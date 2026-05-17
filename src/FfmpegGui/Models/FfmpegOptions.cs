@@ -23,6 +23,10 @@ namespace FfmpegGui.Models
         public bool? AvifStillPicture { get; set; }
         public int? JxlEffort { get; set; }
         public bool? JxlModular { get; set; }
+        /// <summary>
+        /// JPEG→JXL 无损重封装模式：不解码像素，直接复制 DCT 系数，速度极快且完全保留原图质量
+        /// </summary>
+        public bool JxlLosslessJpeg { get; set; } = false;
         public string? JpegHuffman { get; set; }
         public string? TiffCompressionAlgo { get; set; }
         public int? TiffDpi { get; set; }

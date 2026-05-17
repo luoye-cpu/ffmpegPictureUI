@@ -116,20 +116,39 @@ namespace FfmpegGui.Services
                     { args.Add("-dpi"); args.Add(options.TiffDpi.Value.ToString()); }
                     break;
                 case "jxl":
-                    if (options.Lossless)
+                    // --- JPEG→JXL 快速路径：不解码，直接复制 DCT 系数 ---
+                    // 仅当输入为 JPEG 且启用 JxlLosslessJpeg 时才生效
+                    // 此时忽略 distance/effort/modular 参数，ffmpeg 自动处理
+                    if (options.JxlLosslessJpeg)
+                    {
+                        // distance=0 确保无损，配合 lossless_jpeg=1 跳过解码
+                        args.Add("-distance");
+                        args.Add("0");
+                        // 核心参数：告诉 libjxl 输入是 JPEG，直接转码 DCT 系数
+                        args.Add("-lossless_jpeg");
+                        args.Add("1");
+                        // effort 可保留用于 JXL 的压缩效率优化（可选）
+                        if (options.JxlEffort.HasValue)
+                        { args.Add("-effort"); args.Add(options.JxlEffort.Value.ToString()); }
+                    }
+                    else if (options.Lossless)
                     {
                         args.Add("-distance");
                         args.Add("0");
+                        if (options.JxlEffort.HasValue)
+                        { args.Add("-effort"); args.Add(options.JxlEffort.Value.ToString()); }
+                        if (options.JxlModular == true)
+                        { args.Add("-modular"); args.Add("1"); }
                     }
                     else
                     {
                         args.Add("-distance");
                         args.Add(MapJxlDistance(options.Quality).ToString("F1"));
+                        if (options.JxlEffort.HasValue)
+                        { args.Add("-effort"); args.Add(options.JxlEffort.Value.ToString()); }
+                        if (options.JxlModular == true)
+                        { args.Add("-modular"); args.Add("1"); }
                     }
-                    if (options.JxlEffort.HasValue)
-                    { args.Add("-effort"); args.Add(options.JxlEffort.Value.ToString()); }
-                    if (options.JxlModular == true)
-                    { args.Add("-modular"); args.Add("1"); }
                     break;
             }
 

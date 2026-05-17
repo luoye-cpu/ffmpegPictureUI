@@ -121,6 +121,10 @@
               <TextBlock Text="编码努力 (effort)"/>
               <NumericUpDown x:Name="JxlEffortBox" Value="7" Minimum="1" Maximum="9"/>
               <CheckBox x:Name="JxlModularCheck" Content="强制 Modular 模式"/>
+              <Border x:Name="JxlLosslessJpegHint" IsVisible="False" Background="#FFF3E0" 
+                      CornerRadius="4" Padding="6,3" Margin="0,4,0,0">
+                <TextBlock x:Name="JxlLosslessJpegHintText" TextWrapping="Wrap" FontSize="11"/>
+              </Border>
             </StackPanel>
             <!-- JPEG -->
             <StackPanel x:Name="JpegCodecPanel" IsVisible="False" Spacing="4">
