@@ -67,3 +67,14 @@ D:\PLAN-1\ffmpeg-gui\src\FfmpegGui\obj\Debug\net10.0\Avalonia\references
 D:\PLAN-1\ffmpeg-gui\src\FfmpegGui\obj\Debug\net10.0\Avalonia\original.dll
 D:\PLAN-1\ffmpeg-gui\src\FfmpegGui\obj\Debug\net10.0\Avalonia\original.pdb
 D:\PLAN-1\ffmpeg-gui\src\FfmpegGui\obj\Debug\net10.0\Avalonia\original.ref.dll
+D:\PLAN\ffmpegPictureUI\ffmpegPictureUI\src\FfmpegGui\obj\Debug\net10.0\FfmpegGui.csproj.AssemblyReference.cache
+D:\PLAN\ffmpegPictureUI\ffmpegPictureUI\src\FfmpegGui\obj\Debug\net10.0\Avalonia\Resources.Inputs.cache
+D:\PLAN\ffmpegPictureUI\ffmpegPictureUI\src\FfmpegGui\obj\Debug\net10.0\Avalonia\resources
+D:\PLAN\ffmpegPictureUI\ffmpegPictureUI\src\FfmpegGui\obj\Debug\net10.0\FfmpegGui.GeneratedMSBuildEditorConfig.editorconfig
+D:\PLAN\ffmpegPictureUI\ffmpegPictureUI\src\FfmpegGui\obj\Debug\net10.0\FfmpegGui.AssemblyInfoInputs.cache
+D:\PLAN\ffmpegPictureUI\ffmpegPictureUI\src\FfmpegGui\obj\Debug\net10.0\FfmpegGui.AssemblyInfo.cs
+D:\PLAN\ffmpegPictureUI\ffmpegPictureUI\src\FfmpegGui\obj\Debug\net10.0\FfmpegGui.csproj.CoreCompileInputs.cache
+D:\PLAN\ffmpegPictureUI\ffmpegPictureUI\src\FfmpegGui\obj\Debug\net10.0\FfmpegGui.sourcelink.json
+D:\PLAN\ffmpegPictureUI\ffmpegPictureUI\src\FfmpegGui\obj\Debug\net10.0\FfmpegGui.dll
+D:\PLAN\ffmpegPictureUI\ffmpegPictureUI\src\FfmpegGui\obj\Debug\net10.0\refint\FfmpegGui.dll
+D:\PLAN\ffmpegPictureUI\ffmpegPictureUI\src\FfmpegGui\obj\Debug\net10.0\FfmpegGui.pdb

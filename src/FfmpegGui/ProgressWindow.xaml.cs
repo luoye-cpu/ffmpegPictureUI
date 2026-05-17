@@ -131,60 +131,92 @@ namespace FfmpegGui
         private async void AnalyzeQuality_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
         {
             if (_item == null) return;
-            if (AnalysisLabel != null)
-                AnalysisLabel.Text = "正在分析 SSIM + PSNR...";
 
-            var result = await Services.QualityAnalysisService.AnalyzeAsync(
-                _item.InputPath, _item.OutputPath);
-
-            if (AnalysisLabel != null)
+            // 防止重复点击
+            if (sender is Button btn) btn.IsEnabled = false;
+            try
             {
-                if (result.Success)
+                if (AnalysisLabel != null)
+                    AnalysisLabel.Text = "正在分析 SSIM + PSNR...";
+
+                var result = await Services.QualityAnalysisService.AnalyzeAsync(
+                    _item.InputPath, _item.OutputPath);
+
+                if (AnalysisLabel != null)
                 {
-                    var lines = new System.Collections.Generic.List<string>();
-                    if (result.SsimAll.HasValue)
-                        lines.Add($"SSIM: {result.SsimAll.Value:F4}" +
-                                  (result.SsimDB.HasValue ? $" ({result.SsimDB.Value:F2} dB)" : ""));
-                    if (result.PsnrAverage.HasValue)
+                    if (result.Success && (result.SsimAll.HasValue || result.PsnrAverage.HasValue))
                     {
-                        lines.Add($"PSNR: {result.PsnrAverage.Value:F2} dB" +
-                                  (result.PsnrMin.HasValue ? $" (min {result.PsnrMin.Value:F2})" : "") +
-                                  (result.PsnrMax.HasValue ? $" (max {result.PsnrMax.Value:F2})" : ""));
-                    }
+                        // 检测无损编码: SSIM ≈ 1.0 且 PSNR 无穷大
+                        var isLossless = result.SsimAll is >= 0.9999 &&
+                                         result.PsnrAverage is double.PositiveInfinity or >= 99;
 
-                    if (lines.Count == 0)
-                        lines.Add("未检测到质量数据");
+                        var lines = new System.Collections.Generic.List<string>();
 
-                    // 质量评级
-                    if (result.PsnrAverage.HasValue)
-                    {
-                        var psnr = result.PsnrAverage.Value;
-                        lines.Add(psnr switch
+                        if (isLossless)
                         {
-                            >= 45 => "评级: ★★★★★ 优秀",
-                            >= 38 => "评级: ★★★★ 良好",
-                            >= 32 => "评级: ★★★ 一般",
-                            >= 25 => "评级: ★★ 较差",
-                            _ => "评级: ★ 差"
-                        });
-                    }
+                            lines.Add("🔒 无损编码 — 输出与源图完全一致");
+                        }
 
-                    AnalysisLabel.Text = string.Join("\n", lines);
-                }
-                else
-                {
-                    var errMsg = result.Error;
-                    // 提取 ffmpeg 错误中的关键行
-                    if (!string.IsNullOrWhiteSpace(result.RawOutput))
-                    {
-                        var rawLines = result.RawOutput.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
-                        var lastLines = rawLines.Length > 5 
-                            ? string.Join("\n", rawLines[^5..])
-                            : string.Join("\n", rawLines);
-                        errMsg += "\n\n最后输出:\n" + lastLines;
+                        if (result.SsimAll.HasValue)
+                        {
+                            var ssimStr = $"SSIM: {result.SsimAll.Value:F6}";
+                            if (result.SsimDB.HasValue && !double.IsInfinity(result.SsimDB.Value))
+                                ssimStr += $" ({result.SsimDB.Value:F2} dB)";
+                            else if (result.SsimDB.HasValue && double.IsPositiveInfinity(result.SsimDB.Value))
+                                ssimStr += " (∞ dB)";
+                            lines.Add(ssimStr);
+                        }
+                        if (result.PsnrAverage.HasValue)
+                        {
+                            var psnrStr = double.IsPositiveInfinity(result.PsnrAverage.Value)
+                                ? "PSNR: ∞ dB (无损)"
+                                : $"PSNR: {result.PsnrAverage.Value:F2} dB";
+                            if (result.PsnrMin.HasValue && !double.IsInfinity(result.PsnrMin.Value))
+                                psnrStr += $" (min {result.PsnrMin.Value:F2})";
+                            if (result.PsnrMax.HasValue && !double.IsInfinity(result.PsnrMax.Value))
+                                psnrStr += $" (max {result.PsnrMax.Value:F2})";
+                            lines.Add(psnrStr);
+                        }
+
+                        // 质量评级（仅对有损编码）
+                        if (!isLossless && result.PsnrAverage.HasValue && !double.IsInfinity(result.PsnrAverage.Value))
+                        {
+                            var psnr = result.PsnrAverage.Value;
+                            lines.Add(psnr switch
+                            {
+                                >= 45 => "评级: ★★★★★ 优秀",
+                                >= 38 => "评级: ★★★★ 良好",
+                                >= 32 => "评级: ★★★ 一般",
+                                >= 25 => "评级: ★★ 较差",
+                                _ => "评级: ★ 差"
+                            });
+                        }
+
+                        AnalysisLabel.Text = string.Join("\n", lines);
                     }
-                    AnalysisLabel.Text = $"分析失败: {errMsg}";
+                    else
+                    {
+                        var errMsg = result.Error;
+                        if (string.IsNullOrWhiteSpace(errMsg))
+                            errMsg = "未检测到质量数据（ffmpeg 退出码非零但无错误信息）";
+
+                        // 附加上下文：展示 ffmpeg 原始输出的最后几行
+                        if (!string.IsNullOrWhiteSpace(result.RawOutput))
+                        {
+                            var rawLines = result.RawOutput
+                                .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+                            var lastLines = rawLines.Length > 5
+                                ? string.Join("\n", rawLines[^5..])
+                                : string.Join("\n", rawLines);
+                            errMsg += "\n\nffmpeg 输出:\n" + lastLines;
+                        }
+                        AnalysisLabel.Text = $"分析失败: {errMsg}";
+                    }
                 }
+            }
+            finally
+            {
+                if (sender is Button btn2) btn2.IsEnabled = true;
             }
         }
 

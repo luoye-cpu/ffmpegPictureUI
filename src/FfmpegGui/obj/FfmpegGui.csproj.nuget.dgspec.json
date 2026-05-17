@@ -1,17 +1,17 @@
 {
   "format": 1,
   "restore": {
-    "D:\\PLAN\\ffmpegPictureUI\\ffmpegPictureUI\\src\\FfmpegGui\\FfmpegGui.csproj": {}
+    "d:\\PLAN\\ffmpegPictureUI\\ffmpegPictureUI\\src\\FfmpegGui\\FfmpegGui.csproj": {}
   },
   "projects": {
-    "D:\\PLAN\\ffmpegPictureUI\\ffmpegPictureUI\\src\\FfmpegGui\\FfmpegGui.csproj": {
-      "version": "1.0.0",
+    "d:\\PLAN\\ffmpegPictureUI\\ffmpegPictureUI\\src\\FfmpegGui\\FfmpegGui.csproj": {
+      "version": "1.0.1",
       "restore": {
-        "projectUniqueName": "D:\\PLAN\\ffmpegPictureUI\\ffmpegPictureUI\\src\\FfmpegGui\\FfmpegGui.csproj",
+        "projectUniqueName": "d:\\PLAN\\ffmpegPictureUI\\ffmpegPictureUI\\src\\FfmpegGui\\FfmpegGui.csproj",
         "projectName": "FfmpegGui",
-        "projectPath": "D:\\PLAN\\ffmpegPictureUI\\ffmpegPictureUI\\src\\FfmpegGui\\FfmpegGui.csproj",
+        "projectPath": "d:\\PLAN\\ffmpegPictureUI\\ffmpegPictureUI\\src\\FfmpegGui\\FfmpegGui.csproj",
         "packagesPath": "C:\\Users\\20210\\.nuget\\packages\\",
-        "outputPath": "D:\\PLAN\\ffmpegPictureUI\\ffmpegPictureUI\\src\\FfmpegGui\\obj\\",
+        "outputPath": "d:\\PLAN\\ffmpegPictureUI\\ffmpegPictureUI\\src\\FfmpegGui\\obj\\",
         "projectStyle": "PackageReference",
         "fallbackFolders": [
           "C:\\Program Files (x86)\\Microsoft Visual Studio\\Shared\\NuGetPackages"
