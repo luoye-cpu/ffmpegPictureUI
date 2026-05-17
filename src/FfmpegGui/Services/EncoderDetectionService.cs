@@ -142,6 +142,42 @@ namespace FfmpegGui.Services
         }
 
         /// <summary>
+        /// 检测 libjxl 是否支持 -lossless_jpeg 参数（JPEG→JXL 无损重封装）
+        /// 需要 ffmpeg >= 7.0 且编译了 libjxl >= 0.10
+        /// </summary>
+        public static async Task<bool> SupportsJxlLosslessJpegAsync(string? ffmpegPath = null)
+        {
+            var fileName = ffmpegPath ?? AppSettingsService.Current.FfmpegPath;
+            try
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = fileName,
+                    Arguments = "-hide_banner -h encoder=libjxl",
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    StandardOutputEncoding = Encoding.UTF8,
+                    StandardErrorEncoding = Encoding.UTF8
+                };
+
+                using var p = Process.Start(psi);
+                if (p == null) return false;
+                var output = await p.StandardOutput.ReadToEndAsync();
+                var error = await p.StandardError.ReadToEndAsync();
+                await p.WaitForExitAsync();
+
+                var combined = output + error;
+                return combined.Contains("-lossless_jpeg", StringComparison.OrdinalIgnoreCase);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        /// <summary>
         /// 清除缓存（ffmpeg 路径变更后调用）
         /// </summary>
         public static void ClearCache()

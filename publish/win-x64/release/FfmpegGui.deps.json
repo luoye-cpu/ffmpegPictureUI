@@ -7,7 +7,7 @@
   "targets": {
     ".NETCoreApp,Version=v10.0": {},
     ".NETCoreApp,Version=v10.0/win-x64": {
-      "FfmpegGui/1.0.1": {
+      "FfmpegGui/1.1.0": {
         "dependencies": {
           "Avalonia": "11.0.0",
           "Avalonia.Desktop": "11.0.0",
@@ -242,7 +242,7 @@
     }
   },
   "libraries": {
-    "FfmpegGui/1.0.1": {
+    "FfmpegGui/1.1.0": {
       "type": "project",
       "serviceable": false,
       "sha512": ""

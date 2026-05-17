@@ -64,6 +64,8 @@ namespace FfmpegGui
         private ComboBox? AvifPresetCombo;
         private NumericUpDown? JxlEffortBox;
         private CheckBox? JxlModularCheck;
+        private Border? JxlLosslessJpegHint;
+        private TextBlock? JxlLosslessJpegHintText;
         private ComboBox? JpegHuffmanCombo;
         private ComboBox? TiffCompressionCombo;
         private Border? DropZone;
@@ -131,6 +133,8 @@ namespace FfmpegGui
             AvifPresetCombo = this.FindControl<ComboBox>("AvifPresetCombo");
             JxlEffortBox = this.FindControl<NumericUpDown>("JxlEffortBox");
             JxlModularCheck = this.FindControl<CheckBox>("JxlModularCheck");
+            JxlLosslessJpegHint = this.FindControl<Border>("JxlLosslessJpegHint");
+            JxlLosslessJpegHintText = this.FindControl<TextBlock>("JxlLosslessJpegHintText");
             JpegHuffmanCombo = this.FindControl<ComboBox>("JpegHuffmanCombo");
             TiffCompressionCombo = this.FindControl<ComboBox>("TiffCompressionCombo");
             DropZone = this.FindControl<Border>("DropZone");
@@ -219,13 +223,20 @@ namespace FfmpegGui
         private async Task FullDetectionAsync()
         {
             if (LogText != null) LogText.Text += "正在检测 ffmpeg 能力与可用编码器...\n";
+            CjxlService.ClearCache();
+            CjxlService.Detect();
             await FormatCapabilitiesService.InitializeAsync(AppSettingsService.Current.FfmpegPath);
             
             // 预加载所有格式的编码器
             await EncoderDetectionService.GetAllEncodersAsync(AppSettingsService.Current.FfmpegPath);
             
             await RefreshEncoderListAsync();
-            if (LogText != null) LogText.Text += "能力检测完成。\n";
+            if (LogText != null)
+            {
+                LogText.Text += "能力检测完成。\n";
+                if (CjxlService.IsAvailable)
+                    LogText.Text += "✅ 检测到 cjxl.exe，JPEG→JXL 将使用极速无损重封装。\n";
+            }
             UpdateOptionAvailability();
         }
 
@@ -240,7 +251,7 @@ namespace FfmpegGui
             RegenerateCommand();
         }
 
-        private void RegenerateCommand()
+        private async void RegenerateCommand()
         {
             if (string.IsNullOrWhiteSpace(_inputPath)) return;
             var fmt = FormatCombo?.SelectedItem as string ?? "jpg";
@@ -254,6 +265,82 @@ namespace FfmpegGui
             var autoTh = AutoThreadsCheck?.IsChecked ?? true;
             var singleTh = SingleThreadCheck?.IsChecked ?? false;
             int threads = singleTh ? 1 : autoTh ? Models.FfmpegOptions.ComputeAutoThreads() : (int)(ThreadsBox?.Value ?? 4);
+
+            // --- JPEG→JXL 无损重封装自动检测：cjxl 优先 ---
+            bool jxlLosslessJpeg = false;
+            if (fmt is "jxl" && IsJpegInput(_inputPath))
+            {
+                // 1) 优先尝试 cjxl.exe（独立工具，速度最快）
+                if (CjxlService.IsAvailable)
+                {
+                    jxlLosslessJpeg = true;
+                    if (JxlLosslessJpegHint != null)
+                    {
+                        JxlLosslessJpegHint.IsVisible = true;
+                        JxlLosslessJpegHint.Background = new Avalonia.Media.SolidColorBrush(
+                            Avalonia.Media.Color.FromRgb(224, 242, 241)); // 青色底
+                    }
+                    if (JxlLosslessJpegHintText != null)
+                        JxlLosslessJpegHintText.Text = "🚀 cjxl 极速模式：直接复制 JPEG DCT 系数，速度 5-10×，体积更优";
+                    if (LosslessCheck != null)
+                    {
+                        LosslessCheck.IsChecked = true;
+                        LosslessCheck.IsEnabled = false;
+                    }
+                    if (QualitySlider != null)
+                        QualitySlider.IsEnabled = false;
+                }
+                // 2) 回退：ffmpeg libjxl 的 -lossless_jpeg 参数
+                else if (await EncoderDetectionService.SupportsJxlLosslessJpegAsync())
+                {
+                    jxlLosslessJpeg = true;
+                    if (JxlLosslessJpegHint != null)
+                    {
+                        JxlLosslessJpegHint.IsVisible = true;
+                        JxlLosslessJpegHint.Background = new Avalonia.Media.SolidColorBrush(
+                            Avalonia.Media.Color.FromRgb(255, 243, 224)); // 橙色底
+                    }
+                    if (JxlLosslessJpegHintText != null)
+                        JxlLosslessJpegHintText.Text = "⚡ ffmpeg 无损重封装模式：直接复制 DCT 系数，速度提升 5-10×";
+                    if (LosslessCheck != null)
+                    {
+                        LosslessCheck.IsChecked = true;
+                        LosslessCheck.IsEnabled = false;
+                    }
+                    if (QualitySlider != null)
+                        QualitySlider.IsEnabled = false;
+                }
+                else
+                {
+                    // 3) 不支持的提示
+                    if (JxlLosslessJpegHint != null)
+                    {
+                        JxlLosslessJpegHint.IsVisible = true;
+                        JxlLosslessJpegHint.Background = new Avalonia.Media.SolidColorBrush(
+                            Avalonia.Media.Color.FromRgb(255, 243, 224));
+                    }
+                    if (JxlLosslessJpegHintText != null)
+                        JxlLosslessJpegHintText.Text = "💡 提示：安装 cjxl.exe 到 ffmpeg 同目录可启用极速无损重封装（不解码，速度 5-10×）";
+                    if (JxlLosslessJpegHint != null)
+                        JxlLosslessJpegHint.IsVisible = true;
+                }
+            }
+            else
+            {
+                if (JxlLosslessJpegHint != null)
+                    JxlLosslessJpegHint.IsVisible = false;
+                // 恢复控件状态（从 JXL 切换到其他格式时）
+                if (LosslessCheck != null && !LosslessCheck.IsEnabled
+                    && _currentCapabilities?.SupportsLossless == true)
+                {
+                    LosslessCheck.IsEnabled = true;
+                }
+                if (QualitySlider != null && !QualitySlider.IsEnabled
+                    && _currentCapabilities?.SupportsQuality == true)
+                {
+                    QualitySlider.IsEnabled = true;
+                }
+            }
 
             var opts = new Models.FfmpegOptions
             {
@@ -275,6 +362,7 @@ namespace FfmpegGui
                 AvifPreset = useAdvCodec ? (AvifPresetCombo?.SelectedItem as string) : null,
                 JxlEffort = useAdvCodec ? (int?)JxlEffortBox?.Value : null,
                 JxlModular = useAdvCodec ? JxlModularCheck?.IsChecked : null,
+                JxlLosslessJpeg = jxlLosslessJpeg,
                 JpegHuffman = useAdvCodec ? (JpegHuffmanCombo?.SelectedItem as string) : null,
                 TiffCompressionAlgo = useAdvCodec ? (TiffCompressionCombo?.SelectedItem as string) : null
             };
@@ -565,6 +653,7 @@ namespace FfmpegGui
                 AvifPreset = useAdvCodec ? (AvifPresetCombo?.SelectedItem as string) : null,
                 JxlEffort = useAdvCodec ? (int?)JxlEffortBox?.Value : null,
                 JxlModular = useAdvCodec ? JxlModularCheck?.IsChecked : null,
+                JxlLosslessJpeg = fmt is "jxl" && IsJpegInput(inputPath),
                 JpegHuffman = useAdvCodec ? (JpegHuffmanCombo?.SelectedItem as string) : null,
                 TiffCompressionAlgo = useAdvCodec ? (TiffCompressionCombo?.SelectedItem as string) : null
             };
@@ -818,6 +907,7 @@ namespace FfmpegGui
                 AvifPreset = useAdvCodec ? (AvifPresetCombo?.SelectedItem as string) : null,
                 JxlEffort = useAdvCodec ? (int?)JxlEffortBox?.Value : null,
                 JxlModular = useAdvCodec ? JxlModularCheck?.IsChecked : null,
+                JxlLosslessJpeg = fmt is "jxl" && IsJpegInput(_inputPath),
                 JpegHuffman = useAdvCodec ? (JpegHuffmanCombo?.SelectedItem as string) : null,
                 TiffCompressionAlgo = useAdvCodec ? (TiffCompressionCombo?.SelectedItem as string) : null
             };
@@ -963,6 +1053,15 @@ namespace FfmpegGui
             return string.IsNullOrWhiteSpace(outDir)
                 ? Path.ChangeExtension(inputPath, format)
                 : Path.Combine(outDir, fileName);
+        }
+
+        /// <summary>
+        /// 判断输入文件是否为 JPEG 格式（用于 JPEG→JXL 快速路径检测）
+        /// </summary>
+        private static bool IsJpegInput(string path)
+        {
+            var ext = Path.GetExtension(path).ToLowerInvariant();
+            return ext is ".jpg" or ".jpeg" or ".jpe" or ".jfif";
         }
 
         private async void ExportPreset_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)

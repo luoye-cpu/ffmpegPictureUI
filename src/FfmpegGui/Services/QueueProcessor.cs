@@ -79,15 +79,38 @@ namespace FfmpegGui.Services
                             if (!string.IsNullOrEmpty(outDir) && !Directory.Exists(outDir))
                                 Directory.CreateDirectory(outDir);
 
-                            var args = FfmpegCommandBuilder.BuildArguments(item.Options, item.InputPath, item.OutputPath);
-                            var exitCode = await FfmpegRunner.RunAsync(args, s =>
+                            // ---- cjxl 快速路径：JPEG → JXL 无损重封装 ----
+                            if (item.Options.JxlLosslessJpeg && CjxlService.IsAvailable)
                             {
-                                item.Log += s;
-                                _onItemUpdated?.Invoke(item);
-                            }, AppSettingsService.Current.FfmpegPath);
+                                item.Log += "[cjxl] JPEG → JXL 无损重封装（不解码，速度 5-10×）\n";
+                                var threads = item.Options.Threads;
+                                var effort = item.Options.JxlEffort ?? 7;
+                                var exitCode = await CjxlService.RunAsync(
+                                    item.InputPath, item.OutputPath,
+                                    effort, threads,
+                                    s =>
+                                    {
+                                        item.Log += s;
+                                        _onItemUpdated?.Invoke(item);
+                                    });
 
-                            item.ExitCode = exitCode;
-                            item.Status = exitCode == 0 ? "已完成" : $"失败 (退出码 {exitCode})";
+                                item.ExitCode = exitCode;
+                                item.Status = exitCode == 0
+                                    ? "已完成 (cjxl 无损重封装)"
+                                    : $"失败 (cjxl 退出码 {exitCode})";
+                            }
+                            else
+                            {
+                                var args = FfmpegCommandBuilder.BuildArguments(item.Options, item.InputPath, item.OutputPath);
+                                var exitCode = await FfmpegRunner.RunAsync(args, s =>
+                                {
+                                    item.Log += s;
+                                    _onItemUpdated?.Invoke(item);
+                                }, AppSettingsService.Current.FfmpegPath);
+
+                                item.ExitCode = exitCode;
+                                item.Status = exitCode == 0 ? "已完成" : $"失败 (退出码 {exitCode})";
+                            }
                         }
                         catch (OperationCanceledException)
                         {
