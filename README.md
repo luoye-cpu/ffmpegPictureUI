@@ -23,7 +23,8 @@ FFmpeg 是处理图片和视频的瑞士军刀，但它的命令行语法对普�
 
 - **操作系统**：Windows 10/11（其他 .NET 10 支持的平台也可运行，但主要测试环境为 Windows）。
 - **.NET 10 SDK**：请从 [dotnet.microsoft.com](https://dotnet.microsoft.com/zh-cn/download/dotnet/10.0) 下载并安装。
-- **FFmpeg & FFprobe**：必须已安装在系统中，并且路径已添加到系统 `PATH` 环境变量中。  
+- **FFmpeg & FFprobe**：必须已安装在系统中，并且路径已添加到系统 `PATH` 环境变量中。
+- 可以使用3FUI的ffmpeg 官网地址：3fui.top 和 ffmpegfreeui.top 仓库：github.com/Lake1059/FFmpegFreeUI（这也是一款很不错的ffmpeg UI软件，提供主要是视频压制）
   在终端输入 `ffmpeg -version` 和 `ffprobe -version`，确认能正常输出版本信息。
 
 ### 从源码构建并运行
