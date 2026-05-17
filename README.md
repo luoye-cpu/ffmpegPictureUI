@@ -16,6 +16,7 @@ FFmpeg 是处理图片和视频的瑞士军刀，但它的命令行语法对普�
 - **批量处理队列**：支持拖入多个文件，自动排队转换。
 - **并发控制**：可自定义同时运行的转换任务数量，充分利用多核 CPU。
 - **参数预设**：将常用的转换方案保存为预设，一键调用。
+- **质量分析**：编码完成后提供 SSIM + PSNR 客观质量分析，支持无损编码自动识别。
 
 ## 🚀 快速开始
 
@@ -38,3 +39,30 @@ dotnet build src/FfmpegGui/FfmpegGui.csproj
 
 # 直接运行
 dotnet run --project src/FfmpegGui/FfmpegGui.csproj
+```
+
+### 直接下载运行
+
+从 [Releases](https://github.com/luoye-cpu/PLAN-1/releases) 页面下载 `ffmpeg-gui-avalonia-win-x64-v1.0.1.zip`，解压后运行 `FfmpegGui.exe`。
+
+> 需要系统已安装 [.NET 10 运行时](https://dotnet.microsoft.com/zh-cn/download/dotnet/10.0) 和 FFmpeg。
+
+## 📝 更新日志
+
+### v1.0.1 (2026-05-18)
+
+- 🔧 **修复**: 质量分析(SSIM/PSNR)在部分环境下失效的问题
+  - 修复仅解析 stderr 导致 stdout 输出的分析结果被忽略
+  - 添加 30 秒超时保护，防止 ffmpeg 挂起导致 UI 卡死
+  - 修复串行读取 stdout/stderr 可能导致的管道死锁
+  - 改用 `filter_complex` + `-map` 替代 `-lavfi`，提升各 ffmpeg 版本兼容性
+- 🔧 **修复**: 无损编码(PNG/TIFF)质量分析不显示数据的问题
+  - PSNR=∞(inf) 现正确识别为无损编码
+  - 自动标注 "🔒 无损编码 — 输出与源图完全一致"
+- ✨ **新增**: 分辨率一致性预检，两图尺寸不匹配时给出明确提示
+- ✨ **新增**: 文件存在性前置校验，避免文件缺失时无意义报错
+- 🛡️ **增强**: 正则解析支持科学计数法和 RGB 通道标签
+
+### v1.0.0
+
+- 🎉 首个正式版本
