@@ -73,14 +73,23 @@ dotnet run --project src/FfmpegGui/FfmpegGui.csproj
 
 ### 直接下载运行 / Download & Run
 
-从 [Releases](https://github.com/luoye-cpu/PLAN-1/releases) 页面下载 `ffmpeg-gui-avalonia-win-x64-v1.0.1.zip`，解压后运行 `FfmpegGui.exe`。
+从 [Releases](https://github.com/luoye-cpu/PLAN-1/releases) 页面下载 `ffmpeg-gui-avalonia-win-x64-v1.1.0.zip`，解压后运行 `FfmpegGui.exe`。
 
-Download `ffmpeg-gui-avalonia-win-x64-v1.0.1.zip` from the [Releases](https://github.com/luoye-cpu/PLAN-1/releases) page, extract, and run `FfmpegGui.exe`.
+Download `ffmpeg-gui-avalonia-win-x64-v1.1.0.zip` from the [Releases](https://github.com/luoye-cpu/PLAN-1/releases) page, extract, and run `FfmpegGui.exe`.
 
 > ⚠️ 需要系统已安装 [.NET 10 运行时](https://dotnet.microsoft.com/zh-cn/download/dotnet/10.0) 和 FFmpeg。
 > ⚠️ Requires [.NET 10 Runtime](https://dotnet.microsoft.com/zh-cn/download/dotnet/10.0) and FFmpeg installed on the system.
 
 ## 📝 更新日志 / Changelog
+
+### v1.1.0 (2026-05-18)
+
+- 🚀 **新增 / New**: 集成 cjxl.exe，JPEG→JXL 无损重封装极速模式 — Integrated cjxl.exe for ultra-fast JPEG→JXL lossless transcoding
+  - 直接复制 JPEG DCT 系数，无需解码像素，速度提升 5-10× — Directly copies JPEG DCT coefficients without decoding, 5-10× faster
+  - cjxl.exe 已内置在发布包中，开箱即用 — cjxl.exe bundled in the release package, ready to use
+  - 三级检测：cjxl 优先 → ffmpeg libjxl → 提示安装 — Three-tier detection: cjxl first → ffmpeg libjxl → install hint
+  - UI 颜色区分：青色(cjxl) / 橙色(ffmpeg) / 橙色(提示) — Color-coded UI: teal(cjxl) / orange(ffmpeg) / orange(hint)
+- ⚡ **增强 / Enhanced**: JPEG→JXL 未来 ffmpeg 升级 libjxl 后自动启用 lossless_jpeg 参数 — Auto-enables ffmpeg -lossless_jpeg param when ffmpeg upgrades libjxl in the future
 
 ### v1.0.1 (2026-05-18)
 
