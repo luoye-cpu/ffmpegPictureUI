@@ -73,14 +73,35 @@ dotnet run --project src/FfmpegGui/FfmpegGui.csproj
 
 ### 直接下载运行 / Download & Run
 
-从 [Releases](https://github.com/luoye-cpu/PLAN-1/releases) 页面下载 `FfmpegGui-v1.2.2-win-x64.zip`，解压后运行 `FfmpegGui.exe`。
+从 [Releases](https://github.com/luoye-cpu/PLAN-1/releases) 页面下载 `FfmpegGui-v1.2.3-win-x64.zip`，解压后运行 `FfmpegGui.exe`。
 
-Download `FfmpegGui-v1.2.2-win-x64.zip` from the [Releases](https://github.com/luoye-cpu/PLAN-1/releases) page, extract, and run `FfmpegGui.exe`.
+Download `FfmpegGui-v1.2.3-win-x64.zip` from the [Releases](https://github.com/luoye-cpu/PLAN-1/releases) page, extract, and run `FfmpegGui.exe`.
 
 > ⚠️ 需要系统已安装 [.NET 10 运行时](https://dotnet.microsoft.com/zh-cn/download/dotnet/10.0) 和 FFmpeg。
 > ⚠️ Requires [.NET 10 Runtime](https://dotnet.microsoft.com/zh-cn/download/dotnet/10.0) and FFmpeg installed on the system.
 
 ## 📝 更新日志 / Changelog
+
+### v1.2.3 (2026-05-26)
+
+- 🎨 **重构 / Refactor**: UI 全面重构 — Complete UI overhaul
+  - 右侧面板采用卡片式设计，圆角边框统一风格 — Card-style design for right-side panels with rounded corners
+  - 三个主区域可通过 GridSplitter 自由拖动调整大小 — Three main areas freely resizable via GridSplitter
+  - 按钮分组优化，工具栏使用 WrapPanel 自适应换行 — Button grouping optimized, toolbar uses WrapPanel
+  - 顶部工具栏增加深色/浅色模式切换按钮 — Dark/Light mode toggle button added to top bar
+- 🌓 **新增 / New**: 双色主题适配 — Dual theme support
+  - 支持深色模式与浅色模式一键切换 — One-click switch between dark and light modes
+  - 主题偏好自动保存，重启后保持 — Theme preference auto-saved, persists after restart
+- 🐛 **修复 / Fix**: 多项 bug 修复 — Multiple bug fixes
+  - 拖拽单个图片文件不会添加到已选文件列表 — Fixed single image file drag not adding to selected list
+  - 拖拽多个文件夹后无法正常加入转换队列 — Fixed multi-folder drag preventing queue addition
+  - 队列容量从并发数误用为总上限（1125 文件仅 128 入队）— Queue capacity misused as total limit instead of concurrency
+  - 多个控件第二次更改时命令预览不更新 — Command preview not updating on second control change
+- 🔧 **优化 / Improved**: cjxl JPEG→JXL 无损转码 — cjxl JPEG→JXL lossless transcoding
+  - 命令新增 `--lossless_jpeg=1` 显式声明无损转码，消除 cjxl Note 警告 — Added `--lossless_jpeg=1` to explicitly declare lossless transcoding
+  - 移除冗余的「强制保留元数据」选项（cjxl 默认自动保留 EXIF/XMP/ICC）— Removed redundant "Force metadata" option
+  - 右侧命令预览正确显示 cjxl 命令而非 ffmpeg 命令 — Command preview correctly shows cjxl command
+- 📦 **发布 / Release**: FfmpegGui-v1.2.3-win-x64 — Release package FfmpegGui-v1.2.3-win-x64
 
 ### v1.2.2 (2026-05-26)
 

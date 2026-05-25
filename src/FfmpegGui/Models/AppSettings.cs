@@ -15,6 +15,11 @@ namespace FfmpegGui.Models
         /// </summary>
         public int MaxQueueSize { get; set; } = 16;
 
+        /// <summary>
+        /// UI 主题模式：0=跟随系统, 1=浅色, 2=深色（默认深色）
+        /// </summary>
+        public int ThemeMode { get; set; } = 2;
+
         public string FfmpegPath =>
             string.IsNullOrWhiteSpace(FfmpegDirectory)
                 ? "ffmpeg"
