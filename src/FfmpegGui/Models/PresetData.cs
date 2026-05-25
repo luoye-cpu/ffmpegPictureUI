@@ -30,6 +30,7 @@ namespace FfmpegGui.Models
         public string? JpegHuffman { get; set; }
         public string? TiffCompressionAlgo { get; set; }
         public int Concurrency { get; set; } = 2;
+        public int MaxQueueSize { get; set; } = 16;
 
         public string ToJson() => JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true });
 

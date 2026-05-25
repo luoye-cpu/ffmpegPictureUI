@@ -220,7 +220,14 @@
         <!-- 并发 + 执行 -->
         <StackPanel Grid.Row="6" Orientation="Horizontal" Spacing="8" Margin="0,6,0,0"> 
           <TextBlock Text="并行编码任务数" VerticalAlignment="Center"/>
-          <NumericUpDown x:Name="ConcurrencyBox" Value="2" Minimum="1" Maximum="16" Width="80"/>
+          <TextBox x:Name="ConcurrencyBox" Text="2" Width="60" VerticalAlignment="Center"
+                   ToolTip.Tip="请输入1-128之间的整数"/>
+          <StackPanel Orientation="Vertical" Spacing="0" VerticalAlignment="Center">
+            <Button x:Name="ConcurrencyUpBtn" Content="▲" FontSize="8" Padding="6,1"
+                    Click="ConcurrencyUp_Click"/>
+            <Button x:Name="ConcurrencyDownBtn" Content="▼" FontSize="8" Padding="6,1"
+                    Click="ConcurrencyDown_Click"/>
+          </StackPanel>
           <TextBlock x:Name="ConcurrencyLabel" Text="(同时 2 个任务)" VerticalAlignment="Center" Foreground="Gray"/>
           <TextBlock x:Name="QueueCountLabel" Text="队列: 0" VerticalAlignment="Center" Margin="12,0,0,0"/>
         </StackPanel>

@@ -355,6 +355,12 @@
           "lib/net5.0/MicroCom.Runtime.dll": {}
         }
       },
+      "Microsoft.NET.ILLink.Tasks/10.0.8": {
+        "type": "package",
+        "build": {
+          "build/Microsoft.NET.ILLink.Tasks.props": {}
+        }
+      },
       "Microsoft.Win32.SystemEvents/6.0.0": {
         "type": "package",
         "compile": {
@@ -823,6 +829,12 @@
         },
         "runtime": {
           "lib/net5.0/MicroCom.Runtime.dll": {}
+        }
+      },
+      "Microsoft.NET.ILLink.Tasks/10.0.8": {
+        "type": "package",
+        "build": {
+          "build/Microsoft.NET.ILLink.Tasks.props": {}
         }
       },
       "Microsoft.Win32.SystemEvents/6.0.0": {
@@ -1478,6 +1490,56 @@
         "microcom.runtime.nuspec"
       ]
     },
+    "Microsoft.NET.ILLink.Tasks/10.0.8": {
+      "sha512": "dVbSXGIFNR5nZcv2tOLoWI+a9T4jtFd77IYjuND+QVe360qWgAF7H0WtoopYhRw/+SgpGUTyrkrh+65+ClNnfw==",
+      "type": "package",
+      "path": "microsoft.net.illink.tasks/10.0.8",
+      "hasTools": true,
+      "files": [
+        ".nupkg.metadata",
+        ".signature.p7s",
+        "Icon.png",
+        "Sdk/Sdk.props",
+        "THIRD-PARTY-NOTICES.TXT",
+        "analyzers/dotnet/cs/ILLink.CodeFixProvider.dll",
+        "analyzers/dotnet/cs/ILLink.RoslynAnalyzer.dll",
+        "build/Microsoft.NET.ILLink.Analyzers.props",
+        "build/Microsoft.NET.ILLink.Tasks.props",
+        "build/Microsoft.NET.ILLink.targets",
+        "microsoft.net.illink.tasks.10.0.8.nupkg.sha512",
+        "microsoft.net.illink.tasks.nuspec",
+        "tools/net/ILLink.Tasks.deps.json",
+        "tools/net/ILLink.Tasks.dll",
+        "tools/net/Mono.Cecil.Mdb.dll",
+        "tools/net/Mono.Cecil.Pdb.dll",
+        "tools/net/Mono.Cecil.Rocks.dll",
+        "tools/net/Mono.Cecil.dll",
+        "tools/net/Sdk/Sdk.props",
+        "tools/net/build/Microsoft.NET.ILLink.Analyzers.props",
+        "tools/net/build/Microsoft.NET.ILLink.Tasks.props",
+        "tools/net/build/Microsoft.NET.ILLink.targets",
+        "tools/net/illink.deps.json",
+        "tools/net/illink.dll",
+        "tools/net/illink.runtimeconfig.json",
+        "tools/netframework/ILLink.Tasks.dll",
+        "tools/netframework/ILLink.Tasks.dll.config",
+        "tools/netframework/Mono.Cecil.Mdb.dll",
+        "tools/netframework/Mono.Cecil.Pdb.dll",
+        "tools/netframework/Mono.Cecil.Rocks.dll",
+        "tools/netframework/Mono.Cecil.dll",
+        "tools/netframework/Sdk/Sdk.props",
+        "tools/netframework/System.Buffers.dll",
+        "tools/netframework/System.Collections.Immutable.dll",
+        "tools/netframework/System.Memory.dll",
+        "tools/netframework/System.Numerics.Vectors.dll",
+        "tools/netframework/System.Reflection.Metadata.dll",
+        "tools/netframework/System.Runtime.CompilerServices.Unsafe.dll",
+        "tools/netframework/build/Microsoft.NET.ILLink.Analyzers.props",
+        "tools/netframework/build/Microsoft.NET.ILLink.Tasks.props",
+        "tools/netframework/build/Microsoft.NET.ILLink.targets",
+        "useSharedDesignerContext.txt"
+      ]
+    },
     "Microsoft.Win32.SystemEvents/6.0.0": {
       "sha512": "hqTM5628jSsQiv+HGpiq3WKBl2c8v1KZfby2J6Pr7pEPlK9waPdgEO6b8A/+/xn/yZ9ulv8HuqK71ONy2tg67A==",
       "type": "package",
@@ -1825,7 +1887,8 @@
     "net10.0": [
       "Avalonia >= 11.0.0",
       "Avalonia.Desktop >= 11.0.0",
-      "Avalonia.Themes.Fluent >= 11.0.0"
+      "Avalonia.Themes.Fluent >= 11.0.0",
+      "Microsoft.NET.ILLink.Tasks >= 10.0.8"
     ]
   },
   "packageFolders": {
@@ -1833,13 +1896,13 @@
     "C:\\Program Files (x86)\\Microsoft Visual Studio\\Shared\\NuGetPackages": {}
   },
   "project": {
-    "version": "1.2.1",
+    "version": "1.2.2",
     "restore": {
-      "projectUniqueName": "D:\\PLAN\\ffmpegPictureUI\\ffmpegPictureUI\\src\\FfmpegGui\\FfmpegGui.csproj",
+      "projectUniqueName": "d:\\PLAN\\ffmpegPictureUI\\ffmpegPictureUI\\src\\FfmpegGui\\FfmpegGui.csproj",
       "projectName": "FfmpegGui",
-      "projectPath": "D:\\PLAN\\ffmpegPictureUI\\ffmpegPictureUI\\src\\FfmpegGui\\FfmpegGui.csproj",
+      "projectPath": "d:\\PLAN\\ffmpegPictureUI\\ffmpegPictureUI\\src\\FfmpegGui\\FfmpegGui.csproj",
       "packagesPath": "C:\\Users\\20210\\.nuget\\packages\\",
-      "outputPath": "D:\\PLAN\\ffmpegPictureUI\\ffmpegPictureUI\\src\\FfmpegGui\\obj\\",
+      "outputPath": "d:\\PLAN\\ffmpegPictureUI\\ffmpegPictureUI\\src\\FfmpegGui\\obj\\",
       "projectStyle": "PackageReference",
       "fallbackFolders": [
         "C:\\Program Files (x86)\\Microsoft Visual Studio\\Shared\\NuGetPackages"
@@ -1892,6 +1955,12 @@
           "Avalonia.Themes.Fluent": {
             "target": "Package",
             "version": "[11.0.0, )"
+          },
+          "Microsoft.NET.ILLink.Tasks": {
+            "suppressParent": "All",
+            "target": "Package",
+            "version": "[10.0.8, )",
+            "autoReferenced": true
           }
         },
         "imports": [
@@ -2214,17 +2283,6 @@
       "warningLevel": 1,
       "message": "包 \"SkiaSharp\" 2.88.3 具有已知的 高 严重性漏洞，https://github.com/advisories/GHSA-j7hp-h8jx-5ppr",
       "libraryId": "SkiaSharp",
-      "targetGraphs": [
-        "net10.0",
-        "net10.0/win-x64"
-      ]
-    },
-    {
-      "code": "NU1903",
-      "level": "Warning",
-      "warningLevel": 1,
-      "message": "包 \"Tmds.DBus.Protocol\" 0.15.0 具有已知的 高 严重性漏洞，https://github.com/advisories/GHSA-xrw6-gwf8-vvr9",
-      "libraryId": "Tmds.DBus.Protocol",
       "targetGraphs": [
         "net10.0",
         "net10.0/win-x64"
