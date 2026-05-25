@@ -73,14 +73,23 @@ dotnet run --project src/FfmpegGui/FfmpegGui.csproj
 
 ### 直接下载运行 / Download & Run
 
-从 [Releases](https://github.com/luoye-cpu/PLAN-1/releases) 页面下载 `ffmpeg-gui-avalonia-win-x64-v1.1.0.zip`，解压后运行 `FfmpegGui.exe`。
+从 [Releases](https://github.com/luoye-cpu/PLAN-1/releases) 页面下载 `FfmpegGui-v1.2.1-win-x64.zip`，解压后运行 `FfmpegGui.exe`。
 
-Download `ffmpeg-gui-avalonia-win-x64-v1.1.0.zip` from the [Releases](https://github.com/luoye-cpu/PLAN-1/releases) page, extract, and run `FfmpegGui.exe`.
+Download `FfmpegGui-v1.2.1-win-x64.zip` from the [Releases](https://github.com/luoye-cpu/PLAN-1/releases) page, extract, and run `FfmpegGui.exe`.
 
 > ⚠️ 需要系统已安装 [.NET 10 运行时](https://dotnet.microsoft.com/zh-cn/download/dotnet/10.0) 和 FFmpeg。
 > ⚠️ Requires [.NET 10 Runtime](https://dotnet.microsoft.com/zh-cn/download/dotnet/10.0) and FFmpeg installed on the system.
 
 ## 📝 更新日志 / Changelog
+
+### v1.2.1 (2026-05-25)
+
+- 🧹 **优化 / Improved**: 队列控制栏 UI 改进 — Queue control bar UI improvements
+  - 「清空转换队列」按钮移至队列工具栏最前面，仅在队列停止后可点击 — "Clear queue" button moved to front, only enabled when queue is stopped
+  - 移除冗余的「清空已选」按钮 — Removed redundant "Clear selected" button
+  - 「完成当前队列后停止」默认勾选 — "Stop after current queue" checked by default
+- 🐛 **修复 / Fix**: 「清空转换队列」按钮现在可以清除所有非运行中的任务（已完成/已出错/待处理） — "Clear queue" now removes all non-running items (completed/errored/pending), not just pending ones
+- 📦 **发布 / Release**: 发布包内置 cjxl.exe — Release package includes cjxl.exe
 
 ### v1.1.0 (2026-05-18)
 
