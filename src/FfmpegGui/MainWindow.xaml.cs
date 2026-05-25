@@ -54,6 +54,7 @@ namespace FfmpegGui
         private TextBlock? QueueCountLabel;
         private Button? ConcurrencyUpBtn;
         private Button? ConcurrencyDownBtn;
+        private Button? ThemeToggleBtn;
         private CheckBox? UseAdvancedCodec;
         private StackPanel? AdvancedCodecPanel;
         private StackPanel? PngCodecPanel;
@@ -166,6 +167,26 @@ namespace FfmpegGui
 
             // 注册事件
             if (ColorSpaceCombo != null) ColorSpaceCombo.SelectionChanged += ColorSpaceCombo_SelectionChanged;
+            // 其他参数变更时刷新命令预览
+            if (ChromaCombo != null) ChromaCombo.SelectionChanged += (_, _) => RegenerateCommand();
+            if (BitDepthCombo != null) BitDepthCombo.SelectionChanged += (_, _) => RegenerateCommand();
+            if (EncoderCombo != null) EncoderCombo.SelectionChanged += (_, _) => RegenerateCommand();
+            if (ThreadsBox != null) ThreadsBox.ValueChanged += (_, _) => RegenerateCommand();
+            // 高级色彩参数
+            if (ColorPrimariesCombo != null) ColorPrimariesCombo.SelectionChanged += (_, _) => RegenerateCommand();
+            if (ColorTrcCombo != null) ColorTrcCombo.SelectionChanged += (_, _) => RegenerateCommand();
+            if (ColorMatrixCombo != null) ColorMatrixCombo.SelectionChanged += (_, _) => RegenerateCommand();
+            // 高级编码器选项
+            if (PngPredCombo != null) PngPredCombo.SelectionChanged += (_, _) => RegenerateCommand();
+            if (WebpPresetCombo != null) WebpPresetCombo.SelectionChanged += (_, _) => RegenerateCommand();
+            if (AvifCpuUsedBox != null) AvifCpuUsedBox.ValueChanged += (_, _) => RegenerateCommand();
+            if (AvifStillPictureCheck != null) AvifStillPictureCheck.IsCheckedChanged += (_, _) => RegenerateCommand();
+            if (AvifTuneCombo != null) AvifTuneCombo.SelectionChanged += (_, _) => RegenerateCommand();
+            if (AvifPresetCombo != null) AvifPresetCombo.SelectionChanged += (_, _) => RegenerateCommand();
+            if (JxlEffortBox != null) JxlEffortBox.ValueChanged += (_, _) => RegenerateCommand();
+            if (JxlModularCheck != null) JxlModularCheck.IsCheckedChanged += (_, _) => RegenerateCommand();
+            if (JpegHuffmanCombo != null) JpegHuffmanCombo.SelectionChanged += (_, _) => RegenerateCommand();
+            if (TiffCompressionCombo != null) TiffCompressionCombo.SelectionChanged += (_, _) => RegenerateCommand();
             
             // 线程复选框互斥逻辑
             if (AutoThreadsCheck != null)
@@ -189,6 +210,16 @@ namespace FfmpegGui
                     AppSettingsService.Save();
                 };
             }
+
+            // 无损编码 / JXL 强制元数据 → 每次变化刷新命令与选项
+            if (LosslessCheck != null)
+                LosslessCheck.IsCheckedChanged += (_, _) => RegenerateCommand();
+            if (PreserveMetadata != null)
+                PreserveMetadata.IsCheckedChanged += (_, _) => RegenerateCommand();
+            if (UseAdvancedColor != null)
+                UseAdvancedColor.IsCheckedChanged += (_, _) => RegenerateCommand();
+            if (UseAdvancedCodec != null)
+                UseAdvancedCodec.IsCheckedChanged += (_, _) => RegenerateCommand();
 
             // 清空队列按钮引用与初始可用性
             ClearQueueButton = this.FindControl<Button>("ClearQueueButton");
@@ -241,6 +272,15 @@ namespace FfmpegGui
             // 队列项双击 → 打开详情窗口
             if (QueueList != null)
                 QueueList.DoubleTapped += QueueList_DoubleTapped;
+
+            // 主题切换按钮
+            ThemeToggleBtn = this.FindControl<Button>("ThemeToggleBtn");
+            if (ThemeToggleBtn != null)
+            {
+                var isDark = AppSettingsService.Current.ThemeMode != 1; // 默认深色
+                App.SetTheme(isDark);
+                ThemeToggleBtn.Content = isDark ? "☀" : "🌙";
+            }
 
             // 媒体文件列表 — 双击查看详情
             if (MediaFileList != null)
@@ -431,8 +471,22 @@ namespace FfmpegGui
                 TiffCompressionAlgo = useAdvCodec ? (TiffCompressionCombo?.SelectedItem as string) : null
             };
             var outp = GetOutputPath(_inputPath, opts.Format);
-            var args = Services.FfmpegCommandBuilder.BuildArguments(opts, _inputPath, outp);
-            if (CommandText != null) CommandText.Text = "ffmpeg " + args;
+            if (CommandText != null)
+            {
+                if (jxlLosslessJpeg && CjxlService.IsAvailable)
+                {
+                    // cjxl 命令（JPEG→JXL 转码默认保留全部元数据）
+                    var effort = opts.JxlEffort ?? 7;
+                    var t = threads > 0 ? $" --num_threads={threads}" : "";
+                    var cmd = $"cjxl \"{_inputPath}\" \"{outp}\" -d 0 -e {effort}{t} --lossless_jpeg=1";
+                    CommandText.Text = cmd;
+                }
+                else
+                {
+                    var args = Services.FfmpegCommandBuilder.BuildArguments(opts, _inputPath, outp);
+                    CommandText.Text = "ffmpeg " + args;
+                }
+            }
         }
 
         private void UpdateThreadControls()
@@ -472,6 +526,8 @@ namespace FfmpegGui
             {
                 if (SingleThreadCheck != null) SingleThreadCheck.IsChecked = false;
             }
+
+            RegenerateCommand();
         }
 
         private int GetConcurrencyValue()
@@ -523,9 +579,8 @@ namespace FfmpegGui
 
         private void UpdateQueueCountLabel()
         {
-            var maxSize = GetConcurrencyValue();
             if (QueueCountLabel != null)
-                QueueCountLabel.Text = $"队列: {_queueView.Count}/{maxSize}";
+                QueueCountLabel.Text = $"队列: {_queueView.Count} 项";
             if (FileCountLabel != null)
                 FileCountLabel.Text = $"总文件: {_queueView.Count}";
         }
@@ -714,13 +769,11 @@ namespace FfmpegGui
             // 如果有文件夹扫描结果，批量导入
             if (_selectedFiles.Count > 0)
             {
-                int addedCount = 0;
                 foreach (var file in _selectedFiles)
                 {
-                    if (AddSingleToQueue(file))
-                        addedCount++;
+                    AddSingleToQueue(file);
                 }
-                if (LogText != null) LogText.Text += $"已批量添加 {addedCount}/{_selectedFiles.Count} 个文件到队列\n";
+                if (LogText != null) LogText.Text += $"已批量添加 {_selectedFiles.Count} 个文件到队列\n";
                 _selectedFiles.Clear();
                 return;
             }
@@ -735,18 +788,11 @@ namespace FfmpegGui
         }
 
         /// <summary>
-        /// 添加单个文件到队列。返回 true 表示成功添加，false 表示因队列已满等原因被拒绝。
+        /// 添加单个文件到队列。返回 true 表示成功添加。
         /// </summary>
         private bool AddSingleToQueue(string inputPath)
         {
-            // 检查队列上限（使用并行编码任务数作为队列容量）
-            var maxQueueSize = GetConcurrencyValue();
-            if (_queueView.Count >= maxQueueSize)
-            {
-                if (LogText != null) LogText.Text += $"队列已满（上限 {maxQueueSize}），无法添加: {Path.GetFileName(inputPath)}\n";
-                return false;
-            }
-
+            // 注：队列本身无容量上限，"并行编码任务数"仅控制同时运行的任务数
             var fmt = FormatCombo?.SelectedItem as string ?? "jpg";
             var chroma = ChromaCombo?.SelectedItem as string ?? "4:2:0";
             var bitdepthStr = BitDepthCombo?.SelectedItem as string ?? "8";
@@ -792,9 +838,23 @@ namespace FfmpegGui
             _queueItems.Add(item);
             if (LogText != null) LogText.Text += $"已添加到队列: {item.InputPath}\n";
 
-            // 自动生成 ffmpeg 指令预览
-            var cmdArgs = FfmpegCommandBuilder.BuildArguments(options, inputPath, outp);
-            if (CommandText != null) CommandText.Text = "ffmpeg " + cmdArgs;
+            // 自动生成指令预览（cjxl 路径显示 cjxl 命令，否则显示 ffmpeg）
+            if (CommandText != null)
+            {
+                var isCjxl = fmt is "jxl" && IsJpegInput(inputPath) && CjxlService.IsAvailable;
+                if (isCjxl)
+                {
+                    var effort = options.JxlEffort ?? 7;
+                    var t = threads > 0 ? $" --num_threads={threads}" : "";
+                    var cmd = $"cjxl \"{inputPath}\" \"{outp}\" -d 0 -e {effort}{t} --lossless_jpeg=1";
+                    CommandText.Text = cmd;
+                }
+                else
+                {
+                    var cmdArgs = FfmpegCommandBuilder.BuildArguments(options, inputPath, outp);
+                    CommandText.Text = "ffmpeg " + cmdArgs;
+                }
+            }
             return true;
         }
 
@@ -1055,6 +1115,7 @@ namespace FfmpegGui
                     SetComboSelection(ColorMatrixCombo, "bt709");
                     break;
             }
+            RegenerateCommand();
         }
 
         private void SetComboSelection(ComboBox? combo, string value)
@@ -1123,11 +1184,35 @@ namespace FfmpegGui
             };
 
             _outputPath = GetOutputPath(_inputPath, options.Format);
-            var args = FfmpegCommandBuilder.BuildArguments(options, _inputPath, _outputPath);
-            if (CommandText != null) CommandText.Text = "ffmpeg " + args;
+            if (CommandText != null)
+            {
+                var isCjxl = fmt is "jxl" && IsJpegInput(_inputPath) && CjxlService.IsAvailable;
+                if (isCjxl)
+                {
+                    var effort = options.JxlEffort ?? 7;
+                    var t = threads > 0 ? $" --num_threads={threads}" : "";
+                    var cmd = $"cjxl \"{_inputPath}\" \"{_outputPath}\" -d 0 -e {effort}{t} --lossless_jpeg=1";
+                    CommandText.Text = cmd;
+                }
+                else
+                {
+                    var args = FfmpegCommandBuilder.BuildArguments(options, _inputPath, _outputPath);
+                    CommandText.Text = "ffmpeg " + args;
+                }
+            }
         }
 
         // `StopAfterCurrent_Click` 已移除，使用队列旁的复选框 `StopAfterCurrentCheck` 控制该行为。
+
+        private void ThemeToggle_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        {
+            var isDark = !App.IsDarkMode();
+            App.SetTheme(isDark);
+            if (ThemeToggleBtn != null)
+                ThemeToggleBtn.Content = isDark ? "☀" : "🌙";
+            AppSettingsService.Current.ThemeMode = isDark ? 2 : 1;
+            AppSettingsService.Save();
+        }
 
         private async void BrowseFfmpeg_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
         {
@@ -1445,6 +1530,12 @@ namespace FfmpegGui
                     var supported = new[] { ".png", ".jpg", ".jpeg", ".tiff", ".tif", ".webp", ".avif", ".jxl", ".bmp", ".gif" };
                     if (supported.Contains(System.IO.Path.GetExtension(path).ToLower()))
                     {
+                        // 添加到已选文件列表
+                        if (!_mediaFiles.Contains(path))
+                            _mediaFiles.Add(path);
+                        _selectedFiles.Clear();
+                        _selectedFiles.Add(path);
+                        UpdateMediaFileCount();
                         if (LogText != null) LogText.Text += $"已拖放: {path}\n";
                         if (MediaInfoText != null) MediaInfoText.Text = "正在获取媒体信息...";
                         var info = await MediaInfoService.GetMediaInfoAsync(path);
@@ -1483,7 +1574,7 @@ namespace FfmpegGui
                 {
                     AddToMediaFiles(_selectedFiles);
                     if (LogText != null) LogText.Text += $"已拖放 {_selectedFiles.Count} 个文件\n";
-                    _selectedFiles.Clear();
+                    // 注意：不清空 _selectedFiles，以便后续"添加到队列"可批量导入
                     UpdateMediaFileCount();
                 }
             }
