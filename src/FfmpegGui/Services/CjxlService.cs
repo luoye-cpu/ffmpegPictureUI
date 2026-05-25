@@ -121,10 +121,11 @@ namespace FfmpegGui.Services
             // -d 0: 无损
             // -e N: effort
             // 自动检测 JPEG 输入并使用 --jpeg_transcode 模式
-            var args = $"\"{inputPath}\" \"{outputPath}\" -d 0 -e {effort}";
+            var args = $"\"{inputPath}\" \"{outputPath}\" -d 0 -e {effort} --lossless_jpeg=1";
             if (threads > 0)
                 args += $" --num_threads={threads}";
 
+            logCallback?.Invoke($"[cjxl] JPEG → JXL 无损重封装（不解码，速度 5-10×）{Environment.NewLine}");
             logCallback?.Invoke($"[cjxl] {args}{Environment.NewLine}");
 
             var psi = new ProcessStartInfo
