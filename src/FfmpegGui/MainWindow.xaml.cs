@@ -43,7 +43,11 @@ namespace FfmpegGui
         private TextBox? LogText;
         private TextBox? FfmpegPathBox;
         private TextBox? OutputDirBox;
+        private CheckBox? PreserveInputStructure;
+        private CheckBox? StopAfterCurrentCheck;
+        private Button? ClearQueueButton;
         private CheckBox? AutoThreadsCheck;
+        private bool _isQueueRunning = false;
         private CheckBox? SingleThreadCheck;
         private TextBlock? ThreadHintLabel;
         private TextBlock? ConcurrencyLabel;
@@ -77,11 +81,12 @@ namespace FfmpegGui
         private readonly List<string> _selectedFiles = new();
         private readonly ObservableCollection<string> _mediaFiles = new();
         private readonly List<Models.QueueItem> _queueItems = new();
+        private string? _inputBaseDir;
 
         public MainWindow()
         {
             InitializeComponent();
-            _queueProcessor = new QueueProcessor(OnQueueItemUpdated);
+            _queueProcessor = new QueueProcessor(OnQueueItemUpdated, OnQueueStopped);
             Opened += (_, _) => InitControls();
         }
 
@@ -114,6 +119,7 @@ namespace FfmpegGui
             LogText = this.FindControl<TextBox>("LogText");
             FfmpegPathBox = this.FindControl<TextBox>("FfmpegPathBox");
             OutputDirBox = this.FindControl<TextBox>("OutputDirBox");
+            PreserveInputStructure = this.FindControl<CheckBox>("PreserveInputStructure");
             AutoThreadsCheck = this.FindControl<CheckBox>("AutoThreadsCheck");
             SingleThreadCheck = this.FindControl<CheckBox>("SingleThreadCheck");
             ThreadHintLabel = this.FindControl<TextBlock>("ThreadHintLabel");
@@ -170,6 +176,46 @@ namespace FfmpegGui
             }
             UpdateThreadControls();
 
+            if (PreserveInputStructure != null)
+            {
+                // 初始化值（LoadSettings 也会设置一次，冗余安全）
+                PreserveInputStructure.IsChecked = AppSettingsService.Current.PreserveInputFolderStructure;
+                PreserveInputStructure.IsCheckedChanged += (_, _) =>
+                {
+                    AppSettingsService.Current.PreserveInputFolderStructure = PreserveInputStructure.IsChecked ?? false;
+                    AppSettingsService.Save();
+                };
+            }
+
+            // 清空队列按钮引用与初始可用性
+            ClearQueueButton = this.FindControl<Button>("ClearQueueButton");
+            if (ClearQueueButton != null)
+                ClearQueueButton.IsEnabled = !_isQueueRunning;
+
+            // 停止设置复选框（放在队列按钮旁）
+            StopAfterCurrentCheck = this.FindControl<CheckBox>("StopAfterCurrentCheck");
+            if (StopAfterCurrentCheck != null)
+            {
+                StopAfterCurrentCheck.IsCheckedChanged += (_, _) => 
+                {
+                    // 仅在队列正在运行时立即生效；否则在 Start 时会检查此复选框
+                    if (StopAfterCurrentCheck.IsChecked == true)
+                    {
+                        if (_isQueueRunning)
+                        {
+                            if (LogText != null) LogText.Text += "已设置：完成当前队列后停止\n";
+                        }
+                    }
+                    else
+                    {
+                        if (_isQueueRunning)
+                        {
+                            if (LogText != null) LogText.Text += "已取消：完成当前队列后停止\n";
+                        }
+                    }
+                };
+            }
+
             // 队列计数 + 并发数标签更新
             _queueView.CollectionChanged += (_, _) => UpdateQueueCountLabel();
             if (ConcurrencyBox != null)
@@ -212,6 +258,8 @@ namespace FfmpegGui
                 FfmpegPathBox.Text = settings.FfmpegDirectory;
             if (!string.IsNullOrWhiteSpace(settings.OutputDirectory) && OutputDirBox != null)
                 OutputDirBox.Text = settings.OutputDirectory;
+            if (PreserveInputStructure != null)
+                PreserveInputStructure.IsChecked = settings.PreserveInputFolderStructure;
 
             // 如果已有 ffmpeg 路径，启动时自动检测能力
             if (!string.IsNullOrWhiteSpace(settings.FfmpegDirectory))
@@ -586,6 +634,8 @@ namespace FfmpegGui
             if (files != null && files.Count > 0)
             {
                 _inputPath = files[0].Path.LocalPath;
+                // 单文件选择时，不设置输入基目录（仅在选择文件夹时保留结构）
+                _inputBaseDir = null;
                 AddToMediaFiles(files.Select(f => f.Path.LocalPath));
                 UpdateMediaFileCount();
                 if (LogText != null) LogText.Text += $"已选择: {_inputPath}\n";
@@ -674,27 +724,72 @@ namespace FfmpegGui
         {
             int concurrency = (int)(ConcurrencyBox?.Value ?? 2);
             _queueProcessor.Start(concurrency);
+            _isQueueRunning = true;
+            // 如果复选框已勾选，则在启动后请求完成当前队列后停止
+            if (StopAfterCurrentCheck?.IsChecked == true)
+            {
+                _queueProcessor.StopAfterCurrentQueue();
+                if (LogText != null) LogText.Text += "已设置：完成当前队列后停止\n";
+            }
+            if (ClearQueueButton != null)
+                ClearQueueButton.IsEnabled = false;
             if (LogText != null) LogText.Text += $"队列开始，并行: {concurrency} 个任务\n";
         }
 
         private void StopQueue_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
         {
             _queueProcessor.Stop();
+            _isQueueRunning = false;
             if (LogText != null) LogText.Text += "队列已停止\n";
+            if (ClearQueueButton != null)
+                ClearQueueButton.IsEnabled = true;
         }
 
         private void OnQueueItemUpdated(Models.QueueItem item)
         {
             Dispatcher.UIThread.Post(() =>
             {
-                for (int i = 0; i < _queueView.Count; i++)
+                // 首先尝试通过引用在本地队列中定位对应的 QueueItem
+                var idx = _queueItems.FindIndex(x => ReferenceEquals(x, item));
+                if (idx >= 0 && idx < _queueView.Count)
                 {
-                    if (_queueView[i].StartsWith(Path.GetFileName(item.InputPath)))
+                    _queueView[idx] = $"{Path.GetFileName(item.InputPath)} — {item.Status}";
+                    return;
+                }
+
+                // 回退：通过输入路径精确匹配（避免仅用文件名匹配导致模糊替换）
+                for (int i = 0; i < _queueItems.Count && i < _queueView.Count; i++)
+                {
+                    var qi = _queueItems[i];
+                    if (qi.InputPath == item.InputPath && qi.OutputPath == item.OutputPath)
                     {
                         _queueView[i] = $"{Path.GetFileName(item.InputPath)} — {item.Status}";
-                        break;
+                        return;
                     }
                 }
+
+                // 若在本地队列中找不到该项，但状态为已删除，则从 UI 中移除任何残留的显示项
+                if (item.Status == "已删除")
+                {
+                    var fname = Path.GetFileName(item.InputPath);
+                    for (int j = _queueView.Count - 1; j >= 0; j--)
+                    {
+                        if (_queueView[j].StartsWith(fname, StringComparison.OrdinalIgnoreCase))
+                        {
+                            _queueView.RemoveAt(j);
+                        }
+                    }
+                }
+            });
+        }
+
+        private void OnQueueStopped()
+        {
+            Dispatcher.UIThread.Post(() =>
+            {
+                _isQueueRunning = false;
+                if (LogText != null) LogText.Text += "队列已完成\n";
+                if (ClearQueueButton != null) ClearQueueButton.IsEnabled = true;
             });
         }
 
@@ -713,6 +808,43 @@ namespace FfmpegGui
                 _queueItems.RemoveAt(idx);
                 if (LogText != null) LogText.Text += $"已删除: {Path.GetFileName(item.InputPath)}\n";
                 UpdateQueueCountLabel();
+            }
+        }
+
+        private void ClearQueue_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        {
+            if (_isQueueRunning)
+            {
+                if (LogText != null) LogText.Text += "请先停止队列再清空。\n";
+                return;
+            }
+            try
+            {
+                // 1. 清空处理器内部待处理队列（尚未被取走执行的任务）
+                _queueProcessor.ClearPending();
+
+                // 2. 从本地 UI 列表中移除所有非"处理中"的项（已完成/已出错/待处理等都清掉）
+                int removedCount = 0;
+                for (int i = _queueItems.Count - 1; i >= 0; i--)
+                {
+                    if (_queueItems[i].Status != "处理中")
+                    {
+                        _queueItems.RemoveAt(i);
+                        if (i < _queueView.Count)
+                            _queueView.RemoveAt(i);
+                        removedCount++;
+                    }
+                }
+
+                UpdateQueueCountLabel();
+                if (LogText != null)
+                    LogText.Text += removedCount > 0
+                        ? $"已清空队列中 {removedCount} 个任务\n"
+                        : "队列中没有可清空的任务。\n";
+            }
+            catch (Exception ex)
+            {
+                if (LogText != null) LogText.Text += $"清空队列失败: {ex.Message}\n";
             }
         }
 
@@ -917,34 +1049,7 @@ namespace FfmpegGui
             if (CommandText != null) CommandText.Text = "ffmpeg " + args;
         }
 
-        private async void Run_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
-        {
-            if (string.IsNullOrWhiteSpace(CommandText?.Text))
-            {
-                if (LogText != null) LogText.Text += "请先生成命令\n";
-                return;
-            }
-
-            if (LogText != null) LogText.Text += "开始执行 ffmpeg...\n";
-            var args = CommandText.Text.Replace("ffmpeg ", "");
-
-            try
-            {
-                int exit = await FfmpegRunner.RunAsync(args, s =>
-                {
-                    Dispatcher.UIThread.Post(() =>
-                    {
-                        if (LogText != null) LogText.Text += s;
-                    });
-                }, AppSettingsService.Current.FfmpegPath);
-
-                if (LogText != null) LogText.Text += $"ffmpeg 退出码 {exit}\n";
-            }
-            catch (Exception ex)
-            {
-                if (LogText != null) LogText.Text += $"执行失败: {ex.Message}\n";
-            }
-        }
+        // `StopAfterCurrent_Click` 已移除，使用队列旁的复选框 `StopAfterCurrentCheck` 控制该行为。
 
         private async void BrowseFfmpeg_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
         {
@@ -1014,6 +1119,8 @@ namespace FfmpegGui
             if (folders == null || folders.Count == 0) return;
 
             var dir = folders[0].Path.LocalPath;
+            // 记录当前输入基目录，后续用于保留子目录结构
+            _inputBaseDir = dir;
             var supported = new[] { ".png", ".jpg", ".jpeg", ".tiff", ".tif", ".webp", ".avif", ".jxl", ".bmp", ".gif" };
 
             try
@@ -1050,9 +1157,38 @@ namespace FfmpegGui
         {
             var outDir = AppSettingsService.Current.OutputDirectory;
             var fileName = Path.GetFileNameWithoutExtension(inputPath) + "." + format;
-            return string.IsNullOrWhiteSpace(outDir)
-                ? Path.ChangeExtension(inputPath, format)
-                : Path.Combine(outDir, fileName);
+
+            if (string.IsNullOrWhiteSpace(outDir))
+                return Path.ChangeExtension(inputPath, format);
+
+            // 当用户选择保留输入文件夹结构时，且存在输入基目录，则在输出目录下重建相对路径
+            if (AppSettingsService.Current.PreserveInputFolderStructure && !string.IsNullOrWhiteSpace(_inputBaseDir))
+            {
+                try
+                {
+                    var rel = Path.GetRelativePath(_inputBaseDir!, inputPath);
+                    // 如果不是基于 base 的子路径（例如不同盘符），Path.GetRelativePath 会以 ".." 开头
+                    if (rel.StartsWith(".."))
+                        return Path.Combine(outDir, fileName);
+
+                    var relDir = Path.GetDirectoryName(rel);
+                    if (!string.IsNullOrEmpty(relDir))
+                    {
+                        var destDir = Path.Combine(outDir, relDir);
+                        return Path.Combine(destDir, fileName);
+                    }
+                    else
+                    {
+                        return Path.Combine(outDir, fileName);
+                    }
+                }
+                catch
+                {
+                    return Path.Combine(outDir, fileName);
+                }
+            }
+
+            return Path.Combine(outDir, fileName);
         }
 
         /// <summary>
@@ -1279,6 +1415,8 @@ namespace FfmpegGui
             var supported = new[] { ".png", ".jpg", ".jpeg", ".tiff", ".tif", ".webp", ".avif", ".jxl", ".bmp", ".gif" };
             try
             {
+                // 记录基目录以便后续在输出目录中保留相对结构
+                _inputBaseDir = dir;
                 var files = System.IO.Directory.EnumerateFiles(dir, "*.*", System.IO.SearchOption.AllDirectories)
                     .Where(f => supported.Contains(System.IO.Path.GetExtension(f).ToLower()))
                     .ToList();
