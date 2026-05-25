@@ -37,7 +37,7 @@ namespace FfmpegGui
         private CheckBox? PreserveMetadata;
         private CheckBox? LosslessCheck;
         private ListBox? QueueList;
-        private NumericUpDown? ConcurrencyBox;
+        private TextBox? ConcurrencyBox;
         private TextBox? CommandText;
         private TextBox? MediaInfoText;
         private TextBox? LogText;
@@ -52,6 +52,8 @@ namespace FfmpegGui
         private TextBlock? ThreadHintLabel;
         private TextBlock? ConcurrencyLabel;
         private TextBlock? QueueCountLabel;
+        private Button? ConcurrencyUpBtn;
+        private Button? ConcurrencyDownBtn;
         private CheckBox? UseAdvancedCodec;
         private StackPanel? AdvancedCodecPanel;
         private StackPanel? PngCodecPanel;
@@ -112,7 +114,7 @@ namespace FfmpegGui
             PreserveMetadata = this.FindControl<CheckBox>("PreserveMetadata");
             LosslessCheck = this.FindControl<CheckBox>("LosslessCheck");
             QueueList = this.FindControl<ListBox>("QueueList");
-            ConcurrencyBox = this.FindControl<NumericUpDown>("ConcurrencyBox");
+            ConcurrencyBox = this.FindControl<TextBox>("ConcurrencyBox");
             ConcurrencyLabel = this.FindControl<TextBlock>("ConcurrencyLabel");
             CommandText = this.FindControl<TextBox>("CommandText");
             MediaInfoText = this.FindControl<TextBox>("MediaInfoText");
@@ -149,6 +151,7 @@ namespace FfmpegGui
             FileCountLabel = this.FindControl<TextBlock>("FileCountLabel");
             MediaFileList = this.FindControl<ListBox>("MediaFileList");
             MediaFileCount = this.FindControl<TextBlock>("MediaFileCount");
+            QueueCountLabel = this.FindControl<TextBlock>("QueueCountLabel");
 
             // 设置绑定和初始值
             if (FormatCombo != null) FormatCombo.SelectedIndex = 0;
@@ -218,9 +221,20 @@ namespace FfmpegGui
 
             // 队列计数 + 并发数标签更新
             _queueView.CollectionChanged += (_, _) => UpdateQueueCountLabel();
+            ConcurrencyUpBtn = this.FindControl<Button>("ConcurrencyUpBtn");
+            ConcurrencyDownBtn = this.FindControl<Button>("ConcurrencyDownBtn");
             if (ConcurrencyBox != null)
             {
-                ConcurrencyBox.ValueChanged += (_, _) => UpdateConcurrencyLabel();
+                // 仅允许输入数字
+                ConcurrencyBox.AddHandler(TextBox.TextInputEvent, (_, e) =>
+                {
+                    if (e.Text != null && !e.Text.All(char.IsDigit))
+                        e.Handled = true; // 阻止非数字字符输入
+                }, Avalonia.Interactivity.RoutingStrategies.Tunnel);
+                // 失去焦点时校验范围
+                ConcurrencyBox.LostFocus += (_, _) => ValidateAndApplyConcurrency();
+                // 从配置加载已保存的队列上限值
+                ConcurrencyBox.Text = Math.Clamp(AppSettingsService.Current.MaxQueueSize, 1, 128).ToString();
                 UpdateConcurrencyLabel();
             }
 
@@ -260,6 +274,8 @@ namespace FfmpegGui
                 OutputDirBox.Text = settings.OutputDirectory;
             if (PreserveInputStructure != null)
                 PreserveInputStructure.IsChecked = settings.PreserveInputFolderStructure;
+            if (ConcurrencyBox != null)
+                ConcurrencyBox.Text = Math.Clamp(settings.MaxQueueSize, 1, 128).ToString();
 
             // 如果已有 ffmpeg 路径，启动时自动检测能力
             if (!string.IsNullOrWhiteSpace(settings.FfmpegDirectory))
@@ -458,18 +474,66 @@ namespace FfmpegGui
             }
         }
 
+        private int GetConcurrencyValue()
+        {
+            if (ConcurrencyBox == null) return 16;
+            if (int.TryParse(ConcurrencyBox.Text, out var v))
+                return Math.Clamp(v, 1, 128);
+            return 16;
+        }
+
+        private void ValidateAndApplyConcurrency()
+        {
+            if (ConcurrencyBox == null) return;
+            var val = GetConcurrencyValue();
+            var text = val.ToString();
+            if (ConcurrencyBox.Text != text)
+                ConcurrencyBox.Text = text;
+            // 红色边框反馈：超出范围或无效输入
+            var valid = int.TryParse(ConcurrencyBox.Text, out var raw) && raw >= 1 && raw <= 128;
+            ConcurrencyBox.BorderBrush = valid
+                ? Avalonia.Media.Brushes.Transparent
+                : Avalonia.Media.Brushes.Red;
+            if (valid)
+            {
+                AppSettingsService.Current.MaxQueueSize = val;
+                AppSettingsService.Save();
+            }
+            UpdateConcurrencyLabel();
+            UpdateQueueCountLabel();
+        }
+
+        private void ConcurrencyUp_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        {
+            if (ConcurrencyBox == null) return;
+            var val = GetConcurrencyValue();
+            if (val < 128)
+                ConcurrencyBox.Text = (val + 1).ToString();
+            ValidateAndApplyConcurrency();
+        }
+
+        private void ConcurrencyDown_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        {
+            if (ConcurrencyBox == null) return;
+            var val = GetConcurrencyValue();
+            if (val > 1)
+                ConcurrencyBox.Text = (val - 1).ToString();
+            ValidateAndApplyConcurrency();
+        }
+
         private void UpdateQueueCountLabel()
         {
+            var maxSize = GetConcurrencyValue();
             if (QueueCountLabel != null)
-                QueueCountLabel.Text = $"队列: {_queueView.Count}";
+                QueueCountLabel.Text = $"队列: {_queueView.Count}/{maxSize}";
             if (FileCountLabel != null)
                 FileCountLabel.Text = $"总文件: {_queueView.Count}";
         }
 
         private void UpdateConcurrencyLabel()
         {
-            if (ConcurrencyLabel != null && ConcurrencyBox != null)
-                ConcurrencyLabel.Text = $"(同时 {ConcurrencyBox.Value:0} 个任务)";
+            if (ConcurrencyLabel != null)
+                ConcurrencyLabel.Text = $"(同时 {GetConcurrencyValue()} 个任务)";
         }
 
         private void FormatCombo_SelectionChanged(object? sender, SelectionChangedEventArgs e)
@@ -650,11 +714,13 @@ namespace FfmpegGui
             // 如果有文件夹扫描结果，批量导入
             if (_selectedFiles.Count > 0)
             {
+                int addedCount = 0;
                 foreach (var file in _selectedFiles)
                 {
-                    AddSingleToQueue(file);
+                    if (AddSingleToQueue(file))
+                        addedCount++;
                 }
-                if (LogText != null) LogText.Text += $"已批量添加 {_selectedFiles.Count} 个文件到队列\n";
+                if (LogText != null) LogText.Text += $"已批量添加 {addedCount}/{_selectedFiles.Count} 个文件到队列\n";
                 _selectedFiles.Clear();
                 return;
             }
@@ -668,8 +734,19 @@ namespace FfmpegGui
             AddSingleToQueue(_inputPath);
         }
 
-        private void AddSingleToQueue(string inputPath)
+        /// <summary>
+        /// 添加单个文件到队列。返回 true 表示成功添加，false 表示因队列已满等原因被拒绝。
+        /// </summary>
+        private bool AddSingleToQueue(string inputPath)
         {
+            // 检查队列上限（使用并行编码任务数作为队列容量）
+            var maxQueueSize = GetConcurrencyValue();
+            if (_queueView.Count >= maxQueueSize)
+            {
+                if (LogText != null) LogText.Text += $"队列已满（上限 {maxQueueSize}），无法添加: {Path.GetFileName(inputPath)}\n";
+                return false;
+            }
+
             var fmt = FormatCombo?.SelectedItem as string ?? "jpg";
             var chroma = ChromaCombo?.SelectedItem as string ?? "4:2:0";
             var bitdepthStr = BitDepthCombo?.SelectedItem as string ?? "8";
@@ -718,11 +795,12 @@ namespace FfmpegGui
             // 自动生成 ffmpeg 指令预览
             var cmdArgs = FfmpegCommandBuilder.BuildArguments(options, inputPath, outp);
             if (CommandText != null) CommandText.Text = "ffmpeg " + cmdArgs;
+            return true;
         }
 
         private void StartQueue_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
         {
-            int concurrency = (int)(ConcurrencyBox?.Value ?? 2);
+            int concurrency = GetConcurrencyValue();
             _queueProcessor.Start(concurrency);
             _isQueueRunning = true;
             // 如果复选框已勾选，则在启动后请求完成当前队列后停止
@@ -1278,7 +1356,8 @@ namespace FfmpegGui
                 JxlModular = JxlModularCheck?.IsChecked,
                 JpegHuffman = JpegHuffmanCombo?.SelectedItem as string,
                 TiffCompressionAlgo = TiffCompressionCombo?.SelectedItem as string,
-                Concurrency = (int)(ConcurrencyBox?.Value ?? 2)
+                Concurrency = GetConcurrencyValue(),
+                MaxQueueSize = GetConcurrencyValue()
             };
         }
 
@@ -1310,7 +1389,7 @@ namespace FfmpegGui
             if (JxlModularCheck != null && p.JxlModular.HasValue) JxlModularCheck.IsChecked = p.JxlModular.Value;
             SetComboByValue(JpegHuffmanCombo, p.JpegHuffman);
             SetComboByValue(TiffCompressionCombo, p.TiffCompressionAlgo);
-            if (ConcurrencyBox != null) ConcurrencyBox.Value = p.Concurrency;
+            if (ConcurrencyBox != null) ConcurrencyBox.Text = Math.Clamp(p.MaxQueueSize, 1, 128).ToString();
             UpdateConcurrencyLabel();
             UpdateOptionAvailability();
             UpdateQualityLabel();

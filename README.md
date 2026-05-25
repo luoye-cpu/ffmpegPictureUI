@@ -73,14 +73,27 @@ dotnet run --project src/FfmpegGui/FfmpegGui.csproj
 
 ### 直接下载运行 / Download & Run
 
-从 [Releases](https://github.com/luoye-cpu/PLAN-1/releases) 页面下载 `FfmpegGui-v1.2.1-win-x64.zip`，解压后运行 `FfmpegGui.exe`。
+从 [Releases](https://github.com/luoye-cpu/PLAN-1/releases) 页面下载 `FfmpegGui-v1.2.2-win-x64.zip`，解压后运行 `FfmpegGui.exe`。
 
-Download `FfmpegGui-v1.2.1-win-x64.zip` from the [Releases](https://github.com/luoye-cpu/PLAN-1/releases) page, extract, and run `FfmpegGui.exe`.
+Download `FfmpegGui-v1.2.2-win-x64.zip` from the [Releases](https://github.com/luoye-cpu/PLAN-1/releases) page, extract, and run `FfmpegGui.exe`.
 
 > ⚠️ 需要系统已安装 [.NET 10 运行时](https://dotnet.microsoft.com/zh-cn/download/dotnet/10.0) 和 FFmpeg。
 > ⚠️ Requires [.NET 10 Runtime](https://dotnet.microsoft.com/zh-cn/download/dotnet/10.0) and FFmpeg installed on the system.
 
 ## 📝 更新日志 / Changelog
+
+### v1.2.2 (2026-05-26)
+
+- ⚡ **增强 / Enhanced**: 队列容量上限从 16 提升至 128 — Queue capacity limit raised from 16 to 128
+- ✨ **新增 / New**: 「并行编码任务数」控件升级 — "Concurrent tasks" control upgrade
+  - 支持直接键盘输入 1-128 的阿拉伯数字 — Direct keyboard input of Arabic numerals (1-128)
+  - 支持上下按钮微调 — Up/down button fine-tuning
+  - 实时过滤非数字字符输入 — Real-time non-numeric character filtering
+  - 越界值自动修正并显示红色边框提示 — Auto-correct out-of-range values with red border feedback
+  - ToolTip 提示 "请输入1-128之间的整数" — ToolTip: "Enter an integer between 1 and 128"
+- 🔧 **改进 / Improved**: 队列数量显示格式调整为「队列: X/Y」— Queue count display format changed to "Queue: X/Y"
+- 💾 **持久化 / Persistence**: 用户设置的队列数量自动保存到配置文件，重启后保持 — Queue size setting auto-saved to config file, persists after restart
+- 📦 **发布 / Release**: FfmpegGui-v1.2.2-win-x64 — Release package FfmpegGui-v1.2.2-win-x64
 
 ### v1.2.1 (2026-05-25)
 
