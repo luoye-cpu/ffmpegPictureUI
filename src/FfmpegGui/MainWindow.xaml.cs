@@ -4,6 +4,7 @@ using Avalonia.Markup.Xaml;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using System;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.IO;
 using FfmpegGui.Models;
@@ -34,7 +35,14 @@ namespace FfmpegGui
         private StackPanel? AdvancedColorPanel;
         private ComboBox? BitDepthCombo;
         private NumericUpDown? ThreadsBox;
-        private CheckBox? PreserveMetadata;
+        private ComboBox? MetadataModeCombo;
+        private Border? ExifToolPanel;
+        private TextBlock? ExifToolHint;
+        private CheckBox? StripExifGpsCheck;
+        private CheckBox? StripExifTimeCheck;
+        private CheckBox? StripExifCameraCheck;
+        private CheckBox? StripExifAllCheck;
+        private CheckBox? StripXmpCheck;
         private CheckBox? LosslessCheck;
         private ListBox? QueueList;
         private TextBox? ConcurrencyBox;
@@ -43,6 +51,8 @@ namespace FfmpegGui
         private TextBox? LogText;
         private TextBox? FfmpegPathBox;
         private TextBox? OutputDirBox;
+        private TextBox? CjxlPathBox;
+        private TextBox? ExifToolPathBox;
         private CheckBox? PreserveInputStructure;
         private CheckBox? StopAfterCurrentCheck;
         private Button? ClearQueueButton;
@@ -82,6 +92,9 @@ namespace FfmpegGui
         private ListBox? MediaFileList;
         private TextBlock? MediaFileCount;
         private readonly List<string> _selectedFiles = new();
+        // 当批量拖拽多个文件夹时，记录每个已选文件对应的输入根目录，
+        // 以便在保留输入目录结构时按各自根目录计算相对路径。
+        private readonly Dictionary<string, string> _selectedFileBaseDirs = new();
         private readonly ObservableCollection<string> _mediaFiles = new();
         private readonly List<Models.QueueItem> _queueItems = new();
         private string? _inputBaseDir;
@@ -112,7 +125,14 @@ namespace FfmpegGui
             AdvancedColorPanel = this.FindControl<StackPanel>("AdvancedColorPanel");
             BitDepthCombo = this.FindControl<ComboBox>("BitDepthCombo");
             ThreadsBox = this.FindControl<NumericUpDown>("ThreadsBox");
-            PreserveMetadata = this.FindControl<CheckBox>("PreserveMetadata");
+            MetadataModeCombo = this.FindControl<ComboBox>("MetadataModeCombo");
+            ExifToolPanel = this.FindControl<Border>("ExifToolPanel");
+            ExifToolHint = this.FindControl<TextBlock>("ExifToolHint");
+            StripExifGpsCheck = this.FindControl<CheckBox>("StripExifGpsCheck");
+            StripExifTimeCheck = this.FindControl<CheckBox>("StripExifTimeCheck");
+            StripExifCameraCheck = this.FindControl<CheckBox>("StripExifCameraCheck");
+            StripExifAllCheck = this.FindControl<CheckBox>("StripExifAllCheck");
+            StripXmpCheck = this.FindControl<CheckBox>("StripXmpCheck");
             LosslessCheck = this.FindControl<CheckBox>("LosslessCheck");
             QueueList = this.FindControl<ListBox>("QueueList");
             ConcurrencyBox = this.FindControl<TextBox>("ConcurrencyBox");
@@ -122,6 +142,8 @@ namespace FfmpegGui
             LogText = this.FindControl<TextBox>("LogText");
             FfmpegPathBox = this.FindControl<TextBox>("FfmpegPathBox");
             OutputDirBox = this.FindControl<TextBox>("OutputDirBox");
+            CjxlPathBox = this.FindControl<TextBox>("CjxlPathBox");
+            ExifToolPathBox = this.FindControl<TextBox>("ExifToolPathBox");
             PreserveInputStructure = this.FindControl<CheckBox>("PreserveInputStructure");
             AutoThreadsCheck = this.FindControl<CheckBox>("AutoThreadsCheck");
             SingleThreadCheck = this.FindControl<CheckBox>("SingleThreadCheck");
@@ -157,7 +179,7 @@ namespace FfmpegGui
             // 设置绑定和初始值
             if (FormatCombo != null) FormatCombo.SelectedIndex = 0;
             if (ChromaCombo != null) ChromaCombo.SelectedIndex = 0; // auto
-            if (BitDepthCombo != null) BitDepthCombo.SelectedIndex = 0; // 8
+            if (BitDepthCombo != null) BitDepthCombo.SelectedIndex = 0; // auto
             if (ColorSpaceCombo != null) ColorSpaceCombo.SelectedIndex = 0; // auto
             if (ColorPrimariesCombo != null) ColorPrimariesCombo.SelectedIndex = 0;
             if (ColorTrcCombo != null) ColorTrcCombo.SelectedIndex = 0;
@@ -214,8 +236,19 @@ namespace FfmpegGui
             // 无损编码 / JXL 强制元数据 → 每次变化刷新命令与选项
             if (LosslessCheck != null)
                 LosslessCheck.IsCheckedChanged += (_, _) => RegenerateCommand();
-            if (PreserveMetadata != null)
-                PreserveMetadata.IsCheckedChanged += (_, _) => RegenerateCommand();
+            if (MetadataModeCombo != null)
+                MetadataModeCombo.SelectionChanged += (_, _) => { UpdateExifToolPanelState(); RegenerateCommand(); };
+            // ExifTool 复选框变更时刷新命令预览
+            if (StripExifGpsCheck != null)
+                StripExifGpsCheck.IsCheckedChanged += (_, _) => RegenerateCommand();
+            if (StripExifTimeCheck != null)
+                StripExifTimeCheck.IsCheckedChanged += (_, _) => RegenerateCommand();
+            if (StripExifCameraCheck != null)
+                StripExifCameraCheck.IsCheckedChanged += (_, _) => RegenerateCommand();
+            if (StripExifAllCheck != null)
+                StripExifAllCheck.IsCheckedChanged += (_, _) => RegenerateCommand();
+            if (StripXmpCheck != null)
+                StripXmpCheck.IsCheckedChanged += (_, _) => RegenerateCommand();
             if (UseAdvancedColor != null)
                 UseAdvancedColor.IsCheckedChanged += (_, _) => RegenerateCommand();
             if (UseAdvancedCodec != null)
@@ -312,16 +345,17 @@ namespace FfmpegGui
                 FfmpegPathBox.Text = settings.FfmpegDirectory;
             if (!string.IsNullOrWhiteSpace(settings.OutputDirectory) && OutputDirBox != null)
                 OutputDirBox.Text = settings.OutputDirectory;
+            if (!string.IsNullOrWhiteSpace(settings.CjxlPath) && CjxlPathBox != null)
+                CjxlPathBox.Text = settings.CjxlPath;
+            if (!string.IsNullOrWhiteSpace(settings.ExifToolPath) && ExifToolPathBox != null)
+                ExifToolPathBox.Text = settings.ExifToolPath;
             if (PreserveInputStructure != null)
                 PreserveInputStructure.IsChecked = settings.PreserveInputFolderStructure;
             if (ConcurrencyBox != null)
                 ConcurrencyBox.Text = Math.Clamp(settings.MaxQueueSize, 1, 128).ToString();
 
-            // 如果已有 ffmpeg 路径，启动时自动检测能力
-            if (!string.IsNullOrWhiteSpace(settings.FfmpegDirectory))
-            {
-                _ = FullDetectionAsync();
-            }
+            // 启动时自动检测能力（即使没有 ffmpeg 路径也尝试 PATH 检测）
+            _ = FullDetectionAsync();
         }
 
         private async Task FullDetectionAsync()
@@ -339,8 +373,18 @@ namespace FfmpegGui
             {
                 LogText.Text += "能力检测完成。\n";
                 if (CjxlService.IsAvailable)
-                    LogText.Text += "✅ 检测到 cjxl.exe，JPEG→JXL 将使用极速无损重封装。\n";
+                    LogText.Text += $"✅ 检测到 cjxl（{CjxlService.DetectedPath}）\n";
+                else
+                    LogText.Text += "ℹ️ 未检测到 cjxl.exe，JPEG→JXL 将使用 ffmpeg\n";
             }
+            // ExifTool 检测与 UI 更新
+            ExifToolService.Detect();
+            if (LogText != null)
+            {
+                if (ExifToolService.IsAvailable)
+                    LogText.Text += $"✅ 检测到 exiftool（{ExifToolService.DetectedPath}）\n";
+            }
+            UpdateExifToolPanelState();
             UpdateOptionAvailability();
         }
 
@@ -360,8 +404,11 @@ namespace FfmpegGui
             if (string.IsNullOrWhiteSpace(_inputPath)) return;
             var fmt = FormatCombo?.SelectedItem as string ?? "jpg";
             var chroma = ChromaCombo?.SelectedItem as string ?? "auto";
-            var bitdepthStr = BitDepthCombo?.SelectedItem as string ?? "8";
-            if (!int.TryParse(bitdepthStr, out var bitdepth)) bitdepth = 8;
+            var bitdepthStr = BitDepthCombo?.SelectedItem as string ?? "auto";
+            int? bitdepth = null;
+            if (!bitdepthStr.Equals("auto", StringComparison.OrdinalIgnoreCase)
+                && int.TryParse(bitdepthStr, out var bd))
+                bitdepth = bd;
             var encStr = EncoderCombo?.SelectedItem as string ?? "";
             var encName = encStr.Contains(" — ") ? encStr.Split(" — ")[0] : encStr;
             var useAdv = UseAdvancedColor?.IsChecked ?? false;
@@ -456,7 +503,7 @@ namespace FfmpegGui
                 ColorTrc = useAdv ? (ColorTrcCombo?.SelectedItem as string) : null,
                 ColorMatrix = useAdv ? (ColorMatrixCombo?.SelectedItem as string) : null,
                 Encoder = encName, Threads = threads,
-                PreserveMetadata = PreserveMetadata?.IsChecked ?? true,
+                MetadataMode = GetMetadataMode(),
                 Lossless = LosslessCheck?.IsChecked ?? false,
                 PngPred = useAdvCodec ? (PngPredCombo?.SelectedItem as string) : null,
                 WebpPreset = useAdvCodec ? (WebpPresetCombo?.SelectedItem as string) : null,
@@ -468,7 +515,12 @@ namespace FfmpegGui
                 JxlModular = useAdvCodec ? JxlModularCheck?.IsChecked : null,
                 JxlLosslessJpeg = jxlLosslessJpeg,
                 JpegHuffman = useAdvCodec ? (JpegHuffmanCombo?.SelectedItem as string) : null,
-                TiffCompressionAlgo = useAdvCodec ? (TiffCompressionCombo?.SelectedItem as string) : null
+                TiffCompressionAlgo = useAdvCodec ? (TiffCompressionCombo?.SelectedItem as string) : null,
+                StripExifGps = StripExifGpsCheck?.IsChecked ?? true,
+                StripExifTime = StripExifTimeCheck?.IsChecked ?? false,
+                StripExifCamera = StripExifCameraCheck?.IsChecked ?? false,
+                StripExifAll = StripExifAllCheck?.IsChecked ?? false,
+                StripXmp = StripXmpCheck?.IsChecked ?? false
             };
             var outp = GetOutputPath(_inputPath, opts.Format);
             if (CommandText != null)
@@ -646,16 +698,20 @@ namespace FfmpegGui
                 if (ChromaCombo != null) ChromaCombo.IsEnabled = _currentCapabilities.SupportsChroma;
                 if (BitDepthCombo != null)
                 {
-                    BitDepthCombo.IsEnabled = _currentCapabilities.SupportsBitDepth;
-                    // 动态更新位深选项
+                    // 所有格式均可选 auto，因此始终启用
+                    BitDepthCombo.IsEnabled = true;
+                    // 动态更新位深选项：始终首位为 auto
                     BitDepthCombo.Items!.Clear();
+                    BitDepthCombo.Items.Add("auto");
                     foreach (var bd in _currentCapabilities.SupportedBitDepths)
                     {
-                        BitDepthCombo.Items.Add(bd.ToString());
+                        var s = bd.ToString();
+                        if (!BitDepthCombo.Items.Contains(s))
+                            BitDepthCombo.Items.Add(s);
                     }
                     if (BitDepthCombo.Items.Count > 0) BitDepthCombo.SelectedIndex = 0;
                 }
-                if (PreserveMetadata != null) PreserveMetadata.IsEnabled = _currentCapabilities.SupportsMetadata;
+                if (MetadataModeCombo != null) MetadataModeCombo.IsEnabled = _currentCapabilities.SupportsMetadata;
                 if (LosslessCheck != null)
                 {
                     if (fmt is "png" or "tiff")
@@ -720,6 +776,41 @@ namespace FfmpegGui
             }
         }
 
+        /// <summary>
+        /// 从 UI 下拉框获取当前元数据处理模式
+        /// </summary>
+        private Models.MetadataMode GetMetadataMode()
+        {
+            if (MetadataModeCombo?.SelectedIndex == 1)
+                return Models.MetadataMode.StripAll;
+            return Models.MetadataMode.PreserveAll;
+        }
+
+        /// <summary>
+        /// 根据 exiftool 是否可用，显示/隐藏 ExifTool 面板，
+        /// 并根据当前元数据模式（保留/删除全部）启用/禁用其选项
+        /// </summary>
+        private void UpdateExifToolPanelState()
+        {
+            var exifAvailable = ExifToolService.IsAvailable;
+            var isPreserveMode = GetMetadataMode() == Models.MetadataMode.PreserveAll;
+
+            if (ExifToolPanel != null)
+                ExifToolPanel.IsVisible = exifAvailable;
+
+            if (ExifToolHint != null && exifAvailable)
+                ExifToolHint.Text = isPreserveMode
+                    ? "已检测到 exiftool，可选择性删除以下元数据："
+                    : "元数据模式为「删除全部」，exiftool 选项不生效";
+
+            var exifEnabled = exifAvailable && isPreserveMode;
+            if (StripExifGpsCheck != null) StripExifGpsCheck.IsEnabled = exifEnabled;
+            if (StripExifTimeCheck != null) StripExifTimeCheck.IsEnabled = exifEnabled;
+            if (StripExifCameraCheck != null) StripExifCameraCheck.IsEnabled = exifEnabled;
+            if (StripExifAllCheck != null) StripExifAllCheck.IsEnabled = exifEnabled;
+            if (StripXmpCheck != null) StripXmpCheck.IsEnabled = exifEnabled;
+        }
+
         private async Task InitializeCapabilitiesAsync()
         {
             if (LogText != null) LogText.Text += "正在检测本地 ffmpeg 能力...\n";
@@ -756,6 +847,8 @@ namespace FfmpegGui
                 // 单文件选择时，不设置输入基目录（仅在选择文件夹时保留结构）
                 _inputBaseDir = null;
                 AddToMediaFiles(files.Select(f => f.Path.LocalPath));
+                // 单文件选择时清理任何残留的批量映射
+                _selectedFileBaseDirs.Clear();
                 UpdateMediaFileCount();
                 if (LogText != null) LogText.Text += $"已选择: {_inputPath}\n";
                 if (MediaInfoText != null) MediaInfoText.Text = "正在获取媒体信息...";
@@ -771,10 +864,12 @@ namespace FfmpegGui
             {
                 foreach (var file in _selectedFiles)
                 {
-                    AddSingleToQueue(file);
+                    _selectedFileBaseDirs.TryGetValue(file, out var baseDir);
+                    AddSingleToQueue(file, baseDir);
                 }
                 if (LogText != null) LogText.Text += $"已批量添加 {_selectedFiles.Count} 个文件到队列\n";
                 _selectedFiles.Clear();
+                _selectedFileBaseDirs.Clear();
                 return;
             }
 
@@ -790,13 +885,16 @@ namespace FfmpegGui
         /// <summary>
         /// 添加单个文件到队列。返回 true 表示成功添加。
         /// </summary>
-        private bool AddSingleToQueue(string inputPath)
+        private bool AddSingleToQueue(string inputPath, string? inputBaseDir = null)
         {
             // 注：队列本身无容量上限，"并行编码任务数"仅控制同时运行的任务数
             var fmt = FormatCombo?.SelectedItem as string ?? "jpg";
             var chroma = ChromaCombo?.SelectedItem as string ?? "4:2:0";
-            var bitdepthStr = BitDepthCombo?.SelectedItem as string ?? "8";
-            int bitdepth = int.TryParse(bitdepthStr, out var bd) ? bd : 8;
+            var bitdepthStr = BitDepthCombo?.SelectedItem as string ?? "auto";
+            int? bitdepth = null;
+            if (!bitdepthStr.Equals("auto", StringComparison.OrdinalIgnoreCase)
+                && int.TryParse(bitdepthStr, out var bd))
+                bitdepth = bd;
             var encoderStr = EncoderCombo?.SelectedItem as string ?? "";
             var encoderName = encoderStr.Contains(" — ") ? encoderStr.Split(" — ")[0] : encoderStr;
 
@@ -816,7 +914,7 @@ namespace FfmpegGui
                 ColorSpace = ColorSpaceCombo?.SelectedItem as string,
                 Encoder = encoderName,
                 Threads = threads,
-                PreserveMetadata = PreserveMetadata?.IsChecked ?? true,
+                MetadataMode = GetMetadataMode(),
                 Lossless = LosslessCheck?.IsChecked ?? false,
                 PngPred = useAdvCodec ? (PngPredCombo?.SelectedItem as string) : null,
                 WebpPreset = useAdvCodec ? (WebpPresetCombo?.SelectedItem as string) : null,
@@ -828,11 +926,16 @@ namespace FfmpegGui
                 JxlModular = useAdvCodec ? JxlModularCheck?.IsChecked : null,
                 JxlLosslessJpeg = fmt is "jxl" && IsJpegInput(inputPath),
                 JpegHuffman = useAdvCodec ? (JpegHuffmanCombo?.SelectedItem as string) : null,
-                TiffCompressionAlgo = useAdvCodec ? (TiffCompressionCombo?.SelectedItem as string) : null
+                TiffCompressionAlgo = useAdvCodec ? (TiffCompressionCombo?.SelectedItem as string) : null,
+                StripExifGps = StripExifGpsCheck?.IsChecked ?? true,
+                StripExifTime = StripExifTimeCheck?.IsChecked ?? false,
+                StripExifCamera = StripExifCameraCheck?.IsChecked ?? false,
+                StripExifAll = StripExifAllCheck?.IsChecked ?? false,
+                StripXmp = StripXmpCheck?.IsChecked ?? false
             };
 
-            var outp = GetOutputPath(inputPath, options.Format);
-            var item = new Models.QueueItem { InputPath = inputPath, OutputPath = outp, Options = options };
+            var outp = GetOutputPath(inputPath, options.Format, inputBaseDir);
+            var item = new Models.QueueItem { InputPath = inputPath, OutputPath = outp, Options = options, InputBaseDir = inputBaseDir };
             _queueProcessor.Add(item);
             _queueView.Add($"{Path.GetFileName(item.InputPath)} — {item.Status}");
             _queueItems.Add(item);
@@ -861,6 +964,39 @@ namespace FfmpegGui
         private void StartQueue_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
         {
             int concurrency = GetConcurrencyValue();
+            // 如果设置为保留输入目录结构，则在开始队列前为所有待处理项预先生成输出路径与所在目录，
+            // 并更新每项的 OutputPath（以防用户在入队后修改了输出目录）。
+            if (AppSettingsService.Current.PreserveInputFolderStructure)
+            {
+                foreach (var qi in _queueItems)
+                {
+                    try
+                    {
+                        // 重新计算输出路径并写回队列项（使用每项记录的输入基目录）
+                        qi.OutputPath = GetOutputPath(qi.InputPath, qi.Options.Format, qi.InputBaseDir);
+                        var dir = Path.GetDirectoryName(qi.OutputPath);
+                        if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                            Directory.CreateDirectory(dir);
+
+                        // 生成并记录将要执行的命令预览，便于日志追踪（并确保 cjxl 命令使用最新路径）
+                        var isCjxl = qi.Options.Format is "jxl" && IsJpegInput(qi.InputPath) && CjxlService.IsAvailable;
+                        if (isCjxl)
+                        {
+                            var effort = qi.Options.JxlEffort ?? 7;
+                            var t = qi.Options.Threads > 0 ? $" --num_threads={qi.Options.Threads}" : "";
+                            var cmd = $"cjxl \"{qi.InputPath}\" \"{qi.OutputPath}\" -d 0 -e {effort}{t} --lossless_jpeg=1";
+                            qi.Log += $"[cmd-preview] {cmd}\n";
+                        }
+                        else
+                        {
+                            var args = FfmpegCommandBuilder.BuildArguments(qi.Options, qi.InputPath, qi.OutputPath);
+                            qi.Log += $"[cmd-preview] ffmpeg {args}\n";
+                        }
+                    }
+                    catch { }
+                }
+            }
+
             _queueProcessor.Start(concurrency);
             _isQueueRunning = true;
             // 如果复选框已勾选，则在启动后请求完成当前队列后停止
@@ -1010,6 +1146,7 @@ namespace FfmpegGui
         {
             _mediaFiles.Clear();
             _selectedFiles.Clear();
+            _selectedFileBaseDirs.Clear();
             UpdateMediaFileCount();
         }
 
@@ -1017,6 +1154,7 @@ namespace FfmpegGui
         {
             _mediaFiles.Clear();
             _selectedFiles.Clear();
+            _selectedFileBaseDirs.Clear();
             UpdateMediaFileCount();
         }
 
@@ -1142,8 +1280,11 @@ namespace FfmpegGui
 
             var fmt = FormatCombo?.SelectedItem as string ?? "jpg";
             var chroma = ChromaCombo?.SelectedItem as string ?? "4:2:0";
-            var bitdepthStr = BitDepthCombo?.SelectedItem as string ?? "8";
-            int bitdepth = int.TryParse(bitdepthStr, out var bd) ? bd : 8;
+            var bitdepthStr = BitDepthCombo?.SelectedItem as string ?? "auto";
+            int? bitdepth = null;
+            if (!bitdepthStr.Equals("auto", StringComparison.OrdinalIgnoreCase)
+                && int.TryParse(bitdepthStr, out var bd))
+                bitdepth = bd;
             var encoderStr = EncoderCombo?.SelectedItem as string ?? "";
             var encoderName = encoderStr.Contains(" — ") ? encoderStr.Split(" — ")[0] : encoderStr;
 
@@ -1168,7 +1309,7 @@ namespace FfmpegGui
                 ColorMatrix = useAdv ? (ColorMatrixCombo?.SelectedItem as string) : null,
                 Encoder = encoderName,
                 Threads = threads,
-                PreserveMetadata = PreserveMetadata?.IsChecked ?? true,
+                MetadataMode = GetMetadataMode(),
                 Lossless = LosslessCheck?.IsChecked ?? false,
                 PngPred = useAdvCodec ? (PngPredCombo?.SelectedItem as string) : null,
                 WebpPreset = useAdvCodec ? (WebpPresetCombo?.SelectedItem as string) : null,
@@ -1180,7 +1321,12 @@ namespace FfmpegGui
                 JxlModular = useAdvCodec ? JxlModularCheck?.IsChecked : null,
                 JxlLosslessJpeg = fmt is "jxl" && IsJpegInput(_inputPath),
                 JpegHuffman = useAdvCodec ? (JpegHuffmanCombo?.SelectedItem as string) : null,
-                TiffCompressionAlgo = useAdvCodec ? (TiffCompressionCombo?.SelectedItem as string) : null
+                TiffCompressionAlgo = useAdvCodec ? (TiffCompressionCombo?.SelectedItem as string) : null,
+                StripExifGps = StripExifGpsCheck?.IsChecked ?? true,
+                StripExifTime = StripExifTimeCheck?.IsChecked ?? false,
+                StripExifCamera = StripExifCameraCheck?.IsChecked ?? false,
+                StripExifAll = StripExifAllCheck?.IsChecked ?? false,
+                StripXmp = StripXmpCheck?.IsChecked ?? false
             };
 
             _outputPath = GetOutputPath(_inputPath, options.Format);
@@ -1268,6 +1414,121 @@ namespace FfmpegGui
             }
         }
 
+        private async void BrowseCjxl_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        {
+            var topLevel = TopLevel.GetTopLevel(this);
+            if (topLevel?.StorageProvider == null) return;
+            var files = await topLevel.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+            {
+                Title = "选择 cjxl.exe",
+                AllowMultiple = false,
+                FileTypeFilter = new[]
+                {
+                    new FilePickerFileType("可执行文件") { Patterns = new[] { "*.exe" } },
+                    new FilePickerFileType("所有文件") { Patterns = new[] { "*" } }
+                }
+            });
+            if (files != null && files.Count > 0)
+            {
+                var path = files[0].Path.LocalPath;
+                AppSettingsService.Current.CjxlPath = path;
+                AppSettingsService.Save();
+                if (CjxlPathBox != null) CjxlPathBox.Text = path;
+                CjxlService.ClearCache();
+                CjxlService.Detect();
+                if (LogText != null)
+                    LogText.Text += CjxlService.IsAvailable
+                        ? $"✅ cjxl 路径已更新: {path}\n"
+                        : $"⚠️ cjxl 路径已设置但无法使用: {path}\n";
+                RegenerateCommand();
+            }
+        }
+
+        private async void BrowseExifTool_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        {
+            var topLevel = TopLevel.GetTopLevel(this);
+            if (topLevel?.StorageProvider == null) return;
+            var files = await topLevel.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+            {
+                Title = "选择 exiftool",
+                AllowMultiple = false,
+                FileTypeFilter = new[]
+                {
+                    new FilePickerFileType("可执行文件") { Patterns = new[] { "*.exe" } },
+                    new FilePickerFileType("所有文件") { Patterns = new[] { "*" } }
+                }
+            });
+            if (files != null && files.Count > 0)
+            {
+                var path = files[0].Path.LocalPath;
+                AppSettingsService.Current.ExifToolPath = path;
+                AppSettingsService.Save();
+                if (ExifToolPathBox != null) ExifToolPathBox.Text = path;
+                ExifToolService.Detect();
+                UpdateExifToolPanelState();
+                if (LogText != null)
+                    LogText.Text += ExifToolService.IsAvailable
+                        ? $"✅ exiftool 路径已更新: {path}\n"
+                        : $"⚠️ exiftool 路径已设置但无法使用: {path}\n";
+                RegenerateCommand();
+            }
+        }
+
+        private void ClearCjxlPath_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        {
+            AppSettingsService.Current.CjxlPath = null;
+            AppSettingsService.Save();
+            if (CjxlPathBox != null) CjxlPathBox.Text = "";
+            CjxlService.ClearCache();
+            CjxlService.Detect();
+            if (LogText != null)
+                LogText.Text += CjxlService.IsAvailable
+                    ? $"✅ cjxl 自动检测: {CjxlService.DetectedPath}\n"
+                    : "ℹ️ cjxl: 未检测到\n";
+            RegenerateCommand();
+        }
+
+        private void ClearExifToolPath_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        {
+            AppSettingsService.Current.ExifToolPath = null;
+            AppSettingsService.Save();
+            if (ExifToolPathBox != null) ExifToolPathBox.Text = "";
+            ExifToolService.Detect();
+            UpdateExifToolPanelState();
+            if (LogText != null)
+                LogText.Text += ExifToolService.IsAvailable
+                    ? $"✅ exiftool 自动检测: {ExifToolService.DetectedPath}\n"
+                    : "ℹ️ exiftool: 未检测到\n";
+            RegenerateCommand();
+        }
+
+        private void RedetectTools_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        {
+            // 清除所有手动路径，改为自动同目录 + PATH 检测
+            AppSettingsService.Current.CjxlPath = null;
+            AppSettingsService.Current.ExifToolPath = null;
+            AppSettingsService.Save();
+            if (CjxlPathBox != null) CjxlPathBox.Text = "";
+            if (ExifToolPathBox != null) ExifToolPathBox.Text = "";
+
+            if (LogText != null) LogText.Text += "正在自动重新检测外部工具（同目录 → PATH）...\n";
+            CjxlService.ClearCache();
+            CjxlService.Detect();
+            ExifToolService.Detect();
+            UpdateExifToolPanelState();
+
+            if (LogText != null)
+            {
+                LogText.Text += CjxlService.IsAvailable
+                    ? $"✅ cjxl: {CjxlService.DetectedPath}\n"
+                    : "ℹ️ cjxl: 未检测到\n";
+                LogText.Text += ExifToolService.IsAvailable
+                    ? $"✅ exiftool: {ExifToolService.DetectedPath}\n"
+                    : "ℹ️ exiftool: 未检测到\n";
+            }
+            RegenerateCommand();
+        }
+
         private async void SelectFolder_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
         {
             var topLevel = TopLevel.GetTopLevel(this);
@@ -1316,42 +1577,73 @@ namespace FfmpegGui
             }
         }
 
-        private string GetOutputPath(string inputPath, string format)
+        private string GetOutputPath(string inputPath, string format, string? overrideInputBaseDir = null)
         {
             var outDir = AppSettingsService.Current.OutputDirectory;
             var fileName = Path.GetFileNameWithoutExtension(inputPath) + "." + format;
 
+            string resultPath;
             if (string.IsNullOrWhiteSpace(outDir))
-                return Path.ChangeExtension(inputPath, format);
-
-            // 当用户选择保留输入文件夹结构时，且存在输入基目录，则在输出目录下重建相对路径
-            if (AppSettingsService.Current.PreserveInputFolderStructure && !string.IsNullOrWhiteSpace(_inputBaseDir))
             {
-                try
+                resultPath = Path.ChangeExtension(inputPath, format);
+            }
+            else
+            {
+                // 当用户选择保留输入文件夹结构时，且存在输入基目录，则在输出目录下重建相对路径
+                var baseDirToUse = overrideInputBaseDir ?? _inputBaseDir;
+                if (AppSettingsService.Current.PreserveInputFolderStructure && !string.IsNullOrWhiteSpace(baseDirToUse))
                 {
-                    var rel = Path.GetRelativePath(_inputBaseDir!, inputPath);
-                    // 如果不是基于 base 的子路径（例如不同盘符），Path.GetRelativePath 会以 ".." 开头
-                    if (rel.StartsWith(".."))
-                        return Path.Combine(outDir, fileName);
-
-                    var relDir = Path.GetDirectoryName(rel);
-                    if (!string.IsNullOrEmpty(relDir))
+                    try
                     {
-                        var destDir = Path.Combine(outDir, relDir);
-                        return Path.Combine(destDir, fileName);
+                        var rel = Path.GetRelativePath(baseDirToUse!, inputPath);
+                        // 如果不是基于 base 的子路径（例如不同盘符），Path.GetRelativePath 会以 ".." 开头
+                        if (rel.StartsWith(".."))
+                        {
+                            resultPath = Path.Combine(outDir, fileName);
+                        }
+                        else
+                        {
+                                        var relDir = Path.GetDirectoryName(rel);
+                                        // 尝试保留最外层目录名
+                                        var baseTrim = baseDirToUse!.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                                        var baseFolderName = string.IsNullOrEmpty(baseTrim) ? null : Path.GetFileName(baseTrim);
+                                        if (!string.IsNullOrEmpty(relDir))
+                                        {
+                                            string destDir;
+                                            if (!string.IsNullOrEmpty(baseFolderName))
+                                                destDir = Path.Combine(outDir, baseFolderName, relDir);
+                                            else
+                                                destDir = Path.Combine(outDir, relDir);
+                                            resultPath = Path.Combine(destDir, fileName);
+                                        }
+                                        else
+                                        {
+                                            if (!string.IsNullOrEmpty(baseFolderName))
+                                                resultPath = Path.Combine(outDir, baseFolderName, fileName);
+                                            else
+                                                resultPath = Path.Combine(outDir, fileName);
+                                        }
+                        }
                     }
-                    else
+                    catch
                     {
-                        return Path.Combine(outDir, fileName);
+                        resultPath = Path.Combine(outDir, fileName);
                     }
                 }
-                catch
+                else
                 {
-                    return Path.Combine(outDir, fileName);
+                    resultPath = Path.Combine(outDir, fileName);
                 }
             }
 
-            return Path.Combine(outDir, fileName);
+            try
+            {
+                return Path.GetFullPath(resultPath);
+            }
+            catch
+            {
+                return resultPath;
+            }
         }
 
         /// <summary>
@@ -1428,7 +1720,7 @@ namespace FfmpegGui
                 AutoThreads = AutoThreadsCheck?.IsChecked ?? true,
                 SingleThread = SingleThreadCheck?.IsChecked ?? false,
                 ManualThreads = (int)(ThreadsBox?.Value ?? 4),
-                PreserveMetadata = PreserveMetadata?.IsChecked ?? true,
+                MetadataMode = MetadataModeCombo?.SelectedIndex == 1 ? "StripAll" : "PreserveAll",
                 Lossless = LosslessCheck?.IsChecked ?? false,
                 UseAdvancedCodec = UseAdvancedCodec?.IsChecked ?? false,
                 PngPred = PngPredCombo?.SelectedItem as string,
@@ -1441,6 +1733,11 @@ namespace FfmpegGui
                 JxlModular = JxlModularCheck?.IsChecked,
                 JpegHuffman = JpegHuffmanCombo?.SelectedItem as string,
                 TiffCompressionAlgo = TiffCompressionCombo?.SelectedItem as string,
+                StripExifGps = StripExifGpsCheck?.IsChecked ?? true,
+                StripExifTime = StripExifTimeCheck?.IsChecked ?? false,
+                StripExifCamera = StripExifCameraCheck?.IsChecked ?? false,
+                StripExifAll = StripExifAllCheck?.IsChecked ?? false,
+                StripXmp = StripXmpCheck?.IsChecked ?? false,
                 Concurrency = GetConcurrencyValue(),
                 MaxQueueSize = GetConcurrencyValue()
             };
@@ -1461,7 +1758,19 @@ namespace FfmpegGui
             if (SingleThreadCheck != null) SingleThreadCheck.IsChecked = p.SingleThread;
             if (ThreadsBox != null) ThreadsBox.Value = p.ManualThreads;
             UpdateThreadControls();
-            if (PreserveMetadata != null) PreserveMetadata.IsChecked = p.PreserveMetadata;
+            if (MetadataModeCombo != null)
+            {
+                if (p.MetadataMode == "StripAll")
+                    MetadataModeCombo.SelectedIndex = 1;
+                else
+                    MetadataModeCombo.SelectedIndex = 0;
+            }
+            // ExifTool 选项
+            if (StripExifGpsCheck != null) StripExifGpsCheck.IsChecked = p.StripExifGps;
+            if (StripExifTimeCheck != null) StripExifTimeCheck.IsChecked = p.StripExifTime;
+            if (StripExifCameraCheck != null) StripExifCameraCheck.IsChecked = p.StripExifCamera;
+            if (StripExifAllCheck != null) StripExifAllCheck.IsChecked = p.StripExifAll;
+            if (StripXmpCheck != null) StripXmpCheck.IsChecked = p.StripXmp;
             if (LosslessCheck != null) LosslessCheck.IsChecked = p.Lossless;
             if (UseAdvancedCodec != null) UseAdvancedCodec.IsChecked = p.UseAdvancedCodec;
             SetComboByValue(PngPredCombo, p.PngPred);
@@ -1477,6 +1786,7 @@ namespace FfmpegGui
             if (ConcurrencyBox != null) ConcurrencyBox.Text = Math.Clamp(p.MaxQueueSize, 1, 128).ToString();
             UpdateConcurrencyLabel();
             UpdateOptionAvailability();
+            UpdateExifToolPanelState();
             UpdateQualityLabel();
         }
 
@@ -1552,6 +1862,7 @@ namespace FfmpegGui
             {
                 _selectedFiles.Clear();
                 var supported = new[] { ".png", ".jpg", ".jpeg", ".tiff", ".tif", ".webp", ".avif", ".jxl", ".bmp", ".gif" };
+                _selectedFileBaseDirs.Clear();
                 foreach (var path in files)
                 {
                     if (System.IO.Directory.Exists(path))
@@ -1560,7 +1871,12 @@ namespace FfmpegGui
                         {
                             var dirFiles = System.IO.Directory.EnumerateFiles(path, "*.*", System.IO.SearchOption.AllDirectories)
                                 .Where(f => supported.Contains(System.IO.Path.GetExtension(f).ToLower()));
-                            _selectedFiles.AddRange(dirFiles);
+                            foreach (var f in dirFiles)
+                            {
+                                _selectedFiles.Add(f);
+                                // 将此文件映射到当前被拖入的文件夹作为基目录
+                                _selectedFileBaseDirs[f] = path;
+                            }
                         }
                         catch { }
                     }
@@ -1598,7 +1914,12 @@ namespace FfmpegGui
                 }
 
                 _selectedFiles.Clear();
-                _selectedFiles.AddRange(files);
+                _selectedFileBaseDirs.Clear();
+                foreach (var f in files)
+                {
+                    _selectedFiles.Add(f);
+                    _selectedFileBaseDirs[f] = dir;
+                }
                 AddToMediaFiles(files);
                 UpdateMediaFileCount();
                 if (LogText != null) LogText.Text += $"已扫描到 {files.Count} 个文件\n";
