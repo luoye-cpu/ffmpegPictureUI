@@ -9,9 +9,9 @@
     WindowStartupLocation="CenterScreen">
   <DockPanel>
     <!-- 顶部设置栏 -->
-    <Border DockPanel.Dock="Top" Padding="8,6" BorderBrush="{DynamicResource SystemControlBackgroundBaseLowBrush}" BorderThickness="0,0,0,1">
-      <Grid ColumnDefinitions="*,Auto">
-        <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="10">
+    <Border DockPanel.Dock="Top" Padding="8,4" BorderBrush="{DynamicResource SystemControlBackgroundBaseLowBrush}" BorderThickness="0,0,0,1">
+      <Grid RowDefinitions="Auto,Auto" ColumnDefinitions="*,Auto">
+        <StackPanel Grid.Row="0" Grid.Column="0" Orientation="Horizontal" Spacing="10">
           <TextBlock Text="FFmpeg 目录" VerticalAlignment="Center" FontSize="13"/>
           <TextBox x:Name="FfmpegPathBox" Width="240" VerticalAlignment="Center" IsReadOnly="True"/>
           <Button Content="浏览..." Click="BrowseFfmpeg_Click" Padding="8,4"/>
@@ -21,9 +21,26 @@
           <Button Content="浏览..." Click="BrowseOutputDir_Click" Padding="8,4"/>
           <CheckBox x:Name="PreserveInputStructure" Content="保持输入目录结构" VerticalAlignment="Center" Margin="8,0,0,0"/>
         </StackPanel>
-        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6" Margin="4,0,0,0">
+        <StackPanel Grid.Row="0" Grid.Column="1" Orientation="Horizontal" Spacing="6" Margin="4,0,0,0">
           <Button x:Name="ThemeToggleBtn" Content="🌙" FontSize="14" Padding="6,2"
                   ToolTip.Tip="切换深色/浅色模式" Click="ThemeToggle_Click"/>
+        </StackPanel>
+        <!-- 外部工具路径（留空自动检测） -->
+        <StackPanel Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2" Orientation="Horizontal" Spacing="10" Margin="0,3,0,0">
+          <TextBlock Text="cjxl" VerticalAlignment="Center" FontSize="11" Foreground="Gray" Width="24"/>
+          <TextBox x:Name="CjxlPathBox" Width="180" VerticalAlignment="Center" FontSize="11"
+                   Watermark="自动检测"/>
+          <Button Content="浏览" Click="BrowseCjxl_Click" Padding="6,2" FontSize="11"/>
+          <Button Content="✕" Click="ClearCjxlPath_Click" Padding="6,2" FontSize="11"
+                  ToolTip.Tip="清除手动路径，改回自动检测"/>
+          <TextBlock Text="exiftool" VerticalAlignment="Center" FontSize="11" Foreground="Gray" Width="44"/>
+          <TextBox x:Name="ExifToolPathBox" Width="180" VerticalAlignment="Center" FontSize="11"
+                   Watermark="自动检测"/>
+          <Button Content="浏览" Click="BrowseExifTool_Click" Padding="6,2" FontSize="11"/>
+          <Button Content="✕" Click="ClearExifToolPath_Click" Padding="6,2" FontSize="11"
+                  ToolTip.Tip="清除手动路径，改回自动检测"/>
+          <Button Content="🔄 重新检测" Click="RedetectTools_Click" Padding="8,2" FontSize="11"
+                  ToolTip.Tip="清除所有手动路径，从同目录和系统 PATH 自动检测 cjxl / exiftool"/>
         </StackPanel>
       </Grid>
     </Border>
@@ -85,6 +102,7 @@
           </StackPanel>
           <TextBlock Text="位深"/>
           <ComboBox x:Name="BitDepthCombo">
+            <sys:String>auto</sys:String>
             <sys:String>8</sys:String>
           </ComboBox>
           <CheckBox x:Name="UseAdvancedCodec" Content="高级编码选项" Margin="0,6,0,0" 
@@ -156,7 +174,23 @@
             <TextBlock x:Name="ThreadHintLabel" Text="" VerticalAlignment="Center" Foreground="Gray" FontSize="11"/>
           </StackPanel>
           <NumericUpDown x:Name="ThreadsBox" Value="4" Minimum="1" Maximum="64" IsEnabled="False"/>
-          <CheckBox x:Name="PreserveMetadata" Content="保留元数据" IsChecked="True" Margin="0,8,0,0"/>
+          <TextBlock Text="元数据处理" Margin="0,6,0,0"/>
+          <ComboBox x:Name="MetadataModeCombo" SelectedIndex="0">
+            <sys:String>保留所有元数据</sys:String>
+            <sys:String>删除所有元数据</sys:String>
+          </ComboBox>
+          <Border x:Name="ExifToolPanel" IsVisible="False" Margin="0,4,0,0" Padding="8,6" CornerRadius="4"
+                  BorderBrush="{DynamicResource SystemControlBackgroundBaseLowBrush}" BorderThickness="1">
+            <StackPanel Spacing="4">
+              <TextBlock Text="🔒 ExifTool 隐私清理" FontSize="13" FontWeight="Bold"/>
+              <TextBlock x:Name="ExifToolHint" Text="已检测到 exiftool，可选择性删除以下元数据：" FontSize="11" Foreground="Gray" TextWrapping="Wrap"/>
+              <CheckBox x:Name="StripExifGpsCheck" Content="删除 GPS 位置信息" IsChecked="True"/>
+              <CheckBox x:Name="StripExifTimeCheck" Content="删除拍摄时间日期"/>
+              <CheckBox x:Name="StripExifCameraCheck" Content="删除相机/镜头型号与拍摄参数"/>
+              <CheckBox x:Name="StripExifAllCheck" Content="删除全部 EXIF 数据"/>
+              <CheckBox x:Name="StripXmpCheck" Content="删除 XMP 元数据"/>
+            </StackPanel>
+          </Border>
           <CheckBox x:Name="LosslessCheck" Content="无损编码" Margin="0,4,0,0"/>
           <Button Content="生成 FFmpeg 指令" Click="BuildCommand_Click" Margin="0,12,0,0" Padding="8"/>
           <Border BorderBrush="{DynamicResource SystemControlBackgroundBaseLowBrush}" BorderThickness="0,1,0,0" Margin="0,10,0,0"/>

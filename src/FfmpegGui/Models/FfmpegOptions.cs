@@ -1,18 +1,30 @@
 namespace FfmpegGui.Models
 {
+    /// <summary>
+    /// 元数据处理模式
+    /// </summary>
+    public enum MetadataMode
+    {
+        PreserveAll,  // 保留所有元数据
+        StripAll      // 删除所有元数据
+    }
+
     public class FfmpegOptions
     {
         public string Format { get; set; } = "jpg";
         public int Quality { get; set; } = 75;
         public string Chroma { get; set; } = "4:2:0";
-        public int BitDepth { get; set; } = 8;
+        /// <summary>
+        /// 位深：null = auto（不指定，由编码器自行判断）
+        /// </summary>
+        public int? BitDepth { get; set; } = null;
         public string? ColorSpace { get; set; }
         public bool UseAdvancedColorParameters { get; set; } = false;
         public string? ColorPrimaries { get; set; }
         public string? ColorTrc { get; set; }
         public string? ColorMatrix { get; set; }
         public int Threads { get; set; } = ComputeAutoThreads();
-        public bool PreserveMetadata { get; set; } = true;
+        public MetadataMode MetadataMode { get; set; } = MetadataMode.PreserveAll;
         public string? Encoder { get; set; }
         public bool Lossless { get; set; } = false;
         // 高级编码器私有选项
@@ -32,6 +44,18 @@ namespace FfmpegGui.Models
         public int? TiffDpi { get; set; }
         public string? AvifTune { get; set; }
         public string? AvifPreset { get; set; }
+
+        // ── ExifTool 隐私清理选项（仅在 exiftool 可用时生效）──
+        /// <summary>删除 GPS 位置信息（默认勾选）</summary>
+        public bool StripExifGps { get; set; } = true;
+        /// <summary>删除拍摄时间日期</summary>
+        public bool StripExifTime { get; set; } = false;
+        /// <summary>删除相机/镜头型号与拍摄参数</summary>
+        public bool StripExifCamera { get; set; } = false;
+        /// <summary>删除全部 EXIF 数据</summary>
+        public bool StripExifAll { get; set; } = false;
+        /// <summary>删除 XMP 元数据</summary>
+        public bool StripXmp { get; set; } = false;
 
         public static int ComputeAutoThreads()
         {

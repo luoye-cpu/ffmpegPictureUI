@@ -16,7 +16,7 @@ namespace FfmpegGui.Models
         public bool AutoThreads { get; set; } = true;
         public bool SingleThread { get; set; }
         public int ManualThreads { get; set; } = 4;
-        public bool PreserveMetadata { get; set; } = true;
+        public string? MetadataMode { get; set; }
         public bool Lossless { get; set; }
         public bool UseAdvancedCodec { get; set; }
         public string? PngPred { get; set; }
@@ -29,6 +29,12 @@ namespace FfmpegGui.Models
         public bool? JxlModular { get; set; }
         public string? JpegHuffman { get; set; }
         public string? TiffCompressionAlgo { get; set; }
+        // ExifTool 选择性剥离选项
+        public bool StripExifGps { get; set; } = true;
+        public bool StripExifTime { get; set; }
+        public bool StripExifCamera { get; set; }
+        public bool StripExifAll { get; set; }
+        public bool StripXmp { get; set; }
         public int Concurrency { get; set; } = 2;
         public int MaxQueueSize { get; set; } = 16;
 

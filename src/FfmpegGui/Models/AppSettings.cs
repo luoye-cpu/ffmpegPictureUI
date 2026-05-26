@@ -1,4 +1,5 @@
 using System.IO;
+using System.Text.Json.Serialization;
 
 namespace FfmpegGui.Models
 {
@@ -7,27 +8,35 @@ namespace FfmpegGui.Models
         public string? FfmpegDirectory { get; set; }
         public string? OutputDirectory { get; set; }
 
-        // 新增：是否在输出目录下保留与输入相同的子目录结构
+        /// <summary>手动指定的 cjxl.exe 路径（留空则自动检测）</summary>
+        public string? CjxlPath { get; set; }
+
+        /// <summary>手动指定的 exiftool 路径（留空则自动检测）</summary>
+        public string? ExifToolPath { get; set; }
+
         public bool PreserveInputFolderStructure { get; set; } = false;
 
-        /// <summary>
-        /// 最大队列容量（允许同时排队的任务数上限），范围 1-128，默认 16
-        /// </summary>
         public int MaxQueueSize { get; set; } = 16;
 
-        /// <summary>
-        /// UI 主题模式：0=跟随系统, 1=浅色, 2=深色（默认深色）
-        /// </summary>
         public int ThemeMode { get; set; } = 2;
 
+        /// <summary>ffmpeg.exe 完整路径（计算属性，不持久化）</summary>
+        [JsonIgnore]
         public string FfmpegPath =>
             string.IsNullOrWhiteSpace(FfmpegDirectory)
                 ? "ffmpeg"
                 : Path.Combine(FfmpegDirectory, "ffmpeg.exe");
 
+        /// <summary>ffprobe.exe 完整路径（计算属性，不持久化）</summary>
+        [JsonIgnore]
         public string FfprobePath =>
             string.IsNullOrWhiteSpace(FfmpegDirectory)
                 ? "ffprobe"
                 : Path.Combine(FfmpegDirectory, "ffprobe.exe");
+
+        /// <summary>ffmpeg 所在目录（计算属性，不持久化）</summary>
+        [JsonIgnore]
+        public string? FfmpegDir =>
+            string.IsNullOrWhiteSpace(FfmpegDirectory) ? null : FfmpegDirectory;
     }
 }

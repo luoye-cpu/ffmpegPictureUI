@@ -93,3 +93,7 @@ d:\PLAN\ffmpegPictureUI\ffmpegPictureUI\src\FfmpegGui\bin\Release\net10.0\win-x6
 d:\PLAN\ffmpegPictureUI\ffmpegPictureUI\src\FfmpegGui\bin\Release\net10.0\win-x64\FfmpegGui.dll
 d:\PLAN\ffmpegPictureUI\ffmpegPictureUI\src\FfmpegGui\obj\Release\net10.0\win-x64\FfmpegGui.genruntimeconfig.cache
 d:\PLAN\ffmpegPictureUI\ffmpegPictureUI\src\FfmpegGui\obj\Release\net10.0\win-x64\ref\FfmpegGui.dll
+d:\PLAN\ffmpegPictureUI\ffmpegPictureUI\src\FfmpegGui\obj\Release\net10.0\win-x64\FfmpegGui.sourcelink.json
+d:\PLAN\ffmpegPictureUI\ffmpegPictureUI\src\FfmpegGui\bin\Release\net10.0\win-x64\FfmpegGui.pdb
+d:\PLAN\ffmpegPictureUI\ffmpegPictureUI\src\FfmpegGui\obj\Release\net10.0\win-x64\Avalonia\original.pdb
+d:\PLAN\ffmpegPictureUI\ffmpegPictureUI\src\FfmpegGui\obj\Release\net10.0\win-x64\FfmpegGui.pdb

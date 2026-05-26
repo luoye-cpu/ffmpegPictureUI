@@ -1,4 +1,2 @@
-d:\PLAN\ffmpegPictureUI\ffmpegPictureUI\publish\win-x64\release\av_libglesv2.dll
-d:\PLAN\ffmpegPictureUI\ffmpegPictureUI\publish\win-x64\release\libHarfBuzzSharp.dll
-d:\PLAN\ffmpegPictureUI\ffmpegPictureUI\publish\win-x64\release\libSkiaSharp.dll
+d:\PLAN\ffmpegPictureUI\ffmpegPictureUI\publish\win-x64\release\FfmpegGui.pdb
 d:\PLAN\ffmpegPictureUI\ffmpegPictureUI\publish\win-x64\release\FfmpegGui.exe
