@@ -27,67 +27,103 @@ namespace FfmpegGui.Services
             }
         }
 
+        /// <summary>已检测到的 cjxl.exe 完整路径（null = 不可用）</summary>
+        public static string? DetectedPath
+        {
+            get
+            {
+                if (!_detected) Detect();
+                return _detectedPath;
+            }
+        }
+
         /// <summary>
-        /// 检测 cjxl.exe 位置（按优先级）：
-        /// 1. ffmpeg 同目录
-        /// 2. 程序同目录
-        /// 3. 系统 PATH
+        /// 检测 cjxl.exe 位置（三优先级）：
+        /// ① 手动指定路径（AppSettings.CjxlPath）
+        /// ② ffmpeg 同目录 / 程序同目录
+        /// ③ 系统 PATH
         /// </summary>
         public static void Detect()
         {
             _detected = true;
             _detectedPath = null;
 
-            var candidates = new[]
+            // 测试桩支持
+            try
             {
-                // ffmpeg 同目录
-                Path.Combine(Path.GetDirectoryName(AppSettingsService.Current.FfmpegPath) ?? "", "cjxl.exe"),
-                // 程序同目录
-                Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "cjxl.exe"),
-                // PATH 中
-                "cjxl.exe"
-            };
-
-            foreach (var candidate in candidates)
-            {
-                if (candidate == "cjxl.exe")
+                var stub = Environment.GetEnvironmentVariable("FFMPEGGUI_CJXL_STUB");
+                if (!string.IsNullOrWhiteSpace(stub) && stub == "1")
                 {
-                    // 检查 PATH
-                    try
-                    {
-                        var psi = new ProcessStartInfo
-                        {
-                            FileName = "where",
-                            Arguments = "cjxl.exe",
-                            RedirectStandardOutput = true,
-                            UseShellExecute = false,
-                            CreateNoWindow = true
-                        };
-                        using var p = Process.Start(psi);
-                        if (p != null)
-                        {
-                            var output = p.StandardOutput.ReadToEnd().Trim();
-                            p.WaitForExit();
-                            if (!string.IsNullOrWhiteSpace(output))
-                            {
-                                var firstLine = output.Split(new[] { '\r', '\n' },
-                                    StringSplitOptions.RemoveEmptyEntries)[0];
-                                if (File.Exists(firstLine))
-                                {
-                                    _detectedPath = firstLine;
-                                    return;
-                                }
-                            }
-                        }
-                    }
-                    catch { }
+                    _detectedPath = "cjxl.exe";
+                    return;
                 }
-                else if (File.Exists(candidate))
+            }
+            catch { }
+
+            // ── ① 手动指定路径 ──
+            var manual = AppSettingsService.Current.CjxlPath;
+            if (!string.IsNullOrWhiteSpace(manual) && File.Exists(manual))
+            {
+                _detectedPath = manual;
+                return;
+            }
+
+            // ── ② 同目录（ffmpeg 目录 → 程序目录）──
+            var ffmpegDir = AppSettingsService.Current.FfmpegDir;
+            var programDir = AppDomain.CurrentDomain.BaseDirectory;
+
+            var dirs = new[] { ffmpegDir, programDir };
+            foreach (var dir in dirs)
+            {
+                if (string.IsNullOrEmpty(dir)) continue;
+                var candidate = Path.Combine(dir, "cjxl.exe");
+                if (File.Exists(candidate))
                 {
                     _detectedPath = candidate;
                     return;
                 }
             }
+
+            // ── ③ 系统 PATH ──
+            if (TryFindInPath("cjxl.exe", out var pathFound))
+            {
+                _detectedPath = pathFound;
+                return;
+            }
+        }
+
+        /// <summary>在系统 PATH 中查找可执行文件</summary>
+        private static bool TryFindInPath(string exeName, out string? fullPath)
+        {
+            fullPath = null;
+            try
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = OperatingSystem.IsWindows() ? "where" : "which",
+                    Arguments = exeName,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+                using var p = Process.Start(psi);
+                if (p == null) return false;
+                var output = p.StandardOutput.ReadToEnd().Trim();
+                p.WaitForExit(5000);
+                if (!string.IsNullOrWhiteSpace(output))
+                {
+                    var firstLine = output.Split(new[] { '\r', '\n' },
+                        StringSplitOptions.RemoveEmptyEntries)[0];
+                    if (File.Exists(firstLine))
+                    {
+                        fullPath = firstLine;
+                        return true;
+                    }
+                }
+            }
+            catch { }
+            return false;
         }
 
         /// <summary>
@@ -115,6 +151,31 @@ namespace FfmpegGui.Services
         {
             if (_detectedPath == null)
                 throw new InvalidOperationException("cjxl.exe 未找到");
+
+            // 测试桩：当环境变量 FFMPEGGUI_CJXL_STUB=1 时，不实际启动 cjxl，而是模拟写入输出文件（用于本地验证）
+            try
+            {
+                var stub = Environment.GetEnvironmentVariable("FFMPEGGUI_CJXL_STUB");
+                if (!string.IsNullOrWhiteSpace(stub) && stub == "1")
+                {
+                    try
+                    {
+                        var dir = Path.GetDirectoryName(outputPath);
+                        if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                            Directory.CreateDirectory(dir);
+                        // 写入一个小的占位文件
+                        await File.WriteAllTextAsync(outputPath, "cjxl-stub-output");
+                        logCallback?.Invoke($"[cjxl-stub] 写入: {outputPath}{Environment.NewLine}");
+                        return 0;
+                    }
+                    catch (Exception ex)
+                    {
+                        logCallback?.Invoke($"[cjxl-stub] 写入失败: {ex.Message}{Environment.NewLine}");
+                        return -1;
+                    }
+                }
+            }
+            catch { }
 
             // cjxl 命令格式:
             // cjxl input.jpg output.jxl -d 0 -e N --num_threads=N

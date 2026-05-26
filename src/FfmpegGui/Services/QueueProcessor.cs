@@ -133,8 +133,18 @@ namespace FfmpegGui.Services
                             captured.Status = "处理中";
                             _onItemUpdated?.Invoke(captured);
 
-                            // 确保输出目录存在
-                            var outDir = Path.GetDirectoryName(item.OutputPath);
+                            // 确保输出目录存在 —— 先将输出路径标准化为绝对路径，避免相对路径在不同进程中导致位置不一致
+                            string finalOutputPath;
+                            try
+                            {
+                                finalOutputPath = Path.GetFullPath(item.OutputPath);
+                            }
+                            catch
+                            {
+                                finalOutputPath = item.OutputPath;
+                            }
+
+                            var outDir = Path.GetDirectoryName(finalOutputPath);
                             if (!string.IsNullOrEmpty(outDir) && !Directory.Exists(outDir))
                                 Directory.CreateDirectory(outDir);
 
@@ -145,7 +155,7 @@ namespace FfmpegGui.Services
                                 var threads = captured.Options.Threads;
                                 var effort = captured.Options.JxlEffort ?? 7;
                                 var exitCode = await CjxlService.RunAsync(
-                                    captured.InputPath, captured.OutputPath,
+                                    captured.InputPath, finalOutputPath,
                                     effort, threads,
                                     s =>
                                     {
@@ -160,7 +170,7 @@ namespace FfmpegGui.Services
                             }
                             else
                             {
-                                var args = FfmpegCommandBuilder.BuildArguments(captured.Options, captured.InputPath, captured.OutputPath);
+                                var args = FfmpegCommandBuilder.BuildArguments(captured.Options, captured.InputPath, finalOutputPath);
                                 var exitCode = await FfmpegRunner.RunAsync(args, s =>
                                 {
                                     captured.Log += s;
@@ -169,6 +179,35 @@ namespace FfmpegGui.Services
 
                                 captured.ExitCode = exitCode;
                                 captured.Status = exitCode == 0 ? "已完成" : $"失败 (退出码 {exitCode})";
+                            }
+
+                            // ── ExifTool 后处理：编码完成后选择性剥离元数据 ──
+                            if (captured.ExitCode == 0
+                                && captured.Options.MetadataMode == Models.MetadataMode.PreserveAll
+                                && ExifToolService.NeedsProcessing(captured.Options)
+                                && ExifToolService.IsAvailable)
+                            {
+                                try
+                                {
+                                    captured.Log += "[exiftool] 开始隐私清理...\n";
+                                    _onItemUpdated?.Invoke(captured);
+                                    var exifExit = await ExifToolService.RunAsync(
+                                        finalOutputPath,
+                                        captured.Options,
+                                        s =>
+                                        {
+                                            captured.Log += s;
+                                            _onItemUpdated?.Invoke(captured);
+                                        });
+                                    if (exifExit == 0)
+                                        captured.Log += "[exiftool] 隐私清理完成\n";
+                                    else
+                                        captured.Log += $"[exiftool] 警告: 退出码 {exifExit}\n";
+                                }
+                                catch (Exception ex)
+                                {
+                                    captured.Log += $"[exiftool] 错误: {ex.Message}\n";
+                                }
                             }
                         }
                         catch (OperationCanceledException)

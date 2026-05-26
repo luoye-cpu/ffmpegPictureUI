@@ -24,8 +24,11 @@ FFmpeg is the Swiss Army knife for image and video processing, but its command-l
 - **智能选项级联**：根据所选输出格式，动态启用/禁用该格式支持的特性，避免输入无效参数。
   **Smart option cascading**: Dynamically enable/disable features based on the selected output format, preventing invalid parameter input.
 
-- **元数据保留**：可选择保留 EXIF、ICC 配置等信息。
-  **Metadata preservation**: Optionally retain EXIF, ICC profiles, and other information.
+- **元数据处理**：保留全部 / 删除全部，集成 exiftool 后支持选择性删除 GPS、时间、相机信息、XMP 等。
+  **Metadata handling**: Preserve all / Strip all; with exiftool integrated, selective deletion of GPS, time, camera info, XMP, etc.
+
+- **元数据隐私保护**：集成 exiftool（可选），可选择性删除 GPS、相机信息、时间等敏感元数据。
+  **Privacy protection**: Optional exiftool integration to selectively strip GPS, camera info, timestamps, and other sensitive metadata.
 
 - **批量处理队列**：支持拖入多个文件，自动排队转换。
   **Batch processing queue**: Drag and drop multiple files, automatically queuing them for conversion.
@@ -73,15 +76,26 @@ dotnet run --project src/FfmpegGui/FfmpegGui.csproj
 
 ### 直接下载运行 / Download & Run
 
-从 [Releases](https://github.com/luoye-cpu/PLAN-1/releases) 页面下载 `FfmpegGui-v1.2.3-win-x64.zip`，解压后运行 `FfmpegGui.exe`。
+从 [Releases](https://github.com/luoye-cpu/PLAN-1/releases) 页面下载 `FfmpegGui-v1.3.0-win-x64.zip`，解压后运行 `FfmpegGui.exe`。压缩包内含 FfmpegGui.exe（单文件，框架依赖）+ cjxl.exe（可选的 JPEG→JXL 快速转码工具）。
 
-Download `FfmpegGui-v1.2.3-win-x64.zip` from the [Releases](https://github.com/luoye-cpu/PLAN-1/releases) page, extract, and run `FfmpegGui.exe`.
+Download `FfmpegGui-v1.3.0-win-x64.zip` from the [Releases](https://github.com/luoye-cpu/PLAN-1/releases) page, extract, and run `FfmpegGui.exe`. Package includes FfmpegGui.exe (single file, framework-dependent) + cjxl.exe (optional fast JPEG→JXL transcoder).
 
 > ⚠️ 需要系统已安装 [.NET 10 运行时](https://dotnet.microsoft.com/zh-cn/download/dotnet/10.0) 和 FFmpeg。
+> ℹ️ cjxl.exe 已内置，exiftool 需自行下载放入 ffmpeg 同目录。
 > ⚠️ Requires [.NET 10 Runtime](https://dotnet.microsoft.com/zh-cn/download/dotnet/10.0) and FFmpeg installed on the system.
+> ℹ️ cjxl.exe is bundled; exiftool must be downloaded separately and placed in the same directory as ffmpeg.
 
-## 📝 更新日志 / Changelog
+## � 更新日志 / Changelog
+### v1.3.0 (2026-05-26)
 
+- 📦 **单文件发布 + cjxl 内置 / Single-file publish + cjxl bundled**: FfmpegGui.exe 单文件发布（框架依赖），压缩包内含 cjxl.exe
+- 🧹 **元数据重构 / Metadata overhaul**: 元数据保留从复选框改为下拉框（保留全部 / 删除全部）
+- 🔒 **ExifTool 隐私清理 / ExifTool privacy cleaning**: 集成 exiftool（可选），支持选择性删除 GPS、时间、相机信息、全部 EXIF、XMP 等敏感元数据
+- 🎨 **位深 auto 选项 / Bit depth auto**: 所有格式增加 auto 选项（不指定位深，由编码器自行判断），各格式位深范围经审核调整
+- 🔍 **工具检测三优先级 / 3-tier tool detection**: cjxl/exiftool 检测顺序：手动指定 → 同目录 → 系统 PATH；顶部工具栏支持手动指定和重新检测
+- 🗂️ **保持输入目录结构增强 / Preserve folder structure**: 支持保留最外层文件夹名，批量拖拽多文件夹时各自计算路径
+- 💾 **预设增强 / Preset enhancement**: 导出/导入预设覆盖 MetadataMode、StripExif*、位深等全部新参数
+- 🐛 **修复 / Fix**: 批量队列构建时位深未同步 auto 模式，exiftool 文件名支持 `exiftool(-k).exe`
 ### v1.2.3 (2026-05-26)
 
 - 🎨 **重构 / Refactor**: UI 全面重构 — Complete UI overhaul

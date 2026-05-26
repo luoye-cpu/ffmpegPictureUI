@@ -152,23 +152,24 @@ namespace FfmpegGui.Services
                     break;
             }
 
-            // 色度采样：auto 则不指定 pix_fmt，由 ffmpeg 自动选择
+            // 色度采样 或 位深 为 auto 则不指定 pix_fmt，由 ffmpeg 自动选择
             if (!string.IsNullOrWhiteSpace(options.Chroma) 
-                && !options.Chroma.Equals("auto", StringComparison.OrdinalIgnoreCase))
+                && !options.Chroma.Equals("auto", StringComparison.OrdinalIgnoreCase)
+                && options.BitDepth.HasValue)
             {
                 args.Add("-pix_fmt");
                 args.Add(MapPixFmt(options));
             }
 
-            if (options.PreserveMetadata)
+            if (options.MetadataMode == Models.MetadataMode.StripAll)
             {
                 args.Add("-map_metadata");
-                args.Add("0");
+                args.Add("-1");
             }
             else
             {
                 args.Add("-map_metadata");
-                args.Add("-1");
+                args.Add("0");
             }
 
             // 色彩参数：仅当勾选"使用高级色彩参数"时生效，否则按简化 ColorSpace
@@ -230,14 +231,15 @@ namespace FfmpegGui.Services
         private static string MapPixFmt(FfmpegOptions options)
         {
             var fmt = options.Format.ToLower();
+            var bd = options.BitDepth ?? 8; // null 理论不会到这里(外层已判断)，但兜底用 8
             if (fmt == "png" || fmt == "tiff")
             {
-                if (options.BitDepth <= 8) return "rgb24";
+                if (bd <= 8) return "rgb24";
                 return "rgb48le"; // 10/12/16 使用 48le 作为通用输出
             }
 
             // 默认使用 YUV pix fmt
-            if (options.BitDepth <= 8)
+            if (bd <= 8)
             {
                 return options.Chroma switch
                 {
@@ -247,8 +249,9 @@ namespace FfmpegGui.Services
                 };
             }
 
-            if (options.BitDepth == 10) return "yuv420p10le";
-            if (options.BitDepth == 12) return "yuv420p12le";
+            if (bd == 10) return "yuv420p10le";
+            if (bd == 12) return "yuv420p12le";
+            if (bd == 16) return "yuv420p16le";
             return "yuv420p10le";
         }
     }

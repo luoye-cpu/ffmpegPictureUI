@@ -41,6 +41,7 @@ namespace FfmpegGui.Services
 
         private static void SeedLocalRules()
         {
+            // JPEG: 仅 8-bit（JPEG XT 12-bit 不普及）
             _cache["jpg"] = new FormatCapabilities
             {
                 Format = "jpg",
@@ -53,6 +54,7 @@ namespace FfmpegGui.Services
                 SupportedColorSpaces = new List<string> { "BT.601", "BT.709" }
             };
 
+            // PNG: 1/2/4/8/16-bit，常用 8/16
             _cache["png"] = new FormatCapabilities
             {
                 Format = "png",
@@ -65,6 +67,7 @@ namespace FfmpegGui.Services
                 SupportedColorSpaces = new List<string> { "BT.709" }
             };
 
+            // WebP: 仅 8-bit（VP8 不支持高位深）
             _cache["webp"] = new FormatCapabilities
             {
                 Format = "webp",
@@ -77,6 +80,7 @@ namespace FfmpegGui.Services
                 SupportedColorSpaces = new List<string> { "BT.709" }
             };
 
+            // AVIF: AV1 编码，支持 8/10/12-bit
             _cache["avif"] = new FormatCapabilities
             {
                 Format = "avif",
@@ -89,6 +93,7 @@ namespace FfmpegGui.Services
                 SupportedColorSpaces = new List<string> { "BT.709", "BT.2020" }
             };
 
+            // TIFF: 支持 8/16-bit 整数（ffmpeg），部分场景可达 32-bit
             _cache["tiff"] = new FormatCapabilities
             {
                 Format = "tiff",
@@ -97,10 +102,11 @@ namespace FfmpegGui.Services
                 SupportsBitDepth = true,
                 SupportsMetadata = true,
                 SupportsLossless = true,
-                SupportedBitDepths = new List<int> { 8, 10, 12, 16 },
+                SupportedBitDepths = new List<int> { 8, 16 },
                 SupportedColorSpaces = new List<string> { "BT.709" }
             };
 
+            // JPEG XL: 支持 8/10/12/16-bit 整数，甚至 32-bit 浮点
             _cache["jxl"] = new FormatCapabilities
             {
                 Format = "jxl",

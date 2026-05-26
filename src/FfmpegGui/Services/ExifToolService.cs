@@ -1,0 +1,242 @@
+using System;
+using System.Diagnostics;
+using System.IO;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace FfmpegGui.Services
+{
+    /// <summary>
+    /// ExifTool 集成服务：用于选择性剥离 EXIF 元数据（GPS、时间、相机信息等）
+    /// 检测逻辑与 CjxlService 一致——在 ffmpeg 同目录、程序同目录、PATH 中查找
+    /// </summary>
+    public static class ExifToolService
+    {
+        private static string? _detectedPath;
+        private static bool _detected;
+
+        public static bool IsAvailable
+        {
+            get
+            {
+                if (!_detected)
+                    Detect();
+                return _detectedPath != null;
+            }
+        }
+
+        /// <summary>
+        /// 获取已检测的 exiftool 路径（可能为 null）
+        /// </summary>
+        public static string? DetectedPath
+        {
+            get
+            {
+                if (!_detected) Detect();
+                return _detectedPath;
+            }
+        }
+
+        /// <summary>
+        /// 检测 exiftool 位置（三优先级）：
+        /// ① 手动指定路径（AppSettings.ExifToolPath）
+        /// ② ffmpeg 同目录 / 程序同目录
+        /// ③ 系统 PATH
+        /// </summary>
+        public static void Detect()
+        {
+            _detected = true;
+            _detectedPath = null;
+
+            var names = OperatingSystem.IsWindows()
+                ? new[] { "exiftool.exe", "exiftool(-k).exe" }
+                : new[] { "exiftool" };
+
+            // ── ① 手动指定路径 ──
+            var manual = AppSettingsService.Current.ExifToolPath;
+            if (!string.IsNullOrWhiteSpace(manual) && File.Exists(manual))
+            {
+                _detectedPath = manual;
+                return;
+            }
+
+            // ── ② 同目录（ffmpeg 目录 → 程序目录）──
+            var dirs = new[]
+            {
+                AppSettingsService.Current.FfmpegDir ?? "",
+                AppDomain.CurrentDomain.BaseDirectory,
+            };
+            foreach (var dir in dirs)
+            {
+                if (string.IsNullOrEmpty(dir)) continue;
+                foreach (var name in names)
+                {
+                    var candidate = Path.Combine(dir, name);
+                    if (File.Exists(candidate))
+                    {
+                        _detectedPath = candidate;
+                        return;
+                    }
+                }
+            }
+
+            // ── ③ 系统 PATH ──
+            foreach (var name in names)
+            {
+                if (TryFindInPath(name, out var pathFound))
+                {
+                    _detectedPath = pathFound;
+                    return;
+                }
+            }
+        }
+
+        /// <summary>在系统 PATH 中查找可执行文件（通过 -ver 验证可用性）</summary>
+        private static bool TryFindInPath(string exeName, out string? fullPath)
+        {
+            fullPath = null;
+            try
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = exeName,
+                    Arguments = "-ver",
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+                using var p = Process.Start(psi);
+                if (p != null)
+                {
+                    p.WaitForExit(5000);
+                    if (p.ExitCode == 0)
+                    {
+                        // 用 where/which 解析完整路径
+                        var whichPsi = new ProcessStartInfo
+                        {
+                            FileName = OperatingSystem.IsWindows() ? "where" : "which",
+                            Arguments = exeName,
+                            RedirectStandardOutput = true,
+                            RedirectStandardError = true,
+                            UseShellExecute = false,
+                            CreateNoWindow = true
+                        };
+                        using var wp = Process.Start(whichPsi);
+                        if (wp != null)
+                        {
+                            var output = wp.StandardOutput.ReadToEnd().Trim();
+                            wp.WaitForExit(5000);
+                            if (!string.IsNullOrWhiteSpace(output))
+                            {
+                                var firstLine = output.Split(new[] { '\r', '\n' },
+                                    StringSplitOptions.RemoveEmptyEntries)[0];
+                                if (File.Exists(firstLine))
+                                {
+                                    fullPath = firstLine;
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        /// <summary>
+        /// 根据选项构建 exiftool 参数
+        /// </summary>
+        public static string BuildArguments(string filePath, Models.FfmpegOptions options)
+        {
+            var sb = new StringBuilder();
+            sb.Append("-overwrite_original ");
+
+            if (options.StripExifGps)
+                sb.Append("-gps:all= ");
+
+            if (options.StripExifTime)
+                sb.Append("-time:all= ");
+
+            if (options.StripExifCamera)
+            {
+                // 清除相机/镜头相关标签（不影响其他 EXIF 如色彩空间、方向等）
+                sb.Append("-Make= -Model= ");
+                sb.Append("-LensMake= -LensModel= -LensSerialNumber= ");
+                sb.Append("-FocalLength= -FocalLengthIn35mmFormat= ");
+                sb.Append("-FNumber= -ApertureValue= -MaxApertureValue= ");
+                sb.Append("-ExposureTime= -ShutterSpeedValue= ");
+                sb.Append("-ISO= -ISOSpeedRatings= ");
+                sb.Append("-Flash= -WhiteBalance= ");
+                sb.Append("-ExposureProgram= -ExposureMode= -ExposureBiasValue= ");
+                sb.Append("-MeteringMode= -SceneCaptureType= ");
+                sb.Append("-LightSource= -SensingMethod= ");
+                sb.Append("-CameraOwnerName= -BodySerialNumber= ");
+            }
+
+            if (options.StripExifAll)
+                sb.Append("-exif:all= ");
+
+            if (options.StripXmp)
+                sb.Append("-xmp:all= ");
+
+            sb.Append($"\"{filePath}\"");
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// 对文件执行 exiftool 清理
+        /// </summary>
+        public static async Task<int> RunAsync(
+            string filePath,
+            Models.FfmpegOptions options,
+            Action<string>? logCallback = null)
+        {
+            if (_detectedPath == null)
+                throw new InvalidOperationException("exiftool 不可用");
+
+            var args = BuildArguments(filePath, options);
+            logCallback?.Invoke($"[exiftool] {args}\n");
+
+            var psi = new ProcessStartInfo
+            {
+                FileName = _detectedPath,
+                Arguments = args,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                StandardOutputEncoding = Encoding.UTF8,
+                StandardErrorEncoding = Encoding.UTF8
+            };
+
+            using var p = Process.Start(psi);
+            if (p == null)
+                throw new InvalidOperationException("无法启动 exiftool 进程");
+
+            var stdout = await p.StandardOutput.ReadToEndAsync();
+            var stderr = await p.StandardError.ReadToEndAsync();
+            await p.WaitForExitAsync();
+
+            if (!string.IsNullOrWhiteSpace(stdout))
+                logCallback?.Invoke(stdout);
+            if (!string.IsNullOrWhiteSpace(stderr))
+                logCallback?.Invoke(stderr);
+
+            return p.ExitCode;
+        }
+
+        /// <summary>
+        /// 判断当前选项是否需要调用 exiftool
+        /// </summary>
+        public static bool NeedsProcessing(Models.FfmpegOptions options)
+        {
+            return options.StripExifGps ||
+                   options.StripExifTime ||
+                   options.StripExifCamera ||
+                   options.StripExifAll ||
+                   options.StripXmp;
+        }
+    }
+}
