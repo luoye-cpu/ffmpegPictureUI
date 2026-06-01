@@ -1,4 +1,0 @@
-D:\PLAN\ffmpegPictureUI\ffmpegPictureUI\src\FfmpegGui\bin\Release\net10.0\win-x64\publish\av_libglesv2.dll
-D:\PLAN\ffmpegPictureUI\ffmpegPictureUI\src\FfmpegGui\bin\Release\net10.0\win-x64\publish\libHarfBuzzSharp.dll
-D:\PLAN\ffmpegPictureUI\ffmpegPictureUI\src\FfmpegGui\bin\Release\net10.0\win-x64\publish\libSkiaSharp.dll
-D:\PLAN\ffmpegPictureUI\ffmpegPictureUI\src\FfmpegGui\bin\Release\net10.0\win-x64\publish\FfmpegGui.exe

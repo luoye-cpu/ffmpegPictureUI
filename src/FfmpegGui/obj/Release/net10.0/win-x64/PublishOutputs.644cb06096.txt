@@ -1,2 +1,0 @@
-d:\PLAN\ffmpegPictureUI\ffmpegPictureUI\publish\win-x64\release\FfmpegGui.pdb
-d:\PLAN\ffmpegPictureUI\ffmpegPictureUI\publish\win-x64\release\FfmpegGui.exe
