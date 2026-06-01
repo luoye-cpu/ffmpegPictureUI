@@ -24,11 +24,11 @@ FFmpeg is the Swiss Army knife for image and video processing, but its command-l
 - **智能选项级联**：根据所选输出格式，动态启用/禁用该格式支持的特性，避免输入无效参数。
   **Smart option cascading**: Dynamically enable/disable features based on the selected output format, preventing invalid parameter input.
 
-- **元数据处理**：保留全部 / 删除全部，集成 exiftool 后支持选择性删除 GPS、时间、相机信息、XMP 等。
-  **Metadata handling**: Preserve all / Strip all; with exiftool integrated, selective deletion of GPS, time, camera info, XMP, etc.
+- **元数据编辑**：双击已完成条目打开编码详情，底部提供全面的元数据编辑面板（39 个字段，支持读取/修改/还原/清空），依赖系统已安装的 exiftool。
+  **Metadata editing**: Double-click a completed item to open encoding details; a comprehensive metadata editing panel (39 fields covering 5 categories) is available at the bottom, supporting read/modify/restore/clear operations. Requires exiftool installed on the system.
 
-- **元数据隐私保护**：集成 exiftool（可选），可选择性删除 GPS、相机信息、时间等敏感元数据。
-  **Privacy protection**: Optional exiftool integration to selectively strip GPS, camera info, timestamps, and other sensitive metadata.
+- **元数据隐私保护**：集成 exiftool（可选），转码时可选择性删除 GPS、相机信息、时间等敏感元数据；编码完成后也可通过元数据编辑面板精细调整。
+  **Privacy protection**: Optional exiftool integration for selectively stripping GPS, camera info, timestamps, and other sensitive metadata during transcoding; fine-grained adjustment also available via the metadata editing panel after encoding.
 
 - **批量处理队列**：支持拖入多个文件，自动排队转换。
   **Batch processing queue**: Drag and drop multiple files, automatically queuing them for conversion.
@@ -76,9 +76,9 @@ dotnet run --project src/FfmpegGui/FfmpegGui.csproj
 
 ### 直接下载运行 / Download & Run
 
-从 [Releases](https://github.com/luoye-cpu/PLAN-1/releases) 页面下载 `FfmpegGui-v1.3.0-win-x64.zip`，解压后运行 `FfmpegGui.exe`。压缩包内含 FfmpegGui.exe（单文件，框架依赖）+ cjxl.exe（可选的 JPEG→JXL 快速转码工具）。
+从 [Releases](https://github.com/luoye-cpu/PLAN-1/releases) 页面下载 `FfmpegGui-v1.3.1-win-x64.zip`，解压后运行 `FfmpegGui.exe`。压缩包内含 FfmpegGui.exe（单文件，框架依赖）+ cjxl.exe（可选的 JPEG→JXL 快速转码工具）。
 
-Download `FfmpegGui-v1.3.0-win-x64.zip` from the [Releases](https://github.com/luoye-cpu/PLAN-1/releases) page, extract, and run `FfmpegGui.exe`. Package includes FfmpegGui.exe (single file, framework-dependent) + cjxl.exe (optional fast JPEG→JXL transcoder).
+Download `FfmpegGui-v1.3.1-win-x64.zip` from the [Releases](https://github.com/luoye-cpu/PLAN-1/releases) page, extract, and run `FfmpegGui.exe`. Package includes FfmpegGui.exe (single file, framework-dependent) + cjxl.exe (optional fast JPEG→JXL transcoder).
 
 > ⚠️ 需要系统已安装 [.NET 10 运行时](https://dotnet.microsoft.com/zh-cn/download/dotnet/10.0) 和 FFmpeg。
 > ℹ️ cjxl.exe 已内置，exiftool 需自行下载放入 ffmpeg 同目录。
@@ -86,6 +86,16 @@ Download `FfmpegGui-v1.3.0-win-x64.zip` from the [Releases](https://github.com/l
 > ℹ️ cjxl.exe is bundled; exiftool must be downloaded separately and placed in the same directory as ffmpeg.
 
 ## � 更新日志 / Changelog
+### v1.3.1 (2026-06-02)
+
+- 📝 **元数据编辑面板 / Metadata editing panel**: 编码详情窗口新增全面的元数据编辑功能 — Comprehensive metadata editing added to the encoding details window
+  - 双击已完成条目打开编码详情，底部提供可展开的元数据编辑面板 — Double-click a completed item to open encoding details with an expandable metadata editing panel
+  - 39 个字段按 5 类分组：基本信息、日期时间、相机信息、GPS 位置、图片属性 — 39 fields grouped into 5 categories: Basic, Date/Time, Camera, GPS, Image Properties
+  - 支持读取当前元数据、应用修改（保留 .original 备份）、还原、清空全部 — Supports read current metadata, apply changes (with .original backup), restore, and clear all
+  - 异步执行读写操作，不阻塞 UI — Async read/write operations, non-blocking UI
+- 🐛 **修复 / Fix**: 队列列表报错条目单独标红显示 — Failed queue items now displayed in red
+- 🐛 **修复 / Fix**: Converter 返回 null 导致正常条目文字不显示的 Bug — Fixed bug where Converter returning null caused normal item text to disappear
+
 ### v1.3.0 (2026-05-26)
 
 - 📦 **单文件发布 + cjxl 内置 / Single-file publish + cjxl bundled**: FfmpegGui.exe 单文件发布（框架依赖），压缩包内含 cjxl.exe
