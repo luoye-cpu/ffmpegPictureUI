@@ -1,0 +1,45 @@
+# ── .NET 编译输出 ──
+bin/
+obj/
+*.user
+*.suo
+*.vs/
+*.DotSettings.user
+
+# ── 发布输出 ──
+publish/
+
+# ── 日志文件 ──
+*.log
+error.log
+output.log
+*.etl
+
+# ── 调试符号 ──
+*.pdb
+
+# ── NuGet 缓存 / 生成器输出 ──
+*.nuget.*
+project.assets.json
+*.nuget.dgspec.json
+
+# ── 压缩包（不应提交到源码仓库）──
+*.zip
+*.7z
+*.rar
+
+# ── 操作系统垃圾文件 ──
+.DS_Store
+Thumbs.db
+
+# ── IDE 缓存 ──
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── 临时文件 ──
+*.tmp
+*.temp
+*.cache
