@@ -1,7 +1,10 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Text;
+using System.Text.Json;
 using System.Threading.Tasks;
 
 namespace FfmpegGui.Services
@@ -237,6 +240,182 @@ namespace FfmpegGui.Services
                    options.StripExifCamera ||
                    options.StripExifAll ||
                    options.StripXmp;
+        }
+
+        // ──────── 元数据编辑功能 ────────
+
+        /// <summary>元数据分类定义</summary>
+        public enum MetadataCategory { 基本信息, 日期时间, 相机信息, GPS位置, 图片属性 }
+
+        /// <summary>元数据字段定义：显示名 → (exiftool标签名, 分类)</summary>
+        public static readonly Dictionary<string, (string TagName, MetadataCategory Category)> MetadataFields = new()
+        {
+            // ── 基本信息 ──
+            ["标题"]         = ("Title",       MetadataCategory.基本信息),
+            ["描述"]         = ("Description", MetadataCategory.基本信息),
+            ["作者"]         = ("Author",      MetadataCategory.基本信息),
+            ["艺术家"]       = ("Artist",      MetadataCategory.基本信息),
+            ["版权"]         = ("Copyright",   MetadataCategory.基本信息),
+            ["注释"]         = ("Comment",     MetadataCategory.基本信息),
+            ["关键词"]       = ("Keywords",    MetadataCategory.基本信息),
+            ["评级"]         = ("Rating",      MetadataCategory.基本信息),
+            ["文档名称"]     = ("DocumentName",MetadataCategory.基本信息),
+            ["软件"]         = ("Software",    MetadataCategory.基本信息),
+
+            // ── 日期时间 ──
+            ["拍摄日期"]     = ("DateTimeOriginal", MetadataCategory.日期时间),
+            ["创建日期"]     = ("CreateDate",       MetadataCategory.日期时间),
+            ["修改日期"]     = ("ModifyDate",       MetadataCategory.日期时间),
+
+            // ── 相机信息 ──
+            ["相机制造商"]   = ("Make",            MetadataCategory.相机信息),
+            ["相机型号"]     = ("Model",           MetadataCategory.相机信息),
+            ["镜头制造商"]   = ("LensMake",        MetadataCategory.相机信息),
+            ["镜头型号"]     = ("LensModel",       MetadataCategory.相机信息),
+            ["焦距"]         = ("FocalLength",     MetadataCategory.相机信息),
+            ["光圈"]         = ("FNumber",         MetadataCategory.相机信息),
+            ["ISO"]          = ("ISO",             MetadataCategory.相机信息),
+            ["曝光时间"]     = ("ExposureTime",    MetadataCategory.相机信息),
+            ["快门速度"]     = ("ShutterSpeedValue",MetadataCategory.相机信息),
+            ["闪光灯"]       = ("Flash",           MetadataCategory.相机信息),
+            ["白平衡"]       = ("WhiteBalance",    MetadataCategory.相机信息),
+            ["曝光程序"]     = ("ExposureProgram", MetadataCategory.相机信息),
+            ["测光模式"]     = ("MeteringMode",    MetadataCategory.相机信息),
+            ["场景类型"]     = ("SceneCaptureType",MetadataCategory.相机信息),
+            ["感光方式"]     = ("SensingMethod",   MetadataCategory.相机信息),
+            ["曝光补偿"]     = ("ExposureBiasValue",MetadataCategory.相机信息),
+
+            // ── GPS 位置 ──
+            ["GPS 纬度"]     = ("GPSLatitude",     MetadataCategory.GPS位置),
+            ["GPS 经度"]     = ("GPSLongitude",    MetadataCategory.GPS位置),
+            ["GPS 海拔"]     = ("GPSAltitude",     MetadataCategory.GPS位置),
+            ["GPS 日期"]     = ("GPSDateTime",     MetadataCategory.GPS位置),
+            ["GPS 纬度参考"] = ("GPSLatitudeRef",  MetadataCategory.GPS位置),
+            ["GPS 经度参考"] = ("GPSLongitudeRef", MetadataCategory.GPS位置),
+
+            // ── 图片属性 ──
+            ["方向"]         = ("Orientation",     MetadataCategory.图片属性),
+            ["图像描述"]     = ("ImageDescription",MetadataCategory.图片属性),
+            ["用户注释"]     = ("UserComment",     MetadataCategory.图片属性),
+        };
+
+        /// <summary>
+        /// 读取文件现有元数据（JSON 格式解析），返回 显示名→值 的字典
+        /// </summary>
+        public static async Task<Dictionary<string, string>> ReadMetadataAsync(string filePath)
+        {
+            var result = new Dictionary<string, string>();
+            if (_detectedPath == null) return result;
+
+            foreach (var key in MetadataFields.Keys)
+                result[key] = "";
+
+            try
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = _detectedPath,
+                    Arguments = $"-json -G \"{filePath}\"",
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    StandardOutputEncoding = Encoding.UTF8,
+                    StandardErrorEncoding = Encoding.UTF8
+                };
+
+                using var p = Process.Start(psi);
+                if (p == null) return result;
+
+                var stdout = await p.StandardOutput.ReadToEndAsync();
+                await p.WaitForExitAsync();
+
+                if (string.IsNullOrWhiteSpace(stdout)) return result;
+
+                using var doc = JsonDocument.Parse(stdout);
+                var root = doc.RootElement;
+                if (root.ValueKind != JsonValueKind.Array || root.GetArrayLength() == 0)
+                    return result;
+
+                var first = root[0];
+
+                foreach (var field in MetadataFields)
+                {
+                    var tagName = field.Value.TagName;
+                    foreach (var prop in first.EnumerateObject())
+                    {
+                        if (prop.Name.EndsWith($":{tagName}", StringComparison.OrdinalIgnoreCase) ||
+                            prop.Name.Equals(tagName, StringComparison.OrdinalIgnoreCase))
+                        {
+                            result[field.Key] = prop.Value.GetString() ?? "";
+                            break;
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[ExifTool ReadMetadata] {ex.Message}");
+            }
+
+            return result;
+        }
+
+        /// <summary>
+        /// 将元数据写入文件，返回 (退出码, 输出信息)
+        /// </summary>
+        public static async Task<(int ExitCode, string Output)> WriteMetadataAsync(
+            string filePath, Dictionary<string, string> tags, bool keepBackup = true)
+        {
+            if (_detectedPath == null)
+                return (-1, "exiftool 不可用");
+
+            var argList = new List<string>();
+            if (!keepBackup)
+                argList.Add("-overwrite_original");
+
+            foreach (var (displayName, value) in tags)
+            {
+                if (string.IsNullOrWhiteSpace(value))
+                    continue;
+                if (!MetadataFields.TryGetValue(displayName, out var fieldDef))
+                    continue;
+                argList.Add($"-{fieldDef.TagName}={value}");
+            }
+
+            argList.Add($"\"{filePath}\"");
+
+            var args = string.Join(" ", argList);
+
+            try
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = _detectedPath,
+                    Arguments = args,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    StandardOutputEncoding = Encoding.UTF8,
+                    StandardErrorEncoding = Encoding.UTF8
+                };
+
+                using var p = Process.Start(psi);
+                if (p == null)
+                    throw new InvalidOperationException("无法启动 exiftool 进程");
+
+                var stdout = await p.StandardOutput.ReadToEndAsync();
+                var stderr = await p.StandardError.ReadToEndAsync();
+                await p.WaitForExitAsync();
+
+                var output = (stdout + "\n" + stderr).Trim();
+                return (p.ExitCode, output);
+            }
+            catch (Exception ex)
+            {
+                return (-1, $"写入元数据异常: {ex.Message}");
+            }
         }
     }
 }

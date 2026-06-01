@@ -1,8 +1,8 @@
 {
   "version": 2,
-  "dgSpecHash": "CLg+PSPVmp0=",
+  "dgSpecHash": "CSB59cFO45U=",
   "success": true,
-  "projectFilePath": "d:\\PLAN\\ffmpegPictureUI\\ffmpegPictureUI\\tools\\verify_queue\\VerifyQueue.csproj",
+  "projectFilePath": "D:\\PLAN\\ffmpegPictureUI\\ffmpegPictureUI\\tools\\verify_queue\\VerifyQueue.csproj",
   "expectedPackageFiles": [
     "C:\\Users\\20210\\.nuget\\packages\\avalonia\\11.0.0\\avalonia.11.0.0.nupkg.sha512",
     "C:\\Users\\20210\\.nuget\\packages\\avalonia.angle.windows.natives\\2.1.0.2023020321\\avalonia.angle.windows.natives.2.1.0.2023020321.nupkg.sha512",
@@ -36,22 +36,10 @@
       "code": "NU1903",
       "level": "Warning",
       "message": "包 \"SkiaSharp\" 2.88.3 具有已知的 高 严重性漏洞，https://github.com/advisories/GHSA-j7hp-h8jx-5ppr",
-      "projectPath": "d:\\PLAN\\ffmpegPictureUI\\ffmpegPictureUI\\tools\\verify_queue\\VerifyQueue.csproj",
+      "projectPath": "D:\\PLAN\\ffmpegPictureUI\\ffmpegPictureUI\\tools\\verify_queue\\VerifyQueue.csproj",
       "warningLevel": 1,
-      "filePath": "d:\\PLAN\\ffmpegPictureUI\\ffmpegPictureUI\\tools\\verify_queue\\VerifyQueue.csproj",
+      "filePath": "D:\\PLAN\\ffmpegPictureUI\\ffmpegPictureUI\\tools\\verify_queue\\VerifyQueue.csproj",
       "libraryId": "SkiaSharp",
-      "targetGraphs": [
-        "net10.0"
-      ]
-    },
-    {
-      "code": "NU1903",
-      "level": "Warning",
-      "message": "包 \"Tmds.DBus.Protocol\" 0.15.0 具有已知的 高 严重性漏洞，https://github.com/advisories/GHSA-xrw6-gwf8-vvr9",
-      "projectPath": "d:\\PLAN\\ffmpegPictureUI\\ffmpegPictureUI\\tools\\verify_queue\\VerifyQueue.csproj",
-      "warningLevel": 1,
-      "filePath": "d:\\PLAN\\ffmpegPictureUI\\ffmpegPictureUI\\tools\\verify_queue\\VerifyQueue.csproj",
-      "libraryId": "Tmds.DBus.Protocol",
       "targetGraphs": [
         "net10.0"
       ]

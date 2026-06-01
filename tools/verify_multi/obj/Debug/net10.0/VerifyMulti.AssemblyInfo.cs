@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("VerifyMulti")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+3618fd584511ef727b36f0ba6a84ee9f70eae7da")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+76f93e494329573bccc5d8f4acefa9e9835b99d4")]
 [assembly: System.Reflection.AssemblyProductAttribute("VerifyMulti")]
 [assembly: System.Reflection.AssemblyTitleAttribute("VerifyMulti")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
