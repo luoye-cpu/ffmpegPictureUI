@@ -1,6 +1,7 @@
 using Avalonia.Controls;
 using Avalonia.Markup.Xaml;
 using Avalonia.Threading;
+using FfmpegGui.Controls;
 using FfmpegGui.Models;
 using System.Timers;
 
@@ -15,6 +16,7 @@ namespace FfmpegGui
         private TextBox? CommandLabel;
         private TextBox? LogBox;
         private TextBlock? AnalysisLabel;
+        private MetadataEditor? MetadataEditorCtrl;
 
         private readonly QueueItem? _item;
 
@@ -35,6 +37,7 @@ namespace FfmpegGui
             CommandLabel = this.FindControl<TextBox>("CommandLabel");
             LogBox = this.FindControl<TextBox>("LogBox");
             AnalysisLabel = this.FindControl<TextBlock>("AnalysisLabel");
+            MetadataEditorCtrl = this.FindControl<MetadataEditor>("MetadataEditorCtrl");
 
             if (TitleLabel != null)
                 TitleLabel.Text = System.IO.Path.GetFileName(item.InputPath);
@@ -42,6 +45,8 @@ namespace FfmpegGui
                 StatusLabel.Text = item.Status;
             if (CommandLabel != null)
                 CommandLabel.Text = command;
+            if (MetadataEditorCtrl != null)
+                MetadataEditorCtrl.FilePath = item.OutputPath;
 
             // 定时刷新
             var timer = new System.Timers.Timer(500);

@@ -1,0 +1,41 @@
+<UserControl
+    x:Class="FfmpegGui.Controls.MetadataEditor"
+    xmlns="https://github.com/avaloniaui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <Border Padding="6,4" CornerRadius="4"
+          BorderBrush="{DynamicResource SystemControlBackgroundBaseLowBrush}"
+          BorderThickness="1">
+    <StackPanel Spacing="6">
+      <!-- 展开/折叠按钮 -->
+      <Button x:Name="ToggleBtn" HorizontalAlignment="Left"
+              Click="ToggleExpand_Click" Padding="8,3" FontSize="12">
+        <StackPanel Orientation="Horizontal" Spacing="4">
+          <TextBlock x:Name="ToggleIcon" Text="▶"/>
+          <TextBlock Text="📝 元数据编辑"/>
+          <TextBlock x:Name="FieldCountLabel" Text="" FontSize="11" Foreground="Gray"/>
+        </StackPanel>
+      </Button>
+
+      <!-- 编辑面板（默认折叠） -->
+      <StackPanel x:Name="EditorPanel" IsVisible="False" Spacing="10">
+
+        <!-- 操作按钮栏 -->
+        <StackPanel Orientation="Horizontal" Spacing="8">
+          <Button Content="📖 读取当前元数据" Click="ReadMetadata_Click" Padding="8,3" FontSize="11"/>
+          <Button Content="✅ 应用修改" Click="ApplyMetadata_Click" Padding="8,3" FontSize="11"/>
+          <Button Content="↩ 还原" Click="RestoreMetadata_Click" Padding="8,3" FontSize="11"/>
+          <Button Content="🗑 清空所有字段" Click="ClearAll_Click" Padding="8,3" FontSize="11"
+                  Foreground="Gray"/>
+        </StackPanel>
+
+        <!-- 状态反馈 -->
+        <TextBlock x:Name="StatusText" FontSize="11" Foreground="Gray" TextWrapping="Wrap"/>
+
+        <!-- 动态字段区域（ScrollViewer） -->
+        <ScrollViewer MaxHeight="420">
+          <StackPanel x:Name="FieldsPanel" Spacing="10"/>
+        </ScrollViewer>
+      </StackPanel>
+    </StackPanel>
+  </Border>
+</UserControl>

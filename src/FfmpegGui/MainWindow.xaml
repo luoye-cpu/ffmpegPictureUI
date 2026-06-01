@@ -3,6 +3,7 @@
     xmlns="https://github.com/avaloniaui"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:sys="using:System"
+    xmlns:local="using:FfmpegGui.Models"
     Title="FFmpeg 图片转换器"
     Height="780"
     Width="1020"
@@ -213,7 +214,14 @@
               <TextBlock x:Name="FileCountLabel" Text="总文件: 0" FontSize="12"
                          Foreground="Gray" VerticalAlignment="Center"/>
             </StackPanel>
-            <ListBox Grid.Row="1" x:Name="QueueList" SelectionMode="Single" Margin="0,4"/>
+            <ListBox Grid.Row="1" x:Name="QueueList" SelectionMode="Single" Margin="0,4">
+              <ListBox.ItemTemplate>
+                <DataTemplate>
+                  <TextBlock Text="{Binding DisplayText}"
+                             Foreground="{Binding HasError, Converter={x:Static local:ErrorToColorConverter.Instance}}"/>
+                </DataTemplate>
+              </ListBox.ItemTemplate>
+            </ListBox>
             <WrapPanel Grid.Row="2" Margin="0,4,0,0">
               <Button x:Name="ClearQueueButton" Content="清空队列" Click="ClearQueue_Click" Padding="8,3" Margin="0,0,6,3"/>
               <Button Content="选择文件..." Click="SelectFile_Click" Padding="8,3" Margin="0,0,6,3"/>

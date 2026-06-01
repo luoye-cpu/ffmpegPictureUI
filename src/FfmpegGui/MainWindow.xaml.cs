@@ -18,7 +18,7 @@ namespace FfmpegGui
         private string? _inputPath;
         private string? _outputPath;
         private FormatCapabilities? _currentCapabilities;
-        private readonly ObservableCollection<string> _queueView = new();
+        private readonly ObservableCollection<Models.QueueItem> _queueView = new();
         private readonly QueueProcessor _queueProcessor;
         private bool _initialized;
 
@@ -937,7 +937,7 @@ namespace FfmpegGui
             var outp = GetOutputPath(inputPath, options.Format, inputBaseDir);
             var item = new Models.QueueItem { InputPath = inputPath, OutputPath = outp, Options = options, InputBaseDir = inputBaseDir };
             _queueProcessor.Add(item);
-            _queueView.Add($"{Path.GetFileName(item.InputPath)} — {item.Status}");
+            _queueView.Add(item);
             _queueItems.Add(item);
             if (LogText != null) LogText.Text += $"已添加到队列: {item.InputPath}\n";
 
@@ -1023,37 +1023,29 @@ namespace FfmpegGui
         {
             Dispatcher.UIThread.Post(() =>
             {
-                // 首先尝试通过引用在本地队列中定位对应的 QueueItem
-                var idx = _queueItems.FindIndex(x => ReferenceEquals(x, item));
-                if (idx >= 0 && idx < _queueView.Count)
-                {
-                    _queueView[idx] = $"{Path.GetFileName(item.InputPath)} — {item.Status}";
-                    return;
-                }
-
-                // 回退：通过输入路径精确匹配（避免仅用文件名匹配导致模糊替换）
-                for (int i = 0; i < _queueItems.Count && i < _queueView.Count; i++)
-                {
-                    var qi = _queueItems[i];
-                    if (qi.InputPath == item.InputPath && qi.OutputPath == item.OutputPath)
-                    {
-                        _queueView[i] = $"{Path.GetFileName(item.InputPath)} — {item.Status}";
-                        return;
-                    }
-                }
-
-                // 若在本地队列中找不到该项，但状态为已删除，则从 UI 中移除任何残留的显示项
+                // 若该项已被标记为删除，从 UI 中移除
                 if (item.Status == "已删除")
                 {
+                    var idx = _queueItems.FindIndex(x => ReferenceEquals(x, item));
+                    if (idx >= 0 && idx < _queueView.Count)
+                    {
+                        _queueView.RemoveAt(idx);
+                        _queueItems.RemoveAt(idx);
+                        return;
+                    }
+
+                    // 回退：通过输入路径匹配清理残留项
                     var fname = Path.GetFileName(item.InputPath);
                     for (int j = _queueView.Count - 1; j >= 0; j--)
                     {
-                        if (_queueView[j].StartsWith(fname, StringComparison.OrdinalIgnoreCase))
+                        if (Path.GetFileName(_queueView[j].InputPath)
+                            .Equals(fname, StringComparison.OrdinalIgnoreCase))
                         {
                             _queueView.RemoveAt(j);
                         }
                     }
                 }
+                // Status 变更由 INotifyPropertyChanged + DataTemplate 绑定自动反映到 UI
             });
         }
 
