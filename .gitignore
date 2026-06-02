@@ -43,3 +43,15 @@ Thumbs.db
 *.tmp
 *.temp
 *.cache
+
+# ── 外部工具二进制（不应提交到源码仓库） ──
+**/cjxl.exe
+**/djxl.exe
+**/cjpegli.exe
+**/exiftool.exe
+**/exiftool(-k).exe
+**/exiftool_files/
+
+# ── 测试输出目录 ──
+test_output/
+test-output/

@@ -54,6 +54,19 @@ namespace FfmpegGui.Services
                 SupportedColorSpaces = new List<string> { "BT.601", "BT.709" }
             };
 
+            // Jpegli: JPEG 编码改进版（通过 cjpegli 工具编码），同 JPEG 能力集
+            _cache["jpegli"] = new FormatCapabilities
+            {
+                Format = "jpegli",
+                SupportsQuality = true,
+                SupportsChroma = true,
+                SupportsBitDepth = false,
+                SupportsMetadata = true,
+                SupportsLossless = false,
+                SupportedBitDepths = new List<int> { 8 },
+                SupportedColorSpaces = new List<string> { "BT.601", "BT.709" }
+            };
+
             // PNG: 1/2/4/8/16-bit，常用 8/16
             _cache["png"] = new FormatCapabilities
             {
