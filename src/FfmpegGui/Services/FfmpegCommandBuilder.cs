@@ -29,6 +29,7 @@ namespace FfmpegGui.Services
             {
                 case "jpg":
                 case "jpeg":
+                case "jpegli":
                     args.Add("-q:v");
                     args.Add(MapJpegQuality(options.Quality).ToString());
                     if (!string.IsNullOrWhiteSpace(options.JpegHuffman))

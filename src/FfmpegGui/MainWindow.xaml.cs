@@ -77,6 +77,7 @@ namespace FfmpegGui
         private ComboBox? WebpPresetCombo;
         private NumericUpDown? AvifCpuUsedBox;
         private CheckBox? AvifStillPictureCheck;
+        private CheckBox? AutoUseSimdCheck;
         private ComboBox? AvifTuneCombo;
         private ComboBox? AvifPresetCombo;
         private NumericUpDown? JxlEffortBox;
@@ -145,6 +146,7 @@ namespace FfmpegGui
             CjxlPathBox = this.FindControl<TextBox>("CjxlPathBox");
             ExifToolPathBox = this.FindControl<TextBox>("ExifToolPathBox");
             PreserveInputStructure = this.FindControl<CheckBox>("PreserveInputStructure");
+            AutoUseSimdCheck = this.FindControl<CheckBox>("AutoUseSimdCheck");
             AutoThreadsCheck = this.FindControl<CheckBox>("AutoThreadsCheck");
             SingleThreadCheck = this.FindControl<CheckBox>("SingleThreadCheck");
             ThreadHintLabel = this.FindControl<TextBlock>("ThreadHintLabel");
@@ -231,6 +233,15 @@ namespace FfmpegGui
                     AppSettingsService.Current.PreserveInputFolderStructure = PreserveInputStructure.IsChecked ?? false;
                     AppSettingsService.Save();
                 };
+                if (AutoUseSimdCheck != null)
+                {
+                    AutoUseSimdCheck.IsChecked = AppSettingsService.Current.AutoUseSimdBinaries;
+                    AutoUseSimdCheck.IsCheckedChanged += (_, _) =>
+                    {
+                        AppSettingsService.Current.AutoUseSimdBinaries = AutoUseSimdCheck.IsChecked ?? false;
+                        AppSettingsService.Save();
+                    };
+                }
             }
 
             // 无损编码 / JXL 强制元数据 → 每次变化刷新命令与选项
@@ -362,20 +373,188 @@ namespace FfmpegGui
         {
             if (LogText != null) LogText.Text += "正在检测 ffmpeg 能力与可用编码器...\n";
             CjxlService.ClearCache();
+            CjpegliService.ClearCache();
             CjxlService.Detect();
+            CjpegliService.Detect();
             await FormatCapabilitiesService.InitializeAsync(AppSettingsService.Current.FfmpegPath);
             
             // 预加载所有格式的编码器
             await EncoderDetectionService.GetAllEncodersAsync(AppSettingsService.Current.FfmpegPath);
             
             await RefreshEncoderListAsync();
+
+            // CPU 指令集检测
+            try
+            {
+                CpuFeatureService.Detect();
+                if (LogText != null)
+                {
+                    LogText.Text += $"[cpu] 指令集检测: {CpuFeatureService.Summary()}\n";
+                    if (CpuFeatureService.HasAvx2)
+                        LogText.Text += "[cpu] 建议：优先使用带 avx2/avx 优化的本地二进制以获得更好性能。\n";
+                }
+            }
+            catch { }
+
+            // ffmpeg SIMD 编译能力探测
+            try
+            {
+                var ffmpegProbe = ExternalToolsDetector.ProbeFfmpeg();
+                if (LogText != null && ffmpegProbe != null && ffmpegProbe.IsRunnable)
+                {
+                    if (ffmpegProbe.SimdFeatures.Count > 0)
+                        LogText.Text += $"[ffmpeg] SIMD 编译选项: {string.Join(", ", ffmpegProbe.SimdFeatures)}\n";
+                    else
+                        LogText.Text += "[ffmpeg] 未检测到 SIMD 编译选项（可能为通用构建）\n";
+                    if (!string.IsNullOrWhiteSpace(ffmpegProbe.Version))
+                        LogText.Text += $"[ffmpeg] 版本: {ffmpegProbe.Version}\n";
+                }
+            }
+            catch { }
             if (LogText != null)
             {
                 LogText.Text += "能力检测完成。\n";
                 if (CjxlService.IsAvailable)
+                {
                     LogText.Text += $"✅ 检测到 cjxl（{CjxlService.DetectedPath}）\n";
+                    try
+                    {
+                        var tag = ExternalToolsDetector.GetFeatureTagFromFileName(CjxlService.DetectedPath);
+                        if (!string.IsNullOrEmpty(tag))
+                        {
+                            LogText.Text += $"[cpu] cjxl 优化标识: {tag}\n";
+                            if (AppSettingsService.Current.AutoUseSimdBinaries && string.IsNullOrWhiteSpace(AppSettingsService.Current.CjxlPath))
+                            {
+                                AppSettingsService.Current.CjxlPath = Path.GetDirectoryName(CjxlService.DetectedPath);
+                                AppSettingsService.Save();
+                                LogText.Text += $"[auto] 已自动保存 JPEG XL 参考实现库目录: {CjxlService.DetectedPath}\n";
+                            }
+                        }
+
+                        // 运行短样本探测，解析版本/特征信息（异步到线程池避免阻塞 UI）
+                        _ = Task.Run(async () =>
+                        {
+                            try
+                            {
+                                var path = CjxlService.DetectedPath;
+                                if (string.IsNullOrEmpty(path)) return;
+                                var probe = await Task.Run(() => ExternalToolsDetector.ProbeExecutable(path, 2000));
+                                await Dispatcher.UIThread.InvokeAsync(() =>
+                                {
+                                    if (probe != null && probe.IsRunnable)
+                                    {
+                                        if (!string.IsNullOrWhiteSpace(probe.Version)) LogText.Text += $"[probe] cjxl 版本: {probe.Version}\n";
+                                        if (!string.IsNullOrWhiteSpace(probe.DetectedFeatures)) LogText.Text += $"[probe] cjxl 输出特征: {probe.DetectedFeatures}\n";
+                                        var combined = (probe.StdOut + probe.StdErr).Trim();
+                                        if (!string.IsNullOrEmpty(combined))
+                                        {
+                                            var shortOut = combined.Length > 200 ? combined.Substring(0, 200) + "..." : combined;
+                                            LogText.Text += $"[probe] cjxl 输出: {shortOut}\n";
+                                        }
+                                    }
+                                    else
+                                    {
+                                        LogText.Text += "[probe] cjxl 运行探测失败或不兼容（已跳过自动启用）\n";
+                                    }
+                                });
+                            }
+                            catch { }
+                        });
+                    }
+                    catch { }
+                }
                 else
                     LogText.Text += "ℹ️ 未检测到 cjxl.exe，JPEG→JXL 将使用 ffmpeg\n";
+
+                // djxl 检测
+                DjxlService.ClearCache();
+                DjxlService.Detect();
+                if (DjxlService.IsAvailable)
+                {
+                    LogText.Text += $"✅ 检测到 djxl（{DjxlService.DetectedPath}）\n";
+                    try
+                    {
+                        var djxlTag = ExternalToolsDetector.GetFeatureTagFromFileName(DjxlService.DetectedPath);
+                        if (!string.IsNullOrEmpty(djxlTag))
+                            LogText.Text += $"[cpu] djxl 优化标识: {djxlTag}\n";
+
+                        // 异步探测 djxl 版本与 SIMD
+                        _ = Task.Run(async () =>
+                        {
+                            try
+                            {
+                                var path = DjxlService.DetectedPath;
+                                if (string.IsNullOrEmpty(path)) return;
+                                var probe = await Task.Run(() => ExternalToolsDetector.ProbeExecutable(path, 2000));
+                                await Dispatcher.UIThread.InvokeAsync(() =>
+                                {
+                                    if (probe != null && probe.IsRunnable)
+                                    {
+                                        if (!string.IsNullOrWhiteSpace(probe.Version)) LogText.Text += $"[probe] djxl 版本: {probe.Version}\n";
+                                        if (probe.SimdFeatures.Count > 0) LogText.Text += $"[probe] djxl SIMD: {string.Join(", ", probe.SimdFeatures)}\n";
+                                    }
+                                    else
+                                        LogText.Text += "[probe] djxl 运行探测失败或不兼容\n";
+                                });
+                            }
+                            catch { }
+                        });
+                    }
+                    catch { }
+                }
+                else
+                    LogText.Text += "ℹ️ 未检测到 djxl.exe，JXL 解码将回退到 ffmpeg\n";
+
+                if (CjpegliService.IsAvailable)
+                {
+                    LogText.Text += $"✅ 检测到 cjpegli（{CjpegliService.DetectedPath}）\n";
+                    try
+                    {
+                        var tag = ExternalToolsDetector.GetFeatureTagFromFileName(CjpegliService.DetectedPath);
+                        if (!string.IsNullOrEmpty(tag))
+                        {
+                            LogText.Text += $"[cpu] cjpegli 优化标识: {tag}\n";
+                            if (AppSettingsService.Current.AutoUseSimdBinaries && string.IsNullOrWhiteSpace(AppSettingsService.Current.CjxlPath))
+                            {
+                                AppSettingsService.Current.CjxlPath = Path.GetDirectoryName(CjpegliService.DetectedPath);
+                                AppSettingsService.Save();
+                                LogText.Text += $"[auto] 已自动保存 JPEG XL 参考实现库目录: {CjpegliService.DetectedPath}\n";
+                            }
+                        }
+
+                        _ = Task.Run(async () =>
+                        {
+                            try
+                            {
+                                var path = CjpegliService.DetectedPath;
+                                if (string.IsNullOrEmpty(path)) return;
+                                var probe = await Task.Run(() => ExternalToolsDetector.ProbeExecutable(path, 2000));
+                                await Dispatcher.UIThread.InvokeAsync(() =>
+                                {
+                                    if (probe != null && probe.IsRunnable)
+                                    {
+                                        if (!string.IsNullOrWhiteSpace(probe.Version)) LogText.Text += $"[probe] cjpegli 版本: {probe.Version}\n";
+                                        if (!string.IsNullOrWhiteSpace(probe.DetectedFeatures)) LogText.Text += $"[probe] cjpegli 输出特征: {probe.DetectedFeatures}\n";
+                                        var combined = (probe.StdOut + probe.StdErr).Trim();
+                                        if (!string.IsNullOrEmpty(combined))
+                                        {
+                                            var shortOut = combined.Length > 200 ? combined.Substring(0, 200) + "..." : combined;
+                                            LogText.Text += $"[probe] cjpegli 输出: {shortOut}\n";
+                                        }
+                                    }
+                                    else
+                                    {
+                                        LogText.Text += "[probe] cjpegli 运行探测失败或不兼容（已跳过自动启用）\n";
+                                    }
+                                });
+                            }
+                            catch { }
+                        });
+                    }
+                    catch { }
+                }
+                else
+                    LogText.Text += "ℹ️ 未检测到 cjpegli，Jpegli 编码将回退到 ffmpeg/libjpeg\n";
             }
             // ExifTool 检测与 UI 更新
             ExifToolService.Detect();
@@ -399,6 +578,21 @@ namespace FfmpegGui
             RegenerateCommand();
         }
 
+        private string BuildCjpegliCommand(string input, string output, int quality, int threads)
+        {
+            // 如果检测到 cjpegli 则使用其完整路径，否则回退到 ffmpeg
+            if (CjpegliService.IsAvailable && !string.IsNullOrWhiteSpace(CjpegliService.DetectedPath))
+            {
+                var exe = CjpegliService.DetectedPath;
+                var args = new System.Text.StringBuilder();
+                args.Append($"\"{input}\" \"{output}\" --quality {quality}");
+                if (threads > 0) args.Append($" --num_threads={threads}");
+                return $"\"{exe}\" {args.ToString()}";
+            }
+            // 回退：ffmpeg mjpeg 编码（标准 JPEG，非 jpegli）
+            return $"ffmpeg -i \"{input}\" -c:v mjpeg -q:v {Math.Clamp(100 - quality, 2, 31)} \"{output}\"";
+        }
+
         private async void RegenerateCommand()
         {
             if (string.IsNullOrWhiteSpace(_inputPath)) return;
@@ -416,6 +610,17 @@ namespace FfmpegGui
             var autoTh = AutoThreadsCheck?.IsChecked ?? true;
             var singleTh = SingleThreadCheck?.IsChecked ?? false;
             int threads = singleTh ? 1 : autoTh ? Models.FfmpegOptions.ComputeAutoThreads() : (int)(ThreadsBox?.Value ?? 4);
+
+            // 若选择 jpegli 输出，生成 cjpegli 命令
+            if (fmt == "jpegli")
+            {
+                var input = _inputPath!;
+                var outPath = _outputPath ?? Path.ChangeExtension(_inputPath, ".jpg");
+                var qualityVal = (int)QualitySlider.Value;
+                var cmd = BuildCjpegliCommand(input, outPath, qualityVal, threads);
+                if (CommandText != null) CommandText.Text = cmd;
+                return;
+            }
 
             // --- JPEG→JXL 无损重封装自动检测：cjxl 优先 ---
             bool jxlLosslessJpeg = false;
@@ -1410,28 +1615,50 @@ namespace FfmpegGui
         {
             var topLevel = TopLevel.GetTopLevel(this);
             if (topLevel?.StorageProvider == null) return;
-            var files = await topLevel.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+
+            // 改为选择文件夹：用户选择包含 cjxl/djxl/cjpegli 等工具的目录（例如 D:\...\bin）
+            var folders = await topLevel.StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
             {
-                Title = "选择 cjxl.exe",
-                AllowMultiple = false,
-                FileTypeFilter = new[]
-                {
-                    new FilePickerFileType("可执行文件") { Patterns = new[] { "*.exe" } },
-                    new FilePickerFileType("所有文件") { Patterns = new[] { "*" } }
-                }
+                Title = "选择包含 JPEG/JXL 工具的目录",
+                AllowMultiple = false
             });
-            if (files != null && files.Count > 0)
+
+            if (folders != null && folders.Count > 0)
             {
-                var path = files[0].Path.LocalPath;
-                AppSettingsService.Current.CjxlPath = path;
+                var dir = folders[0].Path.LocalPath;
+                AppSettingsService.Current.CjxlPath = dir; // JPEG XL 参考实现库目录（含 cjxl/djxl/cjpegli）
                 AppSettingsService.Save();
-                if (CjxlPathBox != null) CjxlPathBox.Text = path;
+                if (CjxlPathBox != null) CjxlPathBox.Text = dir;
+
+                // 刷新所有 JPEG XL 工具的检测
                 CjxlService.ClearCache();
                 CjxlService.Detect();
+                DjxlService.ClearCache();
+                DjxlService.Detect();
+                CjpegliService.ClearCache();
+                CjpegliService.Detect();
+
+                // 扫描目录中的其他相关工具（例如 djxl / cjpegli / 相关 DLL）并在日志中展示
+                var scan = ExternalToolsDetector.ScanDirectory(dir);
                 if (LogText != null)
-                    LogText.Text += CjxlService.IsAvailable
-                        ? $"✅ cjxl 路径已更新: {path}\n"
-                        : $"⚠️ cjxl 路径已设置但无法使用: {path}\n";
+                {
+                    if (!string.IsNullOrEmpty(scan.CjxlExe))
+                        LogText.Text += $"✅ 在目录找到 cjxl: {scan.CjxlExe}\n";
+                    else if (CjxlService.IsAvailable)
+                        LogText.Text += $"✅ 检测到 cjxl（PATH/同目录）: {CjxlService.DetectedPath}\n";
+                    else
+                        LogText.Text += $"⚠️ 未在所选目录找到 cjxl.exe（将回退到自动检测）\n";
+
+                    if (!string.IsNullOrEmpty(scan.DjxlExe))
+                        LogText.Text += $"✅ 在目录找到 djxl: {scan.DjxlExe}\n";
+                    if (!string.IsNullOrEmpty(scan.CjpegliExe))
+                        LogText.Text += $"✅ 在目录找到 cjpegli: {scan.CjpegliExe}\n";
+                    if (scan.OtherExecutables.Count > 0)
+                        LogText.Text += $"ℹ️ 其他可执行文件: {scan.OtherExecutables.Count} 个（可能包含 ffmpeg 附带工具）\n";
+                    if (scan.FoundDlls.Count > 0)
+                        LogText.Text += $"ℹ️ 发现相关 DLL: {scan.FoundDlls.Count} 个（注意运行时依赖）\n";
+                }
+
                 RegenerateCommand();
             }
         }
@@ -1469,14 +1696,27 @@ namespace FfmpegGui
         private void ClearCjxlPath_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
         {
             AppSettingsService.Current.CjxlPath = null;
+            AppSettingsService.Current.CjpegliPath = null;
             AppSettingsService.Save();
             if (CjxlPathBox != null) CjxlPathBox.Text = "";
             CjxlService.ClearCache();
             CjxlService.Detect();
+            DjxlService.ClearCache();
+            DjxlService.Detect();
+            CjpegliService.ClearCache();
+            CjpegliService.Detect();
             if (LogText != null)
+            {
                 LogText.Text += CjxlService.IsAvailable
                     ? $"✅ cjxl 自动检测: {CjxlService.DetectedPath}\n"
                     : "ℹ️ cjxl: 未检测到\n";
+                LogText.Text += DjxlService.IsAvailable
+                    ? $"✅ djxl 自动检测: {DjxlService.DetectedPath}\n"
+                    : "ℹ️ djxl: 未检测到\n";
+                LogText.Text += CjpegliService.IsAvailable
+                    ? $"✅ cjpegli 自动检测: {CjpegliService.DetectedPath}\n"
+                    : "ℹ️ cjpegli: 未检测到\n";
+            }
             RegenerateCommand();
         }
 
@@ -1499,13 +1739,18 @@ namespace FfmpegGui
             // 清除所有手动路径，改为自动同目录 + PATH 检测
             AppSettingsService.Current.CjxlPath = null;
             AppSettingsService.Current.ExifToolPath = null;
+            AppSettingsService.Current.CjpegliPath = null;
             AppSettingsService.Save();
             if (CjxlPathBox != null) CjxlPathBox.Text = "";
             if (ExifToolPathBox != null) ExifToolPathBox.Text = "";
 
             if (LogText != null) LogText.Text += "正在自动重新检测外部工具（同目录 → PATH）...\n";
             CjxlService.ClearCache();
+            CjpegliService.ClearCache();
+            DjxlService.ClearCache();
             CjxlService.Detect();
+            CjpegliService.Detect();
+            DjxlService.Detect();
             ExifToolService.Detect();
             UpdateExifToolPanelState();
 
@@ -1514,6 +1759,12 @@ namespace FfmpegGui
                 LogText.Text += CjxlService.IsAvailable
                     ? $"✅ cjxl: {CjxlService.DetectedPath}\n"
                     : "ℹ️ cjxl: 未检测到\n";
+                LogText.Text += DjxlService.IsAvailable
+                    ? $"✅ djxl: {DjxlService.DetectedPath}\n"
+                    : "ℹ️ djxl: 未检测到\n";
+                LogText.Text += CjpegliService.IsAvailable
+                    ? $"✅ cjpegli: {CjpegliService.DetectedPath}\n"
+                    : "ℹ️ cjpegli: 未检测到\n";
                 LogText.Text += ExifToolService.IsAvailable
                     ? $"✅ exiftool: {ExifToolService.DetectedPath}\n"
                     : "ℹ️ exiftool: 未检测到\n";
