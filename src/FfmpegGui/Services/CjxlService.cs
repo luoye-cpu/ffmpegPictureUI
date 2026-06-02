@@ -60,12 +60,46 @@ namespace FfmpegGui.Services
             }
             catch { }
 
-            // ── ① 手动指定路径 ──
-            var manual = AppSettingsService.Current.CjxlPath;
-            if (!string.IsNullOrWhiteSpace(manual) && File.Exists(manual))
+            // ── ① 手动指定路径或目录（CjxlPath 优先，CjpegliPath 为备选） ──
+            var manual = AppSettingsService.Current.CjxlPath ?? AppSettingsService.Current.CjpegliPath;
+            if (!string.IsNullOrWhiteSpace(manual))
             {
-                _detectedPath = manual;
-                return;
+                try
+                {
+                    // 如果用户直接指定了可执行文件路径
+                    if (File.Exists(manual))
+                    {
+                        _detectedPath = manual;
+                        return;
+                    }
+
+                    // 如果用户指定的是目录，尝试在该目录（及子目录）查找 cjxl.exe
+                    if (Directory.Exists(manual))
+                    {
+                        var candidate = Path.Combine(manual, "cjxl.exe");
+                        if (File.Exists(candidate))
+                        {
+                            _detectedPath = candidate;
+                            return;
+                        }
+
+                        try
+                        {
+                            var list = new System.Collections.Generic.List<string>();
+                            foreach (var found in Directory.EnumerateFiles(manual, "*cjxl*.exe", SearchOption.AllDirectories))
+                            {
+                                if (File.Exists(found)) list.Add(found);
+                            }
+                            if (list.Count > 0)
+                            {
+                                var pick = ExternalToolsDetector.ChooseBestExecutable(list);
+                                if (!string.IsNullOrEmpty(pick)) { _detectedPath = pick; return; }
+                            }
+                        }
+                        catch { }
+                    }
+                }
+                catch { }
             }
 
             // ── ② 同目录（ffmpeg 目录 → 程序目录）──

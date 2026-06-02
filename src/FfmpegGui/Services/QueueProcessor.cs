@@ -148,8 +148,158 @@ namespace FfmpegGui.Services
                             if (!string.IsNullOrEmpty(outDir) && !Directory.Exists(outDir))
                                 Directory.CreateDirectory(outDir);
 
-                            // ---- cjxl 快速路径：JPEG → JXL 无损重封装 ----
-                            if (captured.Options.JxlLosslessJpeg && CjxlService.IsAvailable)
+                            // ---- 智能 JXL 处理：若输入为 .jxl 且目标为 JPEG，则按类型分支（优先原样重构/高质量解码） ----
+                            var inputExt = Path.GetExtension(captured.InputPath).ToLowerInvariant();
+                            var targetFmt = (captured.Options.Format ?? "").ToLowerInvariant();
+                            var preferCjpegli = targetFmt == "jpegli";
+                            if ((targetFmt == "jpg" || targetFmt == "jpeg" || targetFmt == "jpegli") && inputExt == ".jxl")
+                            {
+                                captured.Log += "[jxl] 检测 JXL 类型并选择最优转换流程...\n";
+                                var jxlType = JxlInspector.DetectType(captured.InputPath);
+
+                                if (jxlType == JxlImageType.JpegReconstruction)
+                                {
+                                    // 场景 A：JPEG 套壳 -- 尝试用 djxl 恢复原始 JPEG（无代际损失）
+                                    if (DjxlService.IsAvailable)
+                                    {
+                                        captured.Log += "[djxl] 尝试还原原始 JPEG（无损重建）\n";
+                                        var exit = await DjxlService.RunAsync(captured.InputPath, finalOutputPath, captured.Options.Threads, s =>
+                                        {
+                                            captured.Log += s;
+                                            _onItemUpdated?.Invoke(captured);
+                                        }, ct);
+                                        captured.ExitCode = exit;
+                                        captured.Status = exit == 0 ? "已完成 (djxl 重构 JPEG)" : $"失败 (djxl 退出码 {exit})";
+                                    }
+                                    else
+                                    {
+                                        // 回退：使用 ffmpeg（可能会解码再编码，非位级还原）
+                                        captured.Log += "[djxl] 未检测到 djxl，回退到 ffmpeg（可能发生解码-重编码）\n";
+                                        var args = FfmpegCommandBuilder.BuildArguments(captured.Options, captured.InputPath, finalOutputPath);
+                                        var exit = await FfmpegRunner.RunAsync(args, s =>
+                                        {
+                                            captured.Log += s;
+                                            _onItemUpdated?.Invoke(captured);
+                                        }, AppSettingsService.Current.FfmpegPath);
+                                        captured.ExitCode = exit;
+                                        captured.Status = exit == 0 ? "已完成 (ffmpeg)" : $"失败 (退出码 {exit})";
+                                    }
+                                }
+                                else if (jxlType == JxlImageType.NativeCodestream)
+                                {
+                                    // 场景 B：原生 JXL -- 解码为高质量中间格式，再用 cjpegli/ffmpeg 编码为 JPEG
+                                    var tmp = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString() + ".png");
+                                    var tmpCreated = false;
+                                    try
+                                    {
+                                        if (DjxlService.IsAvailable)
+                                        {
+                                            // 优先尝试无磁盘管道：djxl -> cjpegli
+                                            if (CjpegliService.IsAvailable)
+                                            {
+                                                captured.Log += "[pipeline] 尝试 djxl -> cjpegli 管道（避免中间文件）\n";
+                                                var pipeExit = await JxlPipelineService.TryPipeDjxlToCjpegliAsync(
+                                                    captured.InputPath, finalOutputPath, captured.Options.Quality, captured.Options.Threads,
+                                                    s => { captured.Log += s; _onItemUpdated?.Invoke(captured); }, ct);
+
+                                                if (pipeExit == 0)
+                                                {
+                                                    captured.ExitCode = 0;
+                                                    captured.Status = "已完成 (cjpegli 管道)";
+                                                }
+                                                else
+                                                {
+                                                    captured.Log += "[pipeline] 管道失败，回退到临时文件流程\n";
+                                                    // 回退到基于临时文件的流程（兼容性更好）
+                                                    var exit = await DjxlService.RunAsync(captured.InputPath, tmp, captured.Options.Threads, s =>
+                                                    {
+                                                        captured.Log += s;
+                                                        _onItemUpdated?.Invoke(captured);
+                                                    }, ct);
+
+                                                    if (exit == 0 && File.Exists(tmp))
+                                                    {
+                                                        tmpCreated = true;
+                                                        captured.Log += "[cjpegli] 使用 cjpegli 对中间文件进行编码\n";
+                                                        var cjexit = await CjpegliService.RunAsync(tmp, finalOutputPath, captured.Options.Quality, captured.Options.Threads, s =>
+                                                        {
+                                                            captured.Log += s;
+                                                            _onItemUpdated?.Invoke(captured);
+                                                        }, ct);
+                                                        captured.ExitCode = cjexit;
+                                                        captured.Status = cjexit == 0 ? "已完成 (cjpegli 编码)" : $"失败 (cjpegli 退出码 {cjexit})";
+                                                    }
+                                                    else
+                                                    {
+                                                        captured.ExitCode = exit;
+                                                        captured.Status = $"失败 (djxl 解码退出码 {exit})";
+                                                    }
+                                                }
+                                            }
+                                            else
+                                            {
+                                                // 未安装 cjpegli：退回到临时文件 + ffmpeg 的组合
+                                                captured.Log += "[djxl] 将原生 JXL 解码为高质量中间 PNG\n";
+                                                var exit = await DjxlService.RunAsync(captured.InputPath, tmp, captured.Options.Threads, s =>
+                                                {
+                                                    captured.Log += s;
+                                                    _onItemUpdated?.Invoke(captured);
+                                                }, ct);
+
+                                                if (exit == 0 && File.Exists(tmp))
+                                                {
+                                                    tmpCreated = true;
+                                                    captured.Log += "[cjpegli] 未检测到 cjpegli，回退到 ffmpeg 对中间文件编码\n";
+                                                    var args = FfmpegCommandBuilder.BuildArguments(captured.Options, tmp, finalOutputPath);
+                                                    var exit2 = await FfmpegRunner.RunAsync(args, s =>
+                                                    {
+                                                        captured.Log += s;
+                                                        _onItemUpdated?.Invoke(captured);
+                                                    }, AppSettingsService.Current.FfmpegPath);
+                                                    captured.ExitCode = exit2;
+                                                    captured.Status = exit2 == 0 ? "已完成 (ffmpeg 编码)" : $"失败 (ffmpeg 退出码 {exit2})";
+                                                }
+                                                else
+                                                {
+                                                    captured.ExitCode = exit;
+                                                    captured.Status = $"失败 (djxl 解码退出码 {exit})";
+                                                }
+                                            }
+                                        }
+                                        else
+                                        {
+                                            // 未安装 djxl，直接用 ffmpeg 处理（兼容但可能会解码再编码）
+                                            captured.Log += "[djxl] 未检测到 djxl，使用 ffmpeg 直接处理 JXL（回退）\n";
+                                            var args = FfmpegCommandBuilder.BuildArguments(captured.Options, captured.InputPath, finalOutputPath);
+                                            var exit = await FfmpegRunner.RunAsync(args, s =>
+                                            {
+                                                captured.Log += s;
+                                                _onItemUpdated?.Invoke(captured);
+                                            }, AppSettingsService.Current.FfmpegPath);
+                                            captured.ExitCode = exit;
+                                            captured.Status = exit == 0 ? "已完成 (ffmpeg)" : $"失败 (退出码 {exit})";
+                                        }
+                                    }
+                                    finally
+                                    {
+                                        try { if (tmpCreated && File.Exists(tmp)) File.Delete(tmp); } catch { }
+                                    }
+                                }
+                                else
+                                {
+                                    // 未知类型：保守回退到 ffmpeg
+                                    var args = FfmpegCommandBuilder.BuildArguments(captured.Options, captured.InputPath, finalOutputPath);
+                                    var exit = await FfmpegRunner.RunAsync(args, s =>
+                                    {
+                                        captured.Log += s;
+                                        _onItemUpdated?.Invoke(captured);
+                                    }, AppSettingsService.Current.FfmpegPath);
+                                    captured.ExitCode = exit;
+                                    captured.Status = exit == 0 ? "已完成 (ffmpeg)" : $"失败 (退出码 {exit})";
+                                }
+                            }
+                            // 原有 cjxl 快速路径（JPEG -> JXL 无损重封装）
+                            else if (captured.Options.JxlLosslessJpeg && CjxlService.IsAvailable)
                             {
                                 captured.Log += "[cjxl] JPEG → JXL 无损重封装（不解码，速度 5-10×）\n";
                                 var threads = captured.Options.Threads;
@@ -170,43 +320,65 @@ namespace FfmpegGui.Services
                             }
                             else
                             {
-                                var args = FfmpegCommandBuilder.BuildArguments(captured.Options, captured.InputPath, finalOutputPath);
-                                var exitCode = await FfmpegRunner.RunAsync(args, s =>
+                                // 如果目标为 jpegli 并检测到 cjpegli，可直接使用 cjpegli（优先于 ffmpeg）
+                                if (preferCjpegli && CjpegliService.IsAvailable)
                                 {
-                                    captured.Log += s;
-                                    _onItemUpdated?.Invoke(captured);
-                                }, AppSettingsService.Current.FfmpegPath);
+                                    captured.Log += "[cjpegli] 目标为 jpegli，使用 cjpegli 进行编码\n";
+                                    var cjexit = await CjpegliService.RunAsync(captured.InputPath, finalOutputPath, captured.Options.Quality, captured.Options.Threads, s =>
+                                    {
+                                        captured.Log += s;
+                                        _onItemUpdated?.Invoke(captured);
+                                    }, ct);
+                                    captured.ExitCode = cjexit;
+                                    captured.Status = cjexit == 0 ? "已完成 (cjpegli)" : $"失败 (cjpegli 退出码 {cjexit})";
+                                }
+                                else
+                                {
+                                    var args = FfmpegCommandBuilder.BuildArguments(captured.Options, captured.InputPath, finalOutputPath);
+                                    var exitCode = await FfmpegRunner.RunAsync(args, s =>
+                                    {
+                                        captured.Log += s;
+                                        _onItemUpdated?.Invoke(captured);
+                                    }, AppSettingsService.Current.FfmpegPath);
 
-                                captured.ExitCode = exitCode;
-                                captured.Status = exitCode == 0 ? "已完成" : $"失败 (退出码 {exitCode})";
+                                    captured.ExitCode = exitCode;
+                                    captured.Status = exitCode == 0 ? "已完成" : $"失败 (退出码 {exitCode})";
+                                }
                             }
 
                             // ── ExifTool 后处理：编码完成后选择性剥离元数据 ──
                             if (captured.ExitCode == 0
                                 && captured.Options.MetadataMode == Models.MetadataMode.PreserveAll
-                                && ExifToolService.NeedsProcessing(captured.Options)
-                                && ExifToolService.IsAvailable)
+                                && ExifToolService.NeedsProcessing(captured.Options))
                             {
-                                try
+                                if (ExifToolService.IsAvailable)
                                 {
-                                    captured.Log += "[exiftool] 开始隐私清理...\n";
-                                    _onItemUpdated?.Invoke(captured);
-                                    var exifExit = await ExifToolService.RunAsync(
-                                        finalOutputPath,
-                                        captured.Options,
-                                        s =>
-                                        {
-                                            captured.Log += s;
-                                            _onItemUpdated?.Invoke(captured);
-                                        });
-                                    if (exifExit == 0)
-                                        captured.Log += "[exiftool] 隐私清理完成\n";
-                                    else
-                                        captured.Log += $"[exiftool] 警告: 退出码 {exifExit}\n";
+                                    try
+                                    {
+                                        captured.Log += "[exiftool] 开始隐私清理...\n";
+                                        _onItemUpdated?.Invoke(captured);
+                                        var exifExit = await ExifToolService.RunAsync(
+                                            finalOutputPath,
+                                            captured.Options,
+                                            s =>
+                                            {
+                                                captured.Log += s;
+                                                _onItemUpdated?.Invoke(captured);
+                                            });
+                                        if (exifExit == 0)
+                                            captured.Log += "[exiftool] 隐私清理完成\n";
+                                        else
+                                            captured.Log += $"[exiftool] 警告: 退出码 {exifExit}\n";
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        captured.Log += $"[exiftool] 错误: {ex.Message}\n";
+                                    }
                                 }
-                                catch (Exception ex)
+                                else
                                 {
-                                    captured.Log += $"[exiftool] 错误: {ex.Message}\n";
+                                    captured.Log += "[exiftool] 未检测到 exiftool，已跳过元数据隐私清理。请安装 exiftool 并在设置中配置路径以启用该功能。\n";
+                                    _onItemUpdated?.Invoke(captured);
                                 }
                             }
                         }
