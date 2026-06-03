@@ -259,5 +259,90 @@ namespace FfmpegGui.Services
                 return -1;
             }
         }
+
+        /// <summary>
+        /// 使用 cjxl 将指定输入文件编码为 JXL（支持完整选项）。
+        /// </summary>
+        public static async Task<int> RunWithOptionsAsync(
+            string inputPath, string outputPath,
+            Models.FfmpegOptions opts,
+            Action<string>? logCallback = null)
+        {
+            if (_detectedPath == null)
+                throw new InvalidOperationException("cjxl.exe 未找到");
+
+            var args = BuildCjxlArguments(inputPath, outputPath, opts);
+            logCallback?.Invoke($"[cjxl] {Path.GetFileName(_detectedPath)} {args}\n");
+
+            var psi = new ProcessStartInfo
+            {
+                FileName = _detectedPath,
+                Arguments = args,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                StandardOutputEncoding = Encoding.UTF8,
+                StandardErrorEncoding = Encoding.UTF8
+            };
+
+            using var process = new Process { StartInfo = psi, EnableRaisingEvents = true };
+            process.OutputDataReceived += (_, e) =>
+            { if (e.Data != null) logCallback?.Invoke(e.Data + Environment.NewLine); };
+            process.ErrorDataReceived += (_, e) =>
+            { if (e.Data != null) logCallback?.Invoke(e.Data + Environment.NewLine); };
+
+            try
+            {
+                process.Start();
+                process.BeginOutputReadLine();
+                process.BeginErrorReadLine();
+                await process.WaitForExitAsync();
+                return process.ExitCode;
+            }
+            catch (Exception ex)
+            {
+                logCallback?.Invoke($"[cjxl] 启动失败: {ex.Message}{Environment.NewLine}");
+                return -1;
+            }
+        }
+
+        /// <summary>
+        /// 构建 cjxl 命令行参数字符串（不含 exe 路径）。
+        /// 用于 UI 预览和实际执行。
+        /// </summary>
+        public static string BuildCjxlArguments(string input, string output, Models.FfmpegOptions opts)
+        {
+            var sb = new System.Text.StringBuilder();
+            sb.Append($"\"{input}\" \"{output}\"");
+
+            var isJpegInput = Path.GetExtension(input).ToLowerInvariant() is ".jpg" or ".jpeg";
+            var effort = opts.JxlEffort ?? 7;
+
+            sb.Append($" -e {effort}");
+
+            if (opts.Threads > 0)
+                sb.Append($" --num_threads={opts.Threads}");
+
+            if (isJpegInput)
+            {
+                // JPEG→JXL 无损重封装
+                sb.Append(" -d 0 --lossless_jpeg=1");
+            }
+            else
+            {
+                // 普通图片：质量→distance 映射
+                var distance = (100 - opts.Quality) * 15.0 / 100.0;
+                sb.Append($" -d {distance:F1}");
+            }
+
+            if (opts.CjxlProgressive)
+                sb.Append(" --progressive");
+
+            if (opts.CjxlPhotonNoiseIso > 0)
+                sb.Append($" --photon_noise_iso={opts.CjxlPhotonNoiseIso}");
+
+            return sb.ToString();
+        }
     }
 }

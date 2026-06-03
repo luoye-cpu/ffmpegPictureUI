@@ -142,14 +142,23 @@ namespace FfmpegGui.Services
         /// </summary>
         public static async Task<int> RunAsync(string inputPath, string outputPath, int quality = 90, int threads = 0, Action<string>? logCallback = null, System.Threading.CancellationToken ct = default)
         {
+            return await RunWithOptionsAsync(inputPath, outputPath, new Models.FfmpegOptions
+            {
+                Quality = quality,
+                Threads = threads,
+                Format = "jpegli"
+            }, logCallback, ct);
+        }
+
+        /// <summary>
+        /// 使用 cjpegli 将指定输入文件编码为 JPEG（支持完整 cjpegli 选项）。
+        /// </summary>
+        public static async Task<int> RunWithOptionsAsync(string inputPath, string outputPath, Models.FfmpegOptions opts, Action<string>? logCallback = null, System.Threading.CancellationToken ct = default)
+        {
             if (_detectedPath == null)
                 throw new InvalidOperationException("cjpegli.exe 未找到");
 
-            // 尝试尽量通用的参数：使用 --quality 或 -quality, 具体取决于本地二进制支持。
-            var args = $"\"{inputPath}\" \"{outputPath}\" --quality {quality}";
-            if (threads > 0)
-                args += $" --num_threads={threads}";
-
+            var args = BuildCjpegliArguments(inputPath, outputPath, opts);
             logCallback?.Invoke($"[cjpegli] {Path.GetFileName(_detectedPath)} {args}\n");
 
             var psi = new ProcessStartInfo
@@ -195,6 +204,51 @@ namespace FfmpegGui.Services
                 try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { }
                 return -1;
             }
+        }
+
+        /// <summary>
+        /// 构建 cjpegli 命令行参数字符串（不含 exe 路径）。
+        /// 用于 UI 预览和实际执行。
+        /// </summary>
+        public static string BuildCjpegliArguments(string input, string output, Models.FfmpegOptions opts)
+        {
+            var sb = new StringBuilder();
+            sb.Append($"\"{input}\" \"{output}\"");
+
+            // 质量
+            sb.Append($" --quality {opts.Quality}");
+
+            // 色度子采样（auto 时不指定，由编码器自行判断）
+            if (!string.IsNullOrWhiteSpace(opts.CjpegliChromaSubsampling)
+                && !opts.CjpegliChromaSubsampling.Equals("auto", StringComparison.OrdinalIgnoreCase))
+                sb.Append($" --chroma_subsampling {opts.CjpegliChromaSubsampling}");
+
+            // 渐进模式
+            if (opts.CjpegliProgressiveId >= 0)
+                sb.Append($" --progressive {opts.CjpegliProgressiveId}");
+
+            // Huffman 优化
+            if (!opts.CjpegliOptimize)
+                sb.Append(" --optimize OFF");
+
+            // 自适应量化
+            if (!opts.CjpegliAdaptiveQuant)
+                sb.Append(" --adaptive_q OFF");
+
+            // 编码器后端
+            if (!string.IsNullOrWhiteSpace(opts.CjpegliEncoderBackend) &&
+                !opts.CjpegliEncoderBackend.Equals("libjpeg", StringComparison.OrdinalIgnoreCase))
+                sb.Append($" --jpeg_encoder {opts.CjpegliEncoderBackend}");
+
+            // PSNR 目标（仅 sjpeg 后端有效）
+            if (opts.CjpegliPsnrTarget > 0)
+                sb.Append($" --psnr {opts.CjpegliPsnrTarget:F2}");
+
+            // 线程（仅当多线程可用时）
+            if (opts.CjpegliMultiThreadAvailable && opts.Threads > 0)
+                sb.Append($" --num_threads={opts.Threads}");
+
+            return sb.ToString();
         }
 
         // TODO: 添加 Stream/pipe API：RunStreamAsync(Stream input, Stream output, ...)

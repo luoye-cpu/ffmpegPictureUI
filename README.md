@@ -10,11 +10,13 @@ An Avalonia UI-based cross-platform batch image conversion tool that wraps `ffmp
 
 | Feature 功能 | Description 说明 |
 |---|---|
-| **Multi-format / 多格式** | JPG, JPEG-LI, PNG, WebP, AVIF, JXL, TIFF |
-| **Quality control / 质量控制** | Quality slider, chroma subsampling (4:4:4/4:2:2/4:2:0), bit depth |
+| **Multi-format / 多格式** | JPEG, JPEG LI, PNG, WebP, AVIF, JPEG XL, TIFF |
+| **Encoder backend / 编码器后端** | Selectable ffmpeg / cjxl / cjpegli per format; cjxl for JXL lossless JPEG repack — 每种格式可选不同编码器后端 |
+| **Quality control / 质量控制** | Quality slider, chroma subsampling (auto/4:4:4/4:2:2/4:2:0/4:4:0), bit depth |
+| **Advanced codec options / 高级编码选项** | Per-format advanced panels: DCT algo, progressive mode, Huffman optimize, adaptive quant, sjpeg backend, PSNR target, lossless compression level, row-mt, still-picture, modular mode — 按格式独立高级面板 |
 | **Color management / 色彩管理** | Color space, primaries, TRC (optional advanced mode) |
 | **JXL Intelligence / JXL 智能** | Auto-detects JPEG-reconstruction vs native codestream; byte-level inspection (`JxlInspector`); picks optimal pipeline |
-| **JPEG-LI / JPEG-LI** | `cjpegli` encoding with quality/threads; falls back to ffmpeg mjpeg |
+| **JPEG-LI / JPEG-LI** | `cjpegli` encoding with full options; falls back to ffmpeg mjpeg when unavailable |
 | **CPU SIMD / CPU 指令集** | Auto-detects AVX2/AVX/SSE4 capable binaries; runtime probe validates compatibility |
 | **Batch queue / 批量队列** | Drag & drop; configurable concurrency (1–128); stop-after-queue |
 | **Metadata editing / 元数据编辑** | 39-field panel via exiftool; 5 categories (read/modify/restore/clear) |
@@ -104,6 +106,22 @@ ffmpegPictureUI/
 ---
 
 ## 📝 Changelog / 更新日志
+
+### v1.3.3 (2026-06-03)
+
+- 🧩 **Unified Encoder Backend / 编码器统一后端**: `cjpegli` and `cjxl` are now selectable encoder options in the encoder dropdown — cjpegli 和 cjxl 作为编码器下拉框中的独立可选选项
+- 🎛️ **Advanced Codec Panels / 高级编码面板**: Full advanced options per format — 每个格式的完整高级编码选项:
+  - **JPEG**: DCT algorithm (`auto`/`int`/`fastint`/`float`)
+  - **JPEG LI**: chroma subsampling, progressive mode, Huffman optimize, adaptive quantization, sjpeg backend, PSNR target
+  - **WebP**: lossless compression level (0–6)
+  - **AVIF**: row-level multithreading (`row-mt`), still-picture mode default enabled
+  - **JPEG XL**: effort, modular mode (cjxl native), lossless-jpeg hint
+- 🔒 **Thread locking / 线程锁定**: Auto-locks single-thread for encoders that don't support multi-threading (cjpegli) — 对不支持多线程的编码器自动锁定单线程
+- 🔤 **Format display names / 格式大写名称**: All format names now capitalized (`JPEG`, `JPEG LI`, `JPEG XL`, `PNG`, `WebP`, `AVIF`, `TIFF`) — 全部格式名大写
+- 🔄 **JPEG LI independent / JPEG LI 独立**: `JPEG LI` is now a separate format entry from `JPEG`, each with its own encoder options — JPEG LI 从 JPEG 中独立为单独格式选项
+- 📐 **Visually-lossless defaults / 视觉无损默认**: AVIF quality default raised to 90, still-picture default checked — AVIF 默认质量提升到 90，静态图片模式默认勾选
+- 🛡️ **SkiaSharp vulnerability fix / 漏洞修复**: Upgraded SkiaSharp 2.88.3 → 2.88.6 (CVE-2023-4863 / GHSA-j7hp-h8jx-5ppr)
+- 🐛 **Fixes / 修复**: Auto-option fallback when advanced codec panel not checked; format normalization for all UI paths — 不勾选高级编码时选项自动回退；全面统一格式名映射
 
 ### v1.3.2 (2026-06-03)
 

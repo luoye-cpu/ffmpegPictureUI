@@ -55,13 +55,13 @@
           <TextBlock Text="参数控制面板" FontSize="20" FontWeight="Bold" Margin="0,0,0,6"/>
           <TextBlock Text="输出格式"/>
           <ComboBox x:Name="FormatCombo" SelectionChanged="FormatCombo_SelectionChanged">
-            <sys:String>jpg</sys:String>
-            <sys:String>jpegli</sys:String>
-            <sys:String>png</sys:String>
-            <sys:String>webp</sys:String>
-            <sys:String>avif</sys:String>
-            <sys:String>jxl</sys:String>
-            <sys:String>tiff</sys:String>
+            <sys:String>JPEG</sys:String>
+            <sys:String>JPEG LI</sys:String>
+            <sys:String>PNG</sys:String>
+            <sys:String>WebP</sys:String>
+            <sys:String>AVIF</sys:String>
+            <sys:String>JPEG XL</sys:String>
+            <sys:String>TIFF</sys:String>
           </ComboBox>
           <TextBlock Text="编码器" Margin="0,4,0,0"/>
           <ComboBox x:Name="EncoderCombo"/>
@@ -127,6 +127,9 @@
                 <sys:String>photo</sys:String><sys:String>drawing</sys:String><sys:String>icon</sys:String>
                 <sys:String>text</sys:String>
               </ComboBox>
+              <TextBlock Text="无损压缩级别 (0-6)" Margin="0,4,0,0"/>
+              <NumericUpDown x:Name="WebpCompressionBox" Value="4" Minimum="0" Maximum="6"/>
+              <TextBlock Text="0=最快/最大, 6=最慢/最小" FontSize="10" Foreground="Gray"/>
             </StackPanel>
             <!-- AVIF -->
             <StackPanel x:Name="AvifCodecPanel" IsVisible="False" Spacing="4">
@@ -143,23 +146,69 @@
                 <sys:String>auto</sys:String><sys:String>good</sys:String>
                 <sys:String>realtime</sys:String>
               </ComboBox>
-              <CheckBox x:Name="AvifStillPictureCheck" Content="静态图片模式 (still-picture)"/>
+              <CheckBox x:Name="AvifStillPictureCheck" Content="静态图片模式 (still-picture)" IsChecked="True"/>
+              <CheckBox x:Name="AvifRowMtCheck" Content="行级多线程 (row-mt, 仅 libaom)" IsChecked="True" Margin="0,4,0,0"/>
             </StackPanel>
             <!-- JPEG XL -->
             <StackPanel x:Name="JxlCodecPanel" IsVisible="False" Spacing="4">
-              <TextBlock Text="编码努力 (effort)"/>
-              <NumericUpDown x:Name="JxlEffortBox" Value="7" Minimum="1" Maximum="9"/>
-              <CheckBox x:Name="JxlModularCheck" Content="强制 Modular 模式"/>
+              <!-- FFmpeg libjxl -->
+              <StackPanel x:Name="JxlFfmpegPanel" IsVisible="True" Spacing="4">
+                <TextBlock Text="编码努力 (effort)"/>
+                <NumericUpDown x:Name="JxlEffortBox" Value="7" Minimum="1" Maximum="9"/>
+                <CheckBox x:Name="JxlModularCheck" Content="强制 Modular 模式"/>
+              </StackPanel>
+              <!-- cjxl 外部工具 -->
+              <StackPanel x:Name="JxlCjxlPanel" IsVisible="False" Spacing="4">
+                <TextBlock Text="编码努力 (effort)"/>
+                <NumericUpDown x:Name="CjxlEffortBox" Value="7" Minimum="1" Maximum="9"/>
+                <CheckBox x:Name="CjxlProgressiveCheck" Content="渐进式解码 (--progressive)" Margin="0,4,0,0"/>
+                <TextBlock Text="光子噪声 ISO (0=禁用)" Margin="0,4,0,0"/>
+                <NumericUpDown x:Name="CjxlPhotonNoiseBox" Value="0" Minimum="0" Maximum="3200" Increment="100"/>
+                <TextBlock Text="0=禁用, 100=低噪, 3200=高噪" FontSize="10" Foreground="Gray"/>
+              </StackPanel>
               <Border x:Name="JxlLosslessJpegHint" IsVisible="False" CornerRadius="4" Padding="6,3" Margin="0,4,0,0">
                 <TextBlock x:Name="JxlLosslessJpegHintText" TextWrapping="Wrap" FontSize="11"/>
               </Border>
             </StackPanel>
-            <!-- JPEG -->
+            <!-- JPEG (FFmpeg mjpeg) -->
             <StackPanel x:Name="JpegCodecPanel" IsVisible="False" Spacing="4">
               <TextBlock Text="Huffman 策略"/>
               <ComboBox x:Name="JpegHuffmanCombo">
                 <sys:String>default</sys:String><sys:String>optimal</sys:String>
               </ComboBox>
+              <TextBlock Text="DCT 算法 (dct)" Margin="0,4,0,0"/>
+              <ComboBox x:Name="JpegDctCombo" SelectedIndex="0">
+                <sys:String>auto</sys:String><sys:String>int</sys:String>
+                <sys:String>fastint</sys:String><sys:String>float</sys:String>
+              </ComboBox>
+            </StackPanel>
+            <!-- JPEG-LI (cjpegli) -->
+            <StackPanel x:Name="JpegliCodecPanel" IsVisible="False" Spacing="4">
+              <TextBlock Text="色度子采样 (chroma_subsampling)"/>
+              <ComboBox x:Name="JpegliChromaCombo" SelectedIndex="0">
+                <sys:String>auto</sys:String><sys:String>444</sys:String>
+                <sys:String>422</sys:String><sys:String>420</sys:String><sys:String>440</sys:String>
+              </ComboBox>
+              <TextBlock Text="渐进模式 (progressive)" Margin="0,4,0,0"/>
+              <ComboBox x:Name="JpegliProgressiveCombo" SelectedIndex="0">
+                <sys:String>自动</sys:String><sys:String>基线/标准</sys:String>
+                <sys:String>渐进式</sys:String>
+              </ComboBox>
+              <CheckBox x:Name="JpegliOptimizeCheck" Content="优化 Huffman 编码 (--optimize)" IsChecked="True" Margin="0,4,0,0"/>
+              <CheckBox x:Name="JpegliAdaptiveQuantCheck" Content="自适应量化 (--adaptive_q)" IsChecked="True"/>
+              <TextBlock Text="编码器后端 (--jpeg_encoder)" Margin="0,4,0,0"/>
+              <ComboBox x:Name="JpegliEncoderBackendCombo" SelectedIndex="0">
+                <sys:String>libjpeg (标准)</sys:String>
+                <sys:String>sjpeg (高级)</sys:String>
+              </ComboBox>
+              <Border x:Name="JpegliPsnrPanel" IsVisible="False" CornerRadius="4" Padding="6,3" Margin="0,4,0,0"
+                      BorderBrush="{DynamicResource SystemControlBackgroundBaseLowBrush}" BorderThickness="1">
+                <StackPanel Spacing="3">
+                  <TextBlock Text="PSNR 目标 (dB)" FontSize="11"/>
+                  <NumericUpDown x:Name="JpegliPsnrBox" Value="0" Minimum="0" Maximum="60" Increment="0.5" FontSize="11"/>
+                  <TextBlock Text="0=禁用, 推荐 40-50" FontSize="10" Foreground="Gray"/>
+                </StackPanel>
+              </Border>
             </StackPanel>
             <!-- TIFF -->
             <StackPanel x:Name="TiffCodecPanel" IsVisible="False" Spacing="4">

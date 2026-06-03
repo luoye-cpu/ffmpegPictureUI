@@ -34,6 +34,8 @@ namespace FfmpegGui.Services
                     args.Add(MapJpegQuality(options.Quality).ToString());
                     if (!string.IsNullOrWhiteSpace(options.JpegHuffman))
                     { args.Add("-huffman"); args.Add(options.JpegHuffman); }
+                    if (!string.IsNullOrWhiteSpace(options.JpegDct) && options.JpegDct != "auto")
+                    { args.Add("-dct"); args.Add(options.JpegDct); }
                     break;
                 case "png":
                     if (options.Lossless)
@@ -56,6 +58,8 @@ namespace FfmpegGui.Services
                     {
                         args.Add("-lossless");
                         args.Add("1");
+                        if (options.WebpCompressionLevel.HasValue)
+                        { args.Add("-compression_level"); args.Add(options.WebpCompressionLevel.Value.ToString()); }
                     }
                     else
                     {
@@ -88,6 +92,8 @@ namespace FfmpegGui.Services
                     }
                     if (options.AvifStillPicture == true)
                     { args.Add("-still-picture"); args.Add("1"); }
+                    if (options.AvifRowMt == true)
+                    { args.Add("-row-mt"); args.Add("1"); }
                     if (!string.IsNullOrWhiteSpace(options.AvifPreset) && options.AvifPreset != "auto")
                     {
                         // libaom → -usage; SVT → -preset

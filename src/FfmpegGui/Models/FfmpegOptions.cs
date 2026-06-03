@@ -26,24 +26,51 @@ namespace FfmpegGui.Models
         public int Threads { get; set; } = ComputeAutoThreads();
         public MetadataMode MetadataMode { get; set; } = MetadataMode.PreserveAll;
         public string? Encoder { get; set; }
+        /// <summary>编码器后端类型（由 UI 设置，供 QueueProcessor 调度）</summary>
+        public Services.EncoderBackend EncoderBackend { get; set; } = Services.EncoderBackend.Ffmpeg;
         public bool Lossless { get; set; } = false;
         // 高级编码器私有选项
         public string? PngPred { get; set; }
         public int? PngDpi { get; set; }
         public string? WebpPreset { get; set; }
+        /// <summary>WebP 无损模式压缩级别 (0-6, 0=最快)</summary>
+        public int? WebpCompressionLevel { get; set; }
         public int? AvifCpuUsed { get; set; }
         public bool? AvifStillPicture { get; set; }
+        public bool? AvifRowMt { get; set; }
         public int? JxlEffort { get; set; }
         public bool? JxlModular { get; set; }
         /// <summary>
         /// JPEG→JXL 无损重封装模式：不解码像素，直接复制 DCT 系数，速度极快且完全保留原图质量
         /// </summary>
         public bool JxlLosslessJpeg { get; set; } = false;
+        /// <summary>cjxl 渐进式解码 (--progressive)</summary>
+        public bool CjxlProgressive { get; set; } = false;
+        /// <summary>cjxl 光子噪声 ISO (0=禁用, 100-3200)</summary>
+        public int CjxlPhotonNoiseIso { get; set; } = 0;
         public string? JpegHuffman { get; set; }
+        /// <summary>JPEG DCT 算法: "int" / "fastint" / "float"</summary>
+        public string? JpegDct { get; set; }
         public string? TiffCompressionAlgo { get; set; }
         public int? TiffDpi { get; set; }
         public string? AvifTune { get; set; }
         public string? AvifPreset { get; set; }
+
+        // ── cjpegli / jpegli 专属高级选项 ──
+        /// <summary>色度子采样: "444", "422", "420", "440"</summary>
+        public string CjpegliChromaSubsampling { get; set; } = "444";
+        /// <summary>渐进模式: -1=自动, 0=基线, 1=渐进 (使用 jpegli 默认扫描脚本6)</summary>
+        public int CjpegliProgressiveId { get; set; } = -1;
+        /// <summary>Huffman 表优化</summary>
+        public bool CjpegliOptimize { get; set; } = true;
+        /// <summary>自适应量化</summary>
+        public bool CjpegliAdaptiveQuant { get; set; } = true;
+        /// <summary>编码器后端: "libjpeg" / "sjpeg"</summary>
+        public string CjpegliEncoderBackend { get; set; } = "libjpeg";
+        /// <summary>PSNR 目标 (sjpeg, 0=禁用)</summary>
+        public float CjpegliPsnrTarget { get; set; } = 0;
+        /// <summary>多线程是否可用（运行时检测，默认 false）</summary>
+        public bool CjpegliMultiThreadAvailable { get; set; } = false;
 
         // ── ExifTool 隐私清理选项（仅在 exiftool 可用时生效）──
         /// <summary>删除 GPS 位置信息（默认勾选）</summary>
@@ -72,9 +99,10 @@ namespace FfmpegGui.Models
         {
             "png" => 100,
             "webp" => 95,
-            "avif" => 85,
+            "avif" => 90,
             "jxl" => 90,
             "tiff" => 0,
+            "jpegli" => 92,
             _ => 92 // jpg 默认
         };
 
@@ -84,6 +112,7 @@ namespace FfmpegGui.Models
         public static string GetQualityLabel(string format, int quality) => format.ToLower() switch
         {
             "jpg" or "jpeg" => $"质量: {quality}% → q:v {2 + (int)Math.Round((100 - quality) * 29.0 / 100.0)}",
+            "jpegli" => $"质量: {quality}% (jpegli)",
             "png" => $"压缩: {quality}% → level {(int)Math.Round((100 - quality) * 9.0 / 100.0)}",
             "webp" => $"质量: {quality}% → q:v {quality}",
             "avif" => $"质量: {quality}% → CRF {(int)Math.Round((100 - quality) * 63.0 / 100.0)}",
