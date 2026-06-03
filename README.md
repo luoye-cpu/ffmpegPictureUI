@@ -107,21 +107,26 @@ ffmpegPictureUI/
 
 ## 📝 Changelog / 更新日志
 
-### v1.3.3 (2026-06-03)
+### v1.3.3 (2026-06-04)
 
-- 🧩 **Unified Encoder Backend / 编码器统一后端**: `cjpegli` and `cjxl` are now selectable encoder options in the encoder dropdown — cjpegli 和 cjxl 作为编码器下拉框中的独立可选选项
-- 🎛️ **Advanced Codec Panels / 高级编码面板**: Full advanced options per format — 每个格式的完整高级编码选项:
-  - **JPEG**: DCT algorithm (`auto`/`int`/`fastint`/`float`)
-  - **JPEG LI**: chroma subsampling, progressive mode, Huffman optimize, adaptive quantization, sjpeg backend, PSNR target
-  - **WebP**: lossless compression level (0–6)
-  - **AVIF**: row-level multithreading (`row-mt`), still-picture mode default enabled
-  - **JPEG XL**: effort, modular mode (cjxl native), lossless-jpeg hint
+- 🧩 **Unified Encoder Backend / 编码器统一后端**: `cjpegli` and `cjxl` are now selectable encoder options in the encoder dropdown; auto-fallback to ffmpeg when external tool unavailable — cjpegli 和 cjxl 作为编码器下拉框中的独立可选选项，不可用时自动回退到 ffmpeg
+- 🎛️ **Advanced Codec Panels / 高级编码面板**: Full advanced options per format, auto-switches by backend — 每个格式的完整高级编码选项，按编码器后端自动切换:
+  - **JPEG LI (cjpegli)**: chroma subsampling (auto/444/422/420/440), progressive mode, Huffman optimize, adaptive quantization, sjpeg backend + PSNR target
+  - **JPEG XL (cjxl)**: effort 1–9, progressive decode, photon noise ISO 0–3200; lossless JPEG repack auto-detect
+  - **JPEG XL (ffmpeg libjxl)**: effort 1–9, modular mode, lossless_jpeg hint
+  - **JPEG (ffmpeg mjpeg)**: Huffman strategy, DCT algorithm (auto/int/fastint/float)
+  - **WebP**: preset + lossless compression level (0–6)
+  - **AVIF**: cpu-used, tune, usage/preset, still-picture (default ON), row-mt
+  - **TIFF**: compression algo (raw/lzw/deflate/packbits)
 - 🔒 **Thread locking / 线程锁定**: Auto-locks single-thread for encoders that don't support multi-threading (cjpegli) — 对不支持多线程的编码器自动锁定单线程
-- 🔤 **Format display names / 格式大写名称**: All format names now capitalized (`JPEG`, `JPEG LI`, `JPEG XL`, `PNG`, `WebP`, `AVIF`, `TIFF`) — 全部格式名大写
-- 🔄 **JPEG LI independent / JPEG LI 独立**: `JPEG LI` is now a separate format entry from `JPEG`, each with its own encoder options — JPEG LI 从 JPEG 中独立为单独格式选项
-- 📐 **Visually-lossless defaults / 视觉无损默认**: AVIF quality default raised to 90, still-picture default checked — AVIF 默认质量提升到 90，静态图片模式默认勾选
-- 🛡️ **SkiaSharp vulnerability fix / 漏洞修复**: Upgraded SkiaSharp 2.88.3 → 2.88.6 (CVE-2023-4863 / GHSA-j7hp-h8jx-5ppr)
-- 🐛 **Fixes / 修复**: Auto-option fallback when advanced codec panel not checked; format normalization for all UI paths — 不勾选高级编码时选项自动回退；全面统一格式名映射
+- 🔤 **Format display names / 格式大写名称**: All format names capitalized (`JPEG`, `JPEG LI`, `JPEG XL`, `PNG`, `WebP`, `AVIF`, `TIFF`) — 格式名统一大写
+- 🔄 **JPEG LI independent / JPEG LI 独立**: `JPEG LI` is a separate format from `JPEG`; outputs standard `.jpg` files — JPEG LI 独立为单独格式，输出标准 .jpg 后缀
+- 📐 **Visually-lossless defaults / 视觉无损默认**: AVIF quality default 90, still-picture default checked — AVIF 默认质量 90 并开启静态图片模式
+- 🛡️ **SkiaSharp vulnerability fix / 漏洞修复**: SkiaSharp 2.88.3 → 2.88.6 (CVE-2023-4863 / GHSA-j7hp-h8jx-5ppr); no .pdb in release
+- ⏱️ **Queue progress display / 队列进度显示**: Real-time elapsed time + N/M completed + ETA based on average task duration — 实时已用时间 + N/M 完成数 + 基于平均耗时的剩余预估
+- 🔁 **Smart fallback / 智能回退**: cjxl/cjpegli auto-retry via ffmpeg→PNG intermediate when direct encoding fails (e.g. AVIF/WebP input) — cjxl/cjpegli 直接编码失败自动通过 ffmpeg 转 PNG 重试
+- 🎨 **Theme-aware labels / 主题感知标签**: All `Gray` foreground labels replaced with `DynamicResource` for readability in dark mode — 全部灰色标签改为动态资源，深色模式下清晰可读
+- 🐛 **Fixes / 修复**: Auto-option fallback when advanced codec panel unchecked; all format lookups via `NormalizeFormat()`; jpegli output extension corrected to `.jpg` — 高级面板不勾选时正确回退；格式名统一映射；jpegli 输出后缀修正
 
 ### v1.3.2 (2026-06-03)
 

@@ -131,6 +131,7 @@ namespace FfmpegGui.Services
                         try
                         {
                             captured.Status = "处理中";
+                            captured.StartedAt = DateTimeOffset.UtcNow;
                             _onItemUpdated?.Invoke(captured);
 
                             // 确保输出目录存在 —— 先将输出路径标准化为绝对路径，避免相对路径在不同进程中导致位置不一致
@@ -212,14 +213,17 @@ namespace FfmpegGui.Services
                                     _onItemUpdated?.Invoke(captured);
                                 }
                             }
+                            captured.CompletedAt = DateTimeOffset.UtcNow;
                         }
                         catch (OperationCanceledException)
                         {
                             captured.Status = "已取消";
+                            captured.CompletedAt = DateTimeOffset.UtcNow;
                         }
                         catch (Exception ex)
                         {
                             captured.Status = "失败: " + ex.Message;
+                            captured.CompletedAt = DateTimeOffset.UtcNow;
                         }
                         finally
                         {
@@ -248,42 +252,124 @@ namespace FfmpegGui.Services
 
         // ── 编码器后端专用处理方法 ──
 
-        /// <summary>cjxl 编码（普通图片→JXL 或 JPEG→JXL 无损重封装）</summary>
+        /// <summary>cjxl 编码（优先直接编码，失败自动转 PNG 再试）</summary>
         private async Task ProcessCjxlAsync(QueueItem item, string outputPath, CancellationToken ct)
         {
             var isJpegInput = Path.GetExtension(item.InputPath).ToLowerInvariant() is ".jpg" or ".jpeg";
-            var effort = item.Options.JxlEffort ?? 7;
 
+            // 第一步：直接尝试 cjxl
+            item.Log += "[cjxl] 直接编码...\n";
+            _onItemUpdated?.Invoke(item);
+            int exitCode;
             if (isJpegInput)
             {
                 item.Log += "[cjxl] JPEG → JXL 无损重封装（不解码，速度 5-10×）\n";
-                var exitCode = await CjxlService.RunWithOptionsAsync(
-                    item.InputPath, outputPath, item.Options,
+                var jpegOpts = new Models.FfmpegOptions
+                {
+                    Quality = item.Options.Quality,
+                    JxlEffort = item.Options.JxlEffort ?? 7,
+                    CjxlProgressive = item.Options.CjxlProgressive,
+                    CjxlPhotonNoiseIso = item.Options.CjxlPhotonNoiseIso,
+                    Threads = item.Options.Threads
+                };
+                exitCode = await CjxlService.RunWithOptionsAsync(
+                    item.InputPath, outputPath, jpegOpts,
                     s => { item.Log += s; _onItemUpdated?.Invoke(item); });
-                item.ExitCode = exitCode;
-                item.Status = exitCode == 0 ? "已完成 (cjxl 无损重封装)" : $"失败 (cjxl 退出码 {exitCode})";
             }
             else
             {
-                item.Log += "[cjxl] 普通图片 → JXL 编码\n";
-                var exitCode = await CjxlService.RunWithOptionsAsync(
+                exitCode = await CjxlService.RunWithOptionsAsync(
                     item.InputPath, outputPath, item.Options,
                     s => { item.Log += s; _onItemUpdated?.Invoke(item); });
-                item.ExitCode = exitCode;
-                item.Status = exitCode == 0 ? "已完成 (cjxl)" : $"失败 (cjxl 退出码 {exitCode})";
             }
+
+            if (exitCode == 0)
+            {
+                item.ExitCode = 0;
+                item.Status = isJpegInput ? "已完成 (cjxl 无损重封装)" : "已完成 (cjxl)";
+                return;
+            }
+
+            // 第二步：直接编码失败，通过 ffmpeg 转 PNG 再试
+            var ext = Path.GetExtension(item.InputPath).ToLowerInvariant();
+            item.Log += $"[cjxl] 直接编码失败 (退出码 {exitCode})，{ext} 可能不被支持，转为 PNG 再试\n";
+            _onItemUpdated?.Invoke(item);
+
+            var tmp = await PreConvertToPngAsync(item, ct);
+            if (tmp == null) return; // 预转换已设置失败状态
+
+            // 用 PNG 重新编码
+            item.Log += "[cjxl] 用中间 PNG 重新编码...\n";
+            _onItemUpdated?.Invoke(item);
+            exitCode = await CjxlService.RunWithOptionsAsync(
+                tmp, outputPath, item.Options,
+                s => { item.Log += s; _onItemUpdated?.Invoke(item); });
+
+            item.ExitCode = exitCode;
+            item.Status = exitCode == 0 ? "已完成 (cjxl, PNG 中转)" : $"失败 (cjxl 退出码 {exitCode})";
+
+            try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
         }
 
-        /// <summary>cjpegli 编码</summary>
+        /// <summary>cjpegli 编码（优先直接编码，失败自动转 PNG 再试）</summary>
         private async Task ProcessCjpegliAsync(QueueItem item, string outputPath, CancellationToken ct)
         {
-            item.Log += "[cjpegli] 使用 cjpegli 进行编码\n";
+            // 第一步：直接尝试 cjpegli
+            item.Log += "[cjpegli] 直接编码...\n";
             _onItemUpdated?.Invoke(item);
             var exit = await CjpegliService.RunWithOptionsAsync(
                 item.InputPath, outputPath, item.Options,
                 s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ct);
+
+            if (exit == 0)
+            {
+                item.ExitCode = 0;
+                item.Status = "已完成 (cjpegli)";
+                return;
+            }
+
+            // 第二步：直接编码失败，通过 ffmpeg 转 PNG 再试
+            var ext = Path.GetExtension(item.InputPath).ToLowerInvariant();
+            item.Log += $"[cjpegli] 直接编码失败 (退出码 {exit})，{ext} 可能不被支持，转为 PNG 再试\n";
+            _onItemUpdated?.Invoke(item);
+
+            var tmp = await PreConvertToPngAsync(item, ct);
+            if (tmp == null) return;
+
+            item.Log += "[cjpegli] 用中间 PNG 重新编码...\n";
+            _onItemUpdated?.Invoke(item);
+            exit = await CjpegliService.RunWithOptionsAsync(
+                tmp, outputPath, item.Options,
+                s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ct);
+
             item.ExitCode = exit;
-            item.Status = exit == 0 ? "已完成 (cjpegli)" : $"失败 (cjpegli 退出码 {exit})";
+            item.Status = exit == 0 ? "已完成 (cjpegli, PNG 中转)" : $"失败 (cjpegli 退出码 {exit})";
+
+            try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
+        }
+
+        /// <summary>用 ffmpeg 将输入转为临时高质量 PNG，返回路径（失败返回 null 并设置状态）</summary>
+        private async Task<string?> PreConvertToPngAsync(QueueItem item, CancellationToken ct)
+        {
+            var tmp = Path.Combine(Path.GetTempPath(), $"ffmpeg_preconv_{Guid.NewGuid():N}.png");
+            item.Log += "[preconv] 使用 ffmpeg 转为高质量 PNG 中间格式\n";
+            _onItemUpdated?.Invoke(item);
+
+            var args = $"-y -i \"{item.InputPath}\" -compression_level 0 \"{tmp}\"";
+            var exit = await FfmpegRunner.RunAsync(args,
+                s => { item.Log += s; _onItemUpdated?.Invoke(item); },
+                AppSettingsService.Current.FfmpegPath);
+
+            if (exit != 0 || !File.Exists(tmp))
+            {
+                item.Log += $"[preconv] ffmpeg 转换失败 (退出码 {exit})\n";
+                item.ExitCode = exit;
+                item.Status = $"失败 (预转换退出码 {exit})";
+                return null;
+            }
+
+            item.Log += "[preconv] 转换完成\n";
+            return tmp;
         }
 
         /// <summary>JXL 输入智能处理（DJXL 重构 / djxl→cjpegli 管道 / ffmpeg 回退）</summary>

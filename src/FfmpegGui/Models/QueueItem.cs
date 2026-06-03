@@ -31,6 +31,10 @@ namespace FfmpegGui.Models
         public int? ExitCode { get; set; }
         public string Log { get; set; } = string.Empty;
         public DateTimeOffset AddedAt { get; set; } = DateTimeOffset.UtcNow;
+        /// <summary>任务开始处理的时间</summary>
+        public DateTimeOffset? StartedAt { get; set; }
+        /// <summary>任务完成的时间</summary>
+        public DateTimeOffset? CompletedAt { get; set; }
         public bool IsCancelled { get; set; } = false;
 
         /// <summary>队列列表显示文本</summary>
