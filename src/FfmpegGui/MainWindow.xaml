@@ -28,13 +28,13 @@
         </StackPanel>
         <!-- 外部工具路径（留空自动检测） -->
         <StackPanel Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2" Orientation="Horizontal" Spacing="10" Margin="0,3,0,0">
-          <TextBlock Text="JPEG XL 参考实现库" VerticalAlignment="Center" FontSize="11" Foreground="Gray" Width="140"/>
+          <TextBlock Text="JPEG XL 参考实现库" VerticalAlignment="Center" FontSize="11" Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" Width="140"/>
           <TextBox x:Name="CjxlPathBox" Width="180" VerticalAlignment="Center" FontSize="11"
                    Watermark="留空自动检测"/>
           <Button Content="浏览" Click="BrowseCjxl_Click" Padding="6,2" FontSize="11"/>
           <Button Content="✕" Click="ClearCjxlPath_Click" Padding="6,2" FontSize="11"
                   ToolTip.Tip="清除手动路径，改回自动检测"/>
-          <TextBlock Text="exiftool" VerticalAlignment="Center" FontSize="11" Foreground="Gray" Width="44"/>
+          <TextBlock Text="exiftool" VerticalAlignment="Center" FontSize="11" Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" Width="44"/>
           <TextBox x:Name="ExifToolPathBox" Width="180" VerticalAlignment="Center" FontSize="11"
                    Watermark="自动检测"/>
           <Button Content="浏览" Click="BrowseExifTool_Click" Padding="6,2" FontSize="11"/>
@@ -129,7 +129,7 @@
               </ComboBox>
               <TextBlock Text="无损压缩级别 (0-6)" Margin="0,4,0,0"/>
               <NumericUpDown x:Name="WebpCompressionBox" Value="4" Minimum="0" Maximum="6"/>
-              <TextBlock Text="0=最快/最大, 6=最慢/最小" FontSize="10" Foreground="Gray"/>
+              <TextBlock Text="0=最快/最大, 6=最慢/最小" FontSize="10" Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
             </StackPanel>
             <!-- AVIF -->
             <StackPanel x:Name="AvifCodecPanel" IsVisible="False" Spacing="4">
@@ -164,7 +164,7 @@
                 <CheckBox x:Name="CjxlProgressiveCheck" Content="渐进式解码 (--progressive)" Margin="0,4,0,0"/>
                 <TextBlock Text="光子噪声 ISO (0=禁用)" Margin="0,4,0,0"/>
                 <NumericUpDown x:Name="CjxlPhotonNoiseBox" Value="0" Minimum="0" Maximum="3200" Increment="100"/>
-                <TextBlock Text="0=禁用, 100=低噪, 3200=高噪" FontSize="10" Foreground="Gray"/>
+                <TextBlock Text="0=禁用, 100=低噪, 3200=高噪" FontSize="10" Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
               </StackPanel>
               <Border x:Name="JxlLosslessJpegHint" IsVisible="False" CornerRadius="4" Padding="6,3" Margin="0,4,0,0">
                 <TextBlock x:Name="JxlLosslessJpegHintText" TextWrapping="Wrap" FontSize="11"/>
@@ -206,7 +206,7 @@
                 <StackPanel Spacing="3">
                   <TextBlock Text="PSNR 目标 (dB)" FontSize="11"/>
                   <NumericUpDown x:Name="JpegliPsnrBox" Value="0" Minimum="0" Maximum="60" Increment="0.5" FontSize="11"/>
-                  <TextBlock Text="0=禁用, 推荐 40-50" FontSize="10" Foreground="Gray"/>
+                  <TextBlock Text="0=禁用, 推荐 40-50" FontSize="10" Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
                 </StackPanel>
               </Border>
             </StackPanel>
@@ -223,7 +223,7 @@
           <StackPanel Orientation="Horizontal" Spacing="6">
             <CheckBox x:Name="AutoThreadsCheck" Content="自动" IsChecked="True" Margin="0,3,0,0"/>
             <CheckBox x:Name="SingleThreadCheck" Content="单线程" Margin="0,3,0,0"/>
-            <TextBlock x:Name="ThreadHintLabel" Text="" VerticalAlignment="Center" Foreground="Gray" FontSize="11"/>
+            <TextBlock x:Name="ThreadHintLabel" Text="" VerticalAlignment="Center" Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" FontSize="11"/>
           </StackPanel>
           <NumericUpDown x:Name="ThreadsBox" Value="4" Minimum="1" Maximum="64" IsEnabled="False"/>
           <TextBlock Text="元数据处理" Margin="0,6,0,0"/>
@@ -235,7 +235,7 @@
                   BorderBrush="{DynamicResource SystemControlBackgroundBaseLowBrush}" BorderThickness="1">
             <StackPanel Spacing="4">
               <TextBlock Text="🔒 ExifTool 隐私清理" FontSize="13" FontWeight="Bold"/>
-              <TextBlock x:Name="ExifToolHint" Text="已检测到 exiftool，可选择性删除以下元数据：" FontSize="11" Foreground="Gray" TextWrapping="Wrap"/>
+              <TextBlock x:Name="ExifToolHint" Text="已检测到 exiftool，可选择性删除以下元数据：" FontSize="11" Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" TextWrapping="Wrap"/>
               <CheckBox x:Name="StripExifGpsCheck" Content="删除 GPS 位置信息" IsChecked="True"/>
               <CheckBox x:Name="StripExifTimeCheck" Content="删除拍摄时间日期"/>
               <CheckBox x:Name="StripExifCameraCheck" Content="删除相机/镜头型号与拍摄参数"/>
@@ -263,7 +263,7 @@
             <StackPanel Grid.Row="0" Orientation="Horizontal" Spacing="10">
               <TextBlock Text="📋 转换队列" FontSize="15" FontWeight="Bold"/>
               <TextBlock x:Name="FileCountLabel" Text="总文件: 0" FontSize="12"
-                         Foreground="Gray" VerticalAlignment="Center"/>
+                         Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" VerticalAlignment="Center"/>
             </StackPanel>
             <ListBox Grid.Row="1" x:Name="QueueList" SelectionMode="Single" Margin="0,4">
               <ListBox.ItemTemplate>
@@ -283,6 +283,13 @@
               <Button Content="⏹ 停止队列" Click="StopQueue_Click" Padding="8,3" Margin="0,0,6,3"/>
               <CheckBox x:Name="StopAfterCurrentCheck" Content="完成后停止"
                         VerticalAlignment="Center" Margin="4,0,0,3" IsChecked="True"/>
+              <Separator Width="12" Background="Transparent"/>
+              <TextBlock x:Name="QueueProgressLabel" Text="队列: 0 / 0" VerticalAlignment="Center"
+                         Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" FontSize="11" Margin="4,0,0,3"/>
+              <TextBlock x:Name="QueueEtaLabel" Text="" VerticalAlignment="Center"
+                         Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" FontSize="11" Margin="4,0,0,3"/>
+              <TextBlock x:Name="ElapsedLabel" Text="" VerticalAlignment="Center"
+                         Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" FontSize="11" Margin="4,0,0,3"/>
             </WrapPanel>
           </Grid>
         </Border>
@@ -296,7 +303,7 @@
             <StackPanel Grid.Row="0" Orientation="Horizontal" Spacing="10">
               <TextBlock Text="📂 已选文件" FontSize="14" FontWeight="Bold"/>
               <TextBlock x:Name="MediaFileCount" Text="" VerticalAlignment="Center"
-                         Foreground="Gray" FontSize="11"/>
+                         Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" FontSize="11"/>
             </StackPanel>
             <Border Grid.Row="1" x:Name="MediaDropZone" Margin="0,4,0,0"
                     BorderBrush="Gray" BorderThickness="1" CornerRadius="4" MinHeight="80">
@@ -307,7 +314,7 @@
                   <Button Content="删除选中" Click="RemoveMediaFile_Click" Padding="6,2" FontSize="11"/>
                   <Button Content="清空列表" Click="ClearMediaFiles_Click" Padding="6,2" FontSize="11"/>
                   <TextBlock Text="双击文件查看媒体信息" VerticalAlignment="Center"
-                             Foreground="Gray" FontSize="11" Margin="8,0,0,0"/>
+                             Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" FontSize="11" Margin="8,0,0,0"/>
                 </StackPanel>
               </Grid>
             </Border>
@@ -340,7 +347,7 @@
               <Button x:Name="ConcurrencyDownBtn" Content="▼" FontSize="8" Padding="6,1"
                       Click="ConcurrencyDown_Click"/>
             </StackPanel>
-            <TextBlock x:Name="ConcurrencyLabel" Text="(同时 2 个任务)" VerticalAlignment="Center" Foreground="Gray"/>
+            <TextBlock x:Name="ConcurrencyLabel" Text="(同时 2 个任务)" VerticalAlignment="Center" Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
             <Separator Width="8" Background="Transparent"/>
             <TextBlock x:Name="QueueCountLabel" Text="队列: 0" VerticalAlignment="Center"/>
           </StackPanel>

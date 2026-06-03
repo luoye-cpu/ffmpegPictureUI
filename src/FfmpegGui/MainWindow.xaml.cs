@@ -55,6 +55,9 @@ namespace FfmpegGui
         private TextBox? ExifToolPathBox;
         private CheckBox? PreserveInputStructure;
         private CheckBox? StopAfterCurrentCheck;
+        private TextBlock? QueueProgressLabel;
+        private TextBlock? QueueEtaLabel;
+        private TextBlock? ElapsedLabel;
         private Button? ClearQueueButton;
         private CheckBox? AutoThreadsCheck;
         private bool _isQueueRunning = false;
@@ -327,6 +330,9 @@ namespace FfmpegGui
 
             // 停止设置复选框（放在队列按钮旁）
             StopAfterCurrentCheck = this.FindControl<CheckBox>("StopAfterCurrentCheck");
+            QueueProgressLabel = this.FindControl<TextBlock>("QueueProgressLabel");
+            QueueEtaLabel = this.FindControl<TextBlock>("QueueEtaLabel");
+            ElapsedLabel = this.FindControl<TextBlock>("ElapsedLabel");
             if (StopAfterCurrentCheck != null)
             {
                 StopAfterCurrentCheck.IsCheckedChanged += (_, _) => 
@@ -399,6 +405,14 @@ namespace FfmpegGui
 
             UpdateQualityLabel();
             if (QualitySlider != null) QualitySlider.PropertyChanged += (_, e) => UpdateQualityLabel();
+
+            // 进度刷新定时器（每秒更新一次）
+            var progressTimer = new System.Timers.Timer(1000);
+            progressTimer.Elapsed += (_, _) =>
+            {
+                Dispatcher.UIThread.Post(() => UpdateProgressDisplay());
+            };
+            progressTimer.Start();
 
             // 加载已保存的设置（如果有 ffmpeg 路径会自动触发能力检测）
             LoadSettings();
@@ -685,8 +699,7 @@ namespace FfmpegGui
                 };
                 if (CommandText != null)
                 {
-                    var cmd = BuildCjpegliPreviewCommand(_inputPath, outputPath, jpegliOpts);
-                    CommandText.Text = cmd;
+                    CommandText.Text = BuildCjpegliPreviewCommand(_inputPath, outputPath, jpegliOpts);
                 }
                 return;
             }
@@ -701,31 +714,30 @@ namespace FfmpegGui
                 var distance = (100 - qualityVal) * 15.0 / 100.0;
                 var t = threads > 0 ? $" --num_threads={threads}" : "";
 
-                var cmdArgs = new System.Text.StringBuilder();
-                cmdArgs.Append($"\"{_inputPath}\" \"{outputPath}\" -e {effort}{t}");
+                var cmd = new System.Text.StringBuilder();
+                cmd.Append("\"").Append(CjxlService.DetectedPath).Append("\" \"")
+                   .Append(_inputPath).Append("\" \"").Append(outputPath).Append("\" -e ").Append(effort).Append(t);
 
                 if (isJpegInput)
                 {
                     ShowJxlLosslessJpegHint("🚀 cjxl 极速模式：直接复制 JPEG DCT 系数，速度 5-10×，体积更优",
                         Avalonia.Media.Color.FromRgb(224, 242, 241));
                     LockLosslessForJxl();
-                    cmdArgs.Append(" -d 0 --lossless_jpeg=1");
+                    cmd.Append(" -d 0 --lossless_jpeg=1");
                 }
                 else
                 {
                     HideJxlLosslessJpegHint();
                     RestoreLosslessAndQuality();
-                    cmdArgs.Append($" -d {distance:F1}");
+                    cmd.Append(" -d ").Append($"{distance:F1}");
                 }
 
-                if (progressive) cmdArgs.Append(" --progressive");
-                if (photonNoise > 0) cmdArgs.Append($" --photon_noise_iso={photonNoise}");
+                if (progressive) cmd.Append(" --progressive");
+                if (photonNoise > 0) cmd.Append(" --photon_noise_iso=").Append(photonNoise);
 
                 if (CommandText != null)
-                {
-                    var cmd = $"\"{CjxlService.DetectedPath}\" {cmdArgs}";
-                    CommandText.Text = cmd;
-                }
+                    CommandText.Text = cmd.ToString();
+
                 return;
             }
 
@@ -930,6 +942,52 @@ namespace FfmpegGui
                 QueueCountLabel.Text = $"队列: {_queueView.Count} 项";
             if (FileCountLabel != null)
                 FileCountLabel.Text = $"总文件: {_queueView.Count}";
+        }
+
+        /// <summary>更新进度显示：队列 N/M + 已用时间 + 剩余预估</summary>
+        private void UpdateProgressDisplay()
+        {
+            // 队列进度
+            var completed = _queueItems.Count(i => i.CompletedAt.HasValue || i.Status == "已删除");
+            var total = _queueItems.Count;
+            if (QueueProgressLabel != null)
+                QueueProgressLabel.Text = total > 0 ? $"队列: {completed} / {total}" : "队列: 0 / 0";
+
+            // 已用时间：当前处理中任务
+            var processing = _queueItems.FirstOrDefault(i => i.Status == "处理中" && i.StartedAt.HasValue);
+            if (processing != null && ElapsedLabel != null)
+            {
+                var elapsed = DateTimeOffset.UtcNow - processing.StartedAt!.Value;
+                ElapsedLabel.Text = elapsed.TotalMinutes >= 1
+                    ? $"已用: {elapsed.TotalMinutes:F1}m"
+                    : $"已用: {elapsed.TotalSeconds:F0}s";
+            }
+            else if (ElapsedLabel != null)
+            {
+                ElapsedLabel.Text = "";
+            }
+
+            // 剩余预估：基于已完成任务的平均耗时
+            if (QueueEtaLabel != null)
+            {
+                var finishedItems = _queueItems.Where(i => i.StartedAt.HasValue && i.CompletedAt.HasValue).ToList();
+                if (finishedItems.Count > 0 && total > completed)
+                {
+                    var avgSec = finishedItems.Average(i => (i.CompletedAt!.Value - i.StartedAt!.Value).TotalSeconds);
+                    var remaining = total - completed;
+                    var etaSec = avgSec * remaining;
+                    if (etaSec >= 3600)
+                        QueueEtaLabel.Text = $"预计剩余: {etaSec / 3600:F1}h";
+                    else if (etaSec >= 60)
+                        QueueEtaLabel.Text = $"预计剩余: {etaSec / 60:F1}m";
+                    else
+                        QueueEtaLabel.Text = $"预计剩余: {etaSec:F0}s";
+                }
+                else
+                {
+                    QueueEtaLabel.Text = "";
+                }
+            }
         }
 
         private void UpdateConcurrencyLabel()
@@ -2023,13 +2081,15 @@ namespace FfmpegGui
 
         private string GetOutputPath(string inputPath, string format, string? overrideInputBaseDir = null)
         {
+            // jpegli 生成标准 .jpg 文件（非 .jpegli 后缀）
+            var ext = format == "jpegli" ? "jpg" : format;
             var outDir = AppSettingsService.Current.OutputDirectory;
-            var fileName = Path.GetFileNameWithoutExtension(inputPath) + "." + format;
+            var fileName = Path.GetFileNameWithoutExtension(inputPath) + "." + ext;
 
             string resultPath;
             if (string.IsNullOrWhiteSpace(outDir))
             {
-                resultPath = Path.ChangeExtension(inputPath, format);
+                resultPath = Path.ChangeExtension(inputPath, ext);
             }
             else
             {
