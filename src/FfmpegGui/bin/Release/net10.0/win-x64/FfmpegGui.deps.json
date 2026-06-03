@@ -7,11 +7,13 @@
   "targets": {
     ".NETCoreApp,Version=v10.0": {},
     ".NETCoreApp,Version=v10.0/win-x64": {
-      "FfmpegGui/1.3.2": {
+      "FfmpegGui/1.3.3": {
         "dependencies": {
           "Avalonia": "11.0.0",
           "Avalonia.Desktop": "11.0.0",
-          "Avalonia.Themes.Fluent": "11.0.0"
+          "Avalonia.Themes.Fluent": "11.0.0",
+          "SkiaSharp": "2.88.6",
+          "SkiaSharp.NativeAssets.Win32": "2.88.6"
         },
         "runtime": {
           "FfmpegGui.dll": {}
@@ -122,7 +124,7 @@
         "dependencies": {
           "Avalonia": "11.0.0",
           "HarfBuzzSharp": "2.8.2.3",
-          "SkiaSharp": "2.88.3"
+          "SkiaSharp": "2.88.6"
         },
         "runtime": {
           "lib/net6.0/Avalonia.Skia.dll": {
@@ -202,18 +204,18 @@
           }
         }
       },
-      "SkiaSharp/2.88.3": {
+      "SkiaSharp/2.88.6": {
         "dependencies": {
-          "SkiaSharp.NativeAssets.Win32": "2.88.3"
+          "SkiaSharp.NativeAssets.Win32": "2.88.6"
         },
         "runtime": {
           "lib/net6.0/SkiaSharp.dll": {
             "assemblyVersion": "2.88.0.0",
-            "fileVersion": "2.88.3.0"
+            "fileVersion": "2.88.6.0"
           }
         }
       },
-      "SkiaSharp.NativeAssets.Win32/2.88.3": {
+      "SkiaSharp.NativeAssets.Win32/2.88.6": {
         "native": {
           "runtimes/win-x64/native/libSkiaSharp.dll": {
             "fileVersion": "0.0.0.0"
@@ -242,7 +244,7 @@
     }
   },
   "libraries": {
-    "FfmpegGui/1.3.2": {
+    "FfmpegGui/1.3.3": {
       "type": "project",
       "serviceable": false,
       "sha512": ""
@@ -345,19 +347,19 @@
       "path": "microsoft.win32.systemevents/6.0.0",
       "hashPath": "microsoft.win32.systemevents.6.0.0.nupkg.sha512"
     },
-    "SkiaSharp/2.88.3": {
+    "SkiaSharp/2.88.6": {
       "type": "package",
       "serviceable": true,
-      "sha512": "sha512-GG8X3EdfwyBfwjl639UIiOVOKEdeoqDgYrz0P1MUCnefXt9cofN+AK8YB/v1+5cLMr03ieWCQdDmPqnFIzSxZw==",
-      "path": "skiasharp/2.88.3",
-      "hashPath": "skiasharp.2.88.3.nupkg.sha512"
+      "sha512": "sha512-wdfeBAQrEQCbJIRgAiargzP1Uy+0grZiG4CSgBnhAgcJTsPzlifIaO73JRdwIlT3TyBoeU9jEqzwFUhl4hTYnQ==",
+      "path": "skiasharp/2.88.6",
+      "hashPath": "skiasharp.2.88.6.nupkg.sha512"
     },
-    "SkiaSharp.NativeAssets.Win32/2.88.3": {
+    "SkiaSharp.NativeAssets.Win32/2.88.6": {
       "type": "package",
       "serviceable": true,
-      "sha512": "sha512-MU4ASL8VAbTv5vSw1PoiWjjjpjtGhWtFYuJnrN4sNHFCePb2ohQij9JhSdqLLxk7RpRtWPdV93fbA53Pt+J0yw==",
-      "path": "skiasharp.nativeassets.win32/2.88.3",
-      "hashPath": "skiasharp.nativeassets.win32.2.88.3.nupkg.sha512"
+      "sha512": "sha512-7TzFO0u/g2MpQsTty4fyCDdMcfcWI+aLswwfnYXr3gtNS6VLKdMXPMeKpJa3pJSLnUBN6wD0JjuCe8OoLBQ6cQ==",
+      "path": "skiasharp.nativeassets.win32/2.88.6",
+      "hashPath": "skiasharp.nativeassets.win32.2.88.6.nupkg.sha512"
     },
     "System.Drawing.Common/6.0.0": {
       "type": "package",
