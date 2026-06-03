@@ -7,6 +7,60 @@ using System.Threading.Tasks;
 
 namespace FfmpegGui.Services
 {
+    /// <summary>
+    /// 编码器后端类型
+    /// </summary>
+    public enum EncoderBackend
+    {
+        Ffmpeg,
+        Cjpegli,   // 外部 cjpegli 工具
+        Cjxl       // 外部 cjxl 工具
+    }
+
+    public class EncoderInfo
+    {
+        public string Name { get; set; } = "";
+        public string Description { get; set; } = "";
+        public bool SupportsFrameMultithreading { get; set; }
+        public bool SupportsExperimental { get; set; }
+        /// <summary>编码器后端类型</summary>
+        public EncoderBackend Backend { get; set; } = EncoderBackend.Ffmpeg;
+        /// <summary>外部工具检测到的路径（仅外部工具有效）</summary>
+        public string? DetectedPath { get; set; }
+        /// <summary>是否可用</summary>
+        public bool IsAvailable => Backend == EncoderBackend.Ffmpeg || !string.IsNullOrWhiteSpace(DetectedPath);
+
+        /// <summary>将显示名称中的后端类型编码，方便后续解析</summary>
+        public string DisplayName => Backend switch
+        {
+            EncoderBackend.Cjpegli => $"🔧 cjpegli — JPEG-LI (jpegli 库)",
+            EncoderBackend.Cjxl => $"🔧 cjxl — JPEG XL (参考实现)",
+            _ => $"{Name} — {Description}"
+        };
+
+        public override string ToString() => DisplayName;
+
+        /// <summary>从 EncoderCombo 选中项解析后端</summary>
+        public static EncoderBackend ParseBackend(string? displayName)
+        {
+            if (string.IsNullOrWhiteSpace(displayName)) return EncoderBackend.Ffmpeg;
+            if (displayName.Contains("cjpegli")) return EncoderBackend.Cjpegli;
+            if (displayName.Contains("cjxl")) return EncoderBackend.Cjxl;
+            return EncoderBackend.Ffmpeg;
+        }
+
+        /// <summary>从 EncoderCombo 选中项解析编码器名称（FFmpeg 编码器名或外部工具标识）</summary>
+        public static string ParseEncoderName(string? displayName)
+        {
+            if (string.IsNullOrWhiteSpace(displayName)) return "";
+            if (displayName.Contains("cjpegli")) return "cjpegli";
+            if (displayName.Contains("cjxl")) return "cjxl";
+            // FFmpeg 编码器: "mjpeg — MJPEG..." → "mjpeg"
+            var dashIdx = displayName.IndexOf(" — ");
+            return dashIdx > 0 ? displayName.Substring(0, dashIdx).Trim() : displayName.Trim();
+        }
+    }
+
     public static class EncoderDetectionService
     {
         private static List<EncoderInfo>? _allEncoders;
@@ -14,7 +68,9 @@ namespace FfmpegGui.Services
         {
             ["jpg"] = new[] { "mjpeg", "mjpeg_qsv", "mjpeg_vaapi", "mjpeg_nvenc", "mjpeg_amf" },
             ["jpeg"] = new[] { "mjpeg", "mjpeg_qsv", "mjpeg_vaapi", "mjpeg_nvenc", "mjpeg_amf" },
-            ["jpegli"] = new[] { "mjpeg", "mjpeg_qsv", "mjpeg_vaapi", "mjpeg_nvenc", "mjpeg_amf" },
+            // jpegli 格式：FFmpeg 无原生 jpegli 编码器，应使用 cjpegli 独立工具
+            // 此处返回空数组，UI 将显示提示并使用 cjpegli 后端
+            ["jpegli"] = Array.Empty<string>(),
             ["png"] = new[] { "png", "png_vaapi" },
             ["webp"] = new[] { "libwebp", "libwebp_anim", "webp" },
             ["avif"] = new[] { "libaom-av1", "libsvtav1", "librav1e", "av1_nvenc", "av1_amf", "av1_qsv", "av1_vaapi" },
@@ -106,38 +162,103 @@ namespace FfmpegGui.Services
         }
 
         /// <summary>
-        /// 获取指定图片格式可用的编码器列表
+        /// 获取指定图片格式可用的编码器列表（包括 FFmpeg 编码器和外部工具）。
         /// </summary>
         public static async Task<List<EncoderInfo>> GetEncodersForFormatAsync(string format, string? ffmpegPath = null)
         {
-            var all = await GetAllEncodersAsync(ffmpegPath);
+            var result = new List<EncoderInfo>();
+            var fmt = format.ToLower();
 
-            if (!FormatEncoderMap.TryGetValue(format, out var candidateNames))
-                return new List<EncoderInfo>();
+            // ── 1) FFmpeg 编码器 ──
+            if (FormatEncoderMap.TryGetValue(fmt, out var candidateNames) && candidateNames.Length > 0)
+            {
+                var all = await GetAllEncodersAsync(ffmpegPath);
+                var ffmpegEncoders = all
+                    .Where(e => candidateNames.Contains(e.Name, StringComparer.OrdinalIgnoreCase))
+                    .ToList();
+                foreach (var enc in ffmpegEncoders)
+                {
+                    enc.Backend = EncoderBackend.Ffmpeg;
+                }
+                ffmpegEncoders.Sort((a, b) => string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase));
+                result.AddRange(ffmpegEncoders);
+            }
 
-            // 筛选出实际可用的编码器
-            var available = all
-                .Where(e => candidateNames.Contains(e.Name, StringComparer.OrdinalIgnoreCase))
-                .ToList();
+            // ── 2) 外部工具编码器 ──
+            switch (fmt)
+            {
+                // JPEG 格式：cjpegli 作为独立编码器可选
+                case "jpg":
+                case "jpeg":
+                    if (CjpegliService.IsAvailable)
+                        result.Add(new EncoderInfo
+                        {
+                            Name = "cjpegli",
+                            Description = "JPEG-LI (jpegli 库)",
+                            Backend = EncoderBackend.Cjpegli,
+                            DetectedPath = CjpegliService.DetectedPath,
+                            SupportsFrameMultithreading = false
+                        });
+                    break;
 
-            // 按名称排序
-            available.Sort((a, b) => string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase));
-            return available;
+                // jpegli 格式：仅 cjpegli（无 FFmpeg 编码器）
+                case "jpegli":
+                    if (CjpegliService.IsAvailable)
+                        result.Add(new EncoderInfo
+                        {
+                            Name = "cjpegli",
+                            Description = "JPEG-LI (jpegli 库)",
+                            Backend = EncoderBackend.Cjpegli,
+                            DetectedPath = CjpegliService.DetectedPath,
+                            SupportsFrameMultithreading = false
+                        });
+                    // 如果 cjpegli 不可用，也添加 FFmpeg mjpeg 回退
+                    else if (FormatEncoderMap.TryGetValue("jpg", out var jpgNames))
+                    {
+                        var all = await GetAllEncodersAsync(ffmpegPath);
+                        var fallback = all
+                            .Where(e => jpgNames.Contains(e.Name, StringComparer.OrdinalIgnoreCase))
+                            .ToList();
+                        foreach (var enc in fallback)
+                        {
+                            enc.Backend = EncoderBackend.Ffmpeg;
+                            enc.Description += " (回退)";
+                        }
+                        result.AddRange(fallback);
+                    }
+                    break;
+
+                // JXL 格式：cjxl 作为独立编码器可选
+                case "jxl":
+                    if (CjxlService.IsAvailable)
+                        result.Add(new EncoderInfo
+                        {
+                            Name = "cjxl",
+                            Description = "JPEG XL (参考实现)",
+                            Backend = EncoderBackend.Cjxl,
+                            DetectedPath = CjxlService.DetectedPath,
+                            SupportsFrameMultithreading = true
+                        });
+                    break;
+            }
+
+            return result;
         }
 
         /// <summary>
-        /// 获取默认编码器
+        /// 获取默认编码器名称（优先外部工具）
         /// </summary>
         public static string GetDefaultEncoder(string format)
         {
             return format.ToLower() switch
             {
-                "jpg" or "jpeg" => "mjpeg",
+                "jpg" or "jpeg" => CjpegliService.IsAvailable ? "cjpegli" : "mjpeg",
+                "jpegli" => CjpegliService.IsAvailable ? "cjpegli" : "mjpeg",
                 "png" => "png",
                 "webp" => "libwebp",
                 "avif" => "libaom-av1",
                 "tiff" => "tiff",
-                "jxl" => "libjxl",
+                "jxl" => CjxlService.IsAvailable ? "cjxl" : "libjxl",
                 _ => ""
             };
         }
@@ -185,14 +306,5 @@ namespace FfmpegGui.Services
         {
             _allEncoders = null;
         }
-    }
-
-    public class EncoderInfo
-    {
-        public string Name { get; set; } = "";
-        public string Description { get; set; } = "";
-        public bool SupportsFrameMultithreading { get; set; }
-        public bool SupportsExperimental { get; set; }
-        public override string ToString() => $"{Name} — {Description}";
     }
 }

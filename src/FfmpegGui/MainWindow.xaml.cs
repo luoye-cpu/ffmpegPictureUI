@@ -71,21 +71,39 @@ namespace FfmpegGui
         private StackPanel? WebpCodecPanel;
         private StackPanel? AvifCodecPanel;
         private StackPanel? JxlCodecPanel;
+        private StackPanel? JxlFfmpegPanel;
+        private StackPanel? JxlCjxlPanel;
         private StackPanel? JpegCodecPanel;
         private StackPanel? TiffCodecPanel;
         private ComboBox? PngPredCombo;
         private ComboBox? WebpPresetCombo;
+        private NumericUpDown? WebpCompressionBox;
         private NumericUpDown? AvifCpuUsedBox;
         private CheckBox? AvifStillPictureCheck;
+        private CheckBox? AvifRowMtCheck;
         private CheckBox? AutoUseSimdCheck;
         private ComboBox? AvifTuneCombo;
         private ComboBox? AvifPresetCombo;
         private NumericUpDown? JxlEffortBox;
+        private NumericUpDown? CjxlEffortBox;
         private CheckBox? JxlModularCheck;
+        private CheckBox? CjxlProgressiveCheck;
+        private NumericUpDown? CjxlPhotonNoiseBox;
         private Border? JxlLosslessJpegHint;
         private TextBlock? JxlLosslessJpegHintText;
         private ComboBox? JpegHuffmanCombo;
+        private ComboBox? JpegDctCombo;
         private ComboBox? TiffCompressionCombo;
+        // ── cjpegli / jpegli 高级面板控件 ──
+        private StackPanel? JpegliCodecPanel;
+        private ComboBox? JpegliChromaCombo;
+        private ComboBox? JpegliProgressiveCombo;
+        private CheckBox? JpegliOptimizeCheck;
+        private CheckBox? JpegliAdaptiveQuantCheck;
+        private ComboBox? JpegliEncoderBackendCombo;
+        private Border? JpegliPsnrPanel;
+        private NumericUpDown? JpegliPsnrBox;
+        // ── 拖放区域 ──
         private Border? DropZone;
         private TextBlock? DropHint;
         private Border? MediaDropZone;
@@ -156,20 +174,38 @@ namespace FfmpegGui
             WebpCodecPanel = this.FindControl<StackPanel>("WebpCodecPanel");
             AvifCodecPanel = this.FindControl<StackPanel>("AvifCodecPanel");
             JxlCodecPanel = this.FindControl<StackPanel>("JxlCodecPanel");
+            JxlFfmpegPanel = this.FindControl<StackPanel>("JxlFfmpegPanel");
+            JxlCjxlPanel = this.FindControl<StackPanel>("JxlCjxlPanel");
             JpegCodecPanel = this.FindControl<StackPanel>("JpegCodecPanel");
             TiffCodecPanel = this.FindControl<StackPanel>("TiffCodecPanel");
             PngPredCombo = this.FindControl<ComboBox>("PngPredCombo");
             WebpPresetCombo = this.FindControl<ComboBox>("WebpPresetCombo");
+            WebpCompressionBox = this.FindControl<NumericUpDown>("WebpCompressionBox");
             AvifCpuUsedBox = this.FindControl<NumericUpDown>("AvifCpuUsedBox");
             AvifStillPictureCheck = this.FindControl<CheckBox>("AvifStillPictureCheck");
+            AvifRowMtCheck = this.FindControl<CheckBox>("AvifRowMtCheck");
             AvifTuneCombo = this.FindControl<ComboBox>("AvifTuneCombo");
             AvifPresetCombo = this.FindControl<ComboBox>("AvifPresetCombo");
             JxlEffortBox = this.FindControl<NumericUpDown>("JxlEffortBox");
             JxlModularCheck = this.FindControl<CheckBox>("JxlModularCheck");
+            // cjxl 专属控件
+            CjxlEffortBox = this.FindControl<NumericUpDown>("CjxlEffortBox");
+            CjxlProgressiveCheck = this.FindControl<CheckBox>("CjxlProgressiveCheck");
+            CjxlPhotonNoiseBox = this.FindControl<NumericUpDown>("CjxlPhotonNoiseBox");
             JxlLosslessJpegHint = this.FindControl<Border>("JxlLosslessJpegHint");
             JxlLosslessJpegHintText = this.FindControl<TextBlock>("JxlLosslessJpegHintText");
             JpegHuffmanCombo = this.FindControl<ComboBox>("JpegHuffmanCombo");
+            JpegDctCombo = this.FindControl<ComboBox>("JpegDctCombo");
             TiffCompressionCombo = this.FindControl<ComboBox>("TiffCompressionCombo");
+            // ── cjpegli / jpegli 高级面板控件 ──
+            JpegliCodecPanel = this.FindControl<StackPanel>("JpegliCodecPanel");
+            JpegliChromaCombo = this.FindControl<ComboBox>("JpegliChromaCombo");
+            JpegliProgressiveCombo = this.FindControl<ComboBox>("JpegliProgressiveCombo");
+            JpegliOptimizeCheck = this.FindControl<CheckBox>("JpegliOptimizeCheck");
+            JpegliAdaptiveQuantCheck = this.FindControl<CheckBox>("JpegliAdaptiveQuantCheck");
+            JpegliEncoderBackendCombo = this.FindControl<ComboBox>("JpegliEncoderBackendCombo");
+            JpegliPsnrPanel = this.FindControl<Border>("JpegliPsnrPanel");
+            JpegliPsnrBox = this.FindControl<NumericUpDown>("JpegliPsnrBox");
             DropZone = this.FindControl<Border>("DropZone");
             DropHint = this.FindControl<TextBlock>("DropHint");
             MediaDropZone = this.FindControl<Border>("MediaDropZone");
@@ -194,7 +230,12 @@ namespace FfmpegGui
             // 其他参数变更时刷新命令预览
             if (ChromaCombo != null) ChromaCombo.SelectionChanged += (_, _) => RegenerateCommand();
             if (BitDepthCombo != null) BitDepthCombo.SelectionChanged += (_, _) => RegenerateCommand();
-            if (EncoderCombo != null) EncoderCombo.SelectionChanged += (_, _) => RegenerateCommand();
+            if (EncoderCombo != null) EncoderCombo.SelectionChanged += (_, _) =>
+            {
+                UpdateThreadAvailabilityForFormat(NormalizeFormat(FormatCombo?.SelectedItem as string));
+                UpdateCodecPanelVisibility(NormalizeFormat(FormatCombo?.SelectedItem as string));
+                RegenerateCommand();
+            };
             if (ThreadsBox != null) ThreadsBox.ValueChanged += (_, _) => RegenerateCommand();
             // 高级色彩参数
             if (ColorPrimariesCombo != null) ColorPrimariesCombo.SelectionChanged += (_, _) => RegenerateCommand();
@@ -203,14 +244,28 @@ namespace FfmpegGui
             // 高级编码器选项
             if (PngPredCombo != null) PngPredCombo.SelectionChanged += (_, _) => RegenerateCommand();
             if (WebpPresetCombo != null) WebpPresetCombo.SelectionChanged += (_, _) => RegenerateCommand();
+            if (WebpCompressionBox != null) WebpCompressionBox.ValueChanged += (_, _) => RegenerateCommand();
             if (AvifCpuUsedBox != null) AvifCpuUsedBox.ValueChanged += (_, _) => RegenerateCommand();
             if (AvifStillPictureCheck != null) AvifStillPictureCheck.IsCheckedChanged += (_, _) => RegenerateCommand();
+            if (AvifRowMtCheck != null) AvifRowMtCheck.IsCheckedChanged += (_, _) => RegenerateCommand();
             if (AvifTuneCombo != null) AvifTuneCombo.SelectionChanged += (_, _) => RegenerateCommand();
             if (AvifPresetCombo != null) AvifPresetCombo.SelectionChanged += (_, _) => RegenerateCommand();
             if (JxlEffortBox != null) JxlEffortBox.ValueChanged += (_, _) => RegenerateCommand();
             if (JxlModularCheck != null) JxlModularCheck.IsCheckedChanged += (_, _) => RegenerateCommand();
+            // cjxl 控件事件
+            if (CjxlEffortBox != null) CjxlEffortBox.ValueChanged += (_, _) => RegenerateCommand();
+            if (CjxlProgressiveCheck != null) CjxlProgressiveCheck.IsCheckedChanged += (_, _) => RegenerateCommand();
+            if (CjxlPhotonNoiseBox != null) CjxlPhotonNoiseBox.ValueChanged += (_, _) => RegenerateCommand();
             if (JpegHuffmanCombo != null) JpegHuffmanCombo.SelectionChanged += (_, _) => RegenerateCommand();
+            if (JpegDctCombo != null) JpegDctCombo.SelectionChanged += (_, _) => RegenerateCommand();
             if (TiffCompressionCombo != null) TiffCompressionCombo.SelectionChanged += (_, _) => RegenerateCommand();
+            // cjpegli / jpegli 高级选项事件
+            if (JpegliChromaCombo != null) JpegliChromaCombo.SelectionChanged += (_, _) => RegenerateCommand();
+            if (JpegliProgressiveCombo != null) JpegliProgressiveCombo.SelectionChanged += (_, _) => RegenerateCommand();
+            if (JpegliOptimizeCheck != null) JpegliOptimizeCheck.IsCheckedChanged += (_, _) => RegenerateCommand();
+            if (JpegliAdaptiveQuantCheck != null) JpegliAdaptiveQuantCheck.IsCheckedChanged += (_, _) => RegenerateCommand();
+            if (JpegliEncoderBackendCombo != null) { JpegliEncoderBackendCombo.SelectionChanged += (_, _) => { UpdateJpegliPsnrVisibility(); RegenerateCommand(); }; }
+            if (JpegliPsnrBox != null) JpegliPsnrBox.ValueChanged += (_, _) => RegenerateCommand();
             
             // 线程复选框互斥逻辑
             if (AutoThreadsCheck != null)
@@ -571,131 +626,130 @@ namespace FfmpegGui
         {
             if (QualitySlider != null && QualityValue != null)
             {
-                var fmt = FormatCombo?.SelectedItem as string ?? "jpg";
+                var fmt = NormalizeFormat(FormatCombo?.SelectedItem as string);
                 var val = (int)QualitySlider.Value;
                 QualityValue.Text = Models.FfmpegOptions.GetQualityLabel(fmt, val);
             }
             RegenerateCommand();
         }
 
-        private string BuildCjpegliCommand(string input, string output, int quality, int threads)
+        private string BuildCjpegliPreviewCommand(string input, string output, Models.FfmpegOptions opts)
         {
-            // 如果检测到 cjpegli 则使用其完整路径，否则回退到 ffmpeg
+            // 如果检测到 cjpegli 则生成完整 cjpegli 命令，否则提示不可用
             if (CjpegliService.IsAvailable && !string.IsNullOrWhiteSpace(CjpegliService.DetectedPath))
             {
                 var exe = CjpegliService.DetectedPath;
-                var args = new System.Text.StringBuilder();
-                args.Append($"\"{input}\" \"{output}\" --quality {quality}");
-                if (threads > 0) args.Append($" --num_threads={threads}");
-                return $"\"{exe}\" {args.ToString()}";
+                var args = CjpegliService.BuildCjpegliArguments(input, output, opts);
+                return $"\"{exe}\" {args}";
             }
-            // 回退：ffmpeg mjpeg 编码（标准 JPEG，非 jpegli）
-            return $"ffmpeg -i \"{input}\" -c:v mjpeg -q:v {Math.Clamp(100 - quality, 2, 31)} \"{output}\"";
+            // 回退：ffmpeg mjpeg 编码（标准 JPEG，非 jpegli）并带说明
+            return $"# cjpegli 不可用，回退到 ffmpeg:{Environment.NewLine}ffmpeg -i \"{input}\" -c:v mjpeg -q:v {Math.Clamp(100 - opts.Quality, 2, 31)} \"{output}\"";
         }
 
         private async void RegenerateCommand()
         {
             if (string.IsNullOrWhiteSpace(_inputPath)) return;
-            var fmt = FormatCombo?.SelectedItem as string ?? "jpg";
+            var fmt = NormalizeFormat(FormatCombo?.SelectedItem as string);
             var chroma = ChromaCombo?.SelectedItem as string ?? "auto";
             var bitdepthStr = BitDepthCombo?.SelectedItem as string ?? "auto";
             int? bitdepth = null;
             if (!bitdepthStr.Equals("auto", StringComparison.OrdinalIgnoreCase)
                 && int.TryParse(bitdepthStr, out var bd))
                 bitdepth = bd;
-            var encStr = EncoderCombo?.SelectedItem as string ?? "";
-            var encName = encStr.Contains(" — ") ? encStr.Split(" — ")[0] : encStr;
             var useAdv = UseAdvancedColor?.IsChecked ?? false;
             var useAdvCodec = UseAdvancedCodec?.IsChecked ?? false;
             var autoTh = AutoThreadsCheck?.IsChecked ?? true;
             var singleTh = SingleThreadCheck?.IsChecked ?? false;
             int threads = singleTh ? 1 : autoTh ? Models.FfmpegOptions.ComputeAutoThreads() : (int)(ThreadsBox?.Value ?? 4);
 
-            // 若选择 jpegli 输出，生成 cjpegli 命令
-            if (fmt == "jpegli")
+            var backend = GetCurrentEncoderBackend();
+            var encName = GetCurrentEncoderName();
+            var outputPath = GetOutputPath(_inputPath, fmt);
+
+            // ── 根据编码器后端生成不同命令 ──
+            if (backend == EncoderBackend.Cjpegli)
             {
-                var input = _inputPath!;
-                var outPath = _outputPath ?? Path.ChangeExtension(_inputPath, ".jpg");
-                var qualityVal = (int)QualitySlider.Value;
-                var cmd = BuildCjpegliCommand(input, outPath, qualityVal, threads);
-                if (CommandText != null) CommandText.Text = cmd;
+                var useJpegliAdv = UseAdvancedCodec?.IsChecked ?? false;
+                var jpegliOpts = new Models.FfmpegOptions
+                {
+                    Format = fmt,
+                    Quality = (int)(QualitySlider?.Value ?? 92),
+                    Threads = 1,
+                    CjpegliChromaSubsampling = useJpegliAdv ? (JpegliChromaCombo?.SelectedItem as string ?? "auto") : "auto",
+                    CjpegliProgressiveId = useJpegliAdv ? JpegliProgressiveCombo?.SelectedIndex switch { 0 => -1, 1 => 0, 2 => 6, _ => -1 } : -1,
+                    CjpegliOptimize = useJpegliAdv ? (JpegliOptimizeCheck?.IsChecked ?? true) : true,
+                    CjpegliAdaptiveQuant = useJpegliAdv ? (JpegliAdaptiveQuantCheck?.IsChecked ?? true) : true,
+                    CjpegliEncoderBackend = useJpegliAdv ? (JpegliEncoderBackendCombo?.SelectedIndex == 1 ? "sjpeg" : "libjpeg") : "libjpeg",
+                    CjpegliPsnrTarget = useJpegliAdv ? (float)(JpegliPsnrBox?.Value ?? 0) : 0,
+                    CjpegliMultiThreadAvailable = false
+                };
+                if (CommandText != null)
+                {
+                    var cmd = BuildCjpegliPreviewCommand(_inputPath, outputPath, jpegliOpts);
+                    CommandText.Text = cmd;
+                }
                 return;
             }
 
-            // --- JPEG→JXL 无损重封装自动检测：cjxl 优先 ---
-            bool jxlLosslessJpeg = false;
-            if (fmt is "jxl" && IsJpegInput(_inputPath))
+            if (backend == EncoderBackend.Cjxl)
             {
-                // 1) 优先尝试 cjxl.exe（独立工具，速度最快）
-                if (CjxlService.IsAvailable)
+                var effort = useAdvCodec ? (int?)CjxlEffortBox?.Value ?? 7 : 7;
+                var progressive = useAdvCodec ? (CjxlProgressiveCheck?.IsChecked ?? false) : false;
+                var photonNoise = useAdvCodec ? (int)(CjxlPhotonNoiseBox?.Value ?? 0) : 0;
+                var isJpegInput = IsJpegInput(_inputPath);
+                var qualityVal = (int)(QualitySlider?.Value ?? 90);
+                var distance = (100 - qualityVal) * 15.0 / 100.0;
+                var t = threads > 0 ? $" --num_threads={threads}" : "";
+
+                var cmdArgs = new System.Text.StringBuilder();
+                cmdArgs.Append($"\"{_inputPath}\" \"{outputPath}\" -e {effort}{t}");
+
+                if (isJpegInput)
                 {
-                    jxlLosslessJpeg = true;
-                    if (JxlLosslessJpegHint != null)
-                    {
-                        JxlLosslessJpegHint.IsVisible = true;
-                        JxlLosslessJpegHint.Background = new Avalonia.Media.SolidColorBrush(
-                            Avalonia.Media.Color.FromRgb(224, 242, 241)); // 青色底
-                    }
-                    if (JxlLosslessJpegHintText != null)
-                        JxlLosslessJpegHintText.Text = "🚀 cjxl 极速模式：直接复制 JPEG DCT 系数，速度 5-10×，体积更优";
-                    if (LosslessCheck != null)
-                    {
-                        LosslessCheck.IsChecked = true;
-                        LosslessCheck.IsEnabled = false;
-                    }
-                    if (QualitySlider != null)
-                        QualitySlider.IsEnabled = false;
-                }
-                // 2) 回退：ffmpeg libjxl 的 -lossless_jpeg 参数
-                else if (await EncoderDetectionService.SupportsJxlLosslessJpegAsync())
-                {
-                    jxlLosslessJpeg = true;
-                    if (JxlLosslessJpegHint != null)
-                    {
-                        JxlLosslessJpegHint.IsVisible = true;
-                        JxlLosslessJpegHint.Background = new Avalonia.Media.SolidColorBrush(
-                            Avalonia.Media.Color.FromRgb(255, 243, 224)); // 橙色底
-                    }
-                    if (JxlLosslessJpegHintText != null)
-                        JxlLosslessJpegHintText.Text = "⚡ ffmpeg 无损重封装模式：直接复制 DCT 系数，速度提升 5-10×";
-                    if (LosslessCheck != null)
-                    {
-                        LosslessCheck.IsChecked = true;
-                        LosslessCheck.IsEnabled = false;
-                    }
-                    if (QualitySlider != null)
-                        QualitySlider.IsEnabled = false;
+                    ShowJxlLosslessJpegHint("🚀 cjxl 极速模式：直接复制 JPEG DCT 系数，速度 5-10×，体积更优",
+                        Avalonia.Media.Color.FromRgb(224, 242, 241));
+                    LockLosslessForJxl();
+                    cmdArgs.Append(" -d 0 --lossless_jpeg=1");
                 }
                 else
                 {
-                    // 3) 不支持的提示
-                    if (JxlLosslessJpegHint != null)
-                    {
-                        JxlLosslessJpegHint.IsVisible = true;
-                        JxlLosslessJpegHint.Background = new Avalonia.Media.SolidColorBrush(
-                            Avalonia.Media.Color.FromRgb(255, 243, 224));
-                    }
-                    if (JxlLosslessJpegHintText != null)
-                        JxlLosslessJpegHintText.Text = "💡 提示：安装 cjxl.exe 到 ffmpeg 同目录可启用极速无损重封装（不解码，速度 5-10×）";
-                    if (JxlLosslessJpegHint != null)
-                        JxlLosslessJpegHint.IsVisible = true;
+                    HideJxlLosslessJpegHint();
+                    RestoreLosslessAndQuality();
+                    cmdArgs.Append($" -d {distance:F1}");
+                }
+
+                if (progressive) cmdArgs.Append(" --progressive");
+                if (photonNoise > 0) cmdArgs.Append($" --photon_noise_iso={photonNoise}");
+
+                if (CommandText != null)
+                {
+                    var cmd = $"\"{CjxlService.DetectedPath}\" {cmdArgs}";
+                    CommandText.Text = cmd;
+                }
+                return;
+            }
+
+            // --- FFmpeg 后端：JPEG→JXL 无损重封装自动检测 ---
+            bool jxlLosslessJpeg = false;
+            if (fmt is "jxl" && IsJpegInput(_inputPath))
+            {
+                if (await EncoderDetectionService.SupportsJxlLosslessJpegAsync())
+                {
+                    jxlLosslessJpeg = true;
+                    ShowJxlLosslessJpegHint("⚡ ffmpeg 无损重封装模式：直接复制 DCT 系数，速度提升 5-10×",
+                        Avalonia.Media.Color.FromRgb(255, 243, 224));
+                    LockLosslessForJxl();
+                }
+                else
+                {
+                    ShowJxlLosslessJpegHint("💡 提示：选择 cjxl 编码器可启用极速无损重封装（不解码，速度 5-10×）",
+                        Avalonia.Media.Color.FromRgb(255, 243, 224));
                 }
             }
             else
             {
-                if (JxlLosslessJpegHint != null)
-                    JxlLosslessJpegHint.IsVisible = false;
-                // 恢复控件状态（从 JXL 切换到其他格式时）
-                if (LosslessCheck != null && !LosslessCheck.IsEnabled
-                    && _currentCapabilities?.SupportsLossless == true)
-                {
-                    LosslessCheck.IsEnabled = true;
-                }
-                if (QualitySlider != null && !QualitySlider.IsEnabled
-                    && _currentCapabilities?.SupportsQuality == true)
-                {
-                    QualitySlider.IsEnabled = true;
-                }
+                HideJxlLosslessJpegHint();
+                RestoreLosslessAndQuality();
             }
 
             var opts = new Models.FfmpegOptions
@@ -707,19 +761,24 @@ namespace FfmpegGui
                 ColorPrimaries = useAdv ? (ColorPrimariesCombo?.SelectedItem as string) : null,
                 ColorTrc = useAdv ? (ColorTrcCombo?.SelectedItem as string) : null,
                 ColorMatrix = useAdv ? (ColorMatrixCombo?.SelectedItem as string) : null,
-                Encoder = encName, Threads = threads,
+                Encoder = encName, EncoderBackend = backend, Threads = threads,
                 MetadataMode = GetMetadataMode(),
                 Lossless = LosslessCheck?.IsChecked ?? false,
                 PngPred = useAdvCodec ? (PngPredCombo?.SelectedItem as string) : null,
                 WebpPreset = useAdvCodec ? (WebpPresetCombo?.SelectedItem as string) : null,
+                WebpCompressionLevel = useAdvCodec ? (int?)WebpCompressionBox?.Value : null,
                 AvifCpuUsed = useAdvCodec ? (int?)AvifCpuUsedBox?.Value : null,
                 AvifStillPicture = useAdvCodec ? AvifStillPictureCheck?.IsChecked : null,
+                AvifRowMt = useAdvCodec ? AvifRowMtCheck?.IsChecked : null,
                 AvifTune = useAdvCodec ? (AvifTuneCombo?.SelectedItem as string) : null,
                 AvifPreset = useAdvCodec ? (AvifPresetCombo?.SelectedItem as string) : null,
                 JxlEffort = useAdvCodec ? (int?)JxlEffortBox?.Value : null,
                 JxlModular = useAdvCodec ? JxlModularCheck?.IsChecked : null,
                 JxlLosslessJpeg = jxlLosslessJpeg,
+                CjxlProgressive = useAdvCodec ? (CjxlProgressiveCheck?.IsChecked ?? false) : false,
+                CjxlPhotonNoiseIso = useAdvCodec ? (int)(CjxlPhotonNoiseBox?.Value ?? 0) : 0,
                 JpegHuffman = useAdvCodec ? (JpegHuffmanCombo?.SelectedItem as string) : null,
+                JpegDct = useAdvCodec ? (JpegDctCombo?.SelectedItem as string is "auto" ? null : JpegDctCombo?.SelectedItem as string) : null,
                 TiffCompressionAlgo = useAdvCodec ? (TiffCompressionCombo?.SelectedItem as string) : null,
                 StripExifGps = StripExifGpsCheck?.IsChecked ?? true,
                 StripExifTime = StripExifTimeCheck?.IsChecked ?? false,
@@ -727,22 +786,53 @@ namespace FfmpegGui
                 StripExifAll = StripExifAllCheck?.IsChecked ?? false,
                 StripXmp = StripXmpCheck?.IsChecked ?? false
             };
-            var outp = GetOutputPath(_inputPath, opts.Format);
             if (CommandText != null)
             {
-                if (jxlLosslessJpeg && CjxlService.IsAvailable)
-                {
-                    // cjxl 命令（JPEG→JXL 转码默认保留全部元数据）
-                    var effort = opts.JxlEffort ?? 7;
-                    var t = threads > 0 ? $" --num_threads={threads}" : "";
-                    var cmd = $"cjxl \"{_inputPath}\" \"{outp}\" -d 0 -e {effort}{t} --lossless_jpeg=1";
-                    CommandText.Text = cmd;
-                }
-                else
-                {
-                    var args = Services.FfmpegCommandBuilder.BuildArguments(opts, _inputPath, outp);
-                    CommandText.Text = "ffmpeg " + args;
-                }
+                var args = Services.FfmpegCommandBuilder.BuildArguments(opts, _inputPath, outputPath);
+                CommandText.Text = "ffmpeg " + args;
+            }
+        }
+
+        // ── JXL 无损提示/控件辅助方法 ──
+        private void ShowJxlLosslessJpegHint(string text, Avalonia.Media.Color bgColor)
+        {
+            if (JxlLosslessJpegHint != null)
+            {
+                JxlLosslessJpegHint.IsVisible = true;
+                JxlLosslessJpegHint.Background = new Avalonia.Media.SolidColorBrush(bgColor);
+            }
+            if (JxlLosslessJpegHintText != null)
+                JxlLosslessJpegHintText.Text = text;
+        }
+
+        private void HideJxlLosslessJpegHint()
+        {
+            if (JxlLosslessJpegHint != null)
+                JxlLosslessJpegHint.IsVisible = false;
+        }
+
+        private void LockLosslessForJxl()
+        {
+            if (LosslessCheck != null)
+            {
+                LosslessCheck.IsChecked = true;
+                LosslessCheck.IsEnabled = false;
+            }
+            if (QualitySlider != null)
+                QualitySlider.IsEnabled = false;
+        }
+
+        private void RestoreLosslessAndQuality()
+        {
+            if (LosslessCheck != null && !LosslessCheck.IsEnabled
+                && _currentCapabilities?.SupportsLossless == true)
+            {
+                LosslessCheck.IsEnabled = true;
+            }
+            if (QualitySlider != null && !QualitySlider.IsEnabled
+                && _currentCapabilities?.SupportsQuality == true)
+            {
+                QualitySlider.IsEnabled = true;
             }
         }
 
@@ -858,8 +948,9 @@ namespace FfmpegGui
         {
             if (EncoderCombo == null || FormatCombo == null) return;
 
-            var fmt = (FormatCombo.SelectedItem as string ?? "jpg").ToLower();
-            var encoders = await EncoderDetectionService.GetEncodersForFormatAsync(fmt);
+            var fmt1 = NormalizeFormat(FormatCombo.SelectedItem as string);
+
+            var encoders = await EncoderDetectionService.GetEncodersForFormatAsync(fmt1);
 
             EncoderCombo.Items!.Clear();
             if (encoders.Count > 0)
@@ -870,7 +961,7 @@ namespace FfmpegGui
                 }
 
                 // 尝试选中默认编码器
-                var defaultEnc = EncoderDetectionService.GetDefaultEncoder(fmt);
+                var defaultEnc = EncoderDetectionService.GetDefaultEncoder(fmt1);
                 var idx = encoders.FindIndex(e => e.Name.Equals(defaultEnc, StringComparison.OrdinalIgnoreCase));
                 EncoderCombo.SelectedIndex = idx >= 0 ? idx : 0;
                 EncoderCombo.IsEnabled = true;
@@ -883,11 +974,49 @@ namespace FfmpegGui
             }
         }
 
+        /// <summary>
+        /// 获取当前选中的编码器后端类型
+        /// </summary>
+        private EncoderBackend GetCurrentEncoderBackend()
+        {
+            var encStr = EncoderCombo?.SelectedItem as string ?? "";
+            return EncoderInfo.ParseBackend(encStr);
+        }
+
+        /// <summary>
+        /// 获取当前选中的编码器名称（FFmpeg 编码器名或外部工具标识）
+        /// </summary>
+        private string GetCurrentEncoderName()
+        {
+            var encStr = EncoderCombo?.SelectedItem as string ?? "";
+            return EncoderInfo.ParseEncoderName(encStr);
+        }
+
+        /// <summary>
+        /// 将 UI 显示名称映射为内部小写格式名。
+        /// "JPEG"→"jpg", "JPEG LI"→"jpegli", "JPEG XL"→"jxl", 其他→小写
+        /// </summary>
+        private static string NormalizeFormat(string? displayName)
+        {
+            if (string.IsNullOrWhiteSpace(displayName)) return "jpeg";
+            return displayName.Trim() switch
+            {
+                "JPEG" => "jpg",
+                "JPEG LI" => "jpegli",
+                "JPEG XL" => "jxl",
+                "PNG" => "png",
+                "WebP" => "webp",
+                "AVIF" => "avif",
+                "TIFF" => "tiff",
+                _ => displayName.Trim().ToLower()
+            };
+        }
+
         private void UpdateOptionAvailability()
         {
             if (FormatCombo == null) return;
-            var fmt = (FormatCombo.SelectedItem as string ?? "jpg").ToLower();
-            _currentCapabilities = FormatCapabilitiesService.GetCapabilities(fmt);
+            var fmt3 = NormalizeFormat(FormatCombo.SelectedItem as string);
+            _currentCapabilities = FormatCapabilitiesService.GetCapabilities(fmt3);
 
             if (_currentCapabilities != null)
             {
@@ -897,7 +1026,7 @@ namespace FfmpegGui
                     if (_currentCapabilities.SupportsQuality)
                     {
                         // 切换到该格式的视觉无损默认值
-                        QualitySlider.Value = Models.FfmpegOptions.GetDefaultQuality(fmt);
+                        QualitySlider.Value = Models.FfmpegOptions.GetDefaultQuality(fmt3);
                     }
                 }
                 if (ChromaCombo != null) ChromaCombo.IsEnabled = _currentCapabilities.SupportsChroma;
@@ -919,7 +1048,7 @@ namespace FfmpegGui
                 if (MetadataModeCombo != null) MetadataModeCombo.IsEnabled = _currentCapabilities.SupportsMetadata;
                 if (LosslessCheck != null)
                 {
-                    if (fmt is "png" or "tiff")
+                    if (fmt3 is "png" or "tiff")
                     {
                         // PNG/TIFF 纯无损格式，强制勾选且锁定
                         LosslessCheck.IsEnabled = false;
@@ -955,8 +1084,56 @@ namespace FfmpegGui
                 if (ColorSpaceCombo != null) ColorSpaceCombo.IsEnabled = true;
             }
 
-            UpdateCodecPanelVisibility(fmt);
+            UpdateCodecPanelVisibility(fmt3);
+            UpdateThreadAvailabilityForFormat(fmt3);
             RegenerateCommand();
+        }
+
+        /// <summary>
+        /// 根据当前编码器后端更新线程控件的可用性。
+        /// cjpegli 不支持多线程，强制锁定为单线程。
+        /// </summary>
+        private void UpdateThreadAvailabilityForFormat(string fmt)
+        {
+            var backend = GetCurrentEncoderBackend();
+            var isSingleThreadOnly = backend == EncoderBackend.Cjpegli;
+            if (isSingleThreadOnly)
+            {
+                if (AutoThreadsCheck != null)
+                {
+                    AutoThreadsCheck.IsEnabled = false;
+                    AutoThreadsCheck.IsChecked = false;
+                }
+                if (SingleThreadCheck != null)
+                {
+                    SingleThreadCheck.IsEnabled = false;
+                    SingleThreadCheck.IsChecked = true;
+                }
+                if (ThreadsBox != null)
+                {
+                    ThreadsBox.IsEnabled = false;
+                    ThreadsBox.Value = 1;
+                }
+                if (ThreadHintLabel != null)
+                    ThreadHintLabel.Text = "(该编码器仅支持单线程)";
+            }
+            else
+            {
+                if (AutoThreadsCheck != null) AutoThreadsCheck.IsEnabled = true;
+                if (SingleThreadCheck != null) SingleThreadCheck.IsEnabled = true;
+                UpdateThreadControls();
+            }
+        }
+
+        /// <summary>
+        /// 当 cjpegli 编码器后端切换时，更新 PSNR 目标面板的可见性。
+        /// 仅 sjpeg 后端支持 PSNR 目标搜索。
+        /// </summary>
+        private void UpdateJpegliPsnrVisibility()
+        {
+            if (JpegliEncoderBackendCombo == null || JpegliPsnrPanel == null) return;
+            var isSjpeg = JpegliEncoderBackendCombo.SelectedIndex == 1;
+            JpegliPsnrPanel.IsVisible = isSjpeg;
         }
 
         private void UpdateCodecPanelVisibility(string fmt)
@@ -967,17 +1144,34 @@ namespace FfmpegGui
             if (AvifCodecPanel != null) AvifCodecPanel.IsVisible = false;
             if (JxlCodecPanel != null) JxlCodecPanel.IsVisible = false;
             if (JpegCodecPanel != null) JpegCodecPanel.IsVisible = false;
+            if (JpegliCodecPanel != null) JpegliCodecPanel.IsVisible = false;
             if (TiffCodecPanel != null) TiffCodecPanel.IsVisible = false;
 
-            // 按格式显示对应面板
+            var backend = GetCurrentEncoderBackend();
+
+            // 按格式+编码器后端显示对应面板
             switch (fmt)
             {
                 case "png": if (PngCodecPanel != null) PngCodecPanel.IsVisible = true; break;
                 case "webp": if (WebpCodecPanel != null) WebpCodecPanel.IsVisible = true; break;
                 case "avif": if (AvifCodecPanel != null) AvifCodecPanel.IsVisible = true; break;
-                case "jxl": if (JxlCodecPanel != null) JxlCodecPanel.IsVisible = true; break;
-                case "jpg": case "jpeg": if (JpegCodecPanel != null) JpegCodecPanel.IsVisible = true; break;
+                case "jxl":
+                    if (JxlCodecPanel != null) JxlCodecPanel.IsVisible = true;
+                    // 根据后端切换 JXL 子面板
+                    if (JxlFfmpegPanel != null)
+                        JxlFfmpegPanel.IsVisible = backend != EncoderBackend.Cjxl;
+                    if (JxlCjxlPanel != null)
+                        JxlCjxlPanel.IsVisible = backend == EncoderBackend.Cjxl;
+                    break;
+                case "jpg": case "jpeg":
+                    // jpg/jpeg 格式：根据编码器后端显示不同高级面板
+                    if (backend == EncoderBackend.Cjpegli)
+                    { if (JpegliCodecPanel != null) JpegliCodecPanel.IsVisible = true; }
+                    else
+                    { if (JpegCodecPanel != null) JpegCodecPanel.IsVisible = true; }
+                    break;
                 case "tiff": if (TiffCodecPanel != null) TiffCodecPanel.IsVisible = true; break;
+                case "jpegli": if (JpegliCodecPanel != null) JpegliCodecPanel.IsVisible = true; break;
             }
         }
 
@@ -1093,7 +1287,7 @@ namespace FfmpegGui
         private bool AddSingleToQueue(string inputPath, string? inputBaseDir = null)
         {
             // 注：队列本身无容量上限，"并行编码任务数"仅控制同时运行的任务数
-            var fmt = FormatCombo?.SelectedItem as string ?? "jpg";
+            var fmt = NormalizeFormat(FormatCombo?.SelectedItem as string);
             var chroma = ChromaCombo?.SelectedItem as string ?? "4:2:0";
             var bitdepthStr = BitDepthCombo?.SelectedItem as string ?? "auto";
             int? bitdepth = null;
@@ -1101,7 +1295,8 @@ namespace FfmpegGui
                 && int.TryParse(bitdepthStr, out var bd))
                 bitdepth = bd;
             var encoderStr = EncoderCombo?.SelectedItem as string ?? "";
-            var encoderName = encoderStr.Contains(" — ") ? encoderStr.Split(" — ")[0] : encoderStr;
+            var encoderName = EncoderInfo.ParseEncoderName(encoderStr);
+            var encoderBackend = EncoderInfo.ParseBackend(encoderStr);
 
             var autoThreads = AutoThreadsCheck?.IsChecked ?? true;
             var singleThread = SingleThreadCheck?.IsChecked ?? false;
@@ -1117,20 +1312,23 @@ namespace FfmpegGui
                 Chroma = chroma,
                 BitDepth = bitdepth,
                 ColorSpace = ColorSpaceCombo?.SelectedItem as string,
-                Encoder = encoderName,
+                Encoder = encoderName, EncoderBackend = encoderBackend,
                 Threads = threads,
                 MetadataMode = GetMetadataMode(),
                 Lossless = LosslessCheck?.IsChecked ?? false,
                 PngPred = useAdvCodec ? (PngPredCombo?.SelectedItem as string) : null,
                 WebpPreset = useAdvCodec ? (WebpPresetCombo?.SelectedItem as string) : null,
+                WebpCompressionLevel = useAdvCodec ? (int?)WebpCompressionBox?.Value : null,
                 AvifCpuUsed = useAdvCodec ? (int?)AvifCpuUsedBox?.Value : null,
                 AvifStillPicture = useAdvCodec ? AvifStillPictureCheck?.IsChecked : null,
+                AvifRowMt = useAdvCodec ? AvifRowMtCheck?.IsChecked : null,
                 AvifTune = useAdvCodec ? (AvifTuneCombo?.SelectedItem as string) : null,
                 AvifPreset = useAdvCodec ? (AvifPresetCombo?.SelectedItem as string) : null,
                 JxlEffort = useAdvCodec ? (int?)JxlEffortBox?.Value : null,
                 JxlModular = useAdvCodec ? JxlModularCheck?.IsChecked : null,
                 JxlLosslessJpeg = fmt is "jxl" && IsJpegInput(inputPath),
                 JpegHuffman = useAdvCodec ? (JpegHuffmanCombo?.SelectedItem as string) : null,
+                JpegDct = useAdvCodec ? (JpegDctCombo?.SelectedItem as string is "auto" ? null : JpegDctCombo?.SelectedItem as string) : null,
                 TiffCompressionAlgo = useAdvCodec ? (TiffCompressionCombo?.SelectedItem as string) : null,
                 StripExifGps = StripExifGpsCheck?.IsChecked ?? true,
                 StripExifTime = StripExifTimeCheck?.IsChecked ?? false,
@@ -1475,7 +1673,7 @@ namespace FfmpegGui
                 return;
             }
 
-            var fmt = FormatCombo?.SelectedItem as string ?? "jpg";
+            var fmt = NormalizeFormat(FormatCombo?.SelectedItem as string);
             var chroma = ChromaCombo?.SelectedItem as string ?? "4:2:0";
             var bitdepthStr = BitDepthCombo?.SelectedItem as string ?? "auto";
             int? bitdepth = null;
@@ -1483,7 +1681,8 @@ namespace FfmpegGui
                 && int.TryParse(bitdepthStr, out var bd))
                 bitdepth = bd;
             var encoderStr = EncoderCombo?.SelectedItem as string ?? "";
-            var encoderName = encoderStr.Contains(" — ") ? encoderStr.Split(" — ")[0] : encoderStr;
+            var encoderName = EncoderInfo.ParseEncoderName(encoderStr);
+            var encoderBackend = EncoderInfo.ParseBackend(encoderStr);
 
             var autoThreads = AutoThreadsCheck?.IsChecked ?? true;
             var singleThread = SingleThreadCheck?.IsChecked ?? false;
@@ -1504,7 +1703,7 @@ namespace FfmpegGui
                 ColorPrimaries = useAdv ? (ColorPrimariesCombo?.SelectedItem as string) : null,
                 ColorTrc = useAdv ? (ColorTrcCombo?.SelectedItem as string) : null,
                 ColorMatrix = useAdv ? (ColorMatrixCombo?.SelectedItem as string) : null,
-                Encoder = encoderName,
+                Encoder = encoderName, EncoderBackend = encoderBackend,
                 Threads = threads,
                 MetadataMode = GetMetadataMode(),
                 Lossless = LosslessCheck?.IsChecked ?? false,
@@ -1512,12 +1711,14 @@ namespace FfmpegGui
                 WebpPreset = useAdvCodec ? (WebpPresetCombo?.SelectedItem as string) : null,
                 AvifCpuUsed = useAdvCodec ? (int?)AvifCpuUsedBox?.Value : null,
                 AvifStillPicture = useAdvCodec ? AvifStillPictureCheck?.IsChecked : null,
+                AvifRowMt = useAdvCodec ? AvifRowMtCheck?.IsChecked : null,
                 AvifTune = useAdvCodec ? (AvifTuneCombo?.SelectedItem as string) : null,
                 AvifPreset = useAdvCodec ? (AvifPresetCombo?.SelectedItem as string) : null,
                 JxlEffort = useAdvCodec ? (int?)JxlEffortBox?.Value : null,
                 JxlModular = useAdvCodec ? JxlModularCheck?.IsChecked : null,
                 JxlLosslessJpeg = fmt is "jxl" && IsJpegInput(_inputPath),
                 JpegHuffman = useAdvCodec ? (JpegHuffmanCombo?.SelectedItem as string) : null,
+                JpegDct = useAdvCodec ? (JpegDctCombo?.SelectedItem as string is "auto" ? null : JpegDctCombo?.SelectedItem as string) : null,
                 TiffCompressionAlgo = useAdvCodec ? (TiffCompressionCombo?.SelectedItem as string) : null,
                 StripExifGps = StripExifGpsCheck?.IsChecked ?? true,
                 StripExifTime = StripExifTimeCheck?.IsChecked ?? false,
