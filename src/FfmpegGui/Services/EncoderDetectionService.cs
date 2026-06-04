@@ -77,7 +77,8 @@ namespace FfmpegGui.Services
             ["tiff"] = new[] { "tiff" },
             ["jxl"] = new[] { "libjxl", "libjxl_anim", "jpegxl" },
             ["bmp"] = new[] { "bmp" },
-            ["gif"] = new[] { "gif" }
+            ["gif"] = new[] { "gif" },
+            ["apng"] = new[] { "apng", "png" }
         };
 
         /// <summary>
@@ -259,6 +260,8 @@ namespace FfmpegGui.Services
                 "avif" => "libaom-av1",
                 "tiff" => "tiff",
                 "jxl" => CjxlService.IsAvailable ? "cjxl" : "libjxl",
+                "apng" => "apng",
+                "gif" => "gif",
                 _ => ""
             };
         }

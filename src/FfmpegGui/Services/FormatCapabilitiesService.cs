@@ -119,6 +119,32 @@ namespace FfmpegGui.Services
                 SupportedColorSpaces = new List<string> { "BT.709" }
             };
 
+            // GIF: 256 色调色板动图，8-bit
+            _cache["gif"] = new FormatCapabilities
+            {
+                Format = "gif",
+                SupportsQuality = true,
+                SupportsChroma = false,
+                SupportsBitDepth = false,
+                SupportsMetadata = false,
+                SupportsLossless = false,
+                SupportedBitDepths = new List<int> { 8 },
+                SupportedColorSpaces = new List<string>()
+            };
+
+            // APNG: 动画 PNG，支持 8/16-bit
+            _cache["apng"] = new FormatCapabilities
+            {
+                Format = "apng",
+                SupportsQuality = false,
+                SupportsChroma = false,
+                SupportsBitDepth = true,
+                SupportsMetadata = false,
+                SupportsLossless = true,
+                SupportedBitDepths = new List<int> { 8, 16 },
+                SupportedColorSpaces = new List<string> { "BT.709" }
+            };
+
             // JPEG XL: 支持 8/10/12/16-bit 整数，甚至 32-bit 浮点
             _cache["jxl"] = new FormatCapabilities
             {

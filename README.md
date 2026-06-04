@@ -1,8 +1,10 @@
 # 🖼️ FfmpegPictureUI — FFmpeg 图片转换器
 
-An Avalonia UI-based cross-platform batch image conversion tool that wraps `ffmpeg`/`ffprobe` with an intuitive GUI. Integrates `cjxl`/`djxl`/`cjpegli` from the [JPEG XL reference implementation](https://github.com/libjxl/libjxl) for optimal JXL ↔ JPEG workflows.
+**⚠️ v1.4.0 BETA — 测试版本，包含实验性动图编码功能，可能有未发现的 Bug。**
 
-基于 Avalonia UI 的跨平台图片批量转换工具，将 `ffmpeg`/`ffprobe` 命令行封装为直观图形界面，并集成 [JPEG XL 参考实现](https://github.com/libjxl/libjxl) 的 `cjxl`/`djxl`/`cjpegli` 以实现最优 JXL ↔ JPEG 转换。
+An Avalonia UI-based cross-platform batch image/animation conversion tool that wraps `ffmpeg`/`ffprobe` with an intuitive GUI. Integrates `cjxl`/`djxl`/`cjpegli` from the [JPEG XL reference implementation](https://github.com/libjxl/libjxl).
+
+基于 Avalonia UI 的跨平台图片/动图批量转换工具，将 `ffmpeg`/`ffprobe` 命令行封装为直观图形界面，并集成 [JPEG XL 参考实现](https://github.com/libjxl/libjxl) 的 `cjxl`/`djxl`/`cjpegli`。
 
 ---
 
@@ -10,7 +12,7 @@ An Avalonia UI-based cross-platform batch image conversion tool that wraps `ffmp
 
 | Feature 功能 | Description 说明 |
 |---|---|
-| **Multi-format / 多格式** | JPEG, JPEG LI, PNG, WebP, AVIF, JPEG XL, TIFF |
+| **Multi-format / 多格式** | JPEG, JPEG LI, PNG, WebP, AVIF, JPEG XL, TIFF — plus animated: GIF, WebP (animated), APNG, AVIF (animated), JPEG XL (animated) |
 | **Encoder backend / 编码器后端** | Selectable ffmpeg / cjxl / cjpegli per format; cjxl for JXL lossless JPEG repack — 每种格式可选不同编码器后端 |
 | **Quality control / 质量控制** | Quality slider (snap-to-tick) + format-aware numeric input — 滑块吸附整数 + 格式感知数字输入框 (JPEG q:v 2-31, JXL distance 0-15, etc.) |
 | **Advanced codec options / 高级编码选项** | Per-format advanced panels: DCT algo, progressive mode, Huffman optimize, adaptive quant, sjpeg backend, PSNR target, lossless compression level, row-mt, still-picture, modular mode — 按格式独立高级面板 |
@@ -19,13 +21,16 @@ An Avalonia UI-based cross-platform batch image conversion tool that wraps `ffmp
 | **JPEG-LI / JPEG-LI** | `cjpegli` encoding with full options; falls back to ffmpeg mjpeg when unavailable |
 | **CPU SIMD / CPU 指令集** | Auto-detects AVX2/AVX/SSE4 capable binaries; runtime probe validates compatibility |
 | **Batch queue / 批量队列** | Drag & drop; configurable concurrency (1–128); stop-after-queue |
-| **Metadata editing / 元数据编辑** | 39-field panel via exiftool; 5 categories (read/modify/restore/clear) |
+| **Metadata editing / 元数据编辑** | ~90-field panel via exiftool; 9 categories (Basic, DateTime, Camera, Shooting, GPS, Image, IPTC, XMP, Color); double-click file opens editor — ~90字段9大分类exiftool编辑器，双击文件打开 |
 | **Privacy cleaning / 隐私清理** | Strip GPS, timestamps, camera info, all EXIF, XMP |
 | **Quality analysis / 质量分析** | SSIM + PSNR post-encode; auto-detects lossless |
 | **Presets / 预设** | Save/load conversion presets; export/import JSON |
 | **Dual theme / 双色主题** | Dark/Light mode; queue text adapts — 队列文字颜色自适应主题 |
 | **Format filter / 格式筛选** | Checkbox window to enable/disable recognized image formats; persists to settings — 勾选启用的图片格式，持久化保存 |
+| **Animation mode / 动图模式** | Mode toggle (Still/Animated); FPS/loop/scale controls (auto or manual); per-format advanced animated panels — 模式切换，帧率/循环/缩放参数(auto可用) |
 | **Lossless lock / 无损锁定** | PNG/TIFF auto-lock quality at max, disable slider — 无损格式自动锁定最高质量 |
+| **Error-only filter / 仅显示报错** | Toggle to hide completed items, show only errors + in-progress — 一键屏蔽正常完成项，聚焦报错任务 |
+| **Search drag-drop / 搜索拖放** | Windows Search result files correctly resolved via Shell namespace paths — Windows 搜索结果拖放正确解析 |
 
 ---
 
@@ -111,6 +116,20 @@ ffmpegPictureUI/
 ---
 
 ## 📝 Changelog / 更新日志
+
+### v1.4.0 BETA (2026-06-04)
+
+> ⚠️ **测试版本** — 包含大量实验性动图编码功能，欢迎反馈 Bug。
+
+- 🎞 **Animation mode / 动图模式**: Still/Animated mode toggle; dynamic format list per mode; FPS, loop count, scale width controls with auto (empty) option — 静态/动图模式切换，格式列表动态变化，帧率/循环/缩放参数均支持留空auto
+- 🎬 **5 animated format support / 5种动图格式**: GIF (palette optimization + dither), WebP animated, PNG (APNG) via `apng` encoder + `-f apng`, AVIF animated via `-still-picture 0`, JPEG XL animated via `cjxl` external tool — 全面支持5种动图格式编码
+- 🎚 **Animation parameter panel / 动图参数面板**: FPS (1-60), loop count (0=infinite/-1=no loop), scale width; empty = auto (follow source) — 动图专属参数卡片式面板
+- 🔍 **Advanced animated codec panels / 动图高级面板**: GIF palettegen+dither toggles, APNG info panel, WebP/AVIF/JXL existing panels adapted for animation — 各动图格式的高级编码选项面板
+- 👁 **Error-only queue filter / 仅显示报错**: Checkbox to hide completed items, showing only errors + in-progress tasks; auto-refreshes on status change — 一键过滤已完成项，聚焦报错任务
+- 📝 **Metadata editor expansion / 元数据编辑器扩展**: 39 → ~90 fields across 9 categories; double-click file opens editor with ffprobe media info — 字段数量翻倍，新增IPTC/XMP/色彩配置等分类
+- 🐛 **exiftool stalling fix / exiftool 挂起修复**: Process deadlock fixed (async stream reads); `exiftool(-k).exe` automatically cloned to `exiftool.exe` to avoid keypress wait — 进程死锁修复，自动处理(-k)版本
+- 🐛 **Search-result drag-drop / 搜索拖放修复**: Windows Search result files resolved via dual-format fallback (`DataFormats.Files` → `FileNames`); Shell namespace paths properly handled — 双格式回退机制解决搜索结果拖放失效
+- 🐛 **JSON value type fix / 元数据读取修复**: `JsonElement.GetString()` replaced with `JsonElementToString()` to handle numeric/boolean/null types in exiftool output — 修复数字/布尔/空类型导致的元数据读取崩溃
 
 ### v1.3.4 (2026-06-04)
 
