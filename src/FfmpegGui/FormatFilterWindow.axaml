@@ -1,0 +1,27 @@
+<Window
+    x:Class="FfmpegGui.FormatFilterWindow"
+    xmlns="https://github.com/avaloniaui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Title="文件格式筛选"
+    Width="320" Height="420"
+    WindowStartupLocation="CenterOwner"
+    CanResize="False">
+  <Grid RowDefinitions="Auto,*,Auto" Margin="16">
+    <TextBlock Grid.Row="0" Text="选择可识别的图片文件格式"
+               FontSize="15" FontWeight="Bold" Margin="0,0,0,12"/>
+
+    <ScrollViewer Grid.Row="1">
+      <StackPanel x:Name="FormatCheckPanel" Spacing="8">
+        <!-- CheckBoxes 由代码动态生成 -->
+      </StackPanel>
+    </ScrollViewer>
+
+    <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right"
+                Spacing="8" Margin="0,12,0,0">
+      <Button Content="全选" Click="SelectAll_Click" Padding="10,4"/>
+      <Button Content="取消全选" Click="DeselectAll_Click" Padding="10,4"/>
+      <Button Content="确定" Click="Ok_Click" Padding="12,4" IsDefault="True"/>
+      <Button Content="取消" Click="Cancel_Click" Padding="12,4" IsCancel="True"/>
+    </StackPanel>
+  </Grid>
+</Window>

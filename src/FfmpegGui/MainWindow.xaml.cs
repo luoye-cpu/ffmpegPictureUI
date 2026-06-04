@@ -25,6 +25,7 @@ namespace FfmpegGui
         private ComboBox? FormatCombo;
         private ComboBox? EncoderCombo;
         private Slider? QualitySlider;
+        private TextBox? QualityBox;
         private TextBlock? QualityValue;
         private ComboBox? ChromaCombo;
         private ComboBox? ColorSpaceCombo;
@@ -61,6 +62,7 @@ namespace FfmpegGui
         private Button? ClearQueueButton;
         private CheckBox? AutoThreadsCheck;
         private bool _isQueueRunning = false;
+        private bool _updatingQuality = false;  // 防止滑块/数字框双向同步时递归
         private CheckBox? SingleThreadCheck;
         private TextBlock? ThreadHintLabel;
         private TextBlock? ConcurrencyLabel;
@@ -113,6 +115,7 @@ namespace FfmpegGui
         private TextBlock? FileCountLabel;
         private ListBox? MediaFileList;
         private TextBlock? MediaFileCount;
+        private Button? FormatFilterBtn;
         private readonly List<string> _selectedFiles = new();
         // 当批量拖拽多个文件夹时，记录每个已选文件对应的输入根目录，
         // 以便在保留输入目录结构时按各自根目录计算相对路径。
@@ -137,6 +140,7 @@ namespace FfmpegGui
             FormatCombo = this.FindControl<ComboBox>("FormatCombo");
             EncoderCombo = this.FindControl<ComboBox>("EncoderCombo");
             QualitySlider = this.FindControl<Slider>("QualitySlider");
+            QualityBox = this.FindControl<TextBox>("QualityBox");
             QualityValue = this.FindControl<TextBlock>("QualityValue");
             ChromaCombo = this.FindControl<ComboBox>("ChromaCombo");
             ColorSpaceCombo = this.FindControl<ComboBox>("ColorSpaceCombo");
@@ -216,6 +220,7 @@ namespace FfmpegGui
             MediaFileList = this.FindControl<ListBox>("MediaFileList");
             MediaFileCount = this.FindControl<TextBlock>("MediaFileCount");
             QueueCountLabel = this.FindControl<TextBlock>("QueueCountLabel");
+            FormatFilterBtn = this.FindControl<Button>("FormatFilterBtn");
 
             // 设置绑定和初始值
             if (FormatCombo != null) FormatCombo.SelectedIndex = 0;
@@ -404,7 +409,46 @@ namespace FfmpegGui
             }
 
             UpdateQualityLabel();
-            if (QualitySlider != null) QualitySlider.PropertyChanged += (_, e) => UpdateQualityLabel();
+            // 质量滑块与数字输入框双向同步（用 _updatingQuality 标志防递归）
+            // 输入框显示的是各格式的实际参数值（如 JPEG q:v 5、JXL distance 1.2）
+            if (QualitySlider != null)
+                QualitySlider.PropertyChanged += (_, e) =>
+                {
+                    if (e.Property.Name == nameof(Slider.Value) && !_updatingQuality)
+                    {
+                        _updatingQuality = true;
+                        var fmt = NormalizeFormat(FormatCombo?.SelectedItem as string);
+                        if (QualityBox != null) QualityBox.Text = Models.FfmpegOptions.FormatQualityForDisplay(fmt, (int)QualitySlider.Value);
+                        _updatingQuality = false;
+                        UpdateQualityLabel();
+                    }
+                };
+            if (QualityBox != null)
+            {
+                QualityBox.TextChanged += (_, _) =>
+                {
+                    if (_updatingQuality) return;
+                    var fmt = NormalizeFormat(FormatCombo?.SelectedItem as string);
+                    if (double.TryParse(QualityBox.Text, System.Globalization.NumberStyles.Float,
+                            System.Globalization.CultureInfo.InvariantCulture, out var parsed))
+                    {
+                        _updatingQuality = true;
+                        var sliderVal = Models.FfmpegOptions.ParseQualityFromDisplay(fmt, parsed);
+                        if (QualitySlider != null) QualitySlider.Value = sliderVal;
+                        _updatingQuality = false;
+                        UpdateQualityLabel();
+                    }
+                };
+                // 失焦时格式化文本（清理无效输入，显示正确的格式参数值）
+                QualityBox.LostFocus += (_, _) =>
+                {
+                    if (QualitySlider != null)
+                    {
+                        var fmt = NormalizeFormat(FormatCombo?.SelectedItem as string);
+                        QualityBox.Text = Models.FfmpegOptions.FormatQualityForDisplay(fmt, (int)QualitySlider.Value);
+                    }
+                };
+            }
 
             // 进度刷新定时器（每秒更新一次）
             var progressTimer = new System.Timers.Timer(1000);
@@ -643,6 +687,13 @@ namespace FfmpegGui
                 var fmt = NormalizeFormat(FormatCombo?.SelectedItem as string);
                 var val = (int)QualitySlider.Value;
                 QualityValue.Text = Models.FfmpegOptions.GetQualityLabel(fmt, val);
+                // 确保数字输入框与滑块保持同步（程序化变更时）
+                if (QualityBox != null && !_updatingQuality)
+                {
+                    _updatingQuality = true;
+                    QualityBox.Text = Models.FfmpegOptions.FormatQualityForDisplay(fmt, val);
+                    _updatingQuality = false;
+                }
             }
             RegenerateCommand();
         }
@@ -832,6 +883,8 @@ namespace FfmpegGui
             }
             if (QualitySlider != null)
                 QualitySlider.IsEnabled = false;
+            if (QualityBox != null)
+                QualityBox.IsEnabled = false;
         }
 
         private void RestoreLosslessAndQuality()
@@ -845,6 +898,7 @@ namespace FfmpegGui
                 && _currentCapabilities?.SupportsQuality == true)
             {
                 QualitySlider.IsEnabled = true;
+                if (QualityBox != null) QualityBox.IsEnabled = true;
             }
         }
 
@@ -1081,6 +1135,7 @@ namespace FfmpegGui
                 if (QualitySlider != null)
                 {
                     QualitySlider.IsEnabled = _currentCapabilities.SupportsQuality;
+                    if (QualityBox != null) QualityBox.IsEnabled = _currentCapabilities.SupportsQuality;
                     if (_currentCapabilities.SupportsQuality)
                     {
                         // 切换到该格式的视觉无损默认值
@@ -1111,6 +1166,17 @@ namespace FfmpegGui
                         // PNG/TIFF 纯无损格式，强制勾选且锁定
                         LosslessCheck.IsEnabled = false;
                         LosslessCheck.IsChecked = true;
+                        // 质量锁定 100%，滑块和输入框均禁用
+                        if (QualitySlider != null)
+                        {
+                            QualitySlider.Value = 100;
+                            QualitySlider.IsEnabled = false;
+                        }
+                        if (QualityBox != null)
+                        {
+                            QualityBox.Text = Models.FfmpegOptions.FormatQualityForDisplay(fmt3, 100);
+                            QualityBox.IsEnabled = false;
+                        }
                     }
                     else
                     {
@@ -1136,6 +1202,7 @@ namespace FfmpegGui
             else
             {
                 if (QualitySlider != null) QualitySlider.IsEnabled = true;
+                if (QualityBox != null) QualityBox.IsEnabled = true;
                 if (ChromaCombo != null) ChromaCombo.IsEnabled = true;
                 if (BitDepthCombo != null) BitDepthCombo.IsEnabled = true;
                 if (LosslessCheck != null) LosslessCheck.IsEnabled = true;
@@ -1285,17 +1352,7 @@ namespace FfmpegGui
             {
                 Title = "选择图片文件",
                 AllowMultiple = false,
-                FileTypeFilter = new[] 
-                {
-                    new FilePickerFileType("图片文件")
-                    {
-                        Patterns = new[] { "*.png", "*.jpg", "*.jpeg", "*.tiff", "*.webp", "*.avif", "*.jxl" }
-                    },
-                    new FilePickerFileType("所有文件")
-                    {
-                        Patterns = new[] { "*" }
-                    }
-                }
+                FileTypeFilter = AppSettingsService.Current.GetImageFilePickerFilter()
             });
 
             if (files != null && files.Count > 0)
@@ -1814,6 +1871,47 @@ namespace FfmpegGui
                 ThemeToggleBtn.Content = isDark ? "☀" : "🌙";
             AppSettingsService.Current.ThemeMode = isDark ? 2 : 1;
             AppSettingsService.Save();
+            // 主题切换时刷新队列列表，确保 Foreground 绑定重新计算
+            RefreshQueueListBinding();
+        }
+
+        /// <summary>刷新队列列表 ItemsSource 绑定，触发 DataTemplate 重新应用前景色</summary>
+        private void RefreshQueueListBinding()
+        {
+            if (QueueList == null) return;
+            var items = QueueList.ItemsSource;
+            QueueList.ItemsSource = null;
+            QueueList.ItemsSource = items;
+        }
+
+        private async void FormatFilter_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        {
+            var result = await FormatFilterWindow.ShowFilterDialog(this);
+            if (result != null)
+            {
+                // 格式筛选变更后，刷新当前已选文件的过滤显示
+                RefreshMediaFilesFilter();
+            }
+        }
+
+        /// <summary>根据当前启用的格式，重新过滤已选文件列表</summary>
+        private void RefreshMediaFilesFilter()
+        {
+            var enabledExts = new HashSet<string>(AppSettingsService.Current.GetEnabledExtensions());
+            var toRemove = _mediaFiles
+                .Where(f => !enabledExts.Contains(Path.GetExtension(f).ToLowerInvariant()))
+                .ToList();
+            foreach (var f in toRemove)
+                _mediaFiles.Remove(f);
+            toRemove = _selectedFiles
+                .Where(f => !enabledExts.Contains(Path.GetExtension(f).ToLowerInvariant()))
+                .ToList();
+            foreach (var f in toRemove)
+            {
+                _selectedFiles.Remove(f);
+                _selectedFileBaseDirs.Remove(f);
+            }
+            UpdateMediaFileCount();
         }
 
         private async void BrowseFfmpeg_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
@@ -2047,7 +2145,7 @@ namespace FfmpegGui
             var dir = folders[0].Path.LocalPath;
             // 记录当前输入基目录，后续用于保留子目录结构
             _inputBaseDir = dir;
-            var supported = new[] { ".png", ".jpg", ".jpeg", ".tiff", ".tif", ".webp", ".avif", ".jxl", ".bmp", ".gif" };
+            var supported = AppSettingsService.Current.GetEnabledExtensions();
 
             try
             {
@@ -2341,7 +2439,7 @@ namespace FfmpegGui
                 else
                 {
                     _inputPath = path;
-                    var supported = new[] { ".png", ".jpg", ".jpeg", ".tiff", ".tif", ".webp", ".avif", ".jxl", ".bmp", ".gif" };
+                    var supported = AppSettingsService.Current.GetEnabledExtensions();
                     if (supported.Contains(System.IO.Path.GetExtension(path).ToLower()))
                     {
                         // 添加到已选文件列表
@@ -2365,7 +2463,7 @@ namespace FfmpegGui
             else
             {
                 _selectedFiles.Clear();
-                var supported = new[] { ".png", ".jpg", ".jpeg", ".tiff", ".tif", ".webp", ".avif", ".jxl", ".bmp", ".gif" };
+                var supported = AppSettingsService.Current.GetEnabledExtensions();
                 _selectedFileBaseDirs.Clear();
                 foreach (var path in files)
                 {
@@ -2402,7 +2500,7 @@ namespace FfmpegGui
 
         private async Task ScanFolderAsync(string dir)
         {
-            var supported = new[] { ".png", ".jpg", ".jpeg", ".tiff", ".tif", ".webp", ".avif", ".jxl", ".bmp", ".gif" };
+            var supported = AppSettingsService.Current.GetEnabledExtensions();
             try
             {
                 // 记录基目录以便后续在输出目录中保留相对结构
