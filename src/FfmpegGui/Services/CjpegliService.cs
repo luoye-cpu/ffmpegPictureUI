@@ -215,8 +215,9 @@ namespace FfmpegGui.Services
             var sb = new StringBuilder();
             sb.Append($"\"{input}\" \"{output}\"");
 
-            // 质量
-            sb.Append($" --quality {opts.Quality}");
+            // 质量 → butteraugli distance（感知均匀，优于 --quality 线性映射）
+            var distance = Models.FfmpegOptions.MapJpegliDistance(opts.Quality);
+            sb.Append($" --distance {distance:F1}");
 
             // 色度子采样（auto 时不指定，由编码器自行判断）
             if (!string.IsNullOrWhiteSpace(opts.CjpegliChromaSubsampling)

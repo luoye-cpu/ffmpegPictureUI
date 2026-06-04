@@ -12,7 +12,7 @@ An Avalonia UI-based cross-platform batch image conversion tool that wraps `ffmp
 |---|---|
 | **Multi-format / 多格式** | JPEG, JPEG LI, PNG, WebP, AVIF, JPEG XL, TIFF |
 | **Encoder backend / 编码器后端** | Selectable ffmpeg / cjxl / cjpegli per format; cjxl for JXL lossless JPEG repack — 每种格式可选不同编码器后端 |
-| **Quality control / 质量控制** | Quality slider, chroma subsampling (auto/4:4:4/4:2:2/4:2:0/4:4:0), bit depth |
+| **Quality control / 质量控制** | Quality slider (snap-to-tick) + format-aware numeric input — 滑块吸附整数 + 格式感知数字输入框 (JPEG q:v 2-31, JXL distance 0-15, etc.) |
 | **Advanced codec options / 高级编码选项** | Per-format advanced panels: DCT algo, progressive mode, Huffman optimize, adaptive quant, sjpeg backend, PSNR target, lossless compression level, row-mt, still-picture, modular mode — 按格式独立高级面板 |
 | **Color management / 色彩管理** | Color space, primaries, TRC (optional advanced mode) |
 | **JXL Intelligence / JXL 智能** | Auto-detects JPEG-reconstruction vs native codestream; byte-level inspection (`JxlInspector`); picks optimal pipeline |
@@ -23,7 +23,9 @@ An Avalonia UI-based cross-platform batch image conversion tool that wraps `ffmp
 | **Privacy cleaning / 隐私清理** | Strip GPS, timestamps, camera info, all EXIF, XMP |
 | **Quality analysis / 质量分析** | SSIM + PSNR post-encode; auto-detects lossless |
 | **Presets / 预设** | Save/load conversion presets; export/import JSON |
-| **Dual theme / 双色主题** | Dark/Light mode; auto-persists |
+| **Dual theme / 双色主题** | Dark/Light mode; queue text adapts — 队列文字颜色自适应主题 |
+| **Format filter / 格式筛选** | Checkbox window to enable/disable recognized image formats; persists to settings — 勾选启用的图片格式，持久化保存 |
+| **Lossless lock / 无损锁定** | PNG/TIFF auto-lock quality at max, disable slider — 无损格式自动锁定最高质量 |
 
 ---
 
@@ -98,7 +100,10 @@ ffmpegPictureUI/
 │   │                     EncoderDetectionService, QualityAnalysisService
 │   ├── Controls/         MetadataEditor
 │   ├── MainWindow.xaml   Primary UI
-│   └── MainWindow.xaml.cs UI logic
+│   ├── MainWindow.xaml.cs UI logic
+│   ├── FormatFilterWindow.axaml  Format filter dialog
+│   ├── FormatFilterWindow.axaml.cs
+│   ├── ProgressWindow.xaml Progress UI
 ├── tools/                Verification utilities
 └── publish/              Publish output
 ```
@@ -106,6 +111,17 @@ ffmpegPictureUI/
 ---
 
 ## 📝 Changelog / 更新日志
+
+### v1.3.4 (2026-06-04)
+
+- 🎚️ **Format-aware quality input / 格式感知质量输入**: NumericUpDown replaced with TextBox showing actual codec values (JPEG q:v 2–31, JXL distance 0–15, AVIF CRF 0–63, etc.) — 数字输入框显示各格式实际编码参数值，滑块和输入框双向正反映射
+- 🎯 **Snap-to-tick slider / 吸附式滑块**: `TickFrequency="1" IsSnapToTickEnabled="True"` ensures every integer value is selectable — 滑块吸附到整数，确保所有质量值可选
+- 🔒 **PNG/TIFF quality lock / 无损格式锁定**: Quality slider+input auto-lock at max value and disabled for lossless-only formats — PNG/TIFF 自动锁定最高质量并禁用
+- 🌓 **Dark mode queue text fix / 深色模式队列文字修复**: Queue items now correctly switch to white text in dark mode via theme-aware `ErrorToColorConverter` + binding refresh — 队列文字在深色模式下正确切换为白色
+- 🏷️ **JPEGli -d parameter / JPEGli 距离参数**: cjpegli uses `--distance` (butteraugli) instead of `--quality` for perceptually uniform control; `-d` in JxlPipeline too — cjpegli 改用感知均匀的 butteraugli 距离参数
+- 🔍 **Image format filter / 图片格式筛选**: Checkbox window to toggle which file extensions are recognized when selecting files/folders/drag-drop; persisted to settings — 勾选窗口选择可识别的图片格式，影响文件选择/文件夹扫描/拖放，持久化保存
+- 🧹 **Format filter refresh / 格式筛选联动**: Changing format filter cleans up currently selected files and queue that no longer match — 格式筛选变更自动清理不匹配的已选文件
+- 🧹 **Deduplicated filter arrays / 去重硬编码**: All 6 hardcoded format extension arrays unified into `AppSettings.GetEnabledExtensions()` — 全部 6 处硬编码格式数组统一集中管理
 
 ### v1.3.3 (2026-06-04)
 

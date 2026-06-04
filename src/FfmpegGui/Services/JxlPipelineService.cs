@@ -32,7 +32,9 @@ namespace FfmpegGui.Services
                 var linkedToken = linked.Token;
 
                 // 启动 cjpegli：从 stdin 读取，输出到 stdout（通过重定向捕获后写入文件）
-                var cjArgs = $"- - --quality {quality}";
+                // quality 0-100 → butteraugli distance
+                var distance = Models.FfmpegOptions.MapJpegliDistance(quality);
+                var cjArgs = $"- - --distance {distance:F1}";
                 if (threads > 0) cjArgs += $" --num_threads={threads}";
 
                 var psiCj = new ProcessStartInfo

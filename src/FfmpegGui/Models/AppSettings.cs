@@ -51,5 +51,50 @@ namespace FfmpegGui.Models
         [JsonIgnore]
         public string? FfmpegDir =>
             string.IsNullOrWhiteSpace(FfmpegDirectory) ? null : FfmpegDirectory;
+
+        // ── 图片文件格式筛选 ──
+
+        /// <summary>
+        /// 所有可选的图片格式定义（名称 → 扩展名列表）
+        /// </summary>
+        [JsonIgnore]
+        public static readonly Dictionary<string, string[]> AllImageFormats = new()
+        {
+            ["PNG"]  = new[] { ".png" },
+            ["JPEG"] = new[] { ".jpg", ".jpeg" },
+            ["JPEG XL"] = new[] { ".jxl" },
+            ["WebP"] = new[] { ".webp" },
+            ["AVIF"] = new[] { ".avif" },
+            ["TIFF"] = new[] { ".tiff", ".tif" },
+            ["BMP"]  = new[] { ".bmp" },
+            ["GIF"]  = new[] { ".gif" },
+        };
+
+        /// <summary>用户启用的图片格式名称列表（持久化到 settings.json）</summary>
+        public List<string> EnabledImageFormats { get; set; } = new() { "PNG", "JPEG", "JPEG XL", "WebP", "AVIF", "TIFF", "BMP", "GIF" };
+
+        /// <summary>根据 EnabledImageFormats 获取所有启用的扩展名（小写）</summary>
+        public string[] GetEnabledExtensions()
+        {
+            var exts = new List<string>();
+            foreach (var name in EnabledImageFormats)
+            {
+                if (AllImageFormats.TryGetValue(name, out var arr))
+                    exts.AddRange(arr);
+            }
+            return exts.Select(e => e.ToLowerInvariant()).ToArray();
+        }
+
+        /// <summary>根据 EnabledImageFormats 生成 FilePicker 的 FileTypeFilter</summary>
+        public Avalonia.Platform.Storage.FilePickerFileType[] GetImageFilePickerFilter()
+        {
+            var enabledExts = GetEnabledExtensions();
+            var patterns = enabledExts.Select(e => "*" + e).ToArray();
+            return new[]
+            {
+                new Avalonia.Platform.Storage.FilePickerFileType("图片文件") { Patterns = patterns },
+                new Avalonia.Platform.Storage.FilePickerFileType("所有文件") { Patterns = new[] { "*" } }
+            };
+        }
     }
 }
