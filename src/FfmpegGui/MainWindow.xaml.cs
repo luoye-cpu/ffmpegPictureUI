@@ -23,6 +23,7 @@ namespace FfmpegGui
         private bool _initialized;
 
         private ComboBox? FormatCombo;
+        private ComboBox? ConversionModeCombo;
         private ComboBox? EncoderCombo;
         private Slider? QualitySlider;
         private TextBox? QualityBox;
@@ -56,6 +57,7 @@ namespace FfmpegGui
         private TextBox? ExifToolPathBox;
         private CheckBox? PreserveInputStructure;
         private CheckBox? StopAfterCurrentCheck;
+        private CheckBox? ShowErrorsOnlyCheck;
         private TextBlock? QueueProgressLabel;
         private TextBlock? QueueEtaLabel;
         private TextBlock? ElapsedLabel;
@@ -72,7 +74,18 @@ namespace FfmpegGui
         private Button? ThemeToggleBtn;
         private CheckBox? UseAdvancedCodec;
         private StackPanel? AdvancedCodecPanel;
+        // 动图参数
+        private StackPanel? AnimationPanel;
+        private TextBox? AnimationFpsBox;
+        private TextBox? AnimationLoopBox;
+        private TextBox? AnimationScaleWBox;
+        private StackPanel? StaticOnlyPanel;
+        // 各格式高级面板
         private StackPanel? PngCodecPanel;
+        private StackPanel? GifCodecPanel;
+        private StackPanel? ApngCodecPanel;
+        private CheckBox? GifPaletteCheck;
+        private CheckBox? GifDitherCheck;
         private StackPanel? WebpCodecPanel;
         private StackPanel? AvifCodecPanel;
         private StackPanel? JxlCodecPanel;
@@ -138,6 +151,7 @@ namespace FfmpegGui
 
             // 获取 UI 控件引用
             FormatCombo = this.FindControl<ComboBox>("FormatCombo");
+            ConversionModeCombo = this.FindControl<ComboBox>("ConversionModeCombo");
             EncoderCombo = this.FindControl<ComboBox>("EncoderCombo");
             QualitySlider = this.FindControl<Slider>("QualitySlider");
             QualityBox = this.FindControl<TextBox>("QualityBox");
@@ -177,7 +191,23 @@ namespace FfmpegGui
             ThreadHintLabel = this.FindControl<TextBlock>("ThreadHintLabel");
             UseAdvancedCodec = this.FindControl<CheckBox>("UseAdvancedCodec");
             AdvancedCodecPanel = this.FindControl<StackPanel>("AdvancedCodecPanel");
+            // 动图参数
+            AnimationPanel = this.FindControl<StackPanel>("AnimationPanel");
+            AnimationFpsBox = this.FindControl<TextBox>("AnimationFpsBox");
+            AnimationLoopBox = this.FindControl<TextBox>("AnimationLoopBox");
+            AnimationScaleWBox = this.FindControl<TextBox>("AnimationScaleWBox");
+            StaticOnlyPanel = this.FindControl<StackPanel>("StaticOnlyPanel");
+            // 动图参数默认空（auto，编码器自行决定）
+            if (AnimationFpsBox != null) AnimationFpsBox.Text = "";
+            if (AnimationLoopBox != null) AnimationLoopBox.Text = "";
+            if (AnimationScaleWBox != null) AnimationScaleWBox.Text = "";
+            if (AnimationPanel != null) AnimationPanel.IsVisible = false;
+            // 各格式高级面板
             PngCodecPanel = this.FindControl<StackPanel>("PngCodecPanel");
+            GifCodecPanel = this.FindControl<StackPanel>("GifCodecPanel");
+            ApngCodecPanel = this.FindControl<StackPanel>("ApngCodecPanel");
+            GifPaletteCheck = this.FindControl<CheckBox>("GifPaletteCheck");
+            GifDitherCheck = this.FindControl<CheckBox>("GifDitherCheck");
             WebpCodecPanel = this.FindControl<StackPanel>("WebpCodecPanel");
             AvifCodecPanel = this.FindControl<StackPanel>("AvifCodecPanel");
             JxlCodecPanel = this.FindControl<StackPanel>("JxlCodecPanel");
@@ -245,6 +275,12 @@ namespace FfmpegGui
                 RegenerateCommand();
             };
             if (ThreadsBox != null) ThreadsBox.ValueChanged += (_, _) => RegenerateCommand();
+            // 动图参数
+            if (AnimationFpsBox != null) AnimationFpsBox.TextChanged += (_, _) => RegenerateCommand();
+            if (AnimationLoopBox != null) AnimationLoopBox.TextChanged += (_, _) => RegenerateCommand();
+            if (AnimationScaleWBox != null) AnimationScaleWBox.TextChanged += (_, _) => RegenerateCommand();
+            if (GifPaletteCheck != null) GifPaletteCheck.IsCheckedChanged += (_, _) => RegenerateCommand();
+            if (GifDitherCheck != null) GifDitherCheck.IsCheckedChanged += (_, _) => RegenerateCommand();
             // 高级色彩参数
             if (ColorPrimariesCombo != null) ColorPrimariesCombo.SelectionChanged += (_, _) => RegenerateCommand();
             if (ColorTrcCombo != null) ColorTrcCombo.SelectionChanged += (_, _) => RegenerateCommand();
@@ -335,6 +371,7 @@ namespace FfmpegGui
 
             // 停止设置复选框（放在队列按钮旁）
             StopAfterCurrentCheck = this.FindControl<CheckBox>("StopAfterCurrentCheck");
+            ShowErrorsOnlyCheck = this.FindControl<CheckBox>("ShowErrorsOnlyCheck");
             QueueProgressLabel = this.FindControl<TextBlock>("QueueProgressLabel");
             QueueEtaLabel = this.FindControl<TextBlock>("QueueEtaLabel");
             ElapsedLabel = this.FindControl<TextBlock>("ElapsedLabel");
@@ -1056,6 +1093,65 @@ namespace FfmpegGui
             _ = RefreshEncoderListAsync();
         }
 
+        // 静态图片模式格式列表
+        private static readonly string[] StillFormats = { "JPEG", "JPEG LI", "PNG", "WebP", "AVIF", "JPEG XL", "TIFF" };
+        // 动图模式格式列表
+        private static readonly string[] AnimatedFormats = { "GIF", "WebP (动图)", "PNG (APNG)", "AVIF (动图)", "JPEG XL (动图)" };
+
+        private static int ParseInt(string? text, int defaultValue, int min, int max)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return defaultValue;
+            if (int.TryParse(text, out var val))
+                return Math.Clamp(val, min, max);
+            return defaultValue;
+        }
+
+        private static int? ParseOptionalInt(string? text, int min, int max)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return null;
+            if (int.TryParse(text, out var val))
+                return Math.Clamp(val, min, max);
+            return null;
+        }
+
+        private void ConversionMode_SelectionChanged(object? sender, SelectionChangedEventArgs e)
+        {
+            if (FormatCombo == null || ConversionModeCombo == null) return;
+
+            var previousFormat = FormatCombo.SelectedItem as string ?? "";
+            var isAnimated = ConversionModeCombo.SelectedIndex == 1;
+            var targetFormats = isAnimated ? AnimatedFormats : StillFormats;
+
+            // 动图模式：控制面板可见性 + 设置默认值
+            if (AnimationPanel != null)
+                AnimationPanel.IsVisible = isAnimated;
+            if (StaticOnlyPanel != null)
+                StaticOnlyPanel.IsVisible = !isAnimated;
+            if (isAnimated)
+            {
+                // 保持空值（auto 模式），不清零
+            }
+
+            // 更新 FormatCombo 选项列表
+            FormatCombo.Items!.Clear();
+            foreach (var f in targetFormats)
+                FormatCombo.Items.Add(f);
+
+            // 尝试保留之前的选中项（如果在新列表中）
+            var idx = Array.IndexOf(targetFormats, previousFormat);
+            if (idx >= 0)
+            {
+                FormatCombo.SelectedIndex = idx;
+            }
+            else
+            {
+                FormatCombo.SelectedIndex = 0;
+                // 需要手动触发 SelectionChanged（列表重建后 SelectedIndex=0 可能不会自动触发）
+                UpdateOptionAvailability();
+                _ = RefreshEncoderListAsync();
+            }
+        }
+
         private async Task RefreshEncoderListAsync()
         {
             if (EncoderCombo == null || FormatCombo == null) return;
@@ -1116,10 +1212,15 @@ namespace FfmpegGui
                 "JPEG" => "jpg",
                 "JPEG LI" => "jpegli",
                 "JPEG XL" => "jxl",
+                "JPEG XL (动图)" => "jxl",
                 "PNG" => "png",
+                "PNG (APNG)" => "apng",
                 "WebP" => "webp",
+                "WebP (动图)" => "webp",
                 "AVIF" => "avif",
+                "AVIF (动图)" => "avif",
                 "TIFF" => "tiff",
+                "GIF" => "gif",
                 _ => displayName.Trim().ToLower()
             };
         }
@@ -1265,6 +1366,8 @@ namespace FfmpegGui
         {
             // 全部隐藏
             if (PngCodecPanel != null) PngCodecPanel.IsVisible = false;
+            if (GifCodecPanel != null) GifCodecPanel.IsVisible = false;
+            if (ApngCodecPanel != null) ApngCodecPanel.IsVisible = false;
             if (WebpCodecPanel != null) WebpCodecPanel.IsVisible = false;
             if (AvifCodecPanel != null) AvifCodecPanel.IsVisible = false;
             if (JxlCodecPanel != null) JxlCodecPanel.IsVisible = false;
@@ -1278,6 +1381,8 @@ namespace FfmpegGui
             switch (fmt)
             {
                 case "png": if (PngCodecPanel != null) PngCodecPanel.IsVisible = true; break;
+                case "apng": if (ApngCodecPanel != null) ApngCodecPanel.IsVisible = true; break;
+                case "gif": if (GifCodecPanel != null) GifCodecPanel.IsVisible = true; break;
                 case "webp": if (WebpCodecPanel != null) WebpCodecPanel.IsVisible = true; break;
                 case "avif": if (AvifCodecPanel != null) AvifCodecPanel.IsVisible = true; break;
                 case "jxl":
@@ -1449,7 +1554,13 @@ namespace FfmpegGui
                 StripExifTime = StripExifTimeCheck?.IsChecked ?? false,
                 StripExifCamera = StripExifCameraCheck?.IsChecked ?? false,
                 StripExifAll = StripExifAllCheck?.IsChecked ?? false,
-                StripXmp = StripXmpCheck?.IsChecked ?? false
+                StripXmp = StripXmpCheck?.IsChecked ?? false,
+                // 动图参数
+                AnimationFps = ParseOptionalInt(AnimationFpsBox?.Text, 1, 60),
+                AnimationLoop = ParseInt(AnimationLoopBox?.Text, 0, -1, 999),
+                GifPaletteOptimize = GifPaletteCheck?.IsChecked ?? true,
+                GifDither = GifDitherCheck?.IsChecked ?? true,
+                AnimationScaleW = ParseOptionalInt(AnimationScaleWBox?.Text, 0, 4096) ?? 0
             };
 
             var outp = GetOutputPath(inputPath, options.Format, inputBaseDir);
@@ -1462,7 +1573,8 @@ namespace FfmpegGui
             // 自动生成指令预览（cjxl 路径显示 cjxl 命令，否则显示 ffmpeg）
             if (CommandText != null)
             {
-                var isCjxl = fmt is "jxl" && IsJpegInput(inputPath) && CjxlService.IsAvailable;
+                var isCjxl = fmt is "jxl" && CjxlService.IsAvailable
+                    && (IsJpegInput(inputPath) || encoderBackend == EncoderBackend.Cjxl);
                 if (isCjxl)
                 {
                     var effort = options.JxlEffort ?? 7;
@@ -1564,6 +1676,9 @@ namespace FfmpegGui
                     }
                 }
                 // Status 变更由 INotifyPropertyChanged + DataTemplate 绑定自动反映到 UI
+                // 若"仅显示报错"模式开启，刷新过滤
+                if (ShowErrorsOnlyCheck?.IsChecked == true)
+                    ApplyErrorOnlyFilter();
             });
         }
 
@@ -1593,6 +1708,23 @@ namespace FfmpegGui
                 if (LogText != null) LogText.Text += $"已删除: {Path.GetFileName(item.InputPath)}\n";
                 UpdateQueueCountLabel();
             }
+        }
+
+        private void ShowErrorsOnly_Changed(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        {
+            if (QueueList == null) return;
+            if (ShowErrorsOnlyCheck?.IsChecked == true)
+                ApplyErrorOnlyFilter();
+            else
+                QueueList.ItemsSource = _queueView;
+        }
+
+        private void ApplyErrorOnlyFilter()
+        {
+            if (QueueList == null) return;
+            var filtered = new ObservableCollection<Models.QueueItem>(
+                _queueView.Where(item => item.HasError || !item.IsCompleted));
+            QueueList.ItemsSource = filtered;
         }
 
         private void ClearQueue_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
@@ -1875,7 +2007,8 @@ namespace FfmpegGui
             _outputPath = GetOutputPath(_inputPath, options.Format);
             if (CommandText != null)
             {
-                var isCjxl = fmt is "jxl" && IsJpegInput(_inputPath) && CjxlService.IsAvailable;
+                var isCjxl = fmt is "jxl" && CjxlService.IsAvailable
+                    && (IsJpegInput(_inputPath) || options.EncoderBackend == EncoderBackend.Cjxl);
                 if (isCjxl)
                 {
                     var effort = options.JxlEffort ?? 7;
@@ -2209,8 +2342,13 @@ namespace FfmpegGui
 
         private string GetOutputPath(string inputPath, string format, string? overrideInputBaseDir = null)
         {
-            // jpegli 生成标准 .jpg 文件（非 .jpegli 后缀）
-            var ext = format == "jpegli" ? "jpg" : format;
+            // jpegli 生成标准 .jpg，apng 生成 .png
+            var ext = format switch
+            {
+                "jpegli" => "jpg",
+                "apng" => "png",
+                _ => format
+            };
             var outDir = AppSettingsService.Current.OutputDirectory;
             var fileName = Path.GetFileNameWithoutExtension(inputPath) + "." + ext;
 
