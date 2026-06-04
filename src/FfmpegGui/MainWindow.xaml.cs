@@ -1684,9 +1684,9 @@ namespace FfmpegGui
             try { mediaInfo = await MediaInfoService.GetMediaInfoAsync(filePath); }
             catch (Exception ex) { mediaInfo = $"获取媒体信息失败: {ex.Message}"; }
 
-            var editor = new Controls.MetadataEditor { FilePath = filePath, Margin = new Avalonia.Thickness(0, 8, 0, 0) };
+            var editor = new Controls.MetadataEditor { FilePath = filePath };
 
-            // 媒体信息面板（只读、可折叠）
+            // 媒体信息面板（只读，固定高度可滚动）
             var mediaInfoBox = new TextBox
             {
                 Text = mediaInfo,
@@ -1694,7 +1694,7 @@ namespace FfmpegGui
                 AcceptsReturn = true,
                 TextWrapping = Avalonia.Media.TextWrapping.Wrap,
                 FontSize = 11,
-                MaxHeight = 180,
+                Height = 140,
                 FontFamily = "Consolas, monospace"
             };
 
@@ -1706,23 +1706,23 @@ namespace FfmpegGui
                 Margin = new Avalonia.Thickness(0, 0, 0, 4)
             };
 
-            var panel = new StackPanel { Spacing = 0 };
-            panel.Children.Add(infoHeader);
-            panel.Children.Add(mediaInfoBox);
-            panel.Children.Add(editor);
-
-            var scrollViewer = new ScrollViewer
+            var infoSection = new Border
             {
-                Content = panel,
-                Padding = new Avalonia.Thickness(12)
+                Margin = new Avalonia.Thickness(0, 0, 0, 10),
+                Child = new StackPanel { Children = { infoHeader, mediaInfoBox } }
             };
+
+            var layout = new DockPanel { Margin = new Avalonia.Thickness(12) };
+            DockPanel.SetDock(infoSection, Avalonia.Controls.Dock.Top);
+            layout.Children.Add(infoSection);
+            layout.Children.Add(editor);
 
             var win = new Window
             {
                 Title = $"📝 元数据编辑 — {Path.GetFileName(filePath)}",
                 Width = 680, Height = 750,
                 WindowStartupLocation = WindowStartupLocation.CenterOwner,
-                Content = scrollViewer
+                Content = layout
             };
             win.Show(this);
         }
@@ -2437,7 +2437,9 @@ namespace FfmpegGui
 
         private void DragEnter(object? sender, DragEventArgs e)
         {
-            if (e.Data.Contains(DataFormats.Files))
+#pragma warning disable CS0618
+            if (e.Data.Contains(DataFormats.Files) || e.Data.Contains(DataFormats.FileNames))
+#pragma warning restore CS0618
             {
                 if (MediaDropZone != null) MediaDropZone.BorderBrush = Avalonia.Media.Brushes.DodgerBlue;
                 if (MediaInfoText != null) MediaInfoText.Text = "释放以载入文件/文件夹...";
@@ -2453,19 +2455,40 @@ namespace FfmpegGui
         private async void DropHandler(object? sender, DragEventArgs e)
         {
             DragLeave(sender, e); // 还原样式
-            if (!e.Data.Contains(DataFormats.Files)) return;
 
-            var items = e.Data.GetFiles();
-            if (items == null) return;
-
-            // 将拖放项解析为真实文件系统路径（处理 Windows 搜索结果的 Shell 路径）
             var files = new List<string>();
-            foreach (var item in items)
+
+            // ① 优先使用 IStorageItem 接口（常规文件拖放）
+            if (e.Data.Contains(DataFormats.Files))
             {
-                var localPath = item.TryGetLocalPath() ?? item.Path.LocalPath;
-                if (!string.IsNullOrWhiteSpace(localPath))
-                    files.Add(localPath);
+                var items = e.Data.GetFiles();
+                if (items != null)
+                {
+                    foreach (var item in items)
+                    {
+                        var localPath = item.TryGetLocalPath() ?? item.Path.LocalPath;
+                        if (!string.IsNullOrWhiteSpace(localPath))
+                            files.Add(localPath);
+                    }
+                }
             }
+
+            // ② 回退：使用原始文件名格式（Windows 搜索结果等 Shell 命名空间路径）
+#pragma warning disable CS0618 // FileNames 在 Windows 桌面平台仍可用
+            if (files.Count == 0 && e.Data.Contains(DataFormats.FileNames))
+            {
+                var rawFiles = e.Data.GetFileNames();
+                if (rawFiles != null)
+                {
+                    foreach (var path in rawFiles)
+                    {
+                        if (!string.IsNullOrWhiteSpace(path))
+                            files.Add(path);
+                    }
+                }
+            }
+#pragma warning restore CS0618
+
             if (files.Count == 0) return;
 
             // 单文件 → 作为输入文件
