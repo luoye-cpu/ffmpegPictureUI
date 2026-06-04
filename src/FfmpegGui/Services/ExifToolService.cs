@@ -245,58 +245,127 @@ namespace FfmpegGui.Services
         // ──────── 元数据编辑功能 ────────
 
         /// <summary>元数据分类定义</summary>
-        public enum MetadataCategory { 基本信息, 日期时间, 相机信息, GPS位置, 图片属性 }
+        public enum MetadataCategory
+        {
+            基本信息, 日期时间, 相机信息, 拍摄参数, GPS位置,
+            图片属性, IPTC信息, XMP信息, 色彩配置
+        }
 
         /// <summary>元数据字段定义：显示名 → (exiftool标签名, 分类)</summary>
         public static readonly Dictionary<string, (string TagName, MetadataCategory Category)> MetadataFields = new()
         {
-            // ── 基本信息 ──
-            ["标题"]         = ("Title",       MetadataCategory.基本信息),
-            ["描述"]         = ("Description", MetadataCategory.基本信息),
-            ["作者"]         = ("Author",      MetadataCategory.基本信息),
-            ["艺术家"]       = ("Artist",      MetadataCategory.基本信息),
-            ["版权"]         = ("Copyright",   MetadataCategory.基本信息),
-            ["注释"]         = ("Comment",     MetadataCategory.基本信息),
-            ["关键词"]       = ("Keywords",    MetadataCategory.基本信息),
-            ["评级"]         = ("Rating",      MetadataCategory.基本信息),
-            ["文档名称"]     = ("DocumentName",MetadataCategory.基本信息),
-            ["软件"]         = ("Software",    MetadataCategory.基本信息),
+            // ── 基本信息 (17) ──
+            ["标题"]           = ("Title",            MetadataCategory.基本信息),
+            ["描述"]           = ("Description",      MetadataCategory.基本信息),
+            ["作者"]           = ("Author",           MetadataCategory.基本信息),
+            ["艺术家"]         = ("Artist",           MetadataCategory.基本信息),
+            ["版权"]           = ("Copyright",        MetadataCategory.基本信息),
+            ["注释"]           = ("Comment",          MetadataCategory.基本信息),
+            ["关键词"]         = ("Keywords",         MetadataCategory.基本信息),
+            ["评级"]           = ("Rating",           MetadataCategory.基本信息),
+            ["文档名称"]       = ("DocumentName",     MetadataCategory.基本信息),
+            ["软件"]           = ("Software",         MetadataCategory.基本信息),
+            ["主题"]           = ("Subject",          MetadataCategory.基本信息),
+            ["说明"]           = ("Instructions",     MetadataCategory.基本信息),
+            ["类别"]           = ("Category",         MetadataCategory.基本信息),
+            ["子类别"]         = ("SupplementalCategories", MetadataCategory.基本信息),
+            ["来源"]           = ("Source",           MetadataCategory.基本信息),
+            ["署名"]           = ("Credit",           MetadataCategory.基本信息),
+            ["原始文件名"]     = ("OriginalFileName", MetadataCategory.基本信息),
 
-            // ── 日期时间 ──
-            ["拍摄日期"]     = ("DateTimeOriginal", MetadataCategory.日期时间),
-            ["创建日期"]     = ("CreateDate",       MetadataCategory.日期时间),
-            ["修改日期"]     = ("ModifyDate",       MetadataCategory.日期时间),
+            // ── 日期时间 (6) ──
+            ["拍摄日期"]       = ("DateTimeOriginal",  MetadataCategory.日期时间),
+            ["创建日期"]       = ("CreateDate",        MetadataCategory.日期时间),
+            ["修改日期"]       = ("ModifyDate",        MetadataCategory.日期时间),
+            ["数字化日期"]     = ("DigitizationDate",  MetadataCategory.日期时间),
+            ["获取日期"]       = ("DateAcquired",      MetadataCategory.日期时间),
+            ["GPS 日期"]       = ("GPSDateTime",       MetadataCategory.日期时间),
 
-            // ── 相机信息 ──
-            ["相机制造商"]   = ("Make",            MetadataCategory.相机信息),
-            ["相机型号"]     = ("Model",           MetadataCategory.相机信息),
-            ["镜头制造商"]   = ("LensMake",        MetadataCategory.相机信息),
-            ["镜头型号"]     = ("LensModel",       MetadataCategory.相机信息),
-            ["焦距"]         = ("FocalLength",     MetadataCategory.相机信息),
-            ["光圈"]         = ("FNumber",         MetadataCategory.相机信息),
-            ["ISO"]          = ("ISO",             MetadataCategory.相机信息),
-            ["曝光时间"]     = ("ExposureTime",    MetadataCategory.相机信息),
-            ["快门速度"]     = ("ShutterSpeedValue",MetadataCategory.相机信息),
-            ["闪光灯"]       = ("Flash",           MetadataCategory.相机信息),
-            ["白平衡"]       = ("WhiteBalance",    MetadataCategory.相机信息),
-            ["曝光程序"]     = ("ExposureProgram", MetadataCategory.相机信息),
-            ["测光模式"]     = ("MeteringMode",    MetadataCategory.相机信息),
-            ["场景类型"]     = ("SceneCaptureType",MetadataCategory.相机信息),
-            ["感光方式"]     = ("SensingMethod",   MetadataCategory.相机信息),
-            ["曝光补偿"]     = ("ExposureBiasValue",MetadataCategory.相机信息),
+            // ── 相机信息 (10) ──
+            ["相机制造商"]     = ("Make",              MetadataCategory.相机信息),
+            ["相机型号"]       = ("Model",             MetadataCategory.相机信息),
+            ["相机序列号"]     = ("BodySerialNumber",  MetadataCategory.相机信息),
+            ["相机所有者"]     = ("CameraOwnerName",   MetadataCategory.相机信息),
+            ["镜头制造商"]     = ("LensMake",          MetadataCategory.相机信息),
+            ["镜头型号"]       = ("LensModel",         MetadataCategory.相机信息),
+            ["镜头序列号"]     = ("LensSerialNumber",  MetadataCategory.相机信息),
+            ["镜头规格"]       = ("LensSpecification", MetadataCategory.相机信息),
+            ["镜头ID"]         = ("LensID",            MetadataCategory.相机信息),
+            ["镜头信息"]       = ("LensInfo",          MetadataCategory.相机信息),
 
-            // ── GPS 位置 ──
-            ["GPS 纬度"]     = ("GPSLatitude",     MetadataCategory.GPS位置),
-            ["GPS 经度"]     = ("GPSLongitude",    MetadataCategory.GPS位置),
-            ["GPS 海拔"]     = ("GPSAltitude",     MetadataCategory.GPS位置),
-            ["GPS 日期"]     = ("GPSDateTime",     MetadataCategory.GPS位置),
-            ["GPS 纬度参考"] = ("GPSLatitudeRef",  MetadataCategory.GPS位置),
-            ["GPS 经度参考"] = ("GPSLongitudeRef", MetadataCategory.GPS位置),
+            // ── 拍摄参数 (12) ──
+            ["焦距"]           = ("FocalLength",             MetadataCategory.拍摄参数),
+            ["35mm 等效焦距"]  = ("FocalLengthIn35mmFormat", MetadataCategory.拍摄参数),
+            ["光圈"]           = ("FNumber",                 MetadataCategory.拍摄参数),
+            ["最大光圈"]       = ("MaxApertureValue",        MetadataCategory.拍摄参数),
+            ["ISO"]            = ("ISO",                     MetadataCategory.拍摄参数),
+            ["曝光时间"]       = ("ExposureTime",            MetadataCategory.拍摄参数),
+            ["快门速度"]       = ("ShutterSpeedValue",       MetadataCategory.拍摄参数),
+            ["曝光补偿"]       = ("ExposureBiasValue",       MetadataCategory.拍摄参数),
+            ["曝光程序"]       = ("ExposureProgram",         MetadataCategory.拍摄参数),
+            ["曝光模式"]       = ("ExposureMode",            MetadataCategory.拍摄参数),
+            ["测光模式"]       = ("MeteringMode",            MetadataCategory.拍摄参数),
+            ["场景类型"]       = ("SceneCaptureType",        MetadataCategory.拍摄参数),
+            ["感光方式"]       = ("SensingMethod",           MetadataCategory.拍摄参数),
+            ["闪光灯"]         = ("Flash",                   MetadataCategory.拍摄参数),
+            ["白平衡"]         = ("WhiteBalance",            MetadataCategory.拍摄参数),
+            ["光源"]           = ("LightSource",             MetadataCategory.拍摄参数),
+            ["对比度"]         = ("Contrast",                MetadataCategory.拍摄参数),
+            ["饱和度"]         = ("Saturation",              MetadataCategory.拍摄参数),
+            ["锐度"]           = ("Sharpness",               MetadataCategory.拍摄参数),
 
-            // ── 图片属性 ──
-            ["方向"]         = ("Orientation",     MetadataCategory.图片属性),
-            ["图像描述"]     = ("ImageDescription",MetadataCategory.图片属性),
-            ["用户注释"]     = ("UserComment",     MetadataCategory.图片属性),
+            // ── GPS 位置 (8) ──
+            ["GPS 纬度"]       = ("GPSLatitude",       MetadataCategory.GPS位置),
+            ["GPS 经度"]       = ("GPSLongitude",      MetadataCategory.GPS位置),
+            ["GPS 海拔"]       = ("GPSAltitude",       MetadataCategory.GPS位置),
+            ["GPS 纬度参考"]   = ("GPSLatitudeRef",    MetadataCategory.GPS位置),
+            ["GPS 经度参考"]   = ("GPSLongitudeRef",   MetadataCategory.GPS位置),
+            ["GPS 海拔参考"]   = ("GPSAltitudeRef",    MetadataCategory.GPS位置),
+            ["GPS 地图基准"]   = ("GPSMapDatum",       MetadataCategory.GPS位置),
+            ["GPS 处理方法"]   = ("GPSProcessingMethod",MetadataCategory.GPS位置),
+
+            // ── 图片属性 (9) ──
+            ["方向"]           = ("Orientation",       MetadataCategory.图片属性),
+            ["图像描述"]       = ("ImageDescription",  MetadataCategory.图片属性),
+            ["用户注释"]       = ("UserComment",       MetadataCategory.图片属性),
+            ["图像宽度"]       = ("ImageWidth",        MetadataCategory.图片属性),
+            ["图像高度"]       = ("ImageHeight",       MetadataCategory.图片属性),
+            ["位深"]           = ("BitsPerSample",     MetadataCategory.图片属性),
+            ["压缩"]           = ("Compression",       MetadataCategory.图片属性),
+            ["分辨率单位"]     = ("ResolutionUnit",    MetadataCategory.图片属性),
+            ["X 分辨率"]       = ("XResolution",       MetadataCategory.图片属性),
+            ["Y 分辨率"]       = ("YResolution",       MetadataCategory.图片属性),
+
+            // ── IPTC 信息 (10) ──
+            ["IPTC 署名"]      = ("Byline",            MetadataCategory.IPTC信息),
+            ["IPTC 署名头衔"]  = ("BylineTitle",       MetadataCategory.IPTC信息),
+            ["IPTC 标题"]      = ("Headline",          MetadataCategory.IPTC信息),
+            ["IPTC 说明"]      = ("Caption",           MetadataCategory.IPTC信息),
+            ["IPTC 说明作者"]  = ("CaptionWriter",     MetadataCategory.IPTC信息),
+            ["IPTC 特殊说明"]  = ("SpecialInstructions",MetadataCategory.IPTC信息),
+            ["IPTC 国家"]      = ("Country",           MetadataCategory.IPTC信息),
+            ["IPTC 省/州"]     = ("ProvinceState",     MetadataCategory.IPTC信息),
+            ["IPTC 城市"]      = ("City",              MetadataCategory.IPTC信息),
+            ["IPTC 地点"]      = ("Location",          MetadataCategory.IPTC信息),
+            ["IPTC 版权声明"]  = ("CopyrightNotice",   MetadataCategory.IPTC信息),
+
+            // ── XMP 信息 (8) ──
+            ["XMP 创建者"]     = ("Creator",           MetadataCategory.XMP信息),
+            ["XMP 创建工具"]   = ("CreatorTool",       MetadataCategory.XMP信息),
+            ["XMP 权利"]       = ("Rights",            MetadataCategory.XMP信息),
+            ["XMP 网页声明"]   = ("WebStatement",      MetadataCategory.XMP信息),
+            ["XMP 标记"]       = ("Label",             MetadataCategory.XMP信息),
+            ["XMP 评级"]       = ("Rating",            MetadataCategory.XMP信息),
+            ["XMP 标识符"]     = ("Identifier",        MetadataCategory.XMP信息),
+            ["XMP 使用条款"]   = ("UsageTerms",        MetadataCategory.XMP信息),
+
+            // ── 色彩配置 (6) ──
+            ["色彩空间"]       = ("ColorSpace",        MetadataCategory.色彩配置),
+            ["Gamma"]          = ("Gamma",             MetadataCategory.色彩配置),
+            ["白点"]           = ("WhitePoint",        MetadataCategory.色彩配置),
+            ["原色"]           = ("PrimaryChromaticities", MetadataCategory.色彩配置),
+            ["ICC 配置文件"]   = ("ICCProfile",        MetadataCategory.色彩配置),
+            ["色彩模式"]       = ("ColorMode",         MetadataCategory.色彩配置),
         };
 
         /// <summary>

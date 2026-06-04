@@ -117,11 +117,12 @@ ffmpegPictureUI/
 - 🎚️ **Format-aware quality input / 格式感知质量输入**: NumericUpDown replaced with TextBox showing actual codec values (JPEG q:v 2–31, JXL distance 0–15, AVIF CRF 0–63, etc.) — 数字输入框显示各格式实际编码参数值，滑块和输入框双向正反映射
 - 🎯 **Snap-to-tick slider / 吸附式滑块**: `TickFrequency="1" IsSnapToTickEnabled="True"` ensures every integer value is selectable — 滑块吸附到整数，确保所有质量值可选
 - 🔒 **PNG/TIFF quality lock / 无损格式锁定**: Quality slider+input auto-lock at max value and disabled for lossless-only formats — PNG/TIFF 自动锁定最高质量并禁用
-- 🌓 **Dark mode queue text fix / 深色模式队列文字修复**: Queue items now correctly switch to white text in dark mode via theme-aware `ErrorToColorConverter` + binding refresh — 队列文字在深色模式下正确切换为白色
-- 🏷️ **JPEGli -d parameter / JPEGli 距离参数**: cjpegli uses `--distance` (butteraugli) instead of `--quality` for perceptually uniform control; `-d` in JxlPipeline too — cjpegli 改用感知均匀的 butteraugli 距离参数
-- 🔍 **Image format filter / 图片格式筛选**: Checkbox window to toggle which file extensions are recognized when selecting files/folders/drag-drop; persisted to settings — 勾选窗口选择可识别的图片格式，影响文件选择/文件夹扫描/拖放，持久化保存
-- 🧹 **Format filter refresh / 格式筛选联动**: Changing format filter cleans up currently selected files and queue that no longer match — 格式筛选变更自动清理不匹配的已选文件
+- 🌓 **Dark mode queue text fix / 深色模式队列文字修复**: Queue items correctly switch to white text in dark mode via theme-aware `ErrorToColorConverter` + binding refresh — 队列文字在深色模式下正确切换为白色
+- 🏷️ **JPEGli -d parameter / JPEGli 距离参数**: cjpegli uses `--distance` (butteraugli) instead of `--quality` for perceptually uniform control — cjpegli 改用感知均匀的 butteraugli 距离参数
+- 🔍 **Image format filter / 图片格式筛选**: Checkbox window to toggle which file extensions are recognized; persisted to settings; cleans up non-matching files — 勾选窗口选择可识别的图片格式，持久化保存，自动清理不匹配文件
 - 🧹 **Deduplicated filter arrays / 去重硬编码**: All 6 hardcoded format extension arrays unified into `AppSettings.GetEnabledExtensions()` — 全部 6 处硬编码格式数组统一集中管理
+- 📝 **Enhanced metadata editor / 元数据编辑器增强**: Expanded from 39 to ~90 fields across 9 categories (Basic, DateTime, Camera, Shooting, GPS, Image, IPTC, XMP, Color); double-click selected files opens metadata editor with ffmpeg media info — 从 39 字段扩展到 ~90 字段 9 大分类，双击已选文件打开含 ffmpeg 媒体信息的元数据编辑器
+- 🐛 **Search-result drag-drop fix / 搜索拖放修复**: Files dragged from Windows Search results now correctly resolve Shell namespace paths via `TryGetLocalPath()` — 从 Windows 搜索结果拖放的文件通过 TryGetLocalPath 正确解析 Shell 路径
 
 ### v1.3.3 (2026-06-04)
 

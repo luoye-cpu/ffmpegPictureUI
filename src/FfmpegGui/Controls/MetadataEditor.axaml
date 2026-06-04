@@ -32,7 +32,7 @@
         <TextBlock x:Name="StatusText" FontSize="11" Foreground="Gray" TextWrapping="Wrap"/>
 
         <!-- 动态字段区域（ScrollViewer） -->
-        <ScrollViewer MaxHeight="420">
+        <ScrollViewer MaxHeight="600">
           <StackPanel x:Name="FieldsPanel" Spacing="10"/>
         </ScrollViewer>
       </StackPanel>

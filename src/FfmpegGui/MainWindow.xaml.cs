@@ -1672,29 +1672,59 @@ namespace FfmpegGui
         {
             if (MediaFileList?.SelectedItem is string path && !string.IsNullOrWhiteSpace(path))
             {
-                try
-                {
-                    var info = await MediaInfoService.GetMediaInfoAsync(path);
-                    // 用简单弹窗展示
-                    var win = new Window
-                    {
-                        Title = $"媒体信息 — {System.IO.Path.GetFileName(path)}",
-                        Width = 600, Height = 450,
-                        WindowStartupLocation = Avalonia.Controls.WindowStartupLocation.CenterOwner
-                    };
-                    var tb = new TextBox 
-                    { 
-                        Text = info, IsReadOnly = true, AcceptsReturn = true,
-                        TextWrapping = Avalonia.Media.TextWrapping.Wrap
-                    };
-                    win.Content = tb;
-                    win.Show();
-                }
-                catch (Exception ex)
-                {
-                    if (LogText != null) LogText.Text += $"获取媒体信息失败: {ex.Message}\n";
-                }
+                await OpenMetadataEditorWindowAsync(path);
             }
+        }
+
+        /// <summary>打开元数据编辑窗口（含 ffmpeg 媒体信息 + exiftool 元数据编辑器）</summary>
+        private async Task OpenMetadataEditorWindowAsync(string filePath)
+        {
+            // 获取 ffmpeg 媒体信息
+            var mediaInfo = "正在获取媒体信息...";
+            try { mediaInfo = await MediaInfoService.GetMediaInfoAsync(filePath); }
+            catch (Exception ex) { mediaInfo = $"获取媒体信息失败: {ex.Message}"; }
+
+            var editor = new Controls.MetadataEditor { FilePath = filePath, Margin = new Avalonia.Thickness(0, 8, 0, 0) };
+
+            // 媒体信息面板（只读、可折叠）
+            var mediaInfoBox = new TextBox
+            {
+                Text = mediaInfo,
+                IsReadOnly = true,
+                AcceptsReturn = true,
+                TextWrapping = Avalonia.Media.TextWrapping.Wrap,
+                FontSize = 11,
+                MaxHeight = 180,
+                FontFamily = "Consolas, monospace"
+            };
+
+            var infoHeader = new TextBlock
+            {
+                Text = "📊 FFmpeg 媒体信息",
+                FontWeight = Avalonia.Media.FontWeight.Bold,
+                FontSize = 13,
+                Margin = new Avalonia.Thickness(0, 0, 0, 4)
+            };
+
+            var panel = new StackPanel { Spacing = 0 };
+            panel.Children.Add(infoHeader);
+            panel.Children.Add(mediaInfoBox);
+            panel.Children.Add(editor);
+
+            var scrollViewer = new ScrollViewer
+            {
+                Content = panel,
+                Padding = new Avalonia.Thickness(12)
+            };
+
+            var win = new Window
+            {
+                Title = $"📝 元数据编辑 — {Path.GetFileName(filePath)}",
+                Width = 680, Height = 750,
+                WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                Content = scrollViewer
+            };
+            win.Show(this);
         }
 
         private void UpdateMediaFileCount()
@@ -2425,11 +2455,21 @@ namespace FfmpegGui
             DragLeave(sender, e); // 还原样式
             if (!e.Data.Contains(DataFormats.Files)) return;
 
-            var files = e.Data.GetFiles()?.Select(f => f.Path.LocalPath).ToArray();
-            if (files == null || files.Length == 0) return;
+            var items = e.Data.GetFiles();
+            if (items == null) return;
+
+            // 将拖放项解析为真实文件系统路径（处理 Windows 搜索结果的 Shell 路径）
+            var files = new List<string>();
+            foreach (var item in items)
+            {
+                var localPath = item.TryGetLocalPath() ?? item.Path.LocalPath;
+                if (!string.IsNullOrWhiteSpace(localPath))
+                    files.Add(localPath);
+            }
+            if (files.Count == 0) return;
 
             // 单文件 → 作为输入文件
-            if (files.Length == 1)
+            if (files.Count == 1)
             {
                 var path = files[0];
                 if (System.IO.Directory.Exists(path))
