@@ -61,7 +61,7 @@ namespace FfmpegGui.Models
         public static readonly Dictionary<string, string[]> AllImageFormats = new()
         {
             ["PNG"]  = new[] { ".png" },
-            ["JPEG"] = new[] { ".jpg", ".jpeg" },
+            ["JPEG"] = new[] { ".jpg", ".jpeg", ".jpe", ".jfif" },
             ["JPEG XL"] = new[] { ".jxl" },
             ["WebP"] = new[] { ".webp" },
             ["AVIF"] = new[] { ".avif" },
