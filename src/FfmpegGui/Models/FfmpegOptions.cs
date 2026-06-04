@@ -106,17 +106,70 @@ namespace FfmpegGui.Models
             _ => 92 // jpg 默认
         };
 
-        /// <summary>
-        /// 质量参数标签名
-        /// </summary>
+        /// <summary>butteraugli distance 0-15（用于 cjpegli 外部工具路径）</summary>
+        public static double MapJpegliDistance(int quality) =>
+            Math.Round((100 - quality) * 15.0 / 100.0, 1);
+
+        // ── 正反映射：滑块 0-100 ↔ 各格式实际编码参数 ──
+
+        // JPEG q:v 2-31（整数，越小质量越高）
+        public static int MapJpegQualityForward(int quality) => (int)Math.Round(2 + (100 - quality) * 29.0 / 100.0);
+        public static int MapJpegQualityInverse(double qv) => (int)Math.Round(100 - (Math.Clamp(qv, 2, 31) - 2) * 100.0 / 29.0);
+
+        // JPEGli distance 0-15（1 位小数）
+        public static double MapJpegliDistanceForward(int quality) => MapJpegliDistance(quality);
+        public static int MapJpegliDistanceInverse(double d) => (int)Math.Round(100 - Math.Clamp(d, 0, 15) * 100.0 / 15.0);
+
+        // PNG compression_level 0-9（整数，越大压缩越狠）
+        public static int MapPngLevelForward(int quality) => (int)Math.Round((100 - quality) * 9.0 / 100.0);
+        public static int MapPngLevelInverse(double level) => (int)Math.Round(100 - Math.Clamp(level, 0, 9) * 100.0 / 9.0);
+
+        // WebP q:v 0-100（与滑块同尺度）
+        public static int MapWebpQualityForward(int quality) => quality;
+        public static int MapWebpQualityInverse(double qv) => (int)Math.Clamp(qv, 0, 100);
+
+        // AVIF CRF 0-63（整数，越小质量越高）
+        public static int MapAvifCrfForward(int quality) => (int)Math.Round((100 - quality) * 63.0 / 100.0);
+        public static int MapAvifCrfInverse(double crf) => (int)Math.Round(100 - Math.Clamp(crf, 0, 63) * 100.0 / 63.0);
+
+        // JXL distance 0-15（1 位小数）
+        public static double MapJxlDistanceForward(int quality) => Math.Round((100 - quality) * 15.0 / 100.0, 1);
+        public static int MapJxlDistanceInverse(double d) => (int)Math.Round(100 - Math.Clamp(d, 0, 15) * 100.0 / 15.0);
+
+        /// <summary>滑块值 → 格式实际参数文本（用于输入框显示）</summary>
+        public static string FormatQualityForDisplay(string fmt, int quality) => fmt.ToLower() switch
+        {
+            "jpg" or "jpeg" => MapJpegQualityForward(quality).ToString(),
+            "jpegli" => MapJpegliDistanceForward(quality).ToString("F1"),
+            "png" => MapPngLevelForward(quality).ToString(),
+            "webp" => MapWebpQualityForward(quality).ToString(),
+            "avif" => MapAvifCrfForward(quality).ToString(),
+            "jxl" => MapJxlDistanceForward(quality).ToString("F1"),
+            "tiff" => "N/A",
+            _ => quality.ToString(),
+        };
+
+        /// <summary>格式实际参数 → 滑块值（用户输入解析用）</summary>
+        public static int ParseQualityFromDisplay(string fmt, double value) => fmt.ToLower() switch
+        {
+            "jpg" or "jpeg" => MapJpegQualityInverse(value),
+            "jpegli" => MapJpegliDistanceInverse(value),
+            "png" => MapPngLevelInverse(value),
+            "webp" => MapWebpQualityInverse(value),
+            "avif" => MapAvifCrfInverse(value),
+            "jxl" => MapJxlDistanceInverse(value),
+            _ => (int)Math.Clamp(value, 0, 100),
+        };
+
+        /// <summary>质量参数标签名</summary>
         public static string GetQualityLabel(string format, int quality) => format.ToLower() switch
         {
-            "jpg" or "jpeg" => $"质量: {quality}% → q:v {2 + (int)Math.Round((100 - quality) * 29.0 / 100.0)}",
-            "jpegli" => $"质量: {quality}% (jpegli)",
-            "png" => $"压缩: {quality}% → level {(int)Math.Round((100 - quality) * 9.0 / 100.0)}",
-            "webp" => $"质量: {quality}% → q:v {quality}",
-            "avif" => $"质量: {quality}% → CRF {(int)Math.Round((100 - quality) * 63.0 / 100.0)}",
-            "jxl" => $"质量: {quality}% → distance {((100 - quality) * 15.0 / 100.0):F1}",
+            "jpg" or "jpeg" => $"质量: {quality}% → q:v {MapJpegQualityForward(quality)}",
+            "jpegli" => $"质量: {quality}% → distance {MapJpegliDistanceForward(quality):F1}",
+            "png" => $"压缩: {quality}% → level {MapPngLevelForward(quality)}",
+            "webp" => $"质量: {quality}% → q:v {MapWebpQualityForward(quality)}",
+            "avif" => $"质量: {quality}% → CRF {MapAvifCrfForward(quality)}",
+            "jxl" => $"质量: {quality}% → distance {MapJxlDistanceForward(quality):F1}",
             "tiff" => "质量: 不适用 (无损格式)",
             _ => $"质量: {quality}%"
         };
