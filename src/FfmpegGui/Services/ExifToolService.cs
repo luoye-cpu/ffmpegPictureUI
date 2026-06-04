@@ -45,6 +45,8 @@ namespace FfmpegGui.Services
         /// ① 手动指定路径（AppSettings.ExifToolPath）
         /// ② ffmpeg 同目录 / 程序同目录
         /// ③ 系统 PATH
+        /// 注意：自动跳过 exiftool(-k).exe（带按键等待的交互版本），
+        ///       若仅找到 (-k) 版本则自动复制为 exiftool.exe 使用。
         /// </summary>
         public static void Detect()
         {
@@ -59,8 +61,8 @@ namespace FfmpegGui.Services
             var manual = AppSettingsService.Current.ExifToolPath;
             if (!string.IsNullOrWhiteSpace(manual) && File.Exists(manual))
             {
-                _detectedPath = manual;
-                return;
+                _detectedPath = ResolveSafeExifToolPath(manual);
+                if (_detectedPath != null) return;
             }
 
             // ── ② 同目录（ffmpeg 目录 → 程序目录）──
@@ -72,13 +74,14 @@ namespace FfmpegGui.Services
             foreach (var dir in dirs)
             {
                 if (string.IsNullOrEmpty(dir)) continue;
+                // 优先查找标准版 exiftool.exe，其次 (-k) 版
                 foreach (var name in names)
                 {
                     var candidate = Path.Combine(dir, name);
                     if (File.Exists(candidate))
                     {
-                        _detectedPath = candidate;
-                        return;
+                        _detectedPath = ResolveSafeExifToolPath(candidate);
+                        if (_detectedPath != null) return;
                     }
                 }
             }
@@ -86,11 +89,45 @@ namespace FfmpegGui.Services
             // ── ③ 系统 PATH ──
             foreach (var name in names)
             {
-                if (TryFindInPath(name, out var pathFound))
+                if (TryFindInPath(name, out var pathFound) && pathFound != null)
                 {
-                    _detectedPath = pathFound;
-                    return;
+                    _detectedPath = ResolveSafeExifToolPath(pathFound);
+                    if (_detectedPath != null) return;
                 }
+            }
+        }
+
+        /// <summary>
+        /// 将 exiftool(-k).exe 转换为标准 exiftool.exe（复制文件避免按键等待挂起）
+        /// </summary>
+        private static string? ResolveSafeExifToolPath(string candidatePath)
+        {
+            if (string.IsNullOrWhiteSpace(candidatePath) || !File.Exists(candidatePath))
+                return null;
+
+            var fileName = Path.GetFileName(candidatePath);
+            // 标准版直接使用
+            if (!fileName.Contains("(-k)"))
+                return candidatePath;
+
+            // (-k) 版本：查找或创建同目录下的标准 exiftool.exe
+            var dir = Path.GetDirectoryName(candidatePath);
+            if (string.IsNullOrEmpty(dir)) return null;
+            var safePath = Path.Combine(dir, "exiftool.exe");
+
+            if (File.Exists(safePath))
+                return safePath;
+
+            // 将 (-k) 版本复制为标准版（内容相同，文件名中的 (-k) 触发等待行为）
+            try
+            {
+                File.Copy(candidatePath, safePath, overwrite: false);
+                return safePath;
+            }
+            catch
+            {
+                // 复制失败则回退到 (-k) 版本（可能会挂起，但至少尝试了）
+                return candidatePath;
             }
         }
 
@@ -197,7 +234,11 @@ namespace FfmpegGui.Services
             Action<string>? logCallback = null)
         {
             if (_detectedPath == null)
-                throw new InvalidOperationException("exiftool 不可用");
+            {
+                Detect();
+                if (_detectedPath == null)
+                    throw new InvalidOperationException("exiftool 未检测到，请确保 exiftool.exe 位于 ffmpeg 同目录或系统 PATH 中");
+            }
 
             var args = BuildArguments(filePath, options);
             logCallback?.Invoke($"[exiftool] {args}\n");
@@ -218,14 +259,21 @@ namespace FfmpegGui.Services
             if (p == null)
                 throw new InvalidOperationException("无法启动 exiftool 进程");
 
-            var stdout = await p.StandardOutput.ReadToEndAsync();
-            var stderr = await p.StandardError.ReadToEndAsync();
+            // 事件驱动读取，避免缓冲区死锁
+            var stdout = new StringBuilder();
+            var stderr = new StringBuilder();
+            p.OutputDataReceived += (_, e) => { if (e.Data != null) stdout.AppendLine(e.Data); };
+            p.ErrorDataReceived += (_, e) => { if (e.Data != null) stderr.AppendLine(e.Data); };
+            p.BeginOutputReadLine();
+            p.BeginErrorReadLine();
             await p.WaitForExitAsync();
 
-            if (!string.IsNullOrWhiteSpace(stdout))
-                logCallback?.Invoke(stdout);
-            if (!string.IsNullOrWhiteSpace(stderr))
-                logCallback?.Invoke(stderr);
+            var stdoutStr = stdout.ToString().Trim();
+            var stderrStr = stderr.ToString().Trim();
+            if (!string.IsNullOrWhiteSpace(stdoutStr))
+                logCallback?.Invoke(stdoutStr);
+            if (!string.IsNullOrWhiteSpace(stderrStr))
+                logCallback?.Invoke(stderrStr);
 
             return p.ExitCode;
         }
@@ -368,16 +416,32 @@ namespace FfmpegGui.Services
             ["色彩模式"]       = ("ColorMode",         MetadataCategory.色彩配置),
         };
 
+        /// <summary>安全地将 JsonElement 转为字符串（处理数字/布尔/null 类型）</summary>
+        private static string JsonElementToString(System.Text.Json.JsonElement element) => element.ValueKind switch
+        {
+            System.Text.Json.JsonValueKind.String => element.GetString() ?? "",
+            System.Text.Json.JsonValueKind.Null => "",
+            System.Text.Json.JsonValueKind.True => "true",
+            System.Text.Json.JsonValueKind.False => "false",
+            _ => element.GetRawText()
+        };
+
         /// <summary>
         /// 读取文件现有元数据（JSON 格式解析），返回 显示名→值 的字典
         /// </summary>
         public static async Task<Dictionary<string, string>> ReadMetadataAsync(string filePath)
         {
             var result = new Dictionary<string, string>();
-            if (_detectedPath == null) return result;
-
             foreach (var key in MetadataFields.Keys)
                 result[key] = "";
+
+            // 确保已检测 exiftool
+            if (_detectedPath == null)
+            {
+                Detect();
+                if (_detectedPath == null)
+                    throw new InvalidOperationException("exiftool 未检测到，请确保 exiftool.exe 位于 ffmpeg 同目录或系统 PATH 中");
+            }
 
             try
             {
@@ -394,14 +458,27 @@ namespace FfmpegGui.Services
                 };
 
                 using var p = Process.Start(psi);
-                if (p == null) return result;
+                if (p == null)
+                    throw new InvalidOperationException("无法启动 exiftool 进程");
 
-                var stdout = await p.StandardOutput.ReadToEndAsync();
+                // 事件驱动读取，避免 stdout/stderr 缓冲区死锁
+                var stdout = new StringBuilder();
+                var stderr = new StringBuilder();
+                p.OutputDataReceived += (_, e) => { if (e.Data != null) stdout.AppendLine(e.Data); };
+                p.ErrorDataReceived += (_, e) => { if (e.Data != null) stderr.AppendLine(e.Data); };
+                p.BeginOutputReadLine();
+                p.BeginErrorReadLine();
                 await p.WaitForExitAsync();
 
-                if (string.IsNullOrWhiteSpace(stdout)) return result;
+                var stdoutStr = stdout.ToString().Trim();
+                var stderrStr = stderr.ToString().Trim();
 
-                using var doc = JsonDocument.Parse(stdout);
+                if (p.ExitCode != 0)
+                    throw new InvalidOperationException($"exiftool 退出码 {p.ExitCode}: {stderrStr}");
+
+                if (string.IsNullOrWhiteSpace(stdoutStr)) return result;
+
+                using var doc = JsonDocument.Parse(stdoutStr);
                 var root = doc.RootElement;
                 if (root.ValueKind != JsonValueKind.Array || root.GetArrayLength() == 0)
                     return result;
@@ -416,7 +493,7 @@ namespace FfmpegGui.Services
                         if (prop.Name.EndsWith($":{tagName}", StringComparison.OrdinalIgnoreCase) ||
                             prop.Name.Equals(tagName, StringComparison.OrdinalIgnoreCase))
                         {
-                            result[field.Key] = prop.Value.GetString() ?? "";
+                            result[field.Key] = JsonElementToString(prop.Value);
                             break;
                         }
                     }
@@ -424,7 +501,7 @@ namespace FfmpegGui.Services
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"[ExifTool ReadMetadata] {ex.Message}");
+                throw new InvalidOperationException($"读取元数据失败: {ex.Message}", ex);
             }
 
             return result;
@@ -436,8 +513,13 @@ namespace FfmpegGui.Services
         public static async Task<(int ExitCode, string Output)> WriteMetadataAsync(
             string filePath, Dictionary<string, string> tags, bool keepBackup = true)
         {
+            // 确保已检测 exiftool
             if (_detectedPath == null)
-                return (-1, "exiftool 不可用");
+            {
+                Detect();
+                if (_detectedPath == null)
+                    return (-1, "exiftool 未检测到，请确保 exiftool.exe 位于 ffmpeg 同目录或系统 PATH 中");
+            }
 
             var argList = new List<string>();
             if (!keepBackup)
@@ -474,11 +556,15 @@ namespace FfmpegGui.Services
                 if (p == null)
                     throw new InvalidOperationException("无法启动 exiftool 进程");
 
-                var stdout = await p.StandardOutput.ReadToEndAsync();
-                var stderr = await p.StandardError.ReadToEndAsync();
+                var stdout = new StringBuilder();
+                var stderr = new StringBuilder();
+                p.OutputDataReceived += (_, e) => { if (e.Data != null) stdout.AppendLine(e.Data); };
+                p.ErrorDataReceived += (_, e) => { if (e.Data != null) stderr.AppendLine(e.Data); };
+                p.BeginOutputReadLine();
+                p.BeginErrorReadLine();
                 await p.WaitForExitAsync();
 
-                var output = (stdout + "\n" + stderr).Trim();
+                var output = (stdout.ToString() + "\n" + stderr.ToString()).Trim();
                 return (p.ExitCode, output);
             }
             catch (Exception ex)
