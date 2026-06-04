@@ -84,6 +84,18 @@ namespace FfmpegGui.Models
         /// <summary>删除 XMP 元数据</summary>
         public bool StripXmp { get; set; } = false;
 
+        // ── 动图参数 ──
+        /// <summary>帧率 (FPS)，null=不指定</summary>
+        public int? AnimationFps { get; set; }
+        /// <summary>循环次数: 0=无限, -1=不循环, >0=指定次数</summary>
+        public int AnimationLoop { get; set; } = 0;
+        /// <summary>GIF 调色板优化</summary>
+        public bool GifPaletteOptimize { get; set; } = true;
+        /// <summary>GIF 抖动处理</summary>
+        public bool GifDither { get; set; } = true;
+        /// <summary>动图缩放宽度 (0=保持原始)</summary>
+        public int AnimationScaleW { get; set; } = 0;
+
         public static int ComputeAutoThreads()
         {
             int total = Environment.ProcessorCount;
@@ -98,11 +110,13 @@ namespace FfmpegGui.Models
         public static int GetDefaultQuality(string format) => format.ToLower() switch
         {
             "png" => 100,
+            "apng" => 100,
             "webp" => 95,
             "avif" => 90,
             "jxl" => 90,
             "tiff" => 0,
             "jpegli" => 92,
+            "gif" => 90,
             _ => 92 // jpg 默认
         };
 

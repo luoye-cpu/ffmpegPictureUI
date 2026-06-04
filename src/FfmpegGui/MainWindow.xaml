@@ -53,7 +53,13 @@
       <ScrollViewer Grid.Column="0">
         <StackPanel Margin="10" Spacing="8">
           <TextBlock Text="参数控制面板" FontSize="20" FontWeight="Bold" Margin="0,0,0,6"/>
-          <TextBlock Text="输出格式"/>
+          <TextBlock Text="转换模式" FontSize="12" Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+          <ComboBox x:Name="ConversionModeCombo" SelectedIndex="0"
+                    SelectionChanged="ConversionMode_SelectionChanged">
+            <sys:String>🖼 静态图片模式</sys:String>
+            <sys:String>🎞 动图模式</sys:String>
+          </ComboBox>
+          <TextBlock Text="输出格式" Margin="0,4,0,0"/>
           <ComboBox x:Name="FormatCombo" SelectionChanged="FormatCombo_SelectionChanged">
             <sys:String>JPEG</sys:String>
             <sys:String>JPEG LI</sys:String>
@@ -63,6 +69,30 @@
             <sys:String>JPEG XL</sys:String>
             <sys:String>TIFF</sys:String>
           </ComboBox>
+          <!-- 动图参数面板 -->
+          <StackPanel x:Name="AnimationPanel" Spacing="4" Margin="0,4,0,0">
+            <TextBlock Text="🎞 动图参数" FontSize="13" FontWeight="Bold"/>
+            <StackPanel Orientation="Horizontal" Spacing="12">
+              <StackPanel Spacing="2">
+                <TextBlock Text="帧率 (FPS)" FontSize="11"/>
+                <TextBox x:Name="AnimationFpsBox" Text="" Width="60" FontSize="13" VerticalAlignment="Center"
+                         Watermark="auto"/>
+              </StackPanel>
+              <StackPanel Spacing="2">
+                <TextBlock Text="循环次数" FontSize="11"/>
+                <TextBox x:Name="AnimationLoopBox" Text="" Width="60" FontSize="13" VerticalAlignment="Center"
+                         Watermark="auto"/>
+              </StackPanel>
+              <StackPanel Spacing="2">
+                <TextBlock Text="缩放宽度" FontSize="11"/>
+                <TextBox x:Name="AnimationScaleWBox" Text="" Width="60" FontSize="13" VerticalAlignment="Center"
+                         Watermark="auto"/>
+              </StackPanel>
+            </StackPanel>
+            <TextBlock Text="留空=auto(跟随源) | 循环: 0=无限/-1=不循环/空=默认 | 缩放: 空=原始" FontSize="10"
+                       Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"
+                       TextWrapping="Wrap"/>
+          </StackPanel>
           <TextBlock Text="编码器" Margin="0,4,0,0"/>
           <ComboBox x:Name="EncoderCombo"/>
           <TextBlock Text="质量" Margin="0,8,0,0"/>
@@ -73,6 +103,8 @@
                      VerticalAlignment="Center" />
           </StackPanel>
           <TextBlock x:Name="QualityValue" Text="质量: 75"/>
+          <!-- 静态图片专属参数（动图模式隐藏） -->
+          <StackPanel x:Name="StaticOnlyPanel" Spacing="8">
           <TextBlock Text="色度采样"/>
           <ComboBox x:Name="ChromaCombo">
             <sys:String>auto</sys:String>
@@ -113,6 +145,8 @@
             <sys:String>auto</sys:String>
             <sys:String>8</sys:String>
           </ComboBox>
+          </StackPanel>
+          <!-- 静态图片专属参数结束 -->
           <CheckBox x:Name="UseAdvancedCodec" Content="高级编码选项" Margin="0,6,0,0" 
                     Checked="UseAdvancedCodec_Checked" Unchecked="UseAdvancedCodec_Unchecked"/>
           <StackPanel x:Name="AdvancedCodecPanel" IsVisible="False" Margin="0,4,0,0" Spacing="6">
@@ -123,6 +157,16 @@
                 <sys:String>none</sys:String><sys:String>sub</sys:String><sys:String>up</sys:String>
                 <sys:String>avg</sys:String><sys:String>paeth</sys:String><sys:String>mixed</sys:String>
               </ComboBox>
+            </StackPanel>
+            <!-- GIF 动图 -->
+            <StackPanel x:Name="GifCodecPanel" IsVisible="False" Spacing="4">
+              <CheckBox x:Name="GifPaletteCheck" Content="调色板优化 (palettegen, 更高质量)" IsChecked="True"/>
+              <CheckBox x:Name="GifDitherCheck" Content="抖动处理 (dither, 减少色带)" IsChecked="True"/>
+            </StackPanel>
+            <!-- APNG -->
+            <StackPanel x:Name="ApngCodecPanel" IsVisible="False" Spacing="4">
+              <TextBlock Text="APNG 使用 PNG 编码器，无损压缩" FontSize="11"
+                         Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
             </StackPanel>
             <!-- WebP -->
             <StackPanel x:Name="WebpCodecPanel" IsVisible="False" Spacing="4">
@@ -288,6 +332,10 @@
               <Button Content="⏹ 停止队列" Click="StopQueue_Click" Padding="8,3" Margin="0,0,6,3"/>
               <CheckBox x:Name="StopAfterCurrentCheck" Content="完成后停止"
                         VerticalAlignment="Center" Margin="4,0,0,3" IsChecked="True"/>
+              <CheckBox x:Name="ShowErrorsOnlyCheck" Content="仅显示报错"
+                        VerticalAlignment="Center" Margin="8,0,0,3"
+                        ToolTip.Tip="屏蔽正常完成项目，仅查看失败的任务"
+                        Checked="ShowErrorsOnly_Changed" Unchecked="ShowErrorsOnly_Changed"/>
               <Separator Width="12" Background="Transparent"/>
               <TextBlock x:Name="QueueProgressLabel" Text="队列: 0 / 0" VerticalAlignment="Center"
                          Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" FontSize="11" Margin="4,0,0,3"/>

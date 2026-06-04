@@ -68,7 +68,63 @@ namespace FfmpegGui.Services
                     }
                     if (!string.IsNullOrWhiteSpace(options.WebpPreset) && options.WebpPreset != "none")
                     { args.Add("-preset"); args.Add(options.WebpPreset); }
+                    // 动图 WebP: -loop 控制循环
+                    if (options.AnimationLoop >= 0)
+                    { args.Add("-loop"); args.Add(options.AnimationLoop.ToString()); }
                     break;
+                case "gif":
+                {
+                    // 构建滤镜链（FPS + 缩放）
+                    var filters = new List<string>();
+                    if (options.AnimationFps.HasValue)
+                        filters.Add($"fps={options.AnimationFps.Value}");
+                    if (options.AnimationScaleW > 0)
+                        filters.Add($"scale={options.AnimationScaleW}:-1:flags=lanczos");
+
+                    if (options.GifPaletteOptimize)
+                    {
+                        // palettegen + paletteuse 双通道滤镜
+                        var filterChain = string.Join(",", filters);
+                        var complex = string.IsNullOrEmpty(filterChain)
+                            ? $"split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse"
+                            : $"{filterChain},split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse";
+                        if (options.GifDither)
+                            complex += ":dither=bayer:bayer_scale=5:diff_mode=rectangle";
+                        args.Insert(1, "-filter_complex");
+                        args.Insert(2, $"\"{complex}\"");
+                    }
+                    else
+                    {
+                        if (filters.Count > 0)
+                        { args.Add("-vf"); args.Add(string.Join(",", filters)); }
+                    }
+                    if (options.AnimationLoop != -1)
+                    { args.Add("-loop"); args.Add(options.AnimationLoop.ToString()); }
+                    break;
+                }
+                case "apng":
+                {
+                    // APNG 必须显式指定 -f apng（.png 后缀默认走 image2 单帧封装）
+                    args.Add("-f"); args.Add("apng");
+                    if (string.IsNullOrWhiteSpace(options.Encoder) || options.Encoder == "png")
+                    {
+                        var idx = args.FindIndex(a => a == "-c:v");
+                        if (idx >= 0 && idx + 1 < args.Count)
+                            args[idx + 1] = "apng";
+                        else
+                        { args.Add("-c:v"); args.Add("apng"); }
+                    }
+                    var filters = new List<string>();
+                    if (options.AnimationFps.HasValue)
+                        filters.Add($"fps={options.AnimationFps.Value}");
+                    if (options.AnimationScaleW > 0)
+                        filters.Add($"scale={options.AnimationScaleW}:-1:flags=lanczos");
+                    if (filters.Count > 0)
+                    { args.Add("-vf"); args.Add(string.Join(",", filters)); }
+                    if (options.AnimationLoop >= 0)
+                    { args.Add("-plays"); args.Add(options.AnimationLoop.ToString()); }
+                    break;
+                }
                 case "avif":
                     if (options.Lossless)
                     {
@@ -90,7 +146,11 @@ namespace FfmpegGui.Services
                         else
                         { args.Add("-tune"); args.Add(t.ToString()); }
                     }
-                    if (options.AvifStillPicture == true)
+                    // 动图 AVIF: still-picture=0
+                    var isAnimated = options.AnimationFps.HasValue || options.AnimationLoop != 0 || options.AvifStillPicture == false;
+                    if (isAnimated)
+                    { args.Add("-still-picture"); args.Add("0"); }
+                    else if (options.AvifStillPicture == true)
                     { args.Add("-still-picture"); args.Add("1"); }
                     if (options.AvifRowMt == true)
                     { args.Add("-row-mt"); args.Add("1"); }
@@ -123,6 +183,36 @@ namespace FfmpegGui.Services
                     { args.Add("-dpi"); args.Add(options.TiffDpi.Value.ToString()); }
                     break;
                 case "jxl":
+                    // ── 动图 JXL：使用 libjxl_anim 编码器 ──
+                    var isJxlAnimated = options.AnimationFps.HasValue || options.AnimationLoop >= 0;
+                    if (isJxlAnimated)
+                    {
+                        // 替换编码器为 libjxl_anim（支持动图）
+                        var encIdx = args.FindIndex(a => a == "-c:v");
+                        if (encIdx >= 0 && encIdx + 1 < args.Count)
+                            args[encIdx + 1] = "libjxl_anim";
+                        else
+                        { args.Add("-c:v"); args.Add("libjxl_anim"); }
+
+                        // 动图滤镜（FPS + 缩放）
+                        var jxlFilters = new List<string>();
+                        if (options.AnimationFps.HasValue)
+                            jxlFilters.Add($"fps={options.AnimationFps.Value}");
+                        if (options.AnimationScaleW > 0)
+                            jxlFilters.Add($"scale={options.AnimationScaleW}:-1:flags=lanczos");
+                        if (jxlFilters.Count > 0)
+                        { args.Add("-vf"); args.Add(string.Join(",", jxlFilters)); }
+
+                        // 质量参数
+                        if (options.Lossless)
+                        { args.Add("-distance"); args.Add("0"); }
+                        else
+                        { args.Add("-distance"); args.Add(MapJxlDistance(options.Quality).ToString("F1")); }
+                        if (options.JxlEffort.HasValue)
+                        { args.Add("-effort"); args.Add(options.JxlEffort.Value.ToString()); }
+                        if (options.JxlModular == true)
+                        { args.Add("-modular"); args.Add("1"); }
+                    }
                     // --- JPEG→JXL 快速路径：不解码，直接复制 DCT 系数 ---
                     // 仅当输入为 JPEG 且启用 JxlLosslessJpeg 时才生效
                     // 此时忽略 distance/effort/modular 参数，ffmpeg 自动处理
