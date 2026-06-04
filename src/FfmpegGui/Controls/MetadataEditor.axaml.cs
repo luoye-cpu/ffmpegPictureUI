@@ -123,8 +123,12 @@ namespace FfmpegGui.Controls
             ExifToolService.MetadataCategory.基本信息 => "📋 基本信息",
             ExifToolService.MetadataCategory.日期时间 => "📅 日期时间",
             ExifToolService.MetadataCategory.相机信息 => "📷 相机信息",
+            ExifToolService.MetadataCategory.拍摄参数 => "⚙️ 拍摄参数",
             ExifToolService.MetadataCategory.GPS位置 => "📍 GPS 位置",
             ExifToolService.MetadataCategory.图片属性 => "🖼 图片属性",
+            ExifToolService.MetadataCategory.IPTC信息 => "📰 IPTC 信息",
+            ExifToolService.MetadataCategory.XMP信息 => "🏷️ XMP 信息",
+            ExifToolService.MetadataCategory.色彩配置 => "🎨 色彩配置",
             _ => cat.ToString()
         };
 
