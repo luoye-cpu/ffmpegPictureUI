@@ -290,6 +290,63 @@ namespace FfmpegGui.Services
                    options.StripXmp;
         }
 
+        /// <summary>
+        /// 将源文件的所有元数据复制到目标文件（保留目标文件的像素数据不变）。
+        /// 用于外部工具（cjxl/cjpegli）编码后恢复丢失的元数据。
+        /// 命令：exiftool -overwrite_original -TagsFromFile source -all:all target
+        /// </summary>
+        public static async Task<int> CopyMetadataAsync(
+            string sourcePath, string targetPath,
+            Action<string>? logCallback = null)
+        {
+            if (_detectedPath == null)
+            {
+                Detect();
+                if (_detectedPath == null) return -1;
+            }
+
+            var args = $"-overwrite_original -TagsFromFile \"{sourcePath}\" -all:all \"{targetPath}\"";
+            logCallback?.Invoke($"[exiftool] 复制元数据: {Path.GetFileName(sourcePath)} → {Path.GetFileName(targetPath)}\n");
+
+            return await RunRawAsync(args, logCallback);
+        }
+
+        /// <summary>执行原始 exiftool 命令（内部用）</summary>
+        private static async Task<int> RunRawAsync(string args, Action<string>? logCallback = null)
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = _detectedPath!,
+                Arguments = args,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                StandardOutputEncoding = Encoding.UTF8,
+                StandardErrorEncoding = Encoding.UTF8
+            };
+
+            using var p = Process.Start(psi);
+            if (p == null) return -1;
+
+            var stdout = new StringBuilder();
+            var stderr = new StringBuilder();
+            p.OutputDataReceived += (_, e) => { if (e.Data != null) stdout.AppendLine(e.Data); };
+            p.ErrorDataReceived += (_, e) => { if (e.Data != null) stderr.AppendLine(e.Data); };
+            p.BeginOutputReadLine();
+            p.BeginErrorReadLine();
+            await p.WaitForExitAsync();
+
+            var stdoutStr = stdout.ToString().Trim();
+            var stderrStr = stderr.ToString().Trim();
+            if (!string.IsNullOrWhiteSpace(stdoutStr))
+                logCallback?.Invoke(stdoutStr + "\n");
+            if (!string.IsNullOrWhiteSpace(stderrStr))
+                logCallback?.Invoke(stderrStr + "\n");
+
+            return p.ExitCode;
+        }
+
         // ──────── 元数据编辑功能 ────────
 
         /// <summary>元数据分类定义</summary>
