@@ -4,14 +4,14 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:sys="using:System"
     xmlns:local="using:FfmpegGui.Models"
-    Title="FFmpeg 图片转换器"
+    Title="FFmpeg 图片转换器 1.4.1 BETA"
     Height="780"
     Width="1020"
     WindowStartupLocation="CenterScreen">
   <DockPanel>
     <!-- 顶部设置栏 -->
     <Border DockPanel.Dock="Top" Padding="8,4" BorderBrush="{DynamicResource SystemControlBackgroundBaseLowBrush}" BorderThickness="0,0,0,1">
-    <Grid RowDefinitions="Auto,Auto,Auto,Auto" ColumnDefinitions="*,Auto">
+    <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto" ColumnDefinitions="*,Auto">
         <StackPanel Grid.Row="0" Grid.Column="0" Orientation="Horizontal" Spacing="10">
           <TextBlock Text="FFmpeg 目录" VerticalAlignment="Center" FontSize="13"/>
           <TextBox x:Name="FfmpegPathBox" Width="240" VerticalAlignment="Center" IsReadOnly="True"/>
@@ -43,6 +43,15 @@
           <Button Content="🔄 重新检测" Click="RedetectTools_Click" Padding="8,2" FontSize="11"
                   ToolTip.Tip="清除所有手动路径，从同目录和系统 PATH 自动检测 cjxl / djxl / cjpegli / exiftool"/>
           <CheckBox x:Name="AutoUseSimdCheck" Content="自动使用 SIMD 优化二进制" VerticalAlignment="Center" Margin="8,0,0,0" FontSize="11"/>
+        </StackPanel>
+        <!-- avifenc 路径（留空自动检测 ffmpeg 同目录） -->
+        <StackPanel Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="2" Orientation="Horizontal" Spacing="10" Margin="0,3,0,0">
+          <TextBlock Text="avifenc" VerticalAlignment="Center" FontSize="11" Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" Width="54"/>
+          <TextBox x:Name="AvifencPathBox" Width="180" VerticalAlignment="Center" FontSize="11"
+                   Watermark="自动检测（ffmpeg 同目录）"/>
+          <Button Content="浏览" Click="BrowseAvifenc_Click" Padding="6,2" FontSize="11"/>
+          <Button Content="✕" Click="ClearAvifencPath_Click" Padding="6,2" FontSize="11"
+                  ToolTip.Tip="清除手动路径，改回自动检测"/>
         </StackPanel>
       </Grid>
     </Border>
@@ -103,8 +112,7 @@
                      VerticalAlignment="Center" />
           </StackPanel>
           <TextBlock x:Name="QualityValue" Text="质量: 75"/>
-          <!-- 静态图片专属参数（动图模式隐藏） -->
-          <StackPanel x:Name="StaticOnlyPanel" Spacing="8">
+          <!-- 色彩管理（静态+动图共用） -->
           <TextBlock Text="色度采样"/>
           <ComboBox x:Name="ChromaCombo">
             <sys:String>auto</sys:String>
@@ -145,8 +153,6 @@
             <sys:String>auto</sys:String>
             <sys:String>8</sys:String>
           </ComboBox>
-          </StackPanel>
-          <!-- 静态图片专属参数结束 -->
           <CheckBox x:Name="UseAdvancedCodec" Content="高级编码选项" Margin="0,6,0,0" 
                     Checked="UseAdvancedCodec_Checked" Unchecked="UseAdvancedCodec_Unchecked"/>
           <StackPanel x:Name="AdvancedCodecPanel" IsVisible="False" Margin="0,4,0,0" Spacing="6">
@@ -176,9 +182,11 @@
                 <sys:String>photo</sys:String><sys:String>drawing</sys:String><sys:String>icon</sys:String>
                 <sys:String>text</sys:String>
               </ComboBox>
-              <TextBlock Text="无损压缩级别 (0-6)" Margin="0,4,0,0"/>
-              <NumericUpDown x:Name="WebpCompressionBox" Value="4" Minimum="0" Maximum="6"/>
-              <TextBlock Text="0=最快/最大, 6=最慢/最小" FontSize="10" Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+              <StackPanel x:Name="WebpLosslessPanel" Spacing="4">
+                <TextBlock Text="无损压缩级别 (0-6)" Margin="0,4,0,0"/>
+                <NumericUpDown x:Name="WebpCompressionBox" Value="4" Minimum="0" Maximum="6"/>
+                <TextBlock Text="0=最快/最大, 6=最慢/最小 | 动图模式下不可用" FontSize="10" Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+              </StackPanel>
             </StackPanel>
             <!-- AVIF -->
             <StackPanel x:Name="AvifCodecPanel" IsVisible="False" Spacing="4">

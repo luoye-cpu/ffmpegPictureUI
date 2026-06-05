@@ -1,6 +1,6 @@
 # 🖼️ FfmpegPictureUI — FFmpeg 图片转换器
 
-**⚠️ v1.4.0 BETA — 测试版本，包含实验性动图编码功能，可能有未发现的 Bug。**
+**⚠️ v1.4.1 BETA — 测试版本，包含实验性动图编码功能，可能有未发现的 Bug。**
 
 An Avalonia UI-based cross-platform batch image/animation conversion tool that wraps `ffmpeg`/`ffprobe` with an intuitive GUI. Integrates `cjxl`/`djxl`/`cjpegli` from the [JPEG XL reference implementation](https://github.com/libjxl/libjxl).
 
