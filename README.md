@@ -117,6 +117,19 @@ ffmpegPictureUI/
 
 ## 📝 Changelog / 更新日志
 
+### v1.4.1 BETA (2026-06-05)
+
+> ⚠️ **测试版本** — 动图编码修复版。
+
+- 🎞 **AVIF → GIF 透明+色彩修复 / AVIF→GIF alpha+color fix**: AVIF 动画转为 GIF 时，颜色流 (0:2) 和 alpha 流 (0:3) 分离解码为 PNG，再通过 `alphamerge` 合并编码。修复了之前单 pass `alphamerge` 直接处理 yuv444p+gray 导致色彩被严重压缩的问题 —— AVIF→GIF now extracts color+alpha streams separately, avoiding color loss from single-pass alphamerge on yuv+gray
+- 🎞 **AVIF → WebP 透明通道 / AVIF→WebP alpha**: 同样采用分轨提取+合并方案，`alphamerge,format=yuva420p` → `libwebp_anim`，保留完整透明通道 —— dual-stream extraction + alphamerge for animated WebP with alpha
+- 🧹 **移除 avifenc 集成 / avifenc integration removed**: `AvifencService.cs` 及所有 avifenc 编码器后端选项已完全移除；GIF→AVIF 保留 avifenc.exe 两步法（提取 RGBA PNG → avifenc 编码），作为独立工具路径由 `AvifencPath` 设置管理 —— avifenc encoder backend removed; two-step GIF→AVIF via avifenc.exe still available as tool path
+- 🎨 **动图编码器面板重设计 / Animated codec panel redesign**: WebP 动图模式隐藏压缩级别面板（不适用），AVIF 动图模式显示 `still-picture=0`，JXL 动图模式隐藏无损复选框 —— per-format animated panel visibility refined
+- 🐛 **JXL 静态图编码修复 / JXL static encoding fix**: `AnimationLoop >= 0` → `AnimationFps.HasValue` 判断动图，避免 FFmpeg 8.x `libjxl_anim` 对静态 JXL 误触发 `-lossless_jpeg` 移除 —— FFmpeg 8.x removed `-lossless_jpeg`, JXL animated detection corrected
+- 🐛 **GIF palettegen 参数修复 / GIF palettegen fix**: `palettegen=...:max_colors=256` 修复（语法 `:` 替代 `=`），`stats_mode=full` 替代 `diff` 保留完整色彩 —— palettegen syntax fix for FFmpeg 8.x
+- 🐛 **拖放保留目录结构修复 / Drag-drop preserve folder structure fix**: 修复拖入新文件时 `_selectedFiles.Clear()` + `_selectedFileBaseDirs.Clear()` 导致已有文件丢失目录映射；追加式拖放 + `_mediaFiles` 加队列时正确传入 `inputBaseDir` —— incremental drag-drop no longer clears existing file→baseDir mappings
+- 🔄 **Metadata 保留扩展 / Metadata preservation**: 外部工具（avifenc/cjxl/cjpegli）转换路径新增 8 个 `exiftool -TagsFromFile` 调用点，确保元数据不丢失 —— 8 additional exiftool metadata restore call points for external tool paths
+
 ### v1.4.0 BETA (2026-06-04)
 
 > ⚠️ **测试版本** — 包含大量实验性动图编码功能，欢迎反馈 Bug。
