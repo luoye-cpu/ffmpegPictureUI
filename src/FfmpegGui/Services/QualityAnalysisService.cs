@@ -56,10 +56,17 @@ namespace FfmpegGui.Services
 
             try
             {
-                // 使用 filter_complex + 显式输出 pad 标签，确保两个滤镜链各自独立输出
-                // 旧版 -lavfi 在某些 ffmpeg 构建中对 ; 分隔的多链支持不稳定
+                // 选择输出文件中最佳的视轨（多轨 AVIF 等需选动画轨而非封面轨）
+                var srcStream = "0:v";
+                var encStream = await SelectBestVideoStreamAsync(encodedPath, fileName);
+
+                // ★ 动图修复:
+                // 1) settb=1/1000 + setpts=N 按帧序号对齐（忽略原始帧间隔），消除不同
+                //    帧率/时间基准导致的帧错位对比——这才是 PSNR 极低的根本原因
+                // 2) split → 各自独立的帧拷贝馈入 ssim / psnr，避免共用 pad
+                //    时第二个滤镜读到错误帧（PSNR 全 inf 问题）
                 var args = $"-hide_banner -i \"{sourcePath}\" -i \"{encodedPath}\" " +
-                           $"-filter_complex \"[0:v][1:v]ssim[ssim_out];[0:v][1:v]psnr[psnr_out]\" " +
+                           $"-filter_complex \"[{srcStream}]settb=1/1000,setpts=N,split[src1][src2];[{encStream}]settb=1/1000,setpts=N,split[enc1][enc2];[src1][enc1]ssim[ssim_out];[src2][enc2]psnr[psnr_out]\" " +
                            $"-map \"[ssim_out]\" -map \"[psnr_out]\" -f null -";
 
                 var psi = new ProcessStartInfo
@@ -130,6 +137,81 @@ namespace FfmpegGui.Services
         }
 
         /// <summary>
+        /// 为输出文件选择最佳视频流（多轨 AVIF 等需要跳过静态封面轨，选动画轨）
+        /// 返回流选择器如 "1:v" 或 "1:v:2"
+        /// </summary>
+        private static async Task<string> SelectBestVideoStreamAsync(
+            string encodedPath, string ffmpegPath)
+        {
+            try
+            {
+                var probePath = FindFfprobe(ffmpegPath);
+                if (probePath == null) return "1:v";
+
+                var psi = new ProcessStartInfo
+                {
+                    FileName = probePath,
+                    Arguments = $"-v error -show_entries stream=index,codec_type,nb_frames -of csv=p=0 \"{encodedPath}\"",
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    StandardOutputEncoding = Encoding.UTF8
+                };
+
+                using var p = Process.Start(psi);
+                if (p == null) return "1:v";
+
+                var output = await p.StandardOutput.ReadToEndAsync();
+                await p.WaitForExitAsync();
+
+                // 解析: index,codec_type,nb_frames
+                // 例: 0,video,1  /  1,video,1  /  2,video,10  /  3,video,10
+                int bestStreamIdx = -1;
+                int bestFrames = -1;
+                var lines = output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+                foreach (var line in lines)
+                {
+                    var parts = line.Split(',');
+                    if (parts.Length >= 3
+                        && parts[1].Trim().Equals("video", StringComparison.OrdinalIgnoreCase)
+                        && int.TryParse(parts[0].Trim(), out var idx)
+                        && int.TryParse(parts[2].Trim(), out var frames))
+                    {
+                        if (frames > bestFrames)
+                        {
+                            bestFrames = frames;
+                            bestStreamIdx = idx;
+                        }
+                    }
+                }
+
+                if (bestStreamIdx >= 0)
+                    return bestStreamIdx == 0 ? "1:v" : $"1:v:{bestStreamIdx}";
+
+                return "1:v";
+            }
+            catch
+            {
+                return "1:v"; // 探测失败则回退默认
+            }
+        }
+
+        private static string? FindFfprobe(string ffmpegPath)
+        {
+            var dir = Path.GetDirectoryName(ffmpegPath) ?? "";
+            var probePath = Path.Combine(dir, "ffprobe");
+            if (Environment.OSVersion.Platform == PlatformID.Win32NT)
+                probePath += ".exe";
+            if (File.Exists(probePath))
+                return probePath;
+            probePath = ffmpegPath.Replace("ffmpeg", "ffprobe");
+            if (File.Exists(probePath))
+                return probePath;
+            return null;
+        }
+
+        /// <summary>
         /// 通过 ffprobe 快速检查两图分辨率是否一致。
         /// 返回 null 表示一致或无法检测（不阻塞后续分析），返回非空字符串则是错误信息。
         /// </summary>
@@ -161,13 +243,8 @@ namespace FfmpegGui.Services
         {
             try
             {
-                var probePath = Path.Combine(Path.GetDirectoryName(ffmpegPath) ?? "", "ffprobe");
-                if (Environment.OSVersion.Platform == PlatformID.Win32NT)
-                    probePath += ".exe";
-                if (!File.Exists(probePath))
-                    probePath = ffmpegPath.Replace("ffmpeg", "ffprobe");
-                if (!File.Exists(probePath))
-                    return null;
+                var probePath = FindFfprobe(ffmpegPath);
+                if (probePath == null) return null;
 
                 var psi = new ProcessStartInfo
                 {
@@ -211,19 +288,25 @@ namespace FfmpegGui.Services
             // "SSIM All:0.978543"
             // "SSIM R:0.987654 G:0.976543 B:0.965432 All:0.978543 (17.68)"  -- RGB 源
             // "SSIM All:1.000000 (inf)"  -- 无损/完全相同
-            var ssimMatch = Regex.Match(output,
+            //
+            // ★ 动图修复: 动图（GIF/APNG/动画WebP 等）的 ssim/psnr 滤镜会为每一帧输出一行，
+            //    最后一行才是所有帧的汇总平均值。这里使用 Matches 取最后一个匹配，
+            //    避免误取第一帧的偏低分数。
+            var ssimMatches = Regex.Matches(output,
                 @"SSIM\s+(?:[YUVRGBrgbyuv]:" + ValuePattern + @"\s*)*?All:\s*(" + ValuePattern + @")(?:\s*\((" + ValuePattern + @")\s*(?:dB)?\s*\))?",
                 RegexOptions.IgnoreCase);
 
             // 回退: 更宽松的模式
-            if (!ssimMatch.Success)
+            if (ssimMatches.Count == 0)
             {
-                ssimMatch = Regex.Match(output,
+                ssimMatches = Regex.Matches(output,
                     @"SSIM.*?All:\s*(" + ValuePattern + @")",
                     RegexOptions.IgnoreCase);
             }
 
-            if (ssimMatch.Success)
+            // 取最后一个匹配（动图时为汇总平均值，静图为唯一匹配）
+            var ssimMatch = ssimMatches.Count > 0 ? ssimMatches[^1] : null;
+            if (ssimMatch != null && ssimMatch.Success)
             {
                 ParseDouble(ssimMatch.Groups[1].Value, v => result.SsimAll = v);
                 if (ssimMatch.Groups[2].Success)
@@ -236,19 +319,21 @@ namespace FfmpegGui.Services
             // "PSNR average:43.15 min:41.23 max:45.89"
             // "PSNR r:42.36 g:45.21 b:44.87 average:43.15"
             // "PSNR y:inf u:inf v:inf average:inf min:inf max:inf"  -- 无损/完全相同
-            var psnrMatch = Regex.Match(output,
+            var psnrMatches = Regex.Matches(output,
                 @"PSNR\s+(?:[yuvrgbYUVRGB]:" + ValuePattern + @"\s*)*?average:\s*(" + ValuePattern + @")(?:\s*min:\s*(" + ValuePattern + @"))?(?:\s*max:\s*(" + ValuePattern + @"))?",
                 RegexOptions.IgnoreCase);
 
             // 回退: 更宽松的模式
-            if (!psnrMatch.Success)
+            if (psnrMatches.Count == 0)
             {
-                psnrMatch = Regex.Match(output,
+                psnrMatches = Regex.Matches(output,
                     @"PSNR.*?average:\s*(" + ValuePattern + @")",
                     RegexOptions.IgnoreCase);
             }
 
-            if (psnrMatch.Success)
+            // 取最后一个匹配（动图时为汇总平均值，静图为唯一匹配）
+            var psnrMatch = psnrMatches.Count > 0 ? psnrMatches[^1] : null;
+            if (psnrMatch != null && psnrMatch.Success)
             {
                 ParseDouble(psnrMatch.Groups[1].Value, v => result.PsnrAverage = v);
                 if (psnrMatch.Groups[2].Success)

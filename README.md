@@ -1,6 +1,6 @@
 # 🖼️ FfmpegPictureUI — FFmpeg 图片转换器
 
-**⚠️ v1.4.1 BETA — 测试版本，包含实验性动图编码功能，可能有未发现的 Bug。**
+**v1.4.2 正式版 — 动图质量分析与编码选项全面修复。**
 
 An Avalonia UI-based cross-platform batch image/animation conversion tool that wraps `ffmpeg`/`ffprobe` with an intuitive GUI. Integrates `cjxl`/`djxl`/`cjpegli` from the [JPEG XL reference implementation](https://github.com/libjxl/libjxl).
 
@@ -40,6 +40,7 @@ An Avalonia UI-based cross-platform batch image/animation conversion tool that w
 |---|---|---|
 | `ffmpeg` + `ffprobe` | ✅ Required / 必需 | Core encoding/decoding, media probing |
 | `cjxl` / `djxl` / `cjpegli` | ⭐ Recommended / 推荐 | JXL transcode, decoding, JPEG-LI encoding |
+| `avifenc` | ⚪ Optional / 可选 | GIF → AVIF two-step encoding with alpha preservation |
 | `exiftool` | ⚪ Optional / 可选 | Metadata editing, privacy cleaning |
 
 > The **JPEG XL 参考实现库** setting (one directory containing `cjxl.exe`/`djxl.exe`/`cjpegli.exe`) is saved as `CjxlPath`. The app auto-selects the best SIMD-optimized binary for your CPU.
@@ -117,88 +118,67 @@ ffmpegPictureUI/
 
 ## 📝 Changelog / 更新日志
 
+### v1.4.2 (2026-06-06)
+
+> 🎯 **正式版** — 动图质量分析与编码选项全面修复。
+
+- 🔬 **SSIM/PSNR 动图质量分析修复 / Animated quality analysis fix**: 三处关键修复彻底解决动图质量测试分数异常低的问题 —— Three critical fixes for animated SSIM/PSNR:
+  - Regex 取最后一帧汇总平均值（而非第一帧偏分）—— `Regex.Matches[^1]` instead of `Regex.Match`
+  - `setpts=N` 按帧序号对齐（而非 `PTS-STARTPTS` 保留帧间隔导致不同帧率错位对比）—— frame-index alignment instead of time-based
+  - `settb=1/1000,split` 标准化时间基准 + 独立帧拷贝避免 PSNR 全 `inf` —— timebase normalization + split for independent filter chains
+  - 多轨 AVIF 自动选择帧数最多的动画轨（跳过高 fps 封面轨）—— auto-select best video stream via ffprobe
+- 🎛️ **动图高级编码选项修复 / Animated codec options fix**: 
+  - JXL 动图模式隐藏 cjxl 后端选项（渐进式解码、光子噪声不适用于动画）—— hide cjxl options for animated JXL
+  - AVIF `-tune` 值越界修复：UI 0-5 → libaom -1/0/1 正确映射 —— tune value mapping for libaom range
+  - APNG / WebP / AVIF 动图全高级选项编码验证通过 —— all animated advanced options verified
+- 🐛 **其他修复 / Other fixes**: `WebpLosslessPanel` 动图模式可见性恢复；编码器列表动图 JXL 过滤 cjxl
+
 ### v1.4.1 BETA (2026-06-05)
 
 > ⚠️ **测试版本** — 动图编码修复版。
 
-- 🎞 **AVIF → GIF 透明+色彩修复 / AVIF→GIF alpha+color fix**: AVIF 动画转为 GIF 时，颜色流 (0:2) 和 alpha 流 (0:3) 分离解码为 PNG，再通过 `alphamerge` 合并编码。修复了之前单 pass `alphamerge` 直接处理 yuv444p+gray 导致色彩被严重压缩的问题 —— AVIF→GIF now extracts color+alpha streams separately, avoiding color loss from single-pass alphamerge on yuv+gray
-- 🎞 **AVIF → WebP 透明通道 / AVIF→WebP alpha**: 同样采用分轨提取+合并方案，`alphamerge,format=yuva420p` → `libwebp_anim`，保留完整透明通道 —— dual-stream extraction + alphamerge for animated WebP with alpha
-- 🧹 **移除 avifenc 集成 / avifenc integration removed**: `AvifencService.cs` 及所有 avifenc 编码器后端选项已完全移除；GIF→AVIF 保留 avifenc.exe 两步法（提取 RGBA PNG → avifenc 编码），作为独立工具路径由 `AvifencPath` 设置管理 —— avifenc encoder backend removed; two-step GIF→AVIF via avifenc.exe still available as tool path
-- 🎨 **动图编码器面板重设计 / Animated codec panel redesign**: WebP 动图模式隐藏压缩级别面板（不适用），AVIF 动图模式显示 `still-picture=0`，JXL 动图模式隐藏无损复选框 —— per-format animated panel visibility refined
-- 🐛 **JXL 静态图编码修复 / JXL static encoding fix**: `AnimationLoop >= 0` → `AnimationFps.HasValue` 判断动图，避免 FFmpeg 8.x `libjxl_anim` 对静态 JXL 误触发 `-lossless_jpeg` 移除 —— FFmpeg 8.x removed `-lossless_jpeg`, JXL animated detection corrected
-- 🐛 **GIF palettegen 参数修复 / GIF palettegen fix**: `palettegen=...:max_colors=256` 修复（语法 `:` 替代 `=`），`stats_mode=full` 替代 `diff` 保留完整色彩 —— palettegen syntax fix for FFmpeg 8.x
-- 🐛 **拖放保留目录结构修复 / Drag-drop preserve folder structure fix**: 修复拖入新文件时 `_selectedFiles.Clear()` + `_selectedFileBaseDirs.Clear()` 导致已有文件丢失目录映射；追加式拖放 + `_mediaFiles` 加队列时正确传入 `inputBaseDir` —— incremental drag-drop no longer clears existing file→baseDir mappings
-- 🔄 **Metadata 保留扩展 / Metadata preservation**: 外部工具（avifenc/cjxl/cjpegli）转换路径新增 8 个 `exiftool -TagsFromFile` 调用点，确保元数据不丢失 —— 8 additional exiftool metadata restore call points for external tool paths
+- 🎞 **AVIF → GIF 透明+色彩修复 / AVIF→GIF alpha+color fix**: 颜色流和 alpha 流分离解码后 alphamerge 合并，修复单 pass 色彩压缩问题 —— dual-stream extraction avoids color loss
+- 🎞 **AVIF → WebP 透明通道 / AVIF→WebP alpha**: 同样分轨提取+合并方案保留完整透明通道 —— same dual-stream approach for animated WebP
+- 🧹 **移除 avifenc 集成 / avifenc integration removed**: 编码器后端选项已完全移除；GIF→AVIF 两步法保留为独立工具路径 —— encoder backend removed, two-step path preserved
+- 🎨 **动图编码器面板重设计 / Animated codec panel redesign**: WebP/AVIF/JXL 动图模式面板可见性细化 —— per-format animated panel visibility refined
+- 🐛 **JXL 静态图编码修复 / JXL static encoding fix**: 动图判断条件修正；palettegen 语法修复；拖放目录结构修复 —— JXL detection, palettegen syntax, drag-drop fixes
+- 🔄 **Metadata 保留扩展 / Metadata preservation**: 外部工具路径新增 8 个 exiftool 调用点
 
 ### v1.4.0 BETA (2026-06-04)
 
-> ⚠️ **测试版本** — 包含大量实验性动图编码功能，欢迎反馈 Bug。
+> ⚠️ **测试版本** — 包含大量实验性动图编码功能。
 
-- 🎞 **Animation mode / 动图模式**: Still/Animated mode toggle; dynamic format list per mode; FPS, loop count, scale width controls with auto (empty) option — 静态/动图模式切换，格式列表动态变化，帧率/循环/缩放参数均支持留空auto
-- 🎬 **5 animated format support / 5种动图格式**: GIF (palette optimization + dither), WebP animated, PNG (APNG) via `apng` encoder + `-f apng`, AVIF animated via `-still-picture 0`, JPEG XL animated via `cjxl` external tool — 全面支持5种动图格式编码
-- 🎚 **Animation parameter panel / 动图参数面板**: FPS (1-60), loop count (0=infinite/-1=no loop), scale width; empty = auto (follow source) — 动图专属参数卡片式面板
-- 🔍 **Advanced animated codec panels / 动图高级面板**: GIF palettegen+dither toggles, APNG info panel, WebP/AVIF/JXL existing panels adapted for animation — 各动图格式的高级编码选项面板
-- 👁 **Error-only queue filter / 仅显示报错**: Checkbox to hide completed items, showing only errors + in-progress tasks; auto-refreshes on status change — 一键过滤已完成项，聚焦报错任务
-- 📝 **Metadata editor expansion / 元数据编辑器扩展**: 39 → ~90 fields across 9 categories; double-click file opens editor with ffprobe media info — 字段数量翻倍，新增IPTC/XMP/色彩配置等分类
-- 🐛 **exiftool stalling fix / exiftool 挂起修复**: Process deadlock fixed (async stream reads); `exiftool(-k).exe` automatically cloned to `exiftool.exe` to avoid keypress wait — 进程死锁修复，自动处理(-k)版本
-- 🐛 **Search-result drag-drop / 搜索拖放修复**: Windows Search result files resolved via dual-format fallback (`DataFormats.Files` → `FileNames`); Shell namespace paths properly handled — 双格式回退机制解决搜索结果拖放失效
-- 🐛 **JSON value type fix / 元数据读取修复**: `JsonElement.GetString()` replaced with `JsonElementToString()` to handle numeric/boolean/null types in exiftool output — 修复数字/布尔/空类型导致的元数据读取崩溃
+- 🎞 **Animation mode / 动图模式**: 静态/动图切换，格式列表动态变化，FPS/循环/缩放参数（留空=auto）—— Still/Animated toggle with auto options
+- 🎬 **5 animated formats / 5种动图格式**: GIF, WebP animated, PNG (APNG), AVIF animated, JPEG XL animated —— full animated encoding support
+- 🎚 **Animation parameter panel / 动图参数面板**: FPS (1-60), loop count, scale width with auto option
+- 🔍 **Advanced animated codec panels / 动图高级面板**: 各动图格式专属编码选项 —— per-format animated codec options
+- 👁 **Error-only queue filter / 仅显示报错**: 一键过滤已完成项，聚焦报错任务
+- 📝 **Metadata editor expansion / 元数据编辑器扩展**: 39→~90 字段，9 大分类，双击文件打开
+- 🐛 **exiftool stalling / search drag-drop / JSON type fixes**
 
 ### v1.3.4 (2026-06-04)
 
-- 🎚️ **Format-aware quality input / 格式感知质量输入**: NumericUpDown replaced with TextBox showing actual codec values (JPEG q:v 2–31, JXL distance 0–15, AVIF CRF 0–63, etc.) — 数字输入框显示各格式实际编码参数值，滑块和输入框双向正反映射
-- 🎯 **Snap-to-tick slider / 吸附式滑块**: `TickFrequency="1" IsSnapToTickEnabled="True"` ensures every integer value is selectable — 滑块吸附到整数，确保所有质量值可选
-- 🔒 **PNG/TIFF quality lock / 无损格式锁定**: Quality slider+input auto-lock at max value and disabled for lossless-only formats — PNG/TIFF 自动锁定最高质量并禁用
-- 🌓 **Dark mode queue text fix / 深色模式队列文字修复**: Queue items correctly switch to white text in dark mode via theme-aware `ErrorToColorConverter` + binding refresh — 队列文字在深色模式下正确切换为白色
-- 🏷️ **JPEGli -d parameter / JPEGli 距离参数**: cjpegli uses `--distance` (butteraugli) instead of `--quality` for perceptually uniform control — cjpegli 改用感知均匀的 butteraugli 距离参数
-- 🔍 **Image format filter / 图片格式筛选**: Checkbox window to toggle which file extensions are recognized; persisted to settings; cleans up non-matching files — 勾选窗口选择可识别的图片格式，持久化保存，自动清理不匹配文件
-- 🧹 **Deduplicated filter arrays / 去重硬编码**: All 6 hardcoded format extension arrays unified into `AppSettings.GetEnabledExtensions()` — 全部 6 处硬编码格式数组统一集中管理
-- 📝 **Enhanced metadata editor / 元数据编辑器增强**: Expanded from 39 to ~90 fields across 9 categories (Basic, DateTime, Camera, Shooting, GPS, Image, IPTC, XMP, Color); double-click selected files opens metadata editor with ffmpeg media info — 从 39 字段扩展到 ~90 字段 9 大分类，双击已选文件打开含 ffmpeg 媒体信息的元数据编辑器
-- 🐛 **Search-result drag-drop fix / 搜索拖放修复**: Files dragged from Windows Search results now correctly resolve Shell namespace paths via `TryGetLocalPath()` — 从 Windows 搜索结果拖放的文件通过 TryGetLocalPath 正确解析 Shell 路径
+- 🎚️ Format-aware quality input with snap-to-tick slider; PNG/TIFF lossless lock; dark mode queue text fix; cjpegli `--distance`; image format filter; deduplicated filter arrays; metadata editor expanded to ~90 fields
 
 ### v1.3.3 (2026-06-04)
 
-- 🧩 **Unified Encoder Backend / 编码器统一后端**: `cjpegli` and `cjxl` are now selectable encoder options in the encoder dropdown; auto-fallback to ffmpeg when external tool unavailable — cjpegli 和 cjxl 作为编码器下拉框中的独立可选选项，不可用时自动回退到 ffmpeg
-- 🎛️ **Advanced Codec Panels / 高级编码面板**: Full advanced options per format, auto-switches by backend — 每个格式的完整高级编码选项，按编码器后端自动切换:
-  - **JPEG LI (cjpegli)**: chroma subsampling (auto/444/422/420/440), progressive mode, Huffman optimize, adaptive quantization, sjpeg backend + PSNR target
-  - **JPEG XL (cjxl)**: effort 1–9, progressive decode, photon noise ISO 0–3200; lossless JPEG repack auto-detect
-  - **JPEG XL (ffmpeg libjxl)**: effort 1–9, modular mode, lossless_jpeg hint
-  - **JPEG (ffmpeg mjpeg)**: Huffman strategy, DCT algorithm (auto/int/fastint/float)
-  - **WebP**: preset + lossless compression level (0–6)
-  - **AVIF**: cpu-used, tune, usage/preset, still-picture (default ON), row-mt
-  - **TIFF**: compression algo (raw/lzw/deflate/packbits)
-- 🔒 **Thread locking / 线程锁定**: Auto-locks single-thread for encoders that don't support multi-threading (cjpegli) — 对不支持多线程的编码器自动锁定单线程
-- 🔤 **Format display names / 格式大写名称**: All format names capitalized (`JPEG`, `JPEG LI`, `JPEG XL`, `PNG`, `WebP`, `AVIF`, `TIFF`) — 格式名统一大写
-- 🔄 **JPEG LI independent / JPEG LI 独立**: `JPEG LI` is a separate format from `JPEG`; outputs standard `.jpg` files — JPEG LI 独立为单独格式，输出标准 .jpg 后缀
-- 📐 **Visually-lossless defaults / 视觉无损默认**: AVIF quality default 90, still-picture default checked — AVIF 默认质量 90 并开启静态图片模式
-- 🛡️ **SkiaSharp vulnerability fix / 漏洞修复**: SkiaSharp 2.88.3 → 2.88.6 (CVE-2023-4863 / GHSA-j7hp-h8jx-5ppr); no .pdb in release
-- ⏱️ **Queue progress display / 队列进度显示**: Real-time elapsed time + N/M completed + ETA based on average task duration — 实时已用时间 + N/M 完成数 + 基于平均耗时的剩余预估
-- 🔁 **Smart fallback / 智能回退**: cjxl/cjpegli auto-retry via ffmpeg→PNG intermediate when direct encoding fails (e.g. AVIF/WebP input) — cjxl/cjpegli 直接编码失败自动通过 ffmpeg 转 PNG 重试
-- 🎨 **Theme-aware labels / 主题感知标签**: All `Gray` foreground labels replaced with `DynamicResource` for readability in dark mode — 全部灰色标签改为动态资源，深色模式下清晰可读
-- 🐛 **Fixes / 修复**: Auto-option fallback when advanced codec panel unchecked; all format lookups via `NormalizeFormat()`; jpegli output extension corrected to `.jpg` — 高级面板不勾选时正确回退；格式名统一映射；jpegli 输出后缀修正
+- 🧩 Unified encoder backend (cjpegli/cjxl/ffmpeg); advanced codec panels per format; thread locking; smart fallback via PNG intermediate; SkiaSharp CVE fix; queue progress ETA
 
 ### v1.3.2 (2026-06-03)
 
-- 🔬 **JXL Smart Pipeline / JXL 智能管线**: Byte-level JXL type detection (`JxlInspector`) distinguishes JPEG-reconstruction from native codestream; auto-selects optimal path — 字节级 JXL 类型检测，自动区分 JPEG 套壳 vs 原生码流并选最优路径
-- 🔧 **Stream pipeline / 流式管道**: `djxl` → `cjpegli` process-to-process pipe with zero intermediate file I/O — 进程间管道，无需磁盘中间文件
-- 🆕 **JPEG-LI format / JPEG-LI 格式**: New `jpegli` output option; prefers `cjpegli` encoding, falls back to ffmpeg mjpeg — 新增 jpegli 输出选项，优先 cjpegli 编码
-- 🧠 **SIMD detection / SIMD 检测**: Startup probe of ffmpeg/cjxl/djxl/cjpegli SIMD capabilities; auto-selects optimal binary — 启动时探测全部工具的 SIMD 编译能力
-- 🔍 **Unified lib path / 统一库路径**: `CjxlPath` → "JPEG XL 参考实现库", single directory manages cjxl/djxl/cjpegli — 一个目录管理全部工具
-- 🐛 **Fix / 修复**: cjpegli detection when CjxlPath points to a file; `FfmpegCommandBuilder` `jpegli` case — cjpegli 检测增强；命令构建补全
-- 🧹 **Cleanup / 清理**: Removed unused candidate panel and probe details UI — 移除未使用 UI 元素
+- 🔬 JXL smart pipeline (byte-level detection, djxl→cjpegli pipe); JPEG-LI format; SIMD detection; unified lib path
 
 ### v1.3.1 (2026-06-02)
 
-- 📝 Metadata editing panel (39 fields, 5 categories, exiftool) / 元数据编辑面板
-- 🐛 Queue error items red highlight; null Converter text fix / 队列报错标红修复
+- 📝 Metadata editing panel (39 fields, 5 categories); queue error red highlight
 
 ### v1.3.0 (2026-05-26)
 
-- 📦 Single-file publish; 🧹 Metadata mode dropdown; 🔒 exiftool privacy cleaning; 🎨 Bit depth auto; 🔍 3-tier tool detection; 🗂️ Preserve folder structure; 💾 Full preset coverage
+- 📦 Single-file publish; metadata mode dropdown; exiftool privacy cleaning; bit depth auto; 3-tier tool detection; preserve folder structure; full preset coverage
 
 ### v1.2.3 (2026-05-26)
 
-- 🎨 UI overhaul (cards, GridSplitter, WrapPanel); 🌓 Dual theme; 🐛 Drag/queue/refresh fixes; 🔧 cjxl `--lossless_jpeg=1`
+- 🎨 UI overhaul (cards, GridSplitter); dual theme; drag/queue fixes; cjxl lossless JPEG
 
 ### v1.2.2 · v1.2.1 · v1.1.0 · v1.0.1 · v1.0.0
 

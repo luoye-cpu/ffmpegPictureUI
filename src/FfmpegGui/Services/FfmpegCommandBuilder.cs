@@ -155,7 +155,17 @@ namespace FfmpegGui.Services
                         if (options.Encoder?.StartsWith("libsvt", StringComparison.OrdinalIgnoreCase) == true)
                         { args.Add("-svtav1-params"); args.Add($"tune={t}"); }
                         else
-                        { args.Add("-tune"); args.Add(t.ToString()); }
+                        {
+                            // libaom -tune 仅接受 -1(psnr)/0(default)/1(vmaf)
+                            // UI 值 0-5 是 SVT-AV1 范围，需映射
+                            var libaomTune = t switch
+                            {
+                                1 => -1,  // UI PSNR → libaom -1
+                                3 => 1,   // UI VMAF → libaom 1
+                                _ => 0    // 其他 → 0(default)
+                            };
+                            args.Add("-tune"); args.Add(libaomTune.ToString());
+                        }
                     }
                     // 动图 AVIF: still-picture=0
                     var isAnimated = options.AnimationFps.HasValue || options.AnimationLoop != 0 || options.AvifStillPicture == false;

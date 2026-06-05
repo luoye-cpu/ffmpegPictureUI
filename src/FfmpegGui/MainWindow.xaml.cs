@@ -1156,8 +1156,13 @@ namespace FfmpegGui
             if (EncoderCombo == null || FormatCombo == null) return;
 
             var fmt1 = NormalizeFormat(FormatCombo.SelectedItem as string);
+            var isAnimMode = ConversionModeCombo?.SelectedIndex == 1;
 
             var encoders = await EncoderDetectionService.GetEncodersForFormatAsync(fmt1);
+
+            // 动图 JXL：cjxl 不支持动画，从编码器列表中移除
+            if (isAnimMode && fmt1 == "jxl")
+                encoders = encoders.Where(e => e.Backend != EncoderBackend.Cjxl).ToList();
 
             EncoderCombo.Items!.Clear();
             if (encoders.Count > 0)
@@ -1414,11 +1419,20 @@ namespace FfmpegGui
 
                 case "jxl":
                     if (JxlCodecPanel != null) JxlCodecPanel.IsVisible = true;
-                    // 根据后端切换 JXL 子面板
-                    if (JxlFfmpegPanel != null)
-                        JxlFfmpegPanel.IsVisible = backend != EncoderBackend.Cjxl;
-                    if (JxlCjxlPanel != null)
-                        JxlCjxlPanel.IsVisible = backend == EncoderBackend.Cjxl;
+                    // 动图 JXL：cjxl 不支持动画，强制只显示 FFmpeg 面板（隐藏 cjxl 选项）
+                    if (isAnimMode)
+                    {
+                        if (JxlFfmpegPanel != null) JxlFfmpegPanel.IsVisible = true;
+                        if (JxlCjxlPanel != null) JxlCjxlPanel.IsVisible = false;
+                    }
+                    else
+                    {
+                        // 根据后端切换 JXL 子面板
+                        if (JxlFfmpegPanel != null)
+                            JxlFfmpegPanel.IsVisible = backend != EncoderBackend.Cjxl;
+                        if (JxlCjxlPanel != null)
+                            JxlCjxlPanel.IsVisible = backend == EncoderBackend.Cjxl;
+                    }
                     // 动图 JXL：禁用 LosslessCheck（libjxl_anim 不支持无损模式）
                     if (isAnimMode && LosslessCheck != null)
                         LosslessCheck.IsEnabled = false;
