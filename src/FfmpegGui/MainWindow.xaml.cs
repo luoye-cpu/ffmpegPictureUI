@@ -55,6 +55,7 @@ namespace FfmpegGui
         private TextBox? OutputDirBox;
         private TextBox? CjxlPathBox;
         private TextBox? ExifToolPathBox;
+        private TextBox? AvifencPathBox;
         private CheckBox? PreserveInputStructure;
         private CheckBox? StopAfterCurrentCheck;
         private CheckBox? ShowErrorsOnlyCheck;
@@ -79,7 +80,6 @@ namespace FfmpegGui
         private TextBox? AnimationFpsBox;
         private TextBox? AnimationLoopBox;
         private TextBox? AnimationScaleWBox;
-        private StackPanel? StaticOnlyPanel;
         // 各格式高级面板
         private StackPanel? PngCodecPanel;
         private StackPanel? GifCodecPanel;
@@ -96,6 +96,7 @@ namespace FfmpegGui
         private ComboBox? PngPredCombo;
         private ComboBox? WebpPresetCombo;
         private NumericUpDown? WebpCompressionBox;
+        private StackPanel? WebpLosslessPanel;
         private NumericUpDown? AvifCpuUsedBox;
         private CheckBox? AvifStillPictureCheck;
         private CheckBox? AvifRowMtCheck;
@@ -184,6 +185,7 @@ namespace FfmpegGui
             OutputDirBox = this.FindControl<TextBox>("OutputDirBox");
             CjxlPathBox = this.FindControl<TextBox>("CjxlPathBox");
             ExifToolPathBox = this.FindControl<TextBox>("ExifToolPathBox");
+            AvifencPathBox = this.FindControl<TextBox>("AvifencPathBox");
             PreserveInputStructure = this.FindControl<CheckBox>("PreserveInputStructure");
             AutoUseSimdCheck = this.FindControl<CheckBox>("AutoUseSimdCheck");
             AutoThreadsCheck = this.FindControl<CheckBox>("AutoThreadsCheck");
@@ -196,7 +198,6 @@ namespace FfmpegGui
             AnimationFpsBox = this.FindControl<TextBox>("AnimationFpsBox");
             AnimationLoopBox = this.FindControl<TextBox>("AnimationLoopBox");
             AnimationScaleWBox = this.FindControl<TextBox>("AnimationScaleWBox");
-            StaticOnlyPanel = this.FindControl<StackPanel>("StaticOnlyPanel");
             // 动图参数默认空（auto，编码器自行决定）
             if (AnimationFpsBox != null) AnimationFpsBox.Text = "";
             if (AnimationLoopBox != null) AnimationLoopBox.Text = "";
@@ -218,6 +219,7 @@ namespace FfmpegGui
             PngPredCombo = this.FindControl<ComboBox>("PngPredCombo");
             WebpPresetCombo = this.FindControl<ComboBox>("WebpPresetCombo");
             WebpCompressionBox = this.FindControl<NumericUpDown>("WebpCompressionBox");
+            WebpLosslessPanel = this.FindControl<StackPanel>("WebpLosslessPanel");
             AvifCpuUsedBox = this.FindControl<NumericUpDown>("AvifCpuUsedBox");
             AvifStillPictureCheck = this.FindControl<CheckBox>("AvifStillPictureCheck");
             AvifRowMtCheck = this.FindControl<CheckBox>("AvifRowMtCheck");
@@ -442,6 +444,7 @@ namespace FfmpegGui
                 DragDrop.SetAllowDrop(MediaDropZone, true);
                 MediaDropZone.AddHandler(DragDrop.DragEnterEvent, DragEnter);
                 MediaDropZone.AddHandler(DragDrop.DragLeaveEvent, DragLeave);
+                MediaDropZone.AddHandler(DragDrop.DragOverEvent, DragOver);
                 MediaDropZone.AddHandler(DragDrop.DropEvent, DropHandler);
             }
 
@@ -510,6 +513,8 @@ namespace FfmpegGui
                 CjxlPathBox.Text = settings.CjxlPath;
             if (!string.IsNullOrWhiteSpace(settings.ExifToolPath) && ExifToolPathBox != null)
                 ExifToolPathBox.Text = settings.ExifToolPath;
+            if (!string.IsNullOrWhiteSpace(settings.AvifencPath) && AvifencPathBox != null)
+                AvifencPathBox.Text = settings.AvifencPath;
             if (PreserveInputStructure != null)
                 PreserveInputStructure.IsChecked = settings.PreserveInputFolderStructure;
             if (ConcurrencyBox != null)
@@ -1125,12 +1130,6 @@ namespace FfmpegGui
             // 动图模式：控制面板可见性 + 设置默认值
             if (AnimationPanel != null)
                 AnimationPanel.IsVisible = isAnimated;
-            if (StaticOnlyPanel != null)
-                StaticOnlyPanel.IsVisible = !isAnimated;
-            if (isAnimated)
-            {
-                // 保持空值（auto 模式），不清零
-            }
 
             // 更新 FormatCombo 选项列表
             FormatCombo.Items!.Clear();
@@ -1375,16 +1374,44 @@ namespace FfmpegGui
             if (JpegliCodecPanel != null) JpegliCodecPanel.IsVisible = false;
             if (TiffCodecPanel != null) TiffCodecPanel.IsVisible = false;
 
-            var backend = GetCurrentEncoderBackend();
+            // 恢复动图模式下可能被隐藏的控件默认值
+            if (WebpLosslessPanel != null) WebpLosslessPanel.IsVisible = true;
 
-            // 按格式+编码器后端显示对应面板
+            var backend = GetCurrentEncoderBackend();
+            var isAnimMode = ConversionModeCombo?.SelectedIndex == 1;
+
+            // 按格式+编码器后端+动图模式显示对应面板
             switch (fmt)
             {
                 case "png": if (PngCodecPanel != null) PngCodecPanel.IsVisible = true; break;
-                case "apng": if (ApngCodecPanel != null) ApngCodecPanel.IsVisible = true; break;
-                case "gif": if (GifCodecPanel != null) GifCodecPanel.IsVisible = true; break;
-                case "webp": if (WebpCodecPanel != null) WebpCodecPanel.IsVisible = true; break;
-                case "avif": if (AvifCodecPanel != null) AvifCodecPanel.IsVisible = true; break;
+
+                case "apng":
+                    if (ApngCodecPanel != null) ApngCodecPanel.IsVisible = true;
+                    break;
+
+                case "gif":
+                    if (GifCodecPanel != null) GifCodecPanel.IsVisible = true;
+                    break;
+
+                case "webp":
+                    if (WebpCodecPanel != null) WebpCodecPanel.IsVisible = true;
+                    // 动图 WebP (libwebp_anim) 不支持无损压缩级别，隐藏相关控件
+                    if (isAnimMode && WebpLosslessPanel != null)
+                        WebpLosslessPanel.IsVisible = false;
+                    break;
+
+                case "avif":
+                    if (AvifCodecPanel != null) AvifCodecPanel.IsVisible = true;
+                    // 动图 AVIF：强制禁用 still-picture + 隐藏 LosslessCheck
+                    if (AvifStillPictureCheck != null)
+                    {
+                        AvifStillPictureCheck.IsEnabled = !isAnimMode;
+                        if (isAnimMode) AvifStillPictureCheck.IsChecked = false;
+                    }
+                    if (isAnimMode && LosslessCheck != null)
+                        LosslessCheck.IsEnabled = false;
+                    break;
+
                 case "jxl":
                     if (JxlCodecPanel != null) JxlCodecPanel.IsVisible = true;
                     // 根据后端切换 JXL 子面板
@@ -1392,7 +1419,11 @@ namespace FfmpegGui
                         JxlFfmpegPanel.IsVisible = backend != EncoderBackend.Cjxl;
                     if (JxlCjxlPanel != null)
                         JxlCjxlPanel.IsVisible = backend == EncoderBackend.Cjxl;
+                    // 动图 JXL：禁用 LosslessCheck（libjxl_anim 不支持无损模式）
+                    if (isAnimMode && LosslessCheck != null)
+                        LosslessCheck.IsEnabled = false;
                     break;
+
                 case "jpg": case "jpeg":
                     // jpg/jpeg 格式：根据编码器后端显示不同高级面板
                     if (backend == EncoderBackend.Cjpegli)
@@ -1489,6 +1520,18 @@ namespace FfmpegGui
                 if (LogText != null) LogText.Text += $"已批量添加 {_selectedFiles.Count} 个文件到队列\n";
                 _selectedFiles.Clear();
                 _selectedFileBaseDirs.Clear();
+                return;
+            }
+
+            // _selectedFiles 为空但 _mediaFiles 有内容：从已选文件列表批量添加
+            if (_mediaFiles.Count > 0)
+            {
+                foreach (var file in _mediaFiles)
+                {
+                    _selectedFileBaseDirs.TryGetValue(file, out var baseDir);
+                    AddSingleToQueue(file, baseDir);
+                }
+                if (LogText != null) LogText.Text += $"已从列表批量添加 {_mediaFiles.Count} 个文件到队列\n";
                 return;
             }
 
@@ -2254,12 +2297,47 @@ namespace FfmpegGui
             RegenerateCommand();
         }
 
+        private async void BrowseAvifenc_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        {
+            var topLevel = TopLevel.GetTopLevel(this);
+            if (topLevel?.StorageProvider == null) return;
+            var files = await topLevel.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+            {
+                Title = "选择 avifenc.exe",
+                AllowMultiple = false,
+                FileTypeFilter = new[]
+                {
+                    new FilePickerFileType("可执行文件") { Patterns = new[] { "*.exe" } },
+                    new FilePickerFileType("所有文件") { Patterns = new[] { "*" } }
+                }
+            });
+            if (files != null && files.Count > 0)
+            {
+                var path = files[0].Path.LocalPath;
+                AppSettingsService.Current.AvifencPath = path;
+                AppSettingsService.Save();
+                if (AvifencPathBox != null) AvifencPathBox.Text = path;
+                if (LogText != null) LogText.Text += $"avifenc 路径已更新: {path}\n";
+                RegenerateCommand();
+            }
+        }
+
+        private void ClearAvifencPath_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        {
+            AppSettingsService.Current.AvifencPath = null;
+            AppSettingsService.Save();
+            if (AvifencPathBox != null) AvifencPathBox.Text = "";
+            if (LogText != null) LogText.Text += "avifenc: 已切换为自动检测（ffmpeg 同目录）\n";
+            RegenerateCommand();
+        }
+
         private void RedetectTools_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
         {
             // 清除所有手动路径，改为自动同目录 + PATH 检测
             AppSettingsService.Current.CjxlPath = null;
             AppSettingsService.Current.ExifToolPath = null;
             AppSettingsService.Current.CjpegliPath = null;
+            AppSettingsService.Current.AvifencPath = null;
             AppSettingsService.Save();
             if (CjxlPathBox != null) CjxlPathBox.Text = "";
             if (ExifToolPathBox != null) ExifToolPathBox.Text = "";
@@ -2323,7 +2401,12 @@ namespace FfmpegGui
                 }
 
                 _selectedFiles.Clear();
-                _selectedFiles.AddRange(files);
+                _selectedFileBaseDirs.Clear();
+                foreach (var f in files)
+                {
+                    _selectedFiles.Add(f);
+                    _selectedFileBaseDirs[f] = dir;
+                }
                 AddToMediaFiles(files);
                 UpdateMediaFileCount();
                 if (LogText != null) LogText.Text += $"已扫描到 {files.Count} 个文件\n";
@@ -2585,6 +2668,18 @@ namespace FfmpegGui
             }
         }
 
+        private void DragOver(object? sender, DragEventArgs e)
+        {
+            // 在 Avalonia 11 中，必须持续在 DragOver 中设置 DragEffects，
+            // 否则仅 DragEnter 设置的 DragEffects 不会被保持，导致 drop 被拒绝。
+#pragma warning disable CS0618
+            if (e.Data.Contains(DataFormats.Files) || e.Data.Contains(DataFormats.FileNames))
+#pragma warning restore CS0618
+            {
+                e.DragEffects = DragDropEffects.Copy;
+            }
+        }
+
         private void DragLeave(object? sender, DragEventArgs e)
         {
             if (MediaDropZone != null) MediaDropZone.BorderBrush = Avalonia.Media.Brushes.LightGray;
@@ -2643,11 +2738,14 @@ namespace FfmpegGui
                     var supported = AppSettingsService.Current.GetEnabledExtensions();
                     if (supported.Contains(System.IO.Path.GetExtension(path).ToLower()))
                     {
-                        // 添加到已选文件列表
+                        // 追加到已选文件列表（不清空已有文件，保持目录结构映射）
                         if (!_mediaFiles.Contains(path))
                             _mediaFiles.Add(path);
-                        _selectedFiles.Clear();
-                        _selectedFiles.Add(path);
+                        if (!_selectedFiles.Contains(path))
+                            _selectedFiles.Add(path);
+                        var parentDir = Path.GetDirectoryName(path);
+                        if (!string.IsNullOrEmpty(parentDir) && !_selectedFileBaseDirs.ContainsKey(path))
+                            _selectedFileBaseDirs[path] = parentDir;
                         UpdateMediaFileCount();
                         if (LogText != null) LogText.Text += $"已拖放: {path}\n";
                         if (MediaInfoText != null) MediaInfoText.Text = "正在获取媒体信息...";
@@ -2660,12 +2758,10 @@ namespace FfmpegGui
                     }
                 }
             }
-            // 多文件或文件夹 → 批量添加
+            // 多文件或文件夹 → 批量追加（不清空已有文件）
             else
             {
-                _selectedFiles.Clear();
                 var supported = AppSettingsService.Current.GetEnabledExtensions();
-                _selectedFileBaseDirs.Clear();
                 foreach (var path in files)
                 {
                     if (System.IO.Directory.Exists(path))
@@ -2676,8 +2772,9 @@ namespace FfmpegGui
                                 .Where(f => supported.Contains(System.IO.Path.GetExtension(f).ToLower()));
                             foreach (var f in dirFiles)
                             {
-                                _selectedFiles.Add(f);
-                                // 将此文件映射到当前被拖入的文件夹作为基目录
+                                if (!_selectedFiles.Contains(f))
+                                    _selectedFiles.Add(f);
+                                // 将此文件映射到当前被拖入的文件夹作为基目录（最新拖放优先）
                                 _selectedFileBaseDirs[f] = path;
                             }
                         }
@@ -2685,7 +2782,11 @@ namespace FfmpegGui
                     }
                     else if (supported.Contains(System.IO.Path.GetExtension(path).ToLower()))
                     {
-                        _selectedFiles.Add(path);
+                        if (!_selectedFiles.Contains(path))
+                            _selectedFiles.Add(path);
+                        var parentDir = Path.GetDirectoryName(path);
+                        if (!string.IsNullOrEmpty(parentDir) && !_selectedFileBaseDirs.ContainsKey(path))
+                            _selectedFileBaseDirs[path] = parentDir;
                     }
                 }
 

@@ -10,8 +10,19 @@ namespace FfmpegGui.Services
         {
             var args = new List<string>();
             args.Add("-y");
+
+            var isGifToAvif = inputPath.EndsWith(".gif", StringComparison.OrdinalIgnoreCase)
+                           && options.Format.Equals("avif", StringComparison.OrdinalIgnoreCase);
+
             args.Add("-i");
             args.Add($"\"{inputPath}\"");
+
+            // GIF → AVIF：swscale 精确标志（输出选项，FFmpeg 8.x 不接受 -i 前 -pix_fmt）
+            if (isGifToAvif)
+            {
+                args.Add("-sws_flags");
+                args.Add("accurate_rnd+full_chroma_int");
+            }
 
             // 编码器选择
             if (!string.IsNullOrWhiteSpace(options.Encoder))
@@ -25,6 +36,7 @@ namespace FfmpegGui.Services
             args.Add($"{options.Threads}");
 
             var fmt = options.Format.ToLower();
+
             switch (fmt)
             {
                 case "jpg":
@@ -83,13 +95,12 @@ namespace FfmpegGui.Services
 
                     if (options.GifPaletteOptimize)
                     {
-                        // palettegen + paletteuse 双通道滤镜
                         var filterChain = string.Join(",", filters);
                         var complex = string.IsNullOrEmpty(filterChain)
-                            ? $"split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse"
-                            : $"{filterChain},split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse";
+                            ? $"split[s0][s1];[s0]palettegen=reserve_transparent=1[p];[s1][p]paletteuse"
+                            : $"{filterChain},split[s0][s1];[s0]palettegen=reserve_transparent=1[p];[s1][p]paletteuse";
                         if (options.GifDither)
-                            complex += ":dither=bayer:bayer_scale=5:diff_mode=rectangle";
+                            complex += "=dither=bayer:bayer_scale=5:diff_mode=rectangle";
                         args.Insert(1, "-filter_complex");
                         args.Insert(2, $"\"{complex}\"");
                     }
@@ -167,6 +178,12 @@ namespace FfmpegGui.Services
                             args.Add("-usage"); args.Add(options.AvifPreset);
                         }
                     }
+                    // GIF → AVIF：两步滤镜链 —— pal8→rgba（保留透明索引→alpha）+ rgba→yuva420p（编码器格式）
+                    if (inputPath.EndsWith(".gif", StringComparison.OrdinalIgnoreCase))
+                    {
+                        args.Add("-vf");
+                        args.Add("format=rgba,format=yuva420p");
+                    }
                     break;
                 case "tiff":
                     if (options.Lossless)
@@ -184,7 +201,8 @@ namespace FfmpegGui.Services
                     break;
                 case "jxl":
                     // ── 动图 JXL：使用 libjxl_anim 编码器 ──
-                    var isJxlAnimated = options.AnimationFps.HasValue || options.AnimationLoop >= 0;
+                    // 仅当用户显式设置了帧率才视为动图（AnimationLoop 默认 0，不能作为判据）
+                    var isJxlAnimated = options.AnimationFps.HasValue;
                     if (isJxlAnimated)
                     {
                         // 替换编码器为 libjxl_anim（支持动图）
@@ -214,17 +232,12 @@ namespace FfmpegGui.Services
                         { args.Add("-modular"); args.Add("1"); }
                     }
                     // --- JPEG→JXL 快速路径：不解码，直接复制 DCT 系数 ---
-                    // 仅当输入为 JPEG 且启用 JxlLosslessJpeg 时才生效
-                    // 此时忽略 distance/effort/modular 参数，ffmpeg 自动处理
+                    // FFmpeg 8.x+ 中 libjxl 自动检测 JPEG 输入并启用无损重封装，
+                    // 只需设置 -distance 0 即可。旧版 -lossless_jpeg 已移除。
                     if (options.JxlLosslessJpeg)
                     {
-                        // distance=0 确保无损，配合 lossless_jpeg=1 跳过解码
                         args.Add("-distance");
                         args.Add("0");
-                        // 核心参数：告诉 libjxl 输入是 JPEG，直接转码 DCT 系数
-                        args.Add("-lossless_jpeg");
-                        args.Add("1");
-                        // effort 可保留用于 JXL 的压缩效率优化（可选）
                         if (options.JxlEffort.HasValue)
                         { args.Add("-effort"); args.Add(options.JxlEffort.Value.ToString()); }
                     }
@@ -249,8 +262,16 @@ namespace FfmpegGui.Services
                     break;
             }
 
+            // GIF → AVIF：强制保留透明通道（GIF 调色板透明度 → alpha 通道）
+            // 必须在通用 pix_fmt 之前，确保覆盖任何无 alpha 的默认值
+            if (fmt == "avif"
+                && inputPath.EndsWith(".gif", StringComparison.OrdinalIgnoreCase))
+            {
+                args.Add("-pix_fmt");
+                args.Add(MapAvifAlphaPixFmt(options));
+            }
             // 色度采样 或 位深 为 auto 则不指定 pix_fmt，由 ffmpeg 自动选择
-            if (!string.IsNullOrWhiteSpace(options.Chroma) 
+            else if (!string.IsNullOrWhiteSpace(options.Chroma) 
                 && !options.Chroma.Equals("auto", StringComparison.OrdinalIgnoreCase)
                 && options.BitDepth.HasValue)
             {
@@ -350,6 +371,31 @@ namespace FfmpegGui.Services
             if (bd == 12) return "yuv420p12le";
             if (bd == 16) return "yuv420p16le";
             return "yuv420p10le";
+        }
+
+        /// <summary>
+        /// GIF → AVIF 透明通道像素格式映射。
+        /// 根据用户设置的色度采样和位深，选择对应的 yuva 格式。
+        /// </summary>
+        private static string MapAvifAlphaPixFmt(FfmpegOptions options)
+        {
+            var bd = options.BitDepth ?? 8;
+            var chroma = options.Chroma ?? "auto";
+
+            if (bd <= 8)
+            {
+                return chroma switch
+                {
+                    "4:4:4" => "yuva444p",
+                    "4:2:2" => "yuva422p",
+                    _ => "yuva420p",
+                };
+            }
+
+            // 高位深：仅 4:2:0 有广泛编码器支持
+            if (bd == 10) return "yuva420p10le";
+            // 12/16-bit 编码器支持有限，回退到 10-bit
+            return "yuva420p10le";
         }
     }
 }
