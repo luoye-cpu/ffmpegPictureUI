@@ -578,12 +578,6 @@ namespace FfmpegGui
                         if (!string.IsNullOrEmpty(tag))
                         {
                             LogText.Text += $"[cpu] cjxl 优化标识: {tag}\n";
-                            if (AppSettingsService.Current.AutoUseSimdBinaries && string.IsNullOrWhiteSpace(AppSettingsService.Current.CjxlPath))
-                            {
-                                AppSettingsService.Current.CjxlPath = Path.GetDirectoryName(CjxlService.DetectedPath);
-                                AppSettingsService.Save();
-                                LogText.Text += $"[auto] 已自动保存 JPEG XL 参考实现库目录: {CjxlService.DetectedPath}\n";
-                            }
                         }
 
                         // 运行短样本探测，解析版本/特征信息（异步到线程池避免阻塞 UI）
@@ -669,12 +663,6 @@ namespace FfmpegGui
                         if (!string.IsNullOrEmpty(tag))
                         {
                             LogText.Text += $"[cpu] cjpegli 优化标识: {tag}\n";
-                            if (AppSettingsService.Current.AutoUseSimdBinaries && string.IsNullOrWhiteSpace(AppSettingsService.Current.CjxlPath))
-                            {
-                                AppSettingsService.Current.CjxlPath = Path.GetDirectoryName(CjpegliService.DetectedPath);
-                                AppSettingsService.Save();
-                                LogText.Text += $"[auto] 已自动保存 JPEG XL 参考实现库目录: {CjpegliService.DetectedPath}\n";
-                            }
                         }
 
                         _ = Task.Run(async () =>
