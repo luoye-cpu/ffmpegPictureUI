@@ -7,10 +7,11 @@ namespace FfmpegGui.Services
 {
     public static class AppSettingsService
     {
-        private static readonly string SettingsDir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "FfmpegGui");
-        private static readonly string SettingsPath = Path.Combine(SettingsDir, "settings.json");
+        /// <summary>
+        /// 设置文件存储在 exe 同目录下的 settings.json（便携模式，适合单文件分发）
+        /// </summary>
+        private static readonly string SettingsPath = Path.Combine(
+            AppContext.BaseDirectory, "settings.json");
 
         private static AppSettings? _current;
         public static AppSettings Current => _current ??= Load();
@@ -41,7 +42,6 @@ namespace FfmpegGui.Services
             if (_current == null) return;
             try
             {
-                Directory.CreateDirectory(SettingsDir);
                 var json = JsonSerializer.Serialize(_current, new JsonSerializerOptions { WriteIndented = true });
                 File.WriteAllText(SettingsPath, json);
             }
