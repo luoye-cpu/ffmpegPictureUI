@@ -4,7 +4,7 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:sys="using:System"
     xmlns:local="using:FfmpegGui.Models"
-    Title="FFmpeg 图片转换器 1.4.1 BETA"
+    Title="FFmpeg 图片转换器 1.4.2"
     Height="780"
     Width="1020"
     WindowStartupLocation="CenterScreen">
