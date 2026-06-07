@@ -1,4 +1,4 @@
-# 🖼️ FfmpegPictureUI — FFmpeg 图片转换器
+# 🖼️ FFmpegPictureUI — FFmpeg 图片转换器
 
 **v1.4.2 正式版 — 动图质量分析与编码选项全面修复。**
 
