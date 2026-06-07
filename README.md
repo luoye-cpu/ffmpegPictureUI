@@ -6,6 +6,8 @@ An Avalonia UI-based cross-platform batch image/animation conversion tool that w
 
 基于 Avalonia UI 的跨平台图片/动图批量转换工具，将 `ffmpeg`/`ffprobe` 命令行封装为直观图形界面，并集成 [JPEG XL 参考实现](https://github.com/libjxl/libjxl) 的 `cjxl`/`djxl`/`cjpegli`。
 
+QQ 交流群：754439779  点击链接加入群聊【FFmpegPictureUI图像处理软件】：https://qm.qq.com/q/M2181PvCkW****
+
 ---
 
 ## ✨ Core Features / 核心功能
