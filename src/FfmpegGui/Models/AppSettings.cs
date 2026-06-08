@@ -69,12 +69,14 @@ namespace FfmpegGui.Models
             ["WebP"] = new[] { ".webp" },
             ["AVIF"] = new[] { ".avif" },
             ["TIFF"] = new[] { ".tiff", ".tif" },
+            ["HEIC"] = new[] { ".heic", ".heif" },
+            ["DNG"]  = new[] { ".dng" },
             ["BMP"]  = new[] { ".bmp" },
             ["GIF"]  = new[] { ".gif" },
         };
 
         /// <summary>用户启用的图片格式名称列表（持久化到 settings.json）</summary>
-        public List<string> EnabledImageFormats { get; set; } = new() { "PNG", "JPEG", "JPEG XL", "WebP", "AVIF", "TIFF", "BMP", "GIF" };
+        public List<string> EnabledImageFormats { get; set; } = new() { "PNG", "JPEG", "JPEG XL", "WebP", "AVIF", "TIFF", "HEIC", "DNG", "BMP", "GIF" };
 
         /// <summary>根据 EnabledImageFormats 获取所有启用的扩展名（小写）</summary>
         public string[] GetEnabledExtensions()

@@ -65,7 +65,7 @@ namespace FfmpegGui.Services
                 //    帧率/时间基准导致的帧错位对比——这才是 PSNR 极低的根本原因
                 // 2) split → 各自独立的帧拷贝馈入 ssim / psnr，避免共用 pad
                 //    时第二个滤镜读到错误帧（PSNR 全 inf 问题）
-                var args = $"-hide_banner -i \"{sourcePath}\" -i \"{encodedPath}\" " +
+                var args = $"-hide_banner -hwaccel cuda -i \"{sourcePath}\" -hwaccel cuda -i \"{encodedPath}\" " +
                            $"-filter_complex \"[{srcStream}]settb=1/1000,setpts=N,split[src1][src2];[{encStream}]settb=1/1000,setpts=N,split[enc1][enc2];[src1][enc1]ssim[ssim_out];[src2][enc2]psnr[psnr_out]\" " +
                            $"-map \"[ssim_out]\" -map \"[psnr_out]\" -f null -";
 

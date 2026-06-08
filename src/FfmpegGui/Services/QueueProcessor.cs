@@ -196,6 +196,14 @@ namespace FfmpegGui.Services
                                 captured.ExitCode = exitCode;
                                 captured.Status = exitCode == 0 ? "已完成" : $"失败 (退出码 {exitCode})";
 
+                                // DNG 输入失败时给出提示：Bayer 传感器原始数据需要先用专用工具去马赛克
+                                if (exitCode != 0 && inputExt == ".dng")
+                                {
+                                    captured.Log += "[dng] ⚠️ DNG 转换失败。如果这是相机直出的 Bayer 传感器原始文件，FFmpeg 无法自动去马赛克。\n";
+                                    captured.Log += "[dng] 建议：先用 Adobe DNG Converter / RawTherapee CLI / dcraw 转为 TIFF 或 PNG，再导入转换。\n";
+                                    captured.Log += "[dng] 手机/线性 DNG 通常可以直接转换，请检查文件来源。\n";
+                                }
+
                                 // AVIF 通过 FFmpeg -map_metadata 0 也不会保留元数据（FFmpeg AVIF muxer 限制），
                                 // 需要 exiftool 单独恢复。其他格式走 -map_metadata 0 一般可保留。
                                 if (exitCode == 0 && captured.Options.Format.Equals("avif", StringComparison.OrdinalIgnoreCase))
