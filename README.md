@@ -133,6 +133,7 @@ ffmpegPictureUI/
 - 📡 **详情窗口实时更新 / Detail window live update**: 双击队列项打开的窗口实时更新当前执行命令和进度，覆盖 ffmpeg/cjxl/cjpegli/djxl/管道全部后端 —— live command + phase-aware progress for all backends
 - 🧹 **UI 清理 / UI cleanup**: 移除 JXL 青色无损检测提示框，检测信息整合到执行日志；日志消息全面细化（工具可用性、输入类型、编码参数）—— removed cyan JXL hint box, refined log messages
 - 🐛 **其他修复 / Other fixes**: cjpegli 管道移除不兼容的 `--num_threads` 参数；JXL 输入 PNG 中转逻辑精确化（仅外部编码器需要时触发）
+- 🐛 **其他修复 / Other fixes**: 加入HEIC输入支持，加入DNG输入支持
 
 ### v1.4.2 (2026-06-06)
 
