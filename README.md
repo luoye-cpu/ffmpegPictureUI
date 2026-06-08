@@ -1,6 +1,6 @@
 # 🖼️ FFmpegPictureUI — FFmpeg 图片转换器
 
-**v1.4.2 正式版 — 动图质量分析与编码选项全面修复。**
+**v1.4.3 正式版 — JXL 管道优化、Gain Map 支持、JPEG LI 整合、实时进度与命令更新。**
 
 An Avalonia UI-based cross-platform batch image/animation conversion tool that wraps `ffmpeg`/`ffprobe` with an intuitive GUI. Integrates `cjxl`/`djxl`/`cjpegli` from the [JPEG XL reference implementation](https://github.com/libjxl/libjxl).
 
@@ -14,13 +14,13 @@ QQ 交流群：754439779  点击链接加入群聊【FFmpegPictureUI图像处理
 
 | Feature 功能 | Description 说明 |
 |---|---|
-| **Multi-format / 多格式** | JPEG, JPEG LI, PNG, WebP, AVIF, JPEG XL, TIFF — plus animated: GIF, WebP (animated), APNG, AVIF (animated), JPEG XL (animated) |
+| **Multi-format / 多格式** | JPEG, PNG, WebP, AVIF, JPEG XL, TIFF — plus animated: GIF, WebP (animated), APNG, AVIF (animated), JPEG XL (animated). JPEG LI 已整合为 JPEG 的 cjpegli 编码器选项 |
 | **Encoder backend / 编码器后端** | Selectable ffmpeg / cjxl / cjpegli per format; cjxl for JXL lossless JPEG repack — 每种格式可选不同编码器后端 |
 | **Quality control / 质量控制** | Quality slider (snap-to-tick) + format-aware numeric input — 滑块吸附整数 + 格式感知数字输入框 (JPEG q:v 2-31, JXL distance 0-15, etc.) |
 | **Advanced codec options / 高级编码选项** | Per-format advanced panels: DCT algo, progressive mode, Huffman optimize, adaptive quant, sjpeg backend, PSNR target, lossless compression level, row-mt, still-picture, modular mode — 按格式独立高级面板 |
 | **Color management / 色彩管理** | Color space, primaries, TRC (optional advanced mode) |
 | **JXL Intelligence / JXL 智能** | Auto-detects JPEG-reconstruction vs native codestream; byte-level inspection (`JxlInspector`); picks optimal pipeline |
-| **JPEG-LI / JPEG-LI** | `cjpegli` encoding with full options; falls back to ffmpeg mjpeg when unavailable |
+| **JPEG-LI / JPEG-LI** | `cjpegli` 作为 JPEG 格式的编码器后端选项，提供完整高级配置（色度子采样、渐进模式等）|
 | **CPU SIMD / CPU 指令集** | Auto-detects AVX2/AVX/SSE4 capable binaries; runtime probe validates compatibility |
 | **Batch queue / 批量队列** | Drag & drop; configurable concurrency (1–128); stop-after-queue |
 | **Metadata editing / 元数据编辑** | ~90-field panel via exiftool; 9 categories (Basic, DateTime, Camera, Shooting, GPS, Image, IPTC, XMP, Color); double-click file opens editor — ~90字段9大分类exiftool编辑器，双击文件打开 |
@@ -30,9 +30,11 @@ QQ 交流群：754439779  点击链接加入群聊【FFmpegPictureUI图像处理
 | **Dual theme / 双色主题** | Dark/Light mode; queue text adapts — 队列文字颜色自适应主题 |
 | **Format filter / 格式筛选** | Checkbox window to enable/disable recognized image formats; persists to settings — 勾选启用的图片格式，持久化保存 |
 | **Animation mode / 动图模式** | Mode toggle (Still/Animated); FPS/loop/scale controls (auto or manual); per-format advanced animated panels — 模式切换，帧率/循环/缩放参数(auto可用) |
-| **Lossless lock / 无损锁定** | PNG/TIFF auto-lock quality at max, disable slider — 无损格式自动锁定最高质量 |
+| **Lossless lock / 无损锁定** | PNG/TIFF/APNG auto-lock quality at max, disable slider — 无损格式自动锁定最高质量 |
 | **Error-only filter / 仅显示报错** | Toggle to hide completed items, show only errors + in-progress — 一键屏蔽正常完成项，聚焦报错任务 |
 | **Search drag-drop / 搜索拖放** | Windows Search result files correctly resolved via Shell namespace paths — Windows 搜索结果拖放正确解析 |
+| **Gain Map (Ultra HDR) / 增益图** | JPEG 输出支持 Gain Map HDR 编码（需 libultrahdr）；自动检测编码器可用性 — Ultra HDR JPEG with backward compat |
+| **Real-time progress / 实时进度** | 详情窗口实时更新命令+进度，支持 ffmpeg/cjxl/cjpegli/djxl/管道全部后端 — live command & progress for all backends |
 
 ---
 
@@ -119,6 +121,18 @@ ffmpegPictureUI/
 ---
 
 ## 📝 Changelog / 更新日志
+
+### v1.4.3 (2026-06-08)
+
+> 🎯 **正式版** — JXL 管道死锁修复、Gain Map 支持、JPEG LI 整合、实时进度与命令更新。
+
+- 🔧 **JXL 管道死锁修复 / JXL pipeline deadlock fix**: 三处管道代码重构（`PipeDjxlToFfmpegAsync`、`JxlPipelineService`），消除 CopyToAsync/WaitForExit 循环等待；新增进程强制清理 finally 块 —— three pipeline methods rewritten to eliminate deadlock
+- 🗺️ **Gain Map (Ultra HDR) 支持 / Gain Map support**: JPEG 格式新增 Gain Map 面板（增益图质量、目标亮度）；自动检测 libultrahdr 编码器；不可用时优雅隐藏 —— auto-detect libultrahdr, graceful degradation
+- 🔀 **JPEG LI 整合 / JPEG LI consolidation**: 移除独立 "JPEG LI" 格式选项，cjpegli 作为 JPEG 编码器后端使用，选中后显示完整 JPEG LI 高级选项 —— cjpegli now a JPEG encoder option
+- 🔒 **APNG 无损锁定 / APNG lossless lock**: 动图模式 APNG 质量强制 100% 且滑块禁用 —— APNG quality locked at max in animation mode
+- 📡 **详情窗口实时更新 / Detail window live update**: 双击队列项打开的窗口实时更新当前执行命令和进度，覆盖 ffmpeg/cjxl/cjpegli/djxl/管道全部后端 —— live command + phase-aware progress for all backends
+- 🧹 **UI 清理 / UI cleanup**: 移除 JXL 青色无损检测提示框，检测信息整合到执行日志；日志消息全面细化（工具可用性、输入类型、编码参数）—— removed cyan JXL hint box, refined log messages
+- 🐛 **其他修复 / Other fixes**: cjpegli 管道移除不兼容的 `--num_threads` 参数；JXL 输入 PNG 中转逻辑精确化（仅外部编码器需要时触发）
 
 ### v1.4.2 (2026-06-06)
 

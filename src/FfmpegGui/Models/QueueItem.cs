@@ -11,6 +11,8 @@ namespace FfmpegGui.Models
         public FfmpegOptions Options { get; set; } = new FfmpegOptions();
         // 当在批量添加时保留每个输入文件对应的输入基目录（用于保留目录结构）
         public string? InputBaseDir { get; set; }
+        /// <summary>实际执行的命令行（用于详情窗口展示）</summary>
+        public string Command { get; set; } = string.Empty;
 
         private string _status = "待处理";
         public string Status

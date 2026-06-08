@@ -220,7 +220,7 @@ namespace FfmpegGui.Services
             if (threads > 0)
                 args += $" --num_threads={threads}";
 
-            logCallback?.Invoke($"[cjxl] JPEG → JXL 无损重封装（不解码，速度 5-10×）{Environment.NewLine}");
+            logCallback?.Invoke($"[cjxl] JPEG→JXL 无损重封装: -d 0 -e {effort} --lossless_jpeg=1 (直接复制 DCT 系数，不解码像素){Environment.NewLine}");
             logCallback?.Invoke($"[cjxl] {args}{Environment.NewLine}");
 
             var psi = new ProcessStartInfo

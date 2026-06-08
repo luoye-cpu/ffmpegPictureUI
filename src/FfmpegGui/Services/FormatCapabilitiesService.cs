@@ -16,6 +16,8 @@ namespace FfmpegGui.Services
         public bool SupportsLossless { get; set; }
         public List<int> SupportedBitDepths { get; set; } = new List<int>();
         public List<string> SupportedColorSpaces { get; set; } = new List<string>();
+        /// <summary>是否支持 Gain Map (Ultra HDR) 编码</summary>
+        public bool SupportsGainMap { get; set; }
     }
 
     public static class FormatCapabilitiesService
@@ -50,21 +52,9 @@ namespace FfmpegGui.Services
                 SupportsBitDepth = false,
                 SupportsMetadata = true,
                 SupportsLossless = false,
+                SupportsGainMap = true,
                 SupportedBitDepths = new List<int> { 8 },
-                SupportedColorSpaces = new List<string> { "BT.601", "BT.709" }
-            };
-
-            // Jpegli: JPEG 编码改进版（通过 cjpegli 工具编码），同 JPEG 能力集
-            _cache["jpegli"] = new FormatCapabilities
-            {
-                Format = "jpegli",
-                SupportsQuality = true,
-                SupportsChroma = true,
-                SupportsBitDepth = false,
-                SupportsMetadata = true,
-                SupportsLossless = false,
-                SupportedBitDepths = new List<int> { 8 },
-                SupportedColorSpaces = new List<string> { "BT.601", "BT.709" }
+                SupportedColorSpaces = new List<string> { "BT.601", "BT.709", "BT.2020" }
             };
 
             // PNG: 1/2/4/8/16-bit，常用 8/16

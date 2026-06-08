@@ -185,6 +185,9 @@ namespace FfmpegGui.Services
                             else
                             {
                                 var args = FfmpegCommandBuilder.BuildArguments(captured.Options, captured.InputPath, finalOutputPath);
+                                captured.Command = "ffmpeg " + args;
+                                captured.Log += $"[cmd] ffmpeg {args}\n";
+                                _onItemUpdated?.Invoke(captured);
                                 var exitCode = await FfmpegRunner.RunAsync(args, s =>
                                 {
                                     captured.Log += s;
@@ -311,12 +314,14 @@ namespace FfmpegGui.Services
             var isJpegInput = Path.GetExtension(item.InputPath).ToLowerInvariant() is ".jpg" or ".jpeg";
 
             // 第一步：直接尝试 cjxl
-            item.Log += "[cjxl] 直接编码...\n";
+            item.Command = "cjxl " + CjxlService.BuildCjxlArguments(item.InputPath, outputPath, item.Options);
+            var inputExtForCjxl = Path.GetExtension(item.InputPath).ToLowerInvariant();
+            item.Log += $"[cjxl] 直接编码 (输入: {inputExtForCjxl}, 目标: jxl, effort={item.Options.JxlEffort ?? 7}, threads={item.Options.Threads})\n";
             _onItemUpdated?.Invoke(item);
             int exitCode;
             if (isJpegInput)
             {
-                item.Log += "[cjxl] JPEG → JXL 无损重封装（不解码，速度 5-10×）\n";
+                item.Log += "[cjxl] 检测到 JPEG 输入，启用无损重封装模式（-d 0 --lossless_jpeg=1，不解码 DCT 系数）\n";
                 var jpegOpts = new Models.FfmpegOptions
                 {
                     Quality = item.Options.Quality,
@@ -352,6 +357,7 @@ namespace FfmpegGui.Services
 
                 var ffmpegOpts = CloneOptionsForFfmpeg(item.Options);
                 var args = FfmpegCommandBuilder.BuildArguments(ffmpegOpts, item.InputPath, outputPath);
+                item.Command = "ffmpeg " + args;
                 var ffExit = await FfmpegRunner.RunAsync(args, s =>
                 {
                     item.Log += s;
@@ -363,8 +369,7 @@ namespace FfmpegGui.Services
             }
 
             // 第二步：直接编码失败，通过 ffmpeg 转 PNG 再试
-            var ext = Path.GetExtension(item.InputPath).ToLowerInvariant();
-            item.Log += $"[cjxl] 直接编码失败 (退出码 {exitCode})，{ext} 可能不被支持，转为 PNG 再试\n";
+            item.Log += $"[cjxl] 直接编码失败 (退出码 {exitCode})，输入格式可能不被 cjxl 直接支持，将通过 ffmpeg 转为 PNG 中间格式后重试\n";
             _onItemUpdated?.Invoke(item);
 
             var tmp = await PreConvertToPngAsync(item, ct);
@@ -373,6 +378,7 @@ namespace FfmpegGui.Services
             // 用 PNG 重新编码
             item.Log += "[cjxl] 用中间 PNG 重新编码...\n";
             _onItemUpdated?.Invoke(item);
+            item.Command = "cjxl " + CjxlService.BuildCjxlArguments(tmp, outputPath, item.Options);
             exitCode = await CjxlService.RunWithOptionsAsync(
                 tmp, outputPath, item.Options,
                 s => { item.Log += s; _onItemUpdated?.Invoke(item); });
@@ -388,6 +394,7 @@ namespace FfmpegGui.Services
         private async Task ProcessCjpegliAsync(QueueItem item, string outputPath, CancellationToken ct)
         {
             // 第一步：直接尝试 cjpegli
+            item.Command = "cjpegli " + CjpegliService.BuildCjpegliArguments(item.InputPath, outputPath, item.Options);
             item.Log += "[cjpegli] 直接编码...\n";
             _onItemUpdated?.Invoke(item);
             var exit = await CjpegliService.RunWithOptionsAsync(
@@ -410,6 +417,7 @@ namespace FfmpegGui.Services
 
                 var ffmpegOpts = CloneOptionsForFfmpeg(item.Options);
                 var args = FfmpegCommandBuilder.BuildArguments(ffmpegOpts, item.InputPath, outputPath);
+                item.Command = "ffmpeg " + args;
                 var ffExit = await FfmpegRunner.RunAsync(args, s =>
                 {
                     item.Log += s;
@@ -430,6 +438,7 @@ namespace FfmpegGui.Services
 
             item.Log += "[cjpegli] 用中间 PNG 重新编码...\n";
             _onItemUpdated?.Invoke(item);
+            item.Command = "cjpegli " + CjpegliService.BuildCjpegliArguments(tmp, outputPath, item.Options);
             exit = await CjpegliService.RunWithOptionsAsync(
                 tmp, outputPath, item.Options,
                 s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ct);
@@ -446,6 +455,7 @@ namespace FfmpegGui.Services
         {
             var tmp = Path.Combine(Path.GetTempPath(), $"ffmpeg_preconv_{Guid.NewGuid():N}.png");
             item.Log += "[preconv] 使用 ffmpeg 转为高质量 PNG 中间格式\n";
+            item.Command = $"ffmpeg -y -i \"{item.InputPath}\" -compression_level 0 \"{tmp}\"";
             _onItemUpdated?.Invoke(item);
 
             var args = $"-y -i \"{item.InputPath}\" -compression_level 0 \"{tmp}\"";
@@ -475,6 +485,7 @@ namespace FfmpegGui.Services
             try
             {
                 // Step 1: 分轨提取颜色(0:2) + alpha(0:3) → 分别解码避免 alphamerge 压缩色彩
+                item.Command = $"[avif→{fmt}] 两步法: 分轨提取颜色+alpha → alphamerge 合并编码";
                 item.Log += $"[avif→{fmt}] Step1: 分轨提取颜色+alpha...\n";
                 _onItemUpdated?.Invoke(item);
 
@@ -556,6 +567,7 @@ namespace FfmpegGui.Services
                 _onItemUpdated?.Invoke(item);
                 // fall through to normal FFmpeg path
                 var fallbackArgs = FfmpegCommandBuilder.BuildArguments(item.Options, item.InputPath, outputPath);
+                item.Command = "ffmpeg " + fallbackArgs;
                 var fallbackExit = await FfmpegRunner.RunAsync(fallbackArgs, s =>
                 {
                     item.Log += s; _onItemUpdated?.Invoke(item);
@@ -567,6 +579,7 @@ namespace FfmpegGui.Services
 
             var tempDir = Path.Combine(Path.GetTempPath(), $"avifenc_frames_{Guid.NewGuid():N}");
             Directory.CreateDirectory(tempDir);
+            item.Command = "[gif→avif] 两步法: ffmpeg 提取RGBA帧 → avifenc 编码动图AVIF";
 
             try
             {
@@ -669,14 +682,22 @@ namespace FfmpegGui.Services
         private async Task ProcessJxlInputAsync(QueueItem item, string outputPath, CancellationToken ct)
         {
             var targetFmt = (item.Options.Format ?? "").ToLowerInvariant();
-            item.Log += "[jxl] 检测 JXL 类型并选择最优转换流程...\n";
             var jxlType = JxlInspector.DetectType(item.InputPath);
+            var jxlTypeName = jxlType switch
+            {
+                JxlImageType.JpegReconstruction => "JPEG 重构（可从 JXL 无损还原原始 JPEG）",
+                JxlImageType.NativeCodestream => "原生 JXL 码流（需解码为像素再编码）",
+                _ => "未知/其他"
+            };
+            item.Log += $"[jxl] 输入类型: {jxlTypeName}\n";
+            item.Log += $"[jxl] 目标格式: {targetFmt}  |  djxl: {(DjxlService.IsAvailable ? "可用" : "不可用")}  |  cjpegli: {(CjpegliService.IsAvailable ? "可用" : "不可用")}  |  cjxl: {(CjxlService.IsAvailable ? "可用" : "不可用")}\n";
 
             if (jxlType == JxlImageType.JpegReconstruction)
             {
                 if (DjxlService.IsAvailable)
                 {
-                    item.Log += "[djxl] 尝试还原原始 JPEG（无损重建）\n";
+                    item.Log += "[jxl] 使用 djxl 从 JXL 还原原始 JPEG（无损，不解码像素）\n";
+                    item.Command = $"djxl \"{item.InputPath}\" \"{outputPath}\"";
                     var exit = await DjxlService.RunAsync(item.InputPath, outputPath, item.Options.Threads,
                         s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ct);
                     item.ExitCode = exit;
@@ -687,6 +708,7 @@ namespace FfmpegGui.Services
                 {
                     item.Log += "[djxl] 未检测到 djxl，回退到 ffmpeg\n";
                     var args = FfmpegCommandBuilder.BuildArguments(item.Options, item.InputPath, outputPath);
+                    item.Command = "ffmpeg " + args;
                     var exit = await FfmpegRunner.RunAsync(args,
                         s => { item.Log += s; _onItemUpdated?.Invoke(item); },
                         AppSettingsService.Current.FfmpegPath);
@@ -703,6 +725,7 @@ namespace FfmpegGui.Services
                     _onItemUpdated?.Invoke(item);
                     var ffmpegOpts = CloneOptionsForFfmpeg(item.Options);
                     var args2 = FfmpegCommandBuilder.BuildArguments(ffmpegOpts, item.InputPath, outputPath);
+                    item.Command = "ffmpeg " + args2;
                     var exit2 = await FfmpegRunner.RunAsync(args2,
                         s => { item.Log += s; _onItemUpdated?.Invoke(item); },
                         AppSettingsService.Current.FfmpegPath);
@@ -711,12 +734,20 @@ namespace FfmpegGui.Services
                     return;
                 }
 
-                var tmp = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString() + ".png");
-                var tmpCreated = false;
-                try
+                if (DjxlService.IsAvailable)
                 {
-                    if (DjxlService.IsAvailable)
+                    // ── 判断是否需要 PNG 中转 ──
+                    // 仅在以下情况使用 PNG 中间文件（外部编码器不支持 stdin）：
+                    //   ① 输出 JPEG/JPEGLI 且 cjpegli 可用 → 管道优先，失败回退 PNG 中转
+                    //   ② 输出 JXL 且 cjxl 可用 → cjxl 不支持 stdin，需 PNG 中转
+                    // 其他所有输出格式 → djxl 直接管道传给 ffmpeg
+                    var usePngIntermediary =
+                        (CjpegliService.IsAvailable && (targetFmt == "jpg" || targetFmt == "jpeg" || targetFmt == "jpegli"))
+                        || (CjxlService.IsAvailable && targetFmt == "jxl");
+
+                    if (usePngIntermediary)
                     {
+                        // ── JPEG/JPEGLI 目标：优先使用 djxl→cjpegli 管道 ──
                         if (CjpegliService.IsAvailable && (targetFmt == "jpg" || targetFmt == "jpeg" || targetFmt == "jpegli"))
                         {
                             item.Log += "[pipeline] 尝试 djxl -> cjpegli 管道\n";
@@ -728,32 +759,43 @@ namespace FfmpegGui.Services
                                 item.ExitCode = 0;
                                 item.Status = "已完成 (cjpegli 管道)";
                                 await RestoreMetadataAsync(item, outputPath);
+                                return;
                             }
                             else
                             {
                                 item.Log += "[pipeline] 管道失败，回退到临时文件\n";
-                                tmpCreated = await FallbackDjxlDecodeToFile(item, tmp, outputPath, ct);
                             }
                         }
-                        else
+
+                        // ── 回退/直接：PNG 中转（cjxl/cjpegli 需要文件输入）──
+                        var tmp = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString() + ".png");
+                        var tmpCreated = false;
+                        try
                         {
                             tmpCreated = await FallbackDjxlDecodeToFile(item, tmp, outputPath, ct);
+                        }
+                        finally
+                        {
+                            try { if (tmpCreated && File.Exists(tmp)) File.Delete(tmp); } catch { }
                         }
                     }
                     else
                     {
-                        item.Log += "[djxl] 未检测到 djxl，使用 ffmpeg 直接处理 JXL\n";
-                        var args = FfmpegCommandBuilder.BuildArguments(item.Options, item.InputPath, outputPath);
-                        var exit = await FfmpegRunner.RunAsync(args,
-                            s => { item.Log += s; _onItemUpdated?.Invoke(item); },
-                            AppSettingsService.Current.FfmpegPath);
-                        item.ExitCode = exit;
-                        item.Status = exit == 0 ? "已完成 (ffmpeg)" : $"失败 (退出码 {exit})";
+                        // ── 其他格式：djxl 管道 → ffmpeg ──
+                        item.Command = $"djxl \"{item.InputPath}\" --output_format=png - | ffmpeg {BuildFfmpegPipeArguments(item.Options, outputPath)}";
+                        await PipeDjxlToFfmpegAsync(item, outputPath, ct);
                     }
                 }
-                finally
+                else
                 {
-                    try { if (tmpCreated && File.Exists(tmp)) File.Delete(tmp); } catch { }
+                    item.Log += "[djxl] 未检测到 djxl，使用 ffmpeg 直接处理 JXL\n";
+                    var args = FfmpegCommandBuilder.BuildArguments(item.Options, item.InputPath, outputPath);
+                    item.Command = "ffmpeg " + args;
+                    var exit = await FfmpegRunner.RunAsync(args,
+                        s => { item.Log += s; _onItemUpdated?.Invoke(item); },
+                        AppSettingsService.Current.FfmpegPath);
+                    item.ExitCode = exit;
+                    item.Status = exit == 0 ? "已完成 (ffmpeg)" : $"失败 (退出码 {exit})";
                 }
             }
             else
@@ -783,7 +825,20 @@ namespace FfmpegGui.Services
                 s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ct);
             if (exit == 0 && File.Exists(tmp))
             {
-                if (CjpegliService.IsAvailable)
+                var targetFmt = (item.Options.Format ?? "").ToLowerInvariant();
+
+                // 根据输出格式选择外部编码器
+                if (targetFmt == "jxl" && CjxlService.IsAvailable)
+                {
+                    item.Log += "[cjxl] 对中间 PNG 进行编码\n";
+                    var cjxlExit = await CjxlService.RunWithOptionsAsync(tmp, outputPath, item.Options,
+                        s => { item.Log += s; _onItemUpdated?.Invoke(item); });
+                    item.ExitCode = cjxlExit;
+                    item.Status = cjxlExit == 0 ? "已完成 (cjxl, PNG 中转)" : $"失败 (cjxl 退出码 {cjxlExit})";
+                    if (cjxlExit == 0) await RestoreMetadataAsync(item, outputPath);
+                    return true;
+                }
+                else if ((targetFmt == "jpg" || targetFmt == "jpeg" || targetFmt == "jpegli") && CjpegliService.IsAvailable)
                 {
                     item.Log += "[cjpegli] 对中间文件进行编码\n";
                     var cjexit = await CjpegliService.RunWithOptionsAsync(tmp, outputPath, item.Options,
@@ -797,6 +852,7 @@ namespace FfmpegGui.Services
                 {
                     item.Log += "[ffmpeg] 对中间文件编码\n";
                     var args = FfmpegCommandBuilder.BuildArguments(item.Options, tmp, outputPath);
+                    item.Command = "ffmpeg " + args;
                     var exit2 = await FfmpegRunner.RunAsync(args,
                         s => { item.Log += s; _onItemUpdated?.Invoke(item); },
                         AppSettingsService.Current.FfmpegPath);
@@ -814,6 +870,185 @@ namespace FfmpegGui.Services
                 item.Status = $"失败 (djxl 解码退出码 {exit})";
                 return false;
             }
+        }
+
+        /// <summary>
+        /// 将 djxl 解码输出通过管道直接传给 ffmpeg 编码，避免中间 PNG 临时文件。
+        /// 适用于 JXL → PNG/WebP/AVIF/TIFF/GIF 等所有非 JPEG/JXL 目标格式。
+        /// </summary>
+        private async Task PipeDjxlToFfmpegAsync(QueueItem item, string outputPath, CancellationToken ct)
+        {
+            var djxl = DjxlService.DetectedPath;
+            if (string.IsNullOrEmpty(djxl))
+            {
+                item.Log += "[pipe] djxl 未找到，回退到 ffmpeg 直接处理\n";
+                var args = FfmpegCommandBuilder.BuildArguments(item.Options, item.InputPath, outputPath);
+                var exit = await FfmpegRunner.RunAsync(args,
+                    s => { item.Log += s; _onItemUpdated?.Invoke(item); },
+                    AppSettingsService.Current.FfmpegPath);
+                item.ExitCode = exit;
+                item.Status = exit == 0 ? "已完成 (ffmpeg)" : $"失败 (退出码 {exit})";
+                return;
+            }
+
+            item.Log += "[pipe] 尝试 djxl → ffmpeg 管道\n";
+            _onItemUpdated?.Invoke(item);
+
+            var ffmpegArgs = BuildFfmpegPipeArguments(item.Options, outputPath);
+
+            Process? procDj = null;
+            Process? procFf = null;
+            try
+            {
+                using var timeoutCts = new CancellationTokenSource(TimeSpan.FromMinutes(10));
+                using var linked = CancellationTokenSource.CreateLinkedTokenSource(timeoutCts.Token, ct);
+                var linkedToken = linked.Token;
+
+                var ffmpegPath = AppSettingsService.Current.FfmpegPath;
+
+                // djxl 解码 JXL → PNG 流输出到 stdout
+                var djArgs = $"\"{item.InputPath}\" --output_format=png -";
+                var psiDj = new ProcessStartInfo
+                {
+                    FileName = djxl,
+                    Arguments = djArgs,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+
+                // ffmpeg 从 stdin 读取 PNG 流
+                var psiFf = new ProcessStartInfo
+                {
+                    FileName = ffmpegPath,
+                    Arguments = ffmpegArgs,
+                    RedirectStandardInput = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+
+                procDj = Process.Start(psiDj);
+                if (procDj == null)
+                {
+                    item.Log += "[pipe] 启动 djxl 失败\n";
+                    item.ExitCode = -1;
+                    item.Status = "失败 (djxl 启动失败)";
+                    return;
+                }
+
+                procFf = Process.Start(psiFf);
+                if (procFf == null)
+                {
+                    item.Log += "[pipe] 启动 ffmpeg 失败\n";
+                    item.ExitCode = -1;
+                    item.Status = "失败 (ffmpeg 启动失败)";
+                    return;
+                }
+
+                // 启动 stderr/stdout 消费者（非阻塞，并行运行）
+                var djErrTask = ConsumeStreamLinesAsync(procDj.StandardError, s => item.Log += $"[djxl] {s}\n");
+                var ffLogTask = ConsumeStreamLinesAsync(procFf.StandardError, s =>
+                {
+                    item.Log += s + "\n";
+                    _onItemUpdated?.Invoke(item);
+                });
+                var ffOutTask = ConsumeStreamLinesAsync(procFf.StandardOutput, s => item.Log += s + "\n");
+
+                // ── 关键：先完成传输 + 关闭 stdin，再等待进程退出（避免死锁）──
+                try
+                {
+                    await procDj.StandardOutput.BaseStream.CopyToAsync(procFf.StandardInput.BaseStream, linkedToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    item.Log += "[pipe] 传输被取消\n";
+                }
+                catch (Exception ex)
+                {
+                    item.Log += $"[pipe] 传输错误: {ex.Message}\n";
+                }
+
+                // 关闭 ffmpeg stdin 以发送 EOF，让 ffmpeg 完成编码
+                try { procFf.StandardInput.Close(); } catch { }
+
+                // 等待 ffmpeg 正常退出（stdin 已关闭，ffmpeg 会自行结束）
+                try { await procFf.WaitForExitAsync(linkedToken); } catch (OperationCanceledException) { }
+                // djxl 应该已经退出（CopyToAsync 完成后 stdout 已读完）
+                try { await procDj.WaitForExitAsync(CancellationToken.None); } catch { }
+
+                // 等待日志消费者完成
+                await djErrTask;
+                await ffLogTask;
+                await ffOutTask;
+
+                var ffExitCode = procFf.HasExited ? procFf.ExitCode : -1;
+                item.ExitCode = ffExitCode;
+                item.Status = ffExitCode == 0 ? "已完成 (djxl→ffmpeg 管道)" : $"失败 (ffmpeg 退出码 {ffExitCode})";
+                if (ffExitCode == 0) await RestoreMetadataAsync(item, outputPath);
+            }
+            catch (OperationCanceledException)
+            {
+                item.Status = "已取消";
+            }
+            catch (Exception ex)
+            {
+                item.Log += $"[pipe] 异常: {ex.Message}\n";
+                item.ExitCode = -1;
+                item.Status = $"失败 (管道异常: {ex.Message})";
+            }
+            finally
+            {
+                // 确保进程被清理
+                if (procFf != null && !procFf.HasExited)
+                {
+                    try { procFf.Kill(entireProcessTree: true); } catch { }
+                }
+                if (procDj != null && !procDj.HasExited)
+                {
+                    try { procDj.Kill(entireProcessTree: true); } catch { }
+                }
+                try { procDj?.Dispose(); } catch { }
+                try { procFf?.Dispose(); } catch { }
+            }
+        }
+
+        /// <summary>构建 ffmpeg 从 stdin 读取 PNG 流的命令行参数</summary>
+        private static string BuildFfmpegPipeArguments(Models.FfmpegOptions options, string outputPath)
+        {
+            // 以 stdin (-) 为输入，用 image2pipe 格式指定 PNG 流
+            var args = FfmpegCommandBuilder.BuildArguments(options, "-", outputPath);
+            // 插入 -f image2pipe 到 -i - 之前
+            var idx = args.IndexOf("-i \"-\"", StringComparison.Ordinal);
+            if (idx >= 0)
+            {
+                args = args.Substring(0, idx) + "-f image2pipe " + args.Substring(idx);
+            }
+            else
+            {
+                // 如果 BuildArguments 生成的格式不同，兼容处理
+                idx = args.IndexOf("-i -", StringComparison.Ordinal);
+                if (idx >= 0)
+                {
+                    args = args.Substring(0, idx) + "-f image2pipe " + args.Substring(idx);
+                }
+            }
+            return args;
+        }
+
+        private static async Task ConsumeStreamLinesAsync(StreamReader reader, Action<string> onLine)
+        {
+            try
+            {
+                string? line;
+                while ((line = await reader.ReadLineAsync().ConfigureAwait(false)) != null)
+                {
+                    onLine(line);
+                }
+            }
+            catch { }
         }
 
         /// <summary>动图回退：将外部工具参数克隆为 FFmpeg 内置编码器参数</summary>
@@ -867,6 +1102,9 @@ namespace FfmpegGui.Services
                 WebpCompressionLevel = original.WebpCompressionLevel,
                 JpegHuffman = original.JpegHuffman,
                 JpegDct = original.JpegDct,
+                JpegGainMap = original.JpegGainMap,
+                JpegGainMapQuality = original.JpegGainMapQuality,
+                JpegGainMapTargetNits = original.JpegGainMapTargetNits,
                 TiffCompressionAlgo = original.TiffCompressionAlgo,
                 // ExifTool
                 StripExifGps = original.StripExifGps,
