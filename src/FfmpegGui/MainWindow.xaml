@@ -4,7 +4,7 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:sys="using:System"
     xmlns:local="using:FfmpegGui.Models"
-    Title="FFmpeg 图片转换器 1.4.2"
+    Title="FFmpeg 图片转换器 1.4.3"
     Height="780"
     Width="1020"
     WindowStartupLocation="CenterScreen">
@@ -71,7 +71,6 @@
           <TextBlock Text="输出格式" Margin="0,4,0,0"/>
           <ComboBox x:Name="FormatCombo" SelectionChanged="FormatCombo_SelectionChanged">
             <sys:String>JPEG</sys:String>
-            <sys:String>JPEG LI</sys:String>
             <sys:String>PNG</sys:String>
             <sys:String>WebP</sys:String>
             <sys:String>AVIF</sys:String>
@@ -223,12 +222,32 @@
                 <NumericUpDown x:Name="CjxlPhotonNoiseBox" Value="0" Minimum="0" Maximum="3200" Increment="100"/>
                 <TextBlock Text="0=禁用, 100=低噪, 3200=高噪" FontSize="10" Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
               </StackPanel>
-              <Border x:Name="JxlLosslessJpegHint" IsVisible="False" CornerRadius="4" Padding="6,3" Margin="0,4,0,0">
-                <TextBlock x:Name="JxlLosslessJpegHintText" TextWrapping="Wrap" FontSize="11"/>
-              </Border>
             </StackPanel>
-            <!-- JPEG (FFmpeg mjpeg) -->
+            <!-- JPEG (FFmpeg mjpeg / libultrahdr) -->
             <StackPanel x:Name="JpegCodecPanel" IsVisible="False" Spacing="4">
+              <!-- Gain Map (Ultra HDR) -->
+              <Border x:Name="JpegGainMapPanel" CornerRadius="4" Padding="8,6" Margin="0,0,0,4"
+                      Background="{DynamicResource SystemControlBackgroundChromeMediumBrush}">
+                <StackPanel Spacing="4">
+                  <CheckBox x:Name="JpegGainMapCheck" Content="Gain Map (Ultra HDR)"
+                            ToolTip.Tip="生成向后兼容的 HDR JPEG。SDR 显示器显示基础图，HDR 显示器自动显示高动态范围。需配合 libultrahdr 编码器使用。"/>
+                  <StackPanel x:Name="JpegGainMapOptions" IsVisible="False" Spacing="4">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                      <TextBlock Text="增益图质量:" VerticalAlignment="Center" Width="80"/>
+                      <NumericUpDown x:Name="JpegGainMapQualityBox" Value="75"
+                                     Minimum="1" Maximum="100" Width="80"/>
+                      <TextBlock Text="(同主质量=-1)" VerticalAlignment="Center" FontSize="10"
+                                 Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                      <TextBlock Text="目标亮度:" VerticalAlignment="Center" Width="80"/>
+                      <NumericUpDown x:Name="JpegGainMapNitsBox" Value="1000"
+                                     Minimum="200" Maximum="10000" Increment="100" Width="80"/>
+                      <TextBlock Text="nit" VerticalAlignment="Center"/>
+                    </StackPanel>
+                  </StackPanel>
+                </StackPanel>
+              </Border>
               <TextBlock Text="Huffman 策略"/>
               <ComboBox x:Name="JpegHuffmanCombo">
                 <sys:String>default</sys:String><sys:String>optimal</sys:String>

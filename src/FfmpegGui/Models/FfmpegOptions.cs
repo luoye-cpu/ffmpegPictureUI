@@ -51,6 +51,13 @@ namespace FfmpegGui.Models
         public string? JpegHuffman { get; set; }
         /// <summary>JPEG DCT 算法: "int" / "fastint" / "float"</summary>
         public string? JpegDct { get; set; }
+        // ── Gain Map (Ultra HDR) JPEG 选项 ──
+        /// <summary>是否启用 Gain Map（仅 JPEG 输出且 libultrahdr 编码器可用时生效）</summary>
+        public bool JpegGainMap { get; set; } = false;
+        /// <summary>Gain Map 压缩质量 (0-100)，-1 表示使用主 Quality 值</summary>
+        public int JpegGainMapQuality { get; set; } = -1;
+        /// <summary>目标显示器亮度 (nit)，默认 1000</summary>
+        public int JpegGainMapTargetNits { get; set; } = 1000;
         public string? TiffCompressionAlgo { get; set; }
         public int? TiffDpi { get; set; }
         public string? AvifTune { get; set; }

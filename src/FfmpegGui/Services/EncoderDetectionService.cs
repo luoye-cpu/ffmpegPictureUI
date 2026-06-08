@@ -66,11 +66,8 @@ namespace FfmpegGui.Services
         private static List<EncoderInfo>? _allEncoders;
         private static readonly Dictionary<string, string[]> FormatEncoderMap = new(StringComparer.OrdinalIgnoreCase)
         {
-            ["jpg"] = new[] { "mjpeg", "mjpeg_qsv", "mjpeg_vaapi", "mjpeg_nvenc", "mjpeg_amf" },
-            ["jpeg"] = new[] { "mjpeg", "mjpeg_qsv", "mjpeg_vaapi", "mjpeg_nvenc", "mjpeg_amf" },
-            // jpegli 格式：FFmpeg 无原生 jpegli 编码器，应使用 cjpegli 独立工具
-            // 此处返回空数组，UI 将显示提示并使用 cjpegli 后端
-            ["jpegli"] = Array.Empty<string>(),
+            ["jpg"] = new[] { "mjpeg", "libultrahdr", "mjpeg_qsv", "mjpeg_vaapi", "mjpeg_nvenc", "mjpeg_amf" },
+            ["jpeg"] = new[] { "mjpeg", "libultrahdr", "mjpeg_qsv", "mjpeg_vaapi", "mjpeg_nvenc", "mjpeg_amf" },
             ["png"] = new[] { "png", "png_vaapi" },
             ["webp"] = new[] { "libwebp", "libwebp_anim", "webp" },
             ["avif"] = new[] { "libaom-av1", "libsvtav1", "librav1e", "av1_nvenc", "av1_amf", "av1_qsv", "av1_vaapi" },
@@ -202,33 +199,6 @@ namespace FfmpegGui.Services
                         });
                     break;
 
-                // jpegli 格式：仅 cjpegli（无 FFmpeg 编码器）
-                case "jpegli":
-                    if (CjpegliService.IsAvailable)
-                        result.Add(new EncoderInfo
-                        {
-                            Name = "cjpegli",
-                            Description = "JPEG-LI (jpegli 库)",
-                            Backend = EncoderBackend.Cjpegli,
-                            DetectedPath = CjpegliService.DetectedPath,
-                            SupportsFrameMultithreading = false
-                        });
-                    // 如果 cjpegli 不可用，也添加 FFmpeg mjpeg 回退
-                    else if (FormatEncoderMap.TryGetValue("jpg", out var jpgNames))
-                    {
-                        var all = await GetAllEncodersAsync(ffmpegPath);
-                        var fallback = all
-                            .Where(e => jpgNames.Contains(e.Name, StringComparer.OrdinalIgnoreCase))
-                            .ToList();
-                        foreach (var enc in fallback)
-                        {
-                            enc.Backend = EncoderBackend.Ffmpeg;
-                            enc.Description += " (回退)";
-                        }
-                        result.AddRange(fallback);
-                    }
-                    break;
-
                 // JXL 格式：cjxl 作为独立编码器可选
                 case "jxl":
                     if (CjxlService.IsAvailable)
@@ -247,14 +217,14 @@ namespace FfmpegGui.Services
         }
 
         /// <summary>
-        /// 获取默认编码器名称（优先外部工具）
+        /// 获取默认编码器名称（优先外部工具，其次 libultrahdr，最后 FFmpeg 内置）
         /// </summary>
         public static string GetDefaultEncoder(string format)
         {
             return format.ToLower() switch
             {
-                "jpg" or "jpeg" => CjpegliService.IsAvailable ? "cjpegli" : "mjpeg",
-                "jpegli" => CjpegliService.IsAvailable ? "cjpegli" : "mjpeg",
+                "jpg" or "jpeg" => CjpegliService.IsAvailable ? "cjpegli"
+                    : HasCachedLibultrahdr() ? "libultrahdr" : "mjpeg",
                 "png" => "png",
                 "webp" => "libwebp",
                 "avif" => "libaom-av1",
@@ -265,6 +235,19 @@ namespace FfmpegGui.Services
                 _ => ""
             };
         }
+
+        /// <summary>
+        /// 检测 libultrahdr 是否在缓存的编码器列表中
+        /// </summary>
+        private static bool HasCachedLibultrahdr()
+        {
+            return _allEncoders?.Any(e => e.Name == "libultrahdr") == true;
+        }
+
+        /// <summary>
+        /// 获取指定格式可用的 Gain Map 编码器是否就绪
+        /// </summary>
+        public static bool IsLibultrahdrAvailable => HasCachedLibultrahdr();
 
         /// <summary>
         /// 检测 libjxl 是否支持 -lossless_jpeg 参数（JPEG→JXL 无损重封装）

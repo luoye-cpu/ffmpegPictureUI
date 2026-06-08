@@ -42,8 +42,27 @@ namespace FfmpegGui.Services
                 case "jpg":
                 case "jpeg":
                 case "jpegli":
-                    args.Add("-q:v");
-                    args.Add(MapJpegQuality(options.Quality).ToString());
+                    // ── Gain Map (Ultra HDR) 模式：使用 libultrahdr 编码器参数 ──
+                    if (options.JpegGainMap && options.Encoder == "libultrahdr")
+                    {
+                        // 基础 JPEG 质量（libultrahdr 用 compression_q 而非 q:v）
+                        args.Add("-compression_q");
+                        args.Add(options.Quality.ToString());
+                        // Gain Map 质量（独立控制，-1 表示使用主质量）
+                        var gmq = options.JpegGainMapQuality >= 0
+                            ? options.JpegGainMapQuality
+                            : options.Quality;
+                        args.Add("-gainmap_compression_q");
+                        args.Add(gmq.ToString());
+                        // 目标显示器亮度
+                        args.Add("-target_display_nits");
+                        args.Add(options.JpegGainMapTargetNits.ToString());
+                    }
+                    else
+                    {
+                        args.Add("-q:v");
+                        args.Add(MapJpegQuality(options.Quality).ToString());
+                    }
                     if (!string.IsNullOrWhiteSpace(options.JpegHuffman))
                     { args.Add("-huffman"); args.Add(options.JpegHuffman); }
                     if (!string.IsNullOrWhiteSpace(options.JpegDct) && options.JpegDct != "auto")
