@@ -64,6 +64,9 @@ namespace FfmpegGui
             if (StatusLabel != null)
                 StatusLabel.Text = _item.Status;
 
+            if (CommandLabel != null && !string.IsNullOrEmpty(_item.Command))
+                CommandLabel.Text = _item.Command;
+
             if (LogBox != null)
             {
                 // 截断过长日志
@@ -81,55 +84,102 @@ namespace FfmpegGui
         private void ParseProgress(string log)
         {
             if (ProgressLabel == null) return;
+
+            // ── 空日志：尚未开始 ──
             if (string.IsNullOrWhiteSpace(log))
             {
-                ProgressLabel.Text = "等待开始...";
+                ProgressLabel.Text = _item?.Status == "待处理" ? "等待开始..." : "已启动，等待输出...";
                 QualityInfoLabel!.Text = "-";
                 return;
             }
 
-            // ffmpeg 进度输出可能在连续更新的同一行，也可能多行
-            // 格式: "frame=  123 fps= 30 q=28.0 size=    1024kB time=00:00:05.00 bitrate=... speed=..."
-            // 单帧图片可能没有 fps= 字段
             var lines = log.Split(new[] { '\r', '\n' }, System.StringSplitOptions.RemoveEmptyEntries);
-            string? lastProgress = null;
+
+            // ── 1) 优先检测 ffmpeg 标准进度输出 ──
+            // 格式: "frame=  123 fps= 30 q=28.0 size=    1024kB time=00:00:05.00 speed=..."
             for (int i = lines.Length - 1; i >= 0; i--)
             {
                 var l = lines[i];
-                if ((l.Contains("frame=") || l.Contains("q=")) && l.Contains("size="))
+                if ((l.Contains("frame=") || l.Contains("speed=")) && l.Contains("size="))
                 {
-                    lastProgress = l.Trim();
-                    break;
+                    ProgressLabel.Text = l.Trim();
+
+                    var qIdx = l.IndexOf("q=");
+                    if (qIdx >= 0)
+                    {
+                        var qPart = l.Substring(qIdx + 2).Trim();
+                        var space2 = qPart.IndexOf(' ');
+                        var qVal = space2 > 0 ? qPart.Substring(0, space2) : qPart;
+                        QualityInfoLabel!.Text = $"q={qVal}";
+                    }
+                    else
+                    {
+                        QualityInfoLabel!.Text = "编码中...";
+                    }
+                    return;
                 }
             }
 
-            if (lastProgress != null)
+            // ── 2) 检测 djxl 进度输出 ──
+            // djxl 输出格式: "Decoded to pixels." / "Reading JXL..." / 百分比
+            for (int i = lines.Length - 1; i >= 0; i--)
             {
-                ProgressLabel.Text = lastProgress;
-
-                // 提取质量值 q=XX.X
-                var qIdx = lastProgress.IndexOf("q=");
-                if (qIdx >= 0)
+                var l = lines[i];
+                if (l.StartsWith("[djxl]") && (l.Contains("Decoded") || l.Contains("Reading") || l.Contains("%")))
                 {
-                    var qPart = lastProgress.Substring(qIdx + 2).Trim();
-                    var space2 = qPart.IndexOf(' ');
-                    var qVal = space2 > 0 ? qPart.Substring(0, space2) : qPart;
-                    QualityInfoLabel!.Text = $"q={qVal} (数值越小质量越高)";
+                    ProgressLabel.Text = l.Replace("[djxl] ", "").Trim();
+                    QualityInfoLabel!.Text = "djxl 解码中";
+                    return;
+                }
+            }
+
+            // ── 3) 检测 cjxl 进度输出 ──
+            for (int i = lines.Length - 1; i >= 0; i--)
+            {
+                var l = lines[i];
+                if (l.StartsWith("[cjxl]") && (l.Contains("%") || l.Contains("MP") || l.Contains("Compressed")))
+                {
+                    ProgressLabel.Text = l.Replace("[cjxl] ", "").Trim();
+                    QualityInfoLabel!.Text = "cjxl 编码中";
+                    return;
+                }
+            }
+
+            // ── 4) 检测当前执行阶段（从日志末尾向前扫描阶段标记）──
+            var phaseMarkers = new[] { "[cjxl]", "[cjpegli]", "[djxl]", "[pipe]", "[pipeline]",
+                "[preconv]", "[avif→", "[gif→", "[exiftool]", "[cmd]" };
+            for (int i = lines.Length - 1; i >= 0; i--)
+            {
+                var l = lines[i];
+                foreach (var marker in phaseMarkers)
+                {
+                    if (l.StartsWith(marker))
+                    {
+                        ProgressLabel.Text = l.Trim();
+                        QualityInfoLabel!.Text = "处理中...";
+                        return;
+                    }
+                }
+            }
+
+            // ── 5) 回退：显示任务状态 ──
+            if (_item != null)
+            {
+                if (_item.Status.StartsWith("已完成") || _item.Status.StartsWith("失败"))
+                {
+                    ProgressLabel.Text = _item.Status;
+                    QualityInfoLabel!.Text = "-";
+                }
+                else if (_item.Status == "处理中")
+                {
+                    ProgressLabel.Text = "处理中...";
+                    QualityInfoLabel!.Text = "等待输出";
                 }
                 else
                 {
-                    QualityInfoLabel!.Text = "无质量数据";
+                    ProgressLabel.Text = _item.Status;
+                    QualityInfoLabel!.Text = "-";
                 }
-            }
-            else if (_item.Status == "已完成" || _item.Status.Contains("失败"))
-            {
-                ProgressLabel.Text = _item.Status;
-                QualityInfoLabel!.Text = "-";
-            }
-            else
-            {
-                ProgressLabel.Text = "正在初始化...";
-                QualityInfoLabel!.Text = "-";
             }
         }
 
