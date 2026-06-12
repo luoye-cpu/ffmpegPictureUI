@@ -41,22 +41,24 @@ namespace FfmpegGui.Services
             {
                 case "jpg":
                 case "jpeg":
-                case "jpegli":
                     // ── Gain Map (Ultra HDR) 模式：使用 libultrahdr 编码器参数 ──
                     if (options.JpegGainMap && options.Encoder == "libultrahdr")
                     {
-                        // 基础 JPEG 质量（libultrahdr 用 compression_q 而非 q:v）
                         args.Add("-compression_q");
                         args.Add(options.Quality.ToString());
-                        // Gain Map 质量（独立控制，-1 表示使用主质量）
                         var gmq = options.JpegGainMapQuality >= 0
                             ? options.JpegGainMapQuality
                             : options.Quality;
                         args.Add("-gainmap_compression_q");
                         args.Add(gmq.ToString());
-                        // 目标显示器亮度
                         args.Add("-target_display_nits");
                         args.Add(options.JpegGainMapTargetNits.ToString());
+                    }
+                    else if (options.EncoderBackend == EncoderBackend.Cjpegli)
+                    {
+                        // JPEG-LI (cjpegli) 使用 butteraugli distance（0-15），与 JXL 一致
+                        args.Add("-distance");
+                        args.Add(MapJpegliDistance(options.Quality).ToString("F1"));
                     }
                     else
                     {
@@ -168,22 +170,31 @@ namespace FfmpegGui.Services
                     }
                     if (options.AvifCpuUsed.HasValue)
                     { args.Add("-cpu-used"); args.Add(options.AvifCpuUsed.Value.ToString()); }
-                    if (!string.IsNullOrWhiteSpace(options.AvifTune)
-                        && int.TryParse(options.AvifTune, out var t))
+                    var isSvt = options.Encoder?.StartsWith("libsvt", StringComparison.OrdinalIgnoreCase) == true;
+                    if (!string.IsNullOrWhiteSpace(options.AvifTune) && options.AvifTune != "默认")
                     {
-                        if (options.Encoder?.StartsWith("libsvt", StringComparison.OrdinalIgnoreCase) == true)
-                        { args.Add("-svtav1-params"); args.Add($"tune={t}"); }
-                        else
+                        switch (options.AvifTune)
                         {
-                            // libaom -tune 仅接受 -1(psnr)/0(default)/1(vmaf)
-                            // UI 值 0-5 是 SVT-AV1 范围，需映射
-                            var libaomTune = t switch
-                            {
-                                1 => -1,  // UI PSNR → libaom -1
-                                3 => 1,   // UI VMAF → libaom 1
-                                _ => 0    // 其他 → 0(default)
-                            };
-                            args.Add("-tune"); args.Add(libaomTune.ToString());
+                            case "PSNR":
+                                if (isSvt) { args.Add("-svtav1-params"); args.Add("tune=1"); }
+                                else { args.Add("-tune"); args.Add("psnr"); }
+                                break;
+                            case "SSIM":
+                                if (isSvt) { args.Add("-svtav1-params"); args.Add("tune=2"); }
+                                else { args.Add("-tune"); args.Add("ssim"); }
+                                break;
+                            case "VMAF":
+                                if (isSvt) { args.Add("-svtav1-params"); args.Add("tune=3"); }
+                                else { args.Add("-tune"); args.Add("vmaf_without_preprocessing"); }
+                                break;
+                            case "IQ (图像优化)":
+                                // libaom 仅支持 tune=iq（原始 aom 参数），SVT-AV1 不支持
+                                if (!isSvt)
+                                {
+                                    args.Add("-usage"); args.Add("allintra");
+                                    args.Add("-aom-params"); args.Add("tune=iq");
+                                }
+                                break;
                         }
                     }
                     // 动图 AVIF: still-picture=0
@@ -194,17 +205,57 @@ namespace FfmpegGui.Services
                     { args.Add("-still-picture"); args.Add("1"); }
                     if (options.AvifRowMt == true)
                     { args.Add("-row-mt"); args.Add("1"); }
-                    if (!string.IsNullOrWhiteSpace(options.AvifPreset) && options.AvifPreset != "auto")
+                    // IQ tune 已设置 -usage allintra，不再重复设置
+                    var iqActive = options.AvifTune == "IQ (图像优化)" && !isSvt;
+                    if (!iqActive && !string.IsNullOrWhiteSpace(options.AvifPreset) && options.AvifPreset != "auto")
                     {
-                        // libaom → -usage; SVT → -preset
-                        if (options.Encoder?.StartsWith("libsvt", StringComparison.OrdinalIgnoreCase) == true)
+                        // ── 编码器特定参数 ──
+                        if (isSvt)
                         {
-                            // SVT preset: map good→7, realtime→10 (approximate)
-                            args.Add("-preset"); args.Add(options.AvifPreset == "realtime" ? "10" : "7");
+                            // SVT-AV1: preset + tune
+                            if (options.AvifSvtPreset.HasValue)
+                            { args.Add("-preset"); args.Add(options.AvifSvtPreset.Value.ToString()); }
+                            if (!string.IsNullOrWhiteSpace(options.AvifSvtTune) && options.AvifSvtTune != "默认")
+                            {
+                                var svtTuneVal = options.AvifSvtTune switch
+                                {
+                                    "VMAF (主观)" => "1",
+                                    "PSNR" => "2",
+                                    "SSIM" => "3",
+                                    _ => "1"
+                                };
+                                args.Add("-svtav1-params"); args.Add($"tune={svtTuneVal}");
+                            }
+                            // SVT still-picture
+                            if (options.AvifStillPicture == true)
+                            { args.Add("-still-picture"); args.Add("1"); }
+                            else if (options.AvifStillPicture == false)
+                            { args.Add("-still-picture"); args.Add("0"); }
                         }
-                        else
+                    }
+                    // ── 硬件编码器预设 ──
+                    if (!string.IsNullOrWhiteSpace(options.AvifHwPreset) && options.AvifHwPreset != "平衡")
+                    {
+                        var enc = options.Encoder ?? "";
+                        if (enc.StartsWith("av1_nvenc", StringComparison.OrdinalIgnoreCase))
                         {
-                            args.Add("-usage"); args.Add(options.AvifPreset);
+                            // NVENC: p1(快) p4(平衡) p7(好)
+                            args.Add("-preset"); args.Add(options.AvifHwPreset == "高质量" ? "p7" : "p1");
+                        }
+                        else if (enc.StartsWith("av1_qsv", StringComparison.OrdinalIgnoreCase))
+                        {
+                            // QSV: veryfast(快) medium(平衡) veryslow(好)
+                            args.Add("-preset"); args.Add(options.AvifHwPreset == "高质量" ? "veryslow" : "veryfast");
+                        }
+                        else if (enc.StartsWith("av1_amf", StringComparison.OrdinalIgnoreCase))
+                        {
+                            // AMF: speed(快) balanced(平衡) quality(好)
+                            args.Add("-quality"); args.Add(options.AvifHwPreset == "高质量" ? "quality" : "speed");
+                        }
+                        else if (enc.StartsWith("av1_vaapi", StringComparison.OrdinalIgnoreCase))
+                        {
+                            // VAAPI: compression_level 1(快) 4(平衡) 7(好)
+                            args.Add("-compression_level"); args.Add(options.AvifHwPreset == "高质量" ? "7" : "1");
                         }
                     }
                     // GIF → AVIF：两步滤镜链 —— pal8→rgba（保留透明索引→alpha）+ rgba→yuva420p（编码器格式）
@@ -337,6 +388,16 @@ namespace FfmpegGui.Services
             }
 
             args.Add($"\"{outputPath}\"");
+
+            // 视频/动图最大时长限制
+            if (options.AnimationDuration > 0)
+            {
+                // 在输出文件前插入 -t（时长限制）
+                var outputIdx = args.Count - 1;
+                args.Insert(outputIdx, "-t");
+                args.Insert(outputIdx + 1, options.AnimationDuration.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            }
+
             return string.Join(" ", args);
         }
 
@@ -372,6 +433,12 @@ namespace FfmpegGui.Services
         private static double MapJxlDistance(int quality)
         {
             // JPEG XL distance 0-15，0=无损，15=最低质量
+            return Math.Round((100 - quality) * 15.0 / 100.0, 1);
+        }
+
+        private static double MapJpegliDistance(int quality)
+        {
+            // JPEG-LI butteraugli distance 0-15，同 JXL 尺度
             return Math.Round((100 - quality) * 15.0 / 100.0, 1);
         }
 
