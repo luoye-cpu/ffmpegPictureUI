@@ -4,13 +4,15 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:sys="using:System"
     xmlns:local="using:FfmpegGui.Models"
-    Title="FFmpeg 图片转换器 1.4.3"
+    Title="FFmpeg 图片转换器 1.4.4"
     Height="780"
     Width="1020"
     WindowStartupLocation="CenterScreen">
   <DockPanel>
-    <!-- 顶部设置栏 -->
-    <Border DockPanel.Dock="Top" Padding="8,4" BorderBrush="{DynamicResource SystemControlBackgroundBaseLowBrush}" BorderThickness="0,0,0,1">
+    <!-- 顶部工具栏卡片 -->
+    <Border DockPanel.Dock="Top" Margin="12,8,12,4" Padding="14,10"
+            CornerRadius="10" BoxShadow="0 2 12 0 #18000000"
+            Background="{DynamicResource SystemControlBackgroundCardHighBrush}">
     <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto" ColumnDefinitions="*,Auto">
         <StackPanel Grid.Row="0" Grid.Column="0" Orientation="Horizontal" Spacing="10">
           <TextBlock Text="FFmpeg 目录" VerticalAlignment="Center" FontSize="13"/>
@@ -30,13 +32,13 @@
         <StackPanel Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2" Orientation="Horizontal" Spacing="10" Margin="0,3,0,0">
           <TextBlock Text="JPEG XL 参考实现库" VerticalAlignment="Center" FontSize="11" Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" Width="140"/>
           <TextBox x:Name="CjxlPathBox" Width="180" VerticalAlignment="Center" FontSize="11"
-                   Watermark="留空自动检测"/>
+                   PlaceholderText="留空自动检测"/>
           <Button Content="浏览" Click="BrowseCjxl_Click" Padding="6,2" FontSize="11"/>
           <Button Content="✕" Click="ClearCjxlPath_Click" Padding="6,2" FontSize="11"
                   ToolTip.Tip="清除手动路径，改回自动检测"/>
           <TextBlock Text="exiftool" VerticalAlignment="Center" FontSize="11" Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" Width="44"/>
           <TextBox x:Name="ExifToolPathBox" Width="180" VerticalAlignment="Center" FontSize="11"
-                   Watermark="自动检测"/>
+                   PlaceholderText="自动检测"/>
           <Button Content="浏览" Click="BrowseExifTool_Click" Padding="6,2" FontSize="11"/>
           <Button Content="✕" Click="ClearExifToolPath_Click" Padding="6,2" FontSize="11"
                   ToolTip.Tip="清除手动路径，改回自动检测"/>
@@ -48,7 +50,7 @@
         <StackPanel Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="2" Orientation="Horizontal" Spacing="10" Margin="0,3,0,0">
           <TextBlock Text="avifenc" VerticalAlignment="Center" FontSize="11" Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" Width="54"/>
           <TextBox x:Name="AvifencPathBox" Width="180" VerticalAlignment="Center" FontSize="11"
-                   Watermark="自动检测（ffmpeg 同目录）"/>
+                   PlaceholderText="自动检测（ffmpeg 同目录）"/>
           <Button Content="浏览" Click="BrowseAvifenc_Click" Padding="6,2" FontSize="11"/>
           <Button Content="✕" Click="ClearAvifencPath_Click" Padding="6,2" FontSize="11"
                   ToolTip.Tip="清除手动路径，改回自动检测"/>
@@ -57,10 +59,13 @@
     </Border>
 
     <!-- 主体两栏布局 -->
-    <Grid ColumnDefinitions="270,*" RowDefinitions="*">
-      <!-- ============ 左侧：参数控制面板 ============ -->
-      <ScrollViewer Grid.Column="0">
-        <StackPanel Margin="10" Spacing="8">
+    <Grid ColumnDefinitions="276,*" RowDefinitions="*" Margin="0,4,0,0">
+      <!-- ============ 左侧：参数控制面板（卡片容器） ============ -->
+      <Border Grid.Column="0" Margin="12,0,0,8" Padding="0"
+              CornerRadius="10" BoxShadow="0 2 12 0 #10000000"
+              Background="{DynamicResource SystemControlBackgroundCardHighBrush}">
+      <ScrollViewer>
+        <StackPanel Margin="14" Spacing="8">
           <TextBlock Text="参数控制面板" FontSize="20" FontWeight="Bold" Margin="0,0,0,6"/>
           <TextBlock Text="转换模式" FontSize="12" Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
           <ComboBox x:Name="ConversionModeCombo" SelectedIndex="0"
@@ -84,22 +89,30 @@
               <StackPanel Spacing="2">
                 <TextBlock Text="帧率 (FPS)" FontSize="11"/>
                 <TextBox x:Name="AnimationFpsBox" Text="" Width="60" FontSize="13" VerticalAlignment="Center"
-                         Watermark="auto"/>
+                         PlaceholderText="auto"/>
               </StackPanel>
               <StackPanel Spacing="2">
                 <TextBlock Text="循环次数" FontSize="11"/>
                 <TextBox x:Name="AnimationLoopBox" Text="" Width="60" FontSize="13" VerticalAlignment="Center"
-                         Watermark="auto"/>
+                         PlaceholderText="auto"/>
               </StackPanel>
               <StackPanel Spacing="2">
                 <TextBlock Text="缩放宽度" FontSize="11"/>
                 <TextBox x:Name="AnimationScaleWBox" Text="" Width="60" FontSize="13" VerticalAlignment="Center"
-                         Watermark="auto"/>
+                         PlaceholderText="auto"/>
               </StackPanel>
             </StackPanel>
             <TextBlock Text="留空=auto(跟随源) | 循环: 0=无限/-1=不循环/空=默认 | 缩放: 空=原始" FontSize="10"
                        Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"
                        TextWrapping="Wrap"/>
+            <!-- 视频时长限制（仅视频输入时生效） -->
+            <StackPanel x:Name="AnimationDurationPanel" Spacing="2" IsVisible="False">
+              <TextBlock Text="最大时长（秒）" FontSize="11"/>
+              <TextBox x:Name="AnimationDurationBox" Text="" Width="60" FontSize="13" VerticalAlignment="Center"
+                       PlaceholderText="不限制"/>
+              <TextBlock Text="视频转码为动图默认截取前N秒，0=全部" FontSize="10"
+                         Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" TextWrapping="Wrap"/>
+            </StackPanel>
           </StackPanel>
           <TextBlock Text="编码器" Margin="0,4,0,0"/>
           <ComboBox x:Name="EncoderCombo"/>
@@ -126,7 +139,7 @@
             <sys:String>BT.709</sys:String>
             <sys:String>BT.2020</sys:String>
           </ComboBox>
-          <CheckBox x:Name="UseAdvancedColor" Content="使用高级色彩参数" Margin="0,6,0,0" Checked="UseAdvancedColor_Checked" Unchecked="UseAdvancedColor_Unchecked"/>
+          <CheckBox x:Name="UseAdvancedColor" Content="使用高级色彩参数" Margin="0,6,0,0" IsCheckedChanged="UseAdvancedColor_IsCheckedChanged"/>
           <StackPanel x:Name="AdvancedColorPanel" IsVisible="False" Margin="0,4,0,0" Spacing="6">
             <TextBlock Text="色彩基准（primaries）"/>
             <ComboBox x:Name="ColorPrimariesCombo">
@@ -153,7 +166,7 @@
             <sys:String>8</sys:String>
           </ComboBox>
           <CheckBox x:Name="UseAdvancedCodec" Content="高级编码选项" Margin="0,6,0,0" 
-                    Checked="UseAdvancedCodec_Checked" Unchecked="UseAdvancedCodec_Unchecked"/>
+                    IsCheckedChanged="UseAdvancedCodec_IsCheckedChanged"/>
           <StackPanel x:Name="AdvancedCodecPanel" IsVisible="False" Margin="0,4,0,0" Spacing="6">
             <!-- PNG -->
             <StackPanel x:Name="PngCodecPanel" IsVisible="False" Spacing="4">
@@ -189,21 +202,40 @@
             </StackPanel>
             <!-- AVIF -->
             <StackPanel x:Name="AvifCodecPanel" IsVisible="False" Spacing="4">
-              <TextBlock Text="编码速度 (cpu-used)"/>
-              <NumericUpDown x:Name="AvifCpuUsedBox" Value="5" Minimum="0" Maximum="8"/>
-              <TextBlock Text="优化目标 (tune)" Margin="0,4,0,0"/>
-              <ComboBox x:Name="AvifTuneCombo" SelectedIndex="3">
-                <sys:String>0</sys:String><sys:String>1</sys:String>
-                <sys:String>2</sys:String><sys:String>3</sys:String><sys:String>4</sys:String>
-                <sys:String>5</sys:String>
-              </ComboBox>
-              <TextBlock Text="编码预设 (usage/preset)" Margin="0,4,0,0"/>
-              <ComboBox x:Name="AvifPresetCombo">
-                <sys:String>auto</sys:String><sys:String>good</sys:String>
-                <sys:String>realtime</sys:String>
-              </ComboBox>
-              <CheckBox x:Name="AvifStillPictureCheck" Content="静态图片模式 (still-picture)" IsChecked="True"/>
-              <CheckBox x:Name="AvifRowMtCheck" Content="行级多线程 (row-mt, 仅 libaom)" IsChecked="True" Margin="0,4,0,0"/>
+              <!-- ── libaom-av1 选项 ── -->
+              <StackPanel x:Name="LibaomAvifPanel" Spacing="4">
+                <TextBlock Text="编码速度 (cpu-used)" FontSize="11"/>
+                <NumericUpDown x:Name="AvifCpuUsedBox" Value="5" Minimum="0" Maximum="8"/>
+                <TextBlock Text="优化目标 (tune)" Margin="0,4,0,0" FontSize="11"/>
+                <ComboBox x:Name="AvifTuneCombo" SelectedIndex="4">
+                  <sys:String>默认</sys:String><sys:String>PSNR</sys:String>
+                  <sys:String>SSIM</sys:String><sys:String>VMAF</sys:String>
+                  <sys:String>IQ (图像优化)</sys:String>
+                </ComboBox>
+                <CheckBox x:Name="AvifStillPictureCheck" Content="静态图片模式 (still-picture)" IsChecked="True"/>
+                <CheckBox x:Name="AvifRowMtCheck" Content="行级多线程 (row-mt)" IsChecked="True" Margin="0,4,0,0"/>
+              </StackPanel>
+              <!-- ── SVT-AV1 选项 ── -->
+              <StackPanel x:Name="SvtAvifPanel" IsVisible="False" Spacing="4">
+                <TextBlock Text="编码预设 (preset, 0=最优 13=最快)" FontSize="11"/>
+                <NumericUpDown x:Name="SvtPresetBox" Value="7" Minimum="0" Maximum="13"/>
+                <TextBlock Text="优化目标 (tune)" Margin="0,4,0,0" FontSize="11"/>
+                <ComboBox x:Name="SvtTuneCombo" SelectedIndex="1">
+                  <sys:String>默认</sys:String><sys:String>VMAF (主观)</sys:String>
+                  <sys:String>PSNR</sys:String><sys:String>SSIM</sys:String>
+                </ComboBox>
+                <CheckBox x:Name="SvtStillPictureCheck" Content="静态图片模式 (still-picture)" IsChecked="True"/>
+              </StackPanel>
+              <!-- ── 硬件/其他编码器选项 ── -->
+              <StackPanel x:Name="HwAvifPanel" IsVisible="False" Spacing="4">
+                <TextBlock Text="编码质量预设" FontSize="11"/>
+                <ComboBox x:Name="HwPresetCombo" SelectedIndex="1">
+                  <sys:String>快速</sys:String><sys:String>平衡</sys:String>
+                  <sys:String>高质量</sys:String>
+                </ComboBox>
+                <TextBlock Text="硬件编码器仅支持预设调节，质量由上方滑块控制" FontSize="10"
+                           Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" TextWrapping="Wrap"/>
+              </StackPanel>
             </StackPanel>
             <!-- JPEG XL -->
             <StackPanel x:Name="JxlCodecPanel" IsVisible="False" Spacing="4">
@@ -329,12 +361,14 @@
           </StackPanel>
         </StackPanel>
       </ScrollViewer>
+    </Border>
 
       <!-- ============ 右侧：队列 + 文件 + 命令 + 日志 ============ -->
-      <Grid Grid.Column="1" Margin="8" RowDefinitions="*,6,*,6,*,Auto">
+      <Grid Grid.Column="1" Margin="8,0,8,0" RowDefinitions="*,6,*,6,*,Auto">
         <!-- ① 转换队列 -->
-        <Border Grid.Row="0" CornerRadius="6" Padding="8,6"
-                BorderBrush="{DynamicResource SystemControlBackgroundBaseLowBrush}" BorderThickness="1">
+        <Border Grid.Row="0" CornerRadius="8" Padding="10,8"
+                BoxShadow="0 1 6 0 #12000000"
+                Background="{DynamicResource SystemControlBackgroundCardHighBrush}">
           <Grid RowDefinitions="Auto,*,Auto">
             <StackPanel Grid.Row="0" Orientation="Horizontal" Spacing="10">
               <TextBlock Text="📋 转换队列" FontSize="15" FontWeight="Bold"/>
@@ -343,7 +377,7 @@
             </StackPanel>
             <ListBox Grid.Row="1" x:Name="QueueList" SelectionMode="Single" Margin="0,4">
               <ListBox.ItemTemplate>
-                <DataTemplate>
+                <DataTemplate x:DataType="local:QueueItem">
                   <TextBlock Text="{Binding DisplayText}"
                              Foreground="{Binding HasError, Converter={x:Static local:ErrorToColorConverter.Instance}}"/>
                 </DataTemplate>
@@ -362,7 +396,7 @@
               <CheckBox x:Name="ShowErrorsOnlyCheck" Content="仅显示报错"
                         VerticalAlignment="Center" Margin="8,0,0,3"
                         ToolTip.Tip="屏蔽正常完成项目，仅查看失败的任务"
-                        Checked="ShowErrorsOnly_Changed" Unchecked="ShowErrorsOnly_Changed"/>
+                        IsCheckedChanged="ShowErrorsOnly_IsCheckedChanged"/>
               <Separator Width="12" Background="Transparent"/>
               <TextBlock x:Name="QueueProgressLabel" Text="队列: 0 / 0" VerticalAlignment="Center"
                          Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" FontSize="11" Margin="4,0,0,3"/>
@@ -377,8 +411,9 @@
         <GridSplitter Grid.Row="1" Height="6" Background="Transparent" HorizontalAlignment="Stretch"/>
 
         <!-- ② 已选文件 -->
-        <Border Grid.Row="2" CornerRadius="6" Padding="8,6"
-                BorderBrush="{DynamicResource SystemControlBackgroundBaseLowBrush}" BorderThickness="1">
+        <Border Grid.Row="2" CornerRadius="8" Padding="10,8"
+                BoxShadow="0 1 6 0 #12000000"
+                Background="{DynamicResource SystemControlBackgroundCardHighBrush}">
           <Grid RowDefinitions="Auto,*">
             <StackPanel Grid.Row="0" Orientation="Horizontal" Spacing="10">
               <TextBlock Text="📂 已选文件" FontSize="14" FontWeight="Bold"/>
@@ -407,8 +442,9 @@
         <GridSplitter Grid.Row="3" Height="6" Background="Transparent" HorizontalAlignment="Stretch"/>
 
         <!-- ③ 命令 + 日志 -->
-        <Border Grid.Row="4" CornerRadius="6" Padding="8,6"
-                BorderBrush="{DynamicResource SystemControlBackgroundBaseLowBrush}" BorderThickness="1">
+        <Border Grid.Row="4" CornerRadius="8" Padding="10,8"
+                BoxShadow="0 1 6 0 #12000000"
+                Background="{DynamicResource SystemControlBackgroundCardHighBrush}">
           <Grid RowDefinitions="Auto,*,Auto,*">
             <TextBlock Grid.Row="0" Text="⚙ 生成的命令" FontSize="13" FontWeight="Bold"/>
             <TextBox Grid.Row="1" x:Name="CommandText" AcceptsReturn="True" IsReadOnly="True" Margin="0,2,0,0"/>
@@ -418,8 +454,9 @@
         </Border>
 
         <!-- ④ 并发控制栏 -->
-        <Border Grid.Row="5" CornerRadius="6" Padding="8,5" Margin="0,6,0,0"
-                BorderBrush="{DynamicResource SystemControlBackgroundBaseLowBrush}" BorderThickness="1">
+        <Border Grid.Row="5" CornerRadius="8" Padding="10,6" Margin="0,8,0,0"
+                BoxShadow="0 1 6 0 #12000000"
+                Background="{DynamicResource SystemControlBackgroundCardHighBrush}">
           <StackPanel Orientation="Horizontal" Spacing="8">
             <TextBlock Text="⚡ 并行编码任务数" VerticalAlignment="Center"/>
             <TextBox x:Name="ConcurrencyBox" Text="2" Width="56" VerticalAlignment="Center"
@@ -433,6 +470,13 @@
             <TextBlock x:Name="ConcurrencyLabel" Text="(同时 2 个任务)" VerticalAlignment="Center" Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
             <Separator Width="8" Background="Transparent"/>
             <TextBlock x:Name="QueueCountLabel" Text="队列: 0" VerticalAlignment="Center"/>
+            <Separator Width="8" Background="Transparent"/>
+            <TextBlock Text="⚙ 进程优先级" VerticalAlignment="Center" FontSize="12"/>
+              <ComboBox x:Name="PriorityCombo" SelectedIndex="3" Width="90" FontSize="12">
+                <sys:String>实时</sys:String><sys:String>高</sys:String>
+                <sys:String>高于正常</sys:String><sys:String>正常</sys:String>
+                <sys:String>低于正常</sys:String><sys:String>低</sys:String>
+            </ComboBox>
           </StackPanel>
         </Border>
       </Grid>

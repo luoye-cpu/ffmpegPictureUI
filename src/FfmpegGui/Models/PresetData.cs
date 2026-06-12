@@ -37,6 +37,13 @@ namespace FfmpegGui.Models
         public bool StripXmp { get; set; }
         public int Concurrency { get; set; } = 2;
         public int MaxQueueSize { get; set; } = 16;
+        // 动图参数
+        public int? AnimationFps { get; set; }
+        public int AnimationLoop { get; set; }
+        public bool GifPaletteOptimize { get; set; } = true;
+        public bool GifDither { get; set; } = true;
+        public int AnimationScaleW { get; set; }
+        public double AnimationDuration { get; set; }
 
         public string ToJson() => JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true });
 

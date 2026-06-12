@@ -8,10 +8,10 @@ namespace FfmpegGui.Services
     public static class AppSettingsService
     {
         /// <summary>
-        /// 设置文件存储在 exe 同目录下的 settings.json（便携模式，适合单文件分发）
+        /// 设置文件存储在 exe 同目录下的 settings.json（便携模式，单文件发布也正确）
         /// </summary>
         private static readonly string SettingsPath = Path.Combine(
-            AppContext.BaseDirectory, "settings.json");
+            Path.GetDirectoryName(Environment.ProcessPath!) ?? ".", "settings.json");
 
         private static AppSettings? _current;
         public static AppSettings Current => _current ??= Load();

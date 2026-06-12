@@ -2,10 +2,56 @@
     x:Class="FfmpegGui.App"
     xmlns="https://github.com/avaloniaui"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
     <Application.Resources>
+        <!-- ═══════════ 现代主题色板 ═══════════ -->
+        <!-- 主强调色（紫色系，可自由修改） -->
+        <SolidColorBrush x:Key="AppAccentColor" Color="#7C5CFC"/>
+        <SolidColorBrush x:Key="AppAccentColorHover" Color="#9175FC"/>
+        <SolidColorBrush x:Key="AppAccentColorPressed" Color="#6648E0"/>
+
+        <!-- 全局圆角标准 -->
+        <CornerRadius x:Key="ControlCornerRadius">6</CornerRadius>
+        <CornerRadius x:Key="CardCornerRadius">10</CornerRadius>
     </Application.Resources>
 
     <Application.Styles>
         <FluentTheme />
+
+        <!-- ═══════════ 全局控件现代化样式 ═══════════ -->
+        <Style Selector="Button">
+            <Setter Property="CornerRadius" Value="6"/>
+            <Setter Property="Padding" Value="14,7"/>
+            <Setter Property="FontSize" Value="13"/>
+        </Style>
+
+        <Style Selector="TextBox">
+            <Setter Property="CornerRadius" Value="6"/>
+            <Setter Property="Padding" Value="10,7"/>
+            <Setter Property="FontSize" Value="13"/>
+        </Style>
+
+        <Style Selector="ComboBox">
+            <Setter Property="CornerRadius" Value="6"/>
+            <Setter Property="FontSize" Value="13"/>
+        </Style>
+
+        <Style Selector="ListBox">
+            <Setter Property="CornerRadius" Value="6"/>
+        </Style>
+
+        <!-- 小型紧凑按钮 -->
+        <Style Selector="Button.Small">
+            <Setter Property="Padding" Value="8,4"/>
+            <Setter Property="FontSize" Value="12"/>
+        </Style>
+
+        <!-- 详情卡片容器 -->
+        <Style Selector="Border.Card">
+            <Setter Property="CornerRadius" Value="10"/>
+            <Setter Property="Padding" Value="14"/>
+            <Setter Property="Background" Value="{DynamicResource SystemControlBackgroundCardHighBrush}"/>
+            <Setter Property="BoxShadow" Value="0 2 12 0 #12000000"/>
+        </Style>
     </Application.Styles>
 </Application>

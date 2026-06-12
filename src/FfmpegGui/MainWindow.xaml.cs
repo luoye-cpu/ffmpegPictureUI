@@ -80,6 +80,8 @@ namespace FfmpegGui
         private TextBox? AnimationFpsBox;
         private TextBox? AnimationLoopBox;
         private TextBox? AnimationScaleWBox;
+        private StackPanel? AnimationDurationPanel;
+        private TextBox? AnimationDurationBox;
         // 各格式高级面板
         private StackPanel? PngCodecPanel;
         private StackPanel? GifCodecPanel;
@@ -102,7 +104,15 @@ namespace FfmpegGui
         private CheckBox? AvifRowMtCheck;
         private CheckBox? AutoUseSimdCheck;
         private ComboBox? AvifTuneCombo;
-        private ComboBox? AvifPresetCombo;
+        // SVT-AV1 专用控件
+        private StackPanel? LibaomAvifPanel;
+        private StackPanel? SvtAvifPanel;
+        private StackPanel? HwAvifPanel;
+        private NumericUpDown? SvtPresetBox;
+        private ComboBox? SvtTuneCombo;
+        private CheckBox? SvtStillPictureCheck;
+        private ComboBox? HwPresetCombo;
+        private ComboBox? PriorityCombo;
         private NumericUpDown? JxlEffortBox;
         private NumericUpDown? CjxlEffortBox;
         private CheckBox? JxlModularCheck;
@@ -202,10 +212,13 @@ namespace FfmpegGui
             AnimationFpsBox = this.FindControl<TextBox>("AnimationFpsBox");
             AnimationLoopBox = this.FindControl<TextBox>("AnimationLoopBox");
             AnimationScaleWBox = this.FindControl<TextBox>("AnimationScaleWBox");
+            AnimationDurationPanel = this.FindControl<StackPanel>("AnimationDurationPanel");
+            AnimationDurationBox = this.FindControl<TextBox>("AnimationDurationBox");
             // 动图参数默认空（auto，编码器自行决定）
             if (AnimationFpsBox != null) AnimationFpsBox.Text = "";
             if (AnimationLoopBox != null) AnimationLoopBox.Text = "";
             if (AnimationScaleWBox != null) AnimationScaleWBox.Text = "";
+            if (AnimationDurationBox != null) AnimationDurationBox.Text = "";
             if (AnimationPanel != null) AnimationPanel.IsVisible = false;
             // 各格式高级面板
             PngCodecPanel = this.FindControl<StackPanel>("PngCodecPanel");
@@ -228,7 +241,15 @@ namespace FfmpegGui
             AvifStillPictureCheck = this.FindControl<CheckBox>("AvifStillPictureCheck");
             AvifRowMtCheck = this.FindControl<CheckBox>("AvifRowMtCheck");
             AvifTuneCombo = this.FindControl<ComboBox>("AvifTuneCombo");
-            AvifPresetCombo = this.FindControl<ComboBox>("AvifPresetCombo");
+            // AVIF 编码器特定面板
+            LibaomAvifPanel = this.FindControl<StackPanel>("LibaomAvifPanel");
+            SvtAvifPanel = this.FindControl<StackPanel>("SvtAvifPanel");
+            HwAvifPanel = this.FindControl<StackPanel>("HwAvifPanel");
+            SvtPresetBox = this.FindControl<NumericUpDown>("SvtPresetBox");
+            SvtTuneCombo = this.FindControl<ComboBox>("SvtTuneCombo");
+            SvtStillPictureCheck = this.FindControl<CheckBox>("SvtStillPictureCheck");
+            HwPresetCombo = this.FindControl<ComboBox>("HwPresetCombo");
+            PriorityCombo = this.FindControl<ComboBox>("PriorityCombo");
             JxlEffortBox = this.FindControl<NumericUpDown>("JxlEffortBox");
             JxlModularCheck = this.FindControl<CheckBox>("JxlModularCheck");
             // cjxl 专属控件
@@ -282,6 +303,7 @@ namespace FfmpegGui
             {
                 UpdateThreadAvailabilityForFormat(NormalizeFormat(FormatCombo?.SelectedItem as string));
                 UpdateCodecPanelVisibility(NormalizeFormat(FormatCombo?.SelectedItem as string));
+                UpdateAvifEncoderPanel();
                 RegenerateCommand();
             };
             if (ThreadsBox != null) ThreadsBox.ValueChanged += (_, _) => RegenerateCommand();
@@ -289,6 +311,7 @@ namespace FfmpegGui
             if (AnimationFpsBox != null) AnimationFpsBox.TextChanged += (_, _) => RegenerateCommand();
             if (AnimationLoopBox != null) AnimationLoopBox.TextChanged += (_, _) => RegenerateCommand();
             if (AnimationScaleWBox != null) AnimationScaleWBox.TextChanged += (_, _) => RegenerateCommand();
+            if (AnimationDurationBox != null) AnimationDurationBox.TextChanged += (_, _) => RegenerateCommand();
             if (GifPaletteCheck != null) GifPaletteCheck.IsCheckedChanged += (_, _) => RegenerateCommand();
             if (GifDitherCheck != null) GifDitherCheck.IsCheckedChanged += (_, _) => RegenerateCommand();
             // 高级色彩参数
@@ -303,7 +326,21 @@ namespace FfmpegGui
             if (AvifStillPictureCheck != null) AvifStillPictureCheck.IsCheckedChanged += (_, _) => RegenerateCommand();
             if (AvifRowMtCheck != null) AvifRowMtCheck.IsCheckedChanged += (_, _) => RegenerateCommand();
             if (AvifTuneCombo != null) AvifTuneCombo.SelectionChanged += (_, _) => RegenerateCommand();
-            if (AvifPresetCombo != null) AvifPresetCombo.SelectionChanged += (_, _) => RegenerateCommand();
+            if (SvtPresetBox != null) SvtPresetBox.ValueChanged += (_, _) => RegenerateCommand();
+            if (SvtTuneCombo != null) SvtTuneCombo.SelectionChanged += (_, _) => RegenerateCommand();
+            if (SvtStillPictureCheck != null) SvtStillPictureCheck.IsCheckedChanged += (_, _) => RegenerateCommand();
+            if (HwPresetCombo != null) HwPresetCombo.SelectionChanged += (_, _) => RegenerateCommand();
+            // 进程优先级变更时持久化
+            if (PriorityCombo != null)
+            {
+                var savedPriority = AppSettingsService.Current.FfmpegPriority;
+                PriorityCombo.SelectedIndex = Math.Clamp(savedPriority, 0, 5);
+                PriorityCombo.SelectionChanged += (_, _) =>
+                {
+                    AppSettingsService.Current.FfmpegPriority = PriorityCombo.SelectedIndex;
+                    AppSettingsService.Save();
+                };
+            }
             if (JxlEffortBox != null) JxlEffortBox.ValueChanged += (_, _) => RegenerateCommand();
             if (JxlModularCheck != null) JxlModularCheck.IsCheckedChanged += (_, _) => RegenerateCommand();
             // cjxl 控件事件
@@ -478,7 +515,7 @@ namespace FfmpegGui
                     {
                         _updatingQuality = true;
                         var fmt = NormalizeFormat(FormatCombo?.SelectedItem as string);
-                        if (QualityBox != null) QualityBox.Text = Models.FfmpegOptions.FormatQualityForDisplay(fmt, (int)QualitySlider.Value);
+                        if (QualityBox != null) QualityBox.Text = Models.FfmpegOptions.FormatQualityForDisplay(fmt, (int)QualitySlider.Value, GetCurrentEncoderBackend());
                         _updatingQuality = false;
                         UpdateQualityLabel();
                     }
@@ -493,7 +530,7 @@ namespace FfmpegGui
                             System.Globalization.CultureInfo.InvariantCulture, out var parsed))
                     {
                         _updatingQuality = true;
-                        var sliderVal = Models.FfmpegOptions.ParseQualityFromDisplay(fmt, parsed);
+                        var sliderVal = Models.FfmpegOptions.ParseQualityFromDisplay(fmt, parsed, GetCurrentEncoderBackend());
                         if (QualitySlider != null) QualitySlider.Value = sliderVal;
                         _updatingQuality = false;
                         UpdateQualityLabel();
@@ -505,7 +542,7 @@ namespace FfmpegGui
                     if (QualitySlider != null)
                     {
                         var fmt = NormalizeFormat(FormatCombo?.SelectedItem as string);
-                        QualityBox.Text = Models.FfmpegOptions.FormatQualityForDisplay(fmt, (int)QualitySlider.Value);
+                        QualityBox.Text = Models.FfmpegOptions.FormatQualityForDisplay(fmt, (int)QualitySlider.Value, GetCurrentEncoderBackend());
                     }
                 };
             }
@@ -736,12 +773,12 @@ namespace FfmpegGui
             {
                 var fmt = NormalizeFormat(FormatCombo?.SelectedItem as string);
                 var val = (int)QualitySlider.Value;
-                QualityValue.Text = Models.FfmpegOptions.GetQualityLabel(fmt, val);
+                QualityValue.Text = Models.FfmpegOptions.GetQualityLabel(fmt, val, GetCurrentEncoderBackend());
                 // 确保数字输入框与滑块保持同步（程序化变更时）
                 if (QualityBox != null && !_updatingQuality)
                 {
                     _updatingQuality = true;
-                    QualityBox.Text = Models.FfmpegOptions.FormatQualityForDisplay(fmt, val);
+                    QualityBox.Text = Models.FfmpegOptions.FormatQualityForDisplay(fmt, val, GetCurrentEncoderBackend());
                     _updatingQuality = false;
                 }
             }
@@ -880,7 +917,10 @@ namespace FfmpegGui
                 AvifStillPicture = useAdvCodec ? AvifStillPictureCheck?.IsChecked : null,
                 AvifRowMt = useAdvCodec ? AvifRowMtCheck?.IsChecked : null,
                 AvifTune = useAdvCodec ? (AvifTuneCombo?.SelectedItem as string) : null,
-                AvifPreset = useAdvCodec ? (AvifPresetCombo?.SelectedItem as string) : null,
+                AvifPreset = GetAvifPresetValue(),
+                AvifSvtPreset = useAdvCodec ? (int?)SvtPresetBox?.Value : null,
+                AvifSvtTune = useAdvCodec ? (SvtTuneCombo?.SelectedItem as string) : null,
+                AvifHwPreset = useAdvCodec ? (HwPresetCombo?.SelectedItem as string) : null,
                 JxlEffort = useAdvCodec ? (int?)JxlEffortBox?.Value : null,
                 JxlModular = useAdvCodec ? JxlModularCheck?.IsChecked : null,
                 JxlLosslessJpeg = jxlLosslessJpeg,
@@ -1109,6 +1149,28 @@ namespace FfmpegGui
             return null;
         }
 
+        private static double? ParseOptionalDouble(string? text, double min, double max)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return null;
+            if (double.TryParse(text,
+                    System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    out var val))
+                return Math.Clamp(val, min, max);
+            return null;
+        }
+
+        /// <summary>
+        /// 获取当前模式下的允许文件扩展名。动图模式下包含视频格式。
+        /// </summary>
+        private string[] GetEnabledExtensionsForCurrentMode()
+        {
+            var isAnimation = ConversionModeCombo?.SelectedIndex == 1;
+            return isAnimation
+                ? AppSettingsService.Current.GetEnabledExtensionsIncludingVideo()
+                : AppSettingsService.Current.GetEnabledExtensions();
+        }
+
         private void ConversionMode_SelectionChanged(object? sender, SelectionChangedEventArgs e)
         {
             if (FormatCombo == null || ConversionModeCombo == null) return;
@@ -1117,9 +1179,12 @@ namespace FfmpegGui
             var isAnimated = ConversionModeCombo.SelectedIndex == 1;
             var targetFormats = isAnimated ? AnimatedFormats : StillFormats;
 
-            // 动图模式：控制面板可见性 + 设置默认值
+            // 动图模式：控制面板可见性
             if (AnimationPanel != null)
                 AnimationPanel.IsVisible = isAnimated;
+            // 视频时长控制仅在动图模式下显示
+            if (AnimationDurationPanel != null)
+                AnimationDurationPanel.IsVisible = isAnimated;
 
             // 更新 FormatCombo 选项列表
             FormatCombo.Items!.Clear();
@@ -1269,7 +1334,7 @@ namespace FfmpegGui
                         }
                         if (QualityBox != null)
                         {
-                            QualityBox.Text = Models.FfmpegOptions.FormatQualityForDisplay(fmt3, 100);
+                            QualityBox.Text = Models.FfmpegOptions.FormatQualityForDisplay(fmt3, 100, GetCurrentEncoderBackend());
                             QualityBox.IsEnabled = false;
                         }
                     }
@@ -1398,6 +1463,7 @@ namespace FfmpegGui
 
                 case "avif":
                     if (AvifCodecPanel != null) AvifCodecPanel.IsVisible = true;
+                    UpdateAvifEncoderPanel();
                     // 动图 AVIF：强制禁用 still-picture + 隐藏 LosslessCheck
                     if (AvifStillPictureCheck != null)
                     {
@@ -1449,6 +1515,47 @@ namespace FfmpegGui
         }
 
         /// <summary>
+        /// 根据当前 AVIF 编码器切换显示不同的高级选项面板
+        /// </summary>
+        private void UpdateAvifEncoderPanel()
+        {
+            var enc = EncoderCombo?.SelectedItem as string ?? "";
+            var isSvt = enc.StartsWith("libsvt", StringComparison.OrdinalIgnoreCase);
+            var isLibaom = enc.StartsWith("libaom", StringComparison.OrdinalIgnoreCase) || string.IsNullOrEmpty(enc);
+
+            // 隐藏所有子面板
+            if (LibaomAvifPanel != null) LibaomAvifPanel.IsVisible = false;
+            if (SvtAvifPanel != null) SvtAvifPanel.IsVisible = false;
+            if (HwAvifPanel != null) HwAvifPanel.IsVisible = false;
+
+            // 根据编码器显示对应面板
+            if (isLibaom)
+            {
+                if (LibaomAvifPanel != null) LibaomAvifPanel.IsVisible = true;
+            }
+            else if (isSvt)
+            {
+                if (SvtAvifPanel != null) SvtAvifPanel.IsVisible = true;
+            }
+            else
+            {
+                // 硬件编码器 / 其他
+                if (HwAvifPanel != null) HwAvifPanel.IsVisible = true;
+            }
+        }
+
+        /// <summary>
+        /// 获取当前编码器对应的 AvifPreset 值（SVT: 数值字符串, libaom: null）
+        /// </summary>
+        private string? GetAvifPresetValue()
+        {
+            var enc = EncoderCombo?.SelectedItem as string ?? "";
+            if (enc.StartsWith("libsvt", StringComparison.OrdinalIgnoreCase))
+                return SvtPresetBox?.Value.ToString();
+            return null; // libaom: usage 由 tune IQ 自动管理
+        }
+
+        /// <summary>
         /// 从 UI 下拉框获取当前元数据处理模式
         /// </summary>
         private Models.MetadataMode GetMetadataMode()
@@ -1496,11 +1603,14 @@ namespace FfmpegGui
             var topLevel = TopLevel.GetTopLevel(this);
             if (topLevel?.StorageProvider == null) return;
 
+            var isAnimationMode = ConversionModeCombo?.SelectedIndex == 1;
             var files = await topLevel.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
             {
-                Title = "选择图片文件",
+                Title = isAnimationMode ? "选择图片或视频文件" : "选择图片文件",
                 AllowMultiple = false,
-                FileTypeFilter = AppSettingsService.Current.GetImageFilePickerFilter()
+                FileTypeFilter = isAnimationMode
+                    ? AppSettingsService.Current.GetAnimationFilePickerFilter()
+                    : AppSettingsService.Current.GetImageFilePickerFilter()
             });
 
             if (files != null && files.Count > 0)
@@ -1598,7 +1708,10 @@ namespace FfmpegGui
                 AvifStillPicture = useAdvCodec ? AvifStillPictureCheck?.IsChecked : null,
                 AvifRowMt = useAdvCodec ? AvifRowMtCheck?.IsChecked : null,
                 AvifTune = useAdvCodec ? (AvifTuneCombo?.SelectedItem as string) : null,
-                AvifPreset = useAdvCodec ? (AvifPresetCombo?.SelectedItem as string) : null,
+                AvifPreset = GetAvifPresetValue(),
+                AvifSvtPreset = useAdvCodec ? (int?)SvtPresetBox?.Value : null,
+                AvifSvtTune = useAdvCodec ? (SvtTuneCombo?.SelectedItem as string) : null,
+                AvifHwPreset = useAdvCodec ? (HwPresetCombo?.SelectedItem as string) : null,
                 JxlEffort = useAdvCodec ? (int?)JxlEffortBox?.Value : null,
                 JxlModular = useAdvCodec ? JxlModularCheck?.IsChecked : null,
                 JxlLosslessJpeg = fmt is "jxl" && IsJpegInput(inputPath),
@@ -1618,7 +1731,8 @@ namespace FfmpegGui
                 AnimationLoop = ParseInt(AnimationLoopBox?.Text, 0, -1, 999),
                 GifPaletteOptimize = GifPaletteCheck?.IsChecked ?? true,
                 GifDither = GifDitherCheck?.IsChecked ?? true,
-                AnimationScaleW = ParseOptionalInt(AnimationScaleWBox?.Text, 0, 4096) ?? 0
+                AnimationScaleW = ParseOptionalInt(AnimationScaleWBox?.Text, 0, 4096) ?? 0,
+                AnimationDuration = ParseOptionalDouble(AnimationDurationBox?.Text, 0.1, 3600) ?? 0
             };
 
             var outp = GetOutputPath(inputPath, options.Format, inputBaseDir);
@@ -1748,7 +1862,7 @@ namespace FfmpegGui
             }
         }
 
-        private void ShowErrorsOnly_Changed(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        private void ShowErrorsOnly_IsCheckedChanged(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
         {
             if (QueueList == null) return;
             if (ShowErrorsOnlyCheck?.IsChecked == true)
@@ -2075,24 +2189,14 @@ namespace FfmpegGui
             UpdateAdvancedColorControls();
         }
 
-        private void UseAdvancedColor_Checked(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        private void UseAdvancedColor_IsCheckedChanged(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
         {
-            if (AdvancedColorPanel != null) AdvancedColorPanel.IsVisible = true;
+            if (AdvancedColorPanel != null) AdvancedColorPanel.IsVisible = UseAdvancedColor?.IsChecked == true;
         }
 
-        private void UseAdvancedColor_Unchecked(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        private void UseAdvancedCodec_IsCheckedChanged(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
         {
-            if (AdvancedColorPanel != null) AdvancedColorPanel.IsVisible = false;
-        }
-
-        private void UseAdvancedCodec_Checked(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
-        {
-            if (AdvancedCodecPanel != null) AdvancedCodecPanel.IsVisible = true;
-        }
-
-        private void UseAdvancedCodec_Unchecked(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
-        {
-            if (AdvancedCodecPanel != null) AdvancedCodecPanel.IsVisible = false;
+            if (AdvancedCodecPanel != null) AdvancedCodecPanel.IsVisible = UseAdvancedCodec?.IsChecked == true;
         }
 
         private void UpdateAdvancedColorControls()
@@ -2186,7 +2290,10 @@ namespace FfmpegGui
                 AvifStillPicture = useAdvCodec ? AvifStillPictureCheck?.IsChecked : null,
                 AvifRowMt = useAdvCodec ? AvifRowMtCheck?.IsChecked : null,
                 AvifTune = useAdvCodec ? (AvifTuneCombo?.SelectedItem as string) : null,
-                AvifPreset = useAdvCodec ? (AvifPresetCombo?.SelectedItem as string) : null,
+                AvifPreset = GetAvifPresetValue(),
+                AvifSvtPreset = useAdvCodec ? (int?)SvtPresetBox?.Value : null,
+                AvifSvtTune = useAdvCodec ? (SvtTuneCombo?.SelectedItem as string) : null,
+                AvifHwPreset = useAdvCodec ? (HwPresetCombo?.SelectedItem as string) : null,
                 JxlEffort = useAdvCodec ? (int?)JxlEffortBox?.Value : null,
                 JxlModular = useAdvCodec ? JxlModularCheck?.IsChecked : null,
                 JxlLosslessJpeg = fmt is "jxl" && IsJpegInput(_inputPath),
@@ -2736,7 +2843,7 @@ namespace FfmpegGui
                 WebpPreset = WebpPresetCombo?.SelectedItem as string,
                 AvifCpuUsed = (int?)AvifCpuUsedBox?.Value,
                 AvifTune = AvifTuneCombo?.SelectedItem as string,
-                AvifPreset = AvifPresetCombo?.SelectedItem as string,
+                AvifPreset = GetAvifPresetValue(),
                 AvifStillPicture = AvifStillPictureCheck?.IsChecked,
                 JxlEffort = (int?)JxlEffortBox?.Value,
                 JxlModular = JxlModularCheck?.IsChecked,
@@ -2786,7 +2893,7 @@ namespace FfmpegGui
             SetComboByValue(WebpPresetCombo, p.WebpPreset);
             if (AvifCpuUsedBox != null && p.AvifCpuUsed.HasValue) AvifCpuUsedBox.Value = p.AvifCpuUsed.Value;
             SetComboByValue(AvifTuneCombo, p.AvifTune);
-            SetComboByValue(AvifPresetCombo, p.AvifPreset);
+            // AvifPreset 由编码器上下文动态决定（SVT: SvtPresetBox, libaom: 不可用）
             if (AvifStillPictureCheck != null && p.AvifStillPicture.HasValue) AvifStillPictureCheck.IsChecked = p.AvifStillPicture.Value;
             if (JxlEffortBox != null && p.JxlEffort.HasValue) JxlEffortBox.Value = p.JxlEffort.Value;
             if (JxlModularCheck != null && p.JxlModular.HasValue) JxlModularCheck.IsChecked = p.JxlModular.Value;
@@ -2814,9 +2921,7 @@ namespace FfmpegGui
 
         private void DragEnter(object? sender, DragEventArgs e)
         {
-#pragma warning disable CS0618
-            if (e.Data.Contains(DataFormats.Files) || e.Data.Contains(DataFormats.FileNames))
-#pragma warning restore CS0618
+            if (e.DataTransfer.Contains(DataFormat.File))
             {
                 if (MediaDropZone != null) MediaDropZone.BorderBrush = Avalonia.Media.Brushes.DodgerBlue;
                 if (MediaInfoText != null) MediaInfoText.Text = "释放以载入文件/文件夹...";
@@ -2826,11 +2931,7 @@ namespace FfmpegGui
 
         private void DragOver(object? sender, DragEventArgs e)
         {
-            // 在 Avalonia 11 中，必须持续在 DragOver 中设置 DragEffects，
-            // 否则仅 DragEnter 设置的 DragEffects 不会被保持，导致 drop 被拒绝。
-#pragma warning disable CS0618
-            if (e.Data.Contains(DataFormats.Files) || e.Data.Contains(DataFormats.FileNames))
-#pragma warning restore CS0618
+            if (e.DataTransfer.Contains(DataFormat.File))
             {
                 e.DragEffects = DragDropEffects.Copy;
             }
@@ -2847,10 +2948,10 @@ namespace FfmpegGui
 
             var files = new List<string>();
 
-            // ① 优先使用 IStorageItem 接口（常规文件拖放）
-            if (e.Data.Contains(DataFormats.Files))
+            // 使用 IStorageItem 接口获取拖放文件
+            if (e.DataTransfer.Contains(DataFormat.File))
             {
-                var items = e.Data.GetFiles();
+                var items = e.DataTransfer.TryGetFiles();
                 if (items != null)
                 {
                     foreach (var item in items)
@@ -2861,22 +2962,6 @@ namespace FfmpegGui
                     }
                 }
             }
-
-            // ② 回退：使用原始文件名格式（Windows 搜索结果等 Shell 命名空间路径）
-#pragma warning disable CS0618 // FileNames 在 Windows 桌面平台仍可用
-            if (files.Count == 0 && e.Data.Contains(DataFormats.FileNames))
-            {
-                var rawFiles = e.Data.GetFileNames();
-                if (rawFiles != null)
-                {
-                    foreach (var path in rawFiles)
-                    {
-                        if (!string.IsNullOrWhiteSpace(path))
-                            files.Add(path);
-                    }
-                }
-            }
-#pragma warning restore CS0618
 
             if (files.Count == 0) return;
 
@@ -2891,7 +2976,7 @@ namespace FfmpegGui
                 else
                 {
                     _inputPath = path;
-                    var supported = AppSettingsService.Current.GetEnabledExtensions();
+                    var supported = GetEnabledExtensionsForCurrentMode();
                     if (supported.Contains(System.IO.Path.GetExtension(path).ToLower()))
                     {
                         // 追加到已选文件列表（不清空已有文件，保持目录结构映射）
@@ -2917,7 +3002,7 @@ namespace FfmpegGui
             // 多文件或文件夹 → 批量追加（不清空已有文件）
             else
             {
-                var supported = AppSettingsService.Current.GetEnabledExtensions();
+                var supported = GetEnabledExtensionsForCurrentMode();
                 foreach (var path in files)
                 {
                     if (System.IO.Directory.Exists(path))
@@ -2958,7 +3043,7 @@ namespace FfmpegGui
 
         private async Task ScanFolderAsync(string dir)
         {
-            var supported = AppSettingsService.Current.GetEnabledExtensions();
+            var supported = GetEnabledExtensionsForCurrentMode();
             try
             {
                 // 记录基目录以便后续在输出目录中保留相对结构

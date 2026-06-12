@@ -103,7 +103,7 @@ namespace FfmpegGui.Controls
                     {
                         FontSize = 11,
                         Margin = new Thickness(4, 1),
-                        Watermark = displayName
+                        PlaceholderText = displayName
                     };
                     Grid.SetRow(textBox, i);
                     Grid.SetColumn(textBox, 1);
