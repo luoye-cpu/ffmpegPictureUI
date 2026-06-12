@@ -48,6 +48,31 @@ namespace FfmpegGui
                 _checkBoxes[kv.Key] = cb;
                 panel.Children.Add(cb);
             }
+
+            // 分隔线与视频格式标题
+            var sep = new Avalonia.Controls.Separator { Margin = new Avalonia.Thickness(0, 4, 0, 0) };
+            panel.Children.Add(sep);
+            var vidTitle = new TextBlock
+            {
+                Text = "🎬 视频格式（动图模式）",
+                FontSize = 11,
+                Foreground = Avalonia.Media.Brushes.Gray,
+                Margin = new Avalonia.Thickness(0, 2, 0, 0)
+            };
+            panel.Children.Add(vidTitle);
+
+            foreach (var kv in AppSettings.AllVideoFormats)
+            {
+                var cb = new CheckBox
+                {
+                    Content = $"{kv.Key}  ({string.Join(", ", kv.Value.Select(e => "*" + e))})",
+                    IsChecked = enabledSet.Contains(kv.Key),
+                    Tag = kv.Key,
+                    Margin = new Avalonia.Thickness(0, 0, 0, 0)
+                };
+                _checkBoxes[kv.Key] = cb;
+                panel.Children.Add(cb);
+            }
         }
 
         private List<string> GetSelectedFormats()

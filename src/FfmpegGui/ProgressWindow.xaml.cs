@@ -85,6 +85,15 @@ namespace FfmpegGui
         {
             if (ProgressLabel == null) return;
 
+            // ★ 任务已完成/失败：不解析日志残留（日志中仍有编码阶段的旧消息），
+            //    直接显示最终状态，避免出现 "djxl 解码中" 等误导信息
+            if (_item != null && (_item.Status.StartsWith("已完成") || _item.Status.StartsWith("失败")))
+            {
+                ProgressLabel.Text = _item.Status;
+                QualityInfoLabel!.Text = "-";
+                return;
+            }
+
             // ── 空日志：尚未开始 ──
             if (string.IsNullOrWhiteSpace(log))
             {

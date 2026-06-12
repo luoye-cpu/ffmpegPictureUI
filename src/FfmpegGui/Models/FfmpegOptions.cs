@@ -62,6 +62,12 @@ namespace FfmpegGui.Models
         public int? TiffDpi { get; set; }
         public string? AvifTune { get; set; }
         public string? AvifPreset { get; set; }
+        /// <summary>SVT-AV1 编码器 preset 值 (0-13, null=不指定)</summary>
+        public int? AvifSvtPreset { get; set; }
+        /// <summary>SVT-AV1 编码器 tune 类型</summary>
+        public string? AvifSvtTune { get; set; }
+        /// <summary>硬件编码器质量预设: 快速/平衡/高质量</summary>
+        public string? AvifHwPreset { get; set; }
 
         // ── cjpegli / jpegli 专属高级选项 ──
         /// <summary>色度子采样: "444", "422", "420", "440"</summary>
@@ -102,6 +108,8 @@ namespace FfmpegGui.Models
         public bool GifDither { get; set; } = true;
         /// <summary>动图缩放宽度 (0=保持原始)</summary>
         public int AnimationScaleW { get; set; } = 0;
+        /// <summary>视频/动图最大时长（秒），0=不限制。仅对视频输入生效，防止生成超大动图</summary>
+        public double AnimationDuration { get; set; } = 0;
 
         public static int ComputeAutoThreads()
         {
@@ -158,10 +166,11 @@ namespace FfmpegGui.Models
         public static int MapJxlDistanceInverse(double d) => (int)Math.Round(100 - Math.Clamp(d, 0, 15) * 100.0 / 15.0);
 
         /// <summary>滑块值 → 格式实际参数文本（用于输入框显示）</summary>
-        public static string FormatQualityForDisplay(string fmt, int quality) => fmt.ToLower() switch
+        public static string FormatQualityForDisplay(string fmt, int quality, Services.EncoderBackend backend = Services.EncoderBackend.Ffmpeg) => fmt.ToLower() switch
         {
-            "jpg" or "jpeg" => MapJpegQualityForward(quality).ToString(),
-            "jpegli" => MapJpegliDistanceForward(quality).ToString("F1"),
+            "jpg" or "jpeg" => backend == Services.EncoderBackend.Cjpegli
+                ? MapJpegliDistanceForward(quality).ToString("F1")
+                : MapJpegQualityForward(quality).ToString(),
             "png" => MapPngLevelForward(quality).ToString(),
             "webp" => MapWebpQualityForward(quality).ToString(),
             "avif" => MapAvifCrfForward(quality).ToString(),
@@ -171,10 +180,11 @@ namespace FfmpegGui.Models
         };
 
         /// <summary>格式实际参数 → 滑块值（用户输入解析用）</summary>
-        public static int ParseQualityFromDisplay(string fmt, double value) => fmt.ToLower() switch
+        public static int ParseQualityFromDisplay(string fmt, double value, Services.EncoderBackend backend = Services.EncoderBackend.Ffmpeg) => fmt.ToLower() switch
         {
-            "jpg" or "jpeg" => MapJpegQualityInverse(value),
-            "jpegli" => MapJpegliDistanceInverse(value),
+            "jpg" or "jpeg" => backend == Services.EncoderBackend.Cjpegli
+                ? MapJpegliDistanceInverse(value)
+                : MapJpegQualityInverse(value),
             "png" => MapPngLevelInverse(value),
             "webp" => MapWebpQualityInverse(value),
             "avif" => MapAvifCrfInverse(value),
@@ -183,10 +193,11 @@ namespace FfmpegGui.Models
         };
 
         /// <summary>质量参数标签名</summary>
-        public static string GetQualityLabel(string format, int quality) => format.ToLower() switch
+        public static string GetQualityLabel(string format, int quality, Services.EncoderBackend backend = Services.EncoderBackend.Ffmpeg) => format.ToLower() switch
         {
-            "jpg" or "jpeg" => $"质量: {quality}% → q:v {MapJpegQualityForward(quality)}",
-            "jpegli" => $"质量: {quality}% → distance {MapJpegliDistanceForward(quality):F1}",
+            "jpg" or "jpeg" => backend == Services.EncoderBackend.Cjpegli
+                ? $"质量: {quality}% → distance {MapJpegliDistanceForward(quality):F1}"
+                : $"质量: {quality}% → q:v {MapJpegQualityForward(quality)}",
             "png" => $"压缩: {quality}% → level {MapPngLevelForward(quality)}",
             "webp" => $"质量: {quality}% → q:v {MapWebpQualityForward(quality)}",
             "avif" => $"质量: {quality}% → CRF {MapAvifCrfForward(quality)}",

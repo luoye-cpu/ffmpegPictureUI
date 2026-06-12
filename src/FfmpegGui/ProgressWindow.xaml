@@ -5,13 +5,17 @@
     xmlns:ctrl="using:FfmpegGui.Controls"
     Title="编码详情" Width="700" Height="750"
     WindowStartupLocation="CenterOwner">
-  <Grid RowDefinitions="Auto,Auto,Auto,*,Auto" Margin="10">
+  <Grid RowDefinitions="Auto,Auto,Auto,*,Auto" Margin="14">
     <!-- Row 0: 标题 -->
-    <TextBlock x:Name="TitleLabel" Grid.Row="0" FontSize="16" FontWeight="Bold"/>
-    <Border Grid.Row="0" BorderBrush="LightGray" BorderThickness="0,0,0,1" Margin="0,4"/>
+    <TextBlock x:Name="TitleLabel" Grid.Row="0" FontSize="18" FontWeight="Bold"/>
+    <Border Grid.Row="0" CornerRadius="2" Margin="0,6"
+            Background="{DynamicResource SystemControlBackgroundBaseLowBrush}" Height="1"/>
 
-    <!-- Row 1: 详情 -->
-    <Grid Grid.Row="1" ColumnDefinitions="100,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto" Margin="0,4,0,0">
+    <!-- Row 1: 详情卡片 -->
+    <Border Grid.Row="1" CornerRadius="8" Padding="14,10" Margin="0,4,0,0"
+            BoxShadow="0 1 6 0 #10000000"
+            Background="{DynamicResource SystemControlBackgroundCardHighBrush}">
+    <Grid ColumnDefinitions="100,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto">
       <TextBlock Text="状态" Grid.Row="0" Grid.Column="0" FontWeight="Bold"/>
       <TextBlock x:Name="StatusLabel" Grid.Row="0" Grid.Column="1"/>
       <TextBlock Text="进度" Grid.Row="1" Grid.Column="0" FontWeight="Bold" Margin="0,4,0,0"/>
@@ -28,6 +32,7 @@
       <TextBox x:Name="CommandLabel" Grid.Row="4" Grid.Column="1" Margin="0,4,0,0" IsReadOnly="True"
                TextWrapping="Wrap" AcceptsReturn="True" Height="50"/>
     </Grid>
+    </Border>
 
     <!-- Row 2: 日志标签 -->
     <TextBlock Grid.Row="2" Text="📜 执行日志" FontWeight="Bold" Margin="0,8,0,4"/>

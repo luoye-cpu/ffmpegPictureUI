@@ -1,10 +1,10 @@
 # 🖼️ FFmpegPictureUI — FFmpeg 图片转换器
 
-**v1.4.3 正式版 — JXL 管道优化、Gain Map 支持、JPEG LI 整合、实时进度与命令更新。**
+**v1.4.4 正式版 — Avalonia 12 现代化 UI、视频转动图、AVIF 编码器面板分离、进程优先级。**
 
-An Avalonia UI-based cross-platform batch image/animation conversion tool that wraps `ffmpeg`/`ffprobe` with an intuitive GUI. Integrates `cjxl`/`djxl`/`cjpegli` from the [JPEG XL reference implementation](https://github.com/libjxl/libjxl).
+An Avalonia UI-based cross-platform batch image/animation/video conversion tool that wraps `ffmpeg`/`ffprobe` with an intuitive GUI. Integrates `cjxl`/`djxl`/`cjpegli` from the [JPEG XL reference implementation](https://github.com/libjxl/libjxl).
 
-基于 Avalonia UI 的跨平台图片/动图批量转换工具，将 `ffmpeg`/`ffprobe` 命令行封装为直观图形界面，并集成 [JPEG XL 参考实现](https://github.com/libjxl/libjxl) 的 `cjxl`/`djxl`/`cjpegli`。
+基于 Avalonia UI 的跨平台图片/动图/视频批量转换工具，将 `ffmpeg`/`ffprobe` 命令行封装为直观图形界面，并集成 [JPEG XL 参考实现](https://github.com/libjxl/libjxl) 的 `cjxl`/`djxl`/`cjpegli`。
 
 QQ 交流群：754439779  点击链接加入群聊【FFmpegPictureUI图像处理软件】：https://qm.qq.com/q/M2181PvCkW****
 
@@ -29,7 +29,7 @@ QQ 交流群：754439779  点击链接加入群聊【FFmpegPictureUI图像处理
 | **Presets / 预设** | Save/load conversion presets; export/import JSON |
 | **Dual theme / 双色主题** | Dark/Light mode; queue text adapts — 队列文字颜色自适应主题 |
 | **Format filter / 格式筛选** | Checkbox window to enable/disable recognized image formats; persists to settings — 勾选启用的图片格式，持久化保存 |
-| **Animation mode / 动图模式** | Mode toggle (Still/Animated); FPS/loop/scale controls (auto or manual); per-format advanced animated panels — 模式切换，帧率/循环/缩放参数(auto可用) |
+| **Animation mode / 动图模式** | Mode toggle (Still/Animated); FPS/loop/scale/duration controls (auto or manual); per-format advanced animated panels; video input support — 模式切换，帧率/循环/缩放/时长参数，视频输入支持 |
 | **Lossless lock / 无损锁定** | PNG/TIFF/APNG auto-lock quality at max, disable slider — 无损格式自动锁定最高质量 |
 | **Error-only filter / 仅显示报错** | Toggle to hide completed items, show only errors + in-progress — 一键屏蔽正常完成项，聚焦报错任务 |
 | **Search drag-drop / 搜索拖放** | Windows Search result files correctly resolved via Shell namespace paths — Windows 搜索结果拖放正确解析 |
@@ -121,6 +121,19 @@ ffmpegPictureUI/
 ---
 
 ## 📝 Changelog / 更新日志
+
+### v1.4.4 (2026-06-12)
+
+> 🎯 **正式版** — Avalonia 12 现代化 UI、视频转动图、AVIF 编码器面板分离、进程优先级控制。
+
+- 🎨 **Avalonia 12 现代化 UI / Modern UI**: 升级至 Avalonia 12.0.4，全局圆角卡片设计（按钮/输入框 6px、面板 10px），阴影效果，自定义强调色 —— Upgraded to Avalonia 12 with rounded card-style UI, shadows, custom accent color
+- 🎬 **视频转动图支持 / Video to animation**: 动图模式可输入 .mp4/.mov/.mkv/.avi/.webm/.wmv/.flv 视频文件；新增时长限制参数 (-t)；格式筛选窗口支持视频格式 —— Video input in animation mode with duration limit
+- 🔧 **AVIF 编码器面板分离 / AVIF encoder panels**: libaom-av1 / libsvtav1 / 硬件编码器各自独立高级面板；新增 SVT preset 0-13 控件；硬件编码质量预设（快/平衡/高质量）；tune=IQ 支持 (-aom-params tune=iq) —— Separate advanced panels per encoder with IQ tune for libaom
+- 📏 **JPEG-LI butteraugli distance / JPEG-LI distance**: 质量参数统一为 butteraugli distance (0-15)，与 JPEG XL 一致 —— Quality unified to butteraugli distance, same as JXL
+- ⚙ **进程优先级 / Process priority**: 底部新增 Windows 进程优先级下拉（实时/高/高于正常/正常/低于正常/低），实时生效 —— Windows process priority control with 6 levels
+- 🔍 **格式筛选视频支持 / Format filter video**: 格式筛选窗口底部追加"🎬 视频格式（动图模式）"分隔区，7 种视频格式可独立勾选 —— Video format filter section at bottom
+- 🐛 **JXL 质量分析修复 / JXL quality analysis fix**: JXL 源文件 SSIM/PSNR 分析自动用 djxl 解码为临时 PNG 后对比 —— auto djxl decode for JXL quality analysis
+- 🐛 **进度窗口状态修复 / Progress window fix**: 已完成任务不再显示残留的解码进度 —— completed tasks show final status instead of stale progress
 
 ### v1.4.3 (2026-06-08)
 

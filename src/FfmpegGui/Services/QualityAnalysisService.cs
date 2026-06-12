@@ -46,16 +46,63 @@ namespace FfmpegGui.Services
                 return result;
             }
 
-            // 分辨率一致性预检
-            var resCheck = await CheckResolutionMatchAsync(sourcePath, encodedPath, fileName);
-            if (!string.IsNullOrEmpty(resCheck))
-            {
-                result.Error = resCheck;
-                return result;
-            }
-
+            // ★ JXL 源文件支持：ffmpeg 原生不支持 JXL 解码，需先用 djxl 转临时 PNG
+            string? tempPngPath = null;
+            var actualSourcePath = sourcePath;
             try
             {
+                if (sourcePath.EndsWith(".jxl", StringComparison.OrdinalIgnoreCase))
+                {
+                    var djxlPath = DjxlService.DetectedPath;
+                    if (!string.IsNullOrEmpty(djxlPath) && File.Exists(djxlPath))
+                    {
+                        tempPngPath = Path.Combine(Path.GetTempPath(),
+                            $"ffmpeg_gui_quality_{Guid.NewGuid():N}.png");
+                        var djArgs = $"\"{sourcePath}\" \"{tempPngPath}\"";
+                        var psiDj = new ProcessStartInfo
+                        {
+                            FileName = djxlPath,
+                            Arguments = djArgs,
+                            RedirectStandardOutput = true,
+                            RedirectStandardError = true,
+                            UseShellExecute = false,
+                            CreateNoWindow = true
+                        };
+                        using (var procDj = Process.Start(psiDj))
+                        {
+                            if (procDj != null)
+                            {
+                                await procDj.WaitForExitAsync();
+                                if (procDj.ExitCode == 0 && File.Exists(tempPngPath) && new FileInfo(tempPngPath).Length > 0)
+                                {
+                                    actualSourcePath = tempPngPath;
+                                }
+                                else
+                                {
+                                    // djxl 解码失败，清理临时文件
+                                    TryDeleteFile(tempPngPath);
+                                    tempPngPath = null;
+                                    result.Error = "JXL 源文件解码失败：djxl 未能将 JXL 转为 PNG，无法进行质量分析";
+                                    return result;
+                                }
+                            }
+                        }
+                    }
+                    else
+                    {
+                        result.Error = "JXL 源文件需要 djxl 工具进行质量分析，但未检测到 djxl.exe";
+                        return result;
+                    }
+                }
+
+                // 分辨率一致性预检（使用实际源文件路径）
+                var resCheck = await CheckResolutionMatchAsync(actualSourcePath, encodedPath, fileName);
+                if (!string.IsNullOrEmpty(resCheck))
+                {
+                    result.Error = resCheck;
+                    return result;
+                }
+
                 // 选择输出文件中最佳的视轨（多轨 AVIF 等需选动画轨而非封面轨）
                 var srcStream = "0:v";
                 var encStream = await SelectBestVideoStreamAsync(encodedPath, fileName);
@@ -65,7 +112,7 @@ namespace FfmpegGui.Services
                 //    帧率/时间基准导致的帧错位对比——这才是 PSNR 极低的根本原因
                 // 2) split → 各自独立的帧拷贝馈入 ssim / psnr，避免共用 pad
                 //    时第二个滤镜读到错误帧（PSNR 全 inf 问题）
-                var args = $"-hide_banner -hwaccel cuda -i \"{sourcePath}\" -hwaccel cuda -i \"{encodedPath}\" " +
+                var args = $"-hide_banner -i \"{actualSourcePath}\" -i \"{encodedPath}\" " +
                            $"-filter_complex \"[{srcStream}]settb=1/1000,setpts=N,split[src1][src2];[{encStream}]settb=1/1000,setpts=N,split[enc1][enc2];[src1][enc1]ssim[ssim_out];[src2][enc2]psnr[psnr_out]\" " +
                            $"-map \"[ssim_out]\" -map \"[psnr_out]\" -f null -";
 
@@ -132,8 +179,22 @@ namespace FfmpegGui.Services
             {
                 result.Error = ex.Message;
             }
+            finally
+            {
+                // 清理 JXL 解码产生的临时 PNG 文件
+                if (tempPngPath != null)
+                    TryDeleteFile(tempPngPath);
+            }
 
             return result;
+        }
+
+        /// <summary>
+        /// 安全删除临时文件（不抛异常）
+        /// </summary>
+        private static void TryDeleteFile(string path)
+        {
+            try { if (File.Exists(path)) File.Delete(path); } catch { }
         }
 
         /// <summary>
