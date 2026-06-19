@@ -311,6 +311,38 @@ namespace FfmpegGui.Services
             return await RunRawAsync(args, logCallback);
         }
 
+        /// <summary>
+        /// 安全复制元数据：仅复制 EXIF/IPTC/XMP 等描述性元数据，
+        /// 跳过 ICC_Profile、ColorSpace、色彩相关标签，保护编码器写入的色彩元数据。
+        /// 命令：exiftool -overwrite_original -TagsFromFile source
+        ///       -EXIF:all -IPTC:all -XMP:all -MakerNotes:all -GPS:all
+        ///       --ColorSpace --ICC_Profile --ColorSpaceData
+        ///       --ColorPrimaries --TransferFunction --ColorMatrix
+        ///       target
+        /// </summary>
+        public static async Task<int> CopyMetadataSafeAsync(
+            string sourcePath, string targetPath,
+            Action<string>? logCallback = null)
+        {
+            if (_detectedPath == null)
+            {
+                Detect();
+                if (_detectedPath == null) return -1;
+            }
+
+            // 仅复制描述性元数据组，排除色彩相关标签
+            // 注意：每个 --TAG 表示"从复制列表中排除该标签"
+            var args = $"-overwrite_original -TagsFromFile \"{sourcePath}\" " +
+                       $"-EXIF:all -IPTC:all -XMP:all -MakerNotes:all -GPS:all " +
+                       $"--ColorSpace --ICC_Profile --ColorSpaceData " +
+                       $"--ColorPrimaries --TransferFunction --ColorMatrix " +
+                       $"--ProfileDescription --ProfileCopyright " +
+                       $"\"{targetPath}\"";
+            logCallback?.Invoke($"[exiftool] 安全复制元数据（保留色彩标签）: {Path.GetFileName(sourcePath)} → {Path.GetFileName(targetPath)}\n");
+
+            return await RunRawAsync(args, logCallback);
+        }
+
         /// <summary>执行原始 exiftool 命令（内部用）</summary>
         private static async Task<int> RunRawAsync(string args, Action<string>? logCallback = null)
         {

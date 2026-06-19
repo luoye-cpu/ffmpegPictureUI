@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
@@ -46,57 +47,57 @@ namespace FfmpegGui.Services
                 return result;
             }
 
-            // ★ JXL 源文件支持：ffmpeg 原生不支持 JXL 解码，需先用 djxl 转临时 PNG
+            // ★ JXL/JXR 解码支持：ffmpeg 不支持这些格式，需先用外部工具转临时 PNG
             string? tempPngPath = null;
+            string? tempPngPath2 = null;
             var actualSourcePath = sourcePath;
+            var actualEncodedPath = encodedPath;
             try
             {
+                // JXL 源文件 → djxl 转 PNG
                 if (sourcePath.EndsWith(".jxl", StringComparison.OrdinalIgnoreCase))
                 {
                     var djxlPath = DjxlService.DetectedPath;
                     if (!string.IsNullOrEmpty(djxlPath) && File.Exists(djxlPath))
                     {
-                        tempPngPath = Path.Combine(Path.GetTempPath(),
-                            $"ffmpeg_gui_quality_{Guid.NewGuid():N}.png");
-                        var djArgs = $"\"{sourcePath}\" \"{tempPngPath}\"";
-                        var psiDj = new ProcessStartInfo
-                        {
-                            FileName = djxlPath,
-                            Arguments = djArgs,
-                            RedirectStandardOutput = true,
-                            RedirectStandardError = true,
-                            UseShellExecute = false,
-                            CreateNoWindow = true
-                        };
-                        using (var procDj = Process.Start(psiDj))
-                        {
-                            if (procDj != null)
-                            {
-                                await procDj.WaitForExitAsync();
-                                if (procDj.ExitCode == 0 && File.Exists(tempPngPath) && new FileInfo(tempPngPath).Length > 0)
-                                {
-                                    actualSourcePath = tempPngPath;
-                                }
-                                else
-                                {
-                                    // djxl 解码失败，清理临时文件
-                                    TryDeleteFile(tempPngPath);
-                                    tempPngPath = null;
-                                    result.Error = "JXL 源文件解码失败：djxl 未能将 JXL 转为 PNG，无法进行质量分析";
-                                    return result;
-                                }
-                            }
-                        }
+                        tempPngPath = Path.Combine(Path.GetTempPath(), $"qa_src_{Guid.NewGuid():N}.png");
+                        if (await RunDecoderAsync(djxlPath, $"\"{sourcePath}\" \"{tempPngPath}\"") == 0
+                            && File.Exists(tempPngPath) && new FileInfo(tempPngPath).Length > 0)
+                            actualSourcePath = tempPngPath;
+                        else { TryDeleteFile(tempPngPath); tempPngPath = null; result.Error = "JXL 源解码失败"; return result; }
                     }
-                    else
-                    {
-                        result.Error = "JXL 源文件需要 djxl 工具进行质量分析，但未检测到 djxl.exe";
-                        return result;
-                    }
+                    else { result.Error = "JXL 源需 djxl.exe"; return result; }
+                }
+
+                // JXR 源/编码文件 → JxrDecApp 转 BMP
+                // 优先在与 JxrEncApp.exe 同目录查找 JxrDecApp.exe，其次搜索 PATH
+                var jxrDecPath = FindJxrDecApp();
+                if (string.IsNullOrEmpty(jxrDecPath))
+                {
+                    result.Error = $"JXR 质量分析需要 JxrDecApp.exe，但未检测到。\n已尝试路径:\n  {_lastJxrDecError}\n请将 JxrDecApp.exe 放入上述任一目录中。";
+                    return result;
+                }
+
+                if (sourcePath.EndsWith(".jxr", StringComparison.OrdinalIgnoreCase))
+                {
+                    tempPngPath = Path.Combine(Path.GetTempPath(), $"qa_src_{Guid.NewGuid():N}.bmp");
+                    if (await RunDecoderAsync(jxrDecPath, $"-i \"{sourcePath}\" -o \"{tempPngPath}\"") == 0
+                        && File.Exists(tempPngPath) && new FileInfo(tempPngPath).Length > 0)
+                        actualSourcePath = tempPngPath;
+                    else { TryDeleteFile(tempPngPath); tempPngPath = null; result.Error = "JXR 源解码失败"; return result; }
+                }
+
+                if (encodedPath.EndsWith(".jxr", StringComparison.OrdinalIgnoreCase))
+                {
+                    tempPngPath2 = Path.Combine(Path.GetTempPath(), $"qa_enc_{Guid.NewGuid():N}.bmp");
+                    if (await RunDecoderAsync(jxrDecPath, $"-i \"{encodedPath}\" -o \"{tempPngPath2}\"") == 0
+                        && File.Exists(tempPngPath2) && new FileInfo(tempPngPath2).Length > 0)
+                        actualEncodedPath = tempPngPath2;
+                    else { TryDeleteFile(tempPngPath2); tempPngPath2 = null; result.Error = "JXR 编码输出解码失败"; return result; }
                 }
 
                 // 分辨率一致性预检（使用实际源文件路径）
-                var resCheck = await CheckResolutionMatchAsync(actualSourcePath, encodedPath, fileName);
+                var resCheck = await CheckResolutionMatchAsync(actualSourcePath, actualEncodedPath, fileName);
                 if (!string.IsNullOrEmpty(resCheck))
                 {
                     result.Error = resCheck;
@@ -105,14 +106,14 @@ namespace FfmpegGui.Services
 
                 // 选择输出文件中最佳的视轨（多轨 AVIF 等需选动画轨而非封面轨）
                 var srcStream = "0:v";
-                var encStream = await SelectBestVideoStreamAsync(encodedPath, fileName);
+                var encStream = await SelectBestVideoStreamAsync(actualEncodedPath, fileName);
 
                 // ★ 动图修复:
                 // 1) settb=1/1000 + setpts=N 按帧序号对齐（忽略原始帧间隔），消除不同
                 //    帧率/时间基准导致的帧错位对比——这才是 PSNR 极低的根本原因
                 // 2) split → 各自独立的帧拷贝馈入 ssim / psnr，避免共用 pad
                 //    时第二个滤镜读到错误帧（PSNR 全 inf 问题）
-                var args = $"-hide_banner -i \"{actualSourcePath}\" -i \"{encodedPath}\" " +
+                var args = $"-hide_banner -i \"{actualSourcePath}\" -i \"{actualEncodedPath}\" " +
                            $"-filter_complex \"[{srcStream}]settb=1/1000,setpts=N,split[src1][src2];[{encStream}]settb=1/1000,setpts=N,split[enc1][enc2];[src1][enc1]ssim[ssim_out];[src2][enc2]psnr[psnr_out]\" " +
                            $"-map \"[ssim_out]\" -map \"[psnr_out]\" -f null -";
 
@@ -184,6 +185,8 @@ namespace FfmpegGui.Services
                 // 清理 JXL 解码产生的临时 PNG 文件
                 if (tempPngPath != null)
                     TryDeleteFile(tempPngPath);
+                if (tempPngPath2 != null)
+                    TryDeleteFile(tempPngPath2);
             }
 
             return result;
@@ -196,6 +199,73 @@ namespace FfmpegGui.Services
         {
             try { if (File.Exists(path)) File.Delete(path); } catch { }
         }
+
+        /// <summary>运行外部解码器进程，返回退出码</summary>
+        private static async Task<int> RunDecoderAsync(string exePath, string args)
+        {
+            try
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = exePath,
+                    Arguments = args,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+                using var p = Process.Start(psi);
+                if (p == null) return -1;
+                await p.WaitForExitAsync();
+                return p.ExitCode;
+            }
+            catch { return -1; }
+        }
+
+        /// <summary>
+        /// 查找 JxrDecApp.exe
+        /// 优先级：手动路径 > ffmpeg/程序同目录 > 其他工具同目录
+        /// </summary>
+        private static string? FindJxrDecApp()
+        {
+            var tried = new List<string>();
+            string? found = null;
+
+            bool Try(string? dir, string label)
+            {
+                if (string.IsNullOrEmpty(dir)) return false;
+                var p = Path.Combine(dir, "JxrDecApp.exe");
+                tried.Add($"[{label}] {p}");
+                if (File.Exists(p)) { found = p; return true; }
+                return false;
+            }
+
+            // ① 最高优先级：手动路径
+            if (Try(AppSettingsService.Current.JxrPath, "手动JxrPath")) return found;
+            if (!string.IsNullOrEmpty(AppSettingsService.Current.JxrPath))
+                if (Try(Path.GetDirectoryName(AppSettingsService.Current.JxrPath), "手动JxrPath目录")) return found;
+
+            // ② 同目录：ffmpeg + 程序目录
+            if (Try(AppSettingsService.Current.FfmpegDir, "FfmpegDir")) return found;
+            if (Try(AppDomain.CurrentDomain.BaseDirectory, "AppDir")) return found;
+
+            // ③ 其他工具路径同目录
+            if (Try(JxrService.DetectedPath, "JxrEncDetected")) return found;
+            if (JxrService.DetectedPath != null)
+                if (Try(Path.GetDirectoryName(JxrService.DetectedPath), "JxrEncDir")) return found;
+            foreach (var cp in new[] { AppSettingsService.Current.CjxlPath, AppSettingsService.Current.CjpegliPath,
+                AppSettingsService.Current.AvifencPath, AppSettingsService.Current.UltrahdrPath })
+            {
+                if (!string.IsNullOrEmpty(cp))
+                {
+                    if (Try(Path.GetDirectoryName(cp), "CfgToolDir")) return found;
+                }
+            }
+
+            _lastJxrDecError = string.Join("\n  ", tried);
+            return null;
+        }
+        private static string _lastJxrDecError = "";
 
         /// <summary>
         /// 为输出文件选择最佳视频流（多轨 AVIF 等需要跳过静态封面轨，选动画轨）

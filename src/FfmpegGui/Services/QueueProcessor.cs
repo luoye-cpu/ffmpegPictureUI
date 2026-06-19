@@ -182,6 +182,14 @@ namespace FfmpegGui.Services
                             {
                                 await ProcessCjpegliAsync(captured, finalOutputPath, ct);
                             }
+                            else if (backend == EncoderBackend.Ultrahdr)
+                            {
+                                await ProcessUltrahdrAsync(captured, finalOutputPath, ct);
+                            }
+                            else if (backend == EncoderBackend.Jxr)
+                            {
+                                await ProcessJxrAsync(captured, finalOutputPath, ct);
+                            }
                             else
                             {
                                 var args = FfmpegCommandBuilder.BuildArguments(captured.Options, captured.InputPath, finalOutputPath);
@@ -204,9 +212,12 @@ namespace FfmpegGui.Services
                                     captured.Log += "[dng] 手机/线性 DNG 通常可以直接转换，请检查文件来源。\n";
                                 }
 
-                                // AVIF 通过 FFmpeg -map_metadata 0 也不会保留元数据（FFmpeg AVIF muxer 限制），
-                                // 需要 exiftool 单独恢复。其他格式走 -map_metadata 0 一般可保留。
-                                if (exitCode == 0 && captured.Options.Format.Equals("avif", StringComparison.OrdinalIgnoreCase))
+                                // ── 统一元数据恢复 ──
+                                // FFmpeg 的 -map_metadata 0 在不同 muxer 下行为不一致（尤其是 ICC Profile、
+                                // XMP 包、Exif IFD 子标签等），因此对所有输出格式都走 exiftool 恢复，
+                                // 确保 ICC 色彩描述、XMP、Exif 等完整保留。AVIF muxer 尤为严重，
+                                // 其他格式（TIFF/PNG/WebP/JXL）也存在不同程度的丢失。
+                                if (exitCode == 0)
                                     await RestoreMetadataAsync(captured, finalOutputPath);
                             }
 
@@ -284,36 +295,127 @@ namespace FfmpegGui.Services
 
         // ── 编码器后端专用处理方法 ──
 
-        /// <summary>外部工具编码后恢复元数据（cjxl/cjpegli/djxl 不会自动保留元数据）</summary>
+        /// <summary>外部工具编码后恢复元数据（优先 exiftool，不可用时回退 ffmpeg）</summary>
         private async Task RestoreMetadataAsync(QueueItem item, string outputPath)
         {
             if (item.Options.MetadataMode != Models.MetadataMode.PreserveAll)
                 return;
 
-            if (!ExifToolService.IsAvailable)
+            var backend = item.Options.EncoderBackend;
+
+            // ── 判断是否需要保护编码器写入的色彩元数据 ──
+            // Ultrahdr: 编码器写入了 Gain Map HDR 元数据 (MPF + XMP-hdr)
+            // Cjxl:     cjxl 在 JXL box 中内嵌色彩元数据
+            // Cjpegli:  cjpegli 生成独立的 ICC/JFIF 色彩标签
+            // FFmpeg:   编码时已通过 -color_primaries/-color_trc/-colorspace 嵌入
+            var protectColorMetadata =
+                backend == EncoderBackend.Ultrahdr ||
+                backend == EncoderBackend.Cjxl ||
+                backend == EncoderBackend.Cjpegli ||
+                backend == EncoderBackend.Ffmpeg;
+
+            // ── 优先：exiftool ──
+            if (ExifToolService.IsAvailable)
             {
-                item.Log += "[metadata] ⚠️ 未检测到 exiftool，外部工具编码将丢失元数据。\n";
-                item.Log += "[metadata] 请安装 exiftool 并确保其在 PATH 或工具目录中。\n";
-                _onItemUpdated?.Invoke(item);
-                return;
+                try
+                {
+                    if (protectColorMetadata)
+                        item.Log += "[exiftool] 从源文件恢复元数据（安全模式：保留编码器色彩元数据）...\n";
+                    else
+                        item.Log += "[exiftool] 从源文件恢复元数据...\n";
+                    _onItemUpdated?.Invoke(item);
+
+                    var copyExit = protectColorMetadata
+                        ? await ExifToolService.CopyMetadataSafeAsync(
+                            item.InputPath, outputPath,
+                            s => { item.Log += s; _onItemUpdated?.Invoke(item); })
+                        : await ExifToolService.CopyMetadataAsync(
+                            item.InputPath, outputPath,
+                            s => { item.Log += s; _onItemUpdated?.Invoke(item); });
+
+                    if (copyExit == 0)
+                    {
+                        item.Log += "[exiftool] 元数据恢复完成\n";
+                        return;
+                    }
+                    else
+                    {
+                        item.Log += $"[exiftool] 元数据恢复警告: 退出码 {copyExit}，尝试 ffmpeg 回退...\n";
+                    }
+                }
+                catch (Exception ex)
+                {
+                    item.Log += $"[exiftool] 元数据恢复异常: {ex.Message}，尝试 ffmpeg 回退...\n";
+                }
+            }
+            else
+            {
+                item.Log += "[metadata] exiftool 未检测到，使用 ffmpeg 回退方案恢复元数据\n";
             }
 
+            // ── 回退：ffmpeg 重新封装 ──
+            // ffmpeg -map_metadata 只会映射全局/流级元数据，不会覆盖编码器内嵌色彩标签
+            await RestoreMetadataViaFfmpegAsync(item, outputPath);
+        }
+
+        /// <summary>
+        /// 使用 ffmpeg 重新封装来恢复元数据：以目标文件的像素流为基础，
+        /// 从源文件映射元数据，输出到临时文件后原子替换。
+        /// </summary>
+        private async Task RestoreMetadataViaFfmpegAsync(QueueItem item, string outputPath)
+        {
+            var tempPath = outputPath + ".meta_restore_tmp";
             try
             {
-                item.Log += "[exiftool] 从源文件恢复元数据...\n";
+                item.Log += "[ffmpeg-meta] 使用 ffmpeg 从源文件恢复元数据...\n";
                 _onItemUpdated?.Invoke(item);
-                var copyExit = await ExifToolService.CopyMetadataAsync(
-                    item.InputPath, outputPath,
-                    s => { item.Log += s; _onItemUpdated?.Invoke(item); });
-                if (copyExit == 0)
-                    item.Log += "[exiftool] 元数据恢复完成\n";
+
+                // 双输入重新封装：
+                //   -i outputPath  (map 0 = 目标文件的像素流)
+                //   -i inputPath   (map_metadata 1 = 源文件的元数据)
+                //   -c copy        (不解码，直接复制码流)
+                //   -map_metadata 1 (从第二个输入映射全局元数据)
+                //   -map_metadata:s:v 1:s:v (从第二个输入映射视频流元数据)
+                var ffArgs = $"-y -i \"{outputPath}\" -i \"{item.InputPath}\" " +
+                             $"-map 0 -map_metadata 1 -map_metadata:s:v 1:s:v " +
+                             $"-c copy \"{tempPath}\"";
+
+                item.Log += $"[ffmpeg-meta] ffmpeg {ffArgs}\n";
+                var exitCode = await FfmpegRunner.RunAsync(ffArgs,
+                    s => { item.Log += s; _onItemUpdated?.Invoke(item); },
+                    AppSettingsService.Current.FfmpegPath);
+
+                if (exitCode == 0 && File.Exists(tempPath))
+                {
+                    // 原子替换：删除原文件，重命名临时文件
+                    try
+                    {
+                        File.Delete(outputPath);
+                        File.Move(tempPath, outputPath);
+                        item.Log += "[ffmpeg-meta] 元数据恢复完成（ffmpeg 重新封装）\n";
+                    }
+                    catch (Exception ex)
+                    {
+                        item.Log += $"[ffmpeg-meta] 文件替换失败: {ex.Message}\n";
+                        TryCleanupTemp(tempPath);
+                    }
+                }
                 else
-                    item.Log += $"[exiftool] 元数据恢复警告: 退出码 {copyExit}\n";
+                {
+                    item.Log += $"[ffmpeg-meta] ffmpeg 重新封装失败 (退出码 {exitCode})，元数据可能丢失\n";
+                    TryCleanupTemp(tempPath);
+                }
             }
             catch (Exception ex)
             {
-                item.Log += $"[exiftool] 元数据恢复错误: {ex.Message}\n";
+                item.Log += $"[ffmpeg-meta] 异常: {ex.Message}\n";
+                TryCleanupTemp(tempPath);
             }
+        }
+
+        private static void TryCleanupTemp(string path)
+        {
+            try { if (File.Exists(path)) File.Delete(path); } catch { }
         }
 
         /// <summary>cjxl 编码（优先直接编码，失败自动转 PNG 再试）</summary>
@@ -376,26 +478,16 @@ namespace FfmpegGui.Services
                 return;
             }
 
-            // 第二步：直接编码失败，通过 ffmpeg 转 PNG 再试
-            item.Log += $"[cjxl] 直接编码失败 (退出码 {exitCode})，输入格式可能不被 cjxl 直接支持，将通过 ffmpeg 转为 PNG 中间格式后重试\n";
+            // 第二步：直接编码失败 → ffmpeg 管道直通 cjxl（无中间文件）
+            var inputExtForPipe = Path.GetExtension(item.InputPath).ToLowerInvariant();
+            item.Log += $"[cjxl] 直接编码失败 (退出码 {exitCode})，{inputExtForPipe} 不被 cjxl 直接支持，将通过 ffmpeg 管道直通 cjxl（无磁盘中间文件）\n";
             _onItemUpdated?.Invoke(item);
 
-            var tmp = await PreConvertToPngAsync(item, ct);
-            if (tmp == null) return; // 预转换已设置失败状态
-
-            // 用 PNG 重新编码
-            item.Log += "[cjxl] 用中间 PNG 重新编码...\n";
-            _onItemUpdated?.Invoke(item);
-            item.Command = "cjxl " + CjxlService.BuildCjxlArguments(tmp, outputPath, item.Options);
-            exitCode = await CjxlService.RunWithOptionsAsync(
-                tmp, outputPath, item.Options,
-                s => { item.Log += s; _onItemUpdated?.Invoke(item); });
-
-            item.ExitCode = exitCode;
-            item.Status = exitCode == 0 ? "已完成 (cjxl, PNG 中转)" : $"失败 (cjxl 退出码 {exitCode})";
-            if (exitCode == 0) await RestoreMetadataAsync(item, outputPath);
-
-            try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
+            var pipeResult = await PipeFfmpegToCjxlAsync(item, outputPath, ct);
+            item.ExitCode = pipeResult.exitCode;
+            item.Status = pipeResult.status;
+            if (pipeResult.exitCode == 0)
+                await RestoreMetadataAsync(item, outputPath);
         }
 
         /// <summary>cjpegli 编码（优先直接编码，失败自动转 PNG 再试）</summary>
@@ -436,26 +528,200 @@ namespace FfmpegGui.Services
                 return;
             }
 
-            // 第二步：直接编码失败，通过 ffmpeg 转 PNG 再试
+            // 第二步：直接编码失败 → ffmpeg 管道直通 cjpegli（无中间文件）
             var ext = Path.GetExtension(item.InputPath).ToLowerInvariant();
-            item.Log += $"[cjpegli] 直接编码失败 (退出码 {exit})，{ext} 可能不被支持，转为 PNG 再试\n";
+            item.Log += $"[cjpegli] 直接编码失败 (退出码 {exit})，{ext} 不被支持，通过 ffmpeg 管道直通 cjpegli（无磁盘中间文件）\n";
             _onItemUpdated?.Invoke(item);
 
-            var tmp = await PreConvertToPngAsync(item, ct);
-            if (tmp == null) return;
+            var pipeResult = await PipeFfmpegToCjpegliAsync(item, outputPath, ct);
+            item.ExitCode = pipeResult.exitCode;
+            item.Status = pipeResult.status;
+            if (pipeResult.exitCode == 0)
+                await RestoreMetadataAsync(item, outputPath);
+        }
 
-            item.Log += "[cjpegli] 用中间 PNG 重新编码...\n";
-            _onItemUpdated?.Invoke(item);
-            item.Command = "cjpegli " + CjpegliService.BuildCjpegliArguments(tmp, outputPath, item.Options);
-            exit = await CjpegliService.RunWithOptionsAsync(
-                tmp, outputPath, item.Options,
-                s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ct);
+        /// <summary>
+        /// ultrahdr_app 编码：ffmpeg 解码图像 → 提取尺寸 + 导出 p010 RAW → ultrahdr_app 编码为 Ultra HDR JPEG。
+        /// ultrahdr_app 仅接受裸像素 RAW 文件，因此需要临时 RAW 文件。
+        /// 场景 0：单一 HDR RAW → Ultra HDR（自动 tone-map 生成 SDR 基底）。
+        /// </summary>
+        private async Task ProcessUltrahdrAsync(QueueItem item, string outputPath, CancellationToken ct)
+        {
+            if (!UltrahdrService.IsAvailable)
+            {
+                item.Log += "[ultrahdr] 未检测到 ultrahdr_app.exe，回退到 FFmpeg\n";
+                _onItemUpdated?.Invoke(item);
+                var fallbackArgs = FfmpegCommandBuilder.BuildArguments(item.Options, item.InputPath, outputPath);
+                item.Command = "ffmpeg " + fallbackArgs;
+                var fbExit = await FfmpegRunner.RunAsync(fallbackArgs,
+                    s => { item.Log += s; _onItemUpdated?.Invoke(item); },
+                    AppSettingsService.Current.FfmpegPath);
+                item.ExitCode = fbExit;
+                item.Status = fbExit == 0 ? "已完成 (ffmpeg 回退)" : $"失败 (退出码 {fbExit})";
+                if (fbExit == 0) await RestoreMetadataAsync(item, outputPath);
+                return;
+            }
 
-            item.ExitCode = exit;
-            item.Status = exit == 0 ? "已完成 (cjpegli, PNG 中转)" : $"失败 (cjpegli 退出码 {exit})";
-            if (exit == 0) await RestoreMetadataAsync(item, outputPath);
+            var ffmpegPath = AppSettingsService.Current.FfmpegPath;
+            var tempDir = Path.Combine(Path.GetTempPath(), $"ultrahdr_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+            var hdrRawPath = Path.Combine(tempDir, "hdr.raw");
 
-            try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
+            try
+            {
+                // Step 1: 用 ffprobe 获取图像尺寸
+                item.Log += "[ultrahdr] Step 1: 获取图像尺寸...\n";
+                _onItemUpdated?.Invoke(item);
+                var (width, height) = await ProbeImageSizeAsync(item.InputPath, ffmpegPath);
+                if (width <= 0 || height <= 0)
+                {
+                    item.ExitCode = -1;
+                    item.Status = "失败 (无法获取图像尺寸)";
+                    return;
+                }
+                item.Log += $"[ultrahdr]   尺寸: {width}x{height}\n";
+
+                // Step 2: ffmpeg 解码输入 → p010le RAW（HDR 意图）
+                item.Log += "[ultrahdr] Step 2: ffmpeg 解码为 p010 RAW...\n";
+                _onItemUpdated?.Invoke(item);
+                var extractArgs = $"-y -i \"{item.InputPath}\" -pix_fmt p010le -f rawvideo \"{hdrRawPath}\"";
+                item.Command = $"ffmpeg {extractArgs}";
+                var extractExit = await FfmpegRunner.RunAsync(extractArgs,
+                    s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ffmpegPath);
+                if (extractExit != 0 || !File.Exists(hdrRawPath))
+                {
+                    item.ExitCode = extractExit;
+                    item.Status = $"失败 (RAW 提取退出码 {extractExit})";
+                    return;
+                }
+
+                // Step 3: ultrahdr_app 编码
+                item.Log += "[ultrahdr] Step 3: ultrahdr_app 编码 Ultra HDR JPEG...\n";
+                _onItemUpdated?.Invoke(item);
+                var quality = Math.Clamp(item.Options.Quality, 1, 100);
+                var gmq = item.Options.JpegGainMapQuality >= 0 ? item.Options.JpegGainMapQuality : -1;
+                var nits = item.Options.JpegGainMapTargetNits > 0 ? item.Options.JpegGainMapTargetNits : 1000;
+                var ultraArgs = UltrahdrService.BuildArguments(
+                    hdrRawPath, outputPath, width, height, quality,
+                    hdrCf: 0, gainmapQuality: gmq, targetNits: nits);
+                item.Command = "ultrahdr_app " + ultraArgs;
+                var ultraExit = await UltrahdrService.RunAsync(ultraArgs,
+                    s => { item.Log += s; _onItemUpdated?.Invoke(item); });
+
+                item.ExitCode = ultraExit;
+                item.Status = ultraExit == 0 ? "已完成 (ultrahdr Ultra HDR)" : $"失败 (ultrahdr 退出码 {ultraExit})";
+                if (ultraExit == 0)
+                    await RestoreMetadataAsync(item, outputPath);
+            }
+            catch (OperationCanceledException)
+            {
+                item.Status = "已取消";
+            }
+            catch (Exception ex)
+            {
+                item.Log += $"[ultrahdr] 异常: {ex.Message}\n";
+                item.ExitCode = -1;
+                item.Status = $"失败: {ex.Message}";
+            }
+            finally
+            {
+                try { Directory.Delete(tempDir, true); } catch { }
+            }
+        }
+
+        /// <summary>
+        /// JxrEncApp 编码：ffmpeg 解码输入 → BMP 临时文件 → JxrEncApp 编码为 JPEG XR。
+        /// JxrEncApp 原生支持 BMP/TIFF 输入，BMP 是无损中间格式。
+        /// </summary>
+        private async Task ProcessJxrAsync(QueueItem item, string outputPath, CancellationToken ct)
+        {
+            if (!JxrService.IsAvailable)
+            {
+                item.Log += "[jxr] JxrEncApp.exe 未检测到，无法编码\n";
+                item.ExitCode = -1;
+                item.Status = "失败 (JxrEncApp 未找到)";
+                return;
+            }
+
+            var ffmpegPath = AppSettingsService.Current.FfmpegPath;
+            var tempDir = Path.Combine(Path.GetTempPath(), $"jxr_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+            var bmpPath = Path.Combine(tempDir, "input.bmp");
+
+            try
+            {
+                // Step 1: ffmpeg 解码 → BMP 临时文件
+                item.Log += "[jxr] Step 1: ffmpeg 解码为 BMP...\n";
+                _onItemUpdated?.Invoke(item);
+                var bmpArgs = $"-y -i \"{item.InputPath}\" -pix_fmt bgr24 \"{bmpPath}\"";
+                item.Command = $"ffmpeg {bmpArgs}";
+                var bmpExit = await FfmpegRunner.RunAsync(bmpArgs,
+                    s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ffmpegPath);
+                if (bmpExit != 0 || !File.Exists(bmpPath))
+                {
+                    item.ExitCode = bmpExit;
+                    item.Status = $"失败 (BMP 解码退出码 {bmpExit})";
+                    return;
+                }
+
+                // Step 2: JxrEncApp 编码
+                item.Log += "[jxr] Step 2: JxrEncApp 编码 JPEG XR...\n";
+                _onItemUpdated?.Invoke(item);
+                var quality = item.Options.Quality / 100.0;
+                if (item.Options.Lossless) quality = 1.0;
+                var jxrArgs = JxrService.BuildArguments(bmpPath, outputPath, quality);
+                item.Command = "JxrEncApp " + jxrArgs;
+                var jxrExit = await JxrService.RunAsync(jxrArgs,
+                    s => { item.Log += s; _onItemUpdated?.Invoke(item); });
+
+                item.ExitCode = jxrExit;
+                item.Status = jxrExit == 0 ? "已完成 (JxrEncApp JPEG XR)" : $"失败 (JxrEncApp 退出码 {jxrExit})";
+                if (jxrExit == 0)
+                    await RestoreMetadataAsync(item, outputPath);
+            }
+            catch (OperationCanceledException)
+            {
+                item.Status = "已取消";
+            }
+            catch (Exception ex)
+            {
+                item.Log += $"[jxr] 异常: {ex.Message}\n";
+                item.ExitCode = -1;
+                item.Status = $"失败: {ex.Message}";
+            }
+            finally
+            {
+                try { Directory.Delete(tempDir, true); } catch { }
+            }
+        }
+
+        /// <summary>使用 ffprobe 获取图像文件的宽高</summary>
+        private static async Task<(int width, int height)> ProbeImageSizeAsync(string inputPath, string ffmpegPath)
+        {
+            try
+            {
+                var ffprobePath = Path.Combine(Path.GetDirectoryName(ffmpegPath) ?? "", "ffprobe.exe");
+                if (!File.Exists(ffprobePath)) ffprobePath = ffmpegPath.Replace("ffmpeg.exe", "ffprobe.exe");
+
+                var psi = new ProcessStartInfo
+                {
+                    FileName = ffprobePath,
+                    Arguments = $"-v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 \"{inputPath}\"",
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+                using var p = Process.Start(psi);
+                if (p == null) return (0, 0);
+                var output = await p.StandardOutput.ReadToEndAsync();
+                await p.WaitForExitAsync();
+                var parts = output.Trim().Split(',');
+                if (parts.Length >= 2 && int.TryParse(parts[0], out var w) && int.TryParse(parts[1], out var h))
+                    return (w, h);
+            }
+            catch { }
+            return (0, 0);
         }
 
         /// <summary>用 ffmpeg 将输入转为临时高质量 PNG，返回路径（失败返回 null 并设置状态）</summary>
@@ -463,10 +729,11 @@ namespace FfmpegGui.Services
         {
             var tmp = Path.Combine(Path.GetTempPath(), $"ffmpeg_preconv_{Guid.NewGuid():N}.png");
             item.Log += "[preconv] 使用 ffmpeg 转为高质量 PNG 中间格式\n";
-            item.Command = $"ffmpeg -y -i \"{item.InputPath}\" -compression_level 0 \"{tmp}\"";
+            // 传递 -map_metadata 0 保留源文件元数据到临时 PNG，确保后续外部工具编码时有元数据可用
+            item.Command = $"ffmpeg -y -i \"{item.InputPath}\" -map_metadata 0 -compression_level 0 \"{tmp}\"";
             _onItemUpdated?.Invoke(item);
 
-            var args = $"-y -i \"{item.InputPath}\" -compression_level 0 \"{tmp}\"";
+            var args = $"-y -i \"{item.InputPath}\" -map_metadata 0 -compression_level 0 \"{tmp}\"";
             var exit = await FfmpegRunner.RunAsync(args,
                 s => { item.Log += s; _onItemUpdated?.Invoke(item); },
                 AppSettingsService.Current.FfmpegPath);
@@ -481,6 +748,203 @@ namespace FfmpegGui.Services
 
             item.Log += "[preconv] 转换完成\n";
             return tmp;
+        }
+
+        /// <summary>
+        /// ffmpeg 解码 → 管道 → cjxl 编码（无磁盘中间文件）。
+        /// 命令等价于: ffmpeg -i input -f image2pipe -vcodec png - | cjxl - output.jxl -d X -e Y
+        /// 元数据通过 exiftool 在编码后恢复。
+        /// </summary>
+        private async Task<(int exitCode, string status)> PipeFfmpegToCjxlAsync(QueueItem item, string outputPath, CancellationToken ct)
+        {
+            var cjxlPath = CjxlService.DetectedPath;
+            if (string.IsNullOrEmpty(cjxlPath))
+            {
+                item.Log += "[cjxl-pipe] cjxl 未找到，无法使用管道\n";
+                return (-1, "失败 (cjxl 未找到)");
+            }
+
+            var ffmpegPath = AppSettingsService.Current.FfmpegPath;
+            var cjxlArgs = CjxlService.BuildCjxlArguments("-", outputPath, item.Options);
+
+            item.Command = $"ffmpeg -y -i \"{item.InputPath}\" -f image2pipe -vcodec png - | cjxl {cjxlArgs}";
+            item.Log += $"[cjxl-pipe] ffmpeg 管道 → cjxl（无中间文件）\n";
+            _onItemUpdated?.Invoke(item);
+
+            return await PipeFfmpegToExternalEncoderAsync(
+                item, ffmpegPath, cjxlPath, cjxlArgs, outputPath, "cjxl", ct);
+        }
+
+        /// <summary>
+        /// ffmpeg 解码 → 管道 → cjpegli 编码（无磁盘中间文件）。
+        /// </summary>
+        private async Task<(int exitCode, string status)> PipeFfmpegToCjpegliAsync(QueueItem item, string outputPath, CancellationToken ct)
+        {
+            var cjpegliPath = CjpegliService.DetectedPath;
+            if (string.IsNullOrEmpty(cjpegliPath))
+            {
+                item.Log += "[cjpegli-pipe] cjpegli 未找到，无法使用管道\n";
+                return (-1, "失败 (cjpegli 未找到)");
+            }
+
+            var ffmpegPath = AppSettingsService.Current.FfmpegPath;
+            var cjpegliArgs = CjpegliService.BuildCjpegliArguments("-", outputPath, item.Options);
+
+            item.Command = $"ffmpeg -y -i \"{item.InputPath}\" -f image2pipe -vcodec png - | cjpegli {cjpegliArgs}";
+            item.Log += $"[cjpegli-pipe] ffmpeg 管道 → cjpegli（无中间文件）\n";
+            _onItemUpdated?.Invoke(item);
+
+            return await PipeFfmpegToExternalEncoderAsync(
+                item, ffmpegPath, cjpegliPath, cjpegliArgs, outputPath, "cjpegli", ct);
+        }
+
+        /// <summary>
+        /// 通用管道方法：ffmpeg 解码 → stdout (PNG 流) → 外部编码器 stdin → 输出文件。
+        /// 此方法消除了所有"解码→写临时 PNG 文件→读取再编码"的磁盘中转。
+        /// </summary>
+        private async Task<(int exitCode, string status)> PipeFfmpegToExternalEncoderAsync(
+            QueueItem item,
+            string ffmpegPath,
+            string encoderPath,
+            string encoderArgs,
+            string outputPath,
+            string encoderTag,
+            CancellationToken ct)
+        {
+            Process? procFf = null;
+            Process? procEnc = null;
+            try
+            {
+                using var timeoutCts = new CancellationTokenSource(TimeSpan.FromMinutes(10));
+                using var linked = CancellationTokenSource.CreateLinkedTokenSource(timeoutCts.Token, ct);
+                var linkedToken = linked.Token;
+
+                // ffmpeg: 解码输入为 PNG 流输出到 stdout
+                var ffArgs = $"-y -i \"{item.InputPath}\" -f image2pipe -vcodec png -";
+                var psiFf = new ProcessStartInfo
+                {
+                    FileName = ffmpegPath,
+                    Arguments = ffArgs,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+
+                // 外部编码器：从 stdin 读取 PNG 流
+                var psiEnc = new ProcessStartInfo
+                {
+                    FileName = encoderPath,
+                    Arguments = encoderArgs,
+                    RedirectStandardInput = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+
+                procFf = Process.Start(psiFf);
+                if (procFf == null)
+                {
+                    item.Log += $"[{encoderTag}-pipe] 启动 ffmpeg 失败\n";
+                    return (-1, $"失败 (ffmpeg 启动失败)");
+                }
+
+                procEnc = Process.Start(psiEnc);
+                if (procEnc == null)
+                {
+                    item.Log += $"[{encoderTag}-pipe] 启动 {encoderTag} 失败\n";
+                    return (-1, $"失败 ({encoderTag} 启动失败)");
+                }
+
+                // 非阻塞消费 stderr 日志
+                var ffLogTask = ConsumeStreamLinesAsync(procFf.StandardError, s =>
+                {
+                    item.Log += $"[ffmpeg] {s}\n";
+                });
+                var encLogTask = ConsumeStreamLinesAsync(procEnc.StandardError, s =>
+                {
+                    item.Log += $"[{encoderTag}] {s}\n";
+                    _onItemUpdated?.Invoke(item);
+                });
+                var encOutTask = ConsumeStreamLinesAsync(procEnc.StandardOutput, s =>
+                {
+                    item.Log += $"[{encoderTag}] {s}\n";
+                });
+
+                // ── 关键：先完成管道传输 + 关闭 stdin，再等待进程退出 ──
+                Exception? transferError = null;
+                try
+                {
+                    await procFf.StandardOutput.BaseStream.CopyToAsync(
+                        procEnc.StandardInput.BaseStream, linkedToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    item.Log += $"[{encoderTag}-pipe] 传输被取消\n";
+                }
+                catch (Exception ex)
+                {
+                    transferError = ex;
+                    item.Log += $"[{encoderTag}-pipe] 传输错误: {ex.Message}\n";
+                }
+
+                // 关闭编码器 stdin 发送 EOF
+                try { procEnc.StandardInput.Close(); } catch { }
+
+                // 等待编码器正常退出
+                try { await procEnc.WaitForExitAsync(linkedToken); }
+                catch (OperationCanceledException) { }
+
+                // ffmpeg 应已自行退出（stdout 已读完）
+                try { await procFf.WaitForExitAsync(CancellationToken.None); } catch { }
+
+                // 等待日志消费完成
+                await ffLogTask;
+                await encLogTask;
+                await encOutTask;
+
+                if (linkedToken.IsCancellationRequested)
+                {
+                    item.Log += $"[{encoderTag}-pipe] 超时或取消\n";
+                    return (-1, "已取消/超时");
+                }
+
+                var encExitCode = procEnc.HasExited ? procEnc.ExitCode : -1;
+                if (encExitCode == 0 && transferError == null)
+                {
+                    item.Log += $"[{encoderTag}-pipe] 管道编码完成\n";
+                    return (0, $"已完成 ({encoderTag} 管道)");
+                }
+                else
+                {
+                    item.Log += $"[{encoderTag}-pipe] 编码失败: {encoderTag} 退出码 {encExitCode}\n";
+                    return (encExitCode != 0 ? encExitCode : -1,
+                            $"失败 ({encoderTag} 退出码 {encExitCode})");
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                return (-1, "已取消");
+            }
+            catch (Exception ex)
+            {
+                item.Log += $"[{encoderTag}-pipe] 异常: {ex.Message}\n";
+                return (-1, $"失败 (管道异常: {ex.Message})");
+            }
+            finally
+            {
+                if (procEnc != null && !procEnc.HasExited)
+                {
+                    try { procEnc.Kill(entireProcessTree: true); } catch { }
+                }
+                if (procFf != null && !procFf.HasExited)
+                {
+                    try { procFf.Kill(entireProcessTree: true); } catch { }
+                }
+                try { procEnc?.Dispose(); } catch { }
+                try { procFf?.Dispose(); } catch { }
+            }
         }
 
         /// <summary>AVIF → GIF/WebP：分轨提取颜色+alpha，再合并编码保留透明通道</summary>
