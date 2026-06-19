@@ -4,7 +4,7 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:sys="using:System"
     xmlns:local="using:FfmpegGui.Models"
-    Title="FFmpeg 图片转换器 1.4.4"
+    Title="FFmpeg 图片转换器 1.4.5"
     Height="780"
     Width="1020"
     WindowStartupLocation="CenterScreen">
@@ -13,7 +13,8 @@
     <Border DockPanel.Dock="Top" Margin="12,8,12,4" Padding="14,10"
             CornerRadius="10" BoxShadow="0 2 12 0 #18000000"
             Background="{DynamicResource SystemControlBackgroundCardHighBrush}">
-    <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto" ColumnDefinitions="*,Auto">
+    <Grid RowDefinitions="Auto,Auto,Auto,Auto" ColumnDefinitions="*,Auto">
+        <!-- Row 0: FFmpeg + 输出目录 + 主题 -->
         <StackPanel Grid.Row="0" Grid.Column="0" Orientation="Horizontal" Spacing="10">
           <TextBlock Text="FFmpeg 目录" VerticalAlignment="Center" FontSize="13"/>
           <TextBox x:Name="FfmpegPathBox" Width="240" VerticalAlignment="Center" IsReadOnly="True"/>
@@ -28,32 +29,64 @@
           <Button x:Name="ThemeToggleBtn" Content="🌙" FontSize="14" Padding="6,2"
                   ToolTip.Tip="切换深色/浅色模式" Click="ThemeToggle_Click"/>
         </StackPanel>
-        <!-- 外部工具路径（留空自动检测） -->
-        <StackPanel Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2" Orientation="Horizontal" Spacing="10" Margin="0,3,0,0">
-          <TextBlock Text="JPEG XL 参考实现库" VerticalAlignment="Center" FontSize="11" Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" Width="140"/>
-          <TextBox x:Name="CjxlPathBox" Width="180" VerticalAlignment="Center" FontSize="11"
-                   PlaceholderText="留空自动检测"/>
-          <Button Content="浏览" Click="BrowseCjxl_Click" Padding="6,2" FontSize="11"/>
-          <Button Content="✕" Click="ClearCjxlPath_Click" Padding="6,2" FontSize="11"
-                  ToolTip.Tip="清除手动路径，改回自动检测"/>
-          <TextBlock Text="exiftool" VerticalAlignment="Center" FontSize="11" Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" Width="44"/>
-          <TextBox x:Name="ExifToolPathBox" Width="180" VerticalAlignment="Center" FontSize="11"
-                   PlaceholderText="自动检测"/>
-          <Button Content="浏览" Click="BrowseExifTool_Click" Padding="6,2" FontSize="11"/>
-          <Button Content="✕" Click="ClearExifToolPath_Click" Padding="6,2" FontSize="11"
-                  ToolTip.Tip="清除手动路径，改回自动检测"/>
-          <Button Content="🔄 重新检测" Click="RedetectTools_Click" Padding="8,2" FontSize="11"
-                  ToolTip.Tip="清除所有手动路径，从同目录和系统 PATH 自动检测 cjxl / djxl / cjpegli / exiftool"/>
-          <CheckBox x:Name="AutoUseSimdCheck" Content="自动使用 SIMD 优化二进制" VerticalAlignment="Center" Margin="8,0,0,0" FontSize="11"/>
+
+        <!-- Row 1: 折叠指示器栏（始终显示） -->
+        <StackPanel Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2" Orientation="Horizontal" Spacing="8" Margin="0,4,0,0">
+          <Button x:Name="ToggleToolsBtn" Content="🔧 外部工具" FontSize="11" Padding="6,2"
+                  ToolTip.Tip="展开/折叠外部工具路径配置" Click="ToggleToolsPanel_Click"/>
+          <Border x:Name="ToolsCompactPanel" CornerRadius="3" Padding="6,2"
+                  Background="{DynamicResource SystemControlBackgroundChromeMediumBrush}">
+            <StackPanel x:Name="ToolsStatusBar" Orientation="Horizontal" Spacing="10"/>
+          </Border>
+          <Button Content="🔄" Click="RedetectTools_Click" Padding="4,2" FontSize="11"
+                  ToolTip.Tip="清除所有手动路径，重新自动检测"/>
+          <CheckBox x:Name="AutoUseSimdCheck" Content="SIMD 优化" VerticalAlignment="Center" FontSize="11"
+                    ToolTip.Tip="自动使用 SIMD 优化二进制"/>
         </StackPanel>
-        <!-- avifenc 路径（留空自动检测 ffmpeg 同目录） -->
-        <StackPanel Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="2" Orientation="Horizontal" Spacing="10" Margin="0,3,0,0">
-          <TextBlock Text="avifenc" VerticalAlignment="Center" FontSize="11" Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" Width="54"/>
-          <TextBox x:Name="AvifencPathBox" Width="180" VerticalAlignment="Center" FontSize="11"
-                   PlaceholderText="自动检测（ffmpeg 同目录）"/>
-          <Button Content="浏览" Click="BrowseAvifenc_Click" Padding="6,2" FontSize="11"/>
-          <Button Content="✕" Click="ClearAvifencPath_Click" Padding="6,2" FontSize="11"
-                  ToolTip.Tip="清除手动路径，改回自动检测"/>
+
+        <!-- Row 2-3: 展开的外部工具详情（默认隐藏） -->
+        <StackPanel x:Name="ToolsDetailPanel" Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="2" IsVisible="False">
+          <!-- cjxl/djxl + exiftool -->
+          <StackPanel Orientation="Horizontal" Spacing="10" Margin="0,3,0,0">
+            <TextBlock Text="cjxl/djxl" VerticalAlignment="Center" FontSize="11"
+                       Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" Width="72"/>
+            <TextBox x:Name="CjxlPathBox" Width="200" VerticalAlignment="Center" FontSize="11"
+                     PlaceholderText="留空自动检测"/>
+            <Button Content="浏览" Click="BrowseCjxl_Click" Padding="6,2" FontSize="11"/>
+            <Button Content="✕" Click="ClearCjxlPath_Click" Padding="6,2" FontSize="11"
+                    ToolTip.Tip="清除手动路径"/>
+            <Separator Width="8" Background="Transparent"/>
+            <TextBlock Text="exiftool" VerticalAlignment="Center" FontSize="11"
+                       Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" Width="72"/>
+            <TextBox x:Name="ExifToolPathBox" Width="200" VerticalAlignment="Center" FontSize="11"
+                     PlaceholderText="自动检测"/>
+            <Button Content="浏览" Click="BrowseExifTool_Click" Padding="6,2" FontSize="11"/>
+            <Button Content="✕" Click="ClearExifToolPath_Click" Padding="6,2" FontSize="11"
+                    ToolTip.Tip="清除手动路径"/>
+          </StackPanel>
+          <!-- avifenc + ultrahdr + JxrEncApp -->
+          <StackPanel Orientation="Horizontal" Spacing="10" Margin="0,3,0,0">
+            <TextBlock Text="avifenc" VerticalAlignment="Center" FontSize="11"
+                       Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" Width="72"/>
+            <TextBox x:Name="AvifencPathBox" Width="140" VerticalAlignment="Center" FontSize="11"
+                     PlaceholderText="自动检测"/>
+            <Button Content="浏览" Click="BrowseAvifenc_Click" Padding="4,2" FontSize="11"/>
+            <Button Content="✕" Click="ClearAvifencPath_Click" Padding="4,2" FontSize="11"/>
+            <Separator Width="4" Background="Transparent"/>
+            <TextBlock Text="ultrahdr" VerticalAlignment="Center" FontSize="11"
+                       Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" Width="72"/>
+            <TextBox x:Name="UltrahdrPathBox" Width="140" VerticalAlignment="Center" FontSize="11"
+                     PlaceholderText="自动检测"/>
+            <Button Content="浏览" Click="BrowseUltrahdr_Click" Padding="4,2" FontSize="11"/>
+            <Button Content="✕" Click="ClearUltrahdrPath_Click" Padding="4,2" FontSize="11"/>
+            <Separator Width="4" Background="Transparent"/>
+            <TextBlock Text="JxrEncApp" VerticalAlignment="Center" FontSize="11"
+                       Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" Width="72"/>
+            <TextBox x:Name="JxrPathBox" Width="140" VerticalAlignment="Center" FontSize="11"
+                     PlaceholderText="自动检测"/>
+            <Button Content="浏览" Click="BrowseJxr_Click" Padding="4,2" FontSize="11"/>
+            <Button Content="✕" Click="ClearJxrPath_Click" Padding="4,2" FontSize="11"/>
+          </StackPanel>
         </StackPanel>
       </Grid>
     </Border>
@@ -81,6 +114,7 @@
             <sys:String>AVIF</sys:String>
             <sys:String>JPEG XL</sys:String>
             <sys:String>TIFF</sys:String>
+            <sys:String>JPEG XR</sys:String>
           </ComboBox>
           <!-- 动图参数面板 -->
           <StackPanel x:Name="AnimationPanel" Spacing="4" Margin="0,4,0,0">
@@ -325,6 +359,13 @@
                 <sys:String>raw</sys:String><sys:String>lzw</sys:String>
                 <sys:String>deflate</sys:String><sys:String>packbits</sys:String>
               </ComboBox>
+            </StackPanel>
+            <!-- JPEG XR (JxrEncApp) -->
+            <StackPanel x:Name="JxrCodecPanel" IsVisible="False" Spacing="4">
+              <TextBlock Text="JPEG XR 编码器 — JxrEncApp (微软参考实现)" FontSize="11"
+                         Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+              <TextBlock Text="支持 8/16/32-bit、浮点、Alpha 通道、无损/有损" FontSize="10"
+                         Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
             </StackPanel>
           </StackPanel>
           <TextBlock Text="CPU 线程"/>

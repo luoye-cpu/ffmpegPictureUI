@@ -41,8 +41,15 @@ namespace FfmpegGui.Services
             {
                 case "jpg":
                 case "jpeg":
+                    // ── ultrahdr_app 外部工具路径（EncoderBackend.Ultrahdr）──
+                    // 不由 FFmpeg 处理，在 QueueProcessor.ProcessUltrahdrAsync 中调度
+                    if (options.EncoderBackend == Services.EncoderBackend.Ultrahdr)
+                    {
+                        // 不生成 FFmpeg 命令，由外部工具路径处理
+                        // 此处仍添加基本参数以确保 BuildArguments 输出非空
+                    }
                     // ── Gain Map (Ultra HDR) 模式：使用 libultrahdr 编码器参数 ──
-                    if (options.JpegGainMap && options.Encoder == "libultrahdr")
+                    else if (options.JpegGainMap && options.Encoder == "libultrahdr")
                     {
                         args.Add("-compression_q");
                         args.Add(options.Quality.ToString());
@@ -89,18 +96,35 @@ namespace FfmpegGui.Services
                 case "webp":
                     if (options.Lossless)
                     {
+                        // ── 无损模式 ──
                         args.Add("-lossless");
                         args.Add("1");
-                        if (options.WebpCompressionLevel.HasValue)
-                        { args.Add("-compression_level"); args.Add(options.WebpCompressionLevel.Value.ToString()); }
+                        // 显式设置 -q:v 100，保证 FFmpeg libwebp 内部以无损 hint 运行
+                        args.Add("-q:v");
+                        args.Add("100");
+                        // compression_level 在无损模式下为 zlib 级别 (0-6)，做范围防护
+                        var cl = options.WebpCompressionLevel ?? 4;
+                        if (cl < 0) cl = 0;
+                        if (cl > 6) cl = 6;
+                        args.Add("-compression_level");
+                        args.Add(cl.ToString());
+                        // 无损模式下不应传递 -preset（picture/photo 等预设会配置有损量化参数，
+                        // 与 -lossless 1 冲突，可能导致 FFmpeg 静默退化为有损）
+                        // 仅在 preset 为 "default" 或 "none" 时允许
+                        if (!string.IsNullOrWhiteSpace(options.WebpPreset)
+                            && (options.WebpPreset == "default" || options.WebpPreset == "none"))
+                        {
+                            args.Add("-preset");
+                            args.Add(options.WebpPreset);
+                        }
                     }
                     else
                     {
                         args.Add("-q:v");
                         args.Add(options.Quality.ToString());
+                        if (!string.IsNullOrWhiteSpace(options.WebpPreset) && options.WebpPreset != "none")
+                        { args.Add("-preset"); args.Add(options.WebpPreset); }
                     }
-                    if (!string.IsNullOrWhiteSpace(options.WebpPreset) && options.WebpPreset != "none")
-                    { args.Add("-preset"); args.Add(options.WebpPreset); }
                     // 动图 WebP: -loop 控制循环
                     if (options.AnimationLoop >= 0)
                     { args.Add("-loop"); args.Add(options.AnimationLoop.ToString()); }
@@ -350,6 +374,16 @@ namespace FfmpegGui.Services
                 args.Add("-pix_fmt");
                 args.Add(MapAvifAlphaPixFmt(options));
             }
+            // WebP 无损模式：强制使用 RGB 像素格式。
+            // libwebp 无损编码需要精确的 RGB 输入；如果输入为 YUV 窄范围（tv range），
+            // YUV→RGB 转换会产生截断误差，导致 libwebp 检测到"非精确还原"而静默退化为有损。
+            // 显式指定 rgba/rgba64le 可确保转换路径可控。
+            else if (fmt == "webp" && options.Lossless)
+            {
+                args.Add("-pix_fmt");
+                var bd = options.BitDepth ?? 8;
+                args.Add(bd <= 8 ? "rgba" : "rgba64le");
+            }
             // 色度采样 或 位深 为 auto 则不指定 pix_fmt，由 ffmpeg 自动选择
             else if (!string.IsNullOrWhiteSpace(options.Chroma) 
                 && !options.Chroma.Equals("auto", StringComparison.OrdinalIgnoreCase)
@@ -363,10 +397,19 @@ namespace FfmpegGui.Services
             {
                 args.Add("-map_metadata");
                 args.Add("-1");
+                args.Add("-map_chapters");
+                args.Add("-1");
             }
             else
             {
+                // 全局元数据映射（Exif/XMP/ICC 等）
                 args.Add("-map_metadata");
+                args.Add("0");
+                // 流级别元数据映射（确保视频流中的色彩、旋转等标签保留）
+                args.Add("-map_metadata:s:v");
+                args.Add("0:s:v");
+                // 章节信息映射（视频输入可能含章节）
+                args.Add("-map_chapters");
                 args.Add("0");
             }
 

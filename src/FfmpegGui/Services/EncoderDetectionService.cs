@@ -14,7 +14,9 @@ namespace FfmpegGui.Services
     {
         Ffmpeg,
         Cjpegli,   // 外部 cjpegli 工具
-        Cjxl       // 外部 cjxl 工具
+        Cjxl,      // 外部 cjxl 工具
+        Ultrahdr,  // 外部 ultrahdr_app 工具 (Gain Map / Ultra HDR)
+        Jxr        // 外部 JxrEncApp 工具 (JPEG XR)
     }
 
     public class EncoderInfo
@@ -35,6 +37,8 @@ namespace FfmpegGui.Services
         {
             EncoderBackend.Cjpegli => $"🔧 cjpegli — JPEG-LI (jpegli 库)",
             EncoderBackend.Cjxl => $"🔧 cjxl — JPEG XL (参考实现)",
+            EncoderBackend.Ultrahdr => $"🔧 ultrahdr — Gain Map / Ultra HDR (谷歌官方)",
+            EncoderBackend.Jxr => $"🔧 JxrEncApp — JPEG XR (微软参考)",
             _ => $"{Name} — {Description}"
         };
 
@@ -46,6 +50,8 @@ namespace FfmpegGui.Services
             if (string.IsNullOrWhiteSpace(displayName)) return EncoderBackend.Ffmpeg;
             if (displayName.Contains("cjpegli")) return EncoderBackend.Cjpegli;
             if (displayName.Contains("cjxl")) return EncoderBackend.Cjxl;
+            if (displayName.Contains("ultrahdr")) return EncoderBackend.Ultrahdr;
+            if (displayName.Contains("jxr") || displayName.Contains("JxrEnc")) return EncoderBackend.Jxr;
             return EncoderBackend.Ffmpeg;
         }
 
@@ -55,6 +61,8 @@ namespace FfmpegGui.Services
             if (string.IsNullOrWhiteSpace(displayName)) return "";
             if (displayName.Contains("cjpegli")) return "cjpegli";
             if (displayName.Contains("cjxl")) return "cjxl";
+            if (displayName.Contains("ultrahdr")) return "ultrahdr";
+            if (displayName.Contains("jxr") || displayName.Contains("JxrEnc")) return "jxr";
             // FFmpeg 编码器: "mjpeg — MJPEG..." → "mjpeg"
             var dashIdx = displayName.IndexOf(" — ");
             return dashIdx > 0 ? displayName.Substring(0, dashIdx).Trim() : displayName.Trim();
@@ -73,6 +81,7 @@ namespace FfmpegGui.Services
             ["avif"] = new[] { "libaom-av1", "libsvtav1", "librav1e", "av1_nvenc", "av1_amf", "av1_qsv", "av1_vaapi" },
             ["tiff"] = new[] { "tiff" },
             ["jxl"] = new[] { "libjxl", "libjxl_anim", "jpegxl" },
+            ["jxr"] = new[] { "jxr" },
             ["bmp"] = new[] { "bmp" },
             ["gif"] = new[] { "gif" },
             ["apng"] = new[] { "apng", "png" }
@@ -185,7 +194,7 @@ namespace FfmpegGui.Services
             // ── 2) 外部工具编码器 ──
             switch (fmt)
             {
-                // JPEG 格式：cjpegli 作为独立编码器可选
+                // JPEG 格式：cjpegli + ultrahdr_app 作为独立编码器可选
                 case "jpg":
                 case "jpeg":
                     if (CjpegliService.IsAvailable)
@@ -196,6 +205,15 @@ namespace FfmpegGui.Services
                             Backend = EncoderBackend.Cjpegli,
                             DetectedPath = CjpegliService.DetectedPath,
                             SupportsFrameMultithreading = false
+                        });
+                    if (UltrahdrService.IsAvailable)
+                        result.Add(new EncoderInfo
+                        {
+                            Name = "ultrahdr",
+                            Description = "Gain Map / Ultra HDR (谷歌官方)",
+                            Backend = EncoderBackend.Ultrahdr,
+                            DetectedPath = UltrahdrService.DetectedPath,
+                            SupportsFrameMultithreading = true
                         });
                     break;
 
@@ -211,6 +229,19 @@ namespace FfmpegGui.Services
                             SupportsFrameMultithreading = true
                         });
                     break;
+
+                // JXR 格式：JxrEncApp 作为独立编码器
+                case "jxr":
+                    if (JxrService.IsAvailable)
+                        result.Add(new EncoderInfo
+                        {
+                            Name = "jxr",
+                            Description = "JPEG XR (微软参考)",
+                            Backend = EncoderBackend.Jxr,
+                            DetectedPath = JxrService.DetectedPath,
+                            SupportsFrameMultithreading = false
+                        });
+                    break;
             }
 
             return result;
@@ -224,12 +255,14 @@ namespace FfmpegGui.Services
             return format.ToLower() switch
             {
                 "jpg" or "jpeg" => CjpegliService.IsAvailable ? "cjpegli"
+                    : UltrahdrService.IsAvailable ? "ultrahdr"
                     : HasCachedLibultrahdr() ? "libultrahdr" : "mjpeg",
                 "png" => "png",
                 "webp" => "libwebp",
                 "avif" => "libaom-av1",
                 "tiff" => "tiff",
                 "jxl" => CjxlService.IsAvailable ? "cjxl" : "libjxl",
+                "jxr" => JxrService.IsAvailable ? "jxr" : "jxr",
                 "apng" => "apng",
                 "gif" => "gif",
                 _ => ""

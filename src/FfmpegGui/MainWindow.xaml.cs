@@ -56,6 +56,7 @@ namespace FfmpegGui
         private TextBox? CjxlPathBox;
         private TextBox? ExifToolPathBox;
         private TextBox? AvifencPathBox;
+        private TextBox? UltrahdrPathBox;
         private CheckBox? PreserveInputStructure;
         private CheckBox? StopAfterCurrentCheck;
         private CheckBox? ShowErrorsOnlyCheck;
@@ -95,6 +96,13 @@ namespace FfmpegGui
         private StackPanel? JxlCjxlPanel;
         private StackPanel? JpegCodecPanel;
         private StackPanel? TiffCodecPanel;
+        private StackPanel? JxrCodecPanel;
+        // 外部工具折叠面板
+        private Button? ToggleToolsBtn;
+        private StackPanel? ToolsDetailPanel;
+        private Border? ToolsCompactPanel;
+        private StackPanel? ToolsStatusBar;
+        private TextBox? JxrPathBox;
         private ComboBox? PngPredCombo;
         private ComboBox? WebpPresetCombo;
         private NumericUpDown? WebpCompressionBox;
@@ -200,6 +208,12 @@ namespace FfmpegGui
             CjxlPathBox = this.FindControl<TextBox>("CjxlPathBox");
             ExifToolPathBox = this.FindControl<TextBox>("ExifToolPathBox");
             AvifencPathBox = this.FindControl<TextBox>("AvifencPathBox");
+            UltrahdrPathBox = this.FindControl<TextBox>("UltrahdrPathBox");
+            JxrPathBox = this.FindControl<TextBox>("JxrPathBox");
+            ToggleToolsBtn = this.FindControl<Button>("ToggleToolsBtn");
+            ToolsDetailPanel = this.FindControl<StackPanel>("ToolsDetailPanel");
+            ToolsCompactPanel = this.FindControl<Border>("ToolsCompactPanel");
+            ToolsStatusBar = this.FindControl<StackPanel>("ToolsStatusBar");
             PreserveInputStructure = this.FindControl<CheckBox>("PreserveInputStructure");
             AutoUseSimdCheck = this.FindControl<CheckBox>("AutoUseSimdCheck");
             AutoThreadsCheck = this.FindControl<CheckBox>("AutoThreadsCheck");
@@ -233,6 +247,7 @@ namespace FfmpegGui
             JxlCjxlPanel = this.FindControl<StackPanel>("JxlCjxlPanel");
             JpegCodecPanel = this.FindControl<StackPanel>("JpegCodecPanel");
             TiffCodecPanel = this.FindControl<StackPanel>("TiffCodecPanel");
+            JxrCodecPanel = this.FindControl<StackPanel>("JxrCodecPanel");
             PngPredCombo = this.FindControl<ComboBox>("PngPredCombo");
             WebpPresetCombo = this.FindControl<ComboBox>("WebpPresetCombo");
             WebpCompressionBox = this.FindControl<NumericUpDown>("WebpCompressionBox");
@@ -572,6 +587,10 @@ namespace FfmpegGui
                 ExifToolPathBox.Text = settings.ExifToolPath;
             if (!string.IsNullOrWhiteSpace(settings.AvifencPath) && AvifencPathBox != null)
                 AvifencPathBox.Text = settings.AvifencPath;
+            if (!string.IsNullOrWhiteSpace(settings.UltrahdrPath) && UltrahdrPathBox != null)
+                UltrahdrPathBox.Text = settings.UltrahdrPath;
+            if (!string.IsNullOrWhiteSpace(settings.JxrPath) && JxrPathBox != null)
+                JxrPathBox.Text = settings.JxrPath;
             if (PreserveInputStructure != null)
                 PreserveInputStructure.IsChecked = settings.PreserveInputFolderStructure;
             if (ConcurrencyBox != null)
@@ -756,6 +775,27 @@ namespace FfmpegGui
                 else
                     LogText.Text += "ℹ️ 未检测到 cjpegli，Jpegli 编码将回退到 ffmpeg/libjpeg\n";
             }
+
+            // ultrahdr_app 检测
+            UltrahdrService.Detect();
+            if (LogText != null)
+            {
+                if (UltrahdrService.IsAvailable)
+                    LogText.Text += $"✅ 检测到 ultrahdr_app（{UltrahdrService.DetectedPath}）\n";
+                else
+                    LogText.Text += "ℹ️ 未检测到 ultrahdr_app.exe，Ultra HDR 将使用 ffmpeg libultrahdr（如可用）\n";
+            }
+
+            // JxrEncApp 检测
+            JxrService.Detect();
+            if (LogText != null)
+            {
+                if (JxrService.IsAvailable)
+                    LogText.Text += $"✅ 检测到 JxrEncApp（{JxrService.DetectedPath}）\n";
+                else
+                    LogText.Text += "ℹ️ 未检测到 JxrEncApp.exe，JPEG XR 将不可用\n";
+            }
+
             // ExifTool 检测与 UI 更新
             ExifToolService.Detect();
             if (LogText != null)
@@ -765,6 +805,7 @@ namespace FfmpegGui
             }
             UpdateExifToolPanelState();
             UpdateOptionAvailability();
+            RefreshToolsStatusBar();
         }
 
         private void UpdateQualityLabel()
@@ -873,6 +914,35 @@ namespace FfmpegGui
                 if (CommandText != null)
                     CommandText.Text = cmd.ToString();
 
+                return;
+            }
+
+            if (backend == EncoderBackend.Ultrahdr)
+            {
+                var qualityVal = (int)(QualitySlider?.Value ?? 90);
+                var gmq = useAdvCodec ? (int)(JpegGainMapQualityBox?.Value ?? -1) : -1;
+                var nits = useAdvCodec ? (int)(JpegGainMapNitsBox?.Value ?? 1000) : 1000;
+                var cmd = new System.Text.StringBuilder();
+                cmd.Append("ultrahdr_app -m 0 -p \"<raw>\" -w <W> -h <H> -q ")
+                   .Append(qualityVal).Append(" -a 0");
+                if (gmq >= 0) cmd.Append(" -Q ").Append(gmq);
+                if (nits > 0) cmd.Append(" -L ").Append(nits);
+                cmd.Append(" -z \"").Append(outputPath).Append("\"");
+                if (CommandText != null)
+                    CommandText.Text = cmd.ToString();
+                return;
+            }
+
+            if (backend == EncoderBackend.Jxr)
+            {
+                var qualityVal = (int)(QualitySlider?.Value ?? 90);
+                var lossless = LosslessCheck?.IsChecked ?? false;
+                var q = lossless ? "1.0" : $"{qualityVal / 100.0:F2}";
+                var cmd = new System.Text.StringBuilder();
+                cmd.Append("JxrEncApp -i <input.bmp> -o \"").Append(outputPath)
+                   .Append("\" -q ").Append(q);
+                if (CommandText != null)
+                    CommandText.Text = cmd.ToString();
                 return;
             }
 
@@ -1279,6 +1349,7 @@ namespace FfmpegGui
                 "AVIF" => "avif",
                 "AVIF (动图)" => "avif",
                 "TIFF" => "tiff",
+                "JPEG XR" => "jxr",
                 "GIF" => "gif",
                 _ => displayName.Trim().ToLower()
             };
@@ -1434,6 +1505,7 @@ namespace FfmpegGui
             if (JpegliCodecPanel != null) JpegliCodecPanel.IsVisible = false;
             if (JpegGainMapPanel != null) JpegGainMapPanel.IsVisible = false;
             if (TiffCodecPanel != null) TiffCodecPanel.IsVisible = false;
+            if (JxrCodecPanel != null) JxrCodecPanel.IsVisible = false;
 
             // 恢复动图模式下可能被隐藏的控件默认值
             if (WebpLosslessPanel != null) WebpLosslessPanel.IsVisible = true;
@@ -1502,6 +1574,13 @@ namespace FfmpegGui
                         if (JpegliCodecPanel != null) JpegliCodecPanel.IsVisible = true;
                         if (JpegGainMapPanel != null) JpegGainMapPanel.IsVisible = false;
                     }
+                    else if (backend == EncoderBackend.Ultrahdr)
+                    {
+                        // ultrahdr 后端：显示 Gain Map 面板 + 基础 JPEG 选项，隐藏 FFmpeg JPEG 面板
+                        if (JpegCodecPanel != null) JpegCodecPanel.IsVisible = true;
+                        if (JpegliCodecPanel != null) JpegliCodecPanel.IsVisible = false;
+                        if (JpegGainMapPanel != null) JpegGainMapPanel.IsVisible = true;
+                    }
                     else
                     {
                         if (JpegCodecPanel != null) JpegCodecPanel.IsVisible = true;
@@ -1511,6 +1590,7 @@ namespace FfmpegGui
                     }
                     break;
                 case "tiff": if (TiffCodecPanel != null) TiffCodecPanel.IsVisible = true; break;
+                case "jxr": if (JxrCodecPanel != null) JxrCodecPanel.IsVisible = true; break;
             }
         }
 
@@ -2458,11 +2538,14 @@ namespace FfmpegGui
 
                 // 刷新所有 JPEG XL 工具的检测
                 CjxlService.ClearCache();
+                UltrahdrService.ClearCache();
+                JxrService.ClearCache();
                 CjxlService.Detect();
                 DjxlService.ClearCache();
                 DjxlService.Detect();
                 CjpegliService.ClearCache();
                 CjpegliService.Detect();
+                UltrahdrService.Detect();
 
                 // 扫描目录中的其他相关工具（例如 djxl / cjpegli / 相关 DLL）并在日志中展示
                 var scan = ExternalToolsDetector.ScanDirectory(dir);
@@ -2531,6 +2614,8 @@ namespace FfmpegGui
             DjxlService.Detect();
             CjpegliService.ClearCache();
             CjpegliService.Detect();
+            UltrahdrService.ClearCache();
+            UltrahdrService.Detect();
             if (LogText != null)
             {
                 LogText.Text += CjxlService.IsAvailable
@@ -2594,6 +2679,123 @@ namespace FfmpegGui
             RegenerateCommand();
         }
 
+        private async void BrowseUltrahdr_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        {
+            var topLevel = TopLevel.GetTopLevel(this);
+            if (topLevel?.StorageProvider == null) return;
+            var files = await topLevel.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+            {
+                Title = "选择 ultrahdr_app.exe",
+                AllowMultiple = false,
+                FileTypeFilter = new[]
+                {
+                    new FilePickerFileType("可执行文件") { Patterns = new[] { "*.exe" } },
+                    new FilePickerFileType("所有文件") { Patterns = new[] { "*" } }
+                }
+            });
+            if (files != null && files.Count > 0)
+            {
+                var path = files[0].Path.LocalPath;
+                AppSettingsService.Current.UltrahdrPath = path;
+                AppSettingsService.Save();
+                if (UltrahdrPathBox != null) UltrahdrPathBox.Text = path;
+                if (LogText != null) LogText.Text += $"ultrahdr 路径已更新: {path}\n";
+                UltrahdrService.ClearCache();
+                UltrahdrService.Detect();
+                RegenerateCommand();
+            }
+        }
+
+        private void ClearUltrahdrPath_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        {
+            AppSettingsService.Current.UltrahdrPath = null;
+            AppSettingsService.Save();
+            if (UltrahdrPathBox != null) UltrahdrPathBox.Text = "";
+            if (LogText != null) LogText.Text += "ultrahdr: 已切换为自动检测\n";
+            UltrahdrService.ClearCache();
+            UltrahdrService.Detect();
+            RegenerateCommand();
+        }
+
+        private void ToggleToolsPanel_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        {
+            if (ToolsDetailPanel != null)
+                ToolsDetailPanel.IsVisible = !ToolsDetailPanel.IsVisible;
+            RefreshToolsStatusBar();
+        }
+
+        private async void BrowseJxr_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        {
+            var topLevel = TopLevel.GetTopLevel(this);
+            if (topLevel?.StorageProvider == null) return;
+            var files = await topLevel.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+            {
+                Title = "选择 JxrEncApp.exe",
+                AllowMultiple = false,
+                FileTypeFilter = new[]
+                {
+                    new FilePickerFileType("可执行文件") { Patterns = new[] { "*.exe" } },
+                    new FilePickerFileType("所有文件") { Patterns = new[] { "*" } }
+                }
+            });
+            if (files != null && files.Count > 0)
+            {
+                var path = files[0].Path.LocalPath;
+                AppSettingsService.Current.JxrPath = path;
+                AppSettingsService.Save();
+                if (JxrPathBox != null) JxrPathBox.Text = path;
+                if (LogText != null) LogText.Text += $"JxrEncApp 路径已更新: {path}\n";
+                JxrService.ClearCache();
+                JxrService.Detect();
+                RegenerateCommand();
+            }
+        }
+
+        private void ClearJxrPath_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        {
+            AppSettingsService.Current.JxrPath = null;
+            AppSettingsService.Save();
+            if (JxrPathBox != null) JxrPathBox.Text = "";
+            if (LogText != null) LogText.Text += "JxrEncApp: 已切换为自动检测\n";
+            JxrService.ClearCache();
+            JxrService.Detect();
+            RegenerateCommand();
+        }
+
+        /// <summary>刷新顶部工具状态指示器（折叠态）</summary>
+        private void RefreshToolsStatusBar()
+        {
+            if (ToolsStatusBar == null) return;
+            ToolsStatusBar.Children.Clear();
+            AddToolStatus(CjxlService.IsAvailable, "cjxl");
+            AddToolStatus(ExifToolService.IsAvailable, "exiftool");
+            AddToolStatus(CjpegliService.IsAvailable, "cjpegli");
+            AddToolStatus(HasAvifencAvailable(), "avifenc");
+            AddToolStatus(UltrahdrService.IsAvailable, "ultrahdr");
+            AddToolStatus(JxrService.IsAvailable, "JxrEnc");
+        }
+
+        private void AddToolStatus(bool available, string name)
+        {
+            if (ToolsStatusBar == null) return;
+            var tb = new TextBlock
+            {
+                Text = $"{(available ? "✅" : "❌")} {name}",
+                FontSize = 11,
+                VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center
+            };
+            ToolTip.SetTip(tb, available ? $"{name} 已检测到" : $"{name} 未检测到");
+            ToolsStatusBar.Children.Add(tb);
+        }
+
+        private static bool HasAvifencAvailable()
+        {
+            var manual = AppSettingsService.Current.AvifencPath;
+            if (!string.IsNullOrWhiteSpace(manual) && File.Exists(manual)) return true;
+            var dir = AppSettingsService.Current.FfmpegDir;
+            return !string.IsNullOrEmpty(dir) && File.Exists(Path.Combine(dir, "avifenc.exe"));
+        }
+
         private void RedetectTools_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
         {
             // 清除所有手动路径，改为自动同目录 + PATH 检测
@@ -2601,16 +2803,23 @@ namespace FfmpegGui
             AppSettingsService.Current.ExifToolPath = null;
             AppSettingsService.Current.CjpegliPath = null;
             AppSettingsService.Current.AvifencPath = null;
+            AppSettingsService.Current.UltrahdrPath = null;
             AppSettingsService.Save();
             if (CjxlPathBox != null) CjxlPathBox.Text = "";
             if (ExifToolPathBox != null) ExifToolPathBox.Text = "";
+            if (AvifencPathBox != null) AvifencPathBox.Text = "";
+            if (UltrahdrPathBox != null) UltrahdrPathBox.Text = "";
 
             if (LogText != null) LogText.Text += "正在自动重新检测外部工具（同目录 → PATH）...\n";
             CjxlService.ClearCache();
             CjpegliService.ClearCache();
+            UltrahdrService.ClearCache();
+            JxrService.ClearCache();
             DjxlService.ClearCache();
             CjxlService.Detect();
             CjpegliService.Detect();
+            UltrahdrService.Detect();
+            DjxlService.Detect();
             DjxlService.Detect();
             ExifToolService.Detect();
             UpdateExifToolPanelState();
@@ -2630,6 +2839,7 @@ namespace FfmpegGui
                     ? $"✅ exiftool: {ExifToolService.DetectedPath}\n"
                     : "ℹ️ exiftool: 未检测到\n";
             }
+            RefreshToolsStatusBar();
             RegenerateCommand();
         }
 

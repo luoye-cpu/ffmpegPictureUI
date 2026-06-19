@@ -1,10 +1,10 @@
 # 🖼️ FFmpegPictureUI — FFmpeg 图片转换器
 
-**v1.4.4 正式版 — Avalonia 12 现代化 UI、视频转动图、AVIF 编码器面板分离、进程优先级。**
+**v1.4.5 正式版 — Ultra HDR 编码器、JPEG XR 支持、管道编码、折叠工具栏、元数据安全模式。**
 
-An Avalonia UI-based cross-platform batch image/animation/video conversion tool that wraps `ffmpeg`/`ffprobe` with an intuitive GUI. Integrates `cjxl`/`djxl`/`cjpegli` from the [JPEG XL reference implementation](https://github.com/libjxl/libjxl).
+An Avalonia UI-based cross-platform batch image/animation/video conversion tool that wraps `ffmpeg`/`ffprobe` with an intuitive GUI. Integrates external encoders: `cjxl`/`djxl`/`cjpegli` (JPEG XL), `ultrahdr_app` (Ultra HDR), `JxrEncApp`/`JxrDecApp` (JPEG XR).
 
-基于 Avalonia UI 的跨平台图片/动图/视频批量转换工具，将 `ffmpeg`/`ffprobe` 命令行封装为直观图形界面，并集成 [JPEG XL 参考实现](https://github.com/libjxl/libjxl) 的 `cjxl`/`djxl`/`cjpegli`。
+基于 Avalonia UI 的跨平台图片/动图/视频批量转换工具，将 `ffmpeg`/`ffprobe` 命令行封装为直观图形界面，集成外部编码器：`cjxl`/`djxl`/`cjpegli`（JPEG XL）、`ultrahdr_app`（Ultra HDR）、`JxrEncApp`/`JxrDecApp`（JPEG XR）。
 
 QQ 交流群：754439779  点击链接加入群聊【FFmpegPictureUI图像处理软件】：https://qm.qq.com/q/M2181PvCkW****
 
@@ -31,7 +31,6 @@ QQ 交流群：754439779  点击链接加入群聊【FFmpegPictureUI图像处理
 | **Format filter / 格式筛选** | Checkbox window to enable/disable recognized image formats; persists to settings — 勾选启用的图片格式，持久化保存 |
 | **Animation mode / 动图模式** | Mode toggle (Still/Animated); FPS/loop/scale/duration controls (auto or manual); per-format advanced animated panels; video input support — 模式切换，帧率/循环/缩放/时长参数，视频输入支持 |
 | **Lossless lock / 无损锁定** | PNG/TIFF/APNG auto-lock quality at max, disable slider — 无损格式自动锁定最高质量 |
-| **Error-only filter / 仅显示报错** | Toggle to hide completed items, show only errors + in-progress — 一键屏蔽正常完成项，聚焦报错任务 |
 | **Search drag-drop / 搜索拖放** | Windows Search result files correctly resolved via Shell namespace paths — Windows 搜索结果拖放正确解析 |
 | **Gain Map (Ultra HDR) / 增益图** | JPEG 输出支持 Gain Map HDR 编码（需 libultrahdr）；自动检测编码器可用性 — Ultra HDR JPEG with backward compat |
 | **Real-time progress / 实时进度** | 详情窗口实时更新命令+进度，支持 ffmpeg/cjxl/cjpegli/djxl/管道全部后端 — live command & progress for all backends |
@@ -44,6 +43,8 @@ QQ 交流群：754439779  点击链接加入群聊【FFmpegPictureUI图像处理
 |---|---|---|
 | `ffmpeg` + `ffprobe` | ✅ Required / 必需 | Core encoding/decoding, media probing |
 | `cjxl` / `djxl` / `cjpegli` | ⭐ Recommended / 推荐 | JXL transcode, decoding, JPEG-LI encoding |
+| `ultrahdr_app` | ⭐ Recommended / 推荐 | Gain Map / Ultra HDR JPEG encoding (Google reference) |
+| `JxrEncApp` / `JxrDecApp` | ⭐ Recommended / 推荐 | JPEG XR encoding/decoding (Microsoft jxrlib) |
 | `avifenc` | ⚪ Optional / 可选 | GIF → AVIF two-step encoding with alpha preservation |
 | `exiftool` | ⚪ Optional / 可选 | Metadata editing, privacy cleaning |
 
@@ -122,7 +123,19 @@ ffmpegPictureUI/
 
 ## 📝 Changelog / 更新日志
 
-### v1.4.4 (2026-06-12)
+### v1.4.5 (2026-06-20)
+
+> 🎯 **正式版** — Ultra HDR 独立编码器、JPEG XR 全面支持、管道编码消除临时文件、折叠工具栏、元数据色彩保护。
+
+- 🗺️ **Ultra HDR 独立编码器 / Ultra HDR encoder**: 集成 Google `ultrahdr_app.exe` 作为 JPEG 独立编码器后端（场景0：单一HDR RAW → 自动SDR基底+增益图）；Gain Map 面板在 ultrahdr 后端下始终可见；新增 `UltrahdrPath` 配置项
+- 🖼️ **JPEG XR 全面支持 / JPEG XR support**: 新增 JXR 输出格式；集成 Microsoft jxrlib `JxrEncApp.exe`/`JxrDecApp.exe`；支持 32 种像素格式、无损/有损、Alpha 通道、色度子采样；JXR 质量分析自动用 JxrDecApp 解码后对比
+- 🔧 **管道编码消除临时文件 / Pipe encoding**: TIFF→JXL/TIFF→JPEG 等原先通过 PNG 临时文件中转的流程全部替换为 `ffmpeg stdout → encoder stdin` 直通管道（`PipeFfmpegToExternalEncoderAsync`），零磁盘中间文件
+- 📂 **折叠工具栏 / Collapsible toolbar**: 顶部外部工具路径面板改为可折叠设计；折叠态显示紧凑状态指示器（✅/❌ 各工具检测状态）；展开后显示完整路径配置；新增 JxrEncApp 路径行
+- 🎨 **元数据色彩保护 / Metadata color safety**: 新增 `CopyMetadataSafeAsync` 安全模式，exiftool 仅复制 EXIF/IPTC/XMP 描述性标签，跳过 ICC_Profile/ColorSpace/ColorPrimaries/TransferFunction，保护编码器内嵌色彩元数据；Ultra HDR/CJXL/CJPEGLI/FFmpeg 路径默认启用
+- 🔄 **元数据恢复回退 / Metadata fallback**: exiftool 不可用时自动回退到 ffmpeg 重新封装恢复元数据（`RestoreMetadataViaFfmpegAsync`）
+- 🐛 **WebP 无损失效修复 / WebP lossless fix**: 无损模式显式 `-q:v 100` + `-compression_level` 范围防护 + 禁止有损预设（picture/photo）+ 强制 RGBA 像素格式防 YUV 截断退化
+- 🐛 **元数据增强 / Enhanced metadata**: 统一所有格式编码后调用元数据恢复；`-map_metadata:s:v` 流级映射；`PreConvertToPngAsync` 传递 `-map_metadata 0`
+- 📊 **检测优先级统一 / Detection priority**: 所有外部工具检测统一为：手动路径 > 同目录 > 系统 PATH
 
 > 🎯 **正式版** — Avalonia 12 现代化 UI、视频转动图、AVIF 编码器面板分离、进程优先级控制。
 
