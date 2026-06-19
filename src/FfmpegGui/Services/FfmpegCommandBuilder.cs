@@ -392,6 +392,24 @@ namespace FfmpegGui.Services
                 args.Add("-pix_fmt");
                 args.Add(MapPixFmt(options));
             }
+            // 位深为 auto：从输入文件自动探测实际位深并传递
+            // 修复 HDR 图片（16-bit+）输出时退化为 8-bit 的问题
+            else if (!options.BitDepth.HasValue)
+            {
+                var detectedBd = ProbeInputBitDepth(inputPath);
+                if (detectedBd > 8)
+                {
+                    // HDR 输入：显式设置高位深像素格式，防止 FFmpeg 默认退化为 8-bit
+                    var autoBdOptions = new FfmpegOptions
+                    {
+                        Format = options.Format,
+                        Chroma = options.Chroma,
+                        BitDepth = detectedBd
+                    };
+                    args.Add("-pix_fmt");
+                    args.Add(MapPixFmt(autoBdOptions));
+                }
+            }
 
             if (options.MetadataMode == Models.MetadataMode.StripAll)
             {
@@ -428,6 +446,22 @@ namespace FfmpegGui.Services
             {
                 args.Add("-colorspace");
                 args.Add(MapColorSpace(options.ColorSpace));
+            }
+            // auto 模式：探测输入 HDR 属性并自动传递色彩元数据
+            // 修复 HDR 图片（PQ/HLG/BT.2020）输出时色彩空间丢失的问题
+            else if (string.IsNullOrWhiteSpace(options.ColorSpace) 
+                     || options.ColorSpace.Equals("auto", StringComparison.OrdinalIgnoreCase))
+            {
+                var hdrMeta = ProbeInputColorMetadata(inputPath);
+                if (hdrMeta.bitDepth > 8)
+                {
+                    if (!string.IsNullOrEmpty(hdrMeta.colorPrimaries))
+                    { args.Add("-color_primaries"); args.Add(hdrMeta.colorPrimaries); }
+                    if (!string.IsNullOrEmpty(hdrMeta.colorTrc))
+                    { args.Add("-color_trc"); args.Add(hdrMeta.colorTrc); }
+                    if (!string.IsNullOrEmpty(hdrMeta.colorSpace))
+                    { args.Add("-colorspace"); args.Add(hdrMeta.colorSpace); }
+                }
             }
 
             args.Add($"\"{outputPath}\"");
@@ -535,6 +569,80 @@ namespace FfmpegGui.Services
             if (bd == 10) return "yuva420p10le";
             // 12/16-bit 编码器支持有限，回退到 10-bit
             return "yuva420p10le";
+        }
+
+        /// <summary>使用 ffprobe 同步探测输入文件的位深</summary>
+        private static int ProbeInputBitDepth(string inputPath)
+        {
+            try
+            {
+                var ffprobe = FindFfprobe();
+                if (ffprobe == null) return 0;
+                using var p = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = ffprobe,
+                    Arguments = $"-v error -select_streams v:0 -show_entries stream=bits_per_raw_sample -of csv=p=0 \"{inputPath}\"",
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                });
+                if (p == null) return 0;
+                var output = p.StandardOutput.ReadToEnd().Trim();
+                p.WaitForExit(5000);
+                if (int.TryParse(output, out var bd)) return bd;
+            }
+            catch { }
+            return 0;
+        }
+
+        private struct ColorMetadata
+        {
+            public int bitDepth;
+            public string? colorPrimaries;
+            public string? colorTrc;
+            public string? colorSpace;
+        }
+
+        /// <summary>使用 ffprobe 同步探测输入文件的 HDR 色彩元数据</summary>
+        private static ColorMetadata ProbeInputColorMetadata(string inputPath)
+        {
+            var meta = new ColorMetadata();
+            try
+            {
+                var ffprobe = FindFfprobe();
+                if (ffprobe == null) return meta;
+                using var p = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = ffprobe,
+                    Arguments = $"-v error -select_streams v:0 -show_entries stream=bits_per_raw_sample,color_primaries,color_transfer,color_space -of csv=p=0 \"{inputPath}\"",
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                });
+                if (p == null) return meta;
+                var output = p.StandardOutput.ReadToEnd().Trim();
+                p.WaitForExit(5000);
+                var parts = output.Split(',');
+                if (parts.Length >= 1 && int.TryParse(parts[0], out var bd)) meta.bitDepth = bd;
+                if (parts.Length >= 2 && !string.IsNullOrEmpty(parts[1]) && parts[1] != "unknown") meta.colorPrimaries = parts[1];
+                if (parts.Length >= 3 && !string.IsNullOrEmpty(parts[2]) && parts[2] != "unknown") meta.colorTrc = parts[2];
+                if (parts.Length >= 4 && !string.IsNullOrEmpty(parts[3]) && parts[3] != "unknown") meta.colorSpace = parts[3];
+            }
+            catch { }
+            return meta;
+        }
+
+        private static string? FindFfprobe()
+        {
+            var ffmpegDir = System.IO.Path.GetDirectoryName(AppSettingsService.Current.FfmpegPath);
+            if (!string.IsNullOrEmpty(ffmpegDir))
+            {
+                var probe = System.IO.Path.Combine(ffmpegDir, "ffprobe.exe");
+                if (System.IO.File.Exists(probe)) return probe;
+            }
+            return null;
         }
     }
 }
