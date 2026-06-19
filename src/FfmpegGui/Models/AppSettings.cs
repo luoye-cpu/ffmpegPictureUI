@@ -20,6 +20,12 @@ namespace FfmpegGui.Models
         /// <summary>手动指定的 avifenc.exe 路径（留空则自动检测 ffmpeg 同目录）</summary>
         public string? AvifencPath { get; set; }
 
+        /// <summary>手动指定的 ultrahdr_app.exe 路径（留空则自动检测）</summary>
+        public string? UltrahdrPath { get; set; }
+
+        /// <summary>手动指定的 JxrEncApp.exe 路径（留空则自动检测）</summary>
+        public string? JxrPath { get; set; }
+
         public bool PreserveInputFolderStructure { get; set; } = false;
 
         public int MaxQueueSize { get; set; } = 16;
@@ -69,6 +75,7 @@ namespace FfmpegGui.Models
             ["PNG"]  = new[] { ".png" },
             ["JPEG"] = new[] { ".jpg", ".jpeg", ".jpe", ".jfif" },
             ["JPEG XL"] = new[] { ".jxl" },
+            ["JPEG XR"] = new[] { ".jxr", ".wdp", ".hdp" },
             ["WebP"] = new[] { ".webp" },
             ["AVIF"] = new[] { ".avif" },
             ["TIFF"] = new[] { ".tiff", ".tif" },

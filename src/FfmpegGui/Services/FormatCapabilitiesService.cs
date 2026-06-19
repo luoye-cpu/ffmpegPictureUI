@@ -147,6 +147,19 @@ namespace FfmpegGui.Services
                 SupportedBitDepths = new List<int> { 8, 10, 12, 16 },
                 SupportedColorSpaces = new List<string> { "BT.709", "BT.2020" }
             };
+
+            // JPEG XR: 支持 8/16/32-bit 整数/浮点，无损+有损，Alpha 通道
+            _cache["jxr"] = new FormatCapabilities
+            {
+                Format = "jxr",
+                SupportsQuality = true,
+                SupportsChroma = true,
+                SupportsBitDepth = true,
+                SupportsMetadata = true,
+                SupportsLossless = true,
+                SupportedBitDepths = new List<int> { 8, 16, 32 },
+                SupportedColorSpaces = new List<string> { "BT.709", "BT.2020" }
+            };
         }
 
         private static async Task TryFetchRemoteCapabilitiesAsync()
