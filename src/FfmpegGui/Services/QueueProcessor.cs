@@ -42,21 +42,39 @@ namespace FfmpegGui.Services
         {
             if (concurrency.HasValue)
                 _concurrency = Math.Max(1, concurrency.Value);
-            // 如果已在运行则先停止
             if (_cts != null)
             {
                 _cts.Cancel();
                 _cts = null;
             }
-            // 每次启动时清除优雅停止请求
             _stopAfterQueueRequested = false;
             _cts = new CancellationTokenSource();
             Task.Run(() => ProcessAsync(_cts.Token));
         }
 
+        /// <summary>
+        /// 将所有"已停止"和"失败"的项重新加入队列（状态复位为"待处理"）。
+        /// 调用方负责在调用此方法前停止正在运行的队列。
+        /// </summary>
+        public void RequeueStoppedAndFailed(List<QueueItem> allItems)
+        {
+            foreach (var item in allItems)
+            {
+                if (item.Status == "已停止" || (item.Status.StartsWith("失败") && item.ExitCode != 0))
+                {
+                    item.Status = "待处理";
+                    item.IsCancelled = false;
+                    item.ExitCode = null;
+                    item.Log += "[重新排队]\n";
+                    _queue.Enqueue(item);
+                    _onItemUpdated?.Invoke(item);
+                }
+            }
+        }
+
         public void Stop()
         {
-            // 立即取消并清除任何优雅停止请求
+            // 立即取消 CTS 并清除优雅停止请求
             _stopAfterQueueRequested = false;
             _cts?.Cancel();
             _cts = null;
@@ -118,7 +136,7 @@ namespace FfmpegGui.Services
                 }
                 if (item != null)
                 {
-                    // 跳过已取消的任务
+                    // 跳过已停止的任务
                     if (item.IsCancelled)
                     {
                         item.Status = "已删除";
@@ -260,7 +278,7 @@ namespace FfmpegGui.Services
                         }
                         catch (OperationCanceledException)
                         {
-                            captured.Status = "已取消";
+                            captured.Status = "已停止";
                             captured.CompletedAt = DateTimeOffset.UtcNow;
                         }
                         catch (Exception ex)
@@ -615,7 +633,7 @@ namespace FfmpegGui.Services
             }
             catch (OperationCanceledException)
             {
-                item.Status = "已取消";
+                item.Status = "已停止";
             }
             catch (Exception ex)
             {
@@ -681,7 +699,7 @@ namespace FfmpegGui.Services
             }
             catch (OperationCanceledException)
             {
-                item.Status = "已取消";
+                item.Status = "已停止";
             }
             catch (Exception ex)
             {
@@ -752,7 +770,7 @@ namespace FfmpegGui.Services
 
         /// <summary>
         /// ffmpeg 解码 → 管道 → cjxl 编码（无磁盘中间文件）。
-        /// 命令等价于: ffmpeg -i input -f image2pipe -vcodec png - | cjxl - output.jxl -d X -e Y
+        /// 命令等价于: ffmpeg -i input -f image2pipe -vcodec ppm - | cjxl - output.jxl -d X -e Y
         /// 元数据通过 exiftool 在编码后恢复。
         /// </summary>
         private async Task<(int exitCode, string status)> PipeFfmpegToCjxlAsync(QueueItem item, string outputPath, CancellationToken ct)
@@ -767,7 +785,7 @@ namespace FfmpegGui.Services
             var ffmpegPath = AppSettingsService.Current.FfmpegPath;
             var cjxlArgs = CjxlService.BuildCjxlArguments("-", outputPath, item.Options);
 
-            item.Command = $"ffmpeg -y -i \"{item.InputPath}\" -f image2pipe -vcodec png - | cjxl {cjxlArgs}";
+            item.Command = $"ffmpeg -y -i \"{item.InputPath}\" -f image2pipe -vcodec ppm - | cjxl {cjxlArgs}";
             item.Log += $"[cjxl-pipe] ffmpeg 管道 → cjxl（无中间文件）\n";
             _onItemUpdated?.Invoke(item);
 
@@ -790,7 +808,7 @@ namespace FfmpegGui.Services
             var ffmpegPath = AppSettingsService.Current.FfmpegPath;
             var cjpegliArgs = CjpegliService.BuildCjpegliArguments("-", outputPath, item.Options);
 
-            item.Command = $"ffmpeg -y -i \"{item.InputPath}\" -f image2pipe -vcodec png - | cjpegli {cjpegliArgs}";
+            item.Command = $"ffmpeg -y -i \"{item.InputPath}\" -f image2pipe -vcodec ppm - | cjpegli {cjpegliArgs}";
             item.Log += $"[cjpegli-pipe] ffmpeg 管道 → cjpegli（无中间文件）\n";
             _onItemUpdated?.Invoke(item);
 
@@ -820,7 +838,7 @@ namespace FfmpegGui.Services
                 var linkedToken = linked.Token;
 
                 // ffmpeg: 解码输入为 PNG 流输出到 stdout
-                var ffArgs = $"-y -i \"{item.InputPath}\" -f image2pipe -vcodec png -";
+                var ffArgs = $"-y -i \"{item.InputPath}\" -f image2pipe -vcodec ppm -";
                 var psiFf = new ProcessStartInfo
                 {
                     FileName = ffmpegPath,
@@ -907,7 +925,7 @@ namespace FfmpegGui.Services
                 if (linkedToken.IsCancellationRequested)
                 {
                     item.Log += $"[{encoderTag}-pipe] 超时或取消\n";
-                    return (-1, "已取消/超时");
+                    return (-1, "已停止/超时");
                 }
 
                 var encExitCode = procEnc.HasExited ? procEnc.ExitCode : -1;
@@ -925,7 +943,7 @@ namespace FfmpegGui.Services
             }
             catch (OperationCanceledException)
             {
-                return (-1, "已取消");
+                return (-1, "已停止");
             }
             catch (Exception ex)
             {
@@ -1134,7 +1152,7 @@ namespace FfmpegGui.Services
                 catch (OperationCanceledException)
                 {
                     try { if (!process.HasExited) process.Kill(true); } catch { }
-                    item.Status = "已取消";
+                    item.Status = "已停止";
                     return;
                 }
 
@@ -1463,7 +1481,7 @@ namespace FfmpegGui.Services
             }
             catch (OperationCanceledException)
             {
-                item.Status = "已取消";
+                item.Status = "已停止";
             }
             catch (Exception ex)
             {
@@ -1487,10 +1505,10 @@ namespace FfmpegGui.Services
             }
         }
 
-        /// <summary>构建 ffmpeg 从 stdin 读取 PNG 流的命令行参数</summary>
+        /// <summary>构建 ffmpeg 从 stdin 读取 PPM 流的命令行参数</summary>
         private static string BuildFfmpegPipeArguments(Models.FfmpegOptions options, string outputPath)
         {
-            // 以 stdin (-) 为输入，用 image2pipe 格式指定 PNG 流
+            // 以 stdin (-) 为输入，用 image2pipe 格式指定 PPM 流
             var args = FfmpegCommandBuilder.BuildArguments(options, "-", outputPath);
             // 插入 -f image2pipe 到 -i - 之前
             var idx = args.IndexOf("-i \"-\"", StringComparison.Ordinal);
@@ -1621,3 +1639,4 @@ namespace FfmpegGui.Services
         }
     }
 }
+
