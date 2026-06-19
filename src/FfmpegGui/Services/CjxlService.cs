@@ -329,9 +329,14 @@ namespace FfmpegGui.Services
                 // JPEG→JXL 无损重封装
                 sb.Append(" -d 0 --lossless_jpeg=1");
             }
+            else if (opts.Lossless)
+            {
+                // 非 JPEG 输入的无损模式：distance=0
+                sb.Append(" -d 0");
+            }
             else
             {
-                // 普通图片：质量→distance 映射
+                // 有损：质量→distance 映射
                 var distance = (100 - opts.Quality) * 15.0 / 100.0;
                 sb.Append($" -d {distance:F1}");
             }

@@ -902,6 +902,10 @@ namespace FfmpegGui
                     LockLosslessForJxl();
                     cmd.Append(" -d 0 --lossless_jpeg=1");
                 }
+                else if (LosslessCheck?.IsChecked ?? false)
+                {
+                    cmd.Append(" -d 0");
+                }
                 else
                 {
                     RestoreLosslessAndQuality();
@@ -1837,6 +1841,8 @@ namespace FfmpegGui
         private void StartQueue_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
         {
             int concurrency = GetConcurrencyValue();
+            // 重新排队已停止和失败的项目
+            _queueProcessor.RequeueStoppedAndFailed(_queueItems);
             // 如果设置为保留输入目录结构，则在开始队列前为所有待处理项预先生成输出路径与所在目录，
             // 并更新每项的 OutputPath（以防用户在入队后修改了输出目录）。
             if (AppSettingsService.Current.PreserveInputFolderStructure)
