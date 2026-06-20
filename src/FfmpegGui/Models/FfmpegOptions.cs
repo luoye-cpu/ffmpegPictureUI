@@ -51,6 +51,8 @@ namespace FfmpegGui.Models
         public string? JpegHuffman { get; set; }
         /// <summary>JPEG DCT 算法: "int" / "fastint" / "float"</summary>
         public string? JpegDct { get; set; }
+        /// <summary>JPEG 渐进模式: -1=自动, 0=基线, 1=渐进 (Gain Map / mjpeg 路径)</summary>
+        public int JpegProgressiveId { get; set; } = 0;  // 0=Baseline (Gain Map 推荐基线)
         // ── Gain Map (Ultra HDR) JPEG 选项 ──
         /// <summary>是否启用 Gain Map（仅 JPEG 输出且 libultrahdr 编码器可用时生效）</summary>
         public bool JpegGainMap { get; set; } = false;
@@ -58,6 +60,12 @@ namespace FfmpegGui.Models
         public int JpegGainMapQuality { get; set; } = -1;
         /// <summary>目标显示器亮度 (nit)，默认 1000</summary>
         public int JpegGainMapTargetNits { get; set; } = 1000;
+        /// <summary>HDR 色彩格式: 0=p010 (YUV), 5=rgba1010102 (RGB), 4=rgbahalffloat</summary>
+        public int JpegGainMapHdrCf { get; set; } = 0;
+        /// <summary>增益图下采样因子: 1=满分辨率, 2=1/2(默认), 4=1/4, 8=1/8</summary>
+        public int JpegGainMapDownsample { get; set; } = 2;
+        /// <summary>多通道增益图: true=RGB, false=灰度(默认,更小体积)</summary>
+        public bool JpegGainMapMultiChannel { get; set; } = false;
         public string? TiffCompressionAlgo { get; set; }
         public int? TiffDpi { get; set; }
         public string? AvifTune { get; set; }
@@ -72,7 +80,7 @@ namespace FfmpegGui.Models
         // ── cjpegli / jpegli 专属高级选项 ──
         /// <summary>色度子采样: "444", "422", "420", "440"</summary>
         public string CjpegliChromaSubsampling { get; set; } = "444";
-        /// <summary>渐进模式: -1=自动, 0=基线, 1=渐进 (使用 jpegli 默认扫描脚本6)</summary>
+        /// <summary>渐进模式: -1=自动(使用cjpegli默认2), 0=基线, 2=渐进</summary>
         public int CjpegliProgressiveId { get; set; } = -1;
         /// <summary>Huffman 表优化</summary>
         public bool CjpegliOptimize { get; set; } = true;
@@ -135,9 +143,9 @@ namespace FfmpegGui.Models
             _ => 92 // jpg 默认
         };
 
-        /// <summary>butteraugli distance 0-15（用于 cjpegli 外部工具路径）</summary>
+        /// <summary>butteraugli distance 0-25（扩展范围，同质量下 cjpegli 输出略小于 mjpeg）</summary>
         public static double MapJpegliDistance(int quality) =>
-            Math.Round((100 - quality) * 15.0 / 100.0, 1);
+            Math.Round((100 - quality) * 25.0 / 100.0, 1);
 
         // ── 正反映射：滑块 0-100 ↔ 各格式实际编码参数 ──
 
@@ -145,9 +153,9 @@ namespace FfmpegGui.Models
         public static int MapJpegQualityForward(int quality) => (int)Math.Round(2 + (100 - quality) * 29.0 / 100.0);
         public static int MapJpegQualityInverse(double qv) => (int)Math.Round(100 - (Math.Clamp(qv, 2, 31) - 2) * 100.0 / 29.0);
 
-        // JPEGli distance 0-15（1 位小数）
+        // JPEGli distance 0-25（1 位小数）
         public static double MapJpegliDistanceForward(int quality) => MapJpegliDistance(quality);
-        public static int MapJpegliDistanceInverse(double d) => (int)Math.Round(100 - Math.Clamp(d, 0, 15) * 100.0 / 15.0);
+        public static int MapJpegliDistanceInverse(double d) => (int)Math.Round(100 - Math.Clamp(d, 0, 25) * 100.0 / 25.0);
 
         // PNG compression_level 0-9（整数，越大压缩越狠）
         public static int MapPngLevelForward(int quality) => (int)Math.Round((100 - quality) * 9.0 / 100.0);

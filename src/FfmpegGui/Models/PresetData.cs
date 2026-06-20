@@ -28,6 +28,8 @@ namespace FfmpegGui.Models
         public int? JxlEffort { get; set; }
         public bool? JxlModular { get; set; }
         public string? JpegHuffman { get; set; }
+        public string? JpegDct { get; set; }
+        public int JpegProgressiveId { get; set; }
         public string? TiffCompressionAlgo { get; set; }
         // ExifTool 选择性剥离选项
         public bool StripExifGps { get; set; } = true;

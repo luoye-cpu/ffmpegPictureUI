@@ -173,6 +173,23 @@ namespace FfmpegGui.Services
                             var backend = captured.Options.EncoderBackend;
                             var inputExt = Path.GetExtension(captured.InputPath).ToLowerInvariant();
 
+                            // Ultra HDR JPEG 输入：解码到临时高位深文件，保留 HDR 信息
+                            if (inputExt is ".jpg" or ".jpeg" && await IsUltraHdrJpegAsync(captured.InputPath))
+                            {
+                                captured.Log += "[UltraHDR] 检测到输入为 Ultra HDR JPEG，解码保留 HDR...\n";
+                                _onItemUpdated?.Invoke(captured);
+                                var decodedPath = await DecodeUltraHdrJpegAsync(captured, captured.InputPath, ct);
+                                if (decodedPath != null)
+                                {
+                                    captured.InputPath = decodedPath;
+                                    captured.Log += "[UltraHDR] 已解码到临时文件，HDR 信息已保留\n";
+                                }
+                                else
+                                {
+                                    captured.Log += "[UltraHDR] 解码失败，使用原始 SDR 基础图继续\n";
+                                }
+                            }
+
                             // GIF → AVIF：FFmpeg 编码器丢弃 alpha，走 avifenc 两步法保留透明通道
                             if (inputExt == ".gif"
                                 && captured.Options.Format.Equals("avif", StringComparison.OrdinalIgnoreCase)
@@ -192,6 +209,12 @@ namespace FfmpegGui.Services
                                 // JXL 输入：智能检测类型并选择最优路径（独立于编码器选择）
                                 await ProcessJxlInputAsync(captured, finalOutputPath, ct);
                             }
+                            // Gain Map (Ultra HDR) JPEG：RAW + cjpegli SDR → ultrahdr_app
+                            else if (captured.Options.JpegGainMap
+                                && (captured.Options.Format == "jpg" || captured.Options.Format == "jpeg"))
+                            {
+                                await ProcessGainMapJpegAsync(captured, finalOutputPath, ct);
+                            }
                             else if (backend == EncoderBackend.Cjxl)
                             {
                                 await ProcessCjxlAsync(captured, finalOutputPath, ct);
@@ -202,7 +225,7 @@ namespace FfmpegGui.Services
                             }
                             else if (backend == EncoderBackend.Ultrahdr)
                             {
-                                await ProcessUltrahdrAsync(captured, finalOutputPath, ct);
+                                await ProcessGainMapJpegAsync(captured, finalOutputPath, ct);
                             }
                             else if (backend == EncoderBackend.Jxr)
                             {
@@ -218,7 +241,7 @@ namespace FfmpegGui.Services
                                 {
                                     captured.Log += s;
                                     _onItemUpdated?.Invoke(captured);
-                                }, AppSettingsService.Current.FfmpegPath);
+                                }, AppSettingsService.Current.FfmpegPath, ct);
                                 captured.ExitCode = exitCode;
                                 captured.Status = exitCode == 0 ? "已完成" : $"失败 (退出码 {exitCode})";
 
@@ -330,10 +353,10 @@ namespace FfmpegGui.Services
                  && !item.Options.ColorSpace.Equals("auto", StringComparison.OrdinalIgnoreCase));
 
             // 编码器后端保护：外部编码器/FFmpeg 已嵌入色彩信息
+            // cjpegli 管道模式不嵌入任何色彩标签（无 JFIF/ICC），不应保护
             var encoderProtectsColor =
                 backend == EncoderBackend.Ultrahdr ||
                 backend == EncoderBackend.Cjxl ||
-                backend == EncoderBackend.Cjpegli ||
                 backend == EncoderBackend.Jxr ||
                 backend == EncoderBackend.Ffmpeg;
 
@@ -374,6 +397,18 @@ namespace FfmpegGui.Services
 
                     if (copyExit == 0)
                     {
+                        // 安全模式下 ICC Profile 可能被排除，显式恢复（ICC 与 YUV 色彩标签不冲突）
+                        if (protectColorMetadata)
+                        {
+                            var iccExit = await ExifToolService.CopyIccProfileAsync(
+                                item.InputPath, outputPath,
+                                s => { item.Log += s; _onItemUpdated?.Invoke(item); });
+                            if (iccExit == 0)
+                                item.Log += "[exiftool] ICC Profile 已恢复\n";
+                        }
+                        // JPEG 输出添加 JFIF 头（提高手机兼容性）
+                        if (IsJpegOutput(item))
+                            await ExifToolService.EnsureJfifHeaderAsync(outputPath);
                         item.Log += "[exiftool] 元数据恢复完成\n";
                         return;
                     }
@@ -599,6 +634,173 @@ namespace FfmpegGui.Services
         }
 
         /// <summary>
+        /// Gain Map (Ultra HDR) JPEG 编码：
+        /// 1. ffmpeg → p010le RAW
+        /// 2. cjpegli（可选）→ 优化 SDR 基础图（比 ultrahdr_app 内置编码器体积更小）
+        /// 3. ultrahdr_app -m 0 -p <raw> [-i <sdr_base>] → Ultra HDR JPEG（基础图+增益图）
+        /// </summary>
+        private async Task ProcessGainMapJpegAsync(QueueItem item, string outputPath, CancellationToken ct)
+        {
+            var ffmpegPath = AppSettingsService.Current.FfmpegPath;
+
+            // 若 ultrahdr_app 不可用，回退到纯 JPEG 编码
+            if (!UltrahdrService.IsAvailable)
+            {
+                item.Log += "[GainMap] ultrahdr_app 未检测到，回退到纯 JPEG 编码（无增益图）\n";
+                _onItemUpdated?.Invoke(item);
+
+                if (item.Options.EncoderBackend == EncoderBackend.Cjpegli && CjpegliService.IsAvailable)
+                {
+                    item.Log += "[GainMap] 使用 cjpegli 编码 JPEG...\n";
+                    _onItemUpdated?.Invoke(item);
+                    var cjExit = await CjpegliService.RunWithOptionsAsync(
+                        item.InputPath, outputPath, item.Options,
+                        s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ct);
+                    item.ExitCode = cjExit;
+                    item.Status = cjExit == 0 ? "已完成 (cjpegli, 无增益图)" : $"失败 (cjpegli 退出码 {cjExit})";
+                }
+                else
+                {
+                    item.Log += "[GainMap] 使用 mjpeg 编码 JPEG...\n";
+                    _onItemUpdated?.Invoke(item);
+                    var mjpegOpts = CloneOptionsForFfmpeg(item.Options);
+                    mjpegOpts.Encoder = "mjpeg";
+                    mjpegOpts.EncoderBackend = EncoderBackend.Ffmpeg;
+                    var args = FfmpegCommandBuilder.BuildArguments(mjpegOpts, item.InputPath, outputPath);
+                    item.Command = "ffmpeg " + args;
+                    var mjExit = await FfmpegRunner.RunAsync(args,
+                        s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ffmpegPath);
+                    item.ExitCode = mjExit;
+                    item.Status = mjExit == 0 ? "已完成 (mjpeg, 无增益图)" : $"失败 (mjpeg 退出码 {mjExit})";
+                }
+                if (item.ExitCode == 0) await RestoreMetadataAsync(item, outputPath);
+                return;
+            }
+
+            var tempDir = Path.Combine(Path.GetTempPath(), $"gainmap_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+            var hdrRawPath = Path.Combine(tempDir, "hdr.raw");
+            string? sdrBaseJpeg = null;
+
+            try
+            {
+                // Step 1: ffprobe 获取图像尺寸
+                item.Log += "[GainMap] Step 1: 获取图像尺寸...\n";
+                _onItemUpdated?.Invoke(item);
+                var (width, height) = await ProbeImageSizeAsync(item.InputPath, ffmpegPath);
+                if (width <= 0 || height <= 0)
+                {
+                    item.ExitCode = -1;
+                    item.Status = "失败 (无法获取图像尺寸)";
+                    return;
+                }
+                item.Log += $"[GainMap]   尺寸: {width}x{height}\n";
+
+                // 检查增益图缩放因子是否能整除图像尺寸
+                var ds = item.Options.JpegGainMapDownsample;
+                if (ds > 1 && (width % ds != 0 || height % ds != 0))
+                {
+                    var newW = width / ds;
+                    var newH = height / ds;
+                    item.Log += $"[GainMap] ⚠️ 增益图缩放因子 {ds} 不能整除图像尺寸 ({width}x{height})，" +
+                        $"ultrahdr_app 将自动取整为 {newW}x{newH}\n";
+                }
+
+                // Step 2: ffmpeg 解码为 RAW（根据 HDR 色彩格式选择像素格式）
+                var rawPixFmt = MapHdrCfToPixFmt(item.Options.JpegGainMapHdrCf);
+                item.Log += $"[GainMap] Step 2: ffmpeg 解码为 {rawPixFmt} RAW...\n";
+                _onItemUpdated?.Invoke(item);
+                var extractArgs = $"-y -i \"{item.InputPath}\" -pix_fmt {rawPixFmt} -f rawvideo \"{hdrRawPath}\"";
+                item.Command = $"ffmpeg {extractArgs}";
+                var extractExit = await FfmpegRunner.RunAsync(extractArgs,
+                    s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ffmpegPath);
+                if (extractExit != 0 || !File.Exists(hdrRawPath))
+                {
+                    item.ExitCode = extractExit;
+                    item.Status = $"失败 (RAW 提取退出码 {extractExit})";
+                    return;
+                }
+
+                // Step 3 (可选): cjpegli 编码优化的 SDR 基础图（比 ultrahdr_app 内置编码器体积更小）
+                if (CjpegliService.IsAvailable)
+                {
+                    item.Log += "[GainMap] Step 3: cjpegli 编码优化的 SDR 基础图（更小体积）...\n";
+                    _onItemUpdated?.Invoke(item);
+                    sdrBaseJpeg = Path.Combine(tempDir, "sdr_base.jpg");
+                    var cjpegliExit = await EncodeSdrBaseWithCjpegliAsync(item, sdrBaseJpeg, ct);
+                    if (cjpegliExit == 0 && File.Exists(sdrBaseJpeg) && new FileInfo(sdrBaseJpeg).Length > 0)
+                    {
+                        var sizeKb = new FileInfo(sdrBaseJpeg).Length / 1024.0;
+                        item.Log += $"[GainMap]   cjpegli SDR 基础图: {sizeKb:F0} KB\n";
+                    }
+                    else
+                    {
+                        item.Log += "[GainMap]   cjpegli 编码失败，回退到 ultrahdr_app 内置编码器\n";
+                        sdrBaseJpeg = null;
+                    }
+                }
+
+                // Step 4: ultrahdr_app 编码为 Ultra HDR JPEG
+                var quality = Math.Clamp(item.Options.Quality, 1, 100);
+                var gmq = item.Options.JpegGainMapQuality >= 0 ? item.Options.JpegGainMapQuality : -1;
+                var nits = item.Options.JpegGainMapTargetNits > 0 ? item.Options.JpegGainMapTargetNits : 1000;
+                var hasCustomSdr = !string.IsNullOrWhiteSpace(sdrBaseJpeg);
+                item.Log += $"[GainMap] Step {(hasCustomSdr ? "4" : "3")}: ultrahdr_app 编码 Ultra HDR JPEG" +
+                    (hasCustomSdr ? "（使用 cjpegli 优化基础图）" : "（内置编码器）") + "...\n";
+                _onItemUpdated?.Invoke(item);
+                var ultraArgs = UltrahdrService.BuildArguments(
+                    hdrRawPath, outputPath, width, height, quality,
+                    hdrCf: item.Options.JpegGainMapHdrCf, gainmapQuality: gmq, targetNits: nits,
+                    sdrBasePath: sdrBaseJpeg, gainmapDownsample: item.Options.JpegGainMapDownsample,
+                    multiChannel: item.Options.JpegGainMapMultiChannel);
+                item.Command = "ultrahdr_app " + ultraArgs;
+                var ultraExit = await UltrahdrService.RunAsync(ultraArgs,
+                    s => { item.Log += s; _onItemUpdated?.Invoke(item); });
+
+                item.ExitCode = ultraExit;
+                item.Status = ultraExit == 0
+                    ? (hasCustomSdr ? "已完成 (Gain Map + cjpegli 优化)" : "已完成 (Gain Map Ultra HDR)")
+                    : $"失败 (ultrahdr 退出码 {ultraExit})";
+                if (ultraExit == 0)
+                    await RestoreMetadataAsync(item, outputPath);
+            }
+            catch (OperationCanceledException)
+            {
+                item.Status = "已停止";
+            }
+            catch (Exception ex)
+            {
+                item.Log += $"[GainMap] 异常: {ex.Message}\n";
+                item.ExitCode = -1;
+                item.Status = $"失败: {ex.Message}";
+            }
+            finally
+            {
+                try { Directory.Delete(tempDir, true); } catch { }
+            }
+        }
+
+        /// <summary>使用 cjpegli 编码 SDR 基础图（与 ProcessCjpegliAsync 行为一致：先直接尝试，失败走 ffmpeg 管道）</summary>
+        private async Task<int> EncodeSdrBaseWithCjpegliAsync(QueueItem item, string sdrBaseJpeg, CancellationToken ct)
+        {
+            // 直接尝试 cjpegli
+            item.Command = "cjpegli " + CjpegliService.BuildCjpegliArguments(item.InputPath, sdrBaseJpeg, item.Options);
+            item.Log += $"[cjpegli-sdr] 直接编码...\n";
+            _onItemUpdated?.Invoke(item);
+            var exit = await CjpegliService.RunWithOptionsAsync(
+                item.InputPath, sdrBaseJpeg, item.Options,
+                s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ct);
+            if (exit == 0) return 0;
+
+            // 直接编码失败 → ffmpeg 管道直通 cjpegli（与 ProcessCjpegliAsync 一致）
+            var ext = Path.GetExtension(item.InputPath).ToLowerInvariant();
+            item.Log += $"[cjpegli-sdr] 直接编码失败 (退出码 {exit})，{ext} 非原生格式，ffmpeg 管道直通 cjpegli...\n";
+            _onItemUpdated?.Invoke(item);
+            var result = await PipeFfmpegToCjpegliAsync(item, sdrBaseJpeg, ct);
+            return result.exitCode;
+        }
+
+        /// <summary>
         /// ultrahdr_app 编码：ffmpeg 解码图像 → 提取尺寸 + 导出 p010 RAW → ultrahdr_app 编码为 Ultra HDR JPEG。
         /// ultrahdr_app 仅接受裸像素 RAW 文件，因此需要临时 RAW 文件。
         /// 场景 0：单一 HDR RAW → Ultra HDR（自动 tone-map 生成 SDR 基底）。
@@ -613,7 +815,7 @@ namespace FfmpegGui.Services
                 item.Command = "ffmpeg " + fallbackArgs;
                 var fbExit = await FfmpegRunner.RunAsync(fallbackArgs,
                     s => { item.Log += s; _onItemUpdated?.Invoke(item); },
-                    AppSettingsService.Current.FfmpegPath);
+                    AppSettingsService.Current.FfmpegPath, ct);
                 item.ExitCode = fbExit;
                 item.Status = fbExit == 0 ? "已完成 (ffmpeg 回退)" : $"失败 (退出码 {fbExit})";
                 if (fbExit == 0) await RestoreMetadataAsync(item, outputPath);
@@ -639,10 +841,19 @@ namespace FfmpegGui.Services
                 }
                 item.Log += $"[ultrahdr]   尺寸: {width}x{height}\n";
 
-                // Step 2: ffmpeg 解码输入 → p010le RAW（HDR 意图）
-                item.Log += "[ultrahdr] Step 2: ffmpeg 解码为 p010 RAW...\n";
+                // 检查增益图缩放因子是否能整除图像尺寸
+                var ds = item.Options.JpegGainMapDownsample;
+                if (ds > 1 && (width % ds != 0 || height % ds != 0))
+                {
+                    item.Log += $"[ultrahdr] ⚠️ 增益图缩放因子 {ds} 不能整除图像尺寸 ({width}x{height})，" +
+                        $"ultrahdr_app 将自动取整\n";
+                }
+
+                // Step 2: ffmpeg 解码为 RAW（根据 HDR 色彩格式选择像素格式）
+                var ultraRawPixFmt = MapHdrCfToPixFmt(item.Options.JpegGainMapHdrCf);
+                item.Log += $"[ultrahdr] Step 2: ffmpeg 解码为 {ultraRawPixFmt} RAW...\n";
                 _onItemUpdated?.Invoke(item);
-                var extractArgs = $"-y -i \"{item.InputPath}\" -pix_fmt p010le -f rawvideo \"{hdrRawPath}\"";
+                var extractArgs = $"-y -i \"{item.InputPath}\" -pix_fmt {ultraRawPixFmt} -f rawvideo \"{hdrRawPath}\"";
                 item.Command = $"ffmpeg {extractArgs}";
                 var extractExit = await FfmpegRunner.RunAsync(extractArgs,
                     s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ffmpegPath);
@@ -661,7 +872,10 @@ namespace FfmpegGui.Services
                 var nits = item.Options.JpegGainMapTargetNits > 0 ? item.Options.JpegGainMapTargetNits : 1000;
                 var ultraArgs = UltrahdrService.BuildArguments(
                     hdrRawPath, outputPath, width, height, quality,
-                    hdrCf: 0, gainmapQuality: gmq, targetNits: nits);
+                    hdrCf: item.Options.JpegGainMapHdrCf, gainmapQuality: gmq, targetNits: nits,
+                    sdrBasePath: null,
+                    gainmapDownsample: item.Options.JpegGainMapDownsample,
+                    multiChannel: item.Options.JpegGainMapMultiChannel);
                 item.Command = "ultrahdr_app " + ultraArgs;
                 var ultraExit = await UltrahdrService.RunAsync(ultraArgs,
                     s => { item.Log += s; _onItemUpdated?.Invoke(item); });
@@ -704,21 +918,33 @@ namespace FfmpegGui.Services
             var ffmpegPath = AppSettingsService.Current.FfmpegPath;
             var tempDir = Path.Combine(Path.GetTempPath(), $"jxr_{Guid.NewGuid():N}");
             Directory.CreateDirectory(tempDir);
-            var bmpPath = Path.Combine(tempDir, "input.bmp");
 
             try
             {
-                // Step 1: ffmpeg 解码 → BMP 临时文件
-                item.Log += "[jxr] Step 1: ffmpeg 解码为 BMP...\n";
+                // Step 0: 检测输入位深，选择合适的中间格式和像素格式
+                int bitDepth = item.Options.BitDepth ?? await ProbeBitDepthAsync(item.InputPath, ffmpegPath);
+                bool isHdr = bitDepth > 8;
+                // 中间格式：HDR 用 TIFF（支持高位深），SDR 用 BMP（更快）
+                var intermediateExt = isHdr ? ".tiff" : ".bmp";
+                var intermediatePath = Path.Combine(tempDir, $"input{intermediateExt}");
+                // 像素格式：>8bit 用 rgb48le (16-bit)，8bit 用 bgr24
+                var pixFmt = isHdr ? "rgb48le" : "bgr24";
+                item.Log += $"[jxr] 检测位深: {bitDepth}-bit, 像素格式: {pixFmt}, 中间格式: {intermediateExt}\n";
+
+                // Step 1: ffmpeg 解码 → BMP/TIFF 中间文件（保留色彩空间）
+                item.Log += $"[jxr] Step 1: ffmpeg 解码为 {intermediateExt.ToUpper()}（{pixFmt}）...\n";
                 _onItemUpdated?.Invoke(item);
-                var bmpArgs = $"-y -i \"{item.InputPath}\" -pix_fmt bgr24 \"{bmpPath}\"";
-                item.Command = $"ffmpeg {bmpArgs}";
-                var bmpExit = await FfmpegRunner.RunAsync(bmpArgs,
+
+                // 构建色彩空间参数
+                var colorArgs = BuildJxrColorArgs(item.Options);
+                var decodeArgs = $"-y {colorArgs}-i \"{item.InputPath}\" -pix_fmt {pixFmt} \"{intermediatePath}\"";
+                item.Command = $"ffmpeg {decodeArgs}";
+                var decExit = await FfmpegRunner.RunAsync(decodeArgs,
                     s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ffmpegPath);
-                if (bmpExit != 0 || !File.Exists(bmpPath))
+                if (decExit != 0 || !File.Exists(intermediatePath))
                 {
-                    item.ExitCode = bmpExit;
-                    item.Status = $"失败 (BMP 解码退出码 {bmpExit})";
+                    item.ExitCode = decExit;
+                    item.Status = $"失败 ({intermediateExt} 解码退出码 {decExit})";
                     return;
                 }
 
@@ -727,13 +953,15 @@ namespace FfmpegGui.Services
                 _onItemUpdated?.Invoke(item);
                 var quality = item.Options.Quality / 100.0;
                 if (item.Options.Lossless) quality = 1.0;
-                var jxrArgs = JxrService.BuildArguments(bmpPath, outputPath, quality);
+                var jxrArgs = JxrService.BuildArguments(intermediatePath, outputPath, quality);
                 item.Command = "JxrEncApp " + jxrArgs;
                 var jxrExit = await JxrService.RunAsync(jxrArgs,
                     s => { item.Log += s; _onItemUpdated?.Invoke(item); });
 
                 item.ExitCode = jxrExit;
-                item.Status = jxrExit == 0 ? "已完成 (JxrEncApp JPEG XR)" : $"失败 (JxrEncApp 退出码 {jxrExit})";
+                item.Status = jxrExit == 0
+                    ? (isHdr ? "已完成 (JxrEncApp JPEG XR HDR)" : "已完成 (JxrEncApp JPEG XR)")
+                    : $"失败 (JxrEncApp 退出码 {jxrExit})";
                 if (jxrExit == 0)
                     await RestoreMetadataAsync(item, outputPath);
             }
@@ -751,6 +979,145 @@ namespace FfmpegGui.Services
             {
                 try { Directory.Delete(tempDir, true); } catch { }
             }
+        }
+
+        /// <summary>构建 JXR ffmpeg 解码的色彩空间参数</summary>
+        private static string BuildJxrColorArgs(FfmpegOptions options)
+        {
+            var sb = new StringBuilder();
+            var colorSpace = options.ColorSpace;
+            if (!string.IsNullOrWhiteSpace(colorSpace) && !colorSpace.Equals("auto", StringComparison.OrdinalIgnoreCase))
+            {
+                // 将色彩空间映射为 primaries/trc/colorspace
+                switch (colorSpace.ToUpper())
+                {
+                    case "BT.2020":
+                        sb.Append("-color_primaries bt2020 -color_trc smpte2084 -colorspace bt2020nc ");
+                        break;
+                    case "BT.709":
+                        sb.Append("-color_primaries bt709 -color_trc bt709 -colorspace bt709 ");
+                        break;
+                    case "BT.601":
+                        sb.Append("-color_primaries smpte170m -color_trc smpte170m -colorspace smpte170m ");
+                        break;
+                }
+            }
+            // 高级色彩参数（覆盖上面的默认映射）
+            if (options.UseAdvancedColorParameters)
+            {
+                if (!string.IsNullOrWhiteSpace(options.ColorPrimaries))
+                    sb.Append($"-color_primaries {options.ColorPrimaries} ");
+                if (!string.IsNullOrWhiteSpace(options.ColorTrc))
+                    sb.Append($"-color_trc {options.ColorTrc} ");
+                if (!string.IsNullOrWhiteSpace(options.ColorMatrix))
+                    sb.Append($"-colorspace {options.ColorMatrix} ");
+            }
+            return sb.ToString();
+        }
+
+        /// <summary>将 ultrahdr_app HDR 色彩格式映射为 ffmpeg 像素格式（当前仅 p010 可用）</summary>
+        private static string MapHdrCfToPixFmt(int hdrCf)
+        {
+            // rgba1010102 / rgbahalffloat 需 ffmpeg 支持 packed pixel format，当前不可用
+            return "p010le";
+        }
+
+        /// <summary>检测 JPEG 是否为 Ultra HDR (含 MPF 增益图)</summary>
+        private static async Task<bool> IsUltraHdrJpegAsync(string path)
+        {
+            if (!ExifToolService.IsAvailable) return false;
+            try
+            {
+                // Ultra HDR JPEG 在 MPF 结构中包含第二张图 (MPImage2)
+                var result = await ExifToolService.GetTagAsync(path, "MPImage2");
+                return !string.IsNullOrWhiteSpace(result);
+            }
+            catch { return false; }
+        }
+
+        /// <summary>将 Ultra HDR JPEG 解码为临时 16-bit TIFF（保留 HDR 信息）</summary>
+        private async Task<string?> DecodeUltraHdrJpegAsync(QueueItem item, string inputPath, CancellationToken ct)
+        {
+            if (!UltrahdrService.IsAvailable) return null;
+            var ffmpegPath = AppSettingsService.Current.FfmpegPath;
+            var tempDir = Path.Combine(Path.GetTempPath(), $"uhdr_decode_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+
+            try
+            {
+                // Step 1: ffprobe 获取尺寸
+                var (width, height) = await ProbeImageSizeAsync(inputPath, ffmpegPath);
+                if (width <= 0 || height <= 0) return null;
+
+                // Step 2: ultrahdr_app 解码 → PQ + rgba1010102 RAW
+                var rawPath = Path.Combine(tempDir, "decoded.raw");
+                var ultraArgs = $"-m 1 -j \"{inputPath}\" -o 2 -O 5 -z \"{rawPath}\"";
+                item.Log += $"[UltraHDR] ultrahdr_app {ultraArgs}\n";
+                _onItemUpdated?.Invoke(item);
+                var ultraExit = await UltrahdrService.RunAsync(ultraArgs,
+                    s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ct);
+                if (ultraExit != 0 || !File.Exists(rawPath)) return null;
+
+                // Step 3: ffmpeg RAW → 16-bit TIFF
+                var tiffPath = Path.Combine(tempDir, "decoded.tiff");
+                var tiffArgs = $"-y -f rawvideo -pix_fmt rgba64le -s {width}x{height} -i \"{rawPath}\" " +
+                    $"-pix_fmt rgb48le -compression_algo lzw \"{tiffPath}\"";
+                item.Log += $"[UltraHDR] ffmpeg RAW→TIFF...\n";
+                _onItemUpdated?.Invoke(item);
+                var tiffExit = await FfmpegRunner.RunAsync(tiffArgs,
+                    s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ffmpegPath, ct);
+                if (tiffExit != 0 || !File.Exists(tiffPath)) return null;
+
+                return tiffPath;
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                item.Log += $"[UltraHDR] 解码异常: {ex.Message}\n";
+                return null;
+            }
+        }
+
+        /// <summary>判断输出是否为 JPEG 格式</summary>
+        private static bool IsJpegOutput(QueueItem item)
+        {
+            var fmt = (item.Options.Format ?? "").ToLowerInvariant();
+            return fmt is "jpg" or "jpeg" or "jpegli";
+        }
+
+        /// <summary>用 ffprobe 探测输入文件的位深</summary>
+        private static async Task<int> ProbeBitDepthAsync(string inputPath, string ffmpegPath)
+        {
+            try
+            {
+                var ffprobePath = Path.Combine(Path.GetDirectoryName(ffmpegPath) ?? "", "ffprobe.exe");
+                if (!File.Exists(ffprobePath)) ffprobePath = ffmpegPath.Replace("ffmpeg.exe", "ffprobe.exe");
+
+                var psi = new ProcessStartInfo
+                {
+                    FileName = ffprobePath,
+                    Arguments = $"-v error -select_streams v:0 -show_entries stream=pix_fmt -of csv=p=0 \"{inputPath}\"",
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+                using var p = Process.Start(psi);
+                if (p == null) return 8;
+                var output = (await p.StandardOutput.ReadToEndAsync()).Trim();
+                await p.WaitForExitAsync();
+
+                // 从像素格式推断位深
+                return output switch
+                {
+                    string s when s.Contains("16") || s.Contains("48") || s.Contains("64") => 16,
+                    string s when s.Contains("12") => 12,
+                    string s when s.Contains("10") => 10,
+                    string s when s.Contains("p010") || s.Contains("p012") => 10,
+                    _ => 8
+                };
+            }
+            catch { return 8; }
         }
 
         /// <summary>使用 ffprobe 获取图像文件的宽高</summary>
@@ -1711,6 +2078,9 @@ namespace FfmpegGui.Services
                 JpegGainMap = original.JpegGainMap,
                 JpegGainMapQuality = original.JpegGainMapQuality,
                 JpegGainMapTargetNits = original.JpegGainMapTargetNits,
+                JpegGainMapHdrCf = original.JpegGainMapHdrCf,
+                JpegGainMapDownsample = original.JpegGainMapDownsample,
+                JpegGainMapMultiChannel = original.JpegGainMapMultiChannel,
                 TiffCompressionAlgo = original.TiffCompressionAlgo,
                 // ExifTool
                 StripExifGps = original.StripExifGps,

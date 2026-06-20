@@ -299,37 +299,78 @@
             </StackPanel>
             <!-- JPEG (FFmpeg mjpeg / libultrahdr) -->
             <StackPanel x:Name="JpegCodecPanel" IsVisible="False" Spacing="4">
-              <!-- Gain Map (Ultra HDR) -->
+              <!-- Gain Map (Ultra HDR) 选项 -->
               <Border x:Name="JpegGainMapPanel" CornerRadius="4" Padding="8,6" Margin="0,0,0,4"
                       Background="{DynamicResource SystemControlBackgroundChromeMediumBrush}">
-                <StackPanel Spacing="4">
-                  <CheckBox x:Name="JpegGainMapCheck" Content="Gain Map (Ultra HDR)"
-                            ToolTip.Tip="生成向后兼容的 HDR JPEG。SDR 显示器显示基础图，HDR 显示器自动显示高动态范围。需配合 libultrahdr 编码器使用。"/>
-                  <StackPanel x:Name="JpegGainMapOptions" IsVisible="False" Spacing="4">
-                    <StackPanel Orientation="Horizontal" Spacing="8">
-                      <TextBlock Text="增益图质量:" VerticalAlignment="Center" Width="80"/>
-                      <NumericUpDown x:Name="JpegGainMapQualityBox" Value="75"
-                                     Minimum="1" Maximum="100" Width="80"/>
-                      <TextBlock Text="(同主质量=-1)" VerticalAlignment="Center" FontSize="10"
-                                 Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+                <StackPanel x:Name="JpegGainMapOptions" Spacing="6">
+                  <TextBlock Text="🎛 Gain Map 参数（选择 ultrahdr 编码器时生效）" FontSize="11"
+                             Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" TextWrapping="Wrap"/>
+                  <!-- 增益图质量：跟随主图 或 独立设置 -->
+                    <CheckBox x:Name="JpegGainMapFollowMainCheck"
+                              Content="增益图质量 = 主图质量"
+                              IsChecked="True" FontSize="11"
+                              ToolTip.Tip="勾选时增益图质量自动跟随上方「质量」滑块；取消后可独立调节"/>
+                    <StackPanel x:Name="JpegGainMapQualityPanel"
+                                IsVisible="False" Orientation="Horizontal" Spacing="6">
+                      <TextBlock Text="增益图质量:" VerticalAlignment="Center" Width="80" FontSize="11"/>
+                      <Button x:Name="GainMapQualityDownBtn" Content="−"
+                              Width="26" Height="24" FontSize="13" Padding="0"
+                              ToolTip.Tip="降低增益图质量"/>
+                      <TextBox x:Name="JpegGainMapQualityBox" Text="75"
+                               Width="42" VerticalAlignment="Center"
+                               TextAlignment="Center" FontSize="12"/>
+                      <Button x:Name="GainMapQualityUpBtn" Content="+"
+                              Width="26" Height="24" FontSize="13" Padding="0"
+                              ToolTip.Tip="提高增益图质量"/>
                     </StackPanel>
+                    <!-- 目标亮度：Slider + TextBox 联动 -->
+                    <TextBlock Text="目标亮度 (HDR)" FontSize="11" Margin="0,2,0,0"/>
                     <StackPanel Orientation="Horizontal" Spacing="8">
-                      <TextBlock Text="目标亮度:" VerticalAlignment="Center" Width="80"/>
-                      <NumericUpDown x:Name="JpegGainMapNitsBox" Value="1000"
-                                     Minimum="200" Maximum="10000" Increment="100" Width="80"/>
-                      <TextBlock Text="nit" VerticalAlignment="Center"/>
+                      <Slider x:Name="JpegGainMapNitsSlider" Minimum="200" Maximum="10000"
+                              TickFrequency="100" IsSnapToTickEnabled="True" Width="130"
+                              VerticalAlignment="Center"/>
+                      <TextBox x:Name="JpegGainMapNitsBox" Text="1000"
+                               Width="54" VerticalAlignment="Center"
+                               TextAlignment="Center" FontSize="12"/>
+                      <TextBlock Text="nit" VerticalAlignment="Center" FontSize="11"/>
                     </StackPanel>
-                  </StackPanel>
+                    <!-- HDR 色彩格式 -->
+                    <TextBlock Text="HDR 色彩格式" FontSize="11" Margin="0,4,0,0"/>
+                    <ComboBox x:Name="JpegGainMapHdrCfCombo" SelectedIndex="0" FontSize="11">
+                      <sys:String>p010 (YUV 10-bit)</sys:String>
+                    </ComboBox>
+                    <TextBlock Text="rgba1010102/rgbahalffloat 需 ffmpeg 支持 packed pixel format（当前不可用）" FontSize="9"
+                               Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" TextWrapping="Wrap"/>
+                    <!-- 增益图分辨率 -->
+                    <TextBlock Text="增益图分辨率 (缩减体积)" FontSize="11" Margin="0,4,0,0"/>
+                    <ComboBox x:Name="JpegGainMapDownsampleCombo" SelectedIndex="1" FontSize="11">
+                      <sys:String>满分辨率 (体积最大)</sys:String>
+                      <sys:String>1/2 分辨率 (推荐)</sys:String>
+                      <sys:String>1/4 分辨率 (小体积)</sys:String>
+                      <sys:String>1/8 分辨率 (最小体积)</sys:String>
+                    </ComboBox>
+                    <TextBlock Text="图片宽高需能被缩放因子整除为最佳 | 默认半分辨率，手动调节需勾选「高级编码选项」" FontSize="9"
+                               Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" TextWrapping="Wrap"/>
+                    <!-- 增益图通道模式 -->
+                    <CheckBox x:Name="JpegGainMapMultiChannelCheck" Content="RGB 多通道增益图 (色彩更准, 更大体积)"
+                              IsChecked="False" FontSize="11" Margin="0,4,0,0"
+                              ToolTip.Tip="勾选=RGB增益图(色彩更准,需高级编码选项)；默认灰度增益图(更小体积)"/>
                 </StackPanel>
               </Border>
               <TextBlock Text="Huffman 策略"/>
-              <ComboBox x:Name="JpegHuffmanCombo">
+              <ComboBox x:Name="JpegHuffmanCombo" SelectedIndex="1">
                 <sys:String>default</sys:String><sys:String>optimal</sys:String>
               </ComboBox>
               <TextBlock Text="DCT 算法 (dct)" Margin="0,4,0,0"/>
               <ComboBox x:Name="JpegDctCombo" SelectedIndex="0">
                 <sys:String>auto</sys:String><sys:String>int</sys:String>
                 <sys:String>fastint</sys:String><sys:String>float</sys:String>
+              </ComboBox>
+              <!-- JPEG 渐进模式 (Gain Map / mjpeg 路径) -->
+              <TextBlock Text="渐进模式 (progressive)" Margin="0,4,0,0"/>
+              <ComboBox x:Name="JpegProgressiveCombo" SelectedIndex="1" FontSize="11">
+                <sys:String>自动</sys:String><sys:String>基线/标准 (兼容性)</sys:String>
+                <sys:String>渐进式 (高性能)</sys:String>
               </ComboBox>
             </StackPanel>
             <!-- JPEG-LI (cjpegli) -->
@@ -341,8 +382,8 @@
               </ComboBox>
               <TextBlock Text="渐进模式 (progressive)" Margin="0,4,0,0"/>
               <ComboBox x:Name="JpegliProgressiveCombo" SelectedIndex="0">
-                <sys:String>自动</sys:String><sys:String>基线/标准</sys:String>
-                <sys:String>渐进式</sys:String>
+                <sys:String>自动</sys:String><sys:String>基线/标准 (兼容性)</sys:String>
+                <sys:String>渐进式 (高性能)</sys:String>
               </ComboBox>
               <CheckBox x:Name="JpegliOptimizeCheck" Content="优化 Huffman 编码 (--optimize)" IsChecked="True" Margin="0,4,0,0"/>
               <CheckBox x:Name="JpegliAdaptiveQuantCheck" Content="自适应量化 (--adaptive_q)" IsChecked="True"/>

@@ -14,6 +14,10 @@ namespace FfmpegGui.Services
             // ── 输入色彩覆盖（必须在 -i 之前，否则编码器无法传递 primaries/transfer）──
             // 关键发现：-color_primaries/-color_trc 放在 -i 之前作为输入色彩覆盖，
             // 编码器才会将它们传递到输出文件；放在 -i 之后大多数编码器会忽略。
+            var fmt0 = options.Format.ToLower();
+            // PNG/TIFF/APNG 是 RGB 原生格式，-colorspace（YUV 矩阵）会与其 cHRM 块冲突；
+            // 但 -color_primaries/-color_trc 仍需保留以正确解释输入色彩空间。
+            var isRgbNativeFmt = fmt0 is "png" or "tiff" or "apng";
             var (inputPrimaries, inputTrc, outputColorSpace) = BuildColorArgsSplit(options, inputPath);
             if (!string.IsNullOrWhiteSpace(inputPrimaries))
             {
@@ -22,6 +26,14 @@ namespace FfmpegGui.Services
             if (!string.IsNullOrWhiteSpace(inputTrc))
             {
                 args.Add("-color_trc"); args.Add(inputTrc);
+            }
+
+            // ── 色彩范围检测：rgb48le 等全范围 RGB 输入 → 强制 pc range ──
+            // 修复 HDR/高位深图片（如 16-bit TIF）转 YUV 时默认 limited range 导致的过曝
+            var inputColorRange = ProbeInputColorRange(inputPath);
+            if (!string.IsNullOrWhiteSpace(inputColorRange))
+            {
+                args.Add("-color_range"); args.Add(inputColorRange);
             }
 
             var isGifToAvif = inputPath.EndsWith(".gif", StringComparison.OrdinalIgnoreCase)
@@ -451,9 +463,24 @@ namespace FfmpegGui.Services
             }
 
             // ── 输出色彩矩阵（YUV colorspace，必须在 -i 之后写入输出流）──
-            if (!string.IsNullOrWhiteSpace(outputColorSpace))
+            // PNG/TIFF 是 RGB 原生格式，不需要 YUV 色彩矩阵参数
+            if (!isRgbNativeFmt && !string.IsNullOrWhiteSpace(outputColorSpace))
             {
                 args.Add("-colorspace"); args.Add(outputColorSpace);
+            }
+
+            // ── HDR→SDR 色调映射（防止过曝）──
+            // 仅当输入明确为 HDR（PQ/HLG）且输出为 SDR-only 格式时触发
+            var needsTonemap = NeedsHdrToSdrTonemap(options, inputPath, inputPrimaries, inputTrc);
+            if (needsTonemap && !string.IsNullOrWhiteSpace(inputTrc) && !isRgbNativeFmt)
+            {
+                // 使用 zscale 将 HDR (PQ) 线性化 → tonemap 映射 → SDR (BT.709)
+                var tonemapFilter = "zscale=t=linear:npl=10000,tonemap=hable:param=0.5,zscale=t=bt709:m=bt709:r=tv,format=yuv420p";
+                var vfIdx = args.FindIndex(a => a == "-vf");
+                if (vfIdx >= 0 && vfIdx + 1 < args.Count)
+                    args[vfIdx + 1] = tonemapFilter + "," + args[vfIdx + 1];
+                else
+                { args.Add("-vf"); args.Add(tonemapFilter); }
             }
 
             args.Add($"\"{outputPath}\"");
@@ -553,8 +580,8 @@ namespace FfmpegGui.Services
 
         private static double MapJpegliDistance(int quality)
         {
-            // JPEG-LI butteraugli distance 0-15，同 JXL 尺度
-            return Math.Round((100 - quality) * 15.0 / 100.0, 1);
+            // JPEG-LI butteraugli distance 0-25（扩展范围，输出略小于同质量 mjpeg）
+            return Math.Round((100 - quality) * 25.0 / 100.0, 1);
         }
 
         private static string MapPixFmt(FfmpegOptions options)
@@ -656,6 +683,71 @@ namespace FfmpegGui.Services
                 return val;      // gray16le → 16
             // YUV 格式: yuv420p10le → 10
             return val;
+        }
+
+        /// <summary>
+        /// 判断是否需要 HDR→SDR 色调映射。
+        /// 仅在输入明确为 HDR（PQ/HLG 传输函数 或 用户选择 BT.2020）时触发。
+        /// 16-bit 无元数据 TIF 是普通高位深 SDR，不需要 tonemap。
+        /// </summary>
+        private static bool NeedsHdrToSdrTonemap(FfmpegOptions options, string inputPath,
+            string? inputPrimaries, string? inputTrc)
+        {
+            var fmt = options.Format.ToLower();
+
+            // 这些格式原生支持 HDR（>8bit），不需要 tonemap
+            if (fmt is "avif" or "jxl" or "tiff" or "jxr") return false;
+            // PNG 仅在 >8bit 时支持 HDR
+            if (fmt is "png" or "apng")
+            {
+                var bd = options.BitDepth ?? ProbeInputBitDepth(inputPath);
+                if (bd > 8) return false;
+            }
+
+            // 仅当输入明确为 HDR（PQ/HLG 传输函数）时才触发 tonemap
+            // 16-bit 无元数据 TIF 不满足此条件
+            if (!string.IsNullOrWhiteSpace(inputTrc))
+            {
+                return inputTrc.Equals("smpte2084", StringComparison.OrdinalIgnoreCase)
+                    || inputTrc.Equals("arib-std-b67", StringComparison.OrdinalIgnoreCase);
+            }
+
+            return false;
+        }
+
+        /// <summary>探测输入文件的色彩范围。RGB 像素格式返回 "pc"（全范围），否则返回 null（不覆盖默认）。</summary>
+        private static string? ProbeInputColorRange(string inputPath)
+        {
+            try
+            {
+                var ffprobe = FindFfprobe();
+                if (ffprobe == null) return null;
+                using var p = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = ffprobe,
+                    Arguments = $"-v error -select_streams v:0 -show_entries stream=pix_fmt -of csv=p=0 \"{inputPath}\"",
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                });
+                if (p == null) return null;
+                var output = p.StandardOutput.ReadToEnd().Trim();
+                p.WaitForExit(5000);
+
+                // RGB 系列像素格式是全范围（0-255, 0-65535）
+                if (output.StartsWith("rgb", StringComparison.OrdinalIgnoreCase)
+                    || output.StartsWith("bgr", StringComparison.OrdinalIgnoreCase)
+                    || output.StartsWith("gbr", StringComparison.OrdinalIgnoreCase)
+                    || output.StartsWith("rgba", StringComparison.OrdinalIgnoreCase)
+                    || output.StartsWith("bgra", StringComparison.OrdinalIgnoreCase)
+                    || output.StartsWith("argb", StringComparison.OrdinalIgnoreCase))
+                {
+                    return "pc";
+                }
+            }
+            catch { }
+            return null;
         }
 
         public struct ColorMetadata

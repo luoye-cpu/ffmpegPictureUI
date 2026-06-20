@@ -107,19 +107,23 @@ namespace FfmpegGui.Services
         /// <summary>
         /// 构建 ultrahdr_app 编码命令行（不含 exe 路径）。
         /// 场景 0：单一 HDR RAW 输入 → Ultra HDR JPEG（自动 tone-map 生成 SDR 基底）。
+        /// 场景 2：HDR RAW + 自定义 SDR 基础图 → Ultra HDR JPEG（使用 -i 传入 cjpegli 编码的高质量 SDR 基础图）。
         /// </summary>
         /// <param name="hdrRawPath">HDR RAW 文件路径（p010 或 rgba1010102）</param>
         /// <param name="outputPath">输出 JPEG 路径</param>
         /// <param name="width">图像宽度</param>
         /// <param name="height">图像高度</param>
-        /// <param name="quality">JPEG 质量 (0-100)</param>
+        /// <param name="quality">JPEG 质量 (0-100)，仅在无自定义 SDR 基础图时生效</param>
         /// <param name="hdrCf">HDR 色彩格式: 0=p010, 5=rgba1010102</param>
         /// <param name="gainmapQuality">增益图质量 (-1=同主质量)</param>
         /// <param name="targetNits">目标显示器亮度 nit</param>
+        /// <param name="sdrBasePath">可选：自定义 SDR 基础图 JPEG 路径（场景 2，由 cjpegli 预编码）</param>
+        /// <param name="gainmapDownsample">增益图下采样因子: 1=满分辨率, 2=1/2(默认), 4=1/4, 8=1/8</param>
         public static string BuildArguments(
             string hdrRawPath, string outputPath,
             int width, int height, int quality,
-            int hdrCf = 0, int gainmapQuality = -1, int targetNits = 1000)
+            int hdrCf = 0, int gainmapQuality = -1, int targetNits = 1000,
+            string? sdrBasePath = null, int gainmapDownsample = 2)
         {
             var sb = new StringBuilder();
             sb.Append($"-m 0");  // encode mode
@@ -129,12 +133,35 @@ namespace FfmpegGui.Services
             sb.Append($" -q {quality}");
             sb.Append($" -a {hdrCf}");
 
+            // 场景 2：传入 cjpegli 预编码的 SDR 基础图（更小体积）
+            if (!string.IsNullOrWhiteSpace(sdrBasePath))
+                sb.Append($" -i \"{sdrBasePath}\"");
+
             if (gainmapQuality >= 0)
                 sb.Append($" -Q {gainmapQuality}");
             if (targetNits > 0)
                 sb.Append($" -L {targetNits}");
+            if (gainmapDownsample > 1)
+                sb.Append($" -s {gainmapDownsample}");
 
             sb.Append($" -z \"{outputPath}\"");
+            return sb.ToString();
+        }
+
+        /// <summary>同 BuildArguments，但增加多通道增益图开关 (-M)</summary>
+        public static string BuildArguments(
+            string hdrRawPath, string outputPath,
+            int width, int height, int quality,
+            int hdrCf, int gainmapQuality, int targetNits,
+            string? sdrBasePath, int gainmapDownsample,
+            bool multiChannel)
+        {
+            var sb = new StringBuilder(BuildArguments(hdrRawPath, outputPath, width, height, quality,
+                hdrCf, gainmapQuality, targetNits, sdrBasePath, gainmapDownsample));
+            // -M 在 -z 之前插入
+            var zIdx = sb.ToString().LastIndexOf(" -z");
+            if (zIdx > 0 && !multiChannel)
+                sb.Insert(zIdx, " -M 0");
             return sb.ToString();
         }
 
@@ -143,7 +170,8 @@ namespace FfmpegGui.Services
         /// </summary>
         public static async Task<int> RunAsync(
             string arguments,
-            Action<string>? logCallback = null)
+            Action<string>? logCallback = null,
+            CancellationToken ct = default)
         {
             if (_detectedPath == null)
                 throw new InvalidOperationException("ultrahdr_app.exe 未找到");
@@ -173,9 +201,16 @@ namespace FfmpegGui.Services
                 process.Start();
                 process.BeginOutputReadLine();
                 process.BeginErrorReadLine();
-                await process.WaitForExitAsync();
+                if (ct.CanBeCanceled)
+                {
+                    using var reg = ct.Register(() => { try { if (!process.HasExited) process.Kill(true); } catch { } });
+                    try { await process.WaitForExitAsync(ct); }
+                    catch (OperationCanceledException) { try { if (!process.HasExited) process.Kill(true); } catch { } throw; }
+                }
+                else { await process.WaitForExitAsync(); }
                 return process.ExitCode;
             }
+            catch (OperationCanceledException) { throw; }
             catch (Exception ex)
             {
                 logCallback?.Invoke($"[ultrahdr] 启动失败: {ex.Message}\n");

@@ -305,7 +305,10 @@ namespace FfmpegGui.Services
                 if (_detectedPath == null) return -1;
             }
 
-            var args = $"-overwrite_original -TagsFromFile \"{sourcePath}\" -all:all \"{targetPath}\"";
+            // -all:all 复制所有可复制标签，但 ICC_Profile 等二进制块可能被跳过，
+            // 因此显式追加 -ICC_Profile 确保色彩配置文件也被复制
+            var args = $"-overwrite_original -m -TagsFromFile \"{sourcePath}\" " +
+                       $"-all:all -ICC_Profile \"{targetPath}\"";
             logCallback?.Invoke($"[exiftool] 复制元数据: {Path.GetFileName(sourcePath)} → {Path.GetFileName(targetPath)}\n");
 
             return await RunRawAsync(args, logCallback);
@@ -345,6 +348,69 @@ namespace FfmpegGui.Services
             logCallback?.Invoke($"[exiftool] 安全复制元数据（已排除色彩标签，保护编码器输出）: {Path.GetFileName(sourcePath)} → {Path.GetFileName(targetPath)}\n");
 
             return await RunRawAsync(args, logCallback);
+        }
+
+        /// <summary>仅复制 ICC Profile（安全模式下补偿色彩配置文件）</summary>
+        public static async Task<int> CopyIccProfileAsync(
+            string sourcePath, string targetPath,
+            Action<string>? logCallback = null)
+        {
+            if (_detectedPath == null)
+            {
+                Detect();
+                if (_detectedPath == null) return -1;
+            }
+
+            var args = $"-overwrite_original -m -TagsFromFile \"{sourcePath}\" " +
+                       $"-ICC_Profile \"{targetPath}\"";
+            logCallback?.Invoke($"[exiftool] 恢复 ICC Profile: {Path.GetFileName(sourcePath)} → {Path.GetFileName(targetPath)}\n");
+
+            return await RunRawAsync(args, logCallback);
+        }
+
+        /// <summary>为 JPEG 添加 JFIF 头（提高手机兼容性）</summary>
+        public static async Task EnsureJfifHeaderAsync(string targetPath)
+        {
+            if (_detectedPath == null)
+            {
+                Detect();
+                if (_detectedPath == null) return;
+            }
+            try
+            {
+                var args = $"-overwrite_original -JFIFVersion=1.02 \"{targetPath}\"";
+                await RunRawAsync(args, null);
+            }
+            catch { }
+        }
+
+        /// <summary>读取单个标签值</summary>
+        public static async Task<string?> GetTagAsync(string path, string tag)
+        {
+            if (_detectedPath == null)
+            {
+                Detect();
+                if (_detectedPath == null) return null;
+            }
+
+            try
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = _detectedPath,
+                    Arguments = $"-{tag} -s -s -s \"{path}\"",
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+                using var p = Process.Start(psi);
+                if (p == null) return null;
+                var output = (await p.StandardOutput.ReadToEndAsync()).Trim();
+                await p.WaitForExitAsync();
+                return string.IsNullOrWhiteSpace(output) ? null : output;
+            }
+            catch { return null; }
         }
 
         /// <summary>执行原始 exiftool 命令（内部用）</summary>
