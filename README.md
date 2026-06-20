@@ -1,6 +1,6 @@
 # 🖼️ FFmpegPictureUI — FFmpeg 图片转换器
 
-**v1.4.5 正式版 — Ultra HDR 编码器、JPEG XR 支持、管道编码、折叠工具栏、元数据安全模式。**
+**v1.4.5 正式版 — Ultra HDR 编码器、JPEG XR 支持、管道编码、HDR 色彩元数据全面修复、折叠工具栏、元数据安全模式。**
 
 An Avalonia UI-based cross-platform batch image/animation/video conversion tool that wraps `ffmpeg`/`ffprobe` with an intuitive GUI. Integrates external encoders: `cjxl`/`djxl`/`cjpegli` (JPEG XL), `ultrahdr_app` (Ultra HDR), `JxrEncApp`/`JxrDecApp` (JPEG XR).
 
@@ -136,6 +136,9 @@ ffmpegPictureUI/
 - 🐛 **WebP 无损失效修复 / WebP lossless fix**: 无损模式显式 `-q:v 100` + `-compression_level` 范围防护 + 禁止有损预设（picture/photo）+ 强制 RGBA 像素格式防 YUV 截断退化
 - 🐛 **元数据增强 / Enhanced metadata**: 统一所有格式编码后调用元数据恢复；`-map_metadata:s:v` 流级映射；`PreConvertToPngAsync` 传递 `-map_metadata 0`
 - 📊 **检测优先级统一 / Detection priority**: 所有外部工具检测统一为：手动路径 > 同目录 > 系统 PATH
+- 🎨 **HDR 色彩元数据全面修复 / HDR color metadata fix**: 修复 FFmpeg 编码器忽略 `-color_primaries`/`-color_trc` 的 Bug（须放 `-i` 之前作为输入覆盖）；cjxl 管道新增 `-x color_space=Rec2100PQ/HLG` + `--intensity_target` 自动映射；简化模式 BT.2020 默认 PQ (HDR 行业标准)；TIFF 格式自动保留 ICC Profile 回退。AVIF/JXL/PNG 全格式 PQ/HLG HDR 输出验证通过
+
+### v1.4.4 
 
 > 🎯 **正式版** — Avalonia 12 现代化 UI、视频转动图、AVIF 编码器面板分离、进程优先级控制。
 

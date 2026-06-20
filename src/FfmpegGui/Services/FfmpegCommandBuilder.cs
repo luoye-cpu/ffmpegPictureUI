@@ -11,6 +11,19 @@ namespace FfmpegGui.Services
             var args = new List<string>();
             args.Add("-y");
 
+            // ── 输入色彩覆盖（必须在 -i 之前，否则编码器无法传递 primaries/transfer）──
+            // 关键发现：-color_primaries/-color_trc 放在 -i 之前作为输入色彩覆盖，
+            // 编码器才会将它们传递到输出文件；放在 -i 之后大多数编码器会忽略。
+            var (inputPrimaries, inputTrc, outputColorSpace) = BuildColorArgsSplit(options, inputPath);
+            if (!string.IsNullOrWhiteSpace(inputPrimaries))
+            {
+                args.Add("-color_primaries"); args.Add(inputPrimaries);
+            }
+            if (!string.IsNullOrWhiteSpace(inputTrc))
+            {
+                args.Add("-color_trc"); args.Add(inputTrc);
+            }
+
             var isGifToAvif = inputPath.EndsWith(".gif", StringComparison.OrdinalIgnoreCase)
                            && options.Format.Equals("avif", StringComparison.OrdinalIgnoreCase);
 
@@ -399,7 +412,6 @@ namespace FfmpegGui.Services
                 var detectedBd = ProbeInputBitDepth(inputPath);
                 if (detectedBd > 8)
                 {
-                    // HDR 输入：显式设置高位深像素格式，防止 FFmpeg 默认退化为 8-bit
                     var autoBdOptions = new FfmpegOptions
                     {
                         Format = options.Format,
@@ -409,6 +421,13 @@ namespace FfmpegGui.Services
                     args.Add("-pix_fmt");
                     args.Add(MapPixFmt(autoBdOptions));
                 }
+            }
+            // 位深已手动指定但色度为 auto：直接按位深设置 pix_fmt
+            // （修复 Chroma=auto 时 BitDepth 设置失效的 Bug）
+            else if (options.BitDepth.HasValue)
+            {
+                args.Add("-pix_fmt");
+                args.Add(MapPixFmt(options));
             }
 
             if (options.MetadataMode == Models.MetadataMode.StripAll)
@@ -431,37 +450,10 @@ namespace FfmpegGui.Services
                 args.Add("0");
             }
 
-            // 色彩参数：仅当勾选"使用高级色彩参数"时生效，否则按简化 ColorSpace
-            if (options.UseAdvancedColorParameters
-                && (!string.IsNullOrWhiteSpace(options.ColorPrimaries) 
-                 || !string.IsNullOrWhiteSpace(options.ColorTrc) 
-                 || !string.IsNullOrWhiteSpace(options.ColorMatrix)))
+            // ── 输出色彩矩阵（YUV colorspace，必须在 -i 之后写入输出流）──
+            if (!string.IsNullOrWhiteSpace(outputColorSpace))
             {
-                if (!string.IsNullOrWhiteSpace(options.ColorPrimaries)) { args.Add("-color_primaries"); args.Add(options.ColorPrimaries); }
-                if (!string.IsNullOrWhiteSpace(options.ColorTrc)) { args.Add("-color_trc"); args.Add(options.ColorTrc); }
-                if (!string.IsNullOrWhiteSpace(options.ColorMatrix)) { args.Add("-colorspace"); args.Add(options.ColorMatrix); }
-            }
-            else if (!string.IsNullOrWhiteSpace(options.ColorSpace)
-                     && !options.ColorSpace.Equals("auto", StringComparison.OrdinalIgnoreCase))
-            {
-                args.Add("-colorspace");
-                args.Add(MapColorSpace(options.ColorSpace));
-            }
-            // auto 模式：探测输入 HDR 属性并自动传递色彩元数据
-            // 修复 HDR 图片（PQ/HLG/BT.2020）输出时色彩空间丢失的问题
-            else if (string.IsNullOrWhiteSpace(options.ColorSpace) 
-                     || options.ColorSpace.Equals("auto", StringComparison.OrdinalIgnoreCase))
-            {
-                var hdrMeta = ProbeInputColorMetadata(inputPath);
-                if (hdrMeta.bitDepth > 8)
-                {
-                    if (!string.IsNullOrEmpty(hdrMeta.colorPrimaries))
-                    { args.Add("-color_primaries"); args.Add(hdrMeta.colorPrimaries); }
-                    if (!string.IsNullOrEmpty(hdrMeta.colorTrc))
-                    { args.Add("-color_trc"); args.Add(hdrMeta.colorTrc); }
-                    if (!string.IsNullOrEmpty(hdrMeta.colorSpace))
-                    { args.Add("-colorspace"); args.Add(hdrMeta.colorSpace); }
-                }
+                args.Add("-colorspace"); args.Add(outputColorSpace);
             }
 
             args.Add($"\"{outputPath}\"");
@@ -476,6 +468,52 @@ namespace FfmpegGui.Services
             }
 
             return string.Join(" ", args);
+        }
+
+        /// <summary>
+        /// 分离色彩参数：(primaries, trc) 放 -i 前作输入覆盖，(colorspace) 放 -i 后作输出矩阵。
+        /// 这是关键修复：-color_primaries/-color_trc 必须放在 -i 之前，大多数编码器
+        /// （AVIF/JXL/PNG/TIFF）才会将其传递到输出文件。
+        /// </summary>
+        private static (string? primaries, string? trc, string? colorspace) BuildColorArgsSplit(
+            Models.FfmpegOptions options, string inputPath)
+        {
+            string? primaries = null, trc = null, colorspace = null;
+
+            if (options.UseAdvancedColorParameters
+                && (!string.IsNullOrWhiteSpace(options.ColorPrimaries)
+                 || !string.IsNullOrWhiteSpace(options.ColorTrc)
+                 || !string.IsNullOrWhiteSpace(options.ColorMatrix)))
+            {
+                primaries = options.ColorPrimaries;
+                trc = options.ColorTrc;
+                colorspace = options.ColorMatrix;
+            }
+            else if (!string.IsNullOrWhiteSpace(options.ColorSpace)
+                     && !options.ColorSpace.Equals("auto", StringComparison.OrdinalIgnoreCase))
+            {
+                var cs = MapColorSpace(options.ColorSpace);
+                (primaries, trc) = cs switch
+                {
+                    "bt2020nc" => ("bt2020", "smpte2084"),  // BT.2020 → PQ (HDR 行业标准)
+                    "bt709" => ("bt709", "bt709"),
+                    _ => (cs, "bt709")
+                };
+                colorspace = cs;
+            }
+            else if (string.IsNullOrWhiteSpace(options.ColorSpace)
+                     || options.ColorSpace.Equals("auto", StringComparison.OrdinalIgnoreCase))
+            {
+                var hdrMeta = ProbeInputColorMetadata(inputPath);
+                if (hdrMeta.bitDepth > 8)
+                {
+                    primaries = hdrMeta.colorPrimaries;
+                    trc = hdrMeta.colorTrc;
+                    colorspace = hdrMeta.colorSpace;
+                }
+            }
+
+            return (primaries, trc, colorspace);
         }
 
         private static string MapColorSpace(string displayName)
@@ -578,10 +616,11 @@ namespace FfmpegGui.Services
             {
                 var ffprobe = FindFfprobe();
                 if (ffprobe == null) return 0;
+                // 同时查询 bits_per_raw_sample 和 pix_fmt，优先前者，回退到后者
                 using var p = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
                 {
                     FileName = ffprobe,
-                    Arguments = $"-v error -select_streams v:0 -show_entries stream=bits_per_raw_sample -of csv=p=0 \"{inputPath}\"",
+                    Arguments = $"-v error -select_streams v:0 -show_entries stream=bits_per_raw_sample,pix_fmt -of csv=p=0 \"{inputPath}\"",
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,
                     UseShellExecute = false,
@@ -590,13 +629,36 @@ namespace FfmpegGui.Services
                 if (p == null) return 0;
                 var output = p.StandardOutput.ReadToEnd().Trim();
                 p.WaitForExit(5000);
-                if (int.TryParse(output, out var bd)) return bd;
+                // 格式: bits_per_raw_sample_value,pix_fmt_value
+                var parts = output.Split(',');
+                // 优先 bits_per_raw_sample
+                if (parts.Length >= 1 && int.TryParse(parts[0], out var bd) && bd > 0) return bd;
+                // 回退：从 pix_fmt 解析（rgb48le→16, yuv420p10le→10, gray16le→16）
+                if (parts.Length >= 2) return ParseBitDepthFromPixFmt(parts[1]);
             }
             catch { }
             return 0;
         }
 
-        private struct ColorMetadata
+        /// <summary>从像素格式字符串中提取位深</summary>
+        private static int ParseBitDepthFromPixFmt(string? pixFmt)
+        {
+            if (string.IsNullOrWhiteSpace(pixFmt)) return 0;
+            // 常见格式: rgb48le→48/3=16, yuv420p10le→10, gray16le→16, rgba64le→64/4=16
+            var match = System.Text.RegularExpressions.Regex.Match(pixFmt, @"(\d+)");
+            if (!match.Success) return 0;
+            var val = int.Parse(match.Value);
+            if (pixFmt.StartsWith("rgb") || pixFmt.StartsWith("bgr") || pixFmt.StartsWith("gbr"))
+                return val / 3;  // rgb48 → 16
+            if (pixFmt.StartsWith("rgba") || pixFmt.StartsWith("bgra") || pixFmt.StartsWith("argb"))
+                return val / 4;  // rgba64 → 16
+            if (pixFmt.StartsWith("gray") || pixFmt.StartsWith("ya"))
+                return val;      // gray16le → 16
+            // YUV 格式: yuv420p10le → 10
+            return val;
+        }
+
+        public struct ColorMetadata
         {
             public int bitDepth;
             public string? colorPrimaries;
@@ -605,7 +667,7 @@ namespace FfmpegGui.Services
         }
 
         /// <summary>使用 ffprobe 同步探测输入文件的 HDR 色彩元数据</summary>
-        private static ColorMetadata ProbeInputColorMetadata(string inputPath)
+        public static ColorMetadata ProbeInputColorMetadata(string inputPath)
         {
             var meta = new ColorMetadata();
             try
@@ -615,7 +677,7 @@ namespace FfmpegGui.Services
                 using var p = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
                 {
                     FileName = ffprobe,
-                    Arguments = $"-v error -select_streams v:0 -show_entries stream=bits_per_raw_sample,color_primaries,color_transfer,color_space -of csv=p=0 \"{inputPath}\"",
+                    Arguments = $"-v error -select_streams v:0 -show_entries stream=bits_per_raw_sample,pix_fmt,color_primaries,color_transfer,color_space -of csv=p=0 \"{inputPath}\"",
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,
                     UseShellExecute = false,
@@ -624,11 +686,19 @@ namespace FfmpegGui.Services
                 if (p == null) return meta;
                 var output = p.StandardOutput.ReadToEnd().Trim();
                 p.WaitForExit(5000);
+                // 格式: bits_per_raw_sample,pix_fmt,color_primaries,color_transfer,color_space
                 var parts = output.Split(',');
-                if (parts.Length >= 1 && int.TryParse(parts[0], out var bd)) meta.bitDepth = bd;
-                if (parts.Length >= 2 && !string.IsNullOrEmpty(parts[1]) && parts[1] != "unknown") meta.colorPrimaries = parts[1];
-                if (parts.Length >= 3 && !string.IsNullOrEmpty(parts[2]) && parts[2] != "unknown") meta.colorTrc = parts[2];
-                if (parts.Length >= 4 && !string.IsNullOrEmpty(parts[3]) && parts[3] != "unknown") meta.colorSpace = parts[3];
+                // 位深：优先 bits_per_raw_sample，回退 pix_fmt
+                if (parts.Length >= 1 && int.TryParse(parts[0], out var bd) && bd > 0)
+                    meta.bitDepth = bd;
+                else if (parts.Length >= 2)
+                    meta.bitDepth = ParseBitDepthFromPixFmt(parts[1]);
+                if (parts.Length >= 3 && !string.IsNullOrEmpty(parts[2]) && parts[2] != "unknown" && parts[2] != "N/A")
+                    meta.colorPrimaries = parts[2];
+                if (parts.Length >= 4 && !string.IsNullOrEmpty(parts[3]) && parts[3] != "unknown" && parts[3] != "N/A")
+                    meta.colorTrc = parts[3];
+                if (parts.Length >= 5 && !string.IsNullOrEmpty(parts[4]) && parts[4] != "unknown" && parts[4] != "N/A")
+                    meta.colorSpace = parts[4];
             }
             catch { }
             return meta;

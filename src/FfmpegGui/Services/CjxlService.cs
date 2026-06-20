@@ -311,7 +311,9 @@ namespace FfmpegGui.Services
         /// 构建 cjxl 命令行参数字符串（不含 exe 路径）。
         /// 用于 UI 预览和实际执行。
         /// </summary>
-        public static string BuildCjxlArguments(string input, string output, Models.FfmpegOptions opts)
+        /// <param name="hdrMeta">auto 模式下的输入色彩探测结果（可选）</param>
+        public static string BuildCjxlArguments(string input, string output, Models.FfmpegOptions opts,
+            FfmpegCommandBuilder.ColorMetadata hdrMeta = default)
         {
             var sb = new System.Text.StringBuilder();
             sb.Append($"\"{input}\" \"{output}\"");
@@ -346,6 +348,32 @@ namespace FfmpegGui.Services
 
             if (opts.CjxlPhotonNoiseIso > 0)
                 sb.Append($" --photon_noise_iso={opts.CjxlPhotonNoiseIso}");
+
+            // ── 色彩空间映射：将 FFmpeg 色彩参数翻译为 cjxl -x color_space ──
+            // auto 模式下优先使用探测结果，否则由用户选项决定
+            string? colorSpace;
+            int intensityTarget;
+            if (hdrMeta.bitDepth > 8)
+            {
+                colorSpace = ColorEncodingHelper.MapToCjxlColorSpace(hdrMeta);
+                intensityTarget = ColorEncodingHelper.MapToIntensityTarget(hdrMeta);
+            }
+            else
+            {
+                colorSpace = ColorEncodingHelper.MapToCjxlColorSpace(opts);
+                intensityTarget = ColorEncodingHelper.MapToIntensityTarget(opts);
+            }
+
+            if (!string.IsNullOrWhiteSpace(colorSpace))
+            {
+                sb.Append($" -x color_space={colorSpace}");
+            }
+
+            // ── HDR 亮度目标（PQ/HLG 时设置）──
+            if (intensityTarget > 0)
+            {
+                sb.Append($" --intensity_target={intensityTarget}");
+            }
 
             return sb.ToString();
         }

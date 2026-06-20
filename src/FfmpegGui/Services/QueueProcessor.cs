@@ -321,16 +321,34 @@ namespace FfmpegGui.Services
 
             var backend = item.Options.EncoderBackend;
 
-            // ── 判断是否需要保护编码器写入的色彩元数据 ──
-            // Ultrahdr: 编码器写入了 Gain Map HDR 元数据 (MPF + XMP-hdr)
-            // Cjxl:     cjxl 在 JXL box 中内嵌色彩元数据
-            // Cjpegli:  cjpegli 生成独立的 ICC/JFIF 色彩标签
-            // FFmpeg:   编码时已通过 -color_primaries/-color_trc/-colorspace 嵌入
-            var protectColorMetadata =
+            // ── 判断是否需要保护输出文件的色彩元数据 ──
+            // 原则：如果用户手动指定了色彩参数，说明用户有明确的色彩意图，
+            //       不应被源文件元数据覆盖；如果一切为 auto，则恢复源文件元数据。
+            var userSpecifiedColor =
+                item.Options.UseAdvancedColorParameters ||
+                (!string.IsNullOrWhiteSpace(item.Options.ColorSpace)
+                 && !item.Options.ColorSpace.Equals("auto", StringComparison.OrdinalIgnoreCase));
+
+            // 编码器后端保护：外部编码器/FFmpeg 已嵌入色彩信息
+            var encoderProtectsColor =
                 backend == EncoderBackend.Ultrahdr ||
                 backend == EncoderBackend.Cjxl ||
                 backend == EncoderBackend.Cjpegli ||
+                backend == EncoderBackend.Jxr ||
                 backend == EncoderBackend.Ffmpeg;
+
+            // 综合判断：用户指定 或 编码器保护 → 安全模式
+            var protectColorMetadata = userSpecifiedColor || encoderProtectsColor;
+
+            // TIFF 特殊处理：TIFF 使用 ICC Profile 色彩管理，不支持视频风格 color_primaries。
+            // 即使用户指定了色彩空间，也应保留源文件 ICC Profile（唯一色彩信息载体）。
+            var isTiff = item.Options.Format.Equals("tiff", StringComparison.OrdinalIgnoreCase)
+                      || item.Options.Format.Equals("tif", StringComparison.OrdinalIgnoreCase);
+            if (isTiff && userSpecifiedColor)
+            {
+                item.Log += "[tiff] TIFF 格式使用 ICC Profile 色彩管理，将保留源文件 ICC 配置（不支持 color_primaries 模式）\n";
+                protectColorMetadata = false; // 允许完整元数据复制（含 ICC Profile）
+            }
 
             // ── 优先：exiftool ──
             if (ExifToolService.IsAvailable)
@@ -338,7 +356,10 @@ namespace FfmpegGui.Services
                 try
                 {
                     if (protectColorMetadata)
-                        item.Log += "[exiftool] 从源文件恢复元数据（安全模式：保留编码器色彩元数据）...\n";
+                    {
+                        var reason = userSpecifiedColor ? "用户指定色彩空间" : "编码器保护";
+                        item.Log += $"[exiftool] 从源文件恢复元数据（安全模式：{reason}，不覆盖色彩标签）...\n";
+                    }
                     else
                         item.Log += "[exiftool] 从源文件恢复元数据...\n";
                     _onItemUpdated?.Invoke(item);
@@ -356,6 +377,11 @@ namespace FfmpegGui.Services
                         item.Log += "[exiftool] 元数据恢复完成\n";
                         return;
                     }
+                    else if (protectColorMetadata)
+                    {
+                        item.Log += $"[exiftool] 元数据恢复警告: 退出码 {copyExit}，已跳过 ffmpeg 回退（色彩保护模式）\n";
+                        return;
+                    }
                     else
                     {
                         item.Log += $"[exiftool] 元数据恢复警告: 退出码 {copyExit}，尝试 ffmpeg 回退...\n";
@@ -363,6 +389,11 @@ namespace FfmpegGui.Services
                 }
                 catch (Exception ex)
                 {
+                    if (protectColorMetadata)
+                    {
+                        item.Log += $"[exiftool] 元数据恢复异常: {ex.Message}，已跳过 ffmpeg 回退（色彩保护模式）\n";
+                        return;
+                    }
                     item.Log += $"[exiftool] 元数据恢复异常: {ex.Message}，尝试 ffmpeg 回退...\n";
                 }
             }
@@ -372,7 +403,14 @@ namespace FfmpegGui.Services
             }
 
             // ── 回退：ffmpeg 重新封装 ──
-            // ffmpeg -map_metadata 只会映射全局/流级元数据，不会覆盖编码器内嵌色彩标签
+            // 仅在色彩不需要保护时才执行 ffmpeg 回退。
+            // ffmpeg -map_metadata 1 会从源文件映射全局元数据（可能含 ICC/色彩标签），
+            // 与用户手动指定的色彩参数或编码器嵌入的色彩信息可能冲突。
+            if (protectColorMetadata)
+            {
+                item.Log += "[ffmpeg-meta] 已跳过回退（色彩保护模式）\n";
+                return;
+            }
             await RestoreMetadataViaFfmpegAsync(item, outputPath);
         }
 
@@ -382,7 +420,9 @@ namespace FfmpegGui.Services
         /// </summary>
         private async Task RestoreMetadataViaFfmpegAsync(QueueItem item, string outputPath)
         {
-            var tempPath = outputPath + ".meta_restore_tmp";
+            // 使用带正确扩展名的临时文件路径，确保 ffmpeg 可以自动识别输出格式
+            var tempPath = Path.Combine(Path.GetTempPath(),
+                $"meta_{Guid.NewGuid():N}_{Path.GetFileName(outputPath)}");
             try
             {
                 item.Log += "[ffmpeg-meta] 使用 ffmpeg 从源文件恢复元数据...\n";
@@ -783,9 +823,19 @@ namespace FfmpegGui.Services
             }
 
             var ffmpegPath = AppSettingsService.Current.FfmpegPath;
-            var cjxlArgs = CjxlService.BuildCjxlArguments("-", outputPath, item.Options);
 
-            item.Command = $"ffmpeg -y -i \"{item.InputPath}\" -f image2pipe -vcodec ppm - | cjxl {cjxlArgs}";
+            // auto 模式：探测输入 HDR 属性，传递给 cjxl 色彩参数
+            var hdrMeta = default(FfmpegCommandBuilder.ColorMetadata);
+            if (string.IsNullOrWhiteSpace(item.Options.ColorSpace)
+                || item.Options.ColorSpace.Equals("auto", StringComparison.OrdinalIgnoreCase))
+            {
+                hdrMeta = FfmpegCommandBuilder.ProbeInputColorMetadata(item.InputPath);
+            }
+
+            var cjxlArgs = CjxlService.BuildCjxlArguments("-", outputPath, item.Options, hdrMeta);
+            var (pipeInputColor, pipeOutputColor) = BuildPipeColorArgs(item.Options, item.InputPath);
+
+            item.Command = $"ffmpeg -y {pipeInputColor}-i \"{item.InputPath}\" {pipeOutputColor}-f image2pipe -vcodec ppm - | cjxl {cjxlArgs}";
             item.Log += $"[cjxl-pipe] ffmpeg 管道 → cjxl（无中间文件）\n";
             _onItemUpdated?.Invoke(item);
 
@@ -806,9 +856,19 @@ namespace FfmpegGui.Services
             }
 
             var ffmpegPath = AppSettingsService.Current.FfmpegPath;
-            var cjpegliArgs = CjpegliService.BuildCjpegliArguments("-", outputPath, item.Options);
 
-            item.Command = $"ffmpeg -y -i \"{item.InputPath}\" -f image2pipe -vcodec ppm - | cjpegli {cjpegliArgs}";
+            // auto 模式：探测输入 HDR 属性
+            var hdrMeta = default(FfmpegCommandBuilder.ColorMetadata);
+            if (string.IsNullOrWhiteSpace(item.Options.ColorSpace)
+                || item.Options.ColorSpace.Equals("auto", StringComparison.OrdinalIgnoreCase))
+            {
+                hdrMeta = FfmpegCommandBuilder.ProbeInputColorMetadata(item.InputPath);
+            }
+
+            var cjpegliArgs = CjpegliService.BuildCjpegliArguments("-", outputPath, item.Options, hdrMeta);
+            var (pipeInputColor2, pipeOutputColor2) = BuildPipeColorArgs(item.Options, item.InputPath);
+
+            item.Command = $"ffmpeg -y {pipeInputColor2}-i \"{item.InputPath}\" {pipeOutputColor2}-f image2pipe -vcodec ppm - | cjpegli {cjpegliArgs}";
             item.Log += $"[cjpegli-pipe] ffmpeg 管道 → cjpegli（无中间文件）\n";
             _onItemUpdated?.Invoke(item);
 
@@ -837,8 +897,10 @@ namespace FfmpegGui.Services
                 using var linked = CancellationTokenSource.CreateLinkedTokenSource(timeoutCts.Token, ct);
                 var linkedToken = linked.Token;
 
-                // ffmpeg: 解码输入为 PNG 流输出到 stdout
-                var ffArgs = $"-y -i \"{item.InputPath}\" -f image2pipe -vcodec ppm -";
+                // ffmpeg: 解码输入为 PPM 流输出到 stdout
+                // primaries/trc 在 -i 前作输入覆盖，colorspace 在 -i 后
+                var (pipeInColor, pipeOutColor) = BuildPipeColorArgs(item.Options, item.InputPath);
+                var ffArgs = $"-y {pipeInColor}-i \"{item.InputPath}\" {pipeOutColor}-f image2pipe -vcodec ppm -";
                 var psiFf = new ProcessStartInfo
                 {
                     FileName = ffmpegPath,
@@ -1503,6 +1565,60 @@ namespace FfmpegGui.Services
                 try { procDj?.Dispose(); } catch { }
                 try { procFf?.Dispose(); } catch { }
             }
+        }
+
+        /// <summary>
+        /// 构建管道中 ffmpeg 的色彩参数。
+        /// 返回 (inputArgs, outputArgs)：inputArgs 放 -i 前作输入覆盖，outputArgs 放 -i 后。
+        /// </summary>
+        private static (string inputArgs, string outputArgs) BuildPipeColorArgs(
+            Models.FfmpegOptions options, string? inputPath = null)
+        {
+            string inputArgs = "", outputArgs = "";
+            if (options.UseAdvancedColorParameters
+                && (!string.IsNullOrWhiteSpace(options.ColorPrimaries)
+                 || !string.IsNullOrWhiteSpace(options.ColorTrc)
+                 || !string.IsNullOrWhiteSpace(options.ColorMatrix)))
+            {
+                if (!string.IsNullOrWhiteSpace(options.ColorPrimaries))
+                    inputArgs += $"-color_primaries {options.ColorPrimaries} ";
+                if (!string.IsNullOrWhiteSpace(options.ColorTrc))
+                    inputArgs += $"-color_trc {options.ColorTrc} ";
+                if (!string.IsNullOrWhiteSpace(options.ColorMatrix))
+                    outputArgs += $"-colorspace {options.ColorMatrix} ";
+            }
+            else if (!string.IsNullOrWhiteSpace(options.ColorSpace)
+                     && !options.ColorSpace.Equals("auto", StringComparison.OrdinalIgnoreCase))
+            {
+                var cs = options.ColorSpace switch
+                {
+                    "BT.601" => ("bt470bg", "bt470bg"),
+                    "BT.709" => ("bt709", "bt709"),
+                    "BT.2020" => ("bt2020", "bt2020nc"),
+                    _ => ("bt709", "bt709")
+                };
+                // BT.2020 默认使用 PQ (smpte2084) — HDR 行业标准
+                var trc = options.ColorSpace == "BT.2020" ? "smpte2084" : "bt709";
+                inputArgs += $"-color_primaries {cs.Item1} -color_trc {trc} ";
+                outputArgs += $"-colorspace {cs.Item2} ";
+            }
+            // auto 模式：探测输入 HDR 属性并自动传递色彩元数据
+            else if (!string.IsNullOrEmpty(inputPath)
+                     && (string.IsNullOrWhiteSpace(options.ColorSpace)
+                         || options.ColorSpace.Equals("auto", StringComparison.OrdinalIgnoreCase)))
+            {
+                var hdrMeta = FfmpegCommandBuilder.ProbeInputColorMetadata(inputPath);
+                if (hdrMeta.bitDepth > 8)
+                {
+                    if (!string.IsNullOrEmpty(hdrMeta.colorPrimaries))
+                        inputArgs += $"-color_primaries {hdrMeta.colorPrimaries} ";
+                    if (!string.IsNullOrEmpty(hdrMeta.colorTrc))
+                        inputArgs += $"-color_trc {hdrMeta.colorTrc} ";
+                    if (!string.IsNullOrEmpty(hdrMeta.colorSpace))
+                        outputArgs += $"-colorspace {hdrMeta.colorSpace} ";
+                }
+            }
+            return (inputArgs, outputArgs);
         }
 
         /// <summary>构建 ffmpeg 从 stdin 读取 PPM 流的命令行参数</summary>

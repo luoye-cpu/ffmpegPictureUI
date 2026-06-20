@@ -330,15 +330,19 @@ namespace FfmpegGui.Services
                 if (_detectedPath == null) return -1;
             }
 
-            // 仅复制描述性元数据组，排除色彩相关标签
+            // 仅复制描述性元数据组，排除色彩相关标签和 TIFF 结构标签
             // 注意：每个 --TAG 表示"从复制列表中排除该标签"
-            var args = $"-overwrite_original -TagsFromFile \"{sourcePath}\" " +
+            var args = $"-overwrite_original -m -TagsFromFile \"{sourcePath}\" " +
                        $"-EXIF:all -IPTC:all -XMP:all -MakerNotes:all -GPS:all " +
                        $"--ColorSpace --ICC_Profile --ColorSpaceData " +
                        $"--ColorPrimaries --TransferFunction --ColorMatrix " +
                        $"--ProfileDescription --ProfileCopyright " +
+                       $"--StripOffsets --StripByteCounts --RowsPerStrip " +
+                       $"--TileOffsets --TileByteCounts --TileWidth --TileLength " +
+                       $"--Compression --Predictor --PhotometricInterpretation " +
+                       $"--SamplesPerPixel --BitsPerSample --PlanarConfiguration " +
                        $"\"{targetPath}\"";
-            logCallback?.Invoke($"[exiftool] 安全复制元数据（保留色彩标签）: {Path.GetFileName(sourcePath)} → {Path.GetFileName(targetPath)}\n");
+            logCallback?.Invoke($"[exiftool] 安全复制元数据（已排除色彩标签，保护编码器输出）: {Path.GetFileName(sourcePath)} → {Path.GetFileName(targetPath)}\n");
 
             return await RunRawAsync(args, logCallback);
         }
