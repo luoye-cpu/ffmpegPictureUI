@@ -28,8 +28,7 @@ namespace FfmpegGui.Services
             {
                 return options.ColorSpace switch
                 {
-                    // BT.2020：默认映射到 Rec2100PQ（行业标准 HDR 格式）。
-                    // cjxl 不支持 BT.2020 SDR (bt709 transfer) 的命名编码。
+                    // BT.2020 → Rec2100PQ (HDR)
                     "BT.2020" => "Rec2100PQ",
                     "BT.709" => "sRGB",
                     "BT.601" => "sRGB",

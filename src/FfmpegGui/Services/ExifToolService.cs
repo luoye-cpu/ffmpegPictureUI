@@ -414,7 +414,7 @@ namespace FfmpegGui.Services
         }
 
         /// <summary>执行原始 exiftool 命令（内部用）</summary>
-        private static async Task<int> RunRawAsync(string args, Action<string>? logCallback = null)
+        internal static async Task<int> RunRawAsync(string args, Action<string>? logCallback = null)
         {
             var psi = new ProcessStartInfo
             {

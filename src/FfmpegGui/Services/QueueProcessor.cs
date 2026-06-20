@@ -174,19 +174,32 @@ namespace FfmpegGui.Services
                             var inputExt = Path.GetExtension(captured.InputPath).ToLowerInvariant();
 
                             // Ultra HDR JPEG 输入：解码到临时高位深文件，保留 HDR 信息
-                            if (inputExt is ".jpg" or ".jpeg" && await IsUltraHdrJpegAsync(captured.InputPath))
+                            // JXL 格式支持「无损重封装忽略增益图」开关
+                            // JXR 格式由 ProcessJxrAsync 自行处理（直接 RAW→TIFF 管道，保 HDR 元数据）
+                            var isJxrOutput = captured.Options.Format.Equals("jxr", StringComparison.OrdinalIgnoreCase);
+                            if (inputExt is ".jpg" or ".jpeg" && await IsUltraHdrJpegAsync(captured.InputPath)
+                                && !isJxrOutput)
                             {
-                                captured.Log += "[UltraHDR] 检测到输入为 Ultra HDR JPEG，解码保留 HDR...\n";
-                                _onItemUpdated?.Invoke(captured);
-                                var decodedPath = await DecodeUltraHdrJpegAsync(captured, captured.InputPath, ct);
-                                if (decodedPath != null)
+                                var skipForJxl = captured.Options.Format.Equals("jxl", StringComparison.OrdinalIgnoreCase)
+                                    && !captured.Options.JxlPreserveUltrahdr;
+                                if (skipForJxl)
                                 {
-                                    captured.InputPath = decodedPath;
-                                    captured.Log += "[UltraHDR] 已解码到临时文件，HDR 信息已保留\n";
+                                    captured.Log += "[UltraHDR] 输入为 Ultra HDR JPEG，但已关闭「保留增益图」→ JXL 无损重封装将忽略增益图\n";
                                 }
                                 else
                                 {
-                                    captured.Log += "[UltraHDR] 解码失败，使用原始 SDR 基础图继续\n";
+                                    captured.Log += "[UltraHDR] 检测到输入为 Ultra HDR JPEG，解码保留 HDR...\n";
+                                    _onItemUpdated?.Invoke(captured);
+                                    var decodedPath = await DecodeUltraHdrJpegAsync(captured, captured.InputPath, ct);
+                                    if (decodedPath != null)
+                                    {
+                                        captured.InputPath = decodedPath;
+                                        captured.Log += "[UltraHDR] 已解码到临时文件，HDR 信息已保留\n";
+                                    }
+                                    else
+                                    {
+                                        captured.Log += "[UltraHDR] 解码失败，使用原始 SDR 基础图继续\n";
+                                    }
                                 }
                             }
 
@@ -397,14 +410,22 @@ namespace FfmpegGui.Services
 
                     if (copyExit == 0)
                     {
-                        // 安全模式下 ICC Profile 可能被排除，显式恢复（ICC 与 YUV 色彩标签不冲突）
-                        if (protectColorMetadata)
+                        // 安全模式下 ICC Profile 可能被排除，显式恢复。
+                        // 但若用户手动指定了色彩空间，源 ICC 会与用户选择冲突 → 跳过。
+                        if (protectColorMetadata && !userSpecifiedColor)
                         {
                             var iccExit = await ExifToolService.CopyIccProfileAsync(
                                 item.InputPath, outputPath,
                                 s => { item.Log += s; _onItemUpdated?.Invoke(item); });
                             if (iccExit == 0)
                                 item.Log += "[exiftool] ICC Profile 已恢复\n";
+                            else
+                                item.Log += $"[exiftool] ⚠️ ICC Profile 恢复失败（退出码 {iccExit}），目标格式可能不支持 exiftool ICC 写入（如 JXL）。\n" +
+                                    $"[exiftool] 建议：勾选「保留 Ultra HDR 增益图」或使用外部 cjxl 编码，以正确保留色彩配置。\n";
+                        }
+                        else if (protectColorMetadata && userSpecifiedColor)
+                        {
+                            item.Log += "[exiftool] 用户已指定色彩空间，跳过源文件 ICC Profile 恢复（避免覆盖用户选择）\n";
                         }
                         // JPEG 输出添加 JFIF 头（提高手机兼容性）
                         if (IsJpegOutput(item))
@@ -921,31 +942,78 @@ namespace FfmpegGui.Services
 
             try
             {
-                // Step 0: 检测输入位深，选择合适的中间格式和像素格式
-                int bitDepth = item.Options.BitDepth ?? await ProbeBitDepthAsync(item.InputPath, ffmpegPath);
-                bool isHdr = bitDepth > 8;
-                // 中间格式：HDR 用 TIFF（支持高位深），SDR 用 BMP（更快）
-                var intermediateExt = isHdr ? ".tiff" : ".bmp";
-                var intermediatePath = Path.Combine(tempDir, $"input{intermediateExt}");
-                // 像素格式：>8bit 用 rgb48le (16-bit)，8bit 用 bgr24
-                var pixFmt = isHdr ? "rgb48le" : "bgr24";
-                item.Log += $"[jxr] 检测位深: {bitDepth}-bit, 像素格式: {pixFmt}, 中间格式: {intermediateExt}\n";
+                var inputExt = Path.GetExtension(item.InputPath).ToLowerInvariant();
+                var isUltraHdrJpeg = inputExt is ".jpg" or ".jpeg"
+                    && await IsUltraHdrJpegAsync(item.InputPath);
 
-                // Step 1: ffmpeg 解码 → BMP/TIFF 中间文件（保留色彩空间）
-                item.Log += $"[jxr] Step 1: ffmpeg 解码为 {intermediateExt.ToUpper()}（{pixFmt}）...\n";
-                _onItemUpdated?.Invoke(item);
+                string intermediatePath;
+                bool isHdr;
 
-                // 构建色彩空间参数
-                var colorArgs = BuildJxrColorArgs(item.Options);
-                var decodeArgs = $"-y {colorArgs}-i \"{item.InputPath}\" -pix_fmt {pixFmt} \"{intermediatePath}\"";
-                item.Command = $"ffmpeg {decodeArgs}";
-                var decExit = await FfmpegRunner.RunAsync(decodeArgs,
-                    s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ffmpegPath);
-                if (decExit != 0 || !File.Exists(intermediatePath))
+                if (isUltraHdrJpeg && UltrahdrService.IsAvailable)
                 {
-                    item.ExitCode = decExit;
-                    item.Status = $"失败 ({intermediateExt} 解码退出码 {decExit})";
-                    return;
+                    // ── Ultra HDR JPEG: ultrahdr 解码为 sRGB → BMP → JxrEncApp (无损) ──
+                    item.Log += "[jxr] 检测到 Ultra HDR JPEG，sRGB 解码 + BMP 中间格式...\n";
+                    _onItemUpdated?.Invoke(item);
+
+                    // Step A: ffprobe 获取尺寸
+                    var (width, height) = await ProbeImageSizeAsync(item.InputPath, ffmpegPath);
+                    if (width <= 0 || height <= 0) { item.Status = "失败 (无法获取尺寸)"; return; }
+
+                    // Step B: ultrahdr_app 解码 → sRGB RAW (增益图已应用)
+                    var rawPath = Path.Combine(tempDir, "srgb.raw");
+                    var ultraArgs = $"-m 1 -j \"{item.InputPath}\" -o 3 -O 3 -z \"{rawPath}\"";
+                    var ultraExit = await UltrahdrService.RunAsync(ultraArgs,
+                        s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ct);
+                    if (ultraExit != 0 || !File.Exists(rawPath)) { item.Status = "失败 (Ultra HDR 解码)"; return; }
+
+                    // Step C: ffmpeg RAW → BMP (8-bit BGR, JxrEncApp 无损往返)
+                    intermediatePath = Path.Combine(tempDir, "input.bmp");
+                    var bmpArgs = $"-y -f rawvideo -pix_fmt x2bgr10le -s {width}x{height} " +
+                        $"-i \"{rawPath}\" -pix_fmt bgr24 \"{intermediatePath}\"";
+                    item.Log += "[jxr] ffmpeg sRGB RAW → BMP (8-bit, 无损)...\n";
+                    _onItemUpdated?.Invoke(item);
+                    var bmpExit = await FfmpegRunner.RunAsync(bmpArgs,
+                        s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ffmpegPath, ct);
+                    try { File.Delete(rawPath); } catch { }
+                    if (bmpExit != 0 || !File.Exists(intermediatePath))
+                    { item.Status = $"失败 (RAW→BMP 退出码 {bmpExit})"; return; }
+
+                    isHdr = false;
+                }
+                else
+                {
+                    // ── 常规输入：ffmpeg 解码 → BMP/TIFF ──
+                    int bitDepth = item.Options.BitDepth ?? await ProbeBitDepthAsync(item.InputPath, ffmpegPath);
+                    isHdr = bitDepth > 8;
+                    var intermediateExt = isHdr ? ".tiff" : ".bmp";
+                    intermediatePath = Path.Combine(tempDir, $"input{intermediateExt}");
+                    var pixFmt = isHdr ? "rgb48le" : "bgr24";
+                    item.Log += $"[jxr] 检测位深: {bitDepth}-bit, 像素格式: {pixFmt}\n";
+
+                    item.Log += $"[jxr] Step 1: ffmpeg 解码为 {intermediateExt.ToUpper()}（{pixFmt}）...\n";
+                    _onItemUpdated?.Invoke(item);
+
+                    var colorArgs = BuildJxrColorArgs(item.Options);
+                    var tiffExtra = isHdr ? " -compression_algo raw -pred none" : "";
+
+                    // 16-bit 输入默认转换为 sRGB（JxrEncApp 固定 sRGB 输出）
+                    string? zscaleFilter = null;
+                    if (isHdr && string.IsNullOrWhiteSpace(colorArgs))
+                    {
+                        // auto 模式: 从宽色域 (默认 Rec.2020) 转换为 sRGB
+                        zscaleFilter = "zscale=primariesin=bt2020:primaries=bt709:transferin=bt709:transfer=iec61966-2-1,";
+                    }
+                    var filterArg = zscaleFilter != null ? $"-vf \"{zscaleFilter}format={pixFmt}\" " : "";
+                    var decodeArgs = $"-y {colorArgs}-i \"{item.InputPath}\" {filterArg}-pix_fmt {pixFmt}{tiffExtra} \"{intermediatePath}\"";
+                    item.Command = $"ffmpeg {decodeArgs}";
+                    var decExit = await FfmpegRunner.RunAsync(decodeArgs,
+                        s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ffmpegPath);
+                    if (decExit != 0 || !File.Exists(intermediatePath))
+                    {
+                        item.ExitCode = decExit;
+                        item.Status = $"失败 ({intermediateExt} 解码退出码 {decExit})";
+                        return;
+                    }
                 }
 
                 // Step 2: JxrEncApp 编码
@@ -963,7 +1031,14 @@ namespace FfmpegGui.Services
                     ? (isHdr ? "已完成 (JxrEncApp JPEG XR HDR)" : "已完成 (JxrEncApp JPEG XR)")
                     : $"失败 (JxrEncApp 退出码 {jxrExit})";
                 if (jxrExit == 0)
+                {
+                    // ── HDR 色彩元数据写入（JxrEncApp 不支持嵌入色彩配置）──
+                    if (!string.IsNullOrWhiteSpace(item.Options.DecodedUltraHdrColorSpace))
+                    {
+                        await WriteJxrHdrMetadataAsync(item, outputPath);
+                    }
                     await RestoreMetadataAsync(item, outputPath);
+                }
             }
             catch (OperationCanceledException)
             {
@@ -981,10 +1056,134 @@ namespace FfmpegGui.Services
             }
         }
 
+        /// <summary>将 HDR 色彩元数据写入 JXR（JxrEncApp 不支持色彩配置，最佳努力写入 EXIF/XMP）</summary>
+        private async Task WriteJxrHdrMetadataAsync(QueueItem item, string outputPath)
+        {
+            if (!ExifToolService.IsAvailable) return;
+            try
+            {
+                item.Log += "[jxr] 写入 HDR 色彩元数据...\n";
+                _onItemUpdated?.Invoke(item);
+
+                var args = $"-overwrite_original -m " +
+                    $"-EXIF:ColorSpace=Uncalibrated " +
+                    $"-EXIF:ImageDescription=\"HDR Rec.2100 PQ\" " +
+                    $"\"{outputPath}\"";
+
+                var exit = await ExifToolService.RunRawAsync(args,
+                    s => { item.Log += s; _onItemUpdated?.Invoke(item); });
+                if (exit == 0)
+                    item.Log += "[jxr] HDR 元数据已写入 (Uncalibrated + Rec.2100 PQ 描述)\n";
+                else
+                    item.Log += $"[jxr] ⚠️ HDR 元数据写入警告 (退出码 {exit})\n";
+            }
+            catch (Exception ex)
+            {
+                item.Log += $"[jxr] HDR 元数据写入异常: {ex.Message}\n";
+            }
+        }
+
+        /// <summary>10-bit PQ RAW (x2bgr10le) → 无压缩 Radiance HDR (.hdr, 32bppRGBE)，JxrEncApp 可识别为 HDR</summary>
+        private static async Task<string?> ConvertRawToRadianceHdrAsync(
+            string rawPath, int width, int height, string tempDir,
+            Action<string>? logCallback = null)
+        {
+            var hdrPath = Path.Combine(tempDir, "input.hdr");
+            try
+            {
+                var rawBytes = await File.ReadAllBytesAsync(rawPath);
+                var expectedSize = width * height * 4;
+                if (rawBytes.Length < expectedSize)
+                {
+                    logCallback?.Invoke($"[jxr-hdr] RAW size mismatch: {rawBytes.Length} vs {expectedSize}\n");
+                    return null;
+                }
+
+                // 写入 Radiance 头（无压缩格式）
+                using var fs = new FileStream(hdrPath, FileMode.Create, FileAccess.Write);
+                using var sw = new StreamWriter(fs, System.Text.Encoding.ASCII, 4096, true);
+                sw.NewLine = "\n";
+                sw.Write("#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y {0} +X {1}\n", height, width);
+                sw.Flush();
+
+                // 逐像素转换: 10-bit PQ(BGR packed) → linear float → RGBE
+                var rgbeRow = new byte[width * 4];
+                for (int y = 0; y < height; y++)
+                {
+                    int rowOffset = y * width * 4;
+                    for (int x = 0; x < width; x++)
+                    {
+                        int i = rowOffset + x * 4;
+                        uint packed = (uint)(rawBytes[i] | (rawBytes[i + 1] << 8)
+                            | (rawBytes[i + 2] << 16) | (rawBytes[i + 3] << 24));
+                        // x2bgr10le: B[0:9], G[10:19], R[20:29], X[30:31]
+                        float b10 = (packed & 0x3FF) / 1023.0f;
+                        float g10 = ((packed >> 10) & 0x3FF) / 1023.0f;
+                        float r10 = ((packed >> 20) & 0x3FF) / 1023.0f;
+                        float r = PqToLinear(r10);
+                        float g = PqToLinear(g10);
+                        float b = PqToLinear(b10);
+                        RgbToRgbe(r, g, b, out byte R, out byte G, out byte B, out byte E);
+                        int dst = x * 4;
+                        rgbeRow[dst] = R;
+                        rgbeRow[dst + 1] = G;
+                        rgbeRow[dst + 2] = B;
+                        rgbeRow[dst + 3] = E;
+                    }
+                    await fs.WriteAsync(rgbeRow, 0, rgbeRow.Length);
+                }
+                logCallback?.Invoke($"[jxr-hdr] Radiance HDR 已生成 ({width}x{height}, RGBE, uncompressed)\n");
+                return hdrPath;
+            }
+            catch (Exception ex)
+            {
+                logCallback?.Invoke($"[jxr-hdr] 转换失败: {ex.Message}\n");
+                return null;
+            }
+        }
+
+        /// <summary>ST.2084 (PQ) EOTF → linear light</summary>
+        private static float PqToLinear(float pq)
+        {
+            // ST.2084 EOTF: L = ((max(V^(1/m2) - c1, 0)) / (c2 - c3 * V^(1/m2)))^(1/m1)
+            const float m1 = 2610f / 16384f;   // 0.1593017578125
+            const float m2 = 2523f / 32f;       // 78.84375
+            const float c1 = 3424f / 4096f;     // 0.8359375
+            const float c2 = 2413f / 128f;      // 18.8515625
+            const float c3 = 2392f / 128f;      // 18.6875
+            float v = MathF.Pow(pq, 1.0f / m2);
+            float num = MathF.Max(v - c1, 0);
+            float den = c2 - c3 * v;
+            return MathF.Pow(num / den, 1.0f / m1);
+        }
+
+        /// <summary>Linear float RGB → RGBE (Radiance shared-exponent)</summary>
+        private static void RgbToRgbe(float r, float g, float b,
+            out byte R, out byte G, out byte B, out byte E)
+        {
+            float max = MathF.Max(r, MathF.Max(g, b));
+            if (max < 1e-32f) { R = G = B = E = 0; return; }
+            int e = (int)MathF.Ceiling(MathF.Log2(max));
+            e = Math.Clamp(e + 128, 0, 255);
+            float scale = MathF.Pow(2, e - 128 - 8);
+            R = (byte)Math.Clamp((int)(r / scale + 0.5f), 0, 255);
+            G = (byte)Math.Clamp((int)(g / scale + 0.5f), 0, 255);
+            B = (byte)Math.Clamp((int)(b / scale + 0.5f), 0, 255);
+            E = (byte)e;
+        }
+
         /// <summary>构建 JXR ffmpeg 解码的色彩空间参数</summary>
         private static string BuildJxrColorArgs(FfmpegOptions options)
         {
             var sb = new StringBuilder();
+
+            // Ultra HDR 解码输出：显式标记 Rec.2100 PQ（优先级最高）
+            if (!string.IsNullOrWhiteSpace(options.DecodedUltraHdrColorSpace))
+            {
+                sb.Append("-color_primaries bt2020 -color_trc smpte2084 -colorspace bt2020nc ");
+                return sb.ToString();
+            }
+
             var colorSpace = options.ColorSpace;
             if (!string.IsNullOrWhiteSpace(colorSpace) && !colorSpace.Equals("auto", StringComparison.OrdinalIgnoreCase))
             {
@@ -1035,7 +1234,7 @@ namespace FfmpegGui.Services
             catch { return false; }
         }
 
-        /// <summary>将 Ultra HDR JPEG 解码为临时 16-bit TIFF（保留 HDR 信息）</summary>
+        /// <summary>将 Ultra HDR JPEG 解码为临时 16-bit PNG（保留 HDR 信息，cjxl 兼容）</summary>
         private async Task<string?> DecodeUltraHdrJpegAsync(QueueItem item, string inputPath, CancellationToken ct)
         {
             if (!UltrahdrService.IsAvailable) return null;
@@ -1052,23 +1251,30 @@ namespace FfmpegGui.Services
                 // Step 2: ultrahdr_app 解码 → PQ + rgba1010102 RAW
                 var rawPath = Path.Combine(tempDir, "decoded.raw");
                 var ultraArgs = $"-m 1 -j \"{inputPath}\" -o 2 -O 5 -z \"{rawPath}\"";
-                item.Log += $"[UltraHDR] ultrahdr_app {ultraArgs}\n";
+                item.Log += $"[UltraHDR] ultrahdr_app 解码...\n";
                 _onItemUpdated?.Invoke(item);
                 var ultraExit = await UltrahdrService.RunAsync(ultraArgs,
                     s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ct);
                 if (ultraExit != 0 || !File.Exists(rawPath)) return null;
 
-                // Step 3: ffmpeg RAW → 16-bit TIFF
-                var tiffPath = Path.Combine(tempDir, "decoded.tiff");
-                var tiffArgs = $"-y -f rawvideo -pix_fmt rgba64le -s {width}x{height} -i \"{rawPath}\" " +
-                    $"-pix_fmt rgb48le -compression_algo lzw \"{tiffPath}\"";
-                item.Log += $"[UltraHDR] ffmpeg RAW→TIFF...\n";
+                // Step 3: ffmpeg RAW → 16-bit PNG（cjxl 可直接读取，RAW 读取后自动清理）
+                var pngPath = Path.Combine(tempDir, "decoded.png");
+                // x2bgr10le: ultrahdr rgba1010102 使用 Vulkan/DX A2B10G10R10 布局（B 在 LSB）
+                var pngArgs = $"-y -f rawvideo -pix_fmt x2bgr10le -s {width}x{height} -i \"{rawPath}\" " +
+                    $"-pix_fmt rgb48be -sws_flags accurate_rnd \"{pngPath}\"";
+                item.Log += $"[UltraHDR] ffmpeg RAW → PNG (16-bit)...\n";
                 _onItemUpdated?.Invoke(item);
-                var tiffExit = await FfmpegRunner.RunAsync(tiffArgs,
+                var pngExit = await FfmpegRunner.RunAsync(pngArgs,
                     s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ffmpegPath, ct);
-                if (tiffExit != 0 || !File.Exists(tiffPath)) return null;
+                try { File.Delete(rawPath); } catch { /* 忽略清理失败 */ }
+                if (pngExit != 0 || !File.Exists(pngPath)) return null;
 
-                return tiffPath;
+                // 解码输出为 HDR (PQ) 像素，源文件的 SDR ICC Profile 不适用。
+                // 后续 cjxl/ffmpeg 编码时将使用 Rec.2100 PQ 色域元数据。
+                item.Options.DecodedUltraHdrColorSpace = "Rec2100PQ";
+                item.Log += "[UltraHDR] 解码完成 → PNG 16-bit (HDR PQ, 已标记 Rec.2100 PQ)\n";
+
+                return pngPath;
             }
             catch (OperationCanceledException) { throw; }
             catch (Exception ex)
@@ -1964,12 +2170,21 @@ namespace FfmpegGui.Services
                     "BT.2020" => ("bt2020", "bt2020nc"),
                     _ => ("bt709", "bt709")
                 };
-                // BT.2020 默认使用 PQ (smpte2084) — HDR 行业标准
+                // BT.2020 HDR: gamma 输入 → PQ 输出 (Rec.2100)
                 var trc = options.ColorSpace == "BT.2020" ? "smpte2084" : "bt709";
-                inputArgs += $"-color_primaries {cs.Item1} -color_trc {trc} ";
+                if (options.ColorSpace == "BT.2020")
+                {
+                    // 源为 gamma (bt709)，转换为 PQ (smpte2084)
+                    inputArgs += $"-color_primaries {cs.Item1} -color_trc bt709 ";
+                    outputArgs += "-vf \"zscale=transferin=bt709:transfer=smpte2084\" ";
+                }
+                else
+                {
+                    inputArgs += $"-color_primaries {cs.Item1} -color_trc {trc} ";
+                }
                 outputArgs += $"-colorspace {cs.Item2} ";
             }
-            // auto 模式：探测输入 HDR 属性并自动传递色彩元数据
+            // auto 模式：探测输入属性。16-bit 且无标签时默认 Rec.2020→sRGB 转换
             else if (!string.IsNullOrEmpty(inputPath)
                      && (string.IsNullOrWhiteSpace(options.ColorSpace)
                          || options.ColorSpace.Equals("auto", StringComparison.OrdinalIgnoreCase)))
@@ -1978,7 +2193,14 @@ namespace FfmpegGui.Services
                 if (hdrMeta.bitDepth > 8)
                 {
                     if (!string.IsNullOrEmpty(hdrMeta.colorPrimaries))
+                    {
                         inputArgs += $"-color_primaries {hdrMeta.colorPrimaries} ";
+                    }
+                    else
+                    {
+                        // 16-bit 无色彩标签（如 TIFF ICC）→ 默认 Rec.2020 转 sRGB
+                        outputArgs += "-vf \"zscale=primariesin=bt2020:primaries=bt709:transferin=bt709:transfer=iec61966-2-1\" ";
+                    }
                     if (!string.IsNullOrEmpty(hdrMeta.colorTrc))
                         inputArgs += $"-color_trc {hdrMeta.colorTrc} ";
                     if (!string.IsNullOrEmpty(hdrMeta.colorSpace))
