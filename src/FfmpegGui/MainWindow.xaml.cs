@@ -127,6 +127,7 @@ namespace FfmpegGui
         private CheckBox? JxlModularCheck;
         private CheckBox? CjxlProgressiveCheck;
         private NumericUpDown? CjxlPhotonNoiseBox;
+        private CheckBox? JxlPreserveUltrahdrCheck;
         private ComboBox? JpegHuffmanCombo;
         private ComboBox? JpegDctCombo;
         private ComboBox? JpegProgressiveCombo;
@@ -280,6 +281,7 @@ namespace FfmpegGui
             CjxlEffortBox = this.FindControl<NumericUpDown>("CjxlEffortBox");
             CjxlProgressiveCheck = this.FindControl<CheckBox>("CjxlProgressiveCheck");
             CjxlPhotonNoiseBox = this.FindControl<NumericUpDown>("CjxlPhotonNoiseBox");
+            JxlPreserveUltrahdrCheck = this.FindControl<CheckBox>("JxlPreserveUltrahdrCheck");
             JpegHuffmanCombo = this.FindControl<ComboBox>("JpegHuffmanCombo");
             JpegDctCombo = this.FindControl<ComboBox>("JpegDctCombo");
             JpegProgressiveCombo = this.FindControl<ComboBox>("JpegProgressiveCombo");
@@ -379,6 +381,7 @@ namespace FfmpegGui
             if (CjxlEffortBox != null) CjxlEffortBox.ValueChanged += (_, _) => RegenerateCommand();
             if (CjxlProgressiveCheck != null) CjxlProgressiveCheck.IsCheckedChanged += (_, _) => RegenerateCommand();
             if (CjxlPhotonNoiseBox != null) CjxlPhotonNoiseBox.ValueChanged += (_, _) => RegenerateCommand();
+            if (JxlPreserveUltrahdrCheck != null) JxlPreserveUltrahdrCheck.IsCheckedChanged += (_, _) => RegenerateCommand();
             if (JpegHuffmanCombo != null) JpegHuffmanCombo.SelectionChanged += (_, _) => RegenerateCommand();
             if (JpegDctCombo != null) JpegDctCombo.SelectionChanged += (_, _) => RegenerateCommand();
             if (JpegProgressiveCombo != null) JpegProgressiveCombo.SelectionChanged += (_, _) => RegenerateCommand();
@@ -912,6 +915,17 @@ namespace FfmpegGui
 
             var backend = GetCurrentEncoderBackend();
             var encName = GetCurrentEncoderName();
+
+            // JXL + 手动色彩空间 → 自动切 cjxl（ffmpeg libjxl 忽略 -color_primaries/-color_trc）
+            if (fmt is "jxl" && backend != EncoderBackend.Cjxl
+                && CjxlService.IsAvailable && IsColorManuallySpecified())
+            {
+                backend = EncoderBackend.Cjxl;
+                encName = "cjxl";
+                if (LogText != null)
+                    LogText.Text += "[jxl] 手动色彩空间 → 自动切换 cjxl 编码器\n";
+            }
+
             var outputPath = GetOutputPath(_inputPath, fmt);
 
             // ── 根据编码器后端生成不同命令 ──
@@ -954,8 +968,21 @@ namespace FfmpegGui
 
                 if (isJpegInput)
                 {
-                    LockLosslessForJxl();
-                    cmd.Append(" -d 0 --lossless_jpeg=1");
+                    // 若用户选择「保留 Ultra HDR 增益图」，则不锁定，按常规质量编码
+                    var preserveUltrahdr = JxlPreserveUltrahdrCheck?.IsChecked ?? true;
+                    if (!preserveUltrahdr)
+                    {
+                        LockLosslessForJxl();
+                        cmd.Append(" -d 0 --lossless_jpeg=1");
+                    }
+                    else
+                    {
+                        RestoreLosslessAndQuality();
+                        if (LosslessCheck?.IsChecked ?? false)
+                            cmd.Append(" -d 0");
+                        else
+                            cmd.Append(" -d ").Append($"{distance:F1}");
+                    }
                 }
                 else if (LosslessCheck?.IsChecked ?? false)
                 {
@@ -1024,18 +1051,27 @@ namespace FfmpegGui
             }
 
             // --- FFmpeg 后端：JPEG→JXL 无损重封装自动检测 ---
+            // 若用户选择「保留 Ultra HDR 增益图」，跳过无损重封装，按常规编码
             bool jxlLosslessJpeg = false;
             if (fmt is "jxl" && IsJpegInput(_inputPath))
             {
-                if (await EncoderDetectionService.SupportsJxlLosslessJpegAsync())
+                var preserveUltrahdr = JxlPreserveUltrahdrCheck?.IsChecked ?? true;
+                if (!preserveUltrahdr && await EncoderDetectionService.SupportsJxlLosslessJpegAsync())
                 {
                     jxlLosslessJpeg = true;
                     LockLosslessForJxl();
                     if (LogText != null)
                         LogText.Text += "[jxl] FFmpeg 检测到 libjxl 支持 lossless_jpeg，将使用无损重封装模式\n";
                 }
+                else if (preserveUltrahdr)
+                {
+                    RestoreLosslessAndQuality();
+                    if (LogText != null)
+                        LogText.Text += "[jxl] 已启用「保留增益图」→ 跳过无损重封装，使用常规编码\n";
+                }
                 else
                 {
+                    RestoreLosslessAndQuality();
                     if (LogText != null)
                         LogText.Text += "[jxl] FFmpeg libjxl 不支持 lossless_jpeg，可选择 cjxl 编码器启用极速模式\n";
                 }
@@ -1073,6 +1109,7 @@ namespace FfmpegGui
                 JxlLosslessJpeg = jxlLosslessJpeg,
                 CjxlProgressive = useAdvCodec ? (CjxlProgressiveCheck?.IsChecked ?? false) : false,
                 CjxlPhotonNoiseIso = useAdvCodec ? (int)(CjxlPhotonNoiseBox?.Value ?? 0) : 0,
+                JxlPreserveUltrahdr = useAdvCodec ? (JxlPreserveUltrahdrCheck?.IsChecked ?? true) : true,
                 JpegHuffman = useAdvCodec ? (JpegHuffmanCombo?.SelectedItem as string) : null,
                 JpegDct = useAdvCodec ? (JpegDctCombo?.SelectedItem as string is "auto" ? null : JpegDctCombo?.SelectedItem as string) : null,
                 JpegProgressiveId = useAdvCodec ? ParseJpegProgressiveId() : -1,
@@ -1396,6 +1433,21 @@ namespace FfmpegGui
         /// <summary>
         /// 获取当前选中的编码器后端类型
         /// </summary>
+        /// <summary>用户是否手动指定了色彩空间（简单模式 ColorSpace 或高级模式 ColorPrimaries）</summary>
+        private bool IsColorManuallySpecified()
+        {
+            // 简单模式: ColorSpace != auto
+            var cs = ColorSpaceCombo?.SelectedItem as string;
+            if (!string.IsNullOrWhiteSpace(cs)
+                && !cs.Equals("auto", StringComparison.OrdinalIgnoreCase))
+                return true;
+            // 高级模式: UseAdvancedColor 勾选且 ColorPrimaries 非空
+            if (UseAdvancedColor?.IsChecked == true
+                && !string.IsNullOrWhiteSpace(ColorPrimariesCombo?.SelectedItem as string))
+                return true;
+            return false;
+        }
+
         private EncoderBackend GetCurrentEncoderBackend()
         {
             var encStr = EncoderCombo?.SelectedItem as string ?? "";
@@ -1855,6 +1907,16 @@ namespace FfmpegGui
             var encoderName = EncoderInfo.ParseEncoderName(encoderStr);
             var encoderBackend = EncoderInfo.ParseBackend(encoderStr);
 
+            // JXL + 手动色彩空间 → 自动切 cjxl（ffmpeg libjxl 忽略 -color_primaries/-color_trc）
+            if (fmt is "jxl" && encoderBackend != EncoderBackend.Cjxl
+                && CjxlService.IsAvailable && IsColorManuallySpecified())
+            {
+                encoderBackend = EncoderBackend.Cjxl;
+                encoderName = "cjxl";
+                if (LogText != null)
+                    LogText.Text += "[jxl] 手动色彩空间 → 自动切换 cjxl 编码器\n";
+            }
+
             var autoThreads = AutoThreadsCheck?.IsChecked ?? true;
             var singleThread = SingleThreadCheck?.IsChecked ?? false;
             int threads = singleThread ? 1
@@ -1886,7 +1948,9 @@ namespace FfmpegGui
                 AvifHwPreset = useAdvCodec ? (HwPresetCombo?.SelectedItem as string) : null,
                 JxlEffort = useAdvCodec ? (int?)JxlEffortBox?.Value : null,
                 JxlModular = useAdvCodec ? JxlModularCheck?.IsChecked : null,
-                JxlLosslessJpeg = fmt is "jxl" && IsJpegInput(inputPath),
+                JxlLosslessJpeg = fmt is "jxl" && IsJpegInput(inputPath)
+                    && !(useAdvCodec && (JxlPreserveUltrahdrCheck?.IsChecked ?? true)),
+                JxlPreserveUltrahdr = useAdvCodec ? (JxlPreserveUltrahdrCheck?.IsChecked ?? true) : true,
                 JpegHuffman = useAdvCodec ? (JpegHuffmanCombo?.SelectedItem as string) : null,
                 JpegDct = useAdvCodec ? (JpegDctCombo?.SelectedItem as string is "auto" ? null : JpegDctCombo?.SelectedItem as string) : null,
                 JpegProgressiveId = useAdvCodec ? ParseJpegProgressiveId() : -1,
@@ -2267,6 +2331,7 @@ namespace FfmpegGui
                 JpegHuffman = original.JpegHuffman,
                 JpegDct = original.JpegDct,
                 JpegProgressiveId = original.JpegProgressiveId,
+                JxlPreserveUltrahdr = original.JxlPreserveUltrahdr,
                 JpegGainMap = original.JpegGainMap,
                 JpegGainMapQuality = original.JpegGainMapQuality,
                 JpegGainMapTargetNits = original.JpegGainMapTargetNits,
@@ -2467,6 +2532,14 @@ namespace FfmpegGui
             var encoderName = EncoderInfo.ParseEncoderName(encoderStr);
             var encoderBackend = EncoderInfo.ParseBackend(encoderStr);
 
+            // JXL + 手动色彩空间 → 自动切 cjxl（ffmpeg libjxl 忽略 -color_primaries/-color_trc）
+            if (fmt is "jxl" && encoderBackend != EncoderBackend.Cjxl
+                && CjxlService.IsAvailable && IsColorManuallySpecified())
+            {
+                encoderBackend = EncoderBackend.Cjxl;
+                encoderName = "cjxl";
+            }
+
             var autoThreads = AutoThreadsCheck?.IsChecked ?? true;
             var singleThread = SingleThreadCheck?.IsChecked ?? false;
             int threads = singleThread ? 1
@@ -2502,7 +2575,9 @@ namespace FfmpegGui
                 AvifHwPreset = useAdvCodec ? (HwPresetCombo?.SelectedItem as string) : null,
                 JxlEffort = useAdvCodec ? (int?)JxlEffortBox?.Value : null,
                 JxlModular = useAdvCodec ? JxlModularCheck?.IsChecked : null,
-                JxlLosslessJpeg = fmt is "jxl" && IsJpegInput(_inputPath),
+                JxlLosslessJpeg = fmt is "jxl" && IsJpegInput(_inputPath)
+                    && !(useAdvCodec && (JxlPreserveUltrahdrCheck?.IsChecked ?? true)),
+                JxlPreserveUltrahdr = useAdvCodec ? (JxlPreserveUltrahdrCheck?.IsChecked ?? true) : true,
                 JpegHuffman = useAdvCodec ? (JpegHuffmanCombo?.SelectedItem as string) : null,
                 JpegDct = useAdvCodec ? (JpegDctCombo?.SelectedItem as string is "auto" ? null : JpegDctCombo?.SelectedItem as string) : null,
                 JpegProgressiveId = useAdvCodec ? ParseJpegProgressiveId() : -1,
@@ -3266,6 +3341,7 @@ namespace FfmpegGui
                 JpegHuffman = JpegHuffmanCombo?.SelectedItem as string,
                 JpegDct = JpegDctCombo?.SelectedItem as string,
                 JpegProgressiveId = ParseJpegProgressiveId(),
+                JxlPreserveUltrahdr = JxlPreserveUltrahdrCheck?.IsChecked ?? true,
                 TiffCompressionAlgo = TiffCompressionCombo?.SelectedItem as string,
                 StripExifGps = StripExifGpsCheck?.IsChecked ?? true,
                 StripExifTime = StripExifTimeCheck?.IsChecked ?? false,
@@ -3318,6 +3394,7 @@ namespace FfmpegGui
             SetComboByValue(JpegHuffmanCombo, p.JpegHuffman);
             if (JpegProgressiveCombo != null && p.JpegProgressiveId is >= -1 and <= 1)
                 JpegProgressiveCombo.SelectedIndex = p.JpegProgressiveId + 1;  // -1→0(自动), 0→1(基线), 1→2(渐进)
+            if (JxlPreserveUltrahdrCheck != null) JxlPreserveUltrahdrCheck.IsChecked = p.JxlPreserveUltrahdr;
             SetComboByValue(TiffCompressionCombo, p.TiffCompressionAlgo);
             if (ConcurrencyBox != null) ConcurrencyBox.Text = Math.Clamp(p.MaxQueueSize, 1, 128).ToString();
             UpdateConcurrencyLabel();

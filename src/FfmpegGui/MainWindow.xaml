@@ -296,6 +296,10 @@
                 <NumericUpDown x:Name="CjxlPhotonNoiseBox" Value="0" Minimum="0" Maximum="3200" Increment="100"/>
                 <TextBlock Text="0=禁用, 100=低噪, 3200=高噪" FontSize="10" Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
               </StackPanel>
+              <!-- Ultra HDR (Gain Map) JPEG → JXL 处理策略 -->
+              <CheckBox x:Name="JxlPreserveUltrahdrCheck"
+                        Content="保留 Ultra HDR 增益图（解码后重新编码；关闭则无损重封装但丢失 HDR）"
+                        IsChecked="True" Margin="0,4,0,0" FontSize="11"/>
             </StackPanel>
             <!-- JPEG (FFmpeg mjpeg / libultrahdr) -->
             <StackPanel x:Name="JpegCodecPanel" IsVisible="False" Spacing="4">
