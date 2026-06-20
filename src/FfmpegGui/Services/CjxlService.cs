@@ -351,11 +351,19 @@ namespace FfmpegGui.Services
                 sb.Append($" --photon_noise_iso={opts.CjxlPhotonNoiseIso}");
 
             // ── 色彩空间映射：将 FFmpeg 色彩参数翻译为 cjxl -x color_space ──
-            // 管道模式（input="-"）：ffmpeg 已将色彩转为 PPM RGB，cjxl 不应再套用色彩标记
+            // 注意：isPipe=true 时仍需设置色彩空间，因为 PPM 管道不携带任何色彩元数据。
+            // cjxl 的 -x color_space= 是输出容器标签，与输入格式无关。
             var isPipe = input == "-";
             string? colorSpace = null;
             int intensityTarget = 0;
-            if (!isPipe)
+
+            // Ultra HDR 解码输出：显式标记 Rec.2100 PQ（优先级最高）
+            if (!string.IsNullOrWhiteSpace(opts.DecodedUltraHdrColorSpace))
+            {
+                colorSpace = opts.DecodedUltraHdrColorSpace;
+                intensityTarget = 10000; // PQ 默认 10000 nits
+            }
+            else
             {
                 if (hdrMeta.bitDepth > 8)
                 {

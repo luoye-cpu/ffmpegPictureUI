@@ -62,6 +62,15 @@ namespace FfmpegGui.Services
 
             var fmt = options.Format.ToLower();
 
+            // BT.2020 HDR: gamma 输入 → PQ 输出 (AVIF/JXL/其他格式)
+            if (!options.UseAdvancedColorParameters
+                && !string.IsNullOrWhiteSpace(options.ColorSpace)
+                && options.ColorSpace.Equals("BT.2020", StringComparison.OrdinalIgnoreCase))
+            {
+                args.Add("-vf");
+                args.Add("zscale=transferin=bt709:transfer=smpte2084");
+            }
+
             switch (fmt)
             {
                 case "jpg":
@@ -507,6 +516,15 @@ namespace FfmpegGui.Services
         {
             string? primaries = null, trc = null, colorspace = null;
 
+            // Ultra HDR 解码输出：显式标记 Rec.2100 PQ（优先级最高）
+            if (!string.IsNullOrWhiteSpace(options.DecodedUltraHdrColorSpace))
+            {
+                primaries = "bt2020";
+                trc = "smpte2084";       // PQ (SMPTE ST 2084)
+                colorspace = "bt2020nc";
+                return (primaries, trc, colorspace);
+            }
+
             if (options.UseAdvancedColorParameters
                 && (!string.IsNullOrWhiteSpace(options.ColorPrimaries)
                  || !string.IsNullOrWhiteSpace(options.ColorTrc)
@@ -522,7 +540,7 @@ namespace FfmpegGui.Services
                 var cs = MapColorSpace(options.ColorSpace);
                 (primaries, trc) = cs switch
                 {
-                    "bt2020nc" => ("bt2020", "smpte2084"),  // BT.2020 → PQ (HDR 行业标准)
+                    "bt2020nc" => ("bt2020", "smpte2084"),  // BT.2020 → PQ (HDR)
                     "bt709" => ("bt709", "bt709"),
                     _ => (cs, "bt709")
                 };

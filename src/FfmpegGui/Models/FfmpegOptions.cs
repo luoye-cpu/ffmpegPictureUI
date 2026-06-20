@@ -48,6 +48,10 @@ namespace FfmpegGui.Models
         public bool CjxlProgressive { get; set; } = false;
         /// <summary>cjxl 光子噪声 ISO (0=禁用, 100-3200)</summary>
         public int CjxlPhotonNoiseIso { get; set; } = 0;
+        /// <summary>JXL 处理 Ultra HDR JPEG 时保留增益图（解码后重新编码），false=无损重封装忽略增益图</summary>
+        public bool JxlPreserveUltrahdr { get; set; } = true;
+        /// <summary>解码的 Ultra HDR 输出色彩空间提示（如 "Rec2100PQ"），用于 cjxl -x color_space=</summary>
+        public string? DecodedUltraHdrColorSpace { get; set; }
         public string? JpegHuffman { get; set; }
         /// <summary>JPEG DCT 算法: "int" / "fastint" / "float"</summary>
         public string? JpegDct { get; set; }
