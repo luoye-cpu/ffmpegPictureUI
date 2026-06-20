@@ -181,7 +181,8 @@ namespace FfmpegGui.Services
         public static async Task<int> RunAsync(
             string inputPath, string outputPath,
             int effort = 7, int threads = 0,
-            Action<string>? logCallback = null)
+            Action<string>? logCallback = null,
+            CancellationToken ct = default)
         {
             if (_detectedPath == null)
                 throw new InvalidOperationException("cjxl.exe 未找到");
@@ -350,18 +351,22 @@ namespace FfmpegGui.Services
                 sb.Append($" --photon_noise_iso={opts.CjxlPhotonNoiseIso}");
 
             // ── 色彩空间映射：将 FFmpeg 色彩参数翻译为 cjxl -x color_space ──
-            // auto 模式下优先使用探测结果，否则由用户选项决定
-            string? colorSpace;
-            int intensityTarget;
-            if (hdrMeta.bitDepth > 8)
+            // 管道模式（input="-"）：ffmpeg 已将色彩转为 PPM RGB，cjxl 不应再套用色彩标记
+            var isPipe = input == "-";
+            string? colorSpace = null;
+            int intensityTarget = 0;
+            if (!isPipe)
             {
-                colorSpace = ColorEncodingHelper.MapToCjxlColorSpace(hdrMeta);
-                intensityTarget = ColorEncodingHelper.MapToIntensityTarget(hdrMeta);
-            }
-            else
-            {
-                colorSpace = ColorEncodingHelper.MapToCjxlColorSpace(opts);
-                intensityTarget = ColorEncodingHelper.MapToIntensityTarget(opts);
+                if (hdrMeta.bitDepth > 8)
+                {
+                    colorSpace = ColorEncodingHelper.MapToCjxlColorSpace(hdrMeta);
+                    intensityTarget = ColorEncodingHelper.MapToIntensityTarget(hdrMeta);
+                }
+                else
+                {
+                    colorSpace = ColorEncodingHelper.MapToCjxlColorSpace(opts);
+                    intensityTarget = ColorEncodingHelper.MapToIntensityTarget(opts);
+                }
             }
 
             if (!string.IsNullOrWhiteSpace(colorSpace))

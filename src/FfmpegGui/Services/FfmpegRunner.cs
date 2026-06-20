@@ -1,13 +1,14 @@
 using System;
 using System.Diagnostics;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace FfmpegGui.Services
 {
     public static class FfmpegRunner
     {
-        public static async Task<int> RunAsync(string arguments, Action<string>? logCallback = null, string? ffmpegPath = null)
+        public static async Task<int> RunAsync(string arguments, Action<string>? logCallback = null, string? ffmpegPath = null, CancellationToken ct = default)
         {
             var fileName = ffmpegPath ?? AppSettingsService.Current.FfmpegPath;
             var psi = new ProcessStartInfo
@@ -28,7 +29,6 @@ namespace FfmpegGui.Services
 
             process.Start();
 
-            // 应用用户设定的进程优先级（与 Windows 任务管理器顺序一致）
             try
             {
                 process.PriorityClass = AppSettingsService.Current.FfmpegPriority switch
@@ -41,11 +41,22 @@ namespace FfmpegGui.Services
                     _ => ProcessPriorityClass.Normal
                 };
             }
-            catch { /* 权限不足时静默忽略 */ }
+            catch { }
 
             process.BeginOutputReadLine();
             process.BeginErrorReadLine();
-            await process.WaitForExitAsync();
+
+            // 支持 CancellationToken：取消时杀死进程树
+            if (ct.CanBeCanceled)
+            {
+                using var reg = ct.Register(() => { try { if (!process.HasExited) process.Kill(true); } catch { } });
+                try { await process.WaitForExitAsync(ct); }
+                catch (OperationCanceledException) { try { if (!process.HasExited) process.Kill(true); } catch { } throw; }
+            }
+            else
+            {
+                await process.WaitForExitAsync();
+            }
             return process.ExitCode;
         }
     }

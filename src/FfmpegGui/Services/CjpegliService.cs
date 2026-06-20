@@ -226,9 +226,9 @@ namespace FfmpegGui.Services
                 && !opts.CjpegliChromaSubsampling.Equals("auto", StringComparison.OrdinalIgnoreCase))
                 sb.Append($" --chroma_subsampling {opts.CjpegliChromaSubsampling}");
 
-            // 渐进模式
+            // 渐进模式 (0=sequential/baseline, 2=progressive, -1=不传参使用默认)
             if (opts.CjpegliProgressiveId >= 0)
-                sb.Append($" --progressive {opts.CjpegliProgressiveId}");
+                sb.Append($" -p {opts.CjpegliProgressiveId}");
 
             // Huffman 优化
             if (!opts.CjpegliOptimize)
@@ -252,15 +252,15 @@ namespace FfmpegGui.Services
                 sb.Append($" --num_threads={opts.Threads}");
 
             // ── 色彩空间映射 ──
-            // JPEG 输出通常为 sRGB；HDR 内容应使用 Ultra HDR (Gain Map) 路径
-            string? colorSpace;
-            if (hdrMeta.bitDepth > 8)
+            // JPEG 输出为 SDR；管道模式下 ffmpeg 已将色彩转为 PPM RGB，不应再套用色彩标记
+            string? colorSpace = null;
+            var isPipe2 = input == "-";
+            if (!isPipe2)
             {
-                colorSpace = ColorEncodingHelper.MapToCjxlColorSpace(hdrMeta);
-            }
-            else
-            {
-                colorSpace = ColorEncodingHelper.MapToCjxlColorSpace(opts);
+                if (hdrMeta.bitDepth > 8)
+                    colorSpace = ColorEncodingHelper.MapToCjxlColorSpace(hdrMeta);
+                else
+                    colorSpace = ColorEncodingHelper.MapToCjxlColorSpace(opts);
             }
             if (!string.IsNullOrWhiteSpace(colorSpace))
             {

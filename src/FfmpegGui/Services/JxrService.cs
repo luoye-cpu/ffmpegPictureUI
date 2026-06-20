@@ -141,7 +141,8 @@ namespace FfmpegGui.Services
         /// </summary>
         public static async Task<int> RunAsync(
             string arguments,
-            Action<string>? logCallback = null)
+            Action<string>? logCallback = null,
+            CancellationToken ct = default)
         {
             if (_detectedPath == null)
                 throw new InvalidOperationException("JxrEncApp.exe 未找到");
@@ -171,9 +172,16 @@ namespace FfmpegGui.Services
                 process.Start();
                 process.BeginOutputReadLine();
                 process.BeginErrorReadLine();
-                await process.WaitForExitAsync();
+                if (ct.CanBeCanceled)
+                {
+                    using var reg = ct.Register(() => { try { if (!process.HasExited) process.Kill(true); } catch { } });
+                    try { await process.WaitForExitAsync(ct); }
+                    catch (OperationCanceledException) { try { if (!process.HasExited) process.Kill(true); } catch { } throw; }
+                }
+                else { await process.WaitForExitAsync(); }
                 return process.ExitCode;
             }
+            catch (OperationCanceledException) { throw; }
             catch (Exception ex)
             {
                 logCallback?.Invoke($"[jxr] 启动失败: {ex.Message}\n");
