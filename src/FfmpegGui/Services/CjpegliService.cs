@@ -210,7 +210,9 @@ namespace FfmpegGui.Services
         /// 构建 cjpegli 命令行参数字符串（不含 exe 路径）。
         /// 用于 UI 预览和实际执行。
         /// </summary>
-        public static string BuildCjpegliArguments(string input, string output, Models.FfmpegOptions opts)
+        /// <param name="hdrMeta">auto 模式下的输入色彩探测结果（可选）</param>
+        public static string BuildCjpegliArguments(string input, string output, Models.FfmpegOptions opts,
+            FfmpegCommandBuilder.ColorMetadata hdrMeta = default)
         {
             var sb = new StringBuilder();
             sb.Append($"\"{input}\" \"{output}\"");
@@ -248,6 +250,22 @@ namespace FfmpegGui.Services
             // 线程（仅当多线程可用时）
             if (opts.CjpegliMultiThreadAvailable && opts.Threads > 0)
                 sb.Append($" --num_threads={opts.Threads}");
+
+            // ── 色彩空间映射 ──
+            // JPEG 输出通常为 sRGB；HDR 内容应使用 Ultra HDR (Gain Map) 路径
+            string? colorSpace;
+            if (hdrMeta.bitDepth > 8)
+            {
+                colorSpace = ColorEncodingHelper.MapToCjxlColorSpace(hdrMeta);
+            }
+            else
+            {
+                colorSpace = ColorEncodingHelper.MapToCjxlColorSpace(opts);
+            }
+            if (!string.IsNullOrWhiteSpace(colorSpace))
+            {
+                sb.Append($" -x color_space={colorSpace}");
+            }
 
             return sb.ToString();
         }

@@ -158,23 +158,36 @@
                      VerticalAlignment="Center" />
           </StackPanel>
           <TextBlock x:Name="QualityValue" Text="质量: 75"/>
-          <!-- 色彩管理（静态+动图共用） -->
-          <TextBlock Text="色度采样"/>
-          <ComboBox x:Name="ChromaCombo">
-            <sys:String>auto</sys:String>
-            <sys:String>4:4:4</sys:String>
-            <sys:String>4:2:2</sys:String>
-            <sys:String>4:2:0</sys:String>
-          </ComboBox>
-          <TextBlock Text="色彩空间" Margin="0,8,0,0"/>
-          <ComboBox x:Name="ColorSpaceCombo">
-            <sys:String>auto</sys:String>
-            <sys:String>BT.601</sys:String>
-            <sys:String>BT.709</sys:String>
-            <sys:String>BT.2020</sys:String>
-          </ComboBox>
-          <CheckBox x:Name="UseAdvancedColor" Content="使用高级色彩参数" Margin="0,6,0,0" IsCheckedChanged="UseAdvancedColor_IsCheckedChanged"/>
-          <StackPanel x:Name="AdvancedColorPanel" IsVisible="False" Margin="0,4,0,0" Spacing="6">
+          <!-- 基本色彩参数：色度采样 / 色彩空间 / 位深 -->
+          <Border CornerRadius="4" Padding="8,6" Margin="0,4,0,0"
+                  Background="{DynamicResource SystemControlBackgroundChromeMediumBrush}">
+            <StackPanel Spacing="6">
+              <TextBlock Text="色度采样" FontSize="11" Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+              <ComboBox x:Name="ChromaCombo">
+                <sys:String>auto</sys:String>
+                <sys:String>4:4:4</sys:String>
+                <sys:String>4:2:2</sys:String>
+                <sys:String>4:2:0</sys:String>
+              </ComboBox>
+              <TextBlock Text="色彩空间"/>
+              <ComboBox x:Name="ColorSpaceCombo">
+                <sys:String>auto</sys:String>
+                <sys:String>BT.601</sys:String>
+                <sys:String>BT.709</sys:String>
+                <sys:String>BT.2020</sys:String>
+              </ComboBox>
+              <TextBlock Text="位深"/>
+              <ComboBox x:Name="BitDepthCombo">
+                <sys:String>auto</sys:String>
+                <sys:String>8</sys:String>
+                <sys:String>10</sys:String>
+                <sys:String>12</sys:String>
+                <sys:String>16</sys:String>
+              </ComboBox>
+            </StackPanel>
+          </Border>
+          <CheckBox x:Name="UseAdvancedColor" Content="高级色彩参数" IsCheckedChanged="UseAdvancedColor_IsCheckedChanged"/>
+          <StackPanel x:Name="AdvancedColorPanel" IsVisible="False" Spacing="6">
             <TextBlock Text="色彩基准（primaries）"/>
             <ComboBox x:Name="ColorPrimariesCombo">
               <sys:String>bt709</sys:String>
@@ -194,11 +207,6 @@
               <sys:String>bt2020</sys:String>
             </ComboBox>
           </StackPanel>
-          <TextBlock Text="位深"/>
-          <ComboBox x:Name="BitDepthCombo">
-            <sys:String>auto</sys:String>
-            <sys:String>8</sys:String>
-          </ComboBox>
           <CheckBox x:Name="UseAdvancedCodec" Content="高级编码选项" Margin="0,6,0,0" 
                     IsCheckedChanged="UseAdvancedCodec_IsCheckedChanged"/>
           <StackPanel x:Name="AdvancedCodecPanel" IsVisible="False" Margin="0,4,0,0" Spacing="6">
@@ -385,7 +393,7 @@
             <StackPanel Spacing="4">
               <TextBlock Text="🔒 ExifTool 隐私清理" FontSize="13" FontWeight="Bold"/>
               <TextBlock x:Name="ExifToolHint" Text="已检测到 exiftool，可选择性删除以下元数据：" FontSize="11" Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" TextWrapping="Wrap"/>
-              <CheckBox x:Name="StripExifGpsCheck" Content="删除 GPS 位置信息" IsChecked="True"/>
+              <CheckBox x:Name="StripExifGpsCheck" Content="删除 GPS 位置信息"/>
               <CheckBox x:Name="StripExifTimeCheck" Content="删除拍摄时间日期"/>
               <CheckBox x:Name="StripExifCameraCheck" Content="删除相机/镜头型号与拍摄参数"/>
               <CheckBox x:Name="StripExifAllCheck" Content="删除全部 EXIF 数据"/>

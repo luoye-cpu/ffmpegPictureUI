@@ -57,7 +57,7 @@ namespace FfmpegGui.Services
                 SupportedColorSpaces = new List<string> { "BT.601", "BT.709", "BT.2020" }
             };
 
-            // PNG: 1/2/4/8/16-bit，常用 8/16
+            // PNG: 1/2/4/8/16-bit，常用 8/16；HDR PNG 支持 BT.2020
             _cache["png"] = new FormatCapabilities
             {
                 Format = "png",
@@ -67,7 +67,7 @@ namespace FfmpegGui.Services
                 SupportsMetadata = true,
                 SupportsLossless = true,
                 SupportedBitDepths = new List<int> { 8, 16 },
-                SupportedColorSpaces = new List<string> { "BT.709" }
+                SupportedColorSpaces = new List<string> { "BT.709", "BT.2020" }
             };
 
             // WebP: 仅 8-bit（VP8 不支持高位深）
@@ -106,7 +106,7 @@ namespace FfmpegGui.Services
                 SupportsMetadata = true,
                 SupportsLossless = true,
                 SupportedBitDepths = new List<int> { 8, 16 },
-                SupportedColorSpaces = new List<string> { "BT.709" }
+                SupportedColorSpaces = new List<string> { "BT.709", "BT.2020" }
             };
 
             // GIF: 256 色调色板动图，8-bit
@@ -132,7 +132,7 @@ namespace FfmpegGui.Services
                 SupportsMetadata = false,
                 SupportsLossless = true,
                 SupportedBitDepths = new List<int> { 8, 16 },
-                SupportedColorSpaces = new List<string> { "BT.709" }
+                SupportedColorSpaces = new List<string> { "BT.709", "BT.2020" }
             };
 
             // JPEG XL: 支持 8/10/12/16-bit 整数，甚至 32-bit 浮点

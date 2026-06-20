@@ -87,7 +87,7 @@ namespace FfmpegGui.Models
 
         // ── ExifTool 隐私清理选项（仅在 exiftool 可用时生效）──
         /// <summary>删除 GPS 位置信息（默认勾选）</summary>
-        public bool StripExifGps { get; set; } = true;
+        public bool StripExifGps { get; set; } = false;
         /// <summary>删除拍摄时间日期</summary>
         public bool StripExifTime { get; set; } = false;
         /// <summary>删除相机/镜头型号与拍摄参数</summary>
