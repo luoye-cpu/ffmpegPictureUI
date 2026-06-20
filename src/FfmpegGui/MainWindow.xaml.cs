@@ -67,6 +67,7 @@ namespace FfmpegGui
         private CheckBox? AutoThreadsCheck;
         private bool _isQueueRunning = false;
         private bool _updatingQuality = false;  // 防止滑块/数字框双向同步时递归
+        private bool _suppressCommandRegen = false; // 批量更新选项时抑制重复 RegenerateCommand 调用
         private CheckBox? SingleThreadCheck;
         private TextBlock? ThreadHintLabel;
         private TextBlock? ConcurrencyLabel;
@@ -128,12 +129,20 @@ namespace FfmpegGui
         private NumericUpDown? CjxlPhotonNoiseBox;
         private ComboBox? JpegHuffmanCombo;
         private ComboBox? JpegDctCombo;
+        private ComboBox? JpegProgressiveCombo;
         // ── Gain Map (Ultra HDR) JPEG 控件 ──
         private Border? JpegGainMapPanel;
-        private CheckBox? JpegGainMapCheck;
         private StackPanel? JpegGainMapOptions;
-        private NumericUpDown? JpegGainMapQualityBox;
-        private NumericUpDown? JpegGainMapNitsBox;
+        private CheckBox? JpegGainMapFollowMainCheck;
+        private StackPanel? JpegGainMapQualityPanel;
+        private TextBox? JpegGainMapQualityBox;
+        private Button? GainMapQualityUpBtn;
+        private Button? GainMapQualityDownBtn;
+        private Slider? JpegGainMapNitsSlider;
+        private TextBox? JpegGainMapNitsBox;
+        private ComboBox? JpegGainMapHdrCfCombo;
+        private ComboBox? JpegGainMapDownsampleCombo;
+        private CheckBox? JpegGainMapMultiChannelCheck;
         private ComboBox? TiffCompressionCombo;
         // ── cjpegli / jpegli 高级面板控件 ──
         private StackPanel? JpegliCodecPanel;
@@ -273,12 +282,20 @@ namespace FfmpegGui
             CjxlPhotonNoiseBox = this.FindControl<NumericUpDown>("CjxlPhotonNoiseBox");
             JpegHuffmanCombo = this.FindControl<ComboBox>("JpegHuffmanCombo");
             JpegDctCombo = this.FindControl<ComboBox>("JpegDctCombo");
+            JpegProgressiveCombo = this.FindControl<ComboBox>("JpegProgressiveCombo");
             // ── Gain Map (Ultra HDR) JPEG 控件 ──
             JpegGainMapPanel = this.FindControl<Border>("JpegGainMapPanel");
-            JpegGainMapCheck = this.FindControl<CheckBox>("JpegGainMapCheck");
             JpegGainMapOptions = this.FindControl<StackPanel>("JpegGainMapOptions");
-            JpegGainMapQualityBox = this.FindControl<NumericUpDown>("JpegGainMapQualityBox");
-            JpegGainMapNitsBox = this.FindControl<NumericUpDown>("JpegGainMapNitsBox");
+            JpegGainMapFollowMainCheck = this.FindControl<CheckBox>("JpegGainMapFollowMainCheck");
+            JpegGainMapQualityPanel = this.FindControl<StackPanel>("JpegGainMapQualityPanel");
+            JpegGainMapQualityBox = this.FindControl<TextBox>("JpegGainMapQualityBox");
+            GainMapQualityUpBtn = this.FindControl<Button>("GainMapQualityUpBtn");
+            GainMapQualityDownBtn = this.FindControl<Button>("GainMapQualityDownBtn");
+            JpegGainMapNitsSlider = this.FindControl<Slider>("JpegGainMapNitsSlider");
+            JpegGainMapNitsBox = this.FindControl<TextBox>("JpegGainMapNitsBox");
+            JpegGainMapHdrCfCombo = this.FindControl<ComboBox>("JpegGainMapHdrCfCombo");
+            JpegGainMapDownsampleCombo = this.FindControl<ComboBox>("JpegGainMapDownsampleCombo");
+            JpegGainMapMultiChannelCheck = this.FindControl<CheckBox>("JpegGainMapMultiChannelCheck");
             TiffCompressionCombo = this.FindControl<ComboBox>("TiffCompressionCombo");
             // ── cjpegli / jpegli 高级面板控件 ──
             JpegliCodecPanel = this.FindControl<StackPanel>("JpegliCodecPanel");
@@ -364,18 +381,56 @@ namespace FfmpegGui
             if (CjxlPhotonNoiseBox != null) CjxlPhotonNoiseBox.ValueChanged += (_, _) => RegenerateCommand();
             if (JpegHuffmanCombo != null) JpegHuffmanCombo.SelectionChanged += (_, _) => RegenerateCommand();
             if (JpegDctCombo != null) JpegDctCombo.SelectionChanged += (_, _) => RegenerateCommand();
+            if (JpegProgressiveCombo != null) JpegProgressiveCombo.SelectionChanged += (_, _) => RegenerateCommand();
             // Gain Map 控件事件
-            if (JpegGainMapCheck != null)
+            if (JpegGainMapFollowMainCheck != null)
             {
-                JpegGainMapCheck.IsCheckedChanged += (_, _) =>
+                JpegGainMapFollowMainCheck.IsCheckedChanged += (_, _) =>
                 {
-                    if (JpegGainMapOptions != null)
-                        JpegGainMapOptions.IsVisible = JpegGainMapCheck.IsChecked == true;
+                    if (JpegGainMapQualityPanel != null)
+                        JpegGainMapQualityPanel.IsVisible = JpegGainMapFollowMainCheck.IsChecked != true;
                     RegenerateCommand();
                 };
             }
-            if (JpegGainMapQualityBox != null) JpegGainMapQualityBox.ValueChanged += (_, _) => RegenerateCommand();
-            if (JpegGainMapNitsBox != null) JpegGainMapNitsBox.ValueChanged += (_, _) => RegenerateCommand();
+            if (JpegGainMapQualityBox != null)
+            {
+                JpegGainMapQualityBox.TextChanged += (_, _) => RegenerateCommand();
+                // 失焦时格式化：限制 1-100 范围
+                JpegGainMapQualityBox.LostFocus += (_, _) =>
+                {
+                    if (int.TryParse(JpegGainMapQualityBox.Text, out var q))
+                        JpegGainMapQualityBox.Text = Math.Clamp(q, 1, 100).ToString();
+                    else
+                        JpegGainMapQualityBox.Text = "75";
+                };
+            }
+            if (GainMapQualityUpBtn != null)
+                GainMapQualityUpBtn.Click += (_, _) => AdjustGainMapQuality(1);
+            if (GainMapQualityDownBtn != null)
+                GainMapQualityDownBtn.Click += (_, _) => AdjustGainMapQuality(-1);
+            if (JpegGainMapNitsBox != null)
+                JpegGainMapNitsBox.TextChanged += (_, _) =>
+                {
+                    SyncNitsToSlider();
+                    RegenerateCommand();
+                };
+            if (JpegGainMapNitsSlider != null)
+            {
+                JpegGainMapNitsSlider.PropertyChanged += (_, e) =>
+                {
+                    if (e.Property.Name == nameof(Slider.Value))
+                    {
+                        JpegGainMapNitsBox!.Text = ((int)JpegGainMapNitsSlider.Value).ToString();
+                        RegenerateCommand();
+                    }
+                };
+            }
+            if (JpegGainMapHdrCfCombo != null)
+                JpegGainMapHdrCfCombo.SelectionChanged += (_, _) => RegenerateCommand();
+            if (JpegGainMapDownsampleCombo != null)
+                JpegGainMapDownsampleCombo.SelectionChanged += (_, _) => RegenerateCommand();
+            if (JpegGainMapMultiChannelCheck != null)
+                JpegGainMapMultiChannelCheck.IsCheckedChanged += (_, _) => RegenerateCommand();
             if (TiffCompressionCombo != null) TiffCompressionCombo.SelectionChanged += (_, _) => RegenerateCommand();
             // cjpegli / jpegli 高级选项事件
             if (JpegliChromaCombo != null) JpegliChromaCombo.SelectionChanged += (_, _) => RegenerateCommand();
@@ -841,7 +896,7 @@ namespace FfmpegGui
 
         private async void RegenerateCommand()
         {
-            if (string.IsNullOrWhiteSpace(_inputPath)) return;
+            if (_suppressCommandRegen || string.IsNullOrWhiteSpace(_inputPath)) return;
             var fmt = NormalizeFormat(FormatCombo?.SelectedItem as string);
             var chroma = ChromaCombo?.SelectedItem as string ?? "auto";
             var bitdepthStr = BitDepthCombo?.SelectedItem as string ?? "auto";
@@ -869,7 +924,7 @@ namespace FfmpegGui
                     Quality = (int)(QualitySlider?.Value ?? 92),
                     Threads = 1,
                     CjpegliChromaSubsampling = useJpegliAdv ? (JpegliChromaCombo?.SelectedItem as string ?? "auto") : "auto",
-                    CjpegliProgressiveId = useJpegliAdv ? JpegliProgressiveCombo?.SelectedIndex switch { 0 => -1, 1 => 0, 2 => 6, _ => -1 } : -1,
+                    CjpegliProgressiveId = useJpegliAdv ? JpegliProgressiveCombo?.SelectedIndex switch { 0 => -1, 1 => 0, 2 => 2, _ => -1 } : -1,
                     CjpegliOptimize = useJpegliAdv ? (JpegliOptimizeCheck?.IsChecked ?? true) : true,
                     CjpegliAdaptiveQuant = useJpegliAdv ? (JpegliAdaptiveQuantCheck?.IsChecked ?? true) : true,
                     CjpegliEncoderBackend = useJpegliAdv ? (JpegliEncoderBackendCombo?.SelectedIndex == 1 ? "sjpeg" : "libjpeg") : "libjpeg",
@@ -921,11 +976,29 @@ namespace FfmpegGui
                 return;
             }
 
+            // ── Gain Map (Ultra HDR) JPEG：RAW + cjpegli SDR 基础图 → ultrahdr_app ──
+            if (backend == EncoderBackend.Ultrahdr && fmt is "jpg" or "jpeg")
+            {
+                var qualityVal = (int)(QualitySlider?.Value ?? 90);
+                var gmq = ParseGainMapQuality();
+                var nits = ParseGainMapNits();
+                var hasCjpegli = CjpegliService.IsAvailable;
+                var cmd = new System.Text.StringBuilder();
+                cmd.Append("[两步法] ffmpeg → p010 RAW");
+                if (hasCjpegli) cmd.Append(" + cjpegli SDR 优化");
+                cmd.Append(" → ultrahdr_app -q ").Append(qualityVal).Append(" -L ").Append(nits);
+                if (gmq >= 0) cmd.Append(" -Q ").Append(gmq);
+                cmd.Append(" -z \"").Append(outputPath).Append("\"");
+                if (CommandText != null)
+                    CommandText.Text = cmd.ToString();
+                return;
+            }
+
             if (backend == EncoderBackend.Ultrahdr)
             {
                 var qualityVal = (int)(QualitySlider?.Value ?? 90);
-                var gmq = useAdvCodec ? (int)(JpegGainMapQualityBox?.Value ?? -1) : -1;
-                var nits = useAdvCodec ? (int)(JpegGainMapNitsBox?.Value ?? 1000) : 1000;
+                var gmq = useAdvCodec ? ParseGainMapQuality() : -1;
+                var nits = useAdvCodec ? ParseGainMapNits() : 1000;
                 var cmd = new System.Text.StringBuilder();
                 cmd.Append("ultrahdr_app -m 0 -p \"<raw>\" -w <W> -h <H> -q ")
                    .Append(qualityVal).Append(" -a 0");
@@ -1002,9 +1075,14 @@ namespace FfmpegGui
                 CjxlPhotonNoiseIso = useAdvCodec ? (int)(CjxlPhotonNoiseBox?.Value ?? 0) : 0,
                 JpegHuffman = useAdvCodec ? (JpegHuffmanCombo?.SelectedItem as string) : null,
                 JpegDct = useAdvCodec ? (JpegDctCombo?.SelectedItem as string is "auto" ? null : JpegDctCombo?.SelectedItem as string) : null,
-                JpegGainMap = (JpegGainMapCheck?.IsChecked ?? false) && EncoderDetectionService.IsLibultrahdrAvailable,
-                JpegGainMapQuality = (int)(JpegGainMapQualityBox?.Value ?? -1),
-                JpegGainMapTargetNits = (int)(JpegGainMapNitsBox?.Value ?? 1000),
+                JpegProgressiveId = useAdvCodec ? ParseJpegProgressiveId() : -1,
+                JpegGainMap = (GetCurrentEncoderBackend() == EncoderBackend.Ultrahdr),
+                JpegGainMapQuality = ParseGainMapQuality(),
+                JpegGainMapTargetNits = ParseGainMapNits(),
+                JpegGainMapHdrCf = ParseGainMapHdrCf(),
+                JpegGainMapDownsample = ParseGainMapDownsample(),
+                JpegGainMapMultiChannel = (UseAdvancedCodec?.IsChecked == true)
+                    && (JpegGainMapMultiChannelCheck?.IsChecked ?? false),
                 TiffCompressionAlgo = useAdvCodec ? (TiffCompressionCombo?.SelectedItem as string) : null,
                 StripExifGps = StripExifGpsCheck?.IsChecked ?? true,
                 StripExifTime = StripExifTimeCheck?.IsChecked ?? false,
@@ -1365,6 +1443,11 @@ namespace FfmpegGui
             var fmt3 = NormalizeFormat(FormatCombo.SelectedItem as string);
             _currentCapabilities = FormatCapabilitiesService.GetCapabilities(fmt3);
 
+            // 批量更新期间抑制 RegenerateCommand，避免冗余调用导致 UI 卡顿
+            _suppressCommandRegen = true;
+            try
+            {
+
             if (_currentCapabilities != null)
             {
                 if (QualitySlider != null)
@@ -1446,6 +1529,11 @@ namespace FfmpegGui
 
             UpdateCodecPanelVisibility(fmt3);
             UpdateThreadAvailabilityForFormat(fmt3);
+            }
+            finally
+            {
+                _suppressCommandRegen = false;
+            }
             RegenerateCommand();
         }
 
@@ -1801,9 +1889,14 @@ namespace FfmpegGui
                 JxlLosslessJpeg = fmt is "jxl" && IsJpegInput(inputPath),
                 JpegHuffman = useAdvCodec ? (JpegHuffmanCombo?.SelectedItem as string) : null,
                 JpegDct = useAdvCodec ? (JpegDctCombo?.SelectedItem as string is "auto" ? null : JpegDctCombo?.SelectedItem as string) : null,
-                JpegGainMap = (JpegGainMapCheck?.IsChecked ?? false) && EncoderDetectionService.IsLibultrahdrAvailable,
-                JpegGainMapQuality = (int)(JpegGainMapQualityBox?.Value ?? -1),
-                JpegGainMapTargetNits = (int)(JpegGainMapNitsBox?.Value ?? 1000),
+                JpegProgressiveId = useAdvCodec ? ParseJpegProgressiveId() : -1,
+                JpegGainMap = (encoderBackend == EncoderBackend.Ultrahdr),
+                JpegGainMapQuality = ParseGainMapQuality(),
+                JpegGainMapTargetNits = ParseGainMapNits(),
+                JpegGainMapHdrCf = ParseGainMapHdrCf(),
+                JpegGainMapDownsample = ParseGainMapDownsample(),
+                JpegGainMapMultiChannel = (UseAdvancedCodec?.IsChecked == true)
+                    && (JpegGainMapMultiChannelCheck?.IsChecked ?? false),
                 TiffCompressionAlgo = useAdvCodec ? (TiffCompressionCombo?.SelectedItem as string) : null,
                 StripExifGps = StripExifGpsCheck?.IsChecked ?? true,
                 StripExifTime = StripExifTimeCheck?.IsChecked ?? false,
@@ -1818,6 +1911,10 @@ namespace FfmpegGui
                 AnimationScaleW = ParseOptionalInt(AnimationScaleWBox?.Text, 0, 4096) ?? 0,
                 AnimationDuration = ParseOptionalDouble(AnimationDurationBox?.Text, 0.1, 3600) ?? 0
             };
+
+            // Gain Map 模式下使用 JpegProgressiveId，默认 Baseline
+            if (options.JpegGainMap)
+                options.CjpegliProgressiveId = options.JpegProgressiveId switch { 1 => 2, _ => 0 };
 
             var outp = GetOutputPath(inputPath, options.Format, inputBaseDir);
             var item = new Models.QueueItem { InputPath = inputPath, OutputPath = outp, Options = options, InputBaseDir = inputBaseDir };
@@ -1902,7 +1999,7 @@ namespace FfmpegGui
                         return;
                     }
 
-                    // 回退：通过输入路径匹配清理残留项
+                    // 回退：通过输入路径匹配清理残留项（同时清理 _queueItems 和 _queueView）
                     var fname = Path.GetFileName(item.InputPath);
                     for (int j = _queueView.Count - 1; j >= 0; j--)
                     {
@@ -1910,6 +2007,14 @@ namespace FfmpegGui
                             .Equals(fname, StringComparison.OrdinalIgnoreCase))
                         {
                             _queueView.RemoveAt(j);
+                        }
+                    }
+                    for (int j = _queueItems.Count - 1; j >= 0; j--)
+                    {
+                        if (Path.GetFileName(_queueItems[j].InputPath)
+                            .Equals(fname, StringComparison.OrdinalIgnoreCase))
+                        {
+                            _queueItems.RemoveAt(j);
                         }
                     }
                 }
@@ -2035,6 +2140,17 @@ namespace FfmpegGui
                 return "cjxl " + CjxlService.BuildCjxlArguments(item.InputPath, item.OutputPath, item.Options);
             }
 
+            // ── Gain Map (Ultra HDR) JPEG：RAW + cjpegli SDR → ultrahdr_app ──
+            if (item.Options.JpegGainMap && (fmt == "jpg" || fmt == "jpeg"))
+            {
+                var q = item.Options.Quality;
+                var nits = item.Options.JpegGainMapTargetNits;
+                var gmq = item.Options.JpegGainMapQuality;
+                var cj = CjpegliService.IsAvailable ? " + cjpegli SDR 优化" : "";
+                return $"[两步法] ffmpeg → p010 RAW{cj} → ultrahdr_app -q {q} -L {nits}" +
+                    (gmq >= 0 ? $" -Q {gmq}" : "") + $" -z \"{item.OutputPath}\"";
+            }
+
             // ── cjpegli 后端 ──
             if (item.Options.EncoderBackend == EncoderBackend.Cjpegli && CjpegliService.IsAvailable)
             {
@@ -2150,9 +2266,13 @@ namespace FfmpegGui
                 WebpCompressionLevel = original.WebpCompressionLevel,
                 JpegHuffman = original.JpegHuffman,
                 JpegDct = original.JpegDct,
+                JpegProgressiveId = original.JpegProgressiveId,
                 JpegGainMap = original.JpegGainMap,
                 JpegGainMapQuality = original.JpegGainMapQuality,
                 JpegGainMapTargetNits = original.JpegGainMapTargetNits,
+                JpegGainMapHdrCf = original.JpegGainMapHdrCf,
+                JpegGainMapDownsample = original.JpegGainMapDownsample,
+                JpegGainMapMultiChannel = original.JpegGainMapMultiChannel,
                 TiffCompressionAlgo = original.TiffCompressionAlgo,
             };
         }
@@ -2385,9 +2505,14 @@ namespace FfmpegGui
                 JxlLosslessJpeg = fmt is "jxl" && IsJpegInput(_inputPath),
                 JpegHuffman = useAdvCodec ? (JpegHuffmanCombo?.SelectedItem as string) : null,
                 JpegDct = useAdvCodec ? (JpegDctCombo?.SelectedItem as string is "auto" ? null : JpegDctCombo?.SelectedItem as string) : null,
-                JpegGainMap = (JpegGainMapCheck?.IsChecked ?? false) && EncoderDetectionService.IsLibultrahdrAvailable,
-                JpegGainMapQuality = (int)(JpegGainMapQualityBox?.Value ?? -1),
-                JpegGainMapTargetNits = (int)(JpegGainMapNitsBox?.Value ?? 1000),
+                JpegProgressiveId = useAdvCodec ? ParseJpegProgressiveId() : -1,
+                JpegGainMap = (GetCurrentEncoderBackend() == EncoderBackend.Ultrahdr),
+                JpegGainMapQuality = ParseGainMapQuality(),
+                JpegGainMapTargetNits = ParseGainMapNits(),
+                JpegGainMapHdrCf = ParseGainMapHdrCf(),
+                JpegGainMapDownsample = ParseGainMapDownsample(),
+                JpegGainMapMultiChannel = (UseAdvancedCodec?.IsChecked == true)
+                    && (JpegGainMapMultiChannelCheck?.IsChecked ?? false),
                 TiffCompressionAlgo = useAdvCodec ? (TiffCompressionCombo?.SelectedItem as string) : null,
                 StripExifGps = StripExifGpsCheck?.IsChecked ?? true,
                 StripExifTime = StripExifTimeCheck?.IsChecked ?? false,
@@ -2987,6 +3112,81 @@ namespace FfmpegGui
             return ext is ".jpg" or ".jpeg" or ".jpe" or ".jfif";
         }
 
+        /// <summary>
+        /// 解析增益图质量：勾选"跟随主图"返回 -1，否则从 TextBox 读取 1-100 的值
+        /// </summary>
+        private int ParseGainMapQuality()
+        {
+            if (JpegGainMapFollowMainCheck?.IsChecked == true)
+                return -1;
+            if (int.TryParse(JpegGainMapQualityBox?.Text, out var q))
+                return Math.Clamp(q, 1, 100);
+            return -1; // 默认跟随主图
+        }
+
+        /// <summary>
+        /// 解析目标亮度 (nit)：从 TextBox 读取 200-10000 的值
+        /// </summary>
+        private int ParseGainMapNits()
+        {
+            if (int.TryParse(JpegGainMapNitsBox?.Text, out var n))
+                return Math.Clamp(n, 200, 10000);
+            return 1000;
+        }
+
+        /// <summary>解析 HDR 色彩格式：当前仅支持 0=p010</summary>
+        private int ParseGainMapHdrCf()
+        {
+            // 仅 p010 (ffmpeg rawvideo 不支持 rgba1010102 / rgbahalffloat 的 packed 布局)
+            return 0;
+        }
+
+        /// <summary>解析增益图下采样因子。默认半分辨率(2)，仅在勾选"高级编码选项"时使用手动设置。</summary>
+        private int ParseGainMapDownsample()
+        {
+            if (UseAdvancedCodec?.IsChecked != true)
+                return 2;  // 默认半分辨率
+            return JpegGainMapDownsampleCombo?.SelectedIndex switch
+            {
+                0 => 1,   // 满分辨率
+                2 => 4,   // 1/4
+                3 => 8,   // 1/8
+                _ => 2    // 1/2 (默认)
+            };
+        }
+
+        /// <summary>解析 JPEG 渐进模式 (Gain Map / mjpeg 路径): -1=自动, 0=基线, 1=渐进</summary>
+        private int ParseJpegProgressiveId()
+        {
+            if (UseAdvancedCodec?.IsChecked != true)
+                return -1;  // 未展开高级选项时自动
+            return JpegProgressiveCombo?.SelectedIndex switch
+            {
+                0 => -1,  // 自动
+                1 => 0,   // 基线/标准
+                2 => 1,   // 渐进式
+                _ => 0
+            };
+        }
+
+        /// <summary>增益图质量 +/- 按钮调整</summary>
+        private void AdjustGainMapQuality(int delta)
+        {
+            var current = ParseGainMapQuality();
+            if (current < 0) current = 75; // 从"跟随主图"切换到手动时，默认 75
+            var val = Math.Clamp(current + delta, 1, 100);
+            if (JpegGainMapQualityBox != null)
+                JpegGainMapQualityBox.Text = val.ToString();
+        }
+
+        /// <summary>Nits Slider 变更时同步到 TextBox</summary>
+        private void SyncNitsToSlider()
+        {
+            if (JpegGainMapNitsSlider == null || JpegGainMapNitsBox == null) return;
+            if (int.TryParse(JpegGainMapNitsBox.Text, out var n))
+                JpegGainMapNitsSlider.Value = Math.Clamp(n, 200, 10000);
+        }
+
         private async void ExportPreset_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
         {
             var topLevel = TopLevel.GetTopLevel(this);
@@ -3064,6 +3264,8 @@ namespace FfmpegGui
                 JxlEffort = (int?)JxlEffortBox?.Value,
                 JxlModular = JxlModularCheck?.IsChecked,
                 JpegHuffman = JpegHuffmanCombo?.SelectedItem as string,
+                JpegDct = JpegDctCombo?.SelectedItem as string,
+                JpegProgressiveId = ParseJpegProgressiveId(),
                 TiffCompressionAlgo = TiffCompressionCombo?.SelectedItem as string,
                 StripExifGps = StripExifGpsCheck?.IsChecked ?? true,
                 StripExifTime = StripExifTimeCheck?.IsChecked ?? false,
@@ -3114,6 +3316,8 @@ namespace FfmpegGui
             if (JxlEffortBox != null && p.JxlEffort.HasValue) JxlEffortBox.Value = p.JxlEffort.Value;
             if (JxlModularCheck != null && p.JxlModular.HasValue) JxlModularCheck.IsChecked = p.JxlModular.Value;
             SetComboByValue(JpegHuffmanCombo, p.JpegHuffman);
+            if (JpegProgressiveCombo != null && p.JpegProgressiveId is >= -1 and <= 1)
+                JpegProgressiveCombo.SelectedIndex = p.JpegProgressiveId + 1;  // -1→0(自动), 0→1(基线), 1→2(渐进)
             SetComboByValue(TiffCompressionCombo, p.TiffCompressionAlgo);
             if (ConcurrencyBox != null) ConcurrencyBox.Text = Math.Clamp(p.MaxQueueSize, 1, 128).ToString();
             UpdateConcurrencyLabel();
