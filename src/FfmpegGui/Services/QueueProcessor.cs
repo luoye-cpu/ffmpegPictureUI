@@ -1703,8 +1703,14 @@ namespace FfmpegGui.Services
         /// <summary>GIF → AVIF 两步法：先提取带透明通道的 PNG 帧，再用 avifenc 编码</summary>
         private async Task ProcessGifToAvifViaAvifencAsync(QueueItem item, string outputPath, CancellationToken ct)
         {
-            // 优先手动路径，回退 ffmpeg 同目录
+            // 优先手动路径（WindowsArtifactsDir 或旧 AvifencPath），回退 ffmpeg 同目录
             var avifencPath = AppSettingsService.Current.AvifencPath;
+            if (string.IsNullOrWhiteSpace(avifencPath) || !File.Exists(avifencPath))
+            {
+                var artifactsDir = AppSettingsService.Current.WindowsArtifactsDir;
+                if (!string.IsNullOrWhiteSpace(artifactsDir))
+                    avifencPath = Path.Combine(artifactsDir, PlatformServices.Avifenc);
+            }
             if (string.IsNullOrWhiteSpace(avifencPath) || !File.Exists(avifencPath))
                 avifencPath = Path.Combine(AppSettingsService.Current.FfmpegDir ?? "", PlatformServices.Avifenc);
             if (!File.Exists(avifencPath))

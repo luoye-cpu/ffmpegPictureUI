@@ -53,10 +53,11 @@ namespace FfmpegGui
         private TextBox? LogText;
         private TextBox? FfmpegPathBox;
         private TextBox? OutputDirBox;
-        private TextBox? CjxlPathBox;
+        private TextBox? JxlLibDirBox;
         private TextBox? ExifToolPathBox;
-        private TextBox? AvifencPathBox;
-        private TextBox? UltrahdrPathBox;
+        private TextBox? ArtifactsDirBox;
+        private TextBlock? JxlLibStatus;
+        private TextBlock? ArtifactsStatus;
         private CheckBox? PreserveInputStructure;
         private CheckBox? StopAfterCurrentCheck;
         private CheckBox? ShowErrorsOnlyCheck;
@@ -103,7 +104,6 @@ namespace FfmpegGui
         private StackPanel? ToolsDetailPanel;
         private Border? ToolsCompactPanel;
         private StackPanel? ToolsStatusBar;
-        private TextBox? JxrPathBox;
         private ComboBox? PngPredCombo;
         private ComboBox? WebpPresetCombo;
         private NumericUpDown? WebpCompressionBox;
@@ -215,11 +215,11 @@ namespace FfmpegGui
             LogText = this.FindControl<TextBox>("LogText");
             FfmpegPathBox = this.FindControl<TextBox>("FfmpegPathBox");
             OutputDirBox = this.FindControl<TextBox>("OutputDirBox");
-            CjxlPathBox = this.FindControl<TextBox>("CjxlPathBox");
+            JxlLibDirBox = this.FindControl<TextBox>("JxlLibDirBox");
             ExifToolPathBox = this.FindControl<TextBox>("ExifToolPathBox");
-            AvifencPathBox = this.FindControl<TextBox>("AvifencPathBox");
-            UltrahdrPathBox = this.FindControl<TextBox>("UltrahdrPathBox");
-            JxrPathBox = this.FindControl<TextBox>("JxrPathBox");
+            ArtifactsDirBox = this.FindControl<TextBox>("ArtifactsDirBox");
+            JxlLibStatus = this.FindControl<TextBlock>("JxlLibStatus");
+            ArtifactsStatus = this.FindControl<TextBlock>("ArtifactsStatus");
             ToggleToolsBtn = this.FindControl<Button>("ToggleToolsBtn");
             ToolsDetailPanel = this.FindControl<StackPanel>("ToolsDetailPanel");
             ToolsCompactPanel = this.FindControl<Border>("ToolsCompactPanel");
@@ -639,16 +639,12 @@ namespace FfmpegGui
                 FfmpegPathBox.Text = settings.FfmpegDirectory;
             if (!string.IsNullOrWhiteSpace(settings.OutputDirectory) && OutputDirBox != null)
                 OutputDirBox.Text = settings.OutputDirectory;
-            if (!string.IsNullOrWhiteSpace(settings.CjxlPath) && CjxlPathBox != null)
-                CjxlPathBox.Text = settings.CjxlPath;
+            if (!string.IsNullOrWhiteSpace(settings.JxlLibDir) && JxlLibDirBox != null)
+                JxlLibDirBox.Text = settings.JxlLibDir;
             if (!string.IsNullOrWhiteSpace(settings.ExifToolPath) && ExifToolPathBox != null)
                 ExifToolPathBox.Text = settings.ExifToolPath;
-            if (!string.IsNullOrWhiteSpace(settings.AvifencPath) && AvifencPathBox != null)
-                AvifencPathBox.Text = settings.AvifencPath;
-            if (!string.IsNullOrWhiteSpace(settings.UltrahdrPath) && UltrahdrPathBox != null)
-                UltrahdrPathBox.Text = settings.UltrahdrPath;
-            if (!string.IsNullOrWhiteSpace(settings.JxrPath) && JxrPathBox != null)
-                JxrPathBox.Text = settings.JxrPath;
+            if (!string.IsNullOrWhiteSpace(settings.WindowsArtifactsDir) && ArtifactsDirBox != null)
+                ArtifactsDirBox.Text = settings.WindowsArtifactsDir;
             if (PreserveInputStructure != null)
                 PreserveInputStructure.IsChecked = settings.PreserveInputFolderStructure;
             if (ConcurrencyBox != null)
@@ -696,15 +692,18 @@ namespace FfmpegGui
             
             await RefreshEncoderListAsync();
 
-            // CPU 指令集检测（同步，极快）
+            // CPU 指令集检测
             try
             {
                 CpuFeatureService.Detect();
                 if (LogText != null)
                 {
-                    LogText.Text += $"[cpu] 指令集检测: {CpuFeatureService.Summary()}\n";
-                    if (CpuFeatureService.HasAvx2)
-                        LogText.Text += "[cpu] 建议：优先使用带 avx2/avx 优化的本地二进制以获得更好性能。\n";
+                    LogText.Text += CpuFeatureService.FullReport() + "\n";
+                    if (CpuFeatureService.HasAnySimd)
+                    {
+                        var tag = CpuFeatureService.BestSimdTag;
+                        LogText.Text += $"[cpu] 建议：优先使用带 {tag} 优化的二进制以获得最佳性能。\n";
+                    }
                 }
             }
             catch { }
@@ -717,174 +716,42 @@ namespace FfmpegGui
                 {
                     if (ffmpegProbe.SimdFeatures.Count > 0)
                         LogText.Text += $"[ffmpeg] SIMD 编译选项: {string.Join(", ", ffmpegProbe.SimdFeatures)}\n";
-                    else
-                        LogText.Text += "[ffmpeg] 未检测到 SIMD 编译选项（可能为通用构建）\n";
                     if (!string.IsNullOrWhiteSpace(ffmpegProbe.Version))
                         LogText.Text += $"[ffmpeg] 版本: {ffmpegProbe.Version}\n";
+                    // 检测 ffmpeg 内置编码器能力
+                    if (ffmpegProbe.StdOut.Contains("libsvtav1", StringComparison.OrdinalIgnoreCase))
+                        LogText.Text += "[ffmpeg] 内置 SVT-AV1 编码器可用（推荐用于 AVIF）\n";
+                    if (ffmpegProbe.StdOut.Contains("libjxl", StringComparison.OrdinalIgnoreCase))
+                        LogText.Text += "[ffmpeg] 内置 libjxl 编码器可用\n";
                 }
             }
             catch { }
-            if (LogText != null)
+
+            // ── 统一外部工具版本探测（替代旧的逐个工具日志）──
+            try
             {
-                LogText.Text += "能力检测完成。\n";
-                if (CjxlService.IsAvailable)
+                var tools = ExternalToolsDetector.ProbeAllTools();
+                if (LogText != null)
                 {
-                    LogText.Text += $"✅ 检测到 cjxl（{CjxlService.DetectedPath}）\n";
-                    try
+                    LogText.Text += "\n── 外部工具检测 ──\n";
+                    foreach (var t in tools)
                     {
-                        var tag = ExternalToolsDetector.GetFeatureTagFromFileName(CjxlService.DetectedPath);
-                        if (!string.IsNullOrEmpty(tag))
+                        if (t.IsAvailable)
                         {
-                            LogText.Text += $"[cpu] cjxl 优化标识: {tag}\n";
+                            var extra = t.SimdFeatures != null ? $" [{t.SimdFeatures}]" : "";
+                            LogText.Text += $"  {t.StatusIcon} {t.Name}: v{t.Version}{extra}\n";
                         }
-
-                        // 运行短样本探测，解析版本/特征信息（异步到线程池避免阻塞 UI）
-                        _ = Task.Run(async () =>
+                        else
                         {
-                            try
-                            {
-                                var path = CjxlService.DetectedPath;
-                                if (string.IsNullOrEmpty(path)) return;
-                                var probe = await Task.Run(() => ExternalToolsDetector.ProbeExecutable(path, 2000));
-                                await Dispatcher.UIThread.InvokeAsync(() =>
-                                {
-                                    if (probe != null && probe.IsRunnable)
-                                    {
-                                        if (!string.IsNullOrWhiteSpace(probe.Version)) LogText.Text += $"[probe] cjxl 版本: {probe.Version}\n";
-                                        if (!string.IsNullOrWhiteSpace(probe.DetectedFeatures)) LogText.Text += $"[probe] cjxl 输出特征: {probe.DetectedFeatures}\n";
-                                        var combined = (probe.StdOut + probe.StdErr).Trim();
-                                        if (!string.IsNullOrEmpty(combined))
-                                        {
-                                            var shortOut = combined.Length > 200 ? combined.Substring(0, 200) + "..." : combined;
-                                            LogText.Text += $"[probe] cjxl 输出: {shortOut}\n";
-                                        }
-                                    }
-                                    else
-                                    {
-                                        LogText.Text += "[probe] cjxl 运行探测失败或不兼容（已跳过自动启用）\n";
-                                    }
-                                });
-                            }
-                            catch { }
-                        });
-                    }
-                    catch { }
-                }
-                else
-                    LogText.Text += "ℹ️ 未检测到 cjxl.exe，JPEG→JXL 将使用 ffmpeg\n";
-
-                // djxl 检测
-                DjxlService.ClearCache();
-                DjxlService.Detect();
-                if (DjxlService.IsAvailable)
-                {
-                    LogText.Text += $"✅ 检测到 djxl（{DjxlService.DetectedPath}）\n";
-                    try
-                    {
-                        var djxlTag = ExternalToolsDetector.GetFeatureTagFromFileName(DjxlService.DetectedPath);
-                        if (!string.IsNullOrEmpty(djxlTag))
-                            LogText.Text += $"[cpu] djxl 优化标识: {djxlTag}\n";
-
-                        // 异步探测 djxl 版本与 SIMD
-                        _ = Task.Run(async () =>
-                        {
-                            try
-                            {
-                                var path = DjxlService.DetectedPath;
-                                if (string.IsNullOrEmpty(path)) return;
-                                var probe = await Task.Run(() => ExternalToolsDetector.ProbeExecutable(path, 2000));
-                                await Dispatcher.UIThread.InvokeAsync(() =>
-                                {
-                                    if (probe != null && probe.IsRunnable)
-                                    {
-                                        if (!string.IsNullOrWhiteSpace(probe.Version)) LogText.Text += $"[probe] djxl 版本: {probe.Version}\n";
-                                        if (probe.SimdFeatures.Count > 0) LogText.Text += $"[probe] djxl SIMD: {string.Join(", ", probe.SimdFeatures)}\n";
-                                    }
-                                    else
-                                        LogText.Text += "[probe] djxl 运行探测失败或不兼容\n";
-                                });
-                            }
-                            catch { }
-                        });
-                    }
-                    catch { }
-                }
-                else
-                    LogText.Text += "ℹ️ 未检测到 djxl.exe，JXL 解码将回退到 ffmpeg\n";
-
-                if (CjpegliService.IsAvailable)
-                {
-                    LogText.Text += $"✅ 检测到 cjpegli（{CjpegliService.DetectedPath}）\n";
-                    try
-                    {
-                        var tag = ExternalToolsDetector.GetFeatureTagFromFileName(CjpegliService.DetectedPath);
-                        if (!string.IsNullOrEmpty(tag))
-                        {
-                            LogText.Text += $"[cpu] cjpegli 优化标识: {tag}\n";
+                            LogText.Text += $"  {t.StatusIcon} {t.Name}: 未检测到\n";
                         }
-
-                        _ = Task.Run(async () =>
-                        {
-                            try
-                            {
-                                var path = CjpegliService.DetectedPath;
-                                if (string.IsNullOrEmpty(path)) return;
-                                var probe = await Task.Run(() => ExternalToolsDetector.ProbeExecutable(path, 2000));
-                                await Dispatcher.UIThread.InvokeAsync(() =>
-                                {
-                                    if (probe != null && probe.IsRunnable)
-                                    {
-                                        if (!string.IsNullOrWhiteSpace(probe.Version)) LogText.Text += $"[probe] cjpegli 版本: {probe.Version}\n";
-                                        if (!string.IsNullOrWhiteSpace(probe.DetectedFeatures)) LogText.Text += $"[probe] cjpegli 输出特征: {probe.DetectedFeatures}\n";
-                                        var combined = (probe.StdOut + probe.StdErr).Trim();
-                                        if (!string.IsNullOrEmpty(combined))
-                                        {
-                                            var shortOut = combined.Length > 200 ? combined.Substring(0, 200) + "..." : combined;
-                                            LogText.Text += $"[probe] cjpegli 输出: {shortOut}\n";
-                                        }
-                                    }
-                                    else
-                                    {
-                                        LogText.Text += "[probe] cjpegli 运行探测失败或不兼容（已跳过自动启用）\n";
-                                    }
-                                });
-                            }
-                            catch { }
-                        });
                     }
-                    catch { }
                 }
-                else
-                    LogText.Text += "ℹ️ 未检测到 cjpegli，Jpegli 编码将回退到 ffmpeg/libjpeg\n";
             }
-
-            // ultrahdr_app 检测
-            UltrahdrService.Detect();
-            if (LogText != null)
-            {
-                if (UltrahdrService.IsAvailable)
-                    LogText.Text += $"✅ 检测到 ultrahdr_app（{UltrahdrService.DetectedPath}）\n";
-                else
-                    LogText.Text += "ℹ️ 未检测到 ultrahdr_app.exe，Ultra HDR 将使用 ffmpeg libultrahdr（如可用）\n";
-            }
-
-            // JxrEncApp 检测
-            JxrService.Detect();
-            if (LogText != null)
-            {
-                if (JxrService.IsAvailable)
-                    LogText.Text += $"✅ 检测到 JxrEncApp（{JxrService.DetectedPath}）\n";
-                else
-                    LogText.Text += "ℹ️ 未检测到 JxrEncApp.exe，JPEG XR 将不可用\n";
-            }
+            catch { }
 
             // ExifTool 检测与 UI 更新
             ExifToolService.Detect();
-            if (LogText != null)
-            {
-                if (ExifToolService.IsAvailable)
-                    LogText.Text += $"✅ 检测到 exiftool（{ExifToolService.DetectedPath}）\n";
-            }
             UpdateExifToolPanelState();
             UpdateOptionAvailability();
             RefreshToolsStatusBar();
@@ -2775,61 +2642,73 @@ namespace FfmpegGui
             }
         }
 
-        private async void BrowseCjxl_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        // ═══════════════════════════════════════════
+        // v2.0 外部工具浏览 (3 项统一)
+        // ═══════════════════════════════════════════
+
+        private async void BrowseJxlLibDir_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
         {
             var topLevel = TopLevel.GetTopLevel(this);
             if (topLevel?.StorageProvider == null) return;
-
-            // 改为选择文件夹：用户选择包含 cjxl/djxl/cjpegli 等工具的目录（例如 D:\...\bin）
             var folders = await topLevel.StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
-            {
-                Title = "选择包含 JPEG/JXL 工具的目录",
-                AllowMultiple = false
-            });
-
-            if (folders != null && folders.Count > 0)
-            {
-                var dir = folders[0].Path.LocalPath;
-                AppSettingsService.Current.CjxlPath = dir; // JPEG XL 参考实现库目录（含 cjxl/djxl/cjpegli）
-                AppSettingsService.Save();
-                if (CjxlPathBox != null) CjxlPathBox.Text = dir;
-
-                // 刷新所有 JPEG XL 工具的检测
-                CjxlService.ClearCache();
-                UltrahdrService.ClearCache();
-                JxrService.ClearCache();
-                CjxlService.Detect();
-                DjxlService.ClearCache();
-                DjxlService.Detect();
-                CjpegliService.ClearCache();
-                CjpegliService.Detect();
-                UltrahdrService.Detect();
-
-                // 扫描目录中的其他相关工具（例如 djxl / cjpegli / 相关 DLL）并在日志中展示
-                var scan = ExternalToolsDetector.ScanDirectory(dir);
-                if (LogText != null)
-                {
-                    if (!string.IsNullOrEmpty(scan.CjxlExe))
-                        LogText.Text += $"✅ 在目录找到 cjxl: {scan.CjxlExe}\n";
-                    else if (CjxlService.IsAvailable)
-                        LogText.Text += $"✅ 检测到 cjxl（PATH/同目录）: {CjxlService.DetectedPath}\n";
-                    else
-                        LogText.Text += $"⚠️ 未在所选目录找到 cjxl.exe（将回退到自动检测）\n";
-
-                    if (!string.IsNullOrEmpty(scan.DjxlExe))
-                        LogText.Text += $"✅ 在目录找到 djxl: {scan.DjxlExe}\n";
-                    if (!string.IsNullOrEmpty(scan.CjpegliExe))
-                        LogText.Text += $"✅ 在目录找到 cjpegli: {scan.CjpegliExe}\n";
-                    if (scan.OtherExecutables.Count > 0)
-                        LogText.Text += $"ℹ️ 其他可执行文件: {scan.OtherExecutables.Count} 个（可能包含 ffmpeg 附带工具）\n";
-                    if (scan.FoundDlls.Count > 0)
-                        LogText.Text += $"ℹ️ 发现相关 DLL: {scan.FoundDlls.Count} 个（注意运行时依赖）\n";
-                }
-
-                RegenerateCommand();
-            }
+            { Title = "选择 JPEG XL 参考库目录 (含 cjxl/djxl/cjpegli)", AllowMultiple = false });
+            if (folders == null || folders.Count == 0) return;
+            var dir = folders[0].Path.LocalPath;
+            AppSettingsService.Current.JxlLibDir = dir;
+            AppSettingsService.Save();
+            if (JxlLibDirBox != null) JxlLibDirBox.Text = dir;
+            RefreshJxlServices();
+            ValidateJxlLibDir(dir);
+            RegenerateCommand();
         }
 
+        private async void BrowseArtifactsDir_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        {
+            var topLevel = TopLevel.GetTopLevel(this);
+            if (topLevel?.StorageProvider == null) return;
+            var folders = await topLevel.StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
+            { Title = "选择 Windows 构建产物目录 (ultrahdr/Jxr/avifenc/...)", AllowMultiple = false });
+            if (folders == null || folders.Count == 0) return;
+            var dir = folders[0].Path.LocalPath;
+            AppSettingsService.Current.WindowsArtifactsDir = dir;
+            AppSettingsService.Save();
+            if (ArtifactsDirBox != null) ArtifactsDirBox.Text = dir;
+            RefreshArtifactsServices();
+            ValidateArtifactsDir(dir);
+            RegenerateCommand();
+        }
+
+        private void ClearJxlLibDir_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        {
+            AppSettingsService.Current.JxlLibDir = null;
+            AppSettingsService.Save();
+            if (JxlLibDirBox != null) JxlLibDirBox.Text = "";
+            if (JxlLibStatus != null) JxlLibStatus.Text = "";
+            RefreshJxlServices();
+            RegenerateCommand();
+        }
+
+        private void ClearArtifactsDir_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        {
+            AppSettingsService.Current.WindowsArtifactsDir = null;
+            AppSettingsService.Save();
+            if (ArtifactsDirBox != null) ArtifactsDirBox.Text = "";
+            if (ArtifactsStatus != null) ArtifactsStatus.Text = "";
+            RefreshArtifactsServices();
+            RegenerateCommand();
+        }
+
+        // ── 旧事件处理（v2.0 已废弃，保留兼容 XAML 引用）──
+        private void BrowseCjxl_Click(object? s, Avalonia.Interactivity.RoutedEventArgs e) => BrowseJxlLibDir_Click(s, e);
+        private void ClearCjxlPath_Click(object? s, Avalonia.Interactivity.RoutedEventArgs e) => ClearJxlLibDir_Click(s, e);
+        private void BrowseAvifenc_Click(object? s, Avalonia.Interactivity.RoutedEventArgs e) => BrowseArtifactsDir_Click(s, e);
+        private void ClearAvifencPath_Click(object? s, Avalonia.Interactivity.RoutedEventArgs e) => ClearArtifactsDir_Click(s, e);
+        private void BrowseUltrahdr_Click(object? s, Avalonia.Interactivity.RoutedEventArgs e) => BrowseArtifactsDir_Click(s, e);
+        private void ClearUltrahdrPath_Click(object? s, Avalonia.Interactivity.RoutedEventArgs e) => ClearArtifactsDir_Click(s, e);
+        private void BrowseJxr_Click(object? s, Avalonia.Interactivity.RoutedEventArgs e) => BrowseArtifactsDir_Click(s, e);
+        private void ClearJxrPath_Click(object? s, Avalonia.Interactivity.RoutedEventArgs e) => ClearArtifactsDir_Click(s, e);
+
+        // exiftool 仍独立保留（选择文件而非文件夹），保留原版完整实现
         private async void BrowseExifTool_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
         {
             var topLevel = TopLevel.GetTopLevel(this);
@@ -2860,35 +2739,6 @@ namespace FfmpegGui
             }
         }
 
-        private void ClearCjxlPath_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
-        {
-            AppSettingsService.Current.CjxlPath = null;
-            AppSettingsService.Current.CjpegliPath = null;
-            AppSettingsService.Save();
-            if (CjxlPathBox != null) CjxlPathBox.Text = "";
-            CjxlService.ClearCache();
-            CjxlService.Detect();
-            DjxlService.ClearCache();
-            DjxlService.Detect();
-            CjpegliService.ClearCache();
-            CjpegliService.Detect();
-            UltrahdrService.ClearCache();
-            UltrahdrService.Detect();
-            if (LogText != null)
-            {
-                LogText.Text += CjxlService.IsAvailable
-                    ? $"✅ cjxl 自动检测: {CjxlService.DetectedPath}\n"
-                    : "ℹ️ cjxl: 未检测到\n";
-                LogText.Text += DjxlService.IsAvailable
-                    ? $"✅ djxl 自动检测: {DjxlService.DetectedPath}\n"
-                    : "ℹ️ djxl: 未检测到\n";
-                LogText.Text += CjpegliService.IsAvailable
-                    ? $"✅ cjpegli 自动检测: {CjpegliService.DetectedPath}\n"
-                    : "ℹ️ cjpegli: 未检测到\n";
-            }
-            RegenerateCommand();
-        }
-
         private void ClearExifToolPath_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
         {
             AppSettingsService.Current.ExifToolPath = null;
@@ -2903,76 +2753,39 @@ namespace FfmpegGui
             RegenerateCommand();
         }
 
-        private async void BrowseAvifenc_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        private void RefreshJxlServices()
         {
-            var topLevel = TopLevel.GetTopLevel(this);
-            if (topLevel?.StorageProvider == null) return;
-            var files = await topLevel.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
-            {
-                Title = "选择 avifenc",
-                AllowMultiple = false,
-                FileTypeFilter = new[]
-                {
-                    new FilePickerFileType("可执行文件") { Patterns = PlatformServices.ExeFilePickerPatterns },
-                    new FilePickerFileType("所有文件") { Patterns = new[] { "*" } }
-                }
-            });
-            if (files != null && files.Count > 0)
-            {
-                var path = files[0].Path.LocalPath;
-                AppSettingsService.Current.AvifencPath = path;
-                AppSettingsService.Save();
-                if (AvifencPathBox != null) AvifencPathBox.Text = path;
-                if (LogText != null) LogText.Text += $"avifenc 路径已更新: {path}\n";
-                RegenerateCommand();
-            }
+            CjxlService.ClearCache(); CjxlService.Detect();
+            DjxlService.ClearCache(); DjxlService.Detect();
+            CjpegliService.ClearCache(); CjpegliService.Detect();
         }
 
-        private void ClearAvifencPath_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        private void RefreshArtifactsServices()
         {
-            AppSettingsService.Current.AvifencPath = null;
-            AppSettingsService.Save();
-            if (AvifencPathBox != null) AvifencPathBox.Text = "";
-            if (LogText != null) LogText.Text += "avifenc: 已切换为自动检测（ffmpeg 同目录）\n";
-            RegenerateCommand();
+            UltrahdrService.ClearCache(); UltrahdrService.Detect();
+            JxrService.ClearCache(); JxrService.Detect();
         }
 
-        private async void BrowseUltrahdr_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        private void ValidateJxlLibDir(string dir)
         {
-            var topLevel = TopLevel.GetTopLevel(this);
-            if (topLevel?.StorageProvider == null) return;
-            var files = await topLevel.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
-            {
-                Title = "选择 ultrahdr_app",
-                AllowMultiple = false,
-                FileTypeFilter = new[]
-                {
-                    new FilePickerFileType("可执行文件") { Patterns = PlatformServices.ExeFilePickerPatterns },
-                    new FilePickerFileType("所有文件") { Patterns = new[] { "*" } }
-                }
-            });
-            if (files != null && files.Count > 0)
-            {
-                var path = files[0].Path.LocalPath;
-                AppSettingsService.Current.UltrahdrPath = path;
-                AppSettingsService.Save();
-                if (UltrahdrPathBox != null) UltrahdrPathBox.Text = path;
-                if (LogText != null) LogText.Text += $"ultrahdr 路径已更新: {path}\n";
-                UltrahdrService.ClearCache();
-                UltrahdrService.Detect();
-                RegenerateCommand();
-            }
+            if (JxlLibStatus == null || LogText == null) return;
+            var found = new List<string>();
+            if (File.Exists(Path.Combine(dir, PlatformServices.Cjxl))) found.Add("cjxl");
+            if (File.Exists(Path.Combine(dir, PlatformServices.Djxl))) found.Add("djxl");
+            if (File.Exists(Path.Combine(dir, PlatformServices.Cjpegli))) found.Add("cjpegli");
+            JxlLibStatus.Text = found.Count > 0 ? $"✅ {string.Join(", ", found)}" : "⚠️ 未找到工具";
+            LogText.Text += $"[jxl] 目录扫描: {(found.Count > 0 ? string.Join(", ", found) : "未检测到 JXL 工具")}\n";
         }
 
-        private void ClearUltrahdrPath_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        private void ValidateArtifactsDir(string dir)
         {
-            AppSettingsService.Current.UltrahdrPath = null;
-            AppSettingsService.Save();
-            if (UltrahdrPathBox != null) UltrahdrPathBox.Text = "";
-            if (LogText != null) LogText.Text += "ultrahdr: 已切换为自动检测\n";
-            UltrahdrService.ClearCache();
-            UltrahdrService.Detect();
-            RegenerateCommand();
+            if (ArtifactsStatus == null || LogText == null) return;
+            var found = new List<string>();
+            if (File.Exists(Path.Combine(dir, PlatformServices.Ultrahdr))) found.Add("ultrahdr");
+            if (File.Exists(Path.Combine(dir, PlatformServices.JxrEnc))) found.Add("JxrEnc");
+            if (File.Exists(Path.Combine(dir, PlatformServices.Avifenc))) found.Add("avifenc");
+            ArtifactsStatus.Text = found.Count > 0 ? $"✅ {string.Join(", ", found)}" : "⚠️ 未找到工具";
+            LogText.Text += $"[artifacts] 目录扫描: {(found.Count > 0 ? string.Join(", ", found) : "未检测到")}\n";
         }
 
         private void ToggleToolsPanel_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
@@ -2980,57 +2793,6 @@ namespace FfmpegGui
             if (ToolsDetailPanel != null)
                 ToolsDetailPanel.IsVisible = !ToolsDetailPanel.IsVisible;
             RefreshToolsStatusBar();
-        }
-
-        private async void BrowseJxr_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
-        {
-            var topLevel = TopLevel.GetTopLevel(this);
-            if (topLevel?.StorageProvider == null) return;
-            var files = await topLevel.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
-            {
-                Title = "选择 JxrEncApp",
-                AllowMultiple = false,
-                FileTypeFilter = new[]
-                {
-                    new FilePickerFileType("可执行文件") { Patterns = PlatformServices.ExeFilePickerPatterns },
-                    new FilePickerFileType("所有文件") { Patterns = new[] { "*" } }
-                }
-            });
-            if (files != null && files.Count > 0)
-            {
-                var path = files[0].Path.LocalPath;
-                AppSettingsService.Current.JxrPath = path;
-                AppSettingsService.Save();
-                if (JxrPathBox != null) JxrPathBox.Text = path;
-                if (LogText != null) LogText.Text += $"JxrEncApp 路径已更新: {path}\n";
-                JxrService.ClearCache();
-                JxrService.Detect();
-                RegenerateCommand();
-            }
-        }
-
-        private void ClearJxrPath_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
-        {
-            AppSettingsService.Current.JxrPath = null;
-            AppSettingsService.Save();
-            if (JxrPathBox != null) JxrPathBox.Text = "";
-            if (LogText != null) LogText.Text += "JxrEncApp: 已切换为自动检测\n";
-            JxrService.ClearCache();
-            JxrService.Detect();
-            RegenerateCommand();
-        }
-
-        /// <summary>刷新顶部工具状态指示器（折叠态）</summary>
-        private void RefreshToolsStatusBar()
-        {
-            if (ToolsStatusBar == null) return;
-            ToolsStatusBar.Children.Clear();
-            AddToolStatus(CjxlService.IsAvailable, "cjxl");
-            AddToolStatus(ExifToolService.IsAvailable, "exiftool");
-            AddToolStatus(CjpegliService.IsAvailable, "cjpegli");
-            AddToolStatus(HasAvifencAvailable(), "avifenc");
-            AddToolStatus(UltrahdrService.IsAvailable, "ultrahdr");
-            AddToolStatus(JxrService.IsAvailable, "JxrEnc");
         }
 
         private void AddToolStatus(bool available, string name)
@@ -3046,59 +2808,46 @@ namespace FfmpegGui
             ToolsStatusBar.Children.Add(tb);
         }
 
-        private static bool HasAvifencAvailable()
-        {
-            var manual = AppSettingsService.Current.AvifencPath;
-            if (!string.IsNullOrWhiteSpace(manual) && File.Exists(manual)) return true;
-            var dir = AppSettingsService.Current.FfmpegDir;
-            return !string.IsNullOrEmpty(dir) && File.Exists(Path.Combine(dir, "avifenc.exe"));
-        }
-
         private void RedetectTools_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
         {
-            // 清除所有手动路径，改为自动同目录 + PATH 检测
-            AppSettingsService.Current.CjxlPath = null;
+            AppSettingsService.Current.JxlLibDir = null;
+            AppSettingsService.Current.WindowsArtifactsDir = null;
             AppSettingsService.Current.ExifToolPath = null;
-            AppSettingsService.Current.CjpegliPath = null;
-            AppSettingsService.Current.AvifencPath = null;
-            AppSettingsService.Current.UltrahdrPath = null;
             AppSettingsService.Save();
-            if (CjxlPathBox != null) CjxlPathBox.Text = "";
+            if (JxlLibDirBox != null) JxlLibDirBox.Text = "";
+            if (ArtifactsDirBox != null) ArtifactsDirBox.Text = "";
             if (ExifToolPathBox != null) ExifToolPathBox.Text = "";
-            if (AvifencPathBox != null) AvifencPathBox.Text = "";
-            if (UltrahdrPathBox != null) UltrahdrPathBox.Text = "";
+            if (JxlLibStatus != null) JxlLibStatus.Text = "";
+            if (ArtifactsStatus != null) ArtifactsStatus.Text = "";
 
-            if (LogText != null) LogText.Text += "正在自动重新检测外部工具（同目录 → PATH）...\n";
-            CjxlService.ClearCache();
-            CjpegliService.ClearCache();
-            UltrahdrService.ClearCache();
-            JxrService.ClearCache();
-            DjxlService.ClearCache();
-            CjxlService.Detect();
-            CjpegliService.Detect();
-            UltrahdrService.Detect();
-            DjxlService.Detect();
-            DjxlService.Detect();
+            if (LogText != null) LogText.Text += "正在重新自动检测外部工具...\n";
+            RefreshJxlServices();
+            RefreshArtifactsServices();
             ExifToolService.Detect();
             UpdateExifToolPanelState();
-
-            if (LogText != null)
-            {
-                LogText.Text += CjxlService.IsAvailable
-                    ? $"✅ cjxl: {CjxlService.DetectedPath}\n"
-                    : "ℹ️ cjxl: 未检测到\n";
-                LogText.Text += DjxlService.IsAvailable
-                    ? $"✅ djxl: {DjxlService.DetectedPath}\n"
-                    : "ℹ️ djxl: 未检测到\n";
-                LogText.Text += CjpegliService.IsAvailable
-                    ? $"✅ cjpegli: {CjpegliService.DetectedPath}\n"
-                    : "ℹ️ cjpegli: 未检测到\n";
-                LogText.Text += ExifToolService.IsAvailable
-                    ? $"✅ exiftool: {ExifToolService.DetectedPath}\n"
-                    : "ℹ️ exiftool: 未检测到\n";
-            }
-            RefreshToolsStatusBar();
             RegenerateCommand();
+        }
+
+        /// <summary>刷新顶部工具状态指示器（折叠态）</summary>
+        private void RefreshToolsStatusBar()
+        {
+            if (ToolsStatusBar == null) return;
+            ToolsStatusBar.Children.Clear();
+            AddToolStatus(CjxlService.IsAvailable, "cjxl");
+            AddToolStatus(ExifToolService.IsAvailable, "exiftool");
+            AddToolStatus(CjpegliService.IsAvailable, "cjpegli");
+        }
+
+        private static bool HasAvifencAvailable()
+        {
+            var artifactsDir = AppSettingsService.Current.WindowsArtifactsDir;
+            if (!string.IsNullOrWhiteSpace(artifactsDir))
+            {
+                var p = Path.Combine(artifactsDir, PlatformServices.Avifenc);
+                if (File.Exists(p)) return true;
+            }
+            var dir = AppSettingsService.Current.FfmpegDir;
+            return !string.IsNullOrEmpty(dir) && File.Exists(Path.Combine(dir, PlatformServices.Avifenc));
         }
 
         private async void SelectFolder_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)

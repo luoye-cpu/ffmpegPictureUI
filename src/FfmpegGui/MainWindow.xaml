@@ -44,18 +44,10 @@
                     ToolTip.Tip="自动使用 SIMD 优化二进制"/>
         </StackPanel>
 
-        <!-- Row 2-3: 展开的外部工具详情（默认隐藏） -->
+        <!-- Row 2-3: 展开的外部工具详情（v2.0 精简为 3 项） -->
         <StackPanel x:Name="ToolsDetailPanel" Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="2" IsVisible="False">
-          <!-- cjxl/djxl + exiftool -->
+          <!-- exiftool (文件选择) -->
           <StackPanel Orientation="Horizontal" Spacing="10" Margin="0,3,0,0">
-            <TextBlock Text="cjxl/djxl" VerticalAlignment="Center" FontSize="11"
-                       Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" Width="72"/>
-            <TextBox x:Name="CjxlPathBox" Width="200" VerticalAlignment="Center" FontSize="11"
-                     PlaceholderText="留空自动检测"/>
-            <Button Content="浏览" Click="BrowseCjxl_Click" Padding="6,2" FontSize="11"/>
-            <Button Content="✕" Click="ClearCjxlPath_Click" Padding="6,2" FontSize="11"
-                    ToolTip.Tip="清除手动路径"/>
-            <Separator Width="8" Background="Transparent"/>
             <TextBlock Text="exiftool" VerticalAlignment="Center" FontSize="11"
                        Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" Width="72"/>
             <TextBox x:Name="ExifToolPathBox" Width="200" VerticalAlignment="Center" FontSize="11"
@@ -63,29 +55,32 @@
             <Button Content="浏览" Click="BrowseExifTool_Click" Padding="6,2" FontSize="11"/>
             <Button Content="✕" Click="ClearExifToolPath_Click" Padding="6,2" FontSize="11"
                     ToolTip.Tip="清除手动路径"/>
+            <TextBlock x:Name="ExifToolStatus" Text="" VerticalAlignment="Center" FontSize="10"
+                       Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
           </StackPanel>
-          <!-- avifenc + ultrahdr + JxrEncApp -->
+          <!-- jxl 参考库 (文件夹选择) -->
           <StackPanel Orientation="Horizontal" Spacing="10" Margin="0,3,0,0">
-            <TextBlock Text="avifenc" VerticalAlignment="Center" FontSize="11"
+            <TextBlock Text="jxl 参考库" VerticalAlignment="Center" FontSize="11"
                        Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" Width="72"/>
-            <TextBox x:Name="AvifencPathBox" Width="140" VerticalAlignment="Center" FontSize="11"
-                     PlaceholderText="自动检测"/>
-            <Button Content="浏览" Click="BrowseAvifenc_Click" Padding="4,2" FontSize="11"/>
-            <Button Content="✕" Click="ClearAvifencPath_Click" Padding="4,2" FontSize="11"/>
-            <Separator Width="4" Background="Transparent"/>
-            <TextBlock Text="ultrahdr" VerticalAlignment="Center" FontSize="11"
+            <TextBox x:Name="JxlLibDirBox" Width="200" VerticalAlignment="Center" FontSize="11"
+                     PlaceholderText="自动检测 (含 cjxl/djxl/cjpegli)"/>
+            <Button Content="浏览" Click="BrowseJxlLibDir_Click" Padding="6,2" FontSize="11"/>
+            <Button Content="✕" Click="ClearJxlLibDir_Click" Padding="6,2" FontSize="11"
+                    ToolTip.Tip="清除手动路径"/>
+            <TextBlock x:Name="JxlLibStatus" Text="" VerticalAlignment="Center" FontSize="10"
+                       Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+          </StackPanel>
+          <!-- artifacts (文件夹选择) -->
+          <StackPanel Orientation="Horizontal" Spacing="10" Margin="0,3,0,0">
+            <TextBlock Text="artifacts" VerticalAlignment="Center" FontSize="11"
                        Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" Width="72"/>
-            <TextBox x:Name="UltrahdrPathBox" Width="140" VerticalAlignment="Center" FontSize="11"
-                     PlaceholderText="自动检测"/>
-            <Button Content="浏览" Click="BrowseUltrahdr_Click" Padding="4,2" FontSize="11"/>
-            <Button Content="✕" Click="ClearUltrahdrPath_Click" Padding="4,2" FontSize="11"/>
-            <Separator Width="4" Background="Transparent"/>
-            <TextBlock Text="JxrEncApp" VerticalAlignment="Center" FontSize="11"
-                       Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" Width="72"/>
-            <TextBox x:Name="JxrPathBox" Width="140" VerticalAlignment="Center" FontSize="11"
-                     PlaceholderText="自动检测"/>
-            <Button Content="浏览" Click="BrowseJxr_Click" Padding="4,2" FontSize="11"/>
-            <Button Content="✕" Click="ClearJxrPath_Click" Padding="4,2" FontSize="11"/>
+            <TextBox x:Name="ArtifactsDirBox" Width="200" VerticalAlignment="Center" FontSize="11"
+                     PlaceholderText="自动检测 (ultrahdr/Jxr/avifenc/...)"/>
+            <Button Content="浏览" Click="BrowseArtifactsDir_Click" Padding="6,2" FontSize="11"/>
+            <Button Content="✕" Click="ClearArtifactsDir_Click" Padding="6,2" FontSize="11"
+                    ToolTip.Tip="清除手动路径"/>
+            <TextBlock x:Name="ArtifactsStatus" Text="" VerticalAlignment="Center" FontSize="10"
+                       Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
           </StackPanel>
         </StackPanel>
       </Grid>
