@@ -234,7 +234,7 @@ namespace FfmpegGui.Services
             bool Try(string? dir, string label)
             {
                 if (string.IsNullOrEmpty(dir)) return false;
-                var p = Path.Combine(dir, "JxrDecApp.exe");
+                var p = Path.Combine(dir, PlatformServices.JxrDec);
                 tried.Add($"[{label}] {p}");
                 if (File.Exists(p)) { found = p; return true; }
                 return false;

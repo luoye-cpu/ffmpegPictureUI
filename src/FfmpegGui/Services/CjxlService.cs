@@ -54,7 +54,7 @@ namespace FfmpegGui.Services
                 var stub = Environment.GetEnvironmentVariable("FFMPEGGUI_CJXL_STUB");
                 if (!string.IsNullOrWhiteSpace(stub) && stub == "1")
                 {
-                    _detectedPath = "cjxl.exe";
+                    _detectedPath = PlatformServices.Cjxl;
                     return;
                 }
             }
@@ -73,10 +73,10 @@ namespace FfmpegGui.Services
                         return;
                     }
 
-                    // 如果用户指定的是目录，尝试在该目录（及子目录）查找 cjxl.exe
+                    // 如果用户指定的是目录，尝试在该目录（及子目录）查找 cjxl
                     if (Directory.Exists(manual))
                     {
-                        var candidate = Path.Combine(manual, "cjxl.exe");
+                        var candidate = Path.Combine(manual, PlatformServices.Cjxl);
                         if (File.Exists(candidate))
                         {
                             _detectedPath = candidate;
@@ -86,7 +86,7 @@ namespace FfmpegGui.Services
                         try
                         {
                             var list = new System.Collections.Generic.List<string>();
-                            foreach (var found in Directory.EnumerateFiles(manual, "*cjxl*.exe", SearchOption.AllDirectories))
+                            foreach (var found in Directory.EnumerateFiles(manual, PlatformServices.CjxlSearchWildcard, SearchOption.AllDirectories))
                             {
                                 if (File.Exists(found)) list.Add(found);
                             }
@@ -102,7 +102,15 @@ namespace FfmpegGui.Services
                 catch { }
             }
 
-            // ── ② 同目录（ffmpeg 目录 → 程序目录）──
+            // ── ② PLAN 便携包自动检测 ──
+            try
+            {
+                var planFound = PlatformServices.TryFindInPlanFolder(PlatformServices.Cjxl);
+                if (planFound != null) { _detectedPath = planFound; return; }
+            }
+            catch { }
+
+            // ── ③ 同目录（ffmpeg 目录 → 程序目录）──
             var ffmpegDir = AppSettingsService.Current.FfmpegDir;
             var programDir = AppDomain.CurrentDomain.BaseDirectory;
 
@@ -110,54 +118,32 @@ namespace FfmpegGui.Services
             foreach (var dir in dirs)
             {
                 if (string.IsNullOrEmpty(dir)) continue;
-                var candidate = Path.Combine(dir, "cjxl.exe");
-                if (File.Exists(candidate))
-                {
-                    _detectedPath = candidate;
-                    return;
-                }
+                var found = PlatformServices.FindToolInDirectory(dir, PlatformServices.Cjxl, PlatformServices.CjxlSearchWildcard);
+                if (found != null) { _detectedPath = found; return; }
             }
 
-            // ── ③ 系统 PATH ──
-            if (TryFindInPath("cjxl.exe", out var pathFound))
+            // ── ④ 扩展搜索路径（Windows: LocalAppData\Programs, Program Files 等）──
+            try
+            {
+                var extendedPath = ExternalToolsDetector.FindToolInExtendedPaths(
+                    PlatformServices.Cjxl, PlatformServices.CjxlSearchWildcard);
+                if (extendedPath != null) { _detectedPath = extendedPath; return; }
+            }
+            catch { }
+
+            // ── ⑤ 系统 PATH ──
+            if (PlatformServices.TryFindInPath(PlatformServices.Cjxl, out var pathFound))
             {
                 _detectedPath = pathFound;
                 return;
             }
         }
 
-        /// <summary>在系统 PATH 中查找可执行文件</summary>
+        /// <summary>在系统 PATH 中查找可执行文件（已迁移至 PlatformServices）</summary>
+        [Obsolete("使用 PlatformServices.TryFindInPath 代替")]
         private static bool TryFindInPath(string exeName, out string? fullPath)
         {
-            fullPath = null;
-            try
-            {
-                var psi = new ProcessStartInfo
-                {
-                    FileName = OperatingSystem.IsWindows() ? "where" : "which",
-                    Arguments = exeName,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    UseShellExecute = false,
-                    CreateNoWindow = true
-                };
-                using var p = Process.Start(psi);
-                if (p == null) return false;
-                var output = p.StandardOutput.ReadToEnd().Trim();
-                p.WaitForExit(5000);
-                if (!string.IsNullOrWhiteSpace(output))
-                {
-                    var firstLine = output.Split(new[] { '\r', '\n' },
-                        StringSplitOptions.RemoveEmptyEntries)[0];
-                    if (File.Exists(firstLine))
-                    {
-                        fullPath = firstLine;
-                        return true;
-                    }
-                }
-            }
-            catch { }
-            return false;
+            return PlatformServices.TryFindInPath(exeName, out fullPath);
         }
 
         /// <summary>

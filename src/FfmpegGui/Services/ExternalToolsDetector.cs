@@ -163,7 +163,7 @@ namespace FfmpegGui.Services
             try
             {
                 // 查找所有可执行文件（包含子目录），并按已知名称分类（支持带特征后缀的可执行文件）
-                foreach (var exe in Directory.EnumerateFiles(dir, "*.exe", SearchOption.AllDirectories))
+                foreach (var exe in Directory.EnumerateFiles(dir, PlatformServices.ExeSearchWildcard, SearchOption.AllDirectories))
                 {
                     var name = Path.GetFileName(exe).ToLowerInvariant();
                     if (name.Contains("cjxl"))
@@ -344,6 +344,71 @@ namespace FfmpegGui.Services
             if (name.Contains("sse41") || name.Contains("sse4")) return "sse4";
             if (name.Contains("sse2")) return "sse2";
             if (name.Contains("neon") || name.Contains("advsimd")) return "neon";
+            return null;
+        }
+
+        /// <summary>
+        /// 获取扩展的外部工具搜索路径（Windows: LocalAppData\Programs, Program Files 等）。
+        /// 用于在 ffmpeg 同目录之外发现 cjxl/exiftool 等工具。
+        /// </summary>
+        public static List<string> GetExtendedSearchPaths()
+        {
+            var paths = new List<string>();
+
+            if (!OperatingSystem.IsWindows())
+                return paths;
+
+            try
+            {
+                // %LocalAppData%\Programs\ （scoop 安装位置）
+                var localPrograms = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "Programs");
+                if (Directory.Exists(localPrograms))
+                    paths.Add(localPrograms);
+
+                // C:\Program Files\ 及子目录
+                var progFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+                if (Directory.Exists(progFiles))
+                {
+                    paths.Add(progFiles);
+                    // 常见子目录
+                    foreach (var sub in new[] { "exiftool", "ffmpeg", "ImageMagick" })
+                    {
+                        var subPath = Path.Combine(progFiles, sub);
+                        if (Directory.Exists(subPath))
+                            paths.Add(subPath);
+                    }
+                }
+
+                // PATH 环境变量中的所有目录（作为回退搜索源）
+                var pathEnv = Environment.GetEnvironmentVariable("PATH");
+                if (!string.IsNullOrEmpty(pathEnv))
+                {
+                    foreach (var segment in pathEnv.Split(';'))
+                    {
+                        var trimmed = segment.Trim();
+                        if (!string.IsNullOrEmpty(trimmed) && Directory.Exists(trimmed))
+                            paths.Add(trimmed);
+                    }
+                }
+            }
+            catch { }
+
+            return paths;
+        }
+
+        /// <summary>
+        /// 在扩展搜索路径中查找工具。返回找到的第一个匹配路径，未找到返回 null。
+        /// </summary>
+        public static string? FindToolInExtendedPaths(string toolName, string searchWildcard)
+        {
+            var extendedPaths = GetExtendedSearchPaths();
+            foreach (var dir in extendedPaths)
+            {
+                var found = PlatformServices.FindToolInDirectory(dir, toolName, searchWildcard);
+                if (found != null) return found;
+            }
             return null;
         }
     }

@@ -42,6 +42,8 @@ namespace FfmpegGui.Services
         {
             if (concurrency.HasValue)
                 _concurrency = Math.Max(1, concurrency.Value);
+            // 动态限制：根据可用内存调整最大并发数（每任务预留 200MB）
+            _concurrency = ClampConcurrencyByMemory(_concurrency);
             if (_cts != null)
             {
                 _cts.Cancel();
@@ -50,6 +52,19 @@ namespace FfmpegGui.Services
             _stopAfterQueueRequested = false;
             _cts = new CancellationTokenSource();
             Task.Run(() => ProcessAsync(_cts.Token));
+        }
+
+        /// <summary>根据系统可用内存动态限制并发数（每任务预留 200MB，下限 1，上限不变）</summary>
+        private static int ClampConcurrencyByMemory(int requested)
+        {
+            try
+            {
+                var memInfo = GC.GetGCMemoryInfo();
+                var availableMB = memInfo.TotalAvailableMemoryBytes / (1024 * 1024);
+                var maxByMemory = (int)Math.Max(1, availableMB / 200);
+                return Math.Max(1, Math.Min(requested, maxByMemory));
+            }
+            catch { return requested; }
         }
 
         /// <summary>
@@ -123,6 +138,10 @@ namespace FfmpegGui.Services
             {
                 while (!ct.IsCancellationRequested)
                 {
+                // 定期清理已完成任务（每 50 次迭代清理一次）
+                if (tasks.Count > 0 && tasks.Count % 50 == 0)
+                    tasks.RemoveAll(t => t.IsCompleted);
+
                 // 如果已请求在当前队列完成后停止，且当前无待处理项且所有已启动任务均完成，则退出循环
                 if (_stopAfterQueueRequested && _queue.IsEmpty && tasks.All(t => t.IsCompleted))
                 {
@@ -540,7 +559,7 @@ namespace FfmpegGui.Services
             // 第一步：直接尝试 cjxl
             item.Command = "cjxl " + CjxlService.BuildCjxlArguments(item.InputPath, outputPath, item.Options);
             var inputExtForCjxl = Path.GetExtension(item.InputPath).ToLowerInvariant();
-            item.Log += $"[cjxl] 直接编码 (输入: {inputExtForCjxl}, 目标: jxl, effort={item.Options.JxlEffort ?? 7}, threads={item.Options.Threads})\n";
+            item.Log += $"[cjxl] 直接编码 (输入: {inputExtForCjxl}, 目标: jxl, effort={item.Options.JxlEffort ?? 5}, threads={item.Options.Threads})\n";
             _onItemUpdated?.Invoke(item);
             int exitCode;
             if (isJpegInput)
@@ -549,7 +568,7 @@ namespace FfmpegGui.Services
                 var jpegOpts = new Models.FfmpegOptions
                 {
                     Quality = item.Options.Quality,
-                    JxlEffort = item.Options.JxlEffort ?? 7,
+                    JxlEffort = item.Options.JxlEffort ?? 5,
                     CjxlProgressive = item.Options.CjxlProgressive,
                     CjxlPhotonNoiseIso = item.Options.CjxlPhotonNoiseIso,
                     Threads = item.Options.Threads
@@ -1296,7 +1315,8 @@ namespace FfmpegGui.Services
         {
             try
             {
-                var ffprobePath = Path.Combine(Path.GetDirectoryName(ffmpegPath) ?? "", "ffprobe.exe");
+                var ffprobePath = PlatformServices.ResolveFfprobePath(ffmpegPath)
+                    ?? Path.Combine(Path.GetDirectoryName(ffmpegPath) ?? "", "ffprobe.exe");
                 if (!File.Exists(ffprobePath)) ffprobePath = ffmpegPath.Replace("ffmpeg.exe", "ffprobe.exe");
 
                 var psi = new ProcessStartInfo
@@ -1331,7 +1351,8 @@ namespace FfmpegGui.Services
         {
             try
             {
-                var ffprobePath = Path.Combine(Path.GetDirectoryName(ffmpegPath) ?? "", "ffprobe.exe");
+                var ffprobePath = PlatformServices.ResolveFfprobePath(ffmpegPath)
+                    ?? Path.Combine(Path.GetDirectoryName(ffmpegPath) ?? "", "ffprobe.exe");
                 if (!File.Exists(ffprobePath)) ffprobePath = ffmpegPath.Replace("ffmpeg.exe", "ffprobe.exe");
 
                 var psi = new ProcessStartInfo
@@ -1685,7 +1706,7 @@ namespace FfmpegGui.Services
             // 优先手动路径，回退 ffmpeg 同目录
             var avifencPath = AppSettingsService.Current.AvifencPath;
             if (string.IsNullOrWhiteSpace(avifencPath) || !File.Exists(avifencPath))
-                avifencPath = Path.Combine(AppSettingsService.Current.FfmpegDir ?? "", "avifenc.exe");
+                avifencPath = Path.Combine(AppSettingsService.Current.FfmpegDir ?? "", PlatformServices.Avifenc);
             if (!File.Exists(avifencPath))
             {
                 item.Log += "[gif→avif] avifenc.exe 未找到，回退到 FFmpeg 单命令\n";
@@ -1872,6 +1893,21 @@ namespace FfmpegGui.Services
 
                     if (usePngIntermediary)
                     {
+                        // ── JXL 目标：优先使用 djxl→cjxl 管道（cjxl 支持 stdin）──
+                        if (CjxlService.IsAvailable && targetFmt == "jxl")
+                        {
+                            item.Log += "[pipeline] 尝试 djxl -> cjxl 管道（无中间文件）\n";
+                            var pipeResult = await PipeDjxlToCjxlAsync(item, outputPath, ct);
+                            if (pipeResult.exitCode == 0)
+                            {
+                                item.ExitCode = 0;
+                                item.Status = pipeResult.status;
+                                await RestoreMetadataAsync(item, outputPath);
+                                return;
+                            }
+                            item.Log += "[pipeline] djxl→cjxl 管道失败，回退到 PNG 中转\n";
+                        }
+
                         // ── JPEG/JPEGLI 目标：优先使用 djxl→cjpegli 管道 ──
                         if (CjpegliService.IsAvailable && (targetFmt == "jpg" || targetFmt == "jpeg" || targetFmt == "jpegli"))
                         {
@@ -1892,7 +1928,7 @@ namespace FfmpegGui.Services
                             }
                         }
 
-                        // ── 回退/直接：PNG 中转（cjxl/cjpegli 需要文件输入）──
+                        // ── 回退/直接：PNG 中转 ──
                         var tmp = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString() + ".png");
                         var tmpCreated = false;
                         try
@@ -1931,6 +1967,102 @@ namespace FfmpegGui.Services
                     AppSettingsService.Current.FfmpegPath);
                 item.ExitCode = exit;
                 item.Status = exit == 0 ? "已完成 (ffmpeg)" : $"失败 (退出码 {exit})";
+            }
+        }
+
+        /// <summary>
+        /// djxl 解码 JXL → stdout(PNG流) → cjxl stdin → 输出 JXL（无磁盘中间文件）。
+        /// 管道失败时返回非零，调用方回退到 PNG 中转方案。
+        /// </summary>
+        private async Task<(int exitCode, string status)> PipeDjxlToCjxlAsync(
+            QueueItem item, string outputPath, CancellationToken ct)
+        {
+            var djxlPath = DjxlService.DetectedPath;
+            var cjxlPath = CjxlService.DetectedPath;
+            if (string.IsNullOrEmpty(djxlPath) || string.IsNullOrEmpty(cjxlPath))
+                return (-1, "失败 (djxl 或 cjxl 未找到)");
+
+            Process? procDj = null;
+            Process? procCj = null;
+            try
+            {
+                using var timeoutCts = new CancellationTokenSource(TimeSpan.FromMinutes(10));
+                using var linked = CancellationTokenSource.CreateLinkedTokenSource(timeoutCts.Token, ct);
+                var linkedToken = linked.Token;
+
+                // cjxl: 从 stdin 读取，编码为 JXL
+                var cjxlArgs = CjxlService.BuildCjxlArguments("-", outputPath, item.Options);
+                var psiCj = new ProcessStartInfo
+                {
+                    FileName = cjxlPath,
+                    Arguments = cjxlArgs,
+                    RedirectStandardInput = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+
+                // djxl: 解码 JXL → PNG 流输出到 stdout
+                var djArgs = $"\"{item.InputPath}\" --output_format=png -";
+                var psiDj = new ProcessStartInfo
+                {
+                    FileName = djxlPath,
+                    Arguments = djArgs,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+
+                procCj = Process.Start(psiCj);
+                if (procCj == null) return (-1, "失败 (cjxl 启动失败)");
+                procDj = Process.Start(psiDj);
+                if (procDj == null) return (-1, "失败 (djxl 启动失败)");
+
+                // 非阻塞消费日志
+                var djLogTask = ConsumeStreamLinesAsync(procDj.StandardError,
+                    s => item.Log += $"[djxl] {s}\n");
+                var cjLogTask = ConsumeStreamLinesAsync(procCj.StandardError,
+                    s => { item.Log += $"[cjxl] {s}\n"; _onItemUpdated?.Invoke(item); });
+                var cjOutTask = ConsumeStreamLinesAsync(procCj.StandardOutput,
+                    s => item.Log += $"[cjxl] {s}\n");
+
+                // 管道传输：djxl stdout → cjxl stdin
+                try
+                {
+                    await procDj.StandardOutput.BaseStream.CopyToAsync(
+                        procCj.StandardInput.BaseStream, linkedToken);
+                }
+                catch (OperationCanceledException) { item.Log += "[djxl→cjxl] 传输取消\n"; }
+                catch (Exception ex) { item.Log += $"[djxl→cjxl] 传输错误: {ex.Message}\n"; }
+
+                try { procCj.StandardInput.Close(); } catch { }
+                try { await procCj.WaitForExitAsync(linkedToken); } catch { }
+                try { await procDj.WaitForExitAsync(CancellationToken.None); } catch { }
+
+                await djLogTask; await cjLogTask; await cjOutTask;
+
+                var exitCode = procCj.HasExited ? procCj.ExitCode : -1;
+                if (exitCode == 0)
+                {
+                    item.Log += "[djxl→cjxl] 管道编码完成\n";
+                    return (0, "已完成 (djxl→cjxl 管道)");
+                }
+                return (exitCode, $"失败 (cjxl 退出码 {exitCode})");
+            }
+            catch (OperationCanceledException) { return (-1, "已停止"); }
+            catch (Exception ex)
+            {
+                item.Log += $"[djxl→cjxl] 异常: {ex.Message}\n";
+                return (-1, $"失败: {ex.Message}");
+            }
+            finally
+            {
+                if (procCj != null && !procCj.HasExited) try { procCj.Kill(true); } catch { }
+                if (procDj != null && !procDj.HasExited) try { procDj.Kill(true); } catch { }
+                try { procCj?.Dispose(); } catch { }
+                try { procDj?.Dispose(); } catch { }
             }
         }
 
@@ -2329,7 +2461,7 @@ namespace FfmpegGui.Services
             var manualPath = AppSettingsService.Current.AvifencPath;
             if (!string.IsNullOrWhiteSpace(manualPath) && File.Exists(manualPath))
                 return true;
-            return File.Exists(Path.Combine(AppSettingsService.Current.FfmpegDir ?? "", "avifenc.exe"));
+            return File.Exists(Path.Combine(AppSettingsService.Current.FfmpegDir ?? "", PlatformServices.Avifenc));
         }
 
         /// <summary>判断队列项是否为动图（输出为GIF/APNG、设有帧率、或输入为动图文件）</summary>
