@@ -1,6 +1,6 @@
 # 🖼️ FFmpegPictureUI — FFmpeg 图片转换器
 
-**v1.4.5 正式版 — Ultra HDR 编码器、JPEG XR 支持、管道编码、HDR 色彩元数据全面修复、折叠工具栏、元数据安全模式。**
+**v1.5.0 — 工具管理 v2.0 重构、jxrlib CMake 化、AVX2 SIMD 全工具编译、PLAN 目录规范化。**
 
 An Avalonia UI-based cross-platform batch image/animation/video conversion tool that wraps `ffmpeg`/`ffprobe` with an intuitive GUI. Integrates external encoders: `cjxl`/`djxl`/`cjpegli` (JPEG XL), `ultrahdr_app` (Ultra HDR), `JxrEncApp`/`JxrDecApp` (JPEG XR).
 
@@ -48,9 +48,9 @@ QQ 交流群：754439779  点击链接加入群聊【FFmpegPictureUI图像处理
 | `avifenc` | ⚪ Optional / 可选 | GIF → AVIF two-step encoding with alpha preservation |
 | `exiftool` | ⚪ Optional / 可选 | Metadata editing, privacy cleaning |
 
-> The **JPEG XL 参考实现库** setting (one directory containing `cjxl.exe`/`djxl.exe`/`cjpegli.exe`) is saved as `CjxlPath`. The app auto-selects the best SIMD-optimized binary for your CPU.
+> The **JPEG XL 参考实现库** (JxlLibDir) 和 **Windows 构建产物** (WindowsArtifactsDir) 两项文件夹路径设置替代了旧版的 5 项独立文件路径。应用自动扫描目录中的工具并选择与 CPU SIMD 匹配的最优二进制。
 >
-> 设置中 **JPEG XL 参考实现库** 字段保存包含 `cjxl.exe`/`djxl.exe`/`cjpegli.exe` 的目录路径，应用自动选择与 CPU 指令集匹配的最优二进制。
+> 设置中提供三个统一路径：`exiftool`（文件选择）、`jxl 参考库`（文件夹，含 cjxl/djxl/cjpegli）、`artifacts`（文件夹，含 ultrahdr/Jxr/avifenc）。
 
 ---
 
@@ -122,6 +122,17 @@ ffmpegPictureUI/
 ---
 
 ## 📝 Changelog / 更新日志
+
+### v1.5.0 (2026-07-14)
+
+> 🎯 **工具管理 v2.0 重构** — 7→3 项统一设置、jxrlib CMake 化、全工具 AVX2 编译。
+
+- 🔧 **工具管理 v2.0 / Tool Management v2.0**: 7 项独立外部工具路径（CjxlPath/CjpegliPath/AvifencPath/UltrahdrPath/JxrPath/ExifToolPath）精简为 3 项（JxlLibDir/WindowsArtifactsDir/ExifToolPath）；旧 settings.json 自动迁移到新字段；Save() 排除已废弃字段
+- 📦 **PLAN 目录规范化 / PLAN Directory**: `jxl-x64-windows-static`→`jxl`、`windows-artifacts`→`artifacts`、`exiftool-13.58_64`→`exiftool`（展平嵌套）；PlanFolderDetector + PlanSubDirs 同步更新
+- 🏗️ **jxrlib CMake 化 / jxrlib CMake**: 为 abandonware jxrlib 创建完整 CMakeLists.txt（5 静态库 + JxrEncApp/JxrDecApp）；支持 VS 2026/2022 及 Linux/ARM 编译
+- ⚡ **AVX2 全工具编译 / AVX2 Recompile**: JxrEncApp/JxrDecApp 以 VS 2026 + `/arch:AVX2` 重编译；ultrahdr_app 以 GCC+Ninja 重编译；性能提升 ~15%（JXR 编码 43→37 MP/s）
+- 🧹 **外部工具精简 / Tool Cleanup**: 移除 4 个未使用工具（aomdec/aomenc/avifdec/avifgainmaputil），节省 ~47MB
+- 🗑️ **CS0618 抑制 / CS0618 Suppression**: 项目级 NoWarn 抑制 56 个废弃字段回退警告，构建日志从 76→20 警告
 
 ### v1.4.5 (2026-06-20)
 

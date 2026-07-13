@@ -114,10 +114,19 @@ cmake -S "$SRC_DIR/libultrahdr" -B "$SRC_DIR/libultrahdr/build" \
     -DUHDR_BUILD_EXAMPLES=ON
 cmake --build "$SRC_DIR/libultrahdr/build" -j$JOBS
 
-# 5. 部署
+# 5. jxrlib → JxrEncApp + JxrDecApp (CMake 支持)
+cmake -S "$SRC_DIR/jxrlib" -B "$SRC_DIR/jxrlib/build" \
+    -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=$BUILD_TYPE \
+    -DCMAKE_C_FLAGS="$SIMD_FLAGS"
+cmake --build "$SRC_DIR/jxrlib/build" -j$JOBS
+
+# 6. 部署
 cp "$SRC_DIR/libultrahdr/build/ultrahdr_app" "$PLAN_DIR/"
 cp "$SRC_DIR/libavif/build/avifenc"         "$PLAN_DIR/"
-# jxrlib: 暂无 Linux CMake 支持，使用 Windows 交叉编译产物
+cp "$SRC_DIR/jxrlib/build/JxrEncApp"        "$PLAN_DIR/"
+cp "$SRC_DIR/jxrlib/build/JxrDecApp"        "$PLAN_DIR/"
+# 注意: ultrahdr_app 需要 libuhdr.so (Linux) 或 libuhdr.dll (Windows)
+cp "$SRC_DIR/libultrahdr/build/libuhdr."*   "$PLAN_DIR/"
 
 echo "Done. Output: $PLAN_DIR"
 ```
@@ -126,7 +135,7 @@ echo "Done. Output: $PLAN_DIR"
 
 - ARM64 下 NASM 不可用，aom 使用 C 回退（较慢）
 - SVE/SVE2: 使用 `-march=armv8.4-a+sve2`
-- jxrlib: 暂无 ARM 编译方案，考虑使用 ffmpeg 内置 JXR 支持
+- jxrlib: ✅ 已支持 CMake 跨平台编译
 
 ---
 
