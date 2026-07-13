@@ -31,15 +31,7 @@ namespace FfmpegGui.Services
 
             try
             {
-                process.PriorityClass = AppSettingsService.Current.FfmpegPriority switch
-                {
-                    0 => ProcessPriorityClass.RealTime,
-                    1 => ProcessPriorityClass.High,
-                    2 => ProcessPriorityClass.AboveNormal,
-                    4 => ProcessPriorityClass.BelowNormal,
-                    5 => ProcessPriorityClass.Idle,
-                    _ => ProcessPriorityClass.Normal
-                };
+                PlatformServices.SetSafePriority(process, AppSettingsService.Current.FfmpegPriority);
             }
             catch { }
 

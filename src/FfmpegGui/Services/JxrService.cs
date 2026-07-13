@@ -42,12 +42,20 @@ namespace FfmpegGui.Services
                 }
                 if (Directory.Exists(manual))
                 {
-                    var candidate = Path.Combine(manual, "JxrEncApp.exe");
+                    var candidate = Path.Combine(manual, PlatformServices.JxrEnc);
                     if (File.Exists(candidate)) { _detectedPath = candidate; return; }
                 }
             }
 
-            // ② ffmpeg 同目录 → 程序同目录
+            // ② PLAN 便携包自动检测
+            try
+            {
+                var planFound = PlatformServices.TryFindInPlanFolder(PlatformServices.JxrEnc);
+                if (planFound != null) { _detectedPath = planFound; return; }
+            }
+            catch { }
+
+            // ③ ffmpeg 同目录 → 程序同目录
             var dirs = new[]
             {
                 AppSettingsService.Current.FfmpegDir ?? "",
@@ -56,12 +64,21 @@ namespace FfmpegGui.Services
             foreach (var dir in dirs)
             {
                 if (string.IsNullOrEmpty(dir)) continue;
-                var candidate = Path.Combine(dir, "JxrEncApp.exe");
+                var candidate = Path.Combine(dir, PlatformServices.JxrEnc);
                 if (File.Exists(candidate)) { _detectedPath = candidate; return; }
             }
 
-            // ③ 系统 PATH
-            if (TryFindInPath("JxrEncApp.exe", out var pathFound))
+            // ④ 扩展搜索路径
+            try
+            {
+                var extended = ExternalToolsDetector.FindToolInExtendedPaths(
+                    PlatformServices.JxrEnc, $"*{PlatformServices.JxrEnc}*");
+                if (extended != null) { _detectedPath = extended; return; }
+            }
+            catch { }
+
+            // ⑤ 系统 PATH
+            if (PlatformServices.TryFindInPath(PlatformServices.JxrEnc, out var pathFound))
             {
                 _detectedPath = pathFound;
                 return;
@@ -70,31 +87,7 @@ namespace FfmpegGui.Services
 
         private static bool TryFindInPath(string exeName, out string? fullPath)
         {
-            fullPath = null;
-            try
-            {
-                var psi = new ProcessStartInfo
-                {
-                    FileName = OperatingSystem.IsWindows() ? "where" : "which",
-                    Arguments = exeName,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    UseShellExecute = false,
-                    CreateNoWindow = true
-                };
-                using var p = Process.Start(psi);
-                if (p == null) return false;
-                var output = p.StandardOutput.ReadToEnd().Trim();
-                p.WaitForExit(5000);
-                if (!string.IsNullOrWhiteSpace(output))
-                {
-                    var firstLine = output.Split(new[] { '\r', '\n' },
-                        StringSplitOptions.RemoveEmptyEntries)[0];
-                    if (File.Exists(firstLine)) { fullPath = firstLine; return true; }
-                }
-            }
-            catch { }
-            return false;
+            return PlatformServices.TryFindInPath(exeName, out fullPath);
         }
 
         public static void ClearCache()

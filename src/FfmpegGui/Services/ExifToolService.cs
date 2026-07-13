@@ -54,8 +54,8 @@ namespace FfmpegGui.Services
             _detectedPath = null;
 
             var names = OperatingSystem.IsWindows()
-                ? new[] { "exiftool.exe", "exiftool(-k).exe" }
-                : new[] { "exiftool" };
+                ? new[] { PlatformServices.Exiftool, "exiftool(-k).exe" }
+                : new[] { PlatformServices.Exiftool };
 
             // ── ① 手动指定路径 ──
             var manual = AppSettingsService.Current.ExifToolPath;
@@ -65,7 +65,15 @@ namespace FfmpegGui.Services
                 if (_detectedPath != null) return;
             }
 
-            // ── ② 同目录（ffmpeg 目录 → 程序目录）──
+            // ── ② PLAN 便携包自动检测 ──
+            try
+            {
+                var planFound = PlatformServices.TryFindInPlanFolder(PlatformServices.Exiftool);
+                if (planFound != null) { _detectedPath = ResolveSafeExifToolPath(planFound); if (_detectedPath != null) return; }
+            }
+            catch { }
+
+            // ── ③ 同目录（ffmpeg 目录 → 程序目录）──
             var dirs = new[]
             {
                 AppSettingsService.Current.FfmpegDir ?? "",
@@ -86,7 +94,16 @@ namespace FfmpegGui.Services
                 }
             }
 
-            // ── ③ 系统 PATH ──
+            // ── ④ 扩展搜索路径（Windows: LocalAppData\Programs 等）──
+            try
+            {
+                var extended = ExternalToolsDetector.FindToolInExtendedPaths(
+                    PlatformServices.Exiftool, $"*{PlatformServices.Exiftool}*");
+                if (extended != null) { _detectedPath = ResolveSafeExifToolPath(extended); if (_detectedPath != null) return; }
+            }
+            catch { }
+
+            // ── ⑤ 系统 PATH ──
             foreach (var name in names)
             {
                 if (TryFindInPath(name, out var pathFound) && pathFound != null)
@@ -113,7 +130,7 @@ namespace FfmpegGui.Services
             // (-k) 版本：查找或创建同目录下的标准 exiftool.exe
             var dir = Path.GetDirectoryName(candidatePath);
             if (string.IsNullOrEmpty(dir)) return null;
-            var safePath = Path.Combine(dir, "exiftool.exe");
+            var safePath = Path.Combine(dir, PlatformServices.Exiftool);
 
             if (File.Exists(safePath))
                 return safePath;
