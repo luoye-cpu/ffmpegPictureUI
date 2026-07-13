@@ -48,17 +48,23 @@ FFmpegPictureUI-v1.5.0-x64-full/
 │   │   ├── ffmpeg.exe
 │   │   ├── ffprobe.exe
 │   │   └── *.dll
-│   ├── jxl-x64-windows-static/      ← libjxl 预编译包
+│   ├── jxl/                          ← libjxl 预编译包
 │   │   └── bin/
 │   │       ├── cjxl.exe
 │   │       ├── djxl.exe
 │   │       └── cjpegli.exe
-│   ├── exiftool-13.58_64/           ← ExifTool 预编译包
-│   │   └── exiftool(-k).exe
-│   └── windows-artifacts/           ← 其他工具
+│   ├── exiftool/                     ← ExifTool
+│   │   └── exiftool.exe
+│   └── artifacts/                    ← 其他自编译工具
 │       ├── ultrahdr_app.exe
+│       ├── libuhdr.dll
 │       ├── JxrEncApp.exe
-│       └── JxrDecApp.exe
+│       ├── JxrDecApp.exe
+│       ├── avifenc.exe
+│       ├── libgcc_s_seh-1.dll        ← GCC 运行时（ultrahdr 依赖）
+│       ├── libstdc++-6.dll
+│       ├── libwinpthread-1.dll
+│       └── libjpeg-9__.dll
 └── FFmpegPictureUI.runtimeconfig.json
 ```
 
@@ -69,9 +75,9 @@ FFmpegPictureUI-v1.5.0-x64-full/
 | 子目录 | 识别条件 | 自动配置项 |
 |--------|---------|-----------|
 | `PLAN/ffmpeg-full/` | 目录存在且含 `ffmpeg(.exe)` | `FfmpegDirectory` |
-| `PLAN/jxl-x64-windows-static/bin/` | 目录存在 | `CjxlPath`（含 cjxl/djxl/cjpegli） |
-| `PLAN/exiftool-13.58_64/` | 目录存在且含 `exiftool(.exe)` | `ExifToolPath` |
-| `PLAN/windows-artifacts/` | 目录存在 | `UltrahdrPath`, `JxrPath` |
+| `PLAN/jxl/bin/` | 目录存在 | `JxlLibDir`（含 cjxl/djxl/cjpegli） |
+| `PLAN/exiftool/` | 目录存在且含 `exiftool(.exe)` | `ExifToolPath` |
+| `PLAN/artifacts/` | 目录存在 | `WindowsArtifactsDir`（含 ultrahdr/Jxr/avifenc） |
 
 > **重要**: 仅在用户**未手动配置**对应路径时才自动填充。用户手动设置的路径优先级更高。
 
