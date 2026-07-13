@@ -40,12 +40,12 @@ namespace FfmpegGui.Services
                     }
                     if (Directory.Exists(manual))
                     {
-                        var candidate = Path.Combine(manual, "djxl.exe");
+                        var candidate = Path.Combine(manual, PlatformServices.Djxl);
                         if (File.Exists(candidate)) { _detectedPath = candidate; return; }
                         try
                         {
                             var list = new System.Collections.Generic.List<string>();
-                            foreach (var f in Directory.EnumerateFiles(manual, "*djxl*.exe", SearchOption.AllDirectories))
+                            foreach (var f in Directory.EnumerateFiles(manual, PlatformServices.DjxlSearchWildcard, SearchOption.AllDirectories))
                             {
                                 if (File.Exists(f)) list.Add(f);
                             }
@@ -61,7 +61,15 @@ namespace FfmpegGui.Services
             }
             catch { }
 
-            // 尝试同目录查找（ffmpeg 目录 -> 程序目录）
+            // ② PLAN 便携包自动检测
+            try
+            {
+                var planFound = PlatformServices.TryFindInPlanFolder(PlatformServices.Djxl);
+                if (planFound != null) { _detectedPath = planFound; return; }
+            }
+            catch { }
+
+            // ③ 同目录查找（ffmpeg 目录 -> 程序目录）
             try
             {
                 var ffmpegDir = AppSettingsService.Current.FfmpegDir;
@@ -70,17 +78,22 @@ namespace FfmpegGui.Services
                 foreach (var dir in dirs)
                 {
                     if (string.IsNullOrEmpty(dir)) continue;
-                    var candidate = Path.Combine(dir, "djxl.exe");
+                    var candidate = Path.Combine(dir, PlatformServices.Djxl);
                     if (File.Exists(candidate)) { _detectedPath = candidate; return; }
                 }
             }
             catch { }
 
-            // PATH
-            if (TryFindInPath("djxl.exe", out var pathFound))
+            // ④ 扩展搜索路径（Windows: LocalAppData\Programs 等）
+            try
             {
-                _detectedPath = pathFound; return;
+                var extended = ExternalToolsDetector.FindToolInExtendedPaths(
+                    PlatformServices.Djxl, PlatformServices.DjxlSearchWildcard);
+                if (extended != null) { _detectedPath = extended; return; }
             }
+            catch { }
+
+            // ⑤ PATH
         }
 
         private static bool TryFindInPath(string exeName, out string? fullPath)

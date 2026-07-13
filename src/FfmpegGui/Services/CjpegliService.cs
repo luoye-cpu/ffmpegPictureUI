@@ -49,12 +49,12 @@ namespace FfmpegGui.Services
                         var dir = Path.GetDirectoryName(manual);
                         if (!string.IsNullOrEmpty(dir))
                         {
-                            var sibling = Path.Combine(dir, "cjpegli.exe");
+                            var sibling = Path.Combine(dir, PlatformServices.Cjpegli);
                             if (File.Exists(sibling)) { _detectedPath = sibling; return; }
                             try
                             {
                                 var list = new List<string>();
-                                foreach (var f in Directory.EnumerateFiles(dir, "*cjpegli*.exe", SearchOption.TopDirectoryOnly))
+                                foreach (var f in Directory.EnumerateFiles(dir, PlatformServices.CjpegliSearchWildcard, SearchOption.TopDirectoryOnly))
                                 {
                                     if (File.Exists(f)) list.Add(f);
                                 }
@@ -70,12 +70,12 @@ namespace FfmpegGui.Services
                     // 情况 3：manual 是目录，在其下递归查找
                     if (Directory.Exists(manual))
                     {
-                        var candidate = Path.Combine(manual, "cjpegli.exe");
+                        var candidate = Path.Combine(manual, PlatformServices.Cjpegli);
                         if (File.Exists(candidate)) { _detectedPath = candidate; return; }
                         try
                         {
                             var list = new List<string>();
-                            foreach (var f in Directory.EnumerateFiles(manual, "*cjpegli*.exe", SearchOption.AllDirectories))
+                            foreach (var f in Directory.EnumerateFiles(manual, PlatformServices.CjpegliSearchWildcard, SearchOption.AllDirectories))
                             {
                                 if (File.Exists(f)) list.Add(f);
                             }
@@ -91,7 +91,40 @@ namespace FfmpegGui.Services
             }
             catch { }
 
-            if (TryFindInPath("cjpegli.exe", out var pathFound))
+            // ── ② PLAN 便携包自动检测 ──
+            try
+            {
+                var planFound = PlatformServices.TryFindInPlanFolder(PlatformServices.Cjpegli);
+                if (planFound != null) { _detectedPath = planFound; return; }
+            }
+            catch { }
+
+            // ── ③ 同目录（ffmpeg 目录 → 程序目录）──
+            try
+            {
+                var ffmpegDir = AppSettingsService.Current.FfmpegDir;
+                var programDir = AppDomain.CurrentDomain.BaseDirectory;
+                var dirs = new[] { ffmpegDir, programDir };
+                foreach (var dir in dirs)
+                {
+                    if (string.IsNullOrEmpty(dir)) continue;
+                    var found = PlatformServices.FindToolInDirectory(dir, PlatformServices.Cjpegli, PlatformServices.CjpegliSearchWildcard);
+                    if (found != null) { _detectedPath = found; return; }
+                }
+            }
+            catch { }
+
+            // ── ④ 扩展搜索路径 ──
+            try
+            {
+                var extended = ExternalToolsDetector.FindToolInExtendedPaths(
+                    PlatformServices.Cjpegli, PlatformServices.CjpegliSearchWildcard);
+                if (extended != null) { _detectedPath = extended; return; }
+            }
+            catch { }
+
+            // ── ⑤ 系统 PATH ──
+            if (PlatformServices.TryFindInPath(PlatformServices.Cjpegli, out var pathFound))
             {
                 _detectedPath = pathFound;
                 return;

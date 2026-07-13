@@ -654,6 +654,28 @@ namespace FfmpegGui
             if (ConcurrencyBox != null)
                 ConcurrencyBox.Text = Math.Clamp(settings.MaxQueueSize, 1, 128).ToString();
 
+            // ── PLAN 文件夹自动识别（便携包自动加载 ffmpeg 目录）──
+            // 各外部工具（cjxl/djxl/cjpegli/exiftool/ultrahdr/jxr）的 PLAN 检测
+            // 已内置于对应 Service.Detect() 中，此处仅处理 ffmpeg 目录。
+            try
+            {
+                var planPath = PlatformServices.PlanFolderPath;
+                if (planPath != null)
+                {
+                    var ffmpegInPlan = Path.Combine(planPath, "ffmpeg-full");
+                    if (Directory.Exists(ffmpegInPlan)
+                        && string.IsNullOrWhiteSpace(AppSettingsService.Current.FfmpegDirectory))
+                    {
+                        AppSettingsService.Current.FfmpegDirectory = ffmpegInPlan;
+                        AppSettingsService.Save();
+                        if (FfmpegPathBox != null) FfmpegPathBox.Text = ffmpegInPlan;
+                    }
+                    if (LogText != null)
+                        LogText.Text += $"[PLAN] 检测到便携组件包: {planPath}\n";
+                }
+            }
+            catch { }
+
             // 启动时自动检测能力（即使没有 ffmpeg 路径也尝试 PATH 检测）
             _ = FullDetectionAsync();
         }
@@ -663,16 +685,18 @@ namespace FfmpegGui
             if (LogText != null) LogText.Text += "正在检测 ffmpeg 能力与可用编码器...\n";
             CjxlService.ClearCache();
             CjpegliService.ClearCache();
-            CjxlService.Detect();
-            CjpegliService.Detect();
-            await FormatCapabilitiesService.InitializeAsync(AppSettingsService.Current.FfmpegPath);
-            
-            // 预加载所有格式的编码器
-            await EncoderDetectionService.GetAllEncodersAsync(AppSettingsService.Current.FfmpegPath);
+
+            // ── 并行启动关键检测（减少启动等待时间）──
+            var detectCjxl   = Task.Run(() => CjxlService.Detect());
+            var detectCjpegli = Task.Run(() => CjpegliService.Detect());
+            var initCaps     = FormatCapabilitiesService.InitializeAsync(AppSettingsService.Current.FfmpegPath);
+            var loadEncoders = EncoderDetectionService.GetAllEncodersAsync(AppSettingsService.Current.FfmpegPath);
+
+            await Task.WhenAll(detectCjxl, detectCjpegli, initCaps, loadEncoders);
             
             await RefreshEncoderListAsync();
 
-            // CPU 指令集检测
+            // CPU 指令集检测（同步，极快）
             try
             {
                 CpuFeatureService.Detect();
@@ -864,6 +888,34 @@ namespace FfmpegGui
             UpdateExifToolPanelState();
             UpdateOptionAvailability();
             RefreshToolsStatusBar();
+
+            // ── 格式能力状态报告（异步，不阻塞 UI）──
+            _ = ReportFormatCapabilityStatusAsync();
+        }
+
+        /// <summary>异步报告各格式的编码/封装/解码能力状态</summary>
+        private async Task ReportFormatCapabilityStatusAsync()
+        {
+            try
+            {
+                var formats = new[] { "jpg", "png", "webp", "avif", "tiff", "jxl", "jxr", "gif", "apng", "bmp" };
+                var ffmpegPath = AppSettingsService.Current.FfmpegPath;
+
+                foreach (var fmt in formats)
+                {
+                    try
+                    {
+                        var status = await EncoderDetectionService.GetFormatStatusAsync(fmt, ffmpegPath);
+                        await Dispatcher.UIThread.InvokeAsync(() =>
+                        {
+                            if (LogText != null)
+                                LogText.Text += $"[format] {status}\n";
+                        });
+                    }
+                    catch { /* 单个格式检测失败不影响其他 */ }
+                }
+            }
+            catch { }
         }
 
         private void UpdateQualityLabel()
@@ -2676,7 +2728,7 @@ namespace FfmpegGui
 
             var files = await topLevel.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
             {
-                Title = "选择 ffmpeg.exe",
+                Title = "选择 ffmpeg",
                 AllowMultiple = false,
                 FileTypeFilter = new[]
                 {
@@ -2788,7 +2840,7 @@ namespace FfmpegGui
                 AllowMultiple = false,
                 FileTypeFilter = new[]
                 {
-                    new FilePickerFileType("可执行文件") { Patterns = new[] { "*.exe" } },
+                    new FilePickerFileType("可执行文件") { Patterns = PlatformServices.ExeFilePickerPatterns },
                     new FilePickerFileType("所有文件") { Patterns = new[] { "*" } }
                 }
             });
@@ -2857,11 +2909,11 @@ namespace FfmpegGui
             if (topLevel?.StorageProvider == null) return;
             var files = await topLevel.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
             {
-                Title = "选择 avifenc.exe",
+                Title = "选择 avifenc",
                 AllowMultiple = false,
                 FileTypeFilter = new[]
                 {
-                    new FilePickerFileType("可执行文件") { Patterns = new[] { "*.exe" } },
+                    new FilePickerFileType("可执行文件") { Patterns = PlatformServices.ExeFilePickerPatterns },
                     new FilePickerFileType("所有文件") { Patterns = new[] { "*" } }
                 }
             });
@@ -2891,11 +2943,11 @@ namespace FfmpegGui
             if (topLevel?.StorageProvider == null) return;
             var files = await topLevel.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
             {
-                Title = "选择 ultrahdr_app.exe",
+                Title = "选择 ultrahdr_app",
                 AllowMultiple = false,
                 FileTypeFilter = new[]
                 {
-                    new FilePickerFileType("可执行文件") { Patterns = new[] { "*.exe" } },
+                    new FilePickerFileType("可执行文件") { Patterns = PlatformServices.ExeFilePickerPatterns },
                     new FilePickerFileType("所有文件") { Patterns = new[] { "*" } }
                 }
             });
@@ -2936,11 +2988,11 @@ namespace FfmpegGui
             if (topLevel?.StorageProvider == null) return;
             var files = await topLevel.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
             {
-                Title = "选择 JxrEncApp.exe",
+                Title = "选择 JxrEncApp",
                 AllowMultiple = false,
                 FileTypeFilter = new[]
                 {
-                    new FilePickerFileType("可执行文件") { Patterns = new[] { "*.exe" } },
+                    new FilePickerFileType("可执行文件") { Patterns = PlatformServices.ExeFilePickerPatterns },
                     new FilePickerFileType("所有文件") { Patterns = new[] { "*" } }
                 }
             });

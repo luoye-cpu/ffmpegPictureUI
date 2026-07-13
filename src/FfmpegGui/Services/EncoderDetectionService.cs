@@ -72,6 +72,9 @@ namespace FfmpegGui.Services
     public static class EncoderDetectionService
     {
         private static List<EncoderInfo>? _allEncoders;
+        private static HashSet<string>? _allDecoders;
+        private static HashSet<string>? _allMuxers;
+
         private static readonly Dictionary<string, string[]> FormatEncoderMap = new(StringComparer.OrdinalIgnoreCase)
         {
             ["jpg"] = new[] { "mjpeg", "libultrahdr", "mjpeg_qsv", "mjpeg_vaapi", "mjpeg_nvenc", "mjpeg_amf" },
@@ -85,6 +88,30 @@ namespace FfmpegGui.Services
             ["bmp"] = new[] { "bmp" },
             ["gif"] = new[] { "gif" },
             ["apng"] = new[] { "apng", "png" }
+        };
+
+        // 格式 → 必需的 muxer 名称（ffmpeg 写文件时使用）
+        private static readonly Dictionary<string, string> FormatMuxerMap = new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["jpg"] = "image2",    ["jpeg"] = "image2",
+            ["png"] = "apng",      ["apng"] = "apng",
+            ["webp"] = "webp",     ["avif"] = "avif",
+            ["tiff"] = "image2",   ["tif"] = "image2",
+            ["jxl"] = "jpegxl",    ["jxr"] = "image2",
+            ["bmp"] = "image2",    ["gif"] = "gif"
+        };
+
+        // 格式 → 必需的 decoder 名称（ffmpeg 读文件时使用，null=内置支持）
+        private static readonly Dictionary<string, string[]> FormatDecoderMap = new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["jpg"] = new[] { "mjpeg" },       ["jpeg"] = new[] { "mjpeg" },
+            ["png"] = new[] { "png" },          ["apng"] = new[] { "apng", "png" },
+            ["webp"] = new[] { "webp" },        ["avif"] = new[] { "av1" },
+            ["tiff"] = new[] { "tiff" },        ["tif"] = new[] { "tiff" },
+            ["jxl"] = new[] { "jpegxl", "libjxl" }, ["jxr"] = new[] { "jxr" },
+            ["bmp"] = new[] { "bmp" },          ["gif"] = new[] { "gif" },
+            ["heic"] = new[] { "hevc" },        ["heif"] = new[] { "hevc", "heif" },
+            ["dng"] = new[] { "tiff" }
         };
 
         /// <summary>
@@ -259,7 +286,7 @@ namespace FfmpegGui.Services
                     : HasCachedLibultrahdr() ? "libultrahdr" : "mjpeg",
                 "png" => "png",
                 "webp" => "libwebp",
-                "avif" => "libaom-av1",
+                "avif" => HasCachedSvtAv1() ? "libsvtav1" : "libaom-av1",
                 "tiff" => "tiff",
                 "jxl" => CjxlService.IsAvailable ? "cjxl" : "libjxl",
                 "jxr" => JxrService.IsAvailable ? "jxr" : "jxr",
@@ -275,6 +302,12 @@ namespace FfmpegGui.Services
         private static bool HasCachedLibultrahdr()
         {
             return _allEncoders?.Any(e => e.Name == "libultrahdr") == true;
+        }
+
+        /// <summary>检测 libsvtav1 是否在缓存的编码器列表中</summary>
+        private static bool HasCachedSvtAv1()
+        {
+            return _allEncoders?.Any(e => e.Name == "libsvtav1") == true;
         }
 
         /// <summary>
@@ -319,11 +352,133 @@ namespace FfmpegGui.Services
         }
 
         /// <summary>
+        /// 获取所有可用的 muxer（复用器/封装器）。用于判断目标格式是否可写。
+        /// </summary>
+        public static async Task<HashSet<string>> GetAllMuxersAsync(string? ffmpegPath = null)
+        {
+            if (_allMuxers != null) return _allMuxers;
+            _allMuxers = await ParseSimpleListAsync("muxers", ffmpegPath);
+            return _allMuxers;
+        }
+
+        /// <summary>
+        /// 获取所有可用的 decoder（解码器）。用于判断输入格式是否可读。
+        /// </summary>
+        public static async Task<HashSet<string>> GetAllDecodersAsync(string? ffmpegPath = null)
+        {
+            if (_allDecoders != null) return _allDecoders;
+            _allDecoders = await ParseSimpleListAsync("decoders", ffmpegPath);
+            return _allDecoders;
+        }
+
+        /// <summary>判断 ffmpeg 是否能写入指定图片格式（检查 muxer 可用性）</summary>
+        public static async Task<bool> IsMuxerAvailableAsync(string format, string? ffmpegPath = null)
+        {
+            if (!FormatMuxerMap.TryGetValue(format.ToLower(), out var muxerName))
+                return false;
+            var muxers = await GetAllMuxersAsync(ffmpegPath);
+            return muxers.Contains(muxerName);
+        }
+
+        /// <summary>判断 ffmpeg 是否能解码指定图片格式（检查 decoder 可用性）</summary>
+        public static async Task<bool> IsDecoderAvailableAsync(string format, string? ffmpegPath = null)
+        {
+            if (!FormatDecoderMap.TryGetValue(format.ToLower(), out var decoderNames))
+                return true; // 未在映射表中 → 假定内置支持
+            var decoders = await GetAllDecodersAsync(ffmpegPath);
+            return decoderNames.Any(d => decoders.Contains(d));
+        }
+
+        /// <summary>获取指定格式的人类可读能力状态描述</summary>
+        public static async Task<string> GetFormatStatusAsync(string format, string? ffmpegPath = null)
+        {
+            var fmt = format.ToLower();
+            var parts = new List<string>();
+
+            // 编码器
+            var encoders = await GetEncodersForFormatAsync(fmt, ffmpegPath);
+            var bestEncoder = encoders.FirstOrDefault(e => e.IsAvailable);
+            if (bestEncoder != null)
+            {
+                var tag = bestEncoder.Backend == EncoderBackend.Ffmpeg ? "" :
+                          bestEncoder.Backend == EncoderBackend.Cjxl ? " (外部 cjxl)" :
+                          bestEncoder.Backend == EncoderBackend.Cjpegli ? " (外部 cjpegli)" :
+                          bestEncoder.Backend == EncoderBackend.Ultrahdr ? " (外部 ultrahdr)" :
+                          bestEncoder.Backend == EncoderBackend.Jxr ? " (外部 JxrEncApp)" : "";
+                parts.Add($"编码: {bestEncoder.Name}{tag}");
+            }
+            else
+            {
+                parts.Add("编码: ❌ 不可用");
+            }
+
+            // Muxer
+            var muxerOk = await IsMuxerAvailableAsync(fmt, ffmpegPath);
+            parts.Add(muxerOk ? "封装: ✅" : "封装: ❌ 不支持");
+
+            // Decoder（仅特定格式需要检查）
+            if (FormatDecoderMap.ContainsKey(fmt))
+            {
+                var decOk = await IsDecoderAvailableAsync(fmt, ffmpegPath);
+                if (!decOk) parts.Add("解码: ❌ 不支持");
+            }
+
+            return $"{fmt.ToUpper()} — " + string.Join(", ", parts);
+        }
+
+        /// <summary>解析 ffmpeg 简单列表输出（-muxers / -decoders 等）为名称集合</summary>
+        private static async Task<HashSet<string>> ParseSimpleListAsync(
+            string listType, string? ffmpegPath = null)
+        {
+            var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var fileName = ffmpegPath ?? AppSettingsService.Current.FfmpegPath;
+
+            try
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = fileName,
+                    Arguments = $"-hide_banner -{listType}",
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    StandardOutputEncoding = Encoding.UTF8
+                };
+
+                using var p = Process.Start(psi);
+                if (p == null) return result;
+                var output = await p.StandardOutput.ReadToEndAsync();
+                await p.WaitForExitAsync();
+
+                var lines = output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+                foreach (var line in lines)
+                {
+                    if (line.Length < 9) continue;
+                    var secondChar = line.Length > 1 ? line[1] : ' ';
+                    if (secondChar == '.' || secondChar == '-' || secondChar == '=') continue;
+
+                    var flags = line.Substring(0, Math.Min(7, line.Length));
+                    var remaining = line.Substring(flags.Length).TrimStart();
+                    var spaceIdx = remaining.IndexOf(' ');
+                    if (spaceIdx <= 0) continue;
+                    var name = remaining.Substring(0, spaceIdx).Trim();
+                    if (!string.IsNullOrEmpty(name))
+                        result.Add(name);
+                }
+            }
+            catch { }
+            return result;
+        }
+
+        /// <summary>
         /// 清除缓存（ffmpeg 路径变更后调用）
         /// </summary>
         public static void ClearCache()
         {
             _allEncoders = null;
+            _allDecoders = null;
+            _allMuxers = null;
         }
     }
 }

@@ -45,19 +45,19 @@ namespace FfmpegGui.Models
         /// </summary>
         public System.Collections.Generic.List<string> IgnoredToolPaths { get; set; } = new System.Collections.Generic.List<string>();
 
-        /// <summary>ffmpeg.exe 完整路径（计算属性，不持久化）</summary>
+        /// <summary>ffmpeg 完整路径（计算属性，不持久化）</summary>
         [JsonIgnore]
         public string FfmpegPath =>
             string.IsNullOrWhiteSpace(FfmpegDirectory)
-                ? "ffmpeg"
-                : Path.Combine(FfmpegDirectory, "ffmpeg.exe");
+                ? Services.PlatformServices.Ffmpeg
+                : Path.Combine(FfmpegDirectory, Services.PlatformServices.Ffmpeg);
 
-        /// <summary>ffprobe.exe 完整路径（计算属性，不持久化）</summary>
+        /// <summary>ffprobe 完整路径（计算属性，不持久化）</summary>
         [JsonIgnore]
         public string FfprobePath =>
             string.IsNullOrWhiteSpace(FfmpegDirectory)
-                ? "ffprobe"
-                : Path.Combine(FfmpegDirectory, "ffprobe.exe");
+                ? Services.PlatformServices.Ffprobe
+                : Path.Combine(FfmpegDirectory, Services.PlatformServices.Ffprobe);
 
         /// <summary>ffmpeg 所在目录（计算属性，不持久化）</summary>
         [JsonIgnore]

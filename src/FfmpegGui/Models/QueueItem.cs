@@ -31,7 +31,34 @@ namespace FfmpegGui.Models
         }
 
         public int? ExitCode { get; set; }
-        public string Log { get; set; } = string.Empty;
+        private string _log = string.Empty;
+
+        /// <summary>日志最大长度（5MB），超出时自动截断头部保留尾部</summary>
+        private const int MaxLogLength = 5 * 1024 * 1024;
+
+        public string Log
+        {
+            get => _log;
+            set
+            {
+                _log = value ?? string.Empty;
+                // 自动截断超长日志
+                if (_log.Length > MaxLogLength)
+                {
+                    var excess = _log.Length - MaxLogLength + 1024 * 1024;
+                    if (excess > 0 && excess < _log.Length)
+                        _log = $"[日志已截断 {excess / 1024}KB | 超出 {MaxLogLength / 1024 / 1024}MB 上限]\n"
+                             + _log.Substring(excess);
+                }
+            }
+        }
+
+        /// <summary>向日志追加文本（比 += 更高效，不使用 StringBuilder 中间对象）</summary>
+        public void AppendLog(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return;
+            Log += text;
+        }
         public DateTimeOffset AddedAt { get; set; } = DateTimeOffset.UtcNow;
         /// <summary>任务开始处理的时间</summary>
         public DateTimeOffset? StartedAt { get; set; }
