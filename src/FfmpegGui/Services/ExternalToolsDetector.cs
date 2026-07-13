@@ -220,65 +220,29 @@ namespace FfmpegGui.Services
             catch { }
             if (list.Count == 0) return null;
 
-            // 构建候选优先级列表（优先按文件名特征匹配 CPU 指令集）
+            // ── 使用 CPU 特征标签优先级排序候选 ──
+            var priorityTags = CpuFeatureService.GetSimdPriorityTags();
             var ordered = new List<string>();
-            var supported = new List<string>();
-            foreach (var c in list)
+            var remaining = new List<string>(list);
+
+            // 按优先级标签依次匹配
+            foreach (var tag in priorityTags)
             {
-                var name = Path.GetFileName(c).ToLowerInvariant();
-                if (name.Contains("avx512") || name.Contains("avx512f"))
+                for (int i = remaining.Count - 1; i >= 0; i--)
                 {
-                    if (CpuFeatureService.HasAvx512F) supported.Add(c);
-                }
-                else if (name.Contains("avx2"))
-                {
-                    if (CpuFeatureService.HasAvx2) supported.Add(c);
-                }
-                else if (name.Contains("avx"))
-                {
-                    if (CpuFeatureService.HasAvx) supported.Add(c);
-                }
-                else if (name.Contains("sse4") || name.Contains("sse41"))
-                {
-                    if (CpuFeatureService.HasSse41) supported.Add(c);
-                }
-                else if (name.Contains("sse2"))
-                {
-                    if (CpuFeatureService.HasSse2) supported.Add(c);
-                }
-                else if (name.Contains("neon") || name.Contains("advsimd") || name.Contains("arm"))
-                {
-                    if (CpuFeatureService.HasAdvSimd) supported.Add(c);
+                    var name = Path.GetFileName(remaining[i]).ToLowerInvariant();
+                    // generic 匹配所有未匹配的
+                    if (tag == "generic" || name.Contains(tag))
+                    {
+                        ordered.Add(remaining[i]);
+                        remaining.RemoveAt(i);
+                    }
                 }
             }
+            // 剩余未匹配的追加到末尾
+            ordered.AddRange(remaining);
 
-            // 优先将支持的按优先级加入 ordered 列表
-            if (supported.Count > 0)
-            {
-                var priority = new[] { "avx512", "avx2", "avx", "sse4", "sse41", "sse2", "neon" };
-                foreach (var tag in priority)
-                {
-                    foreach (var s in supported)
-                        if (Path.GetFileName(s).ToLowerInvariant().Contains(tag) && !ordered.Contains(s)) ordered.Add(s);
-                }
-                // 加入剩余 supported
-                foreach (var s in supported) if (!ordered.Contains(s)) ordered.Add(s);
-            }
-
-            // 然后加入不带特征标识的通用候选
-            foreach (var c in list)
-            {
-                var name = Path.GetFileName(c).ToLowerInvariant();
-                if (!name.Contains("avx") && !name.Contains("sse") && !name.Contains("neon") && !name.Contains("arm"))
-                {
-                    if (!ordered.Contains(c)) ordered.Add(c);
-                }
-            }
-
-            // 最后加入剩余未加入的候选
-            foreach (var c in list) if (!ordered.Contains(c)) ordered.Add(c);
-
-            // 逐个验证候选（运行短样本，例如 --version），首个通过运行验证的优先返回
+            // 逐个验证候选（运行 --version 等），首个通过运行验证的优先返回
             foreach (var cand in ordered)
             {
                 try
@@ -290,15 +254,19 @@ namespace FfmpegGui.Services
                 catch { }
             }
 
-            // 若没有候选通过短样本验证，则退回到原始优先选择逻辑：返回第一个通用或第一个候选
+            // 回退：返回第一个文件存在且文件名不含特征后缀的通用版本
             foreach (var c in list)
             {
                 var name = Path.GetFileName(c).ToLowerInvariant();
-                if (!name.Contains("avx") && !name.Contains("sse") && !name.Contains("neon") && !name.Contains("arm"))
-                    return c;
+                bool hasFeatureTag = false;
+                foreach (var tag in priorityTags)
+                {
+                    if (tag != "generic" && name.Contains(tag)) { hasFeatureTag = true; break; }
+                }
+                if (!hasFeatureTag) return c;
             }
 
-            return list[0];
+            return list.Count > 0 ? list[0] : null;
         }
 
         /// <summary>
@@ -410,6 +378,244 @@ namespace FfmpegGui.Services
                 if (found != null) return found;
             }
             return null;
+        }
+
+        // ═══════════════════════════════════════════════
+        // 统一工具版本探测与能力报告
+        // ═══════════════════════════════════════════════
+
+        /// <summary>单个工具的能力摘要</summary>
+        public class ToolCapability
+        {
+            public string Name { get; set; } = "";
+            public string? Path { get; set; }
+            public string? Version { get; set; }
+            public string? SimdFeatures { get; set; }
+            public bool IsAvailable { get; set; }
+            public string StatusIcon => IsAvailable ? "✅" : "❌";
+            public override string ToString() => $"{StatusIcon} {Name}: {(IsAvailable ? $"v{Version} [{SimdFeatures}]" : "未检测到")}";
+        }
+
+        /// <summary>
+        /// 探测所有外部工具的版本和能力，返回结构化报告。
+        /// 用于启动日志和 UI 状态栏展示。
+        /// </summary>
+        public static List<ToolCapability> ProbeAllTools()
+        {
+            var results = new List<ToolCapability>();
+
+            // 确保所有 Service 已完成检测
+            CjxlService.Detect();
+            DjxlService.Detect();
+            CjpegliService.Detect();
+            UltrahdrService.Detect();
+            JxrService.Detect();
+            ExifToolService.Detect();
+
+            // ffmpeg
+            var ffmpegPath = AppSettingsService.Current.FfmpegPath;
+            var ffmpegProbe = ProbeExecutable(ffmpegPath, 4000);
+            results.Add(new ToolCapability
+            {
+                Name = "ffmpeg",
+                Path = ffmpegPath,
+                Version = ffmpegProbe.Version ?? TryExtractFfmpegVersion(ffmpegPath),
+                SimdFeatures = ffmpegProbe.DetectedFeatures,
+                IsAvailable = ffmpegProbe.IsRunnable
+            });
+
+            // cjxl
+            var cjxl = CjxlService.DetectedPath;
+            var cjxlProbe = cjxl != null ? ProbeExecutable(cjxl, 2000) : null;
+            results.Add(new ToolCapability
+            {
+                Name = "cjxl",
+                Path = cjxl,
+                Version = cjxlProbe?.Version ?? TryExtractCjxlVersion(cjxl),
+                SimdFeatures = cjxlProbe?.DetectedFeatures ?? TryExtractCjxlSimd(cjxl),
+                IsAvailable = CjxlService.IsAvailable
+            });
+
+            // djxl
+            var djxl = DjxlService.DetectedPath;
+            results.Add(new ToolCapability
+            {
+                Name = "djxl",
+                Path = djxl,
+                Version = ProbeAndVersion(djxl),
+                IsAvailable = DjxlService.IsAvailable
+            });
+
+            // cjpegli
+            var cjpegli = CjpegliService.DetectedPath;
+            results.Add(new ToolCapability
+            {
+                Name = "cjpegli",
+                Path = cjpegli,
+                Version = ProbeCjpegliVersion(cjpegli),
+                IsAvailable = CjpegliService.IsAvailable
+            });
+
+            // exiftool
+            var et = ExifToolService.DetectedPath;
+            results.Add(new ToolCapability
+            {
+                Name = "exiftool",
+                Path = et,
+                Version = ProbeAndVersion(et),
+                IsAvailable = ExifToolService.IsAvailable
+            });
+
+            // ultrahdr
+            var uhdr = UltrahdrService.DetectedPath;
+            results.Add(new ToolCapability
+            {
+                Name = "ultrahdr_app",
+                Path = uhdr,
+                Version = ProbeUltrahdrVersion(uhdr),
+                IsAvailable = UltrahdrService.IsAvailable
+            });
+
+            // JxrEncApp
+            var jxr = JxrService.DetectedPath;
+            results.Add(new ToolCapability
+            {
+                Name = "JxrEncApp",
+                Path = jxr,
+                Version = ProbeAndVersion(jxr),
+                IsAvailable = JxrService.IsAvailable
+            });
+
+            // avifenc
+            var avifenc = AppSettingsService.Current.AvifencPath;
+            if (string.IsNullOrWhiteSpace(avifenc))
+                avifenc = Path.Combine(AppSettingsService.Current.FfmpegDir ?? "", PlatformServices.Avifenc);
+            results.Add(new ToolCapability
+            {
+                Name = "avifenc",
+                Path = File.Exists(avifenc) ? avifenc : null,
+                Version = ProbeAndVersion(avifenc),
+                IsAvailable = File.Exists(avifenc)
+            });
+
+            return results;
+        }
+
+        // ── 每工具专用版本探测 ──
+
+        private static string? ProbeAndVersion(string? path)
+        {
+            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return null;
+            var probe = ProbeExecutable(path, 2000);
+            return probe.Version;
+        }
+
+        /// <summary>cjpegli 不支持 --version，需通过 stderr 提取版本</summary>
+        private static string? ProbeCjpegliVersion(string? path)
+        {
+            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return null;
+            try
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = path, Arguments = "-h",
+                    RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true
+                };
+                using var p = Process.Start(psi);
+                if (p == null) return null;
+                var err = p.StandardError.ReadToEnd();
+                p.WaitForExit(2000);
+                return ExtractVersionFromOutput(err);
+            }
+            catch { return null; }
+        }
+
+        /// <summary>ultrahdr_app 版本在 stdout 中 "lib version: vX.Y.Z"</summary>
+        private static string? ProbeUltrahdrVersion(string? path)
+        {
+            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return null;
+            try
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = path, Arguments = "-h",
+                    RedirectStandardOutput = true, RedirectStandardError = true,
+                    UseShellExecute = false, CreateNoWindow = true
+                };
+                using var p = Process.Start(psi);
+                if (p == null) return null;
+                var output = p.StandardOutput.ReadToEnd() + p.StandardError.ReadToEnd();
+                p.WaitForExit(2000);
+                // "lib version: v1.4.0"
+                var m = Regex.Match(output, @"lib version:\s*v?([\d.]+)");
+                return m.Success ? m.Groups[1].Value : ExtractVersionFromOutput(output);
+            }
+            catch { return null; }
+        }
+
+        /// <summary>从 cjxl --version 输出中提取版本: "cjxl v0.11.2 332feb1 [AVX2,SSE2]"</summary>
+        private static string? TryExtractCjxlVersion(string? path)
+        {
+            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return null;
+            try
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = path, Arguments = "--version",
+                    RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true
+                };
+                using var p = Process.Start(psi);
+                if (p == null) return null;
+                var output = p.StandardOutput.ReadToEnd();
+                p.WaitForExit(2000);
+                // "cjxl v0.11.2 332feb1 [AVX2,SSE2]"
+                var m = Regex.Match(output, @"v(\d+\.\d+\.\d+)");
+                return m.Success ? m.Groups[1].Value : null;
+            }
+            catch { return null; }
+        }
+
+        /// <summary>从 cjxl --version 输出中提取 SIMD 标签: [AVX2,SSE2]</summary>
+        private static string? TryExtractCjxlSimd(string? path)
+        {
+            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return null;
+            try
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = path, Arguments = "--version",
+                    RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true
+                };
+                using var p = Process.Start(psi);
+                if (p == null) return null;
+                var output = p.StandardOutput.ReadToEnd();
+                p.WaitForExit(2000);
+                var m = Regex.Match(output, @"\[([^\]]+)\]");
+                return m.Success ? m.Groups[1].Value : null;
+            }
+            catch { return null; }
+        }
+
+        /// <summary>从 ffmpeg 输出中提取版本</summary>
+        private static string? TryExtractFfmpegVersion(string? path)
+        {
+            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return null;
+            try
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = path, Arguments = "-version",
+                    RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true
+                };
+                using var p = Process.Start(psi);
+                if (p == null) return null;
+                var output = p.StandardOutput.ReadToEnd();
+                p.WaitForExit(3000);
+                // "ffmpeg version git-2026-07-05-97cbffe917"
+                var m = Regex.Match(output, @"ffmpeg version ([\w\.\-]+)");
+                return m.Success ? m.Groups[1].Value : ExtractVersionFromOutput(output);
+            }
+            catch { return null; }
         }
     }
 }

@@ -26,6 +26,28 @@ namespace FfmpegGui.Services
                     var settings = JsonSerializer.Deserialize<AppSettings>(json);
                     if (settings != null)
                     {
+                        // ── v2.0 自动迁移旧字段 ──
+                        if (string.IsNullOrWhiteSpace(settings.JxlLibDir))
+                        {
+                            var legacy = settings.CjxlPath ?? settings.CjpegliPath;
+                            if (!string.IsNullOrWhiteSpace(legacy))
+                            {
+                                settings.JxlLibDir = legacy;
+                                settings.CjxlPath = null;
+                                settings.CjpegliPath = null;
+                            }
+                        }
+                        if (string.IsNullOrWhiteSpace(settings.WindowsArtifactsDir))
+                        {
+                            var legacy = settings.AvifencPath ?? settings.UltrahdrPath ?? settings.JxrPath;
+                            if (!string.IsNullOrWhiteSpace(legacy))
+                            {
+                                settings.WindowsArtifactsDir = legacy;
+                                settings.AvifencPath = null;
+                                settings.UltrahdrPath = null;
+                                settings.JxrPath = null;
+                            }
+                        }
                         _current = settings;
                         return settings;
                     }
@@ -42,7 +64,23 @@ namespace FfmpegGui.Services
             if (_current == null) return;
             try
             {
-                var json = JsonSerializer.Serialize(_current, new JsonSerializerOptions { WriteIndented = true });
+                // 不序列化已迁移的旧字段
+                var clone = new AppSettings
+                {
+                    FfmpegDirectory = _current.FfmpegDirectory,
+                    OutputDirectory = _current.OutputDirectory,
+                    ExifToolPath = _current.ExifToolPath,
+                    JxlLibDir = _current.JxlLibDir,
+                    WindowsArtifactsDir = _current.WindowsArtifactsDir,
+                    PreserveInputFolderStructure = _current.PreserveInputFolderStructure,
+                    MaxQueueSize = _current.MaxQueueSize,
+                    ThemeMode = _current.ThemeMode,
+                    FfmpegPriority = _current.FfmpegPriority,
+                    AutoUseSimdBinaries = _current.AutoUseSimdBinaries,
+                    IgnoredToolPaths = _current.IgnoredToolPaths,
+                    EnabledImageFormats = _current.EnabledImageFormats,
+                };
+                var json = JsonSerializer.Serialize(clone, new JsonSerializerOptions { WriteIndented = true, DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull });
                 File.WriteAllText(SettingsPath, json);
             }
             catch { }

@@ -149,17 +149,19 @@ public static class PlatformServices
         }
     }
 
-    /// <summary>PLAN 文件夹中各工具 → 子目录映射</summary>
+    /// <summary>PLAN 文件夹中各工具 → 子目录映射 (v2.0 简化版)</summary>
     private static readonly Dictionary<string, string[]> PlanSubDirs = new()
     {
         [Ffmpeg]  = new[] { "ffmpeg-full" },
         [Ffprobe] = new[] { "ffmpeg-full" },
-        [Cjxl]    = new[] { "jxl-x64-windows-static/bin", "jxl-x64-windows-static" },
-        [Djxl]    = new[] { "jxl-x64-windows-static/bin", "jxl-x64-windows-static" },
-        [Cjpegli] = new[] { "jxl-x64-windows-static/bin", "jxl-x64-windows-static" },
-        [Exiftool] = new[] { "exiftool-13.58_64/exiftool-13.58_64", "exiftool-13.58_64" },
-        [Ultrahdr] = new[] { "windows-artifacts" },
-        [JxrEnc]   = new[] { "windows-artifacts" },
+        [Cjxl]    = new[] { Path.Combine("jxl", "bin"), "jxl" },
+        [Djxl]    = new[] { Path.Combine("jxl", "bin"), "jxl" },
+        [Cjpegli] = new[] { Path.Combine("jxl", "bin"), "jxl" },
+        [Exiftool] = new[] { "exiftool" },
+        [Ultrahdr] = new[] { "artifacts" },
+        [JxrEnc]   = new[] { "artifacts" },
+        [JxrDec]   = new[] { "artifacts" },
+        [Avifenc]  = new[] { "artifacts" },
     };
 
     /// <summary>在 PLAN 文件夹的对应子目录中查找指定工具。未找到返回 null。</summary>

@@ -33,8 +33,9 @@ namespace FfmpegGui.Services
 
             try
             {
-                // 优先使用专用设置，如果用户未设置则兼容旧的 CjxlPath（有时用户把工具目录存放到同一字段）
-                var manual = AppSettingsService.Current.CjpegliPath ?? AppSettingsService.Current.CjxlPath;
+                var manual = AppSettingsService.Current.JxlLibDir
+                          ?? AppSettingsService.Current.CjpegliPath
+                          ?? AppSettingsService.Current.CjxlPath;
                 if (!string.IsNullOrWhiteSpace(manual))
                 {
                     // 情况 1：manual 直接指向 cjpegli.exe 文件

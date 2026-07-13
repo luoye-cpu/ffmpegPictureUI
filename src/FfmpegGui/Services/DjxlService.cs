@@ -31,7 +31,9 @@ namespace FfmpegGui.Services
 
             try
             {
-                var manual = AppSettingsService.Current.CjxlPath ?? AppSettingsService.Current.CjpegliPath;
+                var manual = AppSettingsService.Current.JxlLibDir
+                          ?? AppSettingsService.Current.CjxlPath
+                          ?? AppSettingsService.Current.CjpegliPath;
                 if (!string.IsNullOrWhiteSpace(manual))
                 {
                     if (File.Exists(manual) && Path.GetFileName(manual).ToLower().Contains("djxl"))

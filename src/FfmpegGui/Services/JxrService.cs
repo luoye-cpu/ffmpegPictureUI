@@ -31,8 +31,9 @@ namespace FfmpegGui.Services
             _detected = true;
             _detectedPath = null;
 
-            // ① 手动指定路径
-            var manual = AppSettingsService.Current.JxrPath;
+            // ① 手动指定路径（WindowsArtifactsDir 优先，旧字段兼容）
+            var manual = AppSettingsService.Current.WindowsArtifactsDir
+                      ?? AppSettingsService.Current.JxrPath;
             if (!string.IsNullOrWhiteSpace(manual))
             {
                 if (File.Exists(manual))
