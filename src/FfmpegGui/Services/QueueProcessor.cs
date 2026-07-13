@@ -222,6 +222,35 @@ namespace FfmpegGui.Services
                                 }
                             }
 
+                            // ── RAW 预处理：Bayer 传感器数据去马赛克 ──
+                            // dcraw 将相机 RAW → 线性 16-bit TIFF，解决 ffmpeg 无法处理
+                            // Bayer RAW 和色彩映射错误的问题
+                            if (RawService.IsRawFile(captured.InputPath) && RawService.IsAvailable)
+                            {
+                                captured.Log += "[RAW] 检测到 RAW 文件，正在进行 dcraw 去马赛克预处理...\n";
+                                _onItemUpdated?.Invoke(captured);
+                                var rawTempDir = Path.Combine(Path.GetTempPath(), $"raw_{Guid.NewGuid():N}");
+                                Directory.CreateDirectory(rawTempDir);
+                                var rawTiff = Path.Combine(rawTempDir, $"{Path.GetFileNameWithoutExtension(captured.InputPath)}_raw.tiff");
+                                var success = await RawService.PreProcessAsync(captured.InputPath, rawTiff, s =>
+                                {
+                                    captured.Log += s;
+                                    _onItemUpdated?.Invoke(captured);
+                                }, ct);
+                                if (success)
+                                {
+                                    captured.Log += "[RAW] ✅ 预处理完成，使用线性 TIFF 继续编码。色彩空间: BT.709 + 线性传输。\n";
+                                    captured.InputPath = rawTiff;
+                                    captured.Options.ColorPrimaries = "bt709";
+                                    captured.Options.ColorTrc = "linear";
+                                }
+                                else
+                                {
+                                    captured.Log += "[RAW] ⚠️ 预处理失败，将尝试用 ffmpeg 直接解码（可能失败或色彩错误）。\n";
+                                }
+                                _onItemUpdated?.Invoke(captured);
+                            }
+
                             // GIF → AVIF：FFmpeg 编码器丢弃 alpha，走 avifenc 两步法保留透明通道
                             if (inputExt == ".gif"
                                 && captured.Options.Format.Equals("avif", StringComparison.OrdinalIgnoreCase)
@@ -277,12 +306,13 @@ namespace FfmpegGui.Services
                                 captured.ExitCode = exitCode;
                                 captured.Status = exitCode == 0 ? "已完成" : $"失败 (退出码 {exitCode})";
 
-                                // DNG 输入失败时给出提示：Bayer 传感器原始数据需要先用专用工具去马赛克
-                                if (exitCode != 0 && inputExt == ".dng")
+                                // DNG/RAW 输入失败时给出提示
+                                if (exitCode != 0 && RawService.IsRawFile(captured.InputPath))
                                 {
-                                    captured.Log += "[dng] ⚠️ DNG 转换失败。如果这是相机直出的 Bayer 传感器原始文件，FFmpeg 无法自动去马赛克。\n";
-                                    captured.Log += "[dng] 建议：先用 Adobe DNG Converter / RawTherapee CLI / dcraw 转为 TIFF 或 PNG，再导入转换。\n";
-                                    captured.Log += "[dng] 手机/线性 DNG 通常可以直接转换，请检查文件来源。\n";
+                                    captured.Log += "[RAW] ⚠️ 文件转换失败。可能原因：\n";
+                                    captured.Log += "[RAW]   - Bayer 传感器原始数据需 dcraw 去马赛克（已自动尝试）\n";
+                                    captured.Log += "[RAW]   - 文件损坏或格式不受支持\n";
+                                    captured.Log += "[RAW]   - 请确保 dcraw 已放入 PLAN/artifacts/ 目录\n";
                                 }
 
                                 // ── 统一元数据恢复 ──

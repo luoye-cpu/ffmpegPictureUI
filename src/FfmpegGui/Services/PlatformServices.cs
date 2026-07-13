@@ -33,6 +33,7 @@ public static class PlatformServices
     public static string JxrDec    => ToolName("JxrDecApp");
     public static string Exiftool  => OperatingSystem.IsWindows() ? "exiftool.exe" : "exiftool";
     public static string Avifenc   => ToolName("avifenc");
+    public static string DcrawName => OperatingSystem.IsWindows() ? "dcraw.exe" : "dcraw";
 
     // ── 目录搜索模式（用于 Directory.EnumerateFiles）──
     public static string CjxlSearchWildcard    => OperatingSystem.IsWindows() ? "*cjxl*.exe"   : "*cjxl*";
@@ -162,6 +163,7 @@ public static class PlatformServices
         [JxrEnc]   = new[] { "artifacts" },
         [JxrDec]   = new[] { "artifacts" },
         [Avifenc]  = new[] { "artifacts" },
+        ["dcraw"]  = new[] { "artifacts" },
     };
 
     /// <summary>在 PLAN 文件夹的对应子目录中查找指定工具。未找到返回 null。</summary>
