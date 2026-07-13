@@ -21,6 +21,9 @@ namespace FfmpegGui.Models
         /// <summary>Windows 构建产物目录（含 ultrahdr/JxrEncApp/avifenc，留空则自动检测）</summary>
         public string? WindowsArtifactsDir { get; set; }
 
+        /// <summary>dcraw 可执行文件路径（RAW 预处理，留空则自动检测）</summary>
+        public string? DcrawPath { get; set; }
+
         // ═══════════════════════════════════════════
         // 旧字段（保留以兼容旧配置文件自动迁移）
         // ═══════════════════════════════════════════
@@ -97,6 +100,15 @@ namespace FfmpegGui.Models
             ["DNG"]  = new[] { ".dng" },
             ["BMP"]  = new[] { ".bmp" },
             ["GIF"]  = new[] { ".gif" },
+            // ── 相机 RAW 格式 (输入专属，需 dcraw 预处理) ──
+            ["📷 RAW-Canon"]    = new[] { ".cr2", ".cr3", ".crw" },
+            ["📷 RAW-Nikon"]    = new[] { ".nef", ".nrw" },
+            ["📷 RAW-Sony"]     = new[] { ".arw", ".srf", ".sr2" },
+            ["📷 RAW-Fujifilm"] = new[] { ".raf" },
+            ["📷 RAW-Olympus"]  = new[] { ".orf" },
+            ["📷 RAW-Panasonic"]= new[] { ".rw2", ".rwl" },
+            ["📷 RAW-Pentax"]   = new[] { ".pef" },
+            ["📷 RAW-Others"]   = new[] { ".3fr", ".srw", ".mrw", ".x3f", ".erf", ".kdc", ".dcr", ".mef", ".mos", ".iiq", ".bay", ".raw" },
         };
 
         /// <summary>
@@ -115,7 +127,14 @@ namespace FfmpegGui.Models
         };
 
         /// <summary>用户启用的图片格式名称列表（持久化到 settings.json）</summary>
-        public List<string> EnabledImageFormats { get; set; } = new() { "PNG", "JPEG", "JPEG XL", "WebP", "AVIF", "TIFF", "HEIC", "DNG", "BMP", "GIF" };
+        /// <summary>用户启用的图片格式名称列表（持久化到 settings.json）</summary>
+        public List<string> EnabledImageFormats { get; set; } = new()
+        {
+            "PNG", "JPEG", "JPEG XL", "WebP", "AVIF", "TIFF", "HEIC",
+            "DNG", "BMP", "GIF",
+            "📷 RAW-Canon", "📷 RAW-Nikon", "📷 RAW-Sony", "📷 RAW-Fujifilm",
+            "📷 RAW-Olympus", "📷 RAW-Panasonic", "📷 RAW-Pentax", "📷 RAW-Others"
+        };
 
         /// <summary>获取所有启用的图片扩展名（小写）</summary>
         public string[] GetEnabledExtensions()
