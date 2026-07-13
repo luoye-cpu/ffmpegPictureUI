@@ -1,9 +1,12 @@
 # FFmpegPictureUI 打包脚本
-# 用法: .\pack.ps1 [-Version "1.5.0"] [-Variant "full|min"]
+# 用法:
+#   框架依赖 (默认):   .\pack.ps1 -Version "1.5.0" -Variant full
+#   NativeAOT (.NET 11 SDK 安装后): .\pack.ps1 -Version "1.5.0" -Variant full -Aot
 param(
     [string]$Version = "1.5.0",
     [ValidateSet("full", "min")]
-    [string]$Variant = "full"
+    [string]$Variant = "full",
+    [switch]$Aot  # 启用 NativeAOT 编译（需 .NET 11+ SDK）
 )
 
 $ErrorActionPreference = "Stop"
@@ -18,28 +21,47 @@ $Arch = "x64"
 $Rid = "win-x64"
 
 # 命名
+$modeTag = if ($Aot) { "aot" } else { "" }
 if ($Variant -eq "full") {
-    $PackageName = "FFmpegPictureUI-v$Version-$Arch-full"
+    if ($modeTag) { $PackageName = "FFmpegPictureUI-v$Version-$Arch-full-$modeTag" }
+    else          { $PackageName = "FFmpegPictureUI-v$Version-$Arch-full" }
 } else {
-    $PackageName = "FFmpegPictureUI-v$Version-$Arch"
+    if ($modeTag) { $PackageName = "FFmpegPictureUI-v$Version-$Arch-$modeTag" }
+    else          { $PackageName = "FFmpegPictureUI-v$Version-$Arch" }
 }
 $OutputDir = "$BuildDir\$PackageName"
 $ArchivePath = "$PublishDir\$PackageName.7z"
 
+$modeLabel = if ($Aot) { "NativeAOT (无 Runtime 依赖)" } else { "框架依赖 (需 .NET Runtime)" }
 Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
 Write-Host "  FFmpegPictureUI 打包工具" -ForegroundColor Cyan
-Write-Host "  版本: v$Version | 架构: $Arch | 类型: $Variant" -ForegroundColor Cyan
+Write-Host "  版本: v$Version | 架构: $Arch | 类型: $Variant | $modeLabel" -ForegroundColor Cyan
 Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
 
 # Step 1: 发布
 Write-Host "`n[1/4] dotnet publish..." -ForegroundColor Yellow
-dotnet publish $ProjectDir\FfmpegGui.csproj `
-    -c Release -r $Rid `
-    --self-contained false `
-    -p:PublishSingleFile=true `
-    -p:PublishTrimmed=true `
-    -p:Version=$Version `
-    -o $OutputDir
+
+if ($Aot) {
+    # NativeAOT: 独立可执行文件，纯机器码，用户无需 Runtime
+    dotnet publish $ProjectDir\FfmpegGui.csproj `
+        -c Release -r $Rid `
+        -p:PublishAot=true `
+        -p:SelfContained=true `
+        -p:PublishSingleFile=true `
+        -p:IlcOptimizationPreference=Speed `
+        -p:InvariantGlobalization=true `
+        -p:Version=$Version `
+        -o $OutputDir
+} else {
+    # 框架依赖: 用户需安装 .NET Runtime
+    dotnet publish $ProjectDir\FfmpegGui.csproj `
+        -c Release -r $Rid `
+        --self-contained false `
+        -p:PublishSingleFile=true `
+        -p:PublishTrimmed=true `
+        -p:Version=$Version `
+        -o $OutputDir
+}
 
 if ($LASTEXITCODE -ne 0) { throw "发布失败" }
 Write-Host "   ✅ 发布完成 → $OutputDir" -ForegroundColor Green
@@ -63,6 +85,10 @@ if ($Variant -eq "full") {
         $content = $content.Replace("{VERSION}", $Version)
         $content = $content.Replace("{ARCH}", $Arch)
         $content = $content.Replace("{DATE}", (Get-Date -Format "yyyy-MM-dd"))
+        if ($Aot) {
+            # NativeAOT 版本：移除 .NET Runtime 安装要求
+            $content = $content -replace "\.NET 10\.0 运行时（如未安装请先下载）[\s\S]*?dotnet/10\.0", "本版本已编译为独立可执行文件（NativeAOT），无需额外安装运行环境。"
+        }
         $outReadme = "$PlanDest\使用说明.txt"
         Set-Content -Path $outReadme -Value $content -Encoding UTF8
         Write-Host "   ✅ 使用说明已生成 → $outReadme" -ForegroundColor Green

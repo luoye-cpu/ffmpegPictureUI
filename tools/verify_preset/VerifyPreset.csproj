@@ -3,10 +3,13 @@
     <OutputType>Exe</OutputType>
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
+    <!-- 主项目 TFM，升级 .NET 11 时改为 net11.0 -->
+    <MainTfm>net10.0</MainTfm>
+    <!-- 编译前请先构建主项目: dotnet build src/FfmpegGui/FfmpegGui.csproj -c $(Configuration) -->
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="FfmpegGui">
-      <HintPath>..\..\src\FfmpegGui\bin\Debug\net10.0\FfmpegGui.dll</HintPath>
+      <HintPath>..\..\src\FfmpegGui\bin\$(Configuration)\$(MainTfm)\FfmpegGui.dll</HintPath>
     </Reference>
   </ItemGroup>
 </Project>

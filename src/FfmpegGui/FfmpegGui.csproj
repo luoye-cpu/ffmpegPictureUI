@@ -1,26 +1,72 @@
 <Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- ═══════════════════════════════════════════════ -->
+  <!-- 版本与目标框架                                      -->
+  <!-- ═══════════════════════════════════════════════ -->
   <PropertyGroup>
     <OutputType>Exe</OutputType>
+    <!-- .NET 11 SDK 安装后改为: <TargetFramework>net11.0</TargetFramework> -->
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <RuntimeIdentifiers>win-x64;linux-x64;linux-arm64</RuntimeIdentifiers>
-    <Version>1.4.5</Version>
-    <AssemblyVersion>1.4.5.0</AssemblyVersion>
-    <FileVersion>1.4.5.0</FileVersion>
+    <!-- 版本号 -->
+    <Version>1.5.0</Version>
+    <AssemblyVersion>1.5.0.0</AssemblyVersion>
+    <FileVersion>1.5.0.0</FileVersion>
     <PackageLicenseExpression>GPL-3.0-only</PackageLicenseExpression>
-    <!-- 单文件发布（不含 .NET 运行时，用户需安装 .NET 10 Runtime） -->
+    <!-- v2.0 过渡期：所有 CS0618 均为故意的旧字段回退逻辑 -->
+    <NoWarn>$(NoWarn);CS0618</NoWarn>
+  </PropertyGroup>
+
+  <!-- ═══════════════════════════════════════════════ -->
+  <!-- 发布配置 (框架依赖, .NET 10 当前使用)                 -->
+  <!-- ═══════════════════════════════════════════════ -->
+  <PropertyGroup>
     <PublishSingleFile>true</PublishSingleFile>
     <SelfContained>false</SelfContained>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <PublishTrimmed>true</PublishTrimmed>
+    <TrimMode>partial</TrimMode>
     <DebugType>none</DebugType>
     <DebugSymbols>false</DebugSymbols>
   </PropertyGroup>
 
+  <!-- ═══════════════════════════════════════════════ -->
+  <!-- NativeAOT 配置                                    -->
+  <!-- 启用方法: 将 TargetFramework 改为 net11.0 即可       -->
+  <!-- 条件: 仅当 TFM 为 net11.0+ 时启用                   -->
+  <!-- ═══════════════════════════════════════════════ -->
+  <PropertyGroup Condition="$([MSBuild]::IsTargetFrameworkCompatible('$(TargetFramework)', 'net11.0'))">
+    <PublishAot>true</PublishAot>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <_SuppressWinFormsTrimError>true</_SuppressWinFormsTrimError>
+    <IlcOptimizationPreference>Speed</IlcOptimizationPreference>
+    <IlcFoldIdenticalMethodBodies>true</IlcFoldIdenticalMethodBodies>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <UseSystemResourceKeys>true</UseSystemResourceKeys>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+    <!-- .NET 10 下不启用裁剪（避免 AOT 分析警告） -->
+    <PublishTrimmed Condition="'$(TargetFramework)' == 'net10.0'">false</PublishTrimmed>
+  </PropertyGroup>
+
+  <!-- ═══════════════════════════════════════════════ -->
+  <!-- NuGet 依赖                                         -->
+  <!-- ═══════════════════════════════════════════════ -->
   <ItemGroup>
     <PackageReference Include="Avalonia" Version="12.0.4" />
     <PackageReference Include="Avalonia.Desktop" Version="12.0.4" />
     <PackageReference Include="Avalonia.Themes.Fluent" Version="12.0.4" />
+  </ItemGroup>
+
+  <!-- ═══════════════════════════════════════════════ -->
+  <!-- NativeAOT 反射安全 (防止 System.Runtime.Intrinsics 被裁剪) -->
+  <!-- ═══════════════════════════════════════════════ -->
+  <ItemGroup>
+    <TrimmerRootAssembly Include="System.Runtime.Intrinsics" />
   </ItemGroup>
 
   <ItemGroup>

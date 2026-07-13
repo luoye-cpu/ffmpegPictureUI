@@ -8,22 +8,36 @@ namespace FfmpegGui.Models
         public string? FfmpegDirectory { get; set; }
         public string? OutputDirectory { get; set; }
 
-        /// <summary>手动指定的 cjxl.exe 路径或包含外部工具的目录（留空则自动检测）</summary>
-        public string? CjxlPath { get; set; }
+        // ═══════════════════════════════════════════
+        // v2.0 简化后的外部工具设置（3 项）
+        // ═══════════════════════════════════════════
 
-        /// <summary>手动指定的 exiftool 路径（留空则自动检测）</summary>
+        /// <summary>exiftool 可执行文件路径（留空则自动检测）</summary>
         public string? ExifToolPath { get; set; }
 
-        /// <summary>手动指定的 cjpegli.exe 路径或包含 JPEG 库的目录（留空则自动检测）</summary>
+        /// <summary>JPEG XL 参考库目录（含 cjxl/djxl/cjpegli，留空则自动检测）</summary>
+        public string? JxlLibDir { get; set; }
+
+        /// <summary>Windows 构建产物目录（含 ultrahdr/JxrEncApp/avifenc，留空则自动检测）</summary>
+        public string? WindowsArtifactsDir { get; set; }
+
+        // ═══════════════════════════════════════════
+        // 旧字段（保留以兼容旧配置文件自动迁移）
+        // ═══════════════════════════════════════════
+
+        [Obsolete("v2.0 起使用 JxlLibDir 替代")]
+        public string? CjxlPath { get; set; }
+
+        [Obsolete("v2.0 起使用 JxlLibDir 替代")]
         public string? CjpegliPath { get; set; }
 
-        /// <summary>手动指定的 avifenc.exe 路径（留空则自动检测 ffmpeg 同目录）</summary>
+        [Obsolete("v2.0 起使用 WindowsArtifactsDir 替代")]
         public string? AvifencPath { get; set; }
 
-        /// <summary>手动指定的 ultrahdr_app.exe 路径（留空则自动检测）</summary>
+        [Obsolete("v2.0 起使用 WindowsArtifactsDir 替代")]
         public string? UltrahdrPath { get; set; }
 
-        /// <summary>手动指定的 JxrEncApp.exe 路径（留空则自动检测）</summary>
+        [Obsolete("v2.0 起使用 WindowsArtifactsDir 替代")]
         public string? JxrPath { get; set; }
 
         public bool PreserveInputFolderStructure { get; set; } = false;

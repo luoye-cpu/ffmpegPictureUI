@@ -60,8 +60,10 @@ namespace FfmpegGui.Services
             }
             catch { }
 
-            // ── ① 手动指定路径或目录（CjxlPath 优先，CjpegliPath 为备选） ──
-            var manual = AppSettingsService.Current.CjxlPath ?? AppSettingsService.Current.CjpegliPath;
+            // ── ① 手动指定路径（JxlLibDir 优先，旧字段兼容）──
+            var manual = AppSettingsService.Current.JxlLibDir
+                      ?? AppSettingsService.Current.CjxlPath
+                      ?? AppSettingsService.Current.CjpegliPath;
             if (!string.IsNullOrWhiteSpace(manual))
             {
                 try

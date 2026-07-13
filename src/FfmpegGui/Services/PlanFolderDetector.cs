@@ -10,9 +10,9 @@ namespace FfmpegGui.Services;
 /// PLAN 文件夹结构约定：
 ///   PLAN/
 ///   ├── ffmpeg-full/              ← ffmpeg.exe, ffprobe.exe
-///   ├── jxl-x64-windows-static/   ← bin/cjxl.exe, bin/djxl.exe, bin/cjpegli.exe
-///   ├── exiftool-13.58_64/        ← exiftool(-k).exe（可能嵌套一层同名子目录）
-///   ├── windows-artifacts/        ← ultrahdr_app.exe, JxrEncApp.exe, JxrDecApp.exe
+///   ├── jxl/                      ← bin/cjxl.exe, bin/djxl.exe, bin/cjpegli.exe
+///   ├── exiftool/                 ← exiftool.exe
+///   ├── artifacts/                ← ultrahdr_app.exe, JxrEncApp.exe, avifenc.exe
 ///   └── 使用说明.txt              ← 用户使用指南
 /// </summary>
 public static class PlanFolderDetector
@@ -61,8 +61,8 @@ public static class PlanFolderDetector
                     result.FfmpegDir = ffmpegDir;
             }
 
-            // ── 2) jxl-x64-windows-static ──
-            var jxlDir = Path.Combine(planPath, "jxl-x64-windows-static");
+            // ── 2) jxl ──
+            var jxlDir = Path.Combine(planPath, "jxl");
             if (Directory.Exists(jxlDir))
             {
                 // 优先 bin/ 子目录
@@ -74,19 +74,14 @@ public static class PlanFolderDetector
             }
 
             // ── 3) exiftool ──
-            var etDir = Path.Combine(planPath, "exiftool-13.58_64");
+            var etDir = Path.Combine(planPath, "exiftool");
             if (Directory.Exists(etDir))
             {
-                // 可能存在嵌套同名子目录
-                var nested = Path.Combine(etDir, "exiftool-13.58_64");
-                if (Directory.Exists(nested))
-                    result.ExifToolDir = nested;
-                else
-                    result.ExifToolDir = etDir;
+                result.ExifToolDir = etDir;
             }
 
-            // ── 4) windows-artifacts ──
-            var artifactsDir = Path.Combine(planPath, "windows-artifacts");
+            // ── 4) artifacts ──
+            var artifactsDir = Path.Combine(planPath, "artifacts");
             if (Directory.Exists(artifactsDir))
                 result.ArtifactsDir = artifactsDir;
         }
@@ -113,10 +108,10 @@ public static class PlanFolderDetector
         }
 
         // JXL 工具目录
-        if (string.IsNullOrWhiteSpace(settings.CjxlPath)
+        if (string.IsNullOrWhiteSpace(settings.JxlLibDir)
             && !string.IsNullOrWhiteSpace(plan.JxlBinDir))
         {
-            settings.CjxlPath = plan.JxlBinDir;
+            settings.JxlLibDir = plan.JxlBinDir;
         }
 
         // exiftool：查找 exiftool.exe 或 exiftool(-k).exe
@@ -135,18 +130,12 @@ public static class PlanFolderDetector
             }
         }
 
-        // 外部工具（ultrahdr_app, JxrEncApp）
+        // 外部工具（ultrahdr_app, JxrEncApp, avifenc 等）
         if (!string.IsNullOrWhiteSpace(plan.ArtifactsDir))
         {
-            if (string.IsNullOrWhiteSpace(settings.UltrahdrPath))
+            if (string.IsNullOrWhiteSpace(settings.WindowsArtifactsDir))
             {
-                var p = Path.Combine(plan.ArtifactsDir, PlatformServices.Ultrahdr);
-                if (File.Exists(p)) settings.UltrahdrPath = p;
-            }
-            if (string.IsNullOrWhiteSpace(settings.JxrPath))
-            {
-                var p = Path.Combine(plan.ArtifactsDir, PlatformServices.JxrEnc);
-                if (File.Exists(p)) settings.JxrPath = p;
+                settings.WindowsArtifactsDir = plan.ArtifactsDir;
             }
         }
 
