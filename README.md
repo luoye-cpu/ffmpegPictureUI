@@ -165,7 +165,6 @@ ffmpegPictureUI/
 - **超时保护 / Timeout Protection**: ffmpeg 进程检测使用 `Task.WhenAny + Task.Delay(8000)` 真实超时（替代无效的 CancellationTokenSource）
 - **串行化 / Serialized**: ffmpeg 两次进程调用改为串行（避免双实例冲突导致死锁）
 - **增量日志 / Incremental Logging**: 每步检测完成后通过 Dispatcher 即时输出到 UI，用户可实时看到进度
-- **网络依赖清零 / Zero Network**: 删除 `System.Net.Http` 引用和 `TryFetchRemoteCapabilitiesAsync`，所有检测完全离线
 
 #### 🪟 启动修复 / Startup Fixes
 - **WinExe 输出类型 / WinExe OutputType**: `<OutputType>Exe</OutputType>` → `<OutputType>WinExe</OutputType>`，消除启动 CMD 黑窗
