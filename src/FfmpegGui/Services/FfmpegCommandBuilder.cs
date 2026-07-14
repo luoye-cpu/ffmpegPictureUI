@@ -62,8 +62,54 @@ namespace FfmpegGui.Services
 
             var fmt = options.Format.ToLower();
 
+            // ═══════════════════════════════════════════════════
+            //  ICC 色彩管理 — 烘焙（像素级色彩空间转换）
+            //  必须在 BT.2020 自动 zscale 和 HDR tonemap 之前执行，
+            //  烘焙后通过 skip 标志位避免与后续自动转换双重叠加。
+            // ═══════════════════════════════════════════════════
+            bool skipAutoBt2020Zscale = false;
+            bool skipHdrTonemap = false;
+
+            if (options.IccMode == Models.IccMode.Bake
+                || options.IccMode == Models.IccMode.BakeAndEmbed)
+            {
+                if (!string.IsNullOrWhiteSpace(options.IccFilePath)
+                    && IccProfileService.IsValidIccProfile(options.IccFilePath))
+                {
+                    var srcParams = ResolveIccSourceParams(options);
+                    var dstParams = MapIccTargetColorSpace(options.IccTargetColorSpace);
+
+                    // 仅当源≠目标时才执行转换
+                    if (!ColorParamsEqual(srcParams, dstParams))
+                    {
+                        // 覆盖输入色彩参数（源 = ICC 描述的空间）
+                        inputPrimaries = srcParams.primaries;
+                        inputTrc = srcParams.trc;
+
+                        // 构造 zscale 烘焙滤镜
+                        var zscaleFilter = BuildZscaleBakeFilter(dstParams);
+
+                        // 合并到现有 -vf 滤镜链（追加在末尾）
+                        var vfIdx = args.FindIndex(a => a == "-vf");
+                        if (vfIdx >= 0 && vfIdx + 1 < args.Count)
+                            args[vfIdx + 1] = args[vfIdx + 1] + "," + zscaleFilter;
+                        else
+                        { args.Add("-vf"); args.Add(zscaleFilter); }
+
+                        // 输出色彩标记为目标空间
+                        outputColorSpace = dstParams.matrix;
+
+                        // 标记：烘焙已处理色彩转换，跳过所有自动转换
+                        skipAutoBt2020Zscale = true;
+                        skipHdrTonemap = true;
+                    }
+                }
+            }
+
             // BT.2020 HDR: gamma 输入 → PQ 输出 (AVIF/JXL/其他格式)
-            if (!options.UseAdvancedColorParameters
+            // 若 ICC 烘焙已激活则跳过（避免双重 zscale）
+            if (!skipAutoBt2020Zscale
+                && !options.UseAdvancedColorParameters
                 && !string.IsNullOrWhiteSpace(options.ColorSpace)
                 && options.ColorSpace.Equals("BT.2020", StringComparison.OrdinalIgnoreCase))
             {
@@ -471,6 +517,22 @@ namespace FfmpegGui.Services
                 args.Add("0");
             }
 
+            // ═══════════════════════════════════════════════════
+            //  ICC 色彩管理 — 嵌入（附加 ICC 元数据）
+            //  在编码器参数之后、输出文件之前执行。
+            //  路径 A: -icc_profile（JPEG/PNG/TIFF/WebP有损）
+            //  路径 B: iccgen 滤镜（AVIF/JXL/WebP无损，需 lcms2）
+            // ═══════════════════════════════════════════════════
+            if (options.IccMode == Models.IccMode.Embed
+                || options.IccMode == Models.IccMode.BakeAndEmbed)
+            {
+                if (!string.IsNullOrWhiteSpace(options.IccFilePath)
+                    && IccProfileService.IsValidIccProfile(options.IccFilePath))
+                {
+                    ApplyIccEmbedding(args, options, fmt);
+                }
+            }
+
             // ── 输出色彩矩阵（YUV colorspace，必须在 -i 之后写入输出流）──
             // PNG/TIFF 是 RGB 原生格式，不需要 YUV 色彩矩阵参数
             if (!isRgbNativeFmt && !string.IsNullOrWhiteSpace(outputColorSpace))
@@ -479,17 +541,21 @@ namespace FfmpegGui.Services
             }
 
             // ── HDR→SDR 色调映射（防止过曝）──
-            // 仅当输入明确为 HDR（PQ/HLG）且输出为 SDR-only 格式时触发
-            var needsTonemap = NeedsHdrToSdrTonemap(options, inputPath, inputPrimaries, inputTrc);
-            if (needsTonemap && !string.IsNullOrWhiteSpace(inputTrc) && !isRgbNativeFmt)
+            // 仅当输入明确为 HDR（PQ/HLG）且输出为 SDR-only 格式时触发。
+            // 若 ICC 烘焙已激活则跳过（烘焙已用 zscale 处理色彩转换）。
+            if (!skipHdrTonemap)
             {
-                // 使用 zscale 将 HDR (PQ) 线性化 → tonemap 映射 → SDR (BT.709)
-                var tonemapFilter = "zscale=t=linear:npl=10000,tonemap=hable:param=0.5,zscale=t=bt709:m=bt709:r=tv,format=yuv420p";
-                var vfIdx = args.FindIndex(a => a == "-vf");
-                if (vfIdx >= 0 && vfIdx + 1 < args.Count)
-                    args[vfIdx + 1] = tonemapFilter + "," + args[vfIdx + 1];
-                else
-                { args.Add("-vf"); args.Add(tonemapFilter); }
+                var needsTonemap = NeedsHdrToSdrTonemap(options, inputPath, inputPrimaries, inputTrc);
+                if (needsTonemap && !string.IsNullOrWhiteSpace(inputTrc) && !isRgbNativeFmt)
+                {
+                    // 使用 zscale 将 HDR (PQ) 线性化 → tonemap 映射 → SDR (BT.709)
+                    var tonemapFilter = "zscale=t=linear:npl=10000,tonemap=hable:param=0.5,zscale=t=bt709:m=bt709:r=tv,format=yuv420p";
+                    var vfIdx = args.FindIndex(a => a == "-vf");
+                    if (vfIdx >= 0 && vfIdx + 1 < args.Count)
+                        args[vfIdx + 1] = tonemapFilter + "," + args[vfIdx + 1];
+                    else
+                    { args.Add("-vf"); args.Add(tonemapFilter); }
+                }
             }
 
             args.Add($"\"{outputPath}\"");
@@ -823,6 +889,129 @@ namespace FfmpegGui.Services
                 if (System.IO.File.Exists(probe)) return probe;
             }
             return null;
+        }
+
+        // ═══════════════════════════════════════════════════════════
+        //  ICC 辅助方法
+        // ═══════════════════════════════════════════════════════════
+
+        /// <summary>解析 ICC 烘焙的源色彩空间参数</summary>
+        private static (string primaries, string trc, string matrix) ResolveIccSourceParams(
+            Models.FfmpegOptions options)
+        {
+            // 优先：用户手动选择的源色彩空间
+            if (!string.IsNullOrWhiteSpace(options.IccSourceColorSpace))
+                return MapNamedColorSpace(options.IccSourceColorSpace);
+
+            // 其次：从 ICC 文件描述推断
+            if (!string.IsNullOrWhiteSpace(options.IccFilePath))
+            {
+                var info = IccProfileService.ParseInfo(options.IccFilePath);
+                var guessed = IccProfileService.GuessColorSpace(info?.Description);
+                if (guessed != null)
+                    return MapNamedColorSpace(guessed);
+            }
+
+            // 回退：假定 sRGB（安全默认值）
+            return ("bt709", "iec61966-2-1", "bt709");
+        }
+
+        /// <summary>目标色彩空间名称 → (primaries, trc, matrix)</summary>
+        private static (string primaries, string trc, string matrix) MapIccTargetColorSpace(
+            string name)
+        {
+            var n = (name ?? "sRGB").ToLowerInvariant();
+            if (n.Contains("srgb") || n.Contains("bt.709") || n.Contains("709") || n.Contains("iec61966"))
+                return ("bt709", "iec61966-2-1", "bt709");
+            if (n.Contains("adobe") || n.Contains("adobergb"))
+                return ("bt709", "bt709", "bt709");
+            if (n.Contains("display p3") || n.Contains("displayp3"))
+                return ("smpte432", "bt709", "bt709");
+            if (n.Contains("dci-p3") || n.Contains("dci p3"))
+                return ("smpte431", "smpte428", "bt709");
+            if (n.Contains("prophoto") || n.Contains("romm"))
+                return ("bt470bg", "bt709", "bt709");
+            if (n.Contains("rec.2020") || n.Contains("bt.2020") || n.Contains("rec2020"))
+                return ("bt2020", "smpte2084", "bt2020nc");
+            if (n.Contains("rec.2100") || n.Contains("bt.2100"))
+                return ("bt2020", "smpte2084", "bt2020nc");
+            // 默认 sRGB
+            return ("bt709", "iec61966-2-1", "bt709");
+        }
+
+        /// <summary>常见色彩空间名称 → (primaries, trc, matrix)</summary>
+        private static (string primaries, string trc, string matrix) MapNamedColorSpace(
+            string name)
+            => (name ?? "").ToLowerInvariant() switch
+            {
+                var n when n.Contains("srgb") || n.Contains("bt.709") || n.Contains("iec61966")
+                    => ("bt709", "iec61966-2-1", "bt709"),
+                var n when n.Contains("adobergb") || n.Contains("adobe rgb")
+                    => ("bt709", "bt709", "bt709"),
+                var n when n.Contains("display p3") || n.Contains("displayp3")
+                    => ("smpte432", "bt709", "bt709"),
+                var n when n.Contains("dci-p3") || n.Contains("dci p3")
+                    => ("smpte431", "smpte428", "bt709"),
+                var n when n.Contains("prophoto") || n.Contains("romm")
+                    => ("bt470bg", "bt709", "bt709"),
+                var n when n.Contains("rec.2020") || n.Contains("bt.2020") || n.Contains("rec2020")
+                    => ("bt2020", "smpte2084", "bt2020nc"),
+                var n when n.Contains("rec.2100") || n.Contains("bt.2100")
+                    => ("bt2020", "smpte2084", "bt2020nc"),
+                var n when n.Contains("colormatch")
+                    => ("bt709", "bt709", "bt709"),
+                _ => ("bt709", "iec61966-2-1", "bt709")
+            };
+
+        /// <summary>两个色彩参数集是否相同（避免无意义的 zscale 转换）</summary>
+        private static bool ColorParamsEqual(
+            (string p, string t, string m) a,
+            (string p, string t, string m) b)
+        {
+            return a.p == b.p && a.t == b.t && a.m == b.m;
+        }
+
+        /// <summary>构造 zscale 烘焙滤镜字符串</summary>
+        private static string BuildZscaleBakeFilter(
+            (string primaries, string trc, string matrix) dst)
+        {
+            return $"zscale=p={dst.primaries}:t={dst.trc}:m={dst.matrix}";
+        }
+
+        /// <summary>ICC 嵌入逻辑：根据输出格式选择最佳嵌入路径</summary>
+        /// <remarks>
+        /// 注意：当前 FFmpeg 构建不支持 -icc_profile 选项，
+        /// 且 movie 滤镜无法直接读取 .icc 文件。因此：
+        /// - JPEG/PNG/TIFF/WebP 的 ICC 嵌入通过 QueueProcessor 中的 exiftool 后处理完成
+        /// - AVIF/JXL 的 ICC 通过 iccgen 滤镜从色彩元数据生成（而非外部 ICC 文件）
+        /// - 外部 ICC 文件路径存储在 options.IccFilePath 中供 QueueProcessor 使用
+        /// </remarks>
+        private static void ApplyIccEmbedding(List<string> args,
+            Models.FfmpegOptions options, string fmt)
+        {
+            // 路径 A（JPEG/PNG/TIFF/WebP）：标记需要 exiftool 后处理
+            // FFmpeg 命令行不添加任何 ICC 参数，由 QueueProcessor 在编码后调用 exiftool
+            bool exiftoolFormats = fmt is "jpg" or "jpeg" or "png" or "tiff" or "webp";
+            if (exiftoolFormats)
+            {
+                // ICC 嵌入推迟到 QueueProcessor 的 exiftool 后处理步骤
+                // 此处不添加 FFmpeg 参数，但通过在 BuildArguments 外部标记实现
+                return;
+            }
+
+            // 路径 B（AVIF/JXL）：使用 iccgen 滤镜从色彩元数据生成 ICC
+            // 注意：iccgen 从帧的 color_primaries/color_trc 生成 ICC，而非嵌入外部文件
+            if (fmt is "avif" or "jxl")
+            {
+                // iccgen 不需要外部 ICC 文件路径，它从帧元数据自动生成
+                // 在 -vf 链末尾添加 iccgen
+                var vfIdx = args.FindIndex(a => a == "-vf");
+                if (vfIdx >= 0 && vfIdx + 1 < args.Count)
+                    args[vfIdx + 1] = args[vfIdx + 1] + ",iccgen";
+                else
+                { args.Add("-vf"); args.Add("iccgen"); }
+            }
+            // 其他格式（GIF、JPEG XR 等）：静默跳过，不支持 ICC 嵌入
         }
     }
 }

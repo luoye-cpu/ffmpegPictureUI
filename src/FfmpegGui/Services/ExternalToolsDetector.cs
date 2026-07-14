@@ -411,6 +411,7 @@ namespace FfmpegGui.Services
             UltrahdrService.Detect();
             JxrService.Detect();
             ExifToolService.Detect();
+            RawService.Detect();
 
             // ffmpeg
             var ffmpegPath = AppSettingsService.Current.FfmpegPath;
@@ -486,10 +487,10 @@ namespace FfmpegGui.Services
                 IsAvailable = JxrService.IsAvailable
             });
 
-            // avifenc
+            // avifenc — 多路径检测：手动路径 → artifacts 目录 → PLAN 文件夹
             var avifenc = AppSettingsService.Current.AvifencPath;
-            if (string.IsNullOrWhiteSpace(avifenc))
-                avifenc = Path.Combine(AppSettingsService.Current.FfmpegDir ?? "", PlatformServices.Avifenc);
+            if (string.IsNullOrWhiteSpace(avifenc) || !File.Exists(avifenc))
+                avifenc = FindInArtifactsOrPlan(PlatformServices.Avifenc);
             results.Add(new ToolCapability
             {
                 Name = "avifenc",
@@ -498,7 +499,48 @@ namespace FfmpegGui.Services
                 IsAvailable = File.Exists(avifenc)
             });
 
+            // dcraw — 多路径检测：手动路径 → artifacts 目录 → PLAN 文件夹
+            var dcraw = AppSettingsService.Current.DcrawPath;
+            if (string.IsNullOrWhiteSpace(dcraw) || !File.Exists(dcraw))
+                dcraw = FindInArtifactsOrPlan(PlatformServices.DcrawName);
+            results.Add(new ToolCapability
+            {
+                Name = "dcraw",
+                Path = File.Exists(dcraw) ? dcraw : null,
+                Version = ProbeAndVersion(dcraw),
+                IsAvailable = File.Exists(dcraw)
+            });
+
             return results;
+        }
+
+        /// <summary>在 artifacts 目录和 PLAN 文件夹中查找工具</summary>
+        private static string? FindInArtifactsOrPlan(string toolFileName)
+        {
+            // 1) 用户指定的 artifacts 目录
+            var artifactsDir = AppSettingsService.Current.WindowsArtifactsDir;
+            if (!string.IsNullOrWhiteSpace(artifactsDir))
+            {
+                var p = Path.Combine(artifactsDir, toolFileName);
+                if (File.Exists(p)) return p;
+            }
+            // 2) PLAN 便携文件夹（试完整名 + 去扩展名）
+            var planFound = PlatformServices.TryFindInPlanFolder(toolFileName);
+            if (planFound == null)
+            {
+                var nameNoExt = Path.GetFileNameWithoutExtension(toolFileName);
+                if (nameNoExt != toolFileName)
+                    planFound = PlatformServices.TryFindInPlanFolder(nameNoExt);
+            }
+            if (planFound != null) return planFound;
+            // 3) ffmpeg 同目录
+            var ffDir = AppSettingsService.Current.FfmpegDir;
+            if (!string.IsNullOrWhiteSpace(ffDir))
+            {
+                var p = Path.Combine(ffDir, toolFileName);
+                if (File.Exists(p)) return p;
+            }
+            return null;
         }
 
         // ── 每工具专用版本探测 ──

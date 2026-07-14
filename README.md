@@ -1,6 +1,6 @@
 # 🖼️ FFmpegPictureUI — FFmpeg 图片转换器
 
-**v1.5.0 — 工具管理 v2.0 重构、jxrlib CMake 化、AVX2 SIMD 全工具编译、PLAN 目录规范化。**
+**v1.5.0 BETA — ICC 色彩管理、24 预设系统、检测模块重写、工具面板 3 列重构。**
 
 An Avalonia UI-based cross-platform batch image/animation/video conversion tool that wraps `ffmpeg`/`ffprobe` with an intuitive GUI. Integrates external encoders: `cjxl`/`djxl`/`cjpegli` (JPEG XL), `ultrahdr_app` (Ultra HDR), `JxrEncApp`/`JxrDecApp` (JPEG XR).
 
@@ -18,7 +18,7 @@ QQ 交流群：754439779  点击链接加入群聊【FFmpegPictureUI图像处理
 | **Encoder backend / 编码器后端** | Selectable ffmpeg / cjxl / cjpegli per format; cjxl for JXL lossless JPEG repack — 每种格式可选不同编码器后端 |
 | **Quality control / 质量控制** | Quality slider (snap-to-tick) + format-aware numeric input — 滑块吸附整数 + 格式感知数字输入框 (JPEG q:v 2-31, JXL distance 0-15, etc.) |
 | **Advanced codec options / 高级编码选项** | Per-format advanced panels: DCT algo, progressive mode, Huffman optimize, adaptive quant, sjpeg backend, PSNR target, lossless compression level, row-mt, still-picture, modular mode — 按格式独立高级面板 |
-| **Color management / 色彩管理** | Color space, primaries, TRC (optional advanced mode) |
+| **Color management / 色彩管理** | Color space, primaries, TRC (optional advanced mode); ICC profile embed/bake with external ICC file support — 色彩空间/基准/TRC，ICC 嵌入/烘焙（外部 ICC 文件） |
 | **JXL Intelligence / JXL 智能** | Auto-detects JPEG-reconstruction vs native codestream; byte-level inspection (`JxlInspector`); picks optimal pipeline |
 | **JPEG-LI / JPEG-LI** | `cjpegli` 作为 JPEG 格式的编码器后端选项，提供完整高级配置（色度子采样、渐进模式等）|
 | **CPU SIMD / CPU 指令集** | Auto-detects AVX2/AVX/SSE4 capable binaries; runtime probe validates compatibility |
@@ -26,7 +26,7 @@ QQ 交流群：754439779  点击链接加入群聊【FFmpegPictureUI图像处理
 | **Metadata editing / 元数据编辑** | ~90-field panel via exiftool; 9 categories (Basic, DateTime, Camera, Shooting, GPS, Image, IPTC, XMP, Color); double-click file opens editor — ~90字段9大分类exiftool编辑器，双击文件打开 |
 | **Privacy cleaning / 隐私清理** | Strip GPS, timestamps, camera info, all EXIF, XMP |
 | **Quality analysis / 质量分析** | SSIM + PSNR post-encode; auto-detects lossless |
-| **Presets / 预设** | Save/load conversion presets; export/import JSON |
+| **Presets / 预设** | 24 built-in presets with secondary management window; save/load/import user presets — 24个内置预设+二级管理窗口，支持保存/加载/导入 |
 | **Dual theme / 双色主题** | Dark/Light mode; queue text adapts — 队列文字颜色自适应主题 |
 | **Format filter / 格式筛选** | Checkbox window to enable/disable recognized image formats; persists to settings — 勾选启用的图片格式，持久化保存 |
 | **Animation mode / 动图模式** | Mode toggle (Still/Animated); FPS/loop/scale/duration controls (auto or manual); per-format advanced animated panels; video input support — 模式切换，帧率/循环/缩放/时长参数，视频输入支持 |
@@ -46,11 +46,15 @@ QQ 交流群：754439779  点击链接加入群聊【FFmpegPictureUI图像处理
 | `ultrahdr_app` | ⭐ Recommended / 推荐 | Gain Map / Ultra HDR JPEG encoding (Google reference) |
 | `JxrEncApp` / `JxrDecApp` | ⭐ Recommended / 推荐 | JPEG XR encoding/decoding (Microsoft jxrlib) |
 | `avifenc` | ⚪ Optional / 可选 | GIF → AVIF two-step encoding with alpha preservation |
-| `exiftool` | ⚪ Optional / 可选 | Metadata editing, privacy cleaning |
+| `dcraw` | ⚪ Optional / 可选 | Camera RAW (Bayer) → linear 16-bit TIFF demosaic |
+| `exiftool` | ⚪ Optional / 可选 | Metadata editing, privacy cleaning, ICC profile embedding |
 
-> The **JPEG XL 参考实现库** (JxlLibDir) 和 **Windows 构建产物** (WindowsArtifactsDir) 两项文件夹路径设置替代了旧版的 5 项独立文件路径。应用自动扫描目录中的工具并选择与 CPU SIMD 匹配的最优二进制。
+> **v1.5.0 BETA** — 外部工具面板重新设计为 3 列水平布局：
+> - 📦 **JXL 参考库**（文件夹）— 自动检测 cjxl / djxl / cjpegli
+> - 🏷 **exiftool**（文件）— 元数据编辑与 ICC 嵌入
+> - 🔧 **artifacts**（文件夹）— 自动检测 ultrahdr_app / JxrEncApp / JxrDecApp / avifenc / dcraw
 >
-> 设置中提供三个统一路径：`exiftool`（文件选择）、`jxl 参考库`（文件夹，含 cjxl/djxl/cjpegli）、`artifacts`（文件夹，含 ultrahdr/Jxr/avifenc）。
+> 紧凑状态栏默认隐藏，后台检测完成后自动显示全部工具状态（✅/❌）。PLAN 便携包自动识别，支持手动指定路径。
 
 ---
 
@@ -108,12 +112,14 @@ ffmpegPictureUI/
 │   │                     JxlInspector, JxlPipelineService,
 │   │                     ExternalToolsDetector, CpuFeatureService,
 │   │                     ExifToolService, FormatCapabilitiesService,
-│   │                     EncoderDetectionService, QualityAnalysisService
+│   │                     EncoderDetectionService, QualityAnalysisService,
+│   │                     IccProfileService, PresetManagerService,
+│   │                     PlatformServices, PlanFolderDetector
 │   ├── Controls/         MetadataEditor
 │   ├── MainWindow.xaml   Primary UI
 │   ├── MainWindow.xaml.cs UI logic
 │   ├── FormatFilterWindow.axaml  Format filter dialog
-│   ├── FormatFilterWindow.axaml.cs
+│   ├── PresetManagerWindow.axaml Preset manager window
 │   ├── ProgressWindow.xaml Progress UI
 ├── tools/                Verification utilities
 └── publish/              Publish output
@@ -123,16 +129,54 @@ ffmpegPictureUI/
 
 ## 📝 Changelog / 更新日志
 
-### v1.5.0 (2026-07-14)
+### v1.5.0 BETA (2026-07-14)
 
-> 🎯 **工具管理 v2.0 重构** — 7→3 项统一设置、jxrlib CMake 化、全工具 AVX2 编译。
+> 🎯 **ICC 色彩管理 + 预设系统 v2.0 + 检测模块重写 + 工具面板 3 列重构**
 
-- 🔧 **工具管理 v2.0 / Tool Management v2.0**: 7 项独立外部工具路径（CjxlPath/CjpegliPath/AvifencPath/UltrahdrPath/JxrPath/ExifToolPath）精简为 3 项（JxlLibDir/WindowsArtifactsDir/ExifToolPath）；旧 settings.json 自动迁移到新字段；Save() 排除已废弃字段
-- 📦 **PLAN 目录规范化 / PLAN Directory**: `jxl-x64-windows-static`→`jxl`、`windows-artifacts`→`artifacts`、`exiftool-13.58_64`→`exiftool`（展平嵌套）；PlanFolderDetector + PlanSubDirs 同步更新
-- 🏗️ **jxrlib CMake 化 / jxrlib CMake**: 为 abandonware jxrlib 创建完整 CMakeLists.txt（5 静态库 + JxrEncApp/JxrDecApp）；支持 VS 2026/2022 及 Linux/ARM 编译
-- ⚡ **AVX2 全工具编译 / AVX2 Recompile**: JxrEncApp/JxrDecApp 以 VS 2026 + `/arch:AVX2` 重编译；ultrahdr_app 以 GCC+Ninja 重编译；性能提升 ~15%（JXR 编码 43→37 MP/s）
-- 🧹 **外部工具精简 / Tool Cleanup**: 移除 4 个未使用工具（aomdec/aomenc/avifdec/avifgainmaputil），节省 ~47MB
-- 🗑️ **CS0618 抑制 / CS0618 Suppression**: 项目级 NoWarn 抑制 56 个废弃字段回退警告，构建日志从 76→20 警告
+#### 🎨 ICC 色彩管理 / ICC Color Management
+- **ICC 嵌入 / ICC Embed**: 支持加载外部 .icc/.icm 配置文件并嵌入输出图片。JPEG/PNG/TIFF/WebP 通过 exiftool 后处理嵌入；AVIF/JXL 通过 iccgen 滤镜从色彩元数据生成 ICC
+- **ICC 烘焙 / ICC Bake**: 通过 zscale 滤镜将像素从源色彩空间（如 Adobe RGB）转换到目标色彩空间（如 sRGB），保证所有设备一致显示，无需 ICC 读取支持
+- **烘焙+嵌入双保险 / Bake+Embed**: 同时执行像素转换和 ICC 嵌入，专业工作流推荐
+- **UI 集成 / UI**: 左侧面板新增 🎨 ICC 色彩管理卡片，RadioButton 模式切换（不处理/嵌入/烘焙/烘焙+嵌入），ICC 文件浏览、源/目标色彩空间下拉框、转换参数预览
+- **色彩空间映射 / Color space mapping**: 内置 sRGB/Adobe RGB/Display P3/DCI-P3/ProPhoto RGB/Rec.2020/Rec.2100 完整映射表
+- **冲突避免 / Conflict prevention**: 烘焙模式下自动跳过 HDR tonemap 和 BT.2020 自动 zscale，防止双重转换
+
+#### 📋 预设系统 v2.0 / Preset System v2.0
+- **24 内置预设 / 24 Built-in Presets**: 覆盖全部编码场景的专业预设
+  - 📸 JPEG LI ×3（高质量 d=2.0 / 平衡 d=4.0 / 极限 d=6.0 渐进）— 全部使用 butteraugli distance
+  - ✨ JPEG XL ×4（视觉无损 d=1.0 / 平衡 d=3.0 / 无损 d=0 / ⚡JPEG→JXL 极速重封装）
+  - 🚀 AVIF ×10：AOM（高质量/平衡/无损）+ SVT（高质量/快速）+ NVENC（高质量/快速）+ QSV（高质量/快速）
+  - 🌐 WebP ×3（高质量有损/平衡有损/无损）、🖼 PNG ×2（最大压缩/快速存档）、🖨 TIFF LZW
+  - 🌅 Ultra HDR Gain Map ×1、🎬 GIF 调色板优化 ×1
+- **二级管理窗口 / Secondary Window**: 新增 `PresetManagerWindow`，支持预设列表浏览、详情预览、一键应用、另存当前、导入外部文件、删除用户预设
+- **开发者内置 / Developer Built-in**: 内置预设定义集中于 `PresetManagerService.BuiltInPresets`，增删改只需修改一处
+- **用户预设持久化 / User Presets**: 存储于 `%AppData%/FfmpegGui/presets/*.json`，支持 CRUD
+- **移除旧按钮 / UI Cleanup**: 左侧面板底部移除"导出预设/导入预设"按钮，顶部标题旁新增"📋 预设"入口
+
+#### 🔧 外部工具面板重构 / Tools Panel Redesign
+- **3 列水平布局 / 3-Column Layout**: JXL 参考库 | exiftool | artifacts 三列并排，告别垂直堆叠
+- **全工具检测 / Full Tool Detection**: 紧凑状态栏新增 djxl/ultrahdr/jxr/avifenc/dcraw 检测，覆盖全部 9 种工具
+- **默认隐藏 / Hidden by Default**: 紧凑状态栏启动时隐藏，后台检测完成后自动显示（✅/❌ 各工具状态）
+- **dcraw 检测修复 / dcraw Detection Fix**: 修复 PLAN 字典 key 不一致导致的 dcraw 无法识别（`"dcraw"` vs `"dcraw.exe"`）；新增 `FindInArtifactsOrPlan()` 统一查找逻辑
+- **avifenc 检测增强 / avifenc Detection**: 多路径查找：手动路径 → artifacts 目录 → PLAN 便携文件夹 → ffmpeg 同目录
+
+#### ⚡ 检测模块重写 / Detection Rewrite
+- **架构重构**: `FullDetectionAsync` 彻底重写，三层分阶段执行（文件系统→ffmpeg 进程→外部工具），完全后台化
+- **超时保护 / Timeout Protection**: ffmpeg 进程检测使用 `Task.WhenAny + Task.Delay(8000)` 真实超时（替代无效的 CancellationTokenSource）
+- **串行化 / Serialized**: ffmpeg 两次进程调用改为串行（避免双实例冲突导致死锁）
+- **增量日志 / Incremental Logging**: 每步检测完成后通过 Dispatcher 即时输出到 UI，用户可实时看到进度
+- **网络依赖清零 / Zero Network**: 删除 `System.Net.Http` 引用和 `TryFetchRemoteCapabilitiesAsync`，所有检测完全离线
+
+#### 🪟 启动修复 / Startup Fixes
+- **WinExe 输出类型 / WinExe OutputType**: `<OutputType>Exe</OutputType>` → `<OutputType>WinExe</OutputType>`，消除启动 CMD 黑窗
+- **PublishTrimmed 关闭**: 框架依赖发布禁用裁剪，避免 NETSDK1102 错误
+
+#### 🛠️ 其他改进 / Other Improvements
+- **PresetData 模型扩展**: 新增 EncoderBackend/JxlLosslessJpeg/JpegGainMap/WebpCompressionLevel/AvifSvtPreset/AvifHwPreset/CjpegliChromaSubsampling 等字段
+- **ApplyPresetData 增强**: 编码器后端自动选择、WebP 压缩级别、SVT/HW 预设、cjpegli 选项映射
+- **IccProfileService**: 新建 ICC 文件验证/解析服务，支持魔数检测、头解析、描述标签提取、色彩空间推断
+- **ExifToolService.EmbedIccProfileFromFileAsync**: 新增外部 ICC 文件嵌入方法
+- **QueueProcessor ICC 后处理**: 编码完成后自动调用 exiftool 嵌入用户指定的 ICC 文件
 
 ### v1.4.5 (2026-06-20)
 

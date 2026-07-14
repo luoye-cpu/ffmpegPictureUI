@@ -4,14 +4,14 @@
   <!-- 版本与目标框架                                      -->
   <!-- ═══════════════════════════════════════════════ -->
   <PropertyGroup>
-    <OutputType>Exe</OutputType>
+    <OutputType>WinExe</OutputType>
     <!-- .NET 11 SDK 安装后改为: <TargetFramework>net11.0</TargetFramework> -->
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <RuntimeIdentifiers>win-x64;linux-x64;linux-arm64</RuntimeIdentifiers>
     <!-- 版本号 -->
-    <Version>1.5.0</Version>
+    <Version>1.5.0-beta</Version>
     <AssemblyVersion>1.5.0.0</AssemblyVersion>
     <FileVersion>1.5.0.0</FileVersion>
     <PackageLicenseExpression>GPL-3.0-only</PackageLicenseExpression>
@@ -26,8 +26,9 @@
     <PublishSingleFile>true</PublishSingleFile>
     <SelfContained>false</SelfContained>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
-    <PublishTrimmed>true</PublishTrimmed>
-    <TrimMode>partial</TrimMode>
+    <PublishTrimmed>false</PublishTrimmed>
+    <!-- TrimMode 仅在 PublishTrimmed=true 且 SelfContained=true 时有效 -->
+    <!-- <TrimMode>partial</TrimMode> -->
     <DebugType>none</DebugType>
     <DebugSymbols>false</DebugSymbols>
   </PropertyGroup>
