@@ -47,6 +47,7 @@ namespace FfmpegGui
         private CheckBox? StripExifAllCheck;
         private CheckBox? StripXmpCheck;
         private CheckBox? LosslessCheck;
+        private CheckBox? AppendPngExtCheck;
         private ListBox? QueueList;
         private TextBox? ConcurrencyBox;
         private TextBox? CommandText;
@@ -221,6 +222,7 @@ namespace FfmpegGui
             StripExifAllCheck = this.FindControl<CheckBox>("StripExifAllCheck");
             StripXmpCheck = this.FindControl<CheckBox>("StripXmpCheck");
             LosslessCheck = this.FindControl<CheckBox>("LosslessCheck");
+            AppendPngExtCheck = this.FindControl<CheckBox>("AppendPngExtCheck");
             QueueList = this.FindControl<ListBox>("QueueList");
             ConcurrencyBox = this.FindControl<TextBox>("ConcurrencyBox");
             ConcurrencyLabel = this.FindControl<TextBlock>("ConcurrencyLabel");
@@ -1091,6 +1093,7 @@ namespace FfmpegGui
                 StripExifCamera = StripExifCameraCheck?.IsChecked ?? false,
                 StripExifAll = StripExifAllCheck?.IsChecked ?? false,
                 StripXmp = StripXmpCheck?.IsChecked ?? false,
+                AppendPngExtension = AppendPngExtCheck?.IsChecked ?? false,
                 IccMode = GetIccMode(),
                 IccFilePath = _iccFilePath,
                 IccSourceColorSpace = GetIccSourceSpace(),
@@ -1958,6 +1961,7 @@ namespace FfmpegGui
                 StripExifCamera = StripExifCameraCheck?.IsChecked ?? false,
                 StripExifAll = StripExifAllCheck?.IsChecked ?? false,
                 StripXmp = StripXmpCheck?.IsChecked ?? false,
+                AppendPngExtension = AppendPngExtCheck?.IsChecked ?? false,
                 IccMode = GetIccMode(),
                 IccFilePath = _iccFilePath,
                 IccSourceColorSpace = GetIccSourceSpace(),
@@ -2342,7 +2346,6 @@ namespace FfmpegGui
             if (QueueList?.SelectedIndex is int idx and >= 0 && idx < _queueItems.Count)
             {
                 var item = _queueItems[idx];
-                // 如果没有预存命令，则实时生成（兼容旧队列项）
                 var command = string.IsNullOrEmpty(item.Command)
                     ? BuildQueueItemCommand(item)
                     : item.Command;
@@ -2376,63 +2379,13 @@ namespace FfmpegGui
             UpdateMediaFileCount();
         }
 
-        private async void MediaFileList_DoubleTapped(object? sender, Avalonia.Input.TappedEventArgs e)
+        private void MediaFileList_DoubleTapped(object? sender, Avalonia.Input.TappedEventArgs e)
         {
             if (MediaFileList?.SelectedItem is string path && !string.IsNullOrWhiteSpace(path))
             {
-                await OpenMetadataEditorWindowAsync(path);
+                var win = new ImageDetailWindow(path, null);
+                win.Show(this);
             }
-        }
-
-        /// <summary>打开元数据编辑窗口（含 ffmpeg 媒体信息 + exiftool 元数据编辑器）</summary>
-        private async Task OpenMetadataEditorWindowAsync(string filePath)
-        {
-            // 获取 ffmpeg 媒体信息
-            var mediaInfo = "正在获取媒体信息...";
-            try { mediaInfo = await MediaInfoService.GetMediaInfoAsync(filePath); }
-            catch (Exception ex) { mediaInfo = $"获取媒体信息失败: {ex.Message}"; }
-
-            var editor = new Controls.MetadataEditor { FilePath = filePath };
-
-            // 媒体信息面板（只读，固定高度可滚动）
-            var mediaInfoBox = new TextBox
-            {
-                Text = mediaInfo,
-                IsReadOnly = true,
-                AcceptsReturn = true,
-                TextWrapping = Avalonia.Media.TextWrapping.Wrap,
-                FontSize = 11,
-                Height = 140,
-                FontFamily = "Consolas, monospace"
-            };
-
-            var infoHeader = new TextBlock
-            {
-                Text = "📊 FFmpeg 媒体信息",
-                FontWeight = Avalonia.Media.FontWeight.Bold,
-                FontSize = 13,
-                Margin = new Avalonia.Thickness(0, 0, 0, 4)
-            };
-
-            var infoSection = new Border
-            {
-                Margin = new Avalonia.Thickness(0, 0, 0, 10),
-                Child = new StackPanel { Children = { infoHeader, mediaInfoBox } }
-            };
-
-            var layout = new DockPanel { Margin = new Avalonia.Thickness(12) };
-            DockPanel.SetDock(infoSection, Avalonia.Controls.Dock.Top);
-            layout.Children.Add(infoSection);
-            layout.Children.Add(editor);
-
-            var win = new Window
-            {
-                Title = $"📝 元数据编辑 — {Path.GetFileName(filePath)}",
-                Width = 680, Height = 750,
-                WindowStartupLocation = WindowStartupLocation.CenterOwner,
-                Content = layout
-            };
-            win.Show(this);
         }
 
         private void UpdateMediaFileCount()
@@ -2748,6 +2701,7 @@ namespace FfmpegGui
                 StripExifCamera = StripExifCameraCheck?.IsChecked ?? false,
                 StripExifAll = StripExifAllCheck?.IsChecked ?? false,
                 StripXmp = StripXmpCheck?.IsChecked ?? false,
+                AppendPngExtension = AppendPngExtCheck?.IsChecked ?? false,
                 IccMode = GetIccMode(),
                 IccFilePath = _iccFilePath,
                 IccSourceColorSpace = GetIccSourceSpace(),
@@ -3436,6 +3390,7 @@ namespace FfmpegGui
                 StripExifCamera = StripExifCameraCheck?.IsChecked ?? false,
                 StripExifAll = StripExifAllCheck?.IsChecked ?? false,
                 StripXmp = StripXmpCheck?.IsChecked ?? false,
+                AppendPngExtension = AppendPngExtCheck?.IsChecked ?? false,
                 IccMode = GetIccMode().ToString(),
                 IccFilePath = _iccFilePath,
                 IccSourceColorSpace = GetIccSourceSpace(),

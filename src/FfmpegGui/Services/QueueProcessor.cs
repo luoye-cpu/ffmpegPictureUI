@@ -401,6 +401,26 @@ namespace FfmpegGui.Services
                                     captured.Log += "[exiftool] 未检测到 exiftool，无法嵌入 ICC Profile。请安装 exiftool 并在设置中配置路径。\n";
                                 }
                             }
+                            // ── 追加 .png 后缀（JXL/AVIF 兼容性）──
+                            if (captured.ExitCode == 0 && captured.Options.AppendPngExtension)
+                            {
+                                var fmt = captured.Options.Format.ToLower();
+                                if (fmt is "avif" or "jxl")
+                                {
+                                    try
+                                    {
+                                        var newPath = finalOutputPath + ".png";
+                                        File.Move(finalOutputPath, newPath);
+                                        finalOutputPath = newPath;
+                                        captured.OutputPath = newPath;
+                                        captured.Log += $"[rename] 已追加 .png 后缀: {Path.GetFileName(newPath)}\n";
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        captured.Log += $"[rename] ⚠️ 追加 .png 后缀失败: {ex.Message}\n";
+                                    }
+                                }
+                            }
                             captured.CompletedAt = DateTimeOffset.UtcNow;
                         }
                         catch (OperationCanceledException)

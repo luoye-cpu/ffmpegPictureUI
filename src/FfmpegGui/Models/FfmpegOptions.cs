@@ -129,6 +129,8 @@ namespace FfmpegGui.Models
         public string? IccSourceColorSpace { get; set; }
         /// <summary>目标色彩空间（烘焙模式用），默认 sRGB</summary>
         public string IccTargetColorSpace { get; set; } = "sRGB";
+        /// <summary>输出文件名后追加 .png 后缀（仅 JXL/AVIF 生效，解决某些软件不识别的兼容性问题）</summary>
+        public bool AppendPngExtension { get; set; } = false;
 
         // ── 动图参数 ──
         /// <summary>帧率 (FPS)，null=不指定</summary>

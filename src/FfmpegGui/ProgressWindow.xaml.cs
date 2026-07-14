@@ -1,8 +1,11 @@
 using Avalonia.Controls;
+using Avalonia.Layout;
 using Avalonia.Markup.Xaml;
+using Avalonia.Media;
 using Avalonia.Threading;
 using FfmpegGui.Controls;
 using FfmpegGui.Models;
+using System.Collections.Generic;
 using System.Timers;
 
 namespace FfmpegGui
@@ -10,13 +13,16 @@ namespace FfmpegGui
     public partial class ProgressWindow : Window
     {
         private TextBlock? TitleLabel;
+        private TextBlock? StatusBadge;
         private TextBlock? StatusLabel;
         private TextBlock? ProgressLabel;
         private TextBlock? QualityInfoLabel;
         private TextBox? CommandLabel;
         private TextBox? LogBox;
         private TextBlock? AnalysisLabel;
+        private TextBlock? FilePathLabel;
         private MetadataEditor? MetadataEditorCtrl;
+        private StackPanel? MediaInfoPanel;
 
         private readonly QueueItem? _item;
 
@@ -31,20 +37,27 @@ namespace FfmpegGui
             Title = $"编码详情 — {System.IO.Path.GetFileName(item.InputPath)}";
 
             TitleLabel = this.FindControl<TextBlock>("TitleLabel");
+            StatusBadge = this.FindControl<TextBlock>("StatusBadge");
             StatusLabel = this.FindControl<TextBlock>("StatusLabel");
             ProgressLabel = this.FindControl<TextBlock>("ProgressLabel");
             QualityInfoLabel = this.FindControl<TextBlock>("QualityInfoLabel");
             CommandLabel = this.FindControl<TextBox>("CommandLabel");
             LogBox = this.FindControl<TextBox>("LogBox");
             AnalysisLabel = this.FindControl<TextBlock>("AnalysisLabel");
+            FilePathLabel = this.FindControl<TextBlock>("FilePathLabel");
             MetadataEditorCtrl = this.FindControl<MetadataEditor>("MetadataEditorCtrl");
+            MediaInfoPanel = this.FindControl<StackPanel>("MediaInfoPanel");
 
             if (TitleLabel != null)
                 TitleLabel.Text = System.IO.Path.GetFileName(item.InputPath);
+            if (StatusBadge != null)
+                StatusBadge.Text = item.Status;
             if (StatusLabel != null)
                 StatusLabel.Text = item.Status;
             if (CommandLabel != null)
                 CommandLabel.Text = command;
+            if (FilePathLabel != null)
+                FilePathLabel.Text = $"📁 输出: {item.OutputPath}";
             if (MetadataEditorCtrl != null)
                 MetadataEditorCtrl.FilePath = item.OutputPath;
 
@@ -56,6 +69,88 @@ namespace FfmpegGui
             };
             timer.Start();
             Closed += (_, _) => timer.Stop();
+
+            // 异步加载媒体技术信息
+            _ = LoadMediaInfoAsync();
+        }
+
+        private async System.Threading.Tasks.Task LoadMediaInfoAsync()
+        {
+            if (_item == null || MediaInfoPanel == null) return;
+            try
+            {
+                var info = await Services.MediaInfoParser.ParseAsync(_item.OutputPath, _item);
+                var cards = BuildMediaInfoCards(info);
+                Dispatcher.UIThread.Post(() =>
+                {
+                    if (MediaInfoPanel != null)
+                    {
+                        MediaInfoPanel.Children.Clear();
+                        foreach (var card in cards) MediaInfoPanel.Children.Add(card);
+                    }
+                });
+            }
+            catch { }
+        }
+
+        private static List<Border> BuildMediaInfoCards(Services.MediaInfoModel m)
+        {
+            var cards = new List<Border>();
+
+            // File overview card
+            cards.Add(MakeCard("📁 输出文件",
+                ("文件名", m.FileName),
+                ("格式", m.Format.ToUpper()),
+                ("文件大小", Services.MediaInfoParser.FormatSize(m.FileSize))));
+
+            // Image properties card
+            if (m.Width > 0)
+                cards.Add(MakeCard("🖼 图像属性",
+                    ("分辨率", $"{m.Width} × {m.Height} ({(m.Width * m.Height) / 1_000_000.0:F1} MP)"),
+                    ("位深", m.BitDepth > 0 ? $"{m.BitDepth} bits" : "—"),
+                    ("像素格式", string.IsNullOrWhiteSpace(m.PixelFormat) ? "—" : m.PixelFormat),
+                    ("色彩空间", Services.MediaInfoParser.FormatColorInfo(m))));
+
+            // ICC card
+            var iccText = string.IsNullOrWhiteSpace(m.IccDescription)
+                ? "（未内嵌 ICC Profile）"
+                : $"📎 {m.IccDescription}" + (m.IccSize > 0 ? $" ({m.IccSize} bytes)" : "");
+            cards.Add(MakeCard("🎨 色彩配置", ("ICC", iccText)));
+
+            // Quality card
+            if (m.Ssim.HasValue || m.Psnr.HasValue)
+                cards.Add(MakeCard("📊 质量分析",
+                    ("SSIM", m.Ssim.HasValue ? $"{m.Ssim:F4}" : "—"),
+                    ("PSNR", m.Psnr.HasValue ? $"{m.Psnr:F2} dB" : "—")));
+
+            return cards;
+        }
+
+        private static Border MakeCard(string title, params (string label, string value)[] rows)
+        {
+            var grid = new Grid { ColumnDefinitions = new ColumnDefinitions("80,*") };
+            for (int i = 0; i < rows.Length; i++)
+            {
+                grid.RowDefinitions.Add(new RowDefinition(GridLength.Auto));
+                var lbl = new TextBlock { Text = rows[i].label, FontSize = 11, Foreground = Avalonia.Media.Brushes.Gray, Margin = new Avalonia.Thickness(0, 1) };
+                var val = new TextBlock { Text = rows[i].value, FontSize = 11, Margin = new Avalonia.Thickness(0, 1), TextWrapping = Avalonia.Media.TextWrapping.Wrap };
+                Grid.SetRow(lbl, i); Grid.SetColumn(lbl, 0); grid.Children.Add(lbl);
+                Grid.SetRow(val, i); Grid.SetColumn(val, 1); grid.Children.Add(val);
+            }
+            return new Border
+            {
+                CornerRadius = new Avalonia.CornerRadius(6),
+                Padding = new Avalonia.Thickness(12, 8),
+                Child = new StackPanel
+                {
+                    Spacing = 4,
+                    Children =
+                    {
+                        new TextBlock { Text = title, FontWeight = Avalonia.Media.FontWeight.Bold, FontSize = 12, Margin = new Avalonia.Thickness(0,0,0,2) },
+                        grid
+                    }
+                }
+            };
         }
 
         public void Refresh()
@@ -63,6 +158,8 @@ namespace FfmpegGui
             if (_item == null) return;
             if (StatusLabel != null)
                 StatusLabel.Text = _item.Status;
+            if (StatusBadge != null)
+                StatusBadge.Text = _item.Status;
 
             if (CommandLabel != null && !string.IsNullOrEmpty(_item.Command))
                 CommandLabel.Text = _item.Command;
