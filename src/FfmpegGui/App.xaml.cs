@@ -31,6 +31,13 @@ namespace FfmpegGui
             return Current?.ActualThemeVariant == ThemeVariant.Dark;
         }
 
+        // ═══════════════════════════════════════════════
+        // GPU 加速状态（由 Program.cs 在启动时设置）
+        // ═══════════════════════════════════════════════
+
+        /// <summary>当前会话 GPU 加速是否已启用</summary>
+        public static bool IsGpuEnabled => Program.IsGpuAccelerated;
+
         public override void OnFrameworkInitializationCompleted()
         {
             // 启动时应用已保存的主题（默认深色）
