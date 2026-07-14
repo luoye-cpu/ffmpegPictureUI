@@ -9,6 +9,17 @@ namespace FfmpegGui.Models
         StripAll      // 删除所有元数据
     }
 
+    /// <summary>
+    /// ICC 色彩处理模式
+    /// </summary>
+    public enum IccMode
+    {
+        None = 0,        // 不处理
+        Embed = 1,       // 仅嵌入 ICC 元数据（像素不变）
+        Bake = 2,        // 仅烘焙（像素转换到目标色彩空间，不嵌入 ICC）
+        BakeAndEmbed = 3 // 烘焙 + 嵌入 ICC（双保险：转换像素并附加 ICC 标签）
+    }
+
     public class FfmpegOptions
     {
         public string Format { get; set; } = "jpg";
@@ -108,6 +119,16 @@ namespace FfmpegGui.Models
         public bool StripExifAll { get; set; } = false;
         /// <summary>删除 XMP 元数据</summary>
         public bool StripXmp { get; set; } = false;
+
+        // ── ICC 色彩管理选项 ──
+        /// <summary>ICC 处理模式</summary>
+        public IccMode IccMode { get; set; } = IccMode.None;
+        /// <summary>用户选择的 ICC 文件绝对路径（.icc / .icm）</summary>
+        public string? IccFilePath { get; set; }
+        /// <summary>源色彩空间（烘焙模式用），null=自动从 ICC 文件检测</summary>
+        public string? IccSourceColorSpace { get; set; }
+        /// <summary>目标色彩空间（烘焙模式用），默认 sRGB</summary>
+        public string IccTargetColorSpace { get; set; } = "sRGB";
 
         // ── 动图参数 ──
         /// <summary>帧率 (FPS)，null=不指定</summary>

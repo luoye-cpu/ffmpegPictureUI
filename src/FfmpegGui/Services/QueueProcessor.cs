@@ -359,6 +359,48 @@ namespace FfmpegGui.Services
                                     _onItemUpdated?.Invoke(captured);
                                 }
                             }
+                            // ── ICC 嵌入后处理（用户手动指定的 ICC 文件）──
+                            if (captured.ExitCode == 0
+                                && (captured.Options.IccMode == Models.IccMode.Embed
+                                    || captured.Options.IccMode == Models.IccMode.BakeAndEmbed)
+                                && !string.IsNullOrWhiteSpace(captured.Options.IccFilePath)
+                                && IccProfileService.IsValidIccProfile(captured.Options.IccFilePath))
+                            {
+                                var fmt = captured.Options.Format.ToLower();
+                                // 这些格式支持 exiftool ICC 写入
+                                bool exiftoolCompatible = fmt is "jpg" or "jpeg" or "png" or "tiff" or "webp";
+                                if (exiftoolCompatible && ExifToolService.IsAvailable)
+                                {
+                                    try
+                                    {
+                                        captured.Log += $"[exiftool] 开始嵌入 ICC Profile...\n";
+                                        _onItemUpdated?.Invoke(captured);
+                                        var iccExit = await ExifToolService.EmbedIccProfileFromFileAsync(
+                                            captured.Options.IccFilePath, finalOutputPath,
+                                            s =>
+                                            {
+                                                captured.Log += s;
+                                                _onItemUpdated?.Invoke(captured);
+                                            });
+                                        if (iccExit == 0)
+                                            captured.Log += "[exiftool] ICC Profile 嵌入完成\n";
+                                        else
+                                            captured.Log += $"[exiftool] ⚠️ ICC Profile 嵌入失败（退出码 {iccExit}）\n";
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        captured.Log += $"[exiftool] ICC 嵌入错误: {ex.Message}\n";
+                                    }
+                                }
+                                else if (!exiftoolCompatible)
+                                {
+                                    captured.Log += $"[ICC] {fmt.ToUpper()} 格式的 ICC 嵌入通过 iccgen 滤镜（内置于 FFmpeg 命令行）\n";
+                                }
+                                else
+                                {
+                                    captured.Log += "[exiftool] 未检测到 exiftool，无法嵌入 ICC Profile。请安装 exiftool 并在设置中配置路径。\n";
+                                }
+                            }
                             captured.CompletedAt = DateTimeOffset.UtcNow;
                         }
                         catch (OperationCanceledException)
@@ -2491,11 +2533,18 @@ namespace FfmpegGui.Services
             };
         }
 
-        /// <summary>判断 avifenc.exe 是否可用（手动路径 > ffmpeg 同目录）</summary>
+        /// <summary>判断 avifenc.exe 是否可用（手动路径 > artifacts目录 > PLAN文件夹 > ffmpeg同目录）</summary>
         private static bool HasAvifencAvailable()
         {
             var manualPath = AppSettingsService.Current.AvifencPath;
             if (!string.IsNullOrWhiteSpace(manualPath) && File.Exists(manualPath))
+                return true;
+            // artifacts 目录
+            var artifactsDir = AppSettingsService.Current.WindowsArtifactsDir;
+            if (!string.IsNullOrWhiteSpace(artifactsDir) && File.Exists(Path.Combine(artifactsDir, PlatformServices.Avifenc)))
+                return true;
+            // PLAN 便携文件夹
+            if (PlatformServices.TryFindInPlanFolder(PlatformServices.Avifenc) != null)
                 return true;
             return File.Exists(Path.Combine(AppSettingsService.Current.FfmpegDir ?? "", PlatformServices.Avifenc));
         }

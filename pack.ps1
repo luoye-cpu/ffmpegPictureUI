@@ -58,7 +58,7 @@ if ($Aot) {
         -c Release -r $Rid `
         --self-contained false `
         -p:PublishSingleFile=true `
-        -p:PublishTrimmed=true `
+        -p:PublishTrimmed=false `
         -p:Version=$Version `
         -o $OutputDir
 }
@@ -71,7 +71,15 @@ if ($Variant -eq "full") {
     Write-Host "`n[2/4] 复制 PLAN 组件包..." -ForegroundColor Yellow
     $PlanDest = "$OutputDir\PLAN"
     if (Test-Path $PlanSource) {
-        Copy-Item -Path "$PlanSource\*" -Destination $PlanDest -Recurse -Force
+        # 先删除目标 PLAN 目录及其内容（避免旧文件残留导致冲突）
+        if (Test-Path $PlanDest) {
+            Remove-Item -Recurse -Force $PlanDest -ErrorAction SilentlyContinue
+            # 等待文件系统释放锁
+            Start-Sleep -Milliseconds 500
+        }
+        # 使用 robocopy 避免 PowerShell Copy-Item 的容器/叶节点冲突
+        robocopy $PlanSource $PlanDest /E /NFL /NDL /NJH /NJS /NC /NS
+        if ($LASTEXITCODE -ge 8) { throw "复制 PLAN 失败 (robocopy exit code: $LASTEXITCODE)" }
         Write-Host "   ✅ PLAN 组件已复制" -ForegroundColor Green
     } else {
         Write-Host "   ⚠️ PLAN 源目录不存在: $PlanSource" -ForegroundColor Yellow

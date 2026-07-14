@@ -31,7 +31,39 @@ namespace FfmpegGui.Models
         public string? JpegDct { get; set; }
         public int JpegProgressiveId { get; set; }
         public bool JxlPreserveUltrahdr { get; set; } = true;
+        /// <summary>JPEG→JXL 无损重封装（不解码，直接复制 DCT 系数）</summary>
+        public bool JxlLosslessJpeg { get; set; }
         public string? TiffCompressionAlgo { get; set; }
+        // ── Gain Map (Ultra HDR) JPEG ──
+        /// <summary>是否启用 Gain Map（需 ultrahdr_app 编码器）</summary>
+        public bool JpegGainMap { get; set; }
+        /// <summary>Gain Map 压缩质量 (0-100)，-1=跟随主图</summary>
+        public int JpegGainMapQuality { get; set; } = -1;
+        /// <summary>目标显示器亮度 (nit)</summary>
+        public int JpegGainMapTargetNits { get; set; } = 1000;
+        // ── 编码器后端选择 ──
+        /// <summary>编码器后端名称: Ffmpeg/Cjpegli/Cjxl/Ultrahdr/Jxr</summary>
+        public string? EncoderBackend { get; set; }
+        /// <summary>WebP 无损压缩级别 (0-6)</summary>
+        public int? WebpCompressionLevel { get; set; }
+        // ── AVIF 扩展选项 ──
+        /// <summary>SVT-AV1 preset 值 (0-13)</summary>
+        public int? AvifSvtPreset { get; set; }
+        /// <summary>SVT-AV1 tune 类型</summary>
+        public string? AvifSvtTune { get; set; }
+        /// <summary>硬件编码器预设: 快速/平衡/高质量</summary>
+        public string? AvifHwPreset { get; set; }
+        /// <summary>AVIF 行级多线程</summary>
+        public bool? AvifRowMt { get; set; }
+        // ── cjpegli 扩展选项 ──
+        /// <summary>cjpegli 色度子采样: 444/422/420/440</summary>
+        public string? CjpegliChromaSubsampling { get; set; }
+        /// <summary>cjpegli 渐进模式: -1=自动, 0=基线, 2=渐进</summary>
+        public int CjpegliProgressiveId { get; set; } = -1;
+        /// <summary>cjpegli 优化 Huffman</summary>
+        public bool? CjpegliOptimize { get; set; }
+        /// <summary>cjpegli 自适应量化</summary>
+        public bool? CjpegliAdaptiveQuant { get; set; }
         // ExifTool 选择性剥离选项
         public bool StripExifGps { get; set; } = true;
         public bool StripExifTime { get; set; }
@@ -47,6 +79,11 @@ namespace FfmpegGui.Models
         public bool GifDither { get; set; } = true;
         public int AnimationScaleW { get; set; }
         public double AnimationDuration { get; set; }
+        // ── ICC 色彩管理 ──
+        public string? IccMode { get; set; }
+        public string? IccFilePath { get; set; }
+        public string? IccSourceColorSpace { get; set; }
+        public string? IccTargetColorSpace { get; set; }
 
         public string ToJson() => JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true });
 

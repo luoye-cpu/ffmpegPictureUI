@@ -385,6 +385,30 @@ namespace FfmpegGui.Services
             return await RunRawAsync(args, logCallback);
         }
 
+        /// <summary>将外部 ICC 文件嵌入到输出图片中（用户指定的 ICC 配置文件）</summary>
+        /// <param name="iccFilePath">ICC 配置文件路径 (.icc / .icm)</param>
+        /// <param name="targetPath">要嵌入 ICC 的目标图片路径</param>
+        /// <param name="logCallback">日志回调</param>
+        /// <returns>exiftool 退出码，0=成功</returns>
+        public static async Task<int> EmbedIccProfileFromFileAsync(
+            string iccFilePath, string targetPath,
+            Action<string>? logCallback = null)
+        {
+            if (_detectedPath == null)
+            {
+                Detect();
+                if (_detectedPath == null) return -1;
+            }
+
+            // exiftool 从文件读取 ICC 二进制并写入目标: -icc_profile<=file.icc
+            var args = $"-overwrite_original -m " +
+                       $"-icc_profile<=\"{iccFilePath}\" " +
+                       $"\"{targetPath}\"";
+            logCallback?.Invoke($"[exiftool] 嵌入 ICC Profile: {Path.GetFileName(iccFilePath)} → {Path.GetFileName(targetPath)}\n");
+
+            return await RunRawAsync(args, logCallback);
+        }
+
         /// <summary>为 JPEG 添加 JFIF 头（提高手机兼容性）</summary>
         public static async Task EnsureJfifHeaderAsync(string targetPath)
         {

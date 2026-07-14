@@ -7,9 +7,10 @@ using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.IO;
+using System.Linq;
+using System.Threading.Tasks;
 using FfmpegGui.Models;
 using FfmpegGui.Services;
-using System.Threading.Tasks;
 
 namespace FfmpegGui
 {
@@ -56,8 +57,12 @@ namespace FfmpegGui
         private TextBox? JxlLibDirBox;
         private TextBox? ExifToolPathBox;
         private TextBox? ArtifactsDirBox;
-        private TextBlock? JxlLibStatus;
-        private TextBlock? ArtifactsStatus;
+        private TextBlock? JxlLibStatus;      // (保留兼容，已改用 StackPanel)
+        private TextBlock? ArtifactsStatus;    // (保留兼容，已改用 StackPanel)
+        // ── 外部工具详细状态面板（3 列水平布局）──
+        private StackPanel? JxlToolsStatus;
+        private StackPanel? ExifToolToolsStatus;
+        private StackPanel? ArtifactsToolsStatus;
         private CheckBox? PreserveInputStructure;
         private CheckBox? StopAfterCurrentCheck;
         private CheckBox? ShowErrorsOnlyCheck;
@@ -154,6 +159,14 @@ namespace FfmpegGui
         private ComboBox? JpegliEncoderBackendCombo;
         private Border? JpegliPsnrPanel;
         private NumericUpDown? JpegliPsnrBox;
+        // ── ICC 色彩管理控件 ──
+        private RadioButton? IccModeNone, IccModeEmbed, IccModeBake, IccModeBakeEmbed;
+        private StackPanel? IccFilePanel, IccBakePanel;
+        private TextBox? IccPathBox;
+        private TextBlock? IccInfoLabel, IccCompatText, IccPreviewText;
+        private ComboBox? IccSourceSpaceCombo, IccTargetSpaceCombo;
+        private Border? IccCompatPanel, IccPreviewPanel;
+        private string? _iccFilePath;
         // ── 拖放区域 ──
         private Border? DropZone;
         private TextBlock? DropHint;
@@ -162,6 +175,7 @@ namespace FfmpegGui
         private ListBox? MediaFileList;
         private TextBlock? MediaFileCount;
         private Button? FormatFilterBtn;
+        private Button? PresetManagerBtn;
         private readonly List<string> _selectedFiles = new();
         // 当批量拖拽多个文件夹时，记录每个已选文件对应的输入根目录，
         // 以便在保留输入目录结构时按各自根目录计算相对路径。
@@ -220,6 +234,10 @@ namespace FfmpegGui
             ArtifactsDirBox = this.FindControl<TextBox>("ArtifactsDirBox");
             JxlLibStatus = this.FindControl<TextBlock>("JxlLibStatus");
             ArtifactsStatus = this.FindControl<TextBlock>("ArtifactsStatus");
+            // ── 外部工具详细状态面板 ──
+            JxlToolsStatus = this.FindControl<StackPanel>("JxlToolsStatus");
+            ExifToolToolsStatus = this.FindControl<StackPanel>("ExifToolToolsStatus");
+            ArtifactsToolsStatus = this.FindControl<StackPanel>("ArtifactsToolsStatus");
             ToggleToolsBtn = this.FindControl<Button>("ToggleToolsBtn");
             ToolsDetailPanel = this.FindControl<StackPanel>("ToolsDetailPanel");
             ToolsCompactPanel = this.FindControl<Border>("ToolsCompactPanel");
@@ -316,6 +334,22 @@ namespace FfmpegGui
             MediaFileCount = this.FindControl<TextBlock>("MediaFileCount");
             QueueCountLabel = this.FindControl<TextBlock>("QueueCountLabel");
             FormatFilterBtn = this.FindControl<Button>("FormatFilterBtn");
+            PresetManagerBtn = this.FindControl<Button>("PresetManagerBtn");
+            // ── ICC 色彩管理控件 ──
+            IccModeNone = this.FindControl<RadioButton>("IccModeNone");
+            IccModeEmbed = this.FindControl<RadioButton>("IccModeEmbed");
+            IccModeBake = this.FindControl<RadioButton>("IccModeBake");
+            IccModeBakeEmbed = this.FindControl<RadioButton>("IccModeBakeEmbed");
+            IccFilePanel = this.FindControl<StackPanel>("IccFilePanel");
+            IccBakePanel = this.FindControl<StackPanel>("IccBakePanel");
+            IccPathBox = this.FindControl<TextBox>("IccPathBox");
+            IccInfoLabel = this.FindControl<TextBlock>("IccInfoLabel");
+            IccCompatText = this.FindControl<TextBlock>("IccCompatText");
+            IccPreviewText = this.FindControl<TextBlock>("IccPreviewText");
+            IccSourceSpaceCombo = this.FindControl<ComboBox>("IccSourceSpaceCombo");
+            IccTargetSpaceCombo = this.FindControl<ComboBox>("IccTargetSpaceCombo");
+            IccCompatPanel = this.FindControl<Border>("IccCompatPanel");
+            IccPreviewPanel = this.FindControl<Border>("IccPreviewPanel");
 
             // 设置绑定和初始值
             if (FormatCombo != null) FormatCombo.SelectedIndex = 0;
@@ -442,6 +476,15 @@ namespace FfmpegGui
             if (JpegliAdaptiveQuantCheck != null) JpegliAdaptiveQuantCheck.IsCheckedChanged += (_, _) => RegenerateCommand();
             if (JpegliEncoderBackendCombo != null) { JpegliEncoderBackendCombo.SelectionChanged += (_, _) => { UpdateJpegliPsnrVisibility(); RegenerateCommand(); }; }
             if (JpegliPsnrBox != null) JpegliPsnrBox.ValueChanged += (_, _) => RegenerateCommand();
+            // ── ICC 色彩管理事件 ──
+            if (IccModeNone != null) IccModeNone.IsCheckedChanged += (_, _) => { UpdateIccPanelVisibility(); RegenerateCommand(); };
+            if (IccModeEmbed != null) IccModeEmbed.IsCheckedChanged += (_, _) => { UpdateIccPanelVisibility(); RegenerateCommand(); };
+            if (IccModeBake != null) IccModeBake.IsCheckedChanged += (_, _) => { UpdateIccPanelVisibility(); RegenerateCommand(); };
+            if (IccModeBakeEmbed != null) IccModeBakeEmbed.IsCheckedChanged += (_, _) => { UpdateIccPanelVisibility(); RegenerateCommand(); };
+            if (IccSourceSpaceCombo != null) IccSourceSpaceCombo.SelectionChanged += (_, _) => { UpdateIccPreview(); RegenerateCommand(); };
+            if (IccTargetSpaceCombo != null) IccTargetSpaceCombo.SelectionChanged += (_, _) => { UpdateIccPreview(); RegenerateCommand(); };
+            // 初始化 ICC 面板状态
+            UpdateIccPanelVisibility();
             
             // 线程复选框互斥逻辑
             if (AutoThreadsCheck != null)
@@ -672,92 +715,95 @@ namespace FfmpegGui
             }
             catch { }
 
-            // 启动时自动检测能力（即使没有 ffmpeg 路径也尝试 PATH 检测）
+            // 启动时自动检测能力（异步，不阻塞 UI）
             _ = FullDetectionAsync();
         }
 
+        /// <summary>
+        /// 后台全量检测（完全异步，绝不阻塞 UI，每一步有独立超时保护）。
+        /// 每步完成后通过 Dispatcher 增量更新 UI。
+        /// </summary>
         private async Task FullDetectionAsync()
         {
-            if (LogText != null) LogText.Text += "正在检测 ffmpeg 能力与可用编码器...\n";
-            CjxlService.ClearCache();
-            CjpegliService.ClearCache();
-
-            // ── 并行启动关键检测（减少启动等待时间）──
-            var detectCjxl   = Task.Run(() => CjxlService.Detect());
-            var detectCjpegli = Task.Run(() => CjpegliService.Detect());
-            var initCaps     = FormatCapabilitiesService.InitializeAsync(AppSettingsService.Current.FfmpegPath);
-            var loadEncoders = EncoderDetectionService.GetAllEncodersAsync(AppSettingsService.Current.FfmpegPath);
-
-            await Task.WhenAll(detectCjxl, detectCjpegli, initCaps, loadEncoders);
-            
-            await RefreshEncoderListAsync();
-
-            // CPU 指令集检测
-            try
+            // 所有工作放到后台线程，主方法立即返回
+            await Task.Run(async () =>
             {
-                CpuFeatureService.Detect();
-                if (LogText != null)
+                void Log(string msg) => Dispatcher.UIThread.Post(() =>
                 {
-                    LogText.Text += CpuFeatureService.FullReport() + "\n";
-                    if (CpuFeatureService.HasAnySimd)
+                    if (LogText != null) LogText.Text += msg + "\n";
+                });
+
+                Log("正在检测 ffmpeg 能力与可用编码器...");
+
+                // ── Step 1: 文件系统检测（最快，1-2 秒）──
+                try { CjxlService.ClearCache(); CjxlService.Detect(); Log("[detect] cjxl: " + (CjxlService.IsAvailable ? "OK" : "未找到")); } catch { }
+                try { CjpegliService.ClearCache(); CjpegliService.Detect(); Log("[detect] cjpegli: " + (CjpegliService.IsAvailable ? "OK" : "未找到")); } catch { }
+                try { DjxlService.ClearCache(); DjxlService.Detect(); } catch { }
+                try { ExifToolService.Detect(); Log("[detect] exiftool: " + (ExifToolService.IsAvailable ? "OK" : "未找到")); } catch { }
+                try { UltrahdrService.ClearCache(); UltrahdrService.Detect(); } catch { }
+                try { JxrService.ClearCache(); JxrService.Detect(); } catch { }
+                try { RawService.ClearCache(); RawService.Detect(); Log("[detect] dcraw: " + (RawService.IsAvailable ? "OK" : "未找到")); } catch { }
+
+                // ── Step 2: ffmpeg 进程检测（串行，每项最多 8 秒）──
+                var ffmpegPath = AppSettingsService.Current.FfmpegPath;
+                if (!string.IsNullOrWhiteSpace(ffmpegPath) && File.Exists(ffmpegPath))
+                {
+                    Log("[detect] ffmpeg 已定位: " + ffmpegPath);
+                    try
                     {
-                        var tag = CpuFeatureService.BestSimdTag;
-                        LogText.Text += $"[cpu] 建议：优先使用带 {tag} 优化的二进制以获得最佳性能。\n";
+                        var t = Task.Run(() => FormatCapabilitiesService.InitializeAsync(ffmpegPath));
+                        if (await Task.WhenAny(t, Task.Delay(8000)) == t) Log("[detect] ffmpeg 像素格式检测完成");
+                        else Log("[detect] ⚠️ ffmpeg 像素格式检测超时（跳过）");
                     }
+                    catch (Exception ex) { Log("[detect] ⚠️ ffmpeg 像素格式检测失败: " + ex.Message); }
+                    try
+                    {
+                        var t = Task.Run(() => EncoderDetectionService.GetAllEncodersAsync(ffmpegPath));
+                        if (await Task.WhenAny(t, Task.Delay(8000)) == t) Log("[detect] ffmpeg 编码器列表加载完成");
+                        else Log("[detect] ⚠️ ffmpeg 编码器列表超时（跳过）");
+                    }
+                    catch (Exception ex) { Log("[detect] ⚠️ ffmpeg 编码器列表失败: " + ex.Message); }
                 }
-            }
-            catch { }
-
-            // ffmpeg SIMD 编译能力探测
-            try
-            {
-                var ffmpegProbe = ExternalToolsDetector.ProbeFfmpeg();
-                if (LogText != null && ffmpegProbe != null && ffmpegProbe.IsRunnable)
+                else
                 {
-                    if (ffmpegProbe.SimdFeatures.Count > 0)
-                        LogText.Text += $"[ffmpeg] SIMD 编译选项: {string.Join(", ", ffmpegProbe.SimdFeatures)}\n";
-                    if (!string.IsNullOrWhiteSpace(ffmpegProbe.Version))
-                        LogText.Text += $"[ffmpeg] 版本: {ffmpegProbe.Version}\n";
-                    // 检测 ffmpeg 内置编码器能力
-                    if (ffmpegProbe.StdOut.Contains("libsvtav1", StringComparison.OrdinalIgnoreCase))
-                        LogText.Text += "[ffmpeg] 内置 SVT-AV1 编码器可用（推荐用于 AVIF）\n";
-                    if (ffmpegProbe.StdOut.Contains("libjxl", StringComparison.OrdinalIgnoreCase))
-                        LogText.Text += "[ffmpeg] 内置 libjxl 编码器可用\n";
+                    Log("[detect] ffmpeg 未找到（PATH 或 PLAN 均未检测到），跳过进程探测");
                 }
-            }
-            catch { }
 
-            // ── 统一外部工具版本探测（替代旧的逐个工具日志）──
-            try
-            {
-                var tools = ExternalToolsDetector.ProbeAllTools();
-                if (LogText != null)
+                // ── Step 3: CPU / 外部工具版本 ──
+                try { CpuFeatureService.Detect(); Log(CpuFeatureService.FullReport()); } catch { }
+                try
                 {
-                    LogText.Text += "\n── 外部工具检测 ──\n";
+                    var fp = ExternalToolsDetector.ProbeFfmpeg();
+                    if (fp?.IsRunnable == true)
+                        Log($"[ffmpeg] v{fp.Version} | SIMD: {string.Join(", ", fp.SimdFeatures)}");
+                }
+                catch { }
+                try
+                {
+                    var tools = ExternalToolsDetector.ProbeAllTools();
+                    Log("── 外部工具检测 ──");
                     foreach (var t in tools)
-                    {
-                        if (t.IsAvailable)
-                        {
-                            var extra = t.SimdFeatures != null ? $" [{t.SimdFeatures}]" : "";
-                            LogText.Text += $"  {t.StatusIcon} {t.Name}: v{t.Version}{extra}\n";
-                        }
-                        else
-                        {
-                            LogText.Text += $"  {t.StatusIcon} {t.Name}: 未检测到\n";
-                        }
-                    }
+                        Log($"  {t.StatusIcon} {t.Name}: {(t.IsAvailable ? "v" + t.Version : "未检测到")}");
                 }
-            }
-            catch { }
+                catch (Exception ex) { Log("[tools] 探测失败: " + ex.Message); }
 
-            // ExifTool 检测与 UI 更新
-            ExifToolService.Detect();
-            UpdateExifToolPanelState();
-            UpdateOptionAvailability();
-            RefreshToolsStatusBar();
+                Log("[detect] 全部检测完成");
 
-            // ── 格式能力状态报告（异步，不阻塞 UI）──
-            _ = ReportFormatCapabilityStatusAsync();
+                // ── UI 刷新 ──
+                Dispatcher.UIThread.Post(() =>
+                {
+                    try { _ = RefreshEncoderListAsync(); } catch { }
+                    UpdateExifToolPanelState();
+                    UpdateOptionAvailability();
+                    RefreshToolsStatusBar();
+                });
+            });
+
+            // 格式报告独立异步，不影响主检测
+            _ = Task.Run(async () =>
+            {
+                try { await Task.Delay(2000); await ReportFormatCapabilityStatusAsync(); } catch { }
+            });
         }
 
         /// <summary>异步报告各格式的编码/封装/解码能力状态</summary>
@@ -1044,7 +1090,11 @@ namespace FfmpegGui
                 StripExifTime = StripExifTimeCheck?.IsChecked ?? false,
                 StripExifCamera = StripExifCameraCheck?.IsChecked ?? false,
                 StripExifAll = StripExifAllCheck?.IsChecked ?? false,
-                StripXmp = StripXmpCheck?.IsChecked ?? false
+                StripXmp = StripXmpCheck?.IsChecked ?? false,
+                IccMode = GetIccMode(),
+                IccFilePath = _iccFilePath,
+                IccSourceColorSpace = GetIccSourceSpace(),
+                IccTargetColorSpace = GetIccTargetSpace()
             };
             if (CommandText != null)
             {
@@ -1708,6 +1758,28 @@ namespace FfmpegGui
             return Models.MetadataMode.PreserveAll;
         }
 
+        // ── ICC 色彩管理 — 从 UI 读取选项 ──
+
+        private Models.IccMode GetIccMode()
+        {
+            if (IccModeEmbed?.IsChecked == true) return Models.IccMode.Embed;
+            if (IccModeBake?.IsChecked == true) return Models.IccMode.Bake;
+            if (IccModeBakeEmbed?.IsChecked == true) return Models.IccMode.BakeAndEmbed;
+            return Models.IccMode.None;
+        }
+
+        private string? GetIccSourceSpace()
+        {
+            if (IccSourceSpaceCombo?.SelectedIndex > 0)
+                return IccSourceSpaceCombo?.SelectedItem as string;
+            return null; // auto
+        }
+
+        private string GetIccTargetSpace()
+        {
+            return IccTargetSpaceCombo?.SelectedItem as string ?? "sRGB / BT.709（最大兼容，推荐）";
+        }
+
         /// <summary>
         /// 根据 exiftool 是否可用，显示/隐藏 ExifTool 面板，
         /// 并根据当前元数据模式（保留/删除全部）启用/禁用其选项
@@ -1886,6 +1958,10 @@ namespace FfmpegGui
                 StripExifCamera = StripExifCameraCheck?.IsChecked ?? false,
                 StripExifAll = StripExifAllCheck?.IsChecked ?? false,
                 StripXmp = StripXmpCheck?.IsChecked ?? false,
+                IccMode = GetIccMode(),
+                IccFilePath = _iccFilePath,
+                IccSourceColorSpace = GetIccSourceSpace(),
+                IccTargetColorSpace = GetIccTargetSpace(),
                 // 动图参数
                 AnimationFps = ParseOptionalInt(AnimationFpsBox?.Text, 1, 60),
                 AnimationLoop = ParseInt(AnimationLoopBox?.Text, 0, -1, 999),
@@ -2389,6 +2465,165 @@ namespace FfmpegGui
             if (AdvancedCodecPanel != null) AdvancedCodecPanel.IsVisible = UseAdvancedCodec?.IsChecked == true;
         }
 
+        // ═══════════════════════════════════════════════
+        //  ICC 色彩管理 — 事件处理
+        // ═══════════════════════════════════════════════
+
+        private void IccMode_Changed(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        {
+            // 已通过 InitControls 中的事件 lambda 绑定处理
+        }
+
+        private void UpdateIccPanelVisibility()
+        {
+            var isEmbed = IccModeEmbed?.IsChecked == true;
+            var isBake = IccModeBake?.IsChecked == true;
+            var isBakeEmbed = IccModeBakeEmbed?.IsChecked == true;
+            var isAnyActive = isEmbed || isBake || isBakeEmbed;
+
+            // ICC 文件选择面板：任一活动模式都显示
+            if (IccFilePanel != null)
+                IccFilePanel.IsVisible = isAnyActive;
+
+            // 烘焙面板：仅烘焙/烘焙+嵌入显示
+            if (IccBakePanel != null)
+                IccBakePanel.IsVisible = isBake || isBakeEmbed;
+
+            UpdateIccPreview();
+            UpdateIccCompatibility();
+        }
+
+        private async void BrowseIcc_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        {
+            var topLevel = TopLevel.GetTopLevel(this);
+            if (topLevel?.StorageProvider == null) return;
+
+            var files = await topLevel.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+            {
+                Title = "选择 ICC 配置文件",
+                AllowMultiple = false,
+                FileTypeFilter = new[]
+                {
+                    new FilePickerFileType("ICC 配置文件") { Patterns = new[] { "*.icc", "*.icm" } },
+                    new FilePickerFileType("所有文件") { Patterns = new[] { "*" } }
+                }
+            });
+
+            if (files != null && files.Count > 0)
+            {
+                _iccFilePath = files[0].Path.LocalPath;
+                if (IccPathBox != null) IccPathBox.Text = _iccFilePath;
+
+                // 解析 ICC 文件信息
+                if (IccProfileService.IsValidIccProfile(_iccFilePath))
+                {
+                    var info = IccProfileService.ParseInfo(_iccFilePath);
+                    if (IccInfoLabel != null)
+                        IccInfoLabel.Text = info?.ToString() ?? "有效的 ICC 配置文件";
+                }
+                else
+                {
+                    if (IccInfoLabel != null)
+                        IccInfoLabel.Text = "⚠️ 可能不是有效的 ICC 文件";
+                }
+
+                UpdateIccPreview();
+                RegenerateCommand();
+            }
+        }
+
+        private void ClearIcc_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        {
+            _iccFilePath = null;
+            if (IccPathBox != null) IccPathBox.Text = "";
+            if (IccInfoLabel != null) IccInfoLabel.Text = "";
+            UpdateIccPreview();
+            RegenerateCommand();
+        }
+
+        private void IccHelp_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        {
+            var msg = "🎨 ICC 色彩管理帮助\n\n" +
+                "📎 嵌入 ICC：将 ICC 配置文件作为元数据写入输出文件，像素数据不变。\n" +
+                "   需要查看设备支持 ICC 才能正确显示。\n\n" +
+                "🔥 烘焙 ICC：将像素从源色彩空间转换到目标色彩空间（如 sRGB），\n" +
+                "   所有设备均可正确显示，无需 ICC 支持。\n\n" +
+                "🔥📎 烘焙+嵌入：转换像素并同时嵌入 ICC，双保险。\n\n" +
+                "⚠️ 注意：\n" +
+                "  - 显示器 ICC (mntr) 适合软校样，烘焙建议使用标准色彩空间 ICC\n" +
+                "  - 烘焙会永久改变像素值，不可逆\n" +
+                "  - AVIF/JXL 的 ICC 嵌入需要 FFmpeg ≥ 7.0 + lcms2";
+            if (LogText != null) LogText.Text += msg + "\n";
+        }
+
+        private void IccSourceSpace_Changed(object? sender, SelectionChangedEventArgs e)
+        {
+            UpdateIccPreview();
+            RegenerateCommand();
+        }
+
+        private void IccTargetSpace_Changed(object? sender, SelectionChangedEventArgs e)
+        {
+            UpdateIccPreview();
+            RegenerateCommand();
+        }
+
+        private void UpdateIccPreview()
+        {
+            if (IccPreviewText == null) return;
+
+            var isBake = IccModeBake?.IsChecked == true || IccModeBakeEmbed?.IsChecked == true;
+            if (!isBake || string.IsNullOrWhiteSpace(_iccFilePath))
+            {
+                IccPreviewText.Text = "";
+                return;
+            }
+
+            var srcName = IccSourceSpaceCombo?.SelectedIndex > 0
+                ? IccSourceSpaceCombo?.SelectedItem as string ?? "auto"
+                : "auto（从 ICC 检测）";
+            var dstName = IccTargetSpaceCombo?.SelectedItem as string ?? "sRGB";
+
+            IccPreviewText.Text = $"转换预览:\n  {srcName}  ──zscale──▶  {dstName}";
+        }
+
+        private void UpdateIccCompatibility()
+        {
+            if (IccCompatPanel == null || IccCompatText == null) return;
+
+            var isAnyActive = IccModeEmbed?.IsChecked == true
+                || IccModeBake?.IsChecked == true
+                || IccModeBakeEmbed?.IsChecked == true;
+
+            if (!isAnyActive)
+            {
+                IccCompatPanel.IsVisible = false;
+                return;
+            }
+
+            var fmt = NormalizeFormat(FormatCombo?.SelectedItem as string);
+            var isEmbed = IccModeEmbed?.IsChecked == true || IccModeBakeEmbed?.IsChecked == true;
+
+            var nativeFormats = new[] { "jpg", "jpeg", "png", "tiff" };
+            var iccgenFormats = new[] { "avif", "jxl", "webp" };
+
+            if (isEmbed)
+            {
+                if (Array.Exists(nativeFormats, f => f == fmt))
+                    IccCompatText.Text = $"✅ {fmt.ToUpper()} — 原生支持 ICC 嵌入";
+                else if (Array.Exists(iccgenFormats, f => f == fmt))
+                    IccCompatText.Text = $"⚠️ {fmt.ToUpper()} — 通过 iccgen 滤镜嵌入（需 FFmpeg ≥ 7.0 + lcms2）";
+                else
+                    IccCompatText.Text = $"❌ {fmt.ToUpper()} — 不支持 ICC 嵌入";
+            }
+            else
+            {
+                IccCompatText.Text = $"🔥 烘焙模式 — 像素将被转换，无需 ICC 读取支持";
+            }
+
+            IccCompatPanel.IsVisible = true;
+        }
+
         private void UpdateAdvancedColorControls()
         {
             var sel = (ColorSpaceCombo?.SelectedItem as string ?? "BT.709").ToUpper();
@@ -2512,7 +2747,11 @@ namespace FfmpegGui
                 StripExifTime = StripExifTimeCheck?.IsChecked ?? false,
                 StripExifCamera = StripExifCameraCheck?.IsChecked ?? false,
                 StripExifAll = StripExifAllCheck?.IsChecked ?? false,
-                StripXmp = StripXmpCheck?.IsChecked ?? false
+                StripXmp = StripXmpCheck?.IsChecked ?? false,
+                IccMode = GetIccMode(),
+                IccFilePath = _iccFilePath,
+                IccSourceColorSpace = GetIccSourceSpace(),
+                IccTargetColorSpace = GetIccTargetSpace()
             };
 
             _outputPath = GetOutputPath(_inputPath, options.Format);
@@ -2683,8 +2922,8 @@ namespace FfmpegGui
             AppSettingsService.Current.JxlLibDir = null;
             AppSettingsService.Save();
             if (JxlLibDirBox != null) JxlLibDirBox.Text = "";
-            if (JxlLibStatus != null) JxlLibStatus.Text = "";
             RefreshJxlServices();
+            RefreshToolsStatusBar();
             RegenerateCommand();
         }
 
@@ -2693,8 +2932,8 @@ namespace FfmpegGui
             AppSettingsService.Current.WindowsArtifactsDir = null;
             AppSettingsService.Save();
             if (ArtifactsDirBox != null) ArtifactsDirBox.Text = "";
-            if (ArtifactsStatus != null) ArtifactsStatus.Text = "";
             RefreshArtifactsServices();
+            RefreshToolsStatusBar();
             RegenerateCommand();
         }
 
@@ -2764,28 +3003,29 @@ namespace FfmpegGui
         {
             UltrahdrService.ClearCache(); UltrahdrService.Detect();
             JxrService.ClearCache(); JxrService.Detect();
+            RawService.ClearCache(); RawService.Detect();
         }
 
         private void ValidateJxlLibDir(string dir)
         {
-            if (JxlLibStatus == null || LogText == null) return;
+            if (LogText == null) return;
             var found = new List<string>();
             if (File.Exists(Path.Combine(dir, PlatformServices.Cjxl))) found.Add("cjxl");
             if (File.Exists(Path.Combine(dir, PlatformServices.Djxl))) found.Add("djxl");
             if (File.Exists(Path.Combine(dir, PlatformServices.Cjpegli))) found.Add("cjpegli");
-            JxlLibStatus.Text = found.Count > 0 ? $"✅ {string.Join(", ", found)}" : "⚠️ 未找到工具";
             LogText.Text += $"[jxl] 目录扫描: {(found.Count > 0 ? string.Join(", ", found) : "未检测到 JXL 工具")}\n";
+            RefreshToolsStatusBar();
         }
 
         private void ValidateArtifactsDir(string dir)
         {
-            if (ArtifactsStatus == null || LogText == null) return;
+            if (LogText == null) return;
             var found = new List<string>();
             if (File.Exists(Path.Combine(dir, PlatformServices.Ultrahdr))) found.Add("ultrahdr");
             if (File.Exists(Path.Combine(dir, PlatformServices.JxrEnc))) found.Add("JxrEnc");
             if (File.Exists(Path.Combine(dir, PlatformServices.Avifenc))) found.Add("avifenc");
-            ArtifactsStatus.Text = found.Count > 0 ? $"✅ {string.Join(", ", found)}" : "⚠️ 未找到工具";
             LogText.Text += $"[artifacts] 目录扫描: {(found.Count > 0 ? string.Join(", ", found) : "未检测到")}\n";
+            RefreshToolsStatusBar();
         }
 
         private void ToggleToolsPanel_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
@@ -2793,19 +3033,6 @@ namespace FfmpegGui
             if (ToolsDetailPanel != null)
                 ToolsDetailPanel.IsVisible = !ToolsDetailPanel.IsVisible;
             RefreshToolsStatusBar();
-        }
-
-        private void AddToolStatus(bool available, string name)
-        {
-            if (ToolsStatusBar == null) return;
-            var tb = new TextBlock
-            {
-                Text = $"{(available ? "✅" : "❌")} {name}",
-                FontSize = 11,
-                VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center
-            };
-            ToolTip.SetTip(tb, available ? $"{name} 已检测到" : $"{name} 未检测到");
-            ToolsStatusBar.Children.Add(tb);
         }
 
         private void RedetectTools_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
@@ -2817,8 +3044,6 @@ namespace FfmpegGui
             if (JxlLibDirBox != null) JxlLibDirBox.Text = "";
             if (ArtifactsDirBox != null) ArtifactsDirBox.Text = "";
             if (ExifToolPathBox != null) ExifToolPathBox.Text = "";
-            if (JxlLibStatus != null) JxlLibStatus.Text = "";
-            if (ArtifactsStatus != null) ArtifactsStatus.Text = "";
 
             if (LogText != null) LogText.Text += "正在重新自动检测外部工具...\n";
             RefreshJxlServices();
@@ -2828,14 +3053,90 @@ namespace FfmpegGui
             RegenerateCommand();
         }
 
-        /// <summary>刷新顶部工具状态指示器（折叠态）</summary>
+        /// <summary>刷新顶部工具状态指示器（折叠态 + 展开态详情）</summary>
         private void RefreshToolsStatusBar()
         {
+            // ── 折叠态：一行显示所有工具状态 ──
+            if (ToolsStatusBar != null)
+            {
+                ToolsStatusBar.Children.Clear();
+                // JXL 类
+                AddToolStatus(CjxlService.IsAvailable, "cjxl");
+                AddToolStatus(DjxlService.IsAvailable, "djxl");
+                AddToolStatus(CjpegliService.IsAvailable, "cjpegli");
+                AddSeparator();
+                // exiftool
+                AddToolStatus(ExifToolService.IsAvailable, "exiftool");
+                AddSeparator();
+                // artifacts 类
+                AddToolStatus(UltrahdrService.IsAvailable, "ultrahdr");
+                AddToolStatus(JxrService.IsAvailable, "jxr");
+                AddToolStatus(HasAvifencAvailable(), "avifenc");
+            }
+
+            // ── 展开态：3 列详细状态 ──
+            PopulateCategoryTools(JxlToolsStatus, new[]
+            {
+                ("cjxl", CjxlService.IsAvailable),
+                ("djxl", DjxlService.IsAvailable),
+                ("cjpegli", CjpegliService.IsAvailable),
+            });
+            PopulateCategoryTools(ExifToolToolsStatus, new[]
+            {
+                ("exiftool", ExifToolService.IsAvailable),
+            });
+            PopulateCategoryTools(ArtifactsToolsStatus, new[]
+            {
+                ("ultrahdr", UltrahdrService.IsAvailable),
+                ("jxr", JxrService.IsAvailable),
+                ("avifenc", HasAvifencAvailable()),
+                ("dcraw", RawService.IsAvailable),
+            });
+
+            // 检测完成后显示紧凑状态栏
+            if (ToolsCompactPanel != null) ToolsCompactPanel.IsVisible = true;
+        }
+
+        private void PopulateCategoryTools(StackPanel? panel, (string name, bool available)[] tools)
+        {
+            if (panel == null) return;
+            panel.Children.Clear();
+            foreach (var (name, ok) in tools)
+            {
+                panel.Children.Add(new TextBlock
+                {
+                    Text = $"{(ok ? "✅" : "❌")} {name}",
+                    FontSize = 10,
+                    Foreground = Avalonia.Media.Brushes.Gray,
+                    Margin = new Avalonia.Thickness(0, 0, 2, 0)
+                });
+            }
+        }
+
+        private void AddToolStatus(bool available, string name)
+        {
             if (ToolsStatusBar == null) return;
-            ToolsStatusBar.Children.Clear();
-            AddToolStatus(CjxlService.IsAvailable, "cjxl");
-            AddToolStatus(ExifToolService.IsAvailable, "exiftool");
-            AddToolStatus(CjpegliService.IsAvailable, "cjpegli");
+            ToolsStatusBar.Children.Add(new TextBlock
+            {
+                Text = $"{(available ? "✅" : "❌")} {name}",
+                FontSize = 10,
+                Foreground = Avalonia.Media.Brushes.Gray,
+                Margin = new Avalonia.Thickness(0, 0, 4, 0),
+                VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center
+            });
+        }
+
+        private void AddSeparator()
+        {
+            if (ToolsStatusBar == null) return;
+            ToolsStatusBar.Children.Add(new TextBlock
+            {
+                Text = "│",
+                FontSize = 10,
+                Foreground = Avalonia.Media.Brushes.LightGray,
+                Margin = new Avalonia.Thickness(2, 0, 2, 0),
+                VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center
+            });
         }
 
         private static bool HasAvifencAvailable()
@@ -2846,6 +3147,9 @@ namespace FfmpegGui
                 var p = Path.Combine(artifactsDir, PlatformServices.Avifenc);
                 if (File.Exists(p)) return true;
             }
+            // PLAN 便携文件夹
+            var planFound = PlatformServices.TryFindInPlanFolder(PlatformServices.Avifenc);
+            if (planFound != null) return true;
             var dir = AppSettingsService.Current.FfmpegDir;
             return !string.IsNullOrEmpty(dir) && File.Exists(Path.Combine(dir, PlatformServices.Avifenc));
         }
@@ -3063,52 +3367,17 @@ namespace FfmpegGui
                 JpegGainMapNitsSlider.Value = Math.Clamp(n, 200, 10000);
         }
 
-        private async void ExportPreset_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        private async void OpenPresetManager_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
         {
-            var topLevel = TopLevel.GetTopLevel(this);
-            if (topLevel?.StorageProvider == null) return;
+            var win = new PresetManagerWindow();
+            win.CurrentSettings = BuildPresetData();
+            await win.ShowDialog(this);
 
-            var preset = BuildPresetData();
-            var json = preset.ToJson();
-
-            var file = await topLevel.StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
+            if (win.AppliedPreset != null)
             {
-                Title = "导出预设文件",
-                DefaultExtension = ".json",
-                FileTypeChoices = new[] { new FilePickerFileType("JSON 预设") { Patterns = new[] { "*.json" } } }
-            });
-
-            if (file != null)
-            {
-                await System.IO.File.WriteAllTextAsync(file.Path.LocalPath, json);
-                if (LogText != null) LogText.Text += $"预设已导出: {file.Path.LocalPath}\n";
-            }
-        }
-
-        private async void ImportPreset_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
-        {
-            var topLevel = TopLevel.GetTopLevel(this);
-            if (topLevel?.StorageProvider == null) return;
-
-            var files = await topLevel.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
-            {
-                Title = "导入预设文件",
-                AllowMultiple = false,
-                FileTypeFilter = new[] { new FilePickerFileType("JSON 预设") { Patterns = new[] { "*.json" } } }
-            });
-
-            if (files == null || files.Count == 0) return;
-
-            try
-            {
-                var json = await System.IO.File.ReadAllTextAsync(files[0].Path.LocalPath);
-                var preset = Models.PresetData.FromJson(json);
-                ApplyPresetData(preset);
-                if (LogText != null) LogText.Text += $"预设已导入: {files[0].Path.LocalPath}\n";
-            }
-            catch (Exception ex)
-            {
-                if (LogText != null) LogText.Text += $"导入失败: {ex.Message}\n";
+                ApplyPresetData(win.AppliedPreset);
+                RegenerateCommand();
+                if (LogText != null) LogText.Text += "[预设] 已应用预设配置\n";
             }
         }
 
@@ -3144,11 +3413,33 @@ namespace FfmpegGui
                 JpegProgressiveId = ParseJpegProgressiveId(),
                 JxlPreserveUltrahdr = JxlPreserveUltrahdrCheck?.IsChecked ?? true,
                 TiffCompressionAlgo = TiffCompressionCombo?.SelectedItem as string,
+                // ── 编码器后端 ──
+                EncoderBackend = GetCurrentEncoderBackend().ToString(),
+                // ── Gain Map ──
+                JpegGainMap = GetCurrentEncoderBackend() == Services.EncoderBackend.Ultrahdr,
+                JpegGainMapQuality = ParseGainMapQuality(),
+                JpegGainMapTargetNits = ParseGainMapNits(),
+                // ── WebP 无损压缩级别 ──
+                WebpCompressionLevel = (int?)WebpCompressionBox?.Value,
+                // ── AVIF 扩展 ──
+                AvifSvtPreset = (int?)SvtPresetBox?.Value,
+                AvifSvtTune = SvtTuneCombo?.SelectedItem as string,
+                AvifHwPreset = HwPresetCombo?.SelectedItem as string,
+                AvifRowMt = AvifRowMtCheck?.IsChecked,
+                // ── cjpegli 扩展 ──
+                CjpegliChromaSubsampling = JpegliChromaCombo?.SelectedItem as string,
+                CjpegliProgressiveId = JpegliProgressiveCombo?.SelectedIndex switch { 1 => 0, 2 => 2, _ => -1 },
+                CjpegliOptimize = JpegliOptimizeCheck?.IsChecked,
+                CjpegliAdaptiveQuant = JpegliAdaptiveQuantCheck?.IsChecked,
                 StripExifGps = StripExifGpsCheck?.IsChecked ?? true,
                 StripExifTime = StripExifTimeCheck?.IsChecked ?? false,
                 StripExifCamera = StripExifCameraCheck?.IsChecked ?? false,
                 StripExifAll = StripExifAllCheck?.IsChecked ?? false,
                 StripXmp = StripXmpCheck?.IsChecked ?? false,
+                IccMode = GetIccMode().ToString(),
+                IccFilePath = _iccFilePath,
+                IccSourceColorSpace = GetIccSourceSpace(),
+                IccTargetColorSpace = GetIccTargetSpace(),
                 Concurrency = GetConcurrencyValue(),
                 MaxQueueSize = GetConcurrencyValue()
             };
@@ -3197,6 +3488,46 @@ namespace FfmpegGui
                 JpegProgressiveCombo.SelectedIndex = p.JpegProgressiveId + 1;  // -1→0(自动), 0→1(基线), 1→2(渐进)
             if (JxlPreserveUltrahdrCheck != null) JxlPreserveUltrahdrCheck.IsChecked = p.JxlPreserveUltrahdr;
             SetComboByValue(TiffCompressionCombo, p.TiffCompressionAlgo);
+            // ── 编码器后端 ──
+            if (!string.IsNullOrWhiteSpace(p.EncoderBackend) && EncoderCombo != null)
+            {
+                // 在 EncoderCombo 中查找包含后端名称的项
+                for (int i = 0; i < EncoderCombo.Items!.Count; i++)
+                {
+                    var item = EncoderCombo.Items[i] as string ?? "";
+                    if (item.Contains(p.EncoderBackend, StringComparison.OrdinalIgnoreCase)
+                        || (p.EncoderBackend == "Ffmpeg" && item.Contains("FFmpeg")))
+                    {
+                        EncoderCombo.SelectedIndex = i;
+                        break;
+                    }
+                }
+            }
+            // ── WebP 无损压缩级别 ──
+            if (WebpCompressionBox != null && p.WebpCompressionLevel.HasValue)
+                WebpCompressionBox.Value = p.WebpCompressionLevel.Value;
+            // ── AVIF 扩展选项 ──
+            if (SvtPresetBox != null && p.AvifSvtPreset.HasValue)
+                SvtPresetBox.Value = p.AvifSvtPreset.Value;
+            SetComboByValue(SvtTuneCombo, p.AvifSvtTune);
+            SetComboByValue(HwPresetCombo, p.AvifHwPreset);
+            if (AvifRowMtCheck != null && p.AvifRowMt.HasValue)
+                AvifRowMtCheck.IsChecked = p.AvifRowMt.Value;
+            // ── cjpegli 扩展选项 ──
+            SetComboByValue(JpegliChromaCombo, p.CjpegliChromaSubsampling);
+            if (JpegliProgressiveCombo != null)
+            {
+                JpegliProgressiveCombo.SelectedIndex = p.CjpegliProgressiveId switch
+                {
+                    0 => 1,  // 基线
+                    2 => 2,  // 渐进
+                    _ => 0   // 自动
+                };
+            }
+            if (JpegliOptimizeCheck != null && p.CjpegliOptimize.HasValue)
+                JpegliOptimizeCheck.IsChecked = p.CjpegliOptimize.Value;
+            if (JpegliAdaptiveQuantCheck != null && p.CjpegliAdaptiveQuant.HasValue)
+                JpegliAdaptiveQuantCheck.IsChecked = p.CjpegliAdaptiveQuant.Value;
             if (ConcurrencyBox != null) ConcurrencyBox.Text = Math.Clamp(p.MaxQueueSize, 1, 128).ToString();
             UpdateConcurrencyLabel();
             UpdateOptionAvailability();
