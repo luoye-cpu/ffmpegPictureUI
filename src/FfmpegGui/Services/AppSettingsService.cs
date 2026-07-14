@@ -77,6 +77,7 @@ namespace FfmpegGui.Services
                     MaxQueueSize = _current.MaxQueueSize,
                     ThemeMode = _current.ThemeMode,
                     FfmpegPriority = _current.FfmpegPriority,
+                    GpuAcceleration = _current.GpuAcceleration,
                     AutoUseSimdBinaries = _current.AutoUseSimdBinaries,
                     IgnoredToolPaths = _current.IgnoredToolPaths,
                     EnabledImageFormats = _current.EnabledImageFormats,

@@ -82,6 +82,11 @@ namespace FfmpegGui
         private Button? ConcurrencyUpBtn;
         private Button? ConcurrencyDownBtn;
         private Button? ThemeToggleBtn;
+        private Button? GpuToggleBtn;
+        // GPU 编码器警告面板
+        private Border? GpuEncoderWarning;
+        private TextBlock? GpuEncoderWarningText;
+        private TextBlock? GpuEncoderWarningHint;
         private CheckBox? UseAdvancedCodec;
         private StackPanel? AdvancedCodecPanel;
         // 动图参数
@@ -352,6 +357,10 @@ namespace FfmpegGui
             IccTargetSpaceCombo = this.FindControl<ComboBox>("IccTargetSpaceCombo");
             IccCompatPanel = this.FindControl<Border>("IccCompatPanel");
             IccPreviewPanel = this.FindControl<Border>("IccPreviewPanel");
+            // GPU 编码器警告面板
+            GpuEncoderWarning = this.FindControl<Border>("GpuEncoderWarning");
+            GpuEncoderWarningText = this.FindControl<TextBlock>("GpuEncoderWarningText");
+            GpuEncoderWarningHint = this.FindControl<TextBlock>("GpuEncoderWarningHint");
 
             // 设置绑定和初始值
             if (FormatCombo != null) FormatCombo.SelectedIndex = 0;
@@ -374,6 +383,7 @@ namespace FfmpegGui
                 UpdateThreadAvailabilityForFormat(NormalizeFormat(FormatCombo?.SelectedItem as string));
                 UpdateCodecPanelVisibility(NormalizeFormat(FormatCombo?.SelectedItem as string));
                 UpdateAvifEncoderPanel();
+                UpdateGpuEncoderWarning();
                 RegenerateCommand();
             };
             if (ThreadsBox != null) ThreadsBox.ValueChanged += (_, _) => RegenerateCommand();
@@ -606,6 +616,17 @@ namespace FfmpegGui
                 ThemeToggleBtn.Content = isDark ? "☀" : "🌙";
             }
 
+            // GPU 硬件加速开关按钮
+            GpuToggleBtn = this.FindControl<Button>("GpuToggleBtn");
+            if (GpuToggleBtn != null)
+            {
+                var gpuOn = App.IsGpuEnabled;
+                GpuToggleBtn.Content = gpuOn ? "GPU" : "CPU";
+                ToolTip.SetTip(GpuToggleBtn, gpuOn
+                    ? "GPU 加速已启用（ANGLE/D3D11）— 点击切换为 CPU 软件渲染（需重启）"
+                    : "GPU 加速已禁用 — 点击切换为 GPU 硬件加速（需重启）");
+            }
+
             // 媒体文件列表 — 双击查看详情
             if (MediaFileList != null)
             {
@@ -788,6 +809,36 @@ namespace FfmpegGui
                         Log($"  {t.StatusIcon} {t.Name}: {(t.IsAvailable ? "v" + t.Version : "未检测到")}");
                 }
                 catch (Exception ex) { Log("[tools] 探测失败: " + ex.Message); }
+
+                // ── Step 4: GPU 硬件编码能力检测 ──
+                try
+                {
+                    Log("── GPU 硬件编码能力检测 ──");
+                    var gpuReport = await Services.GpuCapabilityService.DetectAsync();
+                    if (gpuReport.Devices.Count > 0)
+                    {
+                        foreach (var dev in gpuReport.Devices)
+                            Log($"  [GPU 设备] {dev.Description}: {(dev.IsAvailable ? "✅ 可用" : "❌ 不可用")}");
+                    }
+                    else
+                    {
+                        Log("  [GPU 设备] 未检测到任何硬件加速设备");
+                    }
+                    foreach (var kv in gpuReport.Encoders)
+                    {
+                        var icon = kv.Value.Availability switch
+                        {
+                            Services.GpuEncoderAvailability.Verified => "✅",
+                            Services.GpuEncoderAvailability.DeviceFoundUntested => "⚡",
+                            Services.GpuEncoderAvailability.CompiledNoDevice => "⚠️",
+                            Services.GpuEncoderAvailability.Failed => "❌",
+                            Services.GpuEncoderAvailability.NotCompiled => "⊘",
+                            _ => "❓"
+                        };
+                        Log($"  {icon} {kv.Key}: {kv.Value.FriendlyName} — {kv.Value.Availability}");
+                    }
+                }
+                catch (Exception ex) { Log($"[GPU] 检测失败: {ex.Message}"); }
 
                 Log("[detect] 全部检测完成");
 
@@ -2740,6 +2791,118 @@ namespace FfmpegGui
             AppSettingsService.Save();
             // 主题切换时刷新队列列表，确保 Foreground 绑定重新计算
             RefreshQueueListBinding();
+        }
+
+        private void GpuToggle_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        {
+            var currentGpu = AppSettingsService.Current.GpuAcceleration;
+            var newGpu = !currentGpu;
+            AppSettingsService.Current.GpuAcceleration = newGpu;
+            AppSettingsService.Save();
+
+            if (GpuToggleBtn != null)
+            {
+                GpuToggleBtn.Content = newGpu ? "GPU" : "CPU";
+                ToolTip.SetTip(GpuToggleBtn, newGpu
+                    ? "GPU 加速已启用（ANGLE/D3D11）— 点击切换为 CPU 软件渲染（需重启）"
+                    : "GPU 加速已禁用 — 点击切换为 GPU 硬件加速（需重启）");
+            }
+
+            if (LogText != null)
+            {
+                LogText.Text += newGpu
+                    ? "[GPU] GPU 硬件加速已启用（DX11/Vulkan），重启后生效\n"
+                    : "[GPU] GPU 硬件加速已禁用，将使用 CPU 软件渲染，重启后生效\n";
+            }
+        }
+
+        /// <summary>
+        /// 根据当前选中的 GPU 编码器状态，显示/隐藏 GPU 编码器警告面板。
+        /// 当用户选择了一个不可用的 GPU 硬件编码器时，显示橙色警告提示。
+        /// </summary>
+        private void UpdateGpuEncoderWarning()
+        {
+            if (GpuEncoderWarning == null || GpuEncoderWarningText == null)
+                return;
+
+            var encStr = EncoderCombo?.SelectedItem as string ?? "";
+            var encoderName = EncoderInfo.ParseEncoderName(encStr);
+            var isGpu = EncoderDetectionService.IsGpuEncoderName(encoderName);
+
+            if (!isGpu)
+            {
+                GpuEncoderWarning.IsVisible = false;
+                return;
+            }
+
+            var status = Services.GpuCapabilityService.GetEncoderStatus(encoderName);
+            if (status == null)
+            {
+                // GPU 检测尚未运行
+                GpuEncoderWarning.IsVisible = true;
+                GpuEncoderWarning.Background = Avalonia.Media.Brush.Parse("#33FFB300");
+                GpuEncoderWarningText.Text = $"⚡ {encoderName} 为 GPU 硬件编码器，GPU 能力检测尚未完成...";
+                if (GpuEncoderWarningHint != null)
+                    GpuEncoderWarningHint.IsVisible = false;
+                return;
+            }
+
+            switch (status.Availability)
+            {
+                case Services.GpuEncoderAvailability.Verified:
+                    // GPU 编码器可用 → 隐藏警告
+                    GpuEncoderWarning.IsVisible = false;
+                    break;
+
+                case Services.GpuEncoderAvailability.DeviceFoundUntested:
+                    // 有设备但未运行时验证 → 浅黄色提示
+                    GpuEncoderWarning.IsVisible = true;
+                    GpuEncoderWarning.Background = Avalonia.Media.Brush.Parse("#33FFB300");
+                    GpuEncoderWarningText.Text = $"⚡ {status.FriendlyName} — GPU 设备已检测，但运行时验证尚未完成";
+                    if (GpuEncoderWarningHint != null)
+                        GpuEncoderWarningHint.IsVisible = false;
+                    break;
+
+                case Services.GpuEncoderAvailability.CompiledNoDevice:
+                    // 编译了但无设备 → 橙色警告
+                    GpuEncoderWarning.IsVisible = true;
+                    GpuEncoderWarning.Background = Avalonia.Media.Brush.Parse("#33FF9800");
+                    GpuEncoderWarningText.Text = $"⚠️ {status.WarningMessage}";
+                    if (GpuEncoderWarningHint != null)
+                    {
+                        GpuEncoderWarningHint.IsVisible = true;
+                        GpuEncoderWarningHint.Text = "建议切换到 CPU 编码器以确保正常编码。";
+                    }
+                    break;
+
+                case Services.GpuEncoderAvailability.Failed:
+                    // 运行时验证失败 → 红色警告
+                    GpuEncoderWarning.IsVisible = true;
+                    GpuEncoderWarning.Background = Avalonia.Media.Brush.Parse("#33F44336");
+                    GpuEncoderWarningText.Text = $"❌ {status.WarningMessage}";
+                    if (GpuEncoderWarningHint != null)
+                    {
+                        GpuEncoderWarningHint.IsVisible = true;
+                        GpuEncoderWarningHint.Text = "请切换到 CPU 编码器（如 mjpeg / libaom-av1 / libsvtav1）。";
+                    }
+                    break;
+
+                case Services.GpuEncoderAvailability.NotCompiled:
+                    // 未编译 → 灰色提示
+                    GpuEncoderWarning.IsVisible = true;
+                    GpuEncoderWarning.Background = Avalonia.Media.Brush.Parse("#339E9E9E");
+                    GpuEncoderWarningText.Text = $"ℹ️ {status.WarningMessage}";
+                    if (GpuEncoderWarningHint != null)
+                    {
+                        GpuEncoderWarningHint.IsVisible = true;
+                        GpuEncoderWarningHint.Text = "请使用包含此编码器的 ffmpeg 版本，或切换到 CPU 编码器。";
+                    }
+                    break;
+
+                default:
+                    GpuEncoderWarning.IsVisible = false;
+                    break;
+            }
         }
 
         /// <summary>刷新队列列表 ItemsSource 绑定，触发 DataTemplate 重新应用前景色</summary>

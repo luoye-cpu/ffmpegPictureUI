@@ -16,7 +16,8 @@
     <FileVersion>1.5.0.0</FileVersion>
     <PackageLicenseExpression>GPL-3.0-only</PackageLicenseExpression>
     <!-- v2.0 过渡期：所有 CS0618 均为故意的旧字段回退逻辑 -->
-    <NoWarn>$(NoWarn);CS0618</NoWarn>
+    <!-- MSB3884: .NET SDK 默认引用 ManagedMinimumRules.ruleset 但文件不存在，安全忽略 -->
+    <NoWarn>$(NoWarn);CS0618;MSB3884</NoWarn>
   </PropertyGroup>
 
   <!-- ═══════════════════════════════════════════════ -->

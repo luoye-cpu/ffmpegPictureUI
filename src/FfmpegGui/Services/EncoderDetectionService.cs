@@ -32,15 +32,48 @@ namespace FfmpegGui.Services
         /// <summary>是否可用</summary>
         public bool IsAvailable => Backend == EncoderBackend.Ffmpeg || !string.IsNullOrWhiteSpace(DetectedPath);
 
+        // ═══════════════════════════════════════════════
+        // GPU 硬件编码器字段
+        // ═══════════════════════════════════════════════
+
+        /// <summary>是否为 GPU 硬件编码器</summary>
+        public bool IsHardwareEncoder { get; set; }
+
+        /// <summary>GPU 编码器可用性状态</summary>
+        public GpuEncoderAvailability GpuAvailability { get; set; } = GpuEncoderAvailability.Unknown;
+
+        /// <summary>GPU 编码器不可用时的提示信息</summary>
+        public string? GpuWarningMessage { get; set; }
+
+        /// <summary>GPU 编码器是否实际可用（编译 + 硬件存在 + 运行时通过）</summary>
+        public bool IsGpuUsable => IsHardwareEncoder && GpuAvailability == GpuEncoderAvailability.Verified;
+
         /// <summary>将显示名称中的后端类型编码，方便后续解析</summary>
-        public string DisplayName => Backend switch
+        public string DisplayName
         {
-            EncoderBackend.Cjpegli => $"🔧 cjpegli — JPEG-LI (jpegli 库)",
-            EncoderBackend.Cjxl => $"🔧 cjxl — JPEG XL (参考实现)",
-            EncoderBackend.Ultrahdr => $"🔧 ultrahdr — Gain Map / Ultra HDR (谷歌官方)",
-            EncoderBackend.Jxr => $"🔧 JxrEncApp — JPEG XR (微软参考)",
-            _ => $"{Name} — {Description}"
-        };
+            get
+            {
+                var gpuIcon = IsHardwareEncoder
+                    ? GpuAvailability switch
+                    {
+                        GpuEncoderAvailability.Verified => "⚡ ",
+                        GpuEncoderAvailability.DeviceFoundUntested => "⚡ ",
+                        GpuEncoderAvailability.CompiledNoDevice => "⚡⚠️ ",
+                        GpuEncoderAvailability.Failed => "⚡❌ ",
+                        _ => ""
+                    }
+                    : "";
+
+                return Backend switch
+                {
+                    EncoderBackend.Cjpegli => $"🔧 cjpegli — JPEG-LI (jpegli 库)",
+                    EncoderBackend.Cjxl => $"🔧 cjxl — JPEG XL (参考实现)",
+                    EncoderBackend.Ultrahdr => $"🔧 ultrahdr — Gain Map / Ultra HDR (谷歌官方)",
+                    EncoderBackend.Jxr => $"🔧 JxrEncApp — JPEG XR (微软参考)",
+                    _ => $"{gpuIcon}{Name} — {Description}"
+                };
+            }
+        }
 
         public override string ToString() => DisplayName;
 
@@ -210,9 +243,25 @@ namespace FfmpegGui.Services
                 var ffmpegEncoders = all
                     .Where(e => candidateNames.Contains(e.Name, StringComparer.OrdinalIgnoreCase))
                     .ToList();
+
+                // ── GPU 编码器状态标注 ──
                 foreach (var enc in ffmpegEncoders)
                 {
                     enc.Backend = EncoderBackend.Ffmpeg;
+                    if (IsGpuEncoderName(enc.Name))
+                    {
+                        enc.IsHardwareEncoder = true;
+                        var gpuStatus = GpuCapabilityService.GetEncoderStatus(enc.Name);
+                        if (gpuStatus != null)
+                        {
+                            enc.GpuAvailability = gpuStatus.Availability;
+                            enc.GpuWarningMessage = gpuStatus.WarningMessage;
+                        }
+                        else
+                        {
+                            enc.GpuAvailability = GpuEncoderAvailability.Unknown;
+                        }
+                    }
                 }
                 ffmpegEncoders.Sort((a, b) => string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase));
                 result.AddRange(ffmpegEncoders);
@@ -314,6 +363,26 @@ namespace FfmpegGui.Services
         /// 获取指定格式可用的 Gain Map 编码器是否就绪
         /// </summary>
         public static bool IsLibultrahdrAvailable => HasCachedLibultrahdr();
+
+        // ═══════════════════════════════════════════════
+        // GPU 硬件编码器判断
+        // ═══════════════════════════════════════════════
+
+        /// <summary>已知 GPU 硬件编码器名称集合</summary>
+        private static readonly HashSet<string> GpuEncoderNames = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "mjpeg_qsv", "mjpeg_nvenc", "mjpeg_amf", "mjpeg_vaapi",
+            "av1_qsv", "av1_nvenc", "av1_amf", "av1_vaapi",
+            "h264_nvenc", "h264_qsv", "h264_amf", "h264_vaapi",
+            "hevc_nvenc", "hevc_qsv", "hevc_amf", "hevc_vaapi",
+            "png_vaapi"
+        };
+
+        /// <summary>判断编码器名称是否为 GPU 硬件编码器</summary>
+        public static bool IsGpuEncoderName(string encoderName)
+        {
+            return GpuEncoderNames.Contains(encoderName);
+        }
 
         /// <summary>
         /// 检测 libjxl 是否支持 -lossless_jpeg 参数（JPEG→JXL 无损重封装）

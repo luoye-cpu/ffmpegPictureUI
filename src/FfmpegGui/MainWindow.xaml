@@ -26,6 +26,8 @@
           <CheckBox x:Name="PreserveInputStructure" Content="保持输入目录结构" VerticalAlignment="Center" Margin="8,0,0,0"/>
         </StackPanel>
         <StackPanel Grid.Row="0" Grid.Column="1" Orientation="Horizontal" Spacing="6" Margin="4,0,0,0">
+          <Button x:Name="GpuToggleBtn" Content="GPU" FontSize="11" Padding="8,3"
+                  ToolTip.Tip="GPU 硬件加速（点击切换，需重启生效）" Click="GpuToggle_Click"/>
           <Button x:Name="ThemeToggleBtn" Content="🌙" FontSize="14" Padding="6,2"
                   ToolTip.Tip="切换深色/浅色模式" Click="ThemeToggle_Click"/>
         </StackPanel>
@@ -159,6 +161,18 @@
           </StackPanel>
           <TextBlock Text="编码器" Margin="0,4,0,0"/>
           <ComboBox x:Name="EncoderCombo"/>
+          <!-- GPU 硬件编码器状态警告 -->
+          <Border x:Name="GpuEncoderWarning" IsVisible="False"
+                  CornerRadius="6" Padding="10,7" Margin="0,6,0,0">
+            <StackPanel Spacing="4">
+              <TextBlock x:Name="GpuEncoderWarningText" FontSize="11"
+                         TextWrapping="Wrap" Foreground="#333333"/>
+              <TextBlock x:Name="GpuEncoderWarningHint" FontSize="10"
+                         TextWrapping="Wrap"
+                         Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"
+                         Text="建议选择 CPU 编码器 (mjpeg / libaom-av1 / libsvtav1) 以确保兼容性。"/>
+            </StackPanel>
+          </Border>
           <TextBlock Text="质量" Margin="0,8,0,0"/>
           <StackPanel Orientation="Horizontal" Spacing="8">
             <Slider x:Name="QualitySlider" Minimum="0" Maximum="100" Value="92"

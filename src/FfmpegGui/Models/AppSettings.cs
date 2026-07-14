@@ -49,6 +49,9 @@ namespace FfmpegGui.Models
 
         public int ThemeMode { get; set; } = 2;
 
+        /// <summary>GPU 硬件加速：true=启用（Windows: DX11→Vulkan→CPU, Linux: Vulkan→OpenGL→CPU），false=纯软件渲染。需重启生效。</summary>
+        public bool GpuAcceleration { get; set; } = true;
+
         /// <summary>ffmpeg 进程优先级: 0=实时, 1=高, 2=高于正常, 3=正常, 4=低于正常, 5=低</summary>
         public int FfmpegPriority { get; set; } = 3;
 
