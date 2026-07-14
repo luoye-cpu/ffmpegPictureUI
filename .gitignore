@@ -55,3 +55,5 @@ Thumbs.db
 # ── 测试输出目录 ──
 test_output/
 test-output/
+
+.fake
