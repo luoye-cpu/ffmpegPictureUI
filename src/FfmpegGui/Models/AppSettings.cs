@@ -52,6 +52,9 @@ namespace FfmpegGui.Models
         /// <summary>GPU 硬件加速：true=启用（Windows: DX11→Vulkan→CPU, Linux: Vulkan→OpenGL→CPU），false=纯软件渲染。需重启生效。</summary>
         public bool GpuAcceleration { get; set; } = true;
 
+        /// <summary>简洁模式自动编码：true=队列有任务时自动开始，false=手动控制</summary>
+        public bool SimpleModeAutoEncode { get; set; } = false;
+
         /// <summary>ffmpeg 进程优先级: 0=实时, 1=高, 2=高于正常, 3=正常, 4=低于正常, 5=低</summary>
         public int FfmpegPriority { get; set; } = 3;
 

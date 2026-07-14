@@ -10,13 +10,13 @@ namespace FfmpegGui.Services
     /// <summary>
     /// 预设管理服务：管理用户预设的存储/读取/删除，
     /// 以及开发者内置预设的定义。
-    /// 用户预设存储在 %AppData%/FfmpegGui/presets/ 下。
+    /// 用户预设存储在 exe 同目录下的 presets/ 子目录中（便携模式）。
     /// </summary>
     public static class PresetManagerService
     {
         private static readonly string PresetsDir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            "FfmpegGui", "presets");
+            Path.GetDirectoryName(Environment.ProcessPath!) ?? ".",
+            "presets");
 
         // ── 内置预设定义 ──
         // 说明：

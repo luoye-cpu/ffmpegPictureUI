@@ -4,11 +4,13 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:sys="using:System"
     xmlns:local="using:FfmpegGui.Models"
-    Title="FFmpeg 图片转换器 1.5.0 BETA"
+    Title="FFmpeg 图片转换器 1.5.0 BETA2"
     Height="780"
     Width="1020"
     WindowStartupLocation="CenterScreen">
-  <DockPanel>
+  <Grid>
+    <!-- ═══════════ 完整模式主界面 ═══════════ -->
+    <DockPanel x:Name="FullModePanel">
     <!-- 顶部工具栏卡片 -->
     <Border DockPanel.Dock="Top" Margin="12,8,12,4" Padding="14,10"
             CornerRadius="10" BoxShadow="0 2 12 0 #18000000"
@@ -105,12 +107,16 @@
               Background="{DynamicResource SystemControlBackgroundCardHighBrush}">
       <ScrollViewer>
         <StackPanel Margin="14" Spacing="8">
-          <StackPanel Orientation="Horizontal" Spacing="8">
-            <TextBlock Text="参数控制面板" FontSize="20" FontWeight="Bold" Margin="0,0,0,6" VerticalAlignment="Center"/>
+          <TextBlock Text="参数控制面板" FontSize="20" FontWeight="Bold" Margin="0,0,0,4" VerticalAlignment="Center"/>
+          <WrapPanel HorizontalAlignment="Stretch" Margin="0,0,0,0">
             <Button x:Name="PresetManagerBtn" Content="📋 预设" FontSize="12" Padding="8,3"
                     ToolTip.Tip="打开预设管理器 — 选择/保存/导入预设配置"
-                    Click="OpenPresetManager_Click" VerticalAlignment="Center"/>
-          </StackPanel>
+                    Click="OpenPresetManager_Click" Margin="0,0,8,0"/>
+            <Button x:Name="SimpleModeEntryBtn" Content="🧩 简洁模式" FontSize="12"
+                    Padding="10,5"
+                    ToolTip.Tip="切换到极简视图，专注编码队列监控"
+                    Click="EnterSimpleMode_Click"/>
+          </WrapPanel>
           <TextBlock Text="转换模式" FontSize="12" Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
           <ComboBox x:Name="ConversionModeCombo" SelectedIndex="0"
                     SelectionChanged="ConversionMode_SelectionChanged">
@@ -685,4 +691,142 @@
       </Grid>
     </Grid>
   </DockPanel>
+
+    <!-- ═══════════════════════════════════════════════════════════ -->
+    <!-- 简洁模式覆盖面板（默认隐藏，IsVisible 切换）                  -->
+    <!-- ═══════════════════════════════════════════════════════════ -->
+    <!-- 简洁模式覆盖面板（默认隐藏，IsVisible 切换）                  -->
+    <!-- ═══════════════════════════════════════════════════════════ -->
+    <Grid x:Name="SimpleModePanel" IsVisible="False"
+          Background="{DynamicResource SystemControlBackgroundChromeMediumLowBrush}">
+      <Grid.RowDefinitions>
+        <RowDefinition Height="Auto"/>
+        <RowDefinition Height="Auto"/>
+        <RowDefinition Height="Auto"/>
+        <RowDefinition Height="3*"/>
+        <RowDefinition Height="*"/>
+      </Grid.RowDefinitions>
+
+      <!-- ── 顶栏 ── -->
+      <Border Grid.Row="0" Margin="12,8,12,0" Padding="14,10"
+              CornerRadius="10" BoxShadow="0 2 12 0 #18000000"
+              Background="{DynamicResource SystemControlBackgroundCardHighBrush}">
+        <Grid ColumnDefinitions="Auto,*,Auto">
+          <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+            <Button x:Name="SimpleReturnBtn" Content="← 返回完整模式" FontSize="12"
+                    Padding="10,5" Click="SimpleReturn_Click"/>
+            <TextBlock Text="简洁模式" FontSize="18" FontWeight="Bold" VerticalAlignment="Center"/>
+          </StackPanel>
+          <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+            <TextBlock Text="自动编码" VerticalAlignment="Center" FontSize="11"/>
+            <ToggleSwitch x:Name="AutoEncodeToggle" IsCheckedChanged="AutoEncodeToggle_Changed"/>
+          </StackPanel>
+        </Grid>
+      </Border>
+
+      <!-- ── 预设选择器（独占一行，大号醒目） ── -->
+      <Border Grid.Row="1" Margin="12,8,12,0" Padding="20,18"
+              CornerRadius="12" BoxShadow="0 3 16 0 #20000000"
+              Background="#18000000">
+        <Grid ColumnDefinitions="Auto,*">
+          <TextBlock Grid.Column="0" Text="⚙️ 编码预设" FontSize="16" FontWeight="Bold"
+                     VerticalAlignment="Center" Margin="0,0,20,0"/>
+          <ComboBox Grid.Column="1" x:Name="SimplePresetCombo"
+                    FontSize="16" Padding="14,10"
+                    SelectedIndex="0"/>
+        </Grid>
+      </Border>
+
+      <!-- ── 控制栏（参数面板区域，队列上方） ── -->
+      <Border Grid.Row="2" Margin="12,8,12,0" Padding="14,10"
+              CornerRadius="10" BoxShadow="0 2 8 0 #10000000"
+              Background="{DynamicResource SystemControlBackgroundCardHighBrush}">
+        <StackPanel Spacing="8">
+          <StackPanel Orientation="Horizontal" Spacing="10">
+            <Button Content="📂 添加文件" FontSize="14" Padding="18,10"
+                    Click="SimpleAddFiles_Click"/>
+            <Button Content="▶ 开始队列" FontSize="14" Padding="18,10"
+                    Click="SimpleStartQueue_Click"/>
+            <Button Content="⏹ 停止队列" FontSize="14" Padding="18,10"
+                    Click="SimpleStopQueue_Click"/>
+            <Button Content="🗑 清空" FontSize="13" Padding="14,10"
+                    Click="SimpleClearAll_Click"/>
+            <CheckBox Content="仅显示报错" FontSize="12" VerticalAlignment="Center"
+                      Margin="16,0,0,0"
+                      IsCheckedChanged="SimpleErrorsOnly_Changed"/>
+          </StackPanel>
+          <StackPanel Orientation="Horizontal" Spacing="20">
+            <TextBlock x:Name="SimpleStatusLabel" FontSize="12" Text="就绪"
+                       Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+            <TextBlock x:Name="SimpleProgressLabel" FontSize="12" Text="队列: 0/0"/>
+            <TextBlock x:Name="SimpleEtaLabel" FontSize="12"/>
+            <TextBlock x:Name="SimpleElapsedLabel" FontSize="12"/>
+          </StackPanel>
+        </StackPanel>
+      </Border>
+
+      <!-- ── 转换队列列表 ── -->
+      <Border Grid.Row="3" Margin="12,8,12,0" Padding="8"
+              CornerRadius="10" BoxShadow="0 2 8 0 #10000000"
+              Background="{DynamicResource SystemControlBackgroundCardHighBrush}">
+        <Grid RowDefinitions="Auto,*">
+          <StackPanel Grid.Row="0" Orientation="Horizontal" Spacing="8" Margin="0,0,0,6">
+            <TextBlock Text="📋 转换队列" FontSize="13" FontWeight="Bold"/>
+            <TextBlock x:Name="SimpleQueueCount" FontSize="11"
+                       Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"
+                       VerticalAlignment="Center" Text="0 项"/>
+          </StackPanel>
+          <ListBox Grid.Row="1" x:Name="SimpleQueueList" Background="Transparent">
+            <ListBox.ItemTemplate>
+              <DataTemplate x:DataType="local:QueueItem">
+                <Border Padding="8,5" Margin="0,1" CornerRadius="4"
+                        Background="{DynamicResource SystemControlBackgroundChromeMediumBrush}">
+                  <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto">
+                    <TextBlock Grid.Row="0" Grid.Column="0" FontSize="12" FontWeight="Medium"
+                               Text="{Binding DisplayText}" TextTrimming="CharacterEllipsis"/>
+                    <TextBlock Grid.Row="0" Grid.Column="1" Grid.RowSpan="2" FontSize="10"
+                               VerticalAlignment="Center" Margin="6,0,0,0"
+                               Text="{Binding Status}"
+                               Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+                    <TextBlock Grid.Row="1" Grid.Column="0" FontSize="9" Margin="0,1,0,0"
+                               Text="{Binding Log}" TextTrimming="CharacterEllipsis" MaxWidth="400"
+                               Foreground="#E53935"
+                               IsVisible="{Binding HasError}"/>
+                  </Grid>
+                </Border>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+        </Grid>
+      </Border>
+
+      <!-- ── 拖放区域 ── -->
+      <Border Grid.Row="4" Margin="12,8,12,10" Padding="12,10"
+              CornerRadius="10" BoxShadow="0 2 12 0 #18000000"
+              Background="{DynamicResource SystemControlBackgroundCardHighBrush}">
+        <Grid RowDefinitions="Auto,*">
+          <StackPanel Grid.Row="0" Orientation="Horizontal" Spacing="8" Margin="0,0,0,6">
+            <TextBlock Text="📥 拖拽到此处一键开始" FontSize="13" FontWeight="Bold"/>
+            <TextBlock x:Name="SimpleFileCount" FontSize="11"
+                       Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"
+                       VerticalAlignment="Center" Text="0 个文件"/>
+            <Button Content="清空" FontSize="10" Padding="6,2" Margin="12,0,0,0"
+                    Click="SimpleClearMedia_Click"/>
+          </StackPanel>
+          <Border Grid.Row="1" x:Name="SimpleDropZone" MinHeight="60"
+                  BorderBrush="Gray" BorderThickness="1" CornerRadius="6"
+                  Background="{DynamicResource SystemControlBackgroundChromeMediumBrush}">
+            <ListBox x:Name="SimpleMediaList" Background="Transparent">
+              <ListBox.ItemTemplate>
+                <DataTemplate x:DataType="sys:String">
+                  <TextBlock FontSize="12" Text="{Binding}" TextTrimming="CharacterEllipsis"/>
+                </DataTemplate>
+              </ListBox.ItemTemplate>
+            </ListBox>
+          </Border>
+        </Grid>
+      </Border>
+    </Grid>
+
+  </Grid>
 </Window>
