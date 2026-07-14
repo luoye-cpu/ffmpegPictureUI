@@ -119,14 +119,42 @@ namespace FfmpegGui.Services
                 return report;
             }
 
-            // Step 1: 检测硬件加速设备
+            // Step 1: 快速检测硬件加速设备（仅 -hwaccels，约 500ms）
             report.Devices = await DetectHardwareDevicesAsync(ffmpeg);
 
-            // Step 2: 对照已知 GPU 编码器列表检测可用性
-            await DetectGpuEncodersAsync(ffmpeg, report);
+            // Step 2: 对照已知 GPU 编码器列表检测编译状态（仅 -encoders 解析，约 1s）
+            await DetectGpuEncoderCompileStatusAsync(ffmpeg, report);
 
             lock (_lock) { _cachedReport = report; }
             return report;
+        }
+
+        /// <summary>
+        /// 延迟运行 GPU 编码器运行时验证（较慢，每个编码器最多 8s）。
+        /// 应在 DetectAsync 之后、UI 空闲时调用。
+        /// </summary>
+        public static async Task ValidateEncodersAsync(string? ffmpegPath = null)
+        {
+            var report = CachedReport;
+            if (report == null) return;
+
+            var ffmpeg = ffmpegPath ?? AppSettingsService.Current.FfmpegPath;
+            if (string.IsNullOrWhiteSpace(ffmpeg) || !System.IO.File.Exists(ffmpeg)) return;
+
+            // 只验证"编译+有设备"但尚未验证的编码器
+            var toValidate = report.Encoders.Values
+                .Where(e => e.Availability == GpuEncoderAvailability.DeviceFoundUntested)
+                .ToList();
+
+            foreach (var status in toValidate)
+            {
+                var verified = await QuickEncodeTestAsync(ffmpeg, status.EncoderName);
+                status.Availability = verified
+                    ? GpuEncoderAvailability.Verified
+                    : GpuEncoderAvailability.Failed;
+                if (!verified)
+                    status.WarningMessage = $"{status.FriendlyName} 运行时验证失败，可能 GPU 驱动不兼容或硬件不支持此编码格式";
+            }
         }
 
         /// <summary>清除缓存，强制下次重新检测</summary>
@@ -235,8 +263,8 @@ namespace FfmpegGui.Services
             }
         }
 
-        /// <summary>检测所有已知 GPU 编码器的可用性</summary>
-        private static async Task DetectGpuEncodersAsync(string ffmpegPath, GpuCapabilityReport report)
+        /// <summary>检测所有已知 GPU 编码器的编译状态和硬件设备匹配（不运行耗时验证）</summary>
+        private static async Task DetectGpuEncoderCompileStatusAsync(string ffmpegPath, GpuCapabilityReport report)
         {
             // 所有需要检测的 GPU 编码器及其友好名称
             var gpuEncoderDefs = new (string name, string friendly, string requiredDevice)[]
@@ -284,21 +312,9 @@ namespace FfmpegGui.Services
                     continue;
                 }
 
-                // Step 2: 运行时编码验证
+                // Step 2: 标记为待验证（运行时验证延迟到 ValidateEncodersAsync）——快速启动
                 status.Availability = GpuEncoderAvailability.DeviceFoundUntested;
-                var verified = await QuickEncodeTestAsync(ffmpegPath, name);
-
-                if (verified)
-                {
-                    status.Availability = GpuEncoderAvailability.Verified;
-                    status.WarningMessage = null;
-                }
-                else
-                {
-                    status.Availability = GpuEncoderAvailability.Failed;
-                    status.WarningMessage = $"{friendly} 运行时验证失败，可能 GPU 驱动不兼容或硬件不支持此编码格式";
-                }
-
+                status.WarningMessage = null;
                 report.Encoders[name] = status;
             }
         }

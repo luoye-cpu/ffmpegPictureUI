@@ -83,6 +83,25 @@ namespace FfmpegGui
         private Button? ConcurrencyDownBtn;
         private Button? ThemeToggleBtn;
         private Button? GpuToggleBtn;
+        private Button? SimpleModeEntryBtn;
+        // 简洁模式控件
+        private DockPanel? FullModePanel;
+        private Grid? SimpleModePanel;
+        private ListBox? SimpleQueueList;
+        private ListBox? SimpleMediaList;
+        private Border? SimpleDropZone;
+        private TextBlock? SimpleFileCount;
+        private TextBlock? SimpleQueueCount;
+        private ToggleSwitch? AutoEncodeToggle;
+        private ComboBox? SimplePresetCombo;
+        private TextBlock? SimpleStatusLabel;
+        private TextBlock? SimpleProgressLabel;
+        private TextBlock? SimpleEtaLabel;
+        private TextBlock? SimpleElapsedLabel;
+        private bool _simpleModeActive;
+        private PresetEntry? _simpleActivePreset;
+        private System.Timers.Timer? _autoEncodeTimer;
+        private readonly ObservableCollection<string> _simpleMediaFiles = new();
         // GPU 编码器警告面板
         private Border? GpuEncoderWarning;
         private TextBlock? GpuEncoderWarningText;
@@ -627,6 +646,34 @@ namespace FfmpegGui
                     : "GPU 加速已禁用 — 点击切换为 GPU 硬件加速（需重启）");
             }
 
+            // ── 简洁模式控件 ──
+            SimpleModeEntryBtn = this.FindControl<Button>("SimpleModeEntryBtn");
+            FullModePanel = this.FindControl<DockPanel>("FullModePanel");
+            SimpleModePanel = this.FindControl<Grid>("SimpleModePanel");
+            SimpleQueueList = this.FindControl<ListBox>("SimpleQueueList");
+            SimpleMediaList = this.FindControl<ListBox>("SimpleMediaList");
+            SimpleDropZone = this.FindControl<Border>("SimpleDropZone");
+            SimpleFileCount = this.FindControl<TextBlock>("SimpleFileCount");
+            SimpleQueueCount = this.FindControl<TextBlock>("SimpleQueueCount");
+            AutoEncodeToggle = this.FindControl<ToggleSwitch>("AutoEncodeToggle");
+            SimplePresetCombo = this.FindControl<ComboBox>("SimplePresetCombo");
+            SimpleStatusLabel = this.FindControl<TextBlock>("SimpleStatusLabel");
+            SimpleProgressLabel = this.FindControl<TextBlock>("SimpleProgressLabel");
+            SimpleEtaLabel = this.FindControl<TextBlock>("SimpleEtaLabel");
+            SimpleElapsedLabel = this.FindControl<TextBlock>("SimpleElapsedLabel");
+
+            // 简洁模式预设列表初始化
+            if (SimplePresetCombo != null)
+            {
+                var allPresets = PresetManagerService.GetAllPresets();
+                foreach (var p in allPresets)
+                    SimplePresetCombo.Items.Add(p);
+                SimplePresetCombo.SelectedIndex = 0;
+                _simpleActivePreset = allPresets.FirstOrDefault();
+                // 预设切换时自动应用到主界面参数
+                SimplePresetCombo.SelectionChanged += SimplePresetCombo_SelectionChanged;
+            }
+
             // 媒体文件列表 — 双击查看详情
             if (MediaFileList != null)
             {
@@ -758,14 +805,18 @@ namespace FfmpegGui
 
                 Log("正在检测 ffmpeg 能力与可用编码器...");
 
-                // ── Step 1: 文件系统检测（最快，1-2 秒）──
-                try { CjxlService.ClearCache(); CjxlService.Detect(); Log("[detect] cjxl: " + (CjxlService.IsAvailable ? "OK" : "未找到")); } catch { }
-                try { CjpegliService.ClearCache(); CjpegliService.Detect(); Log("[detect] cjpegli: " + (CjpegliService.IsAvailable ? "OK" : "未找到")); } catch { }
-                try { DjxlService.ClearCache(); DjxlService.Detect(); } catch { }
-                try { ExifToolService.Detect(); Log("[detect] exiftool: " + (ExifToolService.IsAvailable ? "OK" : "未找到")); } catch { }
-                try { UltrahdrService.ClearCache(); UltrahdrService.Detect(); } catch { }
-                try { JxrService.ClearCache(); JxrService.Detect(); } catch { }
-                try { RawService.ClearCache(); RawService.Detect(); Log("[detect] dcraw: " + (RawService.IsAvailable ? "OK" : "未找到")); } catch { }
+                // ── Step 1: 文件系统检测（并行化，~500ms → ~100ms）──
+                var detectTasks = new[]
+                {
+                    Task.Run(() => { try { CjxlService.ClearCache(); CjxlService.Detect(); Log("[detect] cjxl: " + (CjxlService.IsAvailable ? "OK" : "未找到")); } catch { } }),
+                    Task.Run(() => { try { CjpegliService.ClearCache(); CjpegliService.Detect(); Log("[detect] cjpegli: " + (CjpegliService.IsAvailable ? "OK" : "未找到")); } catch { } }),
+                    Task.Run(() => { try { DjxlService.ClearCache(); DjxlService.Detect(); } catch { } }),
+                    Task.Run(() => { try { ExifToolService.Detect(); Log("[detect] exiftool: " + (ExifToolService.IsAvailable ? "OK" : "未找到")); } catch { } }),
+                    Task.Run(() => { try { UltrahdrService.ClearCache(); UltrahdrService.Detect(); } catch { } }),
+                    Task.Run(() => { try { JxrService.ClearCache(); JxrService.Detect(); } catch { } }),
+                    Task.Run(() => { try { RawService.ClearCache(); RawService.Detect(); Log("[detect] dcraw: " + (RawService.IsAvailable ? "OK" : "未找到")); } catch { } }),
+                };
+                await Task.WhenAll(detectTasks);
 
                 // ── Step 2: ffmpeg 进程检测（串行，每项最多 8 秒）──
                 var ffmpegPath = AppSettingsService.Current.FfmpegPath;
@@ -837,6 +888,23 @@ namespace FfmpegGui
                         };
                         Log($"  {icon} {kv.Key}: {kv.Value.FriendlyName} — {kv.Value.Availability}");
                     }
+
+                    // 延迟运行时验证（后台，不阻塞启动）
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            await Services.GpuCapabilityService.ValidateEncodersAsync();
+                            var verifiedCount = gpuReport.Encoders.Values.Count(
+                                e => e.Availability == Services.GpuEncoderAvailability.Verified);
+                            Dispatcher.UIThread.Post(() =>
+                            {
+                                if (LogText != null && verifiedCount > 0)
+                                    LogText.Text += $"[GPU] 运行时验证完成: {verifiedCount} 个 GPU 编码器可用\n";
+                            });
+                        }
+                        catch { }
+                    });
                 }
                 catch (Exception ex) { Log($"[GPU] 检测失败: {ex.Message}"); }
 
@@ -2912,6 +2980,505 @@ namespace FfmpegGui
             var items = QueueList.ItemsSource;
             QueueList.ItemsSource = null;
             QueueList.ItemsSource = items;
+        }
+
+        // ═══════════════════════════════════════════════
+        // 简洁模式 — 入口、退出、全部控制逻辑
+        // ═══════════════════════════════════════════════
+
+        private void EnterSimpleMode_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        {
+            if (FullModePanel == null || SimpleModePanel == null) return;
+
+            _simpleModeActive = true;
+            FullModePanel.IsVisible = false;
+            SimpleModePanel.IsVisible = true;
+
+            // 绑定已选文件列表
+            if (SimpleMediaList != null)
+                SimpleMediaList.ItemsSource = _simpleMediaFiles;
+
+            // 绑定共享队列数据
+            if (SimpleQueueList != null)
+                SimpleQueueList.ItemsSource = _queueView;
+
+            // 同步自动编码开关状态
+            if (AutoEncodeToggle != null)
+                AutoEncodeToggle.IsChecked = AppSettingsService.Current.SimpleModeAutoEncode;
+
+            // 同步预设选择
+            SyncPresetToSimpleMode();
+
+            // 设置拖放支持
+            if (SimpleDropZone != null)
+            {
+                DragDrop.SetAllowDrop(SimpleDropZone, true);
+                SimpleDropZone.AddHandler(DragDrop.DragEnterEvent, SimpleDragEnter);
+                SimpleDropZone.AddHandler(DragDrop.DragLeaveEvent, SimpleDragLeave);
+                SimpleDropZone.AddHandler(DragDrop.DragOverEvent, SimpleDragOver);
+                SimpleDropZone.AddHandler(DragDrop.DropEvent, SimpleDrop);
+            }
+
+            // 更新计数
+            UpdateSimpleCounts();
+            UpdateSimpleProgressDisplay();
+        }
+
+        private void SimpleReturn_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        {
+            if (FullModePanel == null || SimpleModePanel == null) return;
+
+            _simpleModeActive = false;
+            SimpleModePanel.IsVisible = false;
+            FullModePanel.IsVisible = true;
+
+            // 同步简洁模式已选文件到主界面已选文件列表
+            if (_simpleMediaFiles.Count > 0 && _mediaFiles != null)
+            {
+                foreach (var f in _simpleMediaFiles)
+                {
+                    if (!_mediaFiles.Contains(f))
+                        _mediaFiles.Add(f);
+                }
+                UpdateMediaFileCount();
+            }
+
+            // 如果自动编码在运行，日志提示
+            if (_autoEncodeTimer != null && _autoEncodeTimer.Enabled)
+            {
+                if (LogText != null)
+                    LogText.Text += "[简洁模式] 已返回完整模式，自动编码保持运行\n";
+            }
+        }
+
+        private void SimpleStartQueue_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        {
+            int concurrency = GetConcurrencyValue();
+            _queueProcessor.RequeueStoppedAndFailed(_queueItems);
+            _queueProcessor.Start(concurrency);
+
+            if (LogText != null)
+                LogText.Text += "[简洁模式] 队列已启动\n";
+            if (SimpleStatusLabel != null)
+                SimpleStatusLabel.Text = "队列运行中...";
+        }
+
+        private void SimpleStopQueue_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        {
+            _queueProcessor.Stop();
+
+            if (LogText != null)
+                LogText.Text += "[简洁模式] 队列已停止\n";
+            if (SimpleStatusLabel != null)
+                SimpleStatusLabel.Text = "已停止";
+        }
+
+        private async void SimpleAddFiles_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        {
+            var topLevel = TopLevel.GetTopLevel(this);
+            if (topLevel?.StorageProvider == null) return;
+
+            var files = await topLevel.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+            {
+                Title = "选择图片文件",
+                AllowMultiple = true,
+                FileTypeFilter = AppSettingsService.Current.GetImageFilePickerFilter()
+            });
+
+            if (files == null || files.Count == 0) return;
+
+            int added = 0;
+            foreach (var file in files)
+            {
+                var inputPath = file.Path.LocalPath;
+
+                // 1) 加入已选文件列表（去重）
+                if (!_simpleMediaFiles.Contains(inputPath))
+                {
+                    _simpleMediaFiles.Add(inputPath);
+                    added++;
+                }
+
+                // 2) 自动创建 QueueItem 并加入转换队列
+                var item = CreateQueueItemFromSimplePreset(inputPath);
+                _queueProcessor.Add(item);
+                _queueView.Add(item);
+                _queueItems.Add(item);
+            }
+
+            UpdateSimpleCounts();
+
+            if (LogText != null)
+                LogText.Text += $"[简洁模式] 已添加 {added} 个文件 → 已选列表 + 转换队列\n";
+
+            // 自动编码检查
+            if (AutoEncodeToggle?.IsChecked == true)
+                CheckAutoEncode();
+        }
+
+        /// <summary>清空已选文件列表（不影响转换队列）</summary>
+        private void SimpleClearMedia_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        {
+            _simpleMediaFiles.Clear();
+            UpdateSimpleCounts();
+        }
+
+        // ═══════════════════════════════════════════════
+        // 简洁模式拖放处理
+        // ═══════════════════════════════════════════════
+
+        private void SimpleDragEnter(object? sender, DragEventArgs e)
+        {
+            if (e.DataTransfer.Contains(DataFormat.File))
+            {
+                e.DragEffects = DragDropEffects.Copy;
+                if (SimpleDropZone != null)
+                    SimpleDropZone.BorderBrush = Avalonia.Media.Brushes.DodgerBlue;
+            }
+            else
+                e.DragEffects = DragDropEffects.None;
+        }
+
+        private void SimpleDragLeave(object? sender, DragEventArgs e)
+        {
+            if (SimpleDropZone != null)
+                SimpleDropZone.BorderBrush = Avalonia.Media.Brushes.Gray;
+        }
+
+        private void SimpleDragOver(object? sender, DragEventArgs e)
+        {
+            if (e.DataTransfer.Contains(DataFormat.File))
+                e.DragEffects = DragDropEffects.Copy;
+            else
+                e.DragEffects = DragDropEffects.None;
+        }
+
+        private void SimpleDrop(object? sender, DragEventArgs e)
+        {
+            if (SimpleDropZone != null)
+                SimpleDropZone.BorderBrush = Avalonia.Media.Brushes.Gray;
+
+            if (!e.DataTransfer.Contains(DataFormat.File)) return;
+
+            var items = e.DataTransfer.TryGetFiles();
+            if (items == null) return;
+
+            int added = 0;
+            var enabledExts = new HashSet<string>(AppSettingsService.Current.GetEnabledExtensions());
+
+            foreach (var item in items)
+            {
+                var path = item.TryGetLocalPath() ?? item.Path.LocalPath;
+                if (string.IsNullOrWhiteSpace(path)) continue;
+
+                // 跳过非启用格式
+                var ext = Path.GetExtension(path).ToLowerInvariant();
+                if (!enabledExts.Contains(ext)) continue;
+
+                // 加入已选文件列表（去重）
+                if (!_simpleMediaFiles.Contains(path))
+                {
+                    _simpleMediaFiles.Add(path);
+                    added++;
+                }
+
+                // 自动加入转换队列
+                var qi = CreateQueueItemFromSimplePreset(path);
+                _queueProcessor.Add(qi);
+                _queueView.Add(qi);
+                _queueItems.Add(qi);
+            }
+
+            UpdateSimpleCounts();
+
+            if (LogText != null && added > 0)
+                LogText.Text += $"[简洁模式] 拖放添加 {added} 个文件 → 已选列表 + 转换队列\n";
+
+            if (AutoEncodeToggle?.IsChecked == true)
+                CheckAutoEncode();
+        }
+
+        private void SimpleClearAll_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        {
+            if (_queueProcessor.IsRunning)
+            {
+                if (LogText != null)
+                    LogText.Text += "[简洁模式] 请先停止队列再清空\n";
+                return;
+            }
+
+            // 清空已完成和失败的队列项
+            int removed = 0;
+            for (int i = _queueItems.Count - 1; i >= 0; i--)
+            {
+                if (_queueItems[i].Status != "处理中")
+                {
+                    _queueItems.RemoveAt(i);
+                    if (i < _queueView.Count) _queueView.RemoveAt(i);
+                    removed++;
+                }
+            }
+
+            // 清空已选文件列表
+            _simpleMediaFiles.Clear();
+
+            UpdateSimpleCounts();
+
+            if (LogText != null && removed > 0)
+                LogText.Text += $"[简洁模式] 已清空 {removed} 个队列项 + 已选文件列表\n";
+        }
+
+        private void AutoEncodeToggle_Changed(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        {
+            var enabled = AutoEncodeToggle?.IsChecked == true;
+            AppSettingsService.Current.SimpleModeAutoEncode = enabled;
+            AppSettingsService.Save();
+
+            if (enabled)
+            {
+                // 启动轮询定时器
+                if (_autoEncodeTimer == null)
+                {
+                    _autoEncodeTimer = new System.Timers.Timer(2000);
+                    _autoEncodeTimer.Elapsed += OnAutoEncodeTick;
+                }
+                _autoEncodeTimer.Start();
+
+                if (LogText != null)
+                    LogText.Text += "[简洁模式] 自动编码已开启，队列有任务时自动开始\n";
+
+                // 立即检查一次
+                CheckAutoEncode();
+            }
+            else
+            {
+                _autoEncodeTimer?.Stop();
+
+                if (LogText != null)
+                    LogText.Text += "[简洁模式] 自动编码已关闭\n";
+            }
+        }
+
+        private void SimpleErrorsOnly_Changed(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        {
+            if (SimpleQueueList == null) return;
+
+            bool showErrorsOnly = (sender as CheckBox)?.IsChecked == true;
+
+            if (showErrorsOnly)
+            {
+                var filtered = new ObservableCollection<Models.QueueItem>(
+                    _queueView.Where(i => i.HasError || !i.IsCompleted));
+                SimpleQueueList.ItemsSource = filtered;
+            }
+            else
+            {
+                SimpleQueueList.ItemsSource = _queueView;
+            }
+        }
+
+        private void SimpleViewDetail_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        {
+            if (sender is Button btn && btn.Tag is QueueItem item)
+            {
+                var command = string.IsNullOrEmpty(item.Command)
+                    ? BuildQueueItemCommand(item)
+                    : item.Command;
+                var win = new ProgressWindow(item, command);
+                win.Show(this);
+            }
+        }
+
+        // ═══════════════════════════════════════════════
+        // 简洁模式 — 内部辅助方法
+        // ═══════════════════════════════════════════════
+
+        /// <summary>将当前的简洁模式预设 ComboBox 同步到主界面保存的预设</summary>
+        private void SyncPresetToSimpleMode()
+        {
+            if (SimplePresetCombo == null || SimplePresetCombo.Items == null) return;
+
+            if (_simpleActivePreset != null)
+            {
+                for (int i = 0; i < SimplePresetCombo.Items.Count; i++)
+                {
+                    if (SimplePresetCombo.Items[i] is PresetEntry pe &&
+                        pe.Name == _simpleActivePreset.Name)
+                    {
+                        SimplePresetCombo.SelectedIndex = i;
+                        return;
+                    }
+                }
+            }
+
+            if (SimplePresetCombo.Items.Count > 0)
+            {
+                SimplePresetCombo.SelectedIndex = 0;
+                _simpleActivePreset = SimplePresetCombo.Items[0] as PresetEntry;
+            }
+        }
+
+        /// <summary>简洁模式预设切换 → 自动应用到主界面参数控件</summary>
+        private void SimplePresetCombo_SelectionChanged(object? sender, SelectionChangedEventArgs e)
+        {
+            if (!_simpleModeActive) return; // 仅简洁模式激活时生效
+            if (SimplePresetCombo?.SelectedItem is PresetEntry preset)
+            {
+                _simpleActivePreset = preset;
+                ApplyPresetData(preset.Data);
+                _ = RefreshEncoderListAsync();
+                UpdateOptionAvailability();
+            }
+        }
+
+        /// <summary>自动编码轮询：检查是否有待处理任务且调度器空闲，是则自动启动</summary>
+        private void OnAutoEncodeTick(object? sender, System.Timers.ElapsedEventArgs e)
+        {
+            Dispatcher.UIThread.Post(() => CheckAutoEncode());
+        }
+
+        private void CheckAutoEncode()
+        {
+            if (!_simpleModeActive) return;
+            if (_queueProcessor.IsRunning) return;
+
+            var hasPending = _queueItems.Any(i =>
+                i.Status == "待处理" && !i.IsCancelled);
+
+            if (hasPending)
+            {
+                _queueProcessor.RequeueStoppedAndFailed(_queueItems);
+                _queueProcessor.Start(GetConcurrencyValue());
+
+                if (SimpleStatusLabel != null)
+                    SimpleStatusLabel.Text = "自动编码运行中...";
+                if (LogText != null)
+                    LogText.Text += "[简洁模式] 自动编码已启动\n";
+            }
+        }
+
+        /// <summary>根据当前选中的简洁模式预设创建 QueueItem</summary>
+        private QueueItem CreateQueueItemFromSimplePreset(string inputPath)
+        {
+            if (_simpleActivePreset == null)
+            {
+                // 回退：从 ComboBox 重新选择
+                _simpleActivePreset = SimplePresetCombo?.SelectedItem as PresetEntry;
+                if (_simpleActivePreset == null)
+                {
+                    // 终极回退：默认高质量 JPEG
+                    return new QueueItem
+                    {
+                        InputPath = inputPath,
+                        OutputPath = GetOutputPath(inputPath, "jpg"),
+                        Options = new FfmpegOptions { Format = "jpg", Quality = 92 },
+                        Status = "待处理"
+                    };
+                }
+            }
+
+            var data = _simpleActivePreset.Data;
+            var fmt = NormalizeFormat(data.Format);
+            var outputPath = GetOutputPath(inputPath, fmt);
+
+            var options = new FfmpegOptions
+            {
+                Format = fmt,
+                Quality = data.Quality,
+                Chroma = data.Chroma ?? "auto",
+                ColorSpace = data.ColorSpace ?? "auto",
+                BitDepth = data.BitDepth is "auto" or null ? null : int.TryParse(data.BitDepth, out var bd) ? bd : null,
+                EncoderBackend = data.EncoderBackend switch
+                {
+                    "Cjpegli" => Services.EncoderBackend.Cjpegli,
+                    "Cjxl" => Services.EncoderBackend.Cjxl,
+                    "Ultrahdr" => Services.EncoderBackend.Ultrahdr,
+                    "Jxr" => Services.EncoderBackend.Jxr,
+                    _ => Services.EncoderBackend.Ffmpeg
+                },
+                Threads = data.AutoThreads ? FfmpegOptions.ComputeAutoThreads() :
+                          data.SingleThread ? 1 : data.ManualThreads,
+                Lossless = data.Lossless,
+                MetadataMode = data.MetadataMode == "StripAll" ? MetadataMode.StripAll : MetadataMode.PreserveAll,
+                PngPred = data.PngPred,
+                WebpPreset = data.WebpPreset,
+                WebpCompressionLevel = data.WebpCompressionLevel,
+                AvifCpuUsed = data.AvifCpuUsed,
+                AvifTune = data.AvifTune,
+                AvifStillPicture = data.AvifStillPicture,
+                AvifRowMt = data.AvifRowMt,
+                AvifSvtPreset = data.AvifSvtPreset,
+                AvifSvtTune = data.AvifSvtTune,
+                AvifHwPreset = data.AvifHwPreset,
+                JxlEffort = data.JxlEffort,
+                JxlModular = data.JxlModular,
+                JxlPreserveUltrahdr = data.JxlPreserveUltrahdr,
+                JxlLosslessJpeg = data.JxlLosslessJpeg,
+                JpegHuffman = data.JpegHuffman,
+                JpegDct = data.JpegDct,
+                JpegProgressiveId = data.JpegProgressiveId,
+                JpegGainMap = data.JpegGainMap,
+                JpegGainMapQuality = data.JpegGainMapQuality,
+                JpegGainMapTargetNits = data.JpegGainMapTargetNits,
+                TiffCompressionAlgo = data.TiffCompressionAlgo,
+                StripExifGps = data.StripExifGps,
+                StripExifTime = data.StripExifTime,
+                StripExifCamera = data.StripExifCamera,
+                StripExifAll = data.StripExifAll,
+                StripXmp = data.StripXmp,
+                AppendPngExtension = data.AppendPngExtension,
+                AnimationFps = data.AnimationFps,
+                AnimationLoop = data.AnimationLoop,
+                GifPaletteOptimize = data.GifPaletteOptimize,
+                GifDither = data.GifDither,
+                AnimationScaleW = data.AnimationScaleW,
+                AnimationDuration = data.AnimationDuration,
+                CjpegliChromaSubsampling = data.CjpegliChromaSubsampling,
+                CjpegliProgressiveId = data.CjpegliProgressiveId,
+                CjpegliOptimize = data.CjpegliOptimize ?? true,
+                CjpegliAdaptiveQuant = data.CjpegliAdaptiveQuant ?? true
+            };
+
+            return new QueueItem
+            {
+                InputPath = inputPath,
+                OutputPath = outputPath,
+                Options = options,
+                Status = "待处理"
+            };
+        }
+
+        /// <summary>更新简洁模式底部状态栏</summary>
+        private void UpdateSimpleProgressDisplay()
+        {
+            if (!_simpleModeActive) return;
+
+            var completed = _queueItems.Count(i => i.CompletedAt.HasValue || i.IsCompleted);
+            var total = _queueItems.Count;
+            var processing = _queueItems.Count(i => i.Status == "处理中");
+
+            if (SimpleProgressLabel != null)
+                SimpleProgressLabel.Text = $"队列: {completed}/{total}";
+            if (SimpleStatusLabel != null && !_queueProcessor.IsRunning)
+                SimpleStatusLabel.Text = total > 0 ? "就绪" : "队列为空";
+        }
+
+        /// <summary>更新简洁模式双列表计数标签</summary>
+        private void UpdateSimpleCounts()
+        {
+            if (SimpleFileCount != null)
+                SimpleFileCount.Text = $"{_simpleMediaFiles.Count} 个文件";
+            if (SimpleQueueCount != null)
+                SimpleQueueCount.Text = $"{_queueView.Count} 项";
+        }
+
+        // 暴露给简洁模式进度刷新的公开入口（由 timer 调用）
+        private void RefreshSimpleProgressIfActive()
+        {
+            if (_simpleModeActive)
+            {
+                Dispatcher.UIThread.Post(() => UpdateSimpleProgressDisplay());
+            }
         }
 
         private async void FormatFilter_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)

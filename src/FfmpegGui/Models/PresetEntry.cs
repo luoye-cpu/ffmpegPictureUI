@@ -9,5 +9,7 @@ namespace FfmpegGui.Models
         public string Source { get; set; } = "user"; // "builtin" or "user"
         public string? FilePath { get; set; }         // 用户预设的文件路径
         public PresetData Data { get; set; } = new();
+
+        public override string ToString() => Name;
     }
 }
