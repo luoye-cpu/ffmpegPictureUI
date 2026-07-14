@@ -543,6 +543,9 @@
               <CheckBox x:Name="StripXmpCheck" Content="删除 XMP 元数据"/>
             </StackPanel>
           </Border>
+          <CheckBox x:Name="AppendPngExtCheck" Content="自动追加 .png 后缀（JXL/AVIF 兼容）"
+                    Margin="0,2,0,0" FontSize="11"
+                    ToolTip.Tip="输出文件名末尾追加 .png，解决部分软件无法识别 .jxl/.avif 的问题。仅对 JXL 和 AVIF 格式生效。"/>
           <CheckBox x:Name="LosslessCheck" Content="无损编码" Margin="0,4,0,0"/>
           <Button Content="生成指令" Click="BuildCommand_Click" Margin="0,12,0,0" Padding="8"/>
         </StackPanel>

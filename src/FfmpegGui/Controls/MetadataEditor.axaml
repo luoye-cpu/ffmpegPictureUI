@@ -26,6 +26,9 @@
           <Button Content="↩ 还原" Click="RestoreMetadata_Click" Padding="8,3" FontSize="11"/>
           <Button Content="🗑 清空所有字段" Click="ClearAll_Click" Padding="8,3" FontSize="11"
                   Foreground="Gray"/>
+          <Separator Width="4" Background="Transparent"/>
+          <Button Content="🎨 嵌入 ICC" Click="EmbedIcc_Click" Padding="8,3" FontSize="11"
+                  ToolTip.Tip="选择 .icc/.icm 文件嵌入到当前图片"/>
         </StackPanel>
 
         <!-- 状态反馈 -->

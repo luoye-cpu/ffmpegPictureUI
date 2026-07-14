@@ -1,0 +1,172 @@
+<Window
+    x:Class="FfmpegGui.ImageDetailWindow"
+    xmlns="https://github.com/avaloniaui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:sys="using:System"
+    Title="📋 图片详情" Width="720" Height="660"
+    WindowStartupLocation="CenterOwner"
+    MinWidth="560" MinHeight="420">
+  <Grid RowDefinitions="Auto,*,Auto" Margin="14">
+    <!-- 标题行 -->
+    <StackPanel Grid.Row="0" Orientation="Horizontal" Spacing="8" Margin="0,0,0,10">
+      <TextBlock x:Name="TitleLabel" Text="📋 图片详情" FontSize="18" FontWeight="Bold"/>
+      <TextBlock x:Name="FileNameLabel" Text="" FontSize="14"
+                 VerticalAlignment="Center"
+                 Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+    </StackPanel>
+
+    <!-- TabControl -->
+    <TabControl Grid.Row="1" x:Name="MainTabs" SelectedIndex="0">
+      <!-- ═══ Tab 1: 技术信息 ═══ -->
+      <TabItem Header="📊 技术信息">
+        <ScrollViewer VerticalScrollBarVisibility="Auto">
+          <StackPanel Spacing="10" Margin="0,6">
+            <!-- 文件概览 -->
+            <Border CornerRadius="6" Padding="12,10"
+                    Background="{DynamicResource SystemControlBackgroundChromeMediumBrush}">
+              <StackPanel Spacing="4">
+                <TextBlock Text="📁 文件概览" FontWeight="Bold" FontSize="13" Margin="0,0,0,4"/>
+                <Grid ColumnDefinitions="90,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto">
+                  <TextBlock Text="文件名" Grid.Row="0" Grid.Column="0" FontSize="11" Foreground="Gray"/>
+                  <TextBlock x:Name="InfoFileName" Grid.Row="0" Grid.Column="1" FontSize="11"/>
+                  <TextBlock Text="完整路径" Grid.Row="1" Grid.Column="0" FontSize="11" Foreground="Gray" Margin="0,2,0,0"/>
+                  <TextBlock x:Name="InfoFullPath" Grid.Row="1" Grid.Column="1" FontSize="11" Margin="0,2,0,0" TextWrapping="Wrap"/>
+                  <TextBlock Text="格式" Grid.Row="2" Grid.Column="0" FontSize="11" Foreground="Gray" Margin="0,2,0,0"/>
+                  <TextBlock x:Name="InfoFormat" Grid.Row="2" Grid.Column="1" FontSize="11" Margin="0,2,0,0"/>
+                  <TextBlock Text="文件大小" Grid.Row="3" Grid.Column="0" FontSize="11" Foreground="Gray" Margin="0,2,0,0"/>
+                  <TextBlock x:Name="InfoFileSize" Grid.Row="3" Grid.Column="1" FontSize="11" Margin="0,2,0,0"/>
+                  <TextBlock Text="修改时间" Grid.Row="4" Grid.Column="0" FontSize="11" Foreground="Gray" Margin="0,2,0,0"/>
+                  <TextBlock x:Name="InfoModified" Grid.Row="4" Grid.Column="1" FontSize="11" Margin="0,2,0,0"/>
+                </Grid>
+              </StackPanel>
+            </Border>
+
+            <!-- 图像属性 -->
+            <Border CornerRadius="6" Padding="12,10"
+                    Background="{DynamicResource SystemControlBackgroundChromeMediumBrush}">
+              <StackPanel Spacing="4">
+                <TextBlock Text="🖼 图像属性" FontWeight="Bold" FontSize="13" Margin="0,0,0,4"/>
+                <Grid ColumnDefinitions="90,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto">
+                  <TextBlock Text="分辨率" Grid.Row="0" Grid.Column="0" FontSize="11" Foreground="Gray"/>
+                  <TextBlock x:Name="InfoResolution" Grid.Row="0" Grid.Column="1" FontSize="11"/>
+                  <TextBlock Text="位深" Grid.Row="1" Grid.Column="0" FontSize="11" Foreground="Gray" Margin="0,2,0,0"/>
+                  <TextBlock x:Name="InfoBitDepth" Grid.Row="1" Grid.Column="1" FontSize="11" Margin="0,2,0,0"/>
+                  <TextBlock Text="像素格式" Grid.Row="2" Grid.Column="0" FontSize="11" Foreground="Gray" Margin="0,2,0,0"/>
+                  <TextBlock x:Name="InfoPixFmt" Grid.Row="2" Grid.Column="1" FontSize="11" Margin="0,2,0,0"/>
+                  <TextBlock Text="色彩空间" Grid.Row="3" Grid.Column="0" FontSize="11" Foreground="Gray" Margin="0,2,0,0"/>
+                  <TextBlock x:Name="InfoColor" Grid.Row="3" Grid.Column="1" FontSize="11" Margin="0,2,0,0" TextWrapping="Wrap"/>
+                  <TextBlock Text="编码器" Grid.Row="4" Grid.Column="0" FontSize="11" Foreground="Gray" Margin="0,2,0,0"/>
+                  <TextBlock x:Name="InfoCodec" Grid.Row="4" Grid.Column="1" FontSize="11" Margin="0,2,0,0"/>
+                </Grid>
+              </StackPanel>
+            </Border>
+
+            <!-- 编码参数（仅队列项有） -->
+            <Border x:Name="EncodeParamsCard" CornerRadius="6" Padding="12,10" IsVisible="False"
+                    Background="{DynamicResource SystemControlBackgroundChromeMediumBrush}">
+              <StackPanel Spacing="4">
+                <TextBlock Text="⚙ 编码参数" FontWeight="Bold" FontSize="13" Margin="0,0,0,4"/>
+                <Grid ColumnDefinitions="90,*" RowDefinitions="Auto,Auto,Auto,Auto">
+                  <TextBlock Text="质量" Grid.Row="0" Grid.Column="0" FontSize="11" Foreground="Gray"/>
+                  <TextBlock x:Name="InfoQuality" Grid.Row="0" Grid.Column="1" FontSize="11"/>
+                  <TextBlock Text="色度采样" Grid.Row="1" Grid.Column="0" FontSize="11" Foreground="Gray" Margin="0,2,0,0"/>
+                  <TextBlock x:Name="InfoChroma" Grid.Row="1" Grid.Column="1" FontSize="11" Margin="0,2,0,0"/>
+                  <TextBlock Text="编码器" Grid.Row="2" Grid.Column="0" FontSize="11" Foreground="Gray" Margin="0,2,0,0"/>
+                  <TextBlock x:Name="InfoEncoder" Grid.Row="2" Grid.Column="1" FontSize="11" Margin="0,2,0,0"/>
+                  <TextBlock Text="模式" Grid.Row="3" Grid.Column="0" FontSize="11" Foreground="Gray" Margin="0,2,0,0"/>
+                  <TextBlock x:Name="InfoLossless" Grid.Row="3" Grid.Column="1" FontSize="11" Margin="0,2,0,0"/>
+                </Grid>
+              </StackPanel>
+            </Border>
+
+            <!-- ICC 色彩配置 -->
+            <Border CornerRadius="6" Padding="12,10"
+                    Background="{DynamicResource SystemControlBackgroundChromeMediumBrush}">
+              <StackPanel Spacing="4">
+                <TextBlock Text="🎨 色彩配置" FontWeight="Bold" FontSize="13" Margin="0,0,0,4"/>
+                <TextBlock x:Name="InfoIcc" FontSize="11"/>
+              </StackPanel>
+            </Border>
+
+            <!-- 转换指令（仅队列项有） -->
+            <Border x:Name="CommandCard" CornerRadius="6" Padding="12,10" IsVisible="False"
+                    Background="{DynamicResource SystemControlBackgroundChromeMediumBrush}">
+              <StackPanel Spacing="4">
+                <TextBlock Text="⚡ 转换指令" FontWeight="Bold" FontSize="13" Margin="0,0,0,4"/>
+                <TextBox x:Name="InfoCommand" IsReadOnly="True" FontSize="11"
+                         FontFamily="Consolas,monospace" AcceptsReturn="True"
+                         TextWrapping="Wrap" MinHeight="40"
+                         Background="{DynamicResource SystemControlBackgroundChromeLowBrush}"/>
+              </StackPanel>
+            </Border>
+
+            <!-- 运行日志（仅队列项有） -->
+            <Border x:Name="LogCard" CornerRadius="6" Padding="12,10" IsVisible="False"
+                    Background="{DynamicResource SystemControlBackgroundChromeMediumBrush}">
+              <StackPanel Spacing="4">
+                <TextBlock Text="📜 运行日志" FontWeight="Bold" FontSize="13" Margin="0,0,0,4"/>
+                <ScrollViewer MaxHeight="300" VerticalScrollBarVisibility="Auto">
+                  <TextBox x:Name="InfoLog" IsReadOnly="True" FontSize="10"
+                           FontFamily="Consolas,monospace" AcceptsReturn="True"
+                           TextWrapping="Wrap"
+                           Background="{DynamicResource SystemControlBackgroundChromeLowBrush}"/>
+                </ScrollViewer>
+              </StackPanel>
+            </Border>
+
+            <!-- 质量分析（仅已完成的队列项有） -->
+            <Border x:Name="QualityCard" CornerRadius="6" Padding="12,10" IsVisible="False"
+                    Background="{DynamicResource SystemControlBackgroundChromeMediumBrush}">
+              <StackPanel Spacing="4">
+                <TextBlock Text="📊 质量分析" FontWeight="Bold" FontSize="13" Margin="0,0,0,4"/>
+                <Grid ColumnDefinitions="90,*" RowDefinitions="Auto,Auto">
+                  <TextBlock Text="SSIM" Grid.Row="0" Grid.Column="0" FontSize="11" Foreground="Gray"/>
+                  <TextBlock x:Name="InfoSsim" Grid.Row="0" Grid.Column="1" FontSize="11"/>
+                  <TextBlock Text="PSNR" Grid.Row="1" Grid.Column="0" FontSize="11" Foreground="Gray" Margin="0,2,0,0"/>
+                  <TextBlock x:Name="InfoPsnr" Grid.Row="1" Grid.Column="1" FontSize="11" Margin="0,2,0,0"/>
+                </Grid>
+              </StackPanel>
+            </Border>
+          </StackPanel>
+        </ScrollViewer>
+      </TabItem>
+
+      <!-- ═══ Tab 2: 元数据编辑 ═══ -->
+      <TabItem Header="✏️ 元数据编辑">
+        <Grid RowDefinitions="Auto,*,Auto" Margin="0,6">
+          <!-- 工具栏 -->
+          <StackPanel Grid.Row="0" Orientation="Horizontal" Spacing="6" Margin="0,0,0,8">
+            <Button Content="📖 读取元数据" Click="ReadMeta_Click" Padding="8,3" FontSize="11"/>
+            <Button Content="💾 保存到文件" Click="SaveMeta_Click" Padding="8,3" FontSize="11"/>
+            <Button Content="↩ 撤销" Click="UndoMeta_Click" Padding="8,3" FontSize="11"/>
+            <Button Content="🗑 清空字段" Click="ClearMeta_Click" Padding="8,3" FontSize="11"/>
+            <Separator Width="6" Background="Transparent"/>
+            <Button Content="🎨 嵌入 ICC" Click="EmbedIcc_Click" Padding="8,3" FontSize="11"
+                    ToolTip.Tip="选择 .icc/.icm 文件嵌入到当前图片"/>
+            <Separator Width="8" Background="Transparent"/>
+            <TextBlock x:Name="MetaStatus" Text="" FontSize="11" VerticalAlignment="Center"
+                       Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+          </StackPanel>
+
+          <!-- 字段区域 -->
+          <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+            <StackPanel x:Name="MetaFieldsPanel" Spacing="8"/>
+          </ScrollViewer>
+
+          <!-- 底部状态 -->
+          <Border Grid.Row="2" Margin="0,6,0,0" Padding="8,4" CornerRadius="4"
+                  Background="{DynamicResource SystemControlBackgroundChromeLowBrush}">
+            <TextBlock x:Name="MetaFileLabel" Text="" FontSize="10"
+                       Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+          </Border>
+        </Grid>
+      </TabItem>
+    </TabControl>
+
+    <!-- 底部操作栏 -->
+    <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="8" Margin="0,10,0,0"
+                HorizontalAlignment="Right">
+      <Button Content="关闭" Click="Close_Click" Padding="12,4" FontSize="12" IsCancel="True"/>
+    </StackPanel>
+  </Grid>
+</Window>

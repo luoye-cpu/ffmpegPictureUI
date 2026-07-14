@@ -227,6 +227,51 @@ namespace FfmpegGui.Controls
             SetStatus("已清空所有字段（未保存到文件）", "gray");
         }
 
+        /// <summary>嵌入外部 ICC 配置文件</summary>
+        private async void EmbedIcc_Click(object? sender, RoutedEventArgs e)
+        {
+            var filePath = ResolveFilePath();
+            if (!File.Exists(filePath)) { SetStatus("❌ 文件不存在", "red"); return; }
+            if (!ExifToolService.IsAvailable) { SetStatus("❌ exiftool 未检测到", "red"); return; }
+
+            var topLevel = TopLevel.GetTopLevel(this);
+            if (topLevel?.StorageProvider == null) return;
+
+            var files = await topLevel.StorageProvider.OpenFilePickerAsync(new Avalonia.Platform.Storage.FilePickerOpenOptions
+            {
+                Title = "选择 ICC 配置文件",
+                AllowMultiple = false,
+                FileTypeFilter = new[]
+                {
+                    new Avalonia.Platform.Storage.FilePickerFileType("ICC 配置文件") { Patterns = new[] { "*.icc", "*.icm" } },
+                    new Avalonia.Platform.Storage.FilePickerFileType("所有文件") { Patterns = new[] { "*" } }
+                }
+            });
+
+            if (files == null || files.Count == 0) return;
+            var iccPath = files[0].Path.LocalPath;
+
+            SetStatus("⏳ 正在嵌入 ICC...", "gray");
+            try
+            {
+                var exit = await Task.Run(() =>
+                    ExifToolService.EmbedIccProfileFromFileAsync(iccPath, filePath, null));
+                if (exit == 0)
+                {
+                    SetStatus($"✅ ICC 已嵌入: {Path.GetFileName(iccPath)}", "green");
+                    // 更新 ICC 配置分类中的显示
+                    if (_fieldBoxes.TryGetValue("ICC 配置文件", out var iccBox))
+                        iccBox.Text = $"已嵌入: {Path.GetFileName(iccPath)}";
+                }
+                else
+                    SetStatus($"⚠️ 嵌入失败（退出码 {exit}）", "red");
+            }
+            catch (Exception ex)
+            {
+                SetStatus($"❌ 嵌入失败: {ex.Message}", "red");
+            }
+        }
+
         // ── 辅助方法 ──
 
         private string ResolveFilePath()

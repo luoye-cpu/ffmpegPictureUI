@@ -68,7 +68,10 @@ namespace FfmpegGui.Services
             // ── ② PLAN 便携包自动检测 ──
             try
             {
+                // 先查标准名 exiftool.exe，再查 (-k) 版
                 var planFound = PlatformServices.TryFindInPlanFolder(PlatformServices.Exiftool);
+                if (planFound == null)
+                    planFound = PlatformServices.TryFindInPlanFolder("exiftool(-k).exe");
                 if (planFound != null) { _detectedPath = ResolveSafeExifToolPath(planFound); if (_detectedPath != null) return; }
             }
             catch { }
