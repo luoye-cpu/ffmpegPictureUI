@@ -1,12 +1,9 @@
 # 🖼️ FFmpegPictureUI — FFmpeg 图片转换器
 
-**v1.5.0 BETA — ICC 色彩管理、24 预设系统、检测模块重写、工具面板 3 列重构。**
+**v1.5.0 BETA2** — Cross-platform batch image/animation/video converter built on Avalonia UI.
+基于 Avalonia UI 的跨平台批量图片/动图/视频转换工具，封装 `ffmpeg`/`ffprobe` + 外部编码器 (`cjxl`/`djxl`/`cjpegli`/`ultrahdr_app`/`JxrEncApp`/`JxrDecApp`).
 
-An Avalonia UI-based cross-platform batch image/animation/video conversion tool that wraps `ffmpeg`/`ffprobe` with an intuitive GUI. Integrates external encoders: `cjxl`/`djxl`/`cjpegli` (JPEG XL), `ultrahdr_app` (Ultra HDR), `JxrEncApp`/`JxrDecApp` (JPEG XR).
-
-基于 Avalonia UI 的跨平台图片/动图/视频批量转换工具，将 `ffmpeg`/`ffprobe` 命令行封装为直观图形界面，集成外部编码器：`cjxl`/`djxl`/`cjpegli`（JPEG XL）、`ultrahdr_app`（Ultra HDR）、`JxrEncApp`/`JxrDecApp`（JPEG XR）。
-
-QQ 交流群：754439779  点击链接加入群聊【FFmpegPictureUI图像处理软件】：https://qm.qq.com/q/M2181PvCkW****
+QQ 交流群：754439779 | [点击加群](https://qm.qq.com/q/M2181PvCkW)
 
 ---
 
@@ -129,160 +126,33 @@ ffmpegPictureUI/
 
 ## 📝 Changelog / 更新日志
 
+### v1.5.0 BETA2 (2026-07-14)
+
+- **Simple Mode / 简洁模式** — Minimal overlay view within the same window; drag-drop files directly into queue; auto-encode toggle starts processing automatically; preset switcher syncs to main UI parameters; dual-list layout (selected files + conversion queue). / 同窗口内极简覆盖视图；拖放文件直接入队；自动编码开关；预设切换同步主界面参数；双列表布局。
+- **GPU Encoder Detection / GPU 编码检测** — Auto-detects QuickSync/NVENC/AMF hardware encoders at startup; runs quick encode validation test per encoder; shows color-coded warning hints (✅⚡⚠️❌) in encoder dropdown when hardware is unavailable. / 启动时自动检测 QSV/NVENC/AMF 硬件编码器；逐编码器快速验证；编码器下拉框彩色警告提示。
+- **GPU UI Acceleration / GPU UI 加速** — ANGLE/D3D11 rendering backend for Windows (Vulkan/OpenGL for Linux); toggleable GPU/CPU button in top toolbar; `--no-gpu` CLI fallback. / Windows ANGLE/D3D11 渲染后端（Linux Vulkan/OpenGL）；GPU/CPU 切换按钮；`--no-gpu` 命令行兜底。
+- **Startup Optimization / 启动优化** — Removed duplicate settings.json I/O; parallelized 7 external tool detections via Task.WhenAll; deferred GPU encoder runtime validation to background idle. / 消除双重 settings.json I/O；7 个外部工具并行检测；GPU 编码器运行时验证延迟到后台空闲。
+- **Portable Storage / 便携化** — Settings & user presets now stored in exe directory (`presets/` subfolder); zero %AppData% dependency; full copy-paste deployment. / 配置和用户预设存储于 exe 同目录；零 %AppData% 依赖；拷贝即用。
+
 ### v1.5.0 BETA (2026-07-14)
 
-> 🎯 **ICC 色彩管理 + 预设系统 v2.0 + 检测模块重写 + 工具面板 3 列重构**
+- **ICC Color Management / ICC 色彩管理** — Load external .icc/.icm profiles; embed ICC metadata via exiftool (JPEG/PNG/TIFF/WebP) or iccgen filter (AVIF/JXL); bake pixels from source to target color space via zscale; bake+embed dual mode; built-in sRGB/Adobe RGB/Display P3/DCI-P3/ProPhoto/Rec.2020/Rec.2100 mapping. / 加载外部 .icc/.icm；exiftool/iccgen 嵌入 ICC 元数据；zscale 烘焙像素转换；烘焙+嵌入双模式；完整色彩空间映射表。
+- **Preset System v2.0 / 预设系统 v2.0** — 24 built-in presets (JPEG LI×3, JXL×4, AVIF×10, WebP×3, PNG×2, TIFF, Ultra HDR, GIF); secondary PresetManagerWindow with list/detail/apply/save/import/delete; user presets CRUD persisted as JSON. / 24 内置预设（JPEG LI×3/JXL×4/AVIF×10/WebP×3/PNG×2/TIFF/Ultra HDR/GIF）；二级预设管理窗口；用户预设 JSON 持久化。
+- **Tools Panel Redesign / 工具面板重构** — 3-column horizontal layout (JXL libs | exiftool | artifacts); compact status bar hidden by default, auto-shows after background detection; full 9-tool coverage with ✅/❌ indicators; PLAN portable pack auto-recognition. / 3 列水平布局（JXL库|exiftool|artifacts）；紧凑状态栏默认隐藏、后台检测完自动显示；全 9 工具 ✅/❌ 状态；PLAN 便携包自动识别。
+- **Detection Module Rewrite / 检测模块重写** — Full async background pipeline with 3-phase execution (filesystem → ffmpeg → tools); real 8s timeout per step via Task.WhenAny; incremental Dispatcher logging; serialized ffmpeg calls to prevent dual-instance deadlock. / 全异步后台管线 3 阶段执行；每步真实 8s 超时；增量 Dispatcher 日志；ffmpeg 串行调用防死锁。
+- **AVIF Encoder Panels / AVIF 编码器面板** — Per-encoder backend sub-panels: AOM (cpu-used/tune/still-picture/row-mt), SVT-AV1 (preset/tune), NVENC/QSV/AMF (hardware presets); dynamic panel switching on encoder selection. / 编码器子面板动态切换：AOM/SVT/NVENC/QSV/AMF 各自独立选项。
+- **Animation & RAW / 动图与 RAW** — Video-to-animation duration limit; dcraw RAW demosaic with auto-detection; expanded RAW format support (Canon/Nikon/Sony/Fujifilm/Olympus/Panasonic/Pentax/Others). / 视频转动图时长限制；dcraw RAW 解码自动检测；扩展 RAW 格式支持。
 
-#### 🎨 ICC 色彩管理 / ICC Color Management
-- **ICC 嵌入 / ICC Embed**: 支持加载外部 .icc/.icm 配置文件并嵌入输出图片。JPEG/PNG/TIFF/WebP 通过 exiftool 后处理嵌入；AVIF/JXL 通过 iccgen 滤镜从色彩元数据生成 ICC
-- **ICC 烘焙 / ICC Bake**: 通过 zscale 滤镜将像素从源色彩空间（如 Adobe RGB）转换到目标色彩空间（如 sRGB），保证所有设备一致显示，无需 ICC 读取支持
-- **烘焙+嵌入双保险 / Bake+Embed**: 同时执行像素转换和 ICC 嵌入，专业工作流推荐
-- **UI 集成 / UI**: 左侧面板新增 🎨 ICC 色彩管理卡片，RadioButton 模式切换（不处理/嵌入/烘焙/烘焙+嵌入），ICC 文件浏览、源/目标色彩空间下拉框、转换参数预览
-- **色彩空间映射 / Color space mapping**: 内置 sRGB/Adobe RGB/Display P3/DCI-P3/ProPhoto RGB/Rec.2020/Rec.2100 完整映射表
-- **冲突避免 / Conflict prevention**: 烘焙模式下自动跳过 HDR tonemap 和 BT.2020 自动 zscale，防止双重转换
 
-#### 📋 预设系统 v2.0 / Preset System v2.0
-- **24 内置预设 / 24 Built-in Presets**: 覆盖全部编码场景的专业预设
-  - 📸 JPEG LI ×3（高质量 d=2.0 / 平衡 d=4.0 / 极限 d=6.0 渐进）— 全部使用 butteraugli distance
-  - ✨ JPEG XL ×4（视觉无损 d=1.0 / 平衡 d=3.0 / 无损 d=0 / ⚡JPEG→JXL 极速重封装）
-  - 🚀 AVIF ×10：AOM（高质量/平衡/无损）+ SVT（高质量/快速）+ NVENC（高质量/快速）+ QSV（高质量/快速）
-  - 🌐 WebP ×3（高质量有损/平衡有损/无损）、🖼 PNG ×2（最大压缩/快速存档）、🖨 TIFF LZW
-  - 🌅 Ultra HDR Gain Map ×1、🎬 GIF 调色板优化 ×1
-- **二级管理窗口 / Secondary Window**: 新增 `PresetManagerWindow`，支持预设列表浏览、详情预览、一键应用、另存当前、导入外部文件、删除用户预设
-- **开发者内置 / Developer Built-in**: 内置预设定义集中于 `PresetManagerService.BuiltInPresets`，增删改只需修改一处
-- **用户预设持久化 / User Presets**: 存储于 `%AppData%/FfmpegGui/presets/*.json`，支持 CRUD
-- **移除旧按钮 / UI Cleanup**: 左侧面板底部移除"导出预设/导入预设"按钮，顶部标题旁新增"📋 预设"入口
+<details>
+<summary>Earlier versions / 更早版本</summary>
 
-#### 🔧 外部工具面板重构 / Tools Panel Redesign
-- **3 列水平布局 / 3-Column Layout**: JXL 参考库 | exiftool | artifacts 三列并排，告别垂直堆叠
-- **全工具检测 / Full Tool Detection**: 紧凑状态栏新增 djxl/ultrahdr/jxr/avifenc/dcraw 检测，覆盖全部 9 种工具
-- **默认隐藏 / Hidden by Default**: 紧凑状态栏启动时隐藏，后台检测完成后自动显示（✅/❌ 各工具状态）
-- **dcraw 检测修复 / dcraw Detection Fix**: 修复 PLAN 字典 key 不一致导致的 dcraw 无法识别（`"dcraw"` vs `"dcraw.exe"`）；新增 `FindInArtifactsOrPlan()` 统一查找逻辑
-- **avifenc 检测增强 / avifenc Detection**: 多路径查找：手动路径 → artifacts 目录 → PLAN 便携文件夹 → ffmpeg 同目录
+- **v1.4.5** — Windows Search drag-drop fix, Linux ARM migration analysis, JXL lossless JPEG repack / Win 搜索拖放修复、Linux ARM 迁移分析、JXL 无损重封装
+- **v1.3.0** — UI cards redesign, dual theme, GridSplitter layout, exiftool privacy cleaning / UI 卡片重构、双色主题、GridSplitter 布局、exiftool 隐私清理
+- **v1.2.0** — Batch queue, metadata editor, format filter, preset v1.0, CPU SIMD detection / 批量队列、元数据编辑器、格式筛选、预设 v1.0、CPU 指令集检测
+- **v1.0.0** — Initial release: multi-format encoding, quality slider, external encoder integration / 初始发布：多格式编码、质量滑块、外部编码器集成
 
-#### ⚡ 检测模块重写 / Detection Rewrite
-- **架构重构**: `FullDetectionAsync` 彻底重写，三层分阶段执行（文件系统→ffmpeg 进程→外部工具），完全后台化
-- **超时保护 / Timeout Protection**: ffmpeg 进程检测使用 `Task.WhenAny + Task.Delay(8000)` 真实超时（替代无效的 CancellationTokenSource）
-- **串行化 / Serialized**: ffmpeg 两次进程调用改为串行（避免双实例冲突导致死锁）
-- **增量日志 / Incremental Logging**: 每步检测完成后通过 Dispatcher 即时输出到 UI，用户可实时看到进度
-
-#### 🪟 启动修复 / Startup Fixes
-- **WinExe 输出类型 / WinExe OutputType**: `<OutputType>Exe</OutputType>` → `<OutputType>WinExe</OutputType>`，消除启动 CMD 黑窗
-- **PublishTrimmed 关闭**: 框架依赖发布禁用裁剪，避免 NETSDK1102 错误
-
-#### 🛠️ 其他改进 / Other Improvements
-- **PresetData 模型扩展**: 新增 EncoderBackend/JxlLosslessJpeg/JpegGainMap/WebpCompressionLevel/AvifSvtPreset/AvifHwPreset/CjpegliChromaSubsampling 等字段
-- **ApplyPresetData 增强**: 编码器后端自动选择、WebP 压缩级别、SVT/HW 预设、cjpegli 选项映射
-- **IccProfileService**: 新建 ICC 文件验证/解析服务，支持魔数检测、头解析、描述标签提取、色彩空间推断
-- **ExifToolService.EmbedIccProfileFromFileAsync**: 新增外部 ICC 文件嵌入方法
-- **QueueProcessor ICC 后处理**: 编码完成后自动调用 exiftool 嵌入用户指定的 ICC 文件
-
-### v1.4.5 (2026-06-20)
-
-> 🎯 **正式版** — Ultra HDR 独立编码器、JPEG XR 全面支持、管道编码消除临时文件、折叠工具栏、元数据色彩保护。
-
-- 🗺️ **Ultra HDR 独立编码器 / Ultra HDR encoder**: 集成 Google `ultrahdr_app.exe` 作为 JPEG 独立编码器后端（场景0：单一HDR RAW → 自动SDR基底+增益图）；Gain Map 面板在 ultrahdr 后端下始终可见；新增 `UltrahdrPath` 配置项
-- 🖼️ **JPEG XR 全面支持 / JPEG XR support**: 新增 JXR 输出格式；集成 Microsoft jxrlib `JxrEncApp.exe`/`JxrDecApp.exe`；支持 32 种像素格式、无损/有损、Alpha 通道、色度子采样；JXR 质量分析自动用 JxrDecApp 解码后对比
-- 🔧 **管道编码消除临时文件 / Pipe encoding**: TIFF→JXL/TIFF→JPEG 等原先通过 PNG 临时文件中转的流程全部替换为 `ffmpeg stdout → encoder stdin` 直通管道（`PipeFfmpegToExternalEncoderAsync`），零磁盘中间文件
-- 📂 **折叠工具栏 / Collapsible toolbar**: 顶部外部工具路径面板改为可折叠设计；折叠态显示紧凑状态指示器（✅/❌ 各工具检测状态）；展开后显示完整路径配置；新增 JxrEncApp 路径行
-- 🎨 **元数据色彩保护 / Metadata color safety**: 新增 `CopyMetadataSafeAsync` 安全模式，exiftool 仅复制 EXIF/IPTC/XMP 描述性标签，跳过 ICC_Profile/ColorSpace/ColorPrimaries/TransferFunction，保护编码器内嵌色彩元数据；Ultra HDR/CJXL/CJPEGLI/FFmpeg 路径默认启用
-- 🔄 **元数据恢复回退 / Metadata fallback**: exiftool 不可用时自动回退到 ffmpeg 重新封装恢复元数据（`RestoreMetadataViaFfmpegAsync`）
-- 🐛 **WebP 无损失效修复 / WebP lossless fix**: 无损模式显式 `-q:v 100` + `-compression_level` 范围防护 + 禁止有损预设（picture/photo）+ 强制 RGBA 像素格式防 YUV 截断退化
-- 🐛 **元数据增强 / Enhanced metadata**: 统一所有格式编码后调用元数据恢复；`-map_metadata:s:v` 流级映射；`PreConvertToPngAsync` 传递 `-map_metadata 0`
-- 📊 **检测优先级统一 / Detection priority**: 所有外部工具检测统一为：手动路径 > 同目录 > 系统 PATH
-- 🎨 **HDR 色彩元数据全面修复 / HDR color metadata fix**: 修复 FFmpeg 编码器忽略 `-color_primaries`/`-color_trc` 的 Bug（须放 `-i` 之前作为输入覆盖）；cjxl 管道新增 `-x color_space=Rec2100PQ/HLG` + `--intensity_target` 自动映射；简化模式 BT.2020 默认 PQ (HDR 行业标准)；TIFF 格式自动保留 ICC Profile 回退。AVIF/JXL/PNG 全格式 PQ/HLG HDR 输出验证通过
-
-### v1.4.4 
-
-> 🎯 **正式版** — Avalonia 12 现代化 UI、视频转动图、AVIF 编码器面板分离、进程优先级控制。
-
-- 🎨 **Avalonia 12 现代化 UI / Modern UI**: 升级至 Avalonia 12.0.4，全局圆角卡片设计（按钮/输入框 6px、面板 10px），阴影效果，自定义强调色 —— Upgraded to Avalonia 12 with rounded card-style UI, shadows, custom accent color
-- 🎬 **视频转动图支持 / Video to animation**: 动图模式可输入 .mp4/.mov/.mkv/.avi/.webm/.wmv/.flv 视频文件；新增时长限制参数 (-t)；格式筛选窗口支持视频格式 —— Video input in animation mode with duration limit
-- 🔧 **AVIF 编码器面板分离 / AVIF encoder panels**: libaom-av1 / libsvtav1 / 硬件编码器各自独立高级面板；新增 SVT preset 0-13 控件；硬件编码质量预设（快/平衡/高质量）；tune=IQ 支持 (-aom-params tune=iq) —— Separate advanced panels per encoder with IQ tune for libaom
-- 📏 **JPEG-LI butteraugli distance / JPEG-LI distance**: 质量参数统一为 butteraugli distance (0-15)，与 JPEG XL 一致 —— Quality unified to butteraugli distance, same as JXL
-- ⚙ **进程优先级 / Process priority**: 底部新增 Windows 进程优先级下拉（实时/高/高于正常/正常/低于正常/低），实时生效 —— Windows process priority control with 6 levels
-- 🔍 **格式筛选视频支持 / Format filter video**: 格式筛选窗口底部追加"🎬 视频格式（动图模式）"分隔区，7 种视频格式可独立勾选 —— Video format filter section at bottom
-- 🐛 **JXL 质量分析修复 / JXL quality analysis fix**: JXL 源文件 SSIM/PSNR 分析自动用 djxl 解码为临时 PNG 后对比 —— auto djxl decode for JXL quality analysis
-- 🐛 **进度窗口状态修复 / Progress window fix**: 已完成任务不再显示残留的解码进度 —— completed tasks show final status instead of stale progress
-
-### v1.4.3 (2026-06-08)
-
-> 🎯 **正式版** — JXL 管道死锁修复、Gain Map 支持、JPEG LI 整合、实时进度与命令更新。
-
-- 🔧 **JXL 管道死锁修复 / JXL pipeline deadlock fix**: 三处管道代码重构（`PipeDjxlToFfmpegAsync`、`JxlPipelineService`），消除 CopyToAsync/WaitForExit 循环等待；新增进程强制清理 finally 块 —— three pipeline methods rewritten to eliminate deadlock
-- 🗺️ **Gain Map (Ultra HDR) 支持 / Gain Map support**: JPEG 格式新增 Gain Map 面板（增益图质量、目标亮度）；自动检测 libultrahdr 编码器；不可用时优雅隐藏 —— auto-detect libultrahdr, graceful degradation
-- 🔀 **JPEG LI 整合 / JPEG LI consolidation**: 移除独立 "JPEG LI" 格式选项，cjpegli 作为 JPEG 编码器后端使用，选中后显示完整 JPEG LI 高级选项 —— cjpegli now a JPEG encoder option
-- 🔒 **APNG 无损锁定 / APNG lossless lock**: 动图模式 APNG 质量强制 100% 且滑块禁用 —— APNG quality locked at max in animation mode
-- 📡 **详情窗口实时更新 / Detail window live update**: 双击队列项打开的窗口实时更新当前执行命令和进度，覆盖 ffmpeg/cjxl/cjpegli/djxl/管道全部后端 —— live command + phase-aware progress for all backends
-- 🧹 **UI 清理 / UI cleanup**: 移除 JXL 青色无损检测提示框，检测信息整合到执行日志；日志消息全面细化（工具可用性、输入类型、编码参数）—— removed cyan JXL hint box, refined log messages
-- 🐛 **其他修复 / Other fixes**: cjpegli 管道移除不兼容的 `--num_threads` 参数；JXL 输入 PNG 中转逻辑精确化（仅外部编码器需要时触发）
-- 🐛 **其他修复 / Other fixes**: 加入HEIC输入支持，加入DNG输入支持
-
-### v1.4.2 (2026-06-06)
-
-> 🎯 **正式版** — 动图质量分析与编码选项全面修复。
-
-- 🔬 **SSIM/PSNR 动图质量分析修复 / Animated quality analysis fix**: 三处关键修复彻底解决动图质量测试分数异常低的问题 —— Three critical fixes for animated SSIM/PSNR:
-  - Regex 取最后一帧汇总平均值（而非第一帧偏分）—— `Regex.Matches[^1]` instead of `Regex.Match`
-  - `setpts=N` 按帧序号对齐（而非 `PTS-STARTPTS` 保留帧间隔导致不同帧率错位对比）—— frame-index alignment instead of time-based
-  - `settb=1/1000,split` 标准化时间基准 + 独立帧拷贝避免 PSNR 全 `inf` —— timebase normalization + split for independent filter chains
-  - 多轨 AVIF 自动选择帧数最多的动画轨（跳过高 fps 封面轨）—— auto-select best video stream via ffprobe
-- 🎛️ **动图高级编码选项修复 / Animated codec options fix**: 
-  - JXL 动图模式隐藏 cjxl 后端选项（渐进式解码、光子噪声不适用于动画）—— hide cjxl options for animated JXL
-  - AVIF `-tune` 值越界修复：UI 0-5 → libaom -1/0/1 正确映射 —— tune value mapping for libaom range
-  - APNG / WebP / AVIF 动图全高级选项编码验证通过 —— all animated advanced options verified
-- 🐛 **其他修复 / Other fixes**: `WebpLosslessPanel` 动图模式可见性恢复；编码器列表动图 JXL 过滤 cjxl
-
-### v1.4.1 BETA (2026-06-05)
-
-> ⚠️ **测试版本** — 动图编码修复版。
-
-- 🎞 **AVIF → GIF 透明+色彩修复 / AVIF→GIF alpha+color fix**: 颜色流和 alpha 流分离解码后 alphamerge 合并，修复单 pass 色彩压缩问题 —— dual-stream extraction avoids color loss
-- 🎞 **AVIF → WebP 透明通道 / AVIF→WebP alpha**: 同样分轨提取+合并方案保留完整透明通道 —— same dual-stream approach for animated WebP
-- 🧹 **移除 avifenc 集成 / avifenc integration removed**: 编码器后端选项已完全移除；GIF→AVIF 两步法保留为独立工具路径 —— encoder backend removed, two-step path preserved
-- 🎨 **动图编码器面板重设计 / Animated codec panel redesign**: WebP/AVIF/JXL 动图模式面板可见性细化 —— per-format animated panel visibility refined
-- 🐛 **JXL 静态图编码修复 / JXL static encoding fix**: 动图判断条件修正；palettegen 语法修复；拖放目录结构修复 —— JXL detection, palettegen syntax, drag-drop fixes
-- 🔄 **Metadata 保留扩展 / Metadata preservation**: 外部工具路径新增 8 个 exiftool 调用点
-
-### v1.4.0 BETA (2026-06-04)
-
-> ⚠️ **测试版本** — 包含大量实验性动图编码功能。
-
-- 🎞 **Animation mode / 动图模式**: 静态/动图切换，格式列表动态变化，FPS/循环/缩放参数（留空=auto）—— Still/Animated toggle with auto options
-- 🎬 **5 animated formats / 5种动图格式**: GIF, WebP animated, PNG (APNG), AVIF animated, JPEG XL animated —— full animated encoding support
-- 🎚 **Animation parameter panel / 动图参数面板**: FPS (1-60), loop count, scale width with auto option
-- 🔍 **Advanced animated codec panels / 动图高级面板**: 各动图格式专属编码选项 —— per-format animated codec options
-- 👁 **Error-only queue filter / 仅显示报错**: 一键过滤已完成项，聚焦报错任务
-- 📝 **Metadata editor expansion / 元数据编辑器扩展**: 39→~90 字段，9 大分类，双击文件打开
-- 🐛 **exiftool stalling / search drag-drop / JSON type fixes**
-
-### v1.3.4 (2026-06-04)
-
-- 🎚️ Format-aware quality input with snap-to-tick slider; PNG/TIFF lossless lock; dark mode queue text fix; cjpegli `--distance`; image format filter; deduplicated filter arrays; metadata editor expanded to ~90 fields
-
-### v1.3.3 (2026-06-04)
-
-- 🧩 Unified encoder backend (cjpegli/cjxl/ffmpeg); advanced codec panels per format; thread locking; smart fallback via PNG intermediate; SkiaSharp CVE fix; queue progress ETA
-
-### v1.3.2 (2026-06-03)
-
-- 🔬 JXL smart pipeline (byte-level detection, djxl→cjpegli pipe); JPEG-LI format; SIMD detection; unified lib path
-
-### v1.3.1 (2026-06-02)
-
-- 📝 Metadata editing panel (39 fields, 5 categories); queue error red highlight
-
-### v1.3.0 (2026-05-26)
-
-- 📦 Single-file publish; metadata mode dropdown; exiftool privacy cleaning; bit depth auto; 3-tier tool detection; preserve folder structure; full preset coverage
-
-### v1.2.3 (2026-05-26)
-
-- 🎨 UI overhaul (cards, GridSplitter); dual theme; drag/queue fixes; cjxl lossless JPEG
-
-### v1.2.2 · v1.2.1 · v1.1.0 · v1.0.1 · v1.0.0
-
-See git history for details / 详见 git 提交记录。
+</details>
 
 ## 📄 License / 许可
 

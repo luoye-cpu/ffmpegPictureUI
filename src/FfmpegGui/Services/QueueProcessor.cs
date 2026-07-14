@@ -20,6 +20,9 @@ namespace FfmpegGui.Services
         private int _concurrency = 2;
         // 请求在当前队列完成后优雅停止（不立刻 Cancel）
         private volatile bool _stopAfterQueueRequested = false;
+
+        /// <summary>调度器是否正在运行（有活跃的 CTS 且未被取消）</summary>
+        public bool IsRunning => _cts != null && !_cts.IsCancellationRequested;
         private readonly Action<QueueItem> _onItemUpdated;
         private readonly Action? _onQueueStopped;
 

@@ -78,6 +78,7 @@ namespace FfmpegGui.Services
                     ThemeMode = _current.ThemeMode,
                     FfmpegPriority = _current.FfmpegPriority,
                     GpuAcceleration = _current.GpuAcceleration,
+                    SimpleModeAutoEncode = _current.SimpleModeAutoEncode,
                     AutoUseSimdBinaries = _current.AutoUseSimdBinaries,
                     IgnoredToolPaths = _current.IgnoredToolPaths,
                     EnabledImageFormats = _current.EnabledImageFormats,

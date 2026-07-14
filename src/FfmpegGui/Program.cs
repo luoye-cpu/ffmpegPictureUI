@@ -1,7 +1,6 @@
 using Avalonia;
 using System;
-using System.IO;
-using System.Text.Json;
+using System.Linq;
 
 namespace FfmpegGui
 {
@@ -15,34 +14,20 @@ namespace FfmpegGui
             .StartWithClassicDesktopLifetime(args);
 
         /// <summary>
-        /// 读取用户 GPU 偏好设置（settings.json）并结合 --no-gpu 参数决定是否启用 GPU 渲染。
+        /// 读取用户 GPU 偏好（复用 AppSettingsService 单例，避免重复 I/O）。
         /// 优先级：--no-gpu 参数 > settings.json 中的 GpuAcceleration > 默认启用。
         /// </summary>
         private static bool ShouldEnableGpu(string[] args)
         {
-            // 命令行参数 --no-gpu 强制禁用（最高优先级）
-            foreach (var arg in args)
-            {
-                if (arg.Equals("--no-gpu", StringComparison.OrdinalIgnoreCase))
-                    return false;
-            }
+            if (args.Any(a => a.Equals("--no-gpu", StringComparison.OrdinalIgnoreCase)))
+                return false;
 
-            // 读取 settings.json 中的用户偏好
             try
             {
-                var settingsPath = Path.Combine(
-                    Path.GetDirectoryName(Environment.ProcessPath!) ?? ".", "settings.json");
-                if (File.Exists(settingsPath))
-                {
-                    var json = File.ReadAllText(settingsPath);
-                    using var doc = JsonDocument.Parse(json);
-                    if (doc.RootElement.TryGetProperty("GpuAcceleration", out var prop))
-                        return prop.GetBoolean();
-                }
+                // 复用 AppSettingsService 加载，避免和 App.OnFrameworkInitializationCompleted 重复读文件
+                return Services.AppSettingsService.Current.GpuAcceleration;
             }
-            catch { /* 文件损坏或不存在，使用默认值 */ }
-
-            return true; // 默认启用 GPU 加速
+            catch { return true; }
         }
 
         public static AppBuilder BuildAvaloniaApp(string[] args)
