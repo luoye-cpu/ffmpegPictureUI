@@ -44,6 +44,11 @@ Thumbs.db
 *.temp
 *.cache
 
+# ── 第三方库源码（嵌套 Git 仓库，不从本仓库追踪） ──
+tools/src/aom/
+tools/src/dcraw/
+tools/src/jxrlib/
+
 # ── 外部工具二进制（不应提交到源码仓库） ──
 **/cjxl.exe
 **/djxl.exe
