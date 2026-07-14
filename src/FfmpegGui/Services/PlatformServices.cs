@@ -159,6 +159,7 @@ public static class PlatformServices
         [Djxl]    = new[] { Path.Combine("jxl", "bin"), "jxl" },
         [Cjpegli] = new[] { Path.Combine("jxl", "bin"), "jxl" },
         [Exiftool] = new[] { "exiftool" },
+        ["exiftool(-k).exe"] = new[] { "exiftool" },
         [Ultrahdr] = new[] { "artifacts" },
         [JxrEnc]   = new[] { "artifacts" },
         [JxrDec]   = new[] { "artifacts" },

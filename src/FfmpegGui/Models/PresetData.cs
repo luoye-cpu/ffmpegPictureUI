@@ -46,6 +46,8 @@ namespace FfmpegGui.Models
         public string? EncoderBackend { get; set; }
         /// <summary>WebP 无损压缩级别 (0-6)</summary>
         public int? WebpCompressionLevel { get; set; }
+        /// <summary>输出文件名追加 .png 后缀（仅 JXL/AVIF）</summary>
+        public bool AppendPngExtension { get; set; }
         // ── AVIF 扩展选项 ──
         /// <summary>SVT-AV1 preset 值 (0-13)</summary>
         public int? AvifSvtPreset { get; set; }

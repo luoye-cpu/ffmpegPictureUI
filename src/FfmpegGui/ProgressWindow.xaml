@@ -3,44 +3,68 @@
     xmlns="https://github.com/avaloniaui"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:ctrl="using:FfmpegGui.Controls"
-    Title="编码详情" Width="700" Height="750"
-    WindowStartupLocation="CenterOwner">
-  <Grid RowDefinitions="Auto,Auto,Auto,*,Auto" Margin="14">
-    <!-- Row 0: 标题 -->
-    <TextBlock x:Name="TitleLabel" Grid.Row="0" FontSize="18" FontWeight="Bold"/>
-    <Border Grid.Row="0" CornerRadius="2" Margin="0,6"
-            Background="{DynamicResource SystemControlBackgroundBaseLowBrush}" Height="1"/>
+    Title="编码详情" Width="720" Height="750"
+    WindowStartupLocation="CenterOwner"
+    MinWidth="560" MinHeight="420">
+  <Grid RowDefinitions="Auto,*,Auto" Margin="14">
+    <!-- 标题行 -->
+    <StackPanel Grid.Row="0" Orientation="Horizontal" Spacing="8" Margin="0,0,0,10">
+      <TextBlock x:Name="TitleLabel" FontSize="18" FontWeight="Bold"/>
+      <TextBlock x:Name="StatusBadge" Text="" FontSize="13" VerticalAlignment="Center"
+                 Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+    </StackPanel>
 
-    <!-- Row 1: 详情卡片 -->
-    <Border Grid.Row="1" CornerRadius="8" Padding="14,10" Margin="0,4,0,0"
-            BoxShadow="0 1 6 0 #10000000"
-            Background="{DynamicResource SystemControlBackgroundCardHighBrush}">
-    <Grid ColumnDefinitions="100,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto">
-      <TextBlock Text="状态" Grid.Row="0" Grid.Column="0" FontWeight="Bold"/>
-      <TextBlock x:Name="StatusLabel" Grid.Row="0" Grid.Column="1"/>
-      <TextBlock Text="进度" Grid.Row="1" Grid.Column="0" FontWeight="Bold" Margin="0,4,0,0"/>
-      <TextBlock x:Name="ProgressLabel" Grid.Row="1" Grid.Column="1" Margin="0,4,0,0"/>
-      <TextBlock Text="质量" Grid.Row="2" Grid.Column="0" FontWeight="Bold" Margin="0,4,0,0"/>
-      <TextBlock x:Name="QualityInfoLabel" Grid.Row="2" Grid.Column="1" Margin="0,4,0,0"/>
-      <TextBlock Text="分析" Grid.Row="3" Grid.Column="0" FontWeight="Bold" Margin="0,4,0,0"/>
-      <StackPanel Grid.Row="3" Grid.Column="1" Margin="0,4,0,0" Spacing="4">
-        <TextBlock x:Name="AnalysisLabel" Text="点击下方按钮分析 SSIM/PSNR"/>
-        <Button Content="分析质量 (SSIM + PSNR)" Click="AnalyzeQuality_Click" Padding="8,4"
-                HorizontalAlignment="Left"/>
-      </StackPanel>
-      <TextBlock Text="命令" Grid.Row="4" Grid.Column="0" FontWeight="Bold" Margin="0,4,0,0"/>
-      <TextBox x:Name="CommandLabel" Grid.Row="4" Grid.Column="1" Margin="0,4,0,0" IsReadOnly="True"
-               TextWrapping="Wrap" AcceptsReturn="True" Height="50"/>
-    </Grid>
-    </Border>
+    <!-- TabControl -->
+    <TabControl Grid.Row="1" x:Name="MainTabs" SelectedIndex="0">
+      <!-- ═══ Tab 1: 转换详情 ═══ -->
+      <TabItem Header="⚡ 转换详情">
+        <Grid RowDefinitions="Auto,Auto,*,Auto" Margin="0,6">
+          <!-- 编码状态卡片 -->
+          <Border Grid.Row="0" CornerRadius="8" Padding="14,10"
+                  BoxShadow="0 1 6 0 #10000000"
+                  Background="{DynamicResource SystemControlBackgroundCardHighBrush}">
+            <Grid ColumnDefinitions="90,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto">
+              <TextBlock Text="状态" Grid.Row="0" Grid.Column="0" FontWeight="Bold" FontSize="12"/>
+              <TextBlock x:Name="StatusLabel" Grid.Row="0" Grid.Column="1" FontSize="12"/>
+              <TextBlock Text="进度" Grid.Row="1" Grid.Column="0" FontWeight="Bold" FontSize="12" Margin="0,4,0,0"/>
+              <TextBlock x:Name="ProgressLabel" Grid.Row="1" Grid.Column="1" FontSize="12" Margin="0,4,0,0"/>
+              <TextBlock Text="质量" Grid.Row="2" Grid.Column="0" FontWeight="Bold" FontSize="12" Margin="0,4,0,0"/>
+              <TextBlock x:Name="QualityInfoLabel" Grid.Row="2" Grid.Column="1" FontSize="12" Margin="0,4,0,0"/>
+              <TextBlock Text="分析" Grid.Row="3" Grid.Column="0" FontWeight="Bold" FontSize="12" Margin="0,4,0,0"/>
+              <StackPanel Grid.Row="3" Grid.Column="1" Margin="0,4,0,0" Spacing="4">
+                <TextBlock x:Name="AnalysisLabel" Text="点击下方按钮分析 SSIM/PSNR" FontSize="11"/>
+                <Button Content="分析质量 (SSIM + PSNR)" Click="AnalyzeQuality_Click" Padding="8,4"
+                        HorizontalAlignment="Left" FontSize="11"/>
+              </StackPanel>
+              <TextBlock Text="命令" Grid.Row="4" Grid.Column="0" FontWeight="Bold" FontSize="12" Margin="0,4,0,0"/>
+              <TextBox x:Name="CommandLabel" Grid.Row="4" Grid.Column="1" Margin="0,4,0,0" IsReadOnly="True"
+                       TextWrapping="Wrap" AcceptsReturn="True" Height="50" FontSize="11"
+                       FontFamily="Consolas,monospace"/>
+            </Grid>
+          </Border>
 
-    <!-- Row 2: 日志标签 -->
-    <TextBlock Grid.Row="2" Text="📜 执行日志" FontWeight="Bold" Margin="0,8,0,4"/>
+          <!-- 媒体信息卡片 -->
+          <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" MaxHeight="180">
+            <StackPanel x:Name="MediaInfoPanel" Margin="0,6,0,0" Spacing="6"/>
+          </ScrollViewer>
 
-    <!-- Row 3: 日志内容 -->
-    <TextBox Grid.Row="3" x:Name="LogBox" AcceptsReturn="True" IsReadOnly="True"/>
+          <!-- 日志标签 -->
+          <TextBlock Grid.Row="2" Text="📜 执行日志" FontWeight="Bold" FontSize="13" Margin="0,6,0,4"/>
 
-    <!-- Row 4: 元数据编辑面板 -->
-    <ctrl:MetadataEditor Grid.Row="4" x:Name="MetadataEditorCtrl" Margin="0,8,0,0"/>
+          <!-- 日志内容 -->
+          <TextBox Grid.Row="3" x:Name="LogBox" AcceptsReturn="True" IsReadOnly="True"
+                   FontFamily="Consolas,monospace" FontSize="11"/>
+        </Grid>
+      </TabItem>
+
+      <!-- ═══ Tab 2: 元数据编辑 ═══ -->
+      <TabItem Header="✏️ 元数据编辑">
+        <ctrl:MetadataEditor x:Name="MetadataEditorCtrl" Margin="0,6"/>
+      </TabItem>
+    </TabControl>
+
+    <!-- 底部 -->
+    <TextBlock Grid.Row="2" x:Name="FilePathLabel" Text="" FontSize="10" Margin="0,6,0,0"
+               Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
   </Grid>
 </Window>
