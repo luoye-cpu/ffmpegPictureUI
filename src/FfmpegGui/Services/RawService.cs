@@ -60,7 +60,8 @@ public static class RawService
         }
 
         // 2) PLAN 文件夹
-        var planPath = PlatformServices.TryFindInPlanFolder("dcraw");
+        var planPath = PlatformServices.TryFindInPlanFolder(PlatformServices.DcrawName)
+                    ?? PlatformServices.TryFindInPlanFolder("dcraw");  // 兼容无扩展名
         if (planPath != null)
         {
             _detectedPath = planPath;

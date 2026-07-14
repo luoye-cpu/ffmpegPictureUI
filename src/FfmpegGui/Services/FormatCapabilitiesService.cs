@@ -1,7 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Net.Http;
-using System.Text.Json;
 using System.Threading.Tasks;
 
 namespace FfmpegGui.Services
@@ -18,6 +16,13 @@ namespace FfmpegGui.Services
         public List<string> SupportedColorSpaces { get; set; } = new List<string>();
         /// <summary>是否支持 Gain Map (Ultra HDR) 编码</summary>
         public bool SupportsGainMap { get; set; }
+        /// <summary>
+        /// ICC 嵌入支持级别:
+        /// "native" = 编码器直接支持 -icc_profile
+        /// "iccgen" = 需通过 iccgen 滤镜（FFmpeg ≥ 7.0 + lcms2）
+        /// "" = 不支持
+        /// </summary>
+        public string IccEmbedSupport { get; set; } = "";
     }
 
     public static class FormatCapabilitiesService
@@ -35,8 +40,7 @@ namespace FfmpegGui.Services
         {
             // 1) 本地静态规则
             SeedLocalRules();
-            // 2) 远端查询（模拟/实际）
-            await TryFetchRemoteCapabilitiesAsync();
+            // 2) 远端查询已禁用（离线优先，无网络依赖）
             // 3) 检测本地 ffmpeg 支持的编解码器/像素格式
             await DetectLocalFfmpegCapabilitiesAsync(ffmpegPath);
         }
@@ -162,31 +166,13 @@ namespace FfmpegGui.Services
             };
         }
 
-        private static async Task TryFetchRemoteCapabilitiesAsync()
-        {
-            try
-            {
-                using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
-                // 示例：github gist/raw/json 或自建 hosted json
-                var url = "https://raw.githubusercontent.com/example/ffmpeg-format-capabilities/main/capabilities.json";
-                var txt = await http.GetStringAsync(url);
-                var doc = JsonSerializer.Deserialize<Dictionary<string, FormatCapabilities>>(txt);
-                if (doc != null)
-                {
-                    foreach (var kv in doc)
-                    {
-                        _cache[kv.Key.ToLower()] = kv.Value;
-                    }
-                }
-            }
-            catch { /* 忽略远端失败 */ }
-        }
-
         private static async Task DetectLocalFfmpegCapabilitiesAsync(string? ffmpegPath = null)
         {
             try
             {
                 var fileName = ffmpegPath ?? AppSettingsService.Current.FfmpegPath;
+                if (string.IsNullOrWhiteSpace(fileName) || !System.IO.File.Exists(fileName))
+                    return; // ffmpeg 不可用，跳过本地检测
                 var psi = new System.Diagnostics.ProcessStartInfo
                 {
                     FileName = fileName,

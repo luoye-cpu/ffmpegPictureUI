@@ -163,7 +163,7 @@ public static class PlatformServices
         [JxrEnc]   = new[] { "artifacts" },
         [JxrDec]   = new[] { "artifacts" },
         [Avifenc]  = new[] { "artifacts" },
-        ["dcraw"]  = new[] { "artifacts" },
+        [DcrawName] = new[] { "artifacts" },
     };
 
     /// <summary>在 PLAN 文件夹的对应子目录中查找指定工具。未找到返回 null。</summary>

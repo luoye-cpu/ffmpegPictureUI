@@ -4,7 +4,7 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:sys="using:System"
     xmlns:local="using:FfmpegGui.Models"
-    Title="FFmpeg 图片转换器 1.4.5"
+    Title="FFmpeg 图片转换器 1.5.0 BETA"
     Height="780"
     Width="1020"
     WindowStartupLocation="CenterScreen">
@@ -35,7 +35,8 @@
           <Button x:Name="ToggleToolsBtn" Content="🔧 外部工具" FontSize="11" Padding="6,2"
                   ToolTip.Tip="展开/折叠外部工具路径配置" Click="ToggleToolsPanel_Click"/>
           <Border x:Name="ToolsCompactPanel" CornerRadius="3" Padding="6,2"
-                  Background="{DynamicResource SystemControlBackgroundChromeMediumBrush}">
+                  Background="{DynamicResource SystemControlBackgroundChromeMediumBrush}"
+                  IsVisible="False">
             <StackPanel x:Name="ToolsStatusBar" Orientation="Horizontal" Spacing="10"/>
           </Border>
           <Button Content="🔄" Click="RedetectTools_Click" Padding="4,2" FontSize="11"
@@ -44,44 +45,52 @@
                     ToolTip.Tip="自动使用 SIMD 优化二进制"/>
         </StackPanel>
 
-        <!-- Row 2-3: 展开的外部工具详情（v2.0 精简为 3 项） -->
+        <!-- Row 2-3: 展开的外部工具详情（3 列水平布局） -->
         <StackPanel x:Name="ToolsDetailPanel" Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="2" IsVisible="False">
-          <!-- exiftool (文件选择) -->
-          <StackPanel Orientation="Horizontal" Spacing="10" Margin="0,3,0,0">
-            <TextBlock Text="exiftool" VerticalAlignment="Center" FontSize="11"
-                       Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" Width="72"/>
-            <TextBox x:Name="ExifToolPathBox" Width="200" VerticalAlignment="Center" FontSize="11"
-                     PlaceholderText="自动检测"/>
-            <Button Content="浏览" Click="BrowseExifTool_Click" Padding="6,2" FontSize="11"/>
-            <Button Content="✕" Click="ClearExifToolPath_Click" Padding="6,2" FontSize="11"
-                    ToolTip.Tip="清除手动路径"/>
-            <TextBlock x:Name="ExifToolStatus" Text="" VerticalAlignment="Center" FontSize="10"
-                       Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
-          </StackPanel>
-          <!-- jxl 参考库 (文件夹选择) -->
-          <StackPanel Orientation="Horizontal" Spacing="10" Margin="0,3,0,0">
-            <TextBlock Text="jxl 参考库" VerticalAlignment="Center" FontSize="11"
-                       Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" Width="72"/>
-            <TextBox x:Name="JxlLibDirBox" Width="200" VerticalAlignment="Center" FontSize="11"
-                     PlaceholderText="自动检测 (含 cjxl/djxl/cjpegli)"/>
-            <Button Content="浏览" Click="BrowseJxlLibDir_Click" Padding="6,2" FontSize="11"/>
-            <Button Content="✕" Click="ClearJxlLibDir_Click" Padding="6,2" FontSize="11"
-                    ToolTip.Tip="清除手动路径"/>
-            <TextBlock x:Name="JxlLibStatus" Text="" VerticalAlignment="Center" FontSize="10"
-                       Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
-          </StackPanel>
-          <!-- artifacts (文件夹选择) -->
-          <StackPanel Orientation="Horizontal" Spacing="10" Margin="0,3,0,0">
-            <TextBlock Text="artifacts" VerticalAlignment="Center" FontSize="11"
-                       Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" Width="72"/>
-            <TextBox x:Name="ArtifactsDirBox" Width="200" VerticalAlignment="Center" FontSize="11"
-                     PlaceholderText="自动检测 (ultrahdr/Jxr/avifenc/...)"/>
-            <Button Content="浏览" Click="BrowseArtifactsDir_Click" Padding="6,2" FontSize="11"/>
-            <Button Content="✕" Click="ClearArtifactsDir_Click" Padding="6,2" FontSize="11"
-                    ToolTip.Tip="清除手动路径"/>
-            <TextBlock x:Name="ArtifactsStatus" Text="" VerticalAlignment="Center" FontSize="10"
-                       Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
-          </StackPanel>
+          <Grid ColumnDefinitions="*,8,*,8,*" Margin="0,4,0,0">
+            <!-- 列 1: JXL 参考库 -->
+            <StackPanel Grid.Column="0" Spacing="4">
+              <TextBlock Text="📦 JXL 参考库" FontSize="11" FontWeight="Bold"
+                         Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+              <StackPanel Orientation="Horizontal" Spacing="4">
+                <TextBox x:Name="JxlLibDirBox" Width="160" VerticalAlignment="Center" FontSize="11"
+                         PlaceholderText="自动检测目录"/>
+                <Button Content="浏览" Click="BrowseJxlLibDir_Click" Padding="4,2" FontSize="10"/>
+                <Button Content="✕" Click="ClearJxlLibDir_Click" Padding="4,2" FontSize="10"
+                        ToolTip.Tip="清除手动路径"/>
+              </StackPanel>
+              <StackPanel x:Name="JxlToolsStatus" Orientation="Horizontal" Spacing="6" Margin="0,2,0,0"/>
+            </StackPanel>
+            <Separator Grid.Column="1" Width="4" Background="Transparent"/>
+            <!-- 列 2: exiftool -->
+            <StackPanel Grid.Column="2" Spacing="4">
+              <TextBlock Text="🏷 exiftool" FontSize="11" FontWeight="Bold"
+                         Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+              <StackPanel Orientation="Horizontal" Spacing="4">
+                <TextBox x:Name="ExifToolPathBox" Width="160" VerticalAlignment="Center" FontSize="11"
+                         PlaceholderText="自动检测 exiftool.exe"/>
+                <Button Content="浏览" Click="BrowseExifTool_Click" Padding="4,2" FontSize="10"/>
+                <Button Content="✕" Click="ClearExifToolPath_Click" Padding="4,2" FontSize="10"
+                        ToolTip.Tip="清除手动路径"/>
+              </StackPanel>
+              <StackPanel x:Name="ExifToolToolsStatus" Orientation="Horizontal" Spacing="6" Margin="0,2,0,0"/>
+            </StackPanel>
+            <Separator Grid.Column="3" Width="4" Background="Transparent"/>
+            <!-- 列 3: artifacts -->
+            <StackPanel Grid.Column="4" Spacing="4">
+              <TextBlock Text="🔧 artifacts" FontSize="11" FontWeight="Bold"
+                         Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+              <StackPanel Orientation="Horizontal" Spacing="4">
+                <TextBox x:Name="ArtifactsDirBox" Width="160" VerticalAlignment="Center" FontSize="11"
+                         PlaceholderText="自动检测目录"/>
+                <Button Content="浏览" Click="BrowseArtifactsDir_Click" Padding="4,2" FontSize="10"/>
+                <Button Content="✕" Click="ClearArtifactsDir_Click" Padding="4,2" FontSize="10"
+                        ToolTip.Tip="清除手动路径"/>
+              </StackPanel>
+              <StackPanel x:Name="ArtifactsToolsStatus" Orientation="Horizontal" Spacing="6" Margin="0,2,0,0"
+                          ToolTip.Tip="含 ultrahdr_app / JxrEncApp / avifenc / dcraw 等"/>
+            </StackPanel>
+          </Grid>
         </StackPanel>
       </Grid>
     </Border>
@@ -94,7 +103,12 @@
               Background="{DynamicResource SystemControlBackgroundCardHighBrush}">
       <ScrollViewer>
         <StackPanel Margin="14" Spacing="8">
-          <TextBlock Text="参数控制面板" FontSize="20" FontWeight="Bold" Margin="0,0,0,6"/>
+          <StackPanel Orientation="Horizontal" Spacing="8">
+            <TextBlock Text="参数控制面板" FontSize="20" FontWeight="Bold" Margin="0,0,0,6" VerticalAlignment="Center"/>
+            <Button x:Name="PresetManagerBtn" Content="📋 预设" FontSize="12" Padding="8,3"
+                    ToolTip.Tip="打开预设管理器 — 选择/保存/导入预设配置"
+                    Click="OpenPresetManager_Click" VerticalAlignment="Center"/>
+          </StackPanel>
           <TextBlock Text="转换模式" FontSize="12" Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
           <ComboBox x:Name="ConversionModeCombo" SelectedIndex="0"
                     SelectionChanged="ConversionMode_SelectionChanged">
@@ -416,6 +430,95 @@
                          Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
             </StackPanel>
           </StackPanel>
+
+          <!-- ═══════════════ ICC 色彩管理卡片 ═══════════════ -->
+          <Border CornerRadius="4" Padding="8,6" Margin="0,8,0,0"
+                  Background="{DynamicResource SystemControlBackgroundChromeMediumBrush}">
+            <StackPanel Spacing="6">
+              <StackPanel Orientation="Horizontal" Spacing="6">
+                <TextBlock Text="🎨 ICC 色彩管理" FontSize="13" FontWeight="Bold"/>
+                <Button Content="?" Width="20" Height="20" FontSize="11" Padding="0"
+                        ToolTip.Tip="嵌入: 保留像素+附加 ICC 标签&#x0a;烘焙: 转换像素到目标色彩空间&#x0a;烘焙+嵌入: 转换像素并同时嵌入 ICC（双保险）"
+                        Click="IccHelp_Click"/>
+              </StackPanel>
+
+              <!-- 模式选择 RadioButton 组 -->
+              <StackPanel Spacing="2">
+                <RadioButton x:Name="IccModeNone" GroupName="IccMode"
+                             Content="○ 不处理（默认）" IsChecked="True"
+                             IsCheckedChanged="IccMode_Changed"/>
+                <RadioButton x:Name="IccModeEmbed" GroupName="IccMode"
+                             Content="📎 嵌入 ICC — 保留像素，附加色彩描述"
+                             IsCheckedChanged="IccMode_Changed"/>
+                <RadioButton x:Name="IccModeBake" GroupName="IccMode"
+                             Content="🔥 烘焙 ICC — 转换像素到目标空间（最大兼容）"
+                             IsCheckedChanged="IccMode_Changed"/>
+                <RadioButton x:Name="IccModeBakeEmbed" GroupName="IccMode"
+                             Content="🔥📎 烘焙 + 嵌入 — 转换像素并附加 ICC（双保险）"
+                             IsCheckedChanged="IccMode_Changed"/>
+              </StackPanel>
+
+              <!-- ICC 文件选择（嵌入/烘焙共用） -->
+              <StackPanel x:Name="IccFilePanel" IsVisible="False" Spacing="4">
+                <TextBlock Text="ICC 配置文件:" FontSize="11"/>
+                <StackPanel Orientation="Horizontal" Spacing="4">
+                  <TextBox x:Name="IccPathBox" Width="150" IsReadOnly="True"
+                           FontSize="11" VerticalAlignment="Center"
+                           PlaceholderText="未选择 .icc/.icm"/>
+                  <Button Content="浏览..." Click="BrowseIcc_Click"
+                          Padding="6,2" FontSize="11"/>
+                  <Button Content="✕" Click="ClearIcc_Click"
+                          Padding="6,2" FontSize="11"
+                          ToolTip.Tip="清除已选择的 ICC 文件"/>
+                </StackPanel>
+                <TextBlock x:Name="IccInfoLabel" Text=""
+                           FontSize="10" TextWrapping="Wrap"
+                           Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+              </StackPanel>
+
+              <!-- 烘焙专属选项 -->
+              <StackPanel x:Name="IccBakePanel" IsVisible="False" Spacing="4">
+                <TextBlock Text="源色彩空间（ICC 描述的空间）:" FontSize="11"/>
+                <ComboBox x:Name="IccSourceSpaceCombo" SelectedIndex="0"
+                          SelectionChanged="IccSourceSpace_Changed">
+                  <sys:String>auto（从 ICC 文件检测）</sys:String>
+                  <sys:String>sRGB / BT.709</sys:String>
+                  <sys:String>Adobe RGB (1998)</sys:String>
+                  <sys:String>Display P3</sys:String>
+                  <sys:String>DCI-P3</sys:String>
+                  <sys:String>ProPhoto RGB</sys:String>
+                  <sys:String>Rec.2020 PQ (HDR)</sys:String>
+                  <sys:String>Rec.2100 HLG (HDR)</sys:String>
+                </ComboBox>
+
+                <TextBlock Text="目标色彩空间（烘焙到）:" FontSize="11" Margin="0,4,0,0"/>
+                <ComboBox x:Name="IccTargetSpaceCombo" SelectedIndex="0"
+                          SelectionChanged="IccTargetSpace_Changed">
+                  <sys:String>sRGB / BT.709（最大兼容，推荐）</sys:String>
+                  <sys:String>Adobe RGB (1998)</sys:String>
+                  <sys:String>Display P3</sys:String>
+                  <sys:String>Rec.2020 PQ (HDR)</sys:String>
+                </ComboBox>
+
+                <!-- 转换预览 -->
+                <Border x:Name="IccPreviewPanel" CornerRadius="3" Padding="6,4"
+                        Background="{DynamicResource SystemControlBackgroundChromeLowBrush}">
+                  <TextBlock x:Name="IccPreviewText" Text="" FontSize="10"
+                             FontFamily="Cascadia Code,Consolas,monospace"
+                             TextWrapping="Wrap"/>
+                </Border>
+              </StackPanel>
+
+              <!-- 格式兼容性提示 -->
+              <Border x:Name="IccCompatPanel" IsVisible="False" CornerRadius="3"
+                      Padding="6,4" Margin="0,2,0,0"
+                      Background="{DynamicResource SystemControlBackgroundChromeLowBrush}">
+                <TextBlock x:Name="IccCompatText" Text="" FontSize="10"
+                           TextWrapping="Wrap"/>
+              </Border>
+            </StackPanel>
+          </Border>
+
           <TextBlock Text="CPU 线程"/>
           <StackPanel Orientation="Horizontal" Spacing="6">
             <CheckBox x:Name="AutoThreadsCheck" Content="自动" IsChecked="True" Margin="0,3,0,0"/>
@@ -442,12 +545,6 @@
           </Border>
           <CheckBox x:Name="LosslessCheck" Content="无损编码" Margin="0,4,0,0"/>
           <Button Content="生成指令" Click="BuildCommand_Click" Margin="0,12,0,0" Padding="8"/>
-          <Border BorderBrush="{DynamicResource SystemControlBackgroundBaseLowBrush}" BorderThickness="0,1,0,0" Margin="0,10,0,0"/>
-          <TextBlock Text="预设管理" FontSize="14" FontWeight="Bold" Margin="0,6,0,0"/>
-          <StackPanel Orientation="Horizontal" Spacing="8">
-            <Button Content="导出预设" Click="ExportPreset_Click" Padding="8,4"/>
-            <Button Content="导入预设" Click="ImportPreset_Click" Padding="8,4"/>
-          </StackPanel>
         </StackPanel>
       </ScrollViewer>
     </Border>
