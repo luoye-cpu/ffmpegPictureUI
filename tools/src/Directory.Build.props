@@ -1,0 +1,9 @@
+<Project>
+  <!-- This file prevents MSBuild from processing legacy third-party projects
+       in the zlib/libavif build dependency directories.
+       These projects use the old <VisualStudioProject> format which is not
+       supported by modern .NET SDK. -->
+  <PropertyGroup>
+    <SkipValidatePackageReferences>true</SkipValidatePackageReferences>
+  </PropertyGroup>
+</Project>

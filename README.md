@@ -1,6 +1,6 @@
 # 🖼️ FFmpegPictureUI — FFmpeg 图片转换器
 
-**v1.5.0 BETA2** — Cross-platform batch image/animation/video converter built on Avalonia UI.
+**v1.5.0 BETA3** — Cross-platform batch image/animation/video converter built on Avalonia UI.
 基于 Avalonia UI 的跨平台批量图片/动图/视频转换工具，封装 `ffmpeg`/`ffprobe` + 外部编码器 (`cjxl`/`djxl`/`cjpegli`/`ultrahdr_app`/`JxrEncApp`/`JxrDecApp`).
 
 QQ 交流群：754439779 | [点击加群](https://qm.qq.com/q/M2181PvCkW)
@@ -15,7 +15,7 @@ QQ 交流群：754439779 | [点击加群](https://qm.qq.com/q/M2181PvCkW)
 | **Encoder backend / 编码器后端** | Selectable ffmpeg / cjxl / cjpegli per format; cjxl for JXL lossless JPEG repack — 每种格式可选不同编码器后端 |
 | **Quality control / 质量控制** | Quality slider (snap-to-tick) + format-aware numeric input — 滑块吸附整数 + 格式感知数字输入框 (JPEG q:v 2-31, JXL distance 0-15, etc.) |
 | **Advanced codec options / 高级编码选项** | Per-format advanced panels: DCT algo, progressive mode, Huffman optimize, adaptive quant, sjpeg backend, PSNR target, lossless compression level, row-mt, still-picture, modular mode — 按格式独立高级面板 |
-| **Color management / 色彩管理** | Color space, primaries, TRC (optional advanced mode); ICC profile embed/bake with external ICC file support — 色彩空间/基准/TRC，ICC 嵌入/烘焙（外部 ICC 文件） |
+| **Color management / 色彩管理** | sRGB/BT.709/BT.2020 PQ/HLG 快速选择；CICP (H.273) 始终启用；4 种 ICC 模式（无/携带/烘焙+嵌入/仅烘焙）；iccgen 自动生成标准 ICC；zscale 双向烘焙；HDR→SDR 色调映射降级；BT.2020 自动位深联动；Gain Map RGB 建议 |
 | **JXL Intelligence / JXL 智能** | Auto-detects JPEG-reconstruction vs native codestream; byte-level inspection (`JxlInspector`); picks optimal pipeline |
 | **JPEG-LI / JPEG-LI** | `cjpegli` 作为 JPEG 格式的编码器后端选项，提供完整高级配置（色度子采样、渐进模式等）|
 | **CPU SIMD / CPU 指令集** | Auto-detects AVX2/AVX/SSE4 capable binaries; runtime probe validates compatibility |
@@ -106,12 +106,13 @@ ffmpegPictureUI/
 │   ├── Models/           AppSettings, FfmpegOptions, QueueItem, PresetData
 │   ├── Services/         FfmpegCommandBuilder, FfmpegRunner, QueueProcessor,
 │   │                     CjxlService, DjxlService, CjpegliService,
-│   │                     JxlInspector, JxlPipelineService,
+│   │                     JxlInspector, JxlPipelineService, JxrService,
 │   │                     ExternalToolsDetector, CpuFeatureService,
 │   │                     ExifToolService, FormatCapabilitiesService,
 │   │                     EncoderDetectionService, QualityAnalysisService,
-│   │                     IccProfileService, PresetManagerService,
-│   │                     PlatformServices, PlanFolderDetector
+│   │                     ColorEncodingHelper, IccProfileService,
+│   │                     PresetManagerService, RawService,
+│   │                     GpuCapabilityService, PlatformServices
 │   ├── Controls/         MetadataEditor
 │   ├── MainWindow.xaml   Primary UI
 │   ├── MainWindow.xaml.cs UI logic
@@ -125,6 +126,17 @@ ffmpegPictureUI/
 ---
 
 ## 📝 Changelog / 更新日志
+
+### v1.5.0 BETA3 (2026-07-15)
+
+- **Color Space Redesign / 色彩空间重构** — New simplified color space picker: sRGB / BT.709 / BT.2020 PQ / BT.2020 HLG; removed BT.601; primaries/trc/matrix auto-fill on selection; BT.2020 auto-sets ≥10-bit depth from source probe. / 全新简化色彩空间选择器；移除 BT.601；自动填充 primaries/trc/matrix；BT.2020 根据源位深自动 ≥10-bit。
+- **ICC System Rewrite / ICC 系统重写** — 4 new modes: ① None (CICP only, discard ICC) ② Carry ICC (keep source or auto-generate standard ICC) ③ Bake + Embed (zscale bake + iccgen) ④ Bake Only (zscale, no ICC). ICC controls fully integrated into Advanced Color panel; bake target follows ColorSpace selection. / 4 种新模式；ICC 控件完全整合入高级色彩面板；烘焙目标跟随色彩空间选择。
+- **CICP Always-On / CICP 始终启用** — H.273 Coding-Independent Code Points enabled in all modes; non-CICP formats (JPEG/WebP/TIFF) auto-embed ICC when non-sRGB; Mode 1 no longer strips CICP from JXL/AVIF. / 所有模式 CICP 始终启用；非 CICP 格式非 sRGB 时自动嵌入 ICC。
+- **HDR→SDR Degradation / HDR 降级** — Automatic zscale+tonemap when output format doesn't support HDR; bit depth warning with source-vs-target comparison. / 输出格式不支持 HDR 时自动色调映射降级；位深比较警告。
+- **Dual Conversion Lock / 双重转换锁定** — ICC bake mode disables manual color parameters to prevent double zscale conversion; conflict detection with 6 scenarios. / ICC 烘焙锁定手动色彩参数防双重转换；6 种冲突场景检测。
+- **Format Capability Verification / 格式能力验证** — Probed actual encoder pixel formats via ffmpeg; updated JXL to 32-bit, AVIF to 12-bit support; added per-format CICP support hints in UI. / ffmpeg 实测编码器像素格式；JXL 更新至 32-bit；UI 显示各格式 CICP 支持提示。
+- **Package Optimization / 打包优化** — Stripped SkiaSharp/HarfBuzz native .pdb debug symbols (~100MB savings); new pack.ps1 cleanup step. / 移除原生 .pdb 调试符号节省约 100MB。
+- **Build & Test / 构建测试** — 55 pipeline test matrix (4 sources × 6 formats × 5 color spaces × 4 ICC modes); all pass on ffmpeg git-2026-07-05. / 55 项管线测试矩阵全部通过。
 
 ### v1.5.0 BETA2 (2026-07-14)
 

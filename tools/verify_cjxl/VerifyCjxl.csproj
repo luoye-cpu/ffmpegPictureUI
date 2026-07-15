@@ -5,5 +5,6 @@
     <Nullable>enable</Nullable>
     <!-- 主项目 TFM，升级 .NET 11 时改为 net11.0 -->
     <MainTfm>net10.0</MainTfm>
+    <NoWarn>$(NoWarn);MSB3884</NoWarn>
   </PropertyGroup>
 </Project>
