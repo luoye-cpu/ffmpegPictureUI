@@ -16,6 +16,10 @@ namespace FfmpegGui.Services
         public List<string> SupportedColorSpaces { get; set; } = new List<string>();
         /// <summary>是否支持 Gain Map (Ultra HDR) 编码</summary>
         public bool SupportsGainMap { get; set; }
+        /// <summary>是否原生支持 CICP (H.273) 色彩标记 (primaries/trc/matrix)</summary>
+        public bool SupportsCicp { get; set; }
+        /// <summary>CICP 支持说明（用于 UI 提示）</summary>
+        public string CicpNote { get; set; } = "";
         /// <summary>
         /// ICC 嵌入支持级别:
         /// "native" = 编码器直接支持 -icc_profile
@@ -47,7 +51,7 @@ namespace FfmpegGui.Services
 
         private static void SeedLocalRules()
         {
-            // JPEG: 仅 8-bit（JPEG XT 12-bit 不普及）
+            // JPEG: mjpeg 仅 8-bit YUV，不支持 CICP（用 EXIF/JFIF 色彩标签）
             _cache["jpg"] = new FormatCapabilities
             {
                 Format = "jpg",
@@ -57,11 +61,13 @@ namespace FfmpegGui.Services
                 SupportsMetadata = true,
                 SupportsLossless = false,
                 SupportsGainMap = true,
+                SupportsCicp = false,
+                CicpNote = "JPEG 使用 EXIF/JFIF 色彩标签，非 CICP；非 sRGB 时自动嵌入 ICC",
                 SupportedBitDepths = new List<int> { 8 },
-                SupportedColorSpaces = new List<string> { "BT.601", "BT.709", "BT.2020" }
+                SupportedColorSpaces = new List<string> { "BT.709", "BT.2020" }
             };
 
-            // PNG: 1/2/4/8/16-bit，常用 8/16；HDR PNG 支持 BT.2020
+            // PNG: 8/16-bit RGB，cHRM 块保留 CICP
             _cache["png"] = new FormatCapabilities
             {
                 Format = "png",
@@ -70,11 +76,13 @@ namespace FfmpegGui.Services
                 SupportsBitDepth = true,
                 SupportsMetadata = true,
                 SupportsLossless = true,
+                SupportsCicp = true,
+                CicpNote = "PNG cHRM 块保留 primaries/trc",
                 SupportedBitDepths = new List<int> { 8, 16 },
                 SupportedColorSpaces = new List<string> { "BT.709", "BT.2020" }
             };
 
-            // WebP: 仅 8-bit（VP8 不支持高位深）
+            // WebP: VP8 仅 8-bit，不支持 CICP
             _cache["webp"] = new FormatCapabilities
             {
                 Format = "webp",
@@ -83,11 +91,13 @@ namespace FfmpegGui.Services
                 SupportsBitDepth = false,
                 SupportsMetadata = true,
                 SupportsLossless = true,
+                SupportsCicp = false,
+                CicpNote = "WebP 不支持 CICP；非 sRGB 时自动嵌入 ICC",
                 SupportedBitDepths = new List<int> { 8 },
                 SupportedColorSpaces = new List<string> { "BT.709" }
             };
 
-            // AVIF: AV1 编码，支持 8/10/12-bit
+            // AVIF: libaom-av1 支持 8/10/12-bit YUV+RGB，原生 CICP
             _cache["avif"] = new FormatCapabilities
             {
                 Format = "avif",
@@ -96,11 +106,13 @@ namespace FfmpegGui.Services
                 SupportsBitDepth = true,
                 SupportsMetadata = true,
                 SupportsLossless = true,
+                SupportsCicp = true,
+                CicpNote = "AVIF 原生支持 CICP (H.273)，8/10/12-bit",
                 SupportedBitDepths = new List<int> { 8, 10, 12 },
                 SupportedColorSpaces = new List<string> { "BT.709", "BT.2020" }
             };
 
-            // TIFF: 支持 8/16-bit 整数（ffmpeg），部分场景可达 32-bit
+            // TIFF: 8/16-bit RGB/YUV，使用 ICC Profile（非 CICP）
             _cache["tiff"] = new FormatCapabilities
             {
                 Format = "tiff",
@@ -109,11 +121,13 @@ namespace FfmpegGui.Services
                 SupportsBitDepth = true,
                 SupportsMetadata = true,
                 SupportsLossless = true,
+                SupportsCicp = false,
+                CicpNote = "TIFF 使用 ICC Profile；非 sRGB 时自动嵌入 ICC",
                 SupportedBitDepths = new List<int> { 8, 16 },
                 SupportedColorSpaces = new List<string> { "BT.709", "BT.2020" }
             };
 
-            // GIF: 256 色调色板动图，8-bit
+            // GIF: 256 色调色板，无色彩管理
             _cache["gif"] = new FormatCapabilities
             {
                 Format = "gif",
@@ -122,11 +136,13 @@ namespace FfmpegGui.Services
                 SupportsBitDepth = false,
                 SupportsMetadata = false,
                 SupportsLossless = false,
+                SupportsCicp = false,
+                CicpNote = "GIF 无色彩管理（256 色调色板）",
                 SupportedBitDepths = new List<int> { 8 },
                 SupportedColorSpaces = new List<string>()
             };
 
-            // APNG: 动画 PNG，支持 8/16-bit
+            // APNG: 动画 PNG，同 PNG 能力
             _cache["apng"] = new FormatCapabilities
             {
                 Format = "apng",
@@ -135,11 +151,13 @@ namespace FfmpegGui.Services
                 SupportsBitDepth = true,
                 SupportsMetadata = false,
                 SupportsLossless = true,
+                SupportsCicp = true,
+                CicpNote = "APNG 同 PNG，cHRM 块保留 CICP",
                 SupportedBitDepths = new List<int> { 8, 16 },
                 SupportedColorSpaces = new List<string> { "BT.709", "BT.2020" }
             };
 
-            // JPEG XL: 支持 8/10/12/16-bit 整数，甚至 32-bit 浮点
+            // JPEG XL: libjxl 8/16/32-bit RGB，原生 CICP
             _cache["jxl"] = new FormatCapabilities
             {
                 Format = "jxl",
@@ -148,11 +166,13 @@ namespace FfmpegGui.Services
                 SupportsBitDepth = true,
                 SupportsMetadata = true,
                 SupportsLossless = true,
-                SupportedBitDepths = new List<int> { 8, 10, 12, 16 },
+                SupportsCicp = true,
+                CicpNote = "JXL 原生 CICP + ICC，支持 8/16/32-bit",
+                SupportedBitDepths = new List<int> { 8, 10, 12, 16, 32 },
                 SupportedColorSpaces = new List<string> { "BT.709", "BT.2020" }
             };
 
-            // JPEG XR: 支持 8/16/32-bit 整数/浮点，无损+有损，Alpha 通道
+            // JPEG XR: JxrEncApp 外部工具，8/16/32-bit
             _cache["jxr"] = new FormatCapabilities
             {
                 Format = "jxr",
@@ -161,6 +181,8 @@ namespace FfmpegGui.Services
                 SupportsBitDepth = true,
                 SupportsMetadata = true,
                 SupportsLossless = true,
+                SupportsCicp = false,
+                CicpNote = "JXR 使用 EXIF ColorSpace + ICC",
                 SupportedBitDepths = new List<int> { 8, 16, 32 },
                 SupportedColorSpaces = new List<string> { "BT.709", "BT.2020" }
             };

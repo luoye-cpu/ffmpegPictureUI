@@ -244,8 +244,17 @@ namespace FfmpegGui.Services
                                 {
                                     captured.Log += "[RAW] ✅ 预处理完成，使用线性 TIFF 继续编码。色彩空间: BT.709 + 线性传输。\n";
                                     captured.InputPath = rawTiff;
-                                    captured.Options.ColorPrimaries = "bt709";
-                                    captured.Options.ColorTrc = "linear";
+                                    // 仅在用户未手动设置色彩参数时覆盖（尊重用户意图）
+                                    if (!captured.Options.UseAdvancedColorParameters
+                                        && string.IsNullOrWhiteSpace(captured.Options.ColorPrimaries))
+                                    {
+                                        captured.Options.ColorPrimaries = "bt709";
+                                        captured.Options.ColorTrc = "linear";
+                                    }
+                                    else
+                                    {
+                                        captured.Log += "[RAW] 用户已设置色彩参数，保留用户配置。\n";
+                                    }
                                 }
                                 else
                                 {
@@ -360,48 +369,6 @@ namespace FfmpegGui.Services
                                 {
                                     captured.Log += "[exiftool] 未检测到 exiftool，已跳过元数据隐私清理。请安装 exiftool 并在设置中配置路径以启用该功能。\n";
                                     _onItemUpdated?.Invoke(captured);
-                                }
-                            }
-                            // ── ICC 嵌入后处理（用户手动指定的 ICC 文件）──
-                            if (captured.ExitCode == 0
-                                && (captured.Options.IccMode == Models.IccMode.Embed
-                                    || captured.Options.IccMode == Models.IccMode.BakeAndEmbed)
-                                && !string.IsNullOrWhiteSpace(captured.Options.IccFilePath)
-                                && IccProfileService.IsValidIccProfile(captured.Options.IccFilePath))
-                            {
-                                var fmt = captured.Options.Format.ToLower();
-                                // 这些格式支持 exiftool ICC 写入
-                                bool exiftoolCompatible = fmt is "jpg" or "jpeg" or "png" or "tiff" or "webp";
-                                if (exiftoolCompatible && ExifToolService.IsAvailable)
-                                {
-                                    try
-                                    {
-                                        captured.Log += $"[exiftool] 开始嵌入 ICC Profile...\n";
-                                        _onItemUpdated?.Invoke(captured);
-                                        var iccExit = await ExifToolService.EmbedIccProfileFromFileAsync(
-                                            captured.Options.IccFilePath, finalOutputPath,
-                                            s =>
-                                            {
-                                                captured.Log += s;
-                                                _onItemUpdated?.Invoke(captured);
-                                            });
-                                        if (iccExit == 0)
-                                            captured.Log += "[exiftool] ICC Profile 嵌入完成\n";
-                                        else
-                                            captured.Log += $"[exiftool] ⚠️ ICC Profile 嵌入失败（退出码 {iccExit}）\n";
-                                    }
-                                    catch (Exception ex)
-                                    {
-                                        captured.Log += $"[exiftool] ICC 嵌入错误: {ex.Message}\n";
-                                    }
-                                }
-                                else if (!exiftoolCompatible)
-                                {
-                                    captured.Log += $"[ICC] {fmt.ToUpper()} 格式的 ICC 嵌入通过 iccgen 滤镜（内置于 FFmpeg 命令行）\n";
-                                }
-                                else
-                                {
-                                    captured.Log += "[exiftool] 未检测到 exiftool，无法嵌入 ICC Profile。请安装 exiftool 并在设置中配置路径。\n";
                                 }
                             }
                             // ── 追加 .png 后缀（JXL/AVIF 兼容性）──

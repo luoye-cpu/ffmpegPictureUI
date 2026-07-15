@@ -16,7 +16,7 @@
 | **工具管理 v2.0** | 7→3 统一设置、旧字段自动迁移、PLAN 规范化 | ✅ |
 | **外部工具重编译** | jxrlib CMake 化、AVX2 全工具编译、冗余清理 | ✅ |
 | **.NET 11 + NativeAOT** | 绿色单文件，用户零 Runtime 依赖 | 📋 |
-| **ICC 色彩管理** | ICC 嵌入/烘焙、外部 ICC 文件加载、exiftool 后处理、zscale 烘焙 | ✅ |
+| **ICC 色彩管理 v2.0** | 4 种 ICC 模式、iccgen 自动生成标准 ICC、zscale 烘焙、CICP 始终启用、HDR→SDR 降级、非 CICP 格式自动 ICC、双重转换锁定 | ✅ |
 | **预设系统 v2.0** | 24 内置预设 + 二级管理窗口 + 用户预设 CRUD | ✅ |
 | **检测模块重写** | 后台线程、Task.WhenAny 超时保护、增量 Dispatcher 日志 | ✅ |
 | **WinExe 启动修复** | OutputType WinExe、无 CMD 窗口、消除网络依赖 | ✅ |
