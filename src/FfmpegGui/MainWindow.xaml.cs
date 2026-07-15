@@ -34,6 +34,7 @@ namespace FfmpegGui
         private ComboBox? ColorPrimariesCombo;
         private ComboBox? ColorTrcCombo;
         private ComboBox? ColorMatrixCombo;
+        private TextBlock? ColorConflictLabel;
         private CheckBox? UseAdvancedColor;
         private StackPanel? AdvancedColorPanel;
         private ComboBox? BitDepthCombo;
@@ -185,13 +186,14 @@ namespace FfmpegGui
         private Border? JpegliPsnrPanel;
         private NumericUpDown? JpegliPsnrBox;
         // ── ICC 色彩管理控件 ──
-        private RadioButton? IccModeNone, IccModeEmbed, IccModeBake, IccModeBakeEmbed;
+        private RadioButton? IccModeNone, IccModeCarry, IccModeBake, IccModeBakeOnly;
         private StackPanel? IccFilePanel, IccBakePanel;
         private TextBox? IccPathBox;
         private TextBlock? IccInfoLabel, IccCompatText, IccPreviewText;
-        private ComboBox? IccSourceSpaceCombo, IccTargetSpaceCombo;
+        private ComboBox? IccSourceSpaceCombo;
         private Border? IccCompatPanel, IccPreviewPanel;
         private string? _iccFilePath;
+        private int _lastProbedSourceBitDepth; // 上次探测的源位深，供冲突检测使用
         // ── 拖放区域 ──
         private Border? DropZone;
         private TextBlock? DropHint;
@@ -233,6 +235,7 @@ namespace FfmpegGui
             ColorPrimariesCombo = this.FindControl<ComboBox>("ColorPrimariesCombo");
             ColorTrcCombo = this.FindControl<ComboBox>("ColorTrcCombo");
             ColorMatrixCombo = this.FindControl<ComboBox>("ColorMatrixCombo");
+            ColorConflictLabel = this.FindControl<TextBlock>("ColorConflictLabel");
             UseAdvancedColor = this.FindControl<CheckBox>("UseAdvancedColor");
             AdvancedColorPanel = this.FindControl<StackPanel>("AdvancedColorPanel");
             BitDepthCombo = this.FindControl<ComboBox>("BitDepthCombo");
@@ -363,9 +366,9 @@ namespace FfmpegGui
             PresetManagerBtn = this.FindControl<Button>("PresetManagerBtn");
             // ── ICC 色彩管理控件 ──
             IccModeNone = this.FindControl<RadioButton>("IccModeNone");
-            IccModeEmbed = this.FindControl<RadioButton>("IccModeEmbed");
+            IccModeCarry = this.FindControl<RadioButton>("IccModeCarry");
             IccModeBake = this.FindControl<RadioButton>("IccModeBake");
-            IccModeBakeEmbed = this.FindControl<RadioButton>("IccModeBakeEmbed");
+            IccModeBakeOnly = this.FindControl<RadioButton>("IccModeBakeOnly");
             IccFilePanel = this.FindControl<StackPanel>("IccFilePanel");
             IccBakePanel = this.FindControl<StackPanel>("IccBakePanel");
             IccPathBox = this.FindControl<TextBox>("IccPathBox");
@@ -373,7 +376,7 @@ namespace FfmpegGui
             IccCompatText = this.FindControl<TextBlock>("IccCompatText");
             IccPreviewText = this.FindControl<TextBlock>("IccPreviewText");
             IccSourceSpaceCombo = this.FindControl<ComboBox>("IccSourceSpaceCombo");
-            IccTargetSpaceCombo = this.FindControl<ComboBox>("IccTargetSpaceCombo");
+
             IccCompatPanel = this.FindControl<Border>("IccCompatPanel");
             IccPreviewPanel = this.FindControl<Border>("IccPreviewPanel");
             // GPU 编码器警告面板
@@ -509,11 +512,11 @@ namespace FfmpegGui
             if (JpegliPsnrBox != null) JpegliPsnrBox.ValueChanged += (_, _) => RegenerateCommand();
             // ── ICC 色彩管理事件 ──
             if (IccModeNone != null) IccModeNone.IsCheckedChanged += (_, _) => { UpdateIccPanelVisibility(); RegenerateCommand(); };
-            if (IccModeEmbed != null) IccModeEmbed.IsCheckedChanged += (_, _) => { UpdateIccPanelVisibility(); RegenerateCommand(); };
+            if (IccModeCarry != null) IccModeCarry.IsCheckedChanged += (_, _) => { UpdateIccPanelVisibility(); RegenerateCommand(); };
             if (IccModeBake != null) IccModeBake.IsCheckedChanged += (_, _) => { UpdateIccPanelVisibility(); RegenerateCommand(); };
-            if (IccModeBakeEmbed != null) IccModeBakeEmbed.IsCheckedChanged += (_, _) => { UpdateIccPanelVisibility(); RegenerateCommand(); };
+            if (IccModeBakeOnly != null) IccModeBakeOnly.IsCheckedChanged += (_, _) => { UpdateIccPanelVisibility(); RegenerateCommand(); };
             if (IccSourceSpaceCombo != null) IccSourceSpaceCombo.SelectionChanged += (_, _) => { UpdateIccPreview(); RegenerateCommand(); };
-            if (IccTargetSpaceCombo != null) IccTargetSpaceCombo.SelectionChanged += (_, _) => { UpdateIccPreview(); RegenerateCommand(); };
+
             // 初始化 ICC 面板状态
             UpdateIccPanelVisibility();
             
@@ -1214,7 +1217,7 @@ namespace FfmpegGui
                 StripXmp = StripXmpCheck?.IsChecked ?? false,
                 AppendPngExtension = AppendPngExtCheck?.IsChecked ?? false,
                 IccMode = GetIccMode(),
-                IccFilePath = _iccFilePath,
+                IccFilePath = null, // 新模式不使用外部 ICC
                 IccSourceColorSpace = GetIccSourceSpace(),
                 IccTargetColorSpace = GetIccTargetSpace()
             };
@@ -1650,14 +1653,20 @@ namespace FfmpegGui
                 if (ColorSpaceCombo != null)
                 {
                     ColorSpaceCombo.Items!.Clear();
-                    ColorSpaceCombo.Items.Add("auto"); // 始终保留 auto
-                    foreach (var cs in _currentCapabilities.SupportedColorSpaces)
+                    ColorSpaceCombo.Items.Add("auto");
+                    ColorSpaceCombo.Items.Add("sRGB");
+                    ColorSpaceCombo.Items.Add("BT.709");
+                    var hasHdr = _currentCapabilities.SupportedColorSpaces.Contains("BT.2020");
+                    if (hasHdr)
                     {
-                        if (!ColorSpaceCombo.Items.Contains(cs))
-                            ColorSpaceCombo.Items.Add(cs);
+                        ColorSpaceCombo.Items.Add("BT.2020 PQ");
+                        ColorSpaceCombo.Items.Add("BT.2020 HLG");
                     }
                     ColorSpaceCombo.IsEnabled = _currentCapabilities.SupportedColorSpaces.Count > 0;
                     if (ColorSpaceCombo.Items.Count > 0) ColorSpaceCombo.SelectedIndex = 0;
+
+                    // 更新 CICP 格式兼容性提示
+                    UpdateCicpHint();
                 }
             }
             else
@@ -1884,9 +1893,9 @@ namespace FfmpegGui
 
         private Models.IccMode GetIccMode()
         {
-            if (IccModeEmbed?.IsChecked == true) return Models.IccMode.Embed;
-            if (IccModeBake?.IsChecked == true) return Models.IccMode.Bake;
-            if (IccModeBakeEmbed?.IsChecked == true) return Models.IccMode.BakeAndEmbed;
+            if (IccModeCarry?.IsChecked == true) return Models.IccMode.CarryIcc;
+            if (IccModeBake?.IsChecked == true) return Models.IccMode.BakeToStandard;
+            if (IccModeBakeOnly?.IsChecked == true) return Models.IccMode.BakeOnly;
             return Models.IccMode.None;
         }
 
@@ -1899,7 +1908,18 @@ namespace FfmpegGui
 
         private string GetIccTargetSpace()
         {
-            return IccTargetSpaceCombo?.SelectedItem as string ?? "sRGB / BT.709（最大兼容，推荐）";
+            // 烘焙目标直接使用高级色彩面板选择的色彩空间
+            var cs = ColorSpaceCombo?.SelectedItem as string;
+            if (string.IsNullOrWhiteSpace(cs) || cs == "auto")
+                return "sRGB / BT.709";
+            return cs switch
+            {
+                "sRGB" => "sRGB / BT.709",
+                "BT.709" => "sRGB / BT.709",
+                "BT.2020 PQ" => "Rec.2020 PQ (HDR)",
+                "BT.2020 HLG" => "Rec.2020 PQ (HDR)",
+                _ => "sRGB / BT.709"
+            };
         }
 
         /// <summary>
@@ -2082,7 +2102,7 @@ namespace FfmpegGui
                 StripXmp = StripXmpCheck?.IsChecked ?? false,
                 AppendPngExtension = AppendPngExtCheck?.IsChecked ?? false,
                 IccMode = GetIccMode(),
-                IccFilePath = _iccFilePath,
+                IccFilePath = null, // 新模式不使用外部 ICC
                 IccSourceColorSpace = GetIccSourceSpace(),
                 IccTargetColorSpace = GetIccTargetSpace(),
                 // 动图参数
@@ -2524,17 +2544,233 @@ namespace FfmpegGui
 
         private void ColorSpaceCombo_SelectionChanged(object? sender, SelectionChangedEventArgs e)
         {
+            var cs = ColorSpaceCombo?.SelectedItem as string;
+            if (string.IsNullOrWhiteSpace(cs) || cs == "auto")
+            {
+                ClearColorConflict();
+                UpdateAdvancedColorControls();
+                return;
+            }
+
+            // 自动填充高级参数以匹配快速选择
+            var (primaries, trc, matrix) = cs switch
+            {
+                "sRGB" => ("bt709", "iec61966-2-1", "bt709"),
+                "BT.709" => ("bt709", "bt709", "bt709"),
+                "BT.2020 PQ" => ("bt2020", "smpte2084", "bt2020nc"),
+                "BT.2020 HLG" => ("bt2020", "arib-std-b67", "bt2020nc"),
+                _ => ((string?)null, (string?)null, (string?)null)
+            };
+
+            if (primaries != null && ColorPrimariesCombo != null)
+                SelectComboItem(ColorPrimariesCombo, primaries);
+            if (trc != null && ColorTrcCombo != null)
+                SelectComboItem(ColorTrcCombo, trc);
+            if (matrix != null && ColorMatrixCombo != null)
+                SelectComboItem(ColorMatrixCombo, matrix);
+
+            // BT.2020 → 自动位深联动: 探测源位深，匹配最优色深
+            if (cs is "BT.2020 PQ" or "BT.2020 HLG" && BitDepthCombo != null)
+            {
+                var currentBd = BitDepthCombo.SelectedItem as string;
+                var sourceBd = ProbeCurrentSourceBitDepth();
+
+                // 确定目标位深: 不低于10bit, 匹配源位深, 不超格式上限
+                int targetBd = sourceBd switch
+                {
+                    <=8 => 10,              // 源≤8bit → 至少升到10bit
+                    10 => 10,               // 源10bit → 保持10bit
+                    12 => 12,               // 源12bit → 保持12bit
+                    _ => 16                 // 源16bit+ → 保持16bit
+                };
+                int maxBd = _currentCapabilities?.SupportedBitDepths?.DefaultIfEmpty(8).Max() ?? 8;
+                int effectiveBd = Math.Min(targetBd, maxBd);
+
+                // 映射到选项
+                var bdStr = effectiveBd switch { <=8 => "8", 10 => "10", 12 => "12", _ => "16" };
+                if (currentBd == "auto" || currentBd == "8" || effectiveBd > (int.TryParse(currentBd, out var cb) ? cb : 8))
+                    SelectComboItem(BitDepthCombo, bdStr);
+
+                // 记录源位深用于冲突检测
+                _lastProbedSourceBitDepth = sourceBd;
+            }
+
+            // ── Gain Map 联动: HDR+JPEG → 建议 RGB 多通道增益图 ──
+            if (cs is "BT.2020 PQ" or "BT.2020 HLG")
+            {
+                var fmt = FormatCombo?.SelectedItem as string ?? "";
+                if (fmt == "JPEG" && JpegGainMapMultiChannelCheck != null
+                    && UseAdvancedCodec?.IsChecked == true)
+                {
+                    // HDR+JPEG: RGB增益图色彩更准
+                    if (JpegGainMapMultiChannelCheck.IsChecked != true)
+                    {
+                        JpegGainMapMultiChannelCheck.IsChecked = true;
+                        if (LogText != null)
+                            LogText.Text += "[GainMap] HDR 输出建议使用 RGB 多通道增益图以获得更优色彩\n";
+                    }
+                }
+            }
+
+            DetectColorConflicts();
             UpdateAdvancedColorControls();
+
+            // ── ICC 联动: 同步烘焙目标空间 + 更新模式2提示 ──
+            UpdateIccCarryLabel();
+        }
+
+
+
+        /// <summary>更新模式2(CarryIcc)的提示</summary>
+        private void UpdateIccCarryLabel()
+        {
+            if (IccInfoLabel == null) return;
+            var cs = ColorSpaceCombo?.SelectedItem as string;
+            if (string.IsNullOrWhiteSpace(cs) || cs == "auto")
+                cs = "sRGB（默认）";
+            IccInfoLabel.Text = $"将保留源 ICC（如有），否则自动嵌入 {cs} 标准 ICC";
+        }
+
+        /// <summary>更新 CICP 格式兼容性提示</summary>
+        private void UpdateCicpHint()
+        {
+            if (_currentCapabilities == null) return;
+            var note = _currentCapabilities.CicpNote;
+            if (!string.IsNullOrWhiteSpace(note) && IccInfoLabel != null
+                && IccModeCarry?.IsChecked != true && IccModeBake?.IsChecked != true)
+            {
+                // 只在非 ICC 模式下显示 CICP 提示（ICC 模式下 IccInfoLabel 已有内容）
+                IccInfoLabel.Text = $"📋 {note}";
+                if (IccFilePanel != null) IccFilePanel.IsVisible = true;
+            }
+        }
+
+        /// <summary>选择 ComboBox 中匹配的项</summary>
+        private static void SelectComboItem(ComboBox combo, string value)
+        {
+            for (int i = 0; i < combo.Items.Count; i++)
+            {
+                if ((combo.Items[i] as string) == value)
+                { combo.SelectedIndex = i; return; }
+            }
+        }
+
+        /// <summary>探测当前源文件位深（调用 ffprobe）</summary>
+        private int ProbeCurrentSourceBitDepth()
+        {
+            if (string.IsNullOrWhiteSpace(_inputPath) || !File.Exists(_inputPath))
+                return 8;
+            try
+            {
+                var ffprobe = System.IO.Path.Combine(
+                    System.IO.Path.GetDirectoryName(AppSettingsService.Current.FfmpegPath) ?? "",
+                    "ffprobe.exe");
+                if (!File.Exists(ffprobe)) return 8;
+                using var p = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = ffprobe,
+                    Arguments = $"-v error -select_streams v:0 -show_entries stream=bits_per_raw_sample -of csv=p=0 \"{_inputPath}\"",
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                });
+                if (p == null) return 8;
+                var output = p.StandardOutput.ReadToEnd().Trim();
+                p.WaitForExit(3000);
+                if (int.TryParse(output, out var bd) && bd > 0) return bd;
+                return 8;
+            }
+            catch { return 8; }
         }
 
         private void UseAdvancedColor_IsCheckedChanged(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
         {
             if (AdvancedColorPanel != null) AdvancedColorPanel.IsVisible = UseAdvancedColor?.IsChecked == true;
+            DetectColorConflicts();
+            RegenerateCommand();
         }
 
         private void UseAdvancedCodec_IsCheckedChanged(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
         {
             if (AdvancedCodecPanel != null) AdvancedCodecPanel.IsVisible = UseAdvancedCodec?.IsChecked == true;
+        }
+
+        /// <summary>检测色彩选项冲突并在 UI 中报告</summary>
+        private void DetectColorConflicts()
+        {
+            if (ColorConflictLabel == null) return;
+            var conflicts = new List<string>();
+            var cs = ColorSpaceCombo?.SelectedItem as string;
+            var fmt = FormatCombo?.SelectedItem as string ?? "";
+
+            // 冲突1: HDR→SDR
+            if (cs is "BT.2020 PQ" or "BT.2020 HLG")
+            {
+                if (fmt is "JPEG" or "WebP" or "GIF" or "BMP")
+                    conflicts.Add($"⚠ HDR({cs})→{fmt}(SDR)：将自动应用色调映射降级");
+            }
+
+            // 冲突2: ICC烘焙激活时锁定手动色彩参数（双重转换锁定）
+            var isBaking = IccModeBake?.IsChecked == true || IccModeBakeOnly?.IsChecked == true;
+            if (isBaking)
+            {
+                // 烘焙模式下禁用高级色彩手动参数，避免双重转换
+                if (ColorPrimariesCombo != null) ColorPrimariesCombo.IsEnabled = false;
+                if (ColorTrcCombo != null) ColorTrcCombo.IsEnabled = false;
+                if (ColorMatrixCombo != null) ColorMatrixCombo.IsEnabled = false;
+                if (UseAdvancedColor?.IsChecked == true)
+                    conflicts.Add("🔒 ICC 烘焙已激活 — 高级色彩参数已锁定，由烘焙目标空间控制");
+            }
+            else
+            {
+                // 恢复高级色彩参数
+                if (ColorPrimariesCombo != null) ColorPrimariesCombo.IsEnabled = true;
+                if (ColorTrcCombo != null) ColorTrcCombo.IsEnabled = true;
+                if (ColorMatrixCombo != null) ColorMatrixCombo.IsEnabled = true;
+            }
+
+            // 冲突3: HDR + 目标格式位深限制
+            if (cs is "BT.2020 PQ" or "BT.2020 HLG")
+            {
+                var bdStr = BitDepthCombo?.SelectedItem as string;
+                int.TryParse(bdStr, out var selBd);
+                var fmtMaxBd = _currentCapabilities?.SupportedBitDepths?.DefaultIfEmpty(8).Max() ?? 8;
+
+                if (fmtMaxBd <= 8)
+                    conflicts.Add($"⚠ {fmt} 仅支持 8-bit，HDR 精度将损失（仍可继续）");
+                else if (_lastProbedSourceBitDepth > fmtMaxBd)
+                    conflicts.Add($"⚠ 源 {_lastProbedSourceBitDepth}-bit → 目标最大 {fmtMaxBd}-bit，将下采样");
+                else if (selBd == 8 && _lastProbedSourceBitDepth > 8)
+                    conflicts.Add($"⚠ 源 {_lastProbedSourceBitDepth}-bit，手动 8-bit 将损失精度");
+            }
+
+            // 冲突4: ICC烘焙目标空间 vs 输出色彩空间不匹配
+            if (isBaking && cs != "auto")
+            {
+                var target = GetIccTargetSpace();
+                var csIsSdr = cs is "sRGB" or "BT.709";
+                var targetIsHdr = target.Contains("Rec.2020") || target.Contains("HDR");
+
+                if (csIsSdr && targetIsHdr)
+                    conflicts.Add($"⚠ 输出色彩为 {cs}(SDR) 但烘焙目标为 HDR，像素将被过度拉伸");
+                if (!csIsSdr && !targetIsHdr)
+                    conflicts.Add($"⚠ 输出色彩为 {cs}(HDR) 但烘焙目标为 sRGB，HDR 将被裁剪为 SDR");
+            }
+
+            if (conflicts.Count > 0)
+            {
+                ColorConflictLabel.Text = string.Join("\n", conflicts);
+                ColorConflictLabel.IsVisible = true;
+                ColorConflictLabel.Foreground = Avalonia.Media.Brushes.Orange;
+            }
+            else { ClearColorConflict(); }
+        }
+
+        private void ClearColorConflict()
+        {
+            if (ColorConflictLabel != null)
+            { ColorConflictLabel.Text = ""; ColorConflictLabel.IsVisible = false; }
         }
 
         // ═══════════════════════════════════════════════
@@ -2548,21 +2784,25 @@ namespace FfmpegGui
 
         private void UpdateIccPanelVisibility()
         {
-            var isEmbed = IccModeEmbed?.IsChecked == true;
+            var isCarry = IccModeCarry?.IsChecked == true;
             var isBake = IccModeBake?.IsChecked == true;
-            var isBakeEmbed = IccModeBakeEmbed?.IsChecked == true;
-            var isAnyActive = isEmbed || isBake || isBakeEmbed;
+            var isBakeOnly = IccModeBakeOnly?.IsChecked == true;
+            var isBaking = isBake || isBakeOnly;
 
-            // ICC 文件选择面板：任一活动模式都显示
-            if (IccFilePanel != null)
-                IccFilePanel.IsVisible = isAnyActive;
-
-            // 烘焙面板：仅烘焙/烘焙+嵌入显示
+            // 烘焙面板：模式3/4显示
             if (IccBakePanel != null)
-                IccBakePanel.IsVisible = isBake || isBakeEmbed;
+                IccBakePanel.IsVisible = isBaking;
+
+            // 信息面板：模式2（CarryIcc）显示提示
+            if (IccFilePanel != null)
+                IccFilePanel.IsVisible = isCarry;
+
+            if (isCarry && IccInfoLabel != null)
+                UpdateIccCarryLabel(); // 动态显示当前色彩空间对应的 ICC 类型
 
             UpdateIccPreview();
             UpdateIccCompatibility();
+            DetectColorConflicts();
         }
 
         private async void BrowseIcc_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
@@ -2634,18 +2874,12 @@ namespace FfmpegGui
             RegenerateCommand();
         }
 
-        private void IccTargetSpace_Changed(object? sender, SelectionChangedEventArgs e)
-        {
-            UpdateIccPreview();
-            RegenerateCommand();
-        }
-
         private void UpdateIccPreview()
         {
             if (IccPreviewText == null) return;
 
-            var isBake = IccModeBake?.IsChecked == true || IccModeBakeEmbed?.IsChecked == true;
-            if (!isBake || string.IsNullOrWhiteSpace(_iccFilePath))
+            var isBake = IccModeBake?.IsChecked == true || IccModeBakeOnly?.IsChecked == true;
+            if (!isBake)
             {
                 IccPreviewText.Text = "";
                 return;
@@ -2653,8 +2887,8 @@ namespace FfmpegGui
 
             var srcName = IccSourceSpaceCombo?.SelectedIndex > 0
                 ? IccSourceSpaceCombo?.SelectedItem as string ?? "auto"
-                : "auto（从 ICC 检测）";
-            var dstName = IccTargetSpaceCombo?.SelectedItem as string ?? "sRGB";
+                : "auto（从文件检测）";
+            var dstName = GetIccTargetSpace();
 
             IccPreviewText.Text = $"转换预览:\n  {srcName}  ──zscale──▶  {dstName}";
         }
@@ -2663,9 +2897,9 @@ namespace FfmpegGui
         {
             if (IccCompatPanel == null || IccCompatText == null) return;
 
-            var isAnyActive = IccModeEmbed?.IsChecked == true
+            var isAnyActive = IccModeCarry?.IsChecked == true
                 || IccModeBake?.IsChecked == true
-                || IccModeBakeEmbed?.IsChecked == true;
+                || IccModeBakeOnly?.IsChecked == true;
 
             if (!isAnyActive)
             {
@@ -2674,7 +2908,7 @@ namespace FfmpegGui
             }
 
             var fmt = NormalizeFormat(FormatCombo?.SelectedItem as string);
-            var isEmbed = IccModeEmbed?.IsChecked == true || IccModeBakeEmbed?.IsChecked == true;
+            var isEmbed = IccModeCarry?.IsChecked == true || IccModeBakeOnly?.IsChecked == true;
 
             var nativeFormats = new[] { "jpg", "jpeg", "png", "tiff" };
             var iccgenFormats = new[] { "avif", "jxl", "webp" };
@@ -2822,7 +3056,7 @@ namespace FfmpegGui
                 StripXmp = StripXmpCheck?.IsChecked ?? false,
                 AppendPngExtension = AppendPngExtCheck?.IsChecked ?? false,
                 IccMode = GetIccMode(),
-                IccFilePath = _iccFilePath,
+                IccFilePath = null, // 新模式不使用外部 ICC
                 IccSourceColorSpace = GetIccSourceSpace(),
                 IccTargetColorSpace = GetIccTargetSpace()
             };
@@ -4122,7 +4356,7 @@ namespace FfmpegGui
                 StripXmp = StripXmpCheck?.IsChecked ?? false,
                 AppendPngExtension = AppendPngExtCheck?.IsChecked ?? false,
                 IccMode = GetIccMode().ToString(),
-                IccFilePath = _iccFilePath,
+                IccFilePath = null, // 新模式不使用外部 ICC
                 IccSourceColorSpace = GetIccSourceSpace(),
                 IccTargetColorSpace = GetIccTargetSpace(),
                 Concurrency = GetConcurrencyValue(),

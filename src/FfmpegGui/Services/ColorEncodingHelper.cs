@@ -28,9 +28,12 @@ namespace FfmpegGui.Services
             {
                 return options.ColorSpace switch
                 {
-                    // BT.2020 → Rec2100PQ (HDR)
-                    "BT.2020" => "Rec2100PQ",
+                    "sRGB" => "sRGB",
                     "BT.709" => "sRGB",
+                    "BT.2020 PQ" => "Rec2100PQ",
+                    "BT.2020 HLG" => "Rec2100HLG",
+                    // 兼容旧名称
+                    "BT.2020" => "Rec2100PQ",
                     "BT.601" => "sRGB",
                     _ => null
                 };
@@ -84,9 +87,11 @@ namespace FfmpegGui.Services
                 }
             }
 
-            // 简化模式 BT.2020 → PQ (HDR 行业标准)，需要设置 intensity_target
+            // 简化模式：HDR (PQ/HLG) 需要设置 intensity_target
             if (!string.IsNullOrWhiteSpace(options.ColorSpace)
-                && options.ColorSpace.Equals("BT.2020", StringComparison.OrdinalIgnoreCase)
+                && (options.ColorSpace.Equals("BT.2020 PQ", StringComparison.OrdinalIgnoreCase)
+                    || options.ColorSpace.Equals("BT.2020 HLG", StringComparison.OrdinalIgnoreCase)
+                    || options.ColorSpace.Equals("BT.2020", StringComparison.OrdinalIgnoreCase))
                 && !options.UseAdvancedColorParameters)
             {
                 if (options.JpegGainMapTargetNits > 0)

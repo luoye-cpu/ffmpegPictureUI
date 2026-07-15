@@ -187,7 +187,7 @@
                      VerticalAlignment="Center" />
           </StackPanel>
           <TextBlock x:Name="QualityValue" Text="质量: 75"/>
-          <!-- 基本色彩参数：色度采样 / 色彩空间 / 位深 -->
+          <!-- 基本色彩参数：色度采样 / 位深（色彩空间已移至高级面板） -->
           <Border CornerRadius="4" Padding="8,6" Margin="0,4,0,0"
                   Background="{DynamicResource SystemControlBackgroundChromeMediumBrush}">
             <StackPanel Spacing="6">
@@ -197,13 +197,6 @@
                 <sys:String>4:4:4</sys:String>
                 <sys:String>4:2:2</sys:String>
                 <sys:String>4:2:0</sys:String>
-              </ComboBox>
-              <TextBlock Text="色彩空间"/>
-              <ComboBox x:Name="ColorSpaceCombo">
-                <sys:String>auto</sys:String>
-                <sys:String>BT.601</sys:String>
-                <sys:String>BT.709</sys:String>
-                <sys:String>BT.2020</sys:String>
               </ComboBox>
               <TextBlock Text="位深"/>
               <ComboBox x:Name="BitDepthCombo">
@@ -215,26 +208,100 @@
               </ComboBox>
             </StackPanel>
           </Border>
-          <CheckBox x:Name="UseAdvancedColor" Content="高级色彩参数" IsCheckedChanged="UseAdvancedColor_IsCheckedChanged"/>
+          <CheckBox x:Name="UseAdvancedColor" Content="高级色彩参数 ⚙" IsCheckedChanged="UseAdvancedColor_IsCheckedChanged"/>
           <StackPanel x:Name="AdvancedColorPanel" IsVisible="False" Spacing="6">
-            <TextBlock Text="色彩基准（primaries）"/>
+            <!-- ── 色彩空间快速选择 ── -->
+            <TextBlock Text="色彩空间（快速选择）" FontSize="11" Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+            <ComboBox x:Name="ColorSpaceCombo" SelectionChanged="ColorSpaceCombo_SelectionChanged">
+              <sys:String>auto</sys:String>
+              <sys:String>sRGB</sys:String>
+              <sys:String>BT.709</sys:String>
+              <sys:String>BT.2020 PQ</sys:String>
+              <sys:String>BT.2020 HLG</sys:String>
+            </ComboBox>
+            
+            <!-- ── 精确色彩参数 ── -->
+            <TextBlock Text="色彩基准（primaries）" Margin="0,6,0,0"/>
             <ComboBox x:Name="ColorPrimariesCombo">
               <sys:String>bt709</sys:String>
-              <sys:String>bt470bg</sys:String>
               <sys:String>bt2020</sys:String>
+              <sys:String>smpte432</sys:String>
             </ComboBox>
             <TextBlock Text="色彩传输函数（trc）"/>
             <ComboBox x:Name="ColorTrcCombo">
               <sys:String>iec61966-2-1</sys:String>
               <sys:String>bt709</sys:String>
               <sys:String>smpte2084</sys:String>
+              <sys:String>arib-std-b67</sys:String>
+              <sys:String>linear</sys:String>
             </ComboBox>
             <TextBlock Text="色彩矩阵（colorspace）"/>
             <ComboBox x:Name="ColorMatrixCombo">
               <sys:String>bt709</sys:String>
-              <sys:String>bt601</sys:String>
-              <sys:String>bt2020</sys:String>
+              <sys:String>bt2020nc</sys:String>
             </ComboBox>
+            
+            <!-- CICP 标记（始终启用以保证准确色彩） -->
+            <TextBlock Text="☑ CICP 色彩标记：始终启用（H.273 标准）" FontSize="10"
+                       Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"
+                       ToolTip.Tip="CICP 确保输出文件携带精确的色彩基准/传输函数/矩阵信息"/>
+            
+            <!-- ── 冲突提示 ── -->
+            <TextBlock x:Name="ColorConflictLabel" Text="" FontSize="10" 
+                       Foreground="Orange" TextWrapping="Wrap" IsVisible="False"/>
+            
+            <!-- ═══════════════ ICC 色彩管理（统一面板，CICP 始终启用）═══════════════ -->
+            <Border CornerRadius="4" Padding="8,6" Margin="0,6,0,0"
+                    Background="{DynamicResource SystemControlBackgroundAltMediumBrush}">
+              <StackPanel Spacing="6">
+                <StackPanel Orientation="Horizontal" Spacing="4">
+                  <TextBlock Text="🎨 ICC 色彩管理" FontSize="12" FontWeight="Bold" VerticalAlignment="Center"/>
+                  <Button Content="?" Width="18" Height="18" FontSize="10" Padding="0"
+                          ToolTip.Tip="模式1: 无ICC(仅CICP)&#x0a;模式2: 携带ICC(源有则留,无则补标准)&#x0a;模式3: 烘焙+嵌入标准ICC&#x0a;模式4: 烘焙(无ICC输出)&#x0a;CICP标记始终启用"
+                          Click="IccHelp_Click"/>
+                </StackPanel>
+                
+                <!-- ICC 模式选择（4个新模式） -->
+                <StackPanel Spacing="2">
+                  <RadioButton x:Name="IccModeNone" GroupName="IccMode"
+                               Content="① 默认 — 无 ICC（仅 CICP 标记）" IsChecked="True"
+                               IsCheckedChanged="IccMode_Changed"/>
+                  <RadioButton x:Name="IccModeCarry" GroupName="IccMode"
+                               Content="② 携带 ICC — 保留源 ICC 或自动补充标准 ICC"
+                               IsCheckedChanged="IccMode_Changed"/>
+                  <RadioButton x:Name="IccModeBake" GroupName="IccMode"
+                               Content="③ 烘焙 + 嵌入标准 ICC — 像素转换并附加标准 ICC"
+                               IsCheckedChanged="IccMode_Changed"/>
+                  <RadioButton x:Name="IccModeBakeOnly" GroupName="IccMode"
+                               Content="④ 仅烘焙 — 像素转换，不输出 ICC"
+                               IsCheckedChanged="IccMode_Changed"/>
+                </StackPanel>
+                
+                <!-- 烘焙目标: 跟随高级色彩空间选择（不独立指定） -->
+                <StackPanel x:Name="IccBakePanel" IsVisible="False" Spacing="4">
+                  <TextBlock Text="烘焙目标: 跟随上方选择的色彩空间" FontSize="11"
+                             Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+                  
+                  <TextBlock Text="源色彩空间（留空=自动从文件检测）:" FontSize="11" Margin="0,4,0,0"/>
+                  <ComboBox x:Name="IccSourceSpaceCombo" SelectedIndex="0"
+                            FontSize="11">
+                    <sys:String>auto（从文件检测）</sys:String>
+                    <sys:String>sRGB / BT.709</sys:String>
+                    <sys:String>Adobe RGB (1998)</sys:String>
+                    <sys:String>Display P3</sys:String>
+                    <sys:String>DCI-P3</sys:String>
+                    <sys:String>ProPhoto RGB</sys:String>
+                    <sys:String>Rec.2020 PQ (HDR)</sys:String>
+                  </ComboBox>
+                </StackPanel>
+                
+                <!-- 标准 ICC 预览提示 -->
+                <StackPanel x:Name="IccFilePanel" IsVisible="False" Spacing="4">
+                  <TextBlock x:Name="IccInfoLabel" Text="" FontSize="10"
+                             Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" TextWrapping="Wrap"/>
+                </StackPanel>
+              </StackPanel>
+            </Border>
           </StackPanel>
           <CheckBox x:Name="UseAdvancedCodec" Content="高级编码选项" Margin="0,6,0,0" 
                     IsCheckedChanged="UseAdvancedCodec_IsCheckedChanged"/>
@@ -450,94 +517,6 @@
                          Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
             </StackPanel>
           </StackPanel>
-
-          <!-- ═══════════════ ICC 色彩管理卡片 ═══════════════ -->
-          <Border CornerRadius="4" Padding="8,6" Margin="0,8,0,0"
-                  Background="{DynamicResource SystemControlBackgroundChromeMediumBrush}">
-            <StackPanel Spacing="6">
-              <StackPanel Orientation="Horizontal" Spacing="6">
-                <TextBlock Text="🎨 ICC 色彩管理" FontSize="13" FontWeight="Bold"/>
-                <Button Content="?" Width="20" Height="20" FontSize="11" Padding="0"
-                        ToolTip.Tip="嵌入: 保留像素+附加 ICC 标签&#x0a;烘焙: 转换像素到目标色彩空间&#x0a;烘焙+嵌入: 转换像素并同时嵌入 ICC（双保险）"
-                        Click="IccHelp_Click"/>
-              </StackPanel>
-
-              <!-- 模式选择 RadioButton 组 -->
-              <StackPanel Spacing="2">
-                <RadioButton x:Name="IccModeNone" GroupName="IccMode"
-                             Content="○ 不处理（默认）" IsChecked="True"
-                             IsCheckedChanged="IccMode_Changed"/>
-                <RadioButton x:Name="IccModeEmbed" GroupName="IccMode"
-                             Content="📎 嵌入 ICC — 保留像素，附加色彩描述"
-                             IsCheckedChanged="IccMode_Changed"/>
-                <RadioButton x:Name="IccModeBake" GroupName="IccMode"
-                             Content="🔥 烘焙 ICC — 转换像素到目标空间（最大兼容）"
-                             IsCheckedChanged="IccMode_Changed"/>
-                <RadioButton x:Name="IccModeBakeEmbed" GroupName="IccMode"
-                             Content="🔥📎 烘焙 + 嵌入 — 转换像素并附加 ICC（双保险）"
-                             IsCheckedChanged="IccMode_Changed"/>
-              </StackPanel>
-
-              <!-- ICC 文件选择（嵌入/烘焙共用） -->
-              <StackPanel x:Name="IccFilePanel" IsVisible="False" Spacing="4">
-                <TextBlock Text="ICC 配置文件:" FontSize="11"/>
-                <StackPanel Orientation="Horizontal" Spacing="4">
-                  <TextBox x:Name="IccPathBox" Width="150" IsReadOnly="True"
-                           FontSize="11" VerticalAlignment="Center"
-                           PlaceholderText="未选择 .icc/.icm"/>
-                  <Button Content="浏览..." Click="BrowseIcc_Click"
-                          Padding="6,2" FontSize="11"/>
-                  <Button Content="✕" Click="ClearIcc_Click"
-                          Padding="6,2" FontSize="11"
-                          ToolTip.Tip="清除已选择的 ICC 文件"/>
-                </StackPanel>
-                <TextBlock x:Name="IccInfoLabel" Text=""
-                           FontSize="10" TextWrapping="Wrap"
-                           Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
-              </StackPanel>
-
-              <!-- 烘焙专属选项 -->
-              <StackPanel x:Name="IccBakePanel" IsVisible="False" Spacing="4">
-                <TextBlock Text="源色彩空间（ICC 描述的空间）:" FontSize="11"/>
-                <ComboBox x:Name="IccSourceSpaceCombo" SelectedIndex="0"
-                          SelectionChanged="IccSourceSpace_Changed">
-                  <sys:String>auto（从 ICC 文件检测）</sys:String>
-                  <sys:String>sRGB / BT.709</sys:String>
-                  <sys:String>Adobe RGB (1998)</sys:String>
-                  <sys:String>Display P3</sys:String>
-                  <sys:String>DCI-P3</sys:String>
-                  <sys:String>ProPhoto RGB</sys:String>
-                  <sys:String>Rec.2020 PQ (HDR)</sys:String>
-                  <sys:String>Rec.2100 HLG (HDR)</sys:String>
-                </ComboBox>
-
-                <TextBlock Text="目标色彩空间（烘焙到）:" FontSize="11" Margin="0,4,0,0"/>
-                <ComboBox x:Name="IccTargetSpaceCombo" SelectedIndex="0"
-                          SelectionChanged="IccTargetSpace_Changed">
-                  <sys:String>sRGB / BT.709（最大兼容，推荐）</sys:String>
-                  <sys:String>Adobe RGB (1998)</sys:String>
-                  <sys:String>Display P3</sys:String>
-                  <sys:String>Rec.2020 PQ (HDR)</sys:String>
-                </ComboBox>
-
-                <!-- 转换预览 -->
-                <Border x:Name="IccPreviewPanel" CornerRadius="3" Padding="6,4"
-                        Background="{DynamicResource SystemControlBackgroundChromeLowBrush}">
-                  <TextBlock x:Name="IccPreviewText" Text="" FontSize="10"
-                             FontFamily="Cascadia Code,Consolas,monospace"
-                             TextWrapping="Wrap"/>
-                </Border>
-              </StackPanel>
-
-              <!-- 格式兼容性提示 -->
-              <Border x:Name="IccCompatPanel" IsVisible="False" CornerRadius="3"
-                      Padding="6,4" Margin="0,2,0,0"
-                      Background="{DynamicResource SystemControlBackgroundChromeLowBrush}">
-                <TextBlock x:Name="IccCompatText" Text="" FontSize="10"
-                           TextWrapping="Wrap"/>
-              </Border>
-            </StackPanel>
-          </Border>
 
           <TextBlock Text="CPU 线程"/>
           <StackPanel Orientation="Horizontal" Spacing="6">

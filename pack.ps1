@@ -66,6 +66,14 @@ if ($Aot) {
 if ($LASTEXITCODE -ne 0) { throw "发布失败" }
 Write-Host "   ✅ 发布完成 → $OutputDir" -ForegroundColor Green
 
+# Step 1.5: 清理调试符号（SkiaSharp/HarfBuzz .pdb ~102MB，仅供调试）
+$pdbFiles = Get-ChildItem "$OutputDir\*.pdb" -ErrorAction SilentlyContinue
+if ($pdbFiles) {
+    $pdbFiles | Remove-Item -Force
+    $savedMB = [math]::Round(($pdbFiles | Measure-Object Length -Sum).Sum / 1MB, 1)
+    Write-Host "   ✅ 已删除调试符号，节省 ${savedMB}MB" -ForegroundColor Green
+}
+
 # Step 2: 复制 PLAN（完整包）
 if ($Variant -eq "full") {
     Write-Host "`n[2/4] 复制 PLAN 组件包..." -ForegroundColor Yellow

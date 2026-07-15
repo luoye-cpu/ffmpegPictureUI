@@ -10,14 +10,18 @@ namespace FfmpegGui.Models
     }
 
     /// <summary>
-    /// ICC 色彩处理模式
+    /// ICC 色彩处理模式（CICP 始终启用，以下控制 ICC 文件的处理方式）
     /// </summary>
     public enum IccMode
     {
-        None = 0,        // 不处理
-        Embed = 1,       // 仅嵌入 ICC 元数据（像素不变）
-        Bake = 2,        // 仅烘焙（像素转换到目标色彩空间，不嵌入 ICC）
-        BakeAndEmbed = 3 // 烘焙 + 嵌入 ICC（双保险：转换像素并附加 ICC 标签）
+        /// <summary>模式1: 默认 — 输出不包含 ICC（输入端即使有 ICC 也丢弃），仅保留 CICP 标记</summary>
+        None = 0,
+        /// <summary>模式2: 携带 ICC — 源文件有 ICC 则保留，否则嵌入匹配色域的标准 ICC</summary>
+        CarryIcc = 1,
+        /// <summary>模式3: 烘焙 + 嵌入标准 ICC — 像素转换到标准色彩空间，输出嵌入标准 ICC</summary>
+        BakeToStandard = 2,
+        /// <summary>模式4: 仅烘焙 — 像素转换到标准色彩空间，输出不携带 ICC</summary>
+        BakeOnly = 3
     }
 
     public class FfmpegOptions
