@@ -1,6 +1,6 @@
-# .NET 11 升级可行性分析与展望
+# .NET 11 升级可行性分析与展望 / .NET 11 Migration Analysis
 
-> 基线: .NET 10.0 | 预计 .NET 11 发布: 2026 年 11 月 (LTS)
+> 基线 / Baseline: .NET 10.0 | 当前版本 / Current: v1.5.0 (已发布 / Released) | 预计 .NET 11 发布: 2026 年 11 月 (LTS)
 
 ---
 
