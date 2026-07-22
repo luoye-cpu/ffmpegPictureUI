@@ -179,7 +179,7 @@ namespace FfmpegGui.Services
                         args.Add(MapJpegQuality(options.Quality).ToString());
                     }
                     if (!string.IsNullOrWhiteSpace(options.JpegHuffman))
-                    { args.Add("-huffman"); args.Add(options.JpegHuffman); }
+                    { args.Add("-huffman"); args.Add(options.JpegHuffman == "optimal" ? "1" : "0"); }
                     if (!string.IsNullOrWhiteSpace(options.JpegDct) && options.JpegDct != "auto")
                     { args.Add("-dct"); args.Add(options.JpegDct); }
                     break;
