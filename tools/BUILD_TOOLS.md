@@ -1,6 +1,6 @@
-# 外部工具编译说明
+# 外部工具编译说明 / Build Tools Guide
 
-> 最后更新: 2026-07-14  
+> 最后更新 / Last Updated: 2026-07-23  
 > 编译环境: Visual Studio 2026 (18) Community + CMake 4.3.1-msvc1 + NASM 2.16.01
 
 ---

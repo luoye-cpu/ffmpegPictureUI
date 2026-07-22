@@ -1,6 +1,6 @@
-# 📋 FFmpegPictureUI 超长线技术规划
+# 📋 FFmpegPictureUI 超长线技术规划 / Technical Roadmap
 
-> 制定日期: 2026-07-13 | 最后更新: 2026-07-14 | 当前版本: v1.5.0 BETA → 目标 v2.0.0
+> 制定日期 / Created: 2026-07-13 | 最后更新 / Last Updated: 2026-07-23 | 当前版本 / Current: v1.5.0 → 目标 / Target: v2.0.0
 
 ---
 
@@ -17,7 +17,11 @@
 | **外部工具重编译** | jxrlib CMake 化、AVX2 全工具编译、冗余清理 | ✅ |
 | **.NET 11 + NativeAOT** | 绿色单文件，用户零 Runtime 依赖 | 📋 |
 | **ICC 色彩管理 v2.0** | 4 种 ICC 模式、iccgen 自动生成标准 ICC、zscale 烘焙、CICP 始终启用、HDR→SDR 降级、非 CICP 格式自动 ICC、双重转换锁定 | ✅ |
-| **预设系统 v2.0** | 24 内置预设 + 二级管理窗口 + 用户预设 CRUD | ✅ |
+| **预设系统 v2.0** | 29 内置预设 + 二级管理窗口 + 用户预设 CRUD + 全部 AVIF 编码器深度预设 | ✅ |
+| **双语界面系统** | 中文/English 一键切换，JSON 资源文件，右上角按钮即时生效 | ✅ |
+| **AVIF 深度优化** | libaom: aq-mode/CDEF/intrabc/denoise; NVENC: aq-strength/spatial-aq/7档预设; QSV: low_power/7档预设; VAAPI/AMF 独立面板 | ✅ |
+| **PNG 增强** | 6 种预测模式中文说明 + DPI 打印分辨率；默认不设 DPI | ✅ |
+| **智能默认值** | 所有高级编码参数在未勾选面板时使用高质量默认值，确保基础操作即有良好输出 | ✅ |
 | **检测模块重写** | 后台线程、Task.WhenAny 超时保护、增量 Dispatcher 日志 | ✅ |
 | **WinExe 启动修复** | OutputType WinExe、无 CMD 窗口、消除网络依赖 | ✅ |
 
