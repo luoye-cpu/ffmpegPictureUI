@@ -165,12 +165,40 @@ ffmpegPictureUI/
 
 
 <details>
-<summary>Earlier versions / 更早版本</summary>
+<summary>v1.5.0 Beta 版本详情 / Beta Version Details</summary>
 
-- **v1.4.5** — Windows 搜索拖放修复、Linux ARM 迁移技术分析、JXL 无损 JPEG 重封装
-- **v1.3.0** — UI 卡片化重构、深色/浅色双主题、GridSplitter 弹性布局、ExifTool 隐私清理
-- **v1.2.0** — 批量队列引擎、元数据编辑器(~90字段)、格式筛选、预设 v1.0、CPU SIMD 指令集检测
-- **v1.0.0** — 初始发布：多格式编码、质量滑块、外部编码器集成(fmpeg/cjxl/cjpegli)
+### v1.5.0 BETA3 (2026-07-15)
+- **色彩空间重构** — 简化选择器：sRGB / BT.709 / BT.2020 PQ / BT.2020 HLG；移除 BT.601；选择后自动填充 primaries/trc/matrix；BT.2020 根据源位深自动 ≥10-bit
+- **ICC 系统重写** — 4 种新模式（无ICC / 携带ICC / 烘焙+嵌入 / 仅烘焙）；zscale 像素烘焙；iccgen 自动生成标准 ICC；烘焙目标跟随色彩空间选择
+- **CICP 始终启用** — H.273 标记在所有模式生效；非 CICP 格式非 sRGB 时自动嵌入 ICC
+- **HDR→SDR 降级** — 输出格式不支持 HDR 时自动 zscale+tonemap；位深比较警告
+- **双重转换锁定** — ICC 烘焙时锁定手动色彩参数，6 种冲突场景检测
+- **打包优化** — 移除原生 .pdb 调试符号 ~100MB；55 项管线测试矩阵全部通过
+
+### v1.5.0 BETA2 (2026-07-14)
+- **简洁模式** — 同窗口极简覆盖视图；拖放直接入队；自动编码开关；预设同步主界面
+- **GPU 编码器检测** — 启动时自动检测 QSV/NVENC/AMF；逐编码器运行时验证；✅⚡⚠️❌ 彩色状态提示
+- **GPU UI 加速** — ANGLE/D3D11 渲染（Windows）；GPU/CPU 一键切换；`--no-gpu` 命令行回退
+- **启动优化** — 消除重复 I/O；7 个外部工具 Task.WhenAll 并行检测；GPU 验证延迟到后台
+- **便携化部署** — 配置/预设存于 exe 同目录 `presets/`；零 %AppData% 依赖；拷贝即用
+
+### v1.5.0 BETA (2026-07-14)
+- **ICC 色彩管理 v1** — 外部 .icc/.icm 加载；exiftool/iccgen 嵌入；zscale 像素烘焙；sRGB~Rec.2100 完整色彩空间映射
+- **预设系统 v2.0** — 24 内置预设 + 二级管理窗口 + 用户 JSON 预设 CRUD
+- **工具面板重构** — 3 列水平布局；紧凑状态栏后台检测完自动显示 ✅/❌；PLAN 便携包自动识别
+- **检测模块重写** — 全异步 3 阶段后台管线；每步 8s 超时；增量 Dispatcher 日志
+- **AVIF 编码器面板** — AOM/SVT/NVENC/QSV/AMF 各自独立选项，编码器切换时动态切换面板
+- **动图与 RAW** — 视频转动图时长限制；dcraw RAW 解码自动检测；扩展 RAW 格式支持
+
+</details>
+
+<details>
+<summary>v1.4.5 及更早 / v1.4.5 & Earlier</summary>
+
+- **v1.4.5** — Windows 搜索结果拖放路径正确解析（Shell 命名空间）；JXL 无损 JPEG 重封装（直接复制 DCT 系数，5-10× 速度）；Linux ARM 迁移技术分析完成
+- **v1.3.0** — UI 卡片化重构（圆角阴影卡片容器）；深色/浅色双主题一键切换；GridSplitter 弹性三区布局；ExifTool 隐私清理（GPS/时间/相机/EXIF/XMP 选择性删除）
+- **v1.2.0** — 批量队列引擎（ConcurrentQueue + 并发 1-128 + 失败重试）；元数据编辑器（~90 字段 9 大分类 + 双击编辑）；格式筛选窗口；预设系统 v1.0；CPU SIMD 指令集自动检测
+- **v1.0.0** — 初始发布：JPEG/PNG/WebP/AVIF/JXL/TIFF 多格式编码；质量滑块；外部编码器集成（ffmpeg/cjxl/cjpegli）；命令行构建与预览
 
 </details>
 
