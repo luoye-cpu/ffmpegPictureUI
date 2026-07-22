@@ -20,11 +20,11 @@ namespace FfmpegGui.Services
 
         // ── 内置预设定义 ──
         // 说明：
-        //  - JPEG 预设统一使用 cjpegli (JPEG LI) 后端，基于 butteraugli distance (-d)
-        //  - JPEG XL 使用 butteraugli distance (-d 0-15)
-        //  - AVIF 提供 4 套编码器后端：AOM / SVT / NVIDIA NVENC / Intel QSV
-        //  - 支持有损+无损的格式分别提供有损和无损两套预设
+        //  - JPEG 预设统一使用 cjpegli (JPEG LI) 后端
+        //  - AVIF 提供 4 套编码器: AOM (cpu-used+aq-mode) / SVT (preset+tune) / NVENC (preset+aq+spatial-aq) / QSV (preset+low_power)
+        //  - PNG 支持 DPI 和预测模式
         //  - Gain Map (Ultra HDR) 已考虑
+        //  - 共 29 个内置预设
 
         private static readonly List<PresetEntry> BuiltInPresets = new()
         {
@@ -137,39 +137,62 @@ namespace FfmpegGui.Services
 
             // ═══════════════════════════════════════════
             //  AVIF — AOM (libaom-av1)
+            //  说明: cpu-used 越低质量越好但越慢; aq-mode=variance 适合照片;
+            //        CDEF/Intrabc 保持默认开启; 胶片颗粒默认关闭
             // ═══════════════════════════════════════════
             new PresetEntry
             {
-                Name = "🚀 AVIF AOM — 高质量 (CRF 20, 4:4:4 10-bit)",
+                Name = "🚀 AVIF AOM — 极致质量 (cpu=2, CRF 15, 4:4:4 10-bit)",
                 Source = "builtin",
                 Data = new PresetData
                 {
-                    Format = "AVIF", Quality = 90, Chroma = "4:4:4",
+                    Format = "AVIF", Quality = 92, Chroma = "4:4:4",
                     BitDepth = "10", ColorSpace = "auto",
                     EncoderBackend = "Ffmpeg",
-                    AvifCpuUsed = 4, AvifStillPicture = true,
+                    AvifCpuUsed = 2, AvifStillPicture = true, AvifRowMt = true,
                     AvifTune = "IQ (图像优化)",
+                    AvifAqMode = "variance",
+                    AvifEnableCdef = true, AvifEnableIntrabc = true,
+                    MetadataMode = "PreserveAll", AutoThreads = true,
+                    Concurrency = 1, MaxQueueSize = 8
+                }
+            },
+            new PresetEntry
+            {
+                Name = "🚀 AVIF AOM — 高质量 (cpu=4, CRF 22, 4:4:4 10-bit)",
+                Source = "builtin",
+                Data = new PresetData
+                {
+                    Format = "AVIF", Quality = 88, Chroma = "4:4:4",
+                    BitDepth = "10", ColorSpace = "auto",
+                    EncoderBackend = "Ffmpeg",
+                    AvifCpuUsed = 4, AvifStillPicture = true, AvifRowMt = true,
+                    AvifTune = "IQ (图像优化)",
+                    AvifAqMode = "variance",
+                    AvifEnableCdef = true, AvifEnableIntrabc = true,
                     MetadataMode = "PreserveAll", AutoThreads = true,
                     Concurrency = 2, MaxQueueSize = 16
                 }
             },
             new PresetEntry
             {
-                Name = "🚀 AVIF AOM — 平衡 (CRF 30, 4:2:0 10-bit)",
+                Name = "🚀 AVIF AOM — 平衡 (cpu=5, CRF 30, 4:2:0 10-bit)",
                 Source = "builtin",
                 Data = new PresetData
                 {
                     Format = "AVIF", Quality = 80, Chroma = "4:2:0",
                     BitDepth = "10", ColorSpace = "auto",
                     EncoderBackend = "Ffmpeg",
-                    AvifCpuUsed = 5, AvifStillPicture = true,
+                    AvifCpuUsed = 5, AvifStillPicture = true, AvifRowMt = true,
+                    AvifAqMode = "variance",
+                    AvifEnableCdef = true, AvifEnableIntrabc = true,
                     MetadataMode = "PreserveAll", AutoThreads = true,
-                    Concurrency = 2, MaxQueueSize = 16
+                    Concurrency = 4, MaxQueueSize = 32
                 }
             },
             new PresetEntry
             {
-                Name = "🚀 AVIF AOM — 无损 (CRF 0, 4:4:4)",
+                Name = "🚀 AVIF AOM — 无损 (CRF 0, 4:4:4, cpu=1)",
                 Source = "builtin",
                 Data = new PresetData
                 {
@@ -177,7 +200,7 @@ namespace FfmpegGui.Services
                     BitDepth = "auto", ColorSpace = "auto",
                     Lossless = true,
                     EncoderBackend = "Ffmpeg",
-                    AvifStillPicture = true,
+                    AvifCpuUsed = 1, AvifStillPicture = true, AvifRowMt = false,
                     MetadataMode = "PreserveAll", AutoThreads = true,
                     Concurrency = 1, MaxQueueSize = 4
                 }
@@ -185,17 +208,100 @@ namespace FfmpegGui.Services
 
             // ═══════════════════════════════════════════
             //  AVIF — SVT-AV1 (libsvtav1)
+            //  说明: preset 越低质量越好; VMAF tune 在人眼感知上表现好
             // ═══════════════════════════════════════════
             new PresetEntry
             {
-                Name = "🚀 AVIF SVT — 高质量 (preset 4, CRF 20)",
+                Name = "🚀 AVIF SVT — 极致质量 (preset 2, CRF 18, 4:4:4 10-bit)",
+                Source = "builtin",
+                Data = new PresetData
+                {
+                    Format = "AVIF", Quality = 92, Chroma = "4:4:4",
+                    BitDepth = "10", ColorSpace = "auto",
+                    EncoderBackend = "Ffmpeg",
+                    AvifSvtPreset = 2, AvifSvtTune = "VMAF (主观)",
+                    AvifStillPicture = true, AvifRowMt = true,
+                    MetadataMode = "PreserveAll", AutoThreads = true,
+                    Concurrency = 2, MaxQueueSize = 16
+                }
+            },
+            new PresetEntry
+            {
+                Name = "🚀 AVIF SVT — 高质量 (preset 4, CRF 24, 4:4:4 10-bit)",
+                Source = "builtin",
+                Data = new PresetData
+                {
+                    Format = "AVIF", Quality = 88, Chroma = "4:4:4",
+                    BitDepth = "10", ColorSpace = "auto",
+                    EncoderBackend = "Ffmpeg",
+                    AvifSvtPreset = 4, AvifSvtTune = "VMAF (主观)",
+                    AvifStillPicture = true, AvifRowMt = true,
+                    MetadataMode = "PreserveAll", AutoThreads = true,
+                    Concurrency = 3, MaxQueueSize = 24
+                }
+            },
+            new PresetEntry
+            {
+                Name = "🚀 AVIF SVT — 平衡 (preset 7, CRF 32, 4:2:0 10-bit)",
+                Source = "builtin",
+                Data = new PresetData
+                {
+                    Format = "AVIF", Quality = 80, Chroma = "4:2:0",
+                    BitDepth = "10", ColorSpace = "auto",
+                    EncoderBackend = "Ffmpeg",
+                    AvifSvtPreset = 7, AvifSvtTune = "VMAF (主观)",
+                    AvifStillPicture = true, AvifRowMt = true,
+                    MetadataMode = "PreserveAll", AutoThreads = true,
+                    Concurrency = 4, MaxQueueSize = 32
+                }
+            },
+            new PresetEntry
+            {
+                Name = "🚀 AVIF SVT — 快速批量 (preset 10, CRF 38, 4:2:0 10-bit)",
+                Source = "builtin",
+                Data = new PresetData
+                {
+                    Format = "AVIF", Quality = 73, Chroma = "4:2:0",
+                    BitDepth = "10", ColorSpace = "auto",
+                    EncoderBackend = "Ffmpeg",
+                    AvifSvtPreset = 10, AvifSvtTune = "VMAF (主观)",
+                    AvifStillPicture = true, AvifRowMt = true,
+                    MetadataMode = "StripAll", AutoThreads = true,
+                    Concurrency = 6, MaxQueueSize = 64
+                }
+            },
+
+            // ═══════════════════════════════════════════
+            //  AVIF — NVIDIA NVENC (av1_nvenc)
+            //  说明: p7 最好最慢; aq-strength=8 默认, 越高平坦区域越激进
+            // ═══════════════════════════════════════════
+            new PresetEntry
+            {
+                Name = "🚀 AVIF NVENC — 高质量 (p7, AQ=8, 4:4:4 10-bit)",
                 Source = "builtin",
                 Data = new PresetData
                 {
                     Format = "AVIF", Quality = 90, Chroma = "4:4:4",
                     BitDepth = "10", ColorSpace = "auto",
                     EncoderBackend = "Ffmpeg",
-                    AvifPreset = "4",
+                    AvifHwPresetLevel = 7,
+                    AvifNvencAqStrength = 8, AvifNvencSpatialAq = true,
+                    AvifStillPicture = true,
+                    MetadataMode = "PreserveAll", AutoThreads = true,
+                    Concurrency = 2, MaxQueueSize = 16
+                }
+            },
+            new PresetEntry
+            {
+                Name = "🚀 AVIF NVENC — 平衡 (p4, AQ=8, 4:2:0 10-bit)",
+                Source = "builtin",
+                Data = new PresetData
+                {
+                    Format = "AVIF", Quality = 82, Chroma = "4:2:0",
+                    BitDepth = "10", ColorSpace = "auto",
+                    EncoderBackend = "Ffmpeg",
+                    AvifHwPresetLevel = 4,
+                    AvifNvencAqStrength = 8, AvifNvencSpatialAq = true,
                     AvifStillPicture = true,
                     MetadataMode = "PreserveAll", AutoThreads = true,
                     Concurrency = 4, MaxQueueSize = 32
@@ -203,67 +309,36 @@ namespace FfmpegGui.Services
             },
             new PresetEntry
             {
-                Name = "🚀 AVIF SVT — 快速 (preset 8, CRF 30)",
+                Name = "🚀 AVIF NVENC — 快速 (p1, AQ=4, 4:2:0 10-bit)",
                 Source = "builtin",
                 Data = new PresetData
                 {
                     Format = "AVIF", Quality = 80, Chroma = "4:2:0",
                     BitDepth = "10", ColorSpace = "auto",
                     EncoderBackend = "Ffmpeg",
-                    AvifPreset = "8",
+                    AvifHwPresetLevel = 1,
+                    AvifNvencAqStrength = 4, AvifNvencSpatialAq = true,
                     AvifStillPicture = true,
-                    MetadataMode = "PreserveAll", AutoThreads = true,
-                    Concurrency = 4, MaxQueueSize = 64
-                }
-            },
-
-            // ═══════════════════════════════════════════
-            //  AVIF — NVIDIA NVENC (av1_nvenc)
-            // ═══════════════════════════════════════════
-            new PresetEntry
-            {
-                Name = "🚀 AVIF NVENC — 高质量 (p7)",
-                Source = "builtin",
-                Data = new PresetData
-                {
-                    Format = "AVIF", Quality = 90, Chroma = "4:4:4",
-                    BitDepth = "10", ColorSpace = "auto",
-                    EncoderBackend = "Ffmpeg",
-                    AvifHwPreset = "高质量",
-                    AvifStillPicture = true,
-                    MetadataMode = "PreserveAll", AutoThreads = true,
-                    Concurrency = 2, MaxQueueSize = 16
-                }
-            },
-            new PresetEntry
-            {
-                Name = "🚀 AVIF NVENC — 快速 (p1)",
-                Source = "builtin",
-                Data = new PresetData
-                {
-                    Format = "AVIF", Quality = 80, Chroma = "4:2:0",
-                    BitDepth = "10", ColorSpace = "auto",
-                    EncoderBackend = "Ffmpeg",
-                    AvifHwPreset = "快速",
-                    AvifStillPicture = true,
-                    MetadataMode = "PreserveAll", AutoThreads = true,
+                    MetadataMode = "StripAll", AutoThreads = true,
                     Concurrency = 4, MaxQueueSize = 64
                 }
             },
 
             // ═══════════════════════════════════════════
             //  AVIF — Intel QSV (av1_qsv)
+            //  说明: veryslow 最好最慢; low_power=0 使用 EU 着色器质量更好
             // ═══════════════════════════════════════════
             new PresetEntry
             {
-                Name = "🚀 AVIF QSV — 高质量 (veryslow)",
+                Name = "🚀 AVIF QSV — 高质量 (slow, CRF 24, 4:4:4 10-bit)",
                 Source = "builtin",
                 Data = new PresetData
                 {
-                    Format = "AVIF", Quality = 90, Chroma = "4:4:4",
+                    Format = "AVIF", Quality = 88, Chroma = "4:4:4",
                     BitDepth = "10", ColorSpace = "auto",
                     EncoderBackend = "Ffmpeg",
-                    AvifHwPreset = "高质量",
+                    AvifHwPresetLevel = 5, // slow
+                    AvifLowPower = false,
                     AvifStillPicture = true,
                     MetadataMode = "PreserveAll", AutoThreads = true,
                     Concurrency = 2, MaxQueueSize = 16
@@ -271,16 +346,33 @@ namespace FfmpegGui.Services
             },
             new PresetEntry
             {
-                Name = "🚀 AVIF QSV — 快速 (veryfast)",
+                Name = "🚀 AVIF QSV — 平衡 (medium, CRF 32, 4:2:0 10-bit)",
                 Source = "builtin",
                 Data = new PresetData
                 {
                     Format = "AVIF", Quality = 80, Chroma = "4:2:0",
                     BitDepth = "10", ColorSpace = "auto",
                     EncoderBackend = "Ffmpeg",
-                    AvifHwPreset = "快速",
+                    AvifHwPresetLevel = 4, // medium
+                    AvifLowPower = false,
                     AvifStillPicture = true,
                     MetadataMode = "PreserveAll", AutoThreads = true,
+                    Concurrency = 3, MaxQueueSize = 24
+                }
+            },
+            new PresetEntry
+            {
+                Name = "🚀 AVIF QSV — 快速 (veryfast, CRF 40, 4:2:0 10-bit)",
+                Source = "builtin",
+                Data = new PresetData
+                {
+                    Format = "AVIF", Quality = 73, Chroma = "4:2:0",
+                    BitDepth = "10", ColorSpace = "auto",
+                    EncoderBackend = "Ffmpeg",
+                    AvifHwPresetLevel = 1, // veryfast
+                    AvifLowPower = false,
+                    AvifStillPicture = true,
+                    MetadataMode = "StripAll", AutoThreads = true,
                     Concurrency = 4, MaxQueueSize = 64
                 }
             },

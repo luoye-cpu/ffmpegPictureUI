@@ -363,30 +363,77 @@ namespace FfmpegGui.Services
                             { args.Add("-still-picture"); args.Add("0"); }
                         }
                     }
-                    // ── 硬件编码器预设 ──
-                    if (!string.IsNullOrWhiteSpace(options.AvifHwPreset) && options.AvifHwPreset != "平衡")
+                    // ── libaom-av1 高级图像选项 ──
+                    if (!isSvt)
+                    {
+                        // aq-mode: 自适应量化
+                        if (!string.IsNullOrWhiteSpace(options.AvifAqMode))
+                        { args.Add("-aq-mode"); args.Add(options.AvifAqMode); }
+                        // CDEF
+                        if (options.AvifEnableCdef == false)
+                        { args.Add("-enable-cdef"); args.Add("0"); }
+                        else if (options.AvifEnableCdef == true)
+                        { args.Add("-enable-cdef"); args.Add("1"); }
+                        // Intrabc (屏幕内容)
+                        if (options.AvifEnableIntrabc == false)
+                        { args.Add("-enable-intrabc"); args.Add("0"); }
+                        else if (options.AvifEnableIntrabc == true)
+                        { args.Add("-enable-intrabc"); args.Add("1"); }
+                        // 降噪 (denoise-noise-level)
+                        if (options.AvifDenoiseLevel.HasValue && options.AvifDenoiseLevel.Value > 0)
+                        { args.Add("-denoise-noise-level"); args.Add(options.AvifDenoiseLevel.Value.ToString()); }
+                    }
+                    // ── 硬件编码器预设 (新:精细7档) ──
+                    // 优先使用新预设级别，回退旧 AvifHwPreset 兼容
+                    var hwLevel = options.AvifHwPresetLevel;
+                    if (hwLevel >= 1 && hwLevel <= 7)
                     {
                         var enc = options.Encoder ?? "";
                         if (enc.StartsWith("av1_nvenc", StringComparison.OrdinalIgnoreCase))
-                        {
-                            // NVENC: p1(快) p4(平衡) p7(好)
-                            args.Add("-preset"); args.Add(options.AvifHwPreset == "高质量" ? "p7" : "p1");
-                        }
+                        { args.Add("-preset"); args.Add($"p{hwLevel}"); }
                         else if (enc.StartsWith("av1_qsv", StringComparison.OrdinalIgnoreCase))
                         {
-                            // QSV: veryfast(快) medium(平衡) veryslow(好)
-                            args.Add("-preset"); args.Add(options.AvifHwPreset == "高质量" ? "veryslow" : "veryfast");
+                            var qsvPresets = new[] { "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow" };
+                            args.Add("-preset"); args.Add(qsvPresets[Math.Clamp(hwLevel - 1, 0, 6)]);
                         }
                         else if (enc.StartsWith("av1_amf", StringComparison.OrdinalIgnoreCase))
                         {
-                            // AMF: speed(快) balanced(平衡) quality(好)
-                            args.Add("-quality"); args.Add(options.AvifHwPreset == "高质量" ? "quality" : "speed");
+                            args.Add("-quality"); args.Add(hwLevel <= 2 ? "speed" : hwLevel <= 5 ? "balanced" : "quality");
                         }
                         else if (enc.StartsWith("av1_vaapi", StringComparison.OrdinalIgnoreCase))
-                        {
-                            // VAAPI: compression_level 1(快) 4(平衡) 7(好)
-                            args.Add("-compression_level"); args.Add(options.AvifHwPreset == "高质量" ? "7" : "1");
-                        }
+                        { args.Add("-compression_level"); args.Add(hwLevel.ToString()); }
+                    }
+                    else if (!string.IsNullOrWhiteSpace(options.AvifHwPreset) && options.AvifHwPreset != "平衡")
+                    {
+                        // 旧字段回退兼容
+                        var enc2 = options.Encoder ?? "";
+                        if (enc2.StartsWith("av1_nvenc", StringComparison.OrdinalIgnoreCase))
+                        { args.Add("-preset"); args.Add(options.AvifHwPreset == "高质量" ? "p7" : "p1"); }
+                        else if (enc2.StartsWith("av1_qsv", StringComparison.OrdinalIgnoreCase))
+                        { args.Add("-preset"); args.Add(options.AvifHwPreset == "高质量" ? "veryslow" : "veryfast"); }
+                        else if (enc2.StartsWith("av1_amf", StringComparison.OrdinalIgnoreCase))
+                        { args.Add("-quality"); args.Add(options.AvifHwPreset == "高质量" ? "quality" : "speed"); }
+                        else if (enc2.StartsWith("av1_vaapi", StringComparison.OrdinalIgnoreCase))
+                        { args.Add("-compression_level"); args.Add(options.AvifHwPreset == "高质量" ? "7" : "1"); }
+                    }
+                    // ── NVENC 高级选项 ──
+                    if (options.Encoder?.StartsWith("av1_nvenc", StringComparison.OrdinalIgnoreCase) == true)
+                    {
+                        if (options.AvifNvencAqStrength.HasValue)
+                        { args.Add("-aq-strength"); args.Add(options.AvifNvencAqStrength.Value.ToString()); }
+                        if (options.AvifNvencSpatialAq == false)
+                        { args.Add("-spatial-aq"); args.Add("0"); }
+                        else if (options.AvifNvencSpatialAq == true)
+                        { args.Add("-spatial-aq"); args.Add("1"); }
+                    }
+                    // ── QSV/VAAPI 低功耗模式 ──
+                    if (options.Encoder?.StartsWith("av1_qsv", StringComparison.OrdinalIgnoreCase) == true
+                        || options.Encoder?.StartsWith("av1_vaapi", StringComparison.OrdinalIgnoreCase) == true)
+                    {
+                        if (options.AvifLowPower == true)
+                        { args.Add("-low_power"); args.Add("1"); }
+                        else if (options.AvifLowPower == false)
+                        { args.Add("-low_power"); args.Add("0"); }
                     }
                     // GIF → AVIF：两步滤镜链 —— pal8→rgba（保留透明索引→alpha）+ rgba→yuva420p（编码器格式）
                     if (inputPath.EndsWith(".gif", StringComparison.OrdinalIgnoreCase))

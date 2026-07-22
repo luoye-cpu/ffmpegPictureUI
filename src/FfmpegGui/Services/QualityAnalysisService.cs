@@ -60,7 +60,7 @@ namespace FfmpegGui.Services
                     var djxlPath = DjxlService.DetectedPath;
                     if (!string.IsNullOrEmpty(djxlPath) && File.Exists(djxlPath))
                     {
-                        tempPngPath = Path.Combine(Path.GetTempPath(), $"qa_src_{Guid.NewGuid():N}.png");
+                        tempPngPath = Path.Combine(PlatformServices.GetTempDir(), $"qa_src_{Guid.NewGuid():N}.png");
                         if (await RunDecoderAsync(djxlPath, $"\"{sourcePath}\" \"{tempPngPath}\"") == 0
                             && File.Exists(tempPngPath) && new FileInfo(tempPngPath).Length > 0)
                             actualSourcePath = tempPngPath;
@@ -80,19 +80,25 @@ namespace FfmpegGui.Services
 
                 if (sourcePath.EndsWith(".jxr", StringComparison.OrdinalIgnoreCase))
                 {
-                    tempPngPath = Path.Combine(Path.GetTempPath(), $"qa_src_{Guid.NewGuid():N}.bmp");
+                    tempPngPath = Path.Combine(PlatformServices.GetTempDir(), $"qa_src_{Guid.NewGuid():N}.bmp");
                     if (await RunDecoderAsync(jxrDecPath, $"-i \"{sourcePath}\" -o \"{tempPngPath}\"") == 0
                         && File.Exists(tempPngPath) && new FileInfo(tempPngPath).Length > 0)
+                    {
                         actualSourcePath = tempPngPath;
+                        PlatformServices.MarkAsTemporaryFile(tempPngPath);
+                    }
                     else { TryDeleteFile(tempPngPath); tempPngPath = null; result.Error = "JXR 源解码失败"; return result; }
                 }
 
                 if (encodedPath.EndsWith(".jxr", StringComparison.OrdinalIgnoreCase))
                 {
-                    tempPngPath2 = Path.Combine(Path.GetTempPath(), $"qa_enc_{Guid.NewGuid():N}.bmp");
+                    tempPngPath2 = Path.Combine(PlatformServices.GetTempDir(), $"qa_enc_{Guid.NewGuid():N}.bmp");
                     if (await RunDecoderAsync(jxrDecPath, $"-i \"{encodedPath}\" -o \"{tempPngPath2}\"") == 0
                         && File.Exists(tempPngPath2) && new FileInfo(tempPngPath2).Length > 0)
+                    {
                         actualEncodedPath = tempPngPath2;
+                        PlatformServices.MarkAsTemporaryFile(tempPngPath2);
+                    }
                     else { TryDeleteFile(tempPngPath2); tempPngPath2 = null; result.Error = "JXR 编码输出解码失败"; return result; }
                 }
 

@@ -49,6 +49,9 @@ namespace FfmpegGui.Models
 
         public int ThemeMode { get; set; } = 2;
 
+        /// <summary>界面语言："zh-CN"=中文（默认）, "en-US"=英文</summary>
+        public string Language { get; set; } = "zh-CN";
+
         /// <summary>GPU 硬件加速：true=启用（Windows: DX11→Vulkan→CPU, Linux: Vulkan→OpenGL→CPU），false=纯软件渲染。需重启生效。</summary>
         public bool GpuAcceleration { get; set; } = true;
 
@@ -67,6 +70,12 @@ namespace FfmpegGui.Models
         /// 用户手动忽略的外部工具路径（持久化）。检测/选择时将跳过这些路径。
         /// </summary>
         public System.Collections.Generic.List<string> IgnoredToolPaths { get; set; } = new System.Collections.Generic.List<string>();
+
+        /// <summary>
+        /// 用户自定义缓存/临时文件目录。留空则自动选择（环境变量 → Linux /dev/shm → 系统 TEMP）。
+        /// 所有管线中间文件（BMP/RAW/TIFF）将写入此目录，处理完成后自动清理。
+        /// </summary>
+        public string? CacheDirectory { get; set; }
 
         /// <summary>ffmpeg 完整路径（计算属性，不持久化）</summary>
         [JsonIgnore]
@@ -132,14 +141,14 @@ namespace FfmpegGui.Models
             ["FLV"]  = new[] { ".flv" },
         };
 
-        /// <summary>用户启用的图片格式名称列表（持久化到 settings.json）</summary>
-        /// <summary>用户启用的图片格式名称列表（持久化到 settings.json）</summary>
+        /// <summary>用户启用的图片格式名称列表（持久化到 settings.json）。默认全选所有格式。</summary>
         public List<string> EnabledImageFormats { get; set; } = new()
         {
-            "PNG", "JPEG", "JPEG XL", "WebP", "AVIF", "TIFF", "HEIC",
+            "PNG", "JPEG", "JPEG XL", "JPEG XR", "WebP", "AVIF", "TIFF", "HEIC",
             "DNG", "BMP", "GIF",
             "📷 RAW-Canon", "📷 RAW-Nikon", "📷 RAW-Sony", "📷 RAW-Fujifilm",
-            "📷 RAW-Olympus", "📷 RAW-Panasonic", "📷 RAW-Pentax", "📷 RAW-Others"
+            "📷 RAW-Olympus", "📷 RAW-Panasonic", "📷 RAW-Pentax", "📷 RAW-Others",
+            "MP4", "MOV", "MKV", "AVI", "WebM", "WMV", "FLV"
         };
 
         /// <summary>获取所有启用的图片扩展名（小写）</summary>

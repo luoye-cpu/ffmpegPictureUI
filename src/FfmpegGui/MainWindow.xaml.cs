@@ -59,6 +59,9 @@ namespace FfmpegGui
         private TextBox? JxlLibDirBox;
         private TextBox? ExifToolPathBox;
         private TextBox? ArtifactsDirBox;
+        private TextBox? CacheDirBox;
+        private Button? CacheToggleBtn;
+        private StackPanel? CachePanel;
         private TextBlock? JxlLibStatus;      // (保留兼容，已改用 StackPanel)
         private TextBlock? ArtifactsStatus;    // (保留兼容，已改用 StackPanel)
         // ── 外部工具详细状态面板（3 列水平布局）──
@@ -136,6 +139,7 @@ namespace FfmpegGui
         private Border? ToolsCompactPanel;
         private StackPanel? ToolsStatusBar;
         private ComboBox? PngPredCombo;
+        private NumericUpDown? PngDpiBox;
         private ComboBox? WebpPresetCombo;
         private NumericUpDown? WebpCompressionBox;
         private StackPanel? WebpLosslessPanel;
@@ -144,13 +148,35 @@ namespace FfmpegGui
         private CheckBox? AvifRowMtCheck;
         private CheckBox? AutoUseSimdCheck;
         private ComboBox? AvifTuneCombo;
-        // SVT-AV1 专用控件
+        // ── libaom-av1 高级图像控件 ──
+        private ComboBox? AvifAqModeCombo;
+        private CheckBox? AvifCdefCheck;
+        private CheckBox? AvifIntrabcCheck;
+        private NumericUpDown? AvifDenoiseBox;
+        // ── 各编码器专用面板 ──
         private StackPanel? LibaomAvifPanel;
         private StackPanel? SvtAvifPanel;
         private StackPanel? HwAvifPanel;
+        private StackPanel? NvencAvifPanel;
+        private StackPanel? QsvAvifPanel;
+        private StackPanel? VaapiAvifPanel;
+        private StackPanel? AmfAvifPanel;
         private NumericUpDown? SvtPresetBox;
         private ComboBox? SvtTuneCombo;
         private CheckBox? SvtStillPictureCheck;
+        // ── NVENC 专用控件 ──
+        private ComboBox? NvencPresetCombo;
+        private NumericUpDown? AvifNvencAqBox;
+        private CheckBox? AvifNvencSpatialAqCheck;
+        // ── QSV 专用控件 ──
+        private ComboBox? QsvPresetCombo;
+        private CheckBox? AvifQsvLowPowerCheck;
+        // ── VAAPI 专用控件 ──
+        private ComboBox? VaapiPresetCombo;
+        private CheckBox? AvifVaapiLowPowerCheck;
+        // ── AMF 专用控件 ──
+        private ComboBox? AmfPresetCombo;
+        // ── 旧硬件面板(保留兼容) ──
         private ComboBox? HwPresetCombo;
         private ComboBox? PriorityCombo;
         private NumericUpDown? JxlEffortBox;
@@ -211,6 +237,10 @@ namespace FfmpegGui
         private readonly List<Models.QueueItem> _queueItems = new();
         private string? _inputBaseDir;
 
+        // ── PNG 预测模式值数组（与 PngPredCombo 的 SelectedIndex 对应）──
+        // 索引: 0=none, 1=sub, 2=up, 3=avg, 4=paeth, 5=mixed
+        private static readonly string[] _pngPredValues = { "none", "sub", "up", "avg", "paeth", "mixed" };
+
         public MainWindow()
         {
             InitializeComponent();
@@ -261,6 +291,9 @@ namespace FfmpegGui
             JxlLibDirBox = this.FindControl<TextBox>("JxlLibDirBox");
             ExifToolPathBox = this.FindControl<TextBox>("ExifToolPathBox");
             ArtifactsDirBox = this.FindControl<TextBox>("ArtifactsDirBox");
+            CacheDirBox = this.FindControl<TextBox>("CacheDirBox");
+            CacheToggleBtn = this.FindControl<Button>("CacheToggleBtn");
+            CachePanel = this.FindControl<StackPanel>("CachePanel");
             JxlLibStatus = this.FindControl<TextBlock>("JxlLibStatus");
             ArtifactsStatus = this.FindControl<TextBlock>("ArtifactsStatus");
             // ── 外部工具详细状态面板 ──
@@ -306,6 +339,7 @@ namespace FfmpegGui
             TiffCodecPanel = this.FindControl<StackPanel>("TiffCodecPanel");
             JxrCodecPanel = this.FindControl<StackPanel>("JxrCodecPanel");
             PngPredCombo = this.FindControl<ComboBox>("PngPredCombo");
+            PngDpiBox = this.FindControl<NumericUpDown>("PngDpiBox");
             WebpPresetCombo = this.FindControl<ComboBox>("WebpPresetCombo");
             WebpCompressionBox = this.FindControl<NumericUpDown>("WebpCompressionBox");
             WebpLosslessPanel = this.FindControl<StackPanel>("WebpLosslessPanel");
@@ -313,13 +347,32 @@ namespace FfmpegGui
             AvifStillPictureCheck = this.FindControl<CheckBox>("AvifStillPictureCheck");
             AvifRowMtCheck = this.FindControl<CheckBox>("AvifRowMtCheck");
             AvifTuneCombo = this.FindControl<ComboBox>("AvifTuneCombo");
+            // libaom-av1 高级图像控件
+            AvifAqModeCombo = this.FindControl<ComboBox>("AvifAqModeCombo");
+            AvifCdefCheck = this.FindControl<CheckBox>("AvifCdefCheck");
+            AvifIntrabcCheck = this.FindControl<CheckBox>("AvifIntrabcCheck");
+            AvifDenoiseBox = this.FindControl<NumericUpDown>("AvifDenoiseBox");
             // AVIF 编码器特定面板
             LibaomAvifPanel = this.FindControl<StackPanel>("LibaomAvifPanel");
             SvtAvifPanel = this.FindControl<StackPanel>("SvtAvifPanel");
             HwAvifPanel = this.FindControl<StackPanel>("HwAvifPanel");
+            NvencAvifPanel = this.FindControl<StackPanel>("NvencAvifPanel");
+            QsvAvifPanel = this.FindControl<StackPanel>("QsvAvifPanel");
+            VaapiAvifPanel = this.FindControl<StackPanel>("VaapiAvifPanel");
+            AmfAvifPanel = this.FindControl<StackPanel>("AmfAvifPanel");
             SvtPresetBox = this.FindControl<NumericUpDown>("SvtPresetBox");
             SvtTuneCombo = this.FindControl<ComboBox>("SvtTuneCombo");
             SvtStillPictureCheck = this.FindControl<CheckBox>("SvtStillPictureCheck");
+            // NVENC / QSV / VAAPI / AMF 专用控件
+            NvencPresetCombo = this.FindControl<ComboBox>("NvencPresetCombo");
+            AvifNvencAqBox = this.FindControl<NumericUpDown>("AvifNvencAqBox");
+            AvifNvencSpatialAqCheck = this.FindControl<CheckBox>("AvifNvencSpatialAqCheck");
+            QsvPresetCombo = this.FindControl<ComboBox>("QsvPresetCombo");
+            AvifQsvLowPowerCheck = this.FindControl<CheckBox>("AvifQsvLowPowerCheck");
+            VaapiPresetCombo = this.FindControl<ComboBox>("VaapiPresetCombo");
+            AvifVaapiLowPowerCheck = this.FindControl<CheckBox>("AvifVaapiLowPowerCheck");
+            AmfPresetCombo = this.FindControl<ComboBox>("AmfPresetCombo");
+            // 旧硬件面板(保留兼容)
             HwPresetCombo = this.FindControl<ComboBox>("HwPresetCombo");
             PriorityCombo = this.FindControl<ComboBox>("PriorityCombo");
             JxlEffortBox = this.FindControl<NumericUpDown>("JxlEffortBox");
@@ -422,6 +475,7 @@ namespace FfmpegGui
             if (ColorMatrixCombo != null) ColorMatrixCombo.SelectionChanged += (_, _) => RegenerateCommand();
             // 高级编码器选项
             if (PngPredCombo != null) PngPredCombo.SelectionChanged += (_, _) => RegenerateCommand();
+            if (PngDpiBox != null) PngDpiBox.ValueChanged += (_, _) => RegenerateCommand();
             if (WebpPresetCombo != null) WebpPresetCombo.SelectionChanged += (_, _) => RegenerateCommand();
             if (WebpCompressionBox != null) WebpCompressionBox.ValueChanged += (_, _) => RegenerateCommand();
             if (AvifCpuUsedBox != null) AvifCpuUsedBox.ValueChanged += (_, _) => RegenerateCommand();
@@ -432,6 +486,23 @@ namespace FfmpegGui
             if (SvtTuneCombo != null) SvtTuneCombo.SelectionChanged += (_, _) => RegenerateCommand();
             if (SvtStillPictureCheck != null) SvtStillPictureCheck.IsCheckedChanged += (_, _) => RegenerateCommand();
             if (HwPresetCombo != null) HwPresetCombo.SelectionChanged += (_, _) => RegenerateCommand();
+            // ── libaom-av1 高级图像控件 ──
+            if (AvifAqModeCombo != null) AvifAqModeCombo.SelectionChanged += (_, _) => RegenerateCommand();
+            if (AvifCdefCheck != null) AvifCdefCheck.IsCheckedChanged += (_, _) => RegenerateCommand();
+            if (AvifIntrabcCheck != null) AvifIntrabcCheck.IsCheckedChanged += (_, _) => RegenerateCommand();
+            if (AvifDenoiseBox != null) AvifDenoiseBox.ValueChanged += (_, _) => RegenerateCommand();
+            // ── NVENC 控件 ──
+            if (NvencPresetCombo != null) NvencPresetCombo.SelectionChanged += (_, _) => RegenerateCommand();
+            if (AvifNvencAqBox != null) AvifNvencAqBox.ValueChanged += (_, _) => RegenerateCommand();
+            if (AvifNvencSpatialAqCheck != null) AvifNvencSpatialAqCheck.IsCheckedChanged += (_, _) => RegenerateCommand();
+            // ── QSV 控件 ──
+            if (QsvPresetCombo != null) QsvPresetCombo.SelectionChanged += (_, _) => RegenerateCommand();
+            if (AvifQsvLowPowerCheck != null) AvifQsvLowPowerCheck.IsCheckedChanged += (_, _) => RegenerateCommand();
+            // ── VAAPI 控件 ──
+            if (VaapiPresetCombo != null) VaapiPresetCombo.SelectionChanged += (_, _) => RegenerateCommand();
+            if (AvifVaapiLowPowerCheck != null) AvifVaapiLowPowerCheck.IsCheckedChanged += (_, _) => RegenerateCommand();
+            // ── AMF 控件 ──
+            if (AmfPresetCombo != null) AmfPresetCombo.SelectionChanged += (_, _) => RegenerateCommand();
             // 进程优先级变更时持久化
             if (PriorityCombo != null)
             {
@@ -761,6 +832,8 @@ namespace FfmpegGui
                 ExifToolPathBox.Text = settings.ExifToolPath;
             if (!string.IsNullOrWhiteSpace(settings.WindowsArtifactsDir) && ArtifactsDirBox != null)
                 ArtifactsDirBox.Text = settings.WindowsArtifactsDir;
+            if (!string.IsNullOrWhiteSpace(settings.CacheDirectory) && CacheDirBox != null)
+                CacheDirBox.Text = settings.CacheDirectory;
             if (PreserveInputStructure != null)
                 PreserveInputStructure.IsChecked = settings.PreserveInputFolderStructure;
             if (ConcurrencyBox != null)
@@ -1182,26 +1255,37 @@ namespace FfmpegGui
                 Encoder = encName, EncoderBackend = backend, Threads = threads,
                 MetadataMode = GetMetadataMode(),
                 Lossless = LosslessCheck?.IsChecked ?? false,
-                PngPred = useAdvCodec ? (PngPredCombo?.SelectedItem as string) : null,
-                WebpPreset = useAdvCodec ? (WebpPresetCombo?.SelectedItem as string) : null,
-                WebpCompressionLevel = useAdvCodec ? (int?)WebpCompressionBox?.Value : null,
-                AvifCpuUsed = useAdvCodec ? (int?)AvifCpuUsedBox?.Value : null,
-                AvifStillPicture = useAdvCodec ? AvifStillPictureCheck?.IsChecked : null,
-                AvifRowMt = useAdvCodec ? AvifRowMtCheck?.IsChecked : null,
+                PngPred = useAdvCodec && PngPredCombo?.SelectedIndex >= 0
+                    ? _pngPredValues[Math.Min(PngPredCombo.SelectedIndex, _pngPredValues.Length - 1)]
+                    : null,
+                PngDpi = useAdvCodec && PngDpiBox?.Value > 0 ? (int?)PngDpiBox.Value : null,
+                WebpPreset = useAdvCodec ? (WebpPresetCombo?.SelectedItem as string) : "picture",
+                WebpCompressionLevel = useAdvCodec ? (int?)WebpCompressionBox?.Value : 4,
+                AvifCpuUsed = useAdvCodec ? (int?)AvifCpuUsedBox?.Value : 4,
+                AvifStillPicture = useAdvCodec ? AvifStillPictureCheck?.IsChecked : true,
+                AvifRowMt = useAdvCodec ? AvifRowMtCheck?.IsChecked : true,
                 AvifTune = useAdvCodec ? (AvifTuneCombo?.SelectedItem as string) : null,
                 AvifPreset = GetAvifPresetValue(),
-                AvifSvtPreset = useAdvCodec ? (int?)SvtPresetBox?.Value : null,
-                AvifSvtTune = useAdvCodec ? (SvtTuneCombo?.SelectedItem as string) : null,
+                AvifSvtPreset = useAdvCodec ? (int?)SvtPresetBox?.Value : 6,
+                AvifSvtTune = useAdvCodec ? (SvtTuneCombo?.SelectedItem as string) : "VMAF (主观)",
                 AvifHwPreset = useAdvCodec ? (HwPresetCombo?.SelectedItem as string) : null,
-                JxlEffort = useAdvCodec ? (int?)JxlEffortBox?.Value : null,
+                AvifHwPresetLevel = useAdvCodec ? GetAvifHwPresetLevel() : 7,
+                AvifAqMode = useAdvCodec ? ParseAvifAqMode() : "variance",
+                AvifEnableCdef = useAdvCodec ? AvifCdefCheck?.IsChecked : true,
+                AvifEnableIntrabc = useAdvCodec ? AvifIntrabcCheck?.IsChecked : true,
+                AvifDenoiseLevel = useAdvCodec && AvifDenoiseBox?.Value > 0 ? (int?)AvifDenoiseBox.Value : null,
+                AvifNvencAqStrength = useAdvCodec ? (int?)AvifNvencAqBox?.Value : 8,
+                AvifNvencSpatialAq = useAdvCodec ? AvifNvencSpatialAqCheck?.IsChecked : true,
+                AvifLowPower = useAdvCodec ? (AvifQsvLowPowerCheck?.IsChecked ?? AvifVaapiLowPowerCheck?.IsChecked) : false,
+                JxlEffort = useAdvCodec ? (int?)JxlEffortBox?.Value : 7,
                 JxlModular = useAdvCodec ? JxlModularCheck?.IsChecked : null,
                 JxlLosslessJpeg = jxlLosslessJpeg,
                 CjxlProgressive = useAdvCodec ? (CjxlProgressiveCheck?.IsChecked ?? false) : false,
                 CjxlPhotonNoiseIso = useAdvCodec ? (int)(CjxlPhotonNoiseBox?.Value ?? 0) : 0,
                 JxlPreserveUltrahdr = useAdvCodec ? (JxlPreserveUltrahdrCheck?.IsChecked ?? true) : true,
-                JpegHuffman = useAdvCodec ? (JpegHuffmanCombo?.SelectedItem as string) : null,
+                JpegHuffman = useAdvCodec ? (JpegHuffmanCombo?.SelectedItem as string) : "optimal",
                 JpegDct = useAdvCodec ? (JpegDctCombo?.SelectedItem as string is "auto" ? null : JpegDctCombo?.SelectedItem as string) : null,
-                JpegProgressiveId = useAdvCodec ? ParseJpegProgressiveId() : -1,
+                JpegProgressiveId = useAdvCodec ? ParseJpegProgressiveId() : 0,
                 JpegGainMap = (GetCurrentEncoderBackend() == EncoderBackend.Ultrahdr),
                 JpegGainMapQuality = ParseGainMapQuality(),
                 JpegGainMapTargetNits = ParseGainMapNits(),
@@ -1209,7 +1293,7 @@ namespace FfmpegGui
                 JpegGainMapDownsample = ParseGainMapDownsample(),
                 JpegGainMapMultiChannel = (UseAdvancedCodec?.IsChecked == true)
                     && (JpegGainMapMultiChannelCheck?.IsChecked ?? false),
-                TiffCompressionAlgo = useAdvCodec ? (TiffCompressionCombo?.SelectedItem as string) : null,
+                TiffCompressionAlgo = useAdvCodec ? (TiffCompressionCombo?.SelectedItem as string) : "lzw",
                 StripExifGps = StripExifGpsCheck?.IsChecked ?? true,
                 StripExifTime = StripExifTimeCheck?.IsChecked ?? false,
                 StripExifCamera = StripExifCameraCheck?.IsChecked ?? false,
@@ -1844,28 +1928,37 @@ namespace FfmpegGui
         private void UpdateAvifEncoderPanel()
         {
             var enc = EncoderCombo?.SelectedItem as string ?? "";
-            var isSvt = enc.StartsWith("libsvt", StringComparison.OrdinalIgnoreCase);
             var isLibaom = enc.StartsWith("libaom", StringComparison.OrdinalIgnoreCase) || string.IsNullOrEmpty(enc);
+            var isSvt = enc.StartsWith("libsvt", StringComparison.OrdinalIgnoreCase);
+            var isNvenc = enc.StartsWith("av1_nvenc", StringComparison.OrdinalIgnoreCase);
+            var isQsv = enc.StartsWith("av1_qsv", StringComparison.OrdinalIgnoreCase);
+            var isVaapi = enc.StartsWith("av1_vaapi", StringComparison.OrdinalIgnoreCase);
+            var isAmf = enc.StartsWith("av1_amf", StringComparison.OrdinalIgnoreCase);
 
             // 隐藏所有子面板
             if (LibaomAvifPanel != null) LibaomAvifPanel.IsVisible = false;
             if (SvtAvifPanel != null) SvtAvifPanel.IsVisible = false;
             if (HwAvifPanel != null) HwAvifPanel.IsVisible = false;
+            if (NvencAvifPanel != null) NvencAvifPanel.IsVisible = false;
+            if (QsvAvifPanel != null) QsvAvifPanel.IsVisible = false;
+            if (VaapiAvifPanel != null) VaapiAvifPanel.IsVisible = false;
+            if (AmfAvifPanel != null) AmfAvifPanel.IsVisible = false;
 
             // 根据编码器显示对应面板
             if (isLibaom)
-            {
-                if (LibaomAvifPanel != null) LibaomAvifPanel.IsVisible = true;
-            }
+                { if (LibaomAvifPanel != null) LibaomAvifPanel.IsVisible = true; }
             else if (isSvt)
-            {
-                if (SvtAvifPanel != null) SvtAvifPanel.IsVisible = true;
-            }
+                { if (SvtAvifPanel != null) SvtAvifPanel.IsVisible = true; }
+            else if (isNvenc)
+                { if (NvencAvifPanel != null) NvencAvifPanel.IsVisible = true; }
+            else if (isQsv)
+                { if (QsvAvifPanel != null) QsvAvifPanel.IsVisible = true; }
+            else if (isVaapi)
+                { if (VaapiAvifPanel != null) VaapiAvifPanel.IsVisible = true; }
+            else if (isAmf)
+                { if (AmfAvifPanel != null) AmfAvifPanel.IsVisible = true; }
             else
-            {
-                // 硬件编码器 / 其他
-                if (HwAvifPanel != null) HwAvifPanel.IsVisible = true;
-            }
+                { if (HwAvifPanel != null) HwAvifPanel.IsVisible = true; } // 兜底
         }
 
         /// <summary>
@@ -1877,6 +1970,40 @@ namespace FfmpegGui
             if (enc.StartsWith("libsvt", StringComparison.OrdinalIgnoreCase))
                 return SvtPresetBox?.Value.ToString();
             return null; // libaom: usage 由 tune IQ 自动管理
+        }
+
+        /// <summary>
+        /// 从 libaom AqModeCombo 解析真正的 aq-mode 值
+        /// 0=默认(不传), 1=variance, 2=complexity
+        /// </summary>
+        private string? ParseAvifAqMode()
+        {
+            var idx = AvifAqModeCombo?.SelectedIndex ?? 0;
+            return idx switch
+            {
+                1 => "variance",
+                2 => "complexity",
+                _ => null  // 0=默认，不传参数
+            };
+        }
+
+        /// <summary>
+        /// 从当前选中的硬件编码器预设下拉框获取预设级别 (1-7)
+        /// </summary>
+        private int GetAvifHwPresetLevel()
+        {
+            var enc = EncoderCombo?.SelectedItem as string ?? "";
+            if (enc.StartsWith("av1_nvenc", StringComparison.OrdinalIgnoreCase))
+                return (NvencPresetCombo?.SelectedIndex ?? 3) + 1;
+            if (enc.StartsWith("av1_qsv", StringComparison.OrdinalIgnoreCase))
+                return (QsvPresetCombo?.SelectedIndex ?? 3) + 1;
+            if (enc.StartsWith("av1_vaapi", StringComparison.OrdinalIgnoreCase))
+                return (VaapiPresetCombo?.SelectedIndex ?? 3) + 1;
+            if (enc.StartsWith("av1_amf", StringComparison.OrdinalIgnoreCase))
+                return (AmfPresetCombo?.SelectedIndex ?? 1) + 1;  // AMF only 3 options
+            // 旧面板兜底
+            var oldIdx = HwPresetCombo?.SelectedIndex ?? 1;
+            return oldIdx + 1; // 0→1, 1→2, 2→3 (old mapping)
         }
 
         /// <summary>
@@ -2068,25 +2195,36 @@ namespace FfmpegGui
                 Threads = threads,
                 MetadataMode = GetMetadataMode(),
                 Lossless = LosslessCheck?.IsChecked ?? false,
-                PngPred = useAdvCodec ? (PngPredCombo?.SelectedItem as string) : null,
-                WebpPreset = useAdvCodec ? (WebpPresetCombo?.SelectedItem as string) : null,
-                WebpCompressionLevel = useAdvCodec ? (int?)WebpCompressionBox?.Value : null,
-                AvifCpuUsed = useAdvCodec ? (int?)AvifCpuUsedBox?.Value : null,
-                AvifStillPicture = useAdvCodec ? AvifStillPictureCheck?.IsChecked : null,
-                AvifRowMt = useAdvCodec ? AvifRowMtCheck?.IsChecked : null,
+                PngPred = useAdvCodec && PngPredCombo?.SelectedIndex >= 0
+                    ? _pngPredValues[Math.Min(PngPredCombo.SelectedIndex, _pngPredValues.Length - 1)]
+                    : null,
+                PngDpi = useAdvCodec && PngDpiBox?.Value > 0 ? (int?)PngDpiBox.Value : null,
+                WebpPreset = useAdvCodec ? (WebpPresetCombo?.SelectedItem as string) : "picture",
+                WebpCompressionLevel = useAdvCodec ? (int?)WebpCompressionBox?.Value : 4,
+                AvifCpuUsed = useAdvCodec ? (int?)AvifCpuUsedBox?.Value : 4,
+                AvifStillPicture = useAdvCodec ? AvifStillPictureCheck?.IsChecked : true,
+                AvifRowMt = useAdvCodec ? AvifRowMtCheck?.IsChecked : true,
                 AvifTune = useAdvCodec ? (AvifTuneCombo?.SelectedItem as string) : null,
                 AvifPreset = GetAvifPresetValue(),
-                AvifSvtPreset = useAdvCodec ? (int?)SvtPresetBox?.Value : null,
-                AvifSvtTune = useAdvCodec ? (SvtTuneCombo?.SelectedItem as string) : null,
+                AvifSvtPreset = useAdvCodec ? (int?)SvtPresetBox?.Value : 6,
+                AvifSvtTune = useAdvCodec ? (SvtTuneCombo?.SelectedItem as string) : "VMAF (主观)",
                 AvifHwPreset = useAdvCodec ? (HwPresetCombo?.SelectedItem as string) : null,
-                JxlEffort = useAdvCodec ? (int?)JxlEffortBox?.Value : null,
+                AvifHwPresetLevel = useAdvCodec ? GetAvifHwPresetLevel() : 7,
+                AvifAqMode = useAdvCodec ? ParseAvifAqMode() : "variance",
+                AvifEnableCdef = useAdvCodec ? AvifCdefCheck?.IsChecked : true,
+                AvifEnableIntrabc = useAdvCodec ? AvifIntrabcCheck?.IsChecked : true,
+                AvifDenoiseLevel = useAdvCodec && AvifDenoiseBox?.Value > 0 ? (int?)AvifDenoiseBox.Value : null,
+                AvifNvencAqStrength = useAdvCodec ? (int?)AvifNvencAqBox?.Value : 8,
+                AvifNvencSpatialAq = useAdvCodec ? AvifNvencSpatialAqCheck?.IsChecked : true,
+                AvifLowPower = useAdvCodec ? (AvifQsvLowPowerCheck?.IsChecked ?? AvifVaapiLowPowerCheck?.IsChecked) : false,
+                JxlEffort = useAdvCodec ? (int?)JxlEffortBox?.Value : 7,
                 JxlModular = useAdvCodec ? JxlModularCheck?.IsChecked : null,
                 JxlLosslessJpeg = fmt is "jxl" && IsJpegInput(inputPath)
                     && !(useAdvCodec && (JxlPreserveUltrahdrCheck?.IsChecked ?? true)),
                 JxlPreserveUltrahdr = useAdvCodec ? (JxlPreserveUltrahdrCheck?.IsChecked ?? true) : true,
-                JpegHuffman = useAdvCodec ? (JpegHuffmanCombo?.SelectedItem as string) : null,
+                JpegHuffman = useAdvCodec ? (JpegHuffmanCombo?.SelectedItem as string) : "optimal",
                 JpegDct = useAdvCodec ? (JpegDctCombo?.SelectedItem as string is "auto" ? null : JpegDctCombo?.SelectedItem as string) : null,
-                JpegProgressiveId = useAdvCodec ? ParseJpegProgressiveId() : -1,
+                JpegProgressiveId = useAdvCodec ? ParseJpegProgressiveId() : 0,
                 JpegGainMap = (encoderBackend == EncoderBackend.Ultrahdr),
                 JpegGainMapQuality = ParseGainMapQuality(),
                 JpegGainMapTargetNits = ParseGainMapNits(),
@@ -2094,7 +2232,7 @@ namespace FfmpegGui
                 JpegGainMapDownsample = ParseGainMapDownsample(),
                 JpegGainMapMultiChannel = (UseAdvancedCodec?.IsChecked == true)
                     && (JpegGainMapMultiChannelCheck?.IsChecked ?? false),
-                TiffCompressionAlgo = useAdvCodec ? (TiffCompressionCombo?.SelectedItem as string) : null,
+                TiffCompressionAlgo = useAdvCodec ? (TiffCompressionCombo?.SelectedItem as string) : "lzw",
                 StripExifGps = StripExifGpsCheck?.IsChecked ?? true,
                 StripExifTime = StripExifTimeCheck?.IsChecked ?? false,
                 StripExifCamera = StripExifCameraCheck?.IsChecked ?? false,
@@ -3023,24 +3161,35 @@ namespace FfmpegGui
                 Threads = threads,
                 MetadataMode = GetMetadataMode(),
                 Lossless = LosslessCheck?.IsChecked ?? false,
-                PngPred = useAdvCodec ? (PngPredCombo?.SelectedItem as string) : null,
-                WebpPreset = useAdvCodec ? (WebpPresetCombo?.SelectedItem as string) : null,
-                AvifCpuUsed = useAdvCodec ? (int?)AvifCpuUsedBox?.Value : null,
-                AvifStillPicture = useAdvCodec ? AvifStillPictureCheck?.IsChecked : null,
-                AvifRowMt = useAdvCodec ? AvifRowMtCheck?.IsChecked : null,
+                PngPred = useAdvCodec && PngPredCombo?.SelectedIndex >= 0
+                    ? _pngPredValues[Math.Min(PngPredCombo.SelectedIndex, _pngPredValues.Length - 1)]
+                    : null,
+                PngDpi = useAdvCodec && PngDpiBox?.Value > 0 ? (int?)PngDpiBox.Value : null,
+                WebpPreset = useAdvCodec ? (WebpPresetCombo?.SelectedItem as string) : "picture",
+                WebpCompressionLevel = useAdvCodec ? (int?)WebpCompressionBox?.Value : 4,
+                AvifStillPicture = useAdvCodec ? AvifStillPictureCheck?.IsChecked : true,
+                AvifRowMt = useAdvCodec ? AvifRowMtCheck?.IsChecked : true,
                 AvifTune = useAdvCodec ? (AvifTuneCombo?.SelectedItem as string) : null,
                 AvifPreset = GetAvifPresetValue(),
-                AvifSvtPreset = useAdvCodec ? (int?)SvtPresetBox?.Value : null,
-                AvifSvtTune = useAdvCodec ? (SvtTuneCombo?.SelectedItem as string) : null,
+                AvifSvtPreset = useAdvCodec ? (int?)SvtPresetBox?.Value : 6,
+                AvifSvtTune = useAdvCodec ? (SvtTuneCombo?.SelectedItem as string) : "VMAF (主观)",
                 AvifHwPreset = useAdvCodec ? (HwPresetCombo?.SelectedItem as string) : null,
-                JxlEffort = useAdvCodec ? (int?)JxlEffortBox?.Value : null,
+                AvifHwPresetLevel = useAdvCodec ? GetAvifHwPresetLevel() : 7,
+                AvifAqMode = useAdvCodec ? ParseAvifAqMode() : "variance",
+                AvifEnableCdef = useAdvCodec ? AvifCdefCheck?.IsChecked : true,
+                AvifEnableIntrabc = useAdvCodec ? AvifIntrabcCheck?.IsChecked : true,
+                AvifDenoiseLevel = useAdvCodec && AvifDenoiseBox?.Value > 0 ? (int?)AvifDenoiseBox.Value : null,
+                AvifNvencAqStrength = useAdvCodec ? (int?)AvifNvencAqBox?.Value : 8,
+                AvifNvencSpatialAq = useAdvCodec ? AvifNvencSpatialAqCheck?.IsChecked : true,
+                AvifLowPower = useAdvCodec ? (AvifQsvLowPowerCheck?.IsChecked ?? AvifVaapiLowPowerCheck?.IsChecked) : false,
+                JxlEffort = useAdvCodec ? (int?)JxlEffortBox?.Value : 7,
                 JxlModular = useAdvCodec ? JxlModularCheck?.IsChecked : null,
                 JxlLosslessJpeg = fmt is "jxl" && IsJpegInput(_inputPath)
                     && !(useAdvCodec && (JxlPreserveUltrahdrCheck?.IsChecked ?? true)),
                 JxlPreserveUltrahdr = useAdvCodec ? (JxlPreserveUltrahdrCheck?.IsChecked ?? true) : true,
-                JpegHuffman = useAdvCodec ? (JpegHuffmanCombo?.SelectedItem as string) : null,
+                JpegHuffman = useAdvCodec ? (JpegHuffmanCombo?.SelectedItem as string) : "optimal",
                 JpegDct = useAdvCodec ? (JpegDctCombo?.SelectedItem as string is "auto" ? null : JpegDctCombo?.SelectedItem as string) : null,
-                JpegProgressiveId = useAdvCodec ? ParseJpegProgressiveId() : -1,
+                JpegProgressiveId = useAdvCodec ? ParseJpegProgressiveId() : 0,
                 JpegGainMap = (GetCurrentEncoderBackend() == EncoderBackend.Ultrahdr),
                 JpegGainMapQuality = ParseGainMapQuality(),
                 JpegGainMapTargetNits = ParseGainMapNits(),
@@ -3048,7 +3197,7 @@ namespace FfmpegGui
                 JpegGainMapDownsample = ParseGainMapDownsample(),
                 JpegGainMapMultiChannel = (UseAdvancedCodec?.IsChecked == true)
                     && (JpegGainMapMultiChannelCheck?.IsChecked ?? false),
-                TiffCompressionAlgo = useAdvCodec ? (TiffCompressionCombo?.SelectedItem as string) : null,
+                TiffCompressionAlgo = useAdvCodec ? (TiffCompressionCombo?.SelectedItem as string) : "lzw",
                 StripExifGps = StripExifGpsCheck?.IsChecked ?? true,
                 StripExifTime = StripExifTimeCheck?.IsChecked ?? false,
                 StripExifCamera = StripExifCameraCheck?.IsChecked ?? false,
@@ -3082,6 +3231,17 @@ namespace FfmpegGui
         }
 
         // `StopAfterCurrent_Click` 已移除，使用队列旁的复选框 `StopAfterCurrentCheck` 控制该行为。
+
+        /// <summary>语言切换：中文 ↔ 英文</summary>
+        private void LangToggle_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        {
+            Services.LocalizationService.Instance.ToggleLanguage();
+            var newLang = Services.LocalizationService.Instance.CurrentLanguage;
+            AppSettingsService.Current.Language = newLang;
+            AppSettingsService.Save();
+            // 按钮文本由 {ext:Loc language} 绑定自动更新，语言切换后 LocBindingSource 触发 Item[] 刷新
+            // 窗口标题也由 {ext:Loc app.title} 绑定自动更新
+        }
 
         private void ThemeToggle_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
         {
@@ -3635,6 +3795,7 @@ namespace FfmpegGui
                 Lossless = data.Lossless,
                 MetadataMode = data.MetadataMode == "StripAll" ? MetadataMode.StripAll : MetadataMode.PreserveAll,
                 PngPred = data.PngPred,
+                PngDpi = data.PngDpi,
                 WebpPreset = data.WebpPreset,
                 WebpCompressionLevel = data.WebpCompressionLevel,
                 AvifCpuUsed = data.AvifCpuUsed,
@@ -3644,6 +3805,14 @@ namespace FfmpegGui
                 AvifSvtPreset = data.AvifSvtPreset,
                 AvifSvtTune = data.AvifSvtTune,
                 AvifHwPreset = data.AvifHwPreset,
+                AvifHwPresetLevel = data.AvifHwPresetLevel,
+                AvifAqMode = data.AvifAqMode,
+                AvifEnableCdef = data.AvifEnableCdef,
+                AvifEnableIntrabc = data.AvifEnableIntrabc,
+                AvifDenoiseLevel = data.AvifDenoiseLevel,
+                AvifNvencAqStrength = data.AvifNvencAqStrength,
+                AvifNvencSpatialAq = data.AvifNvencSpatialAq,
+                AvifLowPower = data.AvifLowPower,
                 JxlEffort = data.JxlEffort,
                 JxlModular = data.JxlModular,
                 JxlPreserveUltrahdr = data.JxlPreserveUltrahdr,
@@ -3951,6 +4120,39 @@ namespace FfmpegGui
             if (ToolsDetailPanel != null)
                 ToolsDetailPanel.IsVisible = !ToolsDetailPanel.IsVisible;
             RefreshToolsStatusBar();
+        }
+
+        // ═══════════════════════════════════════════════
+        // 缓存目录设置（折叠面板）
+        // ═══════════════════════════════════════════════
+
+        private void ToggleCachePanel_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        {
+            if (CachePanel != null)
+                CachePanel.IsVisible = !CachePanel.IsVisible;
+        }
+
+        private async void BrowseCacheDir_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        {
+            var result = await StorageProvider.OpenFolderPickerAsync(new Avalonia.Platform.Storage.FolderPickerOpenOptions
+            {
+                Title = "选择缓存/临时文件目录",
+                AllowMultiple = false
+            });
+            if (result.Count > 0)
+            {
+                var dir = result[0].Path.LocalPath;
+                if (CacheDirBox != null) CacheDirBox.Text = dir;
+                AppSettingsService.Current.CacheDirectory = dir;
+                AppSettingsService.Save();
+            }
+        }
+
+        private void ClearCacheDir_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        {
+            if (CacheDirBox != null) CacheDirBox.Text = "";
+            AppSettingsService.Current.CacheDirectory = null;
+            AppSettingsService.Save();
         }
 
         private void RedetectTools_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
@@ -4318,7 +4520,10 @@ namespace FfmpegGui
                 MetadataMode = MetadataModeCombo?.SelectedIndex == 1 ? "StripAll" : "PreserveAll",
                 Lossless = LosslessCheck?.IsChecked ?? false,
                 UseAdvancedCodec = UseAdvancedCodec?.IsChecked ?? false,
-                PngPred = PngPredCombo?.SelectedItem as string,
+                PngPred = PngPredCombo?.SelectedIndex >= 0
+                    ? _pngPredValues[Math.Min(PngPredCombo.SelectedIndex, _pngPredValues.Length - 1)]
+                    : null,
+                PngDpi = PngDpiBox?.Value > 0 ? (int?)PngDpiBox.Value : null,
                 WebpPreset = WebpPresetCombo?.SelectedItem as string,
                 AvifCpuUsed = (int?)AvifCpuUsedBox?.Value,
                 AvifTune = AvifTuneCombo?.SelectedItem as string,
@@ -4343,7 +4548,18 @@ namespace FfmpegGui
                 AvifSvtPreset = (int?)SvtPresetBox?.Value,
                 AvifSvtTune = SvtTuneCombo?.SelectedItem as string,
                 AvifHwPreset = HwPresetCombo?.SelectedItem as string,
+                AvifHwPresetLevel = GetAvifHwPresetLevel(),
                 AvifRowMt = AvifRowMtCheck?.IsChecked,
+                // ── libaom-av1 高级图像 ──
+                AvifAqMode = ParseAvifAqMode(),
+                AvifEnableCdef = AvifCdefCheck?.IsChecked,
+                AvifEnableIntrabc = AvifIntrabcCheck?.IsChecked,
+                AvifDenoiseLevel = AvifDenoiseBox?.Value > 0 ? (int?)AvifDenoiseBox.Value : null,
+                // ── NVENC 高级 ──
+                AvifNvencAqStrength = (int?)AvifNvencAqBox?.Value,
+                AvifNvencSpatialAq = AvifNvencSpatialAqCheck?.IsChecked,
+                // ── QSV/VAAPI ──
+                AvifLowPower = AvifQsvLowPowerCheck?.IsChecked ?? AvifVaapiLowPowerCheck?.IsChecked,
                 // ── cjpegli 扩展 ──
                 CjpegliChromaSubsampling = JpegliChromaCombo?.SelectedItem as string,
                 CjpegliProgressiveId = JpegliProgressiveCombo?.SelectedIndex switch { 1 => 0, 2 => 2, _ => -1 },
@@ -4394,7 +4610,8 @@ namespace FfmpegGui
             if (StripXmpCheck != null) StripXmpCheck.IsChecked = p.StripXmp;
             if (LosslessCheck != null) LosslessCheck.IsChecked = p.Lossless;
             if (UseAdvancedCodec != null) UseAdvancedCodec.IsChecked = p.UseAdvancedCodec;
-            SetComboByValue(PngPredCombo, p.PngPred);
+            SetComboByValueOrIndex(PngPredCombo, p.PngPred, _pngPredValues);
+            if (PngDpiBox != null && p.PngDpi.HasValue) PngDpiBox.Value = p.PngDpi.Value;
             SetComboByValue(WebpPresetCombo, p.WebpPreset);
             if (AvifCpuUsedBox != null && p.AvifCpuUsed.HasValue) AvifCpuUsedBox.Value = p.AvifCpuUsed.Value;
             SetComboByValue(AvifTuneCombo, p.AvifTune);
@@ -4432,6 +4649,26 @@ namespace FfmpegGui
             SetComboByValue(HwPresetCombo, p.AvifHwPreset);
             if (AvifRowMtCheck != null && p.AvifRowMt.HasValue)
                 AvifRowMtCheck.IsChecked = p.AvifRowMt.Value;
+            // ── libaom-av1 高级图像 ──
+            if (AvifAqModeCombo != null && !string.IsNullOrWhiteSpace(p.AvifAqMode))
+                AvifAqModeCombo.SelectedIndex = p.AvifAqMode switch { "variance" => 1, "complexity" => 2, _ => 0 };
+            if (AvifCdefCheck != null && p.AvifEnableCdef.HasValue) AvifCdefCheck.IsChecked = p.AvifEnableCdef.Value;
+            if (AvifIntrabcCheck != null && p.AvifEnableIntrabc.HasValue) AvifIntrabcCheck.IsChecked = p.AvifEnableIntrabc.Value;
+            if (AvifDenoiseBox != null && p.AvifDenoiseLevel.HasValue) AvifDenoiseBox.Value = p.AvifDenoiseLevel.Value;
+            // ── NVENC ──
+            if (NvencPresetCombo != null && p.AvifHwPresetLevel >= 1)
+                NvencPresetCombo.SelectedIndex = Math.Clamp(p.AvifHwPresetLevel - 1, 0, 6);
+            if (AvifNvencAqBox != null && p.AvifNvencAqStrength.HasValue) AvifNvencAqBox.Value = p.AvifNvencAqStrength.Value;
+            if (AvifNvencSpatialAqCheck != null && p.AvifNvencSpatialAq.HasValue) AvifNvencSpatialAqCheck.IsChecked = p.AvifNvencSpatialAq.Value;
+            // ── QSV/VAAPI ──
+            if (QsvPresetCombo != null && p.AvifHwPresetLevel >= 1)
+                QsvPresetCombo.SelectedIndex = Math.Clamp(p.AvifHwPresetLevel - 1, 0, 6);
+            if (VaapiPresetCombo != null && p.AvifHwPresetLevel >= 1)
+                VaapiPresetCombo.SelectedIndex = Math.Clamp(p.AvifHwPresetLevel - 1, 0, 6);
+            if (AmfPresetCombo != null && p.AvifHwPresetLevel >= 1)
+                AmfPresetCombo.SelectedIndex = Math.Clamp(p.AvifHwPresetLevel <= 2 ? 0 : p.AvifHwPresetLevel <= 5 ? 1 : 2, 0, 2);
+            if (AvifQsvLowPowerCheck != null && p.AvifLowPower.HasValue) AvifQsvLowPowerCheck.IsChecked = p.AvifLowPower.Value;
+            if (AvifVaapiLowPowerCheck != null && p.AvifLowPower.HasValue) AvifVaapiLowPowerCheck.IsChecked = p.AvifLowPower.Value;
             // ── cjpegli 扩展选项 ──
             SetComboByValue(JpegliChromaCombo, p.CjpegliChromaSubsampling);
             if (JpegliProgressiveCombo != null)
@@ -4460,6 +4697,20 @@ namespace FfmpegGui
             for (int i = 0; i < combo.Items!.Count; i++)
             {
                 if ((combo.Items[i] as string) == value)
+                {
+                    combo.SelectedIndex = i;
+                    return;
+                }
+            }
+        }
+
+        /// <summary>通过值数组匹配设置 ComboBox 索引（用于显示文本≠原始值的情况，如 PNG 预测模式）</summary>
+        private static void SetComboByValueOrIndex(ComboBox? combo, string? value, string[] valueArray)
+        {
+            if (combo == null || value == null) return;
+            for (int i = 0; i < valueArray.Length && i < combo.Items!.Count; i++)
+            {
+                if (valueArray[i].Equals(value, StringComparison.OrdinalIgnoreCase))
                 {
                     combo.SelectedIndex = i;
                     return;

@@ -95,6 +95,25 @@ namespace FfmpegGui.Models
         public string? AvifSvtTune { get; set; }
         /// <summary>硬件编码器质量预设: 快速/平衡/高质量</summary>
         public string? AvifHwPreset { get; set; }
+        /// <summary>硬件编码器预设数值 (1-7, 用于 NVENC p1-p7 / QSV veryfast-veryslow / VAAPI compression_level)</summary>
+        public int AvifHwPresetLevel { get; set; } = 4;
+        // ── libaom-av1 高级图像选项 ──
+        /// <summary>自适应量化模式: null=默认, "variance"=适合照片, "complexity"=适合混合内容</summary>
+        public string? AvifAqMode { get; set; }
+        /// <summary>约束方向增强滤波器 (CDEF): null=默认开启, false=关闭提速但边缘可能有振铃</summary>
+        public bool? AvifEnableCdef { get; set; }
+        /// <summary>帧内块复制 (适合截图/UI/文字): null=默认开启, false=关闭</summary>
+        public bool? AvifEnableIntrabc { get; set; }
+        /// <summary>降噪+颗粒合成 (0=关闭): 对噪点多的照片先降噪后合成颗粒,大幅减小体积</summary>
+        public int? AvifDenoiseLevel { get; set; }
+        // ── NVENC 硬件编码器高级选项 ──
+        /// <summary>NVENC 自适应量化强度 (0-15, 默认8): 值越大平坦区域压缩越激进</summary>
+        public int? AvifNvencAqStrength { get; set; }
+        /// <summary>NVENC 空间自适应量化: null=默认开启, false=关闭(均匀QP,可能更大文件)</summary>
+        public bool? AvifNvencSpatialAq { get; set; }
+        // ── QSV/VAAPI 硬件编码器选项 ──
+        /// <summary>QSV/VAAPI 低功耗模式: true=固定功能硬件(质量可能下降但省电), null=默认关闭</summary>
+        public bool? AvifLowPower { get; set; }
 
         // ── cjpegli / jpegli 专属高级选项 ──
         /// <summary>色度子采样: "444", "422", "420", "440"</summary>
