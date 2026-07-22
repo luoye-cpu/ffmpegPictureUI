@@ -556,9 +556,9 @@
                 <sys:String>auto</sys:String><sys:String>int</sys:String>
                 <sys:String>fastint</sys:String><sys:String>float</sys:String>
               </ComboBox>
-              <!-- JPEG 渐进模式 (Gain Map / mjpeg 路径) -->
-              <TextBlock Text="渐进模式 (progressive)" Margin="0,4,0,0"/>
-              <ComboBox x:Name="JpegProgressiveCombo" SelectedIndex="1" FontSize="11">
+              <!-- JPEG 渐进模式 (mjpeg 不支持，仅 cjpegli 有独立面板) -->
+              <TextBlock Text="渐进模式 (progressive)" Margin="0,4,0,0" IsVisible="False"/>
+              <ComboBox x:Name="JpegProgressiveCombo" SelectedIndex="1" FontSize="11" IsVisible="False">
                 <sys:String>自动</sys:String><sys:String>基线/标准 (兼容性)</sys:String>
                 <sys:String>渐进式 (高性能)</sys:String>
               </ComboBox>
