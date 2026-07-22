@@ -171,6 +171,10 @@ public static class RawService
                 File.Move(dcrawOutput, outputTiffPath, overwrite: true);
             }
 
+            // 标记为临时文件，提示 OS 优先内存缓存（dcraw 产出的 TIFF 仅用于后续 ffmpeg 编码）
+            if (File.Exists(outputTiffPath))
+                PlatformServices.MarkAsTemporaryFile(outputTiffPath);
+
             log?.Invoke($"[RAW] 预处理完成: {Path.GetFileName(outputTiffPath)}\n");
             return File.Exists(outputTiffPath);
         }

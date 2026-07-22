@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.IO;
 using System.Runtime.InteropServices;
 
 namespace FfmpegGui.Services;
@@ -205,7 +206,136 @@ public static class PlatformServices
         catch { /* 降级：优先级设置不影响核心功能 */ }
     }
 
-    /// <summary>返回适合当前平台的大文件临时目录</summary>
-    public static string GetTempDir() =>
-        IsLinux && Directory.Exists("/var/tmp") ? "/var/tmp" : Path.GetTempPath();
+    // ═══════════════════════════════════════════════
+    // RAM 优化临时文件
+    // ═══════════════════════════════════════════════
+
+    /// <summary>
+    /// 标记文件为临时文件，提示 OS 优先使用内存缓存、延迟写入磁盘。
+    /// Windows: FILE_ATTRIBUTE_TEMPORARY → OS 尽量缓存在内存，减少磁盘 I/O
+    /// Linux:   在 /dev/shm 上的文件天然 RAM 驻留，无需额外标记
+    /// </summary>
+    public static void MarkAsTemporaryFile(string filePath)
+    {
+        if (IsLinux) return;
+        try
+        {
+            File.SetAttributes(filePath, File.GetAttributes(filePath) | FileAttributes.Temporary);
+        }
+        catch { /* 非致命：属性设置失败不影响功能 */ }
+    }
+
+    /// <summary>在 RAM 优化临时目录中创建子目录</summary>
+    public static string CreateTempSubDir(string prefix)
+    {
+        var dir = Path.Combine(GetTempDir(), $"{prefix}_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        return dir;
+    }
+
+    /// <summary>
+    /// 返回适合当前平台的临时目录，优先级：
+    /// ① 用户设置 CacheDirectory（GUI 中手动配置）
+    /// ② 环境变量 FFMPEGGUI_RAMDISK（用户挂载的 RAM 盘）
+    /// ③ Linux /dev/shm（tmpfs 内存文件系统，零磁盘磨损）
+    /// ④ 系统默认临时目录（Windows 通常已是 SSD）
+    /// </summary>
+    public static string GetTempDir()
+    {
+        // ① 用户在设置中指定的缓存目录（最高优先级）
+        try
+        {
+            var cacheDir = AppSettingsService.Current.CacheDirectory;
+            if (!string.IsNullOrWhiteSpace(cacheDir))
+            {
+                try { Directory.CreateDirectory(cacheDir); } catch { }
+                if (Directory.Exists(cacheDir))
+                    return cacheDir;
+            }
+        }
+        catch { }
+
+        // ② 用户通过环境变量指定的 RAM 盘路径（跨平台通用方案）
+        try
+        {
+            var envPath = Environment.GetEnvironmentVariable("FFMPEGGUI_RAMDISK");
+            if (!string.IsNullOrWhiteSpace(envPath) && Directory.Exists(envPath))
+            {
+                // 确保 RAM 盘有足够空间（至少 500MB），不够则回退
+                try
+                {
+                    var driveInfo = new DriveInfo(Path.GetPathRoot(envPath)!);
+                    if (driveInfo.AvailableFreeSpace > 500_000_000)
+                        return envPath;
+                }
+                catch { /* 无法检测空间，信任用户配置 */ return envPath; }
+            }
+        }
+        catch { }
+
+        // ② Linux: /dev/shm 是内核保证的 tmpfs，大小默认为 50% RAM
+        if (IsLinux && Directory.Exists("/dev/shm"))
+        {
+            try
+            {
+                // 安全检测：至少需要 500MB 可用空间
+                var shmInfo = new DriveInfo("/dev/shm");
+                if (shmInfo.AvailableFreeSpace > 500_000_000)
+                    return "/dev/shm";
+            }
+            catch { /* 无法检测，保守使用 /var/tmp */ }
+            // /dev/shm 空间不足，回退 /var/tmp（持久临时，避免 /tmp 被 systemd 清理）
+            if (Directory.Exists("/var/tmp"))
+                return "/var/tmp";
+        }
+
+        // ③ 标准临时目录（Windows: %TEMP% 通常已在 SSD 上）
+        return Path.GetTempPath();
+    }
+
+    // ═══════════════════════════════════════════════
+    // 缓存文件清理
+    // ═══════════════════════════════════════════════
+
+    /// <summary>缓存子目录前缀（用于识别和清理僵尸目录）</summary>
+    private static readonly string[] TempDirPrefixes =
+    {
+        "raw_", "gainmap_", "ultrahdr_", "jxr_", "jxr_input_",
+        "uhdr_decode_", "avif2gifwebp_", "avifenc_frames_"
+    };
+
+    /// <summary>
+    /// 清理崩溃/异常退出遗留的僵尸临时目录（超过 24 小时的旧目录）。
+    /// 应在应用启动时调用一次。
+    /// </summary>
+    public static void CleanupZombieTempDirs()
+    {
+        try
+        {
+            var cacheDir = GetTempDir();
+            if (!Directory.Exists(cacheDir)) return;
+
+            var cutoff = DateTime.UtcNow.AddHours(-24);
+            foreach (var prefix in TempDirPrefixes)
+            {
+                try
+                {
+                    foreach (var dir in Directory.EnumerateDirectories(cacheDir, $"{prefix}*"))
+                    {
+                        try
+                        {
+                            var dirInfo = new DirectoryInfo(dir);
+                            if (dirInfo.LastWriteTimeUtc < cutoff)
+                            {
+                                Directory.Delete(dir, true);
+                            }
+                        }
+                        catch { /* 单个目录清理失败不影响其他 */ }
+                    }
+                }
+                catch { /* 枚举失败不影响其他前缀 */ }
+            }
+        }
+        catch { /* 清理失败不影响主流程 */ }
+    }
 }

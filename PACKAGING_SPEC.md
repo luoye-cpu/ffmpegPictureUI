@@ -42,6 +42,10 @@ FFmpegPictureUI-v1.5.0-x64-full/
 ├── FfmpegGui.exe                    ← 主程序（由 dotnet publish 生成）
 ├── FfmpegGui.dll                    ← 主程序集
 ├── *.dll                            ← 运行时依赖
+├── Resources/                       ← 程序资源
+│   └── Locales/                     ← 多语言资源
+│       ├── zh-CN.json              ← 中文 (默认)
+│       └── en-US.json              ← 英文
 ├── PLAN/                            ← 外部组件根目录（程序自动识别）
 │   ├── 使用说明.txt                  ← 用户使用指南（打包时自动生成）
 │   ├── ffmpeg-full/                 ← FFmpeg 预编译包

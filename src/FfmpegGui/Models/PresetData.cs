@@ -20,6 +20,7 @@ namespace FfmpegGui.Models
         public bool Lossless { get; set; }
         public bool UseAdvancedCodec { get; set; }
         public string? PngPred { get; set; }
+        public int? PngDpi { get; set; }
         public string? WebpPreset { get; set; }
         public int? AvifCpuUsed { get; set; }
         public string? AvifTune { get; set; }
@@ -55,8 +56,27 @@ namespace FfmpegGui.Models
         public string? AvifSvtTune { get; set; }
         /// <summary>硬件编码器预设: 快速/平衡/高质量</summary>
         public string? AvifHwPreset { get; set; }
+        /// <summary>硬件编码器预设级别 (1-7)</summary>
+        public int AvifHwPresetLevel { get; set; } = 4;
         /// <summary>AVIF 行级多线程</summary>
         public bool? AvifRowMt { get; set; }
+        // ── libaom-av1 高级图像选项 ──
+        /// <summary>自适应量化模式: variance/complexity</summary>
+        public string? AvifAqMode { get; set; }
+        /// <summary>约束方向增强滤波器(CDEF)</summary>
+        public bool? AvifEnableCdef { get; set; }
+        /// <summary>帧内块复制(适合截图/UI)</summary>
+        public bool? AvifEnableIntrabc { get; set; }
+        /// <summary>降噪颗粒合成等级 (0-50)</summary>
+        public int? AvifDenoiseLevel { get; set; }
+        // ── NVENC 高级选项 ──
+        /// <summary>自适应量化强度 (0-15)</summary>
+        public int? AvifNvencAqStrength { get; set; }
+        /// <summary>空间自适应量化</summary>
+        public bool? AvifNvencSpatialAq { get; set; }
+        // ── QSV/VAAPI 选项 ──
+        /// <summary>低功耗模式</summary>
+        public bool? AvifLowPower { get; set; }
         // ── cjpegli 扩展选项 ──
         /// <summary>cjpegli 色度子采样: 444/422/420/440</summary>
         public string? CjpegliChromaSubsampling { get; set; }
