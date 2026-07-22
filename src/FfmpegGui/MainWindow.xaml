@@ -4,7 +4,8 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:sys="using:System"
     xmlns:local="using:FfmpegGui.Models"
-    Title="FFmpeg 图片转换器 1.5.0 BETA2"
+    xmlns:ext="using:FfmpegGui"
+    Title="{ext:Loc app.title}"
     Height="780"
     Width="1020"
     WindowStartupLocation="CenterScreen">
@@ -15,19 +16,23 @@
     <Border DockPanel.Dock="Top" Margin="12,8,12,4" Padding="14,10"
             CornerRadius="10" BoxShadow="0 2 12 0 #18000000"
             Background="{DynamicResource SystemControlBackgroundCardHighBrush}">
-    <Grid RowDefinitions="Auto,Auto,Auto,Auto" ColumnDefinitions="*,Auto">
+    <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto" ColumnDefinitions="*,Auto">
         <!-- Row 0: FFmpeg + 输出目录 + 主题 -->
         <StackPanel Grid.Row="0" Grid.Column="0" Orientation="Horizontal" Spacing="10">
-          <TextBlock Text="FFmpeg 目录" VerticalAlignment="Center" FontSize="13"/>
+          <TextBlock Text="{ext:Loc ffmpeg.dir}" VerticalAlignment="Center" FontSize="13"/>
           <TextBox x:Name="FfmpegPathBox" Width="240" VerticalAlignment="Center" IsReadOnly="True"/>
-          <Button Content="浏览..." Click="BrowseFfmpeg_Click" Padding="8,4"/>
+          <Button Content="{ext:Loc browse}" Click="BrowseFfmpeg_Click" Padding="8,4"/>
           <Separator Width="16" Background="Transparent"/>
-          <TextBlock Text="输出目录" VerticalAlignment="Center" FontSize="13"/>
+          <TextBlock Text="{ext:Loc output.dir}" VerticalAlignment="Center" FontSize="13"/>
           <TextBox x:Name="OutputDirBox" Width="240" VerticalAlignment="Center" IsReadOnly="True"/>
-          <Button Content="浏览..." Click="BrowseOutputDir_Click" Padding="8,4"/>
-          <CheckBox x:Name="PreserveInputStructure" Content="保持输入目录结构" VerticalAlignment="Center" Margin="8,0,0,0"/>
+          <Button Content="{ext:Loc browse}" Click="BrowseOutputDir_Click" Padding="8,4"/>
+          <CheckBox x:Name="PreserveInputStructure" Content="{ext:Loc keep.dir.structure}" VerticalAlignment="Center" Margin="8,0,0,0"/>
         </StackPanel>
         <StackPanel Grid.Row="0" Grid.Column="1" Orientation="Horizontal" Spacing="6" Margin="4,0,0,0">
+          <Button x:Name="CacheToggleBtn" Content="🗂" FontSize="11" Padding="6,2"
+                  ToolTip.Tip="缓存目录设置（点击展开）" Click="ToggleCachePanel_Click"/>
+          <Button x:Name="LangToggleBtn" Content="{ext:Loc language}" FontSize="11" Padding="6,3" Width="36"
+                  ToolTip.Tip="切换界面语言 (中文/English)" Click="LangToggle_Click"/>
           <Button x:Name="GpuToggleBtn" Content="GPU" FontSize="11" Padding="8,3"
                   ToolTip.Tip="GPU 硬件加速（点击切换，需重启生效）" Click="GpuToggle_Click"/>
           <Button x:Name="ThemeToggleBtn" Content="🌙" FontSize="14" Padding="6,2"
@@ -36,16 +41,16 @@
 
         <!-- Row 1: 折叠指示器栏（始终显示） -->
         <StackPanel Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2" Orientation="Horizontal" Spacing="8" Margin="0,4,0,0">
-          <Button x:Name="ToggleToolsBtn" Content="🔧 外部工具" FontSize="11" Padding="6,2"
+          <Button x:Name="ToggleToolsBtn" Content="{ext:Loc external.tools}" FontSize="11" Padding="6,2"
                   ToolTip.Tip="展开/折叠外部工具路径配置" Click="ToggleToolsPanel_Click"/>
           <Border x:Name="ToolsCompactPanel" CornerRadius="3" Padding="6,2"
                   Background="{DynamicResource SystemControlBackgroundChromeMediumBrush}"
                   IsVisible="False">
             <StackPanel x:Name="ToolsStatusBar" Orientation="Horizontal" Spacing="10"/>
           </Border>
-          <Button Content="🔄" Click="RedetectTools_Click" Padding="4,2" FontSize="11"
+          <Button Content="{ext:Loc redetect}" Click="RedetectTools_Click" Padding="4,2" FontSize="11"
                   ToolTip.Tip="清除所有手动路径，重新自动检测"/>
-          <CheckBox x:Name="AutoUseSimdCheck" Content="SIMD 优化" VerticalAlignment="Center" FontSize="11"
+          <CheckBox x:Name="AutoUseSimdCheck" Content="{ext:Loc simd.optimization}" VerticalAlignment="Center" FontSize="11"
                     ToolTip.Tip="自动使用 SIMD 优化二进制"/>
         </StackPanel>
 
@@ -54,13 +59,13 @@
           <Grid ColumnDefinitions="*,8,*,8,*" Margin="0,4,0,0">
             <!-- 列 1: JXL 参考库 -->
             <StackPanel Grid.Column="0" Spacing="4">
-              <TextBlock Text="📦 JXL 参考库" FontSize="11" FontWeight="Bold"
+              <TextBlock Text="{ext:Loc jxl.reference.lib}" FontSize="11" FontWeight="Bold"
                          Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
               <StackPanel Orientation="Horizontal" Spacing="4">
                 <TextBox x:Name="JxlLibDirBox" Width="160" VerticalAlignment="Center" FontSize="11"
                          PlaceholderText="自动检测目录"/>
-                <Button Content="浏览" Click="BrowseJxlLibDir_Click" Padding="4,2" FontSize="10"/>
-                <Button Content="✕" Click="ClearJxlLibDir_Click" Padding="4,2" FontSize="10"
+                <Button Content="{ext:Loc btn.jxl.browse}" Click="BrowseJxlLibDir_Click" Padding="4,2" FontSize="10"/>
+                <Button Content="{ext:Loc btn.clear}" Click="ClearJxlLibDir_Click" Padding="4,2" FontSize="10"
                         ToolTip.Tip="清除手动路径"/>
               </StackPanel>
               <StackPanel x:Name="JxlToolsStatus" Orientation="Horizontal" Spacing="6" Margin="0,2,0,0"/>
@@ -68,13 +73,13 @@
             <Separator Grid.Column="1" Width="4" Background="Transparent"/>
             <!-- 列 2: exiftool -->
             <StackPanel Grid.Column="2" Spacing="4">
-              <TextBlock Text="🏷 exiftool" FontSize="11" FontWeight="Bold"
+              <TextBlock Text="{ext:Loc exiftool.label}" FontSize="11" FontWeight="Bold"
                          Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
               <StackPanel Orientation="Horizontal" Spacing="4">
                 <TextBox x:Name="ExifToolPathBox" Width="160" VerticalAlignment="Center" FontSize="11"
                          PlaceholderText="自动检测 exiftool.exe"/>
-                <Button Content="浏览" Click="BrowseExifTool_Click" Padding="4,2" FontSize="10"/>
-                <Button Content="✕" Click="ClearExifToolPath_Click" Padding="4,2" FontSize="10"
+                <Button Content="{ext:Loc btn.jxl.browse}" Click="BrowseExifTool_Click" Padding="4,2" FontSize="10"/>
+                <Button Content="{ext:Loc btn.clear}" Click="ClearExifToolPath_Click" Padding="4,2" FontSize="10"
                         ToolTip.Tip="清除手动路径"/>
               </StackPanel>
               <StackPanel x:Name="ExifToolToolsStatus" Orientation="Horizontal" Spacing="6" Margin="0,2,0,0"/>
@@ -82,19 +87,31 @@
             <Separator Grid.Column="3" Width="4" Background="Transparent"/>
             <!-- 列 3: artifacts -->
             <StackPanel Grid.Column="4" Spacing="4">
-              <TextBlock Text="🔧 artifacts" FontSize="11" FontWeight="Bold"
+              <TextBlock Text="{ext:Loc artifacts.label}" FontSize="11" FontWeight="Bold"
                          Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
               <StackPanel Orientation="Horizontal" Spacing="4">
                 <TextBox x:Name="ArtifactsDirBox" Width="160" VerticalAlignment="Center" FontSize="11"
                          PlaceholderText="自动检测目录"/>
-                <Button Content="浏览" Click="BrowseArtifactsDir_Click" Padding="4,2" FontSize="10"/>
-                <Button Content="✕" Click="ClearArtifactsDir_Click" Padding="4,2" FontSize="10"
+                <Button Content="{ext:Loc btn.jxl.browse}" Click="BrowseArtifactsDir_Click" Padding="4,2" FontSize="10"/>
+                <Button Content="{ext:Loc btn.clear}" Click="ClearArtifactsDir_Click" Padding="4,2" FontSize="10"
                         ToolTip.Tip="清除手动路径"/>
               </StackPanel>
               <StackPanel x:Name="ArtifactsToolsStatus" Orientation="Horizontal" Spacing="6" Margin="0,2,0,0"
                           ToolTip.Tip="含 ultrahdr_app / JxrEncApp / avifenc / dcraw 等"/>
             </StackPanel>
           </Grid>
+        </StackPanel>
+
+        <!-- Row 4: 缓存目录（折叠，默认隐藏） -->
+        <StackPanel x:Name="CachePanel" Grid.Row="4" Grid.Column="0" Grid.ColumnSpan="2"
+                    IsVisible="False" Orientation="Horizontal" Spacing="8" Margin="0,6,0,0">
+          <TextBlock Text="{ext:Loc cache.dir}" VerticalAlignment="Center" FontSize="12"
+                     ToolTip.Tip="管线中间文件（BMP/RAW/TIFF）存放位置，处理完成后自动清理。留空则自动选择。"/>
+          <TextBox x:Name="CacheDirBox" Width="280" VerticalAlignment="Center" FontSize="11"
+                   PlaceholderText="自动（%TEMP% 或 /dev/shm）"/>
+          <Button Content="{ext:Loc browse}" Click="BrowseCacheDir_Click" Padding="6,3" FontSize="11"/>
+          <Button Content="{ext:Loc btn.clear}" Click="ClearCacheDir_Click" Padding="6,3" FontSize="11"
+                  ToolTip.Tip="恢复自动选择"/>
         </StackPanel>
       </Grid>
     </Border>
@@ -107,23 +124,23 @@
               Background="{DynamicResource SystemControlBackgroundCardHighBrush}">
       <ScrollViewer>
         <StackPanel Margin="14" Spacing="8">
-          <TextBlock Text="参数控制面板" FontSize="20" FontWeight="Bold" Margin="0,0,0,4" VerticalAlignment="Center"/>
+          <TextBlock Text="{ext:Loc parameter.panel}" FontSize="20" FontWeight="Bold" Margin="0,0,0,4" VerticalAlignment="Center"/>
           <WrapPanel HorizontalAlignment="Stretch" Margin="0,0,0,0">
-            <Button x:Name="PresetManagerBtn" Content="📋 预设" FontSize="12" Padding="8,3"
+            <Button x:Name="PresetManagerBtn" Content="{ext:Loc preset}" FontSize="12" Padding="8,3"
                     ToolTip.Tip="打开预设管理器 — 选择/保存/导入预设配置"
                     Click="OpenPresetManager_Click" Margin="0,0,8,0"/>
-            <Button x:Name="SimpleModeEntryBtn" Content="🧩 简洁模式" FontSize="12"
+            <Button x:Name="SimpleModeEntryBtn" Content="{ext:Loc simple.mode}" FontSize="12"
                     Padding="10,5"
                     ToolTip.Tip="切换到极简视图，专注编码队列监控"
                     Click="EnterSimpleMode_Click"/>
           </WrapPanel>
-          <TextBlock Text="转换模式" FontSize="12" Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+          <TextBlock Text="{ext:Loc conversion.mode}" FontSize="12" Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
           <ComboBox x:Name="ConversionModeCombo" SelectedIndex="0"
                     SelectionChanged="ConversionMode_SelectionChanged">
             <sys:String>🖼 静态图片模式</sys:String>
             <sys:String>🎞 动图模式</sys:String>
           </ComboBox>
-          <TextBlock Text="输出格式" Margin="0,4,0,0"/>
+          <TextBlock Text="{ext:Loc output.format}" Margin="0,4,0,0"/>
           <ComboBox x:Name="FormatCombo" SelectionChanged="FormatCombo_SelectionChanged">
             <sys:String>JPEG</sys:String>
             <sys:String>PNG</sys:String>
@@ -135,37 +152,37 @@
           </ComboBox>
           <!-- 动图参数面板 -->
           <StackPanel x:Name="AnimationPanel" Spacing="4" Margin="0,4,0,0">
-            <TextBlock Text="🎞 动图参数" FontSize="13" FontWeight="Bold"/>
+            <TextBlock Text="{ext:Loc animation.params}" FontSize="13" FontWeight="Bold"/>
             <StackPanel Orientation="Horizontal" Spacing="12">
               <StackPanel Spacing="2">
-                <TextBlock Text="帧率 (FPS)" FontSize="11"/>
+                <TextBlock Text="{ext:Loc fps}" FontSize="11"/>
                 <TextBox x:Name="AnimationFpsBox" Text="" Width="60" FontSize="13" VerticalAlignment="Center"
                          PlaceholderText="auto"/>
               </StackPanel>
               <StackPanel Spacing="2">
-                <TextBlock Text="循环次数" FontSize="11"/>
+                <TextBlock Text="{ext:Loc loop.count}" FontSize="11"/>
                 <TextBox x:Name="AnimationLoopBox" Text="" Width="60" FontSize="13" VerticalAlignment="Center"
                          PlaceholderText="auto"/>
               </StackPanel>
               <StackPanel Spacing="2">
-                <TextBlock Text="缩放宽度" FontSize="11"/>
+                <TextBlock Text="{ext:Loc scale.width}" FontSize="11"/>
                 <TextBox x:Name="AnimationScaleWBox" Text="" Width="60" FontSize="13" VerticalAlignment="Center"
                          PlaceholderText="auto"/>
               </StackPanel>
             </StackPanel>
-            <TextBlock Text="留空=auto(跟随源) | 循环: 0=无限/-1=不循环/空=默认 | 缩放: 空=原始" FontSize="10"
+            <TextBlock Text="{ext:Loc animation.hint}" FontSize="10"
                        Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"
                        TextWrapping="Wrap"/>
             <!-- 视频时长限制（仅视频输入时生效） -->
             <StackPanel x:Name="AnimationDurationPanel" Spacing="2" IsVisible="False">
-              <TextBlock Text="最大时长（秒）" FontSize="11"/>
+              <TextBlock Text="{ext:Loc max.duration}" FontSize="11"/>
               <TextBox x:Name="AnimationDurationBox" Text="" Width="60" FontSize="13" VerticalAlignment="Center"
                        PlaceholderText="不限制"/>
-              <TextBlock Text="视频转码为动图默认截取前N秒，0=全部" FontSize="10"
+              <TextBlock Text="{ext:Loc animation.duration.hint}" FontSize="10"
                          Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" TextWrapping="Wrap"/>
             </StackPanel>
           </StackPanel>
-          <TextBlock Text="编码器" Margin="0,4,0,0"/>
+          <TextBlock Text="{ext:Loc encoder}" Margin="0,4,0,0"/>
           <ComboBox x:Name="EncoderCombo"/>
           <!-- GPU 硬件编码器状态警告 -->
           <Border x:Name="GpuEncoderWarning" IsVisible="False"
@@ -176,10 +193,10 @@
               <TextBlock x:Name="GpuEncoderWarningHint" FontSize="10"
                          TextWrapping="Wrap"
                          Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"
-                         Text="建议选择 CPU 编码器 (mjpeg / libaom-av1 / libsvtav1) 以确保兼容性。"/>
+                         Text="{ext:Loc gpu.encoder.warning}"/>
             </StackPanel>
           </Border>
-          <TextBlock Text="质量" Margin="0,8,0,0"/>
+          <TextBlock Text="{ext:Loc quality}" Margin="0,8,0,0"/>
           <StackPanel Orientation="Horizontal" Spacing="8">
             <Slider x:Name="QualitySlider" Minimum="0" Maximum="100" Value="92"
                     TickFrequency="1" IsSnapToTickEnabled="True" Width="170" />
@@ -191,14 +208,14 @@
           <Border CornerRadius="4" Padding="8,6" Margin="0,4,0,0"
                   Background="{DynamicResource SystemControlBackgroundChromeMediumBrush}">
             <StackPanel Spacing="6">
-              <TextBlock Text="色度采样" FontSize="11" Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+              <TextBlock Text="{ext:Loc chroma.subsampling}" FontSize="11" Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
               <ComboBox x:Name="ChromaCombo">
                 <sys:String>auto</sys:String>
                 <sys:String>4:4:4</sys:String>
                 <sys:String>4:2:2</sys:String>
                 <sys:String>4:2:0</sys:String>
               </ComboBox>
-              <TextBlock Text="位深"/>
+              <TextBlock Text="{ext:Loc bit.depth}"/>
               <ComboBox x:Name="BitDepthCombo">
                 <sys:String>auto</sys:String>
                 <sys:String>8</sys:String>
@@ -208,10 +225,10 @@
               </ComboBox>
             </StackPanel>
           </Border>
-          <CheckBox x:Name="UseAdvancedColor" Content="高级色彩参数 ⚙" IsCheckedChanged="UseAdvancedColor_IsCheckedChanged"/>
+          <CheckBox x:Name="UseAdvancedColor" Content="{ext:Loc advanced.color}" IsCheckedChanged="UseAdvancedColor_IsCheckedChanged"/>
           <StackPanel x:Name="AdvancedColorPanel" IsVisible="False" Spacing="6">
             <!-- ── 色彩空间快速选择 ── -->
-            <TextBlock Text="色彩空间（快速选择）" FontSize="11" Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+            <TextBlock Text="{ext:Loc color.space.quick}" FontSize="11" Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
             <ComboBox x:Name="ColorSpaceCombo" SelectionChanged="ColorSpaceCombo_SelectionChanged">
               <sys:String>auto</sys:String>
               <sys:String>sRGB</sys:String>
@@ -221,13 +238,13 @@
             </ComboBox>
             
             <!-- ── 精确色彩参数 ── -->
-            <TextBlock Text="色彩基准（primaries）" Margin="0,6,0,0"/>
+            <TextBlock Text="{ext:Loc color.primaries}" Margin="0,6,0,0"/>
             <ComboBox x:Name="ColorPrimariesCombo">
               <sys:String>bt709</sys:String>
               <sys:String>bt2020</sys:String>
               <sys:String>smpte432</sys:String>
             </ComboBox>
-            <TextBlock Text="色彩传输函数（trc）"/>
+            <TextBlock Text="{ext:Loc color.transfer}"/>
             <ComboBox x:Name="ColorTrcCombo">
               <sys:String>iec61966-2-1</sys:String>
               <sys:String>bt709</sys:String>
@@ -235,14 +252,14 @@
               <sys:String>arib-std-b67</sys:String>
               <sys:String>linear</sys:String>
             </ComboBox>
-            <TextBlock Text="色彩矩阵（colorspace）"/>
+            <TextBlock Text="{ext:Loc color.matrix}"/>
             <ComboBox x:Name="ColorMatrixCombo">
               <sys:String>bt709</sys:String>
               <sys:String>bt2020nc</sys:String>
             </ComboBox>
             
             <!-- CICP 标记（始终启用以保证准确色彩） -->
-            <TextBlock Text="☑ CICP 色彩标记：始终启用（H.273 标准）" FontSize="10"
+            <TextBlock Text="{ext:Loc cicp.always.on}" FontSize="10"
                        Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"
                        ToolTip.Tip="CICP 确保输出文件携带精确的色彩基准/传输函数/矩阵信息"/>
             
@@ -255,34 +272,34 @@
                     Background="{DynamicResource SystemControlBackgroundAltMediumBrush}">
               <StackPanel Spacing="6">
                 <StackPanel Orientation="Horizontal" Spacing="4">
-                  <TextBlock Text="🎨 ICC 色彩管理" FontSize="12" FontWeight="Bold" VerticalAlignment="Center"/>
+                  <TextBlock Text="{ext:Loc icc.color.management}" FontSize="12" FontWeight="Bold" VerticalAlignment="Center"/>
                   <Button Content="?" Width="18" Height="18" FontSize="10" Padding="0"
                           ToolTip.Tip="模式1: 无ICC(仅CICP)&#x0a;模式2: 携带ICC(源有则留,无则补标准)&#x0a;模式3: 烘焙+嵌入标准ICC&#x0a;模式4: 烘焙(无ICC输出)&#x0a;CICP标记始终启用"
                           Click="IccHelp_Click"/>
                 </StackPanel>
                 
-                <!-- ICC 模式选择（4个新模式） -->
+                  <!-- ICC 模式选择（4个新模式） -->
                 <StackPanel Spacing="2">
                   <RadioButton x:Name="IccModeNone" GroupName="IccMode"
-                               Content="① 默认 — 无 ICC（仅 CICP 标记）" IsChecked="True"
+                               Content="{ext:Loc icc.mode.none}" IsChecked="True"
                                IsCheckedChanged="IccMode_Changed"/>
                   <RadioButton x:Name="IccModeCarry" GroupName="IccMode"
-                               Content="② 携带 ICC — 保留源 ICC 或自动补充标准 ICC"
+                               Content="{ext:Loc icc.mode.carry}"
                                IsCheckedChanged="IccMode_Changed"/>
                   <RadioButton x:Name="IccModeBake" GroupName="IccMode"
-                               Content="③ 烘焙 + 嵌入标准 ICC — 像素转换并附加标准 ICC"
+                               Content="{ext:Loc icc.mode.bake}"
                                IsCheckedChanged="IccMode_Changed"/>
                   <RadioButton x:Name="IccModeBakeOnly" GroupName="IccMode"
-                               Content="④ 仅烘焙 — 像素转换，不输出 ICC"
+                               Content="{ext:Loc icc.mode.bakeonly}"
                                IsCheckedChanged="IccMode_Changed"/>
                 </StackPanel>
                 
                 <!-- 烘焙目标: 跟随高级色彩空间选择（不独立指定） -->
                 <StackPanel x:Name="IccBakePanel" IsVisible="False" Spacing="4">
-                  <TextBlock Text="烘焙目标: 跟随上方选择的色彩空间" FontSize="11"
+                  <TextBlock Text="{ext:Loc icc.bake.target}" FontSize="11"
                              Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
                   
-                  <TextBlock Text="源色彩空间（留空=自动从文件检测）:" FontSize="11" Margin="0,4,0,0"/>
+                  <TextBlock Text="{ext:Loc icc.source.space}" FontSize="11" Margin="0,4,0,0"/>
                   <ComboBox x:Name="IccSourceSpaceCombo" SelectedIndex="0"
                             FontSize="11">
                     <sys:String>auto（从文件检测）</sys:String>
@@ -303,16 +320,26 @@
               </StackPanel>
             </Border>
           </StackPanel>
-          <CheckBox x:Name="UseAdvancedCodec" Content="高级编码选项" Margin="0,6,0,0" 
+          <CheckBox x:Name="UseAdvancedCodec" Content="{ext:Loc advanced.codec}" Margin="0,6,0,0" 
                     IsCheckedChanged="UseAdvancedCodec_IsCheckedChanged"/>
           <StackPanel x:Name="AdvancedCodecPanel" IsVisible="False" Margin="0,4,0,0" Spacing="6">
             <!-- PNG -->
             <StackPanel x:Name="PngCodecPanel" IsVisible="False" Spacing="4">
-              <TextBlock Text="预测模式 (pred)"/>
-              <ComboBox x:Name="PngPredCombo">
-                <sys:String>none</sys:String><sys:String>sub</sys:String><sys:String>up</sys:String>
-                <sys:String>avg</sys:String><sys:String>paeth</sys:String><sys:String>mixed</sys:String>
+              <TextBlock Text="{ext:Loc prediction.mode}" FontSize="11"/>
+              <ComboBox x:Name="PngPredCombo" SelectedIndex="4">
+                <sys:String>none (无预测) — 不做行间压缩，速度最快</sys:String>
+                <sys:String>sub (水平差值) — 适合水平渐变、横纹图像</sys:String>
+                <sys:String>up (垂直差值) — 适合垂直渐变、竖纹图像</sys:String>
+                <sys:String>avg (邻域均值) — 通用型预测，综合表现好</sys:String>
+                <sys:String>paeth (自适应) ★默认 — 多数情况最佳选择</sys:String>
+                <sys:String>mixed (逐行最优) — 压缩率最高但编码最慢</sys:String>
               </ComboBox>
+              <TextBlock Text="{ext:Loc png.dpi}" Margin="0,6,0,0" FontSize="11"/>
+              <StackPanel Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+                <NumericUpDown x:Name="PngDpiBox" Value="0" Minimum="0" Maximum="2400" Increment="72" Width="72"/>
+                <TextBlock Text="{ext:Loc png.dpi.hint}" VerticalAlignment="Center" FontSize="10"
+                           Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+              </StackPanel>
             </StackPanel>
             <!-- GIF 动图 -->
             <StackPanel x:Name="GifCodecPanel" IsVisible="False" Spacing="4">
@@ -350,6 +377,22 @@
                   <sys:String>SSIM</sys:String><sys:String>VMAF</sys:String>
                   <sys:String>IQ (图像优化)</sys:String>
                 </ComboBox>
+                <TextBlock Text="自适应量化 (aq-mode)" Margin="0,4,0,0" FontSize="11"/>
+                <ComboBox x:Name="AvifAqModeCombo" SelectedIndex="0">
+                  <sys:String>默认 (编码器自动)</sys:String>
+                  <sys:String>Variance — 方差自适应，适合照片</sys:String>
+                  <sys:String>Complexity — 复杂度自适应，适合混合内容</sys:String>
+                </ComboBox>
+                <TextBlock Text="高级滤波选项" Margin="0,4,0,0" FontSize="11"
+                           Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+                <CheckBox x:Name="AvifCdefCheck" Content="CDEF 方向增强滤波 — 消除边缘振铃/蚊式噪声" IsChecked="True"/>
+                <CheckBox x:Name="AvifIntrabcCheck" Content="帧内块复制 — 截图/UI/文字图片推荐开启" IsChecked="True"/>
+                <TextBlock Text="胶片颗粒合成 (降噪→编码→合成)" Margin="0,4,0,0" FontSize="11"/>
+                <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                  <NumericUpDown x:Name="AvifDenoiseBox" Value="0" Minimum="0" Maximum="50" Width="60"/>
+                  <TextBlock Text="{ext:Loc avif.denoise.hint}" VerticalAlignment="Center" FontSize="10"
+                             Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+                </StackPanel>
                 <CheckBox x:Name="AvifStillPictureCheck" Content="静态图片模式 (still-picture)" IsChecked="True"/>
                 <CheckBox x:Name="AvifRowMtCheck" Content="行级多线程 (row-mt)" IsChecked="True" Margin="0,4,0,0"/>
               </StackPanel>
@@ -364,15 +407,62 @@
                 </ComboBox>
                 <CheckBox x:Name="SvtStillPictureCheck" Content="静态图片模式 (still-picture)" IsChecked="True"/>
               </StackPanel>
-              <!-- ── 硬件/其他编码器选项 ── -->
-              <StackPanel x:Name="HwAvifPanel" IsVisible="False" Spacing="4">
-                <TextBlock Text="编码质量预设" FontSize="11"/>
-                <ComboBox x:Name="HwPresetCombo" SelectedIndex="1">
-                  <sys:String>快速</sys:String><sys:String>平衡</sys:String>
-                  <sys:String>高质量</sys:String>
+              <!-- ── NVENC 硬件编码器选项 ── -->
+              <StackPanel x:Name="NvencAvifPanel" IsVisible="False" Spacing="4">
+                <TextBlock Text="编码质量预设 (preset)" FontSize="11"/>
+                <ComboBox x:Name="NvencPresetCombo" SelectedIndex="3">
+                  <sys:String>p1 — 最快 (低质量)</sys:String>
+                  <sys:String>p2 — 很快</sys:String>
+                  <sys:String>p3 — 快</sys:String>
+                  <sys:String>p4 — 平衡 ★默认</sys:String>
+                  <sys:String>p5 — 好</sys:String>
+                  <sys:String>p6 — 很好</sys:String>
+                  <sys:String>p7 — 最好 (最慢)</sys:String>
                 </ComboBox>
-                <TextBlock Text="硬件编码器仅支持预设调节，质量由上方滑块控制" FontSize="10"
-                           Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" TextWrapping="Wrap"/>
+                <TextBlock Text="自适应量化强度 (aq-strength)" Margin="0,4,0,0" FontSize="11"/>
+                <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                  <NumericUpDown x:Name="AvifNvencAqBox" Value="8" Minimum="0" Maximum="15" Width="60"/>
+                  <TextBlock Text="{ext:Loc avif.aq.hint}" VerticalAlignment="Center" FontSize="10"
+                             Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+                </StackPanel>
+                <CheckBox x:Name="AvifNvencSpatialAqCheck" Content="空间自适应量化 — 平坦/复杂区域差异化压缩" IsChecked="True"/>
+              </StackPanel>
+              <!-- ── QSV 硬件编码器选项 ── -->
+              <StackPanel x:Name="QsvAvifPanel" IsVisible="False" Spacing="4">
+                <TextBlock Text="编码质量预设 (preset)" FontSize="11"/>
+                <ComboBox x:Name="QsvPresetCombo" SelectedIndex="3">
+                  <sys:String>veryfast — 最快</sys:String>
+                  <sys:String>faster — 很快</sys:String>
+                  <sys:String>fast — 快</sys:String>
+                  <sys:String>medium — 平衡 ★默认</sys:String>
+                  <sys:String>slow — 好</sys:String>
+                  <sys:String>slower — 很好</sys:String>
+                  <sys:String>veryslow — 最好 (最慢)</sys:String>
+                </ComboBox>
+                <CheckBox x:Name="AvifQsvLowPowerCheck" Content="低功耗模式 — 使用固定功能硬件(省电但质量略降)" Margin="0,4,0,0"/>
+              </StackPanel>
+              <!-- ── VAAPI 硬件编码器选项 ── -->
+              <StackPanel x:Name="VaapiAvifPanel" IsVisible="False" Spacing="4">
+                <TextBlock Text="编码压缩级别 (compression_level)" FontSize="11"/>
+                <ComboBox x:Name="VaapiPresetCombo" SelectedIndex="3">
+                  <sys:String>1 — 最快 (低质量)</sys:String>
+                  <sys:String>2 — 很快</sys:String>
+                  <sys:String>3 — 快</sys:String>
+                  <sys:String>4 — 平衡 ★默认</sys:String>
+                  <sys:String>5 — 好</sys:String>
+                  <sys:String>6 — 很好</sys:String>
+                  <sys:String>7 — 最好 (最慢)</sys:String>
+                </ComboBox>
+                <CheckBox x:Name="AvifVaapiLowPowerCheck" Content="低功耗模式 — 功耗优先(质量可能略降)" Margin="0,4,0,0"/>
+              </StackPanel>
+              <!-- ── AMF 硬件编码器选项 ── -->
+              <StackPanel x:Name="AmfAvifPanel" IsVisible="False" Spacing="4">
+                <TextBlock Text="编码质量 (quality)" FontSize="11"/>
+                <ComboBox x:Name="AmfPresetCombo" SelectedIndex="1">
+                  <sys:String>speed — 速度优先</sys:String>
+                  <sys:String>balanced — 平衡 ★默认</sys:String>
+                  <sys:String>quality — 质量优先</sys:String>
+                </ComboBox>
               </StackPanel>
             </StackPanel>
             <!-- JPEG XL -->
@@ -518,14 +608,14 @@
             </StackPanel>
           </StackPanel>
 
-          <TextBlock Text="CPU 线程"/>
+          <TextBlock Text="{ext:Loc cpu.threads}"/>
           <StackPanel Orientation="Horizontal" Spacing="6">
-            <CheckBox x:Name="AutoThreadsCheck" Content="自动" IsChecked="True" Margin="0,3,0,0"/>
-            <CheckBox x:Name="SingleThreadCheck" Content="单线程" Margin="0,3,0,0"/>
+            <CheckBox x:Name="AutoThreadsCheck" Content="{ext:Loc auto}" IsChecked="True" Margin="0,3,0,0"/>
+            <CheckBox x:Name="SingleThreadCheck" Content="{ext:Loc single.thread}" Margin="0,3,0,0"/>
             <TextBlock x:Name="ThreadHintLabel" Text="" VerticalAlignment="Center" Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" FontSize="11"/>
           </StackPanel>
           <NumericUpDown x:Name="ThreadsBox" Value="4" Minimum="1" Maximum="64" IsEnabled="False"/>
-          <TextBlock Text="元数据处理" Margin="0,6,0,0"/>
+          <TextBlock Text="{ext:Loc metadata.mode}" Margin="0,6,0,0"/>
           <ComboBox x:Name="MetadataModeCombo" SelectedIndex="0">
             <sys:String>保留所有元数据</sys:String>
             <sys:String>删除所有元数据</sys:String>
@@ -533,20 +623,20 @@
           <Border x:Name="ExifToolPanel" IsVisible="False" Margin="0,4,0,0" Padding="8,6" CornerRadius="4"
                   BorderBrush="{DynamicResource SystemControlBackgroundBaseLowBrush}" BorderThickness="1">
             <StackPanel Spacing="4">
-              <TextBlock Text="🔒 ExifTool 隐私清理" FontSize="13" FontWeight="Bold"/>
-              <TextBlock x:Name="ExifToolHint" Text="已检测到 exiftool，可选择性删除以下元数据：" FontSize="11" Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" TextWrapping="Wrap"/>
-              <CheckBox x:Name="StripExifGpsCheck" Content="删除 GPS 位置信息"/>
-              <CheckBox x:Name="StripExifTimeCheck" Content="删除拍摄时间日期"/>
-              <CheckBox x:Name="StripExifCameraCheck" Content="删除相机/镜头型号与拍摄参数"/>
-              <CheckBox x:Name="StripExifAllCheck" Content="删除全部 EXIF 数据"/>
-              <CheckBox x:Name="StripXmpCheck" Content="删除 XMP 元数据"/>
+              <TextBlock Text="{ext:Loc exiftool.privacy}" FontSize="13" FontWeight="Bold"/>
+              <TextBlock x:Name="ExifToolHint" Text="{ext:Loc exiftool.detected}" FontSize="11" Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" TextWrapping="Wrap"/>
+              <CheckBox x:Name="StripExifGpsCheck" Content="{ext:Loc strip.gps}"/>
+              <CheckBox x:Name="StripExifTimeCheck" Content="{ext:Loc strip.time}"/>
+              <CheckBox x:Name="StripExifCameraCheck" Content="{ext:Loc strip.camera}"/>
+              <CheckBox x:Name="StripExifAllCheck" Content="{ext:Loc strip.all.exif}"/>
+              <CheckBox x:Name="StripXmpCheck" Content="{ext:Loc strip.xmp}"/>
             </StackPanel>
           </Border>
-          <CheckBox x:Name="AppendPngExtCheck" Content="自动追加 .png 后缀（JXL/AVIF 兼容）"
+          <CheckBox x:Name="AppendPngExtCheck" Content="{ext:Loc append.png.extension}"
                     Margin="0,2,0,0" FontSize="11"
                     ToolTip.Tip="输出文件名末尾追加 .png，解决部分软件无法识别 .jxl/.avif 的问题。仅对 JXL 和 AVIF 格式生效。"/>
-          <CheckBox x:Name="LosslessCheck" Content="无损编码" Margin="0,4,0,0"/>
-          <Button Content="生成指令" Click="BuildCommand_Click" Margin="0,12,0,0" Padding="8"/>
+          <CheckBox x:Name="LosslessCheck" Content="{ext:Loc lossless}" Margin="0,4,0,0"/>
+          <Button Content="{ext:Loc generate.command}" Click="BuildCommand_Click" Margin="0,12,0,0" Padding="8"/>
         </StackPanel>
       </ScrollViewer>
     </Border>
@@ -559,7 +649,7 @@
                 Background="{DynamicResource SystemControlBackgroundCardHighBrush}">
           <Grid RowDefinitions="Auto,*,Auto">
             <StackPanel Grid.Row="0" Orientation="Horizontal" Spacing="10">
-              <TextBlock Text="📋 转换队列" FontSize="15" FontWeight="Bold"/>
+              <TextBlock Text="{ext:Loc conversion.queue}" FontSize="15" FontWeight="Bold"/>
               <TextBlock x:Name="FileCountLabel" Text="总文件: 0" FontSize="12"
                          Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" VerticalAlignment="Center"/>
             </StackPanel>
@@ -572,16 +662,16 @@
               </ListBox.ItemTemplate>
             </ListBox>
             <WrapPanel Grid.Row="2" Margin="0,4,0,0">
-              <Button x:Name="ClearQueueButton" Content="清空队列" Click="ClearQueue_Click" Padding="8,3" Margin="0,0,6,3"/>
-              <Button Content="选择文件..." Click="SelectFile_Click" Padding="8,3" Margin="0,0,6,3"/>
-              <Button Content="选择文件夹" Click="SelectFolder_Click" Padding="8,3" Margin="0,0,6,3"/>
-              <Button Content="添加到队列" Click="AddToQueue_Click" Padding="8,3" Margin="0,0,6,3"/>
-              <Button Content="删除选中" Click="DeleteSelected_Click" Padding="8,3" Margin="0,0,6,3"/>
-              <Button Content="▶ 开始队列" Click="StartQueue_Click" Padding="8,3" Margin="0,0,6,3"/>
-              <Button Content="⏹ 停止队列" Click="StopQueue_Click" Padding="8,3" Margin="0,0,6,3"/>
-              <CheckBox x:Name="StopAfterCurrentCheck" Content="完成后停止"
+              <Button x:Name="ClearQueueButton" Content="{ext:Loc clear.queue}" Click="ClearQueue_Click" Padding="8,3" Margin="0,0,6,3"/>
+              <Button Content="{ext:Loc select.file}" Click="SelectFile_Click" Padding="8,3" Margin="0,0,6,3"/>
+              <Button Content="{ext:Loc select.folder}" Click="SelectFolder_Click" Padding="8,3" Margin="0,0,6,3"/>
+              <Button Content="{ext:Loc add.to.queue}" Click="AddToQueue_Click" Padding="8,3" Margin="0,0,6,3"/>
+              <Button Content="{ext:Loc delete.selected}" Click="DeleteSelected_Click" Padding="8,3" Margin="0,0,6,3"/>
+              <Button Content="{ext:Loc start.queue}" Click="StartQueue_Click" Padding="8,3" Margin="0,0,6,3"/>
+              <Button Content="{ext:Loc stop.queue}" Click="StopQueue_Click" Padding="8,3" Margin="0,0,6,3"/>
+              <CheckBox x:Name="StopAfterCurrentCheck" Content="{ext:Loc stop.after.current}"
                         VerticalAlignment="Center" Margin="4,0,0,3" IsChecked="True"/>
-              <CheckBox x:Name="ShowErrorsOnlyCheck" Content="仅显示报错"
+              <CheckBox x:Name="ShowErrorsOnlyCheck" Content="{ext:Loc show.errors.only}"
                         VerticalAlignment="Center" Margin="8,0,0,3"
                         ToolTip.Tip="屏蔽正常完成项目，仅查看失败的任务"
                         IsCheckedChanged="ShowErrorsOnly_IsCheckedChanged"/>
@@ -604,8 +694,8 @@
                 Background="{DynamicResource SystemControlBackgroundCardHighBrush}">
           <Grid RowDefinitions="Auto,*">
             <StackPanel Grid.Row="0" Orientation="Horizontal" Spacing="10">
-              <TextBlock Text="📂 已选文件" FontSize="14" FontWeight="Bold"/>
-              <Button x:Name="FormatFilterBtn" Content="🔍 格式筛选…" FontSize="11"
+              <TextBlock Text="{ext:Loc selected.files}" FontSize="14" FontWeight="Bold"/>
+              <Button x:Name="FormatFilterBtn" Content="{ext:Loc format.filter}" FontSize="11"
                       Padding="6,2" Click="FormatFilter_Click"
                       ToolTip.Tip="勾选可识别的图片文件格式"/>
               <TextBlock x:Name="MediaFileCount" Text="" VerticalAlignment="Center"
@@ -617,9 +707,9 @@
                 <ListBox x:Name="MediaFileList" Grid.Row="0" SelectionMode="Single"
                          Background="Transparent"/>
                 <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="6" Margin="4">
-                  <Button Content="删除选中" Click="RemoveMediaFile_Click" Padding="6,2" FontSize="11"/>
-                  <Button Content="清空列表" Click="ClearMediaFiles_Click" Padding="6,2" FontSize="11"/>
-                  <TextBlock Text="双击文件查看媒体信息" VerticalAlignment="Center"
+                  <Button Content="{ext:Loc delete.selected}" Click="RemoveMediaFile_Click" Padding="6,2" FontSize="11"/>
+                  <Button Content="{ext:Loc clear.queue}" Click="ClearMediaFiles_Click" Padding="6,2" FontSize="11"/>
+                  <TextBlock Text="{ext:Loc double.click.hint}" VerticalAlignment="Center"
                              Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" FontSize="11" Margin="8,0,0,0"/>
                 </StackPanel>
               </Grid>
@@ -634,9 +724,9 @@
                 BoxShadow="0 1 6 0 #12000000"
                 Background="{DynamicResource SystemControlBackgroundCardHighBrush}">
           <Grid RowDefinitions="Auto,*,Auto,*">
-            <TextBlock Grid.Row="0" Text="⚙ 生成的命令" FontSize="13" FontWeight="Bold"/>
+            <TextBlock Grid.Row="0" Text="{ext:Loc generated.command}" FontSize="13" FontWeight="Bold"/>
             <TextBox Grid.Row="1" x:Name="CommandText" AcceptsReturn="True" IsReadOnly="True" Margin="0,2,0,0"/>
-            <TextBlock Grid.Row="2" Text="📜 执行日志" FontSize="13" FontWeight="Bold" Margin="0,4,0,0"/>
+            <TextBlock Grid.Row="2" Text="{ext:Loc execution.log}" FontSize="13" FontWeight="Bold" Margin="0,4,0,0"/>
             <TextBox Grid.Row="3" x:Name="LogText" IsReadOnly="True" Margin="0,2,0,0"/>
           </Grid>
         </Border>
@@ -646,7 +736,7 @@
                 BoxShadow="0 1 6 0 #12000000"
                 Background="{DynamicResource SystemControlBackgroundCardHighBrush}">
           <StackPanel Orientation="Horizontal" Spacing="8">
-            <TextBlock Text="⚡ 并行编码任务数" VerticalAlignment="Center"/>
+            <TextBlock Text="{ext:Loc concurrent.tasks}" VerticalAlignment="Center"/>
             <TextBox x:Name="ConcurrencyBox" Text="2" Width="56" VerticalAlignment="Center"
                      ToolTip.Tip="请输入1-128之间的整数"/>
             <StackPanel Orientation="Vertical" Spacing="0" VerticalAlignment="Center">
@@ -659,7 +749,7 @@
             <Separator Width="8" Background="Transparent"/>
             <TextBlock x:Name="QueueCountLabel" Text="队列: 0" VerticalAlignment="Center"/>
             <Separator Width="8" Background="Transparent"/>
-            <TextBlock Text="⚙ 进程优先级" VerticalAlignment="Center" FontSize="12"/>
+            <TextBlock Text="{ext:Loc process.priority}" VerticalAlignment="Center" FontSize="12"/>
               <ComboBox x:Name="PriorityCombo" SelectedIndex="3" Width="90" FontSize="12">
                 <sys:String>实时</sys:String><sys:String>高</sys:String>
                 <sys:String>高于正常</sys:String><sys:String>正常</sys:String>
@@ -692,12 +782,12 @@
               Background="{DynamicResource SystemControlBackgroundCardHighBrush}">
         <Grid ColumnDefinitions="Auto,*,Auto">
           <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
-            <Button x:Name="SimpleReturnBtn" Content="← 返回完整模式" FontSize="12"
+            <Button x:Name="SimpleReturnBtn" Content="{ext:Loc return.full}" FontSize="12"
                     Padding="10,5" Click="SimpleReturn_Click"/>
-            <TextBlock Text="简洁模式" FontSize="18" FontWeight="Bold" VerticalAlignment="Center"/>
+            <TextBlock Text="{ext:Loc simple.mode.title}" FontSize="18" FontWeight="Bold" VerticalAlignment="Center"/>
           </StackPanel>
           <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-            <TextBlock Text="自动编码" VerticalAlignment="Center" FontSize="11"/>
+            <TextBlock Text="{ext:Loc auto.encode}" VerticalAlignment="Center" FontSize="11"/>
             <ToggleSwitch x:Name="AutoEncodeToggle" IsCheckedChanged="AutoEncodeToggle_Changed"/>
           </StackPanel>
         </Grid>
@@ -722,20 +812,20 @@
               Background="{DynamicResource SystemControlBackgroundCardHighBrush}">
         <StackPanel Spacing="8">
           <StackPanel Orientation="Horizontal" Spacing="10">
-            <Button Content="📂 添加文件" FontSize="14" Padding="18,10"
+            <Button Content="{ext:Loc add.files}" FontSize="14" Padding="18,10"
                     Click="SimpleAddFiles_Click"/>
-            <Button Content="▶ 开始队列" FontSize="14" Padding="18,10"
+            <Button Content="{ext:Loc start.queue}" FontSize="14" Padding="18,10"
                     Click="SimpleStartQueue_Click"/>
-            <Button Content="⏹ 停止队列" FontSize="14" Padding="18,10"
+            <Button Content="{ext:Loc stop.queue}" FontSize="14" Padding="18,10"
                     Click="SimpleStopQueue_Click"/>
-            <Button Content="🗑 清空" FontSize="13" Padding="14,10"
+            <Button Content="{ext:Loc clear}" FontSize="13" Padding="14,10"
                     Click="SimpleClearAll_Click"/>
-            <CheckBox Content="仅显示报错" FontSize="12" VerticalAlignment="Center"
+            <CheckBox Content="{ext:Loc show.errors.only}" FontSize="12" VerticalAlignment="Center"
                       Margin="16,0,0,0"
                       IsCheckedChanged="SimpleErrorsOnly_Changed"/>
           </StackPanel>
           <StackPanel Orientation="Horizontal" Spacing="20">
-            <TextBlock x:Name="SimpleStatusLabel" FontSize="12" Text="就绪"
+            <TextBlock x:Name="SimpleStatusLabel" FontSize="12" Text="{ext:Loc ready}"
                        Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
             <TextBlock x:Name="SimpleProgressLabel" FontSize="12" Text="队列: 0/0"/>
             <TextBlock x:Name="SimpleEtaLabel" FontSize="12"/>
@@ -750,7 +840,7 @@
               Background="{DynamicResource SystemControlBackgroundCardHighBrush}">
         <Grid RowDefinitions="Auto,*">
           <StackPanel Grid.Row="0" Orientation="Horizontal" Spacing="8" Margin="0,0,0,6">
-            <TextBlock Text="📋 转换队列" FontSize="13" FontWeight="Bold"/>
+            <TextBlock Text="{ext:Loc conversion.queue}" FontSize="13" FontWeight="Bold"/>
             <TextBlock x:Name="SimpleQueueCount" FontSize="11"
                        Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"
                        VerticalAlignment="Center" Text="0 项"/>
@@ -785,11 +875,11 @@
               Background="{DynamicResource SystemControlBackgroundCardHighBrush}">
         <Grid RowDefinitions="Auto,*">
           <StackPanel Grid.Row="0" Orientation="Horizontal" Spacing="8" Margin="0,0,0,6">
-            <TextBlock Text="📥 拖拽到此处一键开始" FontSize="13" FontWeight="Bold"/>
+            <TextBlock Text="{ext:Loc drag.drop.hint}" FontSize="13" FontWeight="Bold"/>
             <TextBlock x:Name="SimpleFileCount" FontSize="11"
                        Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"
                        VerticalAlignment="Center" Text="0 个文件"/>
-            <Button Content="清空" FontSize="10" Padding="6,2" Margin="12,0,0,0"
+            <Button Content="{ext:Loc clear}" FontSize="10" Padding="6,2" Margin="12,0,0,0"
                     Click="SimpleClearMedia_Click"/>
           </StackPanel>
           <Border Grid.Row="1" x:Name="SimpleDropZone" MinHeight="60"

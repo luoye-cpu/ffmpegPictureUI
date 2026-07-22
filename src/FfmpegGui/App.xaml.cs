@@ -40,6 +40,11 @@ namespace FfmpegGui
 
         public override void OnFrameworkInitializationCompleted()
         {
+            // 启动时初始化本地化
+            var lang = Services.AppSettingsService.Current.Language;
+            if (string.IsNullOrWhiteSpace(lang)) lang = "zh-CN";
+            Services.LocalizationService.Instance.LoadLocale(lang);
+
             // 启动时应用已保存的主题（默认深色）
             var themeMode = Services.AppSettingsService.Current.ThemeMode;
             RequestedThemeVariant = themeMode == 1 ? ThemeVariant.Light : ThemeVariant.Dark;

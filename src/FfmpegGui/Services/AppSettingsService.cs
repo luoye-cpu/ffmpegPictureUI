@@ -76,12 +76,14 @@ namespace FfmpegGui.Services
                     PreserveInputFolderStructure = _current.PreserveInputFolderStructure,
                     MaxQueueSize = _current.MaxQueueSize,
                     ThemeMode = _current.ThemeMode,
+                    Language = _current.Language,
                     FfmpegPriority = _current.FfmpegPriority,
                     GpuAcceleration = _current.GpuAcceleration,
                     SimpleModeAutoEncode = _current.SimpleModeAutoEncode,
                     AutoUseSimdBinaries = _current.AutoUseSimdBinaries,
                     IgnoredToolPaths = _current.IgnoredToolPaths,
                     EnabledImageFormats = _current.EnabledImageFormats,
+                    CacheDirectory = _current.CacheDirectory,
                 };
                 var json = JsonSerializer.Serialize(clone, new JsonSerializerOptions { WriteIndented = true, DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull });
                 File.WriteAllText(SettingsPath, json);

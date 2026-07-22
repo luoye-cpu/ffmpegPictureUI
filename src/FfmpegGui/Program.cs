@@ -10,8 +10,13 @@ namespace FfmpegGui
         public static bool IsGpuAccelerated { get; private set; } = false;
 
         [STAThread]
-        public static void Main(string[] args) => BuildAvaloniaApp(args)
-            .StartWithClassicDesktopLifetime(args);
+        public static void Main(string[] args)
+        {
+            // 启动时清理上次崩溃遗留的僵尸临时目录（超过 24 小时的旧缓存）
+            try { Services.PlatformServices.CleanupZombieTempDirs(); } catch { }
+
+            BuildAvaloniaApp(args).StartWithClassicDesktopLifetime(args);
+        }
 
         /// <summary>
         /// 读取用户 GPU 偏好（复用 AppSettingsService 单例，避免重复 I/O）。
