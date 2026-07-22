@@ -1,6 +1,6 @@
-# FFmpegPictureUI v1.4.5 → Linux ARM 迁移分析报告
+# FFmpegPictureUI v1.5.0 → Linux ARM 迁移分析报告 / Migration Analysis
 
-> 分析日期: 2026-07-12 | 基线版本: v1.4.5 | 目标平台: Linux ARM (aarch64)
+> 分析日期 / Analysis Date: 2026-07-23 | 基线版本 / Baseline: v1.5.0 | 目标平台 / Target: Linux ARM (aarch64)
 
 ---
 
@@ -11,7 +11,7 @@
 | 框架 | .NET 10.0 |
 | UI 框架 | Avalonia 12.0.4 |
 | 输出类型 | `WinExe` |
-| 运行时标识 | `win-x64`（硬编码） |
+| 运行时标识 | `win-x64;linux-x64;linux-arm64` (已配置) / Already configured |
 | 发布模式 | 单文件 (PublishSingleFile)，非自包含 |
 | 外部工具 | ffmpeg, ffprobe, cjxl, djxl, cjpegli, ultrahdr_app, JxrEncApp, JxrDecApp, exiftool, avifenc |
 
