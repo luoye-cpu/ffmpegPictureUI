@@ -1598,6 +1598,7 @@ namespace FfmpegGui.Services
                     item.Log += $"[{encoderTag}-pipe] 启动 ffmpeg 失败\n";
                     return (-1, $"失败 (ffmpeg 启动失败)");
                 }
+                PlatformServices.SetSafePriority(procFf, AppSettingsService.Current.FfmpegPriority);
 
                 procEnc = Process.Start(psiEnc);
                 if (procEnc == null)
@@ -1605,6 +1606,7 @@ namespace FfmpegGui.Services
                     item.Log += $"[{encoderTag}-pipe] 启动 {encoderTag} 失败\n";
                     return (-1, $"失败 ({encoderTag} 启动失败)");
                 }
+                PlatformServices.SetSafePriority(procEnc, AppSettingsService.Current.FfmpegPriority);
 
                 // 非阻塞消费 stderr 日志
                 var ffLogTask = ConsumeStreamLinesAsync(procFf.StandardError, s =>
@@ -1882,6 +1884,7 @@ namespace FfmpegGui.Services
                 try
                 {
                     process.Start();
+                    PlatformServices.SetSafePriority(process, AppSettingsService.Current.FfmpegPriority);
                     process.BeginOutputReadLine();
                     process.BeginErrorReadLine();
                     await process.WaitForExitAsync(ct);
@@ -2269,8 +2272,10 @@ namespace FfmpegGui.Services
 
                 procCj = Process.Start(psiCj);
                 if (procCj == null) return (-1, "失败 (cjxl 启动失败)");
+                PlatformServices.SetSafePriority(procCj, AppSettingsService.Current.FfmpegPriority);
                 procDj = Process.Start(psiDj);
                 if (procDj == null) return (-1, "失败 (djxl 启动失败)");
+                PlatformServices.SetSafePriority(procDj, AppSettingsService.Current.FfmpegPriority);
 
                 // 非阻塞消费日志
                 var djLogTask = ConsumeStreamLinesAsync(procDj.StandardError,
@@ -2448,6 +2453,7 @@ namespace FfmpegGui.Services
                     item.Status = "失败 (djxl 启动失败)";
                     return;
                 }
+                PlatformServices.SetSafePriority(procDj, AppSettingsService.Current.FfmpegPriority);
 
                 procFf = Process.Start(psiFf);
                 if (procFf == null)
@@ -2457,6 +2463,7 @@ namespace FfmpegGui.Services
                     item.Status = "失败 (ffmpeg 启动失败)";
                     return;
                 }
+                PlatformServices.SetSafePriority(procFf, AppSettingsService.Current.FfmpegPriority);
 
                 // 启动 stderr/stdout 消费者（非阻塞，并行运行）
                 var djErrTask = ConsumeStreamLinesAsync(procDj.StandardError, s => item.Log += $"[djxl] {s}\n");
@@ -2787,6 +2794,7 @@ namespace FfmpegGui.Services
             try
             {
                 process.Start();
+                PlatformServices.SetSafePriority(process, AppSettingsService.Current.FfmpegPriority);
                 process.BeginOutputReadLine();
                 process.BeginErrorReadLine();
                 if (ct.CanBeCanceled)
