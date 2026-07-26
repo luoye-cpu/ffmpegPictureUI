@@ -133,13 +133,43 @@ xcopy /E /I publish\PLAN publish\build\FFmpegPictureUI-v1.5.1-x64-full\PLAN\
 ### 3.4 压缩打包
 
 ```bash
-# 使用 7-Zip
-7z a -mx9 publish\FFmpegPictureUI-v1.5.1-x64-full.7z `
+# 7-Zip 极限压缩（实测最优配置）
+#   -mx9       极限等级；7z 按文件架构自动加 BCJ/BCJ2 过滤器（勿手动 -m0，勿加 mc=1e9 / -mqs）
+#   -md=3840m  字典 3840 MiB（LZMA2 上限）
+#   -mfb=273   单词大小上限
+#   -ms=on     固实压缩
+#   -mmt=1     单线程（压缩率最高）
+7z a -t7z -mx9 -md=3840m -mfb=273 -ms=on -mmt=1 `
+    publish\FFmpegPictureUI-v1.5.1-x64-full.7z `
     publish\build\FFmpegPictureUI-v1.5.1-x64-full\*
 
-7z a -mx9 publish\FFmpegPictureUI-v1.5.1-x64.7z `
+7z a -t7z -mx9 -md=3840m -mfb=273 -ms=on -mmt=1 `
+    publish\FFmpegPictureUI-v1.5.1-x64.7z `
     publish\build\FFmpegPictureUI-v1.5.1-x64\*
 ```
+
+**进程优先级（自动最高）**
+
+7z 为 CPU 密集型长任务，应自动拉满调度优先级以缩短打包时间。`pack.ps1` 在启动 7z 后会**自动**将其 `PriorityClass` 设为 **High**（脚本已内置，无需手动操作）。手动压缩时，用下面这段与脚本同构的 PowerShell 片段即可一行「自动拉满」——它自动定位 7z、启动、提权、等待结束：
+
+```powershell
+function Invoke-7zMax {
+    param([string]$Arguments)
+    $exe = (Get-Command 7z -ErrorAction SilentlyContinue).Source
+    if (-not $exe -and (Test-Path "C:\Program Files\7-Zip\7z.exe")) { $exe = "C:\Program Files\7-Zip\7z.exe" }
+    if (-not $exe) { throw "未找到 7z.exe" }
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $exe; $psi.Arguments = $Arguments; $psi.UseShellExecute = $false
+    $p = [System.Diagnostics.Process]::Start($psi)
+    try { $p.PriorityClass = [System.Diagnostics.ProcessPriorityClass]::High } catch { }  # 启动后立即提权
+    $p.WaitForExit(); return $p.ExitCode
+}
+# 用法（参数整体作为字符串传入，路径含空格时自行加引号）：
+Invoke-7zMax 'a -t7z -mx9 -md=3840m -mfb=273 -ms=on -mmt=1 "out.7z" *'
+```
+
+- **High 即安全最高档**：`RealTime` 会抢占系统调度与磁盘 I/O 线程，压缩时整机易卡死、且 7z 自身读写反被拖慢，**禁用 `RealTime`**。
+- **GUI 手动压缩**：7z GUI 不能自设优先级，需在任务管理器将 `7z.exe` 设为「高」，或用 `start /HIGH 7z a ...`。
 
 ---
 
