@@ -121,24 +121,48 @@ namespace FfmpegGui.Services
                 }
             }
 
-            // BT.2020 HDR: auto zscale (仅简化模式未烘焙时)
+            // ── 简化模式目标色域转换（SDR→HDR / SDR→SDR 色域映射）──
+            // 当用户选择非 auto 目标色域且未使用 ICC 烘焙/高级参数时，
+            // 添加 zscale 滤镜将像素从「实际输入色彩」转换到「目标色彩」。
+            // zscale 输出帧自动携带目标 primaries/trc 标签，编码器会传递到输出文件。
+            // 注意：HDR→SDR 不在此处理（由 NeedsHdrToSdrTonemap 使用 tonemap 曲线）。
             if (!skipAutoBt2020Zscale
                 && !options.UseAdvancedColorParameters
-                && !string.IsNullOrWhiteSpace(options.ColorSpace))
+                && !string.IsNullOrWhiteSpace(options.ColorSpace)
+                && !options.ColorSpace.Equals("auto", StringComparison.OrdinalIgnoreCase))
             {
-                var cs = options.ColorSpace;
-                var isHdrTarget = cs.Equals("BT.2020 PQ", StringComparison.OrdinalIgnoreCase)
-                               || cs.Equals("BT.2020 HLG", StringComparison.OrdinalIgnoreCase)
-                               || cs.Equals("BT.2020", StringComparison.OrdinalIgnoreCase);
-                if (isHdrTarget)
+                var targetParams = MapSimplifiedColorSpace(options.ColorSpace);
+                if (targetParams.primaries != null && targetParams.trc != null)
                 {
-                    var targetTrc = cs.Contains("HLG") ? "arib-std-b67" : "smpte2084";
-                    var actualInputTrc = inputTrc;
-                    if (string.IsNullOrWhiteSpace(actualInputTrc))
-                        actualInputTrc = "bt709";
-                    if (!actualInputTrc.Equals(targetTrc, StringComparison.OrdinalIgnoreCase))
+                    // 实际输入色彩（来自 BuildColorArgsSplit 的 -i 前声明）
+                    var srcP = inputPrimaries ?? "bt709";
+                    var srcT = inputTrc ?? "iec61966-2-1";
+                    var srcM = outputColorSpace ?? "bt709";
+
+                    var dstP = targetParams.primaries!;
+                    var dstT = targetParams.trc!;
+                    var dstM = targetParams.matrix ?? "bt709";
+
+                    // 判断源是否为 HDR（PQ/HLG）→ 若目标是 SDR，交给 tonemap 处理
+                    var srcIsHdr = srcT.Equals("smpte2084", StringComparison.OrdinalIgnoreCase)
+                                || srcT.Equals("arib-std-b67", StringComparison.OrdinalIgnoreCase);
+                    var dstIsHdr = dstT.Equals("smpte2084", StringComparison.OrdinalIgnoreCase)
+                                || dstT.Equals("arib-std-b67", StringComparison.OrdinalIgnoreCase);
+
+                    // 仅在源≠目标时添加 zscale（避免无意义转换）
+                    // 排除 HDR→SDR（由 tonemap 处理，避免高光裁剪）
+                    if ((!string.Equals(srcP, dstP, StringComparison.OrdinalIgnoreCase)
+                         || !string.Equals(srcT, dstT, StringComparison.OrdinalIgnoreCase))
+                        && !(srcIsHdr && !dstIsHdr))
                     {
-                        AppendVideoFilter(args, $"zscale=transferin={actualInputTrc}:transfer={targetTrc}");
+                        var zscaleFilter = $"zscale=pin={srcP}:tin={srcT}:min={srcM}:p={dstP}:t={dstT}:m={dstM}";
+                        AppendVideoFilter(args, zscaleFilter);
+
+                        // 更新输出矩阵标记（zscale 已转换像素，输出色彩空间为目标）
+                        outputColorSpace = dstM;
+
+                        // zscale 已完成色彩转换，跳过后续 tonemap
+                        skipHdrTonemap = true;
                     }
                 }
             }
@@ -652,8 +676,8 @@ namespace FfmpegGui.Services
 
         /// <summary>
         /// 分离色彩参数：(primaries, trc) 放 -i 前作输入覆盖，(colorspace) 放 -i 后作输出矩阵。
-        /// 这是关键修复：-color_primaries/-color_trc 必须放在 -i 之前，大多数编码器
-        /// （AVIF/JXL/PNG/TIFF）才会将其传递到输出文件。
+        /// 关键原则：-i 前的 -color_primaries/-color_trc 必须描述「实际输入」的色彩空间，
+        /// 而非目标色彩空间。目标转换由 zscale 滤镜完成（zscale 输出帧自动携带目标标签）。
         /// </summary>
         private static (string? primaries, string? trc, string? colorspace) BuildColorArgsSplit(
             Models.FfmpegOptions options, string inputPath)
@@ -681,7 +705,26 @@ namespace FfmpegGui.Services
             else if (!string.IsNullOrWhiteSpace(options.ColorSpace)
                      && !options.ColorSpace.Equals("auto", StringComparison.OrdinalIgnoreCase))
             {
-                (primaries, trc, colorspace) = MapSimplifiedColorSpace(options.ColorSpace);
+                // ── 简化模式：返回「实际输入」色彩（非目标）──
+                // 探测输入文件的真实色彩元数据，用于 -i 前的输入声明。
+                // 目标色域转换由后续的 zscale 滤镜完成。
+                var hdrMeta = ProbeInputColorMetadata(inputPath);
+                if (hdrMeta.bitDepth > 8
+                    && !string.IsNullOrWhiteSpace(hdrMeta.colorPrimaries)
+                    && !string.IsNullOrWhiteSpace(hdrMeta.colorTrc))
+                {
+                    // 输入有明确色彩元数据（如真正的 HDR 文件）
+                    primaries = hdrMeta.colorPrimaries;
+                    trc = hdrMeta.colorTrc;
+                    colorspace = hdrMeta.colorSpace;
+                }
+                else
+                {
+                    // 输入无色彩元数据（如 16-bit TIFF 无标签）→ 假定 sRGB
+                    primaries = "bt709";
+                    trc = "iec61966-2-1";
+                    colorspace = "bt709";
+                }
             }
             else if (string.IsNullOrWhiteSpace(options.ColorSpace)
                      || options.ColorSpace.Equals("auto", StringComparison.OrdinalIgnoreCase))
@@ -813,6 +856,8 @@ namespace FfmpegGui.Services
         /// <summary>使用 ffprobe 同步探测输入文件的位深</summary>
         private static int ProbeInputBitDepth(string inputPath)
         {
+            // 管道输入（stdin）无法探测，直接返回 0
+            if (inputPath == "-") return 0;
             try
             {
                 var ffprobe = FindFfprobe();
@@ -892,6 +937,8 @@ namespace FfmpegGui.Services
         /// <summary>探测输入文件的色彩范围。RGB 像素格式返回 "pc"（全范围），否则返回 null（不覆盖默认）。</summary>
         private static string? ProbeInputColorRange(string inputPath)
         {
+            // 管道输入（stdin）无法探测，直接返回 null
+            if (inputPath == "-") return null;
             try
             {
                 var ffprobe = FindFfprobe();
@@ -936,6 +983,8 @@ namespace FfmpegGui.Services
         public static ColorMetadata ProbeInputColorMetadata(string inputPath)
         {
             var meta = new ColorMetadata();
+            // 管道输入（stdin）无法探测，直接返回空结构
+            if (inputPath == "-") return meta;
             try
             {
                 var ffprobe = FindFfprobe();

@@ -1,6 +1,6 @@
 # 📦 FFmpegPictureUI 打包规范
 
-> 版本: 1.1 | 最后更新: 2026-07-23 | 适用于 v1.5.0+ / For v1.5.0+
+> 版本: 1.1 | 最后更新: 2026-07-27 | 适用于 v1.5.1+ / For v1.5.1+
 
 ---
 
@@ -15,7 +15,7 @@
 | 字段 | 说明 | 示例 |
 |------|------|------|
 | `AppName` | 固定 `FFmpegPictureUI` | FFmpegPictureUI |
-| `Version` | 三位语义化版本号 | 1.5.0 |
+| `Version` | 三位语义化版本号 | 1.5.1 |
 | `Arch` | CPU 架构标识 | x64, arm64 |
 | `Variant` | 可选。`full`=含外部工具包，省略=仅程序 | full |
 | `Ext` | 压缩格式 | 7z, zip |
@@ -24,10 +24,10 @@
 
 | 产物 | 名称 |
 |------|------|
-| Windows x64 完整包（含 ffmpeg/cjxl/exiftool） | `FFmpegPictureUI-v1.5.0-x64-full.7z` |
-| Windows x64 精简包（仅程序） | `FFmpegPictureUI-v1.5.0-x64.7z` |
-| Linux ARM64 完整包 | `FFmpegPictureUI-v1.5.0-arm64-full.tar.gz` |
-| Linux ARM64 精简包 | `FFmpegPictureUI-v1.5.0-arm64.tar.gz` |
+| Windows x64 完整包（含 ffmpeg/cjxl/exiftool） | `FFmpegPictureUI-v1.5.1-x64-full.7z` |
+| Windows x64 精简包（仅程序） | `FFmpegPictureUI-v1.5.1-x64.7z` |
+| Linux ARM64 完整包 | `FFmpegPictureUI-v1.5.1-arm64-full.tar.gz` |
+| Linux ARM64 精简包 | `FFmpegPictureUI-v1.5.1-arm64.tar.gz` |
 
 ---
 
@@ -38,7 +38,7 @@
 ### 2.1 目录结构
 
 ```
-FFmpegPictureUI-v1.5.0-x64-full/
+FFmpegPictureUI-v1.5.1-x64-full/
 ├── FfmpegGui.exe                    ← 主程序（由 dotnet publish 生成）
 ├── FfmpegGui.dll                    ← 主程序集
 ├── *.dll                            ← 运行时依赖
@@ -109,7 +109,7 @@ dotnet publish src/FfmpegGui/FfmpegGui.csproj `
     --self-contained false `
     -p:PublishSingleFile=true `
     -p:PublishTrimmed=true `
-    -o publish/build/FFmpegPictureUI-v1.5.0-x64-full/
+    -o publish/build/FFmpegPictureUI-v1.5.1-x64-full/
 
 # Windows x64 精简版（不含 PLAN）
 dotnet publish src/FfmpegGui/FfmpegGui.csproj `
@@ -117,28 +117,28 @@ dotnet publish src/FfmpegGui/FfmpegGui.csproj `
     --self-contained false `
     -p:PublishSingleFile=true `
     -p:PublishTrimmed=true `
-    -o publish/build/FFmpegPictureUI-v1.5.0-x64/
+    -o publish/build/FFmpegPictureUI-v1.5.1-x64/
 ```
 
 ### 3.3 组装完整包
 
 ```bash
 # 将 PLAN 文件夹复制到完整包目录
-xcopy /E /I publish\PLAN publish\build\FFmpegPictureUI-v1.5.0-x64-full\PLAN\
+xcopy /E /I publish\PLAN publish\build\FFmpegPictureUI-v1.5.1-x64-full\PLAN\
 
 # 生成使用说明文档（见第四章）
-# → 输出到 publish\build\FFmpegPictureUI-v1.5.0-x64-full\PLAN\使用说明.txt
+# → 输出到 publish\build\FFmpegPictureUI-v1.5.1-x64-full\PLAN\使用说明.txt
 ```
 
 ### 3.4 压缩打包
 
 ```bash
 # 使用 7-Zip
-7z a -mx9 publish\FFmpegPictureUI-v1.5.0-x64-full.7z `
-    publish\build\FFmpegPictureUI-v1.5.0-x64-full\*
+7z a -mx9 publish\FFmpegPictureUI-v1.5.1-x64-full.7z `
+    publish\build\FFmpegPictureUI-v1.5.1-x64-full\*
 
-7z a -mx9 publish\FFmpegPictureUI-v1.5.0-x64.7z `
-    publish\build\FFmpegPictureUI-v1.5.0-x64\*
+7z a -mx9 publish\FFmpegPictureUI-v1.5.1-x64.7z `
+    publish\build\FFmpegPictureUI-v1.5.1-x64\*
 ```
 
 ---
@@ -221,9 +221,9 @@ xcopy /E /I publish\PLAN publish\build\FFmpegPictureUI-v1.5.0-x64-full\PLAN\
 
 `src/FfmpegGui/FfmpegGui.csproj`:
 ```xml
-<Version>1.5.0</Version>
-<AssemblyVersion>1.5.0.0</AssemblyVersion>
-<FileVersion>1.5.0.0</FileVersion>
+<Version>1.5.1</Version>
+<AssemblyVersion>1.5.1.0</AssemblyVersion>
+<FileVersion>1.5.1.0</FileVersion>
 ```
 
 ### 5.2 更新流程
@@ -231,7 +231,7 @@ xcopy /E /I publish\PLAN publish\build\FFmpegPictureUI-v1.5.0-x64-full\PLAN\
 1. 修改 `.csproj` 中的 `<Version>` 标签
 2. 更新 `README.md` 中的版本号
 3. 执行打包流程
-4. 在 GitHub Releases 中创建对应 tag: `v1.5.0`
+4. 在 GitHub Releases 中创建对应 tag: `v1.5.1`
 
 ---
 
@@ -247,4 +247,4 @@ xcopy /E /I publish\PLAN publish\build\FFmpegPictureUI-v1.5.0-x64-full\PLAN\
 
 ---
 
-> 📅 本规范自 v1.5.0 起生效。历史版本保留旧命名规则以兼容已发布 Release。
+> 📅 本规范自 v1.5.1 起生效。历史版本保留旧命名规则以兼容已发布 Release。

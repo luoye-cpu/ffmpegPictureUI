@@ -1,6 +1,6 @@
 # 🖼️ FFmpegPictureUI — FFmpeg 图片转换器
 
-**v1.5.0** — 2026-07-23 Release | Cross-platform batch image/animation/video converter built on Avalonia UI.
+**v1.5.1** — 2026-07-27 Release | Cross-platform batch image/animation/video converter built on Avalonia UI.
 基于 Avalonia UI 的跨平台批量图片/动图/视频转换工具，封装 `ffmpeg`/`ffprobe` + 外部编码器 (`cjxl`/`djxl`/`cjpegli`/`ultrahdr_app`/`JxrEncApp`/`JxrDecApp`).
 
 QQ 交流群：754439779 | [点击加群](https://qm.qq.com/q/M2181PvCkW)
@@ -130,6 +130,19 @@ ffmpegPictureUI/
 ---
 
 ## 📝 Changelog / 更新日志
+
+### v1.5.1 (2026-07-27) — 色彩管线修复 / Color Pipeline Fix
+
+**🎨 色彩管理修复**
+- **修复 SDR→HDR 像素未转换** — 16-bit TIFF 等无元数据输入手动指定 BT.2020 PQ/HLG 时，输出仅有 HDR 标签但像素未做电光转换（画面偏暗）。`BuildColorArgsSplit` 简化模式改为返回实际输入色彩，新增通用目标色域 zscale 转换逻辑
+- **修复 JXL→PNG 卡死** — 管道模式下 `inputPath="-"` 被传给 ffprobe 探测函数导致无限阻塞。三个探测函数添加管道守卫
+- **HDR→SDR 排除判断** — 简化模式 zscale 转换排除 HDR→SDR 场景（交给 tonemap 处理，避免高光裁剪）
+
+** 构建修复**
+- 从 `.sln` 移除 5 个不存在的工具项目引用（VerifyCjxl/VerifyMulti/VerifyPreset/VerifyQueue/TestColor），消除 NuGet MSB3202 错误
+- 修复 `MainWindow.xaml.cs` CS8601 警告（`CjpegliChromaSubsampling` 空合并）
+
+---
 
 ### v1.5.0 (2026-07-23) — 正式版 / Stable Release
 

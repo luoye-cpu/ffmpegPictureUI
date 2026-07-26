@@ -3851,7 +3851,7 @@ namespace FfmpegGui
                 GifDither = data.GifDither,
                 AnimationScaleW = data.AnimationScaleW,
                 AnimationDuration = data.AnimationDuration,
-                CjpegliChromaSubsampling = data.CjpegliChromaSubsampling,
+                CjpegliChromaSubsampling = data.CjpegliChromaSubsampling ?? "444",
                 CjpegliProgressiveId = data.CjpegliProgressiveId,
                 CjpegliOptimize = data.CjpegliOptimize ?? true,
                 CjpegliAdaptiveQuant = data.CjpegliAdaptiveQuant ?? true
