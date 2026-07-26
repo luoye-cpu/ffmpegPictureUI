@@ -198,12 +198,16 @@ public static class PlatformServices
                 0 => ProcessPriorityClass.RealTime,
                 1 => ProcessPriorityClass.High,
                 2 => ProcessPriorityClass.AboveNormal,
+                3 => ProcessPriorityClass.Normal,
                 4 => ProcessPriorityClass.BelowNormal,
                 5 => ProcessPriorityClass.Idle,
                 _ => ProcessPriorityClass.Normal
             };
         }
-        catch { /* 降级：优先级设置不影响核心功能 */ }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"[priority] 设置失败 (level={priorityLevel}): {ex.Message}");
+        }
     }
 
     // ═══════════════════════════════════════════════

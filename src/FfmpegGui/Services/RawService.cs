@@ -148,6 +148,7 @@ public static class RawService
                 log?.Invoke("[RAW] 无法启动 dcraw 进程。\n");
                 return false;
             }
+            PlatformServices.SetSafePriority(p, AppSettingsService.Current.FfmpegPriority);
 
             var sb = new System.Text.StringBuilder();
             p.OutputDataReceived += (_, e) => { if (e.Data != null) { sb.AppendLine(e.Data); log?.Invoke(e.Data + "\n"); } };

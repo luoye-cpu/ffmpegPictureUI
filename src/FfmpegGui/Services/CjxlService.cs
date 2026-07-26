@@ -237,6 +237,7 @@ namespace FfmpegGui.Services
             try
             {
                 process.Start();
+                PlatformServices.SetSafePriority(process, AppSettingsService.Current.FfmpegPriority);
                 process.BeginOutputReadLine();
                 process.BeginErrorReadLine();
                 await process.WaitForExitAsync();
@@ -284,6 +285,7 @@ namespace FfmpegGui.Services
             try
             {
                 process.Start();
+                PlatformServices.SetSafePriority(process, AppSettingsService.Current.FfmpegPriority);
                 process.BeginOutputReadLine();
                 process.BeginErrorReadLine();
                 await process.WaitForExitAsync();

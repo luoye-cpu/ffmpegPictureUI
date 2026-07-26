@@ -164,6 +164,7 @@ namespace FfmpegGui.Services
             try
             {
                 process.Start();
+                PlatformServices.SetSafePriority(process, AppSettingsService.Current.FfmpegPriority);
                 process.BeginOutputReadLine();
                 process.BeginErrorReadLine();
                 if (ct.CanBeCanceled)
