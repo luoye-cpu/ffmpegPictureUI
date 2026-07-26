@@ -55,6 +55,7 @@ namespace FfmpegGui.Services
                     logCallback?.Invoke("[pipeline] 启动 cjpegli 失败\n");
                     return -1;
                 }
+                PlatformServices.SetSafePriority(procCj, AppSettingsService.Current.FfmpegPriority);
 
                 // 启动 djxl：解码为 PNG 并通过 '-' 输出到 stdout
                 var djArgs = $"\"{inputPath}\" --output_format=png -";
@@ -74,6 +75,7 @@ namespace FfmpegGui.Services
                     logCallback?.Invoke("[pipeline] 启动 djxl 失败\n");
                     return -1;
                 }
+                PlatformServices.SetSafePriority(procDj, AppSettingsService.Current.FfmpegPriority);
 
                 // 启动 stderr 消费者（非阻塞）
                 var cjErrTask = ConsumeLinesAsync(procCj.StandardError, s => logCallback?.Invoke("[cjpegli] " + s + "\n"));

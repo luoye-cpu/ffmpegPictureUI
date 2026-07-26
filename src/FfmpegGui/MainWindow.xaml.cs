@@ -508,8 +508,23 @@ namespace FfmpegGui
             {
                 var savedPriority = AppSettingsService.Current.FfmpegPriority;
                 PriorityCombo.SelectedIndex = Math.Clamp(savedPriority, 0, 5);
-                PriorityCombo.SelectionChanged += (_, _) =>
+                PriorityCombo.SelectionChanged += async (_, _) =>
                 {
+                    // RealTime 优先级风险确认
+                    if (PriorityCombo.SelectedIndex == 0)
+                    {
+                        var confirmed = await ShowConfirmDialogAsync("⚠️ 实时优先级警告",
+                            "「实时」优先级高于系统键盘/鼠标输入线程。\n" +
+                            "如果 ffmpeg 进入 CPU 密集编码（如 AV1），系统将完全无响应，只能硬重启。\n\n" +
+                            "确定要使用实时优先级吗？");
+                        if (!confirmed)
+                        {
+                            // 恢复到之前的选择
+                            PriorityCombo.SelectedIndex = Math.Clamp(
+                                AppSettingsService.Current.FfmpegPriority, 0, 5);
+                            return;
+                        }
+                    }
                     AppSettingsService.Current.FfmpegPriority = PriorityCombo.SelectedIndex;
                     AppSettingsService.Save();
                 };
@@ -4876,6 +4891,58 @@ namespace FfmpegGui
             {
                 if (LogText != null) LogText.Text += $"文件夹扫描失败: {ex.Message}\n";
             }
+        }
+
+        /// <summary>显示确认对话框（确定/取消），返回用户是否点击了确定</summary>
+        private async Task<bool> ShowConfirmDialogAsync(string title, string message)
+        {
+            var tcs = new TaskCompletionSource<bool>();
+
+            var dialog = new Window
+            {
+                Title = title,
+                Width = 420,
+                Height = 200,
+                WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                CanResize = false,
+                Content = new Grid
+                {
+                    RowDefinitions = new RowDefinitions("*,Auto"),
+                    Margin = new Avalonia.Thickness(16),
+                    Children =
+                    {
+                        new TextBlock
+                        {
+                            Text = message, FontSize = 13,
+                            TextWrapping = Avalonia.Media.TextWrapping.Wrap,
+                            [Grid.RowProperty] = 0,
+                            Margin = new Avalonia.Thickness(0, 0, 0, 12)
+                        },
+                        new StackPanel
+                        {
+                            Orientation = Avalonia.Layout.Orientation.Horizontal,
+                            HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right,
+                            Spacing = 8,
+                            [Grid.RowProperty] = 1,
+                            Children =
+                            {
+                                new Button { Content = "确定", Padding = new Avalonia.Thickness(12, 4), IsDefault = true },
+                                new Button { Content = "取消", Padding = new Avalonia.Thickness(12, 4), IsCancel = true }
+                            }
+                        }
+                    }
+                }
+            };
+
+            var buttons = ((dialog.Content as Grid)?.Children[1] as StackPanel)?.Children;
+            if (buttons != null && buttons.Count >= 2)
+            {
+                ((Button)buttons[0]).Click += (_, _) => { tcs.TrySetResult(true); dialog.Close(); };
+                ((Button)buttons[1]).Click += (_, _) => { tcs.TrySetResult(false); dialog.Close(); };
+            }
+
+            await dialog.ShowDialog(this);
+            return await tcs.Task;
         }
 
         private void InitializeComponent()
