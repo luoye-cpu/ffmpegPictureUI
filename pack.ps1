@@ -116,10 +116,31 @@ if ($Variant -eq "full") {
 
 # Step 4: 压缩
 Write-Host "`n[4/4] 压缩打包..." -ForegroundColor Yellow
-if (Get-Command "7z" -ErrorAction SilentlyContinue) {
-    Push-Location $OutputDir
-    7z a -mx9 "$ArchivePath" * | Out-Null
-    Pop-Location
+$sevenZip = Get-Command "7z" -ErrorAction SilentlyContinue
+if (-not $sevenZip -and (Test-Path "C:\Program Files\7-Zip\7z.exe")) {
+    $sevenZip = [pscustomobject]@{ Source = "C:\Program Files\7-Zip\7z.exe" }
+}
+if ($sevenZip) {
+    # 删除旧压缩包，避免 7z 'a' 追加模式残留旧条目
+    Remove-Item $ArchivePath -Force -ErrorAction SilentlyContinue
+    # 极限压缩（实测最优）：
+    #   -mx9       极限等级；7z 按文件架构自动加 BCJ/BCJ2（勿手动 -m0，勿加 mc=1e9 / -mqs，均负优化）
+    #   -md=3840m  字典上限（写 4095m 会被钳制到此值）
+    #   -mfb=273   单词大小上限
+    #   -ms=on     固实压缩
+    #   -mmt=1     单线程（压缩率最高）
+    # '*' 由 7z 在 WorkingDirectory 内自展开，递归打包全部内容
+    $zipArgs = 'a -t7z -mx9 -md=3840m -mfb=273 -ms=on -mmt=1 "' + $ArchivePath + '" *'
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $sevenZip.Source
+    $psi.Arguments = $zipArgs
+    $psi.WorkingDirectory = $OutputDir
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $false   # 继承父控制台，实时显示 7z 压缩进度
+    $proc = [System.Diagnostics.Process]::Start($psi)
+    try { $proc.PriorityClass = [System.Diagnostics.ProcessPriorityClass]::High } catch { }  # 提升 7z 到系统高优先级
+    $proc.WaitForExit()
+    if ($proc.ExitCode -ne 0) { throw "压缩失败 (7z exit code: $($proc.ExitCode))" }
     Write-Host "   ✅ 压缩完成 → $ArchivePath" -ForegroundColor Green
 } else {
     Write-Host "   ⚠️ 未找到 7z 命令，跳过压缩" -ForegroundColor Yellow
