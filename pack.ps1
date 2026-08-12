@@ -74,6 +74,19 @@ if ($pdbFiles) {
     Write-Host "   ✅ 已删除调试符号，节省 ${savedMB}MB" -ForegroundColor Green
 }
 
+# Step 1.6: 确保多语言资源文件存在（单文件发布可能不输出 Content，兜底复制）
+$LocalesDest = "$OutputDir\Resources\Locales"
+if (-not (Get-ChildItem "$LocalesDest\*.json" -ErrorAction SilentlyContinue)) {
+    $LocaleSrc = "$ProjectDir\Resources\Locales"
+    if (Test-Path "$LocaleSrc\*.json") {
+        New-Item -ItemType Directory -Force -Path $LocalesDest | Out-Null
+        Copy-Item "$LocaleSrc\*.json" $LocalesDest -Force
+        Write-Host "   ✅ 已兜底复制多语言资源文件 (zh-CN/en-US)" -ForegroundColor Green
+    } else {
+        Write-Host "   ⚠️ 未找到多语言资源源文件: $LocaleSrc" -ForegroundColor Yellow
+    }
+}
+
 # Step 2: 复制 PLAN（完整包）
 if ($Variant -eq "full") {
     Write-Host "`n[2/4] 复制 PLAN 组件包..." -ForegroundColor Yellow

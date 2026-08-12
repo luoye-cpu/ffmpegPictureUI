@@ -186,6 +186,22 @@ namespace FfmpegGui.Services
                 SupportedBitDepths = new List<int> { 8, 16, 32 },
                 SupportedColorSpaces = new List<string> { "BT.709", "BT.2020" }
             };
+
+            // DNG: dngtool 外部工具 (LibRaw + DNG SDK 1.7.1)，任意 RAW/DNG → DNG
+            _cache["dng"] = new FormatCapabilities
+            {
+                Format = "dng",
+                SupportsQuality = true,   // JXL 有损质量 (需勾选 JXL Modular 选项)
+                SupportsChroma = false,
+                SupportsBitDepth = false, // 保留源位深
+                SupportsMetadata = true,
+                SupportsLossless = true,
+                SupportsCicp = false,
+                CicpNote = "DNG 使用 Camera Profile + AsShot 白平衡",
+                SupportedBitDepths = new List<int> { 8, 12, 14, 16 },
+                SupportedColorSpaces = new List<string> { },
+                SupportsGainMap = false
+            };
         }
 
         private static async Task DetectLocalFfmpegCapabilitiesAsync(string? ffmpegPath = null)

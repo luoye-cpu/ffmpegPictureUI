@@ -145,7 +145,6 @@ public static class PlanFolderDetector
         CjxlService.ClearCache();
         DjxlService.ClearCache();
         CjpegliService.ClearCache();
-        UltrahdrService.ClearCache();
         JxrService.ClearCache();
         // ExifTool: 直接重新检测
         ExifToolService.Detect();

@@ -478,7 +478,7 @@ namespace FfmpegGui.Services
                 {
                     Format = "JPEG", Quality = 85, Chroma = "4:2:0",
                     BitDepth = "auto", ColorSpace = "auto",
-                    EncoderBackend = "Ultrahdr",
+                    EncoderBackend = "Cjpegli",
                     JpegGainMap = true,
                     JpegGainMapQuality = 75,
                     JpegGainMapTargetNits = 1000,

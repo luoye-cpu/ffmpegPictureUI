@@ -72,7 +72,7 @@ namespace FfmpegGui.Services
                     ExifToolPath = _current.ExifToolPath,
                     JxlLibDir = _current.JxlLibDir,
                     WindowsArtifactsDir = _current.WindowsArtifactsDir,
-                    DcrawPath = _current.DcrawPath,
+                    DngToolPath = _current.DngToolPath,
                     PreserveInputFolderStructure = _current.PreserveInputFolderStructure,
                     MaxQueueSize = _current.MaxQueueSize,
                     ThemeMode = _current.ThemeMode,

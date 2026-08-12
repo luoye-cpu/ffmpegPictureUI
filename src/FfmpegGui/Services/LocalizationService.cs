@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.IO;
+using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 
@@ -88,13 +89,10 @@ namespace FfmpegGui.Services
             var filePath = Path.Combine(localeDir, $"{language}.json");
             if (!File.Exists(filePath))
             {
-                // 回退：找不到资源文件时尝试使用默认中文
-                if (language != "zh-CN")
-                {
-                    LoadLocale("zh-CN");
-                    return;
-                }
-                // 连中文都找不到，使用内嵌的英文回退
+                // 外部文件缺失（典型场景：单文件发布时 Content 未随包输出）→
+                // 回退到程序集内嵌资源，确保语言可用且可正常切换
+                if (TryLoadEmbeddedResource(language)) return;
+                // 内嵌资源也缺失（极端情况）→ 内嵌回退字典
                 LoadEmbeddedFallback();
                 return;
             }
@@ -108,20 +106,57 @@ namespace FfmpegGui.Services
                     foreach (var kv in dict)
                         _strings[kv.Key] = kv.Value;
                 }
+                else
+                {
+                    // 文件存在但内容无法解析 → 尝试内嵌资源
+                    if (TryLoadEmbeddedResource(language)) return;
+                    LoadEmbeddedFallback();
+                    return;
+                }
             }
             catch
             {
-                if (language != "zh-CN")
-                {
-                    LoadLocale("zh-CN");
-                    return;
-                }
+                // 文件损坏（编码/读取异常）→ 尝试内嵌资源
+                if (TryLoadEmbeddedResource(language)) return;
                 LoadEmbeddedFallback();
                 return;
             }
 
             CurrentLanguage = language;
             RefreshVersion++;
+        }
+
+        /// <summary>
+        /// 从程序集内嵌资源加载语言文件（Resources/Locales/*.json 编译进程序集）。
+        /// 用于单文件发布等外部资源文件缺失的场景，保证语言可用且可双向切换。
+        /// </summary>
+        private bool TryLoadEmbeddedResource(string language)
+        {
+            try
+            {
+                var asm = typeof(LocalizationService).Assembly;
+                var resName = asm.GetManifestResourceNames()
+                    .FirstOrDefault(n => n.Contains(".Resources.Locales.", StringComparison.OrdinalIgnoreCase)
+                                         && n.EndsWith($".{language}.json", StringComparison.OrdinalIgnoreCase));
+                if (resName == null) return false;
+
+                using var stream = asm.GetManifestResourceStream(resName);
+                if (stream == null) return false;
+                using var reader = new StreamReader(stream);
+                var dict = JsonSerializer.Deserialize<Dictionary<string, string>>(reader.ReadToEnd());
+                if (dict == null) return false;
+
+                _strings.Clear();
+                foreach (var kv in dict)
+                    _strings[kv.Key] = kv.Value;
+                CurrentLanguage = language;
+                RefreshVersion++;
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         /// <summary>切换语言：zh-CN ↔ en-US</summary>
@@ -137,7 +172,12 @@ namespace FfmpegGui.Services
             LoadLocale(lang);
         }
 
-        /// <summary>内嵌英文回退（极端情况：资源文件全部丢失）</summary>
+        /// <summary>
+        /// 内嵌回退（极端情况：外部文件与程序集内嵌资源全部缺失）。
+        /// 回退文本为英文，但语言标记保持 zh-CN（软件默认语言）——
+        /// 修复：旧代码硬编码 CurrentLanguage="en-US" 会导致 ToggleLanguage
+        /// 永远停留在英文状态，用户点击「中文」按钮也无法切回中文（v1.5.1 缺陷）。
+        /// </summary>
         private void LoadEmbeddedFallback()
         {
             _strings.Clear();
@@ -224,7 +264,7 @@ namespace FfmpegGui.Services
             _strings["strip.all.exif"] = "Strip All EXIF";
             _strings["strip.xmp"] = "Strip XMP Metadata";
             _strings["append.png.extension"] = "Append .png extension (JXL/AVIF compat)";
-            CurrentLanguage = "en-US";
+            CurrentLanguage = "zh-CN";
         }
 
         private void OnPropertyChanged([CallerMemberName] string? propertyName = null)

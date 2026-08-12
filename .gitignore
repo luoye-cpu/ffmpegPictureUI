@@ -48,6 +48,43 @@ Thumbs.db
 tools/src/aom/
 tools/src/dcraw/
 tools/src/jxrlib/
+# DNG 构建依赖（手动下载, 见 tools/BUILD_TOOLS.md 或 docs/DNG_BUILD.md）
+tools/src/dng_sdk/
+tools/src/libraw/
+
+# ── CMake 构建产物（install 目录、build/CMakeFiles 等）──
+tools/src/install/
+tools/src/**/build/
+tools/src/**/CMakeFiles/
+tools/src/**/*.tlog/
+**/CMakeCache.txt
+**/cmake_install.cmake
+**/CMakeFiles/
+
+# ── 静态库/目标文件（编译产物，源码仓库不应包含）──
+tools/src/**/*.lib
+tools/src/**/*.a
+tools/src/**/*.obj
+tools/src/**/*.o
+tools/src/**/*.exe
+tools/src/**/*.dll
+
+# ── 嵌套 Git 仓库元数据（已转为普通源码目录的第三方库）──
+tools/src/libraw/.git/
+
+# ── DNG SDK 测试样本与库测试数据（构建不需要, 体积大）──
+tools/src/dng_sdk/**/sample_files/
+tools/src/dng_sdk/**/test_data.js
+tools/src/dng_sdk/**/test_data.tar
+
+# ── DNG SDK 不需要的组件 ──
+# xmp/ (2312 文件): 编译使用 qDNGUseXMP=0, 完全不需要 XMP toolkit
+tools/src/dng_sdk/**/xmp/
+# 平台项目文件 / CI 配置 / 文档 (Windows 构建不需要)
+tools/src/dng_sdk/**/.github/
+tools/src/dng_sdk/**/win/
+tools/src/dng_sdk/**/mac/
+tools/src/dng_sdk/**/*.pdf
 
 # ── 外部工具二进制（不应提交到源码仓库） ──
 **/cjxl.exe

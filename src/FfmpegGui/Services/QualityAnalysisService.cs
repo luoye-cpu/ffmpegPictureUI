@@ -260,7 +260,7 @@ namespace FfmpegGui.Services
             if (JxrService.DetectedPath != null)
                 if (Try(Path.GetDirectoryName(JxrService.DetectedPath), "JxrEncDir")) return found;
             foreach (var cp in new[] { AppSettingsService.Current.CjxlPath, AppSettingsService.Current.CjpegliPath,
-                AppSettingsService.Current.AvifencPath, AppSettingsService.Current.UltrahdrPath })
+                AppSettingsService.Current.AvifencPath })
             {
                 if (!string.IsNullOrEmpty(cp))
                 {

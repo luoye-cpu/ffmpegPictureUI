@@ -25,6 +25,12 @@ namespace FfmpegGui
 
         private ComboBox? FormatCombo;
         private ComboBox? ConversionModeCombo;
+        private ComboBox? DngCompressionCombo;
+        private StackPanel? DngJxlQualityPanel;
+        private Slider? DngJxlQualitySlider;
+        private TextBox? DngJxlQualityBox;
+        private TextBlock? RawEngineStatus;
+        private StackPanel? RawPanel;
         private ComboBox? EncoderCombo;
         private Slider? QualitySlider;
         private TextBox? QualityBox;
@@ -89,6 +95,7 @@ namespace FfmpegGui
         private Button? GpuToggleBtn;
         private Button? SimpleModeEntryBtn;
         // 简洁模式控件
+        private CheckBox? SimpleErrorsOnlyCheck;
         private DockPanel? FullModePanel;
         private Grid? SimpleModePanel;
         private ListBox? SimpleQueueList;
@@ -103,6 +110,7 @@ namespace FfmpegGui
         private TextBlock? SimpleEtaLabel;
         private TextBlock? SimpleElapsedLabel;
         private bool _simpleModeActive;
+        private bool _simpleDropHandlersAttached; // 防止重复进入简洁模式时拖放 handler 重复注册
         private PresetEntry? _simpleActivePreset;
         private System.Timers.Timer? _autoEncodeTimer;
         private readonly ObservableCollection<string> _simpleMediaFiles = new();
@@ -254,8 +262,14 @@ namespace FfmpegGui
             _initialized = true;
 
             // 获取 UI 控件引用
-            FormatCombo = this.FindControl<ComboBox>("FormatCombo");
             ConversionModeCombo = this.FindControl<ComboBox>("ConversionModeCombo");
+            FormatCombo = this.FindControl<ComboBox>("FormatCombo");
+            DngCompressionCombo = this.FindControl<ComboBox>("DngCompressionCombo");
+            DngJxlQualityPanel = this.FindControl<StackPanel>("DngJxlQualityPanel");
+            DngJxlQualitySlider = this.FindControl<Slider>("DngJxlQualitySlider");
+            DngJxlQualityBox = this.FindControl<TextBox>("DngJxlQualityBox");
+            RawEngineStatus = this.FindControl<TextBlock>("RawEngineStatus");
+            RawPanel = this.FindControl<StackPanel>("RawPanel");
             EncoderCombo = this.FindControl<ComboBox>("EncoderCombo");
             QualitySlider = this.FindControl<Slider>("QualitySlider");
             QualityBox = this.FindControl<TextBox>("QualityBox");
@@ -737,6 +751,7 @@ namespace FfmpegGui
 
             // ── 简洁模式控件 ──
             SimpleModeEntryBtn = this.FindControl<Button>("SimpleModeEntryBtn");
+            SimpleErrorsOnlyCheck = this.FindControl<CheckBox>("SimpleErrorsOnlyCheck");
             FullModePanel = this.FindControl<DockPanel>("FullModePanel");
             SimpleModePanel = this.FindControl<Grid>("SimpleModePanel");
             SimpleQueueList = this.FindControl<ListBox>("SimpleQueueList");
@@ -822,11 +837,68 @@ namespace FfmpegGui
                 };
             }
 
-            // 进度刷新定时器（每秒更新一次）
+            // DNG JXL 质量滑块与输入框双向同步（RAW 模式）
+            if (DngJxlQualitySlider != null)
+                DngJxlQualitySlider.PropertyChanged += (_, e) =>
+                {
+                    if (e.Property.Name == nameof(Slider.Value) && !_updatingQuality)
+                    {
+                        _updatingQuality = true;
+                        if (DngJxlQualityBox != null)
+                            DngJxlQualityBox.Text = ((int)DngJxlQualitySlider.Value).ToString();
+                        _updatingQuality = false;
+                    }
+                };
+            if (DngJxlQualityBox != null)
+            {
+                DngJxlQualityBox.TextChanged += (_, _) =>
+                {
+                    if (_updatingQuality) return;
+                    if (int.TryParse(DngJxlQualityBox.Text, out var q) && DngJxlQualitySlider != null)
+                    {
+                        _updatingQuality = true;
+                        DngJxlQualitySlider.Value = Math.Clamp(q, 0, 100);
+                        _updatingQuality = false;
+                    }
+                };
+                DngJxlQualityBox.LostFocus += (_, _) =>
+                {
+                    if (DngJxlQualitySlider != null)
+                    {
+                        var v = (int)DngJxlQualitySlider.Value;
+                        DngJxlQualityBox.Text = v.ToString();
+                        if (DngCompressionCombo != null)
+                            DngJxlQualityPanel.IsVisible = DngCompressionCombo.SelectedIndex == 1;
+                    }
+                    RegenerateCommand();
+                };
+            }
+
+            // RAW 引擎状态提示（dngtool）
+            try
+            {
+                RawService.ClearCache();
+                var rawOk = RawService.Detect();
+                if (RawEngineStatus != null)
+                {
+                    RawEngineStatus.Text = rawOk
+                        ? $"✅ dngtool 引擎: {Path.GetFileName(RawService.DetectedPath)} (支持 DNG 1.7 JXL 解码/编码)"
+                        : "❌ 未检测到 dngtool — 请放入 PLAN/artifacts/ 目录";
+                }
+                if (DngCompressionCombo != null)
+                    DngCompressionCombo.IsEnabled = rawOk && RawService.IsDngTool;
+            }
+            catch { }
+
+            // 进度刷新定时器（每秒更新一次：完整模式 + 简洁模式）
             var progressTimer = new System.Timers.Timer(1000);
             progressTimer.Elapsed += (_, _) =>
             {
-                Dispatcher.UIThread.Post(() => UpdateProgressDisplay());
+                Dispatcher.UIThread.Post(() =>
+                {
+                    UpdateProgressDisplay();
+                    RefreshSimpleProgressIfActive();
+                });
             };
             progressTimer.Start();
 
@@ -903,9 +975,9 @@ namespace FfmpegGui
                     Task.Run(() => { try { CjpegliService.ClearCache(); CjpegliService.Detect(); Log("[detect] cjpegli: " + (CjpegliService.IsAvailable ? "OK" : "未找到")); } catch { } }),
                     Task.Run(() => { try { DjxlService.ClearCache(); DjxlService.Detect(); } catch { } }),
                     Task.Run(() => { try { ExifToolService.Detect(); Log("[detect] exiftool: " + (ExifToolService.IsAvailable ? "OK" : "未找到")); } catch { } }),
-                    Task.Run(() => { try { UltrahdrService.ClearCache(); UltrahdrService.Detect(); } catch { } }),
+                    Task.Run(() => { try {  } catch { } }),
                     Task.Run(() => { try { JxrService.ClearCache(); JxrService.Detect(); } catch { } }),
-                    Task.Run(() => { try { RawService.ClearCache(); RawService.Detect(); Log("[detect] dcraw: " + (RawService.IsAvailable ? "OK" : "未找到")); } catch { } }),
+                    Task.Run(() => { try { RawService.ClearCache(); RawService.Detect(); Log("[detect] dngtool: " + (RawService.IsAvailable ? "OK" : "未找到")); } catch { } }),
                 };
                 await Task.WhenAll(detectTasks);
 
@@ -1023,7 +1095,7 @@ namespace FfmpegGui
         {
             try
             {
-                var formats = new[] { "jpg", "png", "webp", "avif", "tiff", "jxl", "jxr", "gif", "apng", "bmp" };
+                var formats = new[] { "jpg", "png", "webp", "avif", "tiff", "jxl", "jxr", "dng", "gif", "apng", "bmp" };
                 var ffmpegPath = AppSettingsService.Current.FfmpegPath;
 
                 foreach (var fmt in formats)
@@ -1092,6 +1164,22 @@ namespace FfmpegGui
 
             var backend = GetCurrentEncoderBackend();
             var encName = GetCurrentEncoderName();
+
+            // DNG 输出: dngtool 编码命令预览 (非 ffmpeg 管线)
+            if (fmt == "dng")
+            {
+                var dngOut = GetOutputPath(_inputPath, "dng");
+                var useJxl = DngCompressionCombo?.SelectedIndex == 1;
+                var jxlQ = ParseInt(DngJxlQualityBox?.Text, 0, 0, 100);
+                var cmd = useJxl
+                    ? $"dngtool -e -i \"{_inputPath}\" -O \"{dngOut}\" -jxl{(jxlQ > 0 ? $" -q {jxlQ}" : "")}"
+                    : $"dngtool -e -i \"{_inputPath}\" -O \"{dngOut}\" -lossless";
+                if (CommandText != null)
+                {
+                    CommandText.Text = "# RAW → DNG 编码 (dngtool, 支持 DNG 1.7 JXL)" + Environment.NewLine + cmd;
+                }
+                return;
+            }
 
             // JXL + 手动色彩空间 → 自动切 cjxl（ffmpeg libjxl 忽略 -color_primaries/-color_trc）
             if (fmt is "jxl" && backend != EncoderBackend.Cjxl
@@ -1177,40 +1265,6 @@ namespace FfmpegGui
                 if (CommandText != null)
                     CommandText.Text = cmd.ToString();
 
-                return;
-            }
-
-            // ── Gain Map (Ultra HDR) JPEG：RAW + cjpegli SDR 基础图 → ultrahdr_app ──
-            if (backend == EncoderBackend.Ultrahdr && fmt is "jpg" or "jpeg")
-            {
-                var qualityVal = (int)(QualitySlider?.Value ?? 90);
-                var gmq = ParseGainMapQuality();
-                var nits = ParseGainMapNits();
-                var hasCjpegli = CjpegliService.IsAvailable;
-                var cmd = new System.Text.StringBuilder();
-                cmd.Append("[两步法] ffmpeg → p010 RAW");
-                if (hasCjpegli) cmd.Append(" + cjpegli SDR 优化");
-                cmd.Append(" → ultrahdr_app -q ").Append(qualityVal).Append(" -L ").Append(nits);
-                if (gmq >= 0) cmd.Append(" -Q ").Append(gmq);
-                cmd.Append(" -z \"").Append(outputPath).Append("\"");
-                if (CommandText != null)
-                    CommandText.Text = cmd.ToString();
-                return;
-            }
-
-            if (backend == EncoderBackend.Ultrahdr)
-            {
-                var qualityVal = (int)(QualitySlider?.Value ?? 90);
-                var gmq = useAdvCodec ? ParseGainMapQuality() : -1;
-                var nits = useAdvCodec ? ParseGainMapNits() : 1000;
-                var cmd = new System.Text.StringBuilder();
-                cmd.Append("ultrahdr_app -m 0 -p \"<raw>\" -w <W> -h <H> -q ")
-                   .Append(qualityVal).Append(" -a 0");
-                if (gmq >= 0) cmd.Append(" -Q ").Append(gmq);
-                if (nits > 0) cmd.Append(" -L ").Append(nits);
-                cmd.Append(" -z \"").Append(outputPath).Append("\"");
-                if (CommandText != null)
-                    CommandText.Text = cmd.ToString();
                 return;
             }
 
@@ -1301,7 +1355,7 @@ namespace FfmpegGui
                 JpegHuffman = useAdvCodec ? (JpegHuffmanCombo?.SelectedItem as string) : "optimal",
                 JpegDct = useAdvCodec ? (JpegDctCombo?.SelectedItem as string is "auto" ? null : JpegDctCombo?.SelectedItem as string) : null,
                 JpegProgressiveId = useAdvCodec ? ParseJpegProgressiveId() : 0,
-                JpegGainMap = (GetCurrentEncoderBackend() == EncoderBackend.Ultrahdr),
+                JpegGainMap = (GetCurrentEncoderBackend() == EncoderBackend.Cjpegli),
                 JpegGainMapQuality = ParseGainMapQuality(),
                 JpegGainMapTargetNits = ParseGainMapNits(),
                 JpegGainMapHdrCf = ParseGainMapHdrCf(),
@@ -1475,6 +1529,13 @@ namespace FfmpegGui
                 ElapsedLabel.Text = "";
             }
 
+            // 刷新进行中队列项的实时耗时显示（DurationText 每秒更新）
+            foreach (var qi in _queueItems)
+            {
+                if (qi.StartedAt.HasValue && !qi.CompletedAt.HasValue)
+                    qi.RefreshDuration();
+            }
+
             // 剩余预估：基于已完成任务的平均耗时
             if (QueueEtaLabel != null)
             {
@@ -1543,14 +1604,18 @@ namespace FfmpegGui
         }
 
         /// <summary>
-        /// 获取当前模式下的允许文件扩展名。动图模式下包含视频格式。
+        /// 获取当前模式下的允许文件扩展名。
+        /// 静态模式=启用图片扩展名; 动图模式=图片+视频; RAW 模式=RAW 相机文件。
         /// </summary>
         private string[] GetEnabledExtensionsForCurrentMode()
         {
-            var isAnimation = ConversionModeCombo?.SelectedIndex == 1;
-            return isAnimation
-                ? AppSettingsService.Current.GetEnabledExtensionsIncludingVideo()
-                : AppSettingsService.Current.GetEnabledExtensions();
+            var mode = ConversionModeCombo?.SelectedIndex ?? 0;
+            return mode switch
+            {
+                1 => AppSettingsService.Current.GetEnabledExtensionsIncludingVideo(),
+                2 => RawService.RawExtensions.ToArray(),
+                _ => AppSettingsService.Current.GetEnabledExtensions()
+            };
         }
 
         private void ConversionMode_SelectionChanged(object? sender, SelectionChangedEventArgs e)
@@ -1558,8 +1623,15 @@ namespace FfmpegGui
             if (FormatCombo == null || ConversionModeCombo == null) return;
 
             var previousFormat = FormatCombo.SelectedItem as string ?? "";
-            var isAnimated = ConversionModeCombo.SelectedIndex == 1;
-            var targetFormats = isAnimated ? AnimatedFormats : StillFormats;
+            var mode = ConversionModeCombo.SelectedIndex;
+            var isAnimated = mode == 1;
+            var isRaw = mode == 2;
+            var targetFormats = mode switch
+            {
+                1 => AnimatedFormats,
+                2 => new[] { "DNG" },
+                _ => StillFormats
+            };
 
             // 动图模式：控制面板可见性
             if (AnimationPanel != null)
@@ -1567,6 +1639,9 @@ namespace FfmpegGui
             // 视频时长控制仅在动图模式下显示
             if (AnimationDurationPanel != null)
                 AnimationDurationPanel.IsVisible = isAnimated;
+            // RAW 模式专属面板
+            if (RawPanel != null)
+                RawPanel.IsVisible = isRaw;
 
             // 更新 FormatCombo 选项列表
             FormatCombo.Items!.Clear();
@@ -1586,6 +1661,28 @@ namespace FfmpegGui
                 UpdateOptionAvailability();
                 _ = RefreshEncoderListAsync();
             }
+
+            // RAW 模式下压缩/质量由 DNG 面板控制，禁用/隐藏主面板的相关选项（须在 UpdateOptionAvailability 之后覆盖）
+            if (LosslessCheck != null) LosslessCheck.IsVisible = !isRaw;
+            if (QualitySlider != null) QualitySlider.IsEnabled = !isRaw;
+            if (QualityBox != null) QualityBox.IsEnabled = !isRaw;
+            if (BitDepthCombo != null) BitDepthCombo.IsEnabled = !isRaw;
+            if (UseAdvancedColor != null)
+            {
+                UseAdvancedColor.IsEnabled = !isRaw;
+                if (AdvancedColorPanel != null)
+                    AdvancedColorPanel.IsVisible = !isRaw && (UseAdvancedColor.IsChecked ?? false);
+            }
+
+            RegenerateCommand();
+        }
+
+        /// <summary>DNG 压缩方式切换: 显示/隐藏 JXL 质量面板</summary>
+        private void DngCompression_SelectionChanged(object? sender, SelectionChangedEventArgs e)
+        {
+            if (DngJxlQualityPanel != null)
+                DngJxlQualityPanel.IsVisible = DngCompressionCombo?.SelectedIndex == 1;
+            RegenerateCommand();
         }
 
         private async Task RefreshEncoderListAsync()
@@ -1915,21 +2012,13 @@ namespace FfmpegGui
                     if (backend == EncoderBackend.Cjpegli)
                     {
                         if (JpegliCodecPanel != null) JpegliCodecPanel.IsVisible = true;
-                        if (JpegGainMapPanel != null) JpegGainMapPanel.IsVisible = false;
-                    }
-                    else if (backend == EncoderBackend.Ultrahdr)
-                    {
-                        // ultrahdr 后端：显示 Gain Map 面板 + 基础 JPEG 选项，隐藏 FFmpeg JPEG 面板
-                        if (JpegCodecPanel != null) JpegCodecPanel.IsVisible = true;
-                        if (JpegliCodecPanel != null) JpegliCodecPanel.IsVisible = false;
+                        // Gain Map (纯 C# GainMapEncoder) 需要 cjpegli，选择 cjpegli 时显示
                         if (JpegGainMapPanel != null) JpegGainMapPanel.IsVisible = true;
                     }
                     else
                     {
                         if (JpegCodecPanel != null) JpegCodecPanel.IsVisible = true;
-                        // Gain Map 仅 libultrahdr 编码器可用时显示
-                        if (JpegGainMapPanel != null)
-                            JpegGainMapPanel.IsVisible = EncoderDetectionService.IsLibultrahdrAvailable;
+                        if (JpegGainMapPanel != null) JpegGainMapPanel.IsVisible = false;
                     }
                     break;
                 case "tiff": if (TiffCodecPanel != null) TiffCodecPanel.IsVisible = true; break;
@@ -2102,14 +2191,25 @@ namespace FfmpegGui
             var topLevel = TopLevel.GetTopLevel(this);
             if (topLevel?.StorageProvider == null) return;
 
-            var isAnimationMode = ConversionModeCombo?.SelectedIndex == 1;
+            var mode = ConversionModeCombo?.SelectedIndex ?? 0;
+            var isAnimationMode = mode == 1;
+            var isRawMode = mode == 2;
             var files = await topLevel.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
             {
-                Title = isAnimationMode ? "选择图片或视频文件" : "选择图片文件",
+                Title = isAnimationMode ? "选择图片或视频文件" : isRawMode ? "选择 RAW 相机文件" : "选择图片文件",
                 AllowMultiple = false,
                 FileTypeFilter = isAnimationMode
                     ? AppSettingsService.Current.GetAnimationFilePickerFilter()
-                    : AppSettingsService.Current.GetImageFilePickerFilter()
+                    : isRawMode
+                        ? new[]
+                        {
+                            new Avalonia.Platform.Storage.FilePickerFileType("RAW 相机文件")
+                            {
+                                Patterns = RawService.RawExtensions.Select(ext => "*" + ext).ToArray()
+                            },
+                            new Avalonia.Platform.Storage.FilePickerFileType("所有文件") { Patterns = new[] { "*" } }
+                        }
+                        : AppSettingsService.Current.GetImageFilePickerFilter()
             });
 
             if (files != null && files.Count > 0)
@@ -2240,7 +2340,7 @@ namespace FfmpegGui
                 JpegHuffman = useAdvCodec ? (JpegHuffmanCombo?.SelectedItem as string) : "optimal",
                 JpegDct = useAdvCodec ? (JpegDctCombo?.SelectedItem as string is "auto" ? null : JpegDctCombo?.SelectedItem as string) : null,
                 JpegProgressiveId = useAdvCodec ? ParseJpegProgressiveId() : 0,
-                JpegGainMap = (encoderBackend == EncoderBackend.Ultrahdr),
+                JpegGainMap = (encoderBackend == EncoderBackend.Cjpegli),
                 JpegGainMapQuality = ParseGainMapQuality(),
                 JpegGainMapTargetNits = ParseGainMapNits(),
                 JpegGainMapHdrCf = ParseGainMapHdrCf(),
@@ -2266,6 +2366,16 @@ namespace FfmpegGui
                 AnimationScaleW = ParseOptionalInt(AnimationScaleWBox?.Text, 0, 4096) ?? 0,
                 AnimationDuration = ParseOptionalDouble(AnimationDurationBox?.Text, 0.1, 3600) ?? 0
             };
+
+            // RAW 模式: DNG 压缩设置 → JxlModular/Lossless/Quality (QueueProcessor.ProcessDngAsync 读取)
+            if ((ConversionModeCombo?.SelectedIndex ?? 0) == 2 && DngCompressionCombo != null)
+            {
+                var useJxl = DngCompressionCombo.SelectedIndex == 1;
+                var jxlQ = ParseInt(DngJxlQualityBox?.Text, 0, 0, 100);
+                options.JxlModular = useJxl;
+                options.Lossless = !useJxl || jxlQ <= 0;
+                options.Quality = useJxl ? Math.Max(jxlQ, 0) : options.Quality;
+            }
 
             // Gain Map 模式下使用 JpegProgressiveId，默认 Baseline
             if (options.JpegGainMap)
@@ -2374,9 +2484,11 @@ namespace FfmpegGui
                     }
                 }
                 // Status 变更由 INotifyPropertyChanged + DataTemplate 绑定自动反映到 UI
-                // 若"仅显示报错"模式开启，刷新过滤
+                // 若"仅显示报错"模式开启，刷新过滤（完整模式 + 简洁模式）
                 if (ShowErrorsOnlyCheck?.IsChecked == true)
                     ApplyErrorOnlyFilter();
+                if (SimpleErrorsOnlyCheck?.IsChecked == true)
+                    RefreshSimpleErrorFilter();
             });
         }
 
@@ -2471,6 +2583,16 @@ namespace FfmpegGui
             var fmt = (item.Options.Format ?? "").ToLowerInvariant();
             var inputExt = Path.GetExtension(item.InputPath).ToLowerInvariant();
 
+            // ── DNG 输出 (dngtool 编码) ──
+            if (fmt == "dng")
+            {
+                var useJxl = item.Options.JxlModular == true;
+                var jxlQ = useJxl && !item.Options.Lossless ? Math.Clamp(item.Options.Quality, 1, 100) : 0;
+                return useJxl
+                    ? $"dngtool -e -i \"{item.InputPath}\" -O \"{item.OutputPath}\" -jxl{(jxlQ > 0 ? $" -q {jxlQ}" : "")}"
+                    : $"dngtool -e -i \"{item.InputPath}\" -O \"{item.OutputPath}\" -lossless";
+            }
+
             // ── GIF → AVIF（avifenc 两步法）──
             if (inputExt == ".gif" && fmt == "avif")
             {
@@ -2495,15 +2617,14 @@ namespace FfmpegGui
                 return "cjxl " + CjxlService.BuildCjxlArguments(item.InputPath, item.OutputPath, item.Options);
             }
 
-            // ── Gain Map (Ultra HDR) JPEG：RAW + cjpegli SDR → ultrahdr_app ──
+            // ── Gain Map (Ultra HDR) JPEG：纯 C# GainMapEncoder + cjpegli ──
             if (item.Options.JpegGainMap && (fmt == "jpg" || fmt == "jpeg"))
             {
                 var q = item.Options.Quality;
                 var nits = item.Options.JpegGainMapTargetNits;
                 var gmq = item.Options.JpegGainMapQuality;
-                var cj = CjpegliService.IsAvailable ? " + cjpegli SDR 优化" : "";
-                return $"[两步法] ffmpeg → p010 RAW{cj} → ultrahdr_app -q {q} -L {nits}" +
-                    (gmq >= 0 ? $" -Q {gmq}" : "") + $" -z \"{item.OutputPath}\"";
+                var cj = CjpegliService.IsAvailable ? " + cjpegli" : "";
+                return $"[纯托管] GainMapEncoder 色调映射{cj} + 增益图打包 (峰值 {nits}nits, q={q})";
             }
 
             // ── cjpegli 后端 ──
@@ -3205,7 +3326,7 @@ namespace FfmpegGui
                 JpegHuffman = useAdvCodec ? (JpegHuffmanCombo?.SelectedItem as string) : "optimal",
                 JpegDct = useAdvCodec ? (JpegDctCombo?.SelectedItem as string is "auto" ? null : JpegDctCombo?.SelectedItem as string) : null,
                 JpegProgressiveId = useAdvCodec ? ParseJpegProgressiveId() : 0,
-                JpegGainMap = (GetCurrentEncoderBackend() == EncoderBackend.Ultrahdr),
+                JpegGainMap = (GetCurrentEncoderBackend() == EncoderBackend.Cjpegli),
                 JpegGainMapQuality = ParseGainMapQuality(),
                 JpegGainMapTargetNits = ParseGainMapNits(),
                 JpegGainMapHdrCf = ParseGainMapHdrCf(),
@@ -3418,14 +3539,15 @@ namespace FfmpegGui
             // 同步预设选择
             SyncPresetToSimpleMode();
 
-            // 设置拖放支持
-            if (SimpleDropZone != null)
+            // 设置拖放支持（仅注册一次，重复进入简洁模式不会重复 AddHandler）
+            if (SimpleDropZone != null && !_simpleDropHandlersAttached)
             {
                 DragDrop.SetAllowDrop(SimpleDropZone, true);
                 SimpleDropZone.AddHandler(DragDrop.DragEnterEvent, SimpleDragEnter);
                 SimpleDropZone.AddHandler(DragDrop.DragLeaveEvent, SimpleDragLeave);
                 SimpleDropZone.AddHandler(DragDrop.DragOverEvent, SimpleDragOver);
                 SimpleDropZone.AddHandler(DragDrop.DropEvent, SimpleDrop);
+                _simpleDropHandlersAttached = true;
             }
 
             // 更新计数
@@ -3452,6 +3574,10 @@ namespace FfmpegGui
                 UpdateMediaFileCount();
             }
 
+            // 防止重复转换：简洁模式下文件已自动入队，提示用户不要再次点击"添加到队列"
+            if (_simpleMediaFiles.Count > 0 && LogText != null)
+                LogText.Text += "[简洁模式] 已选文件已同步到主界面（这些文件已在转换队列中，请勿重复添加，否则会重复转换）\n";
+
             // 如果自动编码在运行，日志提示
             if (_autoEncodeTimer != null && _autoEncodeTimer.Enabled)
             {
@@ -3462,9 +3588,18 @@ namespace FfmpegGui
 
         private void SimpleStartQueue_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
         {
+            // 运行中再次点击会重启队列并中断当前任务，需要保护
+            if (_queueProcessor.IsRunning)
+            {
+                if (LogText != null)
+                    LogText.Text += "[简洁模式] 队列已在运行中，如需重启请先停止\n";
+                return;
+            }
+
             int concurrency = GetConcurrencyValue();
             _queueProcessor.RequeueStoppedAndFailed(_queueItems);
             _queueProcessor.Start(concurrency);
+            _isQueueRunning = true;
 
             if (LogText != null)
                 LogText.Text += "[简洁模式] 队列已启动\n";
@@ -3475,6 +3610,7 @@ namespace FfmpegGui
         private void SimpleStopQueue_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
         {
             _queueProcessor.Stop();
+            _isQueueRunning = false;
 
             if (LogText != null)
                 LogText.Text += "[简洁模式] 队列已停止\n";
@@ -3675,15 +3811,18 @@ namespace FfmpegGui
             bool showErrorsOnly = (sender as CheckBox)?.IsChecked == true;
 
             if (showErrorsOnly)
-            {
-                var filtered = new ObservableCollection<Models.QueueItem>(
-                    _queueView.Where(i => i.HasError || !i.IsCompleted));
-                SimpleQueueList.ItemsSource = filtered;
-            }
+                RefreshSimpleErrorFilter();
             else
-            {
                 SimpleQueueList.ItemsSource = _queueView;
-            }
+        }
+
+        /// <summary>重建简洁模式"仅显示报错"过滤集合（队列状态变化时由 OnQueueItemUpdated 调用）</summary>
+        private void RefreshSimpleErrorFilter()
+        {
+            if (SimpleQueueList == null) return;
+            var filtered = new ObservableCollection<Models.QueueItem>(
+                _queueView.Where(i => i.HasError || !i.IsCompleted));
+            SimpleQueueList.ItemsSource = filtered;
         }
 
         private void SimpleViewDetail_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
@@ -3748,6 +3887,8 @@ namespace FfmpegGui
 
         private void CheckAutoEncode()
         {
+            // 自动编码仅限简洁模式（含从简洁模式返回后 timer 仍在运行的场景，
+            // _simpleModeActive=false 时静默跳过，避免在完整模式误启动队列）
             if (!_simpleModeActive) return;
             if (_queueProcessor.IsRunning) return;
 
@@ -3801,8 +3942,9 @@ namespace FfmpegGui
                 {
                     "Cjpegli" => Services.EncoderBackend.Cjpegli,
                     "Cjxl" => Services.EncoderBackend.Cjxl,
-                    "Ultrahdr" => Services.EncoderBackend.Ultrahdr,
+                    
                     "Jxr" => Services.EncoderBackend.Jxr,
+                    "Dng" => Services.EncoderBackend.Dng,
                     _ => Services.EncoderBackend.Ffmpeg
                 },
                 Threads = data.AutoThreads ? FfmpegOptions.ComputeAutoThreads() :
@@ -3845,6 +3987,16 @@ namespace FfmpegGui
                 StripExifAll = data.StripExifAll,
                 StripXmp = data.StripXmp,
                 AppendPngExtension = data.AppendPngExtension,
+                // ── ICC 色彩管理（此前缺失，导致简洁模式预设 ICC 设置被静默丢弃）──
+                IccMode = data.IccMode switch
+                {
+                    "CarryIcc" => Models.IccMode.CarryIcc,
+                    "BakeToStandard" => Models.IccMode.BakeToStandard,
+                    "BakeOnly" => Models.IccMode.BakeOnly,
+                    _ => Models.IccMode.None
+                },
+                IccSourceColorSpace = data.IccSourceColorSpace,
+                IccTargetColorSpace = data.IccTargetColorSpace,
                 AnimationFps = data.AnimationFps,
                 AnimationLoop = data.AnimationLoop,
                 GifPaletteOptimize = data.GifPaletteOptimize,
@@ -3866,19 +4018,54 @@ namespace FfmpegGui
             };
         }
 
-        /// <summary>更新简洁模式底部状态栏</summary>
+        /// <summary>更新简洁模式底部状态栏（进度 + 已用时间 + 预计剩余）</summary>
         private void UpdateSimpleProgressDisplay()
         {
             if (!_simpleModeActive) return;
 
-            var completed = _queueItems.Count(i => i.CompletedAt.HasValue || i.IsCompleted);
             var total = _queueItems.Count;
+            var completed = _queueItems.Count(i => i.CompletedAt.HasValue || i.Status == "已删除");
             var processing = _queueItems.Count(i => i.Status == "处理中");
 
             if (SimpleProgressLabel != null)
                 SimpleProgressLabel.Text = $"队列: {completed}/{total}";
             if (SimpleStatusLabel != null && !_queueProcessor.IsRunning)
                 SimpleStatusLabel.Text = total > 0 ? "就绪" : "队列为空";
+
+            // 已用时间：当前处理中任务（与完整模式同口径）
+            var cur = _queueItems.FirstOrDefault(i => i.Status == "处理中" && i.StartedAt.HasValue);
+            if (cur != null && SimpleElapsedLabel != null)
+            {
+                var elapsed = DateTimeOffset.UtcNow - cur.StartedAt!.Value;
+                SimpleElapsedLabel.Text = elapsed.TotalMinutes >= 1
+                    ? $"已用: {elapsed.TotalMinutes:F1}m"
+                    : $"已用: {elapsed.TotalSeconds:F0}s";
+            }
+            else if (SimpleElapsedLabel != null)
+            {
+                SimpleElapsedLabel.Text = "";
+            }
+
+            // 预计剩余：基于已完成任务的平均耗时（与完整模式同口径）
+            if (SimpleEtaLabel != null)
+            {
+                var finishedItems = _queueItems.Where(i => i.StartedAt.HasValue && i.CompletedAt.HasValue).ToList();
+                if (finishedItems.Count > 0 && total > completed)
+                {
+                    var avgSec = finishedItems.Average(i => (i.CompletedAt!.Value - i.StartedAt!.Value).TotalSeconds);
+                    var etaSec = avgSec * (total - completed);
+                    if (etaSec >= 3600)
+                        SimpleEtaLabel.Text = $"预计剩余: {etaSec / 3600:F1}h";
+                    else if (etaSec >= 60)
+                        SimpleEtaLabel.Text = $"预计剩余: {etaSec / 60:F1}m";
+                    else
+                        SimpleEtaLabel.Text = $"预计剩余: {etaSec:F0}s";
+                }
+                else
+                {
+                    SimpleEtaLabel.Text = "";
+                }
+            }
         }
 
         /// <summary>更新简洁模式双列表计数标签</summary>
@@ -3890,7 +4077,7 @@ namespace FfmpegGui
                 SimpleQueueCount.Text = $"{_queueView.Count} 项";
         }
 
-        // 暴露给简洁模式进度刷新的公开入口（由 timer 调用）
+        // 暴露给简洁模式进度刷新的公开入口（由每秒定时器调用）
         private void RefreshSimpleProgressIfActive()
         {
             if (_simpleModeActive)
@@ -4008,7 +4195,7 @@ namespace FfmpegGui
             var topLevel = TopLevel.GetTopLevel(this);
             if (topLevel?.StorageProvider == null) return;
             var folders = await topLevel.StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
-            { Title = "选择 Windows 构建产物目录 (ultrahdr/Jxr/avifenc/...)", AllowMultiple = false });
+            { Title = "选择 Windows 构建产物目录 (Jxr/avifenc/dngtool/...)", AllowMultiple = false });
             if (folders == null || folders.Count == 0) return;
             var dir = folders[0].Path.LocalPath;
             AppSettingsService.Current.WindowsArtifactsDir = dir;
@@ -4103,7 +4290,7 @@ namespace FfmpegGui
 
         private void RefreshArtifactsServices()
         {
-            UltrahdrService.ClearCache(); UltrahdrService.Detect();
+            
             JxrService.ClearCache(); JxrService.Detect();
             RawService.ClearCache(); RawService.Detect();
         }
@@ -4123,9 +4310,9 @@ namespace FfmpegGui
         {
             if (LogText == null) return;
             var found = new List<string>();
-            if (File.Exists(Path.Combine(dir, PlatformServices.Ultrahdr))) found.Add("ultrahdr");
             if (File.Exists(Path.Combine(dir, PlatformServices.JxrEnc))) found.Add("JxrEnc");
             if (File.Exists(Path.Combine(dir, PlatformServices.Avifenc))) found.Add("avifenc");
+            if (File.Exists(Path.Combine(dir, PlatformServices.DngToolName))) found.Add("dngtool");
             LogText.Text += $"[artifacts] 目录扫描: {(found.Count > 0 ? string.Join(", ", found) : "未检测到")}\n";
             RefreshToolsStatusBar();
         }
@@ -4204,9 +4391,9 @@ namespace FfmpegGui
                 AddToolStatus(ExifToolService.IsAvailable, "exiftool");
                 AddSeparator();
                 // artifacts 类
-                AddToolStatus(UltrahdrService.IsAvailable, "ultrahdr");
                 AddToolStatus(JxrService.IsAvailable, "jxr");
                 AddToolStatus(HasAvifencAvailable(), "avifenc");
+                AddToolStatus(RawService.IsAvailable, "dngtool");
             }
 
             // ── 展开态：3 列详细状态 ──
@@ -4222,10 +4409,9 @@ namespace FfmpegGui
             });
             PopulateCategoryTools(ArtifactsToolsStatus, new[]
             {
-                ("ultrahdr", UltrahdrService.IsAvailable),
                 ("jxr", JxrService.IsAvailable),
                 ("avifenc", HasAvifencAvailable()),
-                ("dcraw", RawService.IsAvailable),
+                ("dngtool", RawService.IsAvailable),
             });
 
             // 检测完成后显示紧凑状态栏
@@ -4554,7 +4740,7 @@ namespace FfmpegGui
                 // ── 编码器后端 ──
                 EncoderBackend = GetCurrentEncoderBackend().ToString(),
                 // ── Gain Map ──
-                JpegGainMap = GetCurrentEncoderBackend() == Services.EncoderBackend.Ultrahdr,
+                JpegGainMap = GetCurrentEncoderBackend() == Services.EncoderBackend.Cjpegli,
                 JpegGainMapQuality = ParseGainMapQuality(),
                 JpegGainMapTargetNits = ParseGainMapNits(),
                 // ── WebP 无损压缩级别 ──

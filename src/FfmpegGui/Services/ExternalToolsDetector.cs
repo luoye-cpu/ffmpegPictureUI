@@ -408,7 +408,6 @@ namespace FfmpegGui.Services
             CjxlService.Detect();
             DjxlService.Detect();
             CjpegliService.Detect();
-            UltrahdrService.Detect();
             JxrService.Detect();
             ExifToolService.Detect();
             RawService.Detect();
@@ -467,16 +466,6 @@ namespace FfmpegGui.Services
                 IsAvailable = ExifToolService.IsAvailable
             });
 
-            // ultrahdr
-            var uhdr = UltrahdrService.DetectedPath;
-            results.Add(new ToolCapability
-            {
-                Name = "ultrahdr_app",
-                Path = uhdr,
-                Version = ProbeUltrahdrVersion(uhdr),
-                IsAvailable = UltrahdrService.IsAvailable
-            });
-
             // JxrEncApp
             var jxr = JxrService.DetectedPath;
             results.Add(new ToolCapability
@@ -499,16 +488,16 @@ namespace FfmpegGui.Services
                 IsAvailable = File.Exists(avifenc)
             });
 
-            // dcraw — 多路径检测：手动路径 → artifacts 目录 → PLAN 文件夹
-            var dcraw = AppSettingsService.Current.DcrawPath;
-            if (string.IsNullOrWhiteSpace(dcraw) || !File.Exists(dcraw))
-                dcraw = FindInArtifactsOrPlan(PlatformServices.DcrawName);
+            // dngtool — DNG 1.7 JXL 解码/编码 (LibRaw + Adobe DNG SDK)
+            var dngtool = AppSettingsService.Current.DngToolPath;
+            if (string.IsNullOrWhiteSpace(dngtool) || !File.Exists(dngtool))
+                dngtool = FindInArtifactsOrPlan(PlatformServices.DngToolName);
             results.Add(new ToolCapability
             {
-                Name = "dcraw",
-                Path = File.Exists(dcraw) ? dcraw : null,
-                Version = ProbeAndVersion(dcraw),
-                IsAvailable = File.Exists(dcraw)
+                Name = "dngtool",
+                Path = File.Exists(dngtool) ? dngtool : null,
+                Version = ProbeAndVersion(dngtool),
+                IsAvailable = File.Exists(dngtool)
             });
 
             return results;
@@ -568,29 +557,6 @@ namespace FfmpegGui.Services
                 var err = p.StandardError.ReadToEnd();
                 p.WaitForExit(2000);
                 return ExtractVersionFromOutput(err);
-            }
-            catch { return null; }
-        }
-
-        /// <summary>ultrahdr_app 版本在 stdout 中 "lib version: vX.Y.Z"</summary>
-        private static string? ProbeUltrahdrVersion(string? path)
-        {
-            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return null;
-            try
-            {
-                var psi = new ProcessStartInfo
-                {
-                    FileName = path, Arguments = "-h",
-                    RedirectStandardOutput = true, RedirectStandardError = true,
-                    UseShellExecute = false, CreateNoWindow = true
-                };
-                using var p = Process.Start(psi);
-                if (p == null) return null;
-                var output = p.StandardOutput.ReadToEnd() + p.StandardError.ReadToEnd();
-                p.WaitForExit(2000);
-                // "lib version: v1.4.0"
-                var m = Regex.Match(output, @"lib version:\s*v?([\d.]+)");
-                return m.Success ? m.Groups[1].Value : ExtractVersionFromOutput(output);
             }
             catch { return null; }
         }

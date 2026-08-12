@@ -60,11 +60,64 @@ namespace FfmpegGui.Models
             Log += text;
         }
         public DateTimeOffset AddedAt { get; set; } = DateTimeOffset.UtcNow;
+
+        private DateTimeOffset? _startedAt;
         /// <summary>任务开始处理的时间</summary>
-        public DateTimeOffset? StartedAt { get; set; }
+        public DateTimeOffset? StartedAt
+        {
+            get => _startedAt;
+            set
+            {
+                if (_startedAt != value)
+                {
+                    _startedAt = value;
+                    OnPropertyChanged(nameof(StartedAt));
+                    OnPropertyChanged(nameof(DurationText));
+                }
+            }
+        }
+
+        private DateTimeOffset? _completedAt;
         /// <summary>任务完成的时间</summary>
-        public DateTimeOffset? CompletedAt { get; set; }
+        public DateTimeOffset? CompletedAt
+        {
+            get => _completedAt;
+            set
+            {
+                if (_completedAt != value)
+                {
+                    _completedAt = value;
+                    OnPropertyChanged(nameof(CompletedAt));
+                    OnPropertyChanged(nameof(DurationText));
+                }
+            }
+        }
         public bool IsCancelled { get; set; } = false;
+
+        /// <summary>耗时显示文本（如 "⏱ 3.2s" / "⏱ 1m 23s"）。处理中显示实时计时（由 UI 定时器每秒刷新）。</summary>
+        public string DurationText
+        {
+            get
+            {
+                if (!StartedAt.HasValue) return string.Empty;
+                var end = CompletedAt ?? DateTimeOffset.UtcNow;
+                var d = end - StartedAt.Value;
+                if (d < TimeSpan.Zero) d = TimeSpan.Zero;
+                return "⏱ " + FormatDuration(d);
+            }
+        }
+
+        /// <summary>刷新耗时显示（处理中实时计时，由 UI 定时器每秒调用）</summary>
+        public void RefreshDuration() => OnPropertyChanged(nameof(DurationText));
+
+        /// <summary>将耗时格式化为人类可读文本（&lt;1s / 3.2s / 1m 23s / 2h 5m 10s）</summary>
+        private static string FormatDuration(TimeSpan d)
+        {
+            if (d.TotalSeconds < 1) return "<1s";
+            if (d.TotalMinutes < 1) return $"{d.TotalSeconds:F1}s";
+            if (d.TotalHours < 1) return $"{d.TotalMinutes:F0}m {d.Seconds}s";
+            return $"{d.TotalHours:F0}h {d.Minutes}m {d.Seconds}s";
+        }
 
         /// <summary>队列列表显示文本</summary>
         public string DisplayText => $"{Path.GetFileName(InputPath)} — {Status}";

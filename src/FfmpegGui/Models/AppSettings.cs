@@ -21,8 +21,8 @@ namespace FfmpegGui.Models
         /// <summary>Windows 构建产物目录（含 ultrahdr/JxrEncApp/avifenc，留空则自动检测）</summary>
         public string? WindowsArtifactsDir { get; set; }
 
-        /// <summary>dcraw 可执行文件路径（RAW 预处理，留空则自动检测）</summary>
-        public string? DcrawPath { get; set; }
+        /// <summary>dngtool 可执行文件路径（LibRaw + DNG SDK，支持 DNG 1.7 JXL，留空则自动检测）</summary>
+        public string? DngToolPath { get; set; }
 
         // ═══════════════════════════════════════════
         // 旧字段（保留以兼容旧配置文件自动迁移）
@@ -115,7 +115,7 @@ namespace FfmpegGui.Models
             ["DNG"]  = new[] { ".dng" },
             ["BMP"]  = new[] { ".bmp" },
             ["GIF"]  = new[] { ".gif" },
-            // ── 相机 RAW 格式 (输入专属，需 dcraw 预处理) ──
+            // ── 相机 RAW 格式 (输入专属，需 dngtool 预处理) ──
             ["📷 RAW-Canon"]    = new[] { ".cr2", ".cr3", ".crw" },
             ["📷 RAW-Nikon"]    = new[] { ".nef", ".nrw" },
             ["📷 RAW-Sony"]     = new[] { ".arw", ".srf", ".sr2" },

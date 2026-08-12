@@ -17,7 +17,8 @@ namespace FfmpegGui.Services
             var fmt0 = options.Format.ToLower();
             // PNG/TIFF/APNG 是 RGB 原生格式，-colorspace（YUV 矩阵）会与其 cHRM 块冲突；
             // 但 -color_primaries/-color_trc 仍需保留以正确解释输入色彩空间。
-            var isRgbNativeFmt = fmt0 is "png" or "tiff" or "apng";
+            // JXL 同样为 RGB 原生（XYB 色彩空间），不应写 YUV 矩阵标签。
+            var isRgbNativeFmt = fmt0 is "png" or "tiff" or "apng" or "jxl";
             var (inputPrimaries, inputTrc, outputColorSpace) = BuildColorArgsSplit(options, inputPath);
             if (!string.IsNullOrWhiteSpace(inputPrimaries))
             {
@@ -115,8 +116,13 @@ namespace FfmpegGui.Services
                 var needsTonemap = NeedsHdrToSdrTonemap(options, inputPath, inputPrimaries, inputTrc);
                 if (needsTonemap && !isRgbNativeFmt)
                 {
-                    AppendVideoFilter(args,
-                        "zscale=t=linear:npl=10000,tonemap=hable:param=0.5,zscale=t=bt709:m=bt709:r=tv,format=yuv420p");
+                    // tonemap 滤镜内部自带色彩空间转换（HDR→linear→SDR），无需外部 zscale 链。
+                    // 原实现 zscale=t=linear→tonemap→zscale 存在两个问题：
+                    //   ① zscale (libzimg) 对 YUV 4:2:0 输入要求宽高可被子采样因子整除，
+                    //      奇数尺寸（如 1921x1081）报 code 1027。
+                    //   ② 中间 zscale 依赖帧色彩标签，无标签时报 3074 (no path between colorspaces)。
+                    // format=yuv444p 前缀：4:4:4 无子采样约束，任意尺寸可用；也避免 4:2:0 色度损失。
+                    AppendVideoFilter(args, "format=yuv444p,tonemap=hable:param=0.5");
                     skipHdrTonemap = true;
                 }
             }
@@ -155,7 +161,11 @@ namespace FfmpegGui.Services
                          || !string.Equals(srcT, dstT, StringComparison.OrdinalIgnoreCase))
                         && !(srcIsHdr && !dstIsHdr))
                     {
-                        var zscaleFilter = $"zscale=pin={srcP}:tin={srcT}:min={srcM}:p={dstP}:t={dstT}:m={dstM}";
+                        // format=rgb48le 前缀（RGB 域转换）：规避 libzimg 两个问题——
+                        //  ① 对 YUV 4:2:0 输入的尺寸整除要求（奇数尺寸 1027 错误）
+                        //  ② RGB 输入时无色彩标签导致的 3074 (no path between colorspaces)
+                        // RGB 域无子采样约束，任意尺寸可用；16-bit 精度避免色度损失。
+                        var zscaleFilter = $"format=rgb48le,zscale=pin={srcP}:tin={srcT}:min={srcM}:p={dstP}:t={dstT}:m={dstM}";
                         AppendVideoFilter(args, zscaleFilter);
 
                         // 更新输出矩阵标记（zscale 已转换像素，输出色彩空间为目标）
@@ -171,15 +181,8 @@ namespace FfmpegGui.Services
             {
                 case "jpg":
                 case "jpeg":
-                    // ── ultrahdr_app 外部工具路径（EncoderBackend.Ultrahdr）──
-                    // 不由 FFmpeg 处理，在 QueueProcessor.ProcessUltrahdrAsync 中调度
-                    if (options.EncoderBackend == Services.EncoderBackend.Ultrahdr)
-                    {
-                        // 不生成 FFmpeg 命令，由外部工具路径处理
-                        // 此处仍添加基本参数以确保 BuildArguments 输出非空
-                    }
                     // ── Gain Map (Ultra HDR) 模式：使用 libultrahdr 编码器参数 ──
-                    else if (options.JpegGainMap && options.Encoder == "libultrahdr")
+                    if (options.JpegGainMap && options.Encoder == "libultrahdr")
                     {
                         args.Add("-compression_q");
                         args.Add(options.Quality.ToString());
@@ -805,7 +808,9 @@ namespace FfmpegGui.Services
         {
             var fmt = options.Format.ToLower();
             var bd = options.BitDepth ?? 8; // null 理论不会到这里(外层已判断)，但兜底用 8
-            if (fmt == "png" || fmt == "tiff")
+            // PNG/TIFF/JXL 均为 RGB 原生格式：JXL 使用 XYB 色彩空间，libjxl 编码器接受 RGB 输入。
+            // 若喂入 yuv420p 会先做 YUV→RGB 转换（色度子采样损失）且奇宽奇高时 libjxl 拒绝。
+            if (fmt is "png" or "tiff" or "jxl")
             {
                 if (bd <= 8) return "rgb24";
                 return "rgb48le"; // 10/12/16 使用 48le 作为通用输出

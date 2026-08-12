@@ -77,6 +77,14 @@
 
   <!-- 多语言资源文件 -->
   <ItemGroup>
-    <Content Include="Resources\Locales\*.json" CopyToOutputDirectory="PreserveNewest" />
+    <!--
+      1) ExcludeFromSingleFile: PublishSingleFile 模式下默认会把 Content 嵌入 bundle，
+         导致发布目录 Resources/Locales/ 为空 → 运行时找不到语言文件（v1.5.1 发布包缺陷）。
+         排除后 json 将以物理文件形式随包输出，用户仍可自定义翻译。
+      2) EmbeddedResource: 同时将 json 编译进程序集，作为外部文件缺失时的最后保障。
+    -->
+    <Content Include="Resources\Locales\*.json" CopyToOutputDirectory="PreserveNewest"
+             CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
+    <EmbeddedResource Include="Resources\Locales\*.json" />
   </ItemGroup>
 </Project>

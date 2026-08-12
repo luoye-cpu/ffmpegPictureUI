@@ -29,12 +29,11 @@ public static class PlatformServices
     public static string Cjxl      => ToolName("cjxl");
     public static string Djxl      => ToolName("djxl");
     public static string Cjpegli   => ToolName("cjpegli");
-    public static string Ultrahdr  => ToolName("ultrahdr_app");
     public static string JxrEnc    => ToolName("JxrEncApp");
     public static string JxrDec    => ToolName("JxrDecApp");
     public static string Exiftool  => OperatingSystem.IsWindows() ? "exiftool.exe" : "exiftool";
     public static string Avifenc   => ToolName("avifenc");
-    public static string DcrawName => OperatingSystem.IsWindows() ? "dcraw.exe" : "dcraw";
+    public static string DngToolName => OperatingSystem.IsWindows() ? "dngtool.exe" : "dngtool";
 
     // ── 目录搜索模式（用于 Directory.EnumerateFiles）──
     public static string CjxlSearchWildcard    => OperatingSystem.IsWindows() ? "*cjxl*.exe"   : "*cjxl*";
@@ -161,11 +160,9 @@ public static class PlatformServices
         [Cjpegli] = new[] { Path.Combine("jxl", "bin"), "jxl" },
         [Exiftool] = new[] { "exiftool" },
         ["exiftool(-k).exe"] = new[] { "exiftool" },
-        [Ultrahdr] = new[] { "artifacts" },
         [JxrEnc]   = new[] { "artifacts" },
         [JxrDec]   = new[] { "artifacts" },
         [Avifenc]  = new[] { "artifacts" },
-        [DcrawName] = new[] { "artifacts" },
     };
 
     /// <summary>在 PLAN 文件夹的对应子目录中查找指定工具。未找到返回 null。</summary>
