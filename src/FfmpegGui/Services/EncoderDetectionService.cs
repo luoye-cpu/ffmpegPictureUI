@@ -15,8 +15,8 @@ namespace FfmpegGui.Services
         Ffmpeg,
         Cjpegli,   // 外部 cjpegli 工具
         Cjxl,      // 外部 cjxl 工具
-        Ultrahdr,  // 外部 ultrahdr_app 工具 (Gain Map / Ultra HDR)
-        Jxr        // 外部 JxrEncApp 工具 (JPEG XR)
+        Jxr,       // 外部 JxrEncApp 工具 (JPEG XR)
+        Dng        // 外部 dngtool 工具 (DNG 输出, LibRaw + DNG SDK)
     }
 
     public class EncoderInfo
@@ -68,7 +68,6 @@ namespace FfmpegGui.Services
                 {
                     EncoderBackend.Cjpegli => $"🔧 cjpegli — JPEG-LI (jpegli 库)",
                     EncoderBackend.Cjxl => $"🔧 cjxl — JPEG XL (参考实现)",
-                    EncoderBackend.Ultrahdr => $"🔧 ultrahdr — Gain Map / Ultra HDR (谷歌官方)",
                     EncoderBackend.Jxr => $"🔧 JxrEncApp — JPEG XR (微软参考)",
                     _ => $"{gpuIcon}{Name} — {Description}"
                 };
@@ -83,8 +82,8 @@ namespace FfmpegGui.Services
             if (string.IsNullOrWhiteSpace(displayName)) return EncoderBackend.Ffmpeg;
             if (displayName.Contains("cjpegli")) return EncoderBackend.Cjpegli;
             if (displayName.Contains("cjxl")) return EncoderBackend.Cjxl;
-            if (displayName.Contains("ultrahdr")) return EncoderBackend.Ultrahdr;
             if (displayName.Contains("jxr") || displayName.Contains("JxrEnc")) return EncoderBackend.Jxr;
+            if (displayName.Contains("dngtool")) return EncoderBackend.Dng;
             return EncoderBackend.Ffmpeg;
         }
 
@@ -94,7 +93,6 @@ namespace FfmpegGui.Services
             if (string.IsNullOrWhiteSpace(displayName)) return "";
             if (displayName.Contains("cjpegli")) return "cjpegli";
             if (displayName.Contains("cjxl")) return "cjxl";
-            if (displayName.Contains("ultrahdr")) return "ultrahdr";
             if (displayName.Contains("jxr") || displayName.Contains("JxrEnc")) return "jxr";
             // FFmpeg 编码器: "mjpeg — MJPEG..." → "mjpeg"
             var dashIdx = displayName.IndexOf(" — ");
@@ -110,8 +108,8 @@ namespace FfmpegGui.Services
 
         private static readonly Dictionary<string, string[]> FormatEncoderMap = new(StringComparer.OrdinalIgnoreCase)
         {
-            ["jpg"] = new[] { "mjpeg", "libultrahdr", "mjpeg_qsv", "mjpeg_vaapi", "mjpeg_nvenc", "mjpeg_amf" },
-            ["jpeg"] = new[] { "mjpeg", "libultrahdr", "mjpeg_qsv", "mjpeg_vaapi", "mjpeg_nvenc", "mjpeg_amf" },
+            ["jpg"] = new[] { "mjpeg", "mjpeg_qsv", "mjpeg_vaapi", "mjpeg_nvenc", "mjpeg_amf" },
+            ["jpeg"] = new[] { "mjpeg", "mjpeg_qsv", "mjpeg_vaapi", "mjpeg_nvenc", "mjpeg_amf" },
             ["png"] = new[] { "png", "png_vaapi" },
             ["webp"] = new[] { "libwebp", "libwebp_anim", "webp" },
             ["avif"] = new[] { "libaom-av1", "libsvtav1", "librav1e", "av1_nvenc", "av1_amf", "av1_qsv", "av1_vaapi" },
@@ -270,7 +268,7 @@ namespace FfmpegGui.Services
             // ── 2) 外部工具编码器 ──
             switch (fmt)
             {
-                // JPEG 格式：cjpegli + ultrahdr_app 作为独立编码器可选
+                // JPEG 格式：cjpegli 作为独立编码器可选
                 case "jpg":
                 case "jpeg":
                     if (CjpegliService.IsAvailable)
@@ -281,15 +279,6 @@ namespace FfmpegGui.Services
                             Backend = EncoderBackend.Cjpegli,
                             DetectedPath = CjpegliService.DetectedPath,
                             SupportsFrameMultithreading = false
-                        });
-                    if (UltrahdrService.IsAvailable)
-                        result.Add(new EncoderInfo
-                        {
-                            Name = "ultrahdr",
-                            Description = "Gain Map / Ultra HDR (谷歌官方)",
-                            Backend = EncoderBackend.Ultrahdr,
-                            DetectedPath = UltrahdrService.DetectedPath,
-                            SupportsFrameMultithreading = true
                         });
                     break;
 
@@ -318,20 +307,32 @@ namespace FfmpegGui.Services
                             SupportsFrameMultithreading = false
                         });
                     break;
+
+                // DNG 格式：dngtool 作为独立编码器 (LibRaw + DNG SDK)
+                case "dng":
+                    if (RawService.IsDngTool)
+                        result.Add(new EncoderInfo
+                        {
+                            Name = "dngtool",
+                            Description = "DNG (LibRaw + DNG SDK 1.7, 支持 JXL 压缩)",
+                            Backend = EncoderBackend.Dng,
+                            DetectedPath = RawService.DetectedPath,
+                            SupportsFrameMultithreading = false
+                        });
+                    break;
             }
 
             return result;
         }
 
         /// <summary>
-        /// 获取默认编码器名称（优先外部工具，其次 libultrahdr，最后 FFmpeg 内置）
+        /// 获取默认编码器名称（优先外部工具，最后 FFmpeg 内置）
         /// </summary>
         public static string GetDefaultEncoder(string format)
         {
             return format.ToLower() switch
             {
                 "jpg" or "jpeg" => CjpegliService.IsAvailable ? "cjpegli"
-                    : UltrahdrService.IsAvailable ? "ultrahdr"
                     : HasCachedLibultrahdr() ? "libultrahdr" : "mjpeg",
                 "png" => "png",
                 "webp" => "libwebp",
@@ -339,6 +340,7 @@ namespace FfmpegGui.Services
                 "tiff" => "tiff",
                 "jxl" => CjxlService.IsAvailable ? "cjxl" : "libjxl",
                 "jxr" => JxrService.IsAvailable ? "jxr" : "jxr",
+                "dng" => RawService.IsDngTool ? "dngtool" : "dngtool",
                 "apng" => "apng",
                 "gif" => "gif",
                 _ => ""
@@ -472,8 +474,8 @@ namespace FfmpegGui.Services
                 var tag = bestEncoder.Backend == EncoderBackend.Ffmpeg ? "" :
                           bestEncoder.Backend == EncoderBackend.Cjxl ? " (外部 cjxl)" :
                           bestEncoder.Backend == EncoderBackend.Cjpegli ? " (外部 cjpegli)" :
-                          bestEncoder.Backend == EncoderBackend.Ultrahdr ? " (外部 ultrahdr)" :
-                          bestEncoder.Backend == EncoderBackend.Jxr ? " (外部 JxrEncApp)" : "";
+                          bestEncoder.Backend == EncoderBackend.Jxr ? " (外部 JxrEncApp)" :
+                          bestEncoder.Backend == EncoderBackend.Dng ? " (外部 dngtool)" : "";
                 parts.Add($"编码: {bestEncoder.Name}{tag}");
             }
             else

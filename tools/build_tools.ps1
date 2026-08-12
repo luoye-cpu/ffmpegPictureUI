@@ -3,6 +3,10 @@
 #  用法: .\build_tools.ps1 [-SkipClone] [-CleanAfterBuild] [-SimdLevel AVX2|AVX512|Native|Baseline]
 #  前提: Visual Studio 2022/2026 + CMake + Git + NASM
 #
+#  v3.0 变更:
+#  - 新增 DNG SDK 1.7.1 + LibRaw + libjxl → dngtool (DNG/RAW 解码 + DNG 编码)
+#  - 构建步骤 [6/6] → [7/7]
+#
 #  v2.1 变更:
 #  - 自动检测 VS 2026 → VS 2022 回退
 #  - 强制使用 VS 自带 cmake (支持 "Visual Studio 18 2026" 生成器)
@@ -50,13 +54,13 @@ $SimdFlags = switch ($SimdLevel) {
 }
 
 Write-Host "============================================" -ForegroundColor Cyan
-Write-Host "  build_tools v2.1 | VS $VsVer | SIMD: $SimdLevel" -ForegroundColor Cyan
+Write-Host "  build_tools v3.0 | VS $VsVer | SIMD: $SimdLevel" -ForegroundColor Cyan
 Write-Host "  cmake: $CmakeExe" -ForegroundColor Gray
-Write-Host "  产物: ultrahdr_app + JxrEnc/Dec + avifenc" -ForegroundColor Cyan
+Write-Host "  产物: ultrahdr_app + JxrEnc/Dec + avifenc + dngtool" -ForegroundColor Cyan
 Write-Host "============================================" -ForegroundColor Cyan
 
 # ── 0. 环境检查 ──
-Write-Host "`n[0/6] 检查编译环境..." -ForegroundColor Yellow
+Write-Host "`n[0/7] 检查编译环境..." -ForegroundColor Yellow
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) { throw "git not found" }
 $nasm = Get-Command nasm -ErrorAction SilentlyContinue
 if ($nasm) { Write-Host "  NASM: $($nasm.Source)" -ForegroundColor Green }
@@ -200,6 +204,76 @@ Write-Host "`n--- 版本摘要 ---" -ForegroundColor Cyan
 if (Test-Path "$PlanDir\avifenc.exe") {
     $v = & "$PlanDir\avifenc.exe" --version 2>&1
     Write-Host "  avifenc: $v" -ForegroundColor Gray
+}
+
+# ── 7. 编译 dngtool (LibRaw + DNG SDK 1.7.1 + libjxl) ──
+Write-Host "`n[7/7] 编译 dngtool (DNG SDK 1.7.1 + LibRaw + libjxl)..." -ForegroundColor Yellow
+
+# 环境要求: cmake 4.x 需要此变量以兼容旧版 cmake_minimum_required
+$env:CMAKE_POLICY_VERSION_MINIMUM = "3.5"
+
+$DngSdkRoot = "$SrcDir\dng_sdk\dng_sdk_1_7_1"
+$DngSdkExists = Test-Path "$DngSdkRoot\dng_sdk\source\dng_validate.cpp"
+$LibRawExists = Test-Path "$SrcDir\libraw\libraw\libraw.h"
+
+if (-not ($DngSdkExists -and $LibRawExists)) {
+    Write-Host "  ⚠️ 缺少 DNG SDK 或 LibRaw 源码，跳过 dngtool 构建" -ForegroundColor Yellow
+    Write-Host "  DNG SDK: $DngSdkExists (需手动下载 dng_sdk_1_7_1.zip 解压到 $SrcDir\dng_sdk)" -ForegroundColor Yellow
+    Write-Host "  LibRaw:  $LibRawExists (需 git clone https://github.com/LibRaw/LibRaw.git)" -ForegroundColor Yellow
+} else {
+    # 7a. 构建 DNG SDK 自带的 libjxl (0.8, 与 dng_jxl.cpp 版本匹配)
+    $JxlSrc = "$DngSdkRoot\libjxl\libjxl"
+    $JxlBuild = "$JxlSrc\build"
+    if (-not (Test-Path "$JxlBuild\Release\jxl.lib")) {
+        Write-Host "  [7a] 构建自带 libjxl 0.8 (供 DNG SDK 链接)..." -ForegroundColor Gray
+        if (Test-Path $JxlBuild) { Remove-Item -Recurse -Force $JxlBuild }
+        New-Item $JxlBuild -ItemType Directory -Force | Out-Null
+        Push-Location $JxlBuild
+        & $CmakeExe .. -G $CmakeGen -A x64 `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DBUILD_TESTING=OFF `
+            -DJPEGXL_ENABLE_TOOLS=OFF -DJPEGXL_ENABLE_DEVTOOLS=OFF `
+            -DJPEGXL_ENABLE_BENCHMARK=OFF -DJPEGXL_ENABLE_EXAMPLES=OFF `
+            -DJPEGXL_ENABLE_MANPAGES=OFF -DJPEGXL_ENABLE_JNI=OFF `
+            -DJPEGXL_ENABLE_PLUGINS=OFF -DJPEGXL_BUNDLE_LIBPNG=OFF `
+            -DJPEGXL_ENABLE_SJPEG=OFF -DJPEGXL_ENABLE_OPENEXR=OFF 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) { Write-Host "  FAILED: libjxl configure" -ForegroundColor Red; Pop-Location }
+        else {
+            & $CmakeExe --build . --config Release --parallel $env:NUMBER_OF_PROCESSORS 2>&1 | Out-Null
+            if ($LASTEXITCODE -ne 0) { Write-Host "  FAILED: libjxl build" -ForegroundColor Red; Pop-Location }
+            else { Write-Host "  done: libjxl 0.8" -ForegroundColor Green; Pop-Location }
+        }
+    } else {
+        Write-Host "  [7a] libjxl 0.8 已构建，跳过" -ForegroundColor Gray
+    }
+
+    # 7b. 构建 dngtool
+    $DngToolSrc = "$SrcDir\dngtool"
+    $DngToolBuild = "$DngToolSrc\build"
+    Write-Host "  [7b] 构建 dngtool..." -ForegroundColor Gray
+    if (Test-Path $DngToolBuild) { Remove-Item -Recurse -Force $DngToolBuild }
+    New-Item $DngToolBuild -ItemType Directory -Force | Out-Null
+    Push-Location $DngToolBuild
+    & $CmakeExe .. -G $CmakeGen -A x64 `
+        -DCMAKE_BUILD_TYPE=Release `
+        -DDNG_JXL_LIB_DIR="$JxlBuild\Release" 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) { Write-Host "  FAILED: dngtool configure" -ForegroundColor Red; Pop-Location }
+    else {
+        & $CmakeExe --build . --config Release --parallel $env:NUMBER_OF_PROCESSORS 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) { Write-Host "  FAILED: dngtool build" -ForegroundColor Red; Pop-Location }
+        else {
+            # 部署
+            $DngToolExe = "$DngToolBuild\Release\dngtool.exe"
+            if (Test-Path $DngToolExe) {
+                Copy-Item $DngToolExe "$PlanDir\dngtool.exe" -Force
+                $kb = [math]::Round((Get-Item $DngToolExe).Length / 1KB, 1)
+                Write-Host "  done: dngtool.exe ($kb KB)" -ForegroundColor Green
+            } else {
+                Write-Host "  MISSING: dngtool.exe" -ForegroundColor Yellow
+            }
+            Pop-Location
+        }
+    }
 }
 
 if ($CleanAfterBuild) {

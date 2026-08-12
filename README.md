@@ -41,18 +41,21 @@ QQ 交流群：754439779 | [点击加群](https://qm.qq.com/q/M2181PvCkW)
 |---|---|---|
 | `ffmpeg` + `ffprobe` | ✅ Required / 必需 | Core encoding/decoding, media probing |
 | `cjxl` / `djxl` / `cjpegli` | ⭐ Recommended / 推荐 | JXL transcode, decoding, JPEG-LI encoding |
-| `ultrahdr_app` | ⭐ Recommended / 推荐 | Gain Map / Ultra HDR JPEG encoding (Google reference) |
 | `JxrEncApp` / `JxrDecApp` | ⭐ Recommended / 推荐 | JPEG XR encoding/decoding (Microsoft jxrlib) |
 | `avifenc` | ⚪ Optional / 可选 | GIF → AVIF two-step encoding with alpha preservation |
-| `dcraw` | ⚪ Optional / 可选 | Camera RAW (Bayer) → linear 16-bit TIFF demosaic |
+| `dngtool` | ⭐ Recommended / 推荐 | DNG 1.7 JXL 解码/编码, RAW 去马赛克 (LibRaw + Adobe DNG SDK) |
 | `exiftool` | ⚪ Optional / 可选 | Metadata editing, privacy cleaning, ICC profile embedding |
 
 > **v1.5.0** — 外部工具面板设计为 3 列水平布局：
 > - 📦 **JXL 参考库**（文件夹）— 自动检测 cjxl / djxl / cjpegli
 > - 🏷 **exiftool**（文件）— 元数据编辑与 ICC 嵌入
-> - 🔧 **artifacts**（文件夹）— 自动检测 ultrahdr_app / JxrEncApp / JxrDecApp / avifenc / dcraw
+> - 🔧 **artifacts**（文件夹）— 自动检测 JxrEncApp / JxrDecApp / avifenc / dngtool
 >
 > 紧凑状态栏默认隐藏，后台检测完成后自动显示全部工具状态（✅/❌）。PLAN 便携包自动识别，支持手动指定路径。
+>
+> **Gain Map (Ultra HDR) JPEG** — 由内置纯托管编码器实现（`GainMapEncoder`，分段 Reinhard 色调映射 +
+> cjpegli 编码基础图与增益图 + MPF/XMP/ISO 21496-1 打包），**无需外部工具**。
+> `ultrahdr_app` (Google libultrahdr) 不再随包发布，仅作参考工具（可手动放入 artifacts 目录，软件不再调用）。
 
 ---
 
@@ -201,7 +204,7 @@ ffmpegPictureUI/
 - **工具面板重构** — 3 列水平布局；紧凑状态栏后台检测完自动显示 ✅/❌；PLAN 便携包自动识别
 - **检测模块重写** — 全异步 3 阶段后台管线；每步 8s 超时；增量 Dispatcher 日志
 - **AVIF 编码器面板** — AOM/SVT/NVENC/QSV/AMF 各自独立选项，编码器切换时动态切换面板
-- **动图与 RAW** — 视频转动图时长限制；dcraw RAW 解码自动检测；扩展 RAW 格式支持
+- **动图与 RAW** — 视频转动图时长限制；dngtool RAW 解码自动检测；扩展 RAW 格式支持
 
 </details>
 
@@ -218,6 +221,8 @@ ffmpegPictureUI/
 ## 📄 License / 许可
 
 This project is licensed under the **GNU General Public License v3.0 (GPL 3.0)**. See [../LICENSE](../LICENSE) for the full text, which also includes third-party license notices for all dependencies (Avalonia MIT, SkiaSharp MIT, FFmpeg LGPL/GPL, libjxl BSD 3-Clause, ExifTool GPL, etc.).
+
+> This product includes DNG technology under license by Adobe.  — 本产品包含 Adobe 授权的 DNG 技术（dngtool 使用 Adobe DNG SDK）。
 
 本项目采用 **GNU General Public License v3.0 (GPL 3.0)** 许可。完整文本（含全部依赖的第三方许可证声明）见 [../LICENSE](../LICENSE)。
 
