@@ -57,6 +57,7 @@ target_compile_definitions(dng_sdk PUBLIC
     _CONSOLE _CRT_SECURE_NO_DEPRECATE
     qWinOS=1 qMacOS=0 qVisualC=1 _WINDOWS=1 BIB_MULTI_THREAD=1
     qDNGUseXMP=0
+    qDNGValidate=1   # dng_globals 的 gDumpLineLimit 等符号 (dng_validate 需要)
 )
 
 # ═══════════════════════════════════════════════════════════
@@ -154,3 +155,30 @@ else()
       "${JXL_LIB_DIR}/hwy.lib"
   )
 endif()
+
+# ═══════════════════════════════════════════════════════════
+# dng_validate (Adobe DNG SDK 官方校验器) — 诊断 dngtool 输出兼容性
+# ═══════════════════════════════════════════════════════════
+add_executable(dng_validate "${DNG_SDK_SRC}/dng_validate.cpp")
+target_include_directories(dng_validate PRIVATE
+    "${DNG_SDK_SRC}"
+    "${JXL_SRC_INC}"
+    "${JXL_CLIENT_INC}"
+    "${ZLIB_SRC}"
+)
+target_compile_definitions(dng_validate PRIVATE
+    _CONSOLE _CRT_SECURE_NO_DEPRECATE
+    qWinOS=1 qMacOS=0 qVisualC=1 _WINDOWS=1 BIB_MULTI_THREAD=1
+    qDNGUseXMP=0 qDNGSupportJXL=1 qDNGValidateTarget=1
+)
+target_link_libraries(dng_validate PRIVATE
+    dng_sdk
+    zlib_static
+    "${JXL08_LIB_DIR}/jxl-static.lib"
+    "${JXL08_LIB_DIR}/jxl_threads-static.lib"
+    "${JXL08_TP_DIR}/brotli/Release/brotlidec-static.lib"
+    "${JXL08_TP_DIR}/brotli/Release/brotlienc-static.lib"
+    "${JXL08_TP_DIR}/brotli/Release/brotlicommon-static.lib"
+    "${JXL08_TP_DIR}/highway/Release/hwy.lib"
+    "${JXL08_TP_DIR}/skcms-obj.dir/Release/skcms-obj.lib"
+)

@@ -132,6 +132,8 @@
   "progressive.decode": "渐进式解码 (--progressive)",
   "photon.noise": "光子噪声 ISO (0=禁用)",
   "photon.noise.hint": "0=禁用, 100=低噪, 3200=高噪",
+  "photon.noise.auto": "自动读取输入照片 ISO（EXIF）",
+  "photon.noise.auto.hint": "启用后每张图片编码前自动读取 EXIF 中的 ISO 感光度用于光子噪声，比手动固定值更准确",
   "preserve.ultrahdr": "保留 Ultra HDR 增益图（解码后重新编码；关闭则无损重封装但丢失 HDR）",
   "gain.map.params": "🎛 Gain Map 参数（选择 ultrahdr 编码器时生效）",
   "gain.map.follow.main": "增益图质量 = 主图质量",

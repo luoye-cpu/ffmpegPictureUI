@@ -5,15 +5,19 @@
   <!-- ═══════════════════════════════════════════════ -->
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <!-- .NET 11 SDK 安装后改为: <TargetFramework>net11.0</TargetFramework> -->
-    <TargetFramework>net10.0</TargetFramework>
+    <!-- .NET 11 (NativeAOT 就绪) -->
+    <TargetFramework>net11.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <!-- PsnrCalculator 的 AVX2/SSE2 intrinsics 使用指针访问 (unsafe) -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <RuntimeIdentifiers>win-x64;linux-x64;linux-arm64</RuntimeIdentifiers>
+    <!-- Windows 条件编译符号 (Registry 等 Windows 专属 API) -->
+    <DefineConstants Condition="$([MSBuild]::IsOSPlatform('Windows'))">$(DefineConstants);WINDOWS</DefineConstants>
     <!-- 版本号 -->
-    <Version>1.5.1</Version>
-    <AssemblyVersion>1.5.1.0</AssemblyVersion>
-    <FileVersion>1.5.1.0</FileVersion>
+    <Version>1.5.3</Version>
+    <AssemblyVersion>1.5.3.0</AssemblyVersion>
+    <FileVersion>1.5.3.0</FileVersion>
     <PackageLicenseExpression>GPL-3.0-only</PackageLicenseExpression>
     <!-- v2.0 过渡期：所有 CS0618 均为故意的旧字段回退逻辑 -->
     <!-- MSB3884: .NET SDK 默认引用 ManagedMinimumRules.ruleset 但文件不存在，安全忽略 -->
@@ -21,7 +25,7 @@
   </PropertyGroup>
 
   <!-- ═══════════════════════════════════════════════ -->
-  <!-- 发布配置 (框架依赖, .NET 10 当前使用)                 -->
+  <!-- 发布配置 (框架依赖, .NET 11 当前使用)                 -->
   <!-- ═══════════════════════════════════════════════ -->
   <PropertyGroup>
     <PublishSingleFile>true</PublishSingleFile>
@@ -36,14 +40,19 @@
 
   <!-- ═══════════════════════════════════════════════ -->
   <!-- NativeAOT 配置                                    -->
-  <!-- 启用方法: 将 TargetFramework 改为 net11.0 即可       -->
-  <!-- 条件: 仅当 TFM 为 net11.0+ 时启用                   -->
+  <!-- 启用方法: pack.ps1 -Mode aot / dotnet publish -p:PublishAot=true -->
+  <!-- 条件: 仅当 TFM 为 net11.0+ 时启用 (兼容未来 net12+)   -->
   <!-- ═══════════════════════════════════════════════ -->
   <PropertyGroup Condition="$([MSBuild]::IsTargetFrameworkCompatible('$(TargetFramework)', 'net11.0'))">
-    <PublishAot>true</PublishAot>
+    <!-- 注意: PublishAot 不在此处写死，由命令行 -p:PublishAot=true 控制，
+         否则框架依赖模式 (self-contained false) 的 publish 也会被强制 AOT 而失败 -->
+    <PublishAot Condition="'$(PublishAot)' == ''">false</PublishAot>
     <SelfContained>true</SelfContained>
     <PublishSingleFile>true</PublishSingleFile>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <!-- NativeAOT 隐含 PublishTrimmed=true；必须显式覆盖外层 PropertyGroup 的 false，
+         否则报错 "PublishTrimmed is implied by native compilation and cannot be disabled" -->
+    <PublishTrimmed>true</PublishTrimmed>
     <_SuppressWinFormsTrimError>true</_SuppressWinFormsTrimError>
     <IlcOptimizationPreference>Speed</IlcOptimizationPreference>
     <IlcFoldIdenticalMethodBodies>true</IlcFoldIdenticalMethodBodies>
@@ -51,7 +60,7 @@
     <UseSystemResourceKeys>true</UseSystemResourceKeys>
     <DebugType>none</DebugType>
     <DebugSymbols>false</DebugSymbols>
-    <!-- .NET 10 下不启用裁剪（避免 AOT 分析警告） -->
+    <!-- TFM 回退到 net10 时强制不裁剪（避免 AOT 分析警告） -->
     <PublishTrimmed Condition="'$(TargetFramework)' == 'net10.0'">false</PublishTrimmed>
   </PropertyGroup>
 
@@ -62,6 +71,11 @@
     <PackageReference Include="Avalonia" Version="12.0.4" />
     <PackageReference Include="Avalonia.Desktop" Version="12.0.4" />
     <PackageReference Include="Avalonia.Themes.Fluent" Version="12.0.4" />
+  </ItemGroup>
+
+  <!-- 测试宿主访问 internal 成员 (PsnrCalculator 强制路径测试钩子等) -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="GainMapTestHost" />
   </ItemGroup>
 
   <!-- ═══════════════════════════════════════════════ -->

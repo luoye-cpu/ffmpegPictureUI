@@ -61,11 +61,12 @@ tools/src/**/*.tlog/
 **/cmake_install.cmake
 **/CMakeFiles/
 
-# ── 静态库/目标文件（编译产物，源码仓库不应包含）──
-tools/src/**/*.lib
-tools/src/**/*.a
-tools/src/**/*.obj
-tools/src/**/*.o
+# ── 静态库/目标文件/可执行文件（编译产物，源码仓库不应包含）──
+# 全局模式（无斜杠）匹配任意目录层级，含根目录残留（如 dngcolor_probe.obj）
+*.lib
+*.a
+*.obj
+*.o
 tools/src/**/*.exe
 tools/src/**/*.dll
 
@@ -94,7 +95,14 @@ tools/src/dng_sdk/**/*.pdf
 **/exiftool(-k).exe
 **/exiftool_files/
 
-# ── 测试输出目录 ──
+# ── 测试输出目录（统一规范：tests/output/ 下所有文件不跟踪）──
+# 所有测试产生的文件（临时图片、编码产物、ICC 提取、日志）一律放入 tests/output/
+# 规范见 docs/TESTING.md
+tests/output/
+tests/tmp/
+tests/*.log
+
+# ── 历史遗留的测试输出目录名（兼容旧脚本）──
 test_output/
 test-output/
 

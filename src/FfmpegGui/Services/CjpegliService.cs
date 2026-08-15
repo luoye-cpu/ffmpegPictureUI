@@ -247,7 +247,7 @@ namespace FfmpegGui.Services
         /// </summary>
         /// <param name="hdrMeta">auto 模式下的输入色彩探测结果（可选）</param>
         public static string BuildCjpegliArguments(string input, string output, Models.FfmpegOptions opts,
-            FfmpegCommandBuilder.ColorMetadata hdrMeta = default)
+            FfmpegCommandBuilder.ColorMetadata hdrMeta = default, string? iccPath = null)
         {
             var sb = new StringBuilder();
             sb.Append($"\"{input}\" \"{output}\"");
@@ -288,6 +288,13 @@ namespace FfmpegGui.Services
 
             // ── 色彩空间映射 ──
             // JPEG 输出为 SDR；管道模式下 ffmpeg 已将色彩转为 PPM RGB，不应再套用色彩标记
+            // 有显式 ICC 文件时优先：嵌入 ICC（libjxl 中 ICC 优先于 color_space 简写）
+            // 注意：-x 必须是独立 argv（不接受 "-x key=value" 合成单参数），值为路径时整体加引号
+            if (!string.IsNullOrWhiteSpace(iccPath) && System.IO.File.Exists(iccPath))
+            {
+                sb.Append($" -x \"icc_pathname={iccPath}\"");
+                return sb.ToString();
+            }
             string? colorSpace = null;
             var isPipe2 = input == "-";
             if (!isPipe2)
@@ -299,6 +306,7 @@ namespace FfmpegGui.Services
             }
             if (!string.IsNullOrWhiteSpace(colorSpace))
             {
+                // -x 必须是独立 argv；color_space 值无空格，无需内层引号
                 sb.Append($" -x color_space={colorSpace}");
             }
 

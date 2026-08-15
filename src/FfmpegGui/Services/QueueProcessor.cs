@@ -186,6 +186,19 @@ namespace FfmpegGui.Services
 
                     await sem.WaitAsync(ct).ConfigureAwait(false);
                     var captured = item; // capture for closure
+
+                    // ── 2026-08-15 自适应线程分配 ──
+                    // 自动模式 (AutoThreads): 每任务线程 = max(1, 核数/并发任务数),
+                    // 所有任务合计吃满核数; 并发≥核数时每任务 1 线程 (任务并行占满核)。
+                    // 手动/单线程模式: 遵循用户固定值。实测: 串行×多线程最快,
+                    // 超饱和 (16并发×20线程) 反而最慢 — 此分配避免超饱和。
+                    if (captured.Options.AutoThreads)
+                    {
+                        captured.Options.Threads =
+                            Models.FfmpegOptions.ComputeAdaptiveThreads(_concurrency);
+                    }
+
+                    var tempDirsToCleanup = new List<string>(); // 任务内创建的临时目录（RAW 预处理等），完成后统一清理
                     var t = Task.Run(async () =>
                     {
                         try
@@ -257,12 +270,15 @@ namespace FfmpegGui.Services
                                 _onItemUpdated?.Invoke(captured);
                                 var rawTempDir = Path.Combine(PlatformServices.GetTempDir(), $"raw_{Guid.NewGuid():N}");
                                 Directory.CreateDirectory(rawTempDir);
+                                tempDirsToCleanup.Add(rawTempDir);  // 任务完成后统一删除，避免磁盘泄漏
                                 var rawTiff = Path.Combine(rawTempDir, $"{Path.GetFileNameWithoutExtension(captured.InputPath)}_raw.tiff");
                                 var success = await RawService.PreProcessAsync(captured.InputPath, rawTiff, s =>
                                 {
                                     captured.Log += s;
                                     _onItemUpdated?.Invoke(captured);
-                                }, ct);
+                                }, ct,
+                                highlightMode: captured.Options.DngHighlightMode,
+                                threads: captured.Options.Threads);   // 2026-08-15: UI 线程选项生效
                                 if (success)
                                 {
                                     captured.Log += "[RAW] ✅ 预处理完成，使用线性 TIFF 继续编码。色彩空间: BT.709 + 线性传输。\n";
@@ -362,6 +378,22 @@ namespace FfmpegGui.Services
                                 // 其他格式（TIFF/PNG/WebP/JXL）也存在不同程度的丢失。
                                 if (exitCode == 0)
                                     await RestoreMetadataAsync(captured, finalOutputPath);
+
+                                // ── PNG 3.0: 10/12-bit 有效位 (sBIT chunk) ──
+                                // ffmpeg PNG 编码器无 sBIT 能力（10/12-bit 输入自动提升为 16-bit 容器，
+                                // 有效位语义丢失）。编码完成后以二进制写入 sBIT chunk，
+                                // 使输出符合 PNG 3.0 规范（16-bit 容器 + sBIT 记录有效位）。
+                                // 必须在元数据恢复之后执行（exiftool 复制元数据可能改写 chunk）。
+                                if (exitCode == 0
+                                    && captured.Options.BitDepth is 10 or 12
+                                    && finalOutputPath.EndsWith(".png", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    if (PngCicpService.TryInsertSbit(finalOutputPath, captured.Options.BitDepth.Value))
+                                        captured.Log += $"[png3] 已写入 sBIT chunk（{captured.Options.BitDepth}-bit 有效位）\n";
+                                    else
+                                        captured.Log += "[png3] ⚠️ sBIT chunk 写入失败（已跳过）\n";
+                                    _onItemUpdated?.Invoke(captured);
+                                }
                             }
 
                             // ── ExifTool 后处理 ──
@@ -433,6 +465,11 @@ namespace FfmpegGui.Services
                         }
                         finally
                         {
+                            // 清理任务内创建的临时目录（RAW 预处理等）
+                            foreach (var dir in tempDirsToCleanup)
+                            {
+                                try { if (Directory.Exists(dir)) Directory.Delete(dir, true); } catch { }
+                            }
                             _onItemUpdated?.Invoke(captured);
                             sem.Release();
                         }
@@ -643,23 +680,93 @@ namespace FfmpegGui.Services
         /// <summary>cjxl 编码（优先直接编码，失败自动转 PNG 再试）</summary>
         private async Task ProcessCjxlAsync(QueueItem item, string outputPath, CancellationToken ct)
         {
+            // ── 自动光子噪声：从输入图片 EXIF 读取真实 ISO（每张图独立）──
+            if (item.Options.CjxlAutoPhotonNoise && item.Options.CjxlPhotonNoiseIso <= 0)
+            {
+                var iso = await ExifToolService.ReadIsoAsync(item.InputPath);
+                if (iso.HasValue)
+                {
+                    // cjxl 建议值域 100-3200，超出则钳制
+                    item.Options.CjxlPhotonNoiseIso = Math.Clamp(iso.Value, 100, 3200);
+                    item.Log += $"[cjxl] 自动光子噪声: 从 EXIF 读取 ISO={iso.Value} → --photon_noise_iso={item.Options.CjxlPhotonNoiseIso}\n";
+                }
+                else
+                {
+                    item.Log += "[cjxl] 自动光子噪声: 无法读取 ISO（无 exiftool 或无 ISO 元数据），跳过\n";
+                }
+                _onItemUpdated?.Invoke(item);
+            }
+
             var isJpegInput = Path.GetExtension(item.InputPath).ToLowerInvariant() is ".jpg" or ".jpeg";
 
+            // ── 非 JPEG 输入：保留源 ICC（exiftool 无法写入 JXL 的 ICC，需编码器侧嵌入）──
+            // JPEG 输入走无损重封装会自动保留原始 JPEG 元数据（含 ICC），无需处理。
+            // Ultra HDR 解码输出跳过：线性 HDR 帧色彩由 color_space/intensity_target 表达。
+            // 仅在 PreserveAll 元数据模式下处理（StripAll 时用户不想要任何元数据）。
+            // 关键：cjxl 对 PNG 等容器输入会忽略 -x icc_pathname（仅 PPM/PAM raw 流生效），
+            //       但会自动读取输入 PNG 内嵌的 ICC 块 → 将 ICC 嵌入输入副本即可。
+            //       其他输入（TIFF/WebP 等）cjxl 直接编码会失败 → 走 ffmpeg 管道（-x 生效）。
+            string? srcIccPath = null;
+            if (!isJpegInput
+                && item.Options.MetadataMode == Models.MetadataMode.PreserveAll
+                && string.IsNullOrWhiteSpace(item.Options.DecodedUltraHdrColorSpace))
+            {
+                var (icc, _) = IccProfileService.ExtractIccToTempFile(item.InputPath);
+                if (icc != null)
+                {
+                    var inputExt = Path.GetExtension(item.InputPath).ToLowerInvariant();
+                    if (inputExt is ".png" or ".apng")
+                    {
+                        // PNG 输入：ICC 嵌入输入副本，cjxl 自动读取（-x 对容器输入无效）
+                        try
+                        {
+                            var tmpCopy = Path.Combine(PlatformServices.GetTempDir(),
+                                $"icc_embed_{Guid.NewGuid():N}.png");
+                            File.Copy(item.InputPath, tmpCopy, overwrite: true);
+                            var embedExit = await ExifToolService.EmbedIccProfileFromFileAsync(icc, tmpCopy,
+                                s => { item.Log += s; _onItemUpdated?.Invoke(item); });
+                            if (embedExit == 0)
+                            {
+                                item.Log += "[cjxl] 源 PNG 带 ICC，已嵌入输入副本供 cjxl 自动读取\n";
+                                item.InputPath = tmpCopy;  // 编码使用副本（含 ICC）
+                                srcIccPath = icc;
+                            }
+                            else
+                            {
+                                TryDeleteIcc(tmpCopy);
+                            }
+                        }
+                        catch { TryDeleteIcc(icc); }
+                    }
+                    else
+                    {
+                        // 其他输入：交给 BuildCjxlArguments 的 icc_pathname（管道路径生效）
+                        srcIccPath = icc;
+                        item.Log += "[cjxl] 检测到源文件 ICC，将由 cjxl 嵌入输出 JXL\n";
+                    }
+                }
+            }
+
+            try
+            {
             // 第一步：直接尝试 cjxl
-            item.Command = "cjxl " + CjxlService.BuildCjxlArguments(item.InputPath, outputPath, item.Options);
+            item.Command = "cjxl " + CjxlService.BuildCjxlArguments(item.InputPath, outputPath, item.Options, default, srcIccPath);
             var inputExtForCjxl = Path.GetExtension(item.InputPath).ToLowerInvariant();
             item.Log += $"[cjxl] 直接编码 (输入: {inputExtForCjxl}, 目标: jxl, effort={item.Options.JxlEffort ?? 5}, threads={item.Options.Threads})\n";
             _onItemUpdated?.Invoke(item);
             int exitCode;
             if (isJpegInput)
             {
-                item.Log += "[cjxl] 检测到 JPEG 输入，启用无损重封装模式（-d 0 --lossless_jpeg=1，不解码 DCT 系数）\n";
+                item.Log += item.Options.JxlLosslessJpeg
+                    ? "[cjxl] 检测到 JPEG 输入，启用无损重封装模式（-d 0 --lossless_jpeg=1，不解码 DCT 系数）\n"
+                    : "[cjxl] 检测到 JPEG 输入，关闭无损重封装 → 解码后按质量参数重新编码\n";
                 var jpegOpts = new Models.FfmpegOptions
                 {
                     Quality = item.Options.Quality,
                     JxlEffort = item.Options.JxlEffort ?? 5,
                     CjxlProgressive = item.Options.CjxlProgressive,
                     CjxlPhotonNoiseIso = item.Options.CjxlPhotonNoiseIso,
+                    JxlLosslessJpeg = item.Options.JxlLosslessJpeg,
                     Threads = item.Options.Threads
                 };
                 exitCode = await CjxlService.RunWithOptionsAsync(
@@ -670,7 +777,7 @@ namespace FfmpegGui.Services
             {
                 exitCode = await CjxlService.RunWithOptionsAsync(
                     item.InputPath, outputPath, item.Options,
-                    s => { item.Log += s; _onItemUpdated?.Invoke(item); });
+                    s => { item.Log += s; _onItemUpdated?.Invoke(item); }, srcIccPath);
             }
 
             if (exitCode == 0)
@@ -710,6 +817,11 @@ namespace FfmpegGui.Services
             item.Status = pipeResult.status;
             if (pipeResult.exitCode == 0)
                 await RestoreMetadataAsync(item, outputPath);
+            }
+            finally
+            {
+                TryDeleteIcc(srcIccPath);  // 清理提取的临时 ICC 文件
+            }
         }
 
         /// <summary>cjpegli 编码（优先直接编码，失败自动转 PNG 再试）</summary>
@@ -1176,21 +1288,29 @@ namespace FfmpegGui.Services
                 return;
             }
 
-            // 压缩方式: 无损 JPEG 或 JXL
-            int compression = item.Options.Lossless ? 0 : 0; // 当前 DNG 默认无损
-            int jxlQuality = 0;
-            if (item.Options.JxlModular == true) // 复用 JXL 相关选项选择 JXL 压缩
+            // 压缩方式: 无损 JPEG 或 JXL（由独立 DNG 选项字段控制，兼容旧 JxlModular 语义）
+            int compression = item.Options.DngCompression == 1 ? 1 : 0;
+            int jxlQuality = item.Options.DngJxlQuality;
+            // 兼容旧字段：若 DngCompression 未设置但 JxlModular=true（旧预设），按 JXL 处理
+            if (compression == 0 && item.Options.JxlModular == true)
             {
                 compression = 1;
                 jxlQuality = item.Options.Lossless ? 0 : Math.Clamp(item.Options.Quality, 1, 100);
             }
 
-            item.Log += $"[dng] 编码 DNG ({(compression == 1 ? $"JXL q={jxlQuality}" : "无损 JPEG")})...\n";
+            item.Log += $"[dng] 编码 DNG ({(compression == 1 ? $"JXL q={jxlQuality}" : "无损 JPEG")}" +
+                        $"{(item.Options.DngLinear ? ", 线性 DNG (无 CFA)" : ", 保留 CFA (Bayer)")})...\n";
             _onItemUpdated?.Invoke(item);
 
             var success = await RawService.EncodeToDngAsync(
                 item.InputPath, outputPath, compression, jxlQuality,
-                s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ct);
+                s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ct,
+                linear: item.Options.DngLinear,
+                jxlEffort: item.Options.DngJxlEffort,
+                jxlDecodeSpeed: item.Options.DngJxlDecodeSpeed,
+                bitDepth: item.Options.DngBitDepth,
+                highlightMode: item.Options.DngHighlightMode,
+                threads: item.Options.Threads);   // 2026-08-15: UI 线程选项生效
 
             item.ExitCode = success ? 0 : -1;
             item.Status = success
@@ -1433,15 +1553,18 @@ namespace FfmpegGui.Services
                 hdrMeta = FfmpegCommandBuilder.ProbeInputColorMetadata(item.InputPath);
             }
 
-            var cjxlArgs = CjxlService.BuildCjxlArguments("-", outputPath, item.Options, hdrMeta);
-            var (pipeInputColor, pipeOutputColor) = BuildPipeColorArgs(item.Options, item.InputPath);
+            var (pipeInputColor, pipeOutputColor, pipeIccPath) = BuildPipeColorArgs(item.Options, item.InputPath);
+            var cjxlArgs = CjxlService.BuildCjxlArguments("-", outputPath, item.Options, hdrMeta, pipeIccPath);
+            var pipeVcodec = hdrMeta.hasAlpha ? "pam" : "ppm";
 
-            item.Command = $"ffmpeg -y {pipeInputColor}-i \"{item.InputPath}\" {pipeOutputColor}-compression_level 0 -f image2pipe -vcodec png - | cjxl {cjxlArgs}";
+            item.Command = $"ffmpeg -y {pipeInputColor}-i \"{item.InputPath}\" {pipeOutputColor}-compression_level 0 -f image2pipe -c:v {pipeVcodec} - | cjxl {cjxlArgs}";
             item.Log += $"[cjxl-pipe] ffmpeg 管道 → cjxl（无中间文件）\n";
             _onItemUpdated?.Invoke(item);
 
-            return await PipeFfmpegToExternalEncoderAsync(
+            var pipeResult = await PipeFfmpegToExternalEncoderAsync(
                 item, ffmpegPath, cjxlPath, cjxlArgs, outputPath, "cjxl", ct);
+            TryDeleteIcc(pipeIccPath);  // 清理临时 ICC 文件
+            return pipeResult;
         }
 
         /// <summary>
@@ -1466,20 +1589,25 @@ namespace FfmpegGui.Services
                 hdrMeta = FfmpegCommandBuilder.ProbeInputColorMetadata(item.InputPath);
             }
 
-            var cjpegliArgs = CjpegliService.BuildCjpegliArguments("-", outputPath, item.Options, hdrMeta);
-            var (pipeInputColor2, pipeOutputColor2) = BuildPipeColorArgs(item.Options, item.InputPath);
+            var (pipeInputColor2, pipeOutputColor2, pipeIccPath2) = BuildPipeColorArgs(item.Options, item.InputPath);
+            var cjpegliArgs = CjpegliService.BuildCjpegliArguments("-", outputPath, item.Options, hdrMeta, pipeIccPath2);
+            var pipeVcodec2 = hdrMeta.hasAlpha ? "pam" : "ppm";
 
-            item.Command = $"ffmpeg -y {pipeInputColor2}-i \"{item.InputPath}\" {pipeOutputColor2}-compression_level 0 -f image2pipe -vcodec png - | cjpegli {cjpegliArgs}";
+            item.Command = $"ffmpeg -y {pipeInputColor2}-i \"{item.InputPath}\" {pipeOutputColor2}-compression_level 0 -f image2pipe -c:v {pipeVcodec2} - | cjpegli {cjpegliArgs}";
             item.Log += $"[cjpegli-pipe] ffmpeg 管道 → cjpegli（无中间文件）\n";
             _onItemUpdated?.Invoke(item);
 
-            return await PipeFfmpegToExternalEncoderAsync(
+            var pipeResult2 = await PipeFfmpegToExternalEncoderAsync(
                 item, ffmpegPath, cjpegliPath, cjpegliArgs, outputPath, "cjpegli", ct);
+            TryDeleteIcc(pipeIccPath2);  // 清理临时 ICC 文件
+            return pipeResult2;
         }
 
         /// <summary>
-        /// 通用管道方法：ffmpeg 解码 → stdout (PNG 流) → 外部编码器 stdin → 输出文件。
-        /// 此方法消除了所有"解码→写临时 PNG 文件→读取再编码"的磁盘中转。
+        /// 通用管道方法：ffmpeg 解码 → stdout (PPM/PAM 流) → 外部编码器 stdin → 输出文件。
+        /// 此方法消除了所有"解码→写临时文件→读取再编码"的磁盘中转。
+        /// 注意：必须使用 PPM/PAM raw 流而非 PNG 流——cjxl 的 -x (color_space/icc_pathname)
+        /// 仅对 PPM 等 raw 输入生效，PNG 容器流下会被静默忽略（实测验证）。
         /// </summary>
         private async Task<(int exitCode, string status)> PipeFfmpegToExternalEncoderAsync(
             QueueItem item,
@@ -1498,10 +1626,13 @@ namespace FfmpegGui.Services
                 using var linked = CancellationTokenSource.CreateLinkedTokenSource(timeoutCts.Token, ct);
                 var linkedToken = linked.Token;
 
-                // ffmpeg: 解码输入为 PPM 流输出到 stdout
-                // primaries/trc 在 -i 前作输入覆盖，colorspace 在 -i 后
-                var (pipeInColor, pipeOutColor) = BuildPipeColorArgs(item.Options, item.InputPath);
-                var ffArgs = $"-y {pipeInColor}-i \"{item.InputPath}\" {pipeOutColor}-compression_level 0 -f image2pipe -vcodec png -";
+                // ffmpeg: 解码输入为 PPM/PAM 流输出到 stdout
+                // primaries/trc 在 -i 前作输入覆盖，colorspace/pix_fmt 在 -i 后
+                // 有 alpha → PAM（P7，支持透明），无 alpha → PPM（P6）
+                var (pipeInColor, pipeOutColor, _) = BuildPipeColorArgs(item.Options, item.InputPath);
+                var inMeta = FfmpegCommandBuilder.ProbeInputColorMetadata(item.InputPath);
+                var pipeVcodec = inMeta.hasAlpha ? "pam" : "ppm";
+                var ffArgs = $"-y {pipeInColor}-i \"{item.InputPath}\" {pipeOutColor}-compression_level 0 -f image2pipe -c:v {pipeVcodec} -";
                 var psiFf = new ProcessStartInfo
                 {
                     FileName = ffmpegPath,
@@ -1959,7 +2090,7 @@ namespace FfmpegGui.Services
                     else
                     {
                         // ── 其他格式：djxl 管道 → ffmpeg ──
-                        item.Command = $"djxl \"{item.InputPath}\" --output_format=png - | ffmpeg {BuildFfmpegPipeArguments(item.Options, outputPath)}";
+                        // item.Command 由 PipeDjxlToFfmpegAsync 内部按实际 PPM/PAM 流设置
                         await PipeDjxlToFfmpegAsync(item, outputPath, ct);
                     }
                 }
@@ -2068,12 +2199,12 @@ namespace FfmpegGui.Services
                         if (useCjxl)
                         {
                             pipeResult = await PipeFfmpegToCjxlAsync(item, outputPath, ct);
-                            item.Command = $"ffmpeg -i BMP -compression_level 0 -f image2pipe -vcodec png - | cjxl {CjxlService.BuildCjxlArguments("-", outputPath, item.Options)}";
+                            // item.Command 已由 PipeFfmpegToCjxlAsync 设置为实际命令（PPM/PAM 管道）
                         }
                         else
                         {
                             pipeResult = await PipeFfmpegToCjpegliAsync(item, outputPath, ct);
-                            item.Command = $"ffmpeg -i BMP -compression_level 0 -f image2pipe -vcodec png - | cjpegli {CjpegliService.BuildCjpegliArguments("-", outputPath, item.Options)}";
+                            // item.Command 已由 PipeFfmpegToCjpegliAsync 设置为实际命令（PPM/PAM 管道）
                         }
 
                         if (pipeResult.exitCode == 0)
@@ -2186,6 +2317,12 @@ namespace FfmpegGui.Services
             if (string.IsNullOrEmpty(djxlPath) || string.IsNullOrEmpty(cjxlPath))
                 return (-1, "失败 (djxl 或 cjxl 未找到)");
 
+            // 探测 JXL 输入色彩（ffprobe 读 libjxl demuxer 的枚举值）与 alpha：
+            // PPM/PAM 流不携带色彩标签，必须由 cjxl -x color_space 显式标记，
+            // 否则广色域 JXL 重编码会静默降级为 sRGB。
+            var jxlMeta = FfmpegCommandBuilder.ProbeInputColorMetadata(item.InputPath);
+            var pipeFmt = jxlMeta.hasAlpha ? "pam" : "ppm";
+
             Process? procDj = null;
             Process? procCj = null;
             try
@@ -2194,8 +2331,8 @@ namespace FfmpegGui.Services
                 using var linked = CancellationTokenSource.CreateLinkedTokenSource(timeoutCts.Token, ct);
                 var linkedToken = linked.Token;
 
-                // cjxl: 从 stdin 读取，编码为 JXL
-                var cjxlArgs = CjxlService.BuildCjxlArguments("-", outputPath, item.Options);
+                // cjxl: 从 stdin 读取，编码为 JXL（色彩由探测元数据显式标记）
+                var cjxlArgs = CjxlService.BuildCjxlArguments("-", outputPath, item.Options, jxlMeta);
                 var psiCj = new ProcessStartInfo
                 {
                     FileName = cjxlPath,
@@ -2207,8 +2344,8 @@ namespace FfmpegGui.Services
                     CreateNoWindow = true
                 };
 
-                // djxl: 解码 JXL → PNG 流输出到 stdout
-                var djArgs = $"\"{item.InputPath}\" --output_format=png -";
+                // djxl: 解码 JXL → PPM/PAM 流输出到 stdout（raw 流下 cjxl -x 才生效）
+                var djArgs = $"\"{item.InputPath}\" --output_format={pipeFmt} -";
                 var psiDj = new ProcessStartInfo
                 {
                     FileName = djxlPath,
@@ -2358,7 +2495,20 @@ namespace FfmpegGui.Services
             item.Log += "[pipe] 尝试 djxl → ffmpeg 管道\n";
             _onItemUpdated?.Invoke(item);
 
-            var ffmpegArgs = BuildFfmpegPipeArguments(item.Options, outputPath);
+            // 探测 JXL 输入色彩与 alpha：改用 PPM/PAM raw 流（PNG 流会丢失广色域 ICC，
+            // 且 djxl 的 PNG 输出仅带 sRGB 块），并给 ffmpeg 加输入色彩覆盖（raw 流无标签）。
+            var jxlMeta = FfmpegCommandBuilder.ProbeInputColorMetadata(item.InputPath);
+            var pipeFmt = jxlMeta.hasAlpha ? "pam" : "ppm";
+            var colorPrefix = "";
+            if (!string.IsNullOrWhiteSpace(jxlMeta.colorPrimaries))
+                colorPrefix += $"-color_primaries {jxlMeta.colorPrimaries} ";
+            if (!string.IsNullOrWhiteSpace(jxlMeta.colorTrc))
+                colorPrefix += $"-color_trc {jxlMeta.colorTrc} ";
+            // PPM/PAM raw 流为全范围 RGB，强制 pc range（避免 YUV 编码时 limited range 过曝）
+            colorPrefix += "-color_range pc ";
+
+            var ffmpegArgs = BuildFfmpegPipeArguments(item.Options, outputPath, colorPrefix);
+            item.Command = $"djxl \"{item.InputPath}\" --output_format={pipeFmt} - | ffmpeg {ffmpegArgs}";
 
             Process? procDj = null;
             Process? procFf = null;
@@ -2370,8 +2520,8 @@ namespace FfmpegGui.Services
 
                 var ffmpegPath = AppSettingsService.Current.FfmpegPath;
 
-                // djxl 解码 JXL → PNG 流输出到 stdout
-                var djArgs = $"\"{item.InputPath}\" --output_format=png -";
+                // djxl 解码 JXL → PPM/PAM 流输出到 stdout（raw 流 + ffmpeg 输入覆盖保证色彩正确）
+                var djArgs = $"\"{item.InputPath}\" --output_format={pipeFmt} -";
                 var psiDj = new ProcessStartInfo
                 {
                     FileName = djxl,
@@ -2485,10 +2635,26 @@ namespace FfmpegGui.Services
         /// 构建管道中 ffmpeg 的色彩参数。
         /// 返回 (inputArgs, outputArgs)：inputArgs 放 -i 前作输入覆盖，outputArgs 放 -i 后。
         /// </summary>
-        private static (string inputArgs, string outputArgs) BuildPipeColorArgs(
+        /// <summary>
+        /// 构建 ffmpeg 管道色彩参数 + 位深保留 + ICC 提取。
+        /// 返回 (输入覆盖参数, 输出参数, 提取的 ICC 临时文件路径)。
+        /// iccPath 非 null 时调用方必须负责删除该临时文件。
+        /// </summary>
+        private static (string inputArgs, string outputArgs, string? iccPath) BuildPipeColorArgs(
             Models.FfmpegOptions options, string? inputPath = null)
         {
             string inputArgs = "", outputArgs = "";
+            string? iccPath = null;
+
+            // ── 位深保留：16-bit+ 输入显式指定 PNG 输出位深（防御性，确保不被降级）──
+            // 实测 ffmpeg PNG 编码器对 16-bit 输入默认输出 rgb48be（自动保留），
+            // 此处显式指定消除不确定性；8-bit 输入不指定（保持默认 rgb24）。
+            var depthMeta = default(FfmpegCommandBuilder.ColorMetadata);
+            if (!string.IsNullOrEmpty(inputPath))
+                depthMeta = FfmpegCommandBuilder.ProbeInputColorMetadata(inputPath);
+            if (depthMeta.bitDepth > 8)
+                outputArgs += $"-pix_fmt {(depthMeta.hasAlpha ? "rgba64le" : "rgb48le")} ";
+
             if (options.UseAdvancedColorParameters
                 && (!string.IsNullOrWhiteSpace(options.ColorPrimaries)
                  || !string.IsNullOrWhiteSpace(options.ColorTrc)
@@ -2527,10 +2693,15 @@ namespace FfmpegGui.Services
                 }
                 outputArgs += $"-colorspace {cs.Item2} ";
             }
-            // auto 模式：探测输入属性。16-bit 且无标签时默认 Rec.2020→sRGB 转换
+            // auto 模式：探测输入属性。16-bit 且无标签时优先探测 ICC，
+            // 有 ICC 则按其语义处理（sRGB 不转换 / 可映射空间 zscale 烘焙 / 不可映射则携带 ICC），
+            // 无 ICC 时回退到 Rec.2020→sRGB 转换（HDR 猜测）。
+            // Ultra HDR 解码输出（DecodedUltraHdrColorSpace）跳过：线性 HDR 帧已明确色彩语义，
+            // 由外部 cjxl 的 color_space/intensity_target 参数表达，不能被源 ICC/猜测烘焙覆盖。
             else if (!string.IsNullOrEmpty(inputPath)
                      && (string.IsNullOrWhiteSpace(options.ColorSpace)
-                         || options.ColorSpace.Equals("auto", StringComparison.OrdinalIgnoreCase)))
+                         || options.ColorSpace.Equals("auto", StringComparison.OrdinalIgnoreCase))
+                     && string.IsNullOrWhiteSpace(options.DecodedUltraHdrColorSpace))
             {
                 var hdrMeta = FfmpegCommandBuilder.ProbeInputColorMetadata(inputPath);
                 if (hdrMeta.bitDepth > 8)
@@ -2541,10 +2712,41 @@ namespace FfmpegGui.Services
                     }
                     else
                     {
-                        // 16-bit 无色彩标签（如 TIFF ICC）→ 默认 Rec.2020 转 sRGB
-                        // format=rgb48le 前缀（RGB 域转换）：规避 libzimg 对 4:2:0 的尺寸整除要求
-                        // （奇数尺寸 1027 错误）及 RGB 输入无标签时的 3074 错误
-                        outputArgs += "-vf \"format=rgb48le,zscale=primariesin=bt2020:primaries=bt709:transferin=bt709:transfer=iec61966-2-1\" ";
+                        // 无标签 16-bit → 探测输入 ICC，按其语义决定处理方式
+                        // Ultra HDR 解码输出场景跳过（线性 HDR 帧色彩由 DecodedUltraHdrColorSpace 表达）
+                        var (extractedIcc, iccDesc) = IccProfileService.ExtractIccToTempFile(inputPath);
+                        var guessed = IccProfileService.GuessColorSpace(iccDesc);
+                        if (extractedIcc != null && !string.IsNullOrEmpty(guessed)
+                            && string.IsNullOrWhiteSpace(options.DecodedUltraHdrColorSpace))
+                        if (extractedIcc != null && !string.IsNullOrEmpty(guessed))
+                        {
+                            var (primariesIn, transferIn) = MapIccToZscale(guessed);
+                            if (primariesIn == "bt709" && transferIn == "bt709")
+                            {
+                                // sRGB ICC → 无需转换（修正旧逻辑误判 sRGB 内容为 Rec.2020 的问题）
+                                // 像素保持原样，ICC 由编码器携带（iccx_pathname）
+                                iccPath = extractedIcc;
+                                outputArgs += "-colorspace bt709 ";
+                            }
+                            else if (primariesIn != null)
+                            {
+                                // 可映射的广色域 ICC（Display P3 / Rec.2020）→ zscale 烘焙到 sRGB
+                                outputArgs += $"-vf \"format=rgb48le,zscale=primariesin={primariesIn}:primaries=bt709:transferin={transferIn}:transfer=iec61966-2-1\" ";
+                                TryDeleteIcc(extractedIcc); // 已烘焙，无需携带
+                            }
+                            else
+                            {
+                                // 不可映射的 ICC（Adobe RGB / ProPhoto 等）→ 像素原样 + 携带 ICC，
+                                // 由 cjxl 嵌入输出，查看器按 ICC 正确解释
+                                iccPath = extractedIcc;
+                            }
+                        }
+                        else
+                        {
+                            // 无 ICC → 原逻辑：默认 Rec.2020 转 sRGB（HDR 猜测）
+                            TryDeleteIcc(extractedIcc);
+                            outputArgs += "-vf \"format=rgb48le,zscale=primariesin=bt2020:primaries=bt709:transferin=bt709:transfer=iec61966-2-1\" ";
+                        }
                     }
                     if (!string.IsNullOrEmpty(hdrMeta.colorTrc))
                         inputArgs += $"-color_trc {hdrMeta.colorTrc} ";
@@ -2552,19 +2754,40 @@ namespace FfmpegGui.Services
                         outputArgs += $"-colorspace {hdrMeta.colorSpace} ";
                 }
             }
-            return (inputArgs, outputArgs);
+            return (inputArgs, outputArgs, iccPath);
         }
 
-        /// <summary>构建 ffmpeg 从 stdin 读取 PPM 流的命令行参数</summary>
-        private static string BuildFfmpegPipeArguments(Models.FfmpegOptions options, string outputPath)
+        /// <summary>将 ICC 推断的色彩空间名映射为 zscale 的 primariesin/transferin 参数。返回 (null,null) 表示无法映射</summary>
+        private static (string? primariesIn, string? transferIn) MapIccToZscale(string guessed)
         {
-            // 以 stdin (-) 为输入，用 image2pipe 格式指定 PPM 流
+            return guessed switch
+            {
+                "sRGB" => ("bt709", "bt709"),
+                "Display P3" => ("smpte432", "bt709"),
+                "DCI-P3" => ("smpte431", "bt709"),
+                "Rec.2020" => ("bt2020", "bt709"),
+                "Rec.2100" => ("bt2020", "smpte2084"),
+                _ => (null, null)  // Adobe RGB / ProPhoto / ColorMatch 等无 zscale 命名 → 携带 ICC
+            };
+        }
+
+        private static void TryDeleteIcc(string? path)
+        {
+            try { if (!string.IsNullOrEmpty(path) && File.Exists(path)) File.Delete(path); } catch { }
+        }
+
+        /// <summary>构建 ffmpeg 从 stdin 读取 PPM/PAM 流的命令行参数</summary>
+        /// <param name="colorPrefix">输入色彩覆盖参数（如 -color_primaries bt2020 -color_trc smpte2084），
+        /// 必须放在 -i 之前才生效；PPM/PAM raw 流不携带任何色彩标签，必须显式声明</param>
+        private static string BuildFfmpegPipeArguments(Models.FfmpegOptions options, string outputPath, string? colorPrefix = null)
+        {
+            // 以 stdin (-) 为输入，用 image2pipe 格式指定 PPM/PAM 流
             var args = FfmpegCommandBuilder.BuildArguments(options, "-", outputPath);
-            // 插入 -f image2pipe 到 -i - 之前
+            // 插入 -f image2pipe（及色彩覆盖）到 -i - 之前
             var idx = args.IndexOf("-i \"-\"", StringComparison.Ordinal);
             if (idx >= 0)
             {
-                args = args.Substring(0, idx) + "-f image2pipe " + args.Substring(idx);
+                args = args.Substring(0, idx) + $"{colorPrefix}-f image2pipe " + args.Substring(idx);
             }
             else
             {
@@ -2572,7 +2795,7 @@ namespace FfmpegGui.Services
                 idx = args.IndexOf("-i -", StringComparison.Ordinal);
                 if (idx >= 0)
                 {
-                    args = args.Substring(0, idx) + "-f image2pipe " + args.Substring(idx);
+                    args = args.Substring(0, idx) + $"{colorPrefix}-f image2pipe " + args.Substring(idx);
                 }
             }
             return args;

@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- ═══════════════════════════════════════════════ -->
+  <!-- GainMap 测试宿主: 调用 GainMapEncoder/GainMapDecoder  -->
+  <!-- 验证纯 C# Ultra HDR 编解码链路的正确性           -->
+  <!-- ═══════════════════════════════════════════════ -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net11.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>GainMapTestHost</AssemblyName>
+    <RootNamespace>GainMapTestHost</RootNamespace>
+    <NoWarn>$(NoWarn);CS0618;MSB3884</NoWarn>
+    <!-- 被引用项目 FfmpegGui 是自包含 WinExe, 引用者必须同为自包含 -->
+    <SelfContained>true</SelfContained>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <!-- 测试宿主不需要 AOT/单文件 -->
+    <PublishTrimmed>false</PublishTrimmed>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 引用主项目以复用 GainMapEncoder/GainMapDecoder/服务 -->
+    <ProjectReference Include="..\..\src\FfmpegGui\FfmpegGui.csproj" />
+  </ItemGroup>
+
+</Project>

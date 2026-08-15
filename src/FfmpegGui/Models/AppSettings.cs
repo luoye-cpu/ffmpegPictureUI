@@ -24,6 +24,9 @@ namespace FfmpegGui.Models
         /// <summary>dngtool 可执行文件路径（LibRaw + DNG SDK，支持 DNG 1.7 JXL，留空则自动检测）</summary>
         public string? DngToolPath { get; set; }
 
+        /// <summary>Photoshop 可执行文件路径（留空则自动检测注册表/常见路径）</summary>
+        public string? PhotoshopPath { get; set; }
+
         // ═══════════════════════════════════════════
         // 旧字段（保留以兼容旧配置文件自动迁移）
         // ═══════════════════════════════════════════

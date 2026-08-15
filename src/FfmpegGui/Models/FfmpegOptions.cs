@@ -39,6 +39,12 @@ namespace FfmpegGui.Models
         public string? ColorTrc { get; set; }
         public string? ColorMatrix { get; set; }
         public int Threads { get; set; } = ComputeAutoThreads();
+        /// <summary>
+        /// 自动线程模式 (2026-08-15): 运行时按并发任务数动态分配。
+        /// 每任务线程 = max(1, ProcessorCount / 并发数) — 所有任务合计吃满核数,
+        /// 任务数超过核数时每任务 1 线程。手动/单线程模式为 false (用 Threads 固定值)。
+        /// </summary>
+        public bool AutoThreads { get; set; } = false;
         public MetadataMode MetadataMode { get; set; } = MetadataMode.PreserveAll;
         public string? Encoder { get; set; }
         /// <summary>编码器后端类型（由 UI 设置，供 QueueProcessor 调度）</summary>
@@ -63,10 +69,29 @@ namespace FfmpegGui.Models
         public bool CjxlProgressive { get; set; } = false;
         /// <summary>cjxl 光子噪声 ISO (0=禁用, 100-3200)</summary>
         public int CjxlPhotonNoiseIso { get; set; } = 0;
+
+        /// <summary>自动从输入图片 EXIF 元数据读取 ISO 用于光子噪声（每张图独立读取）</summary>
+        public bool CjxlAutoPhotonNoise { get; set; } = false;
         /// <summary>JXL 处理 Ultra HDR JPEG 时保留增益图（解码后重新编码），false=无损重封装忽略增益图</summary>
         public bool JxlPreserveUltrahdr { get; set; } = true;
         /// <summary>解码的 Ultra HDR 输出色彩空间提示（如 "Rec2100PQ"），用于 cjxl -x color_space=</summary>
         public string? DecodedUltraHdrColorSpace { get; set; }
+
+        // ── DNG 输出选项（dngtool 编码）──
+        /// <summary>DNG 压缩方式: 0=无损 JPEG, 1=JPEG XL (DNG 1.7)。默认 JXL（最大压缩度）</summary>
+        public int DngCompression { get; set; } = 1;
+        /// <summary>DNG JXL 质量 (0=无损, 1-100=有损)。默认 0=无损（最好画质）</summary>
+        public int DngJxlQuality { get; set; } = 0;
+        /// <summary>DNG 输出布局: false=保留 CFA (Bayer, 可重新去马赛克), true=线性 DNG (无 CFA, 体积更小)。默认保留 CFA（信息无损）</summary>
+        public bool DngLinear { get; set; } = false;
+        /// <summary>DNG JXL 编码努力 (effort 1-9, 默认 7=压缩率与速度平衡)</summary>
+        public int DngJxlEffort { get; set; } = 7;
+        /// <summary>DNG JXL 解码速度提示 (DNG 规范 1-4, 默认 1=最高压缩率)</summary>
+        public int DngJxlDecodeSpeed { get; set; } = 1;
+        /// <summary>DNG 高光模式 (LibRaw -H, 0=裁剪, 1=高光恢复, 2=无裁剪/blend)。默认 1=高光恢复</summary>
+        public int DngHighlightMode { get; set; } = 1;
+        /// <summary>DNG 位深: 8/16 (dngtool -4/-6 即 8/16bit, 默认 16 保留原始位深)</summary>
+        public int DngBitDepth { get; set; } = 16;
         public string? JpegHuffman { get; set; }
         /// <summary>JPEG DCT 算法: "int" / "fastint" / "float"</summary>
         public string? JpegDct { get; set; }
@@ -175,6 +200,19 @@ namespace FfmpegGui.Models
             if (total >= 12) return Math.Max(1, total - 4);
             if (total > 4)   return Math.Max(1, total - 2);
             return Math.Max(1, total - 1);
+        }
+
+        /// <summary>
+        /// 自适应线程分配 (2026-08-15): 多任务并行时每任务应分到的线程数。
+        /// 规则: max(1, 总核数 / 并发任务数) — 所有任务合计吃满核数;
+        ///       并发数 ≥ 核数时每任务 1 线程 (任务并行本身已占满核)。
+        /// 并发=1 → 全部核给单个任务 (多线程)。
+        /// </summary>
+        public static int ComputeAdaptiveThreads(int concurrency)
+        {
+            int total = Environment.ProcessorCount;
+            int per = concurrency > 0 ? total / concurrency : total;
+            return Math.Max(1, per);
         }
 
         /// <summary>

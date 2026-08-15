@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 
 namespace FfmpegGui.Services
@@ -29,8 +30,24 @@ namespace FfmpegGui.Services
         public EncoderBackend Backend { get; set; } = EncoderBackend.Ffmpeg;
         /// <summary>外部工具检测到的路径（仅外部工具有效）</summary>
         public string? DetectedPath { get; set; }
-        /// <summary>是否可用</summary>
-        public bool IsAvailable => Backend == EncoderBackend.Ffmpeg || !string.IsNullOrWhiteSpace(DetectedPath);
+        /// <summary>是否可用。外部工具需有路径；FFmpeg 编码器默认可用，但硬件编码器需排除未编译/验证失败</summary>
+        public bool IsAvailable
+        {
+            get
+            {
+                if (Backend != EncoderBackend.Ffmpeg)
+                    return !string.IsNullOrWhiteSpace(DetectedPath);
+                // FFmpeg 内置编码器：硬件编码器若未编译（NotCompiled）或运行时验证失败（Failed）则不可用
+                if (IsHardwareEncoder)
+                {
+                    return GpuAvailability is GpuEncoderAvailability.Verified
+                        or GpuEncoderAvailability.DeviceFoundUntested
+                        or GpuEncoderAvailability.CompiledNoDevice
+                        or GpuEncoderAvailability.Unknown;
+                }
+                return true;
+            }
+        }
 
         // ═══════════════════════════════════════════════
         // GPU 硬件编码器字段
@@ -121,15 +138,16 @@ namespace FfmpegGui.Services
             ["apng"] = new[] { "apng", "png" }
         };
 
-        // 格式 → 必需的 muxer 名称（ffmpeg 写文件时使用）
-        private static readonly Dictionary<string, string> FormatMuxerMap = new(StringComparer.OrdinalIgnoreCase)
+        // 格式 → 必需的 muxer 名称列表（任一存在即可；ffmpeg 各版本 muxer 名不同）
+        // ⚠️ ffmpeg 22 实测：无 jpegxl muxer，JXL 静态图用 image2 muxer + libjxl 编码器输出
+        private static readonly Dictionary<string, string[]> FormatMuxerMap = new(StringComparer.OrdinalIgnoreCase)
         {
-            ["jpg"] = "image2",    ["jpeg"] = "image2",
-            ["png"] = "apng",      ["apng"] = "apng",
-            ["webp"] = "webp",     ["avif"] = "avif",
-            ["tiff"] = "image2",   ["tif"] = "image2",
-            ["jxl"] = "jpegxl",    ["jxr"] = "image2",
-            ["bmp"] = "image2",    ["gif"] = "gif"
+            ["jpg"] = new[] { "image2" },    ["jpeg"] = new[] { "image2" },
+            ["png"] = new[] { "apng", "image2" }, ["apng"] = new[] { "apng", "image2" },
+            ["webp"] = new[] { "webp", "image2" }, ["avif"] = new[] { "avif", "image2" },
+            ["tiff"] = new[] { "image2" },   ["tif"] = new[] { "image2" },
+            ["jxl"] = new[] { "image2", "jpegxl" }, ["jxr"] = new[] { "image2" },
+            ["bmp"] = new[] { "image2" },    ["gif"] = new[] { "gif" }
         };
 
         // 格式 → 必需的 decoder 名称（ffmpeg 读文件时使用，null=内置支持）
@@ -442,19 +460,28 @@ namespace FfmpegGui.Services
             return _allDecoders;
         }
 
-        /// <summary>判断 ffmpeg 是否能写入指定图片格式（检查 muxer 可用性）</summary>
+        /// <summary>判断 ffmpeg 是否能写入指定图片格式（检查 muxer 可用性，任一候选匹配即可）</summary>
         public static async Task<bool> IsMuxerAvailableAsync(string format, string? ffmpegPath = null)
         {
-            if (!FormatMuxerMap.TryGetValue(format.ToLower(), out var muxerName))
+            if (!FormatMuxerMap.TryGetValue(format.ToLower(), out var muxerNames))
                 return false;
             var muxers = await GetAllMuxersAsync(ffmpegPath);
-            return muxers.Contains(muxerName);
+            return muxerNames.Any(m => muxers.Contains(m));
         }
 
-        /// <summary>判断 ffmpeg 是否能解码指定图片格式（检查 decoder 可用性）</summary>
+        /// <summary>判断 ffmpeg 是否能解码指定图片格式（检查 decoder 可用性）。
+        /// JXR 特殊处理：ffmpeg 无 jxr 解码器，但软件有 JxrDecApp 外部解码器（PLAN/artifacts）。</summary>
         public static async Task<bool> IsDecoderAvailableAsync(string format, string? ffmpegPath = null)
         {
-            if (!FormatDecoderMap.TryGetValue(format.ToLower(), out var decoderNames))
+            var fmt = format.ToLower();
+            // JXR：外部 JxrDecApp 是实际解码路径（ProcessJxrInputAsync），ffmpeg 内置 jxr 解码器几乎不存在
+            if (fmt == "jxr")
+            {
+                if (PlatformServices.TryFindInPlanFolder(PlatformServices.JxrDec) != null)
+                    return true;
+                return false;
+            }
+            if (!FormatDecoderMap.TryGetValue(fmt, out var decoderNames))
                 return true; // 未在映射表中 → 假定内置支持
             var decoders = await GetAllDecodersAsync(ffmpegPath);
             return decoderNames.Any(d => decoders.Contains(d));
@@ -484,8 +511,24 @@ namespace FfmpegGui.Services
             }
 
             // Muxer
-            var muxerOk = await IsMuxerAvailableAsync(fmt, ffmpegPath);
-            parts.Add(muxerOk ? "封装: ✅" : "封装: ❌ 不支持");
+            // ⚠️ 外部工具后端（dngtool/JxrEncApp/cjxl/cjpegli）不经过 ffmpeg muxer，
+            // 由外部工具直接写容器。ffmpeg 的 muxer 检查对它们无意义：
+            //   - DNG：dngtool -e 直接写 DNG（ffmpeg 无 dng muxer，但软件可正常输出）
+            //   - JXR：JxrEncApp 直接写 JXR（ffmpeg 的 image2 muxer 实际不参与）
+            // 因此仅对 FFmpeg 内置编码器检查 muxer，外部工具显示"封装: 外部工具"。
+            if (bestEncoder != null && bestEncoder.Backend == EncoderBackend.Ffmpeg)
+            {
+                var muxerOk = await IsMuxerAvailableAsync(fmt, ffmpegPath);
+                parts.Add(muxerOk ? "封装: ✅" : "封装: ❌ 不支持");
+            }
+            else if (bestEncoder != null)
+            {
+                parts.Add("封装: 外部工具");
+            }
+            else
+            {
+                parts.Add("封装: ❌ 不支持");
+            }
 
             // Decoder（仅特定格式需要检查）
             if (FormatDecoderMap.ContainsKey(fmt))
@@ -498,6 +541,13 @@ namespace FfmpegGui.Services
         }
 
         /// <summary>解析 ffmpeg 简单列表输出（-muxers / -decoders 等）为名称集合</summary>
+        /// <remarks>
+        /// ⚠️ ffmpeg 各版本输出格式不同（2026-08 实测）：
+        ///   ffmpeg 4/5/6  -muxers: " E..... webp   WebP file"（1 空格 + 6 标志 + 空格）
+        ///   ffmpeg 22     -muxers: "  E  webp          WebP"（2 空格 + E + 2 空格）—— 前缀仅 5 字符！
+        ///   -encoders/-decoders 均为 7 字符前缀（" V....D name"）
+        /// 因此不能硬编码前缀长度，改为正则提取每行第二个 token（名称）。
+        /// </remarks>
         private static async Task<HashSet<string>> ParseSimpleListAsync(
             string listType, string? ffmpegPath = null)
         {
@@ -525,17 +575,19 @@ namespace FfmpegGui.Services
                 var lines = output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
                 foreach (var line in lines)
                 {
-                    if (line.Length < 9) continue;
-                    var secondChar = line.Length > 1 ? line[1] : ' ';
-                    if (secondChar == '.' || secondChar == '-' || secondChar == '=') continue;
+                    if (string.IsNullOrWhiteSpace(line)) continue;
+                    if (line.StartsWith("---", StringComparison.Ordinal)) continue;
 
-                    var flags = line.Substring(0, Math.Min(7, line.Length));
-                    var remaining = line.Substring(flags.Length).TrimStart();
-                    var spaceIdx = remaining.IndexOf(' ');
-                    if (spaceIdx <= 0) continue;
-                    var name = remaining.Substring(0, spaceIdx).Trim();
-                    if (!string.IsNullOrEmpty(name))
-                        result.Add(name);
+                    // 数据行格式：<标志位> <名称> <描述>。名称 = 第二个 token。
+                    // 标题/说明行（"Formats:"、" D.. = Demuxing supported"）不会匹配或
+                    // 第二个 token 以 '=' 开头被过滤。
+                    var m = Regex.Match(line, @"^\s*\S+\s+(\S+)");
+                    if (!m.Success) continue;
+                    var name = m.Groups[1].Value;
+                    if (name.Length == 0) continue;
+                    // 过滤说明行（"D.. = ..." 的第二个 token 是 '='）与非法名称
+                    if (!char.IsLetterOrDigit(name[0])) continue;
+                    result.Add(name);
                 }
             }
             catch { }

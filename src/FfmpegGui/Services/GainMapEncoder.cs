@@ -83,12 +83,14 @@ public static class GainMapEncoder
                 int pixelCount = w * h;
                 float peakOverWhite = hdrPeakNits / Math.Max(sdrWhiteNits, 1f);
                 float[] normHdr = new float[pixelCount * 4];
+                // 归一化 (2026-08-15: SIMD 化前已是简单乘, JIT 自动向量化; 保持现状)
                 for (int i = 0; i < pixelCount * 4; i++)
                     normHdr[i] = hdrRgbaLinear[i] * peakOverWhite;
 
-                // ── 1. 分段 Reinhard 色调映射 → SDR 线性 ──
-                float[] sdrLinear = ReinhardToSdr(normHdr, w, h, headroom);
-                log?.Invoke("[GainMap] 色调映射完成 (分段 Reinhard)\n");
+                // ── 1. 分段 Reinhard 色调映射 → SDR 线性 (2026-08-15: SIMD 加速) ──
+                float[] sdrLinear = new float[pixelCount * 4];
+                SimdPixelOps.ReinhardToSdr(normHdr, sdrLinear, headroom);
+                log?.Invoke("[GainMap] 色调映射完成 (分段 Reinhard, SIMD)\n");
 
                 // ── 2. Base JPEG (jpegli + sRGB ICC) ──
                 var basePath = Path.Combine(tempDir, "base.jpg");
@@ -193,7 +195,7 @@ public static class GainMapEncoder
     // ═══════════════════════════════════════════
 
     /// <summary>
-    /// 逐像素增益比计算。
+    /// 逐像素增益比计算 (2026-08-15: 灰度分支 SIMD 加速)。
     /// 灰度: gain = log2(亮度(HDR)/亮度(SDR)); RGB: 三通道独立。
     /// 映射 [0, maxLog2Gain] → [0, 255] (Reinhard 保证增益 ≥ 1)。
     /// </summary>
@@ -203,29 +205,23 @@ public static class GainMapEncoder
         int pixelCount = w * h;
         int channels = multiChannel ? 3 : 1;
         byte[] gain = new byte[pixelCount * channels];
-        const float eps = 0.001f;
 
+        // 灰度: SIMD 批量 (亮度点积 + log2 多项式)
+        if (!multiChannel)
+        {
+            SimdPixelOps.ComputeGainMapGray(hdr, sdr, gain, maxLog2Gain);
+            return gain;
+        }
+
+        // RGB: 三通道独立 (标量; 通道数×log2 无向量收益)
+        const float eps = 0.001f;
         for (int i = 0; i < pixelCount; i++)
         {
             int o = i * 4;
-            float hR = hdr[o], hG = hdr[o + 1], hB = hdr[o + 2];
-            float sR = sdr[o], sG = sdr[o + 1], sB = sdr[o + 2];
-
-            if (!multiChannel)
-            {
-                // 亮度增益 (BT.709 权重 — HDR 和 SDR 都在同一线性空间)
-                float hLum = 0.2126f * hR + 0.7152f * hG + 0.0722f * hB;
-                float sLum = 0.2126f * sR + 0.7152f * sG + 0.0722f * sB;
-                float logGain = MathF.Log2(Math.Max(hLum / Math.Max(sLum, eps), 1.0f));
-                gain[i] = LogGainToByte(logGain, maxLog2Gain);
-            }
-            else
-            {
-                int off = i * 3;
-                gain[off] = LogGainToByte(MathF.Log2(Math.Max(hR / Math.Max(sR, eps), 1.0f)), maxLog2Gain);
-                gain[off + 1] = LogGainToByte(MathF.Log2(Math.Max(hG / Math.Max(sG, eps), 1.0f)), maxLog2Gain);
-                gain[off + 2] = LogGainToByte(MathF.Log2(Math.Max(hB / Math.Max(sB, eps), 1.0f)), maxLog2Gain);
-            }
+            int off = i * 3;
+            gain[off] = LogGainToByte(MathF.Log2(Math.Max(hdr[o] / Math.Max(sdr[o], eps), 1.0f)), maxLog2Gain);
+            gain[off + 1] = LogGainToByte(MathF.Log2(Math.Max(hdr[o + 1] / Math.Max(sdr[o + 1], eps), 1.0f)), maxLog2Gain);
+            gain[off + 2] = LogGainToByte(MathF.Log2(Math.Max(hdr[o + 2] / Math.Max(sdr[o + 2], eps), 1.0f)), maxLog2Gain);
         }
         return gain;
     }
@@ -281,21 +277,34 @@ public static class GainMapEncoder
     //  中间文件生成 (ffmpeg raw → PNG, cjpegli PNG → JPEG)
     // ═══════════════════════════════════════════
 
-    /// <summary>SDR 线性 RGBA → sRGB gamma → bgra8 raw → ffmpeg → PNG</summary>
+    /// <summary>SDR 线性 RGBA → sRGB gamma → bgra8 raw → ffmpeg → PNG (2026-08-15: SIMD 加速 FloatToSrgb8)</summary>
     private static async Task WriteBgra8PngAsync(float[] sdrLinear, int w, int h, string pngPath,
         string ffmpeg, Action<string>? log, CancellationToken ct)
     {
         int pixelCount = w * h;
         var raw = new byte[pixelCount * 4];
-        for (int i = 0; i < pixelCount; i++)
+        // SIMD 批量转换: 线性→sRGB 8-bit (R/G/B 三通道)
+        // ⚠️ pix_fmt=bgra 布局: 字节序 B,G,R,A (不是 RGBA!)
+        //   sdrLinear 是 RGBA 交错, 需重排: raw[0]=B, raw[1]=G, raw[2]=R
+        Span<float> rBuf = stackalloc float[512];
+        Span<byte> bBuf = stackalloc byte[512];
+        for (int baseIdx = 0; baseIdx < pixelCount; baseIdx += 128)
         {
-            int o = i * 4;
-            // sRGB gamma 编码
-            raw[o] = FloatToSrgb8(sdrLinear[o]);
-            raw[o + 1] = FloatToSrgb8(sdrLinear[o + 1]);
-            raw[o + 2] = FloatToSrgb8(sdrLinear[o + 2]);
-            raw[o + 3] = 255;
+            int chunk = Math.Min(128, pixelCount - baseIdx);
+            // 逐通道批量转换 (R→[2], G→[1], B→[0])
+            for (int c = 0; c < 3; c++)
+            {
+                int dstC = 2 - c;  // R(0)→2, G(1)→1, B(2)→0
+                for (int k = 0; k < chunk; k++)
+                    rBuf[k] = sdrLinear[(baseIdx + k) * 4 + c];
+                SimdPixelOps.FloatToSrgb8(rBuf[..chunk], bBuf[..chunk]);
+                for (int k = 0; k < chunk; k++)
+                    raw[(baseIdx + k) * 4 + dstC] = bBuf[k];
+            }
         }
+        // alpha = 255
+        for (int i = 0; i < pixelCount; i++)
+            raw[i * 4 + 3] = 255;
         await RunFfmpegRawToPngAsync(raw, w, h, "bgra", pngPath, ffmpeg, log, ct);
     }
 

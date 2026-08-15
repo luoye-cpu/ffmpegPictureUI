@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
+using FfmpegGui.Models;
 
 namespace FfmpegGui.Services
 {
@@ -100,7 +101,7 @@ namespace FfmpegGui.Services
             try
             {
                 var json = File.ReadAllText(filePath);
-                var dict = JsonSerializer.Deserialize<Dictionary<string, string>>(json);
+                var dict = JsonSerializer.Deserialize(json, AppJsonContext.Default.DictionaryStringString);
                 if (dict != null)
                 {
                     foreach (var kv in dict)
@@ -135,15 +136,23 @@ namespace FfmpegGui.Services
             try
             {
                 var asm = typeof(LocalizationService).Assembly;
+                // NativeAOT 友好：优先直接构造资源名（EmbeddedResource 编译期固定），
+                // 仅作为最后手段才枚举资源清单（GetManifestResourceNames 在 AOT 下可用但属反射）
+                var directName = $"FfmpegGui.Resources.Locales.{language}.json";
                 var resName = asm.GetManifestResourceNames()
-                    .FirstOrDefault(n => n.Contains(".Resources.Locales.", StringComparison.OrdinalIgnoreCase)
-                                         && n.EndsWith($".{language}.json", StringComparison.OrdinalIgnoreCase));
+                    .FirstOrDefault(n => n.Equals(directName, StringComparison.OrdinalIgnoreCase));
+                if (resName == null)
+                {
+                    resName = asm.GetManifestResourceNames()
+                        .FirstOrDefault(n => n.Contains(".Resources.Locales.", StringComparison.OrdinalIgnoreCase)
+                                             && n.EndsWith($".{language}.json", StringComparison.OrdinalIgnoreCase));
+                }
                 if (resName == null) return false;
 
                 using var stream = asm.GetManifestResourceStream(resName);
                 if (stream == null) return false;
                 using var reader = new StreamReader(stream);
-                var dict = JsonSerializer.Deserialize<Dictionary<string, string>>(reader.ReadToEnd());
+                var dict = JsonSerializer.Deserialize(reader.ReadToEnd(), AppJsonContext.Default.DictionaryStringString);
                 if (dict == null) return false;
 
                 _strings.Clear();

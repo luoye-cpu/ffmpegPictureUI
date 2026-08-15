@@ -1,6 +1,8 @@
 using Avalonia.Data;
 using Avalonia.Data.Converters;
+using Avalonia.Data.Core;
 using Avalonia.Markup.Xaml;
+using Avalonia.Markup.Xaml.MarkupExtensions.CompiledBindings;
 using FfmpegGui.Services;
 using System;
 using System.Collections.Generic;
@@ -32,10 +34,21 @@ namespace FfmpegGui
             {
                 Converter = new LocValueConverter(Key),
             };
-            mb.Bindings.Add(new Binding
+
+            // ── NativeAOT 安全：使用编译绑定（ClrPropertyInfo + CompiledBindingPathBuilder）──
+            // 与 Avalonia XAML 编译器生成的 AOT 安全代码路径一致，
+            // 避免 ReflectionBinding 的 IL2026/IL3050 警告及裁剪/动态代码风险。
+            var refreshProp = new ClrPropertyInfo(
+                nameof(LocalizationService.RefreshVersion),
+                getter: o => ((LocalizationService)o!).RefreshVersion,
+                setter: null, // 只读属性
+                typeof(int));
+            var compiledPath = new CompiledBindingPathBuilder()
+                .Property(refreshProp, PropertyInfoAccessorFactory.CreateInpcPropertyAccessor)
+                .Build();
+            mb.Bindings.Add(new CompiledBinding(compiledPath)
             {
                 Source = LocalizationService.Instance,
-                Path = "RefreshVersion",
                 Mode = BindingMode.OneWay
             });
             return mb;

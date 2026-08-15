@@ -25,6 +25,12 @@ namespace FfmpegGui.Services
 
             logCallback?.Invoke($"[pipeline] 尝试管道：{Path.GetFileName(djxl)} -> {Path.GetFileName(cjpeg)}\n");
 
+            // 探测 JXL 输入色彩与 alpha：PPM/PAM 流不携带色彩标签，
+            // 必须由 cjpegli -x color_space 显式标记（否则广色域 JXL 降级为 sRGB）
+            var jxlMeta = FfmpegCommandBuilder.ProbeInputColorMetadata(inputPath);
+            var pipeFmt = jxlMeta.hasAlpha ? "pam" : "ppm";
+            var colorSpace = ColorEncodingHelper.MapToCjxlColorSpace(jxlMeta);
+
             Process? procDj = null;
             Process? procCj = null;
             try
@@ -37,6 +43,8 @@ namespace FfmpegGui.Services
                 var distance = Models.FfmpegOptions.MapJpegliDistance(quality);
                 // 管道模式下不传递 --num_threads：部分版本不支持，且管道 I/O 非 CPU 密集
                 var cjArgs = $"- - --distance {distance:F1}";
+                if (!string.IsNullOrWhiteSpace(colorSpace))
+                    cjArgs += $" -x color_space={colorSpace}";
 
                 var psiCj = new ProcessStartInfo
                 {
@@ -57,8 +65,8 @@ namespace FfmpegGui.Services
                 }
                 PlatformServices.SetSafePriority(procCj, AppSettingsService.Current.FfmpegPriority);
 
-                // 启动 djxl：解码为 PNG 并通过 '-' 输出到 stdout
-                var djArgs = $"\"{inputPath}\" --output_format=png -";
+                // 启动 djxl：解码为 PPM/PAM 流并通过 '-' 输出到 stdout（raw 流下 -x 才生效）
+                var djArgs = $"\"{inputPath}\" --output_format={pipeFmt} -";
                 var psiDj = new ProcessStartInfo
                 {
                     FileName = djxl,

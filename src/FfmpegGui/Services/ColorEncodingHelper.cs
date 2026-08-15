@@ -44,12 +44,12 @@ namespace FfmpegGui.Services
         }
 
         /// <summary>
-        /// 根据探测到的色彩元数据直接映射（用于 auto 模式下 HDR 自动检测）。
+        /// 根据探测到的色彩元数据直接映射（用于 auto 模式下色彩自动检测）。
+        /// 不限制位深：8-bit 广色域（如 P3 sRGB 内容）也能正确标记，
+        /// PPM/PAM 管道流不携带色彩标签，必须依赖此映射显式标记。
         /// </summary>
         public static string? MapToCjxlColorSpace(FfmpegCommandBuilder.ColorMetadata hdrMeta)
         {
-            if (hdrMeta.bitDepth <= 8)
-                return null;
             return MapPrimariesTransfer(hdrMeta.colorPrimaries, hdrMeta.colorTrc);
         }
 

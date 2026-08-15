@@ -23,7 +23,7 @@ namespace FfmpegGui.Services
                 if (File.Exists(SettingsPath))
                 {
                     var json = File.ReadAllText(SettingsPath);
-                    var settings = JsonSerializer.Deserialize<AppSettings>(json);
+                    var settings = JsonSerializer.Deserialize(json, AppJsonContext.Default.AppSettings);
                     if (settings != null)
                     {
                         // ── v2.0 自动迁移旧字段 ──
@@ -73,6 +73,7 @@ namespace FfmpegGui.Services
                     JxlLibDir = _current.JxlLibDir,
                     WindowsArtifactsDir = _current.WindowsArtifactsDir,
                     DngToolPath = _current.DngToolPath,
+                    PhotoshopPath = _current.PhotoshopPath,
                     PreserveInputFolderStructure = _current.PreserveInputFolderStructure,
                     MaxQueueSize = _current.MaxQueueSize,
                     ThemeMode = _current.ThemeMode,
@@ -85,7 +86,9 @@ namespace FfmpegGui.Services
                     EnabledImageFormats = _current.EnabledImageFormats,
                     CacheDirectory = _current.CacheDirectory,
                 };
-                var json = JsonSerializer.Serialize(clone, new JsonSerializerOptions { WriteIndented = true, DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull });
+                // 序列化选项 (WriteIndented + 忽略 null) 已由 AppJsonContext 的
+                // JsonSourceGenerationOptions 声明，无需再传 JsonSerializerOptions
+                var json = JsonSerializer.Serialize(clone, AppJsonContext.Default.AppSettings);
                 File.WriteAllText(SettingsPath, json);
             }
             catch { }

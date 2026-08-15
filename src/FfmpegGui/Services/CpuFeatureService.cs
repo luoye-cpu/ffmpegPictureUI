@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
 using System.Runtime.InteropServices;
 
@@ -191,8 +192,15 @@ public static class CpuFeatureService
     }
 
     // ═══════════════════════════════════════════
-    // 反射辅助
+    // 反射辅助（NativeAOT 安全）
     // ═══════════════════════════════════════════
+    // 这些类型可能不存在于旧运行时（AVX512/AVX10/AMX/SVE），故用反射探测。
+    // NativeAOT 下安全：csproj 已通过 TrimmerRootAssembly 保留整个
+    // System.Runtime.Intrinsics 程序集，类型与 IsSupported 属性均不会被裁剪。
+    [UnconditionalSuppressMessage("Trimming", "IL2026",
+        Justification = "System.Runtime.Intrinsics 由 csproj TrimmerRootAssembly 整体保留，反射类型必存在")]
+    [UnconditionalSuppressMessage("Trimming", "IL2075",
+        Justification = "同上：root 程序集后 PublicProperties 元数据必然保留")]
     private static bool ProbeX86(Assembly asm, string typeName)
     {
         try
@@ -205,6 +213,10 @@ public static class CpuFeatureService
         catch { return false; }
     }
 
+    [UnconditionalSuppressMessage("Trimming", "IL2026",
+        Justification = "System.Runtime.Intrinsics 由 csproj TrimmerRootAssembly 整体保留，反射类型必存在")]
+    [UnconditionalSuppressMessage("Trimming", "IL2075",
+        Justification = "同上：root 程序集后 PublicProperties 元数据必然保留")]
     private static bool ProbeArm(Assembly asm, string typeName)
     {
         try

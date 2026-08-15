@@ -1,6 +1,6 @@
 # 📦 FFmpegPictureUI 打包规范
 
-> 版本: 1.1 | 最后更新: 2026-07-27 | 适用于 v1.5.1+ / For v1.5.1+
+> 版本: 1.1 | 最后更新: 2026-08-13 | 适用于 v1.5.2+ / For v1.5.2+
 
 ---
 
@@ -15,19 +15,21 @@
 | 字段 | 说明 | 示例 |
 |------|------|------|
 | `AppName` | 固定 `FFmpegPictureUI` | FFmpegPictureUI |
-| `Version` | 三位语义化版本号 | 1.5.1 |
+| `Version` | 三位语义化版本号 | 1.5.2 |
 | `Arch` | CPU 架构标识 | x64, arm64 |
-| `Variant` | 可选。`full`=含外部工具包，省略=仅程序 | full |
+| `Variant` | 可选。`full`=含 PLAN 外部工具包；省略=单文件（不含 PLAN） | full |
 | `Ext` | 压缩格式 | 7z, zip |
+
+> **注意**: 所有版本统一使用 **NativeAOT 编译**（无 .NET Runtime 依赖），两版本区别仅是否包含 `PLAN/` 外部工具文件夹。
 
 ### 命名示例
 
 | 产物 | 名称 |
 |------|------|
-| Windows x64 完整包（含 ffmpeg/cjxl/exiftool） | `FFmpegPictureUI-v1.5.1-x64-full.7z` |
-| Windows x64 精简包（仅程序） | `FFmpegPictureUI-v1.5.1-x64.7z` |
-| Linux ARM64 完整包 | `FFmpegPictureUI-v1.5.1-arm64-full.tar.gz` |
-| Linux ARM64 精简包 | `FFmpegPictureUI-v1.5.1-arm64.tar.gz` |
+| Windows x64 单文件版（NativeAOT，不含 PLAN） | `FFmpegPictureUI-v1.5.2-x64.7z` |
+| Windows x64 完整版（NativeAOT + PLAN 工具包） | `FFmpegPictureUI-v1.5.2-x64-full.7z` |
+| Linux ARM64 单文件版 | `FFmpegPictureUI-v1.5.2-arm64.tar.gz` |
+| Linux ARM64 完整版 | `FFmpegPictureUI-v1.5.2-arm64-full.tar.gz` |
 
 ---
 
@@ -38,7 +40,7 @@
 ### 2.1 目录结构
 
 ```
-FFmpegPictureUI-v1.5.1-x64-full/
+FFmpegPictureUI-v1.5.2-x64-full/
 ├── FfmpegGui.exe                    ← 主程序（由 dotnet publish 生成）
 ├── FfmpegGui.dll                    ← 主程序集
 ├── *.dll                            ← 运行时依赖
@@ -100,34 +102,55 @@ dotnet build src/FfmpegGui/FfmpegGui.csproj -c Release
 # 3. 准备外部工具包（放入 publish/PLAN/ 目录）
 ```
 
-### 3.2 发布命令
+### 3.2 发布命令（推荐使用 pack.ps1，一键 2 版本，全部 NativeAOT）
+
+```powershell
+# 单文件版（NativeAOT，不含 PLAN，需 .NET 11+ SDK 编译）
+.\pack.ps1 -Version "1.5.2" -Mode app
+
+# 完整版（NativeAOT + PLAN 组件包）
+.\pack.ps1 -Version "1.5.2" -Mode full
+
+# 一键全部 2 个版本（默认）
+.\pack.ps1 -Version "1.5.2" -Mode all
+```
+
+> **注**: NativeAOT 发布后 SkiaSharp/HarfBuzz/ANGLE 3 个原生渲染库（`libSkiaSharp.dll`/`libHarfBuzzSharp.dll`/`av_libglesv2.dll`）无法嵌入 exe，
+> 会以独立文件形式出现在程序目录（.NET 平台限制，`IncludeNativeLibrariesForSelfExtract` 仅对 CoreCLR 生效），
+> 打包时自动随目录一起压缩，属预期行为。
+
+手动发布命令（与 pack.ps1 等价）：
 
 ```bash
-# Windows x64 完整版
+# Windows x64 单文件版（NativeAOT）
 dotnet publish src/FfmpegGui/FfmpegGui.csproj `
     -c Release -r win-x64 `
-    --self-contained false `
+    -p:PublishAot=true `
+    -p:SelfContained=true `
     -p:PublishSingleFile=true `
-    -p:PublishTrimmed=true `
-    -o publish/build/FFmpegPictureUI-v1.5.1-x64-full/
+    -p:IlcOptimizationPreference=Speed `
+    -p:InvariantGlobalization=true `
+    -o publish/build/FFmpegPictureUI-v1.5.2-x64/
 
-# Windows x64 精简版（不含 PLAN）
+# Windows x64 完整版（NativeAOT，另需复制 PLAN/ 目录与使用说明）
 dotnet publish src/FfmpegGui/FfmpegGui.csproj `
     -c Release -r win-x64 `
-    --self-contained false `
+    -p:PublishAot=true `
+    -p:SelfContained=true `
     -p:PublishSingleFile=true `
-    -p:PublishTrimmed=true `
-    -o publish/build/FFmpegPictureUI-v1.5.1-x64/
+    -p:IlcOptimizationPreference=Speed `
+    -p:InvariantGlobalization=true `
+    -o publish/build/FFmpegPictureUI-v1.5.2-x64-full/
 ```
 
 ### 3.3 组装完整包
 
 ```bash
 # 将 PLAN 文件夹复制到完整包目录
-xcopy /E /I publish\PLAN publish\build\FFmpegPictureUI-v1.5.1-x64-full\PLAN\
+xcopy /E /I publish\PLAN publish\build\FFmpegPictureUI-v1.5.2-x64-full\PLAN\
 
 # 生成使用说明文档（见第四章）
-# → 输出到 publish\build\FFmpegPictureUI-v1.5.1-x64-full\PLAN\使用说明.txt
+# → 输出到 publish\build\FFmpegPictureUI-v1.5.2-x64-full\PLAN\使用说明.txt
 ```
 
 ### 3.4 压缩打包
@@ -140,12 +163,12 @@ xcopy /E /I publish\PLAN publish\build\FFmpegPictureUI-v1.5.1-x64-full\PLAN\
 #   -ms=on     固实压缩
 #   -mmt=1     单线程（压缩率最高）
 7z a -t7z -mx9 -md=3840m -mfb=273 -ms=on -mmt=1 `
-    publish\FFmpegPictureUI-v1.5.1-x64-full.7z `
-    publish\build\FFmpegPictureUI-v1.5.1-x64-full\*
+    publish\FFmpegPictureUI-v1.5.2-x64.7z `
+    publish\build\FFmpegPictureUI-v1.5.2-x64\*
 
 7z a -t7z -mx9 -md=3840m -mfb=273 -ms=on -mmt=1 `
-    publish\FFmpegPictureUI-v1.5.1-x64.7z `
-    publish\build\FFmpegPictureUI-v1.5.1-x64\*
+    publish\FFmpegPictureUI-v1.5.2-x64-full.7z `
+    publish\build\FFmpegPictureUI-v1.5.2-x64-full\*
 ```
 
 **进程优先级（自动最高）**
@@ -186,8 +209,7 @@ Invoke-7zMax 'a -t7z -mx9 -md=3840m -mfb=273 -ms=on -mmt=1 "out.7z" *'
 
 📌 运行要求
   • Windows 10/11 或更高版本
-  • .NET 10.0 运行时（如未安装请先下载）
-    下载地址: https://dotnet.microsoft.com/download/dotnet/10.0
+  • 无需安装任何运行环境（NativeAOT 独立编译）
 
 🚀 快速开始
   1. 解压所有文件到任意目录
@@ -227,7 +249,7 @@ Invoke-7zMax 'a -t7z -mx9 -md=3840m -mfb=273 -ms=on -mmt=1 "out.7z" *'
 
   Q: 迁移到其他电脑？
   A: 将整个程序文件夹复制到目标电脑即可（绿色免安装）。
-     确保已安装 .NET 10 运行时。
+     无需安装 .NET 运行时（NativeAOT 已内置）。
 
 📞 反馈与交流
   QQ 群: 754439779
@@ -251,9 +273,9 @@ Invoke-7zMax 'a -t7z -mx9 -md=3840m -mfb=273 -ms=on -mmt=1 "out.7z" *'
 
 `src/FfmpegGui/FfmpegGui.csproj`:
 ```xml
-<Version>1.5.1</Version>
-<AssemblyVersion>1.5.1.0</AssemblyVersion>
-<FileVersion>1.5.1.0</FileVersion>
+<Version>1.5.2</Version>
+<AssemblyVersion>1.5.2.0</AssemblyVersion>
+<FileVersion>1.5.2.0</FileVersion>
 ```
 
 ### 5.2 更新流程
@@ -261,7 +283,7 @@ Invoke-7zMax 'a -t7z -mx9 -md=3840m -mfb=273 -ms=on -mmt=1 "out.7z" *'
 1. 修改 `.csproj` 中的 `<Version>` 标签
 2. 更新 `README.md` 中的版本号
 3. 执行打包流程
-4. 在 GitHub Releases 中创建对应 tag: `v1.5.1`
+4. 在 GitHub Releases 中创建对应 tag: `v1.5.2`
 
 ---
 
@@ -277,4 +299,4 @@ Invoke-7zMax 'a -t7z -mx9 -md=3840m -mfb=273 -ms=on -mmt=1 "out.7z" *'
 
 ---
 
-> 📅 本规范自 v1.5.1 起生效。历史版本保留旧命名规则以兼容已发布 Release。
+> 📅 本规范自 v1.5.2 起生效。历史版本保留旧命名规则以兼容已发布 Release。

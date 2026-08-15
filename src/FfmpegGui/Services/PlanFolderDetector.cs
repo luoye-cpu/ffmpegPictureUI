@@ -9,7 +9,7 @@ namespace FfmpegGui.Services;
 /// 
 /// PLAN 文件夹结构约定：
 ///   PLAN/
-///   ├── ffmpeg-full/              ← ffmpeg.exe, ffprobe.exe
+///   ├── ffmpeg-full*/            ← ffmpeg.exe, ffprobe.exe（目录名包含 "ffmpeg-full" 即可，如 ffmpeg-full-2026.7.24）
 ///   ├── jxl/                      ← bin/cjxl.exe, bin/djxl.exe, bin/cjpegli.exe
 ///   ├── exiftool/                 ← exiftool.exe
 ///   ├── artifacts/                ← ultrahdr_app.exe, JxrEncApp.exe, avifenc.exe
@@ -51,9 +51,9 @@ public static class PlanFolderDetector
 
             result.PlanPath = planPath;
 
-            // ── 1) ffmpeg-full ──
-            var ffmpegDir = Path.Combine(planPath, "ffmpeg-full");
-            if (Directory.Exists(ffmpegDir))
+            // ── 1) ffmpeg-full（目录名包含 "ffmpeg-full" 即可，如 ffmpeg-full-2026.7.24）──
+            var ffmpegDir = PlatformServices.FindPlanSubDir(planPath, "ffmpeg-full");
+            if (ffmpegDir != null)
             {
                 // 验证目录中存在 ffmpeg
                 var ffmpegExe = Path.Combine(ffmpegDir, PlatformServices.Ffmpeg);

@@ -103,10 +103,13 @@ public static class RawService
     /// <param name="outputTiffPath">输出 TIFF 路径</param>
     /// <param name="log">日志回调</param>
     /// <param name="ct">取消令牌</param>
+    /// <param name="highlightMode">高光模式 (LibRaw -H: 0=裁剪, 1=恢复, 2=blend)。2026-08-14 起从 UI 传递。</param>
+    /// <param name="threads">多线程数 (0=自动用硬件并发, 1=单线程)。2026-08-15 新增。</param>
     /// <returns>成功返回 true</returns>
     public static async Task<bool> PreProcessAsync(
         string rawPath, string outputTiffPath,
-        Action<string>? log = null, CancellationToken ct = default)
+        Action<string>? log = null, CancellationToken ct = default,
+        int highlightMode = 1, int threads = 0)
     {
         if (!IsAvailable)
         {
@@ -117,9 +120,12 @@ public static class RawService
 
         // ── dngtool: 唯一引擎 (LibRaw + DNG SDK, 支持 DNG 1.7 JXL) ──
         log?.Invoke($"[RAW] dngtool 去马赛克: {Path.GetFileName(rawPath)}\n");
-        // 去马赛克参数: -d 线性 RGB, -T TIFF, -o 0 相机空间, -q 3 AHD, -W 相机白平衡, -H 1 高光, -6 16-bit
+        // 去马赛克参数: -d 线性 RGB, -T TIFF, -o 0 相机空间, -q 3 AHD, -W 相机白平衡, -H <mode> 高光, -6 16-bit
         // dngtool 扩展: -i 输入, -O 输出
-        var dngArgs = $"-d -T -o 0 -q 3 -W -H 1 -6 -i \"{rawPath}\" -O \"{outputTiffPath}\"";
+        var dngArgs = $"-d -T -o 0 -q 3 -W -H {highlightMode} -6 -i \"{rawPath}\" -O \"{outputTiffPath}\"";
+        // 多线程 (2026-08-15): 0=自动(硬件并发), 1=单线程, N=指定
+        if (threads > 0)
+            dngArgs += $" -threads {threads}";
         log?.Invoke($"[RAW] dngtool {dngArgs}\n");
 
         var ok = await RunProcessAsync(_detectedPath!, dngArgs, outputTiffPath, "dngtool", log, ct);
@@ -142,11 +148,19 @@ public static class RawService
     /// <param name="jxlQuality">JXL 质量 (0=无损, 1-100=有损)</param>
     /// <param name="log">日志回调</param>
     /// <param name="ct">取消令牌</param>
+    /// <param name="linear">true=输出线性 DNG（无 CFA，体积更小），false=保留 CFA (Bayer)</param>
+    /// <param name="jxlEffort">JXL 编码努力 (1-9, 默认 7)</param>
+    /// <param name="jxlDecodeSpeed">JXL 解码速度提示 (DNG 规范 1-4, 默认 4)</param>
+    /// <param name="bitDepth">输出位深 (8 或 16)</param>
+    /// <param name="highlightMode">高光模式 (LibRaw -H: 0=裁剪, 1=恢复, 2=blend)</param>
+    /// <param name="threads">多线程数 (0=自动用硬件并发, 1=单线程)。2026-08-15 新增。</param>
     /// <returns>成功返回 true</returns>
     public static async Task<bool> EncodeToDngAsync(
         string rawPath, string outputDngPath,
         int compression = 0, int jxlQuality = 0,
-        Action<string>? log = null, CancellationToken ct = default)
+        Action<string>? log = null, CancellationToken ct = default,
+        bool linear = false, int jxlEffort = 7, int jxlDecodeSpeed = 4,
+        int bitDepth = 16, int highlightMode = 1, int threads = 0)
     {
         if (!IsDngTool)
         {
@@ -165,11 +179,27 @@ public static class RawService
         {
             args += " -lossless";
         }
+        if (linear)
+            args += " -linear";
+        // 位深: dngtool 的 -4/-6 对应 8/16-bit（-6 是默认，仅 8-bit 时显式传 -4）
+        if (bitDepth <= 8)
+            args += " -4";
+        // 高光模式 (LibRaw -H, 仅解码阶段有效)
+        if (highlightMode != 1)
+            args += $" -H {highlightMode}";
+        // JXL 编码参数（dngtool ≥ 2026-08-13 支持 -effort/-decode_speed）
+        if (compression == 1)
+        {
+            args += $" -effort {jxlEffort} -decode_speed {jxlDecodeSpeed}";
+        }
+        // 多线程 (2026-08-15): 0=自动(硬件并发), 1=单线程, N=指定
+        if (threads > 0)
+            args += $" -threads {threads}";
         log?.Invoke($"[RAW] dngtool {args}\n");
 
         var ok = await RunProcessAsync(_detectedPath!, args, outputDngPath, "dngtool-e", log, ct);
         if (ok)
-            log?.Invoke($"[RAW] ✅ DNG 编码完成 ({(compression == 1 ? "JXL" : "无损 JPEG")})\n");
+            log?.Invoke($"[RAW] ✅ DNG 编码完成 ({(compression == 1 ? "JXL" : "无损 JPEG")}{(linear ? ", 线性" : ", CFA")})\n");
         return ok;
     }
 
