@@ -1,7 +1,7 @@
 # 🖼️ FFmpegPictureUI — FFmpeg 图片转换器
 
-**v1.5.2** — 2026-08-13 Release | Cross-platform batch image/animation/video converter built on Avalonia UI.
-基于 Avalonia UI 的跨平台批量图片/动图/视频转换工具，封装 `ffmpeg`/`ffprobe` + 外部编码器 (`cjxl`/`djxl`/`cjpegli`/`ultrahdr_app`/`JxrEncApp`/`JxrDecApp`).
+**v1.5.3** — 2026-08-15 Release | Cross-platform batch image/animation/video converter built on Avalonia UI.
+基于 Avalonia UI 的跨平台批量图片/动图/视频转换工具，封装 `ffmpeg`/`ffprobe` + 外部编码器 (`cjxl`/`djxl`/`cjpegli`/`JxrEncApp`/`JxrDecApp`).
 
 QQ 交流群：754439779 | [点击加群](https://qm.qq.com/q/M2181PvCkW)
 
@@ -22,7 +22,7 @@ QQ 交流群：754439779 | [点击加群](https://qm.qq.com/q/M2181PvCkW)
 | **Batch queue / 批量队列** | Drag & drop; configurable concurrency (1–128); stop-after-queue |
 | **Metadata editing / 元数据编辑** | ~90-field panel via exiftool; 9 categories (Basic, DateTime, Camera, Shooting, GPS, Image, IPTC, XMP, Color); double-click file opens editor — ~90字段9大分类exiftool编辑器，双击文件打开 |
 | **Privacy cleaning / 隐私清理** | Strip GPS, timestamps, camera info, all EXIF, XMP |
-| **Quality analysis / 质量分析** | SSIM + PSNR post-encode; auto-detects lossless |
+| **Quality analysis / 质量分析** | SSIM + PSNR post-encode; auto-detects lossless; **.NET native PSNR** (AVX512/AVX2/SSE2, 20× faster than ffmpeg filter); **target-domain analysis** (RGB-native formats → RGB, YUV-native → YUV, matches ffmpeg 0.0000dB); **bit-depth normalized** (8/10/16-bit, MaxValue scaling) |
 | **Presets / 预设** | 29 built-in presets with secondary management window; save/load/import user presets — 29个内置预设+二级管理窗口，支持保存/加载/导入 |
 | **Dual theme / 双色主题** | Dark/Light mode; queue text adapts — 队列文字颜色自适应主题 |
 | **Bilingual UI / 双语界面** | 中文 / English one-click toggle, top-right button; JSON resource files — 右上角按钮一键切换 |
@@ -45,25 +45,7 @@ QQ 交流群：754439779 | [点击加群](https://qm.qq.com/q/M2181PvCkW)
 | `avifenc` | ⚪ Optional / 可选 | GIF → AVIF two-step encoding with alpha preservation |
 | `dngtool` | ⭐ Recommended / 推荐 | DNG 1.7 JXL 解码/编码, RAW 去马赛克 (LibRaw + Adobe DNG SDK) |
 | `exiftool` | ⚪ Optional / 可选 | Metadata editing, privacy cleaning, ICC profile embedding |
-| `Photoshop` | ⚪ Optional / 可选 | ACR 兼容性验证 (dngtool 产物打开/渲染, ExtendScript 自动化) |
 
-> **v1.5.3** — 新增 RAW 质量验证：
-> - 🖼 **Photoshop 验证** — 自动检测本机 PS 安装（注册表/常见路径），ExtendScript 打开 dngtool 输出的 DNG
->   验证 ACR 兼容性，可渲染 PNG 参考图。`tests/scripts/run-ps-verify.ps1` 一键运行。
->   - ⚠️ 注意: PS 的 `app.quit()` 不终止进程，验证调用前会自动清理残留 Photoshop 实例
-
-> **v1.5.0** — 外部工具面板设计为 3 列水平布局：
-> - 📦 **JXL 参考库**（文件夹）— 自动检测 cjxl / djxl / cjpegli
-> - 🏷 **exiftool**（文件）— 元数据编辑与 ICC 嵌入
-> - 🔧 **artifacts**（文件夹）— 自动检测 JxrEncApp / JxrDecApp / avifenc / dngtool
->
-> 紧凑状态栏默认隐藏，后台检测完成后自动显示全部工具状态（✅/❌）。PLAN 便携包自动识别，支持手动指定路径。
->
-> **Gain Map (Ultra HDR) JPEG** — 由内置纯托管编码器实现（`GainMapEncoder`，分段 Reinhard 色调映射 +
-> cjpegli 编码基础图与增益图 + MPF/XMP/ISO 21496-1 打包），**无需外部工具**。
-> `ultrahdr_app` (Google libultrahdr) 不再随包发布，仅作参考工具（可手动放入 artifacts 目录，软件不再调用）。
-
----
 
 ## 🚀 Quick Start / 快速开始
 
@@ -81,7 +63,7 @@ dotnet build src/FfmpegGui/FfmpegGui.csproj -c Release
 dotnet run --project src/FfmpegGui/FfmpegGui.csproj
 ```
 
-Or download from [Releases / 发布页](https://github.com/luoye-cpu/PLAN-1/releases).
+Or download from [Releases / 发布页](https://github.com/luoye-cpu/ffmpegPictureUI/releases).
 
 ---
 
@@ -123,7 +105,8 @@ ffmpegPictureUI/
 │   │                     ColorEncodingHelper, IccProfileService,
 │   │                     PresetManagerService, RawService, UltrahdrService,
 │   │                     GpuCapabilityService, PlatformServices,
-│   │                     LocalizationService, PsRenderService (Photoshop ACR 验证)
+│   │                     LocalizationService, PsRenderService, PsnrCalculator,
+│   │                     SimdPixelOps (Photoshop ACR 验证, .NET 原生 PSNR, SIMD)
 │   ├── Controls/         MetadataEditor
 │   ├── Resources/Locales/ zh-CN.json, en-US.json
 │   ├── LocExtension.cs   XAML localization markup extension
@@ -141,19 +124,27 @@ ffmpegPictureUI/
 
 ## 📝 Changelog / 更新日志
 
-### v1.5.3 (2026-08-15) — RAW 质量验证 / RAW Quality Verification
+### v1.5.3 (2026-08-15) — 原生 PSNR + 目标域质量分析 + SIMD 加速
 
-**🖼 Photoshop ACR 兼容性验证**
-- 新增 `PsRenderService` — 自动检测本机 Photoshop（注册表 + 常见路径）
-- ExtendScript 打开 dngtool 输出的 DNG（无损 JPEG / JXL 压缩）验证 ACR 兼容性，可渲染 PNG 参考图
-- `tests/scripts/run-ps-verify.ps1` 一键验证脚本（实测 PS 2026 打开 9600×6376 CFA DNG ✅）
-- ⚠️ 已知行为: PS `app.quit()` 不终止进程，调用前自动清理残留实例（避免脚本排队超时）
+**📊 .NET 原生 PSNR（替代 ffmpeg psnr filter）**
+- 新增 `PsnrCalculator.cs` — 纯 .NET 实现，**无外部依赖**，60MP 大图 **20× 加速**（359ms→17.6ms）
+- 自动 dispatch: AVX512BW → AVX2 → SSE2 → 标量回退
+- 位深归一化: `MaxValue = (1 << bitsPerSample) - 1`，8/10/16-bit 统一计算
+- 多帧语义: `average` = 全局 MSE 聚合，`min`/`max` = 逐帧极值（与 ffmpeg 一致）
 
-**📊 PSNR/SSIM 回归断言**
-- `run-pipeline-tests.ps1` 新增「无损 vs 有损 JXL q90」PSNR ≥ 33dB + SSIM ≥ 0.88 断言
-- 实测: 01 线性样本 47.4dB / 0.991，03 Bayer 样本 35.6dB / 0.906（同管线同解码参数）
+**🎯 目标域质量分析（彻底解决跨格式域偏差）**
+- RGB 系格式（PNG/TIFF/JXL/APNG/GIF/BMP）→ RGB 域（rgb24/rgb48le）
+- YUV 系格式（JPEG/WebP/AVIF/HEIC/JXR）→ YUV 域（yuv444p/yuv444p16le）
+- 与 ffmpeg psnr filter **逐位一致（0.0000dB，D37 断言）**
+- `scale=out_range=pc` 统一 full range（消除 limited vs full 值域错乱）
+- UI 质量分析结果标注 `(RGB)` / `(YUV)` 域
 
----
+**⚡ GainMap SIMD 加速**
+- 新增 `SimdPixelOps.cs` — 4 个热点，实测数据驱动取舍
+- `FloatToSrgb8` AVX2 **2.5×**（0.15→0.06ms，1024 项 LUT + gather 插值）
+- 已集成 GainMapEncoder（ReinhardToSdr / WriteBgra8PngAsync 批量转换 / ComputeGainMap 灰度）
+- 已集成 GainMapDecoder（SrgbToLinearRgba）
+
 
 ### v1.5.2 (2026-08-13) — 管线修复与元数据增强 / Pipeline Fix & Metadata Enhancements
 
