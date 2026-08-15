@@ -6,8 +6,10 @@
     xmlns:local="using:FfmpegGui.Models"
     xmlns:ext="using:FfmpegGui"
     Title="{ext:Loc app.title}"
-    Height="780"
-    Width="1020"
+    Height="850"
+    Width="1100"
+    MinHeight="700"
+    MinWidth="900"
     WindowStartupLocation="CenterScreen">
   <Grid>
     <!-- ═══════════ 完整模式主界面 ═══════════ -->
@@ -17,12 +19,23 @@
             CornerRadius="10" BoxShadow="0 2 12 0 #18000000"
             Background="{DynamicResource SystemControlBackgroundCardHighBrush}">
     <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto" ColumnDefinitions="*,Auto">
-        <!-- Row 0: FFmpeg 路径 + 语言/GPU/主题 (2026-08-15: 输出目录移至 Row 1 减拥挤) -->
-        <StackPanel Grid.Row="0" Grid.Column="0" Orientation="Horizontal" Spacing="10">
+        <!-- Row 0: FFmpeg 目录 + 输出目录 同一行（2026-08-16: 合并两行节省纵向空间；
+             Grid 弹性列宽：输入框随窗口伸缩，任何窗口宽度均不溢出（修复窄窗口下
+             固定 220px 溢出到右侧按钮区的缺陷）。
+             2026-08-16 二次修复: 修复列定义与元素错位（输出目录标签曾落入 12px 固定列、
+             输入框落入 Auto 列导致宽度塌陷）→ 输出目录列 1.4 倍权重 -->
+        <Grid Grid.Row="0" Grid.Column="0" ColumnDefinitions="Auto,*,Auto,Auto,1.4*,Auto">
           <TextBlock Text="{ext:Loc ffmpeg.dir}" VerticalAlignment="Center" FontSize="13"/>
-          <TextBox x:Name="FfmpegPathBox" Width="280" VerticalAlignment="Center" IsReadOnly="True"/>
-          <Button Content="{ext:Loc browse}" Click="BrowseFfmpeg_Click" Padding="8,4"/>
-        </StackPanel>
+          <TextBox x:Name="FfmpegPathBox" Grid.Column="1" MinWidth="120" Margin="10,0,0,0"
+                   VerticalAlignment="Center" IsReadOnly="True"
+                   ToolTip.Tip="{Binding Text, ElementName=FfmpegPathBox}"/>
+          <Button Grid.Column="2" Content="{ext:Loc browse}" Click="BrowseFfmpeg_Click" Padding="8,4" Margin="6,0,0,0"/>
+          <TextBlock Grid.Column="3" Text="{ext:Loc output.dir}" VerticalAlignment="Center" FontSize="13" Margin="16,0,10,0"/>
+          <TextBox x:Name="OutputDirBox" Grid.Column="4" MinWidth="160" Margin="0,0,0,0"
+                   VerticalAlignment="Center" IsReadOnly="True"
+                   ToolTip.Tip="{Binding Text, ElementName=OutputDirBox}"/>
+          <Button Grid.Column="5" Content="{ext:Loc browse}" Click="BrowseOutputDir_Click" Padding="8,4" Margin="6,0,0,0"/>
+        </Grid>
         <StackPanel Grid.Row="0" Grid.Column="1" Orientation="Horizontal" Spacing="6" Margin="4,0,0,0">
           <Button x:Name="CacheToggleBtn" Content="🗂" FontSize="11" Padding="6,2"
                   ToolTip.Tip="缓存目录设置（点击展开）" Click="ToggleCachePanel_Click"/>
@@ -34,11 +47,8 @@
                   ToolTip.Tip="切换深色/浅色模式" Click="ThemeToggle_Click"/>
         </StackPanel>
 
-        <!-- Row 1: 输出目录 + 外部工具折叠 (2026-08-15: 输出目录从 Row 0 移下) -->
+        <!-- Row 1: 保持目录结构 + 外部工具 + SIMD 开关（路径输入已上移 Row 0） -->
         <StackPanel Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2" Orientation="Horizontal" Spacing="10" Margin="0,6,0,0">
-          <TextBlock Text="{ext:Loc output.dir}" VerticalAlignment="Center" FontSize="13"/>
-          <TextBox x:Name="OutputDirBox" Width="240" VerticalAlignment="Center" IsReadOnly="True"/>
-          <Button Content="{ext:Loc browse}" Click="BrowseOutputDir_Click" Padding="8,4"/>
           <CheckBox x:Name="PreserveInputStructure" Content="{ext:Loc keep.dir.structure}" VerticalAlignment="Center" Margin="4,0,0,0"/>
           <Separator Width="16" Background="Transparent"/>
           <Button x:Name="ToggleToolsBtn" Content="{ext:Loc external.tools}" FontSize="11" Padding="6,2"
@@ -338,6 +348,15 @@
               <sys:String>bt2020nc</sys:String>
             </ComboBox>
             
+            <!-- 色彩范围（TV/PC）: 仅 YUV 输出格式支持（AVIF），不支持的格式整组隐藏（2026-08-16）
+                 auto=跟随输入范围（RGB/yuvj→pc，yuv limited→tv） -->
+            <TextBlock x:Name="ColorRangeLabel" Text="{ext:Loc color.range}" ToolTip.Tip="auto(跟随输入)=按输入范围自动选择&#x0a;tv=视频范围(limited 16-235)&#x0a;pc=全范围(full 0-255)"/>
+            <ComboBox x:Name="ColorRangeCombo">
+              <sys:String>auto（跟随输入）</sys:String>
+              <sys:String>tv（视频范围）</sys:String>
+              <sys:String>pc（全范围）</sys:String>
+            </ComboBox>
+            
             <!-- CICP 标记（始终启用以保证准确色彩） -->
             <TextBlock Text="{ext:Loc cicp.always.on}" FontSize="10"
                        Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"
@@ -434,7 +453,7 @@
             <!-- WebP -->
             <StackPanel x:Name="WebpCodecPanel" IsVisible="False" Spacing="4">
               <TextBlock Text="预设 (preset)"/>
-              <ComboBox x:Name="WebpPresetCombo">
+              <ComboBox x:Name="WebpPresetCombo" SelectedIndex="2">
                 <sys:String>none</sys:String><sys:String>default</sys:String><sys:String>picture</sys:String>
                 <sys:String>photo</sys:String><sys:String>drawing</sys:String><sys:String>icon</sys:String>
                 <sys:String>text</sys:String>
@@ -638,7 +657,8 @@
                 <sys:String>auto</sys:String><sys:String>int</sys:String>
                 <sys:String>fastint</sys:String><sys:String>float</sys:String>
               </ComboBox>
-              <!-- JPEG 渐进模式 (mjpeg 不支持，仅 cjpegli 有独立面板) -->
+              <!-- JPEG 渐进: ffmpeg mjpeg 编码器不支持渐进输出（源码确认仅基线），
+                   该值仅供 cjpegli/Gain Map 路径使用（QueueProcessor 转换），故保持隐藏 -->
               <TextBlock Text="渐进模式 (progressive)" Margin="0,4,0,0" IsVisible="False"/>
               <ComboBox x:Name="JpegProgressiveCombo" SelectedIndex="1" FontSize="11" IsVisible="False">
                 <sys:String>自动</sys:String><sys:String>基线/标准 (兼容性)</sys:String>
@@ -653,14 +673,18 @@
                 <sys:String>422</sys:String><sys:String>420</sys:String><sys:String>440</sys:String>
               </ComboBox>
               <TextBlock Text="渐进模式 (progressive)" Margin="0,4,0,0"/>
-              <ComboBox x:Name="JpegliProgressiveCombo" SelectedIndex="0">
+              <ComboBox x:Name="JpegliProgressiveCombo" SelectedIndex="2">
                 <sys:String>自动</sys:String><sys:String>基线/标准 (兼容性)</sys:String>
                 <sys:String>渐进式 (高性能)</sys:String>
               </ComboBox>
-              <CheckBox x:Name="JpegliOptimizeCheck" Content="优化 Huffman 编码 (--optimize)" IsChecked="True" Margin="0,4,0,0"/>
-              <CheckBox x:Name="JpegliAdaptiveQuantCheck" Content="自适应量化 (--adaptive_q)" IsChecked="True"/>
-              <TextBlock Text="编码器后端 (--jpeg_encoder)" Margin="0,4,0,0"/>
-              <ComboBox x:Name="JpegliEncoderBackendCombo" SelectedIndex="0">
+              <CheckBox x:Name="JpegliOptimizeCheck" Content="优化 Huffman 编码" IsChecked="True" Margin="0,4,0,0"
+                        ToolTip.Tip="关闭时禁用 Huffman 表优化（--fixed_code，体积略大但速度更快）"/>
+              <CheckBox x:Name="JpegliAdaptiveQuantCheck" Content="自适应量化" IsChecked="True"
+                        ToolTip.Tip="关闭时禁用自适应量化（--noadaptive_quantization）"/>
+              <!-- 2026-08-16: 当前 cjpegli 版本仅支持 libjpeg 后端（jpeg_encoder/psnr 参数已移除），
+                   后端选择与 PSNR 面板隐藏，避免误导用户 -->
+              <TextBlock Text="编码器后端 (--jpeg_encoder)" Margin="0,4,0,0" IsVisible="False"/>
+              <ComboBox x:Name="JpegliEncoderBackendCombo" SelectedIndex="0" IsVisible="False">
                 <sys:String>libjpeg (标准)</sys:String>
                 <sys:String>sjpeg (高级)</sys:String>
               </ComboBox>
@@ -676,10 +700,17 @@
             <!-- TIFF -->
             <StackPanel x:Name="TiffCodecPanel" IsVisible="False" Spacing="4">
               <TextBlock Text="压缩算法"/>
-              <ComboBox x:Name="TiffCompressionCombo">
+              <ComboBox x:Name="TiffCompressionCombo" SelectedIndex="1">
                 <sys:String>raw</sys:String><sys:String>lzw</sys:String>
                 <sys:String>deflate</sys:String><sys:String>packbits</sys:String>
               </ComboBox>
+              <!-- TIFF DPI（2026-08-16 新增: 此前 TiffDpi 字段无 UI 控件，功能缺失） -->
+              <TextBlock Text="DPI" Margin="0,4,0,0"/>
+              <StackPanel Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+                <NumericUpDown x:Name="TiffDpiBox" Value="0" Minimum="0" Maximum="2400" Increment="72" Width="72"/>
+                <TextBlock Text="0=不写入" VerticalAlignment="Center" FontSize="10"
+                           Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+              </StackPanel>
             </StackPanel>
             <!-- JPEG XR (JxrEncApp) -->
             <StackPanel x:Name="JxrCodecPanel" IsVisible="False" Spacing="4">
@@ -729,7 +760,8 @@
     </Border>
 
       <!-- ============ 右侧：队列 + 文件 + 命令 + 日志 ============ -->
-      <Grid Grid.Column="1" Margin="8,0,8,0" RowDefinitions="*,6,*,6,*,Auto">
+      <!-- 2026-08-16: 行比例 2:1:2（队列与命令/日志优先），原均分导致 780px 高度下队列列表仅 ~100px -->
+      <Grid Grid.Column="1" Margin="8,0,8,0" RowDefinitions="2*,6,*,6,2*,Auto">
         <!-- ① 转换队列 -->
         <Border Grid.Row="0" CornerRadius="8" Padding="10,8"
                 BoxShadow="0 1 6 0 #12000000"

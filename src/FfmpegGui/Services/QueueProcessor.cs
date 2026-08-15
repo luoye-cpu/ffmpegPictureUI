@@ -2839,6 +2839,7 @@ namespace FfmpegGui.Services
                 ColorPrimaries = original.ColorPrimaries,
                 ColorTrc = original.ColorTrc,
                 ColorMatrix = original.ColorMatrix,
+                ColorRange = original.ColorRange,
                 Threads = original.Threads,
                 MetadataMode = original.MetadataMode,
                 Encoder = encoder,

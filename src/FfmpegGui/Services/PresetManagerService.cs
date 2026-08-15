@@ -68,7 +68,7 @@ namespace FfmpegGui.Services
                     Format = "JPEG", Quality = 76, Chroma = "4:2:0",
                     ColorSpace = "auto", BitDepth = "auto",
                     EncoderBackend = "Cjpegli",
-                    JpegHuffman = "optimal", JpegProgressiveId = 1,
+                    JpegHuffman = "optimal", CjpegliProgressiveId = 2, // 2026-08-16 实测渐进压缩率更高
                     MetadataMode = "StripAll", AutoThreads = true,
                     Concurrency = 4, MaxQueueSize = 64
                 }
@@ -83,7 +83,7 @@ namespace FfmpegGui.Services
                 Source = "builtin",
                 Data = new PresetData
                 {
-                    Format = "JPEG XL", Quality = 93, Chroma = "4:4:4",
+                    Format = "JPEG XL", Quality = 93, Chroma = "auto",
                     BitDepth = "auto", ColorSpace = "auto",
                     JxlEffort = 7, JxlModular = false,
                     JxlPreserveUltrahdr = true,
@@ -97,7 +97,7 @@ namespace FfmpegGui.Services
                 Source = "builtin",
                 Data = new PresetData
                 {
-                    Format = "JPEG XL", Quality = 80, Chroma = "4:2:0",
+                    Format = "JPEG XL", Quality = 80, Chroma = "auto",
                     BitDepth = "auto", ColorSpace = "auto",
                     JxlEffort = 5, JxlModular = false,
                     JxlPreserveUltrahdr = true,
@@ -212,11 +212,11 @@ namespace FfmpegGui.Services
             // ═══════════════════════════════════════════
             new PresetEntry
             {
-                Name = "🚀 AVIF SVT — 极致质量 (preset 2, CRF 18, 4:4:4 10-bit)",
+                Name = "🚀 AVIF SVT — 极致质量 (preset 2, CRF 18, 4:2:0 10-bit)",
                 Source = "builtin",
                 Data = new PresetData
                 {
-                    Format = "AVIF", Quality = 92, Chroma = "4:4:4",
+                    Format = "AVIF", Quality = 92, Chroma = "4:2:0", // libsvtav1 仅支持 4:2:0（2026-08-16 实测）
                     BitDepth = "10", ColorSpace = "auto",
                     EncoderBackend = "Ffmpeg",
                     AvifSvtPreset = 2, AvifSvtTune = "VMAF (主观)",
@@ -227,11 +227,11 @@ namespace FfmpegGui.Services
             },
             new PresetEntry
             {
-                Name = "🚀 AVIF SVT — 高质量 (preset 4, CRF 24, 4:4:4 10-bit)",
+                Name = "🚀 AVIF SVT — 高质量 (preset 4, CRF 24, 4:2:0 10-bit)",
                 Source = "builtin",
                 Data = new PresetData
                 {
-                    Format = "AVIF", Quality = 88, Chroma = "4:4:4",
+                    Format = "AVIF", Quality = 88, Chroma = "4:2:0", // libsvtav1 仅支持 4:2:0
                     BitDepth = "10", ColorSpace = "auto",
                     EncoderBackend = "Ffmpeg",
                     AvifSvtPreset = 4, AvifSvtTune = "VMAF (主观)",
@@ -330,11 +330,11 @@ namespace FfmpegGui.Services
             // ═══════════════════════════════════════════
             new PresetEntry
             {
-                Name = "🚀 AVIF QSV — 高质量 (slow, CRF 24, 4:4:4 10-bit)",
+                Name = "🚀 AVIF QSV — 高质量 (slow, CRF 24, 4:2:0 10-bit)",
                 Source = "builtin",
                 Data = new PresetData
                 {
-                    Format = "AVIF", Quality = 88, Chroma = "4:4:4",
+                    Format = "AVIF", Quality = 88, Chroma = "4:2:0", // av1_qsv 仅 nv12/p010le（2026-08-16 实测）
                     BitDepth = "10", ColorSpace = "auto",
                     EncoderBackend = "Ffmpeg",
                     AvifHwPresetLevel = 5, // slow
@@ -382,11 +382,11 @@ namespace FfmpegGui.Services
             // ═══════════════════════════════════════════
             new PresetEntry
             {
-                Name = "🌐 WebP — 高质量有损 (q=92, 4:4:4)",
+                Name = "🌐 WebP — 高质量有损 (q=92, 4:2:0)",
                 Source = "builtin",
                 Data = new PresetData
                 {
-                    Format = "WebP", Quality = 92, Chroma = "4:4:4",
+                    Format = "WebP", Quality = 92, Chroma = "4:2:0", // libwebp 仅支持 yuv420p（2026-08-16 实测）
                     BitDepth = "auto", ColorSpace = "auto",
                     WebpPreset = "picture",
                     MetadataMode = "PreserveAll", AutoThreads = true,
@@ -444,7 +444,7 @@ namespace FfmpegGui.Services
                 {
                     Format = "PNG", Quality = 67, Chroma = "auto",
                     BitDepth = "auto", ColorSpace = "auto",
-                    PngPred = "sub",
+                    Lossless = true, PngPred = "sub",
                     MetadataMode = "PreserveAll", AutoThreads = true,
                     Concurrency = 4, MaxQueueSize = 32
                 }
@@ -496,7 +496,7 @@ namespace FfmpegGui.Services
                 Source = "builtin",
                 Data = new PresetData
                 {
-                    Format = "JPEG", Quality = 85, Chroma = "4:2:0",
+                    Format = "GIF", Quality = 85, Chroma = "auto",
                     BitDepth = "auto", ColorSpace = "auto",
                     GifPaletteOptimize = true, GifDither = true,
                     AnimationLoop = 0,

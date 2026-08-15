@@ -1,6 +1,6 @@
 # 🖼️ FFmpegPictureUI — FFmpeg 图片转换器
 
-**v1.5.3** — 2026-08-15 Release | Cross-platform batch image/animation/video converter built on Avalonia UI.
+**v1.5.4** — 2026-08-16 Release | Cross-platform batch image/animation/video converter built on Avalonia UI.
 基于 Avalonia UI 的跨平台批量图片/动图/视频转换工具，封装 `ffmpeg`/`ffprobe` + 外部编码器 (`cjxl`/`djxl`/`cjpegli`/`JxrEncApp`/`JxrDecApp`).
 
 QQ 交流群：754439779 | [点击加群](https://qm.qq.com/q/M2181PvCkW)
@@ -15,7 +15,7 @@ QQ 交流群：754439779 | [点击加群](https://qm.qq.com/q/M2181PvCkW)
 | **Encoder backend / 编码器后端** | Selectable ffmpeg / cjxl / cjpegli per format; cjxl for JXL lossless JPEG repack — 每种格式可选不同编码器后端 |
 | **Quality control / 质量控制** | Quality slider (snap-to-tick) + format-aware numeric input — 滑块吸附整数 + 格式感知数字输入框 (JPEG q:v 2-31, JXL distance 0-15, etc.) |
 | **Advanced codec options / 高级编码选项** | Per-format advanced panels: DCT algo, progressive mode, Huffman optimize, adaptive quant, sjpeg backend, PSNR target, lossless compression level, row-mt, still-picture, modular mode — 按格式独立高级面板 |
-| **Color management / 色彩管理** | sRGB/BT.709/BT.2020 PQ/HLG 快速选择；CICP (H.273) 始终启用；4 种 ICC 模式（无/携带/烘焙+嵌入/仅烘焙）；iccgen 自动生成标准 ICC；zscale 双向烘焙；HDR→SDR 色调映射降级；BT.2020 自动位深联动；Gain Map RGB 建议 |
+| **Color management / 色彩管理** | sRGB/BT.709/Display P3/BT.2020 PQ/HLG 快速选择；CICP (H.273) 始终启用；4 种 ICC 模式（无/携带/烘焙+嵌入/仅烘焙）；iccgen 自动生成标准 ICC；zscale 双向烘焙；HDR→SDR 色调映射降级；BT.2020 自动位深联动；TV/PC 色彩范围（auto 跟随输入，AVIF 原生支持）；Gain Map RGB 建议 |
 | **JXL Intelligence / JXL 智能** | Auto-detects JPEG-reconstruction vs native codestream; byte-level inspection (`JxlInspector`); picks optimal pipeline |
 | **JPEG-LI / JPEG-LI** | `cjpegli` 作为 JPEG 格式的编码器后端选项，提供完整高级配置（色度子采样、渐进模式等）|
 | **CPU SIMD / CPU 指令集** | Auto-detects AVX2/AVX/SSE4 capable binaries; runtime probe validates compatibility |
@@ -123,6 +123,36 @@ ffmpegPictureUI/
 ---
 
 ## 📝 Changelog / 更新日志
+
+### v1.5.4 (2026-08-16) — 色彩管线全面修复 + UI 选项生效性审查 + 布局重构
+
+**🎨 色彩管线修复（实测驱动）**
+- **色度子采样全位深生效** — 修复 10/12/16-bit 输出恒为 4:2:0 的 Bug（`MapPixFmt` 高位深分支忽略 Chroma），4:4:4/4:2:2 在全部位深下正确映射（libaom 实测 `yuv444p10le`/`yuv422p10le`）
+- **PC 范围 TIFF → TV 范围 AVIF 修复** — 输出侧补 `-color_range` 声明，RGB 全范围输入不再被 limited 矩阵压缩（实测 Y 域：pc=10-239 / tv=26-220）
+- **TV/PC 范围自动跟随输入** — pix_fmt 推断（RGB/yuvj→pc，yuv limited→tv），输入 TV 范围图片 → 输出 TV，数据零拉伸（PSNR 53dB）
+- **AVIF 位深按编码器 clamp** — libaom/NVENC→12-bit，SVT/QSV/AMF→10-bit（防 16-bit 输入编码失败）
+- **UI 按编码器过滤选项** — `UpdateChromaBitDepthOptions()`：SVT/QSV/AMF/WebP 仅显示 auto/4:2:0；libaom/NVENC 显示 8/10/12 位深
+- **ColorRange 控件按格式隐藏** — 不支持的格式（JPEG/WebP/PNG 等）整组隐藏而非仅禁用，切换格式自动复位 auto
+
+**🔧 选项生效性全面修复（预览与入队行为一致）**
+- 新增 TIFF DPI 控件（`TiffDpiBox`，实测 300dpi 正确写入）
+- 简洁模式预设补齐字段（cjpegli 后端/PSNR、cjxl 系列、JxlEffort/Modular、WebpCompressionLevel、TiffDpi）
+- WebP 无损压缩级别仅无损模式显示
+
+**🎯 默认值与内置预设重做**
+- 模型默认值统一：`Chroma=auto`、`StripExifGps=true`、`CjpegliChromaSubsampling=auto`、`CjpegliProgressiveId=2`（渐进实测压缩率更高：体积小 5-38%）
+- WebP/TIFF 下拉默认对齐高级面板关闭时的值（picture/lzw）
+- 29 个内置预设全面重做：GIF 预设格式修正（原为 JPEG）、SVT/QSV/WebP 色度 444→420（实测仅支持 420）、JXL 色度→auto、极限压缩启用 cjpegli 渐进、PNG 快速存档补无损
+
+**🖥 顶部布局重构**
+- FFmpeg 目录 + 输出目录合并一行（Grid 弹性列宽，输出目录 1.4 倍权重）
+- 修复 Grid 列错位（输出目录标签曾落入 12px 固定列导致残字/塌陷）
+- 窗口默认 1100×850（适配 150% DPI 1080p 屏），右侧区域行比例 2:1:2（队列优先）
+
+**🌍 其他**
+- cjpegli 参数适配当前 libjxl 版本（`--fixed_code`/`--noadaptive_quantization`，移除已失效的 `--jpeg_encoder`/`--psnr`）
+- 窗口标题版本号自动同步程序集版本（`NormalizeAppTitleVersion`），发版不再遗漏
+- UI 测试方法论：UIA 边界框 + 视觉模型（SenseNova 6.8 Flash Lite）交叉验证
 
 ### v1.5.3 (2026-08-15) — 原生 PSNR + 目标域质量分析 + SIMD 加速
 
