@@ -9,6 +9,33 @@ namespace FfmpegGui.Services
     {
         public static async Task<string> GetMediaInfoAsync(string path, string? ffprobePath = null, string? ffmpegPath = null)
         {
+            // ── RAW 文件: ffprobe 无法解析 (CR2/NEF/JXL-DNG 等), 用 dngtool -info ──
+            // 2026-08-14 UI 审查修复: RAW 输入显示结构化 JSON 而非 ffprobe 错误
+            if (RawService.IsRawFile(path) && RawService.IsAvailable)
+            {
+                try
+                {
+                    var psi = new ProcessStartInfo
+                    {
+                        FileName = RawService.DetectedPath!,
+                        Arguments = $"-info \"{path}\"",
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true,
+                        UseShellExecute = false,
+                        CreateNoWindow = true,
+                        StandardOutputEncoding = Encoding.UTF8
+                    };
+                    using var p = Process.Start(psi);
+                    if (p != null)
+                    {
+                        var output = await p.StandardOutput.ReadToEndAsync();
+                        await p.WaitForExitAsync();
+                        if (!string.IsNullOrWhiteSpace(output)) return output.Trim();
+                    }
+                }
+                catch { }
+            }
+
             var probeName = ffprobePath ?? AppSettingsService.Current.FfprobePath;
             var ffmpegName = ffmpegPath ?? AppSettingsService.Current.FfmpegPath;
 

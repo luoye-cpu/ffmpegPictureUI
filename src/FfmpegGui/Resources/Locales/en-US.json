@@ -132,6 +132,8 @@
   "progressive.decode": "Progressive Decoding (--progressive)",
   "photon.noise": "Photon Noise ISO (0=disabled)",
   "photon.noise.hint": "0=disabled, 100=low noise, 3200=high noise",
+  "photon.noise.auto": "Auto-read input photo ISO (EXIF)",
+  "photon.noise.auto.hint": "When enabled, ISO from each input photo's EXIF is read before encoding for photon noise, more accurate than a fixed value",
   "preserve.ultrahdr": "Preserve Ultra HDR gain map (decode & re-encode; disable = lossless repack but HDR lost)",
   "gain.map.params": "🎛 Gain Map Parameters (active with ultrahdr encoder)",
   "gain.map.follow.main": "Gain map quality = Main quality",

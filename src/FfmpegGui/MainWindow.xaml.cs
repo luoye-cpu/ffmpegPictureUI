@@ -29,8 +29,15 @@ namespace FfmpegGui
         private StackPanel? DngJxlQualityPanel;
         private Slider? DngJxlQualitySlider;
         private TextBox? DngJxlQualityBox;
+        private StackPanel? DngJxlAdvancedPanel;
+        private NumericUpDown? DngJxlEffortBox;
+        private NumericUpDown? DngJxlDecodeSpeedBox;
+        private ComboBox? DngLinearCombo;
+        private ComboBox? DngBitDepthCombo;
+        private ComboBox? DngHighlightCombo;
         private TextBlock? RawEngineStatus;
         private StackPanel? RawPanel;
+        private StackPanel? StillOptionsPanel;
         private ComboBox? EncoderCombo;
         private Slider? QualitySlider;
         private TextBox? QualityBox;
@@ -74,6 +81,9 @@ namespace FfmpegGui
         private StackPanel? JxlToolsStatus;
         private StackPanel? ExifToolToolsStatus;
         private StackPanel? ArtifactsToolsStatus;
+        // ── Photoshop ACR 验证 (2026-08-15) ──
+        private TextBox? PhotoshopPathBox;
+        private StackPanel? PsToolsStatus;
         private CheckBox? PreserveInputStructure;
         private CheckBox? StopAfterCurrentCheck;
         private CheckBox? ShowErrorsOnlyCheck;
@@ -191,7 +201,9 @@ namespace FfmpegGui
         private NumericUpDown? CjxlEffortBox;
         private CheckBox? JxlModularCheck;
         private CheckBox? CjxlProgressiveCheck;
+        private CheckBox? JxlLosslessJpegCheck;
         private NumericUpDown? CjxlPhotonNoiseBox;
+        private CheckBox? CjxlAutoPhotonNoiseCheck;
         private CheckBox? JxlPreserveUltrahdrCheck;
         private ComboBox? JpegHuffmanCombo;
         private ComboBox? JpegDctCombo;
@@ -208,7 +220,8 @@ namespace FfmpegGui
         private TextBox? JpegGainMapNitsBox;
         private ComboBox? JpegGainMapHdrCfCombo;
         private ComboBox? JpegGainMapDownsampleCombo;
-        private CheckBox? JpegGainMapMultiChannelCheck;
+        private ComboBox? JpegGainMapTypeCombo;
+        private CheckBox? JpegGainMapMultiChannelCheck;  // 兼容旧代码引用
         private ComboBox? TiffCompressionCombo;
         // ── cjpegli / jpegli 高级面板控件 ──
         private StackPanel? JpegliCodecPanel;
@@ -268,8 +281,15 @@ namespace FfmpegGui
             DngJxlQualityPanel = this.FindControl<StackPanel>("DngJxlQualityPanel");
             DngJxlQualitySlider = this.FindControl<Slider>("DngJxlQualitySlider");
             DngJxlQualityBox = this.FindControl<TextBox>("DngJxlQualityBox");
+            DngJxlAdvancedPanel = this.FindControl<StackPanel>("DngJxlAdvancedPanel");
+            DngJxlEffortBox = this.FindControl<NumericUpDown>("DngJxlEffortBox");
+            DngJxlDecodeSpeedBox = this.FindControl<NumericUpDown>("DngJxlDecodeSpeedBox");
+            DngLinearCombo = this.FindControl<ComboBox>("DngLinearCombo");
+            DngBitDepthCombo = this.FindControl<ComboBox>("DngBitDepthCombo");
+            DngHighlightCombo = this.FindControl<ComboBox>("DngHighlightCombo");
             RawEngineStatus = this.FindControl<TextBlock>("RawEngineStatus");
             RawPanel = this.FindControl<StackPanel>("RawPanel");
+            StillOptionsPanel = this.FindControl<StackPanel>("StillOptionsPanel");
             EncoderCombo = this.FindControl<ComboBox>("EncoderCombo");
             QualitySlider = this.FindControl<Slider>("QualitySlider");
             QualityBox = this.FindControl<TextBox>("QualityBox");
@@ -314,6 +334,9 @@ namespace FfmpegGui
             JxlToolsStatus = this.FindControl<StackPanel>("JxlToolsStatus");
             ExifToolToolsStatus = this.FindControl<StackPanel>("ExifToolToolsStatus");
             ArtifactsToolsStatus = this.FindControl<StackPanel>("ArtifactsToolsStatus");
+            // ── Photoshop ACR 验证 (2026-08-15) ──
+            PhotoshopPathBox = this.FindControl<TextBox>("PhotoshopPathBox");
+            PsToolsStatus = this.FindControl<StackPanel>("PsToolsStatus");
             ToggleToolsBtn = this.FindControl<Button>("ToggleToolsBtn");
             ToolsDetailPanel = this.FindControl<StackPanel>("ToolsDetailPanel");
             ToolsCompactPanel = this.FindControl<Border>("ToolsCompactPanel");
@@ -394,7 +417,9 @@ namespace FfmpegGui
             // cjxl 专属控件
             CjxlEffortBox = this.FindControl<NumericUpDown>("CjxlEffortBox");
             CjxlProgressiveCheck = this.FindControl<CheckBox>("CjxlProgressiveCheck");
+            JxlLosslessJpegCheck = this.FindControl<CheckBox>("JxlLosslessJpegCheck");
             CjxlPhotonNoiseBox = this.FindControl<NumericUpDown>("CjxlPhotonNoiseBox");
+            CjxlAutoPhotonNoiseCheck = this.FindControl<CheckBox>("CjxlAutoPhotonNoiseCheck");
             JxlPreserveUltrahdrCheck = this.FindControl<CheckBox>("JxlPreserveUltrahdrCheck");
             JpegHuffmanCombo = this.FindControl<ComboBox>("JpegHuffmanCombo");
             JpegDctCombo = this.FindControl<ComboBox>("JpegDctCombo");
@@ -411,7 +436,8 @@ namespace FfmpegGui
             JpegGainMapNitsBox = this.FindControl<TextBox>("JpegGainMapNitsBox");
             JpegGainMapHdrCfCombo = this.FindControl<ComboBox>("JpegGainMapHdrCfCombo");
             JpegGainMapDownsampleCombo = this.FindControl<ComboBox>("JpegGainMapDownsampleCombo");
-            JpegGainMapMultiChannelCheck = this.FindControl<CheckBox>("JpegGainMapMultiChannelCheck");
+            JpegGainMapTypeCombo = this.FindControl<ComboBox>("JpegGainMapTypeCombo");
+            JpegGainMapMultiChannelCheck = this.FindControl<CheckBox>("JpegGainMapMultiChannelCheck");  // XAML 已改 ComboBox，此引用为 null 兼容
             TiffCompressionCombo = this.FindControl<ComboBox>("TiffCompressionCombo");
             // ── cjpegli / jpegli 高级面板控件 ──
             JpegliCodecPanel = this.FindControl<StackPanel>("JpegliCodecPanel");
@@ -460,6 +486,9 @@ namespace FfmpegGui
             if (ColorTrcCombo != null) ColorTrcCombo.SelectedIndex = 0;
             if (ColorMatrixCombo != null) ColorMatrixCombo.SelectedIndex = 0;
 
+            // ── Photoshop 验证设置加载 (2026-08-15) ──
+            RefreshPsPanelState();
+
             if (QueueList != null) QueueList.ItemsSource = _queueView;
 
             // 注册事件
@@ -484,7 +513,13 @@ namespace FfmpegGui
             if (GifPaletteCheck != null) GifPaletteCheck.IsCheckedChanged += (_, _) => RegenerateCommand();
             if (GifDitherCheck != null) GifDitherCheck.IsCheckedChanged += (_, _) => RegenerateCommand();
             // 高级色彩参数
-            if (ColorPrimariesCombo != null) ColorPrimariesCombo.SelectionChanged += (_, _) => RegenerateCommand();
+            // ⚠️ 联动规则: 选择 primaries 时自动补全匹配的 trc/matrix (如 bt2020 → smpte2084 + bt2020nc)
+            if (ColorPrimariesCombo != null)
+                ColorPrimariesCombo.SelectionChanged += (_, _) =>
+                {
+                    AutoLinkColorParameters();
+                    RegenerateCommand();
+                };
             if (ColorTrcCombo != null) ColorTrcCombo.SelectionChanged += (_, _) => RegenerateCommand();
             if (ColorMatrixCombo != null) ColorMatrixCombo.SelectionChanged += (_, _) => RegenerateCommand();
             // 高级编码器选项
@@ -548,7 +583,18 @@ namespace FfmpegGui
             // cjxl 控件事件
             if (CjxlEffortBox != null) CjxlEffortBox.ValueChanged += (_, _) => RegenerateCommand();
             if (CjxlProgressiveCheck != null) CjxlProgressiveCheck.IsCheckedChanged += (_, _) => RegenerateCommand();
+            if (JxlLosslessJpegCheck != null) JxlLosslessJpegCheck.IsCheckedChanged += (_, _) => RegenerateCommand();
             if (CjxlPhotonNoiseBox != null) CjxlPhotonNoiseBox.ValueChanged += (_, _) => RegenerateCommand();
+            if (CjxlAutoPhotonNoiseCheck != null)
+            {
+                CjxlAutoPhotonNoiseCheck.IsCheckedChanged += (_, _) =>
+                {
+                    // 自动模式禁用手动 ISO 输入框
+                    if (CjxlPhotonNoiseBox != null)
+                        CjxlPhotonNoiseBox.IsEnabled = CjxlAutoPhotonNoiseCheck.IsChecked != true;
+                    RegenerateCommand();
+                };
+            }
             if (JxlPreserveUltrahdrCheck != null) JxlPreserveUltrahdrCheck.IsCheckedChanged += (_, _) => RegenerateCommand();
             if (JpegHuffmanCombo != null) JpegHuffmanCombo.SelectionChanged += (_, _) => RegenerateCommand();
             if (JpegDctCombo != null) JpegDctCombo.SelectionChanged += (_, _) => RegenerateCommand();
@@ -600,7 +646,9 @@ namespace FfmpegGui
                 JpegGainMapHdrCfCombo.SelectionChanged += (_, _) => RegenerateCommand();
             if (JpegGainMapDownsampleCombo != null)
                 JpegGainMapDownsampleCombo.SelectionChanged += (_, _) => RegenerateCommand();
-            if (JpegGainMapMultiChannelCheck != null)
+            if (JpegGainMapTypeCombo != null)
+                JpegGainMapTypeCombo.SelectionChanged += (_, _) => RegenerateCommand();
+            if (JpegGainMapMultiChannelCheck != null)  // XAML 已改 ComboBox，此引用为 null 兼容
                 JpegGainMapMultiChannelCheck.IsCheckedChanged += (_, _) => RegenerateCommand();
             if (TiffCompressionCombo != null) TiffCompressionCombo.SelectionChanged += (_, _) => RegenerateCommand();
             // cjpegli / jpegli 高级选项事件
@@ -874,6 +922,18 @@ namespace FfmpegGui
                 };
             }
 
+            // ── DNG 高级选项事件 ──
+            if (DngJxlEffortBox != null)
+                DngJxlEffortBox.ValueChanged += (_, _) => RegenerateCommand();
+            if (DngJxlDecodeSpeedBox != null)
+                DngJxlDecodeSpeedBox.ValueChanged += (_, _) => RegenerateCommand();
+            if (DngLinearCombo != null)
+                DngLinearCombo.SelectionChanged += (_, _) => RegenerateCommand();
+            if (DngBitDepthCombo != null)
+                DngBitDepthCombo.SelectionChanged += (_, _) => RegenerateCommand();
+            if (DngHighlightCombo != null)
+                DngHighlightCombo.SelectionChanged += (_, _) => RegenerateCommand();
+
             // RAW 引擎状态提示（dngtool）
             try
             {
@@ -934,8 +994,8 @@ namespace FfmpegGui
                 var planPath = PlatformServices.PlanFolderPath;
                 if (planPath != null)
                 {
-                    var ffmpegInPlan = Path.Combine(planPath, "ffmpeg-full");
-                    if (Directory.Exists(ffmpegInPlan)
+                    var ffmpegInPlan = PlatformServices.FindPlanSubDir(planPath, "ffmpeg-full");
+                    if (ffmpegInPlan != null
                         && string.IsNullOrWhiteSpace(AppSettingsService.Current.FfmpegDirectory))
                     {
                         AppSettingsService.Current.FfmpegDirectory = ffmpegInPlan;
@@ -1079,6 +1139,7 @@ namespace FfmpegGui
                     try { _ = RefreshEncoderListAsync(); } catch { }
                     UpdateExifToolPanelState();
                     UpdateOptionAvailability();
+                    RefreshPsPanelState();
                     RefreshToolsStatusBar();
                 });
             });
@@ -1171,12 +1232,21 @@ namespace FfmpegGui
                 var dngOut = GetOutputPath(_inputPath, "dng");
                 var useJxl = DngCompressionCombo?.SelectedIndex == 1;
                 var jxlQ = ParseInt(DngJxlQualityBox?.Text, 0, 0, 100);
+                var effort = (int)(DngJxlEffortBox?.Value ?? 7);
+                var decSpeed = (int)(DngJxlDecodeSpeedBox?.Value ?? 1);
+                var linear = DngLinearCombo?.SelectedIndex == 1;
                 var cmd = useJxl
-                    ? $"dngtool -e -i \"{_inputPath}\" -O \"{dngOut}\" -jxl{(jxlQ > 0 ? $" -q {jxlQ}" : "")}"
-                    : $"dngtool -e -i \"{_inputPath}\" -O \"{dngOut}\" -lossless";
+                    ? $"dngtool -e -i \"{_inputPath}\" -O \"{dngOut}\" -jxl" +
+                      $"{(jxlQ > 0 ? $" -q {jxlQ}" : "")}" +
+                      $" -effort {effort} -decode_speed {decSpeed}" +
+                      (linear ? " -linear" : "")
+                    : $"dngtool -e -i \"{_inputPath}\" -O \"{dngOut}\" -lossless" +
+                      (linear ? " -linear" : "");
                 if (CommandText != null)
                 {
-                    CommandText.Text = "# RAW → DNG 编码 (dngtool, 支持 DNG 1.7 JXL)" + Environment.NewLine + cmd;
+                    CommandText.Text = "# RAW → DNG 编码 (dngtool, 支持 DNG 1.7 JXL)" + Environment.NewLine +
+                        $"# 压缩: {(useJxl ? $"JXL q={jxlQ} effort={effort} decodeSpeed={decSpeed}" : "无损 JPEG")} | 布局: {(linear ? "线性 DNG (无 CFA)" : "保留 CFA (Bayer)")}" + Environment.NewLine +
+                        cmd;
                 }
                 return;
             }
@@ -1222,6 +1292,7 @@ namespace FfmpegGui
                 var effort = useAdvCodec ? (int?)CjxlEffortBox?.Value ?? 7 : 7;
                 var progressive = useAdvCodec ? (CjxlProgressiveCheck?.IsChecked ?? false) : false;
                 var photonNoise = useAdvCodec ? (int)(CjxlPhotonNoiseBox?.Value ?? 0) : 0;
+                var autoPhotonNoise = useAdvCodec && (CjxlAutoPhotonNoiseCheck?.IsChecked ?? false);
                 var isJpegInput = IsJpegInput(_inputPath);
                 var qualityVal = (int)(QualitySlider?.Value ?? 90);
                 var distance = (100 - qualityVal) * 15.0 / 100.0;
@@ -1233,9 +1304,10 @@ namespace FfmpegGui
 
                 if (isJpegInput)
                 {
-                    // 若用户选择「保留 Ultra HDR 增益图」，则不锁定，按常规质量编码
+                    // 无损重封装开关 + 未开启「保留 Ultra HDR 增益图」→ 直接封装 DCT 系数
                     var preserveUltrahdr = JxlPreserveUltrahdrCheck?.IsChecked ?? true;
-                    if (!preserveUltrahdr)
+                    var losslessJpeg = JxlLosslessJpegCheck?.IsChecked ?? true;
+                    if (!preserveUltrahdr && losslessJpeg)
                     {
                         LockLosslessForJxl();
                         cmd.Append(" -d 0 --lossless_jpeg=1");
@@ -1260,7 +1332,8 @@ namespace FfmpegGui
                 }
 
                 if (progressive) cmd.Append(" --progressive");
-                if (photonNoise > 0) cmd.Append(" --photon_noise_iso=").Append(photonNoise);
+                if (autoPhotonNoise) cmd.Append(" --photon_noise_iso=auto");
+                else if (photonNoise > 0) cmd.Append(" --photon_noise_iso=").Append(photonNoise);
 
                 if (CommandText != null)
                     CommandText.Text = cmd.ToString();
@@ -1281,13 +1354,14 @@ namespace FfmpegGui
                 return;
             }
 
-            // --- FFmpeg 后端：JPEG→JXL 无损重封装自动检测 ---
-            // 若用户选择「保留 Ultra HDR 增益图」，跳过无损重封装，按常规编码
+            // --- FFmpeg 后端：JPEG→JXL 无损重封装（由高级选项开关控制）---
+            // 开启「保留 Ultra HDR 增益图」时强制跳过无损重封装（会丢失增益图），按常规编码
             bool jxlLosslessJpeg = false;
             if (fmt is "jxl" && IsJpegInput(_inputPath))
             {
                 var preserveUltrahdr = JxlPreserveUltrahdrCheck?.IsChecked ?? true;
-                if (!preserveUltrahdr && await EncoderDetectionService.SupportsJxlLosslessJpegAsync())
+                var losslessJpegEnabled = JxlLosslessJpegCheck?.IsChecked ?? true;
+                if (!preserveUltrahdr && losslessJpegEnabled && await EncoderDetectionService.SupportsJxlLosslessJpegAsync())
                 {
                     jxlLosslessJpeg = true;
                     LockLosslessForJxl();
@@ -1350,18 +1424,18 @@ namespace FfmpegGui
                 JxlModular = useAdvCodec ? JxlModularCheck?.IsChecked : null,
                 JxlLosslessJpeg = jxlLosslessJpeg,
                 CjxlProgressive = useAdvCodec ? (CjxlProgressiveCheck?.IsChecked ?? false) : false,
-                CjxlPhotonNoiseIso = useAdvCodec ? (int)(CjxlPhotonNoiseBox?.Value ?? 0) : 0,
+                CjxlPhotonNoiseIso = useAdvCodec && (CjxlAutoPhotonNoiseCheck?.IsChecked ?? false) ? 0 : (useAdvCodec ? (int)(CjxlPhotonNoiseBox?.Value ?? 0) : 0),
+                CjxlAutoPhotonNoise = useAdvCodec && (CjxlAutoPhotonNoiseCheck?.IsChecked ?? false),
                 JxlPreserveUltrahdr = useAdvCodec ? (JxlPreserveUltrahdrCheck?.IsChecked ?? true) : true,
                 JpegHuffman = useAdvCodec ? (JpegHuffmanCombo?.SelectedItem as string) : "optimal",
                 JpegDct = useAdvCodec ? (JpegDctCombo?.SelectedItem as string is "auto" ? null : JpegDctCombo?.SelectedItem as string) : null,
                 JpegProgressiveId = useAdvCodec ? ParseJpegProgressiveId() : 0,
-                JpegGainMap = (GetCurrentEncoderBackend() == EncoderBackend.Cjpegli),
+                JpegGainMap = IsHdrColorSelected(),
                 JpegGainMapQuality = ParseGainMapQuality(),
                 JpegGainMapTargetNits = ParseGainMapNits(),
                 JpegGainMapHdrCf = ParseGainMapHdrCf(),
                 JpegGainMapDownsample = ParseGainMapDownsample(),
-                JpegGainMapMultiChannel = (UseAdvancedCodec?.IsChecked == true)
-                    && (JpegGainMapMultiChannelCheck?.IsChecked ?? false),
+                JpegGainMapMultiChannel = ParseGainMapMultiChannel(),
                 TiffCompressionAlgo = useAdvCodec ? (TiffCompressionCombo?.SelectedItem as string) : "lzw",
                 StripExifGps = StripExifGpsCheck?.IsChecked ?? true,
                 StripExifTime = StripExifTimeCheck?.IsChecked ?? false,
@@ -1420,10 +1494,10 @@ namespace FfmpegGui
                 ThreadsBox.IsEnabled = !auto && !single;
                 if (auto)
                 {
-                    var val = Models.FfmpegOptions.ComputeAutoThreads();
-                    ThreadsBox.Value = val;
+                    // 自动模式: 线程数留空 + 不可改 (运行时按并发任务数动态分配)
+                    ThreadsBox.Value = null;
                     if (ThreadHintLabel != null)
-                        ThreadHintLabel.Text = $"(CPU {Environment.ProcessorCount} → 分配 {val})";
+                        ThreadHintLabel.Text = "(自动: 按并发任务数动态分配)";
                 }
                 else if (single)
                 {
@@ -1433,6 +1507,8 @@ namespace FfmpegGui
                 }
                 else
                 {
+                    if (ThreadsBox.Value is null or < 1)
+                        ThreadsBox.Value = 4;
                     if (ThreadHintLabel != null)
                         ThreadHintLabel.Text = "(手动)";
                 }
@@ -1642,6 +1718,12 @@ namespace FfmpegGui
             // RAW 模式专属面板
             if (RawPanel != null)
                 RawPanel.IsVisible = isRaw;
+            // 静态图片/动图通用选项（编码器/质量/色度/位深/高级色彩/无损/.png后缀等）
+            // RAW 模式整体隐藏 —— 2026-08-14 UI 审查修复:
+            //   原实现逐个 IsEnabled=false 导致 RAW 面板下方残留灰色质量条/无损/高级选项,
+            //   用户要求 RAW 面板为独立全新面板而非静态面板上禁用内容
+            if (StillOptionsPanel != null)
+                StillOptionsPanel.IsVisible = !isRaw;
 
             // 更新 FormatCombo 选项列表
             FormatCombo.Items!.Clear();
@@ -1662,26 +1744,20 @@ namespace FfmpegGui
                 _ = RefreshEncoderListAsync();
             }
 
-            // RAW 模式下压缩/质量由 DNG 面板控制，禁用/隐藏主面板的相关选项（须在 UpdateOptionAvailability 之后覆盖）
-            if (LosslessCheck != null) LosslessCheck.IsVisible = !isRaw;
-            if (QualitySlider != null) QualitySlider.IsEnabled = !isRaw;
-            if (QualityBox != null) QualityBox.IsEnabled = !isRaw;
-            if (BitDepthCombo != null) BitDepthCombo.IsEnabled = !isRaw;
-            if (UseAdvancedColor != null)
-            {
-                UseAdvancedColor.IsEnabled = !isRaw;
-                if (AdvancedColorPanel != null)
-                    AdvancedColorPanel.IsVisible = !isRaw && (UseAdvancedColor.IsChecked ?? false);
-            }
+            // RAW 模式下压缩/质量由 DNG 面板控制；静态面板已整体隐藏（见上方 StillOptionsPanel）
+            // （原逐个 IsEnabled/IsVisible 处理已移除，2026-08-14）
 
             RegenerateCommand();
         }
 
-        /// <summary>DNG 压缩方式切换: 显示/隐藏 JXL 质量面板</summary>
+        /// <summary>DNG 压缩方式切换: 显示/隐藏 JXL 质量与高级面板</summary>
         private void DngCompression_SelectionChanged(object? sender, SelectionChangedEventArgs e)
         {
+            var isJxl = DngCompressionCombo?.SelectedIndex == 1;
             if (DngJxlQualityPanel != null)
-                DngJxlQualityPanel.IsVisible = DngCompressionCombo?.SelectedIndex == 1;
+                DngJxlQualityPanel.IsVisible = isJxl;
+            if (DngJxlAdvancedPanel != null)
+                DngJxlAdvancedPanel.IsVisible = isJxl;
             RegenerateCommand();
         }
 
@@ -1852,9 +1928,13 @@ namespace FfmpegGui
                     ColorSpaceCombo.Items.Add("auto");
                     ColorSpaceCombo.Items.Add("sRGB");
                     ColorSpaceCombo.Items.Add("BT.709");
+                    // Display P3: 广色域 SDR (Apple 生态标准), 所有格式均支持 (ICC/CICP)
+                    ColorSpaceCombo.Items.Add("Display P3");
                     var hasHdr = _currentCapabilities.SupportedColorSpaces.Contains("BT.2020");
                     if (hasHdr)
                     {
+                        // P3 PQ: P3 色域 + PQ 曲线 (HDR 场景)
+                        ColorSpaceCombo.Items.Add("P3 PQ");
                         ColorSpaceCombo.Items.Add("BT.2020 PQ");
                         ColorSpaceCombo.Items.Add("BT.2020 HLG");
                     }
@@ -2012,14 +2092,16 @@ namespace FfmpegGui
                     if (backend == EncoderBackend.Cjpegli)
                     {
                         if (JpegliCodecPanel != null) JpegliCodecPanel.IsVisible = true;
-                        // Gain Map (纯 C# GainMapEncoder) 需要 cjpegli，选择 cjpegli 时显示
-                        if (JpegGainMapPanel != null) JpegGainMapPanel.IsVisible = true;
                     }
                     else
                     {
                         if (JpegCodecPanel != null) JpegCodecPanel.IsVisible = true;
-                        if (JpegGainMapPanel != null) JpegGainMapPanel.IsVisible = false;
                     }
+                    // Gain Map (纯 C# GainMapEncoder) 是任意 JPEG 编码器的附加选项:
+                    // 选择 BT.2020 HDR 色彩空间 (PQ/HLG) 时显示, 与编码器后端无关
+                    // SDR 内容 (sRGB/BT.709) headroom=1 无增益意义, 不显示
+                    if (JpegGainMapPanel != null)
+                        JpegGainMapPanel.IsVisible = IsHdrColorSelected();
                     break;
                 case "tiff": if (TiffCodecPanel != null) TiffCodecPanel.IsVisible = true; break;
                 case "jxr": if (JxrCodecPanel != null) JxrCodecPanel.IsVisible = true; break;
@@ -2147,6 +2229,8 @@ namespace FfmpegGui
             {
                 "sRGB" => "sRGB / BT.709",
                 "BT.709" => "sRGB / BT.709",
+                "Display P3" => "Display P3",
+                "P3 PQ" => "Display P3",
                 "BT.2020 PQ" => "Rec.2020 PQ (HDR)",
                 "BT.2020 HLG" => "Rec.2020 PQ (HDR)",
                 _ => "sRGB / BT.709"
@@ -2270,6 +2354,16 @@ namespace FfmpegGui
         /// </summary>
         private bool AddSingleToQueue(string inputPath, string? inputBaseDir = null)
         {
+            // RAW 模式校验: 仅 RAW/DNG 文件可作为输入（DNG 编码需传感器数据）
+            // 提前提示而非等队列执行失败 (2026-08-14 UI 审查修复)
+            if ((ConversionModeCombo?.SelectedIndex ?? 0) == 2
+                && !RawService.IsRawFile(inputPath))
+            {
+                if (LogText != null)
+                    LogText.Text += $"⚠️ 跳过: {Path.GetFileName(inputPath)} 不是 RAW/DNG 文件（RAW 模式仅支持相机原始文件）\n";
+                return false;
+            }
+
             // 注：队列本身无容量上限，"并行编码任务数"仅控制同时运行的任务数
             var fmt = NormalizeFormat(FormatCombo?.SelectedItem as string);
             var chroma = ChromaCombo?.SelectedItem as string ?? "4:2:0";
@@ -2297,6 +2391,10 @@ namespace FfmpegGui
             int threads = singleThread ? 1
                 : autoThreads ? Models.FfmpegOptions.ComputeAutoThreads()
                 : (int)(ThreadsBox?.Value ?? 4);
+            // 2026-08-15 自适应: 自动模式标记 AutoThreads, 运行时按并发任务数
+            // 动态重算 (每任务线程 = max(1, 核数/并发数), 任务合计吃满核)。
+            // Threads 存基准值仅供命令预览, 实际执行由 QueueProcessor 覆盖。
+            var adaptiveAuto = autoThreads && !singleThread;
 
             var useAdvCodec = UseAdvancedCodec?.IsChecked ?? false;
             var options = new FfmpegOptions
@@ -2308,6 +2406,7 @@ namespace FfmpegGui
                 ColorSpace = ColorSpaceCombo?.SelectedItem as string,
                 Encoder = encoderName, EncoderBackend = encoderBackend,
                 Threads = threads,
+                AutoThreads = adaptiveAuto,
                 MetadataMode = GetMetadataMode(),
                 Lossless = LosslessCheck?.IsChecked ?? false,
                 PngPred = useAdvCodec && PngPredCombo?.SelectedIndex >= 0
@@ -2335,18 +2434,18 @@ namespace FfmpegGui
                 JxlEffort = useAdvCodec ? (int?)JxlEffortBox?.Value : 7,
                 JxlModular = useAdvCodec ? JxlModularCheck?.IsChecked : null,
                 JxlLosslessJpeg = fmt is "jxl" && IsJpegInput(inputPath)
+                    && (JxlLosslessJpegCheck?.IsChecked ?? true)
                     && !(useAdvCodec && (JxlPreserveUltrahdrCheck?.IsChecked ?? true)),
                 JxlPreserveUltrahdr = useAdvCodec ? (JxlPreserveUltrahdrCheck?.IsChecked ?? true) : true,
                 JpegHuffman = useAdvCodec ? (JpegHuffmanCombo?.SelectedItem as string) : "optimal",
                 JpegDct = useAdvCodec ? (JpegDctCombo?.SelectedItem as string is "auto" ? null : JpegDctCombo?.SelectedItem as string) : null,
                 JpegProgressiveId = useAdvCodec ? ParseJpegProgressiveId() : 0,
-                JpegGainMap = (encoderBackend == EncoderBackend.Cjpegli),
+                JpegGainMap = IsHdrColorSelected(),
                 JpegGainMapQuality = ParseGainMapQuality(),
                 JpegGainMapTargetNits = ParseGainMapNits(),
                 JpegGainMapHdrCf = ParseGainMapHdrCf(),
                 JpegGainMapDownsample = ParseGainMapDownsample(),
-                JpegGainMapMultiChannel = (UseAdvancedCodec?.IsChecked == true)
-                    && (JpegGainMapMultiChannelCheck?.IsChecked ?? false),
+                JpegGainMapMultiChannel = ParseGainMapMultiChannel(),
                 TiffCompressionAlgo = useAdvCodec ? (TiffCompressionCombo?.SelectedItem as string) : "lzw",
                 StripExifGps = StripExifGpsCheck?.IsChecked ?? true,
                 StripExifTime = StripExifTimeCheck?.IsChecked ?? false,
@@ -2367,11 +2466,19 @@ namespace FfmpegGui
                 AnimationDuration = ParseOptionalDouble(AnimationDurationBox?.Text, 0.1, 3600) ?? 0
             };
 
-            // RAW 模式: DNG 压缩设置 → JxlModular/Lossless/Quality (QueueProcessor.ProcessDngAsync 读取)
+            // RAW 模式: DNG 压缩设置 → 独立 DNG 选项字段 (QueueProcessor.ProcessDngAsync 读取)
             if ((ConversionModeCombo?.SelectedIndex ?? 0) == 2 && DngCompressionCombo != null)
             {
                 var useJxl = DngCompressionCombo.SelectedIndex == 1;
                 var jxlQ = ParseInt(DngJxlQualityBox?.Text, 0, 0, 100);
+                options.DngCompression = useJxl ? 1 : 0;
+                options.DngJxlQuality = jxlQ;
+                options.DngJxlEffort = (int)(DngJxlEffortBox?.Value ?? 7);
+                options.DngJxlDecodeSpeed = (int)(DngJxlDecodeSpeedBox?.Value ?? 4);
+                options.DngLinear = DngLinearCombo?.SelectedIndex == 1;
+                options.DngBitDepth = DngBitDepthCombo?.SelectedIndex == 0 ? 8 : 16;
+                options.DngHighlightMode = DngHighlightCombo?.SelectedIndex ?? 1;
+                // 兼容旧字段（供其他路径读取）
                 options.JxlModular = useJxl;
                 options.Lossless = !useJxl || jxlQ <= 0;
                 options.Quality = useJxl ? Math.Max(jxlQ, 0) : options.Quality;
@@ -2586,11 +2693,15 @@ namespace FfmpegGui
             // ── DNG 输出 (dngtool 编码) ──
             if (fmt == "dng")
             {
-                var useJxl = item.Options.JxlModular == true;
-                var jxlQ = useJxl && !item.Options.Lossless ? Math.Clamp(item.Options.Quality, 1, 100) : 0;
-                return useJxl
-                    ? $"dngtool -e -i \"{item.InputPath}\" -O \"{item.OutputPath}\" -jxl{(jxlQ > 0 ? $" -q {jxlQ}" : "")}"
-                    : $"dngtool -e -i \"{item.InputPath}\" -O \"{item.OutputPath}\" -lossless";
+                var useJxl = item.Options.DngCompression == 1;
+                var jxlQ = item.Options.DngJxlQuality;
+                var linear = item.Options.DngLinear;
+                var cmd = useJxl
+                    ? $"dngtool -e -i \"{item.InputPath}\" -O \"{item.OutputPath}\" -jxl{(jxlQ > 0 ? $" -q {jxlQ}" : "")}" +
+                      $" -effort {item.Options.DngJxlEffort} -decode_speed {item.Options.DngJxlDecodeSpeed}" +
+                      (linear ? " -linear" : "")
+                    : $"dngtool -e -i \"{item.InputPath}\" -O \"{item.OutputPath}\" -lossless" + (linear ? " -linear" : "");
+                return cmd;
             }
 
             // ── GIF → AVIF（avifenc 两步法）──
@@ -2831,6 +2942,8 @@ namespace FfmpegGui
             {
                 "sRGB" => ("bt709", "iec61966-2-1", "bt709"),
                 "BT.709" => ("bt709", "bt709", "bt709"),
+                "Display P3" => ("smpte432", "iec61966-2-1", "bt709"),
+                "P3 PQ" => ("smpte432", "smpte2084", "bt709"),
                 "BT.2020 PQ" => ("bt2020", "smpte2084", "bt2020nc"),
                 "BT.2020 HLG" => ("bt2020", "arib-std-b67", "bt2020nc"),
                 _ => ((string?)null, (string?)null, (string?)null)
@@ -2843,8 +2956,9 @@ namespace FfmpegGui
             if (matrix != null && ColorMatrixCombo != null)
                 SelectComboItem(ColorMatrixCombo, matrix);
 
-            // BT.2020 → 自动位深联动: 探测源位深，匹配最优色深
-            if (cs is "BT.2020 PQ" or "BT.2020 HLG" && BitDepthCombo != null)
+            // HDR (BT.2020 PQ/HLG / P3 PQ) → 自动位深联动: 探测源位深，匹配最优色深
+            var isHdrCs = cs is "BT.2020 PQ" or "BT.2020 HLG" or "P3 PQ";
+            if (isHdrCs && BitDepthCombo != null)
             {
                 var currentBd = BitDepthCombo.SelectedItem as string;
                 var sourceBd = ProbeCurrentSourceBitDepth();
@@ -2869,22 +2983,25 @@ namespace FfmpegGui
                 _lastProbedSourceBitDepth = sourceBd;
             }
 
-            // ── Gain Map 联动: HDR+JPEG → 建议 RGB 多通道增益图 ──
-            if (cs is "BT.2020 PQ" or "BT.2020 HLG")
+            // ── Gain Map 联动: HDR+JPEG → 建议 RGB 增益图 ──
+            if (isHdrCs)
             {
                 var fmt = FormatCombo?.SelectedItem as string ?? "";
-                if (fmt == "JPEG" && JpegGainMapMultiChannelCheck != null
+                if (fmt == "JPEG" && JpegGainMapTypeCombo != null
                     && UseAdvancedCodec?.IsChecked == true)
                 {
-                    // HDR+JPEG: RGB增益图色彩更准
-                    if (JpegGainMapMultiChannelCheck.IsChecked != true)
+                    // HDR+JPEG: RGB增益图色彩更准（若用户未手动选择则自动切 RGB）
+                    if (JpegGainMapTypeCombo.SelectedIndex == 0)
                     {
-                        JpegGainMapMultiChannelCheck.IsChecked = true;
+                        JpegGainMapTypeCombo.SelectedIndex = 1;  // RGB 增益图
                         if (LogText != null)
-                            LogText.Text += "[GainMap] HDR 输出建议使用 RGB 多通道增益图以获得更优色彩\n";
+                            LogText.Text += "[GainMap] HDR 输出建议使用 RGB 增益图以获得更优色彩\n";
                     }
                 }
             }
+
+            // Gain Map 面板可见性依赖 HDR 色彩
+            UpdateGainMapPanelVisibility();
 
             DetectColorConflicts();
             UpdateAdvancedColorControls();
@@ -2961,8 +3078,19 @@ namespace FfmpegGui
         private void UseAdvancedColor_IsCheckedChanged(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
         {
             if (AdvancedColorPanel != null) AdvancedColorPanel.IsVisible = UseAdvancedColor?.IsChecked == true;
+            // Gain Map 面板可见性依赖 HDR 色彩判断（高级参数中的 PQ/HLG 传输函数）
+            UpdateGainMapPanelVisibility();
             DetectColorConflicts();
             RegenerateCommand();
+        }
+
+        /// <summary>根据「JPEG + HDR 色彩 (BT.2020 PQ/HLG)」刷新 Gain Map 面板可见性（任意 JPEG 编码器）</summary>
+        private void UpdateGainMapPanelVisibility()
+        {
+            var fmt = NormalizeFormat(FormatCombo?.SelectedItem as string);
+            if (fmt is not ("jpg" or "jpeg")) return;
+            if (JpegGainMapPanel != null)
+                JpegGainMapPanel.IsVisible = IsHdrColorSelected();
         }
 
         private void UseAdvancedCodec_IsCheckedChanged(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
@@ -2979,7 +3107,7 @@ namespace FfmpegGui
             var fmt = FormatCombo?.SelectedItem as string ?? "";
 
             // 冲突1: HDR→SDR
-            if (cs is "BT.2020 PQ" or "BT.2020 HLG")
+            if (cs is "BT.2020 PQ" or "BT.2020 HLG" or "P3 PQ")
             {
                 if (fmt is "JPEG" or "WebP" or "GIF" or "BMP")
                     conflicts.Add($"⚠ HDR({cs})→{fmt}(SDR)：将自动应用色调映射降级");
@@ -3005,7 +3133,7 @@ namespace FfmpegGui
             }
 
             // 冲突3: HDR + 目标格式位深限制
-            if (cs is "BT.2020 PQ" or "BT.2020 HLG")
+            if (cs is "BT.2020 PQ" or "BT.2020 HLG" or "P3 PQ")
             {
                 var bdStr = BitDepthCombo?.SelectedItem as string;
                 int.TryParse(bdStr, out var selBd);
@@ -3209,10 +3337,15 @@ namespace FfmpegGui
             var sel = (ColorSpaceCombo?.SelectedItem as string ?? "BT.709").ToUpper();
             switch (sel)
             {
-                case "BT.601":
-                    SetComboSelection(ColorPrimariesCombo, "bt470bg");
-                    SetComboSelection(ColorTrcCombo, "bt470bg");
-                    SetComboSelection(ColorMatrixCombo, "bt601");
+                case "DISPLAY P3":
+                    SetComboSelection(ColorPrimariesCombo, "smpte432");
+                    SetComboSelection(ColorTrcCombo, "iec61966-2-1");
+                    SetComboSelection(ColorMatrixCombo, "bt709");
+                    break;
+                case "P3 PQ":
+                    SetComboSelection(ColorPrimariesCombo, "smpte432");
+                    SetComboSelection(ColorTrcCombo, "smpte2084");
+                    SetComboSelection(ColorMatrixCombo, "bt709");
                     break;
                 case "BT.709":
                     SetComboSelection(ColorPrimariesCombo, "bt709");
@@ -3220,9 +3353,11 @@ namespace FfmpegGui
                     SetComboSelection(ColorMatrixCombo, "bt709");
                     break;
                 case "BT.2020":
+                case "BT.2020 PQ":
+                case "BT.2020 HLG":
                     SetComboSelection(ColorPrimariesCombo, "bt2020");
                     SetComboSelection(ColorTrcCombo, "smpte2084");
-                    SetComboSelection(ColorMatrixCombo, "bt2020");
+                    SetComboSelection(ColorMatrixCombo, "bt2020nc");
                     break;
                 default:
                     SetComboSelection(ColorPrimariesCombo, "bt709");
@@ -3231,6 +3366,45 @@ namespace FfmpegGui
                     break;
             }
             RegenerateCommand();
+        }
+
+        /// <summary>
+        /// 高级色彩参数联动: 选择 primaries 时自动补全匹配的 trc/matrix。
+        /// 仅在 trc/matrix 仍是旧值 (未手动改过) 时更新, 避免覆盖用户手动选择。
+        /// </summary>
+        private void AutoLinkColorParameters()
+        {
+            var prim = ColorPrimariesCombo?.SelectedItem as string;
+            if (string.IsNullOrWhiteSpace(prim)) return;
+
+            var trc = ColorTrcCombo?.SelectedItem as string;
+            var mat = ColorMatrixCombo?.SelectedItem as string;
+
+            switch (prim)
+            {
+                case "bt2020":
+                    // BT.2020: 色域 bt2020 + PQ 曲线 + 非恒定亮度矩阵
+                    if (trc is null or "" or "bt709" or "iec61966-2-1" or "smpte432")
+                        SetComboSelection(ColorTrcCombo, "smpte2084");
+                    if (mat is null or "" or "bt709" or "bt601")
+                        SetComboSelection(ColorMatrixCombo, "bt2020nc");
+                    break;
+                case "smpte432":
+                    // Display P3: 色域 P3 + sRGB 曲线 (P3D65 标准) + bt709 矩阵
+                    // 若用户选了 PQ 则保留 (P3 PQ HDR 场景), 仅当 trc 仍是旧 SDR 值时切换
+                    if (trc is null or "" or "bt709" or "bt470bg")
+                        SetComboSelection(ColorTrcCombo, "iec61966-2-1");
+                    if (mat is null or "" or "bt2020nc" or "bt601")
+                        SetComboSelection(ColorMatrixCombo, "bt709");
+                    break;
+                case "bt709":
+                    // BT.709: 标准 SDR
+                    if (trc is null or "" or "smpte2084" or "arib-std-b67" or "iec61966-2-1" or "smpte432")
+                        SetComboSelection(ColorTrcCombo, "bt709");
+                    if (mat is null or "" or "bt2020nc" or "bt601")
+                        SetComboSelection(ColorMatrixCombo, "bt709");
+                    break;
+            }
         }
 
         private void SetComboSelection(ComboBox? combo, string value)
@@ -3321,18 +3495,18 @@ namespace FfmpegGui
                 JxlEffort = useAdvCodec ? (int?)JxlEffortBox?.Value : 7,
                 JxlModular = useAdvCodec ? JxlModularCheck?.IsChecked : null,
                 JxlLosslessJpeg = fmt is "jxl" && IsJpegInput(_inputPath)
+                    && (JxlLosslessJpegCheck?.IsChecked ?? true)
                     && !(useAdvCodec && (JxlPreserveUltrahdrCheck?.IsChecked ?? true)),
                 JxlPreserveUltrahdr = useAdvCodec ? (JxlPreserveUltrahdrCheck?.IsChecked ?? true) : true,
                 JpegHuffman = useAdvCodec ? (JpegHuffmanCombo?.SelectedItem as string) : "optimal",
                 JpegDct = useAdvCodec ? (JpegDctCombo?.SelectedItem as string is "auto" ? null : JpegDctCombo?.SelectedItem as string) : null,
                 JpegProgressiveId = useAdvCodec ? ParseJpegProgressiveId() : 0,
-                JpegGainMap = (GetCurrentEncoderBackend() == EncoderBackend.Cjpegli),
+                JpegGainMap = IsHdrColorSelected(),
                 JpegGainMapQuality = ParseGainMapQuality(),
                 JpegGainMapTargetNits = ParseGainMapNits(),
                 JpegGainMapHdrCf = ParseGainMapHdrCf(),
                 JpegGainMapDownsample = ParseGainMapDownsample(),
-                JpegGainMapMultiChannel = (UseAdvancedCodec?.IsChecked == true)
-                    && (JpegGainMapMultiChannelCheck?.IsChecked ?? false),
+                JpegGainMapMultiChannel = ParseGainMapMultiChannel(),
                 TiffCompressionAlgo = useAdvCodec ? (TiffCompressionCombo?.SelectedItem as string) : "lzw",
                 StripExifGps = StripExifGpsCheck?.IsChecked ?? true,
                 StripExifTime = StripExifTimeCheck?.IsChecked ?? false,
@@ -4281,6 +4455,75 @@ namespace FfmpegGui
             RegenerateCommand();
         }
 
+        // ═══════════════════════════════════════════════
+        // Photoshop ACR 验证 (2026-08-15)
+        // ═══════════════════════════════════════════════
+
+        private async void BrowsePhotoshop_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        {
+            var topLevel = TopLevel.GetTopLevel(this);
+            if (topLevel?.StorageProvider == null) return;
+            var files = await topLevel.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+            {
+                Title = "选择 Photoshop.exe",
+                AllowMultiple = false,
+                FileTypeFilter = new[]
+                {
+                    new FilePickerFileType("可执行文件") { Patterns = PlatformServices.ExeFilePickerPatterns },
+                    new FilePickerFileType("所有文件") { Patterns = new[] { "*" } }
+                }
+            });
+            if (files != null && files.Count > 0)
+            {
+                var path = files[0].Path.LocalPath;
+                AppSettingsService.Current.PhotoshopPath = path;
+                AppSettingsService.Save();
+                if (PhotoshopPathBox != null) PhotoshopPathBox.Text = path;
+                PsRenderService.ClearCache();
+                RefreshPsPanelState();
+                if (LogText != null)
+                    LogText.Text += PsRenderService.IsAvailable
+                        ? $"✅ Photoshop 路径已更新: {path}\n"
+                        : $"⚠️ Photoshop 路径已设置但无法使用: {path}\n";
+            }
+        }
+
+        private void ClearPhotoshopPath_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        {
+            AppSettingsService.Current.PhotoshopPath = null;
+            AppSettingsService.Save();
+            if (PhotoshopPathBox != null) PhotoshopPathBox.Text = "";
+            PsRenderService.ClearCache();
+            RefreshPsPanelState();
+            if (LogText != null)
+                LogText.Text += PsRenderService.IsAvailable
+                    ? $"✅ Photoshop 自动检测: {PsRenderService.DetectedPath}\n"
+                    : "ℹ️ Photoshop: 未检测到\n";
+        }
+
+        /// <summary>从 AppSettings 加载 Photoshop 设置并刷新状态</summary>
+        private void RefreshPsPanelState()
+        {
+            if (PhotoshopPathBox != null)
+                PhotoshopPathBox.Text = AppSettingsService.Current.PhotoshopPath ?? "";
+
+            PsRenderService.ClearCache();
+            PsRenderService.Detect();
+            if (PsToolsStatus != null)
+            {
+                PsToolsStatus.Children.Clear();
+                PsToolsStatus.Children.Add(new TextBlock
+                {
+                    Text = PsRenderService.IsAvailable
+                        ? $"✅ PS {Path.GetFileName(PsRenderService.DetectedPath)}"
+                        : "❌ Photoshop (未检测到)",
+                    FontSize = 10,
+                    Foreground = Avalonia.Media.Brushes.Gray,
+                    Margin = new Avalonia.Thickness(0, 0, 2, 0)
+                });
+            }
+        }
+
         private void RefreshJxlServices()
         {
             CjxlService.ClearCache(); CjxlService.Detect();
@@ -4362,6 +4605,7 @@ namespace FfmpegGui
             AppSettingsService.Current.JxlLibDir = null;
             AppSettingsService.Current.WindowsArtifactsDir = null;
             AppSettingsService.Current.ExifToolPath = null;
+            AppSettingsService.Current.PhotoshopPath = null;
             AppSettingsService.Save();
             if (JxlLibDirBox != null) JxlLibDirBox.Text = "";
             if (ArtifactsDirBox != null) ArtifactsDirBox.Text = "";
@@ -4372,6 +4616,7 @@ namespace FfmpegGui
             RefreshArtifactsServices();
             ExifToolService.Detect();
             UpdateExifToolPanelState();
+            RefreshPsPanelState();
             RegenerateCommand();
         }
 
@@ -4412,6 +4657,10 @@ namespace FfmpegGui
                 ("jxr", JxrService.IsAvailable),
                 ("avifenc", HasAvifencAvailable()),
                 ("dngtool", RawService.IsAvailable),
+            });
+            PopulateCategoryTools(PsToolsStatus, new[]
+            {
+                ("photoshop", PsRenderService.IsAvailable),
             });
 
             // 检测完成后显示紧凑状态栏
@@ -4616,6 +4865,29 @@ namespace FfmpegGui
         /// <summary>
         /// 解析增益图质量：勾选"跟随主图"返回 -1，否则从 TextBox 读取 1-100 的值
         /// </summary>
+        /// <summary>判断当前选择的色彩空间是否为 HDR（BT.2020 PQ/HLG 或 P3 PQ 或高级参数 PQ/HLG 传输函数）。
+        /// Gain Map (Ultra HDR) 仅在 HDR 色彩下有意义（记录 HDR 高光扩展），SDR 内容 headroom=1 无增益。</summary>
+        private bool IsHdrColorSelected()
+        {
+            var cs = ColorSpaceCombo?.SelectedItem as string;
+            if (cs is "BT.2020 PQ" or "BT.2020 HLG" or "P3 PQ") return true;
+            if (UseAdvancedColor?.IsChecked == true)
+            {
+                var trc = ColorTrcCombo?.SelectedItem as string;
+                if (trc is "smpte2084" or "arib-std-b67") return true;
+            }
+            return false;
+        }
+
+        /// <summary>解析增益图类型：0=灰度(1通道), 1=RGB(3通道)。回退到旧 CheckBox 语义。</summary>
+        private bool ParseGainMapMultiChannel()
+        {
+            if (JpegGainMapTypeCombo != null)
+                return JpegGainMapTypeCombo.SelectedIndex == 1;
+            // 兼容：旧 CheckBox（XAML 已移除，此路径仅旧预设/旧二进制）
+            return JpegGainMapMultiChannelCheck?.IsChecked ?? false;
+        }
+
         private int ParseGainMapQuality()
         {
             if (JpegGainMapFollowMainCheck?.IsChecked == true)
@@ -4649,10 +4921,11 @@ namespace FfmpegGui
                 return 2;  // 默认半分辨率
             return JpegGainMapDownsampleCombo?.SelectedIndex switch
             {
-                0 => 1,   // 满分辨率
-                2 => 4,   // 1/4
-                3 => 8,   // 1/8
-                _ => 2    // 1/2 (默认)
+                0 => 1,    // 满分辨率
+                2 => 4,    // 1/4
+                3 => 8,    // 1/8
+                4 => 16,   // 1/16
+                _ => 2     // 1/2 (默认)
             };
         }
 
@@ -4736,13 +5009,16 @@ namespace FfmpegGui
                 JpegDct = JpegDctCombo?.SelectedItem as string,
                 JpegProgressiveId = ParseJpegProgressiveId(),
                 JxlPreserveUltrahdr = JxlPreserveUltrahdrCheck?.IsChecked ?? true,
+                JxlLosslessJpeg = JxlLosslessJpegCheck?.IsChecked ?? true,
                 TiffCompressionAlgo = TiffCompressionCombo?.SelectedItem as string,
                 // ── 编码器后端 ──
                 EncoderBackend = GetCurrentEncoderBackend().ToString(),
                 // ── Gain Map ──
-                JpegGainMap = GetCurrentEncoderBackend() == Services.EncoderBackend.Cjpegli,
+                JpegGainMap = IsHdrColorSelected(),
                 JpegGainMapQuality = ParseGainMapQuality(),
                 JpegGainMapTargetNits = ParseGainMapNits(),
+                JpegGainMapMultiChannel = ParseGainMapMultiChannel(),
+                JpegGainMapDownsample = ParseGainMapDownsample(),
                 // ── WebP 无损压缩级别 ──
                 WebpCompressionLevel = (int?)WebpCompressionBox?.Value,
                 // ── AVIF 扩展 ──
@@ -4772,6 +5048,14 @@ namespace FfmpegGui
                 StripExifAll = StripExifAllCheck?.IsChecked ?? false,
                 StripXmp = StripXmpCheck?.IsChecked ?? false,
                 AppendPngExtension = AppendPngExtCheck?.IsChecked ?? false,
+                // ── DNG 输出选项 ──
+                DngCompression = DngCompressionCombo?.SelectedIndex == 1 ? 1 : 0,
+                DngJxlQuality = ParseInt(DngJxlQualityBox?.Text, 0, 0, 100),
+                DngLinear = DngLinearCombo?.SelectedIndex == 1,
+                DngJxlEffort = (int)(DngJxlEffortBox?.Value ?? 7),
+                DngJxlDecodeSpeed = (int)(DngJxlDecodeSpeedBox?.Value ?? 4),
+                DngHighlightMode = DngHighlightCombo?.SelectedIndex ?? 1,
+                DngBitDepth = DngBitDepthCombo?.SelectedIndex == 0 ? 8 : 16,
                 IccMode = GetIccMode().ToString(),
                 IccFilePath = null, // 新模式不使用外部 ICC
                 IccSourceColorSpace = GetIccSourceSpace(),
@@ -4824,7 +5108,41 @@ namespace FfmpegGui
             if (JpegProgressiveCombo != null && p.JpegProgressiveId is >= -1 and <= 1)
                 JpegProgressiveCombo.SelectedIndex = p.JpegProgressiveId + 1;  // -1→0(自动), 0→1(基线), 1→2(渐进)
             if (JxlPreserveUltrahdrCheck != null) JxlPreserveUltrahdrCheck.IsChecked = p.JxlPreserveUltrahdr;
+            if (JxlLosslessJpegCheck != null) JxlLosslessJpegCheck.IsChecked = p.JxlLosslessJpeg;
+            // ── Gain Map (Ultra HDR) ──
+            if (JpegGainMapTypeCombo != null)
+                JpegGainMapTypeCombo.SelectedIndex = p.JpegGainMapMultiChannel ? 1 : 0;
+            if (JpegGainMapFollowMainCheck != null)
+            {
+                JpegGainMapFollowMainCheck.IsChecked = p.JpegGainMapQuality < 0;
+                if (JpegGainMapQualityPanel != null)
+                    JpegGainMapQualityPanel.IsVisible = p.JpegGainMapQuality >= 0;
+                if (JpegGainMapQualityBox != null && p.JpegGainMapQuality >= 0)
+                    JpegGainMapQualityBox.Text = p.JpegGainMapQuality.ToString();
+            }
+            if (JpegGainMapNitsBox != null && p.JpegGainMapTargetNits > 0)
+                JpegGainMapNitsBox.Text = p.JpegGainMapTargetNits.ToString();
+            if (JpegGainMapDownsampleCombo != null)
+                JpegGainMapDownsampleCombo.SelectedIndex = p.JpegGainMapDownsample switch
+                {
+                    1 => 0, 2 => 1, 4 => 2, 8 => 3, 16 => 4, _ => 1
+                };
             SetComboByValue(TiffCompressionCombo, p.TiffCompressionAlgo);
+            // ── DNG 输出选项恢复 ──
+            if (DngCompressionCombo != null)
+                DngCompressionCombo.SelectedIndex = p.DngCompression == 1 ? 1 : 0;
+            if (DngJxlQualityBox != null)
+                DngJxlQualityBox.Text = p.DngJxlQuality.ToString();
+            if (DngLinearCombo != null)
+                DngLinearCombo.SelectedIndex = p.DngLinear ? 1 : 0;
+            if (DngJxlEffortBox != null)
+                DngJxlEffortBox.Value = Math.Clamp(p.DngJxlEffort, 1, 9);
+            if (DngJxlDecodeSpeedBox != null)
+                DngJxlDecodeSpeedBox.Value = Math.Clamp(p.DngJxlDecodeSpeed, 1, 4);
+            if (DngHighlightCombo != null)
+                DngHighlightCombo.SelectedIndex = Math.Clamp(p.DngHighlightMode, 0, 2);
+            if (DngBitDepthCombo != null)
+                DngBitDepthCombo.SelectedIndex = p.DngBitDepth <= 8 ? 0 : 1;
             // ── 编码器后端 ──
             if (!string.IsNullOrWhiteSpace(p.EncoderBackend) && EncoderCombo != null)
             {

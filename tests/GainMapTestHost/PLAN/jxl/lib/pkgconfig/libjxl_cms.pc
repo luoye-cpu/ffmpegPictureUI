@@ -1,0 +1,13 @@
+prefix=D:/a/libjxl/libjxl/prefix
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib
+includedir=${prefix}/include
+
+Name: libjxl_cms
+Description: CMS support library for libjxl
+Version: 0.11.2
+Requires: 
+Libs: -L${libdir} -ljxl_cms 
+Libs.private: -lm 
+Cflags: -I${includedir}
+Cflags.private: -DJXL_CMS_STATIC_DEFINE

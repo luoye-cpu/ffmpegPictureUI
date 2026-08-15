@@ -332,6 +332,8 @@ namespace FfmpegGui
                             var psnrStr = double.IsPositiveInfinity(result.PsnrAverage.Value)
                                 ? "PSNR: ∞ dB (无损)"
                                 : $"PSNR: {result.PsnrAverage.Value:F2} dB";
+                            // 域标注 (2026-08-15: 按目标格式编码域 — RGB 系格式用 RGB 域, YUV 系用 YUV 域)
+                            psnrStr += result.PsnrIsRgb ? " (RGB)" : " (YUV)";
                             if (result.PsnrMin.HasValue && !double.IsInfinity(result.PsnrMin.Value))
                                 psnrStr += $" (min {result.PsnrMin.Value:F2})";
                             if (result.PsnrMax.HasValue && !double.IsInfinity(result.PsnrMax.Value))

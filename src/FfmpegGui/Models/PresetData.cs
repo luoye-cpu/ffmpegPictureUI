@@ -36,15 +36,33 @@ namespace FfmpegGui.Models
         public bool JxlLosslessJpeg { get; set; }
         public string? TiffCompressionAlgo { get; set; }
         // ── Gain Map (Ultra HDR) JPEG ──
-        /// <summary>是否启用 Gain Map（需 ultrahdr_app 编码器）</summary>
+        /// <summary>是否启用 Gain Map（需 cjpegli + BT.2020 HDR 色彩空间）</summary>
         public bool JpegGainMap { get; set; }
         /// <summary>Gain Map 压缩质量 (0-100)，-1=跟随主图</summary>
         public int JpegGainMapQuality { get; set; } = -1;
         /// <summary>目标显示器亮度 (nit)</summary>
         public int JpegGainMapTargetNits { get; set; } = 1000;
+        /// <summary>增益图类型：false=灰度(1通道), true=RGB(3通道)</summary>
+        public bool JpegGainMapMultiChannel { get; set; }
+        /// <summary>增益图下采样因子：1=满, 2=1/2, 4=1/4, 8=1/8, 16=1/16</summary>
+        public int JpegGainMapDownsample { get; set; } = 2;
         // ── 编码器后端选择 ──
         /// <summary>编码器后端名称: Ffmpeg/Cjpegli/Cjxl/Ultrahdr/Jxr</summary>
         public string? EncoderBackend { get; set; }
+        /// <summary>DNG 压缩方式: 0=无损 JPEG, 1=JPEG XL。默认 JXL（最大压缩度）</summary>
+        public int DngCompression { get; set; } = 1;
+        /// <summary>DNG JXL 质量 (0=无损, 1-100=有损)。默认 0=无损</summary>
+        public int DngJxlQuality { get; set; } = 0;
+        /// <summary>DNG 布局: false=保留 CFA, true=线性 DNG。默认保留 CFA</summary>
+        public bool DngLinear { get; set; } = false;
+        /// <summary>DNG JXL 编码努力 (1-9)。默认 7=压缩率与速度平衡</summary>
+        public int DngJxlEffort { get; set; } = 7;
+        /// <summary>DNG JXL 解码速度提示 (DNG 规范 1-4)。默认 1=最高压缩率</summary>
+        public int DngJxlDecodeSpeed { get; set; } = 1;
+        /// <summary>DNG 高光模式 (0=裁剪, 1=恢复, 2=blend)。默认 1</summary>
+        public int DngHighlightMode { get; set; } = 1;
+        /// <summary>DNG 位深 (8/16)。默认 16</summary>
+        public int DngBitDepth { get; set; } = 16;
         /// <summary>WebP 无损压缩级别 (0-6)</summary>
         public int? WebpCompressionLevel { get; set; }
         /// <summary>输出文件名追加 .png 后缀（仅 JXL/AVIF）</summary>
@@ -107,9 +125,9 @@ namespace FfmpegGui.Models
         public string? IccSourceColorSpace { get; set; }
         public string? IccTargetColorSpace { get; set; }
 
-        public string ToJson() => JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true });
+        public string ToJson() => JsonSerializer.Serialize(this, AppJsonContext.Default.PresetData);
 
         public static PresetData FromJson(string json) =>
-            JsonSerializer.Deserialize<PresetData>(json) ?? new PresetData();
+            JsonSerializer.Deserialize(json, AppJsonContext.Default.PresetData) ?? new PresetData();
     }
 }

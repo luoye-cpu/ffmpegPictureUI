@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -143,25 +144,26 @@ public static class GainMapDecoder
                 var baseRgb = PlanarToInterleaved(baseBytes, baseW * baseH);
                 var gmRgb = PlanarToInterleaved(gmBytes, gmW * gmH);
 
-                // sRGB → 线性 (基础图是 sRGB 编码)
-                for (int i = 0; i < baseW * baseH; i++)
-                {
-                    int o = i * 4;
-                    baseRgb[o] = SrgbToLinear(baseRgb[o]);
-                    baseRgb[o + 1] = SrgbToLinear(baseRgb[o + 1]);
-                    baseRgb[o + 2] = SrgbToLinear(baseRgb[o + 2]);
-                }
+                // sRGB → 线性 (基础图是 sRGB 编码; 2026-08-15: SIMD 加速)
+                SimdPixelOps.SrgbToLinearRgba(baseRgb);
 
                 // 应用增益 (双线性插值增益图 → 基础图分辨率)
                 var hdrRgb = ApplyGainMap(baseRgb, gmRgb, baseW, baseH, gmW, gmH, meta);
 
-                // 输出 gbrpf32le (平面 G,B,R + alpha 占位)
+                // 输出 gbrpf32le (平面 G,B,R)
+                // ⚠️ BlockCopy 是原始字节拷贝, 不能从交错 RGBA 抽取平面!
+                //   必须逐像素跨步抽取 (此前用 BlockCopy 导致输出错乱)
                 var outBytes = new byte[baseW * baseH * 12];
-                Buffer.BlockCopy(hdrRgb, 0, outBytes, 0, baseW * baseH * 4);         // R 平面暂存
-                Buffer.BlockCopy(hdrRgb, 4, outBytes, baseW * baseH * 4, baseW * baseH * 4);   // G 平面暂存
-                Buffer.BlockCopy(hdrRgb, 8, outBytes, baseW * baseH * 8, baseW * baseH * 4);   // B 平面暂存
-                // gbrpf32le 平面顺序 = G,B,R
-                await ReorderGbrAsync(outBytes, baseW * baseH, ct);
+                Span<byte> outSpan = outBytes;
+                for (int i = 0; i < baseW * baseH; i++)
+                {
+                    int o = i * 4;
+                    int po = i * 4;
+                    // gbrpf32le 平面顺序 = G, B, R
+                    BitConverter.TryWriteBytes(outSpan.Slice(po, 4), hdrRgb[o + 1]);              // G
+                    BitConverter.TryWriteBytes(outSpan.Slice(baseW * baseH * 4 + po, 4), hdrRgb[o + 2]);  // B
+                    BitConverter.TryWriteBytes(outSpan.Slice(baseW * baseH * 8 + po, 4), hdrRgb[o]);      // R
+                }
 
                 await File.WriteAllBytesAsync(outputRawPath, outBytes, ct);
                 log?.Invoke($"[GainMap解码] ✅ HDR 线性像素: {baseW}x{baseH} (1.0=SDR白点)\n");
@@ -191,38 +193,62 @@ public static class GainMapDecoder
         {
             if (!ExifToolService.IsAvailable) return null;
 
+            // ── 单次 -json 查询读取全部标签（此前 8 个标签逐个起 exiftool 进程，开销大）──
+            // exiftool -json 输出形如 [{"SourceFile":"...","XMP-gainmap:GainMapMin":0.5,...}]
+            var json = await ReadMetadataJsonAsync(path);
+            if (string.IsNullOrWhiteSpace(json)) return null;
+
             var meta = new GainMapMetadata();
             bool found = false;
 
-            // 逐标签读取 (单个标签查询不触发 trailer 解析警告)
-            var tags = new (string name, Action<float> set)[] {
-                ("GainMapMin", v => meta.GainMapMin = v),
-                ("GainMapMax", v => meta.GainMapMax = v),
-                ("Gamma", v => meta.Gamma = v),
-                ("OffsetSDR", v => meta.OffsetSdr = v),
-                ("OffsetHDR", v => meta.OffsetHdr = v),
-                ("HDRCapacityMax", v => meta.HdrCapacityMax = v),
-            };
-            foreach (var (name, set) in tags)
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            if (root.ValueKind != System.Text.Json.JsonValueKind.Array || root.GetArrayLength() == 0)
+                return null;
+            var first = root[0];
+
+            // 从 JSON 属性中查找标签（属性名可能带命名空间前缀，如 "XMP-gainmap:GainMapMin"）
+            string? GetTag(string tagName)
             {
-                var val = await ReadSingleTagAsync(path, name);
-                if (val != null)
+                foreach (var prop in first.EnumerateObject())
                 {
-                    set(ParseFirstFloat(val));
-                    found = true;
+                    if (prop.Name.EndsWith($":{tagName}", StringComparison.OrdinalIgnoreCase)
+                        || prop.Name.Equals(tagName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return prop.Value.ValueKind switch
+                        {
+                            System.Text.Json.JsonValueKind.String => prop.Value.GetString(),
+                            System.Text.Json.JsonValueKind.Number => prop.Value.GetRawText(),
+                            System.Text.Json.JsonValueKind.True => "True",
+                            System.Text.Json.JsonValueKind.False => "False",
+                            _ => prop.Value.GetRawText(),
+                        };
+                    }
                 }
+                return null;
             }
 
-            // Channels (整数)
-            var ch = await ReadSingleTagAsync(path, "Channels");
+            var min = GetTag("GainMapMin");
+            if (min != null) { meta.GainMapMin = ParseFirstFloat(min); found = true; }
+            var max = GetTag("GainMapMax");
+            if (max != null) { meta.GainMapMax = ParseFirstFloat(max); found = true; }
+            var gamma = GetTag("Gamma");
+            if (gamma != null) { meta.Gamma = ParseFirstFloat(gamma); found = true; }
+            var offsetSdr = GetTag("OffsetSDR");
+            if (offsetSdr != null) { meta.OffsetSdr = ParseFirstFloat(offsetSdr); found = true; }
+            var offsetHdr = GetTag("OffsetHDR");
+            if (offsetHdr != null) { meta.OffsetHdr = ParseFirstFloat(offsetHdr); found = true; }
+            var capMax = GetTag("HDRCapacityMax");
+            if (capMax != null) { meta.HdrCapacityMax = ParseFirstFloat(capMax); found = true; }
+
+            var ch = GetTag("Channels");
             if (ch != null && int.TryParse(ch, out var c) && c > 0)
             {
                 meta.Channels = c;
                 found = true;
             }
 
-            // BaseRenditionIsHDR (布尔)
-            var br = await ReadSingleTagAsync(path, "BaseRenditionIsHDR");
+            var br = GetTag("BaseRenditionIsHDR");
             if (br != null)
                 meta.BaseRenditionIsHdr = br.StartsWith("True", StringComparison.OrdinalIgnoreCase);
 
@@ -231,8 +257,8 @@ public static class GainMapDecoder
         catch { return null; }
     }
 
-    /// <summary>读取单个 exiftool 标签值</summary>
-    private static async Task<string?> ReadSingleTagAsync(string path, string tag)
+    /// <summary>一次 exiftool -json 查询全部标签（带 5 秒超时保护）</summary>
+    private static async Task<string?> ReadMetadataJsonAsync(string path)
     {
         try
         {
@@ -240,17 +266,28 @@ public static class GainMapDecoder
             var psi = new ProcessStartInfo
             {
                 FileName = ExifToolService.DetectedPath!,
-                Arguments = $"-{tag} -s -s -s \"{path}\"",
+                Arguments = $"-json -G \"{path}\"",
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,
-                CreateNoWindow = true
+                CreateNoWindow = true,
+                StandardOutputEncoding = Encoding.UTF8,
+                StandardErrorEncoding = Encoding.UTF8
             };
             using var p = Process.Start(psi);
             if (p == null) return null;
-            var output = (await p.StandardOutput.ReadToEndAsync()).Trim();
-            await p.WaitForExitAsync();
-            return string.IsNullOrWhiteSpace(output) ? null : output;
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            try
+            {
+                var output = await p.StandardOutput.ReadToEndAsync(cts.Token);
+                await p.WaitForExitAsync(cts.Token);
+                return string.IsNullOrWhiteSpace(output) ? null : output.Trim();
+            }
+            catch (OperationCanceledException)
+            {
+                try { p.Kill(true); } catch { }
+                return null;
+            }
         }
         catch { return null; }
     }
@@ -281,12 +318,18 @@ public static class GainMapDecoder
             };
             using var p = Process.Start(psi);
             if (p == null) return false;
-            // 二进制输出直接写文件
-            using var fs = new FileStream(outputJpegPath, FileMode.Create, FileAccess.Write);
-            await p.StandardOutput.BaseStream.CopyToAsync(fs);
+            // ⚠️ ppl-exiftool (Perl 启动器) 实测怪癖:
+            //   进程退出后 stdout 管道数据丢失 (读 0 字节) → 必须进程启动后
+            //   立即开始读 stdout, 且不能先等 WaitForExit。
+            //   先用 MemoryStream 立即读 (FileStream 打开慢会错过窗口), 再落盘。
+            using var ms = new MemoryStream();
+            await p.StandardOutput.BaseStream.CopyToAsync(ms);
+            var stderrTask = p.StandardError.ReadToEndAsync();
             await p.WaitForExitAsync();
-            return p.ExitCode == 0 && File.Exists(outputJpegPath)
-                && new FileInfo(outputJpegPath).Length > 100;
+            await stderrTask;
+            if (p.ExitCode != 0 || ms.Length <= 100) return false;
+            await File.WriteAllBytesAsync(outputJpegPath, ms.ToArray());
+            return File.Exists(outputJpegPath) && new FileInfo(outputJpegPath).Length > 100;
         }
         catch { return false; }
     }
@@ -414,18 +457,6 @@ public static class GainMapDecoder
     }
 
     /// <summary>RGBA 交错 → gbrpf32le planar (G,B,R)</summary>
-    internal static async Task ReorderGbrAsync(byte[] outBytes, int pixelCount, CancellationToken ct)
-    {
-        // outBytes 布局: [R平面][G平面][B平面] → 需要变为 [G平面][B平面][R平面]
-        var tmp = new byte[outBytes.Length];
-        Buffer.BlockCopy(outBytes, 0, tmp, 0, outBytes.Length);
-        Buffer.BlockCopy(tmp, 0, outBytes, 0, pixelCount * 4);                    // R 平面 → 暂时保留
-        Buffer.BlockCopy(tmp, pixelCount * 4, outBytes, 0, pixelCount * 4);       // G → 位置 0
-        Buffer.BlockCopy(tmp, pixelCount * 8, outBytes, pixelCount * 4, pixelCount * 4); // B → 位置 1
-        Buffer.BlockCopy(tmp, 0, outBytes, pixelCount * 8, pixelCount * 4);       // R → 位置 2
-        await Task.CompletedTask;
-    }
-
     /// <summary>sRGB 编码值 → 线性</summary>
     internal static float SrgbToLinear(float v)
     {

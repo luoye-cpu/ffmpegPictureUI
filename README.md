@@ -1,6 +1,6 @@
 # 🖼️ FFmpegPictureUI — FFmpeg 图片转换器
 
-**v1.5.1** — 2026-07-27 Release | Cross-platform batch image/animation/video converter built on Avalonia UI.
+**v1.5.2** — 2026-08-13 Release | Cross-platform batch image/animation/video converter built on Avalonia UI.
 基于 Avalonia UI 的跨平台批量图片/动图/视频转换工具，封装 `ffmpeg`/`ffprobe` + 外部编码器 (`cjxl`/`djxl`/`cjpegli`/`ultrahdr_app`/`JxrEncApp`/`JxrDecApp`).
 
 QQ 交流群：754439779 | [点击加群](https://qm.qq.com/q/M2181PvCkW)
@@ -45,6 +45,12 @@ QQ 交流群：754439779 | [点击加群](https://qm.qq.com/q/M2181PvCkW)
 | `avifenc` | ⚪ Optional / 可选 | GIF → AVIF two-step encoding with alpha preservation |
 | `dngtool` | ⭐ Recommended / 推荐 | DNG 1.7 JXL 解码/编码, RAW 去马赛克 (LibRaw + Adobe DNG SDK) |
 | `exiftool` | ⚪ Optional / 可选 | Metadata editing, privacy cleaning, ICC profile embedding |
+| `Photoshop` | ⚪ Optional / 可选 | ACR 兼容性验证 (dngtool 产物打开/渲染, ExtendScript 自动化) |
+
+> **v1.5.3** — 新增 RAW 质量验证：
+> - 🖼 **Photoshop 验证** — 自动检测本机 PS 安装（注册表/常见路径），ExtendScript 打开 dngtool 输出的 DNG
+>   验证 ACR 兼容性，可渲染 PNG 参考图。`tests/scripts/run-ps-verify.ps1` 一键运行。
+>   - ⚠️ 注意: PS 的 `app.quit()` 不终止进程，验证调用前会自动清理残留 Photoshop 实例
 
 > **v1.5.0** — 外部工具面板设计为 3 列水平布局：
 > - 📦 **JXL 参考库**（文件夹）— 自动检测 cjxl / djxl / cjpegli
@@ -63,8 +69,8 @@ QQ 交流群：754439779 | [点击加群](https://qm.qq.com/q/M2181PvCkW)
 
 ### Prerequisites / 前提条件
 
-- **OS / 系统**: Windows 10/11 (其他 .NET 10 平台应可运行)
-- **.NET 10 Runtime**: [Download / 下载](https://dotnet.microsoft.com/en-us/download/dotnet/10.0)
+- **OS / 系统**: Windows 10/11 (其他 .NET 11 平台应可运行)
+- **.NET 11 Runtime**: [Download / 下载](https://dotnet.microsoft.com/en-us/download/dotnet/11.0)
 - **FFmpeg**: Install and ensure `ffmpeg -version` works / 安装并确认终端可运行 `ffmpeg -version`
 
 ```bash
@@ -117,7 +123,7 @@ ffmpegPictureUI/
 │   │                     ColorEncodingHelper, IccProfileService,
 │   │                     PresetManagerService, RawService, UltrahdrService,
 │   │                     GpuCapabilityService, PlatformServices,
-│   │                     LocalizationService
+│   │                     LocalizationService, PsRenderService (Photoshop ACR 验证)
 │   ├── Controls/         MetadataEditor
 │   ├── Resources/Locales/ zh-CN.json, en-US.json
 │   ├── LocExtension.cs   XAML localization markup extension
@@ -127,6 +133,7 @@ ffmpegPictureUI/
 │   ├── PresetManagerWindow.axaml Preset manager window
 │   ├── ProgressWindow.xaml Progress UI
 ├── tools/                Verification utilities
+├── tests/                Testing (output/ ignored by git, see docs/TESTING.md)
 └── publish/              Publish output
 ```
 
@@ -134,16 +141,43 @@ ffmpegPictureUI/
 
 ## 📝 Changelog / 更新日志
 
+### v1.5.3 (2026-08-15) — RAW 质量验证 / RAW Quality Verification
+
+**🖼 Photoshop ACR 兼容性验证**
+- 新增 `PsRenderService` — 自动检测本机 Photoshop（注册表 + 常见路径）
+- ExtendScript 打开 dngtool 输出的 DNG（无损 JPEG / JXL 压缩）验证 ACR 兼容性，可渲染 PNG 参考图
+- `tests/scripts/run-ps-verify.ps1` 一键验证脚本（实测 PS 2026 打开 9600×6376 CFA DNG ✅）
+- ⚠️ 已知行为: PS `app.quit()` 不终止进程，调用前自动清理残留实例（避免脚本排队超时）
+
+**📊 PSNR/SSIM 回归断言**
+- `run-pipeline-tests.ps1` 新增「无损 vs 有损 JXL q90」PSNR ≥ 33dB + SSIM ≥ 0.88 断言
+- 实测: 01 线性样本 47.4dB / 0.991，03 Bayer 样本 35.6dB / 0.906（同管线同解码参数）
+
+---
+
+### v1.5.2 (2026-08-13) — 管线修复与元数据增强 / Pipeline Fix & Metadata Enhancements
+
+**🔧 管线修复**
+- **修复 ffprobe 色彩字段错位解析** — `-show_entries` 逗号分隔仅最后一个字段生效，实际输出 `pix_fmt,color_space,color_primaries,color_transfer`（无 bits_per_raw_sample），此前 primaries/transfer 一直被交换。修正解析 + 位深解析器重写（yuvj420p→8、yuv420p10le→10、rgb48le→16 全覆盖）
+- **修复 RAW 预处理临时目录泄漏** — `raw_{GUID}` 目录任务完成后统一清理
+- **JXR 命令显示过期** — 显示实际 PPM/PAM 管道命令
+
+**🖼 编码增强**
+- **JPEG XL 无损重封装开关** — 高级选项可独立关闭（关闭时显式 `--lossless_jpeg=0` 重新编码）
+- **光子噪声自动 ISO** — 可选从每张输入照片 EXIF 自动读取 ISO（每图独立，比固定值准确）
+
+**🏗 平台**
+- **NativeAOT 打包** — 2 版本发布（单文件版 / 完整版含 PLAN），全部 NativeAOT 编译，无需 .NET Runtime
+- **PLAN ffmpeg 目录模糊匹配** — 目录名包含 "ffmpeg-full" 即自动识别（如 ffmpeg-full-2026.7.24）
+
+---
+
 ### v1.5.1 (2026-07-27) — 色彩管线修复 / Color Pipeline Fix
 
 **🎨 色彩管理修复**
 - **修复 SDR→HDR 像素未转换** — 16-bit TIFF 等无元数据输入手动指定 BT.2020 PQ/HLG 时，输出仅有 HDR 标签但像素未做电光转换（画面偏暗）。`BuildColorArgsSplit` 简化模式改为返回实际输入色彩，新增通用目标色域 zscale 转换逻辑
 - **修复 JXL→PNG 卡死** — 管道模式下 `inputPath="-"` 被传给 ffprobe 探测函数导致无限阻塞。三个探测函数添加管道守卫
 - **HDR→SDR 排除判断** — 简化模式 zscale 转换排除 HDR→SDR 场景（交给 tonemap 处理，避免高光裁剪）
-
-** 构建修复**
-- 从 `.sln` 移除 5 个不存在的工具项目引用（VerifyCjxl/VerifyMulti/VerifyPreset/VerifyQueue/TestColor），消除 NuGet MSB3202 错误
-- 修复 `MainWindow.xaml.cs` CS8601 警告（`CjpegliChromaSubsampling` 空合并）
 
 ---
 

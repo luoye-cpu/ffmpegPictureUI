@@ -253,15 +253,18 @@ namespace FfmpegGui.Services
         /// <summary>
         /// 使用 cjxl 将指定输入文件编码为 JXL（支持完整选项）。
         /// </summary>
+        /// <param name="iccPath">输入提取的 ICC 文件路径（可选）。非 JPEG 输入且源带 ICC 时传入，
+        /// 由 cjxl 嵌入输出（exiftool 无法写入 JXL 的 ICC，这是唯一嵌入路径）</param>
         public static async Task<int> RunWithOptionsAsync(
             string inputPath, string outputPath,
             Models.FfmpegOptions opts,
-            Action<string>? logCallback = null)
+            Action<string>? logCallback = null,
+            string? iccPath = null)
         {
             if (_detectedPath == null)
                 throw new InvalidOperationException("cjxl.exe 未找到");
 
-            var args = BuildCjxlArguments(inputPath, outputPath, opts);
+            var args = BuildCjxlArguments(inputPath, outputPath, opts, default, iccPath);
             logCallback?.Invoke($"[cjxl] {Path.GetFileName(_detectedPath)} {args}\n");
 
             var psi = new ProcessStartInfo
@@ -303,8 +306,10 @@ namespace FfmpegGui.Services
         /// 用于 UI 预览和实际执行。
         /// </summary>
         /// <param name="hdrMeta">auto 模式下的输入色彩探测结果（可选）</param>
+        /// <param name="iccPath">输入提取的 ICC 文件路径（可选）。存在时以 ICC 定义完整色彩语义，
+        /// 优先于 color_space 简写标签（libjxl 中 ICC 优先）</param>
         public static string BuildCjxlArguments(string input, string output, Models.FfmpegOptions opts,
-            FfmpegCommandBuilder.ColorMetadata hdrMeta = default)
+            FfmpegCommandBuilder.ColorMetadata hdrMeta = default, string? iccPath = null)
         {
             var sb = new System.Text.StringBuilder();
             sb.Append($"\"{input}\" \"{output}\"");
@@ -317,10 +322,19 @@ namespace FfmpegGui.Services
             if (opts.Threads > 0)
                 sb.Append($" --num_threads={opts.Threads}");
 
-            if (isJpegInput)
+            if (isJpegInput && opts.JxlLosslessJpeg)
             {
-                // JPEG→JXL 无损重封装
+                // JPEG→JXL 无损重封装（高级选项开关开启）：不解码，直接复制 DCT 系数
                 sb.Append(" -d 0 --lossless_jpeg=1");
+            }
+            else if (isJpegInput)
+            {
+                // JPEG 输入关闭无损重封装 → 解码后重新编码。
+                // 注意：cjxl 对 JPEG 输入默认启用 lossless_jpeg，必须显式 --lossless_jpeg=0 覆盖
+                if (opts.Lossless)
+                    sb.Append(" -d 0 --lossless_jpeg=0");
+                else
+                    sb.Append($" -d {(100 - opts.Quality) * 15.0 / 100.0:F1} --lossless_jpeg=0");
             }
             else if (opts.Lossless)
             {
@@ -337,17 +351,36 @@ namespace FfmpegGui.Services
             if (opts.CjxlProgressive)
                 sb.Append(" --progressive");
 
-            if (opts.CjxlPhotonNoiseIso > 0)
+            if (opts.CjxlAutoPhotonNoise)
+            {
+                // 自动模式：实际 ISO 由 QueueProcessor 在处理前从 EXIF 读取并写回
+                // CjxlPhotonNoiseIso；此处若尚未解析（UI 预览场景）显示 auto 占位
+                var iso = opts.CjxlPhotonNoiseIso > 0 ? opts.CjxlPhotonNoiseIso.ToString() : "auto";
+                sb.Append($" --photon_noise_iso={iso}");
+            }
+            else if (opts.CjxlPhotonNoiseIso > 0)
                 sb.Append($" --photon_noise_iso={opts.CjxlPhotonNoiseIso}");
 
             // ── 色彩空间映射：将 FFmpeg 色彩参数翻译为 cjxl -x color_space ──
             // 注意：isPipe=true 时仍需设置色彩空间，因为 PPM 管道不携带任何色彩元数据。
             // cjxl 的 -x color_space= 是输出容器标签，与输入格式无关。
             var isPipe = input == "-";
+
+            // 有显式 ICC 文件时优先：ICC 定义完整色彩语义，跳过 color_space 简写（libjxl 中两者冲突时 ICC 优先）
+            // 注意：-x 必须是独立 argv（cjxl 不接受 "-x key=value" 合成单参数），值为路径时整体加引号
+            // Ultra HDR 解码输出（DecodedUltraHdrColorSpace）场景不适用：线性 HDR 帧的 PQ 语义
+            // 由 color_space/intensity_target 精确表达，不能用源 ICC（可能来自 SDR 基础图）覆盖
+            if (!string.IsNullOrWhiteSpace(iccPath) && System.IO.File.Exists(iccPath)
+                && string.IsNullOrWhiteSpace(opts.DecodedUltraHdrColorSpace))
+            {
+                sb.Append($" -x \"icc_pathname={iccPath}\"");
+                return sb.ToString();
+            }
+
             string? colorSpace = null;
             int intensityTarget = 0;
 
-            // Ultra HDR 解码输出：显式标记 Rec.2100 PQ（优先级最高）
+            // Ultra HDR 解码输出：显式标记 Rec.2100 PQ（优先级最高，线性 HDR 帧语义精确表达）
             if (!string.IsNullOrWhiteSpace(opts.DecodedUltraHdrColorSpace))
             {
                 colorSpace = opts.DecodedUltraHdrColorSpace;
@@ -355,12 +388,11 @@ namespace FfmpegGui.Services
             }
             else
             {
-                if (hdrMeta.bitDepth > 8)
-                {
-                    colorSpace = ColorEncodingHelper.MapToCjxlColorSpace(hdrMeta);
-                    intensityTarget = ColorEncodingHelper.MapToIntensityTarget(hdrMeta);
-                }
-                else
+                // 探测元数据优先（含 8-bit 广色域）：PPM/PAM 管道流不携带色彩标签，必须显式标记；
+                // 无探测结果时回退到用户选项映射。
+                colorSpace = ColorEncodingHelper.MapToCjxlColorSpace(hdrMeta);
+                intensityTarget = ColorEncodingHelper.MapToIntensityTarget(hdrMeta);
+                if (string.IsNullOrWhiteSpace(colorSpace))
                 {
                     colorSpace = ColorEncodingHelper.MapToCjxlColorSpace(opts);
                     intensityTarget = ColorEncodingHelper.MapToIntensityTarget(opts);
@@ -369,6 +401,7 @@ namespace FfmpegGui.Services
 
             if (!string.IsNullOrWhiteSpace(colorSpace))
             {
+                // -x 必须是独立 argv；color_space 值无空格，无需内层引号
                 sb.Append($" -x color_space={colorSpace}");
             }
 

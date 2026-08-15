@@ -163,7 +163,28 @@ public static class PlatformServices
         [JxrEnc]   = new[] { "artifacts" },
         [JxrDec]   = new[] { "artifacts" },
         [Avifenc]  = new[] { "artifacts" },
+        [DngToolName] = new[] { "artifacts" },
     };
+
+    /// <summary>
+    /// 在 PLAN 文件夹中查找名称包含指定关键字的子目录（如 "ffmpeg-full"）。
+    /// 用于支持目录名带日期/后缀变体的场景（如 ffmpeg-full-2026.7.24）。
+    /// 返回第一个匹配的子目录绝对路径；未找到返回 null。
+    /// </summary>
+    public static string? FindPlanSubDir(string planPath, string nameContains)
+    {
+        if (!Directory.Exists(planPath)) return null;
+        try
+        {
+            foreach (var dir in Directory.EnumerateDirectories(planPath))
+            {
+                if (Path.GetFileName(dir).Contains(nameContains, StringComparison.OrdinalIgnoreCase))
+                    return dir;
+            }
+        }
+        catch { }
+        return null;
+    }
 
     /// <summary>在 PLAN 文件夹的对应子目录中查找指定工具。未找到返回 null。</summary>
     public static string? TryFindInPlanFolder(string toolName)
@@ -173,8 +194,18 @@ public static class PlatformServices
         if (!PlanSubDirs.TryGetValue(toolName, out var subDirs)) return null;
         foreach (var sub in subDirs)
         {
-            var dir = Path.Combine(plan, sub);
-            if (!Directory.Exists(dir)) continue;
+            string? dir;
+            if (toolName == Ffmpeg || toolName == Ffprobe)
+            {
+                // ffmpeg/ffprobe: 目录名只需包含 "ffmpeg-full"（如 ffmpeg-full-2026.7.24）
+                dir = FindPlanSubDir(plan, "ffmpeg-full");
+                if (dir == null) continue;
+            }
+            else
+            {
+                dir = Path.Combine(plan, sub);
+                if (!Directory.Exists(dir)) continue;
+            }
             var candidate = Path.Combine(dir, toolName);
             if (File.Exists(candidate)) return candidate;
         }
@@ -302,11 +333,17 @@ public static class PlatformServices
     private static readonly string[] TempDirPrefixes =
     {
         "raw_", "gainmap_", "ultrahdr_", "jxr_", "jxr_input_",
-        "uhdr_decode_", "avif2gifwebp_", "avifenc_frames_"
+        "uhdr_decode_", "avif2gifwebp_", "avifenc_frames_", "icc_extract_"
+    };
+
+    /// <summary>缓存文件前缀（用于识别和清理僵尸临时文件，如 icc_extract_*.icc）</summary>
+    private static readonly string[] TempFilePrefixes =
+    {
+        "icc_extract_"
     };
 
     /// <summary>
-    /// 清理崩溃/异常退出遗留的僵尸临时目录（超过 24 小时的旧目录）。
+    /// 清理崩溃/异常退出遗留的僵尸临时目录/文件（超过 24 小时的旧项）。
     /// 应在应用启动时调用一次。
     /// </summary>
     public static void CleanupZombieTempDirs()
@@ -335,6 +372,26 @@ public static class PlatformServices
                     }
                 }
                 catch { /* 枚举失败不影响其他前缀 */ }
+            }
+            // 僵尸临时文件（ICC 提取等，非目录）
+            foreach (var prefix in TempFilePrefixes)
+            {
+                try
+                {
+                    foreach (var file in Directory.EnumerateFiles(cacheDir, $"{prefix}*"))
+                    {
+                        try
+                        {
+                            var fi = new FileInfo(file);
+                            if (fi.LastWriteTimeUtc < cutoff)
+                            {
+                                File.Delete(file);
+                            }
+                        }
+                        catch { }
+                    }
+                }
+                catch { }
             }
         }
         catch { /* 清理失败不影响主流程 */ }

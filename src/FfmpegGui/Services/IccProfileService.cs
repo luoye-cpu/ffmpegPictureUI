@@ -10,7 +10,65 @@ namespace FfmpegGui.Services
     /// </summary>
     public static class IccProfileService
     {
-        /// <summary>验证文件是否为合法 ICC v2/v4 配置文件</summary>
+        /// <summary>
+    /// 用 exiftool 从图片提取内嵌 ICC 配置文件到临时文件。
+    /// 返回 (临时文件路径, ICC 描述)；无 ICC / exiftool 不可用 / 失败时返回 (null, null)。
+    /// 调用方负责删除返回的临时文件。
+    /// 带 5 秒超时保护：exiftool 挂起时杀死进程，防止阻塞编码队列。
+    /// </summary>
+    public static (string? path, string? description) ExtractIccToTempFile(string imagePath)
+    {
+        try
+        {
+            if (string.IsNullOrEmpty(imagePath) || !File.Exists(imagePath))
+                return (null, null);
+            if (!ExifToolService.IsAvailable)
+                return (null, null);
+
+            var tmp = Path.Combine(PlatformServices.GetTempDir(), $"icc_extract_{Guid.NewGuid():N}.icc");
+            using var p = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = ExifToolService.DetectedPath!,
+                Arguments = $"-b -icc_profile \"{imagePath}\"",
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            });
+            if (p == null) return (null, null);
+
+            // RedirectStandardOutput 下 StandardOutput.BaseStream 是原始二进制流，可安全 CopyTo。
+            // 注意：读取放后台任务，主线程 WaitForExit(5s) 超时 → Kill（避免进程挂起时 CopyTo 无限阻塞）。
+            using var ms = new MemoryStream();
+            var readTask = Task.Run(() => p.StandardOutput.BaseStream.CopyTo(ms));
+            if (!p.WaitForExit(5000))
+            {
+                try { p.Kill(); } catch { }
+                TryDelete(tmp);
+                return (null, null);
+            }
+            try { readTask.Wait(1000); } catch { }  // 进程已退出，读取应立即完成
+
+            if (ms.Length < 128) { TryDelete(tmp); return (null, null); }
+            File.WriteAllBytes(tmp, ms.ToArray());
+            if (!IsValidIccProfile(tmp)) { TryDelete(tmp); return (null, null); }
+
+            var info = ParseInfo(tmp);
+            return (tmp, info?.Description);
+        }
+        catch { return (null, null); }
+    }
+
+    private static void TryDelete(string path)
+    {
+        try { if (File.Exists(path)) File.Delete(path); } catch { }
+    }
+
+    /// <summary>公开删除临时 ICC 文件（供探测等外部调用方清理）</summary>
+    public static void TryDeleteIcc(string path)
+        => TryDelete(path);
+
+    /// <summary>验证文件是否为合法 ICC v2/v4 配置文件</summary>
         public static bool IsValidIccProfile(string filePath)
         {
             try

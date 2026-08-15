@@ -17,16 +17,11 @@
             CornerRadius="10" BoxShadow="0 2 12 0 #18000000"
             Background="{DynamicResource SystemControlBackgroundCardHighBrush}">
     <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto" ColumnDefinitions="*,Auto">
-        <!-- Row 0: FFmpeg + 输出目录 + 主题 -->
+        <!-- Row 0: FFmpeg 路径 + 语言/GPU/主题 (2026-08-15: 输出目录移至 Row 1 减拥挤) -->
         <StackPanel Grid.Row="0" Grid.Column="0" Orientation="Horizontal" Spacing="10">
           <TextBlock Text="{ext:Loc ffmpeg.dir}" VerticalAlignment="Center" FontSize="13"/>
-          <TextBox x:Name="FfmpegPathBox" Width="240" VerticalAlignment="Center" IsReadOnly="True"/>
+          <TextBox x:Name="FfmpegPathBox" Width="280" VerticalAlignment="Center" IsReadOnly="True"/>
           <Button Content="{ext:Loc browse}" Click="BrowseFfmpeg_Click" Padding="8,4"/>
-          <Separator Width="16" Background="Transparent"/>
-          <TextBlock Text="{ext:Loc output.dir}" VerticalAlignment="Center" FontSize="13"/>
-          <TextBox x:Name="OutputDirBox" Width="240" VerticalAlignment="Center" IsReadOnly="True"/>
-          <Button Content="{ext:Loc browse}" Click="BrowseOutputDir_Click" Padding="8,4"/>
-          <CheckBox x:Name="PreserveInputStructure" Content="{ext:Loc keep.dir.structure}" VerticalAlignment="Center" Margin="8,0,0,0"/>
         </StackPanel>
         <StackPanel Grid.Row="0" Grid.Column="1" Orientation="Horizontal" Spacing="6" Margin="4,0,0,0">
           <Button x:Name="CacheToggleBtn" Content="🗂" FontSize="11" Padding="6,2"
@@ -39,8 +34,13 @@
                   ToolTip.Tip="切换深色/浅色模式" Click="ThemeToggle_Click"/>
         </StackPanel>
 
-        <!-- Row 1: 折叠指示器栏（始终显示） -->
-        <StackPanel Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2" Orientation="Horizontal" Spacing="8" Margin="0,4,0,0">
+        <!-- Row 1: 输出目录 + 外部工具折叠 (2026-08-15: 输出目录从 Row 0 移下) -->
+        <StackPanel Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2" Orientation="Horizontal" Spacing="10" Margin="0,6,0,0">
+          <TextBlock Text="{ext:Loc output.dir}" VerticalAlignment="Center" FontSize="13"/>
+          <TextBox x:Name="OutputDirBox" Width="240" VerticalAlignment="Center" IsReadOnly="True"/>
+          <Button Content="{ext:Loc browse}" Click="BrowseOutputDir_Click" Padding="8,4"/>
+          <CheckBox x:Name="PreserveInputStructure" Content="{ext:Loc keep.dir.structure}" VerticalAlignment="Center" Margin="4,0,0,0"/>
+          <Separator Width="16" Background="Transparent"/>
           <Button x:Name="ToggleToolsBtn" Content="{ext:Loc external.tools}" FontSize="11" Padding="6,2"
                   ToolTip.Tip="展开/折叠外部工具路径配置" Click="ToggleToolsPanel_Click"/>
           <Border x:Name="ToolsCompactPanel" CornerRadius="3" Padding="6,2"
@@ -56,7 +56,7 @@
 
         <!-- Row 2-3: 展开的外部工具详情（3 列水平布局） -->
         <StackPanel x:Name="ToolsDetailPanel" Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="2" IsVisible="False">
-          <Grid ColumnDefinitions="*,8,*,8,*" Margin="0,4,0,0">
+          <Grid ColumnDefinitions="*,8,*,8,*,8,*" Margin="0,4,0,0">
             <!-- 列 1: JXL 参考库 -->
             <StackPanel Grid.Column="0" Spacing="4">
               <TextBlock Text="{ext:Loc jxl.reference.lib}" FontSize="11" FontWeight="Bold"
@@ -98,6 +98,22 @@
               </StackPanel>
               <StackPanel x:Name="ArtifactsToolsStatus" Orientation="Horizontal" Spacing="6" Margin="0,2,0,0"
                           ToolTip.Tip="含 ultrahdr_app / JxrEncApp / avifenc / dngtool 等"/>
+            </StackPanel>
+            <Separator Grid.Column="5" Width="4" Background="Transparent"/>
+            <!-- 列 4: Photoshop ACR 验证 -->
+            <StackPanel Grid.Column="6" Spacing="4">
+              <TextBlock Text="Photoshop 验证" FontSize="11" FontWeight="Bold"
+                         Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+              <StackPanel Orientation="Horizontal" Spacing="4">
+                <TextBlock Text="Photoshop" FontSize="10" VerticalAlignment="Center"/>
+                <TextBox x:Name="PhotoshopPathBox" Width="160" VerticalAlignment="Center" FontSize="11"
+                         PlaceholderText="自动检测"/>
+                <Button Content="{ext:Loc btn.jxl.browse}" Click="BrowsePhotoshop_Click" Padding="4,2" FontSize="10"/>
+                <Button Content="{ext:Loc btn.clear}" Click="ClearPhotoshopPath_Click" Padding="4,2" FontSize="10"
+                        ToolTip.Tip="清除手动路径，恢复自动检测"/>
+              </StackPanel>
+              <StackPanel x:Name="PsToolsStatus" Orientation="Horizontal" Spacing="6" Margin="0,2,0,0"
+                          ToolTip.Tip="PS/ACR 是 RAW 渲染黄金标准，用于验证 dngtool 输出 DNG 的兼容性"/>
             </StackPanel>
           </Grid>
         </StackPanel>
@@ -186,13 +202,17 @@
           </StackPanel>
           <!-- RAW/DNG 专属选项面板 -->
           <StackPanel x:Name="RawPanel" IsVisible="False" Spacing="4" Margin="0,4,0,0">
-            <TextBlock Text="DNG 压缩方式" FontSize="13" FontWeight="Bold"/>
-            <ComboBox x:Name="DngCompressionCombo" SelectedIndex="0"
+            <TextBlock x:Name="RawEngineStatus" Text="dngtool: 检测中..." FontSize="11"
+                       TextWrapping="Wrap"/>
+            <!-- ── DNG 压缩方式 ── -->
+            <TextBlock Text="DNG 压缩方式" FontSize="13" FontWeight="Bold" Margin="0,4,0,0"/>
+            <ComboBox x:Name="DngCompressionCombo" SelectedIndex="1"
                       SelectionChanged="DngCompression_SelectionChanged">
               <sys:String>无损 JPEG (兼容性最佳)</sys:String>
               <sys:String>JPEG XL (DNG 1.7, 体积最小)</sys:String>
             </ComboBox>
-            <StackPanel x:Name="DngJxlQualityPanel" IsVisible="False" Spacing="2" Margin="0,4,0,0">
+            <!-- JXL 质量 (仅 JXL 压缩时显示) -->
+            <StackPanel x:Name="DngJxlQualityPanel" IsVisible="True" Spacing="2" Margin="0,4,0,0">
               <TextBlock Text="JXL 质量 (0=无损, 1-100=有损)" FontSize="11"/>
               <StackPanel Orientation="Horizontal" Spacing="8">
                 <Slider x:Name="DngJxlQualitySlider" Minimum="0" Maximum="100" Value="0"
@@ -202,15 +222,44 @@
                          VerticalAlignment="Center" TextAlignment="Center"/>
               </StackPanel>
             </StackPanel>
-            <TextBlock x:Name="RawEngineStatus" Text="dngtool: 检测中..." FontSize="11"
-                       TextWrapping="Wrap"/>
-            <TextBlock Text="无损 JPEG: 兼容性最好 (WIC/Photoshop 可直接打开)&#x0a;JPEG XL: DNG 1.7 新压缩, 文件最小, 需 ACR 18.3+ / LibRaw 0.22+" FontSize="10"
+            <!-- JXL 编码参数 (仅 JXL 压缩时显示) -->
+            <StackPanel x:Name="DngJxlAdvancedPanel" IsVisible="True" Spacing="2" Margin="0,4,0,0">
+              <TextBlock Text="JXL 编码努力 (effort 1-9, 越高压缩率越高但越慢)" FontSize="11"/>
+              <NumericUpDown x:Name="DngJxlEffortBox" Value="7" Minimum="1" Maximum="9" Increment="1"/>
+              <TextBlock Text="JXL 解码速度 (1-4, 1=解码最慢但体积最小, 4=解码最快但体积大)" FontSize="11" Margin="0,4,0,0"/>
+              <NumericUpDown x:Name="DngJxlDecodeSpeedBox" Value="1" Minimum="1" Maximum="4" Increment="1"/>
+            </StackPanel>
+            <!-- ── DNG 布局: 保留 CFA / 线性 ── -->
+            <TextBlock Text="DNG 布局" FontSize="13" FontWeight="Bold" Margin="0,6,0,0"/>
+            <ComboBox x:Name="DngLinearCombo" SelectedIndex="0">
+              <sys:String>保留 CFA (Bayer, 可重新去马赛克, 兼容性最佳)</sys:String>
+              <sys:String>线性 DNG (无 CFA, 体积更小, 仅保留线性像素)</sys:String>
+            </ComboBox>
+            <!-- ── 位深 ── -->
+            <TextBlock Text="输出位深" FontSize="11" Margin="0,4,0,0"/>
+            <ComboBox x:Name="DngBitDepthCombo" SelectedIndex="1">
+              <sys:String>8 bit</sys:String>
+              <sys:String>16 bit (默认)</sys:String>
+            </ComboBox>
+            <!-- ── 高光模式 (LibRaw -H) ── -->
+            <TextBlock Text="高光处理 (LibRaw -H)" FontSize="11" Margin="0,4,0,0"/>
+            <ComboBox x:Name="DngHighlightCombo" SelectedIndex="1">
+              <sys:String>裁剪高光 (0, 速度最快)</sys:String>
+              <sys:String>高光恢复 (1, 默认)</sys:String>
+              <sys:String>无裁剪/blend (2)</sys:String>
+            </ComboBox>
+            <TextBlock Text="⚠️ DNG 编码保留原始传感器数据，高光由查看器 (ACR/PS) 处理；此选项仅影响解码渲染" FontSize="10"
                        TextWrapping="Wrap"
+                       Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+            <TextBlock Text="无损 JPEG: 兼容性最好 (WIC/Photoshop 可直接打开)&#x0a;JPEG XL: DNG 1.7 新压缩, 文件最小, 需 ACR 18.3+ / LibRaw 0.22+&#x0a;线性 DNG: 无 CFA 相位, 不可重新去马赛克, 但 JXL 压缩率更高" FontSize="10"
+                       TextWrapping="Wrap" Margin="0,4,0,0"
                        Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
             <TextBlock Text="⚠️ 仅 RAW/DNG 文件可作为输入 (CR2/CR3/NEF/ARW/ORF/RAF/RW2/PEF 等)" FontSize="10"
                        TextWrapping="Wrap"
                        Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
           </StackPanel>
+          <!-- ============ 静态图片/动图通用选项（RAW 模式下整体隐藏） ============ -->
+          <StackPanel x:Name="StillOptionsPanel" Spacing="8">
           <TextBlock Text="{ext:Loc encoder}" Margin="0,4,0,0"/>
           <ComboBox x:Name="EncoderCombo"/>
           <!-- GPU 硬件编码器状态警告 -->
@@ -262,6 +311,8 @@
               <sys:String>auto</sys:String>
               <sys:String>sRGB</sys:String>
               <sys:String>BT.709</sys:String>
+              <sys:String>Display P3</sys:String>
+              <sys:String>P3 PQ</sys:String>
               <sys:String>BT.2020 PQ</sys:String>
               <sys:String>BT.2020 HLG</sys:String>
             </ComboBox>
@@ -507,6 +558,8 @@
                 <TextBlock Text="编码努力 (effort)"/>
                 <NumericUpDown x:Name="CjxlEffortBox" Value="7" Minimum="1" Maximum="9"/>
                 <CheckBox x:Name="CjxlProgressiveCheck" Content="渐进式解码 (--progressive)" Margin="0,4,0,0"/>
+                <CheckBox x:Name="JxlLosslessJpegCheck" Content="JPEG 无损重封装（直接复制 DCT 系数，零质量损失）" IsChecked="True" Margin="0,4,0,0" ToolTip.Tip="JPEG→JXL 时不解码像素，直接封装 DCT 系数（--lossless_jpeg），速度最快且零损失；取消则按上方质量参数重新编码（可配合保留增益图）"/>
+                <CheckBox x:Name="CjxlAutoPhotonNoiseCheck" Content="自动读取输入照片 ISO（EXIF）" Margin="0,4,0,0" ToolTip.Tip="启用后每张图片编码前自动读取 EXIF 中的 ISO 感光度用于光子噪声，比手动固定值更准确"/>
                 <TextBlock Text="光子噪声 ISO (0=禁用)" Margin="0,4,0,0"/>
                 <NumericUpDown x:Name="CjxlPhotonNoiseBox" Value="0" Minimum="0" Maximum="3200" Increment="100"/>
                 <TextBlock Text="0=禁用, 100=低噪, 3200=高噪" FontSize="10" Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
@@ -516,66 +569,66 @@
                         Content="保留 Ultra HDR 增益图（解码后重新编码；关闭则无损重封装但丢失 HDR）"
                         IsChecked="True" Margin="0,4,0,0" FontSize="11"/>
             </StackPanel>
+            <!-- Gain Map (Ultra HDR) 选项 — 任意 JPEG 编码器 (mjpeg/cjpegli) 公共选项 -->
+            <!-- ⚠️ 必须位于 JpegCodecPanel / JpegliCodecPanel 之外: cjpegli 后端显示
+                 JpegliCodecPanel, 若嵌套在 JpegCodecPanel 内会被父容器隐藏导致不可见 -->
+            <Border x:Name="JpegGainMapPanel" CornerRadius="4" Padding="8,6" Margin="0,0,0,4"
+                    Background="{DynamicResource SystemControlBackgroundChromeMediumBrush}">
+              <StackPanel x:Name="JpegGainMapOptions" Spacing="6">
+                <TextBlock Text="🎛 Gain Map (Ultra HDR) — 需选择 HDR 色彩空间 (P3 PQ / BT.2020 PQ / BT.2020 HLG)" FontSize="11"
+                           Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" TextWrapping="Wrap"/>
+                  <TextBlock Text="在「高级色彩参数」中选择 HDR (P3 PQ / BT.2020 PQ/HLG) 后启用；增益图记录 HDR 高光扩展信息，SDR 显示器回退显示基础图" FontSize="9"
+                           Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" TextWrapping="Wrap"/>
+                <!-- 增益图类型：灰度 / RGB -->
+                <TextBlock Text="增益图类型" FontSize="11" Margin="0,2,0,0"/>
+                <ComboBox x:Name="JpegGainMapTypeCombo" SelectedIndex="0" FontSize="11">
+                  <sys:String>灰度增益图 (1 通道, 体积小)</sys:String>
+                  <sys:String>RGB 增益图 (3 通道, 色彩更准)</sys:String>
+                </ComboBox>
+                <!-- 增益图质量：跟随主图 或 独立设置 -->
+                <CheckBox x:Name="JpegGainMapFollowMainCheck"
+                          Content="增益图质量 = 主图质量"
+                          IsChecked="True" FontSize="11"
+                          ToolTip.Tip="勾选时增益图质量自动跟随上方「质量」滑块；取消后可独立调节"/>
+                <StackPanel x:Name="JpegGainMapQualityPanel"
+                            IsVisible="False" Orientation="Horizontal" Spacing="6">
+                  <TextBlock Text="增益图质量:" VerticalAlignment="Center" Width="80" FontSize="11"/>
+                  <Button x:Name="GainMapQualityDownBtn" Content="−"
+                          Width="26" Height="24" FontSize="13" Padding="0"
+                          ToolTip.Tip="降低增益图质量"/>
+                  <TextBox x:Name="JpegGainMapQualityBox" Text="75"
+                           Width="42" VerticalAlignment="Center"
+                           TextAlignment="Center" FontSize="12"/>
+                  <Button x:Name="GainMapQualityUpBtn" Content="+"
+                          Width="26" Height="24" FontSize="13" Padding="0"
+                          ToolTip.Tip="提高增益图质量"/>
+                </StackPanel>
+                <!-- 目标亮度：Slider + TextBox 联动 -->
+                <TextBlock Text="目标亮度 (HDR)" FontSize="11" Margin="0,2,0,0"/>
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                  <Slider x:Name="JpegGainMapNitsSlider" Minimum="200" Maximum="10000"
+                          TickFrequency="100" IsSnapToTickEnabled="True" Width="130"
+                          VerticalAlignment="Center"/>
+                  <TextBox x:Name="JpegGainMapNitsBox" Text="1000"
+                           Width="54" VerticalAlignment="Center"
+                           TextAlignment="Center" FontSize="12"/>
+                  <TextBlock Text="nit" VerticalAlignment="Center" FontSize="11"/>
+                </StackPanel>
+                <!-- 增益图分辨率 -->
+                <TextBlock Text="增益图分辨率 (缩减体积)" FontSize="11" Margin="0,4,0,0"/>
+                <ComboBox x:Name="JpegGainMapDownsampleCombo" SelectedIndex="1" FontSize="11">
+                  <sys:String>满分辨率 (体积最大)</sys:String>
+                  <sys:String>1/2 分辨率 (推荐)</sys:String>
+                  <sys:String>1/4 分辨率 (小体积)</sys:String>
+                  <sys:String>1/8 分辨率 (更小体积)</sys:String>
+                  <sys:String>1/16 分辨率 (最小体积)</sys:String>
+                </ComboBox>
+                <TextBlock Text="增益图为低频信息，1/4~1/16 分辨率视觉差异极小但体积大幅缩减 | 需勾选「高级编码选项」使用手动设置" FontSize="9"
+                           Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" TextWrapping="Wrap"/>
+              </StackPanel>
+            </Border>
             <!-- JPEG (FFmpeg mjpeg / libultrahdr) -->
             <StackPanel x:Name="JpegCodecPanel" IsVisible="False" Spacing="4">
-              <!-- Gain Map (Ultra HDR) 选项 -->
-              <Border x:Name="JpegGainMapPanel" CornerRadius="4" Padding="8,6" Margin="0,0,0,4"
-                      Background="{DynamicResource SystemControlBackgroundChromeMediumBrush}">
-                <StackPanel x:Name="JpegGainMapOptions" Spacing="6">
-                  <TextBlock Text="🎛 Gain Map 参数（选择 ultrahdr 编码器时生效）" FontSize="11"
-                             Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" TextWrapping="Wrap"/>
-                  <!-- 增益图质量：跟随主图 或 独立设置 -->
-                    <CheckBox x:Name="JpegGainMapFollowMainCheck"
-                              Content="增益图质量 = 主图质量"
-                              IsChecked="True" FontSize="11"
-                              ToolTip.Tip="勾选时增益图质量自动跟随上方「质量」滑块；取消后可独立调节"/>
-                    <StackPanel x:Name="JpegGainMapQualityPanel"
-                                IsVisible="False" Orientation="Horizontal" Spacing="6">
-                      <TextBlock Text="增益图质量:" VerticalAlignment="Center" Width="80" FontSize="11"/>
-                      <Button x:Name="GainMapQualityDownBtn" Content="−"
-                              Width="26" Height="24" FontSize="13" Padding="0"
-                              ToolTip.Tip="降低增益图质量"/>
-                      <TextBox x:Name="JpegGainMapQualityBox" Text="75"
-                               Width="42" VerticalAlignment="Center"
-                               TextAlignment="Center" FontSize="12"/>
-                      <Button x:Name="GainMapQualityUpBtn" Content="+"
-                              Width="26" Height="24" FontSize="13" Padding="0"
-                              ToolTip.Tip="提高增益图质量"/>
-                    </StackPanel>
-                    <!-- 目标亮度：Slider + TextBox 联动 -->
-                    <TextBlock Text="目标亮度 (HDR)" FontSize="11" Margin="0,2,0,0"/>
-                    <StackPanel Orientation="Horizontal" Spacing="8">
-                      <Slider x:Name="JpegGainMapNitsSlider" Minimum="200" Maximum="10000"
-                              TickFrequency="100" IsSnapToTickEnabled="True" Width="130"
-                              VerticalAlignment="Center"/>
-                      <TextBox x:Name="JpegGainMapNitsBox" Text="1000"
-                               Width="54" VerticalAlignment="Center"
-                               TextAlignment="Center" FontSize="12"/>
-                      <TextBlock Text="nit" VerticalAlignment="Center" FontSize="11"/>
-                    </StackPanel>
-                    <!-- HDR 色彩格式 -->
-                    <TextBlock Text="HDR 色彩格式" FontSize="11" Margin="0,4,0,0"/>
-                    <ComboBox x:Name="JpegGainMapHdrCfCombo" SelectedIndex="0" FontSize="11">
-                      <sys:String>p010 (YUV 10-bit)</sys:String>
-                    </ComboBox>
-                    <TextBlock Text="rgba1010102/rgbahalffloat 需 ffmpeg 支持 packed pixel format（当前不可用）" FontSize="9"
-                               Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" TextWrapping="Wrap"/>
-                    <!-- 增益图分辨率 -->
-                    <TextBlock Text="增益图分辨率 (缩减体积)" FontSize="11" Margin="0,4,0,0"/>
-                    <ComboBox x:Name="JpegGainMapDownsampleCombo" SelectedIndex="1" FontSize="11">
-                      <sys:String>满分辨率 (体积最大)</sys:String>
-                      <sys:String>1/2 分辨率 (推荐)</sys:String>
-                      <sys:String>1/4 分辨率 (小体积)</sys:String>
-                      <sys:String>1/8 分辨率 (最小体积)</sys:String>
-                    </ComboBox>
-                    <TextBlock Text="图片宽高需能被缩放因子整除为最佳 | 默认半分辨率，手动调节需勾选「高级编码选项」" FontSize="9"
-                               Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" TextWrapping="Wrap"/>
-                    <!-- 增益图通道模式 -->
-                    <CheckBox x:Name="JpegGainMapMultiChannelCheck" Content="RGB 多通道增益图 (色彩更准, 更大体积)"
-                              IsChecked="False" FontSize="11" Margin="0,4,0,0"
-                              ToolTip.Tip="勾选=RGB增益图(色彩更准,需高级编码选项)；默认灰度增益图(更小体积)"/>
-                </StackPanel>
-              </Border>
               <TextBlock Text="Huffman 策略"/>
               <ComboBox x:Name="JpegHuffmanCombo" SelectedIndex="1">
                 <sys:String>default</sys:String><sys:String>optimal</sys:String>
@@ -637,13 +690,6 @@
             </StackPanel>
           </StackPanel>
 
-          <TextBlock Text="{ext:Loc cpu.threads}"/>
-          <StackPanel Orientation="Horizontal" Spacing="6">
-            <CheckBox x:Name="AutoThreadsCheck" Content="{ext:Loc auto}" IsChecked="True" Margin="0,3,0,0"/>
-            <CheckBox x:Name="SingleThreadCheck" Content="{ext:Loc single.thread}" Margin="0,3,0,0"/>
-            <TextBlock x:Name="ThreadHintLabel" Text="" VerticalAlignment="Center" Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" FontSize="11"/>
-          </StackPanel>
-          <NumericUpDown x:Name="ThreadsBox" Value="4" Minimum="1" Maximum="64" IsEnabled="False"/>
           <TextBlock Text="{ext:Loc metadata.mode}" Margin="0,6,0,0"/>
           <ComboBox x:Name="MetadataModeCombo" SelectedIndex="0">
             <sys:String>保留所有元数据</sys:String>
@@ -665,6 +711,18 @@
                     Margin="0,2,0,0" FontSize="11"
                     ToolTip.Tip="输出文件名末尾追加 .png，解决部分软件无法识别 .jxl/.avif 的问题。仅对 JXL 和 AVIF 格式生效。"/>
           <CheckBox x:Name="LosslessCheck" Content="{ext:Loc lossless}" Margin="0,4,0,0"/>
+          </StackPanel>
+
+          <!-- CPU 线程 (静态/动图/RAW 通用, 2026-08-15 移出 StillOptionsPanel:
+               RAW 模式 dngtool 也支持 -threads, 需在此可见) -->
+          <TextBlock Text="{ext:Loc cpu.threads}" Margin="0,4,0,0"/>
+          <StackPanel Orientation="Horizontal" Spacing="6">
+            <CheckBox x:Name="AutoThreadsCheck" Content="{ext:Loc auto}" IsChecked="True" Margin="0,3,0,0"/>
+            <CheckBox x:Name="SingleThreadCheck" Content="{ext:Loc single.thread}" Margin="0,3,0,0"/>
+            <TextBlock x:Name="ThreadHintLabel" Text="" VerticalAlignment="Center" Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" FontSize="11"/>
+          </StackPanel>
+          <NumericUpDown x:Name="ThreadsBox" Value="4" Minimum="1" Maximum="64" IsEnabled="False"/>
+
           <Button Content="{ext:Loc generate.command}" Click="BuildCommand_Click" Margin="0,12,0,0" Padding="8"/>
         </StackPanel>
       </ScrollViewer>

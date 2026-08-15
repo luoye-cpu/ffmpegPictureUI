@@ -1,0 +1,15 @@
+{
+  "FfmpegDirectory": "C:\\PLAN\\ffmpegPictureUI\\publish\\PLAN\\ffmpeg-full",
+  "JxlLibDir": "C:\\PLAN\\ffmpegPictureUI\\publish\\PLAN\\jxl",
+  "WindowsArtifactsDir": "C:\\PLAN\\ffmpegPictureUI\\publish\\PLAN\\artifacts",
+  "PreserveInputFolderStructure": false,
+  "MaxQueueSize": 16,
+  "ThemeMode": 1,
+  "Language": "zh-CN",
+  "GpuAcceleration": true,
+  "SimpleModeAutoEncode": false,
+  "FfmpegPriority": 3,
+  "AutoUseSimdBinaries": true,
+  "IgnoredToolPaths": [],
+  "EnabledImageFormats": ["PNG","JPEG","JPEG XL","JPEG XR","WebP","AVIF","TIFF","HEIC","DNG","BMP","GIF"]
+}

@@ -41,6 +41,107 @@ namespace FfmpegGui.Services
         }
 
         /// <summary>
+        /// 通过 exiftool 读取图片的 ISO 感光度（EXIF PhotographicSensitivity）。
+        /// 返回 null 表示无法读取（exiftool 不可用 / 文件无 ISO 元数据 / 解析失败）。
+        /// 带 5 秒超时保护，防止 exiftool 挂起阻塞编码队列。
+        /// </summary>
+        public static async Task<int?> ReadIsoAsync(string imagePath)
+        {
+            var exe = DetectedPath;
+            if (exe == null || string.IsNullOrEmpty(imagePath) || !File.Exists(imagePath))
+                return null;
+            try
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = exe,
+                    Arguments = $"-s -s -s -PhotographicSensitivity \"{imagePath}\"",
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+                using var p = Process.Start(psi);
+                if (p == null) return null;
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                try
+                {
+                    var output = await p.StandardOutput.ReadToEndAsync(cts.Token);
+                    await p.WaitForExitAsync(cts.Token);
+                    var line = output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+                        .FirstOrDefault()?.Trim();
+                    // 某些相机 ISO 可能是 "200" 或带小数（"100.5"），取整数部分
+                    if (!string.IsNullOrEmpty(line) && int.TryParse(line.Split('.')[0], out var iso) && iso > 0)
+                        return iso;
+                }
+                catch (OperationCanceledException)
+                {
+                    try { p.Kill(); } catch { }
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        /// <summary>
+        /// 通过 exiftool 批量读取图片的色彩语义标签（单次进程）。
+        /// 返回字典：标签名（含组前缀，如 "EXIF:ColorSpace"）→ 显示值（如 "sRGB"）。
+        /// exiftool 不可用 / 读取失败返回空字典。带 5 秒超时保护。
+        /// </summary>
+        public static async Task<Dictionary<string, string>> ReadColorTagsAsync(string imagePath)
+        {
+            var result = new Dictionary<string, string>();
+            var exe = DetectedPath;
+            if (exe == null || string.IsNullOrEmpty(imagePath) || !File.Exists(imagePath))
+                return result;
+            try
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = exe,
+                    Arguments = $"-json -G -ColorSpace -BitsPerSample -ColorType -SRGBRendering -PhotometricInterpretation \"{imagePath}\"",
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    StandardOutputEncoding = Encoding.UTF8,
+                    StandardErrorEncoding = Encoding.UTF8
+                };
+                using var p = Process.Start(psi);
+                if (p == null) return result;
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                string output;
+                try
+                {
+                    // ⚠️ ConfigureAwait(false): 本方法可能被同步等待 (GetAwaiter().GetResult()),
+                    // 若捕获 UI SynchronizationContext 会死锁。2026-08-14 修复。
+                    output = await p.StandardOutput.ReadToEndAsync(cts.Token).ConfigureAwait(false);
+                    await p.WaitForExitAsync(cts.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    try { p.Kill(); } catch { }
+                    return result;
+                }
+                if (string.IsNullOrWhiteSpace(output)) return result;
+
+                using var doc = JsonDocument.Parse(output);
+                var root = doc.RootElement;
+                if (root.ValueKind != JsonValueKind.Array || root.GetArrayLength() == 0)
+                    return result;
+                foreach (var prop in root[0].EnumerateObject())
+                {
+                    if (prop.Name == "SourceFile") continue;
+                    result[prop.Name] = prop.Value.ValueKind == JsonValueKind.String
+                        ? prop.Value.GetString() ?? ""
+                        : prop.Value.GetRawText();
+                }
+            }
+            catch { }
+            return result;
+        }
+
+        /// <summary>
         /// 检测 exiftool 位置（三优先级）：
         /// ① 手动指定路径（AppSettings.ExifToolPath）
         /// ② ffmpeg 同目录 / 程序同目录
@@ -428,7 +529,7 @@ namespace FfmpegGui.Services
             catch { }
         }
 
-        /// <summary>读取单个标签值</summary>
+        /// <summary>读取单个标签值（带 5 秒超时保护，防止 exiftool 挂起阻塞队列）</summary>
         public static async Task<string?> GetTagAsync(string path, string tag)
         {
             if (_detectedPath == null)
@@ -450,9 +551,18 @@ namespace FfmpegGui.Services
                 };
                 using var p = Process.Start(psi);
                 if (p == null) return null;
-                var output = (await p.StandardOutput.ReadToEndAsync()).Trim();
-                await p.WaitForExitAsync();
-                return string.IsNullOrWhiteSpace(output) ? null : output;
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                try
+                {
+                    var output = (await p.StandardOutput.ReadToEndAsync(cts.Token)).Trim();
+                    await p.WaitForExitAsync(cts.Token);
+                    return string.IsNullOrWhiteSpace(output) ? null : output;
+                }
+                catch (OperationCanceledException)
+                {
+                    try { p.Kill(entireProcessTree: true); } catch { }
+                    return null;
+                }
             }
             catch { return null; }
         }

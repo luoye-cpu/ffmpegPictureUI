@@ -1,0 +1,67 @@
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  FFmpegPictureUI v{VERSION} — 使用说明
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📌 运行要求
+  • Windows 10/11 或更高版本
+  • 无需安装任何运行环境（NativeAOT 独立编译）
+
+🚀 快速开始
+  1. 解压所有文件到任意目录
+  2. 双击运行 FfmpegGui.exe
+  3. 程序会自动检测本目录下 PLAN 文件夹中的外部工具
+  4. 拖入图片即可开始批量转换
+
+📁 文件结构
+  FfmpegGui.exe        — 主程序
+  PLAN/                — 外部组件包（程序自动识别）
+    ├── ffmpeg-full/   — FFmpeg 编解码引擎
+    ├── jxl-*/bin/     — JPEG XL 工具 (cjxl/djxl/cjpegli)
+    ├── exiftool-*/    — 元数据编辑工具
+    └── windows-artifacts/ — Ultra HDR / JPEG XR 编码器
+
+🖼️ 支持的格式
+  输入: JPEG, PNG, WebP, AVIF, JPEG XL, JPEG XR, TIFF, HEIC, DNG, BMP, GIF
+  输出: JPEG, PNG, WebP, AVIF, JPEG XL, JPEG XR, TIFF, GIF, APNG
+  动图: GIF, WebP(动), APNG, AVIF(动), JPEG XL(动)
+  特殊: Ultra HDR JPEG (Gain Map), JPEG→JXL 无损重封装
+
+🔧 外部工具说明
+  • FFmpeg        — 核心编解码引擎（必需）
+  • cjxl/djxl     — JPEG XL 高性能编码/解码（推荐，速度提升 5-10x）
+  • cjpegli       — 高质量 JPEG 编码（推荐，比标准 JPEG 体积更小）
+  • ultrahdr_app  — Ultra HDR JPEG 增益图编码（可选）
+  • JxrEncApp     — JPEG XR 编码（可选，仅 Windows）
+  • exiftool      — 元数据编辑与隐私清理（可选）
+
+💡 使用技巧
+  • 拖放文件夹可以批量添加该文件夹内所有支持的图片
+  • 动图模式支持视频文件作为输入（MP4/MOV/MKV 等）
+  • 预设功能可以保存常用的转换参数组合
+  • 双击队列中的已完成项目可以编辑元数据
+
+❓ 常见问题
+  Q: 提示"未检测到 ffmpeg"？
+  A: 确保 PLAN/ffmpeg-full/ 目录存在且包含 ffmpeg.exe。
+     也可以在设置中手动指定 ffmpeg 路径。
+
+  Q: 如何更新外部工具？
+  A: 替换 PLAN/ 下对应子目录中的文件即可。
+     程序每次启动时会自动重新检测工具可用性。
+
+  Q: 迁移到其他电脑？
+  A: 将整个程序文件夹复制到目标电脑即可（绿色免安装）。
+     无需安装 .NET 运行时（NativeAOT 已内置）。
+
+  Q: 转换后的文件比原文件大？
+  A: 尝试降低质量参数，或更换编码器后端。
+     JPEG XL 对 JPEG 源文件可实现无损重封装（体积更小）。
+
+📞 反馈与交流
+  QQ 群: 754439779
+  点击加入: https://qm.qq.com/q/M2181PvCkW
+  GitHub: https://github.com/luoye-cpu/PLAN-1
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  版本: v{VERSION} | 架构: {ARCH} | 日期: {DATE}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

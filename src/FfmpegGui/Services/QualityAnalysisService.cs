@@ -17,6 +17,10 @@ namespace FfmpegGui.Services
         public double? PsnrAverage { get; set; }
         public double? PsnrMin { get; set; }
         public double? PsnrMax { get; set; }
+        /// <summary>PSNR 计算域: true=RGB, false=YUV (仅标注, 不影响数值)</summary>
+        public bool PsnrIsRgb { get; set; } = true;
+        /// <summary>PSNR 位深 (8/10/12/16)</summary>
+        public int PsnrBitDepth { get; set; } = 8;
         public string RawOutput { get; set; } = "";
         public bool Success { get; set; }
         public string Error { get; set; } = "";
@@ -50,6 +54,8 @@ namespace FfmpegGui.Services
             // ★ JXL/JXR 解码支持：ffmpeg 不支持这些格式，需先用外部工具转临时 PNG
             string? tempPngPath = null;
             string? tempPngPath2 = null;
+            string? rawSrcPath = null;
+            string? rawEncPath = null;
             var actualSourcePath = sourcePath;
             var actualEncodedPath = encodedPath;
             try
@@ -70,9 +76,11 @@ namespace FfmpegGui.Services
                 }
 
                 // JXR 源/编码文件 → JxrDecApp 转 BMP
-                // 优先在与 JxrEncApp.exe 同目录查找 JxrDecApp.exe，其次搜索 PATH
-                var jxrDecPath = FindJxrDecApp();
-                if (string.IsNullOrEmpty(jxrDecPath))
+                // ⚠️ 2026-08-15 修复: 仅 JXR 输入才需要 JxrDecApp (此前无条件要求导致非 JXR 分析失败)
+                var isJxrInput = sourcePath.EndsWith(".jxr", StringComparison.OrdinalIgnoreCase)
+                              || encodedPath.EndsWith(".jxr", StringComparison.OrdinalIgnoreCase);
+                var jxrDecPath = isJxrInput ? FindJxrDecApp() : null;
+                if (isJxrInput && string.IsNullOrEmpty(jxrDecPath))
                 {
                     result.Error = $"JXR 质量分析需要 JxrDecApp.exe，但未检测到。\n已尝试路径:\n  {_lastJxrDecError}\n请将 JxrDecApp.exe 放入上述任一目录中。";
                     return result;
@@ -109,6 +117,53 @@ namespace FfmpegGui.Services
                     result.Error = resCheck;
                     return result;
                 }
+                // 分辨率 (用于 .NET 原生 PSNR 的帧大小计算)
+                var srcRes = await GetResolutionAsync(actualSourcePath, fileName)
+                             ?? await GetResolutionAsync(actualEncodedPath, fileName);
+                if (srcRes == null)
+                {
+                    result.Error = "无法获取图像分辨率，无法进行质量分析";
+                    return result;
+                }
+
+                // ── 目标域选择 (2026-08-15: 按目标输出格式的编码域做质量分析) ──
+                // 跨格式比较原则: 子采样损失是格式固有特性, 应在编码器原生域比较才能公平反映质量
+                //   RGB 系 (png/tiff/jxl/bmp/apng/gif): RGB 域
+                //   YUV 系 (jpg/jpeg/webp/avif/heic/heif/jxr/视频): YUV 域
+                // 实测 (256x192): WebP(420) 在 YUV444 域被惩罚 10dB, RGB 域恢复合理值
+                //   → 目标为 RGB 系格式时必须用 RGB 域, 否则子采样损失被误判为编码质量差
+                bool targetIsRgb = IsRgbNativeFormat(encodedPath);
+
+                // ── 位深探测 (支持 8-16bit) ──
+                int bitsPerSample = 8;
+                try
+                {
+                    var probe = FfmpegCommandBuilder.ProbeInputColorMetadata(actualSourcePath);
+                    bitsPerSample = probe.bitDepth > 0 ? probe.bitDepth : 8;
+                }
+                catch { }
+                if (bitsPerSample <= 8)
+                {
+                    try
+                    {
+                        var probe2 = FfmpegCommandBuilder.ProbeInputColorMetadata(actualEncodedPath);
+                        if (probe2.bitDepth > bitsPerSample) bitsPerSample = probe2.bitDepth;
+                    }
+                    catch { }
+                }
+                result.PsnrBitDepth = bitsPerSample;
+                result.PsnrIsRgb = targetIsRgb;
+
+                // 域容器选择: 8-bit → 8bit, 高位深 → 16bit
+                bool useHighBitDepth = bitsPerSample > 8;
+                string pixFmt;
+                if (targetIsRgb)
+                    pixFmt = useHighBitDepth ? "rgb48le" : "rgb24";
+                else
+                    pixFmt = useHighBitDepth ? "yuv444p16le" : "yuv444p";
+                int bytesPerPixel = useHighBitDepth ? 6 : 3;   // 3ch × (1|2)byte
+                int frameBytes = srcRes.Value.Width * srcRes.Value.Height * bytesPerPixel;
+                int psnrBitsPerSample = useHighBitDepth ? 16 : 8;
 
                 // 选择输出文件中最佳的视轨（多轨 AVIF 等需选动画轨而非封面轨）
                 var srcStream = "0:v";
@@ -117,11 +172,18 @@ namespace FfmpegGui.Services
                 // ★ 动图修复:
                 // 1) settb=1/1000 + setpts=N 按帧序号对齐（忽略原始帧间隔），消除不同
                 //    帧率/时间基准导致的帧错位对比——这才是 PSNR 极低的根本原因
-                // 2) split → 各自独立的帧拷贝馈入 ssim / psnr，避免共用 pad
-                //    时第二个滤镜读到错误帧（PSNR 全 inf 问题）
+                // 2) SSIM 由 ffmpeg ssim filter 计算; PSNR 由 .NET 原生 (PsnrCalculator) 计算
+                //    —— ffmpeg 同时输出两路目标域 raw 供 .NET 读取 (split 复制流)
+                // 3) scale=out_range=pc: 统一 full range (PNG=pc, JPEG=tv→pc), 否则值域错乱 PSNR 假低分
+                rawSrcPath = Path.Combine(PlatformServices.GetTempDir(), $"qa_psnr_src_{Guid.NewGuid():N}.raw");
+                rawEncPath = Path.Combine(PlatformServices.GetTempDir(), $"qa_psnr_enc_{Guid.NewGuid():N}.raw");
                 var args = $"-hide_banner -i \"{actualSourcePath}\" -i \"{actualEncodedPath}\" " +
-                           $"-filter_complex \"[{srcStream}]settb=1/1000,setpts=N,split[src1][src2];[{encStream}]settb=1/1000,setpts=N,split[enc1][enc2];[src1][enc1]ssim[ssim_out];[src2][enc2]psnr[psnr_out]\" " +
-                           $"-map \"[ssim_out]\" -map \"[psnr_out]\" -f null -";
+                           $"-filter_complex \"[{srcStream}]settb=1/1000,setpts=N,scale=out_range=pc,format={pixFmt},split[srcA][srcB];" +
+                           $"[{encStream}]settb=1/1000,setpts=N,scale=out_range=pc,format={pixFmt},split[encA][encB];" +
+                           $"[srcA][encA]ssim[ssim_out]\" " +
+                           $"-map \"[ssim_out]\" -f null - " +
+                           $"-map \"[srcB]\" -f rawvideo -pix_fmt {pixFmt} \"{rawSrcPath}\" " +
+                           $"-map \"[encB]\" -f rawvideo -pix_fmt {pixFmt} \"{rawEncPath}\"";
 
                 var psi = new ProcessStartInfo
                 {
@@ -171,6 +233,34 @@ namespace FfmpegGui.Services
                 // 部分 ffmpeg 构建将 SSIM/PSNR 结果输出到 stdout
                 ParseResult(result.RawOutput, result);
 
+                // ── .NET 原生 PSNR (2026-08-15, 替代 ffmpeg psnr filter) ──
+                // 读取 ffmpeg 输出的两路 rawvideo 计算 PSNR，支持位深与色域自适应。
+                // 多帧 (动图): 全局 MSE → average, 逐帧 PSNR → min/max。
+                if (File.Exists(rawSrcPath) && File.Exists(rawEncPath))
+                {
+                    try
+                    {
+                        var rawA = File.ReadAllBytes(rawSrcPath);
+                        var rawB = File.ReadAllBytes(rawEncPath);
+                        if (rawA.Length > 0 && rawA.Length == rawB.Length)
+                        {
+                            var (avg, min, max) = PsnrCalculator.CalculateMultiFramePsnr(rawA, rawB, frameBytes,
+                                bitsPerSample: psnrBitsPerSample, channels: 3, isRgb: false);
+                            result.PsnrAverage = avg;
+                            if (!double.IsPositiveInfinity(min)) result.PsnrMin = min;
+                            if (!double.IsPositiveInfinity(max)) result.PsnrMax = max;
+                        }
+                        else if (rawA.Length != rawB.Length)
+                        {
+                            result.Error = "rawvideo 输出长度不一致（动图帧数不同），PSNR 无法计算";
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        result.Error = $"PSNR 计算失败: {ex.Message}";
+                    }
+                }
+
                 if (!result.SsimAll.HasValue && !result.PsnrAverage.HasValue)
                 {
                     // 提取最后 500 个字符作为错误信息
@@ -193,6 +283,11 @@ namespace FfmpegGui.Services
                     TryDeleteFile(tempPngPath);
                 if (tempPngPath2 != null)
                     TryDeleteFile(tempPngPath2);
+                // 清理 .NET PSNR 用的 rawvideo 临时文件
+                if (rawSrcPath != null)
+                    TryDeleteFile(rawSrcPath);
+                if (rawEncPath != null)
+                    TryDeleteFile(rawEncPath);
             }
 
             return result;
@@ -204,6 +299,22 @@ namespace FfmpegGui.Services
         private static void TryDeleteFile(string path)
         {
             try { if (File.Exists(path)) File.Delete(path); } catch { }
+        }
+
+        /// <summary>
+        /// 判断目标输出格式是否为 RGB 原生 (2026-08-15: 目标域选择依据)。
+        /// RGB 系: PNG/TIFF/BMP/JXL/APNG/GIF — 无子采样, RGB 域比较公平
+        /// YUV 系: JPEG/WebP/AVIF/HEIC/JXR/视频 — 内部 YUV 编码 (4:2:0/4:4:4)
+        /// 注: 无损 WebP/JXL 在任意域 PSNR 均为 inf, 不受归类影响
+        /// </summary>
+        private static bool IsRgbNativeFormat(string outputPath)
+        {
+            var ext = Path.GetExtension(outputPath).ToLowerInvariant();
+            return ext switch
+            {
+                ".png" or ".apng" or ".tiff" or ".tif" or ".bmp" or ".jxl" or ".gif" => true,
+                _ => false
+            };
         }
 
         /// <summary>运行外部解码器进程，返回退出码</summary>
@@ -451,6 +562,8 @@ namespace FfmpegGui.Services
             }
 
             // ---- PSNR 解析 ----
+            // ⚠️ 2026-08-15: PSNR 已由 .NET 原生 (PsnrCalculator) 计算, 此处仅作为
+            //    rawvideo 输出失败时的回退 (兼容旧 ffmpeg 输出)。
             // 覆盖多种输出格式:
             // "PSNR y:42.36 u:45.21 v:44.87 average:43.15 min:41.23 max:45.89"
             // "PSNR average:43.15 min:41.23 max:45.89"
@@ -470,12 +583,12 @@ namespace FfmpegGui.Services
 
             // 取最后一个匹配（动图时为汇总平均值，静图为唯一匹配）
             var psnrMatch = psnrMatches.Count > 0 ? psnrMatches[^1] : null;
-            if (psnrMatch != null && psnrMatch.Success)
+            if (psnrMatch != null && psnrMatch.Success && !result.PsnrAverage.HasValue)
             {
                 ParseDouble(psnrMatch.Groups[1].Value, v => result.PsnrAverage = v);
-                if (psnrMatch.Groups[2].Success)
+                if (psnrMatch.Groups[2].Success && !result.PsnrMin.HasValue)
                     ParseDouble(psnrMatch.Groups[2].Value, v => result.PsnrMin = v);
-                if (psnrMatch.Groups[3].Success)
+                if (psnrMatch.Groups[3].Success && !result.PsnrMax.HasValue)
                     ParseDouble(psnrMatch.Groups[3].Value, v => result.PsnrMax = v);
             }
         }

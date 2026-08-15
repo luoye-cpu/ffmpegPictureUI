@@ -122,7 +122,35 @@ namespace FfmpegGui.Services
                     //      奇数尺寸（如 1921x1081）报 code 1027。
                     //   ② 中间 zscale 依赖帧色彩标签，无标签时报 3074 (no path between colorspaces)。
                     // format=yuv444p 前缀：4:4:4 无子采样约束，任意尺寸可用；也避免 4:2:0 色度损失。
-                    AppendVideoFilter(args, "format=yuv444p,tonemap=hable:param=0.5");
+                    //
+                    // 2026-08-14 修复（实测驱动）:
+                    //   tonemap 滤镜输出为 linear light 像素，帧色彩标签泄漏为 unspecified/linear，
+                    //   直接输出会导致：① 容器 CICP 标签错误（PNG 实测 cICP=primaries=2,transfer=8）
+                    //                    ② 像素未应用 gamma（实测 YAVG 12416 vs 正确 gamma 编码 30770，
+                    //                       linear→gamma 关系精确吻合，画面明显过暗）
+                    //   修复链: tonemap → RGB → zscale 应用目标 gamma + primaries 转换 → 正确像素+标签。
+                    var tmSrcP = inputPrimaries ?? "bt2020";  // tonemap 保持输入 primaries，需转换到目标
+                    var tmDstP = "bt709";
+                    var tmDstT = "bt709";
+                    if (!options.UseAdvancedColorParameters
+                        && !string.IsNullOrWhiteSpace(options.ColorSpace)
+                        && !options.ColorSpace.Equals("auto", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // 简化模式：目标为所选色彩空间（NeedsHdrToSdrTonemap 已排除 HDR 目标，此处恒为 SDR）
+                        var target = MapSimplifiedColorSpace(options.ColorSpace);
+                        tmDstT = target.trc ?? "bt709";
+                        tmDstP = target.primaries ?? "bt709";
+                    }
+                    else if (options.UseAdvancedColorParameters
+                             && !string.IsNullOrWhiteSpace(options.ColorTrc))
+                    {
+                        // 高级参数模式：目标为所选 trc/primaries
+                        tmDstT = options.ColorTrc!;
+                        tmDstP = options.ColorPrimaries ?? "bt709";
+                    }
+                    AppendVideoFilter(args,
+                        $"format=yuv444p,tonemap=hable:param=0.5,format=rgb48le," +
+                        $"zscale=pin={tmSrcP}:tin=linear:min=gbr:p={tmDstP}:t={tmDstT}:m=bt709");
                     skipHdrTonemap = true;
                 }
             }
@@ -696,7 +724,15 @@ namespace FfmpegGui.Services
                 return (primaries, trc, colorspace);
             }
 
-            if (options.UseAdvancedColorParameters
+            // 高级参数模式 或 管线注入的输入色彩声明（如 RAW 预处理标记 bt709/linear）。
+            // 2026-08-14 修复：RAW 去马赛克输出为线性 16-bit TIFF，QueueProcessor 注入
+            // ColorPrimaries=bt709 + ColorTrc=linear 描述输入；但 RAW 模式禁用高级色彩
+            // 面板（UseAdvancedColorParameters=false），导致注入值被忽略 → 线性像素
+            // 无标签输出 → PNG/TIFF/WebP 查看器按 sRGB 解释 → 画面明显过暗。
+            // 修复：ColorPrimaries 与 ColorTrc 均非空时视为输入声明直接使用。
+            if ((options.UseAdvancedColorParameters
+                 || (!string.IsNullOrWhiteSpace(options.ColorPrimaries)
+                     && !string.IsNullOrWhiteSpace(options.ColorTrc)))
                 && (!string.IsNullOrWhiteSpace(options.ColorPrimaries)
                  || !string.IsNullOrWhiteSpace(options.ColorTrc)
                  || !string.IsNullOrWhiteSpace(options.ColorMatrix)))
@@ -751,6 +787,8 @@ namespace FfmpegGui.Services
             {
                 "sRGB" => ("bt709", "iec61966-2-1", "bt709"),
                 "BT.709" => ("bt709", "bt709", "bt709"),
+                "Display P3" => ("smpte432", "iec61966-2-1", "bt709"),
+                "P3 PQ" => ("smpte432", "smpte2084", "bt709"),
                 "BT.2020 PQ" => ("bt2020", "smpte2084", "bt2020nc"),
                 "BT.2020 HLG" => ("bt2020", "arib-std-b67", "bt2020nc"),
                 // 兼容旧名称（逐步淘汰）
@@ -766,6 +804,8 @@ namespace FfmpegGui.Services
             {
                 "sRGB" => "bt709",
                 "BT.709" => "bt709",
+                "Display P3" => "bt709",
+                "P3 PQ" => "bt709",
                 "BT.2020 PQ" => "bt2020nc",
                 "BT.2020 HLG" => "bt2020nc",
                 "BT.601" => "bt470bg",
@@ -858,60 +898,63 @@ namespace FfmpegGui.Services
             return "yuva420p10le";
         }
 
-        /// <summary>使用 ffprobe 同步探测输入文件的位深</summary>
+        /// <summary>使用 ffprobe 同步探测输入文件的位深（复用缓存，不额外起进程）</summary>
         private static int ProbeInputBitDepth(string inputPath)
         {
             // 管道输入（stdin）无法探测，直接返回 0
             if (inputPath == "-") return 0;
-            try
-            {
-                var ffprobe = FindFfprobe();
-                if (ffprobe == null) return 0;
-                // 同时查询 bits_per_raw_sample 和 pix_fmt，优先前者，回退到后者
-                using var p = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
-                {
-                    FileName = ffprobe,
-                    Arguments = $"-v error -select_streams v:0 -show_entries stream=bits_per_raw_sample,pix_fmt -of csv=p=0 \"{inputPath}\"",
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    UseShellExecute = false,
-                    CreateNoWindow = true
-                });
-                if (p == null) return 0;
-                var output = p.StandardOutput.ReadToEnd().Trim();
-                p.WaitForExit(5000);
-                // 格式: bits_per_raw_sample_value,pix_fmt_value
-                var parts = output.Split(',');
-                // 优先 bits_per_raw_sample
-                if (parts.Length >= 1 && int.TryParse(parts[0], out var bd) && bd > 0) return bd;
-                // 回退：从 pix_fmt 解析（rgb48le→16, yuv420p10le→10, gray16le→16）
-                if (parts.Length >= 2) return ParseBitDepthFromPixFmt(parts[1]);
-            }
-            catch { }
-            return 0;
+            // 复用 GetCachedProbe：ProbeInputColorMetadataCore 已同时探测 bits_per_raw_sample 与 pix_fmt
+            return GetCachedProbe(inputPath).bitDepth;
         }
 
-        /// <summary>从像素格式字符串中提取位深</summary>
+        /// <summary>从像素格式字符串中提取位深（正确处理 yuvj420p→8, yuv420p10le→10, rgb48le→16 等）</summary>
         private static int ParseBitDepthFromPixFmt(string? pixFmt)
         {
             if (string.IsNullOrWhiteSpace(pixFmt)) return 0;
-            // 常见格式: rgb48le→48/3=16, yuv420p10le→10, gray16le→16, rgba64le→64/4=16
-            var match = System.Text.RegularExpressions.Regex.Match(pixFmt, @"(\d+)");
-            if (!match.Success) return 0;
-            var val = int.Parse(match.Value);
+            // 常见格式:
+            //   rgb48le/rgb48be → 48/3 = 16
+            //   rgba64le → 64/4 = 16
+            //   yuv420p10le → 10（p 后的数字）
+            //   yuv444p12le → 12
+            //   gray16le → 16
+            //   yuvj420p / yuv420p → 8（无显式位深 = 8）
+            // 注意：不能简单提取第一个数字（yuvj420p 的 "420" 是子采样，不是位深）
+
+            // 优先匹配 "p<N>"（YUV planar 位深）或 "gray<N>"/"ya<N>"（灰度位深）
+            var planar = System.Text.RegularExpressions.Regex.Match(pixFmt, @"p(\d+)(le|be)?$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            if (planar.Success)
+                return int.Parse(planar.Groups[1].Value);
+
+            var gray = System.Text.RegularExpressions.Regex.Match(pixFmt, @"^(gray|ya)(\d+)(le|be)?$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            if (gray.Success)
+                return int.Parse(gray.Groups[2].Value);
+
+            // RGB 系列: rgb48le → 48/3=16, rgba64le → 64/4=16, rgb24 → 8
             if (pixFmt.StartsWith("rgb") || pixFmt.StartsWith("bgr") || pixFmt.StartsWith("gbr"))
-                return val / 3;  // rgb48 → 16
-            if (pixFmt.StartsWith("rgba") || pixFmt.StartsWith("bgra") || pixFmt.StartsWith("argb"))
-                return val / 4;  // rgba64 → 16
-            if (pixFmt.StartsWith("gray") || pixFmt.StartsWith("ya"))
-                return val;      // gray16le → 16
-            // YUV 格式: yuv420p10le → 10
-            return val;
+            {
+                var num = System.Text.RegularExpressions.Regex.Match(pixFmt, @"(\d+)");
+                if (num.Success)
+                {
+                    var val = int.Parse(num.Value);
+                    var divisor = (pixFmt.StartsWith("rgba") || pixFmt.StartsWith("bgra") || pixFmt.StartsWith("argb")) ? 4 : 3;
+                    return val / divisor;
+                }
+            }
+
+            // YUV 无位深后缀（yuv420p/yuvj420p 等）→ 8-bit
+            if (pixFmt.StartsWith("yuv") || pixFmt.StartsWith("yuva") || pixFmt.StartsWith("nv"))
+                return 8;
+
+            // 兜底：数字后跟 le/be（如 gray16le 已处理，其他格式）
+            var tail = System.Text.RegularExpressions.Regex.Match(pixFmt, @"(\d+)(le|be)$");
+            if (tail.Success) return int.Parse(tail.Groups[1].Value);
+
+            return 0;
         }
 
         /// <summary>
         /// 判断是否需要 HDR→SDR 色调映射。
-        /// 仅在输入明确为 HDR（PQ/HLG 传输函数 或 用户选择 BT.2020）时触发。
+        /// 仅在输入明确为 HDR（PQ/HLG 传输函数）且目标为 SDR 时触发。
         /// 16-bit 无元数据 TIF 是普通高位深 SDR，不需要 tonemap。
         /// </summary>
         private static bool NeedsHdrToSdrTonemap(FfmpegOptions options, string inputPath,
@@ -928,6 +971,23 @@ namespace FfmpegGui.Services
                 if (bd > 8) return false;
             }
 
+            // ── 目标色彩空间检查：目标为 HDR (PQ/HLG) 时不需要 tonemap ──
+            // HDR→HDR 转换（如 BT.2020 PQ→P3 PQ）由简化 zscale 分支处理；
+            // 若此处不排除，tonemap 会先把 HDR 压成 SDR、zscale 再按 HDR 解译，
+            // 造成双重转换错误。2026-08-14 修复。
+            if (options.UseAdvancedColorParameters)
+            {
+                if (options.ColorTrc is "smpte2084" or "arib-std-b67")
+                    return false;
+            }
+            else if (!string.IsNullOrWhiteSpace(options.ColorSpace)
+                     && !options.ColorSpace.Equals("auto", StringComparison.OrdinalIgnoreCase))
+            {
+                var target = MapSimplifiedColorSpace(options.ColorSpace);
+                if (target.trc is "smpte2084" or "arib-std-b67")
+                    return false;
+            }
+
             // 仅当输入明确为 HDR（PQ/HLG 传输函数）时才触发 tonemap
             // 16-bit 无元数据 TIF 不满足此条件
             if (!string.IsNullOrWhiteSpace(inputTrc))
@@ -939,41 +999,13 @@ namespace FfmpegGui.Services
             return false;
         }
 
-        /// <summary>探测输入文件的色彩范围。RGB 像素格式返回 "pc"（全范围），否则返回 null（不覆盖默认）。</summary>
+        /// <summary>探测输入文件的色彩范围。RGB 像素格式返回 "pc"（全范围），否则返回 null（不覆盖默认）。复用缓存，不额外起进程。</summary>
         private static string? ProbeInputColorRange(string inputPath)
         {
             // 管道输入（stdin）无法探测，直接返回 null
             if (inputPath == "-") return null;
-            try
-            {
-                var ffprobe = FindFfprobe();
-                if (ffprobe == null) return null;
-                using var p = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
-                {
-                    FileName = ffprobe,
-                    Arguments = $"-v error -select_streams v:0 -show_entries stream=pix_fmt -of csv=p=0 \"{inputPath}\"",
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    UseShellExecute = false,
-                    CreateNoWindow = true
-                });
-                if (p == null) return null;
-                var output = p.StandardOutput.ReadToEnd().Trim();
-                p.WaitForExit(5000);
-
-                // RGB 系列像素格式是全范围（0-255, 0-65535）
-                if (output.StartsWith("rgb", StringComparison.OrdinalIgnoreCase)
-                    || output.StartsWith("bgr", StringComparison.OrdinalIgnoreCase)
-                    || output.StartsWith("gbr", StringComparison.OrdinalIgnoreCase)
-                    || output.StartsWith("rgba", StringComparison.OrdinalIgnoreCase)
-                    || output.StartsWith("bgra", StringComparison.OrdinalIgnoreCase)
-                    || output.StartsWith("argb", StringComparison.OrdinalIgnoreCase))
-                {
-                    return "pc";
-                }
-            }
-            catch { }
-            return null;
+            // RGB 系列像素格式是全范围（0-255, 0-65535），由 GetCachedProbe 的 isRgb 标记判断
+            return GetCachedProbe(inputPath).isRgb ? "pc" : null;
         }
 
         public struct ColorMetadata
@@ -982,13 +1014,199 @@ namespace FfmpegGui.Services
             public string? colorPrimaries;
             public string? colorTrc;
             public string? colorSpace;
+            /// <summary>输入是否含透明通道（由 pix_fmt 推断）</summary>
+            public bool hasAlpha;
+            /// <summary>输入是否为 RGB 系列像素格式（rgb/bgr/gbr/rgba 等，用于 pc range 判断）</summary>
+            public bool isRgb;
+            /// <summary>色彩语义是否来自 ICC/EXIF（true 时上层应携带 ICC 而非仅靠 primaries/trc 标签）</summary>
+            public bool hasIccSemantics;
         }
 
-        /// <summary>使用 ffprobe 同步探测输入文件的 HDR 色彩元数据</summary>
+        // ── ffprobe 探测缓存：同一输入文件在短时间内只探测一次 ──
+        // 此前 BuildArguments 内部对同一文件最多起 3 次 ffprobe 进程（色彩/位深/范围），
+        // 每条转换任务额外增加 ~30ms×N 进程开销。合并为单次查询 + 10 秒缓存。
+        private static readonly Dictionary<string, (DateTime Time, ColorMetadata Meta)> ProbeCache = new();
+        private const int ProbeCacheMax = 256;
+        private const double ProbeCacheTtlSeconds = 10.0;
+        private static readonly object ProbeCacheLock = new();
+
+        /// <summary>带缓存的探测入口：同一输入 10 秒内只起一次 ffprobe 进程</summary>
+        private static ColorMetadata GetCachedProbe(string inputPath)
+        {
+            if (inputPath == "-") return default;
+            lock (ProbeCacheLock)
+            {
+                if (ProbeCache.TryGetValue(inputPath, out var entry)
+                    && (DateTime.UtcNow - entry.Time).TotalSeconds < ProbeCacheTtlSeconds)
+                {
+                    return entry.Meta;
+                }
+            }
+
+            var meta = ProbeInputColorMetadataCore(inputPath);
+
+            lock (ProbeCacheLock)
+            {
+                if (ProbeCache.Count >= ProbeCacheMax)
+                    ProbeCache.Clear();  // 简单清空（缓存仅作短期去重，无需 LRU）
+                ProbeCache[inputPath] = (DateTime.UtcNow, meta);
+            }
+            return meta;
+        }
+
+        /// <summary>使用 ffprobe/exiftool 同步探测输入文件的色彩元数据（带缓存，见 GetCachedProbe）</summary>
         public static ColorMetadata ProbeInputColorMetadata(string inputPath)
+            => GetCachedProbe(inputPath);
+
+        /// <summary>
+        /// 探测核心实现（无缓存，供 GetCachedProbe 调用）。
+        /// 双引擎：exiftool 优先（EXIF ColorSpace + ICC 语义），ffprobe 回退/补充（pix_fmt/位深/alpha）。
+        /// - exiftool 可用：ColorSpace 标签 + ICC 描述推断色彩语义（相机 JPEG 广色域识别）
+        /// - ffprobe 始终提供：pix_fmt → 位深/alpha/isRgb（exiftool 无此能力）
+        /// - 语义合并：exiftool 有值 > ffprobe 值 > 默认
+        /// </summary>
+        private static ColorMetadata ProbeInputColorMetadataCore(string inputPath)
         {
             var meta = new ColorMetadata();
             // 管道输入（stdin）无法探测，直接返回空结构
+            if (inputPath == "-") return meta;
+
+            // ── 1) exiftool 优先：EXIF ColorSpace + ICC 描述（色彩语义真相来源）──
+            // 相机 JPEG 常在 EXIF 写 ColorSpace（1=sRGB, 2=Adobe RGB），ffprobe 读不到；
+            // 广色域真相在 ICC Profile（如 AdobeRGB/DisplayP3），exiftool 可提取解析。
+            // ⚠️ 2026-08-14 死锁修复: 本方法在 UI 线程被同步调用 (RegenerateCommand→BuildArguments),
+            // 直接 .GetAwaiter().GetResult() 会捕获 Avalonia UI SynchronizationContext →
+            // async 方法内部 await 续体无法回到被阻塞的 UI 线程 → 整个软件卡死 (发布版必现)。
+            // 用 Task.Run 包裹使 async 方法在线程池执行, 续体无需 UI 线程。
+            var exifColorTags = Task.Run(() => ExifToolService.ReadColorTagsAsync(inputPath))
+                .GetAwaiter().GetResult();
+
+            // EXIF ColorSpace 值（带任意组前缀，如 "EXIF:ColorSpace"）
+            string? exifColorSpace = null;
+            foreach (var kv in exifColorTags)
+            {
+                if (kv.Key.EndsWith(":ColorSpace", StringComparison.OrdinalIgnoreCase)
+                    || kv.Key.Equals("ColorSpace", StringComparison.OrdinalIgnoreCase))
+                {
+                    exifColorSpace = kv.Value;
+                    break;
+                }
+            }
+
+            // 位深（exiftool BitsPerSample，作为 pix_fmt 解析的交叉验证）
+            string? bitsPerSample = null;
+            foreach (var kv in exifColorTags)
+            {
+                if (kv.Key.EndsWith(":BitsPerSample", StringComparison.OrdinalIgnoreCase))
+                {
+                    bitsPerSample = kv.Value;
+                    break;
+                }
+            }
+            if (bitsPerSample != null && int.TryParse(bitsPerSample, out var exifBd) && exifBd > 0)
+                meta.bitDepth = exifBd;
+
+            // ICC 语义：提取 ICC → 解析描述 → 推断色彩空间（仅对 exiftool 可读的容器格式）
+            string? iccGuessed = null;
+            if (!string.IsNullOrWhiteSpace(exifColorSpace) || true) // 有 exiftool 即尝试 ICC（JPEG/TIFF/WebP 常见）
+            {
+                try
+                {
+                    var (iccPath, iccDesc) = IccProfileService.ExtractIccToTempFile(inputPath);
+                    if (iccPath != null)
+                    {
+                        iccGuessed = IccProfileService.GuessColorSpace(iccDesc);
+                        IccProfileService.TryDeleteIcc(iccPath);
+                    }
+                }
+                catch { }
+            }
+
+            // ── 色彩语义决策：ICC > EXIF ColorSpace ──
+            if (!string.IsNullOrWhiteSpace(iccGuessed))
+            {
+                ApplyIccSemantics(meta, iccGuessed);
+            }
+            else if (!string.IsNullOrWhiteSpace(exifColorSpace))
+            {
+                // EXIF ColorSpace: 1=sRGB, 2=Adobe RGB（无 zscale 命名，近似 bt709 + 上层携带 ICC）
+                if (exifColorSpace.Contains("Adobe", StringComparison.OrdinalIgnoreCase)
+                    || exifColorSpace == "2")
+                {
+                    meta.colorPrimaries = "bt709";
+                    meta.colorTrc = "bt709";
+                    meta.hasIccSemantics = true; // 标记：上层应携带 ICC 而非仅靠标签
+                }
+                else if (exifColorSpace.Contains("sRGB", StringComparison.OrdinalIgnoreCase)
+                         || exifColorSpace == "1")
+                {
+                    meta.colorPrimaries = "bt709";
+                    meta.colorTrc = "iec61966-2-1";
+                    meta.hasIccSemantics = true;
+                }
+            }
+
+            // ── 2) ffprobe 补充：pix_fmt → 位深/alpha/isRgb（始终执行，exiftool 无此能力）──
+            var ffMeta = ProbeWithFfprobe(inputPath);
+            // ffprobe 的 pix_fmt 位深更可靠（exiftool BitsPerSample 可能缺省），
+            // 但 exiftool 位深优先（用户要求 exiftool 优先）；无 exiftool 位深时用 ffprobe
+            if (meta.bitDepth <= 0) meta.bitDepth = ffMeta.bitDepth;
+            meta.hasAlpha = ffMeta.hasAlpha;
+            meta.isRgb = ffMeta.isRgb;
+            if (string.IsNullOrWhiteSpace(meta.colorSpace)) meta.colorSpace = ffMeta.colorSpace;
+            // 语义缺失时才回退 ffprobe 的 primaries/trc
+            if (!meta.hasIccSemantics)
+            {
+                if (string.IsNullOrWhiteSpace(meta.colorPrimaries)) meta.colorPrimaries = ffMeta.colorPrimaries;
+                if (string.IsNullOrWhiteSpace(meta.colorTrc)) meta.colorTrc = ffMeta.colorTrc;
+            }
+            return meta;
+        }
+
+        /// <summary>将 ICC 推断的色彩空间名应用到 ColorMetadata（hasIccSemantics 标记供上层携带 ICC）</summary>
+        private static void ApplyIccSemantics(ColorMetadata meta, string guessed)
+        {
+            meta.hasIccSemantics = true;
+            switch (guessed)
+            {
+                case "sRGB":
+                    meta.colorPrimaries = "bt709";
+                    meta.colorTrc = "iec61966-2-1";
+                    break;
+                case "Adobe RGB":
+                case "ColorMatch RGB":
+                    // 无 zscale 命名 → 近似 bt709，上层携带 ICC 保留完整语义
+                    meta.colorPrimaries = "bt709";
+                    meta.colorTrc = "bt709";
+                    break;
+                case "Display P3":
+                    meta.colorPrimaries = "smpte432";
+                    meta.colorTrc = "bt709";
+                    break;
+                case "DCI-P3":
+                    meta.colorPrimaries = "smpte431";
+                    meta.colorTrc = "bt709";
+                    break;
+                case "Rec.2020":
+                    meta.colorPrimaries = "bt2020";
+                    meta.colorTrc = "bt709";
+                    break;
+                case "Rec.2100":
+                    meta.colorPrimaries = "bt2020";
+                    meta.colorTrc = "smpte2084";
+                    break;
+                case "ProPhoto RGB":
+                    // 无 zscale 命名 → 近似 bt709，上层携带 ICC
+                    meta.colorPrimaries = "bt709";
+                    meta.colorTrc = "bt709";
+                    break;
+            }
+        }
+
+        /// <summary>纯 ffprobe 探测（pix_fmt/色彩标签），供回退与补充使用</summary>
+        private static ColorMetadata ProbeWithFfprobe(string inputPath)
+        {
+            var meta = new ColorMetadata();
             if (inputPath == "-") return meta;
             try
             {
@@ -1006,19 +1224,41 @@ namespace FfmpegGui.Services
                 if (p == null) return meta;
                 var output = p.StandardOutput.ReadToEnd().Trim();
                 p.WaitForExit(5000);
-                // 格式: bits_per_raw_sample,pix_fmt,color_primaries,color_transfer,color_space
                 var parts = output.Split(',');
-                // 位深：优先 bits_per_raw_sample，回退 pix_fmt
-                if (parts.Length >= 1 && int.TryParse(parts[0], out var bd) && bd > 0)
-                    meta.bitDepth = bd;
-                else if (parts.Length >= 2)
-                    meta.bitDepth = ParseBitDepthFromPixFmt(parts[1]);
+                // ⚠️ 关键：ffprobe 的 -show_entries stream=A,B,C 输出顺序为流内部固定顺序
+                // （与参数书写顺序无关）。实测（ffmpeg 22.x / ffprobe 8.x）为：
+                //   pix_fmt, color_space, color_transfer, color_primaries, bits_per_raw_sample
+                // （注意：color_transfer 在 color_primaries 之前！2026-08-14 实测修正）
+                // 因此：
+                //   parts[0]=pix_fmt        → 位深/alpha/RGB 判断的来源
+                //   parts[1]=color_space    → YUV 矩阵 (gbr/bt709/bt2020nc)
+                //   parts[2]=color_transfer → 传输函数 (smpte2084/iec61966-2-1/...)
+                //   parts[3]=color_primaries→ 原色 (bt709/bt2020/smpte432/...)
+                // 兼容性：若未来版本输出更多字段，前 4 项顺序不变。
+                if (parts.Length >= 1 && !string.IsNullOrEmpty(parts[0]))
+                {
+                    var pixFmt = parts[0];
+                    meta.bitDepth = ParseBitDepthFromPixFmt(pixFmt);
+                    // Alpha 检测：pix_fmt 含 'a' 字符（rgba/bgra/argb/ya8 等）。
+                    // pal8 也含 'a' 但它是 8-bit 调色板（无透明通道语义），仅在 >8bit 分支使用时无影响。
+                    meta.hasAlpha = pixFmt.Contains('a');
+                    // RGB 系列像素格式（全范围 0-255/0-65535）→ pc range
+                    meta.isRgb = pixFmt.StartsWith("rgb", StringComparison.OrdinalIgnoreCase)
+                              || pixFmt.StartsWith("bgr", StringComparison.OrdinalIgnoreCase)
+                              || pixFmt.StartsWith("gbr", StringComparison.OrdinalIgnoreCase)
+                              || pixFmt.StartsWith("rgba", StringComparison.OrdinalIgnoreCase)
+                              || pixFmt.StartsWith("bgra", StringComparison.OrdinalIgnoreCase)
+                              || pixFmt.StartsWith("argb", StringComparison.OrdinalIgnoreCase);
+                }
+                // parts[1] = color_space (YUV 矩阵)
+                if (parts.Length >= 2 && !string.IsNullOrEmpty(parts[1]) && parts[1] != "unknown" && parts[1] != "N/A")
+                    meta.colorSpace = parts[1];
+                // parts[2] = color_transfer (实测顺序: transfer 在 primaries 前)
                 if (parts.Length >= 3 && !string.IsNullOrEmpty(parts[2]) && parts[2] != "unknown" && parts[2] != "N/A")
-                    meta.colorPrimaries = parts[2];
+                    meta.colorTrc = parts[2];
+                // parts[3] = color_primaries
                 if (parts.Length >= 4 && !string.IsNullOrEmpty(parts[3]) && parts[3] != "unknown" && parts[3] != "N/A")
-                    meta.colorTrc = parts[3];
-                if (parts.Length >= 5 && !string.IsNullOrEmpty(parts[4]) && parts[4] != "unknown" && parts[4] != "N/A")
-                    meta.colorSpace = parts[4];
+                    meta.colorPrimaries = parts[3];
             }
             catch { }
             return meta;
