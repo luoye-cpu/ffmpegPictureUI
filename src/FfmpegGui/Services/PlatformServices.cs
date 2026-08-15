@@ -329,17 +329,18 @@ public static class PlatformServices
     // 缓存文件清理
     // ═══════════════════════════════════════════════
 
-    /// <summary>缓存子目录前缀（用于识别和清理僵尸目录）</summary>
+    /// <summary>缓存子目录前缀（用于识别和清理僵尸目录，2026-08-16 与实际创建点对齐）</summary>
     private static readonly string[] TempDirPrefixes =
     {
-        "raw_", "gainmap_", "ultrahdr_", "jxr_", "jxr_input_",
-        "uhdr_decode_", "avif2gifwebp_", "avifenc_frames_", "icc_extract_"
+        "raw_", "gainmap_", "gmdecode_", "uhdr_linear_", "jxr_", "jxr_input_",
+        "avif2gifwebp_", "avifenc_frames_", "ffmpeg_ps_check"
     };
 
-    /// <summary>缓存文件前缀（用于识别和清理僵尸临时文件，如 icc_extract_*.icc）</summary>
+    /// <summary>缓存文件前缀（用于识别和清理僵尸临时文件，2026-08-16 补充质量分析/预转换）</summary>
     private static readonly string[] TempFilePrefixes =
     {
-        "icc_extract_"
+        "icc_extract_", "qa_src_", "qa_enc_", "qa_psnr_src_", "qa_psnr_enc_",
+        "ffmpeg_preconv_"
     };
 
     /// <summary>
@@ -373,7 +374,7 @@ public static class PlatformServices
                 }
                 catch { /* 枚举失败不影响其他前缀 */ }
             }
-            // 僵尸临时文件（ICC 提取等，非目录）
+            // 僵尸临时文件（ICC 提取、质量分析、预转换等，非目录）
             foreach (var prefix in TempFilePrefixes)
             {
                 try

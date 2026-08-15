@@ -180,7 +180,9 @@ namespace FfmpegGui.Services
             // ⚠️ 清理残留 PS 进程（app.quit() 不终止进程，残留实例阻塞新脚本）
             KillExistingPhotoshop();
 
-            var scriptDir = Path.Combine(Path.GetTempPath(), "ffmpeg_ps_check");
+            // 2026-08-16 修复: 统一使用 PlatformServices.GetTempDir()（优先用户缓存目录），
+            // 此前硬编码 Path.GetTempPath() 绕过用户 CacheDirectory 设置
+            var scriptDir = Path.Combine(PlatformServices.GetTempDir(), "ffmpeg_ps_check");
             Directory.CreateDirectory(scriptDir);
             var scriptPath = Path.Combine(scriptDir, $"ps_open_{Guid.NewGuid():N}.jsx");
             var resultPath = Path.Combine(scriptDir, $"ps_open_{Guid.NewGuid():N}.txt");
@@ -327,7 +329,8 @@ app.quit();
             // ⚠️ 清理残留 PS 进程（app.quit() 不终止进程，残留实例阻塞新脚本）
             KillExistingPhotoshop();
 
-            var scriptDir = Path.Combine(Path.GetTempPath(), "ffmpeg_ps_check");
+            // 2026-08-16 修复: 统一使用 PlatformServices.GetTempDir()（优先用户缓存目录）
+            var scriptDir = Path.Combine(PlatformServices.GetTempDir(), "ffmpeg_ps_check");
             Directory.CreateDirectory(scriptDir);
             var scriptPath = Path.Combine(scriptDir, $"ps_render_{Guid.NewGuid():N}.jsx");
             var resultPath = Path.Combine(scriptDir, $"ps_render_{Guid.NewGuid():N}.txt");
