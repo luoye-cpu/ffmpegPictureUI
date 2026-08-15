@@ -12,6 +12,8 @@ namespace FfmpegGui.Services
         public bool SupportsBitDepth { get; set; }
         public bool SupportsMetadata { get; set; }
         public bool SupportsLossless { get; set; }
+        /// <summary>是否支持 TV/PC 色彩范围控制（YUV 输出格式；RGB 原生/调色板格式不支持）</summary>
+        public bool SupportsColorRange { get; set; }
         public List<int> SupportedBitDepths { get; set; } = new List<int>();
         public List<string> SupportedColorSpaces { get; set; } = new List<string>();
         /// <summary>是否支持 Gain Map (Ultra HDR) 编码</summary>
@@ -62,6 +64,7 @@ namespace FfmpegGui.Services
                 SupportsLossless = false,
                 SupportsGainMap = true,
                 SupportsCicp = false,
+                // 不支持 TV/PC 控制: mjpeg 编码器仅接受 yuvj (full range) 像素格式，limited 输入直接报错
                 CicpNote = "JPEG 使用 EXIF/JFIF 色彩标签，非 CICP；非 sRGB 时自动嵌入 ICC",
                 SupportedBitDepths = new List<int> { 8 },
                 SupportedColorSpaces = new List<string> { "BT.709", "BT.2020" }
@@ -92,6 +95,7 @@ namespace FfmpegGui.Services
                 SupportsMetadata = true,
                 SupportsLossless = true,
                 SupportsCicp = false,
+                // 不支持 TV/PC 控制: WebP 容器无范围标记，恒按 full range 约定解释，tv 输出会发灰
                 CicpNote = "WebP 不支持 CICP；非 sRGB 时自动嵌入 ICC",
                 SupportedBitDepths = new List<int> { 8 },
                 SupportedColorSpaces = new List<string> { "BT.709" }
@@ -107,6 +111,7 @@ namespace FfmpegGui.Services
                 SupportsMetadata = true,
                 SupportsLossless = true,
                 SupportsCicp = true,
+                SupportsColorRange = true, // AVIF CICP full_range_flag 原生支持 tv/pc
                 CicpNote = "AVIF 原生支持 CICP (H.273)，8/10/12-bit",
                 SupportedBitDepths = new List<int> { 8, 10, 12 },
                 SupportedColorSpaces = new List<string> { "BT.709", "BT.2020" }

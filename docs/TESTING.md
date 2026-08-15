@@ -1,6 +1,6 @@
 # 🧪 FFmpegPictureUI 测试规范
 
-> 版本: 1.0 | 最后更新: 2026-08-13 | 适用于 v1.5.2+
+> 版本: 1.0 | 最后更新: 2026-08-16 | 适用于 v1.5.4+
 
 ---
 
@@ -151,5 +151,64 @@ test-output/
 
 1. **PowerShell 重定向陷阱**：`>` 会破坏二进制流（ICC/PNG 管道输出）。提取二进制时用 `cmd /c "exe args > file"` 或在 C# 中重定向 BaseStream
 2. **exiftool 无法写入 JXL 的 ICC**：JXL 的 ICC 只能由 cjxl `-x icc_pathname`（PPM/PAM 管道）或输入 PNG 内嵌 ICC 携带
-3. **ffprobe 字段顺序**：`-show_entries stream=A,B,C` 逗号分隔仅最后一个字段生效，输出固定为 `pix_fmt,color_space,color_primaries,color_transfer`
+3. **ffprobe 字段顺序**：`-show_entries stream=A,B,C` 逗号分隔仅最后一个字段生效，输出固定为 `pix_fmt,color_space,color_primaries,color_transfer`（注意：`color_transfer` 在 `color_primaries` **之前**）
 4. **测试日志**：长测试建议输出到 `tests/output/test.log` 便于排查
+
+---
+
+## 七、UI 验证方法论（2026-08-16 沉淀）
+
+### 7.1 静态完整性检查（编译前）
+
+```powershell
+# ① XAML 控件名 vs FindControl 引用对比（找缺失/死引用）
+$xaml = Get-Content src/FfmpegGui/MainWindow.xaml -Raw
+$cs = Get-Content src/FfmpegGui/MainWindow.xaml.cs -Raw
+$xamlNames = [regex]::Matches($xaml, 'x:Name="([^"]+)"') | ForEach-Object { $_.Groups[1].Value }
+$findRefs  = [regex]::Matches($cs, 'FindControl<[^>]+>\("([^"]+)"\)') | ForEach-Object { $_.Groups[1].Value }
+$findRefs | Where-Object { $_ -notin $xamlNames }  # 引用了不存在的控件
+
+# ② XAML 事件处理器 vs code-behind 方法
+$events = [regex]::Matches($xaml, '(?:Click|SelectionChanged|IsCheckedChanged|TextChanged|ValueChanged)="([A-Za-z_]\w*)"') | ForEach-Object { $_.Groups[1].Value }
+$methods = [regex]::Matches($cs, '(?:private|public)\s+(?:async\s+)?(?:void|Task|bool|int|string)\s+([A-Za-z_]\w*)\s*\(') | ForEach-Object { $_.Groups[1].Value }
+$events | Where-Object { $_ -notin $methods }
+
+# ③ 本地化 key 完整性（XAML `{ext:Loc xxx}` vs zh-CN.json/en-US.json）
+```
+
+### 7.2 运行时验证（UIA 边界框 = 最精确）
+
+```powershell
+Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+$proc = Get-Process -Name FfmpegGui
+$root = [System.Windows.Automation.AutomationElement]::RootElement
+$cond = New-Object System.Windows.Automation.PropertyCondition(
+    [System.Windows.Automation.AutomationElement]::ProcessIdProperty, $proc.Id)
+$win = $root.FindFirst([System.Windows.Automation.TreeScope]::Children, $cond)
+$el = $win.FindFirst([System.Windows.Automation.TreeScope]::Descendants,
+    (New-Object System.Windows.Automation.PropertyCondition(
+        [System.Windows.Automation.AutomationElement]::AutomationIdProperty, "OutputDirBox")))
+$el.Current.BoundingRectangle  # L/R/T/B 物理像素（注意 150% DPI = 逻辑×1.5）
+```
+
+- 元素 `IsOffscreen` = 被裁剪/滚动出可视区；不在树中 = `IsVisible=false`
+- 验证重叠：对比两个元素 `BoundingRectangle` 的 L/R 是否交叉
+- `SelectionPattern` 可读 ComboBox 当前值；`TogglePattern` 可切换 CheckBox（不稳定时用鼠标模拟）
+
+### 7.3 截图 + 视觉模型（交叉验证）
+
+- **正确流程**：`SetWindowPos(HWND_TOPMOST)` 强制置顶 → `CopyFromScreen` 屏幕捕获
+  （`SetForegroundWindow` 常被 Windows 前台锁定阻止，不可靠）
+- **陷阱**：`PrintWindow` 对 Skia/GPU 渲染窗口可能捕获残缺（黑色区域）——视觉模型如实报告残缺画面会被误判为"模型误报"
+- 视觉模型（SenseNova 6.8 Flash Lite）能力已验证：可读微小文字（窗口标题版本号）、可发现真实布局缺陷（如 39px 按钮重叠，UIA 实测证实）
+- **原则**：视觉模型报告与 UIA 边界框必须交叉印证，不轻易否定任一来源
+
+### 7.4 交互测试清单（发布前）
+
+- [ ] 切换全部格式：编码器列表刷新、色度/位深选项按编码器过滤、ColorRange 按格式显示/隐藏
+- [ ] 勾选高级色彩/高级编码：面板展开、控件可交互
+- [ ] 切换主题（深/浅）、语言（中/英）：控件文字完整无豆腐块
+- [ ] 调整窗口尺寸（含最小尺寸）：无元素溢出/重叠（重点：顶部路径行、底部并发栏）
+- [ ] 简洁模式往返：预设加载、队列显示、自动编码开关
+- [ ] 双击文件打开详情窗口：媒体信息/命令/日志显示
+- [ ] 完整转换流程：添加文件→队列→开始→完成（含 16-bit 输入、HDR 输入、动图输入）

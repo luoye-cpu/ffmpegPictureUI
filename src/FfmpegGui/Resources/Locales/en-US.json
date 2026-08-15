@@ -1,5 +1,5 @@
 {
-  "app.title": "FFmpeg Picture Converter 1.5.0",
+  "app.title": "FFmpeg Picture Converter 1.5.4",
   "format.jpeg": "JPEG",
   "format.png": "PNG",
   "format.webp": "WebP",
@@ -70,6 +70,7 @@
   "color.primaries": "Color Primaries",
   "color.transfer": "Color Transfer (trc)",
   "color.matrix": "Color Matrix (colorspace)",
+  "color.range": "Color Range (TV/PC)",
   "cicp.always.on": "☑ CICP Color Tagging: Always Enabled (H.273 standard)",
   "icc.color.management": "🎨 ICC Color Management",
   "icc.mode.none": "① Default — No ICC (CICP only)",

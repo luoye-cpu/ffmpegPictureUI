@@ -28,7 +28,8 @@ namespace FfmpegGui.Models
     {
         public string Format { get; set; } = "jpg";
         public int Quality { get; set; } = 75;
-        public string Chroma { get; set; } = "4:2:0";
+        /// <summary>色度子采样: auto/4:4:4/4:2:2/4:2:0（默认 auto 跟随输入/格式能力）</summary>
+        public string Chroma { get; set; } = "auto";
         /// <summary>
         /// 位深：null = auto（不指定，由编码器自行判断）
         /// </summary>
@@ -38,6 +39,10 @@ namespace FfmpegGui.Models
         public string? ColorPrimaries { get; set; }
         public string? ColorTrc { get; set; }
         public string? ColorMatrix { get; set; }
+        /// <summary>
+        /// 输出色彩范围: null/"auto" = 自动（RGB 输入→pc），"tv" = limited（视频范围），"pc" = full（全范围）
+        /// </summary>
+        public string? ColorRange { get; set; }
         public int Threads { get; set; } = ComputeAutoThreads();
         /// <summary>
         /// 自动线程模式 (2026-08-15): 运行时按并发任务数动态分配。
@@ -141,10 +146,10 @@ namespace FfmpegGui.Models
         public bool? AvifLowPower { get; set; }
 
         // ── cjpegli / jpegli 专属高级选项 ──
-        /// <summary>色度子采样: "444", "422", "420", "440"</summary>
-        public string CjpegliChromaSubsampling { get; set; } = "444";
-        /// <summary>渐进模式: -1=自动(使用cjpegli默认2), 0=基线, 2=渐进</summary>
-        public int CjpegliProgressiveId { get; set; } = -1;
+        /// <summary>色度子采样: "auto"/"444"/"422"/"420"/"440"（默认 auto 跟随输入）</summary>
+        public string CjpegliChromaSubsampling { get; set; } = "auto";
+        /// <summary>渐进模式: -1=自动, 0=基线, 2=渐进（2026-08-16 实测渐进压缩率更高: 体积小 5-38%，默认 2）</summary>
+        public int CjpegliProgressiveId { get; set; } = 2;
         /// <summary>Huffman 表优化</summary>
         public bool CjpegliOptimize { get; set; } = true;
         /// <summary>自适应量化</summary>
@@ -157,8 +162,8 @@ namespace FfmpegGui.Models
         public bool CjpegliMultiThreadAvailable { get; set; } = false;
 
         // ── ExifTool 隐私清理选项（仅在 exiftool 可用时生效）──
-        /// <summary>删除 GPS 位置信息（默认勾选）</summary>
-        public bool StripExifGps { get; set; } = false;
+        /// <summary>删除 GPS 位置信息（默认开启，与 UI/PresetData 一致）</summary>
+        public bool StripExifGps { get; set; } = true;
         /// <summary>删除拍摄时间日期</summary>
         public bool StripExifTime { get; set; } = false;
         /// <summary>删除相机/镜头型号与拍摄参数</summary>

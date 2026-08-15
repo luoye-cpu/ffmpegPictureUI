@@ -92,39 +92,57 @@ namespace FfmpegGui.Services
             {
                 // 外部文件缺失（典型场景：单文件发布时 Content 未随包输出）→
                 // 回退到程序集内嵌资源，确保语言可用且可正常切换
-                if (TryLoadEmbeddedResource(language)) return;
-                // 内嵌资源也缺失（极端情况）→ 内嵌回退字典
-                LoadEmbeddedFallback();
-                return;
+                if (!TryLoadEmbeddedResource(language))
+                    // 内嵌资源也缺失（极端情况）→ 内嵌回退字典
+                    LoadEmbeddedFallback();
+            }
+            else
+            {
+                try
+                {
+                    var json = File.ReadAllText(filePath);
+                    var dict = JsonSerializer.Deserialize(json, AppJsonContext.Default.DictionaryStringString);
+                    if (dict != null)
+                    {
+                        foreach (var kv in dict)
+                            _strings[kv.Key] = kv.Value;
+                    }
+                    else
+                    {
+                        // 文件存在但内容无法解析 → 尝试内嵌资源
+                        if (!TryLoadEmbeddedResource(language))
+                            LoadEmbeddedFallback();
+                    }
+                }
+                catch
+                {
+                    // 文件损坏（编码/读取异常）→ 尝试内嵌资源
+                    if (!TryLoadEmbeddedResource(language))
+                        LoadEmbeddedFallback();
+                }
             }
 
-            try
-            {
-                var json = File.ReadAllText(filePath);
-                var dict = JsonSerializer.Deserialize(json, AppJsonContext.Default.DictionaryStringString);
-                if (dict != null)
-                {
-                    foreach (var kv in dict)
-                        _strings[kv.Key] = kv.Value;
-                }
-                else
-                {
-                    // 文件存在但内容无法解析 → 尝试内嵌资源
-                    if (TryLoadEmbeddedResource(language)) return;
-                    LoadEmbeddedFallback();
-                    return;
-                }
-            }
-            catch
-            {
-                // 文件损坏（编码/读取异常）→ 尝试内嵌资源
-                if (TryLoadEmbeddedResource(language)) return;
-                LoadEmbeddedFallback();
-                return;
-            }
+            // 统一收尾：标题版本号与程序集版本同步（2026-08-16 修复：
+            // 此前版本号散落在 JSON 中需手工维护，发版遗漏导致标题版本滞后）
+            NormalizeAppTitleVersion();
 
             CurrentLanguage = language;
             RefreshVersion++;
+        }
+
+        /// <summary>
+        /// 将 app.title 中的版本号统一替换为程序集版本（如 "1.5.0" → "1.5.4"）。
+        /// JSON/内嵌资源/回退字典任何来源均生效，避免手工维护版本号遗漏。
+        /// </summary>
+        private void NormalizeAppTitleVersion()
+        {
+            if (!_strings.TryGetValue("app.title", out var title) || string.IsNullOrEmpty(title))
+                return;
+            var ver = typeof(LocalizationService).Assembly.GetName().Version;
+            if (ver == null) return;
+            var verStr = $"{ver.Major}.{ver.Minor}.{ver.Build}";
+            _strings["app.title"] = System.Text.RegularExpressions.Regex.Replace(
+                title, @"\d+\.\d+(\.\d+)?", verStr);
         }
 
         /// <summary>
@@ -251,6 +269,7 @@ namespace FfmpegGui.Services
             _strings["color.primaries"] = "Color Primaries";
             _strings["color.transfer"] = "Color Transfer (trc)";
             _strings["color.matrix"] = "Color Matrix";
+            _strings["color.range"] = "Color Range (TV/PC)";
             _strings["icc.color.management"] = "ICC Color Management";
             _strings["exiftool.privacy"] = "ExifTool Privacy Cleanup";
             _strings["animation.params"] = "Animation Parameters";

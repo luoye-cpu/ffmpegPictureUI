@@ -12,6 +12,8 @@ namespace FfmpegGui.Models
         public string? ColorPrimaries { get; set; }
         public string? ColorTrc { get; set; }
         public string? ColorMatrix { get; set; }
+        /// <summary>输出色彩范围: auto/tv/pc</summary>
+        public string? ColorRange { get; set; }
         public string? BitDepth { get; set; }
         public bool AutoThreads { get; set; } = true;
         public bool SingleThread { get; set; }
@@ -104,6 +106,19 @@ namespace FfmpegGui.Models
         public bool? CjpegliOptimize { get; set; }
         /// <summary>cjpegli 自适应量化</summary>
         public bool? CjpegliAdaptiveQuant { get; set; }
+        /// <summary>cjpegli 编码后端: libjpeg/sjpeg</summary>
+        public string? CjpegliEncoderBackend { get; set; }
+        /// <summary>cjpegli PSNR 目标 (0=禁用)</summary>
+        public float CjpegliPsnrTarget { get; set; }
+        // ── cjxl 高级选项 ──
+        /// <summary>cjxl 渐进式解码</summary>
+        public bool CjxlProgressive { get; set; }
+        /// <summary>cjxl 光子噪声 ISO (0=禁用)</summary>
+        public int CjxlPhotonNoiseIso { get; set; }
+        /// <summary>cjxl 自动读取 EXIF ISO</summary>
+        public bool CjxlAutoPhotonNoise { get; set; }
+        /// <summary>TIFF DPI (0=不写入)</summary>
+        public int? TiffDpi { get; set; }
         // ExifTool 选择性剥离选项
         public bool StripExifGps { get; set; } = true;
         public bool StripExifTime { get; set; }

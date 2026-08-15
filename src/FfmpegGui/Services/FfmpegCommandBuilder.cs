@@ -592,37 +592,78 @@ namespace FfmpegGui.Services
                 var bd = options.BitDepth ?? 8;
                 args.Add(bd <= 8 ? "rgba" : "rgba64le");
             }
-            // 色度采样 或 位深 为 auto 则不指定 pix_fmt，由 ffmpeg 自动选择
-            else if (!string.IsNullOrWhiteSpace(options.Chroma) 
-                && !options.Chroma.Equals("auto", StringComparison.OrdinalIgnoreCase)
-                && options.BitDepth.HasValue)
+            // ── 通用像素格式选择 ──
+            // 规则：
+            // ① 色度采样显式指定（非 auto）→ 必须写 -pix_fmt。此前额外要求位深
+            //    也非 auto，导致「位深 auto + 8-bit 输入」时子采样选择被静默丢弃、
+            //    恒输出 4:2:0（Bug 修复）。
+            // ② 位深 auto → 探测输入实际位深：>8 按输入位深输出，≤8 按 8-bit 输出。
+            // ③ 色度为 auto → 仅按位深指定（默认 4:2:0）。
+            var inputHasAlpha = GetCachedProbe(inputPath).hasAlpha;
+            int EffectiveBitDepth()
+            {
+                if (options.BitDepth.HasValue) return options.BitDepth.Value;
+                var detectedBd = ProbeInputBitDepth(inputPath);
+                return detectedBd > 8 ? detectedBd : 8;
+            }
+
+            // ── AVIF 位深按编码器 clamp（2026-08-16 实测驱动）──
+            // libaom-av1/av1_nvenc: 8/10/12-bit；libsvtav1/av1_qsv/av1_amf: 仅 8/10-bit。
+            // 防止 16-bit 输入 auto 位深 → yuv420p16le 编码失败（libaom/libsvt 均不支持 16-bit YUV）。
+            var avifMaxBd = int.MaxValue;
+            if (fmt == "avif")
+            {
+                var enc = options.Encoder ?? "";
+                avifMaxBd = (enc.StartsWith("libaom", StringComparison.OrdinalIgnoreCase)
+                          || enc.StartsWith("av1_nvenc", StringComparison.OrdinalIgnoreCase)) ? 12 : 10;
+            }
+            int ClampAvifBd(int bd) => Math.Min(bd, avifMaxBd);
+
+            if (!string.IsNullOrWhiteSpace(options.Chroma)
+                && !options.Chroma.Equals("auto", StringComparison.OrdinalIgnoreCase))
             {
                 args.Add("-pix_fmt");
-                args.Add(MapPixFmt(options));
+                args.Add(MapPixFmt(options.Format, options.Chroma, ClampAvifBd(EffectiveBitDepth()), inputHasAlpha, options.ColorRange));
             }
-            // 位深为 auto：从输入文件自动探测实际位深并传递
-            // 修复 HDR 图片（16-bit+）输出时退化为 8-bit 的问题
             else if (!options.BitDepth.HasValue)
             {
+                // 位深为 auto：从输入文件自动探测实际位深并传递
+                // 修复 HDR 图片（16-bit+）输出时退化为 8-bit 的问题
                 var detectedBd = ProbeInputBitDepth(inputPath);
                 if (detectedBd > 8)
                 {
-                    var autoBdOptions = new FfmpegOptions
-                    {
-                        Format = options.Format,
-                        Chroma = options.Chroma,
-                        BitDepth = detectedBd
-                    };
                     args.Add("-pix_fmt");
-                    args.Add(MapPixFmt(autoBdOptions));
+                    args.Add(MapPixFmt(options.Format, options.Chroma, ClampAvifBd(detectedBd), inputHasAlpha, options.ColorRange));
                 }
             }
-            // 位深已手动指定但色度为 auto：直接按位深设置 pix_fmt
-            // （修复 Chroma=auto 时 BitDepth 设置失效的 Bug）
             else if (options.BitDepth.HasValue)
             {
+                // 位深已手动指定但色度为 auto：直接按位深设置 pix_fmt
+                // （修复 Chroma=auto 时 BitDepth 设置失效的 Bug）
                 args.Add("-pix_fmt");
-                args.Add(MapPixFmt(options));
+                args.Add(MapPixFmt(options.Format, options.Chroma, ClampAvifBd(options.BitDepth.Value), inputHasAlpha, options.ColorRange));
+            }
+
+            // ── 输出色彩范围 ──
+            // 优先级: 用户显式选择 (tv/pc) > 自动 (RGB 输入 → pc)
+            // 修复：PC 范围图片（TIFF/PNG 等恒为全范围 RGB）转 AVIF 等 YUV 格式时，
+            // 输入侧已在 -i 前声明 pc，但输出侧未声明 → swscale 默认按 limited (tv)
+            // 矩阵转换（黑位压缩）且编码器将输出标记为 tv。
+            // 输出侧 -color_range：① 控制 swscale 转换矩阵（full/limited 完整映射）
+            // ② AV1/AVIF 写入对应范围标记（CICP full_range_flag）。
+            var outRange = ResolveOutputColorRange(options.ColorRange, inputColorRange);
+            // JPEG/WebP 规范恒为 full range：mjpeg 编码器拒绝 limited 输入（编码失败），
+            // WebP 容器无范围标记（tv 数据会发灰）。防御性回退 pc（预设注入等旁路）。
+            if ((fmt is "jpg" or "jpeg" or "webp") && outRange == "tv")
+            {
+                outRange = "pc";
+            }
+            if (!string.IsNullOrWhiteSpace(outRange)
+                && !isRgbNativeFmt
+                && fmt != "gif") // 调色板格式无色彩范围概念
+            {
+                args.Add("-color_range");
+                args.Add(outRange);
             }
 
             // ── 元数据映射（根据 ICC 模式决定保留或丢弃元数据）──
@@ -844,22 +885,64 @@ namespace FfmpegGui.Services
             return Math.Round((100 - quality) * 25.0 / 100.0, 1);
         }
 
-        private static string MapPixFmt(FfmpegOptions options)
+        /// <summary>
+        /// 根据输出格式、色度子采样、位深与输入透明通道映射 pix_fmt。
+        /// 色度子采样在全部位深（8/10/12/16）下均生效。
+        /// </summary>
+        private static string MapPixFmt(string format, string? chroma, int bitDepth, bool hasAlpha, string? colorRange)
         {
-            var fmt = options.Format.ToLower();
-            var bd = options.BitDepth ?? 8; // null 理论不会到这里(外层已判断)，但兜底用 8
-            // PNG/TIFF/JXL 均为 RGB 原生格式：JXL 使用 XYB 色彩空间，libjxl 编码器接受 RGB 输入。
+            var fmt = format.ToLower();
+            var bd = bitDepth <= 0 ? 8 : bitDepth; // 非法/未知位深兜底 8
+            // PNG/TIFF/APNG/JXL 均为 RGB 原生格式：JXL 使用 XYB 色彩空间，libjxl 编码器接受 RGB 输入。
             // 若喂入 yuv420p 会先做 YUV→RGB 转换（色度子采样损失）且奇宽奇高时 libjxl 拒绝。
-            if (fmt is "png" or "tiff" or "jxl")
+            if (fmt is "png" or "tiff" or "apng" or "jxl")
             {
-                if (bd <= 8) return "rgb24";
-                return "rgb48le"; // 10/12/16 使用 48le 作为通用输出
+                if (bd <= 8) return hasAlpha ? "rgba" : "rgb24";
+                return hasAlpha ? "rgba64le" : "rgb48le"; // 10/12/16 使用 48le 作为通用输出
             }
 
-            // 默认使用 YUV pix fmt
+            // JPEG（mjpeg）：像素格式与色彩范围联动。
+            // yuvj 系列 = full range（JPEG/JFIF 规范约定，默认；强制 yuv 系列会发灰）。
+            // 用户显式选择 tv → yuv 系列（limited 编码，非标但尊重用户选择）。
+            if ((fmt is "jpg" or "jpeg") && bd <= 8)
+            {
+                var isTv = colorRange?.Equals("tv", StringComparison.OrdinalIgnoreCase) == true;
+                if (isTv)
+                {
+                    return chroma switch
+                    {
+                        "4:4:4" => "yuv444p",
+                        "4:2:2" => "yuv422p",
+                        _ => "yuv420p",
+                    };
+                }
+                return chroma switch
+                {
+                    "4:4:4" => "yuvj444p",
+                    "4:2:2" => "yuvj422p",
+                    _ => "yuvj420p",
+                };
+            }
+
+            // 带透明通道的 YUV 输出：编码器对非 4:2:0 的 alpha 支持有限
+            // （libsvtav1 仅 yuva420p；libaom-av1 无 4:2:2 alpha），
+            // 统一回退到最兼容的 4:2:0 alpha 以保留透明通道。
+            if (hasAlpha && fmt is not ("jpg" or "jpeg"))
+            {
+                return bd switch
+                {
+                    10 => "yuva420p10le",
+                    12 => "yuva420p12le",
+                    16 => "yuva420p16le",
+                    _ => "yuva420p",
+                };
+            }
+
+            // 默认使用 YUV pix fmt — 色度子采样在全部位深下均生效
+            // 修复 Bug：此前 10/12/16-bit 恒返回 yuv420p*le，忽略 4:4:4/4:2:2 选择
             if (bd <= 8)
             {
-                return options.Chroma switch
+                return chroma switch
                 {
                     "4:4:4" => "yuv444p",
                     "4:2:2" => "yuv422p",
@@ -867,10 +950,34 @@ namespace FfmpegGui.Services
                 };
             }
 
-            if (bd == 10) return "yuv420p10le";
-            if (bd == 12) return "yuv420p12le";
-            if (bd == 16) return "yuv420p16le";
-            return "yuv420p10le";
+            var depth = bd switch
+            {
+                12 => "12",
+                16 => "16",
+                _ => "10",
+            };
+            return chroma switch
+            {
+                "4:4:4" => $"yuv444p{depth}le",
+                "4:2:2" => $"yuv422p{depth}le",
+                _ => $"yuv420p{depth}le",
+            };
+        }
+
+        /// <summary>
+        /// 解析输出色彩范围：用户显式 tv/pc 优先；
+        /// auto（默认）跟随输入范围——RGB/yuvj 输入 → pc，yuv limited 输入 → tv，未知 → 不覆盖（ffmpeg 默认）。
+        /// </summary>
+        private static string? ResolveOutputColorRange(string? userRange, string? inputRange)
+        {
+            if (!string.IsNullOrWhiteSpace(userRange)
+                && (userRange.Equals("tv", StringComparison.OrdinalIgnoreCase)
+                 || userRange.Equals("pc", StringComparison.OrdinalIgnoreCase)))
+            {
+                return userRange.ToLowerInvariant();
+            }
+            // auto：跟随输入范围（"pc"/"tv"/null）
+            return inputRange;
         }
 
         /// <summary>
@@ -999,13 +1106,13 @@ namespace FfmpegGui.Services
             return false;
         }
 
-        /// <summary>探测输入文件的色彩范围。RGB 像素格式返回 "pc"（全范围），否则返回 null（不覆盖默认）。复用缓存，不额外起进程。</summary>
+        /// <summary>探测输入文件的色彩范围：RGB/yuvj/grayj → "pc"（全范围），yuv（limited）→ "tv"，未知 → null（不覆盖默认）。复用缓存，不额外起进程。</summary>
         private static string? ProbeInputColorRange(string inputPath)
         {
             // 管道输入（stdin）无法探测，直接返回 null
             if (inputPath == "-") return null;
-            // RGB 系列像素格式是全范围（0-255, 0-65535），由 GetCachedProbe 的 isRgb 标记判断
-            return GetCachedProbe(inputPath).isRgb ? "pc" : null;
+            // 由 GetCachedProbe 的 colorRange 标记判断（pix_fmt 推断，见 ProbeInputColorMetadataCore）
+            return GetCachedProbe(inputPath).colorRange;
         }
 
         public struct ColorMetadata
@@ -1014,6 +1121,8 @@ namespace FfmpegGui.Services
             public string? colorPrimaries;
             public string? colorTrc;
             public string? colorSpace;
+            /// <summary>输入色彩范围（pix_fmt 推断）："pc"=全范围, "tv"=limited, null=未知</summary>
+            public string? colorRange;
             /// <summary>输入是否含透明通道（由 pix_fmt 推断）</summary>
             public bool hasAlpha;
             /// <summary>输入是否为 RGB 系列像素格式（rgb/bgr/gbr/rgba 等，用于 pc range 判断）</summary>
@@ -1249,6 +1358,19 @@ namespace FfmpegGui.Services
                               || pixFmt.StartsWith("rgba", StringComparison.OrdinalIgnoreCase)
                               || pixFmt.StartsWith("bgra", StringComparison.OrdinalIgnoreCase)
                               || pixFmt.StartsWith("argb", StringComparison.OrdinalIgnoreCase);
+                    // ── 色彩范围推断（2026-08-15 扩展）──
+                    // 之前只识别 RGB → pc；现在 TV/PC 自动选项需要完整判断：
+                    //   yuvj/grayj 系列 = full range YUV（如 JPEG 解码输出）→ pc
+                    //   yuv 系列 = limited YUV（视频帧/HEIC/AVIF 等）→ tv
+                    //   RGB 系列 = 恒全范围 → pc
+                    //   gray/pal8/其他 = 不判断（避免误标）→ null
+                    if (meta.isRgb)
+                        meta.colorRange = "pc";
+                    else if (pixFmt.StartsWith("yuvj", StringComparison.OrdinalIgnoreCase)
+                          || pixFmt.StartsWith("grayj", StringComparison.OrdinalIgnoreCase))
+                        meta.colorRange = "pc";
+                    else if (pixFmt.StartsWith("yuv", StringComparison.OrdinalIgnoreCase))
+                        meta.colorRange = "tv";
                 }
                 // parts[1] = color_space (YUV 矩阵)
                 if (parts.Length >= 2 && !string.IsNullOrEmpty(parts[1]) && parts[1] != "unknown" && parts[1] != "N/A")

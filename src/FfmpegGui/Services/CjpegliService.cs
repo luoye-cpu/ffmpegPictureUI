@@ -262,25 +262,26 @@ namespace FfmpegGui.Services
                 sb.Append($" --chroma_subsampling {opts.CjpegliChromaSubsampling}");
 
             // 渐进模式 (0=sequential/baseline, 2=progressive, -1=不传参使用默认)
-            if (opts.CjpegliProgressiveId >= 0)
-                sb.Append($" -p {opts.CjpegliProgressiveId}");
+            var progId = opts.CjpegliProgressiveId;
+            // Huffman 优化关闭 → --fixed_code 仅与 sequential (-p 0) 兼容，自动降级（2026-08-16 实测）
+            if (!opts.CjpegliOptimize && progId != 0)
+                progId = 0;
+            if (progId >= 0)
+                sb.Append($" -p {progId}");
 
-            // Huffman 优化
+            // Huffman 优化（当前 cjpegli: --fixed_code 禁用优化；旧版 --optimize 参数已随 libjxl 移除）
             if (!opts.CjpegliOptimize)
-                sb.Append(" --optimize OFF");
+                sb.Append(" --fixed_code");
 
-            // 自适应量化
+            // 自适应量化（当前 cjpegli: --noadaptive_quantization；旧版 --adaptive_q 参数已移除）
             if (!opts.CjpegliAdaptiveQuant)
-                sb.Append(" --adaptive_q OFF");
+                sb.Append(" --noadaptive_quantization");
 
-            // 编码器后端
-            if (!string.IsNullOrWhiteSpace(opts.CjpegliEncoderBackend) &&
-                !opts.CjpegliEncoderBackend.Equals("libjpeg", StringComparison.OrdinalIgnoreCase))
-                sb.Append($" --jpeg_encoder {opts.CjpegliEncoderBackend}");
-
-            // PSNR 目标（仅 sjpeg 后端有效）
-            if (opts.CjpegliPsnrTarget > 0)
-                sb.Append($" --psnr {opts.CjpegliPsnrTarget:F2}");
+            // ⚠️ 2026-08-16: 当前 cjpegli 版本（libjxl 新）不支持 --jpeg_encoder / --psnr
+            // （实测报 "Unknown argument" 且编码失败），已移除参数生成；UI 侧 sjpeg 后端已禁用。
+            // 如未来 cjpegli 重新支持 sjpeg 后端，可在此恢复：
+            //   sb.Append($" --jpeg_encoder {opts.CjpegliEncoderBackend}");
+            //   sb.Append($" --psnr {opts.CjpegliPsnrTarget:F2}");
 
             // 线程（仅当多线程可用时）
             if (opts.CjpegliMultiThreadAvailable && opts.Threads > 0)

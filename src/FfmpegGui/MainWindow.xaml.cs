@@ -47,6 +47,8 @@ namespace FfmpegGui
         private ComboBox? ColorPrimariesCombo;
         private ComboBox? ColorTrcCombo;
         private ComboBox? ColorMatrixCombo;
+        private ComboBox? ColorRangeCombo;
+        private TextBlock? ColorRangeLabel;
         private TextBlock? ColorConflictLabel;
         private CheckBox? UseAdvancedColor;
         private StackPanel? AdvancedColorPanel;
@@ -223,6 +225,7 @@ namespace FfmpegGui
         private ComboBox? JpegGainMapTypeCombo;
         private CheckBox? JpegGainMapMultiChannelCheck;  // 兼容旧代码引用
         private ComboBox? TiffCompressionCombo;
+        private NumericUpDown? TiffDpiBox;
         // ── cjpegli / jpegli 高级面板控件 ──
         private StackPanel? JpegliCodecPanel;
         private ComboBox? JpegliChromaCombo;
@@ -299,6 +302,8 @@ namespace FfmpegGui
             ColorPrimariesCombo = this.FindControl<ComboBox>("ColorPrimariesCombo");
             ColorTrcCombo = this.FindControl<ComboBox>("ColorTrcCombo");
             ColorMatrixCombo = this.FindControl<ComboBox>("ColorMatrixCombo");
+            ColorRangeCombo = this.FindControl<ComboBox>("ColorRangeCombo");
+            ColorRangeLabel = this.FindControl<TextBlock>("ColorRangeLabel");
             ColorConflictLabel = this.FindControl<TextBlock>("ColorConflictLabel");
             UseAdvancedColor = this.FindControl<CheckBox>("UseAdvancedColor");
             AdvancedColorPanel = this.FindControl<StackPanel>("AdvancedColorPanel");
@@ -439,6 +444,7 @@ namespace FfmpegGui
             JpegGainMapTypeCombo = this.FindControl<ComboBox>("JpegGainMapTypeCombo");
             JpegGainMapMultiChannelCheck = this.FindControl<CheckBox>("JpegGainMapMultiChannelCheck");  // XAML 已改 ComboBox，此引用为 null 兼容
             TiffCompressionCombo = this.FindControl<ComboBox>("TiffCompressionCombo");
+            TiffDpiBox = this.FindControl<NumericUpDown>("TiffDpiBox");
             // ── cjpegli / jpegli 高级面板控件 ──
             JpegliCodecPanel = this.FindControl<StackPanel>("JpegliCodecPanel");
             JpegliChromaCombo = this.FindControl<ComboBox>("JpegliChromaCombo");
@@ -485,6 +491,7 @@ namespace FfmpegGui
             if (ColorPrimariesCombo != null) ColorPrimariesCombo.SelectedIndex = 0;
             if (ColorTrcCombo != null) ColorTrcCombo.SelectedIndex = 0;
             if (ColorMatrixCombo != null) ColorMatrixCombo.SelectedIndex = 0;
+            if (ColorRangeCombo != null) ColorRangeCombo.SelectedIndex = 0; // auto
 
             // ── Photoshop 验证设置加载 (2026-08-15) ──
             RefreshPsPanelState();
@@ -501,6 +508,7 @@ namespace FfmpegGui
                 UpdateThreadAvailabilityForFormat(NormalizeFormat(FormatCombo?.SelectedItem as string));
                 UpdateCodecPanelVisibility(NormalizeFormat(FormatCombo?.SelectedItem as string));
                 UpdateAvifEncoderPanel();
+                UpdateChromaBitDepthOptions();
                 UpdateGpuEncoderWarning();
                 RegenerateCommand();
             };
@@ -522,6 +530,7 @@ namespace FfmpegGui
                 };
             if (ColorTrcCombo != null) ColorTrcCombo.SelectionChanged += (_, _) => RegenerateCommand();
             if (ColorMatrixCombo != null) ColorMatrixCombo.SelectionChanged += (_, _) => RegenerateCommand();
+            if (ColorRangeCombo != null) ColorRangeCombo.SelectionChanged += (_, _) => RegenerateCommand();
             // 高级编码器选项
             if (PngPredCombo != null) PngPredCombo.SelectionChanged += (_, _) => RegenerateCommand();
             if (PngDpiBox != null) PngDpiBox.ValueChanged += (_, _) => RegenerateCommand();
@@ -651,6 +660,8 @@ namespace FfmpegGui
             if (JpegGainMapMultiChannelCheck != null)  // XAML 已改 ComboBox，此引用为 null 兼容
                 JpegGainMapMultiChannelCheck.IsCheckedChanged += (_, _) => RegenerateCommand();
             if (TiffCompressionCombo != null) TiffCompressionCombo.SelectionChanged += (_, _) => RegenerateCommand();
+            if (TiffDpiBox != null) TiffDpiBox.ValueChanged += (_, _) => RegenerateCommand();
+            if (TiffDpiBox != null) TiffDpiBox.ValueChanged += (_, _) => RegenerateCommand();
             // cjpegli / jpegli 高级选项事件
             if (JpegliChromaCombo != null) JpegliChromaCombo.SelectionChanged += (_, _) => RegenerateCommand();
             if (JpegliProgressiveCombo != null) JpegliProgressiveCombo.SelectionChanged += (_, _) => RegenerateCommand();
@@ -702,7 +713,12 @@ namespace FfmpegGui
 
             // 无损编码 / JXL 强制元数据 → 每次变化刷新命令与选项
             if (LosslessCheck != null)
-                LosslessCheck.IsCheckedChanged += (_, _) => RegenerateCommand();
+                LosslessCheck.IsCheckedChanged += (_, _) =>
+                {
+                    RegenerateCommand();
+                    // 无损开关影响 WebP 无损压缩级别面板可见性
+                    UpdateCodecPanelVisibility(NormalizeFormat(FormatCombo?.SelectedItem as string));
+                };
             if (MetadataModeCombo != null)
                 MetadataModeCombo.SelectionChanged += (_, _) => { UpdateExifToolPanelState(); RegenerateCommand(); };
             // ExifTool 复选框变更时刷新命令预览
@@ -1395,6 +1411,7 @@ namespace FfmpegGui
                 ColorPrimaries = useAdv ? (ColorPrimariesCombo?.SelectedItem as string) : null,
                 ColorTrc = useAdv ? (ColorTrcCombo?.SelectedItem as string) : null,
                 ColorMatrix = useAdv ? (ColorMatrixCombo?.SelectedItem as string) : null,
+                ColorRange = useAdv ? GetColorRangeValue() : null,
                 Encoder = encName, EncoderBackend = backend, Threads = threads,
                 MetadataMode = GetMetadataMode(),
                 Lossless = LosslessCheck?.IsChecked ?? false,
@@ -1420,7 +1437,13 @@ namespace FfmpegGui
                 AvifNvencAqStrength = useAdvCodec ? (int?)AvifNvencAqBox?.Value : 8,
                 AvifNvencSpatialAq = useAdvCodec ? AvifNvencSpatialAqCheck?.IsChecked : true,
                 AvifLowPower = useAdvCodec ? (AvifQsvLowPowerCheck?.IsChecked ?? AvifVaapiLowPowerCheck?.IsChecked) : false,
-                JxlEffort = useAdvCodec ? (int?)JxlEffortBox?.Value : 7,
+                // JXL effort: cjxl 后端用 cjxl 面板的 effort，ffmpeg 后端用 ffmpeg 面板的 effort
+                // （2026-08-16 修复: 此前 CjxlEffortBox 仅预览 cjxl 分支生效）
+                JxlEffort = useAdvCodec
+                    ? (backend == EncoderBackend.Cjxl
+                        ? (int?)CjxlEffortBox?.Value ?? 7
+                        : (int?)JxlEffortBox?.Value ?? 7)
+                    : 7,
                 JxlModular = useAdvCodec ? JxlModularCheck?.IsChecked : null,
                 JxlLosslessJpeg = jxlLosslessJpeg,
                 CjxlProgressive = useAdvCodec ? (CjxlProgressiveCheck?.IsChecked ?? false) : false,
@@ -1944,6 +1967,16 @@ namespace FfmpegGui
                     // 更新 CICP 格式兼容性提示
                     UpdateCicpHint();
                 }
+
+                // TV/PC 范围: 仅 YUV 输出格式支持（AVIF）；不支持的格式整组隐藏（2026-08-16）
+                var colorRangeSupported = _currentCapabilities.SupportsColorRange;
+                if (ColorRangeCombo != null) ColorRangeCombo.IsVisible = colorRangeSupported;
+                if (ColorRangeLabel != null) ColorRangeLabel.IsVisible = colorRangeSupported;
+                if (!colorRangeSupported && ColorRangeCombo != null && ColorRangeCombo.SelectedIndex != 0)
+                {
+                    // 切换到不支持范围的格式时回到 auto，避免残留无效选择
+                    ColorRangeCombo.SelectedIndex = 0;
+                }
             }
             else
             {
@@ -1962,7 +1995,60 @@ namespace FfmpegGui
             {
                 _suppressCommandRegen = false;
             }
+            UpdateChromaBitDepthOptions();
             RegenerateCommand();
+        }
+
+        /// <summary>
+        /// 按当前编码器调整色度/位深下拉的可用选项（2026-08-16 实测驱动）：
+        /// - libsvtav1 / av1_qsv / av1_amf 仅支持 4:2:0、8/10-bit（ffmpeg 实测 pix_fmts）
+        /// - libwebp 仅支持 4:2:0（yuv420p/yuva420p/bgra）
+        /// - libaom-av1 / av1_nvenc 支持 4:4:4/4:2:2/4:2:0、8/10/12-bit
+        /// 保留用户当前选择；不可用的选择自动回退 auto。
+        /// </summary>
+        private void UpdateChromaBitDepthOptions()
+        {
+            var fmt = NormalizeFormat(FormatCombo?.SelectedItem as string);
+            var enc = EncoderCombo?.SelectedItem as string ?? "";
+            var isSvt = enc.StartsWith("libsvt", StringComparison.OrdinalIgnoreCase);
+            var isQsv = enc.StartsWith("av1_qsv", StringComparison.OrdinalIgnoreCase);
+            var isAmf = enc.StartsWith("av1_amf", StringComparison.OrdinalIgnoreCase);
+            var isLibaom = enc.StartsWith("libaom", StringComparison.OrdinalIgnoreCase);
+            var isNvenc = enc.StartsWith("av1_nvenc", StringComparison.OrdinalIgnoreCase);
+
+            // ── 色度子采样 ──
+            if (ChromaCombo != null)
+            {
+                var only420 = fmt == "webp" || (fmt == "avif" && (isSvt || isQsv || isAmf));
+                var cur = ChromaCombo.SelectedItem as string;
+                ChromaCombo.Items.Clear();
+                ChromaCombo.Items.Add("auto");
+                if (!only420)
+                {
+                    ChromaCombo.Items.Add("4:4:4");
+                    ChromaCombo.Items.Add("4:2:2");
+                }
+                ChromaCombo.Items.Add("4:2:0");
+                if (cur != null && ChromaCombo.Items.Contains(cur))
+                    ChromaCombo.SelectedIndex = ChromaCombo.Items.IndexOf(cur);
+                else
+                    ChromaCombo.SelectedIndex = 0; // auto
+            }
+
+            // ── 位深（仅 AVIF 需要按编码器过滤；其他格式由 UpdateOptionAvailability 的 SupportedBitDepths 控制）──
+            if (BitDepthCombo != null && fmt == "avif")
+            {
+                var cur = BitDepthCombo.SelectedItem as string;
+                var maxBd = (isLibaom || isNvenc) ? 12 : 10;
+                BitDepthCombo.Items.Clear();
+                BitDepthCombo.Items.Add("auto");
+                for (int bd = 8; bd <= maxBd; bd += 2)
+                    BitDepthCombo.Items.Add(bd.ToString());
+                if (cur != null && BitDepthCombo.Items.Contains(cur))
+                    BitDepthCombo.SelectedIndex = BitDepthCombo.Items.IndexOf(cur);
+                else
+                    BitDepthCombo.SelectedIndex = 0; // auto
+            }
         }
 
         /// <summary>
@@ -2051,6 +2137,9 @@ namespace FfmpegGui
                     // 动图 WebP (libwebp_anim) 不支持无损压缩级别，隐藏相关控件
                     if (isAnimMode && WebpLosslessPanel != null)
                         WebpLosslessPanel.IsVisible = false;
+                    // 有损 WebP 不显示无损压缩级别（2026-08-16 修复: 此前有损模式仍显示该控件误导用户）
+                    else if (WebpLosslessPanel != null)
+                        WebpLosslessPanel.IsVisible = LosslessCheck?.IsChecked != false;
                     break;
 
                 case "avif":
@@ -2312,7 +2401,7 @@ namespace FfmpegGui
             }
         }
 
-        private void AddToQueue_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        private async void AddToQueue_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
         {
             // 如果有文件夹扫描结果，批量导入
             if (_selectedFiles.Count > 0)
@@ -2320,7 +2409,7 @@ namespace FfmpegGui
                 foreach (var file in _selectedFiles)
                 {
                     _selectedFileBaseDirs.TryGetValue(file, out var baseDir);
-                    AddSingleToQueue(file, baseDir);
+                    await AddSingleToQueue(file, baseDir);
                 }
                 if (LogText != null) LogText.Text += $"已批量添加 {_selectedFiles.Count} 个文件到队列\n";
                 _selectedFiles.Clear();
@@ -2334,7 +2423,7 @@ namespace FfmpegGui
                 foreach (var file in _mediaFiles)
                 {
                     _selectedFileBaseDirs.TryGetValue(file, out var baseDir);
-                    AddSingleToQueue(file, baseDir);
+                    await AddSingleToQueue(file, baseDir);
                 }
                 if (LogText != null) LogText.Text += $"已从列表批量添加 {_mediaFiles.Count} 个文件到队列\n";
                 return;
@@ -2346,13 +2435,14 @@ namespace FfmpegGui
                 return;
             }
 
-            AddSingleToQueue(_inputPath);
+            await AddSingleToQueue(_inputPath);
         }
 
         /// <summary>
         /// 添加单个文件到队列。返回 true 表示成功添加。
+        /// （2026-08-16 异步化：JXL 无损重封装需 await ffmpeg 能力检测，与预览一致）
         /// </summary>
-        private bool AddSingleToQueue(string inputPath, string? inputBaseDir = null)
+        private async Task<bool> AddSingleToQueue(string inputPath, string? inputBaseDir = null)
         {
             // RAW 模式校验: 仅 RAW/DNG 文件可作为输入（DNG 编码需传感器数据）
             // 提前提示而非等队列执行失败 (2026-08-14 UI 审查修复)
@@ -2366,7 +2456,7 @@ namespace FfmpegGui
 
             // 注：队列本身无容量上限，"并行编码任务数"仅控制同时运行的任务数
             var fmt = NormalizeFormat(FormatCombo?.SelectedItem as string);
-            var chroma = ChromaCombo?.SelectedItem as string ?? "4:2:0";
+            var chroma = ChromaCombo?.SelectedItem as string ?? "auto";
             var bitdepthStr = BitDepthCombo?.SelectedItem as string ?? "auto";
             int? bitdepth = null;
             if (!bitdepthStr.Equals("auto", StringComparison.OrdinalIgnoreCase)
@@ -2396,6 +2486,7 @@ namespace FfmpegGui
             // Threads 存基准值仅供命令预览, 实际执行由 QueueProcessor 覆盖。
             var adaptiveAuto = autoThreads && !singleThread;
 
+            var useAdv = UseAdvancedColor?.IsChecked ?? false;
             var useAdvCodec = UseAdvancedCodec?.IsChecked ?? false;
             var options = new FfmpegOptions
             {
@@ -2404,6 +2495,12 @@ namespace FfmpegGui
                 Chroma = chroma,
                 BitDepth = bitdepth,
                 ColorSpace = ColorSpaceCombo?.SelectedItem as string,
+                // 高级色彩参数（2026-08-15 修复: 此前入队路径遗漏导致仅预览生效）
+                UseAdvancedColorParameters = useAdv,
+                ColorPrimaries = useAdv ? (ColorPrimariesCombo?.SelectedItem as string) : null,
+                ColorTrc = useAdv ? (ColorTrcCombo?.SelectedItem as string) : null,
+                ColorMatrix = useAdv ? (ColorMatrixCombo?.SelectedItem as string) : null,
+                ColorRange = useAdv ? GetColorRangeValue() : null,
                 Encoder = encoderName, EncoderBackend = encoderBackend,
                 Threads = threads,
                 AutoThreads = adaptiveAuto,
@@ -2431,12 +2528,26 @@ namespace FfmpegGui
                 AvifNvencAqStrength = useAdvCodec ? (int?)AvifNvencAqBox?.Value : 8,
                 AvifNvencSpatialAq = useAdvCodec ? AvifNvencSpatialAqCheck?.IsChecked : true,
                 AvifLowPower = useAdvCodec ? (AvifQsvLowPowerCheck?.IsChecked ?? AvifVaapiLowPowerCheck?.IsChecked) : false,
-                JxlEffort = useAdvCodec ? (int?)JxlEffortBox?.Value : 7,
+                // JXL effort: cjxl 后端用 cjxl 面板的 effort，ffmpeg 后端用 ffmpeg 面板的 effort
+                // （2026-08-16 修复: 此前 CjxlEffortBox 仅预览生效，入队恒用 JxlEffortBox 默认值）
+                JxlEffort = useAdvCodec
+                    ? (encoderBackend == EncoderBackend.Cjxl
+                        ? (int?)CjxlEffortBox?.Value ?? 7
+                        : (int?)JxlEffortBox?.Value ?? 7)
+                    : 7,
                 JxlModular = useAdvCodec ? JxlModularCheck?.IsChecked : null,
                 JxlLosslessJpeg = fmt is "jxl" && IsJpegInput(inputPath)
                     && (JxlLosslessJpegCheck?.IsChecked ?? true)
-                    && !(useAdvCodec && (JxlPreserveUltrahdrCheck?.IsChecked ?? true)),
+                    && !(useAdvCodec && (JxlPreserveUltrahdrCheck?.IsChecked ?? true))
+                    // cjxl 工具自身支持 --lossless_jpeg 无需能力检测；ffmpeg libjxl 需检测（2026-08-16 与预览一致）
+                    && (encoderBackend == EncoderBackend.Cjxl
+                        || await EncoderDetectionService.SupportsJxlLosslessJpegAsync()),
                 JxlPreserveUltrahdr = useAdvCodec ? (JxlPreserveUltrahdrCheck?.IsChecked ?? true) : true,
+                // ── cjxl 高级选项（2026-08-16 修复: 此前入队路径缺失导致仅预览生效）──
+                CjxlProgressive = useAdvCodec ? (CjxlProgressiveCheck?.IsChecked ?? false) : false,
+                CjxlPhotonNoiseIso = useAdvCodec && (CjxlAutoPhotonNoiseCheck?.IsChecked ?? false)
+                    ? 0 : (useAdvCodec ? (int)(CjxlPhotonNoiseBox?.Value ?? 0) : 0),
+                CjxlAutoPhotonNoise = useAdvCodec && (CjxlAutoPhotonNoiseCheck?.IsChecked ?? false),
                 JpegHuffman = useAdvCodec ? (JpegHuffmanCombo?.SelectedItem as string) : "optimal",
                 JpegDct = useAdvCodec ? (JpegDctCombo?.SelectedItem as string is "auto" ? null : JpegDctCombo?.SelectedItem as string) : null,
                 JpegProgressiveId = useAdvCodec ? ParseJpegProgressiveId() : 0,
@@ -2447,6 +2558,15 @@ namespace FfmpegGui
                 JpegGainMapDownsample = ParseGainMapDownsample(),
                 JpegGainMapMultiChannel = ParseGainMapMultiChannel(),
                 TiffCompressionAlgo = useAdvCodec ? (TiffCompressionCombo?.SelectedItem as string) : "lzw",
+                TiffDpi = useAdvCodec && TiffDpiBox?.Value > 0 ? (int?)TiffDpiBox.Value : null,
+                // ── cjpegli 高级选项（2026-08-16 修复: 此前入队路径完全缺失导致全部失效）──
+                CjpegliChromaSubsampling = useAdvCodec ? (JpegliChromaCombo?.SelectedItem as string ?? "auto") : "auto",
+                CjpegliProgressiveId = useAdvCodec ? JpegliProgressiveCombo?.SelectedIndex switch { 0 => -1, 1 => 0, 2 => 2, _ => -1 } : -1,
+                CjpegliOptimize = useAdvCodec ? (JpegliOptimizeCheck?.IsChecked ?? true) : true,
+                CjpegliAdaptiveQuant = useAdvCodec ? (JpegliAdaptiveQuantCheck?.IsChecked ?? true) : true,
+                CjpegliEncoderBackend = useAdvCodec ? (JpegliEncoderBackendCombo?.SelectedIndex == 1 ? "sjpeg" : "libjpeg") : "libjpeg",
+                CjpegliPsnrTarget = useAdvCodec ? (float)(JpegliPsnrBox?.Value ?? 0) : 0,
+                CjpegliMultiThreadAvailable = false,
                 StripExifGps = StripExifGpsCheck?.IsChecked ?? true,
                 StripExifTime = StripExifTimeCheck?.IsChecked ?? false,
                 StripExifCamera = StripExifCameraCheck?.IsChecked ?? false,
@@ -3430,7 +3550,7 @@ namespace FfmpegGui
             }
 
             var fmt = NormalizeFormat(FormatCombo?.SelectedItem as string);
-            var chroma = ChromaCombo?.SelectedItem as string ?? "4:2:0";
+            var chroma = ChromaCombo?.SelectedItem as string ?? "auto";
             var bitdepthStr = BitDepthCombo?.SelectedItem as string ?? "auto";
             int? bitdepth = null;
             if (!bitdepthStr.Equals("auto", StringComparison.OrdinalIgnoreCase)
@@ -3467,6 +3587,7 @@ namespace FfmpegGui
                 ColorPrimaries = useAdv ? (ColorPrimariesCombo?.SelectedItem as string) : null,
                 ColorTrc = useAdv ? (ColorTrcCombo?.SelectedItem as string) : null,
                 ColorMatrix = useAdv ? (ColorMatrixCombo?.SelectedItem as string) : null,
+                ColorRange = useAdv ? GetColorRangeValue() : null,
                 Encoder = encoderName, EncoderBackend = encoderBackend,
                 Threads = threads,
                 MetadataMode = GetMetadataMode(),
@@ -3492,7 +3613,11 @@ namespace FfmpegGui
                 AvifNvencAqStrength = useAdvCodec ? (int?)AvifNvencAqBox?.Value : 8,
                 AvifNvencSpatialAq = useAdvCodec ? AvifNvencSpatialAqCheck?.IsChecked : true,
                 AvifLowPower = useAdvCodec ? (AvifQsvLowPowerCheck?.IsChecked ?? AvifVaapiLowPowerCheck?.IsChecked) : false,
-                JxlEffort = useAdvCodec ? (int?)JxlEffortBox?.Value : 7,
+                JxlEffort = useAdvCodec
+                    ? (encoderBackend == EncoderBackend.Cjxl
+                        ? (int?)CjxlEffortBox?.Value ?? 7
+                        : (int?)JxlEffortBox?.Value ?? 7)
+                    : 7,
                 JxlModular = useAdvCodec ? JxlModularCheck?.IsChecked : null,
                 JxlLosslessJpeg = fmt is "jxl" && IsJpegInput(_inputPath)
                     && (JxlLosslessJpegCheck?.IsChecked ?? true)
@@ -4111,6 +4236,11 @@ namespace FfmpegGui
                 Quality = data.Quality,
                 Chroma = data.Chroma ?? "auto",
                 ColorSpace = data.ColorSpace ?? "auto",
+                UseAdvancedColorParameters = data.UseAdvancedColor,
+                ColorPrimaries = data.ColorPrimaries,
+                ColorTrc = data.ColorTrc,
+                ColorMatrix = data.ColorMatrix,
+                ColorRange = data.ColorRange,
                 BitDepth = data.BitDepth is "auto" or null ? null : int.TryParse(data.BitDepth, out var bd) ? bd : null,
                 EncoderBackend = data.EncoderBackend switch
                 {
@@ -4177,10 +4307,17 @@ namespace FfmpegGui
                 GifDither = data.GifDither,
                 AnimationScaleW = data.AnimationScaleW,
                 AnimationDuration = data.AnimationDuration,
-                CjpegliChromaSubsampling = data.CjpegliChromaSubsampling ?? "444",
+                CjpegliChromaSubsampling = data.CjpegliChromaSubsampling ?? "auto",
                 CjpegliProgressiveId = data.CjpegliProgressiveId,
                 CjpegliOptimize = data.CjpegliOptimize ?? true,
-                CjpegliAdaptiveQuant = data.CjpegliAdaptiveQuant ?? true
+                CjpegliAdaptiveQuant = data.CjpegliAdaptiveQuant ?? true,
+                // ── 2026-08-16 补齐: 此前简洁模式预设丢失以下字段 ──
+                CjpegliEncoderBackend = data.CjpegliEncoderBackend ?? "libjpeg",
+                CjpegliPsnrTarget = data.CjpegliPsnrTarget,
+                CjxlProgressive = data.CjxlProgressive,
+                CjxlPhotonNoiseIso = data.CjxlPhotonNoiseIso,
+                CjxlAutoPhotonNoise = data.CjxlAutoPhotonNoise,
+                TiffDpi = data.TiffDpi
             };
 
             return new QueueItem
@@ -4987,6 +5124,7 @@ namespace FfmpegGui
                 ColorPrimaries = ColorPrimariesCombo?.SelectedItem as string,
                 ColorTrc = ColorTrcCombo?.SelectedItem as string,
                 ColorMatrix = ColorMatrixCombo?.SelectedItem as string,
+                ColorRange = MapColorRangeValue(ColorRangeCombo?.SelectedItem as string),
                 BitDepth = BitDepthCombo?.SelectedItem as string,
                 AutoThreads = AutoThreadsCheck?.IsChecked ?? true,
                 SingleThread = SingleThreadCheck?.IsChecked ?? false,
@@ -5042,6 +5180,12 @@ namespace FfmpegGui
                 CjpegliProgressiveId = JpegliProgressiveCombo?.SelectedIndex switch { 1 => 0, 2 => 2, _ => -1 },
                 CjpegliOptimize = JpegliOptimizeCheck?.IsChecked,
                 CjpegliAdaptiveQuant = JpegliAdaptiveQuantCheck?.IsChecked,
+                CjpegliEncoderBackend = JpegliEncoderBackendCombo?.SelectedIndex == 1 ? "sjpeg" : "libjpeg",
+                CjpegliPsnrTarget = (float)(JpegliPsnrBox?.Value ?? 0),
+                // ── cjxl 高级 ──
+                CjxlProgressive = CjxlProgressiveCheck?.IsChecked ?? false,
+                CjxlPhotonNoiseIso = (int)(CjxlPhotonNoiseBox?.Value ?? 0),
+                CjxlAutoPhotonNoise = CjxlAutoPhotonNoiseCheck?.IsChecked ?? false,
                 StripExifGps = StripExifGpsCheck?.IsChecked ?? true,
                 StripExifTime = StripExifTimeCheck?.IsChecked ?? false,
                 StripExifCamera = StripExifCameraCheck?.IsChecked ?? false,
@@ -5076,6 +5220,7 @@ namespace FfmpegGui
             SetComboByValue(ColorPrimariesCombo, p.ColorPrimaries);
             SetComboByValue(ColorTrcCombo, p.ColorTrc);
             SetComboByValue(ColorMatrixCombo, p.ColorMatrix);
+            SetColorRangeCombo(p.ColorRange);
             if (AutoThreadsCheck != null) AutoThreadsCheck.IsChecked = p.AutoThreads;
             if (SingleThreadCheck != null) SingleThreadCheck.IsChecked = p.SingleThread;
             if (ThreadsBox != null) ThreadsBox.Value = p.ManualThreads;
@@ -5128,6 +5273,7 @@ namespace FfmpegGui
                     1 => 0, 2 => 1, 4 => 2, 8 => 3, 16 => 4, _ => 1
                 };
             SetComboByValue(TiffCompressionCombo, p.TiffCompressionAlgo);
+            if (TiffDpiBox != null && p.TiffDpi.HasValue) TiffDpiBox.Value = p.TiffDpi.Value;
             // ── DNG 输出选项恢复 ──
             if (DngCompressionCombo != null)
                 DngCompressionCombo.SelectedIndex = p.DngCompression == 1 ? 1 : 0;
@@ -5203,6 +5349,13 @@ namespace FfmpegGui
                 JpegliOptimizeCheck.IsChecked = p.CjpegliOptimize.Value;
             if (JpegliAdaptiveQuantCheck != null && p.CjpegliAdaptiveQuant.HasValue)
                 JpegliAdaptiveQuantCheck.IsChecked = p.CjpegliAdaptiveQuant.Value;
+            // ── 2026-08-16 补齐: cjpegli 编码后端 / PSNR 目标 / cjxl 高级选项 / TIFF DPI ──
+            if (JpegliEncoderBackendCombo != null)
+                JpegliEncoderBackendCombo.SelectedIndex = p.CjpegliEncoderBackend == "sjpeg" ? 1 : 0;
+            if (JpegliPsnrBox != null) JpegliPsnrBox.Value = (decimal)p.CjpegliPsnrTarget;
+            if (CjxlProgressiveCheck != null) CjxlProgressiveCheck.IsChecked = p.CjxlProgressive;
+            if (CjxlAutoPhotonNoiseCheck != null) CjxlAutoPhotonNoiseCheck.IsChecked = p.CjxlAutoPhotonNoise;
+            if (CjxlPhotonNoiseBox != null) CjxlPhotonNoiseBox.Value = Math.Clamp(p.CjxlPhotonNoiseIso, 0, 3200);
             if (ConcurrencyBox != null) ConcurrencyBox.Text = Math.Clamp(p.MaxQueueSize, 1, 128).ToString();
             UpdateConcurrencyLabel();
             UpdateOptionAvailability();
@@ -5221,6 +5374,35 @@ namespace FfmpegGui
                     return;
                 }
             }
+        }
+
+        // ── 色彩范围 (TV/PC) 显示文字 ↔ 规范值映射 ──
+        // ComboBox 显示带说明（如 "auto（跟随输入）"），内部传递规范值 "auto"/"tv"/"pc"
+        private static string MapColorRangeValue(string? display)
+        {
+            if (string.IsNullOrWhiteSpace(display)) return "auto";
+            var t = display.Trim();
+            if (t.StartsWith("tv", StringComparison.OrdinalIgnoreCase)) return "tv";
+            if (t.StartsWith("pc", StringComparison.OrdinalIgnoreCase)) return "pc";
+            return "auto";
+        }
+
+        private string GetColorRangeValue()
+            => MapColorRangeValue(ColorRangeCombo?.SelectedItem as string);
+
+        private void SetColorRangeCombo(string? value)
+        {
+            if (ColorRangeCombo == null) return;
+            var v = MapColorRangeValue(value);
+            for (int i = 0; i < ColorRangeCombo.Items!.Count; i++)
+            {
+                if (MapColorRangeValue(ColorRangeCombo.Items[i] as string) == v)
+                {
+                    ColorRangeCombo.SelectedIndex = i;
+                    return;
+                }
+            }
+            if (ColorRangeCombo.Items.Count > 0) ColorRangeCombo.SelectedIndex = 0;
         }
 
         /// <summary>通过值数组匹配设置 ComboBox 索引（用于显示文本≠原始值的情况，如 PNG 预测模式）</summary>

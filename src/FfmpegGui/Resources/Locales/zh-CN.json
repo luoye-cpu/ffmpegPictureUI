@@ -1,5 +1,5 @@
 {
-  "app.title": "FFmpeg 图片转换器 1.5.0",
+  "app.title": "FFmpeg 图片转换器 1.5.4",
   "format.jpeg": "JPEG",
   "format.png": "PNG",
   "format.webp": "WebP",
@@ -70,6 +70,7 @@
   "color.primaries": "色彩基准（primaries）",
   "color.transfer": "色彩传输函数（trc）",
   "color.matrix": "色彩矩阵（colorspace）",
+  "color.range": "色彩范围 (TV/PC)",
   "cicp.always.on": "☑ CICP 色彩标记：始终启用（H.273 标准）",
   "icc.color.management": "🎨 ICC 色彩管理",
   "icc.mode.none": "① 默认 — 无 ICC（仅 CICP 标记）",
