@@ -1,6 +1,6 @@
 # 📦 FFmpegPictureUI 打包规范
 
-> 版本: 1.1 | 最后更新: 2026-08-16 | 适用于 v1.5.4+ / For v1.5.4+
+> 版本: 1.1 | 最后更新: 2026-08-30 | 适用于 v1.5.5+ / For v1.5.5+
 
 ---
 
@@ -273,9 +273,9 @@ Invoke-7zMax 'a -t7z -mx9 -md=3840m -mfb=273 -ms=on -mmt=1 "out.7z" *'
 
 `src/FfmpegGui/FfmpegGui.csproj`:
 ```xml
-<Version>1.5.2</Version>
-<AssemblyVersion>1.5.2.0</AssemblyVersion>
-<FileVersion>1.5.2.0</FileVersion>
+<Version>1.5.5</Version>
+<AssemblyVersion>1.5.5.0</AssemblyVersion>
+<FileVersion>1.5.5.0</FileVersion>
 ```
 
 ### 5.2 更新流程
@@ -283,7 +283,7 @@ Invoke-7zMax 'a -t7z -mx9 -md=3840m -mfb=273 -ms=on -mmt=1 "out.7z" *'
 1. 修改 `.csproj` 中的 `<Version>` 标签
 2. 更新 `README.md` 中的版本号
 3. 执行打包流程
-4. 在 GitHub Releases 中创建对应 tag: `v1.5.2`
+4. 在 GitHub Releases 中创建对应 tag: `v1.5.5`
 
 ---
 
