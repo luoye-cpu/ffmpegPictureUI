@@ -15,9 +15,9 @@
     <!-- Windows 条件编译符号 (Registry 等 Windows 专属 API) -->
     <DefineConstants Condition="$([MSBuild]::IsOSPlatform('Windows'))">$(DefineConstants);WINDOWS</DefineConstants>
     <!-- 版本号 -->
-    <Version>1.5.4</Version>
-    <AssemblyVersion>1.5.4.0</AssemblyVersion>
-    <FileVersion>1.5.4.0</FileVersion>
+    <Version>1.5.5</Version>
+    <AssemblyVersion>1.5.5.0</AssemblyVersion>
+    <FileVersion>1.5.5.0</FileVersion>
     <PackageLicenseExpression>GPL-3.0-only</PackageLicenseExpression>
     <!-- v2.0 过渡期：所有 CS0618 均为故意的旧字段回退逻辑 -->
     <!-- MSB3884: .NET SDK 默认引用 ManagedMinimumRules.ruleset 但文件不存在，安全忽略 -->

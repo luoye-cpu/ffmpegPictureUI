@@ -1,6 +1,6 @@
 # 🖼️ FFmpegPictureUI — FFmpeg 图片转换器
 
-**v1.5.4** — 2026-08-16 Release | Cross-platform batch image/animation/video converter built on Avalonia UI.
+**v1.5.5** — 2026-08-30 Release | Cross-platform batch image/animation/video converter built on Avalonia UI.
 基于 Avalonia UI 的跨平台批量图片/动图/视频转换工具，封装 `ffmpeg`/`ffprobe` + 外部编码器 (`cjxl`/`djxl`/`cjpegli`/`JxrEncApp`/`JxrDecApp`).
 
 QQ 交流群：754439779 | [点击加群](https://qm.qq.com/q/M2181PvCkW)
@@ -123,6 +123,16 @@ ffmpegPictureUI/
 ---
 
 ## 📝 Changelog / 更新日志
+
+### v1.5.5 (2026-08-30) — 原生 JXL 转 PNG 管道传输修复
+
+**🐛 管道传输修复（实测驱动）**
+- **JXL→PNG/WebP/AVIF/TIFF/GIF 管道 PAM 识别失败** — `djxl` 解码含 alpha 通道的 JXL 时输出 PAM 流，但 ffmpeg 使用 `-f image2pipe` 无法识别 PAM（`Stream #0:0: Video: none, none` / `Could not find codec parameters`）。按流类型改用专用 demuxer：PAM→`pam_pipe`、PPM→`ppm_pipe`，两者均实测 exit=0 正常产出
+- **覆盖全部走 `PipeDjxlToFfmpegAsync` 的转换路径** — 无 alpha（PPM）不受影响，含 alpha 的 JXL 全链路修复
+
+**✅ 验证**
+- 项目编译通过（0 错误）
+- 端到端实测：含 alpha 的 JXL `djxl --output_format=pam` → `ffmpeg -f pam_pipe -i -` → PNG，exit=0，图像正确产出
 
 ### v1.5.4 (2026-08-16) — 色彩管线全面修复 + UI 选项生效性审查 + 布局重构
 

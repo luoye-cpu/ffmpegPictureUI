@@ -2507,7 +2507,16 @@ namespace FfmpegGui.Services
             // PPM/PAM raw 流为全范围 RGB，强制 pc range（避免 YUV 编码时 limited range 过曝）
             colorPrefix += "-color_range pc ";
 
-            var ffmpegArgs = BuildFfmpegPipeArguments(item.Options, outputPath, colorPrefix);
+            // 关键修复：按流类型选择专用管道 demuxer。
+            // -f image2pipe 无法识别 PAM（带 alpha）流，报 "Could not find codec parameters (Video: none, none)"。
+            var pipeDemuxer = pipeFmt switch
+            {
+                "pam" => "pam_pipe",
+                "ppm" => "ppm_pipe",
+                _     => "image2pipe"
+            };
+
+            var ffmpegArgs = BuildFfmpegPipeArguments(item.Options, outputPath, colorPrefix, pipeDemuxer);
             item.Command = $"djxl \"{item.InputPath}\" --output_format={pipeFmt} - | ffmpeg {ffmpegArgs}";
 
             Process? procDj = null;
@@ -2779,15 +2788,21 @@ namespace FfmpegGui.Services
         /// <summary>构建 ffmpeg 从 stdin 读取 PPM/PAM 流的命令行参数</summary>
         /// <param name="colorPrefix">输入色彩覆盖参数（如 -color_primaries bt2020 -color_trc smpte2084），
         /// 必须放在 -i 之前才生效；PPM/PAM raw 流不携带任何色彩标签，必须显式声明</param>
-        private static string BuildFfmpegPipeArguments(Models.FfmpegOptions options, string outputPath, string? colorPrefix = null)
+        /// <param name="pipeDemuxer">管道 demuxer。默认 image2pipe 仅识别 png/jpeg/tiff 等 image2 编码家族，
+        /// 无法识别 PAM 流（Stream #0:0 Video: none, none 报错）。PAM 必须用 pam_pipe，PPM 用 ppm_pipe。</param>
+        private static string BuildFfmpegPipeArguments(Models.FfmpegOptions options, string outputPath, string? colorPrefix = null, string? pipeDemuxer = null)
         {
-            // 以 stdin (-) 为输入，用 image2pipe 格式指定 PPM/PAM 流
+            // 以 stdin (-) 为输入，用专用 pipe demuxer 指定 PPM/PAM 流。
+            // 关键修复：-f image2pipe 无法识别 PAM（带 alpha），导致
+            //   [in#0/image2pipe] Could not find codec parameters (Video: none, none)
+            // 必须按 stream 类型选择 pam_pipe / ppm_pipe / image2pipe。
+            var demuxer = pipeDemuxer ?? "image2pipe";
             var args = FfmpegCommandBuilder.BuildArguments(options, "-", outputPath);
-            // 插入 -f image2pipe（及色彩覆盖）到 -i - 之前
+            // 插入 -f <demuxer>（及色彩覆盖）到 -i - 之前
             var idx = args.IndexOf("-i \"-\"", StringComparison.Ordinal);
             if (idx >= 0)
             {
-                args = args.Substring(0, idx) + $"{colorPrefix}-f image2pipe " + args.Substring(idx);
+                args = args.Substring(0, idx) + $"{colorPrefix}-f {demuxer} " + args.Substring(idx);
             }
             else
             {
@@ -2795,7 +2810,7 @@ namespace FfmpegGui.Services
                 idx = args.IndexOf("-i -", StringComparison.Ordinal);
                 if (idx >= 0)
                 {
-                    args = args.Substring(0, idx) + $"{colorPrefix}-f image2pipe " + args.Substring(idx);
+                    args = args.Substring(0, idx) + $"{colorPrefix}-f {demuxer} " + args.Substring(idx);
                 }
             }
             return args;
