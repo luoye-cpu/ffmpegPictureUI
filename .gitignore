@@ -1,3 +1,9 @@
+# ═══════════════════════════════════════════════════════════
+#  FFmpegPictureUI .gitignore
+#  规范化: 所有测试/临时产物统一放 tests/output/ (git 忽略)
+#  外部工具二进制、第三方库源码、编译产物一律不跟踪
+# ═══════════════════════════════════════════════════════════
+
 # ── .NET 编译输出 ──
 bin/
 obj/
@@ -8,6 +14,7 @@ obj/
 
 # ── 发布输出 ──
 publish/
+dist/
 
 # ── 日志文件 ──
 *.log
@@ -27,10 +34,13 @@ project.assets.json
 *.zip
 *.7z
 *.rar
+*.gz
+*.tar
 
 # ── 操作系统垃圾文件 ──
 .DS_Store
 Thumbs.db
+desktop.ini
 
 # ── IDE 缓存 ──
 .vscode/
@@ -43,16 +53,48 @@ Thumbs.db
 *.tmp
 *.temp
 *.cache
+*.swp
+~$*
 
-# ── 第三方库源码（嵌套 Git 仓库，不从本仓库追踪） ──
+# ═══════════════════════════════════════════════════════════
+#  测试/临时产物统一规范
+#  所有测试产生的文件（图片、编码产物、日志、临时文件）一律放 tests/output/
+#  该目录整体不跟踪；tests/scripts/ 下的脚本应被跟踪
+# ═══════════════════════════════════════════════════════════
+tests/output/
+tests/tmp/
+tests/*.log
+tests/*.jsonl
+tests/*.txt
+tests/_*.log
+# 本机测试配置（含绝对路径，勿提交；提供 *.template.json 模板）
+tests/**/settings.json
+# 历史遗留测试输出目录名（兼容旧脚本）
+test_output/
+test-output/
+temp_e2e/
+temp_headless_test/
+temp_headless_test2/
+output/
+temp_*/
+
+# ═══════════════════════════════════════════════════════════
+#  第三方库源码（嵌套 Git 仓库 / 手动下载源码，不跟踪）
+# ═══════════════════════════════════════════════════════════
 tools/src/aom/
 tools/src/dcraw/
 tools/src/jxrlib/
+tools/src/jpegli/
+tools/src/libjxl/
+tools/src/libavif/
+tools/src/libultrahdr/
+tools/src/zlib/
 # DNG 构建依赖（手动下载, 见 tools/BUILD_TOOLS.md 或 docs/DNG_BUILD.md）
 tools/src/dng_sdk/
 tools/src/libraw/
+tools/src/dngjxlprobe/
 
-# ── CMake 构建产物（install 目录、build/CMakeFiles 等）──
+# ── CMake 构建产物 ──
 tools/src/install/
 tools/src/**/build/
 tools/src/**/CMakeFiles/
@@ -61,49 +103,52 @@ tools/src/**/*.tlog/
 **/cmake_install.cmake
 **/CMakeFiles/
 
-# ── 静态库/目标文件/可执行文件（编译产物，源码仓库不应包含）──
-# 全局模式（无斜杠）匹配任意目录层级，含根目录残留（如 dngcolor_probe.obj）
+# ── 静态库/目标文件/可执行文件（编译产物）──
 *.lib
 *.a
 *.obj
 *.o
+*.so
+*.so.*
+*.dylib
 tools/src/**/*.exe
 tools/src/**/*.dll
 
-# ── 嵌套 Git 仓库元数据（已转为普通源码目录的第三方库）──
+# ── 嵌套 Git 仓库元数据 ──
+tools/src/**/.git/
 tools/src/libraw/.git/
 
-# ── DNG SDK 测试样本与库测试数据（构建不需要, 体积大）──
-tools/src/dng_sdk/**/sample_files/
-tools/src/dng_sdk/**/test_data.js
-tools/src/dng_sdk/**/test_data.tar
-
-# ── DNG SDK 不需要的组件 ──
-# xmp/ (2312 文件): 编译使用 qDNGUseXMP=0, 完全不需要 XMP toolkit
-tools/src/dng_sdk/**/xmp/
-# 平台项目文件 / CI 配置 / 文档 (Windows 构建不需要)
-tools/src/dng_sdk/**/.github/
-tools/src/dng_sdk/**/win/
-tools/src/dng_sdk/**/mac/
-tools/src/dng_sdk/**/*.pdf
-
-# ── 外部工具二进制（不应提交到源码仓库） ──
+# ═══════════════════════════════════════════════════════════
+#  外部工具二进制（不应提交到源码仓库）
+#  测试项目 GainMapTestHost 下的 PLAN 工具副本也不跟踪
+# ═══════════════════════════════════════════════════════════
 **/cjxl.exe
 **/djxl.exe
 **/cjpegli.exe
 **/exiftool.exe
 **/exiftool(-k).exe
 **/exiftool_files/
+**/JxrEncApp.exe
+**/JxrDecApp.exe
+**/avifenc.exe
+**/dngtool.exe
+**/ultrahdr_app.exe
+**/avif.dll
+**/ffmpeg.exe
+**/ffprobe.exe
+**/plan_test.json
+tests/GainMapTestHost/PLAN/
 
-# ── 测试输出目录（统一规范：tests/output/ 下所有文件不跟踪）──
-# 所有测试产生的文件（临时图片、编码产物、ICC 提取、日志）一律放入 tests/output/
-# 规范见 docs/TESTING.md
-tests/output/
-tests/tmp/
-tests/*.log
-
-# ── 历史遗留的测试输出目录名（兼容旧脚本）──
-test_output/
-test-output/
-
+# ── 临时杂项 ──
 .fake
+*.orig
+*.rej
+
+# ── 一次性诊断脚本归档（无长期价值，忽略）──
+tests/scripts/_archived_diag/
+
+# ═══════════════════════════════════════════════════════════
+#  标准/规范文档（大体积二进制，按需单独获取，不跟踪）
+# ═══════════════════════════════════════════════════════════
+tools/std/
+
