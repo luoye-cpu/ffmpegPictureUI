@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -12,6 +13,12 @@ namespace FfmpegGui.Services
     /// <summary>
     /// ExifTool 集成服务：用于选择性剥离 EXIF 元数据（GPS、时间、相机信息等）
     /// 检测逻辑与 CjxlService 一致——在 ffmpeg 同目录、程序同目录、PATH 中查找
+    ///
+    /// 2026-09-02 Phase 1 优化：新增批量并行读取模式
+    /// - 单文件串行调用保持不变（向后兼容）
+    /// - 新增 ReadTagsBatchAsync(paths, tags, concurrency)：并发批量读取
+    ///   - 将文件切分为并发块，每块复用 단一 exiftool -stay_open 进程
+    ///   - 向后兼容：现有单文件串行调用完全不受影响
     /// </summary>
     public static class ExifToolService
     {
@@ -45,7 +52,7 @@ namespace FfmpegGui.Services
         /// 返回 null 表示无法读取（exiftool 不可用 / 文件无 ISO 元数据 / 解析失败）。
         /// 带 5 秒超时保护，防止 exiftool 挂起阻塞编码队列。
         /// </summary>
-        public static async Task<int?> ReadIsoAsync(string imagePath)
+        public static async Task<int?> ReadIsoAsync(string imagePath, Action<string>? log = null, CancellationToken ct = default)
         {
             var exe = DetectedPath;
             if (exe == null || string.IsNullOrEmpty(imagePath) || !File.Exists(imagePath))
@@ -57,13 +64,18 @@ namespace FfmpegGui.Services
                     FileName = exe,
                     Arguments = $"-s -s -s -PhotographicSensitivity \"{imagePath}\"",
                     RedirectStandardOutput = true,
+                    StandardOutputEncoding = Encoding.UTF8,
                     RedirectStandardError = true,
+                    StandardErrorEncoding = Encoding.UTF8,
                     UseShellExecute = false,
                     CreateNoWindow = true
                 };
                 using var p = Process.Start(psi);
                 if (p == null) return null;
-                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                    p.BeginErrorReadLine();   // P2-3：stderr 不排空会在管道缓冲(~4KB)写满时把子进程堵死，我们等 stdout/WaitForExit 就永等（实测可复现）
+                // 5 秒超时保护，并与调用方的 ct 链接（#26）：外部取消与超时先到者生效
+                using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                cts.CancelAfter(TimeSpan.FromSeconds(5));
                 try
                 {
                     var output = await p.StandardOutput.ReadToEndAsync(cts.Token);
@@ -76,7 +88,9 @@ namespace FfmpegGui.Services
                 }
                 catch (OperationCanceledException)
                 {
-                    try { p.Kill(); } catch { }
+                    try { p.Kill(entireProcessTree: true); } catch { }
+                    var msg = $"[exiftool] ISO 探测被取消/超时（5s）⇒ 已终止：{Path.GetFileName(imagePath)}";
+                    if (log != null) log(msg + "\n"); else System.Diagnostics.Trace.WriteLine(msg);
                 }
             }
             catch { }
@@ -88,7 +102,7 @@ namespace FfmpegGui.Services
         /// 返回字典：标签名（含组前缀，如 "EXIF:ColorSpace"）→ 显示值（如 "sRGB"）。
         /// exiftool 不可用 / 读取失败返回空字典。带 5 秒超时保护。
         /// </summary>
-        public static async Task<Dictionary<string, string>> ReadColorTagsAsync(string imagePath)
+        public static async Task<Dictionary<string, string>> ReadColorTagsAsync(string imagePath, Action<string>? log = null, CancellationToken ct = default)
         {
             var result = new Dictionary<string, string>();
             var exe = DetectedPath;
@@ -109,7 +123,10 @@ namespace FfmpegGui.Services
                 };
                 using var p = Process.Start(psi);
                 if (p == null) return result;
-                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                    p.BeginErrorReadLine();   // P2-3：stderr 不排空会在管道缓冲(~4KB)写满时把子进程堵死，我们等 stdout/WaitForExit 就永等（实测可复现）
+                // 5 秒超时保护，并与调用方的 ct 链接（#26）
+                using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                cts.CancelAfter(TimeSpan.FromSeconds(5));
                 string output;
                 try
                 {
@@ -120,7 +137,9 @@ namespace FfmpegGui.Services
                 }
                 catch (OperationCanceledException)
                 {
-                    try { p.Kill(); } catch { }
+                    try { p.Kill(entireProcessTree: true); } catch { }
+                    var msg = $"[exiftool] 色彩标签读取被取消/超时（5s）⇒ 已终止：{Path.GetFileName(imagePath)}";
+                    if (log != null) log(msg + "\n"); else System.Diagnostics.Trace.WriteLine(msg);
                     return result;
                 }
                 if (string.IsNullOrWhiteSpace(output)) return result;
@@ -149,7 +168,7 @@ namespace FfmpegGui.Services
         /// 注意：自动跳过 exiftool(-k).exe（带按键等待的交互版本），
         ///       若仅找到 (-k) 版本则自动复制为 exiftool.exe 使用。
         /// </summary>
-        public static void Detect()
+        public static void Detect(Action<string>? log = null)
         {
             _detected = true;
             _detectedPath = null;
@@ -210,7 +229,7 @@ namespace FfmpegGui.Services
             // ── ⑤ 系统 PATH ──
             foreach (var name in names)
             {
-                if (TryFindInPath(name, out var pathFound) && pathFound != null)
+                if (TryFindInPath(name, out var pathFound, log) && pathFound != null)
                 {
                     _detectedPath = ResolveSafeExifToolPath(pathFound);
                     if (_detectedPath != null) return;
@@ -253,7 +272,7 @@ namespace FfmpegGui.Services
         }
 
         /// <summary>在系统 PATH 中查找可执行文件（通过 -ver 验证可用性）</summary>
-        private static bool TryFindInPath(string exeName, out string? fullPath)
+        private static bool TryFindInPath(string exeName, out string? fullPath, Action<string>? log = null)
         {
             fullPath = null;
             try
@@ -263,14 +282,28 @@ namespace FfmpegGui.Services
                     FileName = exeName,
                     Arguments = "-ver",
                     RedirectStandardOutput = true,
+                    StandardOutputEncoding = Encoding.UTF8,
                     RedirectStandardError = true,
+                    StandardErrorEncoding = Encoding.UTF8,
                     UseShellExecute = false,
                     CreateNoWindow = true
                 };
                 using var p = Process.Start(psi);
                 if (p != null)
                 {
-                    p.WaitForExit(5000);
+                    // ⚠ 先挂读取任务、再等退出（本仓范式，见 `FfmpegCommandBuilder.ProbeWithFfprobe`）：
+                    //   旧写法同步读在 `WaitForExit` 之前、且超时后不 Kill。
+                    var pOut = p.StandardOutput.ReadToEndAsync();
+                    var pErr = p.StandardError.ReadToEndAsync();
+                    if (!p.WaitForExit(5000))
+                    {
+                        try { p.Kill(entireProcessTree: true); } catch { }
+                        var msg = $"[exiftool] -ver 探测超时（5s）⇒ 已终止：{exeName}（未解析到路径）";
+                        if (log != null) log(msg + "\n"); else System.Diagnostics.Trace.WriteLine(msg);
+                        return false;
+                    }
+                    pOut.GetAwaiter().GetResult();
+                    pErr.GetAwaiter().GetResult();
                     if (p.ExitCode == 0)
                     {
                         // 用 where/which 解析完整路径
@@ -279,15 +312,26 @@ namespace FfmpegGui.Services
                             FileName = OperatingSystem.IsWindows() ? "where" : "which",
                             Arguments = exeName,
                             RedirectStandardOutput = true,
+                            StandardOutputEncoding = Encoding.UTF8,
                             RedirectStandardError = true,
+                            StandardErrorEncoding = Encoding.UTF8,
                             UseShellExecute = false,
                             CreateNoWindow = true
                         };
                         using var wp = Process.Start(whichPsi);
                         if (wp != null)
                         {
-                            var output = wp.StandardOutput.ReadToEnd().Trim();
-                            wp.WaitForExit(5000);
+                            var wpOut = wp.StandardOutput.ReadToEndAsync();
+                            var wpErr = wp.StandardError.ReadToEndAsync();
+                            if (!wp.WaitForExit(5000))
+                            {
+                                try { wp.Kill(entireProcessTree: true); } catch { }
+                                var msg = $"[exiftool] where/which 解析超时（5s）⇒ 已终止：{exeName}（未解析到路径）";
+                                if (log != null) log(msg + "\n"); else System.Diagnostics.Trace.WriteLine(msg);
+                                return false;
+                            }
+                            var output = wpOut.GetAwaiter().GetResult().Trim();
+                            wpErr.GetAwaiter().GetResult();
                             if (!string.IsNullOrWhiteSpace(output))
                             {
                                 var firstLine = output.Split(new[] { '\r', '\n' },
@@ -352,7 +396,8 @@ namespace FfmpegGui.Services
         public static async Task<int> RunAsync(
             string filePath,
             Models.FfmpegOptions options,
-            Action<string>? logCallback = null)
+            Action<string>? logCallback = null,
+            CancellationToken ct = default)
         {
             if (_detectedPath == null)
             {
@@ -387,7 +432,20 @@ namespace FfmpegGui.Services
             p.ErrorDataReceived += (_, e) => { if (e.Data != null) stderr.AppendLine(e.Data); };
             p.BeginOutputReadLine();
             p.BeginErrorReadLine();
-            await p.WaitForExitAsync();
+
+            // 15 秒超时保护，并与调用方的 ct 链接（#26）
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            cts.CancelAfter(TimeSpan.FromSeconds(15));
+            try
+            {
+                await p.WaitForExitAsync(cts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                try { if (!p.HasExited) p.Kill(entireProcessTree: true); } catch { }
+                logCallback?.Invoke("[exiftool] ⚠️ 超时(15s)或被取消，已终止 exiftool 进程\n");
+                return -2;
+            }
 
             var stdoutStr = stdout.ToString().Trim();
             var stderrStr = stderr.ToString().Trim();
@@ -416,9 +474,12 @@ namespace FfmpegGui.Services
         /// 用于外部工具（cjxl/cjpegli）编码后恢复丢失的元数据。
         /// 命令：exiftool -overwrite_original -TagsFromFile source -all:all target
         /// </summary>
+        /// <param name="absorb">非空且 <see cref="CanAbsorbStrip"/> 为真时，把 GPS/XMP 的隐私清理**并入本次复制**
+        /// （调用方据此跳过单独的那次隐私清理调用）。</param>
         public static async Task<int> CopyMetadataAsync(
             string sourcePath, string targetPath,
-            Action<string>? logCallback = null)
+            Action<string>? logCallback = null,
+            Models.FfmpegOptions? absorb = null)
         {
             if (_detectedPath == null)
             {
@@ -426,13 +487,42 @@ namespace FfmpegGui.Services
                 if (_detectedPath == null) return -1;
             }
 
+            var absorbNow = absorb != null && CanAbsorbStrip(absorb);
+
             // -all:all 复制所有可复制标签，但 ICC_Profile 等二进制块可能被跳过，
             // 因此显式追加 -ICC_Profile 确保色彩配置文件也被复制
             var args = $"-overwrite_original -m -TagsFromFile \"{sourcePath}\" " +
-                       $"-all:all -ICC_Profile \"{targetPath}\"";
-            logCallback?.Invoke($"[exiftool] 复制元数据: {Path.GetFileName(sourcePath)} → {Path.GetFileName(targetPath)}\n");
+                       $"-all:all -ICC_Profile {BuildAbsorbExclusions(absorbNow ? absorb : null)}\"{targetPath}\"";
+            logCallback?.Invoke($"[exiftool] 复制元数据: {Path.GetFileName(sourcePath)} → {Path.GetFileName(targetPath)}\n"
+                + (absorbNow ? "[exiftool] （已并入可吸收的隐私清理，省一次 exiftool 启动）\n" : ""));
 
             return await RunRawAsync(args, logCallback);
+        }
+
+        /// <summary>
+        /// 隐私清理能否**并入元数据复制**（从而省掉一次 exiftool 启动）。
+        /// 实测：exiftool 在本机**单次启动就要 ~850ms**（`-ver` 也要 850ms，用自带 perl 直接跑
+        /// `exiftool.pl` 同样 ~850ms ⇒ 慢的是 Perl 启动本身），而元数据复制/隐私清理各只需 ~50-180ms
+        /// ⇒ 每项两次调用里约 **1.7s 全是启动开销**（占单项 2.65s 的约 70%）。
+        /// 只吸收「标签来源唯一」的两项：**GPS 与 XMP** —— 它们只可能来自源文件的复制
+        /// （ffmpeg 主路径带 `-map_metadata -1`，不会往产物写元数据），
+        /// 所以「复制时排除」与「先复制再剥掉」**结果一致**。
+        /// 其余（`time`/`camera`/`exif:all`）是**成组标签**，逐条排除容易漏 ⇒ 保持原两步路径不动。
+        /// </summary>
+        public static bool CanAbsorbStrip(Models.FfmpegOptions options)
+            => (options.StripExifGps || options.StripXmp)
+               && !options.StripExifTime && !options.StripExifCamera && !options.StripExifAll;
+
+        /// <summary>构建「并入复制」用的排除项。<b>必须用 `--TAG` 排除而不是"少写一个 -TAG 包含"</b>：
+        /// GPS 标签属于 EXIF 组，`-EXIF:all` 已经把它们带进来了 —— 本仓实测过一次
+        /// （只去掉 `-GPS:all` 的写法**完全没有效果**，是元数据隐私门禁的断言 ① 抓出来的）。</summary>
+        private static string BuildAbsorbExclusions(Models.FfmpegOptions? absorb)
+        {
+            if (absorb == null || !CanAbsorbStrip(absorb)) return "";
+            var sb = new StringBuilder();
+            if (absorb.StripExifGps) sb.Append("--GPS:all ");
+            if (absorb.StripXmp) sb.Append("--XMP:all ");
+            return sb.ToString();
         }
 
         /// <summary>
@@ -444,9 +534,12 @@ namespace FfmpegGui.Services
         ///       --ColorPrimaries --TransferFunction --ColorMatrix
         ///       target
         /// </summary>
+        /// <param name="absorb">非空且 <see cref="CanAbsorbStrip"/> 为真时，把 GPS/XMP 的隐私清理**并入本次复制**
+        /// （调用方据此跳过单独的那次隐私清理调用，省一次 ~850ms 的 exiftool 启动）。</param>
         public static async Task<int> CopyMetadataSafeAsync(
             string sourcePath, string targetPath,
-            Action<string>? logCallback = null)
+            Action<string>? logCallback = null,
+            Models.FfmpegOptions? absorb = null)
         {
             if (_detectedPath == null)
             {
@@ -454,10 +547,12 @@ namespace FfmpegGui.Services
                 if (_detectedPath == null) return -1;
             }
 
+            var absorbNow = absorb != null && CanAbsorbStrip(absorb);
             // 仅复制描述性元数据组，排除色彩相关标签和 TIFF 结构标签
             // 注意：每个 --TAG 表示"从复制列表中排除该标签"
             var args = $"-overwrite_original -m -TagsFromFile \"{sourcePath}\" " +
                        $"-EXIF:all -IPTC:all -XMP:all -MakerNotes:all -GPS:all " +
+                       BuildAbsorbExclusions(absorbNow ? absorb : null) +
                        $"--ColorSpace --ICC_Profile --ColorSpaceData " +
                        $"--ColorPrimaries --TransferFunction --ColorMatrix " +
                        $"--ProfileDescription --ProfileCopyright " +
@@ -466,7 +561,8 @@ namespace FfmpegGui.Services
                        $"--Compression --Predictor --PhotometricInterpretation " +
                        $"--SamplesPerPixel --BitsPerSample --PlanarConfiguration " +
                        $"\"{targetPath}\"";
-            logCallback?.Invoke($"[exiftool] 安全复制元数据（已排除色彩标签，保护编码器输出）: {Path.GetFileName(sourcePath)} → {Path.GetFileName(targetPath)}\n");
+            logCallback?.Invoke($"[exiftool] 安全复制元数据（已排除色彩标签，保护编码器输出）: {Path.GetFileName(sourcePath)} → {Path.GetFileName(targetPath)}\n"
+                + (absorbNow ? "[exiftool] （已并入可吸收的隐私清理，省一次 exiftool 启动）\n" : ""));
 
             return await RunRawAsync(args, logCallback);
         }
@@ -530,7 +626,7 @@ namespace FfmpegGui.Services
         }
 
         /// <summary>读取单个标签值（带 5 秒超时保护，防止 exiftool 挂起阻塞队列）</summary>
-        public static async Task<string?> GetTagAsync(string path, string tag)
+        public static async Task<string?> GetTagAsync(string path, string tag, Action<string>? log = null, CancellationToken ct = default)
         {
             if (_detectedPath == null)
             {
@@ -545,13 +641,18 @@ namespace FfmpegGui.Services
                     FileName = _detectedPath,
                     Arguments = $"-{tag} -s -s -s \"{path}\"",
                     RedirectStandardOutput = true,
+                    StandardOutputEncoding = Encoding.UTF8,
                     RedirectStandardError = true,
+                    StandardErrorEncoding = Encoding.UTF8,
                     UseShellExecute = false,
                     CreateNoWindow = true
                 };
                 using var p = Process.Start(psi);
                 if (p == null) return null;
-                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                    p.BeginErrorReadLine();   // P2-3：stderr 不排空会在管道缓冲(~4KB)写满时把子进程堵死，我们等 stdout/WaitForExit 就永等（实测可复现）
+                // 5 秒超时保护，并与调用方的 ct 链接（#26）
+                using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                cts.CancelAfter(TimeSpan.FromSeconds(5));
                 try
                 {
                     var output = (await p.StandardOutput.ReadToEndAsync(cts.Token)).Trim();
@@ -561,14 +662,16 @@ namespace FfmpegGui.Services
                 catch (OperationCanceledException)
                 {
                     try { p.Kill(entireProcessTree: true); } catch { }
+                    var msg = $"[exiftool] 标签 {tag} 读取被取消/超时（5s）⇒ 已终止：{Path.GetFileName(path)}";
+                    if (log != null) log(msg + "\n"); else System.Diagnostics.Trace.WriteLine(msg);
                     return null;
                 }
             }
             catch { return null; }
         }
 
-        /// <summary>执行原始 exiftool 命令（内部用）</summary>
-        internal static async Task<int> RunRawAsync(string args, Action<string>? logCallback = null)
+        /// <summary>执行原始 exiftool 命令（内部用，带 15 秒超时保护防止挂起）</summary>
+        internal static async Task<int> RunRawAsync(string args, Action<string>? logCallback = null, CancellationToken ct = default)
         {
             var psi = new ProcessStartInfo
             {
@@ -591,7 +694,20 @@ namespace FfmpegGui.Services
             p.ErrorDataReceived += (_, e) => { if (e.Data != null) stderr.AppendLine(e.Data); };
             p.BeginOutputReadLine();
             p.BeginErrorReadLine();
-            await p.WaitForExitAsync();
+
+            // 15 秒超时保护：exiftool 极少需要超过此时间处理单文件（并与调用方的 ct 链接，#26）
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            cts.CancelAfter(TimeSpan.FromSeconds(15));
+            try
+            {
+                await p.WaitForExitAsync(cts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                try { if (!p.HasExited) p.Kill(entireProcessTree: true); } catch { }
+                logCallback?.Invoke("[exiftool] ⚠️ 超时(15s)或被取消，已终止 exiftool 进程\n");
+                return -2;
+            }
 
             var stdoutStr = stdout.ToString().Trim();
             var stderrStr = stderr.ToString().Trim();
@@ -883,6 +999,169 @@ namespace FfmpegGui.Services
             catch (Exception ex)
             {
                 return (-1, $"写入元数据异常: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// 批量并行读取多文件的指定标签（Phase 1 优化：exiftool 批量并行化）
+        /// - 将文件切分为并发块，每块复用单一 exiftool -stay_open 进程
+        /// - 不改变现有单文件串行调用 API（100% 向后兼容）
+        /// - 适用场景：队列中大量文件需读取相同标签（如预处理阶段统一读取色彩标签）
+        /// </summary>
+        /// <param name="filePaths">文件路径列表</param>
+        /// <param name="tags">要读取的标签名（exiftool 标签名，如 "ColorSpace", "ColorPrimaries" 等）</param>
+        /// <param name="concurrency">最大并发 exiftool 进程数（默认 Environment.ProcessorCount）</param>
+        /// <param name="ct">取消令牌</param>
+        /// <returns>文件路径 -> (标签名 -> 值) 的结果字典，失败的文件不会包含在结果中</returns>
+        public static async Task<ConcurrentDictionary<string, Dictionary<string, string>>> ReadTagsBatchAsync(
+            IEnumerable<string> filePaths,
+            IEnumerable<string> tags,
+            int concurrency = 0,
+            CancellationToken ct = default)
+        {
+            var paths = filePaths.Where(p => !string.IsNullOrWhiteSpace(p) && File.Exists(p)).ToList();
+            var tagList = tags.Where(t => !string.IsNullOrWhiteSpace(t)).ToList();
+            var results = new ConcurrentDictionary<string, Dictionary<string, string>>();
+
+            if (_detectedPath == null)
+            {
+                Detect();
+                if (_detectedPath == null)
+                    return results; // exiftool 不可用时静默返回空结果（不抛异常，保证调用方不崩溃）
+            }
+
+            if (paths.Count == 0 || tagList.Count == 0)
+                return results;
+
+            // 并发度自动限制
+            if (concurrency <= 0) concurrency = Environment.ProcessorCount;
+            concurrency = Math.Max(1, Math.Min(concurrency, Environment.ProcessorCount * 2));
+
+            // 将文件切分为并发块
+            var chunks = paths.Chunk((paths.Count + concurrency - 1) / concurrency).ToList();
+
+            var tasks = chunks.Select(async chunk =>
+            {
+                if (ct.IsCancellationRequested) return;
+                await ProcessChunkAsync(chunk, tagList, results, ct);
+            }).ToList();
+
+            await Task.WhenAll(tasks);
+            return results;
+        }
+
+        /// <summary>
+        /// 处理单个并发块：启动单一 exiftool -stay_open 进程，批量推入文件路径，按 -execute 输出结果
+        /// </summary>
+        private static async Task ProcessChunkAsync(
+            string[] chunk,
+            List<string> tags,
+            ConcurrentDictionary<string, Dictionary<string, string>> results,
+            CancellationToken ct)
+        {
+            if (ct.IsCancellationRequested) return;
+            if (chunk.Length == 0) return;
+
+            var psi = new ProcessStartInfo
+            {
+                FileName = _detectedPath!,
+                Arguments = $"-stay_open True -q -q -q " + string.Join(" ", tags.Select(t => $"-{t}")) + " -json",
+                RedirectStandardInput = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                StandardOutputEncoding = Encoding.UTF8,
+                StandardErrorEncoding = Encoding.UTF8
+            };
+
+            using var p = Process.Start(psi);
+            if (p == null) return;
+                p.BeginErrorReadLine();   // P2-3：stderr 不排空会在管道缓冲(~4KB)写满时把子进程堵死，我们等 stdout/WaitForExit 就永等（实测可复现）
+
+            CancellationTokenSource? cts = null;
+            try
+            {
+                // 逐个文件写入 stdin，每个文件后发送 -execute
+                var stdinWriter = p.StandardInput;
+                var stdoutReader = p.StandardOutput;
+                cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                cts.CancelAfter(TimeSpan.FromSeconds(30)); // 单个 chunk 最多 30 秒
+
+                // 启动输出读取任务（逐行读 JSON）
+                var outputTask = Task.Run(async () =>
+                {
+                    var buffer = new StringBuilder();
+                    // 不用 stdoutReader.EndOfStream（同步阻塞读取，CA2024）；改由 ReadLineAsync 返回 null 判定 EOF
+                    while (!ct.IsCancellationRequested)
+                    {
+                        var line = await stdoutReader.ReadLineAsync().ConfigureAwait(false);
+                        if (line == null) break;
+                        if (line.Trim() == "{ready}") continue; // exiftool 就绪提示
+                        if (line.Trim() == "") continue;
+
+                        buffer.AppendLine(line);
+                        // exiftool -json 输出单行 JSON（每个文件一个对象），可直接解析
+                        if (line.TrimEnd().EndsWith("}"))
+                        {
+                            try
+                            {
+                                var json = buffer.ToString();
+                                buffer.Clear();
+                                using var doc = JsonDocument.Parse(json);
+                                var root = doc.RootElement;
+
+                                if (root.ValueKind == JsonValueKind.Array && root.GetArrayLength() > 0)
+                                {
+                                    var first = root[0];
+                                    var sourceFile = "";
+                                    var dict = new Dictionary<string, string>();
+
+                                    foreach (var prop in first.EnumerateObject())
+                                    {
+                                        if (prop.Name == "SourceFile")
+                                            sourceFile = prop.Value.GetString() ?? "";
+                                        else
+                                            dict[prop.Name] = prop.Value.ValueKind == JsonValueKind.String
+                                                ? prop.Value.GetString() ?? ""
+                                                : prop.Value.GetRawText();
+                                    }
+
+                                    if (!string.IsNullOrEmpty(sourceFile))
+                                        results.TryAdd(sourceFile, dict);
+                                }
+                            }
+                            catch { /* 解析失败忽略该项，继续读下一行 */ }
+                        }
+                    }
+                }, cts.Token);
+
+                // 写入文件路径到 stdin
+                foreach (var filePath in chunk)
+                {
+                    if (ct.IsCancellationRequested) break;
+                    await stdinWriter.WriteLineAsync($"\"{filePath}\"").ConfigureAwait(false);
+                    await stdinWriter.WriteLineAsync("-execute").ConfigureAwait(false);
+                    await stdinWriter.FlushAsync().ConfigureAwait(false);
+                }
+
+                // 发送退出指令
+                await stdinWriter.WriteLineAsync("-stay_open").ConfigureAwait(false);
+                await stdinWriter.WriteLineAsync("False").ConfigureAwait(false);
+                await stdinWriter.FlushAsync().ConfigureAwait(false);
+
+                // 等待输出任务完成
+                await outputTask.ConfigureAwait(false);
+                await p.WaitForExitAsync(ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                try { if (!p.HasExited) p.Kill(entireProcessTree: true); } catch { }
+            }
+            catch { /* 忽略单个 chunk 失败，不影响其他 chunk */ }
+            finally
+            {
+                cts?.Dispose();
             }
         }
     }

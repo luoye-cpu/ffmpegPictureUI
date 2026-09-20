@@ -184,7 +184,7 @@ namespace FfmpegGui
 
             // ★ 任务已完成/失败：不解析日志残留（日志中仍有编码阶段的旧消息），
             //    直接显示最终状态，避免出现 "djxl 解码中" 等误导信息
-            if (_item != null && (_item.Status.StartsWith("已完成") || _item.Status.StartsWith("失败")))
+            if (_item != null && (_item.IsSuccessStatus || _item.IsFailure))
             {
                 ProgressLabel.Text = _item.Status;
                 QualityInfoLabel!.Text = "-";
@@ -194,7 +194,7 @@ namespace FfmpegGui
             // ── 空日志：尚未开始 ──
             if (string.IsNullOrWhiteSpace(log))
             {
-                ProgressLabel.Text = _item?.Status == "待处理" ? "等待开始..." : "已启动，等待输出...";
+                ProgressLabel.Text = (_item?.IsPending ?? false) ? "等待开始..." : "已启动，等待输出...";
                 QualityInfoLabel!.Text = "-";
                 return;
             }
@@ -271,12 +271,12 @@ namespace FfmpegGui
             // ── 5) 回退：显示任务状态 ──
             if (_item != null)
             {
-                if (_item.Status.StartsWith("已完成") || _item.Status.StartsWith("失败"))
+                if (_item.IsSuccessStatus || _item.IsFailure)
                 {
                     ProgressLabel.Text = _item.Status;
                     QualityInfoLabel!.Text = "-";
                 }
-                else if (_item.Status == "处理中")
+                else if (_item.IsProcessing)
                 {
                     ProgressLabel.Text = "处理中...";
                     QualityInfoLabel!.Text = "等待输出";

@@ -10,9 +10,17 @@ $ffmpeg = (Get-ChildItem "publish/PLAN/ffmpeg-full*/ffmpeg.exe" | Select-Object 
 $exif   = "publish/PLAN/exiftool/exiftool.exe"
 if (-not $ffmpeg) { throw "ffmpeg 未找到" }
 
+# 取子进程 stdout 一律走 Start-Process（`& exe` 在部分宿主静默失败：输出为空 ⇒ 假红/空值）
+function Exec([string]$file, [string]$argStr){
+  $o = "$out/_exec.out"; $e = "$out/_exec.err"
+  Start-Process -FilePath $file -ArgumentList $argStr -Wait -NoNewWindow -PassThru `
+    -RedirectStandardOutput $o -RedirectStandardError $e | Out-Null
+  return ([System.IO.File]::ReadAllText($o) + "`n" + [System.IO.File]::ReadAllText($e))
+}
+
 function Gen($name, $ffargs) {
     Write-Host "生成 $name ..." -ForegroundColor DarkGray
-    & $ffmpeg -y -hide_banner -loglevel error @ffargs "$out/$name" 2>&1 | Out-Null
+    Exec $ffmpeg "-y -hide_banner -loglevel error $($ffargs -join ' ') `"$out/$name`"" | Out-Null
     if (-not (Test-Path "$out/$name")) { throw "生成失败: $name" }
     Write-Host "  ✅ $name ($([math]::Round((Get-Item "$out/$name").Length/1KB,1)) KB)" -ForegroundColor Green
 }
@@ -20,7 +28,7 @@ function Gen($name, $ffargs) {
 # 静态单图 (需 -update 1 写入单张图片)
 function GenStill($name, $lavfiSrc, [string[]]$extra) {
     Write-Host "生成 $name ..." -ForegroundColor DarkGray
-    & $ffmpeg -y -hide_banner -loglevel error -f lavfi -i $lavfiSrc -frames:v 1 -update 1 @extra $out/$name 2>&1 | Out-Null
+    Exec $ffmpeg "-y -hide_banner -loglevel error -f lavfi -i $lavfiSrc -frames:v 1 -update 1 $($extra -join ' ') `"$out/$name`"" | Out-Null
     if (-not (Test-Path "$out/$name")) { throw "生成失败: $name" }
     Write-Host "  ✅ $name ($([math]::Round((Get-Item "$out/$name").Length/1KB,1)) KB)" -ForegroundColor Green
 }
@@ -55,17 +63,17 @@ Gen "anim_avif.avif"  @("-f","lavfi","-i","testsrc2=size=256x192:rate=10:duratio
 $cjxl = "publish/PLAN/jxl/bin/cjxl.exe"
 if (Test-Path $cjxl) {
     Write-Host "生成 JXL 素材 ..." -ForegroundColor DarkGray
-    & $cjxl "$out/src_photo.jpg" "$out/src_lossless.jxl" -d 0 -e 3 --lossless_jpeg=1 2>&1 | Out-Null
-    & $cjxl "$out/src_8bit.png" "$out/src_lossless_png.jxl" -d 0 -e 3 2>&1 | Out-Null
-    & $cjxl "$out/src_8bit.png" "$out/src_lossy.jxl" -d 1.5 -e 5 2>&1 | Out-Null
+    Exec $cjxl "-d 0 -e 3 --lossless_jpeg=1 `"$out/src_photo.jpg`" `"$out/src_lossless.jxl`"" | Out-Null
+    Exec $cjxl "-d 0 -e 3 `"$out/src_8bit.png`" `"$out/src_lossless_png.jxl`"" | Out-Null
+    Exec $cjxl "-d 1.5 -e 5 `"$out/src_8bit.png`" `"$out/src_lossy.jxl`"" | Out-Null
     Write-Host "  ✅ JXL 素材" -ForegroundColor Green
 }
 $jxr = "publish/PLAN/artifacts/JxrEncApp.exe"
 if (Test-Path $jxr) {
     Write-Host "生成 JXR 素材 ..." -ForegroundColor DarkGray
     # JxrEncApp 接受 BMP/TIF/HDR; 用 BMP 输入
-    & $ffmpeg -y -hide_banner -loglevel error -f lavfi -i "testsrc2=size=512x384:duration=0.1" -frames:v 1 -update 1 "$out/src_jxr.bmp" 2>&1 | Out-Null
-    & $jxr -i "$out/src_jxr.bmp" -o "$out/src.jxr" 2>&1 | Out-Null
+    Exec $ffmpeg "-y -hide_banner -loglevel error -f lavfi -i `"testsrc2=size=512x384:duration=0.1`" -frames:v 1 -update 1 `"$out/src_jxr.bmp`"" | Out-Null
+    Exec $jxr "-i `"$out/src_jxr.bmp`" -o `"$out/src.jxr`"" | Out-Null
     if (Test-Path "$out/src.jxr") { Write-Host "  ✅ JXR 素材" -ForegroundColor Green }
 }
 
@@ -78,7 +86,7 @@ if (Test-Path $icc) {
 
 # 给 JPEG 嵌入 ICC + EXIF (元数据测试)
 if (Test-Path "$out/srgb.icc") {
-    & $exif "-icc_profile<=$out/srgb.icc" "-DateTimeOriginal=2026:01:15 10:30:00" "-Artist=TestUser" "-GPSLatitude=31.23" "-GPSLongitude=121.47" "$out/src_photo.jpg" 2>&1 | Out-Null
+    Exec $exif "-icc_profile<=`"$out/srgb.icc`" -DateTimeOriginal=`"2026:01:15 10:30:00`" -Artist=TestUser -GPSLatitude=31.23 -GPSLongitude=121.47 `"$out/src_photo.jpg`"" | Out-Null
     Write-Host "  ✅ src_photo.jpg 已嵌 ICC+EXIF+GPS" -ForegroundColor Green
 }
 

@@ -1,0 +1,60 @@
+FfmpegPictureUI
+Copyright (C) 2025-2026 luoye-cpu
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+Source repository: https://github.com/luoye-cpu/ffmpegPictureUI
+
+The full text of the GNU General Public License version 3 is in the file
+named LICENSE in this distribution. It is reproduced verbatim and
+unmodified.
+
+================================================================================
+REQUIRED ATTRIBUTION NOTICES / 必需声明
+================================================================================
+
+1. Adobe DNG technology
+   This product includes DNG technology under license by Adobe.
+
+   (This notice is required by the Adobe DNG Specification patent license
+   and must appear prominently in source code and documentation.)
+
+2. Adobe trademarks
+   Adobe and the DNG logo are trademarks or registered trademarks of Adobe Inc.
+   in the United States and other countries. Such trademarks may not be used to
+   endorse or promote any product unless expressly permitted under separate
+   agreement with Adobe.
+
+3. FFmpeg trademark
+   FFmpeg is a trademark of Fabrice Bellard, originator of the FFmpeg project.
+   This project is not affiliated with, sponsored by, or endorsed by the FFmpeg
+   project or its authors.
+
+4. ExifTool
+   ExifTool is Copyright (C) 2003-2026 Phil Harvey. It is used here under the
+   GNU General Public License version 1.0 or later branch of its dual license.
+
+================================================================================
+THIRD-PARTY COMPONENTS
+================================================================================
+
+This distribution bundles or invokes a number of third-party components. Each is
+licensed under its own terms and is NOT covered by, nor does it extend, the
+license of FfmpegPictureUI. A complete list with license texts and copyright
+notices is provided in:
+
+    THIRD-PARTY-NOTICES.md
+
+Nothing in this NOTICE adds any restriction to the rights granted to you by the
+GNU General Public License version 3 or by any third-party license.

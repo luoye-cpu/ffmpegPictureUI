@@ -463,6 +463,7 @@ namespace FfmpegGui.Services
                     FileName = ffmpegPath,
                     Arguments = args,
                     RedirectStandardOutput = true,
+                    StandardOutputEncoding = Encoding.UTF8,
                     RedirectStandardError = true,
                     UseShellExecute = false,
                     CreateNoWindow = true,

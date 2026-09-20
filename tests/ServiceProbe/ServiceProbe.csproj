@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- ═══════════════════════════════════════════════ -->
+  <!-- 服务级探针: 直接调用真实服务(容器解析/ICC 生成等) -->
+  <!-- 供脚本做单元级断言, 无需跑完整编码队列            -->
+  <!-- ═══════════════════════════════════════════════ -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net11.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>ServiceProbe</AssemblyName>
+    <RootNamespace>ServiceProbe</RootNamespace>
+    <NoWarn>$(NoWarn);CS0618;MSB3884</NoWarn>
+    <!-- 被引用项目 FfmpegGui 是自包含 WinExe, 引用者必须同为自包含 -->
+    <SelfContained>true</SelfContained>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <PublishTrimmed>false</PublishTrimmed>
+    <PublishAot>false</PublishAot>
+    <PublishSingleFile>false</PublishSingleFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 引用主项目以复用真实服务实现 -->
+    <ProjectReference Include="..\..\src\FfmpegGui\FfmpegGui.csproj" />
+  </ItemGroup>
+
+</Project>

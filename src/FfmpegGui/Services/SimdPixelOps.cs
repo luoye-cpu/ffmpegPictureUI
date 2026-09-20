@@ -171,17 +171,20 @@ namespace FfmpegGui.Services
             }
         }
 
-        /// <summary>标量参考：分段 Reinhard 单值</summary>
+        /// <summary>
+        /// SDR 基图色调映射（单调、保留高光层次）：y≤knee（SDR 内容）直通保真；
+        /// y>knee 将 [knee, headroom] 单调压缩到 [knee, 1.0]（轻微 S 形，端点对齐、无暗环），
+        /// 取代旧硬剪切 `y<=1?y:1`（会把所有高光压成死白）。增益图仍按实际 base 值计算，重建不失配。
+        /// </summary>
         public static float SegmentedReinhardScalar(float y, float headroom)
         {
-            if (y <= 1.0f) return y;
-            float t = y / Math.Max(headroom, 1f);
-            float reinhard = t / (1.0f + t);
-            reinhard *= 2.0f;
-            if (y >= 1.25f) return Math.Min(reinhard, 1.0f);
-            float x = Math.Clamp((y - 1.0f) / 0.25f, 0f, 1f);
-            float smooth = x * x * (3.0f - 2.0f * x);
-            return 1.0f + (reinhard - 1.0f) * smooth;
+            const float knee = 0.75f;
+            if (y <= knee) return y;
+            if (headroom <= knee) return 1.0f;
+            float t = (y - knee) / (headroom - knee);          // 0..1
+            float eased = t / (t + 1f) * 2f;                    // 单调: t=0→0, t=1→1
+            float v = knee + (1f - knee) * Math.Clamp(eased, 0f, 1f);
+            return Math.Clamp(v, 0f, 1f);
         }
 
         // ═══════════════════════════════════════════════════
@@ -224,6 +227,7 @@ namespace FfmpegGui.Services
         /// <summary>
         /// 批量 sRGB → 线性（就地转换 RGBA 交错数组，只处理 RGB 三通道，跳过 alpha）。
         /// ⚠️ 实测 AVX2 版 (gather pow) 慢 6.7×，故纯标量。
+        /// （H4 依赖 MathF.Pow，AVX2 的 LUT 查表需要 gather 指令，延迟高于标量 pow；无 gather 的纯向量化无法表达 pow。）
         /// </summary>
         public static void SrgbToLinearRgba(Span<float> rgba)
         {
@@ -240,6 +244,97 @@ namespace FfmpegGui.Services
         {
             v = Math.Clamp(v, 0f, 1f);
             return v <= 0.04045f ? v / 12.92f : MathF.Pow((v + 0.055f) / 1.055f, SrgbInvGamma);
+        }
+
+        // ═══════════════════════════════════════════════════
+        // H6: 线性域 primaries 矩阵映射（RGBA 交错 float，跳过 alpha）
+        //     系数为 double[9] 行主序（由 ColorSpaceRegistry 从公开色度 + Bradford 色适应算出）。
+        //     与 zscale 的 p=/pin= 转换等价，但可用于 zscale 无法命名的空间（ProPhoto/P3/任意 ICC 色度）。
+        //     实测（2026-09）：3×3 乘加无 pow，JIT 已良好向量化 → 保持标量实现。
+        // ═══════════════════════════════════════════════════
+
+        /// <summary>
+        /// 就地把 RGBA 交错线性浮点像素从源原色映射到目标原色：out = M · in。
+        /// 输入可为负/超 1（HDR 与矩阵混色均属正常），故**不做 clamp**；由下游编码自行钳位。
+        /// </summary>
+        public static void ApplyPrimariesMatrix(Span<float> rgba, double[] m9)
+        {
+            if (m9 is null || m9.Length != 9) return;
+            float m0 = (float)m9[0], m1 = (float)m9[1], m2 = (float)m9[2];
+            float m3 = (float)m9[3], m4 = (float)m9[4], m5 = (float)m9[5];
+            float m6 = (float)m9[6], m7 = (float)m9[7], m8 = (float)m9[8];
+            for (int i = 0; i + 4 <= rgba.Length; i += 4)
+            {
+                float r = rgba[i], g = rgba[i + 1], b = rgba[i + 2];
+                rgba[i] = m0 * r + m1 * g + m2 * b;
+                rgba[i + 1] = m3 * r + m4 * g + m5 * b;
+                rgba[i + 2] = m6 * r + m7 * g + m8 * b;
+            }
+        }
+
+        // ═══════════════════════════════════════════════════
+        // H5: PQ (SMPTE ST 2084 / BT.2100) EOTF ⇄ OETF
+        //    定义: L = 线性相对亮度 (1.0 = 10000 nits), E = 编码值 (0..1)
+        //      OETF: E = ((c1 + c2·L^m1) / (1 + c3·L^m1))^m2
+        //      EOTF: L = ((c1 − E^(1/m2)) / (c3·E^(1/m2) − c2))^(1/m1)
+        //    同 SrgbToLinear：依赖 MathF.Pow，AVX2 LUT 方案无收益 → 纯标量。
+        // ═══════════════════════════════════════════════════
+
+        /// <summary>PQ 参考亮度 (nits)：编码值 1.0 = 10000 nits。</summary>
+        public const float PqPeakNits = 10000f;
+
+        private const float PqM1 = 2615f / 16384f;            // 0.1593017578125
+        private const float PqM2 = 2523f / 32f;               // 78.84375
+        private const float PqC1 = 3424f / 4096f;             // 0.8359375
+        private const float PqC2 = 2413f / 128f;              // 18.8515625
+        private const float PqC3 = 2392f / 128f;              // 18.6875
+
+        /// <summary>
+        /// PQ 编码值 → 线性相对亮度 (1.0 = 10000 nits)。
+        /// EOTF: L = ((E^(1/m2) − c1) / (c2 − c3·E^(1/m2)))^(1/m1)（SMPTE ST 2084 / skcms 同形）。
+        /// ⚠️ 分子/分母必须保持该符号顺序：写成 (c1−p)/(p·c3−c2) 并对负值钳 0 会令几乎所有
+        ///    正常码值（p&gt;c1）返回 0 → 画面变黑（实测已踩）。
+        /// </summary>
+        public static float PqEotfScalar(float encoded)
+        {
+            float e = Math.Clamp(encoded, 0f, 1f);
+            if (e <= 0f) return 0f;
+            float p = MathF.Pow(e, 1f / PqM2);
+            float num = p - PqC1;
+            float den = PqC2 - PqC3 * p;
+            if (num <= 0f || den <= 0f) return 0f;      // 低于黑位基准(E≈0.1854) → 0
+            return MathF.Pow(num / den, 1f / PqM1);
+        }
+
+        /// <summary>线性相对亮度 (1.0 = 10000 nits) → PQ 编码值</summary>
+        public static float PqOetfScalar(float linear)
+        {
+            float l = Math.Clamp(linear, 0f, 1f);
+            float lm = MathF.Pow(l, PqM1);
+            float e = MathF.Pow((PqC1 + PqC2 * lm) / (1f + PqC3 * lm), PqM2);
+            return Math.Clamp(e, 0f, 1f);
+        }
+
+        /// <summary>批量 PQ 编码值 → 线性（就地，RGBA 交错，只动 RGB 三通道）</summary>
+        public static void PqEotfRgba(Span<float> rgba)
+        {
+            for (int i = 0; i + 4 <= rgba.Length; i += 4)
+            {
+                rgba[i] = PqEotfScalar(rgba[i]);
+                rgba[i + 1] = PqEotfScalar(rgba[i + 1]);
+                rgba[i + 2] = PqEotfScalar(rgba[i + 2]);
+            }
+        }
+
+        /// <summary>批量线性 → PQ 编码值（就地，RGBA 交错，只动 RGB 三通道）</summary>
+        public static void PqOetfRgba(Span<float> rgba)
+        {
+            for (int i = 0; i + 4 <= rgba.Length; i += 4)
+            {
+                rgba[i] = PqOetfScalar(rgba[i]);
+                rgba[i + 1] = PqOetfScalar(rgba[i + 1]);
+                rgba[i + 2] = PqOetfScalar(rgba[i + 2]);
+            }
         }
 
         // ═══════════════════════════════════════════════════

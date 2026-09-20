@@ -4,10 +4,20 @@ using FfmpegGui.Models;
 
 namespace FfmpegGui.Services
 {
-    public static class FfmpegCommandBuilder
+    // 声明为 partial：色彩输出决定的完整实现见 FfmpegCommandBuilder.Decision.cs（单一裁决点）。
+    public static partial class FfmpegCommandBuilder
     {
-        public static string BuildArguments(FfmpegOptions options, string inputPath, string outputPath)
+        /// <param name="probeInputPath">
+        /// 当 <paramref name="inputPath"/> 是 stdin（`"-"`，如 djxl→ffmpeg 管道）时，传入**喂进管道的那份真实源文件**。
+        /// 背景（P7d 实测）：位深/alpha 靠探测输入得出，而对 `-` 探测必然失败，于是整条 `-pix_fmt`
+        /// 被**静默跳过** ⇒ 编码器自选像素格式，与同一内容走主分支的结果逐像素不同（实测差 R 22 级）。
+        /// 只影响像素格式类探测；**输出色彩决定（<c>DecideOutputColor</c>）仍按 inputPath**——
+        /// 管道已把探测到的色彩元数据注入 options（高级参数模式），两处不同源是故意保留的。
+        /// </param>
+        public static string BuildArguments(FfmpegOptions options, string inputPath, string outputPath, string? probeInputPath = null)
         {
+            // 探测专用输入：默认与真实输入一致；stdin 时由调用方给出可探测的替代文件。
+            string probeInput = string.IsNullOrWhiteSpace(probeInputPath) ? inputPath : probeInputPath!;
             var args = new List<string>();
             args.Add("-y");
 
@@ -19,14 +29,42 @@ namespace FfmpegGui.Services
             // 但 -color_primaries/-color_trc 仍需保留以正确解释输入色彩空间。
             // JXL 同样为 RGB 原生（XYB 色彩空间），不应写 YUV 矩阵标签。
             var isRgbNativeFmt = fmt0 is "png" or "tiff" or "apng" or "jxl";
-            var (inputPrimaries, inputTrc, outputColorSpace) = BuildColorArgsSplit(options, inputPath);
-            if (!string.IsNullOrWhiteSpace(inputPrimaries))
+
+            // ════════════════════════════════════════════════════
+            //  单一裁决点（步骤 3）：这一次任务的色彩输出决定**只算一次**
+            //  输入声明、像素链、iccgen、出口语义、标注取舍全部来自 dec；宣称值的读取点
+            //  （<see cref="EffectiveOutputColorTokens"/> → PNG cICP 后置 / UI 文案、
+            //   ColorIntentFactory → 引擎目标）读同一份。本函数内**不得再算第二套**
+            //  （历史缺陷：“像素已 tonemap 成 SDR、宣称仍写 PQ”、“webp 标 bt709 而像素是 P3”）。
+            // ════════════════════════════════════════════════════
+            var dec = DecideOutputColor(options, inputPath, assignFaithfulPath: true);
+            var outputColorSpace = dec.MatrixForOutput;
+
+            // 保真路径（dec.Faithful）下 Decl* 已被裁决点置 null：不写任何 CICP 标记
+            //（写 bt709 会与附着的 ProPhoto ICC 冲突；bt2020 则是削色后的假标签）。
+            if (!string.IsNullOrWhiteSpace(dec.DeclPrimaries))
             {
-                args.Add("-color_primaries"); args.Add(inputPrimaries);
+                args.Add("-color_primaries"); args.Add(dec.DeclPrimaries!);
             }
-            if (!string.IsNullOrWhiteSpace(inputTrc))
+            if (!string.IsNullOrWhiteSpace(dec.DeclTrc))
             {
-                args.Add("-color_trc"); args.Add(inputTrc);
+                args.Add("-color_trc"); args.Add(dec.DeclTrc!);
+            }
+            // ── 输入矩阵声明（`-i` 前的 `-colorspace`）—— **2026-09-16 修复「角色错位」** ──
+            // 此前矩阵**只**被写进 `dec.MatrixForOutput` 当"输出标签"，于是「精确色彩参数」里的
+            // 矩阵**对输入解读毫无作用**：实测无标签 YUV 源下 `--color-matrix bt2020nc` 与 `bt709`
+            // 的产物 **md5 相同、PSNR=inf**（YUV→RGB 走了 swscale 默认矩阵）。
+            // 现按职责分离：这里声明「源用什么矩阵」（影响像素解读，与上面的 primaries/trc 同口径、同位置）；
+            // 产物该标注什么仍由下面的输出 `-colorspace` 负责（受容器能力 capM 约束）。
+            // ⚠ 必须走 ToFfmpegInputMatrixName 白名单：`bt2020c`/`ycgco`/`chroma-derived-*`/`ictcp`
+            //   实测令 swscale 报 "Impossible to convert between the formats" ⇒ 整条命令 -40、零产物；
+            //   返回 null 时**跳过**（绝不原样拼）。
+            // ⚠ 安全性：对 RGB 原生输出不会污染其 CICP —— 实测 `-colorspace bt2020nc -i … out.png`
+            //   的 PNG 仍报 `color_space=gbr`，且应用侧 PngCicpService 对 PNG 恒写 matrix=0。
+            var declMatrix = ColorSpaceRegistry.ToFfmpegInputMatrixName(dec.DeclMatrix);
+            if (declMatrix != null)
+            {
+                args.Add("-colorspace"); args.Add(declMatrix);
             }
 
             // ── 色彩范围检测：rgb48le 等全范围 RGB 输入 → 强制 pc range ──
@@ -64,165 +102,64 @@ namespace FfmpegGui.Services
             var fmt = options.Format.ToLower();
 
             // ═══════════════════════════════════════════════════
-            //  ICC 色彩管理 — 新模式 (CICP 始终启用)
-            //  模式1 None:        仅 CICP, 丢弃 ICC
-            //  模式2 CarryIcc:    保留源 ICC / 自动补充标准 ICC
-            //  模式3 BakeToStandard: zscale 烘焙 + iccgen 标准 ICC
-            //  模式4 BakeOnly:    zscale 烘焙，无 ICC 输出
+            //  格式色彩能力约束（实测驱动，针对失败模式修正）：由 dec 唯一给出，本处只应用位深硬约束。
+            //  - JPEG(Ffmpeg mjpeg)/WebP(libwebp): 仅支持 SDR；P3 等广色域经 ICC 可交付；
+            //  - TIFF: 仅支持 sRGB 显示色彩语义 (ICC 管理，color_primaries 无效)。
+            //  - AVIF: 支持 HDR 但 libaom 对 P3 高位深有兼容问题 → clamp 位深。
             // ═══════════════════════════════════════════════════
-            bool skipAutoBt2020Zscale = false;
-            bool skipHdrTonemap = false;
-            bool needsIccgen = false; // 是否需要 iccgen 生成标准 ICC
+            int capMaxBitDepth = dec.CapMaxBitDepth;   // 已含硬约束；options.BitDepth 的钳制在裁决点完成
 
-            // ── 模式 3/4: 烘焙像素 ──
-            if (options.IccMode == Models.IccMode.BakeToStandard
-                || options.IccMode == Models.IccMode.BakeOnly)
-            {
-                var srcParams = ResolveIccSourceParams(options);
-                var dstParams = MapIccTargetColorSpace(options.IccTargetColorSpace);
+            // ═══════════════════════════════════════════════════
+            //  色彩像素链：完全由单一裁决点 dec.PixelChains 给出（tonemap / 目标 zscale / D1 超广归一）
+            //  本函数只负责“按决定写命令行”，不得在此复算任何色彩取舍
+            // ═══════════════════════════════════════════════════
+            // ── 色彩策略（取代 IccMode）：控制「是否转换 + 如何标定(ICC/CICP)」；
+            //    具体取舍（preserveSource/stripIcc/iccgen/链）已在裁决点完成，此处只剩日志与元数据映射需要它。
+            var strategy = options.ColorStrategy;
 
-                if (!ColorParamsEqual(srcParams, dstParams))
-                {
-                    // 覆盖输入色彩参数（源 = 源文件 ICC 描述的空间）
-                    inputPrimaries = srcParams.primaries;
-                    inputTrc = srcParams.trc;
-                    // 输出 YUV 矩阵标记为目标空间
-                    outputColorSpace = dstParams.matrix;
+            // ── 按决定写色彩链（唯一的“决定→命令行”换算点；换算规则见 DecideOutputColor）──
+            foreach (var chain in dec.PixelChains) AppendVideoFilter(args, chain);
 
-                    // zscale 烘焙 (含输入输出参数)
-                    var zscaleFilter = BuildZscaleBakeFilter(srcParams, dstParams);
-                    AppendVideoFilter(args, zscaleFilter);
-
-                    skipAutoBt2020Zscale = true;
-                    skipHdrTonemap = true;
-
-                    // 模式 3: 烘焙后 iccgen 从帧元数据生成标准 ICC
-                    // zscale 已更新帧的 primaries/trc 为目标值, iccgen 自动匹配
-                    if (options.IccMode == Models.IccMode.BakeToStandard)
-                        needsIccgen = true;
-                }
-            }
-            // ── 模式 2: 携带 ICC (源有则保留，无则补标准 ICC) ──
-            else if (options.IccMode == Models.IccMode.CarryIcc)
-            {
-                // 保留所有元数据 (包括 ICC Profile)
-                // iccgen 为无 ICC 的源自动生成标准 sRGB ICC
-                needsIccgen = true;
-            }
-
-            // ── HDR→SDR 色彩降级 ──
-            if (!skipHdrTonemap)
-            {
-                var needsTonemap = NeedsHdrToSdrTonemap(options, inputPath, inputPrimaries, inputTrc);
-                if (needsTonemap && !isRgbNativeFmt)
-                {
-                    // tonemap 滤镜内部自带色彩空间转换（HDR→linear→SDR），无需外部 zscale 链。
-                    // 原实现 zscale=t=linear→tonemap→zscale 存在两个问题：
-                    //   ① zscale (libzimg) 对 YUV 4:2:0 输入要求宽高可被子采样因子整除，
-                    //      奇数尺寸（如 1921x1081）报 code 1027。
-                    //   ② 中间 zscale 依赖帧色彩标签，无标签时报 3074 (no path between colorspaces)。
-                    // format=yuv444p 前缀：4:4:4 无子采样约束，任意尺寸可用；也避免 4:2:0 色度损失。
-                    //
-                    // 2026-08-14 修复（实测驱动）:
-                    //   tonemap 滤镜输出为 linear light 像素，帧色彩标签泄漏为 unspecified/linear，
-                    //   直接输出会导致：① 容器 CICP 标签错误（PNG 实测 cICP=primaries=2,transfer=8）
-                    //                    ② 像素未应用 gamma（实测 YAVG 12416 vs 正确 gamma 编码 30770，
-                    //                       linear→gamma 关系精确吻合，画面明显过暗）
-                    //   修复链: tonemap → RGB → zscale 应用目标 gamma + primaries 转换 → 正确像素+标签。
-                    var tmSrcP = inputPrimaries ?? "bt2020";  // tonemap 保持输入 primaries，需转换到目标
-                    var tmDstP = "bt709";
-                    var tmDstT = "bt709";
-                    if (!options.UseAdvancedColorParameters
-                        && !string.IsNullOrWhiteSpace(options.ColorSpace)
-                        && !options.ColorSpace.Equals("auto", StringComparison.OrdinalIgnoreCase))
-                    {
-                        // 简化模式：目标为所选色彩空间（NeedsHdrToSdrTonemap 已排除 HDR 目标，此处恒为 SDR）
-                        var target = MapSimplifiedColorSpace(options.ColorSpace);
-                        tmDstT = target.trc ?? "bt709";
-                        tmDstP = target.primaries ?? "bt709";
-                    }
-                    else if (options.UseAdvancedColorParameters
-                             && !string.IsNullOrWhiteSpace(options.ColorTrc))
-                    {
-                        // 高级参数模式：目标为所选 trc/primaries
-                        tmDstT = options.ColorTrc!;
-                        tmDstP = options.ColorPrimaries ?? "bt709";
-                    }
-                    AppendVideoFilter(args,
-                        $"format=yuv444p,tonemap=hable:param=0.5,format=rgb48le," +
-                        $"zscale=pin={tmSrcP}:tin=linear:min=gbr:p={tmDstP}:t={tmDstT}:m=bt709");
-                    skipHdrTonemap = true;
-                }
-            }
-
-            // ── 简化模式目标色域转换（SDR→HDR / SDR→SDR 色域映射）──
-            // 当用户选择非 auto 目标色域且未使用 ICC 烘焙/高级参数时，
-            // 添加 zscale 滤镜将像素从「实际输入色彩」转换到「目标色彩」。
-            // zscale 输出帧自动携带目标 primaries/trc 标签，编码器会传递到输出文件。
-            // 注意：HDR→SDR 不在此处理（由 NeedsHdrToSdrTonemap 使用 tonemap 曲线）。
-            if (!skipAutoBt2020Zscale
-                && !options.UseAdvancedColorParameters
-                && !string.IsNullOrWhiteSpace(options.ColorSpace)
-                && !options.ColorSpace.Equals("auto", StringComparison.OrdinalIgnoreCase))
-            {
-                var targetParams = MapSimplifiedColorSpace(options.ColorSpace);
-                if (targetParams.primaries != null && targetParams.trc != null)
-                {
-                    // 实际输入色彩（来自 BuildColorArgsSplit 的 -i 前声明）
-                    var srcP = inputPrimaries ?? "bt709";
-                    var srcT = inputTrc ?? "iec61966-2-1";
-                    var srcM = outputColorSpace ?? "bt709";
-
-                    var dstP = targetParams.primaries!;
-                    var dstT = targetParams.trc!;
-                    var dstM = targetParams.matrix ?? "bt709";
-
-                    // 判断源是否为 HDR（PQ/HLG）→ 若目标是 SDR，交给 tonemap 处理
-                    var srcIsHdr = srcT.Equals("smpte2084", StringComparison.OrdinalIgnoreCase)
-                                || srcT.Equals("arib-std-b67", StringComparison.OrdinalIgnoreCase);
-                    var dstIsHdr = dstT.Equals("smpte2084", StringComparison.OrdinalIgnoreCase)
-                                || dstT.Equals("arib-std-b67", StringComparison.OrdinalIgnoreCase);
-
-                    // 仅在源≠目标时添加 zscale（避免无意义转换）
-                    // 排除 HDR→SDR（由 tonemap 处理，避免高光裁剪）
-                    if ((!string.Equals(srcP, dstP, StringComparison.OrdinalIgnoreCase)
-                         || !string.Equals(srcT, dstT, StringComparison.OrdinalIgnoreCase))
-                        && !(srcIsHdr && !dstIsHdr))
-                    {
-                        // format=rgb48le 前缀（RGB 域转换）：规避 libzimg 两个问题——
-                        //  ① 对 YUV 4:2:0 输入的尺寸整除要求（奇数尺寸 1027 错误）
-                        //  ② RGB 输入时无色彩标签导致的 3074 (no path between colorspaces)
-                        // RGB 域无子采样约束，任意尺寸可用；16-bit 精度避免色度损失。
-                        var zscaleFilter = $"format=rgb48le,zscale=pin={srcP}:tin={srcT}:min={srcM}:p={dstP}:t={dstT}:m={dstM}";
-                        AppendVideoFilter(args, zscaleFilter);
-
-                        // 更新输出矩阵标记（zscale 已转换像素，输出色彩空间为目标）
-                        outputColorSpace = dstM;
-
-                        // zscale 已完成色彩转换，跳过后续 tonemap
-                        skipHdrTonemap = true;
-                    }
-                }
-            }
+            // ═══════════════════════════════════════════════════
+            //  多帧输入 → 单帧容器规范化（强制取首帧）
+            //  判据**只看目标容器能不能装多帧**，与**输入扩展名无关**：
+            //  多帧输入（动图 gif/webp/apng/…）写单帧容器（jpg/png/tiff/…）时，image2 封装器报
+            //  `Cannot write more than one file with the same name` ⇒ `Invalid argument`
+            //  ⇒ 整条任务失败、零产物；故在输出前强制 `-frames:v 1`（仅第一帧）。
+            //  多帧容器（gif/webp/avif/apng；以及 `--format jxl --animation-fps` 走 libjxl_anim 时）不加，保留全部帧。
+            //  ⚠ 2026-09-18 修：旧判据是 `inputPath.EndsWith(".gif")` ⇒ 只保护 `.gif` 输入，
+            //    `.webp`/`.apng` 动图写静态目标必失败（实测 exit=1、0 产物）。改成只看目标容器。
+            //  ⚠ 对**单帧输入**加 `-frames:v 1` 是 no-op（本来就只有 1 帧）—— 实测产物逐像素不变
+            //    （`verify-anim-static-target.ps1` 的单帧不回归格用 PSNR=average:inf 锁）。
+            //  ⚠ `jxl + AnimationFps` 必须排除：libjxl_anim 能装多帧，若也插 `-frames:v 1` 会把动图
+            //    **静默截成 1 帧**（变异实测 M2 复现：exit=0 且 1 帧）—— 失败要响，不能静默降级。
+            // ═══════════════════════════════════════════════════
+            bool targetHoldsMultipleFrames = fmt is "gif" or "webp" or "avif" or "apng"
+                || (fmt == "jxl" && options.AnimationFps.HasValue);
+            bool insertFramesV1 = !targetHoldsMultipleFrames; // 目标容器不支持多帧时强制首帧
 
             switch (fmt)
             {
                 case "jpg":
                 case "jpeg":
-                    // ── Gain Map (Ultra HDR) 模式：使用 libultrahdr 编码器参数 ──
-                    if (options.JpegGainMap && options.Encoder == "libultrahdr")
-                    {
-                        args.Add("-compression_q");
-                        args.Add(options.Quality.ToString());
-                        var gmq = options.JpegGainMapQuality >= 0
-                            ? options.JpegGainMapQuality
-                            : options.Quality;
-                        args.Add("-gainmap_compression_q");
-                        args.Add(gmq.ToString());
-                        args.Add("-target_display_nits");
-                        args.Add(options.JpegGainMapTargetNits.ToString());
-                    }
-                    else if (options.EncoderBackend == EncoderBackend.Cjpegli)
+                    // Gain Map (Ultra HDR) 走纯 C# GainMapEncoder（见 QueueProcessor.ProcessGainMapJpegAsync），
+                    // 不再经此 ffmpeg 分支；此处仅按编码器后端设置 JPEG 质量参数。
+                    // ═══ 出声：本分支（ffmpeg/mjpeg）**吃不下**的两个请求，绝不静默丢弃 ═══
+                    // ⚠ 新增文案一律 **ASCII**：`_probe-cjk-hardcode-scan.ps1` 的 `CsUi` 余量为 0
+                    //   （该门禁按 sink 分桶，本处不是它认得的 sink ⇒ 中文会判红）。
+                    // ① 渐进 JPEG：ffmpeg 的 mjpeg 编码器**没有**该能力（实测 `-h encoder=mjpeg` 无该项；
+                    //    真传 `-progressive` 会被 ffmpeg 以 `Unrecognized option` 拒绝）⇒ 产物只能是基线。
+                    //    引擎路径已由 `ColorEngineRouter.BlockReason` 拦截；此处覆盖
+                    //    `--color-engine legacy`（路由层对 legacy 恒放行 ⇒ 原先**完全静默**）
+                    //    与 `auto` 的回退格（后者另有一条引擎侧日志）。
+                    if (options.JpegProgressiveId > 0)
+                        Console.WriteLine("⚠ [jpeg] --jpeg-progressive ignored: ffmpeg's mjpeg encoder has no "
+                            + "progressive support, so the output is baseline. Use -e Cjpegli for progressive JPEG.");
+                    // ② 无损 JPEG：mjpeg 是**有损**编码器 ⇒ `--lossless true` 对本分支无效（原先静默产有损）。
+                    if (options.Lossless)
+                        Console.WriteLine("⚠ [jpeg] --lossless true ignored: the mjpeg encoder is lossy, so the output is lossy. "
+                            + "The only lossless JPEG path here is DNG container compression (--format dng --dng-compression 0).");
+                    if (options.EncoderBackend == EncoderBackend.Cjpegli)
                     {
                         // JPEG-LI (cjpegli) 使用 butteraugli distance（0-15），与 JXL 一致
                         args.Add("-distance");
@@ -278,6 +215,13 @@ namespace FfmpegGui.Services
                             args.Add("-preset");
                             args.Add(options.WebpPreset);
                         }
+                        else if (!string.IsNullOrWhiteSpace(options.WebpPreset))
+                        {
+                            // 出声：无损模式下 preset 被**有意**丢弃（会配置有损量化参数、可能让 libwebp
+                            // 静默退化为有损），但用户看不到 ⇒ 原先属"看起来配置过"。ASCII 文案，理由见 jpg 分支。
+                            Console.WriteLine("⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy "
+                                + "quantization and can silently degrade -lossless 1 to lossy.");
+                        }
                     }
                     else
                     {
@@ -285,38 +229,72 @@ namespace FfmpegGui.Services
                         args.Add(options.Quality.ToString());
                         if (!string.IsNullOrWhiteSpace(options.WebpPreset) && options.WebpPreset != "none")
                         { args.Add("-preset"); args.Add(options.WebpPreset); }
+                        // 出声：`-compression_level` 是无损模式的 zlib 级别，有损模式下无效（原先静默丢弃）。
+                        if (options.WebpCompressionLevel.HasValue)
+                            Console.WriteLine("⚠ [webp] --webp-compression ignored for lossy WebP: it maps to the "
+                                + "lossless-mode zlib level (0-6); use --lossless true to apply it.");
                     }
                     // 动图 WebP: -loop 控制循环
                     if (options.AnimationLoop >= 0)
                     { args.Add("-loop"); args.Add(options.AnimationLoop.ToString()); }
+                    // ── 动图滤镜（fps / 缩放）：与 apng(:291-296) / jxl(:342-347) 分支**同口径** ──
+                    // ⚠ P1-F 缺陷 4（2026-09-19 修）：此前 WebP 分支只写 -loop，用户在动图面板设的
+                    //   帧率与宽度被**静默丢弃**（命令串里连 token 都没有，用户无从察觉）。
+                    //   定性 = **缺陷**（不是 ffmpeg 能力缺失），实测证据（ffmpeg git-2026-09-01，
+                    //   10 帧 / 256x192 的 anim_gif.gif）：
+                    //     `-c:v libwebp_anim -loop 0 -vf "fps=10,scale=64:-1:flags=lanczos"`
+                    //        ⇒ 10 帧 / 64x48 / avg_frame_rate=10/1
+                    //     `-c:v libwebp`（本软件 WebP 的**默认**编码器）加同一 -vf
+                    //        ⇒ 10 帧 / 64x48（两条通路都支持 fps/scale 滤镜；无滤镜对照 256x192）
+                    //   ⇒ 走 `AppendVideoFilter` 合并写入（**不**新增第二条 -vf）：与色彩像素链
+                    //     （`dec.PixelChains`，:121 先写）落在**同一条 -vf** 且像素链在前；
+                    //     `iccgen` 段由 :563 在 switch **之后**追加 ⇒ 出现在 fps/scale 之后。
+                    //     实测该条 -vf 为 `fps=12,scale=320:-1:flags=lanczos,iccgen`（唯一一条 -vf）。
+                    if (options.AnimationFps.HasValue || options.AnimationScaleW > 0)
+                    {
+                        var webpFilters = new List<string>();
+                        if (options.AnimationFps.HasValue)
+                            webpFilters.Add($"fps={options.AnimationFps.Value}");
+                        if (options.AnimationScaleW > 0)
+                            webpFilters.Add($"scale={options.AnimationScaleW}:-1:flags=lanczos");
+                        AppendVideoFilter(args, string.Join(",", webpFilters));
+                    }
                     break;
                 case "gif":
                 {
-                    // 构建滤镜链（FPS + 缩放）
-                    var filters = new List<string>();
-                    if (options.AnimationFps.HasValue)
-                        filters.Add($"fps={options.AnimationFps.Value}");
-                    if (options.AnimationScaleW > 0)
-                        filters.Add($"scale={options.AnimationScaleW}:-1:flags=lanczos");
+                    // ── 2026-09-17：滤镜链与 -loop 的拼装**整体搬移**到
+                    //    `ImageEncoderArgs.BuildGifFilterChain` / `BuildGifOptions`（单一真值），
+                    //    传统管线与自研引擎出口共用同一份 —— 本项目的「两处口径漂移」就是这么反复修掉的。
+                    //    搬移是**逐项、逐顺序**的纯移动，语义一字未改（同一源可用 `[cmd] ffmpeg …` 逐字对拍）。
+                    //
+                    // 色彩转换滤镜（tonemap/zscale/iccgen）此前经 AppendVideoFilter 写入独立 -vf。
+                    // GIF 用 -filter_complex(palettegen/paletteuse)，ffmpeg 不允许同一流同时用 simple(-vf)
+                    // 与 complex(-filter_complex) 滤镜（实测："Simple and complex filtering cannot be used
+                    // together for the same stream"）→ 必须把 -vf 链并入 filter_complex 前端并移除独立 -vf。
+                    string? colorChain = null;
+                    var preVfIdx = args.FindIndex(a => a == "-vf");
+                    if (preVfIdx >= 0 && preVfIdx + 1 < args.Count)
+                    {
+                        colorChain = args[preVfIdx + 1];   // 色彩转换置于链首（先 tonemap 再 fps/scale/palette）
+                        args.RemoveAt(preVfIdx + 1);
+                        args.RemoveAt(preVfIdx);
+                    }
 
-                    if (options.GifPaletteOptimize)
+                    var gifChain = ColorMapping.ImageEncoderArgs.BuildGifFilterChain(options, colorChain);
+                    if (gifChain != null)
                     {
-                        var filterChain = string.Join(",", filters);
-                        var complex = string.IsNullOrEmpty(filterChain)
-                            ? $"split[s0][s1];[s0]palettegen=reserve_transparent=1[p];[s1][p]paletteuse"
-                            : $"{filterChain},split[s0][s1];[s0]palettegen=reserve_transparent=1[p];[s1][p]paletteuse";
-                        if (options.GifDither)
-                            complex += "=dither=bayer:bayer_scale=5:diff_mode=rectangle";
-                        args.Insert(1, "-filter_complex");
-                        args.Insert(2, $"\"{complex}\"");
+                        if (options.GifPaletteOptimize)
+                        {
+                            args.Insert(1, "-filter_complex");
+                            args.Insert(2, $"\"{gifChain}\"");
+                        }
+                        else
+                        {
+                            args.Add("-vf");
+                            args.Add(gifChain);
+                        }
                     }
-                    else
-                    {
-                        if (filters.Count > 0)
-                        { args.Add("-vf"); args.Add(string.Join(",", filters)); }
-                    }
-                    if (options.AnimationLoop != -1)
-                    { args.Add("-loop"); args.Add(options.AnimationLoop.ToString()); }
+                    args.AddRange(ColorMapping.ImageEncoderArgs.BuildGifOptions(options));
                     break;
                 }
                 case "apng":
@@ -343,153 +321,10 @@ namespace FfmpegGui.Services
                     break;
                 }
                 case "avif":
-                    if (options.Lossless)
-                    {
-                        args.Add("-crf");
-                        args.Add("0");
-                    }
-                    else
-                    {
-                        args.Add("-crf");
-                        args.Add(MapAvifCrf(options.Quality).ToString());
-                    }
-                    if (options.AvifCpuUsed.HasValue)
-                    { args.Add("-cpu-used"); args.Add(options.AvifCpuUsed.Value.ToString()); }
-                    var isSvt = options.Encoder?.StartsWith("libsvt", StringComparison.OrdinalIgnoreCase) == true;
-                    if (!string.IsNullOrWhiteSpace(options.AvifTune) && options.AvifTune != "默认")
-                    {
-                        switch (options.AvifTune)
-                        {
-                            case "PSNR":
-                                if (isSvt) { args.Add("-svtav1-params"); args.Add("tune=1"); }
-                                else { args.Add("-tune"); args.Add("psnr"); }
-                                break;
-                            case "SSIM":
-                                if (isSvt) { args.Add("-svtav1-params"); args.Add("tune=2"); }
-                                else { args.Add("-tune"); args.Add("ssim"); }
-                                break;
-                            case "VMAF":
-                                if (isSvt) { args.Add("-svtav1-params"); args.Add("tune=3"); }
-                                else { args.Add("-tune"); args.Add("vmaf_without_preprocessing"); }
-                                break;
-                            case "IQ (图像优化)":
-                                // libaom 仅支持 tune=iq（原始 aom 参数），SVT-AV1 不支持
-                                if (!isSvt)
-                                {
-                                    args.Add("-usage"); args.Add("allintra");
-                                    args.Add("-aom-params"); args.Add("tune=iq");
-                                }
-                                break;
-                        }
-                    }
-                    // 动图 AVIF: still-picture=0
-                    var isAnimated = options.AnimationFps.HasValue || options.AnimationLoop != 0 || options.AvifStillPicture == false;
-                    if (isAnimated)
-                    { args.Add("-still-picture"); args.Add("0"); }
-                    else if (options.AvifStillPicture == true)
-                    { args.Add("-still-picture"); args.Add("1"); }
-                    if (options.AvifRowMt == true)
-                    { args.Add("-row-mt"); args.Add("1"); }
-                    // IQ tune 已设置 -usage allintra，不再重复设置
-                    var iqActive = options.AvifTune == "IQ (图像优化)" && !isSvt;
-                    if (!iqActive && !string.IsNullOrWhiteSpace(options.AvifPreset) && options.AvifPreset != "auto")
-                    {
-                        // ── 编码器特定参数 ──
-                        if (isSvt)
-                        {
-                            // SVT-AV1: preset + tune
-                            if (options.AvifSvtPreset.HasValue)
-                            { args.Add("-preset"); args.Add(options.AvifSvtPreset.Value.ToString()); }
-                            if (!string.IsNullOrWhiteSpace(options.AvifSvtTune) && options.AvifSvtTune != "默认")
-                            {
-                                var svtTuneVal = options.AvifSvtTune switch
-                                {
-                                    "VMAF (主观)" => "1",
-                                    "PSNR" => "2",
-                                    "SSIM" => "3",
-                                    _ => "1"
-                                };
-                                args.Add("-svtav1-params"); args.Add($"tune={svtTuneVal}");
-                            }
-                            // SVT still-picture
-                            if (options.AvifStillPicture == true)
-                            { args.Add("-still-picture"); args.Add("1"); }
-                            else if (options.AvifStillPicture == false)
-                            { args.Add("-still-picture"); args.Add("0"); }
-                        }
-                    }
-                    // ── libaom-av1 高级图像选项 ──
-                    if (!isSvt)
-                    {
-                        // aq-mode: 自适应量化
-                        if (!string.IsNullOrWhiteSpace(options.AvifAqMode))
-                        { args.Add("-aq-mode"); args.Add(options.AvifAqMode); }
-                        // CDEF
-                        if (options.AvifEnableCdef == false)
-                        { args.Add("-enable-cdef"); args.Add("0"); }
-                        else if (options.AvifEnableCdef == true)
-                        { args.Add("-enable-cdef"); args.Add("1"); }
-                        // Intrabc (屏幕内容)
-                        if (options.AvifEnableIntrabc == false)
-                        { args.Add("-enable-intrabc"); args.Add("0"); }
-                        else if (options.AvifEnableIntrabc == true)
-                        { args.Add("-enable-intrabc"); args.Add("1"); }
-                        // 降噪 (denoise-noise-level)
-                        if (options.AvifDenoiseLevel.HasValue && options.AvifDenoiseLevel.Value > 0)
-                        { args.Add("-denoise-noise-level"); args.Add(options.AvifDenoiseLevel.Value.ToString()); }
-                    }
-                    // ── 硬件编码器预设 (新:精细7档) ──
-                    // 优先使用新预设级别，回退旧 AvifHwPreset 兼容
-                    var hwLevel = options.AvifHwPresetLevel;
-                    if (hwLevel >= 1 && hwLevel <= 7)
-                    {
-                        var enc = options.Encoder ?? "";
-                        if (enc.StartsWith("av1_nvenc", StringComparison.OrdinalIgnoreCase))
-                        { args.Add("-preset"); args.Add($"p{hwLevel}"); }
-                        else if (enc.StartsWith("av1_qsv", StringComparison.OrdinalIgnoreCase))
-                        {
-                            var qsvPresets = new[] { "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow" };
-                            args.Add("-preset"); args.Add(qsvPresets[Math.Clamp(hwLevel - 1, 0, 6)]);
-                        }
-                        else if (enc.StartsWith("av1_amf", StringComparison.OrdinalIgnoreCase))
-                        {
-                            args.Add("-quality"); args.Add(hwLevel <= 2 ? "speed" : hwLevel <= 5 ? "balanced" : "quality");
-                        }
-                        else if (enc.StartsWith("av1_vaapi", StringComparison.OrdinalIgnoreCase))
-                        { args.Add("-compression_level"); args.Add(hwLevel.ToString()); }
-                    }
-                    else if (!string.IsNullOrWhiteSpace(options.AvifHwPreset) && options.AvifHwPreset != "平衡")
-                    {
-                        // 旧字段回退兼容
-                        var enc2 = options.Encoder ?? "";
-                        if (enc2.StartsWith("av1_nvenc", StringComparison.OrdinalIgnoreCase))
-                        { args.Add("-preset"); args.Add(options.AvifHwPreset == "高质量" ? "p7" : "p1"); }
-                        else if (enc2.StartsWith("av1_qsv", StringComparison.OrdinalIgnoreCase))
-                        { args.Add("-preset"); args.Add(options.AvifHwPreset == "高质量" ? "veryslow" : "veryfast"); }
-                        else if (enc2.StartsWith("av1_amf", StringComparison.OrdinalIgnoreCase))
-                        { args.Add("-quality"); args.Add(options.AvifHwPreset == "高质量" ? "quality" : "speed"); }
-                        else if (enc2.StartsWith("av1_vaapi", StringComparison.OrdinalIgnoreCase))
-                        { args.Add("-compression_level"); args.Add(options.AvifHwPreset == "高质量" ? "7" : "1"); }
-                    }
-                    // ── NVENC 高级选项 ──
-                    if (options.Encoder?.StartsWith("av1_nvenc", StringComparison.OrdinalIgnoreCase) == true)
-                    {
-                        if (options.AvifNvencAqStrength.HasValue)
-                        { args.Add("-aq-strength"); args.Add(options.AvifNvencAqStrength.Value.ToString()); }
-                        if (options.AvifNvencSpatialAq == false)
-                        { args.Add("-spatial-aq"); args.Add("0"); }
-                        else if (options.AvifNvencSpatialAq == true)
-                        { args.Add("-spatial-aq"); args.Add("1"); }
-                    }
-                    // ── QSV/VAAPI 低功耗模式 ──
-                    if (options.Encoder?.StartsWith("av1_qsv", StringComparison.OrdinalIgnoreCase) == true
-                        || options.Encoder?.StartsWith("av1_vaapi", StringComparison.OrdinalIgnoreCase) == true)
-                    {
-                        if (options.AvifLowPower == true)
-                        { args.Add("-low_power"); args.Add("1"); }
-                        else if (options.AvifLowPower == false)
-                        { args.Add("-low_power"); args.Add("0"); }
-                    }
+                    // ⚠ 2026-09-17：AVIF 编码参数**整体搬移**到 ImageEncoderArgs.BuildAvifOptions（单一真值），
+                    //   传统管线与自研引擎出口共用同一份 —— 本项目的「两处口径漂移」就是这么反复修掉的。
+                    //   搬移是**逐项、逐顺序**的纯移动，语义一字未改（同一源可用 `[cmd] ffmpeg …` 逐字对拍）。
+                    args.AddRange(ColorMapping.ImageEncoderArgs.BuildAvifOptions(options));
                     // GIF → AVIF：两步滤镜链 —— pal8→rgba（保留透明索引→alpha）+ rgba→yuva420p（编码器格式）
                     if (inputPath.EndsWith(".gif", StringComparison.OrdinalIgnoreCase))
                     {
@@ -498,15 +333,24 @@ namespace FfmpegGui.Services
                     }
                     break;
                 case "tiff":
-                    if (options.Lossless)
-                    {
-                        args.Add("-compression_algo");
-                        args.Add("raw");
-                    }
-                    else if (!string.IsNullOrWhiteSpace(options.TiffCompressionAlgo))
+                    // ⚠ P1-F 缺陷 3（2026-09-19 修）：原先 `options.Lossless ⇒ 强制 raw` **优先于**用户选择，
+                    //   而 TIFF 是**强制无损**格式（UpdateOptionAvailability 对 tiff 恒置 LosslessCheck=true
+                    //   并锁定）⇒ `TiffCompressionCombo` 的四个取值（raw/lzw/deflate/packbits）产物完全相同，
+                    //   下拉框成了死控件（用户改了却毫无效果）。
+                    //   实测（ffmpeg git-2026-09-01，src_8bit.png→tiff，8-bit 与 16-bit 两轮）：
+                    //     四种算法 PSNR 均为 `average:inf`（**都是无损**），仅体积不同
+                    //     （8-bit：raw 590657B / lzw 52707B / deflate 26379B / packbits 594241B）
+                    //   ⇒ 「无损就必须 raw」不成立（无任何正确性理由），改为**用户选择优先**；
+                    //     未指定算法时保持原默认 raw（旧行为逐字保留）。
+                    if (!string.IsNullOrWhiteSpace(options.TiffCompressionAlgo))
                     {
                         args.Add("-compression_algo");
                         args.Add(options.TiffCompressionAlgo);
+                    }
+                    else if (options.Lossless)
+                    {
+                        args.Add("-compression_algo");
+                        args.Add("raw");
                     }
                     if (options.TiffDpi.HasValue && options.TiffDpi.Value > 0)
                     { args.Add("-dpi"); args.Add(options.TiffDpi.Value.ToString()); }
@@ -543,9 +387,19 @@ namespace FfmpegGui.Services
                         if (options.JxlModular == true)
                         { args.Add("-modular"); args.Add("1"); }
                     }
-                    // --- JPEG→JXL 快速路径：不解码，直接复制 DCT 系数 ---
-                    // FFmpeg 8.x+ 中 libjxl 自动检测 JPEG 输入并启用无损重封装，
-                    // 只需设置 -distance 0 即可。旧版 -lossless_jpeg 已移除。
+                    // --- JPEG→JXL 快速路径：意图是"不解码、直接复制 DCT 系数" ---
+                    // ⚠ 更正（2026-09-19 实测）：本工具链**做不到**无损重封装。此前注释称
+                    //   "FFmpeg 8.x+ 中 libjxl 自动检测 JPEG 输入并启用无损重封装，只需 -distance 0"
+                    //   ——**不成立**。实测 `-distance 0` 走的是普通有损→无损（modular）重编码：
+                    //   `jxlinfo` 里**没有** "JPEG bitstream reconstruction data available"（无 jbrd），
+                    //   且同一 JPEG 产物大小 35487B（ffmpeg-libjxl）vs 16497B（cjxl 后端真重封装）。
+                    //   即本分支只是"低损重编码"，**不是** JPEG 比特流无损重封装。
+                    //   真正的 jbrd 无损重封装只有 cjxl 后端（`-d 0 --lossless_jpeg=1`）能做到，
+                    //   本工具链的 ffmpeg-libjxl 路径不具备该能力。
+                    // ⚠ 该分支**不是**静帧 JXL 的通用参数（它靠"不解码"实现无损重封装）⇒
+                    //   引擎出口**不承接**（见 ImageEncoderArgs.UnsupportedEncoderSettings），
+                    //   故不能与下面的 BuildJxlOptions 合并；只有 `!JxlLosslessJpeg` 的静帧参数
+                    //   才走单一真值 `ImageEncoderArgs.BuildJxlOptions`（2026-09-17 搬移）。
                     if (options.JxlLosslessJpeg)
                     {
                         args.Add("-distance");
@@ -553,23 +407,9 @@ namespace FfmpegGui.Services
                         if (options.JxlEffort.HasValue)
                         { args.Add("-effort"); args.Add(options.JxlEffort.Value.ToString()); }
                     }
-                    else if (options.Lossless)
-                    {
-                        args.Add("-distance");
-                        args.Add("0");
-                        if (options.JxlEffort.HasValue)
-                        { args.Add("-effort"); args.Add(options.JxlEffort.Value.ToString()); }
-                        if (options.JxlModular == true)
-                        { args.Add("-modular"); args.Add("1"); }
-                    }
                     else
                     {
-                        args.Add("-distance");
-                        args.Add(MapJxlDistance(options.Quality).ToString("F1"));
-                        if (options.JxlEffort.HasValue)
-                        { args.Add("-effort"); args.Add(options.JxlEffort.Value.ToString()); }
-                        if (options.JxlModular == true)
-                        { args.Add("-modular"); args.Add("1"); }
+                        args.AddRange(ColorMapping.ImageEncoderArgs.BuildJxlOptions(options));
                     }
                     break;
             }
@@ -599,44 +439,46 @@ namespace FfmpegGui.Services
             //    恒输出 4:2:0（Bug 修复）。
             // ② 位深 auto → 探测输入实际位深：>8 按输入位深输出，≤8 按 8-bit 输出。
             // ③ 色度为 auto → 仅按位深指定（默认 4:2:0）。
-            var inputHasAlpha = GetCachedProbe(inputPath).hasAlpha;
+            var inputHasAlpha = GetCachedProbe(probeInput).hasAlpha;
             int EffectiveBitDepth()
             {
                 if (options.BitDepth.HasValue) return options.BitDepth.Value;
-                var detectedBd = ProbeInputBitDepth(inputPath);
-                return detectedBd > 8 ? detectedBd : 8;
+                var detectedBd = ProbeInputBitDepth(probeInput);
+                // 即使输入是 16-bit，也要受格式能力上限约束
+                return Math.Min(detectedBd > 8 ? detectedBd : 8, capMaxBitDepth);
             }
 
             // ── AVIF 位深按编码器 clamp（2026-08-16 实测驱动）──
             // libaom-av1/av1_nvenc: 8/10/12-bit；libsvtav1/av1_qsv/av1_amf: 仅 8/10-bit。
             // 防止 16-bit 输入 auto 位深 → yuv420p16le 编码失败（libaom/libsvt 均不支持 16-bit YUV）。
-            var avifMaxBd = int.MaxValue;
-            if (fmt == "avif")
-            {
-                var enc = options.Encoder ?? "";
-                avifMaxBd = (enc.StartsWith("libaom", StringComparison.OrdinalIgnoreCase)
-                          || enc.StartsWith("av1_nvenc", StringComparison.OrdinalIgnoreCase)) ? 12 : 10;
-            }
+            // ⚠ 2026-09-17：判定式**单一真值**搬到 ImageEncoderArgs.AvifMaxBitDepth（引擎出口也用同一份），
+            //   表达式逐字等价 —— 本处仅转发，行为不变。
+            var avifMaxBd = fmt == "avif" ? ColorMapping.ImageEncoderArgs.AvifMaxBitDepth(options) : int.MaxValue;
             int ClampAvifBd(int bd) => Math.Min(bd, avifMaxBd);
 
-            if (!string.IsNullOrWhiteSpace(options.Chroma)
+            // GIF 为调色板格式：paletteuse 输出 pal8，显式 -pix_fmt（如 16-bit 源的 yuv420p16le）会与 pal8
+            // 冲突/编码失败 → GIF 输出跳过通用 pix_fmt（与 8-bit GIF 无 -pix_fmt 的既有正确行为一致）。
+            bool skipGenericPixFmt = fmt is "gif";
+            if (!skipGenericPixFmt
+                && !string.IsNullOrWhiteSpace(options.Chroma)
                 && !options.Chroma.Equals("auto", StringComparison.OrdinalIgnoreCase))
             {
                 args.Add("-pix_fmt");
                 args.Add(MapPixFmt(options.Format, options.Chroma, ClampAvifBd(EffectiveBitDepth()), inputHasAlpha, options.ColorRange));
             }
-            else if (!options.BitDepth.HasValue)
+            else if (!skipGenericPixFmt && !options.BitDepth.HasValue)
             {
                 // 位深为 auto：从输入文件自动探测实际位深并传递
                 // 修复 HDR 图片（16-bit+）输出时退化为 8-bit 的问题
-                var detectedBd = ProbeInputBitDepth(inputPath);
+                // ⚠ P7d：必须探 probeInput（stdin 探不到就会整条 -pix_fmt 不写，像素格式交给编码器自选）
+                var detectedBd = ProbeInputBitDepth(probeInput);
                 if (detectedBd > 8)
                 {
                     args.Add("-pix_fmt");
-                    args.Add(MapPixFmt(options.Format, options.Chroma, ClampAvifBd(detectedBd), inputHasAlpha, options.ColorRange));
+                    args.Add(MapPixFmt(options.Format, options.Chroma, ClampAvifBd(Math.Min(detectedBd, capMaxBitDepth)), inputHasAlpha, options.ColorRange));
                 }
             }
-            else if (options.BitDepth.HasValue)
+            else if (!skipGenericPixFmt && options.BitDepth.HasValue)
             {
                 // 位深已手动指定但色度为 auto：直接按位深设置 pix_fmt
                 // （修复 Chroma=auto 时 BitDepth 设置失效的 Bug）
@@ -670,8 +512,8 @@ namespace FfmpegGui.Services
             // 模式 1 (None): CICP 始终保留，仅剥离非色彩元数据
             // 模式 4 (BakeOnly): 仅剥离 ICC 相关元数据
             // 模式 2/3: 保留全部元数据
-            bool stripAllMeta = options.IccMode == Models.IccMode.None
-                             || options.IccMode == Models.IccMode.BakeOnly;
+            // 除「携带(CarryIcc)」外均剥离源流元数据（目标 ICC 由 iccgen/exiftool 后置生成，避免源 ICC 冲突）。
+            bool stripAllMeta = strategy != Models.ColorStrategy.CarryIcc;
 
             // CICP 兼容格式列表（保留 CICP 不剥离）
             bool isCicpFormat = fmt is "avif" or "jxl" or "png" or "apng";
@@ -705,31 +547,91 @@ namespace FfmpegGui.Services
                 args.Add("0");
             }
 
-            // ── 非 CICP 格式 + 非 sRGB → 自动 ICC 嵌入 ──
-            // JPEG/WebP/TIFF 不支持 CICP，若输出非 sRGB，需 iccgen 补充 ICC
-            bool isNonCicpFormat = fmt is "jpg" or "jpeg" or "webp" or "tiff";
-            bool isNonSrgb = options.ColorSpace != null
-                          && !options.ColorSpace.Equals("auto", StringComparison.OrdinalIgnoreCase)
-                          && !options.ColorSpace.Equals("sRGB", StringComparison.OrdinalIgnoreCase);
-            if (isNonCicpFormat && isNonSrgb && !needsIccgen)
-            {
-                needsIccgen = true;
-            }
+            // ── ICC 取舍已在裁决点完成：是否附 ICC（AttachIcc）、编码器会不会把 iccgen 的 ICC 落盘
+            //    （EncoderWritesFilterIcc）、需不需要队列后置嵌入（NeedsPostEmbedIcc）。本处只按决定写命令行。
+            //  （D2：广色域/超广色域输出用「标准 ICC + CICP」完整描述、iccgen 不支持 HDR 传递等
+            //   判据已全部移入 DecideOutputColor，不在此处复算。）
 
             // ═══════════════════════════════════════════════════
-            //  ICC 嵌入 — iccgen 自动生成标准 ICC（模式2/3 + 非CICP格式补偿）
-            //  CICP 始终启用（在所有模式中已通过 -color_primaries/-color_trc 传递）
+            //  关键约束：iccgen 仅在 RGB 域工作（对 10-bit+ YUV 输入报 "Not yet implemented"），
+            //  且不支持 HDR 传递——两者均已作为判据进入裁决点。
             // ═══════════════════════════════════════════════════
-            if (needsIccgen)
+            if (dec.RunIccgen)
             {
+                // 高位深 YUV 输入 → iccgen 前先转 RGB（iccgen 仅支持 RGB 输入）；
+                // 若还需 tonemap，tonemap 链已在前面处理过，这里只负责格式转换。
+                if (dec.IccgenNeedsRgb) AppendVideoFilter(args, "format=rgb48le");
                 AppendVideoFilter(args, "iccgen");
             }
 
             // ── 输出色彩矩阵（YUV colorspace，必须在 -i 之后写入输出流）──
             // PNG/TIFF 是 RGB 原生格式，不需要 YUV 色彩矩阵参数
-            if (!isRgbNativeFmt && !string.IsNullOrWhiteSpace(outputColorSpace))
+            // 各编码器支持的 colorspace 白名单：只允许 YUV 矩阵写给 YUV 编码器。
+            // gbr/rgb 为 RGB 矩阵：libwebp_anim/mjpeg/libaom/libsvtav1 一律拒绝
+            // （实测 libwebp_anim: "Undefined constant ... in 'gbr'" → Invalid argument → 0 字节）。
+            // RGB 原生格式(png/tiff/apng/jxl)已由 isRgbNativeFmt 跳过本块，故此处不含 gbr/rgb。
+            // 白名单换成「ffmpeg 实际接受的名字」的**实测枚举**（ColorSpaceRegistry.FfmpegColorSpaceNames）。
+            // 旧表里的 bt2020ncl / bt2020cl / ycgcocn / ycgcocs / bt2020 以及 smpte432 / smpte431
+            //（基准名被误当矩阵）经实测**全部被 ffmpeg 拒绝** ⇒ 一旦放行就是整条命令 `-22`、零产物
+            //（`Unable to parse "colorspace" option value …`）。规范化与可用性判定都收在 Registry 里。
+            // 唯一的界面差异：zscale 认 `gbr`、ffmpeg 认 `rgb`，由 ToFfmpegColorSpaceName 转换。
+            // ── 输出标注优先服从**容器能力**（capM）—— 2026-09-16 ──
+            // jpg/webp 的能力表写明矩阵只能 bt709（写别的值：mjpeg/libwebp 会**静默忽略**并写自己的默认
+            // bt470bg，而 bt2020c/ycgco 更会让 swscale 直接失败）。此前 capM 只用于像素链的目标矩阵，
+            // **从不施加于用户的矩阵** ⇒ 用户的 `--color-matrix bt2020nc` 会被原样写进 jpg 的输出标签，
+            // 造成「宣称 bt2020nc、实际文件里没有该标注」。现统一由 capM 优先。
+            var outMatrixToken = dec.CapMatrix ?? outputColorSpace;
+            var ffmpegColorSpace = ColorSpaceRegistry.ToFfmpegColorSpaceName(outMatrixToken);
+            // RGB 矩阵族（gbr→rgb）**不写给 YUV 编码器**：libwebp_anim/mjpeg/libaom/libsvtav1 实测一律拒绝
+            //（"Undefined constant ... in 'gbr'" ⇒ 0 字节）。RGB 原生格式(png/tiff/apng/jxl)已由
+            // isRgbNativeFmt 跳过本块 ⇒ 此处保持旧口径，不写 rgb。
+            if (!isRgbNativeFmt
+                && ffmpegColorSpace != null
+                && !ffmpegColorSpace.Equals("rgb", StringComparison.OrdinalIgnoreCase))
             {
-                args.Add("-colorspace"); args.Add(outputColorSpace);
+                args.Add("-colorspace"); args.Add(ffmpegColorSpace);
+            }
+
+            // ── 图片最长边限制（下采样/缩放）──
+            // ⚠ **顺序统一（R1，2026-09-18）**：scale 必须插在**第一条色彩变换之前**（= 缩放 → 映射）。
+            //   此前走 AppendVideoFilter ⇒ **追加到链尾** ⇒ 映射 → 缩放，与引擎侧
+            //   （`RawColorPipeline.cs:94-97` 的 `format=rgb48le,{scale}` ⇒ 缩放 → 映射）**顺序相反**，
+            //   而两条顺序实测**不等价**（2×2 对照 PSNR 36.47dB / 最大单通道差 14417）。
+            //   ⇒ 改用专用 helper（不复用 AppendVideoFilter：`:498-499` 的 iccgen 依赖其**追加**语义）。
+            //   ⚠ 本行的探测入参仍是 `inputPath`；改成 `probeInput` 属批次 2（gap D），本批次**不动**。
+            if (options.EnableMaxDimension && options.MaxDimension > 0)
+            {
+                var scaleFilter = BuildMaxDimensionScaleFilter(options, inputPath);
+                if (!string.IsNullOrEmpty(scaleFilter))
+                    InsertScaleFilterAtChainHead(args, scaleFilter);
+            }
+
+            // ── 单帧容器首帧选择 ──
+            // 在输出路径前插入 -frames:v 1，确保多帧输入写单帧容器时仅取首帧
+            // （判据见上方 targetHoldsMultipleFrames）。必须在 outputPath 之前才能生效。
+            if (insertFramesV1)
+            {
+                args.Add("-frames:v");
+                args.Add("1");
+            }
+
+            // ── APNG 编码器必须配 `-f apng`（2026-09-15 实测，属**数据完整性**问题）──
+            // 只写 `-c:v apng` 而不指定 `-f apng` 时，`.png` 后缀会让 ffmpeg 走 image2/png 封装器，
+            // 产出**没有 PNG 签名、没有 IHDR、也没有 IEND 的裸 APNG 块流**（实测 2404 字节，首字节即 fcTL，
+            // ffprobe 报 `Invalid PNG signature`，任何解码器都读不了）——而**退出码是 0**，属静默损坏。
+            // 手工对照（同一素材、同一 ffmpeg 构建）：`-c:v apng` ⇒ 缺签名；`-c:v apng -f apng` ⇒ 正常；
+            // `-c:v png` / 默认 ⇒ 正常。
+            // 为什么按「编码器」而不是「目标格式」判定：CloneOptionsForFfmpeg 把 **png 目标也映射成 apng 编码器**
+            // （为让 .png 容器能承载动画）⇒ 此时走的是 case "png" 分支，拿不到 case "apng" 里那句 -f apng。
+            // 受影响的三条通路：ProcessCjxlAsync / ProcessCjpegliAsync 的 ffmpeg 回退、JXR→ffmpeg 标准编码。
+            if (string.Equals(options.Encoder, "apng", StringComparison.OrdinalIgnoreCase))
+            {
+                bool hasApngFmt = false;
+                for (int i = 0; i + 1 < args.Count; i++)
+                {
+                    if (args[i] == "-f" && args[i + 1] == "apng") { hasApngFmt = true; break; }
+                }
+                if (!hasApngFmt) { args.Add("-f"); args.Add("apng"); }
             }
 
             args.Add($"\"{outputPath}\"");
@@ -747,6 +649,49 @@ namespace FfmpegGui.Services
         }
 
         /// <summary>
+        /// 计算「图片最长边限制」的 scale 滤镜字符串（复用入口）。
+        /// 供 FFmpeg 后端以及其他需要手工拼接 ffmpeg 滤镜链的路径（cjxl/cjpegli 管道等）调用。
+        /// 返回 null 表示无需缩放（未启用 / 最长边未超限 / 探测失败）。
+        /// </summary>
+        public static string? BuildMaxDimensionScaleFilter(FfmpegOptions options, string inputPath)
+        {
+            // 前置判断：未启用或参数非法 → 直接返回 null（不缩放）
+            if (!options.EnableMaxDimension || options.MaxDimension <= 0)
+                return null;
+
+            var maxLen = options.MaxDimension;
+            var meta = GetCachedProbe(inputPath);
+            var w = meta.width;
+            var h = meta.height;
+
+            // 宽高探测失败（管道 stdin 或 ffprobe 不可用）→ 跳过缩放，避免破坏转码
+            if (w <= 0 || h <= 0)
+                return null;
+
+            // 最长边判定（宽高相等时视同横向处理）
+            var longest = Math.Max(w, h);
+
+            // 条件跳过：最长边 ≤ 预设参数 → 直接使用原图
+            if (longest <= maxLen)
+                return null;
+
+            // ── 最优滤镜写法：锁定最长边，另一边 -2（自动偶数）──
+            // 相比 "scale=W:H:force_original_aspect_ratio=decrease"：
+            //   ① 精确 W:H 会因浮点舍入产生与源宽高比的微小偏差，而 decrease
+            //      又把尺寸限制到适配框内，导致输出最长边可能小于 maxLen；
+            //   ② 只锁最长边 + -2 让 ffmpeg 完全按源宽高比自动求另一条边，
+            //      宽高比严格保持，且输出最长边恒等于 maxLen（不漂移）。
+            // -2 表示自动计算并强制偶数：兼容 YUV 4:2:0 子采样与 AV1 等
+            // 要求偶数尺寸的编码器（奇数宽高会报错）。
+            // flags=lanczos：高质量下采样（明显优于默认 bilinear）。
+            // 注意：scale=W:H 中 W 是宽度、H 是高度——横向图（w>=h）最长边是宽度，
+            // 必须锁宽度 scale={maxLen}:-2（实机复测：3000x2250 限 2000 → 2000x1500）。
+            return w >= h
+                ? $"scale={maxLen}:-2:flags=lanczos"   // 横向/方形：锁宽度（最长边），高自动
+                : $"scale=-2:{maxLen}:flags=lanczos";  // 纵向：锁高度（最长边），宽自动
+        }
+
+        /// <summary>
         /// 分离色彩参数：(primaries, trc) 放 -i 前作输入覆盖，(colorspace) 放 -i 后作输出矩阵。
         /// 关键原则：-i 前的 -color_primaries/-color_trc 必须描述「实际输入」的色彩空间，
         /// 而非目标色彩空间。目标转换由 zscale 滤镜完成（zscale 输出帧自动携带目标标签）。
@@ -756,28 +701,37 @@ namespace FfmpegGui.Services
         {
             string? primaries = null, trc = null, colorspace = null;
 
-            // Ultra HDR 解码输出：显式标记 Rec.2100 PQ（优先级最高）
+            // Ultra HDR 解码输出：中间格式为线性 sRGB PFM（1.0=SDR 白点 203nits，峰值见 DecodedUltraHdrPeakNits）。
+            // 声明为 bt709 primaries + linear 传递（不再误标 bt2020/PQ —— 数据是线性 sRGB 而非 PQ 编码）。
             if (!string.IsNullOrWhiteSpace(options.DecodedUltraHdrColorSpace))
             {
-                primaries = "bt2020";
-                trc = "smpte2084";       // PQ (SMPTE ST 2084)
-                colorspace = "bt2020nc";
+                primaries = "bt709";
+                trc = "linear";
+                colorspace = "bt709";
                 return (primaries, trc, colorspace);
             }
 
             // 高级参数模式 或 管线注入的输入色彩声明（如 RAW 预处理标记 bt709/linear）。
-            // 2026-08-14 修复：RAW 去马赛克输出为线性 16-bit TIFF，QueueProcessor 注入
-            // ColorPrimaries=bt709 + ColorTrc=linear 描述输入；但 RAW 模式禁用高级色彩
-            // 面板（UseAdvancedColorParameters=false），导致注入值被忽略 → 线性像素
-            // 无标签输出 → PNG/TIFF/WebP 查看器按 sRGB 解释 → 画面明显过暗。
-            // 修复：ColorPrimaries 与 ColorTrc 均非空时视为输入声明直接使用。
-            if ((options.UseAdvancedColorParameters
-                 || (!string.IsNullOrWhiteSpace(options.ColorPrimaries)
-                     && !string.IsNullOrWhiteSpace(options.ColorTrc)))
+            // 关键修复：当 UseAdvancedColorParameters=true 且 ColorPrimaries/ColorTrc 至少有一个被设置时，
+            // 视为用户/预处理明确声明了输入色彩，直接使用，不再探测输入文件。
+            // 这确保 RAW 预处理注入的 bt709/linear 以及用户手动设置的 CP/CT 优先于 ColorSpace 探测。
+            if (options.UseAdvancedColorParameters
+                 && (!string.IsNullOrWhiteSpace(options.ColorPrimaries)
+                     || !string.IsNullOrWhiteSpace(options.ColorTrc)
+                     || !string.IsNullOrWhiteSpace(options.ColorMatrix)))
+            {
+                primaries = options.ColorPrimaries;
+                trc = options.ColorTrc;
+                colorspace = options.ColorMatrix;
+            }
+            else if ((!options.UseAdvancedColorParameters
+                 && !string.IsNullOrWhiteSpace(options.ColorPrimaries)
+                     && !string.IsNullOrWhiteSpace(options.ColorTrc))
                 && (!string.IsNullOrWhiteSpace(options.ColorPrimaries)
                  || !string.IsNullOrWhiteSpace(options.ColorTrc)
                  || !string.IsNullOrWhiteSpace(options.ColorMatrix)))
             {
+                // 兼容旧逻辑：未开启高级模式但手动设置了 CP/CT 时也视为输入声明
                 primaries = options.ColorPrimaries;
                 trc = options.ColorTrc;
                 colorspace = options.ColorMatrix;
@@ -789,11 +743,19 @@ namespace FfmpegGui.Services
                 // 探测输入文件的真实色彩元数据，用于 -i 前的输入声明。
                 // 目标色域转换由后续的 zscale 滤镜完成。
                 var hdrMeta = ProbeInputColorMetadata(inputPath);
-                if (hdrMeta.bitDepth > 8
+                // 输入声明必须如实描述「实际输入」色彩。满足其一即传播探测到的 CICP：
+                //   >8bit（HDR/高位深常见）、HDR 传递(PQ/HLG)、或广色域 primaries(bt2020/P3)。
+                // 修复：旧 `bitDepth>8` 单条件漏掉 8-bit cICP HDR/广色域源（如 8-bit PNG 带
+                //   cICP=bt2020/smpte2084）→ 被误声明为 SDR：① 跳过 HDR→SDR tonemap（高光裁剪/变暗）；
+                //   ② iccgen 作用于仍带 smpte2084 标签的帧 → "Not yet implemented" → 0 字节输出。
+                //   与 auto 分支口径统一，直接用 CICP tokens 判定（不依赖 ICC 推断的 sourceGamutName）。
+                bool srcIsHdr = hdrMeta.colorTrc is "smpte2084" or "arib-std-b67";
+                bool srcIsWide = hdrMeta.colorPrimaries is "bt2020" or "smpte432" or "smpte431";
+                if ((hdrMeta.bitDepth > 8 || srcIsHdr || srcIsWide)
                     && !string.IsNullOrWhiteSpace(hdrMeta.colorPrimaries)
                     && !string.IsNullOrWhiteSpace(hdrMeta.colorTrc))
                 {
-                    // 输入有明确色彩元数据（如真正的 HDR 文件）
+                    // 输入有明确色彩元数据（HDR / 广色域 / 高位深）→ 如实声明
                     primaries = hdrMeta.colorPrimaries;
                     trc = hdrMeta.colorTrc;
                     colorspace = hdrMeta.colorSpace;
@@ -810,7 +772,16 @@ namespace FfmpegGui.Services
                      || options.ColorSpace.Equals("auto", StringComparison.OrdinalIgnoreCase))
             {
                 var hdrMeta = ProbeInputColorMetadata(inputPath);
-                if (hdrMeta.bitDepth > 8)
+                // 传播探测到的输入 primaries/trc：>8bit 或 广/超广色域源均传播（旧代码仅 >8bit，
+                // 导致 8-bit Display-P3/DCI 等常见广色域源丢 CICP/ICC 描述）。
+                var srcPrim = ColorSpaceRegistry.FfmpegTokens(hdrMeta.sourceGamutName).primaries;
+                bool wideSource = !string.IsNullOrEmpty(srcPrim) && srcPrim != "bt709";
+                // cICP-only 源（无 ICC → sourceGamutName 空，如带 cICP 的 8-bit HDR/广色域 PNG）：
+                // 直接用探测到的 CICP tokens 判定，否则 8-bit HDR 源在 auto 模式被当 SDR →
+                // 跳过 tonemap + iccgen 作用于 HDR 帧（"Not yet implemented"）→ 编码失败/0 字节（与简化分支同源修复）。
+                bool cicpHdr = hdrMeta.colorTrc is "smpte2084" or "arib-std-b67";
+                bool cicpWide = hdrMeta.colorPrimaries is "bt2020" or "smpte432" or "smpte431";
+                if (hdrMeta.bitDepth > 8 || wideSource || cicpHdr || cicpWide)
                 {
                     primaries = hdrMeta.colorPrimaries;
                     trc = hdrMeta.colorTrc;
@@ -821,148 +792,142 @@ namespace FfmpegGui.Services
             return (primaries, trc, colorspace);
         }
 
-        /// <summary>将 UI 简化色彩空间名称映射为 (primaries, trc, matrix)</summary>
+        /// <summary>将 UI 简化色彩空间名称映射为 (primaries, trc, matrix)（委托 ColorSpaceRegistry，与管道/烘焙同源同义）</summary>
         private static (string? primaries, string? trc, string? matrix) MapSimplifiedColorSpace(string displayName)
-        {
-            return displayName switch
-            {
-                "sRGB" => ("bt709", "iec61966-2-1", "bt709"),
-                "BT.709" => ("bt709", "bt709", "bt709"),
-                "Display P3" => ("smpte432", "iec61966-2-1", "bt709"),
-                "P3 PQ" => ("smpte432", "smpte2084", "bt709"),
-                "BT.2020 PQ" => ("bt2020", "smpte2084", "bt2020nc"),
-                "BT.2020 HLG" => ("bt2020", "arib-std-b67", "bt2020nc"),
-                // 兼容旧名称（逐步淘汰）
-                "BT.601" => ("bt470bg", "bt470bg", "bt470bg"),
-                "BT.2020" => ("bt2020", "smpte2084", "bt2020nc"),
-                _ => (null, null, null)
-            };
-        }
+            => ColorSpaceRegistry.FfmpegTokens(displayName);
 
         private static string MapColorSpace(string displayName)
         {
-            return displayName switch
+            var (_, _, m) = ColorSpaceRegistry.FfmpegTokens(displayName);
+            return m ?? displayName;
+        }
+
+        /// <summary>
+        /// CICP 令牌 → ITU-T H.273 编号（cICP chunk 要的是字节）。
+        /// ⚠ 不凭记忆：本表由 <c>tests/scripts/verify-png3-interop.ps1</c> 的“写 cICP(N) → ffprobe 读回令牌”
+        /// 循环验证（ffmpeg 为 oracle）；任一不匹配则那条断言失败。
+        /// </summary>
+        public static bool TryGetCicpNumbers(string? primaries, string? trc, out byte p, out byte t)
+        {
+            p = 0; t = 0;
+            if (primaries is null || trc is null) return false;
+            if (!PrimariesToCicp.TryGetValue(primaries, out var pv) || !TransferToCicp.TryGetValue(trc, out var tv)) return false;
+            p = pv; t = tv; return true;
+        }
+
+        /// <summary>
+        /// ICC 实测曲线 → CICP 传递令牌：**仅当与某标准曲线等价**时返回其 token，否则 null（不猜）。
+        /// 用于 S2“源只有 ICC”时判定该 ICC 是否就是标准色彩空间 ICC（色度由 DetectIccPrimaries 管，曲线由此管）。
+        /// </summary>
+        public static string? CicpTokenOfCurve(FfmpegGui.Services.ColorMapping.TransferCurve? c)
+        {
+            if (c == null) return null;
+            // TransferCurve 是 struct ⇒ 参数 TransferCurve? 即 Nullable<T>，不能直接访问成员，需 .Value。
+            var cv = c.Value;
+            // 本文件未 using ColorMapping，故完全限定（也不能 `var T = 类型名`，类型不是值）。
+            if (cv.Equivalent(FfmpegGui.Services.ColorMapping.TransferCurve.Srgb))    return "iec61966-2-1";
+            if (cv.Equivalent(FfmpegGui.Services.ColorMapping.TransferCurve.Bt709))    return "bt709";
+            if (cv.Equivalent(FfmpegGui.Services.ColorMapping.TransferCurve.Pq))       return "smpte2084";
+            if (cv.Equivalent(FfmpegGui.Services.ColorMapping.TransferCurve.Hlg))      return "arib-std-b67";
+            if (cv.Equivalent(FfmpegGui.Services.ColorMapping.TransferCurve.Linear))   return "linear";
+            if (cv.Equivalent(FfmpegGui.Services.ColorMapping.TransferCurve.Gamma22))  return "bt470m";
+            return null;   // 如 Gamma18/26/28、ProPhoto、Smpte240M 等：无对应或不精确 ⇒ 不命名
+        }
+
+        private static readonly System.Collections.Generic.Dictionary<string, byte> PrimariesToCicp = new() {
+            ["bt709"] = 1, ["bt470m"] = 4, ["bt470bg"] = 5, ["smpte170m"] = 6, ["smpte240m"] = 7,
+            ["film"] = 8, ["bt2020"] = 9,
+            // ⚠ 靠 ffprobe 循环验证纠正：smpte431=11、smpte432=12（Display P3(D65) 是 **12**）。
+            //   曾背成 11=smpte432 —— 那会把 Display P3 标成 DCI-P3 影院白点，属实质错标签。
+            ["smpte431"] = 11, ["smpte432"] = 12,
+        };
+
+        private static readonly System.Collections.Generic.Dictionary<string, byte> TransferToCicp = new() {
+            ["bt709"] = 1, ["bt470m"] = 4, ["bt470bg"] = 5, ["smpte170m"] = 6, ["smpte240m"] = 7,
+            ["linear"] = 8, ["log"] = 9, ["log-sqrt"] = 10, ["iec61966-2-4"] = 11, ["bt1361"] = 12,
+            ["iec61966-2-1"] = 13, ["bt2020-10"] = 14, ["bt2020-12"] = 15,
+            ["smpte2084"] = 16, ["smpte428"] = 17, ["arib-std-b67"] = 18,
+        };
+
+        /// <summary>
+        /// 容器色彩能力判定（唯一真源）：返回 (primaries, trc, matrix, maxBitDepth, useIcc) 约束。
+        /// capMaxBitDepth 如 JPEG=8；capUseIcc 表示非 CICP 格式需 iccgen 携带 ICC（TIFF/JPEG/WebP）。
+        /// 注意：返回 null 表示“不约束”，非“不支持”。
+        /// </summary>
+        private static (string? primaries, string? trc, string? matrix, int maxBitDepth, bool useIcc) GetFormatColorCapabilities(string format, Models.FfmpegOptions options)
+        {
+            var fmt = format.ToLowerInvariant();
+
+            // JPEG (mjpeg/cjpegli)：有 APP2 ICC 通路 ⇒ **SDR 广色域（Display P3 / Adobe RGB / SDR-BT.2020）可经 ICC 表达**，
+            // 故不再钳 primaries（旧写法把“未实现的路径”误写成了能力约束）；矩阵仍按 Y'CbCr 惯例钳 bt709。
+            // 真正的硬边界只有两条：① 位深 8；② **HDR 传递无法由 JPEG 自身标定** ——
+            // 除非开启 GainMap (Ultra HDR)：此时 HDR 由“SDR 底 + 增益图”承载，允许 PQ/HLG 目标。
+            if (fmt is "jpg" or "jpeg")
             {
-                "sRGB" => "bt709",
-                "BT.709" => "bt709",
-                "Display P3" => "bt709",
-                "P3 PQ" => "bt709",
-                "BT.2020 PQ" => "bt2020nc",
-                "BT.2020 HLG" => "bt2020nc",
-                "BT.601" => "bt470bg",
-                "BT.2020" => "bt2020nc",
-                _ => displayName
-            };
+                return (null, options.JpegGainMap ? null : "iec61966-2-1", "bt709", 8, true);
+            }
+
+            // WebP (libwebp): **容器无 CICP 通路，但 RIFF 有 ICCP 块** ⇒ 非 sRGB 原色域可经 ICC 交付，
+            // 不钳 primaries（旧写法把“写 -colorspace 会 EINVAL”误写成了“不能交付 P3”；EINVAL 的只是矩阵标签）。
+            //   实测（本仓库 2026-09-14）：iccgen 生成的 P3 ICC **会被 libwebp 编码器丢弃**（产物内无 ICCP 块），
+            //   而用 exiftool 后置嵌入同一 ICC 可正常读回 ⇒ 由裁决点 NeedsPostEmbedIcc 让队列补上那一步。
+            // 仍钳的两项是真硬边界：trc 只能 SDR（无 HDR 标定通路）、matrix 只能 bt709（写其他值 EINVAL）。
+            if (fmt == "webp")
+            {
+                return (null, "iec61966-2-1", "bt709", 8, true);
+            }
+
+            // TIFF: 仅 ICC 风格色彩管理；不支持 CICP color_primaries。
+            // 实测：TIFF + P3(SDR) 可通过 ICC 正常表达；但 TIFF + PQ/HLG (HDR trc) 编码失败。
+            // iccgen 仅支持标准 sRGB (bt709/iec61966-2-1)，不支持 HDR 标签。
+            // TIFF 原生支持 ICC Profile 元数据，应该通过 -map_metadata 保留，而非 iccgen。
+            // → capUseIcc = false，依赖元数据复制而非 iccgen。
+            if (fmt is "tiff" or "tif")
+            {
+                return (null, "iec61966-2-1", null, 16, false);
+            }
+
+            // AVIF: 支持 HDR + HDR 色域，但 libaom 对 Display P3 高位深兼容性差
+            // 编码器特定位深上限：libaom/av1_nvenc 12-bit；libsvtav1 10-bit
+            // Display P3 + 10/12/16-bit 在 libaom 上有回归风险 → 强制降 8bit（保守策略）
+            if (fmt == "avif")
+            {
+                int maxBd = ColorMapping.ImageEncoderArgs.AvifMaxBitDepth(options);
+                // 若目标色彩为 P3 + 高位深 → 降 8bit（libaom P3 高位深回归）
+                if (options.ColorSpace == "Display P3" && (options.BitDepth ?? 8) > 8)
+                {
+                    return ("bt709", "iec61966-2-1", "bt709", 8, false); // P3 高位深 → 回退 sRGB 8bit
+                }
+                return (null, null, null, maxBd, false);
+            }
+
+            // PNG / JPEG XL / JPEG XR / APNG / GIF: 无色彩/位深硬限制
+            return (null, null, null, 16, false);
         }
 
-        private static int MapJpegQuality(int quality)
-        {
-            // 将 0-100 映射到 ffmpeg JPEG qscale 2-31，数值越小质量越高
-            return (int)Math.Round(2 + (100 - quality) * 29.0 / 100.0);
-        }
+        // ⚠ 质量映射的**单一真值**已移到 ImageEncoderArgs（传统管线与自研引擎共用同一份数值，
+        //   避免两处漂移导致"切换管线后产物对不上"）。此处仅转发，语义一字未改。
+        private static int MapJpegQuality(int quality) => ColorMapping.ImageEncoderArgs.MapJpegQuality(quality);
 
-        private static int MapPngCompression(int quality)
-        {
-            // compression_level 0-9，0 最快/最大体积，9 最慢/最小体积
-            return (int)Math.Round((100 - quality) * 9.0 / 100.0);
-        }
+        private static int MapPngCompression(int quality) => ColorMapping.ImageEncoderArgs.MapPngCompression(quality);
 
-        private static int MapAvifCrf(int quality)
-        {
-            // avif 使用 crf 0-63，0 最好
-            return (int)Math.Round((100 - quality) * 63.0 / 100.0);
-        }
+        // ⚠ AVIF 的 crf 映射**单一真值**同样在 ImageEncoderArgs（2026-09-17 搬移），此处仅转发。
+        private static int MapAvifCrf(int quality) => ColorMapping.ImageEncoderArgs.MapAvifCrf(quality);
 
-        private static double MapJxlDistance(int quality)
-        {
-            // JPEG XL distance 0-15，0=无损，15=最低质量
-            return Math.Round((100 - quality) * 15.0 / 100.0, 1);
-        }
+        // ⚠ JXL 的 distance 映射**单一真值**在 ImageEncoderArgs（2026-09-17 搬移），此处仅转发。
+        private static double MapJxlDistance(int quality) => ColorMapping.ImageEncoderArgs.MapJxlDistance(quality);
 
-        private static double MapJpegliDistance(int quality)
-        {
-            // JPEG-LI butteraugli distance 0-25（扩展范围，输出略小于同质量 mjpeg）
-            return Math.Round((100 - quality) * 25.0 / 100.0, 1);
-        }
+        private static double MapJpegliDistance(int quality) => ColorMapping.ImageEncoderArgs.MapJpegliDistance(quality);
 
         /// <summary>
         /// 根据输出格式、色度子采样、位深与输入透明通道映射 pix_fmt。
         /// 色度子采样在全部位深（8/10/12/16）下均生效。
         /// </summary>
+        // ⚠ 2026-09-17：像素格式映射（`MapPixFmt`）**单一真值**搬到 ImageEncoderArgs，
+        //   传统管线与自研引擎出口共用同一份（AVIF 接入引擎后必须共用，否则同一个源两条管线
+        //   会给出不同的色度子采样/位深）。此处仅转发，逻辑一字未改。
         private static string MapPixFmt(string format, string? chroma, int bitDepth, bool hasAlpha, string? colorRange)
-        {
-            var fmt = format.ToLower();
-            var bd = bitDepth <= 0 ? 8 : bitDepth; // 非法/未知位深兜底 8
-            // PNG/TIFF/APNG/JXL 均为 RGB 原生格式：JXL 使用 XYB 色彩空间，libjxl 编码器接受 RGB 输入。
-            // 若喂入 yuv420p 会先做 YUV→RGB 转换（色度子采样损失）且奇宽奇高时 libjxl 拒绝。
-            if (fmt is "png" or "tiff" or "apng" or "jxl")
-            {
-                if (bd <= 8) return hasAlpha ? "rgba" : "rgb24";
-                return hasAlpha ? "rgba64le" : "rgb48le"; // 10/12/16 使用 48le 作为通用输出
-            }
-
-            // JPEG（mjpeg）：像素格式与色彩范围联动。
-            // yuvj 系列 = full range（JPEG/JFIF 规范约定，默认；强制 yuv 系列会发灰）。
-            // 用户显式选择 tv → yuv 系列（limited 编码，非标但尊重用户选择）。
-            if ((fmt is "jpg" or "jpeg") && bd <= 8)
-            {
-                var isTv = colorRange?.Equals("tv", StringComparison.OrdinalIgnoreCase) == true;
-                if (isTv)
-                {
-                    return chroma switch
-                    {
-                        "4:4:4" => "yuv444p",
-                        "4:2:2" => "yuv422p",
-                        _ => "yuv420p",
-                    };
-                }
-                return chroma switch
-                {
-                    "4:4:4" => "yuvj444p",
-                    "4:2:2" => "yuvj422p",
-                    _ => "yuvj420p",
-                };
-            }
-
-            // 带透明通道的 YUV 输出：编码器对非 4:2:0 的 alpha 支持有限
-            // （libsvtav1 仅 yuva420p；libaom-av1 无 4:2:2 alpha），
-            // 统一回退到最兼容的 4:2:0 alpha 以保留透明通道。
-            if (hasAlpha && fmt is not ("jpg" or "jpeg"))
-            {
-                return bd switch
-                {
-                    10 => "yuva420p10le",
-                    12 => "yuva420p12le",
-                    16 => "yuva420p16le",
-                    _ => "yuva420p",
-                };
-            }
-
-            // 默认使用 YUV pix fmt — 色度子采样在全部位深下均生效
-            // 修复 Bug：此前 10/12/16-bit 恒返回 yuv420p*le，忽略 4:4:4/4:2:2 选择
-            if (bd <= 8)
-            {
-                return chroma switch
-                {
-                    "4:4:4" => "yuv444p",
-                    "4:2:2" => "yuv422p",
-                    _ => "yuv420p",
-                };
-            }
-
-            var depth = bd switch
-            {
-                12 => "12",
-                16 => "16",
-                _ => "10",
-            };
-            return chroma switch
-            {
-                "4:4:4" => $"yuv444p{depth}le",
-                "4:2:2" => $"yuv422p{depth}le",
-                _ => $"yuv420p{depth}le",
-            };
-        }
+            => ColorMapping.ImageEncoderArgs.MapPixFmt(format, chroma, bitDepth, hasAlpha, colorRange);
 
         /// <summary>
         /// 解析输出色彩范围：用户显式 tv/pc 优先；
@@ -1004,6 +969,12 @@ namespace FfmpegGui.Services
             // 12/16-bit 编码器支持有限，回退到 10-bit
             return "yuva420p10le";
         }
+
+        /// <summary>
+        /// 供**自研引擎出口**复用同一份输入位深探测（<c>RawColorPipeline</c> 的 AVIF 位深决策要用它）。
+        /// 走 <c>GetCachedProbe</c>，不额外起进程、与上面的私有实现同一份缓存。
+        /// </summary>
+        public static int ProbeInputBitDepthForEngine(string inputPath) => ProbeInputBitDepth(inputPath);
 
         /// <summary>使用 ffprobe 同步探测输入文件的位深（复用缓存，不额外起进程）</summary>
         private static int ProbeInputBitDepth(string inputPath)
@@ -1070,28 +1041,42 @@ namespace FfmpegGui.Services
             var fmt = options.Format.ToLower();
 
             // 这些格式原生支持 HDR（>8bit），不需要 tonemap
-            if (fmt is "avif" or "jxl" or "tiff" or "jxr") return false;
-            // PNG 仅在 >8bit 时支持 HDR
+            // 注意：TIFF 能力约束已将 trc 钳为 SDR (iec61966-2-1)，因此 TIFF 需 tonemap（见下方目标色彩判断）。
+            if (fmt is "avif" or "jxl" or "jxr") return false;
+            // PNG >8bit 可承载 HDR，但**前提是输出被正确标注**（cICP 由 PngCicpService 后置写入）。
+            // 旧写法无条件 return false，会把“用户显式要 SDR 目标（如 Display P3）”也一起豁免：
+            // 结果既不 tonemap（本函数返 false）又被目标转换块排除（srcIsHdr && !dstIsHdr）
+            // → PQ 像素塞进 SDR 标签容器，iccgen 处理不了 HDR 帧标签而直接转换失败。
+            // 现在只在「未指定目标（auto）」时保留 HDR；显式 SDR 目标继续往下走 tonemap 判定。
             if (fmt is "png" or "apng")
             {
                 var bd = options.BitDepth ?? ProbeInputBitDepth(inputPath);
-                if (bd > 8) return false;
+                bool noExplicitTarget = !options.UseAdvancedColorParameters
+                    && (string.IsNullOrWhiteSpace(options.ColorSpace)
+                        || options.ColorSpace.Equals("auto", StringComparison.OrdinalIgnoreCase));
+                if (bd > 8 && noExplicitTarget) return false;
             }
 
             // ── 目标色彩空间检查：目标为 HDR (PQ/HLG) 时不需要 tonemap ──
             // HDR→HDR 转换（如 BT.2020 PQ→P3 PQ）由简化 zscale 分支处理；
             // 若此处不排除，tonemap 会先把 HDR 压成 SDR、zscale 再按 HDR 解译，
             // 造成双重转换错误。2026-08-14 修复。
+            // SDR-only 格式（JPEG/WebP/TIFF）：即使目标声明 HDR trc 也只能表达 SDR → 必须 tonemap。
+            // 与目标转换块 dstT=capTrc 的钳制口径统一。修复：旧代码仅钳 TIFF，JPEG/WebP + HDR 目标
+            // → 既不 tonemap（本函数 return false）也不 zscale 转换（目标块 srcIsHdr&&!dstIsHdr 排除）
+            // → PQ 像素直塞 8-bit SDR 容器 → 高光裁剪 + 整体变暗。
+            bool fmtSdrOnly = fmt is "tiff" or "tif" or "jpg" or "jpeg" or "webp";
             if (options.UseAdvancedColorParameters)
             {
-                if (options.ColorTrc is "smpte2084" or "arib-std-b67")
+                if (!fmtSdrOnly && options.ColorTrc is "smpte2084" or "arib-std-b67")
                     return false;
             }
             else if (!string.IsNullOrWhiteSpace(options.ColorSpace)
                      && !options.ColorSpace.Equals("auto", StringComparison.OrdinalIgnoreCase))
             {
                 var target = MapSimplifiedColorSpace(options.ColorSpace);
-                if (target.trc is "smpte2084" or "arib-std-b67")
+                var dstTrc = fmtSdrOnly ? "iec61966-2-1" : (target.trc ?? "");
+                if (dstTrc is "smpte2084" or "arib-std-b67")
                     return false;
             }
 
@@ -1129,6 +1114,16 @@ namespace FfmpegGui.Services
             public bool isRgb;
             /// <summary>色彩语义是否来自 ICC/EXIF（true 时上层应携带 ICC 而非仅靠 primaries/trc 标签）</summary>
             public bool hasIccSemantics;
+            /// <summary>探测到的源色彩空间规范名（如 "Adobe RGB"/"ProPhoto RGB"），供超广色域归一化到 BT.2020 判定</summary>
+            public string? sourceGamutName;
+            /// <summary>源峰值亮度 (nits)，来自 HDR 静态元数据；0=未读到（调用方必须回退到源曲线名义峰值并写明来源）。</summary>
+            public double peakNits;
+            /// <summary>peakNits 的来源（"MaxCLL" / "BS.2086 mastering"，null=未读到）——日志须能自证峰值不是猜的。</summary>
+            public string? peakSource;
+            /// <summary>图像宽度（像素），0 表示未成功探测</summary>
+            public int width;
+            /// <summary>图像高度（像素），0 表示未成功探测</summary>
+            public int height;
         }
 
         // ── ffprobe 探测缓存：同一输入文件在短时间内只探测一次 ──
@@ -1140,7 +1135,10 @@ namespace FfmpegGui.Services
         private static readonly object ProbeCacheLock = new();
 
         /// <summary>带缓存的探测入口：同一输入 10 秒内只起一次 ffprobe 进程</summary>
-        private static ColorMetadata GetCachedProbe(string inputPath)
+        /// <param name="log">日志回调（取消/超时分支点名用；null ⇒ 退回 Trace.WriteLine）</param>
+        /// <param name="ct">取消令牌（`#26`：上游 15 个调用点**全部**持有 `ct`，此前一条都到不了这里）</param>
+        private static ColorMetadata GetCachedProbe(string inputPath,
+            Action<string>? log = null, CancellationToken ct = default)
         {
             if (inputPath == "-") return default;
             lock (ProbeCacheLock)
@@ -1152,8 +1150,12 @@ namespace FfmpegGui.Services
                 }
             }
 
-            var meta = ProbeInputColorMetadataCore(inputPath);
+            var meta = ProbeInputColorMetadataCore(inputPath, log, ct);
 
+            // ⚠ `#26` 已知取舍：取消时 `meta` 是**退化值**（与探测失败同一形态：bitDepth=0 / 各 token=null，
+            //   调用方按「未知」回退），且它会被写进缓存。本缓存有 **10 秒 TTL**（`ProbeCacheTtlSeconds`）
+            //   ⇒ 最长 10 秒后自愈，**不会永久毒化**。对比 `QueueProcessor.AnimatedJxlCache`（无 TTL）——
+            //   那一处已在 `#26` 报告里单独登记为设计岔口。
             lock (ProbeCacheLock)
             {
                 if (ProbeCache.Count >= ProbeCacheMax)
@@ -1164,8 +1166,49 @@ namespace FfmpegGui.Services
         }
 
         /// <summary>使用 ffprobe/exiftool 同步探测输入文件的色彩元数据（带缓存，见 GetCachedProbe）</summary>
-        public static ColorMetadata ProbeInputColorMetadata(string inputPath)
-            => GetCachedProbe(inputPath);
+        /// <param name="log">日志回调（取消/超时分支点名用；null ⇒ 退回 Trace.WriteLine）</param>
+        /// <param name="ct">取消令牌（`#26`：上游持有 `ct` 却没传下来，本次接通）</param>
+        public static ColorMetadata ProbeInputColorMetadata(string inputPath,
+            Action<string>? log = null, CancellationToken ct = default)
+            => GetCachedProbe(inputPath, log, ct);
+
+        /// <summary>
+        /// 点三：判定并解析超广色域「像素原样 + 仅靠 ICC 描述」的保真 ICC。全部条件满足才生效：
+        /// ① 源色域为 ProPhoto/ROMM（超出 BT.2020，归一必削色且无 CICP 命名）；
+        /// ② 源为 SDR 传递（HDR 应走 CICP 而非 ICC）；③ 未选「仅CICP」策略（用户明确不要 ICC）；
+        /// ④ 目标色域未指定或与源同空间（否则用户要求的是一次转换，保真无从表达）；
+        /// ⑤ 输出容器可后置附着 ICC（exiftool 实测可写 PNG/JPEG/TIFF/WebP；
+        ///    JXL/AVIF 不能由 exiftool 写 ICC → JXL 由 cjxl 直接携带源 ICC，AVIF 保持 BT.2020 归一）。
+        /// 满足 → 返回 ICC 绝对路径（PLAN/iccs 用户文件优先，其次纯托管生成）；否则 null。
+        /// </summary>
+        public static string? ResolveFaithfulUltraWideIcc(Models.FfmpegOptions options,
+            string? srcGamutName, string? srcTrc, string? format)
+            => ResolveFaithfulUltraWideIcc(options.ColorStrategy, options.ColorSpace, srcGamutName, srcTrc, format);
+
+        /// <summary>
+        /// 同上，但**不依赖 <see cref="Models.FfmpegOptions"/>** —— 供色彩引擎的意图装配层
+        /// （`ColorIntentFactory`）复用，保证「哪些源走保真」在**两条管线上是同一个判定**
+        ///（2026-09-16 接入引擎时抽出；此前引擎侧完全没有保真概念 ⇒ 会把 ProPhoto 归一化并丢源 ICC）。
+        /// </summary>
+        public static string? ResolveFaithfulUltraWideIcc(Models.ColorStrategy strategy,
+            string? colorSpace, string? srcGamutName, string? srcTrc, string? format)
+        {
+            if (strategy == Models.ColorStrategy.BakeCicpOnly) return null;
+            if (srcTrc is "smpte2084" or "arib-std-b67") return null;
+            if (!IccProfileBuilder.IsFaithfulOnly(srcGamutName)) return null;
+
+            var f = (format ?? "").ToLowerInvariant();
+            // jxl 亦适用：cjxl 支持 -x icc_pathname（BuildCjxlArguments 已有该分支），
+            // 其 color_space 枚举无法命名 ProPhoto 等 —— 恰是 ICC 保真要解决的场景
+            if (f is not ("png" or "apng" or "jpg" or "jpeg" or "jpegli" or "tiff" or "tif" or "webp" or "jxl"))
+                return null;
+
+            var target = ColorSpaceRegistry.Resolve(colorSpace);
+            var src = ColorSpaceRegistry.Resolve(srcGamutName);
+            if (target != null && src != null && target.Key != src.Key) return null;
+
+            return IccProfileService.GetFaithfulIcc(srcGamutName);
+        }
 
         /// <summary>
         /// 探测核心实现（无缓存，供 GetCachedProbe 调用）。
@@ -1174,7 +1217,10 @@ namespace FfmpegGui.Services
         /// - ffprobe 始终提供：pix_fmt → 位深/alpha/isRgb（exiftool 无此能力）
         /// - 语义合并：exiftool 有值 > ffprobe 值 > 默认
         /// </summary>
-        private static ColorMetadata ProbeInputColorMetadataCore(string inputPath)
+        /// <param name="log">日志回调（取消/超时分支点名用；null ⇒ 退回 Trace.WriteLine）</param>
+        /// <param name="ct">取消令牌（`#26`：上游 15 个调用点全部持有 `ct`，此前四级全断）</param>
+        private static ColorMetadata ProbeInputColorMetadataCore(string inputPath,
+            Action<string>? log = null, CancellationToken ct = default)
         {
             var meta = new ColorMetadata();
             // 管道输入（stdin）无法探测，直接返回空结构
@@ -1187,7 +1233,7 @@ namespace FfmpegGui.Services
             // 直接 .GetAwaiter().GetResult() 会捕获 Avalonia UI SynchronizationContext →
             // async 方法内部 await 续体无法回到被阻塞的 UI 线程 → 整个软件卡死 (发布版必现)。
             // 用 Task.Run 包裹使 async 方法在线程池执行, 续体无需 UI 线程。
-            var exifColorTags = Task.Run(() => ExifToolService.ReadColorTagsAsync(inputPath))
+            var exifColorTags = Task.Run(() => ExifToolService.ReadColorTagsAsync(inputPath, log, ct))
                 .GetAwaiter().GetResult();
 
             // EXIF ColorSpace 值（带任意组前缀，如 "EXIF:ColorSpace"）
@@ -1221,10 +1267,12 @@ namespace FfmpegGui.Services
             {
                 try
                 {
-                    var (iccPath, iccDesc) = IccProfileService.ExtractIccToTempFile(inputPath);
+                    var (iccPath, iccDesc) = IccProfileService.ExtractIccToTempFile(inputPath, log, ct);
                     if (iccPath != null)
                     {
-                        iccGuessed = IccProfileService.GuessColorSpace(iccDesc);
+                        // 先按**度量**（色度矩阵+曲线）定空间，描述文字只作兜底：
+                        // 本仓库生成的标准 ICC 描述就是“RGB built-in”，只按描述猜会让广色域判断静默失效。
+                        iccGuessed = ColorMapping.ColorSpaceIdentify.IdentifyIccSpaceName(iccPath, iccDesc);
                         IccProfileService.TryDeleteIcc(iccPath);
                     }
                 }
@@ -1232,9 +1280,17 @@ namespace FfmpegGui.Services
             }
 
             // ── 色彩语义决策：ICC > EXIF ColorSpace ──
+            // ⚠ EXIF 的 `ColorSpace` 这里只先记成**候选**（`exifPrim`/`exifTrc`），是否采用要等 ffprobe 的
+            //   CICP 出来再定 —— 见下方「CICP 优先」。ICC 分支不受影响（真 ICC 档案是显式色彩数据）。
+            string? exifPrim = null;
+            string? exifTrc = null;
             if (!string.IsNullOrWhiteSpace(iccGuessed))
             {
-                ApplyIccSemantics(meta, iccGuessed);
+                // ⚠️ ColorMetadata 是 struct：必须接回返回值。
+                // 旧写法 `ApplyIccSemantics(meta, ...)` 按值传递 → 丢弃全部修改 →
+                // ICC 推得的 sourceGamutName/hasIccSemantics 永远为空，下游
+                // 「超广色域携带 ICC / 归一 BT.2020 / 保真路径」全部静默失效（本次修复）。
+                meta = ApplyIccSemantics(meta, iccGuessed);
             }
             else if (!string.IsNullOrWhiteSpace(exifColorSpace))
             {
@@ -1242,21 +1298,45 @@ namespace FfmpegGui.Services
                 if (exifColorSpace.Contains("Adobe", StringComparison.OrdinalIgnoreCase)
                     || exifColorSpace == "2")
                 {
-                    meta.colorPrimaries = "bt709";
-                    meta.colorTrc = "bt709";
-                    meta.hasIccSemantics = true; // 标记：上层应携带 ICC 而非仅靠标签
+                    exifPrim = "bt709";
+                    exifTrc = "bt709";
                 }
                 else if (exifColorSpace.Contains("sRGB", StringComparison.OrdinalIgnoreCase)
                          || exifColorSpace == "1")
                 {
-                    meta.colorPrimaries = "bt709";
-                    meta.colorTrc = "iec61966-2-1";
-                    meta.hasIccSemantics = true;
+                    exifPrim = "bt709";
+                    exifTrc = "iec61966-2-1";
                 }
             }
 
             // ── 2) ffprobe 补充：pix_fmt → 位深/alpha/isRgb（始终执行，exiftool 无此能力）──
-            var ffMeta = ProbeWithFfprobe(inputPath);
+            var ffMeta = ProbeWithFfprobe(inputPath, log, ct);
+            // ⚠⚠ **CICP 优先（2026-09-20 修，缺陷 C）**：能写 CICP 的容器（AVIF/HEIC/JXL/MP4…）里，
+            //   **容器的 CICP 才是权威色彩描述**；EXIF/XMP 的 `ColorSpace` 往往只是**源照片的残留标签**。
+            //   实测 `seine_hdr_gainmap_srgb.avif`：CICP 说 `smpte2084`(PQ)，而 `XMP-exif:ColorSpace` 说 `sRGB`
+            //   ⇒ 旧逻辑让 EXIF 覆盖 CICP ⇒ 判成「SDR 输入」⇒ **不插 HDR 色调映射链**
+            //   ⇒ 下游 `iccgen` 遇到 **PQ 帧**硬失败（`Not yet implemented in FFmpeg`，**零产物**）。
+            //   ⇒ CICP 可用（非 `unknown`/`unspecified`）时 EXIF 必须**让位**并**点名**；
+            //     CICP 不可用时行为**完全不变**（相机 JPEG / PNG 实测 CICP 恒为 `unknown,unknown`
+            //     ⇒ 仍靠 EXIF —— 这正是该分支存在的理由，不能一刀切删掉）。
+            bool ffCicpUsable =
+                (!string.IsNullOrWhiteSpace(ffMeta.colorTrc)
+                    && ffMeta.colorTrc != "unknown" && ffMeta.colorTrc != "unspecified")
+                || (!string.IsNullOrWhiteSpace(ffMeta.colorPrimaries)
+                    && ffMeta.colorPrimaries != "unknown" && ffMeta.colorPrimaries != "unspecified");
+            if (exifTrc != null)
+            {
+                if (ffCicpUsable)
+                {
+                    log?.Invoke($"[色彩] EXIF/XMP ColorSpace={exifColorSpace} 让位给容器 CICP（trc={ffMeta.colorTrc} prim={ffMeta.colorPrimaries}）—— 容器自带权威色彩描述时不采信 EXIF 残留\n");
+                }
+                else
+                {
+                    meta.colorPrimaries = exifPrim;
+                    meta.colorTrc = exifTrc;
+                    meta.hasIccSemantics = true; // 标记：上层应携带 ICC 而非仅靠标签
+                }
+            }
             // ffprobe 的 pix_fmt 位深更可靠（exiftool BitsPerSample 可能缺省），
             // 但 exiftool 位深优先（用户要求 exiftool 优先）；无 exiftool 位深时用 ffprobe
             if (meta.bitDepth <= 0) meta.bitDepth = ffMeta.bitDepth;
@@ -1269,13 +1349,26 @@ namespace FfmpegGui.Services
                 if (string.IsNullOrWhiteSpace(meta.colorPrimaries)) meta.colorPrimaries = ffMeta.colorPrimaries;
                 if (string.IsNullOrWhiteSpace(meta.colorTrc)) meta.colorTrc = ffMeta.colorTrc;
             }
+            // 宽高信息来自 ffprobe（exiftool 一般不提供宽高）
+            meta.width = ffMeta.width;
+            meta.height = ffMeta.height;
+            // HDR 内容峰值只可能来自 ffprobe 的 frame side data（exiftool 无此能力）⇒ **必须显式带回**。
+            // 此前本行缺失：ProbeWithFfprobe 里读了 side data 却没人拷贝，
+            // 导致两条消费路径（引擎装配 / GainMap 日志）拿到的 peakNits 永远是 0（实测）。
+            if (meta.peakNits <= 0 && ffMeta.peakNits > 0)
+            {
+                meta.peakNits = ffMeta.peakNits;
+                meta.peakSource = ffMeta.peakSource;
+            }
             return meta;
         }
 
-        /// <summary>将 ICC 推断的色彩空间名应用到 ColorMetadata（hasIccSemantics 标记供上层携带 ICC）</summary>
-        private static void ApplyIccSemantics(ColorMetadata meta, string guessed)
+        /// <summary>将 ICC 推断的色彩空间名应用到 ColorMetadata（hasIccSemantics 标记供上层携带 ICC）。
+        /// ColorMetadata 为 struct，必须返回修改后的副本。</summary>
+        private static ColorMetadata ApplyIccSemantics(ColorMetadata meta, string guessed)
         {
             meta.hasIccSemantics = true;
+            meta.sourceGamutName = guessed;   // 记录源空间名，供 ColorSpaceRegistry 判定超广色域归一化
             switch (guessed)
             {
                 case "sRGB":
@@ -1290,7 +1383,7 @@ namespace FfmpegGui.Services
                     break;
                 case "Display P3":
                     meta.colorPrimaries = "smpte432";
-                    meta.colorTrc = "bt709";
+                    meta.colorTrc = "iec61966-2-1";   // P5: Display P3 用 sRGB 传递函数(P3-D65 标准)
                     break;
                 case "DCI-P3":
                     meta.colorPrimaries = "smpte431";
@@ -1305,15 +1398,20 @@ namespace FfmpegGui.Services
                     meta.colorTrc = "smpte2084";
                     break;
                 case "ProPhoto RGB":
-                    // 无 zscale 命名 → 近似 bt709，上层携带 ICC
+                    // 无 zscale 命名 → 近似 bt709，上层携带 ICC（有命名 ICC 时走保真路径，见
+                    // ResolveFaithfulUltraWideIcc：像素不动 + 仅附着 ProPhoto ICC）
                     meta.colorPrimaries = "bt709";
                     meta.colorTrc = "bt709";
                     break;
             }
+            return meta;
         }
 
-        /// <summary>纯 ffprobe 探测（pix_fmt/色彩标签），供回退与补充使用</summary>
-        private static ColorMetadata ProbeWithFfprobe(string inputPath)
+        /// <summary>纯 ffprobe 探测（pix_fmt/色彩标签/宽高），供回退与补充使用</summary>
+        /// <param name="log">日志回调（取消/超时分支点名用；null ⇒ 退回 Trace.WriteLine）</param>
+        /// <param name="ct">取消令牌（`#26`：本方法此前四级全无 `ct`，用户取消按不动）</param>
+        private static ColorMetadata ProbeWithFfprobe(string inputPath,
+            Action<string>? log = null, CancellationToken ct = default)
         {
             var meta = new ColorMetadata();
             if (inputPath == "-") return meta;
@@ -1324,29 +1422,50 @@ namespace FfmpegGui.Services
                 using var p = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
                 {
                     FileName = ffprobe,
-                    Arguments = $"-v error -select_streams v:0 -show_entries stream=bits_per_raw_sample,pix_fmt,color_primaries,color_transfer,color_space -of csv=p=0 \"{inputPath}\"",
+                    Arguments = $"-v error -select_streams v:0 -show_entries stream=width,height,bits_per_raw_sample,pix_fmt,color_primaries,color_transfer,color_space -of csv=p=0 \"{inputPath}\"",
                     RedirectStandardOutput = true,
-                    RedirectStandardError = true,
+                    StandardOutputEncoding = System.Text.Encoding.UTF8,
+                    RedirectStandardError = true,   // P2-3：排空见下方 BeginErrorReadLine
+                    StandardErrorEncoding = System.Text.Encoding.UTF8,
                     UseShellExecute = false,
                     CreateNoWindow = true
                 });
                 if (p == null) return meta;
-                var output = p.StandardOutput.ReadToEnd().Trim();
-                p.WaitForExit(5000);
+                // ⚠ 先挂上两个读取任务再等退出（与本文件 `ProbePeakNits` 同一范式）：旧的
+                //   `StandardOutput.ReadToEnd()`（同步阻塞）写在 `WaitForExit(5000)` **之前**
+                //   ⇒ 子进程不关管道就永不返回，**超时是死代码、且超时后没有 Kill**。
+                //   实测：畸形 `.jxl`（1 字节、首字节 00/FF）让 ffprobe **永不退出** ⇒ 队列永久挂死。
+                var outTask = p.StandardOutput.ReadToEndAsync();
+                var errTask = p.StandardError.ReadToEndAsync();
+                // `#26`：同步 `WaitForExit(5000)` 不接受 ct ⇒ 用 `ct.Register` 杀树接线；原有 5s 超时**不变**。
+                using var reg = ct.Register(() => { try { p.Kill(entireProcessTree: true); } catch { } });
+                if (!p.WaitForExit(5000))
+                {
+                    try { p.Kill(entireProcessTree: true); } catch { }
+                    // 原写法在此**静默**返回退化 meta ⇒ 补一句点名，不再无声。
+                    var tmsg = $"[probe] ffprobe 色彩探测超时（5s）⇒ 已终止：{Path.GetFileName(inputPath)}（按未探测处理）";
+                    if (log != null) log(tmsg + "\n"); else System.Diagnostics.Trace.WriteLine(tmsg);
+                    return meta;
+                }
+                if (ct.IsCancellationRequested)
+                {
+                    var cmsg = $"[probe] ffprobe 色彩探测被取消 ⇒ 已终止：{Path.GetFileName(inputPath)}（按未探测处理）";
+                    if (log != null) log(cmsg + "\n"); else System.Diagnostics.Trace.WriteLine(cmsg);
+                    return meta;
+                }
+                var output = outTask.GetAwaiter().GetResult().Trim();
+                errTask.GetAwaiter().GetResult();
                 var parts = output.Split(',');
                 // ⚠️ 关键：ffprobe 的 -show_entries stream=A,B,C 输出顺序为流内部固定顺序
                 // （与参数书写顺序无关）。实测（ffmpeg 22.x / ffprobe 8.x）为：
-                //   pix_fmt, color_space, color_transfer, color_primaries, bits_per_raw_sample
+                //   width, height, pix_fmt, color_space, color_transfer, color_primaries, bits_per_raw_sample
                 // （注意：color_transfer 在 color_primaries 之前！2026-08-14 实测修正）
-                // 因此：
-                //   parts[0]=pix_fmt        → 位深/alpha/RGB 判断的来源
-                //   parts[1]=color_space    → YUV 矩阵 (gbr/bt709/bt2020nc)
-                //   parts[2]=color_transfer → 传输函数 (smpte2084/iec61966-2-1/...)
-                //   parts[3]=color_primaries→ 原色 (bt709/bt2020/smpte432/...)
-                // 兼容性：若未来版本输出更多字段，前 4 项顺序不变。
-                if (parts.Length >= 1 && !string.IsNullOrEmpty(parts[0]))
+                // 实际输出示例: 512,384,yuvj420p,bt470bg,unknown,unknown,8
+                // parts[0]=width, parts[1]=height, parts[2]=pix_fmt, parts[3]=color_space,
+                // parts[4]=color_transfer, parts[5]=color_primaries, parts[6]=bits_per_raw_sample
+                if (parts.Length >= 3 && !string.IsNullOrEmpty(parts[2]))
                 {
-                    var pixFmt = parts[0];
+                    var pixFmt = parts[2];
                     meta.bitDepth = ParseBitDepthFromPixFmt(pixFmt);
                     // Alpha 检测：pix_fmt 含 'a' 字符（rgba/bgra/argb/ya8 等）。
                     // pal8 也含 'a' 但它是 8-bit 调色板（无透明通道语义），仅在 >8bit 分支使用时无影响。
@@ -1372,15 +1491,31 @@ namespace FfmpegGui.Services
                     else if (pixFmt.StartsWith("yuv", StringComparison.OrdinalIgnoreCase))
                         meta.colorRange = "tv";
                 }
-                // parts[1] = color_space (YUV 矩阵)
-                if (parts.Length >= 2 && !string.IsNullOrEmpty(parts[1]) && parts[1] != "unknown" && parts[1] != "N/A")
-                    meta.colorSpace = parts[1];
-                // parts[2] = color_transfer (实测顺序: transfer 在 primaries 前)
-                if (parts.Length >= 3 && !string.IsNullOrEmpty(parts[2]) && parts[2] != "unknown" && parts[2] != "N/A")
-                    meta.colorTrc = parts[2];
-                // parts[3] = color_primaries
+                // parts[0] = width
+                if (parts.Length >= 1 && !string.IsNullOrEmpty(parts[0]) && int.TryParse(parts[0], out var w))
+                    meta.width = w;
+                // parts[1] = height
+                if (parts.Length >= 2 && !string.IsNullOrEmpty(parts[1]) && int.TryParse(parts[1], out var h))
+                    meta.height = h;
+                // parts[3] = color_space (YUV 矩阵)
                 if (parts.Length >= 4 && !string.IsNullOrEmpty(parts[3]) && parts[3] != "unknown" && parts[3] != "N/A")
-                    meta.colorPrimaries = parts[3];
+                    meta.colorSpace = parts[3];
+                // parts[4] = color_transfer (实测顺序: transfer 在 primaries 前)
+                if (parts.Length >= 5 && !string.IsNullOrEmpty(parts[4]) && parts[4] != "unknown" && parts[4] != "N/A")
+                    meta.colorTrc = parts[4];
+                // parts[5] = color_primaries
+                if (parts.Length >= 6 && !string.IsNullOrEmpty(parts[5]) && parts[5] != "unknown" && parts[5] != "N/A")
+                    meta.colorPrimaries = parts[5];
+                // parts[6] = bits_per_raw_sample (fallback 位深，若 pix_fmt 无位深信息)
+                if (parts.Length >= 7 && !string.IsNullOrEmpty(parts[6]) && int.TryParse(parts[6], out var bps) && bps > meta.bitDepth)
+                    meta.bitDepth = bps;
+                // P8: 仅对 HDR (PQ/HLG) 源额外读一次 side data 峰值亮度（静像多为无 → 回退）。
+                if (meta.colorTrc == "smpte2084" || meta.colorTrc == "arib-std-b67")
+                {
+                    var (pk, peakFrom) = ProbePeakNits(inputPath, log, ct);
+                    meta.peakNits = pk;
+                    meta.peakSource = peakFrom;
+                }
             }
             catch { }
             return meta;
@@ -1397,77 +1532,173 @@ namespace FfmpegGui.Services
             return null;
         }
 
+        /// <summary>
+        /// P8/P4c：读 HDR 静态元数据的**内容峰值**（nits）及其来源。
+        ///
+        /// 语义对齐 ffmpeg <c>libavfilter/colorspace.c::ff_determine_signal_peak()</c>：
+        /// **MaxCLL 优先**（内容真实峰值），只有取不到 MaxCLL 才退到 BS.2086 mastering display
+        /// max_luminance——后者是调色**监视器**的峰值，是内容峰值的上界；旧实现取两者 Math.Max ⇒ 过度压暗。
+        ///
+        /// 键名与单位不凭记忆，全部由 <c>tests/scripts/_probe-hdr-peak-oracle.ps1</c> 实测本构建 ffprobe 得出：
+        ///  • 内容峰值的 JSON 键是 <c>max_content</c>（**不是** max_cll/MaxCLL）——旧写法因此**从未读到 MaxCLL**；
+        ///  • <c>max_luminance</c> 打印为**有理数字符串** "40000000/10000"，其值已是 cd/m²（=4000），
+        ///    故必须按 num/den 解析（旧写法"取分子再 /10000"只在分母恰为 10000 时碰巧正确）。
+        ///
+        /// 只读第一帧（-read_intervals "%+#1"）：静像本就一帧，视频不必为取元数据而整片解码
+        /// （实测：各容器退出码 0、首帧 side data 仍在；动图输出从 ~9KB 降到 ~0.9KB）。
+        /// 读不到 ⇒ (0, null)，由调用方回退到源曲线名义峰值，并必须在日志写明来源。
+        /// </summary>
+        /// <param name="log">日志回调（取消/超时分支点名用；null ⇒ 退回 Trace.WriteLine）</param>
+        /// <param name="ct">取消令牌（`#26`：本方法此前四级全无 `ct`，用户取消按不动）</param>
+        private static (double peakNits, string? source) ProbePeakNits(string inputPath,
+            Action<string>? log = null, CancellationToken ct = default)
+        {
+            if (inputPath == "-") return (0, null);
+            try
+            {
+                var ffprobe = FindFfprobe();
+                if (ffprobe == null) return (0, null);
+                using var p = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = ffprobe,
+                    Arguments = $"-v error -select_streams v:0 -read_intervals \"%+#1\" -show_frames " +
+                                $"-show_entries frame_side_data_list -of json \"{inputPath}\"",
+                    RedirectStandardOutput = true,
+                    StandardOutputEncoding = System.Text.Encoding.UTF8,
+                    RedirectStandardError = true,
+                    StandardErrorEncoding = System.Text.Encoding.UTF8,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                });
+                if (p == null) return (0, null);
+                // 先挂上两个读取任务再等退出：子进程写满管道时"只等退出"会互相卡死；
+                // 本方法可被 UI 线程同步调用，故超时直接放弃（宁可回退名义峰值也不挂住界面）。
+                var outTask = p.StandardOutput.ReadToEndAsync();
+                var errTask = p.StandardError.ReadToEndAsync();
+                // `#26`：同步 `WaitForExit(5000)` 不接受 ct ⇒ 用 `ct.Register` 杀树接线；原有 5s 超时**不变**。
+                using var reg = ct.Register(() => { try { p.Kill(entireProcessTree: true); } catch { } });
+                if (!p.WaitForExit(5000))
+                {
+                    try { p.Kill(entireProcessTree: true); } catch { }
+                    // 原写法在此**静默**返回 (0,null)（调用方回退名义峰值）⇒ 补一句点名，不再无声。
+                    var tmsg = $"[probe] 峰值亮度探测超时（5s）⇒ 已终止：{Path.GetFileName(inputPath)}（回退名义峰值）";
+                    if (log != null) log(tmsg + "\n"); else System.Diagnostics.Trace.WriteLine(tmsg);
+                    return (0, null);
+                }
+                if (ct.IsCancellationRequested)
+                {
+                    var cmsg = $"[probe] 峰值亮度探测被取消 ⇒ 已终止：{Path.GetFileName(inputPath)}（回退名义峰值）";
+                    if (log != null) log(cmsg + "\n"); else System.Diagnostics.Trace.WriteLine(cmsg);
+                    return (0, null);
+                }
+                string json = outTask.GetAwaiter().GetResult();
+                errTask.GetAwaiter().GetResult();
+                double cll = ExtractJsonNumber(json, "max_content", "MaxCLL", "max_cll");
+                if (cll > 0) return (cll, "MaxCLL");
+                double mld = ExtractJsonNumber(json, "max_luminance", "MasteringDisplayMaxLuminance");
+                return mld > 0 ? (mld, "BS.2086 mastering") : (0, null);
+            }
+            catch { return (0, null); }
+        }
+
+        /// <summary>
+        /// 从 ffprobe JSON 文本中取 "key": value 的数值，兼容三种打印形态：
+        /// 裸数字（<c>"max_content": 600</c>）、字符串小数、**有理数字符串**（<c>"40000000/10000"</c> ⇒ 4000）。
+        /// 可给多个候选键名（不同 ffmpeg 版本打印名不同），取第一个解析出正值者。
+        /// </summary>
+        private static double ExtractJsonNumber(string json, params string[] keys)
+        {
+            if (string.IsNullOrEmpty(json)) return 0;
+            foreach (var key in keys)
+            {
+                int i = json.IndexOf("\"" + key + "\"", StringComparison.Ordinal);
+                if (i < 0) continue;
+                i = json.IndexOf(':', i);
+                if (i < 0) continue;
+                int j = i + 1;
+                while (j < json.Length && (json[j] == ' ' || json[j] == '"' || json[j] == '\t' || json[j] == ':')) j++;
+                int k = j;
+                while (k < json.Length && (char.IsDigit(json[k]) || json[k] == '.' || json[k] == '/' || json[k] == '-')) k++;
+                double v = ParseRationalOrDecimal(json.Substring(j, k - j));
+                if (v > 0) return v;
+            }
+            return 0;
+        }
+
+        /// <summary>解析 "40000000/10000" | "4000.0" | "4000" 为 double；分母为 0 或格式不符 ⇒ 0（绝不猜）。</summary>
+        private static double ParseRationalOrDecimal(string token)
+        {
+            if (string.IsNullOrEmpty(token)) return 0;
+            const System.Globalization.NumberStyles NS = System.Globalization.NumberStyles.Any;
+            var ci = System.Globalization.CultureInfo.InvariantCulture;
+            int slash = token.IndexOf('/');
+            if (slash < 0)
+                return double.TryParse(token, NS, ci, out var d) ? d : 0;
+            var parts = token.Split('/');
+            if (parts.Length != 2) return 0;
+            if (!double.TryParse(parts[0], NS, ci, out var num) || !double.TryParse(parts[1], NS, ci, out var den) || den == 0)
+                return 0;
+            return num / den;
+        }
+
         // ═══════════════════════════════════════════════════════════
         //  ICC 辅助方法
         // ═══════════════════════════════════════════════════════════
 
+        /// <summary>解析 ICC 烘焙的源色彩空间显示名（用于超广色域矩阵转换判定）</summary>
+        private static string? GetIccSourceDisplayName(Models.FfmpegOptions options, string inputPath)
+        {
+            if (!string.IsNullOrWhiteSpace(options.IccFilePath))
+            {
+                var info = IccProfileService.ParseInfo(options.IccFilePath);
+                return ColorMapping.ColorSpaceIdentify.IdentifyIccSpaceName(options.IccFilePath, info?.Description);
+            }
+            // auto（UI 标“从文件检测”）：用探测到的源 ICC 色域名，而非回落 sRGB（与其余路径同源）。
+            return GetCachedProbe(inputPath).sourceGamutName;
+        }
+
         /// <summary>解析 ICC 烘焙的源色彩空间参数</summary>
         private static (string primaries, string trc, string matrix) ResolveIccSourceParams(
-            Models.FfmpegOptions options)
+            Models.FfmpegOptions options, string inputPath)
         {
-            // 优先：用户手动选择的源色彩空间
-            if (!string.IsNullOrWhiteSpace(options.IccSourceColorSpace))
-                return MapNamedColorSpace(options.IccSourceColorSpace);
+            // 源色彩空间不再手动指定（自动：优先 ICC 文件描述推断，其次探测）
 
             // 其次：从 ICC 文件描述推断
             if (!string.IsNullOrWhiteSpace(options.IccFilePath))
             {
                 var info = IccProfileService.ParseInfo(options.IccFilePath);
-                var guessed = IccProfileService.GuessColorSpace(info?.Description);
+                var guessed = ColorMapping.ColorSpaceIdentify.IdentifyIccSpaceName(options.IccFilePath, info?.Description);
                 if (guessed != null)
                     return MapNamedColorSpace(guessed);
             }
+
+            // 再次：auto 时用探测到的源色域兑底（看齐源，避免将 P3/Adobe 源误当 sRGB）。
+            // 优先用 ICC 描述推定的色域名（可判超广）；否则用 ffprobe 的 CICP tokens（cICP 源无 ICC 描述时）。
+            var hp = GetCachedProbe(inputPath);
+            if (!string.IsNullOrWhiteSpace(hp.sourceGamutName))
+                return MapNamedColorSpace(hp.sourceGamutName);
+            if (!string.IsNullOrWhiteSpace(hp.colorPrimaries))
+                return (hp.colorPrimaries, hp.colorTrc ?? hp.colorPrimaries, hp.colorSpace ?? "bt709");
 
             // 回退：假定 sRGB（安全默认值）
             return ("bt709", "iec61966-2-1", "bt709");
         }
 
-        /// <summary>目标色彩空间名称 → (primaries, trc, matrix)</summary>
+        /// <summary>目标色彩空间名称 → (primaries, trc, matrix)。委托 ColorSpaceRegistry（单一来源，bt470bg 等已根除）。</summary>
         private static (string primaries, string trc, string matrix) MapIccTargetColorSpace(
             string name)
         {
-            var n = (name ?? "sRGB").ToLowerInvariant();
-            if (n.Contains("srgb") || n.Contains("bt.709") || n.Contains("709") || n.Contains("iec61966"))
-                return ("bt709", "iec61966-2-1", "bt709");
-            if (n.Contains("adobe") || n.Contains("adobergb"))
-                return ("bt709", "bt709", "bt709");
-            if (n.Contains("display p3") || n.Contains("displayp3"))
-                return ("smpte432", "bt709", "bt709");
-            if (n.Contains("dci-p3") || n.Contains("dci p3"))
-                return ("smpte431", "smpte428", "bt709");
-            if (n.Contains("prophoto") || n.Contains("romm"))
-                return ("bt470bg", "bt709", "bt709");
-            if (n.Contains("rec.2020") || n.Contains("bt.2020") || n.Contains("rec2020"))
-                return ("bt2020", "smpte2084", "bt2020nc");
-            if (n.Contains("rec.2100") || n.Contains("bt.2100"))
-                return ("bt2020", "smpte2084", "bt2020nc");
-            // 默认 sRGB
-            return ("bt709", "iec61966-2-1", "bt709");
+            var (p, t, m) = ColorSpaceRegistry.FfmpegTokens(name);
+            return (p ?? "bt709", t ?? "iec61966-2-1", m ?? "bt709");
         }
 
-        /// <summary>常见色彩空间名称 → (primaries, trc, matrix)</summary>
+        /// <summary>常见色彩空间名称 → (primaries, trc, matrix)。委托 ColorSpaceRegistry。</summary>
         private static (string primaries, string trc, string matrix) MapNamedColorSpace(
             string name)
-            => (name ?? "").ToLowerInvariant() switch
-            {
-                var n when n.Contains("srgb") || n.Contains("bt.709") || n.Contains("iec61966")
-                    => ("bt709", "iec61966-2-1", "bt709"),
-                var n when n.Contains("adobergb") || n.Contains("adobe rgb")
-                    => ("bt709", "bt709", "bt709"),
-                var n when n.Contains("display p3") || n.Contains("displayp3")
-                    => ("smpte432", "bt709", "bt709"),
-                var n when n.Contains("dci-p3") || n.Contains("dci p3")
-                    => ("smpte431", "smpte428", "bt709"),
-                var n when n.Contains("prophoto") || n.Contains("romm")
-                    => ("bt470bg", "bt709", "bt709"),
-                var n when n.Contains("rec.2020") || n.Contains("bt.2020") || n.Contains("rec2020")
-                    => ("bt2020", "smpte2084", "bt2020nc"),
-                var n when n.Contains("rec.2100") || n.Contains("bt.2100")
-                    => ("bt2020", "smpte2084", "bt2020nc"),
-                var n when n.Contains("colormatch")
-                    => ("bt709", "bt709", "bt709"),
-                _ => ("bt709", "iec61966-2-1", "bt709")
-            };
+        {
+            var (p, t, m) = ColorSpaceRegistry.FfmpegTokens(name);
+            return (p ?? "bt709", t ?? "iec61966-2-1", m ?? "bt709");
+        }
 
         /// <summary>两个色彩参数集是否相同（避免无意义的 zscale 转换）。大小写不敏感比较。</summary>
         private static bool ColorParamsEqual(
@@ -1515,6 +1746,138 @@ namespace FfmpegGui.Services
             // 无现有滤镜：新建 -vf
             args.Add("-vf");
             args.Add(filter);
+        }
+
+        /// <summary>「色彩变换」滤镜的 token 前缀 —— 顺序统一 R1 的锚点（插在它们**之前**）</summary>
+        private static readonly string[] ColorTransformTokens = { "zscale=", "tonemap=", "colorchannelmixer=" };
+
+        /// <summary>
+        /// **顺序统一（R1）**：把 <paramref name="scaleFilter"/> 插入到滤镜链里**第一条色彩变换之前**。
+        ///
+        /// <para>
+        /// <b>为什么需要它</b>：色彩变换把像素搬到线性域再搬回来，几何缩放若在其**之后**做，等于在**已定标
+        /// 的域**上重采样。两条顺序**不等价**（同一素材 2×2 对照实测 PSNR 36.47dB / 最大单通道差 14417）
+        /// ⇒ 顺序必须固定为 **缩放 → 映射**。legacy 此前是**映射 → 缩放**（色彩链由 <c>:121</c> 追加、
+        /// scale 由 <c>:535</c> 追加），与引擎侧（<c>RawColorPipeline.cs:94-97</c> 的
+        /// <c>format=rgb48le,{scale}</c> ⇒ 缩放 → 映射）**相反**。
+        /// </para>
+        ///
+        /// <para>
+        /// <b>为何不复用 <see cref="AppendVideoFilter"/></b>：它是**追加**语义（<c>-vf</c> 分支
+        /// <c>+= "," + filter</c>、complex 分支插在 <c>,split</c> 之前），而 <c>:498-499</c> 的 iccgen
+        /// **依赖**该追加语义 —— 改它等于改一条已被别处依赖的契约。本方法只做「插到链首色彩变换之前」
+        /// 这一件事，两者互不干扰。
+        /// </para>
+        ///
+        /// <para>
+        /// <b>两个守卫</b>：
+        /// <list type="number">
+        /// <item><b>字面引号必须留在最外层</b>：链可能是 <c>"format=…,zscale=…"</c>（引号是字符串的一部分，
+        ///   见 <c>BuildArguments</c> 的 GIF 分支与 <c>QueueProcessor.BuildPipeColorArgs</c>）。在位置 0
+        ///   插入会产出 <c>scale=…,"format=…"</c> ⇒ ffmpeg 解析失败（退出码 <c>-22</c>）⇒ 只在引号**内**插入。</item>
+        /// <item><b>不得插进 <c>[label]</c> / <c>[1:v]</c> 段</b>：链首若有输入标签（如
+        ///   <c>[0:v][1:v]alphamerge,…</c>），在标签之前插入会破坏滤镜图。本方法遇到链首标签时
+        ///   <b>不注入、原样返回</b>（多标签 complex 的正确锚点是 merge **之后**，属<b>未覆盖形态</b>；
+        ///   门禁**不得**对该形态套用 <c>scaleIdx == 0</c>）。</item>
+        /// </list>
+        /// </para>
+        ///
+        /// <para>
+        /// <b>锚点规则</b>：只在**第一个 <c>;</c> 段**内查找第一条色彩变换（<c>zscale=</c> / <c>tonemap=</c> /
+        /// <c>colorchannelmixer=</c>，且必须处在**滤镜 token 位置** —— 前一个字符是 <c>,</c> 或段首，
+        /// 否则 <c>zscale=</c> 里的 <c>scale=</c> 子串会误命中）；找不到则锚点 = **该段链首**
+        /// （= 「无色彩变换」时的退化，此时 <c>scaleIdx == 0</c>）。
+        /// </para>
+        /// </summary>
+        internal static string InsertScaleFilterAtChainHead(string chain, string scaleFilter)
+        {
+            if (string.IsNullOrEmpty(chain) || string.IsNullOrEmpty(scaleFilter))
+                return chain;
+
+            // 守卫 1：字面引号留最外层 —— 只在引号内插入（位置 0 插入会破坏命令行，实测 ffmpeg 退出 -22）
+            int bodyStart = chain.Length >= 2 && chain[0] == '"' ? 1 : 0;
+            int bodyEnd = chain.Length >= 2 && chain[^1] == '"' ? chain.Length - 1 : chain.Length;
+            var body = chain.Substring(bodyStart, bodyEnd - bodyStart);
+
+            int segEnd = body.IndexOf(';');
+            var firstSeg = segEnd < 0 ? body : body.Substring(0, segEnd);
+
+            // 守卫 2：链首输入标签 ⇒ 不注入（未覆盖形态，见 XML 注释）
+            if (firstSeg.StartsWith("["))
+                return chain;
+
+            int anchor = FindFirstColorTransformIndex(firstSeg);
+            var newBody = body.Insert(anchor < 0 ? 0 : anchor, scaleFilter + ",");
+
+            return chain.Substring(0, bodyStart) + newBody + chain.Substring(bodyEnd);
+        }
+
+        /// <summary>
+        /// 返回本段内**第一条色彩变换滤镜**的起始下标（无则 -1）。
+        /// 必须处在滤镜 token 位置：段首或前一个字符是 <c>,</c> —— 否则 <c>zscale=</c> 内部的 <c>scale=</c>
+        /// 子串、以及别的滤镜名里同形子串都会误命中。
+        /// </summary>
+        private static int FindFirstColorTransformIndex(string segment)
+        {
+            int best = -1;
+            foreach (var tok in ColorTransformTokens)
+            {
+                int from = 0;
+                while (true)
+                {
+                    int i = segment.IndexOf(tok, from, StringComparison.Ordinal);
+                    if (i < 0) break;
+                    if (i == 0 || segment[i - 1] == ',')
+                    {
+                        if (best < 0 || i < best) best = i;
+                        break;
+                    }
+                    from = i + 1;
+                }
+            }
+            return best;
+        }
+
+        /// <summary>把 <paramref name="scaleFilter"/> 按 R1 插进 <paramref name="args"/> 里已有的 `-vf` / `-filter_complex`。</summary>
+        /// <remarks>
+        /// ⚠ 本批次**不实现**扩展 ①（无滤镜时由 helper 新建 <c>-vf</c>）与扩展 ②（多标签 complex 的
+        /// merge 后锚点）—— 前者此处**委托**给 <see cref="AppendVideoFilter"/> 的兜底（链不存在时
+        /// 「链首」就等于新建的 <c>-vf</c>，行为与改动前逐字一致），后者由
+        /// <see cref="InsertScaleFilterAtChainHead(string,string)"/> 守卫 2 原样返回、**不注入**。
+        /// </summary>
+        private static void InsertScaleFilterAtChainHead(List<string> args, string scaleFilter)
+        {
+            var vfIdx = args.FindIndex(a => a == "-vf");
+            if (vfIdx >= 0 && vfIdx + 1 < args.Count)
+            {
+                args[vfIdx + 1] = InsertScaleFilterAtChainHead(args[vfIdx + 1], scaleFilter);
+                return;
+            }
+            var fcIdx = args.FindIndex(a => a == "-filter_complex");
+            if (fcIdx >= 0 && fcIdx + 1 < args.Count)
+            {
+                args[fcIdx + 1] = InsertScaleFilterAtChainHead(args[fcIdx + 1], scaleFilter);
+                return;
+            }
+            // 无现有滤镜 ⇒ 链不存在，「链首」即新建的 -vf（委托兜底，与改动前一致）
+            AppendVideoFilter(args, scaleFilter);
+        }
+
+        /// <summary>
+        /// 从**已构建的命令行**里取出「最长边缩放」注入项（R1 判别式：<c>scale=W:-2:…</c> / <c>scale=-2:H:…</c>）。
+        /// 供调用方回显一行日志（扩展 ③：「缩了但用户不知道」本身仍是静默）。
+        /// </summary>
+        /// <remarks>
+        /// ⚠ **只读命令行、不读意图** —— 命令行里有才是真有（<c>docs/TESTING.md</c> §6 第 70 条：
+        /// 「日志标记」不足以做门禁）。
+        /// ⚠ <c>-2</c> 是**分水岭**：<c>AnimationScaleW</c> 的 <c>scale={W}:-1:</c> 与 preScale 的
+        /// <c>scale=ceil(iw/2)*2:</c> 都**不匹配**本判别式 ⇒ 不会把别的合法 scale token 当成本项。
+        /// </remarks>
+        public static string? FindInjectedScaleFilter(string args)
+        {
+            if (string.IsNullOrEmpty(args)) return null;
+            var m = System.Text.RegularExpressions.Regex.Match(args, @"scale=(?:\d+:-2|-2:\d+):flags=lanczos");
+            return m.Success ? m.Value : null;
         }
 
         /// <summary>ICC 嵌入逻辑：根据输出格式选择最佳嵌入路径</summary>

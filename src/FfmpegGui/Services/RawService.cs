@@ -215,7 +215,9 @@ public static class RawService
                 FileName = exePath,
                 Arguments = args,
                 RedirectStandardOutput = true,
+                StandardOutputEncoding = System.Text.Encoding.UTF8,
                 RedirectStandardError = true,
+                StandardErrorEncoding = System.Text.Encoding.UTF8,
                 UseShellExecute = false,
                 CreateNoWindow = true
             };
@@ -232,7 +234,23 @@ public static class RawService
             p.BeginOutputReadLine();
             p.BeginErrorReadLine();
 
-            await p.WaitForExitAsync(ct);
+            try
+            {
+                await p.WaitForExitAsync(ct);
+            }
+            catch (OperationCanceledException)
+            {
+                // 取消必须杀进程：否则 dngtool 在后台继续跑到自然结束（孤儿进程，
+                // 占 CPU 且可能写完一个无人消费的大 TIFF）（P2）
+                try { if (!p.HasExited) p.Kill(entireProcessTree: true); } catch { }
+                throw;
+            }
+            catch (Exception)
+            {
+                // 其他等待异常同样先杀进程再走外层统一日志
+                try { if (!p.HasExited) p.Kill(entireProcessTree: true); } catch { }
+                throw;
+            }
 
             if (p.ExitCode != 0)
             {
@@ -244,6 +262,11 @@ public static class RawService
                 PlatformServices.MarkAsTemporaryFile(outputTiffPath);
 
             return File.Exists(outputTiffPath);
+        }
+        catch (OperationCanceledException)
+        {
+            // 维持取消语义：向上传播，调用方按"已停止"处理
+            throw;
         }
         catch (Exception ex)
         {

@@ -123,14 +123,6 @@ static byte[] InsertChunk(byte[] data, string typeName, byte[] chunk)
     return outMs.ToArray();
 }
 
-static (byte[] head, byte[] tail, int sigEnd) SplitAfterIhdr(byte[] data)
-{
-    int pos = 8;
-    int len = BinaryPrimitives.ReadInt32BigEndian(data.AsSpan(pos));
-    int ihdrEnd = pos + 12 + len;
-    return (data[0..ihdrEnd], data[ihdrEnd..], ihdrEnd);
-}
-
 static byte[] BuildChunk(string typeName, byte[] payload)
 {
     var type = Encoding.ASCII.GetBytes(typeName);

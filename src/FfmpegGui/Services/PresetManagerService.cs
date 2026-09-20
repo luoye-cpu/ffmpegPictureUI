@@ -517,6 +517,20 @@ namespace FfmpegGui.Services
             return list;
         }
 
+        /// <summary>根据名称获取预设（内置或用户）</summary>
+        public static PresetEntry? GetPresetByName(string name)
+        {
+            // 先在内置预设中查找（不区分大小写）
+            var builtin = BuiltInPresets.FirstOrDefault(p =>
+                p.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+            if (builtin != null) return builtin;
+
+            // 再在用户预设中查找
+            var userPresets = LoadUserPresets();
+            return userPresets.FirstOrDefault(p =>
+                p.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+        }
+
         /// <summary>获取用户预设列表</summary>
         public static List<PresetEntry> LoadUserPresets()
         {

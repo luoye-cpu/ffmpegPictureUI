@@ -22,21 +22,12 @@ namespace FfmpegGui.Services
                 return MapPrimariesTransfer(options.ColorPrimaries, options.ColorTrc);
             }
 
-            // ── 简化模式：根据 ColorSpace 下拉框映射 ──
+            // ── 简化模式：按 ColorSpace 显示名统一解析（与 ffmpeg 直接路径同源同义，P4）──
+            // 简化仅指 UI 少暴露控件，功能不缩水：完整覆盖 sRGB/BT.709/Display P3/P3 PQ/BT.2020 PQ/HLG。
             if (!string.IsNullOrWhiteSpace(options.ColorSpace)
                 && !options.ColorSpace.Equals("auto", StringComparison.OrdinalIgnoreCase))
             {
-                return options.ColorSpace switch
-                {
-                    "sRGB" => "sRGB",
-                    "BT.709" => "sRGB",
-                    "BT.2020 PQ" => "Rec2100PQ",
-                    "BT.2020 HLG" => "Rec2100HLG",
-                    // 兼容旧名称
-                    "BT.2020" => "Rec2100PQ",
-                    "BT.601" => "sRGB",
-                    _ => null
-                };
+                return ColorSpaceRegistry.CjxlColorSpace(options.ColorSpace);
             }
 
             // auto / 未设置 → 不指定（编码器自动检测或使用默认 sRGB）
@@ -54,6 +45,44 @@ namespace FfmpegGui.Services
         }
 
         /// <summary>
+        /// **引擎 cjxl 出口专用**：由规划层的**目标描述符**映射 cjxl 的 <c>-x color_space=</c>。
+        /// <para>
+        /// 为什么需要这个重载（2026-09-17 接入 cjxl 出口时新增）：上面两个重载吃的是
+        /// <c>FfmpegOptions</c> / 探测元数据，而引擎出口的**唯一权威色彩语义是计划**
+        /// （<c>ColorTransformPlan.Dst</c>，它是按容器能力钳制后的结果）。
+        /// 若出口回头去读 options 或重新探测，就等于把「决策」在出口里**重算一遍** ——
+        /// 会出现"计划说 A、出口标 B"的两套口径（本项目反复修过的缺陷形状）。
+        /// </para>
+        /// <para>
+        /// 映射规则复用同一份 <see cref="MapPrimariesTransfer"/>（不另写一份表）。
+        /// ⚠ 返回 null 有两种含义，调用方必须区分处理：
+        /// <list type="bullet">
+        ///   <item>描述符为 null ⇒ 语义未知；</item>
+        ///   <item>描述符可命名、但**落不进 cjxl 的 <c>color_space</c> 枚举**
+        ///         （枚举只有 sRGB / DisplayP3 / Rec2100PQ / Rec2100HLG，见
+        ///         <c>ColorTransformPlan.JxlColorSpaceEnums</c>；典型是 **SDR BT.2020**、
+        ///         DCI-P3、ProPhoto 这类具名空间）⇒ **只能靠 ICC 描述**。</item>
+        /// </list>
+        /// 故出口在拿到 null 时必须检查计划是否给了 ICC；两者皆无 ⇒ **显式拒绝**
+        /// （绝不产出无色彩描述的 JXL）。
+        /// </para>
+        /// </summary>
+        public static string? MapToCjxlColorSpace(ColorMapping.ColorSpaceDescriptor? d)
+            => d == null ? null : MapPrimariesTransfer(d.PrimariesToken, d.Curve.CicpToken);
+
+        /// <summary>
+        /// 目标描述符是否为 HDR（PQ/HLG）—— 决定 cjxl 出口**必须**声明 <c>--intensity_target</c>。
+        /// <para>
+        /// 依据：`CjxlService.BuildCjxlArguments` 已登记的实测结论 —— 缺了它 libjxl 会回落到
+        /// **默认峰值**，HDR 画面的显示亮度就错了（不是"少个标签"，是亮度语义错）。
+        /// </para>
+        /// </summary>
+        public static bool IsHdrDescriptor(ColorMapping.ColorSpaceDescriptor? d)
+            => d != null
+               && (d.Curve.Kind == ColorMapping.TransferCurve.CurveKind.Pq
+                   || d.Curve.Kind == ColorMapping.TransferCurve.CurveKind.Hlg);
+
+        /// <summary>
         /// 根据探测到的色彩元数据计算 --intensity_target（用于 auto 模式下 HDR 自动检测）。
         /// </summary>
         public static int MapToIntensityTarget(FfmpegCommandBuilder.ColorMetadata hdrMeta)
@@ -63,7 +92,12 @@ namespace FfmpegGui.Services
             var t = hdrMeta.colorTrc ?? "";
             if (t.Equals("smpte2084", StringComparison.OrdinalIgnoreCase)
                 || t.Equals("arib-std-b67", StringComparison.OrdinalIgnoreCase))
+            {
+                // P8: 优先采用源峰值亮度(MaxCLL/mastering)，否则回退 1000。
+                if (hdrMeta.peakNits > 0)
+                    return (int)Math.Clamp(Math.Round(hdrMeta.peakNits), 100, 10000);
                 return 1000;
+            }
             return 0;
         }
 
@@ -87,16 +121,19 @@ namespace FfmpegGui.Services
                 }
             }
 
-            // 简化模式：HDR (PQ/HLG) 需要设置 intensity_target
-            if (!string.IsNullOrWhiteSpace(options.ColorSpace)
-                && (options.ColorSpace.Equals("BT.2020 PQ", StringComparison.OrdinalIgnoreCase)
-                    || options.ColorSpace.Equals("BT.2020 HLG", StringComparison.OrdinalIgnoreCase)
-                    || options.ColorSpace.Equals("BT.2020", StringComparison.OrdinalIgnoreCase))
-                && !options.UseAdvancedColorParameters)
+            // 简化模式：目标归一化后为 HDR 传递(PQ/HLG)时需设置 intensity_target。
+            // 委托 ColorSpaceRegistry（全流程单一色彩真值）判定，取代旧硬编码名单：
+            // 覆盖 BT.2020 PQ/HLG/BT.2020 及 P3 PQ(已归一 Rec2100PQ)——旧名单漏 P3 PQ
+            // 会令其 Rec2100PQ 标记缺峰值亮度声明（libjxl 回落默认峰值）。
+            if (!string.IsNullOrWhiteSpace(options.ColorSpace) && !options.UseAdvancedColorParameters)
             {
-                if (options.JpegGainMapTargetNits > 0)
-                    return options.JpegGainMapTargetNits;
-                return 1000;
+                var spec = ColorSpaceRegistry.Resolve(options.ColorSpace);
+                if (spec != null && (spec.OutTrc == "smpte2084" || spec.OutTrc == "arib-std-b67"))
+                {
+                    if (options.JpegGainMapTargetNits > 0)
+                        return options.JpegGainMapTargetNits;
+                    return 1000;
+                }
             }
 
             return 0;
@@ -106,56 +143,6 @@ namespace FfmpegGui.Services
         /// 精确映射：primaries + transfer → cjxl color_space 缩写
         /// </summary>
         public static string? MapPrimariesTransfer(string? primaries, string? transfer)
-        {
-            var p = (primaries ?? "").ToLowerInvariant();
-            var t = (transfer ?? "").ToLowerInvariant();
-
-            // BT.2020 primaries
-            if (p == "bt2020")
-            {
-                return t switch
-                {
-                    "smpte2084" => "Rec2100PQ",         // BT.2100 PQ (HDR)
-                    "arib-std-b67" => "Rec2100HLG",     // BT.2100 HLG (HDR)
-                    "linear" => "RGB_D65_202_Rel_Lin",  // BT.2020 Linear (HDR/float)
-                    // BT.2020 SDR (bt709/bt1886 etc.)：cjxl 不支持此组合的命名
-                    // 像素色彩由 ffmpeg 管道端处理，JXL 编码时将回退为默认 sRGB 标记
-                    _ => null,
-                };
-            }
-
-            // BT.709 / sRGB primaries
-            if (p == "bt709" || p == "bt470bg" || p == "smpte170m")
-            {
-                return t switch
-                {
-                    "linear" => "RGB_D65_SRG_Rel_Lin",
-                    _ => "sRGB",
-                };
-            }
-
-            // Display P3
-            if (p == "smpte432" || p.Contains("p3"))
-            {
-                return t switch
-                {
-                    "smpte2084" => "Rec2100PQ",  // Display P3 with PQ (not standard but map to Rec2100)
-                    _ => "DisplayP3",
-                };
-            }
-
-            // 仅有 transfer（无 primaries）
-            if (string.IsNullOrWhiteSpace(p) && !string.IsNullOrWhiteSpace(t))
-            {
-                return t switch
-                {
-                    "smpte2084" => "Rec2100PQ",
-                    "arib-std-b67" => "Rec2100HLG",
-                    _ => null,
-                };
-            }
-
-            return null;
-        }
+            => ColorSpaceRegistry.MapPrimariesTransferToCjxl(primaries, transfer);
     }
 }

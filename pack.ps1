@@ -1,10 +1,19 @@
 # FFmpegPictureUI 打包脚本 — 2 版本发布（全部 NativeAOT 编译）
 # 用法:
-#   单文件版 (不含 PLAN):      .\pack.ps1 -Version "1.5.2" -Mode app
-#   完整版 (含 PLAN 组件包):   .\pack.ps1 -Version "1.5.2" -Mode full
-#   一键全部 2 个版本:         .\pack.ps1 -Version "1.5.2" -Mode all (默认)
+#   单文件版 (不含 PLAN):      .\pack.ps1 -Mode app
+#   完整版 (含 PLAN 组件包):   .\pack.ps1 -Mode full
+#   一键全部 2 个版本:         .\pack.ps1 -Mode all (默认)
+#
+# 版本号省略时自动从 src/FfmpegGui/FfmpegGui.csproj 的 <Version> 读取，
+# 避免与项目版本漂移。也可显式指定： .\pack.ps1 -Version "1.6.0"
+#
+# 打包时会强制随附法律文件（缺失即失败，不会产出不合规的包）：
+#   LICENSE                GNU GPL-3.0 逐字全文
+#   NOTICE                 本项目版权与必需声明（含 Adobe DNG 声明）
+#   THIRD-PARTY-NOTICES.md 第三方组件许可清单
+#   licenses/              各第三方许可原文
 param(
-    [string]$Version = "1.5.2",
+    [string]$Version = "",
     [ValidateSet("app", "full", "all")]
     [string]$Mode = "all",
     [switch]$NoCompress  # 跳过 7z 压缩（调试/CI 时快速验证打包逻辑）
@@ -16,6 +25,20 @@ $ProjectDir = "$ScriptDir\src\FfmpegGui"
 $PublishDir = "$ScriptDir\publish"
 $BuildDir = "$ScriptDir\publish\build"
 $PlanSource = "$PublishDir\PLAN"
+
+# ── 版本号：未显式指定时从 csproj 读取，避免与项目版本漂移 ──
+if (-not $Version) {
+    $CsprojPath = "$ProjectDir\FfmpegGui.csproj"
+    $Version = "0.0.0"
+    if (Test-Path $CsprojPath) {
+        $m = Select-String -Path $CsprojPath -Pattern '<Version>([^<]+)</Version>' | Select-Object -First 1
+        if ($m) { $Version = $m.Matches[0].Groups[1].Value }
+    }
+    if ($Version -eq "0.0.0") {
+        throw "无法确定版本号：请用 -Version 显式指定，或确认 $CsprojPath 存在且含 <Version>"
+    }
+    Write-Host "   i 未指定 -Version，已从 csproj 读取: $Version" -ForegroundColor Cyan
+}
 
 # 架构
 $Arch = "x64"
@@ -127,11 +150,13 @@ if ($mode -eq "full") {
             Start-Sleep -Milliseconds 500
         }
         # 使用 robocopy 避免 PowerShell Copy-Item 的容器/叶节点冲突
-        robocopy $PlanSource $PlanDest /E /NFL /NDL /NJH /NJS /NC /NS
+        # /XF 排除 .lib(静态导入库) / .pc(pkg-config) / .cmake(CMake 包配置) —— 均为编译期元数据，运行时无用
+        # /XD 排除 pkgconfig 与 cmake 目录
+        robocopy $PlanSource $PlanDest /E /XF *.lib *.pc *.cmake /XD pkgconfig cmake /NFL /NDL /NJH /NJS /NC /NS
         if ($LASTEXITCODE -ge 8) { throw "复制 PLAN 失败 (robocopy exit code: $LASTEXITCODE)" }
         Write-Host "   ✅ PLAN 组件已复制" -ForegroundColor Green
     } else {
-        Write-Host "   ⚠️ PLAN 源目录不存在: $PlanSource" -ForegroundColor Yellow
+        throw "PLAN 源目录不存在: $PlanSource —— 完整版无法打包。请先准备 PLAN 组件包（见 PACKAGING_SPEC.md），或改用 -Mode app。"
     }
 
     Write-Host "`n[3/4] 生成使用说明..." -ForegroundColor Yellow
@@ -144,11 +169,38 @@ if ($mode -eq "full") {
         $outReadme = "$PlanDest\使用说明.txt"
         Set-Content -Path $outReadme -Value $content -Encoding UTF8
         Write-Host "   ✅ 使用说明已生成 → $outReadme" -ForegroundColor Green
+    } else {
+        throw "缺少使用说明模板: $ReadmeTemplate"
     }
 } else {
     Write-Host "`n[2/4] 跳过 (单文件版不含 PLAN)" -ForegroundColor Yellow
     Write-Host "`n[3/4] 跳过 (单文件版不生成使用说明)" -ForegroundColor Yellow
 }
+
+    # Step 3.5: 随附法律文件（GPL-3.0 §4/§5/§6 要求随二进制分发，缺失即失败）
+    Write-Host "`n[3.5/4] 随附法律文件..." -ForegroundColor Yellow
+    foreach ($lf in @("LICENSE", "NOTICE", "THIRD-PARTY-NOTICES.md")) {
+        $lfSrc = "$ScriptDir\$lf"
+        if (-not (Test-Path $lfSrc)) {
+            throw "缺少必需的法律文件: $lfSrc —— 拒绝打包不合规的产物"
+        }
+        Copy-Item $lfSrc "$OutputDir\$lf" -Force
+        Write-Host "   ✅ $lf" -ForegroundColor Green
+    }
+    $licDirSrc = "$ScriptDir\licenses"
+    if (-not (Test-Path $licDirSrc)) {
+        throw "缺少 licenses/ 目录: $licDirSrc —— 拒绝打包不合规的产物"
+    }
+    Copy-Item $licDirSrc "$OutputDir\licenses" -Recurse -Force
+    $licCount = (Get-ChildItem $licDirSrc -File).Count
+    Write-Host "   ✅ licenses/ ($licCount 个许可原文)" -ForegroundColor Green
+
+    # 清除作者本机运行时状态（含绝对路径，且会让用户继承他人设置）
+    $staleSettings = "$OutputDir\settings.json"
+    if (Test-Path $staleSettings) {
+        Remove-Item $staleSettings -Force
+        Write-Host "   ✅ 已移除 settings.json（作者本机运行时状态，程序会自动重建）" -ForegroundColor Green
+    }
 
     # Step 4: 压缩
     Write-Host "`n[4/4] 压缩打包..." -ForegroundColor Yellow
@@ -184,8 +236,10 @@ if ($mode -eq "full") {
         if ($proc.ExitCode -ne 0) { throw "压缩失败 (7z exit code: $($proc.ExitCode))" }
         Write-Host "   ✅ 压缩完成 → $ArchivePath" -ForegroundColor Green
     } else {
-        Write-Host "   ⚠️ 未找到 7z 命令，跳过压缩" -ForegroundColor Yellow
-        Write-Host "   手动压缩目录: $OutputDir" -ForegroundColor Yellow
+        Write-Host "   x 未找到 7z 命令，无法生成压缩包" -ForegroundColor Red
+        Write-Host "     未压缩目录: $OutputDir" -ForegroundColor Yellow
+        Write-Host "     请安装 7-Zip，或用 -NoCompress 明确表示只要目录" -ForegroundColor Yellow
+        throw "缺少 7z：拒绝静默产出未压缩产物"
     }
 
     Write-Host "`n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan

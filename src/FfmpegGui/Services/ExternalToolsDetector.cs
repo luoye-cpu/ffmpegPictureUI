@@ -29,7 +29,9 @@ namespace FfmpegGui.Services
         /// 对指定可执行文件进行短时间的运行探测（尝试 --version / --help 等），用于检测是否在当前 CPU 上可运行以及解析版本/优化信息。
         /// 返回结果包含 stdout/stderr、退出码以及从输出中识别到的版本/指令集标识（如 avx2）。
         /// </summary>
-        public static ExecutableProbeResult ProbeExecutable(string exePath, int timeoutMs = 2000)
+        /// <param name="log">日志回调（超时分支点名用；null ⇒ 退回 Trace.WriteLine）</param>
+        public static ExecutableProbeResult ProbeExecutable(string exePath, int timeoutMs = 2000,
+            Action<string>? log = null)
         {
             var res = new ExecutableProbeResult();
             if (string.IsNullOrWhiteSpace(exePath) || !File.Exists(exePath)) return res;
@@ -44,7 +46,9 @@ namespace FfmpegGui.Services
                         FileName = exePath,
                         Arguments = arg,
                         RedirectStandardOutput = true,
+                        StandardOutputEncoding = Encoding.UTF8,
                         RedirectStandardError = true,
+                        StandardErrorEncoding = Encoding.UTF8,
                         UseShellExecute = false,
                         CreateNoWindow = true
                     };
@@ -52,22 +56,29 @@ namespace FfmpegGui.Services
                     using var p = Process.Start(psi);
                     if (p == null) continue;
 
-                    // 读取输出（通常很短）并等待退出（带超时）
-                    string outStr = string.Empty;
-                    string errStr = string.Empty;
-                    try
-                    {
-                        outStr = p.StandardOutput.ReadToEnd();
-                        errStr = p.StandardError.ReadToEnd();
-                    }
-                    catch { }
+                    // ⚠ 先挂读取任务、再等退出（本仓范式，见 `FfmpegCommandBuilder.ProbeWithFfprobe`）：
+                    //   旧写法把同步读写在 `WaitForExit(timeoutMs)` **之前** ⇒ 子进程不关管道就永不返回，
+                    //   **超时（以及超时后的 Kill）是死代码**。
+                    var outTask = p.StandardOutput.ReadToEndAsync();
+                    var errTask = p.StandardError.ReadToEndAsync();
 
                     var exited = p.WaitForExit(timeoutMs);
                     if (!exited)
                     {
                         try { if (!p.HasExited) p.Kill(entireProcessTree: true); } catch { }
+                        var tmsg = $"[probe] 工具探测超时（{timeoutMs}ms）⇒ 已终止：{Path.GetFileName(exePath)}（参数 {arg}）";
+                        if (log != null) log(tmsg + "\n"); else System.Diagnostics.Trace.WriteLine(tmsg);
                         continue;
                     }
+
+                    string outStr = string.Empty;
+                    string errStr = string.Empty;
+                    try
+                    {
+                        outStr = outTask.GetAwaiter().GetResult();
+                        errStr = errTask.GetAwaiter().GetResult();
+                    }
+                    catch { }
 
                     res.ExitCode = p.ExitCode;
                     res.StdOut = outStr ?? string.Empty;
@@ -272,7 +283,8 @@ namespace FfmpegGui.Services
         /// <summary>
         /// 专门探测 ffmpeg 的 SIMD 编译能力（通过 ffmpeg -version 输出）
         /// </summary>
-        public static ExecutableProbeResult? ProbeFfmpeg(string? ffmpegPath = null)
+        /// <param name="log">日志回调（超时分支点名用；null ⇒ 退回 Trace.WriteLine）</param>
+        public static ExecutableProbeResult? ProbeFfmpeg(string? ffmpegPath = null, Action<string>? log = null)
         {
             try
             {
@@ -283,12 +295,29 @@ namespace FfmpegGui.Services
                 {
                     try
                     {
-                        var psi = new ProcessStartInfo { FileName = "where", Arguments = "ffmpeg", RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true };
+                        var psi = new ProcessStartInfo
+                        {
+                            FileName = "where",
+                            Arguments = "ffmpeg",
+                            RedirectStandardOutput = true,
+                            StandardOutputEncoding = Encoding.UTF8,   // P2-5：默认按控制台代码页解码，非 ASCII 路径会乱码
+                            UseShellExecute = false,
+                            CreateNoWindow = true
+                        };
                         using var wp = Process.Start(psi);
                         if (wp != null)
                         {
-                            var wout = wp.StandardOutput.ReadToEnd().Trim();
-                            wp.WaitForExit(3000);
+                            // ⚠ 先挂读取任务、再等退出（本仓范式）：旧写法同步读在 `WaitForExit(3000)` 之前。
+                            //   注意：本 psi **未**重定向 stderr ⇒ 只挂 stdout 读取任务（取 StandardError 会抛）。
+                            var woutTask = wp.StandardOutput.ReadToEndAsync();
+                            if (!wp.WaitForExit(3000))
+                            {
+                                try { wp.Kill(entireProcessTree: true); } catch { }
+                                var wmsg = "[probe] where ffmpeg 超时（3s）⇒ 已终止（未解析到 ffmpeg 路径）";
+                                if (log != null) log(wmsg + "\n"); else System.Diagnostics.Trace.WriteLine(wmsg);
+                                return null;
+                            }
+                            var wout = woutTask.GetAwaiter().GetResult().Trim();
                             var firstLine = wout.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
                             if (!string.IsNullOrWhiteSpace(firstLine) && File.Exists(firstLine))
                                 path = firstLine;
@@ -297,7 +326,7 @@ namespace FfmpegGui.Services
                     catch { }
                 }
                 if (!File.Exists(path)) return null;
-                return ProbeExecutable(path, 3000);
+                return ProbeExecutable(path, 3000, log);
             }
             catch { return null; }
         }
@@ -397,10 +426,26 @@ namespace FfmpegGui.Services
         }
 
         /// <summary>
+        /// 预热所有外部工具检测（headless 模式调用，避免并发首次访问时重复 Detect）。
+        /// 仅触发各 Service 的检测逻辑，不做版本探测。
+        /// </summary>
+        /// <param name="log">日志回调（`#26`：`ExifToolService.Detect` 的取消/超时点名用；null ⇒ 退回 Trace.WriteLine）</param>
+        public static void EnsureAllDetected(Action<string>? log = null)
+        {
+            try { CjxlService.Detect(); } catch { }
+            try { DjxlService.Detect(); } catch { }
+            try { CjpegliService.Detect(); } catch { }
+            try { JxrService.Detect(); } catch { }
+            try { ExifToolService.Detect(log); } catch { }
+            try { RawService.Detect(); } catch { }
+        }
+
+        /// <summary>
         /// 探测所有外部工具的版本和能力，返回结构化报告。
         /// 用于启动日志和 UI 状态栏展示。
         /// </summary>
-        public static List<ToolCapability> ProbeAllTools()
+        /// <param name="log">日志回调（`#26`：本方法内 6 处探测的超时点名统一走它；null ⇒ 退回 Trace.WriteLine）</param>
+        public static List<ToolCapability> ProbeAllTools(Action<string>? log = null)
         {
             var results = new List<ToolCapability>();
 
@@ -409,30 +454,30 @@ namespace FfmpegGui.Services
             DjxlService.Detect();
             CjpegliService.Detect();
             JxrService.Detect();
-            ExifToolService.Detect();
+            ExifToolService.Detect(log);
             RawService.Detect();
 
             // ffmpeg
             var ffmpegPath = AppSettingsService.Current.FfmpegPath;
-            var ffmpegProbe = ProbeExecutable(ffmpegPath, 4000);
+            var ffmpegProbe = ProbeExecutable(ffmpegPath, 4000, log);
             results.Add(new ToolCapability
             {
                 Name = "ffmpeg",
                 Path = ffmpegPath,
-                Version = ffmpegProbe.Version ?? TryExtractFfmpegVersion(ffmpegPath),
+                Version = ffmpegProbe.Version ?? TryExtractFfmpegVersion(ffmpegPath, log),
                 SimdFeatures = ffmpegProbe.DetectedFeatures,
                 IsAvailable = ffmpegProbe.IsRunnable
             });
 
             // cjxl
             var cjxl = CjxlService.DetectedPath;
-            var cjxlProbe = cjxl != null ? ProbeExecutable(cjxl, 2000) : null;
+            var cjxlProbe = cjxl != null ? ProbeExecutable(cjxl, 2000, log) : null;
             results.Add(new ToolCapability
             {
                 Name = "cjxl",
                 Path = cjxl,
-                Version = cjxlProbe?.Version ?? TryExtractCjxlVersion(cjxl),
-                SimdFeatures = cjxlProbe?.DetectedFeatures ?? TryExtractCjxlSimd(cjxl),
+                Version = cjxlProbe?.Version ?? TryExtractCjxlVersion(cjxl, log),
+                SimdFeatures = cjxlProbe?.DetectedFeatures ?? TryExtractCjxlSimd(cjxl, log),
                 IsAvailable = CjxlService.IsAvailable
             });
 
@@ -442,7 +487,7 @@ namespace FfmpegGui.Services
             {
                 Name = "djxl",
                 Path = djxl,
-                Version = ProbeAndVersion(djxl),
+                Version = ProbeAndVersion(djxl, log),
                 IsAvailable = DjxlService.IsAvailable
             });
 
@@ -452,7 +497,7 @@ namespace FfmpegGui.Services
             {
                 Name = "cjpegli",
                 Path = cjpegli,
-                Version = ProbeCjpegliVersion(cjpegli),
+                Version = ProbeCjpegliVersion(cjpegli, log),
                 IsAvailable = CjpegliService.IsAvailable
             });
 
@@ -462,7 +507,7 @@ namespace FfmpegGui.Services
             {
                 Name = "exiftool",
                 Path = et,
-                Version = ProbeAndVersion(et),
+                Version = ProbeAndVersion(et, log),
                 IsAvailable = ExifToolService.IsAvailable
             });
 
@@ -472,20 +517,21 @@ namespace FfmpegGui.Services
             {
                 Name = "JxrEncApp",
                 Path = jxr,
-                Version = ProbeAndVersion(jxr),
+                Version = ProbeAndVersion(jxr, log),
                 IsAvailable = JxrService.IsAvailable
             });
 
-            // avifenc — 多路径检测：手动路径 → artifacts 目录 → PLAN 文件夹
-            var avifenc = AppSettingsService.Current.AvifencPath;
-            if (string.IsNullOrWhiteSpace(avifenc) || !File.Exists(avifenc))
-                avifenc = FindInArtifactsOrPlan(PlatformServices.Avifenc);
+            // avifenc — ⚠ P7f：面板展示的可用性必须与实际执行同源，否则会出现“面板说可用、队列却默默改路径”。
+            // 这里曾经是第四份拷贝：它走 FindInArtifactsOrPlan()，额外包含“去扩展名”兼底
+            // ⇒ 若 PLAN 里只有无后缀的 `avifenc`，面板会报可用而 Windows 下根本不可执行（反向假报）。
+            // 现在统一用全局唯一定义 PlatformServices.ResolveAvifencPath()。
+            var avifenc = PlatformServices.ResolveAvifencPath();
             results.Add(new ToolCapability
             {
                 Name = "avifenc",
-                Path = File.Exists(avifenc) ? avifenc : null,
-                Version = ProbeAndVersion(avifenc),
-                IsAvailable = File.Exists(avifenc)
+                Path = avifenc,
+                Version = ProbeAndVersion(avifenc ?? "", log),
+                IsAvailable = avifenc != null
             });
 
             // dngtool — DNG 1.7 JXL 解码/编码 (LibRaw + Adobe DNG SDK)
@@ -496,7 +542,7 @@ namespace FfmpegGui.Services
             {
                 Name = "dngtool",
                 Path = File.Exists(dngtool) ? dngtool : null,
-                Version = ProbeAndVersion(dngtool),
+                Version = ProbeAndVersion(dngtool, log),
                 IsAvailable = File.Exists(dngtool)
             });
 
@@ -534,15 +580,16 @@ namespace FfmpegGui.Services
 
         // ── 每工具专用版本探测 ──
 
-        private static string? ProbeAndVersion(string? path)
+        private static string? ProbeAndVersion(string? path, Action<string>? log = null)
         {
             if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return null;
-            var probe = ProbeExecutable(path, 2000);
+            var probe = ProbeExecutable(path, 2000, log);
             return probe.Version;
         }
 
         /// <summary>cjpegli 不支持 --version，需通过 stderr 提取版本</summary>
-        private static string? ProbeCjpegliVersion(string? path)
+        /// <param name="log">日志回调（超时分支点名用；null ⇒ 退回 Trace.WriteLine）</param>
+        private static string? ProbeCjpegliVersion(string? path, Action<string>? log = null)
         {
             if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return null;
             try
@@ -550,19 +597,31 @@ namespace FfmpegGui.Services
                 var psi = new ProcessStartInfo
                 {
                     FileName = path, Arguments = "-h",
-                    RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true
+                    RedirectStandardError = true,
+                    StandardErrorEncoding = Encoding.UTF8,   // P2-5：默认按控制台代码页解码，非 ASCII 输出会乱码
+                    UseShellExecute = false,
+                    CreateNoWindow = true
                 };
                 using var p = Process.Start(psi);
                 if (p == null) return null;
-                var err = p.StandardError.ReadToEnd();
-                p.WaitForExit(2000);
-                return ExtractVersionFromOutput(err);
+                // ⚠ 先挂读取任务、再等退出（本仓范式，见 `FfmpegCommandBuilder.ProbeWithFfprobe`）：
+                //   旧写法同步读在 `WaitForExit(2000)` **之前** ⇒ 超时（与超时后的 Kill）是死代码。
+                var errTask = p.StandardError.ReadToEndAsync();
+                if (!p.WaitForExit(2000))
+                {
+                    try { p.Kill(entireProcessTree: true); } catch { }
+                    var tmsg = $"[probe] cjpegli 版本探测超时（2s）⇒ 已终止：{Path.GetFileName(path)}";
+                    if (log != null) log(tmsg + "\n"); else System.Diagnostics.Trace.WriteLine(tmsg);
+                    return null;
+                }
+                return ExtractVersionFromOutput(errTask.GetAwaiter().GetResult());
             }
             catch { return null; }
         }
 
         /// <summary>从 cjxl --version 输出中提取版本: "cjxl v0.11.2 332feb1 [AVX2,SSE2]"</summary>
-        private static string? TryExtractCjxlVersion(string? path)
+        /// <param name="log">日志回调（超时分支点名用；null ⇒ 退回 Trace.WriteLine）</param>
+        private static string? TryExtractCjxlVersion(string? path, Action<string>? log = null)
         {
             if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return null;
             try
@@ -570,12 +629,23 @@ namespace FfmpegGui.Services
                 var psi = new ProcessStartInfo
                 {
                     FileName = path, Arguments = "--version",
-                    RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true
+                    RedirectStandardOutput = true,
+                    StandardOutputEncoding = Encoding.UTF8,   // P2-5：默认按控制台代码页解码，非 ASCII 输出会乱码
+                    UseShellExecute = false,
+                    CreateNoWindow = true
                 };
                 using var p = Process.Start(psi);
                 if (p == null) return null;
-                var output = p.StandardOutput.ReadToEnd();
-                p.WaitForExit(2000);
+                // ⚠ 先挂读取任务、再等退出（本仓范式）：旧写法同步读在 `WaitForExit(2000)` **之前**。
+                var outTask = p.StandardOutput.ReadToEndAsync();
+                if (!p.WaitForExit(2000))
+                {
+                    try { p.Kill(entireProcessTree: true); } catch { }
+                    var tmsg = $"[probe] cjxl 版本探测超时（2s）⇒ 已终止：{Path.GetFileName(path)}";
+                    if (log != null) log(tmsg + "\n"); else System.Diagnostics.Trace.WriteLine(tmsg);
+                    return null;
+                }
+                var output = outTask.GetAwaiter().GetResult();
                 // "cjxl v0.11.2 332feb1 [AVX2,SSE2]"
                 var m = Regex.Match(output, @"v(\d+\.\d+\.\d+)");
                 return m.Success ? m.Groups[1].Value : null;
@@ -584,7 +654,8 @@ namespace FfmpegGui.Services
         }
 
         /// <summary>从 cjxl --version 输出中提取 SIMD 标签: [AVX2,SSE2]</summary>
-        private static string? TryExtractCjxlSimd(string? path)
+        /// <param name="log">日志回调（超时分支点名用；null ⇒ 退回 Trace.WriteLine）</param>
+        private static string? TryExtractCjxlSimd(string? path, Action<string>? log = null)
         {
             if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return null;
             try
@@ -592,12 +663,23 @@ namespace FfmpegGui.Services
                 var psi = new ProcessStartInfo
                 {
                     FileName = path, Arguments = "--version",
-                    RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true
+                    RedirectStandardOutput = true,
+                    StandardOutputEncoding = Encoding.UTF8,   // P2-5：默认按控制台代码页解码，非 ASCII 输出会乱码
+                    UseShellExecute = false,
+                    CreateNoWindow = true
                 };
                 using var p = Process.Start(psi);
                 if (p == null) return null;
-                var output = p.StandardOutput.ReadToEnd();
-                p.WaitForExit(2000);
+                // ⚠ 先挂读取任务、再等退出（本仓范式）：旧写法同步读在 `WaitForExit(2000)` **之前**。
+                var outTask = p.StandardOutput.ReadToEndAsync();
+                if (!p.WaitForExit(2000))
+                {
+                    try { p.Kill(entireProcessTree: true); } catch { }
+                    var tmsg = $"[probe] cjxl SIMD 标签探测超时（2s）⇒ 已终止：{Path.GetFileName(path)}";
+                    if (log != null) log(tmsg + "\n"); else System.Diagnostics.Trace.WriteLine(tmsg);
+                    return null;
+                }
+                var output = outTask.GetAwaiter().GetResult();
                 var m = Regex.Match(output, @"\[([^\]]+)\]");
                 return m.Success ? m.Groups[1].Value : null;
             }
@@ -605,7 +687,8 @@ namespace FfmpegGui.Services
         }
 
         /// <summary>从 ffmpeg 输出中提取版本</summary>
-        private static string? TryExtractFfmpegVersion(string? path)
+        /// <param name="log">日志回调（超时分支点名用；null ⇒ 退回 Trace.WriteLine）</param>
+        private static string? TryExtractFfmpegVersion(string? path, Action<string>? log = null)
         {
             if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return null;
             try
@@ -613,12 +696,23 @@ namespace FfmpegGui.Services
                 var psi = new ProcessStartInfo
                 {
                     FileName = path, Arguments = "-version",
-                    RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true
+                    RedirectStandardOutput = true,
+                    StandardOutputEncoding = Encoding.UTF8,   // P2-5：默认按控制台代码页解码，非 ASCII 输出会乱码
+                    UseShellExecute = false,
+                    CreateNoWindow = true
                 };
                 using var p = Process.Start(psi);
                 if (p == null) return null;
-                var output = p.StandardOutput.ReadToEnd();
-                p.WaitForExit(3000);
+                // ⚠ 先挂读取任务、再等退出（本仓范式）：旧写法同步读在 `WaitForExit(3000)` **之前**。
+                var outTask = p.StandardOutput.ReadToEndAsync();
+                if (!p.WaitForExit(3000))
+                {
+                    try { p.Kill(entireProcessTree: true); } catch { }
+                    var tmsg = $"[probe] ffmpeg 版本探测超时（3s）⇒ 已终止：{Path.GetFileName(path)}";
+                    if (log != null) log(tmsg + "\n"); else System.Diagnostics.Trace.WriteLine(tmsg);
+                    return null;
+                }
+                var output = outTask.GetAwaiter().GetResult();
                 // "ffmpeg version git-2026-07-05-97cbffe917"
                 var m = Regex.Match(output, @"ffmpeg version ([\w\.\-]+)");
                 return m.Success ? m.Groups[1].Value : ExtractVersionFromOutput(output);

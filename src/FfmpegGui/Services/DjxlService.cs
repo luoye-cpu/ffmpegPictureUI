@@ -98,34 +98,6 @@ namespace FfmpegGui.Services
             // ⑤ PATH
         }
 
-        private static bool TryFindInPath(string exeName, out string? fullPath)
-        {
-            fullPath = null;
-            try
-            {
-                var psi = new ProcessStartInfo
-                {
-                    FileName = OperatingSystem.IsWindows() ? "where" : "which",
-                    Arguments = exeName,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    UseShellExecute = false,
-                    CreateNoWindow = true
-                };
-                using var p = Process.Start(psi);
-                if (p == null) return false;
-                var output = p.StandardOutput.ReadToEnd().Trim();
-                p.WaitForExit(5000);
-                if (!string.IsNullOrWhiteSpace(output))
-                {
-                    var firstLine = output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)[0];
-                    if (File.Exists(firstLine)) { fullPath = firstLine; return true; }
-                }
-            }
-            catch { }
-            return false;
-        }
-
         public static void ClearCache()
         {
             _detected = false; _detectedPath = null;
@@ -136,7 +108,10 @@ namespace FfmpegGui.Services
             if (_detectedPath == null)
                 throw new InvalidOperationException("djxl.exe 未找到");
             // djxl 命令：djxl input.jxl output.png （或 .jpg 来重构）
+            // threads>0 时透传 --num_threads（此前签名收下线程数却从不使用，P2）
             var args = $"\"{inputPath}\" \"{outputPath}\"";
+            if (threads > 0)
+                args += $" --num_threads={threads}";
             logCallback?.Invoke($"[djxl] {_detectedPath} {args}\n");
 
             var psi = new ProcessStartInfo
@@ -144,14 +119,16 @@ namespace FfmpegGui.Services
                 FileName = _detectedPath,
                 Arguments = args,
                 RedirectStandardOutput = true,
+                StandardOutputEncoding = Encoding.UTF8,
                 RedirectStandardError = true,
+                StandardErrorEncoding = Encoding.UTF8,
                 UseShellExecute = false,
                 CreateNoWindow = true
             };
 
             using var process = new Process { StartInfo = psi, EnableRaisingEvents = true };
 
-            using var timeoutCts = new System.Threading.CancellationTokenSource(TimeSpan.FromMinutes(5));
+            using var timeoutCts = new System.Threading.CancellationTokenSource(TimeSpan.FromMinutes(30));
             using var linked = System.Threading.CancellationTokenSource.CreateLinkedTokenSource(timeoutCts.Token, ct);
             var linkedToken = linked.Token;
 

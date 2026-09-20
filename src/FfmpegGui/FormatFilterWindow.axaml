@@ -2,12 +2,13 @@
     x:Class="FfmpegGui.FormatFilterWindow"
     xmlns="https://github.com/avaloniaui"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-    Title="文件格式筛选"
+    xmlns:ext="using:FfmpegGui"
+    Title="{ext:Loc filter.title}"
     Width="360" Height="560"
     WindowStartupLocation="CenterOwner"
     CanResize="False">
   <Grid RowDefinitions="Auto,*,Auto" Margin="16">
-    <TextBlock Grid.Row="0" Text="选择可识别的图片与视频文件格式"
+    <TextBlock Grid.Row="0" Text="{ext:Loc filter.subtitle}"
                FontSize="15" FontWeight="Bold" Margin="0,0,0,12"/>
 
     <ScrollViewer Grid.Row="1">
@@ -18,10 +19,10 @@
 
     <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right"
                 Spacing="8" Margin="0,12,0,0">
-      <Button Content="全选" Click="SelectAll_Click" Padding="10,4"/>
-      <Button Content="取消全选" Click="DeselectAll_Click" Padding="10,4"/>
-      <Button Content="确定" Click="Ok_Click" Padding="12,4" IsDefault="True"/>
-      <Button Content="取消" Click="Cancel_Click" Padding="12,4" IsCancel="True"/>
+      <Button Content="{ext:Loc filter.btn.selectall}" Click="SelectAll_Click" Padding="10,4"/>
+      <Button Content="{ext:Loc filter.btn.deselectall}" Click="DeselectAll_Click" Padding="10,4"/>
+      <Button Content="{ext:Loc filter.btn.ok}" Click="Ok_Click" Padding="12,4" IsDefault="True"/>
+      <Button Content="{ext:Loc filter.btn.cancel}" Click="Cancel_Click" Padding="12,4" IsCancel="True"/>
     </StackPanel>
   </Grid>
 </Window>

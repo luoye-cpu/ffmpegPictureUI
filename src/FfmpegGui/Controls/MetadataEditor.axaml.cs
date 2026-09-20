@@ -118,36 +118,41 @@ namespace FfmpegGui.Controls
             UpdateFieldCount();
         }
 
-        private static string GetCategoryTitle(ExifToolService.MetadataCategory cat) => cat switch
+        private static string GetCategoryTitle(ExifToolService.MetadataCategory cat)
         {
-            ExifToolService.MetadataCategory.基本信息 => "📋 基本信息",
-            ExifToolService.MetadataCategory.日期时间 => "📅 日期时间",
-            ExifToolService.MetadataCategory.相机信息 => "📷 相机信息",
-            ExifToolService.MetadataCategory.拍摄参数 => "⚙️ 拍摄参数",
-            ExifToolService.MetadataCategory.GPS位置 => "📍 GPS 位置",
-            ExifToolService.MetadataCategory.图片属性 => "🖼 图片属性",
-            ExifToolService.MetadataCategory.IPTC信息 => "📰 IPTC 信息",
-            ExifToolService.MetadataCategory.XMP信息 => "🏷️ XMP 信息",
-            ExifToolService.MetadataCategory.色彩配置 => "🎨 色彩配置",
-            _ => cat.ToString()
-        };
+            var loc = LocalizationService.Instance;
+            return cat switch
+            {
+                ExifToolService.MetadataCategory.基本信息 => loc["meta.category.basic"],
+                ExifToolService.MetadataCategory.日期时间 => loc["meta.category.datetime"],
+                ExifToolService.MetadataCategory.相机信息 => loc["meta.category.camera"],
+                ExifToolService.MetadataCategory.拍摄参数 => loc["meta.category.shooting"],
+                ExifToolService.MetadataCategory.GPS位置 => loc["meta.category.gps"],
+                ExifToolService.MetadataCategory.图片属性 => loc["meta.category.imageprops"],
+                ExifToolService.MetadataCategory.IPTC信息 => loc["meta.category.iptc"],
+                ExifToolService.MetadataCategory.XMP信息 => loc["meta.category.xmp"],
+                ExifToolService.MetadataCategory.色彩配置 => loc["meta.category.color"],
+                _ => cat.ToString()
+            };
+        }
 
         private void UpdateFieldCount()
         {
             if (FieldCountLabel != null)
-                FieldCountLabel.Text = $"({_fieldBoxes.Count} 个字段)";
+                FieldCountLabel.Text = string.Format(LocalizationService.Instance["meta.fieldcount"], _fieldBoxes.Count);
         }
 
         /// <summary>读取文件现有元数据并填入编辑框</summary>
         private async void ReadMetadata_Click(object? sender, RoutedEventArgs e)
         {
-            SetStatus("⏳ 正在读取元数据...", "gray");
+            var loc = LocalizationService.Instance;
+            SetStatus(loc["meta.status.reading"], "gray");
             try
             {
                 var filePath = ResolveFilePath();
                 if (!File.Exists(filePath))
                 {
-                    SetStatus("❌ 文件不存在，请先完成转码。", "red");
+                    SetStatus(loc["meta.err.filemissing"], "red");
                     return;
                 }
 
@@ -161,24 +166,25 @@ namespace FfmpegGui.Controls
 
                 SaveBackup();
                 var count = _fieldBoxes.Count(kv => !string.IsNullOrWhiteSpace(kv.Value.Text));
-                SetStatus($"✅ 读取成功，共 {count} 个字段有值", "green");
+                SetStatus(string.Format(loc["meta.status.readok"], count), "green");
             }
             catch (Exception ex)
             {
-                SetStatus($"❌ 读取失败: {ex.Message}", "red");
+                SetStatus(string.Format(loc["meta.err.readfail"], ex.Message), "red");
             }
         }
 
         /// <summary>将编辑框内容写入文件</summary>
         private async void ApplyMetadata_Click(object? sender, RoutedEventArgs e)
         {
-            SetStatus("⏳ 正在写入元数据...", "gray");
+            var loc = LocalizationService.Instance;
+            SetStatus(loc["meta.status.writing"], "gray");
             try
             {
                 var filePath = ResolveFilePath();
                 if (!File.Exists(filePath))
                 {
-                    SetStatus("❌ 文件不存在，请先完成转码。", "red");
+                    SetStatus(loc["meta.err.filemissing"], "red");
                     return;
                 }
 
@@ -195,16 +201,16 @@ namespace FfmpegGui.Controls
                 {
                     SaveBackup();
                     var count = _fieldBoxes.Count(kv => !string.IsNullOrWhiteSpace(kv.Value.Text));
-                    SetStatus($"✅ 已保存 {count} 个字段", "green");
+                    SetStatus(string.Format(loc["meta.status.saveok"], count), "green");
                 }
                 else
                 {
-                    SetStatus($"⚠️ exiftool 退出码 {exitCode}:\n{output}", "red");
+                    SetStatus(string.Format(loc["meta.err.exitcode"], exitCode, output), "red");
                 }
             }
             catch (Exception ex)
             {
-                SetStatus($"❌ 写入失败: {ex.Message}", "red");
+                SetStatus(string.Format(loc["meta.err.writefail"], ex.Message), "red");
             }
         }
 
@@ -216,7 +222,7 @@ namespace FfmpegGui.Controls
                 if (_backupValues.TryGetValue(displayName, out var value))
                     textBox.Text = value;
             }
-            SetStatus("已还原到上次读取/保存的值", "gray");
+            SetStatus(LocalizationService.Instance["meta.status.restored"], "gray");
         }
 
         /// <summary>清空所有编辑框</summary>
@@ -224,51 +230,53 @@ namespace FfmpegGui.Controls
         {
             foreach (var (_, textBox) in _fieldBoxes)
                 textBox.Text = "";
-            SetStatus("已清空所有字段（未保存到文件）", "gray");
+            SetStatus(LocalizationService.Instance["meta.status.cleared"], "gray");
         }
 
         /// <summary>嵌入外部 ICC 配置文件</summary>
         private async void EmbedIcc_Click(object? sender, RoutedEventArgs e)
         {
+            var loc = LocalizationService.Instance;
             var filePath = ResolveFilePath();
-            if (!File.Exists(filePath)) { SetStatus("❌ 文件不存在", "red"); return; }
-            if (!ExifToolService.IsAvailable) { SetStatus("❌ exiftool 未检测到", "red"); return; }
+            if (!File.Exists(filePath)) { SetStatus(loc["meta.err.filemissing.short"], "red"); return; }
+            if (!ExifToolService.IsAvailable) { SetStatus(loc["meta.err.noexiftool"], "red"); return; }
 
             var topLevel = TopLevel.GetTopLevel(this);
             if (topLevel?.StorageProvider == null) return;
 
             var files = await topLevel.StorageProvider.OpenFilePickerAsync(new Avalonia.Platform.Storage.FilePickerOpenOptions
             {
-                Title = "选择 ICC 配置文件",
+                Title = loc["meta.dlg.selecticc"],
                 AllowMultiple = false,
                 FileTypeFilter = new[]
                 {
-                    new Avalonia.Platform.Storage.FilePickerFileType("ICC 配置文件") { Patterns = new[] { "*.icc", "*.icm" } },
-                    new Avalonia.Platform.Storage.FilePickerFileType("所有文件") { Patterns = new[] { "*" } }
+                    new Avalonia.Platform.Storage.FilePickerFileType(loc["meta.filetype.icc"]) { Patterns = new[] { "*.icc", "*.icm" } },
+                    new Avalonia.Platform.Storage.FilePickerFileType(loc["meta.filetype.all"]) { Patterns = new[] { "*" } }
                 }
             });
 
             if (files == null || files.Count == 0) return;
             var iccPath = files[0].Path.LocalPath;
 
-            SetStatus("⏳ 正在嵌入 ICC...", "gray");
+            SetStatus(loc["meta.status.embedding"], "gray");
             try
             {
                 var exit = await Task.Run(() =>
                     ExifToolService.EmbedIccProfileFromFileAsync(iccPath, filePath, null));
                 if (exit == 0)
                 {
-                    SetStatus($"✅ ICC 已嵌入: {Path.GetFileName(iccPath)}", "green");
+                    SetStatus(string.Format(loc["meta.status.embedok"], Path.GetFileName(iccPath)), "green");
                     // 更新 ICC 配置分类中的显示
+                    // ⚠ "ICC 配置文件" 是 ExifToolService.MetadataFields 的字段名（查询键），不是界面文案，禁止翻译
                     if (_fieldBoxes.TryGetValue("ICC 配置文件", out var iccBox))
-                        iccBox.Text = $"已嵌入: {Path.GetFileName(iccPath)}";
+                        iccBox.Text = string.Format(loc["meta.status.embedded"], Path.GetFileName(iccPath));
                 }
                 else
-                    SetStatus($"⚠️ 嵌入失败（退出码 {exit}）", "red");
+                    SetStatus(string.Format(loc["meta.err.embedfail"], exit), "red");
             }
             catch (Exception ex)
             {
-                SetStatus($"❌ 嵌入失败: {ex.Message}", "red");
+                SetStatus(string.Format(loc["meta.err.embedexc"], ex.Message), "red");
             }
         }
 

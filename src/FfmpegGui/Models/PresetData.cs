@@ -14,6 +14,8 @@ namespace FfmpegGui.Models
         public string? ColorMatrix { get; set; }
         /// <summary>输出色彩范围: auto/tv/pc</summary>
         public string? ColorRange { get; set; }
+        /// <summary>HDR→SDR tonemap 曲线: hable/mobius/reinhard</summary>
+        public string? TonemapCurve { get; set; }
         public string? BitDepth { get; set; }
         public bool AutoThreads { get; set; } = true;
         public bool SingleThread { get; set; }
@@ -48,6 +50,8 @@ namespace FfmpegGui.Models
         public bool JpegGainMapMultiChannel { get; set; }
         /// <summary>增益图下采样因子：1=满, 2=1/2, 4=1/4, 8=1/8, 16=1/16</summary>
         public int JpegGainMapDownsample { get; set; } = 2;
+        /// <summary>底图色域（均为 SDR 底）："srgb"(默认) / "bt2020"(Rec.2020 广色域底)</summary>
+        public string? JpegGainMapBaseGamut { get; set; }
         // ── 编码器后端选择 ──
         /// <summary>编码器后端名称: Ffmpeg/Cjpegli/Cjxl/Ultrahdr/Jxr</summary>
         public string? EncoderBackend { get; set; }
@@ -129,16 +133,25 @@ namespace FfmpegGui.Models
         public int MaxQueueSize { get; set; } = 16;
         // 动图参数
         public int? AnimationFps { get; set; }
-        public int AnimationLoop { get; set; }
+        public int AnimationLoop { get; set; } = -1;
         public bool GifPaletteOptimize { get; set; } = true;
         public bool GifDither { get; set; } = true;
         public int AnimationScaleW { get; set; }
         public double AnimationDuration { get; set; }
         // ── ICC 色彩管理 ──
+        /// <summary>[遗留] 旧 ICC 模式字符串，仅为兼容旧预设；新预设用 <see cref="ColorStrategy"/>。</summary>
         public string? IccMode { get; set; }
+        /// <summary>色彩策略字符串（recommended/carry/cicp-only/manual）。</summary>
+        public string? ColorStrategy { get; set; }
         public string? IccFilePath { get; set; }
         public string? IccSourceColorSpace { get; set; }
         public string? IccTargetColorSpace { get; set; }
+        
+        // ── 图片最长边限制 (缩放) ──
+        /// <summary>启用最长边限制功能</summary>
+        public bool EnableMaxDimension { get; set; } = false;
+        /// <summary>最长边像素限制 (默认 1920)</summary>
+        public int MaxDimension { get; set; } = 1920;
 
         public string ToJson() => JsonSerializer.Serialize(this, AppJsonContext.Default.PresetData);
 

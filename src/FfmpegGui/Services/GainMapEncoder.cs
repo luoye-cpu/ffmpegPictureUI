@@ -48,21 +48,42 @@ public static class GainMapEncoder
     /// <param name="baseQuality">Base JPEG 质量 (butteraugli distance, 0.5-25)</param>
     /// <param name="gainMapQuality">增益图质量 (butteraugli distance, 0.5-25)</param>
     /// <param name="downsample">增益图降采样因子 (默认 4 = 1/4 分辨率)</param>
+    /// <param name="baseGamut">
+    /// 底图（base rendition）色域："srgb"（默认）或 "bt2020"。两者**均为 SDR**（sRGB 传递 + 203nits 白点），
+    /// HDR 信息全部由增益图承载 —— 对齐 libultrahdr 的 writeIccProfile(UHDR_CT_SRGB, cg) 与
+    /// ultrahdr_color_gamut = {BT709, P3, BT2100}。底图色域不等于源色域时，**像素必须做线性域
+    /// primaries 矩阵映射**（参考实现亦先 convertYuv 再编码），绝不只改标签。
+    /// </param>
+    /// <param name="sourcePrimaries">传入线性像素的 primaries（CICP token，如 bt709/smpte432/bt2020）。</param>
     /// <param name="log">日志回调</param>
     /// <param name="ct">取消令牌</param>
+    /// <param name="jpegProgressiveLevel">
+    /// 底图与增益图 JPEG 的 cjpegli 渐进级别（`-p N`，取值 0..2）。`-1`（默认）= **不传** `-p`，
+    /// 沿用 cjpegli 自身默认（= 2，即渐进）。⚠ 只对 **cjpegli 后端**有效：回退 ffmpeg mjpeg 时
+    /// 无法表达渐进（ffmpeg 的 mjpeg 编码器**没有**该能力，见 `ImageEncoderArgs` 的说明），
+    /// 此时会记一条日志点名，绝不静默当没选。
+    /// <para>
+    /// ⚠ **必须是最后一个形参**：`QueueProcessor` 的专用 GainMap 管线用**位置实参**传
+    /// <paramref name="log"/>/<paramref name="ct"/>（`QueueProcessor.cs:1895`），插在它们之前会破坏该调用点。
+    /// </para>
+    /// </param>
     /// <returns>成功返回 true</returns>
     public static async Task<bool> EncodeAsync(
         float[] hdrRgbaLinear, int w, int h, string outputPath,
         float hdrPeakNits = 1000f, float sdrWhiteNits = KSdrWhiteNits,
         bool multiChannel = false, float baseQuality = 1.5f, float gainMapQuality = 1.5f,
-        int downsample = 4, Action<string>? log = null, CancellationToken ct = default)
+        int downsample = 4, string baseGamut = "srgb", string? sourcePrimaries = null,
+        Action<string>? log = null, CancellationToken ct = default,
+        int jpegProgressiveLevel = -1)
     {
         try
         {
             var ffmpeg = AppSettingsService.Current.FfmpegPath;
-            if (!CjpegliService.IsAvailable)
+            bool cjpegliAvail = CjpegliService.IsAvailable;
+            bool ffmpegAvail = !string.IsNullOrWhiteSpace(ffmpeg) && File.Exists(ffmpeg);
+            if (!cjpegliAvail && !ffmpegAvail)
             {
-                log?.Invoke("[GainMap] ⚠️ cjpegli 不可用，无法编码 Gain Map\n");
+                log?.Invoke("[GainMap] ⚠️ cjpegli 与 ffmpeg(mjpeg) 均不可用，无法编码 Gain Map\n");
                 return false;
             }
 
@@ -75,28 +96,50 @@ public static class GainMapEncoder
                 float headroom = hdrPeakNits / sdrWhiteNits;
                 float maxLog2Gain = MathF.Log2(Math.Max(headroom, 1.0f));
 
-                log?.Invoke($"[GainMap] 参数: HDR峰值 {hdrPeakNits:F0}nits, SDR白点 {sdrWhiteNits:F0}nits, headroom {headroom:F2} ({maxLog2Gain:F2} log2)\n");
+                bool wideBase = string.Equals(baseGamut, "bt2020", StringComparison.OrdinalIgnoreCase)
+                             || string.Equals(baseGamut, "bt2100", StringComparison.OrdinalIgnoreCase);
+                log?.Invoke($"[GainMap] 参数: HDR峰值 {hdrPeakNits:F0}nits, SDR白点 {sdrWhiteNits:F0}nits, headroom {headroom:F2} ({maxLog2Gain:F2} log2)" +
+                    (wideBase ? ", 底图=Rec.2020 (SDR, 广色域)" : ", 底图=sRGB (SDR)") + "\n");
 
                 // ── 归一化 HDR 到 SDR 白点相对空间 ──
                 // 输入约定: 线性值 1.0 = hdrPeakNits (zscale npl 语义)
                 // normHdr = 物理亮度 / SDR白点 → SDR 内容(≤白点) → ≤1.0, HDR 高光 → >1.0
                 int pixelCount = w * h;
                 float peakOverWhite = hdrPeakNits / Math.Max(sdrWhiteNits, 1f);
-                float[] normHdr = new float[pixelCount * 4];
+                float[] normHdr = BufferPool.RentFloat(pixelCount * 4);
+                float[] sdrLinear = BufferPool.RentFloat(pixelCount * 4);
+                try
+                {
                 // 归一化 (2026-08-15: SIMD 化前已是简单乘, JIT 自动向量化; 保持现状)
                 for (int i = 0; i < pixelCount * 4; i++)
                     normHdr[i] = hdrRgbaLinear[i] * peakOverWhite;
 
                 // ── 1. 分段 Reinhard 色调映射 → SDR 线性 (2026-08-15: SIMD 加速) ──
-                float[] sdrLinear = new float[pixelCount * 4];
                 SimdPixelOps.ReinhardToSdr(normHdr, sdrLinear, headroom);
                 log?.Invoke("[GainMap] 色调映射完成 (分段 Reinhard, SIMD)\n");
 
-                // ── 2. Base JPEG (jpegli + sRGB ICC) ──
+                // ── 1b. 底图色域映射（线性域 primaries 矩阵）──
+                // 增益图元数据声明 useBaseColorSpace=True ⇒ 增益必须在**底图色域**内计算，
+                // 所以 HDR 侧与 SDR 侧都要先映射到底图原色（参考实现同理：先 convertYuv 到目标 gamut）。
+                // 映射后像素仍是线性、仍以 1.0 = SDR 白点为约定，仅原色基改变。
+                string baseTok = wideBase ? "bt2020" : "bt709";
+                var gamutMtx = ColorSpaceRegistry.LinearMatrixBetweenPrimaries(sourcePrimaries, baseTok);
+                if (gamutMtx != null)
+                {
+                    SimdPixelOps.ApplyPrimariesMatrix(normHdr, gamutMtx);
+                    SimdPixelOps.ApplyPrimariesMatrix(sdrLinear, gamutMtx);
+                    log?.Invoke($"[GainMap] 底图色域映射: {sourcePrimaries} → {baseTok}（线性域 3x3 矩阵，HDR/SDR 两侧同步）\n");
+                }
+                else if (wideBase)
+                {
+                    log?.Invoke($"[GainMap] ⚠️ 未能求出 {sourcePrimaries ?? "(未知)"} → {baseTok} 矩阵，底图将不映射（仅改标签，存在色偏风险）\n");
+                }
+
+                // ── 2. Base JPEG（始终 SDR：sdrLinear → sRGB gamma → 8bit）──
                 var basePath = Path.Combine(tempDir, "base.jpg");
                 var basePng = Path.Combine(tempDir, "base.png");
                 await WriteBgra8PngAsync(sdrLinear, w, h, basePng, ffmpeg, log, ct);
-                var baseOk = await EncodeJpegliAsync(basePng, basePath, baseQuality, log, ct);
+                var baseOk = await EncodeJpegFileAsync(basePng, basePath, baseQuality, jpegProgressiveLevel, log, ct);
                 if (!baseOk)
                 {
                     log?.Invoke("[GainMap] ❌ Base JPEG 编码失败\n");
@@ -104,13 +147,35 @@ public static class GainMapEncoder
                 }
                 log?.Invoke($"[GainMap] Base JPEG: {Math.Round(new FileInfo(basePath).Length / 1024.0)} KB\n");
 
+                // 底图色域必须由底图自身的色彩描述表达（JPEG 无 CICP 机制）：
+                // 对齐参考实现 writeIccProfile(UHDR_CT_SRGB, cg) —— 无论 sRGB 还是广色域底都附对应 ICC。
+                // ICC 由 iccgen(lcms2) 生成（实测其 BT.2020 色度与 libultrahdr kRec2020 逐位一致）。
+                {
+                    var baseIcc = IccProfileService.GetOrGenerateStandardIcc(basePath,
+                        wideBase ? "bt2020" : "bt709", "iec61966-2-1", wideBase ? "bt2020nc" : "bt709", log, ct);
+                    if (baseIcc != null)
+                    {
+                        var iccExit = await ExifToolService.EmbedIccProfileFromFileAsync(baseIcc, basePath, log ?? (_ => { }));
+                        log?.Invoke(iccExit == 0
+                            ? $"[GainMap] 底图已附 {(wideBase ? "Rec.2020 SDR" : "sRGB")} ICC（{Path.GetFileName(baseIcc)}）\n"
+                            : $"[GainMap] ⚠️ 底图 ICC 嵌入失败（退出码 {iccExit}），查看器可能按错误色域解读底图\n");
+                    }
+                    else
+                    {
+                        log?.Invoke("[GainMap] ⚠️ 无法生成底图 ICC（需 ffmpeg/iccgen）；底图色域仅由惯例推断\n");
+                    }
+                }
+
                 // ── 3. 增益图计算 + 降采样 + JPEG ──
+                //   log2(HDR/SDR) ∈ [0, maxLog2Gain] → [0,255]（上映射；两侧均已在底图色域内）
                 byte[] gainMapPixels = ComputeGainMap(normHdr, sdrLinear, w, h, multiChannel, maxLog2Gain);
                 byte[] gainMapScaled = RescaleGainMap(gainMapPixels, w, h, multiChannel, downsample, out int gmW, out int gmH);
+                BufferPool.ReturnByte(gainMapPixels);
                 var gmPath = Path.Combine(tempDir, "gainmap.jpg");
                 var gmPng = Path.Combine(tempDir, "gainmap.png");
                 await WriteGrayOrRgbPngAsync(gainMapScaled, gmW, gmH, multiChannel, gmPng, ffmpeg, log, ct);
-                var gmOk = await EncodeJpegliAsync(gmPng, gmPath, gainMapQuality, log, ct);
+                BufferPool.ReturnByte(gainMapScaled);
+                var gmOk = await EncodeJpegFileAsync(gmPng, gmPath, gainMapQuality, jpegProgressiveLevel, log, ct);
                 if (!gmOk)
                 {
                     log?.Invoke("[GainMap] ❌ 增益图 JPEG 编码失败\n");
@@ -120,11 +185,29 @@ public static class GainMapEncoder
 
                 // ── 4. 打包 (XMP + MPF + ISO 21496-1) ──
                 byte[] baseJpeg = File.ReadAllBytes(basePath);
+                // ⚠⚠ 2026-09-20（裁定：**SDR ⇒ 普通 JPEG**）：**headroom ≤ 1（增益区间为 0）时不写增益图**。
+                //   理由：`--jpeg-gain-map` 的语义是「为 **HDR** 内容提供可上映射的增益」；
+                //   SDR 输入没有可承载的 HDR 增益 ⇒ 原先仍会写出一张 `GainMapMin=GainMapMax=0` 的
+                //   **假 Ultra HDR**（自称 Ultra HDR、实际零增益）—— 属本仓最忌讳的「**宣称≠交付**」。
+                //   ⇒ 直接以**底图 JPEG** 作产物（= 普通 JPEG，像素与原先完全一致），并**点名**为何未启用。
+                //   ⚠ 判据用**数值**（`maxLog2Gain <= 0`）而非字符串比 `"0.00"`；HDR 输入（headroom > 1）不受影响。
+                if (maxLog2Gain <= 0f)
+                {
+                    File.WriteAllBytes(outputPath, baseJpeg);
+                    log?.Invoke("[GainMap] ⚠️ 输入为 SDR（headroom ≤ 1，增益区间为 0）⇒ 无可承载的 HDR 增益，已按**普通 JPEG** 输出（未写入增益图）。需要 Ultra HDR 请改用 HDR 输入。\n");
+                    return true;
+                }
                 byte[] gainMapJpeg = File.ReadAllBytes(gmPath);
                 WriteJpegGainMapFile(baseJpeg, gainMapJpeg, w, h, gmW, gmH, multiChannel,
                     headroom, maxLog2Gain, outputPath);
                 log?.Invoke($"[GainMap] ✅ Ultra HDR JPEG: {Math.Round(new FileInfo(outputPath).Length / 1024.0)} KB\n");
                 return true;
+                }
+                finally
+                {
+                    BufferPool.ReturnFloat(normHdr);
+                    BufferPool.ReturnFloat(sdrLinear);
+                }
             }
             finally
             {
@@ -169,25 +252,15 @@ public static class GainMapEncoder
         return sdr;
     }
 
-    /// <summary>分段 Reinhard: y≤1 直通, 1&lt;y&lt;1.25 smoothstep 过渡, y≥1.25 标准 Reinhard (含 headroom 归一化)</summary>
+    /// <summary>
+    /// SDR 基图色调映射（单调，与 SimdPixelOps.SegmentedReinhardScalar 语义一致）：
+    /// y≤1.0（SDR 内容，1.0=SDR 白点 203nits）直通；y>1.0（HDR 高光）单调钳位到 1.0。
+    /// ⚠️ 旧 reinhard*=2 归一化产生非单调曲线(高光暗环)，已修正为单调钳位。
+    /// 注：本方法为参考实现（活跃路径走 SimdPixelOps.ReinhardToSdr）。
+    /// </summary>
     private static float SegmentedReinhardMap(float y, float headroom)
     {
-        if (y <= 1.0f) return y;
-
-        // Reinhard: x/(1+x), 归一化使 1.0 → 1.0
-        // 使用 headroom 保护: 压缩后峰值不越过 1.0
-        float t = y / Math.Max(headroom, 1f);
-        float reinhard = t / (1.0f + t); // 0..0.5
-        // 归一化: 使 y=headroom → 1.0
-        reinhard *= 2.0f;
-
-        if (y >= 1.25f) return Math.Min(reinhard, 1.0f);
-
-        // smoothstep 过渡 [1.0, 1.25]
-        float x = (y - 1.0f) / 0.25f;
-        x = Math.Clamp(x, 0f, 1f);
-        float smooth = x * x * (3.0f - 2.0f * x);
-        return 1.0f + (reinhard - 1.0f) * smooth;
+        return y <= 1.0f ? y : 1.0f;
     }
 
     // ═══════════════════════════════════════════
@@ -204,7 +277,7 @@ public static class GainMapEncoder
     {
         int pixelCount = w * h;
         int channels = multiChannel ? 3 : 1;
-        byte[] gain = new byte[pixelCount * channels];
+        byte[] gain = BufferPool.RentByte(pixelCount * channels);
 
         // 灰度: SIMD 批量 (亮度点积 + log2 多项式)
         if (!multiChannel)
@@ -245,7 +318,7 @@ public static class GainMapEncoder
         outW = (w + factor - 1) / factor;
         outH = (h + factor - 1) / factor;
         int channels = multiChannel ? 3 : 1;
-        byte[] dst = new byte[outW * outH * channels];
+        byte[] dst = BufferPool.RentByte(outW * outH * channels);
 
         for (int dy = 0; dy < outH; dy++)
         {
@@ -277,35 +350,41 @@ public static class GainMapEncoder
     //  中间文件生成 (ffmpeg raw → PNG, cjpegli PNG → JPEG)
     // ═══════════════════════════════════════════
 
-    /// <summary>SDR 线性 RGBA → sRGB gamma → bgra8 raw → ffmpeg → PNG (2026-08-15: SIMD 加速 FloatToSrgb8)</summary>
-    private static async Task WriteBgra8PngAsync(float[] sdrLinear, int w, int h, string pngPath,
+    /// <summary>
+    /// 线性 RGBA → sRGB gamma → bgra8 raw → ffmpeg → PNG。
+    /// ⚠️ pix_fmt=bgra 字节序 B,G,R,A（不是 RGBA）→ 通道需重排。
+    /// 2026-08-15: FloatToSrgb8 SIMD 加速（128 像素分块，避开 AVX2 gather 陙阱）。
+    /// </summary>
+    private static async Task WriteBgra8PngAsync(float[] srcRgba, int w, int h, string pngPath,
         string ffmpeg, Action<string>? log, CancellationToken ct)
     {
         int pixelCount = w * h;
-        var raw = new byte[pixelCount * 4];
-        // SIMD 批量转换: 线性→sRGB 8-bit (R/G/B 三通道)
-        // ⚠️ pix_fmt=bgra 布局: 字节序 B,G,R,A (不是 RGBA!)
-        //   sdrLinear 是 RGBA 交错, 需重排: raw[0]=B, raw[1]=G, raw[2]=R
-        Span<float> rBuf = stackalloc float[512];
-        Span<byte> bBuf = stackalloc byte[512];
-        for (int baseIdx = 0; baseIdx < pixelCount; baseIdx += 128)
+        var raw = BufferPool.RentByte(pixelCount * 4);
+        try
         {
-            int chunk = Math.Min(128, pixelCount - baseIdx);
-            // 逐通道批量转换 (R→[2], G→[1], B→[0])
-            for (int c = 0; c < 3; c++)
+            // SIMD 批量转换: 线性→sRGB 8-bit (R/G/B 三通道)
+            Span<float> rBuf = stackalloc float[512];
+            Span<byte> bBuf = stackalloc byte[512];
+            for (int baseIdx = 0; baseIdx < pixelCount; baseIdx += 128)
             {
-                int dstC = 2 - c;  // R(0)→2, G(1)→1, B(2)→0
-                for (int k = 0; k < chunk; k++)
-                    rBuf[k] = sdrLinear[(baseIdx + k) * 4 + c];
-                SimdPixelOps.FloatToSrgb8(rBuf[..chunk], bBuf[..chunk]);
-                for (int k = 0; k < chunk; k++)
-                    raw[(baseIdx + k) * 4 + dstC] = bBuf[k];
+                int chunk = Math.Min(128, pixelCount - baseIdx);
+                // 逐通道批量转换 (R→[2], G→[1], B→[0])
+                for (int c = 0; c < 3; c++)
+                {
+                    int dstC = 2 - c;  // R(0)→2, G(1)→1, B(2)→0
+                    for (int k = 0; k < chunk; k++)
+                        rBuf[k] = srcRgba[(baseIdx + k) * 4 + c];
+                    SimdPixelOps.FloatToSrgb8(rBuf[..chunk], bBuf[..chunk]);
+                    for (int k = 0; k < chunk; k++)
+                        raw[(baseIdx + k) * 4 + dstC] = bBuf[k];
+                }
             }
+            // alpha = 255
+            for (int i = 0; i < pixelCount; i++)
+                raw[i * 4 + 3] = 255;
+            await RunFfmpegRawToPngAsync(raw, w, h, pixelCount * 4, "bgra", pngPath, ffmpeg, log, ct);
         }
-        // alpha = 255
-        for (int i = 0; i < pixelCount; i++)
-            raw[i * 4 + 3] = 255;
-        await RunFfmpegRawToPngAsync(raw, w, h, "bgra", pngPath, ffmpeg, log, ct);
+        finally { BufferPool.ReturnByte(raw); }
     }
 
     /// <summary>增益图 → 灰度或 RGB PNG (raw → ffmpeg)</summary>
@@ -317,32 +396,42 @@ public static class GainMapEncoder
         if (multiChannel)
         {
             // RGB 数据直接写, ffmpeg 用 rgb24
-            await RunFfmpegRawToPngAsync(gainPixels, w, h, "rgb24", pngPath, ffmpeg, log, ct);
+            await RunFfmpegRawToPngAsync(gainPixels, w, h, pixelCount * 3, "rgb24", pngPath, ffmpeg, log, ct);
         }
         else
         {
             // 灰度 → 复制为 RGB (避免 cjpegli 灰度兼容问题)
-            var rgb = new byte[pixelCount * 3];
-            for (int i = 0; i < pixelCount; i++)
+            var rgb = BufferPool.RentByte(pixelCount * 3);
+            try
             {
-                rgb[i * 3] = rgb[i * 3 + 1] = rgb[i * 3 + 2] = gainPixels[i];
+                for (int i = 0; i < pixelCount; i++)
+                {
+                    rgb[i * 3] = rgb[i * 3 + 1] = rgb[i * 3 + 2] = gainPixels[i];
+                }
+                await RunFfmpegRawToPngAsync(rgb, w, h, pixelCount * 3, "rgb24", pngPath, ffmpeg, log, ct);
             }
-            await RunFfmpegRawToPngAsync(rgb, w, h, "rgb24", pngPath, ffmpeg, log, ct);
+            finally { BufferPool.ReturnByte(rgb); }
         }
     }
 
-    private static async Task RunFfmpegRawToPngAsync(byte[] raw, int w, int h, string pixFmt,
+    private static async Task RunFfmpegRawToPngAsync(byte[] raw, int w, int h, int exactBytes, string pixFmt,
         string pngPath, string ffmpeg, Action<string>? log, CancellationToken ct)
     {
         var rawPath = pngPath + ".raw";
-        await File.WriteAllBytesAsync(rawPath, raw, ct);
-        var args = $"-y -f rawvideo -pix_fmt {pixFmt} -s {w}x{h} -i \"{rawPath}\" \"{pngPath}\"";
+        // 池化数组长度可能 > 请求；严格只写 exactBytes，避免脏尾（rawvideo 按帧读取，此处仍按精确写入以防万一）
+        await using (var fs = new FileStream(rawPath, FileMode.Create, FileAccess.Write))
+        {
+            await fs.WriteAsync(raw.AsMemory(0, exactBytes), ct);
+        }
+        var args = $"-y -f rawvideo -pix_fmt {pixFmt} -s {w}x{h} -i \"{rawPath}\" -frames:v 1 -update 1 \"{pngPath}\"";
         var psi = new ProcessStartInfo
         {
             FileName = ffmpeg,
             Arguments = args,
             RedirectStandardOutput = true,
+            StandardOutputEncoding = Encoding.UTF8,
             RedirectStandardError = true,
+            StandardErrorEncoding = Encoding.UTF8,
             UseShellExecute = false,
             CreateNoWindow = true
         };
@@ -357,25 +446,67 @@ public static class GainMapEncoder
             throw new InvalidOperationException($"ffmpeg PNG 转换失败 (exit {p.ExitCode})");
     }
 
-    private static async Task<bool> EncodeJpegliAsync(string pngPath, string jpgPath,
-        float distance, Action<string>? log, CancellationToken ct)
+    /// <summary>把 PNG 编成 JPEG：优先 cjpegli（--distance），回退 ffmpeg mjpeg（-q:v 由 distance 换算）。
+    /// 使 GainMap 不绑定特定 JPEG 编码器（符合“直接用所选 JPEG 编码器实现”）。
+    /// <para>
+    /// <paramref name="progressiveLevel"/> 是 cjpegli 的 `-p N`（0=sequential / 2=progressive）；
+    /// `-1` = **不传**该参数、沿用 cjpegli 自身默认。⚠ 回退 ffmpeg mjpeg 时该选项**无法表达**
+    /// （ffmpeg 的 mjpeg 编码器没有渐进能力）⇒ 记一条日志点名，绝不静默当没选。
+    /// </para>
+    /// </summary>
+    private static async Task<bool> EncodeJpegFileAsync(string pngPath, string jpgPath,
+        float distance, int progressiveLevel, Action<string>? log, CancellationToken ct)
     {
-        var psi = new ProcessStartInfo
+        if (CjpegliService.IsAvailable)
         {
-            FileName = CjpegliService.DetectedPath!,
-            Arguments = $"\"{pngPath}\" \"{jpgPath}\" --distance {distance:F1} --chroma_subsampling 420",
+            // 渐进级别：`-1` 表示不传，交 cjpegli 自身默认（= 2 渐进）
+            var progArg = progressiveLevel >= 0 ? $" -p {progressiveLevel}" : "";
+            var psi = new ProcessStartInfo
+            {
+                FileName = CjpegliService.DetectedPath!,
+                Arguments = $"\"{pngPath}\" \"{jpgPath}\" --distance {distance:F1} --chroma_subsampling 420{progArg}",
+                RedirectStandardOutput = true,
+                StandardOutputEncoding = Encoding.UTF8,
+                RedirectStandardError = true,
+                StandardErrorEncoding = Encoding.UTF8,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            using var p = Process.Start(psi)!;
+            p.OutputDataReceived += (_, e) => { if (e.Data != null) log?.Invoke(e.Data + "\n"); };
+            p.ErrorDataReceived += (_, e) => { if (e.Data != null) log?.Invoke(e.Data + "\n"); };
+            p.BeginOutputReadLine();
+            p.BeginErrorReadLine();
+            await p.WaitForExitAsync(ct);
+            return p.ExitCode == 0 && File.Exists(jpgPath) && new FileInfo(jpgPath).Length > 0;
+        }
+        // 回退 ffmpeg mjpeg：butteraugli distance(0.5-6) → 质量滑块 → -q:v（2-31，越小越好）。
+        // ⚠ mjpeg 无渐进能力 ⇒ 已请求渐进级别时必须点名（否则用户以为设了渐进、拿到的却是基线）。
+        // ⚠ 文案必须纯 ASCII：`_probe-cjk-hardcode-scan.ps1` 的 C# UI 面余量为 0（新增中文代码串必红）。
+        if (progressiveLevel >= 0)
+            log?.Invoke($"[GainMap] WARN: JPEG progressive level {progressiveLevel} requested, but cjpegli is unavailable"
+                      + " => the ffmpeg mjpeg fallback has no progressive support; output is baseline (option not applied).\n");
+        var ffmpegPath = AppSettingsService.Current.FfmpegPath;
+        float qSlider = Math.Clamp(100f - distance * 4f, 1f, 100f);
+        int qv = (int)Math.Round(2 + (100 - qSlider) * 29.0 / 100.0);
+        var fpsi = new ProcessStartInfo
+        {
+            FileName = ffmpegPath,
+            Arguments = $"-y -i \"{pngPath}\" -q:v {qv} \"{jpgPath}\"",
             RedirectStandardOutput = true,
+            StandardOutputEncoding = Encoding.UTF8,
             RedirectStandardError = true,
+            StandardErrorEncoding = Encoding.UTF8,
             UseShellExecute = false,
             CreateNoWindow = true
         };
-        using var p = Process.Start(psi)!;
-        p.OutputDataReceived += (_, e) => { if (e.Data != null) log?.Invoke(e.Data + "\n"); };
-        p.ErrorDataReceived += (_, e) => { if (e.Data != null) log?.Invoke(e.Data + "\n"); };
-        p.BeginOutputReadLine();
-        p.BeginErrorReadLine();
-        await p.WaitForExitAsync(ct);
-        return p.ExitCode == 0 && File.Exists(jpgPath) && new FileInfo(jpgPath).Length > 0;
+        using var fp = Process.Start(fpsi)!;
+        fp.OutputDataReceived += (_, e) => { if (e.Data != null) log?.Invoke(e.Data + "\n"); };
+        fp.ErrorDataReceived += (_, e) => { if (e.Data != null) log?.Invoke(e.Data + "\n"); };
+        fp.BeginOutputReadLine();
+        fp.BeginErrorReadLine();
+        await fp.WaitForExitAsync(ct);
+        return fp.ExitCode == 0 && File.Exists(jpgPath) && new FileInfo(jpgPath).Length > 0;
     }
 
     /// <summary>线性 float [0,1] → sRGB 8-bit</summary>
@@ -423,7 +554,8 @@ public static class GainMapEncoder
         byte[] gainMapWithIso = InsertIsoIntoSegment(gainMapJpeg, iso);
 
         // 4. XMP (含 Item:Length = 增益图完整大小)
-        byte[] xmp = BuildXmpMetadata(baseW, baseH, gmW, gmH, multiChannel, headroom, gainMapWithIso.Length);
+        byte[] xmp = BuildXmpMetadata(baseW, baseH, gmW, gmH, multiChannel, headroom,
+            gainMapWithIso.Length);
 
         // 5. MPF
         // 布局: [SOI][XMP APP1][MPF APP2][Base其余]
@@ -501,18 +633,25 @@ public static class GainMapEncoder
     ///   [min_version: u16 BE][writer_version: u16 BE][flags: u8]
     ///   flags: bit7=multi-channel, bit6=useBaseColorSpace, bit3=common denominator
     ///   然后各字段分数编码 (独立分母)
+    /// 底图始终 SDR（BaseRenditionIsHDR=False）⇒ 增益为上映射：
+    ///   gainMapMin = 0、gainMapMax = +log2(headroom)；
+    ///   baseHdrHeadroom = log2(1.0) = 0、alternateHdrHeadroom = log2(headroom)。
+    /// ⚠️ 分母必须与 N = log2×100 匹配（旧写法负值时用分母 1 → 第三方解出 -230而非 -2.3）。
     /// </summary>
     private static byte[] BuildIso21496Metadata(bool multiChannel, float maxLog2Gain)
     {
-        // log2 值用精确分数: maxLog2Gain × 100 / 100
-        int gainMapMaxLog2N = (int)MathF.Round(maxLog2Gain * 100f);
-        const int gainMapMaxLog2D = 100;
+        // log2 值用精确分数: log2 × 100 / 100
+        int gainLog2N = (int)MathF.Round(maxLog2Gain * 100f);
+        const int Log2D = 100;
         const int gammaN = 1, gammaD = 1;
         const int offsetN = 1, offsetD = 64;
-        const int gainMinN = 0, gainMinD = 1;
-        const int baseHeadroomN = 0, baseHeadroomD = 1;       // 2^0 = 1.0
-        const int alternateHeadroomD = 100;
-        int alternateHeadroomN = gainMapMaxLog2N;             // 与 gainMapMax 一致!
+        // 增益区间（log2）：底图始终 SDR ⇒ 恒为上映射 [0, +max]
+        const int gainMinN = 0;
+        int gainMaxN = gainLog2N;
+        // base/alternate headroom（均为 log2）：SDR 底 → base = log2(1.0) = 0，alternate = headroom
+        const int baseHeadroomN = 0, baseHeadroomD = 1;
+        int alternateHeadroomN = gainLog2N;
+        const int alternateHeadroomD = Log2D;
 
         int channels = multiChannel ? 3 : 1;
         byte flags = 0;
@@ -526,14 +665,14 @@ public static class GainMapEncoder
         bw.Write(flags);
 
         // baseHdrHeadroom / alternateHdrHeadroom (非 common denominator 模式)
-        WriteBe32Bytes(bw, (uint)baseHeadroomN); WriteBe32Bytes(bw, (uint)baseHeadroomD);
-        WriteBe32Bytes(bw, (uint)alternateHeadroomN); WriteBe32Bytes(bw, (uint)alternateHeadroomD);
+        WriteBe32Bytes(bw, unchecked((uint)baseHeadroomN)); WriteBe32Bytes(bw, (uint)baseHeadroomD);
+        WriteBe32Bytes(bw, unchecked((uint)alternateHeadroomN)); WriteBe32Bytes(bw, (uint)alternateHeadroomD);
 
         // 每通道: gainMapMin, gainMapMax, gamma, baseOffset, alternateOffset
         for (int c = 0; c < channels; c++)
         {
-            WriteBe32Bytes(bw, unchecked((uint)gainMinN)); WriteBe32Bytes(bw, (uint)gainMinD);
-            WriteBe32Bytes(bw, unchecked((uint)gainMapMaxLog2N)); WriteBe32Bytes(bw, (uint)gainMapMaxLog2D);
+            WriteBe32Bytes(bw, unchecked((uint)gainMinN)); WriteBe32Bytes(bw, (uint)Log2D);
+            WriteBe32Bytes(bw, unchecked((uint)gainMaxN)); WriteBe32Bytes(bw, (uint)Log2D);
             WriteBe32Bytes(bw, (uint)gammaN); WriteBe32Bytes(bw, (uint)gammaD);
             WriteBe32Bytes(bw, unchecked((uint)offsetN)); WriteBe32Bytes(bw, (uint)offsetD);
             WriteBe32Bytes(bw, unchecked((uint)offsetN)); WriteBe32Bytes(bw, (uint)offsetD);
@@ -544,12 +683,16 @@ public static class GainMapEncoder
     /// <summary>
     /// 构建 hdrgm XMP 元数据 (APP1 段数据, 含命名空间)。
     /// 对齐 libultrahdr generateXmpForPrimaryImage: GainMap item 写 Item:Length。
+    /// 底图始终 SDR ⇒ BaseRenditionIsHDR=False、GainMapMin=0、GainMapMax=+log2(headroom)，
+    /// 与 ISO 二进制声明保持一致（两者不一致时本软件解码以 ISO 为准并告警）。
+    /// 底图色域（sRGB / Rec.2020 SDR）由底图自己的 ICC 描述，XMP 不携带 primaries 字段。
     /// </summary>
     private static byte[] BuildXmpMetadata(int baseW, int baseH, int gmW, int gmH, bool multiChannel,
         float headroom, long gainMapLength)
     {
-        float gainMinLog2 = 0f;
-        float gainMaxLog2 = MathF.Log2(Math.Max(headroom, 1.0f));
+        float maxLog2 = MathF.Log2(Math.Max(headroom, 1.0f));
+        const float gainMinLog2 = 0f;                 // SDR 底：无下映射
+        float gainMaxLog2 = maxLog2;
         const float offset = KOffset;
         const float gamma = 1.0f;
 
@@ -577,8 +720,14 @@ public static class GainMapEncoder
             "</rdf:Seq>" +
             "</Container:Directory>" +
             "<hdrgm:Version>1.0</hdrgm:Version>" +
+            "<hdrgm:UseBaseRenderingColorSpace>True</hdrgm:UseBaseRenderingColorSpace>" +
+            // AndroidX JpegImageCodec 读法：声明两幅图的「逻辑尺寸」与比例（解码尺寸可能因宏块对齐更大，
+            // 增益图坐标必须按逻辑尺寸归一，否则边缘增益错位）。
+            $"<hdrgm:MapPrimary>{baseW}x{baseH}</hdrgm:MapPrimary>" +
+            $"<hdrgm:MapSecondary>{gmW}x{gmH}</hdrgm:MapSecondary>" +
+            "<hdrgm:MapImageRatio>1.0</hdrgm:MapImageRatio>" +
             "<hdrgm:BaseRenditionIsHDR>False</hdrgm:BaseRenditionIsHDR>" +
-            $"<hdrgm:GainMapMin>{gainMinLog2.ToString("0.0", inv)}</hdrgm:GainMapMin>" +
+            $"<hdrgm:GainMapMin>{gainMinLog2.ToString("0.00", inv)}</hdrgm:GainMapMin>" +
             $"<hdrgm:GainMapMax>{gainMaxLog2.ToString("0.00", inv)}</hdrgm:GainMapMax>" +
             $"<hdrgm:Gamma>{gamma.ToString("0.0", inv)}</hdrgm:Gamma>" +
             $"<hdrgm:OffsetSDR>{offset.ToString("0.000000", inv)}</hdrgm:OffsetSDR>" +

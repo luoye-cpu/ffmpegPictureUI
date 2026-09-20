@@ -158,94 +158,29 @@ namespace FfmpegGui.Services
         }
 
         /// <summary>
-        /// 使用 cjxl 进行 JPEG → JXL 无损重封装
+        /// P1-1：cjxl 的等待必须**带超时且响应取消**。之前两处都是裸 <c>WaitForExitAsync()</c>：
+        /// 用户点停止、或 cjxl 自己挂死 ⇒ 该项永不结束、并发槽位永久泄漏、整条队列卡住
+        /// （同仓库的 Djxl/Cjpegli 早有超时守卫，只有 cjxl 漏了）。
+        /// 阈值取 30 分钟而非二者的 5 分钟：cjxl 在 effort 9/10 + 大图上合法耗时远高于它们，
+        /// 本守卫的目标是杜绝“永久挂死”，不是砍掉慢编码。超时与取消都用非 0 返回并写日志，绝不静默。
         /// </summary>
-        /// <param name="inputPath">输入 JPEG 文件路径</param>
-        /// <param name="outputPath">输出 JXL 文件路径</param>
-        /// <param name="effort">编码努力 (1-9)</param>
-        /// <param name="threads">线程数</param>
-        /// <param name="logCallback">日志回调</param>
-        /// <returns>退出码（0=成功）</returns>
-        public static async Task<int> RunAsync(
-            string inputPath, string outputPath,
-            int effort = 7, int threads = 0,
-            Action<string>? logCallback = null,
-            CancellationToken ct = default)
+        private const int ProcessTimeoutMinutes = 30;
+
+        private static async Task<int> WaitGuardedAsync(Process process, CancellationToken ct, Action<string>? logCallback)
         {
-            if (_detectedPath == null)
-                throw new InvalidOperationException("cjxl.exe 未找到");
-
-            // 测试桩：当环境变量 FFMPEGGUI_CJXL_STUB=1 时，不实际启动 cjxl，而是模拟写入输出文件（用于本地验证）
+            using var timeoutCts = new CancellationTokenSource(TimeSpan.FromMinutes(ProcessTimeoutMinutes));
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(timeoutCts.Token, ct);
             try
             {
-                var stub = Environment.GetEnvironmentVariable("FFMPEGGUI_CJXL_STUB");
-                if (!string.IsNullOrWhiteSpace(stub) && stub == "1")
-                {
-                    try
-                    {
-                        var dir = Path.GetDirectoryName(outputPath);
-                        if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
-                            Directory.CreateDirectory(dir);
-                        // 写入一个小的占位文件
-                        await File.WriteAllTextAsync(outputPath, "cjxl-stub-output");
-                        logCallback?.Invoke($"[cjxl-stub] 写入: {outputPath}{Environment.NewLine}");
-                        return 0;
-                    }
-                    catch (Exception ex)
-                    {
-                        logCallback?.Invoke($"[cjxl-stub] 写入失败: {ex.Message}{Environment.NewLine}");
-                        return -1;
-                    }
-                }
-            }
-            catch { }
-
-            // cjxl 命令格式:
-            // cjxl input.jpg output.jxl -d 0 -e N --num_threads=N
-            // -d 0: 无损
-            // -e N: effort
-            // 自动检测 JPEG 输入并使用 --jpeg_transcode 模式
-            var args = $"\"{inputPath}\" \"{outputPath}\" -d 0 -e {effort} --lossless_jpeg=1";
-            if (threads > 0)
-                args += $" --num_threads={threads}";
-
-            logCallback?.Invoke($"[cjxl] JPEG→JXL 无损重封装: -d 0 -e {effort} --lossless_jpeg=1 (直接复制 DCT 系数，不解码像素){Environment.NewLine}");
-            logCallback?.Invoke($"[cjxl] {args}{Environment.NewLine}");
-
-            var psi = new ProcessStartInfo
-            {
-                FileName = _detectedPath,
-                Arguments = args,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                StandardOutputEncoding = Encoding.UTF8,
-                StandardErrorEncoding = Encoding.UTF8
-            };
-
-            using var process = new Process { StartInfo = psi, EnableRaisingEvents = true };
-            process.OutputDataReceived += (_, e) =>
-            {
-                if (e.Data != null) logCallback?.Invoke(e.Data + Environment.NewLine);
-            };
-            process.ErrorDataReceived += (_, e) =>
-            {
-                if (e.Data != null) logCallback?.Invoke(e.Data + Environment.NewLine);
-            };
-
-            try
-            {
-                process.Start();
-                PlatformServices.SetSafePriority(process, AppSettingsService.Current.FfmpegPriority);
-                process.BeginOutputReadLine();
-                process.BeginErrorReadLine();
-                await process.WaitForExitAsync();
+                await process.WaitForExitAsync(linked.Token).ConfigureAwait(false);
                 return process.ExitCode;
             }
-            catch (Exception ex)
+            catch (OperationCanceledException)
             {
-                logCallback?.Invoke($"[cjxl] 启动失败: {ex.Message}{Environment.NewLine}");
+                try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { }
+                logCallback?.Invoke(timeoutCts.IsCancellationRequested
+                    ? $"[cjxl] ⏱ 超过 {ProcessTimeoutMinutes} 分钟仍未结束 ⇒ 判为挂死，已终止进程树（显式失败，不静默）\n"
+                    : "[cjxl] 已取消 ⇒ 已终止进程树\n");
                 return -1;
             }
         }
@@ -259,7 +194,8 @@ namespace FfmpegGui.Services
             string inputPath, string outputPath,
             Models.FfmpegOptions opts,
             Action<string>? logCallback = null,
-            string? iccPath = null)
+            string? iccPath = null,
+            CancellationToken ct = default)
         {
             if (_detectedPath == null)
                 throw new InvalidOperationException("cjxl.exe 未找到");
@@ -291,12 +227,12 @@ namespace FfmpegGui.Services
                 PlatformServices.SetSafePriority(process, AppSettingsService.Current.FfmpegPriority);
                 process.BeginOutputReadLine();
                 process.BeginErrorReadLine();
-                await process.WaitForExitAsync();
-                return process.ExitCode;
+                return await WaitGuardedAsync(process, ct, logCallback);
             }
             catch (Exception ex)
             {
                 logCallback?.Invoke($"[cjxl] 启动失败: {ex.Message}{Environment.NewLine}");
+                try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { }
                 return -1;
             }
         }
@@ -308,8 +244,19 @@ namespace FfmpegGui.Services
         /// <param name="hdrMeta">auto 模式下的输入色彩探测结果（可选）</param>
         /// <param name="iccPath">输入提取的 ICC 文件路径（可选）。存在时以 ICC 定义完整色彩语义，
         /// 优先于 color_space 简写标签（libjxl 中 ICC 优先）</param>
+        /// <param name="colorSpaceOverride">
+        /// **引擎 cjxl 出口专用**（2026-09-17 接入）：由**规划层目标描述符**翻译好的
+        /// cjxl <c>color_space</c> 名（翻译在 <c>ColorEncodingHelper.MapToCjxlColorSpace</c>）。
+        /// 非 null 时**跳过**下面的探测/选项推导，直接采用 —— 出口的色彩语义只能来自计划，
+        /// 不得回头读 options（否则"决策在计划层、标注在出口层"各算一遍）。
+        /// </param>
+        /// <param name="intensityTargetOverride">
+        /// 同上，由出口算好的 <c>--intensity_target</c>（nits；0 = 不指定）。
+        /// ⚠ 两者必须**成对**传：只传一个会让"色彩空间来自计划、峰值来自选项"混源。
+        /// </param>
         public static string BuildCjxlArguments(string input, string output, Models.FfmpegOptions opts,
-            FfmpegCommandBuilder.ColorMetadata hdrMeta = default, string? iccPath = null)
+            FfmpegCommandBuilder.ColorMetadata hdrMeta = default, string? iccPath = null,
+            string? colorSpaceOverride = null, int intensityTargetOverride = 0)
         {
             var sb = new System.Text.StringBuilder();
             sb.Append($"\"{input}\" \"{output}\"");
@@ -365,6 +312,8 @@ namespace FfmpegGui.Services
             // 注意：isPipe=true 时仍需设置色彩空间，因为 PPM 管道不携带任何色彩元数据。
             // cjxl 的 -x color_space= 是输出容器标签，与输入格式无关。
             var isPipe = input == "-";
+            // 出口已翻译好色彩语义 ⇒ 不再看探测/选项（见 colorSpaceOverride 的文档）
+            bool hasExplicitColor = colorSpaceOverride != null || intensityTargetOverride > 0;
 
             // 有显式 ICC 文件时优先：ICC 定义完整色彩语义，跳过 color_space 简写（libjxl 中两者冲突时 ICC 优先）
             // 注意：-x 必须是独立 argv（cjxl 不接受 "-x key=value" 合成单参数），值为路径时整体加引号
@@ -374,17 +323,33 @@ namespace FfmpegGui.Services
                 && string.IsNullOrWhiteSpace(opts.DecodedUltraHdrColorSpace))
             {
                 sb.Append($" -x \"icc_pathname={iccPath}\"");
+                // HDR：即使走 ICC 路径，仍需 --intensity_target 声明显示峰值亮度（libjxl 中与 ICC 独立）。
+                var itHdr = hasExplicitColor
+                    ? intensityTargetOverride                       // 出口已算好（含 HDR 目标必给的兜底）
+                    : ColorEncodingHelper.MapToIntensityTarget(hdrMeta);
+                if (itHdr <= 0) itHdr = ColorEncodingHelper.MapToIntensityTarget(opts);
+                if (itHdr > 0) sb.Append($" --intensity_target={itHdr}");
                 return sb.ToString();
             }
 
             string? colorSpace = null;
             int intensityTarget = 0;
 
-            // Ultra HDR 解码输出：显式标记 Rec.2100 PQ（优先级最高，线性 HDR 帧语义精确表达）
-            if (!string.IsNullOrWhiteSpace(opts.DecodedUltraHdrColorSpace))
+            if (hasExplicitColor)
+            {
+                // ── 引擎 cjxl 出口：色彩语义来自**计划**（colorSpace 可为 null ⇒ 由 ICC 描述）──
+                colorSpace = colorSpaceOverride;
+                intensityTarget = intensityTargetOverride;
+            }
+            // Ultra HDR 解码输出：线性 HDR PFM，显式标记线性色彩空间 + 真实峰值（优先级最高）
+            else if (!string.IsNullOrWhiteSpace(opts.DecodedUltraHdrColorSpace))
             {
                 colorSpace = opts.DecodedUltraHdrColorSpace;
-                intensityTarget = 10000; // PQ 默认 10000 nits
+                // intensity_target 取解码得到的真实峰值(203×2^GainMapMax)；旧值硬编码 10000 错约 10×。
+                // 未提供峰值时（如 JXL 输入 PQ 管道另路径）沿用 PQ 标称 10000。
+                intensityTarget = opts.DecodedUltraHdrPeakNits > 0
+                    ? (int)Math.Clamp(Math.Round(opts.DecodedUltraHdrPeakNits), 100, 10000)
+                    : 10000;
             }
             else
             {

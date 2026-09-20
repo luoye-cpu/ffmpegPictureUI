@@ -1,6 +1,6 @@
 # 📦 FFmpegPictureUI 打包规范
 
-> 版本: 1.1 | 最后更新: 2026-08-30 | 适用于 v1.5.5+ / For v1.5.5+
+> 版本: 1.1 | 最后更新: 2026-09-06 | 适用于 v1.6.0+ / For v1.6.0+
 
 ---
 
@@ -62,15 +62,10 @@ FFmpegPictureUI-v1.5.2-x64-full/
 │   ├── exiftool/                     ← ExifTool
 │   │   └── exiftool.exe
 │   └── artifacts/                    ← 其他自编译工具
-│       ├── ultrahdr_app.exe
-│       ├── libuhdr.dll
 │       ├── JxrEncApp.exe
 │       ├── JxrDecApp.exe
 │       ├── avifenc.exe
-│       ├── libgcc_s_seh-1.dll        ← GCC 运行时（ultrahdr 依赖）
-│       ├── libstdc++-6.dll
-│       ├── libwinpthread-1.dll
-│       └── libjpeg-9__.dll
+│       └── dngtool.exe
 └── FFmpegPictureUI.runtimeconfig.json
 ```
 
@@ -83,7 +78,7 @@ FFmpegPictureUI-v1.5.2-x64-full/
 | `PLAN/ffmpeg-full/` | 目录存在且含 `ffmpeg(.exe)` | `FfmpegDirectory` |
 | `PLAN/jxl/bin/` | 目录存在 | `JxlLibDir`（含 cjxl/djxl/cjpegli） |
 | `PLAN/exiftool/` | 目录存在且含 `exiftool(.exe)` | `ExifToolPath` |
-| `PLAN/artifacts/` | 目录存在 | `WindowsArtifactsDir`（含 ultrahdr/Jxr/avifenc） |
+| `PLAN/artifacts/` | 目录存在 | `WindowsArtifactsDir`（含 Jxr/avifenc/dngtool） |
 
 > **重要**: 仅在用户**未手动配置**对应路径时才自动填充。用户手动设置的路径优先级更高。
 
@@ -234,7 +229,6 @@ Invoke-7zMax 'a -t7z -mx9 -md=3840m -mfb=273 -ms=on -mmt=1 "out.7z" *'
   • FFmpeg        — 核心编解码引擎（必需）
   • cjxl/djxl     — JPEG XL 高性能编码/解码（推荐）
   • cjpegli       — 高质量 JPEG 编码（推荐）
-  • ultrahdr_app  — Ultra HDR JPEG 编码（可选）
   • JxrEncApp     — JPEG XR 编码（可选）
   • exiftool      — 元数据编辑与隐私清理（可选）
 
@@ -253,7 +247,7 @@ Invoke-7zMax 'a -t7z -mx9 -md=3840m -mfb=273 -ms=on -mmt=1 "out.7z" *'
 
 📞 反馈与交流
   QQ 群: 754439779
-  GitHub: https://github.com/luoye-cpu/PLAN-1
+  GitHub: https://github.com/luoye-cpu/ffmpegPictureUI
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   版本: v{VERSION} | 架构: {ARCH} | 构建日期: {DATE}
@@ -273,9 +267,9 @@ Invoke-7zMax 'a -t7z -mx9 -md=3840m -mfb=273 -ms=on -mmt=1 "out.7z" *'
 
 `src/FfmpegGui/FfmpegGui.csproj`:
 ```xml
-<Version>1.5.5</Version>
-<AssemblyVersion>1.5.5.0</AssemblyVersion>
-<FileVersion>1.5.5.0</FileVersion>
+<Version>1.6.0</Version>
+<AssemblyVersion>1.6.0.0</AssemblyVersion>
+<FileVersion>1.6.0.0</FileVersion>
 ```
 
 ### 5.2 更新流程
@@ -283,7 +277,7 @@ Invoke-7zMax 'a -t7z -mx9 -md=3840m -mfb=273 -ms=on -mmt=1 "out.7z" *'
 1. 修改 `.csproj` 中的 `<Version>` 标签
 2. 更新 `README.md` 中的版本号
 3. 执行打包流程
-4. 在 GitHub Releases 中创建对应 tag: `v1.5.5`
+4. 在 GitHub Releases 中创建对应 tag: `v1.6.0`
 
 ---
 

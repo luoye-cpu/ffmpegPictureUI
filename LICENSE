@@ -1,7 +1,5 @@
-GNU GENERAL PUBLIC LICENSE
+                    GNU GENERAL PUBLIC LICENSE
                        Version 3, 29 June 2007
-
- Copyright (c) 2025-2026 luoye-cpu
 
  Copyright (C) 2007 Free Software Foundation, Inc. <https://fsf.org/>
  Everyone is permitted to copy and distribute verbatim copies
@@ -622,88 +620,55 @@ copy of the Program in return for a fee.
 
                      END OF TERMS AND CONDITIONS
 
+            How to Apply These Terms to Your New Programs
 
-=============================================================================
-                      Third-Party License Notices
-                    第三方开源许可声明
-=============================================================================
+  If you develop a new program, and you want it to be of the greatest
+possible use to the public, the best way to achieve this is to make it
+free software which everyone can redistribute and change under these terms.
 
-This project ("FfmpegPictureUI") relies on the following open-source
-dependencies. Their respective licenses are reproduced or referenced below.
-These dependencies are licensed under their own terms and are not covered
-by the GPL 3.0 that applies to FfmpegPictureUI itself.
+  To do so, attach the following notices to the program.  It is safest
+to attach them to the start of each source file to most effectively
+state the exclusion of warranty; and each file should have at least
+the "copyright" line and a pointer to where the full notice is found.
 
-本项目（"FfmpegPictureUI"）使用了以下开源依赖。它们各受自身许可证约束，
-不受 FfmpegPictureUI 本身的 GPL 3.0 约束。
+    <one line to give the program's name and a brief idea of what it does.>
+    Copyright (C) <year>  <name of author>
 
+    This program is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
 
----- NuGet Dependencies (.NET Managed Libraries / 托管库) ----
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
 
-1. Avalonia UI
-   Packages: Avalonia, Avalonia.Desktop, Avalonia.Themes.Fluent,
-             Avalonia.Win32, Avalonia.Skia, Avalonia.FreeDesktop,
-             Avalonia.Native, Avalonia.X11, Avalonia.Angle.Windows.Natives,
-             Avalonia.Remote.Protocol, Avalonia.BuildServices
-   License: MIT
-   Copyright: (c) AvaloniaUI OÜ
-   Homepage: https://github.com/AvaloniaUI/Avalonia
+    You should have received a copy of the GNU General Public License
+    along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-2. SkiaSharp
-   Packages: SkiaSharp, SkiaSharp.NativeAssets.*
-   License: MIT
-   Copyright: (c) 2015-2016 Xamarin, Inc. / 2017-2018 Microsoft
-   Homepage: https://github.com/mono/SkiaSharp
-   Note: Underlying engine is Google Skia (BSD-style)
+Also add information on how to contact you by electronic and paper mail.
 
-3. HarfBuzzSharp
-   Packages: HarfBuzzSharp, HarfBuzzSharp.NativeAssets.*
-   License: MIT
-   Copyright: (c) 2015-2016 Xamarin, Inc. / 2017-2018 Microsoft
+  If the program does terminal interaction, make it output a short
+notice like this when it starts in an interactive mode:
 
-4. MicroCom.Runtime — License: MIT
-5. Tmds.DBus.Protocol — License: MIT
-6. System.Drawing.Common et al. — License: MIT (c) .NET Foundation
+    <program>  Copyright (C) <year>  <name of author>
+    This program comes with ABSOLUTELY NO WARRANTY; for details type `show w'.
+    This is free software, and you are welcome to redistribute it
+    under certain conditions; type `show c' for details.
 
+The hypothetical commands `show w' and `show c' should show the appropriate
+parts of the General Public License.  Of course, your program's commands
+might be different; for a GUI interface, you would use an "about box".
 
----- Bundled Native Executable (随发行版附带) ----
+  You should also get your employer (if you work as a programmer) or school,
+if any, to sign a "copyright disclaimer" for the program, if necessary.
+For more information on this, and how to apply and follow the GNU GPL, see
+<https://www.gnu.org/licenses/>.
 
-7. cjxl.exe (from libjxl / JPEG XL reference implementation)
-   License: BSD 3-Clause
-   Homepage: https://github.com/libjxl/libjxl
-   Note: cjxl.exe is included as an optional convenience tool. The app
-     invokes it as a child process and does not statically link libjxl.
-     cjxl.exe 以子进程方式调用，不链接到本项目。
-
-   BSD 3-Clause:
-     Redistribution and use in source and binary forms, with or without
-     modification, are permitted provided that the following conditions
-     are met: (1) retain copyright notice; (2) reproduce notice in
-     documentation; (3) no endorsement without written permission.
-     Full text: https://github.com/libjxl/libjxl/blob/main/LICENSE
-
-
----- External Tools (NOT bundled / 外部安装，不包含在发行版中) ----
-
-8. FFmpeg / FFprobe
-   License: LGPL 2.1+ / GPL 2+ (depends on build configuration)
-   Homepage: https://ffmpeg.org
-   Note: Must be installed separately. FfmpegPictureUI invokes ffmpeg
-     as a child process via command line. This "separate process" usage
-     falls under the GPL's "mere aggregation" clause and the resulting
-     output is not considered a covered work of ffmpeg.
-     注：以独立子进程调用，属于 GPL"mere aggregation"范畴。
-
-9. ExifTool
-   License: GPL 1+ / Artistic License (Perl)
-   Homepage: https://github.com/exiftool/exiftool
-   Note: Invoked as a separate child process; same rationale as FFmpeg.
-     注：同样以子进程方式调用。
-
-10. cjpegli.exe / djxl.exe (from libjxl)
-    License: BSD 3-Clause
-    Homepage: https://github.com/libjxl/libjxl
-    Note: Placed in the configured JPEG XL reference implementation
-      directory. Invoked as child processes.
-      注：配置在"JPEG XL 参考实现库"目录中，以子进程方式调用。
-
-=============================================================================
+  The GNU General Public License does not permit incorporating your program
+into proprietary programs.  If your program is a subroutine library, you
+may consider it more useful to permit linking proprietary applications with
+the library.  If this is what you want to do, use the GNU Lesser General
+Public License instead of this License.  But first, please read
+<https://www.gnu.org/licenses/why-not-lgpl.html>.

@@ -11,6 +11,14 @@ $dngtool = "publish/PLAN/artifacts/dngtool.exe"
 $samples = "tools/src/dng_sdk/dng_sdk_1_7_1/sample_files"
 $cores = (Get-CimInstance Win32_Processor | Measure-Object NumberOfLogicalProcessors -Sum).Sum
 
+# 取子进程 stdout 一律走 Start-Process（`& exe` 在部分宿主静默失败：输出为空 ⇒ 假红/空值）
+function Exec([string]$file, [string]$argStr){
+  $o = "$out/_exec.out"; $e = "$out/_exec.err"
+  Start-Process -FilePath $file -ArgumentList $argStr -Wait -NoNewWindow -PassThru `
+    -RedirectStandardOutput $o -RedirectStandardError $e | Out-Null
+  return ([System.IO.File]::ReadAllText($o) + "`n" + [System.IO.File]::ReadAllText($e))
+}
+
 $pass = 0; $fail = 0; $failList = @()
 function Check($name, $cond) {
     if ($cond) { Write-Host "  ✅ $name" -ForegroundColor Green; $script:pass++ }
@@ -46,20 +54,20 @@ foreach ($c in $cases) {
 Write-Host "`nB. 各编码器线程参数端到端" -ForegroundColor Cyan
 
 # B1: dngtool -threads 1 vs 8 (小样本, effort=1)
-& $dngtool -e -jxl -q 0 -effort 1 -threads 1 -i "$samples/01_jxl_linear_raw_integer.dng" -O "$out/dng_t1.dng" 2>&1 | Out-Null
-& $dngtool -e -jxl -q 0 -effort 1 -threads 8 -i "$samples/01_jxl_linear_raw_integer.dng" -O "$out/dng_t8.dng" 2>&1 | Out-Null
+Exec $dngtool "-e -jxl -q 0 -effort 1 -threads 1 -i `"$samples/01_jxl_linear_raw_integer.dng`" -O `"$out/dng_t1.dng`"" | Out-Null
+Exec $dngtool "-e -jxl -q 0 -effort 1 -threads 8 -i `"$samples/01_jxl_linear_raw_integer.dng`" -O `"$out/dng_t8.dng`"" | Out-Null
 $d1 = Test-Path "$out/dng_t1.dng"; $d8 = Test-Path "$out/dng_t8.dng"
 Check "B1 dngtool -threads 1/8 均可执行 ($d1/$d8)" ($d1 -and $d8)
 
 # B2: cjxl --num_threads 1 vs 8 (小图)
-& $cjxl "tests/output/sources/src_8bit.png" "$out/cjxl_t1.jxl" -e 3 --num_threads=1 2>$null | Out-Null
-& $cjxl "tests/output/sources/src_8bit.png" "$out/cjxl_t8.jxl" -e 3 --num_threads=8 2>$null | Out-Null
+Exec $cjxl "`"tests/output/sources/src_8bit.png`" `"$out/cjxl_t1.jxl`" -e 3 --num_threads=1" 2>$null | Out-Null
+Exec $cjxl "`"tests/output/sources/src_8bit.png`" `"$out/cjxl_t8.jxl`" -e 3 --num_threads=8" 2>$null | Out-Null
 $c1 = Test-Path "$out/cjxl_t1.jxl"; $c8 = Test-Path "$out/cjxl_t8.jxl"
 Check "B2 cjxl --num_threads 1/8 均可执行 ($c1/$c8)" ($c1 -and $c8)
 
 # B3: ffmpeg -threads 1 vs 8
-& $ffmpeg -y -hide_banner -loglevel error -threads 1 -i "tests/output/sources/src_8bit.png" -q:v 5 "$out/ff_t1.jpg" 2>&1 | Out-Null
-& $ffmpeg -y -hide_banner -loglevel error -threads 8 -i "tests/output/sources/src_8bit.png" -q:v 5 "$out/ff_t8.jpg" 2>&1 | Out-Null
+Exec $ffmpeg "-y -hide_banner -loglevel error -threads 1 -i `"tests/output/sources/src_8bit.png`" -q:v 5 `"$out/ff_t1.jpg`"" | Out-Null
+Exec $ffmpeg "-y -hide_banner -loglevel error -threads 8 -i `"tests/output/sources/src_8bit.png`" -q:v 5 `"$out/ff_t8.jpg`"" | Out-Null
 $f1 = Test-Path "$out/ff_t1.jpg"; $f8 = Test-Path "$out/ff_t8.jpg"
 Check "B3 ffmpeg -threads 1/8 均可执行 ($f1/$f8)" ($f1 -and $f8)
 
@@ -73,7 +81,7 @@ Check "B5 cjxl 1/8线程输出一致" ($hc1 -eq $hc8)
 Write-Host "`nC. 实测各档位提速 (dngtool effort=2, 大样本)" -ForegroundColor Cyan
 foreach ($t in @(1, 5, 20)) {
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    & $dngtool -e -jxl -q 0 -effort 2 -threads $t -i "$samples/01_jxl_linear_raw_integer.dng" -O "$out/dng_bench_$t.dng" 2>&1 | Out-Null
+    Exec $dngtool "-e -jxl -q 0 -effort 2 -threads $t -i `"$samples/01_jxl_linear_raw_integer.dng`" -O `"$out/dng_bench_$t.dng`"" | Out-Null
     $sw.Stop()
     Write-Host "  ── $t 线程: $([math]::Round($sw.Elapsed.TotalSeconds,1))s"
     if ($t -eq 1) { $t1time = $sw.Elapsed.TotalSeconds }

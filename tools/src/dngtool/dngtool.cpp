@@ -677,34 +677,41 @@ static int EncodeDng(
 
     negative->SetColorChannels(3);
 
-    // CFA 模式: filters 是 dcraw 风格的 32-bit 值, 每 2-bit 一个像素颜色
-    // 值 0=RGGB, 1=GRBG, 2=GBRG, 3=BGGR (2x2 相位)
+    // CFA 模式: filters 是 dcraw 风格的 32-bit 值
+    // ⚠⚠ 2026-09-20 修复（三处 bug 叠加，实测症状：产物 CFA 相位错 ⇒ 解码后颜色错）：
+    //   bug① 位移常量错：dcraw 的 `FC(row,col) = (filters >> ((((row<<1 & 14) + (col&1)) << 1)) & 3`
+    //        ⇒ (0,0)→shift 0, (0,1)→2, **(1,0)→4, (1,1)→6**；旧代码写 `>>8` / `>>10`（错）。
+    //   bug② 未处理 dcraw 的 `3`（= **第二个绿 G2**）：旧代码的四个相位模式只用了 0/1/2
+    //        ⇒ 常见值 0xB4B4B4B4（= [0,1,3,2]）**四个模式全不匹配** ⇒ 落 else。
+    //   bug③ **相位语义与 DNG SDK 相反**：`dng_negative::SetBayerMosaic(phase)` 的真实映射
+    //        （权威来源 `dng_sdk/source/dng_negative.cpp:2957`）是
+    //          phase 0 ⇒ [G,R][B,G] = **GRBG**   phase 1 ⇒ [R,G][G,B] = **RGGB**
+    //          phase 2 ⇒ [B,G][G,R] = **BGGR**   phase 3 ⇒ [G,B][R,G] = **GBRG**
+    //        即与「0=RGGB」的直觉 **0↔1、2↔3 互换**。旧代码按直觉传 phase ⇒ 写出的 CFA 相位反了。
+    //   实测证据（Sony ILCE-7S.ARW，源 filters=0xB4B4B4B4 即 RGGB）：
+    //        旧产物 CFAPattern = [Green,Red][Blue,Green]（**GRBG**，错）；且日志报
+    //        `WARNING: unusual CFA pattern, using phase 0`（bug② 的直接指纹）。
     if (isBayer)
     {
-        // 从 filters 推导 2x2 相位:
-        // filters 每 2 bit 编码颜色: 0=R, 1=G, 2=B (dcraw FC 宏)
-        // 提取左上角 2x2 相位
-        unsigned phase = 0;
-        // dcraw: FC(row,col) = (filters >> (((row<<1 & 14) + (col & 1)) << 1)) & 3
-        int c00 = (filters >> 0) & 3;         // row0,col0
-        int c01 = (filters >> 2) & 3;         // row0,col1
-        int c10 = (filters >> 8) & 3;         // row1,col0
-        int c11 = (filters >> 10) & 3;        // row1,col1
-        // 标准相位: 0=RGGB, 1=GRBG, 2=GBRG, 3=BGGR
-        if (c00 == 0 && c01 == 1 && c10 == 1 && c11 == 2) phase = 0;
-        else if (c00 == 1 && c01 == 0 && c10 == 2 && c11 == 1) phase = 1;
-        else if (c00 == 2 && c01 == 1 && c10 == 1 && c11 == 0) phase = 2;
-        else if (c00 == 1 && c01 == 2 && c10 == 0 && c11 == 1) phase = 3;
+        // dcraw 颜色编码: 0=R, 1=G, 2=B, 3=G2（第二个绿）⇒ 先把 G2 归一化成 G 再匹配相位
+        auto normG = [](int c) { return c == 3 ? 1 : c; };
+        int c00 = normG((filters >> 0) & 3);   // (row0,col0)
+        int c01 = normG((filters >> 2) & 3);   // (row0,col1)
+        int c10 = normG((filters >> 4) & 3);   // (row1,col0)
+        int c11 = normG((filters >> 6) & 3);   // (row1,col1)
+        // ⚠ 按 **DNG SDK 的真实相位顺序**匹配（0=GRBG, 1=RGGB, 2=BGGR, 3=GBRG）
+        unsigned phase = 1;                    // 退化默认用 RGGB（最常见）
+        if      (c00 == 1 && c01 == 0 && c10 == 2 && c11 == 1) phase = 0;   // GRBG
+        else if (c00 == 0 && c01 == 1 && c10 == 1 && c11 == 2) phase = 1;   // RGGB
+        else if (c00 == 2 && c01 == 1 && c10 == 1 && c11 == 0) phase = 2;   // BGGR
+        else if (c00 == 1 && c01 == 2 && c10 == 0 && c11 == 1) phase = 3;   // GBRG
         else
-        {
-            // 非常规模式, 退化为按相位 0 处理 (多数情况正确)
-            fprintf(stderr, "[dngtool-e] WARNING: unusual CFA pattern, using phase 0\n");
-            phase = 0;
-        }
+            fprintf(stderr, "[dngtool-e] WARNING: unusual CFA pattern (0x%X -> %d,%d,%d,%d), assuming RGGB\n",
+                    filters, c00, c01, c10, c11);
 
         negative->SetColorKeys(colorKeyRed, colorKeyGreen, colorKeyBlue, colorKeyGreen);
         negative->SetBayerMosaic(phase);
-        if (verbose) fprintf(stderr, "[dngtool-e] Bayer CFA phase %u\n", phase);
+        if (verbose) fprintf(stderr, "[dngtool-e] Bayer CFA phase %u (0=GRBG,1=RGGB,2=BGGR,3=GBRG)\n", phase);
     }
     else
     {
@@ -718,10 +725,16 @@ static int EncodeDng(
     bool outFloat = false;
 
     // ── 尺寸与裁剪 ──
-    negative->SetDefaultCropSize(activeW, activeH);
-    negative->SetDefaultCropOrigin(leftMargin, topMargin);
+    // ⚠⚠ 2026-09-20 修复（缺陷②）：`DefaultCropOrigin` 按 DNG 规范是**相对 `ActiveArea` 的偏移**，
+    //   而 `ActiveArea` 本身已经包含了 (topMargin, leftMargin)。旧代码把 margin **又填进 origin**
+    //   ⇒ 「DefaultCrop 落在 ActiveArea 之外」⇒ **JXL 压缩路径解码时直接报错**：
+    //     `*** Error: Default crop extends outside ActiveArea ***`
+    //   （实测 Canon EOS R6，源 margin=156,108）。⚠ 无损 JPEG 路径**不做该校验**所以看不出来，
+    //   但产物同样带着错误的裁剪框（换解码器/换软件就可能暴露）。
     negative->SetActiveArea(dng_rect(topMargin, leftMargin,
                                      topMargin + activeH, leftMargin + activeW));
+    negative->SetDefaultCropSize(activeW, activeH);
+    negative->SetDefaultCropOrigin(0, 0);
     negative->SetDefaultScale(dng_urational(1, 1), dng_urational(1, 1));
 
     // ⚠️ OriginalDefaultFinalSize 必须 = DefaultFinalSize!

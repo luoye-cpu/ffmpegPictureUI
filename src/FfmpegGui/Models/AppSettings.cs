@@ -18,8 +18,11 @@ namespace FfmpegGui.Models
         /// <summary>JPEG XL 参考库目录（含 cjxl/djxl/cjpegli，留空则自动检测）</summary>
         public string? JxlLibDir { get; set; }
 
-        /// <summary>Windows 构建产物目录（含 ultrahdr/JxrEncApp/avifenc，留空则自动检测）</summary>
+        /// <summary>Windows 构建产物目录（含 JxrEncApp/avifenc/dngtool，留空则自动检测）</summary>
         public string? WindowsArtifactsDir { get; set; }
+
+        /// <summary>标准 ICC 目录（PLAN/iccs，存放 iccgen 无法生成的 prophoto-rgb / bt2100-pq 等；留空则自动检测）</summary>
+        public string? IccDirectory { get; set; }
 
         /// <summary>dngtool 可执行文件路径（LibRaw + DNG SDK，支持 DNG 1.7 JXL，留空则自动检测）</summary>
         public string? DngToolPath { get; set; }
@@ -58,11 +61,34 @@ namespace FfmpegGui.Models
         /// <summary>GPU 硬件加速：true=启用（Windows: DX11→Vulkan→CPU, Linux: Vulkan→OpenGL→CPU），false=纯软件渲染。需重启生效。</summary>
         public bool GpuAcceleration { get; set; } = true;
 
+        /// <summary>
+        /// 渲染后端（「手动选择 GPU」）。取值：<c>"auto"</c>（按平台默认回退链，默认值）/
+        /// <c>"angle"</c>（Windows ANGLE→D3D11）/ <c>"vulkan"</c> / <c>"software"</c>（纯 CPU）。
+        /// 与 <see cref="GpuAcceleration"/> 的关系：<c>GpuAcceleration=false</c> 时恒为 software；
+        /// 否则以本字段为准。**需重启生效**。
+        /// </summary>
+        public string RenderingMode { get; set; } = "auto";
+
         /// <summary>简洁模式自动编码：true=队列有任务时自动开始，false=手动控制</summary>
         public bool SimpleModeAutoEncode { get; set; } = false;
 
+        /// <summary>
+        /// IPC 服务器（Named Pipe 单实例/跨进程任务提交）：true=启用，false=禁用（默认）。
+        /// 默认关闭——后台化核心是"窗口最小化到托盘待命"，进程保留队列继续跑，
+        /// 而非挂载常驻后台服务。仅需跨进程提交任务时开启。
+        /// </summary>
+        public bool EnableIpcServer { get; set; } = false;
+
         /// <summary>ffmpeg 进程优先级: 0=实时, 1=高, 2=高于正常, 3=正常, 4=低于正常, 5=低</summary>
         public int FfmpegPriority { get; set; } = 3;
+
+        /// <summary>
+        /// 图片最长边限制：true=启用（处理时读取原图宽高，若最长边超过 MaxLength 则按下采样比例缩放），false=禁用。
+        /// </summary>
+        public bool EnableMaxDimension { get; set; } = false;
+
+        /// <summary>图片最长边参数 (MaxLength)。最长边 ≤ 该值时直接使用原图（跳过缩放）；超过时才缩放。</summary>
+        public int MaxLength { get; set; } = 1920;
 
         /// <summary>
         /// 启用后：在检测到与 CPU 指令集匹配的优化二进制时，自动优先使用并保存工具路径（仅在用户未手动指定时生效）。
@@ -143,6 +169,18 @@ namespace FfmpegGui.Models
             ["WMV"]  = new[] { ".wmv" },
             ["FLV"]  = new[] { ".flv" },
         };
+
+        /// <summary>
+        /// **仅支持解码输入、不提供编码输出**的格式名。
+        /// HEIC/HEIF：本工具链无 HEIF 写通路（ffmpeg 无 heif muxer、无 heifenc），且 HEVC 图片编码另涉专利授权，
+        /// 因此产品定位定为“可读不可写”；解码由 mov demuxer + hevc 解码器承担（已实测 .heic 会路由到 mov）。
+        /// </summary>
+        [JsonIgnore]
+        public static readonly string[] DecodeOnlyFormats = { "HEIC" };
+
+        /// <summary>判断某格式名是否只能解码（大小写/前导点无关）。</summary>
+        public static bool IsDecodeOnlyFormat(string? name)
+            => name != null && DecodeOnlyFormats.Contains(name.Trim().TrimStart('.'), StringComparer.OrdinalIgnoreCase);
 
         /// <summary>用户启用的图片格式名称列表（持久化到 settings.json）。默认全选所有格式。</summary>
         public List<string> EnabledImageFormats { get; set; } = new()

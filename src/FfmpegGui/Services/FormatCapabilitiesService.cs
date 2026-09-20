@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 
@@ -33,11 +34,15 @@ namespace FfmpegGui.Services
 
     public static class FormatCapabilitiesService
     {
-        private static readonly Dictionary<string, FormatCapabilities> _cache = new();
+        // S-P1-5：必须是并发字典。写入发生在 InitializeAsync（后台初始化线程），读取发生在 UI 线程
+        // （下拉框/能力提示），普通 Dictionary 并发读写会抛异常或读到损坏的内部状态。
+        private static readonly ConcurrentDictionary<string, FormatCapabilities> _cache = new();
 
         public static FormatCapabilities? GetCapabilities(string format)
         {
-            format = format.ToLower();
+            // ToLowerInvariant 而非 ToLower：缓存键全是 ASCII 小写字面量，
+            // 用文化敏感转换会在土耳其语等区域把 "I" 变成 "ı"（无点 i）⇒ 查不到键。
+            format = format.ToLowerInvariant();
             if (_cache.TryGetValue(format, out var cap)) return cap;
             return null;
         }
@@ -235,14 +240,20 @@ namespace FfmpegGui.Services
                 foreach (var kv in _cache)
                 {
                     var cap = kv.Value;
-                    cap.SupportedColorSpaces = cap.SupportedColorSpaces ?? new List<string>();
+                    // ⚠ S-P1-5：**不要原地改** cap.SupportedColorSpaces —— 该对象在 SeedLocalRules() 里
+                    // 就已经发布进缓存，UI 线程随时可能正在枚举这个 List；List<T> 非线程安全，
+                    // 并发 Add + 枚举会抛 InvalidOperationException 或读到半成品。
+                    // 改为 copy-on-write：在**新列表**上累加，最后整体替换属性 ⇒ 读者只会看到
+                    // 「旧的完整列表」或「新的完整列表」，不会看到中间态。
+                    var spaces = new List<string>(cap.SupportedColorSpaces ?? new List<string>());
                     void AddIfNotExists(string cs)
                     {
-                        if (!cap.SupportedColorSpaces.Contains(cs, StringComparer.OrdinalIgnoreCase))
-                            cap.SupportedColorSpaces.Add(cs);
+                        if (!spaces.Contains(cs, StringComparer.OrdinalIgnoreCase))
+                            spaces.Add(cs);
                     }
                     if (outp.Contains("yuv444p")) AddIfNotExists("BT.709");
                     if (outp.Contains("yuv420p10le") || outp.Contains("yuv420p12le")) AddIfNotExists("BT.2020");
+                    cap.SupportedColorSpaces = spaces;
                 }
             }
             catch { }

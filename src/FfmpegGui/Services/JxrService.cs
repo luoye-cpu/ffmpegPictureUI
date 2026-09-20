@@ -86,6 +86,8 @@ namespace FfmpegGui.Services
             }
         }
 
+        /// <summary>在系统 PATH 中查找可执行文件（已迁移至 PlatformServices）</summary>
+        [Obsolete("使用 PlatformServices.TryFindInPath 代替")]
         private static bool TryFindInPath(string exeName, out string? fullPath)
         {
             return PlatformServices.TryFindInPath(exeName, out fullPath);
@@ -167,13 +169,25 @@ namespace FfmpegGui.Services
                 PlatformServices.SetSafePriority(process, AppSettingsService.Current.FfmpegPriority);
                 process.BeginOutputReadLine();
                 process.BeginErrorReadLine();
-                if (ct.CanBeCanceled)
+                // 超时守卫（对齐 CjxlService 的 30 分钟）：JxrEncApp 挂死时若无超时将永久
+                // 阻塞队列项并泄漏并发槽位；ct 为 default（调用方未传）时尤甚（P2）。
+                using var timeoutCts = new System.Threading.CancellationTokenSource(TimeSpan.FromMinutes(30));
+                using var linked = System.Threading.CancellationTokenSource.CreateLinkedTokenSource(timeoutCts.Token, ct);
+                using var reg = linked.Token.Register(() => { try { if (!process.HasExited) process.Kill(true); } catch { } });
+                try
                 {
-                    using var reg = ct.Register(() => { try { if (!process.HasExited) process.Kill(true); } catch { } });
-                    try { await process.WaitForExitAsync(ct); }
-                    catch (OperationCanceledException) { try { if (!process.HasExited) process.Kill(true); } catch { } throw; }
+                    await process.WaitForExitAsync(linked.Token);
                 }
-                else { await process.WaitForExitAsync(); }
+                catch (OperationCanceledException)
+                {
+                    try { if (!process.HasExited) process.Kill(true); } catch { }
+                    if (timeoutCts.IsCancellationRequested && !ct.IsCancellationRequested)
+                    {
+                        logCallback?.Invoke("[jxr] 已超时（30 分钟），已终止进程\n");
+                        return -1;
+                    }
+                    throw;   // 用户取消：维持原有取消语义
+                }
                 return process.ExitCode;
             }
             catch (OperationCanceledException) { throw; }

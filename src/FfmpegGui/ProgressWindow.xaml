@@ -3,7 +3,8 @@
     xmlns="https://github.com/avaloniaui"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:ctrl="using:FfmpegGui.Controls"
-    Title="编码详情" Width="720" Height="750"
+    xmlns:ext="using:FfmpegGui"
+    Title="{ext:Loc progress.title}" Width="720" Height="750"
     WindowStartupLocation="CenterOwner"
     MinWidth="560" MinHeight="420">
   <Grid RowDefinitions="Auto,*,Auto" Margin="14">
@@ -17,26 +18,26 @@
     <!-- TabControl -->
     <TabControl Grid.Row="1" x:Name="MainTabs" SelectedIndex="0">
       <!-- ═══ Tab 1: 转换详情 ═══ -->
-      <TabItem Header="⚡ 转换详情">
+      <TabItem Header="{ext:Loc progress.tab.convert}">
         <Grid RowDefinitions="Auto,Auto,*,Auto" Margin="0,6">
           <!-- 编码状态卡片 -->
           <Border Grid.Row="0" CornerRadius="8" Padding="14,10"
                   BoxShadow="0 1 6 0 #10000000"
                   Background="{DynamicResource SystemControlBackgroundCardHighBrush}">
             <Grid ColumnDefinitions="90,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto">
-              <TextBlock Text="状态" Grid.Row="0" Grid.Column="0" FontWeight="Bold" FontSize="12"/>
+              <TextBlock Text="{ext:Loc progress.col.status}" Grid.Row="0" Grid.Column="0" FontWeight="Bold" FontSize="12"/>
               <TextBlock x:Name="StatusLabel" Grid.Row="0" Grid.Column="1" FontSize="12"/>
-              <TextBlock Text="进度" Grid.Row="1" Grid.Column="0" FontWeight="Bold" FontSize="12" Margin="0,4,0,0"/>
+              <TextBlock Text="{ext:Loc progress.col.progress}" Grid.Row="1" Grid.Column="0" FontWeight="Bold" FontSize="12" Margin="0,4,0,0"/>
               <TextBlock x:Name="ProgressLabel" Grid.Row="1" Grid.Column="1" FontSize="12" Margin="0,4,0,0"/>
-              <TextBlock Text="质量" Grid.Row="2" Grid.Column="0" FontWeight="Bold" FontSize="12" Margin="0,4,0,0"/>
+              <TextBlock Text="{ext:Loc progress.col.quality}" Grid.Row="2" Grid.Column="0" FontWeight="Bold" FontSize="12" Margin="0,4,0,0"/>
               <TextBlock x:Name="QualityInfoLabel" Grid.Row="2" Grid.Column="1" FontSize="12" Margin="0,4,0,0"/>
-              <TextBlock Text="分析" Grid.Row="3" Grid.Column="0" FontWeight="Bold" FontSize="12" Margin="0,4,0,0"/>
+              <TextBlock Text="{ext:Loc progress.col.analysis}" Grid.Row="3" Grid.Column="0" FontWeight="Bold" FontSize="12" Margin="0,4,0,0"/>
               <StackPanel Grid.Row="3" Grid.Column="1" Margin="0,4,0,0" Spacing="4">
-                <TextBlock x:Name="AnalysisLabel" Text="点击下方按钮分析 SSIM/PSNR" FontSize="11"/>
-                <Button Content="分析质量 (SSIM + PSNR)" Click="AnalyzeQuality_Click" Padding="8,4"
+                <TextBlock x:Name="AnalysisLabel" Text="{ext:Loc progress.analysis.hint}" FontSize="11"/>
+                <Button Content="{ext:Loc progress.analysis.btn}" Click="AnalyzeQuality_Click" Padding="8,4"
                         HorizontalAlignment="Left" FontSize="11"/>
               </StackPanel>
-              <TextBlock Text="命令" Grid.Row="4" Grid.Column="0" FontWeight="Bold" FontSize="12" Margin="0,4,0,0"/>
+              <TextBlock Text="{ext:Loc progress.col.command}" Grid.Row="4" Grid.Column="0" FontWeight="Bold" FontSize="12" Margin="0,4,0,0"/>
               <TextBox x:Name="CommandLabel" Grid.Row="4" Grid.Column="1" Margin="0,4,0,0" IsReadOnly="True"
                        TextWrapping="Wrap" AcceptsReturn="True" Height="50" FontSize="11"
                        FontFamily="Consolas,monospace"/>
@@ -58,7 +59,7 @@
       </TabItem>
 
       <!-- ═══ Tab 2: 元数据编辑 ═══ -->
-      <TabItem Header="✏️ 元数据编辑">
+      <TabItem Header="{ext:Loc progress.tab.metadata}">
         <ctrl:MetadataEditor x:Name="MetadataEditorCtrl" Margin="0,6"/>
       </TabItem>
     </TabControl>

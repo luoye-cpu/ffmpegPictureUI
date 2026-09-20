@@ -20,6 +20,46 @@ namespace FfmpegGui.Services
         Dng        // 外部 dngtool 工具 (DNG 输出, LibRaw + DNG SDK)
     }
 
+    /// <summary>
+    /// 编码器后端与目标格式的兼容性判定。
+    /// 用于防止「后端与目标格式不匹配」时产出扩展名与真实内容不符的错标文件
+    /// （例如 backend=Cjxl 但 format=avif，会写出内容为 JXL 的 .avif 文件）。
+    /// CLI 默认后端推断、队列真实分派、dry-run 命令预览三处共用此逻辑，保证行为一致。
+    /// </summary>
+    public static class EncoderBackendCompat
+    {
+        /// <summary>后端是否适用于目标格式。不匹配时调用方应回退到 <see cref="EncoderBackend.Ffmpeg"/>。</summary>
+        public static bool IsCompatibleWith(EncoderBackend backend, string? format)
+        {
+            var fmt = (format ?? "").ToLowerInvariant();
+            return backend switch
+            {
+                EncoderBackend.Cjxl => fmt is "jxl",
+                EncoderBackend.Cjpegli => fmt is "jpg" or "jpeg" or "jpegli",
+                EncoderBackend.Jxr => fmt is "jxr",
+                EncoderBackend.Dng => fmt is "dng",
+                EncoderBackend.Ffmpeg => true,
+                _ => true
+            };
+        }
+
+        /// <summary>
+        /// 根据目标格式推断合理的默认后端（CLI 未显式指定 -e 时使用）。
+        /// 仅当对应外部工具可用时才选择专用后端，否则回退 FFmpeg（内置 libjxl 等）。
+        /// </summary>
+        public static EncoderBackend InferDefaultBackend(string? format)
+        {
+            var fmt = (format ?? "").ToLowerInvariant();
+            return fmt switch
+            {
+                "jxl" => CjxlService.IsAvailable ? EncoderBackend.Cjxl : EncoderBackend.Ffmpeg,
+                "jxr" => JxrService.IsAvailable ? EncoderBackend.Jxr : EncoderBackend.Ffmpeg,
+                "dng" => RawService.IsAvailable ? EncoderBackend.Dng : EncoderBackend.Ffmpeg,
+                _ => EncoderBackend.Ffmpeg
+            };
+        }
+    }
+
     public class EncoderInfo
     {
         public string Name { get; set; } = "";
@@ -37,13 +77,14 @@ namespace FfmpegGui.Services
             {
                 if (Backend != EncoderBackend.Ffmpeg)
                     return !string.IsNullOrWhiteSpace(DetectedPath);
-                // FFmpeg 内置编码器：硬件编码器若未编译（NotCompiled）或运行时验证失败（Failed）则不可用
+                // FFmpeg 内置编码器：GPU 硬件编码器仅在「确有对应硬件」时才算可用。
+                // 可用性诚实原则：无硬件(CompiledNoDevice)/未编译(NotCompiled)/验证失败(Failed)/未检测(Unknown)
+                // 一律判为不可用，避免用户误判可用 → 选中后运行时硬失败或被静默回退到别的编码器。
+                // 仅 Verified(运行时验证通过) 与 DeviceFoundUntested(已探测到硬件、尚未跑验证) 视为可用。
                 if (IsHardwareEncoder)
                 {
                     return GpuAvailability is GpuEncoderAvailability.Verified
-                        or GpuEncoderAvailability.DeviceFoundUntested
-                        or GpuEncoderAvailability.CompiledNoDevice
-                        or GpuEncoderAvailability.Unknown;
+                        or GpuEncoderAvailability.DeviceFoundUntested;
                 }
                 return true;
             }
@@ -105,16 +146,37 @@ namespace FfmpegGui.Services
         }
 
         /// <summary>从 EncoderCombo 选中项解析编码器名称（FFmpeg 编码器名或外部工具标识）</summary>
+        /// <remarks>
+        /// ⚠ P1-F 缺陷 1（2026-09-19 修）：硬件编码器的显示名带**图标前缀**（见 <see cref="DisplayName"/>
+        /// 的 <c>gpuIcon</c>：<c>"⚡ "</c> / <c>"⚡⚠️ "</c> / <c>"⚡❌ "</c>），而图标排在**名字之前**
+        /// ⇒ 原先「按 <c>" — "</c> 切分 + <c>Trim()</c>」得到的是 <c>"⚡ av1_nvenc"</c>（图标与名字之间
+        /// 那个空格在**串中间**，<c>Trim()</c> 去不掉）。该串被当 <c>-c:v</c> 的**值**写进命令行
+        /// ⇒ 下一个 token 变成 <c>"⚡"</c>，ffmpeg 收到非法编码器名，整条命令必然失败。
+        /// 修法：先取 <c>" — "</c> 之前的名字段，再剥掉**首尾非编码器名字符**
+        /// （ffmpeg 编码器名恒为 <c>[A-Za-z0-9_.-]</c>）。
+        /// </remarks>
         public static string ParseEncoderName(string? displayName)
         {
             if (string.IsNullOrWhiteSpace(displayName)) return "";
             if (displayName.Contains("cjpegli")) return "cjpegli";
             if (displayName.Contains("cjxl")) return "cjxl";
             if (displayName.Contains("jxr") || displayName.Contains("JxrEnc")) return "jxr";
-            // FFmpeg 编码器: "mjpeg — MJPEG..." → "mjpeg"
-            var dashIdx = displayName.IndexOf(" — ");
-            return dashIdx > 0 ? displayName.Substring(0, dashIdx).Trim() : displayName.Trim();
+            // FFmpeg 编码器: "mjpeg — MJPEG..." → "mjpeg"；"⚡ av1_nvenc — …" → "av1_nvenc"
+            var head = displayName;
+            var dashIdx = head.IndexOf(" — ", StringComparison.Ordinal);
+            if (dashIdx > 0) head = head.Substring(0, dashIdx);
+            head = head.Trim();
+            int start = 0;
+            while (start < head.Length && !IsEncoderNameChar(head[start])) start++;
+            int end = head.Length;
+            while (end > start && !IsEncoderNameChar(head[end - 1])) end--;
+            return head.Substring(start, end - start);
         }
+
+        /// <summary>编码器名允许的字符（ffmpeg 命名约定：字母 / 数字 / 下划线 / 连字符 / 点）。</summary>
+        private static bool IsEncoderNameChar(char c) =>
+            (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+            || c == '_' || c == '-' || c == '.';
     }
 
     public static class EncoderDetectionService
@@ -181,6 +243,7 @@ namespace FfmpegGui.Services
                     Arguments = "-hide_banner -encoders",
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,
+                    StandardErrorEncoding = Encoding.UTF8,
                     UseShellExecute = false,
                     CreateNoWindow = true,
                     StandardOutputEncoding = Encoding.UTF8
@@ -188,6 +251,7 @@ namespace FfmpegGui.Services
 
                 using var p = Process.Start(psi);
                 if (p == null) return _allEncoders;
+                    p.BeginErrorReadLine();   // P2-3：stderr 不排空会在管道缓冲(~4KB)写满时把子进程堵死，我们等 stdout/WaitForExit 就永等（实测可复现）
                 var output = await p.StandardOutput.ReadToEndAsync();
                 await p.WaitForExitAsync();
 
@@ -350,8 +414,7 @@ namespace FfmpegGui.Services
         {
             return format.ToLower() switch
             {
-                "jpg" or "jpeg" => CjpegliService.IsAvailable ? "cjpegli"
-                    : HasCachedLibultrahdr() ? "libultrahdr" : "mjpeg",
+                "jpg" or "jpeg" => CjpegliService.IsAvailable ? "cjpegli" : "mjpeg",
                 "png" => "png",
                 "webp" => "libwebp",
                 "avif" => HasCachedSvtAv1() ? "libsvtav1" : "libaom-av1",
@@ -365,24 +428,11 @@ namespace FfmpegGui.Services
             };
         }
 
-        /// <summary>
-        /// 检测 libultrahdr 是否在缓存的编码器列表中
-        /// </summary>
-        private static bool HasCachedLibultrahdr()
-        {
-            return _allEncoders?.Any(e => e.Name == "libultrahdr") == true;
-        }
-
         /// <summary>检测 libsvtav1 是否在缓存的编码器列表中</summary>
         private static bool HasCachedSvtAv1()
         {
             return _allEncoders?.Any(e => e.Name == "libsvtav1") == true;
         }
-
-        /// <summary>
-        /// 获取指定格式可用的 Gain Map 编码器是否就绪
-        /// </summary>
-        public static bool IsLibultrahdrAvailable => HasCachedLibultrahdr();
 
         // ═══════════════════════════════════════════════
         // GPU 硬件编码器判断
@@ -562,6 +612,7 @@ namespace FfmpegGui.Services
                     Arguments = $"-hide_banner -{listType}",
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,
+                    StandardErrorEncoding = Encoding.UTF8,
                     UseShellExecute = false,
                     CreateNoWindow = true,
                     StandardOutputEncoding = Encoding.UTF8
@@ -569,6 +620,7 @@ namespace FfmpegGui.Services
 
                 using var p = Process.Start(psi);
                 if (p == null) return result;
+                    p.BeginErrorReadLine();   // P2-3：stderr 不排空会在管道缓冲(~4KB)写满时把子进程堵死，我们等 stdout/WaitForExit 就永等（实测可复现）
                 var output = await p.StandardOutput.ReadToEndAsync();
                 await p.WaitForExitAsync();
 

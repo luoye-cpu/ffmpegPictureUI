@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- ═══════════════════════════════════════════════ -->
+  <!-- UI 测试宿主: Avalonia.Headless 加载真实 MainWindow -->
+  <!-- 程序化验证 UI 交互/选项生效/参数传递/简洁模式      -->
+  <!-- ═══════════════════════════════════════════════ -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net11.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>UiTestHost</AssemblyName>
+    <RootNamespace>UiTestHost</RootNamespace>
+    <NoWarn>$(NoWarn);CS0618;MSB3884</NoWarn>
+    <!-- 被引用项目 FfmpegGui 是自包含 WinExe, 引用者必须同为自包含 -->
+    <SelfContained>true</SelfContained>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <!-- 测试宿主不需要 AOT/单文件/裁剪 -->
+    <PublishTrimmed>false</PublishTrimmed>
+    <PublishAot>false</PublishAot>
+    <PublishSingleFile>false</PublishSingleFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Avalonia 无头测试平台: 加载真实 XAML + 控件树, 无需显示器/鼠标 -->
+    <PackageReference Include="Avalonia.Headless" Version="12.1.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 引用主项目以复用真实 App / MainWindow / 服务 -->
+    <ProjectReference Include="..\..\src\FfmpegGui\FfmpegGui.csproj" />
+  </ItemGroup>
+
+</Project>

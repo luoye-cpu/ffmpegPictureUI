@@ -12,7 +12,7 @@ namespace FfmpegGui.Services;
 ///   ├── ffmpeg-full*/            ← ffmpeg.exe, ffprobe.exe（目录名包含 "ffmpeg-full" 即可，如 ffmpeg-full-2026.7.24）
 ///   ├── jxl/                      ← bin/cjxl.exe, bin/djxl.exe, bin/cjpegli.exe
 ///   ├── exiftool/                 ← exiftool.exe
-///   ├── artifacts/                ← ultrahdr_app.exe, JxrEncApp.exe, avifenc.exe
+///   ├── artifacts/                ← JxrEncApp.exe, avifenc.exe, dngtool.exe
 ///   └── 使用说明.txt              ← 用户使用指南
 /// </summary>
 public static class PlanFolderDetector
@@ -28,8 +28,10 @@ public static class PlanFolderDetector
         public string? JxlBinDir { get; set; }
         /// <summary>exiftool 所在目录</summary>
         public string? ExifToolDir { get; set; }
-        /// <summary>额外工具目录（ultrahdr_app, JxrEncApp 等）</summary>
+        /// <summary>额外工具目录（JxrEncApp, avifenc, dngtool 等）</summary>
         public string? ArtifactsDir { get; set; }
+        /// <summary>标准 ICC 目录（PLAN/iccs：prophoto-rgb / bt2100-pq 等 iccgen 无法生成的配置文件）</summary>
+        public string? IccDir { get; set; }
 
         public bool IsValid => PlanPath != null;
     }
@@ -84,6 +86,11 @@ public static class PlanFolderDetector
             var artifactsDir = Path.Combine(planPath, "artifacts");
             if (Directory.Exists(artifactsDir))
                 result.ArtifactsDir = artifactsDir;
+
+            // ── 5) iccs（标准 ICC 资源）──
+            var iccsDir = Path.Combine(planPath, "iccs");
+            if (Directory.Exists(iccsDir))
+                result.IccDir = iccsDir;
         }
         catch { }
 
@@ -130,7 +137,7 @@ public static class PlanFolderDetector
             }
         }
 
-        // 外部工具（ultrahdr_app, JxrEncApp, avifenc 等）
+        // 外部工具（JxrEncApp, avifenc, dngtool 等）
         if (!string.IsNullOrWhiteSpace(plan.ArtifactsDir))
         {
             if (string.IsNullOrWhiteSpace(settings.WindowsArtifactsDir))
@@ -138,6 +145,10 @@ public static class PlanFolderDetector
                 settings.WindowsArtifactsDir = plan.ArtifactsDir;
             }
         }
+
+        // 标准 ICC 目录（PLAN/iccs）
+        if (!string.IsNullOrWhiteSpace(plan.IccDir) && string.IsNullOrWhiteSpace(settings.IccDirectory))
+            settings.IccDirectory = plan.IccDir;
 
         AppSettingsService.Save();
 

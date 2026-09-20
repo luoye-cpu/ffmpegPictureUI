@@ -66,24 +66,26 @@ namespace FfmpegGui
 
         private void ShowDetail(Models.PresetEntry? entry)
         {
+            var loc = LocalizationService.Instance;
             var title = this.FindControl<TextBlock>("DetailTitle");
             var text = this.FindControl<TextBlock>("DetailText");
 
             if (entry == null)
             {
-                if (title != null) title.Text = "选择一个预设查看详情";
+                if (title != null) title.Text = loc["preset.detail.empty"];
                 if (text != null) text.Text = "";
                 return;
             }
 
             var d = entry.Data;
-            var desc = $"格式: {d.Format ?? "—"}  |  质量: {d.Quality}%  |  色度: {d.Chroma ?? "auto"}  |  位深: {d.BitDepth ?? "auto"}";
+            var desc = string.Format(loc["preset.detail.line1"],
+                d.Format ?? "—", d.Quality, d.Chroma ?? "auto", d.BitDepth ?? "auto");
             if (!string.IsNullOrWhiteSpace(d.ColorSpace) && d.ColorSpace != "auto")
-                desc += $"  |  色彩空间: {d.ColorSpace}";
+                desc += string.Format(loc["preset.detail.colorspace"], d.ColorSpace);
             if (d.Lossless)
-                desc += "  |  无损";
-            desc += $"  |  线程: {(d.AutoThreads ? "自动" : d.ManualThreads.ToString())}";
-            desc += $"  |  元数据: {d.MetadataMode ?? "保留"}";
+                desc += loc["preset.detail.lossless"];
+            desc += string.Format(loc["preset.detail.threads"], d.AutoThreads ? loc["preset.threads.auto"] : d.ManualThreads.ToString());
+            desc += string.Format(loc["preset.detail.metadata"], d.MetadataMode ?? loc["preset.metadata.keep"]);
 
             if (title != null) title.Text = entry.Name;
             if (text != null) text.Text = desc;
@@ -95,7 +97,7 @@ namespace FfmpegGui
         {
             if (_selectedPreset == null)
             {
-                ShowWarning("请先选择一个预设");
+                ShowWarning(LocalizationService.Instance["preset.warn.selectfirst"]);
                 return;
             }
 
@@ -104,22 +106,23 @@ namespace FfmpegGui
 
         private async void SaveCurrent_Click(object? sender, RoutedEventArgs e)
         {
+            var loc = LocalizationService.Instance;
             if (CurrentSettings == null)
             {
-                ShowWarning("当前无可用设置");
+                ShowWarning(loc["preset.warn.nosettings"]);
                 return;
             }
 
             // 简易输入对话框：用 TaskCompletionSource + 弹出式输入
-            var name = await ShowInputDialogAsync("保存预设", "请输入预设名称:");
+            var name = await ShowInputDialogAsync(loc["preset.dlg.savetitle"], loc["preset.dlg.savename"]);
             if (string.IsNullOrWhiteSpace(name)) return;
 
             var ok = PresetManagerService.SaveUserPreset(name.Trim(), CurrentSettings);
             if (!ok)
             {
                 // 同名 → 询问是否覆盖
-                var overwrite = await ShowConfirmDialogAsync("覆盖确认",
-                    $"预设 \"{name.Trim()}\" 已存在，是否覆盖?");
+                var overwrite = await ShowConfirmDialogAsync(loc["preset.dlg.overwritetitle"],
+                    string.Format(loc["preset.dlg.overwrite"], name.Trim()));
                 if (overwrite)
                 {
                     PresetManagerService.OverwriteUserPreset(name.Trim(), CurrentSettings);
@@ -132,14 +135,15 @@ namespace FfmpegGui
 
         private async void ImportFile_Click(object? sender, RoutedEventArgs e)
         {
+            var loc = LocalizationService.Instance;
             var topLevel = TopLevel.GetTopLevel(this);
             if (topLevel?.StorageProvider == null) return;
 
             var files = await topLevel.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
             {
-                Title = "导入预设文件",
+                Title = loc["preset.dlg.importtitle"],
                 AllowMultiple = true,
-                FileTypeFilter = new[] { new FilePickerFileType("JSON 预设") { Patterns = new[] { "*.json" } } }
+                FileTypeFilter = new[] { new FilePickerFileType(loc["preset.filetype.json"]) { Patterns = new[] { "*.json" } } }
             });
 
             if (files == null || files.Count == 0) return;
@@ -157,20 +161,21 @@ namespace FfmpegGui
 
         private async void Delete_Click(object? sender, RoutedEventArgs e)
         {
+            var loc = LocalizationService.Instance;
             if (_selectedPreset == null)
             {
-                ShowWarning("请先选择一个预设");
+                ShowWarning(loc["preset.warn.selectfirst"]);
                 return;
             }
 
             if (_selectedPreset.Source == "builtin")
             {
-                ShowWarning("内置预设不可删除");
+                ShowWarning(loc["preset.warn.builtin"]);
                 return;
             }
 
-            var confirm = await ShowConfirmDialogAsync("删除确认",
-                $"确定要删除预设 \"{_selectedPreset.Name}\" 吗？");
+            var confirm = await ShowConfirmDialogAsync(loc["preset.dlg.deletetitle"],
+                string.Format(loc["preset.dlg.delete"], _selectedPreset.Name));
             if (!confirm) return;
 
             PresetManagerService.DeleteUserPreset(_selectedPreset.Name);
@@ -182,7 +187,7 @@ namespace FfmpegGui
         {
             if (_selectedPreset == null)
             {
-                ShowWarning("请先选择一个预设再关闭");
+                ShowWarning(LocalizationService.Instance["preset.warn.selectfirst.close"]);
                 return;
             }
 
@@ -226,8 +231,8 @@ namespace FfmpegGui
                             [Grid.RowProperty] = 2,
                             Children =
                             {
-                                new Button { Content = "确定", Padding = new Avalonia.Thickness(12,4), IsDefault = true },
-                                new Button { Content = "取消", Padding = new Avalonia.Thickness(12,4), IsCancel = true }
+                                new Button { Content = LocalizationService.Instance["preset.btn.ok"], Padding = new Avalonia.Thickness(12,4), IsDefault = true },
+                                new Button { Content = LocalizationService.Instance["preset.btn.cancel"], Padding = new Avalonia.Thickness(12,4), IsCancel = true }
                             }
                         }
                     }
@@ -283,8 +288,8 @@ namespace FfmpegGui
                             [Grid.RowProperty] = 1,
                             Children =
                             {
-                                new Button { Content = "确定", Padding = new Avalonia.Thickness(12,4), IsDefault = true },
-                                new Button { Content = "取消", Padding = new Avalonia.Thickness(12,4), IsCancel = true }
+                                new Button { Content = LocalizationService.Instance["preset.btn.ok"], Padding = new Avalonia.Thickness(12,4), IsDefault = true },
+                                new Button { Content = LocalizationService.Instance["preset.btn.cancel"], Padding = new Avalonia.Thickness(12,4), IsCancel = true }
                             }
                         }
                     }
@@ -304,7 +309,7 @@ namespace FfmpegGui
 
         private async void ShowWarning(string message)
         {
-            await ShowConfirmDialogAsync("提示", message);
+            await ShowConfirmDialogAsync(LocalizationService.Instance["preset.dlg.warningtitle"], message);
         }
     }
 }

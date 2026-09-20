@@ -89,7 +89,7 @@ namespace FfmpegGui.Services
                 if (sourcePath.EndsWith(".jxr", StringComparison.OrdinalIgnoreCase))
                 {
                     tempPngPath = Path.Combine(PlatformServices.GetTempDir(), $"qa_src_{Guid.NewGuid():N}.bmp");
-                    if (await RunDecoderAsync(jxrDecPath, $"-i \"{sourcePath}\" -o \"{tempPngPath}\"") == 0
+                    if (await RunDecoderAsync(jxrDecPath!, $"-i \"{sourcePath}\" -o \"{tempPngPath}\"") == 0
                         && File.Exists(tempPngPath) && new FileInfo(tempPngPath).Length > 0)
                     {
                         actualSourcePath = tempPngPath;
@@ -101,7 +101,7 @@ namespace FfmpegGui.Services
                 if (encodedPath.EndsWith(".jxr", StringComparison.OrdinalIgnoreCase))
                 {
                     tempPngPath2 = Path.Combine(PlatformServices.GetTempDir(), $"qa_enc_{Guid.NewGuid():N}.bmp");
-                    if (await RunDecoderAsync(jxrDecPath, $"-i \"{encodedPath}\" -o \"{tempPngPath2}\"") == 0
+                    if (await RunDecoderAsync(jxrDecPath!, $"-i \"{encodedPath}\" -o \"{tempPngPath2}\"") == 0
                         && File.Exists(tempPngPath2) && new FileInfo(tempPngPath2).Length > 0)
                     {
                         actualEncodedPath = tempPngPath2;
@@ -327,12 +327,15 @@ namespace FfmpegGui.Services
                     FileName = exePath,
                     Arguments = args,
                     RedirectStandardOutput = true,
+                    StandardOutputEncoding = Encoding.UTF8,
                     RedirectStandardError = true,
+                    StandardErrorEncoding = Encoding.UTF8,
                     UseShellExecute = false,
                     CreateNoWindow = true
                 };
                 using var p = Process.Start(psi);
                 if (p == null) return -1;
+                    p.BeginErrorReadLine();   // P2-3：stderr 不排空会在管道缓冲(~4KB)写满时把子进程堵死，我们等 stdout/WaitForExit 就永等（实测可复现）
                 await p.WaitForExitAsync();
                 return p.ExitCode;
             }
@@ -402,6 +405,7 @@ namespace FfmpegGui.Services
                     Arguments = $"-v error -show_entries stream=index,codec_type,nb_frames -of csv=p=0 \"{encodedPath}\"",
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,
+                    StandardErrorEncoding = Encoding.UTF8,
                     UseShellExecute = false,
                     CreateNoWindow = true,
                     StandardOutputEncoding = Encoding.UTF8
@@ -409,6 +413,7 @@ namespace FfmpegGui.Services
 
                 using var p = Process.Start(psi);
                 if (p == null) return "1:v";
+                    p.BeginErrorReadLine();   // P2-3：stderr 不排空会在管道缓冲(~4KB)写满时把子进程堵死，我们等 stdout/WaitForExit 就永等（实测可复现）
 
                 var output = await p.StandardOutput.ReadToEndAsync();
                 await p.WaitForExitAsync();
@@ -500,6 +505,7 @@ namespace FfmpegGui.Services
                     Arguments = $"-v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 \"{filePath}\"",
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,
+                    StandardErrorEncoding = Encoding.UTF8,
                     UseShellExecute = false,
                     CreateNoWindow = true,
                     StandardOutputEncoding = Encoding.UTF8
@@ -507,6 +513,7 @@ namespace FfmpegGui.Services
 
                 using var p = Process.Start(psi);
                 if (p == null) return null;
+                    p.BeginErrorReadLine();   // P2-3：stderr 不排空会在管道缓冲(~4KB)写满时把子进程堵死，我们等 stdout/WaitForExit 就永等（实测可复现）
 
                 var output = await p.StandardOutput.ReadToEndAsync();
                 await p.WaitForExitAsync();

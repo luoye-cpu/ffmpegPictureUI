@@ -1,7 +1,8 @@
 <UserControl
     x:Class="FfmpegGui.Controls.MetadataEditor"
     xmlns="https://github.com/avaloniaui"
-    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:ext="using:FfmpegGui">
   <Border Padding="6,4" CornerRadius="4"
           BorderBrush="{DynamicResource SystemControlBackgroundBaseLowBrush}"
           BorderThickness="1">
@@ -11,7 +12,7 @@
               Click="ToggleExpand_Click" Padding="8,3" FontSize="12">
         <StackPanel Orientation="Horizontal" Spacing="4">
           <TextBlock x:Name="ToggleIcon" Text="▶"/>
-          <TextBlock Text="📝 元数据编辑"/>
+          <TextBlock Text="{ext:Loc meta.editor.title}"/>
           <TextBlock x:Name="FieldCountLabel" Text="" FontSize="11" Foreground="Gray"/>
         </StackPanel>
       </Button>
@@ -21,14 +22,14 @@
 
         <!-- 操作按钮栏 -->
         <StackPanel Orientation="Horizontal" Spacing="8">
-          <Button Content="📖 读取当前元数据" Click="ReadMetadata_Click" Padding="8,3" FontSize="11"/>
-          <Button Content="✅ 应用修改" Click="ApplyMetadata_Click" Padding="8,3" FontSize="11"/>
-          <Button Content="↩ 还原" Click="RestoreMetadata_Click" Padding="8,3" FontSize="11"/>
-          <Button Content="🗑 清空所有字段" Click="ClearAll_Click" Padding="8,3" FontSize="11"
+          <Button Content="{ext:Loc meta.btn.read}" Click="ReadMetadata_Click" Padding="8,3" FontSize="11"/>
+          <Button Content="{ext:Loc meta.btn.apply}" Click="ApplyMetadata_Click" Padding="8,3" FontSize="11"/>
+          <Button Content="{ext:Loc meta.btn.restore}" Click="RestoreMetadata_Click" Padding="8,3" FontSize="11"/>
+          <Button Content="{ext:Loc meta.btn.clearall}" Click="ClearAll_Click" Padding="8,3" FontSize="11"
                   Foreground="Gray"/>
           <Separator Width="4" Background="Transparent"/>
-          <Button Content="🎨 嵌入 ICC" Click="EmbedIcc_Click" Padding="8,3" FontSize="11"
-                  ToolTip.Tip="选择 .icc/.icm 文件嵌入到当前图片"/>
+          <Button Content="{ext:Loc meta.btn.embedicc}" Click="EmbedIcc_Click" Padding="8,3" FontSize="11"
+                  ToolTip.Tip="{ext:Loc meta.tip.embedicc}"/>
         </StackPanel>
 
         <!-- 状态反馈 -->

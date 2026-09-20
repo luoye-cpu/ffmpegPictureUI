@@ -1,4 +1,4 @@
-using Avalonia.Controls;
+﻿using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Markup.Xaml;
 using Avalonia.Platform.Storage;
@@ -48,6 +48,7 @@ namespace FfmpegGui
         private ComboBox? ColorTrcCombo;
         private ComboBox? ColorMatrixCombo;
         private ComboBox? ColorRangeCombo;
+        private ComboBox? TonemapCurveCombo;
         private TextBlock? ColorRangeLabel;
         private TextBlock? ColorConflictLabel;
         private CheckBox? UseAdvancedColor;
@@ -64,6 +65,11 @@ namespace FfmpegGui
         private CheckBox? StripXmpCheck;
         private CheckBox? LosslessCheck;
         private CheckBox? AppendPngExtCheck;
+        // 图片最长边限制
+        private CheckBox? EnableMaxDimensionCheck;
+        private StackPanel? MaxDimensionPanel;
+        private NumericUpDown? MaxDimensionBox;
+        private TextBlock? MaxDimensionHint;
         private ListBox? QueueList;
         private TextBox? ConcurrencyBox;
         private TextBox? CommandText;
@@ -95,6 +101,7 @@ namespace FfmpegGui
         private Button? ClearQueueButton;
         private CheckBox? AutoThreadsCheck;
         private bool _isQueueRunning = false;
+        private bool _allowFullExit = false;      // 允许完全退出（托盘菜单 Exit 时置 true）
         private bool _updatingQuality = false;  // 防止滑块/数字框双向同步时递归
         private bool _suppressCommandRegen = false; // 批量更新选项时抑制重复 RegenerateCommand 调用
         private CheckBox? SingleThreadCheck;
@@ -214,6 +221,8 @@ namespace FfmpegGui
         private Border? JpegGainMapPanel;
         private StackPanel? JpegGainMapOptions;
         private CheckBox? JpegGainMapFollowMainCheck;
+        private CheckBox? JpegGainMapEnableCheck;   // GainMap 独立开关（高级色彩面板，仅 JPEG）
+        private CheckBox? ColorGamutMapCheck;       // 色域映射（GMO）开关（高级色彩面板，默认关）
         private StackPanel? JpegGainMapQualityPanel;
         private TextBox? JpegGainMapQualityBox;
         private Button? GainMapQualityUpBtn;
@@ -223,6 +232,7 @@ namespace FfmpegGui
         private ComboBox? JpegGainMapHdrCfCombo;
         private ComboBox? JpegGainMapDownsampleCombo;
         private ComboBox? JpegGainMapTypeCombo;
+        private ComboBox? JpegGainMapBaseCombo;
         private CheckBox? JpegGainMapMultiChannelCheck;  // 兼容旧代码引用
         private ComboBox? TiffCompressionCombo;
         private NumericUpDown? TiffDpiBox;
@@ -237,6 +247,8 @@ namespace FfmpegGui
         private NumericUpDown? JpegliPsnrBox;
         // ── ICC 色彩管理控件 ──
         private RadioButton? IccModeNone, IccModeCarry, IccModeBake, IccModeBakeOnly;
+        // 用户是否手动切换过 ICC 模式（true 后色彩空间联动不再自动改变模式）；抑制联动写入误标记
+        private bool _iccModeTouched; private bool _suppressIccAutoLink;
         private StackPanel? IccFilePanel, IccBakePanel;
         private TextBox? IccPathBox;
         private TextBlock? IccInfoLabel, IccCompatText, IccPreviewText;
@@ -303,6 +315,7 @@ namespace FfmpegGui
             ColorTrcCombo = this.FindControl<ComboBox>("ColorTrcCombo");
             ColorMatrixCombo = this.FindControl<ComboBox>("ColorMatrixCombo");
             ColorRangeCombo = this.FindControl<ComboBox>("ColorRangeCombo");
+            TonemapCurveCombo = this.FindControl<ComboBox>("TonemapCurveCombo");
             ColorRangeLabel = this.FindControl<TextBlock>("ColorRangeLabel");
             ColorConflictLabel = this.FindControl<TextBlock>("ColorConflictLabel");
             UseAdvancedColor = this.FindControl<CheckBox>("UseAdvancedColor");
@@ -319,6 +332,11 @@ namespace FfmpegGui
             StripXmpCheck = this.FindControl<CheckBox>("StripXmpCheck");
             LosslessCheck = this.FindControl<CheckBox>("LosslessCheck");
             AppendPngExtCheck = this.FindControl<CheckBox>("AppendPngExtCheck");
+            // 图片最长边限制
+            EnableMaxDimensionCheck = this.FindControl<CheckBox>("EnableMaxDimensionCheck");
+            MaxDimensionPanel = this.FindControl<StackPanel>("MaxDimensionPanel");
+            MaxDimensionBox = this.FindControl<NumericUpDown>("MaxDimensionBox");
+            MaxDimensionHint = this.FindControl<TextBlock>("MaxDimensionHint");
             QueueList = this.FindControl<ListBox>("QueueList");
             ConcurrencyBox = this.FindControl<TextBox>("ConcurrencyBox");
             ConcurrencyLabel = this.FindControl<TextBlock>("ConcurrencyLabel");
@@ -432,6 +450,7 @@ namespace FfmpegGui
             // ── Gain Map (Ultra HDR) JPEG 控件 ──
             JpegGainMapPanel = this.FindControl<Border>("JpegGainMapPanel");
             JpegGainMapOptions = this.FindControl<StackPanel>("JpegGainMapOptions");
+            JpegGainMapEnableCheck = this.FindControl<CheckBox>("JpegGainMapEnableCheck");
             JpegGainMapFollowMainCheck = this.FindControl<CheckBox>("JpegGainMapFollowMainCheck");
             JpegGainMapQualityPanel = this.FindControl<StackPanel>("JpegGainMapQualityPanel");
             JpegGainMapQualityBox = this.FindControl<TextBox>("JpegGainMapQualityBox");
@@ -442,7 +461,10 @@ namespace FfmpegGui
             JpegGainMapHdrCfCombo = this.FindControl<ComboBox>("JpegGainMapHdrCfCombo");
             JpegGainMapDownsampleCombo = this.FindControl<ComboBox>("JpegGainMapDownsampleCombo");
             JpegGainMapTypeCombo = this.FindControl<ComboBox>("JpegGainMapTypeCombo");
+            JpegGainMapBaseCombo = this.FindControl<ComboBox>("JpegGainMapBaseCombo");
             JpegGainMapMultiChannelCheck = this.FindControl<CheckBox>("JpegGainMapMultiChannelCheck");  // XAML 已改 ComboBox，此引用为 null 兼容
+            // ── 色域映射（GMO）开关 ──
+            ColorGamutMapCheck = this.FindControl<CheckBox>("ColorGamutMapCheck");
             TiffCompressionCombo = this.FindControl<ComboBox>("TiffCompressionCombo");
             TiffDpiBox = this.FindControl<NumericUpDown>("TiffDpiBox");
             // ── cjpegli / jpegli 高级面板控件 ──
@@ -526,10 +548,11 @@ namespace FfmpegGui
                 ColorPrimariesCombo.SelectionChanged += (_, _) =>
                 {
                     AutoLinkColorParameters();
+                    UpdateAdvancedColorValidation();
                     RegenerateCommand();
                 };
-            if (ColorTrcCombo != null) ColorTrcCombo.SelectionChanged += (_, _) => RegenerateCommand();
-            if (ColorMatrixCombo != null) ColorMatrixCombo.SelectionChanged += (_, _) => RegenerateCommand();
+            if (ColorTrcCombo != null) ColorTrcCombo.SelectionChanged += (_, _) => { UpdateAdvancedColorValidation(); RegenerateCommand(); };
+            if (ColorMatrixCombo != null) ColorMatrixCombo.SelectionChanged += (_, _) => { UpdateAdvancedColorValidation(); RegenerateCommand(); };
             if (ColorRangeCombo != null) ColorRangeCombo.SelectionChanged += (_, _) => RegenerateCommand();
             // 高级编码器选项
             if (PngPredCombo != null) PngPredCombo.SelectionChanged += (_, _) => RegenerateCommand();
@@ -657,6 +680,8 @@ namespace FfmpegGui
                 JpegGainMapDownsampleCombo.SelectionChanged += (_, _) => RegenerateCommand();
             if (JpegGainMapTypeCombo != null)
                 JpegGainMapTypeCombo.SelectionChanged += (_, _) => RegenerateCommand();
+            if (JpegGainMapBaseCombo != null)
+                JpegGainMapBaseCombo.SelectionChanged += (_, _) => RegenerateCommand();
             if (JpegGainMapMultiChannelCheck != null)  // XAML 已改 ComboBox，此引用为 null 兼容
                 JpegGainMapMultiChannelCheck.IsCheckedChanged += (_, _) => RegenerateCommand();
             if (TiffCompressionCombo != null) TiffCompressionCombo.SelectionChanged += (_, _) => RegenerateCommand();
@@ -670,10 +695,10 @@ namespace FfmpegGui
             if (JpegliEncoderBackendCombo != null) { JpegliEncoderBackendCombo.SelectionChanged += (_, _) => { UpdateJpegliPsnrVisibility(); RegenerateCommand(); }; }
             if (JpegliPsnrBox != null) JpegliPsnrBox.ValueChanged += (_, _) => RegenerateCommand();
             // ── ICC 色彩管理事件 ──
-            if (IccModeNone != null) IccModeNone.IsCheckedChanged += (_, _) => { UpdateIccPanelVisibility(); RegenerateCommand(); };
-            if (IccModeCarry != null) IccModeCarry.IsCheckedChanged += (_, _) => { UpdateIccPanelVisibility(); RegenerateCommand(); };
-            if (IccModeBake != null) IccModeBake.IsCheckedChanged += (_, _) => { UpdateIccPanelVisibility(); RegenerateCommand(); };
-            if (IccModeBakeOnly != null) IccModeBakeOnly.IsCheckedChanged += (_, _) => { UpdateIccPanelVisibility(); RegenerateCommand(); };
+            if (IccModeNone != null) IccModeNone.IsCheckedChanged += (_, _) => { MarkIccModeTouched(); UpdateIccPanelVisibility(); RegenerateCommand(); };
+            if (IccModeCarry != null) IccModeCarry.IsCheckedChanged += (_, _) => { MarkIccModeTouched(); UpdateIccPanelVisibility(); RegenerateCommand(); };
+            if (IccModeBake != null) IccModeBake.IsCheckedChanged += (_, _) => { MarkIccModeTouched(); UpdateIccPanelVisibility(); RegenerateCommand(); };
+            if (IccModeBakeOnly != null) IccModeBakeOnly.IsCheckedChanged += (_, _) => { MarkIccModeTouched(); UpdateIccPanelVisibility(); RegenerateCommand(); };
             if (IccSourceSpaceCombo != null) IccSourceSpaceCombo.SelectionChanged += (_, _) => { UpdateIccPreview(); RegenerateCommand(); };
 
             // 初始化 ICC 面板状态
@@ -711,6 +736,29 @@ namespace FfmpegGui
                 }
             }
 
+            // 图片最长边限制：从配置加载并持久化
+            if (EnableMaxDimensionCheck != null)
+            {
+                EnableMaxDimensionCheck.IsChecked = AppSettingsService.Current.EnableMaxDimension;
+                EnableMaxDimensionCheck.IsCheckedChanged += (_, _) =>
+                {
+                    AppSettingsService.Current.EnableMaxDimension = EnableMaxDimensionCheck.IsChecked ?? false;
+                    AppSettingsService.Save();
+                };
+                if (MaxDimensionBox != null)
+                {
+                    MaxDimensionBox.Value = (decimal)Math.Clamp(AppSettingsService.Current.MaxLength, 1, 7680);
+                    MaxDimensionBox.ValueChanged += (_, _) =>
+                    {
+                        if (MaxDimensionBox.Value.HasValue)
+                        {
+                            AppSettingsService.Current.MaxLength = (int)Math.Clamp(MaxDimensionBox.Value.Value, 1, 7680);
+                            AppSettingsService.Save();
+                        }
+                    };
+                }
+            }
+
             // 无损编码 / JXL 强制元数据 → 每次变化刷新命令与选项
             if (LosslessCheck != null)
                 LosslessCheck.IsCheckedChanged += (_, _) =>
@@ -719,6 +767,21 @@ namespace FfmpegGui
                     // 无损开关影响 WebP 无损压缩级别面板可见性
                     UpdateCodecPanelVisibility(NormalizeFormat(FormatCombo?.SelectedItem as string));
                 };
+            
+            // 图片最长边限制：复选框变更时刷新命令预览，并切换 MaxDimensionPanel 可见性
+            if (EnableMaxDimensionCheck != null)
+            {
+                EnableMaxDimensionCheck.IsCheckedChanged += (_, _) =>
+                {
+                    RegenerateCommand();
+                    if (MaxDimensionPanel != null)
+                        MaxDimensionPanel.IsVisible = EnableMaxDimensionCheck.IsChecked == true;
+                };
+                // 初始化面板可见性
+                if (MaxDimensionPanel != null)
+                    MaxDimensionPanel.IsVisible = EnableMaxDimensionCheck.IsChecked == true;
+            }
+            
             if (MetadataModeCombo != null)
                 MetadataModeCombo.SelectionChanged += (_, _) => { UpdateExifToolPanelState(); RegenerateCommand(); };
             // ExifTool 复选框变更时刷新命令预览
@@ -812,6 +875,61 @@ namespace FfmpegGui
                     ? "GPU 加速已启用（ANGLE/D3D11）— 点击切换为 CPU 软件渲染（需重启）"
                     : "GPU 加速已禁用 — 点击切换为 GPU 硬件加速（需重启）");
             }
+
+            // ⚙ 设置菜单：初始化勾选态（渲染后端 / 主题 / 语言 / 缓存目录）
+            SyncSettingsMenuChecks();
+
+            // ── ComboBox 选项本地化（见 FillComboByLoc 的说明）──
+            // ⚠ key 顺序必须与原 XAML 里 <sys:String> 的顺序**逐字一致**：后端是按
+            //   SelectedIndex 取值的，顺序错位会导致「界面选 A、实际跑 B」且不报错。
+            // 参数：ComboBox、默认选中索引（须与原 XAML 的 SelectedIndex 一致）、选项 key（顺序同原 XAML）
+            FillComboByLoc(this.FindControl<ComboBox>("DngCompressionCombo"), 1,
+                "dng.comp.lossless.jpeg", "dng.comp.jxl");
+            FillComboByLoc(this.FindControl<ComboBox>("DngLinearCombo"), 0,
+                "dng.layout.cfa", "dng.layout.linear");
+            FillComboByLoc(this.FindControl<ComboBox>("DngBitDepthCombo"), 1,
+                "dng.bitdepth.8", "dng.bitdepth.16");
+            FillComboByLoc(this.FindControl<ComboBox>("DngHighlightCombo"), 1,
+                "dng.hl.clip", "dng.hl.recover", "dng.hl.blend");
+            FillComboByLoc(this.FindControl<ComboBox>("ColorRangeCombo"), 0,
+                "color.range.auto", "color.range.tv", "color.range.pc");
+            FillComboByLoc(this.FindControl<ComboBox>("PngPredCombo"), 4,
+                "png.pred.none", "png.pred.sub", "png.pred.up",
+                "png.pred.avg", "png.pred.paeth", "png.pred.mixed");
+            FillComboByLoc(this.FindControl<ComboBox>("AvifTuneCombo"), 4,
+                "avif.tune.default", "avif.tune.psnr", "avif.tune.ssim",
+                "avif.tune.vmaf", "avif.tune.iq");
+            FillComboByLoc(this.FindControl<ComboBox>("AvifAqModeCombo"), 0,
+                "avif.aq.default", "avif.aq.variance", "avif.aq.complexity");
+            FillComboByLoc(this.FindControl<ComboBox>("SvtTuneCombo"), 1,
+                "svt.tune.default", "svt.tune.vmaf", "svt.tune.psnr", "svt.tune.ssim");
+            FillComboByLoc(this.FindControl<ComboBox>("NvencPresetCombo"), 3,
+                "nvenc.p1", "nvenc.p2", "nvenc.p3", "nvenc.p4", "nvenc.p5", "nvenc.p6", "nvenc.p7");
+            FillComboByLoc(this.FindControl<ComboBox>("QsvPresetCombo"), 3,
+                "qsv.veryfast", "qsv.faster", "qsv.fast", "qsv.medium",
+                "qsv.slow", "qsv.slower", "qsv.veryslow");
+            FillComboByLoc(this.FindControl<ComboBox>("VaapiPresetCombo"), 3,
+                "vaapi.1", "vaapi.2", "vaapi.3", "vaapi.4", "vaapi.5", "vaapi.6", "vaapi.7");
+            FillComboByLoc(this.FindControl<ComboBox>("AmfPresetCombo"), 1,
+                "amf.speed", "amf.balanced", "amf.quality");
+            FillComboByLoc(this.FindControl<ComboBox>("JpegGainMapTypeCombo"), 0,
+                "gainmap.type.gray", "gainmap.type.rgb");
+            FillComboByLoc(this.FindControl<ComboBox>("JpegGainMapBaseCombo"), 0,
+                "gainmap.base.srgb", "gainmap.base.rec2020");
+            FillComboByLoc(this.FindControl<ComboBox>("JpegGainMapDownsampleCombo"), 1,
+                "gainmap.ds.full", "gainmap.ds.half", "gainmap.ds.quarter",
+                "gainmap.ds.eighth", "gainmap.ds.sixteenth");
+            FillComboByLoc(this.FindControl<ComboBox>("MetadataModeCombo"), 0,
+                "meta.keep.all", "meta.strip.all");
+            FillComboByLoc(this.FindControl<ComboBox>("PriorityCombo"), 3,
+                "priority.realtime", "priority.high", "priority.above.normal",
+                "priority.normal", "priority.below.normal", "priority.low");
+            FillComboByLoc(this.FindControl<ComboBox>("JpegProgressiveCombo"), 1,
+                "jpeg.progressive.auto", "jpeg.progressive.baseline", "jpeg.progressive.prog");
+            FillComboByLoc(this.FindControl<ComboBox>("JpegliProgressiveCombo"), 2,
+                "jpeg.progressive.auto", "jpeg.progressive.baseline", "jpeg.progressive.prog");
+            FillComboByLoc(this.FindControl<ComboBox>("JpegliEncoderBackendCombo"), 0,
+                "jpegli.backend.libjpeg", "jpegli.backend.sjpeg");
 
             // ── 简洁模式控件 ──
             SimpleModeEntryBtn = this.FindControl<Button>("SimpleModeEntryBtn");
@@ -931,7 +1049,7 @@ namespace FfmpegGui
                     {
                         var v = (int)DngJxlQualitySlider.Value;
                         DngJxlQualityBox.Text = v.ToString();
-                        if (DngCompressionCombo != null)
+                        if (DngCompressionCombo != null && DngJxlQualityPanel != null)
                             DngJxlQualityPanel.IsVisible = DngCompressionCombo.SelectedIndex == 1;
                     }
                     RegenerateCommand();
@@ -1050,7 +1168,7 @@ namespace FfmpegGui
                     Task.Run(() => { try { CjxlService.ClearCache(); CjxlService.Detect(); Log("[detect] cjxl: " + (CjxlService.IsAvailable ? "OK" : "未找到")); } catch { } }),
                     Task.Run(() => { try { CjpegliService.ClearCache(); CjpegliService.Detect(); Log("[detect] cjpegli: " + (CjpegliService.IsAvailable ? "OK" : "未找到")); } catch { } }),
                     Task.Run(() => { try { DjxlService.ClearCache(); DjxlService.Detect(); } catch { } }),
-                    Task.Run(() => { try { ExifToolService.Detect(); Log("[detect] exiftool: " + (ExifToolService.IsAvailable ? "OK" : "未找到")); } catch { } }),
+                    Task.Run(() => { try { ExifToolService.Detect(m => Log(m.TrimEnd('\n'))); Log("[detect] exiftool: " + (ExifToolService.IsAvailable ? "OK" : "未找到")); } catch { } }),
                     Task.Run(() => { try {  } catch { } }),
                     Task.Run(() => { try { JxrService.ClearCache(); JxrService.Detect(); } catch { } }),
                     Task.Run(() => { try { RawService.ClearCache(); RawService.Detect(); Log("[detect] dngtool: " + (RawService.IsAvailable ? "OK" : "未找到")); } catch { } }),
@@ -1086,14 +1204,14 @@ namespace FfmpegGui
                 try { CpuFeatureService.Detect(); Log(CpuFeatureService.FullReport()); } catch { }
                 try
                 {
-                    var fp = ExternalToolsDetector.ProbeFfmpeg();
+                    var fp = ExternalToolsDetector.ProbeFfmpeg(null, m => { if (LogText != null) LogText.Text += m; });
                     if (fp?.IsRunnable == true)
                         Log($"[ffmpeg] v{fp.Version} | SIMD: {string.Join(", ", fp.SimdFeatures)}");
                 }
                 catch { }
                 try
                 {
-                    var tools = ExternalToolsDetector.ProbeAllTools();
+                    var tools = ExternalToolsDetector.ProbeAllTools(m => { if (LogText != null) LogText.Text += m; });
                     Log("── 外部工具检测 ──");
                     foreach (var t in tools)
                         Log($"  {t.StatusIcon} {t.Name}: {(t.IsAvailable ? "v" + t.Version : "未检测到")}");
@@ -1276,6 +1394,14 @@ namespace FfmpegGui
                 if (LogText != null)
                     LogText.Text += "[jxl] 手动色彩空间 → 自动切换 cjxl 编码器\n";
             }
+            else if (fmt is "jxl" && backend != EncoderBackend.Cjxl
+                && !CjxlService.IsAvailable && IsColorManuallySpecified())
+            {
+                // 可用性诚实：cjxl 不可用时，ffmpeg 内置 libjxl 会忽略 -color_primaries/-color_trc，
+                // 手动色彩空间无法兑现 → 明确告警，避免用户误以为色彩已应用（静默丢色）。
+                if (LogText != null)
+                    LogText.Text += "⚠️ [jxl] 手动色彩空间需 cjxl 兑现，但未检测到 cjxl；ffmpeg libjxl 会忽略色彩参数，手动色彩可能丢失。请安装 cjxl 或改用 auto 色彩。\n";
+            }
 
             var outputPath = GetOutputPath(_inputPath, fmt);
 
@@ -1412,6 +1538,7 @@ namespace FfmpegGui
                 ColorTrc = useAdv ? (ColorTrcCombo?.SelectedItem as string) : null,
                 ColorMatrix = useAdv ? (ColorMatrixCombo?.SelectedItem as string) : null,
                 ColorRange = useAdv ? GetColorRangeValue() : null,
+                TonemapCurve = null, // tonemap 曲线内部固定 hable
                 Encoder = encName, EncoderBackend = backend, Threads = threads,
                 MetadataMode = GetMetadataMode(),
                 Lossless = LosslessCheck?.IsChecked ?? false,
@@ -1453,12 +1580,13 @@ namespace FfmpegGui
                 JpegHuffman = useAdvCodec ? (JpegHuffmanCombo?.SelectedItem as string) : "optimal",
                 JpegDct = useAdvCodec ? (JpegDctCombo?.SelectedItem as string is "auto" ? null : JpegDctCombo?.SelectedItem as string) : null,
                 JpegProgressiveId = useAdvCodec ? ParseJpegProgressiveId() : 0,
-                JpegGainMap = IsHdrColorSelected(),
+                JpegGainMap = JpegGainMapEnableCheck?.IsChecked == true,
                 JpegGainMapQuality = ParseGainMapQuality(),
                 JpegGainMapTargetNits = ParseGainMapNits(),
-                JpegGainMapHdrCf = ParseGainMapHdrCf(),
+                // (libultrahdr hdr-cf 字段已移除)
                 JpegGainMapDownsample = ParseGainMapDownsample(),
                 JpegGainMapMultiChannel = ParseGainMapMultiChannel(),
+                JpegGainMapBaseGamut = ParseGainMapBaseGamut(),
                 TiffCompressionAlgo = useAdvCodec ? (TiffCompressionCombo?.SelectedItem as string) : "lzw",
                 StripExifGps = StripExifGpsCheck?.IsChecked ?? true,
                 StripExifTime = StripExifTimeCheck?.IsChecked ?? false,
@@ -1466,10 +1594,36 @@ namespace FfmpegGui
                 StripExifAll = StripExifAllCheck?.IsChecked ?? false,
                 StripXmp = StripXmpCheck?.IsChecked ?? false,
                 AppendPngExtension = AppendPngExtCheck?.IsChecked ?? false,
-                IccMode = GetIccMode(),
+                // (IccMode 已由 ColorStrategy 取代)
+                ColorStrategy = GetColorStrategy(),   // 色彩策略（4 单选直选）
+                ColorGamutMap = GetColorGamutMap(),   // 色域映射（GMO）：off 默认（钳位）/ on（压缩）
                 IccFilePath = null, // 新模式不使用外部 ICC
-                IccSourceColorSpace = GetIccSourceSpace(),
-                IccTargetColorSpace = GetIccTargetSpace()
+                // (源色彩空间已改为自动 CICP+ICC 检测)
+                // (烘焙目标取主色域下拉，旧 IccTargetColorSpace 字段已移除)
+                // ── 动图参数 + TIFF DPI（2026-09-19 P1-B 修复：预览路径此前**整体漏传**）──
+                // 实测缺陷：本 opts 初始化块原先**不含**这 5 个字段，而入队路径
+                // （BuildQueueItemOptions 的 options 初始化，约 :2748）**含** ⇒ 用户看到的
+                // 预览命令与实际执行的命令不一致：动图 fps / 缩放 / 循环 / 时长、TIFF DPI
+                // 在预览里**静默丢失**（命令串里连 token 都没有，用户无从察觉）。
+                // 逐字镜像入队路径的表达式，保证两处同源（禁止各写一套口径）。
+                // ── 2026-09-19 P1-E（任务 C）：动图参数**只在动图模式下读取** ──
+                // 定性 = **缺陷**（不是"保留用户输入"的约定）：ConversionMode_SelectionChanged
+                // 在非动图模式把 AnimationPanel 整体 IsVisible=false（见该方法），用户在静态
+                // 模式下**看不到也改不了**这几个框，但它们的残留文本仍会进命令 —— 典型
+                // "看起来配置过"。后果（FfmpegCommandBuilder 源码可证）：
+                //   · 静态 WebP 会被塞进 `-vf fps=…,scale=…`（FfmpegCommandBuilder.cs:253-261）；
+                //   · 静态 **JXL 会被静默换成 `-c:v libjxl_anim`** —— 该分支的判据就是
+                //     `options.AnimationFps.HasValue`（:361），即"有没有 fps"等于"是不是动图"。
+                // 修法：按模式取值（**不**清空控件 —— 用户来回切换时输入仍在，只是静态模式下不下发）。
+                // 三处（RegenerateCommand / AddSingleToQueue / BuildCommand_Click）逐字同源。
+                AnimationFps = IsAnimationMode() ? ParseOptionalInt(AnimationFpsBox?.Text, 1, 60) : null,
+                AnimationLoop = IsAnimationMode() ? ParseInt(AnimationLoopBox?.Text, 0, -1, 999) : -1,
+                AnimationScaleW = IsAnimationMode() ? (ParseOptionalInt(AnimationScaleWBox?.Text, 0, 4096) ?? 0) : 0,
+                AnimationDuration = IsAnimationMode() ? (ParseOptionalDouble(AnimationDurationBox?.Text, 0.1, 3600) ?? 0) : 0,
+                TiffDpi = useAdvCodec && TiffDpiBox?.Value > 0 ? (int?)TiffDpiBox.Value : null,
+                // 最长边限制（同上：入队路径 :2750-2751 有、预览路径漏 ⇒ 预览看不到 scale= 滤镜）
+                EnableMaxDimension = EnableMaxDimensionCheck?.IsChecked ?? false,
+                MaxDimension = (int?)MaxDimensionBox?.Value ?? 1920,
             };
             if (CommandText != null)
             {
@@ -1479,6 +1633,9 @@ namespace FfmpegGui
         }
 
         // ── JXL 无损控件锁定/恢复 ──
+        /// <summary>控件是否被 <see cref="LockLosslessForJxl"/> 锁上 —— 恢复时**只**撤销自己锁的那把。</summary>
+        private bool _losslessLockedByJxl;
+
         private void LockLosslessForJxl()
         {
             if (LosslessCheck != null)
@@ -1490,16 +1647,41 @@ namespace FfmpegGui
                 QualitySlider.IsEnabled = false;
             if (QualityBox != null)
                 QualityBox.IsEnabled = false;
+            _losslessLockedByJxl = true;
         }
 
+        /// <summary>
+        /// 撤销 <see cref="LockLosslessForJxl"/> 加的无损/质量锁定。
+        /// <para>
+        /// ⚠ P1-F 缺陷 2（2026-09-19 修）：本方法原先在**每一次** <c>RegenerateCommand</c> 都被调用，
+        /// 判据是 <c>!IsEnabled &amp;&amp; SupportsLossless</c> ⇒ 把 <c>UpdateOptionAvailability</c> 刚为
+        /// **纯无损格式**（png / tiff / apng，见其 <c>fmt3 is "png" or "tiff" or "apng"</c> 分支）
+        /// 与**动图 JXL/AVIF 模式**（见 <c>UpdateCodecPanelVisibility</c>）设下的 <c>IsEnabled = false</c>
+        /// 重新打开 —— 控件看起来能改、实际被强制，UI 对用户**说谎**（值本身仍被强制 ⇒ 产物是对的，
+        /// 属 UI 状态一致性缺陷，不是输出缺陷）。
+        /// </para>
+        /// <para>
+        /// 现在只撤销**自己**（JXL 无损重封装）那把锁：<c>_losslessLockedByJxl</c> 未置位 ⇒ 直接返回
+        /// （格式级/模式级锁定一律不碰）；已置位 ⇒ 撤销前**复核**当前格式/模式是否本来就该锁。
+        /// 恢复时机因此变成「切换格式 / 编码器 / 切换 JXL 保留增益图开关」等真正改变锁定条件的动作，
+        /// 而不是「每次重生成命令」。
+        /// </para>
+        /// </summary>
         private void RestoreLosslessAndQuality()
         {
-            if (LosslessCheck != null && !LosslessCheck.IsEnabled
+            if (!_losslessLockedByJxl) return;
+            _losslessLockedByJxl = false;
+            var fmt = NormalizeFormat(FormatCombo?.SelectedItem as string);
+            var isAnimMode = ConversionModeCombo?.SelectedIndex == 1;
+            // 与 UpdateOptionAvailability / UpdateCodecPanelVisibility 的锁定口径一致：这些场景下不得解开。
+            bool formatLocks = fmt is "png" or "tiff" or "apng"
+                || (isAnimMode && (fmt is "jxl" or "avif"));
+            if (LosslessCheck != null && !formatLocks
                 && _currentCapabilities?.SupportsLossless == true)
             {
                 LosslessCheck.IsEnabled = true;
             }
-            if (QualitySlider != null && !QualitySlider.IsEnabled
+            if (QualitySlider != null && !formatLocks
                 && _currentCapabilities?.SupportsQuality == true)
             {
                 QualitySlider.IsEnabled = true;
@@ -1520,20 +1702,20 @@ namespace FfmpegGui
                     // 自动模式: 线程数留空 + 不可改 (运行时按并发任务数动态分配)
                     ThreadsBox.Value = null;
                     if (ThreadHintLabel != null)
-                        ThreadHintLabel.Text = "(自动: 按并发任务数动态分配)";
+                        ThreadHintLabel.Text = Services.LocalizationService.Instance["threads.auto.hint"];
                 }
                 else if (single)
                 {
                     ThreadsBox.Value = 1;
                     if (ThreadHintLabel != null)
-                        ThreadHintLabel.Text = "(单线程模式)";
+                        ThreadHintLabel.Text = Services.LocalizationService.Instance["threads.single.hint"];
                 }
                 else
                 {
                     if (ThreadsBox.Value is null or < 1)
                         ThreadsBox.Value = 4;
                     if (ThreadHintLabel != null)
-                        ThreadHintLabel.Text = "(手动)";
+                        ThreadHintLabel.Text = Services.LocalizationService.Instance["threads.manual.hint"];
                 }
             }
 
@@ -1609,13 +1791,13 @@ namespace FfmpegGui
         private void UpdateProgressDisplay()
         {
             // 队列进度
-            var completed = _queueItems.Count(i => i.CompletedAt.HasValue || i.Status == "已删除");
+            var completed = _queueItems.Count(i => i.CompletedAt.HasValue || i.IsDeleted);
             var total = _queueItems.Count;
             if (QueueProgressLabel != null)
                 QueueProgressLabel.Text = total > 0 ? $"队列: {completed} / {total}" : "队列: 0 / 0";
 
             // 已用时间：当前处理中任务
-            var processing = _queueItems.FirstOrDefault(i => i.Status == "处理中" && i.StartedAt.HasValue);
+            var processing = _queueItems.FirstOrDefault(i => i.IsProcessing && i.StartedAt.HasValue);
             if (processing != null && ElapsedLabel != null)
             {
                 var elapsed = DateTimeOffset.UtcNow - processing.StartedAt!.Value;
@@ -1773,6 +1955,18 @@ namespace FfmpegGui
             RegenerateCommand();
         }
 
+        /// <summary>
+        /// 当前是否「动图模式」（ConversionModeCombo 索引 1）。
+        /// ⚠ P1-E 任务 C（2026-09-19）：动图参数（fps / 循环 / 缩放 / 时长）**只在动图模式下**
+        /// 读取，判据的**单一真值**就是本方法 —— 三处 opts 构造（RegenerateCommand /
+        /// AddSingleToQueue / BuildCommand_Click）一律调它，禁止各自内联索引比较。
+        /// 为什么必须收口：非动图模式下 AnimationPanel 是 IsVisible=false（见
+        /// <see cref="ConversionMode_SelectionChanged"/>），控件里的残留文本用户看不见、
+        /// 却能改变命令（静态 WebP 带上 fps= 滤镜；静态 JXL 因 AnimationFps.HasValue 被换成
+        /// libjxl_anim）—— 属本仓最忌讳的"看起来配置过"。
+        /// </summary>
+        private bool IsAnimationMode() => (ConversionModeCombo?.SelectedIndex ?? 0) == 1;
+
         /// <summary>DNG 压缩方式切换: 显示/隐藏 JXL 质量与高级面板</summary>
         private void DngCompression_SelectionChanged(object? sender, SelectionChangedEventArgs e)
         {
@@ -1792,6 +1986,11 @@ namespace FfmpegGui
             var isAnimMode = ConversionModeCombo?.SelectedIndex == 1;
 
             var encoders = await EncoderDetectionService.GetEncodersForFormatAsync(fmt1);
+
+            // 可用性诚实原则：只向用户提供「当前环境真能兑现」的编码器，过滤掉不可用项
+            // （如无对应 GPU 硬件的 nvenc/qsv、未检测到的外部工具），避免用户选中后运行时才失败
+            // 或被静默回退到别的编码器 → 造成「实际编码器 ≠ 用户所选」。
+            encoders = encoders.Where(e => e.IsAvailable).ToList();
 
             // 动图 JXL：cjxl 不支持动画，从编码器列表中移除
             if (isAnimMode && fmt1 == "jxl")
@@ -1954,6 +2153,12 @@ namespace FfmpegGui
                     // Display P3: 广色域 SDR (Apple 生态标准), 所有格式均支持 (ICC/CICP)
                     ColorSpaceCombo.Items.Add("Display P3");
                     var hasHdr = _currentCapabilities.SupportedColorSpaces.Contains("BT.2020");
+                    // JPEG 特例：HDR 无法由 JPEG 自身标定，但**开启 GainMap (Ultra HDR) 后可以**
+                    // （SDR 底 + 增益图，在支持的设备上显示 HDR）⇒ HDR 目标项随开关出现/消失，
+                    // 而不是让用户选了再被降级。
+                    bool gainMapOn = (FormatCombo?.SelectedItem as string)?.ToLowerInvariant() is "jpg" or "jpeg"
+                                     && JpegGainMapEnableCheck?.IsChecked == true;
+                    if (gainMapOn) hasHdr = true;
                     if (hasHdr)
                     {
                         // P3 PQ: P3 色域 + PQ 曲线 (HDR 场景)
@@ -2009,7 +2214,11 @@ namespace FfmpegGui
         private void UpdateChromaBitDepthOptions()
         {
             var fmt = NormalizeFormat(FormatCombo?.SelectedItem as string);
-            var enc = EncoderCombo?.SelectedItem as string ?? "";
+            // ⚠ P1-F 缺陷 1（显示侧）：这里原先读 **EncoderCombo 的显示串**（含硬件编码器的图标前缀
+            //   "⚡ "）⇒ `StartsWith("av1_nvenc")` 对 "⚡ av1_nvenc — …" 恒假 ⇒ 按编码器过滤
+            //   色度/位深选项的那几支永远不生效（av1_nvenc 会拿到 libaom 的选项集）。
+            //   改用 GetCurrentEncoderName()（= EncoderInfo.ParseEncoderName，已剥图标）。
+            var enc = GetCurrentEncoderName();
             var isSvt = enc.StartsWith("libsvt", StringComparison.OrdinalIgnoreCase);
             var isQsv = enc.StartsWith("av1_qsv", StringComparison.OrdinalIgnoreCase);
             var isAmf = enc.StartsWith("av1_amf", StringComparison.OrdinalIgnoreCase);
@@ -2077,7 +2286,7 @@ namespace FfmpegGui
                     ThreadsBox.Value = 1;
                 }
                 if (ThreadHintLabel != null)
-                    ThreadHintLabel.Text = "(该编码器仅支持单线程)";
+                    ThreadHintLabel.Text = Services.LocalizationService.Instance["threads.encoder.single"];
             }
             else
             {
@@ -2110,6 +2319,7 @@ namespace FfmpegGui
             if (JpegCodecPanel != null) JpegCodecPanel.IsVisible = false;
             if (JpegliCodecPanel != null) JpegliCodecPanel.IsVisible = false;
             if (JpegGainMapPanel != null) JpegGainMapPanel.IsVisible = false;
+            if (JpegGainMapEnableCheck != null) JpegGainMapEnableCheck.IsVisible = fmt is "jpg" or "jpeg";
             if (TiffCodecPanel != null) TiffCodecPanel.IsVisible = false;
             if (JxrCodecPanel != null) JxrCodecPanel.IsVisible = false;
 
@@ -2190,7 +2400,8 @@ namespace FfmpegGui
                     // 选择 BT.2020 HDR 色彩空间 (PQ/HLG) 时显示, 与编码器后端无关
                     // SDR 内容 (sRGB/BT.709) headroom=1 无增益意义, 不显示
                     if (JpegGainMapPanel != null)
-                        JpegGainMapPanel.IsVisible = IsHdrColorSelected();
+                        JpegGainMapPanel.IsVisible = JpegGainMapEnableCheck?.IsChecked == true
+                                            && (FormatCombo?.SelectedItem as string)?.ToLowerInvariant() is "jpg" or "jpeg";
                     break;
                 case "tiff": if (TiffCodecPanel != null) TiffCodecPanel.IsVisible = true; break;
                 case "jxr": if (JxrCodecPanel != null) JxrCodecPanel.IsVisible = true; break;
@@ -2202,7 +2413,10 @@ namespace FfmpegGui
         /// </summary>
         private void UpdateAvifEncoderPanel()
         {
-            var enc = EncoderCombo?.SelectedItem as string ?? "";
+            // ⚠ P1-F 缺陷 1（显示侧）：同 UpdateChromaBitDepthOptions —— 原先读显示串，
+            //   硬件编码器的 "⚡ " 前缀让 `StartsWith("av1_nvenc")` 恒假 ⇒ 面板回退到兜底的
+            //   HwAvifPanel，用户看到的是**别人的**参数面板。改用已剥图标的 GetCurrentEncoderName()。
+            var enc = GetCurrentEncoderName();
             var isLibaom = enc.StartsWith("libaom", StringComparison.OrdinalIgnoreCase) || string.IsNullOrEmpty(enc);
             var isSvt = enc.StartsWith("libsvt", StringComparison.OrdinalIgnoreCase);
             var isNvenc = enc.StartsWith("av1_nvenc", StringComparison.OrdinalIgnoreCase);
@@ -2267,7 +2481,11 @@ namespace FfmpegGui
         /// </summary>
         private int GetAvifHwPresetLevel()
         {
-            var enc = EncoderCombo?.SelectedItem as string ?? "";
+            // ⚠ P1-F 缺陷 1（显示侧）：同 UpdateAvifEncoderPanel —— 这四支判据的编码器名
+            //   （av1_nvenc/qsv/vaapi/amf）**全部**是 GPU 编码器 ⇒ 显示串恒带 "⚡ " 前缀
+            //   ⇒ `StartsWith("av1_nvenc")` 恒假 ⇒ 每次都落到「旧面板兜底」读**隐藏的**
+            //   HwPresetCombo，用户在自己那块面板上选的预设被静默替换。改用 GetCurrentEncoderName()。
+            var enc = GetCurrentEncoderName();
             if (enc.StartsWith("av1_nvenc", StringComparison.OrdinalIgnoreCase))
                 return (NvencPresetCombo?.SelectedIndex ?? 3) + 1;
             if (enc.StartsWith("av1_qsv", StringComparison.OrdinalIgnoreCase))
@@ -2301,6 +2519,49 @@ namespace FfmpegGui
             return Models.IccMode.None;
         }
 
+        /// <summary>4 个策略单选→ColorStrategy（None→推荐, Carry→携带, Bake→仅CICP, BakeOnly→手动）。</summary>
+        private Models.ColorStrategy GetColorStrategy()
+        {
+            if (IccModeCarry?.IsChecked == true) return Models.ColorStrategy.CarryIcc;
+            if (IccModeBake?.IsChecked == true) return Models.ColorStrategy.BakeCicpOnly;
+            if (IccModeBakeOnly?.IsChecked == true) return Models.ColorStrategy.Manual;
+            return Models.ColorStrategy.Recommended;
+        }
+
+        /// <summary>
+        /// 把 4 个策略单选设成指定策略（Recommended 对应 <c>IccModeNone</c> 单选）。
+        /// 载入预设时用：单选由 GroupName 自动互斥，故只需勾选目标那一个（勾选会触发
+        /// IccMode_Changed → MarkIccModeTouched/UpdateIccPanelVisibility/RegenerateCommand）。
+        /// </summary>
+        private void SetColorStrategyRadio(Models.ColorStrategy strategy)
+        {
+            switch (strategy)
+            {
+                case Models.ColorStrategy.CarryIcc:
+                    if (IccModeCarry != null) IccModeCarry.IsChecked = true;
+                    break;
+                case Models.ColorStrategy.BakeCicpOnly:
+                    if (IccModeBake != null) IccModeBake.IsChecked = true;
+                    break;
+                case Models.ColorStrategy.Manual:
+                    if (IccModeBakeOnly != null) IccModeBakeOnly.IsChecked = true;
+                    break;
+                default:   // Recommended（枚举定义上即未知值的兜底）
+                    if (IccModeNone != null) IccModeNone.IsChecked = true;
+                    break;
+            }
+        }
+
+        /// <summary>
+        /// 色域映射（GMO）开关 → <c>FfmpegOptions.ColorGamutMap</c>（off 默认 | on）。
+        /// 控件缺失/未勾选一律 off ⇒ 与历史行为（钳位硬裁切）逐字节相同，默认行为不因新增控件而改变。
+        /// </summary>
+        private string GetColorGamutMap() => ColorGamutMapCheck?.IsChecked == true ? "on" : "off";
+
+        /// <summary>勾选变化：刷新命令预览（选项经 GetColorGamutMap 进入 FfmpegOptions）。</summary>
+        private void ColorGamutMap_Changed(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+            => RegenerateCommand();
+
         private string? GetIccSourceSpace()
         {
             if (IccSourceSpaceCombo?.SelectedIndex > 0)
@@ -2310,20 +2571,11 @@ namespace FfmpegGui
 
         private string GetIccTargetSpace()
         {
-            // 烘焙目标直接使用高级色彩面板选择的色彩空间
+            // 烘焙目标 = 快速色彩空间所选（支持 Display P3 / P3 PQ / BT.2020 PQ/HLG，不再降级为 SDR）。
             var cs = ColorSpaceCombo?.SelectedItem as string;
             if (string.IsNullOrWhiteSpace(cs) || cs == "auto")
-                return "sRGB / BT.709";
-            return cs switch
-            {
-                "sRGB" => "sRGB / BT.709",
-                "BT.709" => "sRGB / BT.709",
-                "Display P3" => "Display P3",
-                "P3 PQ" => "Display P3",
-                "BT.2020 PQ" => "Rec.2020 PQ (HDR)",
-                "BT.2020 HLG" => "Rec.2020 PQ (HDR)",
-                _ => "sRGB / BT.709"
-            };
+                return "sRGB";
+            return cs;
         }
 
         /// <summary>
@@ -2395,7 +2647,7 @@ namespace FfmpegGui
                 _selectedFileBaseDirs.Clear();
                 UpdateMediaFileCount();
                 if (LogText != null) LogText.Text += $"已选择: {_inputPath}\n";
-                if (MediaInfoText != null) MediaInfoText.Text = "正在获取媒体信息...";
+                if (MediaInfoText != null) MediaInfoText.Text = Services.LocalizationService.Instance["media.loading"];
                 var info = await MediaInfoService.GetMediaInfoAsync(_inputPath);
                 if (MediaInfoText != null) MediaInfoText.Text = info;
             }
@@ -2475,6 +2727,13 @@ namespace FfmpegGui
                 if (LogText != null)
                     LogText.Text += "[jxl] 手动色彩空间 → 自动切换 cjxl 编码器\n";
             }
+            else if (fmt is "jxl" && encoderBackend != EncoderBackend.Cjxl
+                && !CjxlService.IsAvailable && IsColorManuallySpecified())
+            {
+                // 可用性诚实：cjxl 不可用时 libjxl 会忽略手动色彩参数 → 明确告警，避免静默丢色。
+                if (LogText != null)
+                    LogText.Text += "⚠️ [jxl] 手动色彩空间需 cjxl 兑现，但未检测到 cjxl；ffmpeg libjxl 会忽略色彩参数，手动色彩可能丢失。请安装 cjxl 或改用 auto 色彩。\n";
+            }
 
             var autoThreads = AutoThreadsCheck?.IsChecked ?? true;
             var singleThread = SingleThreadCheck?.IsChecked ?? false;
@@ -2501,6 +2760,7 @@ namespace FfmpegGui
                 ColorTrc = useAdv ? (ColorTrcCombo?.SelectedItem as string) : null,
                 ColorMatrix = useAdv ? (ColorMatrixCombo?.SelectedItem as string) : null,
                 ColorRange = useAdv ? GetColorRangeValue() : null,
+                TonemapCurve = null, // tonemap 曲线内部固定 hable
                 Encoder = encoderName, EncoderBackend = encoderBackend,
                 Threads = threads,
                 AutoThreads = adaptiveAuto,
@@ -2551,12 +2811,13 @@ namespace FfmpegGui
                 JpegHuffman = useAdvCodec ? (JpegHuffmanCombo?.SelectedItem as string) : "optimal",
                 JpegDct = useAdvCodec ? (JpegDctCombo?.SelectedItem as string is "auto" ? null : JpegDctCombo?.SelectedItem as string) : null,
                 JpegProgressiveId = useAdvCodec ? ParseJpegProgressiveId() : 0,
-                JpegGainMap = IsHdrColorSelected(),
+                JpegGainMap = JpegGainMapEnableCheck?.IsChecked == true,
                 JpegGainMapQuality = ParseGainMapQuality(),
                 JpegGainMapTargetNits = ParseGainMapNits(),
-                JpegGainMapHdrCf = ParseGainMapHdrCf(),
+                // (libultrahdr hdr-cf 字段已移除)
                 JpegGainMapDownsample = ParseGainMapDownsample(),
                 JpegGainMapMultiChannel = ParseGainMapMultiChannel(),
+                JpegGainMapBaseGamut = ParseGainMapBaseGamut(),
                 TiffCompressionAlgo = useAdvCodec ? (TiffCompressionCombo?.SelectedItem as string) : "lzw",
                 TiffDpi = useAdvCodec && TiffDpiBox?.Value > 0 ? (int?)TiffDpiBox.Value : null,
                 // ── cjpegli 高级选项（2026-08-16 修复: 此前入队路径完全缺失导致全部失效）──
@@ -2573,17 +2834,24 @@ namespace FfmpegGui
                 StripExifAll = StripExifAllCheck?.IsChecked ?? false,
                 StripXmp = StripXmpCheck?.IsChecked ?? false,
                 AppendPngExtension = AppendPngExtCheck?.IsChecked ?? false,
-                IccMode = GetIccMode(),
+                // 图片最长边限制
+                EnableMaxDimension = EnableMaxDimensionCheck?.IsChecked ?? false,
+                MaxDimension = (int?)MaxDimensionBox?.Value ?? 1920,
+                // (IccMode 已由 ColorStrategy 取代)
+                ColorStrategy = GetColorStrategy(),   // 色彩策略（4 单选直选）
+                ColorGamutMap = GetColorGamutMap(),   // 色域映射（GMO）：off 默认（钳位）/ on（压缩）
                 IccFilePath = null, // 新模式不使用外部 ICC
-                IccSourceColorSpace = GetIccSourceSpace(),
-                IccTargetColorSpace = GetIccTargetSpace(),
-                // 动图参数
-                AnimationFps = ParseOptionalInt(AnimationFpsBox?.Text, 1, 60),
-                AnimationLoop = ParseInt(AnimationLoopBox?.Text, 0, -1, 999),
+                // (源色彩空间已改为自动 CICP+ICC 检测)
+                // (烘焙目标取主色域下拉，旧 IccTargetColorSpace 字段已移除)
+                // 动图参数（⚠ P1-E 任务 C：只在动图模式下读取，否则静态 WebP/JXL 会带上
+                // 隐藏面板里的残留 fps/scale —— 静态 JXL 甚至会被换成 libjxl_anim。理由见
+                // RegenerateCommand 处的同一段注释）
+                AnimationFps = IsAnimationMode() ? ParseOptionalInt(AnimationFpsBox?.Text, 1, 60) : null,
+                AnimationLoop = IsAnimationMode() ? ParseInt(AnimationLoopBox?.Text, 0, -1, 999) : -1,
                 GifPaletteOptimize = GifPaletteCheck?.IsChecked ?? true,
                 GifDither = GifDitherCheck?.IsChecked ?? true,
-                AnimationScaleW = ParseOptionalInt(AnimationScaleWBox?.Text, 0, 4096) ?? 0,
-                AnimationDuration = ParseOptionalDouble(AnimationDurationBox?.Text, 0.1, 3600) ?? 0
+                AnimationScaleW = IsAnimationMode() ? (ParseOptionalInt(AnimationScaleWBox?.Text, 0, 4096) ?? 0) : 0,
+                AnimationDuration = IsAnimationMode() ? (ParseOptionalDouble(AnimationDurationBox?.Text, 0.1, 3600) ?? 0) : 0
             };
 
             // RAW 模式: DNG 压缩设置 → 独立 DNG 选项字段 (QueueProcessor.ProcessDngAsync 读取)
@@ -2604,9 +2872,11 @@ namespace FfmpegGui
                 options.Quality = useJxl ? Math.Max(jxlQ, 0) : options.Quality;
             }
 
-            // Gain Map 模式下使用 JpegProgressiveId，默认 Baseline
-            if (options.JpegGainMap)
-                options.CjpegliProgressiveId = options.JpegProgressiveId switch { 1 => 2, _ => 0 };
+            // Gain Map 的 JPEG 渐进级别由 JpegProgressiveId **直接**决定（单一真值见
+            // ColorMapping/GainMapJpegCodec.ProgressiveLevelOf，由引擎 GainMap 出口消费）。
+            // ⚠ 2026-09-19 删除此处原先的 `CjpegliProgressiveId = JpegProgressiveId switch …`：
+            //   GainMap 路径**从不读** CjpegliProgressiveId（底图/增益图恒由 GainMapEncoder 调
+            //   cjpegli 编码）⇒ 那是死代码，用户设的渐进被静默丢弃（实测 0 与 1 产物 MD5 相同）。
 
             var outp = GetOutputPath(inputPath, options.Format, inputBaseDir);
             var item = new Models.QueueItem { InputPath = inputPath, OutputPath = outp, Options = options, InputBaseDir = inputBaseDir };
@@ -2627,7 +2897,45 @@ namespace FfmpegGui
             return true;
         }
 
-        private void StartQueue_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        /// <summary>
+        /// 公共 API：供 IPC 服务器或外部调用添加任务到队列（线程安全）。
+        /// QueueProcessor.Add 使用 ConcurrentQueue 线程安全，可同步调用；
+        /// UI 集合更新通过 Dispatcher 调度到 UI 线程。
+        /// </summary>
+        /// <param name="items">要入队的任务列表</param>
+        /// <returns>成功入队的数量</returns>
+        public int AddItemsToQueue(IReadOnlyList<Models.QueueItem> items)
+        {
+            if (items == null || items.Count == 0) return 0;
+
+            var addedList = new List<Models.QueueItem>();
+            foreach (var item in items)
+            {
+                if (string.IsNullOrWhiteSpace(item.InputPath)) continue;
+                // 线程安全入队（ConcurrentQueue）
+                _queueProcessor.Add(item);
+                addedList.Add(item);
+            }
+
+            // UI 集合更新调度到 UI 线程（异步，不阻塞）
+            if (addedList.Count > 0)
+            {
+                var snapshot = addedList.ToArray();
+                Dispatcher.UIThread.Post(() =>
+                {
+                    foreach (var item in snapshot)
+                    {
+                        _queueView.Add(item);
+                        _queueItems.Add(item);
+                    }
+                    if (LogText != null) LogText.Text += $"[IPC] 已添加 {snapshot.Length} 项到队列\n";
+                });
+            }
+
+            return addedList.Count;
+        }
+
+        public void StartProcessing()
         {
             int concurrency = GetConcurrencyValue();
             // 重新排队已停止和失败的项目
@@ -2640,13 +2948,11 @@ namespace FfmpegGui
                 {
                     try
                     {
-                        // 重新计算输出路径并写回队列项（使用每项记录的输入基目录）
                         qi.OutputPath = GetOutputPath(qi.InputPath, qi.Options.Format, qi.InputBaseDir);
                         var dir = Path.GetDirectoryName(qi.OutputPath);
                         if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
                             Directory.CreateDirectory(dir);
 
-                        // 生成并记录将要执行的命令预览，便于日志追踪
                         qi.Command = BuildQueueItemCommand(qi);
                         qi.Log += $"[cmd-preview] {qi.Command}\n";
                     }
@@ -2656,7 +2962,6 @@ namespace FfmpegGui
 
             _queueProcessor.Start(concurrency);
             _isQueueRunning = true;
-            // 如果复选框已勾选，则在启动后请求完成当前队列后停止
             if (StopAfterCurrentCheck?.IsChecked == true)
             {
                 _queueProcessor.StopAfterCurrentQueue();
@@ -2665,6 +2970,11 @@ namespace FfmpegGui
             if (ClearQueueButton != null)
                 ClearQueueButton.IsEnabled = false;
             if (LogText != null) LogText.Text += $"队列开始，并行: {concurrency} 个任务\n";
+        }
+
+        private void StartQueue_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        {
+            StartProcessing();
         }
 
         private void StopQueue_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
@@ -2681,7 +2991,7 @@ namespace FfmpegGui
             Dispatcher.UIThread.Post(() =>
             {
                 // 若该项已被标记为删除，从 UI 中移除
-                if (item.Status == "已删除")
+                if (item.IsDeleted)
                 {
                     var idx = _queueItems.FindIndex(x => ReferenceEquals(x, item));
                     if (idx >= 0 && idx < _queueView.Count)
@@ -2729,12 +3039,54 @@ namespace FfmpegGui
             });
         }
 
+        // ═══════════════════════════════════════════════
+        // 托盘支持：公共访问器
+        // ═══════════════════════════════════════════════
+
+        /// <summary>队列是否正在运行</summary>
+        public bool IsQueueRunning => _isQueueRunning;
+
+        /// <summary>允许完全退出（托盘菜单 Exit 时置 true）</summary>
+        public bool AllowFullExit
+        {
+            get => _allowFullExit;
+            set => _allowFullExit = value;
+        }
+
+        /// <summary>获取正在处理的任务数量</summary>
+        public int GetProcessingCount()
+        {
+            return _queueItems.Count(i => i.IsProcessing);
+        }
+
+        /// <summary>暂停队列（完成当前项后停止）</summary>
+        public void PauseQueue()
+        {
+            if (_isQueueRunning)
+            {
+                _queueProcessor.StopAfterCurrentQueue();
+                if (LogText != null) LogText.Text += "已请求：完成当前队列后停止\n";
+            }
+        }
+
+        /// <summary>继续队列（从暂停恢复）</summary>
+        public void ResumeQueue()
+        {
+            if (!_isQueueRunning)
+            {
+                int concurrency = GetConcurrencyValue();
+                _queueProcessor.Start(concurrency);
+                _isQueueRunning = true;
+                if (LogText != null) LogText.Text += $"队列继续，并行: {concurrency} 个任务\n";
+            }
+        }
+
         private void DeleteSelected_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
         {
             if (QueueList?.SelectedIndex is int idx and >= 0 && idx < _queueItems.Count)
             {
                 var item = _queueItems[idx];
-                if (item.Status == "处理中")
+                if (item.IsProcessing)
                 {
                     if (LogText != null) LogText.Text += "无法删除正在处理的任务\n";
                     return;
@@ -2805,7 +3157,7 @@ namespace FfmpegGui
         /// 为队列项构建实际将执行的完整命令行（与 QueueProcessor 调度逻辑一致）。
         /// 覆盖所有后端路径：ffmpeg / cjxl / cjpegli / djxl 管道 / avifenc 两步法 等。
         /// </summary>
-        private static string BuildQueueItemCommand(QueueItem item)
+        internal static string BuildQueueItemCommand(QueueItem item)
         {
             var fmt = (item.Options.Format ?? "").ToLowerInvariant();
             var inputExt = Path.GetExtension(item.InputPath).ToLowerInvariant();
@@ -2842,8 +3194,9 @@ namespace FfmpegGui
                 return BuildJxlInputCommand(item.InputPath, item.OutputPath, item.Options);
             }
 
-            // ── cjxl 后端 ──
-            if (item.Options.EncoderBackend == EncoderBackend.Cjxl && CjxlService.IsAvailable)
+            // ── cjxl 后端（仅当目标格式为 jxl 时，与真实分派一致）──
+            if (item.Options.EncoderBackend == EncoderBackend.Cjxl && CjxlService.IsAvailable
+                && EncoderBackendCompat.IsCompatibleWith(EncoderBackend.Cjxl, item.Options.Format))
             {
                 return "cjxl " + CjxlService.BuildCjxlArguments(item.InputPath, item.OutputPath, item.Options);
             }
@@ -2855,11 +3208,12 @@ namespace FfmpegGui
                 var nits = item.Options.JpegGainMapTargetNits;
                 var gmq = item.Options.JpegGainMapQuality;
                 var cj = CjpegliService.IsAvailable ? " + cjpegli" : "";
-                return $"[纯托管] GainMapEncoder 色调映射{cj} + 增益图打包 (峰值 {nits}nits, q={q})";
+                return $"[纯托管] GainMapEncoder 色调映射{cj} + 增益图打包 (峰值 {nits}nits, q={q}, prog -p {Services.ColorMapping.GainMapJpegCodec.ProgressiveLevelOf(item.Options)} (-1=none))";
             }
 
-            // ── cjpegli 后端 ──
-            if (item.Options.EncoderBackend == EncoderBackend.Cjpegli && CjpegliService.IsAvailable)
+            // ── cjpegli 后端（仅当目标格式为 jpg/jpeg 时，与真实分派一致）──
+            if (item.Options.EncoderBackend == EncoderBackend.Cjpegli && CjpegliService.IsAvailable
+                && EncoderBackendCompat.IsCompatibleWith(EncoderBackend.Cjpegli, item.Options.Format))
             {
                 return "cjpegli " + CjpegliService.BuildCjpegliArguments(item.InputPath, item.OutputPath, item.Options);
             }
@@ -2877,7 +3231,13 @@ namespace FfmpegGui
             var isAnimated = options.AnimationFps.HasValue
                 || targetFmt == "gif" || targetFmt == "apng";
 
-            if (jxlType == JxlImageType.JpegReconstruction)
+            // 与 ProcessJxlInputAsync 保持一致：JXL→JXL 时跳过 djxl 重构
+            // （djxl 无法输出 .jxl），按原生码流重编码路径预览
+            var effectiveType = jxlType;
+            if (jxlType == JxlImageType.JpegReconstruction && targetFmt == "jxl")
+                effectiveType = JxlImageType.NativeCodestream;
+
+            if (effectiveType == JxlImageType.JpegReconstruction)
             {
                 if (DjxlService.IsAvailable)
                     return $"djxl \"{inputPath}\" \"{outputPath}\"";
@@ -2885,7 +3245,7 @@ namespace FfmpegGui
                     return "ffmpeg " + FfmpegCommandBuilder.BuildArguments(options, inputPath, outputPath);
             }
 
-            if (jxlType == JxlImageType.NativeCodestream)
+            if (effectiveType == JxlImageType.NativeCodestream)
             {
                 if (isAnimated)
                 {
@@ -2903,20 +3263,25 @@ namespace FfmpegGui
                     {
                         if ((targetFmt == "jpg" || targetFmt == "jpeg" || targetFmt == "jpegli") && CjpegliService.IsAvailable)
                         {
-                            // djxl→cjpegli 管道（优先）或 PNG 中转
-                            return $"djxl \"{inputPath}\" --output_format=png - | cjpegli "
+                            // djxl→cjpegli 管道（优先）或 PNM 中转
+                            // 注：djxl v0.12+ 不再支持 PNG 输出，与实际执行一致用 pnm (PPM/PAM 自适应)
+                            return $"djxl \"{inputPath}\" --output_format=pnm - | cjpegli "
                                 + CjpegliService.BuildCjpegliArguments("-", outputPath, options);
                         }
                         if (targetFmt == "jxl" && CjxlService.IsAvailable)
                         {
-                            // cjxl 需要文件输入 → PNG 中转
-                            return $"[两步法] djxl 解码 → 临时PNG → cjxl "
-                                + CjxlService.BuildCjxlArguments("<tmp.png>", outputPath, options);
+                            // cjxl 需要文件输入 → PNM 中转
+                            return $"[两步法] djxl 解码 → 临时PNM → cjxl "
+                                + CjxlService.BuildCjxlArguments("<tmp.pnm>", outputPath, options);
                         }
                     }
 
                     // 直接管道：djxl → ffmpeg
-                    var pipeArgs = FfmpegCommandBuilder.BuildArguments(options, "-", outputPath);
+                    // ⚠ P7d：stdin 探不到位深/alpha ⇒ 必须拿真实源文件做探测替代，否则预览里看到的命令看不到实际输出像素。
+                    // ⚠ 已知不一致（未修，只登记）：预览用 `--output_format=png -f image2pipe`，而实际执行
+                    //   （QueueProcessor.PipeDjxlToFfmpegAsync）用 `ppm/pam + ppm_pipe/pam_pipe` 并注入高级色彩参数。
+                    //   要真同源得把管道参数拼装收拢到一处（同一个 BuildFfmpegPipeArguments），属 P7a-3 后续。
+                    var pipeArgs = FfmpegCommandBuilder.BuildArguments(options, "-", outputPath, inputPath);
                     var idx = pipeArgs.IndexOf("-i \"-\"", StringComparison.Ordinal);
                     if (idx >= 0)
                         pipeArgs = pipeArgs.Substring(0, idx) + "-f image2pipe " + pipeArgs.Substring(idx);
@@ -2978,9 +3343,9 @@ namespace FfmpegGui
                 JpegGainMap = original.JpegGainMap,
                 JpegGainMapQuality = original.JpegGainMapQuality,
                 JpegGainMapTargetNits = original.JpegGainMapTargetNits,
-                JpegGainMapHdrCf = original.JpegGainMapHdrCf,
                 JpegGainMapDownsample = original.JpegGainMapDownsample,
                 JpegGainMapMultiChannel = original.JpegGainMapMultiChannel,
+                JpegGainMapBaseGamut = original.JpegGainMapBaseGamut,
                 TiffCompressionAlgo = original.TiffCompressionAlgo,
             };
         }
@@ -3057,17 +3422,8 @@ namespace FfmpegGui
                 return;
             }
 
-            // 自动填充高级参数以匹配快速选择
-            var (primaries, trc, matrix) = cs switch
-            {
-                "sRGB" => ("bt709", "iec61966-2-1", "bt709"),
-                "BT.709" => ("bt709", "bt709", "bt709"),
-                "Display P3" => ("smpte432", "iec61966-2-1", "bt709"),
-                "P3 PQ" => ("smpte432", "smpte2084", "bt709"),
-                "BT.2020 PQ" => ("bt2020", "smpte2084", "bt2020nc"),
-                "BT.2020 HLG" => ("bt2020", "arib-std-b67", "bt2020nc"),
-                _ => ((string?)null, (string?)null, (string?)null)
-            };
+            // 自动填充高级参数以匹配快速选择（委托 ColorSpaceRegistry 单一来源，避免映射表重复漂移）
+            var (primaries, trc, matrix) = ColorSpaceRegistry.FfmpegTokens(cs);
 
             if (primaries != null && ColorPrimariesCombo != null)
                 SelectComboItem(ColorPrimariesCombo, primaries);
@@ -3126,8 +3482,40 @@ namespace FfmpegGui
             DetectColorConflicts();
             UpdateAdvancedColorControls();
 
+            // ── ICC 联动: 非 BT.709/sRGB → 默认烘焙到标准色域+ICC+CICP（尊重用户手动选择的 ICC 模式）──
+            AutoLinkIccModeFromColorSpace(cs);
+
             // ── ICC 联动: 同步烘焙目标空间 + 更新模式2提示 ──
             UpdateIccCarryLabel();
+        }
+
+        /// <summary>用户手动切换 ICC 模式时标记（联动写入时由 _suppressIccAutoLink 隔道，不误标记）。</summary>
+        private void MarkIccModeTouched()
+        {
+            if (!_suppressIccAutoLink) _iccModeTouched = true;
+        }
+
+        /// <summary>
+        /// 色彩空间→ICC 模式联动：选中非标准色域(Display P3/P3 PQ/BT.2020 PQ/HLG)时，
+        /// 默认切为 BakeToStandard（烘焙像素到该标准色域 + 携带 ICC + CICP）；回到 sRGB/BT.709/auto 时切回 None（纯 CICP）。
+        /// 若用户已手动选择过 ICC 模式(_iccModeTouched)，则不再自动覆盖。
+        /// </summary>
+        private void AutoLinkIccModeFromColorSpace(string? cs)
+        {
+            if (_iccModeTouched) return;
+            var spec = ColorSpaceRegistry.Resolve(cs);
+            bool wantBake = spec != null && spec.Kind != ColorSpaceRegistry.GamutKind.Standard;
+            _suppressIccAutoLink = true;
+            try
+            {
+                if (wantBake && IccModeBake != null && IccModeBake.IsChecked != true)
+                    IccModeBake.IsChecked = true;
+                else if (!wantBake && IccModeNone != null
+                         && (IccModeBake?.IsChecked == true || IccModeBakeOnly?.IsChecked == true))
+                    IccModeNone.IsChecked = true;
+            }
+            finally { _suppressIccAutoLink = false; }
+            UpdateIccPanelVisibility();
         }
 
 
@@ -3182,13 +3570,30 @@ namespace FfmpegGui
                     FileName = ffprobe,
                     Arguments = $"-v error -select_streams v:0 -show_entries stream=bits_per_raw_sample -of csv=p=0 \"{_inputPath}\"",
                     RedirectStandardOutput = true,
-                    RedirectStandardError = true,
+                    StandardOutputEncoding = System.Text.Encoding.UTF8,
+                    RedirectStandardError = true,   // P2-3：stderr 必须排空（下方挂 errTask 异步读完）
+                    StandardErrorEncoding = System.Text.Encoding.UTF8,
                     UseShellExecute = false,
                     CreateNoWindow = true
                 });
                 if (p == null) return 8;
-                var output = p.StandardOutput.ReadToEnd().Trim();
-                p.WaitForExit(3000);
+                // ⚠ 先挂读取任务、再等退出（本仓范式，见 `FfmpegCommandBuilder.ProbeWithFfprobe`）：
+                //   旧写法把同步读写在 `WaitForExit(3000)` **之前** ⇒ 子进程不关管道就永不返回，
+                //   **超时（与超时后的 Kill）是死代码**。实测：畸形 `.jxl` 让 ffprobe 永不退出。
+                var outTask = p.StandardOutput.ReadToEndAsync();
+                var errTask = p.StandardError.ReadToEndAsync();
+                if (!p.WaitForExit(3000))
+                {
+                    try { p.Kill(entireProcessTree: true); } catch { }
+                    // `#26`：关闭 `#24` 留下的「Trace 可见性债」——本方法是 MainWindow 实例方法，
+                    // 直接走 UI 的日志通道（`LogText`），`Trace` 保留作兜底（非 UI 线程时仍可抓到）。
+                    var bdMsg = $"[bitdepth] ffprobe 位深探测超时（3s）⇒ 已终止：{System.IO.Path.GetFileName(_inputPath)}（按 8bit 处理）";
+                    System.Diagnostics.Trace.WriteLine(bdMsg);
+                    Dispatcher.UIThread.Post(() => { if (LogText != null) LogText.Text += bdMsg + "\n"; });
+                    return 8;
+                }
+                var output = outTask.GetAwaiter().GetResult().Trim();
+                errTask.GetAwaiter().GetResult();
                 if (int.TryParse(output, out var bd) && bd > 0) return bd;
                 return 8;
             }
@@ -3210,7 +3615,8 @@ namespace FfmpegGui
             var fmt = NormalizeFormat(FormatCombo?.SelectedItem as string);
             if (fmt is not ("jpg" or "jpeg")) return;
             if (JpegGainMapPanel != null)
-                JpegGainMapPanel.IsVisible = IsHdrColorSelected();
+                JpegGainMapPanel.IsVisible = JpegGainMapEnableCheck?.IsChecked == true
+                                    && (FormatCombo?.SelectedItem as string)?.ToLowerInvariant() is "jpg" or "jpeg";
         }
 
         private void UseAdvancedCodec_IsCheckedChanged(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
@@ -3267,18 +3673,7 @@ namespace FfmpegGui
                     conflicts.Add($"⚠ 源 {_lastProbedSourceBitDepth}-bit，手动 8-bit 将损失精度");
             }
 
-            // 冲突4: ICC烘焙目标空间 vs 输出色彩空间不匹配
-            if (isBaking && cs != "auto")
-            {
-                var target = GetIccTargetSpace();
-                var csIsSdr = cs is "sRGB" or "BT.709";
-                var targetIsHdr = target.Contains("Rec.2020") || target.Contains("HDR");
-
-                if (csIsSdr && targetIsHdr)
-                    conflicts.Add($"⚠ 输出色彩为 {cs}(SDR) 但烘焙目标为 HDR，像素将被过度拉伸");
-                if (!csIsSdr && !targetIsHdr)
-                    conflicts.Add($"⚠ 输出色彩为 {cs}(HDR) 但烘焙目标为 sRGB，HDR 将被裁剪为 SDR");
-            }
+            // 烘焙目标现与输出色彩空间同源（均来自 ColorSpaceCombo），无需再校验二者不匹配。
 
             if (conflicts.Count > 0)
             {
@@ -3295,6 +3690,24 @@ namespace FfmpegGui
             { ColorConflictLabel.Text = ""; ColorConflictLabel.IsVisible = false; }
         }
 
+        /// <summary>仅「手动」策略：用户改三元组时实时校验 CICP 组合，非阻拦告警（仍按选择执行）。</summary>
+        private void UpdateAdvancedColorValidation()
+        {
+            if (ColorConflictLabel == null) return;
+            if (GetColorStrategy() != Models.ColorStrategy.Manual) return;
+            var warn = ColorSpaceRegistry.ValidateCicpTriple(
+                ColorPrimariesCombo?.SelectedItem as string,
+                ColorTrcCombo?.SelectedItem as string,
+                ColorMatrixCombo?.SelectedItem as string);
+            if (warn != null)
+            {
+                ColorConflictLabel.Text = "⚠ " + warn + "（仍按你的选择执行）";
+                ColorConflictLabel.IsVisible = true;
+                ColorConflictLabel.Foreground = Avalonia.Media.Brushes.Orange;
+            }
+            else ClearColorConflict();
+        }
+
         // ═══════════════════════════════════════════════
         //  ICC 色彩管理 — 事件处理
         // ═══════════════════════════════════════════════
@@ -3306,21 +3719,26 @@ namespace FfmpegGui
 
         private void UpdateIccPanelVisibility()
         {
-            var isCarry = IccModeCarry?.IsChecked == true;
-            var isBake = IccModeBake?.IsChecked == true;
-            var isBakeOnly = IccModeBakeOnly?.IsChecked == true;
-            var isBaking = isBake || isBakeOnly;
-
-            // 烘焙面板：模式3/4显示
-            if (IccBakePanel != null)
-                IccBakePanel.IsVisible = isBaking;
-
-            // 信息面板：模式2（CarryIcc）显示提示
-            if (IccFilePanel != null)
-                IccFilePanel.IsVisible = isCarry;
-
-            if (isCarry && IccInfoLabel != null)
+            var strategy = GetColorStrategy();
+            // 源/烘焙目标子面板已废弃（源恒自动检测；目标取主色域下拉）→ 隐藏。
+            if (IccBakePanel != null) IccBakePanel.IsVisible = false;
+            if (IccFilePanel != null) IccFilePanel.IsVisible = strategy == Models.ColorStrategy.CarryIcc;
+            if (strategy == Models.ColorStrategy.CarryIcc && IccInfoLabel != null)
                 UpdateIccCarryLabel(); // 动态显示当前色彩空间对应的 ICC 类型
+
+            // 携带/仅CICP：色彩空间锁定（源为准）；推荐/手动：按格式能力启用。
+            if (ColorSpaceCombo != null)
+            {
+                bool locked = strategy is Models.ColorStrategy.CarryIcc or Models.ColorStrategy.BakeCicpOnly;
+                ColorSpaceCombo.IsEnabled = !locked
+                    && (_currentCapabilities is null || _currentCapabilities.SupportedColorSpaces.Count > 0);
+            }
+
+            // 仅CICP（策略3）：格式不支持 CICP 时禁用该单选；JPEG 且 GainMap 开启时例外可用。
+            bool gainMapOn = JpegGainMapEnableCheck?.IsChecked == true
+                && (FormatCombo?.SelectedItem as string)?.ToLowerInvariant() is "jpg" or "jpeg";
+            if (IccModeBake != null)
+                IccModeBake.IsEnabled = (_currentCapabilities?.SupportsCicp ?? true) || gainMapOn;
 
             UpdateIccPreview();
             UpdateIccCompatibility();
@@ -3358,7 +3776,7 @@ namespace FfmpegGui
                 else
                 {
                     if (IccInfoLabel != null)
-                        IccInfoLabel.Text = "⚠️ 可能不是有效的 ICC 文件";
+                        IccInfoLabel.Text = Services.LocalizationService.Instance["icc.invalid.file"];
                 }
 
                 UpdateIccPreview();
@@ -3454,37 +3872,12 @@ namespace FfmpegGui
 
         private void UpdateAdvancedColorControls()
         {
-            var sel = (ColorSpaceCombo?.SelectedItem as string ?? "BT.709").ToUpper();
-            switch (sel)
-            {
-                case "DISPLAY P3":
-                    SetComboSelection(ColorPrimariesCombo, "smpte432");
-                    SetComboSelection(ColorTrcCombo, "iec61966-2-1");
-                    SetComboSelection(ColorMatrixCombo, "bt709");
-                    break;
-                case "P3 PQ":
-                    SetComboSelection(ColorPrimariesCombo, "smpte432");
-                    SetComboSelection(ColorTrcCombo, "smpte2084");
-                    SetComboSelection(ColorMatrixCombo, "bt709");
-                    break;
-                case "BT.709":
-                    SetComboSelection(ColorPrimariesCombo, "bt709");
-                    SetComboSelection(ColorTrcCombo, "bt709");
-                    SetComboSelection(ColorMatrixCombo, "bt709");
-                    break;
-                case "BT.2020":
-                case "BT.2020 PQ":
-                case "BT.2020 HLG":
-                    SetComboSelection(ColorPrimariesCombo, "bt2020");
-                    SetComboSelection(ColorTrcCombo, "smpte2084");
-                    SetComboSelection(ColorMatrixCombo, "bt2020nc");
-                    break;
-                default:
-                    SetComboSelection(ColorPrimariesCombo, "bt709");
-                    SetComboSelection(ColorTrcCombo, "bt709");
-                    SetComboSelection(ColorMatrixCombo, "bt709");
-                    break;
-            }
+            // 委托 ColorSpaceRegistry 单一来源（修正旧硬编码对 BT.2020 HLG 误填 smpte2084 的 bug）。
+            var cs = ColorSpaceCombo?.SelectedItem as string;
+            var (p, t, m) = ColorSpaceRegistry.FfmpegTokens(cs);   // auto/未知 → null → 下方默认 sRGB
+            SetComboSelection(ColorPrimariesCombo, p ?? "bt709");
+            SetComboSelection(ColorTrcCombo, t ?? "iec61966-2-1");
+            SetComboSelection(ColorMatrixCombo, m ?? "bt709");
             RegenerateCommand();
         }
 
@@ -3588,6 +3981,7 @@ namespace FfmpegGui
                 ColorTrc = useAdv ? (ColorTrcCombo?.SelectedItem as string) : null,
                 ColorMatrix = useAdv ? (ColorMatrixCombo?.SelectedItem as string) : null,
                 ColorRange = useAdv ? GetColorRangeValue() : null,
+                TonemapCurve = null, // tonemap 曲线内部固定 hable
                 Encoder = encoderName, EncoderBackend = encoderBackend,
                 Threads = threads,
                 MetadataMode = GetMetadataMode(),
@@ -3626,12 +4020,13 @@ namespace FfmpegGui
                 JpegHuffman = useAdvCodec ? (JpegHuffmanCombo?.SelectedItem as string) : "optimal",
                 JpegDct = useAdvCodec ? (JpegDctCombo?.SelectedItem as string is "auto" ? null : JpegDctCombo?.SelectedItem as string) : null,
                 JpegProgressiveId = useAdvCodec ? ParseJpegProgressiveId() : 0,
-                JpegGainMap = IsHdrColorSelected(),
+                JpegGainMap = JpegGainMapEnableCheck?.IsChecked == true,
                 JpegGainMapQuality = ParseGainMapQuality(),
                 JpegGainMapTargetNits = ParseGainMapNits(),
-                JpegGainMapHdrCf = ParseGainMapHdrCf(),
+                // (libultrahdr hdr-cf 字段已移除)
                 JpegGainMapDownsample = ParseGainMapDownsample(),
                 JpegGainMapMultiChannel = ParseGainMapMultiChannel(),
+                JpegGainMapBaseGamut = ParseGainMapBaseGamut(),
                 TiffCompressionAlgo = useAdvCodec ? (TiffCompressionCombo?.SelectedItem as string) : "lzw",
                 StripExifGps = StripExifGpsCheck?.IsChecked ?? true,
                 StripExifTime = StripExifTimeCheck?.IsChecked ?? false,
@@ -3639,10 +4034,23 @@ namespace FfmpegGui
                 StripExifAll = StripExifAllCheck?.IsChecked ?? false,
                 StripXmp = StripXmpCheck?.IsChecked ?? false,
                 AppendPngExtension = AppendPngExtCheck?.IsChecked ?? false,
-                IccMode = GetIccMode(),
+                // (IccMode 已由 ColorStrategy 取代)
+                ColorStrategy = GetColorStrategy(),   // 色彩策略（4 单选直选）
+                ColorGamutMap = GetColorGamutMap(),   // 色域映射（GMO）：off 默认（钳位）/ on（压缩）
                 IccFilePath = null, // 新模式不使用外部 ICC
-                IccSourceColorSpace = GetIccSourceSpace(),
-                IccTargetColorSpace = GetIccTargetSpace()
+                // (源色彩空间已改为自动 CICP+ICC 检测)
+                // (烘焙目标取主色域下拉，旧 IccTargetColorSpace 字段已移除)
+                // ── 动图参数 + TIFF DPI（2026-09-19 P1-B 修复：本「生成命令」路径同样漏传）──
+                // 与 RegenerateCommand 的预览 opts 同源修复，理由见该处注释。
+                // ⚠ P1-E 任务 C：三处都按 IsAnimationMode() 取值（静态模式下不下发动图参数）。
+                AnimationFps = IsAnimationMode() ? ParseOptionalInt(AnimationFpsBox?.Text, 1, 60) : null,
+                AnimationLoop = IsAnimationMode() ? ParseInt(AnimationLoopBox?.Text, 0, -1, 999) : -1,
+                AnimationScaleW = IsAnimationMode() ? (ParseOptionalInt(AnimationScaleWBox?.Text, 0, 4096) ?? 0) : 0,
+                AnimationDuration = IsAnimationMode() ? (ParseOptionalDouble(AnimationDurationBox?.Text, 0.1, 3600) ?? 0) : 0,
+                TiffDpi = useAdvCodec && TiffDpiBox?.Value > 0 ? (int?)TiffDpiBox.Value : null,
+                // 最长边限制（同上）
+                EnableMaxDimension = EnableMaxDimensionCheck?.IsChecked ?? false,
+                MaxDimension = (int?)MaxDimensionBox?.Value ?? 1920,
             };
 
             _outputPath = GetOutputPath(_inputPath, options.Format);
@@ -3674,6 +4082,7 @@ namespace FfmpegGui
             var newLang = Services.LocalizationService.Instance.CurrentLanguage;
             AppSettingsService.Current.Language = newLang;
             AppSettingsService.Save();
+            RefreshLocCombos();   // ComboBox 选项是 C# 填充的，需手动刷新
             // 按钮文本由 {ext:Loc language} 绑定自动更新，语言切换后 LocBindingSource 触发 Item[] 刷新
             // 窗口标题也由 {ext:Loc app.title} 绑定自动更新
         }
@@ -3768,7 +4177,7 @@ namespace FfmpegGui
                     if (GpuEncoderWarningHint != null)
                     {
                         GpuEncoderWarningHint.IsVisible = true;
-                        GpuEncoderWarningHint.Text = "建议切换到 CPU 编码器以确保正常编码。";
+                        GpuEncoderWarningHint.Text = Services.LocalizationService.Instance["gpu.advice.switch.cpu"];
                     }
                     break;
 
@@ -3780,7 +4189,7 @@ namespace FfmpegGui
                     if (GpuEncoderWarningHint != null)
                     {
                         GpuEncoderWarningHint.IsVisible = true;
-                        GpuEncoderWarningHint.Text = "请切换到 CPU 编码器（如 mjpeg / libaom-av1 / libsvtav1）。";
+                        GpuEncoderWarningHint.Text = Services.LocalizationService.Instance["gpu.advice.switch.cpu.list"];
                     }
                     break;
 
@@ -3792,7 +4201,7 @@ namespace FfmpegGui
                     if (GpuEncoderWarningHint != null)
                     {
                         GpuEncoderWarningHint.IsVisible = true;
-                        GpuEncoderWarningHint.Text = "请使用包含此编码器的 ffmpeg 版本，或切换到 CPU 编码器。";
+                        GpuEncoderWarningHint.Text = Services.LocalizationService.Instance["gpu.advice.ffmpeg.version"];
                     }
                     break;
 
@@ -3854,6 +4263,24 @@ namespace FfmpegGui
             UpdateSimpleProgressDisplay();
         }
 
+        protected override void OnClosed(EventArgs e)
+        {
+            // 释放自动编码轮询定时器，避免窗口关闭后 Timer 及其 Elapsed 处理器泄漏
+            // （隐藏到托盘不会触发 OnClosed，仅真正退出时执行）
+            try
+            {
+                if (_autoEncodeTimer != null)
+                {
+                    _autoEncodeTimer.Stop();
+                    _autoEncodeTimer.Elapsed -= OnAutoEncodeTick;
+                    _autoEncodeTimer.Dispose();
+                    _autoEncodeTimer = null;
+                }
+            }
+            catch { }
+            base.OnClosed(e);
+        }
+
         private void SimpleReturn_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
         {
             if (FullModePanel == null || SimpleModePanel == null) return;
@@ -3903,7 +4330,7 @@ namespace FfmpegGui
             if (LogText != null)
                 LogText.Text += "[简洁模式] 队列已启动\n";
             if (SimpleStatusLabel != null)
-                SimpleStatusLabel.Text = "队列运行中...";
+                SimpleStatusLabel.Text = Services.LocalizationService.Instance["queue.running"];
         }
 
         private void SimpleStopQueue_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
@@ -3914,7 +4341,7 @@ namespace FfmpegGui
             if (LogText != null)
                 LogText.Text += "[简洁模式] 队列已停止\n";
             if (SimpleStatusLabel != null)
-                SimpleStatusLabel.Text = "已停止";
+                SimpleStatusLabel.Text = Services.LocalizationService.Instance["queue.stopped"];
         }
 
         private async void SimpleAddFiles_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
@@ -4192,7 +4619,7 @@ namespace FfmpegGui
             if (_queueProcessor.IsRunning) return;
 
             var hasPending = _queueItems.Any(i =>
-                i.Status == "待处理" && !i.IsCancelled);
+                i.IsPending && !i.IsCancelled);
 
             if (hasPending)
             {
@@ -4241,6 +4668,7 @@ namespace FfmpegGui
                 ColorTrc = data.ColorTrc,
                 ColorMatrix = data.ColorMatrix,
                 ColorRange = data.ColorRange,
+                TonemapCurve = data.TonemapCurve,
                 BitDepth = data.BitDepth is "auto" or null ? null : int.TryParse(data.BitDepth, out var bd) ? bd : null,
                 EncoderBackend = data.EncoderBackend switch
                 {
@@ -4291,22 +4719,20 @@ namespace FfmpegGui
                 StripExifAll = data.StripExifAll,
                 StripXmp = data.StripXmp,
                 AppendPngExtension = data.AppendPngExtension,
-                // ── ICC 色彩管理（此前缺失，导致简洁模式预设 ICC 设置被静默丢弃）──
-                IccMode = data.IccMode switch
-                {
-                    "CarryIcc" => Models.IccMode.CarryIcc,
-                    "BakeToStandard" => Models.IccMode.BakeToStandard,
-                    "BakeOnly" => Models.IccMode.BakeOnly,
-                    _ => Models.IccMode.None
-                },
-                IccSourceColorSpace = data.IccSourceColorSpace,
-                IccTargetColorSpace = data.IccTargetColorSpace,
+                // ── 色彩策略（旧预设 IccMode 自动迁移）──
+                ColorStrategy = Models.ColorStrategyMapper.TryParse(data.ColorStrategy, out var cstrat) ? cstrat
+                    : (data.IccMode == "BakeOnly" ? Models.ColorStrategy.BakeCicpOnly
+                       : data.IccMode == "CarryIcc" ? Models.ColorStrategy.CarryIcc
+                       : Models.ColorStrategy.Recommended),   // 新预设取 ColorStrategy；旧预设按 IccMode 映射
                 AnimationFps = data.AnimationFps,
                 AnimationLoop = data.AnimationLoop,
                 GifPaletteOptimize = data.GifPaletteOptimize,
                 GifDither = data.GifDither,
                 AnimationScaleW = data.AnimationScaleW,
                 AnimationDuration = data.AnimationDuration,
+                // 图片最长边限制
+                EnableMaxDimension = data.EnableMaxDimension,
+                MaxDimension = data.MaxDimension,
                 CjpegliChromaSubsampling = data.CjpegliChromaSubsampling ?? "auto",
                 CjpegliProgressiveId = data.CjpegliProgressiveId,
                 CjpegliOptimize = data.CjpegliOptimize ?? true,
@@ -4335,8 +4761,8 @@ namespace FfmpegGui
             if (!_simpleModeActive) return;
 
             var total = _queueItems.Count;
-            var completed = _queueItems.Count(i => i.CompletedAt.HasValue || i.Status == "已删除");
-            var processing = _queueItems.Count(i => i.Status == "处理中");
+            var completed = _queueItems.Count(i => i.CompletedAt.HasValue || i.IsDeleted);
+            var processing = _queueItems.Count(i => i.IsProcessing);
 
             if (SimpleProgressLabel != null)
                 SimpleProgressLabel.Text = $"队列: {completed}/{total}";
@@ -4344,7 +4770,7 @@ namespace FfmpegGui
                 SimpleStatusLabel.Text = total > 0 ? "就绪" : "队列为空";
 
             // 已用时间：当前处理中任务（与完整模式同口径）
-            var cur = _queueItems.FirstOrDefault(i => i.Status == "处理中" && i.StartedAt.HasValue);
+            var cur = _queueItems.FirstOrDefault(i => i.IsProcessing && i.StartedAt.HasValue);
             if (cur != null && SimpleElapsedLabel != null)
             {
                 var elapsed = DateTimeOffset.UtcNow - cur.StartedAt!.Value;
@@ -4568,7 +4994,7 @@ namespace FfmpegGui
                 AppSettingsService.Current.ExifToolPath = path;
                 AppSettingsService.Save();
                 if (ExifToolPathBox != null) ExifToolPathBox.Text = path;
-                ExifToolService.Detect();
+                ExifToolService.Detect(m => { if (LogText != null) LogText.Text += m; });
                 UpdateExifToolPanelState();
                 if (LogText != null)
                     LogText.Text += ExifToolService.IsAvailable
@@ -4583,7 +5009,7 @@ namespace FfmpegGui
             AppSettingsService.Current.ExifToolPath = null;
             AppSettingsService.Save();
             if (ExifToolPathBox != null) ExifToolPathBox.Text = "";
-            ExifToolService.Detect();
+            ExifToolService.Detect(m => { if (LogText != null) LogText.Text += m; });
             UpdateExifToolPanelState();
             if (LogText != null)
                 LogText.Text += ExifToolService.IsAvailable
@@ -4714,6 +5140,187 @@ namespace FfmpegGui
                 CachePanel.IsVisible = !CachePanel.IsVisible;
         }
 
+        // ═══════════ ⚙ 设置菜单（二级菜单）处理器（2026-09-16 新增）═══════════
+        // 设计原则：菜单项只负责「改设置 + 保存 + 回显」，实际生效路径一律复用既有逻辑
+        // （主题走 App.SetTheme、语言走 LocalizationService、缓存目录走既有选择器），
+        // 避免出现第二份真值。
+
+        /// <summary>渲染后端（手动选择 GPU）。需重启生效，故在日志里明确告知。</summary>
+        private void RenderModeMenu_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        {
+            if (sender is not MenuItem mi || mi.Tag is not string mode) return;
+            AppSettingsService.Current.RenderingMode = mode;
+            // "software" 与 GpuAcceleration=false 语义等价 ⇒ 两者同步，避免出现
+            // 「菜单显示 CPU 软件渲染、而设置里 GPU 仍是开启」这种自相矛盾的状态。
+            AppSettingsService.Current.GpuAcceleration = mode != "software";
+            AppSettingsService.Save();
+            SyncSettingsMenuChecks();
+            if (LogText != null)
+                LogText.Text += $"[渲染] 后端已设为 {DescribeRenderMode(mode)}，重启后生效\n";
+        }
+
+        private void ThemeMenu_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        {
+            if (sender is not MenuItem mi || mi.Tag is not string tag) return;
+            var isDark = tag == "dark";
+            App.SetTheme(isDark);
+            AppSettingsService.Current.ThemeMode = isDark ? 2 : 1;
+            AppSettingsService.Save();
+            if (ThemeToggleBtn != null) ThemeToggleBtn.Content = isDark ? "☀" : "🌙";
+            SyncSettingsMenuChecks();
+            RefreshQueueListBinding();   // 主题切换后队列列表 Foreground 需重算
+        }
+
+        private void LangMenu_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        {
+            if (sender is not MenuItem mi || mi.Tag is not string lang) return;
+            Services.LocalizationService.Instance.SetLanguage(lang);
+            AppSettingsService.Current.Language = lang;
+            AppSettingsService.Save();
+            SyncSettingsMenuChecks();
+            RefreshLocCombos();   // ComboBox 选项是 C# 填充的，需手动刷新
+        }
+
+        /// <summary>设置缓存目录（复用既有目录选择器逻辑，不另起一份真值）。</summary>
+        private async void CacheDirMenu_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        {
+            var result = await StorageProvider.OpenFolderPickerAsync(new Avalonia.Platform.Storage.FolderPickerOpenOptions
+            {
+                Title = "选择缓存/临时文件目录",
+                AllowMultiple = false
+            });
+            if (result.Count > 0)
+            {
+                var dir = result[0].Path.LocalPath;
+                if (CacheDirBox != null) CacheDirBox.Text = dir;
+                AppSettingsService.Current.CacheDirectory = dir;
+                AppSettingsService.Save();
+                SyncSettingsMenuChecks();
+                if (LogText != null) LogText.Text += $"[缓存] 目录已设为 {dir}\n";
+            }
+        }
+
+        /// <summary>在系统文件管理器中打开当前缓存目录。</summary>
+        private void OpenCacheDirMenu_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        {
+            var dir = Services.PlatformServices.GetTempDir();
+            if (string.IsNullOrWhiteSpace(dir) || !Directory.Exists(dir))
+            {
+                if (LogText != null) LogText.Text += "[缓存] 缓存目录不存在或不可用\n";
+                return;
+            }
+            try
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = dir,
+                    UseShellExecute = true      // 必须：交给 shell 用默认文件管理器打开
+                });
+            }
+            catch (Exception ex)
+            {
+                if (LogText != null) LogText.Text += $"[缓存] 打开失败：{ex.Message}\n";
+            }
+        }
+
+        /// <summary>
+        /// 按 Tag 在设置菜单里查项。
+        /// ⚠ <c>MenuFlyout</c> 及其内部的 <c>MenuItem</c> **不在可视树**里，因此 XAML 的
+        /// <c>x:Name</c> 不会生成字段、<c>FindControl</c> 也找不到（编译期就会报 CS0103）。
+        /// 唯一可靠入口是按钮的 <c>Flyout</c> 属性。
+        /// </summary>
+        private MenuItem? FindMenuByTag(string tag)
+        {
+            var btn = this.FindControl<Button>("SettingsMenuBtn");
+            if (btn?.Flyout is not MenuFlyout fly) return null;
+            foreach (var top in fly.Items.OfType<MenuItem>())
+                foreach (var sub in top.Items.OfType<MenuItem>())
+                    if (sub.Tag as string == tag) return sub;
+            return null;
+        }
+
+        // ═══════════ ComboBox 选项本地化（2026-09-16 新增）═══════════
+        // 背景：XAML 里的 `<sys:String>中文</sys:String>` 是**元素内容**，标记扩展
+        // `{ext:Loc}` 在那里不生效 ⇒ 这些选项切英文后仍是中文；而且 i18n 门禁的正则
+        // 只匹配属性值，**也看不见它们**（等于一类隐形缺口）。
+        // 这里改为 C# 填充，并登记到 _locCombos 以便语言切换时统一刷新。
+        private readonly Dictionary<ComboBox, string[]> _locCombos = new();
+
+        /// <summary>
+        /// 用 Loc key 填充 ComboBox 选项，并登记以便语言切换时刷新。
+        /// ⚠ **选项顺序必须与原 XAML 完全一致**——后端是用 <c>SelectedIndex</c> 取值的，
+        /// 顺序变了会静默改变语义（界面选 A、实际跑 B），这是本项目反复出现过的坑。
+        /// </summary>
+        private void FillComboByLoc(ComboBox? combo, int defaultIndex, params string[] keys)
+        {
+            if (combo == null) return;
+            _locCombos[combo] = keys;
+            // ⚠ 首次填充时 ItemsSource 为空 ⇒ XAML 里写的 SelectedIndex 已被重置为 -1，
+            //   必须显式给默认索引；否则选中项会丢，后端还可能拿到 -1 出错。
+            var idx = combo.SelectedIndex >= 0 ? combo.SelectedIndex : defaultIndex;
+            combo.ItemsSource = keys.Select(k => Services.LocalizationService.Instance[k]).ToList();
+            combo.SelectedIndex = idx;
+        }
+
+        private static void ApplyLocCombo(ComboBox combo, string[] keys)
+        {
+            var loc = Services.LocalizationService.Instance;
+            var idx = combo.SelectedIndex;
+            combo.ItemsSource = keys.Select(k => loc[k]).ToList();
+            combo.SelectedIndex = idx;   // 按索引保持选中项（顺序不变 ⇒ 语义不变）
+        }
+
+        /// <summary>语言切换后刷新所有已登记的 ComboBox 选项。</summary>
+        private void RefreshLocCombos()
+        {
+            foreach (var kv in _locCombos) ApplyLocCombo(kv.Key, kv.Value);
+        }
+
+        /// <summary>
+        /// 把当前设置回显到菜单勾选态。初始化时与每次改动后各调一次。
+        /// ⚠ 只做回显，不写设置——避免「回显」反而把配置改掉。
+        /// </summary>
+        private void SyncSettingsMenuChecks()
+        {
+            try
+            {
+                var mode = (AppSettingsService.Current.RenderingMode ?? "auto").ToLowerInvariant();
+                if (!AppSettingsService.Current.GpuAcceleration) mode = "software";
+                foreach (var m in new[] { "auto", "angle", "vulkan", "software" })
+                    FindMenuByTag(m)?.SetCurrentValue(MenuItem.IsCheckedProperty, m == mode);
+
+                var dark = App.IsDarkMode();
+                FindMenuByTag("dark")?.SetCurrentValue(MenuItem.IsCheckedProperty, dark);
+                FindMenuByTag("light")?.SetCurrentValue(MenuItem.IsCheckedProperty, !dark);
+
+                var lang = AppSettingsService.Current.Language ?? "zh-CN";
+                var isZh = lang.StartsWith("zh", StringComparison.OrdinalIgnoreCase);
+                FindMenuByTag("zh-CN")?.SetCurrentValue(MenuItem.IsCheckedProperty, isZh);
+                FindMenuByTag("en-US")?.SetCurrentValue(MenuItem.IsCheckedProperty, !isZh);
+
+                var cache = AppSettingsService.Current.CacheDirectory;
+                var cacheItem = FindMenuByTag("cachedir");
+                if (cacheItem != null)
+                {
+                    // ⚠ 这里直接赋值会覆盖 XAML 里的 {ext:Loc} 绑定 ⇒ 必须靠
+                    // 「语言切换后重新调用本方法」来保证它是新语言（LangMenu_Click 已如此）。
+                    var loc = Services.LocalizationService.Instance;
+                    cacheItem.Header = string.IsNullOrWhiteSpace(cache)
+                        ? loc["settings.cache.set"]
+                        : string.Format(loc["settings.cache.current"], cache);
+                }
+            }
+            catch { /* 回显失败不影响功能 */ }
+        }
+
+        private static string DescribeRenderMode(string mode) => mode switch
+        {
+            "angle" => "GPU：ANGLE / D3D11",
+            "vulkan" => "GPU：Vulkan",
+            "software" => "CPU 软件渲染",
+            _ => "自动（推荐）"
+        };
+
         private async void BrowseCacheDir_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
         {
             var result = await StorageProvider.OpenFolderPickerAsync(new Avalonia.Platform.Storage.FolderPickerOpenOptions
@@ -4751,7 +5358,7 @@ namespace FfmpegGui
             if (LogText != null) LogText.Text += "正在重新自动检测外部工具...\n";
             RefreshJxlServices();
             RefreshArtifactsServices();
-            ExifToolService.Detect();
+            ExifToolService.Detect(m => { if (LogText != null) LogText.Text += m; });
             UpdateExifToolPanelState();
             RefreshPsPanelState();
             RegenerateCommand();
@@ -4774,7 +5381,7 @@ namespace FfmpegGui
                 AddSeparator();
                 // artifacts 类
                 AddToolStatus(JxrService.IsAvailable, "jxr");
-                AddToolStatus(HasAvifencAvailable(), "avifenc");
+                AddToolStatus(PlatformServices.ResolveAvifencPath() != null, "avifenc");
                 AddToolStatus(RawService.IsAvailable, "dngtool");
             }
 
@@ -4792,7 +5399,7 @@ namespace FfmpegGui
             PopulateCategoryTools(ArtifactsToolsStatus, new[]
             {
                 ("jxr", JxrService.IsAvailable),
-                ("avifenc", HasAvifencAvailable()),
+                ("avifenc", PlatformServices.ResolveAvifencPath() != null),
                 ("dngtool", RawService.IsAvailable),
             });
             PopulateCategoryTools(PsToolsStatus, new[]
@@ -4846,20 +5453,8 @@ namespace FfmpegGui
             });
         }
 
-        private static bool HasAvifencAvailable()
-        {
-            var artifactsDir = AppSettingsService.Current.WindowsArtifactsDir;
-            if (!string.IsNullOrWhiteSpace(artifactsDir))
-            {
-                var p = Path.Combine(artifactsDir, PlatformServices.Avifenc);
-                if (File.Exists(p)) return true;
-            }
-            // PLAN 便携文件夹
-            var planFound = PlatformServices.TryFindInPlanFolder(PlatformServices.Avifenc);
-            if (planFound != null) return true;
-            var dir = AppSettingsService.Current.FfmpegDir;
-            return !string.IsNullOrEmpty(dir) && File.Exists(Path.Combine(dir, PlatformServices.Avifenc));
-        }
+        // ⚠ P7f：UI 不再自带“avifenc 是否可用”的副本（曾经这里是第三份拷贝，且漏了手动 AvifencPath）。
+        //   下面两处状态展示直接问全局唯一入口 PlatformServices.ResolveAvifencPath()。
 
         private async void SelectFolder_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
         {
@@ -4904,7 +5499,7 @@ namespace FfmpegGui
 
                 // 取第一个文件获取媒体信息
                 _inputPath = files[0];
-                if (MediaInfoText != null) MediaInfoText.Text = "正在获取媒体信息...";
+                if (MediaInfoText != null) MediaInfoText.Text = Services.LocalizationService.Instance["media.loading"];
                 var info = await MediaInfoService.GetMediaInfoAsync(_inputPath);
                 if (MediaInfoText != null) MediaInfoText.Text = $"[文件夹: {dir}]\n共 {files.Count} 个文件\n\n{info}";
             }
@@ -5004,6 +5599,43 @@ namespace FfmpegGui
         /// </summary>
         /// <summary>判断当前选择的色彩空间是否为 HDR（BT.2020 PQ/HLG 或 P3 PQ 或高级参数 PQ/HLG 传输函数）。
         /// Gain Map (Ultra HDR) 仅在 HDR 色彩下有意义（记录 HDR 高光扩展），SDR 内容 headroom=1 无增益。</summary>
+        /// <summary>GainMap 独立开关变化：切换子选项面板可见性 + 刷新色彩面板（仅CICP 例外）与命令。</summary>
+        private void JpegGainMapEnable_Changed(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        {
+            var on = JpegGainMapEnableCheck?.IsChecked == true;
+            if (JpegGainMapPanel != null)
+                JpegGainMapPanel.IsVisible = on
+                    && (FormatCombo?.SelectedItem as string)?.ToLowerInvariant() is "jpg" or "jpeg";
+            UpdateIccPanelVisibility();
+            // ── D-1 同族修复（2026-09-20）：刷新会**冲掉**用户已设的目标色域 / 位深 / 质量 ──────────
+            // 缺陷：`UpdateOptionAvailability()` 会 `Items.Clear()` + 重建 `ColorSpaceCombo`（`:2149-2170`）
+            //   与 `BitDepthCombo`（`:2109-2117`）并把 `SelectedIndex` 归 0，还会把 `QualitySlider.Value`
+            //   设为该格式默认值（`:2100`）。⇒ 用户勾/取消「GainMap (Ultra HDR)」时**格式并未改变**，
+            //   这三项却被重置（与 D-1 的「应用预设后三项留不住」**同族**，`§11.4` 登记的残留即此）。
+            // 修法：**刷新前快照、刷新后回写** —— 与 `ApplyPresetData` 的 D-1 修法**同一模式**。
+            // ⚠ 只改**本处理器**：刷新函数本体与另外 5 个调用点（`:1275`/`:1851`/`:1948`/`:2611`/`:4604`）
+            //   行为**一字不变**（D-1 明确要求，避免动到「切格式 ⇒ 重建候选集」的既有语义）。
+            // ⚠ 回写一律走 `SetComboByValue`：值若不在新候选集里（例如**关掉** GainMap 后 HDR 色域项消失）
+            //   就**保持刷新后的默认值**（= 今天的行为），绝不写进非法值。
+            var keepColorSpace = ColorSpaceCombo?.SelectedItem as string;
+            var keepBitDepth = BitDepthCombo?.SelectedItem as string;
+            var keepQuality = QualitySlider?.Value ?? double.NaN;
+            var keepFmt = NormalizeFormat(FormatCombo?.SelectedItem as string);
+            UpdateOptionAvailability();   // 开关会改变 JPEG 的 HDR 能力⇒ 目标色域列表需重新过滤
+            // ⚠ 顺序：色域先、位深后。HDR 色域会触发位深自动联动（`ColorSpaceCombo_SelectionChanged:3440`）
+            //   ⇒ 后写位深 = 用户的显式位深是**最后一次写入**（与「用户选择即终态」的语义一致）。
+            SetComboByValue(ColorSpaceCombo, keepColorSpace);
+            SetComboByValue(BitDepthCombo, keepBitDepth);
+            // ⚠ 纯无损格式（PNG/TIFF/APNG）的质量被**产品语义**锁定 100（`:2122-2137`），不得回写（同 D-1）。
+            if (QualitySlider != null && !double.IsNaN(keepQuality)
+                && keepFmt is not ("png" or "tiff" or "apng"))
+            {
+                QualitySlider.Value = keepQuality;
+            }
+            UpdateQualityLabel();
+            RegenerateCommand();
+        }
+
         private bool IsHdrColorSelected()
         {
             var cs = ColorSpaceCombo?.SelectedItem as string;
@@ -5024,6 +5656,10 @@ namespace FfmpegGui
             // 兼容：旧 CheckBox（XAML 已移除，此路径仅旧预设/旧二进制）
             return JpegGainMapMultiChannelCheck?.IsChecked ?? false;
         }
+
+        /// <summary>解析底图色域：0=sRGB SDR 底（默认）, 1=Rec.2020 SDR 底（广色域）；HDR 始终由增益图承载。</summary>
+        private string ParseGainMapBaseGamut()
+            => JpegGainMapBaseCombo?.SelectedIndex == 1 ? "bt2020" : "srgb";
 
         private int ParseGainMapQuality()
         {
@@ -5084,7 +5720,7 @@ namespace FfmpegGui
         private void AdjustGainMapQuality(int delta)
         {
             var current = ParseGainMapQuality();
-            if (current < 0) current = 75; // 从"跟随主图"切换到手动时，默认 75
+            if (current < 0) current = 75; // 从「跟随主图」切换到手动时，默认 75（⚠ 引号用「」：直引号会被 _probe-cjk-hardcode-scan.ps1 误计成硬编码文案，见该脚本口径②）
             var val = Math.Clamp(current + delta, 1, 100);
             if (JpegGainMapQualityBox != null)
                 JpegGainMapQualityBox.Text = val.ToString();
@@ -5125,6 +5761,7 @@ namespace FfmpegGui
                 ColorTrc = ColorTrcCombo?.SelectedItem as string,
                 ColorMatrix = ColorMatrixCombo?.SelectedItem as string,
                 ColorRange = MapColorRangeValue(ColorRangeCombo?.SelectedItem as string),
+                TonemapCurve = null, // tonemap 曲线内部固定 hable
                 BitDepth = BitDepthCombo?.SelectedItem as string,
                 AutoThreads = AutoThreadsCheck?.IsChecked ?? true,
                 SingleThread = SingleThreadCheck?.IsChecked ?? false,
@@ -5152,10 +5789,11 @@ namespace FfmpegGui
                 // ── 编码器后端 ──
                 EncoderBackend = GetCurrentEncoderBackend().ToString(),
                 // ── Gain Map ──
-                JpegGainMap = IsHdrColorSelected(),
+                JpegGainMap = JpegGainMapEnableCheck?.IsChecked == true,
                 JpegGainMapQuality = ParseGainMapQuality(),
                 JpegGainMapTargetNits = ParseGainMapNits(),
                 JpegGainMapMultiChannel = ParseGainMapMultiChannel(),
+                JpegGainMapBaseGamut = ParseGainMapBaseGamut(),
                 JpegGainMapDownsample = ParseGainMapDownsample(),
                 // ── WebP 无损压缩级别 ──
                 WebpCompressionLevel = (int?)WebpCompressionBox?.Value,
@@ -5200,10 +5838,30 @@ namespace FfmpegGui
                 DngJxlDecodeSpeed = (int)(DngJxlDecodeSpeedBox?.Value ?? 4),
                 DngHighlightMode = DngHighlightCombo?.SelectedIndex ?? 1,
                 DngBitDepth = DngBitDepthCombo?.SelectedIndex == 0 ? 8 : 16,
+                // ── 色彩策略 ──
+                // 必须**同时**写两个字段（实测缺陷，2026-09-19）：
+                //   · `ColorStrategy` 是新预设的**真值**（PresetData.cs:144-145）；
+                //   · `IccMode` 是**遗留**字段（PresetData.cs:142-143），保留它旧版本应用仍能读新预设（向后兼容）。
+                // 此前只写 IccMode ⇒ 载入侧 FfmpegOptions.ApplyPresetData（FfmpegOptions.cs:135-138）先读
+                // ColorStrategy（为空）再回退 FromIccMode(IccMode)，而两处对同名按钮语义互斥
+                // （GetIccMode:2514-2520 vs GetColorStrategy:2523-2529）⇒ 中间两个模式往返错位：
+                //   IccModeBake(BakeCicpOnly) 存 BakeToStandard → 载入 Recommended
+                //   IccModeBakeOnly(Manual)   存 BakeOnly       → 载入 BakeCicpOnly
+                // ⚠ 取值必须是 ColorStrategyMapper.TryParse 认得的**规范串**（PresetData.cs:144 自述格式
+                //   recommended/carry/cicp-only/manual），**不能**用 `Enum.ToString()`：实测
+                //   `BakeCicpOnly` 不在 TryParse 的别名表内（ColorStrategy.cs:56-71），ToString() 写出的
+                //   "BakeCicpOnly" 会被 TryParse 拒绝 ⇒ 又回退 IccMode 迁移 ⇒ IccModeBake 仍然错位。
+                ColorStrategy = GetColorStrategy() switch
+                {
+                    Models.ColorStrategy.CarryIcc => "carry-icc",
+                    Models.ColorStrategy.BakeCicpOnly => "cicp-only",
+                    Models.ColorStrategy.Manual => "manual",
+                    _ => "recommended",
+                },
                 IccMode = GetIccMode().ToString(),
                 IccFilePath = null, // 新模式不使用外部 ICC
-                IccSourceColorSpace = GetIccSourceSpace(),
-                IccTargetColorSpace = GetIccTargetSpace(),
+                // (源色彩空间已改为自动 CICP+ICC 检测)
+                // (烘焙目标取主色域下拉，旧 IccTargetColorSpace 字段已移除)
                 Concurrency = GetConcurrencyValue(),
                 MaxQueueSize = GetConcurrencyValue()
             };
@@ -5257,6 +5915,9 @@ namespace FfmpegGui
             // ── Gain Map (Ultra HDR) ──
             if (JpegGainMapTypeCombo != null)
                 JpegGainMapTypeCombo.SelectedIndex = p.JpegGainMapMultiChannel ? 1 : 0;
+            if (JpegGainMapBaseCombo != null)
+                JpegGainMapBaseCombo.SelectedIndex =
+                    string.Equals(p.JpegGainMapBaseGamut, "bt2020", StringComparison.OrdinalIgnoreCase) ? 1 : 0;
             if (JpegGainMapFollowMainCheck != null)
             {
                 JpegGainMapFollowMainCheck.IsChecked = p.JpegGainMapQuality < 0;
@@ -5358,7 +6019,61 @@ namespace FfmpegGui
             if (CjxlPhotonNoiseBox != null) CjxlPhotonNoiseBox.Value = Math.Clamp(p.CjxlPhotonNoiseIso, 0, 3200);
             if (ConcurrencyBox != null) ConcurrencyBox.Text = Math.Clamp(p.MaxQueueSize, 1, 128).ToString();
             UpdateConcurrencyLabel();
+            // ── 色彩策略单选恢复（2026-09-19 修复）──────────────────────────────────
+            // 缺陷：保存侧已写规范串 ColorStrategy（BuildPresetData 内），但本方法此前**整块缺失**
+            //   对 IccMode*/ColorStrategy 的引用（引用数 = 0）⇒「应用预设」后 4 个策略单选保持原样，
+            //   下一次保存/编码用的是**旧策略**，预设形同虚设（违反验收面「四大模式正确」）。
+            // 语义与 FfmpegOptions.ApplyPresetData（FfmpegOptions.cs:135-138）**逐条同构**：
+            //   ① 优先规范串 ColorStrategyMapper.TryParse(p.ColorStrategy)（大小写/别名不敏感）；
+            //   ② 否则用遗留 IccMode 迁移：Enum.TryParse<IccMode> + FromIccMode
+            //      （None 与 BakeToStandard 同归 Recommended 是**有意的等价类**，不在此"修"）；
+            //   ③ 两者都不可用 ⇒ **保持当前单选不变**，并在日志里**点名**两个字段的原始取值。
+            //      本仓价值序：静默 < 响亮但看不懂 < 响亮且点名 ⇒ 绝不静默改写为 Recommended。
+            // ⚠ 日志串**保持 ASCII**：`_probe-cjk-hardcode-scan.ps1` 的判据是「UI 面硬编码中文行
+            //   不得增加」，而 `LogText.Text +=` 落进它认不出的 sink ⇒ fail-closed 计为 UI 面；
+            //   本处是**新增**行且该锁余量为 0，用中文会立刻把它顶红。
+            // ⚠ 位置：必须在所有 ComboBox 恢复（含 ColorSpaceCombo）**之后** —— 色域联动
+            //   AutoLinkIccModeFromColorSpace 会改单选，本块须是最后一次写入。
+            if (Models.ColorStrategyMapper.TryParse(p.ColorStrategy, out var presetStrategy))
+            {
+                SetColorStrategyRadio(presetStrategy);
+            }
+            else if (!string.IsNullOrWhiteSpace(p.IccMode)
+                     && Enum.TryParse<Models.IccMode>(p.IccMode, true, out var presetIccMode))
+            {
+                SetColorStrategyRadio(Models.ColorStrategyMapper.FromIccMode(presetIccMode));
+            }
+            else if (LogText != null)
+            {
+                LogText.Text += "[preset] color strategy unresolved: ColorStrategy='"
+                    + (p.ColorStrategy ?? "<null>") + "', IccMode='" + (p.IccMode ?? "<null>")
+                    + "' -- current strategy radio kept unchanged\n";
+            }
             UpdateOptionAvailability();
+
+            // ── D-1 修复（2026-09-19）：刷新**之后**再落一次「随格式变化的控件」──────────────
+            // 缺陷：`UpdateOptionAvailability()` 会 `Items.Clear()` + 重建 `ColorSpaceCombo` /
+            //   `BitDepthCombo` 并把 `SelectedIndex` 归 0，还会把 `QualitySlider.Value` 设为该格式
+            //   默认值 ⇒ 上面 `:5848`/`:5850`/`:5851` 写进去的预设值被**整体冲掉**
+            //   （症状：「应用预设」后目标色域 / 位深 / 质量三项留不住，预设形同虚设）。
+            // 修法：把这三项**移到刷新之后**再写一次。**不修改刷新函数本体** ⇒ 另外 6 个调用点
+            //   （格式切换 `:1851`、动图模式 `:1948`、能力初始化 `:2611`、简易预设 `:4604`、
+            //   GainMap 开关 `:5610`）行为**一字不变**，避免动到「切格式 ⇒ 重建候选集」的既有语义。
+            // ⚠ 不得顺手改 `:2122-2143` 的「PNG/TIFF/APNG 强制无损」——那是**既定产品语义**，
+            //   被 `UiTestHost` 的 J9a / J14d-1 / L2a-L2d 三条锁住；故质量只在**非**纯无损格式上回写。
+            // ⚠ 顺序：色域先、位深后。色域变更会触发 HDR 位深自动联动（`ColorSpaceCombo_SelectionChanged`），
+            //   后写位深 = 预设的显式位深为**最后一次写入**（与「预设即终态」的语义一致）。
+            // ⚠ 色域回写不会改坏 ICC 单选：`SetColorStrategyRadio` 已置 `_iccModeTouched = true`
+            //   ⇒ `AutoLinkIccModeFromColorSpace` 提前返回（同 `:3503-3505`）。
+            var presetFmt = NormalizeFormat(FormatCombo?.SelectedItem as string);
+            SetComboByValue(ColorSpaceCombo, p.ColorSpace);
+            SetComboByValue(BitDepthCombo, p.BitDepth);
+            if (QualitySlider != null && p.Quality >= 0
+                && presetFmt is not ("png" or "tiff" or "apng"))
+            {
+                QualitySlider.Value = p.Quality;
+            }
+
             UpdateExifToolPanelState();
             UpdateQualityLabel();
         }
@@ -5489,7 +6204,7 @@ namespace FfmpegGui
                             _selectedFileBaseDirs[path] = parentDir;
                         UpdateMediaFileCount();
                         if (LogText != null) LogText.Text += $"已拖放: {path}\n";
-                        if (MediaInfoText != null) MediaInfoText.Text = "正在获取媒体信息...";
+                        if (MediaInfoText != null) MediaInfoText.Text = Services.LocalizationService.Instance["media.loading"];
                         var info = await MediaInfoService.GetMediaInfoAsync(path);
                         if (MediaInfoText != null) MediaInfoText.Text = info;
                     }

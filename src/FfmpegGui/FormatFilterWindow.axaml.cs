@@ -54,7 +54,7 @@ namespace FfmpegGui
             panel.Children.Add(sep);
             var vidTitle = new TextBlock
             {
-                Text = "🎬 视频格式（动图模式）",
+                Text = LocalizationService.Instance["filter.video.title"],
                 FontSize = 11,
                 Foreground = Avalonia.Media.Brushes.Gray,
                 Margin = new Avalonia.Thickness(0, 2, 0, 0)

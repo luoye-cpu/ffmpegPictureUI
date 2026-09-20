@@ -1,96 +1,153 @@
+**简体中文** | [English](README.en.md)
+
 # 🖼️ FFmpegPictureUI — FFmpeg 图片转换器
 
-**v1.5.5** — 2026-08-30 Release | Cross-platform batch image/animation/video converter built on Avalonia UI.
-基于 Avalonia UI 的跨平台批量图片/动图/视频转换工具，封装 `ffmpeg`/`ffprobe` + 外部编码器 (`cjxl`/`djxl`/`cjpegli`/`JxrEncApp`/`JxrDecApp`).
+**v1.6.0** — 2026-09-16 发布 · 基于 Avalonia UI 的跨平台批量图片 / 动图 / 视频转换工具，封装 `ffmpeg` / `ffprobe` + 外部编码器（`cjxl` / `djxl` / `cjpegli` / `JxrEncApp` / `JxrDecApp`）。
 
 QQ 交流群：754439779 | [点击加群](https://qm.qq.com/q/M2181PvCkW)
 
 ---
 
-## ✨ Core Features / 核心功能
+## ✨ 核心功能
 
-| Feature 功能 | Description 说明 |
+| 功能 | 说明 |
 |---|---|
-| **Multi-format / 多格式** | JPEG, PNG, WebP, AVIF, JPEG XL, TIFF — plus animated: GIF, WebP (animated), APNG, AVIF (animated), JPEG XL (animated). JPEG LI 已整合为 JPEG 的 cjpegli 编码器选项 |
-| **Encoder backend / 编码器后端** | Selectable ffmpeg / cjxl / cjpegli per format; cjxl for JXL lossless JPEG repack — 每种格式可选不同编码器后端 |
-| **Quality control / 质量控制** | Quality slider (snap-to-tick) + format-aware numeric input — 滑块吸附整数 + 格式感知数字输入框 (JPEG q:v 2-31, JXL distance 0-15, etc.) |
-| **Advanced codec options / 高级编码选项** | Per-format advanced panels: DCT algo, progressive mode, Huffman optimize, adaptive quant, sjpeg backend, PSNR target, lossless compression level, row-mt, still-picture, modular mode — 按格式独立高级面板 |
-| **Color management / 色彩管理** | sRGB/BT.709/Display P3/BT.2020 PQ/HLG 快速选择；CICP (H.273) 始终启用；4 种 ICC 模式（无/携带/烘焙+嵌入/仅烘焙）；iccgen 自动生成标准 ICC；zscale 双向烘焙；HDR→SDR 色调映射降级；BT.2020 自动位深联动；TV/PC 色彩范围（auto 跟随输入，AVIF 原生支持）；Gain Map RGB 建议 |
-| **JXL Intelligence / JXL 智能** | Auto-detects JPEG-reconstruction vs native codestream; byte-level inspection (`JxlInspector`); picks optimal pipeline |
-| **JPEG-LI / JPEG-LI** | `cjpegli` 作为 JPEG 格式的编码器后端选项，提供完整高级配置（色度子采样、渐进模式等）|
-| **CPU SIMD / CPU 指令集** | Auto-detects AVX2/AVX/SSE4 capable binaries; runtime probe validates compatibility |
-| **Batch queue / 批量队列** | Drag & drop; configurable concurrency (1–128); stop-after-queue |
-| **Metadata editing / 元数据编辑** | ~90-field panel via exiftool; 9 categories (Basic, DateTime, Camera, Shooting, GPS, Image, IPTC, XMP, Color); double-click file opens editor — ~90字段9大分类exiftool编辑器，双击文件打开 |
-| **Privacy cleaning / 隐私清理** | Strip GPS, timestamps, camera info, all EXIF, XMP |
-| **Quality analysis / 质量分析** | SSIM + PSNR post-encode; auto-detects lossless; **.NET native PSNR** (AVX512/AVX2/SSE2, 20× faster than ffmpeg filter); **target-domain analysis** (RGB-native formats → RGB, YUV-native → YUV, matches ffmpeg 0.0000dB); **bit-depth normalized** (8/10/16-bit, MaxValue scaling) |
-| **Presets / 预设** | 29 built-in presets with secondary management window; save/load/import user presets — 29个内置预设+二级管理窗口，支持保存/加载/导入 |
-| **Dual theme / 双色主题** | Dark/Light mode; queue text adapts — 队列文字颜色自适应主题 |
-| **Bilingual UI / 双语界面** | 中文 / English one-click toggle, top-right button; JSON resource files — 右上角按钮一键切换 |
-| **Format filter / 格式筛选** | Checkbox window to enable/disable recognized image formats; persists to settings — 勾选启用的图片格式，持久化保存 |
-| **Animation mode / 动图模式** | Mode toggle (Still/Animated); FPS/loop/scale/duration controls (auto or manual); per-format advanced animated panels; video input support — 模式切换，帧率/循环/缩放/时长参数，视频输入支持 |
-| **Lossless lock / 无损锁定** | PNG/TIFF/APNG auto-lock quality at max, disable slider — 无损格式自动锁定最高质量 |
-| **Search drag-drop / 搜索拖放** | Windows Search result files correctly resolved via Shell namespace paths — Windows 搜索结果拖放正确解析 |
-| **Gain Map (Ultra HDR) / 增益图** | JPEG 输出支持 Gain Map HDR 编码（需 libultrahdr）；自动检测编码器可用性 — Ultra HDR JPEG with backward compat |
-| **Real-time progress / 实时进度** | 详情窗口实时更新命令+进度，支持 ffmpeg/cjxl/cjpegli/djxl/管道全部后端 — live command & progress for all backends |
+| **多格式** | JPEG, PNG, WebP, AVIF, JPEG XL, TIFF — 动图：GIF, WebP (动态), APNG, AVIF (动态), JPEG XL (动态)；JPEG-LI 已整合为 JPEG 的 `cjpegli` 编码器选项 |
+| **编码器后端** | 每种格式可选 `ffmpeg` / `cjxl` / `cjpegli` 编码器；`cjxl` 用于 JXL 无损 JPEG 重封装 |
+| **质量控制** | 质量滑块（吸附整数）+ 格式感知数字输入框（JPEG q:v 2-31，JXL distance 0-15 等） |
+| **高级编码选项** | 按格式独立高级面板：DCT 算法、渐进模式、Huffman 优化、自适应量化、sjpeg 后端、PSNR 目标、无损压缩级别、row-mt、still-picture、modular 模式 |
+| **色彩管理** | sRGB/BT.709/Display P3/BT.2020 PQ/HLG 快速选择；CICP (H.273) 与 ICC 双标定；4 种**色彩策略**（推荐 / 携带源 ICC / 仅CICP / 手动）；`iccgen` 自动生成标准 ICC；**ProPhoto/ROMM 像素原样保真（仅靠 ICC 描述，不归一削色）**；**纯托管 ICC 写入器**（iccgen 无法命名的空间，无需外部 .icc 资源）；zscale 双向烘焙；HDR→SDR 色调映射降级；BT.2020 自动位深联动；TV/PC 色彩范围（auto 跟随输入，AVIF 原生支持）；Gain Map RGB 建议 |
+| **JXL 智能** | 自动检测 JPEG 重建 vs 原生码流；字节级检测（`JxlInspector`）；自动选择最优管线 |
+| **JPEG-LI** | `cjpegli` 作为 JPEG 格式的编码器后端选项，提供完整高级配置（色度子采样、渐进模式等）|
+| **CPU SIMD** | 自动检测 AVX2/AVX/SSE4 兼容二进制；运行时探测验证兼容性 |
+| **批量队列** | 拖放输入；可配置并发（1–128）；队列完成后自动停止 |
+| **元数据编辑** | ~90 字段 9 大分类 exiftool 编辑器（Basic, DateTime, Camera, Shooting, GPS, Image, IPTC, XMP, Color），双击文件打开 |
+| **隐私清理** | 剥离 GPS、时间戳、相机信息、全部 EXIF、XMP |
+| **质量分析** | 编码后 SSIM + PSNR；自动检测无损；**.NET 原生 PSNR**（AVX512/AVX2/SSE2，比 ffmpeg filter 快 20×）；**目标域分析**（RGB 原生格式 → RGB，YUV 原生 → YUV，与 ffmpeg 0.0000dB 一致）；**位深归一化**（8/10/16-bit，MaxValue 缩放） |
+| **预设** | 29 个内置预设 + 二级管理窗口，支持保存/加载/导入用户预设 |
+| **双色主题** | 深色/浅色主题；队列文字颜色自适应 |
+| **双语界面** | 中文 / English 一键切换，右上角按钮即时生效，JSON 资源文件 |
+| **格式筛选** | 勾选启用的图片格式，持久化保存到设置 |
+| **动图模式** | 模式切换（静态/动图）；帧率/循环/缩放/时长控制（自动或手动）；按格式独立动画高级面板；支持视频输入 |
+| **无损锁定** | PNG/TIFF/APNG 无损格式自动锁定最高质量、禁用滑块 |
+| **搜索拖放** | Windows 搜索结果经 Shell 命名空间路径正确解析 |
+| **Gain Map (Ultra HDR)** | **全纯托管编解码，无 libultrahdr 依赖**：编码用所选 JPEG 后端（`cjpegli`/`ffmpeg mjpeg`），底层符合 ISO 21496-1 + XMP(hdrgm) + MPF 三重元数据；解码为纯托管 ISO/MPF 容器直读（exiftool 仅做交叉校验/兜底）；底图可选 **sRGB SDR**（默认，兼容 Android/libultrahdr）或 **BT.2100 PQ HDR**（实验性，容器内保留完整 HDR） |
+| **实时进度** | 详情窗口实时更新命令 + 进度，支持 ffmpeg/cjxl/cjpegli/djxl/管道全部后端 |
 
 ---
 
-## 🔧 External Tools / 外部工具依赖
+## 🔧 外部工具依赖
 
-| Tool 工具 | Status 状态 | Role 用途 |
+| 工具 | 状态 | 用途 |
 |---|---|---|
-| `ffmpeg` + `ffprobe` | ✅ Required / 必需 | Core encoding/decoding, media probing |
-| `cjxl` / `djxl` / `cjpegli` | ⭐ Recommended / 推荐 | JXL transcode, decoding, JPEG-LI encoding |
-| `JxrEncApp` / `JxrDecApp` | ⭐ Recommended / 推荐 | JPEG XR encoding/decoding (Microsoft jxrlib) |
-| `avifenc` | ⚪ Optional / 可选 | GIF → AVIF two-step encoding with alpha preservation |
-| `dngtool` | ⭐ Recommended / 推荐 | DNG 1.7 JXL 解码/编码, RAW 去马赛克 (LibRaw + Adobe DNG SDK) |
-| `exiftool` | ⚪ Optional / 可选 | Metadata editing, privacy cleaning, ICC profile embedding |
+| `ffmpeg` + `ffprobe` | ✅ 必需 | 核心编解码、媒体探测 |
+| `cjxl` / `djxl` / `cjpegli` | ⭐ 推荐 | JXL 转码、解码、JPEG-LI 编码 |
+| `JxrEncApp` / `JxrDecApp` | ⭐ 推荐 | JPEG XR 编码/解码 (Microsoft jxrlib) |
+| `avifenc` | ⚪ 可选 | GIF → AVIF 两步编码（保留 alpha） |
+| `dngtool` | ⭐ 推荐 | DNG 1.7 JXL 解码/编码、RAW 去马赛克 (LibRaw + Adobe DNG SDK) |
+| `exiftool` | ⚪ 可选 | 元数据编辑、隐私清理、ICC 嵌入 |
 
+---
 
-## 🚀 Quick Start / 快速开始
+## 🚀 快速开始
 
-### Prerequisites / 前提条件
+### 前提条件
 
-- **OS / 系统**: Windows 10/11 (其他 .NET 11 平台应可运行)
-- **.NET 11 Runtime**: [Download / 下载](https://dotnet.microsoft.com/en-us/download/dotnet/11.0)
-- **FFmpeg**: Install and ensure `ffmpeg -version` works / 安装并确认终端可运行 `ffmpeg -version`
+- **系统**：Windows 10/11（其他 .NET 11 平台应可运行）
+- **.NET 11 运行时**：[下载](https://dotnet.microsoft.com/en-us/download/dotnet/11.0)
+- **FFmpeg**：安装并确认终端可运行 `ffmpeg -version`
 
 ```bash
-# Clone and build / 克隆并构建
-git clone https://github.com/luoye-cpu/PLAN-1.git
-cd PLAN-1/ffmpegPictureUI
+# 克隆并构建
+git clone https://github.com/luoye-cpu/ffmpegPictureUI.git
+cd ffmpegPictureUI
 dotnet build src/FfmpegGui/FfmpegGui.csproj -c Release
 dotnet run --project src/FfmpegGui/FfmpegGui.csproj
 ```
 
-Or download from [Releases / 发布页](https://github.com/luoye-cpu/ffmpegPictureUI/releases).
+或从 [Releases 发布页](https://github.com/luoye-cpu/ffmpegPictureUI/releases) 下载。
 
 ---
 
-## 🔬 JXL Pipeline / JXL 转换管线
+## ⚙️ 无界面批处理（Headless CLI）
 
-The app inspects JXL file type at byte level and picks the optimal path:
+支持 `--headless` 模式，无需 GUI 即可批量转换，适合脚本/CI/服务器后台任务。
+
+### 基本用法
+
+```bash
+# 批量转换目录下所有图片为 JXL（无损，保留目录结构）
+FfmpegGui.exe --headless -i D:\Photos -o D:\Converted -f jxl -e Cjxl --preserve-structure
+
+# 指定质量/并发转为 AVIF
+FfmpegGui.exe --headless -i *.jpg -o out -f avif -q 85 -j 4
+
+# 使用预设
+FfmpegGui.exe --headless -i input.mov -o out -f jxl --preset "JXL Lossless"
+
+# 仅预览命令不执行（dry-run）
+FfmpegGui.exe --headless --dry-run -i *.jpg -o out -f jxl -e Cjxl
+
+# 结构化日志双写（控制台 + JSONL 文件）
+FfmpegGui.exe --headless -i *.jpg -o out -f jxl \
+  --log-file logs/convert.jsonl --log-format JsonLines
+```
+
+### 主要参数
+
+| 参数 | 说明 |
+|------|------|
+| `-i/--input` | 输入文件/目录/通配符（逗号分隔多个） |
+| `-o/--output` | 输出目录 |
+| `--preserve-structure` | 保留输入目录结构 |
+| `-f/--format` | 输出格式 (jpg/png/webp/avif/jxl/jxr/tiff/gif/dng) |
+| `-e/--encoder` | 编码器后端 (Ffmpeg/Cjxl/Cjpegli/Jxr/Dng) |
+| `-q/--quality` | 质量 1-100 |
+| `-j/--concurrency` | 并发任务数（默认 CPU 核心数） |
+| `--auto-threads` | 自动分配每任务线程数 |
+| `--settings <file>` | 指定配置文件 |
+| `--log-file <file>` | 日志输出文件 |
+| `--log-level <lvl>` | Error/Warn/Info/Debug/Trace |
+| `--log-format <fmt>` | Text/JsonLines |
+| `--dry-run` | 仅打印命令不执行 |
+| `--preset <name>` | 使用内置/用户预设 |
+| `--strip-*` | 隐私清理（--strip-gps/--strip-time/--strip-camera/--strip-all-exif/--strip-xmp） |
+
+### 配置分层优先级
+
+```
+环境变量 (FFMPEGGUI_*) > --settings 文件 > 便携 settings.json > 用户配置目录 > 默认
+```
+
+常用环境变量：`FFMPEGGUI_FFMPEG_DIR`、`FFMPEGGUI_OUTPUT_DIR`、`FFMPEGGUI_JXL_LIB_DIR`、`FFMPEGGUI_PLAN_DIR`、`FFMPEGGUI_GPU`。
+
+### 系统托盘
+
+关闭主窗口默认最小化到系统托盘（而非退出），队列后台继续运行。托盘菜单支持「显示主窗口 / 暂停队列 / 退出」。
+
+---
+
+## 🔬 JXL 转换管线
 
 应用通过字节级检测判断 JXL 文件类型并自动选择最优路径：
 
-### Scene A — JPEG Reconstruction / 场景 A — JPEG 套壳
+### 场景 A — JPEG 套壳（JPEG Reconstruction）
 
 ```
-.jxl (JPEG-wrapped)  ──djxl──▶  .jpg (bit-exact, zero quality loss)
-                                 .jpg（位级还原，零质量损失）
+.jxl (JPEG 套壳)  ──djxl──▶  .jpg (位级还原，零质量损失)
 ```
 
-### Scene B — Native Codestream / 场景 B — 原生 JXL
+### 场景 B — 原生（Native Codestream）
 
 ```
-.jxl (native)  ──djxl──▶  PNG stream  ══pipe══▶  cjpegli  ──▶  .jpg (preferred)
-                 ──djxl──▶  temp PNG   ──▶  cjpegli       ──▶  .jpg (fallback)
-                 ──ffmpeg libjxl──▶  mjpeg                ──▶  .jpg (last resort)
+.jxl (原生)  ──djxl──▶  PNG 流 ══管道══▶  cjpegli  ──▶  .jpg (首选)
+              ──djxl──▶  临时 PNG   ──▶  cjpegli  ──▶  .jpg (回退)
+              ──ffmpeg libjxl──▶  mjpeg     ──▶  .jpg (兜底)
 ```
 
 ---
 
-## 🏗️ Project Structure / 项目结构
+## 🏗️ 项目结构
 
 ```
 ffmpegPictureUI/
@@ -103,194 +160,42 @@ ffmpegPictureUI/
 │   │                     ExifToolService, FormatCapabilitiesService,
 │   │                     EncoderDetectionService, QualityAnalysisService,
 │   │                     ColorEncodingHelper, IccProfileService,
-│   │                     PresetManagerService, RawService, UltrahdrService,
+│   │                     PresetManagerService, RawService,
 │   │                     GpuCapabilityService, PlatformServices,
 │   │                     LocalizationService, PsRenderService, PsnrCalculator,
-│   │                     SimdPixelOps (Photoshop ACR 验证, .NET 原生 PSNR, SIMD)
+│   │                     SimdPixelOps（Photoshop ACR 验证, .NET 原生 PSNR, SIMD）
 │   ├── Controls/         MetadataEditor
 │   ├── Resources/Locales/ zh-CN.json, en-US.json
-│   ├── LocExtension.cs   XAML localization markup extension
-│   ├── MainWindow.xaml   Primary UI
-│   ├── MainWindow.xaml.cs UI logic
-│   ├── FormatFilterWindow.axaml  Format filter dialog
-│   ├── PresetManagerWindow.axaml Preset manager window
-│   ├── ProgressWindow.xaml Progress UI
-├── tools/                Verification utilities
-├── tests/                Testing (output/ ignored by git, see docs/TESTING.md)
-└── publish/              Publish output
+│   ├── LocExtension.cs   XAML 本地化标记扩展
+│   ├── MainWindow.xaml   主界面
+│   ├── MainWindow.xaml.cs UI 逻辑
+│   ├── FormatFilterWindow.axaml  格式筛选对话框
+│   ├── PresetManagerWindow.axaml 预设管理窗口
+│   ├── ProgressWindow.xaml 进度窗口
+├── tools/                验证工具
+├── tests/                测试（output/ 被 git 忽略，见 docs/TESTING.md）
+└── publish/              发布输出
 ```
 
 ---
 
-## 📝 Changelog / 更新日志
+## 📝 更新日志
 
-### v1.5.5 (2026-08-30) — 原生 JXL 转 PNG 管道传输修复
-
-**🐛 管道传输修复（实测驱动）**
-- **JXL→PNG/WebP/AVIF/TIFF/GIF 管道 PAM 识别失败** — `djxl` 解码含 alpha 通道的 JXL 时输出 PAM 流，但 ffmpeg 使用 `-f image2pipe` 无法识别 PAM（`Stream #0:0: Video: none, none` / `Could not find codec parameters`）。按流类型改用专用 demuxer：PAM→`pam_pipe`、PPM→`ppm_pipe`，两者均实测 exit=0 正常产出
-- **覆盖全部走 `PipeDjxlToFfmpegAsync` 的转换路径** — 无 alpha（PPM）不受影响，含 alpha 的 JXL 全链路修复
-
-**✅ 验证**
-- 项目编译通过（0 错误）
-- 端到端实测：含 alpha 的 JXL `djxl --output_format=pam` → `ffmpeg -f pam_pipe -i -` → PNG，exit=0，图像正确产出
-
-### v1.5.4 (2026-08-16) — 色彩管线全面修复 + UI 选项生效性审查 + 布局重构
-
-**🎨 色彩管线修复（实测驱动）**
-- **色度子采样全位深生效** — 修复 10/12/16-bit 输出恒为 4:2:0 的 Bug（`MapPixFmt` 高位深分支忽略 Chroma），4:4:4/4:2:2 在全部位深下正确映射（libaom 实测 `yuv444p10le`/`yuv422p10le`）
-- **PC 范围 TIFF → TV 范围 AVIF 修复** — 输出侧补 `-color_range` 声明，RGB 全范围输入不再被 limited 矩阵压缩（实测 Y 域：pc=10-239 / tv=26-220）
-- **TV/PC 范围自动跟随输入** — pix_fmt 推断（RGB/yuvj→pc，yuv limited→tv），输入 TV 范围图片 → 输出 TV，数据零拉伸（PSNR 53dB）
-- **AVIF 位深按编码器 clamp** — libaom/NVENC→12-bit，SVT/QSV/AMF→10-bit（防 16-bit 输入编码失败）
-- **UI 按编码器过滤选项** — `UpdateChromaBitDepthOptions()`：SVT/QSV/AMF/WebP 仅显示 auto/4:2:0；libaom/NVENC 显示 8/10/12 位深
-- **ColorRange 控件按格式隐藏** — 不支持的格式（JPEG/WebP/PNG 等）整组隐藏而非仅禁用，切换格式自动复位 auto
-
-**🔧 选项生效性全面修复（预览与入队行为一致）**
-- 新增 TIFF DPI 控件（`TiffDpiBox`，实测 300dpi 正确写入）
-- 简洁模式预设补齐字段（cjpegli 后端/PSNR、cjxl 系列、JxlEffort/Modular、WebpCompressionLevel、TiffDpi）
-- WebP 无损压缩级别仅无损模式显示
-
-**🎯 默认值与内置预设重做**
-- 模型默认值统一：`Chroma=auto`、`StripExifGps=true`、`CjpegliChromaSubsampling=auto`、`CjpegliProgressiveId=2`（渐进实测压缩率更高：体积小 5-38%）
-- WebP/TIFF 下拉默认对齐高级面板关闭时的值（picture/lzw）
-- 29 个内置预设全面重做：GIF 预设格式修正（原为 JPEG）、SVT/QSV/WebP 色度 444→420（实测仅支持 420）、JXL 色度→auto、极限压缩启用 cjpegli 渐进、PNG 快速存档补无损
-
-**🖥 顶部布局重构**
-- FFmpeg 目录 + 输出目录合并一行（Grid 弹性列宽，输出目录 1.4 倍权重）
-- 修复 Grid 列错位（输出目录标签曾落入 12px 固定列导致残字/塌陷）
-- 窗口默认 1100×850（适配 150% DPI 1080p 屏），右侧区域行比例 2:1:2（队列优先）
-
-**🌍 其他**
-- cjpegli 参数适配当前 libjxl 版本（`--fixed_code`/`--noadaptive_quantization`，移除已失效的 `--jpeg_encoder`/`--psnr`）
-- 窗口标题版本号自动同步程序集版本（`NormalizeAppTitleVersion`），发版不再遗漏
-- UI 测试方法论：UIA 边界框 + 视觉模型（SenseNova 6.8 Flash Lite）交叉验证
-
-### v1.5.3 (2026-08-15) — 原生 PSNR + 目标域质量分析 + SIMD 加速
-
-**📊 .NET 原生 PSNR（替代 ffmpeg psnr filter）**
-- 新增 `PsnrCalculator.cs` — 纯 .NET 实现，**无外部依赖**，60MP 大图 **20× 加速**（359ms→17.6ms）
-- 自动 dispatch: AVX512BW → AVX2 → SSE2 → 标量回退
-- 位深归一化: `MaxValue = (1 << bitsPerSample) - 1`，8/10/16-bit 统一计算
-- 多帧语义: `average` = 全局 MSE 聚合，`min`/`max` = 逐帧极值（与 ffmpeg 一致）
-
-**🎯 目标域质量分析（彻底解决跨格式域偏差）**
-- RGB 系格式（PNG/TIFF/JXL/APNG/GIF/BMP）→ RGB 域（rgb24/rgb48le）
-- YUV 系格式（JPEG/WebP/AVIF/HEIC/JXR）→ YUV 域（yuv444p/yuv444p16le）
-- 与 ffmpeg psnr filter **逐位一致（0.0000dB，D37 断言）**
-- `scale=out_range=pc` 统一 full range（消除 limited vs full 值域错乱）
-- UI 质量分析结果标注 `(RGB)` / `(YUV)` 域
-
-**⚡ GainMap SIMD 加速**
-- 新增 `SimdPixelOps.cs` — 4 个热点，实测数据驱动取舍
-- `FloatToSrgb8` AVX2 **2.5×**（0.15→0.06ms，1024 项 LUT + gather 插值）
-- 已集成 GainMapEncoder（ReinhardToSdr / WriteBgra8PngAsync 批量转换 / ComputeGainMap 灰度）
-- 已集成 GainMapDecoder（SrgbToLinearRgba）
+当前版本 **v1.6.0**（2026-09-16）。完整版本历史见 **[CHANGELOG.md](CHANGELOG.md)**。
 
 
-### v1.5.2 (2026-08-13) — 管线修复与元数据增强 / Pipeline Fix & Metadata Enhancements
+## 📄 许可
 
-**🔧 管线修复**
-- **修复 ffprobe 色彩字段错位解析** — `-show_entries` 逗号分隔仅最后一个字段生效，实际输出 `pix_fmt,color_space,color_primaries,color_transfer`（无 bits_per_raw_sample），此前 primaries/transfer 一直被交换。修正解析 + 位深解析器重写（yuvj420p→8、yuv420p10le→10、rgb48le→16 全覆盖）
-- **修复 RAW 预处理临时目录泄漏** — `raw_{GUID}` 目录任务完成后统一清理
-- **JXR 命令显示过期** — 显示实际 PPM/PAM 管道命令
+本项目采用 **GNU General Public License v3.0 (GPL 3.0)** 许可。
 
-**🖼 编码增强**
-- **JPEG XL 无损重封装开关** — 高级选项可独立关闭（关闭时显式 `--lossless_jpeg=0` 重新编码）
-- **光子噪声自动 ISO** — 可选从每张输入照片 EXIF 自动读取 ISO（每图独立，比固定值准确）
+- 完整许可文本：[LICENSE](LICENSE)
+- 版权与必需声明：[NOTICE](NOTICE)
+- 第三方组件许可清单：[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)
+- 各第三方许可原文：[licenses/](licenses/)
 
-**🏗 平台**
-- **NativeAOT 打包** — 2 版本发布（单文件版 / 完整版含 PLAN），全部 NativeAOT 编译，无需 .NET Runtime
-- **PLAN ffmpeg 目录模糊匹配** — 目录名包含 "ffmpeg-full" 即自动识别（如 ffmpeg-full-2026.7.24）
+> This product includes DNG technology under license by Adobe.
+> 本产品包含 Adobe 授权的 DNG 技术（dngtool 使用 Adobe DNG SDK）。
 
----
-
-### v1.5.1 (2026-07-27) — 色彩管线修复 / Color Pipeline Fix
-
-**🎨 色彩管理修复**
-- **修复 SDR→HDR 像素未转换** — 16-bit TIFF 等无元数据输入手动指定 BT.2020 PQ/HLG 时，输出仅有 HDR 标签但像素未做电光转换（画面偏暗）。`BuildColorArgsSplit` 简化模式改为返回实际输入色彩，新增通用目标色域 zscale 转换逻辑
-- **修复 JXL→PNG 卡死** — 管道模式下 `inputPath="-"` 被传给 ffprobe 探测函数导致无限阻塞。三个探测函数添加管道守卫
-- **HDR→SDR 排除判断** — 简化模式 zscale 转换排除 HDR→SDR 场景（交给 tonemap 处理，避免高光裁剪）
-
----
-
-### v1.5.0 (2026-07-23) — 正式版 / Stable Release
-
-**🎛 编码器与质量**
-- **AVIF 深度优化** — libaom 新增 aq-mode（自适应量化，Variance/Complexity）、CDEF 方向增强滤波、帧内块复制(intrabc)、胶片颗粒合成(denoise 0-50)；NVENC 新增 aq-strength(0-15)+空间自适应量化(spatial-aq)；QSV/VAAPI 新增低功耗模式(low_power)
-- **硬件编码器 7 档精细预设** — NVENC(p1~p7) / QSV(veryfast~veryslow) / VAAPI(compression_level 1~7) 独立面板，默认最高质量(p7/veryslow/7)
-- **29 个内置预设** — 覆盖 AOM×4 / SVT×4 / NVENC×3 / QSV×3 / JPEG LI×3 / JXL×4 / WebP×3 / PNG×2 / TIFF / Ultra HDR / GIF，全部使用最新参数
-- **智能默认值** — 不勾选"高级编码选项"即可获得优化输出，所有参数内置高质量默认（cpu-used=4, still-picture=1, aq-mode=variance, huffman=optimal...）
-- **PNG 增强** — 6 种预测模式带中文场景说明 + DPI 打印分辨率（默认不设，纯可选）
-
-**🌐 界面与体验**
-- **双语界面** — 中文 / English 一键切换，右上角按钮即时生效，JSON 资源文件
-- **简洁模式** — 同窗口极简覆盖视图，拖放文件直接入队，自动编码开关
-- **GPU UI 加速** — Windows ANGLE/D3D11 渲染，GPU/CPU 按钮可切换
-- **便携化部署** — 配置与预设存于 exe 同目录，零 %AppData% 依赖，拷贝即用
-
-**🎨 色彩管理**
-- **ICC 系统重写** — 4 种新模式：①无ICC(CICP) ②携带ICC ③烘焙+嵌入 ④仅烘焙；zscale 像素烘焙；iccgen 自动生成标准 ICC
-- **CICP 始终启用** — H.273 色彩标记在所有模式生效；非 CICP 格式非 sRGB 时自动嵌入 ICC
-- **HDR→SDR 自动降级** — 输出格式不支持 HDR 时自动色调映射；双重转换冲突检测与锁定
-- **色彩空间快速选择** — sRGB / BT.709 / BT.2020 PQ / BT.2020 HLG；BT.2020 自动 ≥10-bit
-
-**🔧 工具与架构**
-- **工具面板重构** — 3 列水平布局（JXL库|exiftool|artifacts）；紧凑状态栏后台检测完自动显示 ✅/❌；PLAN 便携包自动识别
-- **GPU 编码器检测** — 启动时自动检测 NVENC/QSV/AMF 可用性并逐编码器运行时验证
-- **检测模块重写** — 全异步后台管线，真实超时保护，增量日志
-- **打包优化** — 精简调试符号 ~100MB；Resources/Locales/ 多语言资源自动包含
-
-**🐛 修复与优化**
-- 消除重复 settings.json I/O；7 个外部工具并行检测
-- Windows 搜索拖放路径正确解析
-- 输出类型 WinExe，无 CMD 窗口
-
-
-<details>
-<summary>v1.5.0 Beta 版本详情 / Beta Version Details</summary>
-
-### v1.5.0 BETA3 (2026-07-15)
-- **色彩空间重构** — 简化选择器：sRGB / BT.709 / BT.2020 PQ / BT.2020 HLG；移除 BT.601；选择后自动填充 primaries/trc/matrix；BT.2020 根据源位深自动 ≥10-bit
-- **ICC 系统重写** — 4 种新模式（无ICC / 携带ICC / 烘焙+嵌入 / 仅烘焙）；zscale 像素烘焙；iccgen 自动生成标准 ICC；烘焙目标跟随色彩空间选择
-- **CICP 始终启用** — H.273 标记在所有模式生效；非 CICP 格式非 sRGB 时自动嵌入 ICC
-- **HDR→SDR 降级** — 输出格式不支持 HDR 时自动 zscale+tonemap；位深比较警告
-- **双重转换锁定** — ICC 烘焙时锁定手动色彩参数，6 种冲突场景检测
-- **打包优化** — 移除原生 .pdb 调试符号 ~100MB；55 项管线测试矩阵全部通过
-
-### v1.5.0 BETA2 (2026-07-14)
-- **简洁模式** — 同窗口极简覆盖视图；拖放直接入队；自动编码开关；预设同步主界面
-- **GPU 编码器检测** — 启动时自动检测 QSV/NVENC/AMF；逐编码器运行时验证；✅⚡⚠️❌ 彩色状态提示
-- **GPU UI 加速** — ANGLE/D3D11 渲染（Windows）；GPU/CPU 一键切换；`--no-gpu` 命令行回退
-- **启动优化** — 消除重复 I/O；7 个外部工具 Task.WhenAll 并行检测；GPU 验证延迟到后台
-- **便携化部署** — 配置/预设存于 exe 同目录 `presets/`；零 %AppData% 依赖；拷贝即用
-
-### v1.5.0 BETA (2026-07-14)
-- **ICC 色彩管理 v1** — 外部 .icc/.icm 加载；exiftool/iccgen 嵌入；zscale 像素烘焙；sRGB~Rec.2100 完整色彩空间映射
-- **预设系统 v2.0** — 24 内置预设 + 二级管理窗口 + 用户 JSON 预设 CRUD
-- **工具面板重构** — 3 列水平布局；紧凑状态栏后台检测完自动显示 ✅/❌；PLAN 便携包自动识别
-- **检测模块重写** — 全异步 3 阶段后台管线；每步 8s 超时；增量 Dispatcher 日志
-- **AVIF 编码器面板** — AOM/SVT/NVENC/QSV/AMF 各自独立选项，编码器切换时动态切换面板
-- **动图与 RAW** — 视频转动图时长限制；dngtool RAW 解码自动检测；扩展 RAW 格式支持
-
-</details>
-
-<details>
-<summary>v1.4.5 及更早 / v1.4.5 & Earlier</summary>
-
-- **v1.4.5** — Windows 搜索结果拖放路径正确解析（Shell 命名空间）；JXL 无损 JPEG 重封装（直接复制 DCT 系数，5-10× 速度）；Linux ARM 迁移技术分析完成
-- **v1.3.0** — UI 卡片化重构（圆角阴影卡片容器）；深色/浅色双主题一键切换；GridSplitter 弹性三区布局；ExifTool 隐私清理（GPS/时间/相机/EXIF/XMP 选择性删除）
-- **v1.2.0** — 批量队列引擎（ConcurrentQueue + 并发 1-128 + 失败重试）；元数据编辑器（~90 字段 9 大分类 + 双击编辑）；格式筛选窗口；预设系统 v1.0；CPU SIMD 指令集自动检测
-- **v1.0.0** — 初始发布：JPEG/PNG/WebP/AVIF/JXL/TIFF 多格式编码；质量滑块；外部编码器集成（ffmpeg/cjxl/cjpegli）；命令行构建与预览
-
-</details>
-
-## 📄 License / 许可
-
-This project is licensed under the **GNU General Public License v3.0 (GPL 3.0)**. See [../LICENSE](../LICENSE) for the full text, which also includes third-party license notices for all dependencies (Avalonia MIT, SkiaSharp MIT, FFmpeg LGPL/GPL, libjxl BSD 3-Clause, ExifTool GPL, etc.).
-
-> This product includes DNG technology under license by Adobe.  — 本产品包含 Adobe 授权的 DNG 技术（dngtool 使用 Adobe DNG SDK）。
-
-本项目采用 **GNU General Public License v3.0 (GPL 3.0)** 许可。完整文本（含全部依赖的第三方许可证声明）见 [../LICENSE](../LICENSE)。
-
-> ⚠️ GPL 3.0 is a strong copyleft license. If you distribute modified versions of this software (including in binary form), you must also make the source code available under GPL 3.0.
->
 > ⚠️ GPL 3.0 是强传染性许可证。若你分发本软件的修改版本（含二进制形式），你必须同时以 GPL 3.0 开源其源代码。
+
+> FFmpeg 是 Fabrice Bellard 的商标。本项目与 FFmpeg 项目无隶属关系，亦未获其背书。

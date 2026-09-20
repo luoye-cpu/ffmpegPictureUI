@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Threading;
 
 namespace FfmpegGui.Services;
 
@@ -64,7 +65,10 @@ public static class PlatformServices
     // ═══════════════════════════════════════════════
 
     /// <summary>在系统 PATH 中查找可执行文件（Windows=where, Unix=which）</summary>
-    public static bool TryFindInPath(string toolName, out string? fullPath)
+    /// <param name="log">日志回调（取消/超时分支点名用；null ⇒ 退回 Trace.WriteLine）</param>
+    /// <param name="ct">取消令牌（`#26`：调用方 `QueueProcessor.ProcessJxrInputAsync` 持有它却没传下来，本次接通）</param>
+    public static bool TryFindInPath(string toolName, out string? fullPath,
+        Action<string>? log = null, CancellationToken ct = default)
     {
         fullPath = null;
         try
@@ -75,14 +79,36 @@ public static class PlatformServices
                 FileName = finder,
                 Arguments = toolName,
                 RedirectStandardOutput = true,
+                StandardOutputEncoding = System.Text.Encoding.UTF8,
                 RedirectStandardError = true,
+                StandardErrorEncoding = System.Text.Encoding.UTF8,
                 UseShellExecute = false,
                 CreateNoWindow = true
             };
             using var p = Process.Start(psi);
             if (p == null) return false;
-            var output = p.StandardOutput.ReadToEnd().Trim();
-            p.WaitForExit(5000);
+            // ⚠ 先挂读取任务、再等退出（本仓范式，见 `FfmpegCommandBuilder.ProbeWithFfprobe`）：
+            //   旧的 `StandardOutput.ReadToEnd()`（同步阻塞）写在 `WaitForExit(5000)` **之前**
+            //   ⇒ 子进程不关管道就永不返回，**超时是死代码、且超时后没有 Kill**。
+            var outTask = p.StandardOutput.ReadToEndAsync();
+            var errTask = p.StandardError.ReadToEndAsync();
+            // `#26`：同步 `WaitForExit(5000)` 不接受 ct ⇒ 用 `ct.Register` 杀树接线（不改调用方）；原有 5s 超时**不变**。
+            using var reg = ct.Register(() => { try { p.Kill(entireProcessTree: true); } catch { } });
+            if (!p.WaitForExit(5000))
+            {
+                try { p.Kill(entireProcessTree: true); } catch { }
+                var tmsg = $"[path] {finder} 查找超时（5s）⇒ 已终止：{toolName}（未解析到路径）";
+                if (log != null) log(tmsg + "\n"); else System.Diagnostics.Trace.WriteLine(tmsg);
+                return false;
+            }
+            if (ct.IsCancellationRequested)
+            {
+                var cmsg = $"[path] {finder} 查找被取消 ⇒ 已终止：{toolName}（未解析到路径）";
+                if (log != null) log(cmsg + "\n"); else System.Diagnostics.Trace.WriteLine(cmsg);
+                return false;
+            }
+            var output = outTask.GetAwaiter().GetResult().Trim();
+            errTask.GetAwaiter().GetResult();
             if (string.IsNullOrWhiteSpace(output)) return false;
             var firstLine = output.Split(new[] { '\r', '\n' },
                 StringSplitOptions.RemoveEmptyEntries)[0];
@@ -129,13 +155,19 @@ public static class PlatformServices
     }
 
     // ═══════════════════════════════════════════════
-    // PLAN 文件夹检测（便携包自动识别）
+    // PLAN 文件夹检测（便携包自动识别 + 开发模式回退）
     // ═══════════════════════════════════════════════
 
     private static string? _planPath;
     private static bool _planScanned;
 
-    /// <summary>PLAN 文件夹路径（程序同目录下的 PLAN/），null=不存在</summary>
+    /// <summary>
+    /// PLAN 文件夹路径。搜索优先级：
+    /// 1. 程序同目录下的 PLAN/（发布包）
+    /// 2. 当前工作目录下的 PLAN/（dotnet run 开发模式）
+    /// 3. 进程可执行文件所在目录向上查找（临时解决方案）
+    /// 4. 环境变量 FFMPEGGUI_PLAN_DIR（显式指定）
+    /// </summary>
     public static string? PlanFolderPath
     {
         get
@@ -143,8 +175,69 @@ public static class PlatformServices
             if (!_planScanned)
             {
                 _planScanned = true;
-                var p = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "PLAN");
-                if (Directory.Exists(p)) _planPath = p;
+                
+                // 优先使用环境变量显式指定（CI/部署场景）
+                var envPlan = Environment.GetEnvironmentVariable("FFMPEGGUI_PLAN_DIR");
+                if (!string.IsNullOrWhiteSpace(envPlan) && Directory.Exists(envPlan))
+                {
+                    _planPath = envPlan;
+                    return _planPath;
+                }
+
+                // ① 程序同目录（发布包 / 单文件发布）
+                var baseDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "PLAN");
+                if (Directory.Exists(baseDir))
+                {
+                    _planPath = baseDir;
+                    return _planPath;
+                }
+
+                // ② 当前工作目录（dotnet run 开发模式，项目根目录）
+                var cwd = Directory.GetCurrentDirectory();
+                var cwdPlan = Path.Combine(cwd, "PLAN");
+                if (Directory.Exists(cwdPlan))
+                {
+                    _planPath = cwdPlan;
+                    return _planPath;
+                }
+
+                // ③ 向上查找目录树（处理 bin/Release 等嵌套情况）
+                var dir = new DirectoryInfo(cwd);
+                while (dir != null)
+                {
+                    var candidate = Path.Combine(dir.FullName, "PLAN");
+                    if (Directory.Exists(candidate))
+                    {
+                        _planPath = candidate;
+                        return _planPath;
+                    }
+                    dir = dir.Parent;
+                }
+
+                // ④ 进程可执行文件目录向上查找（单文件发布等特殊场景）
+                try
+                {
+                    var procPath = Environment.ProcessPath;
+                    if (!string.IsNullOrEmpty(procPath))
+                    {
+                        var procDir = Path.GetDirectoryName(procPath);
+                        if (!string.IsNullOrEmpty(procDir))
+                        {
+                            var pDir = new DirectoryInfo(procDir);
+                            while (pDir != null)
+                            {
+                                var cand = Path.Combine(pDir.FullName, "PLAN");
+                                if (Directory.Exists(cand))
+                                {
+                                    _planPath = cand;
+                                    return _planPath;
+                                }
+                                pDir = pDir.Parent;
+                            }
+                        }
+                    }
+                }
+                catch { }
             }
             return _planPath;
         }
@@ -184,6 +277,31 @@ public static class PlatformServices
         }
         catch { }
         return null;
+    }
+
+    /// <summary>
+    /// avifenc 定位的**全局唯一入口**（P7f）。顺序：手动路径 → artifacts 目录 → PLAN 便携文件夹 → ffmpeg 同目录。
+    /// ⚠ 曾经同一件事有三份拷贝且口径不一：队列分派判“可用”、执行方法自己重找时漏了 PLAN 分支
+    ///   ⇒ 便携发布包布局下 GIF→AVIF 两步法永远跑不到并**静默回退**；UI 又只查其中三项（漏手动路径）。
+    ///   所有“avifenc 在哪 / 是否可用”的提问都必须走本函数，不得在调用方重新拼路径。
+    /// </summary>
+    public static string? ResolveAvifencPath()
+    {
+        var manual = AppSettingsService.Current.AvifencPath;
+        if (!string.IsNullOrWhiteSpace(manual) && File.Exists(manual)) return manual;
+
+        var artifactsDir = AppSettingsService.Current.WindowsArtifactsDir;
+        if (!string.IsNullOrWhiteSpace(artifactsDir))
+        {
+            var p = Path.Combine(artifactsDir, Avifenc);
+            if (File.Exists(p)) return p;
+        }
+
+        var inPlan = TryFindInPlanFolder(Avifenc);
+        if (inPlan != null && File.Exists(inPlan)) return inPlan;
+
+        var byFfmpeg = Path.Combine(AppSettingsService.Current.FfmpegDir ?? "", Avifenc);
+        return File.Exists(byFfmpeg) ? byFfmpeg : null;
     }
 
     /// <summary>在 PLAN 文件夹的对应子目录中查找指定工具。未找到返回 null。</summary>

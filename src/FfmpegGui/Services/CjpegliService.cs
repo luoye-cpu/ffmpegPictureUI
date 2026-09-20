@@ -132,38 +132,6 @@ namespace FfmpegGui.Services
             }
         }
 
-        private static bool TryFindInPath(string exeName, out string? fullPath)
-        {
-            fullPath = null;
-            try
-            {
-                var psi = new ProcessStartInfo
-                {
-                    FileName = OperatingSystem.IsWindows() ? "where" : "which",
-                    Arguments = exeName,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    UseShellExecute = false,
-                    CreateNoWindow = true
-                };
-                using var p = Process.Start(psi);
-                if (p == null) return false;
-                var output = p.StandardOutput.ReadToEnd().Trim();
-                p.WaitForExit(5000);
-                if (!string.IsNullOrWhiteSpace(output))
-                {
-                    var firstLine = output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)[0];
-                    if (File.Exists(firstLine))
-                    {
-                        fullPath = firstLine;
-                        return true;
-                    }
-                }
-            }
-            catch { }
-            return false;
-        }
-
         public static void ClearCache()
         {
             _detected = false;
@@ -200,14 +168,16 @@ namespace FfmpegGui.Services
                 FileName = _detectedPath,
                 Arguments = args,
                 RedirectStandardOutput = true,
+                StandardOutputEncoding = Encoding.UTF8,
                 RedirectStandardError = true,
+                StandardErrorEncoding = Encoding.UTF8,
                 UseShellExecute = false,
                 CreateNoWindow = true
             };
 
             using var process = new Process { StartInfo = psi, EnableRaisingEvents = true };
 
-            using var timeoutCts = new System.Threading.CancellationTokenSource(TimeSpan.FromMinutes(5));
+            using var timeoutCts = new System.Threading.CancellationTokenSource(TimeSpan.FromMinutes(30));
             using var linked = System.Threading.CancellationTokenSource.CreateLinkedTokenSource(timeoutCts.Token, ct);
             var linkedToken = linked.Token;
 
@@ -247,7 +217,7 @@ namespace FfmpegGui.Services
         /// </summary>
         /// <param name="hdrMeta">auto 模式下的输入色彩探测结果（可选）</param>
         public static string BuildCjpegliArguments(string input, string output, Models.FfmpegOptions opts,
-            FfmpegCommandBuilder.ColorMetadata hdrMeta = default, string? iccPath = null)
+            FfmpegCommandBuilder.ColorMetadata hdrMeta = default, string? iccPath = null, bool includeThreads = true)
         {
             var sb = new StringBuilder();
             sb.Append($"\"{input}\" \"{output}\"");
@@ -283,8 +253,8 @@ namespace FfmpegGui.Services
             //   sb.Append($" --jpeg_encoder {opts.CjpegliEncoderBackend}");
             //   sb.Append($" --psnr {opts.CjpegliPsnrTarget:F2}");
 
-            // 线程（仅当多线程可用时）
-            if (opts.CjpegliMultiThreadAvailable && opts.Threads > 0)
+            // 线程（仅当多线程可用时；includeThreads=false 供裸流管道调用，与 JxlPipelineService 语义一致）
+            if (includeThreads && opts.CjpegliMultiThreadAvailable && opts.Threads > 0)
                 sb.Append($" --num_threads={opts.Threads}");
 
             // ── 色彩空间映射 ──
