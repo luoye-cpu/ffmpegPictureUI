@@ -1,5 +1,5 @@
 # 项目目录结构规范化脚本
-$root = "C:\PLAN\ffmpegPictureUI"
+$root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 Set-Location $root
 $report = @()
 

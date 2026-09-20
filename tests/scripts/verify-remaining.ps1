@@ -1,7 +1,8 @@
 # 验证剩余问题的修复状态 (三类关键用例)
-$exe = "C:\PLAN\ffmpegPictureUI\publish\build\FFmpegPictureUI-dev-x64-full\FfmpegGui.exe"
-$ffprobe = (Get-ChildItem "C:\PLAN\ffmpegPictureUI\publish\PLAN\ffmpeg-full*\ffprobe.exe" | Select-Object -First 1).FullName
-$base = "C:\PLAN\ffmpegPictureUI\tests\output\results\matrix\safe_sources"
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+$exe = "$repoRoot\publish\build\FFmpegPictureUI-dev-x64-full\FfmpegGui.exe"
+$ffprobe = (Get-ChildItem "$repoRoot\publish\PLAN\ffmpeg-full*\ffprobe.exe" | Select-Object -First 1).FullName
+$base = "$repoRoot\tests\output\results\matrix\safe_sources"
 $log = "C:\temp\verify_remaining.log"
 Remove-Item $log -Force -ErrorAction SilentlyContinue
 

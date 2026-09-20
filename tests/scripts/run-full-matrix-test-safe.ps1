@@ -8,7 +8,7 @@
 #  覆盖: 格式组合矩阵 + HDR BT.2020/SDR × 色彩深度组合
 #  ═══════════════════════════════════════════════════════════
 $ErrorActionPreference = "Continue"
-$root = "C:\PLAN\ffmpegPictureUI"
+$root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 Set-Location $root
 
 $appDir  = "$root\publish\build\FFmpegPictureUI-dev-x64-full"

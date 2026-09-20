@@ -46,7 +46,7 @@
 dotnet build tests/ServiceProbe/ServiceProbe.csproj -c Release --no-restore
 
 # 启动 GUI 前设置工具目录
-$env:FFMPEGGUI_FFMPEG_DIR = "C:/PLAN/ffmpegPictureUI/publish/PLAN/ffmpeg-full"
+$env:FFMPEGGUI_FFMPEG_DIR = "<repo-root>/publish/PLAN/ffmpeg-full"
 src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.exe
 ```
 
@@ -302,7 +302,7 @@ src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.exe
   （`FfmpegGui.dll` 23:56:17 ≥ 最新源 `QueueProcessor.cs` 23:55:47；`ServiceProbe.dll` 20:34:26 ≥ `Program.cs` 20:33:41）。
   可复现命令（需先把 `$env:FFMPEGGUI_FFMPEG_DIR` 设为本机 ffmpeg 目录）：
   ```powershell
-  $pr = 'C:\PLAN\ffmpegPictureUI\tests\ServiceProbe\bin\Release\net11.0\win-x64\ServiceProbe.exe'
+  $pr = '<repo-root>\tests\ServiceProbe\bin\Release\net11.0\win-x64\ServiceProbe.exe'
   $modes = 'contract,wire,verdict,selftest,iccname,plan,curve,matrix,ootf,hlgwire,bt2446,decision,engine,runner,settings,procstreams,encoding,ipc,i18n,geometry' -split ','
   $tp = 0; $tf = 0
   foreach ($m in $modes) {

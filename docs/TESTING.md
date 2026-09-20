@@ -1110,7 +1110,7 @@ test-output/
     **上一手交接的结论**（`docs/HANDOVER.md` 交接清单第 1 项，标记为唯一 ⚠️ 遗留）：
     「HLG 与 PQ 源同图转 SDR 像素逐位一致（PSNR=inf）——headless 路由未走进程内 ColorKernels 的 OOTF 分支」。
 
-    **复核：该结论不成立**。实测交接所用素材 `c:/PLAN/jxl_test/{hlg_src,pq_src}.png`：
+    **复核：该结论不成立**。实测交接所用素材 `<test-dir>/{hlg_src,pq_src}.png`：
     ```
     md5(hlg_src.png) = 2a037da450f73c5dffa27bdb8253109f
     md5(pq_src.png)  = 2a037da450f73c5dffa27bdb8253109f   ← 完全相同
@@ -2259,7 +2259,7 @@ test-output/
     且 `svt.aq.strength` 转为孤立，净 +1（见第 63 条）。
     ⚠ 这两个数**必须能自证口径**，可复现命令（PowerShell 5.1 / 7 均可，直接粘贴）：
     ```powershell
-    $root = 'C:\PLAN\ffmpegPictureUI\src\FfmpegGui'
+    $root = '<repo-root>\src\FfmpegGui'
     $json = Get-Content -Raw -Encoding UTF8 "$root\Resources\Locales\zh-CN.json"
     $keys = ([regex]::Matches($json, '(?m)^\s*"([A-Za-z0-9._]+)"\s*:')) |
             ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique
@@ -3273,9 +3273,9 @@ test-output/
     与引擎在 rgb48le 上缩放**不是同一个像素结果**）**尚未落盘**（队列第三位）
     ⇒ 本条现在是**前置约束**，不是"已实现"。落盘时按上列 ①~⑤ 实现 8 条断言 + M-a~M-e 五个变异。
 
-75. **清单外矩阵脚本依赖外部素材 `D:\TEST2`（人工验收环境前提，非缺陷）**
+75. **清单外矩阵脚本依赖外部素材 `<local-dir>`（人工验收环境前提，非缺陷）**
 
-    `verify-remaining.ps1:39`（`$dng = "D:\TEST2\RGBS6695-HDR\RGBS6695-HDR.dng"`，`:41-46` 六格 DNG→各格式）、
+    `verify-remaining.ps1:39`（`$dng = "<local-dir>\RGBS6695-HDR\RGBS6695-HDR.dng"`，`:41-46` 六格 DNG→各格式）、
     `run-full-matrix-test.ps1:140-152`（10 项素材清单）、`run-full-matrix-test-safe.ps1:165/167/169/171/173/206/209`、
     `final-verify.ps1:65-66`（L4-404 用同一 DNG）。
 
@@ -3287,7 +3287,7 @@ test-output/
     （+`_probe-ct-chain-closure-scan.ps1`）→ 现 **48 条**（**2026-09-19 P4-A 接线 +6**：`verify-ui-host.ps1` / `verify-ui-param-matrix.ps1` / `verify-ui-strategy-map.ps1` / `verify-ui-param-defects.ps1` / `verify-cli-strict.ps1` / `verify-png-structure.ps1`）；**每次增删必须重新数**。）
     ⚠ **维护者已裁定：不参数化**（本机硬编码路径保留）⇒ 它们是**人工验收脚本**，不是常规门禁。
     ⚠ 与 §6 已登记的「**清单内**脚本缺素材时仍 80/0」**不是一回事**：清单内脚本**自备素材**（`ensure-fixtures.ps1` / `_lib-color-assets.ps1`）；
-    **清单外**这 4 个依赖 `D:\TEST2`，且**没有任何一处登记过"缺该目录时的预期行为"（skip 还是红）** —— 这是本条要补的**具体缺口**。
+    **清单外**这 4 个依赖 `<local-dir>`，且**没有任何一处登记过"缺该目录时的预期行为"（skip 还是红）** —— 这是本条要补的**具体缺口**。
 
 76. **改动前先做「回归预判」—— 两个方向：会不会弄红别人的门禁 / 新门禁会不会自己假绿（2026-09-18 登记）**
 

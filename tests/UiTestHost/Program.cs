@@ -19,7 +19,22 @@ namespace UiTestHost
         private const BindingFlags BF = BindingFlags.NonPublic | BindingFlags.Instance;
         private const BindingFlags BFS = BindingFlags.NonPublic | BindingFlags.Static;
         private static FfmpegGui.MainWindow W = null!;
-        private static string SrcDir = @"C:\PLAN\ffmpegPictureUI\tests\output\sources";
+
+        // 仓库根：从程序集所在目录向上查找 ffmpegPictureUI.sln，避免硬编码本机路径。
+        private static readonly string RepoRoot = FindRepoRoot();
+        private static string FindRepoRoot()
+        {
+            var d = new System.IO.DirectoryInfo(AppContext.BaseDirectory);
+            while (d != null)
+            {
+                if (System.IO.File.Exists(System.IO.Path.Combine(d.FullName, "ffmpegPictureUI.sln")))
+                    return d.FullName;
+                d = d.Parent;
+            }
+            return AppContext.BaseDirectory;
+        }
+
+        private static string SrcDir = System.IO.Path.Combine(RepoRoot, "tests", "output", "sources");
 
         private static int _pass, _fail;
         private static readonly List<string> _failMsgs = new();
@@ -66,7 +81,7 @@ namespace UiTestHost
         public static int Main(string[] args)
         {
             // ══════ fail-fast：必须先显式指定 PLAN 目录 ══════
-            // 背景（实测）：`bin/.../PLAN` Junction 不存在时 PlanFolderPath 会向上误命中 `C:\PLAN`（假阳性），
+            // 背景（实测）：`bin/.../PLAN` Junction 不存在时 PlanFolderPath 会向上误命中 `<parent-dir>`（假阳性），
             // 外部工具探测随即落入**无超时**的扩展路径枚举（`C:\Program Files` + `%LocalAppData%\Programs`
             // + 每个 PATH 目录），栈恒在 FileSystemEnumerator.MoveNext，>13 min 不收敛。
             // ⇒ 未设 / 指向不存在目录时立刻拒绝运行，绝不进入那条路径。
@@ -311,7 +326,7 @@ namespace UiTestHost
                 // 反射注入 exiftool 检测可用 (真实运行时由 Detect() 设置; headless exe 无 PLAN 同级目录,
                 // 故注入以验证 UI 逻辑本身: ExifToolPanel.IsVisible=exifAvailable, strip.IsEnabled=exifAvailable&&preserve)
                 var et = typeof(FfmpegGui.Services.ExifToolService);
-                var exifReal = @"C:\PLAN\ffmpegPictureUI\publish\PLAN\exiftool\exiftool.exe";
+                var exifReal = System.IO.Path.Combine(RepoRoot, "publish", "PLAN", "exiftool", "exiftool.exe");
                 et.GetField("_detectedPath", BFS)?.SetValue(null, System.IO.File.Exists(exifReal) ? exifReal : "exiftool");
                 et.GetField("_detected", BFS)?.SetValue(null, true);
 
@@ -405,8 +420,8 @@ namespace UiTestHost
             Console.WriteLine("\n########## G组: GUI驱动端到端真实转换 ##########");
             Safe("G1 PNG端到端(添加队列→开始→产物)", () =>
             {
-                var plan = @"C:\PLAN\ffmpegPictureUI\publish\PLAN";
-                var outDir = @"C:\PLAN\ffmpegPictureUI\tests\output\gui-test";
+                var plan = System.IO.Path.Combine(RepoRoot, "publish", "PLAN");
+                var outDir = System.IO.Path.Combine(RepoRoot, "tests", "output", "gui-test");
                 var st = FfmpegGui.Services.AppSettingsService.Current;
                 st.FfmpegDirectory = System.IO.Path.Combine(plan, "ffmpeg-full");
                 st.OutputDirectory = outDir;
@@ -555,8 +570,8 @@ namespace UiTestHost
             {
                 var filter = (string?)R.GetMethod("BuildUltraWideToBt2020Filter", new[] { typeof(string) })!.Invoke(null, new object?[] { "Adobe RGB" });
                 if (filter == null) { Check("H11 滤镜非空", false, "null"); return; }
-                var ff = @"C:\PLAN\ffmpegPictureUI\publish\PLAN\ffmpeg-full\ffmpeg.exe";
-                var probeExe = @"C:\PLAN\ffmpegPictureUI\publish\PLAN\ffmpeg-full\ffprobe.exe";
+                var ff = System.IO.Path.Combine(RepoRoot, "publish", "PLAN", "ffmpeg-full", "ffmpeg.exe");
+                var probeExe = System.IO.Path.Combine(RepoRoot, "publish", "PLAN", "ffmpeg-full", "ffprobe.exe");
                 var src = System.IO.Path.Combine(SrcDir, "src_8bit.png");
                 var outP = System.IO.Path.Combine(TempDir, "_h11_bt2020.png");   // 任务 B：临时产物不进共享语料目录
                 try { if (System.IO.File.Exists(outP)) System.IO.File.Delete(outP); } catch { }
@@ -626,7 +641,7 @@ namespace UiTestHost
                 if (icc == null) { Check("I3 ProPhoto保真", false, "GetFaithfulIcc 返回 null"); return; }
                 // headless 主机无 PLAN 同级目录，且中途会被重新 Detect → 每次自维注入 exiftool 路径（同 C3）
                 var etType = typeof(FfmpegGui.Services.ExifToolService);
-                var exifReal = @"C:\PLAN\ffmpegPictureUI\publish\PLAN\exiftool\exiftool.exe";
+                var exifReal = System.IO.Path.Combine(RepoRoot, "publish", "PLAN", "exiftool", "exiftool.exe");
                 etType.GetField("_detectedPath", BFS)?.SetValue(null, System.IO.File.Exists(exifReal) ? exifReal : null);
                 etType.GetField("_detected", BFS)?.SetValue(null, true);
                 if (!FfmpegGui.Services.ExifToolService.IsAvailable)
@@ -720,7 +735,7 @@ namespace UiTestHost
             });
 
             // ── 8-bit 广色域源传播(高-1) + Bake 读探测源(中-3): 用 iccgen 生成真实 8-bit Display-P3 源 ──
-            var ffExe = @"C:\PLAN\ffmpegPictureUI\publish\PLAN\ffmpeg-full\ffmpeg.exe";
+            var ffExe = System.IO.Path.Combine(RepoRoot, "publish", "PLAN", "ffmpeg-full", "ffmpeg.exe");
             var p3 = System.IO.Path.Combine(TempDir, "_p3_8bit.png");   // 任务 B：临时产物不进共享语料目录
             try { Run(ffExe, $"-y -hide_banner -loglevel error -i \"{System.IO.Path.Combine(SrcDir, "src_8bit.png")}\" -vf \"format=rgb48le,zscale=pin=bt709:tin=iec61966-2-1:min=bt709:p=smpte432:t=iec61966-2-1:m=bt709,iccgen\" \"{p3}\""); } catch { }
             Safe("I9 8bit-P3源 auto→命令含smpte432 (高-1)", () =>

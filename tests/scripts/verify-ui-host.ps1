@@ -9,7 +9,7 @@
 # 本门禁锁住的三件事:
 #   1. **前置环境**: 先设 `FFMPEGGUI_PLAN_DIR`(按仓库根推导, 不写死绝对路径)。
 #      ⚠ 裸跑会挂死 >13 min 不收敛: `bin/.../PLAN` Junction 不存在 => `PlanFolderPath`
-#      向上误命中 `C:\PLAN`(假阳性, 因仓库恰在该路径下) => 外部工具探测落入**无超时**的
+#      向上误命中 `<parent-dir>`(假阳性, 因仓库恰在该路径下) => 外部工具探测落入**无超时**的
 #      扩展路径枚举(`C:\Program Files` + `%LocalAppData%\Programs` + 每个 PATH 目录),
 #      栈恒在 `FileSystemEnumerator.MoveNext`。宿主侧已加 fail-fast, 本脚本再从外部兜一层。
 #   2. **硬超时**(默认 120 s, `-TimeoutSec` 可覆盖)。`Start-Process -Wait` **没有** timeout

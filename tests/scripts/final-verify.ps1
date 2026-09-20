@@ -1,7 +1,8 @@
 # 最终验证脚本: 验证 3 类修复的关键用例
-$exe = "C:\PLAN\ffmpegPictureUI\publish\build\FFmpegPictureUI-dev-x64-full\FfmpegGui.exe"
-$ffprobe = (Get-ChildItem "C:\PLAN\ffmpegPictureUI\publish\PLAN\ffmpeg-full*\ffprobe.exe" | Select-Object -First 1).FullName
-$base = "C:\PLAN\ffmpegPictureUI\tests\output\results\matrix\safe_sources"
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+$exe = "$repoRoot\publish\build\FFmpegPictureUI-dev-x64-full\FfmpegGui.exe"
+$ffprobe = (Get-ChildItem "$repoRoot\publish\PLAN\ffmpeg-full*\ffprobe.exe" | Select-Object -First 1).FullName
+$base = "$repoRoot\tests\output\results\matrix\safe_sources"
 $logFile = "C:\temp\final_verification.log"
 Remove-Item $logFile -Force -ErrorAction SilentlyContinue
 
@@ -49,14 +50,14 @@ $total = 0
 # 1. HDR -> TIFF HDR 目标 (capTrc=SDR 但需完整 tonemap)
 Log ""
 Log "=== 类别1: HDR AVIF -> TIFF (HDR 目标) ==="
-$src = "C:\PLAN\ffmpegPictureUI\tests\output\results\matrix\safe_sources\hdr_avif_s.avif"
-if (TestCase "L2-233" $("C:\PLAN\ffmpegPictureUI\tests\output\results\matrix\safe_sources\hdr_avif_s.avif") "tiff" "Ffmpeg" "BT.2020 PQ" "16") { } else { $failures++ }
+$src = "$repoRoot\tests\output\results\matrix\safe_sources\hdr_avif_s.avif"
+if (TestCase "L2-233" $("$repoRoot\tests\output\results\matrix\safe_sources\hdr_avif_s.avif") "tiff" "Ffmpeg" "BT.2020 PQ" "16") { } else { $failures++ }
 $total++
 
 # 2. HDR JXL -> WebP (HDR JXL 管道丢失)
 Log ""
 Log "=== 类别2: HDR JXL -> WebP (HDR 管道) ==="
-if (TestCase "L3-315" "C:\PLAN\ffmpegPictureUI\tests\output\results\matrix\safe_sources\hdr_jxl_s.jxl" "webp" "Ffmpeg" "sRGB" "8") { } else { $failures++ }
+if (TestCase "L3-315" "$repoRoot\tests\output\results\matrix\safe_sources\hdr_jxl_s.jxl" "webp" "Ffmpeg" "sRGB" "8") { } else { $failures++ }
 $total++
 
 # 3. DNG HDR -> 各格式 (RAW HDR -> 各格式)
@@ -69,13 +70,13 @@ $total++
 # 4. 其他原本失败的关键用例
 Log ""
 Log "=== 类别4: 回归验证 ==="
-if (TestCase "avif_p3_8" "C:\PLAN\ffmpegPictureUI\tests\output\results\matrix\safe_sources\png_sdr_s.png" "avif" "Ffmpeg" "Display P3" "8") { } else { $failures++ }
+if (TestCase "avif_p3_8" "$repoRoot\tests\output\results\matrix\safe_sources\png_sdr_s.png" "avif" "Ffmpeg" "Display P3" "8") { } else { $failures++ }
 $total++
-if (TestCase "webp_p3" "C:\PLAN\ffmpegPictureUI\tests\output\results\matrix\safe_sources\png_sdr_s.png" "webp" "Ffmpeg" "Display P3" "8") { } else { $failures++ }
+if (TestCase "webp_p3" "$repoRoot\tests\output\results\matrix\safe_sources\png_sdr_s.png" "webp" "Ffmpeg" "Display P3" "8") { } else { $failures++ }
 $total++
-if (TestCase "webp_hdr_srgb" "C:\PLAN\ffmpegPictureUI\tests\output\results\matrix\safe_sources\hdr_avif_s.avif" "webp" "Ffmpeg" "sRGB" "8") { } else { $failures++ }
+if (TestCase "webp_hdr_srgb" "$repoRoot\tests\output\results\matrix\safe_sources\hdr_avif_s.avif" "webp" "Ffmpeg" "sRGB" "8") { } else { $failures++ }
 $total++
-if (TestCase "16bit_avif" "C:\PLAN\ffmpegPictureUI\tests\output\results\matrix\safe_sources\tiff16_s.png" "avif" "Ffmpeg" "" "16") { } else { $failures++ }
+if (TestCase "16bit_avif" "$repoRoot\tests\output\results\matrix\safe_sources\tiff16_s.png" "avif" "Ffmpeg" "" "16") { } else { $failures++ }
 $total++
 
 Log ""

@@ -1,8 +1,9 @@
 # 修复回归测试 v3: 使用参数数组正确调用
-$exe = "C:\PLAN\ffmpegPictureUI\publish\build\FFmpegPictureUI-dev-x64-full\FfmpegGui.exe"
-$ffprobe = (Get-ChildItem "C:\PLAN\ffmpegPictureUI\publish\PLAN\ffmpeg-full*\ffprobe.exe" | Select-Object -First 1).FullName
-$base = "C:\PLAN\ffmpegPictureUI\tests\output\results\matrix\safe_sources"
-$logFile = "C:\PLAN\ffmpegPictureUI\tests\output\results\regtest_fix_v3.log"
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+$exe = "$repoRoot\publish\build\FFmpegPictureUI-dev-x64-full\FfmpegGui.exe"
+$ffprobe = (Get-ChildItem "$repoRoot\publish\PLAN\ffmpeg-full*\ffprobe.exe" | Select-Object -First 1).FullName
+$base = "$repoRoot\tests\output\results\matrix\safe_sources"
+$logFile = "$repoRoot\tests\output\results\regtest_fix_v3.log"
 Remove-Item $logFile -ErrorAction SilentlyContinue
 
 # 取子进程 stdout 一律走 Start-Process（`& exe` 在部分宿主静默失败：输出为空 ⇒ 假红/空值）
@@ -48,7 +49,7 @@ $sw0 = [System.Diagnostics.Stopwatch]::StartNew()
 foreach ($c in $cases) {
     $id = $c[0]; $fmt = $c[1]; $enc = $c[2]; $srcName = $c[3]; $cs = $c[4]; $bd = $c[5]
     $src = "$base\$srcName"
-    $outDir = "C:\PLAN\ffmpegPictureUI\tests\output\results\regen_v3\$id"
+    $outDir = "$repoRoot\tests\output\results\regen_v3\$id"
     if (Test-Path $outDir) { Remove-Item "$outDir\*" -Force -ErrorAction SilentlyContinue } else { New-Item -ItemType Directory -Force -Path $outDir | Out-Null }
 
     # 构建参数数组（关键：用数组而非字符串）

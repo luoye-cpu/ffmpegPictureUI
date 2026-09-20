@@ -6,7 +6,7 @@
 #  输出: tests/output/results/matrix/ (git 忽略)
 # ═══════════════════════════════════════════════════════════
 $ErrorActionPreference = "Continue"
-$root = "C:\PLAN\ffmpegPictureUI"
+$root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 Set-Location $root
 
 # ── 被测主体 ──

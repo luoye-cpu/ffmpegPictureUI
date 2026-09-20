@@ -1,5 +1,5 @@
 # 归档一次性诊断脚本到 _archived 子目录
-$root = "C:\PLAN\ffmpegPictureUI"
+$root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 Set-Location $root
 $scriptsDir = "tests\scripts"
 $archivedDir = "$scriptsDir\_archived_diag"

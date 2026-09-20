@@ -114,7 +114,7 @@ Kind  : enum 26 · bool 16 · continuous 14 · path 1
 
 ### D2 ⚠⚠ **`tests/UiTestHost` 裸跑必挂**（环境耦合，与 §3「PLAN Junction」同族但症状更重）
 
-`tests/UiTestHost/bin/.../PLAN` **不存在** ⇒ `PlanFolderPath` 向上误命中 `C:\PLAN`（假阳性，因仓库恰位于 `C:\PLAN\ffmpegPictureUI`）⇒ 外部工具探测落入**无超时**的扩展路径枚举（`C:\Program Files` + `%LocalAppData%\Programs` + 每个 PATH 目录）⇒ **>13 min 不收敛**（`dotnet-stack` 显示栈恒在 `FileSystemEnumerator.MoveNext`，CPU 178%）。
+`tests/UiTestHost/bin/.../PLAN` **不存在** ⇒ `PlanFolderPath` 向上误命中 `<parent-dir>`（假阳性，因仓库恰位于 `<repo-root>`）⇒ 外部工具探测落入**无超时**的扩展路径枚举（`C:\Program Files` + `%LocalAppData%\Programs` + 每个 PATH 目录）⇒ **>13 min 不收敛**（`dotnet-stack` 显示栈恒在 `FileSystemEnumerator.MoveNext`，CPU 178%）。
 ✅ 设 `FFMPEGGUI_PLAN_DIR=<repo>\publish\PLAN` 后 **6 s 跑完**。
 ⚠ 对照：`tests/GainMapTestHost/bin/.../PLAN` **存在** ⇒ 它裸跑正常。**两个宿主行为不同纯属该目录差异。**
 
