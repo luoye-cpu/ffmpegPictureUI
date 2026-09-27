@@ -23,6 +23,8 @@ foreach ($case in @("A","B")) {
   $a = [System.IO.File]::ReadAllBytes($rawA); $b = [System.IO.File]::ReadAllBytes($rawB)
   $n = [Math]::Min($a.Length, $b.Length); $maxd = 0; $ndiff = 0
   for ($i = 0; $i + 2 -le $n; $i += 2) {
+    # ⚠ [int] 必须先转：PowerShell 的 `[byte] x -shl 8` 截断回 byte ⇒ 高位字节恒丢（>255 的 16-bit 样本读成低字节）
+    $v1 = [int]$a[$i] + ([int]$a[$i+1] -shl 8); $v2 = [int]$b[$i] + ([int]$b[$i+1] -shl 8)
     $v1 = $a[$i] + ($a[$i+1] -shl 8); $v2 = $b[$i] + ($b[$i+1] -shl 8)
     $dv = [Math]::Abs($v1 - $v2); if ($dv -gt $maxd) { $maxd = $dv }; if ($dv -gt 1) { $ndiff++ }
   }

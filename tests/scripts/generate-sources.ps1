@@ -86,7 +86,7 @@ if (Test-Path $icc) {
 
 # 给 JPEG 嵌入 ICC + EXIF (元数据测试)
 if (Test-Path "$out/srgb.icc") {
-    Exec $exif "-icc_profile<=`"$out/srgb.icc`" -DateTimeOriginal=`"2026:01:15 10:30:00`" -Artist=TestUser -GPSLatitude=31.23 -GPSLongitude=121.47 `"$out/src_photo.jpg`"" | Out-Null
+    Exec $exif "-icc_profile<=`"$out/srgb.icc`" -DateTimeOriginal=`"2026:01:15 10:30:00`" -Artist=TestUser -GPSLatitude=31.23 -GPSLongitude=121.47 `"$out/src_photo.jpg`"" | Out-Null  # 合并取数已论证：这是写标签的副作用调用（嵌 ICC + 写 EXIF/GPS），返回值 Out-Null 丢弃，不喂任何断言
     Write-Host "  ✅ src_photo.jpg 已嵌 ICC+EXIF+GPS" -ForegroundColor Green
 }
 

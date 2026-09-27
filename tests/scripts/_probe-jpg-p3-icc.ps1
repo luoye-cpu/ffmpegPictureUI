@@ -19,6 +19,9 @@ New-Item -ItemType Directory -Force -Path $d | Out-Null
 $in = "$d/src_cicp.png"
 $prExe = "$root/tests/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.exe"
 if (-not (Test-Path $prExe)) { $prExe = "$root/tests/ServiceProbe/bin/Debug/net11.0/win-x64/ServiceProbe.exe" }
+# ⚠ 2026-09-21（TESTING.md 第 84 条处置建议 ①）：**回退是静默的** —— 门禁可能测的
+#   不是你以为的那个二进制。⇒ 一律**打印被测 exe 与构建类型**，让读数可追溯。
+Write-Output ("[gate] exe=" + $prExe + $(if ($prExe -like '*\Debug\*') { " (Debug fallback)" } else { " (Release)" }))
 if (Test-Path $prExe) {
     Start-Process -FilePath $ff -ArgumentList "-y -hide_banner -loglevel error -f lavfi -i `"testsrc2=size=128x96:duration=0.1`" -frames:v 1 -update 1 -c:v png -pix_fmt rgb48be `"$in`"" -NoNewWindow -Wait | Out-Null
     # png3 <file> [sbitBits（0=不写）] [primaries transfer] ⇒ 10 = sBIT(10)；9/16 = BT.2020 PQ

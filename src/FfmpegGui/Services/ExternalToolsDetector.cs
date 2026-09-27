@@ -16,6 +16,15 @@ namespace FfmpegGui.Services
         public class ExecutableProbeResult
         {
             public bool IsRunnable { get; set; }
+            /// <summary>
+            /// ⚠ 与「超时」**必须区分**：以下三种都算「这个文件根本不可作为工具启动」——
+            ///  ① `Process.Start` 自己抛（实测：ACL 拒绝启动的 `WindowsApps\...\djxl.exe`、非 PE 的伪 `.exe`、文件已消失）；
+            ///  ② 进程起来了但**加载器**当场把它杀掉（缺依赖 DLL 等，退出码 `0xC0000135/0xC000007B/0xC0000142`，
+            ///     实测这类"起得来但不干活"若不算起不来，兜底照样报 ✅ 而任务必失败）；
+            ///  ③ 空路径。
+            /// ⇒ 但**探测超时不算**（`exiftool(-k).exe` 这类"打印完等你按键"的工具恒超时却确实能用）。
+            /// </summary>
+            public bool LaunchFailed { get; set; }
             public int? ExitCode { get; set; }
             public string StdOut { get; set; } = string.Empty;
             public string StdErr { get; set; } = string.Empty;
@@ -23,6 +32,59 @@ namespace FfmpegGui.Services
             public string? DetectedFeatures { get; set; }
             /// <summary>从输出中检测到的 SIMD 指令集列表（如 avx2, sse4）</summary>
             public List<string> SimdFeatures { get; set; } = new List<string>();
+        }
+
+        /// <summary>
+        /// **只回答"这个文件能不能作为进程启动"** —— 不解析版本、不试多组参数。
+        /// 为什么单独有它（2026-09-23）：可用性收口原本复用 <see cref="ProbeExecutable"/>，
+        /// 而那个原语会**依次试 5 组参数**（`--version/-version/--help/-h/?`）每组最多等 2 s
+        /// ⇒ 最坏 **~10 s**。而 `RawService.Detect()` 有 UI 线程调用点
+        /// （`MainWindow.InitControls()` 与 `RefreshArtifactsServices()` ⇒ "重新检测/换目录"），
+        /// 等于把一个未声明的上界放进用户必点的交互路径里。
+        /// 三种"起不来"形态**逐字保持**（与 `ExecutableProbeResult.LaunchFailed` 同一口径）：
+        ///   ① `Process.Start` 抛（ACL 拒绝、非 PE、文件已消失）；
+        ///   ② 起来了但被**加载器**当场杀掉（`0xC0000135/0xC000007B/0xC0000142`）；
+        ///   ③ 空路径 / 文件不存在。
+        /// ⚠ **超时不算起不来** ⇒ 跑到预算仍未退出即判"起得来"并立刻 Kill
+        ///   （`exiftool(-k).exe` 这类"打印完等你按键"的工具恒"不退出"却确实能用）。
+        /// 预算默认 1000 ms ⇒ 单次启动、界内可预期。
+        /// </summary>
+        public static bool CanLaunch(string? exePath, int budgetMs = 1000)
+        {
+            if (string.IsNullOrWhiteSpace(exePath) || !File.Exists(exePath)) return false;   // ③
+            Process? p = null;
+            try
+            {
+                p = Process.Start(new ProcessStartInfo
+                {
+                    FileName = exePath,
+                    Arguments = "--version",            // 只试一组：起不起得来与参数是否被认识无关
+                    UseShellExecute = false,
+                    RedirectStandardOutput = false,     // 不重定向 ⇒ 无需排空，也就不会因缓冲堵死
+                    RedirectStandardError = false,
+                    CreateNoWindow = true,
+                });
+            }
+            catch
+            {
+                return false;                            // ①
+            }
+            if (p == null) return false;                 // ①（某些宿主 Start 返回 null）
+            try
+            {
+                if (!p.WaitForExit(budgetMs))
+                {
+                    // 预算内没退出 ⇒ 它确实在跑（等输入/等参数）⇒ 判可启动，别把它留下
+                    try { p.Kill(entireProcessTree: true); } catch { }
+                    return true;
+                }
+                return !IsLoaderFailureExit(p.ExitCode); // ②
+            }
+            catch { return true; }                       // 读不到退出码但进程已存在过 ⇒ 保守判「起得来」
+            finally
+            {
+                try { p.Dispose(); } catch { }
+            }
         }
 
         /// <summary>
@@ -34,7 +96,13 @@ namespace FfmpegGui.Services
             Action<string>? log = null)
         {
             var res = new ExecutableProbeResult();
-            if (string.IsNullOrWhiteSpace(exePath) || !File.Exists(exePath)) return res;
+            if (string.IsNullOrWhiteSpace(exePath) || !File.Exists(exePath))
+            {
+                // ⚠ 文件根本不存在 ⇒ 属于「起不来」而不是「探测超时」⇒ 必须让兜底把它排除，
+                //   否则枚举与启动之间的时间窗里文件消失（删档/清理器）也会被判成可用工具。
+                res.LaunchFailed = true;
+                return res;
+            }
 
             var argsToTry = new[] { "--version", "-version", "--help", "-h", "/?" };
             foreach (var arg in argsToTry)
@@ -54,7 +122,8 @@ namespace FfmpegGui.Services
                     };
 
                     using var p = Process.Start(psi);
-                    if (p == null) continue;
+                    if (p == null) { res.LaunchFailed = true; continue; }
+                    res.LaunchFailed = false;   // 起得来 ⇒ 清掉更早的参数留下的标记
 
                     // ⚠ 先挂读取任务、再等退出（本仓范式，见 `FfmpegCommandBuilder.ProbeWithFfprobe`）：
                     //   旧写法把同步读写在 `WaitForExit(timeoutMs)` **之前** ⇒ 子进程不关管道就永不返回，
@@ -91,11 +160,15 @@ namespace FfmpegGui.Services
 
                     // 判定为可运行：退出码为0或有输出文本被视为可用（某些工具在 --version 时返回非0但仍输出信息）
                     res.IsRunnable = (res.ExitCode == 0) || !string.IsNullOrWhiteSpace(res.StdOut) || !string.IsNullOrWhiteSpace(res.StdErr);
+                    // ⚠ 起来了但被**加载器**当场杀掉（缺 DLL / 镜像格式不对）⇒ 等同"起不来"（见 LaunchFailed 注释 ②）
+                    if (!res.IsRunnable && IsLoaderFailureExit(res.ExitCode)) res.LaunchFailed = true;
                     return res;
                 }
                 catch (Exception ex)
                 {
                     // 记录异常到 stderr 字段，继续尝试下一个参数
+                    // ⚠ 起不来 ≠ 超时：标记下来，供 ChooseBestExecutable 的兜底排除（见 LaunchFailed 注释）
+                    res.LaunchFailed = true;
                     res.StdErr += ex.Message + "\n";
                     try { if (File.Exists(exePath) && OperatingSystem.IsWindows()) { } } catch { }
                 }
@@ -174,7 +247,9 @@ namespace FfmpegGui.Services
             try
             {
                 // 查找所有可执行文件（包含子目录），并按已知名称分类（支持带特征后缀的可执行文件）
-                foreach (var exe in Directory.EnumerateFiles(dir, PlatformServices.ExeSearchWildcard, SearchOption.AllDirectories))
+                // ⚠ 走 EnumerateFilesSafe：用户完全可能选到一棵大树（实测含 junction 回环的目录会让
+                //   AllDirectories 永不返回），这里必须"有预算地扫 + 说明扫到哪"，不能挂死界面。
+                foreach (var exe in EnumerateFilesSafe(dir, PlatformServices.ExeSearchWildcard))
                 {
                     var name = Path.GetFileName(exe).ToLowerInvariant();
                     if (name.Contains("cjxl"))
@@ -201,7 +276,7 @@ namespace FfmpegGui.Services
                 {
                     try
                     {
-                        foreach (var dll in Directory.EnumerateFiles(dir, pat, SearchOption.AllDirectories))
+                        foreach (var dll in EnumerateFilesSafe(dir, pat))
                         {
                             if (!res.FoundDlls.Contains(dll)) res.FoundDlls.Add(dll);
                         }
@@ -214,12 +289,137 @@ namespace FfmpegGui.Services
             return res;
         }
 
+        /// <summary>递归扫描的**单根**预算（秒）。判据取自实测，不是猜的：
+        /// 合法根 `C:\Program Files` 全树 = 11.5 s ⇒ 留 ~30% 余量取 15 s。</summary>
+        public const int PerRootScanBudgetSec = 15;
+
+        /// <summary>一次 <see cref="FindToolInExtendedPaths"/> 的**总**预算（秒）：
+        /// 实测扩展根有 35 个，只按单根收口最坏仍是分钟级 ⇒ 再收一道总口。
+        /// 合法命中实测都落在前两个根（≤ 12 s）。</summary>
+        public const int ExtendedScanTotalBudgetSec = 60;
+
+        /// <summary>
+        /// 退出码是否属于「进程被 Windows 加载器当场杀掉」（镜像/依赖问题）—— 这类文件**不是可用的工具**，
+        /// 与「工具本身不支持该参数」（业务失败）或「探测超时」都不同。
+        /// </summary>
+        private static bool IsLoaderFailureExit(int? exitCode)
+        {
+            if (!exitCode.HasValue) return false;
+            int c = exitCode.Value;
+            return c == unchecked((int)0xC0000135)    // STATUS_DLL_NOT_FOUND
+                || c == unchecked((int)0xC000007B)    // STATUS_INVALID_IMAGE_FORMAT
+                || c == unchecked((int)0xC0000142);   // STATUS_DLL_INIT_FAILED
+        }
+
+        /// <summary>
+        /// 扫描日志出口：有 log 回调就交给它（进应用日志面板），否则进 Trace。
+        /// ⚠ 调用点必须把**整条消息写在同一行**。机制（2026-09-23 实测，别再凭猜改）：
+        ///   `_probe-cjk-hardcode-scan` 的 ②-c 按「该行**第一个**含中文的字面量」分桶——
+        ///   以 <c>[</c> 开头的进 <c>[tag]</c> 桶（不判），否则看同一行有没有 sink 令牌，再落进判据桶（UI 面）。
+        ///   本类的消息一律以 <c>[detect] …</c> 开头 ⇒ 靠的是**前缀进 [tag] 桶**而**不是** sink：
+        ///   sink 正则里的 <c>\bLog\s*\(</c> 在 <c>DiagLog(</c> 处**没有词边界**（前面是字母 g）⇒ 不匹配。
+        ///   ⇒ 一旦把字面量折行，续行的第一个字面量既不以 <c>[</c> 开头、同行也没有 sink ⇒ 抬一次棘轮。
+        /// </summary>
+        private static void DiagLog(Action<string>? log, string msg)
+        {
+            if (log != null) log(msg + "\n"); else System.Diagnostics.Trace.WriteLine(msg);
+        }
+
+        /// <summary>
+        /// 带预算的递归文件收集。**四条硬约束都对应实测踩过的坑**：
+        ///  ① 自己走显式栈、**跳过重解析点**：PATH 里只要出现一棵大树（实测本机进程 PATH 含
+        ///    `C:\Users\&lt;me&gt;`，用户配置文件根目录），.NET 的 AllDirectories 递归就**永不返回**
+        ///    —— 60 s 仍不返回、句柄以 ~2000/s 涨到 9 万、单核满载 ⇒ 启动/入队路径直接挂死。
+        ///  ② 预算按**目录**收口而不是按命中收口：`*djxl*.exe` 这种稀有通配在"只数命中"的写法下
+        ///    永远不会触发检查点，等于没有预算。
+        ///  ③ 文件枚举与子目录枚举**各自容错**：两者若共用一个 try，"这一层的文件读崩了"会连带
+        ///    **整棵子树不入栈** ⇒ 又回到"静默丢命中"。
+        ///  ④ 被跳过的目录数必须**报出来**：只报超时不报跳过 = 把"扫不全"这件事藏进成功路径。
+        /// 超预算 ⇒ 返回已收集到的部分，并**点名**是哪个根被截断（不得静默）。
+        /// </summary>
+        public static List<string> EnumerateFilesSafe(
+            string root, string wildcard, Action<string>? log = null, int budgetSec = PerRootScanBudgetSec)
+        {
+            var hits = new List<string>();
+            if (string.IsNullOrWhiteSpace(root) || !Directory.Exists(root)) return hits;
+
+            var sw = Stopwatch.StartNew();
+            var stack = new Stack<string>();
+            stack.Push(root);
+            int dirs = 0, reparse = 0, blocked = 0;
+            bool truncated = false;
+            while (stack.Count > 0)
+            {
+                if (sw.Elapsed.TotalSeconds > budgetSec) { truncated = true; break; }
+                var dir = stack.Pop();
+                try
+                {
+                    dirs++;
+                    foreach (var f in Directory.EnumerateFiles(dir, wildcard)) hits.Add(f);
+                }
+                catch { blocked++; /* 本层文件不可读 ⇒ 只丢这一层，子目录照旧入栈 */ }
+                try
+                {
+                    foreach (var d in Directory.EnumerateDirectories(dir))
+                    {
+                        if (sw.Elapsed.TotalSeconds > budgetSec) { truncated = true; break; }
+                        try
+                        {
+                            if ((File.GetAttributes(d) & FileAttributes.ReparsePoint) != 0) { reparse++; continue; }
+                        }
+                        catch { blocked++; continue; }
+                        stack.Push(d);
+                    }
+                }
+                catch { blocked++; }
+            }
+            // ⚠ 只在**真的截断**时出声。实测普通令牌下 `C:\Program Files\WindowsApps` 的 DACL 无 AU/BU 允许 ACE
+            //   ⇒ "被挡目录数 > 0" 在一次**正常**扫描里恒成立；重解析点更是设计内跳过。
+            //     把它们做成常态日志 ⇒ 每根×每工具都喷一行（`ScanDirectory` 一次就 7 行），把"点名异常"稀释成噪声。
+            if (truncated)
+                DiagLog(log, $"[detect] 递归扫描超出 {budgetSec}s 预算 ⇒ 已截断：{root}（已扫 {dirs} 个目录，跳过重解析 {reparse} 个、不可访问 {blocked} 个；扫不到的工具可在设置里手动指定路径）");
+            return hits;
+        }
+
+        /// <summary>按**目录边界**判断 <c>candidate</c> 是否等于 <c>parent</c> 或位于其下（Windows 路径大小写不敏感）。</summary>
+        private static bool IsUnderDirectory(string candidate, string parent)
+        {
+            if (string.IsNullOrEmpty(candidate) || string.IsNullOrEmpty(parent)) return false;
+            var c = candidate.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            var p = parent.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            if (c.Length < p.Length) return false;
+            if (!c.StartsWith(p, StringComparison.OrdinalIgnoreCase)) return false;
+            // 必须正好相等，或紧接着一个分隔符（否则 C:\Windowsold 会冒充 C:\Windows 的子目录）
+            return c.Length == p.Length || c[p.Length] == Path.DirectorySeparatorChar || c[p.Length] == Path.AltDirectorySeparatorChar;
+        }
+
+        /// <summary>
+        /// 候选是否可能是「可直接 Process.Start 的可执行文件」。
+        /// Windows 按扩展名收口（Prefetch 的 <c>*.EXE-*.pf</c>、DLL、说明文件等一律不算）；
+        /// 其余平台的外部工具常无扩展名 ⇒ 不做限制（否则会误杀）。
+        /// </summary>
+        private static bool IsExecutableFile(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path)) return false;
+            if (!OperatingSystem.IsWindows()) return true;
+            var ext = Path.GetExtension(path);
+            return ext.Equals(".exe", StringComparison.OrdinalIgnoreCase)
+                || ext.Equals(".com", StringComparison.OrdinalIgnoreCase);
+        }
+
         public static string? ChooseBestExecutable(IEnumerable<string> candidates)
         {
             if (candidates == null) return null;
             CpuFeatureService.Detect();
             var list = new List<string>(candidates);
-            // 过滤掉用户手动忽略的路径
+            // ⚠ 只接受**真正可执行**的候选（本函数是唯一收口，故在这里统一把关）：
+            //   调用方的通配常写成 `*exiftool*` / `*jxr*` 这种**不限扩展名**的形式，而 Windows 的 PATH
+            //   含 `C:\Windows`，候选又以 AllDirectories 递归 ⇒ 实测命中
+            //   `C:\Windows\Prefetch\EXIFTOOL.EXE-65513778.pf`，加上末尾那条「探测全失败仍返回 list[0]」的
+            //   回退，面板会报 `exiftool: ✅` 而真正 Process.Start 时抛 InvalidApplication（任务失败、
+            //   已产出的成品还被半成品清理删掉）。⇒ 非可执行文件必须在进入排序/回退前就剔除。
+            list.RemoveAll(p => !IsExecutableFile(p));
+            // ⚠ 用户手动忽略的路径
             try
             {
                 var ignored = AppSettingsService.Current.IgnoredToolPaths;
@@ -254,6 +454,7 @@ namespace FfmpegGui.Services
             ordered.AddRange(remaining);
 
             // 逐个验证候选（运行 --version 等），首个通过运行验证的优先返回
+            var unlaunchable = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var cand in ordered)
             {
                 try
@@ -261,13 +462,18 @@ namespace FfmpegGui.Services
                     var probe = ProbeExecutable(cand, timeoutMs: 2000);
                     if (probe != null && probe.IsRunnable)
                         return cand;
+                    // ⚠ 只登记「Process.Start 自己抛了」的候选。探测**超时**不进这里 ——
+                    //   `exiftool(-k).exe` 这类"打印完等你按键"的工具恒超时，但它确实能用，
+                    //   把超时也算成起不来 ⇒ 直接砍掉一条真实可用的安装形态。
+                    if (probe != null && probe.LaunchFailed) unlaunchable.Add(cand);
                 }
-                catch { }
+                catch { unlaunchable.Add(cand); }
             }
 
             // 回退：返回第一个文件存在且文件名不含特征后缀的通用版本
             foreach (var c in list)
             {
+                if (unlaunchable.Contains(c)) continue;
                 var name = Path.GetFileName(c).ToLowerInvariant();
                 bool hasFeatureTag = false;
                 foreach (var tag in priorityTags)
@@ -277,7 +483,13 @@ namespace FfmpegGui.Services
                 if (!hasFeatureTag) return c;
             }
 
-            return list.Count > 0 ? list[0] : null;
+            // ⚠⚠ 末尾兜底**不得**把"已证实起不来"的文件报成可用工具（可用性诚实原则）：
+            //   实测本机 `C:\Program Files\WindowsApps\LinYuSen.HDRImageViewer_1.0.31.0_x64__phzzaxm6z2j1m\
+            //   encoders\x64\djxl.exe` 是别的包里的私有二进制，普通令牌 Process.Start 直接 Access Denied，
+            //   而旧写法照样返回它 ⇒ 面板 ✅、真跑时 InvalidApplication（任务失败），
+            //   并让「模拟工具缺失」的两条门禁（jxl-codestream-route ⑦ / ffmpeg-heartbeat ③）自检转红。
+            var launchable = list.Where(p => !unlaunchable.Contains(p)).ToList();
+            return launchable.Count > 0 ? launchable[0] : null;
         }
 
         /// <summary>
@@ -355,6 +567,23 @@ namespace FfmpegGui.Services
             if (!OperatingSystem.IsWindows())
                 return paths;
 
+            // ⚠ 可注入的收口（**门禁与部署都需要它**）：显式给出搜索根时，本函数只返回这些根。
+            //   动机是实测教训：「模拟某工具不可用」的门禁原先只能把 PLAN/手动路径指向空目录，
+            //   而探测的第 ④ 步仍会把整台机器找一遍 —— 本机因此被 `C:\Program Files\WindowsApps\`
+            //   里另一个应用自带的私有 `djxl.exe` 命中 ⇒ 降级断言的自检判「模拟没生效」而红。
+            //   ⇒ 降级路径的判据**不能依赖本机恰好没装过某个第三方应用**。
+            //   空段与不存在的目录一律丢弃（否则一个末尾 `;` 就等于"不覆盖"，静默失效）。
+            var over = Environment.GetEnvironmentVariable("FFMPEGGUI_EXT_SEARCH_DIRS");
+            if (!string.IsNullOrWhiteSpace(over))
+            {
+                foreach (var seg in over.Split(';'))
+                {
+                    var t = seg.Trim();
+                    if (t.Length > 0 && Directory.Exists(t)) paths.Add(t);
+                }
+                return paths;
+            }
+
             try
             {
                 // %LocalAppData%\Programs\ （scoop 安装位置）
@@ -382,11 +611,19 @@ namespace FfmpegGui.Services
                 var pathEnv = Environment.GetEnvironmentVariable("PATH");
                 if (!string.IsNullOrEmpty(pathEnv))
                 {
+                    // ⚠ 不扫系统目录（本函数返回的每个目录都会被 FindToolInDirectory 以
+                    //   SearchOption.AllDirectories **递归**遍历）：实测 PATH 含 `C:\Windows` ⇒
+                    //   扫到 `C:\Windows\Prefetch\EXIFTOOL.EXE-*.pf` 并被当成工具（面板假 ✅，真正
+                    //   Process.Start 抛 InvalidApplication），且遍历整棵 Windows 树本身是分钟级开销。
+                    //   「装在 PATH 里的工具」另由第⑤步 TryFindInPath **非递归**解析 ⇒ 排除系统目录不丢能力。
+                    var winDir = (Environment.GetFolderPath(Environment.SpecialFolder.Windows) ?? "")
+                                     .TrimEnd(Path.DirectorySeparatorChar);
                     foreach (var segment in pathEnv.Split(';'))
                     {
                         var trimmed = segment.Trim();
-                        if (!string.IsNullOrEmpty(trimmed) && Directory.Exists(trimmed))
-                            paths.Add(trimmed);
+                        if (string.IsNullOrEmpty(trimmed) || !Directory.Exists(trimmed)) continue;
+                        if (winDir.Length > 0 && IsUnderDirectory(trimmed, winDir)) continue;
+                        paths.Add(trimmed);
                     }
                 }
             }
@@ -397,13 +634,21 @@ namespace FfmpegGui.Services
 
         /// <summary>
         /// 在扩展搜索路径中查找工具。返回找到的第一个匹配路径，未找到返回 null。
+        /// ⚠ 除单根预算外再收一道**总**预算：实测扩展根有 35 个，只按单根收口最坏仍是分钟级。
         /// </summary>
-        public static string? FindToolInExtendedPaths(string toolName, string searchWildcard)
+        public static string? FindToolInExtendedPaths(
+            string toolName, string searchWildcard, Action<string>? log = null)
         {
             var extendedPaths = GetExtendedSearchPaths();
+            var sw = Stopwatch.StartNew();
             foreach (var dir in extendedPaths)
             {
-                var found = PlatformServices.FindToolInDirectory(dir, toolName, searchWildcard);
+                if (sw.Elapsed.TotalSeconds > ExtendedScanTotalBudgetSec)
+                {
+                    DiagLog(log, $"[detect] {toolName} 的扩展搜索超出总预算 {ExtendedScanTotalBudgetSec}s ⇒ 放弃剩余根（可在设置里手动指定该工具路径）");
+                    return null;
+                }
+                var found = PlatformServices.FindToolInDirectory(dir, toolName, searchWildcard, log);
                 if (found != null) return found;
             }
             return null;
@@ -449,12 +694,19 @@ namespace FfmpegGui.Services
         {
             var results = new List<ToolCapability>();
 
-            // 确保所有 Service 已完成检测
-            CjxlService.Detect();
-            DjxlService.Detect();
-            CjpegliService.Detect();
-            JxrService.Detect();
+            // ⚠ 这里原先无条件把 5 个 service 的 `Detect()` **各再跑一遍**：GUI 启动 Step1 已经
+            //   `ClearCache(); Detect();` 过一次 ⇒ 同一条 5 级路径搜索（含最坏 60 s 的扩展搜索）
+            //   在一次启动里被跑两遍。⇒ 改成"确保已检测"而不是"强制重扫"：读 `DetectedPath`
+            //   （getter 自带"没检测过才检测"），需要重扫的调用方自己先 `ClearCache()`。
+            _ = CjxlService.DetectedPath;
+            _ = DjxlService.DetectedPath;
+            _ = CjpegliService.DetectedPath;
+            _ = JxrService.DetectedPath;
+            // exiftool 走 Detect(log) 而不是 DetectedPath：`#26` 要求把它的取消/超时点名送进 log，
+            // 而它自身已带"一进程一遍"门控 ⇒ 这里重复调用是零开销。
             ExifToolService.Detect(log);
+            // RawService 的 `DetectedPath` **不触发**检测 ⇒ 保留显式 Detect()（其内部是
+            // `if (_detected) return` 的幂等守卫，零开销）。
             RawService.Detect();
 
             // ffmpeg
@@ -530,8 +782,9 @@ namespace FfmpegGui.Services
             {
                 Name = "avifenc",
                 Path = avifenc,
-                Version = ProbeAndVersion(avifenc ?? "", log),
-                IsAvailable = avifenc != null
+                Version = ProbeAndVersion(avifenc ?? "", log),   // ⚠ 必须在 IsAvailable 之前：本行顺带记录启动性
+                // ⚠ `!= null` 不够 —— 见 `ProbeAndVersion` 的注释：起不来的 exe 也必须算不可用（面板与执行同源）。
+                IsAvailable = avifenc != null && !PlatformServices.IsToolUnlaunchable(avifenc)
             });
 
             // dngtool — DNG 1.7 JXL 解码/编码 (LibRaw + Adobe DNG SDK)
@@ -542,8 +795,8 @@ namespace FfmpegGui.Services
             {
                 Name = "dngtool",
                 Path = File.Exists(dngtool) ? dngtool : null,
-                Version = ProbeAndVersion(dngtool, log),
-                IsAvailable = File.Exists(dngtool)
+                Version = ProbeAndVersion(dngtool, log),          // ⚠ 同上：先探测并记录，再判可用性
+                IsAvailable = File.Exists(dngtool) && !PlatformServices.IsToolUnlaunchable(dngtool)
             });
 
             return results;
@@ -584,6 +837,15 @@ namespace FfmpegGui.Services
         {
             if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return null;
             var probe = ProbeExecutable(path, 2000, log);
+            // ⚠ 顺手把「起得来 / 起不来」记进 PlatformServices 的启动性备忘录（2026-09-23）。
+            //   动机：`avifenc` / `dngtool` 这两个**没有独立 Service** 的工具，可用性一直只看
+            //   `!= null` / `File.Exists` ⇒ 落进 WindowsApps 那种 ACL 拒绝启动的 exe 时，
+            //   面板报 ✅、队列却 `InvalidApplication` 失败（且已产出的成品会被半成品清理删掉）。
+            //   这里记录是**零额外开销**的：探测本来就在上一行跑了，只是原先把结论丢掉只留 Version。
+            //   ⚠ 只记 `LaunchFailed`（含"Process.Start 抛异常"与"被加载器当场杀掉"），
+            //     **不记超时** —— `exiftool(-k).exe` 这类"打印完等你按键"的工具恒超时却确实能用。
+            if (probe.LaunchFailed) PlatformServices.RecordToolUnlaunchable(path);
+            else PlatformServices.RecordToolLaunchable(path);
             return probe.Version;
         }
 

@@ -80,8 +80,14 @@ $root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path; Set-Location $roo
 $env:FFMPEGGUI_FFMPEG_DIR = "$root/publish/PLAN/ffmpeg-full"
 $exe = "$root/src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.exe"
 if (-not (Test-Path $exe)) { $exe = "$root/src/FfmpegGui/bin/Debug/net11.0/win-x64/FfmpegGui.exe" }
+# ⚠ 2026-09-21（TESTING.md 第 84 条处置建议 ①）：**回退是静默的** —— 门禁可能测的
+#   不是你以为的那个二进制。⇒ 一律**打印被测 exe 与构建类型**，让读数可追溯。
+Write-Output ("[gate] exe=" + $exe + $(if ($exe -like '*\Debug\*') { " (Debug fallback)" } else { " (Release)" }))
 $pr  = "$root/tests/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.exe"
 if (-not (Test-Path $pr)) { $pr = "$root/tests/ServiceProbe/bin/Debug/net11.0/win-x64/ServiceProbe.exe" }
+# ⚠ 2026-09-21（TESTING.md 第 84 条处置建议 ①）：**回退是静默的** —— 门禁可能测的
+#   不是你以为的那个二进制。⇒ 一律**打印被测 exe 与构建类型**，让读数可追溯。
+Write-Output ("[gate] exe=" + $pr + $(if ($pr -like '*\Debug\*') { " (Debug fallback)" } else { " (Release)" }))
 $ff = "$root/publish/PLAN/ffmpeg-full/ffmpeg.exe"
 $fp = "$root/publish/PLAN/ffmpeg-full/ffprobe.exe"
 
@@ -106,6 +112,18 @@ function Exec([string]$file, [string]$argStr, [string]$tag) {
   return @{ code = $p.ExitCode; text = ([System.IO.File]::ReadAllText($o) + "`n" + [System.IO.File]::ReadAllText($e)) }
 }
 
+# 只读 stdout 版（取「工具的值」专用，返回形态与 Exec 一致 ⇒ `.code` 判据不受影响）：
+#   ffprobe 的 `-of csv` 字段值走 **stdout**，合并 stderr 会把报错行当值返回 —— 实测（本机、同一门禁
+#   形状）ffprobe 在截断 AVIF 上 stdout 为 0 B、stderr 166 B 全是 `moov atom not found` + 带数字的
+#   路径 ⇒ 本文件 FrameCount/ImgSize 的判据（帧数 >1、尺寸 ==128x96）读的是被污染的串。
+#   读产品/探针的 headless 日志（**只在 stderr**）时仍用上面的 Exec。
+function ExecOut([string]$file, [string]$argStr, [string]$tag) {
+  $o = "$work/$tag.out"; $e = "$work/$tag.err"
+  $p = Start-Process -FilePath $file -ArgumentList $argStr -Wait -NoNewWindow -PassThru `
+       -RedirectStandardOutput $o -RedirectStandardError $e
+  return @{ code = $p.ExitCode; text = [System.IO.File]::ReadAllText($o) }
+}
+
 # 真实帧数：ffprobe `-count_frames`（**不用** `frame=` 日志字段）。取不到（如单帧静图的空值）记 0。
 # ⚠ 只认**整行就是数字**的输出行：ffprobe 的报错里会带上含数字的路径（GUID 目录名），
 #   宽松匹配 `\d+` 会把路径里的数字当帧数 ⇒ 假绿。
@@ -119,8 +137,10 @@ function Exec([string]$file, [string]$argStr, [string]$tag) {
 #       ⇒ 「全流取 max」会把单帧文件判成 **Multiple（假 Multiple）**，「全流求和」更离谱（46/55）。
 #   ⇒ **唯一正确形态**：`-select_streams v`（**滤掉音频**；不是 `v:0`，也不是全流）+ 然后**取 max**（**不得求和**）。
 #   ⚠ 同一形态对 `-count_frames` 一样成立（全流 `1 + 44`）⇒ **换方法救不了**，两条都必须 `-select_streams v`。
+# ⚠ 取数口径（本轮分诊）：FrameCount / ImgSize 改用 **ExecOut（只读 stdout）** ⇒ 上面「报错里带数字的路径」
+#   这一类污染源从源头切断；但**整行数字的严格过滤保留原样**（口径变了不等于判据变松，两层防护各自成立）。
 function FrameCount([string]$path) {
-  $r = Exec $fp "-v error -select_streams v:0 -count_frames -show_entries stream=nb_read_frames -of csv=p=0 `"$path`"" "probe_$(Split-Path $path -Leaf)"
+  $r = ExecOut $fp "-v error -select_streams v:0 -count_frames -show_entries stream=nb_read_frames -of csv=p=0 `"$path`"" "probe_$(Split-Path $path -Leaf)"
   $n = 0
   foreach ($ln in ($r.text -split "`r?`n")) {
     if ($ln -match '^\s*(\d+)\s*$') { $n = [int]$Matches[1] }
@@ -130,7 +150,7 @@ function FrameCount([string]$path) {
 
 # 尺寸 WxH（ffprobe csv）⇒ 字符串 "128x96"；探测失败返回 ""（同样只认整行 `W,H` 形态）。
 function ImgSize([string]$path) {
-  $r = Exec $fp "-v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 `"$path`"" "size_$(Split-Path $path -Leaf)"
+  $r = ExecOut $fp "-v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 `"$path`"" "size_$(Split-Path $path -Leaf)"
   $s = ""
   foreach ($ln in ($r.text -split "`r?`n")) {
     if ($ln -match '^\s*(\d+)\s*,\s*(\d+)\s*$') { $s = ($Matches[1] + "x" + $Matches[2]) }

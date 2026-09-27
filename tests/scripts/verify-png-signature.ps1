@@ -15,9 +15,21 @@ $ff = "$root/publish/PLAN/ffmpeg-full/ffmpeg.exe"
 $jxrEnc = "$root/publish/PLAN/artifacts/JxrEncApp.exe"
 $exe = "$root/src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.exe"
 if (-not (Test-Path $exe)) { $exe = "$root/src/FfmpegGui/bin/Debug/net11.0/win-x64/FfmpegGui.exe" }
+# ⚠ 2026-09-21（TESTING.md 第 84 条处置建议 ①）：**回退是静默的** —— 门禁可能测的
+#   不是你以为的那个二进制。⇒ 一律**打印被测 exe 与构建类型**，让读数可追溯。
+Write-Output ("[gate] exe=" + $exe + $(if ($exe -like '*\Debug\*') { " (Debug fallback)" } else { " (Release)" }))
 $val = "$root/tests/output/pngsig"
 
-$pass = 0; $fail = 0
+$pass = 0; $fail = 0; $skip = 0
+# ⚠ 2026-09-21（`TESTING.md` 第 81 条同族）：**整门禁跳过必须打印汇总并计数**。
+#   原先三条跳过路径直接 `exit 0`、**不打印任何汇总** ⇒ 读者只看到一句 SKIP，
+#   分不清「跑完了且干净」与「一条断言都没跑」。
+function SkipAll([string]$why) {
+    $script:skip++
+    Write-Output "SKIP $why"
+    Write-Output "===== PASS=0 FAIL=0 SKIP=$skip（⚠ 整门禁未运行，不是通过）====="
+    exit 0
+}
 # ⚠ 用**单个参数字符串**而不是数组：`Run-Exe $ff @('a','b')` 这种「函数 + 数组实参」的绑定
 #   会把数组元素当成多个位置参数，$argv 只拿到第一个元素 ⇒ ffmpeg 实际只收到 `-y`，
 #   静默什么都不生成（实测踩过：素材全空、却因为后续步骤用旧残留而看起来像通过）。
@@ -38,8 +50,8 @@ function Test-PngStruct([string]$path) {
     return @{ Ok = $true; Why = '' }
 }
 
-if (-not (Test-Path $exe)) { Write-Output "SKIP FfmpegGui.exe 未构建（先 dotnet build）"; exit 0 }
-if (-not (Test-Path $jxrEnc)) { Write-Output "SKIP 缺 JxrEncApp（publish/PLAN/artifacts）"; exit 0 }
+if (-not (Test-Path $exe)) { SkipAll "FfmpegGui.exe 未构建（先 dotnet build）" }
+if (-not (Test-Path $jxrEnc)) { SkipAll "缺 JxrEncApp（publish/PLAN/artifacts）" }
 
 # ⚠ 每次运行用独立工作目录：固定目录在并发/上次残留（锁住的子目录删不掉）时会串味，
 #   实测踩过——上一轮的输出目录残留 + Remove-Item 只删掉根下文件，导致素材看起来“生成了又消失”。
@@ -54,7 +66,7 @@ $e3 = Run-Exe $ff "-y -v error -i `"$val/src.png`" `"$val/src.bmp`""
 $e4 = Run-Exe $jxrEnc "-i `"$val/src.bmp`" -o `"$val/src.jxr`""
 Write-Output ("素材生成: exit=$e1/$e2/$e3/$e4  目录=" + ((Get-ChildItem $val -ErrorAction SilentlyContinue | ForEach-Object { $_.Name }) -join ','))
 if (-not (Test-Path "$val/src.png") -or -not (Test-Path "$val/anim.gif") -or -not (Test-Path "$val/src.jxr")) {
-    Write-Output "SKIP 素材生成不完整（src.png / anim.gif / src.jxr 三缺一）"; exit 0
+    SkipAll "素材生成不完整（src.png / anim.gif / src.jxr 三缺一）"
 }
 Write-Output ("素材: " + ((Get-ChildItem $val -File | ForEach-Object { "$($_.Name)=$($_.Length)" }) -join ' '))
 
@@ -96,7 +108,7 @@ else {
     Write-Output "  FAIL negctrl 去掉 -f apng 仍被判正常 ⇒ 本门禁识别不了该损坏，断言无效"
 }
 
-Write-Output "`n===== PASS=$pass FAIL=$fail ====="
+Write-Output "`n===== PASS=$pass FAIL=$fail SKIP=$skip ====="
 # 成功即清理本次工作目录；失败则保留供排查（否则每跑一次就多一个 GUID 目录）
 if ($fail -eq 0) { Remove-Item -Recurse -Force $val -ErrorAction SilentlyContinue }
 else { Write-Output "工作目录保留供排查: $val" }

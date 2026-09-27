@@ -131,7 +131,7 @@ function Run-Test {
             $script:passCount++
             $fileKB = [math]::Round($outFile.Length / 1KB, 1)
             $probe = ""; try {
-                $probe = (Exec $ffprobe "-v error -select_streams v:0 -show_entries `"stream=pix_fmt,color_space,color_primaries,color_transfer`" -of csv=p=0 `"$($outFile.FullName)`"" | Out-String).Trim()
+                $probe = (Exec $ffprobe "-v error -select_streams v:0 -show_entries `"stream=pix_fmt,color_space,color_primaries,color_transfer`" -of csv=p=0 `"$($outFile.FullName)`"" | Out-String).Trim()  # 合并取数已论证：Probe 只进日志与 CSV 报告列，PASS/FAIL 由 $okLine 与文件存在决定，不喂断言；ffprobe 非 perl 打包，-v error 下 stderr 无 locale 警告可混入
             } catch { $probe = "probe-error" }
             Log "    [PASS] ${elapsed}s/${fileKB}KB $probe" "Green"
             $script:results.Add([pscustomobject]@{ TestId=$TestId; Category=$Category; Status="PASS"

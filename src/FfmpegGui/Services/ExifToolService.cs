@@ -24,6 +24,39 @@ namespace FfmpegGui.Services
     {
         private static string? _detectedPath;
         private static bool _detected;
+        /// <summary>本进程内是否**已经试过**一次探测(失败也记一次)。</summary>
+        private static bool _attempted;
+        /// <summary>把"清缓存 → 5 级扫描 → 发布结果"整体串行化。</summary>
+        private static readonly object _gate = new();
+
+        /// <summary>
+        /// 复位缓存 ⇒ 允许重新探测。**必须在**"用户改了 exiftool 路径 / 点重新检测 / 换了工具目录"
+        /// 的路径上调用,否则 <see cref="Detect"/> 的"一次进程一遍"门控会让重试失效。
+        /// </summary>
+        public static void ClearCache()
+        {
+            lock (_gate) { _detected = false; _attempted = false; _detectedPath = null; }
+        }
+
+        /// <summary>
+        /// 探测 exiftool。⚠ 默认**一个进程只扫一遍**(失败也认):本文件内有 **12 处**
+        /// `if (_detectedPath == null) { Detect(); … }` 的兜底(本类 16 个 `if (_detectedPath == null)`
+        /// 守卫中,后跟 `Detect(` 的那 12 处;全仓其余 4 处散布在 **四个**兄弟类里 ——
+        /// `CjxlService.cs:213` / `CjpegliService.cs:167` / `DjxlService.cs:128` / `JxrService.cs:151`,
+        /// 它们是 `throw` 守卫、不重扫)。没有这道门控时,
+        /// "机器上真没装 exiftool"的场景会**每次调用**重跑整条 5 级链 —— 含最坏
+        /// `ExtendedScanTotalBudgetSec = 60 s` 的扩展搜索 ⇒ 一次元数据操作卡一分钟。
+        /// 需要强制重扫的入口请显式传 <paramref name="force"/> = true(或先 <see cref="ClearCache"/>)。
+        /// </summary>
+        public static void Detect(Action<string>? log = null, bool force = false)
+        {
+            lock (_gate)
+            {
+                if (!force && _attempted) return;
+                _attempted = true;
+                DetectCore(log);
+            }
+        }
 
         public static bool IsAvailable
         {
@@ -161,14 +194,14 @@ namespace FfmpegGui.Services
         }
 
         /// <summary>
-        /// 检测 exiftool 位置（三优先级）：
-        /// ① 手动指定路径（AppSettings.ExifToolPath）
-        /// ② ffmpeg 同目录 / 程序同目录
-        /// ③ 系统 PATH
-        /// 注意：自动跳过 exiftool(-k).exe（带按键等待的交互版本），
-        ///       若仅找到 (-k) 版本则自动复制为 exiftool.exe 使用。
+        /// 探测体（五优先级）：① 手动指定路径 → ② PLAN 便携包 → ③ ffmpeg/程序同目录
+        /// → ④ 系统扩展搜索 → ⑤ 系统 PATH。
+        /// 注意：自动跳过 exiftool(-k).exe（带按键等待的交互版本），若仅找到 (-k) 版本则自动复制为
+        ///       exiftool.exe 使用。
+        /// ⚠ 本注释原先写"三优先级"而实现是五级 —— 声明与实现不符是这类"逐级兜底"代码的老毛病
+        ///   （djxl 的 ⑤ 曾只有一句注释、没有代码），改任何一级都要同步这里。
         /// </summary>
-        public static void Detect(Action<string>? log = null)
+        private static void DetectCore(Action<string>? log)
         {
             _detected = true;
             _detectedPath = null;
@@ -221,7 +254,7 @@ namespace FfmpegGui.Services
             try
             {
                 var extended = ExternalToolsDetector.FindToolInExtendedPaths(
-                    PlatformServices.Exiftool, $"*{PlatformServices.Exiftool}*");
+                    PlatformServices.Exiftool, $"*{PlatformServices.Exiftool}*", log);
                 if (extended != null) { _detectedPath = ResolveSafeExifToolPath(extended); if (_detectedPath != null) return; }
             }
             catch { }
@@ -409,52 +442,11 @@ namespace FfmpegGui.Services
             var args = BuildArguments(filePath, options);
             logCallback?.Invoke($"[exiftool] {args}\n");
 
-            var psi = new ProcessStartInfo
-            {
-                FileName = _detectedPath,
-                Arguments = args,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                StandardOutputEncoding = Encoding.UTF8,
-                StandardErrorEncoding = Encoding.UTF8
-            };
-
-            using var p = Process.Start(psi);
-            if (p == null)
-                throw new InvalidOperationException("无法启动 exiftool 进程");
-
-            // 事件驱动读取，避免缓冲区死锁
-            var stdout = new StringBuilder();
-            var stderr = new StringBuilder();
-            p.OutputDataReceived += (_, e) => { if (e.Data != null) stdout.AppendLine(e.Data); };
-            p.ErrorDataReceived += (_, e) => { if (e.Data != null) stderr.AppendLine(e.Data); };
-            p.BeginOutputReadLine();
-            p.BeginErrorReadLine();
-
-            // 15 秒超时保护，并与调用方的 ct 链接（#26）
-            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            cts.CancelAfter(TimeSpan.FromSeconds(15));
-            try
-            {
-                await p.WaitForExitAsync(cts.Token);
-            }
-            catch (OperationCanceledException)
-            {
-                try { if (!p.HasExited) p.Kill(entireProcessTree: true); } catch { }
-                logCallback?.Invoke("[exiftool] ⚠️ 超时(15s)或被取消，已终止 exiftool 进程\n");
-                return -2;
-            }
-
-            var stdoutStr = stdout.ToString().Trim();
-            var stderrStr = stderr.ToString().Trim();
-            if (!string.IsNullOrWhiteSpace(stdoutStr))
-                logCallback?.Invoke(stdoutStr);
-            if (!string.IsNullOrWhiteSpace(stderrStr))
-                logCallback?.Invoke(stderrStr);
-
-            return p.ExitCode;
+            // ⚠ 2026-09-21：本方法是**写**操作（exiftool 会重写整个文件）⇒ 统一走 RunWriteAsync：
+            //   先清掉上次被超时杀掉时残留的 `_exiftool_tmp`（否则下次恒报
+            //   `Error: Temporary file already exists`），并按文件大小放宽超时。
+            //   原先此处内联了一份进程逻辑、硬编码 15 s，实测 276 MB 的 PNG 写一次需约 32 s ⇒ 必然超时。
+            return await RunWriteAsync(filePath, args, logCallback, ct);
         }
 
         /// <summary>
@@ -496,7 +488,7 @@ namespace FfmpegGui.Services
             logCallback?.Invoke($"[exiftool] 复制元数据: {Path.GetFileName(sourcePath)} → {Path.GetFileName(targetPath)}\n"
                 + (absorbNow ? "[exiftool] （已并入可吸收的隐私清理，省一次 exiftool 启动）\n" : ""));
 
-            return await RunRawAsync(args, logCallback);
+            return await RunWriteAsync(targetPath, args, logCallback);
         }
 
         /// <summary>
@@ -526,6 +518,70 @@ namespace FfmpegGui.Services
         }
 
         /// <summary>
+        /// ⚠⚠ PNG 目标必须先清掉**损坏的 `eXIf` 块**，否则 exiftool 会**拒绝写入任何标签**。
+        ///
+        /// <para><b>根因（实测 2026-09-21）</b>：ffmpeg 的 PNG 复用器写出的 `eXIf` 块里，
+        /// IFD0 **原样照搬了 TIFF 专用的 `StripOffsets` / `StripByteCounts`** —— 而 PNG 里根本没有
+        /// 「strip 数据」这个概念 ⇒ exiftool 读取该块时报
+        /// <c>Error: Error reading StripOffsets data in IFD0</c> 并**以退出码 1 放弃写入**
+        /// （`-m` 不生效：这是致命错误，不是 minor warning）。
+        /// ⇒ **PNG 输出的元数据恢复曾经恒不生效**（日志只留一句「警告: 退出码 1」）。</para>
+        ///
+        /// <para><b>为什么是 `-EXIF:all=`（只清 EXIF 组）而不是 `-all=`</b>：
+        /// PNG 的色彩靠 `iCCP` / `cICP` / `cHRM` / `gAMA` 这些**独立 chunk**承载，
+        /// `-all=` 会连它们一起删掉。实测 `-EXIF:all=` 只重写 `eXIf`，其余 chunk 全部幸存。</para>
+        ///
+        /// <para>⚠ `-StripOffsets=`（只删该标签）**不可行**：exiftool 报
+        /// <c>Sorry, StripOffsets is not writable</c> ⇒ 删不掉，读取依旧失败。</para>
+        /// </summary>
+        private static string PngExifResetArg(string targetPath)
+            => targetPath.EndsWith(".png", StringComparison.OrdinalIgnoreCase) ? "-EXIF:all= " : "";
+
+        /// <summary>
+        /// **写**元数据的超时秒数：按目标文件大小放宽。
+        /// <para>依据（实测 2026-09-21）：exiftool 写元数据 = **重写整个文件**（临时文件 + rename），
+        /// 实测 **276 MB 的 PNG 约需 32 s** ⇒ 原先固定 15 s **必然超时**，
+        /// 且被杀的进程会**留下 `&lt;目标&gt;_exiftool_tmp`**（污染输出目录 + 让后续调用恒失败）。</para>
+        /// <para>取「15 s + 每 MB 0.25 s」，上限 600 s。⚠ 这是**放宽**而非取消保护：真挂死仍会被杀掉。</para>
+        /// <para>只读探测（读标签）不要用它 —— 用默认 15 s 即可。</para>
+        /// </summary>
+        private static int WriteTimeoutSecondsFor(string targetPath)
+        {
+            try
+            {
+                var mb = new FileInfo(targetPath).Length / (1024.0 * 1024.0);
+                return (int)Math.Clamp(15 + mb * 0.25, 15, 600);
+            }
+            catch { return 15; }
+        }
+
+        /// <summary>
+        /// 清掉上一次被超时杀掉时残留的 `&lt;目标&gt;_exiftool_tmp`。
+        /// ⚠ 不清掉的话，后续每次调用都会报 `Error: Temporary file already exists` 并**恒失败**
+        /// （实测：RAW→PNG 的补漏即因此失败，见 `RAW_PIPELINE_AUDIT.md §10`）。
+        /// </summary>
+        private static void CleanStaleExifToolTemp(string targetPath)
+        {
+            try
+            {
+                var tmp = targetPath + "_exiftool_tmp";
+                if (File.Exists(tmp)) File.Delete(tmp);
+            }
+            catch { /* 清理失败不阻断：让 exiftool 自己报错更可诊断 */ }
+        }
+
+        /// <summary>
+        /// **写**元数据的统一出口：先清掉残留的 `_exiftool_tmp`，再按目标文件大小放宽超时。
+        /// 所有会改动目标文件的 exiftool 调用都应走这里（`CopyMetadata*` / `CopyIccProfile*` / `RunAsync`）。
+        /// </summary>
+        private static Task<int> RunWriteAsync(string targetPath, string args, Action<string>? logCallback = null,
+            CancellationToken ct = default)
+        {
+            CleanStaleExifToolTemp(targetPath);
+            return RunRawAsync(args, logCallback, ct, WriteTimeoutSecondsFor(targetPath));
+        }
+
+        /// <summary>
         /// 安全复制元数据：仅复制 EXIF/IPTC/XMP 等描述性元数据，
         /// 跳过 ICC_Profile、ColorSpace、色彩相关标签，保护编码器写入的色彩元数据。
         /// 命令：exiftool -overwrite_original -TagsFromFile source
@@ -550,7 +606,7 @@ namespace FfmpegGui.Services
             var absorbNow = absorb != null && CanAbsorbStrip(absorb);
             // 仅复制描述性元数据组，排除色彩相关标签和 TIFF 结构标签
             // 注意：每个 --TAG 表示"从复制列表中排除该标签"
-            var args = $"-overwrite_original -m -TagsFromFile \"{sourcePath}\" " +
+            var args = $"-overwrite_original -m {PngExifResetArg(targetPath)}-TagsFromFile \"{sourcePath}\" " +
                        $"-EXIF:all -IPTC:all -XMP:all -MakerNotes:all -GPS:all " +
                        BuildAbsorbExclusions(absorbNow ? absorb : null) +
                        $"--ColorSpace --ICC_Profile --ColorSpaceData " +
@@ -564,7 +620,136 @@ namespace FfmpegGui.Services
             logCallback?.Invoke($"[exiftool] 安全复制元数据（已排除色彩标签，保护编码器输出）: {Path.GetFileName(sourcePath)} → {Path.GetFileName(targetPath)}\n"
                 + (absorbNow ? "[exiftool] （已并入可吸收的隐私清理，省一次 exiftool 启动）\n" : ""));
 
-            return await RunRawAsync(args, logCallback);
+            return await RunWriteAsync(targetPath, args, logCallback);
+        }
+
+        /// <summary>
+        /// RAW 输入专用：从**用户实际提供的源 RAW** 补回「中间件丢掉」的拍摄字段。
+        ///
+        /// <para><b>为什么需要它</b>：RAW 输入（非 DNG 输出）会先经 `dngtool -d -T` 解成中间 TIFF，
+        /// 而该步实为 **dcraw 兼容 TIFF 写出**（`Software = dcraw v9.26`）—— 只搬
+        /// `Make/Model/ModifyDate/Software` + `ExposureTime/FNumber/ISO/FocalLength`。
+        /// 随后产品的元数据恢复以**中间 TIFF** 为源 ⇒ 源 RAW 的
+        /// `DateTimeOriginal` / `CreateDate` / `LensModel` / `ExposureProgram` / `MeteringMode` /
+        /// `Flash` 等**永久丢失**（实测 5/5 厂商复现；`RAW_PIPELINE_AUDIT.md §10`）。
+        /// 本方法在常规恢复**之后**、用**白名单**把这些字段从原 RAW 补回。</para>
+        ///
+        /// <para>⚠⚠ <b>只用白名单，绝不用 `-all:all`</b> —— 源 RAW 上有三类标签会与产物**冲突**：</para>
+        /// <list type="bullet">
+        /// <item>`ColorSpace`：RAW 上常为 `Adobe RGB` / `Uncalibrated`，回带会与编码器写入的色彩标签打架</item>
+        /// <item>`PixelXDimension` / `PixelYDimension`：RAW 上常是**内嵌预览**的尺寸，与产物实际尺寸不符</item>
+        /// <item>`Orientation`：像素**已由解码器旋正**，再回带会**二次旋转**</item>
+        /// </list>
+        ///
+        /// <para>⚠⚠ <b>隐私开关必须在此同样生效</b>：`CanAbsorbStrip` 为真时，调用方会**跳过**
+        /// 那一次独立的隐私清理 ⇒ 本方法若不排除 GPS/XMP，等于**把刚剥掉的隐私又装回去**。</para>
+        ///
+        /// <para>⚠ <b>`Flash` 必须写成 `-EXIF:Flash`</b>：实测不带组限定时，exiftool 会**顺带创建一个 XMP 块**
+        /// （6 个 `XMP-exif:Flash*` 标签），**即使显式写了 `--XMP:all` 也拦不住** ⇒ 既是多余产物，
+        /// 也是隐私开关的绕过口。加 `-EXIF:` 限定后 XMP 块为 0。</para>
+        /// </summary>
+        /// <returns>exiftool 退出码；0=成功，-2=按隐私开关跳过（非错误）</returns>
+        public static async Task<int> CopyRawCaptureFieldsAsync(
+            string rawPath, string targetPath, Models.FfmpegOptions options,
+            Action<string>? logCallback = null)
+        {
+            if (options.StripExifAll)
+            {
+                logCallback?.Invoke("[exiftool] 已请求删除全部 EXIF ⇒ 跳过 RAW 拍摄字段补回\n");
+                return -2;
+            }
+
+            if (_detectedPath == null)
+            {
+                Detect();
+                if (_detectedPath == null) return -1;
+            }
+
+            var args = BuildRawCaptureFieldsArgs(rawPath, targetPath, options);
+            logCallback?.Invoke($"[exiftool] 从源 RAW 补回拍摄字段（白名单，不覆盖色彩/尺寸/方向）: "
+                + $"{Path.GetFileName(rawPath)} → {Path.GetFileName(targetPath)}\n");
+
+            return await RunWriteAsync(targetPath, args, logCallback);
+        }
+
+        /// <summary>
+        /// 构建「从源 RAW 补回拍摄字段」的 exiftool 参数。
+        ///
+        /// <para>⚠⚠ **独立成方法是为了能被探针断言** —— 下面四条约束都是**非显然**的，
+        /// 且一旦被"顺手优化"掉就会**静默**出错（产物看起来完全正常，只是字段又丢了 / 隐私又漏了）：</para>
+        /// <list type="number">
+        /// <item><b>白名单，不用 `-all:all`</b>：源 RAW 的 `ColorSpace`（常为 Adobe RGB）、
+        ///   `PixelXDimension/YDimension`（常是**内嵌预览**尺寸）、`Orientation`（像素**已被解码器旋正**）
+        ///   回带会与产物冲突 —— 最后一项会导致**二次旋转**。</item>
+        /// <item><b>`-EXIF:Flash` 而不是裸 `-Flash`</b>：裸写时 exiftool 会**顺带创建 XMP 块**
+        ///   （6 个 `XMP-exif:Flash*` 标签），**即使显式写 `--XMP:all` 也拦不住**
+        ///   ⇒ 既是多余产物，也是**隐私开关的绕过口**。</item>
+        /// <item><b>PNG 目标必须先 `-EXIF:all=` 复位</b>：ffmpeg 写坏的 `eXIf` 块
+        ///   （IFD0 里带 TIFF 专用 `StripOffsets`）会让整条命令以退出码 1 放弃写入。</item>
+        /// <item><b>隐私开关必须在此生效</b>：`CanAbsorbStrip` 为真时那次独立隐私清理会被**跳过**
+        ///   ⇒ 这里若不排除 GPS/XMP，就等于**把刚剥掉的隐私又装回去**。</item>
+        /// </list>
+        /// <para>⚠ 可见性为 <c>public</c> 是**刻意的** —— 与同类的 <see cref="BuildArguments"/> 一致：
+        /// 探针 `ServiceProbe` 在**另一个程序集**里，`internal` 对它不可见，
+        /// 而本仓**禁止改 csproj**（加 `InternalsVisibleTo` 会让 `dotnet build` 一起坏）⇒ 只能 public。</para>
+        /// </summary>
+        public static string BuildRawCaptureFieldsArgs(
+            string rawPath, string targetPath, Models.FfmpegOptions options)
+        {
+            var sb = new StringBuilder();
+            // ── 时间（`--strip-time` 时跳过）──
+            if (!options.StripExifTime)
+            {
+                sb.Append("-DateTimeOriginal -CreateDate -ModifyDate ");
+                sb.Append("-SubSecTime -SubSecTimeOriginal -SubSecTimeDigitized ");
+                sb.Append("-OffsetTime -OffsetTimeOriginal -OffsetTimeDigitized ");
+            }
+            // ── 相机 / 镜头（`--strip-camera` 时跳过）──
+            if (!options.StripExifCamera)
+            {
+                sb.Append("-LensModel -LensMake -LensSerialNumber -LensInfo -LensSpecification -MaxApertureValue ");
+            }
+            // ── 曝光 / 测光 / 场景（描述性拍摄参数，不属于「相机信息」开关）──
+            sb.Append("-ExposureProgram -MeteringMode -EXIF:Flash -ExposureMode -SceneCaptureType -CustomRendered ");
+            sb.Append("-ShutterSpeedValue -ApertureValue -BrightnessValue -ExposureCompensation ");
+            sb.Append("-SubjectDistance -LightSource -WhiteBalance -DigitalZoomRatio -FocalLengthIn35mmFormat ");
+            sb.Append("-SubjectDistanceRange -SensingMethod -FileSource -SceneType ");
+            sb.Append("-FocalPlaneXResolution -FocalPlaneYResolution -FocalPlaneResolutionUnit ");
+            // ── 描述性文本 ──
+            sb.Append("-Artist -Copyright -ImageDescription -UserComment ");
+            sb.Append("-Rating -XPKeywords -XPComment -XPTitle -XPSubject -XPAuthor ");
+            // ── 隐私开关：GPS / XMP ──
+            if (!options.StripExifGps) sb.Append("-GPS:all ");
+            if (!options.StripXmp) sb.Append("-XMP:all ");
+
+            return $"-overwrite_original -m {PngExifResetArg(targetPath)}-TagsFromFile \"{rawPath}\" {sb}\"{targetPath}\"";
+        }
+
+        /// <summary>
+        /// **把描述性元数据全部剥离**（写操作）。
+        ///
+        /// <para><b>为什么不能复用 <see cref="RunAsync"/> + <see cref="BuildArguments"/></b>：
+        /// `--strip-metadata` 只把 <c>MetadataMode</c> 置成 <c>StripAll</c>，**并不置 <c>StripExifAll</c>**
+        /// （见 `CliParser`）⇒ `BuildArguments` 只发出 `-gps:all=`，
+        /// 而**不带** <see cref="PngExifResetArg"/> 的 EXIF 复位 ⇒ 在 ffmpeg 写坏的 `eXIf` 块上
+        /// 直接以退出码 1 失败（实测：`png --strip-metadata` 产物 GPS 仍在）。</para>
+        ///
+        /// <para>⚠ **不删 ICC**：PNG 的色彩靠 `iCCP`/`cICP`/`cHRM`/`gAMA` 独立 chunk 承载，
+        /// 剥离元数据不应连色彩一起删（与 `FfmpegCommandBuilder` 保 CICP 的意图一致）。</para>
+        /// </summary>
+        public static async Task<int> StripDescriptiveMetadataAsync(
+            string targetPath, Action<string>? logCallback = null, CancellationToken ct = default)
+        {
+            if (_detectedPath == null)
+            {
+                Detect();
+                if (_detectedPath == null) return -1;
+            }
+
+            var args = $"-overwrite_original -m {PngExifResetArg(targetPath)}" +
+                       $"-exif:all= -gps:all= -xmp:all= -iptc:all= \"{targetPath}\"";
+            logCallback?.Invoke($"[exiftool] {args}\n");
+            return await RunWriteAsync(targetPath, args, logCallback, ct);
         }
 
         /// <summary>仅复制 ICC Profile（安全模式下补偿色彩配置文件）</summary>
@@ -582,7 +767,7 @@ namespace FfmpegGui.Services
                        $"-ICC_Profile \"{targetPath}\"";
             logCallback?.Invoke($"[exiftool] 恢复 ICC Profile: {Path.GetFileName(sourcePath)} → {Path.GetFileName(targetPath)}\n");
 
-            return await RunRawAsync(args, logCallback);
+            return await RunWriteAsync(targetPath, args, logCallback);
         }
 
         /// <summary>将外部 ICC 文件嵌入到输出图片中（用户指定的 ICC 配置文件）</summary>
@@ -606,7 +791,7 @@ namespace FfmpegGui.Services
                        $"\"{targetPath}\"";
             logCallback?.Invoke($"[exiftool] 嵌入 ICC Profile: {Path.GetFileName(iccFilePath)} → {Path.GetFileName(targetPath)}\n");
 
-            return await RunRawAsync(args, logCallback);
+            return await RunWriteAsync(targetPath, args, logCallback);
         }
 
         /// <summary>为 JPEG 添加 JFIF 头（提高手机兼容性）</summary>
@@ -620,7 +805,7 @@ namespace FfmpegGui.Services
             try
             {
                 var args = $"-overwrite_original -JFIFVersion=1.02 \"{targetPath}\"";
-                await RunRawAsync(args, null);
+                await RunWriteAsync(targetPath, args);
             }
             catch { }
         }
@@ -670,8 +855,15 @@ namespace FfmpegGui.Services
             catch { return null; }
         }
 
-        /// <summary>执行原始 exiftool 命令（内部用，带 15 秒超时保护防止挂起）</summary>
-        internal static async Task<int> RunRawAsync(string args, Action<string>? logCallback = null, CancellationToken ct = default)
+        /// <summary>执行原始 exiftool 命令（内部用，带超时保护防止挂起）</summary>
+        /// <param name="timeoutSeconds">
+        /// 超时秒数。<b>写操作必须按目标文件大小放宽</b> —— exiftool 写元数据要**重写整个文件**
+        /// （临时文件 + rename），实测 **276 MB 的 PNG 需要约 32 s**，固定 15 s 必然超时
+        /// 并**留下 `&lt;目标&gt;_exiftool_tmp` 残留**（既污染输出目录，又会让下一次调用报
+        /// `Temporary file already exists`）。只读操作（探测标签）用默认值即可。
+        /// </param>
+        internal static async Task<int> RunRawAsync(string args, Action<string>? logCallback = null,
+            CancellationToken ct = default, int timeoutSeconds = 15)
         {
             var psi = new ProcessStartInfo
             {
@@ -695,9 +887,9 @@ namespace FfmpegGui.Services
             p.BeginOutputReadLine();
             p.BeginErrorReadLine();
 
-            // 15 秒超时保护：exiftool 极少需要超过此时间处理单文件（并与调用方的 ct 链接，#26）
+            // 超时保护：默认 15 s（只读探测足够）；写操作由调用方按文件大小放宽（见 timeoutSeconds）。
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            cts.CancelAfter(TimeSpan.FromSeconds(15));
+            cts.CancelAfter(TimeSpan.FromSeconds(Math.Max(1, timeoutSeconds)));
             try
             {
                 await p.WaitForExitAsync(cts.Token);
@@ -705,7 +897,7 @@ namespace FfmpegGui.Services
             catch (OperationCanceledException)
             {
                 try { if (!p.HasExited) p.Kill(entireProcessTree: true); } catch { }
-                logCallback?.Invoke("[exiftool] ⚠️ 超时(15s)或被取消，已终止 exiftool 进程\n");
+                logCallback?.Invoke($"[exiftool] ⚠️ 超时({timeoutSeconds}s)或被取消，已终止 exiftool 进程\n");
                 return -2;
             }
 

@@ -167,6 +167,15 @@ public sealed class ColorIntent
 
     public FormatColorCaps Format = ColorMappingEngine.CapsFor("png");
     public int TargetBitDepth = 8;
+    /// <summary>
+    /// 用户**请求**的位深（未经任何容器钳制）；null = 用户未指定（此时"目标档"由源位深推出，
+    /// 不构成"请求 ≠ 交付"）。与 <see cref="TargetBitDepth"/> 的差就是 ①b 要播报的那笔账：
+    /// <see cref="TargetBitDepth"/> 是**实际交付档**（被 `Decision` 的 capBd 与本装配的
+    /// <see cref="FormatColorCaps.MaxBitDepth"/> 各钳一次之后的值）。
+    /// ⚠ 取"较深的那一个"：<c>BitDepthRequested</c> 只有在**真的发生了钳制**时才被写，
+    ///   而意图装配可能发生在钳制之前（那条路径上 <c>o.BitDepth</c> 本身就还是请求档）。
+    /// </summary>
+    public int? RequestedBitDepth;
     public bool HdrOutput;
     public bool SourceIsRaw;
     /// <summary>允许 GMO 色域压缩（否则越界只允许超集或裁切告警）。</summary>

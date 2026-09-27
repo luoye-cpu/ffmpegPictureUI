@@ -241,14 +241,30 @@ public static class GainMapDecoder
                 //   SDR 基图(sRGB 编码): 线性化 → 应用增益(上映射)
                 //   HDR 基图(PQ 编码, BaseRenditionIsHDR): 基图本身已是 HDR，增益图描述 base→SDR 下映射
                 //     → 取 HDR 像素无需应用增益，直接 PQ EOTF 后缩放到「1.0 = SDR 白点」约定
+                // ⚠️ 整数溢出防线：JPEG SOF 尺寸上限 65535×65535 = 4.29e9 > int.MaxValue。
+                //    `baseW * baseH` 按 int 相乘会溢出（变负或变小），令下面的长度自检**形同虚设**，
+                //    畸形文件即可绕过守卫并在后续 `new byte[...]` 抛 OverflowException（只靠外层 catch 兜底）。
+                //    ⇒ 全程 long 运算 + 单帧像素数上限（与 IsoBmffGainMapProbe 对 box 长度一律 long 校验同口径）。
+                // 上限取 1 亿像素：×12 字节 = 1.2e9 < int.MaxValue ⇒ 后续 `new byte[...]`、平面跨步
+                // 与 int 索引都**不可能**溢出；正常照片（含中画幅）远低于此。
+                const long MaxDecodedPixels = 100_000_000L;
+                long basePixels = (long)baseW * baseH;
+                long gmPixels   = (long)gmW * gmH;
+                if (basePixels <= 0 || basePixels > MaxDecodedPixels
+                    || gmPixels <= 0 || gmPixels > MaxDecodedPixels)
+                {
+                    log?.Invoke($"[GainMap解码] ❌ 尺寸不可处理: base {baseW}x{baseH}, 增益图 {gmW}x{gmH}\n");
+                    return null;
+                }
+
                 var baseBytes = await File.ReadAllBytesAsync(baseRawPath, ct);
-                if (baseBytes.Length < baseW * baseH * 12L)
+                if (baseBytes.Length < basePixels * 12L)
                 {
                     log?.Invoke("[GainMap解码] ❌ 像素数据不完整\n");
                     return null;
                 }
                 bool hdrBase = meta.BaseRenditionIsHdr;
-                var baseRgb = PlanarToInterleaved(baseBytes, baseW * baseH);
+                var baseRgb = PlanarToInterleaved(baseBytes, (int)basePixels);
                 float[] hdrRgb;
 
                 // 底图始终按 **SDR** 解读（本项目与 Ultra HDR 标准的底图定义）。
@@ -260,35 +276,42 @@ public static class GainMapDecoder
                     log?.Invoke("[GainMap解码] ⚠️ useBaseColorSpace=False（增益图定义在 alternate 色域），已按底图色域近似应用\n");
 
                 var gmBytes = await File.ReadAllBytesAsync(gmRawPath, ct);
-                if (gmBytes.Length < gmW * gmH * 12L)
+                if (gmBytes.Length < gmPixels * 12L)
                 {
                     log?.Invoke("[GainMap解码] ❌ 像素数据不完整\n");
                     return null;
                 }
                 // sRGB → 线性（底图无论 sRGB 还是 Rec.2020 均用 sRGB 传递编码，见 GainMapEncoder）
                 SimdPixelOps.SrgbToLinearRgba(baseRgb);
-                var gmRgb = PlanarToInterleaved(gmBytes, gmW * gmH);
+                var gmRgb = PlanarToInterleaved(gmBytes, (int)gmPixels);
                 // 应用增益 (双线性插值增益图 → 基础图分辨率)
                 hdrRgb = ApplyGainMap(baseRgb, gmRgb, baseW, baseH, gmW, gmH, meta);
 
                 // 输出 gbrpf32le (平面 G,B,R)
                 // ⚠️ BlockCopy 是原始字节拷贝, 不能从交错 RGBA 抽取平面!
                 //   必须逐像素跨步抽取 (此前用 BlockCopy 导致输出错乱)
-                var outBytes = new byte[baseW * baseH * 12];
+                int basePx = (int)basePixels;                 // 已由上面的上限检查保证可安全转 int
+                var outBytes = new byte[basePx * 12];          // 上限检查已保证 basePx*12 < int.MaxValue
                 Span<byte> outSpan = outBytes;
-                for (int i = 0; i < baseW * baseH; i++)
+                int planeStride = basePx * 4;
+                for (int i = 0; i < basePx; i++)
                 {
                     int o = i * 4;
-                    int po = i * 4;
                     // gbrpf32le 平面顺序 = G, B, R
-                    BitConverter.TryWriteBytes(outSpan.Slice(po, 4), hdrRgb[o + 1]);              // G
-                    BitConverter.TryWriteBytes(outSpan.Slice(baseW * baseH * 4 + po, 4), hdrRgb[o + 2]);  // B
-                    BitConverter.TryWriteBytes(outSpan.Slice(baseW * baseH * 8 + po, 4), hdrRgb[o]);      // R
+                    BitConverter.TryWriteBytes(outSpan.Slice(o, 4), hdrRgb[o + 1]);                    // G
+                    BitConverter.TryWriteBytes(outSpan.Slice(planeStride + o, 4), hdrRgb[o + 2]);      // B
+                    BitConverter.TryWriteBytes(outSpan.Slice(planeStride * 2 + o, 4), hdrRgb[o]);      // R
                 }
 
                 await File.WriteAllBytesAsync(outputRawPath, outBytes, ct);
-                // 峰值亮度：SDR 底 = 203 × 2^GainMapMax（ISO alternateHdrHeadroom）
-                var peakNits = GainMapEncoder.KSdrWhiteNits * MathF.Pow(2f, meta.GainMapMax);
+                // 峰值亮度：SDR 底 = 203 × 2^headroom（ISO alternateHdrHeadroom）
+                // ⚠️ 权威值是 **HDRCapacityMax**（= alternateHdrHeadroom 的 log2），不是 GainMapMax：
+                //    ISO 21496-1 允许 gainMapMax **大于** alternateHdrHeadroom（增益图可覆盖比实际
+                //    所需更宽的增益范围）。第三方文件（Adobe 等）两者不等时用 GainMapMax 会**高估**
+                //    峰值 ⇒ 传给 cjxl 的 --intensity-target 偏大、HDR 显得发灰。
+                //    自家产物两者恒相等（见 GainMapEncoder.BuildXmpMetadata）⇒ 本改动不影响既有基线。
+                float peakLog2 = meta.HdrCapacityMax > 0f ? meta.HdrCapacityMax : meta.GainMapMax;
+                var peakNits = GainMapEncoder.KSdrWhiteNits * MathF.Pow(2f, peakLog2);
                 // 线性像素的原色语义 = **底图自己的色域**（由底图 ICC 读出，JPEG 无 CICP 可用）：
                 //   bt709→RGB_D65_SRG_Rel_Lin、bt2020→RGB_D65_202_Rel_Lin、smpte432→RGB_D65_P3_Rel_Lin。
                 //   无 ICC 时按 JPEG 惯例视为 sRGB。
@@ -811,25 +834,43 @@ public static class GainMapDecoder
                 return null;
             var first = root[0];
 
-            // 从 JSON 属性中查找标签（属性名可能带命名空间前缀，如 "XMP-gainmap:GainMapMin"）
+            // 从 JSON 属性中查找标签（属性名形如 "XMP-gainmap:GainMapMin"）。
+            //
+            // ⚠️ 必须**限定命名空间**：exiftool 参数带 `-G` ⇒ 输出的是**全部**元数据组（EXIF/XMP/ICC…），
+            //    而 EXIF 自身就有名为 `Gamma` 的标签（0xA500，相机 JPEG 极常见，典型值 2.2）。
+            //    旧实现用 `EndsWith(":Gamma")` 做无组限制的后缀匹配，且取**第一个**命中 —— EXIF 组通常
+            //    先于 XMP 组输出 ⇒ 对**无 ISO 21496-1 APP2、只有 XMP 的旧 Ultra HDR 文件**（Google 相机
+            //    2023 年产物）会把相机的 EXIF:Gamma 当成**增益图 gamma** 应用 `gv^(1/2.2)`，整图增益错乱。
+            //    `Channels` 同此风险。
+            // ⇒ 规则：只有 gain map 的两个命名空间（XMP-gainmap / XMP-hdrgm，以及裸 XMP）算权威命中并
+            //   立即返回；不带组名的同名属性仅作兜底（exiftool 不带 -G 时的形态），绝不采信 EXIF/其它组。
             string? GetTag(string tagName)
             {
+                string? fallback = null;
                 foreach (var prop in first.EnumerateObject())
                 {
-                    if (prop.Name.EndsWith($":{tagName}", StringComparison.OrdinalIgnoreCase)
-                        || prop.Name.Equals(tagName, StringComparison.OrdinalIgnoreCase))
+                    var nm = prop.Name;
+                    int colon = nm.IndexOf(':');
+                    bool hit;
+                    if (colon > 0)
                     {
-                        return prop.Value.ValueKind switch
-                        {
-                            System.Text.Json.JsonValueKind.String => prop.Value.GetString(),
-                            System.Text.Json.JsonValueKind.Number => prop.Value.GetRawText(),
-                            System.Text.Json.JsonValueKind.True => "True",
-                            System.Text.Json.JsonValueKind.False => "False",
-                            _ => prop.Value.GetRawText(),
-                        };
+                        string ns = nm.Substring(0, colon);
+                        hit = (ns.Equals("XMP-gainmap", StringComparison.OrdinalIgnoreCase)
+                               || ns.Equals("XMP-hdrgm", StringComparison.OrdinalIgnoreCase)
+                               || ns.Equals("XMP", StringComparison.OrdinalIgnoreCase))
+                              && nm.Substring(colon + 1).Equals(tagName, StringComparison.OrdinalIgnoreCase);
                     }
+                    else
+                    {
+                        hit = nm.Equals(tagName, StringComparison.OrdinalIgnoreCase);
+                    }
+                    if (!hit) continue;
+
+                    string? v = ReadTagValue(prop.Value);
+                    if (colon > 0) return v;      // 权威命名空间命中 ⇒ 立即返回
+                    fallback ??= v;               // 无组名形 ⇒ 仅兜底
                 }
-                return null;
+                return fallback;
             }
 
             var min = GetTag("GainMapMin");
@@ -874,6 +915,16 @@ public static class GainMapDecoder
         }
         catch { return null; }
     }
+
+    /// <summary>把 exiftool JSON 的标签值统一取成字符串（Number 取原始文本，避免双重格式化丢精度）。</summary>
+    private static string? ReadTagValue(System.Text.Json.JsonElement e) => e.ValueKind switch
+    {
+        System.Text.Json.JsonValueKind.String => e.GetString(),
+        System.Text.Json.JsonValueKind.Number => e.GetRawText(),
+        System.Text.Json.JsonValueKind.True => "True",
+        System.Text.Json.JsonValueKind.False => "False",
+        _ => e.GetRawText(),
+    };
 
     /// <summary>解析 "1920x1080" / "1920 1080" 形式尺寸对</summary>
     private static bool TryParseSize(string? value, out int w, out int h)
@@ -999,7 +1050,9 @@ public static class GainMapDecoder
     internal static float[] ApplyGainMap(float[] baseRgba, float[] gmRgba, int baseW, int baseH,
         int gmW, int gmH, GainMapMetadata meta)
     {
-        int pixelCount = baseW * baseH;
+        long px = (long)baseW * baseH;                 // 防溢出：见调用方的 MaxDecodedPixels 说明
+        if (px <= 0 || px > int.MaxValue / 4) return Array.Empty<float>();
+        int pixelCount = (int)px;
         var result = new float[pixelCount * 4];
         bool isGray = meta.Channels <= 1;
 
@@ -1024,7 +1077,13 @@ public static class GainMapDecoder
                 float gy = (Math.Min(y, priH - 1) + 0.5f) * gH / priH - 0.5f;
                 gx = Math.Clamp(gx, 0, gW - 1);
                 gy = Math.Clamp(gy, 0, gH - 1);
-                int x0 = (int)MathF.Floor(gx), y0 = (int)MathF.Floor(gy);
+                // ⚠️ 索引必须按**解码缓冲区尺寸** (gmW/gmH) 钳位，不能按元数据声明的逻辑尺寸 (gW/gH)：
+                //    畸形或被篡改的文件可声明 MapSecondaryWidth/Height **大于**实际解码宽度，
+                //    此时 gx 被钳到 gW-1 > gmW-1 ⇒ (y0*gmW + x0)*4 越界读（旧代码只钳了 x1/y1，
+                //    x0/y0 漏钳，异常只能被外层 catch 吞成"解码失败"）。
+                //    ⇒ 逻辑尺寸只用于归一化映射，安全钳位一律走真实缓冲区尺寸。
+                int x0 = Math.Clamp((int)MathF.Floor(gx), 0, gmW - 1);
+                int y0 = Math.Clamp((int)MathF.Floor(gy), 0, gmH - 1);
                 int x1 = Math.Min(x0 + 1, gmW - 1), y1 = Math.Min(y0 + 1, gmH - 1);
                 float fx = gx - x0, fy = gy - y0;
 

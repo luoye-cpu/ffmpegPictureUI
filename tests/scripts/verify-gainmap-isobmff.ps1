@@ -99,6 +99,9 @@ $root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path; Set-Location $roo
 $env:FFMPEGGUI_FFMPEG_DIR = "$root/publish/PLAN/ffmpeg-full"
 $exe = "$root/src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.exe"
 if (-not (Test-Path $exe)) { $exe = "$root/src/FfmpegGui/bin/Debug/net11.0/win-x64/FfmpegGui.exe" }
+# ⚠ 2026-09-21（TESTING.md 第 84 条处置建议 ①）：**回退是静默的** —— 门禁可能测的
+#   不是你以为的那个二进制。⇒ 一律**打印被测 exe 与构建类型**，让读数可追溯。
+Write-Output ("[gate] exe=" + $exe + $(if ($exe -like '*\Debug\*') { " (Debug fallback)" } else { " (Release)" }))
 $sp  = "$root/tests/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.exe"
 $ff  = "$root/publish/PLAN/ffmpeg-full/ffmpeg.exe"
 $fp  = "$root/publish/PLAN/ffmpeg-full/ffprobe.exe"
@@ -128,6 +131,39 @@ function Exec([string]$file, [string]$argStr, [string]$tag) {
   $t = "";  if (Test-Path $o) { $t  = [System.IO.File]::ReadAllText($o) }
   $t2 = ""; if (Test-Path $e) { $t2 = [System.IO.File]::ReadAllText($e) }
   return @{ code = $p.ExitCode; text = ($t + "`n" + $t2) }
+}
+
+# ⚠⚠ **只读 stdout 的取数（读「工具写在 stdout 的值」时唯一合法的尺）**
+#   上面 `Exec` 把 stderr 拼进 `text` —— 只对**实测只在 stderr** 的东西是对的：ffmpeg 的 PSNR 行、`frame=`、
+#   signalstats 的 `YMIN=`（实测 `-hide_banner -i x -vf signalstats,metadata=print… -f null -` 的
+#   stdout = **0 字节**、`YMIN=30` 只在 stderr ⇒ 这类判据吃的是 stderr 的**告警全集**，换成 `ExecOut`
+#   会读到空 ⇒ 恒真（**不许换**）。⚠ 合并的代价也要写清（2026-09-27 实测）：本机 `LANG`/`LC_ALL` 不被识别时
+#   ffmpeg/ffprobe 会往 stderr 吐 locale 警告（实测 26 B），ffprobe **不带 `-v error` 时**还会吐整段版本
+#   横幅（实测 4838 B）⇒ 拿合并结果做 `-notmatch`（"不许出现 X"）的判据在污染环境下会变脆（有噪声时
+#   "不含 X"可能只是没读到）；这一类属**改判据**范畴（归一化剥噪声 / 按字段取值），本轮只登记、不动。
+#   ⚠⚠ **本文件原先「产品/探针日志只在 stderr」的说法已被实测否证，别再引用**：
+#   · ServiceProbe 的读数**全在 stdout**（主循环 2026-09-27 实测 `decision` 模式：stdout 6184 B、stderr **0 B**，
+#     `PROBE RESULT:` / `pass=` / `ColorMatrix1=` 全在 stdout）⇒ 本文件 §1/§1b/§2b 那些
+#     `Exec $sp "gainmap-isobmff …"` / `Exec $sp "color …"` 取的是 stdout 的值，**同样该走 `ExecOut`**
+#     —— 只是它们没被结构锁点名（锁的变量名单里没有 `$sp`），**不在本轮分诊清单**，留作下一步（换之前按实测确认）。
+#   · 本文件的产品日志走 `RunApp`，它本来就是「先读 stdout、空了才读 stderr」⇒ 也不保证在 stderr。
+#   ⚠ "值在哪个流"要**逐条实测**，别照抄直觉：exiftool 的 ICC 诊断在**全量 dump**（`-a -G1 -s` 不带标签名）时
+#   两边都打（实测 stdout 1678 B 里就有 `[ExifTool] Warning : Bad ICC_Profile table…`），而**指定标签名**
+#   （`-G -s -ColorSpace` / `-ProfileDescription`）时 stdout **只有值**、诊断只在 stderr。
+#   本轮改的站点读的都是**值**（ffprobe `-of csv` 字段、exiftool 指定标签）⇒ 一律走 `ExecOut`，因为随包
+#   `publish/PLAN/exiftool/exiftool.exe` 是 **perl 打包版**：进程环境带着本机 perl 不认的
+#   `LC_ALL`/`LANG`（从 MSYS/bash 侧起门禁就是 `C.UTF-8`）时，它**每次调用往 stderr 喷 245 B locale warning**
+#   ⇒ 合并版"取到的值"会混进警告文本（实测同一条 `-G -s -ColorSpace`：OLD 301 B / NEW 56 B），两种坏法都真实发生过：
+#     · **假绿**：负断言被撑成恒真（`'' -notmatch 'x'` 通过）、两侧同污时 `-ne` 变成两条警告互比；
+#     · **假红**：值前面多一行警告，归一化剥不干净 ⇒ 两格判成不同。
+#   ⇒ 本函数**只**回 stdout（形状与 `Exec` 一致，调用点只需换函数名）；stderr 照样落盘供排查，只是不进返回值。
+function ExecOut([string]$file, [string]$argStr, [string]$tag) {
+  $o = "$work/$tag.out"; $e = "$work/$tag.err"
+  $p = Start-Process -FilePath $file -ArgumentList $argStr -Wait -NoNewWindow -PassThru `
+       -RedirectStandardOutput $o -RedirectStandardError $e
+  if (-not (Test-Path $o)) { return @{ code = $p.ExitCode; text = "" } }
+  $t = [System.IO.File]::ReadAllText($o)
+  return @{ code = $p.ExitCode; text = $t }
 }
 
 # ⚠ 共享读：重定向目标在子进程存活期间被独占 ⇒ 直接 ReadAllText 会抛「being used by another process」。
@@ -195,11 +231,18 @@ $r = Exec $ff "-y -v error -f lavfi -i `"color=c=black:s=64x48`" -f lavfi -i `"g
 if (Test-Path $avifenc) { $r = Exec $avifenc "-q 60 `"$alphaPng`" `"$alphaAvif`"" "gen_aavif" }
 
 # 形态自检：**这是本门禁的判据载体**（必须先钉住素材真实形态，否则后面的行为断言可能真空绿）
-$sp1 = Exec $fp "-v error -show_entries stream=index,codec_type,nb_frames -of csv=p=0 `"$plain`"" "sh_plain"
-$sa1 = Exec $fp "-v error -show_entries stream=index,codec_type,nb_frames -of csv=p=0 `"$anim`"" "sh_anim"
-$sg1 = Exec $fp "-v error -show_entries stream=index,codec_type,nb_frames -of csv=p=0 `"$gmSdr`"" "sh_gm"
+# ⚠ 这四条读 ffprobe `-of csv` 的**值** ⇒ 用只读 stdout 的 `ExecOut`。实测（2026-09-27，laneB 微实验，
+#   `tests/output/laneB/equiv-laneB4.ps1`）：本机 ffprobe **带 `-v error` 时 stderr = 0 字节**（clean 与
+#   LC_ALL/LANG=C.UTF-8 两种条件相同），csv 值全在 stdout（seine_sdr_gainmap_srgb.avif 读回
+#   `0,video,1,` + `1,video,1,`）⇒ 合并版与只读版**同值**（只差合并版固定多塞的那个换行符），
+#   因此这次换尺**不会**让任何格由绿转红；而不带 `-v error` 时 ffprobe 会往 stderr 吐 4838 B 横幅 ⇒
+#   合并读法一旦有人日后去掉 `-v error` 就会把横幅端进"值"里，这正是要用 `ExecOut` 的理由。
+#   ⚠ 另外三条 CK 都带**正向** `-match`（读不到就红），唯一那条 `-notmatch 1,video` 与正向锁同址。
+$sp1 = ExecOut $fp "-v error -show_entries stream=index,codec_type,nb_frames -of csv=p=0 `"$plain`"" "sh_plain"
+$sa1 = ExecOut $fp "-v error -show_entries stream=index,codec_type,nb_frames -of csv=p=0 `"$anim`"" "sh_anim"
+$sg1 = ExecOut $fp "-v error -show_entries stream=index,codec_type,nb_frames -of csv=p=0 `"$gmSdr`"" "sh_gm"
 $sx1 = ""
-if (Test-Path $alphaAvif) { $sx1 = (Exec $fp "-v error -show_entries stream=index,codec_type,nb_frames -of csv=p=0 `"$alphaAvif`"" "sh_alpha").text }
+if (Test-Path $alphaAvif) { $sx1 = (ExecOut $fp "-v error -show_entries stream=index,codec_type,nb_frames -of csv=p=0 `"$alphaAvif`"" "sh_alpha").text }
 Write-Host "  [形态] plain: $($sp1.text.Trim())"
 Write-Host "  [形态] anim : $($sa1.text.Trim())"
 Write-Host "  [形态] gmSdr: $($sg1.text.Trim())"
@@ -272,7 +315,9 @@ CK ((Test-Path $heicPos) -and (Test-Path $heicNeg)) `
    "§1b 前置：HEIC 合成件齐备（synth_heic_gainmap.heic / synth_heic_gainmap_fakehevc.heic）—— 缺则本段整段无凭据（fail-closed，不静默跳过）"
 
 # 形态自检：正向件必须被 ffprobe 认成「2 条 hevc 流」（证明容器合法，且底图/增益图 item 都是**真实 HEVC**）
-$hp = Exec $fp "-v error -show_entries stream=index,codec_name,width,height -of csv=p=0 `"$heicPos`"" "sh_heicpos"
+# ⚠ `ExecOut`：实测 ffprobe `-v error` 下 csv 两行全在 stdout（`0,hevc,64,48` + `1,hevc,64,48`）、stderr 0 B
+#   ⇒ 与合并版同值，换尺不产生由绿转红；读不到容器时 stdout 空、报错在 stderr ⇒ 那条红是对的（正向断言）。
+$hp = ExecOut $fp "-v error -show_entries stream=index,codec_name,width,height -of csv=p=0 `"$heicPos`"" "sh_heicpos"
 Write-Host "  [形态] heicPos: $($hp.text.Trim())"
 CK (($hp.text -match '(?m)^\s*0\s*,\s*hevc') -and ($hp.text -match '(?m)^\s*1\s*,\s*hevc')) `
    "§1b 素材形态：合成 HEIC 含 2 条 hevc 流（判据载体：增益图 item 确是真实 HEVC 码流，不是改标签的空壳）"
@@ -292,13 +337,15 @@ if (Test-Path "$work/gm_pos.hevc") {
   $scOk = ($gb.Length -ge 4 -and $gb[0] -eq 0 -and $gb[1] -eq 0 -and $gb[2] -eq 0 -and $gb[3] -eq 1)
 }
 CK $scOk "§1b 正向：产物是 **Annex-B**（首 4 字节 = 00 00 00 01，实 $gmLen B）"
-$dg = Exec $fp "-v error -f hevc -show_entries stream=codec_name,width,height -of csv=p=0 `"$work/gm_pos.hevc`"" "d_heic"
+$dg = ExecOut $fp "-v error -f hevc -show_entries stream=codec_name,width,height -of csv=p=0 `"$work/gm_pos.hevc`"" "d_heic"
 CK ($dg.text -match '(?m)^\s*hevc,64,48') `
    "§1b 正向 **端到端**：探针产出的字节被 ffprobe 解为 hevc 64x48（实 $($dg.text.Trim())）—— 参数集前置与逐 NAL 转换都对"
 # 反控：把**同一份**产物按 AV1 解复用器（`-f obu`）解 ⇒ 不得成功（证明它真是 HEVC/Annex-B，而非被原样透传的 OBU）
-$dg2 = Exec $fp "-v error -f obu -show_entries stream=codec_name,width,height -of csv=p=0 `"$work/gm_pos.hevc`"" "d_heic_obu"
+$dg2 = ExecOut $fp "-v error -f obu -show_entries stream=codec_name,width,height -of csv=p=0 `"$work/gm_pos.hevc`"" "d_heic_obu"
 # ⚠ 不能断言「输出不含 `av1`」—— `-f obu` 是**强制**解复用器，它照样会报 `codec_name=av1`，
 #   只是**宽高为 0**（实测 `av1,0,0` + stderr `Failed to read obu`）。判据取「解不出 64x48」。
+#   ⚠ 取数走 `ExecOut`（只看 stdout 的那行 csv）：`-f obu` 的报错在 stderr，拼进返回值只会给这条
+#     **负断言**白送噪声；判据的**活性**由上一条正向断言（同一份产物、`-f hevc` 解出 64x48）承担。
 CK (-not ($dg2.text -match ',\s*64\s*,\s*48')) `
    "§1b **反控（断言有牙）**：产物按 `-f obu`（AV1）解**解不出 64x48**（实 $(($dg2.text -split "`r?`n" | Where-Object { $_ -match 'av1' } | Select-Object -First 1))）—— 否则说明产物其实是 AV1 字节，上面两条正向断言就是假绿"
 
@@ -353,7 +400,7 @@ CK (($avifBody -match 'maxFrames\s*>\s*1') -and ($avifBody -match 'framesKnown')
 CK ($avifBody -match 'IsoBmffGainMapProbe\.HasTmapItemFast\(') `
    "§2 判据含「增益图容器」支（HasTmapItemFast）—— 用来把「静态 AVIF+alpha」与「静态增益图 AVIF」分开"
 CK ($avifBody -notmatch 'videoCount\s*>=\s*2') `
-   "§2 旧判据 `videoCount >= 2` 已移除（它把「输入有第二条流」误当「输入多帧」）"
+   "§2 旧判据「videoCount >= 2」已移除（它把「输入有第二条流」误当「输入多帧」）"
 # 反控：把「增益图容器」那一支从源码文本删掉 ⇒ 锚点断言必须转红。
 $mutantBody = $avifBody -replace 'IsoBmffGainMapProbe\.HasTmapItemFast\(', 'MutatedAway('
 CK (-not ($mutantBody -match 'IsoBmffGainMapProbe\.HasTmapItemFast\(')) `
@@ -421,10 +468,16 @@ $et = "$root/publish/PLAN/exiftool/exiftool.exe"
 $negPng = "$work/neg_src.png"; $negJpg = "$work/neg_exif_srgb.jpg"
 $r = Exec $ff "-y -v error -f lavfi -i `"testsrc2=s=64x48`" -frames:v 1 `"$negPng`"" "gen_negpng"
 $r = Exec $ff "-y -v error -i `"$negPng`" -frames:v 1 `"$negJpg`"" "gen_negjpg"
-if ((Test-Path $et) -and (Test-Path $negJpg)) { $r = Exec $et "-overwrite_original -EXIF:ColorSpace=sRGB `"$negJpg`"" "tag_negjpg" }
+if ((Test-Path $et) -and (Test-Path $negJpg)) { $r = Exec $et "-overwrite_original -EXIF:ColorSpace=sRGB `"$negJpg`"" "tag_negjpg" }  # 合并取数已论证：这是**写标签**的动作（打标夹具），返回值只赋给 $r 且从不消费 ⇒ 不喂任何断言
 # 负控素材形态自检（**没有它，下面那条负控可能真空绿**）：CICP 必须真是 unknown，且 EXIF 标签必须真写进去了。
-$nchk = Exec $fp "-v error -select_streams v:0 -show_entries stream=color_transfer -of csv=p=0 `"$negJpg`"" "chk_neg_cicp"
-$echk = Exec $et "-G -s -ColorSpace `"$negJpg`"" "chk_neg_et"
+# ⚠ 两条都读**工具写在 stdout 的值** ⇒ `ExecOut`。实测（laneB equiv-laneB3/4）：
+#   · `$nchk` 用 `-v error` 的 ffprobe ⇒ stderr 0 字节、`unknown` 在 stdout ⇒ 与合并版同值，换尺不由绿转红；
+#   · `$echk` 打标后回读：stdout = 「[EXIF] ColorSpace : sRGB」56 B，合并版在同一次调用里多吐 245 B 的
+#     perl locale 警告（OLD 301 B / NEW 56 B）⇒ 值被警告糊住，`-match 'ColorSpace'` 读的就不再是"文件里
+#     真有什么标签"。⚠ 反向也实测过：文件缺失时 exiftool 的 Error 行只在 **stderr**、stdout 为空 ⇒
+#     只读 stdout 会让这条自检**转红**，而"标签没写进去"本来就该红（收紧，不是放宽）。
+$nchk = ExecOut $fp "-v error -select_streams v:0 -show_entries stream=color_transfer -of csv=p=0 `"$negJpg`"" "chk_neg_cicp"
+$echk = ExecOut $et "-G -s -ColorSpace `"$negJpg`"" "chk_neg_et"
 CK (($nchk.text -match 'unknown') -and ($echk.text -match 'ColorSpace')) `
    "§3b 负控素材形态：JPEG 的 CICP 真是 unknown 且 EXIF ColorSpace 标签真写进去了（否则下面那条负控真空绿）"
 $pPos = Exec $sp "color `"$gmHdr`"" "p_cicp_pos"

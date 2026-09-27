@@ -22,6 +22,18 @@ function Exec([string]$file, [string]$argStr){
   return ([System.IO.File]::ReadAllText($o) + "`n" + [System.IO.File]::ReadAllText($e))
 }
 
+# 只读 stdout 版（取「工具的值」专用）：exiftool 的标签值走 **stdout**，而随包 exiftool 是 perl 打包版
+#   ⇒ 进程环境带着本机 perl 不认的 LC_ALL/LANG（MSYS 里起门禁 = C.UTF-8）时**每次调用先往 stderr 喷
+#   locale warning**，合并取数就会把警告当值返回（本机实测：同一素材合并 394 B / 只读 149 B，
+#   差的就是那 6 行警告）。读 avifenc/cjxl/ffmpeg 的进度与报错（**只在 stderr**）仍用上面的 Exec。
+function ExecOut([string]$file, [string]$argStr){
+  $o = "$d/_exec.out"; $e = "$d/_exec.err"
+  $p = Start-Process -FilePath $file -ArgumentList $argStr -Wait -NoNewWindow -PassThru `
+    -RedirectStandardOutput $o -RedirectStandardError $e
+  $global:LASTEXITCODE = $p.ExitCode
+  return [System.IO.File]::ReadAllText($o)
+}
+
 function Show($tag) { Write-Host "`n=== $tag ===" -ForegroundColor Cyan }
 
 # ── 素材：带 Display P3 ICC 的 16bit PNG ──
@@ -31,7 +43,7 @@ if ($LASTEXITCODE -ne 0) { Write-Host "  素材生成失败 rc=$LASTEXITCODE" -F
 # ⚠ 提取二进制 ICC 必须用 exiftool -w（PowerShell 重定向会按文本解码而损坏字节流）
 #    且 -w 必须含格式码（%f），否则不会生成我们指定的文件名
 Remove-Item "$d/p3.icc" -EA SilentlyContinue
-Exec $et "-b -icc_profile -w `"$d/%f.icc`" `"$d/p3.png`"" | Out-Null
+Exec $et "-b -icc_profile -w `"$d/%f.icc`" `"$d/p3.png`"" | Out-Null  # 合并取数已论证：这条不取值——二进制 ICC 由 -w 直接写进文件，返回值整条丢进 Out-Null，警告文本喂不到任何判据
 if (-not (Test-Path "$d/p3.icc")) { Get-ChildItem "$d/*.icc" | ForEach-Object { "    (发现 $($_.Name))" } }
 $iccBytes = (Get-Item "$d/p3.icc" -EA SilentlyContinue).Length
 Write-Output "素材: p3.png=$((Get-Item "$d/p3.png").Length)B（内嵌 ICC）, 提取 p3.icc=${iccBytes}B"
@@ -41,7 +53,7 @@ if ($iccBytes -lt 200) { Write-Host "  ICC 提取失败（后续 --icc 实验受
 Show "E1a0: AVIF 内嵌 ICC 直通（不加任何色彩参数）"
 $rc0 = Exec $encl "--lossless `"$d/p3.png`" `"$d/e1a0.avif`""
 Write-Output "  avifenc exit=$LASTEXITCODE  产物=$((Get-Item "$d/e1a0.avif" -EA SilentlyContinue).Length)B"
-$read0 = Exec $et "-a -G1 -s -ICC_Profile -ColorPrimaries -TransferCharacteristics -MatrixCoefficients `"$d/e1a0.avif`""
+$read0 = ExecOut $et "-a -G1 -s -ICC_Profile -ColorPrimaries -TransferCharacteristics -MatrixCoefficients `"$d/e1a0.avif`""
 ($read0 -split "`r?`n" | ForEach-Object { "    $($_)" })
 $hasIcc0 = [bool]($read0 -match "ICC_Profile")
 
@@ -51,7 +63,7 @@ $hasIcc1 = $false
 if ($iccBytes -ge 200) {
   $rc1 = Exec $encl "--lossless --icc `"$d/p3.icc`" `"$d/p3.png`" `"$d/e1a1.avif`""
   Write-Output "  avifenc exit=$LASTEXITCODE  产物=$((Get-Item "$d/e1a1.avif" -EA SilentlyContinue).Length)B"
-  $read1 = Exec $et "-a -G1 -s -ICC_Profile -ColorPrimaries -TransferCharacteristics `"$d/e1a1.avif`""
+  $read1 = ExecOut $et "-a -G1 -s -ICC_Profile -ColorPrimaries -TransferCharacteristics `"$d/e1a1.avif`""
   ($read1 -split "`r?`n" | ForEach-Object { "    $($_)" })
   $hasIcc1 = [bool]($read1 -match "ICC_Profile")
 } else { Write-Output "  跳过（无 .icc 文件）" }
@@ -64,13 +76,13 @@ Show "E1c: 仅写 nclx（对照，确认本工具能写 CICP）"
 $rcC = Exec $encl "--lossless --nclx 12/1/6 -r full `"$d/p3.png`" `"$d/e1c.avif`""
 Write-Output "  avifenc exit=$LASTEXITCODE  产物=$((Get-Item "$d/e1c.avif" -EA SilentlyContinue).Length)B"
 if ($LASTEXITCODE -ne 0) { (($rcC -split "`r?`n") | Select-Object -First 3 | ForEach-Object { "    ! $($_)" }) }
-((Exec $et "-a -G1 -s -ICC_Profile -ColorPrimaries -TransferCharacteristics -MatrixCoefficients `"$d/e1c.avif`"") -split "`r?`n" | ForEach-Object { "    $($_)" })
+((ExecOut $et "-a -G1 -s -ICC_Profile -ColorPrimaries -TransferCharacteristics -MatrixCoefficients `"$d/e1c.avif`"") -split "`r?`n" | ForEach-Object { "    $($_)" })
 
 Show "E1b: AVIF 同时写 rICC 与 nclx（--icc + --nclx）"
 $rc2 = Exec $encl "--lossless --icc `"$d/p3.icc`" --nclx 12/1/6 -r full `"$d/p3.png`" `"$d/e1b.avif`""
 Write-Output "  avifenc exit=$LASTEXITCODE  产物=$((Get-Item "$d/e1b.avif" -EA SilentlyContinue).Length)B"
 if ($LASTEXITCODE -ne 0) { (($rc2 -split "`r?`n") | Select-Object -First 4 | ForEach-Object { "    ! $($_)" }) }
-$read2 = Exec $et "-a -G1 -s -ICC_Profile -ColorPrimaries -TransferCharacteristics -MatrixCoefficients `"$d/e1b.avif`""
+$read2 = ExecOut $et "-a -G1 -s -ICC_Profile -ColorPrimaries -TransferCharacteristics -MatrixCoefficients `"$d/e1b.avif`""
 ($read2 -split "`r?`n" | ForEach-Object { "    $($_)" })
 $hasIcc2 = [bool]($read2 -match "ICC_Profile"); $hasNclx2 = [bool]($read2 -match "ColorPrimaries")
 Write-Output "  → ICC 存在=$hasIcc2  nclx(CICP) 存在=$hasNclx2  （共存=$($hasIcc2 -and $hasNclx2)）"
@@ -84,12 +96,14 @@ $ppm = "$d/p3.ppm"
 Exec $ff "-y -hide_banner -loglevel error -i `"$d/p3.png`" -pix_fmt rgb48le `"$ppm`"" | Out-Null
 $rc3 = Exec $cjxl "`"$ppm`" `"$d/e2a.jxl`" -x icc_pathname=`"$d/p3.icc`" -d 0"
 Write-Output "  cjxl exit=$LASTEXITCODE  产物=$((Get-Item "$d/e2a.jxl" -EA SilentlyContinue).Length)B"
-((Exec $jinfo "`"$d/e2a.jxl`"") -split "`r?`n" | ForEach-Object { "    $($_)" })
+# jxlinfo 的色彩/码流信息同样走 **stdout**（本机实测：stdout 有内容、stderr 空）⇒ 一并走 ExecOut。
+#   ⚠ 这类调用点扫描器看不见（它的白名单只认 $et/$exif*/$fp/$ffprobe*），别指望第 56 条替你钉住。
+((ExecOut $jinfo "`"$d/e2a.jxl`"") -split "`r?`n" | ForEach-Object { "    $($_)" })
 
 Show "E2b: cjxl 同给 color_space=DisplayP3 与 icc_pathname"
 $rc4 = Exec $cjxl "`"$ppm`" `"$d/e2b.jxl`" -x color_space=DisplayP3 -x icc_pathname=`"$d/p3.icc`" -d 0"
 Write-Output "  cjxl exit=$LASTEXITCODE  产物=$((Get-Item "$d/e2b.jxl" -EA SilentlyContinue).Length)B"
-$i2b = Exec $jinfo "`"$d/e2b.jxl`""
+$i2b = ExecOut $jinfo "`"$d/e2b.jxl`""
 ($i2b -split "`r?`n" | ForEach-Object { "    $($_)" })
 
 Show "E2c: cjxl 仅 color_space=DisplayP3（对照，看两者是否产生不同码流）"

@@ -18,6 +18,20 @@ function Exec([string]$file, [string]$argStr){
   return ([System.IO.File]::ReadAllText($o) + "`n" + [System.IO.File]::ReadAllText($e))
 }
 
+# 只读 stdout 的取数（值走 stdout 的调用一律用它，不要用上面的 Exec）
+#   为什么必须分家：随包 exiftool 是 perl 打包版，环境带本机 perl 不认的 LC_ALL/LANG（从 MSYS 侧
+#   起门禁即出现 C.UTF-8）⇒ 每次调用都往 stderr 喷 6 行 locale 警告（实测 244 字节）。
+#   合并取数时这 244 字节会并进「值」里：标签缺失 ⇒ 值非空 ⇒ 「-ne 空串」型断言假绿；
+#   标签存在 ⇒ 值前挂警告 ⇒ 「-eq 空串」/相等比对型断言假红。ffmpeg 的进度与 PSNR 只在 stderr，
+#   那一类仍走 Exec（合并是对的），故两个函数并存、按值的真实流向选。
+function ExecOut([string]$file, [string]$argStr){
+  $o = "$out/_exec.out"; $e = "$out/_exec.err"
+  $p = Start-Process -FilePath $file -ArgumentList $argStr -Wait -NoNewWindow -PassThru `
+    -RedirectStandardOutput $o -RedirectStandardError $e
+  $global:LASTEXITCODE = $p.ExitCode
+  return [System.IO.File]::ReadAllText($o)
+}
+
 $ffmpeg = (Get-ChildItem "publish/PLAN/ffmpeg-full*/ffmpeg.exe" | Select-Object -First 1).FullName
 $ffprobe = (Get-ChildItem "publish/PLAN/ffmpeg-full*/ffprobe.exe" | Select-Object -First 1).FullName
 $exif = "publish/PLAN/exiftool/exiftool.exe"
@@ -32,18 +46,18 @@ function Check($name, $cond) {
 # 读取输出文件的 CICP 标签 — 用 exiftool (ffprobe 对 smpte432 显示 unknown 是 ffprobe bug!)
 function GetCicp($path) {
     if (-not (Test-Path $path)) { return "MISSING" }
-    $p = (Exec $exif "-s -s -ColorPrimaries `"$path`"").Trim()
-    $t = (Exec $exif "-s -s -TransferCharacteristics `"$path`"").Trim()
-    $m = (Exec $exif "-s -s -MatrixCoefficients `"$path`"").Trim()
+    $p = (ExecOut $exif "-s -s -ColorPrimaries `"$path`"").Trim()
+    $t = (ExecOut $exif "-s -s -TransferCharacteristics `"$path`"").Trim()
+    $m = (ExecOut $exif "-s -s -MatrixCoefficients `"$path`"").Trim()
     return "$p|$t|$m"
 }
 
 # 读取输出文件的 ICC 名称 (兼容 iccgen 生成的无 ProfileName 但含 Description 的 ICC)
 function GetIccName($path) {
     if (-not (Test-Path $path)) { return "" }
-    $n = (Exec $exif "-s -s -ProfileName `"$path`"").Trim()
-    if (-not $n) { $n = (Exec $exif "-s -s -ICC_Profile_Name `"$path`"").Trim() }
-    if (-not $n) { $n = (Exec $exif "-s -s -ProfileDescription `"$path`"").Trim() }
+    $n = (ExecOut $exif "-s -s -ProfileName `"$path`"").Trim()
+    if (-not $n) { $n = (ExecOut $exif "-s -s -ICC_Profile_Name `"$path`"").Trim() }
+    if (-not $n) { $n = (ExecOut $exif "-s -s -ProfileDescription `"$path`"").Trim() }
     if ($null -eq $n) { return "" }
     return (($n -replace '^[^:]+:\s*','') -replace '^ProfileName:\s*','')
 }
@@ -139,7 +153,7 @@ Copy-Item $srcIcc $iccTest -Force
 # B1: 模式2 CarryIcc — 输出应保留 ICC
 $oB1 = "$res/b1_carry.png"
 Exec $ffmpeg "-y -hide_banner -loglevel error -i `"$iccTest`" -c:v png `"$oB1`"" | Out-Null
-Exec $exif "-tagsfromfile `"$iccTest`" -all:all `"$oB1`"" | Out-Null
+Exec $exif "-tagsfromfile `"$iccTest`" -all:all `"$oB1`"" | Out-Null  # 合并取数已论证：纯写入（把源 JPEG 标签灌进 PNG），返回值被 Out-Null 丢弃、不喂任何断言；随后读值走 GetIccName 的只读取数
 $icc1 = GetIccName $oB1
 Check "B1 CarryIcc: ICC 保留 ($icc1)" ($icc1 -ne "")
 
@@ -158,7 +172,7 @@ Check "B3 BakeOnly: 无 ICC ($iccB3='')" ($iccB3 -eq "")
 # B4: 模式1 None — 需先剥离源 ICC (ffmpeg 从 JPEG 输入自动携带 ICC!)
 $noIccSrc = "$res/src_noicc.jpg"
 Exec $ffmpeg "-y -hide_banner -loglevel error -i `"$iccTest`" -vf `"format=yuv444p`" -q:v 5 `"$noIccSrc`"" | Out-Null
-Exec $exif "-ICC_Profile= `"$noIccSrc`"" | Out-Null
+Exec $exif "-ICC_Profile= `"$noIccSrc`"" | Out-Null  # 合并取数已论证：剥 ICC 的写操作，返回值 Out-Null 丢弃；B4 的判据由后面只读的 GetIccName 提供
 $oB4 = "$res/b4_none.png"
 Exec $ffmpeg "-y -hide_banner -loglevel error -i `"$noIccSrc`" -c:v png `"$oB4`"" | Out-Null
 $iccB4 = GetIccName $oB4
@@ -196,7 +210,7 @@ Write-Host "`nD. 色彩转换 × 输出格式" -ForegroundColor Cyan
 $cjxl = "publish/PLAN/jxl/bin/cjxl.exe"
 if (Test-Path $cjxl) {
     Exec $cjxl "`"$o2`" `"$res/d1_p3.jxl`" -d 0 -e 5" | Out-Null
-    $jxlInfo = (Exec "publish/PLAN/jxl/bin/jxlinfo.exe" "`"$res/d1_p3.jxl`"") -split "`r?`n" | Select-String "Color space|color space" | Select-Object -First 2
+    $jxlInfo = (ExecOut "publish/PLAN/jxl/bin/jxlinfo.exe" "`"$res/d1_p3.jxl`"") -split "`r?`n" | Select-String "Color space|color space" | Select-Object -First 2
     Check "D1 P3→JXL 色彩=$jxlInfo" ($jxlInfo -match "RGB|P3")  # P3 输入无 ICC 时 jxl 标 sRGB, 有 ICC 标 P3
 }
 
@@ -210,14 +224,14 @@ Check "D2 P3→AVIF CICP=$cD2 (应 SMPTE EG 432)" ($cD2 -match "432-1|SMPTE EG")
 $oD3 = "$res/d3_p3.jpg"
 Exec $ffmpeg "-y -hide_banner -loglevel error -i `"$o2`" -q:v 5 -color_primaries smpte432 -color_trc iec61966-2-1 `"$oD3`"" | Out-Null
 # 软件 RestoreMetadataAsync: 源 ICC 复制 (P3 源无 ICC 时 iccgen 补偿, 此处用 a2 PNG 模拟)
-Exec $exif "-icc_profile<=$src/srgb.icc `"$oD3`"" | Out-Null
+Exec $exif "-icc_profile<=$src/srgb.icc `"$oD3`"" | Out-Null  # 合并取数已论证：写 ICC 的副作用调用，返回值 Out-Null 丢弃；D3 判据由只读的 GetIccName 提供
 $iccD3 = GetIccName $oD3
 Check "D3 P3→JPEG ICC=$iccD3" ($iccD3 -ne "")
 
 # D4: P3 → WebP (软件流程: ffmpeg + exiftool ICC 恢复 — iccgen 对 WebP muxer 不生效!)
 $oD4 = "$res/d4_p3.webp"
 Exec $ffmpeg "-y -hide_banner -loglevel error -i `"$o2`" -c:v libwebp -quality 85 `"$oD4`"" | Out-Null
-Exec $exif "-icc_profile<=$src/srgb.icc `"$oD4`"" | Out-Null
+Exec $exif "-icc_profile<=$src/srgb.icc `"$oD4`"" | Out-Null  # 合并取数已论证：同上，WebP 写 ICC 的副作用调用，返回值丢弃，不喂断言
 $iccD4 = GetIccName $oD4
 Check "D4 P3→WebP ICC=$iccD4 (exiftool 恢复)" ($iccD4 -ne "")
 
@@ -265,7 +279,7 @@ Check "F2 sBIT+cICP 共存: $f2Sbit | $f2Cicp" ($f2Sbit -match "R=10" -and $f2Ci
 
 # F3: ffprobe 解码端识别 cICP (PNG 3.0 闭环)
 # 注意: ffprobe csv 输出顺序为 color_transfer,color_primaries
-$f3Cicp = (Exec $ffprobe "-v error -select_streams v:0 -show_entries stream=color_primaries,color_transfer -of csv=p=0 `"$res/f1_sbit10_cicp.png`"").Trim()
+$f3Cicp = (ExecOut $ffprobe "-v error -select_streams v:0 -show_entries stream=color_primaries,color_transfer -of csv=p=0 `"$res/f1_sbit10_cicp.png`"").Trim()
 Check "F3 ffprobe 识别 cICP=$f3Cicp (应 bt2020,smpte2084)" ($f3Cicp -match "smpte2084" -and $f3Cicp -match "bt2020")
 
 # F4: 16-bit 容器 + sBIT(10) → 有效位语义验证 (sBIT 声明 10-bit)

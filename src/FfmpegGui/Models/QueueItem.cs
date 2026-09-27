@@ -11,6 +11,17 @@ namespace FfmpegGui.Models
         public FfmpegOptions Options { get; set; } = new FfmpegOptions();
         // 当在批量添加时保留每个输入文件对应的输入基目录（用于保留目录结构）
         public string? InputBaseDir { get; set; }
+        /// <summary>
+        /// 用户**实际提供**的源文件路径。<b>必须在任何中间件改写 <see cref="InputPath"/> 之前</b>设置
+        /// （RAW→临时 TIFF / UltraHDR PFM / MaxDimension 预缩放 / djxl 中转副本），此后不再变更。
+        /// 两个用途：
+        /// ① **元数据恢复的取源** —— RAW 的拍摄字段（`DateTimeOriginal` / `CreateDate` / `LensModel` /
+        ///    `ExposureProgram` / `MeteringMode` / `Flash` 等）**只存在于原文件**：中间件
+        ///    （`dngtool -d -T`，实为 dcraw 兼容 TIFF 写出）只搬 5 项 EXIF
+        ///    ⇒ 以中间件为源会**永久丢失**这些字段（实测 5/5 厂商复现，见 `RAW_PIPELINE_AUDIT.md §10`）。
+        /// ② **队列显示名** —— 见 <see cref="DisplayName"/>。
+        /// </summary>
+        public string? SourceInputPath { get; set; }
         /// <summary>实际执行的命令行（用于详情窗口展示）</summary>
         public string Command { get; set; } = string.Empty;
 
@@ -166,8 +177,20 @@ namespace FfmpegGui.Models
             return $"{d.TotalHours:F0}h {d.Minutes}m {d.Seconds}s";
         }
 
+        /// <summary>
+        /// 队列列表 / 日志显示用的**输入名**。
+        /// ⚠⚠ **取 <see cref="SourceInputPath"/>，不得取 <see cref="InputPath"/>**：
+        /// 后者在 RAW 预处理后被改写成内部临时 TIFF（`xxx_raw.tiff`，位于 `%TEMP%/raw_&lt;guid&gt;/`）
+        /// ⇒ 队列列表 / 进度窗标题 / CLI 输出会显示**用户从未提供过的文件名**
+        /// （实测 `Canon_EOS40D.CR2` 显示成 `Canon_EOS40D_raw.tiff`，见 `RAW_PIPELINE_AUDIT.md §10.5`）。
+        /// ⚠ 另一处易错点：本属性与 <see cref="InputPath"/> 都是**无通知**的纯属性，但这**不代表**绑定不会刷新 ——
+        /// <see cref="Status"/> 的 setter 会通知 <see cref="DisplayText"/>，而后者每次求值都**重读**本属性
+        /// ⇒ RAW 预处理后状态必然变化（`处理中` / `已完成`）⇒ 绑定**确实会**刷成临时名。
+        /// </summary>
+        public string DisplayName => Path.GetFileName(SourceInputPath ?? InputPath);
+
         /// <summary>队列列表显示文本</summary>
-        public string DisplayText => $"{Path.GetFileName(InputPath)} — {Status}";
+        public string DisplayText => $"{DisplayName} — {Status}";
 
         /// <summary>是否为报错条目（状态以"失败"开头）</summary>
         public bool HasError => !string.IsNullOrEmpty(Status) && Status.StartsWith("失败");

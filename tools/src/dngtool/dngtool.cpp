@@ -437,12 +437,14 @@ static int Decode(
     processor.imgdata.rawparams.use_dngsdk = LIBRAW_DNG_ALL;
     // JXL 压缩 DNG 的 Opcode2/3 处理 (DNG 1.7)
     processor.imgdata.rawparams.options |= (1u << 27); // LIBRAW_RAWOPTIONS_DNG_STAGE23_IFPRESENT_JPGJXL
-    // ⚠️ 必须同时启用 STAGE2/STAGE3: 自编码 JXL-DNG 无 OpcodeList,
-    // 只开 IFPRESENT_JPGJXL 会走 dng_read_image 直读分支 → ttShort 数据
-    // 只拷入 raw_alloc 而 color3_image 指针未设置 → dcraw_process 输出 G/B=0
-    // (Adobe 官方 JXL-DNG 带 OpcodeList2 自动走 DNG SDK 分支所以正常)
-    processor.imgdata.rawparams.options |= (1u << 12); // LIBRAW_RAWOPTIONS_DNG_STAGE2
-    processor.imgdata.rawparams.options |= (1u << 13); // LIBRAW_RAWOPTIONS_DNG_STAGE3
+    // ⚠⚠ 2026-09-20：STAGE2 / STAGE3 **不再无条件启用**（原先无条件 ⇒ 改为 `unpack()` 后按需重试）。
+    //   原因：它们会强制走 DNG SDK 的 BuildStage2Image（**去马赛克**）分支 ⇒ 对
+    //   **保留 CFA 的 DNG**（我们自己用 `-e -lossless` 写的）会**误去马赛克**：
+    //   实测 `unpack()` 后 `filters` 被清 0、数据改走 `color3_image`（3 平面）
+    //   ⇒ 解码结果与源差 **100%~170%**（Fujifilm RAF → DNG 实测，见 RAW_PIPELINE_AUDIT §5.7）。
+    //   但**线性 DNG / 自编码 JXL-DNG**（3 平面、无 OpcodeList）**确实需要**它们，
+    //   否则 `dcraw_process` 输出 G/B=0（原注释记录的现象）。
+    //   ⇒ 改为在 `unpack()` 后**按需重试**（见下方 gotCfa 判断）。
     // ⚠️ 必须启用 ALLOWSIZECHANGE (1<<14): 带 ActiveArea 的 DNG (如 Adobe 官方
     // 03_jxl_bayer_raw_integer.dng, ActiveArea 6376x9600 ≠ raw 7168x10240)
     // BuildStage2Image 裁剪到 ActiveArea → 尺寸不匹配 → 无此选项报 DATA_ERROR
@@ -479,6 +481,30 @@ static int Decode(
     }
 
     ret = processor.unpack();
+
+    // ⚠⚠ 2026-09-20：**按需启用 DNG SDK STAGE2/3**（原先无条件启用 ⇒ 会误去马赛克，见上方注释）。
+    //   判据：`unpack()` 后是否拿到「**CFA 单平面**」（`raw_image` 非空 且 `filters != 0`）。
+    //   · 是 ⇒ 这是**保留 CFA 的 DNG**（我们自己 `-e -lossless` 写的）⇒ **不需要** STAGE2/3 ✓
+    //   · 否 ⇒ 是**线性/已去马赛克的 DNG**（自编码 JXL-DNG、官方 float/linear DNG）
+    //          ⇒ 必须启用 STAGE2/3，否则 `dcraw_process` 输出 G/B=0 ⇒ 重开重试 ✓
+    {
+        const bool gotCfa = (ret == LIBRAW_SUCCESS)
+                         && processor.imgdata.rawdata.raw_image != nullptr
+                         && processor.imgdata.idata.filters != 0;
+        if (!gotCfa && processor.imgdata.idata.dng_version > 0)
+        {
+            if (verbose)
+                fprintf(stderr, "[dngtool] not a CFA DNG (filters=%u raw_image=%p) -> retry with DNG SDK STAGE2/3\n",
+                        processor.imgdata.idata.filters, (void*)processor.imgdata.rawdata.raw_image);
+            processor.recycle();
+            processor.imgdata.rawparams.options |= (1u << 12); // LIBRAW_RAWOPTIONS_DNG_STAGE2
+            processor.imgdata.rawparams.options |= (1u << 13); // LIBRAW_RAWOPTIONS_DNG_STAGE3
+            ret = processor.open_file(inputPath);
+            if (ret == LIBRAW_SUCCESS)
+                ret = processor.unpack();
+        }
+    }
+
     if (ret != LIBRAW_SUCCESS)
     {
         fprintf(stderr, "[dngtool] ERROR: unpack failed: %s\n", libraw_strerror(ret));
@@ -514,6 +540,8 @@ static int Decode(
             fprintf(stderr, "\n");
         }
     }
+
+    // （2026-09-20 临时调试代码已移除）
 
     if (verbose) fprintf(stderr, "[dngtool] processing ...\n");
     ret = processor.dcraw_process();
@@ -1473,6 +1501,12 @@ int main(int argc, char* argv[])
         else if (strcmp(a, "-linear") == 0) forceLinear = true;
         else if (strcmp(a, "-effort") == 0 && i + 1 < argc) jxlEffort = atoi(argv[++i]);
         else if (strcmp(a, "-decode_speed") == 0 && i + 1 < argc) jxlDecodeSpeed = atoi(argv[++i]);
+        // ⚠⚠ 2026-09-21：**JXL 质量独立参数**（`-jxlq`，0 = 无损，默认 0）。
+        //   原先 JXL 质量**复用 `-q`**（= demosaic 质量，默认 **3**）⇒
+        //   产品传 `-jxl` 不带 `-q` 时 `jxlQuality` 被算成 **3**
+        //   ⇒ `SetDistance((100-3)*15/100 = 14.55f)` ⇒ **严重有损**！
+        //   实测：JXL 产物 raw 校验和 `sum=725637202`，而源与无损 JPEG 产物都是 `711851004`。
+        else if (strcmp(a, "-jxlq") == 0 && i + 1 < argc) jxlQuality = atoi(argv[++i]);
         else if (strcmp(a, "-c") == 0) { /* 保留: stdout 输出 (未实现) */ }
         else
         {
@@ -1499,7 +1533,10 @@ int main(int argc, char* argv[])
             fprintf(stderr, "[dngtool] -e requires -i <input> and -O <output>\n");
             return 1;
         }
-        jxlQuality = (encodeCompression == 1) ? quality : 0;
+        // ⚠⚠ 2026-09-21：**不再用 `-q`（demosaic 质量）覆盖 JXL 质量** ——
+        //   `jxlQuality` 现在**只由 `-jxlq` 设置**（默认 **0 = 无损**）✓
+        //   （旧代码 `jxlQuality = (encodeCompression == 1) ? quality : 0;` 会让
+        //    产品默认调用 `-jxl`（不带 `-q`）时误取 demosaic 默认值 3 ⇒ 有损）
         return EncodeDng(inputPath.c_str(), outputPath.c_str(),
                          encodeCompression, jxlQuality, forceLinear,
                          jxlEffort, jxlDecodeSpeed, highlight, outputBps,

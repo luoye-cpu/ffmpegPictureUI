@@ -2,7 +2,7 @@
 
 # 🖼️ FFmpegPictureUI — FFmpeg Image Converter
 
-**v1.6.0** — 2026-09-16 Release · Cross-platform batch image / animation / video converter built on Avalonia UI, wrapping `ffmpeg` / `ffprobe` plus external encoders (`cjxl` / `djxl` / `cjpegli` / `JxrEncApp` / `JxrDecApp`).
+**v1.6.0** — 2026-09-28 Release · Cross-platform batch image / animation / video converter built on Avalonia UI, wrapping `ffmpeg` / `ffprobe` plus external encoders (`cjxl` / `djxl` / `cjpegli` / `JxrEncApp` / `JxrDecApp`).
 
 QQ Group: 754439779 | [Join Group](https://qm.qq.com/q/M2181PvCkW)
 
@@ -121,6 +121,10 @@ Environment variables (FFMPEGGUI_*) > --settings file > portable settings.json >
 
 Common environment variables: `FFMPEGGUI_FFMPEG_DIR`, `FFMPEGGUI_OUTPUT_DIR`, `FFMPEGGUI_JXL_LIB_DIR`, `FFMPEGGUI_PLAN_DIR`, `FFMPEGGUI_GPU`.
 
+External-tool detection fallback: `FFMPEGGUI_EXT_SEARCH_DIRS` (`;`-separated directory list). When set, the "extended system search"
+step uses **only** these roots instead of recursively walking `%LOCALAPPDATA%\Programs`, `C:\Program Files` and every PATH entry.
+Unset means the default behaviour is unchanged.
+
 ### System tray
 
 Closing the main window minimizes to the system tray by default (instead of quitting) so the queue keeps running in the background. Tray menu: "Show Main Window / Pause Queue / Exit".
@@ -181,7 +185,7 @@ ffmpegPictureUI/
 
 ## 📝 Changelog
 
-Current version **v1.6.0** (2026-09-16). Full release history: **[CHANGELOG.en.md](CHANGELOG.en.md)**.
+Current version **v1.6.0** (2026-09-28). Full release history: **[CHANGELOG.en.md](CHANGELOG.en.md)**.
 
 
 ## 📄 License

@@ -97,7 +97,7 @@ function Run-Test {
             $fileKB = [math]::Round($outFile.Length / 1KB, 1)
             $probe = ""
             try {
-                $probeOut = Exec $ffprobe "-v error -select_streams v:0 -show_entries `"stream=pix_fmt,color_space,color_primaries,color_transfer`" -of csv=p=0 `"$actualOutPath`""
+                $probeOut = Exec $ffprobe "-v error -select_streams v:0 -show_entries `"stream=pix_fmt,color_space,color_primaries,color_transfer`" -of csv=p=0 `"$actualOutPath`""  # 合并取数已论证：Probe 只进日志与 CSV 报告列，PASS/FAIL 由 $success 与文件存在决定，不喂断言；且 ffprobe 非 perl 打包，-v error 下 stderr 无 locale 警告可混入
                 $probe = ($probeOut -split "`r?`n" -join "").Trim()
             } catch { $probe = "probe-error" }
             Log "    [PASS] (${elapsed}s, ${fileKB}KB) probe=$probe" "Green"

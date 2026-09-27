@@ -128,6 +128,11 @@ namespace FfmpegGui.Services
                 {
                     Format = "JPEG XL", Quality = 100, Chroma = "auto",
                     BitDepth = "auto", ColorSpace = "auto",
+                    // jbrd 那只复选框只在「高级编码 + cjxl 后端」的面板里可见才参与判定
+                    // （MainWindow 的 ReadJxlAdvancedCheckStates，A-10 2026-09-26）⇒ 这两项必须写出来，
+                    // 否则本预设的 JxlLosslessJpeg 会被当成「面板不可见 ⇒ 回落默认 false」而静默失效。
+                    UseAdvancedCodec = true,
+                    EncoderBackend = "Cjxl",
                     JxlLosslessJpeg = true,
                     JxlEffort = 7,
                     MetadataMode = "PreserveAll", AutoThreads = true,

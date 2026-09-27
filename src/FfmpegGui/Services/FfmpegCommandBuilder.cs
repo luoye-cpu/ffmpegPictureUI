@@ -105,7 +105,10 @@ namespace FfmpegGui.Services
             //  格式色彩能力约束（实测驱动，针对失败模式修正）：由 dec 唯一给出，本处只应用位深硬约束。
             //  - JPEG(Ffmpeg mjpeg)/WebP(libwebp): 仅支持 SDR；P3 等广色域经 ICC 可交付；
             //  - TIFF: 仅支持 sRGB 显示色彩语义 (ICC 管理，color_primaries 无效)。
-            //  - AVIF: 支持 HDR 但 libaom 对 P3 高位深有兼容问题 → clamp 位深。
+            //  - AVIF: 位深上限**只按实际会跑的编码器**给（libaom/av1_nvenc 12、其余 10，
+            //    见 `ImageEncoderArgs.AvifMaxBitDepthForEncoder`，任务 #36）。原先另有一条
+            //    "Display P3 + 高位深 ⇒ 强制 8bit"的特例，2026-09-26 任务 #39 **实测否证后已删除**
+            //    （数据与理由就在 `GetFormatColorCapabilities` 的 avif 分支上）。
             // ═══════════════════════════════════════════════════
             int capMaxBitDepth = dec.CapMaxBitDepth;   // 已含硬约束；options.BitDepth 的钳制在裁决点完成
 
@@ -176,16 +179,20 @@ namespace FfmpegGui.Services
                     { args.Add("-dct"); args.Add(options.JpegDct); }
                     break;
                 case "png":
-                    if (options.Lossless)
-                    {
-                        args.Add("-compression_level");
-                        args.Add("0");
-                    }
-                    else
-                    {
-                        args.Add("-compression_level");
-                        args.Add(MapPngCompression(options.Quality).ToString());
-                    }
+                    // ── A-14（2026-09-26 修）：无损 ≠ 关掉 deflate ──
+                    // 旧写法把「强制无损」实现成**恒** `-compression_level 0`（zlib level 0 = 存储，完全不压），
+                    // 与用户指定的压缩级别无关。实测（随包 ffmpeg git-2026-09 系列，src_8bit.png 512x384）：
+                    //   level 0 = 592110 B / level 1 = 27280 B / level 9 = 23364 B
+                    //   三档各自解码回 rawvideo(rgb24) 的 md5 **与源解码 md5 完全相同**
+                    //   ⇒ 0/1/9 全是真无损，25.4 倍的体积差**只来自压缩级别**，无损语义对此没有要求。
+                    // 现只把「压缩级别」这一根轴交给 Quality（`MapPngCompression` 反比映射 0-9），
+                    // 与 `options.Lossless` 解绑；「PNG/TIFF/APNG **强制无损**」这条既定产品语义**未动**
+                    // （它由 MainWindow.UpdateOptionAvailability 保证，被 UiTestHost 的 J9a / L2a-L2d 锁住）。
+                    // ⚠ 界面现状：png 下质量被钉在 100 且滑块禁用 ⇒ `MapPngCompression(100)` = **0**
+                    //   ⇒ 默认命令行与产物**逐字节不变**（J9a 断言的 `-compression_level=0` 仍然成立）；
+                    //   真正把这只旋钮交回用户需要界面侧放开那把锁（或给 PNG 单开级别控件），属另一条 lane。
+                    args.Add("-compression_level");
+                    args.Add(MapPngCompression(options.Quality).ToString());
                     if (!string.IsNullOrWhiteSpace(options.PngPred))
                     { args.Add("-pred"); args.Add(options.PngPred); }
                     if (options.PngDpi.HasValue && options.PngDpi.Value > 0)
@@ -200,7 +207,11 @@ namespace FfmpegGui.Services
                         // 显式设置 -q:v 100，保证 FFmpeg libwebp 内部以无损 hint 运行
                         args.Add("-q:v");
                         args.Add("100");
-                        // compression_level 在无损模式下为 zlib 级别 (0-6)，做范围防护
+                        // ⚠ A-15（2026-09-26 复核）：`-compression_level` 是 AVCodecContext 的**通用**项，
+                        //   落到 libwebp 的 method(0-6)，**有损同样生效**（旧注释称它是无损专有的 zlib 级别，
+                        //   判错了；见下面有损分支的实测数字）。无损下它本来就在发，此处只做范围防护。
+                        //   实测静帧无损：省略 14426 = level4 14426 = level6 14426，level0 = 27030，level9 钳到 6；
+                        //   动图无损：省略 34822 / level0 41930 / level6 34404 ⇒ 无损下它一直是有效旋钮，两种模式都吃。
                         var cl = options.WebpCompressionLevel ?? 4;
                         if (cl < 0) cl = 0;
                         if (cl > 6) cl = 6;
@@ -227,12 +238,37 @@ namespace FfmpegGui.Services
                     {
                         args.Add("-q:v");
                         args.Add(options.Quality.ToString());
-                        if (!string.IsNullOrWhiteSpace(options.WebpPreset) && options.WebpPreset != "none")
+                        var lossyPreset = !string.IsNullOrWhiteSpace(options.WebpPreset)
+                                          && options.WebpPreset != "none";
+                        // 空判要重复写在 if 里：IsNullOrWhiteSpace 的NotNullWhen 精化不会穿过中间 bool 变量，
+                        // 否则这里会拿可空串喂 List.Add（CS8604）；语义与 lossyPreset 等价，不是新条件。
+                        if (lossyPreset && options.WebpPreset is not null)
                         { args.Add("-preset"); args.Add(options.WebpPreset); }
-                        // 出声：`-compression_level` 是无损模式的 zlib 级别，有损模式下无效（原先静默丢弃）。
+                        // ── A-15（2026-09-26 修）：有损模式同样放行 -compression_level ──
+                        // 旧注释/旧告警称它是无损专有的 zlib 级别、有损下无效 ⇒ **判错**，一个可用旋钮被藏掉。
+                        // 它是 AVCodecContext 通用项，落 libwebp 的 method(0-6)，有损/无损、静帧/动图都吃。
+                        // 三向实测（随包 ffmpeg；省略 / 传默认 4 / 传有效值，比产物 md5）：
+                        //   静帧有损 q75 preset=none：省略 7482 = 4 7482，0 ⇒ 9868，6 ⇒ 7378，9 ⇒ 7378(钳到 6)
+                        //   动图有损 q75 preset=none：省略 46126 = 4 46126，0 ⇒ 59472，6 ⇒ 43930
+                        //   动图有损 无 preset：省略 46126 = 4 46126（GUI 走的就是这条默认口径）
+                        // ⇒ 界面默认值 4 与「省略」**逐字节相同** ⇒ 放行不改动任何默认产物，只有改过才生效。
+                        // ⚠ 唯一真实的失效场景：同一条命令给了**非 none 的 -preset** —— libwebp 的 preset
+                        //   会把 method 钉死（实测 preset=picture 时 level 0/4/6 三档产物 md5 全等，
+                        //   无损 + preset=default 也一样）。与本文件无损分支**丢弃 preset** 是同一处冲突的另一面，
+                        //   故这里出声（ASCII：sink 限制见 jpg 分支注释）。
                         if (options.WebpCompressionLevel.HasValue)
-                            Console.WriteLine("⚠ [webp] --webp-compression ignored for lossy WebP: it maps to the "
-                                + "lossless-mode zlib level (0-6); use --lossless true to apply it.");
+                        {
+                            var lcl = options.WebpCompressionLevel.Value;
+                            // 实测 -1 不被当作「未指定」，libwebp 按 method 0 处理 ⇒ 产物反而变大，显式钳制。
+                            if (lcl < 0) lcl = 0;
+                            if (lcl > 6) lcl = 6;
+                            args.Add("-compression_level");
+                            args.Add(lcl.ToString());
+                            if (lossyPreset)
+                                Console.WriteLine("⚠ [webp] -compression_level is pinned by -preset "
+                                    + options.WebpPreset + " (measured byte-identical output for level 0/4/6); "
+                                    + "use --webp-preset none to let -compression_level apply.");
+                        }
                     }
                     // 动图 WebP: -loop 控制循环
                     if (options.AnimationLoop >= 0)
@@ -316,6 +352,29 @@ namespace FfmpegGui.Services
                         filters.Add($"scale={options.AnimationScaleW}:-1:flags=lanczos");
                     if (filters.Count > 0)
                     { args.Add("-vf"); args.Add(string.Join(",", filters)); }
+                    // ── A-16（2026-09-26 修）：APNG 能力被静默截短 ──
+                    // PNG 分支一直在发的 -pred / -dpi 此前在 APNG 下**一个都不发**，而 `apng` 编码器
+                    // 与 `png` 编码器共用同一族 AVOptions：`ffmpeg -h encoder=apng` 列出的就是
+                    // `(A)PNG encoder AVOptions: -dpi / -dpm / -pred (from 0 to 5) (default paeth)`
+                    // （取值名 none/sub/up/avg/paeth/mixed，与 `_pngPredValues` 逐字相同）。
+                    // 实测（随包 ffmpeg，anim_gif.gif 10 帧 → -f apng -c:v apng）：
+                    //   -pred none 56979 B / sub 70234 B / paeth 73198 B / mixed 73211 B
+                    //   四种产物解码回 rawvideo(rgb24) 的 md5 **互相同**（⇒ 换预测不改变像素，只改体积）
+                    //   -dpi 300 ⇒ exiftool 读得 pHYs `Pixels Per Unit X = 11811 / Pixel Units = meters`，
+                    //   不给 -dpi 的对照只读到 `1 / 1 / Unknown`（先量到「真的有该字段」的一份再下结论）
+                    // 每帧语义（要求自测的一项）：同一素材只取 1 帧时 none→paeth 只差 623 B，
+                    //   取满 10 帧时同口径差 16219 B（≈26 倍）⇒ 若 -pred 只作用首帧，这个差值不会随帧数放大，
+                    //   故确认**对每一帧生效**（后续帧是帧间差分，预测模式的影响比首帧更大）。
+                    // 16-bit / alpha 源同样吃（src_16bit.png + `-pred sub -dpi 150` ⇒ PSNR average:inf）。
+                    // ⇒ 两个选项按 PNG 分支**同款判据与同款取值**下发，不新增界面字段。
+                    // ⚠ 与 PNG 分支的**唯一**不同：这里**不发** `-compression_level`。实测 apng 的默认级别
+                    //   就等于 6（省略 73198 = `-compression_level 6` 73198、9 ⇒ 68059、0 ⇒ **1743881**），
+                    //   而 PNG 那根轴是 `MapPngCompression(Quality)` 且无损格式下 Quality 被钉在 100 ⇒ 0，
+                    //   照搬会把 APNG 撑到 24 倍 ⇒ 要接这根轴得先单独定映射（见返回说明）。
+                    if (!string.IsNullOrWhiteSpace(options.PngPred))
+                    { args.Add("-pred"); args.Add(options.PngPred); }
+                    if (options.PngDpi.HasValue && options.PngDpi.Value > 0)
+                    { args.Add("-dpi"); args.Add(options.PngDpi.Value.ToString()); }
                     if (options.AnimationLoop >= 0)
                     { args.Add("-plays"); args.Add(options.AnimationLoop.ToString()); }
                     break;
@@ -597,7 +656,8 @@ namespace FfmpegGui.Services
             //   此前走 AppendVideoFilter ⇒ **追加到链尾** ⇒ 映射 → 缩放，与引擎侧
             //   （`RawColorPipeline.cs:94-97` 的 `format=rgb48le,{scale}` ⇒ 缩放 → 映射）**顺序相反**，
             //   而两条顺序实测**不等价**（2×2 对照 PSNR 36.47dB / 最大单通道差 14417）。
-            //   ⇒ 改用专用 helper（不复用 AppendVideoFilter：`:498-499` 的 iccgen 依赖其**追加**语义）。
+            //   ⇒ 改用专用 helper（不复用 AppendVideoFilter：iccgen 段依赖其**在 switch 之后追加**的语义，
+            //      见本文件中「`iccgen` 段由 … 在 switch **之后**追加」那段）。
             //   ⚠ 本行的探测入参仍是 `inputPath`；改成 `probeInput` 属批次 2（gap D），本批次**不动**。
             if (options.EnableMaxDimension && options.MaxDimension > 0)
             {
@@ -643,6 +703,50 @@ namespace FfmpegGui.Services
                 var outputIdx = args.Count - 1;
                 args.Insert(outputIdx, "-t");
                 args.Insert(outputIdx + 1, options.AnimationDuration.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            }
+
+            // ── ⚠⚠ 2026-09-22（管线审查 §3.4 · **legacy 侧**）：透明输入不得被**静默拍平** ──────────────
+            //   引擎侧已修（`RawColorPipeline.BuildEncodeArgs` 的 alpha 分支）；legacy 侧同病：
+            //   色彩链先 `format=rgb48le`（**无 alpha 平面**）⇒ 透明被丢。实测（真透明源 + Display P3）：
+            //     legacy → png = **`rgb48be`**、webp = **`yuv420p`**（均无 alpha 通道），而引擎侧已是 rgba/argb。
+            //   修法沿用引擎**同款**：把**原文件**作第二输入、只取它的 **alpha 平面**，在色彩链**之后** `alphamerge`。
+            //   ⚠ **只对带 alpha 的源生效** ⇒ 不透明源（现有全部门禁用例）的命令行**逐字不变**
+            //     （可用「改动前后 `[cmd]` 逐字对比」验证 —— 这是本改动的主要回归护栏）。
+            //   ⚠ 必须 `-frames:v 1`：底图 `[0:v]` 恒 1 帧，而 alpha 源是**原文件**（多帧输入会给 N 帧）
+            //     ⇒ 否则编码器报 `-22`（**该坑 JXR 出口已登记过**，见 `RawColorPipeline.EncodeJxrViaJxrEncAppAsync` 注释）。
+            //   ⚠ 必须**强制**给出带 alpha 的 `-pix_fmt`：否则编码器仍按链输出（无 alpha）推断 ⇒ 补了也白补。
+            //   ⚠ 选项顺序：`-i` **先**、输出侧选项（`-pix_fmt` / `-frames:v`）**后** ——
+            //     放 `-i` 之前会被 ffmpeg 当**输入**选项而失效。
+            if (inputHasAlpha && !skipGenericPixFmt && fmt is "png" or "apng" or "tiff" or "tif" or "webp")
+            {
+                var vfIdx2 = args.FindIndex(a => a == "-vf");
+                if (vfIdx2 >= 0 && vfIdx2 + 1 < args.Count)
+                {
+                    var chain = args[vfIdx2 + 1];
+                    var aBd = options.BitDepth.HasValue ? options.BitDepth.Value : ProbeInputBitDepth(probeInput);
+                    var alphaFmt = ClampAvifBd(aBd) <= 8 ? "rgba" : "rgba64le";   // 与链输出同深，否则 alphamerge 无法协商
+                    var graph = $"[1:v]format={alphaFmt},alphaextract[a];[0:v]{chain}[b];[b][a]alphamerge";
+                    args[vfIdx2] = "-filter_complex";
+                    args[vfIdx2 + 1] = graph;
+                    // ⚠⚠ 第二输入 `-i` **必须紧跟在第一个 `-i` 之后** —— 插到输出选项之后会被 ffmpeg
+                    //   当作**输入**选项去解析（实测报 `Error parsing options for input file` + `-22`）。
+                    var iIdx = args.FindIndex(a => a == "-i");
+                    if (iIdx >= 0 && iIdx + 1 < args.Count)
+                    {
+                        args.Insert(iIdx + 2, "\"" + inputPath + "\"");
+                        args.Insert(iIdx + 2, "-i");
+                    }
+                    // 输出侧选项（`-pix_fmt` / `-frames:v`）留在**输出路径之前**（输出路径恒在最后）。
+                    // ⚠⚠ **`-frames:v 1` 必须复用既有的 `insertFramesV1` 判据**，不能无条件加 ——
+                    //   否则**多帧容器**（gif/webp/avif/apng、`jxl + AnimationFps`）会被**静默截成 1 帧**：
+                    //   实测（首版就是这么写的）`anim.webp → webp` 从 **10 帧变 1 帧**，
+                    //   被 `verify-anim-static-target` ③ 与 `verify-webp-anim-probe` ③(b) 双双抓住。
+                    var extra = new List<string> {
+                        "-pix_fmt", MapPixFmt(options.Format, options.Chroma, ClampAvifBd(aBd), true, options.ColorRange)
+                    };
+                    if (insertFramesV1) { extra.Add("-frames:v"); extra.Add("1"); }
+                    args.InsertRange(args.Count - 1, extra);
+                }
             }
 
             return string.Join(" ", args);
@@ -887,18 +991,26 @@ namespace FfmpegGui.Services
                 return (null, "iec61966-2-1", null, 16, false);
             }
 
-            // AVIF: 支持 HDR + HDR 色域，但 libaom 对 Display P3 高位深兼容性差
-            // 编码器特定位深上限：libaom/av1_nvenc 12-bit；libsvtav1 10-bit
-            // Display P3 + 10/12/16-bit 在 libaom 上有回归风险 → 强制降 8bit（保守策略）
+            // AVIF: 支持 HDR + HDR 色域；位深上限**只按实际会跑的编码器**取（libaom/av1_nvenc 12、
+            // 其余 10，见 `ImageEncoderArgs.AvifMaxBitDepthForEncoder`，任务 #36）。
+            // ❌ **2026-09-26 任务 #39：删掉原先这条特例**
+            //   `if (options.ColorSpace == "Display P3" && (options.BitDepth ?? 8) > 8)
+            //        return ("bt709", "iec61966-2-1", "bt709", 8, false);`
+            // 它的理由只是注释里那句"Display P3 + 10/12/16-bit 在 libaom 上有回归风险（保守策略）"，
+            // 全仓**没有任何实测记录**。补做的实测（取证 `tests/output/t36/probe_39b.ps1`）拿
+            // **产品自己那条** avif+P3 命令行逐字复用、**只换 `-pix_fmt`**：
+            //   yuv420p     rc=0 5505 B  ffprobe primaries=smpte432/trc=iec61966-2-1/matrix=bt709
+            //   yuv420p10le rc=0 5595 B  同一套标签    PSNR(对 8bit 产物)=51.45 dB
+            //   yuv420p12le rc=0 5435 B  同一套标签    PSNR(对 8bit 产物)=50.99 dB
+            //   （stderr 全程无 "not support / Undefined / Invalid"）
+            // ⇒ "回归"不可复现：三档都编得出来、nclx 标签都落得进去、像素与 8bit 档同源。
+            // ⚠ 顺带量到那条特例**连自己声明的都没做到**：它写"回退 sRGB"，实际产物标签仍是 P3 ——
+            //   nclx 来自 zscale 写进帧的色彩属性，而特例给的 capP/capT 只在 tonemap 链
+            //   （`tmDstP = capP ?? tmDstP`）被消费 ⇒ 真正咬人的只有 `capBd=8` 那一项，
+            //   也就是"无据削掉用户明确要的位深"。⇒ 撤掉；位深上限统一交回编码器能力那条唯一真值。
             if (fmt == "avif")
             {
-                int maxBd = ColorMapping.ImageEncoderArgs.AvifMaxBitDepth(options);
-                // 若目标色彩为 P3 + 高位深 → 降 8bit（libaom P3 高位深回归）
-                if (options.ColorSpace == "Display P3" && (options.BitDepth ?? 8) > 8)
-                {
-                    return ("bt709", "iec61966-2-1", "bt709", 8, false); // P3 高位深 → 回退 sRGB 8bit
-                }
-                return (null, null, null, maxBd, false);
+                return (null, null, null, ColorMapping.ImageEncoderArgs.AvifMaxBitDepth(options), false);
             }
 
             // PNG / JPEG XL / JPEG XR / APNG / GIF: 无色彩/位深硬限制
@@ -1040,9 +1152,42 @@ namespace FfmpegGui.Services
         {
             var fmt = options.Format.ToLower();
 
+            // 「用户有没有显式指定目标」—— 两条 HDR 原生容器的豁免支（下面的 avif/jxl/jxr 与 PNG/APNG）
+            // **共用同一个计算**，不要各写一份（#43 的根因就是其中一份写成了无条件豁免）。
+            bool noExplicitTarget = !options.UseAdvancedColorParameters
+                && (string.IsNullOrWhiteSpace(options.ColorSpace)
+                    || options.ColorSpace.Equals("auto", StringComparison.OrdinalIgnoreCase));
+
             // 这些格式原生支持 HDR（>8bit），不需要 tonemap
             // 注意：TIFF 能力约束已将 trc 钳为 SDR (iec61966-2-1)，因此 TIFF 需 tonemap（见下方目标色彩判断）。
-            if (fmt is "avif" or "jxl" or "jxr") return false;
+            // ⚠ **任务 #43（2026-09-27）**：这一支原先是**无条件** `return false`，于是"用户显式要 SDR 目标"
+            //   也被一起豁免 —— 与下面 PNG/APNG 支注释里记的那次修复是**同一个错**，只是这三个格式的后果不同：
+            //   实测（HDR/PQ 源，`--color-engine legacy`，矩阵 `tests/output/t43/matrix_pre.log` +
+            //   可信复测 `tests/output/t43/matrix2_pre_measure.log`，逐格带哈希）：
+            //     · avif：目标 ∈ {Display P3, sRGB, BT.2020} 三档全部
+            //       `Error while filtering: Not yet implemented`（= HDR 帧被塞给 iccgen）⇒ 非零退出、零产物；
+            //       本支**正是**这一族的因 —— 修后三档分别出货 4169B/smpte432、4281B/bt709、4725B/bt2020。
+            //     · jxl（**已排除在本支之外，别再记在这儿**）：三个目标各得到**同一份
+            //       18235 B / 387E3F40D905A96B、标签仍是 bt2020** 的产物 ⇒ 目标被静默吃掉，症状更坏；
+            //       但改前改后**逐字节不变**，因为 legacy 的 jxl 走的是「cjxl 直接编码」旁路
+            //       （日志里连 ffmpeg 的 `[cmd]` 都没有，命令行是 `cjxl.exe 源.png 目标.jxl -x color_space=DisplayP3`）
+            //       ⇒ 本函数根本不在那条路上。真正的因是 P7a-3 未接线的色彩后置旁路，另记任务 #44。
+            //     · jxr：同一族的**第三条**旁路（`[jxr] Step 2: JxrEncApp 编码 JPEG XR...` 两步法），
+            //       auto 与显式 P3 得到**同一份 152166 B / 20D3E0175E9D12D8**、标签 `unknown`，
+            //       中间那条 ffmpeg 命令行里 tonemap/zscale/iccgen 全无 ⇒ 本支同样管不到它，一并记 #44。
+            //   ⇒ 现在只在「未指定目标」时保留 HDR 直通；显式目标继续往下走 tonemap 判定
+            //     （HDR 目标如 `P3 PQ` 仍被下面"目标为 HDR ⇒ 不 tonemap"那段拦住，auto 与 P3 PQ 两列
+            //     的交付**必须逐字不变**，那是这次修改的"不误伤"证据）。
+            //   ⚠ **不照抄 PNG 的 `bd > 8` 前提**：那是 PNG 自己"能不能标 HDR"的代理；
+            //     AVIF/JXL 在 8bit 下同样能用 nclx 标 PQ ⇒ 抄过来会凭空改掉一批 auto 格。
+            //   ⚠ 本函数返回的是"**要不要** tonemap"，所以"保留 HDR 直通"= `return false`。
+            //     第一版写成 `return noExplicitTarget` ⇒ 恰好把两列同时搞反：auto 格被强加 tonemap
+            //     （产物 5247 B → 4281 B），而三个显式目标格命令行**逐字未变**（仍然 iccgen 失败）。
+            //     pre/post 矩阵当场抓出 ⇒ 改这里必须跑矩阵，别看代码顺眼。
+            if (fmt is "avif" or "jxl" or "jxr")
+            {
+                if (noExplicitTarget) return false;
+            }
             // PNG >8bit 可承载 HDR，但**前提是输出被正确标注**（cICP 由 PngCicpService 后置写入）。
             // 旧写法无条件 return false，会把“用户显式要 SDR 目标（如 Display P3）”也一起豁免：
             // 结果既不 tonemap（本函数返 false）又被目标转换块排除（srcIsHdr && !dstIsHdr）
@@ -1051,9 +1196,6 @@ namespace FfmpegGui.Services
             if (fmt is "png" or "apng")
             {
                 var bd = options.BitDepth ?? ProbeInputBitDepth(inputPath);
-                bool noExplicitTarget = !options.UseAdvancedColorParameters
-                    && (string.IsNullOrWhiteSpace(options.ColorSpace)
-                        || options.ColorSpace.Equals("auto", StringComparison.OrdinalIgnoreCase));
                 if (bd > 8 && noExplicitTarget) return false;
             }
 

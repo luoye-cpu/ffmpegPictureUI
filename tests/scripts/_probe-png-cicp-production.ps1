@@ -26,10 +26,23 @@ function Exec([string]$file, [string]$argStr){
   return ([System.IO.File]::ReadAllText($o) + "`n" + [System.IO.File]::ReadAllText($e))
 }
 
+# 只读 stdout 版（取「工具的值」专用）：ffprobe 的 `-of csv` 字段值走 **stdout**，合并 stderr 会把
+#   报错行当值返回 ⇒ 下面三行 `ffprobe:` 读数（本探针的唯一证据）可能被污染。
+#   产品 headless 日志不经本函数（走 `$out/<tag>.err` 文件 + Get-Content），上面的合并版 Exec 因此
+#   在本文件已无调用点 —— 保留它是为了「将来要读 ffmpeg stderr 时别再手写一份合并取数」。
+function ExecOut([string]$file, [string]$argStr){
+  $o = "$out/_exec.out"; $e = "$out/_exec.err"
+  Start-Process -FilePath $file -ArgumentList $argStr -Wait -NoNewWindow -PassThru `
+    -RedirectStandardOutput $o -RedirectStandardError $e | Out-Null
+  return [System.IO.File]::ReadAllText($o)
+}
+
 function Dump([string]$p, [string]$tag) {
     $b = [System.IO.File]::ReadAllBytes($p); $pos = 8; $l = @()
     while ($pos + 12 -le $b.Length) {
-        $len = [int](($b[$pos] -shl 24) -bor ($b[$pos+1] -shl 16) -bor ($b[$pos+2] -shl 8) -bor $b[$pos+3])
+        # ⚠ 必须 [int] 再移：PowerShell 里 `[byte]0x10 -shl 8` 被截断成 0（2026-09-26 实测）
+        #   ⇒ 不 cast 的话，IDAT>255 B 的 PNG 一律遍历失步（与 verify-png3-interop 同一处坑）。
+        $len = [int](([int]$b[$pos] -shl 24) -bor ([int]$b[$pos+1] -shl 16) -bor ([int]$b[$pos+2] -shl 8) -bor [int]$b[$pos+3])
         if ($len -lt 0 -or $pos + 12 + $len -gt $b.Length) { break }
         $t = [Text.Encoding]::ASCII.GetString($b, $pos + 4, 4)
         $hex = if ($len -ge 1 -and $len -le 8) { (($b[($pos+8)..($pos+7+$len)]) | ForEach-Object { $_.ToString("X2") }) -join ' ' } else { "" }
@@ -48,7 +61,7 @@ foreach ($case in @(@("BT.2020 PQ", "pq"), @("Display P3", "p3"), @("auto", "aut
     Write-Output "── $cs (exit=$($p.ExitCode)) → $(if ($made) { $made.Name } else { '无产物' })"
     if (-not $made) { Get-Content "$out/$tag.err" -EA SilentlyContinue | Select-Object -First 3 | ForEach-Object { "    ! $_" }; continue }
     Dump $made.FullName "chunk"
-    $probe = (((Exec $fp "-v error -select_streams v:0 -show_entries stream=color_primaries,color_transfer -of csv=p=0 `"$($made.FullName)`"") -split "`r?`n") -join ",")
+    $probe = (((ExecOut $fp "-v error -select_streams v:0 -show_entries stream=color_primaries,color_transfer -of csv=p=0 `"$($made.FullName)`"") -split "`r?`n") -join ",")
     Write-Output "    ffprobe: $probe"
     Get-Content "$out/$tag.err" -EA SilentlyContinue | Select-String -Pattern "png3" | Select-Object -First 3 | ForEach-Object { "      log: $($_.Line.Trim())" }
 }
@@ -63,7 +76,7 @@ if (Test-Path $p3out) {
     Write-Output "── S2 carry（源含 cICP+iCCP）(exit=$($p2.ExitCode)) → $(if ($made2) { $made2.Name } else { '无产物' })"
     if ($made2) {
         Dump $made2.FullName "chunk"
-        Write-Output ("    ffprobe: " + (((Exec $fp "-v error -select_streams v:0 -show_entries stream=color_primaries,color_transfer -of csv=p=0 `"$($made2.FullName)`"") -split "`r?`n") -join ","))
+        Write-Output ("    ffprobe: " + (((ExecOut $fp "-v error -select_streams v:0 -show_entries stream=color_primaries,color_transfer -of csv=p=0 `"$($made2.FullName)`"") -split "`r?`n") -join ","))
         $t2 = [Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($made2.FullName))
         Write-Output ("    含 cICP chunk: {0}   含 iCCP chunk: {1}" -f $t2.Contains("cICP"), $t2.Contains("iCCP"))
     }
@@ -79,7 +92,7 @@ if (Test-Path $jpgP3) {
     Write-Output "── S2 carry，源=JPEG(仅 P3 ICC、无 CICP)(exit=$($p3.ExitCode)) → $(if ($made3) { $made3.Name } else { '无产物' })"
     if ($made3) {
         Dump $made3.FullName "chunk"
-        Write-Output ("    ffprobe: " + (((Exec $fp "-v error -select_streams v:0 -show_entries stream=color_primaries,color_transfer -of csv=p=0 `"$($made3.FullName)`"") -split "`r?`n") -join ","))
+        Write-Output ("    ffprobe: " + (((ExecOut $fp "-v error -select_streams v:0 -show_entries stream=color_primaries,color_transfer -of csv=p=0 `"$($made3.FullName)`"") -split "`r?`n") -join ","))
         Get-Content "$out/icc2cicp.err" -EA SilentlyContinue | Select-String -Pattern "png3" | Select-Object -First 2 | ForEach-Object { "      log: $($_.Line.Trim())" }
     }
 } else { Write-Output "── SKIP：缺 $jpgP3（先跑 _probe-jpg-p3-icc.ps1）" }

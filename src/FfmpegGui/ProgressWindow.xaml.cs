@@ -34,7 +34,7 @@ namespace FfmpegGui
         public ProgressWindow(QueueItem item, string command) : this()
         {
             _item = item;
-            Title = $"编码详情 — {System.IO.Path.GetFileName(item.InputPath)}";
+            Title = $"编码详情 — {item.DisplayName}";
 
             TitleLabel = this.FindControl<TextBlock>("TitleLabel");
             StatusBadge = this.FindControl<TextBlock>("StatusBadge");
@@ -49,7 +49,7 @@ namespace FfmpegGui
             MediaInfoPanel = this.FindControl<StackPanel>("MediaInfoPanel");
 
             if (TitleLabel != null)
-                TitleLabel.Text = System.IO.Path.GetFileName(item.InputPath);
+                TitleLabel.Text = item.DisplayName;
             if (StatusBadge != null)
                 StatusBadge.Text = item.Status;
             if (StatusLabel != null)

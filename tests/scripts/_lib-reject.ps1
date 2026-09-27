@@ -381,7 +381,7 @@ function Get-RejectCodeRegistry {
 
         (New-RejectCode -Name 'NoIccCarrier' -Family 'Degradation' `
             -Source ($deg + ':70') -DocSource ($deg + ':69') `
-            -Trigger ($plan + ':151') -TriggerScope 'CollectDegradations' `
+            -Trigger ($plan + ':243') -TriggerScope 'CollectDegradations' `
             -Precondition 'source carries an ICC AND the plan ends with AttachIcc=false. Easiest: -i <jpeg-with-ICC> -f gif (gif cannot carry arbitrary ICC, so S1 maps to the sRGB working space and drops the source ICC)'),
 
         (New-RejectCode -Name 'HdrNoIccCarryPath' -Family 'Degradation' `
@@ -392,28 +392,35 @@ function Get-RejectCodeRegistry {
 
         (New-RejectCode -Name 'ContainerCannotCarryIcc' -Family 'Degradation' `
             -Source ($deg + ':74') -DocSource ($deg + ':73') `
-            -Trigger ($plan + ':154') -TriggerScope 'CollectDegradations' `
+            -Trigger ($plan + ':246') -TriggerScope 'CollectDegradations' `
             -Precondition 'source carries an ICC AND FormatColorCaps.CanCarryArbitraryIcc is false for the output container. Same case as NoIccCarrier with gif/jxr: -i <jpeg-with-ICC> -f gif'),
 
         (New-RejectCode -Name 'UnlabeledAssumedSrgb' -Family 'Degradation' `
             -Source ($deg + ':76') -DocSource ($deg + ':75') `
-            -Trigger ($plan + ':142') -TriggerScope 'CollectDegradations' `
+            -Trigger ($plan + ':234') -TriggerScope 'CollectDegradations' `
             -Precondition 'plan.UnlabeledAssumedSrgb is set. Two proven routes: (a) container has no colour path at all (gif/jxr) with an sRGB-equivalent target -> -f gif --color-space sRGB; (b) the confidence gate: an unlabelled source (Confidence=CodecDefault < CicpTag) with no explicit target and a container where UnlabeledMeansSrgb is true -> -f jpg'),
 
         (New-RejectCode -Name 'GamutClipped' -Family 'Degradation' `
             -Source ($deg + ':78') -DocSource ($deg + ':77') `
-            -Trigger ($plan + ':136') -TriggerScope 'CollectDegradations' `
+            -Trigger ($plan + ':228') -TriggerScope 'CollectDegradations' `
             -Precondition 'plan.GamutOutsideDestination = true AND plan.GamutMap = false. Proven by verify-gamut-map.ps1: --icc-file <p3.icc> --color-space sRGB on an unlabelled PNG (source metric = Display P3, P3 is not contained in sRGB) with --color-gamut-map off/absent'),
 
         (New-RejectCode -Name 'GamutCompressed' -Family 'Degradation' `
             -Source ($deg + ':87') -DocSource ($deg + ':79') `
-            -Trigger ($plan + ':133') -TriggerScope 'CollectDegradations' `
+            -Trigger ($plan + ':225') -TriggerScope 'CollectDegradations' `
             -Precondition 'plan.GamutOutsideDestination = true AND plan.GamutMap = true (needs --color-gamut-map on AND ColorTransformPlan.LuminancesOf(dst) non-null). Proven by verify-gamut-map.ps1 sec.2 (on vs off differ, log shows H1/GMO). Mutually exclusive with GamutClipped'),
 
+        # ⚠ 本码现在**有三个生产点**（登记表一行只放得下一个，其余在此点名，行号按 2026-09-26 树）：
+        #   ① :124 出口 8bit 容器上限（Map 且 OutBitDepth=8）；
+        #   ①b :194 RGB 原生出口取到别的档（png/tiff/jxl 的 10/12 ⇒ 升位走 BitDepthRaised，同一条语句二选一）；
+        #   ①b :213 **非 RGB 原生出口**（webp/jpg/avif…）：任务 #35 新增，判据 = 用户请求档
+        #      （`ColorIntent.RequestedBitDepth`）> 交付档（`PlanPolicy.TargetBitDepth`）。
+        #      CLI：--bit-depth 10 -f webp ⇒ 日志 降级（BitDepthReduced）：出口位深降为 8bit（本次目标 10bit）。
+        #   ⚠ 注释不能放在 `` ` `` 续行链**中间**（PS 会在下一个非续行 token 处断句 ⇒ 整段解析失败）。
         (New-RejectCode -Name 'BitDepthReduced' -Family 'Degradation' `
             -Source ($deg + ':89') -DocSource ($deg + ':88') `
-            -Trigger ($plan + ':123') -TriggerScope 'CollectDegradations' `
-            -Precondition 'plan.Action = Map AND plan.OutBitDepth = 8, i.e. TargetBitDepth <= 8 AND !Requires16BitIntermediate AND FormatColorCaps.RgbNative (png/apng/tiff/jxl/jxr/gif). Needs a real mapping: --bit-depth 8 --color-space "Display P3" on an sRGB PNG'),
+            -Trigger ($plan + ':124') -TriggerScope 'CollectDegradations' `
+            -Precondition 'plan.Action = Map AND plan.OutBitDepth = 8, i.e. TargetBitDepth <= 8 AND !Requires16BitIntermediate AND FormatColorCaps.RgbNative (png/apng/tiff/jxl/jxr/gif). Needs a real mapping: --bit-depth 8 --color-space "Display P3" on an sRGB PNG. Second/third sites are named in the comment above; the non-RgbNative one needs an explicit --bit-depth above the container ceiling (--bit-depth 10 -f webp)'),
 
         (New-RejectCode -Name 'GainMapNonJpeg' -Family 'Degradation' `
             -Source ($deg + ':91') -DocSource ($deg + ':90') `
@@ -447,7 +454,7 @@ function Get-RejectCodeRegistry {
 
         (New-RejectCode -Name 'ToneMapNotAppliedToGainMap' -Family 'Degradation' `
             -Source ($deg + ':101') -DocSource ($deg + ':100') `
-            -Trigger ($plan + ':169') -TriggerScope 'CollectDegradations' `
+            -Trigger ($plan + ':261') -TriggerScope 'CollectDegradations' `
             -Precondition 'plan.GainMap = true AND it.ToneMapRequested AND NOT it.ToneMapAuto. Proven by verify-gainmap-engine.ps1 sec.7: -f jpg --jpeg-gain-map true --color-tone-map hable on an SDR source (ColorIntentFactory skips the "tonemap needs an HDR source" gate when JpegGainMap is set, on purpose)')
     )
 

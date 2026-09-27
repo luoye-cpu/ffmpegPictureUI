@@ -16,6 +16,9 @@ $ex = "$root/publish/PLAN/exiftool/exiftool.exe"
 $env:FFMPEGGUI_FFMPEG_DIR = "$root/publish/PLAN/ffmpeg-full"
 $exe = "$root/src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.exe"
 if (-not (Test-Path $exe)) { $exe = "$root/src/FfmpegGui/bin/Debug/net11.0/win-x64/FfmpegGui.exe" }
+# ⚠ 2026-09-21（TESTING.md 第 84 条处置建议 ①）：**回退是静默的** —— 门禁可能测的
+#   不是你以为的那个二进制。⇒ 一律**打印被测 exe 与构建类型**，让读数可追溯。
+Write-Output ("[gate] exe=" + $exe + $(if ($exe -like '*\Debug\*') { " (Debug fallback)" } else { " (Release)" }))
 $out = "$root/tests/output/validate/p7d"
 if (Test-Path $out) { Remove-Item -LiteralPath $out -Recurse -Force -ErrorAction SilentlyContinue }
 New-Item -ItemType Directory -Force -Path $out | Out-Null
@@ -26,6 +29,17 @@ function Exec([string]$file, [string]$argStr){
   Start-Process -FilePath $file -ArgumentList $argStr -Wait -NoNewWindow -PassThru `
     -RedirectStandardOutput $o -RedirectStandardError $e | Out-Null
   return ([System.IO.File]::ReadAllText($o) + "`n" + [System.IO.File]::ReadAllText($e))
+}
+
+# 只读 stdout 版（取「工具的值」专用）：ffprobe 的 `-of csv` 字段值走 **stdout**，合并 stderr 会把报错行
+#   （`moov atom not found` 之类）与 exiftool 的 locale 警告当成值一起返回 ⇒ 下面那些 `tags=` 列
+#   （本探针唯一的读数）会被污染。ffmpeg 的进度与报错在本文件不经 helper（写进 `$out/_e_<tag>.txt` 再
+#   Get-Content），所以上面的合并版 Exec 已无调用点 —— 留着只为「将来要合并读 stderr 时别再手写一份」。
+function ExecOut([string]$file, [string]$argStr){
+  $o = "$out/_exec.out"; $e = "$out/_exec.err"
+  Start-Process -FilePath $file -ArgumentList $argStr -Wait -NoNewWindow -PassThru `
+    -RedirectStandardOutput $o -RedirectStandardError $e | Out-Null
+  return [System.IO.File]::ReadAllText($o)
 }
 
 $pg = "$root/tests/output/results/color/a2_srgb_p3.png"
@@ -49,14 +63,14 @@ function Enc([string]$tag, [string[]]$a) {
         $err = ((Get-Content "$out/_e_$tag.txt" -Raw) -replace '\s+', ' ')
         "{0,-26} 失败：{1}" -f $tag, $err.Substring(0, [Math]::Min(90, $err.Length)); return
     }
-    "{0,-26} px={1,-14} tags={2}" -f $tag, (Px $o), ((((Exec $fp "-v error -select_streams v:0 -show_entries stream=pix_fmt,color_range,color_space -of csv=p=0 `"$o`"") -split "`r?`n")) -join ',')
+    "{0,-26} px={1,-14} tags={2}" -f $tag, (Px $o), ((((ExecOut $fp "-v error -select_streams v:0 -show_entries stream=pix_fmt,color_range,color_space -of csv=p=0 `"$o`"") -split "`r?`n")) -join ',')
 }
 # 主分支 CLI 的真实命令行（从 [cmd] 日志抄录）
 $SRC = @('-y', '-hide_banner', '-loglevel', 'error', '-color_primaries', 'smpte432', '-color_trc', 'iec61966-2-1')
 $IN = @('-i', $pg)
 $POSTFULL = @('-threads', '0', '-q:v', '75', '-pix_fmt', 'yuv420p', '-map_metadata', '-1', '-map_chapters', '-1', '-vf', 'iccgen')
 
-"源 PNG 像素：$(Px $pg)   tags=$((((Exec $fp "-v error -select_streams v:0 -show_entries stream=pix_fmt,color_range,color_space,color_primaries -of csv=p=0 `"$pg`"") -split "`r?`n")) -join ',')"
+"源 PNG 像素：$(Px $pg)   tags=$((((ExecOut $fp "-v error -select_streams v:0 -show_entries stream=pix_fmt,color_range,color_space,color_primaries -of csv=p=0 `"$pg`"") -split "`r?`n")) -join ',')"
 ""
 "=== A. 照抄主分支 CLI 的各开关组合（输入 PNG）==="
 Enc 'A0_照抄' ($SRC + $IN + $POSTFULL)
@@ -82,7 +96,7 @@ if (Test-Path $djxl) { Start-Process -FilePath $djxl -ArgumentList @("`"$jxl`"",
 if (-not (Test-Path $ppm)) { "  无法生成 PPM（缺 djxl 或 libjxl），B 组跳过"; }
 else {
     "PPM 像素：$(Px $ppm)（应 == 源）"
-    "PPM 帧属性：" + ((((Exec $fp "-v error -select_streams v:0 -show_entries stream=pix_fmt,color_range,color_space,color_primaries -of csv=p=0 `"$ppm`"") -split "`r?`n")) -join ',')
+    "PPM 帧属性：" + ((((ExecOut $fp "-v error -select_streams v:0 -show_entries stream=pix_fmt,color_range,color_space,color_primaries -of csv=p=0 `"$ppm`"") -split "`r?`n")) -join ',')
     $P = @('-color_primaries','smpte432','-color_trc','iec61966-2-1')
     # 本构建无 `ppm_image` demuxer（实测 Unknown input format），喂文件靠扩展名即可
     Enc 'B0_PPM裸' (@('-y','-hide_banner','-loglevel','error','-i',$ppm) + @('-q:v','75'))

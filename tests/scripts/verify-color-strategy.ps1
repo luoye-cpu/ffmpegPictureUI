@@ -83,7 +83,22 @@
 #       —— 别只数 `Assert`（那是 +4，会漏掉 ③d(d) 那个格子；本注释曾误写 (+4)，2026-09-18 更正）。
 #       并新增**裁决 parity** 断言 —— 同一输入两条管线各跑一次**真实 CLI**，
 #       `Verdict.Kind` 必须逐格相同（比"产物 CICP/ICC 一致"更本质），且**断言覆盖格数 ≥12**
-#       （否则"两边都读不到 ⇒ 全 skip"会退化成空断言）。⇒ 本脚本现为 **63/0**（实测）。
+#       （否则"两边都读不到 ⇒ 全 skip"会退化成空断言）。⇒ ①..④ 段原基线 **63/0**（实测）。
+#       ⚠ **2026-09-26（任务 #35）新增 ③f 段 = +8 条断言**（F0a..F0e 五条判据自测 + F1/F2/F3 真实格）
+#         落地时 **70/1**（F3 刻意红 = #35 那笔"webp/avif 位深升降零播报"的机器可查登记，
+#         根因在 `Decision.cs` 与 `ColorIntentFactory.cs` 先把请求档钳掉）。
+#       ✅ **同日修复后 71/0**（实测：`tests/output/_gate_script_verify-color-strategy.ps1.txt`
+#         16:05:39 那轮，被测 DLL 16:00:17 构建、内含本次新增的 `BitDepthRequested`/`RequestedBitDepth`）
+#         —— 修法不是放宽判据，而是把"用户请求档"穿过那两处钳制带进规划层，
+#         见 `ColorStrategyPlanning.CollectDegradations` ①b 的非 RgbNative 分支。
+#       ⚠ **同日深夜（任务 #39/#41）再加 F4/F5 = +6 条 ⇒ 77/0**（实测 `tests/output/t39/strategy_after2.log`，
+#         DLL `1881E2F76539CAEF`）：F4 `avif + Display P3 + 12` 必须**真交付 12bit**、F5 同一格请求 16
+#         必须落到编码器上限 12 且恰好播一次。这两条钉的是**删掉"AVIF+P3 高位深 ⇒ 8bit"无据特例之后**的
+#         新契约（取证 `tests/output/t36/probe_39b.ps1`），所以它们是**收紧**不是放宽：
+#         特例若被加回来，F4 立刻红。⚠ F4 的出口 `-pix_fmt` 取日志里**最后一个**匹配（引擎路线前面那条
+#         `rgb48le` 是喂编码器的中间件格式，不是交付档 —— 第一版取第一个匹配，把正确产物判成红）。
+#         ⚠ 本段的牙仍在 F0a..F0e（合成行自测）+ F2（真日志配错实测）上：
+#         **不许**再为变绿动 F1/F3/F4/F5 的判据。
 #   ⚠ 日志标签：传统管线消费裁决时打 `[色彩裁决]`，**不是** `[色彩引擎]` ——
 #     `verify-color-wiring.ps1:110` / `verify-gainmap-engine.ps1:116` 断言「显式 legacy 一行
 #     `色彩引擎` 日志都不该出现（逃生门零污染）」；换标签后该断言继续成立且仍有牙（它拦的是
@@ -92,6 +107,9 @@ $ErrorActionPreference = "Continue"
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path; Set-Location $root
 $exe = "$root/src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.exe"
 if (-not (Test-Path $exe)) { $exe = "$root/src/FfmpegGui/bin/Debug/net11.0/win-x64/FfmpegGui.exe" }
+# ⚠ 2026-09-21（TESTING.md 第 84 条处置建议 ①）：**回退是静默的** —— 门禁可能测的
+#   不是你以为的那个二进制。⇒ 一律**打印被测 exe 与构建类型**，让读数可追溯。
+Write-Output ("[gate] exe=" + $exe + $(if ($exe -like '*\Debug\*') { " (Debug fallback)" } else { " (Release)" }))
 $et = "$root/publish/PLAN/exiftool/exiftool.exe"
 $fp = "$root/publish/PLAN/ffmpeg-full/ffprobe.exe"
 $val = "$root/tests/output/validate"; $col = "$val/../results/color"
@@ -106,6 +124,14 @@ function Exec([string]$file, [string]$argStr){
   Start-Process -FilePath $file -ArgumentList $argStr -Wait -NoNewWindow -PassThru `
     -RedirectStandardOutput $o -RedirectStandardError $e | Out-Null
   return ([System.IO.File]::ReadAllText($o) + "`n" + [System.IO.File]::ReadAllText($e))
+}
+# **只读 stdout** 的取数口径（读"值"用它，读 ffmpeg 的 stderr 进度/错误才用上面的 `Exec`）。
+# 理由见 `:175` 的注释：exiftool 的 perl locale warning 会把负断言撑成恒真。
+function ExecOut([string]$file, [string]$argStr){
+  $o = "$out/_exec.out"; $e = "$out/_exec.err"
+  Start-Process -FilePath $file -ArgumentList $argStr -Wait -NoNewWindow -PassThru `
+    -RedirectStandardOutput $o -RedirectStandardError $e | Out-Null
+  return [System.IO.File]::ReadAllText($o)
 }
 
 $pass=0;$fail=0
@@ -154,11 +180,15 @@ function S($tag,$inFile,$fmt,$strat,$gm,$expectReject = $false,$legacy = $false,
     Write-Host ("  FAIL {0,-24} (无输出)" -f $runTag) -ForegroundColor Red; $script:fail++
     $script:res[$runTag]=@{Ok=$false;Bytes=0;Cicp="";Icc=$false;Log=$log}; return
   }
-  $cicp = (Exec $fp "-v error -select_streams v:0 -show_entries `"stream=color_primaries,color_transfer`" -of csv=p=0 `"$($f.FullName)`"") -split "`r?`n"
-  # 归一化：ffprobe 的输出可能带空行 / 尾随分隔符（stdout 与 stderr 被拼在一起），
-  # 不归一化会让"值相同"的两格在对照段被判成不同（假红）。
+  # ⚠ 两处取数都改 **ExecOut（只读 stdout）**：`Exec` 把 stderr 并进返回值，而随包 exiftool 是 perl 打的，
+  #   环境带本机 perl 不认的 `LC_ALL/LANG` 时每次调用都先喷 locale warning ⇒
+  #   ① `$hasIcc` 被喂进 `-not $ge.Icc` 这类**负断言**（gif 不许写假标注），污染会让它偏成假绿/假红两边都可能，
+  #   ② `$cicpStr` 里会混进 warning 文本，两格对照（`:289`/`:319`/`:346`）就变成"两条 warning 互比"。
+  #   前置的"取数尺有牙"正对照见 `:213`（同一把尺必须先在**真有 ICC** 的素材上读到东西）。
+  $cicp = (ExecOut $fp "-v error -select_streams v:0 -show_entries `"stream=color_primaries,color_transfer`" -of csv=p=0 `"$($f.FullName)`"") -split "`r?`n"
+  # 归一化：ffprobe 的输出可能带空行 / 尾随分隔符，不归一化会让"值相同"的两格在对照段被判成不同（假红）。
   $cicpStr = (($cicp -join ",") -split "," | ForEach-Object { $_.Trim() } | Where-Object { $_ }) -join ","
-  $hasIcc = (Exec $et "-a -s -G0 `"$($f.FullName)`"") -match "ICC|ProfileDescription|iccp"
+  $hasIcc = (ExecOut $et "-a -s -G0 `"$($f.FullName)`"") -match "ICC|ProfileDescription|iccp"
   Write-Host ("  PASS {0,-24} {1,6}B  cicp={2}  ICC={3}" -f $runTag,$f.Length,$cicpStr,$hasIcc) -ForegroundColor Green
   $script:pass++
   $script:res[$runTag]=@{Ok=$true;Bytes=$f.Length;Cicp=$cicpStr;Icc=[bool]$hasIcc;Log=$log}
@@ -185,6 +215,12 @@ function Assert($name,$cond,$detail){
 }
 
 $sdr="$val/sdr_plain.png"; $p3="$col/a2_srgb_p3.png"; $hdr="$val/src_hdr.png"
+
+# ⚠ **取数尺自己的前置正对照**（#51，2026-09-27）：下面的 `$hasIcc` 会被喂进"不许写假标注"这类**负断言**
+#   （`map-gif-不写假标注` 的 `-not $ge.Icc`）。负断言最怕的是"尺子一直读不到东西"—— 那让它恒真。
+#   ⇒ 先用**同一条命令**在一份**真有 ICC** 的素材上量到"有"，读到不到就直接判红、本轮不作数。
+$probeIcc = (ExecOut $et "-a -s -G0 `"$p3`"") -match "ICC|ProfileDescription|iccp"
+Assert "前置-取数尺有牙" $probeIcc "同一条 exiftool 读法在 P3 素材上读得到 ICC ⇒ 后面的「不得写出 ICC」负断言不是空转"
 
 # ── ① 引擎（默认执行体）矩阵 ──
 foreach($strat in @("recommended","carry","cicp-only","manual")){
@@ -435,6 +471,201 @@ Assert "L-manual-hdr-jpggm" ($r.Bytes -gt 0)                 "S4 手动 + GainMa
 $rc = $script:res["L-carry-sdr-png"]; $rr = $script:res["L-recommended-sdr-png"]
 Assert "L-S2≠S1(策略生效)" (($rc.Bytes -ne $rr.Bytes) -or ($rc.Icc -ne $rr.Icc)) `
   "传统管线上 S2(携带) 与 S1(推荐) 必须走出不同结局（carry=$($rc.Bytes)B/ICC=$($rc.Icc)，recommended=$($rr.Bytes)B/ICC=$($rr.Icc)）"
+
+# ── ③f 位深播报锁（任务 #35：出口档 ≠ 请求档 ⇒ 必须点名，且播报必须与实测交付一致）────────────
+# 为什么放在本脚本而不是只靠 `verify-color-matrix-full.ps1` 的 CAP 尺子：
+#   网格那条判据**读日志**，但它一次跑 360 格、约 35 分钟，且只在 full 层才覆盖位深轴（quick 层
+#   只有 png/jxl × {8,16}）⇒ 拿它当"位深播报"的**日常**门禁太贵。本段是三格的最小锁。
+#
+# 判据形状（照抄网格 §2a 的四态语义，**不**新造一套口径、也**不**只断言"日志里有字"）：
+#   · 日志里只有**人话**（"出口位深升为 16bit…"）而没有稳定码 ⇒ `SILENT` ⇒ 红；
+#   · 播了升位、实测交付却**更浅** ⇒ `MISANNOUNCED` ⇒ 红（这条就是"播了但没做到"）；
+#   · 播了降位、实测交付却**更深** ⇒ `MISANNOUNCED` ⇒ 红；
+#   · 同一格同时播升位与降位 ⇒ `MISANNOUNCED-both` ⇒ 红。
+#   ⇒ 判据的"牙"由下面的合成自测锁住（零转换成本），真实格只是把它作用到实测日志与实测位深上。
+#
+# 三格真实断言：
+#   F1 `jxl --bit-depth 10`（RGB 原生，规划层看得到请求档 10）⇒ 必须播 `BitDepthRaised`，
+#      且 **jxlinfo 读回的码流位深**必须等于播报里那个数（16）。
+#      ⚠ 位深真值**不能用 ffprobe**：它对 JXL 报的是**解码输出** pix_fmt（rgb48le），
+#        不是码流位深 —— 用它当参照，"码流其实只写了 8bit"这种缺陷能一路骗过本锁。
+#   F2 负控：拿 **F1 的同一份真实日志**，把实测交付档位换成 8（= 播"升到 16"却只给到 8）
+#      ⇒ 判据**必须**转 MISANNOUNCED。这条钉的是"播报↔实测一致"这半截不是空断言。
+#   F3 `webp --bit-depth 10`（非 RGB 原生，容器出口只有 8bit）⇒ 必须播降位、且实测交付=8。
+#      ⚠⚠ **本格 2026-09-26 曾按预期转红**（那笔 #35 未平的账的机器可查登记），**判据一个字没放宽**：
+#      红时的根因**不在** `CollectDegradations` —— 实测进规划层的 `TargetBitDepth` 已经是 8
+#      （`FfmpegCommandBuilder.Decision.cs` 的 capBd 钳制先就地改写调用方 options，
+#      `ColorIntentFactory.cs:145` 再 `Math.Min(…, caps.MaxBitDepth)` 钳一次）⇒ 请求档 10 在**看得见它
+#      的那一层之外**就没了，①b 拿不到"用户要 10"这个事实，自然播不出"10→8"。
+#      当时的实测证据：`--bit-depth 10 -f webp` 的 `[cmd]` 是 `-pix_fmt yuv420p`（交付 8），日志里
+#      **零** `BitDepth*` 码；`--bit-depth 16 -f avif` 的 `[cmd]` 是 `-pix_fmt yuv420p10le`（交付 10），
+#      同样零播报。⇒ 修法是"把请求档穿过钳制带进规划层"（`FfmpegOptions.BitDepthRequested` →
+#      `ColorIntent.RequestedBitDepth` → ①b 的非 RgbNative 分支），本格随即转绿。
+Write-Host "`n### ③f 位深播报锁（出口档 ≠ 请求档 ⇒ 必须点名 + 播报须与实测一致）###" -ForegroundColor Cyan
+$ji = "$root/publish/PLAN/jxl/bin/jxlinfo.exe"
+
+# 交付位深：ffprobe 的 pix_fmt ⇒ 位深（**只用于非 JXL 容器**；JXL 走 jxlinfo，理由见 F1 注释）
+$script:pixDepthForLock = @{
+  'rgb24' = 8; 'rgba' = 8; 'bgra' = 8; 'gray' = 8; 'pal8' = 8; 'yuv420p' = 8; 'yuvj420p' = 8
+  'yuv444p' = 8; 'yuv422p' = 8; 'yuva420p' = 8
+  'gbrp10le' = 10; 'yuv420p10le' = 10; 'yuv444p10le' = 10; 'yuva420p10le' = 10
+  'gbrp12le' = 12; 'yuv420p12le' = 12; 'yuv444p12le' = 12; 'yuva420p12le' = 12
+  'rgb48le' = 16; 'rgb48be' = 16; 'rgba64le' = 16; 'gbrp16le' = 16; 'yuv420p16le' = 16
+}
+function Lock-DeliveredDepth([string]$File) {
+  # ⚠ 只读 stdout：ffprobe 的值走 stdout，`Exec` 会把 stderr 拼在前面 ⇒ 污染环境下 `[0]` 取到的是警告行，
+  #   本函数会"认不出来 ⇒ $null"，而那些 $null 让调用方**只比播报不猜**（负断言侧被撑松）。
+  $raw = (ExecOut $fp "-v error -select_streams v:0 -show_entries `"stream=pix_fmt`" -of csv=p=0 `"$File`"")
+  $px = (@($raw -split "`r?`n") | Where-Object { $_.Trim() -ne '' } | Select-Object -First 1)
+  if (-not $px) { return $null }
+  $k = ([string]$px).Trim().ToLowerInvariant()
+  if ($script:pixDepthForLock.ContainsKey($k)) { return [int]$script:pixDepthForLock[$k] }
+  return $null          # 认不出来 ⇒ $null（调用方只比播报、不猜），**绝不**回落到"看起来正常"的默认值
+}
+# 与网格 §2a 同语义的四态判据（局部一份，刻意不复用网格脚本：门禁之间不许互相依赖产物）
+function Lock-JudgeDepth {
+  param([int]$Requested, [string]$Log, $Delivered)
+  $raised = ($Log -match 'BitDepthRaised'); $reduced = ($Log -match 'BitDepthReduced')
+  if ($raised -and $reduced) { return 'MISANNOUNCED-both' }
+  if ((-not $raised) -and (-not $reduced)) { return 'SILENT' }
+  if ($null -ne $Delivered) {
+    if ($raised -and ([int]$Delivered -lt $Requested)) { return 'MISANNOUNCED-shallower' }
+    if ($reduced -and ([int]$Delivered -gt $Requested)) { return 'MISANNOUNCED-deeper' }
+  }
+  if ($raised) { return 'raised-announced' }
+  return 'reduced-announced'
+}
+
+# —— 判据自测（合成行，不起进程、不建图）：没有这四条，下面的真实格就是"恒绿门禁" ——
+$synWords = '[色彩引擎] ⚠️ 出口位深降为 8bit（本次目标 10bit）⇒ 精度不保留'      # 只有人话、没有稳定码
+Assert "F0a 判据自测·无人话外的码" ((Lock-JudgeDepth 10 $synWords 8) -eq 'SILENT') `
+  "无稳定码（只有中文描述）的日志必须仍判 SILENT ⇒ 本锁不是在找字（实得 $(Lock-JudgeDepth 10 $synWords 8)）"
+$synRaised = '[色彩引擎] ⚠️ 降级（BitDepthRaised）：出口位深升为 16bit（本次目标 10bit）⇒ **升位、非降级**'
+Assert "F0b 判据自测·播升给浅" ((Lock-JudgeDepth 10 $synRaised 8) -eq 'MISANNOUNCED-shallower') `
+  "播升位而实测 8 < 请求 10 ⇒ 必须 MISANNOUNCED（实得 $(Lock-JudgeDepth 10 $synRaised 8)）"
+Assert "F0c 判据自测·播降给深" ((Lock-JudgeDepth 12 ('降级（BitDepthReduced）：出口位深降为 8bit') 16) -eq 'MISANNOUNCED-deeper') `
+  "播降位而实测 16 > 请求 12 ⇒ 必须 MISANNOUNCED（方向播反就是假播报）"
+Assert "F0d 判据自测·升降同播" ((Lock-JudgeDepth 10 ($synRaised + ' BitDepthReduced') 16) -eq 'MISANNOUNCED-both') `
+  "同一格同时播升位与降位 ⇒ 必须 MISANNOUNCED-both（自相矛盾不许互相抵消成绿）"
+Assert "F0e 判据自测·一致即绿" ((Lock-JudgeDepth 10 $synRaised 16) -eq 'raised-announced') `
+  "播升位且实测交付 16 ⇒ 判合规（否则 F1 的绿没有基准）"
+
+# —— 跑一格真实任务，返回 日志 / 产物 / rc（与 S() 同一套 Start-Process 取法，不走 `& exe`）——
+function Lock-RunCell([string]$Tag, [string]$InFile, [string]$Fmt, [string]$Bd) {
+  Start-Sleep -Seconds 2
+  $a = "--headless --log-level Debug -i `"$InFile`" --format $Fmt --bit-depth $Bd --color-space `"Display P3`" --output `"$out/F-$Tag`""
+  $p = Start-Process -FilePath $exe -ArgumentList $a -Wait -NoNewWindow -PassThru `
+        -RedirectStandardOutput "$out/F-$Tag.o" -RedirectStandardError "$out/F-$Tag.e"
+  $log = [System.IO.File]::ReadAllText("$out/F-$Tag.o") + [System.IO.File]::ReadAllText("$out/F-$Tag.e")
+  $f = Get-ChildItem -Recurse "$out/F-$Tag" -File -EA SilentlyContinue |
+       Where-Object { $_.Extension -eq ".$Fmt" } | Sort-Object Length -Descending | Select-Object -First 1
+  return @{ Rc = $p.ExitCode; Log = $log; Prod = $f }
+}
+
+# F1 jxl 10 ⇒ 播升位，且 **jxlinfo 读回的码流位深**必须就是播报里那个数
+$c1 = Lock-RunCell "jxl10" $sdr "jxl" "10"
+if (-not $c1.Prod) {
+  Assert "F1 jxl10 播报=实测" $false "jxl --bit-depth 10 无产物（rc=$($c1.Rc)）⇒ 本锁无从比对，判红不放行"
+} else {
+  # ⚠ 只读 stdout：jxlinfo 的 `N-bit RGB` 是**值**（下面 `[regex]::Match` 后直接喂 F1 的"播报=实测"断言）。
+  #   合并版会把 stderr 的 locale 警告一起端进来 ⇒ 匹配到的位数不再是产物实测值（第 56 条扫描点名的 3 处之一）。
+  $jiTxt = if (Test-Path $ji) { (ExecOut $ji "`"$($c1.Prod.FullName)`"") | Out-String } else { '' }
+  $mJi = [regex]::Match($jiTxt, '(\d+)-bit\s+(?:RGB|Gray|Alphaless)')
+  $jiBits = if ($mJi.Success) { [int]$mJi.Groups[1].Value } else { $null }
+  $mAnn = [regex]::Match($c1.Log, 'BitDepthRaised）：出口位深升为\s*(\d+)bit（本次目标\s*(\d+)bit')
+  $annTo = if ($mAnn.Success) { [int]$mAnn.Groups[1].Value } else { $null }
+  $annReq = if ($mAnn.Success) { [int]$mAnn.Groups[2].Value } else { $null }
+  $jv = Lock-JudgeDepth 10 $c1.Log $jiBits
+  Assert "F1 jxl10 播报=实测" `
+    (($jv -eq 'raised-announced') -and ($annReq -eq 10) -and ($null -ne $jiBits) -and ($annTo -eq $jiBits)) `
+    ("jxl --bit-depth 10 ⇒ 需 BitDepthRaised 且播报的出口档 == jxlinfo 读回的码流位深" +
+     "（判据=$jv 播报 $annReq→$annTo jxlinfo=$jiBits；ffprobe 的 pix_fmt 只作对照、不当位深真值）")
+  # F2 负控：同一份**真实**日志 + 被换成 8 的实测交付 ⇒ 必须转红（证明 F1 的"一致"半截有牙）
+  $jvNeg = Lock-JudgeDepth 10 $c1.Log 8
+  Assert "F2 负控·真日志配错实测" ($jvNeg -eq 'MISANNOUNCED-shallower') `
+    "F1 的真实日志配上实测 8 ⇒ 必须 MISANNOUNCED（实得 $jvNeg）—— 否则 F1 只是在找字"
+}
+
+# F3 webp 10 ⇒ 出口只有 8bit，必须播降位且实测交付 = 8（2026-09-26 修复后转绿；段首有红时的根因）
+$c3 = Lock-RunCell "webp10" $sdr "webp" "10"
+if (-not $c3.Prod) {
+  Assert "F3 webp10 播报=实测" $false "webp --bit-depth 10 无产物（rc=$($c3.Rc)）⇒ 无法比对，判红"
+} else {
+  $d3 = Lock-DeliveredDepth $c3.Prod.FullName
+  $jv3 = Lock-JudgeDepth 10 $c3.Log $d3
+  Assert "F3 webp10 播报=实测" `
+    (($jv3 -eq 'reduced-announced') -and ($d3 -eq 8) -and ($c3.Log -match 'BitDepthReduced）：出口位深降为 8bit（本次目标 10bit')) `
+    ("[任务#35 回潮] webp --bit-depth 10 ⇒ 需播 BitDepthReduced(10→8) 且实测交付 8" +
+     "（判据=$jv3 实测交付 $d3）。红只有两种成因：① 请求档又被钳制吃掉（查 FfmpegOptions.BitDepthRequested" +
+     " 是否仍在 capBd 钳制之前被记、ColorIntent.RequestedBitDepth 是否仍装配）；" +
+     "② CollectDegradations ①b 的非 RgbNative 分支被改掉。两者都不许用放宽判据解决。")
+}
+
+# F4 avif 12 + 显式 Display P3 ⇒ 任务 #41 的现场格（取证 tests/output/t36/attribute_41.ps1）
+#   现象（`tests/output/t36/grid-t36.csv` 的 avif × Display P3 行）：bd=10/12 各 6 格交付 `pixfmt=yuv420p`
+#     （**8bit**）却记 `verdict=ok`，而 `announced=True`。
+#   ⚠ 我第一版把这条写成"产品**静默**削档"，**那是错的**：单格实跑（engine / auto / legacy 三管线 ×
+#     8bit 与 16bit 两源，共 6 格）**每一格都播了**「降级（BitDepthReduced）：出口位深降为 8bit
+#     （本次目标 12bit）」，产物也确实 8bit ⇒ 播报与交付一致，产品这半边是诚实的。
+#   ⇒ 真正的洞有两处，都不在产品播报：
+#     ① 网格 `$pixDepth` 缺 8bit YUV 词形 ⇒ `delivered` 恒空（实测：全表 `announced=True 且 delivered 空`
+#        = avif 18 格 + webp 54 格）⇒ "播报 vs 实测"对账与**承诺账**在这 72 格上从不执行；
+#     ② 网格 CAP 对"请求档在能力表里"的格子**根本不看日志**（`verdict = if ($capOk) { 'ok' }`）⇒
+#        #36 把 avif 的 12 档纳进表之后，"表说支持 12、产品按 #39 那条无实测支撑的 P3 折档交付 8"
+#        就被判成 ok。✅ **补上①的词形后已实测兑现**：全层网格 `PASS=18 FAIL=1`，红的正是承诺账里
+#        这 12 格（`CAP承诺? … →Display P3 avif10/12 能力表说支持、产品却交付了 8bit` × 6 源 × 2 档，
+#        日志 `tests/output/t36/grid-t36-run3.log`）⇒ 红指向 #39 那条折档，不指向本段的播报。
+#   ⇒ #39 已把那条特例**实测否证并删除** ⇒ 本格从"只要求不静默"升级为钉**新契约**：
+#     F4 avif + Display P3 + 请求 12 ⇒ **真交付 12bit**（命令行 `-pix_fmt yuv420p12le`）且零位深码；
+#     F5 avif + Display P3 + 请求 16 ⇒ 落到编码器上限 12、且**恰好播一次** BitDepthReduced(16→12)。
+#     两条都另外要求"交付位深**测得出来**"：测不出时"只看播报"的判据一律放绿 ⇒ 那是 #41 登记的尺子失明。
+$c4 = Lock-RunCell "avif12p3" $sdr "avif" "12"
+if (-not $c4.Prod) {
+  Assert "F4 avif12+P3 不许静默降位" $false "avif --bit-depth 12 + Display P3 无产物（rc=$($c4.Rc)）⇒ 无从比对，判红不放行"
+} else {
+  $d4 = Lock-DeliveredDepth $c4.Prod.FullName
+  $jv4 = Lock-JudgeDepth 12 $c4.Log $d4
+  # 出口侧的 `-pix_fmt` = 该格日志里**最后一个** `-pix_fmt <tok>`。引擎路线会先打
+  #   `[色彩] ffmpeg … -f rawvideo -pix_fmt rgb48le -video_size 512x384 -i <临时raw> … -pix_fmt yuv420p12le out.avif`
+  # 前一个是**喂给编码器的中间件格式**（16bit RGB 中间件），后一个才是**交付档** ⇒
+  # 取第一个会把 rgb48le 当成出口，把正确的产物判成红（本轮实测踩过，故在此写明取法）。
+  $mm4 = [regex]::Matches($c4.Log, '-pix_fmt\s+([\w]+)')
+  $px4 = if ($mm4.Count -gt 0) { $mm4[$mm4.Count - 1].Groups[1].Value } else { '' }
+  $n4 = [regex]::Matches($c4.Log, 'BitDepthReduced）').Count
+  Assert "F4 avif12+P3 交付位深测得出" ($null -ne $d4) `
+    ("交付位深必须当场测得出来（实得 [" + $d4 + ']，产物 pix_fmt 见该格日志）——测不出来时 #41 这类' +
+     '静默削档就会和"只看播报"的判据叠成 ok；红先看 Lock-DeliveredDepth 的 pixDepthForLock 是否缺词形')
+  Assert "F4 avif12+P3 必须真交付 12bit" `
+    (($d4 -eq 12) -and ($px4 -eq 'yuv420p12le') -and ($c4.Log -notmatch 'BitDepth')) `
+    ('请求 12 就必须真给到 12：实测交付 [' + $d4 + '] 命令行 pix_fmt=' + $px4 + ' 判据=' + $jv4 +
+     ' 日志含位深码=' + ($c4.Log -match 'BitDepth') + '。产品里"avif + Display P3 + 高位深 ⇒ 8bit"那条特例' +
+     '已被实测否证并删除（同一命令行只换 -pix_fmt，8/10/12 三档 rc=0、nclx 标签一致、' +
+     '10/12 对 8 的 PSNR=51.45/50.99 dB，取证 tests/output/t36/probe_39b.ps1）' +
+     '⇒ 本条红 = 有人把那条特例加回来，或在别处另立了一条无据的削档（不许用放宽判据解决）')
+  Assert "F4 avif12+P3 同码不重播" ($n4 -le 1) `
+    ('BitDepthReduced 在该格日志里出现 ' + $n4 + ' 次（>1 ⇒ 同一事实有两个写者各播一遍，日志自相矛盾；' +
+     '与 ①/①b 的去重约定冲突）')
+}
+
+# F5 avif + Display P3 + 请求 16 ⇒ 交付必须是**编码器上限** 12（libaom 无 16bit YUV），且恰好播一次。
+#   这条是 F4 的另一半：F4 证明"不再无据削档"，F5 证明"该削的还削、并且仍然点名"。
+#   读数含义：16 ⇒ 钳制被整个删掉（libaom 编不出 16bit YUV）；8 ⇒ #39 那条特例又回来了。
+$c5 = Lock-RunCell "avif16p3" $sdr "avif" "16"
+if (-not $c5.Prod) {
+  Assert "F5 avif16+P3 无产物" $false "avif --bit-depth 16 + Display P3 无产物（rc=$($c5.Rc)）⇒ 无从比对，判红"
+} else {
+  $d5 = Lock-DeliveredDepth $c5.Prod.FullName
+  $jv5 = Lock-JudgeDepth 16 $c5.Log $d5
+  $n5 = [regex]::Matches($c5.Log, 'BitDepthReduced）').Count
+  Assert "F5 avif16+P3 交付必须等于编码器上限 12" ($d5 -eq 12) `
+    ('实得 [' + $d5 + ']（判据=' + $jv5 + '）——是 16 说明钳制被整个删掉，是 8 说明那条无据特例又回来了；' +
+     '而 12 这个数不是本脚本硬编码的，它与 verify-decision-delivery ⑯ 从 ffmpeg 自报表现场读到的上限同源')
+  Assert "F5 avif16+P3 必须点名降档" (($jv5 -eq 'reduced-announced') -and ($c5.Log -match 'BitDepthReduced）：出口位深降为 12bit（本次目标 16bit')) `
+    ('降档要点名且方向要对（判据=' + $jv5 + ' 实测 [' + $d5 + ']）——静默 16→12 就是任务 #35 那一族回潮；' +
+     '红时先查 FfmpegOptions.BitDepthRequested 是否仍在 capBd 钳制之前被记、ColorIntent.RequestedBitDepth 是否仍装配')
+  Assert "F5 avif16+P3 同码不重播" ($n5 -le 1) `
+    ('BitDepthReduced 在该格日志里出现 ' + $n5 + ' 次（>1 ⇒ 同一事实有两个写者各播一遍，日志自相矛盾）')
+}
 
 Write-Host "`n===== PASS=$pass FAIL=$fail =====" -ForegroundColor $(if($fail -eq 0){"Green"}else{"Red"})
 Write-Host "关注: cicp-only 的 avif/png 应 ICC=False; carry/hdr-png 应保 HDR(cicp smpte2084); jpeg+gm 应产出可用 UltraHDR" -ForegroundColor Yellow

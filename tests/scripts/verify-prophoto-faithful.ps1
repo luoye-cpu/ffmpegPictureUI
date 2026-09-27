@@ -10,8 +10,14 @@ $ErrorActionPreference = "Continue"
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path; Set-Location $root
 $exe   = "$root/src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.exe"
 if (-not (Test-Path $exe)) { $exe = "$root/src/FfmpegGui/bin/Debug/net11.0/win-x64/FfmpegGui.exe" }
+# ⚠ 2026-09-21（TESTING.md 第 84 条处置建议 ①）：**回退是静默的** —— 门禁可能测的
+#   不是你以为的那个二进制。⇒ 一律**打印被测 exe 与构建类型**，让读数可追溯。
+Write-Output ("[gate] exe=" + $exe + $(if ($exe -like '*\Debug\*') { " (Debug fallback)" } else { " (Release)" }))
 $probe = "$root/tests/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.exe"
 if (-not (Test-Path $probe)) { $probe = "$root/tests/ServiceProbe/bin/Debug/net11.0/win-x64/ServiceProbe.exe" }
+# ⚠ 2026-09-21（TESTING.md 第 84 条处置建议 ①）：**回退是静默的** —— 门禁可能测的
+#   不是你以为的那个二进制。⇒ 一律**打印被测 exe 与构建类型**，让读数可追溯。
+Write-Output ("[gate] exe=" + $probe + $(if ($probe -like '*\Debug\*') { " (Debug fallback)" } else { " (Release)" }))
 $et    = "$root/publish/PLAN/exiftool/exiftool.exe"
 $ff    = "$root/publish/PLAN/ffmpeg-full/ffmpeg.exe"
 $fp    = "$root/publish/PLAN/ffmpeg-full/ffprobe.exe"
@@ -27,6 +33,23 @@ function Exec([string]$file, [string]$argStr){
     -RedirectStandardOutput $o -RedirectStandardError $e
   $global:LASTEXITCODE = $p.ExitCode
   return ([System.IO.File]::ReadAllText($o) + "`n" + [System.IO.File]::ReadAllText($e))
+}
+# ⚠ **只读 stdout 的取数**（读「工具写在 stdout 的值」时唯一合法的尺，与 `Exec` 同形状、只换返回口径）：
+#   合并版 `Exec` 把 stderr 一起拼进返回值，这对**实测只在 stderr** 的东西是对的（ffmpeg 的 PSNR 行 /
+#   `frame=` / signalstats 的 `YMIN=` —— 实测那类命令 stdout 0 字节）。⚠ 但**产品与 ServiceProbe 的日志
+#   不保证在 stderr**（2026-09-27 实测 `ServiceProbe decision`：stdout 6184 B、stderr **0 B**，
+#   `PROBE RESULT:` / `pass=` 全在 stdout）⇒ 别把"读日志"和"读工具值"混成一把尺。
+#   但 exiftool 的标签值、ffprobe 的 `-of csv` 字段都在 **stdout** —— 而随包 exiftool 是 **perl 打包版**：
+#   环境里带着本机 perl 不认的 `LC_ALL`/`LANG`（MSYS/bash 侧是 `C.UTF-8`）时它**每次调用先往 stderr 喷
+#   locale warning** ⇒ 合并读法拿到的"值"前面（或后面）会多一行警告：喂 `-match`/`-notmatch` 会被撑成
+#   **假绿**，喂 `-eq`/集合比较会变成"两条警告互比"或**假红**。stderr 仍落盘供排查，只是不进返回值。
+function ExecOut([string]$file, [string]$argStr){
+  $o = "$out/_exec.out"; $e = "$out/_exec.err"
+  $p = Start-Process -FilePath $file -ArgumentList $argStr -Wait -NoNewWindow -PassThru `
+    -RedirectStandardOutput $o -RedirectStandardError $e
+  $global:LASTEXITCODE = $p.ExitCode
+  $t = [System.IO.File]::ReadAllText($o)
+  return $t
 }
 
 $pass=0;$fail=0
@@ -44,11 +67,31 @@ function PixHash($f,$pix){
   if(-not (Test-Path $raw)){ return $null }
   (Get-FileHash $raw -Algorithm SHA256).Hash
 }
-function IccDesc($f){ (Exec $et "-a -G1 -s -ProfileDescription -ProfileColorSpace -ICCProfileDescription `"$f`"").Trim() }
-function Cicp($f){ (Exec $fp "-v error -select_streams v:0 -show_entries `"stream=color_primaries,color_transfer`" -of csv=p=0 `"$f`"").Trim() }
+# ⚠ 取数口径（两条都读**工具写在 stdout 的值**，故走 `ExecOut`）：
+#   · IccDesc —— exiftool `-a -G1 -s -ProfileDescription...` 的标签值：实测 stdout=「[ICC_Profile] ProfileDescription : …」；
+#     同一命令在污染条件下合并版多吐 245 B 的 perl locale 警告（OLD 307 B / NEW 62 B）⇒ 值被警告糊住。
+#     消费方三条 CK 都是**正向** `-match "ProPhoto"` ⇒ 读空即红，收紧不会由绿转红。
+#   · Cicp —— ffprobe `-of csv`：实测本机 ffprobe 带 `-v error` 时 stderr = 0 字节、值全在 stdout ⇒ 与合并版同值。
+#   ⚠ 判据强度已登记（本轮不改判据）：`Cicp` 在本文件**只**喂 ③ 那条 `-notmatch "bt709|smpte432|bt2020"`
+#     （负断言），读空也为真；③ 里另一条正向证据读的是 **ICC 描述**（IccDesc），与 CICP 标签是**两把不同的
+#     尺**，不能算同址正向锁 ⇒ **本条负断言目前没有同址正向锁**（与 gainmap-isobmff §1b 的 `-f obu` 反控
+#     「正向 -match 与反向 -notmatch 同址、读同一份产物字节」明确不同形）。补同址正向锁不属本轮取数口径
+#     分诊（主循环已把这一类「空值 + 负断言」记为待处置项），此处只如实登记、不改判据、不放宽任何阈值。
+function IccDesc($f){ (ExecOut $et "-a -G1 -s -ProfileDescription -ProfileColorSpace -ICCProfileDescription `"$f`"").Trim() }
+function Cicp($f){ (ExecOut $fp "-v error -select_streams v:0 -show_entries `"stream=color_primaries,color_transfer`" -of csv=p=0 `"$f`"").Trim() }
 
 Write-Host "`n### 1) 造 ProPhoto 源 ###" -ForegroundColor Cyan
-Copy-Item "$root/tests/output/sources/src_8bit.png" "$out/src_prophoto.png"
+# ⚠ 2026-09-21（`TESTING.md` 第 68 条）：**消费者读不到前置产物必须红**。
+#   原先此处是**无守卫**的 `Copy-Item`，而本脚本 `$ErrorActionPreference = "Continue"`
+#   ⇒ 缺源时只往 stderr 报一句错、**脚本继续跑**，后续断言会在「源根本不存在」的语境下
+#     给出误导性结论（这正是第 68 条要挡的形态）。现改为**显式红 + 自清**。
+$src8 = "$root/tests/output/sources/src_8bit.png"
+if (-not (Test-Path $src8)) {
+    Write-Output "缺素材 $src8（由 generate-sources.ps1 生成）—— 本条**不给绿灯**"
+    if ($fail -eq 0) { Remove-Item -Recurse -Force $out -ErrorAction SilentlyContinue }
+    exit 1
+}
+Copy-Item $src8 "$out/src_prophoto.png"
 # 保真 ICC 路径由 ServiceProbe 输出（带写入器版本号，不硬编码文件名）
 $ppIcc = $null
 if (Test-Path $probe) {
@@ -58,11 +101,36 @@ if (Test-Path $probe) {
 }
 if (-not $ppIcc -or -not (Test-Path $ppIcc)) { No "无法定位纯托管生成的 ProPhoto ICC"; Write-Host "`n===== PASS=$pass FAIL=$fail =====" -ForegroundColor Red; exit 1 }
 Ok "保真 ICC: $(Split-Path -Leaf $ppIcc) ($((Get-Item $ppIcc).Length) B)"
-Exec $et "-overwrite_original -m `"-icc_profile<=$ppIcc`" `"$out/src_prophoto.png`"" | Out-Null
+Exec $et "-overwrite_original -m `"-icc_profile<=$ppIcc`" `"$out/src_prophoto.png`"" | Out-Null  # 合并取数已论证：这是**附着 ICC 的写入动作**，返回值显式 Out-Null 丢弃 ⇒ 不喂任何断言
 $srcDesc = IccDesc "$out/src_prophoto.png"
 if ("$srcDesc" -match "ProPhoto") { Ok "源已附着 ProPhoto ICC ($srcDesc)" } else { No "源 ICC 异常: '$srcDesc'" }
-$srcDump = Exec $et "-a -G1 -s `"$out/src_prophoto.png`""
-if ($srcDump -notmatch "Corrupted") { Ok "exiftool 可无损解析生成的 mluc desc" } else { No "exiftool 报 Corrupted（生成器 mluc 格式有误）" }
+# ⚠ 取数口径（实测后定为**只读 stdout**）：本条读的是 exiftool 的**全量 dump**（`-a -G1 -s` 不带标签名），
+#   这种形态下 ICC 解析诊断**两边都打**（实测 `tests/output/laneB/equiv-laneB4.ps1` Q1：坏 ICC 的 PNG
+#   stdout 1678 B 里就有 `[ExifTool] Warning : Bad length ICC_Profile (length 4776)`，stderr 只有 244 B
+#   的 perl locale 警告）⇒ 只读 stdout **不瞎**，反而剥掉了噪声。
+#   ⚠ 对比：一旦**指定标签名**（如 `IccDesc` 的三个 desc 字段、`-G -s -ColorSpace`），stdout 就只剩值、
+#   诊断只在 stderr（同一实验 Q1b：指定标签形态 stdout 0 B）⇒ 那种形态的判据不许改成只读 stdout 去找诊断。
+# ⚠ 判据词形改为**实测**（2026-09-27 取证 `tests/output/t61/probe-corrupted-token.ps1`）：
+#   exiftool 面对坏 ICC **从不打 "Corrupted"** ⇒ 旧写法 `-notmatch "Corrupted"` 是**恒真死断言**。
+#   实测两种形状：① 坏 ICC 嵌在容器里 ⇒ **stdout** `[ExifTool] Warning : Bad length ICC_Profile (length N)`；
+#   ② 裸 .icc ⇒ **stderr** `[Exiftool] Error : Truncated ICC profile`。本判据吃的是①（全量 dump 形态，stdout 有诊断）。
+$IccDiagRx = 'Bad length ICC_Profile|Truncated ICC profile|Error\s*:.*ICC'
+# ⚠⚠ 同址正向锁（把这条负断言从"恒真"变成"能红"）：造一份**真坏**的 ICC 嵌进同一类容器，
+#   用**同一把尺**读，必须命中 `$IccDiagRx`。它不成立就说明下面的"无损解析"根本没有牙。
+#   夹具落在 $out **之外**（别的段按目录递归挑产物，别在这里撒文件）。
+$diag = "$root/tests/output/validate/prophoto-diag"
+New-Item -ItemType Directory -Force -Path $diag | Out-Null
+$ctlPng = "$diag/broken_ctl.png"
+Copy-Item "$out/src_prophoto.png" $ctlPng -Force
+$goodIccBytes = [IO.File]::ReadAllBytes($ppIcc)
+$truncIcc = "$diag/truncated.icc"
+[IO.File]::WriteAllBytes($truncIcc, $goodIccBytes[0..([int]($goodIccBytes.Length / 2))])
+$null = Exec $et "-overwrite_original `"-icc_profile<=$truncIcc`" `"$ctlPng`""   # 合并取数已论证：**写入**夹具（把截短的 ICC 嵌进副本），返回值显式 `$null` 丢弃、不喂任何断言；下一步的**读数**走 ExecOut
+$ctlDump = (ExecOut $et "-a -G1 -s `"$ctlPng`"") -join ''
+if ($ctlDump -match $IccDiagRx) { Ok "正向锁：同一把尺在**故意截短**的 ICC 上确实报出问题（判据有牙）" }
+else { No "正向锁失效：截短的 ICC 没被读出问题 ⇒ 下面的‘无损解析’是恒真断言（实得 $(($ctlDump -split "`n" | Where-Object { $_ -match 'ExifTool|Warning|Error' } | Select-Object -First 2) -join ' | ')）" }
+$srcDump = ExecOut $et "-a -G1 -s `"$out/src_prophoto.png`""
+if ($srcDump -notmatch $IccDiagRx) { Ok "exiftool 可无损解析生成的 mluc desc" } else { No "exiftool 报 ICC 诊断问题（生成器 mluc 格式有误）" }
 $srcHash = PixHash "$out/src_prophoto.png" "rgb48le"
 Ok "源像素哈希 $srcHash"
 
@@ -86,7 +154,10 @@ if(-not $o){ No "无 PNG 输出" } else {
   $h = PixHash $o "rgb48le"
   if($h -eq $srcHash){ Ok "RGB 样本逐位一致（像素未转换）" } else { No "像素被改动 ($h)" }
   if((IccDesc $o) -match "ProPhoto"){ Ok "输出带 ProPhoto ICC" } else { No "输出缺 ProPhoto ICC: $(IccDesc $o)" }
-  if(((Exec $et "-a -G1 -s `"$o`"") -join "") -notmatch "Corrupted"){ Ok "输出 ICC 可被 exiftool 无损解析" } else { No "输出 ICC 解析报 Corrupted" }
+  # ⚠ 取数口径同 §1 的 `$srcDump`：exiftool 的 ICC 诊断在**全量 dump** 形态下两边都打 ⇒ 只读 stdout 不瞎
+  #   （`Exec $et` → `ExecOut $et` 是本轮改动之一）。判据词形同 §1（"Corrupted" 是死词），
+  #   且**共用 §1 那条正向锁**（同一把尺已在故意截短的 ICC 上报出问题 ⇒ 这里"读不到"才是真信号）。
+  if(((ExecOut $et "-a -G1 -s `"$o`"") -join "") -notmatch $IccDiagRx){ Ok "输出 ICC 可被 exiftool 无损解析" } else { No "输出 ICC 解析报出问题" }
   if($log -match "\[保真\]"){ Ok "日志走了保真路径" } else { No "日志未见保真附着" }
   if((Cicp $o) -notmatch "bt709|smpte432|bt2020"){ Ok "未写误导性 CICP（$((Cicp $o) -replace '\s','')）" } else { No "输出仍带 CICP 标签: $(Cicp $o)" }
 }

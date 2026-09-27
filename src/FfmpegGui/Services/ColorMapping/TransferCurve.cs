@@ -110,6 +110,28 @@ public readonly struct TransferCurve
     public static readonly TransferCurve Bt709 = new(CurveKind.Parametric,
         1.0 / 0.45, 1.0 / 1.099, 0.099 / 1.099, 1.0 / 4.5, 0.08125, 0.0, 0.0, "bt709", "BT.709");
 
+    /// <summary>
+    /// BT.709 的 **zimg 实现形态**：纯幂 γ(1/2.4)（无 α、无线性趾）。
+    /// <para>
+    /// ⚠ 这**不是** BT.709 的定义式（定义式见 <see cref="Bt709"/>）。两者的编码差在中间调最大约
+    /// **7231/65535 ≈ 28.1 LSB@8bit**（实测：`zscale=t=bt709` 的像素与 ITU-R BT.709-6 定义式最大差
+    /// 7231 LSB@16bit，与纯 γ(1/2.4) 只差 8bit 量化地板 0.0039）⇒ 是同构建 lcms2/zimg 都躲不开的
+    /// **能看见的差别**，不是等价写法。
+    /// </para>
+    /// <para>
+    /// 存在的唯一理由 = 复刻历史产物：`--color-709-curve zimg`（<see cref="Transfer709Curve.Zimg"/>）
+    /// 时，进程内（H1）出口的编码曲线换成本条，使其与 `zscale=t=bt709`（H2）给出的像素同形。
+    /// </para>
+    /// <para>
+    /// ⚠ <see cref="CicpToken"/> 故意为 **null**：CICP `bt709` 以及由它生成的 BT.709 ICC 指的都是
+    /// **定义式**；给这条曲线挂上 "bt709" 就等于宣称"标注能描述这些像素"—— 而那正是口径黑名单
+    /// 当初要防的「标签说 A、像素是 B」。出口标注仍由**目标描述符**决定（见
+    /// <c>ColorMappingEngine.SetLabelsFrom</c>），本曲线**只影响像素**，不影响标签。
+    /// </para>
+    /// </summary>
+    public static readonly TransferCurve Bt709Zimg = new(CurveKind.Parametric,
+        2.4, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, null, "BT.709(zimg γ1/2.4)");
+
     /// <summary>BT.470-6 System M（gamma 2.2 纯幂）—— Adobe RGB (1998) 的传递函数。</summary>
     public static readonly TransferCurve Gamma22 = new(CurveKind.Parametric,
         2.2, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, "bt470m", "gamma2.2");
@@ -130,9 +152,27 @@ public readonly struct TransferCurve
     public static readonly TransferCurve Gamma26 = new(CurveKind.Parametric,
         2.6, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, null, "gamma2.6(DCI)");
 
-    /// <summary>BTV/SMTE 240M γ=0.44 曲线（与 BT.709 同理，保留标准取整拐点）。</summary>
+    /// <summary>
+    /// SMPTE 240M：α=1.1115、β=0.1115，γ=1/0.45，toe 斜率 4.0，拐点 d=0.0912（= 4×0.0228）。
+    /// <para>
+    /// ⚠️ 修正记录：此前写成 γ=1/0.44、d=0.07611。SMPTE 240M-1995 的幂是 **0.45**（不是 0.44），
+    /// 线性断点 L=0.0228 ⇒ 编码域断点 4×0.0228 = **0.0912**；而 0.07611 与两条分支都不相切
+    /// （趾段 L=0.019028、幂段 L=0.019170，差 0.75%），属无出处的自造值。
+    /// γ 写 0.44 令中间调亮度偏差可达 ~3%，且因子 `HasItuRoundingKink` 把本曲线排除在 H2 之外
+    /// （`smpte240m` 在口径黑名单内）⇒ 错误曲线只在 H1 生效，无 zscale 参照可校。
+    /// </para>
+    /// <para>
+    /// ⚠️ 与 zimg 的**已知分歧**（zimg 实测，勿把本曲线"对齐"成 zimg 形态）：
+    /// `zscale=tin=linear:t=smpte240m` 输出的像素是**纯 γ(1/2.4)** —— 与 `t=bt709` 的输出
+    /// **逐位相同**（linear 0.5 → 0.749157、0.01 → 0.146746），既无 α/β 也无线性趾，
+    /// 即 zimg 把 bt709 与 smpte240m 都简化成了 γ2.4（本仓已为 bt709 单独登记 `Bt709Zimg`）。
+    /// 本曲线取 **SMPTE 240M-1995 / libplacebo 的定义式**，与 zimg 形态**不同构** —— 正因如此
+    /// `smpte240m` 才留在 H2 口径黑名单内；哪天若要放行给 zscale，两边像素会差到肉眼可见
+    /// （≈27 LSB@8bit），必须先登记，**不得静默放行**。
+    /// </para>
+    /// </summary>
     public static readonly TransferCurve Smpte240M = new(CurveKind.Parametric,
-        1.0 / 0.44, 1.0 / 1.1115, 0.1115 / 1.1115, 1.0 / 4.0, 0.07611, 0.0, 0.0, "smpte240m", "SMPTE.240M");
+        1.0 / 0.45, 1.0 / 1.1115, 0.1115 / 1.1115, 1.0 / 4.0, 0.0912, 0.0, 0.0, "smpte240m", "SMPTE.240M");
 
     /// <summary>线性。</summary>
     public static readonly TransferCurve Linear = new(CurveKind.Linear,
@@ -147,7 +187,11 @@ public readonly struct TransferCurve
         0, 0, 0, 0, 0, 0, 0, "arib-std-b67", "HLG(BT.2100)");
 
     // ST 2084 常数（SMPTE ST 2084:2014）
-    private const double PqM1 = 2615.0 / 16384.0;
+    // ⚠️ m1 = 2610/16384 = 0.1593017578125（标准值，逐字核对）。
+    //    此处原写 2615/16384 = 0.15960693（差 0.19%），与同仓 QueueProcessor 的 2610f/16384f 不自洽，
+    //    且 SimdPixelOps 侧犯的是同一个错 ⇒ 两侧「互检」必然通过、nits 锚点容差 3.5% 又远大于偏差，
+    //    错误因此长期存活。改本常数必须重跑 ServiceProbe pq/curve 与全部 HDR 对拍。
+    private const double PqM1 = 2610.0 / 16384.0;
     private const double PqM2 = 2523.0 / 4096.0 * 128.0;
     private const double PqC1 = 3424.0 / 4096.0;
     private const double PqC2 = 2413.0 / 4096.0 * 32.0;

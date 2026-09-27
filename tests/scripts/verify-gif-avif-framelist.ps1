@@ -15,6 +15,9 @@ Set-Location $root
 $env:FFMPEGGUI_FFMPEG_DIR = "$root/publish/PLAN/ffmpeg-full"
 $exe = "$root/src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.exe"
 if (-not (Test-Path $exe)) { $exe = "$root/src/FfmpegGui/bin/Debug/net11.0/win-x64/FfmpegGui.exe" }
+# ⚠ 2026-09-21（TESTING.md 第 84 条处置建议 ①）：**回退是静默的** —— 门禁可能测的
+#   不是你以为的那个二进制。⇒ 一律**打印被测 exe 与构建类型**，让读数可追溯。
+Write-Output ("[gate] exe=" + $exe + $(if ($exe -like '*\Debug\*') { " (Debug fallback)" } else { " (Release)" }))
 $ff = "$env:FFMPEGGUI_FFMPEG_DIR/ffmpeg.exe"
 $fp = "$env:FFMPEGGUI_FFMPEG_DIR/ffprobe.exe"
 $avifenc = "$root/publish/PLAN/artifacts/avifenc.exe"
@@ -33,6 +36,17 @@ function Exec([string]$file, [string]$argStr){
   Start-Process -FilePath $file -ArgumentList $argStr -Wait -NoNewWindow -PassThru `
     -RedirectStandardOutput $o -RedirectStandardError $e | Out-Null
   return ([System.IO.File]::ReadAllText($o) + "`n" + [System.IO.File]::ReadAllText($e))
+}
+
+# 只读 stdout 版（取「工具的值」专用）：ffprobe 的 `-of csv` 帧数走 **stdout**。下面的 AvifFrames 会把
+#   每一行 `-replace '[^0-9]',''` 再取最大值 ⇒ 合并进来的 stderr 里任何带数字的文本（本机实测 ffprobe
+#   失败时 stdout 0 B / stderr 166 B，含报错与带数字的路径）都会变成一个**看似合法的帧数**去和 420 比。
+#   读 ffmpeg 造素材的进度/报错（**只在 stderr**）时仍用 Exec。
+function ExecOut([string]$file, [string]$argStr){
+  $o = "$work/_exec.out"; $e = "$work/_exec.err"
+  Start-Process -FilePath $file -ArgumentList $argStr -Wait -NoNewWindow -PassThru `
+    -RedirectStandardOutput $o -RedirectStandardError $e | Out-Null
+  return [System.IO.File]::ReadAllText($o)
 }
 
 $script:pass = 0; $script:fail = 0; $script:skip = 0
@@ -70,7 +84,7 @@ function Run-Queue([string]$inFile, [string]$outDir, [string[]]$extra = @()) {
 
 # 动图 AVIF 的真实帧数：ffprobe 对 -select_streams v:0 只报主图 1 帧（实测），必须看全部视频流取最大值。
 function AvifFrames([string]$path) {
-  $rows = (Exec $fp "-v error -select_streams v -count_frames -show_entries stream=nb_read_frames -of csv=p=0 `"$path`"") -split "`r?`n"
+  $rows = (ExecOut $fp "-v error -select_streams v -count_frames -show_entries stream=nb_read_frames -of csv=p=0 `"$path`"") -split "`r?`n"
   $n = 0
   foreach ($r in $rows) { $v = 0; if ([int]::TryParse(($r -replace '[^0-9]', ''), [ref]$v)) { if ($v -gt $n) { $n = $v } } }
   return $n

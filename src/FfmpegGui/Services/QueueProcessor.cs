@@ -21,6 +21,14 @@ namespace FfmpegGui.Services
         // 请求在当前队列完成后优雅停止（不立刻 Cancel）
         private volatile bool _stopAfterQueueRequested = false;
 
+        // ⚠ 2026-09-21 加固 1/3：并发信号量提为**字段**（跨循环共享）。
+        //   原先在 ProcessAsync 内 `new SemaphoreSlim(_concurrency)` ⇒ 快速重启时
+        //   新旧两个循环各持一个信号量 ⇒ **瞬时总并发可达 2×_concurrency**（峰值内存超预期）。
+        private SemaphoreSlim _sem = new(2, 2);
+
+        // ⚠ 2026-09-21 加固 2/3：后台循环句柄 —— Start() 先等旧循环退出，再启动新循环。
+        private Task? _runner;
+
         /// <summary>调度器是否正在运行（有活跃的 CTS 且未被取消）</summary>
         public bool IsRunning => _cts != null && !_cts.IsCancellationRequested;
         private readonly Action<QueueItem> _onItemUpdated;
@@ -52,9 +60,36 @@ namespace FfmpegGui.Services
                 _cts.Cancel();
                 _cts = null;
             }
+
+            // ⚠ 2026-09-21 加固 2/3：**先等旧循环真正退出**再启动新循环。
+            //   原先只 Cancel + null ⇒ 旧循环可能仍在 `await Task.WhenAll(tasks)` 收尾，
+            //   新循环立即启动 ⇒ 两批任务重叠（配合加固 1 的共享信号量后已不会超并发，
+            //   但仍避免同一队列被两个循环同时消费、以及并发峰值抖动）。超时兜底 3s，异常不外抛。
+            var prev = _runner;
+            if (prev != null && !prev.IsCompleted)
+            {
+                try { prev.Wait(TimeSpan.FromSeconds(3)); }
+                catch { /* 旧循环的异常不应阻断重启 */ }
+            }
+            _runner = null;
+
+            RebuildSemaphore();
+
             _stopAfterQueueRequested = false;
             _cts = new CancellationTokenSource();
-            Task.Run(() => ProcessAsync(_cts.Token));
+            var ct = _cts.Token;
+            _runner = Task.Run(() => ProcessAsync(ct));
+        }
+
+        /// <summary>
+        /// 重建并发信号量以匹配 <c>_concurrency</c>。
+        /// ⚠ 2026-09-21 加固 3/3：必须在**无活跃任务**时调用（<c>Start()</c> 已先等旧循环退出）。
+        /// </summary>
+        private void RebuildSemaphore()
+        {
+            var old = _sem;
+            _sem = new SemaphoreSlim(_concurrency, _concurrency);
+            try { old.Dispose(); } catch { /* 旧实例可能仍被已退出的循环引用，忽略 */ }
         }
 
         /// <summary>
@@ -183,7 +218,9 @@ namespace FfmpegGui.Services
 
         private async Task ProcessAsync(CancellationToken ct)
         {
-            var sem = new SemaphoreSlim(_concurrency);
+            // ⚠ 2026-09-21 加固 1/3：使用**共享字段**信号量（跨循环），不再每次 new。
+            //   （原先 `new SemaphoreSlim(_concurrency)` 会在快速重启时造成 2× 并发。）
+            var sem = _sem;
             var tasks = new List<Task>();
             try
             {
@@ -239,11 +276,49 @@ namespace FfmpegGui.Services
                         // RAW→TIFF / MaxDimension 预缩放 PNG），而临时目录在项结束时删除。
                         // 不还原的话，「重新排队」拿着已消失的临时路径重跑必然失败（且错误信息还指向不存在的文件）。
                         var originalInputPath = captured.InputPath;
-                        try
+                        // ⚠⚠ 2026-09-21：把「用户实际提供的源文件」钉死在**改写之前** —— 供两处使用：
+                        //   ① **元数据恢复的取源**：RAW 的拍摄字段（`DateTimeOriginal` / `CreateDate` /
+                        //      `LensModel` / `ExposureProgram` / `MeteringMode` / `Flash` 等）**只存在于原文件**；
+                        //      中间件 `dngtool -d -T` 只搬 5 项 EXIF ⇒ 以临时件为源会永久丢失（实测 5/5 厂商）。
+                        //   ② **队列显示名**：否则 RAW 输入会显示内部临时文件名 `xxx_raw.tiff`。
+                        //   幂等赋值（只写一次）：同一项可能被多次改写 InputPath。
+                        if (string.IsNullOrEmpty(captured.SourceInputPath))
+                            captured.SourceInputPath = originalInputPath;
+                    try
+                    {
+                        // ── 前置：**元数据剥离需要 exiftool**，缺失时不得静默放行（2026-09-22，管线审查 §3.5）────
+                        // 实测缺陷：exiftool 不可用时选「删除全部元数据」，ffmpeg 侧仍用 `-map_metadata 0`
+                        //   **把源元数据整体复制** ⇒ 产物**原样带出 GPS**，且日志**无任何点名**、任务报成功。
+                        // 处置沿用本文件既有先例（DNG/dngtool 的「**可用性诚实原则**」）：
+                        //   · **显式选了「删除全部」**（用户明确要求剥离）⇒ **点名 + 失败**（不静默降级）；
+                        //   · 仅**个别开关**为真 ⇒ 只**点名警告**、**不失败** —— 因为 `StripExifGps` 的
+                        //     **默认值就是 true**（隐私默认），若也失败则「缺 exiftool」会把**每个**任务都判失败。
+                        // ⚠ 消息一律 **ASCII**：`_probe-cjk-hardcode-scan` 的余量为 0，新增中文行会立刻顶红。
+                        bool stripAllRequested = captured.Options.MetadataMode == Models.MetadataMode.StripAll;
+                        bool stripFlagsOn = captured.Options.StripExifTime || captured.Options.StripExifCamera
+                                         || captured.Options.StripExifAll || captured.Options.StripXmp
+                                         || captured.Options.StripExifGps;
+                        if ((stripAllRequested || stripFlagsOn) && !ExifToolService.IsAvailable)
                         {
-                            captured.Status = "处理中";
-                            captured.StartedAt = DateTimeOffset.UtcNow;
+                            captured.Log += "[meta] exiftool NOT FOUND\n";
+                            captured.Log += "[meta]   requested metadata strip CANNOT be performed"
+                                         + " (ffmpeg would still copy source metadata via -map_metadata 0)\n";
+                            captured.Log += "[meta]   put exiftool under PLAN/exiftool/ , or turn the strip options off\n";
+                            if (stripAllRequested)
+                            {
+                                captured.Log += "[meta]   -> refusing this item (no silent fallback)\n";
+                                captured.ExitCode = -1;
+                                captured.Status = "失败 (exiftool 未找到)";
+                                _onItemUpdated?.Invoke(captured);
+                                return;
+                            }
+                            captured.Log += "[meta]   -> continuing WITHOUT the requested strip (named above)\n";
                             _onItemUpdated?.Invoke(captured);
+                        }
+
+                        captured.Status = "处理中";
+                        captured.StartedAt = DateTimeOffset.UtcNow;
+                        _onItemUpdated?.Invoke(captured);
 
                             // 确保输出目录存在 —— 先将输出路径标准化为绝对路径，避免相对路径在不同进程中导致位置不一致
                             string finalOutputPath;
@@ -675,7 +750,7 @@ namespace FfmpegGui.Services
                                 // ⚠⚠ 2026-09-20：**非 JPEG 目标 + `--jpeg-gain-map` ⇒ 契约拒绝（`exit 91`，同码）**。
                                 //   为什么必须在这里补：BMP/DNG/PPM 这类「**连色彩通路都没有**」的出口，
                                 //   `ColorIntentFactory` 返回 null ⇒ 规划层的 `SupportsGainMap` 闸**根本不运行**
-                                //   （见上方 `:661-663` 的既有注释）⇒ 请求被**静默丢弃**：
+                                //   （见本文件中解释「规划层的 `SupportsGainMap` 闸**根本不运行**」的那条注释）⇒ 请求被**静默丢弃**：
                                 //   L3 实测 20 例 `gainmap-absent`（`-f bmp --jpeg-gain-map true`）产物是**普通 BMP**、
                                 //   日志**无任何点名**、末行仍报「完成 1 项, 失败 0 项」——正是本仓最忌讳的「看起来配置过」。
                                 //   ⚠ 判据带 `!ShouldRoute`：引擎**可走**的非 JPEG（如 `-f png`）仍由规划层拒绝
@@ -708,9 +783,10 @@ namespace FfmpegGui.Services
                                     //   · Proceed             ⇒ 不变。
                                     // 为什么挂在这里：本 else 体是两条入口的**唯一汇合点** ——
                                     //   入口①显式 `--color-engine legacy`（`TryRunColorEngineAsync:774` 早退）；
-                                    //   入口②auto 默认 + 引擎不可走（`:818` 的 block 分支早退）；
-                                    //   另有第三种「计划为直通/保真」（`:869`）⇒ 已经带回了 `engPlan`，白捡一个裁决。
-                                    // 为什么不在 block 分支（`:810-818`）内部：它在算 intent **之前**就 return，
+                                    //   入口②auto 默认 + 引擎不可走（`ColorEngineRouter.BlockReason` 非空那条早退）；
+                                    //   另有第三种「计划为直通/保真」（见本文件中「直通 或 **超广色域保真**」那段）
+//     ⇒ 已经带回了 `engPlan`，白捡一个裁决。
+                                    // 为什么不在 block 分支（`ColorEngineRouter.BlockReason` 非空那条）内部：它在算 intent **之前**就 return，
                                     //   且 explicit-engine 那条是「硬失败 90」（路由前置条件不满足 ≠ 任务级终局，
                                     //   两者语义不同，见 `ColorVerdict.cs` 的 ⚠）；且它覆盖不到入口①。
                                     // ⚠ **不新增任何 Reject 格**：这里只**消费**规划层既有裁决，
@@ -724,8 +800,8 @@ namespace FfmpegGui.Services
                                     var legacyVerdict = legacyPlan?.Verdict;
                                     bool legacyReject = legacyVerdict?.Kind == ColorMapping.VerdictKind.Reject;
                                     // ⚠ **只在"裁决由本消费点算出来"时打印**（`engPlan == null`）。
-                                    //   `engPlan != null` 只有一种来源：`:869` 的「计划为直通/保真」——
-                                    //   那条路**引擎侧已经打过同一份裁决与同一批降级码**（`:834-836`），
+                                    //   `engPlan != null` 只有一种来源：「直通 或 **超广色域保真**」那段——
+                                    //   那条路**引擎侧已经打过同一份裁决与同一批降级码**（见本文件中「色彩后置全套」那段），
                                     //   再打一遍就是同一条损失在日志里出现两次（不同标签，容易被误读成两处损失）。
                                     //   ⇒ 一次裁决只由**它的产出方**打印一次。
                                     //   （`legacyReject` 在 `engPlan != null` 时恒 false：引擎侧 `:837` 已把 Reject 拦下。）
@@ -1010,6 +1086,15 @@ namespace FfmpegGui.Services
                     return (true, 90, null);
                 }
                 Log($"[色彩引擎] 本次不适用引擎（{block.Code}：{block.Text}）⇒ 由传统管线处理（非引擎编码出口的格式属正常归属）\n");
+                // ⚠ 2026-09-27 维护者定案：**HDR→SDR 的色调映射契约以自研管线（引擎）为准**
+                //   （引擎口径：Hable + `white=203nit`，且仅在出口语义本身是 HDR 时发 `intensity_target`）。
+                //   回落到传统管线后用的是 ffmpeg `tonemap=hable` 收满量程、SDR 出口不发 intensity_target
+                //   ⇒ 同一份 HDR 源两条路**码值域稳定差 ~10 dB**（同路跨目标只差 ~30 dB，故这是契约不是色彩错误；
+                //   实测与推理见 `docs/COLOR_MATRIX_FIX_PLAN_2026-09-24.md` 的 #44 收口段末表格，任务 #55）。
+                //   既然定案"以自研为准"，这条差异就**不能静默发生** ⇒ 每次回退都点名。
+                //   文案 ASCII：`_probe-cjk-hardcode-scan` 会把 `.Log +=` 的行算进 UI 面（现余量 12）。
+                Log("[color-engine] NOTE: falling back to the legacy chain, whose HDR->SDR tone-map contract "
+                    + "differs from the in-house engine (which is the standard per maintainer decision 2026-09-27)\n");
                 LogAlternatives(Log, block.Alternatives);
                 return (false, 0, null);
             }
@@ -1251,6 +1336,19 @@ namespace FfmpegGui.Services
                     // S3「仅 CICP」意图：输出不应残留 ICC；若残留属异常，必须可见。
                     if (effStrat == Models.ColorStrategy.BakeCicpOnly && hasIccp)
                         captured.Log += "[png3] ⚠️ 仅CICP 策略下输出仍含 iCCP（应被剥离）\n";
+                    // ── 与 cICP 并存的低优先级块必须剥掉（任务 #31(ii)，2026-09-26 实测）──
+                    // 实测两格产物里 `cICP.transfer=13(sRGB)` 与 `gAMA=45455(γ2.2)` + `sRGB` + `cHRM` 同在
+                    // ⇒ 认 cICP 的读者与只看 gAMA/sRGB 的老读者解出**不同**结果。
+                    // ⚠ 放在 switch **之外**：块可能是 ffmpeg 编码器自己写的（实测 HDR→PNG 默认格没有任何
+                    //   `[png3]` 日志却带着 cICP）⇒ 只在"本服务写了 cICP"的分支里剥，就会漏掉编码器写的那类。
+                    if (PngCicpService.TryStripChunksSupersededByCicp(finalOutputPath, out int stripped))
+                    {
+                        if (stripped > 0)
+                            captured.Log += $"[png3] 已剥离与 cICP 并存、且被其取代的 {stripped} 个色彩块（gAMA/cHRM/sRGB）"
+                                          + "（规范优先级 cICP>iCCP>sRGB>cHRM/gAMA）\n";
+                    }
+                    else
+                        captured.Log += "[png3] ⚠️ 与 cICP 并存的低优先级色彩块剥离失败（产物仍可能自相矛盾，已保留原文件）\n";
                     _onItemUpdated?.Invoke(captured);
                 }
 
@@ -1406,11 +1504,62 @@ namespace FfmpegGui.Services
 
         // ── 编码器后端专用处理方法 ──
 
+        /// <summary>
+        /// 该输出格式是否属于「ffmpeg 侧会**映射**源元数据的 CICP 格式」。
+        /// <para>`FfmpegCommandBuilder` 为保住 `cICP`/`cHRM`/`gAMA` 色彩 chunk，对
+        /// `avif`/`jxl`/`png`/`apng` 一律用 `-map_metadata 0`（而非 `-map_metadata -1`）
+        /// ⇒ 源 EXIF 会被一并带进产物。</para>
+        /// <para>⚠ <b>实测只有 `png`/`apng` 真的泄漏 GPS</b>：`avif` 虽然同样用 `-map_metadata 0`，
+        /// 但产物里查不到 GPS（`avif`/`jxl` 的 EXIF 落地方式不同）；`jpg`/`webp`/`tiff` 用
+        /// `-map_metadata -1`，本就不泄漏。
+        /// ⇒ 这里**只列 `png`/`apng`**，避免给 avif/jxl 白加一次 exiftool 启动（~850ms/项）。
+        /// 若将来 avif/jxl 也开始泄漏，需另立断言并按实测扩列。</para>
+        /// </summary>
+        private static bool IsCicpMetadataMappedFormat(string? format)
+            => format is not null
+               && (format.Equals("png", StringComparison.OrdinalIgnoreCase)
+                   || format.Equals("apng", StringComparison.OrdinalIgnoreCase));
+
         /// <summary>外部工具编码后恢复元数据（优先 exiftool，不可用时回退 ffmpeg）</summary>
         private async Task RestoreMetadataAsync(QueueItem item, string outputPath)
         {
             if (item.Options.MetadataMode != Models.MetadataMode.PreserveAll)
+            {
+                // ⚠⚠ 2026-09-21：**`StripAll` 不等于「已经剥离干净」**。
+                //   ffmpeg 侧对 CICP 格式（`png`/`apng`）走的是 `-map_metadata 0`
+                //   —— 那是为了保住 `cICP`/`cHRM`/`gAMA` 这些**色彩** chunk（见
+                //   `FfmpegCommandBuilder` 的 `isCicpFormat` 分支），但它会**顺带把源 EXIF（含 GPS）
+                //   带进产物**；而 StripAll 原先在这里**直接 return** ⇒ 既不复制、也不清理
+                //   ⇒ **用户的隐私删除被静默绕过**。
+                //   实测（源 jpg 带 GPS，`--strip-metadata`）：jpg / webp / tiff 产物 GPS **均无**，
+                //   **png / apng 却带 GPS** ⇒ 只有这两种格式中招。
+                //   ⇒ 补一次真正的剥离。⚠ 用 `StripDescriptiveMetadataAsync`（内部先做 `-EXIF:all=`
+                //     复位：ffmpeg 写坏的 `eXIf` 块会让**任何** exiftool 写操作直接以退出码 1 失败），
+                //     且它**只删 EXIF/GPS/XMP/IPTC**，`cICP`/`cHRM`/`gAMA` 等色彩 chunk 不受影响。
+                //   ⚠ 不能复用 `RunAsync` + `BuildArguments`：`--strip-metadata` 并不置 `StripExifAll`
+                //     ⇒ 那条路只发 `-gps:all=`，在坏 `eXIf` 上必然失败（实测 GPS 残留）。
+                if (item.Options.MetadataMode == Models.MetadataMode.StripAll
+                    && IsCicpMetadataMappedFormat(item.Options.Format)
+                    && ExifToolService.IsAvailable
+                    && File.Exists(outputPath))
+                {
+                    try
+                    {
+                        item.Log += "[exiftool] 剥离全部元数据（png/apng 的 ffmpeg 侧为保 CICP 而映射了源元数据）...\n";
+                        _onItemUpdated?.Invoke(item);
+                        var stripExit = await ExifToolService.StripDescriptiveMetadataAsync(
+                            outputPath, s => { item.Log += s; _onItemUpdated?.Invoke(item); });
+                        item.Log += stripExit == 0
+                            ? "[exiftool] ✅ 全部元数据已剥离\n"
+                            : $"[exiftool] ⚠️ 剥离全部元数据退出码 {stripExit}\n";
+                    }
+                    catch (Exception ex)
+                    {
+                        item.Log += $"[exiftool] ⚠️ 剥离全部元数据异常: {ex.Message}\n";
+                    }
+                }
                 return;
+            }
 
             var backend = item.Options.EncoderBackend;
 
@@ -1424,10 +1573,18 @@ namespace FfmpegGui.Services
 
             // 编码器后端保护：外部编码器/FFmpeg 已嵌入色彩信息
             // cjpegli 管道模式不嵌入任何色彩标签（无 JFIF/ICC），不应保护
+            // ⚠⚠ 2026-09-22（管线审查 §36.6 的实测结论）：**GainMap 变体是例外** ——
+            //   上面那句对**普通** cjpegli 输出成立，但对 **GainMap 出口不成立**：
+            //   增益图出口由 `GainMapEncoder` **自己写底图 ICC**（对齐 libultrahdr：底图是什么色域就附什么 ICC）。
+            //   若不保护 ⇒ 随元数据带回的**源 ICC 会覆盖底图 ICC** ⇒ **底图错标**。
+            //   实测（HDR 源 + 源附 P3 ICC + `--format jpg --jpeg-gain-map true`）：
+            //     · 默认（引擎/Ffmpeg 后端）：底图 ICC = `75FF19E1…` —— **自己的色域**，正确；
+            //     · `--encoder cjpegli`：底图 ICC = `D6881218…` —— 与**源 P3 ICC 逐字节相同** ⇒ 错标。
             var encoderProtectsColor =
                 backend == EncoderBackend.Cjxl ||
                 backend == EncoderBackend.Jxr ||
-                backend == EncoderBackend.Ffmpeg;
+                backend == EncoderBackend.Ffmpeg ||
+                (backend == EncoderBackend.Cjpegli && item.Options.JpegGainMap);
 
             // 综合判断：用户指定 或 编码器保护 → 安全模式
             var protectColorMetadata = userSpecifiedColor || encoderProtectsColor;
@@ -1474,23 +1631,43 @@ namespace FfmpegGui.Services
                         // 仅当**计划层生效策略**为「携带(CarryIcc)」时才显式回带源 ICC；
                         // 推荐/手动——像素已转换到目标（目标 ICC 由 iccgen/exiftool 生成），回带源 ICC 会失配，故不回带。
                         // ⚠ 用声明值会让 S2 被覆盖（如 GainMap 要求底图映射）后仍回带源 ICC ⇒ 与已映射的像素失配。
-                        if (protectColorMetadata && !userSpecifiedColor
-                            && FfmpegCommandBuilder.EffectiveColorStrategy(item.Options, item.InputPath)
-                               == Models.ColorStrategy.CarryIcc)
+                        bool effCarry = FfmpegCommandBuilder.EffectiveColorStrategy(item.Options, item.InputPath)
+                                        == Models.ColorStrategy.CarryIcc;
+                        // ⚠ 「用户指定了色彩空间」这一条**不能**一概跳过源 ICC 恢复（2026-09-26 实测缺陷）：
+                        //   对**编码器会丢弃 ICC 的容器**（能力表 `EncoderWritesGeneratedIcc=false`，本构建实测只有 webp），
+                        //   这里的跳过 + P7a 后置的 `Action != CarryIcc` 排除**叠加**后，没有任何一方负责嵌入 ⇒
+                        //   产物**零色彩标注**，而查看器把无标注 webp 按 sRGB 解读 ⇒ 广色域像素被洗白。
+                        //   复现：源 PNG 挂 Display P3 ICC + `--color-strategy carry --color-space BT.2020` →
+                        //   webp 产物 96 B、`exiftool -b -icc_profile` 抽出 **0 B**、裁决仍是 `Proceed`（legacy/engine 两条都中）。
+                        //   携带的承诺是"像素零改动"⇒ 唯一能真实描述这些像素的就是**源 ICC**；
+                        //   给没动过的像素挂一张目标空间的 ICC 才是假标签，所以这里补带源 ICC 并点名空间选择为何没落到标签上。
+                        bool containerDropsIcc = !FfmpegGui.Services.ColorMapping.ColorMappingEngine
+                            .CapsFor(item.Options.Format).EncoderWritesGeneratedIcc;
+                        if (protectColorMetadata && effCarry && (!userSpecifiedColor || containerDropsIcc))
                         {
                             var iccExit = await ExifToolService.CopyIccProfileAsync(
                                 item.InputPath, outputPath,
                                 s => { item.Log += s; _onItemUpdated?.Invoke(item); });
-                            if (iccExit == 0)
-                                item.Log += "[exiftool] ICC Profile 已恢复\n";
-                            else
+                            if (iccExit != 0)
+                            {
                                 item.Log += $"[exiftool] ⚠️ ICC Profile 恢复失败（退出码 {iccExit}），目标格式可能不支持 exiftool ICC 写入（如 JXL）。\n" +
                                     $"[exiftool] 建议：勾选「保留 Ultra HDR 增益图」或使用外部 cjxl 编码，以正确保留色彩配置。\n";
+                            }
+                            // ⚠ 每条诊断都要落在**带 `item.Log +=` 的那一行**上：cjk 棘轮（②-c）是**词法**判据，
+                            //   折行会让消息掉进「UI 面」桶（本仓已把它登记为三类误计之一，范式见 HANDOVER §5 第 5 行）。
+                            else if (userSpecifiedColor)
+                                item.Log += "[exiftool] ICC Profile 已恢复（本容器编码器丢弃 ICC ⇒ 携带策略下标签只能取源 ICC；指定的目标空间未落到标签）\n";
+                            else
+                                item.Log += "[exiftool] ICC Profile 已恢复\n";
                         }
                         else if (protectColorMetadata && userSpecifiedColor)
                         {
                             item.Log += "[exiftool] 用户已指定色彩空间，跳过源文件 ICC Profile 恢复（避免覆盖用户选择）\n";
                         }
+                        // ── RAW 补漏：从**源 RAW** 取回中间件丢掉的拍摄字段 ──
+                        // 必须在这里（常规恢复**之后**）：常规恢复的源是中间 TIFF，那些字段根本不在里面。
+                        await RestoreRawCaptureFieldsAsync(item, outputPath);
+
                         // JPEG 输出添加 JFIF 头（提高手机兼容性）
                         if (IsJpegOutput(item))
                             await ExifToolService.EnsureJfifHeaderAsync(outputPath);
@@ -1500,6 +1677,10 @@ namespace FfmpegGui.Services
                     else if (protectColorMetadata)
                     {
                         item.Log += $"[exiftool] 元数据恢复警告: 退出码 {copyExit}，已跳过 ffmpeg 回退（色彩保护模式）\n";
+                        // ⚠ 常规复制失败**不等于**拍摄字段也补不回：补漏是**独立的一次调用**且只写白名单
+                        //   ⇒ 仍然尝试（部分元数据胜过全丢）。实测 PNG 目标曾因 ffmpeg 写坏的 `eXIf`
+                        //   块让常规复制恒失败，若在此直接 return，补漏就永远不生效。
+                        await RestoreRawCaptureFieldsAsync(item, outputPath);
                         return;
                     }
                     else
@@ -1532,6 +1713,53 @@ namespace FfmpegGui.Services
                 return;
             }
             await RestoreMetadataViaFfmpegAsync(item, outputPath);
+        }
+
+        /// <summary>
+        /// RAW 输入专用补漏：从**用户实际提供的源 RAW** 取回中间件（`dngtool -d -T`，实为 dcraw 兼容 TIFF 写出）
+        /// 丢掉的拍摄字段（`DateTimeOriginal` / `CreateDate` / `LensModel` / `ExposureProgram` /
+        /// `MeteringMode` / `Flash` 等）。实测 5/5 厂商复现，见 `docs/RAW_PIPELINE_AUDIT.md §10`。
+        ///
+        /// <para><b>触发条件（三条全满足才动手）</b>：① 有 <see cref="QueueItem.SourceInputPath"/>；
+        /// ② 它与当前 <see cref="QueueItem.InputPath"/> **不同**（确实被中间件替换过 ⇒ 常规恢复的源已不是原文件）；
+        /// ③ 它是 RAW 家族文件。</para>
+        ///
+        /// <para>⚠ <b>不做「把源整个换掉再复制一遍」</b> —— 那会把源 RAW 的 `ColorSpace`（常为 Adobe RGB）、
+        /// `PixelXDimension/YDimension`（常为内嵌预览尺寸）、`Orientation`（像素已被解码器旋正）一并带回，
+        /// 与产物冲突。故只走**白名单**，见 <see cref="ExifToolService.CopyRawCaptureFieldsAsync"/>。</para>
+        ///
+        /// <para>⚠ 补漏失败**不得**影响任务结果：像素与主元数据此时已经正确，只记日志。</para>
+        /// </summary>
+        private async Task RestoreRawCaptureFieldsAsync(QueueItem item, string outputPath)
+        {
+            var src = item.SourceInputPath;
+            if (string.IsNullOrEmpty(src)) return;
+            if (string.Equals(src, item.InputPath, StringComparison.OrdinalIgnoreCase)) return; // 源未被替换 ⇒ 常规恢复已覆盖
+            if (!RawService.IsRawFile(src)) return;
+            if (!File.Exists(src)) return;
+            if (!ExifToolService.IsAvailable)
+            {
+                item.Log += "[exiftool] ⚠️ 未检测到 exiftool ⇒ 无法从源 RAW 补回拍摄字段（拍摄时间 DateTimeOriginal/CreateDate、镜头型号等仍会缺失）\n";
+                return;
+            }
+
+            try
+            {
+                _onItemUpdated?.Invoke(item);
+                var exit = await ExifToolService.CopyRawCaptureFieldsAsync(
+                    src, outputPath, item.Options,
+                    s => { item.Log += s; _onItemUpdated?.Invoke(item); });
+                if (exit == 0)
+                    item.Log += "[exiftool] ✅ 已从源 RAW 补回拍摄字段\n";
+                else if (exit == -2)
+                { /* 已按隐私开关跳过；说明行由被调方打印 */ }
+                else
+                    item.Log += $"[exiftool] ⚠️ 从源 RAW 补回拍摄字段失败（退出码 {exit}）\n";
+            }
+            catch (Exception ex)
+            {
+                item.Log += $"[exiftool] ⚠️ 从源 RAW 补回拍摄字段异常: {ex.Message}\n";
+            }
         }
 
         /// <summary>
@@ -1677,6 +1905,10 @@ namespace FfmpegGui.Services
                 else
                 {
                     item.Log += "[cjxl] 自动光子噪声: 无法读取 ISO（无 exiftool 或无 ISO 元数据），跳过\n";
+                    // 让那句「跳过」名副其实并在此处兜住：cjxl 没有 auto 这个取值（BuildCjxlArguments
+                    // 里的 auto 只是 UI 预览占位），标志不清就会把一条跑不通的参数真的发给编码器。
+                    // 队列侧此前靠 JPEG 分支漏搬该字段侥幸躲过 ⇒ 两条分支传同一份 options 后必须显式清。
+                    item.Options.CjxlAutoPhotonNoise = false;
                 }
                 _onItemUpdated?.Invoke(item);
             }
@@ -1690,6 +1922,12 @@ namespace FfmpegGui.Services
             // 关键：cjxl 对 PNG 等容器输入会忽略 -x icc_pathname（仅 PPM/PAM raw 流生效），
             //       但会自动读取输入 PNG 内嵌的 ICC 块 → 将 ICC 嵌入输入副本即可。
             //       其他输入（TIFF/WebP 等）cjxl 直接编码会失败 → 走 ffmpeg 管道（-x 生效）。
+            // ⚠ 上面"直接编码失败才走管道"的分支动机是**色彩**，但"-x 生效"这句要说清边界（#44 实测，
+            //   取证 `tests/output/t44/cjxl_x_probe2.log` / `noise_floor.log`）：cjxl 的规则是
+            //   「**输入自带色彩元数据（ICC/CICP）时以输入为准、`-x` 被静默忽略**」，与容器还是裸流无关
+            //   （HDR PNG 三种 `-x color_space` 得到同一份字节；同源 PPM 才生效；无 ICC 的 SDR PNG 也生效）。
+            //   且 `-x` **只写声明、不转像素** ⇒ 光靠"换条路 + 传 -x"修不了 #44，只会把"目标被忽略"
+            //   变成"声称 P3、像素仍是原域"。要兑现目标必须在**交给 cjxl 之前**把像素转好。
             string? srcIccPath = null;
             string? iccEmbedTmpCopy = null;   // ICC 嵌入输入副本（临时 PNG，编码后须清理）
             if (!isJpegInput
@@ -1735,41 +1973,125 @@ namespace FfmpegGui.Services
 
             try
             {
+            // ── #44-① 插点 B：直编前那道「要不要转像素」的闸门 ──
+            // 直连 cjxl **做不到**改像素：cjxl 对自带色彩元数据的输入会忽略 `-x`，而 `-x` 本来也**只写声明、
+            // 不转像素**（上方 #44 那段已登记实测）⇒ 只要裁决点要求的出口语义与输入侧声明不同，用户的显式
+            // 目标就会被静默吃掉。此时改道插点 A 的管道路线（ffmpeg 按 dec 转像素 → 裸 PPM/PAM
+            // → cjxl `-x color_space=`，裸流输入下 `-x` 生效）。
+            // ⚠ 判据是**语义差**（见下面 `jxlNeedsRemap` 那段的读数），不是链的数量 —— 原写法
+            //   `dec.PixelChains.Count > 0` 在 jxl 这一族恒假（裁决点被 `isRgbNativeFmt` 挡掉了 tonemap 链），
+            //   与 `LogInjectedScale` 的"读命令行"同口径地，这里要读的是**交付什么**而不是**有没有链**。
+            // ⚠ 三条护栏：
+            //   ① 无链（auto / 直通 / 保真 / JPEG 无损重封装 / 动图）⇒ 下面每一句照旧执行，
+            //      日志文案一字不动（`verify-webp-anim-probe.ps1` 逐字匹配「[cjxl] 直接编码 …」两行）；
+            //   ② 动图不改道：PPM/PAM 管道是**单帧**裸流，改道会把动画静默截成一帧；既有那条
+            //      「回退到 FFmpeg libjxl_anim」分支走主构建器（#43 已修好，能兑现目标），语义不动；
+            //   ③ 出口语义必须**落得进 cjxl 的 color_space 枚举**（只有 sRGB / DisplayP3 / Rec2100PQ /
+            //      Rec2100HLG，见 `ColorSpaceRegistry.MapPrimariesTransferToCjxl`）才改道：本路线**不给
+            //      ICC**（裸流 + `-x` 是唯一声明手段），命名不了的目标（典型 = SDR BT.2020）改了只会
+            //      得到「像素已转 BT.2020、标签仍是 cjxl 对裸流的默认解读」⇒ 比「目标被忽略」更坏
+            //      （§#44「半个修法比现状更坏」那条告警），故维持现状。
+            // ⚠ JPEG 输入 + 显式目标：改道后**不再**有 `-d 0 --lossless_jpeg=1` 的 DCT 无损重封装 —— 这是
+            //   本格**唯一**能兑现目标的方式（要转像素就必须先解码重编），下面那行 `[cjxl] target needs
+            //   pixel remap …` 点名了改道原因，不静默。
+            var jxlDecision = FfmpegCommandBuilder.DecideOutputColor(item.Options, item.InputPath);
+            // ── #44 观测面（本次新增，缺陷一的诊断入口）──
+            // 本旁路原先**零读数**：实测 `tests/output/post44/jxl_legacy_*/o.txt` 里 `grep -c 色彩裁决` = 0
+            // ⇒ 闸门为何从不触发（插点 B 的判据 `PixelChains.Count > 0`）无从判断，只能猜。
+            // ⚠ 主消费点（`:810` 那句 `[色彩裁决] 裁决=…`）在 jxl 直编路线上**到不了**，所以这一行打的是
+            //   **本旁路自己**那一次 `DecideOutputColor` 的结果 —— 复用既有 `Short()` 摘要，不另立第二份字段口径。
+            // 文案 ASCII + `[` 前缀 + `item.Log +=` sink ⇒ 落进 `_probe-cjk-hardcode-scan` 不参与判据的
+            // CsTag/CsDiag 桶（UI 面余量只有 10，不动它）。
+            var jxlObsVerdict = FfmpegCommandBuilder.ResolveLegacyVerdictPlan(item.Options, item.InputPath)?.Verdict;
+            item.Log += $"[色彩裁决] 通路=cjxl-legacy {jxlDecision.Short()}"
+                      + $" reject={(jxlObsVerdict == null ? "null" : jxlObsVerdict.Kind.ToString())}\n";
+            _onItemUpdated?.Invoke(item);
+            // ── #44 缺陷一的新判据（2026-09-27，由上面那行观测读数定出来的，不是先猜再验）──
+            // 实测读数（`tests/output/post44obs/jxl_legacy_*/o.txt`，五格 `链数` 全为 0）：
+            //   auto  出口=bt2020/smpte2084 链数=0 · p3 出口=smpte432/iec61966-2-1 链数=0 · srgb 出口=bt709/iec61966-2-1 链数=0
+            //   bt2020 出口=bt2020/bt709 链数=0 · p3pq 出口=bt2020/smpte2084 链数=0
+            // ⇒ 闸门 `PixelChains.Count > 0` **从不触发**的因，是裁决点自己给 jxl 算出了**空链**
+            //   （`isRgbNativeFmt` 含 jxl，而 tonemap 链的许可支只补了 png/tiff ⇒ HDR→SDR 既不 tonemap
+            //    也不 zscale），而出口语义**已经**被换成目标令牌 ⇒ 「链为空但目标已变」这一格原判据失明。
+            // ⇒ 判据改成读**语义**：用户显式指定的目标 ≠ 直编路线将要交付的语义（= 输入侧声明，因为
+            //   cjxl 直编永不改像素）。链非空仍是充分条件（保 png/tiff 那类既有改道），两者取或。
+            var jxlNeedsRemap = jxlDecision.PixelChains.Count > 0
+                                || FfmpegCommandBuilder.DirectEncodeTargetDiffers(jxlDecision);
+            var jxlPipeSpace = (!IsAnimated(item) && jxlNeedsRemap)
+                ? ColorEncodingHelper.MapPrimariesTransfer(jxlDecision.OutPrimaries, jxlDecision.OutTrc)
+                : null;
+            // ── 出口语义落不进 cjxl 的 color_space 枚举时，改走 **ICC 描述**（#44 的最后一格）──
+            // 实测（`tests/output/t44/icc_pathname_probe.ps1`）：cjxl 在**裸 PPM/PAM 输入**上
+            //   `-x icc_pathname=` 生效 —— 无 flag `42139 B/92278FBF…`（jxlinfo `sRGB primaries`）
+            //   vs 带 ICC `42374 B/5FFED91E…`（jxlinfo `584-byte ICC profile, CMM type "lcms"`）；
+            //   而 `-x color_space=Rec2020` 被 cjxl 直接拒收（`exit=1`，无产物）⇒ SDR BT.2020 只能这么落。
+            // ⚠ 这与"exiftool **后置**写 JXL ICC 无效"（`verify-color-caps.ps1:52` 钉的那条，仍然成立）
+            //   是**两层不同的事**：那是编完之后往容器补，这是编码时由 cjxl 自己嵌。别混着一句带过。
+            string? jxlPipeIcc = null;
+            if (jxlPipeSpace == null && jxlNeedsRemap && !IsAnimated(item)
+                && !string.IsNullOrWhiteSpace(jxlDecision.OutPrimaries)
+                && !string.IsNullOrWhiteSpace(jxlDecision.OutTrc))
+            {
+                jxlPipeIcc = IccProfileService.GetOrGenerateStandardIcc(item.InputPath,
+                    jxlDecision.OutPrimaries!, jxlDecision.OutTrc!,
+                    jxlDecision.MatrixForOutput ?? "bt709",
+                    s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ct);
+            }
+            if (jxlPipeSpace == null && jxlPipeIcc == null && jxlNeedsRemap && !IsAnimated(item))
+            {
+                // 既不能命名、又生成不出 ICC ⇒ 宁可维持现状并在此**点名**（本仓价值序：静默 < 响亮但看不懂
+                //   < 响亮且点名），也绝不"改道后只改标签"（§#44「半个修法比现状更坏」）。
+                // 文案 ASCII：`_probe-cjk-hardcode-scan` 的 UI 面余量只有 10。
+                item.Log += $"[cjxl] WARNING: target {jxlDecision.OutPrimaries ?? "unknown"}/{jxlDecision.OutTrc ?? "unknown"}"
+                          + $" has no cjxl color_space enum and this route cannot carry an ICC"
+                          + $" => direct encode kept, pixels stay {jxlDecision.DeclPrimaries ?? "unknown"}/{jxlDecision.DeclTrc ?? "unknown"}"
+                          + " (target NOT applied); use --color-engine engine or a CICP-nameable target\n";
+                _onItemUpdated?.Invoke(item);
+            }
+            if (jxlPipeSpace != null || jxlPipeIcc != null)
+            {
+                // 文案 ASCII：`_probe-cjk-hardcode-scan` 的 UI 面余量只有 10
+                item.Log += $"[cjxl] target needs pixel remap ({jxlDecision.PixelChains.Count} chain) "
+                          + $"=> skip direct encode, use ffmpeg pipe + cjxl "
+                          + (jxlPipeSpace != null ? $"-x color_space={jxlPipeSpace}\n"
+                                                  : $"-x icc_pathname=<generated {jxlDecision.OutPrimaries}/{jxlDecision.OutTrc}>\n");
+                _onItemUpdated?.Invoke(item);
+                var pixelPipe = await PipeFfmpegToCjxlAsync(item, outputPath, ct, jxlDecision, jxlPipeIcc);
+                item.ExitCode = pixelPipe.exitCode;
+                item.Status = pixelPipe.status;
+                if (pixelPipe.exitCode == 0)
+                    await RestoreMetadataAsync(item, outputPath);
+                return;   // finally 照旧执行（清理提取的临时 ICC 与 ICC 输入副本）
+            }
+
             // 第一步：直接尝试 cjxl
             item.Command = "cjxl " + CjxlService.BuildCjxlArguments(item.InputPath, outputPath, item.Options, default, srcIccPath);
             var inputExtForCjxl = Path.GetExtension(item.InputPath).ToLowerInvariant();
-            item.Log += $"[cjxl] 直接编码 (输入: {inputExtForCjxl}, 目标: jxl, effort={item.Options.JxlEffort ?? 5}, threads={item.Options.Threads})\n";
+            // effort 的缺省值与 CjxlService.BuildCjxlArguments 同一口径（未设置时 cjxl 默认 7）：
+            // 旧写法此处写 5，而它上一行生成的 item.Command 已经是 7 ⇒ 日志与命令两个数不一致。
+            item.Log += $"[cjxl] 直接编码 (输入: {inputExtForCjxl}, 目标: jxl, effort={item.Options.JxlEffort ?? 7}, threads={item.Options.Threads})\n";
             _onItemUpdated?.Invoke(item);
-            int exitCode;
+            // A-1（2026-09-26）：两条分支传同一份 options（item.Options）—— 此前 JPEG 分支另起一份逐字段
+            // 搬运清单，漏掉 Lossless 与色彩字段 ⇒ 用户勾的无损被吞成有损距离，而它上方那行 item.Command
+            // 却是用完整 opts 生成的 ⇒ 详情窗显示的命令与实际执行的并非同一条。effort 的缺省值不在此处补，
+            // 由 CjxlService.BuildCjxlArguments 唯一负责；JPEG 输入时 srcIccPath 恒为 null
+            // （上面那段 ICC 保留只在非 JPEG 分支里赋值）⇒ 合并调用不改变 ICC 语义。
             if (isJpegInput)
             {
                 item.Log += item.Options.JxlLosslessJpeg
                     ? "[cjxl] 检测到 JPEG 输入，启用无损重封装模式（-d 0 --lossless_jpeg=1，不解码 DCT 系数）\n"
                     : "[cjxl] 检测到 JPEG 输入，关闭无损重封装 → 解码后按质量参数重新编码\n";
-                var jpegOpts = new Models.FfmpegOptions
-                {
-                    Quality = item.Options.Quality,
-                    JxlEffort = item.Options.JxlEffort ?? 5,
-                    CjxlProgressive = item.Options.CjxlProgressive,
-                    CjxlPhotonNoiseIso = item.Options.CjxlPhotonNoiseIso,
-                    JxlLosslessJpeg = item.Options.JxlLosslessJpeg,
-                    Threads = item.Options.Threads
-                };
-                exitCode = await CjxlService.RunWithOptionsAsync(
-                    item.InputPath, outputPath, jpegOpts,
-                    s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ct: ct);
             }
-            else
-            {
-                exitCode = await CjxlService.RunWithOptionsAsync(
-                    item.InputPath, outputPath, item.Options,
-                    s => { item.Log += s; _onItemUpdated?.Invoke(item); }, srcIccPath, ct: ct);
-            }
+            var exitCode = await CjxlService.RunWithOptionsAsync(
+                item.InputPath, outputPath, item.Options,
+                s => { item.Log += s; _onItemUpdated?.Invoke(item); }, srcIccPath, ct: ct);
 
             if (exitCode == 0)
             {
                 item.ExitCode = 0;
-                item.Status = isJpegInput ? "已完成 (cjxl 无损重封装)" : "已完成 (cjxl)";
+                // A-2（2026-09-26）：状态按是否真走 jbrd 判定，与上面那句按 JxlLosslessJpeg 分支的日志同口径；
+                // 旧写法只看输入是不是 JPEG ⇒ 关闭无损重封装时也写无损重封装，自相矛盾。
+                item.Status = isJpegInput && item.Options.JxlLosslessJpeg ? "已完成 (cjxl 无损重封装)" : "已完成 (cjxl)";
                 await RestoreMetadataAsync(item, outputPath);
                 return;
             }
@@ -2040,6 +2362,13 @@ namespace FfmpegGui.Services
 
                 string intermediatePath;
                 bool isHdr;
+                // #44-① 插点 C：第一步是否**真的按裁决点转了像素**，以及转到的目标 ICC 路径/标签。
+                // JxrEncApp 写不了 ICC（它只吃 BMP/TIFF 的像素）⇒ 转了像素就必须由 exiftool 在编码成功后
+                // 把目标 ICC 补进产物（实测 exiftool 对 JXR 可写、逐字节可读回，见 RawColorPipeline 的
+                // JXR 出口注释）；否则得到「像素已是目标域、文件没有任何色彩描述」的半件修法，比不转更坏。
+                bool jxrPixelsRemapped = false;
+                string? jxrTargetIcc = null;
+                string jxrTargetIccLabel = "";
 
                 // ── 常规输入：ffmpeg 解码 → BMP/TIFF ──
                 {
@@ -2054,35 +2383,60 @@ namespace FfmpegGui.Services
                     item.Log += $"[jxr] Step 1: ffmpeg 解码为 {intermediateExt.ToUpper()}（{pixFmt}）...\n";
                     _onItemUpdated?.Invoke(item);
 
-                    var colorArgs = BuildJxrColorArgs(item.Options);
+                    // ── #44-① 插点 C：两步法第一步与色彩裁决点**同源** ──
+                    // 旧写法在此**第三遍**自算色彩判定（`BuildJxrColorArgs`）：把**目标** tokens 拼到 `-i`
+                    // 之前 ⇒ 只是把"源的解释"改成目标、像素一步不转（`-vf` 那段守卫自证恒为 null）
+                    // ⇒ 用户的显式目标被静默吃掉（#44 的 jxr 格）。现：
+                    //   输入声明 = dec.Decl*（如实描述源；Ultra HDR 解码输入 bt709/linear 亦由同一处给出，
+                    //   与旧 `BuildJxrColorArgs` 第一条分支逐字同值）；像素 = dec.PixelChains（与主构建器、
+                    //   cjxl 管道路线**同一份链**）。矩阵声明走白名单 `ToFfmpegInputMatrixName`（`gbr`→`rgb`、
+                    //   不可用则不拼），与 `BuildArguments` 同一份口径。
+                    var jxrDecision = FfmpegCommandBuilder.DecideOutputColor(item.Options, item.InputPath);
+                    var colorArgs = "";
+                    if (!string.IsNullOrWhiteSpace(jxrDecision.DeclPrimaries))
+                        colorArgs += $"-color_primaries {jxrDecision.DeclPrimaries} ";
+                    if (!string.IsNullOrWhiteSpace(jxrDecision.DeclTrc))
+                        colorArgs += $"-color_trc {jxrDecision.DeclTrc} ";
+                    var jxrDeclMatrix = ColorSpaceRegistry.ToFfmpegInputMatrixName(jxrDecision.DeclMatrix);
+                    if (jxrDeclMatrix != null)
+                        colorArgs += $"-colorspace {jxrDeclMatrix} ";
                     var tiffExtra = isHdr ? " -compression_algo raw -pred none" : "";
 
-                    // 无标签 >8bit：仅 RAW 来源才做 Rec.2020→sRGB 的 HDR 猜测(P9)；
-                    // 其余无标签 16-bit 输入保守按 sRGB（不猜测/不转换），避免误判。
-                    // ⚠ 2026-09-18 更正：此处原注释为「16-bit 输入默认转换为 sRGB（JxrEncApp 固定 sRGB 输出）」，
-                    //   它描述的是**已被推翻的旧策略**。对**无任何色彩标签**的 16-bit 输入硬按 Rec.2020 解读
-                    //   会**静默改像素**且用户看不出：实测 `src_16bit.png`（rgb48be，primaries/transfer 均 unknown）
-                    //   → `--format jxr --color-engine legacy` ⇒ 命令行含 `zscale=primariesin=bt2020`、产物 147707B；
-                    //   同输入同目标走引擎**不做该转换** ⇒ 152166B，像素不同。
-                    //   本处口径与下方 cjxl/cjpegli 管道段（「无 ICC：仅 RAW 来源输入才做 Rec.2020→sRGB 的 HDR 猜测(P9)」）
-                    //   保持一致 —— 同一判据在同一个文件里**不得有两个方向**。
-                    string? zscaleFilter = null;
-                    if (isHdr && string.IsNullOrWhiteSpace(colorArgs))
+                    // 无标签 >8bit 一律**不猜**：旧口径「仅 RAW 来源才做 Rec.2020→sRGB 的 HDR 猜测(P9)」此前
+                    // 已在 2026-09-18 被实测证伪为不可达（RAW 在上游被 dngtool 预解码成 `*_raw.tiff` 并注入
+                    // bt709/linear 声明），那段自证恒为 null 的死守卫随本次同源改造一并删除 —— 判据回到唯一
+                    // 一份：改不改像素只由裁决点的 `PixelChains` 说，本处不再留第二套方向。
+                    var filterArg = "";
+                    if (jxrDecision.PixelChains.Count > 0)
                     {
-                        // format=rgb48le 前缀: 规避 libzimg 对 4:2:0 输入的尺寸整除要求（奇数尺寸 1027）
-                        if (RawService.IsRawFile(item.InputPath))
-                            zscaleFilter = "format=rgb48le,zscale=primariesin=bt2020:primaries=bt709:transferin=bt709:transfer=iec61966-2-1,";
+                        // 逗号串照主构建器的 `-vf` 形态；链尾再收一口 `format={pixFmt}`（与被删除的旧守卫同形），
+                        // 保证中转 BMP/TIFF 拿到的正是本分支要写的像素格式。
+                        filterArg = $"-vf \"{string.Join(",", jxrDecision.PixelChains)},format={pixFmt}\" ";
+                        jxrPixelsRemapped = true;
                     }
-                    // ⚠ 实测（2026-09-18）：加守卫后本分支**不可达**，`zscaleFilter` 恒为 null —— 两个**独立**原因：
-                    //   ① RAW 输入在更上游已被 dngtool 预解码成 `*_raw.tiff` 并改写 `captured.InputPath`
-                    //      ⇒ 走到这里 `RawService.IsRawFile(item.InputPath)` 恒为 false；
-                    //   ② 那次预处理同时把 `ColorPrimaries/ColorTrc/UseAdvancedColorParameters` 置为
-                    //      bt709/linear/true ⇒ `colorArgs` **非空** ⇒ 外层 `isHdr && …WhiteSpace(colorArgs)` 根本进不来。
-                    //   两者都实测过：`raw_lossy.dng --format jxr --color-engine legacy` 的 `[cmd] ffmpeg`
-                    //   是 `-color_primaries bt709 -color_trc linear -i "…raw_lossy_raw.tiff" …`，无 `-vf`。
-                    //   ⇒ 保留守卫是**表达意图**（若将来 RAW 不再预解码，此处也不该按 Rec.2020 硬猜），
-                    //     但它**不是**一条今天还活着的行为约束 —— 别拿它当"RAW 会转换"的证据。
-                    var filterArg = zscaleFilter != null ? $"-vf \"{zscaleFilter}format={pixFmt}\" " : "";
+                    // ⚠ ICC 的生成**不能**挂在"像素转了没有"这个条件里（2026-09-27 由 #49 的 LEGACY 层实测抓出）：
+                    //   请求目标 == 源色域时 `PixelChains` 恒为 0（不转是合法的），旧写法于是既不生成也不嵌入任何
+                    //   描述；而 `RestoreMetadataAsync` 那侧又因「用户已指定色彩空间」跳过回带源 ICC
+                    //   ⇒ 产物**零标注**，JXR 再无 CICP 可退 ⇒ 查看器按 sRGB 解读 P3/BT.2020 数值（洗白）。
+                    //   ICC 描述的是**存进文件的这组值**，与"这一路有没有真的动过像素"无关 ⇒ 只要裁决点给得出
+                    //   成对的出口 token 就该嵌。
+                    if (!string.IsNullOrWhiteSpace(jxrDecision.OutPrimaries)
+                        && !string.IsNullOrWhiteSpace(jxrDecision.OutTrc))
+                    {
+                        jxrTargetIccLabel = $"{jxrDecision.OutPrimaries}/{jxrDecision.OutTrc}";
+                        jxrTargetIcc = IccProfileService.GetOrGenerateStandardIcc(item.InputPath,
+                            jxrDecision.OutPrimaries!, jxrDecision.OutTrc!,
+                            jxrDecision.MatrixForOutput ?? "bt709",
+                            s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ct);
+                    }
+                    else if (jxrPixelsRemapped)
+                        jxrTargetIccLabel = "unnamed-by-decision";   // 出口语义拿不到成对 token ⇒ 生成不了标准 ICC
+                    // P7a-3 同源登记：算链用的就是 item.Options（未克隆）⇒ 登记同一实例 + 本次真源。
+                    // 登记后链尾不再打「裁决点未参与」；但**补 ICC 这一步不能只靠链尾**：共享后置的判据是
+                    // `dec.NeedsPostEmbedIcc`，而它要求「该容器的编码器会丢弃 iccgen 的 ICC」
+                    // （`FfmpegCommandBuilder.EncoderWritesFilterIcc` 只登记 webp 会丢，jxr 不在其列）⇒ 恒 false，
+                    // 故目标 ICC 由上面的 `jxrTargetIcc` + 编码成功后的 exiftool 那一步负责。
+                    NoteColorDecisionSource(item, item.Options, item.InputPath);
                     // ⚠ 2026-09-18（#13 站点 A）：中转目标是 BMP/TIFF，走 ffmpeg `image2` 复用器 —— 它按**固定文件名**
                     //   写盘，**不能**承载多帧（多帧输入时 ffmpeg 报 `Cannot write more than one file with the same
                     //   name… Are you missing the -update option or a sequence pattern?` 并以 -22 退出）。
@@ -2134,6 +2488,27 @@ namespace FfmpegGui.Services
                         await WriteJxrHdrMetadataAsync(item, outputPath, ct);
                     }
                     await RestoreMetadataAsync(item, outputPath);
+                    // ── #44-① 插点 C 的后半：有色彩描述要落地就得落地（**不再只看"转没转像素"**，同上注）──
+                    // 必须在元数据恢复**之后**（否则回带的源 ICC 会与转换后的像素失配，与主分支后置同序）。
+                    // 文案 ASCII：`_probe-cjk-hardcode-scan` 的 UI 面余量只有 10。
+                    if (jxrPixelsRemapped || !string.IsNullOrWhiteSpace(jxrTargetIcc))
+                    {
+                        if (!string.IsNullOrWhiteSpace(jxrTargetIcc) && File.Exists(jxrTargetIcc))
+                        {
+                            var embExit = await ExifToolService.EmbedIccProfileFromFileAsync(
+                                jxrTargetIcc, outputPath,
+                                s => { item.Log += s; _onItemUpdated?.Invoke(item); });
+                            item.Log += embExit == 0
+                                ? $"[jxr] target ICC embedded via exiftool ({jxrTargetIccLabel})"
+                                  + " - JxrEncApp itself cannot write ICC\n"
+                                : $"[jxr] WARNING: target ICC embed failed (exit {embExit})"
+                                  + $" ({jxrTargetIccLabel}) - the file has no color description\n";
+                        }
+                        else
+                            item.Log += $"[jxr] WARNING: target {jxrTargetIccLabel} has no standard ICC"
+                                      + " - output carries no color description (explicit, not silent)\n";
+                        _onItemUpdated?.Invoke(item);
+                    }
                 }
             }
             catch (OperationCanceledException)
@@ -2326,38 +2701,11 @@ namespace FfmpegGui.Services
                 await RestoreMetadataAsync(item, outputPath);
         }
 
-        /// <summary>构建 JXR ffmpeg 解码的色彩空间参数</summary>
-        private static string BuildJxrColorArgs(FfmpegOptions options)
-        {
-            var sb = new StringBuilder();
-
-            // Ultra HDR 解码输出：中间为线性 sRGB PFM（1.0=SDR白点），声明 bt709+linear（不再误标 bt2020/PQ）
-            if (!string.IsNullOrWhiteSpace(options.DecodedUltraHdrColorSpace))
-            {
-                sb.Append("-color_primaries bt709 -color_trc linear -colorspace bt709 ");
-                return sb.ToString();
-            }
-
-            var colorSpace = options.ColorSpace;
-            if (!string.IsNullOrWhiteSpace(colorSpace) && !colorSpace.Equals("auto", StringComparison.OrdinalIgnoreCase))
-            {
-                // 将色彩空间映射为 primaries/trc/colorspace（委托 ColorSpaceRegistry，简化路径亦完整覆盖广色域，P4）
-                var (csPrim, csTrc, csMat) = ColorSpaceRegistry.FfmpegTokens(colorSpace);
-                if (csPrim != null)
-                    sb.Append($"-color_primaries {csPrim} -color_trc {csTrc} -colorspace {csMat} ");
-            }
-            // 高级色彩参数（覆盖上面的默认映射）
-            if (options.UseAdvancedColorParameters)
-            {
-                if (!string.IsNullOrWhiteSpace(options.ColorPrimaries))
-                    sb.Append($"-color_primaries {options.ColorPrimaries} ");
-                if (!string.IsNullOrWhiteSpace(options.ColorTrc))
-                    sb.Append($"-color_trc {options.ColorTrc} ");
-                if (!string.IsNullOrWhiteSpace(options.ColorMatrix))
-                    sb.Append(ColorSpaceRegistry.FfmpegColorSpaceArg(options.ColorMatrix));
-            }
-            return sb.ToString();
-        }
+        // #44-① 插点 C：原 `BuildJxrColorArgs`（JXR 第一步自算的那套色彩判定）**已退役** ——
+        // 它是本项目反复消灭的「第三套自算色彩判定」形状：把目标 tokens 拼到 `-i` 前只改「源的解释」、
+        // 像素一步不转。其职责现由单一裁决点承担（`DecideOutputColor` 的 `Decl*` + `PixelChains`），
+        // 上面 `ProcessJxrAsync` 第一步即按它拼命令行；Ultra HDR 解码输入的 bt709/linear 声明
+        // 同样由裁决点给出（`BuildColorArgsSplit` 第一条分支），值与退役前逐字相同。
 
         /// <summary>检测 JPEG 是否为 Ultra HDR (含增益图)：纯托管容器直读优先，exiftool(MPImage2) 兜底</summary>
         private static async Task<bool> IsUltraHdrJpegAsync(string path, Action<string>? log = null, CancellationToken ct = default)
@@ -2567,7 +2915,18 @@ namespace FfmpegGui.Services
         /// 命令等价于: ffmpeg -i input -compression_level 0 -f image2pipe -vcodec png - | cjxl - output.jxl -d X -e Y
         /// 元数据通过 exiftool 在编码后恢复。
         /// </summary>
-        private async Task<(int exitCode, string status)> PipeFfmpegToCjxlAsync(QueueItem item, string outputPath, CancellationToken ct)
+        /// <param name="pixelDecision">
+        /// #44-① 插点 A：插点 B 判「本次要转像素」时把**那一份**裁决产物传进来（同源，不重算第二次）。
+        /// null ⇒ 按本次输入现算一次。两种结局：
+        ///  • 链为空，或出口语义落不进 cjxl 的 <c>color_space</c> 枚举 ⇒ 命令行拼法与改动前**一致**
+        ///    （仍由 <see cref="BuildPipeColorArgs"/> 给输入声明 / ICC 携带取舍 / 最长边缩放）；
+        ///  • 链非空**且**出口可命名 ⇒ 输入声明取 <c>dec.Decl*</c>、像素取 <c>-vf dec.PixelChains</c>、
+        ///    出口取 <c>-x color_space=</c>（裸 PPM/PAM 流不携带色彩元数据 ⇒ <c>-x</c> 生效，#44 实测），
+        ///    并按 P7a-3 **同源登记**，链尾据此复算同一份裁决。
+        /// </param>
+        private async Task<(int exitCode, string status)> PipeFfmpegToCjxlAsync(QueueItem item, string outputPath,
+            CancellationToken ct, FfmpegCommandBuilder.OutputColorDecision? pixelDecision = null,
+            string? pixelIccPath = null)
         {
             var cjxlPath = CjxlService.DetectedPath;
             if (string.IsNullOrEmpty(cjxlPath))
@@ -2577,28 +2936,100 @@ namespace FfmpegGui.Services
             }
 
             var ffmpegPath = AppSettingsService.Current.FfmpegPath;
+            void PipeLog(string s) { item.Log += s; _onItemUpdated?.Invoke(item); }
 
-            // auto 模式：探测输入 HDR 属性，传递给 cjxl 色彩参数
-            var hdrMeta = default(FfmpegCommandBuilder.ColorMetadata);
-            if (string.IsNullOrWhiteSpace(item.Options.ColorSpace)
-                || item.Options.ColorSpace.Equals("auto", StringComparison.OrdinalIgnoreCase))
+            // 探测一次即可（`GetCachedProbe` 带缓存）：它同时供两处用 ——
+            //  ① auto 格把它交给 cjxl 的色彩推导（与改动前同一份 hdrMeta）；
+            //  ② ppm/pam 的选择要看 alpha，而**改动前真正执行的那份 argv**（`PipeFfmpegToExternalEncoderAsync`
+            //     内部自己拼的）恒按探测值选，展示用的那一份却用 hdrMeta（显式目标下恒 default=false ⇒ 只能显示
+            //     ppm）⇒ 两处各拼一遍、显示与执行可以不一致。本次收敛成一次拼装（见下方 ffArgs）。
+            var inMeta = FfmpegCommandBuilder.ProbeInputColorMetadata(item.InputPath, PipeLog, ct);
+            var autoColorSpace = string.IsNullOrWhiteSpace(item.Options.ColorSpace)
+                || item.Options.ColorSpace.Equals("auto", StringComparison.OrdinalIgnoreCase);
+            var hdrMeta = autoColorSpace ? inMeta : default(FfmpegCommandBuilder.ColorMetadata);
+
+            var dec = pixelDecision ?? FfmpegCommandBuilder.DecideOutputColor(item.Options, item.InputPath);
+            // 改道判据与插点 B 同一条：链非空（要转像素）且出口语义落得进 cjxl 的 color_space 枚举。
+            var cjxlSpace = dec.PixelChains.Count > 0
+                ? ColorEncodingHelper.MapPrimariesTransfer(dec.OutPrimaries, dec.OutTrc)
+                : null;
+
+            string ffArgs;
+            string cjxlArgs;
+            string? pipeIccPath = null;
+
+            if (cjxlSpace != null || pixelIccPath != null)
             {
-                hdrMeta = FfmpegCommandBuilder.ProbeInputColorMetadata(item.InputPath,
-                    s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ct);
+                // ── 输入侧：如实声明**源**用什么色彩语义（dec.Decl*），不是目标 ──
+                // 旧写法（`BuildPipeColorArgs` 的显式目标分支）把**目标** tokens 拼到 `-i` 前 ⇒ 只把源的
+                // 解释改掉、像素一步不转 ⇒ 目标被静默吃掉（#44 的缺陷形状）。矩阵声明走白名单
+                // `ToFfmpegInputMatrixName`（与 `BuildArguments` 同一份，不可用则跳过、绝不原样拼）。
+                var inArgs = "";
+                if (!string.IsNullOrWhiteSpace(dec.DeclPrimaries))
+                    inArgs += $"-color_primaries {dec.DeclPrimaries} ";
+                if (!string.IsNullOrWhiteSpace(dec.DeclTrc))
+                    inArgs += $"-color_trc {dec.DeclTrc} ";
+                var declMatrix = ColorSpaceRegistry.ToFfmpegInputMatrixName(dec.DeclMatrix);
+                if (declMatrix != null)
+                    inArgs += $"-colorspace {declMatrix} ";
+
+                // ── 像素侧：链内容 = 裁决点的 PixelChains（逗号串，与 BuildArguments 的 AppendVideoFilter 同形）──
+                // `-pix_fmt` 在前、`-vf` 在后：照本管道路线既有写法（`BuildPipeColorArgs` 亦此序），不自己发明。
+                var outArgs = inMeta.bitDepth > 8
+                    ? $"-pix_fmt {(inMeta.hasAlpha ? "rgba64le" : "rgb48le")} "
+                    : "";
+                var chain = $"\"{string.Join(",", dec.PixelChains)}\"";
+                // 最长边限制插在**链首色彩变换之前**（R1 顺序判据与 `BuildPipeColorArgs` 共用同一份实现）
+                var scaleFilter = FfmpegCommandBuilder.BuildMaxDimensionScaleFilter(item.Options, item.InputPath);
+                if (!string.IsNullOrEmpty(scaleFilter))
+                    chain = FfmpegCommandBuilder.InsertScaleFilterAtChainHead(chain, scaleFilter);
+                outArgs += $"-vf {chain} ";
+
+                var pipeVcodec = inMeta.hasAlpha ? "pam" : "ppm";
+                ffArgs = $"-y {inArgs}-i \"{item.InputPath}\" {outArgs}-compression_level 0 "
+                       + $"-f image2pipe -c:v {pipeVcodec} -";
+                LogInjectedScale(item, ffArgs);   // 扩展 ③：缩了要让用户看得见
+
+                // ── 出口侧：裸流不携带任何色彩元数据 ⇒ `-x color_space=` 生效；本路线**不传 icc_pathname** ──
+                // ⚠ `--intensity_target` 与 color_space **成对**传（`BuildCjxlArguments` 的文档要求：只传一个
+                //   会让"色彩空间来自裁决、峰值来自选项"混源）。取值顺序照本仓既有那三处，不新增判据：
+                //   ① 只在**出口语义本身是 HDR**(PQ/HLG) 时才发（SDR 目标发它 = 假亮度声明；改动前 SDR 格
+                //      走的 `MapToIntensityTarget` 两个重载对 SDR 同样返回 0）；
+                //   ② 显式目标 ⇒ 用 `MapToIntensityTarget(options)`（与改动前显式目标格的 fallback 同源）；
+                //   ③ auto ⇒ 用源峰值 `MapToIntensityTarget(hdrMeta)`（与改动前 ICC 分支里那句同值）；
+                //   ④ 仍拿不到 ⇒ 1000，与引擎出口 `RawColorPipeline` 那句 HDR 兜底同数。
+                var pipeNits = 0;
+                if (dec.OutTrc is "smpte2084" or "arib-std-b67")
+                {
+                    pipeNits = ColorEncodingHelper.MapToIntensityTarget(item.Options);
+                    if (pipeNits <= 0) pipeNits = ColorEncodingHelper.MapToIntensityTarget(hdrMeta);
+                    if (pipeNits <= 0) pipeNits = 1000;
+                }
+                // 出口描述二选一：能命名 ⇒ `-x color_space=`；不能命名但生成了 ICC ⇒ `-x icc_pathname=`
+                //   （**裸流上实测生效**，见插点 B 那段读数）。两者都拿不到时由调用方维持直编并点名。
+                cjxlArgs = CjxlService.BuildCjxlArguments("-", outputPath, item.Options, hdrMeta, pixelIccPath,
+                    cjxlSpace, pipeNits);
+                // 同源登记（P7a-3）：**算链用的就是 item.Options**（未克隆、未改），故登记同一实例；
+                // 探测输入 = 喂进管道的那份真源（此处可能与 item.Options 的 ICC 副本同为副本路径，见插点 B）。
+                NoteColorDecisionSource(item, item.Options, item.InputPath);
+            }
+            else
+            {
+                (var pipeInputColor, var pipeOutputColor, pipeIccPath) =
+                    BuildPipeColorArgs(item.Options, item.InputPath, PipeLog, ct);
+                var pipeVcodec = inMeta.hasAlpha ? "pam" : "ppm";
+                ffArgs = $"-y {pipeInputColor}-i \"{item.InputPath}\" {pipeOutputColor}-compression_level 0 "
+                       + $"-f image2pipe -c:v {pipeVcodec} -";
+                cjxlArgs = CjxlService.BuildCjxlArguments("-", outputPath, item.Options, hdrMeta, pipeIccPath);
             }
 
-            var (pipeInputColor, pipeOutputColor, pipeIccPath) = BuildPipeColorArgs(item.Options, item.InputPath,
-                s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ct);
-            var cjxlArgs = CjxlService.BuildCjxlArguments("-", outputPath, item.Options, hdrMeta, pipeIccPath);
-            var pipeVcodec = hdrMeta.hasAlpha ? "pam" : "ppm";
-
-            item.Command = $"ffmpeg -y {pipeInputColor}-i \"{item.InputPath}\" {pipeOutputColor}-compression_level 0 -f image2pipe -c:v {pipeVcodec} - | cjxl {cjxlArgs}";
+            item.Command = $"ffmpeg {ffArgs} | cjxl {cjxlArgs}";
             item.Log += $"[cmd] {item.Command}\n";   // 管道两侧都带色彩覆盖，不给看命令行就没法定矩阵/范围
             item.Log += $"[cjxl-pipe] ffmpeg 管道 → cjxl（无中间文件）\n";
             _onItemUpdated?.Invoke(item);
 
             var pipeResult = await PipeFfmpegToExternalEncoderAsync(
-                item, ffmpegPath, cjxlPath, cjxlArgs, outputPath, "cjxl", ct);
+                item, ffmpegPath, cjxlPath, cjxlArgs, outputPath, "cjxl", ct, ffArgs);
             TryDeleteIcc(pipeIccPath);  // 清理临时 ICC 文件
             return pipeResult;
         }
@@ -2648,6 +3079,11 @@ namespace FfmpegGui.Services
         /// 注意：必须使用 PPM/PAM raw 流而非 PNG 流——cjxl 的 -x (color_space/icc_pathname)
         /// 仅对 PPM 等 raw 输入生效，PNG 容器流下会被静默忽略（实测验证）。
         /// </summary>
+        /// <param name="prebuiltFfmpegArgs">
+        /// 调用方**已经拼好并展示过**的那一份 ffmpeg argv（`#44-①` 插点 A 传入，令"给用户看的命令"与
+        /// "真正执行的命令"出自同一次拼装）。为 null 时保持既有行为：本方法内部再拼一遍
+        /// （cjxl/cjpegli 之外的旧调用点，以及 cjpegli 管道路线，逐字不变）。
+        /// </param>
         private async Task<(int exitCode, string status)> PipeFfmpegToExternalEncoderAsync(
             QueueItem item,
             string ffmpegPath,
@@ -2655,7 +3091,8 @@ namespace FfmpegGui.Services
             string encoderArgs,
             string outputPath,
             string encoderTag,
-            CancellationToken ct)
+            CancellationToken ct,
+            string? prebuiltFfmpegArgs = null)
         {
             Process? procFf = null;
             Process? procEnc = null;
@@ -2671,12 +3108,16 @@ namespace FfmpegGui.Services
                 // 有 alpha → PAM（P7，支持透明），无 alpha → PPM（P6）
                 // ⚠ `#26`：本处 `linkedToken`（`CreateLinkedTokenSource(timeoutCts.Token, ct)` 的产物）
                 //   原本就建好躺在同一作用域里却没往下交 —— 正是 `#25` 报告里「最干净的一处」。
-                var (pipeInColor, pipeOutColor, _) = BuildPipeColorArgs(item.Options, item.InputPath,
-                    s => { item.Log += s; _onItemUpdated?.Invoke(item); }, linkedToken);
-                var inMeta = FfmpegCommandBuilder.ProbeInputColorMetadata(item.InputPath,
-                    s => { item.Log += s; _onItemUpdated?.Invoke(item); }, linkedToken);
-                var pipeVcodec = inMeta.hasAlpha ? "pam" : "ppm";
-                var ffArgs = $"-y {pipeInColor}-i \"{item.InputPath}\" {pipeOutColor}-compression_level 0 -f image2pipe -c:v {pipeVcodec} -";
+                var ffArgs = prebuiltFfmpegArgs;
+                if (ffArgs == null)
+                {
+                    var (pipeInColor, pipeOutColor, _) = BuildPipeColorArgs(item.Options, item.InputPath,
+                        s => { item.Log += s; _onItemUpdated?.Invoke(item); }, linkedToken);
+                    var inMeta = FfmpegCommandBuilder.ProbeInputColorMetadata(item.InputPath,
+                        s => { item.Log += s; _onItemUpdated?.Invoke(item); }, linkedToken);
+                    var pipeVcodec = inMeta.hasAlpha ? "pam" : "ppm";
+                    ffArgs = $"-y {pipeInColor}-i \"{item.InputPath}\" {pipeOutColor}-compression_level 0 -f image2pipe -c:v {pipeVcodec} -";
+                }
                 var psiFf = new ProcessStartInfo
                 {
                     FileName = ffmpegPath,
@@ -2884,7 +3325,10 @@ namespace FfmpegGui.Services
 
                 if (fmt == "gif")
                 {
-                    var dither = item.Options.GifDither ? "=dither=bayer:bayer_scale=5:diff_mode=rectangle" : "";
+                    // A-13（2026-09-26）：关抖动要显式 dither=none（paletteuse 默认 sierra2_4a，省略≠关），
+                    // 与 ImageEncoderArgs.BuildGifFilterChain 同口径 —— 这是调色板链的第二份拷贝，
+                    // 两处必须一起改，否则 AVIF/GIF 两步转换路径与常规路径又分叉。
+                    var dither = item.Options.GifDither ? "=dither=bayer:bayer_scale=5:diff_mode=rectangle" : "=dither=none";
                     if (hasAlpha)
                     {
                         // 单 pass: color(0:v) + alpha(1:v) → alphamerge → palettegen → paletteuse
@@ -4078,7 +4522,7 @@ namespace FfmpegGui.Services
                 // ⚠ **顺序统一（R1，2026-09-18）**：改为插到**第一条色彩变换之前**，不再插到 `quoteEnd`（= 链尾）。
                 //   旧写法 `before + "," + scaleFilter + after` 把 scale 追加到引号内末尾 ⇒ 映射 → 缩放，
                 //   与引擎侧（缩放 → 映射）相反（2×2 对照实测 PSNR 36.47dB / 最大差 14417）。
-                //   顺序判据只有一份：`FfmpegCommandBuilder.InsertScaleFilterAtChainHead`（与 `:535` 同源）。
+                //   顺序判据只有一份：`FfmpegCommandBuilder.InsertScaleFilterAtChainHead`（`FfmpegCommandBuilder.cs` 内唯一实现）。
                 //
                 // ⚠ 旧写法里的 `LastIndexOf('"')` 是**侥幸正确**：它假设 `outputArgs` 里带引号的 token
                 //   只有 `-vf` 一个。一旦将来别处引入第二个带引号 token（如 `-metadata comment="…"`），

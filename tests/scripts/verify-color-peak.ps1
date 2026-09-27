@@ -15,14 +15,27 @@ $ff = "$root/publish/PLAN/ffmpeg-full/ffmpeg.exe"
 $fp = "$root/publish/PLAN/ffmpeg-full/ffprobe.exe"
 $pr = "$root/tests/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.exe"
 if (-not (Test-Path $pr)) { $pr = "$root/tests/ServiceProbe/bin/Debug/net11.0/win-x64/ServiceProbe.exe" }
+# ⚠ 2026-09-21（TESTING.md 第 84 条处置建议 ①）：**回退是静默的** —— 门禁可能测的
+#   不是你以为的那个二进制。⇒ 一律**打印被测 exe 与构建类型**，让读数可追溯。
+Write-Output ("[gate] exe=" + $pr + $(if ($pr -like '*\Debug\*') { " (Debug fallback)" } else { " (Release)" }))
 if (-not (Test-Path $pr)) { Write-Host "先构建 ServiceProbe（Release 或 Debug）" -ForegroundColor Red; exit 1 }
 if (-not (Test-Path $ff)) { Write-Host "缺 ffmpeg：$ff" -ForegroundColor Red; exit 1 }
 
 # ⚠ 运行级隔离（GUID，2026-09-17）：固定 `$d` + 开头整目录删，会被**并发的同名实例**互删 ⇒ 假红（§6 第 66 条）。
 $d = "$root/tests/output/validate/peak_$([guid]::NewGuid().ToString('N').Substring(0, 8))"
 New-Item -ItemType Directory -Force -Path $d | Out-Null
-$pass = 0; $fail = 0
+$pass = 0; $fail = 0; $skip = 0
 function CK($ok, $msg) { if ($ok) { $script:pass++; Write-Output "  PASS $msg" } else { $script:fail++; Write-Output "  FAIL $msg" } }
+# ⚠ 2026-09-21（`TESTING.md` 第 81 条处置建议）：**SKIP 必须进汇总并计数**（第 76 条口径）。
+#   缺陷形态：本门禁的 (d) 段曾用一句裸 `Write-Output "  SKIP (d)…"` **静默跳过 4 条断言** ——
+#   **不进汇总**、无 `CK` ⇒ 汇总行仍是「PASS=25 FAIL=0」，读者**没有任何线索**知道少了 4 条。
+#   ⚠ 而 `tests/output/validate/src_hdr.png`（生产者 `ensure-fixtures.ps1`）**不受版本控制**
+#     （`tests/output/**` 被 .gitignore），且**运行器不跑 ensure-fixtures** ⇒ **干净检出上必然缺失**
+#     ⇒ 这条通道会真的发作。现改为与 `verify-gif-avif-framelist.ps1` **同一形态**。
+function SKIP([string]$what, [int]$n = 1) {
+    $script:skip += $n
+    Write-Host "SKIP ($n 条) $what" -ForegroundColor Yellow
+}
 
 # ⚠ 参数名不能叫 $args（PowerShell 自动变量会吞掉实参）
 function RunTool([string]$exe, [string[]]$argList, [string]$tag) {
@@ -73,7 +86,7 @@ CK ($r.out -match 'reason=.*峰值来源=用户') "(c) 日志写明来源=用户
 
 Write-Host "`n=== (d) 静像无元数据 ⇒ 诚实回退名义峰值（并写明） ===" -ForegroundColor Cyan
 if (-not (Test-Path $hdrPng)) {
-    Write-Output "  SKIP (d)：缺 $hdrPng（先跑 ensure-fixtures.ps1）"
+    SKIP "(d) 段整段：缺 $hdrPng（先跑 ensure-fixtures.ps1）—— 以下 4 条断言**本轮未运行**，不是通过" 4
 } else {
     $r = RunTool $pr @('peak', $hdrPng, '0') 'd'
     EchoOut $r
@@ -131,7 +144,7 @@ Write-Output "  （(a)(b) 走的正是生产那条 ffprobe 命令行；若单帧
 CK ($true) "(e) 由 (a)(b) 覆盖：限定 %+#1 后 MaxCLL/mastering 仍可读"
 
 Write-Host ""
-Write-Host "===== peak 源峰值读取: PASS=$pass FAIL=$fail =====" -ForegroundColor $(if ($fail -eq 0) { "Green" } else { "Red" })
+Write-Host "===== peak 源峰值读取: PASS=$pass FAIL=$fail SKIP=$skip =====" -ForegroundColor $(if ($fail -eq 0) { "Green" } else { "Red" })
 # 跑绿自清（跑红保留 GUID 目录供排查）—— 必须在 exit 之前，且用显式 if/else 给出退出码（§6 第 66/67 条）。
 if ($fail -eq 0) { Remove-Item -Recurse -Force $d -ErrorAction SilentlyContinue }
 if ($fail -eq 0) { exit 0 } else { exit 1 }

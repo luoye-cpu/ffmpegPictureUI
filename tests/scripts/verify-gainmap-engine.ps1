@@ -42,8 +42,14 @@ $ErrorActionPreference = "Continue"
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path; Set-Location $root
 $exe = "$root/src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.exe"
 if (-not (Test-Path $exe)) { $exe = "$root/src/FfmpegGui/bin/Debug/net11.0/win-x64/FfmpegGui.exe" }
+# ⚠ 2026-09-21（TESTING.md 第 84 条处置建议 ①）：**回退是静默的** —— 门禁可能测的
+#   不是你以为的那个二进制。⇒ 一律**打印被测 exe 与构建类型**，让读数可追溯。
+Write-Output ("[gate] exe=" + $exe + $(if ($exe -like '*\Debug\*') { " (Debug fallback)" } else { " (Release)" }))
 $pr  = "$root/tests/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.exe"
 if (-not (Test-Path $pr)) { $pr = "$root/tests/ServiceProbe/bin/Debug/net11.0/win-x64/ServiceProbe.exe" }
+# ⚠ 2026-09-21（TESTING.md 第 84 条处置建议 ①）：**回退是静默的** —— 门禁可能测的
+#   不是你以为的那个二进制。⇒ 一律**打印被测 exe 与构建类型**，让读数可追溯。
+Write-Output ("[gate] exe=" + $pr + $(if ($pr -like '*\Debug\*') { " (Debug fallback)" } else { " (Release)" }))
 $fp  = "$root/publish/PLAN/ffmpeg-full/ffprobe.exe"
 $et  = "$root/publish/PLAN/exiftool/exiftool.exe"
 foreach ($need in @($exe, $pr, $fp, $et)) { if (-not (Test-Path $need)) { Write-Output "缺工具：$need"; exit 1 } }
@@ -534,6 +540,94 @@ CK ($gjc -match '=> o\.JpegProgressiveId switch \{ 1 => 2, 0 => 0, _ => -1 \};')
 CK ($gme -match 'Action<string>\? log = null, CancellationToken ct = default,\s+int jpegProgressiveLevel = -1\)') "⑩ 源码锁：jpegProgressiveLevel 仍是 EncodeAsync 的**末位**形参（QueueProcessor 用位置实参传 log/ct）"
 CK ($qpc -match 'ColorMapping\.GainMapJpegCodec\.ProgressiveLevelOf\(item\.Options\)') "⑩ 源码锁：专用管线调用点复用单一真值（不另写映射）"
 CK ($qpc -match 'jpegProgressiveLevel: gmProgLv\)') "⑩ 源码锁：专用管线确实把该值传进 EncodeAsync（防接线被删）"
+
+# ══ ⑪ §38 锁：GainMap + `--encoder cjpegli` ⇒ 底图 ICC 不得被**源** ICC 覆盖 ════════════
+Write-Host "`n### 11) §38 GainMap + cjpegli：底图 ICC 必须与引擎一致、且不得等于源 ICC ###" -ForegroundColor Cyan
+# 缺陷（`docs/HANDOVER.md §38`，轴 C 报、09-22 首次实机复现）：`encoderProtectsColor` 原先不含
+#   Cjpegli  ⇒ GainMap 变体下 `protectColorMetadata=false` ⇒ `RestoreMetadataAsync` 走
+#   「完整元数据复制（含 ICC）」，把**源**色域的 ICC 盖到底图上（实测修复前底图 ICC 与源 ICC
+#   **逐字节相同** = `D6881218…`）。而 GainMap 的底图 ICC 由 `GainMapEncoder` 自己写
+#   （对齐 libultrahdr：底图是什么色域就附什么 ICC）⇒ 复制回来的源 ICC 是**错标**。
+# 判据（以**引擎路径为参照**，因为 §38.4 实测二者修复后一致；三条互相制衡，任何一条空跑都会被另两条抓住）：
+#   a) 引擎底图 ICC ≠ 源 ICC       —— 反空跑对照（a 不成立则 b/c 恒真 = 真空绿）
+#   b) cjpegli 底图 ICC == 引擎底图 ICC —— 换后端**不得**换色彩宣称
+#   c) cjpegli 底图 ICC ≠ 源 ICC       —— 正是修复前逐字节相同的那一条
+#   d) 第三方色度读数交叉核对（exiftool 读红原色），不依赖任何自研解析器
+# 素材**自备**：P3 ICC 由 ffmpeg `iccgen` 现造（口径同 `_probe-jpg-p3-icc.ps1` 的 zscale 链），
+#   再内嵌进本门禁已有的 `$hdr`（PQ/bt2020、**本无 ICC**）⇒ 与引擎臂的唯一变量就是"源带 P3 ICC"。
+#   ⚠ 三个 ICC 一律**从文件里抽出来再比**（PNG 的 iCCP / JPEG 的 APP2 存储形态不同），
+#     拿"嵌入前的原始 .icc 字节"去比"产物抽出来的字节"会因容器封装差异而假红。
+$ffG = "$root/publish/PLAN/ffmpeg-full/ffmpeg.exe"
+# ⚠ `-w` 的参数是**文件名模板**（`%f` = 源文件不带扩展名的名字）：实测给它一个**字面文件名**
+#   （如 `$out/x.icc`）时 exiftool **不落盘**、也不报错 ⇒ 静默抽不到 ICC。
+function ExtractIcc([string]$src, [string]$tag) {
+    Get-ChildItem "$out/s38icc_${tag}_*.icc" -EA SilentlyContinue | Remove-Item -Force -EA SilentlyContinue
+    Start-Process -FilePath $et -ArgumentList @('-b', '-ICC_Profile', '-w', "$out/s38icc_${tag}_%f.icc", "`"$src`"") `
+        -NoNewWindow -Wait -RedirectStandardOutput "$out/_iccd.out" -RedirectStandardError "$out/_iccd.err" | Out-Null
+    $f = Get-ChildItem "$out/s38icc_${tag}_*.icc" -EA SilentlyContinue | Select-Object -First 1
+    # ⚠ 必须**非空文件**：`Get-FileHash` 对 0 字节文件也返回一个固定哈希 ⇒ "抽到了"与"抽到空壳"
+    #   在哈希层面无法区分 ⇒ ⑪b 的 `==` 会被两个空壳撑成恒等（假绿）。
+    if ($null -ne $f -and $f.Length -gt 0) { return $f.FullName }
+    return ""
+}
+function IccDump([string]$src, [string]$tag) {
+    $p = ExtractIcc $src $tag
+    if ($p -eq "") { return "" }
+    return (Get-FileHash $p -Algorithm SHA256).Hash
+}
+$p3Jpg = "$out/s38_p3src.jpg"
+if (Test-Path $p3Jpg) { Remove-Item $p3Jpg -Force }
+# ⚠ ArgumentList 必须是**单个已拼好的字符串**：`-ArgumentList 'a' + $b` 会被 PowerShell 当成
+#   位置参数（实测报 `A positional parameter cannot be found that accepts argument '+'`）。
+$p3Args = '-y -hide_banner -loglevel error -f lavfi -i "testsrc2=size=64x48:duration=0.1" ' +
+          '-frames:v 1 -vf "format=rgb48le,zscale=pin=bt709:tin=linear:min=gbr:p=smpte432:t=iec61966-2-1:m=bt709,iccgen" "' + $p3Jpg + '"'
+$gp3 = Start-Process -FilePath $ffG -ArgumentList $p3Args -NoNewWindow -Wait -PassThru
+CK (($gp3.ExitCode -eq 0) -and (Test-Path $p3Jpg)) "⑪ 素材：ffmpeg iccgen 造出带 ICC 的 P3 载体（exit=$($gp3.ExitCode)）"
+$p3IccFile = ExtractIcc $p3Jpg 'emb'
+CK ($p3IccFile -ne "") "⑪ 素材：P3 ICC 已从 iccgen 载体里抽出（$p3IccFile）"
+$srcP3 = "$out/s38_src_p3.png"
+Copy-Item $hdr $srcP3 -Force
+Start-Process -FilePath $et -ArgumentList @('-overwrite_original', "-icc_profile<=$p3IccFile", "`"$srcP3`"") `
+    -NoNewWindow -Wait -RedirectStandardOutput "$out/_icce.out" -RedirectStandardError "$out/_icce.err" | Out-Null
+$srcRed = ExifTag $srcP3 'ICC_Profile:ChromaticityChannel1'
+# ⚠ 判据取 `^0\.6[78]` 而非 `^0\.68`：iccgen 写出的 P3 红原色实测是 **0.67999**（规范值 0.680 的
+#   定点舍入），而 sRGB=0.64、BT.2020=0.708 都落在该区间外 ⇒ 既有牙又不会被舍入翻红。
+CK ($srcRed -match '^0\.6[78]') "⑪ 前提：源已带 **P3** ICC（exiftool 红原色 x∈[0.67,0.69)，实得「$srcRed」）"
+$srcIcc = IccDump $srcP3 'src'
+CK ($srcIcc -ne "") "⑪ 前提：源 ICC 可被抽出（防空对照：抽不到则下面三条全无意义）"
+
+$e38 = RunCli 's38_engine' $srcP3 'jpg' @('--jpeg-gain-map', 'true')
+$c38 = RunCli 's38_cjli'  $srcP3 'jpg' @('--jpeg-gain-map', 'true', '--encoder', 'cjpegli')
+CK ($e38.code -eq 0 -and $e38.file) "⑪ 引擎臂产出底图（exit=$($e38.code)）"
+CK ($c38.code -eq 0 -and $c38.file) "⑪ cjpegli 臂产出底图（exit=$($c38.code)）"
+$eIcc = ""; $cIcc = ""
+if ($e38.file) { $eIcc = IccDump $e38.file.FullName 'engine' }
+if ($c38.file) { $cIcc = IccDump $c38.file.FullName 'cjli' }
+$eRed = ""; $cRed = ""
+if ($e38.file) { $eRed = ExifTag $e38.file.FullName 'ICC_Profile:ChromaticityChannel1' }
+if ($c38.file) { $cRed = ExifTag $c38.file.FullName 'ICC_Profile:ChromaticityChannel1' }
+#   ⚠ **源 ICC 的哈希每轮都会变**：实测同一滤镜链两次生成的 P3 ICC **长度相同(584B)、只有第 35 字节不同**
+#     ⇒ 那是 ICC 头 date/time 字段里的秒 ⇒ ffmpeg `iccgen` 把生成时刻写进了配置文件头。
+#     所以源 ICC 只能当**不等式判据的一侧**，**不许**被当成可 pin 的指纹。
+#     引擎/cjpegli 两个**底图** ICC 实测跨轮稳定（`75FF19E1029473FE`，与 `docs/HANDOVER.md §38.1` 逐字同值）
+#     ⇒ ⑪b 的等号判据成立（两条臂在同一轮内比较）。
+Write-Host ("  [§38 读数] 源 ICC=" + $srcIcc.Substring(0, [Math]::Min(16, $srcIcc.Length)) +
+            "  引擎底图=" + $eIcc.Substring(0, [Math]::Min(16, $eIcc.Length)) +
+            "  cjpegli 底图=" + $cIcc.Substring(0, [Math]::Min(16, $cIcc.Length)))
+CK (($eIcc -ne "") -and ($cIcc -ne "")) "⑪ 两条臂的底图 ICC 都抽到了（非空，否则等号是真空成立）"
+CK ($eIcc -ne $srcIcc) "⑪a 对照：引擎底图 ICC ≠ 源 ICC（实得引擎 $eIcc / 源 $srcIcc）⇒ 下面两条有判别力"
+CK (($cIcc -ne "") -and ($cIcc -eq $eIcc)) "⑪b 锁：cjpegli 底图 ICC == 引擎底图 ICC ⇒ 换后端不得换色彩宣称"
+CK (($cIcc -ne "") -and ($cIcc -ne $srcIcc)) "⑪c 锁：cjpegli 底图 ICC ≠ 源 ICC（修复前正是逐字节等于源 ICC = 错标）"
+CK (($cRed -ne "") -and ($srcRed -ne "") -and ($cRed -ne $srcRed)) "⑪d 第三方色度交叉核对：cjpegli 底图红原色（$cRed）≠ 源（$srcRed）"
+$qpcText = [System.IO.File]::ReadAllText("$root/src/FfmpegGui/Services/QueueProcessor.cs")
+# ⚠⚠ 源码锁必须**锚定到初始化式内部**：全文无锚的 `–match` 只要那串出现在**任何**位置就绿 ⇒
+#   ①整行注释掉仍绿（注释里也含该串）②挪进死变量/别的分支也绿。⇒ 三条分开咬。
+$ecInit = [regex]::Match($qpcText, '(?s)var encoderProtectsColor\s*=[\s\S]{0,400}?;')
+CK $ecInit.Success "⑪ 源码锁A：encoderProtectsColor 的初始化式仍在本文件（形态大变 ⇒ 先红再核，不静默）"
+CK ($ecInit.Value -match 'Cjpegli && item\.Options\.JpegGainMap') `
+   "⑪ 源码锁B：GainMap 变体例外确实在 encoderProtectsColor 初始化式「内」（挪到别处/删掉即红）"
+$commentedOut = @($qpcText -split "`r?`n" | Where-Object { $_ -match 'Cjpegli\s*&&\s*item\.Options\.JpegGainMap' -and $_.Trim().StartsWith('//') })
+CK ($commentedOut.Count -eq 0) "⑪ 源码锁C：该例外不得以整行注释形态存在（注释掉即红，实得 $($commentedOut.Count) 行）"
 
 Write-Host ""
 Write-Host "===== gainmap-engine: PASS=$pass FAIL=$fail =====" -ForegroundColor $(if ($fail -eq 0) { "Green" } else { "Red" })

@@ -12,12 +12,27 @@ $env:FFMPEGGUI_FFMPEG_DIR = "$root/publish/PLAN/ffmpeg-full"
 $ff = "$root/publish/PLAN/ffmpeg-full/ffmpeg.exe"
 $exe = "$root/src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.exe"
 if (-not (Test-Path $exe)) { $exe = "$root/src/FfmpegGui/bin/Debug/net11.0/win-x64/FfmpegGui.exe" }
+# ⚠ 2026-09-21（TESTING.md 第 84 条处置建议 ①）：**回退是静默的** —— 门禁可能测的
+#   不是你以为的那个二进制。⇒ 一律**打印被测 exe 与构建类型**，让读数可追溯。
+Write-Output ("[gate] exe=" + $exe + $(if ($exe -like '*\Debug\*') { " (Debug fallback)" } else { " (Release)" }))
 $prb = "$root/tests/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.exe"
 if (-not (Test-Path $prb)) { $prb = "$root/tests/ServiceProbe/bin/Debug/net11.0/win-x64/ServiceProbe.exe" }
+# ⚠ 2026-09-21（TESTING.md 第 84 条处置建议 ①）：**回退是静默的** —— 门禁可能测的
+#   不是你以为的那个二进制。⇒ 一律**打印被测 exe 与构建类型**，让读数可追溯。
+Write-Output ("[gate] exe=" + $prb + $(if ($prb -like '*\Debug\*') { " (Debug fallback)" } else { " (Release)" }))
 $src = "$root/src/FfmpegGui/Services/QueueProcessor.cs"
 $val = "$root/tests/output/gmmem_$([guid]::NewGuid().ToString('N').Substring(0, 8))"
 
-$pass = 0; $fail = 0
+$pass = 0; $fail = 0; $skip = 0
+# ⚠ 2026-09-21（`TESTING.md` 第 81 条同族 · 口径统一）：**整门禁跳过也打印汇总并计数**。
+#   原先三条前置守卫直接 `exit 0`、**不打印汇总** ⇒ 门禁在「有汇总」与「无汇总」两种形态间摇摆，
+#   读者/运行器无法用同一口径判读（本仓第 62 条要求无汇总的一律**单列**）。
+function SkipAll([string]$why) {
+    $script:skip++
+    Write-Output "SKIP $why"
+    Write-Output "===== PASS=0 FAIL=0 SKIP=$skip（⚠ 整门禁未运行，不是通过）====="
+    exit 0
+}
 function Run-Exe([string]$file, [string]$argStr) {
     return (Start-Process -FilePath $file -ArgumentList $argStr -Wait -NoNewWindow -PassThru).ExitCode
 }
@@ -40,8 +55,8 @@ function Measure-PeakMB([string]$argStr, [string]$tag, [string]$expectFile) {
     return @{ MB = [math]::Round($peak / 1MB, 1); Exit = $ec; Ok = $ok }
 }
 
-if (-not (Test-Path $exe)) { Write-Output "SKIP FfmpegGui.exe 未构建（先 dotnet build）"; exit 0 }
-if (-not (Test-Path $prb)) { Write-Output "SKIP 缺 ServiceProbe（png3 打标要用）"; exit 0 }
+if (-not (Test-Path $exe)) { SkipAll "FfmpegGui.exe 未构建（先 dotnet build）" }
+if (-not (Test-Path $prb)) { SkipAll "缺 ServiceProbe（png3 打标要用）" }
 
 # ── ① 从源码解析声明的两档预留 ──
 $srcText = [System.IO.File]::ReadAllText($src)
@@ -60,7 +75,7 @@ New-Item -ItemType Directory -Path $val -Force | Out-Null
 # ── ② 4K HDR 素材（16-bit + bt2020/PQ，与 GainMap 编码前置条件一致）──
 $src4k = "$val/src4k_hdr.png"
 Run-Exe $ff "-y -v error -f lavfi -i `"testsrc=size=3840x2160:rate=1`" -frames:v 1 -pix_fmt rgb48le `"$src4k`"" | Out-Null
-if (-not (Test-Path $src4k)) { Write-Output "SKIP 4K 素材生成失败"; exit 0 }
+if (-not (Test-Path $src4k)) { SkipAll "4K 素材生成失败" }
 # 打 cICP 标签（bt2020/PQ）；输出重定向到文件，避免子进程 stdout 混进门禁输出
 $soTag = "$val/png3.out.txt"
 Start-Process -FilePath $prb -ArgumentList "png3 `"$src4k`" 0 9 16" -Wait -NoNewWindow -PassThru `
@@ -108,7 +123,7 @@ if ($rGm.MB -gt $tooSmall) {
     $fail++; Write-Output ("  FAIL negctrl {0}MB 竟能覆盖实测 {1}MB ⇒ 断言 A 失去意义" -f $tooSmall, $rGm.MB)
 }
 
-Write-Output "`n===== PASS=$pass FAIL=$fail ====="
+Write-Output "`n===== PASS=$pass FAIL=$fail SKIP=$skip ====="
 # 成功即清理本次工作目录；失败则保留供排查。
 # ⚠ 在**被沙箱接管的 agent 环境**里 `Remove-Item -Recurse` 会被拦截并静默失败（实测两次跑完仍留目录），
 #   所以在那种环境里会在 tests/output/ 下累积 gmmem_* 目录（每个约 70MB，含 4K 素材）——正常 shell 下不会有此问题。

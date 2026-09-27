@@ -194,7 +194,9 @@ namespace FfmpegGui.Services
             ["avif"] = new[] { "libaom-av1", "libsvtav1", "librav1e", "av1_nvenc", "av1_amf", "av1_qsv", "av1_vaapi" },
             ["tiff"] = new[] { "tiff" },
             ["jxl"] = new[] { "libjxl", "libjxl_anim", "jpegxl" },
-            ["jxr"] = new[] { "jxr" },
+            // ⚠ 原值是 `{"jxr"}` ⇒ 按名匹配 `-encoders` **恒命中 0 条**（ffmpeg 里的真名是 `libjxr`，
+            //   `-codecs` 实测 `DEVILS jpegxr …(encoders: libjxr)`，`tests/output/t50/`）。
+            ["jxr"] = new[] { "libjxr" },
             ["bmp"] = new[] { "bmp" },
             ["gif"] = new[] { "gif" },
             ["apng"] = new[] { "apng", "png" }
@@ -219,7 +221,7 @@ namespace FfmpegGui.Services
             ["png"] = new[] { "png" },          ["apng"] = new[] { "apng", "png" },
             ["webp"] = new[] { "webp" },        ["avif"] = new[] { "av1" },
             ["tiff"] = new[] { "tiff" },        ["tif"] = new[] { "tiff" },
-            ["jxl"] = new[] { "jpegxl", "libjxl" }, ["jxr"] = new[] { "jxr" },
+            ["jxl"] = new[] { "jpegxl", "libjxl" }, ["jxr"] = new[] { "libjxr" },   // jxr 真名 libjxr（原写 "jxr" ⇒ 查表恒空）
             ["bmp"] = new[] { "bmp" },          ["gif"] = new[] { "gif" },
             ["heic"] = new[] { "hevc" },        ["heif"] = new[] { "hevc", "heif" },
             ["dng"] = new[] { "tiff" }
@@ -461,6 +463,23 @@ namespace FfmpegGui.Services
         public static async Task<bool> SupportsJxlLosslessJpegAsync(string? ffmpegPath = null)
         {
             var fileName = ffmpegPath ?? AppSettingsService.Current.FfmpegPath;
+            // 答案属于被探测的那个 ffmpeg 构建 ⇒ 以路径为键缓存（同 ClearCache 的失效口径）。
+            // 现在命令预览也走这条判定（每次控件变化都会采集一遍），不缓存就是每次改一个
+            // 下拉框起一个 ffmpeg 进程。
+            if (_jxlLosslessJpeg.HasValue && _jxlLosslessJpegProbedFor == fileName)
+                return _jxlLosslessJpeg.Value;
+
+            var supported = await ProbeJxlLosslessJpegAsync(fileName);
+            _jxlLosslessJpegProbedFor = fileName;
+            _jxlLosslessJpeg = supported;
+            return supported;
+        }
+
+        private static string? _jxlLosslessJpegProbedFor;
+        private static bool? _jxlLosslessJpeg;
+
+        private static async Task<bool> ProbeJxlLosslessJpegAsync(string fileName)
+        {
             try
             {
                 var psi = new ProcessStartInfo
@@ -520,17 +539,16 @@ namespace FfmpegGui.Services
         }
 
         /// <summary>判断 ffmpeg 是否能解码指定图片格式（检查 decoder 可用性）。
-        /// JXR 特殊处理：ffmpeg 无 jxr 解码器，但软件有 JxrDecApp 外部解码器（PLAN/artifacts）。</summary>
+        /// ⚠ JXR 的旧写法在这里**直接短路**成"只看外部 JxrDecApp"，理由写的是"ffmpeg 内置 jxr 解码器几乎不存在"
+        ///   —— 实测已否证（09-26 构建，`tests/output/t50/`）：`-codecs` 有 `(decoders: libjxr)`，
+        ///   且 `.jxr → 原始像素` 往返**位精确**（ffmpeg 自解与 JxrDecApp 两条独立回读同哈希）。
+        ///   ⇒ 现在两条都算数：JxrDecApp 在位即可，否则照 `FormatDecoderMap["jxr"] = libjxr` 问 ffmpeg。</summary>
         public static async Task<bool> IsDecoderAvailableAsync(string format, string? ffmpegPath = null)
         {
             var fmt = format.ToLower();
-            // JXR：外部 JxrDecApp 是实际解码路径（ProcessJxrInputAsync），ffmpeg 内置 jxr 解码器几乎不存在
-            if (fmt == "jxr")
-            {
-                if (PlatformServices.TryFindInPlanFolder(PlatformServices.JxrDec) != null)
-                    return true;
-                return false;
-            }
+            // JXR：外部 JxrDecApp 仍是 `ProcessJxrInputAsync` 的既有解码路径，但它**不再是唯一**一条。
+            if (fmt == "jxr" && PlatformServices.TryFindInPlanFolder(PlatformServices.JxrDec) != null)
+                return true;
             if (!FormatDecoderMap.TryGetValue(fmt, out var decoderNames))
                 return true; // 未在映射表中 → 假定内置支持
             var decoders = await GetAllDecodersAsync(ffmpegPath);
@@ -654,6 +672,8 @@ namespace FfmpegGui.Services
             _allEncoders = null;
             _allDecoders = null;
             _allMuxers = null;
+            _jxlLosslessJpeg = null;
+            _jxlLosslessJpegProbedFor = null;
         }
     }
 }

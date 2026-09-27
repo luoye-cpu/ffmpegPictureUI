@@ -254,7 +254,151 @@ public static class ImageEncoderArgs
                   + "split[s0][s1];[s0]palettegen=reserve_transparent=1[p];[s1][p]paletteuse";
         if (o.GifDither)
             chain += "=dither=bayer:bayer_scale=5:diff_mode=rectangle";
+        // A-13（2026-09-26）：关闭抖动必须显式发 dither=none —— paletteuse 的官方默认是 sierra2_4a，
+        // 省略参数不等于关闭（三向实测：bayer 29959 / 裸 paletteuse 30073 / dither=none 26714 B）。
+        // 判据别拿 GIF 源做：pal8 无量化误差，五种 dither 产物逐字节相同 ⇒ 只有真彩色源才分得出。
+        else
+            chain += "=dither=none";
         return chain;
+    }
+
+    /// <summary>
+    /// AVIF 的**编码器后端**（参数分域的唯一判据，2026-09-26 新增）。
+    /// <para>
+    /// **为什么需要它**：此前 <see cref="BuildAvifOptions"/> 只用一个 <c>isSvt</c> 布尔排除 libaom 项
+    /// ⇒ 四个硬件后端照收 <c>-crf / -cpu-used / -still-picture / -row-mt / -aq-mode /
+    /// -enable-cdef / -enable-intrabc / -usage / -aom-params / -tune</c>。其中三条**必然失败**（实测）：
+    /// av1_amf 收 <c>-usage allintra</c> ⇒ Unable to parse、rc=127（AMF 也有同名私有项，但取值域是
+    /// transcoding/lowlatency/webcam/high_quality/lowlatency_high_quality）；av1_nvenc 收
+    /// <c>-tune psnr</c> 或 <c>-tune ssim</c> ⇒ Unable to parse、rc=127（NVENC 的 tune 域是
+    /// hq/uhq/ll/ull/lossless）。其余是响亮失败的反面：ffmpeg 只告警
+    /// <c>Codec AVOption ... has not been used</c>，产物不变。
+    /// </para>
+    /// <para>
+    /// 各后端**真实存在**的质量轴与取值域（随包 ffmpeg git-2026-09-24 的
+    /// <c>ffmpeg -h encoder=X</c> 自报表 + 产物核对，全部为本轮实测）：
+    /// </para>
+    /// <list type="table">
+    /// <item><description><c>Libaom</c> = <c>libaom-av1</c>：<c>-crf</c> [-1..63]、<c>-cpu-used</c> [0..8]、
+    /// <c>-aq-mode</c> [-1..4]（none/variance/complexity/cyclic）、<c>-row-mt</c>、<c>-still-picture</c>、
+    /// <c>-enable-cdef</c>、<c>-enable-intrabc</c>、<c>-denoise-noise-level</c>、<c>-usage</c>
+    /// （good/realtime/allintra）、<c>-tune</c>（**只有** psnr|ssim）、<c>-aom-params</c>（IQ 走
+    /// <c>tune=iq</c>，实测 rc=0）。crf 0 实测 PSNR=inf ⇒ 真无损。</description></item>
+    /// <item><description><c>Svt</c> = <c>libsvtav1</c>：<c>-crf</c> [0..63]（实测日志回显
+    /// <c>BRC mode / rate factor : CRF / 30.00</c> ⇒ 真生效）、<c>-qp</c> [0..63]、<c>-preset</c>
+    /// [-2..13]（实测 14 ⇒ out of range）、<c>-svtav1-params</c> dict（<c>tune</c> 域见
+    /// <see cref="SvtTuneValue"/>、<c>lossless</c> 见 A-12）。**没有** <c>-still-picture</c> /
+    /// <c>-cpu-used</c> / <c>-aq-mode</c>。</description></item>
+    /// <item><description><c>Nvenc</c> = <c>av1_nvenc</c>：质量轴 <c>-cq</c> [0..63]（**0=auto**，
+    /// 实测 1/10/20/45/63 = 27907/23815/17032/5429/1542 B）、<c>-preset</c> p1..p7、
+    /// <c>-spatial-aq</c>（默认 0）、<c>-aq-strength</c> [1..15] 默认 8；<c>-low_power</c> 该编码器
+    /// 的自报表里**没有**。<b>无损做不到</b>：<c>-tune lossless</c> 这一档在选项表里确实存在，但
+    /// AV1 实测到开编码器时报 <c>not supported</c>、rc=127（<c>-rc constqp</c> 同），故无损勾选
+    /// 只能落到 <c>-cq 1</c>（实测 PSNR 66.17dB，仍是有损）并如实出声。</description></item>
+    /// <item><description><c>Qsv</c> = <c>av1_qsv</c>：自报表内**无** crf/cq/qp（实测 <c>-cq</c> 报
+    /// has not been used），常量质量走通用 <c>-global_quality</c>；<c>-preset</c> 具名值
+    /// veryfast/faster/fast/medium/slow/slower/veryslow（实测 <c>-preset p7</c> 被拒）；
+    /// <c>-low_power</c> 存在。</description></item>
+    /// <item><description><c>Amf</c> = <c>av1_amf</c>：常量质量 = <c>-rc cqp</c> + <c>-qp_i</c>/-qp_p
+    /// [-1..255]（实测 300 ⇒ out of range [-1 - 255]）；另有 <c>-rc qvbr</c> +
+    /// <c>-qvbr_quality_level</c> [-1..51]（实测 60 ⇒ out of range）；<c>-quality</c>
+    /// 具名值 high_quality/quality/balanced/speed。</description></item>
+    /// <item><description><c>Vaapi</c> = <c>av1_vaapi</c>：⚠ **随包构建不含该编码器**
+    /// （<c>-h encoder=av1_vaapi</c> 报 <c>Codec is not recognized</c>，<c>-encoders</c> 里 av1 只有
+    /// libaom/svt/d3d12va/nvenc/qsv/amf/mf/vulkan）⇒ 本机**无法**实测任何一条。质量轴取上游
+    /// vaapi 共用码控读的 <c>AVCodecContext.global_quality</c>（通用项，域 INT_MIN..INT_MAX，
+    /// ffmpeg 层不会越界），生效性未验。</description></item>
+    /// <item><description><c>Other</c>：未识别的编码器（含本构建不含的 <c>librav1e</c>）只发
+    /// <c>-crf</c>，不发任何私有项。</description></item>
+    /// </list>
+    /// </summary>
+    private enum AvifBackend { Libaom, Svt, Nvenc, Qsv, Amf, Vaapi, Other }
+
+    /// <summary>
+    /// <c>FfmpegOptions.Encoder</c> → <see cref="AvifBackend"/>。传入的应是已剥掉图标与说明的**干净
+    /// 编码器名**（采集侧走 <c>EncoderInfo.ParseEncoderName</c>）。
+    /// <para>
+    /// ⚠ 空串/未识别的兜底是**有意的分歧**：空串按 <c>Libaom</c> 处理（与旧实现的 <c>!isSvt</c> 口径
+    /// 逐字一致 —— 旧代码在 Encoder 为空时照发 libaom 项；且不给 <c>-c:v</c> 时 ffmpeg 为 avif
+    /// 选的默认编码器就是 libaom-av1），而**其它**未识别名字（librav1e 等）按 <c>Other</c> 只发 crf，
+    /// 免得把 libaom 的私有项发到别人身上。
+    /// </para>
+    /// </summary>
+    private static AvifBackend ClassifyAvifBackend(string? encoder)
+    {
+        var e = (encoder ?? "").Trim();
+        if (e.Length == 0 || e.StartsWith("libaom", StringComparison.OrdinalIgnoreCase)) return AvifBackend.Libaom;
+        if (e.StartsWith("libsvt", StringComparison.OrdinalIgnoreCase)) return AvifBackend.Svt;
+        if (e.StartsWith("av1_nvenc", StringComparison.OrdinalIgnoreCase)) return AvifBackend.Nvenc;
+        if (e.StartsWith("av1_qsv", StringComparison.OrdinalIgnoreCase)) return AvifBackend.Qsv;
+        if (e.StartsWith("av1_amf", StringComparison.OrdinalIgnoreCase)) return AvifBackend.Amf;
+        if (e.StartsWith("av1_vaapi", StringComparison.OrdinalIgnoreCase)) return AvifBackend.Vaapi;
+        return AvifBackend.Other;
+    }
+
+    /// <summary>
+    /// tune 的**语言无关**归一（A-7）：两把 tune 下拉存进 <c>FfmpegOptions</c> 的都是
+    /// **本地化之后的显示串**，旧代码直接拿中文字面量当键比对 ⇒ locale 实测
+    /// <c>avif.tune.iq</c> 在 zh 是 IQ (图像优化)、在 en 是 IQ (Image Optimized) ⇒ 英文界面下
+    /// 整条 IQ 什么都不发；而 <c>!= 默认</c> 这类哨兵在英文下恒真（进了 switch 又落空）。
+    /// <para>
+    /// 现在只认 token/前缀，zh 与 en 两种显示串折到同一个值；**默认档与不认识的档一律折成空串
+    /// = 不发参数**（旧实现正是靠中文字面量识别默认档，才在英文下变成半生效状态 ⇒ 宁可什么都不发，
+    /// 也不发一个错值）。当前 locale 里出现的 5 个值全部覆盖：默认/Default、PSNR、SSIM、VMAF、
+    /// IQ (…)；另外采集侧在简单模式下硬塞的 VMAF (主观) 这类带尾巴的写法也能按前缀认出来。
+    /// </para>
+    /// </summary>
+    private static string NormalizeTuneToken(string? display)
+    {
+        var u = ((display ?? "").Trim()).ToUpperInvariant();
+        if (u.Length == 0) return "";
+        if (u.StartsWith("IQ", StringComparison.Ordinal)) return "iq";
+        if (u.Contains("MS_SSIM", StringComparison.Ordinal)) return "ms_ssim";
+        if (u.Contains("VMAF", StringComparison.Ordinal)) return "vmaf";
+        if (u.Contains("PSNR", StringComparison.Ordinal)) return "psnr";
+        if (u.Contains("SSIM", StringComparison.Ordinal)) return "ssim";
+        return "";
+    }
+
+    /// <summary>
+    /// SVT-AV1 的 tune 取值（A-6：旧实现整体错位一格）。域**不是**凭记忆写的，取本机库的自报：
+    /// 传 tune=6 时 SVT 自己打印
+    /// <c>Invalid tune flag [0 - 5, 0 for VQ, 1 for PSNR, 2 for SSIM, 3 for IQ, 4 for MS_SSIM, and 5 for VMAF]</c>，
+    /// 且逐个传 0..5 时 SVT 的配置回显（<c>preset / tune / pred struct</c> 行）依次是
+    /// VQ / PSNR / SSIM / (IQ 直接 abort) / MS_SSIM / VMAF ⇒ 双向对齐。
+    /// <para>
+    /// <c>iq</c> 返回 null 是因为实测 <c>tune=3</c> 在随机访问结构下直接
+    /// <c>Tune IQ only supports all-intra and low delay</c> + bad parameter ⇒ GUI 没有 all-intra 通路，
+    /// 发出去就是 100% 失败（旧代码把 VMAF 折成 tune=3，恰好落在这个崩溃值上）。
+    /// </para>
+    /// </summary>
+    private static string? SvtTuneValue(string token) => token switch
+    {
+        "psnr" => "1",
+        "ssim" => "2",
+        "vmaf" => "5",
+        "ms_ssim" => "4",
+        "vq" => "0",
+        _ => null,
+    };
+
+    /// <summary>
+    /// AV1 的 log-QP 域（0..63，libaom/SVT 的 crf）→ qindex 域（0..255，AMF 的 <c>-qp_i</c>/<c>-qp_p</c>）。
+    /// <para>
+    /// 逐值取本机 libaom 源码 <c>tools/src/aom/av1/encoder/av1_quantize.c</c> 的
+    /// <c>quantizer_to_qindex[]</c> 表：0..61 段是 4 倍关系，表尾两项是 249 与 255（不是线性外推）。
+    /// 下限取 1 是因为该 AVOption 的 -1 表示**不设**（会把 QP 交回码控自行决定），而滑块拉到最好
+    /// 一档时语义应当是 QP 最低，不是把 QP 交出去。
+    /// </para>
+    /// <para>
+    /// ⚠ 这条换算只在 <c>av1_amf</c> 用到，而本机**没有 AMD GPU**（amfrt64.dll 打不开、编码器开不起来）
+    /// ⇒ 换算是**表算**、非实测：AMF 是否按 AV1 qindex 解释这个值、cqp 对 AV1 支持到不到位，均未验。
+    /// </para>
+    /// </summary>
+    private static int AvifQIndexFromCrf(int crf)
+    {
+        var c = Math.Clamp(crf, 0, 63);
+        return Math.Max(1, c >= 63 ? 255 : c == 62 ? 249 : c * 4);
     }
 
     /// <summary>
@@ -267,93 +411,183 @@ public static class ImageEncoderArgs
     /// <c>avifenc.exe</c> 专用管线，不在引擎出口内。
     /// </para>
     /// <para>
-    /// 覆盖：crf（无损 ⇒ 0）、<c>-cpu-used</c>、<c>-tune</c>（libaom）/ <c>-svtav1-params tune=</c>（SVT）、
-    /// IQ 档（<c>-usage allintra</c> + <c>-aom-params tune=iq</c>）、<c>-still-picture</c>、<c>-row-mt</c>、
-    /// SVT preset/tune、libaom 高级（aq-mode / cdef / intrabc / denoise）、
-    /// 硬件编码器 7 档预设（nvenc/qsv/amf/vaapi）与旧字段回退、NVENC aq-strength+spatial-aq、
-    /// QSV/VAAPI low_power。
+    /// 覆盖范围与**参数分域**（2026-09-26 起重写，逐条依据见 <see cref="AvifBackend"/> 的实测表）：
+    /// 质量轴按编码器选（libaom/SVT 用 <c>-crf</c>、NVENC 用 <c>-cq</c>、QSV/VAAPI 用
+    /// <c>-global_quality</c>、AMF 用 <c>-rc cqp</c> + <c>-qp_i</c>/<c>-qp_p</c>）；
+    /// libaom 私有项（<c>-cpu-used / -tune / -usage / -aom-params / -still-picture / -row-mt /
+    /// -aq-mode / -enable-cdef / -enable-intrabc / -denoise-noise-level</c>）**只发 libaom**；
+    /// SVT 发 <c>-preset</c> 与**唯一一个** <c>-svtav1-params</c> dict（<c>tune=</c>、无损时
+    /// <c>lossless=1</c>）；硬件编码器发各自具名档位；NVENC 另有
+    /// <c>-spatial-aq</c> + <c>-aq-strength</c>；<c>-low_power</c> 只发给 QSV（四支自报表里**只有
+    /// av1_qsv 有这一项**，实测 nvenc/svt/amf 的表内 0 命中）与 VAAPI（沿用旧口径，本机未验）。
+    /// </para>
+    /// <para>
+    /// ⚠ 显示串一律先过 <see cref="NormalizeTuneToken"/> 再比对（A-7：中文显示串当参数键在英文界面下
+    /// 整条静默失效）；<c>-svtav1-params</c> 的多键必须合并成一次出现（实测重复出现是**整体替换**）。
     /// </para>
     /// </summary>
     public static List<string> BuildAvifOptions(FfmpegOptions o)
     {
         var args = new List<string>(16);
-        if (o.Lossless)
+        var backend = ClassifyAvifBackend(o.Encoder);
+        // GUI 只有**一条**质量滑块，先把它折成 AV1 的 log-QP 域（0..63，0 最好），再送到该编码器
+        // **真实存在**的那条质量轴上。旧写法对四个硬件后端照发 -crf，而 crf 不是它们的 AVOption。
+        var crf = o.Lossless ? 0 : MapAvifCrf(o.Quality);
+        // SVT 的私有项统一攒成**一个** dict 再发：实测重复出现的 -svtav1-params 是**整体替换**而非
+        // 合并（分两次发 tune=5 与 lossless=1 的产物，与只发 lossless=1 逐字节相同 e7816f68，
+        // 而合并成 tune=5:lossless=1 是另一个产物 dff9419a）⇒ 多个键必须用 : 连在同一次出现里。
+        var svtParams = new List<string>(2);
+
+        // ── 质量轴（逐编码器；域与生效性见 ClassifyAvifBackend 的实测表）──
+        switch (backend)
         {
-            args.Add("-crf");
-            args.Add("0");
+            case AvifBackend.Nvenc:
+                // NVENC AV1 的常量质量轴是 -cq（自报域 0..63，但 **0 是 auto 不是最好档**）⇒ 下限取 1。
+                // 实测单调生效（512x512 同素材同构建）：cq 1/10/20/45/63 = 27907/23815/17032/5429/1542 B；
+                // 对照旧写法：-crf 10 与 -crf 60 产物**同哈希** 28e1ac81（19696 B）且 ffmpeg 报
+                // Codec AVOption crf has not been used ⇒ 滑块此前对 NVENC 完全无效。
+                args.Add("-cq"); args.Add(Math.Clamp(crf, 1, 63).ToString());
+                // NVENC AV1 **没有**无损档：实测 -tune lossless 与 -rc constqp 都报 not supported、rc=127
+                // ⇒ 勾了无损只能落到 cq 下限（最好但仍有损，实测 -cq 1 的 PSNR 66.17dB 而非 inf）。
+                if (o.Lossless)
+                    Console.WriteLine("[avif/av1_nvenc] --lossless true is not honoured: the NVENC AV1 encoder "
+                        + "has no lossless mode (ffmpeg -tune lossless / -rc constqp both fail with not "
+                        + "supported). Falling back to the best constant-quality setting (-cq 1), which "
+                        + "is still lossy. Use libaom-av1 or libsvtav1 for a truly lossless AVIF.");
+                break;
+            case AvifBackend.Qsv:
+                // av1_qsv 的自报表里**没有** crf / cq / qp（实测 -cq 对它报 has not been used），
+                // 常量质量输入是 AVCodecContext 的通用项 -global_quality（ICQ/QVBR 的取值来源）。
+                // 上限压到 51 是为了落在 QSV 常量质量各档**共同**的域内（避免越界硬失败）。
+                // ⚠ 本机无 Intel 核显（av1_qsv 一开编码器就失败）⇒ 只验到**参数名与 ffmpeg 层合法**，
+                //   取值是否真改变产物**未验**。
+                args.Add("-global_quality"); args.Add(Math.Clamp(crf, 1, 51).ToString());
+                break;
+            case AvifBackend.Amf:
+                // av1_amf 的常量质量轴是 cqp 码控下的 -qp_i / -qp_p（自报域 -1..255，实测传 300 报
+                // out of range [-1 - 255] ⇒ 域已核）。AMF 的 QP 是 qindex 域，不是 log-QP 域，
+                // 故按 libaom 的 quantizer_to_qindex 表换算（见 AvifQIndexFromCrf）。
+                // ⚠ 本机无 AMD GPU（amfrt64.dll 打不开）⇒ 生效性与 cqp 对 AV1 的支持度**未验**，
+                //   仅保证 ffmpeg 层不发散（同一条命令换成 -usage allintra 时 rc=127 的解析失败可证）。
+                var amfQp = AvifQIndexFromCrf(crf).ToString();
+                args.Add("-rc"); args.Add("cqp");
+                args.Add("-qp_i"); args.Add(amfQp);
+                args.Add("-qp_p"); args.Add(amfQp);
+                break;
+            case AvifBackend.Vaapi:
+                // ⚠ **随包 ffmpeg 根本不含 av1_vaapi**（-h encoder=av1_vaapi 报 Codec is not recognized，
+                //   -encoders 里也只有 d3d12va / nvenc / qsv / amf / mf / vulkan）⇒ 本分支在本机
+                //   无任何可实测依据。取上游 vaapi 共用码控读的那条轴（AVCodecContext.global_quality），
+                //   它是通用 AVOption（域 INT_MIN..INT_MAX）⇒ 不可能在 ffmpeg 层越界；生效性**未验**。
+                args.Add("-global_quality"); args.Add(Math.Clamp(crf, 1, 63).ToString());
+                break;
+            default:
+                // libaom-av1 与 libsvtav1 **都**有真 -crf：自报表 libaom [-1..63]、libsvtav1 [0..63]；
+                // SVT 实测日志回显 BRC mode / rate factor : CRF / 30.00 ⇒ 真生效。
+                // 未知编码器（如本构建不含的 librav1e）也走这里：-crf 是各软件 AV1 编码器的公共写法。
+                args.Add("-crf"); args.Add(crf.ToString());
+                break;
         }
-        else
+        // ── tune（A-6 逐值对表 + A-7 语言无关）──
+        // 两把下拉存的都是**本地化之后的显示串**，旧代码拿中文字面量当键 ⇒ 英文界面下整条 IQ 静默失效、
+        // 而 != 默认 这类哨兵在英文下恒真。先折成 token、再按编码器域分发（见 NormalizeTuneToken）。
+        var tuneTok = NormalizeTuneToken(o.AvifTune);
+        var svtTuneTok = NormalizeTuneToken(o.AvifSvtTune);
+        switch (backend)
         {
-            args.Add("-crf");
-            args.Add(MapAvifCrf(o.Quality).ToString());
-        }
-        if (o.AvifCpuUsed.HasValue)
-        { args.Add("-cpu-used"); args.Add(o.AvifCpuUsed.Value.ToString()); }
-        var isSvt = o.Encoder?.StartsWith("libsvt", StringComparison.OrdinalIgnoreCase) == true;
-        if (!string.IsNullOrWhiteSpace(o.AvifTune) && o.AvifTune != "默认")
-        {
-            switch (o.AvifTune)
-            {
-                case "PSNR":
-                    if (isSvt) { args.Add("-svtav1-params"); args.Add("tune=1"); }
-                    else { args.Add("-tune"); args.Add("psnr"); }
-                    break;
-                case "SSIM":
-                    if (isSvt) { args.Add("-svtav1-params"); args.Add("tune=2"); }
-                    else { args.Add("-tune"); args.Add("ssim"); }
-                    break;
-                case "VMAF":
-                    if (isSvt) { args.Add("-svtav1-params"); args.Add("tune=3"); }
-                    else { args.Add("-tune"); args.Add("vmaf_without_preprocessing"); }
-                    break;
-                case "IQ (图像优化)":
-                    // libaom 仅支持 tune=iq（原始 aom 参数），SVT-AV1 不支持
-                    if (!isSvt)
-                    {
+            case AvifBackend.Libaom:
+                switch (tuneTok)
+                {
+                    case "psnr":
+                    case "ssim":
+                        // libaom 的 -tune 自报域是 -1..1，即只有 psnr | ssim（其余值 Unable to parse、rc=127）
+                        args.Add("-tune"); args.Add(tuneTok);
+                        break;
+                    case "iq":
+                        // IQ 只能走原始 aom 参数：实测 -usage allintra + -aom-params tune=iq 为 rc=0
                         args.Add("-usage"); args.Add("allintra");
                         args.Add("-aom-params"); args.Add("tune=iq");
-                    }
-                    break;
-            }
-        }
-        // 动图 AVIF: still-picture=0
-        var isAnimated = o.AnimationFps.HasValue || o.AnimationLoop != 0 || o.AvifStillPicture == false;
-        if (isAnimated)
-        { args.Add("-still-picture"); args.Add("0"); }
-        else if (o.AvifStillPicture == true)
-        { args.Add("-still-picture"); args.Add("1"); }
-        if (o.AvifRowMt == true)
-        { args.Add("-row-mt"); args.Add("1"); }
-        // IQ tune 已设置 -usage allintra，不再重复设置
-        var iqActive = o.AvifTune == "IQ (图像优化)" && !isSvt;
-        if (!iqActive && !string.IsNullOrWhiteSpace(o.AvifPreset) && o.AvifPreset != "auto")
-        {
-            // ── 编码器特定参数 ──
-            if (isSvt)
-            {
-                // SVT-AV1: preset + tune
-                if (o.AvifSvtPreset.HasValue)
-                { args.Add("-preset"); args.Add(o.AvifSvtPreset.Value.ToString()); }
-                if (!string.IsNullOrWhiteSpace(o.AvifSvtTune) && o.AvifSvtTune != "默认")
-                {
-                    var svtTuneVal = o.AvifSvtTune switch
-                    {
-                        "VMAF (主观)" => "1",
-                        "PSNR" => "2",
-                        "SSIM" => "3",
-                        _ => "1"
-                    };
-                    args.Add("-svtav1-params"); args.Add($"tune={svtTuneVal}");
+                        break;
+                    case "vmaf":
+                        // 本构建的 libaom **不带** VMAF tune：实测 -tune vmaf_without_preprocessing 与
+                        // -tune vmaf 都是 Unable to parse、rc=127（该 AVOption 的域就到 ssim 为止），
+                        // -aom-params tune=vmaf 也 rc=127 并提示需 -DCONFIG_TUNE_VMAF=1 ⇒ 发出去必崩。
+                        // 旧代码正是在这里发了个不存在的值 ⇒ 选 VMAF 的 libaom 任务 100% 失败。
+                        Console.WriteLine("[avif/libaom-av1] tune=vmaf is not available in this libaom build "
+                            + "(-tune accepts only psnr | ssim, and -aom-params tune=vmaf fails with "
+                            + "CONFIG_TUNE_VMAF), so no tuning flag is emitted. Switch encoder to libsvtav1 "
+                            + "for a VMAF-tuned encode.");
+                        break;
                 }
-                // SVT still-picture
-                if (o.AvifStillPicture == true)
-                { args.Add("-still-picture"); args.Add("1"); }
-                else if (o.AvifStillPicture == false)
-                { args.Add("-still-picture"); args.Add("0"); }
-            }
+                break;
+            case AvifBackend.Svt:
+                // SVT 的 tune 只能走 -svtav1-params（下面统一成一个 dict 发）。专用那把下拉优先于通用
+                // tune 那把：两把同时有值时旧代码会发**两次** -svtav1-params，而后一次整体替换前一次。
+                var sv = SvtTuneValue(svtTuneTok.Length > 0 ? svtTuneTok : tuneTok);
+                if (sv != null)
+                {
+                    // 无损时逐档放行/拦下（实测 preset 7 + crf 0 + lossless=1）：
+                    //   tune=0(VQ) / 1(PSNR) / 2(SSIM) ⇒ PSNR **inf**，无损成立；
+                    //   tune=4(MS_SSIM) ⇒ 32.16dB、tune=5(VMAF) ⇒ 53.14dB ⇒ 这两个会**悄悄把
+                    //   lossless=1 打掉**（产物仍是 rc=0、不报错，但已有损）。
+                    // 无损承诺比调优指标重，且 GUI 的 SVT tune 默认档恰好是 VMAF ⇒ 必须拦。
+                    if (!o.Lossless || sv == "0" || sv == "1" || sv == "2") svtParams.Add("tune=" + sv);
+                    else
+                        Console.WriteLine("[avif/libsvtav1] tune=" + sv + " dropped because lossless is on: with "
+                            + "lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for "
+                            + "tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless "
+                            + "promise wins here; turn lossless off to keep the tuning metric.");
+                }
+                else if (tuneTok == "iq" && svtTuneTok.Length == 0)
+                    // IQ 在 SVT 里就是 tune=3，而实测（随机访问结构下）它直接 bad parameter：
+                    // Tune IQ only supports all-intra and low delay ⇒ 本构建的 GUI 没有 all-intra 通路，
+                    // 故不发。旧代码把 VMAF 折成 tune=3 恰好落在这个崩溃值上（见 A-6）。
+                    Console.WriteLine("[avif/libsvtav1] tune=IQ is not usable on SVT-AV1 (tune=3 aborts with "
+                        + "Tune IQ only supports all-intra and low delay), so no tuning flag is emitted. "
+                        + "Use libaom-av1 for IQ.");
+                break;
         }
-        // ── libaom-av1 高级图像选项 ──
-        if (!isSvt)
+        // ── 结构/速度轴 -cpu-used：libaom 私有项（自报域 0..8）──
+        // 实测对 nvenc / svt 它只会得到 Codec AVOption cpu-used has not been used ⇒ 旧代码白发。
+        // SVT 的速度轴是 -preset（GUI 已有 SvtPresetBox），不在此挪用 cpu-used 的档位。
+        if (backend == AvifBackend.Libaom && o.AvifCpuUsed.HasValue)
+        { args.Add("-cpu-used"); args.Add(o.AvifCpuUsed.Value.ToString()); }
+        // ── 静帧 / 行并行：-still-picture 与 -row-mt 都是 **libaom 私有项** ──
+        // 实测对 nvenc / svt 它们只会换来 Codec AVOption has not been used（libsvtav1 的自报表里
+        // 根本没有 -still-picture ⇒ SVT 上不存在正确接法）。
+        // ⚠ 顺带修掉一个恒真的动图判据：旧写法含 o.AnimationLoop != 0 一项，而**静帧任务**里
+        //   MainWindow 给 AnimationLoop 的就是默认值 -1（-1 != 0 恒真）⇒ isAnimated 恒真 ⇒
+        //   面板上默认勾选的静帧复选框只能发出 -still-picture 0，-still-picture 1 这一支**不可达**。
+        //   现按字面语义判动图：给了 fps、或循环计数有效（0=无限循环、>0=有限次，-1=非动图模式）、
+        //   或用户显式取消静帧。
+        if (backend == AvifBackend.Libaom)
+        {
+            var isAnimated = o.AnimationFps.HasValue || o.AnimationLoop >= 0 || o.AvifStillPicture == false;
+            if (isAnimated)
+            { args.Add("-still-picture"); args.Add("0"); }
+            else if (o.AvifStillPicture == true)
+            { args.Add("-still-picture"); args.Add("1"); }
+            if (o.AvifRowMt == true)
+            { args.Add("-row-mt"); args.Add("1"); }
+        }
+        // ── SVT 的速度轴 -preset（自报域 -2..13；实测传 14 报 out of range [-2 - 13]）──
+        else if (backend == AvifBackend.Svt)
+        {
+            // 旧实现把 -preset 绑在 AvifPreset 非空上、取值却来自 AvifSvtPreset ⇒ 预设里只带
+            // AvifSvtPreset 时档位会被整条丢掉；这里直接按 AvifSvtPreset 判。
+            if (o.AvifSvtPreset.HasValue)
+            { args.Add("-preset"); args.Add(o.AvifSvtPreset.Value.ToString()); }
+        }
+        // A-12：SVT 的 crf 0 **不是**无损（实测 crf 0 = PSNR 45.89dB），真无损要 lossless=1
+        // （实测 rc=0、PSNR=inf、25991 B @preset 7；对照 libaom 的 crf 0 本身就是 inf ⇒ 两编码器口径对齐）。
+        // ⚠ 上面的 tune 分支会在全档被拦下时留下**只有 lossless=1** 的 dict，正是这条保住了无损。
+        if (backend == AvifBackend.Svt && o.Lossless) svtParams.Add("lossless=1");
+        if (svtParams.Count > 0)
+        { args.Add("-svtav1-params"); args.Add(string.Join(":", svtParams)); }
+        // ── libaom-av1 高级图像选项（这一组**全是 libaom 私有项**，A-9）──
+        // 旧口径只用 !isSvt 排除 libaom 项 ⇒ 四个硬件后端照收 -aq-mode / -enable-cdef /
+        // -enable-intrabc / -denoise-noise-level，实测每个都只得到 has not been used 告警。
+        if (backend == AvifBackend.Libaom)
         {
             // aq-mode: 自适应量化
             if (!string.IsNullOrWhiteSpace(o.AvifAqMode))
@@ -372,50 +606,71 @@ public static class ImageEncoderArgs
             if (o.AvifDenoiseLevel.HasValue && o.AvifDenoiseLevel.Value > 0)
             { args.Add("-denoise-noise-level"); args.Add(o.AvifDenoiseLevel.Value.ToString()); }
         }
-        // ── 硬件编码器预设 (新:精细7档) ──
-        // 优先使用新预设级别，回退旧 AvifHwPreset 兼容
-        var hwLevel = o.AvifHwPresetLevel;
-        if (hwLevel >= 1 && hwLevel <= 7)
+        // ── 硬件编码器的速度/质量预设（GUI 的 7 档下拉；A-9 的另一半：档位名也必须按编码器发）──
+        // 档位名逐支核过自报表：
+        //   av1_nvenc -preset 的具名值是 p1..p7（另有 slow|medium|fast），实测 -preset veryslow
+        //     报 Unable to parse ⇒ 旧的 p{n} 写法正确；
+        //   av1_qsv   -preset 的具名值是 veryfast..veryslow（实测 -preset p7 报 Unable to parse）；
+        //   av1_amf   -quality 的具名值是 speed|balanced|quality|high_quality（实测 banana 被拒）；
+        //   av1_vaapi -compression_level 是 AVCodecContext 的**通用**项（域 INT_MIN..INT_MAX，
+        //     默认 -1）⇒ ffmpeg 层不会越界；上游 vaapi 侧把它当质量级读并再按设备能力钳制。
+        var hwLevel = Math.Clamp(o.AvifHwPresetLevel, 1, 7);   // 越界档位在下面各轴上都可能硬失败 ⇒ 钳制
+        switch (backend)
         {
-            var enc = o.Encoder ?? "";
-            if (enc.StartsWith("av1_nvenc", StringComparison.OrdinalIgnoreCase))
-            { args.Add("-preset"); args.Add($"p{hwLevel}"); }
-            else if (enc.StartsWith("av1_qsv", StringComparison.OrdinalIgnoreCase))
+            case AvifBackend.Nvenc:
+                args.Add("-preset"); args.Add($"p{hwLevel}");
+                break;
+            case AvifBackend.Qsv:
             {
                 var qsvPresets = new[] { "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow" };
-                args.Add("-preset"); args.Add(qsvPresets[Math.Clamp(hwLevel - 1, 0, 6)]);
+                args.Add("-preset"); args.Add(qsvPresets[hwLevel - 1]);
+                break;
             }
-            else if (enc.StartsWith("av1_amf", StringComparison.OrdinalIgnoreCase))
-            { args.Add("-quality"); args.Add(hwLevel <= 2 ? "speed" : hwLevel <= 5 ? "balanced" : "quality"); }
-            else if (enc.StartsWith("av1_vaapi", StringComparison.OrdinalIgnoreCase))
-            { args.Add("-compression_level"); args.Add(hwLevel.ToString()); }
+            case AvifBackend.Amf:
+                args.Add("-quality"); args.Add(hwLevel <= 2 ? "speed" : hwLevel <= 5 ? "balanced" : "quality");
+                break;
+            case AvifBackend.Vaapi:
+                args.Add("-compression_level"); args.Add(hwLevel.ToString());
+                break;
         }
-        else if (!string.IsNullOrWhiteSpace(o.AvifHwPreset) && o.AvifHwPreset != "平衡")
+        // 旧实现在这里还有一条 回退旧 AvifHwPreset 的分支（拿 平衡 / 高质量 这类中文显示串当键，
+        // 即 A-7 的第 393/398/400/402/404 行），**已删除**。删除依据（两条独立、都已核实）：
+        //   ① 该分支不可达：进入条件是档位不在 1..7，而 AvifHwPresetLevel 默认 4、MainWindow 采的是
+        //      7 或 1..7、PresetManagerService 的六处内置预设也全是 1..7 ⇒ 条件恒假；
+        //   ② 依赖的字段恒空：HwPresetCombo 在 MainWindow.xaml 里**不存在**（grep 命中 0），
+        //      采集侧只能给 null；FfmpegOptions.ApplyPreset 不搬 AvifHwPreset；CliParser 也没有对应键。
+        // ── NVENC 的空间 AQ（A-4 / A-5）──
+        if (backend == AvifBackend.Nvenc)
         {
-            // 旧字段回退兼容
-            var enc2 = o.Encoder ?? "";
-            if (enc2.StartsWith("av1_nvenc", StringComparison.OrdinalIgnoreCase))
-            { args.Add("-preset"); args.Add(o.AvifHwPreset == "高质量" ? "p7" : "p1"); }
-            else if (enc2.StartsWith("av1_qsv", StringComparison.OrdinalIgnoreCase))
-            { args.Add("-preset"); args.Add(o.AvifHwPreset == "高质量" ? "veryslow" : "veryfast"); }
-            else if (enc2.StartsWith("av1_amf", StringComparison.OrdinalIgnoreCase))
-            { args.Add("-quality"); args.Add(o.AvifHwPreset == "高质量" ? "quality" : "speed"); }
-            else if (enc2.StartsWith("av1_vaapi", StringComparison.OrdinalIgnoreCase))
-            { args.Add("-compression_level"); args.Add(o.AvifHwPreset == "高质量" ? "7" : "1"); }
-        }
-        // ── NVENC 高级选项 ──
-        if (o.Encoder?.StartsWith("av1_nvenc", StringComparison.OrdinalIgnoreCase) == true)
-        {
-            if (o.AvifNvencAqStrength.HasValue)
-            { args.Add("-aq-strength"); args.Add(o.AvifNvencAqStrength.Value.ToString()); }
-            if (o.AvifNvencSpatialAq == false)
-            { args.Add("-spatial-aq"); args.Add("0"); }
-            else if (o.AvifNvencSpatialAq == true)
+            // 三向对照实测（固定 -cq 20）：省略 == -spatial-aq 0（同哈希 21eed557 / 17032 B），
+            // 只有传 1 才变（6d0b6211 / 16636 B）⇒ NVENC 侧默认本就是 0 ⇒ 勾选**必须**显式发 1，
+            // 否则该复选框两个状态等价（A-4 的成因）。三态仍区分：null = 用户没表态 ⇒ 不发。
+            if (o.AvifNvencSpatialAq == true)
             { args.Add("-spatial-aq"); args.Add("1"); }
+            else if (o.AvifNvencSpatialAq == false)
+            { args.Add("-spatial-aq"); args.Add("0"); }
+
+            // aq-strength：自报域 1..15、默认 8（实测传 0 与传 16 都是 out of range、rc=127）。
+            // 0 在本文件里的语义是**不设该参数**（面板把 0 解释成关闭 AQ，而 0 不是合法取值）；
+            // 越上界钳到 15，而不是发一个必崩的值。
+            // 另外官方语义是**仅当 Spatial AQ 开启**该字段才参与（实测不开空间 AQ 时传 5、传 8
+            // 与省略三者产物同哈希 21eed557）⇒ 空间 AQ 未开时不发它，并如实出声（否则又是一个
+            // 看得见、按得动、但改变不了任何东西的旋钮）。
+            var aqStrength = o.AvifNvencAqStrength;
+            if (aqStrength.HasValue && aqStrength.Value > 0)
+            {
+                if (o.AvifNvencSpatialAq == true)
+                { args.Add("-aq-strength"); args.Add(Math.Clamp(aqStrength.Value, 1, 15).ToString()); }
+                else
+                    Console.WriteLine("[avif/av1_nvenc] -aq-strength dropped because spatial AQ is off: NVENC "
+                        + "only uses this field when -spatial-aq is 1 (verified: with spatial AQ off, "
+                        + "strength 5 / strength 8 / omitting it all yield the identical file). Enable "
+                        + "Spatial AQ to apply it. The value 0 means do not emit this option at all, "
+                        + "because the encoder range starts at 1.");
+            }
         }
-        // ── QSV/VAAPI 低功耗模式 ──
-        if (o.Encoder?.StartsWith("av1_qsv", StringComparison.OrdinalIgnoreCase) == true
-            || o.Encoder?.StartsWith("av1_vaapi", StringComparison.OrdinalIgnoreCase) == true)
+        // ── QSV / VAAPI 低功耗模式（-low_power 在 av1_qsv 的自报表里确有此项）──
+        if (backend == AvifBackend.Qsv || backend == AvifBackend.Vaapi)
         {
             if (o.AvifLowPower == true)
             { args.Add("-low_power"); args.Add("1"); }
@@ -426,25 +681,46 @@ public static class ImageEncoderArgs
     }
 
     /// <summary>
-    /// AVIF 的**编码器特定位深上限**（单一真值）：<c>libaom-av1</c> / <c>av1_nvenc</c> 支持
-    /// 8/10/12-bit；<c>libsvtav1</c> / <c>av1_qsv</c> / <c>av1_amf</c> / <c>av1_vaapi</c> 仅 8/10-bit。
+    /// AVIF 的**编码器特定位深上限**（单一真值），按 <see cref="ClassifyAvifBackend"/> 的同一套分类给：
+    /// <c>libaom-av1</c> / <c>av1_nvenc</c> ⇒ 12；<c>libsvtav1</c> / <c>av1_qsv</c> / <c>av1_amf</c> /
+    /// <c>av1_vaapi</c> / 未识别名 ⇒ 10。
     /// <para>
-    /// ⚠ 与既有口径**逐字一致**（含"<c>options.Encoder</c> 为空 ⇒ 落到 10"这条隐含行为）：
-    /// 传统管线在 <c>FfmpegCommandBuilder</c> 里用的是 <c>options.Encoder ?? ""</c> 做前缀匹配，
-    /// 空串既不以 libaom 也不以 av1_nvenc 开头 ⇒ 上限 10。这里必须沿用同一判定，
-    /// 否则引擎与传统管线在"未显式指定编码器"时会对同一个 16-bit 源给出不同位深。
+    /// ★ **空编码器名 ⇒ 12，不是 10**（任务 #36，2026-09-26 收口）。空名意味着命令里**不写** <c>-c:v</c>
+    ///   ⇒ 由 ffmpeg 为 <c>.avif</c> 挑默认编码器，实测本仓随包构建挑的就是 <c>libaom-av1</c>
+    ///   （<c>Stream #0:0 -> #0:0 (png (native) -> av1 (libaom-av1))</c>）。
+    ///   <see cref="ClassifyAvifBackend"/> 一直是这么处理空串的（"不给 -c:v 时 ffmpeg 为 avif 选的默认
+    ///   编码器就是 libaom-av1"），而本函数原先按 <c>options.Encoder ?? ""</c> 做前缀匹配 ⇒ 空串落到
+    ///   else 支得 10。两条口径在同一个类里相隔 350 行、互相矛盾。
+    ///   代价是实打实的：CLI/headless **没有**任何入口能写 <c>options.Encoder</c>（<c>--encoder</c> 映射到
+    ///   <c>EncoderBackend</c> 枚举，不是编码器名）⇒ 命令行 <c>--bit-depth 12</c> 在裁决点被永久钳到 10，
+    ///   并向用户播报"本工具对该容器实测可交付的上限 = 10bit" —— 那句是**假的**。
+    ///   同一函数还被 UI 位深下拉的旧三元式（<c>? 12 : 10</c>）复制过一份，现由
+    ///   <c>MainWindow.UpdateChromaBitDepthOptions</c> 改调本函数收掉。
     /// </para>
     /// <para>
-    /// 实测（`ffmpeg -h encoder=`）：libaom-av1 支持 yuv420p/422p/444p/gbrp + 10le/12le + gray；
-    /// libsvtav1 **只**支持 yuv420p / yuv420p10le。
+    /// 实测各编码器自报的像素格式表（本仓随包 ffmpeg <c>-h encoder=</c>，2026-09-26）：
+    /// libaom-av1 含 <c>yuv420p12le / yuv422p12le / yuv444p12le / gbrp12le</c>；
+    /// av1_nvenc 含 <c>p012le / p212le / yuv444p12msble</c>；
+    /// libsvtav1 只到 <c>yuv420p10le</c>；av1_qsv 只到 <c>p010le</c>；av1_amf 只到 <c>p010le</c>。
+    /// ⇒ <c>tests/scripts/verify-decision-delivery.ps1</c> ⑯ 现场解析这张表，但它只对**两行**下判断：
+    ///   「不写 -c:v 时 ffmpeg 实际选的默认编码器」与 <c>libsvtav1</c>（后者用来证明解析器能区分不同
+    ///   编码器，否则"交付 == 实测上限"就是恒等式）⇒ 随包 ffmpeg 换了默认编码器会红在前提那条。
+    /// ⚠ <c>av1_nvenc ⇒ 12</c> 这一行**本轮没有被端到端验过**，且已知可疑：本表只决定"允许到哪档"，
+    ///   真正的像素格式名由 <see cref="MapPixFmt"/> 给（12bit ⇒ <c>yuv420p12le</c>），而 nvenc 的自报表里
+    ///   **没有** <c>yuv420p12le</c>（只有 <c>p012le / p212le / yuv444p12msble</c>）⇒ 12bit + nvenc 大概率
+    ///   会被编码器拒收。本机无 NVIDIA GPU（见本文件 <c>AvifBackend</c> 注："本机无法实测任何一条"）
+    ///   ⇒ 登记为待办，不在本轮改（改它需要能起 nvenc 的机器）。libaom 一行是实测过的（⑯ 的前提条）。
     /// </para>
     /// </summary>
-    public static int AvifMaxBitDepth(FfmpegOptions o)
-    {
-        var enc = o.Encoder ?? "";
-        return (enc.StartsWith("libaom", StringComparison.OrdinalIgnoreCase)
-             || enc.StartsWith("av1_nvenc", StringComparison.OrdinalIgnoreCase)) ? 12 : 10;
-    }
+    public static int AvifMaxBitDepthForEncoder(string? encoder)
+        => ClassifyAvifBackend(encoder) switch
+        {
+            AvifBackend.Libaom or AvifBackend.Nvenc => 12,
+            _ => 10,
+        };
+
+    /// <summary>见 <see cref="AvifMaxBitDepthForEncoder"/>（按 <c>options.Encoder</c> 取档）。</summary>
+    public static int AvifMaxBitDepth(FfmpegOptions o) => AvifMaxBitDepthForEncoder(o.Encoder);
 
     /// <summary>
     /// AVIF 出口的**有效位深**（引擎侧入口）。与传统管线
@@ -453,7 +729,8 @@ public static class ImageEncoderArgs
     /// <item>用户显式 <c>--bit-depth N</c> ⇒ <c>min(N, 编码器上限)</c>；</item>
     /// <item>否则用**探测到的源位深**：源 ≤ 8 ⇒ 8（传统管线此时**根本不写** <c>-pix_fmt</c>，
     ///       等价于编码器默认的 <c>yuv420p</c>；引擎显式写 <c>yuv420p</c> 结果相同）；</item>
-    /// <item>源 &gt; 8 ⇒ <c>min(源位深, 编码器上限)</c>（16-bit 源 + libaom 默认 ⇒ 10，不是 16 —— 16-bit YUV 编码器不支持）。</item>
+    /// <item>源 &gt; 8 ⇒ <c>min(源位深, 编码器上限)</c>（未选编码器时上限 12 ⇒ 16-bit 源出 12bit，
+    ///       不是 16 —— 16-bit YUV 编码器不支持）。</item>
     /// </list>
     /// <para>
     /// ⚠ **为什么引擎不能只看 <c>plan.OutBitDepth</c>**：AVIF 是 YUV 容器、<c>RgbNative=false</c>，

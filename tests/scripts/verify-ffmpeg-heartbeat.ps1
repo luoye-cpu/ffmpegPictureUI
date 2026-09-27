@@ -27,7 +27,7 @@
 #      ⚠ 这一条是「负控必须有牙」的关键：注入 2 s、实测总耗时 ~15 s ⇒ 任何「按总墙钟
 #        判死」的错误实现都会在这一条上红。同时断言日志里**一个 progress 块行都没有**
 #        （证明心跳真的被内部消化、没有污染既有日志 —— 这是 team-lead 要求实测的那一条）。
-#   ③-d **反向**：动图 JXL（4K × 30 帧）`--format apng` ⇒ 站点 B（`:2951` jxl-anim）。
+#   ③-d **反向**：动图 JXL（4K × 48 帧）`--format apng` ⇒ 站点 B（`:2951` jxl-anim）。
 #      实测总耗时 ~10 s（≈ 注入阈值的 5×）⇒ 牙口比 ③ 还大。
 #      ⚠ 站点可达性**由日志行证明**（`[jxl] 动图 JXL 不进行 djxl→PNG 中间解码`），不靠耗时推断。
 #   ③-e **反向**：JPEG 重构型 JXL（jbrd 容器）+ djxl 不可用 ⇒ 站点 A（`:2934` jxl-recon-no-djxl）。
@@ -60,6 +60,9 @@ $root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path; Set-Location $roo
 $env:FFMPEGGUI_FFMPEG_DIR = "$root/publish/PLAN/ffmpeg-full"
 $exe = "$root/src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.exe"
 if (-not (Test-Path $exe)) { $exe = "$root/src/FfmpegGui/bin/Debug/net11.0/win-x64/FfmpegGui.exe" }
+# ⚠ 2026-09-21（TESTING.md 第 84 条处置建议 ①）：**回退是静默的** —— 门禁可能测的
+#   不是你以为的那个二进制。⇒ 一律**打印被测 exe 与构建类型**，让读数可追溯。
+Write-Output ("[gate] exe=" + $exe + $(if ($exe -like '*\Debug\*') { " (Debug fallback)" } else { " (Release)" }))
 $ff  = "$root/publish/PLAN/ffmpeg-full/ffmpeg.exe"
 $fp  = "$root/publish/PLAN/ffmpeg-full/ffprobe.exe"
 $cjxl = "$root/publish/PLAN/jxl/bin/cjxl.exe"
@@ -77,16 +80,24 @@ $probeSec     = 3        # 探测站点超时（把应用尽快推到编码阶�
 $hbSec        = 2        # 心跳阈值：② 与 ③ 共用 —— ② 用它判死、③ 用它证「不被误杀」
 $env:FFMPEGGUI_JXL_PROBE_TIMEOUT_SEC = "$probeSec"
 $env:FFMPEGGUI_HEARTBEAT_TIMEOUT_SEC = "$hbSec"
-# 让 djxl / cjxl 都不可用：① 手动目录置空 + ② 打掉 PLAN 便携包自动检测
-#   （⚠ 只置空 JXL_LIB_DIR 不够：DjxlService.Detect 还有 PLAN / 同目录 / 扩展路径 / PATH 四级兜底，
-#     实测只置空它时 `djxl: 可用` ⇒ 会走 djxl→cjxl 管道、**根本到不了 :3036**。）
+# 让 djxl / cjxl 都不可用：① 手动目录置空 + ② 打掉 PLAN 便携包自动检测 + ④ 打掉系统扩展搜索根
+#   ⚠⚠ 2026-09-22 实测教训：**只置空前两级是不够的，而且原注释低估了 ④ 的杀伤面** ——
+#     `GetExtendedSearchPaths` 会把 `%LOCALAPPDATA%\Programs`、`C:\Program Files` 与**整个 PATH**
+#     递归扫一遍，本机因此命中 `C:\Program Files\WindowsApps\LinYuSen.HDRImageViewer_1.0.31.0_x64__
+#     phzzaxm6z2j1m\encoders\x64\djxl.exe`（别的包自带的私有二进制）⇒ `djxl: 可用` ⇒
+#     ③/③-e 的「模拟真的生效」自检**按设计转红**（这条自检是有牙的，红得对）。
+#     该文件其实**根本起不来**（实测 Access Denied ⇒ 产品侧已改为"起不来就不算可用"），
+#     但**降级路径的门禁不能赌本机恰好没装过某个第三方应用** ⇒ 用 `FFMPEGGUI_EXT_SEARCH_DIRS`
+#     显式把搜索根收口到空目录（该变量置空时=不覆盖，见 ExternalToolsDetector.GetExtendedSearchPaths）。
+$emptyExt  = Join-Path $work 'emptyext';  New-Item -ItemType Directory -Force -Path $emptyExt  | Out-Null
 $env:FFMPEGGUI_JXL_LIB_DIR = $emptyJxl
 $env:FFMPEGGUI_PLAN_DIR    = $emptyPlan
+$env:FFMPEGGUI_EXT_SEARCH_DIRS = $emptyExt
 
-$negLimitSec = 90        # ③ / ③-e 合法慢任务上限（实测 ~15 s / ~5 s）
+$negLimitSec = 90        # ③ / ③-e 合法慢任务上限（2026-09-24 单跑实测 ③ ≈16.0 s / ③-d ≈10.1 s / ③-e ≈10.3 s；整轮负载下会到 ~1.5–2×）
 $posLimitSec = 40        # ② 忙等判死上限（实测 ~16 s：3 s 探测 ×2 + 2 s 心跳 + 启动/轮询余量）
 $animLimitSec = 90       # ③-d 动图慢任务上限（实测 ~10 s）
-# ③-d 的帧数探测超时：30 帧 4K 的 `ffprobe -count_frames` 实测 **2.84 s**，
+# ③-d 的帧数探测超时：4K 素材的 `ffprobe -count_frames` 实测 30 帧 **2.84 s**（现 48 帧按线性 ~4.5 s），
 #   基线 3 s 只剩 0.16 s 余量（慢机上会翻成「超时 ⇒ 按静图处理」）⇒ 本条单独放宽到 20 s。
 #   ⚠ 站点 B 的可达性其实**不依赖**这个探测（`--format apng` 让 `IsAnimated` 直接返回 true），
 #     放宽只是为了别在日志里留下一条 `帧数探测超时` 的噪声（本条另有一条断言禁止它）。
@@ -247,7 +258,7 @@ CK (($hbBlock.Length -gt 0) -and ($hbBlock -match 'return HangExitCode')) `
 #   `InactivityTimeoutMinutes = 30` 之后（且该分支结构性不可达）。这正是 D⑨ 登记的「类级根因未修」。
 #   ⚠ 反例（把签名改回 `bool heartbeat = false`）：本断言转红（实测见回报的变异验证）。
 CK ($srcCode -match 'bool heartbeat\s*=\s*true') `
-   "① 心跳是 **RunAsync 的默认行为**（`bool heartbeat = true`，opt-out）—— 类级堵住「未显式开启的调用点一旦忙等仍挂死」"
+   "① 心跳是 **RunAsync 的默认行为**（「bool heartbeat = true」，opt-out）—— 类级堵住「未显式开启的调用点一旦忙等仍挂死」"
 # ⭐ #15-b：心跳分支的活性判据必须**只**认「进度块到达」（`lastProgressTicks`），不得回退到「任意输出」
 #   （`lastActivityTicks`）—— 否则任何一行 stdout/stderr 噪声都能给忙等续命（旧实现正是这条更弱的信号）。
 #   ⚠ 反例（把 `lastProgressTicks` 换回 `lastActivityTicks`）：本断言转红（实测见回报的变异验证）。
@@ -307,35 +318,56 @@ CK (($headBytes[0] -eq 0xFF) -and ($headBytes[1] -eq 0x0A)) `
 CK ((Get-Item $real4k).Length -gt 100000) `
    "素材：4K JXL 足够大（实 $((Get-Item $real4k).Length) B）⇒ 高 effort 编码才有可测的耗时"
 
-# ── ③-d 素材：动图 JXL（4K × 30 帧）─────────────────────────────────────────────────
+# ── ③-d 素材：动图 JXL（4K × 48 帧）─────────────────────────────────────────────────
 #   ⚠ 造法：把同一段**裸码流**重复拼接 —— JXL 的帧序列就是这么表示的（本仓 ffprobe 也认）。
 #     帧数用 **ffprobe 第三方确认**，不靠我们自称。
-#   ⚠ 30 帧是实测选定的：`ffprobe -count_frames` 2.84 s、整条用例 ~10 s ⇒ 对注入的 2 s
-#     心跳有 ~5× 牙口（③ 的 15 s 是 7.5×；本条的 10 s 已足够咬住「按总墙钟判死」的实现）。
 $one4k = "$work/one4k.jxl"
 $g3 = Exec $ff "-y -hide_banner -loglevel error -i `"$work/src4k.png`" -frames:v 1 -c:v libjxl -effort 3 `"$one4k`"" "gen4kjxl1"
-$anim4k = "$work/anim4k_30.jxl"
+#   ⚠ 48 帧（不是 30）：本臂的「负控有牙」判据要求跑得**远久于**注入阈值，而 2026-09-22 探测修快后
+#     30 帧实测只有 5.9–6.3 s（贴着 6 s 的地板 ⇒ 抖动就能翻红）。加帧是**加判据的牙**，不是降阈值。
+$anim4k = "$work/anim4k_48.jxl"
 $oneBytes = [System.IO.File]::ReadAllBytes($one4k)
 $msA = New-Object System.IO.MemoryStream
-for ($i = 0; $i -lt 30; $i++) { $msA.Write($oneBytes, 0, $oneBytes.Length) }
+for ($i = 0; $i -lt 48; $i++) { $msA.Write($oneBytes, 0, $oneBytes.Length) }
 [System.IO.File]::WriteAllBytes($anim4k, $msA.ToArray()); $msA.Close()
 $fcA = (& $fp -v error -select_streams v:0 -count_frames -show_entries stream=nb_read_frames -of csv=p=0 $anim4k 2>$null | Out-String).Trim()
-CK ($fcA -eq '30') `
-   "素材：动图 JXL 的帧数经 ffprobe 确认 = 30（实 $fcA）—— 第三方证据（本仓 ffprobe），不是自称"
+CK ($fcA -eq '48') `
+   "素材：动图 JXL 的帧数经 ffprobe 确认 = 48（实 $fcA）—— 第三方证据（本仓 ffprobe），不是自称"
 CK ((Get-Item $anim4k).Length -gt 1000000) `
    "素材：动图 JXL 足够大（实 $((Get-Item $anim4k).Length) B）⇒ 编码耗时可测"
 
-# ── ③-e 素材：JPEG 重构型（jbrd）JXL ────────────────────────────────────────────────
+# ── ③-e 素材：JPEG 重构型（jbrd）JXL，**8K 且高熵（noise）** ────────────────────────
 #   ⚠ 只有 cjxl 能造出 jbrd（ffmpeg 的 libjxl 出口**不写** jbrd box），开关是 `--lossless_jpeg=1`。
-#     这里用**直接路径**调 cjxl —— 上面把 `FFMPEGGUI_JXL_LIB_DIR/PLAN_DIR` 指向空目录只影响
+#     这里用**直接路径**调 cjxl —— 上面把 `FFMPEGGUI_JXL_LIB_DIR/PLAN_DIR/EXT_SEARCH_DIRS` 置空只影响
 #     **被测应用**的探测，不影响我们自己造素材。
-$src4kJpg = "$work/src4k.jpg"
-$g4 = Exec $ff "-y -hide_banner -loglevel error -i `"$work/src4k.png`" -q:v 2 `"$src4kJpg`"" "gen4kjpg"
-$jbrd4k = "$work/jbrd4k.jxl"
-$g5 = Exec $cjxl "`"$src4kJpg`" `"$jbrd4k`" --lossless_jpeg=1" "genjbrd"
-CK ((Test-Path $jbrd4k) -and ($g5.code -eq 0) -and ((Get-Item $jbrd4k).Length -gt 1000)) `
-   "素材：jbrd 素材已生成（cjxl `--lossless_jpeg=1`，exit=$($g5.code)，实 $((Get-Item $jbrd4k).Length) B）"
-$jbHead = [System.IO.File]::ReadAllBytes($jbrd4k)[0..11]
+#   ⚠⚠ 为什么刻意加 `noise`：本臂的「负控有牙」要求"合法任务跑得**远久于**注入阈值 2 s"，而这份耗时
+#     **必须来自真实编码**。实测 png/`-compression_level 9` 单帧：4K **干净**渐变 1.0 s、4K **噪声** 3.0 s
+#     （zlib 咬不动高熵数据），6K 干净也只有 2.0 s ⇒ 在**低熵**下"分辨率"不是杠杆，**熵**才是；
+#     一旦熵已拉满，像素数就回到**线性**杠杆 ⇒ 本素材用「8K ∧ noise」。
+#   ⚠⚠ 2026-09-23/24 本臂连续两次翻车 ⇒ 结论是**它不该自带墙钟判据**：
+#     第一次：`elapsed -ge 3` 在整轮里量到 **2.8 s** 红。真因是这条下限**没有同夹具落盘读数背书**
+#       （3 s 照上面"4K 噪声 ≈ 3.0 s"的估值写的）。⚠ 我第一版把它归因成"同日修掉『启动期 5 级链跑两遍』
+#       把固定开销削快了"——**该归因是错的**：`ProbeAllTools` 全仓唯一调用点是 `MainWindow.xaml.cs:1248`
+#       （GUI Step3），而 `RunApp` 起的是 headless（`Program.cs:267` 走 `EnsureAllDetected`），
+#       两条根本不在一条路上；我当"前值"用的 3.8 s 还是 09-19 的**另一种素材**。完整登记见 §6 第 103 条。
+#     第二次：按"做实工作量"升到 8K ⇒ 空闲机 10.3 s 全绿，**但整轮负载下 8.8 s 被真心跳判死**
+#       （产物 0、日志含「无进度心跳」；同一时刻 ③/③-d 耗时也涨到单跑的 1.5–2 倍 ⇒ 是负载不是抖动）。
+#       机制：站点 A 的目标是**单帧** png + zlib 9 ⇒ ffmpeg 一次编码几乎只发一统计块 ⇒
+#       「无进度窗口」≈ 整个编码时长 ⇒ `阈值 > 窗口`（别误杀）与 `阈值 < 时长`（有牙）**互斥**，
+#       加大工作量只会把两个数一起推大 ⇒ 这条臂上的墙钟判据原理上不可能稳。
+#   ⇒ 维护者拍板（2026-09-24）：**本臂只保留站点 A 的覆盖**，"按总墙钟判死"这条能力交给
+#     ③ / ③-d 两处 `elapsed -ge 6`（多帧任务、块流持续 ⇒ 与负载解耦；实测 16.0/10.1 s ⇒ 余量 2.7–3.8×）。
+#     夹具回落到 4K 噪声以缩短无进度窗口。为防以后有人把 ③/③-d 那两条也顺手删掉，
+#     下面用一条**形状锁**钉住"该能力仍有两处载体"（见 ③-e 段末）。
+#   ⚠ 上面"4K 干净 1.0 s / 4K 噪声 3.0 s / 6K 干净 2.0 s"三档沿用自上一位作者的注释、本次未复测。
+#   ⚠ 上限 `negLimitSec = 90` 仍宽松。目标格式必须是 png + `--quality 0`（约束见下方执行处）。
+$srcNoisyJpg = "$work/src4k_noisy.jpg"
+$g4 = Exec $ff "-y -hide_banner -loglevel error -f lavfi -i `"testsrc2=s=3840x2160:duration=0.1`" -frames:v 1 -vf `"format=rgb48le,noise=alls=60:allf=u`" -q:v 2 `"$srcNoisyJpg`"" "gen4knoisy"
+$jbrdNoisy = "$work/jbrd4k_noisy.jxl"
+$g5 = Exec $cjxl "`"$srcNoisyJpg`" `"$jbrdNoisy`" --lossless_jpeg=1" "genjbrd"
+CK ((Test-Path $jbrdNoisy) -and ($g5.code -eq 0) -and ((Get-Item $jbrdNoisy).Length -gt 1000)) `
+   "素材：jbrd 素材已生成（cjxl `--lossless_jpeg=1`，exit=$($g5.code)，实 $((Get-Item $jbrdNoisy).Length) B）"
+$jbHead = [System.IO.File]::ReadAllBytes($jbrdNoisy)[0..11]
 CK ([System.Text.Encoding]::ASCII.GetString($jbHead, 4, 3) -eq 'JXL') `
    "素材：jbrd 素材是 ISOBMFF 容器（bytes 4..6 = `JXL`）—— 裸码流**不可能**被判 JPEG 重构，故这是必要条件"
 
@@ -389,7 +421,10 @@ Write-Host "`n### ③-d 反向：动图 JXL（4K × 30 帧）--format apng（站
 #   ⚠ 站点可达性**不靠耗时推断**，靠站点 B 的**专属日志行**：`动图 JXL 不进行 djxl→PNG 中间解码`。
 #     它在 `IsAnimated(item)` 为真、且 `DjxlService.IsAvailable` 分支**之前**打印 ⇒ 只有真进了
 #     动图分支才会有这一行（进站点 C 会打「未检测到 djxl，使用 ffmpeg 直接处理 JXL」，不是这句）。
-$rAnim = RunApp $anim4k "$work/out_anim" "anim" $animLimitSec @() @{ FFMPEGGUI_JXL_PROBE_TIMEOUT_SEC = "$animProbeSec" } "apng"
+# ⚠ `--quality 0` 是给 apng 的 zlib 拉到最高级 ⇒ 这份"合法慢"由**真实编码工作量**提供。
+#   2026-09-22 实测：探测扫整台机器被修快后，本条从 26.3 s 塌到 **5.97 s**（阈值 6 s ⇒ 红），
+#   塌下去的那 20 s 从来不是编码时间。与 ③-e 同一处方，见那里的 ⚠⚠ 注释。
+$rAnim = RunApp $anim4k "$work/out_anim" "anim" $animLimitSec @("--quality", "0") @{ FFMPEGGUI_JXL_PROBE_TIMEOUT_SEC = "$animProbeSec" } "apng"
 Write-Host ("  自行结束={0} 被门禁Kill={1} 耗时={2:N1}s 产物={3}" -f $rAnim.selfEnded, $rAnim.killed, $rAnim.elapsed, $rAnim.prods)
 CK ($rAnim.text -match '\[jxl\] 输入类型: 原生') `
    "③-d 自检：输入被判为原生 JXL 码流（`[jxl] 输入类型: 原生`）"
@@ -420,7 +455,13 @@ CK ($rAnim.text -notmatch '(?m)^\[cmd\] ffmpeg .*-progress') `
 Write-Host "`n### ③-e 反向：JPEG 重构型 JXL + djxl 不可用（站点 A）⇒ **不得**误杀 ###" -ForegroundColor Cyan
 #   ⚠ 站点 A 与站点 C 共用同一句 `[cmd] ffmpeg`，区别在**入口**：A 的入口行是
 #     「`[jxl] 输入类型: JPEG 重构`」+「`[djxl] 未检测到 djxl，回退到 ffmpeg`」（`回退到`，不是`使用`）。
-$rRecon = RunApp $jbrd4k "$work/out_recon" "recon" $negLimitSec @() $null
+#   ⚠⚠ 目标格式必须是 png + `--quality 0`（映射到 zlib `-compression_level 9`，见
+#     `ImageEncoderArgs.MapPngCompression`），**不能**是 `--format jxl`：实测把目标改成 jxl 后
+#     本条从站点 A 漂到站点 C（`使用 ffmpeg 直接处理 JXL`）⇒ 覆盖不到 A 的入口分支。
+#   ⚠⚠ 2026-09-22：修掉「外部工具探测递归扫整台机器」后，本条从 20.7 s 掉到 **1.3 s** —— 那 20 s
+#     本来就是探测开销、不是编码 ⇒ "跑得比注入阈值久"这条**负控**失去判据。必须由**真实编码工作量**
+#     提供这份余量（下面那条「负控有牙」红得对，不许靠 lowering 阈值蒙过去）。
+$rRecon = RunApp $jbrdNoisy "$work/out_recon" "recon" $negLimitSec @("--quality", "0") $null
 Write-Host ("  自行结束={0} 被门禁Kill={1} 耗时={2:N1}s 产物={3}" -f $rRecon.selfEnded, $rRecon.killed, $rRecon.elapsed, $rRecon.prods)
 CK ($rRecon.text -match '\[jxl\] 输入类型: JPEG 重构') `
    "③-e 自检：输入被判为 JPEG 重构型（`[jxl] 输入类型: JPEG 重构`）—— jbrd 容器经应用自己确认"
@@ -434,8 +475,16 @@ CK ($rRecon.text -match '\[心跳\] 已追加') `
    "③-e 自检：心跳确实开在这次运行上（`[心跳] 已追加`）"
 CK ($rRecon.selfEnded -and (-not $rRecon.killed)) `
    "③-e 合法慢任务**没有被误杀**（自行正常结束，未被门禁 Kill；耗时 $([math]::Round($rRecon.elapsed,1)) s）"
-CK ($rRecon.elapsed -ge 3) `
-   "③-e **负控有牙**：实测总耗时 $([math]::Round($rRecon.elapsed,1)) s ≥ 3 s（仍 > 注入阈值 $hbSec s ⇒ 「按总墙钟判死」的实现照样会在本条转红；下界取 3 s 而非实测的 4.4 s 是因为本条耗时以应用启动/收尾的固定开销为主，换机器会浮动）"
+# ⚠ 「按总墙钟判死会被抓住」这条能力**不在本臂上**（单帧编码的无进度窗口 ≈ 时长 ⇒ 与阈值互斥，
+#   见上方素材段的 2026-09-23/24 两次翻车记录）。它的载体是 ③ / ③-d 两条多帧臂。
+#   这里用一条**形状锁**钉住"能力仍有两处载体"：谁把 ③/③-d 的 `elapsed -ge 6` 删了或调低，本条即红，
+#   防止"把判据从一处搬走"最后变成"哪儿都没有判据"。⚠ 正则必须锚到 `CK (` 上：
+#   本文件**注释里**也出现 `elapsed -ge 6` 这个串，裸数会多数。
+$wallClockCarriers = @(Get-Content -LiteralPath $PSCommandPath -Raw |
+    ForEach-Object { [regex]::Matches($_, '(?m)^\s*CK \(\$r(?:Neg|Anim)\.elapsed -ge 6\)') } | ForEach-Object { $_.Value })
+Write-Host ("  [读数] ③-e 本次耗时 $([math]::Round($rRecon.elapsed,1)) s（**只作诊断打印**，不作判据）；墙钟判据载体数 = " + $wallClockCarriers.Count)
+CK ($wallClockCarriers.Count -eq 2) `
+   "③-e 能力移交锁：『按总墙钟判死必被抓住』必须由 ③/③-d 两条「elapsed -ge 6」承载（实 $($wallClockCarriers.Count)，须 2）"
 CK (-not ($rRecon.text -match '无进度心跳')) `
    "③-e 日志**不含**「无进度心跳」⇒ 心跳判死没有对合法慢任务开火"
 CK ($rRecon.prods -eq 1) "③-e 产物 1 个（实 $($rRecon.prods)）—— 合法任务仍然出结果"

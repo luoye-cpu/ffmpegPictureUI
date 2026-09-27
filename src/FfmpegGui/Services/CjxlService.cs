@@ -13,6 +13,10 @@ namespace FfmpegGui.Services
     {
         private static string? _detectedPath;
         private static bool _detected;
+        // ⚠ 锁同时罩住 `Detect()` 与两个 getter（同 `DjxlService`：旧写法在 Detect 第一行就
+        //   `_detected = true; _detectedPath = null;`，扫描窗口内的并发读者会拿到
+        //   "已检测但不可用"的假阴，而 cjxl 的有无直接决定 JXL 出口与 DNG 压缩分派）。
+        private static readonly object _gate = new();
 
         /// <summary>
         /// cjxl.exe 是否可用
@@ -21,9 +25,12 @@ namespace FfmpegGui.Services
         {
             get
             {
-                if (!_detected)
-                    Detect();
-                return _detectedPath != null;
+                lock (_gate)
+                {
+                    if (!_detected)
+                        Detect();
+                    return _detectedPath != null;
+                }
             }
         }
 
@@ -32,18 +39,26 @@ namespace FfmpegGui.Services
         {
             get
             {
-                if (!_detected) Detect();
-                return _detectedPath;
+                lock (_gate)
+                {
+                    if (!_detected) Detect();
+                    return _detectedPath;
+                }
             }
         }
 
-        /// <summary>
-        /// 检测 cjxl.exe 位置（三优先级）：
-        /// ① 手动指定路径（AppSettings.CjxlPath）
-        /// ② ffmpeg 同目录 / 程序同目录
-        /// ③ 系统 PATH
-        /// </summary>
         public static void Detect()
+        {
+            lock (_gate) { DetectCore(); }
+        }
+
+        /// <summary>
+        /// 检测体（五优先级）：① 手动指定路径 → ② PLAN 便携包 → ③ ffmpeg/程序同目录
+        /// → ④ 系统扩展搜索 → ⑤ 系统 PATH（非递归）。
+        /// ⚠ 本注释原先只声明"三优先级"而实现是五级 —— 这类"逐级兜底"代码的声明与实现
+        ///   必须同步（djxl 的 ⑤ 曾只有一句注释、没有代码）。
+        /// </summary>
+        private static void DetectCore()
         {
             _detected = true;
             _detectedPath = null;
@@ -87,11 +102,9 @@ namespace FfmpegGui.Services
 
                         try
                         {
-                            var list = new System.Collections.Generic.List<string>();
-                            foreach (var found in Directory.EnumerateFiles(manual, PlatformServices.CjxlSearchWildcard, SearchOption.AllDirectories))
-                            {
-                                if (File.Exists(found)) list.Add(found);
-                            }
+                            // ⚠ 手动目录同样可能是一棵大树 ⇒ 走带预算的递归（见 EnumerateFilesSafe 注释）
+                            var list = ExternalToolsDetector.EnumerateFilesSafe(
+                                manual, PlatformServices.CjxlSearchWildcard);
                             if (list.Count > 0)
                             {
                                 var pick = ExternalToolsDetector.ChooseBestExecutable(list);
@@ -139,13 +152,6 @@ namespace FfmpegGui.Services
                 _detectedPath = pathFound;
                 return;
             }
-        }
-
-        /// <summary>在系统 PATH 中查找可执行文件（已迁移至 PlatformServices）</summary>
-        [Obsolete("使用 PlatformServices.TryFindInPath 代替")]
-        private static bool TryFindInPath(string exeName, out string? fullPath)
-        {
-            return PlatformServices.TryFindInPath(exeName, out fullPath);
         }
 
         /// <summary>
@@ -310,7 +316,15 @@ namespace FfmpegGui.Services
 
             // ── 色彩空间映射：将 FFmpeg 色彩参数翻译为 cjxl -x color_space ──
             // 注意：isPipe=true 时仍需设置色彩空间，因为 PPM 管道不携带任何色彩元数据。
-            // cjxl 的 -x color_space= 是输出容器标签，与输入格式无关。
+            // ⚠ **本行原写"-x color_space= 是输出容器标签，与输入格式无关"—— 实测是假的**（#44，
+            //   `tests/output/t44/cjxl_x_probe2.log`）：cjxl 的准确规则是「**输入自带色彩元数据（ICC/CICP）
+            //   时以输入为准、`-x` 被静默忽略；输入不带时才生效**」——
+            //   · HDR PNG：不给 `-x` / 给 DisplayP3 / 给 sRGB ⇒ **同一份 16399 B / A9DB6D0E82285B1E**；
+            //   · 同源转 PPM 后 ⇒ 8051 / 8492 / 8053 B 三份不同，jxlinfo 分别报 sRGB / P3 primaries；
+            //   · 无内嵌 ICC 的 SDR PNG ⇒ `-x` 生效（8061 vs 8433 B）⇒ 决定因素不是"容器 vs 裸流"。
+            // ⚠ 且 `-x` **只写声明、不重映射像素**（`p3.png` 带 `ProfileDescription: DisplayP3`、
+            //   `n1.png` 无 ICC，而两者像素差只落在有损编码噪声档 27–30 dB）⇒ 想靠"改走管道让 `-x` 生效"
+            //   来兑现用户目标会造出"声称 P3、像素仍是原域"的产物：**必须先把像素转过去**。
             var isPipe = input == "-";
             // 出口已翻译好色彩语义 ⇒ 不再看探测/选项（见 colorSpaceOverride 的文档）
             bool hasExplicitColor = colorSpaceOverride != null || intensityTargetOverride > 0;

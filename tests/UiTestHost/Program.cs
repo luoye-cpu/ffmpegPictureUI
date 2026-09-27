@@ -120,6 +120,11 @@ namespace UiTestHost
                 W.Show();
                 Pump(10); // Opened -> InitControls
 
+                // ⚠ GroupP 必须**紧跟启动**跑，不能排到最后：中间有别的组会把面板清空
+                //   （实测 `GroupN` 的 N6 负控就写 `logBox.Text = ""` 只留本次产生的日志）⇒
+                //   放末尾时那 7 行 `[detect]` 早被抹掉，本组会一路轮询到超时（实测把宿主从 6 s 拖到 79 s）。
+                GroupP_StartupDetectLog();
+
                 SetInput(System.IO.Path.Combine(SrcDir, "src_8bit.png"));
 
                 GroupA_FormatToCommand();
@@ -137,6 +142,7 @@ namespace UiTestHost
                 GroupM_CliStrict();
                 GroupN_PresetRoundTrip();
                 GroupO_GainMapToggleKeepsTargets();
+                GroupR_EncoderArgDomains();
                 if (_negCtl) RunNegativeControl();
 
                 W.Close();
@@ -341,6 +347,54 @@ namespace UiTestHost
                 if (mode != null) mode.SelectedIndex = 0; Pump(8); // 保留模式
                 Check("C3c 保留模式→strip复选框启用", gps?.IsEnabled == true, $"enabled={gps?.IsEnabled}");
             });
+            // ⚠⚠ 2026-09-22（管线审查 §3.5 的修复锁）：**exiftool 不可用**时 ——
+            //   面板必须**保持可见**、所有相关选项**禁用**、模式**强制回「保留」**、且**给出显式提示**。
+            //   为什么必须有这条锁：旧行为是「面板**直接隐藏** + 提示**只在可用时才设置**」，
+            //   而「元数据模式」下拉当时**仍可选中「删除全部」** ⇒ 剥离**静默失效**：
+            //   ffmpeg 侧仍用 `-map_metadata 0` 把源元数据整体复制 ⇒ 产物**原样带出 GPS**
+            //   （已实机复现：缺 exiftool 时产物 GPS 与源逐字相同，且日志零点名、任务报成功）。
+            Safe("C3d exiftool不可用→面板可见+选项禁用+强制保留+提示", () =>
+            {
+                var fPath = typeof(FfmpegGui.Services.ExifToolService).GetField("_detectedPath", BFS);
+                var fDet = typeof(FfmpegGui.Services.ExifToolService).GetField("_detected", BFS);
+                var oldPath = fPath?.GetValue(null);
+                var oldDet = fDet?.GetValue(null);
+                try
+                {
+                    // 模拟「已经检测过、但没找到 exiftool」（IsAvailable 的判据是 `_detectedPath != null`）
+                    fDet?.SetValue(null, true);
+                    fPath?.SetValue(null, null);
+                    typeof(FfmpegGui.MainWindow).GetMethod("UpdateExifToolPanelState", BF)!.Invoke(W, null);
+                    Pump(8);
+                    var mode = Find<ComboBox>("MetadataModeCombo");
+                    var panel = Find<Border>("ExifToolPanel");
+                    var gps = Find<CheckBox>("StripExifGpsCheck");
+                    var hint = Find<TextBlock>("ExifToolHint");
+                    Check("C3d exiftool不可用→面板仍可见（否则用户得不到任何解释）",
+                          panel?.IsVisible == true, $"visible={panel?.IsVisible}");
+                    Check("C3d exiftool不可用→模式下拉禁用（不得再选「删除全部」）",
+                          mode?.IsEnabled == false, $"enabled={mode?.IsEnabled}");
+                    Check("C3d exiftool不可用→模式强制回「保留」",
+                          mode?.SelectedIndex == 0, $"idx={mode?.SelectedIndex}");
+                    Check("C3d exiftool不可用→strip复选框禁用",
+                          gps?.IsEnabled == false, $"enabled={gps?.IsEnabled}");
+                    Check("C3d exiftool不可用→提示明确说明不可用（点名 exiftool）",
+                          hint?.Text != null && hint.Text.Contains("exiftool", StringComparison.OrdinalIgnoreCase),
+                          $"hint=\"{hint?.Text}\"");
+                }
+                finally
+                {
+                    // ⚠ 必须**还原**，否则这条锁会把后续用例的状态带坏（且是跨用例的静态状态）
+                    fDet?.SetValue(null, oldDet);
+                    fPath?.SetValue(null, oldPath);
+                    typeof(FfmpegGui.MainWindow).GetMethod("UpdateExifToolPanelState", BF)!.Invoke(W, null);
+                    Pump(8);
+                }
+            });
+            // 还原后必须回到「可用」态（否则说明上面那条锁污染了静态状态）
+            Check("C3d 还原后 strip复选框重新启用",
+                  Find<CheckBox>("StripExifGpsCheck")?.IsEnabled == true,
+                  $"enabled={Find<CheckBox>("StripExifGpsCheck")?.IsEnabled}");
             Safe("C4 转换模式=动图→动图面板", () =>
             {
                 var m = Find<ComboBox>("ConversionModeCombo");
@@ -399,6 +453,214 @@ namespace UiTestHost
                 Check("E3 完整面板恢复", full?.IsVisible == true, $"visible={full?.IsVisible}");
                 Check("E3b 简洁面板隐藏", simple?.IsVisible == false, $"visible={simple?.IsVisible}");
             });
+
+            // E4: 简洁模式的预设必须能把**高级模式的整体状态**摆出来（含"转换模式"这条新轴）。
+            // 三种格式里 GIF 只存在于 AnimatedFormats、DNG 只存在于 RAW 模式，而三个模式的格式
+            // 候选集互斥 ⇒ 预设若不携带模式，切完预设后 FormatCombo 根本选不中，且是**静默**选不中。
+            Safe("E4 预设联动高级模式状态（模式轴）", () =>
+            {
+                var combo = Find<ComboBox>("SimplePresetCombo");
+                var mode = Find<ComboBox>("ConversionModeCombo");
+                var fmt = Find<ComboBox>("FormatCombo");
+                if (combo?.Items == null || mode == null || fmt == null)
+                { Check("E4 控件存在", false, "combo/mode/fmt null"); return; }
+
+                int gifIdx = -1, pngIdx = -1;
+                for (int i = 0; i < combo.Items.Count; i++)
+                {
+                    if (combo.Items[i] is not FfmpegGui.Models.PresetEntry pe) continue;
+                    if (gifIdx < 0 && string.Equals(pe.Data.Format, "GIF", StringComparison.OrdinalIgnoreCase)) gifIdx = i;
+                    if (pngIdx < 0 && string.Equals(pe.Data.Format, "PNG", StringComparison.OrdinalIgnoreCase)) pngIdx = i;
+                }
+                Check("E4a 预设表含 GIF 与 PNG 条目", gifIdx >= 0 && pngIdx >= 0, $"gif={gifIdx} png={pngIdx}");
+
+                // 应用预设会改掉整套高级模式状态（这正是"完整快照"要做到的），所以先用同一套
+                // 机制拍一张快照，测完还原 —— 否则后面的组会读到被本组改过的控件默认值。
+                var buildSnap = typeof(FfmpegGui.MainWindow).GetMethod("BuildPresetData", BF);
+                var applySnap = typeof(FfmpegGui.MainWindow).GetMethod("ApplyPresetData", BF);
+                if (buildSnap == null || applySnap == null)
+                { Check("E4 快照反射入口可用", false, "BuildPresetData/ApplyPresetData missing"); return; }
+                var snapshot = buildSnap.Invoke(W, null);
+
+                Click("SimpleModeEntryBtn");   // 预设切换仅在简洁模式激活时生效
+                combo.SelectedIndex = gifIdx; Pump(12);
+                Check("E4b GIF 预设把模式推到动图", mode.SelectedIndex == 1, $"mode={mode.SelectedIndex}");
+                Check("E4c GIF 预设确实选中 GIF 格式", (fmt.SelectedItem as string) == "GIF", $"fmt={fmt.SelectedItem}");
+
+                combo.SelectedIndex = pngIdx; Pump(12);
+                Check("E4d PNG 预设把模式拉回静态", mode.SelectedIndex == 0, $"mode={mode.SelectedIndex}");
+                Click("SimpleReturnBtn");
+
+                applySnap.Invoke(W, new object?[] { snapshot });
+                Pump(12);
+                Check("E4e 快照还原后模式与格式回到应用前",
+                      mode.SelectedIndex == 0 && (fmt.SelectedItem as string) != "GIF",
+                      $"mode={mode.SelectedIndex} fmt={fmt.SelectedItem}");
+            });
+
+            // E5: 结构锁 —— 简洁模式是**覆盖层**，不得再有第二套选项真值。
+            // 行为断言在重构后是恒真的（两条路径已是同一条），所以这里锁"别长回第二套"。
+            Safe("E5 简洁模式与高级模式同源（结构锁）", () =>
+            {
+                var p = System.IO.Path.Combine(RepoRoot, "src", "FfmpegGui", "MainWindow.xaml.cs");
+                var src = System.IO.File.ReadAllText(p);
+                int Count(string pat) => System.Text.RegularExpressions.Regex.Matches(src, pat).Count;
+
+                Check("E5a 第二套预设→选项映射已移除",
+                      src.IndexOf("CreateQueueItemFromSimplePreset", StringComparison.Ordinal) < 0,
+                      "CreateQueueItemFromSimplePreset still present");
+                var collectSites = Count(@"UseAdvancedColorParameters = useAdv");
+                Check("E5b 控件→FfmpegOptions 采集点唯一", collectSites == 1, $"sites={collectSites}");
+                var collectRefs = Count(@"CollectOptionsFromUiAsync\(");
+                Check("E5c 采集点被入队与两条预览共用", collectRefs >= 4, $"refs={collectRefs}");
+
+                // 简洁模式的两个入队 handler 必须走共享路径，且不得自己往队列里塞 item
+                string Slice(string from, string to)
+                {
+                    int a = src.IndexOf(from, StringComparison.Ordinal);
+                    int b = src.IndexOf(to, a + from.Length, StringComparison.Ordinal);
+                    if (a < 0 || b < 0) return "";
+                    return src.Substring(a, b - a);
+                }
+                var addFiles = Slice("SimpleAddFiles_Click", "SimpleClearMedia_Click");
+                var drop = Slice("private async void SimpleDrop", "SimpleClearAll_Click");
+                Check("E5d 文件选择入队走 AddSingleToQueue",
+                      addFiles.Length > 0 && addFiles.Contains("await AddSingleToQueue(")
+                      && !addFiles.Contains("_queueProcessor.Add("), $"len={addFiles.Length}");
+                Check("E5e 拖放入队走 AddSingleToQueue",
+                      drop.Length > 0 && drop.Contains("await AddSingleToQueue(")
+                      && !drop.Contains("_queueProcessor.Add("), $"len={drop.Length}");
+            });
+
+            // E6: 旧预设 JSON 里没有的轴，应用时**不得**被 schema 默认值写进控件。
+            // 具体盯 AnimationLoop：循环框出厂是**空**（=auto，采集侧解析成 0），而 PresetData 的
+            // 旧默认值是 -1（无限循环）⇒ 无条件回放的差异是「0 → -1」，产物会从播一次变成不停播。
+            Safe("E6 旧预设未表达的轴不得改控件", () =>
+            {
+                var applyE6 = typeof(FfmpegGui.MainWindow).GetMethod("ApplyPresetData", BF);
+                var buildE6 = typeof(FfmpegGui.MainWindow).GetMethod("BuildPresetData", BF);
+                var box = Find<TextBox>("AnimationLoopBox");
+                var fpsBox = Find<TextBox>("AnimationFpsBox");
+                if (applyE6 == null || buildE6 == null || box == null)
+                { Check("E6 反射/控件可用", false, "apply/build/AnimationLoopBox null"); return; }
+
+                var snap = buildE6.Invoke(W, null);
+                try
+                {
+                    box.Text = "";
+                    if (fpsBox != null) fpsBox.Text = "";
+                    Pump(4);
+                    var legacy = FfmpegGui.Models.PresetData.FromJson("{\"format\":\"GIF\",\"quality\":85}");
+                    Check("E6a 旧预设的 AnimationLoop 解析为空", !legacy.AnimationLoop.HasValue,
+                          "hasValue=" + legacy.AnimationLoop.HasValue);
+                    applyE6.Invoke(W, new object?[] { legacy });
+                    Pump(10);
+                    Check("E6b 旧预设不得把循环框写成 -1", box.Text != "-1", "text=[" + box.Text + "]");
+                    Check("E6c 旧预设不得把 fps 框写成数值", string.IsNullOrWhiteSpace(fpsBox?.Text),
+                          "text=[" + fpsBox?.Text + "]");
+                }
+                finally
+                {
+                    applyE6.Invoke(W, new object?[] { snap });
+                    Pump(10);
+                }
+            });
+
+            // E7: 覆盖层的宗旨 —— 它没有自己的内容，显示与操作的都是高级模式那一份。
+            Safe("E7 覆盖层与高级模式共用同一份已选集合", () =>
+            {
+                var mfField = typeof(FfmpegGui.MainWindow).GetField("_mediaFiles", BF);
+                var advList = Find<ListBox>("MediaFileList");
+                var simList = Find<ListBox>("SimpleMediaList");
+                if (mfField?.GetValue(W) is not System.Collections.IList shared || advList == null || simList == null)
+                { Check("E7 共享集合与两个列表可用", false, "mediaFiles/列表 取不到"); return; }
+
+                Click("SimpleModeEntryBtn"); Pump(6);
+                Check("E7a 两个列表绑的是同一个集合实例（无第二份内容源）",
+                      ReferenceEquals(simList.ItemsSource, advList.ItemsSource)
+                      && ReferenceEquals(simList.ItemsSource, shared),
+                      $"simple={simList.ItemsSource?.GetType().Name} adv={advList.ItemsSource?.GetType().Name}");
+
+                var src = System.IO.File.ReadAllText(System.IO.Path.Combine(RepoRoot, "src", "FfmpegGui", "MainWindow.xaml.cs"));
+                Check("E7b 第二份已选集合已从产品码移除", !src.Contains("_simpleMediaFiles"),
+                      "仍存在 _simpleMediaFiles");
+                int a = src.IndexOf("private void SimpleReturn_Click", System.StringComparison.Ordinal);
+                int b = src.IndexOf("private void SimpleStartQueue_Click", a, System.StringComparison.Ordinal);
+                var retBody = a >= 0 && b > a ? src.Substring(a, b - a) : "";
+                Check("E7c 返回完整模式不再做「合并/去重添加」（无 _mediaFiles.Add）",
+                      retBody.Length > 0 && !retBody.Contains("_mediaFiles.Add("),
+                      "len=" + retBody.Length);
+
+                // 行为面：往高级模式那份集合里加一项，覆盖层重新进入后必须显示同一项与同一计数；
+                // 再点覆盖层的「清空」，共享集合必须真的空掉 —— 证明覆盖层的清空动的是同一份内容。
+                var snapshot = new List<string>(shared.Cast<object>().Select(x => x.ToString() ?? ""));
+                var probe = System.IO.Path.Combine(SrcDir, "zz-overlay-probe.png");
+                int before = shared.Count;
+                if (!shared.Contains(probe)) shared.Add(probe);
+                Click("SimpleReturnBtn"); Pump(4);
+                Click("SimpleModeEntryBtn"); Pump(8);
+                var cnt = Find<TextBlock>("SimpleFileCount")?.Text ?? "";
+                Check("E7d 覆盖层计数标签反映共享集合", cnt.StartsWith(shared.Count.ToString()),
+                      $"label=[{cnt}] shared={shared.Count} before={before}");
+                typeof(FfmpegGui.MainWindow)
+                    .GetMethod("SimpleClearMedia_Click", BF)
+                    ?.Invoke(W, new object?[] { null, null });
+                Pump(6);
+                Check("E7e 覆盖层的清空动的是同一份集合", shared.Count == 0,
+                      $"shared={shared.Count}");
+                // 还原到本条断言之前的内容，避免污染后面的组（IList 没有 Clear，逐行删）
+                for (int i = shared.Count - 1; i >= 0; i--) shared.RemoveAt(i);
+                foreach (var s in snapshot) shared.Add(s);
+                typeof(FfmpegGui.MainWindow).GetMethod("UpdateMediaFileCount", BF)?.Invoke(W, null);
+                Click("SimpleReturnBtn"); Pump(4);
+            });
+
+            // E8: 回显的忠实性 —— 覆盖层显示的是"高级模式当前的生效设置"，不是"最后点了哪条预设"；
+            //      两者一旦不符必须点名（锁的是"覆盖层骗人"这类最难被发现的显示缺陷）。
+            Safe("E8 覆盖层回显 = 高级模式当前生效设置", () =>
+            {
+                var loc = FfmpegGui.Services.LocalizationService.Instance;
+                var fmtCombo = Find<ComboBox>("FormatCombo");
+                var modeCombo = Find<ComboBox>("ConversionModeCombo");
+                var label = Find<TextBlock>("SimpleCurrentStateLabel");
+                var combo = Find<ComboBox>("SimplePresetCombo");
+                var q = Find<Slider>("QualitySlider");
+                if (fmtCombo == null || modeCombo == null || label == null || combo == null || q == null)
+                { Check("E8 所需控件可用", false, "有控件为 null"); return; }
+
+                var mwT = typeof(FfmpegGui.MainWindow);
+                // 前置条件自己清：E4/E6 已经应用过预设，残留的指纹会让 E8d 因"别组改过状态"而假红
+                mwT.GetField("_simpleAppliedSig", BF)?.SetValue(W, "");
+                var snap8 = mwT.GetMethod("BuildPresetData", BF)?.Invoke(W, null);
+                Click("SimpleModeEntryBtn"); Pump(6);
+
+                var fmtDisp = fmtCombo.SelectedItem as string ?? "";
+                var modeDisp = modeCombo.SelectedItem as string ?? "";
+                Check("E8a 回显含当前格式的显示串", fmtDisp.Length > 0 && (label.Text ?? "").Contains(fmtDisp),
+                      $"label=[{label.Text}] fmt={fmtDisp}");
+                Check("E8b 回显含当前转换模式的显示串", modeDisp.Length > 0 && (label.Text ?? "").Contains(modeDisp),
+                      $"label=[{label.Text}] mode={modeDisp}");
+                Check("E8c 回显以本地化标题开头（不是硬编码中文）",
+                      (label.Text ?? "").StartsWith(loc["simple.current.state"]), label.Text ?? "");
+                Check("E8d 没应用过预设时不喊不一致（防假警报）",
+                      !(label.Text ?? "").Contains(loc["simple.preset.custom"]), label.Text ?? "");
+
+                combo.SelectedIndex = combo.SelectedIndex == 0 ? 1 : 0; Pump(12);
+                Check("E8e 刚应用完预设 ⇒ 与预设一致，不喊不一致",
+                      !(label.Text ?? "").Contains(loc["simple.preset.custom"]), label.Text ?? "");
+
+                q.Value = Math.Clamp(q.Value - 20, q.Minimum, q.Maximum); Pump(8);
+                mwT.GetMethod("UpdateSimpleCounts", BF)?.Invoke(W, null);
+                Check("E8f 改掉质量后回显点名不一致",
+                      (label.Text ?? "").Contains(loc["simple.preset.custom"]), label.Text ?? "");
+
+                if (snap8 != null)
+                {
+                    mwT.GetMethod("ApplyPresetData", BF)?.Invoke(W, new object?[] { snap8 });
+                    Pump(10);
+                }
+                Click("SimpleReturnBtn"); Pump(4);
+            });
         }
 
         // ══════════════ F组: 后台可见性 (最小化到托盘的核心动作) ══════════════
@@ -421,7 +683,15 @@ namespace UiTestHost
             Safe("G1 PNG端到端(添加队列→开始→产物)", () =>
             {
                 var plan = System.IO.Path.Combine(RepoRoot, "publish", "PLAN");
-                var outDir = System.IO.Path.Combine(RepoRoot, "tests", "output", "gui-test");
+                // ⚠⚠ 2026-09-22（`HANDOVER §33` 项 1）：**不得再用共享固定目录 `tests/output/gui-test`**。
+                //   它被 5 条 UI 门禁（ui-host / ui-param-matrix / ui-strategy-map / ui-param-defects / cli-strict）
+                //   **共用** —— 而 `st.OutputDirectory` 是**静态设置、跨组持续生效** ⇒ 预览/编码命令会把同名产物
+                //   写进同一个目录 ⇒ 两个实例/两条门禁互相覆盖 ⇒ **偶发假红**（实测整轮两次红、红的还不是同一条：
+                //   Run A 的 `H10` 子 ffmpeg 命令因写盘争抢 `exit 1`）。已登记同类成因：`COLOR_TRAPS:45`。
+                //   ⇒ 改用**本实例的运行级目录** `TempDir`（`%TEMP%/uitesthost_<guid>`）——
+                //     与 `:47-49` 既有约定**完全一致**（「中间产物一律写这里，绝不写进共享目录」），且**退出时自清**。
+                var outDir = TempDir;
+                if (!System.IO.Directory.Exists(outDir)) System.IO.Directory.CreateDirectory(outDir);
                 var st = FfmpegGui.Services.AppSettingsService.Current;
                 st.FfmpegDirectory = System.IO.Path.Combine(plan, "ffmpeg-full");
                 st.OutputDirectory = outDir;
@@ -867,8 +1137,8 @@ namespace UiTestHost
         /// GroupO：**GainMap 开关不得冲掉用户已设的目标色域 / 位深 / 质量**（2026-09-20；D-1 同族残留）。
         ///
         /// 缺陷：`JpegGainMapEnable_Changed` 调 `UpdateOptionAvailability()`，而后者会
-        /// `Items.Clear()` + 重建 `ColorSpaceCombo`（`MainWindow.xaml.cs:2149-2170`）与 `BitDepthCombo`
-        /// （`:2109-2117`）并把 `SelectedIndex` 归 0，还会把 `QualitySlider.Value` 设为该格式默认值（`:2100`）
+        /// `Items.Clear()` + 重建 `ColorSpaceCombo` 与 `BitDepthCombo` 并把 `SelectedIndex` 归 0，
+        /// 还会把 `QualitySlider.Value` 设为该格式默认值（见 `MainWindow.xaml.cs` 的 `UpdateOptionAvailability()`）。
         /// ⇒ 用户勾/取消「GainMap (Ultra HDR)」时**格式并未改变**，这三项却被整体重置。
         /// （D-1 只修了「应用预设」那条路径，并在注释里显式说明**不动刷新函数本体**；本组锁住开关这条路径。）
         ///
@@ -879,6 +1149,240 @@ namespace UiTestHost
         /// ⚠⚠ **变异写法本身有坑**（本轮踩到）：第一版变异只在真行**上方**加了几行注释掉的**副本**，
         ///   真正的回写行仍在 ⇒ 只有质量那条转红、cs/bd 假绿。**变异必须删/注释掉真正生效的那几行**。
         /// </summary>
+        // ═══════════════════════════════════════════════════════════════════════════
+        // R组：编码参数**分域下发**与**官方取值域**的落地锁（2026-09-26 审查 → 修复）
+        //
+        // 出处：docs/ENCODING_OPTIONS_AUDIT_2026-09-26.md 的 A-3/A-4/A-5/A-6/A-7/A-9/A-12
+        //       /A-13/A-14/A-15/A-16 与附带发现的"静帧仍发 -still-picture=1 不可达"。
+        // 判据**按审查规格写**（不是照抄实现）：每条都对应一次实测过的失效形态。
+        // 全部走纯函数（BuildAvifOptions / BuildGifFilterChain / BuildArguments），
+        // 不需要起编码器进程 ⇒ 硬件后端也能锁"参数名发给了谁"。
+        // ═══════════════════════════════════════════════════════════════════════════
+        static void GroupR_EncoderArgDomains()
+        {
+            Console.WriteLine("\n########## R组: 编码参数分域与取值域 ##########");
+
+            int N(List<string> a, string t) => a.Count(x => x == t);
+            bool No(List<string> a, params string[] ts) => ts.All(t => !a.Contains(t));
+            string? After(List<string> a, string t)
+            {
+                int i = a.IndexOf(t);
+                return i >= 0 && i + 1 < a.Count ? a[i + 1] : null;
+            }
+            var IA = typeof(FfmpegGui.Services.ColorMapping.ImageEncoderArgs);
+            var buildAvif = IA.GetMethod("BuildAvifOptions", BindingFlags.Static | BindingFlags.Public)!;
+            var buildGif = IA.GetMethod("BuildGifFilterChain", BindingFlags.Static | BindingFlags.Public)!;
+            List<string> Avif(FfmpegGui.Models.FfmpegOptions o) =>
+                (List<string>)buildAvif.Invoke(null, new object?[] { o })!;
+            string? GifChain(FfmpegGui.Models.FfmpegOptions o) =>
+                (string?)buildGif.Invoke(null, new object?[] { o, Array.Empty<string>() });
+
+            FfmpegGui.Models.FfmpegOptions AvifBase(string encoder) => new()
+            {
+                Format = "avif", Encoder = encoder, Quality = 50,
+                AvifCpuUsed = 4, AvifStillPicture = true, AvifRowMt = true,
+                AvifAqMode = "variance", AvifEnableCdef = true, AvifEnableIntrabc = true,
+                AvifHwPresetLevel = 4, AvifNvencSpatialAq = true, AvifNvencAqStrength = 8,
+            };
+
+            Safe("R1 AVIF 硬件后端不得吃 libaom 私有项", () =>
+            {
+                var a = Avif(AvifBase("av1_nvenc"));
+                Check("R1a nvenc 有真实质量轴 -cq", a.Contains("-cq"), "args=" + string.Join(" ", a));
+                Check("R1b nvenc 不再吃 -crf（实测 10 与 60 同哈希）", !a.Contains("-crf"),
+                      "found -crf=" + After(a, "-crf"));
+                Check("R1c nvenc 不吃 libaom 私有项",
+                      No(a, "-cpu-used", "-aq-mode", "-enable-cdef", "-enable-intrabc",
+                         "-row-mt", "-still-picture", "-aom-params", "-usage"),
+                      "args=" + string.Join(" ", a));
+                var q = Avif(AvifBase("av1_qsv"));
+                Check("R1d qsv 不吃 -crf", !q.Contains("-crf"), "args=" + string.Join(" ", q));
+                var amf = Avif(AvifBase("av1_amf"));
+                // 实测：AMF 也有私有 -usage ⇒ 收到 libaom 的 "allintra" 直接 rc=127（默认配置必失败）
+                Check("R1e amf 不发 -usage allintra", No(amf, "-usage"),
+                      "args=" + string.Join(" ", amf));
+                Check("R1f amf 不发 -aom-params", !amf.Contains("-aom-params"),
+                      "args=" + string.Join(" ", amf));
+                var l = Avif(AvifBase("libaom-av1"));
+                Check("R1g libaom 仍走 -crf（未被误伤）", l.Contains("-crf"),
+                      "crf=" + After(l, "-crf"));
+                Check("R1h libaom 不吃 -cq", No(l, "-cq"), "found -cq");
+            });
+
+            Safe("R2 SVT tune 对表（旧实现整体错位一格）", () =>
+            {
+                string TuneOf(string display)
+                {
+                    var o = AvifBase("libsvt-av1");
+                    o.AvifSvtTune = display;
+                    var a = Avif(o);
+                    var d = a.IndexOf("-svtav1-params");
+                    return d >= 0 && d + 1 < a.Count ? a[d + 1] : "<none>";
+                }
+                Check("R2a PSNR⇒tune=1", TuneOf("PSNR").Contains("tune=1"), TuneOf("PSNR"));
+                Check("R2b SSIM⇒tune=2", TuneOf("SSIM").Contains("tune=2"), TuneOf("SSIM"));
+                Check("R2c VMAF⇒tune=5", TuneOf("VMAF").Contains("tune=5"), TuneOf("VMAF"));
+                Check("R2d 默认档不发 tune", !TuneOf("默认").Contains("tune="), TuneOf("默认"));
+                var multi = Avif(new FfmpegGui.Models.FfmpegOptions
+                {
+                    Format = "avif", Encoder = "libsvt-av1", Quality = 50,
+                    AvifSvtTune = "VMAF", AvifTune = "PSNR", AvifSvtPreset = 4, Lossless = true,
+                });
+                Check("R2e -svtav1-params 只出现一次（实测重复出现是整体替换）",
+                      N(multi, "-svtav1-params") == 1, "count=" + N(multi, "-svtav1-params"));
+                Check("R2f SVT 无损走 lossless=1（旧 crf0 实测 45.89dB 是假的）",
+                      string.Join(" ", multi).Contains("lossless=1"),
+                      "args=" + string.Join(" ", multi));
+            });
+
+            Safe("R3 tune 显示串语言无关（A-7）", () =>
+            {
+                string ForLibaom(string display)
+                {
+                    var o = AvifBase("libaom-av1");
+                    o.AvifTune = display;
+                    return string.Join(" ", Avif(o));
+                }
+                var zh = ForLibaom("IQ (图像优化)");
+                var en = ForLibaom("IQ (Image Optimized)");
+                Check("R3a zh 与 en 的 IQ 产出同一条参数", zh == en, $"zh=[{zh}] en=[{en}]");
+                Check("R3b IQ 确实 tune=iq", en.Contains("tune=iq"), en);
+                Check("R3c 默认档两种语言都不发 tune",
+                      !ForLibaom("默认").Contains("tune=") && !ForLibaom("Default").Contains("tune="),
+                      ForLibaom("Default"));
+                // 采集侧给 **SVT** 那把下拉硬塞的 fallback 是带尾巴的 "VMAF (主观)"（MainWindow 采集侧），
+                // 所以前缀折叠要在 SVT 分支上验；而 libaom 分支的旧写法发的是
+                // vmaf_without_preprocessing —— 实测该值不存在（rc=127）⇒ 正确行为是**不再发**它。
+                var tail = Avif(new FfmpegGui.Models.FfmpegOptions
+                {
+                    Format = "avif", Encoder = "libsvt-av1", Quality = 50, AvifSvtTune = "VMAF (主观)",
+                });
+                Check("R3d SVT 认得带尾巴的显示串（前缀折叠⇒tune=5）",
+                      string.Join(" ", tail).Contains("tune=5"), "args=" + string.Join(" ", tail));
+                Check("R3e libaom 不再发不存在的 vmaf_without_preprocessing",
+                      !ForLibaom("VMAF").Contains("vmaf_without_preprocessing"), ForLibaom("VMAF"));
+            });
+
+            Safe("R4 NVENC 空间 AQ 与 aq-strength 取值域（A-4/A-5）", () =>
+            {
+                var on = Avif(AvifBase("av1_nvenc"));
+                Check("R4a 勾选必须显式发 -spatial-aq 1（省略==0 是惰性的）",
+                      After(on, "-spatial-aq") == "1", "-spatial-aq=" + After(on, "-spatial-aq"));
+                var off = Avif(new FfmpegGui.Models.FfmpegOptions
+                {
+                    Format = "avif", Encoder = "av1_nvenc", Quality = 50,
+                    AvifNvencSpatialAq = false, AvifNvencAqStrength = 8, AvifHwPresetLevel = 4,
+                });
+                Check("R4b 取消勾选发 0", After(off, "-spatial-aq") == "0",
+                      "-spatial-aq=" + After(off, "-spatial-aq"));
+                Check("R4c 未开空间 AQ 时不发 aq-strength（实测三态同哈希）",
+                      !off.Contains("-aq-strength"), "args=" + string.Join(" ", off));
+                var zero = Avif(new FfmpegGui.Models.FfmpegOptions
+                {
+                    Format = "avif", Encoder = "av1_nvenc", Quality = 50,
+                    AvifNvencSpatialAq = true, AvifNvencAqStrength = 0, AvifHwPresetLevel = 4,
+                });
+                Check("R4d aq-strength=0 不发（0 越界 rc=127，语义应是「不设」）",
+                      !zero.Contains("-aq-strength"), "args=" + string.Join(" ", zero));
+                var over = Avif(new FfmpegGui.Models.FfmpegOptions
+                {
+                    Format = "avif", Encoder = "av1_nvenc", Quality = 50,
+                    AvifNvencSpatialAq = true, AvifNvencAqStrength = 99, AvifHwPresetLevel = 4,
+                });
+                Check("R4e 越上界被钳到 15", After(over, "-aq-strength") == "15",
+                      "aq-strength=" + After(over, "-aq-strength"));
+            });
+
+            Safe("R5 静帧任务仍要能走到 -still-picture（附带发现）", () =>
+            {
+                // 旧判据含 AnimationLoop != 0，而采集侧给静帧恒填 -1 ⇒ 恒真 ⇒ 该参数永不可达
+                var a = Avif(new FfmpegGui.Models.FfmpegOptions
+                {
+                    Format = "avif", Encoder = "libaom-av1", Quality = 50,
+                    AvifStillPicture = true, AnimationLoop = -1, AnimationFps = null,
+                });
+                Check("R5 静帧发 -still-picture 1", After(a, "-still-picture") == "1",
+                      "args=" + string.Join(" ", a));
+            });
+
+            Safe("R6 GIF 关闭抖动必须显式（A-13①）", () =>
+            {
+                var off = GifChain(new FfmpegGui.Models.FfmpegOptions
+                {
+                    Format = "gif", GifPaletteOptimize = true, GifDither = false, AnimationFps = 10,
+                });
+                Check("R6a 关抖动⇒paletteuse=dither=none（省略==sierra2_4a 不是关）",
+                      off != null && off.Contains("paletteuse=dither=none"), $"chain=[{off}]");
+                var on = GifChain(new FfmpegGui.Models.FfmpegOptions
+                {
+                    Format = "gif", GifPaletteOptimize = true, GifDither = true, AnimationFps = 10,
+                });
+                Check("R6b 开抖动仍是 bayer", on != null && on.Contains("dither=bayer"), $"chain=[{on}]");
+            });
+
+            Safe("R7 PNG 无损不再绑死压缩级别（A-14）", () =>
+            {
+                string ArgsFor(int quality) => FfmpegGui.Services.FfmpegCommandBuilder.BuildArguments(
+                    new FfmpegGui.Models.FfmpegOptions
+                    {
+                        Format = "png", Quality = quality, Lossless = true, UseAdvancedColorParameters = false,
+                    },
+                    System.IO.Path.Combine(SrcDir, "src_8bit.png"), "out.png");
+                var mid = ArgsFor(50);
+                Check("R7a 无损 + 质量 50 ⇒ 级别不是被钉死的 0（旧写法 11.3× 体积）",
+                      mid.Contains("-compression_level") && !mid.Contains("-compression_level 0"),
+                      "args=" + mid);
+                // 「强制无损」这条既定语义的证据不在命令行里（PNG 编码本身无损，没有 -lossy 旗标可查），
+                // 它由 J9a / J14d-1 / L2a-L2d 钉住 ⇒ 这里只验新放行的轴守住了界、也没混进有损参数。
+                // ⚠ 这道界**不是** ffmpeg 给的：`-h full` 里 -compression_level 声明是
+                //   (from INT_MIN to INT_MAX)（通用 AVCodecContext 项，无界），zlib 的 0..9 是实现域
+                //   ⇒ 越界只能由我们自己在放行点守，正因无界才必须有这条断言。
+                int lvl = int.MinValue;
+                var m = System.Text.RegularExpressions.Regex.Match(mid, @"-compression_level (\S+)");
+                if (m.Success) int.TryParse(m.Groups[1].Value, out lvl);
+                Check("R7b 放行的 PNG 级别守在本软件的 0..9 域内（ffmpeg 声明无界，界由我们守）",
+                      lvl >= 0 && lvl <= 9, $"level={lvl} args=" + mid);
+                Check("R7c PNG 命令行里不出现有损质量旗标", !mid.Contains("-q:v"),
+                      "args=" + mid);
+            });
+
+            Safe("R8 WebP 有损放行压缩级别 / APNG 补发 pred 与 dpi（A-15/A-16）", () =>
+            {
+                var lossy = FfmpegGui.Services.FfmpegCommandBuilder.BuildArguments(
+                    new FfmpegGui.Models.FfmpegOptions
+                    {
+                        Format = "webp", Quality = 75, Lossless = false,
+                        WebpPreset = "none", WebpCompressionLevel = 6,
+                    },
+                    System.IO.Path.Combine(SrcDir, "src_8bit.png"), "out.webp");
+                Check("R8a 有损 WebP 也发 -compression_level（旧注释判成无损专有）",
+                      lossy.Contains("-compression_level 6"), "args=" + lossy);
+                var apng = FfmpegGui.Services.FfmpegCommandBuilder.BuildArguments(
+                    new FfmpegGui.Models.FfmpegOptions
+                    {
+                        Format = "apng", Quality = 50, Lossless = true,
+                        PngPred = "sub", PngDpi = 300,
+                    },
+                    System.IO.Path.Combine(SrcDir, "src_8bit.png"), "out.png");
+                Check("R8b APNG 补发 -pred（实测每帧生效）", apng.Contains("-pred sub"), "args=" + apng);
+                Check("R8c APNG 补发 -dpi", apng.Contains("-dpi 300"), "args=" + apng);
+            });
+
+            // 负控：整组不能是恒真 —— 若分域判据全部失效（例如实现退化成"谁都发一套"），
+            // 上面 R1/R2/R4 的"不得包含"断言必须转红。这里量一次"确实存在被排除的项"作为对照。
+            Safe("R9 负控：R1 的排除集非空", () =>
+            {
+                var a = Avif(AvifBase("av1_nvenc"));
+                var excluded = new[] { "-cpu-used", "-aq-mode", "-enable-cdef", "-row-mt", "-still-picture" }
+                    .Count(a.Contains);
+                Check("R9a nvenc 分支确实被排除了这 5 项", excluded == 0,
+                      $"仍出现 {excluded} 项");
+                Check("R9b 同一套输入在 libaom 分支上会出现其中至少 3 项（证明排除是**按后端**的）",
+                      new[] { "-cpu-used", "-aq-mode", "-enable-cdef", "-row-mt", "-still-picture" }
+                          .Count(Avif(AvifBase("libaom-av1")).Contains) >= 3, "libaom 命中不足");
+            });
+        }
+
         static void GroupO_GainMapToggleKeepsTargets()
         {
             Safe("O1/O2/O3 GainMap 开关保持目标三项", () =>
@@ -1004,6 +1508,105 @@ namespace UiTestHost
         static string UiState() =>
             $"advColor={Find<CheckBox>("UseAdvancedColor")?.IsChecked} advCodec={Find<CheckBox>("UseAdvancedCodec")?.IsChecked} " +
             $"lossless={Find<CheckBox>("LosslessCheck")?.IsChecked} enc={Find<ComboBox>("EncoderCombo")?.SelectedItem as string}";
+
+        // ══════════════ GroupP：启动期检测面板的「槽位 = 工具 = 日志行」不变式 ══════════════
+        // 为什么单独跑一组（2026-09-23）：`verify-startup-warmup.ps1` 对缺陷 ② 只有**结构锁**
+        // （源码里恰好 7 个 `Mk("…")`），而缺陷当时的**真实表现**在面板上：修之前 7 个槽位只打出
+        // **4 行** `[detect]`（djxl / jxr 那两条根本不写日志，另有整个一个槽位是 `efc06221` 删
+        // UltrahdrService 留下的空任务）⇒ 结构数对、面板照样缺，**只有真跑一次启动才区分得开**。
+        // `FullDetectionAsync()` 是 `InitControls()` 里 fire-and-forget 起的，宿主 `W.Show(); Pump(10)`
+        // 已经把它点着 ⇒ 本组只等它把行打完。
+        static void GroupP_StartupDetectLog()
+        {
+            var box = Find<TextBox>("LogText");
+            Check("P0 面板控件 LogText 在位（本组前提）", box != null,
+                  "FindControl<TextBox>(\"LogText\") == null ⇒ 面板根本没构造起来");
+            if (box == null) return;
+
+            var names = new[] { "cjxl", "cjpegli", "djxl", "exiftool", "JxrEncApp", "avifenc", "dngtool" };
+            // 轮询上限 45 s：本机预热实测 1~2 s，但「PLAN 整棵缺失 ⇒ 走扩展搜索预算」的最坏路径要几十秒。
+            // ⚠ 超时**不能判红**，要单列「测量失败」⇒ 否则"这台机器装了什么应用"会决定断言颜色（§6 口径）。
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var verdicts = new System.Collections.Generic.List<string>();
+            var others = new System.Collections.Generic.List<string>();
+            var unknowns = new System.Collections.Generic.List<string>();
+            while (sw.Elapsed.TotalSeconds < 45.0)
+            {
+                Pump(6);
+                ClassifyDetectLines(box.Text, names, verdicts, others, unknowns);
+                if (verdicts.Count >= names.Length) break;
+            }
+
+            string Ro() => $"用时 {sw.Elapsed.TotalSeconds:N1}s；结论行 {verdicts.Count}、其它 [detect] 诊断行 {others.Count}、疑似空槽位 {unknowns.Count}";
+            Check("P1 七个槽位都打出了结论行（槽位数 = 日志行数）", verdicts.Count == names.Length,
+                  verdicts.Count == names.Length ? Ro() : "★测量失败（不是产品失败）★ " + Ro()
+                    + " ⇒ 60s 内没等齐，本机探测路径异常，本组后续断言不作数");
+            if (verdicts.Count != names.Length) return;
+
+            // P2 每条结论行都必须真的给出结论（修之前某两条压根不打，另一条打出来什么都没有）
+            var unconcluded = new System.Collections.Generic.List<string>();
+            foreach (var l in verdicts)
+                if (!(l.EndsWith("OK", StringComparison.Ordinal) || l.EndsWith("未找到", StringComparison.Ordinal)))
+                    unconcluded.Add(l);
+            Check("P2 每条结论行都以 OK/未找到 收尾（无'检测了但不说结果'形态）",
+                  unconcluded.Count == 0,
+                  unconcluded.Count == 0 ? Ro() : $"违例 {unconcluded.Count} 条：{string.Join(" ⧉ ", unconcluded)}");
+
+            // P3 逐个点名：7 个工具各恰有一行（少一个 = 那个槽位又静默了；多一个 = 重复打）
+            foreach (var n in names)
+            {
+                var hits = new System.Collections.Generic.List<string>();
+                foreach (var l in verdicts)
+                    if (l.StartsWith("[detect] " + n + ": ", StringComparison.Ordinal)) hits.Add(l);
+                Check($"P3 [{n}] 恰有一条结论行", hits.Count == 1,
+                      $"实 {hits.Count} 条（0 = 该槽位又静默了；>1 = 重复打）：{string.Join(" ⧉ ", hits)}");
+            }
+
+            // P4「名字不认识的**结论行**」= 空槽位/漏删工具的确切字节形态（旧缺陷：删 UltrahdrService 后
+            //     留下 `Task.Run(() => { try { } catch { } })`，以及某条打出 `[detect] : OK` 这类无名行）。
+            Check("P4 不存在'未知名字却带结论'的行（空槽位/漏改名的直接形态）", unknowns.Count == 0,
+                  $"疑似空槽位行 {unknowns.Count} 条：{string.Join(" ⧉ ", unknowns)}");
+
+            // P5 反控：证明本组不是"恒绿"——把 7 个名字逐一拼回去必须能数到 7
+            int accounted = 0;
+            foreach (var n in names)
+                foreach (var l in verdicts)
+                    if (l.StartsWith("[detect] " + n + ": ", StringComparison.Ordinal)) { accounted++; break; }
+            Check("P5 对照组：P3 逐名累加必须恰好吃掉全部 7 条结论行（防本组被判据漏行恒绿）",
+                  accounted == verdicts.Count && accounted == names.Length,
+                  $"accounted={accounted} verdicts={verdicts.Count} names={names.Length}；{Ro()}");
+        }
+
+        // 面板里的 `[detect] ` 开头行分三类（口径必须**按形状**而不是按"有没有冒号"）：
+        //   verdicts = `[detect] <七个槽位名之一>: <尾巴>`          ⇒ 槽位打的结论（本组判据对象）
+        //   suspects = `[detect] <别的名字>: <OK|未找到|探测抛异常…>` ⇒ **空槽位/漏改名**的确切形态
+        //   others   = 其余 `[detect]` 行                            ⇒ Step2 的 ffmpeg 进度行
+        //     （`[detect] ffmpeg 已定位: C:\…\ffmpeg.exe` / `…像素格式检测完成` / `…编码器列表加载完成`
+        //      / `[detect] ffmpeg 未找到（PATH 或 PLAN 均未检测到），跳过进程探测`）
+        //     ⚠ 实测本机就会多出这些 ⇒ 若按"名字不认识就判红"，P4 会**天天假红**；
+        //       所以 suspects 只收「尾巴是**结论词**、名字却不在七个之内」的行 —— 那才是空槽位/漏改名的信号。
+        static void ClassifyDetectLines(string? text, string[] names,
+            System.Collections.Generic.List<string> verdicts,
+            System.Collections.Generic.List<string> others,
+            System.Collections.Generic.List<string> suspects)
+        {
+            verdicts.Clear(); others.Clear(); suspects.Clear();
+            if (string.IsNullOrEmpty(text)) return;
+            foreach (var raw in text!.Split('\n'))
+            {
+                var l = raw.TrimEnd('\r').TrimEnd();
+                if (!l.StartsWith("[detect] ", StringComparison.Ordinal)) continue;
+                int colon = l.IndexOf(": ", "[detect] ".Length, StringComparison.Ordinal);
+                if (colon < 0) { others.Add(l); continue; }
+                string head = l.Substring("[detect] ".Length, colon - "[detect] ".Length);
+                string tail = l.Substring(colon + 2);
+                bool known = false;
+                foreach (var n in names) if (string.Equals(n, head, StringComparison.Ordinal)) { known = true; break; }
+                if (known) { verdicts.Add(l); continue; }
+                bool verdictShaped = tail == "OK" || tail == "未找到" || tail.StartsWith("探测抛异常", StringComparison.Ordinal);
+                if (verdictShaped) suspects.Add(l); else others.Add(l);
+            }
+        }
 
         static void GroupJ_UiSweep()
         {
@@ -1941,6 +2544,18 @@ namespace UiTestHost
                 //   修复后走 nvenc 支：NvencPresetCombo.SelectedIndex=3 ⇒ level=4 ⇒ `-preset p4`。
                 var ad = Find<CheckBox>("UseAdvancedCodec"); if (ad != null) ad.IsChecked = true;
                 Pump(10); Regen();
+                // ⚠⚠ 2026-09-22（`HANDOVER §33` 项 2）：**本块需要的是「特定厂商」的 nvenc**，
+                //   而上面 L1e 的 `PickEncoder(s => s.StartsWith("⚡"))` 只保证「**某个**硬件编码器」——
+                //   它取的是**按名字排序后的第一个** `⚡` 项（列表按名字排序：`EncoderDetectionService.cs:346`），
+                //   而本机同时有 `av1_amf`(AMD) 与 `av1_nvenc`(NVIDIA) 且 **`av1_amf` < `av1_nvenc`**
+                //   ⇒ **`av1_amf` 只要被检测到，L1e 就必然选中它**（⚠ 实测它的检测是**间歇性**的：时有时无）
+                //   ⇒ `encNow == "av1_nvenc"` 不成立 ⇒ 下面 else 直接判红。
+                //   （整轮实测：两次红、红的还不是同一条 —— Run A 是 H10、Run B 是 L1j，后者报 `-c:v=av1_amf`。）
+                //   ⇒ 这里**按名字显式选中 nvenc**（**不改 L1e 的语义与其厂商无关的覆盖**）：
+                //     选择是**持久**的（L1e 的选择一直保留到本处），故本行**是承重的**。
+                //   ⚠ 本机确实没有 nvenc 时 `PickEncoder` 返回 null ⇒ 走原 else（如实判红）。
+                PickEncoder(s => s.Contains("av1_nvenc", StringComparison.Ordinal));
+                Regen();
                 var np = Find<ComboBox>("NvencPresetCombo");
                 var encNow = Val(Tok(Cmd()), "-c:v");
                 if (np != null && encNow == "av1_nvenc")
@@ -2325,13 +2940,15 @@ namespace UiTestHost
                       bad.StartsWith("ArgumentException", StringComparison.Ordinal)
                       && bad.Contains("--bit-depth", StringComparison.Ordinal), bad);
 
-                // M3e 现状锁（**刻意不做范围校验**）：0 能解析 ⇒ 不得被拒。
-                //   理由：本仓 0/-1 大量作哨兵（AnimationScaleW=0 保持原始、AnimationLoop=-1 不循环）；
-                //   把"能解析但语义可疑"的取值判非法会误伤合法用法 ⇒ 范围语义留给下游。
-                var o0 = tryOpts("bit-depth", "0");
-                Check("M3e 现状锁 --bit-depth 0 不被拒（不做范围校验）",
-                      o0 != null && o0.BitDepth == 0,
-                      o0 == null ? "applyOpts threw" : $"BitDepth={o0.BitDepth}");
+                // M3e（2026-09-25 **反转**）：旧断言锁的是"修复前现状"（`0 不被拒 ⇒ 刻意不做范围校验`），
+                //   当时给的理由是"本仓 0/-1 大量作哨兵"（AnimationScaleW=0 保持原始、AnimationLoop=-1 不循环）。
+                //   但 bit-depth 的哨兵是 **auto/null**（由 M3b + M3f 锁住），不是 0 ⇒ 那条理由不适用：
+                //   放行 0 只会让它流到下游去取一个不存在的出口档，正是 P2.5 要修的**静默降档**缺陷本身。
+                //   ⇒ 现在要求 0 与 banana 同命（ArgumentException 点名 --bit-depth）。这是**收紧**，不是放宽。
+                var zOutcome = applyOutcome("bit-depth", "0");
+                Check("M3e --bit-depth 0 被拒（范围校验；哨兵是 auto/null 而非 0）",
+                      zOutcome.StartsWith("ArgumentException", StringComparison.Ordinal)
+                      && zOutcome.Contains("--bit-depth", StringComparison.Ordinal), zOutcome);
 
                 var oDef = new FfmpegGui.Models.FfmpegOptions();
                 Check("M3f auto ≡ 未设置（有意，锁住）",
@@ -2426,7 +3043,7 @@ namespace UiTestHost
         //     （`PresetData.cs:142-145` 自述「[遗留] 旧 ICC 模式字符串…新预设用 ColorStrategy」）；
         //   · 载入侧 `FfmpegOptions.ApplyPresetData`（`FfmpegOptions.cs:135-138`）**优先**读 `ColorStrategy`，
         //     缺失才回退 `ColorStrategyMapper.FromIccMode(IccMode)`；
-        //   · 两个函数对**同名按钮**的语义互斥（`MainWindow.xaml.cs:2514-2520` vs `:2523-2529`），
+        //   · 两个函数对**同名按钮**的语义互斥（`MainWindow.xaml.cs` 的 `GetIccMode()` vs `GetColorStrategy()`），
         //     且 `FromIccMode` 把 BakeToStandard 折叠进 Recommended（`ColorStrategy.cs:47-53`，**有意设计**）
         //     ⇒ 中间两个模式（IccModeBake / IccModeBakeOnly）往返后错位。
         // 四条锁：① 4 值逐值往返（两条载入路径 A/B）；② 负控=往返后 4 值互不相同（防折叠成恒真）；
@@ -2472,15 +3089,32 @@ namespace UiTestHost
                     Check("N1a " + rn + " 实时=" + exp + " ⇒ 载入A 不变", live == exp && gotA == exp,
                           $"live={live} saved.IccMode={p2.IccMode ?? "<null>"} saved.ColorStrategy={p2.ColorStrategy ?? "<null>"} gotA={gotA} expect={exp}");
 
-                    // 载入路径 B：简洁模式入队（MainWindow.xaml.cs:4699 的内联迁移分支）
-                    var entry = new FfmpegGui.Models.PresetEntry { Name = "N1-" + rn, Source = "user", Data = p2 };
-                    typeof(FfmpegGui.MainWindow).GetField("_simpleActivePreset", BF)!.SetValue(W, entry);
-                    var qi = (FfmpegGui.Models.QueueItem)mwType
-                        .GetMethod("CreateQueueItemFromSimplePreset", BF)!
-                        .Invoke(W, new object?[] { System.IO.Path.Combine(SrcDir, "src_8bit.png") })!;
-                    var gotB = qi.Options.ColorStrategy.ToString();
+                    // 载入路径 B（2026-09-26 重写）：预设 → ApplyPresetData(真实控件) → 唯一采集点。
+                    // 原先这条走 `CreateQueueItemFromSimplePreset`（简洁模式自带的第二套
+                    // PresetData→FfmpegOptions 映射）；那条映射已删 —— 简洁模式现在与入队共用采集点，
+                    // 所以这条锁量的是「预设能否完整描述高级模式状态」，比原来更强。
+                    var apply = mwType.GetMethod("ApplyPresetData", BF);
+                    var collect = mwType.GetMethod("CollectOptionsFromUiAsync", BF);
+                    if (apply == null || collect == null)
+                    {
+                        Check("N1b " + rn + " 反射入口可用", false,
+                              "ApplyPresetData=" + (apply == null ? "missing" : "ok")
+                            + " CollectOptionsFromUiAsync=" + (collect == null ? "missing" : "ok"));
+                        return;
+                    }
+                    apply.Invoke(W, new object?[] { p2 });
+                    Pump(8);
+                    var collectTask = (System.Threading.Tasks.Task<FfmpegGui.Models.FfmpegOptions>)collect
+                        .Invoke(W, new object?[] { System.IO.Path.Combine(SrcDir, "src_8bit.png"), false })!;
+                    for (int spin = 0; spin < 300 && !collectTask.IsCompleted; spin++) Pump(1);
+                    if (!collectTask.IsCompleted)
+                    {
+                        Check("N1b " + rn + " 采集已收敛", false, "collector never completed (UI pump starved)");
+                        return;
+                    }
+                    var gotB = collectTask.Result.ColorStrategy.ToString();
                     tripB.Add(gotB);
-                    Check("N1b " + rn + " 实时=" + exp + " ⇒ 载入B(简洁模式) 不变", gotB == exp,
+                    Check("N1b " + rn + " 实时=" + exp + " ⇒ 载入B(预设→控件→采集) 不变", gotB == exp,
                           $"gotB={gotB} expect={exp}");
                 });
             }

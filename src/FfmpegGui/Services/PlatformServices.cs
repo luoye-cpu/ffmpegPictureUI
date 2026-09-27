@@ -134,23 +134,19 @@ public static class PlatformServices
 
     /// <summary>在目录及子目录中查找特定工具（优先直接匹配，其次递归）</summary>
     public static string? FindToolInDirectory(
-        string directory, string toolName, string searchWildcard)
+        string directory, string toolName, string searchWildcard, Action<string>? log = null)
     {
         if (!Directory.Exists(directory)) return null;
         var candidate = Path.Combine(directory, toolName);
         if (File.Exists(candidate)) return candidate;
-        try
-        {
-            var list = new List<string>();
-            foreach (var f in Directory.EnumerateFiles(
-                directory, searchWildcard, SearchOption.AllDirectories))
-            {
-                if (File.Exists(f)) list.Add(f);
-            }
-            if (list.Count > 0)
-                return ExternalToolsDetector.ChooseBestExecutable(list);
-        }
-        catch { }
+        // ⚠ 递归必须走 EnumerateFilesSafe（预算 + 跳过 junction + 单目录不可访问不丢整棵子树）：
+        //   旧写法直接把 `SearchOption.AllDirectories` 交给 .NET，实测在"PATH 含用户配置文件根目录"
+        //   这种真实配置下**永不返回**（句柄 9 万 / 单核满载），把工具探测变成挂死。
+        var list = ExternalToolsDetector.EnumerateFilesSafe(directory, searchWildcard, log);
+        // ⚠ 可执行性收口在 ExternalToolsDetector.ChooseBestExecutable（实测：无扩展约束的通配
+        //   如 `*exiftool*` 会命中 C:\Windows\Prefetch\EXIFTOOL.EXE-*.pf）。
+        if (list.Count > 0)
+            return ExternalToolsDetector.ChooseBestExecutable(list);
         return null;
     }
 
@@ -160,6 +156,18 @@ public static class PlatformServices
 
     private static string? _planPath;
     private static bool _planScanned;
+
+    /// <summary>
+    /// 复位 PLAN 定位缓存 ⇒ 下一次读 <see cref="PlanFolderPath"/> 重新扫描。
+    /// ⚠ <c>_planScanned</c> 原先是**一次性闩**（解析任何候选之前就置 true、全仓无复位入口）
+    ///   ⇒ 运行期换便携包/改 `FFMPEGGUI_PLAN_DIR` 对已启动的进程无效。
+    ///   现在"换了 ffmpeg 目录"与"点了重新检测"都会走这里。
+    /// </summary>
+    public static void ResetPlanFolderCache()
+    {
+        _planScanned = false;
+        _planPath = null;
+    }
 
     /// <summary>
     /// PLAN 文件夹路径。搜索优先级：
@@ -280,28 +288,101 @@ public static class PlatformServices
     }
 
     /// <summary>
+    /// 工具「**起不起得来**」备忘录（2026-09-23 新增）。
+    /// 为什么需要：`avifenc` / `dngtool` 没有独立 Service ⇒ 可用性一直只看"文件在不在"，
+    /// 于是落进 `WindowsApps` 那种 ACL 拒绝启动的 exe 时**面板报 ✅、队列却 InvalidApplication 失败**
+    /// （且已产出的成品会被半成品清理删掉）。
+    /// ⚠ **"零额外开销"只对 `ProbeAllTools` 那条链成立**：那里的 `ProbeAndVersion` 本来就在探测，
+    ///   这里只是把结论留下来（原先只取 Version）。而 `RawService` 那条链是**真多一次启动** ——
+    ///   它有 `_detected` 一次性缓存，晚到的探测结果回流不进队列所读的那个值，只能在 `Detect()` 内探
+    ///   （2026-09-23 实测：只写备忘录的修法被行为锁当场判红）。那次探测被限成单次 `CanLaunch`（界内 ~1 s），
+    ///   理由与调用点线程见 `RawService.Launchable`。
+    /// ⚠ 语义刻意**单向**：只有"已证实起不来"才影响解析；"没记录"= 未知 = 按原样返回。
+    ///   反过来说就是**不做乐观否定** —— 否则一个还没被探测过的工具会凭空消失。
+    /// ⚠ 只由"起不来"三形态填（Start 抛 / 被加载器当场杀掉 / 空路径），**超时不算**
+    ///   （`exiftool(-k).exe` 这类打印完等你按键的工具恒超时却确实能用）。
+    /// </summary>
+    private static readonly object _launchMemoGate = new();
+    private static readonly HashSet<string> _unlaunchable = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// 备忘录的键 ⇒ **必须过 `Path.GetFullPath`**。不规范化的话，同一物理文件以不同形态到达
+    /// （相对/绝对、`.` 段、大小写、`Path.Combine` 产生的重复分隔符）会被当成两个键
+    /// ⇒ "已证实起不来"漏判，收口在该路径上**静默失效**（2026-09-23 自查发现）。
+    /// 取不到全路径（非法字符等）时退回原串 ⇒ 宁可多记一条，也不因规范化异常丢记录。
+    /// </summary>
+    private static string MemoKey(string path)
+    {
+        try { return Path.GetFullPath(path); } catch { return path; }
+    }
+
+    /// <summary>记录"这个路径已证实起不来"。空路径不记（否则会污染一切查询）。</summary>
+    public static void RecordToolUnlaunchable(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return;
+        lock (_launchMemoGate) { _unlaunchable.Add(MemoKey(path)); }
+    }
+
+    /// <summary>记录"这个路径起得来" ⇒ 撤销更早的反例（换了包 / 修好权限后要能自己恢复）。</summary>
+    public static void RecordToolLaunchable(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return;
+        lock (_launchMemoGate) { _unlaunchable.Remove(MemoKey(path)); }
+    }
+
+    /// <summary>是否已被证实起不来（未知 ⇒ false，即不拦）。</summary>
+    public static bool IsToolUnlaunchable(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return false;
+        lock (_launchMemoGate) { return _unlaunchable.Contains(MemoKey(path)); }
+    }
+
+    /// <summary>
+    /// 清空启动性备忘录 ⇒ 用户"换了 ffmpeg 目录"或"点了重新检测"时必须调，
+    /// 否则一次误判会**在这个进程里永久化**（哪怕 exe 已被修好）。
+    /// </summary>
+    public static void ResetToolLaunchabilityCache()
+    {
+        lock (_launchMemoGate) { _unlaunchable.Clear(); }
+    }
+
+    /// <summary>
     /// avifenc 定位的**全局唯一入口**（P7f）。顺序：手动路径 → artifacts 目录 → PLAN 便携文件夹 → ffmpeg 同目录。
     /// ⚠ 曾经同一件事有三份拷贝且口径不一：队列分派判“可用”、执行方法自己重找时漏了 PLAN 分支
     ///   ⇒ 便携发布包布局下 GIF→AVIF 两步法永远跑不到并**静默回退**；UI 又只查其中三项（漏手动路径）。
     ///   所有“avifenc 在哪 / 是否可用”的提问都必须走本函数，不得在调用方重新拼路径。
+    /// ⚠ 逐级判据是「文件在」**且**「没被证实起不来」（见 <see cref="IsToolUnlaunchable"/>）：
+    ///   起不来要**继续下一级**，好让装在别处的可用副本胜出，而不是让整个 AVIF 功能凭空消失。
+    ///   ⇒ 面板（`ProbeAllTools` / 状态行 / headless 报告）与执行（`QueueProcessor`）都问这里，
+    ///     所以"报 ✅ 却必失败"这一类假报只能在本函数里一次修掉。
     /// </summary>
     public static string? ResolveAvifencPath()
     {
+        foreach (var cand in EnumerateAvifencCandidates())
+        {
+            if (IsToolUnlaunchable(cand)) continue;
+            return cand;
+        }
+        return null;
+    }
+
+    private static IEnumerable<string> EnumerateAvifencCandidates()
+    {
         var manual = AppSettingsService.Current.AvifencPath;
-        if (!string.IsNullOrWhiteSpace(manual) && File.Exists(manual)) return manual;
+        if (!string.IsNullOrWhiteSpace(manual) && File.Exists(manual)) yield return manual;
 
         var artifactsDir = AppSettingsService.Current.WindowsArtifactsDir;
         if (!string.IsNullOrWhiteSpace(artifactsDir))
         {
             var p = Path.Combine(artifactsDir, Avifenc);
-            if (File.Exists(p)) return p;
+            if (File.Exists(p)) yield return p;
         }
 
         var inPlan = TryFindInPlanFolder(Avifenc);
-        if (inPlan != null && File.Exists(inPlan)) return inPlan;
+        if (inPlan != null && File.Exists(inPlan)) yield return inPlan;
 
         var byFfmpeg = Path.Combine(AppSettingsService.Current.FfmpegDir ?? "", Avifenc);
-        return File.Exists(byFfmpeg) ? byFfmpeg : null;
+        if (File.Exists(byFfmpeg)) yield return byFfmpeg;
     }
 
     /// <summary>在 PLAN 文件夹的对应子目录中查找指定工具。未找到返回 null。</summary>

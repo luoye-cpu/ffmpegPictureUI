@@ -33,10 +33,22 @@ namespace FfmpegGui
         private NumericUpDown? DngJxlEffortBox;
         private NumericUpDown? DngJxlDecodeSpeedBox;
         private ComboBox? DngLinearCombo;
+        /// <summary>
+        /// ⚠ 2026-09-21：**「线性 DNG」适用条件提示** —— 仅在选中「线性」时显示。
+        /// 实测 dngtool 对 Bayer 输入会明确拒绝（`-linear 仅适用于线性/去马赛克输入`），
+        /// 而 UI 原先把「线性」与「保留 CFA」并列为可选且**无任何提示** ⇒ 「UI 与真实不符」。
+        /// </summary>
+        private TextBlock? DngLinearHint;
         private ComboBox? DngBitDepthCombo;
         private ComboBox? DngHighlightCombo;
         private TextBlock? RawEngineStatus;
         private StackPanel? RawPanel;
+        /// <summary>
+        /// ⚠ 2026-09-20：**DNG 输出专属选项面板**（压缩/JXL 质量/布局/位深/高光）。
+        /// 可见性 = 「RAW 模式 **且** 输出格式 = dng」—— 原先这些选项直接在 <c>RawPanel</c> 里，
+        /// 选「RAW → jpg/avif」时仍显示 ⇒ 「UI 与真实不符」。
+        /// </summary>
+        private StackPanel? DngOptionsPanel;
         private StackPanel? StillOptionsPanel;
         private ComboBox? EncoderCombo;
         private Slider? QualitySlider;
@@ -128,11 +140,13 @@ namespace FfmpegGui
         private TextBlock? SimpleProgressLabel;
         private TextBlock? SimpleEtaLabel;
         private TextBlock? SimpleElapsedLabel;
+        private TextBlock? SimpleCurrentStateLabel;
+        // 应用预设那一刻抓的核心轴指纹，用于判断"之后的状态还等不等于那次预设"
+        private string _simpleAppliedSig = "";
         private bool _simpleModeActive;
         private bool _simpleDropHandlersAttached; // 防止重复进入简洁模式时拖放 handler 重复注册
         private PresetEntry? _simpleActivePreset;
         private System.Timers.Timer? _autoEncodeTimer;
-        private readonly ObservableCollection<string> _simpleMediaFiles = new();
         // GPU 编码器警告面板
         private Border? GpuEncoderWarning;
         private TextBlock? GpuEncoderWarningText;
@@ -190,7 +204,6 @@ namespace FfmpegGui
         private StackPanel? AmfAvifPanel;
         private NumericUpDown? SvtPresetBox;
         private ComboBox? SvtTuneCombo;
-        private CheckBox? SvtStillPictureCheck;
         // ── NVENC 专用控件 ──
         private ComboBox? NvencPresetCombo;
         private NumericUpDown? AvifNvencAqBox;
@@ -300,10 +313,12 @@ namespace FfmpegGui
             DngJxlEffortBox = this.FindControl<NumericUpDown>("DngJxlEffortBox");
             DngJxlDecodeSpeedBox = this.FindControl<NumericUpDown>("DngJxlDecodeSpeedBox");
             DngLinearCombo = this.FindControl<ComboBox>("DngLinearCombo");
+            DngLinearHint = this.FindControl<TextBlock>("DngLinearHint");
             DngBitDepthCombo = this.FindControl<ComboBox>("DngBitDepthCombo");
             DngHighlightCombo = this.FindControl<ComboBox>("DngHighlightCombo");
             RawEngineStatus = this.FindControl<TextBlock>("RawEngineStatus");
             RawPanel = this.FindControl<StackPanel>("RawPanel");
+            DngOptionsPanel = this.FindControl<StackPanel>("DngOptionsPanel");
             StillOptionsPanel = this.FindControl<StackPanel>("StillOptionsPanel");
             EncoderCombo = this.FindControl<ComboBox>("EncoderCombo");
             QualitySlider = this.FindControl<Slider>("QualitySlider");
@@ -422,7 +437,6 @@ namespace FfmpegGui
             AmfAvifPanel = this.FindControl<StackPanel>("AmfAvifPanel");
             SvtPresetBox = this.FindControl<NumericUpDown>("SvtPresetBox");
             SvtTuneCombo = this.FindControl<ComboBox>("SvtTuneCombo");
-            SvtStillPictureCheck = this.FindControl<CheckBox>("SvtStillPictureCheck");
             // NVENC / QSV / VAAPI / AMF 专用控件
             NvencPresetCombo = this.FindControl<ComboBox>("NvencPresetCombo");
             AvifNvencAqBox = this.FindControl<NumericUpDown>("AvifNvencAqBox");
@@ -565,7 +579,6 @@ namespace FfmpegGui
             if (AvifTuneCombo != null) AvifTuneCombo.SelectionChanged += (_, _) => RegenerateCommand();
             if (SvtPresetBox != null) SvtPresetBox.ValueChanged += (_, _) => RegenerateCommand();
             if (SvtTuneCombo != null) SvtTuneCombo.SelectionChanged += (_, _) => RegenerateCommand();
-            if (SvtStillPictureCheck != null) SvtStillPictureCheck.IsCheckedChanged += (_, _) => RegenerateCommand();
             if (HwPresetCombo != null) HwPresetCombo.SelectionChanged += (_, _) => RegenerateCommand();
             // ── libaom-av1 高级图像控件 ──
             if (AvifAqModeCombo != null) AvifAqModeCombo.SelectionChanged += (_, _) => RegenerateCommand();
@@ -947,6 +960,7 @@ namespace FfmpegGui
             SimpleProgressLabel = this.FindControl<TextBlock>("SimpleProgressLabel");
             SimpleEtaLabel = this.FindControl<TextBlock>("SimpleEtaLabel");
             SimpleElapsedLabel = this.FindControl<TextBlock>("SimpleElapsedLabel");
+            SimpleCurrentStateLabel = this.FindControl<TextBlock>("SimpleCurrentStateLabel");
 
             // 简洁模式预设列表初始化
             if (SimplePresetCombo != null)
@@ -1062,7 +1076,14 @@ namespace FfmpegGui
             if (DngJxlDecodeSpeedBox != null)
                 DngJxlDecodeSpeedBox.ValueChanged += (_, _) => RegenerateCommand();
             if (DngLinearCombo != null)
-                DngLinearCombo.SelectionChanged += (_, _) => RegenerateCommand();
+                DngLinearCombo.SelectionChanged += (_, _) =>
+                {
+                    // ⚠ 2026-09-21：选中「线性」时显示适用条件提示
+                    //   （dngtool 对 Bayer 输入会明确拒绝 `-linear` ⇒ 必须让用户事先知道）
+                    if (DngLinearHint != null)
+                        DngLinearHint.IsVisible = DngLinearCombo.SelectedIndex == 1;
+                    RegenerateCommand();
+                };
             if (DngBitDepthCombo != null)
                 DngBitDepthCombo.SelectionChanged += (_, _) => RegenerateCommand();
             if (DngHighlightCombo != null)
@@ -1162,16 +1183,29 @@ namespace FfmpegGui
 
                 Log("正在检测 ffmpeg 能力与可用编码器...");
 
-                // ── Step 1: 文件系统检测（并行化，~500ms → ~100ms）──
+                // ── Step 1: 文件系统检测（并行化）──
+                // ⚠ 不变式：**槽位数 == 被检测工具数 == `[detect]` 日志条数**，且**异常必须留名**。
+                //   旧形态是 7 槽 / 6 工具 / 4 条日志：第 5 槽是 `efc06221` 删掉 UltrahdrService 时
+                //   留下的**空任务**，而 djxl/jxr 两条**不打日志** ⇒ ①人读日志数不出"预热了几个工具"
+                //   ②某个 Detect 抛异常被 `catch { }` 吞掉时**连"未找到"都不打**,面板只留一个 ❌、
+                //   原因零记录。⇒ 统一走下面的 Mk：探测 + 必打一行 + 异常点名异常。
+                System.Threading.Tasks.Task Mk(string name, Action probe, Func<bool> ok) =>
+                    System.Threading.Tasks.Task.Run(() =>
+                    {
+                        try { probe(); Log($"[detect] {name}: {(ok() ? "OK" : "未找到")}"); }
+                        catch (Exception ex) { Log($"[detect] {name}: 探测抛异常 {ex.GetType().Name}: {ex.Message}（按未找到处理）"); }
+                    });
                 var detectTasks = new[]
                 {
-                    Task.Run(() => { try { CjxlService.ClearCache(); CjxlService.Detect(); Log("[detect] cjxl: " + (CjxlService.IsAvailable ? "OK" : "未找到")); } catch { } }),
-                    Task.Run(() => { try { CjpegliService.ClearCache(); CjpegliService.Detect(); Log("[detect] cjpegli: " + (CjpegliService.IsAvailable ? "OK" : "未找到")); } catch { } }),
-                    Task.Run(() => { try { DjxlService.ClearCache(); DjxlService.Detect(); } catch { } }),
-                    Task.Run(() => { try { ExifToolService.Detect(m => Log(m.TrimEnd('\n'))); Log("[detect] exiftool: " + (ExifToolService.IsAvailable ? "OK" : "未找到")); } catch { } }),
-                    Task.Run(() => { try {  } catch { } }),
-                    Task.Run(() => { try { JxrService.ClearCache(); JxrService.Detect(); } catch { } }),
-                    Task.Run(() => { try { RawService.ClearCache(); RawService.Detect(); Log("[detect] dngtool: " + (RawService.IsAvailable ? "OK" : "未找到")); } catch { } }),
+                    Mk("cjxl",      () => { CjxlService.ClearCache(); CjxlService.Detect(); },                        () => CjxlService.IsAvailable),
+                    Mk("cjpegli",   () => { CjpegliService.ClearCache(); CjpegliService.Detect(); },                   () => CjpegliService.IsAvailable),
+                    Mk("djxl",      () => { DjxlService.ClearCache(); DjxlService.Detect(); },                         () => DjxlService.IsAvailable),
+                    Mk("exiftool",  () => { ExifToolService.ClearCache(); ExifToolService.Detect(m => Log(m.TrimEnd('\n'))); }, () => ExifToolService.IsAvailable),
+                    Mk("JxrEncApp", () => { JxrService.ClearCache(); JxrService.Detect(); },                           () => JxrService.IsAvailable),
+                    // avifenc 没有独立 Service，解析入口 `ResolveAvifencPath()` 本身无缓存 ⇒ 无 ClearCache 可做，
+                    // 但**照样要占一个槽位、打一行日志**（否则"槽位=工具=日志"的不变式又被破坏）。
+                    Mk("avifenc",   () => { },                                                                        () => PlatformServices.ResolveAvifencPath() != null),
+                    Mk("dngtool",   () => { RawService.ClearCache(); RawService.Detect(); },                           () => RawService.IsAvailable),
                 };
                 await Task.WhenAll(detectTasks);
 
@@ -1345,20 +1379,12 @@ namespace FfmpegGui
         {
             if (_suppressCommandRegen || string.IsNullOrWhiteSpace(_inputPath)) return;
             var fmt = NormalizeFormat(FormatCombo?.SelectedItem as string);
-            var chroma = ChromaCombo?.SelectedItem as string ?? "auto";
-            var bitdepthStr = BitDepthCombo?.SelectedItem as string ?? "auto";
-            int? bitdepth = null;
-            if (!bitdepthStr.Equals("auto", StringComparison.OrdinalIgnoreCase)
-                && int.TryParse(bitdepthStr, out var bd))
-                bitdepth = bd;
-            var useAdv = UseAdvancedColor?.IsChecked ?? false;
             var useAdvCodec = UseAdvancedCodec?.IsChecked ?? false;
             var autoTh = AutoThreadsCheck?.IsChecked ?? true;
             var singleTh = SingleThreadCheck?.IsChecked ?? false;
             int threads = singleTh ? 1 : autoTh ? Models.FfmpegOptions.ComputeAutoThreads() : (int)(ThreadsBox?.Value ?? 4);
 
             var backend = GetCurrentEncoderBackend();
-            var encName = GetCurrentEncoderName();
 
             // DNG 输出: dngtool 编码命令预览 (非 ffmpeg 管线)
             if (fmt == "dng")
@@ -1390,7 +1416,6 @@ namespace FfmpegGui
                 && CjxlService.IsAvailable && IsColorManuallySpecified())
             {
                 backend = EncoderBackend.Cjxl;
-                encName = "cjxl";
                 if (LogText != null)
                     LogText.Text += "[jxl] 手动色彩空间 → 自动切换 cjxl 编码器\n";
             }
@@ -1434,7 +1459,7 @@ namespace FfmpegGui
                 var effort = useAdvCodec ? (int?)CjxlEffortBox?.Value ?? 7 : 7;
                 var progressive = useAdvCodec ? (CjxlProgressiveCheck?.IsChecked ?? false) : false;
                 var photonNoise = useAdvCodec ? (int)(CjxlPhotonNoiseBox?.Value ?? 0) : 0;
-                var autoPhotonNoise = useAdvCodec && (CjxlAutoPhotonNoiseCheck?.IsChecked ?? false);
+                // 预览只印数字 ISO；auto 那条由运行侧解析（cjxl 无 auto 取值，见下方 A-19 注释）
                 var isJpegInput = IsJpegInput(_inputPath);
                 var qualityVal = (int)(QualitySlider?.Value ?? 90);
                 var distance = (100 - qualityVal) * 15.0 / 100.0;
@@ -1447,9 +1472,9 @@ namespace FfmpegGui
                 if (isJpegInput)
                 {
                     // 无损重封装开关 + 未开启「保留 Ultra HDR 增益图」→ 直接封装 DCT 系数
-                    var preserveUltrahdr = JxlPreserveUltrahdrCheck?.IsChecked ?? true;
-                    var losslessJpeg = JxlLosslessJpegCheck?.IsChecked ?? true;
-                    if (!preserveUltrahdr && losslessJpeg)
+                    // A-10：与采集侧共用 ReadJxlAdvancedCheckStates（面板收起时这两只不参与）
+                    var jxlChecks = ReadJxlAdvancedCheckStates(fmt, useAdvCodec);
+                    if (!jxlChecks.PreserveUltrahdr && jxlChecks.LosslessJpeg)
                     {
                         LockLosslessForJxl();
                         cmd.Append(" -d 0 --lossless_jpeg=1");
@@ -1474,8 +1499,11 @@ namespace FfmpegGui
                 }
 
                 if (progressive) cmd.Append(" --progressive");
-                if (autoPhotonNoise) cmd.Append(" --photon_noise_iso=auto");
-                else if (photonNoise > 0) cmd.Append(" --photon_noise_iso=").Append(photonNoise);
+                // A-19（2026-09-26）：cjxl 没有 auto 这个取值（实测 --photon_noise_iso=auto ⇒ rc=1
+                // "Error parsing flag"），真值是运行时从 EXIF 解析出的数字 ISO。预览不再印这条
+                // 照着敲必然失败的占位串；也不在此起 exiftool 取真值 —— 本函数挂在每次控件变化上，
+                // 为预览起进程等于每次改下拉框起一个进程。运行侧那条日志已点名解析结果。
+                if (photonNoise > 0) cmd.Append(" --photon_noise_iso=").Append(photonNoise);
 
                 if (CommandText != null)
                     CommandText.Text = cmd.ToString();
@@ -1496,21 +1524,14 @@ namespace FfmpegGui
                 return;
             }
 
-            // --- FFmpeg 后端：JPEG→JXL 无损重封装（由高级选项开关控制）---
-            // 开启「保留 Ultra HDR 增益图」时强制跳过无损重封装（会丢失增益图），按常规编码
-            bool jxlLosslessJpeg = false;
+            // --- FFmpeg 后端：JPEG→JXL 无损重封装 ---
+            // A-10（2026-09-26）：jbrd 重封装从此**只属于 cjxl 面板**（那只复选框就在 cjxl 面板里），
+            // 而 ffmpeg libjxl 出口实测不写 jbrd box（见 FfmpegCommandBuilder 的 2026-09-19 更正）
+            // ⇒ 这一侧不再自己算结论，只按采集侧同一个判定维持 LockLossless/Restore 的反向联动。
             if (fmt is "jxl" && IsJpegInput(_inputPath))
             {
-                var preserveUltrahdr = JxlPreserveUltrahdrCheck?.IsChecked ?? true;
-                var losslessJpegEnabled = JxlLosslessJpegCheck?.IsChecked ?? true;
-                if (!preserveUltrahdr && losslessJpegEnabled && await EncoderDetectionService.SupportsJxlLosslessJpegAsync())
-                {
-                    jxlLosslessJpeg = true;
-                    LockLosslessForJxl();
-                    if (LogText != null)
-                        LogText.Text += "[jxl] FFmpeg 检测到 libjxl 支持 lossless_jpeg，将使用无损重封装模式\n";
-                }
-                else if (preserveUltrahdr)
+                var jxlChecks = ReadJxlAdvancedCheckStates(fmt, useAdvCodec);
+                if (jxlChecks.PreserveUltrahdr)
                 {
                     RestoreLosslessAndQuality();
                     if (LogText != null)
@@ -1528,103 +1549,12 @@ namespace FfmpegGui
                 RestoreLosslessAndQuality();
             }
 
-            var opts = new Models.FfmpegOptions
-            {
-                Format = fmt, Quality = (int)(QualitySlider?.Value ?? 92),
-                Chroma = chroma, BitDepth = bitdepth,
-                ColorSpace = ColorSpaceCombo?.SelectedItem as string,
-                UseAdvancedColorParameters = useAdv,
-                ColorPrimaries = useAdv ? (ColorPrimariesCombo?.SelectedItem as string) : null,
-                ColorTrc = useAdv ? (ColorTrcCombo?.SelectedItem as string) : null,
-                ColorMatrix = useAdv ? (ColorMatrixCombo?.SelectedItem as string) : null,
-                ColorRange = useAdv ? GetColorRangeValue() : null,
-                TonemapCurve = null, // tonemap 曲线内部固定 hable
-                Encoder = encName, EncoderBackend = backend, Threads = threads,
-                MetadataMode = GetMetadataMode(),
-                Lossless = LosslessCheck?.IsChecked ?? false,
-                PngPred = useAdvCodec && PngPredCombo?.SelectedIndex >= 0
-                    ? _pngPredValues[Math.Min(PngPredCombo.SelectedIndex, _pngPredValues.Length - 1)]
-                    : null,
-                PngDpi = useAdvCodec && PngDpiBox?.Value > 0 ? (int?)PngDpiBox.Value : null,
-                WebpPreset = useAdvCodec ? (WebpPresetCombo?.SelectedItem as string) : "picture",
-                WebpCompressionLevel = useAdvCodec ? (int?)WebpCompressionBox?.Value : 4,
-                AvifCpuUsed = useAdvCodec ? (int?)AvifCpuUsedBox?.Value : 4,
-                AvifStillPicture = useAdvCodec ? AvifStillPictureCheck?.IsChecked : true,
-                AvifRowMt = useAdvCodec ? AvifRowMtCheck?.IsChecked : true,
-                AvifTune = useAdvCodec ? (AvifTuneCombo?.SelectedItem as string) : null,
-                AvifPreset = GetAvifPresetValue(),
-                AvifSvtPreset = useAdvCodec ? (int?)SvtPresetBox?.Value : 6,
-                AvifSvtTune = useAdvCodec ? (SvtTuneCombo?.SelectedItem as string) : "VMAF (主观)",
-                AvifHwPreset = useAdvCodec ? (HwPresetCombo?.SelectedItem as string) : null,
-                AvifHwPresetLevel = useAdvCodec ? GetAvifHwPresetLevel() : 7,
-                AvifAqMode = useAdvCodec ? ParseAvifAqMode() : "variance",
-                AvifEnableCdef = useAdvCodec ? AvifCdefCheck?.IsChecked : true,
-                AvifEnableIntrabc = useAdvCodec ? AvifIntrabcCheck?.IsChecked : true,
-                AvifDenoiseLevel = useAdvCodec && AvifDenoiseBox?.Value > 0 ? (int?)AvifDenoiseBox.Value : null,
-                AvifNvencAqStrength = useAdvCodec ? (int?)AvifNvencAqBox?.Value : 8,
-                AvifNvencSpatialAq = useAdvCodec ? AvifNvencSpatialAqCheck?.IsChecked : true,
-                AvifLowPower = useAdvCodec ? (AvifQsvLowPowerCheck?.IsChecked ?? AvifVaapiLowPowerCheck?.IsChecked) : false,
-                // JXL effort: cjxl 后端用 cjxl 面板的 effort，ffmpeg 后端用 ffmpeg 面板的 effort
-                // （2026-08-16 修复: 此前 CjxlEffortBox 仅预览 cjxl 分支生效）
-                JxlEffort = useAdvCodec
-                    ? (backend == EncoderBackend.Cjxl
-                        ? (int?)CjxlEffortBox?.Value ?? 7
-                        : (int?)JxlEffortBox?.Value ?? 7)
-                    : 7,
-                JxlModular = useAdvCodec ? JxlModularCheck?.IsChecked : null,
-                JxlLosslessJpeg = jxlLosslessJpeg,
-                CjxlProgressive = useAdvCodec ? (CjxlProgressiveCheck?.IsChecked ?? false) : false,
-                CjxlPhotonNoiseIso = useAdvCodec && (CjxlAutoPhotonNoiseCheck?.IsChecked ?? false) ? 0 : (useAdvCodec ? (int)(CjxlPhotonNoiseBox?.Value ?? 0) : 0),
-                CjxlAutoPhotonNoise = useAdvCodec && (CjxlAutoPhotonNoiseCheck?.IsChecked ?? false),
-                JxlPreserveUltrahdr = useAdvCodec ? (JxlPreserveUltrahdrCheck?.IsChecked ?? true) : true,
-                JpegHuffman = useAdvCodec ? (JpegHuffmanCombo?.SelectedItem as string) : "optimal",
-                JpegDct = useAdvCodec ? (JpegDctCombo?.SelectedItem as string is "auto" ? null : JpegDctCombo?.SelectedItem as string) : null,
-                JpegProgressiveId = useAdvCodec ? ParseJpegProgressiveId() : 0,
-                JpegGainMap = JpegGainMapEnableCheck?.IsChecked == true,
-                JpegGainMapQuality = ParseGainMapQuality(),
-                JpegGainMapTargetNits = ParseGainMapNits(),
-                // (libultrahdr hdr-cf 字段已移除)
-                JpegGainMapDownsample = ParseGainMapDownsample(),
-                JpegGainMapMultiChannel = ParseGainMapMultiChannel(),
-                JpegGainMapBaseGamut = ParseGainMapBaseGamut(),
-                TiffCompressionAlgo = useAdvCodec ? (TiffCompressionCombo?.SelectedItem as string) : "lzw",
-                StripExifGps = StripExifGpsCheck?.IsChecked ?? true,
-                StripExifTime = StripExifTimeCheck?.IsChecked ?? false,
-                StripExifCamera = StripExifCameraCheck?.IsChecked ?? false,
-                StripExifAll = StripExifAllCheck?.IsChecked ?? false,
-                StripXmp = StripXmpCheck?.IsChecked ?? false,
-                AppendPngExtension = AppendPngExtCheck?.IsChecked ?? false,
-                // (IccMode 已由 ColorStrategy 取代)
-                ColorStrategy = GetColorStrategy(),   // 色彩策略（4 单选直选）
-                ColorGamutMap = GetColorGamutMap(),   // 色域映射（GMO）：off 默认（钳位）/ on（压缩）
-                IccFilePath = null, // 新模式不使用外部 ICC
-                // (源色彩空间已改为自动 CICP+ICC 检测)
-                // (烘焙目标取主色域下拉，旧 IccTargetColorSpace 字段已移除)
-                // ── 动图参数 + TIFF DPI（2026-09-19 P1-B 修复：预览路径此前**整体漏传**）──
-                // 实测缺陷：本 opts 初始化块原先**不含**这 5 个字段，而入队路径
-                // （BuildQueueItemOptions 的 options 初始化，约 :2748）**含** ⇒ 用户看到的
-                // 预览命令与实际执行的命令不一致：动图 fps / 缩放 / 循环 / 时长、TIFF DPI
-                // 在预览里**静默丢失**（命令串里连 token 都没有，用户无从察觉）。
-                // 逐字镜像入队路径的表达式，保证两处同源（禁止各写一套口径）。
-                // ── 2026-09-19 P1-E（任务 C）：动图参数**只在动图模式下读取** ──
-                // 定性 = **缺陷**（不是"保留用户输入"的约定）：ConversionMode_SelectionChanged
-                // 在非动图模式把 AnimationPanel 整体 IsVisible=false（见该方法），用户在静态
-                // 模式下**看不到也改不了**这几个框，但它们的残留文本仍会进命令 —— 典型
-                // "看起来配置过"。后果（FfmpegCommandBuilder 源码可证）：
-                //   · 静态 WebP 会被塞进 `-vf fps=…,scale=…`（FfmpegCommandBuilder.cs:253-261）；
-                //   · 静态 **JXL 会被静默换成 `-c:v libjxl_anim`** —— 该分支的判据就是
-                //     `options.AnimationFps.HasValue`（:361），即"有没有 fps"等于"是不是动图"。
-                // 修法：按模式取值（**不**清空控件 —— 用户来回切换时输入仍在，只是静态模式下不下发）。
-                // 三处（RegenerateCommand / AddSingleToQueue / BuildCommand_Click）逐字同源。
-                AnimationFps = IsAnimationMode() ? ParseOptionalInt(AnimationFpsBox?.Text, 1, 60) : null,
-                AnimationLoop = IsAnimationMode() ? ParseInt(AnimationLoopBox?.Text, 0, -1, 999) : -1,
-                AnimationScaleW = IsAnimationMode() ? (ParseOptionalInt(AnimationScaleWBox?.Text, 0, 4096) ?? 0) : 0,
-                AnimationDuration = IsAnimationMode() ? (ParseOptionalDouble(AnimationDurationBox?.Text, 0.1, 3600) ?? 0) : 0,
-                TiffDpi = useAdvCodec && TiffDpiBox?.Value > 0 ? (int?)TiffDpiBox.Value : null,
-                // 最长边限制（同上：入队路径 :2750-2751 有、预览路径漏 ⇒ 预览看不到 scale= 滤镜）
-                EnableMaxDimension = EnableMaxDimensionCheck?.IsChecked ?? false,
-                MaxDimension = (int?)MaxDimensionBox?.Value ?? 1920,
-            };
+            // 唯一采集点：预览不再自己读控件（此前这份 opts 少读 AvifCpuUsed / Gif / cjpegli / DNG
+            // 等二十来项，取消勾选后预览仍按开启画）。
+            var opts = await CollectOptionsFromUiAsync(_inputPath, logNotices: false);
+            if (opts == null) return;
+            // A-10 之后上面那段联动与采集侧共用 ReadJxlAdvancedCheckStates ⇒ 两侧同式，
+            // 原先这里那行「用预览算出的结论覆盖采集结果」已删除（它存在的唯一理由就是两侧不同式）。
             if (CommandText != null)
             {
                 var args = Services.FfmpegCommandBuilder.BuildArguments(opts, _inputPath, outputPath);
@@ -1687,6 +1617,36 @@ namespace FfmpegGui
                 QualitySlider.IsEnabled = true;
                 if (QualityBox != null) QualityBox.IsEnabled = true;
             }
+        }
+
+        /// <summary>
+        /// A-10（2026-09-26）：JXL 那两只复选框的**面板可见才生效**判定 —— 唯一采集点与命令预览共用这一处。
+        /// <para>
+        /// 旧形状的毛病：「jbrd 无损重封装」那只挂在 <c>JxlCjxlPanel</c> 下（只在高级编码 + cjxl 后端可见），
+        /// 「保留 Ultra HDR 增益图」那只挂在 <c>JxlCodecPanel</c> 下（只在高级编码 + jxl 格式可见），
+        /// 而采集式里前者**任何时候都读**、否决条件才看 <c>useAdvCodec</c> ⇒
+        /// 面板收起时这两只的存量值照样决定走不走无损重封装（控件看不见却能改命令，
+        /// 正是 <c>IsAnimationMode()</c> 注释点名的忌讳形状），且预览与入队两侧算出的结论不同。
+        /// </para>
+        /// <para>
+        /// 规则（单一、可解释）：**所属面板不可见 ⇒ 该复选框不参与，回落到数据模型的出厂默认**
+        /// （<c>FfmpegOptions.JxlLosslessJpeg = false</c> 不重封装、<c>JxlPreserveUltrahdr = true</c>
+        /// 保留增益图 ⇒ 质量滑块照常生效）。可见条件与 <c>UpdateCodecPanelVisibility</c> 的 jxl 分支
+        /// 逐条同构：格式 jxl + 勾了高级编码；cjxl 那只还额外要求后端为 cjxl 且非动图模式。
+        /// 后端**刻意在函数内自己读** <c>GetCurrentEncoderBackend()</c>（即下拉当前值，与面板可见性同源），
+        /// 不吃调用方那份可能被「手动色彩 → 自动切 cjxl」改写过的局部值：那种情形下用户看到的
+        /// 仍是 ffmpeg 面板，控件依旧不该参与。
+        /// </para>
+        /// </summary>
+        private (bool LosslessJpeg, bool PreserveUltrahdr) ReadJxlAdvancedCheckStates(
+            string fmt, bool useAdvCodec)
+        {
+            var jxlPanelVisible = fmt is "jxl" && useAdvCodec;
+            var cjxlPanelVisible = jxlPanelVisible
+                && GetCurrentEncoderBackend() == EncoderBackend.Cjxl && !IsAnimationMode();
+            return (
+                LosslessJpeg: cjxlPanelVisible && (JxlLosslessJpegCheck?.IsChecked ?? true),
+                PreserveUltrahdr: !jxlPanelVisible || (JxlPreserveUltrahdrCheck?.IsChecked ?? true));
         }
 
         private void UpdateThreadControls()
@@ -1849,6 +1809,12 @@ namespace FfmpegGui
         private void FormatCombo_SelectionChanged(object? sender, SelectionChangedEventArgs e)
         {
             UpdateOptionAvailability();
+            // ⚠ 2026-09-20：**格式变化也要刷新「DNG 专属选项」的可见性** ——
+            //   该面板要求「RAW 模式 **且** 输出格式 = dng」；模式没变但格式变了同样要重算
+            //   （本 handler 原先只调 UpdateOptionAvailability()，**不**触发 UpdatePanels ⇒ 会漏刷）。
+            if (DngOptionsPanel != null && ConversionModeCombo != null)
+                DngOptionsPanel.IsVisible = ConversionModeCombo.SelectedIndex == 2
+                    && NormalizeFormat(FormatCombo?.SelectedItem as string) == "dng";
             _ = RefreshEncoderListAsync();
         }
 
@@ -1923,6 +1889,13 @@ namespace FfmpegGui
             // RAW 模式专属面板
             if (RawPanel != null)
                 RawPanel.IsVisible = isRaw;
+            // ⚠⚠ 2026-09-20：**DNG 输出专属选项**只在「RAW 模式 **且** 输出格式 = dng」时显示。
+            //   原先它们直接放在 RawPanel 里 ⇒ 选「RAW → jpg/avif」时仍显示
+            //   ⇒ 用户会以为压缩/布局/位深/高光设置生效，实际对非 DNG 输出**完全无效**
+            //   ⇒ 正是「UI 与真实不符」。
+            if (DngOptionsPanel != null)
+                DngOptionsPanel.IsVisible = isRaw
+                    && NormalizeFormat(FormatCombo?.SelectedItem as string) == "dng";
             // 静态图片/动图通用选项（编码器/质量/色度/位深/高级色彩/无损/.png后缀等）
             // RAW 模式整体隐藏 —— 2026-08-14 UI 审查修复:
             //   原实现逐个 IsEnabled=false 导致 RAW 面板下方残留灰色质量条/无损/高级选项,
@@ -1931,22 +1904,28 @@ namespace FfmpegGui
                 StillOptionsPanel.IsVisible = !isRaw;
 
             // 更新 FormatCombo 选项列表
-            FormatCombo.Items!.Clear();
-            foreach (var f in targetFormats)
-                FormatCombo.Items.Add(f);
+            // ⚠ CS8602（2026-09-20）：FormatCombo 来自 FindControl，静态分析认为可能为 null
+            var fmtItems = FormatCombo?.Items;
+            fmtItems?.Clear();
+            if (fmtItems != null)
+                foreach (var f in targetFormats)
+                    fmtItems.Add(f);
 
             // 尝试保留之前的选中项（如果在新列表中）
             var idx = Array.IndexOf(targetFormats, previousFormat);
-            if (idx >= 0)
+            if (FormatCombo != null)   // ⚠ CS8602（2026-09-20）：FindControl 的结果静态分析认为可空
             {
-                FormatCombo.SelectedIndex = idx;
-            }
-            else
-            {
-                FormatCombo.SelectedIndex = 0;
-                // 需要手动触发 SelectionChanged（列表重建后 SelectedIndex=0 可能不会自动触发）
-                UpdateOptionAvailability();
-                _ = RefreshEncoderListAsync();
+                if (idx >= 0)
+                {
+                    FormatCombo.SelectedIndex = idx;
+                }
+                else
+                {
+                    FormatCombo.SelectedIndex = 0;
+                    // 需要手动触发 SelectionChanged（列表重建后 SelectedIndex=0 可能不会自动触发）
+                    UpdateOptionAvailability();
+                    _ = RefreshEncoderListAsync();
+                }
             }
 
             // RAW 模式下压缩/质量由 DNG 面板控制；静态面板已整体隐藏（见上方 StillOptionsPanel）
@@ -2116,7 +2095,10 @@ namespace FfmpegGui
                     }
                     if (BitDepthCombo.Items.Count > 0) BitDepthCombo.SelectedIndex = 0;
                 }
-                if (MetadataModeCombo != null) MetadataModeCombo.IsEnabled = _currentCapabilities.SupportsMetadata;
+                // ⚠ 2026-09-22：**必须与 `UpdateExifToolPanelState()` 同一表达式**（`&& ExifToolService.IsAvailable`）——
+                //   否则本处会把那边的 exiftool 条件**覆盖**掉，导致「缺 exiftool 仍可选『删除全部』」的旧缺陷复活。
+                if (MetadataModeCombo != null)
+                    MetadataModeCombo.IsEnabled = _currentCapabilities.SupportsMetadata && ExifToolService.IsAvailable;
                 if (LosslessCheck != null)
                 {
                     if (fmt3 is "png" or "tiff" or "apng")
@@ -2222,8 +2204,6 @@ namespace FfmpegGui
             var isSvt = enc.StartsWith("libsvt", StringComparison.OrdinalIgnoreCase);
             var isQsv = enc.StartsWith("av1_qsv", StringComparison.OrdinalIgnoreCase);
             var isAmf = enc.StartsWith("av1_amf", StringComparison.OrdinalIgnoreCase);
-            var isLibaom = enc.StartsWith("libaom", StringComparison.OrdinalIgnoreCase);
-            var isNvenc = enc.StartsWith("av1_nvenc", StringComparison.OrdinalIgnoreCase);
 
             // ── 色度子采样 ──
             if (ChromaCombo != null)
@@ -2248,7 +2228,10 @@ namespace FfmpegGui
             if (BitDepthCombo != null && fmt == "avif")
             {
                 var cur = BitDepthCombo.SelectedItem as string;
-                var maxBd = (isLibaom || isNvenc) ? 12 : 10;
+                // 上限与**钳制实际用的那一条规则**同源（任务 #36）：这里原先自带一份
+                // `(isLibaom || isNvenc) ? 12 : 10`，且**不含**"编码器留空"这一支 ⇒
+                // 留空时下拉只给到 10，而命令里不写 -c:v ⇒ 实跑 libaom-av1、能出 12bit。
+                var maxBd = Services.ColorMapping.ImageEncoderArgs.AvifMaxBitDepthForEncoder(enc);
                 BitDepthCombo.Items.Clear();
                 BitDepthCombo.Items.Add("auto");
                 for (int bd = 8; bd <= maxBd; bd += 2)
@@ -2586,14 +2569,32 @@ namespace FfmpegGui
         {
             var exifAvailable = ExifToolService.IsAvailable;
             var isPreserveMode = GetMetadataMode() == Models.MetadataMode.PreserveAll;
+            var loc = Services.LocalizationService.Instance;
 
+            // ⚠⚠ 2026-09-22（管线审查 §3.5 修复）：**exiftool 缺失时不得把面板整个藏起来**。
+            //   旧行为 = `ExifToolPanel.IsVisible = exifAvailable` + 提示语**只在可用时才设置**
+            //   ⇒ 用户**得不到任何解释**；而「元数据模式」下拉当时**仍可选中「删除全部」**
+            //   ⇒ 剥离**静默失效**：ffmpeg 侧仍用 `-map_metadata 0` 把源元数据整体复制，
+            //     产物**原样带出 GPS**（已实机复现：缺 exiftool 时产物 GPS 与源逐字相同）。
+            //   现行为：面板**保持可见**、**所有相关选项禁用**、**始终**用显式提示说明不可用。
             if (ExifToolPanel != null)
-                ExifToolPanel.IsVisible = exifAvailable;
+                ExifToolPanel.IsVisible = true;
 
-            if (ExifToolHint != null && exifAvailable)
-                ExifToolHint.Text = isPreserveMode
-                    ? "已检测到 exiftool，可选择性删除以下元数据："
-                    : "元数据模式为「删除全部」，exiftool 选项不生效";
+            if (ExifToolHint != null)
+                ExifToolHint.Text = !exifAvailable
+                    ? loc["exiftool.missing"]
+                    : (isPreserveMode ? loc["exiftool.detected"] : loc["exiftool.mode.stripall"]);
+
+            // 元数据模式下拉：**格式能力** ∧ **exiftool 可用**（缺一不可）。
+            // ⚠ 不可用时**强制回「保留」**（安全侧）—— 否则「删除全部」会留在选中态而实际不生效。
+            if (MetadataModeCombo != null)
+            {
+                // ⚠ 能力对象可空（`FormatCapabilities?`）⇒ 未知时**不触碰** `IsEnabled`（与既有 `UpdateOptionAvailability` 同口径）。
+                if (_currentCapabilities != null)
+                    MetadataModeCombo.IsEnabled = exifAvailable && _currentCapabilities.SupportsMetadata;
+                if (!exifAvailable && MetadataModeCombo.SelectedIndex != 0)
+                    MetadataModeCombo.SelectedIndex = 0;
+            }
 
             var exifEnabled = exifAvailable && isPreserveMode;
             if (StripExifGpsCheck != null) StripExifGpsCheck.IsEnabled = exifEnabled;
@@ -2694,16 +2695,21 @@ namespace FfmpegGui
         /// 添加单个文件到队列。返回 true 表示成功添加。
         /// （2026-08-16 异步化：JXL 无损重封装需 await ffmpeg 能力检测，与预览一致）
         /// </summary>
-        private async Task<bool> AddSingleToQueue(string inputPath, string? inputBaseDir = null)
+        /// <summary>
+        /// 唯一采集点：把高级模式的当前控件状态读成一份 FfmpegOptions。入队、命令预览、
+        /// 简洁模式共用它 —— 任何一条路径都不再自己读控件（此前有 4 份各自独立的采集）。
+        /// 返回 null = 该输入在当前转换模式下不合法（调用方跳过）。
+        /// </summary>
+        private async Task<Models.FfmpegOptions?> CollectOptionsFromUiAsync(string inputPath, bool logNotices = true)
         {
             // RAW 模式校验: 仅 RAW/DNG 文件可作为输入（DNG 编码需传感器数据）
             // 提前提示而非等队列执行失败 (2026-08-14 UI 审查修复)
             if ((ConversionModeCombo?.SelectedIndex ?? 0) == 2
                 && !RawService.IsRawFile(inputPath))
             {
-                if (LogText != null)
+                if (logNotices && LogText != null)
                     LogText.Text += $"⚠️ 跳过: {Path.GetFileName(inputPath)} 不是 RAW/DNG 文件（RAW 模式仅支持相机原始文件）\n";
-                return false;
+                return null;
             }
 
             // 注：队列本身无容量上限，"并行编码任务数"仅控制同时运行的任务数
@@ -2724,14 +2730,14 @@ namespace FfmpegGui
             {
                 encoderBackend = EncoderBackend.Cjxl;
                 encoderName = "cjxl";
-                if (LogText != null)
+                if (logNotices && LogText != null)
                     LogText.Text += "[jxl] 手动色彩空间 → 自动切换 cjxl 编码器\n";
             }
             else if (fmt is "jxl" && encoderBackend != EncoderBackend.Cjxl
                 && !CjxlService.IsAvailable && IsColorManuallySpecified())
             {
                 // 可用性诚实：cjxl 不可用时 libjxl 会忽略手动色彩参数 → 明确告警，避免静默丢色。
-                if (LogText != null)
+                if (logNotices && LogText != null)
                     LogText.Text += "⚠️ [jxl] 手动色彩空间需 cjxl 兑现，但未检测到 cjxl；ffmpeg libjxl 会忽略色彩参数，手动色彩可能丢失。请安装 cjxl 或改用 auto 色彩。\n";
             }
 
@@ -2747,6 +2753,8 @@ namespace FfmpegGui
 
             var useAdv = UseAdvancedColor?.IsChecked ?? false;
             var useAdvCodec = UseAdvancedCodec?.IsChecked ?? false;
+            // A-10：两只 JXL 复选框按「所属面板可见才参与」取值，采集与命令预览共用同一个判定函数。
+            var jxlChecks = ReadJxlAdvancedCheckStates(fmt, useAdvCodec);
             var options = new FfmpegOptions
             {
                 Format = fmt,
@@ -2785,7 +2793,12 @@ namespace FfmpegGui
                 AvifEnableCdef = useAdvCodec ? AvifCdefCheck?.IsChecked : true,
                 AvifEnableIntrabc = useAdvCodec ? AvifIntrabcCheck?.IsChecked : true,
                 AvifDenoiseLevel = useAdvCodec && AvifDenoiseBox?.Value > 0 ? (int?)AvifDenoiseBox.Value : null,
-                AvifNvencAqStrength = useAdvCodec ? (int?)AvifNvencAqBox?.Value : 8,
+                // A-5：NVENC aq-strength 的官方区间是 [1,15]（实测 -h encoder=av1_nvenc 打印
+                // from 1 to 15、default 8），传 0 是硬失败而非「关闭 AQ」（实测 out of range、退出码 127）
+                // ⇒ 控件下限已改为 1；这里再钳一次，兜住「旧预设 JSON 里存着 0」那条回放路径。
+                AvifNvencAqStrength = useAdvCodec
+                    ? Math.Clamp((int?)AvifNvencAqBox?.Value ?? 8, 1, 15)
+                    : 8,
                 AvifNvencSpatialAq = useAdvCodec ? AvifNvencSpatialAqCheck?.IsChecked : true,
                 AvifLowPower = useAdvCodec ? (AvifQsvLowPowerCheck?.IsChecked ?? AvifVaapiLowPowerCheck?.IsChecked) : false,
                 // JXL effort: cjxl 后端用 cjxl 面板的 effort，ffmpeg 后端用 ffmpeg 面板的 effort
@@ -2796,13 +2809,14 @@ namespace FfmpegGui
                         : (int?)JxlEffortBox?.Value ?? 7)
                     : 7,
                 JxlModular = useAdvCodec ? JxlModularCheck?.IsChecked : null,
+                // A-10：jbrd 无损重封装只在「该复选框可见」时由用户决定（不可见 ⇒ false，即模型默认）。
+                // 可见已蕴含后端是 cjxl ⇒ 原先那层 ffmpeg libjxl 能力检测不再需要（且实测该出口
+                // 根本不写 jbrd box，见 FfmpegCommandBuilder 的 2026-09-19 更正）；
+                // 否决条件也改读同一个判定结果，两侧不会再算出不同结论。
                 JxlLosslessJpeg = fmt is "jxl" && IsJpegInput(inputPath)
-                    && (JxlLosslessJpegCheck?.IsChecked ?? true)
-                    && !(useAdvCodec && (JxlPreserveUltrahdrCheck?.IsChecked ?? true))
-                    // cjxl 工具自身支持 --lossless_jpeg 无需能力检测；ffmpeg libjxl 需检测（2026-08-16 与预览一致）
-                    && (encoderBackend == EncoderBackend.Cjxl
-                        || await EncoderDetectionService.SupportsJxlLosslessJpegAsync()),
-                JxlPreserveUltrahdr = useAdvCodec ? (JxlPreserveUltrahdrCheck?.IsChecked ?? true) : true,
+                    && jxlChecks.LosslessJpeg
+                    && !jxlChecks.PreserveUltrahdr,
+                JxlPreserveUltrahdr = jxlChecks.PreserveUltrahdr,
                 // ── cjxl 高级选项（2026-08-16 修复: 此前入队路径缺失导致仅预览生效）──
                 CjxlProgressive = useAdvCodec ? (CjxlProgressiveCheck?.IsChecked ?? false) : false,
                 CjxlPhotonNoiseIso = useAdvCodec && (CjxlAutoPhotonNoiseCheck?.IsChecked ?? false)
@@ -2877,6 +2891,14 @@ namespace FfmpegGui
             // ⚠ 2026-09-19 删除此处原先的 `CjpegliProgressiveId = JpegProgressiveId switch …`：
             //   GainMap 路径**从不读** CjpegliProgressiveId（底图/增益图恒由 GainMapEncoder 调
             //   cjpegli 编码）⇒ 那是死代码，用户设的渐进被静默丢弃（实测 0 与 1 产物 MD5 相同）。
+
+            return options;
+        }
+
+        private async Task<bool> AddSingleToQueue(string inputPath, string? inputBaseDir = null)
+        {
+            var options = await CollectOptionsFromUiAsync(inputPath);
+            if (options == null) return false;
 
             var outp = GetOutputPath(inputPath, options.Format, inputBaseDir);
             var item = new Models.QueueItem { InputPath = inputPath, OutputPath = outp, Options = options, InputBaseDir = inputBaseDir };
@@ -3001,20 +3023,21 @@ namespace FfmpegGui
                         return;
                     }
 
-                    // 回退：通过输入路径匹配清理残留项（同时清理 _queueItems 和 _queueView）
-                    var fname = Path.GetFileName(item.InputPath);
+                    // 回退：通过**显示名**匹配清理残留项（同时清理 _queueItems 和 _queueView）
+                    // ⚠ 2026-09-21：原先取 `Path.GetFileName(InputPath)`。RAW 预处理会把 `InputPath` 改写成
+                    //   内部临时 TIFF ⇒ 「改写前加入的重复条目」(`a.CR2`) 与「改写后的本项」(`a_raw.tiff`)
+                    //   会得到**两个不同名字** ⇒ 残留项**清不掉**。改用 `DisplayName`（源路径优先）后两侧一致。
+                    var fname = item.DisplayName;
                     for (int j = _queueView.Count - 1; j >= 0; j--)
                     {
-                        if (Path.GetFileName(_queueView[j].InputPath)
-                            .Equals(fname, StringComparison.OrdinalIgnoreCase))
+                        if (string.Equals(_queueView[j].DisplayName, fname, StringComparison.OrdinalIgnoreCase))
                         {
                             _queueView.RemoveAt(j);
                         }
                     }
                     for (int j = _queueItems.Count - 1; j >= 0; j--)
                     {
-                        if (Path.GetFileName(_queueItems[j].InputPath)
-                            .Equals(fname, StringComparison.OrdinalIgnoreCase))
+                        if (string.Equals(_queueItems[j].DisplayName, fname, StringComparison.OrdinalIgnoreCase))
                         {
                             _queueItems.RemoveAt(j);
                         }
@@ -3094,7 +3117,7 @@ namespace FfmpegGui
                 item.IsCancelled = true;
                 _queueView.RemoveAt(idx);
                 _queueItems.RemoveAt(idx);
-                if (LogText != null) LogText.Text += $"已删除: {Path.GetFileName(item.InputPath)}\n";
+                if (LogText != null) LogText.Text += $"已删除: {item.DisplayName}\n";
                 UpdateQueueCountLabel();
             }
         }
@@ -3372,12 +3395,21 @@ namespace FfmpegGui
             }
         }
 
-        private void ClearMediaFiles_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        /// <summary>
+        /// 清空已选文件的唯一实现：完整模式的「清空文件」按钮与简洁模式覆盖层共用它
+        /// （覆盖层的宗旨是"操作都落在高级模式上"，不允许自己维护第二套清空语义）。
+        /// </summary>
+        private void ClearSelectedMediaLists()
         {
             _mediaFiles.Clear();
             _selectedFiles.Clear();
             _selectedFileBaseDirs.Clear();
             UpdateMediaFileCount();
+        }
+
+        private void ClearMediaFiles_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        {
+            ClearSelectedMediaLists();
         }
 
         private void ClearFiles_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
@@ -3934,7 +3966,7 @@ namespace FfmpegGui
             if (combo.Items.Count > 0) combo.SelectedIndex = 0;
         }
 
-        private void BuildCommand_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        private async void BuildCommand_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
         {
             if (string.IsNullOrWhiteSpace(_inputPath))
             {
@@ -3943,115 +3975,9 @@ namespace FfmpegGui
             }
 
             var fmt = NormalizeFormat(FormatCombo?.SelectedItem as string);
-            var chroma = ChromaCombo?.SelectedItem as string ?? "auto";
-            var bitdepthStr = BitDepthCombo?.SelectedItem as string ?? "auto";
-            int? bitdepth = null;
-            if (!bitdepthStr.Equals("auto", StringComparison.OrdinalIgnoreCase)
-                && int.TryParse(bitdepthStr, out var bd))
-                bitdepth = bd;
-            var encoderStr = EncoderCombo?.SelectedItem as string ?? "";
-            var encoderName = EncoderInfo.ParseEncoderName(encoderStr);
-            var encoderBackend = EncoderInfo.ParseBackend(encoderStr);
-
-            // JXL + 手动色彩空间 → 自动切 cjxl（ffmpeg libjxl 忽略 -color_primaries/-color_trc）
-            if (fmt is "jxl" && encoderBackend != EncoderBackend.Cjxl
-                && CjxlService.IsAvailable && IsColorManuallySpecified())
-            {
-                encoderBackend = EncoderBackend.Cjxl;
-                encoderName = "cjxl";
-            }
-
-            var autoThreads = AutoThreadsCheck?.IsChecked ?? true;
-            var singleThread = SingleThreadCheck?.IsChecked ?? false;
-            int threads = singleThread ? 1
-                : autoThreads ? Models.FfmpegOptions.ComputeAutoThreads()
-                : (int)(ThreadsBox?.Value ?? 4);
-
-            var useAdv = UseAdvancedColor?.IsChecked ?? false;
-            var useAdvCodec = UseAdvancedCodec?.IsChecked ?? false;
-            var options = new FfmpegOptions
-            {
-                Format = fmt,
-                Quality = (int)(QualitySlider?.Value ?? 75),
-                Chroma = chroma,
-                BitDepth = bitdepth,
-                ColorSpace = ColorSpaceCombo?.SelectedItem as string,
-                UseAdvancedColorParameters = useAdv,
-                ColorPrimaries = useAdv ? (ColorPrimariesCombo?.SelectedItem as string) : null,
-                ColorTrc = useAdv ? (ColorTrcCombo?.SelectedItem as string) : null,
-                ColorMatrix = useAdv ? (ColorMatrixCombo?.SelectedItem as string) : null,
-                ColorRange = useAdv ? GetColorRangeValue() : null,
-                TonemapCurve = null, // tonemap 曲线内部固定 hable
-                Encoder = encoderName, EncoderBackend = encoderBackend,
-                Threads = threads,
-                MetadataMode = GetMetadataMode(),
-                Lossless = LosslessCheck?.IsChecked ?? false,
-                PngPred = useAdvCodec && PngPredCombo?.SelectedIndex >= 0
-                    ? _pngPredValues[Math.Min(PngPredCombo.SelectedIndex, _pngPredValues.Length - 1)]
-                    : null,
-                PngDpi = useAdvCodec && PngDpiBox?.Value > 0 ? (int?)PngDpiBox.Value : null,
-                WebpPreset = useAdvCodec ? (WebpPresetCombo?.SelectedItem as string) : "picture",
-                WebpCompressionLevel = useAdvCodec ? (int?)WebpCompressionBox?.Value : 4,
-                AvifStillPicture = useAdvCodec ? AvifStillPictureCheck?.IsChecked : true,
-                AvifRowMt = useAdvCodec ? AvifRowMtCheck?.IsChecked : true,
-                AvifTune = useAdvCodec ? (AvifTuneCombo?.SelectedItem as string) : null,
-                AvifPreset = GetAvifPresetValue(),
-                AvifSvtPreset = useAdvCodec ? (int?)SvtPresetBox?.Value : 6,
-                AvifSvtTune = useAdvCodec ? (SvtTuneCombo?.SelectedItem as string) : "VMAF (主观)",
-                AvifHwPreset = useAdvCodec ? (HwPresetCombo?.SelectedItem as string) : null,
-                AvifHwPresetLevel = useAdvCodec ? GetAvifHwPresetLevel() : 7,
-                AvifAqMode = useAdvCodec ? ParseAvifAqMode() : "variance",
-                AvifEnableCdef = useAdvCodec ? AvifCdefCheck?.IsChecked : true,
-                AvifEnableIntrabc = useAdvCodec ? AvifIntrabcCheck?.IsChecked : true,
-                AvifDenoiseLevel = useAdvCodec && AvifDenoiseBox?.Value > 0 ? (int?)AvifDenoiseBox.Value : null,
-                AvifNvencAqStrength = useAdvCodec ? (int?)AvifNvencAqBox?.Value : 8,
-                AvifNvencSpatialAq = useAdvCodec ? AvifNvencSpatialAqCheck?.IsChecked : true,
-                AvifLowPower = useAdvCodec ? (AvifQsvLowPowerCheck?.IsChecked ?? AvifVaapiLowPowerCheck?.IsChecked) : false,
-                JxlEffort = useAdvCodec
-                    ? (encoderBackend == EncoderBackend.Cjxl
-                        ? (int?)CjxlEffortBox?.Value ?? 7
-                        : (int?)JxlEffortBox?.Value ?? 7)
-                    : 7,
-                JxlModular = useAdvCodec ? JxlModularCheck?.IsChecked : null,
-                JxlLosslessJpeg = fmt is "jxl" && IsJpegInput(_inputPath)
-                    && (JxlLosslessJpegCheck?.IsChecked ?? true)
-                    && !(useAdvCodec && (JxlPreserveUltrahdrCheck?.IsChecked ?? true)),
-                JxlPreserveUltrahdr = useAdvCodec ? (JxlPreserveUltrahdrCheck?.IsChecked ?? true) : true,
-                JpegHuffman = useAdvCodec ? (JpegHuffmanCombo?.SelectedItem as string) : "optimal",
-                JpegDct = useAdvCodec ? (JpegDctCombo?.SelectedItem as string is "auto" ? null : JpegDctCombo?.SelectedItem as string) : null,
-                JpegProgressiveId = useAdvCodec ? ParseJpegProgressiveId() : 0,
-                JpegGainMap = JpegGainMapEnableCheck?.IsChecked == true,
-                JpegGainMapQuality = ParseGainMapQuality(),
-                JpegGainMapTargetNits = ParseGainMapNits(),
-                // (libultrahdr hdr-cf 字段已移除)
-                JpegGainMapDownsample = ParseGainMapDownsample(),
-                JpegGainMapMultiChannel = ParseGainMapMultiChannel(),
-                JpegGainMapBaseGamut = ParseGainMapBaseGamut(),
-                TiffCompressionAlgo = useAdvCodec ? (TiffCompressionCombo?.SelectedItem as string) : "lzw",
-                StripExifGps = StripExifGpsCheck?.IsChecked ?? true,
-                StripExifTime = StripExifTimeCheck?.IsChecked ?? false,
-                StripExifCamera = StripExifCameraCheck?.IsChecked ?? false,
-                StripExifAll = StripExifAllCheck?.IsChecked ?? false,
-                StripXmp = StripXmpCheck?.IsChecked ?? false,
-                AppendPngExtension = AppendPngExtCheck?.IsChecked ?? false,
-                // (IccMode 已由 ColorStrategy 取代)
-                ColorStrategy = GetColorStrategy(),   // 色彩策略（4 单选直选）
-                ColorGamutMap = GetColorGamutMap(),   // 色域映射（GMO）：off 默认（钳位）/ on（压缩）
-                IccFilePath = null, // 新模式不使用外部 ICC
-                // (源色彩空间已改为自动 CICP+ICC 检测)
-                // (烘焙目标取主色域下拉，旧 IccTargetColorSpace 字段已移除)
-                // ── 动图参数 + TIFF DPI（2026-09-19 P1-B 修复：本「生成命令」路径同样漏传）──
-                // 与 RegenerateCommand 的预览 opts 同源修复，理由见该处注释。
-                // ⚠ P1-E 任务 C：三处都按 IsAnimationMode() 取值（静态模式下不下发动图参数）。
-                AnimationFps = IsAnimationMode() ? ParseOptionalInt(AnimationFpsBox?.Text, 1, 60) : null,
-                AnimationLoop = IsAnimationMode() ? ParseInt(AnimationLoopBox?.Text, 0, -1, 999) : -1,
-                AnimationScaleW = IsAnimationMode() ? (ParseOptionalInt(AnimationScaleWBox?.Text, 0, 4096) ?? 0) : 0,
-                AnimationDuration = IsAnimationMode() ? (ParseOptionalDouble(AnimationDurationBox?.Text, 0.1, 3600) ?? 0) : 0,
-                TiffDpi = useAdvCodec && TiffDpiBox?.Value > 0 ? (int?)TiffDpiBox.Value : null,
-                // 最长边限制（同上）
-                EnableMaxDimension = EnableMaxDimensionCheck?.IsChecked ?? false,
-                MaxDimension = (int?)MaxDimensionBox?.Value ?? 1920,
-            };
+            var options = await CollectOptionsFromUiAsync(_inputPath, logNotices: true);
+            if (options == null) return;
+            var threads = options.Threads;
 
             _outputPath = GetOutputPath(_inputPath, options.Format);
             if (CommandText != null)
@@ -4232,9 +4158,9 @@ namespace FfmpegGui
             FullModePanel.IsVisible = false;
             SimpleModePanel.IsVisible = true;
 
-            // 绑定已选文件列表
+            // 绑定已选文件列表 —— 与完整模式共用同一份集合（覆盖层只是它的另一种显示）
             if (SimpleMediaList != null)
-                SimpleMediaList.ItemsSource = _simpleMediaFiles;
+                SimpleMediaList.ItemsSource = _mediaFiles;
 
             // 绑定共享队列数据
             if (SimpleQueueList != null)
@@ -4289,20 +4215,7 @@ namespace FfmpegGui
             SimpleModePanel.IsVisible = false;
             FullModePanel.IsVisible = true;
 
-            // 同步简洁模式已选文件到主界面已选文件列表
-            if (_simpleMediaFiles.Count > 0 && _mediaFiles != null)
-            {
-                foreach (var f in _simpleMediaFiles)
-                {
-                    if (!_mediaFiles.Contains(f))
-                        _mediaFiles.Add(f);
-                }
-                UpdateMediaFileCount();
-            }
-
-            // 防止重复转换：简洁模式下文件已自动入队，提示用户不要再次点击"添加到队列"
-            if (_simpleMediaFiles.Count > 0 && LogText != null)
-                LogText.Text += "[简洁模式] 已选文件已同步到主界面（这些文件已在转换队列中，请勿重复添加，否则会重复转换）\n";
+            // 已选文件与队列本来就是同一份集合（覆盖层无自己的内容源）⇒ 此处不再需要任何同步/合并动作。
 
             // 如果自动编码在运行，日志提示
             if (_autoEncodeTimer != null && _autoEncodeTimer.Enabled)
@@ -4363,20 +4276,18 @@ namespace FfmpegGui
             {
                 var inputPath = file.Path.LocalPath;
 
-                // 1) 加入已选文件列表（去重）
-                if (!_simpleMediaFiles.Contains(inputPath))
+                // 1) 加入高级模式的已选文件列表（去重；覆盖层显示的就是它）
+                if (!_mediaFiles.Contains(inputPath))
                 {
-                    _simpleMediaFiles.Add(inputPath);
+                    _mediaFiles.Add(inputPath);
                     added++;
                 }
 
-                // 2) 自动创建 QueueItem 并加入转换队列
-                var item = CreateQueueItemFromSimplePreset(inputPath);
-                _queueProcessor.Add(item);
-                _queueView.Add(item);
-                _queueItems.Add(item);
+                // 2) 入队复用高级模式的唯一采集点，简洁模式不自带选项映射
+                await AddSingleToQueue(inputPath);
             }
 
+            UpdateMediaFileCount();   // 已选计数标签属完整模式，覆盖层改了同一份集合要一并刷新
             UpdateSimpleCounts();
 
             if (LogText != null)
@@ -4390,7 +4301,7 @@ namespace FfmpegGui
         /// <summary>清空已选文件列表（不影响转换队列）</summary>
         private void SimpleClearMedia_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
         {
-            _simpleMediaFiles.Clear();
+            ClearSelectedMediaLists();
             UpdateSimpleCounts();
         }
 
@@ -4424,7 +4335,7 @@ namespace FfmpegGui
                 e.DragEffects = DragDropEffects.None;
         }
 
-        private void SimpleDrop(object? sender, DragEventArgs e)
+        private async void SimpleDrop(object? sender, DragEventArgs e)
         {
             if (SimpleDropZone != null)
                 SimpleDropZone.BorderBrush = Avalonia.Media.Brushes.Gray;
@@ -4446,20 +4357,18 @@ namespace FfmpegGui
                 var ext = Path.GetExtension(path).ToLowerInvariant();
                 if (!enabledExts.Contains(ext)) continue;
 
-                // 加入已选文件列表（去重）
-                if (!_simpleMediaFiles.Contains(path))
+                // 加入高级模式的已选文件列表（去重）
+                if (!_mediaFiles.Contains(path))
                 {
-                    _simpleMediaFiles.Add(path);
+                    _mediaFiles.Add(path);
                     added++;
                 }
 
-                // 自动加入转换队列
-                var qi = CreateQueueItemFromSimplePreset(path);
-                _queueProcessor.Add(qi);
-                _queueView.Add(qi);
-                _queueItems.Add(qi);
+                // 入队复用高级模式的唯一采集点
+                await AddSingleToQueue(path);
             }
 
+            UpdateMediaFileCount();   // 同 SimpleAddFiles_Click：共用一份集合 ⇒ 完整模式的计数标签也要跟着走
             UpdateSimpleCounts();
 
             if (LogText != null && added > 0)
@@ -4490,8 +4399,8 @@ namespace FfmpegGui
                 }
             }
 
-            // 清空已选文件列表
-            _simpleMediaFiles.Clear();
+            // 清空已选文件列表（走完整模式自己的那套清空语义）
+            ClearSelectedMediaLists();
 
             UpdateSimpleCounts();
 
@@ -4602,6 +4511,9 @@ namespace FfmpegGui
                 ApplyPresetData(preset.Data);
                 _ = RefreshEncoderListAsync();
                 UpdateOptionAvailability();
+                // 指纹要在全部刷新之后抓：回显比对的是"用户实际看到的那份状态"
+                _simpleAppliedSig = SimpleCoreSignature();
+                UpdateSimpleCurrentStateLabel();
             }
         }
 
@@ -4631,128 +4543,6 @@ namespace FfmpegGui
                 if (LogText != null)
                     LogText.Text += "[简洁模式] 自动编码已启动\n";
             }
-        }
-
-        /// <summary>根据当前选中的简洁模式预设创建 QueueItem</summary>
-        private QueueItem CreateQueueItemFromSimplePreset(string inputPath)
-        {
-            if (_simpleActivePreset == null)
-            {
-                // 回退：从 ComboBox 重新选择
-                _simpleActivePreset = SimplePresetCombo?.SelectedItem as PresetEntry;
-                if (_simpleActivePreset == null)
-                {
-                    // 终极回退：默认高质量 JPEG
-                    return new QueueItem
-                    {
-                        InputPath = inputPath,
-                        OutputPath = GetOutputPath(inputPath, "jpg"),
-                        Options = new FfmpegOptions { Format = "jpg", Quality = 92 },
-                        Status = "待处理"
-                    };
-                }
-            }
-
-            var data = _simpleActivePreset.Data;
-            var fmt = NormalizeFormat(data.Format);
-            var outputPath = GetOutputPath(inputPath, fmt);
-
-            var options = new FfmpegOptions
-            {
-                Format = fmt,
-                Quality = data.Quality,
-                Chroma = data.Chroma ?? "auto",
-                ColorSpace = data.ColorSpace ?? "auto",
-                UseAdvancedColorParameters = data.UseAdvancedColor,
-                ColorPrimaries = data.ColorPrimaries,
-                ColorTrc = data.ColorTrc,
-                ColorMatrix = data.ColorMatrix,
-                ColorRange = data.ColorRange,
-                TonemapCurve = data.TonemapCurve,
-                BitDepth = data.BitDepth is "auto" or null ? null : int.TryParse(data.BitDepth, out var bd) ? bd : null,
-                EncoderBackend = data.EncoderBackend switch
-                {
-                    "Cjpegli" => Services.EncoderBackend.Cjpegli,
-                    "Cjxl" => Services.EncoderBackend.Cjxl,
-                    
-                    "Jxr" => Services.EncoderBackend.Jxr,
-                    "Dng" => Services.EncoderBackend.Dng,
-                    _ => Services.EncoderBackend.Ffmpeg
-                },
-                Threads = data.AutoThreads ? FfmpegOptions.ComputeAutoThreads() :
-                          data.SingleThread ? 1 : data.ManualThreads,
-                Lossless = data.Lossless,
-                MetadataMode = data.MetadataMode == "StripAll" ? MetadataMode.StripAll : MetadataMode.PreserveAll,
-                PngPred = data.PngPred,
-                PngDpi = data.PngDpi,
-                WebpPreset = data.WebpPreset,
-                WebpCompressionLevel = data.WebpCompressionLevel,
-                AvifCpuUsed = data.AvifCpuUsed,
-                AvifTune = data.AvifTune,
-                AvifStillPicture = data.AvifStillPicture,
-                AvifRowMt = data.AvifRowMt,
-                AvifSvtPreset = data.AvifSvtPreset,
-                AvifSvtTune = data.AvifSvtTune,
-                AvifHwPreset = data.AvifHwPreset,
-                AvifHwPresetLevel = data.AvifHwPresetLevel,
-                AvifAqMode = data.AvifAqMode,
-                AvifEnableCdef = data.AvifEnableCdef,
-                AvifEnableIntrabc = data.AvifEnableIntrabc,
-                AvifDenoiseLevel = data.AvifDenoiseLevel,
-                AvifNvencAqStrength = data.AvifNvencAqStrength,
-                AvifNvencSpatialAq = data.AvifNvencSpatialAq,
-                AvifLowPower = data.AvifLowPower,
-                JxlEffort = data.JxlEffort,
-                JxlModular = data.JxlModular,
-                JxlPreserveUltrahdr = data.JxlPreserveUltrahdr,
-                JxlLosslessJpeg = data.JxlLosslessJpeg,
-                JpegHuffman = data.JpegHuffman,
-                JpegDct = data.JpegDct,
-                JpegProgressiveId = data.JpegProgressiveId,
-                JpegGainMap = data.JpegGainMap,
-                JpegGainMapQuality = data.JpegGainMapQuality,
-                JpegGainMapTargetNits = data.JpegGainMapTargetNits,
-                TiffCompressionAlgo = data.TiffCompressionAlgo,
-                StripExifGps = data.StripExifGps,
-                StripExifTime = data.StripExifTime,
-                StripExifCamera = data.StripExifCamera,
-                StripExifAll = data.StripExifAll,
-                StripXmp = data.StripXmp,
-                AppendPngExtension = data.AppendPngExtension,
-                // ── 色彩策略（旧预设 IccMode 自动迁移）──
-                ColorStrategy = Models.ColorStrategyMapper.TryParse(data.ColorStrategy, out var cstrat) ? cstrat
-                    : (data.IccMode == "BakeOnly" ? Models.ColorStrategy.BakeCicpOnly
-                       : data.IccMode == "CarryIcc" ? Models.ColorStrategy.CarryIcc
-                       : Models.ColorStrategy.Recommended),   // 新预设取 ColorStrategy；旧预设按 IccMode 映射
-                AnimationFps = data.AnimationFps,
-                AnimationLoop = data.AnimationLoop,
-                GifPaletteOptimize = data.GifPaletteOptimize,
-                GifDither = data.GifDither,
-                AnimationScaleW = data.AnimationScaleW,
-                AnimationDuration = data.AnimationDuration,
-                // 图片最长边限制
-                EnableMaxDimension = data.EnableMaxDimension,
-                MaxDimension = data.MaxDimension,
-                CjpegliChromaSubsampling = data.CjpegliChromaSubsampling ?? "auto",
-                CjpegliProgressiveId = data.CjpegliProgressiveId,
-                CjpegliOptimize = data.CjpegliOptimize ?? true,
-                CjpegliAdaptiveQuant = data.CjpegliAdaptiveQuant ?? true,
-                // ── 2026-08-16 补齐: 此前简洁模式预设丢失以下字段 ──
-                CjpegliEncoderBackend = data.CjpegliEncoderBackend ?? "libjpeg",
-                CjpegliPsnrTarget = data.CjpegliPsnrTarget,
-                CjxlProgressive = data.CjxlProgressive,
-                CjxlPhotonNoiseIso = data.CjxlPhotonNoiseIso,
-                CjxlAutoPhotonNoise = data.CjxlAutoPhotonNoise,
-                TiffDpi = data.TiffDpi
-            };
-
-            return new QueueItem
-            {
-                InputPath = inputPath,
-                OutputPath = outputPath,
-                Options = options,
-                Status = "待处理"
-            };
         }
 
         /// <summary>更新简洁模式底部状态栏（进度 + 已用时间 + 预计剩余）</summary>
@@ -4809,10 +4599,46 @@ namespace FfmpegGui
         private void UpdateSimpleCounts()
         {
             if (SimpleFileCount != null)
-                SimpleFileCount.Text = $"{_simpleMediaFiles.Count} 个文件";
+                SimpleFileCount.Text = $"{_mediaFiles.Count} 个文件";
             if (SimpleQueueCount != null)
                 SimpleQueueCount.Text = $"{_queueView.Count} 项";
+            UpdateSimpleCurrentStateLabel();
         }
+
+        /// <summary>覆盖层的只读回显：把高级模式当前的生效设置原样显示出来（值取自同一批控件的当前显示串）。</summary>
+        private void UpdateSimpleCurrentStateLabel()
+        {
+            if (SimpleCurrentStateLabel == null) return;
+            var loc = Services.LocalizationService.Instance;
+            var fmt = FormatCombo?.SelectedItem as string ?? "?";
+            var parts = new List<string> { fmt, ConversionModeCombo?.SelectedItem as string ?? "?" };
+            var enc = EncoderCombo?.SelectedItem as string;
+            if (!string.IsNullOrWhiteSpace(enc)) parts.Add(enc!);
+            if (QualitySlider != null)
+                parts.Add("q" + Models.FfmpegOptions.FormatQualityForDisplay(
+                    NormalizeFormat(fmt), (int)QualitySlider.Value, GetCurrentEncoderBackend()));
+            var text = loc["simple.current.state"] + ": " + string.Join(" | ", parts);
+            if (IsSimplePresetDrifted()) text += "  (" + loc["simple.preset.custom"] + ")";
+            SimpleCurrentStateLabel.Text = text;
+        }
+
+        // 只比对回显里出现的那几根轴，且拿「应用预设那一刻」的指纹作参照 —— 不是拿预设 JSON 本身比对：
+        // 后者会被 Build/Apply 尚未完全对称的旁路字段噪成「永不匹配」，那条账由 N1b / E 组去锁，
+        // 不该由一个显示层回显天天喊假警。
+        private string SimpleCoreSignature()
+        {
+            var p = BuildPresetData();
+            var mode = p.ConversionMode ?? ModeOfPresetFormat(p.Format);
+            return string.Join("|",
+                (p.Format ?? "").Trim(),
+                mode,
+                (p.EncoderBackend ?? "Ffmpeg").Trim(),
+                p.Quality,
+                p.Lossless ? 1 : 0);
+        }
+
+        private bool IsSimplePresetDrifted()
+            => _simpleAppliedSig.Length > 0 && SimpleCoreSignature() != _simpleAppliedSig;
 
         // 暴露给简洁模式进度刷新的公开入口（由每秒定时器调用）
         private void RefreshSimpleProgressIfActive()
@@ -4876,6 +4702,17 @@ namespace FfmpegGui
                 AppSettingsService.Current.FfmpegDirectory = dir;
                 AppSettingsService.Save();
                 EncoderDetectionService.ClearCache();
+            // ⚠ 换 ffmpeg 目录 = 换了"环境"，凡是**以 ffmpeg 身份为隐含键**的静态缓存都必须一起失效。
+            //   旧写法只清了 EncoderDetectionService 一份，导致：
+            //     · GPU 硬件编码报告（`GpuCapabilityService._cachedReport`，缓存键里根本没有 ffmpeg 身份）
+            //       ⇒ 换包后仍报旧 GPU 结论；它的 ClearCache 此前**全仓 0 调用点**。
+            //     · 格式能力（`FormatCapabilitiesService._cache`，`SupportedColorSpaces` 是**累加**语义
+            //       ⇒ 换能力更弱的 ffmpeg 也回不去）。
+            //     · PLAN 定位（`PlatformServices._planScanned` 是一次性闩 ⇒ 插拔/换包后不重扫）。
+            GpuCapabilityService.ClearCache();
+            FormatCapabilitiesService.ClearCache();
+            PlatformServices.ResetPlanFolderCache();
+            PlatformServices.ResetToolLaunchabilityCache();   // 换包 ⇒ 旧 exe 的「起不来」判定不能再留着（否则修好了也不恢复）
 
                 if (FfmpegPathBox != null) FfmpegPathBox.Text = dir;
                 if (LogText != null) LogText.Text += $"FFmpeg 目录已更新: {dir}\n";
@@ -4994,7 +4831,8 @@ namespace FfmpegGui
                 AppSettingsService.Current.ExifToolPath = path;
                 AppSettingsService.Save();
                 if (ExifToolPathBox != null) ExifToolPathBox.Text = path;
-                ExifToolService.Detect(m => { if (LogText != null) LogText.Text += m; });
+                ExifToolService.ClearCache();   // 用户主动入口（浏览/清除/重新检测）⇒ 必须绕开「一次进程一遍」的门控
+            ExifToolService.Detect(m => { if (LogText != null) LogText.Text += m; }, force: true);
                 UpdateExifToolPanelState();
                 if (LogText != null)
                     LogText.Text += ExifToolService.IsAvailable
@@ -5009,7 +4847,8 @@ namespace FfmpegGui
             AppSettingsService.Current.ExifToolPath = null;
             AppSettingsService.Save();
             if (ExifToolPathBox != null) ExifToolPathBox.Text = "";
-            ExifToolService.Detect(m => { if (LogText != null) LogText.Text += m; });
+            ExifToolService.ClearCache();   // 用户主动入口（浏览/清除/重新检测）⇒ 必须绕开「一次进程一遍」的门控
+            ExifToolService.Detect(m => { if (LogText != null) LogText.Text += m; }, force: true);
             UpdateExifToolPanelState();
             if (LogText != null)
                 LogText.Text += ExifToolService.IsAvailable
@@ -5096,7 +4935,6 @@ namespace FfmpegGui
 
         private void RefreshArtifactsServices()
         {
-            
             JxrService.ClearCache(); JxrService.Detect();
             RawService.ClearCache(); RawService.Detect();
         }
@@ -5358,9 +5196,20 @@ namespace FfmpegGui
             if (LogText != null) LogText.Text += "正在重新自动检测外部工具...\n";
             RefreshJxlServices();
             RefreshArtifactsServices();
-            ExifToolService.Detect(m => { if (LogText != null) LogText.Text += m; });
+            ExifToolService.ClearCache();   // 用户主动入口（浏览/清除/重新检测）⇒ 必须绕开「一次进程一遍」的门控
+            ExifToolService.Detect(m => { if (LogText != null) LogText.Text += m; }, force: true);
             UpdateExifToolPanelState();
             RefreshPsPanelState();
+            // ⚠ 旧写法到此就结束 ⇒ **顶部状态行不刷新**：用户按了"重新检测",折叠态的 ✅/❌ 与版本段
+            //   还停在上一轮（`RefreshToolsStatusBar` 才是那 8 项的唯一出口）。
+            //   另外"重新检测"= 环境可能变了 ⇒ GPU 报告与格式能力这两处以 ffmpeg 身份为隐含键的
+            //   静态缓存必须一起作废。PLAN 目录的同理：`_planScanned` 是一次性闩,不复位
+            //   就等于"整个便携包被挪了位置,重新检测仍去旧 PLAN 里找"。
+            GpuCapabilityService.ClearCache();
+            FormatCapabilitiesService.ClearCache();
+            PlatformServices.ResetPlanFolderCache();
+            PlatformServices.ResetToolLaunchabilityCache();   // 否则一次误判会在本进程里永久化（用户就是来重试的）
+            RefreshToolsStatusBar();
             RegenerateCommand();
         }
 
@@ -5608,13 +5457,17 @@ namespace FfmpegGui
                     && (FormatCombo?.SelectedItem as string)?.ToLowerInvariant() is "jpg" or "jpeg";
             UpdateIccPanelVisibility();
             // ── D-1 同族修复（2026-09-20）：刷新会**冲掉**用户已设的目标色域 / 位深 / 质量 ──────────
-            // 缺陷：`UpdateOptionAvailability()` 会 `Items.Clear()` + 重建 `ColorSpaceCombo`（`:2149-2170`）
-            //   与 `BitDepthCombo`（`:2109-2117`）并把 `SelectedIndex` 归 0，还会把 `QualitySlider.Value`
-            //   设为该格式默认值（`:2100`）。⇒ 用户勾/取消「GainMap (Ultra HDR)」时**格式并未改变**，
+            // 缺陷：`UpdateOptionAvailability()` 会 `Items.Clear()` + 重建 `ColorSpaceCombo`（见 `UpdateOptionAvailability()` 内那几行）
+            //   与 `BitDepthCombo` 并把 `SelectedIndex` 归 0，还会把 `QualitySlider.Value`
+            //   设为该格式默认值（同见该方法）。⇒ 用户勾/取消「GainMap (Ultra HDR)」时**格式并未改变**，
             //   这三项却被重置（与 D-1 的「应用预设后三项留不住」**同族**，`§11.4` 登记的残留即此）。
             // 修法：**刷新前快照、刷新后回写** —— 与 `ApplyPresetData` 的 D-1 修法**同一模式**。
-            // ⚠ 只改**本处理器**：刷新函数本体与另外 5 个调用点（`:1275`/`:1851`/`:1948`/`:2611`/`:4604`）
-            //   行为**一字不变**（D-1 明确要求，避免动到「切格式 ⇒ 重建候选集」的既有语义）。
+// ⚠ 只改**本处理器**：刷新函数本体与另外 5 个调用点（能力检测后的 UI 刷新回调、
+//   格式切换 `FormatCombo_SelectionChanged`、动图模式 `ConversionMode_SelectionChanged`、
+//   能力初始化 `InitializeCapabilitiesAsync`、简易预设 `SimplePresetCombo_SelectionChanged`）
+//   行为**一字不变**（D-1 明确要求，避免动到「切格式 ⇒ 重建候选集」的既有语义）。
+//   ⚠ 2026-09-21 改：原先此处写的是**绝对行号**（`:1275`/`:1851`/`:1948`/`:2611`/`:4604`）
+//     ⇒ 插入任何行都会失效（`COLOR_TRAPS §十四`）⇒ 改为**具名 handler**。
             // ⚠ 回写一律走 `SetComboByValue`：值若不在新候选集里（例如**关掉** GainMap 后 HDR 色域项消失）
             //   就**保持刷新后的默认值**（= 今天的行为），绝不写进非法值。
             var keepColorSpace = ColorSpaceCombo?.SelectedItem as string;
@@ -5626,7 +5479,7 @@ namespace FfmpegGui
             //   ⇒ 后写位深 = 用户的显式位深是**最后一次写入**（与「用户选择即终态」的语义一致）。
             SetComboByValue(ColorSpaceCombo, keepColorSpace);
             SetComboByValue(BitDepthCombo, keepBitDepth);
-            // ⚠ 纯无损格式（PNG/TIFF/APNG）的质量被**产品语义**锁定 100（`:2122-2137`），不得回写（同 D-1）。
+            // ⚠ 纯无损格式（PNG/TIFF/APNG）的质量被**产品语义**锁定 100（见本文件中「PNG/TIFF/APNG 纯无损格式，强制勾选且锁定」那段），不得回写（同 D-1）。
             if (QualitySlider != null && !double.IsNaN(keepQuality)
                 && keepFmt is not ("png" or "tiff" or "apng"))
             {
@@ -5838,6 +5691,23 @@ namespace FfmpegGui
                 DngJxlDecodeSpeed = (int)(DngJxlDecodeSpeedBox?.Value ?? 4),
                 DngHighlightMode = DngHighlightCombo?.SelectedIndex ?? 1,
                 DngBitDepth = DngBitDepthCombo?.SelectedIndex == 0 ? 8 : 16,
+                // ── Snapshot backfill: axes BuildPresetData never wrote (2026-09-26) ──
+                // Without these the round trip Build -> Apply silently dropped them, and since
+                // simple mode now enqueues from the advanced-mode UI state, a preset that cannot
+                // express an axis no longer reproduces the state it was saved from.
+                ConversionMode = ConversionModeCombo?.SelectedIndex,
+                EncoderName = EncoderCombo?.SelectedItem as string,
+                ColorGamutMap = GetColorGamutMap(),
+                CjxlEffort = (int?)CjxlEffortBox?.Value,
+                TiffDpi = TiffDpiBox?.Value > 0 ? (int?)TiffDpiBox.Value : null,
+                AnimationFps = ParseOptionalInt(AnimationFpsBox?.Text, 1, 60),
+                AnimationLoop = ParseInt(AnimationLoopBox?.Text, 0, -1, 999),
+                AnimationScaleW = ParseOptionalInt(AnimationScaleWBox?.Text, 0, 4096) ?? 0,
+                AnimationDuration = ParseOptionalDouble(AnimationDurationBox?.Text, 0.1, 3600) ?? 0,
+                GifPaletteOptimize = GifPaletteCheck?.IsChecked ?? true,
+                GifDither = GifDitherCheck?.IsChecked ?? true,
+                EnableMaxDimension = EnableMaxDimensionCheck?.IsChecked ?? false,
+                MaxDimension = (int?)MaxDimensionBox?.Value ?? 1920,
                 // ── 色彩策略 ──
                 // 必须**同时**写两个字段（实测缺陷，2026-09-19）：
                 //   · `ColorStrategy` 是新预设的**真值**（PresetData.cs:144-145）；
@@ -5869,6 +5739,16 @@ namespace FfmpegGui
 
         private void ApplyPresetData(Models.PresetData p)
         {
+            // Mode first: ConversionMode_SelectionChanged rebuilds FormatCombo's item list
+            // (still / animated / RAW carry disjoint format sets), so a format written before the
+            // mode would be dropped when that rebuild runs. null = preset predates the axis.
+            var presetMode = p.ConversionMode
+                ?? (string.IsNullOrWhiteSpace(p.Format) ? null : ModeOfPresetFormat(p.Format));
+            if (presetMode.HasValue && ConversionModeCombo != null
+                && ConversionModeCombo.SelectedIndex != presetMode.Value)
+            {
+                ConversionModeCombo.SelectedIndex = presetMode.Value;
+            }
             SetComboByValue(FormatCombo, p.Format);
             if (QualitySlider != null && p.Quality >= 0) QualitySlider.Value = p.Quality;
             SetComboByValue(ChromaCombo, p.Chroma);
@@ -5951,6 +5831,20 @@ namespace FfmpegGui
             if (DngBitDepthCombo != null)
                 DngBitDepthCombo.SelectedIndex = p.DngBitDepth <= 8 ? 0 : 1;
             // ── 编码器后端 ──
+            // Exact preset selection first: one backend can expose several encoders, and the
+            // backend-name substring match below cannot tell them apart.
+            if (!string.IsNullOrWhiteSpace(p.EncoderName) && EncoderCombo?.Items != null)
+            {
+                for (int i = 0; i < EncoderCombo.Items.Count; i++)
+                {
+                    if (string.Equals(EncoderCombo.Items[i] as string, p.EncoderName,
+                            StringComparison.OrdinalIgnoreCase))
+                    {
+                        EncoderCombo.SelectedIndex = i;
+                        break;
+                    }
+                }
+            }
             if (!string.IsNullOrWhiteSpace(p.EncoderBackend) && EncoderCombo != null)
             {
                 // 在 EncoderCombo 中查找包含后端名称的项
@@ -6019,6 +5913,30 @@ namespace FfmpegGui
             if (CjxlPhotonNoiseBox != null) CjxlPhotonNoiseBox.Value = Math.Clamp(p.CjxlPhotonNoiseIso, 0, 3200);
             if (ConcurrencyBox != null) ConcurrencyBox.Text = Math.Clamp(p.MaxQueueSize, 1, 128).ToString();
             UpdateConcurrencyLabel();
+            // ── Snapshot backfill replay (2026-09-26) ────────────────────────────────────────
+            // Controls BuildPresetData now captures but this method never restored, so a preset
+            // silently left them at whatever the user had. Placed before the color-strategy radio
+            // block because handlers fired here (gain map enable, max dimension) rebuild panels and
+            // can move that radio -- the strategy write must stay the last one.
+            if (ColorGamutMapCheck != null && !string.IsNullOrWhiteSpace(p.ColorGamutMap))
+                ColorGamutMapCheck.IsChecked =
+                    string.Equals(p.ColorGamutMap, "on", StringComparison.OrdinalIgnoreCase);
+            if (CjxlEffortBox != null && p.CjxlEffort.HasValue)
+                CjxlEffortBox.Value = Math.Clamp(p.CjxlEffort.Value, 1, 9);
+            if (GifPaletteCheck != null) GifPaletteCheck.IsChecked = p.GifPaletteOptimize;
+            if (GifDitherCheck != null) GifDitherCheck.IsChecked = p.GifDither;
+            if (AnimationFpsBox != null && p.AnimationFps.HasValue)
+                AnimationFpsBox.Text = p.AnimationFps.Value.ToString();
+            if (AnimationLoopBox != null && p.AnimationLoop.HasValue)
+                AnimationLoopBox.Text = p.AnimationLoop.Value.ToString();
+            if (AnimationScaleWBox != null) AnimationScaleWBox.Text = p.AnimationScaleW.ToString();
+            if (AnimationDurationBox != null && p.AnimationDuration > 0)
+                AnimationDurationBox.Text = p.AnimationDuration.ToString("0.###");
+            if (EnableMaxDimensionCheck != null) EnableMaxDimensionCheck.IsChecked = p.EnableMaxDimension;
+            if (MaxDimensionBox != null && p.MaxDimension > 0) MaxDimensionBox.Value = p.MaxDimension;
+            if (AppendPngExtCheck != null) AppendPngExtCheck.IsChecked = p.AppendPngExtension;
+            if (JpegGainMapEnableCheck != null) JpegGainMapEnableCheck.IsChecked = p.JpegGainMap;
+            SetComboByValue(JpegDctCombo, p.JpegDct);
             // ── 色彩策略单选恢复（2026-09-19 修复）──────────────────────────────────
             // 缺陷：保存侧已写规范串 ColorStrategy（BuildPresetData 内），但本方法此前**整块缺失**
             //   对 IccMode*/ColorStrategy 的引用（引用数 = 0）⇒「应用预设」后 4 个策略单选保持原样，
@@ -6054,17 +5972,20 @@ namespace FfmpegGui
             // ── D-1 修复（2026-09-19）：刷新**之后**再落一次「随格式变化的控件」──────────────
             // 缺陷：`UpdateOptionAvailability()` 会 `Items.Clear()` + 重建 `ColorSpaceCombo` /
             //   `BitDepthCombo` 并把 `SelectedIndex` 归 0，还会把 `QualitySlider.Value` 设为该格式
-            //   默认值 ⇒ 上面 `:5848`/`:5850`/`:5851` 写进去的预设值被**整体冲掉**
+            //   默认值 ⇒ 本方法上面写进去的**三项预设值（目标色域 / 位深 / 质量）**被**整体冲掉**
             //   （症状：「应用预设」后目标色域 / 位深 / 质量三项留不住，预设形同虚设）。
-            // 修法：把这三项**移到刷新之后**再写一次。**不修改刷新函数本体** ⇒ 另外 6 个调用点
-            //   （格式切换 `:1851`、动图模式 `:1948`、能力初始化 `:2611`、简易预设 `:4604`、
-            //   GainMap 开关 `:5610`）行为**一字不变**，避免动到「切格式 ⇒ 重建候选集」的既有语义。
-            // ⚠ 不得顺手改 `:2122-2143` 的「PNG/TIFF/APNG 强制无损」——那是**既定产品语义**，
+// 修法：把这三项**移到刷新之后**再写一次。**不修改刷新函数本体** ⇒ 另外 6 个调用点
+//   （格式切换 `FormatCombo_SelectionChanged`、动图模式 `ConversionMode_SelectionChanged`、
+//   能力初始化 `InitializeCapabilitiesAsync`、简易预设 `SimplePresetCombo_SelectionChanged`、
+//   GainMap 开关 `JpegGainMapEnable_Changed`）行为**一字不变**，避免动到「切格式 ⇒ 重建候选集」的既有语义。
+//   ⚠ 2026-09-21 改：原先此处写的是**绝对行号**（`:1851`/`:1948`/`:2611`/`:4604`/`:5610`），
+//     插入任何行都会失效（本仓 `COLOR_TRAPS §十四` 已立规「行号不是稳定标识符」）⇒ 改为**具名 handler**。
+            // ⚠ 不得顺手改「PNG/TIFF/APNG 强制无损」那段——那是**既定产品语义**，
             //   被 `UiTestHost` 的 J9a / J14d-1 / L2a-L2d 三条锁住；故质量只在**非**纯无损格式上回写。
             // ⚠ 顺序：色域先、位深后。色域变更会触发 HDR 位深自动联动（`ColorSpaceCombo_SelectionChanged`），
             //   后写位深 = 预设的显式位深为**最后一次写入**（与「预设即终态」的语义一致）。
             // ⚠ 色域回写不会改坏 ICC 单选：`SetColorStrategyRadio` 已置 `_iccModeTouched = true`
-            //   ⇒ `AutoLinkIccModeFromColorSpace` 提前返回（同 `:3503-3505`）。
+            //   ⇒ `AutoLinkIccModeFromColorSpace` 提前返回（见该方法的早退分支）。
             var presetFmt = NormalizeFormat(FormatCombo?.SelectedItem as string);
             SetComboByValue(ColorSpaceCombo, p.ColorSpace);
             SetComboByValue(BitDepthCombo, p.BitDepth);
@@ -6076,6 +5997,20 @@ namespace FfmpegGui
 
             UpdateExifToolPanelState();
             UpdateQualityLabel();
+        }
+
+        /// <summary>
+        /// Conversion mode implied by a preset format string. The three modes carry disjoint format
+        /// lists (see ConversionMode_SelectionChanged), so "GIF" only ever selects in animated mode
+        /// and "DNG" only in RAW mode. Presets saved before the ConversionMode axis existed rely on
+        /// this, otherwise their Format write misses silently against the rebuilt item list.
+        /// </summary>
+        private static int ModeOfPresetFormat(string? format)
+        {
+            var f = (format ?? "").Trim();
+            if (f.Equals("DNG", StringComparison.OrdinalIgnoreCase)) return 2;
+            if (AnimatedFormats.Any(a => string.Equals(a, f, StringComparison.OrdinalIgnoreCase))) return 1;
+            return 0;
         }
 
         private static void SetComboByValue(ComboBox? combo, string? value)

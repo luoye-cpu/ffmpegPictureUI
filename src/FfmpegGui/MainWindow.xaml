@@ -278,6 +278,11 @@
           <StackPanel x:Name="RawPanel" IsVisible="False" Spacing="4" Margin="0,4,0,0">
             <TextBlock x:Name="RawEngineStatus" Text="{ext:Loc dng.status.detecting}" FontSize="11"
                        TextWrapping="Wrap"/>
+            <!-- ⚠⚠ 2026-09-20：**DNG 输出专属选项**统一放进本面板，
+                 可见性 = 「RAW 模式 **且** 输出格式 = dng」。
+                 原先它们直接放在 RawPanel 里 ⇒ 用户选「RAW → jpg/avif」时这些选项**仍然显示**，
+                 会让人以为设置生效，实际对非 DNG 输出**完全无效** ⇒ 「UI 与真实不符」。 -->
+            <StackPanel x:Name="DngOptionsPanel" IsVisible="False" Spacing="4">
             <!-- ── DNG 压缩方式 ── -->
             <TextBlock Text="{ext:Loc dng.compression}" FontSize="13" FontWeight="Bold" Margin="0,4,0,0"/>
             <!-- 选项改由 C# 的 FillComboByLoc 填充：<sys:String> 是元素内容，
@@ -305,12 +310,26 @@
             <!-- ── DNG 布局: 保留 CFA / 线性 ── -->
             <TextBlock Text="{ext:Loc dng.layout}" FontSize="13" FontWeight="Bold" Margin="0,6,0,0"/>
             <ComboBox x:Name="DngLinearCombo" SelectedIndex="0"/>
+            <!-- 2026-09-21: hint for "Linear DNG" applicability.
+                 dngtool rejects -linear for Bayer input ("-linear only applies to linear/demosaiced input"),
+                 but the UI listed Linear alongside Keep CFA with NO hint at all
+                 => user selects it and fails at runtime => UI vs. real behaviour mismatch.
+                 Shown only while Linear is selected (see MainWindow.xaml.cs). -->
+            <TextBlock x:Name="DngLinearHint" Text="{ext:Loc dng.linear.hint}"
+                       IsVisible="False" FontSize="10" TextWrapping="Wrap" Margin="0,2,0,0"
+                       Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
             <!-- ── 位深 ── -->
             <TextBlock Text="{ext:Loc dng.bitdepth}" FontSize="11" Margin="0,4,0,0"/>
             <ComboBox x:Name="DngBitDepthCombo" SelectedIndex="1"/>
             <!-- ── 高光模式 (LibRaw -H) ── -->
             <TextBlock Text="{ext:Loc dng.highlight}" FontSize="11" Margin="0,4,0,0"/>
             <ComboBox x:Name="DngHighlightCombo" SelectedIndex="1"/>
+            <!-- 2026-09-21: measured - CFA-preserving DNG output is UNAFFECTED by highlight mode
+                 (all three modes produce byte-identical files); it only applies to the
+                 demosaic/linear path. Stating this avoids "UI vs. real behaviour" mismatch. -->
+            <TextBlock Text="{ext:Loc dng.highlight.hint}" FontSize="10"
+                       TextWrapping="Wrap" Margin="0,2,0,0"
+                       Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
             <TextBlock Text="{ext:Loc dng.note.sensor}" FontSize="10"
                        TextWrapping="Wrap"
                        Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
@@ -320,6 +339,7 @@
             <TextBlock Text="{ext:Loc dng.note.input}" FontSize="10"
                        TextWrapping="Wrap"
                        Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+            </StackPanel>
           </StackPanel>
           <!-- ============ 静态图片/动图通用选项（RAW 模式下整体隐藏） ============ -->
           <StackPanel x:Name="StillOptionsPanel" Spacing="8">
@@ -555,7 +575,9 @@
                 <NumericUpDown x:Name="SvtPresetBox" Value="7" Minimum="0" Maximum="13"/>
                 <TextBlock Text="{ext:Loc svt.tune}" Margin="0,4,0,0" FontSize="11"/>
                 <ComboBox x:Name="SvtTuneCombo" SelectedIndex="1"/>
-                <CheckBox x:Name="SvtStillPictureCheck" Content="{ext:Loc avif.still.picture}" IsChecked="True"/>
+                <!-- libsvtav1 没有 still-picture 这个 AVOption（实测 `-svtav1-params still-picture=1`
+                     报 Error parsing option、退出码 127），面板上原先那只「静态图片模式」复选框
+                     全仓无消费方 ⇒ 已删除（A-11）；实发的 -still-picture 只来自 libaom 面板那只。 -->
               </StackPanel>
               <!-- ── NVENC 硬件编码器选项 ── -->
               <StackPanel x:Name="NvencAvifPanel" IsVisible="False" Spacing="4">
@@ -563,7 +585,11 @@
                 <ComboBox x:Name="NvencPresetCombo" SelectedIndex="3"/>
                 <TextBlock Text="{ext:Loc nvenc.aq.strength}" Margin="0,4,0,0" FontSize="11"/>
                 <!-- ⚠ 同 496 行：60px 数值框 + 约 220px 提示文本 ≈ 286px > 面板可用 236px ⇒ 提示被裁。 -->
-                <NumericUpDown x:Name="AvifNvencAqBox" Value="8" Minimum="0" Maximum="15" MinWidth="80" HorizontalAlignment="Left"/>
+                <!-- 下限 1：官方区间是 [1,15]（实测 `-h encoder=av1_nvenc` 打印 from 1 to 15、default 8），
+                     传 0 不是「关闭 AQ」而是硬失败（实测 Value 0.000000 for parameter aq-strength
+                     out of range [1 - 15]、退出码 127）。要关 AQ 请取消下方 Spatial AQ 勾选
+                     （实测不勾 spatial-aq 时 aq-strength 完全不参与：1 / 15 / 省略三态产物逐字节相同）。 -->
+                <NumericUpDown x:Name="AvifNvencAqBox" Value="8" Minimum="1" Maximum="15" MinWidth="80" HorizontalAlignment="Left"/>
                 <TextBlock Text="{ext:Loc avif.aq.hint}" TextWrapping="Wrap" FontSize="10" Margin="0,2,0,0"
                            Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
                 <CheckBox x:Name="AvifNvencSpatialAqCheck" Content="{ext:Loc avif.spatial.aq}" IsChecked="True"/>
@@ -684,9 +710,13 @@
                 <sys:String>default</sys:String><sys:String>optimal</sys:String>
               </ComboBox>
               <TextBlock Text="{ext:Loc jpeg.dct}" Margin="0,4,0,0"/>
+              <!-- A-20：ffmpeg mjpeg 的 -dct 没有 float（实测 -dct float ⇒ rc=127
+                   「Undefined constant or missing '('」），留着它就是一条选了必失败的路径；
+                   int / fastint 实测生效。历史预设或 CLI 若仍写 float，会原样透传给编码器
+                   并响亮失败，不在这里静默改写。 -->
               <ComboBox x:Name="JpegDctCombo" SelectedIndex="0">
                 <sys:String>auto</sys:String><sys:String>int</sys:String>
-                <sys:String>fastint</sys:String><sys:String>float</sys:String>
+                <sys:String>fastint</sys:String>
               </ComboBox>
               <!-- JPEG 渐进: ffmpeg mjpeg 编码器不支持渐进输出（源码确认仅基线），
                    该值仅供 cjpegli/Gain Map 路径使用（QueueProcessor 转换），故保持隐藏 -->
@@ -953,12 +983,17 @@
       <Border Grid.Row="1" Margin="12,8,12,0" Padding="20,18"
               CornerRadius="12" BoxShadow="0 3 16 0 #20000000"
               Background="#18000000">
-        <Grid ColumnDefinitions="Auto,*">
-          <TextBlock Grid.Column="0" Text="{ext:Loc preset.encoding.title}" FontSize="16" FontWeight="Bold"
+        <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto">
+          <TextBlock Grid.Row="0" Grid.Column="0" Text="{ext:Loc preset.encoding.title}" FontSize="16" FontWeight="Bold"
                      VerticalAlignment="Center" Margin="0,0,20,0"/>
-          <ComboBox Grid.Column="1" x:Name="SimplePresetCombo"
+          <ComboBox Grid.Row="0" Grid.Column="1" x:Name="SimplePresetCombo"
                     FontSize="16" Padding="14,10"
                     SelectedIndex="0"/>
+          <!-- 覆盖层的只读回显：显示的是高级模式当前的生效设置本身（取自同一批控件的当前显示值），
+               而不是"最后点了哪条预设"；两者不符时后缀点名。 -->
+          <TextBlock Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2" x:Name="SimpleCurrentStateLabel"
+                     FontSize="11" Margin="0,8,0,0" TextWrapping="Wrap"
+                     Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
         </Grid>
       </Border>
 

@@ -15,18 +15,26 @@ namespace FfmpegGui.Services
     {
         private static string? _detectedPath;
         private static bool _detected;
+        // ⚠ 锁同时罩住 `Detect()` 与两个 getter（同 `DjxlService`：扫描窗口内的并发读者
+        //   会拿到"已检测但不可用"的假阴，而 JXR 的编解码分派直接读它）。
+        private static readonly object _gate = new();
 
         public static bool IsAvailable
         {
-            get { if (!_detected) Detect(); return _detectedPath != null; }
+            get { lock (_gate) { if (!_detected) Detect(); return _detectedPath != null; } }
         }
 
         public static string? DetectedPath
         {
-            get { if (!_detected) Detect(); return _detectedPath; }
+            get { lock (_gate) { if (!_detected) Detect(); return _detectedPath; } }
         }
 
         public static void Detect()
+        {
+            lock (_gate) { DetectCore(); }
+        }
+
+        private static void DetectCore()
         {
             _detected = true;
             _detectedPath = null;
@@ -84,13 +92,6 @@ namespace FfmpegGui.Services
                 _detectedPath = pathFound;
                 return;
             }
-        }
-
-        /// <summary>在系统 PATH 中查找可执行文件（已迁移至 PlatformServices）</summary>
-        [Obsolete("使用 PlatformServices.TryFindInPath 代替")]
-        private static bool TryFindInPath(string exeName, out string? fullPath)
-        {
-            return PlatformServices.TryFindInPath(exeName, out fullPath);
         }
 
         public static void ClearCache()

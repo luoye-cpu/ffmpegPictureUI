@@ -265,11 +265,17 @@ namespace FfmpegGui
             Console.WriteLine("正在检测外部工具...");
             // `#26`：headless 侧把 exiftool 检测的取消/超时点名接到控制台（消息自带 "\n" ⇒ 用 Write）。
             ExternalToolsDetector.EnsureAllDetected(m => Console.Write(m));
+            // ⚠ 这份报告必须与 `ExternalToolsDetector.ProbeAllTools` 的 8 项**同名同数**。
+            //   旧写法只打 6 行且**不含 djxl** —— 而 djxl 恰恰决定 JXL 走"原生码流 / JPEG 重构 /
+            //   GainMap 解码"哪条路（缺失只体现在任务日志的 `[jxl] … djxl: 可用/不可用` 一行里），
+            //   启动报告里看不见它 ⇒ "检测了但不报告"。avifenc 同样两侧都不报。
             Console.WriteLine($"  ffmpeg: {(IsFfmpegAvailable() ? "✅" : "❌")}");
             Console.WriteLine($"  cjxl: {(CjxlService.IsAvailable ? "✅" : "❌")}");
+            Console.WriteLine($"  djxl: {(DjxlService.IsAvailable ? "✅" : "❌")}");
             Console.WriteLine($"  cjpegli: {(CjpegliService.IsAvailable ? "✅" : "❌")}");
             Console.WriteLine($"  exiftool: {(ExifToolService.IsAvailable ? "✅" : "❌")}");
             Console.WriteLine($"  JxrEncApp: {(JxrService.IsAvailable ? "✅" : "❌")}");
+            Console.WriteLine($"  avifenc: {(FfmpegGui.Services.PlatformServices.ResolveAvifencPath() != null ? "✅" : "❌")}");
             Console.WriteLine($"  dngtool: {(RawService.IsAvailable ? "✅" : "❌")}");
 
             // 构建队列项
@@ -310,7 +316,7 @@ namespace FfmpegGui
                 foreach (var item in items)
                 {
                     var cmd = MainWindow.BuildQueueItemCommand(item);
-                    Console.WriteLine($"[{Path.GetFileName(item.InputPath)} → {Path.GetFileName(item.OutputPath)}]");
+                    Console.WriteLine($"[{item.DisplayName} → {Path.GetFileName(item.OutputPath)}]");
                     Console.WriteLine(cmd);
                     Console.WriteLine();
                 }

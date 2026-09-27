@@ -38,20 +38,28 @@
 #   F2 `-f jpegli` 与 `-f jpg` 等价（无条件折叠）
 #      `CliParser.cs:150` `if (fmt == "jpegli") fmt = "jpg";`（避免产出 `.jpegli` 非法扩展名）。
 #   F3 `--bit-depth` 在 format ∈ {jpg,jpeg} 下 4 值 -> 8（**条件折叠**）
-#      `FfmpegCommandBuilder.Decision.cs:147` 按容器上限**就地改写 options.BitDepth**；
-#      上限来自 `FfmpegCommandBuilder.cs:867`（jpg/jpeg -> 8）。改写是单点的 => 下游只见 8。
+#      `FfmpegCommandBuilder.Decision.cs` 的 capBd 分支按容器上限**就地改写 options.BitDepth**；
+#      上限来自 `GetFormatColorCapabilities` 的 jpg/jpeg 行（-> 8）。改写是单点的 => 下游只见 8。
 #   F4 `--bit-depth` 在 format = webp 下 4 值 -> 8（**条件折叠**）
-#      同上 :147 + `FfmpegCommandBuilder.cs:877`（webp -> 8）。
-#   F5 `--bit-depth` 在 format = avif 且 --color-space = "Display P3" 下 4 值 -> 8（**条件折叠**）
-#      `FfmpegCommandBuilder.cs:899` 该分支整支回退 ("bt709","iec61966-2-1","bt709",8)，
-#      上限 8 经 :147 就地改写 => 10/12/16 全部等价于 8。
+#      同上那段就地改写 + `GetFormatColorCapabilities` 的 webp 行（-> 8）。
+#      ⚠ 精确行号**只写在各自的 Evidence 字段里**（A21/A30 按行锚定校验，行号漂了会当场响）；
+#        散文里不要再复写一遍数字 —— 本轮实测：散文里的 :867/:877/:486/:1871 全都漂了，
+#        而机器校的那份也漂了 6 条（见文件末尾 N7 的补充登记）。
+#   F5 ~~`--bit-depth` 在 format = avif 且 --color-space = "Display P3" 下 4 值 -> 8~~
+#      **2026-09-26 任务 #39 删除该折叠**：它的取证行是产品里
+#      `return ("bt709", "iec61966-2-1", "bt709", 8, false)` 那条"P3 高位深 ⇒ 回退 8bit"特例，
+#      而该特例的理由（"libaom 上 P3+10/12/16 有回归"）**从未被量过**。补量后不成立
+#      （同一命令行只换 -pix_fmt：8/10/12 三档 rc=0、nclx 标签一致、10/12 对 8 的 PSNR 51.4/51.0 dB，
+#      取证 `tests/output/t36/probe_39b.ps1`）⇒ 产品已删特例，四个取值**不再等价**。
+#      ⇒ 覆盖账是**变多**不是变少：avif+Display P3 的 bit-depth 从"1 格代表 4 档"变成 4 档各跑。
 #
 # ── 已考察但**故意不折叠**的候选（防过度折叠；详见文件末尾 NOTES）─────────────────
 #   N1 `-f jpeg` 与 `-f jpg`：编码器选择相同（`EncoderDetectionService.cs:38`），
 #      但 `CliParser.BuildOutputPath` 用 Format 原样拼扩展名 => `.jpeg` vs `.jpg` 产物名不同，
 #      **不等价**（只折编码器语义、不折产物名，会掩盖扩展名缺陷）。
-#   N2 `--color-engine auto` 与 `engine`：`Requested`（`ColorEngineRouter.cs:100-101`）对二者
-#      同为真，但 `ExplicitlyRequested`（:115-116）只认字面 engine => 不可走时
+#   N2 `--color-engine auto` 与 `engine`：`Requested`（`ColorEngineRouter.cs` 的
+#      `public static bool Requested`，2026-09-27 在 :100-102）对二者
+#      同为真，但 `ExplicitlyRequested`（同文件 `public static bool ExplicitlyRequested`）只认字面 engine => 不可走时
 #      「硬失败并点名」vs「回退传统管线」两种结局，**不等价**。
 #   N3 `--color-space "P3 PQ"` 与 `"BT.2020 PQ"`：输出 CICP tokens 相同，但前者 Kind=UltraWide
 #      => 额外做源->BT.2020 像素 gamut 转换（`ColorSpaceRegistry.cs:94-98` vs :106-109），**不等价**。
@@ -373,8 +381,9 @@ function Get-EquivalenceClasses {
         Members = @('8', '10', '12', '16')
         When = @{ 'format' = @('jpg', 'jpeg') }
         Evidence = @(
-            'src/FfmpegGui/Services/FfmpegCommandBuilder.Decision.cs:147|if (options.BitDepth.HasValue && options.BitDepth.Value > capBd) options.BitDepth = capBd;',
-            'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:867|options.JpegGainMap ? null : "iec61966-2-1", "bt709", 8, true'
+            'src/FfmpegGui/Services/FfmpegCommandBuilder.Decision.cs:147|if (options.BitDepth.HasValue && options.BitDepth.Value > capBd)',
+            'src/FfmpegGui/Services/FfmpegCommandBuilder.Decision.cs:155|options.BitDepth = capBd;',
+            'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:971|options.JpegGainMap ? null : "iec61966-2-1", "bt709", 8, true'
         )
         Rationale = 'JPEG container caps bit depth at 8 and DecideOutputColor rewrites options.BitDepth in place, so 8/10/12/16 are observationally equal'
     }
@@ -387,25 +396,24 @@ function Get-EquivalenceClasses {
         Members = @('8', '10', '12', '16')
         When = @{ 'format' = @('webp') }
         Evidence = @(
-            'src/FfmpegGui/Services/FfmpegCommandBuilder.Decision.cs:147|if (options.BitDepth.HasValue && options.BitDepth.Value > capBd) options.BitDepth = capBd;',
-            'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:877|return (null, "iec61966-2-1", "bt709", 8, true);'
+            'src/FfmpegGui/Services/FfmpegCommandBuilder.Decision.cs:147|if (options.BitDepth.HasValue && options.BitDepth.Value > capBd)',
+            'src/FfmpegGui/Services/FfmpegCommandBuilder.Decision.cs:155|options.BitDepth = capBd;',
+            'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:981|return (null, "iec61966-2-1", "bt709", 8, true);'
         )
         Rationale = 'WebP container caps bit depth at 8 and DecideOutputColor rewrites options.BitDepth in place, so 8/10/12/16 are observationally equal'
     }
 
-    # ── F5 bit-depth 在 avif + Display P3 下 4 值 -> 8（条件）──
-    $f5 = @{
-        Axis = 'bit-depth'
-        ClassId = 'bit-depth-avifp3-8'
-        Representative = '8'
-        Members = @('8', '10', '12', '16')
-        When = @{ 'format' = @('avif'); 'color-space' = @('Display P3') }
-        Evidence = @(
-            'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:899|return ("bt709", "iec61966-2-1", "bt709", 8, false);',
-            'src/FfmpegGui/Services/FfmpegCommandBuilder.Decision.cs:147|if (options.BitDepth.HasValue && options.BitDepth.Value > capBd) options.BitDepth = capBd;'
-        )
-        Rationale = 'AVIF + Display P3 + high bit depth falls back to sRGB 8-bit (libaom regression guard) and the cap is applied in place'
-    }
+    # ── F5 **已删除**（2026-09-26 任务 #39）──
+    # 原先这里登记过一条条件折叠：`bit-depth-avifp3-8`（format=avif 且 color-space="Display P3"
+    # 时 8/10/12/16 四个取值都等价于 8），Evidence 指向
+    # `FfmpegCommandBuilder.cs|return ("bt709", "iec61966-2-1", "bt709", 8, false);`。
+    # 该特例的理由只是注释里那句"Display P3 + 10/12/16-bit 在 libaom 上有回归风险"，全仓无实测记录；
+    # 补做的实测（`tests/output/t36/probe_39b.ps1`，拿产品自己那条命令行逐字复用、只换 -pix_fmt）：
+    # 8/10/12 三档 rc 都为 0、nclx 标签都落得进去（smpte432/iec61966-2-1/bt709）、
+    # 10le 与 12le 对 8bit 产物的 PSNR = 51.45 / 50.99 dB ⇒ 三档**可观测地不同**（交付位深不同）
+    # ⇒ 特例已从产品删除，这条折叠随之删除：`--bit-depth` 在 avif+P3 下**不再等价**。
+    # ⚠ 覆盖账：删掉这条折叠 = avif+Display P3 的 bit-depth 由"1 格代表 4 档"变成"4 档各跑"
+    #   ⇒ L1/L3 的用例数上升（不是下降），`Test-MatrixStructure` 的 A21 取证行也不再指向已删的行。
 
     return @(
         (New-FoldClass @f1a),
@@ -413,8 +421,7 @@ function Get-EquivalenceClasses {
         (New-FoldClass @f1c),
         (New-FoldClass @f2a),
         (New-FoldClass @f3),
-        (New-FoldClass @f4),
-        (New-FoldClass @f5)
+        (New-FoldClass @f4)
     )
 }
 
@@ -587,7 +594,7 @@ function Get-SemanticMatrices {
             Rationale = 'Strategy decides whether/how color is converted and labelled, target gamut decides where to, container decides which labelling is even expressible (CICP vs ICC), engine decides which combinations are unroutable. The four are not independent.'
             Evidence = @(
                 'src/FfmpegGui/Services/FfmpegCommandBuilder.Decision.cs:144|var (capP, capT, capM, capBd, capIcc) = GetFormatColorCapabilities(fmt, options);',
-                'src/FfmpegGui/Services/ColorMapping/ColorEngineRouter.cs:101|!string.Equals(o.ColorEngine, "legacy", StringComparison.OrdinalIgnoreCase));'
+                'src/FfmpegGui/Services/ColorMapping/ColorEngineRouter.cs:102|!string.Equals(o.ColorEngine, "legacy", StringComparison.OrdinalIgnoreCase));'
             )
         },
         @{
@@ -596,7 +603,7 @@ function Get-SemanticMatrices {
             Rationale = 'Backend compatibility is a function of format, and -pix_fmt is a single-truth mapping of (format, chroma, bitDepth); the container also clamps bit depth. None of the four is independent.'
             Evidence = @(
                 'src/FfmpegGui/Services/EncoderDetectionService.cs:38|EncoderBackend.Cjpegli => fmt is "jpg" or "jpeg" or "jpegli",',
-                'src/FfmpegGui/Services/ColorMapping/ImageEncoderArgs.cs:486|if (fmt is "png" or "tiff" or "apng" or "jxl")'
+                'src/FfmpegGui/Services/ColorMapping/ImageEncoderArgs.cs:763|if (fmt is "png" or "tiff" or "apng" or "jxl")'
             )
         },
         @{
@@ -605,7 +612,7 @@ function Get-SemanticMatrices {
             Rationale = 'The preserve flag clears all five strip bits in the parser, so metadata-mode is NOT a single-variable switch against the strip bits; the container then decides whether EXIF/XMP can be carried at all.'
             Evidence = @(
                 'src/FfmpegGui/CliParser.cs:216|case "--preserve-metadata":',
-                'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:1871|bool exiftoolFormats = fmt is "jpg" or "jpeg" or "png" or "tiff" or "webp";'
+                'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:2041|bool exiftoolFormats = fmt is "jpg" or "jpeg" or "png" or "tiff" or "webp";'
             )
         },
         @{
@@ -613,16 +620,17 @@ function Get-SemanticMatrices {
             Axes = @('format', 'color-engine', 'jpeg-gain-map', 'jpeg-gain-map-base-gamut', 'jpeg-gain-map-downsample')
             Rationale = 'Requesting a gain map forces the engine regardless of --color-engine legacy, so the engine axis is not independent of the gain-map switch; base gamut and downsample are encoder args of the same Ultra HDR output.'
             Evidence = @(
-                'src/FfmpegGui/Services/ColorMapping/ColorEngineRouter.cs:101|!string.Equals(o.ColorEngine, "legacy", StringComparison.OrdinalIgnoreCase));'
+                'src/FfmpegGui/Services/ColorMapping/ColorEngineRouter.cs:102|!string.Equals(o.ColorEngine, "legacy", StringComparison.OrdinalIgnoreCase));'
             )
         },
         @{
             Name = 'bitdepth-container'
             Axes = @('format', 'color-space', 'bit-depth')
-            Rationale = 'Bit depth is clamped by the container capability table, and AVIF + Display P3 + high bit depth collapses to sRGB 8-bit, so all three axes are coupled.'
+            Rationale = 'Bit depth is clamped by the outlet: AVIF takes its ceiling from the encoder that actually runs (libaom/av1_nvenc 12, others 10; an empty encoder name means no -c:v, i.e. ffmpeg default = libaom-av1), WebP/JPEG are capped at 8 by the container, and RGB-native outlets only ship 8/16 - so the three axes are coupled. (2026-09-26: the former "AVIF + Display P3 + high bit depth collapses to sRGB 8-bit" clause was measured and removed; see task 39 and tests/output/t36/probe_39b.ps1.)'
             Evidence = @(
-                'src/FfmpegGui/Services/ColorMapping/ImageEncoderArgs.cs:445|return (enc.StartsWith("libaom", StringComparison.OrdinalIgnoreCase)',
-                'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:899|return ("bt709", "iec61966-2-1", "bt709", 8, false);'
+                'src/FfmpegGui/Services/ColorMapping/ImageEncoderArgs.cs:715|AvifMaxBitDepthForEncoder(string? encoder)',
+                'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:1013|return (null, null, null, ColorMapping.ImageEncoderArgs.AvifMaxBitDepth(options), false);',
+                'src/FfmpegGui/Services/FfmpegCommandBuilder.Decision.cs:155|options.BitDepth = capBd;'
             )
         }
     )
@@ -1294,8 +1302,9 @@ if ($script:MatrixRunSelfTest) {
 #     （ImageEncoderArgs.cs:486-489）。看起来也是一条条件折叠，但本波次**只确认了 pix_fmt 一处**，
 #     没有查清是否还有别的 `BitDepth` 消费者（例如位深元数据 / `-bits_per_raw_sample`）
 #     会让 10/12/16 在产物上可区分 => **故意不登记**（宁缺勿滥：错的折叠会静默丢覆盖）。
-#     同理未登记 avif 的 12/16 -> AvifMaxBitDepth（ImageEncoderArgs.cs:442-447，上限还依赖
-#     `o.Encoder` 前缀，需先知道后端才能定论）。
+#     同理未登记 avif 的 12/16 -> `AvifMaxBitDepthForEncoder`（取证在 `bitdepth-container` 矩阵的
+#     Evidence 里；#36 之后上限由 `ClassifyAvifBackend` 推，空编码器名 ⇒ 实跑 libaom-av1 ⇒ 12），
+#     且 16 与 12 在产物上是否可区分还没逐格量过 => **故意不登记**（宁缺勿滥：错的折叠会静默丢覆盖）。
 #
 # N6. **未查全**：`--color-strategy` / `--jpeg-gain-map-base-gamut` 的**别名**不在轴取值域内
 #     ColorStrategyMapper.TryParse（ColorStrategy.cs:62-69）认 recommend/auto/携带/0 等别名；
@@ -1304,10 +1313,10 @@ if ($script:MatrixRunSelfTest) {
 #     本波次**未**单独建「别名表」=> 别名覆盖率是空白，登记在此。
 #
 # N7. 本库的取证断言**按行号锚定**：若并发修改让 `ColorStrategy.cs:49-52` / `CliParser.cs:150` /
-#     `FfmpegCommandBuilder.cs:867,877,899` / `FfmpegCommandBuilder.Decision.cs:147` /
-#     `ImageEncoderArgs.cs:445,486` / `EncoderDetectionService.cs:38` / `CliParser.cs:216` /
-#     `FfmpegCommandBuilder.cs:1871` 中任一行移动，A21/A30 会当场转红 —— 这是**故意**的
-#     （取证失效必须响，不允许静默沿用）。
+#     `FfmpegCommandBuilder.cs`（jpg / webp / avif 三个能力分支）/ `FfmpegCommandBuilder.Decision.cs`
+#     （capBd 就地改写那几行）/ `ImageEncoderArgs.cs`（MapPixFmt 的 RGB 原生分支）/
+#     `EncoderDetectionService.cs:38` / `CliParser.cs:216` 中任一行移动，A21/A30 会当场转红 ——
+#     这是**故意**的（取证失效必须响，不允许静默沿用）。
 #     实测：本库开发期间 `CliParser.cs` 被并发改动、整体位移 +5 行（`case "--preserve-metadata":`
 #     从 :211 移到 :216），A30 立刻转红并报出「found at line 216」—— 行号锚定确实有牙。
 #

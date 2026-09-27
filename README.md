@@ -2,7 +2,7 @@
 
 # 🖼️ FFmpegPictureUI — FFmpeg 图片转换器
 
-**v1.6.0** — 2026-09-16 发布 · 基于 Avalonia UI 的跨平台批量图片 / 动图 / 视频转换工具，封装 `ffmpeg` / `ffprobe` + 外部编码器（`cjxl` / `djxl` / `cjpegli` / `JxrEncApp` / `JxrDecApp`）。
+**v1.6.0** — 2026-09-28 发布 · 基于 Avalonia UI 的跨平台批量图片 / 动图 / 视频转换工具，封装 `ffmpeg` / `ffprobe` + 外部编码器（`cjxl` / `djxl` / `cjpegli` / `JxrEncApp` / `JxrDecApp`）。
 
 QQ 交流群：754439779 | [点击加群](https://qm.qq.com/q/M2181PvCkW)
 
@@ -121,6 +121,10 @@ FfmpegGui.exe --headless -i *.jpg -o out -f jxl \
 
 常用环境变量：`FFMPEGGUI_FFMPEG_DIR`、`FFMPEGGUI_OUTPUT_DIR`、`FFMPEGGUI_JXL_LIB_DIR`、`FFMPEGGUI_PLAN_DIR`、`FFMPEGGUI_GPU`。
 
+外部工具探测兜底：`FFMPEGGUI_EXT_SEARCH_DIRS`（`;` 分隔的目录列表）。设置后，探测的"系统扩展搜索"一级**只用这些根**，
+不再递归 `%LOCALAPPDATA%\Programs`、`C:\Program Files` 与 PATH 里的每个目录（该级实测在 PATH 含大树时会把启动拖成分钟级）。
+未设置时行为不变。
+
 ### 系统托盘
 
 关闭主窗口默认最小化到系统托盘（而非退出），队列后台继续运行。托盘菜单支持「显示主窗口 / 暂停队列 / 退出」。
@@ -181,7 +185,7 @@ ffmpegPictureUI/
 
 ## 📝 更新日志
 
-当前版本 **v1.6.0**（2026-09-16）。完整版本历史见 **[CHANGELOG.md](CHANGELOG.md)**。
+当前版本 **v1.6.0**（2026-09-28）。完整版本历史见 **[CHANGELOG.md](CHANGELOG.md)**。
 
 
 ## 📄 许可

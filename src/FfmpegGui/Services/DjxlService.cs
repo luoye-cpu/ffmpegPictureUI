@@ -13,18 +13,27 @@ namespace FfmpegGui.Services
     {
         private static string? _detectedPath;
         private static bool _detected;
+        // ⚠ 锁必须同时罩住 `Detect()` 与两个 getter：旧写法 Detect() 第一行就
+        //   `_detected = true; _detectedPath = null;` ⇒ 扫描期间并发读者会拿到
+        //   "已检测但不可用"的**假阴**（本工具的有无直接决定 JXL 走哪条路）。
+        private static readonly object _gate = new();
 
         public static bool IsAvailable
         {
-            get { if (!_detected) Detect(); return _detectedPath != null; }
+            get { lock (_gate) { if (!_detected) Detect(); return _detectedPath != null; } }
         }
 
         public static string? DetectedPath
         {
-            get { if (!_detected) Detect(); return _detectedPath; }
+            get { lock (_gate) { if (!_detected) Detect(); return _detectedPath; } }
         }
 
         public static void Detect()
+        {
+            lock (_gate) { DetectCore(); }
+        }
+
+        private static void DetectCore()
         {
             _detected = true;
             _detectedPath = null;
@@ -46,11 +55,9 @@ namespace FfmpegGui.Services
                         if (File.Exists(candidate)) { _detectedPath = candidate; return; }
                         try
                         {
-                            var list = new System.Collections.Generic.List<string>();
-                            foreach (var f in Directory.EnumerateFiles(manual, PlatformServices.DjxlSearchWildcard, SearchOption.AllDirectories))
-                            {
-                                if (File.Exists(f)) list.Add(f);
-                            }
+                            // ⚠ 手动目录同样可能是一棵大树 ⇒ 走带预算的递归（见 EnumerateFilesSafe 注释）
+                            var list = ExternalToolsDetector.EnumerateFilesSafe(
+                                manual, PlatformServices.DjxlSearchWildcard);
                             if (list.Count > 0)
                             {
                                 var pick = ExternalToolsDetector.ChooseBestExecutable(list);
@@ -95,7 +102,20 @@ namespace FfmpegGui.Services
             }
             catch { }
 
-            // ⑤ PATH
+            // ⑤ 系统 PATH —— **非递归**（`where`/`which` 一次解析，不会被 PATH 里的大树拖死）
+            //   ⚠ 这一级原本**只有一句注释、没有代码**，而本类 `:10` 的文档早就声明
+            //     「检测优先级 … -> PATH」⇒ 声明与实现冲突。它在本轮变成真缺陷：
+            //     `GetExtendedSearchPaths` 排除了 `C:\Windows*`（递归扫系统树既分钟级、又会翻到
+            //     `Prefetch\*.pf` 这种假工具），而它给出的理由正是"第⑤步会非递归兜住 PATH 里的工具"
+            //     ⇒ 该前提对 djxl 不成立 ⇒ 把 `djxl.exe` 放进 `System32` 的用户从"④ 侥幸扫到"
+            //     变成"永远发现不了"，且 djxl 缺失只会静默改走 ffmpeg 兜底、用户看不出来。
+            //   ⚠ 兄弟服务（`CjxlService` / `CjpegliService` / `JxrService`）一直是这么写的。
+            try
+            {
+                if (PlatformServices.TryFindInPath(PlatformServices.Djxl, out var pathFound) && pathFound != null)
+                    _detectedPath = pathFound;
+            }
+            catch { }
         }
 
         public static void ClearCache()

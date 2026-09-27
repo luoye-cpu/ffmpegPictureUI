@@ -133,7 +133,9 @@ namespace FfmpegGui.Models
         public int MaxQueueSize { get; set; } = 16;
         // 动图参数
         public int? AnimationFps { get; set; }
-        public int AnimationLoop { get; set; } = -1;
+        // Nullable: 0 (once) and -1 (infinite) are both meaningful and the box ships *empty*,
+        // so a preset that never expressed this axis must not overwrite it with the schema default.
+        public int? AnimationLoop { get; set; }
         public bool GifPaletteOptimize { get; set; } = true;
         public bool GifDither { get; set; } = true;
         public int AnimationScaleW { get; set; }
@@ -152,6 +154,21 @@ namespace FfmpegGui.Models
         public bool EnableMaxDimension { get; set; } = false;
         /// <summary>最长边像素限制 (默认 1920)</summary>
         public int MaxDimension { get; set; } = 1920;
+
+        // ── Preset completeness (2026-09-26): simple mode is now a pure overlay that enqueues
+        // with the advanced-mode UI state, so a preset has to describe that state completely.
+        // These nullable axes are the ones the schema never had. null = "an old preset predates
+        // this axis": ApplyPresetData then leaves that control untouched, except ConversionMode,
+        // which is derived from Format (ModeOfPresetFormat) because the three modes carry
+        // disjoint format lists. ──
+        /// <summary>ConversionModeCombo index: 0=still 1=animation 2=RAW</summary>
+        public int? ConversionMode { get; set; }
+        /// <summary>EncoderCombo selection text (one backend can expose several encoders)</summary>
+        public string? EncoderName { get; set; }
+        /// <summary>Color gamut mapping: "on" / "off"</summary>
+        public string? ColorGamutMap { get; set; }
+        /// <summary>cjxl panel effort; branches with JxlEffort by backend</summary>
+        public int? CjxlEffort { get; set; }
 
         public string ToJson() => JsonSerializer.Serialize(this, AppJsonContext.Default.PresetData);
 

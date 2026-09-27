@@ -40,7 +40,7 @@ namespace ServiceProbe
     /// </summary>
     internal static class Program
     {
-        private static int _pass, _fail;
+        private static int _pass, _fail, _skip;
 
         /// <summary>
         /// 从探针输出目录向上定位仓库内工具链（publish/PLAN），写入 AppSettings。
@@ -87,7 +87,7 @@ namespace ServiceProbe
             InitExternalTools();          // 否则 iccgen/exiftool 类互测会静默 SKIP（假绿）
             if (args.Length == 0)
             {
-                Console.WriteLine("usage: ServiceProbe <gainmap|icc|icc-dump|cicp|color|faithful|pq|matrix|curve|plan|geometry|bench|selftest|i18n> ...");
+                Console.WriteLine("usage: ServiceProbe <gainmap|icc|icc-dump|cicp|color|faithful|pq|matrix|curve|plan|geometry|bench|selftest|i18n|psnr|simdswitch> ...");
                 return 2;
             }
             try
@@ -126,8 +126,12 @@ namespace ServiceProbe
                     case "iccname": ProbeIccName(); break;
                     // psnr &lt;a&gt; &lt;b&gt; [阈dB] —— 任意两张图（同尺寸）的像素级比对，接线路径的门禁需要它
                     case "psnr": ProbePsnr(args).GetAwaiter().GetResult(); break;
+                    // simdswitch（无参）—— 面板「SIMD 优化」开关的消费点行为锁（判据单点在 SimdKernelRouting）
+                    case "simdswitch": ProbeSimdSwitch(); break;
                     case "runner": ProbeRunnerGuard(args).GetAwaiter().GetResult(); break;
                     case "settings": ProbeSettingsSave(); break;
+                    // metaraw —— RAW 输入的**元数据保留**锁（参数形态 + 纯逻辑，**不需要任何素材**）
+                    case "metaraw": ProbeMetadataRaw(); break;
                     case "procstreams": ProbeProcStreams(); break;
                     case "encoding": ProbeProcEncoding(); break;
                     case "ipc": ProbeIpc(); break;
@@ -153,6 +157,9 @@ namespace ServiceProbe
                     // firstframe <input> [输出根目录] —— 引擎解码步「多帧输入只取首帧」覆盖（直调引擎，绕过路由层）
                     case "firstframe": ProbeFirstframe(args).GetAwaiter().GetResult(); break;
                     case "selftest": ProbeSelfTest(); break;
+                    // tooldetect [预算秒] —— 外部工具探测的开销/诚实性/可注入性（见方法头注释）
+                    case "tooldetect": ProbeToolDetect(args); break;
+                    case "colormath": ProbeColorMathAgainstZimg(); break;
                     // i18n —— 双语本地化端到端：真实现 LocalizationService 能加载两套字典且取值命中
                     case "i18n": ProbeI18n(); break;
                     case "bench": ProbeBench(args); break;
@@ -164,18 +171,116 @@ namespace ServiceProbe
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"exception: {ex.GetType().Name}: {ex.Message}");
+                // ⚠ 2026-09-21：加 **`FAIL ` 前缀**（`TESTING.md` 第 85 条处置建议 ①）。
+                //   原样只打 `exception: …` ⇒ **不带 `FAIL` 前缀** ⇒ 凡按 `^FAIL` 过滤的读者**看不见它**；
+                //   而汇总行照常打印、`fail` 只 +1 ⇒ 实测出现过「`pass` 52→36（16 条整段没跑）而 `fail` 只 +1」
+                //   ⇒ 只看汇总行的人会以为"只坏了 1 条"。加前缀后它与 `Check` 的失败行**同形**，不会再被过滤掉。
+                Console.WriteLine($"FAIL exception: {ex.GetType().Name}: {ex.Message}");
                 Console.WriteLine(ex.StackTrace ?? "");
                 _fail++;
             }
-            Console.WriteLine($"PROBE RESULT: pass={_pass} fail={_fail}");
+            // ⚠ `skip=` **只在 >0 时**追加：既有门禁里有按 `PROBE RESULT: pass=N fail=0` 逐字匹配的断言，
+            //   无条件改这行的格式会让它们集体转红（无关的假红）。
+            Console.WriteLine(_skip > 0
+                ? $"PROBE RESULT: pass={_pass} fail={_fail} skip={_skip}"
+                : $"PROBE RESULT: pass={_pass} fail={_fail}");
             return _fail == 0 ? 0 : 1;
+        }
+
+        /// <summary>
+        /// 「本机条件下这条**判不了**」必须**计数并点名**（`SKIP`），既不许静默消失、也不许记成 PASS。
+        /// 本仓既有教训：静默 SKIP = 断言无声消失 ⇒ 假绿通道（见 `docs/TESTING.md §6` 与
+        /// `docs/HANDOVER_2026-09-22.md §2.2` 第 1 项的 5 脚本普查）。
+        /// </summary>
+        private static void Skip(string msg)
+        {
+            Console.WriteLine($"SKIP {msg}");
+            _skip++;
         }
 
         private static void Check(bool ok, string msg)
         {
             Console.WriteLine($"{(ok ? "PASS" : "FAIL")} {msg}");
             if (ok) _pass++; else _fail++;
+        }
+
+        // ───────────────────── RAW 输入元数据保留（锁） ─────────────────────
+
+        /// <summary>
+        /// 锁「RAW 输入的拍摄字段补回」与「队列显示名」两条**非显然**约束（2026-09-21 新增）。
+        ///
+        /// <para>⚠⚠ **刻意不依赖任何素材**：仓库里**没有任何受版本控制的 RAW/DNG 素材**
+        /// （`tests/output/**` 与 `tools/src/dng_sdk/**` 都被 `.gitignore` 排除）⇒
+        /// 若把锁建在「真跑一张 RAW」上，干净检出时它会 SKIP ⇒ **静默假绿**。
+        /// 故这里断言的是**参数形态**与**纯逻辑取值**，任何检出都能跑。
+        /// 端到端行为锁见 `verify-metadata-privacy.ps1` 的 ④⑤。</para>
+        ///
+        /// <para>被锁的四条约束都是「一旦被顺手优化掉就**静默**出错」的类型 ——
+        /// 产物看起来完全正常，只是字段又丢了、或隐私又漏了。</para>
+        /// </summary>
+        private static void ProbeMetadataRaw()
+        {
+            // ── A. 队列显示名：SourceInputPath 优先 ──
+            //    RAW 预处理会把 InputPath 改写成内部临时 TIFF（`xxx_raw.tiff`），
+            //    若不优先取源路径，队列 / 进度窗 / CLI 会显示**用户从未提供的文件名**。
+            var it = new FfmpegGui.Models.QueueItem
+            {
+                InputPath = @"C:\Temp\raw_abc123\Canon_EOS40D_raw.tiff",
+                SourceInputPath = @"D:\photos\Canon_EOS40D.CR2",
+            };
+            Check(it.DisplayName == "Canon_EOS40D.CR2",
+                $"A1 DisplayName 取源路径（实「{it.DisplayName}」）");
+            Check(!it.DisplayName.Contains("_raw.tiff"),
+                "A2 DisplayName 不得是内部临时文件名");
+            it.Status = "已完成";
+            Check(it.DisplayText.StartsWith("Canon_EOS40D.CR2", StringComparison.Ordinal),
+                $"A3 DisplayText 用显示名（实「{it.DisplayText}」）");
+
+            var it2 = new FfmpegGui.Models.QueueItem { InputPath = @"D:\photos\x.jpg" };
+            Check(it2.DisplayName == "x.jpg",
+                $"A4 无源路径时回退 InputPath（实「{it2.DisplayName}」）");
+
+            // ── B. 补回拍摄字段的参数形态 ──
+            var opt = new FfmpegGui.Models.FfmpegOptions();
+            var png = ExifToolService.BuildRawCaptureFieldsArgs(@"D:\photos\a.CR2", @"D:\out\a.png", opt);
+            var jpg = ExifToolService.BuildRawCaptureFieldsArgs(@"D:\photos\a.CR2", @"D:\out\a.jpg", opt);
+
+            Check(png.Contains("-DateTimeOriginal") && png.Contains("-CreateDate"),
+                "B1 白名单含拍摄时间主字段（DateTimeOriginal / CreateDate）");
+            Check(png.Contains("-LensModel") && png.Contains("-MeteringMode") && png.Contains("-ExposureProgram"),
+                "B2 白名单含镜头 / 测光 / 曝光程序");
+            Check(png.Contains("-EXIF:Flash") && !png.Contains(" -Flash"),
+                "B3 Flash 必须带 -EXIF: 限定（裸写会顺带创建 XMP 块，连 --XMP:all 都拦不住）");
+            Check(!png.Contains("-all:all"),
+                "B4 不得用 -all:all（源 RAW 的 ColorSpace/尺寸/Orientation 会与产物冲突）");
+            Check(!png.Contains("-Orientation") && !png.Contains("-ColorSpace") && !png.Contains("-PixelXDimension"),
+                "B5 不得回带 Orientation / ColorSpace / PixelXDimension（Orientation 会导致二次旋转）");
+            Check(png.Contains("-EXIF:all="),
+                "B6 PNG 目标必须先复位损坏的 eXIf 块（-EXIF:all=）");
+            Check(!jpg.Contains("-EXIF:all="),
+                "B7 负控：非 PNG 目标不得插 -EXIF:all=（会多一次无谓的整文件重写）");
+            Check(png.Contains("-TagsFromFile \"D:\\photos\\a.CR2\""),
+                "B8 取源必须是**源 RAW**（不是中间 TIFF）");
+
+            // ── C. 隐私开关必须在补漏里同样生效 ──
+            //    `CanAbsorbStrip` 为真时那次独立隐私清理会被**跳过** ⇒
+            //    补漏若不排除 GPS/XMP，就等于**把刚剥掉的隐私又装回去**。
+            var gpsOn = ExifToolService.BuildRawCaptureFieldsArgs(@"D:\a.CR2", @"D:\o.jpg",
+                new FfmpegGui.Models.FfmpegOptions { StripExifGps = true });
+            Check(!gpsOn.Contains("-GPS:all"),
+                "C1 StripExifGps 时不得带 -GPS:all（否则等于把剥掉的隐私装回去）");
+            var gpsOff = ExifToolService.BuildRawCaptureFieldsArgs(@"D:\a.CR2", @"D:\o.jpg",
+                new FfmpegGui.Models.FfmpegOptions { StripExifGps = false });
+            Check(gpsOff.Contains("-GPS:all"), "C2 负控：不剥 GPS 时必须带 -GPS:all");
+            var xmpOn = ExifToolService.BuildRawCaptureFieldsArgs(@"D:\a.CR2", @"D:\o.jpg",
+                new FfmpegGui.Models.FfmpegOptions { StripXmp = true });
+            Check(!xmpOn.Contains("-XMP:all"), "C3 StripXmp 时不得带 -XMP:all");
+            var timeOn = ExifToolService.BuildRawCaptureFieldsArgs(@"D:\a.CR2", @"D:\o.jpg",
+                new FfmpegGui.Models.FfmpegOptions { StripExifTime = true });
+            Check(!timeOn.Contains("-DateTimeOriginal"), "C4 StripExifTime 时不得带 -DateTimeOriginal");
+            var camOn = ExifToolService.BuildRawCaptureFieldsArgs(@"D:\a.CR2", @"D:\o.jpg",
+                new FfmpegGui.Models.FfmpegOptions { StripExifCamera = true });
+            Check(!camOn.Contains("-LensModel"), "C5 StripExifCamera 时不得带 -LensModel");
         }
 
         // ────────────────────────────── i18n ──────────────────────────────
@@ -486,9 +591,16 @@ namespace ServiceProbe
             Anch("ProPhoto ToLinear(0.5)", TC.ProPhoto.ToLinear(0.5), Math.Pow(0.5, 1.8), 1e-9);
             Anch("ProPhoto 趾段 ToLinear(0.03)", TC.ProPhoto.ToLinear(0.03), 0.03 / 16.0, 1e-12);
             Anch("ProPhoto 趾段连续(拐点 d)", TC.ProPhoto.ToLinear(TC.ProPhoto.D), TC.ProPhoto.D / 16.0, 1e-12);
-            Anch("PQ EOTF(0.5) nits", TC.Pq.ToLinear(0.5) * 10000.0, 92.7, 1.0);
-            Anch("PQ EOTF(0.5799) nits", TC.Pq.ToLinear(0.5799) * 10000.0, 203.0, 1.0);
-            Anch("PQ EOTF(0.7516) nits", TC.Pq.ToLinear(0.7516) * 10000.0, 1000.0, 3.0);
+            // ⚠️ PQ 绝对锚点：码值必须是**精确解**，容差必须**紧到能抓住常数错误**。
+            //    旧锚点用 0.5799 / 0.7516（4 位小数）+ 容差 1 / 3 —— 这两个数都是**不精确的码值**：
+            //    203 nits 处 4 位小数的量化误差就有 ±1.4 nits，而 m1 常数写错（2610→2615，差 0.19%）
+            //    在 203 nits 处只造成 ~1.1 nits 偏差，**正好藏在容差里** —— 这是该错误长期存活的原因之一。
+            //    现码值经 **zimg 实测核对**（ffmpeg -vf "zscale=tin=smpte2084:t=linear:npl=10000"，
+            //    16-bit 量化地板 ±0.04 nits）：0.580694 → 203.25 nits、0.751812 → 999.77 nits、
+            //    0.5 → 92.32 nits ⇒ 203 nits 的 PQ 码值是 **0.5807** 而不是 0.5799（后者仅 201.5 nits）。
+            Anch("PQ EOTF(0.5) nits", TC.Pq.ToLinear(0.5) * 10000.0, 92.28, 0.5);
+            Anch("PQ EOTF(0.580694) nits(=203)", TC.Pq.ToLinear(0.580694) * 10000.0, 203.0, 0.5);
+            Anch("PQ EOTF(0.751812) nits(=1000)", TC.Pq.ToLinear(0.751812) * 10000.0, 1000.0, 1.0);
             Anch("HLG EOTF(0.5)=拐点 1/12", TC.Hlg.ToLinear(0.5), 1.0 / 12.0, 1e-6);
             Anch("HLG EOTF(0.2)=V^2/3", TC.Hlg.ToLinear(0.2), 0.04 / 3.0, 1e-9);
             Anch("Linear ToLinear(0.37)", TC.Linear.ToLinear(0.37), 0.37, 0.0);
@@ -540,6 +652,37 @@ namespace ServiceProbe
             Check(TC.Srgb.CicpToken == "iec61966-2-1" && TC.ProPhoto.CicpToken == null,
                 "CICP 可命名性标记正确（ProPhoto 不可命名）");
             Check(TC.Pq.CicpToken == "smpte2084" && TC.Hlg.CicpToken == "arib-std-b67", "HDR 曲线 CICP 标记");
+
+            // ── #29：BT.709 的 **zimg 实现形态**（`--color-709-curve zimg` 的出口曲线）锚点 ──
+            // 这条曲线存在的唯一理由 = 复刻历史产物；它**不是** BT.709 的定义式，两者差到肉眼可见
+            // （见下方 16bit 最大差锚点）。所以它必须同时满足：
+            //   ① 数学上是纯 γ(1/2.4)（无 α、无线性趾）；② 不被 CICP token 查询命中（默认口径永远是定义式）；
+            //   ③ 与定义式的差**量级可断言**（不是"差不多"也不是"等价写法"）。
+            Anch("Bt709Zimg ToLinear(0.5)", TC.Bt709Zimg.ToLinear(0.5), Math.Pow(0.5, 2.4), 1e-12);
+            Anch("Bt709Zimg FromLinear(0.5)", TC.Bt709Zimg.FromLinear(0.5), Math.Pow(0.5, 1.0 / 2.4), 1e-12);
+            Check(TC.Bt709Zimg.CicpToken == null && !TC.Bt709Zimg.HasToeSegment
+                  && !TC.Bt709Zimg.HasItuRoundingKink && !TC.Bt709Zimg.Equivalent(TC.Bt709),
+                  $"Bt709Zimg 不可 CICP 命名且无趾段（实 token={TC.Bt709Zimg.CicpToken ?? "null"} 趾={TC.Bt709Zimg.HasToeSegment}）"
+                + "⇒ 它只描述像素，不冒充标准里的 bt709");
+            Check(TC.ForCicpTransfer("bt709")!.Value.Equivalent(TC.Bt709),
+                "CICP bt709 仍解析为定义式（zimg 形态不得变成 token 的默认解读，否则 std 口径被静默替换）");
+            {
+                double maxD = 0, sumD = 0;
+                const int samples = 65536;
+                for (int i = 0; i < samples; i++)
+                {
+                    double l = i / (samples - 1.0);
+                    double d = Math.Abs(TC.Bt709.FromLinear(l) - TC.Bt709Zimg.FromLinear(l));
+                    if (d > maxD) maxD = d;
+                    sumD += d;
+                }
+                // 实测锚点：定义式与纯 γ(1/2.4) 的编码差最大 6986/65535（linear≈0.017），
+                // 均值 3059/65535；zscale=t=bt709 的实测值 7231 与之差 245 ≈ 1 LSB@8bit 的量化地板。
+                Check(maxD * 65535 >= 6900 && maxD * 65535 <= 7100 && sumD / samples * 65535 >= 2900
+                      && sumD / samples * 65535 <= 3200,
+                    $"两条 BT.709 口径的差可看见：max={maxD * 65535:F0} LSB@16bit（={maxD * 255:F1} LSB@8bit）"
+                  + $" mean={sumD / samples * 65535:F0}（界 6900–7100 / 2900–3200）");
+            }
         }
 
         /// <summary>
@@ -677,12 +820,33 @@ namespace ServiceProbe
         {
             var src = FfmpegGui.Services.ColorMapping.ColorSpaceDescriptor.FromCicp(sp, st, sp) ?? throw new Exception($"src {sp}/{st}");
             var dst = FfmpegGui.Services.ColorMapping.ColorSpaceDescriptor.FromCicp(dp, dt, dp) ?? throw new Exception($"dst {dp}/{dt}");
+
+            // ⚠️ 亮度域换算必须与生产 `ColorTransformPlan.ToSpec()` **同口径**，否则本探针测的根本
+            //    不是真实引擎路径：PQ 的 1.0 = 10000nits、HLG = 1000nits、其余 = 203nits（SDR 参考白）。
+            //    旧实现两项都留默认 1 ⇒ PQ→sRGB 不做 49× 换算，与 zimg 参照差出 PSNR 7.3dB，
+            //    而那笔账长期被当成「zimg 参照口径分歧（PQ 归一约定不同）」豁免 —— 实为**探针自身的
+            //    构造缺陷**（它绕过 ToSpec 手搓 spec），不是引擎的口径分歧。
+            double Nits(FfmpegGui.Services.ColorMapping.TransferCurve c)
+                => c.Kind switch
+                {
+                    FfmpegGui.Services.ColorMapping.TransferCurve.CurveKind.Pq
+                        => FfmpegGui.Services.ColorMapping.TransferCurve.PqPeakNits,
+                    FfmpegGui.Services.ColorMapping.TransferCurve.CurveKind.Hlg
+                        => FfmpegGui.Services.ColorMapping.Bt2100Ootf.NominalPeakNits,
+                    _ => FfmpegGui.Services.ColorMapping.TransferCurve.SdrWhiteNits,
+                };
+            double sdr = FfmpegGui.Services.ColorMapping.TransferCurve.SdrWhiteNits;
+
+            // ⚠️ 白名单同步：因本缺陷而被判为「口径分歧」的格子，修复后应从 $knownNonDefects 移除，
+            //    否则豁免会把真正的回归也一起免掉（门禁就失去牙齿）。见 verify-color-engine-xcheck.ps1。
             return new FfmpegGui.Services.ColorMapping.TransformSpec
             {
                 SrcCurve = src.Curve,
                 DstCurve = dst.Curve,
                 Matrix = matrix ? src.MatrixTo(dst) : null,
                 ClampLinearBeforeEncode = clamp,
+                LinearScale = Nits(src.Curve) / sdr,
+                EncodeScale = sdr / Nits(dst.Curve),
             };
         }
 
@@ -1075,6 +1239,160 @@ namespace ServiceProbe
                 Check(pOk.Backend == CB.FfmpegFilter, $"C7 对照：目标 iec61966-2-1 仍可走 H2（实为 {pOk.Backend}）");
             }
 
+            // C7b —— 缺陷 #29 的**行为锁**（此前只有 C7 那条结构锁，而像素从头到尾没被这个开关碰过）：
+            //   `--color-709-curve` 在**结构上必须走 H1** 的格子里，std 与 zimg 曾拿到**逐字节相同**的产物
+            //   （2026-09-26 实测四格 × {std,zimg} 全数同 md5）⇒ 用户显式选了口径却是静默无效参数。
+            //   本段量的是**真像素**（Plan → ToSpec → ColorKernels，与 QueueProcessor.cs:1090 同一条链），
+            //   差量级按实测的曲线分歧给**上下界**，不写"不同即可"那种没牙的断言：
+            //     · zimg 的 bt709 = 纯 γ(1/2.4)，与 ITU-R BT.709-6 定义式的编码差在 linear≈0.0169 处
+            //       取最大 = **6986 LSB@16bit ≈ 27.2 LSB@8bit**（本轮按两条定义式自算；
+            //       zscale 实测值 7231 LSB@16bit 与之差 245 ≈ 1 LSB@8bit 的量化地板，同源同向）。
+            //   ⚠ 前提条件也断言：两格都**必须**落在 H1（BT.2020 ⊄ BT.709 ⇒ 开 GMO ⇒ needsGmo ⇒ 后端与口径
+            //     无关），否则比较的对象变成"我们的曲线 vs zscale 的曲线"，本断言就测不到我们要测的东西。
+            {
+                var lin2020 = CS.FromCicp("bt2020", "linear", "BT.2020(线性源)");
+                var bt709Sdr = CS.FromCicp("bt709", "bt709", "BT.709 SDR");
+                var srgbDst2 = CS.FromCicp("bt709", "iec61966-2-1", "sRGB 目标");
+                if (lin2020 != null && bt709Sdr != null && srgbDst2 != null)
+                {
+                    FfmpegGui.Services.ColorMapping.PlanPolicy Pol709(bool zimg, bool gmo = true)
+                        => new()
+                        {
+                            Format = CE.CapsFor("png"),
+                            AllowApproximateCurve = false, ForceMapping = true, TargetExplicit = true,
+                            AllowGamutCompression = gmo, TargetBitDepth = 8,
+                            Transfer709 = zimg ? F709.Zimg : F709.Std,
+                        };
+                    var c7bStd = CE.Plan(lin2020, bt709Sdr, Pol709(false));
+                    var c7bZim = CE.Plan(lin2020, bt709Sdr, Pol709(true));
+                    Check(c7bStd.Backend == CB.InProcess && c7bZim.Backend == CB.InProcess,
+                        $"C7b 前提：两格都必须落在 H1（实 std={c7bStd.Backend} / zimg={c7bZim.Backend}）");
+
+                    var spStd = c7bStd.ToSpec(); var spZim = c7bZim.ToSpec();
+                    Check(spStd.DstCurve.Equivalent(TC.Bt709) && !spZim.DstCurve.Equivalent(TC.Bt709)
+                          && Math.Abs(spZim.DstCurve.G - 2.4) < 1e-12 && spZim.DstCurve.C == 0.0 && spZim.DstCurve.D == 0.0,
+                          $"C7b 结构：zimg 的出口曲线必须是纯 γ(1/2.4)（实={spZim.DstCurve.Name}），std 仍是定义式（实={spStd.DstCurve.Name}）");
+                    // 口径只改**像素**，不改**标注**：这是"对齐历史产物"的字面语义（zscale 的产物也一直
+                    // 是 t=bt709 标签 + γ2.4 像素）。⚠ 反过来也必须成立：这条曲线自己**不**声称可 CICP 命名。
+                    Check(spZim.DstCurve.CicpToken == null && spZim.DstCurve.TableLength == 0
+                          && c7bZim.OutTransfer == "bt709" && c7bStd.OutTransfer == "bt709"
+                          && c7bZim.IccTrc == "bt709" && c7bStd.IccTrc == "bt709"
+                          && c7bZim.AttachIcc == c7bStd.AttachIcc,
+                          $"C7b 标注不随口径走：zimg 曲线 CicpToken=null（不发明命名），CICP 与 ICC 仍 bt709"
+                        + $"（实 t={c7bZim.OutTransfer}/{c7bStd.OutTransfer} icc={c7bZim.IccTrc ?? "-"}/{c7bStd.IccTrc ?? "-"}）");
+
+                    // 65536 级**线性**灰阶：源曲线=linear ⇒ 输入码值就是线性值，两条出口曲线的取差点
+                    // （linear≈0.0169）必被采到；R=G=B ⇒ GMO 对中性色严格 no-op（见 GamutMapScalar 的性质），
+                    // 于是 16bit 差值里只剩"曲线口径"这一项，没有别的算子混进来。
+                    const int n709 = 65536;
+                    var in709 = new byte[n709 * 6];
+                    for (int i = 0; i < n709; i++)
+                    {
+                        ushort v = (ushort)i;
+                        for (int c = 0; c < 3; c++) { in709[i * 6 + c * 2] = (byte)(v & 0xFF); in709[i * 6 + c * 2 + 1] = (byte)(v >> 8); }
+                    }
+                    var oStd = new byte[n709 * 6]; var oZim = new byte[n709 * 6];
+                    var oStd2 = new byte[n709 * 6]; var oZim2 = new byte[n709 * 6];
+                    CK.TransformRgb48le(in709, oStd, spStd, n709);
+                    CK.TransformRgb48le(in709, oZim, spZim, n709);
+                    CK.TransformRgb48le(in709, oStd2, spStd, n709);
+                    CK.TransformRgb48le(in709, oZim2, spZim, n709);
+                    Check(oStd.AsSpan().SequenceEqual(oStd2) && oZim.AsSpan().SequenceEqual(oZim2),
+                        "C7b 反向（确定性）：同口径两跑必须逐字节相同（std/zimg 各两跑；防 RNG/抖动混进口径差里）");
+                    bool same16 = oStd.AsSpan().SequenceEqual(oZim);
+                    int max16 = 0; long sum16 = 0;
+                    for (int i = 0; i + 1 < oStd.Length; i += 2)
+                    {
+                        int d = Math.Abs((oStd[i] | (oStd[i + 1] << 8)) - (oZim[i] | (oZim[i + 1] << 8)));
+                        if (d > max16) max16 = d;
+                        sum16 += d;
+                    }
+                    Check(!same16 && max16 >= 6900 && max16 <= 7100,
+                        $"C7b 行为（16bit）：std vs zimg 必须**产物不同**且最大差落在 6986±100 LSB@16bit"
+                      + $"（实 相同={same16} max={max16} mean={(double)sum16 / (n709 * 3):F1}）—— 静默无效或把曲线换错都拦");
+
+                    // 同一条差换算到 8bit 出口（本工具最常见的产物位深）。⚠ 这里显式关掉有序抖动：
+                    // 本断言量的是**口径差本身**，±1 LSB 的抖动不该进上下界（抖动的一致性由 C10/C11 守）。
+                    var sp8Std = c7bStd.ToSpec(); sp8Std.Dither = FfmpegGui.Services.ColorMapping.DitherMode.None;
+                    var sp8Zim = c7bZim.ToSpec(); sp8Zim.Dither = FfmpegGui.Services.ColorMapping.DitherMode.None;
+                    var b8Std = new byte[n709 * 3]; var b8Zim = new byte[n709 * 3];
+                    CK.TransformRgb48leToRgb8(in709, b8Std, sp8Std, n709, null, null, n709, 0);
+                    CK.TransformRgb48leToRgb8(in709, b8Zim, sp8Zim, n709, null, null, n709, 0);
+                    int max8 = 0; long sum8 = 0;
+                    for (int i = 0; i < b8Std.Length; i++)
+                    {
+                        int d = Math.Abs(b8Std[i] - b8Zim[i]);
+                        if (d > max8) max8 = d;
+                        sum8 += d;
+                    }
+                    double mean8 = (double)sum8 / b8Std.Length;
+                    Check(max8 >= 25 && max8 <= 30 && mean8 >= 9.0 && mean8 <= 15.0,
+                        $"C7b 行为（8bit）：最大差应落在 27±3 LSB、均值 11.8±3 LSB（实 max={max8} mean={mean8:F2}）"
+                      + "⇒ 量级对得上实测分歧，不是末位抖动");
+
+                    // ── "不许静默"那一半：兑现要点名兑现，兑现不了要点名原因（可用性诚实）──
+                    Check(c7bZim.Reason.Contains("已兑现(H1)"),
+                        $"C7b 点名：zimg 在 H1 格必须声明已兑现（实 Reason={c7bZim.Reason}）");
+                    Check(!c7bStd.Reason.Contains("口径=zimg"),
+                        "C7b 反向：std（=默认值）不逐格播报，避免把日志变成噪声");
+                    // H2 格（放行 zscale 的那条）也必须点名，且说清"由 zscale 兑现"而不是"由我们换曲线"
+                    var p3lin2 = CS.FromCicp("smpte432", "iec61966-2-1", "Display P3(标签)");
+                    if (p3lin2 != null)
+                    {
+                        var c7bH2 = CE.Plan(p3lin2, bt709Sdr, Pol709(true, gmo: false));
+                        Check(c7bH2.Backend == CB.FfmpegFilter && c7bH2.Reason.Contains("已兑现(H2)"),
+                            $"C7b 点名：H2 格要说清口径由 zscale 兑现（实 backend={c7bH2.Backend} Reason={c7bH2.Reason}）");
+                    }
+                    var c7bNa = CE.Plan(lin2020, srgbDst2, Pol709(true));
+                    Check(c7bNa.Action == CA.Map && c7bNa.Reason.Contains("与 BT.709 编码口径无关"),
+                        $"C7b 点名不适用：目标是 sRGB 曲线 ⇒ 必须说明为何本开关不适用（act={c7bNa.Action} 实 Reason={c7bNa.Reason}）");
+                    var polGm709 = Pol709(true); polGm709.GainMapRequested = true;
+                    var c7bGm = CE.Plan(lin2020, bt709Sdr, polGm709);
+                    Check(c7bGm.Reason.Contains("GainMap 出口"),
+                        $"C7b 点名不适用：GainMap 出口不消费计划层曲线 ⇒ 必须点名（实 Reason={c7bGm.Reason}）");
+                    var c7bNone = CE.Plan(lin2020, null, Pol709(true));
+                    // ⚠ 只查"不改像素"没有牙：那四个字在**基础理由**里就有（"无目标色彩空间 → 不改像素，沿用源描述"），
+                    //   把 Transfer709Note 的不适用点名整段删掉它也照样绿（实测：见下方注释的短语才是点名独有）。
+                    //   故额外锁一条**只可能来自点名文本**的短语 —— 缺陷 #29 的"不许静默"就是这一条在守。
+                    Check(c7bNone.Action == CA.None && c7bNone.Reason.Contains("不改像素")
+                          && c7bNone.Reason.Contains("没有出口编码可换曲线"),
+                        $"C7b 点名不适用：无目标（不改像素）⇒ 必须点名（act={c7bNone.Action} 实 Reason={c7bNone.Reason}）");
+                    // 未验证的 zimg 形态不得被"顺手发明"成曲线：bt470bg/smpte240m 只放行 H2，不换出口曲线
+                    var bt470bgDst = CS.FromCicp("bt709", "bt470bg", "BT.709 原色 + γ2.8 传递");
+                    var smpte240Dst = CS.FromCicp("bt709", "smpte240m", "BT.709 原色 + SMPTE 240M 传递");
+                    var p3ForToken = CS.FromCicp("smpte432", "linear", "Display P3(线性源)");
+                    foreach (var dUnverified in new[] { bt470bgDst, smpte240Dst })
+                    {
+                        if (dUnverified == null || p3ForToken == null) { Check(false, "C7b 前提：bt470bg/smpte240m 或 P3(线性) 描述符不可用"); continue; }
+                        var c7bUv = CE.Plan(p3ForToken, dUnverified, Pol709(true, gmo: false));
+                        Check(c7bUv.DstCurve != null && !c7bUv.DstCurve.Value.Equivalent(TC.Bt709Zimg)
+                              && c7bUv.ToSpec().DstCurve.Equivalent(dUnverified.Curve)
+                              && c7bUv.Reason.Contains("未实测"),
+                            $"C7b 不发明曲线：{dUnverified.TransferToken} 的 zimg 形态未验证 ⇒ 出口曲线仍是本仓那条"
+                          + $"（实 dst={c7bUv.ToSpec().DstCurve.Name}）{c7bUv.Reason}");
+                    }
+                    // ── 上面那条量的是"计划有没有换曲线"（行为）；这条量"可用表本身长什么样"（字面）──
+                    // ⚠ 正向对照（bt709 必须给出曲线）与两条 null 一起写：只写 null 那两条的话，
+                    //   `ZimgExitCurve` 退化成"永远返回 null"（开关整个失效）也会让它俩假绿。
+                    // ServiceProbe 不在 FfmpegGui 的 InternalsVisibleTo 名单里（改 csproj 会炸还原），
+                    // 故与取私有字段的既有做法一致：NonPublic|Static 反射，取不到方法就判红。
+                    var zecMi = typeof(CE).GetMethod("ZimgExitCurve",
+                        System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+                    if (zecMi == null)
+                        Check(false, "C7b 可用表字面锁：反射取不到 ColorMappingEngine.ZimgExitCurve（改名/改可见性 ⇒ 锁静默失效）");
+                    else
+                    {
+                        Check(zecMi.Invoke(null, new object?[] { "bt709" }) is TC zec709 && zec709.Equivalent(TC.Bt709Zimg),
+                            "C7b 可用表字面锁：ZimgExitCurve(\"bt709\") 必须给出 zimg 形态（正向对照，拦\"永远 null\"式退化）");
+                        Check(zecMi.Invoke(null, new object?[] { "bt470bg" }) == null,
+                            "C7b 可用表字面锁：ZimgExitCurve(\"bt470bg\") 必须为 null（未实测 ⇒ 不换曲线，也不为凑绿发明曲线）");
+                        Check(zecMi.Invoke(null, new object?[] { "smpte240m" }) == null,
+                            "C7b 可用表字面锁：ZimgExitCurve(\"smpte240m\") 必须为 null（未实测 ⇒ 不换曲线，也不为凑绿发明曲线）");
+                    }
+                }
+                else Check(false, "C7b 前提描述符不可用（bt2020/linear、bt709/bt709、sRGB 之一为 null）");
+            }
+
             // C8 单入口检测器：必须抓到真入口，且**不得误杀**标注工具（iccgen/format/纯缩放/CLI 标注选项）
             var pH1 = new FfmpegGui.Services.ColorMapping.ColorTransformPlan { Action = CA.Map, Backend = CB.InProcess };
             var pCarry = new FfmpegGui.Services.ColorMapping.ColorTransformPlan { Action = CA.CarryIcc, Backend = CB.None };
@@ -1210,6 +1528,143 @@ namespace ServiceProbe
                     if (dev > maxDev) maxDev = dev;
                 }
                 Check(maxDev <= 1, $"C11 拑动幅度受控：与无拑动降位最大偏差 {maxDev} LSB（应 ≤1）");
+            }
+
+            // C12 **精确可表示的码值必须原样出来**（有序抖动的居中判据；2026-09-26 补）
+            //   动机：C10/C11 只测「tile 一致」与「单调」，两者对**中心偏移**都不敏感 ——
+            //   旧写法 t = Bayer4[p] − 0.5f/4f ⇒ t ∈ [−0.125, +0.8125]，16 个相位里 **6 个** t > 0.5，
+            //   于是"本来 8bit 能 1:1 精确表示"的码值被系统性抬 +1（8bit 源经 rgb48le 后码值恒为 257 的整数倍）。
+            //   这就是维护者点名的**无意义精度损失**：没有任何视觉收益，只是把可精确表达的值推高一档。
+            //   ⇒ 判据必须按相位穷举（只跑一种相位会随机落在"恰好没事"的那 10/16 上）。
+            {
+                int w12 = 16, h12 = 16;                       // 16×16 ⇒ 4×4 相位各出现 16 次
+                var specN12 = Spec("bt709", "iec61966-2-1", "bt709", "iec61966-2-1");   // 同原色 ⇒ 无矩阵
+                specN12.Dither = FfmpegGui.Services.ColorMapping.DitherMode.Ordered4x4;
+                var tbl12 = CK.BuildTables(specN12.SrcCurve);
+                var src12 = new byte[w12 * h12 * 6];
+                var want12 = new byte[w12 * h12 * 3];
+                for (int i = 0; i < w12 * h12; i++)
+                {
+                    // 扫过整条 8bit 码轴（含 0/255 两端），16bit 值 = 257×码值 ⇒ 8bit 能 1:1 精确表示
+                    int code = (int)Math.Round(i / (double)(w12 * h12 - 1) * 255.0);
+                    int v16 = code * 257;
+                    for (int c = 0; c < 3; c++)
+                    {
+                        src12[i * 6 + c * 2] = (byte)(v16 & 0xFF); src12[i * 6 + c * 2 + 1] = (byte)(v16 >> 8);
+                        want12[i * 3 + c] = (byte)code;
+                    }
+                }
+                var got12 = new byte[w12 * h12 * 3];
+                CK.TransformRgb48leToRgb8(src12, got12, specN12, w12 * h12, tbl12, tbl12, w12, 0);
+                int lifted = 0, dropped = 0, worstPhase = 0;
+                var phaseBad = new int[16];
+                for (int i = 0; i < w12 * h12; i++)
+                {
+                    int ph = (i % w12 & 3) + ((i / w12 & 3) << 2);
+                    for (int c = 0; c < 3; c++)
+                    {
+                        int d = got12[i * 3 + c] - want12[i * 3 + c];
+                        if (d > 0) lifted++; else if (d < 0) dropped++;
+                        if (d != 0) phaseBad[ph]++;
+                    }
+                }
+                for (int p = 1; p < 16; p++) if (phaseBad[p] > phaseBad[worstPhase]) worstPhase = p;
+                Check(lifted == 0 && dropped == 0,
+                    $"C12 精确可表示的码值经拑动降位必须逐字节 no-op（抬升 {lifted} / 下降 {dropped}，最差相位 {worstPhase} 命中 {phaseBad[worstPhase]} 次）");
+                // 这条判据自己也要有对照：同一内核关掉抖动时必须仍逐字节相等（否则上面那条可能只是"抖动根本没跑"）
+                specN12.Dither = FfmpegGui.Services.ColorMapping.DitherMode.None;
+                var gotOff = new byte[got12.Length];
+                CK.TransformRgb48leToRgb8(src12, gotOff, specN12, w12 * h12, tbl12, tbl12, w12, 0);
+                Check(gotOff.AsSpan().SequenceEqual(want12), "C12 对照：关掉抖动同样逐字节 no-op ⇒ 上面那条不是「抖动没生效」造出来的假绿");
+                // 反向哨兵：**半档**输入（257 的整数倍 +128，8bit 不可精确表示）在 16 个相位上必须展开成
+                //   ≥2 个不同输出。没有这条，"C12 全等"也可能只是这条路把抖动整体吞掉了。
+                var srcOdd = new byte[src12.Length]; var gotOdd = new byte[got12.Length];
+                for (int i = 0; i < w12 * h12; i++)
+                {
+                    int vOdd = ((i % 254) + 1) * 257 + 128;      // ≤ 254×257+128 = 65346，不越 16bit 界
+                    for (int c = 0; c < 3; c++)
+                    { srcOdd[i * 6 + c * 2] = (byte)(vOdd & 0xFF); srcOdd[i * 6 + c * 2 + 1] = (byte)(vOdd >> 8); }
+                }
+                var specD2 = Spec("bt709", "iec61966-2-1", "bt709", "iec61966-2-1");
+                specD2.Dither = FfmpegGui.Services.ColorMapping.DitherMode.Ordered4x4;
+                CK.TransformRgb48leToRgb8(srcOdd, gotOdd, specD2, w12 * h12, tbl12, tbl12, w12, 0);
+                int distinct = new System.Collections.Generic.HashSet<byte>(gotOdd).Count;
+                Check(distinct >= 2, $"C12 哨兵：半档输入经抖动必须展开成 ≥2 个不同输出（实得 {distinct} 种）⇒ 抖动确实在这条路上生效");
+            }
+
+            // C13 RGBA 出口的抖动必须加在**码域**（`ColorKernels.cs:351-362` 现在加在线性域）
+            //   依据：本出口的输入是 8-bit ⇒ 每一个源码值在 8-bit 出口上都**精确可表示**，
+            //   所以"抖动的正确行为"在这里就是**整体 no-op**；任何偏离都是纯损伤。
+            //   而线性域加法会被 sRGB OETF 趾段斜率（12.92）放大：暗部 ±0.469/255 的线性位移
+            //   折算成码值可达 ~10 档 ⇒ 比不抖更差（取证见 docs/COLOR_MATRIX_AUDIT_2026-09-24.md §4.3）。
+            //   ⚠ 本出口的**产品调用数为 0**（同 §4.3："只被门禁养着"）⇒ 这条锁的是"两副面孔"不再出现，
+            //     以及 P3 把自研出口定样时不许把它复制成活路。
+            {
+                int w13 = 16, h13 = 16;                       // 16×16 ⇒ 16 个 Bayer 相位全覆盖
+                var spec13 = Spec("bt709", "iec61966-2-1", "bt709", "iec61966-2-1");   // 同原色 ⇒ 无矩阵
+                var eotf813 = TC.Srgb.BuildEotfTable8();
+                var src13 = new byte[w13 * h13 * 4];
+                for (int i = 0; i < w13 * h13; i++)
+                {
+                    byte c13 = (byte)(i % 256);               // 扫遍整条 8bit 码轴（含 0 与 255 端点）
+                    src13[i * 4 + 0] = c13; src13[i * 4 + 1] = c13; src13[i * 4 + 2] = c13; src13[i * 4 + 3] = 200;
+                }
+                var off13 = new byte[src13.Length];
+                CK.TransformRgba8(src13, off13, spec13, eotf813, w13, h13);            // Dither 默认 None
+                int offBad = 0, firstOff = -1;
+                for (int i = 0; i < w13 * h13; i++)
+                    for (int c = 0; c < 3; c++)
+                        if (off13[i * 4 + c] != src13[i * 4 + c]) { offBad++; if (firstOff < 0) firstOff = src13[i * 4 + c]; }
+                Check(offBad == 0,
+                    $"C13 对照：不抖时 identity 直通必须逐字节还原（破坏 {offBad} 处，首个源码值 {firstOff}）⇒ 否则下面两条是编码表的锅，不是抖动的锅");
+
+                var specD13 = Spec("bt709", "iec61966-2-1", "bt709", "iec61966-2-1");
+                specD13.Dither = FfmpegGui.Services.ColorMapping.DitherMode.Ordered4x4;
+                var on13 = new byte[src13.Length];
+                CK.TransformRgba8(src13, on13, specD13, eotf813, w13, h13);
+                int changed = 0, maxDev = 0, darkestHit = 255;
+                for (int i = 0; i < w13 * h13; i++)
+                    for (int c = 0; c < 3; c++)
+                    {
+                        int d = Math.Abs(on13[i * 4 + c] - src13[i * 4 + c]);
+                        if (d != 0) { changed++; if (src13[i * 4 + c] < darkestHit) darkestHit = src13[i * 4 + c]; }
+                        if (d > maxDev) maxDev = d;
+                    }
+                Check(changed == 0,
+                    $"C13 8bit→8bit 精确可表示 ⇒ 开抖动后必须逐字节还原（被改变 {changed} 处，最低的受损源码值 {darkestHit}）");
+                Check(maxDev <= 1,
+                    $"C13 抖动幅度上限：与源码值最大偏离 {maxDev} 必须 ≤1 档（码域抖动的定义；线性域加会被趾段斜率放大到 ~10）");
+                Console.WriteLine($"  C13 读数：改动 {changed}/768 处、最大偏离 {maxDev} 档、最低受损码值 {darkestHit}");
+
+                // 反向哨兵：换成**跨色域矩阵 + 非中性像素**（会产生真正的分数码值）⇒ 抖动必须仍然起作用，
+                //   但偏离仍受"码域加 ±0.469 档"的定义约束（`Round(x+t)` vs `Round(x)` 最多差 1）。
+                //   ⚠ 输入必须**带彩色**：三条通道相等时，行和为 1 的原色矩阵保中性 ⇒ 输出仍落在整数码上，
+                //     抖动"无事可做"是正确行为而不是失效（实测用灰阶跑这条 ⇒ 改动 0/768，误判成"抖动被关掉"）。
+                //   没有这条哨兵，"把抖动整段删掉"也能让上面三条全绿 ⇒ 那才是真的降级。
+                var srcC = new byte[src13.Length];
+                for (int i = 0; i < w13 * h13; i++)
+                {
+                    srcC[i * 4 + 0] = (byte)(i % 256);
+                    srcC[i * 4 + 1] = (byte)((i * 7 + 3) % 256);
+                    srcC[i * 4 + 2] = (byte)((i * 13 + 5) % 256);
+                    srcC[i * 4 + 3] = 255;
+                }
+                var specOn13 = Spec("bt709", "iec61966-2-1", "smpte432", "iec61966-2-1");
+                var specMx13 = Spec("bt709", "iec61966-2-1", "smpte432", "iec61966-2-1");
+                specMx13.Dither = FfmpegGui.Services.ColorMapping.DitherMode.Ordered4x4;
+                var mOff = new byte[srcC.Length]; var mOn = new byte[srcC.Length];
+                CK.TransformRgba8(srcC, mOff, specOn13, eotf813, w13, h13);
+                CK.TransformRgba8(srcC, mOn, specMx13, eotf813, w13, h13);
+                int diffM = 0, devM = 0;
+                for (int i = 0; i + 4 <= srcC.Length; i += 4)
+                    for (int c = 0; c < 3; c++)
+                    {
+                        int d = Math.Abs(mOn[i + c] - mOff[i + c]);
+                        if (d != 0) diffM++;
+                        if (d > devM) devM = d;
+                    }
+                Check(diffM > 0 && devM <= 1,
+                    $"C13 哨兵：有矩阵且非中性输入时抖动仍要生效且只在码域展开（实际改动 {diffM}/768 处、最大偏离 {devM} 档；要求 >0 且 ≤1）");
             }
 
             Console.WriteLine($"  contract: 共 {cells} 格，覆盖豁免 {exempted}，拒绝 {rejects}");
@@ -1872,8 +2327,16 @@ namespace ServiceProbe
 
             double scene = hlg.Curve.ToLinear(Code);
             double nits = FfmpegGui.Services.ColorMapping.Bt2100Ootf.ApplyAchromatic(scene, Peak);
-            double expectNorm = nits / Peak;
-            Console.WriteLine($"    HLG {Code} → 场景线性 {scene:F5} → OOTF 显示 {nits:F1} nits → 归一 {expectNorm:F5}");
+            double expectNorm = nits / Peak;   // 归一到**源峰值**域（1.0 = 1000nits），仅作对照打印
+            // ⚠️ 生产口径（与 `ColorTransformPlan.ToSpec()` 同源）：内核中间域是「1.0 = SDR 参考白」，
+            //    源 HLG 的 1.0 = 1000nits 必须经 LinearScale = 1000/203 换过去 ⇒ 结果落在 1.0=203nits 域。
+            //    旧探针**不设** LinearScale ⇒ 实际测的是「把 1000nits 归一直接当成 sRGB 白」的
+            //    **非生产路径**（与 xcheck 同一类缺陷，见 2026-09-28 修复）。
+            //    本用例 Code=0.75 ⇒ nits≈203 ⇒ expectSdr≈1.002（几乎正好是 SDR 白，便于观察）。
+            double sdr = FfmpegGui.Services.ColorMapping.TransferCurve.SdrWhiteNits;
+            double expectSdr = nits / sdr;
+            Console.WriteLine($"    HLG {Code} → 场景线性 {scene:F5} → OOTF 显示 {nits:F1} nits "
+                + $"→ 归一(源峰值) {expectNorm:F5} → SDR 白域 {expectSdr:F5}");
 
             // 单像素 rgb48**le**（内核按 little-endian 解释字节对）
             ushort v = (ushort)Math.Round(Code * 65535.0);
@@ -1888,27 +2351,31 @@ namespace ServiceProbe
                 ClampLinearBeforeEncode = false,   // 不钳位，才能看到真实线性值
                 SrcIsHlgScene = true,
                 SrcHlgSystemGamma = FfmpegGui.Services.ColorMapping.Bt2100Ootf.SystemGamma(Peak),
+                LinearScale = Peak / sdr,   // 与生产 ToSpec 同口径：HLG 1.0=1000nits → 1.0=203nits
             };
 
-            // ① 峰值测量路径（tonemap 的 headroom 依据）——漏 OOTF 会让 headroom 算错
+            // ① 峰值测量路径（tonemap 的 headroom 依据）——漏 OOTF 会让 headroom 算错。
+            //    MeasurePeak 的口径是「已乘 LinearScale」⇒ 结果落在 1.0 = SDR 参考白域。
             double peak = FfmpegGui.Services.ColorMapping.ColorKernels.MeasurePeakLinearRgb48(buf, 1, spec, null);
-            Check(Math.Abs(peak - expectNorm) / expectNorm < 0.05,
-                $"① 峰值测量路径应用了 OOTF（期望 {expectNorm:F4}，实得 {peak:F4}）");
+            Check(Math.Abs(peak - expectSdr) / expectSdr < 0.05,
+                $"① 峰值测量路径应用了 OOTF + 亮度域换算（期望 {expectSdr:F4}，实得 {peak:F4}）");
 
-            // ② 主转换路径：HLG → sRGB，输出线性域应落在显示光而非场景光
+            // ② 主转换路径：HLG → sRGB，输出应落在**显示光**且经 SDR 白域换算。
+            //    ⚠ Code=0.75 时 nits≈203 ⇒ expectSdr≈1.002 略超 1，48-bit 出口会钳到 65535
+            //      （误差 ~0.2%，远小于 5% 容差）⇒ 不影响本判据的判别力。
             var dst = new byte[6];
             FfmpegGui.Services.ColorMapping.ColorKernels.TransformRgb48le(buf, dst, spec, 1, null, null);
             int o0 = dst[0] | (dst[1] << 8);
             double outLin = srgb.Curve.ToLinear(o0 / 65535.0);
-            Check(Math.Abs(outLin - expectNorm) / expectNorm < 0.05,
-                $"② 主转换路径应用了 OOTF（期望线性 {expectNorm:F4}，实得 {outLin:F4}）");
+            Check(Math.Abs(outLin - expectSdr) / expectSdr < 0.05,
+                $"② 主转换路径应用了 OOTF + 亮度域换算（期望线性 {expectSdr:F4}，实得 {outLin:F4}）");
 
             // ③ float RGBA 路径：与 ①② 同一判据，防止两条实现各自漂移（本项目反复出现过"三处不一致"）
             var f = new float[4] { (float)Code, (float)Code, (float)Code, 1f };
             FfmpegGui.Services.ColorMapping.ColorKernels.TransformRgba(f, spec);
             double fLin = srgb.Curve.ToLinear(f[0]);
-            Check(Math.Abs(fLin - expectNorm) / expectNorm < 0.05,
-                $"③ float RGBA 路径应用了 OOTF（期望线性 {expectNorm:F4}，实得 {fLin:F4}）");
+            Check(Math.Abs(fLin - expectSdr) / expectSdr < 0.05,
+                $"③ float RGBA 路径应用了 OOTF + 亮度域换算（期望线性 {expectSdr:F4}，实得 {fLin:F4}）");
         }
 
         /// <summary>
@@ -2214,7 +2681,10 @@ namespace ServiceProbe
             Check(proP != null && p3d != null, "构造 ProPhoto / Display P3 描述符（JXL ICC 通路用例前置）");
             if (proP != null && p3d != null)
             {
-                Check(!CE.CapsAcceptsCicp(jxlCaps, proP),
+                // 第三个参数 = **外部编码器出口**（#38）：这条断言讲的正是 cjxl 的 `-x color_space=`
+                // 枚举宽度（ProPhoto 无处可标 ⇒ 只能走 ICC），故必须显式给 true；
+                // 同一目标走 ffmpeg 的 libjxl 出口时该枚举**不适用**（`CapsAcceptsCicp(…, false)` 为真）。
+                Check(!CE.CapsAcceptsCicp(jxlCaps, proP, true),
                     "jxl 的 CICP 枚举（sRGB/DisplayP3/Rec2100PQ/Rec2100HLG）表达不了 ProPhoto ⇒ 该目标只能走 ICC");
                 var polJxl = new FfmpegGui.Services.ColorMapping.PlanPolicy
                 { Format = jxlCaps, AllowApproximateCurve = false, ForceMapping = true, TargetExplicit = true };
@@ -2554,6 +3024,257 @@ namespace ServiceProbe
         }
 
         /// <summary>
+        /// simdswitch —— 面板「SIMD 优化」(AppSettings.AutoUseSimdBinaries) 的**消费点**行为锁
+        /// （2026-09-27 新增；编排与结构锁见 tests/scripts/verify-simd-switch-fallback.ps1）。
+        ///
+        /// 立锁动机：这个开关此前**只有写入端**（复选框 → Save() → settings.json），全仓
+        /// **没有任何代码读它决定走不走 SIMD**，而 zh/en 两条 tooltip 都在承诺「关闭后逐像素回退」
+        /// ⇒ 声明与实现冲突。实现落在 SimdKernelRouting（判据只此一份），本 mode 锁它**真的被消费**。
+        ///
+        /// 判据形状（全程进程内、确定性合成像素，不需要素材 / 外部 exe / 特定硬件）：
+        ///   S0 本进程**从配置里**拿到的开关值 → 选路（配置→内核这一跳；编排脚本再用
+        ///      FFMPEGGUI_AUTO_SIMD=false/true 各跑一次，交叉判定这两行确实跟着配置走）；
+        ///   S1 选路本身：关 ⇒ 恒 scalar（与本机 ISA 无关）；开 ⇒ 探针自带的那份 ISA 优先级读数；
+        ///   S2/S3 同一份输入、开关开/关两次：8-bit SSE 逐位相等，且回退那条与**探针自带的第三份
+        ///         独立标量实现**逐字节相等（⇒ 「标量分支偷偷仍走 SIMD / 错位」都会红）；
+        ///   S4 有牙自证：把 b 整体错位 1 字节 ⇒ SSE 与 PSNR 必须**跳出** S2/S3 的容差，
+        ///      否则那两条只是在量「两边都是同一个错值」，容差本身没有牙；
+        ///   S5 下限断言：输入必须真的有差异（全等帧 ⇒ 任何内核都返回 0 ⇒ 空断言恒绿通道）；
+        ///   S6 SimdPixelOps 那一路消费者（tooltip 说的是「SIMD 加速的像素处理」，不止 PSNR）。
+        ///
+        /// ⚠ 正确性不依赖硬件：只有 S0a 那一臂需要「本机至少 SSE2」（win-x64 恒成立），
+        ///   判不了时走 Skip() 点名，不静默消失。AVX-512/AVX2 只影响**性能读数**，不影响任何判据。
+        /// </summary>
+        private static void ProbeSimdSwitch()
+        {
+            const double PsnrTolDb = 1e-9;   // 同一 SSE ⇒ 同一 double 算式 ⇒ 实差应为 0，这里只留一点余量
+
+            bool hasAvx512 = System.Runtime.Intrinsics.X86.Avx512BW.IsSupported;
+            bool hasAvx2 = System.Runtime.Intrinsics.X86.Avx2.IsSupported;
+            bool hasSse2 = System.Runtime.Intrinsics.X86.Sse2.IsSupported;
+            Console.WriteLine($"isa-avx512bw={hasAvx512} isa-avx2={hasAvx2} isa-sse2={hasSse2}");
+
+            // 探针自带的第二份「优先级」读数（测试端重述判据是**应该**的，否则实现抄错无人知）
+            string WantKernel(bool allowSimd)
+                => !allowSimd ? SimdKernelRouting.PathScalar
+                 : hasAvx512 ? SimdKernelRouting.PathAvx512
+                 : hasAvx2 ? SimdKernelRouting.PathAvx2
+                 : hasSse2 ? SimdKernelRouting.PathSse2
+                 : SimdKernelRouting.PathScalar;
+
+            // ── S0：配置 → 选路（**改写任何设置之前**的一次性读数）──
+            bool startupFlag = AAS.Current.AutoUseSimdBinaries;
+            string startupKernel = SimdKernelRouting.ResolvePixelKernelPath();
+            Console.WriteLine($"startup-flag={startupFlag}");
+            Console.WriteLine($"startup-kernel={startupKernel}");
+            Check(startupFlag || startupKernel == SimdKernelRouting.PathScalar,
+                $"S0 配置说「关」（startup-flag={startupFlag}）⇒ 启动选路必须是 scalar（实 {startupKernel}）");
+            if (startupFlag && hasSse2)
+                Check(startupKernel != SimdKernelRouting.PathScalar,
+                    $"S0 配置说「开」且本机有 SSE2 ⇒ 启动选路不得是 scalar（实 {startupKernel}）");
+            else Skip($"S0 的「开 ⇒ 非 scalar」这一臂本机判不了（startup-flag={startupFlag} isa-sse2={hasSse2}）");
+
+            // ── S1：开关两态的选路读数（进程内直接改写设置，与面板写的是同一个属性）──
+            // ⚠ 哨兵初值不是装饰：try 里的赋值在 C# 的确定性赋值规则下**不算已赋值**，
+            //   且万一 try 抛异常（Main 会 catch 成 FAIL），这些值会一路带到断言里 ⇒ 必须**判红**而不是编译不过/静默绿。
+            string kernelOn = "?", kernelOff = "?";
+            var prior = AAS.Current.AutoUseSimdBinaries;
+            try
+            {
+                AAS.Current.AutoUseSimdBinaries = true;
+                kernelOn = SimdKernelRouting.ResolvePixelKernelPath();
+                AAS.Current.AutoUseSimdBinaries = false;
+                kernelOff = SimdKernelRouting.ResolvePixelKernelPath();
+            }
+            finally { AAS.Current.AutoUseSimdBinaries = prior; }
+            Console.WriteLine($"kernel-on={kernelOn} kernel-off={kernelOff}");
+            Check(kernelOn == WantKernel(true),
+                $"S1a 开关开 ⇒ 选路 = 本机 ISA 优先级（期望 {WantKernel(true)}，实 {kernelOn}）");
+            Check(kernelOff == SimdKernelRouting.PathScalar,
+                $"S1b 开关关 ⇒ 选路 = scalar，与本机有无 AVX-512 无关（实 {kernelOff}；isa={hasAvx512}/{hasAvx2}/{hasSse2}）");
+            Check(kernelOff != kernelOn || !hasSse2,
+                $"S1c 开关必须**真的换掉内核**（开={kernelOn} 关={kernelOff}）⇒ 否则它仍是空开关");
+
+            // 确定性合成：LCG 字节对，差异散布在 ~1/7 + ~1/11 的样本上（±128 与大 ±1 两种幅度）
+            static (byte[] a, byte[] b) Synth(int len)
+            {
+                var a = new byte[len];
+                var b = new byte[len];
+                uint s = 12345u + (uint)len;
+                for (int i = 0; i < len; i++)
+                {
+                    s = unchecked(s * 1664525u + 1013904223u);
+                    a[i] = (byte)(s >> 24);
+                }
+                for (int i = 0; i < len; i++)
+                {
+                    b[i] = a[i];
+                    if (i % 7 == 3) b[i] = (byte)(a[i] ^ 0x80);
+                    else if (i % 11 == 5) b[i] = (byte)(a[i] == 0 ? 1 : a[i] - 1);
+                }
+                return (a, b);
+            }
+            // 第三份实现：探针自己写的逐像素标量循环（不经任何选路，作为绝对参照）
+            static long ScalarOracle(ReadOnlySpan<byte> x, ReadOnlySpan<byte> y)
+            {
+                long acc = 0;
+                for (int i = 0; i < x.Length; i++) { int d = x[i] - y[i]; acc += (long)d * d; }
+                return acc;
+            }
+            static int DiffCount(byte[] x, byte[] y)
+            {
+                int n = 0;
+                for (int i = 0; i < x.Length; i++) if (x[i] != y[i]) n++;
+                return n;
+            }
+
+            var cases8 = new (string name, int len, int channels)[]
+            {
+                ("8bit-64字节对齐", 64 * 64 * 3, 3),
+                ("8bit-带标量尾巴", 41 * 37 * 3, 3),     // 4551：不满一个 32/64 字节向量，逼尾循环
+                ("8bit-灰度单通道", 1001, 1),
+            };
+            foreach (var c in cases8)
+            {
+                var (a, b) = Synth(c.len);
+                int diffCount = DiffCount(a, b);
+                Check(diffCount >= 32 && c.len % c.channels == 0,
+                    $"S5 {c.name} 输入下限：差异样本 {diffCount} ≥ 32 且长度可被通道数整除"
+                  + $"⇒ 否则「全等帧 ⇒ 每条内核都返回 0」会把下面所有等式假绿");
+
+                long sseOn = long.MinValue, sseOff = long.MinValue;
+                double psnrOn = double.NaN, psnrOff = double.NaN;
+                prior = AAS.Current.AutoUseSimdBinaries;
+                try
+                {
+                    AAS.Current.AutoUseSimdBinaries = true;
+                    sseOn = PsnrCalculator.SquaredDiffSum(a, b);
+                    psnrOn = PsnrCalculator.CalculatePsnr(a, b, 8, c.channels, true);
+                    AAS.Current.AutoUseSimdBinaries = false;
+                    sseOff = PsnrCalculator.SquaredDiffSum(a, b);
+                    psnrOff = PsnrCalculator.CalculatePsnr(a, b, 8, c.channels, true);
+                }
+                finally { AAS.Current.AutoUseSimdBinaries = prior; }
+                long oracle = ScalarOracle(a, b);
+                Console.WriteLine($"  {c.name}: len={c.len} diffs={diffCount} sse(on|off|oracle)={sseOn}|{sseOff}|{oracle} "
+                    + $"psnr on={psnrOn:F9} off={psnrOff:F9}");
+                Check(sseOff == oracle,
+                    $"S3 {c.name} 回退分支**真是逐像素标量**：与探针自带的第三份实现相等（关={sseOff} 参照={oracle}）");
+                Check(sseOn == sseOff,
+                    $"S2 {c.name} 开关开/关两次 SSE 逐位相等（开={sseOn} 关={sseOff}）⇒ 默认路径数值一个字没动");
+                Check(double.IsFinite(psnrOn) && double.IsFinite(psnrOff)
+                      && Math.Abs(psnrOn - psnrOff) <= PsnrTolDb,
+                    $"S2b {c.name} 开关开/关两次的 PSNR 差 ≤ {PsnrTolDb:g}dB（实 {Math.Abs(psnrOn - psnrOff):E3}）");
+
+                // ── S4 有牙自证：把 b 整体错位一格 ⇒ 必须跳出上面那两条的容差 ──
+                var bMis = new byte[c.len];
+                for (int i = 0; i < c.len; i++) bMis[i] = b[(i + 1) % c.len];
+                long sseMis = ScalarOracle(a, bMis);
+                double psnrMis = PsnrCalculator.CalculatePsnr(a, bMis, 8, c.channels, true);
+                Check(sseMis != sseOff && Math.Abs(psnrMis - psnrOff) > PsnrTolDb,
+                    $"S4 {c.name} 负控：错位一格的标量结果（sse={sseMis} psnr={psnrMis:F6}）必须被 S2/S2b 抓到"
+                  + $"（实差 SSE={Math.Abs(sseMis - sseOff)} PSNR={Math.Abs(psnrMis - psnrOff):E3}）"
+                  + $"⇒ 否则上面那两条只是「两边同一个错值」，容差没有牙");
+            }
+
+            // ── S3b 多帧（真实管线 QualityAnalysisService 用的就是这个入口）──
+            {
+                var (fa, fb) = Synth(64 * 32 * 3);
+                int frame = fa.Length;
+                var aa = new byte[frame * 2];
+                var bb = new byte[frame * 2];
+                Array.Copy(fa, 0, aa, 0, frame);          // 帧 1 与参考全等 ⇒ 该帧 PSNR = inf
+                Array.Copy(fa, 0, bb, 0, frame);
+                Array.Copy(fa, 0, aa, frame, frame);      // 帧 2 才带差异
+                Array.Copy(fb, 0, bb, frame, frame);
+                (double Average, double Min, double Max) on = (double.NaN, double.NaN, double.NaN);
+                (double Average, double Min, double Max) off = (double.NaN, double.NaN, double.NaN);
+                prior = AAS.Current.AutoUseSimdBinaries;
+                try
+                {
+                    AAS.Current.AutoUseSimdBinaries = true;
+                    on = PsnrCalculator.CalculateMultiFramePsnr(aa, bb, frame, 8, 3, true);
+                    AAS.Current.AutoUseSimdBinaries = false;
+                    off = PsnrCalculator.CalculateMultiFramePsnr(aa, bb, frame, 8, 3, true);
+                }
+                finally { AAS.Current.AutoUseSimdBinaries = prior; }
+                Console.WriteLine($"  多帧: on={on.Average:F9}/{on.Min:F9}/{on.Max:F9} off={off.Average:F9}/{off.Min:F9}/{off.Max:F9}");
+                Check(double.IsPositiveInfinity(on.Max) && double.IsPositiveInfinity(off.Max),
+                    $"S3a 多帧 max=inf（帧 1 全等）在两态都成立（on={on.Max} off={off.Max}）⇒ 回退没把 inf 语义吃掉");
+                Check(Math.Abs(on.Average - off.Average) <= PsnrTolDb
+                      && Math.Abs(on.Min - off.Min) <= PsnrTolDb,
+                    $"S3b 多帧 avg/min 两态差 ≤ {PsnrTolDb:g}dB（实 {Math.Abs(on.Average - off.Average):E3} / {Math.Abs(on.Min - off.Min):E3}）");
+            }
+
+            // ── S3c 16-bit 路径：本来就是逐像素标量 ⇒ 开关两态必须同样逐位一致 ──
+            {
+                var (a16, b16) = Synth(60 * 40 * 3 * 2);
+                double pOn = double.NaN, pOff = double.NaN;
+                prior = AAS.Current.AutoUseSimdBinaries;
+                try
+                {
+                    AAS.Current.AutoUseSimdBinaries = true;
+                    pOn = PsnrCalculator.CalculatePsnr(a16, b16, 16, 3, true);
+                    AAS.Current.AutoUseSimdBinaries = false;
+                    pOff = PsnrCalculator.CalculatePsnr(a16, b16, 16, 3, true);
+                }
+                finally { AAS.Current.AutoUseSimdBinaries = prior; }
+                Console.WriteLine($"  16bit: on={pOn:F9} off={pOff:F9}");
+                Check(double.IsFinite(pOn) && Math.Abs(pOn - pOff) <= PsnrTolDb,
+                    $"S3c 16-bit 两态 PSNR 逐位一致（{pOn:F6} vs {pOff:F6}）⇒ 开关没被错接进 16-bit 分支");
+            }
+
+            // ── S6：SimdPixelOps 那一路消费者（tooltip 说的是「SIMD 加速的像素处理」，不止 PSNR）──
+            {
+                int nF = 512;
+                var fsrc = new float[nF];
+                uint fs = 987654321u;
+                for (int i = 0; i < nF; i++)
+                {
+                    fs = unchecked(fs * 1664525u + 1013904223u);
+                    fsrc[i] = i switch
+                    {
+                        0 => 0f,
+                        1 => 1f,
+                        2 => 0.0031308f,        // sRGB 编码阈值（分支边界）
+                        3 => 0.00313081f,
+                        _ => (int)((fs >> 8) & 0xFFFFFF) / (float)0xFFFFFF,
+                    };
+                }
+                var dOn = new byte[nF];
+                var dOff = new byte[nF];
+                prior = AAS.Current.AutoUseSimdBinaries;
+                try
+                {
+                    AAS.Current.AutoUseSimdBinaries = false;
+                    Check(!SimdKernelRouting.FloatToSrgb8UsesSimd,
+                        $"S6a 开关关 ⇒ FloatToSrgb8UsesSimd 必须为 false（实 {SimdKernelRouting.FloatToSrgb8UsesSimd}，isa-avx2={hasAvx2}）");
+                    SimdPixelOps.FloatToSrgb8(fsrc, dOff);
+                    AAS.Current.AutoUseSimdBinaries = true;
+                    Check(SimdKernelRouting.FloatToSrgb8UsesSimd == hasAvx2,
+                        $"S6b 开关开 ⇒ SIMD 判定 == 本机 Avx2.IsSupported（实 {SimdKernelRouting.FloatToSrgb8UsesSimd} vs {hasAvx2}）");
+                    SimdPixelOps.FloatToSrgb8(fsrc, dOn);
+                }
+                finally { AAS.Current.AutoUseSimdBinaries = prior; }
+                int offVsRef = 0, onVsOff = 0, shifted = 0;
+                for (int i = 0; i < nF; i++)
+                {
+                    offVsRef = Math.Max(offVsRef, Math.Abs(dOff[i] - SimdPixelOps.FloatToSrgb8Scalar(fsrc[i])));
+                    onVsOff = Math.Max(onVsOff, Math.Abs(dOn[i] - dOff[i]));
+                    if (i > 0) shifted = Math.Max(shifted, Math.Abs(dOff[i - 1] - SimdPixelOps.FloatToSrgb8Scalar(fsrc[i])));
+                }
+                Console.WriteLine($"  float-to-srgb8: offVsScalarRef={offVsRef}LSB onVsOff={onVsOff}LSB shiftedMax={shifted}LSB isa-avx2={hasAvx2}");
+                Check(offVsRef == 0, $"S6c 回退路径与标量参考 0 LSB 差（实 {offVsRef}）");
+                Check(onVsOff <= 1, $"S6d 两态输出差 ≤ 1 LSB ⇒ 回退不改数值语义（实 {onVsOff}）");
+                Check(shifted > 0,
+                    $"S6e 负控：错位一格必须被 S6c 那种逐字节判据抓到（实错位差 {shifted} LSB）⇒ 否则 0 LSB 那条是空判据");
+                if (hasAvx2 && onVsOff == 0)
+                    Console.WriteLine("INFO S6 的数值臂本机不可判别（AVX2 的 LUT 近似恰好与标量逐字节相同）"
+                        + "⇒ 该臂由 S6a/S6b 的选路读数 + 编排脚本的结构锁承担（不判红、也不假装验过）");
+            }
+        }
+
+        /// <summary>
         /// peakmeasure —— 峰值链路最后一档：无用户值、无元数据时**整帧实测内容峰值**。
         ///
         /// 为什么不算“自己验自己”：期望 nits 由**素材生成时写入的最高码值**经 PQ 曲线定义换算
@@ -2864,6 +3585,89 @@ namespace ServiceProbe
                     catch (Exception ex) { Check(false, $"{cse.name}/{fmt} A/B 对比异常：{ex.Message}"); }
                 }
             }
+
+            // ═════════════════ #29：`--color-709-curve` 的**端到端**行为锁（真产物字节）═════════════════
+            // 与 `contract` 的 C7b 分工：C7b 在**内核**上量口径差（无外部依赖、上下界可推演），
+            // 本段把它跑成**真产物**（ffmpeg 解码 → H1 变换 → PNG 编码 → 再解码对拍）——
+            // 缺陷当初的表象就是"两条 CLI 命令产物逐字节相同"（2026-09-26 实测四格 × {std,zimg} 全同 md5），
+            // 只有真产物层能证明"用户这次拿到的确实是另一个东西"。
+            // 格子必须结构上落在 H1：Display P3 ⊄ BT.709 ⇒ 开 GMO ⇒ needsGmo ⇒ 后端与口径无关
+            // （若落进 H2，比的就是 zscale 而不是我们的出口曲线，本段就测不到要测的东西 ⇒ 下面先断言前提）。
+            {
+                string p3Src = "tests/output/results/color/a2_srgb_p3.png";
+                if (!File.Exists(p3Src) || string.IsNullOrWhiteSpace(ff) || !File.Exists(ff))
+                {
+                    Check(false, $"#29 端到端缺前提（素材 {p3Src} 或 ffmpeg）⇒ 本段未验证，不是通过");
+                }
+                else
+                {
+                    var o709 = new FfmpegGui.Models.FfmpegOptions
+                    {
+                        Format = "png", ColorSpace = "BT.709", ColorStrategy = FfmpegGui.Models.ColorStrategy.Recommended,
+                        BitDepth = 8, ColorGamutMap = "on",
+                        Quality = FfmpegGui.Models.FfmpegOptions.GetDefaultQuality("png"),
+                    };
+                    var byCurve = new System.Collections.Generic.Dictionary<string, string>();
+                    bool premOk = true;
+                    foreach (var curve in new[] { "std", "zimg" })
+                    {
+                        o709.Color709Curve = curve;
+                        var it709 = FfmpegGui.Services.ColorMapping.ColorIntentFactory.FromOptions(o709, p3Src, out var why709);
+                        if (it709 == null) { Check(false, $"#29 端到端 {curve} 意图装配失败：{why709}"); premOk = false; break; }
+                        var pl709 = CE.Plan(it709);
+                        if (!pl709.IsOk) { Check(false, $"#29 端到端 {curve} 计划拒绝：{pl709.Reason}"); premOk = false; break; }
+                        if (pl709.Backend != CB.InProcess)
+                        { Check(false, $"#29 端到端前提：{curve} 必须落在 H1（实为 {pl709.Backend}）{pl709.Reason}"); premOk = false; break; }
+                        string op = $"{dir}/_709_{curve}.png";
+                        if (File.Exists(op)) File.Delete(op);
+                        try
+                        {
+                            FfmpegGui.Services.ColorMapping.RawColorPipeline.TransformFileAsync(
+                                p3Src, op, pl709.ToSpec(), pl709, null, default, 2).GetAwaiter().GetResult();
+                            byCurve[curve] = op;
+                        }
+                        catch (Exception ex) { Check(false, $"#29 端到端 {curve} 引擎异常：{ex.Message}"); premOk = false; break; }
+                    }
+                    if (premOk && byCurve.Count == 2)
+                    {
+                        var bStd = File.ReadAllBytes(byCurve["std"]);
+                        var bZim = File.ReadAllBytes(byCurve["zimg"]);
+                        Check(!bStd.AsSpan().SequenceEqual(bZim),
+                            $"#29 端到端：std 与 zimg 的真产物必须**逐字节不同**（std {bStd.Length}B / zimg {bZim.Length}B）"
+                          + "⇒ 缺陷原貌就是两者同 md5（静默无效参数）");
+
+                        // 差多少：解码回 rgb48（8bit 产物 ⇒ 码值 = 8bit×257），换算成 8bit LSB 再比上下界。
+                        var (ws, hs) = FfmpegGui.Services.ColorMapping.RawColorPipeline
+                            .ProbeSizeAsync(byCurve["std"]).GetAwaiter().GetResult();
+                        var pxStd = FfmpegGui.Services.ColorMapping.RawColorPipeline
+                            .DecodeToRgb48Async(byCurve["std"], ws, hs).GetAwaiter().GetResult();
+                        var pxZim = FfmpegGui.Services.ColorMapping.RawColorPipeline
+                            .DecodeToRgb48Async(byCurve["zimg"], ws, hs).GetAwaiter().GetResult();
+                        int maxE2e = 0; long sumE2e = 0; long cntE2e = 0;
+                        for (int i = 0; i + 1 < pxStd.Length && i + 1 < pxZim.Length; i += 2)
+                        {
+                            int d = Math.Abs((pxStd[i] | (pxStd[i + 1] << 8)) - (pxZim[i] | (pxZim[i + 1] << 8))) / 257;
+                            if (d > maxE2e) maxE2e = d;
+                            sumE2e += d; cntE2e++;
+                        }
+                        double meanE2e = (double)sumE2e / Math.Max(1, cntE2e);
+                        Check(maxE2e >= 24 && maxE2e <= 32 && meanE2e >= 2.0,
+                            $"#29 端到端差量级：max={maxE2e} LSB@8bit（界 24–32，理论 27.2）mean={meanE2e:F2}"
+                          + $"（{ws}x{hs}，{cntE2e} 样本）⇒ 差的是口径量级，不是压缩/元数据噪声");
+
+                        // 反向：同口径重跑必须逐字节相同（把"差"归因到口径，而不是抖动/RNG/时间戳）
+                        string op2 = $"{dir}/_709_std_rerun.png";
+                        if (File.Exists(op2)) File.Delete(op2);
+                        o709.Color709Curve = "std";
+                        var it2 = FfmpegGui.Services.ColorMapping.ColorIntentFactory.FromOptions(o709, p3Src, out var why2);
+                        var pl2 = CE.Plan(it2!);
+                        FfmpegGui.Services.ColorMapping.RawColorPipeline.TransformFileAsync(
+                            p3Src, op2, pl2.ToSpec(), pl2, null, default, 2).GetAwaiter().GetResult();
+                        Check(File.ReadAllBytes(op2).AsSpan().SequenceEqual(bStd),
+                            "#29 端到端反向：std 重跑产物必须逐字节相同（确定性；差异只应来自口径本身）");
+                    }
+                }
+            }
         }
 
         // ═══════════════════ geometry：引擎几何缩放路径的覆盖 ═══════════════════
@@ -3081,7 +3885,7 @@ namespace ServiceProbe
                 // ⚠ 关键结论（读码可得，本段用像素实测背书）：**两条路径的顺序相同**，差别只在 ① 多一次
                 //   「缩放产物落盘成 PNG → 再解码」的量化往返 ⇒ 预期 ① 略差、差异应很小。
                 //   真正的**反序**只出现在 legacy 路径（`--color-engine legacy`）：色彩链在
-                //   `FfmpegCommandBuilder.cs:121`、scale 在 `:535` ⇒ legacy = 映射 → 缩放。那是既有的
+                //   `FfmpegCommandBuilder.cs:121`、scale 由 `InsertScaleFilterAtChainHead` 插入 ⇒ legacy = 映射 → 缩放。那是既有的
                 //   引擎-vs-legacy 差异，与「删不删预缩放」无关，不在本段射程内。
                 {
                     string src = await MakeSource(512, 384).ConfigureAwait(false);
@@ -3153,7 +3957,7 @@ namespace ServiceProbe
                 }
 
                 // ═══ 顺序统一（R1）：scale 必须插在「第一条色彩变换之前」（2026-09-18）═══
-                // 判据只有一份：`FfmpegCommandBuilder.InsertScaleFilterAtChainHead` —— legacy 的 `:535`
+                // 判据只有一份：`FfmpegCommandBuilder.InsertScaleFilterAtChainHead` —— legacy 的 scale 也走它
                 // 与 `QueueProcessor.BuildPipeColorArgs` 的管道路径同源。
                 // 本段**读命令行、不读日志**；token 按 `,` 切分；判别式
                 //   `^scale=\d+:-2:flags=lanczos$` / `^scale=-2:\d+:flags=lanczos$`
@@ -4269,11 +5073,103 @@ namespace ServiceProbe
                 AAS.Load(bad);
                 Check(AAS.LastLoadIssue != null,
                     $"损坏的设置文件被记录而非静默重置（issue={AAS.LastLoadIssue}）");
+
+                // ── 全字段落盘往返锁（2026-09-24 补）──
+                //   上面几条只测 Language / MaxQueueSize ⇒ **没进 `Save()` 手写克隆表**的属性能永远不被发现
+                //   （实测就是这样漏着 `RenderingMode` 而本探针一直绿）。⚠ 光看"文件里有没有这个键"也不够：
+                //   `Save()` 序列化的是 `new AppSettings{…}` 那个 clone ⇒ 漏掉的字段会带着**模型默认值**
+                //   一起落盘，键在、值却是错的。⇒ 判据只能是「设非默认值 → Save → 读回 → 逐个相等」。
+                AAS.Load(f);   // 目标重新指回 f（上一步的损坏文件会把 Save 引到 corrupt.json）
+                var fresh = new FfmpegGui.Models.AppSettings();
+                var props = typeof(FfmpegGui.Models.AppSettings)
+                    .GetProperties(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+                var sentinels = new System.Collections.Generic.List<System.Collections.Generic.KeyValuePair<System.Reflection.PropertyInfo, object?>>();
+                var unsupported = new System.Collections.Generic.List<string>();
+                int eligible = 0;
+                foreach (var p in props)
+                {
+                    if (!p.CanRead || !p.CanWrite) continue;
+                    if (p.GetCustomAttributes(typeof(System.Text.Json.Serialization.JsonIgnoreAttribute), false).Length > 0) continue;
+                    if (p.GetCustomAttributes(typeof(ObsoleteAttribute), false).Length > 0) continue;
+                    eligible++;
+                    var sent = SettingsSentinel(p, p.GetValue(fresh));
+                    if (sent == null) { unsupported.Add(p.Name + ":" + p.PropertyType.Name); continue; }
+                    p.SetValue(AAS.Current, sent);
+                    sentinels.Add(new System.Collections.Generic.KeyValuePair<System.Reflection.PropertyInfo, object?>(p, sent));
+                }
+                Check(unsupported.Count == 0,
+                    "每个候选持久化属性都能造出非默认哨兵（不支持的类型 = " + (unsupported.Count == 0 ? "无" : string.Join(", ", unsupported)) + "）");
+                Check(eligible >= 20,
+                    $"反射口径自检：候选持久化属性 >= 20（实得 {eligible}）⇒ 否则下面的往返比对会空转");
+                Check(AAS.Save(), "带哨兵值的那次 Save 成功");
+                //   ⚠ 读回**不用** `AppJsonContext`（它是 internal，探针看不见），也不用 `AAS.Load`
+                //     （它会用 `FFMPEGGUI_*` 环境变量覆盖路径/队列/主题等字段 ⇒ 哨兵会被环境值洗掉，测的就不是落盘了）。
+                //     这里用默认命名 + 大小写不敏感的普通反序列化：文件里的键就是 PascalCase 的属性名，
+                //     读回口径与写出口径一致 ⇒ 本条只回答"我设的值有没有真的出去再回来"。
+                var back = System.Text.Json.JsonSerializer.Deserialize<FfmpegGui.Models.AppSettings>(
+                    System.IO.File.ReadAllText(f),
+                    new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                var diffs = new System.Collections.Generic.List<string>();
+                if (back == null) diffs.Add("反序列化读回 null");
+                else
+                {
+                    foreach (var kv in sentinels)
+                    {
+                        var got = kv.Key.GetValue(back);
+                        if (!SettingsSame(kv.Key.PropertyType, kv.Value, got))
+                            diffs.Add(kv.Key.Name + ": 写入 " + SettingsShow(kv.Value) + " / 读回 " + SettingsShow(got));
+                    }
+                }
+                Check(diffs.Count == 0,
+                    "全部 " + sentinels.Count + " 个持久化属性都真的落盘并能读回（不同源 = "
+                    + (diffs.Count == 0 ? "无" : string.Join(" | ", diffs)) + "）");
             }
             finally
             {
                 try { System.IO.Directory.Delete(dir, true); } catch { }
             }
+        }
+
+        /// <summary>
+        /// 为「落盘往返」造一个**必然不等于模型默认值**的哨兵；返回 null = 该类型不认识
+        /// ⇒ 由调用方点名判红（新增属性用了没见过的类型时，逼这里同步，而不是静默少测一个字段）。
+        /// </summary>
+        private static object? SettingsSentinel(System.Reflection.PropertyInfo p, object? freshDefault)
+        {
+            var t = p.PropertyType;
+            if (t == typeof(string))
+            {
+                var s = "zz-" + p.Name + "-7";
+                return (freshDefault as string) == s ? s + "x" : s;
+            }
+            if (t == typeof(bool)) return !(freshDefault as bool? ?? false);
+            if (t == typeof(int))
+            {
+                var v = 4242;
+                return (freshDefault as int?) == v ? 4243 : v;
+            }
+            if (t == typeof(System.Collections.Generic.List<string>))
+                return new System.Collections.Generic.List<string> { "zz-a", "zz-b" };
+            return null;
+        }
+
+        private static bool SettingsSame(Type t, object? a, object? b)
+        {
+            if (t == typeof(System.Collections.Generic.List<string>))
+            {
+                var la = a as System.Collections.Generic.List<string>;
+                var lb = b as System.Collections.Generic.List<string>;
+                if (la == null || lb == null || la.Count != lb.Count) return false;
+                for (int i = 0; i < la.Count; i++) if (la[i] != lb[i]) return false;
+                return true;
+            }
+            return Equals(a, b);
+        }
+
+        private static string SettingsShow(object? v)
+        {
+            if (v is System.Collections.Generic.List<string> l) return "[" + string.Join(",", l) + "]";
+            return v?.ToString() ?? "(null)";
         }
 
         /// <summary>
@@ -4496,6 +5392,451 @@ namespace ServiceProbe
                 + (didCicp ? $"cICP={cicpOk} " : "cICP=跳过 ")
                 + $"大小={(new FileInfo(path).Exists ? new FileInfo(path).Length : -1)}");
             Check((!didSbit || sbitOk) && (!didCicp || cicpOk), "png3 chunk 写入成功");
+        }
+
+        // ══════════════════════════════════════════════════════════════
+        // tooldetect [每根预算秒] —— 外部工具探测的**开销**与**诚实性**探针（2026-09-22 新增）
+        //   背景（2026-09-22 17:56 整轮 4 红里的 2 红）：`verify-jxl-codestream-route` ⑦ 与
+        //   `verify-ffmpeg-heartbeat` ③/③-e 都在断言「djxl 不可用 ⇒ 响亮降级」。两条门禁靠
+        //   `FFMPEGGUI_PLAN_DIR`/`FFMPEGGUI_JXL_LIB_DIR` 指向空目录来**模拟**"工具不存在"，但那只盖住
+        //   探测的 ①手动路径 与 ②PLAN 两个分支；③同目录 / ④扩展搜索仍然会把**整台机器**找一遍。
+        //   实测：本机 `C:\Program Files\WindowsApps\LinYuSen.HDRImageViewer_1.0.31.0_x64__phzzaxm6z2j1m\
+        //   encoders\x64\djxl.exe` 被 ④ 命中 ⇒ "可用"（⇒ 自检判「模拟没生效」而红）。而该文件用普通令牌
+        //   **根本起不来**（实测 Process.Start 报 Access Denied）⇒ 它压根不该被算作可用工具。
+        //   ⚠ 结论：**模拟降级路径的门禁不能依赖"本机恰好没装过某个第三方应用"** ⇒ 需要③一个可注入的收口；
+        //   ⚠ 同时「起不来的文件」不能报成可用（诚实性），否则面板 ✅ 而任务必失败。
+        //   开销读数一并打：④ 的每个根都以 AllDirectories 递归，实测单棵 `C:\Program Files` 就要几十秒，
+        //   且递归枚举器**未 Dispose** ⇒ 中途抛异常（ACL/长路径）时整条目录句柄链泄漏（实测一次降级
+        //   路径跑下来句柄 87,682 个 / 935 MB / 单核满载 29 分钟不返回）。
+        // ══════════════════════════════════════════════════════════════
+        private static void ProbeToolDetect(string[] args)
+        {
+            int budgetSec = 120;
+            if (args.Length > 1 && int.TryParse(args[1], out var bs) && bs > 0) budgetSec = bs;
+
+            int Handles()
+            {
+                try
+                {
+                    using var self = System.Diagnostics.Process.GetCurrentProcess();
+                    self.Refresh();
+                    return self.HandleCount;
+                }
+                catch { return -1; }
+            }
+
+            var tmp = Path.Combine(Path.GetTempPath(),
+                "tooldetect_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+            Directory.CreateDirectory(tmp);
+            int h0 = Handles();
+            try
+            {
+                // ── ① 读数：每个扩展搜索根的递归扫描耗时 + 句柄增量 ──
+                var roots = FfmpegGui.Services.ExternalToolsDetector.GetExtendedSearchPaths();
+                Console.WriteLine($"[读数] 扩展搜索根 {roots.Count} 个，起始句柄 {h0}");
+                // 看门狗：单根扫描若**永不返回**，只靠"下一行为什么没出现"归因太弱 ⇒ 每 5s 打一次句柄。
+                bool watching = true;
+                var wd = new System.Threading.Thread(() =>
+                {
+                    while (watching)
+                    {
+                        System.Threading.Thread.Sleep(5000);
+                        if (!watching) break;
+                        Console.WriteLine($"[watch] 句柄 {Handles()}");
+                        Console.Out.Flush();
+                    }
+                }) { IsBackground = true };
+                wd.Start();
+                double spent = 0; int scanned = 0, skipped = 0;
+                foreach (var r in roots)
+                {
+                    if (spent > budgetSec) { skipped++; continue; }
+                    int hb = Handles();
+                    // ⚠ **扫之前**先点名并 flush：卡在某个根上时，这条读数才能归因（否则输出停在半截说不清是谁）
+                    Console.WriteLine($"[读数] → 扫描 {r}");
+                    Console.Out.Flush();
+                    var sw = System.Diagnostics.Stopwatch.StartNew();
+                    var found = FfmpegGui.Services.PlatformServices.FindToolInDirectory(
+                        r, FfmpegGui.Services.PlatformServices.Djxl,
+                        FfmpegGui.Services.PlatformServices.DjxlSearchWildcard);
+                    sw.Stop();
+                    int ha = Handles();
+                    spent += sw.Elapsed.TotalSeconds; scanned++;
+                    Console.WriteLine($"[读数]   {sw.Elapsed.TotalSeconds,6:F1}s 句柄 {hb}->{ha} (Δ{ha - hb,6})  " +
+                                      $"{r}  命中={(found ?? "(无)")}");
+                }
+                watching = false;
+                if (skipped > 0) Console.WriteLine($"[读数] 超出预算 {budgetSec}s ⇒ {skipped} 个根未扫");
+                int h1 = Handles();
+                Console.WriteLine($"[读数] 合计 {spent:F1}s（扫 {scanned}/{roots.Count} 根），句柄 {h0}->{h1} (Δ{h1 - h0})");
+                Console.Out.Flush();
+
+                // ── ①b 反挂死锁：拿"用户配置文件根目录"当唯一根找一个必然不存在的工具 ──
+                //   这是实测到的真实形态：本机进程 PATH 里出现过裸 `C:\Users\20210`，而旧的
+                //   `SearchOption.AllDirectories` 递归在这种树上**永不返回**（60 s 时句柄已 9 万）。
+                //   预算常量不凭记忆写：断言的是「不超过单根预算 + 5s 抖动」。
+                if (OperatingSystem.IsWindows())
+                {
+                    var prof = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+                    var swP = System.Diagnostics.Stopwatch.StartNew();
+                    var ghost = FfmpegGui.Services.PlatformServices.FindToolInDirectory(
+                        prof, "zz_no_such_tool_xyz.exe", "*zz_no_such_tool_xyz*.exe");
+                    swP.Stop();
+                    int hp = Handles();
+                    //   ⚠ 上界**不得**只取产品常量：否则实现里把 `PerRootScanBudgetSec` 调大，本条判据
+                    //     会跟着自动放宽 ⇒ 等于没有判据。⇒ 先锁常量的合理区间，再用它推上界。
+                    int budgetConst = FfmpegGui.Services.ExternalToolsDetector.PerRootScanBudgetSec;
+                    Check(budgetConst >= 5 && budgetConst <= 30,
+                        $"①e 单根预算常量必须落在 [5,30]s（实得 {budgetConst}s；实测合法根 `C:\\Program Files` 全树 3.0s（`_probe-tool-detect.out:6`））");
+                    Console.WriteLine($"[读数] 病态根 {prof} 单根扫描 {swP.Elapsed.TotalSeconds:F1}s 命中={(ghost ?? "(无)")} 句柄 {hp}");
+                    Console.Out.Flush();
+                    Check(ghost == null && hp >= 0 && swP.Elapsed.TotalSeconds <= budgetConst + 5,
+                        $"①b 病态根必须在预算内返回 null（实得 {swP.Elapsed.TotalSeconds:F1}s / 上限 " +
+                        $"{budgetConst + 5}s / 命中 {(ghost ?? "(null)")} / 句柄读数 {(hp < 0 ? "(取不到⇒判红)" : hp.ToString())}）");
+                    // ⚠ 泄漏的判据是**斜率**不是绝对值：绝对阈值抓不住"每根几十、累计上千"的慢泄漏
+                    //   （实测合法实现两次读数在 -2 ~ +35 之间摆动，而回归态是 9 万）。
+                    int hb2 = Handles();
+                    var sw2 = System.Diagnostics.Stopwatch.StartNew();
+                    var ghost2 = FfmpegGui.Services.PlatformServices.FindToolInDirectory(
+                        prof, "zz_no_such_tool_xyz.exe", "*zz_no_such_tool_xyz*.exe");
+                    sw2.Stop();
+                    int ha2 = Handles();
+                    Check(ghost2 == null && hb2 >= 0 && ha2 >= 0 && (ha2 - hb2) <= 200,
+                        $"①c 同一病态根**连扫两次**，第二次的句柄增量必须≈0（泄漏随次数线性涨；" +
+                        $"Δ {ha2 - hb2} ≤ 200，第二次耗时 {sw2.Elapsed.TotalSeconds:F1}s）");
+                }
+                else Skip("①b/①c/①e 依赖 Windows 的『PATH 含大树』形态 ⇒ 本机不判（不是通过）");
+
+                // ── ①f 反挂死判据**自己**要有牙（2026-09-22 变异实测的直接产物）──
+                //   拿真实用户目录当"病态根"时，去掉 `EnumerateFilesSafe` 的 reparse 跳过 ⇒ ①b/①c
+                //   **一条都不红**：真实目录本来就是靠 15 s 预算收口的，而 ①b 的上界 = 预算 + 5，
+                //   结构上任何"重解析放大"都超不过 20 s ⇒ 判据形同虚设（成因=针无牙，不是没触发）。
+                //   ⇒ 判据要咬得住，得自己造一个**必然成环**的根：`looproot\loop -> looproot`（自环 junction）。
+                //     · 实现正确（跳过 reparse）⇒ 永不进入 loop ⇒ 亚秒级返回 null
+                //     · 实现被改坏 ⇒ 无限下降直到撞满预算 ⇒ 本条转红（阈值 5 s ≪ 单根预算 15 s）
+                //   ⚠ 收尾顺序是硬要求：**先单独摘掉 junction**（`Delete(link,false)` 只摘链接），
+                //     再做递归清理 —— 反过来会让"递归删除跟着链接走进自己"（本仓已登记过 junction 删除坑）。
+                if (OperatingSystem.IsWindows())
+                {
+                    var loopRoot = Path.Combine(tmp, "looproot");
+                    var loopLink = Path.Combine(loopRoot, "loop");
+                    Directory.CreateDirectory(loopRoot);
+                    File.WriteAllText(Path.Combine(loopRoot, "loop_fixture.txt"), "fixture");
+                    bool made = false;
+                    try
+                    {
+                        var mk = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                        {
+                            FileName = "cmd.exe",
+                            Arguments = $"/c mklink /J \"{loopLink}\" \"{loopRoot}\"",
+                            UseShellExecute = false, CreateNoWindow = true,
+                            RedirectStandardOutput = true, RedirectStandardError = true
+                        });
+                        if (mk != null) { mk.WaitForExit(5000); }
+                        made = Directory.Exists(loopLink);
+                    }
+                    catch (Exception ex) { Console.WriteLine($"[读数] mklink 异常：{ex.GetType().Name}"); }
+                    Console.WriteLine($"[读数] 自环 junction 根造好={made}（{loopRoot}）");
+                    if (!made) Skip("①f 本机造不出 junction（权限/被拦）⇒ 本条不判，不是通过");
+                    else
+                    {
+                        // ⚠⚠ 判据**不能是耗时**：2026-09-23 变异实测 —— 去掉 reparse 跳过后，自环 walk
+                        //   不是撞满 15 s 预算，而是在 ~12 层 `\loop` 后被 **MAX_PATH** 截停，全程 0.2 s
+                        //   ⇒ 任何"≤ N 秒"型阈值都咬不住这条变异（`①b/①c 无牙`的翻版）。
+                        //   ⇒ 换成**与时间无关**的判据：同一个标记文件必须**只被看见一次**。
+                        //     跳过 reparse ⇒ 1 次；走进自环 ⇒ 每层都撞见一次 ⇒ 计数 >1 ⇒ 红。
+                        var swL = System.Diagnostics.Stopwatch.StartNew();
+                        var seen = FfmpegGui.Services.ExternalToolsDetector.EnumerateFilesSafe(loopRoot, "loop_fixture.txt");
+                        var loopHit = FfmpegGui.Services.PlatformServices.FindToolInDirectory(
+                            loopRoot, "zz_no_such_tool_xyz.exe", "*zz_no_such_tool_xyz*.exe");
+                        swL.Stop();
+                        // 负控/对照：同样计数法用在**没有环**的根上必须也是 1 ⇒ 证明红来自"成环"，不是计数口径写错
+                        var plainRoot = Path.Combine(tmp, "plainroot");
+                        Directory.CreateDirectory(plainRoot);
+                        File.WriteAllText(Path.Combine(plainRoot, "loop_fixture.txt"), "fixture");
+                        int plainSeen = FfmpegGui.Services.ExternalToolsDetector.EnumerateFilesSafe(plainRoot, "loop_fixture.txt").Count;
+                        try { Directory.Delete(loopLink, false); } catch { }
+                        bool linkGone = !Directory.Exists(loopLink);
+                        Check(linkGone, "①f-清理 junction 必须能单独摘掉（摘不掉 ⇒ 立刻判红，绝不留给递归清理）");
+                        Check(plainSeen == 1,
+                            $"①f-对照 无环根的同名文件必须恰好被看见 1 次（实得 {plainSeen}）⇒ 下一条的计数口径本身可信");
+                        Check(seen.Count == 1 && loopHit == null,
+                            $"①f 自环根里的标记文件**只能被看见一次**（实得 {seen.Count} 次 / {swL.Elapsed.TotalSeconds:F1}s；" +
+                            $"跳过 reparse 才做得到，>1 = 走进了环 ⇒ 与耗时无关，MAX_PATH 截停也照样红）");
+                    }
+                }
+                else Skip("①f 的自环 junction 只在 Windows 上可造 ⇒ 本机不判，不是通过");
+
+                // ── ② 诚实性：已证实**无法启动**的候选不得被报成可用工具 ──
+                //   形态 (a)：一个后缀 .exe 但不是有效 PE 的文件（Prefetch 的 *.pf 之外的另一类"看着像"）。
+                var junk = Path.Combine(tmp, "djxl_junk.exe");
+                File.WriteAllText(junk, "this is not a portable executable");
+                //   对照组（**负断言必须带一条两边都有的对照串**，否则"返回 null"可能只是因为根本没找到）：
+                //   真能起来的 djxl 复制成一个不同名文件。
+                //   ⚠ "文件存在" ≠ "起得来" ⇒ 每个候选都要**实跑一次**再认。2026-09-25 两种失效都踩过：
+                //     · 只判 File.Exists 就用仓内 `tools/src/libjxl/build/tools/Release/djxl.exe` —— 它依赖
+                //       `build/lib/Release/*.dll`（实测单独拷走 ⇒ 加载器退出 127、缺 `jxl_cms.dll`）
+                //       ⇒ ②b/⑤/⑥ 一起变成 **5 条假红**（对照组自己起不来，负断言全部失去方向）。
+                //     · 只认 `PlanFolderPath/jxl/bin/djxl.exe` —— 本机 PlanFolderPath 解析成 `C:\PLAN` 而那里没有
+                //       jxl ⇒ ② 判红、⑤/⑥ 连带 SKIP（**覆盖丢失**，SKIP 不是通过）。
+                //   ⇒ 候选按序：产品解析出的 PLAN 发布版 → 仓内 `publish/PLAN/jxl/bin/djxl.exe`
+                //     （实测自带依赖、单独拷到 temp 仍 `--version` exit=0）。全部实跑失败 ⇒ 判红并列出试过什么。
+                string LaunchableCtl(string exe)   // 自己启动来判，不走被测的 ChooseBestExecutable（否则是构造恒等）
+                {
+                    try
+                    {
+                        var psi = new System.Diagnostics.ProcessStartInfo(exe, "--version")
+                        {
+                            RedirectStandardOutput = true,
+                            RedirectStandardError = true,
+                            UseShellExecute = false,
+                            CreateNoWindow = true
+                        };
+                        using var pp = System.Diagnostics.Process.Start(psi);
+                        if (pp == null) return "Process.Start 返回 null";
+                        var tOut = pp.StandardOutput.ReadToEndAsync();     // ⚠ 先挂读取、再等退出（本仓范式）
+                        var tErr = pp.StandardError.ReadToEndAsync();
+                        if (!pp.WaitForExit(8000)) { try { pp.Kill(entireProcessTree: true); } catch { } return "超时(8s)"; }
+                        string o = tOut.GetAwaiter().GetResult() + tErr.GetAwaiter().GetResult();
+                        return (pp.ExitCode == 0 || !string.IsNullOrWhiteSpace(o)) ? "ok" : $"exit={pp.ExitCode} 无输出";
+                    }
+                    catch (Exception ex) { return $"{ex.GetType().Name}: {ex.Message}"; }
+                }
+                var ctlCands = new List<string>();
+                void AddCtl(string p)
+                {
+                    if (!string.IsNullOrWhiteSpace(p) && File.Exists(p) && !ctlCands.Contains(p)) ctlCands.Add(p);
+                }
+                AddCtl(Path.Combine(FfmpegGui.Services.PlatformServices.PlanFolderPath ?? "", "jxl", "bin", "djxl.exe"));
+                for (var dp = new DirectoryInfo(AppContext.BaseDirectory); dp != null; dp = dp.Parent)
+                    AddCtl(Path.Combine(dp.FullName, "publish", "PLAN", "jxl", "bin", "djxl.exe"));
+                var real = Path.Combine(tmp, "djxl_real.exe");
+                var realSrc = "";
+                var ctlLog = new StringBuilder();
+                foreach (var cd in ctlCands)
+                {
+                    try { File.Copy(cd, real, true); }
+                    catch (Exception ex) { ctlLog.Append($" [{cd}] 拷贝失败 {ex.GetType().Name}"); continue; }
+                    var vv = LaunchableCtl(real);
+                    if (vv == "ok") { realSrc = cd; break; }
+                    ctlLog.Append($" [{cd}] {vv}");
+                }
+                bool haveReal = realSrc.Length > 0;
+                // ⚠ 对照组缺失**必须判红**（旧写法只 `Console.WriteLine("FAIL …")` ⇒ 不进 `_fail`、
+                //   汇总仍是 `fail=0` ⇒ ②b/②c 整段蒸发而门禁照绿 = 假绿通道）。
+                if (!haveReal)
+                    Check(false, "② 对照组缺失：" + (ctlCands.Count == 0
+                            ? "一个候选都没凑出来（PLAN 与仓内 publish 都没有 djxl.exe）"
+                            : ctlLog.ToString().Trim())
+                        + " ⇒ ②b/②c 无从判（绝不静默跳过）");
+
+                var junkOnly = FfmpegGui.Services.ExternalToolsDetector
+                    .ChooseBestExecutable(new[] { junk });
+                Check(junkOnly == null,
+                    $"②a 只有「起不来的 .exe」时返回 null（实得 {(junkOnly ?? "(null)")}）——不得回退成假 ✅");
+                if (haveReal)
+                {
+                    var realOnly = FfmpegGui.Services.ExternalToolsDetector
+                        .ChooseBestExecutable(new[] { real });
+                    Check(string.Equals(realOnly, real, StringComparison.OrdinalIgnoreCase),
+                        $"②b 对照组：真能起来的 exe 必须被选中（实得 {(realOnly ?? "(null)")}）");
+                    var mixed = FfmpegGui.Services.ExternalToolsDetector
+                        .ChooseBestExecutable(new[] { junk, real });
+                    Check(string.Equals(mixed, real, StringComparison.OrdinalIgnoreCase),
+                        "②c 真假混合：坏候选被跳过、选中好的（顺序把坏的放前面）");
+                }
+
+                //   形态 (b)：Prefetch 里的 `EXIFTOOL.EXE-<hash>.pf` —— 只有**无扩展名约束**的通配会命中它。
+                var pfDir = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.Windows), "Prefetch");
+                string? pfHit = null;
+                try
+                {
+                    using var en = Directory.EnumerateFiles(pfDir, "*exiftool.exe*").GetEnumerator();
+                    while (en.MoveNext()) { pfHit = en.Current; break; }
+                }
+                catch (Exception ex) { Console.WriteLine($"[读数] Prefetch 枚举不可用：{ex.GetType().Name}"); }
+                Console.WriteLine($"[读数] `*exiftool.exe*` 在 Prefetch 命中: {(pfHit ?? "(本机无命中)")}");
+                if (pfHit != null)
+                {
+                    var pf = FfmpegGui.Services.ExternalToolsDetector.ChooseBestExecutable(new[] { pfHit });
+                    Check(pf == null, $"②d Prefetch 的 .pf 不得被当作工具（实得 {(pf ?? "(null)")}）");
+                }
+                // ⚠ 本机 Prefetch 读不到（非提权令牌的 DACL 只给 BA）或确实没有命中 ⇒ **点名 SKIP**，
+                //   不许让这条"因为条件不满足而没跑"变成汇总里的一个绿点。
+                else Skip("②d Prefetch 形态本机不可判（无命中或目录不可枚举）⇒ 不是通过");
+
+                // ── ③ 可注入性：降级路径的门禁必须能**确定地**关掉系统级搜索根 ──
+                if (OperatingSystem.IsWindows())
+                {
+                    var emptyA = Path.Combine(tmp, "rootA");
+                    Directory.CreateDirectory(emptyA);
+                    var saved = Environment.GetEnvironmentVariable("FFMPEGGUI_EXT_SEARCH_DIRS");
+                    try
+                    {
+                        Environment.SetEnvironmentVariable("FFMPEGGUI_EXT_SEARCH_DIRS", emptyA);
+                        var rs = FfmpegGui.Services.ExternalToolsDetector.GetExtendedSearchPaths();
+                        Check(rs.Count == 1 && string.Equals(rs[0], emptyA, StringComparison.OrdinalIgnoreCase),
+                            $"③ FFMPEGGUI_EXT_SEARCH_DIRS 覆盖系统根（实得 [{string.Join(" | ", rs)}]）");
+                        Environment.SetEnvironmentVariable("FFMPEGGUI_EXT_SEARCH_DIRS", emptyA + ";");
+                        var rs2 = FfmpegGui.Services.ExternalToolsDetector.GetExtendedSearchPaths();
+                        Check(rs2.Count == 1 && string.Equals(rs2[0], emptyA, StringComparison.OrdinalIgnoreCase),
+                            $"③b 末尾空段不得被当成「整个 PATH」（实得 [{string.Join(" | ", rs2)}]）");
+                    }
+                    finally
+                    {
+                        Environment.SetEnvironmentVariable("FFMPEGGUI_EXT_SEARCH_DIRS", saved);
+                    }
+                    Console.WriteLine($"[读数] 撤掉覆盖后根数回到 {FfmpegGui.Services.ExternalToolsDetector.GetExtendedSearchPaths().Count}");
+                }
+                else Skip("③/③b 的可注入收口只在 Windows 上有意义（非 Windows 本就不做系统递归搜索）⇒ 不是通过");
+
+                // ── ⑤ 系统 PATH 这一级必须真的存在且真的非递归 ──
+                //   2026-09-22 实测：`DjxlService.Detect` 的 `// ⑤ PATH` **只有注释没有代码**，
+                //   而 `GetExtendedSearchPaths` 排除 `C:\Windows*` 的理由正是"⑤ 会兜住 PATH 工具"
+                //   ⇒ 前提不成立 ⇒ 放在 System32 的 djxl 永远发现不了（且只表现为静默换通路）。
+                //   判据成对：**原语行为**（放得进 PATH 就找得到 / 拿掉就找不到）+ **接线源码锁**
+                //   （`DjxlService` 真的调它 —— 光有原语不挡住"忘了接线"，那正是本次的缺陷形态）。
+                if (OperatingSystem.IsWindows() && haveReal)
+                {
+                    var pathDir = Path.Combine(tmp, "pathroot");
+                    Directory.CreateDirectory(pathDir);
+                    File.Copy(realSrc, Path.Combine(pathDir, "djxl.exe"), true);
+                    var savedPath = Environment.GetEnvironmentVariable("PATH");
+                    bool foundInPath = false; string? foundAt = null;
+                    try
+                    {
+                        Environment.SetEnvironmentVariable("PATH", pathDir + ";" + savedPath);
+                        foundInPath = FfmpegGui.Services.PlatformServices.TryFindInPath(
+                            FfmpegGui.Services.PlatformServices.Djxl, out foundAt);
+                    }
+                    finally { Environment.SetEnvironmentVariable("PATH", savedPath); }
+                    Check(foundInPath && !string.IsNullOrEmpty(foundAt)
+                          && Path.GetDirectoryName(foundAt)!.Equals(pathDir, StringComparison.OrdinalIgnoreCase),
+                        $"⑤a 原语：只在 PATH 里的 djxl 必须被找到（实得 found={foundInPath} path={foundAt ?? "(null)"}）");
+                    // 负控：同一原语在**没**注入 PATH 时必须找不到（否则 ⑤a 是"总能找到"的真空绿）
+                    bool stillFound = FfmpegGui.Services.PlatformServices.TryFindInPath(
+                        "zz_no_such_tool_in_path.exe", out var stillAt);
+                    Check(!stillFound && stillAt == null,
+                        $"⑤a-负控 不在 PATH 的工具必须找不到（实得 found={stillFound} path={stillAt ?? "(null)"}）");
+                    // 源码锁要先定位仓库根（同 `InitExternalTools` 的向上走法；找不到 ⇒ 判红，不静默跳过）
+                    string? djsPath = null;
+                    for (var d2 = new DirectoryInfo(AppContext.BaseDirectory); d2 != null; d2 = d2.Parent)
+                    {
+                        var cand = Path.Combine(d2.FullName, "src", "FfmpegGui", "Services", "DjxlService.cs");
+                        if (File.Exists(cand)) { djsPath = cand; break; }
+                    }
+                    Check(djsPath != null, $"⑤b 前置：定位到 DjxlService.cs（实得 {djsPath ?? "(未找到 ⇒ 接线锁无法判)"}）");
+                    var djs = djsPath == null ? "" : File.ReadAllText(djsPath);
+                    Check(djs.Contains("TryFindInPath(PlatformServices.Djxl"),
+                        "⑤b 接线锁：DjxlService 的 ⑤ 真的调用 TryFindInPath（只剩注释/被删即红）");
+                    Check(!System.Text.RegularExpressions.Regex.IsMatch(djs, @"//\s*⑤\s*PATH\s*\r?\n\s*\}"),
+                        "⑤b2 接线锁：不得再出现「只有 `// ⑤ PATH` 注释、下一行就收尾」的形态");
+                }
+                else Skip("⑤a/⑤b 需要 Windows + 可执行的 djxl 对照组 ⇒ 本机不判（不是通过）");
+
+                // ── ⑥ SIMD 标签选路：文件名后缀必须按本机 CPU 能力定序，且「标签优先」不得盖过「起不起来」 ──
+                //   2026-09-24 补的**零覆盖**：`ChooseBestExecutable` 里这一段（`GetSimdPriorityTags()` → 逐个
+                //   tag 用 `name.Contains(tag)` 收拢 → 剩余追加 → `generic` 兜住全部）此前**一条判据都没有** ——
+                //   把它整段删掉，①/②/③/⑤ 全照样绿（它们要么只喂单元素候选，要么喂不带标签的文件名）。
+                //   ⚠ 判据刻意**不重算产品的排序**（那只会做成"构造恒等"自检）：断言的是外部可观察后果 ——
+                //     输入顺序无关、高优先标签必胜、高优先那份起不来时必须落到次高、全带标签且全起不来必须 null。
+                //   ⚠ 夹具前提单独断言（不信任自己的构造）：选出的两个标签**互不为子串**，且三个文件名都
+                //     不命中比 hi 更早的标签 ⇒ 否则"期望 = hi 那份"根本不可计算（子串歧义会让判据失去方向）。
+                if (haveReal)
+                {
+                    var tags = FfmpegGui.Services.CpuFeatureService.GetSimdPriorityTags();
+                    Check(tags.Length > 0 && tags[tags.Length - 1] == "generic",
+                        $"⑥a1 标签表非空且末位是 generic（实得 {tags.Length} 项 / 末位 \"{tags[tags.Length - 1]}\"）");
+                    bool anyBlank = false;
+                    foreach (var t2 in tags) if (string.IsNullOrWhiteSpace(t2)) anyBlank = true;
+                    //   匹配判据是 `name.Contains(tag)` ⇒ 一个空/空白标签会让**第一轮**吞掉全部候选并按**逆序**
+                    //   返回（`for i = Count-1 downto 0`），选路静默退化成"最后入列者优先"，且不抛错不打日志。
+                    Check(!anyBlank, "⑥a2 标签表不得含空/空白项（`Contains(\"\")` 恒真 ⇒ 排序退化为逆序，见上）");
+                    string? hi = null, lo = null;
+                    for (int a = 0; a < tags.Length && hi == null; a++)
+                    {
+                        if (tags[a] == "generic") break;
+                        for (int b = a + 1; b < tags.Length; b++)
+                        {
+                            if (tags[b] == "generic") break;
+                            if (!tags[a].Contains(tags[b], StringComparison.Ordinal)
+                                && !tags[b].Contains(tags[a], StringComparison.Ordinal)) { hi = tags[a]; lo = tags[b]; break; }
+                        }
+                    }
+                    if (hi == null || lo == null)
+                    {
+                        Skip("⑥b–⑥e 需要标签表里存在**互不为子串**的一对（本机表 = ["
+                             + string.Join(", ", tags) + "]）⇒ 造不出无歧义夹具，不判，不是通过");
+                    }
+                    else
+                    {
+                        int idxHi = Array.IndexOf(tags, hi);
+                        int idxLo = Array.IndexOf(tags, lo);
+                        var simdDir = Path.Combine(tmp, "simd");
+                        var simdJunk = Path.Combine(tmp, "simdjunk");
+                        Directory.CreateDirectory(simdDir);
+                        Directory.CreateDirectory(simdJunk);
+                        string MkReal(string dir, string tag)
+                        {
+                            var p = Path.Combine(dir, "zzprobe-" + tag + ".exe");
+                            File.Copy(realSrc, p, true);           // 同一份**真起得来**的二进制，只差文件名
+                            return p;
+                        }
+                        var pHi = MkReal(simdDir, hi);
+                        var pLo = MkReal(simdDir, lo);
+                        var pPlain = Path.Combine(simdDir, "zzprobeplain.exe");
+                        File.Copy(realSrc, pPlain, true);
+                        var jHi = Path.Combine(simdJunk, "zzprobe-" + hi + ".exe");
+                        File.WriteAllText(jHi, "this is not a portable executable");
+                        var jLo = Path.Combine(simdJunk, "zzprobe-" + lo + ".exe");
+                        File.WriteAllText(jLo, "this is not a portable executable");
+                        string N(string? p) { return p == null ? "(null)" : Path.GetFileName(p); }
+                        Check(idxHi >= 0 && idxLo > idxHi,
+                            $"⑥a3 选出的标签顺序与表内优先级一致（hi={hi}@{idxHi} / lo={lo}@{idxLo}）");
+                        bool premiseOk = true;
+                        foreach (var nm in new[] { N(pHi), N(pLo), N(pPlain) })
+                        {
+                            var ln = nm.ToLowerInvariant();
+                            for (int k = 0; k < idxHi; k++) if (ln.Contains(tags[k])) premiseOk = false;
+                        }
+                        foreach (var t2 in tags)
+                            if (t2 != "generic" && N(pPlain).ToLowerInvariant().Contains(t2)) premiseOk = false;
+                        Check(premiseOk,
+                            $"⑥-premise 夹具前提：hi/lo/plain 的文件名都不得命中比 hi 更早的标签，且 plain 不得命中任何实标签" +
+                            $"（表=[{string.Join(", ", tags)}]，hi={hi}@{idxHi}）");
+                        var r1 = FfmpegGui.Services.ExternalToolsDetector.ChooseBestExecutable(new[] { pLo, pHi, pPlain });
+                        var r2 = FfmpegGui.Services.ExternalToolsDetector.ChooseBestExecutable(new[] { pPlain, pHi, pLo });
+                        var r3 = FfmpegGui.Services.ExternalToolsDetector.ChooseBestExecutable(new[] { pHi, pPlain, pLo });
+                        Check(string.Equals(r1, pHi, StringComparison.OrdinalIgnoreCase)
+                              && string.Equals(r2, pHi, StringComparison.OrdinalIgnoreCase)
+                              && string.Equals(r3, pHi, StringComparison.OrdinalIgnoreCase),
+                            $"⑥b 三种输入顺序都必须选高优先标签那份（实得 {N(r1)} / {N(r2)} / {N(r3)}，期望 {N(pHi)}）");
+                        var r4 = FfmpegGui.Services.ExternalToolsDetector.ChooseBestExecutable(new[] { pPlain, pLo });
+                        Check(string.Equals(r4, pLo, StringComparison.OrdinalIgnoreCase),
+                            $"⑥c 拿掉 hi 时应落到次高标签那份（实得 {N(r4)}，期望 {N(pLo)}）⇒ 起作用的是标签匹配而不是「返回第一个」");
+                        var r5 = FfmpegGui.Services.ExternalToolsDetector.ChooseBestExecutable(new[] { jHi, pLo, pPlain });
+                        Check(string.Equals(r5, pLo, StringComparison.OrdinalIgnoreCase),
+                            $"⑥d hi 位置换成起不来的垃圾 ⇒ 必须落到 lo（实得 {N(r5)}，期望 {N(pLo)}）：标签优先级不得盖过「起不起来」");
+                        var r6 = FfmpegGui.Services.ExternalToolsDetector.ChooseBestExecutable(new[] { jHi, jLo });
+                        Check(r6 == null,
+                            $"⑥e 全是「带特征后缀 + 起不来」的候选 ⇒ 必须 null（实得 {N(r6)}）——末尾兜底不得把带标签的垃圾报成工具");
+                        Console.WriteLine($"[读数] ⑥ 夹具 hi={hi} lo={lo} 表=[{string.Join(", ", tags)}] " +
+                                          $"CPU={FfmpegGui.Services.CpuFeatureService.Summary()}");
+                    }
+                }
+                else Skip("⑥ 依赖 ② 的真 djxl 对照组来造「都起得来、只差文件名」的三份候选（对照组缺失时 ② 已判红）⇒ 不判");
+
+                // ── ④ 残留自证（精确路径，不用通配） ──
+                int del = 0;
+                foreach (var f in Directory.GetFiles(tmp, "*", SearchOption.AllDirectories)) { File.Delete(f); del++; }
+                Directory.Delete(tmp, true);
+                Check(!Directory.Exists(tmp), $"④ 运行级目录已清零（删 {del} 个文件）：{tmp}");
+            }
+            finally
+            {
+                try { if (Directory.Exists(tmp)) Directory.Delete(tmp, true); } catch { }
+            }
         }
 
         private static void ProbeSelfTest()
@@ -4944,6 +6285,129 @@ namespace ServiceProbe
             Check(ColorSpaceRegistry.ExactTransferName("BT.2100 PQ") == "smpte2084", "BT.2100 PQ → smpte2084");
             Check(ColorSpaceRegistry.ExactTransferName("ProPhoto RGB") == null, "ProPhoto(1.8) 不可精确表达 → null");
             Check(ColorSpaceRegistry.ExactTransferName("DCI-P3") == null, "DCI-P3(2.6) 不可精确表达 → null");
+        }
+
+        /// <summary>
+        /// colormath —— 把本仓 CICP 原色表推导出的线性矩阵，与**外部参照实现 zimg** 逐元素对撞。
+        /// 参照值来源：本机 `C:\PLAN\VQBench\PLAN\ffmpeg-full\ffmpeg.exe`（git-2026-08-06，含 zscale/zimg）
+        /// 实测于 2026-09-24：`-f rawvideo -pix_fmt gbrpf32le -video_size 1x1`（喂单位基向量）→
+        /// `zscale=pin=&lt;T&gt;:tin=linear:min=0:p=bt709:t=linear:m=0,format=gbrpf32le` → 读回 12 字节浮点。
+        /// ⚠ 两点口径：① **必须走 float**，16-bit 出口会把 BT.2020/P3→709 的负值与 &gt;1 削平，
+        ///    先前用 8-bit `color=` 源 + `rgb48le` 出口测出的"各 token 都是单位阵"就是那个假象；
+        /// ② gbrp 平面序是 **G,B,R**，下面每行已按 (R,G,B) 三列重排。
+        /// 控制组：pin=1(bt709)→bt709 必须是精确单位阵；pin=9(bt2020) 必须等于 ITU BT.2080 发布值
+        /// （也与本仓 `ProbeMatrix` 的期望常量一致）⇒ 参照本身可信。
+        /// </summary>
+        private static void ProbeColorMathAgainstZimg()
+        {
+            // token → 9 项行主序（与 LinearMatrixBetweenPrimaries 同形：out[r] = Σ m[r*3+k]·in[k]）
+            //   ⚠ 每个数组都过了一道独立校验：**三行之和必须各为 1**（白→白，与白点无关）——
+            //     第一版这里有 4 个 token 因为平面序重排写错，正是这条校验逐个抓出来的。
+            var zimg = new (string Tok, double[] M)[]
+            {
+                ("bt709",     new[] { 1.0, 0.0, 0.0,  0.0, 1.0, 0.0,  0.0, 0.0, 1.0 }),
+                ("bt470m",    new[] { 1.48616, -0.40355, -0.08260,  -0.02510, 0.95402, 0.07108,  -0.02722, -0.04410, 1.07132 }),
+                ("bt470bg",   new[] { 1.04404, -0.04404, 0.0,  0.0, 1.0, 0.0,  0.0, 0.01179, 0.98821 }),
+                ("smpte170m", new[] { 0.93954, 0.05018, 0.01028,  0.01777, 0.96579, 0.01643,  -0.00162, -0.00437, 1.00599 }),
+                ("smpte240m", new[] { 0.93954, 0.05018, 0.01028,  0.01777, 0.96579, 0.01643,  -0.00162, -0.00437, 1.00599 }),
+                ("film",      new[] { 1.34618, -0.33920, -0.00698,  -0.04735, 1.06605, -0.01870,  -0.02166, -0.06131, 1.08298 }),
+                ("bt2020",    new[] { 1.66049, -0.58764, -0.07285,  -0.12455, 1.13290, -0.00835,  -0.01815, -0.10058, 1.11873 }),
+                ("smpte428",  new[] { 3.14666, -1.66646, -0.48019,  -0.99552, 1.95576, 0.03976,  0.06359, -0.21456, 1.15097 }),
+                ("smpte431",  new[] { 1.15752, -0.15496, -0.00255,  -0.04150, 1.04557, -0.00407,  -0.01805, -0.07858, 1.09663 }),
+                ("smpte432",  new[] { 1.22494, -0.22494, 0.0,  -0.04206, 1.04206, 0.0,  -0.01964, -0.07864, 1.09827 }),
+                ("jedec-p22", new[] { 1.02525, -0.02655, 0.00130,  0.01939, 0.94803, 0.03258,  -0.00177, -0.00144, 1.00321 }),
+            };
+            // ── 容差**分档**（P4 收口：原先一个 1e-3 把两种性质完全不同的上限混在一起）──
+            //   实测残差（2026-09-26，本 mode 自己打出来的 maxErr，不是估的）：
+            //     bt2020 1.14e-6 · bt470bg 3.38e-6 · smpte432 3.95e-6 · smpte170m 4.91e-6
+            //     · smpte240m 4.91e-6 · jedec-p22 4.92e-6  ⇒ **A 档**
+            //     bt470m 1.76e-4 · smpte431 2.36e-4        ⇒ **B 档**
+            //   A 档 = 1e-5：锚 A（zimg）的读数只有 5 位小数 ⇒ 单元素舍入地板 5e-6，
+            //     实测最大 4.92e-6 正贴着它 ⇒ 再严就是在抄 zimg 的舍入，而不是在验本仓的数学。
+            //   B 档 = 5e-4：这两格的残差**不来自原色抄错**，而来自"白点只给到有限位数"这一事实——
+            //     `bt470m` 用 Illuminant C (0.3101,0.3162)、`smpte431` 用影院白 (0.314,0.351)，
+            //     而色适应矩阵对白点位数远比原色敏感（残差集中在对角元 1,1 / 反对角 0,2 正是适应项）。
+            //     ⇒ 要收紧 B 档，先按权威源取更高精度的白点常数、再用同一锚复测；
+            //       **不许**把 5e-4 调到 1e-3 去"吸收"，也不许拿 A 档去判它（那会立刻假红）。
+            //   ⚠ 没登记进本表的 token ⇒ 判红并点名"不知道该用哪档"：默认走宽松档就是这条锁漏齿的方式。
+            var tolTier = new System.Collections.Generic.Dictionary<string, (double Tol, string Why)>
+            {
+                ["bt2020"] = (1e-5, "A 档=锚读数舍入地板 5e-6"),
+                ["bt470bg"] = (1e-5, "A 档=锚读数舍入地板 5e-6"),
+                ["smpte432"] = (1e-5, "A 档=锚读数舍入地板 5e-6"),
+                ["smpte170m"] = (1e-5, "A 档=锚读数舍入地板 5e-6"),
+                ["smpte240m"] = (1e-5, "A 档=锚读数舍入地板 5e-6"),
+                ["jedec-p22"] = (1e-5, "A 档=锚读数舍入地板 5e-6"),
+                ["bt470m"] = (5e-4, "B 档=白点位数上限（Illuminant C）"),
+                ["smpte431"] = (5e-4, "B 档=白点位数上限（影院白 0.314,0.351）"),
+            };
+
+            foreach (var (tok, expect) in zimg)
+            {
+                var got = ColorSpaceRegistry.LinearMatrixBetweenPrimaries(tok, "bt709");
+                if (tok == "bt709")
+                {
+                    // 同 token 的契约就是 null（=不映射）；把它当"缺矩阵"判红是我第一版的错向断言。
+                    Check(got == null, "bt709→bt709 必须 null（同原色 = 不映射，绝不生成单位阵去乘一遍）");
+                    continue;
+                }
+                if (got == null)
+                {
+                    // null 只有在「本仓**故意**不收录」时才正确，且必须逐个点名理由：
+                    //   film     = 未收录（lcms 有原色但残差 2.1e-4，精度不足以填表）
+                    //   smpte428 = **xy 参数化表达不了**（H.273 蓝原色 y=0 ⇒ 归一化退化）⇒ 只能不收录
+                    // 其余 token 拿到 null 一律红：那说明表被删漏了，而不是"设计如此"。
+                    var whyNull = new System.Collections.Generic.Dictionary<string, string>
+                    {
+                        ["film"] = "未收录（精度不足）",
+                        ["smpte428"] = "xy 不可表达 ⇒ 故意不收录，不许挑一组「看着像」的补回来",
+                    };
+                    Check(whyNull.ContainsKey(tok),
+                        $"{tok}→bt709 返回 null ⇒ 只允许出现在「故意不收录」名单里（名单与理由：film=精度不足、smpte428=xy 表达不了）");
+                    continue;
+                }
+                double err = 0; int worst = -1;
+                for (int i = 0; i < 9; i++)
+                {
+                    double d = Math.Abs(got[i] - expect[i]);
+                    if (d > err) { err = d; worst = i; }
+                }
+                Console.WriteLine($"  {tok,-11} maxErr={err:E2} (位置 {worst / 3},{worst % 3}) " +
+                    $"本仓=[{string.Join(",", got.Select(v => v.ToString("0.0000", System.Globalization.CultureInfo.InvariantCulture)))}] " +
+                    $"zimg=[{string.Join(",", expect.Select(v => v.ToString("0.0000", System.Globalization.CultureInfo.InvariantCulture)))}]");
+                if (!tolTier.TryGetValue(tok, out var tier))
+                {
+                    // 新加 token 时**必须**同时登记档位与依据 ⇒ 否则"这条到底该多严"会变成隐含默认值。
+                    Check(false, $"{tok}→bt709 未登记容差档位 ⇒ 不判（实测 maxErr={err:E2}；请补 tolTier 与依据）");
+                    continue;
+                }
+                Check(err <= tier.Tol,
+                    $"{tok}→bt709 与 zimg 参照逐元素一致（≤{tier.Tol:0.######}，{tier.Why}）实差 {err:E2}");
+            }
+
+            // 表内重复项的直接后果：名义上不同的标准被判"同原色"⇒ 跳映射（用户明令禁止的那类静默）
+            var dup = new System.Collections.Generic.List<string>();
+            for (int i = 0; i < zimg.Length; i++)
+                for (int j = i + 1; j < zimg.Length; j++)
+                {
+                    var a = ColorSpaceRegistry.LinearMatrixBetweenPrimaries(zimg[i].Tok, "bt709");
+                    var b = ColorSpaceRegistry.LinearMatrixBetweenPrimaries(zimg[j].Tok, "bt709");
+                    if (a == null || b == null) continue;
+                    bool same = true;
+                    for (int k = 0; k < 9; k++) if (Math.Abs(a[k] - b[k]) > 1e-9) { same = false; break; }
+                    if (same) dup.Add($"{zimg[i].Tok}≡{zimg[j].Tok}");
+                }
+            Console.WriteLine("  本仓把不同标准算成**同一矩阵**的 token 对：" + (dup.Count == 0 ? "无" : string.Join(" ", dup)));
+            // 重复**不是自动违法**：zimg 自己也让 smpte170m 与 smpte240m 同原色（差异只在传递函数），
+            // 所以这里要的是「白名单之外不得重复」——白名单每一对都必须有外部锚的理由，
+            // 加对进白名单等同于改判据，必须写清楚是谁、凭什么加进来的（别用"看着一样"当理由）。
+            var allowedDup = new System.Collections.Generic.Dictionary<string, string>
+            {
+                ["smpte170m≡smpte240m"] = "两锚同判：lcms chrm 与 zimg 矩阵都给出同一组原色，差异只在 trc/matrix",
+            };
+            var badDup = dup.Where(x => !allowedDup.ContainsKey(x)).ToList();
+            Check(dup.Count > 0 && badDup.Count == 0,
+                $"同矩阵对全部落在白名单内（实得 {dup.Count} 对，白名单外 {badDup.Count} 对：{string.Join(" ", badDup)}）");
         }
 
         /// <summary>pq —— SMPTE ST 2084 EOTF/OETF 锚点值与互逆自检（防符号/常数写错致画面变黑）。</summary>

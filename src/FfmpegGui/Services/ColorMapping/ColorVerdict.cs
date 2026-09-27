@@ -85,8 +85,23 @@ public static class DegradationCodes
     /// </para>
     /// </summary>
     public const string GamutCompressed = "GamutCompressed";
-    /// <summary>出口位深低于中间精度（8bit 容器 + 有损变换）。</summary>
+    /// <summary>
+    /// 出口位深**低于**本次目标位深（两个来源：8bit 容器 + 有损变换 ⇒ 中间精度损失并做有序抖动；
+    /// 或目标档位高于出口能交付的档位，如请求 32 而出口只有 16）。
+    /// </summary>
     public const string BitDepthReduced = "BitDepthReduced";
+    /// <summary>
+    /// 出口位深**高于**本次目标位深（典型：请求 10/12 而 RGB 原生容器只有 8/16 两档 ⇒ 实得 16）。
+    /// <para>
+    /// ⚠ **语义上不是损失**：升位不丢精度，只让产物更大 —— 单独成一个 Code（而不是复用
+    /// <see cref="BitDepthReduced"/>）正是为了不让日志把「给了更多」写成「丢了东西」。
+    /// 但它**仍然登记在 Degradations 通道里**：这条通道是本仓唯一的「用户请求 ≠ 实际交付」播报口，
+    /// 漏报的代价（用户以为出了 12bit、实际是 16bit 且全程零字）远大于「Kind 被翻成
+    /// <see cref="VerdictKind.ProceedWithDegradation"/>」这一措辞代价。
+    /// </para>
+    /// <para>⚠ 与 <see cref="BitDepthReduced"/> 互斥：同一格出口位深不可能既高于又低于目标。</para>
+    /// </summary>
+    public const string BitDepthRaised = "BitDepthRaised";
     /// <summary>请求了 GainMap 但容器非 JPEG 族 ⇒ 结构不可能。</summary>
     public const string GainMapNonJpeg = "GainMapNonJpeg";
     /// <summary>GainMap 与几何缩放同用（未验证的新几何路径）。</summary>

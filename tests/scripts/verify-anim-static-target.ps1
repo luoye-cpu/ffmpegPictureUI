@@ -43,7 +43,13 @@
 # ⚠ 双宿主兼容（PS 7 / PS 5.1）：禁三元 `? :` / `??` / `?.` / `&&` / `||`；双引号串内禁全角弯引号（用 「」）。
 # ⚠⚠ **退出码禁用轮询式 `.ExitCode`**：PS5.1 下 `Start-Process -PassThru`（不带 `-Wait`）的 `.ExitCode`
 #   **恒为 `$null`**，而 `[int]$null == 0` ⇒ 会把「读不到」伪装成「exit 0」⇒ **假绿**。
-#   本门禁的用例都会自行结束 ⇒ 轮询到 `HasExited` 后再读 `ExitCode`，并对 `$null` 单独记账。
+#   ⚠ 2026-09-22 更正：本文件此前写着"轮询到 `HasExited` 后再读 `ExitCode`，并对 `$null` 单独记账"——
+#     前半句的前提是错的（结束 ≠ 读得到），后半句是**虚假声明**（代码里没有任何 `$null` 记账），
+#     实测该门禁在 PS5.1 下全红、在 pwsh7 下 48/0。现改为：`GetFrames` 只看文本不依赖取码，
+#     需要真退出码的判据一律走 `CheckExit`（取不到 ⇒ 单列点名"测量失败"的红），⑤ 另加"可评估"前置。
+#   ⚠ 本门禁**仍未**改成 `-Wait -PassThru` 或「子宿主 + rc 文件」⇒ 在 5.1 下那几条 `exit == 0`
+#     会以"测量失败"的形式红着（fail-closed，不再伪装成产品缺陷）。要真正双宿主可用需按
+#     `verify-ui-host.ps1` 的 rc 范式改造 ⇒ **已登记为待办**，不在本轮范围内。
 # ⚠⚠ **杀树禁用 `$p.Kill($true)`**（该重载在 PS5.1/.NET Framework 上不存在）⇒ 用下面的 `KillTree`。
 # ⚠ 形参名**不能**叫 `$pid`（只读自动变量）。
 # ⚠⚠ **结尾必须是完整 if/else**（§6 第 67 条）：清理步会污染 `$LASTEXITCODE`，只写
@@ -53,6 +59,9 @@ $root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path; Set-Location $roo
 $env:FFMPEGGUI_FFMPEG_DIR = "$root/publish/PLAN/ffmpeg-full"
 $exe = "$root/src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.exe"
 if (-not (Test-Path $exe)) { $exe = "$root/src/FfmpegGui/bin/Debug/net11.0/win-x64/FfmpegGui.exe" }
+# ⚠ 2026-09-21（TESTING.md 第 84 条处置建议 ①）：**回退是静默的** —— 门禁可能测的
+#   不是你以为的那个二进制。⇒ 一律**打印被测 exe 与构建类型**，让读数可追溯。
+Write-Output ("[gate] exe=" + $exe + $(if ($exe -like '*\Debug\*') { " (Debug fallback)" } else { " (Release)" }))
 $ff = "$root/publish/PLAN/ffmpeg-full/ffmpeg.exe"
 $fp = "$root/publish/PLAN/ffmpeg-full/ffprobe.exe"
 
@@ -129,15 +138,36 @@ function GetCmdLine([string]$text) {
   return ""
 }
 
+# ⚠⚠ 退出码判据必须**区分"产品非 0"与"本宿主取不到码"**（2026-09-22 实测教训）：
+#   PS5.1 下本门禁的 `Exec`/`RunApp` 是"轮询 `HasExited` 后读 `.ExitCode`"，该写法恒得 `$null`
+#   （既有实测见 `GetFrames` 上方注释）。旧写法把 `$null` 直接喂进 `$r.code -eq 0` ⇒
+#   在 5.1 下**全部记成产品失败**（假红），且 ⑤ 那条取反判据因此**恒真真空绿**（假绿）。
+#   ⇒ 取不到码时单列一条**点名"测量失败"**的红，绝不让它伪装成产品结论。
+function CheckExit($code, [string]$msg) {
+  if ($null -eq $code) {
+    Check $false "$msg —— 退出码在本宿主取不到（PS5.1 轮询式 `.ExitCode` 恒为 null）⇒ **测量失败**，不是产品失败"
+    return
+  }
+  Check ($code -eq 0) "$msg（实 $code）"
+}
+
 # 帧数（ffprobe 真数帧；失败返回 -1，**不得**把「读不到」当成 1）
+# ⚠⚠ 判据**不看退出码**：PS5.1 下本函数的 `Exec` 是"轮询 `HasExited` 后读 `.ExitCode`"，
+#   而该写法在 5.1 下**恒取到 `$null`**（既有实测：`verify-jxl-probe-timeout.ps1:114`
+#   「带 `-Wait` ⇒ 1；轮询到 HasExited 后读 ⇒ `<null>`，`Refresh()` 无效」、
+#   `verify-avif-anim-probe.ps1:144`「`WaitForExit()` 与 `Refresh()` 都救不回来」）。
+#   旧写法 `if ($r.code -ne 0) { return -1 }` 因此把**每一次**取帧都判成失败 ⇒ 整门禁 mass 假红
+#   （实测同一份脚本 pwsh7 = 48/0、PS5.1 = 全红，而手调 ffprobe 同一文件返回 `…,10` / rc=0）。
+#   ⇒ 改为"只认整行为数字的那一行"，读不到仍返回 -1（fail-closed 不变），但不再依赖宿主取码能力。
 function GetFrames([string]$f) {
   if (-not (Test-Path $f)) { return -1 }
   $r = Exec $fp ("-v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of csv=p=0 `"$f`"") "fp_$([guid]::NewGuid().ToString('N').Substring(0,6))"
-  if ($r.code -ne 0) { return -1 }
-  $line = ""
-  foreach ($ln in ($r.text -split "`n")) { if ($ln.Trim() -ne "") { $line = $ln.Trim() } }
+  if ($r.timedOut) { return -1 }
   $n = 0
-  if ([int]::TryParse($line, [ref]$n)) { return $n }
+  foreach ($ln in ($r.text -split "`n")) {
+    $s = $ln.Trim()
+    if ($s -ne "" -and [int]::TryParse($s, [ref]$n)) { return $n }
+  }
   return -1
 }
 
@@ -211,7 +241,7 @@ function RunAnimCase([string]$inPath, [string]$fmt, [string]$tag, [string]$label
   if ($frames -ge 0) { $framesTxt = "$frames" }
   Write-Host "  [$label] exit=$($r.code) 产物=$(if ($prodName -eq '') { '(无)' } else { $prodName }) 帧=$framesTxt 带-frames:v1=$hasFlag"
 
-  Check ($r.code -eq 0) "$grp $label：exit == 0（实 $($r.code)）"
+  CheckExit $r.code "$grp $label：exit == 0"
   # ⚠ 文案差异是**有意**的（与原文逐字一致）：② 的有产物带目录、③ 的不带。
   if ($expectKind -eq "single") {
     Check ($prod -ne "") "$grp $label：有产物（$outdir）"
@@ -262,7 +292,7 @@ foreach ($c in $sgl) {
   $framesTxt = "0"; if ($frames -ge 0) { $framesTxt = "$frames" }
   Write-Host "  [$($c.label)] exit=$($r.code) 产物=$(if ($prod -eq '') { '(无)' } else { Split-Path $prod -Leaf }) 帧=$framesTxt 带-frames:v1=$hasFlag"
 
-  Check ($r.code -eq 0) "④ $($c.label)：exit == 0（实 $($r.code)）"
+  CheckExit $r.code "④ $($c.label)：exit == 0"
   Check ($prod -ne "") "④ $($c.label)：有产物"
   Check ($frames -eq 1) "④ $($c.label)：产物 1 帧（实 $framesTxt）"
   Check $hasFlag "④ $($c.label)：命令行**带** 「-frames:v 1」（证明单帧输入也走了新分支，不是没覆盖到）"
@@ -293,8 +323,22 @@ $jframes = -1
 if ($jprod -ne "") { $jframes = GetFrames $jprod }
 $jframesTxt = "0"; if ($jframes -ge 0) { $jframesTxt = "$jframes" }
 Write-Host "  [anim.webp → jxl(anim)] exit=$($jr.code) 产物=$(if ($jprod -eq '') { '(无)' } else { Split-Path $jprod -Leaf }) 帧=$jframesTxt"
-Check (-not (($jr.code -eq 0) -and ($jframes -eq 1))) `
-  "⑤ anim.webp → jxl + --animation-fps：**不得** exit 0 且 1 帧（否则动画被静默丢弃；实 exit=$($jr.code) 帧=$jframesTxt）"
+# ⚠ 这条是**取反**判据 ⇒ 必须先证明"两个输入都可评估"，否则它会**恒真真空绿**：
+#   PS5.1 下 `$jr.code` 取不到 ⇒ `$null -eq 0` 为假 ⇒ `(-and)` 短路 ⇒ `-not $false` = 恒 PASS。
+#   该条正是本门禁变异验证（把 `FfmpegCommandBuilder` 的 `insertFramesV1` 判据改成无条件插参）
+#   用来抓红的牙 ⇒ 牙不能建立在取码能力上。
+# ⚠ 但"可评估"前置**不得过严**（2026-09-22 实测踩过）：本用例的**正确**行为之一就是"应用拒绝并
+#   非零退出、零产物"（实测 exit=1、`image2 … does not contain an image sequence pattern`）⇒
+#   那种情形下压根没有产物可数帧，要求 `帧 ≥ 0` 会把**合法拒绝**误判成测量失败。
+#   ⇒ 只有"取不到码"或"exit==0 却数不到帧"这两种**会让判据假通过**的情形才记测量失败。
+$g5Msg = "⑤ anim.webp → jxl + --animation-fps：**不得** exit 0 且 1 帧（否则动画被静默丢弃；实 exit=$($jr.code) 帧=$jframesTxt）"
+if ($null -eq $jr.code) {
+  Check $false "⑤ anim.webp → jxl + --animation-fps：退出码在本宿主取不到（PS5.1 轮询式 `.ExitCode` 恒为 null）⇒ **测量失败**，不下「未截断」的结论（旧写法在此情形下会恒真 PASS）"
+} elseif (($jr.code -eq 0) -and ($jframes -lt 0)) {
+  Check $false "⑤ anim.webp → jxl + --animation-fps：exit==0 但产物帧数读不到（帧=-1）⇒ **测量失败**，不得当成「未截断」"
+} else {
+  Check (-not (($jr.code -eq 0) -and ($jframes -eq 1))) $g5Msg
+}
 
 Write-Host "`n### ⑥ 被测 exe mtime 跑前跑后一致 ###" -ForegroundColor Cyan
 $exeMtimeAfter = (Get-Item $exe).LastWriteTime

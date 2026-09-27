@@ -4,6 +4,9 @@ $root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 Set-Location $root
 $exe = "$root/src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.exe"
 if (-not (Test-Path $exe)) { $exe = "$root/src/FfmpegGui/bin/Debug/net11.0/win-x64/FfmpegGui.exe" }
+# ⚠ 2026-09-21（TESTING.md 第 84 条处置建议 ①）：**回退是静默的** —— 门禁可能测的
+#   不是你以为的那个二进制。⇒ 一律**打印被测 exe 与构建类型**，让读数可追溯。
+Write-Output ("[gate] exe=" + $exe + $(if ($exe -like '*\Debug\*') { " (Debug fallback)" } else { " (Release)" }))
 $uhdr = "$root/publish/PLAN/artifacts/ultrahdr_app.exe"
 $et = "$root/publish/PLAN/exiftool/exiftool.exe"
 $fp = "$root/publish/PLAN/ffmpeg-full/ffprobe.exe"
@@ -19,6 +22,17 @@ function Exec([string]$file, [string]$argStr){
   Start-Process -FilePath $file -ArgumentList $argStr -Wait -NoNewWindow -PassThru `
     -RedirectStandardOutput $o -RedirectStandardError $e | Out-Null
   return ([System.IO.File]::ReadAllText($o) + "`n" + [System.IO.File]::ReadAllText($e))
+}
+
+# 只读 stdout 的取数：随包 exiftool 是 perl 打包版，环境带本机 perl 不认的 LC_ALL/LANG 时
+#   每次调用都往 stderr 喷 locale 警告（实测 244 字节 6 行）⇒ 读「工具写在 stdout 的单个值」
+#   必须只取 stdout，否则警告并进值里，取证打印会被撑成看不懂的形态。
+#   本脚本无 pass/fail 计数（诊断型），但下面两处是把单个值当结论读的，仍按只对口径取数。
+function ExecOut([string]$file, [string]$argStr){
+  $o = "$out/_exec.out"; $e = "$out/_exec.err"
+  Start-Process -FilePath $file -ArgumentList $argStr -Wait -NoNewWindow -PassThru `
+    -RedirectStandardOutput $o -RedirectStandardError $e | Out-Null
+  return [System.IO.File]::ReadAllText($o)
 }
 
 function App($argStr, $tag) {
@@ -39,7 +53,7 @@ $gm = Get-ChildItem -Recurse "$out/gm" -Filter *.jpg -ErrorAction SilentlyContin
 if ($gm) {
     Write-Host "  [SIZE] $($gm.Length) bytes -> $($gm.FullName)" -ForegroundColor Green
     Write-Host "  --- exiftool 元数据 (hdrgm XMP / MPF / ISO) ---"
-    (Exec $et "-G -a `"$($gm.FullName)`"") -split "`r?`n" | Select-String -Pattern "hdr|Gain|MPF|MPImage|ISO|Container|Primary" | Select-Object -First 30
+    (Exec $et "-G -a `"$($gm.FullName)`"") -split "`r?`n" | Select-String -Pattern "hdr|Gain|MPF|MPImage|ISO|Container|Primary" | Select-Object -First 30  # 合并取数已论证：全量标签转储按行喂 Select-String 供人读，不喂断言；保留 stderr 恰好让 exiftool 自身的报错也出现在取证输出里
     Write-Host "  --- ultrahdr_app 解码验证 (mode 探测) ---"
     foreach ($m in 1,2) {
         $uo = Start-Process -FilePath $uhdr -ArgumentList "-m $m -i `"$($gm.FullName)`" -o `"$out/uhdr_dec_m$m.jpg`"" -Wait -NoNewWindow -PassThru -RedirectStandardOutput "$out/uhdr_dec_m$m.out" -RedirectStandardError "$out/uhdr_dec_m$m.err"
@@ -55,9 +69,9 @@ Write-Host "  $q2"
 $tif = Get-ChildItem -Recurse "$out/tiffp3" -Include *.tif,*.tiff -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($tif) {
     Write-Host "  [SIZE] $($tif.Length) bytes"
-    $iccDesc = (Exec $et "-ICC_Profile:ProfileDescription -ICC_Profile:ProfileClass -b `"$($tif.FullName)`"") -split "`r?`n"
+    $iccDesc = (ExecOut $et "-ICC_Profile:ProfileDescription -ICC_Profile:ProfileClass -b `"$($tif.FullName)`"") -split "`r?`n"
     Write-Host "  [嵌入ICC ProfileDescription] $iccDesc"
-    $cicp = (Exec $fp "-v error -select_streams v:0 -show_entries `"stream=color_primaries,color_transfer`" -of csv=p=0 `"$($tif.FullName)`"") -split "`r?`n"
+    $cicp = (ExecOut $fp "-v error -select_streams v:0 -show_entries `"stream=color_primaries,color_transfer`" -of csv=p=0 `"$($tif.FullName)`"") -split "`r?`n"
     Write-Host "  [CICP] $cicp"
     Write-Host "  >> 期望(遵循JXL): ICC=Display P3;  若=sRGB 则确认源ICC覆盖目标ICC的Bug" -ForegroundColor Yellow
 } else { Write-Host "  [FAIL] no tiff produced" -ForegroundColor Red }

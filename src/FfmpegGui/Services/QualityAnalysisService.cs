@@ -198,6 +198,9 @@ namespace FfmpegGui.Services
                 };
 
                 using var p = Process.Start(psi);
+                // 2026-09-21: this path previously MISSED the process-priority call,
+                // so the UI "process priority" setting had no effect here.
+                if (p != null) PlatformServices.SetSafePriority(p, AppSettingsService.Current.FfmpegPriority);
                 if (p == null)
                 {
                     result.Error = "无法启动 ffmpeg";
@@ -334,6 +337,8 @@ namespace FfmpegGui.Services
                     CreateNoWindow = true
                 };
                 using var p = Process.Start(psi);
+                // 2026-09-21: same as above - priority was previously not applied here.
+                if (p != null) PlatformServices.SetSafePriority(p, AppSettingsService.Current.FfmpegPriority);
                 if (p == null) return -1;
                     p.BeginErrorReadLine();   // P2-3：stderr 不排空会在管道缓冲(~4KB)写满时把子进程堵死，我们等 stdout/WaitForExit 就永等（实测可复现）
                 await p.WaitForExitAsync();

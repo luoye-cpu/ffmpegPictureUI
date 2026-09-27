@@ -198,8 +198,15 @@ public static class GainMapEncoder
                     return true;
                 }
                 byte[] gainMapJpeg = File.ReadAllBytes(gmPath);
-                WriteJpegGainMapFile(baseJpeg, gainMapJpeg, w, h, gmW, gmH, multiChannel,
-                    headroom, maxLog2Gain, outputPath);
+                if (!WriteJpegGainMapFile(baseJpeg, gainMapJpeg, w, h, gmW, gmH, multiChannel,
+                        headroom, maxLog2Gain, outputPath))
+                {
+                    // 与「SDR 输入 ⇒ 普通 JPEG」的短路不同：那条是**主动决定**并点名说明；
+                    // 这条是**没能**写出增益图 ⇒ 必须宣告失败，不允许留下"自称 Ultra HDR"的产物。
+                    log?.Invoke("[GainMap] ❌ Ultra HDR 封装失败：底图 JPEG 中定位不到 SOS，" +
+                                "无法插入 XMP/MPF ⇒ 未写出增益图（也未产出「假 Ultra HDR」）\n");
+                    return false;
+                }
                 log?.Invoke($"[GainMap] ✅ Ultra HDR JPEG: {Math.Round(new FileInfo(outputPath).Length / 1024.0)} KB\n");
                 return true;
                 }
@@ -436,6 +443,9 @@ public static class GainMapEncoder
             CreateNoWindow = true
         };
         using var p = Process.Start(psi)!;
+        // 2026-09-21: this path previously MISSED the process-priority call, so the UI
+        // "process priority" setting had no effect on this ffmpeg invocation.
+        PlatformServices.SetSafePriority(p, AppSettingsService.Current.FfmpegPriority);
         p.OutputDataReceived += (_, e) => { if (e.Data != null) log?.Invoke(e.Data + "\n"); };
         p.ErrorDataReceived += (_, e) => { if (e.Data != null) log?.Invoke(e.Data + "\n"); };
         p.BeginOutputReadLine();
@@ -473,6 +483,8 @@ public static class GainMapEncoder
                 CreateNoWindow = true
             };
             using var p = Process.Start(psi)!;
+            // 2026-09-21: same as above - the external cjpegli encoder also needs the priority.
+            PlatformServices.SetSafePriority(p, AppSettingsService.Current.FfmpegPriority);
             p.OutputDataReceived += (_, e) => { if (e.Data != null) log?.Invoke(e.Data + "\n"); };
             p.ErrorDataReceived += (_, e) => { if (e.Data != null) log?.Invoke(e.Data + "\n"); };
             p.BeginOutputReadLine();
@@ -529,7 +541,8 @@ public static class GainMapEncoder
     ///   [Base JPEG: SOI][APP1: XMP][APP2: MPF][Base 其余 (DQT/SOF/DHT/SOS/扫描/EOI)]
     ///   [增益图 JPEG: SOI][APP2: ISO 21496-1][增益图其余]
     /// </summary>
-    private static void WriteJpegGainMapFile(byte[] baseJpeg, byte[] gainMapJpeg,
+    /// <returns>true=已写出完整 Ultra HDR；false=**未能**写出增益图（调用方必须宣告失败，不得报成功）。</returns>
+    private static bool WriteJpegGainMapFile(byte[] baseJpeg, byte[] gainMapJpeg,
         int baseW, int baseH, int gmW, int gmH, bool multiChannel,
         float headroom, float maxLog2Gain, string outputPath)
     {
@@ -537,9 +550,11 @@ public static class GainMapEncoder
         int sosIndex = FindSosIndex(baseJpeg);
         if (sosIndex < 0)
         {
-            // 异常: 仅写 Base
-            File.WriteAllBytes(outputPath, baseJpeg);
-            return;
+            // ❌ 定位不到 SOS ⇒ 无法在扫描数据之前插入 XMP/MPF ⇒ **根本写不出 Ultra HDR**。
+            //    旧实现此时静默写出一张**普通 JPEG**，而调用方照样打 "✅ Ultra HDR" —— 这正是本仓
+            //    最忌讳的「宣称≠交付」（对比 EncodeAsync 中 maxLog2Gain<=0 的 SDR 短路：那条会**点名**）。
+            //    ⇒ 返回 false，由调用方宣告失败；绝不产出「自称 Ultra HDR 的普通 JPEG」。
+            return false;
         }
 
         // 2. Base 头部段 = [SOI ... SOS 之前], 不含 SOS
@@ -582,10 +597,17 @@ public static class GainMapEncoder
         ms.Write(gainMapWithIso, 0, gainMapWithIso.Length);
 
         File.WriteAllBytes(outputPath, ms.ToArray());
+        return true;
     }
 
     private static void WriteAppSegment(Stream s, byte marker, byte[] payload)
     {
+        // JPEG 段长字段只有 16 位 ⇒ payload 上限 65533。当前 XMP(~1.2KB)/MPF(86B) 远小于此，
+        // 但旧代码无任何防御：将来扩字段会**静默写出坏段**（长度回绕），比抛错难查得多 ⇒ 显式断言。
+        if (payload.Length + 2 > 0xFFFF)
+            throw new InvalidOperationException(
+                $"JPEG APP segment 过长：{payload.Length + 2} > 65535（段长字段只有 16 位）");
+
         s.WriteByte(0xFF);
         s.WriteByte(marker);
         int len = payload.Length + 2;
@@ -598,10 +620,19 @@ public static class GainMapEncoder
     private static int FindSosIndex(byte[] jpeg)
     {
         int i = 2; // 跳过 SOI
-        while (i + 3 < jpeg.Length)
+        while (i + 1 < jpeg.Length)
         {
-            if (jpeg[i] == 0xFF && jpeg[i + 1] == 0xDA) return i;
             if (jpeg[i] != 0xFF) { i++; continue; }
+            byte m = jpeg[i + 1];
+            if (m == 0xFF) { i++; continue; }                        // 0xFF 填充字节
+            if (m == 0x00) { i += 2; continue; }                     // 字节填充（紧随 0xFF 的 0x00）
+            if (m == 0xD8) { i += 2; continue; }                     // SOI（异常嵌套，跳过）
+            // ⚠️ **独立标记（无 16 位长度字段）**：TEM(0x01) 与 RSTn(0xD0–0xD7)。
+            //    旧实现把它们后面两个字节当成段长 ⇒ 跳位错乱 ⇒ 在正常的渐进/带 restart 标记的
+            //    JPEG 上找不到 SOS 而返回 -1（该失败又被上层静默成"仅写 Base"）。
+            if (m == 0x01 || (m >= 0xD0 && m <= 0xD7)) { i += 2; continue; }
+            if (m == 0xDA) return i;                                 // SOS
+            if (i + 3 >= jpeg.Length) return -1;                     // 截断
             // 段: FF xx LL LL data
             int len = (jpeg[i + 2] << 8) | jpeg[i + 3];
             if (len < 2) return -1;

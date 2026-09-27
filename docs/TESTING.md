@@ -105,7 +105,7 @@ ffprobe -v error -select_streams v:0 -show_entries stream=pix_fmt -of csv=p=0 ou
 |---|---|---|
 | `run-color-regress.ps1` | 一次跑完下面所有 `verify-*.ps1` 并汇总 | 各脚本自身的 `PASS=n FAIL=n` |
 | `run-pipeline-tests.ps1` | 主编码/解码/后端矩阵 | 80 项，含 PSNR/SSIM 阈值 |
-| `verify-color-strategy.ps1` | 4 种色彩策略 × {SDR/广色域/HDR 源} × 4 格式；**2026-09-17（S6）起还含「两条管线的裁决对照」** | 输出非空 + 记录 CICP/ICC 供比对；**63/0**（2026-09-17 S6 实测；S7 轮为 58/0）。S6 新增（+5）：③d(d) **legacy 在 Reject 格同样拒绝**（非零退出码 + `Reason` / `建议` / `可替代方案：Kind/Value`）；③e **裁决 parity** —— 同一输入**真实 CLI 跑两遍**（默认引擎 / `--color-engine legacy`），逐格比 `Verdict.Kind` **且比结局**（`Reject` ⇒ 零产物；非 `Reject` ⇒ 有产物），外加**覆盖格数下限 12**（防"两边都读不到 ⇒ 全 skip"的空断言）。⚠ 判据一律是**稳定枚举**（`VerdictKind` / `DegradationCodes.*` / `AlternativeKind`），禁止自由文本；⚠ ② 段 `expectReject` 由**读裁决**决定、不再硬编码（详见 §6 第 79 条） |
+| `verify-color-strategy.ps1` | 4 种色彩策略 × {SDR/广色域/HDR 源} × 4 格式；**2026-09-17（S6）起还含「两条管线的裁决对照」** | 输出非空 + 记录 CICP/ICC 供比对；**71/0**（2026-09-26 17:35 整轮实测；演进 58/0（S7）→ 63/0（S6）→ **70/1**（09-26 新增 ③f「位深播报锁」+8 条，其中 F3 故意留红，钉 #35 那笔"webp/avif 位深升降零播报"的账）→ **71/0**（同日 #35 修完：请求档穿过两处钳制带进规划层，**判据一字未放宽**，红的成因改为 F0a–F0e 五条合成自测 + F2 真日志负控来咬）→ **77/0**（同日深夜 #39/#41 加 F4/F5 共 6 条：F4 `avif + Display P3 + --bit-depth 12` 必须**真交付 12bit**、F5 请求 16 必须落到编码器上限 12 且恰好播一次；钉的是**删掉"AVIF+P3 高位深 ⇒ 8bit"无据特例之后**的新契约 ⇒ 是**收紧**不是放宽，特例加回来 F4 立刻红。⚠ F4 的出口 `-pix_fmt` 必须取日志里**最后一个**匹配：引擎路线前面那条 `rgb48le` 是喂编码器的中间件格式，取第一个会把正确产物判成红 —— 本轮实测踩过。读数 `tests/output/t39/strategy_after2.log`，DLL `1881E2F76539CAEF`））。S6 新增（+5）：③d(d) **legacy 在 Reject 格同样拒绝**（非零退出码 + `Reason` / `建议` / `可替代方案：Kind/Value`）；③e **裁决 parity** —— 同一输入**真实 CLI 跑两遍**（默认引擎 / `--color-engine legacy`），逐格比 `Verdict.Kind` **且比结局**（`Reject` ⇒ 零产物；非 `Reject` ⇒ 有产物），外加**覆盖格数下限 12**（防"两边都读不到 ⇒ 全 skip"的空断言）。⚠ 判据一律是**稳定枚举**（`VerdictKind` / `DegradationCodes.*` / `AlternativeKind`），禁止自由文本；⚠ ② 段 `expectReject` 由**读裁决**决定、不再硬编码（详见 §6 第 79 条） |
 | `verify-widegamut-regression.ps1` | ⚠ **只验「广色域源在各格式/各目标下能否产出非空产物」**（18 条 = 18 格产物存在性） | **仅看产物存在且非空**；`ffprobe` 读到的 CICP **只回显不判**。**不做任何像素级断言**（既不验"不偏色/不削色"，也没有 ICC 度量与亮度统计）⇒ 广色域保真/削色必须看 `verify-prophoto-faithful.ps1`（raw 样本逐位一致）与 `verify-color-wiring.ps1`（PSNR/ICC 一致性） |
 | `verify-format-regression.ps1` | 各格式能力约束（钳位/置灰/失败旁路） | 退出码 + 产物尺寸 |
 | `verify-prophoto-faithful.ps1` | **ProPhoto 像素原样 + 仅 ICC 保真路径** | 输出与源 **RGB 样本逐位一致**（raw 哈希）、ICC 描述=ProPhoto、无误导性 CICP、AVIF 不误用保真、生成 ICC 色度 == 已发布 ProPhoto(D50) 矩阵 |
@@ -113,7 +113,7 @@ ffprobe -v error -select_streams v:0 -show_entries stream=pix_fmt -of csv=p=0 ou
 | `verify-gainmap-engine.ps1` | **GainMap 走色彩引擎出口的专项门禁**：引擎决策/引擎出口（含「显式 `legacy` + GainMap 仍走引擎」）、`--jpeg-gain-map-base-gamut` 与 `-multi-channel` 透传、预缩放不得静默退化为 SDR、tonemap 误伤修复、GainMap + 最长边缩放新契约、`isHdrInput` 判据换源、`--jpeg-progressive` 三态 × GainMap 双路径（§10 结构锁） | 真实 CLI 端到端 + **第三方可证**判据（不靠产品日志散文）：`exiftool` 读底图**内嵌 ICC 色度**（bt2020 红原色 **0.70799 0.29201** vs 默认 sRGB **0.64 0.33**）· `exiftool` 读 XMP hdrgm `Channels`（multi=**3** / 默认=**1**）· ffmpeg 解**主图 raw 比 MD5**（证明 bt2020 底是**真像素转换**、非只改标签）· 非法 `--jpeg-gain-map-base-gamut bogus` ⇒ **exit 2 + 零产物 + 点名「取值无效」** · `isHdrInput` 换源：cICP=PQ + 内嵌 sRGB ICC ⇒ 实测走 **SDR**（`GainMapMax=0.00`），去 ICC 对照 ⇒ **HDR**（`2.30`）—— ⚠ 该行为与 PNG 第三版规范（cICP 优先级 1 > iCCP 2）**矛盾**，属**疑似缺陷**，断言锁的是**当前行为**（详见 §6 第 52 条后的更正）。**117/0**（2026-09-19 实测；新增 §10「`--jpeg-progressive` 三态 × GainMap 双路径」**+33 条** ⇒ **84 → 117**；**7 组变异全部有牙**；**PS 5.1 与 PS 7 双宿主各一次，均 `PASS=117 FAIL=0`**）**；#20(0919)（心跳判据锁）后整轮实测仍 `117/0`**（源 `tests/output/step3-round-1127.log:524`；✅ 有效性前置**已满足**：整轮汇总 `全部通过` ⟺ `failedItems` 为空 ⟺ 源码漂移检查通过（双路互证），详见 §6 基线行） |
 | `verify-gamut-map.ps1` | **色域映射（GMO，`--color-gamut-map`）的端到端门禁**（**36/0**；2026-09-17 实测更正，原写 26/0） | 引擎 `off` 与**默认（不传）**产物**逐字节相同**；`on` 与 `off` **不同**且决策行 `ColorLoss=GamutCompression` + `H1(需 GMO 色域压缩)`；**no-op 负控**（sRGB→Display P3：未越界但**确实发生映射**）`on`≡`off` **且不得启用 GMO 后端**；**显式 `legacy` + `on` ⇒ 硬失败并点名且不产出**（对照 `legacy`+`off` 正常产出）；默认 `auto` 下引擎不可走时**只告警、不拦任务**；非法取值 `yes` ⇒ 硬报错不产出 |
 | `verify-webp-hdr-fix.ps1` / `verify-tiff-icc.ps1` / `verify-remaining.ps1` | TIFF ICC 策略、WebP HDR 降级、DNG→各格式 | 人工读数脚本（无硬断言，看 EXIT/尺寸/YAVG）；⚠ 其中 `verify-tiff-icc` / `verify-webp-hdr-fix` **2026-09-19 起被运行器打 `← 表格型：无 PASS/FAIL 契约` 标签**（与 `verify-colorfmt-matrix` 同列，见 §6 第 62 条）—— **不含**同行的 `verify-remaining.ps1`（它**不在** `$tableOnly` 内） |
-| `verify-decision-delivery.ps1` | **步骤 3 单一裁决点的交付端门禁**：广色域/tonemap 后跑真实 CLI，逐项读**产物**；还覆盖**专用通路**（现造带 P3 ICC 的 `.jxl` 走 `ProcessJxlInputAsync`）、**同源结构锁**（直接调 `BuildArguments` 的位置必须恰好三处，新开通路不登记就红）、以及“两条路径像素必须相同”的 P7d 回归锁 | 产物 ICC 色度量得（P3 红 x=0.680 / sRGB 0.640）、ffprobe 读回 cICP 与出口语义一致、“该不该后置嵌 ICC”与容器实测一致；专用通路不得静默交无标注产物；同一内容走主分支与 JXL 管道的 webp **像素逐字节相同**；P3 目标格以**全帧 PSNR** 证明像素**真的**落到 P3 域 —— 判据是**相对差**（按 P3 解 − 按 sRGB 解 **≥ 15dB**；饱和素材实测 38.196 − 14.146 = **24.05dB**，余量 ~9dB；只贴标签不动像素时差 ≈ 0）；⚠ 该判据**要求素材含饱和色**（当前 `sdr_plain.png` 96.41% 的像素色差 ≥128），换素材须同步复核，否则会**假红**（详见 §6 第 57 条 ④）。2026-09-17 由「匹配 zscale 命令行」改为像素/色度度量（该格默认走引擎 H1，命令行里没有 zscale）；跑不通的路径只能 SKIP、不能给绿（共 **51** 项、0 SKIP；2026-09-17 实测更正，原写 44 项：新增 ⑪ 组＝真透明动图两步法的帧数守恒 + alpha 交付 + 两条素材对照组，另有 P7f/P7g/P7h 结构锁） |
+| `verify-decision-delivery.ps1` | **步骤 3 单一裁决点的交付端门禁**：广色域/tonemap 后跑真实 CLI，逐项读**产物**；还覆盖**专用通路**（现造带 P3 ICC 的 `.jxl` 走 `ProcessJxlInputAsync`）、**同源结构锁**（直接调 `BuildArguments` 的位置必须恰好三处，新开通路不登记就红）、以及“两条路径像素必须相同”的 P7d 回归锁 | 产物 ICC 色度量得（P3 红 x=0.680 / sRGB 0.640）、ffprobe 读回 cICP 与出口语义一致、“该不该后置嵌 ICC”与容器实测一致；专用通路不得静默交无标注产物；同一内容走主分支与 JXL 管道的 webp **像素逐字节相同**；P3 目标格以**全帧 PSNR** 证明像素**真的**落到 P3 域 —— 判据是**相对差**（按 P3 解 − 按 sRGB 解 **≥ 15dB**；饱和素材实测 38.196 − 14.146 = **24.05dB**，余量 ~9dB；只贴标签不动像素时差 ≈ 0）；⚠ 该判据**要求素材含饱和色**（当前 `sdr_plain.png` 96.41% 的像素色差 ≥128），换素材须同步复核，否则会**假红**（详见 §6 第 57 条 ④）。2026-09-17 由「匹配 zscale 命令行」改为像素/色度度量（该格默认走引擎 H1，命令行里没有 zscale）；跑不通的路径只能 SKIP、不能给绿（共 **81** 项、0 SKIP。条数演进：**51**(09-17) → 59(步骤3 收口轮) → 63(09-26 #26② 的 ⑮「链末曲线==产物标签」锁) → 73(09-26 #36 的 ⑯「AVIF 出口位深==实际会跑的编码器能力」锁，10 条：2 条取外部权威/尺子自证、5 条量产品交付、3 条结构锁) → **77**(09-27 零点 #39 的 ⑰「HDR 源 → AVIF + 显式广色域目标」锁，4 条：交付必须还是请求的 12bit、primaries 必须是 smpte432、换成 sRGB 目标必须读回 bt709（对照组，防"恒等于某串"）、trc 不许仍是 PQ/HLG）。→ **81**(09-27 #43 的 ⑰b「同一组合改走 `--color-engine legacy`，两路一起锁」4 条：legacy×显式 P3 必须出货（改前是 `exit=1` + 只挂 iccgen + 零产物）、产物必须 `smpte432` + trc `iec61966-2-1`、legacy×sRGB 对照必须读回 `bt709`、**legacy×auto 命令行不许出现 tonemap 且 trc 必须仍是 `smpte2084`** —— 最后那条是本次唯一能抓住"豁免谓词写反"的读数，见 `docs/COLOR_MATRIX_FIX_PLAN_2026-09-24.md` 的 #43 收口节)。⚠ ⑰ 当年只锁能出货的引擎路，是因为同组合下 legacy 本就硬失败（只挂 iccgen 不走 tonemap ⇒ ffmpeg "Not yet implemented"）——那是 #43 的缺陷，**修好后由 ⑰b 把两路一起锁上**，不是把失败焊成"必须失败"。⚠ ⑯ 的三条结构锁**匹配前先剥整行注释**，否则解释修复的注释自己会把门禁判红（本轮踩过）；09-17 原写 44 项：新增 ⑪ 组＝真透明动图两步法的帧数守恒 + alpha 交付 + 两条素材对照组，另有 P7f/P7g/P7h 结构锁） |
 | `verify-color-engine-xcheck.ps1` | **引擎 vs 外部参照（libzimg/zscale）逐像素互测**：2 图 × 5 组转换 = 10 格 | 每格 `PSNR ≥ 55dB` / `maxDiff ≤ 1500/65535` / `峰值 ΔE*ab ≤ 1.5`；6 格**已知非缺陷**（zimg 参照口径分歧）走显式白名单豁免，其余 4 格坏了照常红。**退出码语义**：除白名单外任何一格失败 ⇒ `exit 1`（2026-09-17 前全文无 `exit` ⇒ 恒 `exit 0`，详见 §6 第 58 条） |
 | `verify-colorfmt-matrix.ps1` | 跨格式「目标 = Display P3(SDR)」可用性矩阵：png/jpg/webp/tiff/jxl/avif 六格 —— ICC / CICP 到底有没有进产物（判据全部来自第三方工具 exiftool/ffprobe/jxlinfo，不用产品自己的解析器自证） | **表格型：无 PASS/FAIL 契约**。它只打印对照表（`✅ ICC=P3` / `⚠ 有 ICC 但非 P3 参照` / `❌ 产物无任何 P3 描述`）；全文的 `exit 1` 只用于「缺 exe/ffmpeg/ffprobe/exiftool」与「源生成失败」这类**前置条件**，**不用于断言** ⇒ `exit=0` 只表示「跑完了」，**不等于**断言全绿。它的价值是**给出第三方读数**（其 584B 读数曾被拿去与 `verify-color-engine-xcheck` 的失败项交叉印证，见 `docs/archive/AGENT_TASK_SPLIT.md:48`）；**不要**给它硬造断言 —— 尤其「有 ICC 但非 P3 参照」需人判断（独立生成的合法 P3 ICC 未必与参照逐字节相同，硬断言会误伤）。运行器 `_run-step3-gates.ps1` 已显式标注它（**2026-09-19 起共 4 条**：本条 + `verify-tiff-icc` + `verify-webp-hdr-fix` + `_probe-jpg-p3-icc`，详见 §6 第 62 条） |
 | `verify-ps-compat.ps1` | **门禁脚本自身的宿主兼容性** —— 防「门禁跑不起来 = 假绿」 | 语料 ≥30 个 `.ps1`；逐文件用**当前宿主**解析器验证可解析；剥离字符串/注释后正文不得出现 PS7+ 专属语法（三元 `? :` / `??` / `?.` / `&&` / `\|\|`）；8 条负控证明探针有牙且**不误伤**字符串/注释/here-string；点名回归锁 `verify-color-token-normalize.ps1` 与 `_probe-icc-affects-decode.ps1` |
@@ -203,7 +203,13 @@ $p = "tests/ServiceProbe/bin/Debug/net11.0/win-x64/ServiceProbe.exe"
 & $p decision                          # 步骤 3 验收门禁：宣称值 ↔ 命令行 ↔ ICC 后置判据（60 格）
 & $p color    in.png png [exiftool]  # 源色彩探测结果 + 保真判定
 & $p pq                              # ST 2084 EOTF/OETF 锚点值与互逆自检
+& $p colormath                       # 原色表色度常数 ↔ 双锚（zimg 矩阵 + lcms chrm）逐元素对拍；含 null/重复对白名单
+& $p tooldetect                      # 外部工具探测：开销 / 诚实性 / 可注入性（由 `_probe-tool-detect.ps1` 编排）
 ```
+
+⚠ **`tooldetect` 有意不进 `$Probes` 默认清单**（上面的「22 个 mode」因此**不含**它）：它必须自己
+设 `FFMPEGGUI_EXT_SEARCH_DIRS` 把「系统扩展搜索」那一级钉成可控的临时根，否则判据会随本机
+装过什么应用而翻转 ⇒ 放进默认清单等于把一条**环境依赖**的断言混进确定性批次。跑法见该门禁脚本。
 
 输出为 `PASS/FAIL` + `key=value` 行，末行 `PROBE RESULT: pass=N fail=N`，退出码 0/1，便于脚本 grep。
 
@@ -211,7 +217,10 @@ $p = "tests/ServiceProbe/bin/Debug/net11.0/win-x64/ServiceProbe.exe"
 > 否则 `AssemblyLoadContext` 加载失败；与 `tests/UiTestHost` 保持同一套属性。
 
 **当前基线（2026-09-19 复核；口径 = 运行器 `$Probes` 默认清单里各 mode 的 pass 之和）**：
-**20 个 mode / 合计 525 / fail=0**（`geometry` = **52**；`verdict` **36 → 41**，GainMap 格新增断言；
+**22 个 mode**（⚠ 2026-09-26 把 `colormath` 接进默认清单 ⇒ 第 22 个；下面那个 **546** 是**前 21 个** mode 的求和，
+**不含** `colormath`；`colormath` 单跑实测 `12/0`，合计要等下一次整轮才并进去，此处**不预先宣布新基线**）·
+**前 21 个 mode 合计 546 / fail=0**（**2026-09-24 逐 mode 实测求和**：原 542 + `settings` **7 → 11**（+4 = 全字段落盘往返锁，见 §6 第 110 条）；
+⚠ 下面这些是**当时**那批数字的溯源链，**不重述**：`geometry` = **52**；`metaraw` = **17**（RAW 元数据保留：显示名 + 补漏参数形态，**不依赖素材**）；`verdict` **36 → 41**，GainMap 格新增断言；
 **`runner` 2 → 8**（#20(0919) 心跳判据锁，见下方溯源）；
 `_run-step3-gates.ps1` 的 `$Probes` 默认值已含 `geometry` ⇒ 20 个 mode）。
 ⚠ **取值时刻 / 取值方式（按 §6 第 78 条）**：**取值时刻 ~2026-09-18 01:14**（⚠ 以下三条描述的是 **519** 那次实测；**525** 为 2026-09-19 #20(0919) 后的追加，见下方溯源）；
@@ -235,11 +244,65 @@ $p = "tests/ServiceProbe/bin/Debug/net11.0/win-x64/ServiceProbe.exe"
 —— 计数会漂（`wire` 与 `verdict` 尤其）。⚠ **改任一 mode 的断言后必须重算总和**：
 历史上出现过「`contract` 100 → 107 改了、总数漏改、仍写 372」的错值，由复核方用「各 mode 求和 ≠ 372」抓出。
 ⚠ **某个 mode 若不在 `_run-step3-gates.ps1` 的 `$Probes` 默认值里，说明运行器清单与文档不同步**
-（可据此核对「mode 齐不齐」）。`_run-step3-gates.ps1` 的**脚本门禁清单**当前 **48 条**
-（**2026-09-19 P4-A 接线后实测数组条目数** —— 复现命令：`grep -oE "'[^']+\.ps1'" tests/scripts/_run-step3-gates.ps1 | sort -u | wc -l` = **48**（该命令 2026-09-18 曾得 **42**、更早原写 **40** 是旧值；⚠ 本行只改**当前值**，历史链见下行「演进」）；
-⚠ 演进：29 → 32（2026-09-17）→ 33（+`verify-engine-firstframe.ps1`）→ 34（+`verify-jxl-codestream-route.ps1`）
-→ 35（2026-09-18 +`verify-anim-static-target.ps1`）→ 36（2026-09-18 +`verify-jxl-probe-timeout.ps1`）
-→ 37（2026-09-18 +`verify-ffmpeg-heartbeat.ps1`）。⚠ **每次增删必须重新数，不要沿用旧值**；
+（可据此核对「mode 齐不齐」）。`_run-step3-gates.ps1` 的**脚本门禁清单**当前 **54 条**
+（**2026-09-24 第六次接线后实测数组条目数** —— 复现命令必须**按数组锚定**（不用行号、也不用全文件 grep）：
+`$c = Get-Content -Raw tests/scripts/_run-step3-gates.ps1; [regex]::Matches([regex]::Match($c,'(?ms)^\$scriptList\s*=\s*@\((.*?)\)\r?\n\$actualScriptCount').Groups[1].Value,"'[^']+\.ps1'").Count` = **54**；
+⚠ 本行原先给的 `grep -oE "'[^']+\.ps1'" … | sort -u | wc -l` **现已失真**：2026-09-22 实测它得 **53**，
+因为运行器别处还有 `'generate-sources.ps1'` / `'ensure-fixtures.ps1'` 两个引号串被算进来 ⇒ **不要**再用它取当前值。）；
+⚠ 演进（**只有这三档可逐字复核**，更早的链在 `§6` 与本行之间历史上曾不同步 ⇒ 不重述）：
+**49 条**（2026-09-20，`docs/HANDOVER.md` 第四/五轮验收行 `script-list=49 条（受管基线 49）`）
+→ **50 条**（2026-09-22，`docs/HANDOVER_2026-09-22.md §0` 记 `$expectedScriptCount = 50`，+`verify-engine-alpha-preserve.ps1`）
+→ **51 条**（2026-09-22，+`_probe-tool-detect.ps1`：外部工具探测的**开销/诚实性/可注入性**三合一锁）
+→ **52 条**（2026-09-23，+`verify-startup-warmup.ps1`：启动期「环境分析 / 预热」七缺陷锁，结构锁 + 一次真跑）
+→ **53 条**（2026-09-23，+`verify-ipc-extra-options.ps1`：IPC `ExtraOptions` 透传轴回归锁 —— 2026-09-19 就写好、自带变异验证，却从未上清单 ⇒ 「有锁但不上锁」）
+→ **54 条**（2026-09-24，+`_probe-settings-clone-coverage.ps1`：`Save()` 手写克隆表的结构锁 —— 它 2026-09-15 就写好、**接入当天就抓到一个长期缺陷**（`RenderingMode` 每次 Save 被重置成默认值）⇒ 与上一条同属"有锁但不上锁"，见 §6 第 110 条）。
+→ **57 条**（2026-09-27 第九次接线，+`verify-simd-switch-fallback.ps1`：面板「SIMD 优化」复选框**终于有消费者**的锁 ——
+  修前它是「有声明、无实现」（两条语言的 tooltip 都承诺「关闭后逐像素回退」，而 `PsnrCalculator`/`SimdPixelOps` 无条件看 ISA）。
+  四段：① 行为（`ServiceProbe simdswitch` 关/开两跑，**pass>=25 下限**防整段没跑）② `FFMPEGGUI_AUTO_SIMD` 两端到端（关⇒scalar、开⇒非 scalar、两态必须不同 ⇒ **修复前必红**）③④ 结构（`.IsSupported` 与消费端集合只此一份、内核分派表只一张、**空集合也判红**）。
+  实测 **17/0/1SKIP**；变异 = 把 `ResolvePixelKernelPath` 的守卫反向 ⇒ **PASS 17→13、FAIL 0→4**，还原后源文件逐字节一致
+→ **56 条**（2026-09-27 第八次接线，+`_probe-stderr-merge-scan.ps1`：任务 #51 的**合并取数结构锁**——把
+  「stdout+stderr 拼起来返回」的 helper 被用来读**工具的值**（exiftool 标签 / ffprobe 字段）的站点扫出来并锁成债账
+  （债账起 **84** ⇒ **同日逐条分诊到 0**，见 §6 第 114 条；实测 0.7 s。⚠ 该锁自己有一处**造假的假红**：`-ManagedOnly` 口径下共现基数只有 21，而共现下限原本钉死 30 ⇒ 现按口径分档 30 / 18）。它同日收了五处口并各补**正对照**，见 §6 第 113 条）。
+→ **55 条**（2026-09-27，+`_probe-matrix-structure.ps1`：色彩矩阵清单的**行锚定取证自检**（A1..A31 + B1..B7 + 本门禁自己的变异注入），单遍实测 5.5 s ⇒ 两遍 ≈ 9 s。**理由不是"又想到一条"，是账已经错过两次**：折叠表/矩阵每条带 `Evidence = 路径:行号|字面片段`，而核对它的 `verify-oracle-matrix.ps1` **有意不入列**（2.5 h）⇒ 2026-09-27 上午核账发现 **6/19 条早就漂了**，接线**当天**又漂一条（#39/#43 改了 `FfmpegCommandBuilder.cs` 的行 ⇒ `metadata-core` 2011 → 2041）。见 §6 第 112 条）。
+⚠ **每次增删必须重新数，不要沿用旧值**；
+⚠⚠ **增删一条门禁要动的「账」全清单**（2026-09-24 汇总；下面每一项**漏掉之后都真实发生过**，不是假想后果）：
+  ① `$scriptList` 数组加/删条目 ⇒ ② `$expectedScriptCount` 常量（**数组 ≠ 常量 ⇒ 运行时条数锁响亮红**）⇒
+  ③ 运行器**散文里的现量陈述**（三处形态见 §6 第 107 条。**漏改本来不会红** —— 接第 53 条时就漏过两处、
+    之后照常全绿无人发现；09-24 起由**第 ⑰ 针**钉住 ⇒ 现在漏改 = 运行器**拒绝跑**）⇒
+  ④ 本章「4 + 7 + N = 总数」的分类分解，以及 `docs/HANDOVER.md` / `docs/HANDOVER_2026-09-22.md` §0 /
+    `.workbuddy-ai/memory/MEMORY.md` 里的同数陈述 ⇒
+  ⑤ 若新脚本**无 PASS/FAIL 契约**或**只有退出码契约** ⇒ 还要进 `$tableOnly` / `$noSelfSummary`；
+    而这两个数组的**条数**由第 13/14 针钉死为 **4 / 7** ⇒ 动了数组必须同时改那两针的期望值（否则形态自检拒绝跑）。
+  ⚠ `-Scripts` 子集跑**不能**用来宣布基线（汇总行自带「不构成基线」标记）；宣布新基线要跑全量，
+    且**开始前**就停止改 `src` 与运行器（`Check-SrcDrift`/`Check-SelfDrift` 把中途改动判作废，注释也算）。
+
+⚠⚠ **未受管脚本台账（2026-09-24 全量盘点；此前有人记成"只有 6 条孤儿门禁"—— 那个数太小了）**：
+  口径 = AST 取 `$scriptList`（**55**）与 `tests/scripts/*.ps1` 全量（**95**）的差 ⇒ **未受管 40 个**。
+  （2026-09-27 重测：上一档记的是 54 / 93 / 39；其间进了 `_probe-matrix-structure.ps1`（受管 +1），
+  全量 +2 = 该新门禁 + `verify-color-matrix-full.ps1` 落入这份台账的统计口径 ⇒ 未受管净 +1。）
+  分类规则是**按文件名前缀**（确定性的，不靠人工判读；`insert_cicp.ps1` 归 B 就是因为这条规则）：
+  · **A 库 = 5**（`_lib-axes` / `_lib-color-assets` / `_lib-matrix` / `_lib-oracle` / `_lib-reject`）
+    ⇒ **永远不该**进清单：它们是被 dot-source 的共享库，进去就会被当门禁跑 ⇒ 撞今天的「零断言 ⇒ 红」闸。
+  · **B 编排 / 脚本工具 = 13**（运行器自己 `_run-step3-gates`、素材生产者 `generate-sources` / `ensure-fixtures`、
+    清理 `cleanup-structure` / `archive-diagnostics`、fixture 构造 `insert_cicp`、以及 6 个 `run-*` 旧编排器）
+    ⇒ **有意不入列**。⚠ 其中 `run-color-regress.ps1` / `run-full-matrix-test*.ps1` 是**清单机制出现之前**的
+    并行跑法 ⇒ 与运行器职责重复（归档要点头，不擅自删）。
+  · **C 一次性取证 `_probe-*` = 16**（gpu-stage1..3 / zimg-* / sws-* / ztf-locate / p7d-bisect /
+    jxl-webp-pixels / hdr-peak-oracle / icc-affects-decode / caps-e1-e2 / png-cicp-production …）
+    ⇒ 都是某次定性调查留下的**证据脚本**，**绝大多数没有 `PASS/FAIL` 契约** ⇒ 接进清单等于改判据形状，
+    所以不入列是合适的。**但要说清它们得到什么保护、没得到什么**：
+    ✅ `verify-ps-compat.ps1` 的语料是 `tests/scripts/*.ps1` **全量** ⇒ **语法层（5.1 兼容）已被覆盖**；
+    ❌ **语义 / 可跑性无人管**（引用的产品路径、参数、exe 位置变了都不会红）—— 本轮就实撞到一次：
+    `_probe-settings-clone-coverage.ps1` 早在 2026-09-15 就写好、能抓 `Save()` 漏字段，
+    但**不在清单 ⇒ 没人跑 ⇒ 期间真的又漏了一个 `RenderingMode`**（见 §6 第 110 条）。
+    ⇒ 处置口径：**凡是"能判红产品"的取证脚本，要么升级为带契约的门禁接进清单，要么在 D 类里点名它已腐坏。**
+  · **D 其他 = 6**：`verify-oracle-matrix.ps1`（**有意**只手工长跑它的 5010 例执行层，≈ 2.5 h，见上方与 §6 第 92 条邻域）·
+    `probe-gainmap-tiff.ps1`（GainMap/TIFF 取证，无汇总契约）·
+    `final-verify.ps1` / `regtest-fix.ps1` / `verify-remaining.ps1` ⇒ **实测已腐坏**：三条都指向
+    `publish/build/FFmpegPictureUI-dev-x64-full/FfmpegGui.exe`，而 `publish/build/` **在本仓不存在**
+    （`ls publish/build` 无此目录），其中两条还把日志写到仓库外的 `C:\temp\*.log`
+    ⇒ 建议**归档到 `tests/scripts/_archived_diag/`**（仓库里 `archive-diagnostics.ps1` 就是干这个的，
+    但它从未跑过 —— `_archived_diag` 目录不存在）或删掉；**删/移文件要维护者点头，本轮只登记**。
 ⚠ **判文件编码不要看 Bash 的 `grep` 输出**（2026-09-19 实测）：Git Bash 终端会把 UTF-8 中文按 GBK 渲染 ⇒ 看起来像整个文件被写成 GBK（`：` 显示为 `锛`），**实际文件是合法 UTF-8**。判编码要用 `new TextDecoder('utf-8', {fatal:true}).decode(buf)`（严格解码，抛异常才是真坏），或直接用 Read 工具读。
 ⚠ 本行此前写「当前 33 条」并给了一条 `sed -n '235,242p' …` 的复现命令 —— 那是**行号锚点**，注释一增行即失效，
 现改为与 `docs/HANDOVER.md` 同一句的**全文件 grep** 形态）。
@@ -824,8 +887,12 @@ test-output/
       ⚠ **变异的第一版打错了层**：先改 `FfmpegOptions.StripExifGps = false`，门禁**依然全绿** ——
       因为 CLI 路径会用 `CliParser` 自己那份默认值（`Options.StripGps = true`）**覆盖**模型默认值；
       改在 `CliParser` 那层才转红。⇒ 这条记录两件事：
-      （a）门禁确实承重；（b）**隐私默认值目前有两处独立真值**（`FfmpegOptions.StripExifGps`
-      与 `CliParser.Options.StripGps`），只改一处不生效 —— 属潜在隐患，建议合并为单一真值（未做）。
+（a）门禁确实承重；（b）**隐私默认值目前有两处独立真值**（`FfmpegOptions.StripExifGps`
+与 `CliParser.Options.StripGps`），只改一处不生效 —— 属潜在隐患，建议合并为单一真值（未做）。
+⚠ **2026-09-21 复核：结论不变，但「形态」已变** —— `Options.StripGps` 现已改为 **`bool?` 三态**
+（`null` = 用户未显式指定），故它**不再是**「第二个默认值」；但**转换点仍硬编码**
+`StripExifGps = opts.StripGps ?? true`（`CliParser.cs:519`）⇒ **第二个真值仍在**，
+改 `FfmpegOptions.StripExifGps` 的默认值依旧不生效 ⇒ **隐患与「未做」结论均成立**。
 33. **IPC SubmitJob 端到端（2026-09-15 新增）：IPC 的核心功能此前从未被验证过**
     - 背景：IPC 的设计用途是「把任务提交给**正在运行的实例**」，但 IPC 传输本身此前从未跑通
       （见第 29/30 条）⇒ `HandleSubmitJob` → `ExpandInput` → `BuildOutputPath` → orchestrator 交接
@@ -866,13 +933,19 @@ test-output/
       `--format jpegli` 本身是坏的（见第 35 条），`--format dng` 走 raw 专用链路。
     - 顺带记录：exiftool 的 `-stay_open True -@ argfile`（常驻进程）能把启动开销降到接近 0
       （可再省 ~850ms/项），但属**架构级改动**，未做。
-35. **【新发现，未修】`--format jpegli` 产物扩展名非法 ⇒ 转换必然失败**
+35. **【已修】`--format jpegli` 产物扩展名非法 ⇒ 转换必然失败**
     - 实测（默认选项，输入 jpg）：`--format jpegli` 生成的输出路径是 `…\src.jpegli`，
       ffmpeg 报 `Unable to choose an output format for '…src.jpegli'`、退出码 **-22**、**无任何产物**。
     - 依据：`jpegli` 在 `FfmpegCommandBuilder.cs:1333` 与 `FfmpegOptions.cs:389` 里**被当作合法格式**
       （有质量映射），但输出扩展名是按 `"." + format` 拼的 ⇒ `.jpegli` 不是 ffmpeg 认识的扩展名。
     - 与第 34 条的改动**无关**（未触碰输出命名）；属**既有 bug**，未修 —— 需先定 `jpegli` 的语义：
       它是**格式**还是**编码器后端**？若算格式，输出扩展名应为 `.jpg`。
+    - ✅ **2026-09-21 复核：已修**（本条的「未修」已过期）。**实测**（`Canon_EOS40D.CR2 --format jpegli`）：
+      `rc=0`、队列「完成 1 项, 失败 0 项」、产物 **`Canon_EOS40D.jpg`**（扩展名合法）。
+      判据落在 `EncoderDetectionService.cs:38`：`EncoderBackend.Cjpegli => fmt is "jpg" or "jpeg" or "jpegli"`
+      ⇒ `jpegli` 现按 **`jpg` 格式的编码器别名**处理（即本条提出的语义问题的答案：**算编码器后端，不算格式**）。
+      ⚠ 但 `verify-metadata-privacy.ps1` 末尾的附注仍以「`--format jpegli` 是坏的」为由**排除**一条通路
+      ⇒ 该附注**同样过期**（2026-09-21 已同步更正；见该脚本 `附注` 段）。
 36. **GUI 实机验证（2026-09-15 新增）：GUI 能启动 + 其 IPC 可用 + 提交的任务真的被处理**
     - 背景：交接文档把「GUI 启动 + 鼠标操作路径未测」列为**提交前的前置条件**。本轮至少把
       **GUI 启动 + IPC 全链路**这一段跑通了（**鼠标交互仍未测**）。
@@ -963,6 +1036,8 @@ test-output/
     ⇒ 已加**新鲜度硬闸**：跑前按**项目配对**比较 mtime（`src/FfmpegGui/**` ↔ `FfmpegGui.dll`、
     `tests/ServiceProbe/**` ↔ `ServiceProbe.exe`），陈旧就 `exit 2` + 打印新旧时间戳 + 重建命令。
     ⚠ 必须**配对**：`FfmpegGui.dll` 只在 src 改动时才更新，拿它与探针的 `Program.cs` 比会**永久误报 STALE**（本轮踩到过）。
+    ⚠ **【现值演进，2026-09-24】**上面这两对是**当时**的覆盖面；现已扩到 **4 对**（补 `src/**/FfmpegGui.exe`、
+      `tests/UiTestHost/**` ↔ `UiTestHost.exe`）⇒ 见本节第 106 条。**"按项目配对"这条纪律不变**，新增两对同样只与自己项目的源码比。
 
     **(b) `Start-Process -FilePath "pwsh"` ⇒ 整批脚本门禁从未执行**
     `Get-Command pwsh` ⇒ **NOTFOUND**（宿主自身是 PowerShell 7.6.6，位于 `C:\Program Files\PowerShell\7`）。
@@ -1680,6 +1755,11 @@ test-output/
     `RawColorPipeline.EncodeJxlViaCjxlAsync`/`PipeToEncoderAsync`：变换后的 raw → `ffmpeg -f image2pipe -c:v ppm|pam -`
     → `cjxl - out.jxl -x color_space=|icc_pathname= --intensity_target=`，不落中间文件）。
     ⇒ 仍在出口外的只剩 **JXR / DNG**（以及动画输入、GainMap+最长边缩放两条组合）。
+    ⚠ **2026-09-21 再次更正：上一行的 `JXR` 也已失效** —— JXR 现已接入引擎
+    （复用 `ColorTransformPlan.ExternalEncoderExit` + `RawColorPipeline.EncodeJxrViaJxrEncAppAsync`，
+    中转容器由 `plan.OutBitDepth` 决定：8-bit ⇒ BMP / >8-bit ⇒ TIFF；alpha 走第二输入不拍平）
+    ⇒ **仍在引擎出口外的只剩 `DNG`**（外加动画输入、GainMap+最长边缩放两条组合）。
+    单一真值以 `HANDOVER.md` 顶部清单为准（那里已写「**只剩 DNG**」）。
     ⚠ 出口内任何一环失败（cjxl 缺失 / 要 ICC 拿不到 / 语义落不进 cjxl 枚举）一律**显式失败**，
     **绝不回退** ffmpeg 的 libjxl。⚠ 本轮同时修掉一个由该出口**暴露**的引擎缺陷：
     `ColorTransformPlan.ToSpec()` 对 `CarryIcc`/`None` 计划回落 `?? Linear`/`?? Srgb` 猜测式默认
@@ -2570,7 +2650,7 @@ test-output/
       本条出现的行号（`:22` / `:40` / `:31` / `:35` / `:25` / `:23` / `:38` / `:27` 等）**全是脚本自身的**，与本运行器无关。
       本节其余处引用的**运行器**行号，一律锚在快照 `SHA256=C999C35BF6C49506…` / 57518 B / mtime `2026-09-19 12:15:44` / 671 行上，**指纹一变即作废**。
 
-    **全量 48 条分类（2026-09-19，逐条读源码、剔除整行注释后判定；含当日 **P4-A 接线 +6** 后的 48 条）**：
+    **全量 53 条分类（下表逐条判定的是 2026-09-19 的 **48 条**快照（含当日 P4-A 接线 +6）；其后 +5 ⇒ 现 53 条：2026-09-20 `verify-gainmap-isobmff.ps1` → 49、2026-09-22 `verify-engine-alpha-preserve.ps1` → 50、2026-09-22 `_probe-tool-detect.ps1` → 51、2026-09-23 `verify-startup-warmup.ps1` → 52、2026-09-23 `verify-ipc-extra-options.ps1` → 53 ⇒ 这 5 条不在下表内，归属均为 C 类（各有自身计数汇总 + 断言驱动退出码）**：
     - **A 类 · 无契约 = 4 条（应进 `$tableOnly`）**：`verify-colorfmt-matrix.ps1`（非零 `exit 1` 只在 `:22` 缺 exe / `:40` 生成源失败 ⇒ 前置条件）· `verify-tiff-icc.ps1`（全文**无 `exit` token**）· `verify-webp-hdr-fix.ps1`（全文**无 `exit` token**，`:35` 只打印 `[EXIT] $($p.ExitCode)`）· `_probe-jpg-p3-icc.ps1`（非零 `exit 1` 只在 `:31`「缺输入且自备失败」⇒ 前置条件）。
       ⇒ **运行器打的标签（逐字原文，含前导 2 空格）**：`  ← 表格型：无 PASS/FAIL 契约（exit=0 仅表示跑完）`
       —— 由 `$tableOnly` 数组决定（**2026-09-19 实测 4 条，与本类逐条一致**）；
@@ -2592,7 +2672,7 @@ test-output/
       ⚠ **两个超时阈值 = 受管不变量（勿调参）**：`[int]$ProbeTimeoutSec = 120,`（**探针段**，`Invoke-StepWithTimeout … -TimeoutSec $ProbeTimeoutSec`）/ `[int]$ScriptTimeoutSec = 480)`（**脚本段**，同参数传 `$ScriptTimeoutSec`）。
       —— 二者被运行器**自身形态自检逐字钉住**：自检输出 `shape-selfcheck=OK（14 针：… / 探针超时默认值 / 脚本超时默认值 / …）` 中**第 11 针 = 探针超时默认值**、**第 12 针 = 脚本超时默认值**；源码定义处注释亦写明「探针段 = **第 11 针**、脚本段 = **第 12 针**」，并点明动机是「防按各自基准悄悄调参」（正是「60 vs 120」往返多轮的根因）；自检失败文案为 `探针超时默认值针 = …（须 1：默认值必须逐字钉住，防按各自基准悄悄调参）`。
       ⇒ 改这两个数**必须同步改自检针**，否则自检失败 ⇒ 运行器**拒绝跑**（`[SHAPE]` ⇒ `exit 2`，**不产出读数**）；它们**只决定「等多久判死」**，与断言判据正交。
-    - **C 类 · 有自身计数汇总 = 37 条**，且**37/37 都有断言驱动的非零退出**（`if ($fail -gt 0) { exit 1 }` / `exit $(if ($fail -eq 0) { 0 } else { 1 })` / `if ($fail -ne 0) { exit 1 }`）⇒ **无「计数显示红、退出码却恒 0」的假绿**。
+    - **C 类 · 有自身计数汇总 = 42 条**（2026-09-23 第五次接线后实测；= 清单 53 − `$tableOnly` 4 − `$noSelfSummary` 7），且**42/42 都有断言驱动的非零退出**（`if ($fail -gt 0) { exit 1 }` / `exit $(if ($fail -eq 0) { 0 } else { 1 })` / `if ($fail -ne 0) { exit 1 }`）⇒ **无「计数显示红、退出码却恒 0」的假绿**。
       ⚠ **2026-09-19 P4-A 接线 +6（31 → 37）** —— 新增 6 条**逐条归属 C 类**：各自**有自身计数汇总**（`PASS=n FAIL=m`）**与退出码契约**（显式 `exit 1` / `else exit 0`）⇒ **都不进** `$tableOnly` / `$noSelfSummary`（那两个数组的条数锁 **4 / 7 不变**）。下表 6 行 = **本轮实跑读数**：
 
       | # | 脚本（= 清单第 43~48 条） | 自身计数汇总行（实测） | 退出码 | 时长 |
@@ -2607,10 +2687,11 @@ test-output/
       ⇒ **6 条合计 32.4 s**（对整轮 ~950 s 是 **+3.4%**）⇒ 时长预算无碍。⚠ 前 5 条都跑同一个 `tests/UiTestHost.exe`（各跑一遍**全量**宿主，只在锚点断言上分工）⇒ 有**受控冗余**（换来的是「某个分组被静默删掉」能被各自锚点抓住）。
       ⚠ `verify-cli-strict.ps1` **有意放清单末位**：它含「共享语料目录里不得残留 `_*.png`」的验收，末位才能把**前面所有脚本**的残留都纳入观测。
       ⚠⚠ **一并如实登记的覆盖缺口（未处置，另议）**：① **`tests/UiTestHost` 是第三个项目**，而运行器的新鲜度（STALE）闸**只覆盖 `src/FfmpegGui` + `tests/ServiceProbe`** ⇒ 只重建那两者时，前 5 条会拿**陈旧的 `UiTestHost.exe`** 跑出「绿」；当前靠**手工**保证三者同批重建。② **`verify-oracle-matrix.ps1`**（本轮新建，5010 条组合用例 + `_lib-oracle.ps1` 独立裁判，实测 **1.6~2.0 s/用例 ⇒ 全量约 2.5 h**）**有意不入清单**（远超 `ScriptTimeoutSec 480`），按**手工长跑**执行：`-Layer L1` ≈ 6 min、`-Layer L2` ≈ 5 min、`-Smoke` ≈ 8 s。
-    - **合计 4 + 7 + 37 = 48** ✓（与运行器清单条数一致）
-      ⚠ **本表条数受 `$expectedScriptCount` 硬保护**（`_run-step3-gates.ps1` 里 `$expectedScriptCount = 48` 与 `@($scriptList).Count` 比对，
+      ⚠ **【2026-09-24 更新：上面 ① 已处置，② 不变】**STALE 闸由 2 对扩到 **4 对** —— `UiTestHost.exe`（5 条 UI 门禁执行的产物）与被清单内 28 条端到端门禁执行的 `src/**/FfmpegGui.exe`（AST 实测）都已进闸 ⇒ 缺口 ① 闭环，取证与变异验证见本节第 106 条；`verify-oracle-matrix.ps1` **仍是有意的**手工长跑件（未接入清单，本轮未改）。
+    - **合计 4 + 7 + 46 = 57** ✓（与运行器清单条数一致；2026-09-27 第九次接线 `verify-simd-switch-fallback.ps1` 归 **C 类** ⇒ `4 + 7` 不动、`45 → 46`）；2026-09-24 第六次接线把 `_probe-settings-clone-coverage.ps1` 并入 **C 类** ⇒ `42 → 43`；2026-09-27 第七次接线把 `_probe-matrix-structure.ps1` 并入 **C 类** ⇒ `43 → 44`；同日第八次接线把 `_probe-stderr-merge-scan.ps1` 并入 **C 类** ⇒ `44 → 45`；三次三个标签数组都不动 ⇒ 第 13/14 针仍是 4 / 7）
+      ⚠ **本表条数受 `$expectedScriptCount` 硬保护**（`_run-step3-gates.ps1` 里 `$expectedScriptCount = 54` 与 `@($scriptList).Count` 比对，
       不等即打 `[FAIL] 脚本清单条数 = …，受管基线 = … ⇒ 基线漂移（增删条目必须同步四处文档）` **且**进 `$failedItems` ⇒ 整轮红）。
-      ⇒ **双向闭环**：**增删脚本** ⇒ 本表的 `4 / 7 / 37` 分解必须与那个常量**一起改**；**反之运行器报「基线漂移」⇒ 就是来找本表**。
+      ⇒ **双向闭环**：**增删脚本** ⇒ 本表的 `4 / 7 / 42` 分解必须与那个常量**一起改**；**反之运行器报「基线漂移」⇒ 就是来找本表**。
       ⚠ 此处**只引符号名不引行号**（常量名 / 变量名对漂移免疫；行号口径见本节上文「锚在运行器快照」那段）。
 
     **形态描述（5 类，**仅供人读**，不用于 `$tableOnly` 判定）**：`_probe-*-scan` 诊断型 ×5 · 表格型 ×1（`verify-colorfmt-matrix`）· `===== DONE =====` ×2（`verify-tiff-icc` / `verify-webp-hdr-fix`）· 自有汇总口径 ×1（`run-pipeline-tests`，`通过: N 失败: M`）· 自有总结口径 ×1（`verify-color-engine-xcheck`，`===== xcheck 总结 =====`）。
@@ -3279,12 +3360,18 @@ test-output/
     `run-full-matrix-test.ps1:140-152`（10 项素材清单）、`run-full-matrix-test-safe.ps1:165/167/169/171/173/206/209`、
     `final-verify.ps1:65-66`（L4-404 用同一 DNG）。
 
-    ⚠ **这 4 个都不在 `_run-step3-gates.ps1` 的 48 条必跑清单内** ⇒ **常规门禁批量跑不受影响**；受影响的是"全量 / 矩阵级"**手动验收**。
+    ⚠ **这 4 个都不在 `_run-step3-gates.ps1` 的 53 条必跑清单内** ⇒ **常规门禁批量跑不受影响**；受影响的是"全量 / 矩阵级"**手动验收**。
     （⚠ 演进：原写 **32 条** → 2026-09-18 更正为 **33 条**（+`verify-engine-firstframe.ps1`）→ **34 条**
     （+`verify-jxl-codestream-route.ps1`）→ **35 条**（+`verify-anim-static-target.ps1`）→ **36 条**
     （+`verify-jxl-probe-timeout.ps1`）→ **37 条**（+`verify-ffmpeg-heartbeat.ps1`）→ **38 条**
     （+`_probe-sync-read-before-wait-scan.ps1`）→ **39 条**（+`verify-jxr-anim-input.ps1`）→ **42 条**（+`verify-webp-anim-probe.ps1`）
-    （+`_probe-ct-chain-closure-scan.ps1`）→ 现 **48 条**（**2026-09-19 P4-A 接线 +6**：`verify-ui-host.ps1` / `verify-ui-param-matrix.ps1` / `verify-ui-strategy-map.ps1` / `verify-ui-param-defects.ps1` / `verify-cli-strict.ps1` / `verify-png-structure.ps1`）；**每次增删必须重新数**。）
+    （+`_probe-ct-chain-closure-scan.ps1`）→ 现 **48 条**（**2026-09-19 P4-A 接线 +6**：`verify-ui-host.ps1` / `verify-ui-param-matrix.ps1` / `verify-ui-strategy-map.ps1` / `verify-ui-param-defects.ps1` / `verify-cli-strict.ps1` / `verify-png-structure.ps1`）
+    → **49 条**（2026-09-20 +`verify-gainmap-isobmff.ps1`）→ **50 条**（2026-09-22 +`verify-engine-alpha-preserve.ps1`）→ **51 条**（2026-09-22 +`_probe-tool-detect.ps1`）→ **52 条**（2026-09-23 +`verify-startup-warmup.ps1`）→ **53 条**（2026-09-23 +`verify-ipc-extra-options.ps1`）；**每次增删必须重新数**。
+    ⚠ **2026-09-22 复核时新发现一处疑似漏接线（未处置，待维护者定）**：`verify-ipc-extra-options.ps1`
+      文件头自述「P1-C … 回归锁（2026-09-19 新增）」，且形态上是完整的 C 类契约（自身 `PASS=` 汇总 +
+      `RESULT` 行 + 断言驱动的 `exit 1`），但它**既不在**同日 P4-A 的 +6 名单里、文档中也**查不到任何**
+      "有意不入列"的登记 ⇒ 无法区分"漏接线"与"有意手跑但忘了记"。⇒ 本轮**未擅自接线**（接一条 = 清单 52、
+      且要先实测它的时长与稳定性），只在此点名。核对方法：`powershell -File tests/scripts/verify-ipc-extra-options.ps1` 跑通后按 §6 的 C 类口径登记。））
     ⚠ **维护者已裁定：不参数化**（本机硬编码路径保留）⇒ 它们是**人工验收脚本**，不是常规门禁。
     ⚠ 与 §6 已登记的「**清单内**脚本缺素材时仍 80/0」**不是一回事**：清单内脚本**自备素材**（`ensure-fixtures.ps1` / `_lib-color-assets.ps1`）；
     **清单外**这 4 个依赖 `<local-dir>`，且**没有任何一处登记过"缺该目录时的预期行为"（skip 还是红）** —— 这是本条要补的**具体缺口**。
@@ -3589,7 +3676,39 @@ test-output/
       ⇒ 汇总行看起来仍是"全绿"，读者**没有任何线索**知道少了 4 条。
     ⇒ 两处修法取其一（按第 68 条硬口径**应改成红**；若坚持保留 SKIP 语义，则按第 76 条**让 SKIP 进汇总并计数**）。
 
-    **现状（2026-09-18）**：**只登记，未修**（`verify-color-peak.ps1` 本轮无人改；mtime 2026-09-17 20:21:44）。
+    **现状**：✅ **已修（2026-09-21）**，取**第 76 条口径**（让 SKIP 进汇总并计数），而非第 68 条的硬红。
+    **为什么取 76 而非 68**：该素材 `tests/output/validate/src_hdr.png`（生产者 `ensure-fixtures.ps1`）
+    **不受版本控制**（`tests/output/**` 被 `.gitignore`），且**运行器不跑 `ensure-fixtures`**
+    ⇒ **干净检出上它必然缺失** ⇒ 若改成硬红，门禁会在干净检出上**永久红**（那是"环境未就绪"，不是缺陷）。
+    而本条的**真正病灶是"不可见"**（登记原文：「其余形态是"断言红了"（**可见**）；本条是"断言**不存在了**"（**不可见**）」）
+    ⇒ **修"可见性"即治本**。
+    **修法**：加 `$skip` 计数器 + `function SKIP([string]$what,[int]$n=1)`（与 `verify-gif-avif-framelist.ps1` **同一形态**），
+    (d) 段改为 `SKIP "…以下 4 条断言**本轮未运行**，不是通过" 4`，汇总行改为 `PASS=$pass FAIL=$fail SKIP=$skip`。
+    **负控实测（2026-09-21）**：临时移走素材 ⇒ 打印
+    `SKIP (4 条) (d) 段整段：缺 …—— 以下 4 条断言**本轮未运行**，不是通过`，
+    汇总行 **`PASS=21 FAIL=0 SKIP=4`**（**修复前**是 `PASS=25 FAIL=0` —— 读者**看不出**少了 4 条）；
+    还原素材后 **`PASS=25 FAIL=0 SKIP=0`**（哈希 `f168fcb080e0151f` 复原一致）。
+    ⚠ **② 已做（2026-09-21）**：对 `tests/scripts/*.ps1` 做了**两轮**普查 ——
+    ⚠ **第一轮用字符串 grep（`Write-Output "…SKIP…"`）有假阴性**（漏掉 `Say "SKIP …"` 这类辅助函数包装）；
+    **第二轮改用语义判据**（「**首条断言之前**是否 `exit 0`」）⇒ 共命中 **5 个脚本 / 14 处跳过点**：
+    · **真缺陷**（汇总看起来完整、实际少跑 ⇒ 已修）：`verify-color-peak.ps1`（(d) 段 4 条）·
+    `verify-decision-delivery.ps1`（⑫外层 4 / ⑫内层 3 / ⑩ 5 / ⑪ 9 条，汇总加 `skip=`）；
+    · **口径统一**（整门禁跳过**本就可见** —— 该轮只有一句 SKIP、运行器展示正则含 `SKIP`、第 62 条已要求单列；
+    补汇总行是为**统一形态**）：`verify-png-signature.ps1` · `verify-metadata-privacy.ps1` · `verify-gainmap-memory.ps1`
+    （各 3 条前置守卫 ⇒ `SkipAll` + `===== PASS=0 FAIL=0 SKIP=1（⚠ 整门禁未运行，不是通过）=====`）；
+    · **判定为不是缺陷**：`verify-color-caps.ps1`（在「(g) **未实测项（必须显式标注）**」小节，那些断言本就不存在）·
+    `verify-color-tonemap.ps1`（有**独立黄字小节** `=== SKIP（未实现，不给绿灯）===`）。
+    ⚠ **2026-09-27 更新（#52）**：上面那句"caps 的断言本就不存在"**只对当时成立** —— `verify-color-caps.ps1`
+    那行 jxr 的纯打印 SKIP（原文写「本构建无 ICC/CICP 写通路」）已被实测否证并换成 (g) 段**三条真断言**
+    （ffmpeg `-c:v libjxr` 可编 / exiftool 写 ICC 能逐字节读回 / 嵌后 `JxrDecApp` 仍可解）⇒ 该门禁
+    **12/0 → 15/0**；脚本段 SKIP 由 4 条降为 **3 条**（清点见 `.workbuddy-ai/memory/COLOR_TRAPS.md` §七）。
+    **C# 侧**（`ServiceProbe` / `UiTestHost`）**已普查 ⇒ 无同类缺陷**（SKIP 全带显式标记且被运行器捕获）。
+    变异验证：**M5**（`if ($true)`）⇒ `pass=48 fail=0 **skip=3**` · **M6**（移走 `JxrEncApp.exe`）⇒
+    `PASS=0 FAIL=0 SKIP=1（⚠ 整门禁未运行，不是通过）` · **M7**（`verify-gainmap-memory` 强制跳过）⇒ 同上；
+    三处源文件均**用「编辑后」备份**还原并核验「功能仍在」。
+    ⚠ **仍未做**：`ensure-fixtures.ps1` **未接线进运行器** —— ⚠ **查明这不是疏漏而是锁设计使然**
+    （运行器 `:460` 取 `tests/output/.gates.lock`、`:783` 才跑脚本循环，而该脚本用**同一把锁** ⇒ 接进循环必然 `exit 9`）
+    ⇒ 三种改法（循环前先跑 / 加 `-LockAlreadyHeld` 旁路 / 运行器自产 fixture）**均属设计决策，待维护者拍板**。
 
 82. **`validate/cmsx` 已成死链：生产者已改名、消费者仍读旧目录、运行器注释过期（2026-09-18 登记；按「红了也没人看」口径不派工）**
 
@@ -3711,8 +3830,13 @@ test-output/
     ② **同一份源码、两个不同 exe 的"绿"不是同一个读数** —— `Release`/`Debug` 是两次独立构建产物
        （Debug 未优化、且路径/时序行为可能不同）⇒ **不能拿"Debug 绿"去宣布"Release 绿"**。
 
-    **处置建议（只登记，未修）**：① 回退时**必须打印它测的是哪个 exe**（一行 `[gate] exe=… (Release|Debug fallback)` 即可）；
-    ② 更硬的做法是**找不到 Release 就红**（与第 68 条同族：前置产物缺失**必须红**，不得静默降级）。
+**处置建议**：✅ **① 已落地（2026-09-21）**：全部 **38 处**回退点（`$exe` 28 处 + `$pr`/`$prExe`/`$prb` 等 10 处，分布于 **33 个脚本**）
+在回退判定之后**一律打印** `[gate] exe=<实际路径> (Release|Debug fallback)` ⇒ 读数可追溯。
+⚠ 实现纪律：**只插入新行、不改动既有行**（逐文件核验插入数 = 匹配数）；
+新行用 `$(if (…) {…} else {…})`（**PS5.1 兼容**，非 `?:`）；新串**纯 ASCII**（不碰 cjk 锁）。
+实测：`verify-ps-compat` **13/0**；`verify-color-peak` 打印 `…ServiceProbe.exe (Release)`、`verify-metadata-privacy` 打印 `…FfmpegGui.exe (Release)`。
+② **更硬的做法（仍开放）**：**找不到 Release 就红**（与第 68 条同族：前置产物缺失**必须红**，不得静默降级）——
+⚠ 属**行为变更**（会让「只构建了 Debug」的既有用法直接转红）⇒ 留给维护者拍板。
 
 85. **断言自身越界 ⇒ 整段静默不执行，且 `exception:` 行不带 `FAIL` 前缀（2026-09-18 登记）**
 
@@ -3731,7 +3855,13 @@ test-output/
     ⇒ **它是"读门禁的人"的口径，不只是"写断言的人"的自觉**：任何读数异常（尤其 `fail` 小得可疑），
       都要去 `PROBE RESULT` **之前**找 `exception:`。
 
-    **处置建议（只登记，未修）**：① 探针的 `catch` 应打 **`FAIL exception: …`**（带前缀，才进得了 `^FAIL` 过滤）；
+    **处置建议**：✅ **① 已落地（2026-09-21）**：`tests/ServiceProbe/Program.cs` 的主 `catch` 改打
+**`FAIL exception: …`**（带前缀）⇒ 它与 `Check` 的失败行**同形**，凡按 `^FAIL` 过滤的读者都能看见，
+不会再出现「`pass` 骤降而只看汇总行的人以为只坏了 1 条」。
+⚠ 影响面先查过：全仓只有 2 个脚本出现 `exception:` 字样（`verify-ipc-extra-options.ps1` / `verify-oracle-matrix.ps1`），
+且都指**它们自己的**异常，**不解析探针输出** ⇒ 加前缀**无副作用**；探针基线复核 **仍 542/0**。
+⚠ **本条更重要的遗产**（登记者自评「比按 `exception:` 过滤更有用」）：**判据是「`fail` 与 `pass` 的变化量不匹配」** ——
+`fail=1` 却 `pass` 骤降（实测 −16）⇒ **任何读数异常（尤其 `fail` 小得可疑）都要去 `PROBE RESULT` 之前找 `exception:`**。
     ② 更好的是**断言前先做边界自检**（`if ($si -lt 2) { Check($false, "…索引不足，本段无法评估…"); return }`）
     ⇒ 把"**没跑**"变成"**明确红**"（与第 68 条同族：不得静默少验）。
 
@@ -4495,6 +4625,553 @@ test-output/
     **本条自身的有效窗口**：机制由 **2026-09-19** 落盘（`#28(0919)`）；上列行号锚在运行器快照
     **792 行 / 66961 B / `SHA256=7C7A4725…`（16 位前缀）/ mtime `2026-09-19 12:49:09`** ⇒ **指纹一变即作废**（见第 78 条）。
     配套实测：`shape-selfcheck=OK（**16 针**…）` —— **第 16 针即「自身指纹」**（第 15 针为「读失败不沿用」，登记见 `COLOR_TRAPS §B.9` / 本条上方第 100 条邻域）。
+
+103. **时间型负控的下限如果没有"同夹具实测读数"背书就是许愿；而"归因到自己刚做的改动"的那种解释，落笔前必须先做一票区分的实验（2026-09-23 登记，`verify-ffmpeg-heartbeat.ps1` ③-e）**
+
+    **现象**：整轮 52 条里唯一一条红 = `③-e **负控有牙**：实测总耗时 2.8 s ≥ 3 s`。
+    这条的作用是让「按总墙钟判死」的错误实现**照样转红** ⇒ 它要求合法慢任务**明显跑得比注入阈值（2 s）久**。
+
+    **⚠⚠ 我第一版给这条写的归因是错的，被独立复核推翻 —— 错法本身比错更值得留档**：
+    我原写"掉的 1 s 正是本班修掉的『启动期同一条 5 级链跑两遍』，因为 `RunApp` 量的是整个应用进程、含启动探测"，
+    还拿 `hb_final_ps7.log` 的 **3.8 s** 当"同一夹具的前值"。两条都不成立：
+    · `ExternalToolsDetector.ProbeAllTools` **全仓唯一调用点是 `MainWindow.xaml.cs:1248`（GUI Step3）**，
+      而 headless 走的是另一个函数（`Program.cs:267` 调 `EnsureAllDetected`）⇒ **那条修复根本不在这条 `elapsed` 的路上**；
+    · `hb_final_ps7.log` 是 **2026-09-19** 的 transcript（文件第 3 行自报开始时间），且 HEAD 版 ③-e 素材是
+      `testsrc2=s=3840x2160` **不带 noise**、`RunApp` 也**没传 `--quality 0`** ⇒ **不是同一夹具**，两个数不能对撞。
+
+    **真正的结论（这次有落盘背书）**：`≥ 3 s` 这条下限**从来没有一次同夹具的实测读数为它背书** ——
+    它写在"4K 噪声 ≈ 3.0 s"那句估算旁边，第一次在整轮里跑就量到 **2.8 s ⇒ 红**。
+    ⇒ 可迁移的硬规矩：**给时间型判据设下限时，必须同批留一条"该素材自己的独立耗时"作为背书**
+      （最好就是门禁自己打印的那行耗时，且**跑过一次**），否则阈值是许愿不是判据。
+    ⚠⚠ 另一条更该记住的：**这个假归因对我的改动有利**（它把一条红解释成"我把启动修快了"的副产品，
+      于是既不用改产品也不用承认判据薄）。**归因到自己改动的红，落笔前必须先做一次能一票区分的实验**
+      —— 这里那一刀就是"`ProbeAllTools` 到底被谁调用"，`grep` 一条就够，成本几秒。
+
+    **同一根因的前一次（仅系该脚本注释自述，全库无落盘读数 ⇒ 别当实测引用）**：注释写 2026-09-22 之前本条
+    实测 **20.7 s**、其中 ~19 s 是探测递归扫全机的开销，探测修快后塌成 **1.3 s**，当时靠"把熵拉满"补回。
+
+    **第一次处置（2026-09-23，做对了三分之一）**：阈值一律不动、**把真实工作量做实** ——
+    素材 `testsrc2` 从 `3840x2160` 提到 `7680x4320`（熵已是 `noise=alls=60` ⇒ 像素数回到**线性**杠杆），
+    单跑实测 **9.1 s**、空闲机复跑 10.3 s ⇒ 对 `≥ 3 s` 有 ≥3× 余量。`hbSec = 2` 全程未改
+    （改阈值 = 用放宽判据换绿灯，本仓禁止）。⚠ 素材形态有硬约束：目标格式必须 **png + `--quality 0`**，
+    改成 `--format jxl` 会让本臂从**站点 A** 漂到**站点 C** ⇒ 覆盖不到要覆盖的那个入口分支。
+
+    **第二次翻车与真正的结论（2026-09-24）**：8K 版在**下一次整轮**里又红了，而且不是"下限不够"——
+    `③-e 日志不含「无进度心跳」` 与 `产物 1 个（实 0）` 双双转红，读数 **8.8 s / 产物 0**；
+    同一条门禁**单跑两次都是 68/0**（③-e 10.3 s / 产物 1），而同一轮里 ③ 由 16.0 s 涨到 23.3 s、
+    ③-d 由 10.1 s 涨到 19.4 s ⇒ **是整轮负载，不是抖动**（判据：单跑 vs 整轮同夹具同代码，只差负载）。
+    **机制（这条臂的原理性限制）**：站点 A 的目标是**单帧** png + zlib 9 ⇒ ffmpeg 一次编码
+    几乎只发一个统计块 ⇒ 「最大无进度窗口」≈「总时长」。于是
+    `阈值 > 窗口`（合法任务别被误杀）与 `阈值 < 时长`（墙钟判死的实现必须被抓）变成**互斥**，
+    加大工作量只是把两个数一起推大 ⇒ **单帧臂上挂墙钟判据不可能稳**。第一次的红（2.8 s）和这次的红（误杀）
+    其实是同一个设计问题的两种表现。
+    ⇒ 维护者拍板（2026-09-24）：**③-e 只保留站点 A 的覆盖**，夹具回落到 4K 噪声以缩短窗口；
+    "按总墙钟判死必被抓住"这条能力交给 **③ / ③-d 两条多帧臂**的 `elapsed -ge 6`
+    （块流持续 ⇒ 与负载解耦；实测 16.0 / 10.1 s ⇒ 余量 2.7–3.8×，**比原来 ③-e 的 1.2× 更强**），
+    并在 ③-e 上留一条**形状锁**断言"该能力仍有两处载体"（防搬运变成哪儿都没判）。
+
+    **可迁移的推论（下一个人先按这三条自查）**：
+    ① 写「跑得比阈值久」这类**时间型**判据时，余量必须由**与固定开销无关的真实工作量**提供，
+      并且**门禁要把 elapsed 打印出来**（本条一直有「耗时=」读数行 ⇒ 才可能对撞出 2.8 / 8.8 / 10.3）；
+      但更要紧的是：**先问这项工作的"进度信号节奏"是否独立于它的总时长** ——
+      单帧/无中间产出的活儿做不到，只能换成多帧负载（同一族的 ①f 则是换成**计数**判据，
+      见 `HANDOVER_2026-09-22 §3.4`）。
+    ② **改动任何启动/初始化路径的固定开销之后，回看所有以墙钟计时为牙的判据**（本仓已知只有这一处）。
+    ③ 红的时候先做**单跑 vs 整轮**那一对读数：两者同代码同夹具，唯一差别是负载 ⇒
+      一次就能把"产品回归 / 判据脆弱 / 机器负载"三者分开（这次靠它避免去"修"一个根本没坏的产品行为）。
+
+    **同一次跑出的另一条读数陷阱（顺手钉住）**：③-e 红时该门禁的**断言总数会从 68 变 67** ——
+    因为 ④「运行级目录已清零」那条 `CK` 被包在 `if ($fail -eq 0) { … } else { 只 Write-Host 保留现场 }` 里
+    （现役 `verify-ffmpeg-heartbeat.ps1:555-560`）⇒ **红的时候少发一条断言**。
+    ⇒ 拿「两次跑出的 PASS 条数对不对得上」当自证之前，先确认这条**条件分支**；本轮它就是被误当成
+    "第二个异常"查了一轮，真因是上面那一条红的连带效应。
+
+104. **"只写进备忘录、让消费者去查"式的修复会被形状锁全绿放过 —— 必须有一跑能观察到行为差异（2026-09-23 登记，`RawService.Detect` / `verify-startup-warmup` S8f/S8g）**
+
+    **现象**：给"起不来的 exe 不得算可用"补收口时，第一版做法是让 `ExternalToolsDetector.ProbeAndVersion`
+    把 `LaunchFailed` 结论写进 `PlatformServices` 的启动性备忘录，再由 `RawService.Detect` 的六级去查它。
+    五条形状锁（记录点在不在、每级查没查、复位调用有没有）**全绿**，`S8f` 行为锁**当场红**：
+    把 `FFMPEGGUI_DNGTOOL_PATH` 指到一个只有 `MZ` 头的垃圾 exe、其余各级都换成空目录 ⇒ 面板仍报 `dngtool: ✅`。
+
+    **为什么形状锁抓不到**：`RawService.Detect()` 开头是 `if (_detected) return _detectedPath != null;`
+    —— 一次性缓存。GUI Step1 的 `Mk("dngtool", …)` 先跑完并置位 ⇒ 之后 `ProbeAllTools`（Step3）探出的反例
+    **永远回流不到队列所读的那个值**。所以"每级都写了 `!IsToolUnlaunchable(...)`"这句话**逐字为真**，
+    却在真实时序下恒为"未知 ⇒ 放行"。⇒ **形状锁证明的是"代码写了"，不是"代码会生效"。**
+
+    **正确形态**：收口要落在**消费者自己探测**那一层 —— `Detect()` 内按优先级枚举六级候选、
+    逐个 `ProbeExecutable(path, 2000)`、`LaunchFailed` 就换下一级；备忘录降级成"同一路径每进程最多探一次"的优化。
+
+    **这条对判据设计的可迁移结论**：
+    ① 凡是"加一个过滤/缓存/注册表"式的修复，落锁时必须有一条**能观察到结果差异**的行为断言，
+      且它要构造出**过滤器唯一一次生效的场景**（这里 = 其余各级都给空目录，逼出"唯一候选是坏文件"）。
+    ② 行为对要**单变量**：`S8f`（垃圾 MZ ⇒ ❌）与 `S8g`（同一套空目录环境、只换成起得来的真 PE ⇒ ✅）
+      共用环境，只差"文件起不起得来" ⇒ 才能排除"名字不认/文件不在"这类混淆解释。
+      ⚠ `S8g` 借的是 `ffmpeg.exe` —— 它**不是** dngtool，却必须仍判 ✅；这一条同时锁住"收口判的是可启动性"。
+    ③ ⚠ 反过来的坑也踩过：`S8f` 第一版没掐其余各级 ⇒ PLAN 里有好副本 ⇒ 期望 ❌ 却读到 ✅ ⇒
+      差点把**正确行为**（跳过坏候选、继续下一级）当成 bug 去"修"。**先确认测量能区分，再怀疑实现。**
+
+    **同批顺带修掉的一处口径不一致**：headless 报告的 `dngtool` 行读 `RawService.IsAvailable`，
+    而 `ProbeAllTools` 的 dngtool 行自己拼"手动 → artifacts/PLAN"⇒ 两者级别集合不同。
+    本次没有强行统一（属既有分歧、改动面大），只在 §0-B ⑧ 与 §4 第 4 条留痕。
+
+105. **运行器补两项"每步验证"能力：`-Scripts` 子集开关 + 「零断言 ⇒ 红」闸（2026-09-24 登记，`_run-step3-gates.ps1`）**
+
+    **为什么要加（两个都已付出代价的事实）**：
+    ① 此前只有"整轮 53 条 ≈ 20 min"与"裸跑单个 `verify-*.ps1`"两个选项，而**裸跑绕开运行器五项保护**
+      （仓库锁 / 单步硬超时 / STALE 新鲜度闸 / 双漂移复核 / `_gate_script_*.txt` 留痕）
+      ⇒ 结果是一晚启动 6 次整轮（2 次自己中止、1 次被残留锁拒起）≈ 80–100 分钟墙钟。
+    ② C 类门禁只要 `exit 0` 就算过，**没人检查它到底跑没跑断言** ⇒ 审计点名 6 条
+      "前置缺失即零断言绿灯"（`verify-color-token-normalize.ps1:45-46` 等），与 §6 第 68 条
+      「缺参照时 PASS 9→8 而 exit 仍 0」同族。
+
+    **`-Scripts a.ps1,b.ps1` 的三条语义（不要凭直觉改）**：
+    · 五项保护**照常生效**，但汇总行强制标注 `（-Scripts 子集 N/M 条 ⇒ 不构成基线）`
+      ⇒ 子集绿**不能**当基线用，宣布新基线必须跑全量（这条写在运行器自己的打印里，不靠人记）；
+    · 名字不在受管清单内 ⇒ **拒绝跑**（不是静默忽略）——静默忽略正好制造"以为跑过了其实没跑"；
+    · 条数锁仍对**全数组**生效（它校验清单本身的完整性，与本次跑几条无关）；
+      且 `-SkipScripts` 与 `-Scripts` 同时给出 ⇒ 拒绝跑（前者在脚本段之前就早退）。
+
+    **「零断言 ⇒ 红」闸的判据形状**：取该门禁输出里**所有** `PASS=<n>`（大小写均可）的**最大值**，
+    为 0 或一个都找不到 ⇒ 计入 `$failedItems`。
+    ⚠ 为什么取 max 而不是"第一条/最后一条"：一条门禁常有多处计数（子步骤 + 总计 + per-probe），
+    取第一条会撞上小的子计数、取最后一条会撞上探针读数，**只有 max 回答"到底跑没跑过断言"**。
+    ⚠ 两类契约例外**不判**（它们各自有别的承诺）：`$tableOnly`（无 PASS/FAIL 契约）、
+    `$noSelfSummary`（只认退出码）；超时与输出读失败也**不重复判**（上面已单独记账，一次故障只该红一条）。
+
+    **两闸都已做过变异验证（不是"写了就算"）**：
+    · 子集开关：正常 10 条抽样无一条误伤（含 2 条 `$tableOnly` + 2 条 `$noSelfSummary` 控件）；
+      非法名字 ⇒ `RC=1` 点名；冲突 ⇒ `RC=1` 点名；且**顺带验证 STALE 在子集路径上真的生效**
+      （第一次子集跑就被 `FfmpegGui.dll < src` 拒起，正是变异脚本"还原晚于重建"造成的真陈旧）。
+    · 零断言闸：把 `verify-png3-interop.ps1` 临时改成"`exit 0` + 汇总 `PASS=0`"（模拟缺件静默跳过）
+      ⇒ 运行器 `RC=1` 并打两行（现场提示 + `$failedItems` 条目）；变异文件**逐字节还原一致**。
+    ⚠ 顺带一条通用坑（本次自己踩的）：**变异/试验脚本的"还原"必须在"重建"之前**，
+      否则留下"源码比二进制新"的真 STALE，下一次任何跑动都会被新鲜度闸拒起。
+
+106. **新鲜度（STALE）闸由 2 对扩到 4 对：配对清单的来源是「谁被门禁执行」，不是「有几个 csproj」（2026-09-24 登记，`_run-step3-gates.ps1`）**
+
+    **触发事实（两处，都不是推测）**：
+    ① 运行器**自己**在清单注释里把 `tests/UiTestHost` 登记成「已知覆盖缺口（未处置，另议）⇒ 靠手工」
+      —— **两处镜像**：本节第 62 条末尾那句"① `tests/UiTestHost` 是第三个项目…"（历史记录**不改写**，
+      只在其后加了一条【2026-09-24 更新：① 已处置】指针），以及 `_run-step3-gates.ps1` 清单注释里的同一条
+      （后者属"现行说明书"⇒ 已就地改写为「曾有的缺口 + 唯余 GainMapTestHost」）
+      ⇒ 5 条 UI 门禁执行的 `UiTestHost.exe` **从来没有被任何新鲜度判据看过一眼**。
+    ② **同族事故早就登记过**：§6 第 50 条 ⑤「12 个门禁脚本把 `bin/Debug` 排在 Release 之前 ⇒ 跑的是
+      14 小时前的旧二进制；而运行器的硬闸只比探针 bin 目录里那份 `FfmpegGui.dll`，**看不到子脚本用的 exe**
+      ⇒ 没拦住」。当时修的是"脚本取哪份 exe"，**闸本身没跟着补** ⇒ 清单内 28 条端到端门禁执行的
+      `src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.exe` 至今不在判据内。
+
+    **配对清单怎么来的（这是本条的可迁移部分）**：先取**受管清单**（用 PowerShell **AST** 解析
+    `$scriptList` 的数组字面量，`StringConstantExpressionAst` ⇒ 53 条，避免正则把注释里的名字也数进去），
+    再逐条扫该门禁源码里出现的**产物路径字面量**：
+    · 引用 `src/**/win-x64/FfmpegGui.exe` ⇒ **28** 条；· 引用 `tests/UiTestHost/**/UiTestHost.exe` ⇒ **5** 条；
+    · 引用 `bin/Debug/**/FfmpegGui.exe`（Release 缺位时的兜底）⇒ **27** 条。
+    ⚠ 我**先**在运行器消息里凭上一轮记忆写了「被 **24** 条端到端门禁执行」，AST 一数是 **28** ⇒
+    措辞已改为**不带条数**（`FfmpegGui.exe(端到端门禁实际执行的产物)`），条数只留在本节与运行器注释里并标"实测"。
+    ⇒ **运行时打印的判据文本里不要嵌会漂移的计数**：它既不会被任何锁校验，又比注释更容易被人当成权威口径。
+
+    **最终 4 对判据**（`[STALE]` 段，符号 `$stale` / `Get-NewestSrc`）：
+    `src/FfmpegGui/**` ↔ ①探针 bin 里的 `FfmpegGui.dll` ②`src/**/FfmpegGui.exe`；
+    `tests/ServiceProbe/**` ↔ `ServiceProbe.exe`；`tests/UiTestHost/**` ↔ `UiTestHost.exe`。
+    ⚠ **仍按项目配对**（第 39 条 (a) 的纪律）：`UiTestHost` 只与**自己项目**的源码比 —— 拿它的源码 mtime
+    去比 `src` 会造出与产品无关的**假 STALE**（该注释就写在代码里）。
+
+    **变异验证（6 次跑动，全部走子集开关，未跑整轮）**：夹具 = `-Probes selftest -Scripts verify-ps-compat.ps1`
+    （单跑 3–13 s），mtime 变异用 `.LastWriteTime=` 赋值 + **逐 tick 还原**，**不用 `touch`**（MSYS 的 `touch`
+    在本仓踩过截成 0 字节的坑），还原后同时核对**内容 SHA256 未变**：
+    · **A 对照**（工作树本来就新鲜）⇒ `rc=0` / 13.2 s / **0** 条 `[STALE]` / `ps-compat PASS=13 FAIL=0`；
+    · **B** 只把 `tests/UiTestHost/Program.cs` 往前推、**不重建** ⇒ `rc=2` / 3.1 s，**只**点名
+      `UiTestHost.exe 2026/9/24 4:46:20 < tests/UiTestHost 源码 …（Program.cs）` ⇒ 另三对**无误伤**；
+    · **C** 只把 `src/FfmpegGui/Services/RawService.cs` 往前推 ⇒ `rc=2` / 2.7 s，一次点出**两行**
+      （`FfmpegGui.dll …` 与 `FfmpegGui.exe(端到端门禁实际执行的产物) …`），且 `UiTestHost.exe` **不**误报；
+    · **D** 还原后再跑对照 ⇒ 重新 `rc=0` 无 STALE（证明还原彻底，没留第 105 条那个"还原晚于重建"的尾巴）；
+    · **E** 单独复核退出码与锁 ⇒ 拒跑时 `rc=2` 且 `.gates.lock` **无残留**（第 86 条 #147 C(0919) 里
+      "STALE 拒跑也必须自己放锁"那条修复仍生效）；
+    · **F** `-SkipScripts` 对照 ⇒ `rc=0` / 58.2 s / **0** 条 STALE ⇒ 新配对不误伤"只跑探针"模式。
+
+    **本闸的两条语义边界（写在这里以免被高估）**：
+    · mtime 配对只回答「**产物不比源码旧**」，**不**回答「这次改动真的进了产物」。
+      ⚠ 该边界在**另一会话**里以"增量构建可能留下旧产物 mtime、要靠 dll 的 SHA 才能证明改动进了二进制"的形式
+      出现过 ⇒ 但**本仓尚无专条取证**，所以此处只登记为**待证边界**（下次做 dll SHA 对撞时顺手验一下）。
+    · 四对都写成 `if ($src -and $exe -and …)` ⇒ **产物缺失时该对静默跳过**（"缺失"不等于"被拦住"）。
+      现状可接受的理由：Release exe 缺位时门禁不会红，而是**换一份产物跑** —— 清单内 **27** 条内嵌
+      `bin/Debug/**/FfmpegGui.exe` 兜底路径（AST 实测），而 **Debug 那份根本不在闸内** ⇒ 这正是第 50 条 ⑤ 的族裔。
+      ⚠ 已有一半天数：全仓 `tests/scripts/*.ps1` 里 **35 个文件**打印 `[gate] exe=… (Release | Debug fallback)`
+      （实测 `grep -l '\[gate\] exe='` 计数，含运行器自己）⇒ **可追溯**，但仍然**不拦**
+      （读数只到"知道自己在跑哪份"，不到"跑的是对的那份"）。
+      ⇒ 是否改成「缺失即拒跑」是个**取舍**（会连带挡掉"这台机器没建 `UiTestHost`、只想跑 `-Probes`"的合法用法），
+      已作为待决策登记在 `docs/HANDOVER_2026-09-22.md` §4 第 9 行。
+    · **第三条算是本轮自打**：`tests/GainMapTestHost.exe` 为什么不在闸内 —— 判据取**赋值形态**
+      （`tests/scripts/*.ps1` 的**非注释行**里 `$x = … GainMapTestHost` = **0** 处；**同形态**搜 `UiTestHost` =
+      **6** 处：运行器 + 5 条 UI 门禁 ⇒ 对照证明这条负断言**有牙**，不是正则写错造成的"看着像 0"）。
+      ⚠ 我最初写的是 `grep GainMapTestHost.exe tests/scripts/*.ps1` = 0 命中，**随后被自己推翻**：
+      运行器新增的那段注释里就含 `GainMapTestHost.exe` 这个串 ⇒ **负断言被自己的文字满足**，命令不再等于 0。
+      ⇒ 可迁移：**文件内容型负断言必须 (a) 把注释/自身文字排除在来源之外，(b) 配一条同形态的正对照**；
+      只在注释里解释"为什么 0"是不够的 —— 注释本身就是新的命中来源。
+
+107. **「人读的现量陈述」也要钉到唯一真值源：形态自检第 ⑰ 针（2026-09-24 登记，`_run-step3-gates.ps1`）**
+
+    **已付出的代价（不是假想）**：接第 53 条门禁时，我把 `$expectedScriptCount`、`$scriptList` 数组、
+    `docs/TESTING.md` 的「4 + 7 + 42 = 53」都改了，**漏改运行器自己注释里的两处条数散文** ⇒
+    之后跑的整轮**照常全绿、无人报错**。原因很机械：**条数锁只比「数组 vs 常量」**，散文不在任何锁的射程里；
+    而散文恰恰是后来的人（和我自己）当成"权威口径"直接引用的那一行 ⇒ **它漂移比常量错更害人**，因为没人会去复核注释。
+
+    **判据形状（第 ⑰ 针，接在原 16 针之后）**：先从运行器全文取 `常量定义`，**必须恰好 1 处**（写两处 ⇒ 谁生效取决于顺序），
+    取其数字为真值；再要求**三种"现量陈述"形态各命中 ≥1** 且其中数字 == 该真值。
+    ⚠ 为什么**不**做成"扫全文所有 `N 条`"：那会撞上历史演进链里的 `42 / 48 / 49 / 50 / 51 / 52` 等**旧读数**
+    （历史链按"逐字保留 + 另加现值指针"的规矩**不许改写**）⇒ 只钉**现量陈述**的形态，
+    新增一处现量陈述时**必须把它的形态加进这一针**，否则那一处仍然无锁（这一条写在针的注释里）。
+    ⚠ 沿用本函数头注释里那条老纪律：本函数读的是**自己的源码** ⇒ 所有 token 一律**拼接**构造，注释里也不得写出连续形式，
+    否则"必须出现"型会被针自己满足掉（同义反复）。
+
+    **变异验证（4 次跑动，全走 `-Probes selftest -Scripts verify-ps-compat.ps1` 子集；每次 3–13 s）**：
+    · **A 控制** ⇒ `rc=0`，打印 `shape-selfcheck=OK（17 针：… / 自身指纹 / 散文条数）`；
+    · **B 改散文数字**（`清单条数以实测为准 = 53 条` → `= 52 条`）⇒ `rc=2` + 点名
+      `散文条数与常量不符：清单条数…以实测为准 = 52（常量 = 53）` ⇒ **有牙**；
+    · **C 改掉散文形态**（`全跑 53 条(≈20min)` → `全跑 N 条(≈20min)`）⇒ `rc=2` + 点名
+      `全跑 N 条 命中 0（散文被删或改了形态 ⇒ 该处失去保护）` ⇒ 证明"命中 ≥1"那一半**不是装饰**
+      （只做数字相等的话，删掉散文反而会让针"变干净"）；
+    · **D 还原后控制** ⇒ 重新 `rc=0`；三次变异/还原全部用 `ReadAllBytes`/`WriteAllBytes` **逐字节**回滚，
+      收尾核对 `byteIdentical=True` 且 SHA `B6C3A927E6CE5965` 未变（不用 `WriteAllText` —— 它会吞 BOM，见下一条 §6 第 108 条）。
+      ⚠ 该 SHA 只是**那四次跑动期间**的指纹；做完镜像同步后又动了一次运行器注释 ⇒ 现值以交接文档 §0 那行为准。
+    · 四次的 `.gates.lock` 残留均为 **False**（`[SHAPE]` 拒跑路径与 `[STALE]` 一样必须先 `Release-GatesLock`）。
+
+    **镜像同步（针数是"打印出来的字符串"而不是任何判据 ⇒ 全仓 `grep -n '16 针'` 才是权威清单）**：
+    本轮实动 **7 处** —— 运行器内 4 处（头部注释「（16 针）」、针清单行首、`shape-selfcheck=OK` 打印串、
+    以及给 `[SHAPE]` **新增一行专指散文条数的修法提示**，否则读者照着"退出码取法"那条修法去查会白跑）
+    \+ 文档 3 处（交接 §0 的基线行、§3 的待办改闭结、`COLOR_TRAPS` 的针清单）。
+    而 `docs/TESTING.md` 第 102 条与 §6 第 92 条邻域里带日期限定的「**2026-09-19 13:46 权威整轮 = 16 针**」是
+    **历史读数** ⇒ 保留原文不动（那两处本来就把"以运行器打印的 `OK（N 针…）` 为准"写在句子里，自漂移免疫）。
+
+    **可迁移的一条**：**每一条"现量陈述"要么钉在唯一真值源上，要么就承认它是会漂移的散文**。
+    本仓已有三件同族工具（条数锁 = 数组 vs 常量、第 13/14 针 = 数组内部计数、第 ⑰ 针 = 散文 vs 常量），
+    前两件都只管机器读的结构 ⇒ 第三件补的正是"人读的那一行"这个空档。
+
+108. **批量改文件的 harness 会自己造错：`WriteAllText` 吞 BOM、"手工去 BOM"吃掉首字符 —— 两处已造成本仓真实损失（2026-09-24 登记）**
+
+    **发生在本轮的两次（都是我自己的 harness，不是被测代码）**：
+    · `[System.IO.File]::WriteAllText($p, $txt)` 用的是 **UTF-8 无 BOM** ⇒ 原本带 BOM 的文件被**静默去 BOM**；
+    · 为了"补回 BOM"而写的 `ReadAllText` + **手工 `Substring(1)`** 更糟 —— `ReadAllText` **本来就已经剥掉**了 BOM，
+      再切一位就切到了真正的首字符：`tests/ServiceProbe/Program.cs` 的 `using` 被削成 `sing`（**23 个 CS 编译错误**），
+      而**未跟踪**的 `docs/HANDOVER_2026-09-22.md` 丢了开头的 `# 交` —— 后者**没有 git 副本可回滚**（只能手工重打）。
+    · 同一次脚本还给 `Program.cs` **加了** BOM（与"去 BOM"相反的另一个方向）⇒ **两个方向都会错**，
+      说明问题不在"猜哪种编码对"，而在**用文本 API 做本不该由它做的字节级事情**。
+
+    **规矩（本轮之后一律照此）**：
+    · 批量/变异改文件优先用 **Edit 工具**（逐处替换、不改整文件编码）；必须用脚本时，
+      **`ReadAllBytes` → 检测前三字节 `EF BB BF` → `WriteAllBytes` 时按原样写回**，全程不碰文本 API；
+    · **还原后必须核对**：`byteIdentical`（逐字节）或至少 **SHA256 与动手前一致**（本轮第 107 条的变异夹具就是这么收口的）；
+    · 未跟踪文件**没有回滚路径** ⇒ 动它之前先复制一份到 `tests/output/`（该目录被 ignore，不会污染工作树）。
+
+    **现状核对（2026-09-24 实测，首 6 字节）**：`tests/ServiceProbe/Program.cs` = `75 73 69 6E 67 20`（`using `，无 BOM、
+    首字符完好）· `docs/HANDOVER_2026-09-22.md` = `EF BB BF 23 20 E4`（BOM 之后紧跟被回填的 `# 交`）·
+    `_run-step3-gates.ps1` = `23 20 5F 72 75 6E`（无 BOM，且第 107 条三次字节级回滚后仍如此）。
+    ⚠ 这三行只证明**当下**完好，不证明"中间没被弄坏过"——损失（23 个编译错误 + 一次手工重打文档）确实发生过并被修掉。
+
+    **同一条纪律的**反方向**代价（本轮实测一次，值得记）**：变异跑完后按备份**逐字节还原**
+    `ExternalToolsDetector.cs`（内容已等于原版），紧接着的子集跑被 **`[STALE]` 拒了** ——
+    `FfmpegGui.dll 06:20:28 < src 06:21:21（ExternalToolsDetector.cs）`。
+    ⇒ 这不是判据坏了，而是它**只看 mtime** 的必然结果：**内容相同、mtime 变新 ⇒ 保守误拒**（假红方向，
+    代价 = 多跑一次构建；比"假绿"便宜得多，所以**不要**为了好看去放宽它）。
+    处置 = 按交接文档 §1 用 **`-t:Rebuild` 同批重建四项目**（`0 警告 0 错误`），复跑子集 4 条全绿
+    （`tooldetect 26/0 SKIP=0` · ps-compat 13/0 · cjk 14/0 · startup-warmup 47/0），
+    且四份 `FfmpegGui.dll` 全部回到 **`1CD0098625C684C4`**（= 变异前的指纹 ⇒ 产物里没有变异码）。
+    ⚠ **别用 `Copy-Item` 拷产物来"修 mtime"** —— 那会撞上 `COLOR_TRAPS §H` 那条反向坑（恢复保留旧 mtime
+    ⇒ MSBuild 判"已是最新"跳过重建 ⇒ 后续读数其实来自变异版二进制），比这次误拒危险得多。
+
+109. **SIMD 标签选路从"零判据"到 8 条：变异实测"删掉整段排序，四条老门禁全绿"（2026-09-24 登记，`tooldetect` ⑥）**
+
+    **动因（是归类审计的结果，不是假想）**：`ExternalToolsDetector.ChooseBestExecutable` 里那段
+    "按 `CpuFeatureService.GetSimdPriorityTags()` 逐个标签用 `name.Contains(tag)` 收拢候选 → 剩余追加 →
+    `generic` 兜住全部"的**选路逻辑此前零判据**。把整段删掉，`tooldetect` 的 ①/②/③/⑤ **一条都不会红**
+    —— 因为它们要么只喂单元素候选、要么喂不带特征后缀的文件名 ⇒ 属"有代码没锁"。
+
+    **补的 8 条（⑥a1/a2/a3/premise/b/c/d/e）与设计取舍**：
+    · **不重算产品的排序**（那只会做成"构造恒等"自检，产品错我也跟着错）⇒ 断言**外部可观察后果**：
+      ① 输入顺序无关（三种顺序喂同一组候选都必须选高优先那份）② 拿掉高优先后必须落到次高
+      ③ 高优先位置换成**起不来的**垃圾 ⇒ 必须落到次高（标签优先级不得盖过"起不起来"）
+      ④ 全是"带后缀 + 起不来" ⇒ 必须 `null`（末尾兜底不得把带特征后缀的垃圾报成工具）。
+    · **夹具前提单独断言**（`⑥-premise`）：从标签表里挑一对**互不为子串**的 `(hi, lo)`，并要求三个文件名
+      都不命中比 `hi` 更早的标签、`plain` 不命中任何实标签 —— 否则"期望 = hi 那份"根本不可计算
+      （`avx` ⊂ `avx2` 这类包含关系会让判据**静默失去方向**）。本机读数：表 `[avx2, avx, sse4, sse2, generic]`、
+      `hi=avx2`、`lo=sse4`、`CPU=x64 v3 avx2`、**SKIP=0**。
+      ⚠ 若某台机器的标签表里**找不到**互不为子串的一对，⑥b–⑥e 走**点名 SKIP**（打印整张表），**不算通过**。
+    · 空标签这一类失效模式单独钉（`⑥a2`）：判据是 `Contains(tag)` ⇒ 一个空串会让第一轮吞掉全部候选并按
+      **逆序**返回（`for i = Count-1 downto 0`）⇒ 选路静默退化成"最后入列者优先"，不抛错、不打日志。
+
+    **变异验证（真改产品码，跑门禁看红）**：把 `var priorityTags = CpuFeatureService.GetSimdPriorityTags();`
+    换成 `System.Array.Empty<string>()`（= 选路整段失效）⇒ 重建 `0 警告 0 错误` ⇒
+    `tooldetect` **PASS 26 → 24、FAIL=2**，红的正是 ⑥b 与 ⑥c，且失败读数自带"返回第一个"的指纹：
+    `实得 zzprobe-sse4.exe / zzprobeplain.exe / zzprobe-avx2.exe`（三种输入顺序给出三个不同答案）。
+    ⚠ **⑥d / ⑥e 在该变异下仍绿** —— 它们咬的是"起不起来"，不是顺序 ⇒ 能力归属如实登记，
+    别让"两条没红"被误读成"两条无牙"（同 §6 第 ②d 条"受两道冗余保护"那条教训）。
+    还原方式 = 动手前把源文件**逐字节备份**、收尾按备份 `WriteAllBytes` 回写并核对
+    （`byteIdentical=True`、`ExternalToolsDetector.cs` SHA `083FAC9B3685C863`）；
+    还原后重建 ⇒ 四份 `FfmpegGui.dll` 全部回到 **`1CD0098625C684C4`**（与改动前同一指纹 ⇒ 变异没漏进最终产物），
+    复跑 `tooldetect` **PASS=26 FAIL=0 SKIP=0**。
+
+    **同一次审计顺手抓到的另一格（本轮**没**动产品）**：`AutoUseSimdBinaries` 这个设置
+    ① 由复选框写入并持久化、② 启动时回填复选框，**但没有任何消费者** ——
+    `grep -rn 'AutoUseSimd' src tests` 只命中设置模型 / 持久化 / UI 三处；`PsnrCalculator.cs:193-197`
+    一律按 `Avx512BW/Avx2/Sse2.IsSupported` 无条件选路。而两条本地化文案都在**承诺**一个回退
+    （`tip.simd`："关闭后逐像素回退，仅用于排查" / "turning it off falls back to scalar code"）
+    ⇒ **声明与实现冲突**，且该复选框在门禁里同样**零断言**。已登记为 `docs/HANDOVER_2026-09-22.md` §4 第 10 行
+    （两档修法 + 代价；本轮不自作主张改产品）。
+
+    **镜像同步**：`tooldetect` 读数 **18/0 → 26/0** —— 交接文档 §0 的"现树定向验证"行与 §7 速查表已改为 26/0；
+    §0 的 09-23 晚班单跑行、§2 表格行、§3.4 的"回退后控制组 18/0"三处是**带日期的历史读数** ⇒ 逐字保留。
+    ⚠ `tooldetect` **不在**运行器 `$Probes` 默认 21 个 mode 里（由第 51 条门禁自己起）⇒ "探针 21 mode 合计 542"
+    这条基线**不受影响**，别去动它。
+
+    **一条刻意留空的判据（登记清楚，别以后当"已覆盖"）**：⑥e 只钉住"带特征后缀 + **起不来** ⇒ 兜底不得交出"。
+    另一半**没有锁**：某候选若"**起得来、但探测判它不可用**"，末尾兜底 `launchable[0]` 仍会把带后缀的那份交出去。
+    这**不是**缺陷：`ProbeExecutable` 只把"启动抛异常 / `Start` 返 null / 被加载器当场杀（`0xC0000135`/`0xC000007B`/
+    `0xC0000142`）"记成 `LaunchFailed`，**超时不算** —— `exiftool(-k).exe` 这类"打印完等你按键"的恒超时工具
+    全靠这条活着 ⇒ 一旦改成"探测不可用 ⇒ 不返回"就砍掉一条合法安装形态（同 §6 里那条"超时≠起不来"的决定）。
+    ⚠ 为什么本轮**没**给它写判据：要造出"`IsRunnable` 的补集"需要一个"**退出码非 0 且 stdout/stderr 都为空
+    且不是加载器错误**"的确定性 exe（`IsRunnable = ExitCode==0 || 两路任一非空`，见 `ExternalToolsDetector.cs:162`），
+    本轮没找到这种现成 exe ⇒ **不做半截夹具**（照抄某个系统程序的行为会随版本翻红，那比没判据更糟）。
+    要补的话，先解决"合法超时形态"与"收紧兜底"这对矛盾，再谈判据。
+
+110. **`Save()` 的手写克隆表把漏掉的字段"落盘成默认值"——`RenderingMode` 因此丢了渲染后端；两把锁与"有锁但不上锁"第二次（2026-09-24 登记）**
+
+    **症状与机理（一句话）**：`AppSettingsService.Save()` 不序列化 `_current`，而是
+    `var clone = new AppSettings { 逐字段 = _current.X }` 再序列化那个 clone（源码注释给了理由：
+    不序列化已迁移的 `[Obsolete]` 字段）。⇒ **新加的持久化属性只要忘了进这张表，就不会"丢一次保存"，
+    而是被写成模型默认值** —— 用户改完立刻 `Save()`，**值当场被打回默认**。
+    ⚠ 这点反直觉：**"文件里明明有这个键"不能否定缺陷**（键在、值是默认）⇒ 只看键名的判据必然漏。
+
+    **实撞到的是 `RenderingMode`**（`Models/AppSettings.cs:70`，默认 `"auto"`）：
+    菜单 `MainWindow.xaml.cs:5239` 写它 → `:5243` **立刻 `Save()`** → 启动 `Program.cs:127` 读它选渲染后端；
+    而 `grep -c RenderingMode src/FfmpegGui/Services/AppSettingsService.cs` = **0**、
+    `git log -S RenderingMode -- .../AppSettingsService.cs` **为空** ⇒ 该字段**从未**被保存过。
+    ⇒ 用户选 vulkan 后重启，拿到的是 `auto` 的回退链（`Program.cs:153` = AngleEgl→Vulkan→Software）
+    ⇒ **"我选了 Vulkan，它其实先用 ANGLE"**；且同一次点击还会同步 `GpuAcceleration`（那个在表里）⇒
+    症状被半掩盖：选 software 看起来有效，选 angle/vulkan 无效。
+    ⚠ 缺陷进入代码的确切日期**无法从版本历史确定**（`git log -S` 只追到"补齐版本控制追踪"那次提交）。
+
+    **两把锁（成对，各管一半，缺一半就复发）**：
+    · **结构锁 = 第 54 条 `_probe-settings-clone-coverage.ps1`**（纯源码扫描，~1 s，零依赖）：
+      比对"模型里真正持久化的属性集合"与"`Save()` 克隆体里的赋值集合"，**双向**判（漏项 + 陈旧项）。
+      这次重写成带契约的门禁时补了两条它原先没有的东西：
+      **下限断言**（属性数 / 克隆项数各 ≥15 ⇒ 否则"正则失效 ⇒ 集合空 ⇒ 恒绿"这条空断言通道无人守）与
+      **有牙自证**（内存里删掉一行赋值再比对）。⚠ 自证的判据写成"**相对基线恰好多报出被删的那一个**"，
+      不是"漏项总数 == 1" —— 主缺陷未修时基线漏项本来就非空，写成 `==1` 会让自证与主判据**互相绑死**
+      （实测正是这种形态：基线 `{RenderingMode}` + 删掉的 `{FfmpegDirectory}` ⇒ 2 个）。
+    · **行为锁 = `ServiceProbe settings` 新增的"全字段落盘往返"**（该 mode **7 → 11** 条 ⇒ 探针基线 542 → **546**）：
+      反射枚举"可持久化"属性（排除 `[JsonIgnore]` 计算属性与 `[Obsolete]` 迁移输入），逐个**设成非默认哨兵**
+      → `Save()` → 读回 → **逐字段相等**；外加"候选属性 ≥ 20"的反射口径自检与"类型不认识即点名判红"。
+      ⚠ 读回**不用** `AppJsonContext`（internal，探针看不见），也不用 `AAS.Load`
+      （它会被 `FFMPEGGUI_*` 环境变量覆盖路径/队列/主题 ⇒ 测的就不是落盘了）。
+
+    **变异证据（真改产品码，两次重建）**：删掉 `RenderingMode = _current.RenderingMode,` 这一行 ⇒
+    · 结构锁红：`FAIL 每个持久化属性都被 Save() 写回落盘（漏项 = RenderingMode）`（`PASS=7 FAIL=1`、`exit=1`），
+      而它内部的**有牙自证仍绿** ⇒ 两条判据各自独立报账；
+    · 行为锁红：`FAIL 全部 23 个持久化属性都真的落盘并能读回（不同源 = RenderingMode: 写入 zz-RenderingMode-7 / 读回 auto）`
+      （`PROBE RESULT: pass=10 fail=1`）⇒ 这一行读数把"落盘成默认值"的机理**直接印在日志上**。
+    还原后：结构锁 **8/0**、行为锁 **11/0**、四项目 `-t:Rebuild` **0 警告 0 错误**、
+    四份 `FfmpegGui.dll` 一致 = **`7123B5983DCCAB8A`**（产品码真的变了 ⇒ 与旧基线 `1cd0098625c684c4` 不同，见交接 §0）。
+
+    **两把锁的口径互相印证**：结构锁用**正则扫源码**得"持久化属性 = **23** 个"，行为锁用**反射**
+    （`BindingFlags.Public|Instance`，排除 `[JsonIgnore]` 计算属性与 `[Obsolete]` 迁移输入）得候选属性 = **23** 个
+    —— 两条完全独立的路径数出同一个数 ⇒ "属性被漏掉"之外还防住"某一方的口径自己失效"。
+    ⚠ 但**别把这种一致当成充分**：如果模型某天加一个正则与反射**都**认不出的写法（例如属性拆成多行），
+    两边会**一起**变少 ⇒ 数数不会报错。所以两边各自都带了下限断言（结构锁 ≥15+≥15、行为锁 ≥20），
+    下限的绝对值来自本次实测，改模型写法时**要重数**而不是放阈值。
+
+    ⚠ 结构锁那条"有牙自证"自身的限制（写清楚，别当成万能）：变异体是**按整行正则删一行赋值**构造的，
+      同一行文本若在文件里出现两次会被**一起删掉** ⇒ 计数差值不为 1 ⇒ 自证**响亮报错**（不是静默通过）。
+      当前 `AppSettingsService.cs` 里这类赋值行恰好唯一，所以读数可信；改 `Save()` 写法时要记着这条前提。
+    **为什么这是"有锁但不上锁"的第二次**：第一次是 `verify-ipc-extra-options.ps1`（2026-09-19 写好、
+    09-23 才接线，见 §6 第 92 条邻域与运行器清单注释）。本条脚本 2026-09-15 就存在，
+    **和它一样的命运**：写它的那次确实抓到了当时的漏项（`IccDirectory` / `EnableIpcServer`，即 S-P0-1），
+    修完就把脚本放回原处 ⇒ **不进清单 ⇒ 之后新增字段没人再跑它** ⇒ 同一个洞又漏了一次。
+    ⇒ 可迁移的一条：**"我修好这个缺陷了"不等于"这类缺陷不会再出现"**；防它复发的那条判据
+    必须进**每次都跑**的地方（受管清单），否则它只是"修完那一刻的验尸报告"。
+
+111. **简洁模式自带第二套选项真值 ⇒ 降级为覆盖层；顺手把"控件→FfmpegOptions"的 4 份副本收成 1 份（2026-09-26 登记）**
+
+    **机理（一句话）**：同一个"把高级模式控件读成 `FfmpegOptions`"的动作在 `MainWindow.xaml.cs` 里
+    有**四份互不相干的拷贝** —— `AddSingleToQueue`（真入队）、`RegenerateCommand`（实时预览）、
+    `BuildCommand_Click`（生成命令按钮）、`CreateQueueItemFromSimplePreset`（简洁模式，从 `PresetData`
+    手工搬字段）。⇒ 每加一个选项要改四处，历史上确实只补齐过其中两处（代码里
+    `2026-08-16 修复: 此前入队路径缺失导致仅预览生效` 与 `2026-08-16 补齐: 此前简洁模式预设丢失以下字段`
+    两条注释就是那两次漏改留下的疤）。**用户看到"选项没生效"取决于他走的是哪一份。**
+    ⚠ 该缺陷本仓**早已知情**：`IsAnimationMode()` 的注释（2026-09-19，P1-E 任务 C）写明
+    "三处 opts 构造一律调它，禁止各自内联索引比较" —— 那是给四处副本之一打的补丁，没收成一处。
+
+    **修法（三件事必须同批，分批必退化）**：
+    ① **唯一采集点** `CollectOptionsFromUiAsync(inputPath, logNotices)`：入队与两条预览都调它，
+       预览侧传 `logNotices: false`（否则每次改控件重复打那两条 jxl 提示）。
+       ⚠ 统一的前提是先给 `EncoderDetectionService.SupportsJxlLosslessJpegAsync()` 加**按 ffmpeg 路径为键**
+       的缓存（并挂进 `ClearCache()`）：它每次调用起一个进程，而 `RegenerateCommand` 有 **109** 个触发点
+       ⇒ 不缓存就是"改一个下拉框起一个 ffmpeg"。
+    ② **简洁模式不再有第二套真值**：删 `CreateQueueItemFromSimplePreset`（**123 行 / 6194 字符**），
+       两个入队 handler 改为 `await AddSingleToQueue(path)` ⇒ "简洁模式跟随高级模式"从此是**结构性**的。
+    ③ **预设成为完整快照**（否则 ② 必静默退化：简洁模式以前直接读 `PresetData` 就能拿到、
+       而现在要经"回放成控件"才拿得到的字段，回放侧根本没写控件）。实际缺口：
+       · `PresetData` 补 **4** 条缺失轴：`ConversionMode`（静态/动图/RAW）、`EncoderName`、
+         `ColorGamutMap`、`CjxlEffort`（cjxl 面板 effort 与 `JxlEffort` 按后端分叉，此前只存一份）；
+       · `BuildPresetData` 补 **13** 项从不写入的（上列 4 轴 + `TiffDpi` + 动图 4 + GIF 2 + 最长边 2）；
+       · `ApplyPresetData` 补 **14** 处从不回放的控件（上列 + `AppendPngExtension` + `JpegDct` +
+         **`JpegGainMapEnableCheck`** ⇒ 从不回放 GainMap **开关**，预设里的 GainMap 在高级模式永远开不起来）。
+       ⚠ 两条硬顺序约束：**模式必须早于格式**回放（`ConversionMode_SelectionChanged` 会 `Items.Clear()`
+         重建 `FormatCombo`，三个模式的格式候选集**互斥**），且新增回放块必须排在色彩策略单选**之前**
+         （该单选按既有 D-1 约定须是最后一次写入）。
+
+    **旧预设的兼容不是可选的**：`ModeOfPresetFormat()` 在 `ConversionMode` 缺席时按格式推导
+    （`GIF` 只存在于 `AnimatedFormats`、`DNG` 只在 RAW ⇒ 推 1 / 2，其余 0）。磁盘上既有的用户预设
+    **全部**没有这条轴，不推导就得到"切了 GIF 预设、格式下拉却**静默**保持原值"
+    （静态模式没有 GIF 这一项，`SetComboByValue` 找不到就什么都不做）。
+
+    **判据（`UiTestHost`，宿主汇总 340 → **353** 条、`353 PASS / 0 FAIL`）**：
+    · **E4（5 条，行为）**：简洁模式选 GIF 内置预设 ⇒ 模式推到动图 **且** 格式真选中 `GIF`；
+      再选 PNG 预设 ⇒ 模式拉回静态。E4e 用 `BuildPresetData` 快照 / `ApplyPresetData` 还原，
+      避免本组污染后面的组 —— **第一次跑就因为漏了还原把 `J14a-1` 顶红**（预设把 `PngPred` 写成 `mixed`，
+      而该断言量的是"面板默认值进命令"）⇒ 顺序耦合真实存在，这条是踩出来的。
+    · **E5（5 条，结构锁）**：`CreateQueueItemFromSimplePreset` 必须**零命中**；采集签名
+      `UseAdvancedColorParameters = useAdv` 必须**恰好吃到 1 处**（长出第二份采集就红）；采集点引用 ≥4 处；
+      两个入队 handler 的**函数体内**必须有 `await AddSingleToQueue(` 且不得自己 `_queueProcessor.Add(`。
+      ⚠ ② 之后"入队选项等于高级模式选项"这条行为断言已恒真，所以锁的是"别长回去"而不是"现在对不对"。
+    · **N1b（4 条，重写）**：原先这条反射调用那个被删的方法；现在走
+      `预设 → ApplyPresetData(真实控件) → CollectOptionsFromUiAsync` ⇒ 同一条锁改量"预设能否完整描述
+      高级模式状态"，比原来更强。⚠ 反射拿到的 async 方法用 `Pump` 轮询收敛，**不** `.Wait()`
+      （会饿死 UI 线程续体）。
+
+    **变异证据**：把 `ApplyPresetData` 的模式回放改成 `if (false && presetMode.HasValue ...)`、Release
+    重建 ⇒ `E4b mode=0`、`E4c fmt=JPEG XL`（静态模式候选集里没有 GIF ⇒ 下拉**停在原选中项**）两条转红
+    （`348 PASS / 2 FAIL`、`exit=2`）⇒ 新锁有牙，且把"静默选不中"的形态直接印在读数上。
+
+    **其余读数**：`_probe-cjk-hardcode-scan` UI 面 **833 ≤ 基线 837**（净 **−4**：删掉的映射带的中文
+    字面量比新增的多；新增说明一律写成整行 `//` 注释，该门禁剥注释 ⇒ 不计）。
+    **整轮绑定**：`_run-step3-gates.ps1` 在 pwsh **7.6.6** 下 54 条**全部通过**、STALE **0**、
+    宿主 **353/0**；四份 `FfmpegGui.dll` 一致 = **`354ed9319506e91f`**（本轮读数绑这个指纹；
+    追加修正前的中间一轮是 `d3d90c04191bbc34`，`54` 条同样全绿，可当同向对照）。
+    运行器自哈希未变 = `FE846C90C18EB85A lines=1075` ⇒ 本轮**没有**动过运行器
+    （其中"宿主断言总数 340"那句注释**故意留在原值未改** —— 改它会让自哈希校验在下一轮报"运行器被改过"，
+    那句注释该由下一次动运行器的人一并校准）。
+    `verify-ui-host` / `verify-ui-param-matrix` / `verify-ui-param-defects` / `verify-ui-strategy-map` /
+    `verify-cli-strict` 五条单跑亦 `exit=0`。
+
+    **同批的三处追加修正（第一版漏掉的，都是"补全反而引入的新差异"）**：
+    · **`PresetData.AnimationLoop` 改成 `int?`**。它是**既有字段**、schema 默认 `-1`（无限循环），
+      而循环框出厂是**空**（采集侧 `ParseInt(text, 0, …)` ⇒ 空 = 0）。给"从不回放"的字段补上回放之后，
+      **老预设**（JSON 里根本没有这个键）会从"不动控件"变成"写 `-1`" ⇒ 产物从播一次变成不停播。
+      ⇒ 判据 **E6（3 条）**：手工构造 `{"format":"GIF","quality":85}` 走真实 `FromJson` → `ApplyPresetData`，
+      要求循环框与 fps 框**仍是空**，外加"旧预设的该字段解析为 null"这条前提锁。
+      ⚠ 同一族还有 `GifPaletteOptimize` / `AppendPngExtension` / `EnableMaxDimension` / `MaxDimension`：
+      它们的 schema 默认值与 XAML 默认值**恰好相同** ⇒ 无条件回放在今天无差异，故**没有**跟着改可空
+      （改了只多一层噪音）；哪天两者不一致，就要按 `AnimationLoop` 这条路处理。
+      ⚠ 顺带统一了 CLI 侧 `FfmpegOptions.ApplyPresetData`（原来无条件 `AnimationLoop = p.AnimationLoop`，
+      现在与上一行 `AnimationFps` 一样带 `HasValue` 门）。
+    · **「生成命令」按钮改回带提示**（`logNotices: true`）：统一采集后它继承了 RAW 守卫，
+      原先在 RAW 模式选非 RAW 文件会**静默什么都不做**；`RegenerateCommand` 仍传 `false`
+      （它挂在 109 个触发点上，会重复打那两条 jxl 提示）。
+    · **BOM 被自己的批量脚本吞掉**：脚本用 `UTF8Encoding($true)` + `WriteAllBytes($enc.GetBytes(..))`
+      还原 BOM，而 .NET 的 `GetBytes` **永远不带 preamble** ⇒ `MainWindow.xaml.cs` 首 3 字节没了；
+      更糟的是脚本打印的 `bom_preserved=True` 取自**它读到的输入标志**，不是输出 ⇒ 自报假证。
+      编译器与门禁全都无感（BOM 不参与编译语义）。已按字节补回并**独立**用 `head -c 16` 与
+      `git show HEAD:…` 的首行逐字节核对（`efbbbf 7573696e67` = BOM + `using`）。
+      ⇒ 教训与 §6 第 110 条同族：**harness 的自检读数必须取自输出，不能取自"我打算怎么做"的那个参数。**
+
+    **明确未收的账（记在这儿，别当成已完事）**：
+    ① 预览侧 `jxlLosslessJpeg` 的判定式与采集侧仍**不完全同**（少一层 `useAdvancedCodec` 门、不含 cjxl
+      直连分支），而它还驱动 `LockLosslessForJxl` / `RestoreLosslessAndQuality` 反向改控件 ⇒ 本轮
+      **保留预览原行为**（在 `RegenerateCommand` 里显式覆盖 `opts.JxlLosslessJpeg`），没敢同批改；
+    ② `SvtStillPictureCheck` 是**死控件**：XAML 里有、只挂 `RegenerateCommand` 回调、全仓无 `?.IsChecked`
+      消费方 ⇒ SVT 面板那个"单图"复选框点了什么都不改（本次审计抓到，未动）；
+    ③ `PresetData.Concurrency` 与 `MaxQueueSize` 被 `BuildPresetData` 写成**同一个值**（并发数），
+      而 `ApplyPresetData` 只读 `MaxQueueSize` ⇒ 前者是死字段；
+    ④ 简洁模式预设下拉停留在"最后点的那条"，用户回高级模式手改后不会变成"自定义" ⇒ 真值已是控件状态
+      （正确），只是**标签滞后**，属显示问题不是正确性问题；
+    ⑤ 内置 30 条预设仍不显式携带 `ConversionMode`，靠格式推导兜底（其中只有 GIF 一条需要非静态模式）。
+
+112. **第 55 条 `_probe-matrix-structure.ps1`：矩阵清单的行锚定取证必须秒级上清单，不能绑在 2.5 h 长跑上（2026-09-27 登记，任务 #42）**
+
+    **事实链**：`_lib-matrix.ps1` 的折叠表与语义矩阵每条都带 `Evidence = '<repo 相对路径>:<行号>|<字面片段>'`，
+    `Test-MatrixStructure` 的 A21（折叠 11 条）/A30（矩阵 10 条）会**真的去读那一行**核对片段还在不在。
+    但调用它的只有 `Invoke-MatrixSelfTest`，而那个此前**只有 `verify-oracle-matrix.ps1` 会跑** ——
+    一条**有意不入清单**的 2.5 h 长跑门禁 ⇒ 行号漂移要等某个手动跑它的人偶然看见。
+    两笔账：**2026-09-27 上午核账发现 6/19 条早就漂了**（已逐条修复并登记）；**接线当天又漂一条** ——
+    #39/#43 往 `FfmpegCommandBuilder.cs` 插注释 ⇒ `metadata-core` 的 pin 从 2011 抬到 2041，
+    当场被 A30 报成 `literal not on ... :2011 (found at line 2041)`。**这就是这条门禁存在的理由，不是假想**。
+
+    **接法（最小改动）**：不复制判据 —— 新门禁只 dot-source `_lib-matrix.ps1`（库注释保证 dot-source 零副作用，
+    含 `_lib-axes.ps1` 的 param 覆盖陷阱处置）并调 `Invoke-MatrixSelfTest`，
+    成本实测**单遍 5.5 s / 两遍 ≈ 9 s**，不起产品进程、不产生任何转换。
+
+    **三处 fail-closed 守卫**（都是本仓踩过的形态）：① 结果行 `[MATRIX RESULT: pass=… fail=…]` 缺失 ⇒
+    直接红并**中止**（不许"读不到就当过"，因为库内那个 param 覆盖陷阱的历史症状恰好就是"静默零输出 + 退出码 0"）；
+    ② 自检断言总数下限 30（现测 38 = A1..A31 + B1..B7）⇒ 有人删检查项而不是删被检查的东西时会响；
+    ③ A21/A30 的 `checked=` 必须 ≥ 1 —— 两条都是**负断言**，取证清单为空时它们**恒绿**。
+    另加两本账对账：打印出的汇总 vs 库内 `$script:MatrixSelfTestResult`（同一事实两个写者，不等即红）。
+
+    **有牙证明**（当场跑过，不是引用库内 B 段）：
+    变异 = 把 `metadata-core` 的行号从 2041 改成 2040 ⇒ 本门禁 `pass=7 fail=1`、红的正是"结构自检零红"那条、
+    **退出码 1**；改回 ⇒ `8/0`。库自带的变异注入（删一对两两覆盖 ⇒ A7 点名 `missing=14`）由本门禁的第二遍把守，
+    它红 ⇒ 本门禁红。
+
+    ⚠ 接线时同步的四处账（漏任何一处都会被判漂移，见 §3.4 的"增删一条门禁要动的账"全清单）：
+    `$scriptList` +1 ⇒ `$expectedScriptCount` 54 → 55 ⇒ 运行器三处散文条数（第 ⑰ 针）⇒
+    本章 `4 + 7 + N` 分解（`43 → 44`）与未受管台账（54/93/39 → **55/95/40**，D 类 5 → 6）。
+    `$tableOnly` / `$noSelfSummary` **不动**（新门禁自带 `PASS/FAIL` 契约 ⇒ C 类）。
+    ⚠ **接线必然改运行器自身** ⇒ 运行器自哈希 `FE846C90C18EB85A lines=1075 bytes=95990` →
+    **`27D6616B146A0725 lines=1092 bytes=98049`**（2026-09-27 那轮 55/55 起/收尾逐位一致）。
+    历史各轮记录的是**各自当时**的哈希 ⇒ 拿现值去比对旧行的"同一把尺"前提**不再成立**，引用要连哈希一起引。
+
+113. **第 56 条 `_probe-stderr-merge-scan.ps1`：合并式取数（stdout+stderr）读"工具的值"必须是显式例外，不能是默认（2026-09-27 登记，任务 #51）**
+    **症状形状**（不是"跑不过"，是"跑过了但结论是假的"）：随包 exiftool 是 **perl 打包**的，进程环境里带着本机 perl
+    不认的 `LC_ALL` / `LANG`（从 MSYS/bash 侧起门禁就会出现 `C.UTF-8`）⇒ **每次调用先往 stderr 喷 locale warning**。
+    于是一个"把 stdout 与 stderr 拼起来返回"的 fetch helper，读回来的**值**其实是警告文本。两种坏法都实测出现过：
+    ① **假绿** —— 负断言被撑成恒真：`'' -notmatch 'a'`（"素材确实不透明"在读不到时照样通过）、
+    两侧同污时 `-ne` 变成"两条警告互比"（`run-pipeline-tests.ps1` 的 `ColorMatrix1` 就是这个形状）；
+    ② **假红** —— 值前面多一行警告，归一化没剥干净 ⇒ 两格对照判"不同"。
+    **本轮收口的五处**（各配**正对照**：同一把尺必须先在"真有值"的素材上读到东西，负断言才不是空转）：
+    `verify-engine-alpha-preserve.ps1`（`Get-PixFmt` 只读 stdout + 空值返回 `$null`，三处消费点先验 `$null`）·
+    `run-pipeline-tests.ps1`（`ColorMatrix1` 两行改用文件内既有的 `ExifVal`；四行 ffprobe 改 `ExecStdoutOnly`；
+    **取数为空即 throw**）· `verify-color-caps.ps1`（新增 `ExecOut`，`IccOf`/`CicpOf` 改只读 +
+    「前置：IccOf 在已知带 ICC 的素材上读得到」**12/0 → 16/0**）· `verify-color-strategy.ps1`
+    （新增 `ExecOut`，`$cicp`/`$hasIcc`/`Lock-DeliveredDepth` 改只读 + 「前置-取数尺有牙」**77/0 → 78/0**）。
+    ⚠ **运行器另加一段**：整轮起头清 `LC_ALL`/`LANG`/`LC_CTYPE` 并打印 `env-cleaned=…` —— 但那是**减少触发面**，
+    **不是修法**：门禁仍可能在别的宿主下被起（清单外手工跑、别的 shell），所以判据必须落在**取数那层**。
+    **这把尺的能力边界（必须写清，别当数据流分析）**：只做**文件级共现** ——「同文件里有合并 fetch」+「用该合并
+    helper 调 exiftool/ffprobe」⇒ 记一个站点。它**不追踪变量流向**，所以"读了值但只打印/只当副作用"也会被计入 ⇒
+    基线因此是**债账**不是达标线：**实测 84**（`-ManagedOnly` 口径 43），本轮收口前是 89。
+    判据三档：① 站点数 **≤ 84**（棘轮，新增必红，除非调用行留字面『合并取数已论证』说明为什么值只在 stderr）；
+    ② **已收口四文件的逐文件残留数**（caps=5、strategy=0、run-pipeline=0、alpha-preserve=0）——
+    残留逐个在注释里写明"只打印 / 写入 / 抽取到文件、返回值不喂断言"；**改少了也红** ⇒ 名单不许静默腐烂；
+    ③ 枚举下限 40 文件 + 共现基数下限 30 文件（正则一旦失效，站点数会**假降**成"零违规" ⇒ 由这两个下限拦死）。
+    **有牙自证**（留痕 `tests/output/t51/teeth.log`）：造一个含合并 helper + `Exec $et` 取值的临时脚本 ⇒
+    被点名（`_tmp-t51-teeth.ps1:11`）、站点数 **84→85** 判红；删掉夹具 ⇒ 回 **84** 判绿。
+    ⚠ **同时纠正一条我自己早前的判断**：清单里 `verify-gainmap-isobmff.ps1:429-431` 那组**不是**假绿 ——
+    它的两条都是正向形态自检（`-match 'unknown'` / `-match 'ColorSpace'`，读不到即红），只是被共现尺子计入债账。
+    逐条分诊 84 处仍是**未做的后续项**（分"值只在 stderr 的合法合并"与"该改只读"两档）。
+
+114. **合并取数债账 84 ⇒ 0 的逐条分诊，以及这把尺自己的两处盲区（2026-09-27，任务 #54）**
+    分诊口径两档：**值确实只在 stderr**（ffmpeg 的 `psnr` 汇总行、`signalstats` 的 `YMIN=`/`SATAVG=`、`^frame=`、`Corrupted`、产品日志、`-ver` 摘要、`-icc_profile<=` 写入、`-b -w` 抽取到文件）⇒ 调用行留字面『合并取数已论证』并写明为什么；
+    **值是工具写在 stdout 的** ⇒ 改 `ExecOut`/`ExecStdoutOnly`/`ExifVal`。跑完 **站点 0**（全仓与 `-ManagedOnly` 两个口径都是 0）⇒ 判据从「债不得增加」升级为**零未分诊站点**：新增一行裸合并取值即红。
+    ⚠ **第一轮盲区**：`reValRead` 只认 `$et`/`$fp` 等变量名 ⇒ 补齐 `$ex`（exiftool 在 5 个脚本里叫这个）/`$ji`/`$jxlinfo` 后**当场新冒出 3 处**，其中 1 处是真喂断言的：
+    `verify-color-strategy.ps1` 里 jxlinfo 的 `N-bit RGB` 读数直接进 F1「播报位深 == 实测位深」⇒ 已改 `ExecOut`；剩两处按档一登记（摘要打印 / 写操作）。
+    ⚠ **第二轮盲区（这把尺自己造的假红）**：共现基数下限原本全局钉 30，而 `-ManagedOnly` 只看清单内 43 条门禁 ⇒ 实测共现 **21** 个文件 ⇒ 那一档**恒红**。下限现按口径分档（全局 30 / 受管 18），两个实测数写在注释里。
+    **有牙自证**：剥掉 `verify-png3-interop` 一处标记 ⇒ 站点 1 条并点名 `:131`、判红；还原后与备份**逐字节一致**、回到 6/0。
+    ⚠ **有意不纳入** `$pr`/`$sp`（ServiceProbe，.NET）：本尺打的是「perl 打包工具往 stderr 喷 locale warning 污染值」这一型；.NET 探针只在异常时写 stderr，且异常行已加 `FAIL ` 前缀 ⇒ 由 `verify-simd-switch-fallback` 的「pass>=25 + 拒绝 unknown command」下限锁住，不在这里造 25 条假债。
+
+115. **两处「静默错读数」的尺子缺陷（`verify-decision-delivery` ⑩/⑪，2026-09-27）**
+    ① **多行工具输出先 `-join` 再 `[int]`/`-match`**：`ffprobe -of csv -select_streams v -count_frames` 在多流产物上**逐流一行**（实测动图 AVIF = `1` 与 `10` 两行）⇒ 旧写法 `[int]((… -join '').Trim())` 读成 **1010**；换成 `-join ','` 再 `[int]`，zh-CN 下 `[int]"1,1"` = **11**（逗号是千分位）——**两种都不抛异常**，帧数判据就此静默读成千位数。
+    同族两处：建表那行 `@{ n = [int]$c[2] }` 遇到不含逗号的行会拿到 `$null` ⇒ `[int]$null` = **0 帧的一行**（整表错位也不报错）；`-join ''` 用在**字符串**判据上会把 `yuva420p`+`yuv420p` 拼成一个仍 `-match 'yuva'` 的串 ⇒ 把「透明被丢了」读成「透明在」。
+    修法：新增 `ProbeInts`（逐行 `^-?\d+$` 才转数，读不出返回 `$null` ⇒ 调用方判红），比较前取 `Maximum`；pix_fmt 改成**逐条流全查**并列出违规者。两条自证：合成「两行同值」输入必须解析成 2 条、最大 10（旧尺必得 1010）+ 换 `-of json` 当**独立尺**对最大值（实测该源 2 条流、两把尺都是 10）。
+    ② **从共享产物目录按枚举顺序挑夹具**：⑩ 段用 `Get-ChildItem results -Recurse -Include *.avif | Where Length -gt 3000 | First 1` 挑「动图 AVIF」，而 `results/` 是**所有门禁共用的出口** —— 色彩矩阵 22:08 往里放了一张 4719 B 的**静帧** ⇒ 20:28 那一轮全绿的同一条判据，22:20 单跑变 **4 红**（帧数=1，且两条负断言被静帧走到的另一分支翻转）。
+    修法：逐候选**量判据所需的那个属性**（帧数 ≥2）再选中，并把选中的素材名与帧数打进日志。⇒ 凡是"枚举第一个当夹具"的写法都要问一句：这条判据依赖它的哪个属性，那个属性量过吗？
+    改后单跑 **84/0**（原 81/0：+读数器自检、+独立尺对照、+逐流表合法性）。
+
+116. **判据词形要回工具实测，不能照抄记忆里的错误文案（`verify-prophoto-faithful`，2026-09-27）**
+    两处 `-notmatch "Corrupted"` 的词是**当年凭印象写的**：实测 exiftool 面对坏 ICC 从不打 `Corrupted` —— 嵌在容器里是 **stdout** 的 `[ExifTool] Warning : Bad length ICC_Profile (length 4776)`，裸 `.icc` 是 **stderr** 的 `Error : Truncated ICC profile` ⇒ 那两条负断言**恒真**，一直在给「生成器把 mluc 写坏了」发绿。
+    修法：词形换成实测集 `Bad length ICC_Profile|Truncated ICC profile|Error\s*:.*ICC`，并**补同址正向锁** —— 把本次生成的 ProPhoto ICC 截掉一半、嵌进 `src_prophoto.png` 的副本、用**同一把尺**读，必须命中 ⇒ 从此"读不到"才是真信号。夹具落在 `$out` **之外**（`tests/output/validate/prophoto-diag`），别污染按目录递归挑产物的段落。单跑 **27/0**。
+    ⇒ 推论：**凡是拿「工具会不会说 X」当判据的，先造一个「它必然说 X」的夹具量一次**；量不到就说明这条判据没有牙。
+
+117. **「有声明、无实现」的能力位：面板「SIMD 优化」此前零消费者（第 57 条，2026-09-27）**
+    三条曾同时成立：① `AutoUseSimdBinaries` 由复选框写入并持久化；② zh/en 两条 `tip.simd` 都在**承诺**「关闭后逐像素回退 / falls back to scalar code」；③ 但 `grep AutoUseSimd src` 只命中声明/UI/持久化三处，**没有任何代码读它决定走不走 SIMD** ⇒ 用户关开关毫无效果、门禁对它也零断言。
+    按「降级不是修复」把实现提到声明的水位（判据单点 `SimdKernelRouting`），而不是把 tooltip 改弱。默认（开）路径**逐位不变**的实证 = 探针 S2/S2b/S3（两态 SSE 相等 + 与第三份独立标量实现相等）+ S4/S6e 的错位负控（防"两边同一个错值"）。
+    ⇒ 可复用的鉴别法：**界面或文档里每一个承诺，都要能指到一处读它的代码**；指不到就是死开关。
 
 ---
 

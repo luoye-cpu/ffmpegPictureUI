@@ -181,6 +181,11 @@ namespace FfmpegGui.Services
                 Language = _current.Language,
                 FfmpegPriority = _current.FfmpegPriority,
                 GpuAcceleration = _current.GpuAcceleration,
+                // ⚠ 这张表是**手写**的，漏一个字段就等于把它**重置成模型默认值**（不是"不落盘"，
+                //   因为 clone 是 new AppSettings ⇒ 未赋值的属性带的是默认值，随后被整体序列化落盘）。
+                //   RenderingMode 就因此漏了很久：菜单改它后立刻 Save()，值当场被打回「auto」。
+                //   ⇒ 新增任何持久化属性都必须同时加到这里；判据见 tests/scripts/_probe-settings-clone-coverage.ps1。
+                RenderingMode = _current.RenderingMode,
                 SimpleModeAutoEncode = _current.SimpleModeAutoEncode,
                 EnableIpcServer = _current.EnableIpcServer,
                 AutoUseSimdBinaries = _current.AutoUseSimdBinaries,

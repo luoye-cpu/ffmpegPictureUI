@@ -15,8 +15,9 @@ namespace FfmpegGui.Services.ColorMapping;
 ///    与 <see cref="ImageEncoderArgs.IsEngineEncodable"/>；**该清单的唯一真值在
 ///    <see cref="ImageEncoderArgs.IsEngineEncodable"/>，本类不再自持副本** —— 2026-09-17 合并）；
 ///    **DNG** 仍走外部编码器，引擎不能替代（DNG 结构上需要传感器 Bayer 数据）。
-///    ⚠ **JXR 于 2026-09-17 接入**（本条此前写作"JXR/DNG 仍走外部编码器"）：
-///    本工具链的 ffmpeg **没有 jxr 编码器**（实测 `-encoders` 无 jxr）⇒ 不存在 ffmpeg 编码出口这条替代路径，
+///    ⚠ **JXR 于 2026-09-17 接入**（本条此前写作「JXR/DNG 仍走外部编码器」）：
+///    ffmpeg 的 `libjxr` **存在**（09-26 构建实测）但**无质量 AVOption**、字节序与 jxrlib 不一致
+///    ⇒ 不作替代编码出口（唯一口径见 `RawColorPipeline` 的 JXR 出口文档），
 ///    jxr 恒走 **JXR 执行出口**（`ColorTransformPlan.ExternalEncoderExit` ⇒ `RawColorPipeline` 的
 ///    BMP/TIFF 中转 + `JxrEncApp`，见 <c>EncodeJxrViaJxrEncAppAsync</c>）。
 ///    ⚠ 出口内部任何一环不满足（JxrEncApp 缺失 / 中转失败）一律**显式失败**，绝不静默改道。
@@ -109,6 +110,14 @@ public static class ColorEngineRouter
     ///    传统管线是它的正常归属 ⇒ 记一条说明后继续走。
     ///    ⚠ 2026-09-17（cjxl 出口轮）更正：此处曾把「JXL 的 **Cjxl 后端子情形**」也列为不可走，
     ///      现已接入 ⇒ 不再是本条的举例（JXR/DNG/动画仍是）。
+    /// ⚠ **2026-09-27 维护者定案（任务 #55）**：HDR→SDR 的**色调映射契约以本引擎为准** —— 引擎走
+    ///    `Hable + white=203nit`，且只在出口语义本身是 HDR(PQ/HLG) 时发 `--intensity_target`；
+    ///    传统管线走 ffmpeg `tonemap=hable` 收满量程、SDR 出口不发 ⇒ 两路码值域稳定差 ~10 dB
+    ///    （取证 `tests/output/t44/`，登记在 `docs/COLOR_MATRIX_FIX_PLAN_2026-09-24.md` 的 #44 收口段末）。
+    ///    ⇒ 上面那条「默认 auto 时继续走传统管线」是**唯一允许的偏离口子**（只剩 DNG / 动画两种结构性
+    ///    不在引擎出口的形态），且 `QueueProcessor` 现在必须**点名**这次偏离，不许静默。
+    ///    ⚠ 不要拿"两路逐像素相同"当验收判据：HDR 源上它本就不成立（这是契约，不是回归）；
+    ///      `verify-color-matrix-full.ps1` §6c 的跨路像素判据因此**只打 SDR 源**。
     /// ⚠ 不分这两种情况会让默认切引擎后**所有非引擎格式硬失败**（实测 avif/gif 全红、退出码 90）。
     /// </para>
     /// </summary>
@@ -214,7 +223,7 @@ public static class ColorEngineRouter
         //   可用性诚实：宁可失败并点名，也不静默换执行体。
         if (o.EncoderBackend != FfmpegGui.Services.EncoderBackend.Ffmpeg
             && !(ext == "jxl" && o.EncoderBackend == FfmpegGui.Services.EncoderBackend.Cjxl)
-            && ext != "jxr")   // JXR：JxrEncApp 是本工具链**唯一**的 jxr 编码器 ⇒ 出口内恒由它编码
+            && ext != "jxr")   // JXR：ffmpeg 的 libjxr 无质量 AVOption ⇒ 出口内恒由 JxrEncApp 编码（理由见本类文档）
             return new EngineBlock
             {
                 Code = EngineBlockCodes.ExternalBackend,

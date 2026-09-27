@@ -38,6 +38,16 @@ namespace FfmpegGui.Services
         // （下拉框/能力提示），普通 Dictionary 并发读写会抛异常或读到损坏的内部状态。
         private static readonly ConcurrentDictionary<string, FormatCapabilities> _cache = new();
 
+        /// <summary>
+        /// 作废全部格式能力缓存。**换 ffmpeg 目录/包时必须调**：
+        /// `SupportedColorSpaces` 是**在旧列表上累加**的语义 ⇒ 不清就等于"换了能力更弱的 ffmpeg 也回不去"
+        /// （旧写法没有任何失效入口，全仓 0 调用点）。
+        /// </summary>
+        public static void ClearCache()
+        {
+            _cache.Clear();
+        }
+
         public static FormatCapabilities? GetCapabilities(string format)
         {
             // ToLowerInvariant 而非 ToLower：缓存键全是 ASCII 小写字面量，

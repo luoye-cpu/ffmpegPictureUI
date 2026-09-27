@@ -67,6 +67,17 @@ function Exec([string]$file, [string]$argStr, [string]$tag) {
   return @{ code = $p.ExitCode; text = ([System.IO.File]::ReadAllText($o) + "`n" + [System.IO.File]::ReadAllText($e)) }
 }
 
+# 只读 stdout 版（取「工具的值」专用，返回形态与 Exec 一致 ⇒ `.code` 判据不受影响）：
+#   ffprobe 的 `-of csv` 字段值走 **stdout**，合并 stderr 会把报错行当值喂给 ImgMeta 的 codec/profile/
+#   尺寸/帧数解析（本机实测 ffprobe 失败时 stdout 0 B、stderr 全是 `moov atom not found` + 带数字路径）。
+#   产品 headless 日志（RunCli 的 `Exec $exe`）与 ffmpeg/cjxl 的报错**两条流都要看** ⇒ 那里的合并是故意的。
+function ExecOut([string]$file, [string]$argStr, [string]$tag) {
+  $o = "$work/$tag.out"; $e = "$work/$tag.err"
+  $p = Start-Process -FilePath $file -ArgumentList $argStr -Wait -NoNewWindow -PassThru `
+       -RedirectStandardOutput $o -RedirectStandardError $e
+  return @{ code = $p.ExitCode; text = [System.IO.File]::ReadAllText($o) }
+}
+
 # 跑一次 headless 队列，返回 @{ code; text; dir; prod; prodPath }
 function RunCli([string]$tag, [string]$inFile, [string]$extra) {
   $outDir = "$work/out_$tag"
@@ -82,7 +93,7 @@ function RunCli([string]$tag, [string]$inFile, [string]$extra) {
 # ffprobe：codec_name / profile / WxH / 帧数（帧数走 -count_frames，**不用** frame= 日志字段）
 function ImgMeta([string]$path) {
   if (($path -eq "") -or (-not (Test-Path $path))) { return @{ raw = ""; codec = ""; profile = ""; size = ""; frames = -1 } }
-  $r = Exec $fp "-v error -select_streams v:0 -count_frames -show_entries stream=codec_name,profile,width,height,nb_read_frames -of csv=p=0 `"$path`"" "probe_$(Split-Path $path -Leaf)"
+  $r = ExecOut $fp "-v error -select_streams v:0 -count_frames -show_entries stream=codec_name,profile,width,height,nb_read_frames -of csv=p=0 `"$path`"" "probe_$(Split-Path $path -Leaf)"
   $raw = ""
   foreach ($ln in ($r.text -split "`r?`n")) {
     $t = $ln.Trim()
@@ -147,7 +158,9 @@ Write-Host "  [素材] 裸码流 head= $csHead  长度= $csLen B"
 CK ($csLen -ge 12) "★ 裸码流素材长度 ≥ 12 B（实 $csLen B）—— 这正是修前那条 magic 支**不可达**的原因"
 CK ((HeadHexN $cs 3) -eq "FF 0A F8") "裸码流 head 以 FF 0A 开头（实 $(HeadHexN $cs 3)）"
 CK ((HeadHexN $ct 12) -eq "00 00 00 0C 4A 58 4C 20 0D 0A 87 0A") "容器素材 head == ISOBMFF 签名（实 $(HeadHexN $ct 12)）"
-$ji = Exec $jxlinfo "`"$jb`"" "ji"
+# jxlinfo 的判定文本走 stdout（本机实测：stdout 有内容、stderr 空）⇒ 同一条判据改用只读取数。
+# ⚠ 这一类不在扫描器的变量白名单里（它只认 $et/$exif*/$fp/$ffprobe*），扫描器看不见 ⇒ 顺手收掉。
+$ji = ExecOut $jxlinfo "`"$jb`"" "ji"
 CK ($ji.text -match 'bitstream reconstruction data available') "jbrd 素材经 jxlinfo 确认含重构数据（第三方证据）"
 CK ((ImgMeta $cs).size -eq "512x384") "裸码流素材尺寸 512x384（实 $((ImgMeta $cs).size)）"
 
@@ -219,17 +232,27 @@ CK ($rE.text -match '已完成 \(djxl 重构 JPEG\)') "⑥ 终态仍为「已完
 # ── ⑦ 降级路径：裸码流 + djxl 不可用 ⇒ 必须响亮且点名原因，不得假装用了外部编码器 ──
 Write-Host "`n### ⑦ 降级：裸码流 + djxl 不可用 ###" -ForegroundColor Cyan
 # 模拟法：把 PLAN 目录指向空目录（`FFMPEGGUI_PLAN_DIR` 在 PlanFolderPath 里**优先于**程序目录），
-# 并把 `FFMPEGGUI_JXL_LIB_DIR` 也指向空目录（DjxlService 的 ① 手动路径分支）。
-$emptyPlan = "$work/emptyplan"; $emptyJxl = "$work/emptyjxl"
+# 把 `FFMPEGGUI_JXL_LIB_DIR` 也指向空目录（DjxlService 的 ① 手动路径分支），
+# 并且**必须**再用 `FFMPEGGUI_EXT_SEARCH_DIRS` 收掉探测的第 ④ 级（系统扩展搜索根）。
+# ⚠⚠ 2026-09-22 实测：漏掉第 ④ 级时本条**必红**（而且红得对）—— ④ 会把 `C:\Program Files`
+#   连根递归，本机命中别的包自带的私有 `WindowsApps\...\djxl.exe` ⇒ `djxl: 可用` ⇒
+#   「模拟真的生效」自检按设计转红。该文件实测 Access Denied 起不来（产品侧已改为
+#   "起不来就不算可用"），但**降级判据不能赌本机装过什么应用** ⇒ 三级一起置空才是"工具不存在"。
+$emptyPlan = "$work/emptyplan"; $emptyJxl = "$work/emptyjxl"; $emptyExt = "$work/emptyext"
 New-Item -ItemType Directory -Force -Path $emptyPlan | Out-Null
 New-Item -ItemType Directory -Force -Path $emptyJxl | Out-Null
+New-Item -ItemType Directory -Force -Path $emptyExt | Out-Null
 $oldJxlLib = $env:FFMPEGGUI_JXL_LIB_DIR
+$oldExtDirs = $env:FFMPEGGUI_EXT_SEARCH_DIRS
 $env:FFMPEGGUI_PLAN_DIR = $emptyPlan
 $env:FFMPEGGUI_JXL_LIB_DIR = $emptyJxl
+$env:FFMPEGGUI_EXT_SEARCH_DIRS = $emptyExt
 $rF = RunCli "F_cs_nodjxl" $cs "--format jpg --encoder cjpegli"
 $env:FFMPEGGUI_PLAN_DIR = "$root/publish/PLAN"
 if ($null -eq $oldJxlLib) { Remove-Item Env:FFMPEGGUI_JXL_LIB_DIR -ErrorAction SilentlyContinue }
 else { $env:FFMPEGGUI_JXL_LIB_DIR = $oldJxlLib }
+if ($null -eq $oldExtDirs) { Remove-Item Env:FFMPEGGUI_EXT_SEARCH_DIRS -ErrorAction SilentlyContinue }
+else { $env:FFMPEGGUI_EXT_SEARCH_DIRS = $oldExtDirs }
 # ★ 先自检「模拟真的生效」——否则这条降级断言会**真空绿**
 CK ($rF.text -match 'djxl: 不可用') "⑦ 自检：日志确实报「djxl: 不可用」（模拟生效，否则本条是真空绿）"
 CK ($rF.text -match '\[djxl\] 未检测到 djxl') "⑦ 降级**响亮**：日志明确打出「[djxl] 未检测到 djxl」"

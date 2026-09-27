@@ -57,10 +57,23 @@ public sealed class FormatColorCaps
     /// <summary>能否**同时**携带 ICC 与写 CICP（JXL 在 E2 实测前保守为 false ⇒ 择一）。</summary>
     public bool CanHaveBothIccAndCicp = true;
     /// <summary>
-    /// 容器实际可写入的 CICP (primaries,transfer) 组合限制：null = 自由 nclx（AVIF/HEIF）；
-    /// 非空 = 只能取表内枚举（JXL 的 color_space 枚举集）。
+    /// ★ **出口**（不是容器！）可写入的 CICP (primaries,transfer) 组合限制：
+    ///   null = 自由 nclx；非空 = 只能取表内枚举。
+    /// <para>
+    /// ⚠ 任务 #38 把语义写进名字：这一位**曾经**叫 <c>CicpSpaceEnums</c> 并被当成"容器能力"读，
+    ///   而 jxl 行填的其实是 **cjxl 的 `-x color_space=` 枚举宽度** —— 同一目标走 ffmpeg 的 libjxl
+    ///   出口能写任意 nclx（实测：<c>-e Ffmpeg</c> + DCI-P3 ⇒ jxlinfo 读回「P3 primaries, sRGB transfer」，
+    ///   而 <c>#37</c> 那 24 格 BT.2020 在 cjxl 出口上只能改走 <c>-x icc_pathname=</c>）。
+    ///   把它当容器能力用的后果由 <c>#37</c> 量过：无条件按枚举剥 CICP 会把 ffmpeg 出口那条
+    ///   **本来能交付**的路打成 0 字节产物。
+    /// </para>
+    /// <para>
+    /// ⇒ 因此本位**只允许在外部编码器出口（cjxl / JxrEncApp）成立时参与判断**，
+    ///   由 <see cref="CapsAcceptsCicp"/> 的第三个参数把关（该参数**没有默认值**，
+    ///   编译器逼每个调用点表态；结构锁见 <c>verify-color-caps</c> 的出口维度段）。
+    /// </para>
     /// </summary>
-    public string[]? CicpSpaceEnums;
+    public string[]? ExternalOutletCicpSpaceEnums;
     /// <summary>无 CICP 通路时的归因（S3 与日志用；TIFF = ContainerNonNormative）。</summary>
     public CicpUnavailableReason NoCicpReason = CicpUnavailableReason.ContainerNoCicp;
     /// <summary>
@@ -333,6 +346,29 @@ public sealed class ColorTransformPlan
     /// 值域约定：源编码值 → 线性后乘以 LinearScale，把“1.0 = 源峰值”换到“1.0 = SDR 参考白”，
     /// 以便色调映射按 headroom 压缩；无 tonemap 时 LinearScale 保持 1（不改变旧行为）。
     /// </summary>
+    /// <summary>
+    /// 曲线线性值 1.0 的亮度语义（nits）：PQ / HLG 由**曲线定义**决定，其余取描述符声明值。
+    /// 与 <c>ColorIntentFactory.FixHdrNits</c> 同口径（声明值 &gt; SDR 参考白 ⇒ 尊重调用方，如
+    /// <c>--color-hdr-peak</c> 指定的实际峰值）。
+    /// <para>
+    /// ⚠️ 为什么要在这里再兜一次底：PQ 编码的 1.0 **恒为** 10000 nits、HLG 恒为 1000 nits（BT.2100
+    /// 名义峰值），这是曲线的定义而非标注。而 `ColorSpaceDescriptor.FromCicp` 的 nits 形参默认取
+    /// **SDR 参考白 203** ⇒ 凡是**直接构造描述符**的调用点（不经 ColorIntentFactory 装配，如
+    /// ServiceProbe 的 xcheck）都会拿到 203 ⇒ headroom=1 ⇒ 亮度域换算与 tone mapping 全部判成
+    /// "无需动作"，错误的曝光就此静默通过。
+    /// </para>
+    /// </summary>
+    private static double NitsOfLinearOneFor(TransferCurve c, double declared)
+    {
+        double nominal = c.Kind switch
+        {
+            TransferCurve.CurveKind.Pq => TransferCurve.PqPeakNits,
+            TransferCurve.CurveKind.Hlg => Bt2100Ootf.NominalPeakNits,
+            _ => TransferCurve.SdrWhiteNits,
+        };
+        return declared > TransferCurve.SdrWhiteNits ? declared : nominal;
+    }
+
     public TransformSpec ToSpec()
     {
         // ── ⚠ 「像素零改动」的计划必须是**恒等 spec**（2026-09-17 实测踩到，缺陷已修）────────────
@@ -369,11 +405,26 @@ public sealed class ColorTransformPlan
             ClampLinearBeforeEncode = true,
             Tone = Tone,
         };
-        if (Tone != null && Tone.Active && Src != null)
-        {
-            // 源曲线的 1.0 代表多少 nits（PQ=10000、HLG=1000、SDR=203）→ 换到“1.0 = SDR 白”
-            s.LinearScale = Src.NitsOfLinearOne / Math.Max(1.0, Tone.SdrWhiteNits);
-        }
+        // ── 亮度域换算：解码侧 LinearScale（源→中间域） + 编码侧 EncodeScale（中间域→目标域）─────
+        // 中间工作域 = 「1.0 = SDR 参考白」（tonemap 的固有值域约定，见 ToneMapParams 的类注释）；
+        // 源/目标各自的归一语义见 ColorSpaceDescriptor.NitsOfLinearOne（PQ=10000、HLG=1000、SDR=203）。
+        //
+        // ⚠️ 旧实现只在 **tonemap 激活时** 设 LinearScale，且**完全没有**编码侧换算 ⇒
+        //   · SDR→PQ：sRGB 白（1.0 = 203nits）被 PqOetf(1.0) 直接编码成 **10000nits**（过曝 49×）；
+        //   · PQ↔HLG：PQ 归一 1.0=10000、HLG 归一 1.0=1000，缺换算 ⇒ 亮度差 **10 倍**；
+        //   · 无 tonemap 的 PQ→SDR：整体**暗 49×**（xcheck 的「PQ 归一约定不同」格即此症状，PSNR 7.3dB）。
+        //   这些平时不显形，只因多数 HDR 任务走 H2（zscale 自己会换算）；一旦 GMO 或不可命名空间
+        //   落到 H1 就会产出错曝光的图 —— 而 H1 恰恰是自称"精确"的那条路径。
+        // ⇒ 两侧都换算后，SDR→SDR 恒为 1（不动既有基线），HDR→SDR + tonemap 亦与旧行为逐位一致。
+        double refWhite = Tone is { Active: true } ? Math.Max(1.0, Tone.SdrWhiteNits)
+                                                  : TransferCurve.SdrWhiteNits;
+        // nits 语义以**曲线定义**为准（见 NitsOfLinearOneFor），不依赖调用方是否记得传参。
+        double srcNits = Src == null ? 0.0 : NitsOfLinearOneFor(Src.Curve, Src.NitsOfLinearOne);
+        double dstNits = Dst == null ? 0.0 : NitsOfLinearOneFor(Dst.Curve, Dst.NitsOfLinearOne);
+        if (srcNits > 0 && Math.Abs(srcNits - refWhite) > 1e-9)
+            s.LinearScale = srcNits / refWhite;
+        if (dstNits > 0 && Math.Abs(dstNits - refWhite) > 1e-9)
+            s.EncodeScale = refWhite / dstNits;
         // HLG 是 scene-referred：解码后需经 BT.2100 OOTF（场景光 → 显示光），PQ 不需要。
         // 名义峰值与 PQ 的 nits 归一同源：描述符的 NitsOfLinearOne（HLG=1000，见 ColorIntentFactory.FixHdrNits）。
         if (Src != null && Src.Curve.Kind == TransferCurve.CurveKind.Hlg)
@@ -494,9 +545,25 @@ public static partial class ColorMappingEngine
         // JXL：exiftool 写不进 ICC，但 cjxl -x icc_pathname 可以；CICP 枚举仅 sRGB/DisplayP3/Rec2100PQ/HLG
         // E2 实测（cjxl+icc_pathname 与 color_space=DisplayP3 同给）：产物与“仅 ICC”**字节完全相同**，
         // jxlinfo 只报 584B ICC → **不能共存，ICC 胜出**（旧结论由此钉实）。
-        ["jxl"]   = new() { Format = "jxl",   CanCarryArbitraryIcc = true,  CanCicp = true, CanGenerateIccFromCicp = false, MaxBitDepth = 32, RgbNative = true, CanHdr = true,
-                            UnlabeledMeansSrgb = false, CanHaveBothIccAndCicp = false, CicpSpaceEnums = JxlColorSpaceEnums,
-                            VerifiedBy = "E2 实测：cjxl 同给 color_space+icc_pathname 仍只写 ICC（不可共存）" },
+        // ✅ 2026-09-26（任务 #37）把 `CanGenerateIccFromCicp` 翻成 **true**：E2 那条证据证的是
+        //   "**同一文件里 ICC 与 CICP 不可共存**"，从前被当成"**不能由 CICP 生成 ICC**"——两件事。
+        //   本次实测（`tests/output/t35/probe-jxl-bt2020-icc.ps1`，按产品真实通路喂 **PPM**）：
+        //   加 `-x icc_pathname=<iccgen 生成的 2020 ICC>` ⇒ jxlinfo 报 `584-byte ICC profile (lcms)`，
+        //   解码回来的 PNG 色度 = 0.708/0.292、0.170/0.797、0.131/0.046（= BT.2020/D65）；
+        //   不加 ⇒ jxlinfo 报 sRGB、解码 PNG **无** ICC；两次解码像素 rgb48 sha 相同 ⇒ ICC 不改像素。
+        //   ⚠ 本位在现存消费者里与 `CanCarryArbitraryIcc` 是**或**关系（:707/:877/:917）⇒ 翻它本身不改变
+        //     任何一格的结局；24 格 `jxl × BT.2020` 被拒的真凶是 `EnforceContainerAnnotationRules` 的
+        //     **择一**（它留着容器写不出的 CICP、剥掉唯一能兑现的生成 ICC），已在那一处修。
+        //     翻位是把表**改诚实**，不是当修复用。
+        //     ⚠ 那条修法**必须按出口判**：`CicpSpaceEnums` 钉的是 **cjxl** 的 `-x color_space=` 宽度，
+        //       而 ffmpeg 的 libjxl 出口能写任意 CICP（实测 `-e Ffmpeg` + DCI-P3 ⇒ jxlinfo 读回
+        //       「Rec.2100 primaries, 709 transfer」，被 `verify-color-wiring` (10) 钉住）
+        //       ⇒ 无条件按枚举剥 CICP 会把那条本来能交付的路打成 **0 字节产物**。
+        //       本表**没有"后端/出口"这一维**就是这个坑的根（登记任务 #38）；现在由调用方
+        //       把出口标志（`PlanPolicy.ExternalEncoderExit`）递进择一判据。
+        ["jxl"]   = new() { Format = "jxl",   CanCarryArbitraryIcc = true,  CanCicp = true, CanGenerateIccFromCicp = true,  MaxBitDepth = 32, RgbNative = true, CanHdr = true,
+                            UnlabeledMeansSrgb = false, CanHaveBothIccAndCicp = false, ExternalOutletCicpSpaceEnums = JxlColorSpaceEnums,
+                            VerifiedBy = "E2：ICC 与 CICP 不可共存（ICC 胜出）；09-26 PPM 实测：生成 ICC 可写入并读回 BT.2020 色度、像素逐字节不变" },
         // E1 实测：avifenc 能把任意 ICC 写入 AVIF（内嵌直通 与 显式 --icc 均成功，584B ICC 读回）；
         // 且 --icc + --nclx P/T/M 产出的同一文件里 colr 的 nclx 与 ICC **共存**（exiftool 两者均可见）。
         // ⚠ --lossless 下 avifenc 强制 matrix=identity(0)，传 6/9 会报“Matrix coefficients have to be identity…”。
@@ -556,23 +623,32 @@ public static partial class ColorMappingEngine
         _ => CodecLoss.Unknown,
     };
 
-    /// <summary>容器是否接受该 (primaries, transfer) 的 CICP 表达（JXL 受枚举集限制）。</summary>
-    public static bool CapsAcceptsCicp(FormatColorCaps caps, ColorSpaceDescriptor? d)
+    /// <summary>
+    /// 「这条 (primaries, transfer) 本次**写不写得进**出口标注」的唯一判据。
+    /// <para>
+    /// ⚠ 第三个参数**必须显式传**（任务 #38）：<see cref="FormatColorCaps.ExternalOutletCicpSpaceEnums"/>
+    ///   钉的是**外部编码器出口**（cjxl 的 <c>-x color_space=</c>）的枚举宽度，**不是容器能力**。
+    ///   给 <c>false</c>（ffmpeg 出口）⇒ 只要 <c>CanCicp</c> 就按"自由 nclx"放行。
+    ///   刻意**不给默认值**：漏传就是编译不过，而不是悄悄沿用"容器 = cjxl 的限制"这个错前提。
+    /// </para>
+    /// </summary>
+    public static bool CapsAcceptsCicp(FormatColorCaps caps, ColorSpaceDescriptor? d, bool externalEncoderOutlet)
     {
         if (!caps.CanCicp || d == null || !d.IsCicpNameable) return false;
-        if (caps.CicpSpaceEnums == null) return true;                       // 自由 nclx（AVIF/HEIF）
+        // 枚举集只约束外部出口；ffmpeg 的各容器出口写的是真 nclx（jxl 走 libjxl 时同理）
+        if (caps.ExternalOutletCicpSpaceEnums == null || !externalEncoderOutlet) return true;   // 自由 nclx（AVIF/HEIF）
         // JXL：枚举名由 (primaries, transfer) 对决定
         bool hdr = d.Curve.Kind is TransferCurve.CurveKind.Pq or TransferCurve.CurveKind.Hlg;
         if (!hdr)
         {
             if (d.PrimariesToken == "bt709" && d.Curve.CicpToken == "iec61966-2-1")
-                return Array.IndexOf(caps.CicpSpaceEnums, "sRGB") >= 0;
+                return Array.IndexOf(caps.ExternalOutletCicpSpaceEnums, "sRGB") >= 0;
             if (d.PrimariesToken == "smpte432" && d.Curve.CicpToken == "iec61966-2-1")
-                return Array.IndexOf(caps.CicpSpaceEnums, "DisplayP3") >= 0;
+                return Array.IndexOf(caps.ExternalOutletCicpSpaceEnums, "DisplayP3") >= 0;
             return false;                                                    // SDR-BT.2020 等无枚举
         }
         var want = d.Curve.Kind == TransferCurve.CurveKind.Pq ? "Rec2100PQ" : "Rec2100HLG";
-        return d.PrimariesToken == "bt2020" && Array.IndexOf(caps.CicpSpaceEnums, want) >= 0;
+        return d.PrimariesToken == "bt2020" && Array.IndexOf(caps.ExternalOutletCicpSpaceEnums, want) >= 0;
     }
 
     /// <summary>
@@ -592,6 +668,7 @@ public static partial class ColorMappingEngine
             p.Action = ColorAction.None;
             p.Reason = "无目标色彩空间 → 不改像素，沿用源描述";
             if (src != null) SetLabelsFrom(p, src, policy, preferCarry: true);
+            p.Reason += Transfer709Note(policy, null, p.Action, false);
             return p;
         }
 
@@ -604,6 +681,7 @@ public static partial class ColorMappingEngine
             p.Action = ColorAction.Reject;
             p.Reason = "源色彩无法确定（缺 ICC 且无 CICP 标签）→ 不映射、不写误导标签";
             p.Advice = "为源文件指定色彩空间，或先由源携带 ICC";
+            p.Reason += Transfer709Note(policy, dst.TransferToken, p.Action, false);
             return p;
         }
 
@@ -615,6 +693,7 @@ public static partial class ColorMappingEngine
             p.Action = ColorAction.None;
             p.Reason = "源=目标（矩阵与曲线等价）→ 直通，仅保证标注正确";
             SetLabelsFrom(p, dst, policy, preferCarry: src.IsIccDerived);
+            p.Reason += Transfer709Note(policy, dst.TransferToken, p.Action, false);
             return p;
         }
 
@@ -625,6 +704,7 @@ public static partial class ColorMappingEngine
             p.Action = ColorAction.Reject;
             p.Reason = $"无法求出 src→dst 矩阵（色度未知、矩阵奇异或白点不守恒 dev={src.LastRowSumDeviation:E1}）";
             p.Advice = "改用可携带 ICC 的格式（PNG/TIFF/WebP/JXL），或补全色彩描述";
+            p.Reason += Transfer709Note(policy, dst.TransferToken, p.Action, false);
             return p;
         }
         p.Matrix = MatrixIsIdentity(m) ? null : m;
@@ -637,6 +717,24 @@ public static partial class ColorMappingEngine
         // ⇒ 除非用户显式要求对齐 zimg（Transfer709=Zimg），否则**强制走 H1**，避免“标签说 A、像素是 B”。
         bool zimgDivergent = ZimgDivergentTransfer(dst.TransferToken);
         if (zimgDivergent && policy.Transfer709 == Transfer709Curve.Std) h2Possible = false;
+        // ── 口径落到像素（缺陷 #29 的前半边：`--color-709-curve` 在 H1 格子上曾经**静默无效**）──────
+        // 上面那条只回答"这格交给谁算"；结构上必须走 H1 的格子（需 GMO / 曲线不可 CICP 命名 /
+        // 已拿到 raw 像素）里，std 与 zimg 曾经拿到**逐字节相同**的产物（2026-09-26 实测四格 ×
+        // {std,zimg} 全数 md5 相同）⇒ 用户显式选了口径，开关却没有作用对象。
+        // 这里补上作用对象：Zimg 口径下把**出口编码曲线**换成 zimg 的实现形态（纯 γ(1/2.4)，
+        // 见 <see cref="TransferCurve.Bt709Zimg"/>），于是 H1 与 H2（zscale=t=bt709 本就是 γ2.4）
+        // 给出同一种像素 —— 这才是"对齐历史产物"的字面意思。
+        // ⚠ 只有 **bt709** 有实测背书：<see cref="ZimgDivergentTransfer"/> 还收了 bt470bg/smpte240m，
+        //   但它们的 zimg 形态**未验证** ⇒ 一律不换曲线（宁可不兑现，也不发明一条传递特性），
+        //   改由 <see cref="Transfer709Note"/> 在裁决理由里点名"本格不适用 + 原因"（不许静默）。
+        // ⚠ 出口**标注**一个字都不动（仍由目标描述符给 bt709）：CICP/ICC 的 bt709 = 定义式，
+        //   像素与标签不同形是 zimg 口径的**既有属性**（H2 产物一直是这样），不是本次新引入的失配。
+        bool zimgExitApplied = false;
+        if (policy.Transfer709 == Transfer709Curve.Zimg)
+        {
+            var zimgExit = ZimgExitCurve(dst.TransferToken);
+            if (zimgExit != null) { p.DstCurve = zimgExit.Value; zimgExitApplied = true; }
+        }
         if (!srcCurveOk)
         {
             if (!policy.AllowApproximateCurve)
@@ -646,6 +744,7 @@ public static partial class ColorMappingEngine
                 p.Reason = "存在引擎无法精确表达的曲线（如 A2B/非中性 profile）→ " +
                            (p.Action == ColorAction.CarryIcc ? "携带源 ICC，不动像素" : "拒绝（格式也不能带 ICC）");
                 p.Advice = p.Action == ColorAction.CarryIcc ? "" : "改用 PNG/TIFF/WebP/JXL 目标以携带 ICC";
+                p.Reason += Transfer709Note(policy, dst.TransferToken, p.Action, zimgExitApplied);
                 return p;
             }
             p.Reason = "曲线不精确但策略允许近似（legacy 兼容路径）";
@@ -697,11 +796,58 @@ public static partial class ColorMappingEngine
         }
 
         SetLabelsFrom(p, dst, policy, preferCarry: false);
+        p.Reason += Transfer709Note(policy, dst.TransferToken, p.Action, zimgExitApplied, p.Backend);
         return p;
     }
 
     /// <summary>目标曲线是否与 zimg 实现分歧/未验证（这些目标不得交给 H2，除非显式对齐 zimg）。</summary>
     internal static bool ZimgDivergentTransfer(string? trcToken) => trcToken is "bt709" or "bt470bg" or "smpte240m";
+
+    /// <summary>
+    /// 该 CICP transfer 在 **zimg 口径**下有没有**实测背书**的替代出口曲线。
+    /// <para>
+    /// 只有 `bt709` 有（实测 zimg 把它实现成纯 γ(1/2.4)，与定义式差 ~28.1 LSB@8bit）。
+    /// `bt470bg` 本仓已是纯幂 γ2.8（无"定义式 vs 纯幂"之分），`smpte240m` 的 zimg 形态未实测
+    /// ⇒ 两者一律返回 null：**不换曲线、也不发明曲线**，由 <see cref="Transfer709Note"/> 点名"本格不适用"。
+    /// </para>
+    /// </summary>
+    internal static TransferCurve? ZimgExitCurve(string? trcToken)
+        => trcToken == "bt709" ? TransferCurve.Bt709Zimg : null;
+
+    /// <summary>
+    /// `--color-709-curve` 的**兑现情况点名**（缺陷 #29 的后半边：结构上换不了曲线的格子**不许静默**）。
+    /// <para>
+    /// 为什么只在 <c>Zimg</c> 出声：<c>Std</c> 就是本仓一直以来的出口曲线（ITU-R 定义式），
+    /// 逐格播报"默认值已生效"只是日志噪声；而 CLI 的默认值就是 `"std"`
+    /// （<c>FfmpegOptions.Color709Curve</c>），装配层**无从区分**"用户显式选了 std"与"用户没选"
+    /// —— 要区分得让 CliParser 记录"是否被显式赋值"，不在本文件的归属内（已登记进本轮报告）。
+    /// </para>
+    /// <para>
+    /// ⚠ 文案一律写成**单行**且以 `[...]` 起头：`_probe-cjk-hardcode-scan.ps1` 按**词法**分桶
+    /// （一行的首个中文字面量以 <c>[</c> 开头 ⇒ 编码日志桶，不参与"UI 面不得增加"的判据），
+    /// 折行或换前缀都会把这条诊断推进判据桶 ⇒ 棘轮立刻转红。
+    /// </para>
+    /// </summary>
+    /// <param name="dstTrc">目标 CICP transfer token（无目标时传 null）。</param>
+    /// <param name="action">本计划的最终 Action（非 Map ⇒ 根本没有出口编码）。</param>
+    /// <param name="exitCurveApplied">出口曲线是否真的被换成 zimg 形态。</param>
+    /// <param name="backend">像素由谁算（H1 用我们的曲线，H2 用 zscale —— 两者在 zimg 口径下同形，但归因不同）。</param>
+    internal static string Transfer709Note(PlanPolicy policy, string? dstTrc, ColorAction action,
+        bool exitCurveApplied, ColorBackend backend = ColorBackend.None)
+    {
+        if (policy.Transfer709 != Transfer709Curve.Zimg) return "";
+        if (policy.GainMapRequested)
+            return " [口径=zimg 未作用于本格：GainMap 出口的底图编码由 GainMapEncoder 自持，计划层的出口曲线不被消费]";
+        if (exitCurveApplied && action == ColorAction.Map)
+            return backend == ColorBackend.FfmpegFilter
+                ? " [口径=zimg 已兑现(H2)：像素由 zscale 给出，其 t=bt709 本就是纯 γ(1/2.4) —— 本开关正是为此放行 H2（Std 侧由口径黑名单禁掉）]"
+                : " [口径=zimg 已兑现(H1)：出口曲线改用 zimg 的 BT.709 形态（纯 γ(1/2.4)，与 ITU-R 定义式差 ~28.1LSB@8bit）；标注仍按目标描述符写 bt709 —— 与 zscale=t=bt709 的产物同形，即本开关的用途]";
+        if (action != ColorAction.Map)
+            return $" [口径=zimg 未作用于本格：本次 act={action} 不改像素 ⇒ 没有出口编码可换曲线]";
+        if (ZimgDivergentTransfer(dstTrc))
+            return $" [口径=zimg 未作用于本格：出口 trc={dstTrc} 的 zimg 实现形态未实测 ⇒ 不换曲线（宁可不兑现也不发明传递特性），本开关只在放行 H2 上生效]";
+        return $" [口径=zimg 未作用于本格：出口 trc={dstTrc ?? "-"} 与 BT.709 编码口径无关（本开关只换 BT.709 的编码形态）]";
+    }
 
     /// <summary>
     /// 单入口不变量检测（规划 §4）：找出命令行中**改变像素色彩**的滤镜入口。

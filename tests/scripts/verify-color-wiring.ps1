@@ -19,6 +19,9 @@ $ErrorActionPreference = "Continue"
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path; Set-Location $root
 $exe = "$root/src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.exe"
 if (-not (Test-Path $exe)) { $exe = "$root/src/FfmpegGui/bin/Debug/net11.0/win-x64/FfmpegGui.exe" }
+# ⚠ 2026-09-21（TESTING.md 第 84 条处置建议 ①）：**回退是静默的** —— 门禁可能测的
+#   不是你以为的那个二进制。⇒ 一律**打印被测 exe 与构建类型**，让读数可追溯。
+Write-Output ("[gate] exe=" + $exe + $(if ($exe -like '*\Debug\*') { " (Debug fallback)" } else { " (Release)" }))
 $fp = "$root/publish/PLAN/ffmpeg-full/ffprobe.exe"
 $ff = "$root/publish/PLAN/ffmpeg-full/ffmpeg.exe"   # MeanY 要跑 signalstats；不定义就会拿到空路径而永远返 -1
 # (8) 段自备 P3 ICC 素材要用 exiftool（提取 ICC）；生成逻辑与 caps 共用 `_lib-color-assets.ps1`。
@@ -27,6 +30,9 @@ $et = "$root/publish/PLAN/exiftool/exiftool.exe"
 . "$root/tests/scripts/_lib-color-assets.ps1"
 $pr = "$root/tests/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.exe"
 if (-not (Test-Path $pr)) { $pr = "$root/tests/ServiceProbe/bin/Debug/net11.0/win-x64/ServiceProbe.exe" }
+# ⚠ 2026-09-21（TESTING.md 第 84 条处置建议 ①）：**回退是静默的** —— 门禁可能测的
+#   不是你以为的那个二进制。⇒ 一律**打印被测 exe 与构建类型**，让读数可追溯。
+Write-Output ("[gate] exe=" + $pr + $(if ($pr -like '*\Debug\*') { " (Debug fallback)" } else { " (Release)" }))
 foreach ($need in @($exe, $fp, $pr)) { if (-not (Test-Path $need)) { Write-Output "缺工具：$need"; exit 1 } }
 $val = "$root/tests/output/validate"; $col = "$val/../results/color"
 # ⚠ **运行级隔离（2026-09-17 修）**：原先 `$out` 是**固定**路径 + 下一行整目录删
@@ -437,22 +443,30 @@ if (Test-Path $alphaSrc) {
 } else {
     CK $false "(10) 生成 alpha 素材失败（$alphaSrc）—— 本条**不给绿灯**"
 }
-# ── (10e) 目标**落不进 cjxl 枚举** ⇒ 显式失败并**点名出路**（2026-09-17 实测登记的能力缺口）──
-# 背景（实测，不是推断）：`--color-space DCI-P3`（或 ProPhoto / 裸 BT.2020）在 jxl 上会被规划层归一成
-# `bt2020/bt709` 语义（超广目标 ⇒ BT.2020 SDR 归一），而 **cjxl 的 `-x color_space=` 枚举**
-# （sRGB / Display P3 / Rec2100PQ / Rec2100HLG）表达不了它，`CanGenerateIccFromCicp=false` 又意味着
-# 规划层**不会**给这类目标配 ICC ⇒ 出口只能**显式失败**。
-# ⚠ 这是**能力缺口**、不是格式限制：同一请求走 `-e Ffmpeg` **能交付**（ffmpeg 的 JXL muxer 能写任意 CICP）。
-#   所以本段**同时**钉住两件事：① 现状是显式失败（不是静默错标）；② 同一目标在另一后端是可交付的
-#   ⇒ 若将来有人补上"为不可枚举目标生成目标 ICC"的能力，本段 ① 会转红**并提示该契约已变更**。
+# ── (10e) 目标**落不进 cjxl 枚举** ⇒ 现在由**生成目标 ICC** 交付（2026-09-26 任务 #37 契约变更）──
+# 旧现状（2026-09-17 登记）：`--color-space DCI-P3`（或 ProPhoto / 裸 BT.2020）在 jxl 上被规划层归一成
+#   `bt2020/bt709`，而 cjxl 的 `-x color_space=` 枚举表达不了 ⇒ 出口**显式失败且不产出**。
+#   当时那一条注释就预告过："若将来有人补上『为不可枚举目标生成目标 ICC』的能力，本段 ① 会转红
+#   并提示该契约已变更"。**现在就是那一天**：真凶不是能力位 `CanGenerateIccFromCicp`（它与
+#   `CanCarryArbitraryIcc` 是或关系，本就恒真），而是 `EnforceContainerAnnotationRules` 的**择一**——
+#   它留着"容器写不出的 CICP"、剥掉了"唯一能兑现的生成 ICC"。择一加了一条前置：
+#   **CICP 必须真的落得进本容器的枚举**（判据仍是同一个 `CapsAcceptsCicp`，不另立标准）。
+# 本段因此改钉**新契约**，四条都要有牙：交付、语义可读回、机制点名、**旧拒绝文案不得复现**。
 $c5 = RunCli 'eng_cjxl_dcip3' $p3 'jxl' @('--color-space', '"DCI-P3"')
-CK ($c5.code -ne 0 -and -not $c5.file) `
-   "(10) 目标落不进 cjxl 枚举（DCI-P3 ⇒ bt2020/bt709）⇒ **显式失败且不产出**（exit=$($c5.code)，产物=$([bool]$c5.file)）"
-CK ($c5.log -match '落不进 cjxl 的 color_space 枚举') "(10) 失败原因点名到「cjxl 的 color_space 枚举」（不是笼统失败）"
-CK ($c5.log -match '-e Ffmpeg') "(10) 失败信息**给出出路**（点名「-e Ffmpeg」）—— 否则用户会以为「这个目标做不到」"
+CK ($c5.code -eq 0 -and $c5.file -and $c5.file.Length -gt 0) `
+   "(10) 目标落不进 cjxl 枚举（DCI-P3 ⇒ bt2020/bt709）⇒ **现在必须交付**（exit=$($c5.code)，产物=$([bool]$c5.file)）—— 契约见本段头注"
+if ($c5.file -and (Test-Path $jxlinfo)) {
+    $cs5 = JxlColorSpace $c5.file.FullName
+    CK ($cs5 -match 'Rec\.2100 primaries' -and $cs5 -match '709 transfer') `
+       "(10) 且 cjxl 侧真的交付了该语义（jxlinfo 读回「$cs5」）⇒ 不是'出了个文件但标注丢了'"
+} else { CK $false "(10) 无产物或无 jxlinfo ⇒ 语义无从读回，判红" }
+CK ($c5.log -match 'icc_pathname') `
+   "(10) 机制点名：cjxl 命令行带 -x icc_pathname=（生成目标 ICC 落盘）—— 否则这条交付无从复现"
+CK ($c5.log -notmatch '落不进 cjxl 的 color_space 枚举') `
+   "(10) 旧的显式拒绝**不得复现**（日志里再出现「落不进 cjxl 的 color_space 枚举」= 择一被改回原样）"
 $c6 = RunCli 'eng_ffmpeg_dcip3' $p3 'jxl' @('--color-space', '"DCI-P3"', '-e', 'Ffmpeg')
 CK ($c6.file -and $c6.file.Length -gt 0) `
-   "(10) 交叉证明：**同一目标**走 ffmpeg-libjxl 后端产出非空 jxl（$($c6.file.Length)B）⇒ 窄的是 cjxl 的枚举，不是这个目标"
+   "(10) 交叉证明：**同一目标**走 ffmpeg-libjxl 后端也产出非空 jxl（$($c6.file.Length)B）⇒ 两条后端现在都走得通"
 if ($c6.file -and (Test-Path $jxlinfo)) {
     $cs6 = JxlColorSpace $c6.file.FullName
     CK ($cs6 -match 'Rec\.2100 primaries' -and $cs6 -match '709 transfer') `
@@ -487,8 +501,11 @@ if (Test-Path $alphaSrc) {
 }
 
 # ── (11) JXR 执行出口（2026-09-17 接入）──
-# 背景：`JxrEncApp` 是**纯文件式** `-i input -o output`（不吃 rawvideo/stdin），且本工具链的 ffmpeg
-# **没有 jxr 编码器**（实测 `-encoders` 无 jxr）⇒ 引擎只能把变换后的 raw 落成中转容器（BMP/TIFF）再交给它。
+# 背景：`JxrEncApp` 是**纯文件式** `-i input -o output`（不吃 rawvideo/stdin）。⚠ 本段初稿把「不走 ffmpeg
+# 编码」的理由写成「本工具链的 ffmpeg 没有 jxr 编码器」—— **已按实测改正**（09-26 构建 `-codecs` 报
+# `(encoders: libjxr)`，取证 `tests/output/t50/`）：libjxr **在**，但它**无质量 AVOption** 且字节序与
+# jxrlib 不一致 ⇒ 不作替代执行体（唯一口径见 `RawColorPipeline` 的 JXR 出口文档）。⇒ 引擎只能把变换后的
+# raw 落成中转容器（BMP/TIFF）再交给 JxrEncApp。
 # 本段钉住四件事：① 出口真的产出**真 JXR**（由**独立解码器** JxrDecApp 回读，不看自家日志）；
 # ② 色彩决策来自**计划**而不是那条硬编码 zscale；③ alpha **没被静默拍平**（同 GIF/cjxl 的坑）；
 # ④ 中转容器由**计划位深**决定。
@@ -502,7 +519,10 @@ if (Test-Path $alphaSrc) {
 Write-Host "`n=== (11) JXR 执行出口：BMP/TIFF 中转 + JxrEncApp ===" -ForegroundColor Cyan
 $jxrEnc = "$root/publish/PLAN/artifacts/JxrEncApp.exe"
 $jxrDec = "$root/publish/PLAN/artifacts/JxrDecApp.exe"
-# jxr 产物 ffmpeg **读不了**（本构建无 jxr 解码器）⇒ 回读一律经 JxrDecApp 转成 TIFF，再用 ffmpeg/exiftool。
+# jxr 回读**一律经 JxrDecApp**，不用 ffmpeg 自解。⚠ 理由不是「本构建没有 jxr 解码器」（实测**有**：
+# `-codecs` 报 `(decoders: libjxr)`，且 8/16-bit 往返位精确）而是两条：① 门禁要的是**第三方**证明
+# 「这是真 JXR」，自家链路自解会把「写法自洽」冒充成「格式正确」；② ffmpeg 解 .jxr **不导出 ICC**
+# ⇒ ICC 只能走 exiftool（`tests/output/t50/` 实测）。
 function JxrDec([string]$jxrPath, [string]$outPath, [string]$fmt) {
     Start-Process -FilePath $jxrDec -ArgumentList @('-i', $jxrPath, '-o', $outPath, '-c', $fmt) `
         -NoNewWindow -Wait -RedirectStandardOutput "$out/_jxrdec.txt" | Out-Null

@@ -580,9 +580,16 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
                         // **缺陷**的部分：此前是靠 `int.Parse("auto")` 抛 FormatException、被兜底
                         // catch 吞掉**碰巧**得到 null ⇒ 用户显式写的 `auto` 与拼错的值（如 banana）
                         // 在外部完全不可区分。现在 auto 走显式分支，其余解析失败报错。
-                        options.BitDepth = string.Equals(value.Trim(), "auto", StringComparison.OrdinalIgnoreCase)
-                            ? (int?)null
-                            : ParseIntStrict(key, value);
+                        // ── P2.5 ①（2026-09-25 值域收口）──
+                        // D6 只收了「能不能解析」，没收「解析出来是不是一个位深」⇒ `--bit-depth 47`
+                        // 一路走到 `ColorIntentFactory` 钳成 32/16、照样出图、日志零字（实测 NC2 红 +
+                        // CAP 尺子 144 格静默）。现按 `--help`（本文件 `:340`）登记的域闭合：
+                        // 只接受 `auto` | 8 | 10 | 12 | 16，其余**显式拒绝**（抛 `ArgumentException`
+                        // ⇒ CLI 退出码 2、IPC 转 `Invalid payload`，**无产物**）。
+                        // 走 `ParseBitDepthStrict` 而不是在 case 里内联 try/catch：本方法末尾那个兜底
+                        // `catch { }` 就是 D6 点过的"解析失败被吞"形状，只有
+                        // `ArgumentException` 能穿出去 ⇒ 校验必须落在 `BadValue` 这条唯一出口上。
+                        options.BitDepth = ParseBitDepthStrict(key, value);
                         break;
                     case "color-space": options.ColorSpace = value; break;
                     case "color-primaries": options.ColorPrimaries = value; break;
@@ -650,7 +657,7 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
                         // 取值域 = `ColorIntentFactory.cs:184-204`（Trim+小写后 switch）：`""` / `none` /
                         // `reinhard` / `hable` / `mobius` / `bt2446a`；其 `default:` 分支对未知值**返 null**
                         // ⇒ 引擎不接手 ⇒ **静默回退传统管线**（策略悄悄换了执行路径，用户无从察觉）。
-                        // ⚠ `bt2390` 必须**放行**：`:202` 把它判为「可识别但本管线不支持」并显式拒绝
+                        // ⚠ `bt2390` 必须**放行**：本文件「分层语义」那段把它判为「可识别但本管线不支持」并显式拒绝
                         //   ⇒ 属「**能识别**」而非「无法识别」，按本仓分层语义不得在 CLI 层提前拦。
                         // ⚠ 空串也放行：消费方写的是 `(o.ColorToneMap ?? "none")`，空串与 none 同义，
                         //   是既有合法写法（轴登记 none|reinhard|hable|mobius|bt2446a 已被覆盖）。
@@ -804,14 +811,22 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
         //   ① 不做**范围**校验。本仓大量使用哨兵值：`AnimationLoop = -1`（不循环）、
         //      `JpegGainMapQuality = -1`（用默认 75，QueueProcessor.cs:1877-1878）、
         //      `BitDepth = null`（= auto）、`AnimationScaleW = 0`（保持原始）。
-        //      范围/哨兵语义属各下游组件，不在此收口 ⇒ `--bit-depth 0` 这类「能解析但语义可疑」
-        //      的取值仍按旧行为下发，由下游/ffmpeg 响亮失败。
+        //      范围/哨兵语义属各下游组件，不在此收口 ⇒ 那些「能解析但语义可疑」的取值仍按旧行为
+        //      下发，由下游/ffmpeg 响亮失败。
+        //      ⚠ **例外**（2026-09-25，P2.5 ①）：`--bit-depth` 的域**封闭且本仓自持**
+        //        ⇒ 已由 `ParseBitDepthStrict` 收口为 `8|10|12|16|auto`（数值四档与 `--help:340` 的
+        //        `<8|10|12|16>`、轴登记 `_lib-axes.ps1:201` 的 `@('8','10','12','16')` 逐字相同；
+        //        `auto` 是 D6 确立的「≡ 未设置」，help 与轴登记都不列它 ⇒ 只在报错消息里点名）。
+        //        `--bit-depth 0` / `47` 现在是**拒绝**（退出码 2、无产物），不再下发给下游兜底。
+        //        理由：下游不会拒绝，只会把非法值钳进容器能力表 ⇒ 制造"请求 47 实得 16"的静默格。
         //   ② 自由字符串型取值的收口是**逐项判定**的，不是一刀切（2026-09-19 维护者裁决第 2 项）。
         //      ✅ **已收口**（取值域封闭且由本仓自持 ⇒ 走 `ParseTokenStrict`，非法值报错）：
         //        chroma（auto|4:4:4|4:2:2|4:2:0）· color-range（auto|tv|pc）·
         //        color-709-curve（std|zimg）· color-carry-scope（none|unnameable|all|0|1|2）·
         //        color-tone-map（""|none|reinhard|hable|mobius|bt2446a|bt2390）·
-        //        jpeg-huffman（default|optimal|1|0）
+        //        jpeg-huffman（default|optimal|1|0）·
+        //        bit-depth（8|10|12|16|auto，走同族的 `ParseBitDepthStrict` —— 它是整数域，
+        //        且 `auto` 要落成 `null` 而非字符串，故不复用 `ParseTokenStrict`）
         //      ⛔ **刻意不收口**（收口就会把合法值挡在门外，分四类）：
         //        · 域在**下游工具**手里（本文件没有可信枚举，硬校验等于**编造**一张表）：
         //          webp-preset · png-pred · tiff-compression · jpeg-dct · cjpegli-chroma · tonemap-curve
@@ -850,6 +865,36 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
                               System.Globalization.CultureInfo.InvariantCulture, out var v))
                 throw BadValue(key, value, "需要整数");
             return v;
+        }
+
+        /// <summary>
+        /// <c>--bit-depth</c> 的合法域（P2.5 ① 值域收口，2026-09-25）：本表**就是**唯一真值，
+        /// 数值四档与 <c>--help</c> 的 <c>--bit-depth &lt;8|10|12|16&gt;</c> 及轴登记
+        /// （<c>_lib-axes.ps1:201</c>）逐字相同，另接受 <c>auto</c>（D6 的「≡ 未设置」）。
+        /// <para>
+        /// 为什么必须在此收口：位深与 <c>--chroma</c> / <c>--color-range</c> 同属「**取值域封闭、
+        /// 且域由本仓自持**」那一类 ⇒ 拼错或被钳制的值此前与合法值在外部**不可区分**
+        /// （实测 <c>--bit-depth 47</c> 退出码 0 且照出产物）。而下游拿到 int 之后**不会**再校验，
+        /// 只会把它钳进容器能力表 ⇒「请求 47 实得 16」全程无字。
+        /// </para>
+        /// <para>
+        /// ⚠ 与 <see cref="ParseTokenStrict"/> 同一口径：`expected` 传**纯 ASCII**（中文由
+        /// <see cref="BadValue"/> 的模板承载），否则 <c>_probe-cjk-hardcode-scan</c> 的 <c>CsUi</c>
+        /// 判据（余量 0）立即转红。
+        /// </para>
+        /// </summary>
+        /// <returns><c>null</c> = <c>auto</c>（≡ 未设置，与 UI 下拉同源）。</returns>
+        private static int? ParseBitDepthStrict(string key, string value)
+        {
+            var v = (value ?? "").Trim();
+            if (v.Equals("auto", StringComparison.OrdinalIgnoreCase)) return null;
+            // 解析失败与"解析成功但不是位深"走**同一个**出口（同一个 BadValue）：
+            // 分两条路就会出现「banana 报错、47 不报」那种半套收口。
+            if (!int.TryParse(v, System.Globalization.NumberStyles.Integer,
+                              System.Globalization.CultureInfo.InvariantCulture, out var n)
+                || n is not (8 or 10 or 12 or 16))
+                throw BadValue(key, value, "8 | 10 | 12 | 16 | auto");
+            return n;
         }
 
         private static double ParseDoubleStrict(string key, string value)

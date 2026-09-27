@@ -6,12 +6,23 @@ namespace FfmpegGui.Services
     /// <summary>
     /// PNG 3.0 chunk 写入服务（已实现：sBIT / cICP；**尚未实现：cLLI / mDCV**）。
     /// ffmpeg PNG 编码器只能输出 8/16-bit 容器，无法表达 10/12-bit 有效位语义
-    /// （gbrp10le 输入会被自动提升为 16-bit 且不写 sBIT chunk），也**不写 cICP**（实测）。
-    /// 本服务在编码完成后以二进制方式补写，使输出符合 PNG 3.0 规范（2025-06-24 W3C Recommendation）。
+    /// （gbrp10le 输入会被自动提升为 16-bit 且不写 sBIT chunk），本服务在编码完成后以二进制方式补写，
+    /// 使输出符合 PNG 3.0 规范（2025-06-24 W3C Recommendation）。
     /// 算法与 tools/src/pngcicp 工具一致（CRC32 反射表 0xEDB88320，已经 ffmpeg 解码零告警交叉验证）。
-    /// ⚠ 已知缺口：生产路径（QueueProcessor）只调 <see cref="TryInsertSbit"/>，未调 <see cref="TryInsertCicp"/>
-    ///   ⇒ HDR(PQ/HLG) PNG 目前**没有任何色彩描述**（iccgen 又不支持 HDR ICC）；
-    ///   接前必须用与 BuildArguments 同源的输出语义判定，且避开与 iCCP 的冲突（规范：iCCP 优先）。
+    /// ⚠ **本行原写「ffmpeg 也*不写* cICP（实测）」已作废**（2026-09-26 实测）：帧带色彩标签时
+    ///   该编码器**会**写 cICP —— HDR→8bit PNG 默认格产物里就有 cICP 而生产日志**没有**任何 <c>[png3]</c> 行
+    ///   （取证：<c>tests/output/_diag_31cur/run_auto/</c>）。⇒ 凡"只在我们要写时才处理块"的逻辑都会漏掉这一类，
+    ///   <see cref="TryStripChunksSupersededByCicp"/> 的调用点因此放在分支**之外**。
+    /// ✅ **2026-09-22 更正**：本条原写「⚠ 已知缺口：生产路径（QueueProcessor）只调 <see cref="TryInsertSbit"/>，
+    ///   **未调** <see cref="TryInsertCicp"/> ⇒ HDR(PQ/HLG) PNG 目前**没有任何色彩描述**」——**该缺口已闭合**：
+    ///   生产路径现在经 <see cref="DecideLabel"/> 判定后**确实**会调 <see cref="TryInsertCicp"/>
+    ///   （`QueueProcessor.cs` 的「PNG 3.0: cICP chunk」段；`WriteCicp` 分支）。
+    ///   ⇒ 保留此更正记录，避免读者据旧文以为 HDR PNG 仍无色彩描述。
+    ///   ⚠ 判据仍必须与 <c>BuildArguments</c> **同源**（本服务不自己重推输出语义）。
+    ///   ⚠ **本行原写「避开与 iCCP 的冲突（规范：iCCP 优先）」是错的**：PNG Third Edition 的优先级是
+    ///     <c>cICP &gt; iCCP &gt; sRGB &gt; cHRM/gAMA</c>（同文件 :134/:161 已核原文并写对）。
+    ///     ⇒ 写 cICP 后**保留 iCCP 是合法的**（两者一致时是有意的双描述），
+    ///       而**留着矛盾的 gAMA/cHRM/sRGB 才是缺陷** ⇒ 由 <see cref="TryStripChunksSupersededByCicp"/> 收口。
     /// </summary>
     public static class PngCicpService
     {
@@ -103,6 +114,72 @@ namespace FfmpegGui.Services
                 outMs.Write(chunk);
                 outMs.Write(buf, ihdrEnd, buf.Length - ihdrEnd);
                 File.WriteAllBytes(pngPath, outMs.ToArray());
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// 产物若已带 <c>cICP</c>，剥掉被它**取代且数值可能互相矛盾**的 <c>gAMA</c> / <c>cHRM</c> / <c>sRGB</c> 三块。
+        /// <para>
+        /// 为什么必须做（2026-09-26 实测，取证脚本与产物块清单见 `tests/output/_diag_31cur/`）：
+        /// 同一张出口 PNG 里，ffmpeg 的 PNG 编码器与本服务会留下**三份互相冲突的曲线声明** ——
+        /// 实测 `sdr_srgb_engine` / `sdr_auto` 两格的块序是
+        /// <c>['IHDR','cICP','pHYs','sRGB','cHRM','gAMA','IDAT…']</c>，
+        /// 其中 <c>cICP.transfer=13</c>（=IEC 61966-2-1，sRGB 分段）而 <c>gAMA=45455</c>（γ=1/2.2）
+        /// ⇒ 认 cICP 的读者与只看 gAMA/sRGB 的老读者**解码结果不同**。
+        /// 规范优先级（PNG Third Edition，本类 :134/:161 已核原文）是
+        /// <c>cICP &gt; iCCP &gt; sRGB &gt; cHRM/gAMA</c> ⇒ 低优先级块与高优先级块矛盾时，留着它们
+        /// 就是把"哪种读者读到哪个答案"交给读者的实现细节。**这是本仓既定口径**（:161「写 cICP 消除 gAMA」），
+        /// 此前只落在注释里、没落在代码上 —— 本方法把它落成动作。
+        /// </para>
+        /// <para>
+        /// ⚠ <c>iCCP</c> **不在剥离名单**：PNG 允许 cICP 与 iCCP 并存（能力表
+        /// <c>CanHaveBothIccAndCicp=true</c>），且维护者 2026-09-26 定样"图像容器 SDR 出口 = sRGB ICC"
+        /// ⇒ 两者**一致**时并存是有意的。不一致时（cICP=1 而 iCCP 是 sRGB）是**另一条**缺陷
+        /// —— 那是"出口曲线标签与像素不符"（任务 #26②：tonemap 链末级把 zimg 的纯 γ2.4 写成 bt709），
+        /// 靠改这里消不掉，也不许在这里顺手"改标签凑像素"。
+        /// </para>
+        /// </summary>
+        /// <param name="removed">输出：实际剥掉的块数（0 = 无 cICP 或本就没有可剥的块）。</param>
+        /// <returns>解析/写回成功为 true；任何异常 ⇒ false 且**不修改文件**。</returns>
+        public static bool TryStripChunksSupersededByCicp(string pngPath, out int removed)
+        {
+            removed = 0;
+            try
+            {
+                var data = File.ReadAllBytes(pngPath);
+                if (!TryParseHeader(data, out _, out _, out var ihdrEnd))
+                    return false;
+
+                // 先扫一遍：没有 cICP 就什么都不做（不得"顺手清一下 gAMA"——那是无 cICP 时唯一的曲线来源）
+                var superseded = new HashSet<string>(StringComparer.Ordinal) { "gAMA", "cHRM", "sRGB" };
+                bool hasCicp = false;
+                for (int pos = ihdrEnd; pos + 12 <= data.Length;)
+                {
+                    int len = BinaryPrimitives.ReadInt32BigEndian(data.AsSpan(pos));
+                    var type = Encoding.ASCII.GetString(data, pos + 4, 4);
+                    if (type == "cICP") { hasCicp = true; break; }
+                    pos += 12 + len;
+                }
+                if (!hasCicp) return true;
+
+                using var ms = new MemoryStream(data.Length);
+                ms.Write(data, 0, ihdrEnd);                      // 签名 + IHDR 原样保留
+                for (int pos = ihdrEnd; pos + 12 <= data.Length;)
+                {
+                    int len = BinaryPrimitives.ReadInt32BigEndian(data.AsSpan(pos));
+                    if (pos + 12 + len > data.Length) return false;   // 截断/脏块 ⇒ 放弃，不改文件
+                    var type = Encoding.ASCII.GetString(data, pos + 4, 4);
+                    if (superseded.Contains(type)) { removed++; pos += 12 + len; continue; }
+                    ms.Write(data, pos, 12 + len);
+                    pos += 12 + len;
+                }
+                if (removed == 0) return true;                   // 无可剥 ⇒ 不写回（连 mtime 都不该动）
+                File.WriteAllBytes(pngPath, ms.ToArray());
                 return true;
             }
             catch

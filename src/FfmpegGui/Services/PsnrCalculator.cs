@@ -21,6 +21,11 @@ namespace FfmpegGui.Services
     /// 实现 (2026-08-15 向前看齐 AVX512/AVX10):
     ///   AVX512 (BW) → AVX2 → SSE2 → 标量 (8-bit 像素)
     ///   16-bit 像素: 标量 (ReadOnlySpan&lt;ushort&gt; reinterpret)
+    ///
+    /// 选路 (2026-09-27 起): 「AVX512 → AVX2 → SSE2 → 标量」这条优先级链**只写在**
+    ///   SimdKernelRouting.ResolvePixelKernelPath() 一处，且先受面板「SIMD 优化」
+    ///   (AppSettings.AutoUseSimdBinaries) 支配：关掉 ⇒ 恒标量（与本机 ISA 无关）。
+    ///   16-bit 路径本来就是逐像素标量，开关对它没有任何影响（两条路数值同样逐位一致）。
     /// </summary>
     public static class PsnrCalculator
     {
@@ -165,39 +170,40 @@ namespace FfmpegGui.Services
         }
 
         /// <summary>
-        /// 测试钩子: 强制使用指定指令集路径。
+        /// 测试钩子: 强制使用指定指令集路径（路径名字面量 = SimdKernelRouting.Path* 常量）。
+        /// ⚠ 与生产选路共用同一张分派表（<see cref="ApplyKernel"/>）⇒ 本钩子测的就是生产那条路。
         /// </summary>
         internal static long SquaredDiffSumForced(ReadOnlySpan<byte> a, ReadOnlySpan<byte> b, string path)
         {
             if (a.Length != b.Length)
                 throw new ArgumentException("两帧长度不一致", nameof(b));
-            return path switch
-            {
-                "avx512" => SquaredDiffSumAvx512(a, b),
-                "avx2" => SquaredDiffSumAvx2(a, b),
-                "sse2" => SquaredDiffSumSse2(a, b),
-                "scalar" => SquaredDiffSumScalar(a, b),
-                _ => throw new ArgumentException($"未知路径: {path}", nameof(path))
-            };
+            return ApplyKernel(path, a, b);
         }
 
         /// <summary>
         /// 对两帧等长 8-bit 像素计算平方误差和 (SIMD 加速)。
         /// 指令集优先级: AVX512 (BW) → AVX2 → SSE2 → 标量。
+        /// 面板「SIMD 优化」关闭 ⇒ 恒走标量（判据在 SimdKernelRouting，本类不再自带 IsSupported）。
         /// </summary>
         public static long SquaredDiffSum(ReadOnlySpan<byte> a, ReadOnlySpan<byte> b)
         {
             if (a.Length != b.Length)
                 throw new ArgumentException("两帧长度不一致", nameof(b));
-
-            if (Avx512BW.IsSupported)
-                return SquaredDiffSumAvx512(a, b);
-            if (Avx2.IsSupported)
-                return SquaredDiffSumAvx2(a, b);
-            if (Sse2.IsSupported)
-                return SquaredDiffSumSse2(a, b);
-            return SquaredDiffSumScalar(a, b);
+            return ApplyKernel(SimdKernelRouting.ResolvePixelKernelPath(), a, b);
         }
+
+        /// <summary>
+        /// 内核分派表 —— 生产选路（<see cref="SimdKernelRouting.ResolvePixelKernelPath"/>）
+        /// 与测试钩子 <see cref="SquaredDiffSumForced"/> 都走这一张，避免两份分派漂移。
+        /// </summary>
+        private static long ApplyKernel(string path, ReadOnlySpan<byte> a, ReadOnlySpan<byte> b) => path switch
+        {
+            SimdKernelRouting.PathAvx512 => SquaredDiffSumAvx512(a, b),
+            SimdKernelRouting.PathAvx2 => SquaredDiffSumAvx2(a, b),
+            SimdKernelRouting.PathSse2 => SquaredDiffSumSse2(a, b),
+            SimdKernelRouting.PathScalar => SquaredDiffSumScalar(a, b),
+            _ => throw new ArgumentException($"未知路径: {path}", nameof(path))
+        };
 
         // ═══════════════════════════════════════════════════
         // 实现 (8-bit SIMD 路径)

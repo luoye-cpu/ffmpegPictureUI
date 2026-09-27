@@ -62,10 +62,10 @@ $cases = @(
 $knownNonDefects = @{
   "bars16.png/BT.2020→sRGB"     = "zimg 参照口径分歧：zimg 的 bt709 是纯 γ2.4（与定义式分歧）"
   "bars16.png/sRGB→BT.2020"     = "zimg 参照口径分歧：zimg 的 bt709 是纯 γ2.4（与定义式分歧）"
-  "bars16.png/PQ(BT.2020)→sRGB" = "zimg 参照口径分歧：PQ 归一约定不同"
+  "bars16.png/PQ(BT.2020)→sRGB" = "⚠ 2026-09-28 部分已修：探针 Spec() 绕过生产 ToSpec 手搓 spec ⇒ 缺亮度域换算（1.0=10000nits 当成 1.0=203nits），PSNR 仅 7.3dB。补换算后 **23.2dB**（ΔE avg 46.5→3.3）。剩余差异 = **无 tone mapping 时 HDR 高光被硬裁切** 与 zimg 的约定不同 ⇒ 待接入 tonemap 后重评，**不是「不可修的口径分歧」**"
   "t2.png/BT.2020→sRGB"         = "zimg 参照口径分歧：zimg 的 bt709 是纯 γ2.4（与定义式分歧）"
   "t2.png/sRGB→BT.2020"         = "zimg 参照口径分歧：zimg 的 bt709 是纯 γ2.4（与定义式分歧）"
-  "t2.png/PQ(BT.2020)→sRGB"     = "zimg 参照口径分歧：PQ 归一约定不同"
+  "t2.png/PQ(BT.2020)→sRGB"     = "⚠ 2026-09-28 部分已修：同 bars16 的 PQ 格（探针缺亮度域换算）。19.7dB→待重测；剩余差异 = 无 tone mapping 的高光裁切 vs zimg ⇒ 不是不可修的口径分歧"
 }
 
 $allOk = $true
@@ -93,6 +93,36 @@ foreach ($img in @("bars16.png","t2.png")) {
         }
     }
   }
+}
+# ── 2026-09-27 新增：**HDR→SDR 契约以自研管线为准**（维护者定案，任务 #55）⇒ 偏离必须点名 ──────────
+#   定案内容：引擎口径 = `Hable + white=203nit`，且仅出口语义本身是 HDR 时才发 `intensity_target`；
+#   传统管线 = ffmpeg `tonemap=hable` 收满量程、SDR 出口不发 ⇒ 同一份 HDR 源两路码值域稳定差 ~10 dB
+#   （实测取证 `tests/output/t44/`、登记在 FIX_PLAN 的 #44 收口段末）。
+#   ⇒ 既然"以自研为准"，`--color-engine auto` 因结构原因（DNG / 动画）回落到传统管线时**不许静默**：
+#     必须同时出现「本次不适用引擎」与「tone-map contract differs … in-house engine … is the standard」两行。
+#   ⚠ 反真空：先要求「本次不适用引擎」真的出现了 —— 没触发回落时后面那条恒真是假的绿。
+#   ⚠ 本门禁没有 `CK`/计数器，它的判决载体是 `$allOk`（+ 末尾 exit）⇒ 沿用同一形态，不自第二套账。
+function Chk([bool]$ok, [string]$msg) {
+  if ($ok) { Write-Host "  PASS $msg" -ForegroundColor Green }
+  else { Write-Host "  FAIL $msg" -ForegroundColor Red; $script:allOk = $false }
+}
+Write-Host "`n=== 契约点名：auto 回落到 legacy 时必须说明 tone-map 契约不同（#55） ===" -ForegroundColor Cyan
+$xexe = "$root/src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.exe"
+$animIn = "$d/xchk_anim_in.webp"
+$null = Exec $ff "-y -hide_banner -loglevel error -f lavfi -i `"testsrc2=s=64x48:r=10:d=1`" -frames:v 3 `"$animIn`""
+$outAnim = "$d/xchk_anim_out"
+$ao = "$d/xchk_anim.o"; $ae = "$d/xchk_anim.e"
+if ((Test-Path $xexe) -and (Test-Path $animIn)) {
+  Start-Process -FilePath $xexe -ArgumentList "--headless --log-level Debug -i `"$animIn`" -o `"$outAnim`" -f png" `
+      -Wait -NoNewWindow -PassThru -RedirectStandardOutput $ao -RedirectStandardError $ae | Out-Null
+  $aLog = ((Get-Content -LiteralPath $ao -Raw -EA SilentlyContinue) + "`n" +
+           (Get-Content -LiteralPath $ae -Raw -EA SilentlyContinue))
+  $fellBack = [bool]($aLog -match '本次不适用引擎')
+  Chk $fellBack '前置：动画输入确实触发了 auto 回落（日志含「本次不适用引擎」）—— 否则下面那条判据是恒真空绿'
+  Chk (($fellBack) -and ($aLog -match 'tone-map contract differs') -and ($aLog -match 'is the standard')) `
+      'auto 回落时点名了 tone-map 契约差异（#55 定案：以自研管线为准，偏离不许静默）'
+} else {
+  Chk $false "契约点名的前置缺位（exe 或动画夹具不存在）⇒ 该判据本轮未跑，不判绿"
 }
 Write-Host "`n===== xcheck 总结: $(if ($allOk) {'全部通过'} else {'存在失败'})（白名单豁免 $waived 格） =====" -ForegroundColor $(if ($allOk) {"Green"} else {"Red"})
 # ── 退出码语义（2026-09-17 新增）────────────────────────────────────────────────

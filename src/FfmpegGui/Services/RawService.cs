@@ -32,7 +32,10 @@ public static class RawService
         ".3fr",                           // Hasselblad
         ".srw",                           // Samsung
         ".mrw",                           // Minolta
-        ".x3f",                           // Sigma
+        // ⚠ 2026-09-21：**移除 `.x3f`（Sigma Foveon）** —— 实测 LibRaw **不支持**该格式：
+        //   `dngtool -info *.X3F` ⇒ "Unsupported file format or not RAW file"；
+        //   4 个 X3F 样本（DP1 / SD14 / SD15）**全部失败**。
+        //   保留它会让文件对话框"声称支持"却必然失败 ⇒ 「UI 与真实不符」。
         ".erf",                           // Epson
         ".kdc", ".dcr",                   // Kodak
         ".mef",                           // Mamiya
@@ -56,36 +59,83 @@ public static class RawService
         if (_detected) return _detectedPath != null;
         _detected = true;
 
-        // ① dngtool (新引擎): 手动路径 → PLAN → 同目录 → PATH
-        var manual = AppSettingsService.Current.DngToolPath;
-        if (!string.IsNullOrWhiteSpace(manual) && File.Exists(manual))
+        // ① dngtool (新引擎): 手动路径 → PLAN → artifacts 目录 → ffmpeg/程序同目录 → PATH（全部非递归）
+        //   ⚠ 声明与实现必须一致（本文件原先漏了两级）：
+        //     · 原"同目录"只查**程序目录**，漏了 ffmpeg 同目录 —— 兄弟服务（Cjxl/Jxr/ExifTool）两级都查；
+        //     · 原链里**没有 artifacts 目录**，而 `PreProcessAsync` 的报错文案恰恰让用户把 dngtool 放进
+        //       `PLAN/artifacts/`，`ProbeAllTools` 的 dngtool 行也按 artifacts 找 ⇒ 两份口径可以各报一半。
+        //   ⚠ 刻意**不补**"系统扩展搜索"那一级：dngtool 是自研随包二进制，补了只会把"确实没装"的场景
+        //     变成每次最多 `ExtendedScanTotalBudgetSec = 60 s` 的全机扫描（零收益、高代价）。
+        // ⚠ 每一级的判据是「文件在」**且**「探一次确认真的起得来」，起不来就**继续下一级**（2026-09-23）。
+        //   动机：过去只判 `File.Exists` ⇒ 落进 `WindowsApps` 那种 ACL 拒绝启动的 exe 时
+        //   `IsAvailable == true`、面板报 ✅，而 `PreProcessAsync` 一跑就 `InvalidApplication`
+        //   （且已产出的成品会被半成品清理删掉）。
+        //   ⚠ 探测必须**在本方法里**做，不能只靠 `ProbeAllTools` 把结论写进 `PlatformServices` 的备忘录：
+        //     本方法开头有 `_detected` 一次性缓存，GUI Step1 先跑完 ⇒ 后来探出的反例**永远回流不到**
+        //     队列所读的那个值。（实测踩过：把垃圾 exe 指到 manual 级，面板照样 ✅ ⇒ 备忘录式修法不成立。）
+        //   ⚠ 只有 `LaunchFailed` 算"起不来"，**超时不算**（见 `ExecutableProbeResult.LaunchFailed` 注释）。
+        foreach (var cand in EnumerateCandidates())
         {
-            _detectedPath = manual;
-            return true;
-        }
-
-        var planDng = PlatformServices.TryFindInPlanFolder(PlatformServices.DngToolName);
-        if (planDng != null)
-        {
-            _detectedPath = planDng;
-            return true;
-        }
-
-        var exeDir = AppDomain.CurrentDomain.BaseDirectory;
-        var localDng = Path.Combine(exeDir, PlatformServices.DngToolName);
-        if (File.Exists(localDng))
-        {
-            _detectedPath = localDng;
-            return true;
-        }
-
-        if (PlatformServices.TryFindInPath(PlatformServices.DngToolName, out var dngPath))
-        {
-            _detectedPath = dngPath;
+            if (!Launchable(cand)) continue;
+            _detectedPath = cand;
             return true;
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// 六级候选，**顺序即优先级**：手动 → PLAN → artifacts → ffmpeg 同目录 → 程序同目录 → PATH（全部非递归）。
+    /// 与逐块写法逐字等价，只是把"命中即返回"拆成"先按优先级列出、再逐个验起得起不来"。
+    /// </summary>
+    private static IEnumerable<string> EnumerateCandidates()
+    {
+        var manual = AppSettingsService.Current.DngToolPath;
+        if (!string.IsNullOrWhiteSpace(manual) && File.Exists(manual)) yield return manual;
+
+        var planDng = PlatformServices.TryFindInPlanFolder(PlatformServices.DngToolName);
+        if (planDng != null && File.Exists(planDng)) yield return planDng;
+
+        var artifactsDir = AppSettingsService.Current.WindowsArtifactsDir;
+        if (!string.IsNullOrWhiteSpace(artifactsDir))
+        {
+            var inArtifacts = Path.Combine(artifactsDir, PlatformServices.DngToolName);
+            if (File.Exists(inArtifacts)) yield return inArtifacts;
+        }
+
+        var ffmpegDir = AppSettingsService.Current.FfmpegDir;
+        if (!string.IsNullOrWhiteSpace(ffmpegDir))
+        {
+            var besideFfmpeg = Path.Combine(ffmpegDir, PlatformServices.DngToolName);
+            if (File.Exists(besideFfmpeg)) yield return besideFfmpeg;
+        }
+
+        var exeDir = AppDomain.CurrentDomain.BaseDirectory;
+        var localDng = Path.Combine(exeDir, PlatformServices.DngToolName);
+        if (File.Exists(localDng)) yield return localDng;
+
+        if (PlatformServices.TryFindInPath(PlatformServices.DngToolName, out var dngPath)
+            && !string.IsNullOrWhiteSpace(dngPath) && File.Exists(dngPath!))
+            yield return dngPath!;
+    }
+
+    /// <summary>
+    /// 该候选是否真能启动。先查 <see cref="PlatformServices.IsToolUnlaunchable"/> 备忘录
+    /// （同一路径每进程最多探一次），未知才用 `CanLaunch` 验一次 ⇒ **单次启动、界内 ~1 s**。
+    /// ⚠ 这里**不能**用 `ProbeExecutable`：那个原语会依次试 5 组参数、每组最多等 2 s（最坏 ~10 s），
+    ///   而本方法经 `IsAvailable` 挂在 `InitControls()` / `RefreshArtifactsServices()` 这类
+    ///   **UI 线程**调用点上（"启动"与"重新检测/换目录"都是用户必点的路径）⇒ 未声明的上界会冻住窗口。
+    /// </summary>
+    private static bool Launchable(string path)
+    {
+        if (PlatformServices.IsToolUnlaunchable(path)) return false;
+        if (!ExternalToolsDetector.CanLaunch(path))
+        {
+            PlatformServices.RecordToolUnlaunchable(path);
+            return false;
+        }
+        PlatformServices.RecordToolLaunchable(path);
+        return true;
     }
 
     public static void ClearCache()
@@ -173,7 +223,15 @@ public static class RawService
         if (compression == 1)
         {
             args += " -jxl";
-            if (jxlQuality > 0) args += $" -q {jxlQuality}";
+            // ⚠⚠ 2026-09-21：改用**独立的 JXL 质量参数 `-jxlq`**。
+            //   原先用 `-q`（= demosaic 质量）且**仅当 jxlQuality > 0 才传** ⇒
+            //   默认（jxlQuality == 0 = 无损）时**不传 `-q`**，而 dngtool 侧 `quality` 默认是 **3**
+            //   （demosaic AHD）⇒ 被当成 JXL 质量 3
+            //   ⇒ `SetDistance((100-3)*15/100 = 14.55f)` ⇒ **严重有损**！
+            //   实测：JXL 产物 raw 校验和 `sum=725637202` ≠ 源 `711851004`
+            //   （无损 JPEG 产物则与源**完全一致**）。
+            //   现在**总是显式传 `-jxlq`**，dngtool 侧 `jxlQuality` 只由该参数设置 ✓
+            args += $" -jxlq {Math.Max(0, jxlQuality)}";
         }
         else
         {

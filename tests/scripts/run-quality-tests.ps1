@@ -17,6 +17,19 @@ function Exec([string]$file, [string]$argStr){
   return ([System.IO.File]::ReadAllText($o) + "`n" + [System.IO.File]::ReadAllText($e))
 }
 
+# 只读 stdout 的取数（读 exiftool / ffprobe 写在 stdout 的值一律用它，别用上面的 Exec）
+#   随包 exiftool 是 perl 打包版：进程环境带本机 perl 不认的 LC_ALL/LANG 时，每次调用都往 stderr
+#   喷 6 行 locale 警告（实测 244 字节）。合并取数会把这 244 字节并进「值」：标签缺失 ⇒ 值非空 ⇒
+#   「-ne 空」型断言假绿；标签存在 ⇒ 值前挂警告 ⇒ 「-eq」/两侧比对型断言假红或互比假绿。
+#   PSNR 那类值只在 stderr 的读取仍走 Exec（合并是对的），故两函数并存。
+function ExecOut([string]$file, [string]$argStr){
+  $o = "$out/_exec.out"; $e = "$out/_exec.err"
+  $p = Start-Process -FilePath $file -ArgumentList $argStr -Wait -NoNewWindow -PassThru `
+    -RedirectStandardOutput $o -RedirectStandardError $e
+  $global:LASTEXITCODE = $p.ExitCode
+  return [System.IO.File]::ReadAllText($o)
+}
+
 $ffmpeg = (Get-ChildItem "publish/PLAN/ffmpeg-full*/ffmpeg.exe" | Select-Object -First 1).FullName
 $ffprobe = (Get-ChildItem "publish/PLAN/ffmpeg-full*/ffprobe.exe" | Select-Object -First 1).FullName
 $exif   = "publish/PLAN/exiftool/exiftool.exe"
@@ -54,7 +67,7 @@ Check "PNG→TIFF→PNG PSNR=$p" ($p -ge 60)
 
 # 16-bit PNG→TIFF 位深
 Exec $ffmpeg "-y -hide_banner -loglevel error -i `"$src/src_16bit.png`" -c:v tiff -update 1 `"$res/q_16tiff.tiff`"" | Out-Null
-$bps = Exec $exif "-s -BitsPerSample `"$res/q_16tiff.tiff`""
+$bps = ExecOut $exif "-s -BitsPerSample `"$res/q_16tiff.tiff`""
 Check "16-bit PNG→TIFF BitsPerSample=$bps (应=16)" ($bps -match "16 16 16")
 
 # WebP 无损→PNG 往返 (需 rgb24 才能真无损, yuv420p 会丢失色度)
@@ -96,18 +109,18 @@ Write-Host "`n════════ C. 色彩元数据 ═══════�
 
 # HDR 验证: 用 cjxl -x color_space 显式写 Rec.2100 PQ (软件实际做法)
 Exec $cjxl "`"$src/src_hdr_pq.png`" `"$res/q_hdr.jxl`" -d 0 -e 7 -x `"color_space=RGB_D65_202_Rel_PeQ`"" | Out-Null
-$jxlInfo = ((Exec "publish/PLAN/jxl/bin/jxlinfo.exe" "`"$res/q_hdr.jxl`"") -split "`r?`n") | Select-String "Color space|color space" | Select-Object -First 1
+$jxlInfo = ((ExecOut "publish/PLAN/jxl/bin/jxlinfo.exe" "`"$res/q_hdr.jxl`"") -split "`r?`n") | Select-String "Color space|color space" | Select-Object -First 1
 Check "HDR→JXL 色彩空间=$jxlInfo" ($jxlInfo -match "RGB")
 
 # JPEG 嵌入 ICC 后 → PNG 应带 ICC
 Exec $ffmpeg "-y -hide_banner -loglevel error -i `"$src/src_photo.jpg`" -update 1 `"$res/q_icc.png`"" | Out-Null
-$icc = (Exec $exif "-s -ICC_Profile_Name `"$res/q_icc.png`"").Trim()
+$icc = (ExecOut $exif "-s -ICC_Profile_Name `"$res/q_icc.png`"").Trim()
 Check "JPEG(含ICC)→PNG ICC 保留=$icc" ($icc -ne "")
 
 # 16-bit PNG → JXL (cjxl) 位深
 Exec $cjxl "`"$src/src_16bit.png`" `"$res/q_16.jxl`" -d 0 -e 7" | Out-Null
-$jxlInfo = ((Exec "publish/PLAN/jxl/bin/jxlinfo.exe" "`"$res/q_16.jxl`"") -split "`r?`n") | Select-String "bit depth|bits_per_sample" | Select-Object -First 1
-if (-not $jxlInfo) { $jxlInfo = ((Exec "publish/PLAN/jxl/bin/jxlinfo.exe" "`"$res/q_16.jxl`"") -split "`r?`n") | Select-Object -First 6 | Select-Object -Last 2 }
+$jxlInfo = ((ExecOut "publish/PLAN/jxl/bin/jxlinfo.exe" "`"$res/q_16.jxl`"") -split "`r?`n") | Select-String "bit depth|bits_per_sample" | Select-Object -First 1
+if (-not $jxlInfo) { $jxlInfo = ((ExecOut "publish/PLAN/jxl/bin/jxlinfo.exe" "`"$res/q_16.jxl`"") -split "`r?`n") | Select-Object -First 6 | Select-Object -Last 2 }
 Check "16-bit→JXL 位深=$jxlInfo" ($jxlInfo -match "16")
 
 # ═══════════════════════════════════════════════════════════
@@ -115,12 +128,12 @@ Write-Host "`n════════ D. 元数据 (EXIF/GPS/时间) ═══�
 
 # src_photo.jpg 有 EXIF+GPS+ICC → 转 PNG 应保留
 Exec $ffmpeg "-y -hide_banner -loglevel error -i `"$src/src_photo.jpg`" -update 1 `"$res/q_meta.png`"" | Out-Null
-Exec $exif (@("-tagsfromfile", "$src/src_photo.jpg", "-all:all", "$res/q_meta.png") -join ' ') | Out-Null
-$artist = ((Exec $exif "-s -s -Artist `"$res/q_meta.png`"") -replace '^Artist:\s*','').Trim()
-$gps = ((Exec $exif "-s -s -GPSLatitude `"$res/q_meta.png`"") -replace '^GPSLatitude:\s*','').Trim()
+Exec $exif (@("-tagsfromfile", "$src/src_photo.jpg", "-all:all", "$res/q_meta.png") -join ' ') | Out-Null  # 合并取数已论证：纯写入（把源 JPEG 元数据灌进 PNG），返回值被 Out-Null 丢弃、不喂断言；下面四行读值改走只读取数
+$artist = ((ExecOut $exif "-s -s -Artist `"$res/q_meta.png`"") -replace '^Artist:\s*','').Trim()
+$gps = ((ExecOut $exif "-s -s -GPSLatitude `"$res/q_meta.png`"") -replace '^GPSLatitude:\s*','').Trim()
 # PNG 中 ICC 标签名为 ProfileName (JPEG 为 ICC_Profile_Name)
-$iccN = ((Exec $exif "-s -s -ProfileName `"$res/q_meta.png`"") -replace '^ProfileName:\s*','').Trim()
-if (-not $iccN) { $iccN = ((Exec $exif "-s -s -ICC_Profile_Name `"$res/q_meta.png`"") -replace '^ICC_Profile_Name:\s*','').Trim() }
+$iccN = ((ExecOut $exif "-s -s -ProfileName `"$res/q_meta.png`"") -replace '^ProfileName:\s*','').Trim()
+if (-not $iccN) { $iccN = ((ExecOut $exif "-s -s -ICC_Profile_Name `"$res/q_meta.png`"") -replace '^ICC_Profile_Name:\s*','').Trim() }
 Check "元数据恢复 Artist=$artist" ($artist -eq "TestUser")
 Check "元数据恢复 GPS=$gps" ($gps -ne "")
 Check "元数据恢复 ICC=$iccN" ($iccN -ne "")
@@ -132,10 +145,10 @@ $s = "tools/src/dng_sdk/dng_sdk_1_7_1/sample_files/01_jxl_linear_raw_integer.dng
 
 # DNG→DNG 重编码 ColorMatrix 保留
 Exec $dngtool "-e -jxl -q 0 -effort 7 -i $s -O `"$res/q_dng.dng`"" | Out-Null
-$cm1 = ((Exec $exif "-s -s -ColorMatrix1 `"$res/q_dng.dng`"") -replace '^ColorMatrix1:\s*','').Trim()
-$cm1s = ((Exec $exif "-s -s -ColorMatrix1 $s") -replace '^ColorMatrix1:\s*','').Trim()
+$cm1 = ((ExecOut $exif "-s -s -ColorMatrix1 `"$res/q_dng.dng`"") -replace '^ColorMatrix1:\s*','').Trim()
+$cm1s = ((ExecOut $exif "-s -s -ColorMatrix1 $s") -replace '^ColorMatrix1:\s*','').Trim()
 Check "DNG 重编码 ColorMatrix1 保留" ($cm1 -eq $cm1s)
-$be = ((Exec $exif "-s -s -BaselineExposure `"$res/q_dng.dng`"") -replace '^BaselineExposure:\s*','').Trim()
+$be = ((ExecOut $exif "-s -s -BaselineExposure `"$res/q_dng.dng`"") -replace '^BaselineExposure:\s*','').Trim()
 Check "DNG 重编码 BaselineExposure=$be (应=0.35)" ($be -eq "0.35")
 
 # DNG→TIFF 像素解码可用

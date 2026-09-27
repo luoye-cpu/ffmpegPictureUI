@@ -4,6 +4,9 @@ $root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 Set-Location $root
 $exe = "$root/src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.exe"
 if (-not (Test-Path $exe)) { $exe = "$root/src/FfmpegGui/bin/Debug/net11.0/win-x64/FfmpegGui.exe" }
+# ⚠ 2026-09-21（TESTING.md 第 84 条处置建议 ①）：**回退是静默的** —— 门禁可能测的
+#   不是你以为的那个二进制。⇒ 一律**打印被测 exe 与构建类型**，让读数可追溯。
+Write-Output ("[gate] exe=" + $exe + $(if ($exe -like '*\Debug\*') { " (Debug fallback)" } else { " (Release)" }))
 $ffprobe = "$root/publish/PLAN/ffmpeg-full/ffprobe.exe"
 $val = "$root/tests/output/validate"
 # ⚠ 运行级隔离（GUID）：固定 `$out` + 开头整目录删，会被**并发的同名实例**互删 ⇒ 假红（§6 第 66 条）。
@@ -19,6 +22,16 @@ function Exec([string]$file, [string]$argStr){
   return ([System.IO.File]::ReadAllText($o) + "`n" + [System.IO.File]::ReadAllText($e))
 }
 
+# 只读 stdout 版（取「工具的值」专用）：ffprobe 的 `-of csv` 字段值走 **stdout**，合并 stderr 会把报错行
+#   当值填进每格的 `trc=` 读数（本机实测 ffprobe 失败时 stdout 0 B / stderr 166 B 全是报错）。
+#   产品日志不经 helper（走 `$out/<tag>.out` + Get-Content）⇒ 上面的合并版 Exec 在本文件已无调用点。
+function ExecOut([string]$file, [string]$argStr){
+  $o = "$out/_exec.out"; $e = "$out/_exec.err"
+  Start-Process -FilePath $file -ArgumentList $argStr -Wait -NoNewWindow -PassThru `
+    -RedirectStandardOutput $o -RedirectStandardError $e | Out-Null
+  return [System.IO.File]::ReadAllText($o)
+}
+
 $pass = 0; $fail = 0
 function Run-Case($srcName, $inFile, $fmt, $extra) {
     $tag = "$srcName-$fmt" + $(if ($extra.Count -gt 0) { "-tgt" } else { "-auto" })
@@ -32,7 +45,7 @@ function Run-Case($srcName, $inFile, $fmt, $extra) {
     $produced = Get-ChildItem -Recurse $dst -Include *.$fmt,*.jpg,*.jpeg,*.tif,*.tiff -ErrorAction SilentlyContinue | Select-Object -First 1
     $errTxt = (Get-Content $se -ErrorAction SilentlyContinue | Where-Object { $_ -ne "" }) -join " | "
     if ($null -ne $produced -and $produced.Length -gt 0) {
-        $meta = (Exec $ffprobe "-v error -select_streams v:0 -show_entries `"stream=color_primaries,color_transfer`" -of csv=p=0 `"$($produced.FullName)`"") -split "`r?`n"
+        $meta = (ExecOut $ffprobe "-v error -select_streams v:0 -show_entries `"stream=color_primaries,color_transfer`" -of csv=p=0 `"$($produced.FullName)`"") -split "`r?`n"
         Write-Host ("  PASS {0,-26} {1,7}B  trc={2}" -f $tag, $produced.Length, $meta) -ForegroundColor Green
         $script:pass++
     } else {

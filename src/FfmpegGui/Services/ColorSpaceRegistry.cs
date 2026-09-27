@@ -45,6 +45,11 @@ namespace FfmpegGui.Services
         // 目标白点 D65（转换基准；BT.2020 原色已写入下方各 Spec）
         private static readonly double[] D65 = { 0.3127, 0.3290 };
 
+        // Illuminant C（BT.470-6 M 制与 film 原色的白点；数值取自
+        // docs/COLOR_MATRIX_FIX_PLAN_2026-09-24.md「P1 · 第二套独立推导贴 zimg」表的"最佳白点"列）。
+        // ⚠ 不许凭记忆改动：改一次就要重跑一次附录 A 的对拍。
+        private static readonly double[] IlluminantC = { 0.3101, 0.3162 };
+
         private static readonly Dictionary<string, Spec> ByKey = Build();
 
         private static Dictionary<string, Spec> Build()
@@ -541,23 +546,67 @@ namespace FfmpegGui.Services
             public required double[] R, G, B, W;   // xy 色度 + 白点
         }
 
+        /// <summary>
+        /// CICP primaries token → 规范原色 xy + 白点。
+        ///
+        /// 数据来源（三处，每一格都要能指回其中之一；缺依据就**不填**，让它 fail-closed）：
+        ///  ① 原色 xy：`docs/COLOR_MATRIX_FIX_PLAN_2026-09-24.md` **附录 A**「锚 B｜lcms2 `chrm` 实测」表；
+        ///  ② 白点　：同文件 **P1**「第二套独立推导贴 zimg」表的「最佳白点」列；
+        ///  ③ 贴 zimg 残差 max|Δ|：同上表，对照参照矩阵见 `COLOR_MATRIX_AUDIT_2026-09-24.md` **§2**。
+        ///
+        /// 两档精度（口径来自 FIX_PLAN P1 结论③，断言侧必须按档分别设容差、并把依据写进文案）：
+        ///  - **A 档 ≤1e-5**：xy 与白点都能精确表达，贴 zimg 到 1e-5 以内。
+        ///  - **B 档 ≤5e-4（精度受限，非"已验证通过"）**：lcms 的 `chrm` 只给 4 位小数 ⇒ 残差 ~2e-4。
+        ///    要再严必须回 ITU-T H.273 表 1 或 zimg 常数取更高精度的 xy，**不得**把 1e-3 当"验过了"。
+        /// </summary>
         private static readonly Dictionary<string, PrimariesDef> PrimariesTable = new(StringComparer.OrdinalIgnoreCase)
         {
-            // BT.709 / sRGB 原色（D65）
+            // ── A 档：公布值/两锚一致 ──────────────────────────────────────────────
+            // ⚠ 本族拆开的缘由：旧版本这里写着「470M/470BG/170M/240M/FCC/P22 同原色族，差异在传递/矩阵」，
+            //   并给五个 token 填了**同一组**常数 —— 实测那组恰好只是 JEDEC-P22 自己的 ⇒ 其余四格在拿 P22 的
+            //   矩阵乘像素（与 zimg 逐元素实差 0.052–0.461，审计 §2）。事实是 470M / 470BG / 170M(=240M) / P22
+            //   **四套原色互不相同**，差异同时存在于原色与传递函数。顺带：`fcc` 是 **矩阵**名（CICP matrix 4），
+            //   根本不是原色 token（见本类 FfmpegColorSpaceNames），旧注释把它列进"原色族"是第二处错。
+            // BT.709 / sRGB 原色（D65）— 附录 A 的自检基准（还原精确）
             ["bt709"] = new() { Token = "bt709", R = new[] { 0.640, 0.330 }, G = new[] { 0.300, 0.600 }, B = new[] { 0.150, 0.060 }, W = D65 },
-            // BT.2020 / BT.2100 原色（D65）
+            // BT.2020 / BT.2100 原色（D65）— BT.2080 公布值，两锚一致（贴 zimg 1.1e-6）
             ["bt2020"] = new() { Token = "bt2020", R = new[] { 0.708, 0.292 }, G = new[] { 0.170, 0.797 }, B = new[] { 0.131, 0.046 }, W = D65 },
-            // Display P3（BT.709 白点 D65 + DCI 原色）
+            // Display P3（BT.709 白点 D65 + DCI 原色）— EG 432-1（贴 zimg 3.95e-6）
             ["smpte432"] = new() { Token = "smpte432", R = new[] { 0.680, 0.320 }, G = new[] { 0.265, 0.690 }, B = new[] { 0.150, 0.060 }, W = D65 },
-            // DCI-P3 / 影院（RP 431-2 白点 0.314,0.351）
-            ["smpte431"] = new() { Token = "smpte431", R = new[] { 0.680, 0.320 }, G = new[] { 0.265, 0.690 }, B = new[] { 0.150, 0.060 }, W = new[] { 0.314, 0.351 } },
-            ["smpte428"] = new() { Token = "smpte428", R = new[] { 0.680, 0.320 }, G = new[] { 0.265, 0.690 }, B = new[] { 0.150, 0.060 }, W = new[] { 0.314, 0.351 } },
-            // BT.601 系（470M/470BG/170M/240M/FCC/P22 同原色族，差异在传递/矩阵）
-            ["bt470m"] = new() { Token = "bt470m", R = new[] { 0.630, 0.340 }, G = new[] { 0.295, 0.605 }, B = new[] { 0.155, 0.077 }, W = D65 },
-            ["bt470bg"] = new() { Token = "bt470bg", R = new[] { 0.630, 0.340 }, G = new[] { 0.295, 0.605 }, B = new[] { 0.155, 0.077 }, W = D65 },
-            ["smpte170m"] = new() { Token = "smpte170m", R = new[] { 0.630, 0.340 }, G = new[] { 0.295, 0.605 }, B = new[] { 0.155, 0.077 }, W = D65 },
-            ["smpte240m"] = new() { Token = "smpte240m", R = new[] { 0.630, 0.340 }, G = new[] { 0.295, 0.605 }, B = new[] { 0.155, 0.077 }, W = D65 },
+            // JEDEC-P22（D65）— 贴 zimg 4.92e-6。⚠ 反证：这一组就是旧表里被五个 token 共用的那组常数，
+            // 也就是说旧表实际是"只有 P22 对、其余四格全在拿 P22 算"。
             ["jedec-p22"] = new() { Token = "jedec-p22", R = new[] { 0.630, 0.340 }, G = new[] { 0.295, 0.605 }, B = new[] { 0.155, 0.077 }, W = D65 },
+            // BT.470-6 System B / BT.601-625（EBU）原色（D65）— 附录 A 实测 (0.640,0.330)(0.290,0.600)(0.150,0.060)，
+            // 与 bt709 只差绿原色 x（0.290 vs 0.300）⇒ 贴 zimg 后矩阵呈"≈单位阵 + 1.044 白点归一"的形状（审计 §2 同判）。
+            ["bt470bg"] = new() { Token = "bt470bg", R = new[] { 0.640, 0.330 }, G = new[] { 0.290, 0.600 }, B = new[] { 0.150, 0.060 }, W = D65 },
+            // SMPTE 170M（BT.601-525 / SMPTE-C 原色，D65）— 附录 A 实测 (0.630,0.340)(0.310,0.595)(0.155,0.070)
+            ["smpte170m"] = new() { Token = "smpte170m", R = new[] { 0.630, 0.340 }, G = new[] { 0.310, 0.595 }, B = new[] { 0.155, 0.070 }, W = D65 },
+            // SMPTE 240M：**与 smpte170m 同原色（SMPTE-C），差异只在传递函数** — 附录 A 与 zimg 两锚同判这一点。
+            // ⚠ 这是本表**唯一一对合法的重复**（FIX_PLAN P1 的"同矩阵白名单"预期只含这一对）；
+            //   白名单外出现重复即意味着有新的两格被压成同一组常数，必须报错。
+            ["smpte240m"] = new() { Token = "smpte240m", R = new[] { 0.630, 0.340 }, G = new[] { 0.310, 0.595 }, B = new[] { 0.155, 0.070 }, W = D65 },
+
+            // ── B 档：原色 xy 受 lcms `chrm` 4 位小数限制，残差 ~2e-4（精度受限，别再当 A 档用）──
+            // DCI-P3 / 影院（RP 431-2 白点 0.314,0.351）— 贴 zimg 2.3e-4
+            ["smpte431"] = new() { Token = "smpte431", R = new[] { 0.680, 0.320 }, G = new[] { 0.265, 0.690 }, B = new[] { 0.150, 0.060 }, W = new[] { 0.314, 0.351 } },
+            // BT.470-6 System M（NTSC 1953）原色 + **Illuminant C** 白点 — 贴 zimg 1.6e-4
+            // （白点已由"第二套独立推导"定为 C 而非 D65；残差来自 xy 只有 4 位小数，见上方 B 档说明）
+            ["bt470m"] = new() { Token = "bt470m", R = new[] { 0.670, 0.330 }, G = new[] { 0.210, 0.710 }, B = new[] { 0.140, 0.080 }, W = IlluminantC },
+
+            // ⚠ **smpte428 故意不收录**（不是漏了，也不许"挑一组看着像的"补回来）：
+            //   CICP 10 = SMPTE ST 428-1，其原色是 CIE-1931 XYZ 三角（红 (1,0)、绿 (0,1)、**蓝 (0,0)**、白 1/3,1/3）。
+            //   蓝原色 y=0 ⇒ PrimariesToXyz() 的归一化退化，**xy 参数化根本无法表达它**——
+            //   实测贴不上 zimg（max|Δ| 1.9，即 ~199% 满量程），第二套独立推导同样失败，
+            //   故 FIX_PLAN P1 定案：这一格不存在"该填什么值"，只存在"不填"。
+            //   旧写法把 smpte428 抄成 smpte431 的字节级副本 ⇒ 拿 DCI-P3 的矩阵去乘像素，属最坏的一类静默错。
+            //   现在 GetPrimaries("smpte428") → null ⇒ LinearMatrixBetweenPrimaries() / ColorantsD50() /
+            //   ColorSpaceDescriptor.FromCicp() 一律 fail-closed（明说不支持）。
+            //   （附录 A 曾记"锚 A(zimg) 与锚 B(lcms) 对 smpte428 给出不同原色"——两锚的"冲突"已被上面的
+            //    可表达性判据消解：无论哪一组 xy 都表达不了 XYZ 三角，因此不需要再裁决谁对。）
+
+            // ⚠ **film 同样不收录**：附录 A 有它的 lcms 原色 (0.681,0.319)(0.243,0.692)(0.145,0.049)+C 白，
+            //   但贴 zimg 仍只有 2.1e-4（同 B 档精度问题），而审计把 `film→null` 定性为**能力缺口 = fail-closed，安全**，
+            //   FIX_PLAN P1 明确要求保留该断言 ⇒ 本轮不新增，登记为能力边界；要收它得先解决 xy 精度（回 H.273 表 1）。
         };
 
         /// <summary>取 CICP primaries token 的规范色度；未知返回 null（调用方不得猜测）。</summary>

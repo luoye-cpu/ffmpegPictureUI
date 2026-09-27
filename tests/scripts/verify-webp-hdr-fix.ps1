@@ -4,6 +4,9 @@ $root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 Set-Location $root
 $exe = "$root/src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.exe"
 if (-not (Test-Path $exe)) { $exe = "$root/src/FfmpegGui/bin/Debug/net11.0/win-x64/FfmpegGui.exe" }
+# ⚠ 2026-09-21（TESTING.md 第 84 条处置建议 ①）：**回退是静默的** —— 门禁可能测的
+#   不是你以为的那个二进制。⇒ 一律**打印被测 exe 与构建类型**，让读数可追溯。
+Write-Output ("[gate] exe=" + $exe + $(if ($exe -like '*\Debug\*') { " (Debug fallback)" } else { " (Release)" }))
 $ffprobe = "$root/publish/PLAN/ffmpeg-full/ffprobe.exe"
 $ffmpeg = "$root/publish/PLAN/ffmpeg-full/ffmpeg.exe"
 $val = "$root/tests/output/validate"
@@ -19,6 +22,16 @@ function Exec([string]$file, [string]$argStr){
   Start-Process -FilePath $file -ArgumentList $argStr -Wait -NoNewWindow -PassThru `
     -RedirectStandardOutput $o -RedirectStandardError $e | Out-Null
   return ([System.IO.File]::ReadAllText($o) + "`n" + [System.IO.File]::ReadAllText($e))
+}
+
+# 只读 stdout 版（取「工具的值」专用）：ffprobe 的 `-of csv` 字段值走 **stdout**，合并 stderr 会把报错行
+#   当值填进 `[META]` 读数。下面读 ffmpeg 的 `YAVG`（signalstats 的 `metadata=print` **只写 stderr**）
+#   仍必须用 Exec —— 那是合法的合并取数。
+function ExecOut([string]$file, [string]$argStr){
+  $o = "$out/_exec.out"; $e = "$out/_exec.err"
+  Start-Process -FilePath $file -ArgumentList $argStr -Wait -NoNewWindow -PassThru `
+    -RedirectStandardOutput $o -RedirectStandardError $e | Out-Null
+  return [System.IO.File]::ReadAllText($o)
 }
 
 function Run-Case($name, $inFile, $extra) {
@@ -39,7 +52,7 @@ function Run-Case($name, $inFile, $extra) {
     if ($null -eq $webp) { Write-Host "  [RESULT] NO OUTPUT FILE" -ForegroundColor Red; return }
     if ($webp.Length -eq 0) { Write-Host "  [RESULT] 0-BYTE (FAIL)" -ForegroundColor Red; return }
     # 探测输出色彩元数据 + 像素亮度均值
-    $meta = Exec $ffprobe "-v error -select_streams v:0 -show_entries `"stream=pix_fmt,color_primaries,color_transfer,color_space`" -of csv=p=0 `"$($webp.FullName)`""
+    $meta = ExecOut $ffprobe "-v error -select_streams v:0 -show_entries `"stream=pix_fmt,color_primaries,color_transfer,color_space`" -of csv=p=0 `"$($webp.FullName)`""
     $yavg = (Exec $ffmpeg "-i `"$($webp.FullName)`" -vf `"signalstats,metadata=print:key=lavfi.signalstats.YAVG`" -f null -") -split "`r?`n" | Select-String "YAVG" | Select-Object -Last 1
     Write-Host "  [SIZE] $($webp.Length) bytes" -ForegroundColor Green
     Write-Host "  [META] $meta"

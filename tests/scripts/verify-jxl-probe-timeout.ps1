@@ -121,6 +121,9 @@ $root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path; Set-Location $roo
 $env:FFMPEGGUI_FFMPEG_DIR = "$root/publish/PLAN/ffmpeg-full"
 $exe = "$root/src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.exe"
 if (-not (Test-Path $exe)) { $exe = "$root/src/FfmpegGui/bin/Debug/net11.0/win-x64/FfmpegGui.exe" }
+# ⚠ 2026-09-21（TESTING.md 第 84 条处置建议 ①）：**回退是静默的** —— 门禁可能测的
+#   不是你以为的那个二进制。⇒ 一律**打印被测 exe 与构建类型**，让读数可追溯。
+Write-Output ("[gate] exe=" + $exe + $(if ($exe -like '*\Debug\*') { " (Debug fallback)" } else { " (Release)" }))
 $ff = "$root/publish/PLAN/ffmpeg-full/ffmpeg.exe"
 $fp = "$root/publish/PLAN/ffmpeg-full/ffprobe.exe"
 
@@ -165,6 +168,17 @@ function Exec([string]$file, [string]$argStr, [string]$tag) {
   $p = Start-Process -FilePath $file -ArgumentList $argStr -Wait -NoNewWindow -PassThru `
        -RedirectStandardOutput $o -RedirectStandardError $e
   return @{ code = $p.ExitCode; text = ([System.IO.File]::ReadAllText($o) + "`n" + [System.IO.File]::ReadAllText($e)) }
+}
+
+# 只读 stdout 版（取「工具的值」专用，返回形态与 Exec 一致 ⇒ `.code` 判据不受影响）：
+#   ffprobe 的 `-of csv` 字段值走 **stdout**，合并 stderr 会把报错行（本机实测截断 AVIF：stdout 0 B /
+#   stderr 166 B 的 `moov atom not found` + 带数字路径）当值喂给 FrameCount。读 ffmpeg 造素材的进度与
+#   报错（**只在 stderr**）时仍用 Exec；应用的 headless 日志由 RunApp 直接读 `.app.out` / `.app.err`。
+function ExecOut([string]$file, [string]$argStr, [string]$tag) {
+  $o = "$work/$tag.out"; $e = "$work/$tag.err"
+  $p = Start-Process -FilePath $file -ArgumentList $argStr -Wait -NoNewWindow -PassThru `
+       -RedirectStandardOutput $o -RedirectStandardError $e
+  return @{ code = $p.ExitCode; text = [System.IO.File]::ReadAllText($o) }
 }
 
 # ⚠ 共享读：`RedirectStandardOutput` 的目标文件在子进程存活期间被独占 ⇒ 直接 `ReadAllText` 会抛
@@ -225,7 +239,7 @@ function Snapshot([int]$appPid) {
 # 真实帧数：ffprobe `-count_frames`（**不用** `frame=` 日志字段：本工程已实测不可靠）。
 # ⚠ 只认**整行就是数字**的输出行：ffprobe 报错会带上含数字的路径（GUID 目录名）⇒ 宽松匹配会假绿。
 function FrameCount([string]$path) {
-  $r = Exec $fp "-v error -select_streams v:0 -count_frames -show_entries stream=nb_read_frames -of csv=p=0 `"$path`"" "fc_$([guid]::NewGuid().ToString('N').Substring(0,6))"
+  $r = ExecOut $fp "-v error -select_streams v:0 -count_frames -show_entries stream=nb_read_frames -of csv=p=0 `"$path`"" "fc_$([guid]::NewGuid().ToString('N').Substring(0,6))"
   $n = 0
   foreach ($ln in ($r.text -split "`r?`n")) { if ($ln -match '^\s*(\d+)\s*$') { $n = [int]$Matches[1] } }
   return $n

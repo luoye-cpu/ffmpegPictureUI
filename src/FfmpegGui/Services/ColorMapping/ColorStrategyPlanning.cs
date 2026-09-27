@@ -105,8 +105,9 @@ public static partial class ColorMappingEngine
     /// S5′：给「引擎本来就会产出、但确实丢了东西」的格登记**已发生**的结构化损失。
     /// <para>
     /// **判据一律取自现成字段**（<see cref="ColorTransformPlan"/> 的 Action/OutBitDepth/
-    /// GamutOutsideDestination/UnlabeledAssumedSrgb/AttachIcc、<see cref="PlanPolicy.Format"/> 的能力表、
-    /// <see cref="ColorIntent.Source"/> 的 <c>SourceIccPath</c>），**不新算任何东西**；
+    /// GamutOutsideDestination/UnlabeledAssumedSrgb/AttachIcc、<see cref="PlanPolicy.Format"/> 的能力表
+    /// 与 `PlanPolicy.TargetBitDepth`、<see cref="ColorIntent.Source"/> 的 <c>SourceIccPath</c>），
+    /// **不新算任何东西**；
     /// 且只在 <c>Action != Reject</c> 时登记 —— <c>Reject</c> 格的"原因"属于 <c>Reason</c>/<c>Alternatives</c>，
     /// 不属于 <c>Degradations</c>（后者是「已发生」而非「将拒绝」）。
     /// </para>
@@ -122,6 +123,106 @@ public static partial class ColorMappingEngine
         if (p.Action == ColorAction.Map && p.OutBitDepth == 8)
             degs.Add(new ColorDegradation(DegradationCodes.BitDepthReduced,
                 $"出口位深降为 {p.OutBitDepth}bit（容器上限）⇒ 中间精度损失，已按目标位深做有序抖动"));
+
+        // ①b **交付档 ≠ 目标档**（升位 / 降位两个方向）：`PlanWithPolicy` 末尾的 OutBitDepth 式子
+        //    值域只有 {8,16}，而 RGB 原生出口交付的像素格式同样是两档（rgb24 / rgb48le）
+        //    ⇒ 目标 10/12 必然被取到上档 16（升）、目标 32 必然被取到下档 16（降）。
+        //    两种都不是用户要的那个数，都不许静默（不登记就等于"看起来按 12bit 出了"）。
+        //    ⚠ **方向必须分开登记**：升到 16 不丢精度（只是产物变大），用 `BitDepthReduced` 播它
+        //      就是拿"降级"这个词骗日志；反之同理 ⇒ `>` 走 `BitDepthRaised`、`<` 走 `BitDepthReduced`。
+        //    ⚠ 与上面 ① **不重复触发**：① 要求 `OutBitDepth == 8`，而 RGB 原生出口给 8 的前提就是
+        //      `TargetBitDepth <= 8` ⇒ 那一格永远不满足此处的 `!=`。
+        //    ⚠ 三条前置，缺一条就假报：
+        //      · `pol.Format.RgbNative` —— 只有 RGB 原生容器的交付档由本层说得出（`RawColorPipeline`
+        //        直接吐 rgb24/rgb48le）。YUV 容器（jpg/webp/avif）的 16 只是**中间件**精度，真实出口由
+        //        `ImageEncoderArgs`（AVIF 见 `AvifEffectiveBitDepth`）决定 ⇒ 拿它比对会把
+        //        "10bit 的 AVIF"说成"升到 12bit"（假播报）；
+        //      · `outlet <= MaxBitDepth` —— 出口必须**真的承载得了**这一档：gif 是 RgbNative 但上限 8，
+        //        给它报"升到 16"是假的（调色板量化后仍是 8bit）；
+        //      · 交付档**只在能断定的格上**才与目标比对（断法见下面 `outlet` 的取法）：断不出来的
+        //        格子按"不播报"处理 —— 猜出来的交付档就是新的假播报源。
+        //
+        // ⚠⚠⚠ **2026-09-26（任务 #35 实测轮）本段的第 4 条前置 —— 也是"YUV 容器零播报"的真正根因**：
+        //    把上面这条扩到非 RgbNative 容器**不足以**兑现播报，因为传进本层的
+        //    `pol.TargetBitDepth` **已经不是用户请求的那个数**了。实测（本机 Release exe，
+        //    `--headless --log-level Debug`，产物与命令行都记在 tests/output/t35/）：
+        //      · `--bit-depth 10 -f webp` → 本层看到 `TargetBitDepth=8`，出口 `-pix_fmt yuv420p`（8bit）；
+        //      · `--bit-depth 16 -f avif` → 本层看到 `TargetBitDepth=10`，出口 `-pix_fmt yuv420p10le`；
+        //        （⚠ 那两个数是 **#35 当时**的读数；#36 修 `AvifMaxBitDepthForEncoder` 后同一格的
+        //         钳制档变成 12 —— 见 `ImageEncoderArgs` 里那条"空编码器名 ⇒ 实跑 libaom-av1 ⇒ 12"。）
+        //      · `--bit-depth 16 -f avif --color-space "Display P3"` → 本层看到 `TargetBitDepth=8`
+        //        （`GetFormatColorCapabilities` 当时那条"avif + P3 + 高位深 ⇒ 回退 8bit"保守支）。
+        //        ⚠ 该特例已于**同日任务 #39 实测否证并删除** ⇒ 这一格现在的正确结局是
+        //        `TargetBitDepth=12`（libaom 上限）并照常播报 16→12；两条都由
+        //        `verify-decision-delivery` ⑯/⑰ 钉住，别拿本行旧读数当现状。）
+        //    请求档在**进入本层之前**被两处钳掉，修复前两处都不留痕：
+        //      ① `FfmpegCommandBuilder.Decision.cs`（现 :147-156，引文为**修复前**原文）
+        //         `if (options.BitDepth.HasValue && options.BitDepth.Value > capBd) options.BitDepth = capBd;`
+        //         —— 直接**改写调用方的 options**（capBd 来自 `GetFormatColorCapabilities`：
+        //         webp/jpg=8、avif=`AvifMaxBitDepth`⇒**#35 当时**未显式选编码器是 10（#36 已改为 12）、其余 16）；
+        //      ② `ColorIntentFactory.cs:145`
+        //         `TargetBitDepth = Math.Min(o.BitDepth ?? (meta.bitDepth > 8 ? meta.bitDepth : 8), caps.MaxBitDepth)`
+        //         —— 再按能力表 `MaxBitDepth` 钳一次（webp=8 / avif=12 / jpg=8）。
+        //    ⇒ 到本层手上时 `TargetBitDepth <= caps.MaxBitDepth` **恒成立**，于是"按能力表算出口档"
+        //      无论怎么写都只能是 `outlet = min(TargetBitDepth, 上限) == TargetBitDepth` ⇒ 本段
+        //      在非 RgbNative 分支上**永不触发**。这不是判据太松，而是**证据已经被上面两处吃掉了**。
+        //    ⇒ **修法**（2026-09-26 实施轮）：不放开本段的判据（放开了也仍是假绿，因为事实不在本层），
+        //      而是把"用户请求档"这一事实**穿过那两处钳制带到本层**：
+        //        · `Decision.cs` 钳制前先把被钳掉的那一档记进 `FfmpegOptions.BitDepthRequested`
+        //          （只记**更深**的一次 —— 同一 options 重入时第二次读到的已是出口档）；
+        //        · `ColorIntentFactory` 装配成 <see cref="ColorIntent.RequestedBitDepth"/>（= 请求档，
+        //          与 `TargetBitDepth` = 交付档 刻意分成两个字段）；
+        //        · 本段下方新增的 **非 RgbNative 分支**据此播报"请求 10 ⇒ 交付 8"。
+        //      ⇒ 已实测：`verify-color-strategy.ps1` ③f 的 F3（webp 10）**由故意留红转为绿**，
+        //        整段 71/0（读数出处：`tests/output/_gate_script_verify-color-strategy.ps1.txt`
+        //        2026-09-26 16:05:39 那轮，被测 DLL 16:00:17 构建）。
+        //      ⚠ **尚未复跑**：网格 §2a 那 71 格（webp 54 / avif 17）"真静默"是否随之清零 ——
+        //        预期清零，但截至本次改动**没有**实测数；复跑产物落在 `tests/output/t35/grid-t35fix*.csv`，
+        //        跑完把格数填回这里（不许拿"应该"当读数）。
+        //    ⚠ 既有 RgbNative 分支的行为与文案**一字未动**（png/tiff/jxl 的 10/12 ⇒ `BitDepthRaised`
+        //      仍照常播报，实测见 ③f 的 jxl 格）。
+        if (pol.Format.RgbNative)
+        {
+            // 交付位深从哪儿读，取决于本次产物由谁编码（`QueueProcessor` 在 Action=None/CarryIcc 时
+            // 把重编码交给 ffmpeg，那一带的 `OutBitDepth` **不代表交付**）：
+            //   · Map 支 —— 引擎出口真驱动，直接读 `p.OutBitDepth`（这是本层唯一的交付事实源）；
+            //   · 直通/携带支 —— 由 ffmpeg 侧按 `EffectiveBitDepth → MapPixFmt` 取档，只有
+            //     `MapPixFmt` 明写着「bd<=8 ? rgb24 : rgb48le」的这四个容器能断定是两档；
+            //     其余（tif/jxr/gif/ppm 走的是别的分支）**保守返回目标本身 ⇒ 不播报**：
+            //     本层的契约是"只播能证实的"，猜出来的交付档就是新的假播报源。
+            int outlet = p.Action == ColorAction.Map ? p.OutBitDepth
+                : pol.Format.Format is "png" or "apng" or "tiff" or "jxl"
+                    ? (pol.TargetBitDepth <= 8 ? 8 : 16)
+                    : pol.TargetBitDepth;
+            // `TargetBitDepth >= 8` 不是防呆而是**去重**：低于 8 的目标（只有预设能塞进来，CLI 已拒）
+            // 必然被抬到 8 ⇒ 那一格上面 ① 已经按"容器上限降为 8bit"播过，再播一条"升为 8bit"就是自相矛盾。
+            if (outlet != pol.TargetBitDepth && pol.TargetBitDepth >= 8 && outlet <= pol.Format.MaxBitDepth)
+            {
+                bool up = outlet > pol.TargetBitDepth;
+                degs.Add(new ColorDegradation(
+                    up ? DegradationCodes.BitDepthRaised : DegradationCodes.BitDepthReduced,
+                    (up
+                        ? $"出口位深升为 {outlet}bit（本次目标 {pol.TargetBitDepth}bit）⇒ **升位、非降级**：像素精度不损失，代价是产物更大。原因="
+                        : $"出口位深降为 {outlet}bit（本次目标 {pol.TargetBitDepth}bit）⇒ 高于出口档的精度不保留。原因=")
+                    + (up && pol.TargetBitDepth <= 8 && p.Requires16BitIntermediate
+                        ? "目标虽是 8bit，但本次变换需 16bit 中间精度（HDR 曲线/高位深目标）⇒ 出口按 16bit 交付"
+                        : $"{pol.Format.Format} 出口的 RGB 原生像素格式只有 8/16 两档（rgb24 / rgb48le）⇒ 目标 {pol.TargetBitDepth}bit 无对应出口档，被取到 {outlet}bit")));
+            }
+        }
+        else if (it.RequestedBitDepth is int req && req > pol.TargetBitDepth
+                 && !(p.Action == ColorAction.Map && p.OutBitDepth == 8))
+        {
+            // **非 RGB 原生出口**（webp/jpg/jpegli/avif/heic…）：交付档不是本层算出来的，而是
+            // `Decision` 的 capBd 与 `ColorIntentFactory` 的能力表各钳一次之后的 `pol.TargetBitDepth` ——
+            // 而那条链的出口像素格式正是由它经 `EffectiveBitDepth → MapPixFmt` 取档 ⇒ **它等于实际交付档**
+            //（不是猜；反证由网格 §2a 拿产物 pix_fmt 实测对账，③f 的 F3 拿 webp 真格子对账）。
+            // ⇒ 只要"用户请求 > 交付"就是**真实降位**，不播就是静默降级（任务 #35 的 71 格）。
+            // ⚠ 与上面 ① **去重**：`Map` 且出口 8bit 时 ① 已按"容器上限降为 8bit"播过，再播一条就自相矛盾。
+            // ⚠ 此分支**不做升位**：钳制只向下，"交付 > 请求"在这里不可能成立，写出了就是假播报。
+            degs.Add(new ColorDegradation(DegradationCodes.BitDepthReduced,
+                $"出口位深降为 {pol.TargetBitDepth}bit（本次目标 {req}bit）⇒ 高于出口档的精度不保留。原因="
+                + $"{pol.Format.Format} 出口由编码器取档，本工具对该容器实测可交付的上限 = {pol.TargetBitDepth}bit"));
+        }
 
         // ② 源色域超出目标：**硬裁切**（GamutClipped）与 **GMO 压缩**（GamutCompressed）是两种不同的
         //    「已发生损失」，必须分开登记：
@@ -254,7 +355,7 @@ public static partial class ColorMappingEngine
         }
 
         p.CodecLoss = CodecLossOf(pol.Format.Format, it.TargetLossless);
-        EnforceContainerAnnotationRules(p, pol.Format);
+        EnforceContainerAnnotationRules(p, pol.Format, pol.ExternalEncoderExit);
         p.ColorLoss = ClassifyColorLoss(p, pol, it);
         p.Annot = ClassifyAnnot(p);
         // 出口位深真驱动（§5′.6）：直通/携带绝不降位；只有确实变换且目标容器上限 8bit 才走 8bit+抖动。
@@ -263,6 +364,9 @@ public static partial class ColorMappingEngine
         //   中间件降成 8bit 会在 RGB→YUV 之前白丢精度（legacy 是保 16bit 到编码器）。
         //   A/B 实测：引擎出 `rgb24` 中间件时与 legacy 的 jpg 在 RGB 域仅 30.3dB（max|Δ|=122）；
         //   改为 16bit 中间件后见 TESTING §6 第 49 条复测。
+        // ⚠ **本式的值域是 {8,16}**（下游 `RawColorPipeline`/`ImageEncoderArgs.MapPixFmt` 只区分这两档：
+        //   `OutBitDepth == 8` 走 rgb24、其余走 rgb48le）⇒ 目标 10/12 必然被取到上档 16，
+        //   这一「请求 ≠ 交付」不静默：由 `CollectDegradations` 的 ①b 登记 `BitDepthRaised` 播报。
         p.OutBitDepth = p.Action != ColorAction.Map || p.ColorLoss == ColorLoss.None ? 16
             : (pol.TargetBitDepth <= 8 && !p.Requires16BitIntermediate && pol.Format.RgbNative ? 8 : 16);
         EnsureAnnotationNotSilentlyMissing(p, pol, it);
@@ -386,7 +490,7 @@ public static partial class ColorMappingEngine
         // 结局 2（两种形态，都是像素零改动）：
         //   2a 容器可写 CICP 且源可命名 ⇒ **继承源 CICP 标签**（描述随容器元数据一起带走，不生成 ICC）
         //   2b 容器未标注语义明确（PNG/JPEG/WebP）⇒ 无标注直通 + UnlabeledAssumedSrgb
-        if (src.Confidence >= EquivalenceTolerances.MinConfidenceForMapping && CapsAcceptsCicp(caps, src))
+        if (src.Confidence >= EquivalenceTolerances.MinConfidenceForMapping && CapsAcceptsCicp(caps, src, pol.ExternalEncoderExit))
         {
             p.Action = ColorAction.None;
             p.Backend = ColorBackend.None;
@@ -448,10 +552,13 @@ public static partial class ColorMappingEngine
             return Reject(p, "S3 仅 CICP：源色彩无法确定 → 无法写出正确标签", "补源色彩描述或改用 S4 手动指定");
 
         // 目标：用户指定优先，否则取"该容器可 CICP 表达的最窄超集"
-        var target = it.Target ?? NameableSupersetFor(src, caps);
-        if (target == null || !CapsAcceptsCicp(caps, target))
+        var target = it.Target ?? NameableSupersetFor(src, caps, pol.ExternalEncoderExit);
+        if (target == null || !CapsAcceptsCicp(caps, target, pol.ExternalEncoderExit))
             return Reject(p, $"S3 仅 CICP：源 {src.Name} 无法用 {caps.Format} 的 CICP 表达" +
-                             (caps.CicpSpaceEnums != null ? $"（枚举集仅 {string.Join('/', caps.CicpSpaceEnums)}）" : ""),
+                             // ⚠ "枚举集仅 …"这句只在**外部出口**下才成立（那位钉的是 cjxl 的
+                             //   `-x color_space=` 宽度）；ffmpeg 出口没有这个限制 ⇒ 不该把它说成容器的锅。
+                             (pol.ExternalEncoderExit && caps.ExternalOutletCicpSpaceEnums != null
+                                 ? $"（本次出口为外部编码器，枚举集仅 {string.Join('/', caps.ExternalOutletCicpSpaceEnums)}）" : ""),
                 "改 S1/S2 并携带 ICC，或换容器（PNG/TIFF/WebP 可携带任意 ICC）",
                 FormatAlts("能力表 CanCarryArbitraryIcc ⇒ 可携带任意 ICC", "png", "tiff", "webp"));
 
@@ -496,7 +603,7 @@ public static partial class ColorMappingEngine
             return Reject(p, $"S4 手动：无法解析目标（space={m?.Space ?? "-"} p={m?.Primaries ?? "-"} t={m?.Transfer ?? "-"}）",
                 "使用受支持的空间名或 CICP token");
 
-        bool canName = CapsAcceptsCicp(caps, target);
+        bool canName = CapsAcceptsCicp(caps, target, pol.ExternalEncoderExit);
         if (!canName && !caps.CanCarryArbitraryIcc)
             return Reject(p, $"S4 手动：{caps.Format} 既不能写该空间的 CICP 又不能携带任意 ICC"
                              + (caps.HasColorPath ? "" : "（该容器完全无色彩管理通路）"),
@@ -537,18 +644,25 @@ public static partial class ColorMappingEngine
         // 否则请求会被静默忽略（无目标 → Action=None → 不改像素），违反“不得静默降级”。
         if (pol.ToneMapRequested && srcHdr && it.Target == null)
         {
-            var twin = SdrTwinOf(src!, caps);
+            var twin = SdrTwinOf(src!, caps, pol.ExternalEncoderExit);
             if (twin != null) it.Target = twin;
         }
 
         // ── HDR 源 + auto 目标 + 容器「能承载 HDR 但**当前位深**不够」⇒ 显式交回传统管线（2026-09-17）──
         // 为什么不能走下面的 HDR 守卫（Reject）：8bit PNG 是本工具的**合法**出口（GUI 默认位深就是 8），
         //   Reject 会让「HDR → PNG(8bit)」无路可走。
-        // 为什么不让引擎接管 tonemap：引擎的 SDR 标定是 bt709/iec61966-2-1（sRGB 曲线），而 PNG 的
-        //   SDR 出口语义（传统 tonemap 链末级 `zscale=p=bt709:t=bt709` ⇒ 编码器写 cICP bt709/bt709）
-        //   是 **bt709/bt709** —— 两者不同，接管就会**改变交付**，而 :126-128 锁定的是 bt709/bt709。
-        // 所以本格的正确结局是「显式交回 + 如实标注出口语义」：旧实现宣称"不改像素、沿用源描述"
-        //   （OutPrimaries=bt2020/OutTransfer=smpte2084），交付却是 tonemap 后的 bt709/bt709。
+        // 为什么当初不让引擎接管 tonemap：引擎的 SDR 标定是 bt709/iec61966-2-1（sRGB 分段），而传统
+        //   tonemap 链末级当时写 `zscale=…t=bt709`（zimg 把 `t=bt709` 实现成**纯 γ2.4**）⇒ 两条管线的
+        //   交付确实不同，接管就等于**改变交付**，而当时的锁钉的就是 bt709/bt709。
+        // ⚠ **该前提已随 #26②（2026-09-26）消失**：链末默认改成 `t=iec61966-2-1`（=sRGB 分段，
+        //   CICP transfer=13；改前旧标签声称 BT.709 定义式却没实现它，且 H.273 里没有纯 γ2.4 的编号
+        //   ⇒ 只能把像素提到标签水位，不许改标签收口）。现在两条管线的 SDR 出口**同为** bt709/iec61966-2-1
+        //   ⇒ 这条 `交回` 从此**只是路径选择**（谁来做这次 tonemap），不再是正确性要求；
+        //   P3「像素路径清退 zimg、全部走自研内核」落地时**连这条交回一起撤掉**。
+        //   锁已同步：`verify-decision-delivery.ps1` ⑮（链末用的曲线 == 产物标签兑现的曲线 + 必须等于
+        //   iec61966-2-1，另配"用生产写块器把标签改成 cICP=1 ⇒ 判据必须失配"的负控）。
+        // 旧实现的另一处错也要记住：它曾宣称"不改像素、沿用源描述"（OutPrimaries=bt2020/
+        //   OutTransfer=smpte2084），而交付其实是 tonemap 后的 SDR ⇒ 那才是「宣称≠交付」。
         if (srcHdr == true && it.Target == null && !pol.HdrOutput && !pol.ToneMapRequested && caps.CanHdr)
             return PlanDelegatedHdrSdr(p, it, pol, declared, ov);
 
@@ -605,7 +719,7 @@ public static partial class ColorMappingEngine
         //   → 取“容器可表达的最窄超集”（包含源⇒零削色）；找不到则 Reject。
         // ⚠️ “能表达”不等于“能写 CICP”：PNG/JPEG/WebP/TIFF 无 CICP 通路但可携带/生成 ICC（实测踩过：混为一谈会误拒 sRGB→png）。
         bool canCarrySourceIcc = caps.CanCarryArbitraryIcc && src?.SourceIccPath != null;
-        bool expressible = src != null && (CapsAcceptsCicp(caps, src)
+        bool expressible = src != null && (CapsAcceptsCicp(caps, src, pol.ExternalEncoderExit)
             || ((caps.CanCarryArbitraryIcc || caps.CanGenerateIccFromCicp) && src.IsCicpNameable));
         if (it.Target == null && src != null && srcHdr == false && !canCarrySourceIcc && !expressible)
         {
@@ -621,7 +735,7 @@ public static partial class ColorMappingEngine
                 cg.Advice = $"若需保留 {src.Name} 的完整色彩，请改用 PNG/TIFF/WebP/JXL 携带 ICC";
                 return cg;
             }
-            var sup = NameableSupersetFor(src, caps);
+            var sup = NameableSupersetFor(src, caps, pol.ExternalEncoderExit);
             if (sup == null)
                 return Reject(p, $"S1 推荐：{caps.Format} 既不能携带 {src.Name} 的 ICC，又不能表达该空间",
                     "改用 PNG/TIFF/WebP/JXL 携带 ICC；或接受归入可命名超集（需容器支持）",
@@ -737,7 +851,7 @@ public static partial class ColorMappingEngine
     /// <summary>源已可 CICP 表达时沿用其标签（携带策略下的"标注继承"，同样不改像素）。</summary>
     private static void CarryCicpLabels(ColorTransformPlan p, ColorSpaceDescriptor src, FormatColorCaps caps)
     {
-        if (!CapsAcceptsCicp(caps, src)) { p.CicpUnavailable = caps.CanCicp ? CicpUnavailableReason.SpaceNotNameable : caps.NoCicpReason; return; }
+        if (!CapsAcceptsCicp(caps, src, p.ExternalEncoderExit)) { p.CicpUnavailable = caps.CanCicp ? CicpUnavailableReason.SpaceNotNameable : caps.NoCicpReason; return; }
         p.OutPrimaries = src.PrimariesToken;
         p.OutTransfer = src.TransferToken;
         p.OutMatrix = MatrixTokenFor(src.PrimariesToken);
@@ -760,7 +874,7 @@ public static partial class ColorMappingEngine
     /// 取"该容器可用 CICP 表达的最窄超集"（S3 用）：sRGB → Display P3 → BT.2020，HDR 保曲线。
     /// 找不到（如 JXL 无 SDR-BT.2020 枚举而源是 Adobe RGB）⇒ null，调用方 Reject。
     /// </summary>
-    public static ColorSpaceDescriptor? NameableSupersetFor(ColorSpaceDescriptor? src, FormatColorCaps caps)
+    public static ColorSpaceDescriptor? NameableSupersetFor(ColorSpaceDescriptor? src, FormatColorCaps caps, bool externalEncoderOutlet)
     {
         if (src == null || !src.IsMappable) return null;
         bool hdr = src.Curve.Kind is TransferCurve.CurveKind.Pq or TransferCurve.CurveKind.Hlg;
@@ -771,7 +885,7 @@ public static partial class ColorMappingEngine
         foreach (var (prim, trc) in cands)
         {
             var d = ColorSpaceDescriptor.FromCicp(prim, trc, $"CICP:{prim}/{trc}");
-            if (d == null || !CapsAcceptsCicp(caps, d)) continue;
+            if (d == null || !CapsAcceptsCicp(caps, d, externalEncoderOutlet)) continue;
             if (ContainsGamut(src, d)) return d;
         }
         return null;
@@ -809,13 +923,13 @@ public static partial class ColorMappingEngine
     /// 与定义式分歧（见 <c>PlanCore</c> 的 <c>zimgDivergent</c> 黑名单）⇒ 引擎侧更不该拿它当 SDR 标定。
     /// </para>
     /// </summary>
-    private static ColorSpaceDescriptor? SdrTwinOf(ColorSpaceDescriptor src, FormatColorCaps caps)
+    private static ColorSpaceDescriptor? SdrTwinOf(ColorSpaceDescriptor src, FormatColorCaps caps, bool externalEncoderOutlet)
     {
         if (src.PrimariesToken == null) return null;
         foreach (var trc in new[] { "iec61966-2-1", "bt709" })
         {
             var d = ColorSpaceDescriptor.FromCicp("bt709", trc, $"{src.Name} -> SDR(bt709/{trc})");
-            if (d != null && (CapsAcceptsCicp(caps, d) || caps.CanCarryArbitraryIcc || caps.CanGenerateIccFromCicp))
+            if (d != null && (CapsAcceptsCicp(caps, d, externalEncoderOutlet) || caps.CanCarryArbitraryIcc || caps.CanGenerateIccFromCicp))
                 return d;
         }
         return null;
@@ -894,7 +1008,14 @@ public static partial class ColorMappingEngine
     }
 
     /// <summary>按容器能力裁剪标注（ICC/CICP 是否可共存、无 CICP 时记原因）。</summary>
-    private static void EnforceContainerAnnotationRules(ColorTransformPlan p, FormatColorCaps caps)
+    /// <param name="externalEncoderExit">
+    /// 本次产物由**外部编码器出口**（cjxl）编码。<see cref="FormatColorCaps.CicpSpaceEnums"/> 钉的
+    /// 就是这个枚举的宽度 —— ffmpeg 的 libjxl 出口能写任意 CICP（实测见下方择一分支的注释），
+    /// 所以"这条 CICP 落不落得进"**必须按出口判**。⚠ 不能读 <c>p.ExternalEncoderExit</c>：那个位是
+    /// <see cref="Plan"/> 在 <c>PlanWithPolicy</c> **返回之后**才装配的（:40），在本函数里恒为 false
+    /// —— 第一版就是这么把已经修好的 cjxl 分支又改回去的（实测：wiring (10) 三条同时转红）。
+    /// </param>
+    private static void EnforceContainerAnnotationRules(ColorTransformPlan p, FormatColorCaps caps, bool externalEncoderExit)
     {
         if (p.Action == ColorAction.Reject) return;
         bool icc = p.AttachIcc, cicp = p.OutPrimaries != null;
@@ -907,8 +1028,27 @@ public static partial class ColorMappingEngine
         }
         if (icc && cicp && !caps.CanHaveBothIccAndCicp)
         {
-            // 择一：携带型 ICC 优先（描述更完备）；纯生成 ICC 且源已命名则保留 CICP
-            if (p.IccPath != null) { p.OutPrimaries = p.OutTransfer = p.OutMatrix = null; p.CicpUnavailable = CicpUnavailableReason.ContainerNonNormative; cicp = false; }
+            // 择一：携带型 ICC 优先（描述更完备）；纯生成 ICC 且源已命名则保留 CICP。
+            // ⚠⚠ 但"保留 CICP"必须以**这个容器真的写得下这条 CICP**为前提（2026-09-26 任务 #37 实测）：
+            //   JXL 的 `color_space` 只有 sRGB / Display P3 / Rec.2100 PQ / HLG 四个枚举
+            //   （`CapsAcceptsCicp` + `CicpSpaceEnums`），拿 `bt2020/bt709` 走这条分支会把**唯一能兑现的
+            //   那个标注（生成 ICC）剥掉**，留一个执行体写不出来的 CICP ⇒ 实测结局是 cjxl 出口抛
+            //   「计划未提供 ICC ⇒ 拒绝」（网格 full 层 24 格 `jxl × BT.2020` 全数被拒）。
+            //   判据仍只有**一个真值源**：`CapsAcceptsCicp` —— 与路由/执行体用的是同一个函数，
+            //   不在这里另写一份枚举表。
+            // ⚠⚠ 但这条前置必须看**实际出口**，不能只看格式能力表（2026-09-26 实测打出来的一格）：
+            //   `CicpSpaceEnums` 钉的是 **cjxl 的 `-x color_space=` 枚举**，而同一目标走 ffmpeg 的
+            //   libjxl 出口**能写任意 CICP**（实测：`-e Ffmpeg` + DCI-P3 ⇒ jxlinfo 读回
+            //   「Rec.2100 primaries, 709 transfer」，`verify-color-wiring` (10) 的交叉证明格）。
+            //   无条件按枚举剥 CICP 会把**那条本来能交付的路**改成"附一张 ffmpeg 出口写不进的 ICC"
+            //   ⇒ 实测产物 0 字节（`RawColorPipeline` 的 JXL 附 ICC 诚实门抛）。
+            //   能力表本来就没有"后端"这一维（这是 #37 暴露出的真缺口），这里先用出口标志位收口：
+            //   **只有 cjxl 出口**才受枚举约束。
+            var cicpProbe = ColorSpaceDescriptor.FromCicp(p.OutPrimaries, p.OutTransfer, "择一判定");
+            if (p.IccPath != null)
+            { p.OutPrimaries = p.OutTransfer = p.OutMatrix = null; p.CicpUnavailable = CicpUnavailableReason.ContainerNonNormative; cicp = false; }
+            else if (!CapsAcceptsCicp(caps, cicpProbe, externalEncoderExit))
+            { p.OutPrimaries = p.OutTransfer = p.OutMatrix = null; p.CicpUnavailable = CicpUnavailableReason.SpaceNotNameable; cicp = false; }
             else { StripIcc(p); icc = false; }
             p.Reason += " 标注=择一（容器不能同时携带 ICC 与 CICP）";
         }

@@ -15,18 +15,27 @@ namespace FfmpegGui.Services
     {
         private static string? _detectedPath;
         private static bool _detected;
+        // ⚠ 锁同时罩住 `Detect()` 与两个 getter：旧写法 Detect() 第一行就
+        //   `_detected = true; _detectedPath = null;` ⇒ 扫描期间并发读者会拿到
+        //   "已检测但不可用"的假阴（路由分派直接读它）。同 `DjxlService`。
+        private static readonly object _gate = new();
 
         public static bool IsAvailable
         {
-            get { if (!_detected) Detect(); return _detectedPath != null; }
+            get { lock (_gate) { if (!_detected) Detect(); return _detectedPath != null; } }
         }
 
         public static string? DetectedPath
         {
-            get { if (!_detected) Detect(); return _detectedPath; }
+            get { lock (_gate) { if (!_detected) Detect(); return _detectedPath; } }
         }
 
         public static void Detect()
+        {
+            lock (_gate) { DetectCore(); }
+        }
+
+        private static void DetectCore()
         {
             _detected = true;
             _detectedPath = null;
@@ -75,11 +84,9 @@ namespace FfmpegGui.Services
                         if (File.Exists(candidate)) { _detectedPath = candidate; return; }
                         try
                         {
-                            var list = new List<string>();
-                            foreach (var f in Directory.EnumerateFiles(manual, PlatformServices.CjpegliSearchWildcard, SearchOption.AllDirectories))
-                            {
-                                if (File.Exists(f)) list.Add(f);
-                            }
+                            // ⚠ 手动目录同样可能是一棵大树 ⇒ 走带预算的递归（见 EnumerateFilesSafe 注释）
+                            var list = ExternalToolsDetector.EnumerateFilesSafe(
+                                manual, PlatformServices.CjpegliSearchWildcard);
                             if (list.Count > 0)
                             {
                                 var pick = ExternalToolsDetector.ChooseBestExecutable(list);

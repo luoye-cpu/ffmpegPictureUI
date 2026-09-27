@@ -15,6 +15,10 @@ namespace FfmpegGui.Services
     ///   教训: AVX2 gather 延迟高, 对中小数据 (GainMap 4K) 反不如标量 MathF;
     ///   只有 FloatToSrgb8 (每像素 1 次 pow, 标量开销大) 有真实收益。
     ///
+    /// 选路 (2026-09-27 起): 本类**不再自带** Avx2.IsSupported 判定，
+    ///   唯一判据在 SimdKernelRouting.FloatToSrgb8UsesSimd
+    ///   (= 面板「SIMD 优化」&& Avx2.IsSupported) ⇒ 关掉开关这里逐像素回退标量。
+    ///
     /// 精度: log2/exp2 用 1024 项 LUT + 线性插值 (表由 MathF 生成, 绝对正确),
     /// 8-bit 输出误差 ≤ 1 LSB (D28 断言验证)。
     ///
@@ -67,12 +71,14 @@ namespace FfmpegGui.Services
         /// <summary>
         /// 批量 线性 float → sRGB 8-bit（逐像素，源 RGBA 交错或纯值数组皆可）。
         /// 输入范围 [0,1]，越界自动 clamp。与标量 FloatToSrgb8Scalar 逐字节一致（±1 LSB）。
+        /// 走不走 AVX2 由 SimdKernelRouting.FloatToSrgb8UsesSimd 单点决定
+        /// （面板「SIMD 优化」关掉 ⇒ 逐像素标量回退，且这是**更精确**的那条路：无 LUT 近似）。
         /// </summary>
         public static void FloatToSrgb8(Span<float> src, Span<byte> dst)
         {
             if (src.Length != dst.Length)
                 throw new ArgumentException("源/目标长度不一致");
-            if (Avx2.IsSupported)
+            if (SimdKernelRouting.FloatToSrgb8UsesSimd)
             {
                 FloatToSrgb8Avx2(src, dst);
                 return;
@@ -283,7 +289,10 @@ namespace FfmpegGui.Services
         /// <summary>PQ 参考亮度 (nits)：编码值 1.0 = 10000 nits。</summary>
         public const float PqPeakNits = 10000f;
 
-        private const float PqM1 = 2615f / 16384f;            // 0.1593017578125
+        // ⚠️ m1 = 2610/16384 = 0.1593017578125（SMPTE ST 2084:2014 标准值）。
+        //    原写 2615f/16384f = 0.15960693f：注释写的是标准值、代码却是错的，两者不符。
+        //    与 TransferCurve.PqM1 必须**同一个数**（两者曾同时错 ⇒ 互检式测试永远绿）。
+        private const float PqM1 = 2610f / 16384f;            // 0.1593017578125
         private const float PqM2 = 2523f / 32f;               // 78.84375
         private const float PqC1 = 3424f / 4096f;             // 0.8359375
         private const float PqC2 = 2413f / 128f;              // 18.8515625

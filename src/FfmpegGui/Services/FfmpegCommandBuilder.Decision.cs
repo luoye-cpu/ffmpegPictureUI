@@ -144,7 +144,16 @@ namespace FfmpegGui.Services
             var (capP, capT, capM, capBd, capIcc) = GetFormatColorCapabilities(fmt, options);
             d.CapPrimaries = capP; d.CapTrc = capT; d.CapMatrix = capM;
             d.CapMaxBitDepth = capBd; d.CapUseIcc = capIcc;
-            if (options.BitDepth.HasValue && options.BitDepth.Value > capBd) options.BitDepth = capBd;
+            if (options.BitDepth.HasValue && options.BitDepth.Value > capBd)
+            {
+                // 就地钳制会**擦掉用户的请求档** ⇒ 先把被钳掉的那一档记进 `BitDepthRequested`，
+                // 规划层的 ①b 才能播"请求 10 ⇒ 交付 8"（任务 #35：webp 54 格 / avif 17 格零播报的根因）。
+                // 取**更深**的那次：同一 options 被重入时，第二次进来读到的已是上一次的出口档，
+                // 用 `??=` 会把它当成请求档、越记越浅。
+                if (options.BitDepthRequested == null || options.BitDepth.Value > options.BitDepthRequested.Value)
+                    options.BitDepthRequested = options.BitDepth;
+                options.BitDepth = capBd;
+            }
 
             var meta = string.IsNullOrEmpty(inputPath) || inputPath == "-"
                 ? new ColorMetadata() : ProbeInputColorMetadata(inputPath);
@@ -216,7 +225,21 @@ namespace FfmpegGui.Services
                 // PNG 不再按位深豁免：needsTonemap 已综合“目标是否 SDR”与“能否标注”，
                 // 旧的 `<= 8` 门与上游短路重复，会把 16-bit PNG 的 HDR→SDR 再漏掉。
                 bool pngNeedsTonemap = (fmt is "png" or "apng") && needsTonemap;
-                if (needsTonemap && (!isRgbNativeFmt || tiffNeedsTonemap || pngNeedsTonemap))
+                // ── 任务 #44（2026-09-27）：JXL 也补上这条许可，否则 `isRgbNativeFmt` 的豁免**只**咬住 JXL ──
+                // `isRgbNativeFmt` 的立项理由是「RGB 原生容器不该写 `-colorspace`（YUV 矩阵声明）」
+                //（见其定义处那句注释），而它被**复用**成了「跳过 tonemap 链」的判据 ⇒ TIFF/PNG 各自补了
+                // 许可支，**只剩 JXL 没有**：`NeedsHdrToSdrTonemap` 对 avif/jxl/jxr 的豁免早已在 #43 改成
+                // 「仅未指定目标时保留 HDR 直通」，于是 JXL + 显式 SDR 出现 `needsTonemap=true` 而链为空
+                // ⇒ 两个后果（均有实测）：
+                //   ① `--encoder ffmpeg`：`d.RunIccgen` 仍为真（`frameIsHdr` 看的是**目标** trc，不是帧），
+                //      而帧上的 trc 还是 `smpte2084` ⇒ PQ 帧塞给 iccgen ⇒ `Error while filtering:
+                //      Not yet implemented` ⇒ exit=1、零产物（#43 在 avif 上修掉的同一个形状）；
+                //   ② cjxl 直编旁路：闸门读 `PixelChains.Count` ⇒ 恒 0 ⇒ 永不改道，用户的显式目标被静默吃掉。
+                // 判据本身不动（`NeedsHdrToSdrTonemap` 一支字节未改 ⇒ PNG 支/avif 支语义不变），这里只是
+                // 让 JXL 与 avif 走**同一条**结论。auto / HDR 目标（P3 PQ）两列 `needsTonemap=false`
+                // ⇒ 本支不介入，产物必须逐字节不变（`verify-decision-delivery` ⑰b 反向锁同口径）。
+                bool jxlNeedsTonemap = fmt is "jxl" && needsTonemap;
+                if (needsTonemap && (!isRgbNativeFmt || tiffNeedsTonemap || pngNeedsTonemap || jxlNeedsTonemap))
                 {
                     // tonemap 滤镜内部自带色彩空间转换（HDR→linear→SDR），无需外部 zscale 链。
                     // 原实现 zscale=t=linear→tonemap→zscale 存在两个问题：
@@ -233,7 +256,23 @@ namespace FfmpegGui.Services
                     //   修复链: tonemap → RGB → zscale 应用目标 gamma + primaries 转换 → 正确像素+标签。
                     var tmSrcP = inputPrimaries ?? "bt2020";  // tonemap 保持输入 primaries，需转换到目标
                     var tmDstP = "bt709";
-                    var tmDstT = "bt709";
+                    // ── SDR 出口的**传递曲线默认值** = iec61966-2-1（sRGB 分段），不是 bt709（任务 #26②，2026-09-26）──
+                    // 为什么原来那个 "bt709" 是**双重不诚实**（实测，取证见 docs/COLOR_MATRIX_FIX_PLAN 的 #31 段
+                    //   与 `tests/output/_diag_31cur/`）：
+                    //   ① **像素**：zimg 把 `t=bt709` 实现成**纯 γ(1/2.4)**，而 ITU-R BT.709 的定义式是
+                    //      **分段**（线性段 0.018/4.5，与 sRGB 的 0.04045/12.92 不同）⇒ 写 `t=bt709` 得到的
+                    //      既不是标准 BT.709 也不是 sRGB；
+                    //   ② **标签**：链末把这个 token 直接交出去（`outT = tmDstT`）⇒ PNG 写 `cICP.transfer=1`、
+                    //      其他容器写 `-color_trc bt709` ⇒ **标签声称的是那条它根本没实现的曲线**。
+                    //      而 CICP/H.273 里**没有**"纯 γ2.4"这个编号 ⇒ 这条缺陷**无法靠改标签收口**，
+                    //      只能把**像素**提到标签水位（维护者 2026-09-26 定样 A + "图像文件选 sRGB"）。
+                    // ⇒ 选 `iec61966-2-1` 的三个理由：zimg **确实**实现了它的分段形式（`ColorSpaceRegistry` 已登记
+                    //   "有 sRGB 分段、无 BT.709 分段"）；它有正式编号（CICP transfer=13）⇒ 标签兑现得了；
+                    //   且引擎侧 `SdrTwinOf` 的 SDR 候选表**本来就把它排第一** ⇒ 两条管线在此收敛
+                    //   （修复前实测：引擎格像素=sRGB、标签=cICP 1/1 + sRGB iCCP，两边各错一半）。
+                    // ⚠ 这条只改**未指定目标时的默认值**：`capT`（TIFF/JPEG/WebP 的 SDR 硬钳）与用户显式目标
+                    //   （`hasExplicitTarget` / 高级 trc）仍然优先，不改它们的语义。
+                    var tmDstT = "iec61966-2-1";
                     // 首先应用格式能力约束（TIFF/JPEG/WebP 目标恒为 SDR）
                     tmDstP = capP ?? tmDstP;
                     tmDstT = capT ?? tmDstT;
@@ -387,6 +426,12 @@ namespace FfmpegGui.Services
             // iccgen 不支持 HDR 传递(smpte2084/arib，实测 "Not yet implemented")：有效目标 trc（格式钳制优先）为 HDR
             // 时跳过 iccgen，HDR 由 cICP/CICP 表达。修复：旧代码对 HDR 广色域目标仍 iccgen → 编码失败或产出错误 ICC。
             // SDR-only 格式(JPEG/WebP/TIFF)的 capTrc 已钳 SDR（且 HDR 目标经 tonemap 转 SDR）→ frameIsHdr=false，iccgen 正常。
+            // ⚠ 上面那句"HDR 源经 tonemap 转 SDR"对 avif/jxl/jxr **只在用户显式指定了目标时才成立**：
+            //   `NeedsHdrToSdrTonemap` 对这三个格式在「未指定目标」时保留 HDR 直通（那时 frameIsHdr 仍为真、
+            //   由 cICP/CICP 表达，本来就不该来这条分支）。任务 #43 的缺陷正是这条豁免**曾经无条件**，
+            //   于是 legacy 链把 PQ 帧直接塞给 iccgen ⇒ "Not yet implemented" ⇒ 非零退出 + 零产物。
+            //   把那条豁免改回无条件 = 复发 #43；判据锁在 `verify-decision-delivery` ⑰b（四条，含 auto 列的
+            //   "不许出现 tonemap"这条反向锁）。
             var effDstTrc = capT
                 ?? (advanced ? options.ColorTrc : outTargetSpec?.OutTrc)
                 ?? inputTrc;
@@ -586,6 +631,45 @@ namespace FfmpegGui.Services
                 return (d.OutPrimaries, d.OutTrc, d.SourceHasCicp);
             }
             catch { return (null, null, false); }
+        }
+
+        // ══════════════════════════════════════════════════════════════════════════════
+        //  #44：外部工具旁路（cjxl 直接编码）的「交付语义 vs 用户目标」对账判据
+        //  ⚠ 本段加在文件**尾部**：`_lib-matrix.ps1` 的取证锚点按行号钉 `:144/:147/:155`，
+        //    在前面插任何一行都会让 4 条门禁无因转红。
+        // ══════════════════════════════════════════════════════════════════════════════
+
+        /// <summary>
+        /// 裁决点要求的**出口语义**是否与「cjxl 直编路线将要交付的语义」不一致。
+        ///
+        /// 为什么判据必须是**语义差**而不是链的数量（#44 的实测教训）：
+        ///  • 直编路线**永不**改像素 —— cjxl 对自带色彩元数据的输入忽略 `-x`（`tests/output/t44/cjxl_x_probe2.log`），
+        ///    而 `-x` 本来也**只写声明、不转像素**。所以它交付的就是**输入侧声明的那份语义**
+        ///    = <see cref="OutputColorDecision.DeclPrimaries"/> / <see cref="OutputColorDecision.DeclTrc"/>。
+        ///  • 用户显式指定目标时，出口语义 <see cref="OutputColorDecision.OutPrimaries"/>/
+        ///    <see cref="OutputColorDecision.OutTrc"/> 已经被换成目标令牌 ⇒ 两者不等就是「目标兑现不了」。
+        ///  • 用链数量做判据在这一族**恒不触发**：#43 之后 avif 靠 tonemap 链兑现目标，而 jxl 曾被
+        ///    <c>isRgbNativeFmt</c> 复用出的豁免挡掉链（现由 <c>jxlNeedsTonemap</c> 补上，见上面
+        ///    「HDR→SDR 色彩降级」那段），**判据不该依赖那条链存不存在** —— 否则同类豁免再次漏网时
+        ///    闸门又静默失效（正是这一格的历史症状）。
+        ///
+        /// ⚠ **两侧都必须命名才断不一致**（fail-closed 的方向是"不改道"而非"改道"）：任一侧为空/未标签时
+        ///   无法断言两份语义等价，此时维持既有直编路线 —— 与 §#44「不可命名就不猜」以及
+        ///   <c>ColorSpaceRegistry.MapPrimariesTransferToCjxl</c> 返回 null 时交由 ICC/上游处理的口径一致。
+        ///   实测这条保住了 JPEG 输入的 **auto 格**（无标签 jpeg 两侧都取不到令牌 ⇒ 不改道，
+        ///   `-d 0 --lossless_jpeg=1` 的 DCT 无损重封装性能路照旧；见 `tests/output/t44/jpgchk/ls_auto`
+        ///   的 `链数=0` + 直接编码行）。JPEG + **显式目标**仍会改道，但那是既有 `链数>0` 那半判据的结论
+        ///   （zscale 链本来就在），本判据不额外扩大改道面。
+        /// </summary>
+        public static bool DirectEncodeTargetDiffers(OutputColorDecision? d)
+        {
+            if (d == null) return false;
+            var dp = (d.DeclPrimaries ?? "").Trim().ToLowerInvariant();
+            var dt = (d.DeclTrc ?? "").Trim().ToLowerInvariant();
+            var op = (d.OutPrimaries ?? "").Trim().ToLowerInvariant();
+            var ot = (d.OutTrc ?? "").Trim().ToLowerInvariant();
+            if (dp.Length == 0 || dt.Length == 0 || op.Length == 0 || ot.Length == 0) return false;
+            return dp != op || dt != ot;
         }
     }
 }

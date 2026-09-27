@@ -2,7 +2,9 @@
 #
 # 缺陷（本门禁要锁住的东西）：
 #   JXR 出口要把像素交给 `JxrEncApp`，而它是**纯文件式** `-i input -o output`（不吃 rawvideo/stdin），
-#   本工具链的 ffmpeg 又**没有 jxr 编码器** ⇒ 必须先落一个中转容器（BMP/TIFF，走 ffmpeg 的 `image2`
+#   ffmpeg 的 `libjxr` 又**无质量 AVOption**、字节序与 jxrlib 不一致 ⇒ 不作替代执行体（唯一口径见
+#   `RawColorPipeline` 的 JXR 出口文档；⚠ 本行初稿写作「本工具链的 ffmpeg 没有 jxr 编码器」，09-27 按实测改正）
+#   ⇒ 必须先落一个中转容器（BMP/TIFF，走 ffmpeg 的 `image2`
 #   复用器）。而 `image2` 是**固定文件名**写盘、**不能**承载多帧：多帧输入时 ffmpeg 报
 #       `[image2] Cannot write more than one file with the same name… Are you missing the -update option
 #        or a sequence pattern?` + `Error submitting a packet to the muxer: Invalid argument`
@@ -52,6 +54,9 @@ $root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path; Set-Location $roo
 $env:FFMPEGGUI_FFMPEG_DIR = "$root/publish/PLAN/ffmpeg-full"
 $exe = "$root/src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.exe"
 if (-not (Test-Path $exe)) { $exe = "$root/src/FfmpegGui/bin/Debug/net11.0/win-x64/FfmpegGui.exe" }
+# ⚠ 2026-09-21（TESTING.md 第 84 条处置建议 ①）：**回退是静默的** —— 门禁可能测的
+#   不是你以为的那个二进制。⇒ 一律**打印被测 exe 与构建类型**，让读数可追溯。
+Write-Output ("[gate] exe=" + $exe + $(if ($exe -like '*\Debug\*') { " (Debug fallback)" } else { " (Release)" }))
 $ff = "$root/publish/PLAN/ffmpeg-full/ffmpeg.exe"
 $fp = "$root/publish/PLAN/ffmpeg-full/ffprobe.exe"
 $jxrEnc = "$root/publish/PLAN/artifacts/JxrEncApp.exe"
@@ -80,26 +85,62 @@ function Exec([string]$file, [string]$argStr, [string]$tag) {
   return @{ code = $p.ExitCode; text = ([System.IO.File]::ReadAllText($o) + "`n" + [System.IO.File]::ReadAllText($e)) }
 }
 
+# ⚠⚠ **只读 stdout 的取数**（读「工具写在 stdout 的值」时唯一合法的尺；形状与 `Exec` 一致，只换返回口径）
+#   `Exec` 把 stderr 拼进 `text` —— 对**实测只在 stderr** 的东西是故意的、正确的：ffmpeg 的 PSNR 行 /
+#   `frame=` / signalstats 的 `YMIN=`（实测 `-hide_banner -i x -vf signalstats,metadata=print… -f null -`
+#   的 stdout = **0 字节**、`YMIN=` 只在 stderr ⇒ 这类判据吃的是 stderr 的**告警全集**，换只读 stdout 会恒真）。
+#   ⚠ 合并的代价（2026-09-27 实测）：本机 `LANG`/`LC_ALL` 不被识别时 ffmpeg/ffprobe 也往 stderr 吐 locale
+#   警告（实测 26 B），ffprobe **不带 `-v error` 时**还吐整段版本横幅（实测 4838 B）⇒ 拿合并结果做
+#   `-notmatch` 的判据在污染环境下会变脆；本轮按口径**只登记、不改判据**。
+#   ⚠ 但**产品/ServiceProbe 的日志不保证在 stderr**，别照抄上面那句：2026-09-27 实测
+#   `ServiceProbe decision` 的 6184 B 输出**全在 stdout**、stderr 0 B（`PROBE RESULT:` / `pass=` 都在 stdout）；
+#   本文件的 `Exec $exe "--headless --log-level debug …"` 取的是 stdout+stderr **全集**，② 的
+#   `-match '\[色彩\] ffmpeg'` / `-notmatch '\[jxr\] Step 1:'` 这类**互斥标签**判据吃的就是那个全集
+#   ⇒ 保持合并是对的，动它之前先按实测确认那个标记在哪个流（实测不在本轮范围内，故本轮**未改**这些站点）。
+#   下面三个 helper 读的是 **ffprobe 的 csv 字段值（stdout）** ⇒ 换 `ExecOut`；而随包 exiftool 是 perl 打包版：
+#   环境带着本机 perl 不认的 `LC_ALL`/`LANG`（MSYS/bash 侧的 `C.UTF-8`）时它每次调用先往 stderr 喷
+#   locale warning ⇒ 拼回来的噪声让「帧数/尺寸/像素格式」这类**整行匹配 + -eq 对账**既可能假红（值前多一行）、
+#   也可能假绿（同污时两条警告互比）。⇒ stderr 照样落盘供排查，但**绝不进返回值**。
+function ExecOut([string]$file, [string]$argStr, [string]$tag) {
+  $o = "$work/$tag.out"; $e = "$work/$tag.err"
+  $p = Start-Process -FilePath $file -ArgumentList $argStr -Wait -NoNewWindow -PassThru `
+       -RedirectStandardOutput $o -RedirectStandardError $e
+  if (-not (Test-Path $o)) { return @{ code = $p.ExitCode; text = "" } }
+  $t = [System.IO.File]::ReadAllText($o)
+  return @{ code = $p.ExitCode; text = $t }
+}
+
 # 真实帧数：ffprobe `-count_frames`（**不用**日志里的 `frame=` 字段：本工程已实测不可靠）。
 # ⚠ 只认**整行就是数字**的输出行：ffprobe 报错会带上含数字的路径（GUID 目录名）⇒ 宽松匹配会假绿。
+# ⚠ 取数用 `ExecOut` 的理由（实测 laneB）：ffprobe 的 csv 值**全在 stdout**、本机 ffprobe 的 stderr 在
+#   带 `-v error` 时 ffprobe 的 stderr 实测 **0 字节**（clean 与 LC_ALL/LANG=C.UTF-8 两种条件一样，
+#   alpha_q1.00.jxr / sdr_plain.png 的读数与合并版**同值**，只差合并版固定多塞的那个换行符）
+#   ⇒ 换尺不会让任何格由绿转红；而"读不到"时 stdout 为空、报错只在 stderr ⇒ 那种红是对的（本 helper 返回 0，
+#   由 ① 的 `$fw -gt 1` / `$fs -eq 1` 两条**正向**前提自检判红，不喂负断言）。
 function FrameCount([string]$path) {
-  $r = Exec $fp ('-v error -select_streams v:0 -count_frames -show_entries stream=nb_read_frames -of csv=p=0 "' + $path + '"') "fc_$([guid]::NewGuid().ToString('N').Substring(0,6))"
+  $r = ExecOut $fp ('-v error -select_streams v:0 -count_frames -show_entries stream=nb_read_frames -of csv=p=0 "' + $path + '"') "fc_$([guid]::NewGuid().ToString('N').Substring(0,6))"
   $n = 0
   foreach ($ln in ($r.text -split "`r?`n")) { if ($ln -match '^\s*(\d+)\s*$') { $n = [int]$Matches[1] } }
   return $n
 }
 
 # 尺寸 WxH（ffprobe csv）；探测失败返回 ""（只认整行 `W,H` 形态）。
+# ⚠ `ExecOut`：值在 stdout（实测 alpha_q1.00.jxr 的 WxH 行 stdout=「64,64」、带 `-v error` 时 stderr 0 字节，
+#   与合并版**同值**，只差合并版多塞的那个换行符）；
+#   消费方 ③ 的 `$sz -eq "256x192"` 是**正向**对账 ⇒ 读空即红，收紧不会由绿转红。
 function ImgSize([string]$path) {
-  $r = Exec $fp ('-v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "' + $path + '"') "sz_$([guid]::NewGuid().ToString('N').Substring(0,6))"
+  $r = ExecOut $fp ('-v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "' + $path + '"') "sz_$([guid]::NewGuid().ToString('N').Substring(0,6))"
   $s = ""
   foreach ($ln in ($r.text -split "`r?`n")) { if ($ln -match '^\s*(\d+)\s*,\s*(\d+)\s*$') { $s = ($Matches[1] + "x" + $Matches[2]) } }
   return $s
 }
 
 # 像素格式（ffprobe）；用于「alpha 素材真有 alpha」这一条**前提自检**。
+# ⚠ `ExecOut`：实测 ffprobe `-v error` 的 pix_fmt 令牌在 stdout（sdr_plain.png→`rgb24`、
+#   alpha_q1.00.jxr→`bgra`）、stderr 0 B ⇒ 与合并版同值。消费方 ① 的 `$pfA -match '^(rgba|argb|...)'`
+#   与 ① 的 `$pfSA -match ...` 都是**正向**匹配 ⇒ 读空即红，换尺不会由绿转红。
 function PixFmt([string]$path) {
-  $r = Exec $fp ('-v error -select_streams v:0 -show_entries stream=pix_fmt -of default=nw=1:nk=1 "' + $path + '"') "pf_$([guid]::NewGuid().ToString('N').Substring(0,6))"
+  $r = ExecOut $fp ('-v error -select_streams v:0 -show_entries stream=pix_fmt -of default=nw=1:nk=1 "' + $path + '"') "pf_$([guid]::NewGuid().ToString('N').Substring(0,6))"
   foreach ($ln in ($r.text -split "`r?`n")) { if ($ln -match '^\s*([a-z0-9]+)\s*$') { return $Matches[1] } }
   return ""
 }
@@ -118,7 +159,9 @@ function AlphaYMin16([string]$path) {
   return -1
 }
 
-# 独立解码器回读（**第三方证明是真 JXR**，不看自家日志）。产物 ffmpeg **读不了**（本构建无 jxr 解码器）。
+# 独立解码器回读（**第三方证明是真 JXR**，不看自家日志）。⚠ 不用 ffmpeg 自解的理由不是「本构建没有 jxr
+# 解码器」（实测**有** `(decoders: libjxr)`、往返位精确），而是：自家链路自解会把「写法自洽」冒充成
+# 「格式正确」，且 ffmpeg 解 .jxr **不导出 ICC**（取证 `tests/output/t50/`）。
 function JxrDec([string]$jxrPath, [string]$outPath, [string]$fmt) {
   if (Test-Path $outPath) { try { [System.IO.File]::Delete($outPath) } catch { } }
   $a = '-i "' + $jxrPath + '" -o "' + $outPath + '" -c ' + $fmt

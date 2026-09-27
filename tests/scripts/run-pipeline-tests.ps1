@@ -18,6 +18,29 @@ function Exec([string]$file, [string]$argStr){
   return ([System.IO.File]::ReadAllText($o) + "`n" + [System.IO.File]::ReadAllText($e))
 }
 
+# ── exiftool 读数专用口径（**只读 stdout** + 逐行剥标签）────────────────────────────
+# 为什么不能复用上面的 Exec：exiftool 是 perl 打包的，只要进程环境里带着本机 perl 不认的
+#   `LC_ALL/LANG=C.UTF-8`（从 MSYS/bash 侧起门禁时就会出现），它每次调用都往 **stderr** 喷
+#   5 行 `perl: warning: Setting locale failed`，而**退出码仍是 0** ⇒ 退出码不是信号。
+#   实测踩到的假红：`-split + Out-String + -replace '^.*?:\s*'` 只剥得掉**首行**的标签前缀，
+#   warning 全留在"值"里 ⇒ 拿 `16383\nperl: warning…` 去 `-ne "16383"` 判红，而真实值是对的。
+# ⚠ 期望值/阈值**一字未改** —— 变的是"取数口径"，不是判据强度。
+function ExecStdoutOnly([string]$file, [string]$argStr){
+  $o = "$res/_exif.out"; $e = "$res/_exif.err"
+  $p = Start-Process -FilePath $file -ArgumentList $argStr -Wait -NoNewWindow -PassThru `
+    -RedirectStandardOutput $o -RedirectStandardError $e
+  $global:LASTEXITCODE = $p.ExitCode
+  return [System.IO.File]::ReadAllText($o)
+}
+function ExifVal([string]$tag, [string]$path){
+  $txt = ExecStdoutOnly $exif "-s -s -$tag `"$path`""
+  $lines = @($txt -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" })
+  if ($lines.Count -eq 0) { return "" }
+  $v = $lines[0] -replace '^.*?:\s*',''
+  if ($lines.Count -gt 1) { $v = $v + ' ' + (($lines[1..($lines.Count - 1)]) -join ' ') }
+  return $v.Trim()
+}
+
 $ffmpeg = (Get-ChildItem "publish/PLAN/ffmpeg-full*/ffmpeg.exe" | Select-Object -First 1).FullName
 $ffprobe = (Get-ChildItem "publish/PLAN/ffmpeg-full*/ffprobe.exe" | Select-Object -First 1).FullName
 $cjxl   = "publish/PLAN/jxl/bin/cjxl.exe"
@@ -50,7 +73,7 @@ function Test-Step($name, $script) {
 
 function ProbeFmt($path) {
     if (-not (Test-Path $path)) { return "MISSING" }
-    $fmt = ((Exec $ffprobe "-v error -select_streams v:0 -show_entries stream=codec_name,pix_fmt,width,height -of csv=p=0 `"$path`"") -split "`r?`n")[0]
+    $fmt = ((ExecStdoutOnly $ffprobe "-v error -select_streams v:0 -show_entries stream=codec_name,pix_fmt,width,height -of csv=p=0 `"$path`"") -split "`r?`n")[0]
     return $fmt
 }
 
@@ -58,12 +81,12 @@ function ProbeFmt($path) {
 function AnimFrames($path) {
     if (-not (Test-Path $path)) { return -1 }
     if ($path -match '\.gif$') {
-        $nf = ((Exec $ffprobe "-v error -select_streams v:0 -show_entries stream=nb_frames -of csv=p=0 `"$path`"") -split "`r?`n")[0]
+        $nf = ((ExecStdoutOnly $ffprobe "-v error -select_streams v:0 -show_entries stream=nb_frames -of csv=p=0 `"$path`"") -split "`r?`n")[0]
         if ($nf -match '^\d+$') { return [int]$nf }
     }
     if ($path -match '\.avif$') {
         # AVIF 动画: 多流结构, 选帧率最高/帧数最多的动画轨
-        $streams = (Exec $ffprobe "-v error -show_entries stream=index,nb_frames -of csv=p=0 `"$path`"") -split "`r?`n"
+        $streams = (ExecStdoutOnly $ffprobe "-v error -show_entries stream=index,nb_frames -of csv=p=0 `"$path`"") -split "`r?`n"
         $best = 1
         foreach ($s in $streams) {
             $parts = $s -split ','
@@ -74,7 +97,7 @@ function AnimFrames($path) {
         }
         return $best
     }
-    $nf = ((Exec $ffprobe "-v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of csv=p=0 `"$path`"") -split "`r?`n")[0]
+    $nf = ((ExecStdoutOnly $ffprobe "-v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of csv=p=0 `"$path`"") -split "`r?`n")[0]
     if ($nf -match '^\d+$') { return [int]$nf }
     return -1
 }
@@ -329,7 +352,10 @@ Test-Step "DNG → JXL-DNG 重编码 (dngtool)" {
     if (-not (Test-Path "$res/raw_reenc.dng")) { throw "无输出" }
 }
 Test-Step "DNG → JXL-DNG 有损 (dngtool q=90)" {
-    Exec $dngtool "-e -jxl -q 90 -effort $rawEffort -i `"$dngSample`" -O `"$res/raw_lossy.dng`"" | Out-Null
+    # ⚠ 2026-09-21：JXL 质量改用**独立参数 `-jxlq`** ——
+    #   原先复用 `-q`，而 `-q` 的语义是 **demosaic 质量**（默认 3）；
+    #   产品传 `-jxl`（不带 `-q`）时会误取 3 ⇒ 有损。现已分离，本处同步跟进。
+    Exec $dngtool "-e -jxl -jxlq 90 -effort $rawEffort -i `"$dngSample`" -O `"$res/raw_lossy.dng`"" | Out-Null
     if (-not (Test-Path "$res/raw_lossy.dng")) { throw "无输出" }
 }
 Test-Step "DNG → 无损 JPEG DNG (dngtool)" {
@@ -355,9 +381,9 @@ Test-Step "Bayer JXL-DNG → CFA 保留重编码 (dngtool)" {
     Exec $dngtool "-e -jxl -q 0 -effort $rawEffort -i `"$bayerSample`" -O `"$res/raw_bayer_cfa.dng`"" | Out-Null
     if (-not (Test-Path "$res/raw_bayer_cfa.dng")) { throw "无输出" }
     # CFA 必须保留: SamplesPerPixel=1 + Color Filter Array
-    $spp = (((Exec $exif "-s -s -SamplesPerPixel `"$res/raw_bayer_cfa.dng`"") -split "`r?`n" | Where-Object { $_ -ne "" }) | Out-String) -replace '^.*?:\s*',''
-    $pi = (((Exec $exif "-s -s -PhotometricInterpretation `"$res/raw_bayer_cfa.dng`"") -split "`r?`n" | Where-Object { $_ -ne "" }) | Out-String) -replace '^.*?:\s*',''
-    if ($spp.Trim() -ne "1" -or $pi -notmatch "Color Filter Array") {
+    $spp = (ExifVal "SamplesPerPixel" "$res/raw_bayer_cfa.dng")
+    $pi = (ExifVal "PhotometricInterpretation" "$res/raw_bayer_cfa.dng")
+    if ($spp -ne "1" -or $pi -notmatch "Color Filter Array") {
         throw "CFA 丢失: SamplesPerPixel=$spp PI=$pi"
     }
 }
@@ -368,14 +394,19 @@ Test-Step "Bayer JXL-DNG → 解码 (dngtool, ActiveArea)" {
 }
 }
 Test-Step "Bayer CFA-DNG 色彩标签无损 (ColorMatrix1)" {
-    $cm1 = ((Exec $exif "-s -s -ColorMatrix1 `"$res/raw_bayer_cfa.dng`"") -split "`r?`n")[0].Trim()
-    $cm1src = ((Exec $exif "-s -s -ColorMatrix1 `"$bayerSample`"") -split "`r?`n")[0].Trim()
+    # ⚠ 原来这两行用的是合并 stdout+stderr 的 `Exec` + `(-split)[0].Trim()`：随包 exiftool 是 perl 打的，
+    #   环境带 perl 不认的 LC_ALL/LANG 时**每次调用都先喷 locale warning** ⇒ 第 0 行取到的是 warning 文本，
+    #   两侧同污 ⇒ `-ne` 变成"两条 warning 互比"= **恒真假绿**（#51 数出的五处之一）。
+    #   改走本文件既有的 `ExifVal`（只读 stdout + 剥标签），并**空值显式失败**（两侧都读不到不该算通过）。
+    $cm1 = ExifVal 'ColorMatrix1' "$res/raw_bayer_cfa.dng"
+    $cm1src = ExifVal 'ColorMatrix1' "$bayerSample"
+    if ($cm1 -eq '' -or $cm1src -eq '') { throw "ColorMatrix1 取数为空（产物='$cm1' 源='$cm1src'）⇒ 不许当通过" }
     if ($cm1 -ne $cm1src) { throw "ColorMatrix1 不一致" }
 }
 Test-Step "Bayer CFA-DNG 黑/白电平正确 (ACR 渲染亮度)" {
-    $bl = (((Exec $exif "-s -s -BlackLevel `"$res/raw_bayer_cfa.dng`"") -split "`r?`n" | Where-Object { $_ -ne "" }) | Out-String) -replace '^.*?:\s*',''
-    $wl = (((Exec $exif "-s -s -WhiteLevel `"$res/raw_bayer_cfa.dng`"") -split "`r?`n" | Where-Object { $_ -ne "" }) | Out-String) -replace '^.*?:\s*',''
-    if ($bl.Trim() -notmatch "^512" -or $wl.Trim() -ne "16383") {
+    $bl = (ExifVal "BlackLevel" "$res/raw_bayer_cfa.dng")
+    $wl = (ExifVal "WhiteLevel" "$res/raw_bayer_cfa.dng")
+    if ($bl -notmatch "^512" -or $wl -ne "16383") {
         throw "黑/白电平错误: Black=$bl White=$wl (期望 512/16383)"
     }
 }

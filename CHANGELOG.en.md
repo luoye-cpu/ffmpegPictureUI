@@ -13,7 +13,7 @@ All notable changes to this project are documented in this file.
 
 ## 📝 Changelog
 
-### v1.6.0 (2026-09-16) — Full bilingual localization + UI usability fixes + global exception safety net
+### v1.6.0 (2026-09-28) — Full bilingual localization + UI usability fixes + global exception safety net + color matrix correctness fixes
 
 **🌐 Bilingual localization (i18n)**
 - Hardcoded Chinese **122 → 9** (the rest are dynamic placeholders and language self-names, intentionally kept); `<sys:String>` options **67 → 0**
@@ -35,8 +35,48 @@ All notable changes to this project are documented in this file.
   turning unhandled exceptions from 28 `async void` handlers into "log and continue" instead of silent process death;
   crashes are written to `crash.log` in the cache folder
 
+**🎨 Color matrix correctness fixes (2026-09-28)**
+
+- **PQ transfer constant** — `m1` corrected from `2615/16384` to `2610/16384` (SMPTE ST 2084).
+  Both implementations (`TransferCurve` / `SimdPixelOps`) carried the **same** wrong constant, so cross-check
+  tests always passed and the error survived for a long time
+- **SMPTE 240M transfer** — exponent `0.44 → 0.45`, code-domain breakpoint `0.07611 → 0.0912`
+  (matches zimg / libplacebo). This curve lives in the H2 denylist and only runs in-process, so it had no external reference
+- **H1 luma-domain scaling** — added encode-side `EncodeScale` to pair with decode-side `LinearScale`. Fixes
+  SDR→PQ being **49× over-exposed**, PQ↔HLG differing by **10×**, and non-tone-mapped PQ→SDR being **49× too dark**
+- **HLG target inverse OOTF** — the 48-bit main loop was **missing it entirely**; the float path also passed
+  normalized values where absolute nits were required
+- **nits semantics derived from the curve** — "1.0 = 10000 / 1000 nits" for PQ/HLG no longer depends on whether
+  the caller remembers to pass the parameter
+- Measured: PQ(BT.2020)→sRGB vs zimg **PSNR 7.26dB → 23.20dB**, mean ΔE **46.5 → 3.30**
+
+**🖼️ GainMap (Ultra HDR / ISO 21496-1) fixes**
+
+- **XMP lookup restricted to gain-map namespaces** — it previously matched by tag suffix, so a camera's
+  `EXIF:Gamma` (typically 2.2) could be read as the gain map gamma, **corrupting the gain of legacy Ultra HDR files**
+- **Base SOS lookup failure no longer silently emits a "fake Ultra HDR"** — it now reports failure instead of
+  shipping a plain JPEG labelled Ultra HDR
+- **JPEG segment scan handles markers without a length field** (TEM / RSTn / fill bytes)
+- **Decoder hardening** — `long` arithmetic with a per-frame pixel cap (an int overflow could bypass the length
+  check); sampling indices clamped to the **decoded buffer** (only x1/y1 were clamped before)
+- **Peak luminance now uses `alternateHdrHeadroom`** — third-party files (Adobe etc.) are no longer over-estimated
+  just because `gainMapMax` is larger
+
+**🧪 Gate hardening**
+
+- **PQ absolute anchors** now use zimg-measured code values (`0.580694` / `0.751812`) with tolerances tightened
+  from `1/1/3` to `0.5/0.5/1.0`, so the anchors can actually catch constant-level errors
+- **Fixed two probes that bypassed production scaling** (`xcheck` / `hlgwire`) — they hand-built specs and
+  therefore never measured the real engine path; one had a genuine defect permanently waived as a "known non-defect"
+- Noted for the record: zimg's `smpte240m` and `bt709` outputs are **bit-identical** (pure γ2.4). This project
+  implements the SMPTE 240M-1995 definition, which is **not** isomorphic to zimg's form — recorded in code
+  comments so nobody "aligns" it to zimg by mistake
+
 **✅ Verification**
-- Full gate suite: **17 probe modes green**, **16 script gates green**; build with 0 warnings / 0 errors
+- Full grid **360 cells green** (`PASS=24 FAIL=0`); `color-strategy` 78/0, `decision-delivery` 84/0,
+  `color-wiring` 105/0, `gamut-map` 36/0, `prophoto-faithful` 27/0, `gainmap-managed` 22/0,
+  `gainmap-engine` 138/0, `gainmap-isobmff` 52/0
+- Probes `contract` 136/0, `selftest` 36/0, `curve` 44/0, `hlgwire` 3/3; build with 0 warnings / 0 errors
 
 ### v1.5.6 (2026-09-06) — Full real-machine testing + format color capability constraints + HDR end-to-end fixes
 

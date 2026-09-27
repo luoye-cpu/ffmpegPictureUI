@@ -89,7 +89,7 @@ namespace FfmpegGui.Services
             if (_logLevel >= LogLevel.Debug)
             {
                 Write(LogLevel.Debug, "progress",
-                    $"[{Volatile.Read(ref _completedCount) + 1}/{_totalCount}] {Path.GetFileName(item.InputPath)} → {item.Status}",
+                    $"[{Volatile.Read(ref _completedCount) + 1}/{_totalCount}] {item.DisplayName} → {item.Status}",
                     file: item.InputPath);
                 FlushItemLog(item, final: false);
             }
@@ -114,7 +114,7 @@ namespace FfmpegGui.Services
             {
                 var elapsedStr = FormatDuration(TimeSpan.FromSeconds(elapsedSec.Value));
                 Write(level, "item_completed",
-                    $"[{done}/{_totalCount}] {Path.GetFileName(item.InputPath)} {item.Status} ({elapsedStr})",
+                    $"[{done}/{_totalCount}] {item.DisplayName} {item.Status} ({elapsedStr})",
                     file: item.InputPath,
                     progress: done,
                     total: _totalCount,
@@ -124,7 +124,7 @@ namespace FfmpegGui.Services
             else
             {
                 Write(level, "item_completed",
-                    $"[{done}/{_totalCount}] {Path.GetFileName(item.InputPath)} → {item.Status}",
+                    $"[{done}/{_totalCount}] {item.DisplayName} → {item.Status}",
                     file: item.InputPath,
                     progress: done,
                     total: _totalCount,

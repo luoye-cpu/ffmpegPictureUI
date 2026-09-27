@@ -63,6 +63,9 @@ $root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path; Set-Location $roo
 $env:FFMPEGGUI_FFMPEG_DIR = "$root/publish/PLAN/ffmpeg-full"
 $exe = "$root/src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.exe"
 if (-not (Test-Path $exe)) { $exe = "$root/src/FfmpegGui/bin/Debug/net11.0/win-x64/FfmpegGui.exe" }
+# ⚠ 2026-09-21（TESTING.md 第 84 条处置建议 ①）：**回退是静默的** —— 门禁可能测的
+#   不是你以为的那个二进制。⇒ 一律**打印被测 exe 与构建类型**，让读数可追溯。
+Write-Output ("[gate] exe=" + $exe + $(if ($exe -like '*\Debug\*') { " (Debug fallback)" } else { " (Release)" }))
 $ff = "$root/publish/PLAN/ffmpeg-full/ffmpeg.exe"
 $fp = "$root/publish/PLAN/ffmpeg-full/ffprobe.exe"
 
@@ -89,6 +92,20 @@ function Exec([string]$file, [string]$argStr, [string]$tag) {
   $t2 = ""
   if (Test-Path $e) { $t2 = [System.IO.File]::ReadAllText($e) }
   return @{ code = $p.ExitCode; text = ($t + "`n" + $t2) }
+}
+
+# 只读 stdout 版（取「工具的值」专用；返回形态与 Exec 一致 ⇒ `.code` 判据不受影响）：
+#   ffprobe 的 `-of csv` 字段值走 **stdout**，合并 stderr 会把报错行当值返回。实测（本机，截断 AVIF）
+#   stdout = 0 B、stderr = 166 B 的 `moov atom not found` ⇒ 下面 `$stillStreams` 那类「按行取流清单」的
+#   判据读的会是被污染的串。读 ffmpeg 造素材时的进度与报错（**只在 stderr**）时仍用 Exec；应用自己的
+#   headless 日志走 RunApp + ReadShared（两条流分别落到 `.app.out` / `.app.err`），不经这两个 helper。
+function ExecOut([string]$file, [string]$argStr, [string]$tag) {
+  $o = "$work/$tag.out"; $e = "$work/$tag.err"
+  $p = Start-Process -FilePath $file -ArgumentList $argStr -Wait -NoNewWindow -PassThru `
+       -RedirectStandardOutput $o -RedirectStandardError $e
+  $t = ""
+  if (Test-Path $o) { $t = [System.IO.File]::ReadAllText($o) }
+  return @{ code = $p.ExitCode; text = $t }
 }
 
 # ⚠ 共享读：`RedirectStandardOutput` 的目标文件在子进程存活期间被独占 ⇒ 直接 `ReadAllText` 会抛
@@ -185,8 +202,8 @@ $truncBytes = 0
 if (Test-Path $trunc) { $truncBytes = (Get-Item $trunc).Length }
 
 # ffprobe 对两条素材的真实反应（**这是「不确定触发器」的判据载体**，必须先钉住）
-$ps1 = Exec $fp "-v error -show_entries stream=index,codec_type -of csv=p=0 `"$still`"" "probe_still"
-$pt1 = Exec $fp "-v error -show_entries stream=index,codec_type -of csv=p=0 `"$trunc`"" "probe_trunc"
+$ps1 = ExecOut $fp "-v error -show_entries stream=index,codec_type -of csv=p=0 `"$still`"" "probe_still"
+$pt1 = ExecOut $fp "-v error -show_entries stream=index,codec_type -of csv=p=0 `"$trunc`"" "probe_trunc"
 $stillStreams = @(($ps1.text -split "`r?`n") | Where-Object { $_ -match '^\s*\d+\s*,\s*\w+\s*$' })
 Write-Host "  [素材] still.avif = $stillBytes B（ffprobe exit=$($ps1.code)，流行数=$($stillStreams.Count)）"
 Write-Host "         trunc.avif = $truncBytes B（ffprobe exit=$($pt1.code)）"

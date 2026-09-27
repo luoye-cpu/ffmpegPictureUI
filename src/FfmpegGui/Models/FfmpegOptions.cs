@@ -119,7 +119,7 @@ namespace FfmpegGui.Models
             if (p.DngBitDepth > 0) DngBitDepth = p.DngBitDepth;
 
             if (p.AnimationFps.HasValue) AnimationFps = p.AnimationFps;
-            AnimationLoop = p.AnimationLoop;
+            if (p.AnimationLoop.HasValue) AnimationLoop = p.AnimationLoop.Value;
             GifPaletteOptimize = p.GifPaletteOptimize;
             GifDither = p.GifDither;
             if (p.AnimationScaleW > 0) AnimationScaleW = p.AnimationScaleW;
@@ -147,6 +147,19 @@ namespace FfmpegGui.Models
         /// 位深：null = auto（不指定，由编码器自行判断）
         /// </summary>
         public int? BitDepth { get; set; } = null;
+        /// <summary>
+        /// <see cref="BitDepth"/> 被容器上限**就地钳制之前**的那一档 = 用户真正请求的位深；null = 未指定或从未被钳。
+        /// <para>
+        /// 为什么需要它（任务 #35）：<c>FfmpegCommandBuilder.Decision</c> 里
+        /// `if (options.BitDepth.Value > capBd) options.BitDepth = capBd;` 是本仓唯一的位深事实源，
+        /// 就地改写会把"用户要 10"这个事实**擦掉** ⇒ 规划层拿到的目标档已经是 8，于是
+        /// `--bit-depth 10 -f webp`（请求 10、交付 8）这类**真实降位**成了零播报。
+        /// 播报本身仍只由规划层 <c>CollectDegradations</c> ①b 登记（本字段只补它缺的那半个事实）。
+        /// </para>
+        /// ⚠ 不是用户可选项：预设 DTO（<c>PresetData</c>）里没有它，也不进简洁模式；
+        ///   值由钳制点就地补记 ⇒ CLI/GUI/预设回放三种入口都会得到正确的请求档。
+        /// </summary>
+        public int? BitDepthRequested { get; set; } = null;
         public string? ColorSpace { get; set; }
         public bool UseAdvancedColorParameters { get; set; } = false;
         /// <summary>
@@ -362,8 +375,9 @@ namespace FfmpegGui.Models
         /// 失败一律**显式失败**，不回退 ffmpeg 的 libjxl。</item>
         /// ⚠ 同日第四次更正（JXR 出口轮）：**JXR 也已接入**（同一计划位 ⇒ `RawColorPipeline` 的
         /// BMP/TIFF 中转 + `JxrEncApp` 执行出口）⇒ 本条清单只剩 **DNG/动画** 与「GainMap + 最长边缩放」。
-        /// ⚠ 本工具链的 ffmpeg **没有 jxr 编码器**（实测 `-encoders` 无 jxr）⇒ JXR 出口内失败**没有可回退的
-        /// 替代编码器**，同样一律显式失败。</item>
+        /// ⚠ 本工具链的 ffmpeg **有** `libjxr`（09-26 构建实测，取证 `tests/output/t50/`），但它**无质量
+        /// AVOption** 且字节序与 jxrlib 不一致 ⇒ 不作回退项（唯一口径见 `RawColorPipeline` 的 JXR 出口文档）；
+        /// JXR 出口内失败**没有可回退的替代编码器**，同样一律显式失败。</item>
         /// <item><c>engine</c>：**显式要求**引擎。不可走时**硬失败并点名原因**（绝不静默回退，可用性诚实）。</item>
         /// <item><c>legacy</c>：**显式**回退传统 ffmpeg 色彩链。仅用于 A/B 对拍与故障排查
         /// （其 4 个策略只有两个布尔近似：无 Reject、无超集归一）。</item>

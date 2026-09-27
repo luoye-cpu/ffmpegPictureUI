@@ -1,7 +1,25 @@
 # _run-step3-gates.ps1 —— 步骤 3 改动后的门禁批量执行（只回显每个门禁的汇总行 + 失败明细）
-# 用法：pwsh -NoProfile -File tests/scripts/_run-step3-gates.ps1 [-Probes a,b,c] [-SkipScripts]
-param([string]$Probes = 'contract,wire,verdict,selftest,iccname,plan,curve,matrix,ootf,hlgwire,bt2446,decision,engine,runner,settings,procstreams,encoding,ipc,i18n,geometry',
+# 用法：pwsh -NoProfile -File tests/scripts/_run-step3-gates.ps1 [-Probes a,b,c] [-SkipScripts] [-Scripts a,b]
+#   ⚠ `-Scripts` = **脚本级子集**（2026-09-24 新增）。动机：此前只有"全跑 57 条(≈20min)"与
+#     "裸跑单个 verify-*.ps1"两种选择，而裸跑会绕开本文件的**仓库锁 / 单步超时 / STALE 新鲜度闸 /
+#     双漂移复核 / `_gate_script_*.txt` 留痕**五项保护 ⇒ 增量验证要么太贵要么不可信。
+#     子集跑**保留**上述五项，但**不构成基线**（汇总行会点名），宣布新基线仍需一次全量。
+# ⚠ `colormath`（2026-09-26 接进默认清单，第 22 个 mode）——**必须**在默认清单里，理由是它守的是
+#   「原色表被悄悄改回缺陷值」这类**没有任何其他判据会响**的回归：`matrix` 只锁标签选路、
+#   `plan/curve` 只看传递函数，把 `ColorSpaceRegistry` 的色度常数抄错，像素会**静默偏色**而全绿。
+#   接进来之前先做了变异验牙（两次都是**改坏 `ColorSpaceRegistry.cs` 再逐字节还原**，还原后
+#   `sha256=b8175f16ffeb129b` 与变异前一致、重建后 `colormath` 回 `12/0`）：
+#     · M1 把 `bt470bg` 的 G 从 (0.290,0.600) 塌回 bt709 的 (0.300,0.600)（= 修复前「多 token 共用一套常数」
+#       的缺陷形态）⇒ `pass=11 fail=1`，红条读数 `实差 4.40E-002`；
+#     · M2 把已**故意不收录**的 `smpte428` 按旧写法补成 `smpte431` 的字节级副本 ⇒ `pass=10 fail=2`，
+#       两条各自咬一个方向：`实差 1.99E+000`（≈199% 满量程，正是"拿 DCI-P3 矩阵乘像素"的量级）
+#       + 「白名单外重复对 `smpte428≡smpte431`」。
+#   ⇒ 两条都有牙 ⇒ 才允许进默认清单。0.4 s、纯进程内、不依赖素材与外部 exe。
+param([string]$Probes = 'contract,wire,verdict,selftest,iccname,plan,curve,matrix,colormath,ootf,hlgwire,bt2446,decision,engine,runner,settings,procstreams,encoding,ipc,i18n,geometry,metaraw',
       [switch]$SkipScripts,
+      # ⚠ 逗号分隔的**文件名**（含 .ps1），顺序不敏感；名字不在清单内 ⇒ 响亮报红而不是静默忽略。
+      #   `pwsh -File` 下 `-Scripts a,b` 只会作为一个参数传入（与 $Probes 同一坑，见 :455），故这里自己切。
+      [string]$Scripts = '',
       # ⚠ #22（2026-09-19）：单步硬超时。标定依据 = 2026-09-19 整轮**全量实测分布**
       #   （探针 20 条 max 10.4 s / 合计 43.4 s；子脚本 42 条 max 158.9 s / 合计 848.6 s；总墙钟 892 s）
       #   ⇒ 脚本段取 max × ≈3 向上取整（480）。**探针段刻意宽**（2026-09-19 team-lead 定稿 = 120）：
@@ -29,7 +47,7 @@ param([string]$Probes = 'contract,wire,verdict,selftest,iccname,plan,curve,matri
 #    2026-09-17 新增 verify-gamut-map.ps1；**同日按「运行级隔离（GUID）」改写，见 §6 第 66 条**；
 #    同日再新增生产者 `_probe-jpg-p3-icc.ps1`，理由见下方 ②(b) 与调序注释；
 #    同日再新增 `verify-geometry-engine.ps1`（**几何缩放死代码**的专项门禁，理由见 `$Probes` 的 `geometry` 注释））──
-#    ⚠ **清单条数以实测为准 = 48 条**（⚠ 2026-09-19 P4-A 前为 42 条）（`foreach` 数组里的 `.ps1` 条目数）。
+#    ⚠ **清单条数以实测为准 = 57 条**（⚠ 2026-09-19 P4-A 前为 42 条；2026-09-23 由 48 经 49/50/51 到 52，2026-09-23/24 再接 `verify-ipc-extra-options.ps1` ⇒ 53，2026-09-24 再接 `_probe-settings-clone-coverage.ps1` ⇒ 54，2026-09-27 再接 `_probe-matrix-structure.ps1`（任务 #42，秒级结构自检）⇒ 55，同日再接 `_probe-stderr-merge-scan.ps1`（任务 #51，合并取数结构锁）⇒ 56，同日再接 `verify-simd-switch-fallback.ps1`（面板「SIMD 优化」声明/实现冲突 ⇒ 判据单点 `SimdKernelRouting`）⇒ 57）（`foreach` 数组里的 `.ps1` 条目数）。
 #      原注释写「29 个」「31 条」均与实测不符（**历史偏差**，非本轮引入），已按实测更正。
 #      2026-09-18 新增 `verify-engine-firstframe.ps1`（引擎多帧解码只取首帧，理由见该脚本头注释）
 #      ⇒ 32 → 33，已重新数过。
@@ -334,17 +352,18 @@ function Read-TextShared([string]$path) {
   return $null
 }
 
-# ── ⚠ #22 / #23 / 第 15·16 针：运行器**自身形态**自检（16 针）──────────────────
+# ── ⚠ #22 / #23 / 第 15·16·17 针：运行器**自身形态**自检（17 针）──────────────────
 # 为什么必须有：上面「退出码只从包装层写出的 rc 文件读」这条纪律，若将来有人回退成「读进程对象的
 #   退出码」，PS5.1 下它恒 null ⇒ **整轮每一条都假红**，而现象看起来像产品回归 ⇒ 必须钉成形态断言。
-# 16 针：① helper 定义点 ==1；② 调用点 ==2；③ 带超时调用点 ==2（两个调用点都必须把超时当变量传，
+# 17 针：① helper 定义点 ==1；② 调用点 ==2；③ 带超时调用点 ==2（两个调用点都必须把超时当变量传，
 #   不得写字面量）；④⑤ 裸取退出码（`$p.` / `$proc.`）计数 ==0；⑥ 进程对象的退出码取法计数 ==0；
 #   ⑦ 包装层写 rc 点 ==1；⑧ helper 读 rc 点 ==1；⑨ 进程树杀法 token ==1；⑩ 超时抑制点 ==2；
 #   ⑪ 探针超时**默认值**逐字钉住 ==1（定稿 = **120**，变异方向 = 改成 60 ⇒ 必须红）；
 #   ⑫ 脚本超时**默认值**逐字钉住 ==1（= **480**，变异方向 = 改成 420 ⇒ 必须红）；
 #   ⑬ `$tableOnly` **条数** ==4；⑭ `$noSelfSummary` **条数** ==7；
 #   ⑮ 读失败分支 ==2 且 共享读引用 ==3（异常路径**不得沿用上一轮 `$txt`**）；
-#   ⑯ 运行器**自身指纹**：打印点 ==2（启动 + 收尾）· 自漂移复核引用 ==3 · 归属不明告警 ==2。
+#   ⑯ 运行器**自身指纹**：打印点 ==2（启动 + 收尾）· 自漂移复核引用 ==3 · 归属不明告警 ==2；
+#   ⑰ 清单**散文条数** == `$expectedScriptCount` 常量（常量定义点 ==1；三种散文形态各命中 ≥1 且数字相同）。
 # ⚠ ⑯ 的理由（2026-09-19 #28，gp-1 与 gp-3 各自独立查出）：`Check-SrcDrift` **只覆盖
 #   `src/FfmpegGui` 与 `tests/ServiceProbe`** ⇒ **运行器自身既不在覆盖范围、也不哈希自身**。
 #   有人在整轮进行中改运行器 ⇒ 那一轮读数**归属不明**（跑的是旧版还是新版？）而**无任何告警**。
@@ -364,6 +383,11 @@ function Read-TextShared([string]$path) {
 #   （实测 `[ipc]` 打出 `pass=6` = `encoding` 的读数）。探针段 `$sum` **参与记账**
 #   ⇒ **真失败会被上一轮的 `fail=0` 掩盖**（结构性假绿通道）；脚本段 `$sum` 只回显 ⇒ 后果是**误导显示**。
 #   ⇒ 修法 = 共享读（`FileShare.ReadWrite`）+ 短重试 + **读失败显式记 FAIL 并清空 `$txt`**。
+# ⚠ ⑰ 的理由（2026-09-24）：**运行时那条条数锁只比「数组 vs 常量」** ⇒ 散文里的条数**从来没有锁**。
+#   实证：接第 53 条时我改完了常量与数组、**漏改两处散文**，之后跑的整轮**照常全绿、无人报错**
+#   （散文是读者当权威口径引用的那个数 ⇒ 它漂移比常量错更害人，因为没人会去复核注释）。
+#   ⚠ 本针**不能**改成"扫所有出现的条数"——那会撞上历史演进链里的 `42 / 48 / 52` 等**旧读数**
+#   （历史链按规矩逐字保留）⇒ 只钉**三种"现量陈述"形态**，新增现量陈述时必须把形态加进这一针。
 # ⚠ 本函数读**运行器自身原文（含注释，不剥注释 —— 故意比 ps-compat 更严）**，所以**所有针都必须
 #   用拼接构造**：否则针的字面量会被本函数自己的源码满足 ⇒ 断言退化成同义反复
 #   （「不得出现」型恒红、「必须出现」型恒绿）。⚠ 同理，注释里也不得写出那些针的**连续**形式。
@@ -433,6 +457,36 @@ function Test-RunnerShape {
   if ($cSelfPrint -ne 2 -or $cSelfDrift -ne 3 -or $cSelfWarn -ne 2) {
     $bad.Add("自指纹打印点 = $cSelfPrint（须 2）· 自漂移复核引用 = $cSelfDrift（须 3）· 归属不明告警 = $cSelfWarn（须 2）⇒ 否则运行器自身被改时无法检出（读数归属不明）")
   }
+  # ⑰ 清单**散文条数**与常量对账（2026-09-24）。为什么必须有：条数锁只管「数组 vs 常量」，
+  #   **散文一行都不在锁里** ⇒ 接第 53 条时我漏改了两处散文，整轮照常全绿、无人报错
+  #   （而散文恰恰是读者当"权威口径"引用的那个数，它漂移比常量错更害人）。
+  #   判据 = 常量定义点恰好 1 处；下列三种形态各须命中 ≥1 且其中数字 == 常量。
+  #   ⚠ token 一律**拼接**构造（本函数读的是自己的源码），注释里也不得写出连续形式；
+  #     新增别的条数散文表述时，把它的形态加进下面这个列表，否则那处仍然无锁。
+  $nConstLine = 'expectedScriptCount' + ' = (\d+)'
+  $nProseA = '清单条数' + '以实测为准 = (\d+) 条'
+  $nProseB = '受管基线：脚本清单 = \*\*' + '(\d+)\*\* 条'
+  $nProseC = '全跑 ' + '(\d+) 条'
+  $mConst = @([regex]::Matches($t, $nConstLine))
+  $proseBad = @()
+  if ($mConst.Count -ne 1) {
+    $proseBad += "常量定义点 = $($mConst.Count)（须 1：写两处则谁生效取决于顺序）"
+  } else {
+    $constVal = [int]$mConst[0].Groups[1].Value
+    $proseSpec = @(
+      @{ Name = '清单条数…以实测为准'; Pat = $nProseA },
+      @{ Name = '受管基线：脚本清单';  Pat = $nProseB },
+      @{ Name = '全跑 N 条';          Pat = $nProseC }
+    )
+    foreach ($spec in $proseSpec) {
+      $ms = @([regex]::Matches($t, $spec.Pat))
+      if ($ms.Count -lt 1) { $proseBad += "$($spec.Name) 命中 0（散文被删或改了形态 ⇒ 该处失去保护）" }
+      foreach ($m in $ms) {
+        if ([int]$m.Groups[1].Value -ne $constVal) { $proseBad += "$($spec.Name) = $($m.Groups[1].Value)（常量 = $constVal）" }
+      }
+    }
+  }
+  if ($proseBad.Count -gt 0) { $bad.Add("散文条数与常量不符：" + ($proseBad -join ' · ')) }
   return $bad
 }
 
@@ -456,6 +510,34 @@ function Get-SelfFingerprint {
 $probeList = @($Probes -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 if ($probeList.Count -eq 0) { Write-Output "无探针 mode，拒绝空跑"; exit 2 }
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path; Set-Location $root
+
+# ── 前置：派生 fixture 的**按需补建**（2026-09-22；`HANDOVER §33` 项 3）─────────────────────────
+# 为什么需要：`tests/output/**` **不受版本控制**（`.gitignore:78`）⇒ **干净检出上**派生 fixture 全缺
+#   ⇒ 相关门禁会**跳过**部分断言（现已显示 `SKIP=` 计数，但**仍然是没跑**）。
+# ⚠⚠ **必须在取锁之前跑**：两个生产者都用**同一把**仓库级锁（`#147 C`），而下面几行就要取锁
+#   ⇒ 把它们放进脚本循环内**必然 exit 9**。
+# ⚠ **只在确实缺时跑**（正常机器上零开销）；两个生产者各查一个代表性产物，且**有先后依赖**
+#   （`ensure-fixtures` 要读 `sources/src_8bit.png`）⇒ 数组顺序不可颠倒。
+# ⚠ **刻意不取退出码**：本文件的自形态检查把「进程对象的退出码取法」钉成**全文件计数 == 0**
+#   （PS5.1 下恒 null ⇒ 全轮假红）⇒ 这里改用**语义判据**：跑完看**素材是否到位**。
+#   若生产者因「锁被别的实例占用」而 `exit 9` ⇒ 本轮**中止**（并发禁止，语义与下方一致）；
+#   其它失败 ⇒ 只警告不中止 —— 受影响的门禁会各自以可见的 `SKIP` 记账。
+$fixtureProducers = @(
+    @{ Need = "$root/tests/output/sources/src_8bit.png"; Producer = 'generate-sources.ps1' },
+    @{ Need = "$root/tests/output/validate/src_hdr.png"; Producer = 'ensure-fixtures.ps1'  }
+)
+foreach ($fp in $fixtureProducers) {
+    if (Test-Path $fp.Need) { continue }
+    $sp = Join-Path $PSScriptRoot $fp.Producer
+    if (-not (Test-Path $sp)) {
+        Write-Output "⚠ 缺派生素材 $($fp.Need)，且找不到生产者 $sp ⇒ 相关断言会以 SKIP 记账"
+        continue
+    }
+    Write-Output "⚠ 缺派生素材 $($fp.Need) ⇒ 先跑 $($fp.Producer)（干净检出/素材被清后的一次性补建）"
+    & $sp
+    if (Test-Path $fp.Need) { Write-Output "✅ 已补建 $($fp.Need)" }
+    else { Write-Output "⚠ 跑完仍缺 $($fp.Need) ⇒ 相关断言会以 SKIP 记账（不中止本轮）" }
+}
 
 # ── ⚠⚠ #147 C：仓库级单锁（2026-09-19 实施；方案与验收见 docs/TESTING.md §6 第 86 条）──────────
 # 目的：消除成因 1（同名脚本并发）与成因 2（共享 fixture 并发读写）的**最大窗口**（两个 runner 实例并发），
@@ -520,8 +602,22 @@ $script:gatesLockStream = $null
 Write-Output "gates-lock=$script:gatesLockPath (pid=$PID)"
 
 $env:FFMPEGGUI_FFMPEG_DIR = "$root/publish/PLAN/ffmpeg-full"
+
+# ── 起手清 perl locale 环境变量（2026-09-27，#51 第 0 项）─────────────────────────────
+# 随包 exiftool 是 perl 打的：只要子进程继承 `LC_ALL`/`LANG` = C.UTF-8，它每次往 **stderr** 喷
+# 4-6 行 "Setting locale failed" warning，而**退出码仍是 0**。全仓有 43 处"合并 stdout+stderr"取数点，
+# 其中 18 处读的是 **FfmpegGui 自己的日志** —— 而产品 `ExifToolService.cs:906-909` 把子进程 stderr
+# 原样转投进应用日志 ⇒ 那 18 处**在脚本侧分流救不了**，只能在源头掐掉。
+# ⚠ 这条**不替代**逐点改造（"exiftool 起不来 / 文件不存在 ⇒ 两路同为不可用"是另一回事，
+#   会造假绿，登记在 `tests/output/t51` 白名单第 1-9 项）。
+foreach ($v in @('LC_ALL', 'LANG', 'LC_CTYPE')) { Remove-Item "Env:$v" -ErrorAction SilentlyContinue }
+# 打印一行，让"这一轮是在干净环境下跑的"成为可追溯读数（与 `[gate] exe=` 同族）。
+Write-Output "env-cleaned=LC_ALL,LANG,LC_CTYPE (exiftool 的 perl locale warning 源头掐掉；本轮起有效)"
 $pr = "$root/tests/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.exe"
 if (-not (Test-Path $pr)) { $pr = "$root/tests/ServiceProbe/bin/Debug/net11.0/win-x64/ServiceProbe.exe" }
+# ⚠ 2026-09-21（TESTING.md 第 84 条处置建议 ①）：**回退是静默的** —— 门禁可能测的
+#   不是你以为的那个二进制。⇒ 一律**打印被测 exe 与构建类型**，让读数可追溯。
+Write-Output ("[gate] exe=" + $pr + $(if ($pr -like '*\Debug\*') { " (Debug fallback)" } else { " (Release)" }))
 Write-Output "probe-host=$pr"
 
 # ── 二进制新鲜度闸（2026-09-15 新增）───────────────────────────────────────────
@@ -541,17 +637,42 @@ $guiSrc = Get-NewestSrc "$root/src/FfmpegGui"
 $prbSrc = Get-NewestSrc "$root/tests/ServiceProbe"
 $guiDll = Get-Item (Join-Path $binDir 'FfmpegGui.dll') -ErrorAction SilentlyContinue
 $prbExe = Get-Item $pr -ErrorAction SilentlyContinue
+# ── 2026-09-24 补两对配对（此前 STALE 只管两对 ⇒ 另两个"真正被执行的产物"靠手工）──────────
+#   ① `UiTestHost.exe`：**5** 条 UI 门禁（ui-host / param-matrix / strategy-map / param-defects /
+#      cli-strict）跑的就是它（清单内引用数按 AST 实测）。此前只重建 src+ServiceProbe 时，这 5 条会拿
+#      **陈旧宿主**跑出「绿」—— 运行器自己在清单注释里把这条登记成"未覆盖缺口 ⇒ 靠手工"，现在补上。
+#   ② `src/FfmpegGui/bin/**/FfmpegGui.exe`：清单内 **28** 条端到端门禁执行的是这个 **exe**
+#      （AST 取 `$scriptList` 后逐条扫引用，2026-09-24 实测；原注释凭印象写"24 条"已作废 ⇒ 见 §6 第 106 条）。
+#      ⚠ 它补的**不是**"dll 新、exe 旧"那种边角状态，而是**这个文件此前根本不在任何判据里**：
+#      旧配对只比探针 bin 目录下那份 `FfmpegGui.dll`（`$guiDll`，另一条构建输出路径上的副本），
+#      而 28 条门禁执行的是 `src/**/win-x64/FfmpegGui.exe` —— **不同目录、不同文件**。
+#      ⚠ 别把这条读成"exe 与 dll 的 mtime 会各自漂移"：本轮未做该实验，也**不需要**它成立，
+#      缺判据这件事本身就够严重（§6 第 50 条 ⑤ 已经因为"闸看不到子脚本 exe"赔过一次整批数字）。
+#   ⚠ 本闸的语义边界（不要高估）：mtime 配对只回答"**产物不比源码旧**"，**不**回答"这次改动真的进了产物"
+#      （增量构建可能保留旧 mtime ⇒ 要证后者得拿 dll 的 SHA 与参照对撞）。见 §6 第 106 条末段。
+$uiSrc  = Get-NewestSrc "$root/tests/UiTestHost"
+$uiExe  = Get-Item "$root/tests/UiTestHost/bin/Release/net11.0/win-x64/UiTestHost.exe" -ErrorAction SilentlyContinue
+$guiExe = Get-Item "$root/src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.exe" -ErrorAction SilentlyContinue
 $stale = @()
 if ($guiSrc -and $guiDll -and $guiDll.LastWriteTime -lt $guiSrc.LastWriteTime) {
   $stale += ("FfmpegGui.dll {0} < src {1}（{2}）" -f $guiDll.LastWriteTime, $guiSrc.LastWriteTime, $guiSrc.Name)
 }
+if ($guiSrc -and $guiExe -and $guiExe.LastWriteTime -lt $guiSrc.LastWriteTime) {
+  $stale += ("FfmpegGui.exe(端到端门禁实际执行的产物) {0} < src {1}（{2}）" -f $guiExe.LastWriteTime, $guiSrc.LastWriteTime, $guiSrc.Name)
+}
 if ($prbSrc -and $prbExe -and $prbExe.LastWriteTime -lt $prbSrc.LastWriteTime) {
   $stale += ("ServiceProbe.exe {0} < src {1}（{2}）" -f $prbExe.LastWriteTime, $prbSrc.LastWriteTime, $prbSrc.Name)
 }
+# ⚠ UiTestHost **只与自己的源码比**：它引用 FfmpegGui，但 src 侧的陈旧由上面两对负责；
+#   拿 `tests/UiTestHost` 的源码去比 src 的 mtime 会造出与产品无关的假 STALE。
+if ($uiSrc -and $uiExe -and $uiExe.LastWriteTime -lt $uiSrc.LastWriteTime) {
+  $stale += ("UiTestHost.exe {0} < tests/UiTestHost 源码 {1}（{2}）" -f $uiExe.LastWriteTime, $uiSrc.LastWriteTime, $uiSrc.Name)
+}
 if ($stale.Count -gt 0) {
-  Write-Output "[STALE] 探针产物比源码旧，拒绝跑（否则结论不可信）"
+  Write-Output "[STALE] 被执行的产物比它的源码旧，拒绝跑（否则结论不可信）"
   $stale | ForEach-Object { Write-Output ("        " + $_) }
-  Write-Output  "        重建：dotnet build tests/ServiceProbe/ServiceProbe.csproj -c Release"
+  Write-Output  "        重建（同批、各自 -c Release）：src/FfmpegGui | tests/ServiceProbe | tests/UiTestHost"
+  Write-Output  "        ⚠ tests/GainMapTestHost 不在本闸内（其 exe 不被任何门禁执行），但它是第四份 FfmpegGui.dll 副本 ⇒ 重建时同批带上"
   # ⚠ 2026-09-19 修（实施 #147 C 锁时漏掉的退出点）：此处**必须**先释放仓库级锁 ——
   #   否则「正常拒绝」也会留下残留锁（实测：STALE 拒跑后 `跑后锁残留=True`，下次运行会被
   #   自己的锁挡住并报「疑似残留锁」）。`Release-GatesLock` 只删**自己写的**锁（pid 校验）。
@@ -567,10 +688,11 @@ if ($shapeBad.Count -gt 0) {
   Write-Output "[SHAPE] 运行器自身形态自检失败，拒绝跑（否则退出码读数不可信）"
   $shapeBad | ForEach-Object { Write-Output ("        " + $_) }
   Write-Output  "        修法：退出码一律取 Invoke-StepWithTimeout 的返回值；进程对象在 helper 内命名 child"
+  Write-Output '        修法（若红的是「散文条数」那一针）：把现量陈述里的条数改成与 $expectedScriptCount 一致；新增现量陈述时把它的形态加进 Test-RunnerShape 第 ⑰ 针'
   Release-GatesLock
   exit 2
 }
-Write-Output "shape-selfcheck=OK（16 针：定义点 / 调用点 / 带超时调用点 / 裸取 A / 裸取 B / 进程对象取码 / 写 rc 点 / 读 rc 点 / 杀树 token / 抑制点 / 探针超时默认值 / 脚本超时默认值 / tableOnly 条数 / noSelfSummary 条数 / 读失败不沿用 / 自身指纹）"
+Write-Output "shape-selfcheck=OK（17 针：定义点 / 调用点 / 带超时调用点 / 裸取 A / 裸取 B / 进程对象取码 / 写 rc 点 / 读 rc 点 / 杀树 token / 抑制点 / 探针超时默认值 / 脚本超时默认值 / tableOnly 条数 / noSelfSummary 条数 / 读失败不沿用 / 自身指纹 / 散文条数）"
 
 # ── ⚠ #28：启动时记录**运行器自身**指纹（收尾前重测 ⇒ 不一致则响亮告警）────────────────
 # ⚠ 这一行**有意打印**（收尾还有一行）：日志里出现 hash 是**预期**的，不是异常。
@@ -668,7 +790,16 @@ foreach ($m in $probeList) {
     Get-Content $o -Tail 5 -ErrorAction SilentlyContinue | ForEach-Object { Write-Output ("        " + $_) }
   }
 }
-if ($SkipScripts) { Check-SrcDrift; Check-SelfDrift; Exit-WithSummary "（-SkipScripts，仅探针）" }
+if ($SkipScripts) {
+  # ⚠ `-SkipScripts` 在脚本段之前就早退 ⇒ 同时给 `-Scripts` 时那些子集**根本不会被跑**。
+  #   静默忽略会变成"以为跑过了其实没跑"，这里点名拒绝。
+  if (-not [string]::IsNullOrWhiteSpace($Scripts)) {
+    Write-Output "[FAIL] -SkipScripts 与 -Scripts 互斥（前者在脚本段前就早退 ⇒ 子集不会跑）。去掉 -SkipScripts。"
+    $failedItems.Add("runner:-SkipScripts 与 -Scripts 同时给出")
+    Exit-WithSummary "（参数冲突，拒绝跑）"
+  }
+  Check-SrcDrift; Check-SelfDrift; Exit-WithSummary "（-SkipScripts，仅探针）"
+}
 
 # ⚠ #22（2026-09-19）：`$psExe` 的计算已**上移**到探针段之前 —— 理由：`Invoke-StepWithTimeout` 的
 #   **包装层**需要一个宿主 exe，而探针段就要用它（原位置在探针段之后，本轮上移）。原注释随之上移。
@@ -724,7 +855,7 @@ $noSelfSummary = @('_probe-cancel-propagation-scan.ps1', '_probe-ct-chain-closur
 #   观察项**，改成必红等于**主动放弃一条覆盖**；补生产者只是**修复清单的遗漏**。
 #   ⚠ **本组正确性依赖 runner 串行**（`validate/jpgp3` 是固定共享目录）——
 #   若将来 runner 改成并行，本组必须先改成「指针/按会话隔离」（§6 第 68 条）。
-# ⚠ 受管基线：脚本清单 = **48** 条（`.workbuddy-ai/memory/MEMORY.md` / `docs/HANDOVER.md` /
+# ⚠ 受管基线：脚本清单 = **57** 条（`.workbuddy-ai/memory/MEMORY.md` / `docs/HANDOVER.md` /
 #   `docs/TESTING.md` §3.5 同记此数）。增删条目必须**同时**改此常量 + 四处文档；
 #   否则下面的条数锁会响亮报红（防「删掉一条 ⇒ 静默变 47 ⇒ 日志照常、无人发现」）。
 #   ⚠ 本锁在 `-SkipScripts` 下**不执行**（该模式走上面的早退，清单根本没被使用）——
@@ -738,18 +869,62 @@ $noSelfSummary = @('_probe-cancel-propagation-scan.ps1', '_probe-ct-chain-closur
 #     · 第 46 条 = `verify-ui-param-defects.ps1` ⇒ `UIPARAMDEF RESULT: pass=302 fail=0`（6.3 s）
 #     · 第 47 条 = `verify-cli-strict.ps1`       ⇒ `CLISTRICT RESULT: pass=302 fail=0`（6.0 s）
 #     · 第 48 条 = `verify-png-structure.ps1`    ⇒ `PNGSTRUCT RESULT: pass=32 fail=0`（1.4 s）
+#       ⚠ 上面 5 条 UI 门禁的 `pass=302` 是 **2026-09-19 那一轮的实跑读数**，按"历史链逐字保留"的规矩不改写；
+#       现值演进：302 → 328（2026-09-22）→ **340**（2026-09-24，`UiTestHost` 加 `GroupP_StartupDetectLog` +12 条）。
+#       ⇒ 想核对当期值：看整轮日志里 `UIHOST RESULT: pass=` 那一行，别拿这段历史注释当现值。
 #   ⇒ 6 条**合计仅 32.4 s**（对整轮 ~950 s 是 +3.4%）⇒ 时长预算无碍。
 #   ⚠ 这 6 条**都带自身计数汇总**（`PASS=n FAIL=m` + 显式 `exit 1/else exit 0`）
 #     ⇒ **都不进** `$tableOnly` / `$noSelfSummary`（第 13/14 针的条数锁因此不变：4 / 7）。
 #   ⚠ 前 5 条都跑同一个 `tests/UiTestHost.exe`（各跑一遍**全量**宿主，只在锚点断言上分工）
 #     ⇒ 有**受控冗余**（4 次重复执行宿主 ≈ 24 s），换来的是「某个分组被静默删掉」能被各自锚点抓住。
-#   ⚠⚠ **已知覆盖缺口（未处置，另议）**：`tests/UiTestHost` 是**第三个项目**，而本运行器的
-#     **新鲜度（STALE）闸只覆盖 `src/FfmpegGui` + `tests/ServiceProbe` 两个** ⇒ 只重建那两者时，
-#     这 5 条会拿**陈旧的 `UiTestHost.exe`** 跑出「绿」。当前靠**手工**保证三者同批重建。
+#   ⚠⚠ **曾有的覆盖缺口（2026-09-24 已处置）**：`tests/UiTestHost` 是**第三个项目**，而本运行器的
+#     新鲜度（STALE）闸原先**只覆盖 `src/FfmpegGui` + `tests/ServiceProbe` 两个** ⇒ 只重建那两者时，
+#     这 5 条会拿**陈旧的 `UiTestHost.exe`** 跑出「绿」，当时靠**手工**保证三者同批重建。
+#     ⇒ 现已把 `UiTestHost.exe ↔ tests/UiTestHost/**` 与被 28 条端到端门禁执行的
+#       `src/**/FfmpegGui.exe ↔ src/FfmpegGui/**` 两对补进同一条闸（见上方 `[STALE]` 段）；
+#       `tests/GainMapTestHost.exe` **仍不在闸内** —— 判据取**赋值形态**而非"搜文件名"：
+#       `tests/scripts/*.ps1` 的**非注释行**里 `$x = … GainMapTestHost` = **0** 处
+#       （对照：同一判据搜 `UiTestHost` = **6** 处 ⇒ 证明这条负断言有牙，不是写错了正则）。
+#       ⚠ **不要**改回 `grep GainMapTestHost.exe tests/scripts/*.ps1` 那种写法：本文件自己的注释里就含这个串
+#         ⇒ 负断言会被自己的文字满足（本轮实测踩过，故换成赋值形态 + 带对照）。见 §6 第 106 条末段。
+#     ⚠ 但"扩到 4 对"**不等于**"所有被执行产物都进了闸"：门禁在 Release exe 缺位时会**兜底跑 Debug 那份**
+#       （清单内 27 条内嵌该路径；会打印 `(Debug fallback)` 因而**可追溯**，但**不拦**），而 **Debug 不在本闸内**，
+#       且本闸四对都是"产物不存在 ⇒ 该对跳过" ⇒ 「缺失即拒跑」与否是**待决策**，
+#       见 `docs/HANDOVER_2026-09-22.md` §4 第 9 行与 `docs/TESTING.md` §6 第 106 条末段。
 #   ⚠ 不接入的长跑门禁：`verify-oracle-matrix.ps1`（本轮新建，5010 条组合 + 独立裁判）
 #     实测 **1.6~2.0 s/用例 ⇒ 全量约 2.5 h**，远超 `ScriptTimeoutSec 480` ⇒ **有意不入清单**，
 #     按**手工长跑**执行（`-Layer L1` ≈ 6 min / `-Layer L2` ≈ 5 min / `-Smoke` ≈ 8 s）。
-$expectedScriptCount = 49
+# ⚠⚠ **2026-09-22 接线：49 → 50（+1）** —— `verify-engine-alpha-preserve.ps1`
+#   （管线审查 §3.4 的修复锁；见清单内该条目的登记与变异验证）。
+# ⚠⚠ **2026-09-22 第二次接线：50 → 51（+1）** —— `_probe-tool-detect.ps1`
+#   （外部工具探测的**开销/诚实性/可注入性**三合一锁；起因是本轮两条门禁红 + 一次实测 29 分钟挂死，
+#     细节写在该脚本文件头。断言本体在 `ServiceProbe tooldetect`，本条目只做编排。）
+# ⚠⚠ **2026-09-23 第四次接线：51 → 52（+1）** —— `verify-startup-warmup.ps1`
+#   （启动期「环境分析 / 预热」的七缺陷锁：检测了不报告、GUI 空槽位 + 异常零记录、同一条 5 级
+#     路径链一次启动跑两遍、扫描窗口内的假阴、exiftool 每次调用重扫、换环境不失效、
+#     声明级数 ≠ 实现级数。结构锁 + 一次真跑（headless `--dry-run` 报告 8 行）。
+#     变异验证 13 例全部有牙（逐例清单见该脚本文件头的「变异验证登记」段，含两条 harness 踩坑告示）。）
+# ⚠⚠ **2026-09-24 第六次接线：53 → 54（+1）** —— `_probe-settings-clone-coverage.ps1`
+#   （`AppSettingsService.Save()` 手写克隆表的**结构锁**。**接入当天就抓到一个长期缺陷**：
+#     `AppSettings.RenderingMode` 从没进过这张表 ⇒ 每次 `Save()` 都把它写成**模型默认值 "auto"**
+#     （菜单 `MainWindow.xaml.cs:5239` 刚改完、`:5243` 立刻 Save ⇒ 用户选的渲染后端当场丢失，
+#     启动 `Program.cs:127` 读到的永远是 auto）。该脚本 2026-09-15 就写好了，
+#     但**和 `verify-ipc-extra-options` 一样属于"有锁但不上锁"** ⇒ 脚本自 2026-09-15 起就没人跑过，
+#     而缺陷进入代码的确切日期**未能从版本历史确定**（`git log -S RenderingMode` 只追到补齐追踪那次提交）。
+#     配套还给了 `ServiceProbe settings` 一条**行为锁**（设非默认哨兵 → Save → 读回逐个比对），
+#     两条独立成对：结构锁管"有没有漏字段"，行为锁管"值真的出去了没有"。
+#     分类账随之变成 **4 + 7 + 43 = 54**（`$tableOnly` / `$noSelfSummary` 两个数组**不动**）。
+#     变异证据：删掉 `RenderingMode = _current.RenderingMode,` 那一行 ⇒ 本条红「漏项 = RenderingMode」
+#     且 `settings` 红「写入 zz-RenderingMode-7 / 读回 auto」（实测读数见 §6 第 110 条）。）
+# ⚠⚠ **2026-09-23 第五次接线：52 → 53（+1）** —— `verify-ipc-extra-options.ps1`
+#   （IPC **ExtraOptions 透传轴**的回归锁（P1-C）。该脚本 2026-09-19 就写好了、且自带变异验证，
+#     却从未进清单 ⇒ 属「有锁但不上锁」的静默覆盖缺口（与 2026-09-19 P4-A 那批 +6 同性质）。
+#     白班 §4 第 6 条当时记的是"接一条 = 清单 52"—— 那个数已过期：接它时清单已经是 52 ⇒ **现 53**，
+#     分类账随之变成 **4 + 7 + 42 = 53**（`$tableOnly` / `$noSelfSummary` 两个数组**不动**）。
+#     接入前实测单跑：`PASS=20 FAIL=0`、`exit=0`、stderr 0 字节。
+#     ⚠ 它要**独占 GUI 实例 + 命名管道**（脚本 :52-56 有实例即判红）⇒ 依赖运行器**串行**，
+#       且必须排在 `verify-cli-strict.ps1` **之前**（见下方清单内登记与末位约定）。）
+$expectedScriptCount = 57
 $scriptList = @('verify-ps-compat.ps1','verify-color-caps.ps1','verify-color-wiring.ps1','verify-color-strategy.ps1','verify-format-regression.ps1',
                  'verify-widegamut-regression.ps1','verify-tiff-icc.ps1','verify-webp-hdr-fix.ps1','verify-decision-delivery.ps1',
                  '_probe-stderr-drain-scan.ps1','_probe-proc-encoding-scan.ps1','_probe-cancel-propagation-scan.ps1','_probe-i18n-scan.ps1','_probe-cjk-hardcode-scan.ps1','verify-png-signature.ps1','verify-gainmap-memory.ps1','verify-metadata-privacy.ps1','verify-gif-avif-framelist.ps1','verify-color-peak.ps1',
@@ -767,9 +942,110 @@ $scriptList = @('verify-ps-compat.ps1','verify-color-caps.ps1','verify-color-wir
                  'run-pipeline-tests.ps1','verify-png3-interop.ps1','verify-color-tonemap.ps1','verify-color-engine-xcheck.ps1',
                  'verify-geometry-engine.ps1','verify-engine-firstframe.ps1','verify-jxl-codestream-route.ps1','verify-anim-static-target.ps1',
                  'verify-jxl-probe-timeout.ps1','verify-ffmpeg-heartbeat.ps1','_probe-sync-read-before-wait-scan.ps1','verify-jxr-anim-input.ps1','_probe-ct-chain-closure-scan.ps1','verify-avif-anim-probe.ps1','verify-webp-anim-probe.ps1',
+                 # ── 第 50 条：2026-09-22 接线（`verify-engine-alpha-preserve.ps1`）────────────────────
+                 #   覆盖「**透明输入 + 色彩变换** ⇒ alpha 被静默拍平」的修复（管线审查 §3.4）。
+                 #   ⚠ 它的素材必须**真透明**（`colorchannelmixer=aa=0` 自造，并在门禁内**自检** alpha==0）——
+                 #     只用 `sources/src_alpha.png` 是**不够**的（它实测「RGBA 容器但全不透明」，会让断言恒真）。
+                 #   ⚠ 变异验证：把 `RawColorPipeline.BuildEncodeArgs` 的 alpha 判据改成 `false` ⇒
+                 #     该门禁 `PASS=9 FAIL=7`（② 的 6 条 + ③ 的正例 1 条）⇒ **有牙**。
+                 #   ⚠ 放在 `verify-cli-strict.ps1` **之前**：后者含「共享语料目录不得残留 `_*.png`」的验收，
+                 #     必须在**所有**脚本之后跑（既有约定）。
+                 'verify-engine-alpha-preserve.ps1',
+                 # ── 第 51 条：2026-09-22 接线（`_probe-tool-detect.ps1`）─────────────────────────────
+                 #   锁三件实测缺陷：① 递归扫 PATH 每个根 ⇒ 遇用户配置文件根目录这类大树**永不返回**
+                 #   （实测 60 s 时句柄 9 万 / 单核满载 / 一次降级路径挂 29 分钟）；② 兜底把「已证实
+                 #   起不来」的候选报成可用工具（WindowsApps 私有 djxl.exe = Access Denied、
+                 #   Prefetch 的 `EXIFTOOL.EXE-*.pf` 被 `*exiftool.exe*` 命中）；③ 降级路径的门禁无法
+                 #   确定性地关掉系统搜索根 ⇒ 判据随本机装过什么应用而翻转（本轮 ①②就是那么翻红的）。
+                 '_probe-tool-detect.ps1',
+                 # ── 第 52 条：2026-09-23 接线（`verify-startup-warmup.ps1`）───────────────────────────
+                 #   锁启动期「环境分析 / 预热」的七处实测缺陷（细节在其文件头 ①~⑦）。两类锁并存：
+                 #   ①**结构锁**（读源码文本，确定性）：`ProbeAllTools` 内不得再有无条件 `Xxx.Detect();`、
+                 #     四个 service 的 `lock (_gate)` ≥ 3、exiftool 的 `_attempted` 短路、GUI 的失效调用点
+                 #     （GPU / 格式能力 / PLAN 闩）、RawService 六级逐形态锁。
+                 #   ②**行为锁**（真跑一次 headless `--dry-run`）：报告必须 8 行且与 `ProbeAllTools` 同名同数
+                 #     —— 只有①会退化成字符串存在性，抓不住「函数存在但没人调 / 检测了但不报告」。
+                 #   ⚠ 变异验证：13 例逐条注入（含删掉 djxl 那一行报告后**重建 exe**）⇒ 13/13 转红，无空转。
+                 #   ⚠ 必须排在 `verify-cli-strict.ps1` **之前**（末位约定见上）。
+                 'verify-startup-warmup.ps1',
                  # ── 第 43~48 条：2026-09-19 P4-A 接线（见上方 `$expectedScriptCount` 处的登记）──
                  # ⚠ `verify-cli-strict.ps1` **有意放最后**：它含「共享语料目录里不得残留 `_*.png`」的验收，
                  #   放在末位才能把**前面所有脚本**的残留都纳入观测。
+                 # ── 第 53 条：2026-09-23 接线（`verify-ipc-extra-options.ps1`）────────────────────────
+                 #   锁 IPC 侧 `ExtraOptions` **真的被应用**（复用 CLI 的 key→字段映射，不另写平行表）：
+                 #   3 条正控走**真实命名管道 + 真实 GUI 实例 + ffprobe 回读产物 pix_fmt**（chroma 4:2:0 →
+                 #   `yuvj420p` / 4:2:2 → `yuvj422p` / bit-depth 16 → `rgb48*`），2 条向后兼容（缺键 vs 空字典
+                 #   **是两件事，两条都锁**），1 组非法取值必须**显式失败且点名 key** 且不产出文件。
+                 #   ⚠ 归 **C 类**：自身有 `PASS=/FAIL=` 汇总 + `RESULT` 行 + 断言驱动 `exit 1`，前置缺件 fail-closed
+                 #     ⇒ **不进** `$tableOnly` / `$noSelfSummary`。其文件头自带变异验证登记（删掉 ApplyExtraOption
+                 #     调用 ⇒ B3/C3/D3 + G1/G2 转红）。
+                 #   ⚠ 独占 GUI + 命名管道 ⇒ 必须在 `verify-cli-strict.ps1` **之前**、且依赖运行器串行。
+                 'verify-ipc-extra-options.ps1',
+                 # ── 第 54 条：2026-09-24 接线（`_probe-settings-clone-coverage.ps1`）───────────────────
+                 #   锁 `AppSettingsService.Save()` 的**手写克隆表**是否覆盖全部持久化属性。
+                 #   为什么这条必须进清单（**它进来当天就抓到一个长期缺陷**）：`Save()` 序列化的是
+                 #   `new AppSettings{ 逐字段 = _current.X }` ⇒ 漏一个字段不是"不落盘"，而是**落盘成模型默认值**
+                 #   （键在、值被打回默认）⇒ 用户改完立刻 Save 就当场丢失。实测命中
+                 #   `RenderingMode`（菜单改它 → 立刻 Save → 启动读它选渲染后端），而该脚本
+                 #   **早已存在但不在清单里** ⇒ 谁也不跑 ⇒ 缺陷一直躺着。
+                 #   两把锁各自独立：本条是**结构锁**（读源码比对字段集合，零依赖、~1 s），
+                 #   `ServiceProbe settings` 里同期补的"全字段落盘往返"是**行为锁**（设哨兵 → Save → 读回比对）。
+                 #   变异证据：删掉 `RenderingMode = _current.RenderingMode,` 那一行 ⇒
+                 #     本条红（"漏项 = RenderingMode"）+ `settings` 也红（"写入 zz-RenderingMode-7 / 读回 auto"）；
+                 #     本条内部的「有牙自证」用**相对基线多报一个**的判据，避免与主判据互相绑死。
+                 #   ⚠ 归 **C 类**：自身有 `PASS=/FAIL=` 汇总 + 断言驱动 `exit 1` ⇒ **不进** `$tableOnly` /
+                 #     `$noSelfSummary`（第 13/14 针的 4 / 7 不变）。纯源码扫描，不需要 exe、不动任何产物。
+                 '_probe-settings-clone-coverage.ps1',
+                 # ── 第 55 条：2026-09-27 接线（`_probe-matrix-structure.ps1`，任务 #42）─────────────────
+                 #   跑 `_lib-matrix.ps1` 的**结构自检**（A1..A31 + 库自带 B1..B7 正/负控）+ 本门禁自己的
+                 #   变异注入（删一对两两覆盖 ⇒ A7 必须点名转红）。
+                 #   为什么必须进清单：折叠表 / 语义矩阵每条都带 `Evidence = '<路径>:<行号>|<字面片段>'`，
+                 #   A21/A30 会真去读那一行；但此前只有 `verify-oracle-matrix.ps1` 跑它，而那条是
+                 #   **有意不入列**的 2.5 h 长跑 ⇒ 行号漂移没人看见。实测账：**6/19 条早就腐烂**，
+                 #   接线当天（#39/#43 改了 `FfmpegCommandBuilder.cs` 的行）又当场漂一条
+                 #   （`metadata-core` 2011 → 2041）——**这就是这条门禁存在的理由，不是假想**。
+                 #   成本：两遍自检 ≈ 11 s（单遍实测 5.5 s），纯数据 + 读源码，**不起产品进程、不动产物**。
+                 #   ⚠ 归 **C 类**：自身有 `MATRIXSTRUCT RESULT: pass=/fail=` 汇总 + 断言驱动
+                 #     `exit 1`/`exit 0` 成对 ⇒ **不进** `$tableOnly` / `$noSelfSummary`（第 13/14 针不变）。
+                 #   有牙自证三处：① 结果行缺失 ⇒ 直接红并中止（不许"读不到就当过"）；
+                 #     ② 断言总数下限 30（防有人删检查项而不是删被检查的东西）；
+                 #     ③ A21/A30 的 `checked=` 必须 ≥1（负断言在空清单上恒绿 ⇒ 拦死）。
+                 #   变异证据（当场跑过）：把 `metadata-core` 的行号改成 2040 ⇒ `pass=7 fail=1`、
+                 #     红的正是「结构自检零红」那条，退出码 1；改回 2041 ⇒ 8/0。
+                 '_probe-matrix-structure.ps1',
+                 # ── 第 56 条：2026-09-27 接线（`_probe-stderr-merge-scan.ps1`，任务 #51）──────────────
+                 #   扫「把 stdout+stderr 拼起来返回」的取数 helper 被用来读**工具的值**（exiftool 标签 /
+                 #   ffprobe 字段）的站点。动机是实测的：随包 exiftool 是 perl 打的，环境带本机 perl 不认的
+                 #   `LC_ALL/LANG`（从 MSYS/bash 起门禁就会出现）⇒ 每次调用先喷 locale warning 到 stderr，
+                 #   于是"值"变成警告文本。两类坏法都真发生过：负断言被撑成恒真（`'' -notmatch 'a'` ⇒
+                 #   "素材确实不透明"假绿；两侧同污时 `-ne` 变成两条警告互比），以及值前多一行 ⇒ 假红。
+                 #   本轮据此收了五处口（alpha-preserve / run-pipeline / caps / strategy ×2），并给每处补了
+                 #   **正对照**（同一把尺必须先在"真有值"的素材上读到东西）。
+                 #   ⚠ 这把尺只做**文件级共现**，不做数据流 ⇒ 它锁的是"债不得增加 + 已收口五处不得回退"，
+                 #     不是"这些站点都对"。债账基线 = **84**（本轮收口前实测 89），逐条分诊仍是后续项。
+                 #   ⚠ 归 **C 类**：自身有 `STDERRMERGE RESULT: pass=/fail=` 汇总 + 断言驱动 `exit 1`/`0`
+                 #     ⇒ **不进** `$tableOnly` / `$noSelfSummary`（第 13/14 针不变）。
+                 #   有牙自证两处（当场跑过，留痕 `tests/output/t51/teeth.log`）：① 造一个含合并 helper +
+                 #     `Exec $et` 取值的临时脚本 ⇒ 它被点名（`_tmp-t51-teeth.ps1:11`）、站点数 **84→85** 判红；
+                 #     删掉夹具 ⇒ 回到 84 判绿；
+                 #     ② 枚举下限 40 + 共现基数下限 30（正则失效会伪装成"零违规"，那两个下限把它拦住）。
+                 '_probe-stderr-merge-scan.ps1',
+                 # ── 第 57 条：2026-09-27 接线（`verify-simd-switch-fallback.ps1`，面板「SIMD 优化」消费者）──
+                 #   立锁动机是一条**已核实的声明/实现冲突**：`AppSettings.AutoUseSimdBinaries` 由复选框
+                 #   写入并持久化，zh/en 两条 `tip.simd` 都在承诺「关闭后逐像素回退 / falls back to scalar
+                 #   code」，但修复前**全仓没有任何代码读它决定走不走 SIMD**（`PsnrCalculator.SquaredDiffSum`
+                 #   无条件按 ISA 优先级、`SimdPixelOps.FloatToSrgb8` 无条件看 `Avx2.IsSupported`）。
+                 #   ⇒ 按「降级不是修复」把实现提到声明的水位：判据单点 `SimdKernelRouting`。
+                 #   四段判据：① 行为（`ServiceProbe simdswitch`，进程内确定性合成像素，S0..S6）+
+                 #   **pass>=25 下限**（防"mode 整段没跑 ⇒ exit 0"）；② `FFMPEGGUI_AUTO_SIMD` 两跑端到端
+                 #   （关⇒scalar / 开⇒非 scalar / 两态必须不同 ⇒ **修复前必红**）；③④ 结构锁（`.IsSupported`
+                 #   与消费端集合只此一份、内核分派表只有一张；**空集合也判红**）。
+                 #   牙的证据（主循环 2026-09-27 实跑，非内存变异）：把 `ResolvePixelKernelPath` 的守卫
+                 #   反向（`if (!UserAllowsSimd)` → `if (UserAllowsSimd)`）⇒ 本条 **PASS=17→13 / FAIL=0→4**
+                 #   （②c 关⇒avx2、②d 开⇒scalar、①/①b 的 pass 下限同时跌破），还原后逐字节一致、17/0/1SKIP。
+                 #   ⚠ 归 **C 类**：自带 `===== … PASS= FAIL= SKIP= =====` 汇总 + 断言驱动 `exit 1`/`0`
+                 #     ⇒ **不进** `$tableOnly` / `$noSelfSummary`（第 13/14 针条数不变：4 / 7）。
+                 'verify-simd-switch-fallback.ps1',
                  'verify-ui-host.ps1','verify-ui-param-matrix.ps1','verify-ui-strategy-map.ps1','verify-ui-param-defects.ps1','verify-cli-strict.ps1','verify-png-structure.ps1')
 $actualScriptCount = @($scriptList).Count
 if ($actualScriptCount -ne $expectedScriptCount) {
@@ -777,7 +1053,25 @@ if ($actualScriptCount -ne $expectedScriptCount) {
   $failedItems.Add("runner:脚本清单条数 $actualScriptCount ≠ 基线 $expectedScriptCount")
 }
 Write-Output "script-list=$actualScriptCount 条（受管基线 $expectedScriptCount）"
-foreach ($s in $scriptList) {
+# ── `-Scripts` 子集解析（2026-09-24）──────────────────────────────────────────────
+# 条数锁**始终对全数组生效**（它校验的是清单本身，与本次跑几条无关）；子集只影响下面跑哪些。
+$subsetTag = ''
+$runList = $scriptList
+if (-not [string]::IsNullOrWhiteSpace($Scripts)) {
+  $want = @($Scripts -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+  $unknown = @($want | Where-Object { $scriptList -notcontains $_ })
+  if ($unknown.Count -gt 0) {
+    # 打错名字静默忽略 ⇒ "看着跑过了其实没跑"，正是本仓最忌的假绿 ⇒ 响亮拒绝。
+    Write-Output ("[FAIL] -Scripts 里有 $($unknown.Count) 个名字不在受管清单内：$($unknown -join ', ')")
+    $failedItems.Add("runner:-Scripts 名字不在清单（$($unknown -join ', ')）")
+    Exit-WithSummary "（-Scripts 参数非法，拒绝跑）"
+  }
+  $runList = @($scriptList | Where-Object { $want -contains $_ })
+  $subsetTag = "（-Scripts 子集 $($runList.Count)/$actualScriptCount 条 ⇒ **不构成基线**）"
+  Write-Output ("[SUBSET] 只跑 $($runList.Count) 条：$($runList -join ', ')")
+  Write-Output "[SUBSET] 仓库锁 / 单步超时 / STALE / 双漂移 / 逐条留痕 **仍然全部生效**；宣布新基线需跑全量。"
+}
+foreach ($s in $runList) {
   $p2 = Join-Path "tests/scripts" $s
   if (-not (Test-Path $p2)) { Write-Output "[SKIP] $s 不存在"; continue }
   $o = "$root/tests/output/_gate_script_$s.txt"
@@ -807,6 +1101,24 @@ foreach ($s in $scriptList) {
   elseif ($readFail) { $tag = '  ⚠输出读取失败' }
   elseif ($tableOnly -contains $s) { $tag = '  ← 表格型：无 PASS/FAIL 契约（exit=0 仅表示跑完）' }
   elseif ($noSelfSummary -contains $s) { $tag = '  ← 有退出码契约（exit=0 即无失败）；无自身计数汇总' }
+  # ── 「零断言 ⇒ 红」闸（2026-09-24）──────────────────────────────────────────────
+  #   挡的是这一类：**前置素材缺失 ⇒ 一条断言都没跑，但 exit=0 且汇总"看起来干净"**。
+  #   历史同族：`verify-png3-interop` 缺参照时 PASS 9→8 而 exit 仍 0（§6 第 68 条），
+  #   以及审计点名的 6 条"缺件即零断言绿灯"形态（verify-color-token-normalize:45 等）。
+  #   取**所有匹配里的最大值**：一条门禁常有多处 `PASS=n`（子步骤 + 总计），
+  #   拿"第一条"会撞上小的子计数、拿"最后一条"会撞上 per-probe 读数 ⇒ max 才回答"到底跑没跑断言"。
+  #   ⚠ 例外两类各有自己的契约（$tableOnly 无 PASS/FAIL 契约、$noSelfSummary 只认退出码），
+  #     且超时 / 读失败已在上面单独记账 ⇒ 这里不重复判，避免一次故障刷两条红。
+  if (-not $r2.TimedOut -and -not $readFail -and ($tableOnly -notcontains $s) -and ($noSelfSummary -notcontains $s)) {
+    $passNums = @([regex]::Matches([string]$txt, '(?i)PASS\s*=\s*(\d+)') | ForEach-Object { [int]$_.Groups[1].Value })
+    if ($passNums.Count -eq 0) {
+      Write-Output "      ⚠零断言闸：本门禁输出里**找不到任何 `PASS=n` 计数** ⇒ 无法证明它跑过断言"
+      $failedItems.Add("script:$s (零断言：无 PASS=n 汇总 ⇒ 可能一条断言都没跑)")
+    } elseif (($passNums | Measure-Object -Maximum).Maximum -eq 0) {
+      Write-Output "      ⚠零断言闸：`PASS=0` ⇒ 一条断言都没跑（多半是前置缺失被静默跳过）"
+      $failedItems.Add("script:$s (零断言：PASS=0)")
+    }
+  }
   Write-Output ("[{0,-32}] exit={1}  {2}  {3:N1}s{4}" -f $s, $rc2, $sum, $r2.ElapsedSec, $tag)
   if ($r2.TimedOut) {
     $failedItems.Add("script:$s (超时 $($ScriptTimeoutSec)s，已击杀进程树)")
@@ -821,4 +1133,4 @@ foreach ($s in $scriptList) {
 }
 Check-SrcDrift
 Check-SelfDrift
-Exit-WithSummary ""
+Exit-WithSummary $subsetTag

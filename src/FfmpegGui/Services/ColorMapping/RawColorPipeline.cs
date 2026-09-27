@@ -528,8 +528,17 @@ public static class RawColorPipeline
     /// <para>
     /// **为什么必须落中转文件**（与 cjxl 出口的管道形态不同）：`JxrEncApp` 的接口就是纯文件式
     /// <c>-i input -o output</c>（实测自述用法：<c>bmp: &lt;=8bpc, BGR</c> / <c>tif: &gt;=8bpc, RGB</c> /
-    /// <c>hdr: 32bppRGBE only</c>），不接受 stdin/rawvideo；而本工具链的 ffmpeg **没有 jxr 编码器**
-    /// （实测 <c>-encoders</c> 无 jxr）⇒ 也不存在"交给 ffmpeg 编码"这条替代路径。
+    /// <c>hdr: 32bppRGBE only</c>），不接受 stdin/rawvideo。
+    /// </para>
+    /// <para>
+    /// **为什么不改道 ffmpeg（此口径的唯一权威，其余站点引本段）**：本构建的 ffmpeg **确实有** `libjxr`
+    /// —— 实测 git-2026-09-26-8864fd0aec 的 <c>-codecs</c> 报
+    /// <c>DEVILS jpegxr …(decoders: libjxr)(encoders: libjxr)</c>，取证 <c>tests/output/t50/</c>。
+    /// 本段此前写作「本工具链的 ffmpeg 没有 jxr 编码器」，那是**过期事实**，2026-09-27 按实测改正。
+    /// 但它当不了 JXR 出口的替代执行体：<c>-h encoder=libjxr</c> 的**私有 AVOption 零条** ⇒ 面板的
+    /// 质量/无损旋钮全部失效（实测 7 种质量变体产物同 sha），且它写 <c>24-bit RGB</c> 而 JxrEncApp 写
+    /// <c>24-bit BGR</c>、rgba 用一个非标准 GUID ⇒ 改道等于静默丢掉用户参数并改字节序。
+    /// **结论不变、理由换**：出口内任何一环不满足都**显式失败**，绝不回退。
     /// </para>
     /// <para>
     /// **中转格式与位深（均为实测，不是推断）**：8-bit ⇒ BMP（<c>bgr24</c>）；&gt;8-bit ⇒ TIFF
@@ -557,12 +566,13 @@ public static class RawColorPipeline
                 "JXR 出口需要 FfmpegOptions（质量/无损只存在于其中）");
 
         // ── ① 可用性诚实：JxrEncApp 缺失 ⇒ 显式失败 ──
-        // **没有可回退的编码器**：本工具链的 ffmpeg 无 jxr 编码器，"回退"只会产出扩展名对不上内容的文件。
+        // **没有可回退的编码器**：不是「ffmpeg 缺 jxr 编码器」（它有 libjxr，理由见本方法 <summary>），
+        // 而是改道 libjxr 会静默丢掉质量参数并改字节序 ⇒「回退」只会产出与请求不符的文件。
         var jxr = JxrService.DetectedPath;
         if (string.IsNullOrWhiteSpace(jxr) || !File.Exists(jxr))
             throw new InvalidOperationException(
                 "JXR 出口：未找到 JxrEncApp.exe ⇒ 拒绝产出 JXR"
-                + "（本工具链的 ffmpeg 没有 jxr 编码器，不存在可回退的替代编码器）");
+                + "（ffmpeg 的 libjxr 无质量参数且字节序不合，不作为回退项）");
 
         var ffmpeg = AppSettingsService.Current.FfmpegPath;
         if (string.IsNullOrWhiteSpace(ffmpeg) || !File.Exists(ffmpeg))
@@ -670,6 +680,9 @@ public static class RawColorPipeline
                 UseShellExecute = false, CreateNoWindow = true,
             });
             if (pa == null) { log?.Invoke("[色彩] ❌ cjxl 出口：ffmpeg 启动失败\n"); return -1; }
+            // 2026-09-21: this path previously MISSED the process-priority call, so the UI
+            // "process priority" setting had no effect here (UI vs. real behaviour mismatch).
+            Services.PlatformServices.SetSafePriority(pa, Services.AppSettingsService.Current.FfmpegPriority);
 
             pb = Process.Start(new ProcessStartInfo
             {
@@ -680,6 +693,8 @@ public static class RawColorPipeline
                 UseShellExecute = false, CreateNoWindow = true,
             });
             if (pb == null) { log?.Invoke("[色彩] ❌ cjxl 出口：cjxl 启动失败\n"); return -1; }
+            // 2026-09-21: same as above - the external encoder (cjxl) also needs the priority.
+            Services.PlatformServices.SetSafePriority(pb, Services.AppSettingsService.Current.FfmpegPriority);
 
             // 两侧 stderr 都必须**排空**（否则子进程写满管道缓冲即阻塞，表现为"卡住"）
             var errA = pa.StandardError.ReadToEndAsync(token);
@@ -876,6 +891,32 @@ public static class RawColorPipeline
             gifExtraIn = $" -i \"{inputPath}\"";
             gifFilter = $" -filter_complex \"{gifChain}\"";
             outLabels = "";
+        }
+        // ⚠⚠ 2026-09-22（管线审查 §3.4 修复）：**alpha 不能只在 gif 出口补**。
+        //   引擎 raw 通路是 rgb24/rgb48le（**无 alpha 平面**）⇒ 只要输入带 alpha 且**需要色彩变换**，
+        //   png/apng/tiff/webp 的产物都会被**静默拍平** —— 实机复现（源 `src_alpha.png`，`pix_fmt=rgba`）：
+        //     透明源 → png(Display P3) = **rgb24** · tiff = **rgb24** · webp = **yuv420p**（两条管线都丢）。
+        //   修法：把 gif 出口既有的「**第二输入只取原文件的 alpha 平面 + `alphamerge`**」推广到这些出口，
+        //   并**显式给出带 alpha 的 `-pix_fmt`** —— 否则编码器仍按"无 alpha 的输入帧"推断 ⇒ 补了也白补。
+        //   ⚠ 判据与 cjxl/JXR 出口**同源**：同一个 `ProbeInputColorMetadata().hasAlpha`（内部走缓存）。
+        //   ⚠ **avif 不在本次范围**：它的 alpha 是**独立辅助流**，引擎出口已登记为「已知不支持」
+        //     （`hasAlpha` 硬编码 false、ffmpeg 侧实测也丢）⇒ 保持登记状态，不在此处"顺手修"。
+        else if (o != null && ext is "png" or "apng" or "tiff" or "tif" or "webp"
+                 && FfmpegCommandBuilder.ProbeInputColorMetadata(inputPath).hasAlpha)
+        {
+            var aScale = FfmpegCommandBuilder.BuildMaxDimensionScaleFilter(o, inputPath);
+            string aFmt = plan.OutBitDepth == 8 ? "rgba" : "rgba64le";   // 与 pixIn 同深，否则 alphamerge 无法协商
+            string aMerge = $"[1:v]{(string.IsNullOrEmpty(aScale) ? "" : aScale + ",")}"
+                          + $"format={aFmt},alphaextract[a];[0:v]format={pixIn}[b];[b][a]alphamerge";
+            gifExtraIn = $" -i \"{inputPath}\"";
+            // ⚠⚠ **必须限制输出帧数**：底图 `[0:v]` 是 rawvideo（恒 1 帧），而 alpha 源 `[1:v]` 是**原文件** ——
+            //   多帧输入（如 10 帧 webp）会给 `[1:v]` 10 帧 ⇒ 滤镜图产出 10 帧 ⇒ 编码器报
+            //   `编码失败 (exit -22)`（实测：多帧 webp + 最长边 128 走本分支即复现）。
+            //   ⇒ 与 JXR 出口（`EncodeJxrViaJxrEncAppAsync`，`#13 站点 B`）**同一处置**：限制**输出**帧数。
+            //   语义也与引擎既有约定一致：**多帧输入只取首帧**（本函数的解码步就带 `-frames:v 1`）。
+            gifFilter = $" -filter_complex \"{aMerge}\" -frames:v 1";
+            var alphaPix = ImageEncoderArgs.MapPixFmt(ext, o.Chroma, plan.OutBitDepth, true, o.ColorRange);
+            if (!string.IsNullOrWhiteSpace(alphaPix)) pixFmt = $" -pix_fmt {alphaPix}";
         }
         return $"-y -hide_banner -loglevel error {inArgs}{gifExtraIn}{gifFilter}{outLabels}{codec}{pixFmt}{opts} \"{outputPath}\"";
     }

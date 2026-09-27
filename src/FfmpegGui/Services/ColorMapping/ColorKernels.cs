@@ -23,6 +23,16 @@ public sealed class TransformSpec
     /// 1.0 = 不缩放。
     /// </summary>
     public double LinearScale = 1.0;
+    /// <summary>
+    /// **编码前**的目标域换算系数（与 <see cref="LinearScale"/> 成对）：把内核的中间工作域
+    /// （1.0 = 参考白，见 <see cref="ToneMapParams"/> 的值域约定）换到目标曲线的归一域
+    /// （1.0 = 目标的 NitsOfLinearOne）。1.0 = 不缩放。
+    /// <para>
+    /// 缺了它 ⇒ SDR→PQ 把 203nits 的白编码成 10000nits（**过曝 49×**）、PQ↔HLG 亮度差 **10×**、
+    /// 无 tonemap 的 PQ→SDR 整体**暗 49×**。
+    /// </para>
+    /// </summary>
+    public double EncodeScale = 1.0;
     public DitherMode Dither = DitherMode.None;
     /// <summary>编码前是否把线性值钳到 [0,1]（SDR 输出 true；HDR 中间过程 false）。</summary>
     public bool ClampLinearBeforeEncode = true;
@@ -74,7 +84,8 @@ public sealed class TransformSpec
 
     /// <summary>曲线与矩阵都无变化 → 无需处理（调用方应直接跳过内核）。</summary>
     public bool IsIdentity => Matrix == null && SrcCurve.Equivalent(DstCurve)
-        && Math.Abs(LinearScale - 1.0) < 1e-12 && (Tone == null || !Tone.Active)
+        && Math.Abs(LinearScale - 1.0) < 1e-12 && Math.Abs(EncodeScale - 1.0) < 1e-12
+        && (Tone == null || !Tone.Active)
         // 色域映射是一次真实的像素改动 ⇒ 开着就绝不能判为 identity（否则调用方会整趟跳过内核）
         && !GamutMapActive;
 }
@@ -116,7 +127,7 @@ public readonly struct GamutMapParams
 /// </summary>
 public static class ColorKernels
 {
-    // 4x4 Bayer 有序抖动矩阵（阈值 ∈ [0,1)，幅度 1 LSB）
+    // 4x4 Bayer 有序抖动矩阵（原始阈值 ∈ [0,1)，满幅 1 LSB；用前必须减去 BayerCenter 才居中）
     private static readonly float[] Bayer4 =
     {
         0f / 16, 8f / 16, 2f / 16, 10f / 16,
@@ -124,6 +135,20 @@ public static class ColorKernels
         3f / 16, 11f / 16, 1f / 16,  9f / 16,
        15f / 16, 7f / 16, 13f / 16,  5f / 16,
     };
+
+    /// <summary>
+    /// <see cref="Bayer4"/> 的**均值** = (0+1+…+15)/16 = 7.5/16 = 0.46875。抖动量必须减这个值才真正居中：
+    /// t = Bayer4[p] − BayerCenter = (2p − 15)/32 ⇒ t ∈ [−0.46875, +0.46875]，均值 0，且 |t| &lt; 0.5。
+    /// （表内 n/16 与 7.5/16 都是 2 的幂的商 ⇒ float 下逐值精确，t 无附加舍入误差。）
+    /// <para>⚠ 旧写法减 <c>0.5f/4f</c>（= 2/16）⇒ t ∈ [−2/16, +13/16]、均值 +5.5/16 = <b>+0.344 LSB</b>，
+    /// 16 个相位里有 6 个（p ≥ 10 ⇒ t ≥ 0.5）会把**本可 1:1 精确表示**的码值抬 +1：8-bit 源经
+    /// <c>format=rgb48le</c> 升位后码值恒为 257 的整数倍，<see cref="EncodeTo8"/> 里 code16/65535×255
+    /// 恰为整数 ⇒ 抖动纯粹是"花钱买损失"（纯色与平滑渐变上长出 Bayer 斑）。</para>
+    /// <para>居中后对任意精确可表示（整数）码值 v：Round(v + t) == v 对**全部 16 个相位**成立 ——
+    /// 离最近的 .5 进位边界还有 0.5 − 0.46875 = 0.03125 LSB 余量，远大于 double 中间量的 ~1e-13 误差。</para>
+    /// <para>两条 8-bit 出口（<see cref="TransformRgba8"/> 与 <see cref="TransformRgb48leToRgb8"/>）共用此常量。</para>
+    /// </summary>
+    private const float BayerCenter = 7.5f / 16f;
 
     /// <summary>由系统伽马反解名义峰值 L_W：γ = 1.2 + 0.42·Log10(L_W/1000) 的代数逆。</summary>
     private static double NitsOfGamma(double gamma)
@@ -167,13 +192,20 @@ public static class ColorKernels
     {
         var cv = spec.DstCurve;
         bool clamp = spec.ClampLinearBeforeEncode;
+        double encScale = spec.EncodeScale;
+        bool encScaleOn = Math.Abs(encScale - 1.0) > 1e-12;
         double dstNits = spec.DstIsHlgScene ? NitsOfGamma(spec.DstHlgSystemGamma) : 0;
         for (int i = 0; i + 4 <= rgba.Length; i += 4)
         {
+            // 编码前的目标域换算：中间域(1.0=参考白) → 目标归一域（与主循环同序：GMO 之后、钳位之前）
+            if (encScaleOn)
+                for (int c = 0; c < 3; c++) rgba[i + c] *= (float)encScale;
             if (spec.DstIsHlgScene)
             {
-                // HLG 编码的是场景光：先把线性显示光换到 nits 域做逆向 OOTF，再换回归一线性域。
-                double r = rgba[i], g = rgba[i + 1], b = rgba[i + 2];
+                // HLG 编码的是场景光：先把线性显示光**换算到 nits 绝对值域**（ApplyInverse 要求 nits
+                // 输入 —— 旧写法直接把归一值喂进去，少乘一个 dstNits ⇒ 整条 OOTF 错位），
+                // 再经逆向 OOTF（显示光→场景光），输出即归一场景光。
+                double r = rgba[i] * dstNits, g = rgba[i + 1] * dstNits, b = rgba[i + 2] * dstNits;
                 Bt2100Ootf.ApplyInverse(ref r, ref g, ref b, dstNits);
                 rgba[i] = (float)r; rgba[i + 1] = (float)g; rgba[i + 2] = (float)b;
             }
@@ -282,13 +314,22 @@ public static class ColorKernels
     // ═══════════════════════════════════════════════════════════════════
 
     /// <summary>
-    /// 8-bit RGBA → 8-bit RGBA（就地或跨缓冲）。源 EOTF 用 256 项表，目标 OETF 用 4096 点表 + 插值。
+    /// 8-bit RGBA → 8-bit RGBA（就地或跨缓冲）。源 EOTF 用 256 项表，目标 OETF 用 65536 项表。
     /// </summary>
     /// <param name="originX">本缓冲首像素在**整幅图**中的绝对 x（拖动相位用，保证 tile 切分结果逐字节一致）。</param>
     /// <param name="originY">同上，绝对 y。</param>
+    /// <exception cref="NotSupportedException">
+    /// <c>spec.ClampLinearBeforeEncode == false</c>：本内核的编码出口只有 8-bit 表这一条，
+    /// 而表的定义域就是线性 [0,1]（见 <see cref="BuildEncodeLut16"/>）⇒ 做不到"保留线性余量"，
+    /// 于是显式失败，不再静默钳位（与 <c>RawColorPipeline.TablesFor</c> 的"不钳位不建表"同一约定）。
+    /// </exception>
     public static void TransformRgba8(ReadOnlySpan<byte> src, Span<byte> dst, in TransformSpec spec,
         float[] srcEotfTable, int width, int height, byte[]? dstLut16 = null, int originX = 0, int originY = 0)
     {
+        // 先拒后算：无论表是调用方给的还是这里自建的，本路径都必然把线性值钳到 [0,1]。
+        if (!spec.ClampLinearBeforeEncode)
+            throw new NotSupportedException(
+                "TransformRgba8 的编码出口是定义域 [0,1] 的 8-bit 查找表，无法兑现 ClampLinearBeforeEncode=false（保留线性余量）的承诺；不钳位请走解析式路径（TransformRgb48le / EncodeFromLinearInPlace）。");
         int n = Math.Min(src.Length, dst.Length);
         bool hasMtx = spec.Matrix != null;
         var m = spec.Matrix;
@@ -300,7 +341,7 @@ public static class ColorKernels
             m6 = (float)m[6]; m7 = (float)m[7]; m8 = (float)m[8];
         }
         // 目标曲线 → 256×256 量化用查表（16bit 中间，一次生成，误差 ≤0.5/65535）
-        byte[] encLut = dstLut16 ?? BuildEncodeLut16(spec.DstCurve, spec.ClampLinearBeforeEncode);
+        byte[] encLut = dstLut16 ?? BuildEncodeLut16(spec.DstCurve, clamp: true);
         // 色域映射参数：每个缓冲换算一次，热循环只读常量（不启用时 gamut=false，循环里零开销）
         bool gamut = spec.GamutMapActive;
         var gm = default(GamutMapParams);
@@ -332,12 +373,22 @@ public static class ColorKernels
                 int px = i >> 2;
                 int ax = originX + (px % Math.Max(1, width));
                 int ay = originY + (px / Math.Max(1, width));
-                float t = Bayer4[(ax & 3) + ((ay & 3) << 2)] - 0.5f / 4f;
-                r += t / 255f; g += t / 255f; b += t / 255f;
+                float t = Bayer4[(ax & 3) + ((ay & 3) << 2)] - BayerCenter;   // t ∈ [−7.5/16, +7.5/16]，均值 0
+                // ⚠ 抖动量必须加在**码域**，不能加在线性域：sRGB OETF 趾段斜率 12.92 会把
+                //   “±0.469 档”的意图放大成实测 **6 档**（旧写法 `r += t/255f` 改动 213/768 个码值，
+                //   最低受损源码值 = 2 ⇒ 全在暗部，比不抖更差）。判据与取证：`contract` 的 C13、
+                //   docs/COLOR_MATRIX_AUDIT_2026-09-24.md §4.3。
+                // 这里走解析式 `EncodeTo8` 而**不是**查表：`encLut` 的值域已经是整数 8bit，
+                //   拿不到分数码值 ⇒ 加不上 t；用同一函数也就与主力 8-bit 出口共用一副量化口径。
+                dst[i + 0] = EncodeTo8(null, spec.DstCurve, r, true, t);
+                dst[i + 1] = EncodeTo8(null, spec.DstCurve, g, true, t);
+                dst[i + 2] = EncodeTo8(null, spec.DstCurve, b, true, t);
+                dst[i + 3] = src[i + 3];
+                continue;
             }
-            dst[i + 0] = LookupEncode(encLut, r, spec.ClampLinearBeforeEncode);
-            dst[i + 1] = LookupEncode(encLut, g, spec.ClampLinearBeforeEncode);
-            dst[i + 2] = LookupEncode(encLut, b, spec.ClampLinearBeforeEncode);
+            dst[i + 0] = LookupEncode(encLut, r);
+            dst[i + 1] = LookupEncode(encLut, g);
+            dst[i + 2] = LookupEncode(encLut, b);
             dst[i + 3] = src[i + 3];
         }
     }
@@ -345,22 +396,34 @@ public static class ColorKernels
     /// <summary>
     /// 编码查找表：16-bit 线性索引（0..65535）→ 8-bit 编码值。表长 65536（64KB，L2 常驻）。
     /// 只在反复处理同一条曲线时生成一次（调用方缓存）。
+    /// <para><b>定义域固定是线性 [0,1]</b>（索引 65535 ↔ 1.0），且值域是 <see cref="byte"/>
+    /// —— 线性 &gt;1 无论钳不钳都只会落到 255，"保留 HDR 线性余量"在这条表路径上根本没有承载物。
+    /// 因此 <paramref name="clamp"/> 为 false 时**直接拒绝建表**（以前是一枚死参数：两分支同式、
+    /// 静默钳位，让调用方误以为承诺兑现了）。需要不钳位请走解析式快路径
+    /// （16-bit 的 TransformRgb48le 重载在建表处就按 clamp 决定用表还是用 pow）。</para>
     /// </summary>
+    /// <exception cref="NotSupportedException">clamp == false：本表做不到，交回调用方决定（失败优于装成功）。</exception>
     public static byte[] BuildEncodeLut16(TransferCurve dst, bool clamp)
     {
+        if (!clamp)
+            throw new NotSupportedException(
+                "BuildEncodeLut16 的表定义域是线性 [0,1]、值域是 8-bit，无法表达 ClampLinearBeforeEncode=false 的线性余量。");
         var t = new byte[65536];
         for (int i = 0; i < 65536; i++)
         {
-            double lin = clamp ? Math.Clamp(i / 65535.0, 0.0, 1.0) : i / 65535.0;
-            double e = dst.FromLinear(lin);
+            double e = dst.FromLinear(i / 65535.0);   // i/65535 ∈ [0,1]，无需再钳（旧的恒等三元已删）
             t[i] = (byte)Math.Clamp(Math.Round(e * 255.0), 0, 255);
         }
         return t;
     }
 
-    private static byte LookupEncode(byte[] lut16, float linear, bool clamp)
+    /// <summary>
+    /// 线性 → 8-bit 码值（查表）。**本步必然钳位**：表的定义域就是线性 [0,1]，
+    /// 所以这里不带 clamp 开关 —— 不钳位的 spec 走不到这里（<see cref="TransformRgba8"/> 入口已拒绝）。
+    /// </summary>
+    private static byte LookupEncode(byte[] lut16, float linear)
     {
-        float v = clamp ? Math.Clamp(linear, 0f, 1f) : Math.Clamp(linear, 0f, 1f);   // 表定义域就是 [0,1]
+        float v = Math.Clamp(linear, 0f, 1f);
         int idx = (int)(v * 65535f + 0.5f);
         return lut16[idx < 0 ? 0 : (idx > 65535 ? 65535 : idx)];
     }
@@ -470,6 +533,12 @@ public static class ColorKernels
         //   （输出随 s^γ 变化）⇒ 先乘 scale 会把 L_W 的语义搞错。
         bool srcHlg = spec.SrcIsHlgScene;
         double srcHlgPeak = srcHlg ? NitsOfGamma(spec.SrcHlgSystemGamma) : 0;
+        // 编码侧（与解码侧对称）：目标域换算 + HLG 目标的逆向 OOTF。旧实现在 48-bit 主循环里
+        // **两者都缺** ⇒ 目标为 PQ/HLG 时产出错曝光（过曝 49× / 差 10×）。
+        double encScale = spec.EncodeScale;
+        bool encScaleOn = Math.Abs(encScale - 1.0) > 1e-12;
+        bool dstHlg = spec.DstIsHlgScene;
+        double dstHlgPeak = dstHlg ? NitsOfGamma(spec.DstHlgSystemGamma) : 0;
 
         for (int i = 0; i < pixelCount; i++)
         {
@@ -495,6 +564,20 @@ public static class ColorKernels
             // ⚠ 色域映射必须在这里：**矩阵之后**（此刻是目标色域的线性 RGB）、**钳位之前**
             //   （钳位一旦发生，越界信息就没了，只剩硬裁切）。详见 TransformSpec.GamutMap。
             if (gamut) GamutMapScalar(ref r, ref g, ref b, in gm);
+            // ── 编码前的目标域换算（GMO 之后、钳位之前）：中间域(1.0=参考白) → 目标归一域 ──
+            if (encScaleOn)
+            {
+                r *= (float)encScale; g *= (float)encScale; b *= (float)encScale;
+            }
+            if (dstHlg)
+            {
+                // HLG 编码的是**场景光**：先把目标域线性值换算成 nits 绝对值（ApplyInverse 要求
+                // nits 输入 ⇒ 少乘 dstHlgPeak 会让整条 OOTF 错位），经逆向 OOTF（显示光→场景光）
+                // 后再交回 HlgOetf。
+                double nr = r * dstHlgPeak, ng = g * dstHlgPeak, nb = b * dstHlgPeak;
+                Bt2100Ootf.ApplyInverse(ref nr, ref ng, ref nb, dstHlgPeak);
+                r = (float)nr; g = (float)ng; b = (float)nb;
+            }
             if (clamp)
             {
                 r = Math.Clamp(r, 0f, 1f); g = Math.Clamp(g, 0f, 1f); b = Math.Clamp(b, 0f, 1f);
@@ -572,8 +655,15 @@ public static class ColorKernels
             m6 = (float)m9[6]; m7 = (float)m9[7]; m8 = (float)m9[8];
         }
         var eF = srcTab?.Eotf; var oF = dstTab?.Oetf;
+        // 契约：CurveTables 的定义域同样是线性 [0,1]（EncodeLerp 在两端饱和）⇒ 不钳位的 spec 必须由
+        //   调用方送 null 表来回退解析式（现由 RawColorPipeline.TablesFor 把这条约定钉住），别指望本内核替你钳。
         bool tbl = eF != null && oF != null;
         bool clamp = spec.ClampLinearBeforeEncode;
+        // 上面那条契约现在是**硬**的：靠注释守约已经被证明不可靠（同一形状的静默钳在这条链上出现过两次），
+        //   所以"带着表却不钳位"这种组合直接失败，而不是等调用方记得传 null。
+        if (tbl && !clamp)
+            throw new NotSupportedException(
+                "CurveTables 的定义域是线性 [0,1]，与 ClampLinearBeforeEncode=false 互斥 ⇒ 请送 null 表走解析式（与 TablesFor 同规则）");
         bool dither = spec.Dither == DitherMode.Ordered4x4;
         int w = Math.Max(1, width);
         // 色域映射参数（本路径是 8-bit 产物的主力出口，必须与 16-bit 路径同算子同顺序）
@@ -612,7 +702,7 @@ public static class ColorKernels
             if (dither)
             {
                 int ax = (originIndex + i) % w, ay = (originIndex + i) / w;
-                t = Bayer4[(ax & 3) + ((ay & 3) << 2)] - 0.5f / 4f;   // ±约 1/16 个 8bit 台阶，中心对齐
+                t = Bayer4[(ax & 3) + ((ay & 3) << 2)] - BayerCenter;   // 居中：t ∈ [−0.46875, +0.46875] LSB，均值 0
             }
             dst[p + 0] = EncodeTo8(oF, spec.DstCurve, rr, clamp, t);
             dst[p + 1] = EncodeTo8(oF, spec.DstCurve, gg, clamp, t);
@@ -711,6 +801,15 @@ public static class ColorKernels
                 GamutMapScalar(ref fr, ref fg, ref fb, in gp);
                 lr = fr; lg = fg; lb = fb;
             }
+        }
+        // 编码前的目标域换算（与内核同序：GMO 之后、钳位之前）
+        lr *= spec.EncodeScale; lg *= spec.EncodeScale; lb *= spec.EncodeScale;
+        if (spec.DstIsHlgScene)
+        {
+            // 与主循环同式：先换到 nits 绝对值域，再逆向 OOTF（显示光→场景光）
+            double dn = NitsOfGamma(spec.DstHlgSystemGamma);
+            lr *= dn; lg *= dn; lb *= dn;
+            Bt2100Ootf.ApplyInverse(ref lr, ref lg, ref lb, dn);
         }
         if (spec.ClampLinearBeforeEncode)
         {

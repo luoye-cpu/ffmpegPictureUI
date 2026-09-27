@@ -143,6 +143,11 @@ public static class ColorIntentFactory
             // legacy 的对应口径见 `FfmpegCommandBuilder.EffectiveBitDepth()`：
             //   Math.Min(detected > 8 ? detected : 8, capMaxBitDepth)
             TargetBitDepth = Math.Min(o.BitDepth ?? (meta.bitDepth > 8 ? meta.bitDepth : 8), caps.MaxBitDepth),
+            // ⚠ 与上面一行**不是同一个数**：上面是"实际交付档"（已被 Decision 的 capBd 与此处的
+            //   caps.MaxBitDepth 各钳一次），这里是**用户请求档**（钳制前）。两者的差 ⇒ ①b 播报。
+            //   `?? o.BitDepth` 兜的是"意图装配早于钳制"那条顺序 —— 那时 o.BitDepth 本身就还是请求档。
+            //   null（用户未指定 ⇒ 跟随源位深）**刻意不当请求档**：那不是"请求 ≠ 交付"。
+            RequestedBitDepth = o.BitDepthRequested ?? o.BitDepth,
             SourceIsRaw = RawService.IsRawFile(inputPath),
             AllowUnlabeled = o.ColorAllowUnlabeled,
             // ── 色域压缩（GMO）开关（2026-09-17 接入引擎）────────────────────────────────
@@ -170,7 +175,8 @@ public static class ColorIntentFactory
             // ⚠ 判据放在装配层（这里）而不是执行层：出口选择是一次**决策**，执行层被约定为「只照计划做」
             //   （见 `ColorTransformPlan.ExternalEncoderExit` 的注释）。
             //   ⚠ 2026-09-17（JXR 轮）追加 `jxr`：`JxrEncApp` 是**纯文件式** `-i/-o`（不吃 rawvideo/stdin），
-            //     且本工具链的 ffmpeg **没有 jxr 编码器**（实测 `-encoders` 无 jxr）⇒ 不存在"普通编码出口"
+            //     且 ffmpeg 的 `libjxr` 无质量 AVOption、字节序与 jxrlib 不一致 ⇒ 不能当替代执行体
+            //     （唯一口径见 `RawColorPipeline` 的 JXR 出口文档）⇒ 不存在「普通编码出口」
             //     这条替代路径 ⇒ jxr **恒**走本出口（不必像 jxl 那样再判后端）。
             ExternalEncoderExit = (fmt == "jxl" && o.EncoderBackend == EncoderBackend.Cjxl) || fmt == "jxr",
         };
