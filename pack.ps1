@@ -69,8 +69,19 @@ function Invoke-Pack([string]$mode) {
     Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
 
     # 清理旧产物，避免残留
-    if (Test-Path $OutputDir) { Remove-Item -Recurse -Force $OutputDir }
+    # ⚠ 10-01 实测教训：中途 kill 过一次 pack.ps1 后，输出目录被残留进程锁住，这句 `Remove-Item`
+    #   报 "The process cannot access the file … being used by another process" 却**没有中止脚本**
+    #   ⇒ 后面照常压缩并打印"打包完成"，产出的是一个**新旧混合状态**的目录（当时 PLAN 只剩 49 个文件）。
+    #   清不掉就必须停下来：拿旧目录出包比不出包糟糕得多。
+    if (Test-Path $OutputDir) {
+        Remove-Item -Recurse -Force $OutputDir -ErrorAction SilentlyContinue
+        if (Test-Path $OutputDir) {
+            throw "[$mode] 无法清掉旧产物目录（被其他进程占用）：$OutputDir ⇒ 中止。先确认没有正在运行的 pack.ps1 / 7z / 被测 exe，再重试；不要重用该目录。"
+        }
+    }
     New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
+    # 本轮起点时间：给后面的"完整性闸"判断 PLAN/法律文件确实是**这一次**复制进来的
+    $runStart = Get-Date
 
     # Step 1: NativeAOT 发布（所有版本统一 AOT 编译）
     Write-Host "`n[1/4] dotnet publish (NativeAOT)..." -ForegroundColor Yellow
@@ -204,6 +215,30 @@ if ($mode -eq "full") {
 
     # Step 4: 压缩
     Write-Host "`n[4/4] 压缩打包..." -ForegroundColor Yellow
+
+    # ── 完整性闸：压缩**之前**核对目录内容（10-01 出包事故的对策）────────────────────
+    # 当时的实况：清理旧目录失败被吞掉 ⇒ 目录里 PLAN 只剩 49 个文件（缺 exiftool/ 与 artifacts/），
+    # 而脚本一路走到"✅ 压缩完成 / 🎉 全部打包完成"。出包的门槛不能只看"没报错"，必须看**内容**。
+    $need = @("FfmpegGui.exe", "LICENSE", "NOTICE", "THIRD-PARTY-NOTICES.md")
+    $needDirs = @("licenses")
+    if ($mode -eq "full") {
+        $need += @("PLAN\ffmpeg-full\ffmpeg.exe", "PLAN\jxl\bin\cjxl.exe", "PLAN\jxl\bin\djxl.exe",
+                   "PLAN\jxl\bin\jxlinfo.exe", "PLAN\exiftool\exiftool.exe",
+                   "PLAN\artifacts\JxrEncApp.exe", "PLAN\artifacts\JxrDecApp.exe",
+                   "PLAN\artifacts\avifenc.exe", "PLAN\artifacts\dngtool.exe")
+        $needDirs += @("PLAN\exiftool", "PLAN\artifacts", "PLAN\ffmpeg-full", "PLAN\jxl")
+    }
+    $miss = @()
+    foreach ($n in $need)      { if (-not (Test-Path (Join-Path $OutputDir $n))) { $miss += $n } }
+    foreach ($d in $needDirs)  { if (-not (Test-Path (Join-Path $OutputDir $d))) { $miss += "$d\" } }
+    $gotFiles = @(Get-ChildItem $OutputDir -Recurse -File -EA SilentlyContinue).Count
+    # PLAN 组件包共 ~568 个文件；含 PLAN 的完整包总文件数应 ≥ 560（robocopy 排除了 .lib/.pc/.cmake）
+    $minFiles = $(if ($mode -eq "full") { 560 } else { 8 })
+    if ($miss.Count -gt 0 -or $gotFiles -lt $minFiles) {
+        throw "[$mode] 完整性闸未过：缺 $(if ($miss.Count) { ($miss -join ', ') } else { '(无缺项)' })；文件数 $gotFiles（要求 ≥ $minFiles）⇒ 拒绝压缩出包"
+    }
+    Write-Host "   ✅ 完整性闸通过：$gotFiles 个文件，必需项齐备" -ForegroundColor Green
+
     if ($NoCompress) {
         Write-Host "   ⏭️ 已跳过压缩 (-NoCompress)" -ForegroundColor Yellow
         Write-Host "   产物目录: $OutputDir" -ForegroundColor Yellow

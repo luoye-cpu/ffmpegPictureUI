@@ -133,10 +133,25 @@ cjpegli 侧同理（默认 q92→d2.0 vs 原生 0.82；同一名义质量下 ⬜
 ⇒ 同一条滑块在 JXL 用 0–15、在 cjpegli 用 0–25，跨后端也不可比。**cjxl/cjpegli 原生都吃 `-q`**，
 最简正解是直接传 `-q` 而不是自己折算。
 
-### A-19 ⬜ `cjxl --photon_noise_iso=auto` 这个形式不存在 ⇒ 命令直接跑不通
+### A-19 🔷 `cjxl --photon_noise_iso=auto` 这个形式不存在 ⇒ 命令直接跑不通
 主循环独立复现：`=auto` ⇒ `rc=1 "Error parsing flag --photon_noise_iso=auto"`；`=3200` ⇒ `rc=0`（17362 B）。
 ⇒ 勾「自动读取 EXIF ISO」而 EXIF 无 ISO 时，编码与预览都给出一条跑不通的命令（子 agent 称代码只写"跳过"日志
 而不清标志 ⇒ 仍发 `=auto`）。
+
+**2026-09-30 主循环复案（本条当时只修了一半，现已修完）**：下面「修复状态」表曾记 `已修 / 无独立锁`，
+那句"已修"只对**传统路线**成立——清标志那一步内联在 `QueueProcessor.ProcessCjxlAsync` 里，
+而 `:714` 的分派写成 `backend == Cjxl && !engineRoutable` ⇒ **引擎可走（= 默认路线）根本进不到它**，
+`RawColorPipeline` 的 cjxl 出口于是把未解析的 `auto` 直接发给编码器。
+实机读数（`tests/output/t62/`，cjxl v0.11.2，891x981 16-bit，与用户截图同尺寸同位深）：
+`--photon_noise_iso=auto` ⇒ 写入 0 B、cjxl 退出码 1、产物 0 B、写方 broken pipe；
+同参数只换成 `=400` 或不给 ⇒ 退出码 0、产物 188942 / 188932 B；
+单独给 `-x color_space=sRGB` ⇒ 退出码 0（排除"标注参数被拒"这条备选解释）。
+**后果不是"报错"而是"挂 30 分钟"**：cjxl 提前退出后没人再读 ffmpeg 的 stdout，5.2 MB 流写满管道缓冲即
+永久阻塞，而 `pa.WaitForExitAsync(token)` 的 token 只有 30 分钟超时会被触发 ⇒ 用户停在"处理中"，
+最后拿到的是"超时或已取消"，真因埋在后面那行 stderr 里。
+**同批实测的第二条**：`-d 0`（数学无损）叠加 `--photon_noise_iso=400` ⇒ djxl 回读 **99.46%** 的 16-bit
+样本偏离源（平均偏差 30875/65535），而 jxlinfo 对两者都报 `(possibly) lossless`（噪声由解码端按帧头参数
+合成，体积只多 10 B ⇒ 从文件大小查不出来）。⇒ 该组合不再发给编码器，UI 侧无损时置灰。
 
 ### A-20 ⬜ `-dct float` 是 UI 提供、ffmpeg 拒绝的
 主循环核实 `MainWindow.xaml:707-710` 的 `JpegDctCombo` 含 `float`；mjpeg 的 `-dct` 合法值无 float
@@ -256,9 +271,14 @@ cjpegli 侧同理（默认 q92→d2.0 vs 原生 0.82；同一名义质量下 ⬜
 | A-15 WebP 压缩级别适用范围 | **已修**：有损/动图同样放行（钳 0-6） | `R8a` |
 | A-16 APNG 不发 pred/dpi | **已修**：补发 | `R8b-c` |
 | 附带发现：静帧 `-still-picture` 永不可达 | **已修**（旧判据 `AnimationLoop != 0` 在静帧恒真） | `R5` |
-| A-19 `photon_noise_iso=auto` | **已修**：运行侧读不到 ISO 就清标志；预览不再印这条跑不通的串 | 无独立锁 |
+| A-19 `photon_noise_iso=auto` | **09-26 只修了传统路线 ⇒ 09-30 修完**：ISO 解析上提到 `:714` 分叉之前（三条 cjxl 出口共用一份已解析 options）；`BuildCjxlArguments` 加 fail-closed 兜底（真执行宁可省略也**不发占位串**，`auto` 只留在预览）；无损（distance=0）时不发噪声并点名；管道传输失败立刻杀 ffmpeg 并把编码器 stderr 带进异常（不再等 30 分钟报"超时"） | `wire ①-⑤`、`(10g)`×6、`J9d-a~d`（各含正控与变异验牙） |
 | A-20 `-dct float` | **已修**：从下拉移除（历史预设/CLI 写 float 会原样透传并响亮失败） | 无独立锁 |
-| A-18 质量轴与后端真实域不符（JXL/cjpegli 的 q↔d 折算） | **未修** | — |
+| A-26（09-30 新增，无独立小节，账在本表；⚠ 与上面第三节的 A-25「No capable devices」不是同一件事）jbrd 从未被激活 | **已修**：`JxlLosslessJpeg` 默认 `false` + 采集式「面板不可见⇒false」+ 与默认勾着的「保留 Ultra HDR」无条件相与，**三道**叠加 ⇒ 默认走 `-d 3.8` 有损重编码而用户以为无损；且 95 个门禁里**没有一条**问过 app 自己发没发 `--lossless_jpeg=1`。现开关默认启用、与「输入真是 JPEG」相与成**有效值**、JPEG/JXL 两格共用一只控件 | `⑩`×7（含 jxlinfo 独立读回、PNG 负控、XAML 单份结构锁）、`jbrd-①~⑥`、`J16a/b` |
+| A-27（09-30 新增，同上无独立小节）ffmpeg-libjxl 用 `-distance 0` 冒充 jbrd ⇒ 质量轴被吞 | **已修**：删掉 `FfmpegCommandBuilder` 那条特例，jxl 质量档一律走 `BuildJxlOptions`；「该后端做不到 jbrd」由任务日志点名（实测四档产物逐字节同尺寸 59,685 B ⇒ 现各档不同） | `qa-①②③`、`⑪`（`EncoderUnsupportedSetting` 的 jxl 格首次真跑，四臂两两只差一个变量） |
+| A-28（10-01 新增）jbrd 默认翻转带出的**取向回归** | **已修**：`JxlLosslessJpeg` 的有效值只与到"输入是 JPEG"，而同一个布尔又被元数据恢复当作"这次像素没动"的唯一判据（`CjxlService.UsesLosslessJpegRewrap`）⇒ JPEG→JPEG/PNG/WebP/AVIF 也把 `Orientation=8` 留在已旋正的像素上 = 查看器二次旋转。出货包实测四格全中（源 coded 640x480 → 产物 480x640 且标签仍 8）；补上"目标必须是 jxl"这一与后四格标签均丢，jxl(jbrd) 仍正确带走取向 | `verify-color-wiring (12)`×8（含夹具自检与反真空臂）、`verify-jxl-codestream-route ⑫`×4 |
+| A-29（10-01 新增）app 自产 HDR/float JXL **无法回灌** | **未修**（需选路决策，故不就地改）：`Ultra HDR JPEG → JXL` 出 `32-bit float` 的 JXL，再转任何目标都死在 `djxl 解码退出码 1`。旁证产物没坏：手跑 `djxl → .png` 成功、`→ .ppm` 报 `JxlDecoderSetImageOutBitDepth failed`，随包 ffmpeg 能解出 `rgbf32le` ⇒ 反向管道选了 float 走不了的 PPM 中间格式。建议：HDR/float 源改走 ffmpeg 解码（或按 `jxlinfo` 判出的深度选中间格式），失败时点名而不是只报解码器退出码 | 无（复现脚本 `tests/output/t76/jbrd-e2e.ps1` 的 `A ultrahdr` 两臂） |
+| A-30（10-01 新增）`--jxl-modular` 在 cjxl 后端静默丢弃 | **未修**（低危、诚实性）：`CjxlService` 里 `JxlModular` 命中 0 次，而 `-modular` 只由 `ImageEncoderArgs`（ffmpeg/libjxl 路）发；面板 `JxlFfmpegPanel` 已按后端收窄 ⇒ UI 用户碰不到，只有 CLI 拿到"设了不生效且无声"。建议按 jbrd 那条的做法点名而不静默 | 无 |
+| A-18 质量轴与后端真实域不符（JXL/cjpegli 的 q↔d 折算） | **未修**（A-27 修的是「被常量吞掉」，本条是「折算公式与 libjxl 自己的域不同」，两者不是同一件事） | — |
 | A-13② GIF 表达不出"不循环" | **未修**（不能简单恒发 `-loop`：采集侧给静帧恒填 `-1` ⇒ 会把所有默认 GIF 摘掉 NETSCAPE、动图输入变播一次。要做须把 `AnimationLoop` 改可空哨兵，会连带重写上面刚改的 `isAnimated` 判据 ⇒ 单独一批） | — |
 | A-17 JXR 面板零控件 / q≤49 静默 4:2:0 | **未修**（需界面决策与新增双语串） | — |
 | A-21 / A-22 dngtool 文案过期、"保留 CFA"实出 Linear Raw | **未修** | — |

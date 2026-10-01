@@ -446,30 +446,25 @@ namespace FfmpegGui.Services
                         if (options.JxlModular == true)
                         { args.Add("-modular"); args.Add("1"); }
                     }
-                    // --- JPEG→JXL 快速路径：意图是"不解码、直接复制 DCT 系数" ---
-                    // ⚠ 更正（2026-09-19 实测）：本工具链**做不到**无损重封装。此前注释称
-                    //   "FFmpeg 8.x+ 中 libjxl 自动检测 JPEG 输入并启用无损重封装，只需 -distance 0"
-                    //   ——**不成立**。实测 `-distance 0` 走的是普通有损→无损（modular）重编码：
-                    //   `jxlinfo` 里**没有** "JPEG bitstream reconstruction data available"（无 jbrd），
-                    //   且同一 JPEG 产物大小 35487B（ffmpeg-libjxl）vs 16497B（cjxl 后端真重封装）。
-                    //   即本分支只是"低损重编码"，**不是** JPEG 比特流无损重封装。
-                    //   真正的 jbrd 无损重封装只有 cjxl 后端（`-d 0 --lossless_jpeg=1`）能做到，
-                    //   本工具链的 ffmpeg-libjxl 路径不具备该能力。
-                    // ⚠ 该分支**不是**静帧 JXL 的通用参数（它靠"不解码"实现无损重封装）⇒
-                    //   引擎出口**不承接**（见 ImageEncoderArgs.UnsupportedEncoderSettings），
-                    //   故不能与下面的 BuildJxlOptions 合并；只有 `!JxlLosslessJpeg` 的静帧参数
-                    //   才走单一真值 `ImageEncoderArgs.BuildJxlOptions`（2026-09-17 搬移）。
-                    if (options.JxlLosslessJpeg)
-                    {
-                        args.Add("-distance");
-                        args.Add("0");
-                        if (options.JxlEffort.HasValue)
-                        { args.Add("-effort"); args.Add(options.JxlEffort.Value.ToString()); }
-                    }
-                    else
-                    {
-                        args.AddRange(ColorMapping.ImageEncoderArgs.BuildJxlOptions(options));
-                    }
+                    // --- JPEG→JXL：本后端**做不到**无损重封装（jbrd），只按质量档重编码 ---
+                    // 更正（2026-09-19 实测）：此前这里的注释称"FFmpeg 8.x+ 的 libjxl 会自动检测 JPEG
+                    //   输入并启用无损重封装，只需 -distance 0"——**不成立**。实测 `-distance 0` 走的是
+                    //   普通 modular 无损重编码：`jxlinfo` 里**没有** "JPEG bitstream reconstruction data
+                    //   available"（无 jbrd），同一 JPEG 产物 35,487 B（ffmpeg-libjxl）vs 16,497 B
+                    //   （cjxl 后端真重封装）。真正的 jbrd 只有 cjxl 的 `-d 0 --lossless_jpeg=1` 能做到。
+                    //   2026-10-01 复测同一结论仍然成立（见下方那条收拢说明里的新数字）。
+                    // ── jxl 参数一律走单一真值 `ImageEncoderArgs.BuildJxlOptions`（2026-10-01 收拢）──
+                    // 这里原本有一条 `if (options.JxlLosslessJpeg) ⇒ -distance 0` 的特例，理由是
+                    // 「JPEG→JXL 免解码重封装」。但上面 2026-09-19 的更正已经实测证明 **ffmpeg 的 libjxl
+                    // 做不到 jbrd**（无 reconstruction 盒、同一 JPEG 35,487 B vs cjxl 16,497 B）——
+                    // 也就是说这条特例从来兑现不了它承诺的东西，只剩两个副作用：
+                    //   ① 吞掉质量轴：实测 `-e Ffmpeg` 下 q=30/50/75/90 产物**全是 58.3 kB**、
+                    //      命令行恒为 `-distance 0`；关掉该开关后恢复 10.5 / 3.8（3.9 / 9.6 kB）。
+                    //      2026-09-30 无损重封装改成**默认启用**之后，这一格从罕见变成常态。
+                    //   ② 漏发 `-modular`（`BuildJxlOptions` 的两个分支都会发，这条不会）。
+                    // 真正能做到重封装的只有 cjxl 后端；走到这里说明后端就是 ffmpeg ⇒ 该按用户要的
+                    // 质量档出活，做不到重封装由 QueueProcessor 那条 jbrd 告警点名，而不是改参数冒充。
+                    args.AddRange(ColorMapping.ImageEncoderArgs.BuildJxlOptions(options));
                     break;
             }
 
@@ -1639,6 +1634,20 @@ namespace FfmpegGui.Services
                 // parts[1] = height
                 if (parts.Length >= 2 && !string.IsNullOrEmpty(parts[1]) && int.TryParse(parts[1], out var h))
                     meta.height = h;
+                // ── 宽高改按**显示**口径（2026-09-30）──
+                // 上面的 csv 拿的是 **coded** 尺寸，而全仓的解码段都不写 `-noautorotate` ⇒
+                // 带取向标签的源实际吐出的帧是旋正过的（实测 TIFF Orientation=8：coded 6000×4000、
+                // 解码帧 4000×6000）。本字段唯一的消费者是 `BuildMaxDimensionScaleFilter` 的
+                // 「锁哪条边」判据 ⇒ 留 coded 会锁错边（实测 6000×4000 限 2000 → 产物 2000×3000，
+                // 最长边**突破**用户上限），且与引擎侧按显示尺寸声明的 `w` 互相对不上。
+                // 探测本身收在 `ImageGeometry`（仓内宽高探测的唯一实现）。
+                if (meta.width > 0 && meta.height > 0)
+                {
+                    var (dw, dh) = ImageGeometry.DisplaySizeAsync(inputPath, ffprobe, log, ct)
+                        .GetAwaiter().GetResult();
+                    if (dw > 0 && dh > 0) { meta.width = dw; meta.height = dh; }
+                }
+
                 // parts[3] = color_space (YUV 矩阵)
                 if (parts.Length >= 4 && !string.IsNullOrEmpty(parts[3]) && parts[3] != "unknown" && parts[3] != "N/A")
                     meta.colorSpace = parts[3];

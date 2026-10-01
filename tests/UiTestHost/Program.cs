@@ -1890,6 +1890,49 @@ namespace UiTestHost
                 ll.IsChecked = false; SetFormat("PNG"); Regen();
             });
 
+            // ── J9d cjxl 光子噪声 × 无损（2026-09-30：无损与合成噪声互斥）──
+            // 本段**只断言控件可用性状态机**（这是我改的那一处），不断言命令串：
+            // headless 宿主里 PLAN 工具链探测不到 cjxl（同 C3/H11 对 exiftool 的自维注入注记），
+            // `JxlCjxlPanel` 因此不可见 ⇒ 在这里比命令串会测到"没有 cjxl"而不是"规则对不对"。
+            // 命令串那一半由两处各自钉住：`ServiceProbe wire` 的 ①-⑤（纯函数）与
+            // `verify-color-wiring.ps1` 的 (10g)（真产品 CLI 端到端）。
+            // 实测依据：`-d 0 --photon_noise_iso=400` ⇒ 99.46% 的 16-bit 样本偏离源，
+            // 而 jxlinfo 仍报 "(possibly) lossless"（噪声在解码端合成，体积只多 10 B）。
+            Safe("J9d cjxl 光子噪声×无损", () =>
+            {
+                var adv = Find<CheckBox>("UseAdvancedCodec");
+                if (adv != null) adv.IsChecked = true;
+                Pump(10);
+                SetFormat("JXL"); Pump(10); Regen();
+                var auto = Find<CheckBox>("CjxlAutoPhotonNoiseCheck");
+                var isoBox = Find<NumericUpDown>("CjxlPhotonNoiseBox");
+                var ll = Find<CheckBox>("LosslessCheck");
+                if (auto == null || isoBox == null || ll == null)
+                {
+                    Check("J9d 控件存在", false, $"auto={auto != null} iso={isoBox != null} lossless={ll != null}");
+                    return;
+                }
+                ll.IsChecked = false; Pump(6);
+                auto.IsChecked = true; Pump(6);
+                Check("J9d-a 非无损+自动模式 ⇒ 复选框可选、手动 ISO 置灰",
+                      auto.IsEnabled && !isoBox.IsEnabled,
+                      $"auto.Enabled={auto.IsEnabled} iso.Enabled={isoBox.IsEnabled}");
+                auto.IsChecked = false; Pump(6);
+                Check("J9d-b 非无损+手动 ISO ⇒ 两只都可选（正控：证明 a 的置灰不是恒假）",
+                      auto.IsEnabled && isoBox.IsEnabled,
+                      $"auto.Enabled={auto.IsEnabled} iso.Enabled={isoBox.IsEnabled}");
+                ll.IsChecked = true; Pump(6);
+                Check("J9d-c 无损 ⇒ 两只都置灰（叠加会静默破坏逐比特无损）",
+                      !auto.IsEnabled && !isoBox.IsEnabled,
+                      $"auto.Enabled={auto.IsEnabled} iso.Enabled={isoBox.IsEnabled}");
+                // 撤掉无损必须**原样回来**（只撤锁、不吞用户意图；IsChecked 全程未被本方法改写）
+                ll.IsChecked = false; Pump(6);
+                Check("J9d-d 撤掉无损 ⇒ 可选性回来且勾选状态未被吞",
+                      auto.IsEnabled && isoBox.IsEnabled && auto.IsChecked == false,
+                      $"auto.Enabled={auto.IsEnabled} iso.Enabled={isoBox.IsEnabled} auto.Checked={auto.IsChecked}");
+                ll.IsChecked = false; SetFormat("PNG"); Pump(8); Regen();
+            });
+
             // ── J10 AppendPngExtCheck：**后置改名**，不得改变命令 token（否则是参数串污染）──
             Safe("J10 AppendPngExtCheck 不进命令串", () =>
             {
@@ -2245,6 +2288,37 @@ namespace UiTestHost
                 //   ⇒ 原先「WebP 只写 -loop」不再是全部事实。本组只锁 -loop；
                 //     WebP 动图 fps/scale 的断言见 GroupL 的 L4。
                 Console.WriteLine("      [info] J15 WebP 分支已断言 -loop；fps/scaleW 的断言见 GroupL/L4（P1-F 缺陷 4 已修）");
+            });
+
+            // ── J16 JPEG→JXL 无损重封装那只**共用**控件（2026-09-30：开关默认启用）──
+            // 控件从 `JxlCjxlPanel` 迁到 `JxlLosslessJpegPanel`：JPEG 与 JPEG XL 两格共用**同一只**。
+            // 迁走的理由与 `JpegGainMapPanel` 同一条：嵌进任一只按格式切换的面板，另一格就看不见它，
+            // 只能再放第二只 ⇒ 两只控件 = 两个真值。命令形状那一半由 `ServiceProbe wire` 的 jbrd-①~⑥
+            // 与 `verify-jxl-codestream-route` 的 ⑩（真产物 jbrd）各自钉住，这里只锁货构型。
+            Safe("J16 jbrd 共用面板", () =>
+            {
+                var ad = Find<CheckBox>("UseAdvancedCodec"); if (ad != null) ad.IsChecked = true; Pump(10);
+                // ⚠ 上一组 J15 把转换模式留在**动图**（items = AnimatedFormats，里面没有 "PNG"/"JPEG"）
+                //   ⇒ 那时 SetFormat("PNG") 会把 SelectedItem 置空、格式**没变**，负控就成了假红。
+                //   先复位到静图，再谈格式切换。
+                var mode = Find<ComboBox>("ConversionModeCombo"); if (mode != null) mode.SelectedIndex = 0; Pump(10);
+                var panel = Find<StackPanel>("JxlLosslessJpegPanel");
+                var chk = Find<CheckBox>("JxlLosslessJpegCheck");
+                if (panel == null || chk == null)
+                {
+                    Check("J16a 控件存在且已迁到共用面板", false, $"panel={panel != null} chk={chk != null}");
+                    return;
+                }
+                SetFormat("JPEG"); Pump(10);
+                Check("J16a JPEG 格 ⇒ 共用面板可见、默认勾选",
+                      panel.IsVisible && chk.IsChecked == true,
+                      $"visible={panel.IsVisible} checked={chk.IsChecked}");
+                SetFormat("PNG"); Pump(10);
+                var fcombo = Find<ComboBox>("FormatCombo");
+                Check("J16b 负控：PNG 格 ⇒ 面板隐藏（不是一只恒可见的装饰）",
+                      !panel.IsVisible,
+                      $"visible={panel.IsVisible} fmt={fcombo?.SelectedItem} nItems={fcombo?.Items?.Count} mode={Find<ComboBox>("ConversionModeCombo")?.SelectedIndex}");
+                if (ad != null) ad.IsChecked = false; Pump(6);
             });
 
             SweepReset();

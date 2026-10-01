@@ -1,4 +1,4 @@
-# 交接文档 (Agent Handover)
+﻿# 交接文档 (Agent Handover)
 
 > 📌 **接手请先读**：**`docs/HANDOVER_2026-09-22.md`**（2026-09-22 的**全新单页交接**：
 > 当前状态速览 · 接手第一步 · 本会话改动清单 · **未验证部分** · 待决策 · 新增陷阱 · 命令速查）。
@@ -2243,7 +2243,7 @@ UI 宿主 **322/0** · `verify-color-strategy` **63/0** · `gainmap-isobmff` **5
      `$Probes` 默认值**同集**，可据此核对"mode 齐不齐"）。
      ⚠ 记账口径：**各 mode 的 pass 之和**才是总数 —— 曾把 `contract` 从 100 更新到 107 却漏更新总数，
      写成 372（错值），由 `general-purpose-1` 复核时用"16 项求和 ≠ 372"抓出。**改任一 mode 后必须重算总和**。
-   - **脚本门禁**：`_run-step3-gates.ps1` 清单内 **48 条**（⚠ 实测 `foreach` 数组条目数；此前注释写 29、后写 31~41，均已更正；第 32 条 = `verify-geometry-engine.ps1`，第 33 条 = `verify-engine-firstframe.ps1`，第 34 条 = `verify-jxl-codestream-route.ps1`，第 35 条 = `verify-anim-static-target.ps1`，第 36 条 = `verify-jxl-probe-timeout.ps1`，第 37 条 = `verify-ffmpeg-heartbeat.ps1`，第 38 条 = `_probe-sync-read-before-wait-scan.ps1`，第 39 条 = `verify-jxr-anim-input.ps1`，第 40 条 = `_probe-ct-chain-closure-scan.ps1`，第 41 条 = `verify-avif-anim-probe.ps1`，**第 42 条 = `verify-webp-anim-probe.ps1`**，**第 43 条 = `verify-ui-host.ps1`**，**第 44 条 = `verify-ui-param-matrix.ps1`**，**第 45 条 = `verify-ui-strategy-map.ps1`**，**第 46 条 = `verify-ui-param-defects.ps1`**，**第 47 条 = `verify-cli-strict.ps1`**，**第 48 条 = `verify-png-structure.ps1`**（第 43~48 条 = **2026-09-19 P4-A 接线**新增 6 条））。
+   - **脚本门禁**：`_run-step3-gates.ps1` 清单内 **60 条**（2026-10-01；复现口径取运行器打印的 `script-list=N 条（受管基线 N）`）（⚠ 实测 `foreach` 数组条目数；此前注释写 29、后写 31~41，均已更正；第 32 条 = `verify-geometry-engine.ps1`，第 33 条 = `verify-engine-firstframe.ps1`，第 34 条 = `verify-jxl-codestream-route.ps1`，第 35 条 = `verify-anim-static-target.ps1`，第 36 条 = `verify-jxl-probe-timeout.ps1`，第 37 条 = `verify-ffmpeg-heartbeat.ps1`，第 38 条 = `_probe-sync-read-before-wait-scan.ps1`，第 39 条 = `verify-jxr-anim-input.ps1`，第 40 条 = `_probe-ct-chain-closure-scan.ps1`，第 41 条 = `verify-avif-anim-probe.ps1`，**第 42 条 = `verify-webp-anim-probe.ps1`**，**第 43 条 = `verify-ui-host.ps1`**，**第 44 条 = `verify-ui-param-matrix.ps1`**，**第 45 条 = `verify-ui-strategy-map.ps1`**，**第 46 条 = `verify-ui-param-defects.ps1`**，**第 47 条 = `verify-cli-strict.ps1`**，**第 48 条 = `verify-png-structure.ps1`**（第 43~48 条 = **2026-09-19 P4-A 接线**新增 6 条））。
      ⚠⚠ **这个数字每加一个门禁脚本就变** ⇒ 改 `tests/scripts/**` 后**必须重新数**，**不要拿旧值推算**：`grep -oE "'[^']+\.ps1'" tests/scripts/_run-step3-gates.ps1 | sort -u | wc -l`。
      ⚠ **2026-09-18 实测教训**：这个数字在**同一天内被改了五次**（32→33→34→35→36），而四处文档同步总是慢一步 ⇒ 属**反复复发的漂移源**（本次同步点：本行 + `docs/TESTING.md` 的 4 处计数：「35 条」×3、「34 个 GUID」×1）。⚠ **同日续报**：该数字当天**继续漂到 41**（36→37→38→39→40→41，又新增 6 个脚本：`verify-ffmpeg-heartbeat` / `_probe-sync-read-before-wait-scan` / `verify-jxr-anim-input` / `_probe-ct-chain-closure-scan` / `verify-avif-anim-probe`）⇒ 上面的「五次」只是**当时的快照**，**漂移并未止于 36**。
    - ⚠ **脚本门禁必须双宿主兼容**（PS 7 与 PS 5.1 都要能跑）—— 运行器用**当前宿主**作子脚本解释器，
@@ -3469,3 +3469,19 @@ var encoderProtectsColor =
    ⇒ **接手第一件事：跑一次整轮**（见 `docs/HANDOVER_2026-09-22.md §1`）。
 2. ⚠ **本修复尚无门禁锁定** ⇒ 建议在既有 GainMap 门禁里补一条「底图 ICC ≠ 源 ICC」的断言（或加进 `verify-engine-alpha-preserve` 式的专用门禁）。
 3. ⚠ 中断遗留的**陈旧锁**已确认属主不存在后清除（`pid 92940`）；游离进程核对为**无**。
+
+---
+
+## 2026-10-01 批次收口（管线审查 × 测试覆盖审计）
+
+- 台账全文：**`docs/PIPELINE_TEST_AUDIT_2026-10-01.md`**（判词 / 假绿机制 / 逐格式高级选项可用性矩阵 / 应覆盖范围）。
+- 整轮读数：`_run-step3-gates.ps1` **83 步全部 exit=0，「运行器汇总：全部通过」**，日志头
+  `artifact-sha16: FfmpegGui.dll=8FF98B12BE0B71CD`（=出货包 beta2-full 内那份，确定性重建同指纹）；取证 `tests/output/t78/round-R2.log`。
+- 本轮把 STALE 闸从「只判旧」补成「缺席即拒跑」（5 项产物），并修掉 **35 个门禁恒假的构建类型标注**
+  （`'*\Debug\*'` 比不过正斜杠路径 ⇒ 实测一条 `PASS=22 FAIL=0` 跑的是 09-30 的 Debug 产物）。两条都是**假绿机制**，不是功能缺陷。
+- L3（打出货包）判据从零建成：`t76/jbrd-e2e.ps1` **89/2**、`t76/orientation-rewrap.ps1` 14/0、
+  `t77/gainmap-thirdparty.ps1` **13/0**（libultrahdr 自己认证 Ultra HDR，且逐项与产品声明的 log2 余量对账）、
+  `t69/pkg-smoke3.ps1` 17/0、`t79/knob-liveness.ps1` **18 臂 = 活 15 / 死 1 / 被拒 1 / 未判 1**。
+- 2 条红是**真缺陷**（增益图 JPEG→JXL 无损宣称静默退化为 float、且该产物取不回来），未修，复见审计文档 §五 U1。
+- ⚠ 上述 5 套 L3 判据都在 `tests/output/`（`.gitignore:78` ⇒ 不进提交、一次 `git clean -xdf` 就没了）。
+  下一批应移入 `tests/scripts/` 并接成清单条目（60→63），成本与连带要改的条数陈述见审计文档 §六。

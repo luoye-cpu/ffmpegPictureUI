@@ -1,6 +1,6 @@
-# _run-step3-gates.ps1 —— 步骤 3 改动后的门禁批量执行（只回显每个门禁的汇总行 + 失败明细）
+﻿# _run-step3-gates.ps1 —— 步骤 3 改动后的门禁批量执行（只回显每个门禁的汇总行 + 失败明细）
 # 用法：pwsh -NoProfile -File tests/scripts/_run-step3-gates.ps1 [-Probes a,b,c] [-SkipScripts] [-Scripts a,b]
-#   ⚠ `-Scripts` = **脚本级子集**（2026-09-24 新增）。动机：此前只有"全跑 57 条(≈20min)"与
+#   ⚠ `-Scripts` = **脚本级子集**（2026-09-24 新增）。动机：此前只有"全跑 60 条(≈20min)"与
 #     "裸跑单个 verify-*.ps1"两种选择，而裸跑会绕开本文件的**仓库锁 / 单步超时 / STALE 新鲜度闸 /
 #     双漂移复核 / `_gate_script_*.txt` 留痕**五项保护 ⇒ 增量验证要么太贵要么不可信。
 #     子集跑**保留**上述五项，但**不构成基线**（汇总行会点名），宣布新基线仍需一次全量。
@@ -47,7 +47,7 @@ param([string]$Probes = 'contract,wire,verdict,selftest,iccname,plan,curve,matri
 #    2026-09-17 新增 verify-gamut-map.ps1；**同日按「运行级隔离（GUID）」改写，见 §6 第 66 条**；
 #    同日再新增生产者 `_probe-jpg-p3-icc.ps1`，理由见下方 ②(b) 与调序注释；
 #    同日再新增 `verify-geometry-engine.ps1`（**几何缩放死代码**的专项门禁，理由见 `$Probes` 的 `geometry` 注释））──
-#    ⚠ **清单条数以实测为准 = 57 条**（⚠ 2026-09-19 P4-A 前为 42 条；2026-09-23 由 48 经 49/50/51 到 52，2026-09-23/24 再接 `verify-ipc-extra-options.ps1` ⇒ 53，2026-09-24 再接 `_probe-settings-clone-coverage.ps1` ⇒ 54，2026-09-27 再接 `_probe-matrix-structure.ps1`（任务 #42，秒级结构自检）⇒ 55，同日再接 `_probe-stderr-merge-scan.ps1`（任务 #51，合并取数结构锁）⇒ 56，同日再接 `verify-simd-switch-fallback.ps1`（面板「SIMD 优化」声明/实现冲突 ⇒ 判据单点 `SimdKernelRouting`）⇒ 57）（`foreach` 数组里的 `.ps1` 条目数）。
+#    ⚠ **清单条数以实测为准 = 60 条**（⚠ 2026-09-19 P4-A 前为 42 条；2026-09-23 由 48 经 49/50/51 到 52，2026-09-23/24 再接 `verify-ipc-extra-options.ps1` ⇒ 53，2026-09-24 再接 `_probe-settings-clone-coverage.ps1` ⇒ 54，2026-09-27 再接 `_probe-matrix-structure.ps1`（任务 #42，秒级结构自检）⇒ 55，同日再接 `_probe-stderr-merge-scan.ps1`（任务 #51，合并取数结构锁）⇒ 56，同日再接 `verify-simd-switch-fallback.ps1`（面板「SIMD 优化」声明/实现冲突 ⇒ 判据单点 `SimdKernelRouting`）⇒ 57，2026-09-30 再接 `verify-geometry-orientation.ps1` + `_probe-geometry-single-source-scan.ps1`（取向标签 ⇒ **显示尺寸**口径的专项门禁 + 唯一实现结构锁）⇒ 59，同日再接 `verify-gainmap-host.ps1`（把 `GainMapTestHost` 套件接进清单 + STALE 第 ⑤ 对）⇒ 60）（`foreach` 数组里的 `.ps1` 条目数）。
 #      原注释写「29 个」「31 条」均与实测不符（**历史偏差**，非本轮引入），已按实测更正。
 #      2026-09-18 新增 `verify-engine-firstframe.ps1`（引擎多帧解码只取首帧，理由见该脚本头注释）
 #      ⇒ 32 → 33，已重新数过。
@@ -617,7 +617,7 @@ $pr = "$root/tests/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.exe"
 if (-not (Test-Path $pr)) { $pr = "$root/tests/ServiceProbe/bin/Debug/net11.0/win-x64/ServiceProbe.exe" }
 # ⚠ 2026-09-21（TESTING.md 第 84 条处置建议 ①）：**回退是静默的** —— 门禁可能测的
 #   不是你以为的那个二进制。⇒ 一律**打印被测 exe 与构建类型**，让读数可追溯。
-Write-Output ("[gate] exe=" + $pr + $(if ($pr -like '*\Debug\*') { " (Debug fallback)" } else { " (Release)" }))
+Write-Output ("[gate] exe=" + $pr + $(if ($pr -like '*[/\]Debug[/\]*') { " (Debug fallback)" } else { " (Release)" }))
 Write-Output "probe-host=$pr"
 
 # ── 二进制新鲜度闸（2026-09-15 新增）───────────────────────────────────────────
@@ -668,11 +668,32 @@ if ($prbSrc -and $prbExe -and $prbExe.LastWriteTime -lt $prbSrc.LastWriteTime) {
 if ($uiSrc -and $uiExe -and $uiExe.LastWriteTime -lt $uiSrc.LastWriteTime) {
   $stale += ("UiTestHost.exe {0} < tests/UiTestHost 源码 {1}（{2}）" -f $uiExe.LastWriteTime, $uiSrc.LastWriteTime, $uiSrc.Name)
 }
+# ── 第 ⑤ 对（2026-09-30）：`GainMapTestHost.exe` ↔ `tests/GainMapTestHost/**` ─────────────
+#   动机就是本次要处理的遗留：该宿主的套件此前**不被任何门禁执行**（运行器自己在下面一行登记着这件事），
+#   于是 09-20「SDR ⇒ 普通 JPEG」裁定作废的 4 条期望在树里**红了 10 天**没人被拦。
+#   现已接成清单第 60 条 `verify-gainmap-host.ps1` ⇒ 它执行的产物必须进新鲜度闸，
+#   否则该门禁会拿**陈旧宿主**报绿（与 09-24 给 UiTestHost 补对同族）。
+$gmSrc = Get-NewestSrc "$root/tests/GainMapTestHost"
+$gmExe = Get-Item "$root/tests/GainMapTestHost/bin/Release/net11.0/win-x64/GainMapTestHost.exe" -ErrorAction SilentlyContinue
+if ($gmSrc -and $gmExe -and $gmExe.LastWriteTime -lt $gmSrc.LastWriteTime) {
+  $stale += ("GainMapTestHost.exe {0} < tests/GainMapTestHost 源码 {1}（{2}）" -f $gmExe.LastWriteTime, $gmSrc.LastWriteTime, $gmSrc.Name)
+}
+# ── 2026-10-01 补：**不存在**也必须拒（此前只判"旧"）──────────────────────────────────
+#   动因是本轮实测到的假绿链：`bin/Release` 的产物会被外部 `dotnet build`/清理整时段打回，而 `bin/`
+#   在 .gitignore 里 ⇒ 这种打回**git 看不见**；35 个子脚本的 exe 解析是「Release 缺 ⇒ 静默换 Debug」，
+#   且那行构建类型标注用的是 `'*\Debug\*'` 去比**正斜杠拼出来的路径** ⇒ 恒假，日志反而写 "(Release)"。
+#   实测读数：`verify-gainmap-managed.ps1` 报 PASS=22 FAIL=0，被测的是 09-30 22:11 的 Debug 产物。
+#   旧闸用 `-and` 短路，产物为 $null 时整条判据被跳过 ⇒「不存在」比「旧」更容易蒙混过关。
+if (-not $guiDll) { $stale += 'FfmpegGui.dll 不存在（src/FfmpegGui/bin/Release）⇒ 被测产物无从判定，本轮不可绑定任何指纹' }
+if (-not $guiExe) { $stale += 'FfmpegGui.exe 不存在 ⇒ 端到端门禁会静默回退到 Debug 产物（本轮实测踩过）' }
+if (-not $prbExe) { $stale += 'ServiceProbe.exe 不存在 ⇒ 探针类门禁静默回退或整段跳过' }
+if (-not $uiExe)  { $stale += 'UiTestHost.exe 不存在 ⇒ UI 门禁静默回退或整段跳过' }
+if (-not $gmExe)  { $stale += 'GainMapTestHost.exe 不存在 ⇒ GainMap 宿主门禁静默回退或整段跳过' }
 if ($stale.Count -gt 0) {
-  Write-Output "[STALE] 被执行的产物比它的源码旧，拒绝跑（否则结论不可信）"
+  Write-Output "[STALE] 被执行的产物缺失或比它的源码旧，拒绝跑（否则结论不可信）"
   $stale | ForEach-Object { Write-Output ("        " + $_) }
-  Write-Output  "        重建（同批、各自 -c Release）：src/FfmpegGui | tests/ServiceProbe | tests/UiTestHost"
-  Write-Output  "        ⚠ tests/GainMapTestHost 不在本闸内（其 exe 不被任何门禁执行），但它是第四份 FfmpegGui.dll 副本 ⇒ 重建时同批带上"
+  Write-Output  "        重建（同批、各自 -c Release）：src/FfmpegGui | tests/ServiceProbe | tests/UiTestHost | tests/GainMapTestHost"
+  Write-Output  "        ⚠ tests/GainMapTestHost 自 2026-09-30 起**已进闸**（清单第 60 条 `verify-gainmap-host.ps1` + 上面第 ⑤ 对）"
   # ⚠ 2026-09-19 修（实施 #147 C 锁时漏掉的退出点）：此处**必须**先释放仓库级锁 ——
   #   否则「正常拒绝」也会留下残留锁（实测：STALE 拒跑后 `跑后锁残留=True`，下次运行会被
   #   自己的锁挡住并报「疑似残留锁」）。`Release-GatesLock` 只删**自己写的**锁（pid 校验）。
@@ -698,6 +719,24 @@ Write-Output "shape-selfcheck=OK（17 针：定义点 / 调用点 / 带超时调
 # ⚠ 这一行**有意打印**（收尾还有一行）：日志里出现 hash 是**预期**的，不是异常。
 $selfFp0 = Get-SelfFingerprint
 Write-Output ("runner-self-sha256=" + $selfFp0.Sha + " lines=" + $selfFp0.Lines + " bytes=" + $selfFp0.Bytes + "  (启动时记录；有意打印)")
+
+# ── 2026-10-01 补：把**被测产物**指纹钉进本轮日志头（取代"人工记 FfmpegGui.dll 前 16"的旧约定）──
+#   为什么现在补：历史基线一直靠人在结论里手抄 DLL 前 16 位（易腐、事后无从核对），
+#   而本轮抓到的假绿链恰恰是"这轮跑的到底是哪份二进制"答不出来 —— `bin/Release` 被外部
+#   `dotnet build` 打回（`bin/` 在 .gitignore 里 ⇒ git 看不见），35 个子脚本静默换 Debug 产物。
+#   上面的闸已 fail-closed；这一行把"是哪一份"变成日志里可事后比对的读数，不是口头声明。
+$artFp = @()
+foreach ($ap in @(
+    @{ n = 'FfmpegGui.dll';         p = (Join-Path $binDir 'FfmpegGui.dll') },
+    @{ n = 'FfmpegGui.exe';         p = "$root/src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.exe" },
+    @{ n = 'ServiceProbe.exe';      p = $pr },
+    @{ n = 'UiTestHost.exe';        p = "$root/tests/UiTestHost/bin/Release/net11.0/win-x64/UiTestHost.exe" },
+    @{ n = 'GainMapTestHost.exe';   p = "$root/tests/GainMapTestHost/bin/Release/net11.0/win-x64/GainMapTestHost.exe" })) {
+  $h = ''
+  try { if (Test-Path $ap.p) { $h = (Get-FileHash $ap.p -Algorithm SHA256 -ErrorAction Stop).Hash.Substring(0, 16) } } catch { $h = '读失败' }
+  $artFp += ('{0}={1}' -f $ap.n, $(if ($h) { $h } else { '缺失' }))
+}
+Write-Output ("artifact-sha16: " + ($artFp -join '  ') + "  (被测产物；跑后不改则可事后追溯到这一份)")
 
 # ── 跑后源码漂移复核（2026-09-15 新增）────────────────────────────────────────
 # 本仓库存在**并发编辑会话**：跑的过程中源码可能被改，此时上面每一行结论都
@@ -855,7 +894,7 @@ $noSelfSummary = @('_probe-cancel-propagation-scan.ps1', '_probe-ct-chain-closur
 #   观察项**，改成必红等于**主动放弃一条覆盖**；补生产者只是**修复清单的遗漏**。
 #   ⚠ **本组正确性依赖 runner 串行**（`validate/jpgp3` 是固定共享目录）——
 #   若将来 runner 改成并行，本组必须先改成「指针/按会话隔离」（§6 第 68 条）。
-# ⚠ 受管基线：脚本清单 = **57** 条（`.workbuddy-ai/memory/MEMORY.md` / `docs/HANDOVER.md` /
+# ⚠ 受管基线：脚本清单 = **60** 条（`.workbuddy-ai/memory/MEMORY.md` / `docs/HANDOVER.md` /
 #   `docs/TESTING.md` §3.5 同记此数）。增删条目必须**同时**改此常量 + 四处文档；
 #   否则下面的条数锁会响亮报红（防「删掉一条 ⇒ 静默变 47 ⇒ 日志照常、无人发现」）。
 #   ⚠ 本锁在 `-SkipScripts` 下**不执行**（该模式走上面的早退，清单根本没被使用）——
@@ -882,14 +921,17 @@ $noSelfSummary = @('_probe-cancel-propagation-scan.ps1', '_probe-ct-chain-closur
 #     这 5 条会拿**陈旧的 `UiTestHost.exe`** 跑出「绿」，当时靠**手工**保证三者同批重建。
 #     ⇒ 现已把 `UiTestHost.exe ↔ tests/UiTestHost/**` 与被 28 条端到端门禁执行的
 #       `src/**/FfmpegGui.exe ↔ src/FfmpegGui/**` 两对补进同一条闸（见上方 `[STALE]` 段）；
-#       `tests/GainMapTestHost.exe` **仍不在闸内** —— 判据取**赋值形态**而非"搜文件名"：
-#       `tests/scripts/*.ps1` 的**非注释行**里 `$x = … GainMapTestHost` = **0** 处
-#       （对照：同一判据搜 `UiTestHost` = **6** 处 ⇒ 证明这条负断言有牙，不是写错了正则）。
-#       ⚠ **不要**改回 `grep GainMapTestHost.exe tests/scripts/*.ps1` 那种写法：本文件自己的注释里就含这个串
-#         ⇒ 负断言会被自己的文字满足（本轮实测踩过，故换成赋值形态 + 带对照）。见 §6 第 106 条末段。
+#       ⚠ **【2026-09-30 更新】该宿主当时"仍不在闸内"，现已进闸**：接成清单第 60 条
+#       `verify-gainmap-host.ps1`，并补了上面 STALE 的**第 ⑤ 对**（`GainMapTestHost.exe` ↔ 自己的源码）。
+#       ⇒ 上面那条负断言（"非注释行里 `$x = … GainMapTestHost` = **0** 处"）**据此作废**，同一判据
+#         现命中 `verify-gainmap-host.ps1:26-27` 与本文件 `:676-679`。
+#       接闸的动机就是本次处理的遗留：09-20「SDR ⇒ 普通 JPEG」裁定作废了 `sdr` 格的 4 条 UltraHDR 期望，
+#       而**没有门禁跑这个宿主** ⇒ 那 4 条红在树里稳定存在 10 天，只有手工跑宿主才偶然看得见。
+#       （"取赋值形态而非搜文件名"这条纪律仍然成立：本文件注释里就含该文件名，搜文件名会被自己的
+#         文字满足 ⇒ 新门禁特意保留了这条判据形态。见 §6 第 106 条末段、第 120 条。）
 #     ⚠ 但"扩到 4 对"**不等于**"所有被执行产物都进了闸"：门禁在 Release exe 缺位时会**兜底跑 Debug 那份**
 #       （清单内 27 条内嵌该路径；会打印 `(Debug fallback)` 因而**可追溯**，但**不拦**），而 **Debug 不在本闸内**，
-#       且本闸四对都是"产物不存在 ⇒ 该对跳过" ⇒ 「缺失即拒跑」与否是**待决策**，
+#       且本闸各对（2026-09-30 起为**五对**）都是"产物不存在 ⇒ 该对跳过" ⇒ 「缺失即拒跑」与否是**待决策**，
 #       见 `docs/HANDOVER_2026-09-22.md` §4 第 9 行与 `docs/TESTING.md` §6 第 106 条末段。
 #   ⚠ 不接入的长跑门禁：`verify-oracle-matrix.ps1`（本轮新建，5010 条组合 + 独立裁判）
 #     实测 **1.6~2.0 s/用例 ⇒ 全量约 2.5 h**，远超 `ScriptTimeoutSec 480` ⇒ **有意不入清单**，
@@ -924,12 +966,12 @@ $noSelfSummary = @('_probe-cancel-propagation-scan.ps1', '_probe-ct-chain-closur
 #     接入前实测单跑：`PASS=20 FAIL=0`、`exit=0`、stderr 0 字节。
 #     ⚠ 它要**独占 GUI 实例 + 命名管道**（脚本 :52-56 有实例即判红）⇒ 依赖运行器**串行**，
 #       且必须排在 `verify-cli-strict.ps1` **之前**（见下方清单内登记与末位约定）。）
-$expectedScriptCount = 57
+$expectedScriptCount = 60
 $scriptList = @('verify-ps-compat.ps1','verify-color-caps.ps1','verify-color-wiring.ps1','verify-color-strategy.ps1','verify-format-regression.ps1',
                  'verify-widegamut-regression.ps1','verify-tiff-icc.ps1','verify-webp-hdr-fix.ps1','verify-decision-delivery.ps1',
                  '_probe-stderr-drain-scan.ps1','_probe-proc-encoding-scan.ps1','_probe-cancel-propagation-scan.ps1','_probe-i18n-scan.ps1','_probe-cjk-hardcode-scan.ps1','verify-png-signature.ps1','verify-gainmap-memory.ps1','verify-metadata-privacy.ps1','verify-gif-avif-framelist.ps1','verify-color-peak.ps1',
                  '_probe-jpg-p3-icc.ps1','verify-colorfmt-matrix.ps1','verify-prophoto-faithful.ps1',
-                 'verify-gainmap-managed.ps1','verify-gainmap-engine.ps1',
+                 'verify-gainmap-managed.ps1','verify-gainmap-engine.ps1','verify-gainmap-host.ps1',
                  # ── 第 49 条：2026-09-20 接线（`verify-gainmap-isobmff.ps1`）──────────────────────────
                  #   覆盖 **AVIF/HEIC（ISO-BMFF）增益图的识别 + 解码**：此前 `GainMapDecoder` 只认 JPEG 容器
                  #   ⇒ 增益图被**静默丢弃无点名**；且旧动画判据（`videoCount >= 2`）把**静态增益图 AVIF**与
@@ -940,7 +982,7 @@ $scriptList = @('verify-ps-compat.ps1','verify-color-caps.ps1','verify-color-wir
                  'verify-gamut-map.ps1',
                  'verify-color-token-normalize.ps1','verify-hlg-route.ps1',
                  'run-pipeline-tests.ps1','verify-png3-interop.ps1','verify-color-tonemap.ps1','verify-color-engine-xcheck.ps1',
-                 'verify-geometry-engine.ps1','verify-engine-firstframe.ps1','verify-jxl-codestream-route.ps1','verify-anim-static-target.ps1',
+                 'verify-geometry-engine.ps1','verify-engine-firstframe.ps1','verify-geometry-orientation.ps1','_probe-geometry-single-source-scan.ps1','verify-jxl-codestream-route.ps1','verify-anim-static-target.ps1',
                  'verify-jxl-probe-timeout.ps1','verify-ffmpeg-heartbeat.ps1','_probe-sync-read-before-wait-scan.ps1','verify-jxr-anim-input.ps1','_probe-ct-chain-closure-scan.ps1','verify-avif-anim-probe.ps1','verify-webp-anim-probe.ps1',
                  # ── 第 50 条：2026-09-22 接线（`verify-engine-alpha-preserve.ps1`）────────────────────
                  #   覆盖「**透明输入 + 色彩变换** ⇒ alpha 被静默拍平」的修复（管线审查 §3.4）。

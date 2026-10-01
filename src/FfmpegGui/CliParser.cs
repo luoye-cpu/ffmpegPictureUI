@@ -413,11 +413,12 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
         {
             var items = new List<QueueItem>();
 
-            // 展开输入模式
+            // 展开输入模式（同时记录每个文件的输入根目录，供 --preserve-structure 重建结构用）
             var inputFiles = new List<string>();
+            var baseDirs = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             foreach (var pattern in opts.InputPatterns)
             {
-                ExpandInputPattern(pattern, inputFiles);
+                ExpandInputPattern(pattern, inputFiles, baseDirs);
             }
 
             if (inputFiles.Count == 0)
@@ -431,24 +432,64 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
 
             var baseOptions = BuildBaseOptions(opts);
 
+            // ⚠ 同批输出冲突防护：目录树递归枚举 + 输出只取文件名 ⇒ 不同子目录的同名文件
+            //   会写到**同一个**目标路径相互覆盖（实机测试 2026-09-28：6 进 3 出、rc=0 静默丢文件）。
+            //   同批内的重名一律自动加序号并在 item.Log 点名 —— 绝不允许 rc=0 掩盖丢失。
+            var seenOutputs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
             foreach (var file in inputFiles)
             {
-                var outputPath = BuildOutputPath(file, opts);
+                baseDirs.TryGetValue(file, out var baseDir);
+                var outputPath = BuildOutputPath(file, opts, baseDir);
+                string? conflictNote = null;
+
+                if (!seenOutputs.Add(outputPath))
+                {
+                    var outDir = Path.GetDirectoryName(outputPath) ?? opts.OutputDirectory;
+                    var stem = Path.GetFileNameWithoutExtension(outputPath);
+                    var ext = Path.GetExtension(outputPath);
+                    string candidate;
+                    var n = 1;
+                    do { candidate = Path.Combine(outDir, $"{stem}_{n}{ext}"); n++; }
+                    while (!seenOutputs.Add(candidate));
+                    conflictNote = $"[output-conflict] 目标与队列中其他输入重名（{Path.GetFileName(outputPath)}）"
+                                 + $" ⇒ 自动改名 {Path.GetFileName(candidate)}（避免静默覆盖丢失文件）";
+                    outputPath = candidate;
+                }
+
                 var options = baseOptions.DeepClone();
                 options.Format = opts.Format;
                 // 未显式指定 -e 时按目标格式推断合理后端，避免默认后端与格式不符导致错标文件
                 options.EncoderBackend = opts.EncoderBackendExplicit
                     ? opts.EncoderBackend
                     : EncoderBackendCompat.InferDefaultBackend(opts.Format);
+                // ── JPEG→JXL 无损重封装：CLI 侧的「默认开」在这里落地（2026-09-30）──────────
+                // 有效值 = (用户显式指定 ?? 开关默认 true) **且** 输入真是 JPEG **且** 目标真是 JXL。
+                // 为什么必须与输入相与：<c>FfmpegOptions.JxlLosslessJpeg</c> 会被
+                // `ImageEncoderArgs` 当作「引擎不可承接 jxl」的判据，而它看不到输入格式
+                // ⇒ 没有这一与，PNG→JXL 会被整批挡出色彩引擎。QueueProcessor 里还有一道
+                // 同样的归一，兜的是别的路径（UI/预设/克隆）。
+                // ⚠ 为什么**还**必须与目标格式相与（2026-10-01）：同一个布尔又被
+                //   `CjxlService.UsesLosslessJpegRewrap` 用作"像素这次没动"的唯一判据，进而决定
+                //   「源的 Orientation 要不要留在产物上」。少了格式这一与 ⇒ JPEG→JPEG/PNG/AVIF/WebP
+                //   也自认"没动像素"，把取向标签留在已被旋正的像素上 = 查看器二次旋转（出货包实测）。
+                options.JxlLosslessJpeg = (baseOptions.JxlLosslessJpegRequested
+                        ?? FfmpegGui.Models.FfmpegOptions.DefaultJxlLosslessJpeg)
+                    && FfmpegGui.Services.CjxlService.IsJpegInputPath(file)
+                    && string.Equals(options.Format, "jxl", StringComparison.OrdinalIgnoreCase);
 
                 var item = new QueueItem
                 {
                     InputPath = file,
                     OutputPath = outputPath,
                     Options = options,
-                    InputBaseDir = opts.PreserveInputStructure ? Path.GetDirectoryName(file) : null
+                    // 语义修正：这是**输入根目录**（重建相对结构的基准），不是文件所在目录。
+                    // QueueProcessor 目前不消费它（CLI 结构保留已在 BuildOutputPath 落实），
+                    // 但字段必须语义正确，避免未来接入时踩坑。
+                    InputBaseDir = baseDir
                 };
 
+                if (conflictNote != null) item.Log += conflictNote + "\n";
                 items.Add(item);
             }
 
@@ -477,9 +518,12 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
             }
         }
 
-        private static void ExpandInputPattern(string pattern, List<string> results)
+        private static void ExpandInputPattern(string pattern, List<string> results,
+            Dictionary<string, string> baseDirs)
         {
-            // 处理目录、通配符、单文件
+            // 处理目录、通配符、单文件。
+            // baseDirs[file] = 该文件的**输入根目录**（--preserve-structure 重建相对结构的基准）。
+            // ⚠ 必须是「用户给的根」，而不是文件所在目录 —— 否则 sub\a.png 的相对路径永远算不出来。
             if (Directory.Exists(pattern))
             {
                 // 目录：递归查找支持的图片/视频文件
@@ -487,12 +531,17 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
                 exts.UnionWith(AppSettings.AllVideoFormats.Values.SelectMany(x => x));
                 foreach (var ext in exts)
                 {
-                    results.AddRange(Directory.GetFiles(pattern, "*" + ext, SearchOption.AllDirectories));
+                    foreach (var f in Directory.GetFiles(pattern, "*" + ext, SearchOption.AllDirectories))
+                    {
+                        results.Add(f);
+                        baseDirs[f] = pattern;
+                    }
                 }
             }
             else if (File.Exists(pattern))
             {
                 results.Add(pattern);
+                baseDirs[pattern] = Path.GetDirectoryName(pattern) ?? ".";
             }
             else
             {
@@ -502,7 +551,11 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
                 if (string.IsNullOrEmpty(dir)) dir = ".";
                 if (Directory.Exists(dir))
                 {
-                    results.AddRange(Directory.GetFiles(dir, searchPattern));
+                    foreach (var f in Directory.GetFiles(dir, searchPattern))
+                    {
+                        results.Add(f);
+                        baseDirs[f] = dir;
+                    }
                 }
             }
         }
@@ -675,7 +728,9 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
                     case "lossless": options.Lossless = ParseBoolStrict(key, value); break;
                     case "jxl-effort": options.JxlEffort = ParseIntStrict(key, value); break;
                     case "jxl-modular": options.JxlModular = ParseBoolStrict(key, value); break;
-                    case "jxl-lossless-jpeg": options.JxlLosslessJpeg = ParseBoolStrict(key, value); break;
+                    case "jxl-lossless-jpeg": options.JxlLosslessJpeg = ParseBoolStrict(key, value);
+                        // 同时记下"这是用户显式写的"，否则默认值翻 true 后无法区分"没写"与"写了 false"
+                        options.JxlLosslessJpegRequested = options.JxlLosslessJpeg; break;
                     case "cjxl-progressive": options.CjxlProgressive = ParseBoolStrict(key, value); break;
                     case "cjxl-photon-noise-iso": options.CjxlPhotonNoiseIso = ParseIntStrict(key, value); break;
                     case "cjxl-auto-photon-noise": options.CjxlAutoPhotonNoise = ParseBoolStrict(key, value); break;
@@ -988,7 +1043,7 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
             return !(char.IsDigit(c) || c == '.');           // "-1"/"-.5" ⇒ 取值；"-abc" ⇒ 选项
         }
 
-        private static string BuildOutputPath(string inputFile, Result opts)
+        private static string BuildOutputPath(string inputFile, Result opts, string? baseDir)
         {
             var ext = "." + opts.Format.ToLowerInvariant();
             var fileName = Path.GetFileNameWithoutExtension(inputFile) + ext;
@@ -998,10 +1053,20 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
                 return Path.Combine(Path.GetDirectoryName(inputFile) ?? ".", fileName);
             }
 
-            if (opts.PreserveInputStructure)
+            // --preserve-structure：按「输入根目录 → 文件」的**相对路径**在输出目录下重建结构。
+            // ⚠ 旧实现两个分支逐字相同（空操作）⇒ 目录树的所有文件都落到 OutputDirectory\文件名
+            //   相互覆盖（实机测试 2026-09-28：6 进 3 出、rc=0 静默丢文件）。GUI 侧
+            //   (MainWindow.GetOutputPath) 一直是正确实现，本处对齐其口径：
+            //   相对路径不可表达（跨盘符，rel 以 ".." 开头）⇒ 退回扁平文件名。
+            //   输出子目录由 QueueProcessor 执行时统一创建（QueueProcessor.cs 输出路径标准化段）。
+            if (opts.PreserveInputStructure && !string.IsNullOrEmpty(baseDir))
             {
-                // 简单实现：仅用文件名，目录结构由 QueueProcessor.Start 时处理
-                return Path.Combine(opts.OutputDirectory, fileName);
+                var rel = Path.GetRelativePath(baseDir, inputFile);
+                if (!string.IsNullOrEmpty(rel) && !rel.StartsWith("..") && !Path.IsPathRooted(rel))
+                {
+                    var relOut = Path.ChangeExtension(rel, ext);
+                    return Path.Combine(opts.OutputDirectory, relOut);
+                }
             }
 
             return Path.Combine(opts.OutputDirectory, fileName);

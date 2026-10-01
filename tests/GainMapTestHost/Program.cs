@@ -61,6 +61,12 @@ public static class Program
         Console.WriteLine("═══ C. 输出结构验证 ═══");
         await StructureCheckAsync(Path.Combine(outDir, "hdr1000.jpg"));
 
+        // ── E. 带方向标签 (Orientation) 的输入 —— 显示尺寸口径回归 ──
+        Console.WriteLine();
+        Console.WriteLine("═══ E. 方向标签 (Orientation=8) 显示尺寸回归 ═══");
+        await OrientedGainMapDecodeTestAsync(outDir);
+        await OrientedQualityAnalysisTestAsync(outDir);
+
         // ── D. PNG 3.0 chunk 服务 (PngCicpService) ──
         Console.WriteLine();
         Console.WriteLine("═══ D. PNG 3.0 sBIT/cICP (PngCicpService) ═══");
@@ -1054,17 +1060,45 @@ public static class Program
             var pixels = CreateHdrTestPixels(w, h, hdrPeak);
 
             var outPath = Path.Combine(outDir, $"{name}.jpg");
+            var gmLog = new System.Text.StringBuilder();
             var ok = await GainMapEncoder.EncodeAsync(
                 pixels, w, h, outPath,
                 hdrPeakNits: hdrPeak, sdrWhiteNits: GainMapEncoder.KSdrWhiteNits,
                 multiChannel: multiChannel,
                 baseQuality: 1.5f, gainMapQuality: 1.5f,
                 downsample: downsample,
-                log: s => Console.Write(s));
+                log: s => { gmLog.Append(s); Console.Write(s); });
 
             Check($"编码完成 ({name})", ok && File.Exists(outPath));
             if (!ok || !File.Exists(outPath)) return;
             Console.WriteLine($"  输出: {outPath} ({new FileInfo(outPath).Length} 字节)");
+
+            // ── 零余量（SDR）格：**按 2026-09-20 的裁定断言**，不再断言 UltraHDR 结构 ──
+            // 裁定原文在 `GainMapEncoder.cs:188-197`：`headroom ≤ 1`（增益区间为 0）时**不写增益图**，
+            // 直接以底图 JPEG 作产物并**点名**原因 —— 因为写一张 `GainMapMin=GainMapMax=0` 的
+            // "自称 Ultra HDR、实际零增益"是本仓最忌讳的「宣称≠交付」。
+            // ⚠ 本段此前的期望（MPImage2/hdrgm/Channels 必须存在）与该裁定相反 ⇒ 稳定 4 红。
+            //   修法不是放宽断言，而是把它换成**更严**的：降级必须点名、产物必须是完整 JPEG、
+            //   且**不得**留下任何 UltraHDR 痕迹（半写的 MPF 指针或 hdrgm XMP 比"没有增益图"更糟）。
+            if (hdrPeak <= GainMapEncoder.KSdrWhiteNits)
+            {
+                Check($"{name}: 零余量 ⇒ 日志点名「无可承载的 HDR 增益」降级（不静默）",
+                    gmLog.ToString().Contains("无可承载的 HDR 增益"));
+                var head = await File.ReadAllBytesAsync(outPath);
+                Check($"{name}: 产物是完整 JPEG（SOI FFD8 + EOI FFD9，{head.Length}B）",
+                    head.Length > 4 && head[0] == 0xFF && head[1] == 0xD8
+                    && head[^2] == 0xFF && head[^1] == 0xD9);
+                var mp2Sdr = await ExifToolService.GetTagAsync(outPath, "MPImage2");
+                Check($"{name}: 负断言——**不得**残留 MPImage2（半写 MPF 比无增益图更坏），实得「{mp2Sdr ?? "(空)"}」",
+                    string.IsNullOrWhiteSpace(mp2Sdr));
+                var maxSdr = await ExifToolService.GetTagAsync(outPath, "GainMapMax");
+                Check($"{name}: 负断言——**不得**残留 hdrgm GainMapMax，实得「{maxSdr ?? "(空)"}」",
+                    string.IsNullOrWhiteSpace(maxSdr));
+                var dimSdr = await ExifToolService.GetTagAsync(outPath, "ImageWidth");
+                Check($"{name}: 降级只去掉增益层，底图像素尺寸仍是 {w}x{h}（实得宽 {dimSdr ?? "(空)"}）",
+                    (dimSdr ?? "").Trim() == w.ToString());
+                return;
+            }
 
             // 结构检查: MPImage2 存在 = Ultra HDR JPEG
             var mp2 = await ExifToolService.GetTagAsync(outPath, "MPImage2");
@@ -1100,8 +1134,25 @@ public static class Program
         }
 
         var rawOut = Path.Combine(outDir, $"{name}_decoded.rgba");
+        // ⚠ 先清掉**上一轮遗留**的同名产物再判：本目录是跨轮复用的固定路径，
+        //   留着旧文件会让「解码器有没有写出增益图」这一判据两头都不可信 ——
+        //   正向断言会因残留而**假绿**，负向断言会因残留而**假红**
+        //   （实测 `sdr_decoded.rgba` 是 09-19 那批"SDR 也写假增益图"时期的遗留物，
+        //   09-20 裁定后产品不再写它，而文件还在 ⇒ 负断言当场被它判红）。
+        try { if (File.Exists(rawOut)) File.Delete(rawOut); } catch { }
         try
         {
+            // ── 零余量（SDR）格：产物按裁定是**普通 JPEG** ⇒ 闭环要比的不是"HDR 值对不对"，
+            //   而是解码器**不许把普通 JPEG 当成有增益图**（编侧不写、解侧不猜，两侧同一契约）。
+            if (hdrPeak <= GainMapEncoder.KSdrWhiteNits)
+            {
+                var plain = await GainMapDecoder.DecodeToLinearRawAsync(jpg, rawOut,
+                    log: s => Console.Write(s));
+                Check($"{name}: 零余量产物被解码器判为**非 UltraHDR**（不凭空造增益），实得 w={plain?.w ?? 0}",
+                    plain == null && !File.Exists(rawOut));
+                return;
+            }
+
             // ── 手动对照: ffmpeg 解码基础图 (整个文件) ──
             var ffmpeg = AppSettingsService.Current.FfmpegPath;
             var manualBase = Path.Combine(Path.GetTempPath(), $"gm_manual_{name}.rgba");
@@ -1278,6 +1329,378 @@ public static class Program
             }
         }
         return px;
+    }
+
+    // ═══════════════════════════════════════════════
+    //  E1. GainMap 解码路径 × Orientation（显示尺寸口径）
+    // ═══════════════════════════════════════════════
+    /// <summary>
+    /// E1: 底图带 Orientation=8 的 Ultra HDR JPEG → GainMapDecoder.DecodeToLinearRawAsync
+    /// 必须报**显示尺寸**（宽高互换），且线性产物与 ffmpeg 独立参照逐像素一致。
+    /// </summary>
+    private static async Task OrientedGainMapDecodeTestAsync(string outDir)
+    {
+        Console.WriteLine("\n── E1 GainMap 解码 × Orientation=8 ──");
+        var ffmpeg = AppSettingsService.Current.FfmpegPath;
+        var ffprobe = FindFfprobeForTest(ffmpeg);
+        var exif = ExifToolService.DetectedPath;
+        if (string.IsNullOrWhiteSpace(ffmpeg) || !File.Exists(ffmpeg) || ffprobe == null || exif == null)
+        {
+            Check($"E1 工具链齐备 (ffmpeg={ffmpeg != null}, ffprobe={ffprobe != null}, exiftool={exif != null})", false);
+            return;
+        }
+
+        // 夹具几何：coded **横向** 256x192（w≠h），Orientation=8 ⇒ 显示应为 192x256（纵向）。
+        // 内容刻意做成「行内容 ≠ 列内容」（竖条 + 横带 + 角块 + 棋盘波纹），剪切/转置才可辨。
+        const int codedW = 256, codedH = 192;
+        const int dispW = codedH, dispH = codedW;
+        const float hdrPeak = 1000f;
+        var fixturePixels = CreateOrientedFixturePixels(codedW, codedH);
+
+        var plainJpg = Path.Combine(outDir, "e1_oriented_plain.jpg");
+        var encLog = new System.Text.StringBuilder();
+        var encOk = await GainMapEncoder.EncodeAsync(
+            fixturePixels, codedW, codedH, plainJpg,
+            hdrPeakNits: hdrPeak, sdrWhiteNits: GainMapEncoder.KSdrWhiteNits,
+            multiChannel: false, baseQuality: 1.5f, gainMapQuality: 1.5f, downsample: 4,
+            log: s => encLog.Append(s));
+        Check($"E1a 夹具: Ultra HDR 编码完成 (coded {codedW}x{codedH})", encOk && File.Exists(plainJpg));
+        if (!encOk || !File.Exists(plainJpg)) return;
+
+        // ── 打取向标签 ──
+        // ⚠ exiftool 陷阱（2026-09-30 实测）：`-Orientation=8` **不带 `-n`** 会按字符串查表 ⇒ 静默写成 **3**
+        //   （180° ⇒ 宽高不互换）⇒ 夹具当场失去牙。故这里一律带 `-n`，且**回读标签** + 用 ffprobe
+        //   复核「coded 与 display 确实互换」两件事，而不是相信写入调用成功。
+        var jpg = Path.Combine(outDir, "e1_oriented.jpg");
+        File.Copy(plainJpg, jpg, true);
+        var stampExit = await RunExifToolAsync($"-overwrite_original -n -Orientation=8 \"{jpg}\"", exif);
+        var orientTag = await ReadOrientationNumericAsync(jpg, exif);
+        var mp2AfterStamp = await ExifToolService.GetTagAsync(jpg, "MPImage2");
+        var codedProbe = await ProbeCodedSizeForTestAsync(jpg, ffprobe);
+        var dispProbe = await ImageGeometry.DisplaySizeAsync(jpg, ffprobe, s => Console.Write(s));
+        Check($"E1b 夹具取向有牙: exiftool 回读 Orientation={orientTag} (退出码 {stampExit}) ⇒ coded {codedProbe.w}x{codedProbe.h} / display {dispProbe.w}x{dispProbe.h}（期望 8 / {codedW}x{codedH} / {dispW}x{dispH}）",
+            stampExit == 0 && orientTag == "8"
+            && codedProbe.w == codedW && codedProbe.h == codedH
+            && dispProbe.w == dispW && dispProbe.h == dispH);
+        // 增益图结构必须在 exiftool 重写 APP1 之后仍然可读（否则 E1 测的就不是 Ultra HDR 解码路径了）。
+        Check($"E1c 打标签后增益图结构仍在 (MPImage2 {(mp2AfterStamp?.Length ?? 0)} 字节)", !string.IsNullOrWhiteSpace(mp2AfterStamp));
+
+        // ── 独立参照：三条命令全部只走 ffmpeg，不碰任何产品实现 ──
+        var refAuto = Path.Combine(outDir, "e1_ref_autorotate.raw");
+        var refT2 = Path.Combine(outDir, "e1_ref_transpose2.raw");
+        var refCoded = Path.Combine(outDir, "e1_ref_noautorotate.raw");
+        foreach (var f in new[] { refAuto, refT2, refCoded })
+            try { if (File.Exists(f)) File.Delete(f); } catch { }
+        int exA = await FfmpegRunner.RunAsync($"-y -hide_banner -loglevel error -i \"{jpg}\" -pix_fmt gbrpf32le -f rawvideo \"{refAuto}\"", null, ffmpeg);
+        int exB = await FfmpegRunner.RunAsync($"-y -hide_banner -loglevel error -noautorotate -i \"{jpg}\" -vf transpose=2 -pix_fmt gbrpf32le -f rawvideo \"{refT2}\"", null, ffmpeg);
+        int exC = await FfmpegRunner.RunAsync($"-y -hide_banner -loglevel error -noautorotate -i \"{jpg}\" -pix_fmt gbrpf32le -f rawvideo \"{refCoded}\"", null, ffmpeg);
+        long needDisp = (long)dispW * dispH * 12, needCoded = (long)codedW * codedH * 12;
+        bool rotDirectionPinned = exA == 0 && exB == 0 && File.Exists(refAuto) && File.Exists(refT2)
+            && new FileInfo(refAuto).Length == needDisp
+            && new FileInfo(refAuto).Length == new FileInfo(refT2).Length
+            && FixedTimeBytesEqual(await File.ReadAllBytesAsync(refAuto), await File.ReadAllBytesAsync(refT2));
+        long refAutoLen = File.Exists(refAuto) ? new FileInfo(refAuto).Length : 0;
+        Check($"E1d ffmpeg 参照: 默认解码=显示几何 {refAutoLen}B 且与 `-noautorotate + transpose=2` **逐字节相同**（取向 8 ⇒ rotation 90 的方向由实测钉死）",
+            rotDirectionPinned);
+        Check($"E1e 夹具 coded 帧（-noautorotate）与旋正帧**不是**同一份字节（否则夹具无轴可换）",
+            exC == 0 && new FileInfo(refCoded).Length == needCoded && refCoded.Length > 0
+            && !FixedTimeBytesEqual(ReadFirstK(await File.ReadAllBytesAsync(refCoded), 4096),
+                                    ReadFirstK(await File.ReadAllBytesAsync(refAuto), 4096)));
+
+        // ── 被测：产品解码路径 ──
+        var rawOut = Path.Combine(outDir, "e1_oriented_decoded.rgba");
+        try { if (File.Exists(rawOut)) File.Delete(rawOut); } catch { }   // 跨轮复用目录：残留会制造假绿
+        var res = await GainMapDecoder.DecodeToLinearRawAsync(jpg, rawOut, log: s => Console.Write(s));
+        Check($"E1f GainMapDecoder 报**显示**尺寸：期望 {dispW}x{dispH}，实得 {res?.w ?? 0}x{res?.h ?? 0}（coded={codedW}x{codedH}）",
+            res != null && res.Value.w == dispW && res.Value.h == dispH);
+        if (res == null || !File.Exists(rawOut))
+        {
+            // 走到这里说明产品对"带取向标签的 Ultra HDR"直接解码失败 ⇒ 不是跳过，而是显式判红并说明。
+            Check($"E1g 解码器对取向 Ultra HDR 产出线性像素（实得 {(res == null ? "null（解码失败）" : "有尺寸但无文件")}）；" +
+                "注：本用例刻意让整图压在 SDR 白点以下 ⇒ 增益图恒 1x，若仍解不出即路径缺陷", false);
+            return;
+        }
+
+        var outBytes = await File.ReadAllBytesAsync(rawOut);
+        var refBytes = await File.ReadAllBytesAsync(refAuto);
+        Check($"E1h 线性产物长度 = 显示尺寸×12B（实得 {outBytes.Length}，需 {needDisp}）", outBytes.Length >= needDisp);
+
+        // 参照 = 对 ffmpeg 旋正帧做**教科书 sRGB EOTF**（独立实现，不抄 SimdPixelOps，避免"把被测实现抄进参照"）。
+        // 夹具刻意压在 SDR 白点以下 ⇒ GainMapEncoder 的分段 Reinhard 直通 ⇒ 增益图恒 1x，
+        // 于是「EOTF(ffmpeg 底图帧)」与产品线性输出应当**逐像素相等**（只剩 8bit 量化残差）。
+        // 峰值参考取 1.0 = SDR 白点（产物约定），夹具最大线性值 ≈0.98 ⇒ 满量程=1。
+        int n = dispW * dispH;
+        var prod = new[] { PlaneFloats(outBytes, 0, n, false), PlaneFloats(outBytes, 1, n, false), PlaneFloats(outBytes, 2, n, false) };
+        var refr = new[] { PlaneFloats(refBytes, 0, n, true), PlaneFloats(refBytes, 1, n, true), PlaneFloats(refBytes, 2, n, true) };
+        double mseOk = 0, mseSheared = 0;
+        for (int c = 0; c < 3; c++)
+        {
+            var a = prod[c]; var b = refr[c];
+            for (int i = 0; i < n; i++)
+            {
+                double d = a[i] - b[i]; mseOk += d * d;
+                // 已知坏读数：字节不变、按 **coded** 步长重排（复现"声明未旋几何 ⇒ 每行错位"的缺陷）
+                int si = (i / codedW) * dispW + (i % codedW);
+                double ds = a[i] - b[si]; mseSheared += ds * ds;
+            }
+        }
+        mseOk /= 3.0 * n; mseSheared /= 3.0 * n;
+        double psnrOk = mseOk > 0 ? 10 * Math.Log10(1.0 / mseOk) : double.PositiveInfinity;
+        double psnrSheared = mseSheared > 0 ? 10 * Math.Log10(1.0 / mseSheared) : double.PositiveInfinity;
+        Console.WriteLine($"  E1: 按显示几何 PSNR={psnrOk:F2}dB, 按 coded 步长重排 PSNR={psnrSheared:F2}dB");
+        Check($"E1i 线性产物 vs ffmpeg 独立参照（显示几何）PSNR={psnrOk:F2}dB ≥ 40dB", psnrOk >= 40);
+        // 本条是**判据自身的牙齿**：若夹具能被转置洗白（对称/均匀），这条会当场红。
+        Check($"E1j 有牙自证: 同一份参照按 coded 步长重排后 PSNR={psnrSheared:F2}dB 必须 <20dB 且比正确读数差 >20dB",
+            psnrSheared < 20 && psnrOk - psnrSheared > 20);
+    }
+
+    // ═══════════════════════════════════════════════
+    //  E2. 质量分析服务 × Orientation（分辨率预检不得误拒）
+    // ═══════════════════════════════════════════════
+    /// <summary>
+    /// E2: 源带 Orientation=8、产物无方向标签 ⇒ QualityAnalysisService.AnalyzeAsync
+    /// 不得以「分辨率不一致」拒绝；无损产物必须读出 inf。
+    /// <para>动机（2026-09-30 缺陷）：预检曾读 **coded** 尺寸 ⇒ 对旋正后的正确产物报
+    /// 「源图 (6000x4000) 与输出图 (4000x6000) 分辨率不一致」而拒绝对拍。现在预检走
+    /// <see cref="ImageGeometry"/>（显示口径）。本用例同时留一条**反证臂**（E2g1/E2g2）：产物轴向
+    /// 真的不一致时预检必须仍然拒绝 —— 否则"修好"可能只是把闸门拆了。</para>
+    /// </summary>
+    private static async Task OrientedQualityAnalysisTestAsync(string outDir)
+    {
+        Console.WriteLine("\n── E2 质量分析 × Orientation=8 ──");
+        var ffmpeg = AppSettingsService.Current.FfmpegPath;
+        var ffprobe = FindFfprobeForTest(ffmpeg);
+        var exif = ExifToolService.DetectedPath;
+        if (string.IsNullOrWhiteSpace(ffmpeg) || !File.Exists(ffmpeg) || ffprobe == null || exif == null)
+        {
+            Check("E2 工具链齐备 (ffmpeg/ffprobe/exiftool)", false);
+            return;
+        }
+
+        const int codedW = 64, codedH = 32;      // coded 横向；Orientation=8 ⇒ 显示 32x64
+        const int dispW = codedH, dispH = codedW;
+
+        // 夹具内容：testsrc2 在 64x32 上行列内容互不相同（渐变 + 计时条 + 十字），转置/剪切可辨。
+        var srcPlain = Path.Combine(outDir, "e2_src_plain.jpg");
+        int exSrc = await FfmpegRunner.RunAsync(
+            $"-y -hide_banner -loglevel error -f lavfi -i \"testsrc2=size={codedW}x{codedH}:r=25\" -frames:v 1 -update 1 -q:v 2 \"{srcPlain}\"",
+            null, ffmpeg);
+        var src = Path.Combine(outDir, "e2_src_oriented.jpg");
+        File.Copy(srcPlain, src, true);
+        // ⚠ 同 E1：必须 `-n`（否则静默写成 3=180° ⇒ 轴向不变 ⇒ 夹具没牙），并回读核验。
+        int stamp = await RunExifToolAsync($"-overwrite_original -n -Orientation=8 \"{src}\"", exif);
+        var tag = await ReadOrientationNumericAsync(src, exif);
+        var coded = await ProbeCodedSizeForTestAsync(src, ffprobe);
+        var disp = await ImageGeometry.DisplaySizeAsync(src, ffprobe);
+        Check($"E2a 夹具取向有牙: Orientation 回读={tag} (退出码 {stamp}) ⇒ coded {coded.w}x{coded.h} / display {disp.w}x{disp.h}（期望 8 / {codedW}x{codedH} / {dispW}x{dispH}）",
+            exSrc == 0 && stamp == 0 && tag == "8"
+            && coded.w == codedW && coded.h == codedH && disp.w == dispW && disp.h == dispH);
+
+        // ── 无损臂：ffmpeg 直接转 PNG（产物天然已是旋正后的 32x64，且不带取向标签）──
+        var lossless = Path.Combine(outDir, "e2_lossless.png");
+        try { if (File.Exists(lossless)) File.Delete(lossless); } catch { }
+        int exLl = await FfmpegRunner.RunAsync($"-y -hide_banner -loglevel error -i \"{src}\" -update 1 \"{lossless}\"", null, ffmpeg);
+        var llSize = await ImageGeometry.DisplaySizeAsync(lossless, ffprobe);
+        Check($"E2b 无损产物几何 = 源的**显示**尺寸 {llSize.w}x{llSize.h}（期望 {dispW}x{dispH}，退出码 {exLl}）",
+            exLl == 0 && File.Exists(lossless) && llSize.w == dispW && llSize.h == dispH);
+
+        var qa = await QualityAnalysisService.AnalyzeAsync(src, lossless);
+        Console.WriteLine($"      [E2] 无损臂 Success={qa.Success} PSNR={qa.PsnrAverage} SSIM={qa.SsimAll} Error=\"{qa.Error.Replace("\n", " ")}\"");
+        Check($"E2c 取向源 × 旋正产物 ⇒ **不得**报「分辨率不一致」（实得 Error=\"{qa.Error.Split('\n')[0]}\"）",
+            !qa.Error.Contains("分辨率不一致"));
+        Check($"E2d 预检放行并算出 PSNR（数值或 inf，实得 {(qa.PsnrAverage.HasValue ? qa.PsnrAverage.Value.ToString("F3") : "无")}，Success={qa.Success}）",
+            qa.Success && qa.PsnrAverage.HasValue);
+        Check($"E2e 无损产物的「无损」读数 = inf（实得 PSNR={qa.PsnrAverage}）",
+            qa.Success && (double.IsPositiveInfinity(qa.PsnrAverage ?? 0) || (qa.PsnrAverage ?? -1) >= 99));
+
+        // ── 有损臂：证明 E2e 的 inf 不是恒返回值 ──
+        var lossy = Path.Combine(outDir, "e2_lossy.jpg");
+        try { if (File.Exists(lossy)) File.Delete(lossy); } catch { }
+        int exLy = await FfmpegRunner.RunAsync($"-y -hide_banner -loglevel error -i \"{src}\" -q:v 12 -update 1 \"{lossy}\"", null, ffmpeg);
+        var qaLossy = await QualityAnalysisService.AnalyzeAsync(src, lossy);
+        Console.WriteLine($"      [E2] 有损臂 Success={qaLossy.Success} PSNR={qaLossy.PsnrAverage} Error=\"{qaLossy.Error.Replace("\n", " ")}\"");
+        Check($"E2f 有损产物同样放行，但 PSNR 必须是**有限**值（实得 {qaLossy.PsnrAverage}，退出码 {exLy}）",
+            exLy == 0 && !qaLossy.Error.Contains("分辨率不一致") && qaLossy.PsnrAverage.HasValue
+            && !double.IsPositiveInfinity(qaLossy.PsnrAverage.Value));
+
+        // ── 反证臂：产物轴向真的不同（-noautorotate ⇒ 64x32）⇒ 预检必须仍然拒绝 ──
+        // ⚠ 实测（本轮）：ffmpeg 会把**帧级** displaymatrix/EXIF 取向**透传**进产物，连 `-map_metadata -1`
+        //   都剥不掉（它管的是文件/流级元数据）⇒ 只加 `-noautorotate` 的 PNG 再被读成 32x64，
+        //   显示口径下两轴其实**一致**，预检不拒才是对的。所以这里再用 exiftool `-all=` 把标签剥干净，
+        //   并**先自证**该产物的显示尺寸确实等于 coded（64x32）—— 否则本条反证臂是空枪。
+        var wrongAxis = Path.Combine(outDir, "e2_wrong_axis.png");
+        try { if (File.Exists(wrongAxis)) File.Delete(wrongAxis); } catch { }
+        int exBad = await FfmpegRunner.RunAsync($"-y -hide_banner -loglevel error -noautorotate -i \"{src}\" -update 1 \"{wrongAxis}\"", null, ffmpeg);
+        int exStrip = await RunExifToolAsync($"-overwrite_original -all= \"{wrongAxis}\"", exif);
+        var badSize = await ImageGeometry.DisplaySizeAsync(wrongAxis, ffprobe);
+        Check($"E2g1 反证臂夹具成立: 剥标签后产物显示尺寸 = coded {codedW}x{codedH}（实得 {badSize.w}x{badSize.h}，ffmpeg 退出码 {exBad}，exiftool 退出码 {exStrip}）",
+            exBad == 0 && exStrip == 0 && badSize.w == codedW && badSize.h == codedH);
+        var qaBad = await QualityAnalysisService.AnalyzeAsync(src, wrongAxis);
+        Console.WriteLine($"      [E2] 反证臂 Success={qaBad.Success} PSNR={qaBad.PsnrAverage} Error=\"{qaBad.Error.Replace("\n", " ")}\"");
+        Check($"E2g2 反证: 轴向真不一致的产物仍必须被「分辨率不一致」拒绝（实得 Error=\"{qaBad.Error.Split('\n')[0]}\"，Success={qaBad.Success}）",
+            qaBad.Error.Contains("分辨率不一致") && !qaBad.Success);
+    }
+
+    // ═══════════════════════════════════════════════
+    //  E1/E2 共用夹具与探针辅助
+    // ═══════════════════════════════════════════════
+
+    /// <summary>
+    /// E1 夹具像素（约定同 <see cref="CreateHdrTestPixels"/>：1.0 = 峰值亮度）。
+    /// <para>⚠ 全部像素刻意压在 **SDR 白点以下**（峰值取 1000nits ⇒ 白点 = 203/1000 ≈ 0.203，
+    /// 本夹具最大 0.18）。理由：`GainMapEncoder` 的分段 Reinhard 对 y≤1 直通 ⇒ 增益图恒 1x（空间常量）。
+    /// 增益图（MPImage2 副图）**并不携带取向标签**，若让增益随内容变化，旋正后的底图与未旋正的增益图
+    /// 坐标就会错配，"独立参照"将不再唯一确定产品输出；恒增益夹具把这一层噪声摘掉，
+    /// 使线性产物可被 ffmpeg 底图帧 + 独立 sRGB EOTF **逐像素**复核（几何才是本用例的被测量）。</para>
+    /// <para>非对称性：竖亮条（列向特征）+ 顶暗带（行向特征）+ 右下块 + 棋盘波纹，w≠h ⇒ 转置/剪切可辨。</para>
+    /// </summary>
+    private static float[] CreateOrientedFixturePixels(int w, int h)
+    {
+        var px = new float[w * h * 4];
+        for (int y = 0; y < h; y++)
+        {
+            for (int x = 0; x < w; x++)
+            {
+                float v = 0.010f + 0.055f * x / w;                 // 仅沿 x 的斜坡（行内不同列，行间相同）
+                if (x < w / 8) v = 0.170f;                          // 左侧亮竖条 —— 列向特征
+                if (y < h / 6) v = 0.020f;                          // 顶部暗横带 —— 行向特征
+                if (x > w * 0.85f && y > h * 0.80f) v = 0.120f;     // 右下块 —— 与上面两者都不重合
+                if (((x / 8) + (y / 8)) % 2 == 0) v *= 1.12f;       // 棋盘波纹：让每一行都不等于任何列
+                v = Math.Min(v, 0.180f);                            // 仍低于 SDR 白点 0.203 ⇒ 增益恒 1x
+                int i = (y * w + x) * 4;
+                px[i] = v; px[i + 1] = v; px[i + 2] = v; px[i + 3] = 1f;   // 消色差：避免色度二次采样引入与几何无关的噪声
+            }
+        }
+        return px;
+    }
+
+    /// <summary>教科书 sRGB EOTF（独立于 SimdPixelOps.SrgbToLinearScalar，参照不许抄被测实现）。</summary>
+    private static float SrgbEotfForTest(float v)
+    {
+        v = Math.Clamp(v, 0f, 1f);
+        return v <= 0.04045f ? v / 12.92f : MathF.Pow((v + 0.055f) / 1.055f, 2.4f);
+    }
+
+    /// <summary>从 gbrpf32le **平面** rawvideo（平面顺序 G,B,R）取一个平面的 float；可选套 EOTF。</summary>
+    private static float[] PlaneFloats(byte[] raw, int plane, int count, bool srgbToLinear)
+    {
+        var dst = new float[count];
+        int off = plane * count * 4;
+        for (int i = 0; i < count && off + i * 4 + 4 <= raw.Length; i++)
+        {
+            float v = BitConverter.ToSingle(raw, off + i * 4);
+            dst[i] = srgbToLinear ? SrgbEotfForTest(v) : v;
+        }
+        return dst;
+    }
+
+    private static bool FixedTimeBytesEqual(byte[] a, byte[] b)
+    {
+        if (a.Length != b.Length) return false;
+        for (int i = 0; i < a.Length; i++) if (a[i] != b[i]) return false;
+        return true;
+    }
+
+    private static byte[] ReadFirstK(byte[] src, int k)
+    {
+        int len = Math.Min(k, src.Length);
+        var dst = new byte[len];
+        Array.Copy(src, dst, len);
+        return dst;
+    }
+
+    /// <summary>ffprobe 定位（与 QualityAnalysisService.FindFfprobe 同判据；那份是 private，此处独立实现以便测试自证）。</summary>
+    private static string? FindFfprobeForTest(string? ffmpegPath)
+    {
+        if (string.IsNullOrWhiteSpace(ffmpegPath)) return null;
+        var dir = Path.GetDirectoryName(ffmpegPath) ?? "";
+        var p = Path.Combine(dir, "ffprobe");
+        if (Environment.OSVersion.Platform == PlatformID.Win32NT) p += ".exe";
+        if (File.Exists(p)) return p;
+        p = ffmpegPath.Replace("ffmpeg", "ffprobe");
+        return File.Exists(p) ? p : null;
+    }
+
+    /// <summary>
+    /// 只读 **coded** 宽高（`stream=width,height`）。
+    /// <para>⚠ 这是**故意**在产品之外造的"另一把尺"：本用例要量的正是 coded 与 display 之差，
+    /// 若两头都用 <see cref="ImageGeometry"/> 就退化成自我循环。`src/` 侧的单一真值门禁
+    /// （<c>_probe-geometry-single-source-scan.ps1</c> 只扫 <c>src/FfmpegGui</c>）不受本行影响。</para>
+    /// </summary>
+    private static async Task<(int w, int h)> ProbeCodedSizeForTestAsync(string path, string ffprobe)
+    {
+        try
+        {
+            using var p = Process.Start(new ProcessStartInfo
+            {
+                FileName = ffprobe,
+                Arguments = $"-v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 \"{path}\"",
+                RedirectStandardOutput = true, RedirectStandardError = true,
+                UseShellExecute = false, CreateNoWindow = true
+            });
+            if (p == null) return (0, 0);
+            var outTask = p.StandardOutput.ReadToEndAsync();
+            var errTask = p.StandardError.ReadToEndAsync();
+            await p.WaitForExitAsync();
+            _ = await errTask;
+            var parts = (await outTask).Trim().Split(',');
+            return parts.Length >= 2 && int.TryParse(parts[0], out var w) && int.TryParse(parts[1], out var h) ? (w, h) : (0, 0);
+        }
+        catch { return (0, 0); }
+    }
+
+    /// <summary>
+    /// 读**数值**取向（`exiftool -n -Orientation`）。
+    /// <para>⚠ 必须带 `-n`：默认输出的是**描述**（"Rotate 270 CW"），而本用例的判据是数值 8
+    /// ——「写入不带 -n ⇒ 静默变 3」与「读取不带 -n ⇒ 只给描述」是同一枚硬币的两面，
+    /// 只有数值读数能同时挡住这两种错。取不到 ⇒ 返回空串（断言随之判红，不猜）。</para>
+    /// </summary>
+    private static async Task<string> ReadOrientationNumericAsync(string path, string exiftoolPath)
+    {
+        try
+        {
+            using var p = Process.Start(new ProcessStartInfo
+            {
+                FileName = exiftoolPath,
+                Arguments = $"-n -Orientation \"{path}\"",
+                RedirectStandardOutput = true, RedirectStandardError = true,
+                UseShellExecute = false, CreateNoWindow = true
+            });
+            if (p == null) return "";
+            var o = p.StandardOutput.ReadToEndAsync();
+            var e = p.StandardError.ReadToEndAsync();
+            await p.WaitForExitAsync();
+            _ = await e;   // perl 的 locale 警告走 stderr，与读数无关
+            var line = (await o).Trim();
+            int colon = line.IndexOf(':');
+            return colon >= 0 ? line[(colon + 1)..].Trim() : line;
+        }
+        catch { return ""; }
+    }
+
+    /// <summary>直调 exiftool（走 ExifToolService 自检测到的路径，不硬编码）；返回退出码。</summary>
+    private static async Task<int> RunExifToolAsync(string arguments, string exiftoolPath)
+    {
+        try
+        {
+            using var p = Process.Start(new ProcessStartInfo
+            {
+                FileName = exiftoolPath,
+                Arguments = arguments,
+                RedirectStandardOutput = true, RedirectStandardError = true,
+                UseShellExecute = false, CreateNoWindow = true
+            });
+            if (p == null) return -1;
+            var o = p.StandardOutput.ReadToEndAsync();
+            var e = p.StandardError.ReadToEndAsync();
+            await p.WaitForExitAsync();
+            var line = (await o).Trim();
+            if (line.Length > 0) Console.WriteLine($"      [exiftool] {line}");
+            var errText = (await e).Trim();
+            if (errText.Length > 0) Console.WriteLine($"      [exiftool stderr] {errText}");
+            return p.ExitCode;
+        }
+        catch (Exception ex) { Console.WriteLine($"      [exiftool] 异常 {ex.Message}"); return -1; }
     }
 
     private static void Check(string name, bool ok)

@@ -14,12 +14,12 @@ $exe = "$root/src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.exe"
 if (-not (Test-Path $exe)) { $exe = "$root/src/FfmpegGui/bin/Debug/net11.0/win-x64/FfmpegGui.exe" }
 # ⚠ 2026-09-21（TESTING.md 第 84 条处置建议 ①）：**回退是静默的** —— 门禁可能测的
 #   不是你以为的那个二进制。⇒ 一律**打印被测 exe 与构建类型**，让读数可追溯。
-Write-Output ("[gate] exe=" + $exe + $(if ($exe -like '*\Debug\*') { " (Debug fallback)" } else { " (Release)" }))
+Write-Output ("[gate] exe=" + $exe + $(if ($exe -like '*[/\]Debug[/\]*') { " (Debug fallback)" } else { " (Release)" }))
 $prb = "$root/tests/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.exe"
 if (-not (Test-Path $prb)) { $prb = "$root/tests/ServiceProbe/bin/Debug/net11.0/win-x64/ServiceProbe.exe" }
 # ⚠ 2026-09-21（TESTING.md 第 84 条处置建议 ①）：**回退是静默的** —— 门禁可能测的
 #   不是你以为的那个二进制。⇒ 一律**打印被测 exe 与构建类型**，让读数可追溯。
-Write-Output ("[gate] exe=" + $prb + $(if ($prb -like '*\Debug\*') { " (Debug fallback)" } else { " (Release)" }))
+Write-Output ("[gate] exe=" + $prb + $(if ($prb -like '*[/\]Debug[/\]*') { " (Debug fallback)" } else { " (Release)" }))
 $src = "$root/src/FfmpegGui/Services/QueueProcessor.cs"
 $val = "$root/tests/output/gmmem_$([guid]::NewGuid().ToString('N').Substring(0, 8))"
 

@@ -1,4 +1,4 @@
-# 🧪 FFmpegPictureUI 测试规范
+﻿# 🧪 FFmpegPictureUI 测试规范
 
 > 版本: 1.0 | 最后更新: 2026-09-06 | 适用于 v1.6.0+
 
@@ -120,6 +120,8 @@ ffprobe -v error -select_streams v:0 -show_entries stream=pix_fmt -of csv=p=0 ou
 | `verify-color-token-normalize.ps1` | 色彩 token 规范化（CLI 别名 / GUI 矩阵词表 / 输入矩阵白名单） | A–E 五节；不可用矩阵必须**出声**且**不失败**（此前是静默忽略或 -40 零产物）；GUI 词表每个选项都必须在 `FfmpegInputMatrixNames` 内（"提供了但不可用"即红） |
 | `verify-hlg-route.ps1` | HLG 走 OOTF 分支的**接线级**覆盖（类级绿 ≠ 接线级绿） | 素材自检（两源 md5 必须**不同** + ffprobe transfer 分别为 arib-std-b67/smpte2084）；HLG→SDR 与 PQ→SDR 峰值不同且 PSNR **有限**；同源两次 ⇒ PSNR=inf（控制组） |
 | `verify-geometry-engine.ps1` | **色彩引擎「最长边几何缩放」路径**（`RawColorPipeline.cs:94-129`）—— ⚠ 该段在**默认路径上是死代码**：`QueueProcessor.cs:429-496` 先预缩放并改写输入（`:487`）⇒ 引擎拿到时**已不超限** ⇒ 引擎那段**永不执行** | 只跑 `ServiceProbe geometry`（**直调引擎**、绕过 `QueueProcessor` ⇒ 那段才真的跑到），并对探针的**结构化行**独立复读（不只看 `PROBE RESULT`）：5 个用例的**产出尺寸**与 **Stats 反推尺寸**都必须等于实测期望（含纵向与**非整数边**分支）、负控（不超限）尺寸不变且日志**不得**出现 `几何缩放（最长边限制）`、引擎缩放尺寸 == `QueueProcessor` 预缩放尺寸、**像素级**「今天(预缩放→映射) vs 删后(引擎内缩放→映射)」PSNR ≥ 40dB（实测 61.55dB / maxDiff 280/65535）、探针自清（GUID 目录必须消失）。⚠ 边界坑：512x384 套 `scale=-2:32` 实测 **42x32**，自己算 42.67 会得 43/44。共 **23/0**（配套探针 `geometry` **52** 条；⚠ 原记 **35**，2026-09-18 由 `gainmap-merge-partA` 实测复核更正 —— 专项门禁自身 **23/0** 复核仍准确） |
+| `verify-geometry-orientation.ps1` | **取向标签（TIFF `Orientation`）下的「显示尺寸」口径**——ffmpeg 会 autorotate，而探测读的是 coded 尺寸 ⇒ 引擎把旋正后的 raw 按未旋正尺寸标注 ⇒ **产物按行错位重排** | 只跑 `ServiceProbe orientation`（**直调引擎**）。夹具自检三针：coded 必须 64x32 而 `rotation` 必须 90（两口径**轴向不同**才有效，方图/180° 都会让门禁退化成恒真）、负控夹具必须 `rotation=0`、参照臂（ffmpeg 直解 PNG）必须**不带** rotation（否则对拍的是「两次旋转是否抵消」）。判据：`ProbeSizeAsync` 报 32x64 而非 coded 64x32、引擎产出几何 == 显示尺寸、16-bit 出口与独立参照 **psnr=inf**（逐字节等）、8-bit 出口 ≥45dB（实测 58.38）、`+最长边限制 16` 时滤镜必须是 `scale=-2:16`（纵向）且产出 8x16、负控不得凭空旋转。共 **18/0**（配套探针 **15** 条）。⚠ 变异验牙：把 `ImageGeometry.ApplyRotation` 改恒等（= 退回 coded）⇒ **7 条 FAIL**，读数含 `engine=64x32`、`psnr=图不可比:Width and height of input videos must be same`、`filter="scale=16:-2"`（锁错边 ⇒ 产物 16x32，最长边**突破**用户上限） |
+| `verify-gainmap-host.ps1` | **把 `tests/GainMapTestHost` 全量套件接进清单**（第 60 条，2026-09-30）—— 此前该宿主的 exe **不被任何门禁执行**（运行器自己登记着这条缺口）⇒ 09-20「SDR ⇒ 普通 JPEG」裁定作废的 4 条 `sdr` 格期望在树里**红了 10 天**，只有手工跑宿主才看得见 | 跑宿主全量（A 编码 / B 解码闭环 / C 结构 / D PNG3.0 / 像素内核），判据不只看汇总：① `通过 N 失败 0 已知问题 0` 且 **N ≥103**（基线演进 86 →（2026-10-01 补取向标签 E1 九条 + E2 八条）103；掉了=有用例被跳过/删）；② **汇总行之前**的逐条 `❌` 数必须等于失败数（宿主在汇总后会把失败清单**重打一遍** ⇒ 全文计数恒为 2×，见 `Program.cs:71-73`）；③ 零余量（SDR）契约的 **6 条逐条点名在位** + 一条**反向锁**（`sdr` 格不许再断言 `MPImage2 存在`）；④ 取向标签（`Orientation=8`）的 **4 条承重断言点名在位**（`E1f` 解码器报显示尺寸 / `E1i` 显示几何 PSNR≥40dB / `E2c` 不得报「分辨率不一致」 / **`E2g2` 反证臂：轴向真不一致仍必须被拒 ⇒ 挡住「用放宽判据换绿灯」**）；⑤ exe 缺失即判红，并打印被测产物与构建类型。**18/0**。⚠ 变异验牙：把宿主两处 `hdrPeak <= KSdrWhiteNits` 分支禁掉 ⇒ **PASS=3 FAIL=11**，且 ② 当场报出 `失败数 4`、`通过数 80`（= 回到遗留前的状态），反向锁也响；还原以 md5 自证 |
 | `_run-step3-gates.ps1` | 一次跑完所有 `ServiceProbe <模式>` 门禁 + 主要 `verify-*.ps1`，只回显汇总行与失败明细 | `-Probes a,b,c` / `-SkipScripts` 可只跑子集 |
 | `_lib-color-assets.ps1` | ⚠ **共享库、非门禁**（不产 PASS/FAIL、**不登记进** `_run-step3-gates.ps1` 的脚本清单） | 只在 dot-source 时定义 `New-P3IccAsset`（ffmpeg `zscale+iccgen` 造 P3 PNG + exiftool 提取 `p3.icc`）；**无顶层副作用**（否则谁 dot-source 谁跑一遍素材生成）。存在理由是消掉「一条门禁依赖另一条门禁的遗留产物」：`verify-color-caps.ps1` 与 `verify-color-wiring.ps1` 两边**都调用它自备**，不新增第二套生成口径（详见 §6 第 64 条） |
 
@@ -244,7 +246,7 @@ $p = "tests/ServiceProbe/bin/Debug/net11.0/win-x64/ServiceProbe.exe"
 —— 计数会漂（`wire` 与 `verdict` 尤其）。⚠ **改任一 mode 的断言后必须重算总和**：
 历史上出现过「`contract` 100 → 107 改了、总数漏改、仍写 372」的错值，由复核方用「各 mode 求和 ≠ 372」抓出。
 ⚠ **某个 mode 若不在 `_run-step3-gates.ps1` 的 `$Probes` 默认值里，说明运行器清单与文档不同步**
-（可据此核对「mode 齐不齐」）。`_run-step3-gates.ps1` 的**脚本门禁清单**当前 **54 条**
+（可据此核对「mode 齐不齐」）。`_run-step3-gates.ps1` 的**脚本门禁清单**当前 **60 条**（2026-10-01 接线 `verify-geometry-orientation.ps1` + `_probe-geometry-single-source-scan.ps1` + `verify-gainmap-host.ps1` 后；权威复现口径 = 运行器**自己打印的** `script-list=N 条（受管基线 N）` 那一行，它比任何外部正则都可靠 —— 本文原来给的 `(?ms)^\$scriptList...` 正则实测命中 0（数组内含大量注释行，闭合 `)` 不在行首），**别再拿它当复现命令**）
 （**2026-09-24 第六次接线后实测数组条目数** —— 复现命令必须**按数组锚定**（不用行号、也不用全文件 grep）：
 `$c = Get-Content -Raw tests/scripts/_run-step3-gates.ps1; [regex]::Matches([regex]::Match($c,'(?ms)^\$scriptList\s*=\s*@\((.*?)\)\r?\n\$actualScriptCount').Groups[1].Value,"'[^']+\.ps1'").Count` = **54**；
 ⚠ 本行原先给的 `grep -oE "'[^']+\.ps1'" … | sort -u | wc -l` **现已失真**：2026-09-22 实测它得 **53**，
@@ -5172,6 +5174,74 @@ test-output/
     三条曾同时成立：① `AutoUseSimdBinaries` 由复选框写入并持久化；② zh/en 两条 `tip.simd` 都在**承诺**「关闭后逐像素回退 / falls back to scalar code」；③ 但 `grep AutoUseSimd src` 只命中声明/UI/持久化三处，**没有任何代码读它决定走不走 SIMD** ⇒ 用户关开关毫无效果、门禁对它也零断言。
     按「降级不是修复」把实现提到声明的水位（判据单点 `SimdKernelRouting`），而不是把 tooltip 改弱。默认（开）路径**逐位不变**的实证 = 探针 S2/S2b/S3（两态 SSE 相等 + 与第三份独立标量实现相等）+ S4/S6e 的错位负控（防"两边同一个错值"）。
     ⇒ 可复用的鉴别法：**界面或文档里每一个承诺，都要能指到一处读它的代码**；指不到就是死开关。
+
+118. **取向标签 ⇒「coded 尺寸标注旋正像素」：一条缺陷同时坏掉产物与质量分析（第 58 条，2026-09-30）**
+    用户素材 `DSC00118.TIF`（SONY ILCE-7M2，6000×4000、16-bit 无压缩 RGB、`Orientation=8`、无 ICC）转 JXL 出花图。
+    实机读数（随包 ffmpeg git-2026-09-26）：`ffprobe stream=width,height` = **6000,4000**，而解码帧挂
+    `3x3 displaymatrix rotation=90` ⇒ ffmpeg **autorotate**，帧实际是 **4000×6000**。
+    引擎据此把 144,000,000 B 的 raw 按 `-video_size 6000x4000` 声明 ⇒ **每行错位重排**：
+    产物 vs 真值 **PSNR 7.97 dB**；同一段 raw 改按 4000×6000 重排再 `transpose=1` vs 真值 **inf**（逐字节等）
+    ⇒ 错的是几何标注，不是像素处理。**与目标格式无关**（PNG 出口同样 7.97 dB），legacy 直通 ffmpeg 正确（4000×6000）。
+    两处守卫都是**盲**的：`rawLen < w*h*6` 与 `h = px/w` 反推在**转置下字节数恒等** ⇒ 已把前者改成精确等式。
+    同一条根因的第二个症状在质量分析：`CheckResolutionMatchAsync` 也比 coded 尺寸 ⇒ ①对**正确**的产物报
+    「源图 (6000x4000) 与输出图 (4000x6000) 分辨率不一致」而拒绝对拍；②对**错的**产物预检反而通过，
+    直到 ffmpeg `ssim` 报 `Width and height of input videos must be same`，用户只拿到 stderr 尾巴。
+    **不要拿 `-noautorotate` 当修法**：`ExifToolService.CopyRawCaptureFieldsAsync` 与 `QueueProcessor` 的
+    `Orientation` 排除理由都是「像素**已**由解码器旋正」，关掉旋正会让元数据策略与像素两头同时对不上。
+    另记一条"有时好有时坏"的成因：开「最长边限制」时上游中继 PNG 由 ffmpeg 写出、像素已旋正且**不带**
+    orientation 标签（实测 coded 2000×3000、`rotation` 空）⇒ coded==display，缺陷自动消失；默认不开 ⇒ 必坏。
+119. **宽高探测此前在 `src/` 里有四份实现 ⇒ 收成 `ImageGeometry` 一份 + 结构锁（第 59 条，2026-09-30）**
+    修的时候发现"探宽高"各自写了四份，全部只读 coded：`RawColorPipeline.ProbeSizeAsync`、
+    `GainMapDecoder.ProbeSizeAsync`、`QualityAnalysisService.GetResolutionAsync`、`QueueProcessor.ProbeImageSizeAsync`
+    （第四份是**跑结构锁时才发现的**，不在最初的排查清单里）。⇒ 修一处漏三处，下次还会漏。
+    现四处一律转发 `Services/ImageGeometry.cs`（coded 尺寸 + 帧级 `displaymatrix rotation`，±90 交换宽高），
+    并由 `_probe-geometry-single-source-scan.ps1` 锁住：旧形态 `stream=width,height -of` 在 `src/` 代码中
+    命中数必须为 **0**（剥掉整行注释再匹配）、`ImageGeometry` 必须仍同时含 `frame_side_data_list`/`displaymatrix`/`ApplyRotation`
+    （否则"唯一实现被删"时前者会假绿）、四个消费者必须仍引用 `ImageGeometry.DisplaySizeAsync`。
+    ⚠ 这把锁做过变异：往 `QualityAnalysisService` 里塞一行含旧形态的字符串 ⇒ **红态退出码 1**、还原后 **0**，
+    且还原以 md5 逐字节自证。
+    ⚠ 造夹具时的实测坑：`exiftool -Orientation=8` **不带 `-n`** 会写成 **3**（PrintConv 反查失败后落默认值，
+    还只报一句 `Can't convert IFD0:Orientation (not in PrintConv)` 就"Nothing to do"）⇒ 180° **不改变轴向**，
+    整条门禁会静默失牙。必须 `exiftool -n -Orientation=8`，并在门禁里断言 `rotation == 90`。
+
+120. **一条产品裁定让测试端红了 10 天没人看见：根因是"套件不在闸内"，不是"没人写测试"（第 60 条，2026-09-30）**
+    `GainMapTestHost` 稳定报 **80/4**（`sdr` 格：`MPImage2 存在` / `hdrgm GainMapMin/Max 存在` /
+    `Channels 期望 1` / `解码成功`）。逐条追下去：产品侧 `GainMapEncoder.cs:188-197` 有 **2026-09-20 的裁定**
+    —— `headroom ≤ 1`（增益区间为 0）时**不写增益图**，直接以底图 JPEG 交付并**点名**原因
+    （写一张 `GainMapMin=GainMapMax=0` 的"自称 Ultra HDR、实际零增益"属「宣称≠交付」）。
+    ⇒ 红的是**测试端的过期期望**，不是产物。归属做过单变量 A/B：把本次几何修复在 `GainMapDecoder` 里的
+    那一处退回 HEAD 重建 ⇒ **同样 80/4** ⇒ 与取向标签那条缺陷无关。
+    **真正的遗留是"这个宿主的 exe 不被任何门禁执行"**（运行器 `_run-step3-gates.ps1` 自己登记着这句话，
+    且当年还用"非注释行里 `$x = … GainMapTestHost` = 0 处"当负断言）⇒ 套件红了没有任何闸会响。
+    处置：接成清单第 60 条 + 补 STALE 第 ⑤ 对（该 exe ↔ 自己的源码），并把 `sdr` 格那 3 条过期期望
+    换成 **6 条更严的契约断言**（降级必须点名 / 产物必须是完整 JPEG SOI+EOI / **不得**残留 MPImage2 与
+    hdrgm（半写 MPF 比无增益图更坏）/ 底图尺寸不得变 / 解码器必须把它判为**非 UltraHDR**）⇒ **86/0**。
+    ⚠ 换期望不等于放宽：判据从"有没有增益图"变成"降级是否诚实且不留假痕迹"，条数 3 → 6。
+    同日再补**取向标签两条用例**（`E1` 九条 + `E2` 八条 ⇒ 宿主 **103/0**、门禁 **18/0**）：`E1` 钉 `GainMapDecoder` 走显示几何（coded 256×192 ⇒ 显示 192×256；线性产物 vs ffmpeg 独立参照 **46.22 dB**，而同一份参照按 coded 步长重排只有 **12.95 dB** ⇒ 用例自带反证臂）；`E2` 钉 `QualityAnalysisService.AnalyzeAsync`（无损臂 PSNR=∞ 且**不报**「分辨率不一致」、有损臂必须给**有限**值、另有一条 `E2g2` 反证：轴向**真**不一致的产物仍要被拒）。
+    ⚠ 两处实测踩到的尺子缺陷：① 宿主在汇总**之后**把失败清单**重打一遍**（`Program.cs:71-73`）
+      ⇒ 门禁若按全文数 `❌`，计数恒为 2× 失败数 ⇒ 必须只数汇总行之前那段；
+    ② `sdr_decoded.rgba` 是 **09-19** 那批"SDR 也写假增益图"时期的**遗留产物**，而 `tests/output/gainmap/`
+      是跨轮复用的固定目录 ⇒ 新加的**负**断言被这个旧文件当场判红（正向断言则会因它**假绿**）。
+      修法是在解码前删掉同名旧产物（clean slate），不是删文件了事。
+    ⚠ **两条新量到的工具事实**（已写进 `E2g1` 注释）：① ffmpeg 会把**帧级 displaymatrix / EXIF 取向透传进 PNG 产物**，且 `-map_metadata -1` **剥不掉** ⇒ 一个"只加了 `-noautorotate` 的错轴产物"在显示口径下**仍与源同轴**，所以造"轴向真不一致"的反证臂必须再用 `exiftool -all=` 剥标签，并**先自证其显示尺寸 == coded**；② 该宿主的 `D13`/`D16a-c` 四条**依赖 CWD**（从 `bin` 目录跑会红）⇒ 门禁一律先 `Set-Location $root` 再跑，这也是"裸跑宿主"与"门禁跑宿主"读数会不一致的原因。
+121. **第二个取向缺陷：几何修好了，元数据恢复又把 `Orientation` 抄回产物 ⇒ 查看器二次旋转（2026-10-01）**
+    第 118 条修完像素后，用**产品自己的恢复调用**实测：对 4000×6000 的无标签产物跑
+    `exiftool -overwrite_original -m -TagsFromFile 源 -all:all -ICC_Profile 产物` ⇒ 产物读回 `Orientation : 8`
+    ⇒ 像素对、标签错，合规查看器仍会再转一次。根因是**两条**恢复通路都不排除该标签：
+    `ExifToolService.CopyMetadataAsync`（`-all:all`）与 `CopyMetadataSafeAsync`（`-EXIF:all`，
+    它已排除 `StripOffsets/RowsPerStrip/PhotometricInterpretation…` 这一整族"几何结构"标签，
+    **唯独漏了同族里唯一会让查看器重转的 `Orientation`**）。当年"只用白名单、绝不 `-all:all`"的
+    纪律只写在 RAW 拍摄字段补回那条（`CopyRawCaptureFieldsAsync`），管不到这两条主路。
+    ⚠ **排除式的形态是量出来的，不是推的**：照抄同文件 GPS/XMP 的组通配写成 `--Orientation:all`
+    **实测不生效**（同一命令、同一夹具仍读回 8），裸 `--Orientation` 与 `--EXIF:Orientation` 才有效
+    ⇒ 组通配对**整组**标签有效，对**单个可跨组重名**的标签无效。
+    ⚠ **例外必须留**：JPEG→JXL 免解码重封装（`--lossless_jpeg=1`，像素原样搬 DCT 系数）的产物
+    取向标签仍然成立 ⇒ 无条件剥掉会把这一类做坏。判据收在 `CjxlService.UsesLosslessJpegRewrap`，
+    与 cjxl 命令行里那个 `--lossless_jpeg=1` 的判据**同一份实现**（结构锁：全仓该串只允许一处发射点）。
+    载体：`ServiceProbe orientmeta`（8 条，含 M2 控制臂"Make/Model 必须仍到产物"——否则 M1 会被
+    "整块复制根本没跑"假绿；M4 反证臂"传 `dropOrientation:false` 时标签必须留得住"）。
+    ⚠ 变异验牙：把排除式退回空串 ⇒ `pass=6 fail=2`，红的正是 M1/M3 两条，M4 不受影响。
+    ⚠ **`rc=0` 不是证据**：排除式不生效时 exiftool 照样返回 0。
 
 ---
 

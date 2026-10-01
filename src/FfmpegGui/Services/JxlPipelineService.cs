@@ -142,6 +142,13 @@ namespace FfmpegGui.Services
                 // 等待进程退出：必须带 linkedToken（超时/取消可打断），
                 // 且取消路径先杀进程——djxl 可能阻塞在无读者的 stdout 上永不退出，
                 // 裸 CancellationToken.None 等待会让 finally 的 Kill 永不可达（P1-N4）。
+                // ⚠ 任一泵已经失败 ⇒ 对端再也不会读/写，进程会永久堵在管道上，等下去的唯一结局是等满
+                //   超时 ⇒ 当场杀掉。判据本身早已含 `transferError == null && writeError == null`（下面），
+                //   缺的只是"别让它拖满超时才说这句话"。与 `RawColorPipeline.PipeToEncoderAsync` 同一条修法。
+                if (transferError != null)
+                { try { if (!procDj.HasExited) procDj.Kill(entireProcessTree: true); } catch { } }
+                if (writeError != null)
+                { try { if (!procCj.HasExited) procCj.Kill(entireProcessTree: true); } catch { } }
                 try { await procCj.WaitForExitAsync(linkedToken).ConfigureAwait(false); }
                 catch (OperationCanceledException) { try { if (!procCj.HasExited) procCj.Kill(entireProcessTree: true); } catch { } }
                 try { await procDj.WaitForExitAsync(linkedToken).ConfigureAwait(false); }

@@ -634,9 +634,6 @@
                 <TextBlock Text="{ext:Loc jxl.effort}"/>
                 <NumericUpDown x:Name="CjxlEffortBox" Value="7" Minimum="1" Maximum="9"/>
                 <CheckBox x:Name="CjxlProgressiveCheck" Content="{ext:Loc jxl.progressive}" Margin="0,4,0,0"/>
-                <CheckBox x:Name="JxlLosslessJpegCheck" IsChecked="True" Margin="0,4,0,0" ToolTip.Tip="{ext:Loc tip.jxl.lossless.jpeg}">
-                  <TextBlock Text="{ext:Loc jxl.lossless.jpeg}" TextWrapping="Wrap"/>
-                </CheckBox>
                 <CheckBox x:Name="CjxlAutoPhotonNoiseCheck" Margin="0,4,0,0" ToolTip.Tip="{ext:Loc tip.photon.auto}">
                   <TextBlock Text="{ext:Loc jxl.photon.auto}" TextWrapping="Wrap"/>
                 </CheckBox>
@@ -648,6 +645,17 @@
               <CheckBox x:Name="JxlPreserveUltrahdrCheck"
                         Content="{ext:Loc jxl.preserve.ultrahdr}"
                         IsChecked="True" Margin="0,4,0,0" FontSize="11"/>
+            </StackPanel>
+            <!-- JPEG → JPEG XL 无损快速重封装（jbrd）：JPEG 与 JPEG XL 两处**共用这一只控件** -->
+            <!-- ⚠ 必须位于 JxlCjxlPanel / JpegCodecPanel 之外（与下面 JpegGainMapPanel 同一条理由）：
+                 嵌进任一只按格式切换的面板，另一格就看不见它 ⇒ 只能再放第二只，而两只控件
+                 = 两个真值，正是本仓反复修过的形状。可见性由 UpdateCodecPanelVisibility 统一开合。 -->
+            <StackPanel x:Name="JxlLosslessJpegPanel" IsVisible="False" Spacing="2">
+              <CheckBox x:Name="JxlLosslessJpegCheck" IsChecked="True" ToolTip.Tip="{ext:Loc tip.jxl.lossless.jpeg}">
+                <TextBlock Text="{ext:Loc jxl.lossless.jpeg}" TextWrapping="Wrap"/>
+              </CheckBox>
+              <TextBlock Text="{ext:Loc jxl.lossless.jpeg.hint}" FontSize="10" TextWrapping="Wrap"
+                         Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
             </StackPanel>
             <!-- Gain Map (Ultra HDR) 选项 — 任意 JPEG 编码器 (mjpeg/cjpegli) 公共选项 -->
             <!-- ⚠️ 必须位于 JpegCodecPanel / JpegliCodecPanel 之外: cjpegli 后端显示

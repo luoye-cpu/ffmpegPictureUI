@@ -232,9 +232,34 @@ namespace FfmpegGui.Models
         public int? JxlEffort { get; set; }
         public bool? JxlModular { get; set; }
         /// <summary>
-        /// JPEG→JXL 无损重封装模式：不解码像素，直接复制 DCT 系数，速度极快且完全保留原图质量
+        /// JPEG→JXL 无损重封装的**出厂默认**（2026-09-30 由 false 改为 true）。
+        /// 默认值只此一处：<c>PresetData</c> 的初始值、面板不可见时的回落、以及各探针夹具都引它，
+        /// 不再各写一份字面量（此前"数据模型默认 false + 采集式再与一个默认勾着的开关相与"
+        /// 两道叠加，使这条功能在默认配置下永不可能生效）。
+        /// </summary>
+        public const bool DefaultJxlLosslessJpeg = true;
+        /// <summary>
+        /// JPEG→JXL 无损重封装模式：不解码像素，直接复制 DCT 系数（cjxl 的 <c>--lossless_jpeg=1</c>
+        /// / jbrd 盒），速度极快且完全保留原图质量。
+        /// <para>
+        /// **本字段存的是「本次任务的有效值」，不是「用户开关的位置」**——有效值必须同时满足
+        /// 「开关开着」**且**「输入真是 JPEG」。开关的默认值在
+        /// <see cref="DefaultJxlLosslessJpeg"/>（2026-09-30 起为 **true**：默认走重封装）。
+        /// 之所以不在这里直接默认 true：<c>ImageEncoderArgs.UnsupportedEncoderSettings</c> 只读这个布尔
+        /// 就决定「引擎不可承接 jxl」（引擎要先解码，结构上无法复制 DCT 系数），而它**看不到输入格式**
+        /// ⇒ 模型默认 true 会把 **PNG→JXL 整批挡出色彩引擎**。归一化在
+        /// <c>QueueProcessor</c>（唯一同时看得到输入路径与 options 的执行漏斗）与 UI 采集式各做一次。
+        /// </para>
         /// </summary>
         public bool JxlLosslessJpeg { get; set; } = false;
+        /// <summary>
+        /// CLI 侧「用户是否**显式**指定过无损重封装」（<c>--jxl-lossless-jpeg true|false</c>）。
+        /// null = 没指定 ⇒ 按 <see cref="DefaultJxlLosslessJpeg"/> 取默认。
+        /// 为什么需要这一格：布尔本身分不清"没写"和"写了 false"，而默认值翻成 true 之后，
+        /// 拿 `opts.JxlLosslessJpeg == false` 判"用户要关"会把**没指定**也当成关。
+        /// 只有 <c>CliParser.CreateQueueItems</c> 读它（UI 侧走控件本身的状态，不需要）。
+        /// </summary>
+        public bool? JxlLosslessJpegRequested { get; set; }
         /// <summary>cjxl 渐进式解码 (--progressive)</summary>
         public bool CjxlProgressive { get; set; } = false;
         /// <summary>cjxl 光子噪声 ISO (0=禁用, 100-3200)</summary>

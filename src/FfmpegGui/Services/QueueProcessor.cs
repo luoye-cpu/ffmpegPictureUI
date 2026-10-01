@@ -389,6 +389,25 @@ namespace FfmpegGui.Services
                                 captured.Log += "[动画]    如非本意，请去掉 --animation-fps；若确实要动图，请改用多帧输入（.gif/.apng/动画 .webp/.avif/.jxl）。\n";
                             }
 
+                            // ── jbrd 有效值归一（2026-09-30）────────────────────────────────────────
+                            // 开关自 09-30 起**默认启用**（`FfmpegOptions.DefaultJxlLosslessJpeg = true`），
+                            // 而 `JxlLosslessJpeg` 这个字段是「本次任务的有效值」：只有输入真是 JPEG 才成立。
+                            // 为什么必须在这里归一：`ImageEncoderArgs.UnsupportedEncoderSettings` 只看这个
+                            // 布尔就把 jxl 判成「引擎不可承接」（重封装要复制 DCT 系数，引擎必须先解码），
+                            // 而它拿不到输入路径（`ColorEngineRouter.BlockReason(o, outputPath, animated)`
+                            // 的签名里没有输入）⇒ 不归一的话 **PNG→JXL 会被整批挡出色彩引擎**。
+                            // 必须排在 `engineRoutable` **之前**：再往下的预缩放（:649）与 Ultra HDR 解码
+                            // 都会改写 `InputPath`，那时就看不出「原始输入是不是 JPEG」了。
+                            // ⚠ 2026-10-01 补第三个条件（目标格式）：同一个布尔还是
+                            //   `CjxlService.UsesLosslessJpegRewrap` 的输入，而后者决定
+                            //   "源的 Orientation 要不要留在产物上"。只与到"输入是 JPEG" ⇒
+                            //   JPEG→JPEG/PNG/AVIF/WebP 也自认"像素没动"，于是把取向标签留在
+                            //   已被旋正的像素上 ⇒ 查看器二次旋转（出货包实测，见该谓词注释）。
+                            if (captured.Options.JxlLosslessJpeg
+                                && (!CjxlService.IsJpegInputPath(captured.InputPath)
+                                    || !captured.Options.Format.Equals("jxl", StringComparison.OrdinalIgnoreCase)))
+                                captured.Options.JxlLosslessJpeg = false;
+
                             bool engineRoutable = ColorMapping.ColorEngineRouter.ShouldRoute(
                                 captured.Options, finalOutputPath, inputMayHaveMultipleFrames);
             bool gainMapViaDedicated = captured.Options.JpegGainMap && !engineRoutable;
@@ -435,6 +454,21 @@ namespace FfmpegGui.Services
                                 throw new InvalidOperationException(
                                     $"所选编码器后端 {backend} 不适用于目标格式 {captured.Options.Format}。" +
                                     "请改用兼容的编码器/格式组合（不回退到其他编码器，避免产出与所选不符的文件）。");
+                            }
+
+                            // ── jbrd 无损重封装 × ffmpeg-libjxl 后端：点名，不静默（2026-09-30）──────
+                            // 该开关自 09-30 起**默认启用**，于是「JPEG 输入 + jxl 输出 + 手动选了 ffmpeg
+                            // 后端」从罕见格变成常见格。而本工具链的 ffmpeg-libjxl **写不出 jbrd**
+                            // （`FfmpegCommandBuilder` 的 2026-09-19 更正已登记；本次复测同一份 JPEG：
+                            //  ffmpeg-libjxl 5,551.3 kB / 1.73× vs cjxl 真重封装 3,041.9 kB / 0.95×，
+                            //  且只有后者的 jxlinfo 报 "JPEG bitstream reconstruction data available"）。
+                            // 那条分支只发 `-distance 0`，是"低损重编码"，不是用户勾的那件事
+                            // ⇒ 必须说出来；只写在源码注释里等于没写（用户看不到注释）。
+                            if (captured.Options.JxlLosslessJpeg && backend == EncoderBackend.Ffmpeg
+                                && captured.Options.Format.Equals("jxl", StringComparison.OrdinalIgnoreCase))
+                            {
+                                captured.Log += "[cjxl] ⚠️ 无损重封装(jbrd)开着，但本次后端是 ffmpeg 的 libjxl：该出口实测不写 jbrd 盒 ⇒ 产物是重新编码的像素，不是 JPEG 比特流重建（体积也更大）。要真重封装请改用 cjxl 后端。\n";
+                                _onItemUpdated?.Invoke(captured);
                             }
 
                             // Ultra HDR JPEG 输入：GainMapDecoder (纯 C#) 应用增益图恢复 HDR 线性像素
@@ -672,6 +706,20 @@ namespace FfmpegGui.Services
                             // 色彩后置是否已在主分支跑完：下面那些专用通路（外部编码器 / JXL·JXR·AVIF·GIF）
                             // 不进入主分支的 `{ …色彩后置… }`，因此需要一个统一入口决定“补做还是显式报未参与”（P7a-3）。
                             bool colorPostStepsDone = false;
+
+                            // ── cjxl 自动光子噪声：ISO 解析提到**分叉之前**（2026-09-30）────────────────
+                            // 本链上共有三条 cjxl 出口：`:714` 的 `ProcessCjxlAsync`（直编/管道）、
+                            // 引擎可走时的 `RawColorPipeline` cjxl 出口、以及 JXL·JXR 输入的两步法回退
+                            // （`ProcessJxlInputAsync` / `FallbackDjxlDecodeToFile`）。三者传的是**同一份**
+                            // `captured.Options`，而 `:714` 写成 `backend == Cjxl && !engineRoutable` ⇒
+                            // 解析若内联在 `ProcessCjxlAsync` 里，**默认路线（引擎）就拿不到**：cjxl 的
+                            // `--photon_noise_iso` 只吃浮点，收到未解析的 `auto` 会在读 stdin 之前退出 1、
+                            // 零产物，写方表现为"管道正在被关闭"（实测 2026-09-30，`tests/output/t62/`）。
+                            // 判据取「cjxl 可用 且 目标是 jxl」= 上面三条出口的并集（那两条回退各自还额外
+                            // 要求 target 是 jxl），不另起第二份判定。
+                            if (CjxlService.IsAvailable
+                                && captured.Options.Format.Equals("jxl", StringComparison.OrdinalIgnoreCase))
+                                await ResolveCjxlPhotonNoiseIsoAsync(captured, ct);
 
                             // GIF → AVIF：FFmpeg 编码器丢弃 alpha，走 avifenc 两步法保留透明通道。
                             // ⚠ 可用性判断**不得写在本条件里**（P7f）：曾经写成 `&& HasAvifencAvailable()`，
@@ -1615,15 +1663,22 @@ namespace FfmpegGui.Services
                         item.Log += "[exiftool] 从源文件恢复元数据...\n";
                     _onItemUpdated?.Invoke(item);
 
+                    // ⚠ `Orientation` 只在**免解码重封装**这一种情形下必须保留（像素原样搬 DCT 系数 ⇒
+                    //   源的取向标签仍然成立）；其余一切路径的像素都被解码器旋正过 ⇒ 带回该标签 = 二次旋转。
+                    //   判据取 `CjxlService.UsesLosslessJpegRewrap`（与 cjxl 命令行里 `--lossless_jpeg=1`
+                    //   的判据**同一份实现**，不另写一遍）。
+                    bool keepOrientationTag = CjxlService.UsesLosslessJpegRewrap(item.InputPath, item.Options);
                     var copyExit = protectColorMetadata
                         ? await ExifToolService.CopyMetadataSafeAsync(
                             item.InputPath, outputPath,
                             s => { item.Log += s; _onItemUpdated?.Invoke(item); },
-                            absorb: item.Options)   // 可吸收时把 GPS/XMP 的隐私清理并入本次复制（省一次 exiftool 启动）
+                            absorb: item.Options,   // 可吸收时把 GPS/XMP 的隐私清理并入本次复制（省一次 exiftool 启动）
+                            dropOrientation: !keepOrientationTag)
                         : await ExifToolService.CopyMetadataAsync(
                             item.InputPath, outputPath,
                             s => { item.Log += s; _onItemUpdated?.Invoke(item); },
-                            absorb: item.Options);
+                            absorb: item.Options,
+                            dropOrientation: !keepOrientationTag);
 
                     if (copyExit == 0)
                     {
@@ -1889,31 +1944,50 @@ namespace FfmpegGui.Services
             }
         }
 
+        /// <summary>
+        /// **自动光子噪声的 ISO 解析（cjxl 专用，2026-09-30 上提到分叉之前）**：
+        /// 把 UI 的"auto"意图换成 cjxl 能吃的浮点数。
+        ///
+        /// 为什么必须是**分叉前的一次调用**（此前它内联在 `ProcessCjxlAsync` 里）：cjxl 的
+        /// `--photon_noise_iso` 解析器是 `ParseFloat && >= 0`（libjxl `tools/cjxl_main.cc`），
+        /// **没有 `auto` 这个取值** —— 未解析的占位串会让 cjxl 在读取 stdin 之前就以 1 退出
+        /// （实测 2026-09-30：`Unable to interpret as float: auto.`、零产物、写方 broken pipe）。
+        /// 而 `:714` 的分派是 `backend == Cjxl && !engineRoutable` ⇒ 引擎可走时**根本进不到**
+        /// `ProcessCjxlAsync`，内联版本等于只服务了一条路线；`RawColorPipeline` 的 cjxl 出口
+        /// 直接拿未解析的 options 建命令行 ⇒ 勾了自动光子噪声的 jxl 任务在默认路线上必失败。
+        ///
+        /// 判不到 ISO（无 exiftool / 无 EXIF，典型 = PNG 输入）⇒ **清掉标志**，让"跳过"名副其实。
+        /// `BuildCjxlArguments` 另有一道 fail-closed 兜底（真执行时宁可省略也不发占位串），
+        /// 防的是今后第三条路线重犯，不替代本方法。
+        /// </summary>
+        private async Task ResolveCjxlPhotonNoiseIsoAsync(QueueItem item, CancellationToken ct)
+        {
+            if (!item.Options.CjxlAutoPhotonNoise || item.Options.CjxlPhotonNoiseIso > 0) return;
+
+            var iso = await ExifToolService.ReadIsoAsync(item.InputPath, s => item.Log += s, ct);
+            if (iso.HasValue)
+            {
+                // cjxl 建议值域 100-3200，超出则钳制
+                item.Options.CjxlPhotonNoiseIso = Math.Clamp(iso.Value, 100, 3200);
+                item.Log += $"[cjxl] 自动光子噪声: 从 EXIF 读取 ISO={iso.Value} → --photon_noise_iso={item.Options.CjxlPhotonNoiseIso}\n";
+            }
+            else
+            {
+                item.Log += "[cjxl] 自动光子噪声: 无法读取 ISO（无 exiftool 或无 ISO 元数据），跳过\n";
+                // 让那句「跳过」名副其实并在此处兜住：cjxl 没有 auto 这个取值（BuildCjxlArguments
+                // 里的 auto 只是 UI 预览占位），标志不清就会把一条跑不通的参数真的发给编码器。
+                item.Options.CjxlAutoPhotonNoise = false;
+            }
+            _onItemUpdated?.Invoke(item);
+        }
+
         /// <summary>cjxl 编码（优先直接编码，失败自动转 PNG 再试）</summary>
         private async Task ProcessCjxlAsync(QueueItem item, string outputPath, CancellationToken ct)
         {
-            // ── 自动光子噪声：从输入图片 EXIF 读取真实 ISO（每张图独立）──
-            if (item.Options.CjxlAutoPhotonNoise && item.Options.CjxlPhotonNoiseIso <= 0)
-            {
-                var iso = await ExifToolService.ReadIsoAsync(item.InputPath, s => item.Log += s, ct);
-                if (iso.HasValue)
-                {
-                    // cjxl 建议值域 100-3200，超出则钳制
-                    item.Options.CjxlPhotonNoiseIso = Math.Clamp(iso.Value, 100, 3200);
-                    item.Log += $"[cjxl] 自动光子噪声: 从 EXIF 读取 ISO={iso.Value} → --photon_noise_iso={item.Options.CjxlPhotonNoiseIso}\n";
-                }
-                else
-                {
-                    item.Log += "[cjxl] 自动光子噪声: 无法读取 ISO（无 exiftool 或无 ISO 元数据），跳过\n";
-                    // 让那句「跳过」名副其实并在此处兜住：cjxl 没有 auto 这个取值（BuildCjxlArguments
-                    // 里的 auto 只是 UI 预览占位），标志不清就会把一条跑不通的参数真的发给编码器。
-                    // 队列侧此前靠 JPEG 分支漏搬该字段侥幸躲过 ⇒ 两条分支传同一份 options 后必须显式清。
-                    item.Options.CjxlAutoPhotonNoise = false;
-                }
-                _onItemUpdated?.Invoke(item);
-            }
-
-            var isJpegInput = Path.GetExtension(item.InputPath).ToLowerInvariant() is ".jpg" or ".jpeg";
+            // 自动光子噪声的 ISO 已在**分叉之前**解析完（`ResolveCjxlPhotonNoiseIsoAsync`，
+            // 2026-09-30 上提）⇒ 此处不再重复读 EXIF：两条路线必须传同一份已解析 options，
+            // 否则"引擎出口拿到未解析的 auto"就是本次修的那个缺陷的形状。
+            var isJpegInput = CjxlService.IsJpegInputPath(item.InputPath);
 
             // ── 非 JPEG 输入：保留源 ICC（exiftool 无法写入 JXL 的 ICC，需编码器侧嵌入）──
             // JPEG 输入走无损重封装会自动保留原始 JPEG 元数据（含 ICC），无需处理。
@@ -2838,48 +2912,24 @@ namespace FfmpegGui.Services
             catch { return 8; }
         }
 
-        /// <summary>使用 ffprobe 获取图像文件的宽高</summary>
-        /// <param name="log">日志回调（取消分支点名用；null ⇒ 退回 Trace.WriteLine）</param>
+        /// <summary>
+        /// GainMap 专用管线的尺寸入口 —— **显示**尺寸（含 autorotate）。
+        /// <para>⚠ 2026-09-30：本方法曾是仓内**又一份**自写 `-show_entries stream=width,height`
+        /// （= coded 尺寸）。它的下游把 <c>width*height</c> 当 <c>pixelCount</c> 去切一段
+        /// **由 autorotate 解码出来的** gbrpf32le raw（<c>Step 3</c>），而长度自检用的是
+        /// <c>rawBytes.Length &lt; pixelCount*3*4</c> —— 转置下字节数恒等 ⇒ 拦不住 ⇒
+        /// 与 <c>RawColorPipeline</c> 同一类"按 coded 标注旋正像素"的行错位。
+        /// 现统一转发 <see cref="ImageGeometry"/>（仓内宽高探测的唯一实现）。</para>
+        /// </summary>
+        /// <param name="log">日志回调（探测失败/超时的点名；null ⇒ 退回 Trace.WriteLine）</param>
         /// <param name="ct">取消令牌（`#26`：调用方一直持有它却没往下传，本次接通）</param>
-        private static async Task<(int width, int height)> ProbeImageSizeAsync(string inputPath, string ffmpegPath,
+        private static Task<(int width, int height)> ProbeImageSizeAsync(string inputPath, string ffmpegPath,
             Action<string>? log = null, CancellationToken ct = default)
         {
-            try
-            {
-                var ffprobePath = PlatformServices.ResolveFfprobePath(ffmpegPath)
-                    ?? Path.Combine(Path.GetDirectoryName(ffmpegPath) ?? "", "ffprobe.exe");
-                if (!File.Exists(ffprobePath)) ffprobePath = ffmpegPath.Replace("ffmpeg.exe", "ffprobe.exe");
-
-                var psi = new ProcessStartInfo
-                {
-                    FileName = ffprobePath,
-                    Arguments = $"-v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 \"{inputPath}\"",
-                    RedirectStandardOutput = true,
-                    StandardOutputEncoding = Encoding.UTF8,
-                    RedirectStandardError = true,
-                    StandardErrorEncoding = Encoding.UTF8,
-                    UseShellExecute = false,
-                    CreateNoWindow = true
-                };
-                using var p = Process.Start(psi);
-                if (p == null) return (0, 0);
-                // `#26`：本方法原本**没有任何超时**；本次只接上调用方的取消令牌 ⇒ 取消即杀树，
-                // 按既有兜底返回 (0,0)（调用方据此报「无法获取图像尺寸」）。**不新增超时**。
-                using var reg = ct.Register(() => { try { p.Kill(entireProcessTree: true); } catch { } });
-                var output = await ReadStdoutDrainingStderrAsync(p);
-                await p.WaitForExitAsync();
-                if (ct.IsCancellationRequested)
-                {
-                    var msg = $"[probe] 图像尺寸探测被取消 ⇒ 已终止：{Path.GetFileName(inputPath)}（尺寸不可用）";
-                    if (log != null) log(msg + "\n"); else System.Diagnostics.Trace.WriteLine(msg);
-                    return (0, 0);
-                }
-                var parts = output.Trim().Split(',');
-                if (parts.Length >= 2 && int.TryParse(parts[0], out var w) && int.TryParse(parts[1], out var h))
-                    return (w, h);
-            }
-            catch { }
-            return (0, 0);
+            var ffprobePath = PlatformServices.ResolveFfprobePath(ffmpegPath)
+                ?? Path.Combine(Path.GetDirectoryName(ffmpegPath) ?? "", "ffprobe.exe");
+            if (!File.Exists(ffprobePath)) ffprobePath = ffmpegPath.Replace("ffmpeg.exe", "ffprobe.exe");
+            return ImageGeometry.DisplaySizeAsync(inputPath, ffprobePath, log, ct);
         }
 
         /// <summary>用 ffmpeg 将输入转为临时高质量 PNG，返回路径（失败返回 null 并设置状态）</summary>
@@ -3199,6 +3249,14 @@ namespace FfmpegGui.Services
                 try { await procEnc.WaitForExitAsync(linkedToken); }
                 catch (OperationCanceledException) { try { if (!procEnc.HasExited) procEnc.Kill(entireProcessTree: true); } catch { } }
 
+                // 传输已失败 ⇒ 编码器不会再读 stdin，而 ffmpeg 还有整幅裸流要写 ⇒ 它会**永久阻塞在
+                // 写端**（实测 891x981 的 5.2 MB PPM 流写满管道缓冲即卡死）。继续等的唯一结局是等满
+                // 30 分钟超时，而真因早已打在上面的 stderr 逐行日志里 ⇒ 立刻杀掉，让结论马上落地。
+                // 与 `RawColorPipeline.PipeToEncoderAsync` 同一条修法（2026-09-30）。
+                if (transferError != null)
+                {
+                    try { if (!procFf.HasExited) procFf.Kill(entireProcessTree: true); } catch { }
+                }
                 // ffmpeg 应已自行退出（stdout 已读完）；但取消/编码器提前退出时 ffmpeg 可能
                 // 阻塞在无读者的 stdout —— 必须用 linkedToken 打断并杀进程（P1-N4）
                 try { await procFf.WaitForExitAsync(linkedToken); }
@@ -4000,17 +4058,25 @@ namespace FfmpegGui.Services
                     s => item.Log += $"[cjxl] {s}\n");
 
                 // 管道传输：djxl stdout → cjxl stdin
+                Exception? transferError = null;
                 try
                 {
                     await procDj.StandardOutput.BaseStream.CopyToAsync(
                         procCj.StandardInput.BaseStream, linkedToken);
                 }
                 catch (OperationCanceledException) { item.Log += "[djxl→cjxl] 传输取消\n"; }
-                catch (Exception ex) { item.Log += $"[djxl→cjxl] 传输错误: {ex.Message}\n"; }
+                catch (Exception ex) { transferError = ex; item.Log += $"[djxl→cjxl] 传输错误: {ex.Message}\n"; }
 
                 try { procCj.StandardInput.Close(); } catch { }
                 try { await procCj.WaitForExitAsync(linkedToken); }
                 catch (OperationCanceledException) { try { if (!procCj.HasExited) procCj.Kill(entireProcessTree: true); } catch { } }
+                // 传输已经失败 ⇒ cjxl 不会再读任何东西，而 djxl 还有整幅 PNM 要写 ⇒ 它会**永久阻塞在
+                // 写端**（实测同形状：891x981 的 5.2 MB 流写满管道缓冲即卡死）。继续等的唯一结局是等满
+                // 30 分钟超时 ⇒ 立刻杀掉写侧。与 `RawColorPipeline.PipeToEncoderAsync` 同一条修法。
+                if (transferError != null)
+                {
+                    try { if (!procDj.HasExited) procDj.Kill(entireProcessTree: true); } catch { }
+                }
                 // djxl 可能阻塞在无读者的 stdout（cjxl 提前退出时）——取消/超时必须打断并杀进程，
                 // 裸 CancellationToken.None 等待会让 finally 的 Kill 永不可达（P1-N4）
                 try { await procDj.WaitForExitAsync(linkedToken); }
@@ -4019,11 +4085,16 @@ namespace FfmpegGui.Services
                 await djLogTask; await cjLogTask; await cjOutTask;
 
                 var exitCode = procCj.HasExited ? procCj.ExitCode : -1;
-                if (exitCode == 0)
+                // ⚠ 判据必须含 `transferError == null`：只认 cjxl 退出码，会在一截**半截流**上判成功
+                //（cjxl 收到被截断的 PNM 也可能以 0 退出）。与 `PipeFfmpegToExternalEncoderAsync`
+                //  和 `JxlPipelineService` 同一条成功契约。
+                if (exitCode == 0 && transferError == null)
                 {
                     item.Log += "[djxl→cjxl] 管道编码完成\n";
                     return (0, "已完成 (djxl→cjxl 管道)");
                 }
+                if (exitCode == 0)
+                    return (-1, $"失败 (cjxl 退出码 0，但管道传输失败：{transferError?.Message})");
                 return (exitCode, $"失败 (cjxl 退出码 {exitCode})");
             }
             catch (OperationCanceledException) { return (-1, "已停止"); }
@@ -4254,6 +4325,7 @@ namespace FfmpegGui.Services
                 var ffOutTask = ConsumeStreamLinesAsync(procFf.StandardOutput, s => item.Log += s + "\n");
 
                 // ── 关键：先完成传输 + 关闭 stdin，再等待进程退出（避免死锁）──
+                Exception? transferError = null;
                 try
                 {
                     await procDj.StandardOutput.BaseStream.CopyToAsync(procFf.StandardInput.BaseStream, linkedToken);
@@ -4264,6 +4336,7 @@ namespace FfmpegGui.Services
                 }
                 catch (Exception ex)
                 {
+                    transferError = ex;
                     item.Log += $"[pipe] 传输错误: {ex.Message}\n";
                 }
 
@@ -4273,6 +4346,12 @@ namespace FfmpegGui.Services
                 // 等待 ffmpeg 正常退出（stdin 已关闭，ffmpeg 会自行结束）
                 try { await procFf.WaitForExitAsync(linkedToken); }
                 catch (OperationCanceledException) { try { if (!procFf.HasExited) procFf.Kill(entireProcessTree: true); } catch { } }
+                // 传输已经失败 ⇒ ffmpeg 不会再读 stdin，djxl 会**永久阻塞在无人读的 stdout 上**
+                // ⇒ 立刻杀写侧，别等满 30 分钟（与上面两条管道同一条修法）
+                if (transferError != null)
+                {
+                    try { if (!procDj.HasExited) procDj.Kill(entireProcessTree: true); } catch { }
+                }
                 // djxl：取消/ffmpeg 提前退出时可能阻塞在无读者的 stdout —— 用 linkedToken 打断并杀进程（P1-N4）
                 try { await procDj.WaitForExitAsync(linkedToken); }
                 catch (OperationCanceledException) { try { if (!procDj.HasExited) procDj.Kill(entireProcessTree: true); } catch { } }
@@ -4283,9 +4362,19 @@ namespace FfmpegGui.Services
                 await ffOutTask;
 
                 var ffExitCode = procFf.HasExited ? procFf.ExitCode : -1;
+                if (ffExitCode == 0 && transferError != null)
+                {
+                    // ⚠ 必须保持**单行**：折行会让续行脱离 `item.Log +=` 这个 sink 标记，
+                    //   被 `_probe-cjk-hardcode-scan` 误计入「UI 面文案」桶（本文件 :383 登记过同因漂移）。
+                    item.Log += $"[pipe] ffmpeg 退出码 0，但管道传输失败 ⇒ 判失败、不恢复元数据（半截流产出的文件不能当成功）：{transferError.Message}\n";
+                    ffExitCode = -1;
+                }
+                // 成功判据与另外三条管道**同一条契约**（`transferError == null` 出现在正向条件里，
+                // 由 `verify-color-wiring.ps1 (10h)` 逐站点比对）：只认进程退出码，会在一截半截流上判成功。
+                var pipeOk = (ffExitCode == 0 && transferError == null);
                 item.ExitCode = ffExitCode;
-                item.Status = ffExitCode == 0 ? "已完成 (djxl→ffmpeg 管道)" : $"失败 (ffmpeg 退出码 {ffExitCode})";
-                if (ffExitCode == 0) await RestoreMetadataAsync(item, outputPath);
+                item.Status = pipeOk ? "已完成 (djxl→ffmpeg 管道)" : $"失败 (ffmpeg 退出码 {ffExitCode})";
+                if (pipeOk) await RestoreMetadataAsync(item, outputPath);
             }
             catch (OperationCanceledException)
             {

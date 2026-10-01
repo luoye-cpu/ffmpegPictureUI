@@ -468,10 +468,20 @@ namespace FfmpegGui.Services
         /// </summary>
         /// <param name="absorb">非空且 <see cref="CanAbsorbStrip"/> 为真时，把 GPS/XMP 的隐私清理**并入本次复制**
         /// （调用方据此跳过单独的那次隐私清理调用）。</param>
+        /// <param name="dropOrientation">
+        /// ⚠ 2026-10-01：**默认必须剥掉源的 `Orientation`**。全仓解码段都不写 `-noautorotate`
+        /// ⇒ 产物的像素**已被 ffmpeg 旋正**，此时把 `Orientation=8` 抄到产物上 = 让合规查看器
+        /// **再旋一次**（实测：修好几何后的 4000×6000 JXL 经本方法恢复元数据后，exiftool 读回
+        /// `Orientation : 8` ⇒ 像素对、标签错）。
+        /// 唯一的例外是**免解码重封装**（cjxl `--lossless_jpeg=1`，像素原样搬 DCT 系数 ⇒ 标签仍然成立、
+        /// 必须保留）⇒ 调用方传 <c>dropOrientation: false</c>，判据取
+        /// <see cref="CjxlService.UsesLosslessJpegRewrap"/>（与本判据同源，不许各写一份）。
+        /// </param>
         public static async Task<int> CopyMetadataAsync(
             string sourcePath, string targetPath,
             Action<string>? logCallback = null,
-            Models.FfmpegOptions? absorb = null)
+            Models.FfmpegOptions? absorb = null,
+            bool dropOrientation = true)
         {
             if (_detectedPath == null)
             {
@@ -484,7 +494,8 @@ namespace FfmpegGui.Services
             // -all:all 复制所有可复制标签，但 ICC_Profile 等二进制块可能被跳过，
             // 因此显式追加 -ICC_Profile 确保色彩配置文件也被复制
             var args = $"-overwrite_original -m -TagsFromFile \"{sourcePath}\" " +
-                       $"-all:all -ICC_Profile {BuildAbsorbExclusions(absorbNow ? absorb : null)}\"{targetPath}\"";
+                       $"-all:all -ICC_Profile {BuildAbsorbExclusions(absorbNow ? absorb : null)}" +
+                       $"{(dropOrientation ? OrientationExclusion : string.Empty)}\"{targetPath}\"";
             logCallback?.Invoke($"[exiftool] 复制元数据: {Path.GetFileName(sourcePath)} → {Path.GetFileName(targetPath)}\n"
                 + (absorbNow ? "[exiftool] （已并入可吸收的隐私清理，省一次 exiftool 启动）\n" : ""));
 
@@ -516,6 +527,19 @@ namespace FfmpegGui.Services
             if (absorb.StripXmp) sb.Append("--XMP:all ");
             return sb.ToString();
         }
+
+        /// <summary>
+        /// 剥掉源的 <c>Orientation</c>（两条恢复通路共用的一份排除式）。
+        /// <para>⚠ 形态必须是**裸名** <c>--Orientation</c>。写成 <c>--Orientation:all</c>（照抄上面
+        /// GPS/XMP 的组通配样式）**实测不生效**：同一命令、同一夹具（JPEG 源 <c>Orientation=8</c> →
+        /// 无标签 JPEG 产物），<c>--Orientation:all</c> 之后产物仍读回 <c>Orientation=8</c>，
+        /// 而 <c>--Orientation</c> 与 <c>--EXIF:Orientation</c> 都能剥掉。
+        /// 组通配对**整组**标签（GPS/XMP）有效，对**单个可跨组重名**的标签无效 ⇒ 别"顺手统一"回去。</para>
+        /// <para>同理，单横线 <c>-Orientation</c> 是"复制该标签"而不是排除（与本文件 ① 那条 GPS 的
+        /// 实测教训同族）。</para>
+        /// <para>必须排在 <c>-TagsFromFile</c> / <c>-all:all</c> **之后**（exiftool 按参数顺序求值）。</para>
+        /// </summary>
+        private const string OrientationExclusion = "--Orientation ";
 
         /// <summary>
         /// ⚠⚠ PNG 目标必须先清掉**损坏的 `eXIf` 块**，否则 exiftool 会**拒绝写入任何标签**。
@@ -595,7 +619,8 @@ namespace FfmpegGui.Services
         public static async Task<int> CopyMetadataSafeAsync(
             string sourcePath, string targetPath,
             Action<string>? logCallback = null,
-            Models.FfmpegOptions? absorb = null)
+            Models.FfmpegOptions? absorb = null,
+            bool dropOrientation = true)
         {
             if (_detectedPath == null)
             {
@@ -606,6 +631,9 @@ namespace FfmpegGui.Services
             var absorbNow = absorb != null && CanAbsorbStrip(absorb);
             // 仅复制描述性元数据组，排除色彩相关标签和 TIFF 结构标签
             // 注意：每个 --TAG 表示"从复制列表中排除该标签"
+            // ⚠ `Orientation` 同属"TIFF 结构/几何"这一族（下面已排 StripOffsets/RowsPerStrip/
+            //   PhotometricInterpretation… 那一串）——它此前**被漏掉**，而它恰恰是唯一会
+            //   让查看器把已旋正的像素**再转一次**的那一个。理由见 CopyMetadataAsync 的同名参数。
             var args = $"-overwrite_original -m {PngExifResetArg(targetPath)}-TagsFromFile \"{sourcePath}\" " +
                        $"-EXIF:all -IPTC:all -XMP:all -MakerNotes:all -GPS:all " +
                        BuildAbsorbExclusions(absorbNow ? absorb : null) +
@@ -616,7 +644,7 @@ namespace FfmpegGui.Services
                        $"--TileOffsets --TileByteCounts --TileWidth --TileLength " +
                        $"--Compression --Predictor --PhotometricInterpretation " +
                        $"--SamplesPerPixel --BitsPerSample --PlanarConfiguration " +
-                       $"\"{targetPath}\"";
+                       $"{(dropOrientation ? OrientationExclusion : string.Empty)}\"{targetPath}\"";
             logCallback?.Invoke($"[exiftool] 安全复制元数据（已排除色彩标签，保护编码器输出）: {Path.GetFileName(sourcePath)} → {Path.GetFileName(targetPath)}\n"
                 + (absorbNow ? "[exiftool] （已并入可吸收的隐私清理，省一次 exiftool 启动）\n" : ""));
 

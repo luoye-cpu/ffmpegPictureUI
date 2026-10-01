@@ -56,7 +56,7 @@ $exe = "$root/src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.exe"
 if (-not (Test-Path $exe)) { $exe = "$root/src/FfmpegGui/bin/Debug/net11.0/win-x64/FfmpegGui.exe" }
 # ⚠ 2026-09-21（TESTING.md 第 84 条处置建议 ①）：**回退是静默的** —— 门禁可能测的
 #   不是你以为的那个二进制。⇒ 一律**打印被测 exe 与构建类型**，让读数可追溯。
-Write-Output ("[gate] exe=" + $exe + $(if ($exe -like '*\Debug\*') { " (Debug fallback)" } else { " (Release)" }))
+Write-Output ("[gate] exe=" + $exe + $(if ($exe -like '*[/\]Debug[/\]*') { " (Debug fallback)" } else { " (Release)" }))
 $ff = "$root/publish/PLAN/ffmpeg-full/ffmpeg.exe"
 $fp = "$root/publish/PLAN/ffmpeg-full/ffprobe.exe"
 $jxrEnc = "$root/publish/PLAN/artifacts/JxrEncApp.exe"
@@ -308,11 +308,22 @@ CK ($legLine -match 'input\.(bmp|tiff)"\s*$') "② 该参数紧贴中转产物 `
 # ── ③ 负控 ───────────────────────────────────────────────────────────────────────
 Write-Host "`n### ③ 负控 A：单帧输入 → jxr 不得回归 ###" -ForegroundColor Cyan
 $singleCases = @(
-  @{ src = $single;  name = "single.png(1帧)";       eng = "legacy"; tag = "n_legacy_single"; cdec = "0" },
-  # ⚠ 单帧**无 alpha** 走引擎出口 ⇒ 中转是 48bppRGB ⇒ 解码码 `-c 10`（`-c 23` 是 64bppRGBA，会 exit=-106）。
-  @{ src = $single;  name = "single.png(1帧)";       eng = "auto";   tag = "n_auto_single";   cdec = "10" },
-  @{ src = $singleA; name = "single_alpha.png(1帧)"; eng = "auto";   tag = "n_auto_singleA";  cdec = "23" }
+  @{ src = $single;  name = "single.png(1帧)";       eng = "legacy"; tag = "n_legacy_single"; cdec = "0";  wantPf = '24-bit BGR' },
+  # ⚠ 2026-09-30：本臂原先写死 `cdec = "10"`（48bppRGB），依据是"引擎出口的出口位深恒 16"。
+  #   那句话把**中间件精度**当成了**交付深度** —— 交付档现改按 `plan.TargetBitDepth`（与 (11a)/(11a2) 同批修），
+  #   8-bit 源 ⇒ 24bppBGR。解码码现由**产物的 PixelFormat** 现推，并与表里的期望值**对账**：
+  #   档位若哪天再漂，红的是"期望 vs 实测不一致"这一句，而不是"产物解不出来"这种会被误读成坏文件的假红。
+  @{ src = $single;  name = "single.png(1帧)";       eng = "auto";   tag = "n_auto_single";   cdec = "0";  wantPf = '24-bit BGR' },
+  @{ src = $singleA; name = "single_alpha.png(1帧)"; eng = "auto";   tag = "n_auto_singleA";  cdec = "22"; wantPf = '32-bit BGRA' }
 )
+# 码表逐字取自 `JxrDecApp` 自己的 usage（22=32bppBGRA、23=64bppRGBA；工具对扩展名不敏感，实测 `.bin` 也可）。
+function JxrDecodeCode([string]$pf) {
+  if ($pf -match '24-bit BGR')  { return '0' }
+  if ($pf -match '48-bit RGB')  { return '10' }
+  if ($pf -match '32-bit BGRA') { return '22' }
+  if ($pf -match '64-bit RGBA') { return '23' }
+  return ''
+}
 foreach ($c in $singleCases) {
   $outdir = "$work/$($c.tag)"
   $extra = ""
@@ -320,7 +331,17 @@ foreach ($c in $singleCases) {
   $r = Exec $exe ('--headless --log-level debug -i "' + $c.src + '" -o "' + $outdir + '" --format jxr' + $extra) "run_$($c.tag)"
   $p = Product $outdir @(".jxr")
   $dec = $false
-  if ($null -ne $p) { $dec = JxrDec $p.FullName "$work/_back_$($c.tag).tif" $c.cdec }
+  $code = $c.cdec
+  if ($null -ne $p) {
+    if (Test-Path $et) {
+      $pfC = JxrPixelFormat $p.FullName
+      CK ($pfC -match [regex]::Escape($c.wantPf)) `
+         "③ $($c.name) → jxr/$($c.eng)：交付档位回读为「$($c.wantPf)」（实得「$pfC」）—— 中间件档不再冒充交付档"
+      $derived = JxrDecodeCode $pfC
+      if ($derived -ne '') { $code = $derived }
+    }
+    $dec = JxrDec $p.FullName "$work/_back_$($c.tag).tif" $code
+  }
   $sz = ""
   if ($null -ne $p) { $sz = (ImgSize "$work/_back_$($c.tag).tif") }
   Write-Host ("  [{0} → jxr / {1}] exit={2} 产物={3} 可解={4} 回读尺寸={5}" -f `

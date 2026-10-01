@@ -84,10 +84,14 @@ function RunCli([string]$tag, [string]$inFile, [string]$extra) {
   if (Test-Path $outDir) { [System.IO.Directory]::Delete($outDir, $true) }
   New-Item -ItemType Directory -Force -Path $outDir | Out-Null
   $r = Exec $exe "--headless --log-level debug -i `"$inFile`" -o `"$outDir`" $extra" "run_$tag"
-  $prod = Get-ChildItem $outDir -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1
+  # ⚠ 计数要**全枚举**：`Select-Object -First 1` 之后拿到的永远 ≤1，"0 产物"与"≥2 产物"会一起被读成 1。
+  #   `prod` 仍取第一个（既有的 ② ~ ⑥ 段按它取路径，语义不变），新增的 `prodCount` 供 ⑪ 段判"干净拒绝"。
+  $prods = @(Get-ChildItem $outDir -Recurse -File -ErrorAction SilentlyContinue)
+  $prod = $null
+  if ($prods.Count -ge 1) { $prod = $prods[0] }
   $pp = ""
   if ($null -ne $prod) { $pp = $prod.FullName }
-  return @{ code = $r.code; text = $r.text; dir = $outDir; prod = $prod; prodPath = $pp }
+  return @{ code = $r.code; text = $r.text; dir = $outDir; prod = $prod; prodPath = $pp; prodCount = $prods.Count }
 }
 
 # ffprobe：codec_name / profile / WxH / 帧数（帧数走 -count_frames，**不用** frame= 日志字段）
@@ -272,6 +276,143 @@ CK ($mtBefore -eq $mtAfter) "⑧ 跑期间 FfmpegGui.exe mtime 未变（前=$mtB
 # ── ⑨ 残留自证 ────────────────────────────────────────────────────────────────
 Write-Host "`n### ⑨ 残留自证 ###" -ForegroundColor Cyan
 # 清理一律用 .NET API 绕过宿主批量删除守卫（§6 第 57/67 条：守卫会抛 terminating error 并污染 $LASTEXITCODE）。
+# ── ⑩ 编码侧（2026-09-30 补）：app 自己有没有真的发出 --lossless_jpeg=1 ──────────────
+# 排在 ⑨ 那段「运行级目录清零」之前（⑨ 是 teardown，不是编号顺序）。
+# 此前**全仓零覆盖**：`--lossless_jpeg` 在 95 个门禁脚本里只出现在"手工调 cjxl 造素材"的地方，
+# 没有任何一条判据问过 **app 发没发** ⇒ 它被三道独立失效永久掐死（模型默认 false + 采集式
+# 「面板不可见⇒false」+ 与一只**默认勾着**的「保留 Ultra HDR 增益图」无条件相与）却全绿。
+# 掐死态实测：默认产物是 `-d 3.8` 的**有损**像素重编码（893 kB，源 JPEG 3,209 kB）⇒ 用户以为拿到无损。
+$jbJpg = "$work/enc_src.jpg"
+$null = Exec $ff "-y -hide_banner -loglevel error -f lavfi -i gradients=s=320x240:c0=0x305090:c1=0xd0a040:n=6,format=rgb24 -frames:v 1 -q:v 3 $jbJpg" "jbgen"
+if (-not (Test-Path $jbJpg)) { CK $false "⑩ JPEG 素材生成失败 ⇒ 本段判据全部作废" }
+else {
+  $jbSrcKB = (Get-Item $jbJpg).Length
+  $jbOut = "$work/jb_on"; New-Item -ItemType Directory -Force -Path $jbOut | Out-Null
+  $jb = Exec $exe "--headless -i $jbJpg --format jxl --output $jbOut --log-level Debug" "jbrd"
+  $jbFile = @(Get-ChildItem $jbOut -Recurse -File | Where-Object { $_.Extension -eq '.jxl' })
+  CK ($jbFile.Count -eq 1) "⑩ 默认路径产出恰好一个 .jxl（实得 $($jbFile.Count)）"
+  if ($jbFile.Count -eq 1) {
+    # 取 jxlinfo 的**值**必须走只读 stdout 版：合并取数会把 stderr 的报错行当成值喂给判据
+    #   （`_probe-stderr-merge-scan.ps1` 的债账基线是 0 ⇒ 这里用 Exec 会当场报红）。
+    $jbInfo = (ExecOut $jxlinfo ('"' + $jbFile[0].FullName + '"') "jbinfo").text
+    CK ($jb.text -match '--lossless_jpeg=1') `
+       "⑩ app **默认**就发出 --lossless_jpeg=1（开关默认启用，不再被采集式掐死）"
+    CK ($jbInfo -match 'reconstruction data') `
+       "⑩ 产物真是 jbrd 比特流重建而非像素重编码（jxlinfo 独立读回）"
+    CK ($jbFile[0].Length -lt $jbSrcKB) `
+       "⑩ 重封装产物小于源 JPEG（$($jbFile[0].Length) B < $jbSrcKB B）"
+  }
+  # 负控：显式关掉 ⇒ 不再发 --lossless_jpeg=1（此时引擎不再被 `ImageEncoderArgs` 拦，回到管道像素路线，
+  # 所以判据只能是"没有 =1"，不是"必须有 =0"——管道输入的 isJpegInput 恒 false，本就不该发任何一侧）。
+  $jbOff = "$work/jb_off"; New-Item -ItemType Directory -Force -Path $jbOff | Out-Null
+  $r2 = Exec $exe "--headless -i $jbJpg --format jxl --output $jbOff --jxl-lossless-jpeg false --log-level Debug" "jboff"
+  CK ($r2.text -notmatch '--lossless_jpeg=1') `
+     "⑩ 负控：显式 --jxl-lossless-jpeg false ⇒ 不再发 --lossless_jpeg=1（证明上面三条不是恒发造成的假绿）"
+  # 负控：非 JPEG 输入不得被这个默认值误挡出色彩引擎（ImageEncoderArgs 只看布尔、看不到输入格式）
+  $jbPng = "$work/enc_src.png"
+  $null = Exec $ff "-y -hide_banner -loglevel error -i $jbJpg -frames:v 1 $jbPng" "jbpng"
+  $jbP = "$work/jb_png"; New-Item -ItemType Directory -Force -Path $jbP | Out-Null
+  $r3 = Exec $exe "--headless -i $jbPng --format jxl --output $jbP --log-level Debug" "jbpngrun"
+  CK ($r3.text -match 'cjxl 命令行' -and $r3.text -notmatch '--lossless_jpeg=1') `
+     "⑩ 负控：PNG 输入仍走引擎 cjxl 出口、不被无损重封装误拦（有效值已与「输入是 JPEG」相与）"
+  # 结构锁：JPEG 与 JPEG XL 两格**共用同一只控件**（各放一只 = 两个真值，是本仓反复修的形状）
+  $xamlSrc = [System.IO.File]::ReadAllText("$root/src/FfmpegGui/MainWindow.xaml")
+  $nChk = [regex]::Matches($xamlSrc, 'x:Name="JxlLosslessJpegCheck"').Count
+  $nPnl = [regex]::Matches($xamlSrc, 'x:Name="JxlLosslessJpegPanel"').Count
+  CK ($nChk -eq 1 -and $nPnl -eq 1) `
+     "⑩ 结构锁：那只开关在 XAML 里恰好一份（chk=$nChk panel=$nPnl；出现 2 就是两个真值）"
+}
+
+# ── ⑪ jbrd × 引擎拦截格（EncoderUnsupportedSetting）：2026-09-30 补，本格此前**从未被真跑驱动** ──
+# 为什么这一格需要判据：`_lib-reject.ps1` 的登记表里它只活在 `-Precondition` 的描述串中，
+#   而全库的实跑夹具只有 webp `--chroma 4:4:4` 那一对 ⇒ 「引擎拒绝 jbrd」这件事没有一条读数。
+#   更要紧的是它与 09-30 那次默认翻转直接耦合：拦截判据 `ImageEncoderArgs.UnsupportedEncoderSettings`
+#   只看 `opts.JxlLosslessJpeg` 这一个布尔、拿不到输入路径 ⇒ 归一（QueueProcessor 的 jbrd 有效值归一）
+#   一旦失效，**所有 PNG→JXL 都会被整批挡出色彩引擎**，而引擎侧一切照常（只是静默走 legacy）。
+# 实测（本机 Release FfmpegGui.exe，取证目录 tests/output/t73/，DLL SHA256 前 16 = F5B2111365C3D664；
+#   下面四条臂的读数由本段自身每次跑出，取证轮：G1 rc=1/0 产物、G2 rc=0/1 产物、G3 rc=0/1 产物、G4 rc=0/1 产物）：
+#   ① JPEG 输入 + `--encoder ffmpeg --color-engine engine` ⇒ rc=1、0 产物、
+#      日志 `[色彩引擎] ❌ 按要求应走引擎，但本次不可走（EncoderUnsupportedSetting）`
+#   ② 同一格不加 `--color-engine`（默认 auto）⇒ rc=0、有产物、
+#      日志 `[色彩引擎] 本次不适用引擎（EncoderUnsupportedSetting：…）⇒ 由传统管线处理`
+#   ③ PNG 输入、其余选项逐字相同 ⇒ 日志**不含** EncoderUnsupportedSetting、正常出产物
+#   ④ JPEG 输入、只把 `--jxl-lossless-jpeg` 换成 false ⇒ 同样不含、正常出产物
+$blkJpg = "$work/blk_src.jpg"
+$blkPng = "$work/blk_src.png"
+$null = Exec $ff "-y -hide_banner -loglevel error -f lavfi -i gradients=s=200x150:c0=0x204070:c1=0xc07030:n=4,format=rgb24 -frames:v 1 -q:v 3 $blkJpg" "blkgen"
+$null = Exec $ff "-y -hide_banner -loglevel error -i $blkJpg -frames:v 1 $blkPng" "blkpng"
+if ((Test-Path $blkJpg) -and (Test-Path $blkPng)) {
+  # ⚠ 四条臂**共用同一段选项串**，只换「输入扩展名」或「开关值」⇒ 每两条之间只有一个变量，
+  #   差别本身就是一票判据（不需要改源码做变异）：
+  #     G1(jpg,true) vs G3(png,true)  —— 唯一差别是输入 ⇒ 证明拦截判据**吃输入路径**（有效值归一在干活）
+  #     G1(jpg,true) vs G4(jpg,false) —— 唯一差别是开关 ⇒ 证明拦截判据**吃那个值**，
+  #                                       不是「jxl + ffmpeg 后端恒被拦」这种恒真
+  $blkOpts = '--format jxl --encoder ffmpeg --color-engine engine --jxl-lossless-jpeg true'
+  # ① 正控：显式要求引擎 ⇒ 必须**响亮拒绝且不出产物**（静默出产物就等于"引擎悄悄换了语义"）
+  $rBlkA = RunCli "G1_jpg_engine_forced" $blkJpg $blkOpts
+  CK ($rBlkA.text -match '按要求应走引擎，但本次不可走（EncoderUnsupportedSetting') `
+     "⑪ 正控 G1：JPEG 输入 + 开关开 + 强制引擎 ⇒ 点名「按要求应走引擎，但本次不可走（EncoderUnsupportedSetting）」"
+  CK ($rBlkA.prodCount -eq 0 -and $rBlkA.code -ne 0) `
+     "⑪ 正控 G1：同一格是**干净拒绝**（0 产物 + rc≠0，实测 rc=$($rBlkA.code)），不是「拒绝文案照打、产物照出」"
+  # ② auto ⇒ 回落传统管线，但 jbrd 做不到那件事必须**同时**被点名（第 ⑩ 段修的 #10 的牙）
+  $rBlkB = RunCli "G2_jpg_engine_auto" $blkJpg '--format jxl --encoder ffmpeg --jxl-lossless-jpeg true'
+  CK ($rBlkB.text -match '本次不适用引擎（EncoderUnsupportedSetting：') `
+     "⑪ auto 归属 G2：引擎不可走 ⇒ 「本次不适用引擎（EncoderUnsupportedSetting：…）」＋回落传统管线"
+  CK ($rBlkB.code -eq 0 -and $rBlkB.prodCount -eq 1) `
+     "⑪ auto 归属 G2：默认档不硬失败（rc=$($rBlkB.code)、产物 $($rBlkB.prodCount) 个）"
+  CK ($rBlkB.text -match '无损重封装\(jbrd\)开着') `
+     "⑪ auto 归属 G2：回落到的 ffmpeg-libjxl **也**做不到 jbrd ⇒ 必须另有那句点名（锚「无损重封装(jbrd)开着」）"
+  # ③ 差分臂 A（关键）：非 JPEG 输入 + 开关照开 ⇒ **不该**被拦。
+  #    它是 ①② 的反真空臂：若判据改成"只看开关默认值"，PNG→JXL 会整批被挡出引擎而 ①② 仍全绿。
+  $rBlkC = RunCli "G3_png_engine_forced" $blkPng $blkOpts
+  CK ($rBlkC.text -notmatch 'EncoderUnsupportedSetting') `
+     "⑪ 差分臂 G3（与 G1 只差输入扩展名）：PNG 输入即使强制引擎也**不得**命中 EncoderUnsupportedSetting"
+  CK ($rBlkC.code -eq 0 -and $rBlkC.prodCount -eq 1) `
+     "⑪ 差分臂 G3：同一格正常交付（rc=$($rBlkC.code)、产物 $($rBlkC.prodCount) 个）—— 否则上一句是「整条路都没跑」的恒真"
+  # ④ 差分臂 B：JPEG 输入 + 开关关 ⇒ 也不该被拦（证明 G1 的红是**这个值**造成的，不是格式/后端本身）
+  $rBlkD = RunCli "G4_jpg_engine_off" $blkJpg '--format jxl --encoder ffmpeg --color-engine engine --jxl-lossless-jpeg false'
+  CK ($rBlkD.text -notmatch 'EncoderUnsupportedSetting') `
+     "⑪ 差分臂 G4（与 G1 只差开关值）：同一 JPEG 输入关掉开关 ⇒ 不再命中 EncoderUnsupportedSetting"
+  CK ($rBlkD.code -eq 0 -and $rBlkD.prodCount -eq 1) `
+     "⑪ 差分臂 G4：关掉后走引擎出口并正常交付（rc=$($rBlkD.code)、产物 $($rBlkD.prodCount) 个）"
+} else {
+  CK $false "⑪ 素材生成失败（jpg/png 缺其一）⇒ 本段八条判据全部作废，不接受静默跳过"
+}
+
+# ── ⑫ jbrd 往返的**文件级**判据（2026-10-01 补）：JPEG→JXL→JPEG 必须逐字节回到原文件 ──────
+# 为什么还要加这一段：⑩ 只证明"正向产物里有 reconstruction 盒"（jxlinfo 读回），
+#   而"无损互转换"这句话真正的承诺是**反向能拿回原来那张 JPEG**。此前全仓没有任何一条判据
+#   比较过往返文件与原文件的字节（`tests/output/t76/jbrd-e2e.ps1` 首次实测时才建立）。
+#   判据用字节/像素哈希，不读自家日志措辞 ⇒ 换了实现也照样成立。
+# 反真空臂：同一素材显式关掉 jbrd ⇒ 往返必须**不再**逐字节相同（否则上面的"相同"是恒真）。
+$rtJpg = "$work/rt_src.jpg"
+$null = Exec $ff "-y -hide_banner -loglevel error -f lavfi -i gradients=s=512x384:c0=0x2060a0:c1=0xd07030:n=6,noise=alls=8:allf=t,format=rgb24 -frames:v 1 -q:v 3 $rtJpg" "rtgen"
+if (Test-Path $rtJpg) {
+  $rtSrcHash = (Get-FileHash $rtJpg -Algorithm SHA256).Hash
+  $a = RunCli "K1_fwd" $rtJpg "--format jxl"
+  $aOk = ($a.prodCount -eq 1)
+  CK $aOk "⑫ 正向（JPEG→JXL）产出唯一产物（实 $($a.prodCount) 个，rc=$($a.code)）"
+  if ($aOk) {
+    $b = RunCli "K2_rev" $a.prodPath "--format jpg"
+    if ($b.prodCount -ne 1) {
+      CK $false "⑫ 反向（JXL→JPEG）产出唯一产物（实 $($b.prodCount) 个，rc=$($b.code)）⇒ 往返无从比对"
+    } else {
+      $rtBack = (Get-FileHash $b.prodPath -Algorithm SHA256).Hash
+      CK ($rtBack -eq $rtSrcHash) "⑫ 往返产物与源 JPEG **逐字节相同**（源/回前 16 位 $($rtSrcHash.Substring(0,16)) / $($rtBack.Substring(0,16)))"
+    }
+  }
+  $c = RunCli "K3_fwd_off" $rtJpg "--format jxl --jxl-lossless-jpeg false"
+  $cOk = ($c.prodCount -eq 1)
+  CK $cOk "⑫ 反真空正向（关掉 jbrd）产出唯一产物（实 $($c.prodCount) 个）"
+  if ($cOk) {
+    $d = RunCli "K4_rev_off" $c.prodPath "--format jpg"
+    if ($d.prodCount -ne 1) { CK $false "⑫ 反真空反向产出唯一产物（实 $($d.prodCount) 个）⇒ 该臂无从判别" }
+    else { CK ((Get-FileHash $d.prodPath -Algorithm SHA256).Hash -ne $rtSrcHash) "⑫ 反真空：关掉 jbrd 后往返**不再**逐字节相同 ⇒ 上面那条判据有牙" }
+  }
+} else {
+  CK $false "⑫ 往返夹具生成失败 ⇒ 本段四条不给绿灯"
+}
+
 try { if (Test-Path $work) { [System.IO.Directory]::Delete($work, $true) } } catch { }
 CK (-not (Test-Path $work)) "⑨ 运行级目录已清零：$work"
 

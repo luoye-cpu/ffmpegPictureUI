@@ -36,8 +36,9 @@ namespace FfmpegGui.Models
         public string? JpegDct { get; set; }
         public int JpegProgressiveId { get; set; }
         public bool JxlPreserveUltrahdr { get; set; } = true;
-        /// <summary>JPEG→JXL 无损重封装（不解码，直接复制 DCT 系数）</summary>
-        public bool JxlLosslessJpeg { get; set; }
+        /// <summary>JPEG→JXL 无损重封装（不解码，直接复制 DCT 系数）。默认值引
+        /// <see cref="FfmpegOptions.DefaultJxlLosslessJpeg"/>，与数据模型同一处。</summary>
+        public bool JxlLosslessJpeg { get; set; } = FfmpegOptions.DefaultJxlLosslessJpeg;
         public string? TiffCompressionAlgo { get; set; }
         // ── Gain Map (Ultra HDR) JPEG ──
         /// <summary>是否启用 Gain Map（需 cjpegli + BT.2020 HDR 色彩空间）</summary>

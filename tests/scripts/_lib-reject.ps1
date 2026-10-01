@@ -331,29 +331,29 @@ function Get-RejectCodeRegistry {
 
         (New-RejectCode -Name 'FormatNotSupported' -Family 'EngineBlock' `
             -Source ($eng + ':53') -DocSource ($eng + ':52') `
-            -Trigger ($router + ':184') -TriggerScope 'BlockReason' `
+            -Trigger ($router + ':193') -TriggerScope 'BlockReason' `
             -Precondition '-f bmp : output extension .bmp is NOT in ImageEncoderArgs.IsEngineEncodable (png/apng/tiff/tif/webp/jpg/jpeg/avif/gif/jxl/jxr) => BlockReason returns FormatNotSupported before any other check'),
 
         (New-RejectCode -Name 'AnimatedInput' -Family 'EngineBlock' `
             -Source ($eng + ':55') -DocSource ($eng + ':54') `
-            -Trigger ($router + ':192') -TriggerScope 'BlockReason' `
+            -Trigger ($router + ':201') -TriggerScope 'BlockReason' `
             -Precondition '-i <*.gif> (input side clause of QueueProcessor.InputHasMultipleFramesAsync returns true unconditionally for .gif/.apng) with any engine-encodable -f'),
 
         (New-RejectCode -Name 'ExternalBackend' -Family 'EngineBlock' `
             -Source ($eng + ':57') -DocSource ($eng + ':56') `
-            -Trigger ($router + ':220') -TriggerScope 'BlockReason' `
+            -Trigger ($router + ':229') -TriggerScope 'BlockReason' `
             -Reachable $false `
             -UnreachableReason 'Constructed at ColorEngineRouter.cs:220 but never reaches the log: QueueProcessor dispatch intercepts every compatible backend/format pair BEFORE the engine insertion point (:600) -- Cjpegli/jpg hits the unconditional branch at :582, Jxr/jxr at :586, Dng/dng at :596, Cxl/jxl at :571 -- while an INCOMPATIBLE pair (e.g. -f png -e Cjxl) throws at :328 before BlockReason is consulted. BlockReason is still evaluated inside ShouldRoute (:287) but its EngineBlock object is discarded without logging.' `
             -Precondition '-f jpg -e Cjpegli is the closest candidate (guard passes, BlockReason would return ExternalBackend) but the item is dispatched to ProcessCjpegliAsync at QueueProcessor.cs:582 and the code is never logged'),
 
         (New-RejectCode -Name 'AnimationScaleUnsupported' -Family 'EngineBlock' `
             -Source ($eng + ':59') -DocSource ($eng + ':58') `
-            -Trigger ($router + ':329') -TriggerScope 'UnconsumedOutputSettingItems' `
+            -Trigger ($router + ':338') -TriggerScope 'UnconsumedOutputSettingItems' `
             -Precondition '--animation-scale-w <non-zero> (UnconsumedOutputSettingItems item[0]; FfmpegOptions.AnimationScaleW != 0 is checked regardless of the output container)'),
 
         (New-RejectCode -Name 'LegacyTonemapCurve' -Family 'EngineBlock' `
             -Source ($eng + ':61') -DocSource ($eng + ':60') `
-            -Trigger ($router + ':336') -TriggerScope 'UnconsumedOutputSettingItems' `
+            -Trigger ($router + ':345') -TriggerScope 'UnconsumedOutputSettingItems' `
             -Precondition '--tonemap-curve <hable|mobius|reinhard> : non-empty FfmpegOptions.TonemapCurve is structurally unconsumed by the engine (use --color-tone-map instead)'),
 
         (New-RejectCode -Name 'GeometryWithGainMap' -Family 'EngineBlock' `
@@ -364,13 +364,13 @@ function Get-RejectCodeRegistry {
 
         (New-RejectCode -Name 'ProgressiveJpeg' -Family 'EngineBlock' `
             -Source ($eng + ':65') -DocSource ($eng + ':64') `
-            -Trigger ($router + ':394') -TriggerScope 'UnconsumedOutputSettingItems' `
+            -Trigger ($router + ':403') -TriggerScope 'UnconsumedOutputSettingItems' `
             -Precondition '--jpeg-progressive 1 with a NON-GainMap jpeg target (JpegProgressiveId > 0 and NOT (JpegGainMap and fmt in jpg/jpeg)); the >0 test is deliberate so -1 (auto) does not trip it'),
 
         (New-RejectCode -Name 'EncoderUnsupportedSetting' -Family 'EngineBlock' `
             -Source ($eng + ':67') -DocSource ($eng + ':66') `
-            -Trigger ($router + ':407') -TriggerScope 'UnconsumedOutputSettingItems' `
-            -Precondition '-f webp --chroma 4:4:4 (libwebp has no 4:4:4). Other sub-cases: -f avif --chroma 4:4:4 with a libsvtav1 encoder, -f jxl --jxl-lossless-jpeg true'),
+            -Trigger ($router + ':416') -TriggerScope 'UnconsumedOutputSettingItems' `
+            -Precondition '-f webp --chroma 4:4:4 (libwebp has no 4:4:4). Sub-case 2: -f avif --chroma 4:4:4 with a libsvtav1 encoder. Sub-case 3 (JXL): needs -i <jpeg> -f jxl --encoder ffmpeg, because since 2026-09-30 the block reads the EFFECTIVE jbrd value (ImageEncoderArgs.UnsupportedEncoderSettings only sees FfmpegOptions.JxlLosslessJpeg, which QueueProcessor normalizes to false for a non-JPEG input) -- see N7 for which sub-cases have a live driver'),
 
         # ── 降级词表（DegradationCodes，14 个）───────────────────────────────────
         (New-RejectCode -Name 'NoCicpCarrier' -Family 'Degradation' `
@@ -381,7 +381,7 @@ function Get-RejectCodeRegistry {
 
         (New-RejectCode -Name 'NoIccCarrier' -Family 'Degradation' `
             -Source ($deg + ':70') -DocSource ($deg + ':69') `
-            -Trigger ($plan + ':243') -TriggerScope 'CollectDegradations' `
+            -Trigger ($plan + ':252') -TriggerScope 'CollectDegradations' `
             -Precondition 'source carries an ICC AND the plan ends with AttachIcc=false. Easiest: -i <jpeg-with-ICC> -f gif (gif cannot carry arbitrary ICC, so S1 maps to the sRGB working space and drops the source ICC)'),
 
         (New-RejectCode -Name 'HdrNoIccCarryPath' -Family 'Degradation' `
@@ -392,22 +392,22 @@ function Get-RejectCodeRegistry {
 
         (New-RejectCode -Name 'ContainerCannotCarryIcc' -Family 'Degradation' `
             -Source ($deg + ':74') -DocSource ($deg + ':73') `
-            -Trigger ($plan + ':246') -TriggerScope 'CollectDegradations' `
+            -Trigger ($plan + ':255') -TriggerScope 'CollectDegradations' `
             -Precondition 'source carries an ICC AND FormatColorCaps.CanCarryArbitraryIcc is false for the output container. Same case as NoIccCarrier with gif/jxr: -i <jpeg-with-ICC> -f gif'),
 
         (New-RejectCode -Name 'UnlabeledAssumedSrgb' -Family 'Degradation' `
             -Source ($deg + ':76') -DocSource ($deg + ':75') `
-            -Trigger ($plan + ':234') -TriggerScope 'CollectDegradations' `
+            -Trigger ($plan + ':242') -TriggerScope 'CollectDegradations' `
             -Precondition 'plan.UnlabeledAssumedSrgb is set. Two proven routes: (a) container has no colour path at all (gif/jxr) with an sRGB-equivalent target -> -f gif --color-space sRGB; (b) the confidence gate: an unlabelled source (Confidence=CodecDefault < CicpTag) with no explicit target and a container where UnlabeledMeansSrgb is true -> -f jpg'),
 
         (New-RejectCode -Name 'GamutClipped' -Family 'Degradation' `
             -Source ($deg + ':78') -DocSource ($deg + ':77') `
-            -Trigger ($plan + ':228') -TriggerScope 'CollectDegradations' `
+            -Trigger ($plan + ':237') -TriggerScope 'CollectDegradations' `
             -Precondition 'plan.GamutOutsideDestination = true AND plan.GamutMap = false. Proven by verify-gamut-map.ps1: --icc-file <p3.icc> --color-space sRGB on an unlabelled PNG (source metric = Display P3, P3 is not contained in sRGB) with --color-gamut-map off/absent'),
 
         (New-RejectCode -Name 'GamutCompressed' -Family 'Degradation' `
             -Source ($deg + ':87') -DocSource ($deg + ':79') `
-            -Trigger ($plan + ':225') -TriggerScope 'CollectDegradations' `
+            -Trigger ($plan + ':234') -TriggerScope 'CollectDegradations' `
             -Precondition 'plan.GamutOutsideDestination = true AND plan.GamutMap = true (needs --color-gamut-map on AND ColorTransformPlan.LuminancesOf(dst) non-null). Proven by verify-gamut-map.ps1 sec.2 (on vs off differ, log shows H1/GMO). Mutually exclusive with GamutClipped'),
 
         # ⚠ 本码现在**有三个生产点**（登记表一行只放得下一个，其余在此点名，行号按 2026-09-26 树）：
@@ -418,43 +418,43 @@ function Get-RejectCodeRegistry {
         #      CLI：--bit-depth 10 -f webp ⇒ 日志 降级（BitDepthReduced）：出口位深降为 8bit（本次目标 10bit）。
         #   ⚠ 注释不能放在 `` ` `` 续行链**中间**（PS 会在下一个非续行 token 处断句 ⇒ 整段解析失败）。
         (New-RejectCode -Name 'BitDepthReduced' -Family 'Degradation' `
-            -Source ($deg + ':89') -DocSource ($deg + ':88') `
+            -Source ($deg + ':92') -DocSource ($deg + ':88') `
             -Trigger ($plan + ':124') -TriggerScope 'CollectDegradations' `
             -Precondition 'plan.Action = Map AND plan.OutBitDepth = 8, i.e. TargetBitDepth <= 8 AND !Requires16BitIntermediate AND FormatColorCaps.RgbNative (png/apng/tiff/jxl/jxr/gif). Needs a real mapping: --bit-depth 8 --color-space "Display P3" on an sRGB PNG. Second/third sites are named in the comment above; the non-RgbNative one needs an explicit --bit-depth above the container ceiling (--bit-depth 10 -f webp)'),
 
         (New-RejectCode -Name 'GainMapNonJpeg' -Family 'Degradation' `
-            -Source ($deg + ':91') -DocSource ($deg + ':90') `
+            -Source ($deg + ':106') -DocSource ($deg + ':105') `
             -Trigger '' -TriggerScope '' -Reachable $false `
             -UnreachableReason 'The constant exists but has NO construction site (grep count = 1). The non-JPEG GainMap request is handled EARLIER by a contract-layer Reject (ColorStrategyPlanning.cs:181-193, "gain map is not applicable to <fmt>") which writes only free-text Reason/Advice and deliberately registers NO degradation (Reject rows never carry Degradations -- see ProjectVerdict).' `
             -Precondition 'candidate is -f png --jpeg-gain-map true, which produces a Reject with exit code 91, not this degradation'),
 
         (New-RejectCode -Name 'GeometryWithGainMap' -Family 'Degradation' `
-            -Source ($deg + ':93') -DocSource ($deg + ':92') `
+            -Source ($deg + ':108') -DocSource ($deg + ':107') `
             -Trigger '' -TriggerScope '' -Reachable $false `
             -UnreachableReason 'Same-name sibling of EngineBlockCodes.GeometryWithGainMap; also never constructed (grep count = 1). Its only live descendant is a defensive throw in RawColorPipeline.cs:228-234, which is unreachable in production because the pre-scale relay at QueueProcessor.cs:421-470 always shrinks first.' `
             -Precondition 'candidate is -f jpg --jpeg-gain-map true --max-dimension-enabled true --max-dimension 128 (historically blocked by the engine router, now a normal success)'),
 
         (New-RejectCode -Name 'NoColorPath' -Family 'Degradation' `
-            -Source ($deg + ':95') -DocSource ($deg + ':94') `
+            -Source ($deg + ':110') -DocSource ($deg + ':109') `
             -Trigger '' -TriggerScope '' -Reachable $false `
             -UnreachableReason 'The constant exists but has NO construction site (grep count = 1). The doc comment names GIF/JXR/PPM, but the "container has no colour management path" fact is consumed structurally (ColorIntentFactory.cs:44 gate, PlanRecommended !caps.HasColorPath branch) and surfaces as UnlabeledAssumedSrgb instead.' `
             -Precondition 'candidate is -i <jpeg-with-ICC> -f gif, which registers NoIccCarrier + ContainerCannotCarryIcc + UnlabeledAssumedSrgb, NOT NoColorPath'),
 
         (New-RejectCode -Name 'AnimatedNotSupported' -Family 'Degradation' `
-            -Source ($deg + ':97') -DocSource ($deg + ':96') `
+            -Source ($deg + ':112') -DocSource ($deg + ':111') `
             -Trigger '' -TriggerScope '' -Reachable $false `
             -UnreachableReason 'The constant exists but has NO construction site (grep count = 1). Animated inputs are handled one level up: ColorEngineRouter.BlockReason returns EngineBlockCodes.AnimatedInput (a ROUTING block, not a task-level degradation), and the engine is never asked to plan an animated frame.' `
             -Precondition 'candidate is -i <*.gif> -f gif, which surfaces as EngineBlockCodes.AnimatedInput'),
 
         (New-RejectCode -Name 'EncoderUnsupportedSetting' -Family 'Degradation' `
-            -Source ($deg + ':99') -DocSource ($deg + ':98') `
+            -Source ($deg + ':114') -DocSource ($deg + ':113') `
             -Trigger '' -TriggerScope '' -Reachable $false `
             -UnreachableReason 'TRAP: the string "EncoderUnsupportedSetting" IS produced, but only as EngineBlock.Code (EngineBlockCodes.EncoderUnsupportedSetting at ColorEngineRouter.cs:407). DegradationCodes.EncoderUnsupportedSetting is never constructed, so it never appears in a "degradation (<code>)" line. A naive Contains assertion on the bare name would be vacuously true here.' `
             -Precondition 'candidate is -f webp --chroma 4:4:4, which surfaces as the ENGINE-BLOCK variant of the same name'),
 
         (New-RejectCode -Name 'ToneMapNotAppliedToGainMap' -Family 'Degradation' `
-            -Source ($deg + ':101') -DocSource ($deg + ':100') `
-            -Trigger ($plan + ':261') -TriggerScope 'CollectDegradations' `
+            -Source ($deg + ':116') -DocSource ($deg + ':115') `
+            -Trigger ($plan + ':270') -TriggerScope 'CollectDegradations' `
             -Precondition 'plan.GainMap = true AND it.ToneMapRequested AND NOT it.ToneMapAuto. Proven by verify-gainmap-engine.ps1 sec.7: -f jpg --jpeg-gain-map true --color-tone-map hable on an SDR source (ColorIntentFactory skips the "tonemap needs an HDR source" gate when JpegGainMap is set, on purpose)')
     )
 
@@ -1028,7 +1028,7 @@ function Invoke-RejectSelfTest {
         Source = 'src/FfmpegGui/Services/ColorMapping/ColorVerdict.cs:66'
         DocSource = 'src/FfmpegGui/Services/ColorMapping/ColorVerdict.cs:65'
         Doc = 'syn'; DocError = ''
-        Trigger = 'src/FfmpegGui/Services/ColorMapping/ColorStrategyPlanning.cs:123'
+        Trigger = 'src/FfmpegGui/Services/ColorMapping/ColorStrategyPlanning.cs:124'
         TriggerScope = 'CollectDegradations'
         Reachable = $true; UnreachableReason = ''
         Precondition = 'syn'
@@ -1090,7 +1090,7 @@ function Invoke-RejectSelfTest {
         Source = 'src/FfmpegGui/Services/ColorMapping/EngineBlock.cs:53'
         DocSource = 'src/FfmpegGui/Services/ColorMapping/EngineBlock.cs:52'
         Doc = 'syn'; DocError = ''
-        Trigger = 'src/FfmpegGui/Services/ColorMapping/ColorEngineRouter.cs:184'
+        Trigger = 'src/FfmpegGui/Services/ColorMapping/ColorEngineRouter.cs:193'
         TriggerScope = 'BlockReason'
         Reachable = $true; UnreachableReason = ''
         Precondition = 'syn'
@@ -1098,10 +1098,10 @@ function Invoke-RejectSelfTest {
     }
     $synDeg = [pscustomobject]@{
         Name = 'BitDepthReduced'; Family = 'Degradation'; Constant = 'DegradationCodes.BitDepthReduced'
-        Source = 'src/FfmpegGui/Services/ColorMapping/ColorVerdict.cs:89'
+        Source = 'src/FfmpegGui/Services/ColorMapping/ColorVerdict.cs:92'
         DocSource = 'src/FfmpegGui/Services/ColorMapping/ColorVerdict.cs:88'
         Doc = 'syn'; DocError = ''
-        Trigger = 'src/FfmpegGui/Services/ColorMapping/ColorStrategyPlanning.cs:123'
+        Trigger = 'src/FfmpegGui/Services/ColorMapping/ColorStrategyPlanning.cs:124'
         TriggerScope = 'CollectDegradations'
         Reachable = $true; UnreachableReason = ''
         Precondition = 'syn'
@@ -1177,10 +1177,10 @@ function Invoke-RejectSelfTest {
     # B6 负控：TriggerScope 写错（生产点行不在该方法里）=> A12 必须转红
     $wrongScope = [pscustomobject]@{
         Name = 'BitDepthReduced'; Family = 'Degradation'; Constant = 'DegradationCodes.BitDepthReduced'
-        Source = 'src/FfmpegGui/Services/ColorMapping/ColorVerdict.cs:89'
+        Source = 'src/FfmpegGui/Services/ColorMapping/ColorVerdict.cs:92'
         DocSource = 'src/FfmpegGui/Services/ColorMapping/ColorVerdict.cs:88'
         Doc = 'syn'; DocError = ''
-        Trigger = 'src/FfmpegGui/Services/ColorMapping/ColorStrategyPlanning.cs:123'
+        Trigger = 'src/FfmpegGui/Services/ColorMapping/ColorStrategyPlanning.cs:124'
         # 故意写错：那一行的真实宿主是 CollectDegradations
         TriggerScope = 'PlanRecommended'
         Reachable = $true; UnreachableReason = ''
@@ -1195,8 +1195,8 @@ function Invoke-RejectSelfTest {
     $bareTok = [pscustomobject]@{
         Name = 'EncoderUnsupportedSetting'; Family = 'Degradation'
         Constant = 'DegradationCodes.EncoderUnsupportedSetting'
-        Source = 'src/FfmpegGui/Services/ColorMapping/ColorVerdict.cs:99'
-        DocSource = 'src/FfmpegGui/Services/ColorMapping/ColorVerdict.cs:98'
+        Source = 'src/FfmpegGui/Services/ColorMapping/ColorVerdict.cs:114'
+        DocSource = 'src/FfmpegGui/Services/ColorMapping/ColorVerdict.cs:113'
         Doc = 'syn'; DocError = ''
         Trigger = ''; TriggerScope = ''; Reachable = $false
         UnreachableReason = 'syn'
@@ -1209,7 +1209,7 @@ function Invoke-RejectSelfTest {
         Source = 'src/FfmpegGui/Services/ColorMapping/EngineBlock.cs:67'
         DocSource = 'src/FfmpegGui/Services/ColorMapping/EngineBlock.cs:66'
         Doc = 'syn'; DocError = ''
-        Trigger = 'src/FfmpegGui/Services/ColorMapping/ColorEngineRouter.cs:407'
+        Trigger = 'src/FfmpegGui/Services/ColorMapping/ColorEngineRouter.cs:416'
         TriggerScope = 'UnconsumedOutputSettingItems'
         Reachable = $true; UnreachableReason = ''
         Precondition = 'syn'
@@ -1342,3 +1342,12 @@ if ($SelfTest) {
 #     消费方（P2-E 的执行阶段）应在构建稳定后先跑一遍正控，把 derived 的转成实测；
 #     届时**唯一需要改的就是 `Evidence` 字段**，断言串与 Args 不用动。
 #     消费方（P2-E 的执行阶段）应在构建恢复后先跑一遍正控，把 derived 的转成实测。
+#
+# N7. `EncoderUnsupportedSetting` 的三个子格：本库只登记**一个码**，而它有三个生产子格
+#     （webp 4:4:4 / avif+libsvtav1 4:4:4·4:2:2 / jxl+jbrd）。B7 的契约是「每码恰好一正一负」，
+#     所以子格不能各自成为一行用例 —— 它们由**各自的专项门禁**实跑驱动，本表只保证「这个名字有人证过」：
+#       · webp 4:4:4      -> 本库用例表 R-EngineBlock-EncoderUnsupportedSetting-positive（Evidence=derived）
+#       · jxl + jbrd      -> `verify-jxl-codestream-route.ps1` 第 ⑪ 段（2026-09-30 起实跑，含
+#                            auto 回落臂 + **PNG 输入负控臂**；后者是防「有效值归一失效 ⇒ PNG→JXL
+#                            整批被挡出引擎」的反真空臂，本库的用例表结构上表达不了这个子格）
+#       · avif + libsvtav1 -> 未实跑（登记为 derived-from-source；无判据数字，别当已验）

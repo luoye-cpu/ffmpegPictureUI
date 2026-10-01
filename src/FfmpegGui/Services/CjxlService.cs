@@ -192,6 +192,40 @@ namespace FfmpegGui.Services
         }
 
         /// <summary>
+        /// 输入扩展名是否为 JPEG —— **全仓唯一判据**（2026-09-30 收拢）。
+        /// <para>
+        /// 此前至少三份各写一遍：<c>CjxlService.BuildCjxlArguments</c> 的
+        /// <c>is ".jpg" or ".jpeg"</c>、<c>QueueProcessor.ProcessCjxlAsync:1949</c> 同一对、
+        /// <c>MainWindow.IsJpegInput</c> 的 <c>.jpg/.jpeg/.jpe/.jfif</c> 四元 ——
+        /// 少一份就会有一格"用户勾了重封装却被当成非 JPEG"。列表取**最宽**的那份（UI 侧）。
+        /// </para>
+        /// </summary>
+        public static bool IsJpegInputPath(string? path)
+        {
+            var ext = Path.GetExtension(path ?? "").ToLowerInvariant();
+            return ext is ".jpg" or ".jpeg" or ".jpe" or ".jfif";
+        }
+
+        /// <summary>
+        /// 本次是否**真的**走「JPEG→JXL 免解码重封装」（复制 DCT 系数、**不解码像素**）。
+        /// <para>这是仓内该判据的**唯一实现**：<see cref="BuildCjxlArguments"/> 用它决定
+        /// <c>--lossless_jpeg=1</c>，<c>QueueProcessor</c> 的元数据恢复用它决定
+        /// **要不要把源的 <c>Orientation</c> 留在产物上**（见 <c>ExifToolService</c> 的同名参数）。
+        /// 两处必须同源：像素没动 ⇒ 取向标签仍然成立、必须保留；像素被解码器旋正 ⇒
+        /// 同一张标签会让查看器**二次旋转**。判据各写一份时，第二类缺陷（宣称≠交付）必然复发。</para>
+        /// </summary>
+        public static bool UsesLosslessJpegRewrap(string? inputPath, Models.FfmpegOptions opts)
+            // ⚠ **第三个条件（目标格式必须是 jxl）是 2026-10-01 补的**，缺它的后果是实测到的：
+            //   该谓词同时是 `QueueProcessor` 决定"要不要把源的 Orientation 留在产物上"的唯一判据，
+            //   而 09-30 起 `JxlLosslessJpeg` 默认开着 ⇒ 只与"输入是 JPEG"相与时，
+            //   **JPEG→JPEG/PNG/AVIF/WebP 也被当成"像素没动"** ⇒ 像素已被解码器旋正、标签却还写着 8
+            //   ⇒ 查看器二次旋转。出货包实测（`tests/output/t76/orientation-rewrap.ps1`，
+            //   源 coded=640x480/Orientation=8）：jpg/png/avif/webp 四格产物 coded=480,640 且 Orientation=8。
+            //   本谓词的语义是"本次**真的**走重封装"，而重封装的产物只能是 JXL ⇒ 格式条件本来就在语义里。
+            => opts != null && IsJpegInputPath(inputPath) && opts.JxlLosslessJpeg
+               && string.Equals(opts.Format, "jxl", StringComparison.OrdinalIgnoreCase);
+
+        /// <summary>
         /// 使用 cjxl 将指定输入文件编码为 JXL（支持完整选项）。
         /// </summary>
         /// <param name="iccPath">输入提取的 ICC 文件路径（可选）。非 JPEG 输入且源带 ICC 时传入，
@@ -206,7 +240,8 @@ namespace FfmpegGui.Services
             if (_detectedPath == null)
                 throw new InvalidOperationException("cjxl.exe 未找到");
 
-            var args = BuildCjxlArguments(inputPath, outputPath, opts, default, iccPath);
+            var args = BuildCjxlArguments(inputPath, outputPath, opts, default, iccPath,
+                log: logCallback);
             logCallback?.Invoke($"[cjxl] {Path.GetFileName(_detectedPath)} {args}\n");
 
             var psi = new ProcessStartInfo
@@ -260,14 +295,35 @@ namespace FfmpegGui.Services
         /// 同上，由出口算好的 <c>--intensity_target</c>（nits；0 = 不指定）。
         /// ⚠ 两者必须**成对**传：只传一个会让"色彩空间来自计划、峰值来自选项"混源。
         /// </param>
+        /// <param name="forPreview">
+        /// **仅 UI 预览**传 true（默认 false = 真执行）。预览要把"待从 EXIF 解析"的自动光子噪声显示成
+        /// <c>--photon_noise_iso=auto</c>；而 cjxl 的取值解析器是 <c>ParseFloat &amp;&amp; &gt;=0</c>
+        /// （libjxl <c>tools/cjxl_main.cc</c> 的 <c>ParsePhotonNoiseParameter</c>），**没有 auto 这个取值**
+        /// ⇒ 真执行时未解析的 auto 一律**省略该 flag**（2026-09-30 实测：cjxl 退出码 1、
+        /// <c>Unable to interpret as float: auto.</c>、零产物，而写方表现为管道 broken pipe）。
+        /// </param>
+        /// <param name="log">
+        /// 省略/丢弃某个用户请求的参数时**点名**用（可用性诚实）。只在真执行路径传；预览不需要。
+        /// </param>
         public static string BuildCjxlArguments(string input, string output, Models.FfmpegOptions opts,
             FfmpegCommandBuilder.ColorMetadata hdrMeta = default, string? iccPath = null,
-            string? colorSpaceOverride = null, int intensityTargetOverride = 0)
+            string? colorSpaceOverride = null, int intensityTargetOverride = 0,
+            bool forPreview = false, Action<string>? log = null)
         {
             var sb = new System.Text.StringBuilder();
             sb.Append($"\"{input}\" \"{output}\"");
 
-            var isJpegInput = Path.GetExtension(input).ToLowerInvariant() is ".jpg" or ".jpeg";
+            var isJpegInput = IsJpegInputPath(input);
+            // ⚠ fail-closed 点名（2026-09-30）：jbrd 无损重封装要求把 **JPEG 原件**交给 cjxl 复制 DCT
+            //   系数；管道输入（`"-"` = 解码后的 PPM/PAM 裸流）在结构上不可能重封装，而 `isJpegInput`
+            //   按扩展名判 ⇒ `"-"` 恒 false ⇒ 开关为开时这条命令会**静默退化成像素重编码**
+            //   （实测：引擎路线下产物 911 kB / `-d 3.8`，而真重封装是 3,049 kB 的逐比特无损）。
+            //   路由层本应拦住这一格（`ImageEncoderArgs` 把它列为引擎不可承接、`ProcessCjxlAsync`
+            //   需要改像素时也会改道并写明理由）；这里兜的是"今后又有新路线绕过去"。
+            if (opts.JxlLosslessJpeg && isJpegInput == false && !forPreview)
+                log?.Invoke("[cjxl] --lossless_jpeg is requested but the input is not a JPEG file"
+                          + " (pipe/raw stream): DCT coefficients cannot be repacked from decoded pixels"
+                          + " => this run re-encodes pixels instead of losslessly repacking the JPEG\n");
             var effort = opts.JxlEffort ?? 7;
 
             sb.Append($" -e {effort}");
@@ -275,9 +331,14 @@ namespace FfmpegGui.Services
             if (opts.Threads > 0)
                 sb.Append($" --num_threads={opts.Threads}");
 
-            if (isJpegInput && opts.JxlLosslessJpeg)
+            // 实际交给 cjxl 的 distance。**判据是这一个数是否为 0，不是 opts.Lossless**：
+            // 有损分支在 Quality=100 时算出 `-d 0.0`，cjxl 同样按数学无损处理。
+            double emittedDistance;
+
+            if (UsesLosslessJpegRewrap(input, opts))
             {
                 // JPEG→JXL 无损重封装（高级选项开关开启）：不解码，直接复制 DCT 系数
+                emittedDistance = 0;
                 sb.Append(" -d 0 --lossless_jpeg=1");
             }
             else if (isJpegInput)
@@ -285,34 +346,63 @@ namespace FfmpegGui.Services
                 // JPEG 输入关闭无损重封装 → 解码后重新编码。
                 // 注意：cjxl 对 JPEG 输入默认启用 lossless_jpeg，必须显式 --lossless_jpeg=0 覆盖
                 if (opts.Lossless)
+                {
+                    emittedDistance = 0;
                     sb.Append(" -d 0 --lossless_jpeg=0");
+                }
                 else
-                    sb.Append($" -d {(100 - opts.Quality) * 15.0 / 100.0:F1} --lossless_jpeg=0");
+                {
+                    emittedDistance = (100 - opts.Quality) * 15.0 / 100.0;
+                    sb.Append($" -d {emittedDistance:F1} --lossless_jpeg=0");
+                }
             }
             else if (opts.Lossless)
             {
                 // 非 JPEG 输入的无损模式：distance=0
+                emittedDistance = 0;
                 sb.Append(" -d 0");
             }
             else
             {
                 // 有损：质量→distance 映射
-                var distance = (100 - opts.Quality) * 15.0 / 100.0;
-                sb.Append($" -d {distance:F1}");
+                emittedDistance = (100 - opts.Quality) * 15.0 / 100.0;
+                sb.Append($" -d {emittedDistance:F1}");
             }
 
             if (opts.CjxlProgressive)
                 sb.Append(" --progressive");
 
-            if (opts.CjxlAutoPhotonNoise)
+            // ── 光子噪声：与"数学无损"互斥 ────────────────────────────────────────────────
+            // 实测（2026-09-30，891x981 16-bit，同一源同一 effort）：
+            //   `-d 0`                 → djxl 回读与源**逐字节相同**（真无损）
+            //   `-d 0 --photon_noise_iso=400` → **99.46%** 的 16-bit 样本被改动（平均偏差 30875/65535），
+            //                            而 jxlinfo 对两者都报 "(possibly) lossless" —— 噪声是解码端按
+            //                            帧头参数合成的，所以体积只多 10 B，尺寸读数完全看不出来。
+            // ⇒ 无损出口叠加噪声 = 产物不再是无损，却仍被标成无损 ⇒ 本构造器**不输出**这个组合，
+            //   并点名（UI 侧同步把该选项在无损时置灰）。
+            bool noiseRequested = opts.CjxlAutoPhotonNoise || opts.CjxlPhotonNoiseIso > 0;
+            if (!noiseRequested) { /* 用户没要噪声 */ }
+            else if (emittedDistance <= 0)
             {
-                // 自动模式：实际 ISO 由 QueueProcessor 在处理前从 EXIF 读取并写回
-                // CjxlPhotonNoiseIso；此处若尚未解析（UI 预览场景）显示 auto 占位
-                var iso = opts.CjxlPhotonNoiseIso > 0 ? opts.CjxlPhotonNoiseIso.ToString() : "auto";
-                sb.Append($" --photon_noise_iso={iso}");
+                log?.Invoke($"[cjxl] photon noise skipped: distance={emittedDistance:F1} is mathematically"
+                          + " lossless, and adding synthesized noise would break bit-exactness"
+                          + " while jxlinfo still reports 'lossless'\n");
             }
             else if (opts.CjxlPhotonNoiseIso > 0)
                 sb.Append($" --photon_noise_iso={opts.CjxlPhotonNoiseIso}");
+            else if (forPreview)
+            {
+                // 自动模式：实际 ISO 由 QueueProcessor 在处理前从 EXIF 读取并写回
+                // CjxlPhotonNoiseIso；此处（仅预览）尚未解析时显示 auto 占位
+                sb.Append(" --photon_noise_iso=auto");
+            }
+            else
+            {
+                log?.Invoke("[cjxl] --photon_noise_iso dropped: auto mode was requested but the ISO value"
+                          + " was never resolved from EXIF. cjxl has no 'auto' value for this flag"
+                          + " (its parser requires a float), so emitting the placeholder would make the"
+                          + " encoder exit 1 with no output\n");
+            }
 
             // ── 色彩空间映射：将 FFmpeg 色彩参数翻译为 cjxl -x color_space ──
             // 注意：isPipe=true 时仍需设置色彩空间，因为 PPM 管道不携带任何色彩元数据。

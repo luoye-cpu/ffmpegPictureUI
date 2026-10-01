@@ -224,6 +224,7 @@ namespace FfmpegGui
         private CheckBox? JxlModularCheck;
         private CheckBox? CjxlProgressiveCheck;
         private CheckBox? JxlLosslessJpegCheck;
+        private StackPanel? JxlLosslessJpegPanel;
         private NumericUpDown? CjxlPhotonNoiseBox;
         private CheckBox? CjxlAutoPhotonNoiseCheck;
         private CheckBox? JxlPreserveUltrahdrCheck;
@@ -455,6 +456,7 @@ namespace FfmpegGui
             CjxlEffortBox = this.FindControl<NumericUpDown>("CjxlEffortBox");
             CjxlProgressiveCheck = this.FindControl<CheckBox>("CjxlProgressiveCheck");
             JxlLosslessJpegCheck = this.FindControl<CheckBox>("JxlLosslessJpegCheck");
+            JxlLosslessJpegPanel = this.FindControl<StackPanel>("JxlLosslessJpegPanel");
             CjxlPhotonNoiseBox = this.FindControl<NumericUpDown>("CjxlPhotonNoiseBox");
             CjxlAutoPhotonNoiseCheck = this.FindControl<CheckBox>("CjxlAutoPhotonNoiseCheck");
             JxlPreserveUltrahdrCheck = this.FindControl<CheckBox>("JxlPreserveUltrahdrCheck");
@@ -634,9 +636,9 @@ namespace FfmpegGui
             {
                 CjxlAutoPhotonNoiseCheck.IsCheckedChanged += (_, _) =>
                 {
-                    // 自动模式禁用手动 ISO 输入框
-                    if (CjxlPhotonNoiseBox != null)
-                        CjxlPhotonNoiseBox.IsEnabled = CjxlAutoPhotonNoiseCheck.IsChecked != true;
+                    // 自动模式禁用手动 ISO 输入框；无损时两只一起禁用（判据在
+                    // UpdateCjxlPhotonNoiseAvailability，与 LosslessCheck 共用同一处）
+                    UpdateCjxlPhotonNoiseAvailability();
                     RegenerateCommand();
                 };
             }
@@ -779,6 +781,8 @@ namespace FfmpegGui
                     RegenerateCommand();
                     // 无损开关影响 WebP 无损压缩级别面板可见性
                     UpdateCodecPanelVisibility(NormalizeFormat(FormatCombo?.SelectedItem as string));
+                    // 无损与 cjxl 光子噪声互斥（distance=0 加噪声会静默破坏逐比特无损）
+                    UpdateCjxlPhotonNoiseAvailability();
                 };
             
             // 图片最长边限制：复选框变更时刷新命令预览，并切换 MaxDimensionPanel 可见性
@@ -1620,6 +1624,33 @@ namespace FfmpegGui
         }
 
         /// <summary>
+        /// cjxl 光子噪声两只控件的可用性 —— **唯一判据点**（2026-09-30）。
+        /// <para>
+        /// **为什么无损时光子噪声必须不可选**（实测，891x981 16-bit，同 effort 同尺寸）：
+        /// <c>-d 0</c> 单独 ⇒ djxl 回读与源**逐字节相同**；<c>-d 0 --photon_noise_iso=400</c> ⇒
+        /// **99.46%** 的 16-bit 样本被改动（平均偏差 30875/65535），而 jxlinfo 对两者都报
+        /// <c>(possibly) lossless</c>。噪声是解码端按帧头参数合成的，所以文件只大 10 B ——
+        /// 用体积根本查不出来，产物却已经不再无损。"勾选无损"与"加合成噪声"是互斥诉求，
+        /// 因此这里直接不给选，而不是让用户撞上一条会静默改像素的组合。
+        /// </para>
+        /// <para>
+        /// 命令行侧的同一规则在 <c>CjxlService.BuildCjxlArguments</c>（distance 为 0 时省略该 flag 并点名），
+        /// 本方法只负责不让 UI 摆出一个做不到的选项。**不清 <c>IsChecked</c>**：撤掉无损时用户的意图要能回来
+        /// （与 <see cref="RestoreLosslessAndQuality"/> 的"只撤自己那把锁"同一取向）。
+        /// </para>
+        /// </summary>
+        private void UpdateCjxlPhotonNoiseAvailability()
+        {
+            bool lossless = LosslessCheck?.IsChecked == true;
+            bool autoIso = CjxlAutoPhotonNoiseCheck?.IsChecked == true;
+            if (CjxlAutoPhotonNoiseCheck != null)
+                CjxlAutoPhotonNoiseCheck.IsEnabled = !lossless;
+            // 自动模式禁用手动 ISO 输入框（既有规则）；无损时连同手动 ISO 一起禁用
+            if (CjxlPhotonNoiseBox != null)
+                CjxlPhotonNoiseBox.IsEnabled = !lossless && !autoIso;
+        }
+
+        /// <summary>
         /// A-10（2026-09-26）：JXL 那两只复选框的**面板可见才生效**判定 —— 唯一采集点与命令预览共用这一处。
         /// <para>
         /// 旧形状的毛病：「jbrd 无损重封装」那只挂在 <c>JxlCjxlPanel</c> 下（只在高级编码 + cjxl 后端可见），
@@ -1630,8 +1661,11 @@ namespace FfmpegGui
         /// </para>
         /// <para>
         /// 规则（单一、可解释）：**所属面板不可见 ⇒ 该复选框不参与，回落到数据模型的出厂默认**
-        /// （<c>FfmpegOptions.JxlLosslessJpeg = false</c> 不重封装、<c>JxlPreserveUltrahdr = true</c>
-        /// 保留增益图 ⇒ 质量滑块照常生效）。可见条件与 <c>UpdateCodecPanelVisibility</c> 的 jxl 分支
+        /// （<c>FfmpegOptions.JxlLosslessJpeg</c> = <see cref="FfmpegOptions.DefaultJxlLosslessJpeg"/>
+        /// 即**默认重封装**、<c>JxlPreserveUltrahdr = true</c> 保留增益图）。
+        /// ⚠ 2026-09-30：这里的回落曾写成「不可见 ⇒ false」，而默认勾着的增益图框又在采集式里
+        ///   无条件否决重封装 ⇒ 两道叠加让无损重封装在默认配置下**永远不可能生效**。
+        /// 可见条件与 <c>UpdateCodecPanelVisibility</c> 的 jxl 分支
         /// 逐条同构：格式 jxl + 勾了高级编码；cjxl 那只还额外要求后端为 cjxl 且非动图模式。
         /// 后端**刻意在函数内自己读** <c>GetCurrentEncoderBackend()</c>（即下拉当前值，与面板可见性同源），
         /// 不吃调用方那份可能被「手动色彩 → 自动切 cjxl」改写过的局部值：那种情形下用户看到的
@@ -1642,10 +1676,15 @@ namespace FfmpegGui
             string fmt, bool useAdvCodec)
         {
             var jxlPanelVisible = fmt is "jxl" && useAdvCodec;
-            var cjxlPanelVisible = jxlPanelVisible
-                && GetCurrentEncoderBackend() == EncoderBackend.Cjxl && !IsAnimationMode();
+            // jbrd 那只自 2026-09-30 起挂在**共用面板** `JxlLosslessJpegPanel` 上（JPEG 与 JPEG XL
+            // 两格都可能出现，同一只控件），所以「是否参与」直接问面板可见性 —— 由
+            // `UpdateCodecPanelVisibility` 单点决定，这里再算一份就会与 XAML 那侧漂移。
+            // 不可见 ⇒ 回落出厂默认（**默认重封装**），不是回落 false。
+            var losslessPanelVisible = JxlLosslessJpegPanel?.IsVisible == true;
             return (
-                LosslessJpeg: cjxlPanelVisible && (JxlLosslessJpegCheck?.IsChecked ?? true),
+                LosslessJpeg: losslessPanelVisible
+                    ? (JxlLosslessJpegCheck?.IsChecked ?? FfmpegOptions.DefaultJxlLosslessJpeg)
+                    : FfmpegOptions.DefaultJxlLosslessJpeg,
                 PreserveUltrahdr: !jxlPanelVisible || (JxlPreserveUltrahdrCheck?.IsChecked ?? true));
         }
 
@@ -2299,6 +2338,8 @@ namespace FfmpegGui
             if (WebpCodecPanel != null) WebpCodecPanel.IsVisible = false;
             if (AvifCodecPanel != null) AvifCodecPanel.IsVisible = false;
             if (JxlCodecPanel != null) JxlCodecPanel.IsVisible = false;
+            // JPEG→JXL 无损重封装那只：JPEG 与 JPEG XL 两格共用，先全隐，再由各自 case 打开
+            if (JxlLosslessJpegPanel != null) JxlLosslessJpegPanel.IsVisible = false;
             if (JpegCodecPanel != null) JpegCodecPanel.IsVisible = false;
             if (JpegliCodecPanel != null) JpegliCodecPanel.IsVisible = false;
             if (JpegGainMapPanel != null) JpegGainMapPanel.IsVisible = false;
@@ -2367,6 +2408,14 @@ namespace FfmpegGui
                     // 动图 JXL：禁用 LosslessCheck（libjxl_anim 不支持无损模式）
                     if (isAnimMode && LosslessCheck != null)
                         LosslessCheck.IsEnabled = false;
+                    // 面板每次按格式/后端重算可见性时同步重算光子噪声可用性：
+                    // LockLosslessForJxl 那类**程序化**置勾在已是 true 时不会再触发
+                    // IsCheckedChanged，只挂处理器会漏掉这一格。
+                    UpdateCjxlPhotonNoiseAvailability();
+                    // jbrd 那只：只有 cjxl 后端 + 非动图才可能兑现（ffmpeg 的 libjxl 出口实测**不写**
+                    // jbrd 盒，见 FfmpegCommandBuilder 的 2026-09-19 更正；cjxl 也不支持动画）
+                    if (JxlLosslessJpegPanel != null)
+                        JxlLosslessJpegPanel.IsVisible = !isAnimMode && backend == EncoderBackend.Cjxl;
                     break;
 
                 case "jpg": case "jpeg":
@@ -2379,6 +2428,11 @@ namespace FfmpegGui
                     {
                         if (JpegCodecPanel != null) JpegCodecPanel.IsVisible = true;
                     }
+                    // 用户要求（2026-09-30）：JPEG 这一格也要能看到「JPEG→JPEG XL 无损快速重封装」
+                    // 这只开关 —— 与 JPEG XL 那格是**同一只控件**（见 MainWindow.xaml 的
+                    // JxlLosslessJpegPanel），所以不存在两份真值；它实际生效的条件仍是
+                    // 「目标格式 jxl + 输入是 JPEG」（采集式里的 fmt/IsJpegInput 两道）。
+                    if (JxlLosslessJpegPanel != null) JxlLosslessJpegPanel.IsVisible = true;
                     // Gain Map (纯 C# GainMapEncoder) 是任意 JPEG 编码器的附加选项:
                     // 选择 BT.2020 HDR 色彩空间 (PQ/HLG) 时显示, 与编码器后端无关
                     // SDR 内容 (sRGB/BT.709) headroom=1 无增益意义, 不显示
@@ -2809,13 +2863,17 @@ namespace FfmpegGui
                         : (int?)JxlEffortBox?.Value ?? 7)
                     : 7,
                 JxlModular = useAdvCodec ? JxlModularCheck?.IsChecked : null,
-                // A-10：jbrd 无损重封装只在「该复选框可见」时由用户决定（不可见 ⇒ false，即模型默认）。
+                // A-10：jbrd 无损重封装只在「该复选框可见」时由用户决定（不可见 ⇒ 回落模型默认）。
                 // 可见已蕴含后端是 cjxl ⇒ 原先那层 ffmpeg libjxl 能力检测不再需要（且实测该出口
                 // 根本不写 jbrd box，见 FfmpegCommandBuilder 的 2026-09-19 更正）；
                 // 否决条件也改读同一个判定结果，两侧不会再算出不同结论。
+                // ⚠ 2026-09-30：增益图那只否决框**默认是勾着的**，旧写法无条件 `&& !PreserveUltrahdr`
+                //   ⇒ 对**任何** JPEG 输入都把无损重封装永久否决了（这是"开关开着却没生效"的第一因）。
+                //   两者真正互斥的只有「输入确实是 Ultra HDR JPEG 且用户要保留增益图」这一格，
+                //   所以否决条件加上 Ultra HDR 实测判定；普通 JPEG 从此默认走重封装。
                 JxlLosslessJpeg = fmt is "jxl" && IsJpegInput(inputPath)
                     && jxlChecks.LosslessJpeg
-                    && !jxlChecks.PreserveUltrahdr,
+                    && !(jxlChecks.PreserveUltrahdr && await GainMapDecoder.IsUltraHdrManagedAsync(inputPath)),
                 JxlPreserveUltrahdr = jxlChecks.PreserveUltrahdr,
                 // ── cjxl 高级选项（2026-08-16 修复: 此前入队路径缺失导致仅预览生效）──
                 CjxlProgressive = useAdvCodec ? (CjxlProgressiveCheck?.IsChecked ?? false) : false,
@@ -3221,7 +3279,8 @@ namespace FfmpegGui
             if (item.Options.EncoderBackend == EncoderBackend.Cjxl && CjxlService.IsAvailable
                 && EncoderBackendCompat.IsCompatibleWith(EncoderBackend.Cjxl, item.Options.Format))
             {
-                return "cjxl " + CjxlService.BuildCjxlArguments(item.InputPath, item.OutputPath, item.Options);
+                return "cjxl " + CjxlService.BuildCjxlArguments(item.InputPath, item.OutputPath, item.Options,
+                    forPreview: true);
             }
 
             // ── Gain Map (Ultra HDR) JPEG：纯 C# GainMapEncoder + cjpegli ──
@@ -3295,7 +3354,8 @@ namespace FfmpegGui
                         {
                             // cjxl 需要文件输入 → PNM 中转
                             return $"[两步法] djxl 解码 → 临时PNM → cjxl "
-                                + CjxlService.BuildCjxlArguments("<tmp.pnm>", outputPath, options);
+                                + CjxlService.BuildCjxlArguments("<tmp.pnm>", outputPath, options,
+                                    forPreview: true);
                         }
                     }
 
@@ -3986,10 +4046,12 @@ namespace FfmpegGui
                     && (IsJpegInput(_inputPath) || options.EncoderBackend == EncoderBackend.Cjxl);
                 if (isCjxl)
                 {
-                    var effort = options.JxlEffort ?? 7;
-                    var t = threads > 0 ? $" --num_threads={threads}" : "";
-                    var cmd = $"cjxl \"{_inputPath}\" \"{_outputPath}\" -d 0 -e {effort}{t} --lossless_jpeg=1";
-                    CommandText.Text = cmd;
+                    // 2026-09-30：这里原先**手写**一条 `cjxl "…" "…" -d 0 -e N --lossless_jpeg=1`，
+                    // 完全不看 `options.JxlLosslessJpeg`、不看质量档、也不看渐进/光子噪声/色彩标注
+                    // ⇒ 用户点「生成命令」看到的是一条根本不会执行的、且恰好是那条永远没被激活的
+                    // 无损重封装命令（预览与实跑两套口径）。改为与实跑同一个构造器。
+                    CommandText.Text = "cjxl " + CjxlService.BuildCjxlArguments(
+                        _inputPath, _outputPath, options, forPreview: true);
                 }
                 else
                 {

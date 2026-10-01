@@ -1182,49 +1182,24 @@ public static class GainMapDecoder
         return v <= 0.04045f ? v / 12.92f : MathF.Pow((v + 0.055f) / 1.055f, 2.4f);
     }
 
-    /// <param name="log">日志回调（取消分支点名用；null ⇒ 退回 Trace.WriteLine）</param>
+    /// <param name="log">日志回调（探测失败/取消的点名；null ⇒ 退回 Trace.WriteLine）</param>
     /// <param name="ct">取消令牌（`#26`：调用方 `DecodeToLinearRawAsync` 一直持有它却没往下传，本次接通）</param>
     /// <param name="inputFmtArgs">输入侧的 `-f <fmt> ` 前缀（裸流才需要；空串 = 由 ffprobe 自行探测容器）。
-    /// ⚠ 必须放在**输入文件名之前**（`-f` 是输入选项），故拼在 `-select_streams` 之前。</param>
-    private static async Task<(int w, int h)> ProbeSizeAsync(string path, string ffmpeg,
+    /// ⚠ 必须放在**输入文件名之前**（`-f` 是输入选项），故由 <see cref="ImageGeometry.BuildProbeArguments"/> 拼在探测项之前。</param>
+    /// <remarks>
+    /// 2026-09-30：本方法曾是仓内**第二份**自写 `-show_entries stream=width,height`（= coded 尺寸），
+    /// 与 <c>RawColorPipeline.ProbeSizeAsync</c>、<c>QualityAnalysisService.GetResolutionAsync</c> 各一份。
+    /// 解码段（<c>baseArgs</c>）不写 <c>-noautorotate</c> ⇒ 带取向标签的 Ultra HDR 底图会旋正，
+    /// 而 <c>base.rgba</c> 是**裸 rawvideo**、下游只做长度自检 ⇒ 同一条"coded 标注旋正像素"的缺陷链。
+    /// 现统一转发到 <see cref="ImageGeometry"/>，返回**显示**尺寸。
+    /// </remarks>
+    private static Task<(int w, int h)> ProbeSizeAsync(string path, string ffmpeg,
         Action<string>? log = null, CancellationToken ct = default, string inputFmtArgs = "")
     {
-        try
-        {
-            var ffprobe = PlatformServices.ResolveFfprobePath(ffmpeg)
-                ?? Path.Combine(Path.GetDirectoryName(ffmpeg) ?? "", "ffprobe.exe");
-            if (!File.Exists(ffprobe)) ffprobe = ffmpeg.Replace("ffmpeg.exe", "ffprobe.exe");
-            var psi = new ProcessStartInfo
-            {
-                FileName = ffprobe,
-                Arguments = $"-v error {inputFmtArgs}-select_streams v:0 -show_entries stream=width,height -of csv=p=0 \"{path}\"",
-                RedirectStandardOutput = true,
-                StandardOutputEncoding = Encoding.UTF8,
-                RedirectStandardError = true,
-                StandardErrorEncoding = Encoding.UTF8,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
-            using var p = Process.Start(psi);
-            if (p == null) return (0, 0);
-                p.BeginErrorReadLine();   // P2-3：stderr 不排空会在管道缓冲(~4KB)写满时把子进程堵死，我们等 stdout/WaitForExit 就永等（实测可复现）
-            // `#26`：本方法原本**没有任何超时**（同步读写在 WaitForExit 之前也会挂住），本次只接上
-            // 调用方的取消令牌 —— 取消 ⇒ 杀树 + 点名 ⇒ 按既有兜底返回 (0,0)。**不新增超时**。
-            using var reg = ct.Register(() => { try { p.Kill(entireProcessTree: true); } catch { } });
-            var output = (await p.StandardOutput.ReadToEndAsync()).Trim();
-            await p.WaitForExitAsync();
-            if (ct.IsCancellationRequested)
-            {
-                var msg = $"[GainMap解码] ffprobe 尺寸探测被取消 ⇒ 已终止：{Path.GetFileName(path)}（尺寸不可用）";
-                if (log != null) log(msg + "\n"); else System.Diagnostics.Trace.WriteLine(msg);
-                return (0, 0);
-            }
-            var parts = output.Split(',');
-            if (parts.Length >= 2 && int.TryParse(parts[0], out var w) && int.TryParse(parts[1], out var h))
-                return (w, h);
-        }
-        catch { }
-        return (0, 0);
+        var ffprobe = PlatformServices.ResolveFfprobePath(ffmpeg)
+            ?? Path.Combine(Path.GetDirectoryName(ffmpeg) ?? "", "ffprobe.exe");
+        if (!File.Exists(ffprobe)) ffprobe = ffmpeg.Replace("ffmpeg.exe", "ffprobe.exe");
+        return ImageGeometry.DisplaySizeAsync(path, ffprobe, log, ct, inputFmtArgs);
     }
 
     private static async Task<int> RunFfmpegAsync(string args, string ffmpeg,

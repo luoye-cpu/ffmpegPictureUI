@@ -205,6 +205,18 @@ public sealed class ColorTransformPlan
     /// 仅当确实发生变换且容器上限为 8bit 时取 8（配合 NeedsDither 做有序抖动）。
     /// </summary>
     public int OutBitDepth = 16;
+    /// <summary>
+    /// **交付位深**（由 <c>PlanPolicy.TargetBitDepth</c> 透传，2026-09-30 新增）：
+    /// 与 <see cref="OutBitDepth"/>（= 引擎**中间件**精度）刻意分成两个字段。
+    /// <para>
+    /// 为什么必须分开：直通/携带按规则走 16bit 中间件（<see cref="OutBitDepth"/> 的文档），
+    /// 但**交付**该出几 bit 由容器与源决定（<c>ImageEncoderArgs.MapPixFmt</c>，与
+    /// <c>CollectDegradations</c> ①b 播报的是同一档）。此前出口只能自己重推一遍 ——
+    /// 引擎的 cjxl 出口就把中间件档当成了交付档，8bit 源被按 16bit 无损编码，
+    /// 实测同一份像素 20,233.6 kB vs 11,485.5 kB（+76.2%），比源 PNG 还大（取证 <c>tests/output/t63/</c>）。
+    /// </para>
+    /// </summary>
+    public int TargetBitDepth = 8;
     public bool GamutOutsideDestination;      // 源色域超出目标 → 需要裁切/GMO 或改超集容器
 
     /// <summary>

@@ -156,6 +156,10 @@ namespace ServiceProbe
                     case "geometry": ProbeGeometry(args).GetAwaiter().GetResult(); break;
                     // firstframe <input> [输出根目录] —— 引擎解码步「多帧输入只取首帧」覆盖（直调引擎，绕过路由层）
                     case "firstframe": ProbeFirstframe(args).GetAwaiter().GetResult(); break;
+                    // orientation [输出根目录] —— 取向标签（TIFF Orientation）下的**显示尺寸**口径（直调引擎）
+                    case "orientation": ProbeOrientation(args).GetAwaiter().GetResult(); break;
+                    // orientmeta [输出根目录] —— 元数据恢复不得把 Orientation 抄回已旋正的产物（二次旋转）
+                    case "orientmeta": ProbeOrientMeta(args).GetAwaiter().GetResult(); break;
                     case "selftest": ProbeSelfTest(); break;
                     // tooldetect [预算秒] —— 外部工具探测的开销/诚实性/可注入性（见方法头注释）
                     case "tooldetect": ProbeToolDetect(args); break;
@@ -2652,6 +2656,104 @@ namespace ServiceProbe
                 "-", "o.jxl", cjxlOpts, default, null, null, 0);
             Check(!argsNone.Contains("color_space") && !argsNone.Contains("intensity_target"),
                 $"cjxl 出口命令行：计划未给色彩语义时**不得凭空生成**标注（{argsNone}）");
+            // ── cjxl 的 --photon_noise_iso：三条规则（2026-09-30 实机复现后定，取证 tests/output/t62/）──
+            // ① **真执行永不输出 `auto`**：cjxl 的解析器是 `ParseFloat && >= 0`（libjxl
+            //    `tools/cjxl_main.cc:ParsePhotonNoiseParameter`），收到 `auto` 会在读 stdin 之前
+            //    退出 1、零产物，写方表现为 broken pipe（"管道正在被关闭"）。
+            // ② 预览**保留** `auto`：那是"待从 EXIF 解析"的显示意图，不发给编码器。
+            // ③ **distance=0 时不发噪声**：实测 `-d 0 --photon_noise_iso=400` 让 99.46% 的 16-bit
+            //    样本偏离源（平均偏差 30875/65535），而 jxlinfo 对两者都报 "(possibly) lossless"
+            //    —— 噪声由解码端按帧头参数合成，体积只多 10 B ⇒ 从文件大小查不出来。
+            //    判据是**实际发出的 distance**，不是 Lossless 复选框（Quality=100 也算数学无损）。
+            string pnLog = "";
+            Action<string> pnSink = s => pnLog += s;
+            var pnLossy = O("jxl"); pnLossy.Quality = 75; pnLossy.JxlEffort = 7;   // distance 3.8
+            var pnAutoUnresolved = O("jxl"); pnAutoUnresolved.Quality = 75; pnAutoUnresolved.JxlEffort = 7;
+            pnAutoUnresolved.CjxlAutoPhotonNoise = true;   // CjxlPhotonNoiseIso 保持 0 = 未解析
+            var a1 = FfmpegGui.Services.CjxlService.BuildCjxlArguments(
+                "-", "o.jxl", pnAutoUnresolved, default, null, null, 0, false, pnSink);
+            Check(!a1.Contains("photon_noise_iso"),
+                $"① 真执行 + 未解析的 auto ⇒ **省略该 flag**，绝不发占位串（{a1}）");
+            Check(pnLog.Contains("dropped"),
+                $"① 省略时**点名**（不静默吞掉用户设置）：[{pnLog.Trim()}]");
+            var a2 = FfmpegGui.Services.CjxlService.BuildCjxlArguments(
+                "-", "o.jxl", pnAutoUnresolved, default, null, null, 0, true, null);
+            Check(a2.Contains("--photon_noise_iso=auto"),
+                $"② 预览仍显示 auto 占位（有损距离下）：[{a2}]");
+            var pnLossless = O("jxl"); pnLossless.Lossless = true; pnLossless.JxlEffort = 7;
+            pnLossless.CjxlPhotonNoiseIso = 400;
+            pnLog = "";
+            var a3 = FfmpegGui.Services.CjxlService.BuildCjxlArguments(
+                "-", "o.jxl", pnLossless, default, null, null, 0, false, pnSink);
+            Check(a3.Contains("-d 0") && !a3.Contains("photon_noise_iso"),
+                $"③ 无损 ⇒ 只有 -d 0、不带噪声（叠加会静默破坏逐比特无损）（{a3}）");
+            Check(pnLog.Contains("photon noise skipped"), $"③ 无损丢弃时点名：[{pnLog.Trim()}]");
+            pnLossy.CjxlPhotonNoiseIso = 400;
+            var a4 = FfmpegGui.Services.CjxlService.BuildCjxlArguments(
+                "-", "o.jxl", pnLossy, default, null, null, 0, false, null);
+            Check(a4.Contains("--photon_noise_iso=400"),
+                $"④ **正控**：有损 + 数值 ISO ⇒ flag 照发（否则 ①③ 只是「功能没接上」的假绿）（{a4}）");
+            var pnQ100 = O("jxl"); pnQ100.Quality = 100; pnQ100.JxlEffort = 7; pnQ100.CjxlPhotonNoiseIso = 400;
+            var a5 = FfmpegGui.Services.CjxlService.BuildCjxlArguments(
+                "-", "o.jxl", pnQ100, default, null, null, 0, false, null);
+            Check(a5.Contains("-d 0.0") && !a5.Contains("photon_noise_iso"),
+                $"⑤ 判据是**发出的 distance**而非复选框：Quality=100 ⇒ -d 0.0 ⇒ 同样不发噪声（{a5}）");
+            // ── jbrd 无损重封装（2026-09-30：开关默认启用，且此前被三道独立失效永久掐死）──
+            // 实测失效链（取证 tests/output/t64/）：模型默认 false + 采集式「面板不可见⇒false」
+            //   + 与一只**默认勾着**的「保留 Ultra HDR 增益图」无条件相与 ⇒ 三条里任一条都足以让
+            //   它恒假 ⇒ 默认配置下 JPEG→JXL 从来走的是 `-d 3.8` 像素重编码（产物 908 kB，非无损）。
+            // ⚠ 语义分工（本组要钉的就是这个）：`DefaultJxlLosslessJpeg` = **开关**默认（true）；
+            //   `FfmpegOptions.JxlLosslessJpeg` = **本次有效值**，必须与「输入真是 JPEG」相与 ——
+            //   因为 `ImageEncoderArgs` 只看这个布尔就拦掉整个 jxl 引擎路线，而它看不到输入格式。
+            Check(FfmpegGui.Models.FfmpegOptions.DefaultJxlLosslessJpeg
+                    && !new FfmpegGui.Models.FfmpegOptions().JxlLosslessJpeg,
+                "jbrd-① 开关默认开=true 而模型字段(有效值)默认=false；两者必须分家，否则 PNG→JXL 会被误拦出引擎");
+            var jbOn = O("jxl"); jbOn.JxlEffort = 7; jbOn.Threads = 0; jbOn.JxlLosslessJpeg = true;
+            var jbFile = FfmpegGui.Services.CjxlService.BuildCjxlArguments(
+                "in.jpg", "o.jxl", jbOn, default, null, null, 0, false, null);
+            Check(jbFile.Contains("-d 0") && jbFile.Contains("--lossless_jpeg=1"),
+                $"jbrd-② 有效值+真 JPEG 输入 ⇒ 发出无损重封装（{jbFile}）");
+            pnLog = "";
+            var jbPipe = FfmpegGui.Services.CjxlService.BuildCjxlArguments(
+                "-", "o.jxl", jbOn, default, null, null, 0, false, pnSink);
+            Check(!jbPipe.Contains("--lossless_jpeg=1") && pnLog.Contains("input is not a JPEG file"),
+                $"jbrd-③ 有效值开着但输入是管道 ⇒ **不冒充**重封装且点名（日志=[{pnLog.Trim()}] 命令=[{jbPipe}]）");
+            var jbOff = O("jxl"); jbOff.JxlLosslessJpeg = false; jbOff.Quality = 75;
+            var jbOffArgs = FfmpegGui.Services.CjxlService.BuildCjxlArguments(
+                "in.jpg", "o.jxl", jbOff, default, null, null, 0, false, null);
+            Check(jbOffArgs.Contains("--lossless_jpeg=0"),
+                $"jbrd-④ **正控**：手动关掉 ⇒ 显式发 --lossless_jpeg=0（不是省略，cjxl 对 JPEG 默认是 1）（{jbOffArgs}）");
+            var jbRoute = O("jxl"); jbRoute.ColorEngine = "engine";
+            jbRoute.EncoderBackend = FfmpegGui.Services.EncoderBackend.Cjxl;
+            jbRoute.JxlLosslessJpeg = true;
+            var jbBr = FfmpegGui.Services.ColorMapping.ColorEngineRouter.BlockReason(jbRoute, "o.jxl", false);
+            Check(jbBr?.Code == "EncoderUnsupportedSetting",
+                $"jbrd-⑤ 有效值为真时引擎**必须拦**（引擎要先解码，结构上无法复制 DCT 系数）⇒ 实 Code={jbBr?.Code ?? "null"}");
+            // 负控（与 ⑤ 只差一个布尔）：有效值为假 ⇒ jxl+Cjxl 照旧路由 —— 放宽/拦截都不得外溢。
+            var jbRouteOff = O("jxl"); jbRouteOff.ColorEngine = "engine";
+            jbRouteOff.EncoderBackend = FfmpegGui.Services.EncoderBackend.Cjxl;
+            var jbBr2 = FfmpegGui.Services.ColorMapping.ColorEngineRouter.BlockReason(jbRouteOff, "o.jxl", false);
+            Check(jbBr2 == null, $"jbrd-⑥ 负控：有效值 false ⇒ 仍走引擎出口（block={jbBr2?.Code ?? "无"}）");
+            // ── jbrd 开关**不得改写在 ffmpeg-libjxl 后端上的质量轴**（2026-10-01 实测后补）──
+            // 该开关 09-30 起默认启用，而 `FfmpegCommandBuilder` 里曾有一条
+            // `if (JxlLosslessJpeg) ⇒ -distance 0` 的特例：ffmpeg 的 libjxl 做不到 jbrd（09-19 实测），
+            // 这条特例只剩副作用 —— 实测 `-e Ffmpeg` 下 q=30/50/75/90 **产物全是 58.3 kB、命令行恒为
+            // -distance 0**（关掉后恢复 10.5 / 3.8 ⇒ 3.9 / 9.6 kB）。默认值一翻，这格从罕见变成常态。
+            // ⚠ 这里显式给 BitDepth，避免 BuildArguments 去探测不存在的输入而把读数搅浑。
+            string JxlCmd(int q, bool lossless, bool? modular)
+            {
+                var o = O("jxl"); o.Quality = q; o.Lossless = lossless; o.BitDepth = 8;
+                o.JxlLosslessJpeg = true; o.JxlModular = modular;
+                return FfmpegGui.Services.FfmpegCommandBuilder.BuildArguments(o, "in.jpg", "out.jxl");
+            }
+            var qa30 = JxlCmd(30, false, null); var qa90 = JxlCmd(90, false, null);
+            Check(qa30.Contains("-distance 10.5") && qa90.Contains("-distance 1.5")
+                    && !qa30.Contains("-distance 0") && !qa90.Contains("-distance 0"),
+                $"qa-① 开关开着也不吞质量轴：q30⇒10.5 / q90⇒1.5（实 [{qa30}] / [{qa90}]）");
+            var qaL = JxlCmd(75, true, null);
+            Check(qaL.Contains("-distance 0"), $"qa-② 正控：真要无损由 Lossless 决定（{qaL}）");
+            var qaM = JxlCmd(75, false, true);
+            Check(qaM.Contains("-modular 1"), $"qa-③ 特例曾漏发的 -modular 现在跟着单一真值走（{qaM}）");
             // **2026-09-17 单一真值锁**：白名单此前在 `ColorEngineRouter` 与 `ImageEncoderArgs` 各写一份
             // 字面量（后者**全仓无调用者**，只在 Router 文档里被引用）⇒ 已合并为
             // `ImageEncoderArgs.IsEngineEncodable` **一份**，Router 改为调用它。
@@ -4217,6 +4319,403 @@ namespace ServiceProbe
                 }
                 catch { }
                 Console.WriteLine($"geometry-cleanup: 删除文件 {removed}/{total}，目录{(dirGone ? "已" : "未")}删除");
+            }
+        }
+
+        // ═══════════════════ orientation：取向标签下的几何口径（显示尺寸 vs coded 尺寸）═══════════════════
+
+        /// <summary>
+        /// orientation [输出根目录] —— 带 <c>Orientation</c> 标签的输入，引擎与几何探测必须按**显示**尺寸工作。
+        ///
+        /// <para><b>本门禁钉住的缺陷（2026-09-30 实机确证）**：用户的 6000×4000 16-bit 无压缩 TIFF
+        /// （SONY ILCE-7M2，<c>Orientation=8</c>，无 ICC）转 JXL 出"花图"。根因不在 JXL、也不在色彩：
+        /// ffmpeg 对取向标签会 **autorotate**（随包 git-2026-09-26 实测：解码帧挂
+        /// <c>3x3 displaymatrix rotation=90</c>，帧尺寸 4000×6000），而 <c>RawColorPipeline.ProbeSizeAsync</c>
+        /// 当时读的是 <c>ffprobe stream=width,height</c> = **coded** 6000×4000 ⇒ 编码段用
+        /// <c>-video_size 6000x4000</c> 去声明一段真实排布为 4000×6000 的 raw ⇒ **每行错位重排**。
+        /// 实测该产物 vs 真值 <b>PSNR 7.97 dB</b>；把同一段 raw 按 4000×6000 重排再 <c>transpose=1</c>
+        /// 则 <b>inf</b>（逐字节等）⇒ 错的是几何标注，不是像素处理。旧的长度守卫 <c>rawLen &lt; w*h*6</c>
+        /// 对此**完全盲**（转置下字节数恒等）。</para>
+        ///
+        /// <para><b>夹具的三处硬自检</b>（不成立就直接判红，不许"看起来跑了"）：
+        /// ① coded 尺寸必须是 64×32 而 rotation 必须是 90 —— 二者**不相等**才是有效夹具，
+        ///    否则整条门禁退化成恒真（这是"锚在绝对常数上的判据要有一例把常数挪开"的同类）；
+        /// ② 参照臂（ffmpeg 直解的 PNG）必须**不带** rotation side data —— 否则两臂各旋一次，
+        ///    对拍的是"两次旋转是否抵消"而不是几何口径；
+        /// ③ 写标签必须用 <c>exiftool -n</c>：实测 <c>-Orientation=8</c> **不带 <c>-n</c>** 会写成
+        ///    <b>3</b>（PrintConv 反查失败后落默认值）⇒ 180° 不改变轴向 ⇒ 夹具静默失牙。</para>
+        ///
+        /// <para><b>为什么源用 64×32 而不是 1024×1024</b>：判据要的是"轴向可分辨"，
+        /// 方图在转置下不可分辨（与 ① 同一道理）；小图让整条门禁跑在秒级。</para>
+        /// </summary>
+        private static async System.Threading.Tasks.Task ProbeOrientation(string[] args)
+        {
+            string ff = AppSettingsService.Current.FfmpegPath;
+            string ffp = AppSettingsService.Current.FfprobePath;
+            string exif = FfmpegGui.Services.ExifToolService.DetectedPath ?? "";
+            if (string.IsNullOrWhiteSpace(ff) || !File.Exists(ff))
+            { Check(false, "orientation：未找到 ffmpeg（AppSettings 未初始化 / publish/PLAN 缺失）"); return; }
+            if (string.IsNullOrWhiteSpace(ffp) || !File.Exists(ffp))
+            { Check(false, "orientation：未找到 ffprobe ⇒ 夹具前提无法自检"); return; }
+            if (string.IsNullOrWhiteSpace(exif) || !File.Exists(exif))
+            { Check(false, "orientation：未检测到 exiftool ⇒ 无法造取向夹具（显式判红，不静默跳过）"); return; }
+
+            string root = args.Length >= 2 ? args[1] : "tests/output/validate";
+            // 运行级隔离（GUID）：固定目录会被并发同名实例互删 ⇒ 假红（TESTING §6 第 66 条）
+            string dir = Path.Combine(root, "orient_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+            Directory.CreateDirectory(dir);
+            Console.WriteLine($"orient-out={dir}");
+            var created = new List<string>();
+
+            // 独立进程读数（**不复用** ImageGeometry 的解析器 ⇒ 本门禁是产品代码的对照臂）
+            async Task<string> Cap(string exe, string a)
+            {
+                using var p = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(exe, a)
+                {
+                    RedirectStandardOutput = true, RedirectStandardError = true,
+                    UseShellExecute = false, CreateNoWindow = true
+                })!;
+                var so = p.StandardOutput.ReadToEndAsync();
+                var se = p.StandardError.ReadToEndAsync();     // P2-3：两路都要排空
+                await p.WaitForExitAsync().ConfigureAwait(false);
+                return (await so.ConfigureAwait(false) + await se.ConfigureAwait(false)).Trim();
+            }
+            async Task Run(string exe, string a) { await Cap(exe, a).ConfigureAwait(false); }
+            // coded 尺寸：ffprobe 的 stream 段（**旧口径**，本门禁专门拿它当"错的那把尺"）
+            (int w, int h) Coded(string path)
+            {
+                var m = System.Text.RegularExpressions.Regex.Match(
+                    Cap(ffp, $"-v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 \"{path}\"")
+                        .GetAwaiter().GetResult(), @"(\d+),(\d+)");
+                return m.Success ? (int.Parse(m.Groups[1].Value), int.Parse(m.Groups[2].Value)) : (0, 0);
+            }
+            int Rotation(string path)
+            {
+                var m = System.Text.RegularExpressions.Regex.Match(
+                    Cap(ffp, $"-v error -select_streams v:0 -read_intervals \"%+#1\" "
+                          + $"-show_entries frame_side_data_list -of json \"{path}\"")
+                        .GetAwaiter().GetResult(), @"""rotation""\s*:\s*(-?\d+)");
+                return m.Success ? int.Parse(m.Groups[1].Value) : 0;
+            }
+            // 像素对照：两臂同格式 → ffmpeg 自带 psnr（与本仓 PsnrCalculator 无关 ⇒ 独立参照）
+            // ⚠ 取不到数字时**必须报出原因**（变异实测：几何口径退回 coded 后两臂尺寸不同 ⇒
+            //   ffmpeg 直接拒绝，读数会是空的；只写"无读数"就等于把最有信息量的一条证据丢掉）
+            string Psnr(string a, string b, string fmt)
+            {
+                string outp = Cap(ff, $"-hide_banner -i \"{a}\" -i \"{b}\" "
+                            + $"-lavfi \"[0:v]format={fmt}[x];[1:v]format={fmt}[y];[x][y]psnr\" -f null -")
+                          .GetAwaiter().GetResult();
+                var m = System.Text.RegularExpressions.Regex.Match(outp, @"average:(inf|[0-9][0-9.]*)");
+                if (m.Success) return m.Groups[1].Value;
+                var w = System.Text.RegularExpressions.Regex.Match(outp,
+                    @"(Width and height of input videos must be same|Invalid data|No such file)");
+                return w.Success ? $"图不可比:{w.Groups[1].Value}" : "无读数";
+            }
+            // 夹具：lavfi 生成的**非对称**图（testsrc2 含渐变+文字，行/列内容互不相同 ⇒ 剪切可测）
+            async Task<string> MakeTiff(string name, string pix, int orientation)
+            {
+                var p = Path.Combine(dir, name);
+                await Run(ff, $"-y -hide_banner -loglevel error -f lavfi "
+                            + $"-i \"testsrc2=size=64x32:duration=1\" -frames:v 1 -pix_fmt {pix} \"{p}\"")
+                          .ConfigureAwait(false);
+                created.Add(p);
+                if (orientation != 0)
+                    await Run(exif, $"-q -n -overwrite_original \"-Orientation={orientation}\" \"{p}\"")
+                          .ConfigureAwait(false);
+                return p;
+            }
+            async Task<(FfmpegGui.Services.ColorMapping.RawColorPipeline.Stats st, int w, int h)> EngineRun(
+                string src, string outPath, int bitDepth, int maxDim)
+            {
+                var o = new FfmpegGui.Models.FfmpegOptions
+                {
+                    Format = "png", ColorStrategy = ST.Recommended, BitDepth = bitDepth,
+                    EnableMaxDimension = maxDim > 0, MaxDimension = maxDim > 0 ? maxDim : 0,
+                };
+                var it = FfmpegGui.Services.ColorMapping.ColorIntentFactory.FromOptions(o, src, out var why);
+                if (it == null) throw new InvalidOperationException($"选项→意图失败：{why}");
+                var plan = CE.Plan(it);
+                if (!plan.IsOk) throw new InvalidOperationException($"计划被拒：{plan.Reason}");
+                var st = await FfmpegGui.Services.ColorMapping.RawColorPipeline.TransformFileAsync(
+                    src, outPath, plan.ToSpec(), plan, null, default, 1, ff, o).ConfigureAwait(false);
+                var (w, h) = await FfmpegGui.Services.ColorMapping.RawColorPipeline
+                    .ProbeSizeAsync(outPath, ff).ConfigureAwait(false);
+                return (st, w, h);
+            }
+
+            try
+            {
+                // ── 夹具 + 前提自检 ──
+                string src16 = await MakeTiff("o16_orient8.tif", "rgb48le", 8).ConfigureAwait(false);
+                string src8  = await MakeTiff("o8_orient8.tif", "rgb24", 8).ConfigureAwait(false);
+                string srcNR = await MakeTiff("o16_norot.tif", "rgb48le", 0).ConfigureAwait(false);
+                var (cw, ch) = Coded(src16);
+                int rot = Rotation(src16);
+                var (dw, dh) = (ch, cw);   // 期望显示尺寸 = coded 交换（rotation=90）
+                Console.WriteLine($"orient-fixture coded={cw}x{ch} rotation={rot} displayExpect={dw}x{dh}");
+                Check(cw == 64 && ch == 32, $"夹具 coded = 64x32（实 {cw}x{ch}）");
+                Check(rot == 90,
+                    $"夹具 rotation = 90（实 {rot}）⇒ 取向标签真的会被 autorotate；"
+                  + $"若为 0/-180 说明 exiftool 少了 -n（实测会静默写成 3 ⇒ 轴向不变 ⇒ 门禁失牙）");
+                Check(cw != dw && ch != dh, "夹具前提：coded 与显示尺寸**轴向不同**（相同则该夹具恒真、测不到本缺陷）");
+                var (nrW, nrH) = (Coded(srcNR).w, Coded(srcNR).h);
+                Check(Rotation(srcNR) == 0 && nrW == 64 && nrH == 32,
+                    $"负控夹具无取向标签（rotation={Rotation(srcNR)}，coded={nrW}x{nrH}）");
+
+                // ── 探测口径本身：显示尺寸必须与 coded 不同 ──
+                var (pw, ph) = await FfmpegGui.Services.ColorMapping.RawColorPipeline
+                    .ProbeSizeAsync(src16, ff).ConfigureAwait(false);
+                Console.WriteLine($"orient-probe coded={cw}x{ch} probe(显示)={pw}x{ph}");
+                Check(pw == dw && ph == dh,
+                    $"ProbeSizeAsync 报**显示**尺寸 {dw}x{dh}（实 {pw}x{ph}；旧实现报 coded {cw}x{ch}）");
+
+                // ── O1：16-bit 取向源 → 引擎产出必须是 32x64 且与独立参照逐字节等 ──
+                // 参照 = ffmpeg 直解（同样吃 autorotate），不经本仓任何代码 ⇒ 两臂只可能差在几何标注。
+                string ref16 = Path.Combine(dir, "ref16.png"); created.Add(ref16);
+                await Run(ff, $"-y -hide_banner -loglevel error -i \"{src16}\" -frames:v 1 "
+                            + $"-pix_fmt rgb48le -compression_level 0 \"{ref16}\"").ConfigureAwait(false);
+                var (rcw, rch) = Coded(ref16);
+                Check(rcw == dw && rch == dh && Rotation(ref16) == 0,
+                    $"参照臂前提：ffmpeg 直解产物 coded={rcw}x{rch}（期望 {dw}x{dh}）且**不带** rotation"
+                  + $"（实 {Rotation(ref16)}）⇒ 对拍的是几何口径，不是「两次旋转是否抵消」");
+                string e1 = Path.Combine(dir, "O1_engine16.png"); created.Add(e1);
+                var s1 = await EngineRun(src16, e1, 16, 0).ConfigureAwait(false);
+                string p1 = Psnr(e1, ref16, "gbrp16le");
+                Console.WriteLine($"orient-case id=O1-16bit expect={dw}x{dh} engine={s1.w}x{s1.h} "
+                                + $"stats={s1.st.Width}x{s1.st.Height} psnr={p1}");
+                Check(s1.w == dw && s1.h == dh, $"O1 引擎产出尺寸 = {dw}x{dh}（实 {s1.w}x{s1.h}）");
+                Check(s1.st.Width == s1.w && s1.st.Height == s1.h,
+                    $"O1 Stats 与实际产物一致（{s1.st.Width}x{s1.st.Height} vs {s1.w}x{s1.h}）");
+                Check(p1 == "inf",
+                    $"O1 像素与独立参照**逐字节等**（psnr={p1}）⇒ 不是「接近」，是没有任何行错位；"
+                  + $"缺陷未修时本条实测读数为「图不可比:Width and height of input videos must be same」"
+                  + $"（两臂轴向不同），用户侧产物 vs 真值则是 7.97dB 量级");
+
+                // ── O2：8-bit 出口（16→8 降位由引擎内核做，允许 ±1 LSB 舍入差）──
+                string ref8 = Path.Combine(dir, "ref8.png"); created.Add(ref8);
+                await Run(ff, $"-y -hide_banner -loglevel error -i \"{src8}\" -frames:v 1 "
+                            + $"-pix_fmt rgb24 -compression_level 0 \"{ref8}\"").ConfigureAwait(false);
+                string e2 = Path.Combine(dir, "O2_engine8.png"); created.Add(e2);
+                var s2 = await EngineRun(src8, e2, 8, 0).ConfigureAwait(false);
+                string p2 = Psnr(e2, ref8, "gbrp");
+                double p2v = double.TryParse(p2, out var v2) ? v2 : (p2 == "inf" ? 999 : -1);
+                Console.WriteLine($"orient-case id=O2-8bit expect={dw}x{dh} engine={s2.w}x{s2.h} psnr={p2}");
+                Check(s2.w == dw && s2.h == dh, $"O2 引擎产出尺寸 = {dw}x{dh}（实 {s2.w}x{s2.h}）");
+                Check(p2v >= 45.0, $"O2 8-bit 出口 psnr ≥45dB（实 {p2}）⇒ 几何正确（剪切会掉到个位数 dB）");
+
+                // ── O3：取向源 + 最长边限制 ⇒ 滤镜必须锁**显示**口径的长边（纵向分支）──
+                string filter3 = FfmpegCommandBuilder.BuildMaxDimensionScaleFilter(
+                    new FfmpegGui.Models.FfmpegOptions
+                    { Format = "png", EnableMaxDimension = true, MaxDimension = 16 }, src16) ?? "";
+                string e3 = Path.Combine(dir, "O3_engine_max16.png"); created.Add(e3);
+                var s3 = await EngineRun(src16, e3, 16, 16).ConfigureAwait(false);
+                Console.WriteLine($"orient-case id=O3-maxdim filter=\"{filter3}\" expect=8x16 "
+                                + $"engine={s3.w}x{s3.h} stats={s3.st.Width}x{s3.st.Height}");
+                Check(filter3.Contains("-2:16", StringComparison.Ordinal),
+                    $"O3 滤镜锁的是**纵向**长边（scale=-2:16，实得 \"{filter3}\"）；"
+                  + $"按 coded 64x32 判会选成 scale=16:-2 ⇒ 最长边突破用户上限");
+                Check(s3.w == 8 && s3.h == 16, $"O3 引擎产出 = 8x16（实 {s3.w}x{s3.h}）");
+                Check(s3.st.Width == s3.w && s3.st.Height == s3.h,
+                    $"O3 Stats 与实际产物一致（{s3.st.Width}x{s3.st.Height} vs {s3.w}x{s3.h}）");
+
+                // ── O4 负控：无取向标签的同一张图 ⇒ 不许凭空旋转 ──
+                string e4 = Path.Combine(dir, "O4_engine_norot.png"); created.Add(e4);
+                var s4 = await EngineRun(srcNR, e4, 16, 0).ConfigureAwait(false);
+                Console.WriteLine($"orient-case id=O4-negative expect=64x32 engine={s4.w}x{s4.h}");
+                Check(s4.w == 64 && s4.h == 32,
+                    $"O4 负控：无取向标签 ⇒ 产出保持 64x32（实 {s4.w}x{s4.h}）；"
+                  + $"若变成 32x64 说明探测在凭空施加旋转");
+            }
+            catch (Exception ex)
+            {
+                Check(false, $"orientation 探针异常：{ex.GetType().Name}: {ex.Message}");
+            }
+            finally
+            {
+                int total = 0;
+                foreach (var p in created) { try { if (File.Exists(p)) total++; } catch { } }
+                int removed = 0;
+                foreach (var p in created) { try { if (File.Exists(p)) { File.Delete(p); removed++; } } catch { } }
+                bool dirGone = false;
+                try
+                {
+                    if (Directory.Exists(dir) && Directory.GetFileSystemEntries(dir).Length == 0)
+                    { Directory.Delete(dir); dirGone = true; }
+                }
+                catch { }
+                Console.WriteLine($"orient-cleanup: 删除文件 {removed}/{total}，目录{(dirGone ? "已" : "未")}删除");
+            }
+        }
+
+
+        // ═══════════════ orientmeta：元数据恢复不得把 Orientation 抄回已旋正的产物 ═══════════════
+
+        /// <summary>
+        /// orientmeta —— 第二个取向缺陷的专项探针（2026-10-01 实测确证）。
+        ///
+        /// <para><b>缺陷</b>：几何修好之后，像素是正的（4000×6000），但元数据恢复用的是
+        /// <c>exiftool -all:all</c>（<c>ExifToolService.cs:496</c>）与 <c>-EXIF:all</c> 安全模式
+        /// （<c>:633</c>），**两条都不排除 `Orientation`** ⇒ 源的 <c>Orientation=8</c> 被抄到已旋正的
+        /// 产物上 ⇒ 合规查看器**再转一次**。实测：对修好的 JXL 跑一次恢复命令，exiftool 读回
+        /// <c>Orientation : 8</c>（像素对、标签错）。</para>
+        ///
+        /// <para><b>唯一例外</b>：JPEG→JXL **免解码重封装**（<c>--lossless_jpeg=1</c>，像素原样搬 DCT 系数）
+        /// ⇒ 源的取向标签仍然成立，**必须保留**。判据收在 <see cref="CjxlService.UsesLosslessJpegRewrap"/>，
+        /// 与 cjxl 命令行里那个 <c>--lossless_jpeg=1</c> 的判据是同一份实现。</para>
+        ///
+        /// <para><b>为什么 M2 必须存在</b>：只断言"产物没有 Orientation"会被"整块复制根本没跑"满足
+        /// （假绿）。所以同一次调用里必须证明 <c>Make/Model</c> **确实到了**产物 ⇒ 排除是逐标签的、
+        /// 不是把复制掐了。</para>
+        /// </summary>
+        private static async System.Threading.Tasks.Task ProbeOrientMeta(string[] args)
+        {
+            string ff = AppSettingsService.Current.FfmpegPath;
+            string exif = FfmpegGui.Services.ExifToolService.DetectedPath ?? "";
+            if (string.IsNullOrWhiteSpace(ff) || !File.Exists(ff))
+            { Check(false, "orientmeta：未找到 ffmpeg"); return; }
+            if (string.IsNullOrWhiteSpace(exif) || !File.Exists(exif))
+            { Check(false, "orientmeta：未检测到 exiftool ⇒ 无法造夹具（显式判红，不静默跳过）"); return; }
+
+            string root = args.Length >= 2 ? args[1] : "tests/output/validate";
+            string dir = Path.Combine(root, "orientmeta_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+            Directory.CreateDirectory(dir);
+            Console.WriteLine($"orientmeta-out={dir}");
+            var created = new List<string>();
+
+            async Task Run(string exe, string a)
+            {
+                using var p = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(exe, a)
+                { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true })!;
+                var so = p.StandardOutput.ReadToEndAsync();
+                var se = p.StandardError.ReadToEndAsync();
+                await p.WaitForExitAsync().ConfigureAwait(false);
+                await so; await se;
+            }
+            // ⚠ **只读 stdout**：exiftool 的 perl locale 警告走 **stderr**，合并取数会把
+            //   "Falling back to the standard locale" 当成标签值读回来（本探针第一版实测踩中，
+            //   6 条判据全被它带红）。stderr 仍要**排空**（P2-3：不排空会堵死子进程），只是不参与取值。
+            //   ⇒ 这正是 `_probe-stderr-merge-scan.ps1` 那条债账锁要拦的形态，写探针的人也不例外。
+            async Task<string> Cap(string exe, string a)
+            {
+                using var p = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(exe, a)
+                { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true })!;
+                var so = p.StandardOutput.ReadToEndAsync();
+                var se = p.StandardError.ReadToEndAsync();
+                await p.WaitForExitAsync().ConfigureAwait(false);
+                string stdout = await so.ConfigureAwait(false);
+                _ = await se.ConfigureAwait(false);
+                return stdout.Trim();
+            }
+            async Task<string> OrientationOf(string path)
+                => (await Cap(exif, $"-q -n -Orientation \"{path}\"").ConfigureAwait(false))
+                     .Split(':').Last().Trim();
+
+            try
+            {
+                // ── 夹具：带拍摄字段的取向 JPEG（Make/Model 用来证明"复制真的发生了"）──
+                string src = Path.Combine(dir, "src_orient8.jpg"); created.Add(src);
+                await Run(ff, $"-y -hide_banner -loglevel error -f lavfi "
+                            + $"-i \"testsrc2=size=64x32:duration=1\" -frames:v 1 -q:v 3 \"{src}\"")
+                      .ConfigureAwait(false);
+                await Run(exif, $"-q -n -overwrite_original \"-Orientation=8\" -Make=TESTCAM -Model=TESTMODEL "
+                              + $"\"{src}\"").ConfigureAwait(false);
+                var (cw, ch) = FfmpegGui.Services.ImageGeometry
+                    .ParseDisplaySize(await Cap(AppSettingsService.Current.FfprobePath,
+                        $"-v error -select_streams v:0 -read_intervals \"%+#1\" "
+                      + $"-show_entries stream=width,height -show_entries frame_side_data_list -of json \"{src}\"")
+                        .ConfigureAwait(false));
+                Check(cw == 32 && ch == 64 && await OrientationOf(src) == "8",
+                    $"夹具：Orientation=8 且**显示**尺寸 = 32x64（实得 {cw}x{ch} / 标签 {await OrientationOf(src)}）"
+                  + $"——coded 必须是 64x32，否则两口径同轴、本探针恒真");
+
+                // ── 产物：模拟"解码器已旋正"的出口（ffmpeg 直解，不带任何取向标签）──
+                string prod = Path.Combine(dir, "prod_upright.jpg"); created.Add(prod);
+                await Run(ff, $"-y -hide_banner -loglevel error -i \"{src}\" -frames:v 1 -q:v 3 \"{prod}\"")
+                      .ConfigureAwait(false);
+                var (pw, ph) = FfmpegGui.Services.ImageGeometry
+                    .ParseDisplaySize(await Cap(AppSettingsService.Current.FfprobePath,
+                        $"-v error -select_streams v:0 -read_intervals \"%+#1\" "
+                      + $"-show_entries stream=width,height -show_entries frame_side_data_list -of json \"{prod}\"")
+                        .ConfigureAwait(false));
+                Check(pw == 32 && ph == 64 && await OrientationOf(prod) == "",
+                    $"产物起点：像素已旋正（{pw}x{ph}）且**本来就没有** Orientation 标签（实得「{await OrientationOf(prod)}」）"
+                  + $"⇒ 后面若出现标签，只可能是恢复步骤抄进来的");
+
+                // ── M1/M2：产品自己的恢复调用（默认 dropOrientation=true）──
+                int rc = await FfmpegGui.Services.ExifToolService.CopyMetadataAsync(
+                    src, prod, null, absorb: null).ConfigureAwait(false);
+                string gotOri = await OrientationOf(prod).ConfigureAwait(false);
+                string gotMake = (await Cap(exif, $"-q -s -Make \"{prod}\"").ConfigureAwait(false))
+                                    .Split(':').Last().Trim();
+                string gotModel = (await Cap(exif, $"-q -s -Model \"{prod}\"").ConfigureAwait(false))
+                                    .Split(':').Last().Trim();
+                // ⚠ 排除式**不生效**时 exiftool 返回退出码 0（它只是照抄了标签），所以 rc 不是证据。
+                //   控制臂：同一次调用里必须看到 Make/Model 到了产物（M2）——M1 只有在 M2 成立时才有意义。
+                Console.WriteLine($"orientmeta-full  rc={rc} Orientation=「{gotOri}」 Make=「{gotMake}」 Model=「{gotModel}」");
+                Check(rc == 0, $"M0 恢复调用退出码 0（实得 {rc}）");
+                Check(gotOri == "",
+                    $"M1 全量复制（-all:all）后产物**不得**带 Orientation（实得「{gotOri}」）"
+                  + $"⇒ 修前实测这里就是 8 ⇒ 查看器二次旋转");
+                Check(gotMake == "TESTCAM" && gotModel == "TESTMODEL",
+                    $"M2 同一次复制必须仍把 Make/Model 带过去（实得 {gotMake}/{gotModel}）"
+                  + $"⇒ 证明排除是**逐标签**的，不是把整块复制掐了（否则 M1 会假绿）");
+
+                // ── M3：安全模式同判据 ──
+                string prod2 = Path.Combine(dir, "prod_upright_safe.jpg"); created.Add(prod2);
+                await Run(ff, $"-y -hide_banner -loglevel error -i \"{src}\" -frames:v 1 -q:v 3 \"{prod2}\"")
+                      .ConfigureAwait(false);
+                int rc2 = await FfmpegGui.Services.ExifToolService.CopyMetadataSafeAsync(
+                    src, prod2, null, absorb: null).ConfigureAwait(false);
+                string got2 = await OrientationOf(prod2).ConfigureAwait(false);
+                string mk2 = (await Cap(exif, $"-q -s -Make \"{prod2}\"").ConfigureAwait(false))
+                                .Split(':').Last().Trim();
+                Console.WriteLine($"orientmeta-safe  rc={rc2} Orientation=「{got2}」 Make=「{mk2}」");
+                Check(got2 == "" && mk2 == "TESTCAM",
+                    $"M3 安全模式（-EXIF:all）同样剥掉 Orientation 且仍带 Make"
+                  + $"（实得 Orientation=「{got2}」 Make=「{mk2}」）⇒ 两条恢复通路都得修，漏一条等于没修");
+
+                // ── M4：反证臂——免解码重封装必须**保留**标签（判据有牙的唯一证据）──
+                string prod3 = Path.Combine(dir, "prod_rewrap.jpg"); created.Add(prod3);
+                await Run(ff, $"-y -hide_banner -loglevel error -i \"{src}\" -frames:v 1 -q:v 3 \"{prod3}\"")
+                      .ConfigureAwait(false);
+                int rc3 = await FfmpegGui.Services.ExifToolService.CopyMetadataAsync(
+                    src, prod3, null, absorb: null, dropOrientation: false).ConfigureAwait(false);
+                string got3 = await OrientationOf(prod3).ConfigureAwait(false);
+                Console.WriteLine($"orientmeta-rewrap rc={rc3} Orientation=「{got3}」");
+                Check(got3 == "8",
+                    $"M4 传 dropOrientation:false（重封装路径）时标签必须**留得住**（实得「{got3}」）"
+                  + $"⇒ 若这条也变空，说明排除是无条件的 ⇒ 会把真需要取向提示的免解码产物做坏");
+
+                // ── M5：单一判据的行为面 ──
+                var oRewrap = new FfmpegGui.Models.FfmpegOptions { Format = "jxl", JxlLosslessJpeg = true };
+                var oPlain = new FfmpegGui.Models.FfmpegOptions { Format = "jxl", JxlLosslessJpeg = false };
+                bool jpgOn = FfmpegGui.Services.CjxlService.UsesLosslessJpegRewrap(src, oRewrap);
+                bool jpgOff = FfmpegGui.Services.CjxlService.UsesLosslessJpegRewrap(src, oPlain);
+                bool tifOn = FfmpegGui.Services.CjxlService.UsesLosslessJpegRewrap(
+                    Path.Combine(dir, "x.tif"), oRewrap);
+                Console.WriteLine($"orientmeta-predicate jpg/on={jpgOn} jpg/off={jpgOff} tif/on={tifOn}");
+                Check(jpgOn && !jpgOff && !tifOn,
+                    $"M5 重封装判据三格：JPEG+开=true / JPEG+关=false / 非 JPEG+开=false"
+                  + $"（实得 {jpgOn}/{jpgOff}/{tifOn}）⇒ 只有这一份实现能同时喂 cjxl 命令行与恢复步骤");
+            }
+            catch (Exception ex)
+            {
+                Check(false, $"orientmeta 探针异常：{ex.GetType().Name}: {ex.Message}");
+            }
+            finally
+            {
+                int total = 0;
+                foreach (var p in created) { try { if (File.Exists(p)) total++; } catch { } }
+                int removed = 0;
+                foreach (var p in created) { try { if (File.Exists(p)) { File.Delete(p); removed++; } } catch { } }
+                bool dirGone = false;
+                try
+                {
+                    if (Directory.Exists(dir) && Directory.GetFileSystemEntries(dir).Length == 0)
+                    { Directory.Delete(dir); dirGone = true; }
+                }
+                catch { }
+                Console.WriteLine($"orientmeta-cleanup: 删除文件 {removed}/{total}，目录{(dirGone ? "已" : "未")}删除");
             }
         }
 

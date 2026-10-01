@@ -81,6 +81,8 @@ public static class RawColorPipeline
                 + "请改用可 CICP 命名的目标空间（sRGB / Display P3 / Rec.2100 PQ / HLG），"
                 + "或改用 PNG/TIFF/WebP 出口携带 ICC；若要保留任意 ICC 请改用 cjxl 后端");
 
+        // w0/h0 = **显示**尺寸（含 autorotate 后的轴向），见 ProbeSizeAsync 的注释：解码段不写
+        // `-noautorotate`，所以只有这个口径能与后面 rawvideo 的真实排布对上。
         var (w0, h0) = await ProbeSizeAsync(inputPath, ffmpeg, ct).ConfigureAwait(false);
         if (w0 <= 0 || h0 <= 0) throw new InvalidOperationException("无法获取图像尺寸");
 
@@ -144,8 +146,14 @@ public static class RawColorPipeline
                 st.Width = w; st.Height = h;
                 log?.Invoke($"[色彩] 几何缩放（最长边限制）：{w0}x{h0} → {w}x{h}（{scaleFilter}）\n");
             }
-            else if (rawLen < (long)w * h * 6)
-                throw new InvalidOperationException($"解码失败：产物不完整（{rawLen}B < {(long)w * h * 6}B）");
+            else if (rawLen != (long)w * h * 6)
+                // ⚠ 必须是**精确等式**而不是下界（2026-09-30）：`rawLen < w*h*6` 这种写法对
+                //   "几何口径取错"是**盲的** —— coded 6000×4000 与旋正后 4000×6000 的字节数**完全相同**，
+                //   下界判据照样放行，产物却已被按行错位重排（实测 PSNR 7.97 dB）。
+                //   解码段带 `-frames:v 1` ⇒ 一帧 rgb48le 的长度就是 `w*h*6`，多一字节都是异常。
+                throw new InvalidOperationException(
+                    $"解码产物与显示尺寸不符（{rawLen}B ≠ {w}×{h}×6={(long)w * h * 6}B）⇒ 几何口径不可信");
+
             var sched = ColorScheduler.ForItem(concurrency, w, h, 6);        // rgb48le = 6 B/px
             st.Scheduler = sched.ToLogFragment();
             PlatformServices.MarkAsTemporaryFile(tmp);
@@ -463,10 +471,23 @@ public static class RawColorPipeline
 
         // ── ④ 编码参数：与直连路径**共用同一个** BuildCjxlArguments（不另写一份）──
         // 色彩语义以 override 传入（来自计划）；质量/effort/渐进/光子噪声仍由它按 options 产出。
-        var cjxlArgs = CjxlService.BuildCjxlArguments("-", outputPath, options, hdrMeta, iccFile, cjxlSpace, itNits);
+        var cjxlArgs = CjxlService.BuildCjxlArguments("-", outputPath, options, hdrMeta, iccFile,
+            cjxlSpace, itNits, log: log);
 
         // ── ⑤ ffmpeg 侧：raw → PPM/PAM 流 ──
+        // ⚠ **`pixIn` 是盘上中间件的格式，不是交付格式**（2026-09-30 实测修，取证 `tests/output/t63/`、
+        //   `t65/`、`t66/`）：原先 PPM 的样本深度直接跟 `plan.OutBitDepth`（引擎中间件档，直通恒 16），
+        //   于是 8-bit 源也被 cjxl 按 **16-bit** 无损编码 —— 同一份像素 8bit 交付 11,485.5 kB、
+        //   16bit 交付 **20,233.6 kB（+76.2%）**，比源 PNG（12,163.9 kB）还大 66%，正是用户报的
+        //   "无损比 PNG 还大"。
+        //   为什么不在规划层把直通支改成 8bit：那样会让引擎走 `ColorKernels.EncodeTo8`，
+        //   其 `code16/65535*255` 在 float 下对 ×257 码值**不是恒等**（实测 0..91 恒等、92 起约半数
+        //   偏低 1、252..255 恒偏低 1）⇒ 把无损改成 ±1 有损。而 ffmpeg 的 `format=rgb24` 与 cjxl
+        //   往返都是逐比特精确的（E1/E2/E3）⇒ **降位交给 ffmpeg 做**，中间件保持 16bit 不动。
+        //   交付档取自 `plan.TargetBitDepth` + 容器自己的 `MapPixFmt`（与 png/tiff 出口同一判据，
+        //   也与 `CollectDegradations` ①b 播报的那一份一致）。
         string pixIn = plan.OutBitDepth == 8 ? "rgb24" : "rgb48le";
+        string ppmPix = ImageEncoderArgs.MapPixFmt("jxl", null, plan.TargetBitDepth, hdrMeta.hasAlpha, null);
         string ffArgs;
         if (hdrMeta.hasAlpha)
         {
@@ -478,7 +499,7 @@ public static class RawColorPipeline
             var scaleFilter = FfmpegCommandBuilder.BuildMaxDimensionScaleFilter(options, inputPath);
             string alphaFmt = plan.OutBitDepth == 8 ? "rgba" : "rgba64le";  // 与 pixIn 同深，否则 alphamerge 无法协商
             string merge = $"[1:v]{(string.IsNullOrEmpty(scaleFilter) ? "" : scaleFilter + ",")}"
-                         + $"format={alphaFmt},alphaextract[a];[0:v]format={pixIn}[b];[b][a]alphamerge";
+                         + $"format={alphaFmt},alphaextract[a];[0:v]format={pixIn}[b];[b][a]alphamerge,format={ppmPix}";
             ffArgs = $"-y -hide_banner -loglevel error -f rawvideo -pix_fmt {pixIn} -video_size {w}x{h} "
                    + $"-i \"{rawPath}\" -i \"{inputPath}\" -filter_complex \"{merge}\" "
                    + $"-compression_level 0 -f image2pipe -c:v pam -";
@@ -486,8 +507,12 @@ public static class RawColorPipeline
         else
         {
             ffArgs = $"-y -hide_banner -loglevel error -f rawvideo -pix_fmt {pixIn} -video_size {w}x{h} "
-                   + $"-i \"{rawPath}\" -compression_level 0 -f image2pipe -c:v ppm -";
+                   + $"-i \"{rawPath}\" -vf \"format={ppmPix}\" "
+                   + $"-compression_level 0 -f image2pipe -c:v ppm -";
         }
+        if (ppmPix != pixIn)
+            log?.Invoke($"[色彩] cjxl 出口：中间件 {pixIn} → 交付 {ppmPix}"
+                      + $"（目标位深 {plan.TargetBitDepth}bit；16bit 载体无损编码会显著变大且并非用户所要）\n");
 
         // 命令行必须可追溯（与 RunToEndAsync 同款理由）：A/B 对拍时"两条管线差在哪个参数"只能靠这两行
         // ⚠ `cjxl 命令行:` 这个**显式标签不能省**：本方法后面还有若干 `[色彩] cjxl 出口：…` 的散文行，
@@ -579,6 +604,13 @@ public static class RawColorPipeline
             throw new InvalidOperationException("JXR 出口需要 ffmpeg 做 raw → BMP/TIFF 中转，但未找到 ffmpeg");
 
         bool out8 = plan.OutBitDepth == 8;
+        // ⚠ **中间件精度 ≠ 交付样本深度**（2026-10-01，与 cjxl 出口同一条修法）：
+        //   `out8` 说的是盘上那份 raw 是什么格式（直通/携带的中间件恒 16-bit），
+        //   而 JXR 该出几 bit 由 `plan.TargetBitDepth` 决定。原先三处（中转容器、`pixOut`、
+        //   `tiffExtra`）全用 `out8` ⇒ 8-bit 源被绕成 16-bit JXR。实测（800x600 8-bit PNG，
+        //   `--lossless`）：交付 `pix_fmt=rgb48le`、877.2 kB，而同素材的 png/tiff 出口都正确给
+        //   `rgb24` ⇒ 只有这一条出口漏了。降位仍交给 ffmpeg 的 `-pix_fmt`（对 ×257 码值精确）。
+        bool deliver8 = plan.TargetBitDepth <= 8;
         var meta = FfmpegCommandBuilder.ProbeInputColorMetadata(inputPath, log, ct);
         bool hasAlpha = meta.hasAlpha;
 
@@ -587,14 +619,14 @@ public static class RawColorPipeline
         //   静默无效（已实测登记）⇒ 用 Remove-Item 会留下中转文件。
         var dir = Path.Combine(PlatformServices.GetTempDir(), $"cmjxr_{Guid.NewGuid():N}");
         Directory.CreateDirectory(dir);
-        var inter = Path.Combine(dir, out8 ? "in.bmp" : "in.tiff");
+        var inter = Path.Combine(dir, deliver8 ? "in.bmp" : "in.tiff");
         try
         {
             string pixIn = out8 ? "rgb24" : "rgb48le";
-            string pixOut = hasAlpha ? (out8 ? "bgra" : "rgba64le") : pixIn;
+            string pixOut = hasAlpha ? (deliver8 ? "bgra" : "rgba64le") : (deliver8 ? "rgb24" : "rgb48le");
             // TIFF 必须显式免压缩/免预测：JxrEncApp 自述只吃 `tif: >=8bpc, RGB`，
             // 压缩过的 TIFF 是否被它接受未经验证 ⇒ 用最朴素的无压缩形态（实测可用）。
-            string tiffExtra = out8 ? "" : " -compression_algo raw -pred none";
+            string tiffExtra = deliver8 ? "" : " -compression_algo raw -pred none";
 
             string ffArgs;
             if (hasAlpha)
@@ -633,7 +665,10 @@ public static class RawColorPipeline
             int fx = await RunToEndAsync(ffmpeg, ffArgs, log, ct).ConfigureAwait(false);
             if (fx != 0 || !File.Exists(inter) || new FileInfo(inter).Length == 0)
                 throw new InvalidOperationException(
-                    $"JXR 出口：raw → {(out8 ? "BMP" : "TIFF")} 中转失败 (exit {fx})");
+                    // ⚠ 中转容器名要说**实际写的那个**：容器由 `deliver8`（交付档）选，而 `out8` 说的是
+                    //   盘上中间件（直通/携带恒 16-bit）⇒ 8-bit 直通源写的是 in.bmp，报 TIFF 就是假文案
+                    //   （2026-10-01 打包冒烟实测到：日志「→ TIFF」而命令行 `-pix_fmt rgb24 … in.bmp`）。
+                    $"JXR 出口：raw → {(deliver8 ? "BMP" : "TIFF")} 中转失败 (exit {fx})");
 
             // ── ③ JxrEncApp 编码 ──
             double quality = options.Lossless ? 1.0 : options.Quality / 100.0;
@@ -644,7 +679,7 @@ public static class RawColorPipeline
             int ec = await JxrService.RunAsync(jxrArgs, s => log?.Invoke(s), ct).ConfigureAwait(false);
             if (ec != 0 || !File.Exists(outputPath) || new FileInfo(outputPath).Length == 0)
                 return ec != 0 ? ec : -1;   // 调用方按「编码失败 (exit …)」统一报错（不在这里吞掉）
-            log?.Invoke($"[色彩] JXR 出口：变换后的 raw → {(out8 ? "BMP" : "TIFF")}"
+            log?.Invoke($"[色彩] JXR 出口：变换后的 raw → {(deliver8 ? "BMP" : "TIFF")}"
                       + $"（{(hasAlpha ? "含 alpha，第二输入补平面" : "无 alpha")}）→ JxrEncApp（中转文件已清理）\n");
             return 0;
         }
@@ -713,6 +748,16 @@ public static class RawColorPipeline
             try { pb.StandardInput.Close(); } catch { }        // 关 stdin 发 EOF
             try { await pb.WaitForExitAsync(token).ConfigureAwait(false); }
             catch (OperationCanceledException) { try { if (!pb.HasExited) pb.Kill(entireProcessTree: true); } catch { } }
+            // 传输已经失败 ⇒ 编码器不会再读任何东西，而 ffmpeg 还有整幅 PPM 要写：实测 891x981 的
+            // 5.2 MB 流写满管道缓冲（64 KB 量级）后就**永久阻塞在写端**——此时没有任何东西会再读它的
+            // stdout。等下去的唯一结局是 30 分钟超时，用户届时看到的是"超时或已取消"，真因（编码器的
+            // 参数错误）被埋在下面那行 encErr 里 ⇒ 直接杀掉，让真因立刻浮出来。
+            // ⚠ 这里**不取消 token**：`errA`/`errB` 是 `ReadToEndAsync(token)`，一取消就读不到
+            //   cjxl 的 stderr 了，而那正是本次要交给用户的那句话。
+            if (transferError != null)
+            {
+                try { if (!pa.HasExited) pa.Kill(entireProcessTree: true); } catch { }
+            }
             // ffmpeg 应已自行退出；取消/编码器提前退出时它可能阻塞在无读者的 stdout ⇒ 用 token 打断并杀
             try { await pa.WaitForExitAsync(token).ConfigureAwait(false); }
             catch (OperationCanceledException) { try { if (!pa.HasExited) pa.Kill(entireProcessTree: true); } catch { } }
@@ -729,7 +774,14 @@ public static class RawColorPipeline
                 log?.Invoke($"[色彩] ffmpeg（cjxl 出口侧）: {ffErr.TrimEnd()}\n");
             if (!string.IsNullOrWhiteSpace(encErr)) log?.Invoke($"[色彩] cjxl: {encErr.TrimEnd()}\n");
             if (transferError != null)
-                throw new InvalidOperationException($"cjxl 出口：管道传输失败（{transferError.Message}）");
+                // 异常文本必须自带编码器原话：这条是任务详情里唯一与"为什么失败"面对面的字段，
+                // 只写"管道传输失败（管道正在被关闭）"等于把 broken pipe 这个**症状**当结论回给用户。
+                throw new InvalidOperationException(
+                    $"cjxl 出口：管道传输失败（{transferError.Message}）"
+                    + $"；cjxl 提前退出，退出码 {pb.ExitCode}"
+                    + (string.IsNullOrWhiteSpace(encErr)
+                        ? "，且 cjxl 未输出任何信息"
+                        : $"，cjxl 说：{encErr.Trim()}"));
             return pb.ExitCode;
         }
         finally
@@ -915,6 +967,15 @@ public static class RawColorPipeline
             //   ⇒ 与 JXR 出口（`EncodeJxrViaJxrEncAppAsync`，`#13 站点 B`）**同一处置**：限制**输出**帧数。
             //   语义也与引擎既有约定一致：**多帧输入只取首帧**（本函数的解码步就带 `-frames:v 1`）。
             gifFilter = $" -filter_complex \"{aMerge}\" -frames:v 1";
+            // ⚠ 这里的位深**必须**与 `pixIn`（中间件档）同源，不能改成 `plan.TargetBitDepth`：
+            //   上面的滤镜链把帧定成 `format={pixIn}`，交付档若更低就变成 swscale 的**隐式降位**
+            //   —— 绕开引擎自己的有序抖动，正是 `ColorKernels.EncodeTo8` 那条弯路（见
+            //   `ColorStrategyPlanning` 的 OutBitDepth 注释）。
+            //   代价由实测划定（`tests/output/t73/probe2.ps1`，真透明源 alphaYMIN=11）：
+            //   非 RGB 原生容器里只有 webp 会因此多写一档（`-pix_fmt yuva420p16le`），
+            //   而 libwebp 不吃它 ⇒ ffmpeg 自行谈回 `yuva420p`，产物 pix_fmt/alpha 都与 legacy 同
+            //   （YMIN 10 vs 11，差 1 LSB 属有损 webp 正常范围）⇒ **声明与实际交付不符，但无行为后果**。
+            //   `--bit-depth 10 -f webp` 同格产物逐字节相同 ⇒ 该档不影响任何可达格的结果。
             var alphaPix = ImageEncoderArgs.MapPixFmt(ext, o.Chroma, plan.OutBitDepth, true, o.ColorRange);
             if (!string.IsNullOrWhiteSpace(alphaPix)) pixFmt = $" -pix_fmt {alphaPix}";
         }
@@ -1112,27 +1173,17 @@ public static class RawColorPipeline
         finally { TryDelete(tmp); }
     }
 
-    public static async Task<(int w, int h)> ProbeSizeAsync(string path, string? ffmpegOverride = null, CancellationToken ct = default)
-    {
-        var ffprobe = AppSettingsService.Current.FfprobePath;
-        if (string.IsNullOrWhiteSpace(ffprobe) || !File.Exists(ffprobe)) return (0, 0);
-        var psi = new ProcessStartInfo
-        {
-            FileName = ffprobe,
-            Arguments = $"-v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 \"{path}\"",
-            RedirectStandardOutput = true, RedirectStandardError = true,
-            StandardOutputEncoding = System.Text.Encoding.UTF8,
-            StandardErrorEncoding = System.Text.Encoding.UTF8,
-            UseShellExecute = false, CreateNoWindow = true,
-        };
-        using var p = Process.Start(psi);
-        if (p == null) return (0, 0);
-            p.BeginErrorReadLine();   // P2-3：stderr 不排空会在管道缓冲(~4KB)写满时把子进程堵死，我们等 stdout/WaitForExit 就永等（实测可复现）
-        string outp = await p.StandardOutput.ReadToEndAsync(ct).ConfigureAwait(false);
-        await p.WaitForExitAsync(ct).ConfigureAwait(false);
-        var parts = outp.Trim().Split(',', StringSplitOptions.RemoveEmptyEntries);
-        return parts.Length >= 2 && int.TryParse(parts[0], out var w) && int.TryParse(parts[1], out var h) ? (w, h) : (0, 0);
-    }
+    /// <summary>
+    /// 引擎的几何真值入口 —— **显示**尺寸（autorotate 之后 ffmpeg 实际吐出的宽高）。
+    /// <para>⚠ 2026-09-30 前本方法是自写的一份 `-show_entries stream=width,height`（= **coded** 尺寸），
+    /// 而下面的解码段从不写 `-noautorotate` ⇒ 带取向标签的输入（实测 <c>Orientation=8</c> 的
+    /// 6000×4000 16-bit TIFF）解码出的是 4000×6000，却被按 coded 尺寸标注给编码器 ⇒ **每行错位重排**
+    /// （产物 vs 真值 PSNR **7.97 dB**；把同一段 raw 按 4000×6000 重排再旋回则 **inf**，逐字节等）。
+    /// 长度自检拦不住它：<c>rawLen = w*h*6</c> 在转置下恒等。⇒ 口径改由 <see cref="ImageGeometry"/>
+    /// 统一提供，本方法只保留既有签名与既有 ffprobe 解析来源（<c>AppSettingsService.FfmprobePath</c>）。</para>
+    /// </summary>
+    public static Task<(int w, int h)> ProbeSizeAsync(string path, string? ffmpegOverride = null, CancellationToken ct = default)
+        => ImageGeometry.DisplaySizeAsync(path, AppSettingsService.Current.FfprobePath, log: null, ct);
 
     private static async Task<int> RunToEndAsync(string exe, string args, Action<string>? log, CancellationToken ct)
     {

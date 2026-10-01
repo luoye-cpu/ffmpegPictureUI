@@ -853,8 +853,11 @@ public static class ImageEncoderArgs
     /// </para>
     /// <para>
     /// <c>jxl</c> 于 **2026-09-17** 接入，**只覆盖「静帧 + ffmpeg libjxl」子情形**：
-    /// cjxl 后端仍被 <c>ColorEngineRouter.BlockReason</c> 的 <c>backend != Ffmpeg</c> 挡住
-    /// （cjxl 不吃 rawvideo）；动图 JXL 被 `inputIsAnimated` 挡住；
+    /// cjxl 后端的参数不在本方法（cjxl 不吃 rawvideo，其命令行由
+    /// <c>CjxlService.BuildCjxlArguments</c> 负责）；⚠ 但**不要**据此以为 cjxl 后端走不了引擎 ——
+    /// <c>ColorEngineRouter.BlockReason</c> 早已为它开了例外（<c>!(ext == "jxl" &amp;&amp; backend == Cjxl)</c>，
+    /// 2026-09-17 第三批），本方法只是**不被那条路调用**（本句在接入前写的，已过期）。
+    /// 动图 JXL 被 `inputIsAnimated` 挡住；
     /// <c>JxlLosslessJpeg</c> 被 <see cref="UnsupportedEncoderSettings"/> 挡住。
     /// ⚠ JXL 的标注只能走 **CICP**：ffmpeg libjxl 编码器**不落盘 ICC**
     /// （实测：<c>-vf iccgen</c> 的 ICC 被丢弃；exiftool 拒写 JXL，退出码 1）

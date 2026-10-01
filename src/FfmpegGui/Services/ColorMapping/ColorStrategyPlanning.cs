@@ -364,11 +364,22 @@ public static partial class ColorMappingEngine
         //   中间件降成 8bit 会在 RGB→YUV 之前白丢精度（legacy 是保 16bit 到编码器）。
         //   A/B 实测：引擎出 `rgb24` 中间件时与 legacy 的 jpg 在 RGB 域仅 30.3dB（max|Δ|=122）；
         //   改为 16bit 中间件后见 TESTING §6 第 49 条复测。
+        // ⚠ **2026-09-30 记一笔实测过的弯路**：曾把直通支也改成 `TargetBitDepth<=8 ⇒ 8`，想让 8bit 源
+        //   直接按 8bit 交付。位深确实降下来了（同一份 8bit 源 20,233.6 kB → 11,485.5 kB），
+        //   但**无损被改成 ±1 有损**：`OutBitDepth=8` 会让引擎走 `ColorKernels.EncodeTo8`，
+        //   其 `code16/65535*255` 在 float 下对「×257 的码值」不是恒等映射
+        //   （实测 0..91 恒等、92 起约半数偏低 1、252..255 恒偏低 1；`tests/output/t65/`）。
+        //   而 ffmpeg 的 `format=rgb24` 与 cjxl 本身都是精确的（`tests/output/t66/` E1/E2/E3）。
+        //   ⇒ 本字段的语义仍是「**中间件精度**」；直通时的**交付档**由各出口自己按
+        //   `TargetBitDepth` + `ImageEncoderArgs.MapPixFmt` 决定（cjxl 出口已照此修，见该处注释）。
         // ⚠ **本式的值域是 {8,16}**（下游 `RawColorPipeline`/`ImageEncoderArgs.MapPixFmt` 只区分这两档：
         //   `OutBitDepth == 8` 走 rgb24、其余走 rgb48le）⇒ 目标 10/12 必然被取到上档 16，
         //   这一「请求 ≠ 交付」不静默：由 `CollectDegradations` 的 ①b 登记 `BitDepthRaised` 播报。
         p.OutBitDepth = p.Action != ColorAction.Map || p.ColorLoss == ColorLoss.None ? 16
             : (pol.TargetBitDepth <= 8 && !p.Requires16BitIntermediate && pol.Format.RgbNative ? 8 : 16);
+        // 交付档要能被下游出口读到（此前 `ColorTransformPlan.TargetBitDepth` 声明了却无人赋值，
+        // 于是「出口该出几 bit」只能被各出口重新推导一遍 —— cjxl 出口就是这么推错成中间件档的）。
+        p.TargetBitDepth = pol.TargetBitDepth;
         EnsureAnnotationNotSilentlyMissing(p, pol, it);
         return p;
     }

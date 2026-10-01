@@ -1,4 +1,4 @@
-# _lib-matrix.ps1 -- 穷举组合测试地基④：L2 两两正交（pairwise）+ L3 语义真矩阵（P2-A / P2-F）
+﻿# _lib-matrix.ps1 -- 穷举组合测试地基④：L2 两两正交（pairwise）+ L3 语义真矩阵（P2-A / P2-F）
 #
 # 定位（为什么是「库」而不是「门禁」）：
 #   本文件**不产 PASS/FAIL 汇总门禁**，只被 dot-source 复用（写法对齐同目录
@@ -383,7 +383,7 @@ function Get-EquivalenceClasses {
         Evidence = @(
             'src/FfmpegGui/Services/FfmpegCommandBuilder.Decision.cs:147|if (options.BitDepth.HasValue && options.BitDepth.Value > capBd)',
             'src/FfmpegGui/Services/FfmpegCommandBuilder.Decision.cs:155|options.BitDepth = capBd;',
-            'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:971|options.JpegGainMap ? null : "iec61966-2-1", "bt709", 8, true'
+            'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:966|options.JpegGainMap ? null : "iec61966-2-1", "bt709", 8, true'
         )
         Rationale = 'JPEG container caps bit depth at 8 and DecideOutputColor rewrites options.BitDepth in place, so 8/10/12/16 are observationally equal'
     }
@@ -398,7 +398,7 @@ function Get-EquivalenceClasses {
         Evidence = @(
             'src/FfmpegGui/Services/FfmpegCommandBuilder.Decision.cs:147|if (options.BitDepth.HasValue && options.BitDepth.Value > capBd)',
             'src/FfmpegGui/Services/FfmpegCommandBuilder.Decision.cs:155|options.BitDepth = capBd;',
-            'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:981|return (null, "iec61966-2-1", "bt709", 8, true);'
+            'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:976|return (null, "iec61966-2-1", "bt709", 8, true);'
         )
         Rationale = 'WebP container caps bit depth at 8 and DecideOutputColor rewrites options.BitDepth in place, so 8/10/12/16 are observationally equal'
     }
@@ -612,7 +612,11 @@ function Get-SemanticMatrices {
             Rationale = 'The preserve flag clears all five strip bits in the parser, so metadata-mode is NOT a single-variable switch against the strip bits; the container then decides whether EXIF/XMP can be carried at all.'
             Evidence = @(
                 'src/FfmpegGui/CliParser.cs:216|case "--preserve-metadata":',
-                'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:2041|bool exiftoolFormats = fmt is "jpg" or "jpeg" or "png" or "tiff" or "webp";'
+                # ⚠ pin 演进：2011 →（#39/#43 插注释）2041 →（2026-09-30 显示尺寸轮往 :1641 之后插了 14 行）**2055**。
+                #   →（2026-10-01 并发会话从同一文件删 5 行 ⇒ 该文件**四条 pin 同步 −5**：971→966、981→976、1013→1008、2055→2050）**2050**。
+                #   漂移由 A30 当场报出（`literal not on ...:2041 (found at line 2055)`）⇒ 抬号前先 `grep -n` 复核实况行，
+                #   并确认全文件该字面量**只出现一次**（行号锚不容歧义）。见 docs/TESTING.md §6 第 112 条。
+                'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:2050|bool exiftoolFormats = fmt is "jpg" or "jpeg" or "png" or "tiff" or "webp";'
             )
         },
         @{
@@ -629,7 +633,7 @@ function Get-SemanticMatrices {
             Rationale = 'Bit depth is clamped by the outlet: AVIF takes its ceiling from the encoder that actually runs (libaom/av1_nvenc 12, others 10; an empty encoder name means no -c:v, i.e. ffmpeg default = libaom-av1), WebP/JPEG are capped at 8 by the container, and RGB-native outlets only ship 8/16 - so the three axes are coupled. (2026-09-26: the former "AVIF + Display P3 + high bit depth collapses to sRGB 8-bit" clause was measured and removed; see task 39 and tests/output/t36/probe_39b.ps1.)'
             Evidence = @(
                 'src/FfmpegGui/Services/ColorMapping/ImageEncoderArgs.cs:715|AvifMaxBitDepthForEncoder(string? encoder)',
-                'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:1013|return (null, null, null, ColorMapping.ImageEncoderArgs.AvifMaxBitDepth(options), false);',
+                'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:1008|return (null, null, null, ColorMapping.ImageEncoderArgs.AvifMaxBitDepth(options), false);',
                 'src/FfmpegGui/Services/FfmpegCommandBuilder.Decision.cs:155|options.BitDepth = capBd;'
             )
         }

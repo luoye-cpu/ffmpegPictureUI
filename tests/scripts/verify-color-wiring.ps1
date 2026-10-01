@@ -21,7 +21,7 @@ $exe = "$root/src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.exe"
 if (-not (Test-Path $exe)) { $exe = "$root/src/FfmpegGui/bin/Debug/net11.0/win-x64/FfmpegGui.exe" }
 # ⚠ 2026-09-21（TESTING.md 第 84 条处置建议 ①）：**回退是静默的** —— 门禁可能测的
 #   不是你以为的那个二进制。⇒ 一律**打印被测 exe 与构建类型**，让读数可追溯。
-Write-Output ("[gate] exe=" + $exe + $(if ($exe -like '*\Debug\*') { " (Debug fallback)" } else { " (Release)" }))
+Write-Output ("[gate] exe=" + $exe + $(if ($exe -like '*[/\]Debug[/\]*') { " (Debug fallback)" } else { " (Release)" }))
 $fp = "$root/publish/PLAN/ffmpeg-full/ffprobe.exe"
 $ff = "$root/publish/PLAN/ffmpeg-full/ffmpeg.exe"   # MeanY 要跑 signalstats；不定义就会拿到空路径而永远返 -1
 # (8) 段自备 P3 ICC 素材要用 exiftool（提取 ICC）；生成逻辑与 caps 共用 `_lib-color-assets.ps1`。
@@ -32,7 +32,7 @@ $pr = "$root/tests/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.exe"
 if (-not (Test-Path $pr)) { $pr = "$root/tests/ServiceProbe/bin/Debug/net11.0/win-x64/ServiceProbe.exe" }
 # ⚠ 2026-09-21（TESTING.md 第 84 条处置建议 ①）：**回退是静默的** —— 门禁可能测的
 #   不是你以为的那个二进制。⇒ 一律**打印被测 exe 与构建类型**，让读数可追溯。
-Write-Output ("[gate] exe=" + $pr + $(if ($pr -like '*\Debug\*') { " (Debug fallback)" } else { " (Release)" }))
+Write-Output ("[gate] exe=" + $pr + $(if ($pr -like '*[/\]Debug[/\]*') { " (Debug fallback)" } else { " (Release)" }))
 foreach ($need in @($exe, $fp, $pr)) { if (-not (Test-Path $need)) { Write-Output "缺工具：$need"; exit 1 } }
 $val = "$root/tests/output/validate"; $col = "$val/../results/color"
 # ⚠ **运行级隔离（2026-09-17 修）**：原先 `$out` 是**固定**路径 + 下一行整目录删
@@ -500,6 +500,120 @@ if (Test-Path $alphaSrc) {
     }
 }
 
+# ── (10g) 自动光子噪声 × 引擎 cjxl 出口（2026-09-30：未解析的 "auto" 曾被当成真参数发出去）──
+# 缺陷形状：cjxl 的 `--photon_noise_iso` 解析器是 `ParseFloat && >= 0`（libjxl
+#   `tools/cjxl_main.cc:ParsePhotonNoiseParameter`），**没有 auto 这个取值**；而"从 EXIF 取 ISO"
+#   这句当时内联在 `ProcessCjxlAsync` 里，`:714` 的分派写成 `backend == Cjxl && !engineRoutable`
+#   ⇒ 引擎可走（= 默认路线）**根本进不到**它 ⇒ 占位串被当真参数发出，cjxl 在读 stdin 之前就退出 1、
+#   零产物，写方只看到"管道正在被关闭"（实测取证 `tests/output/t62/`：A/D 臂 exit 1 + 0 B，
+#   B/C/E 臂同参数只换掉该 flag ⇒ 正常出货，排除了 `-x color_space=` 这条备选解释）。
+# 本段钉四件事：① 该组合出得来货；② 命令行里**没有 auto**；③ ISO 解析确实发生在**引擎路线**上；
+#   ④ **正控**：数值 ISO + 有损时 flag 照发 —— 没有 ④，② 可能只是"整个功能没接上"造成的假绿。
+$ph1 = RunCli 'eng_cjxl_photon_auto' $p3 'jxl' @('--cjxl-auto-photon-noise', 'true')
+CK ($ph1.code -eq 0 -and $ph1.file -and $ph1.file.Length -gt 0) `
+   "(10) auto 光子噪声 + 引擎 cjxl 出口产出非空 jxl（exit=$($ph1.code)，$($ph1.file.Length)B）"
+$ph1Cmd = (($ph1.log -split "`n") | Where-Object { $_ -match '\[色彩\] cjxl 命令行' } | Select-Object -Last 1)
+CK ($ph1Cmd -and $ph1Cmd -notmatch 'photon_noise_iso=auto') `
+   "(10) 未解析的占位串**没有**被发给编码器（命令行：$ph1Cmd）"
+CK ($ph1.log -match '自动光子噪声') `
+   "(10) ISO 解析确实跑在**引擎路线**上（该行由分叉前的共用步骤打出，不再内联在 ProcessCjxlAsync）"
+$ph2 = RunCli 'eng_cjxl_photon_iso' $p3 'jxl' @('--cjxl-photon-noise-iso', '400')
+$ph2Cmd = (($ph2.log -split "`n") | Where-Object { $_ -match '\[色彩\] cjxl 命令行' } | Select-Object -Last 1)
+CK ($ph2.file -and $ph2.file.Length -gt 0 -and $ph2Cmd -match '--photon_noise_iso=400') `
+   "(10) **正控**：有损 + 数值 ISO ⇒ flag 照发且产物非空（命令行：$ph2Cmd）"
+# 无损与光子噪声互斥。实测（891x981 16-bit，同 effort）：`-d 0` 往返逐字节相同；
+# `-d 0 --photon_noise_iso=400` ⇒ **99.46%** 的 16-bit 样本偏离源（平均偏差 30875/65535），
+# 而 jxlinfo 对两者都报 "(possibly) lossless" —— 噪声由解码端按帧头参数合成，体积只多 10 B，
+# 用文件大小根本查不出来 ⇒ 这个组合不发给编码器，且**点名**丢弃。
+$ph3 = RunCli 'eng_cjxl_photon_lossless' $p3 'jxl' @('--lossless', 'true', '--cjxl-photon-noise-iso', '400')
+$ph3Cmd = (($ph3.log -split "`n") | Where-Object { $_ -match '\[色彩\] cjxl 命令行' } | Select-Object -Last 1)
+CK ($ph3.file -and $ph3.file.Length -gt 0 -and $ph3Cmd -match '-d 0' -and $ph3Cmd -notmatch 'photon_noise_iso') `
+   "(10) 无损 ⇒ 命令行只有 -d 0、**不带** --photon_noise_iso（叠加会静默破坏逐比特无损）"
+CK ($ph3.log -match 'photon noise skipped') `
+   "(10) 被丢弃的用户参数**点名**（不静默吞设置）"
+# ── (10h) 双进程管道的统一卫生要求（结构锁，进程→进程的每一条都要过）──
+# 动机：cjxl 提前退出后，写侧 ffmpeg 会**永久堵在无人读的 stdout 上**（实测卡 25 分钟直到父进程句柄
+#   关闭），而等待用的 token 只有 30 分钟超时会触发 ⇒ 用户停在「处理中」，真因被埋在后面的 stderr 行里。
+#   这一格**没有用户可达的行为判据**（要复现就得让真编码器在读完 stdin 前死掉，而那正是被修掉的东西），
+#   所以钉**结构**：谁把 Kill 那几行删了、或新加一条管道没带这套要求，本段立刻红。
+# ⚠ 先剥整行注释再匹配（注释里出现过 `pa.Kill` 字样，会造假命中）。
+function Strip-LineComments10([string]$text) {
+    return ((@($text -split "`r?`n") | ForEach-Object { ($_ -replace '//.*$', '') }) -join "`n")
+}
+# 表 = 全仓**进程→进程**的管道（写侧变量名即该条的判据锚）
+$pipeSites = @(
+    @{ f='src/FfmpegGui/Services/ColorMapping/RawColorPipeline.cs'; m='PipeToEncoderAsync'; w='pa'; x='(?s)管道传输失败.{0,420}encErr\.Trim\(\)' },
+    @{ f='src/FfmpegGui/Services/JxlPipelineService.cs';            m='TryPipeDjxlToCjpegliAsync';         w='procDj' },
+    @{ f='src/FfmpegGui/Services/QueueProcessor.cs';                m='PipeFfmpegToExternalEncoderAsync';  w='procFf' },
+    @{ f='src/FfmpegGui/Services/QueueProcessor.cs';                m='PipeDjxlToCjxlAsync';               w='procDj' },
+    @{ f='src/FfmpegGui/Services/QueueProcessor.cs';                m='PipeDjxlToFfmpegAsync';             w='procDj' }
+)
+# **发现闸**：条数由源码现量，不靠人记得改表 ⇒ 新增一条进程→进程管道而没入表，这里先红。
+# 只数"目标是别人的 stdin"的那些；写进 MemoryStream/FileStream 的不算（不存在无人读管道这一死法）。
+$pipeAll = ''
+foreach ($cs in (Get-ChildItem -Path "$root/src" -Recurse -Filter *.cs |
+                 Where-Object { $_.FullName -notmatch '\\(bin|obj)\\' })) {
+    $pipeAll += (Strip-LineComments10 ([IO.File]::ReadAllText($cs.FullName))) + "`n"
+}
+$pipeFound = @([regex]::Matches($pipeAll, '(?s)StandardOutput\.BaseStream\.CopyToAsync\(\s*\w+\.StandardInput'))
+CK ($pipeFound.Count -eq $pipeSites.Count) `
+   "(10) 进程→进程管道条数 == 结构锁表长（实得 $($pipeFound.Count)，表 $($pipeSites.Count)）⇒ 新增管道必须先入表并带齐三件"
+foreach ($s in $pipeSites) {
+    $txt = Strip-LineComments10 ([IO.File]::ReadAllText("$root/$($s.f)"))
+    # 锚**定义**而不是首次出现：这三条管道在 QueueProcessor 里都先被调用再定义，
+    # 拿 IndexOf("Name(") 会锚到调用点 ⇒ 切出来的是别的方法的代码 ⇒ 三项判据一起 False（假红）。
+    $mm = [regex]::Match($txt, "(?m)^[^\S\r\n]*(private|public|internal)[^\r\n]*\b$($s.m)\b[^\r\n]*\(")
+    if (-not $mm.Success) { CK $false "(10h) 定义锚点丢失：$($s.m)（被改名/删掉，判据不再覆盖它）"; continue }
+    $open = $txt.IndexOf('{', $mm.Index)
+    if ($open -lt 0) { CK $false "(10h) $($s.m)：找不到方法体起点"; continue }
+    $depth = 0; $end = $txt.Length
+    for ($k = $open; $k -lt $txt.Length; $k++) {
+        $ch = $txt[$k].ToString()
+        if ($ch -eq '{') { $depth++ }
+        elseif ($ch -eq '}') { $depth--; if ($depth -eq 0) { $end = $k; break } }
+    }
+    $body = $txt.Substring($mm.Index, $end - $mm.Index)
+    $cap = $body -match 'transferError = ex'
+    $kill = $body -match "(?s)if \(transferError != null\).{0,240}$($s.w)\.Kill\("
+    # 成功判据：要么条件里带 `transferError == null`，要么显式 throw —— 二者皆无 = 半截流能被判成功
+    $gate = ($body -match 'transferError == null') -or ($body -match '(?s)if \(transferError != null\)[\s\S]{0,520}?throw')
+    # 表项可带 x = 该条独有的附加要求（引擎出口那条：异常文本必须含编码器 stderr 原话）
+    $extra = $true
+    if ($s.x) { $extra = ($body -match $s.x) }
+    CK ($cap -and $kill -and $gate -and $extra) `
+       "(10h) $($s.m)：捕获=$cap 杀写侧($($s.w))=$kill 成功判据含传输失败=$gate 附加=$extra"
+}
+
+# ── (10j) 交付样本深度：外部编码器出口不得把「中间件精度」当「交付深度」（2026-10-01）──
+# 实测：8-bit 源经引擎出口时，cjxl 出口曾喂 16-bit PPM（同一份像素 +76%，比源 PNG 还大）、
+#   JXR 出口曾落 16-bit TIFF（877.2 kB / rgb48le）。png/tiff 出口一直是对的（它们不由本字段决定交付）。
+# 判据用**第三方读回的产物 pix_fmt**，不看自家日志；并配 16-bit 源的正控，
+# 否则"恒 8-bit"也能骗过前两条。
+$p8src = "$out/_d8.png"; $p16src = "$out/_d16.png"
+Start-Process -FilePath $ff -ArgumentList @('-y','-hide_banner','-loglevel','error','-f','lavfi',
+    '-i','gradients=s=240x180:c0=0x305090:c1=0xd0a040:n=5,format=rgb24','-frames:v','1',$p8src) `
+    -NoNewWindow -Wait -RedirectStandardOutput "$out/_dgen.txt" -RedirectStandardError "$out/_dgen.e" | Out-Null
+Start-Process -FilePath $ff -ArgumentList @('-y','-hide_banner','-loglevel','error','-f','lavfi',
+    '-i','gradients=s=240x180:c0=0x305090:c1=0xd0a040:n=5,format=rgb48le','-frames:v','1',$p16src) `
+    -NoNewWindow -Wait -RedirectStandardOutput "$out/_dgen2.txt" -RedirectStandardError "$out/_dgen2.e" | Out-Null
+function PixOf([string]$path) {
+    $o = "$out/_pix.txt"
+    Start-Process -FilePath $fp -ArgumentList @('-v','error','-select_streams','v:0','-show_entries',
+        'stream=pix_fmt','-of','csv=p=0', $path) -NoNewWindow -Wait -RedirectStandardOutput $o | Out-Null
+    return ([System.IO.File]::ReadAllText($o)).Trim()
+}
+if ((Test-Path $p8src) -and (Test-Path $p16src)) {
+    $d1 = RunCli 'depth_jxl8' $p8src 'jxl' @('--lossless','true')
+    $pixJ8 = if ($d1.file) { PixOf $d1.file.FullName } else { '<无产物>' }
+    CK ($pixJ8 -match '^rgb24$') "(10j) 8-bit 源 → JXL 无损交付 rgb24（不是 rgb48le 载体）：$pixJ8"
+    $d2 = RunCli 'depth_jxr8' $p8src 'jxr' @('--lossless','true')
+    $pixX8 = if ($d2.file) { PixOf $d2.file.FullName } else { '<无产物>' }
+    CK ($pixX8 -match 'bgr24|rgb24') "(10j) 8-bit 源 → JXR 交付 8-bit（曾为 rgb48le / +369%）：$pixX8"
+    $d3 = RunCli 'depth_jxl16' $p16src 'jxl' @('--lossless','true')
+    $pixJ16 = if ($d3.file) { PixOf $d3.file.FullName } else { '<无产物>' }
+    CK ($pixJ16 -match '48') "(10j) **正控**：16-bit 源仍按 16-bit 交付（证明上两条不是恒 8-bit）：$pixJ16"
+} else { CK $false "(10j) 位深夹具生成失败 ⇒ 本段三条不给绿灯" }
+
 # ── (11) JXR 执行出口（2026-09-17 接入）──
 # 背景：`JxrEncApp` 是**纯文件式** `-i input -o output`（不吃 rawvideo/stdin）。⚠ 本段初稿把「不走 ffmpeg
 # 编码」的理由写成「本工具链的 ffmpeg 没有 jxr 编码器」—— **已按实测改正**（09-26 构建 `-codecs` 报
@@ -535,26 +649,65 @@ function JxrPixelFormat([string]$jxrPath) {
 }
 if ((Test-Path $jxrEnc) -and (Test-Path $jxrDec)) {
     $cmjxrBefore = @(Get-ChildItem $env:TEMP -Directory -Filter 'cmjxr_*' -EA SilentlyContinue).Count
-    # ── (11a) 直通源（8-bit，无 ICC）⇒ 计划出口位深 **16** ⇒ TIFF 中转 ──
+    # ── (11a) 直通源（8-bit，无 ICC）⇒ **交付**按源档 8bit ⇒ BMP 中转 ──
+    # ⚠ 2026-09-30 契约变更（原判据在此处已过期，逐字记下免得再被改回去）：原先钉的是
+    #   「中转恒为 TIFF + `-pix_fmt rgb48le`，因为计划『直通/携带绝不降位』⇒ 出口位深 16、不由源位深决定」。
+    #   那句话把**中间件精度**当成了**交付深度**：同一份 8-bit 像素按 16-bit 交付实测 151,899 B，
+    #   按 8-bit 交付 30,925 B（**4.91×**，本轮取证 `tests/output/t74/jxrcodes.ps1`），而两侧
+    #   JxrDecApp 独立回读**都能解出** ⇒ 像素没变、只是载体白涨。
+    #   现在交付档取自 `plan.TargetBitDepth`；『绝不降位』那条约束仍然管**中间件**
+    #   （同一行的 `-f rawvideo -pix_fmt rgb48le` 必须继续成立）⇒ 两条一起钉，**判据只增不减**。
     $x1 = RunCli 'eng_jxr_sdr' $sdr 'jxr' @()
     CK ($x1.file -and $x1.file.Length -gt 0) "(11) JXR 出口产出非空 .jxr（$($x1.file.Length)B）"
     $x1ff = (($x1.log -split "`n") | Where-Object { $_ -match '\[色彩\] ffmpeg' -and $_ -match 'rawvideo' } | Select-Object -Last 1)
-    CK ($x1ff -and $x1ff -match 'in\.tiff' -and $x1ff -match '-pix_fmt rgb48le') `
-       "(11) 直通用例走 **TIFF** 中转 + rgb48le（计划「直通/携带绝不降位」⇒ 出口位深 16，不由源位深 8 决定）"
-    CK ($x1ff -and $x1ff -notmatch 'in\.bmp') `
-       "(11) 该用例**不是** BMP（JxrEncApp 自述 bmp: <=8bpc ⇒ 48-bit 中转只能走 TIFF）"
+    CK ($x1ff -and $x1ff -match 'in\.bmp' -and $x1ff -match '-pix_fmt rgb24 ') `
+       "(11) 8-bit 直通源 ⇒ **BMP** 中转 + 交付 `-pix_fmt rgb24`（交付档取自计划的目标位深，不再取自中间件档）"
+    CK ($x1ff -and $x1ff -match '-f rawvideo -pix_fmt rgb48le') `
+       "(11) 同一行的**中间件**仍是 rgb48le ⇒ 『直通绝不降位』没有被削弱，改的只是出口交付档"
+    CK ($x1ff -and $x1ff -notmatch 'in\.tiff') `
+       "(11) 该用例**不是** TIFF（TIFF 只属于 ≥8bpc 交付；两档同时出现=交付档被两处独立推导）"
+    # ⚠ 日志文案必须说**实际写的那个容器**：本仓出过一次「日志 → TIFF、命令行 in.bmp」的假文案
+    #   （2026-10-01 打包冒烟抓到，根因是文案读 `out8`（中间件档）而容器读 `deliver8`（交付档））。
+    $x1s = (($x1.log -split "`n") | Where-Object { $_ -match 'JXR 出口：变换后的 raw' } | Select-Object -Last 1)
+    CK ($x1s -and $x1s -match '→ BMP') `
+       "(11) 播报的中转容器与命令行一致（实得「$($x1s -replace '^\s*\[色彩\]\s*','')」；旧文案在此处写 TIFF）"
     CK ($x1ff -and $x1ff -notmatch 'zscale') `
        "(11) 出口的 ffmpeg 命令行**不含 zscale** ⇒ 色彩不再由硬编码滤镜决定（原 ProcessJxrAsync 的 :1783 那条）"
     CK ($x1.log -match '\[色彩\] JxrEncApp 命令行:') "(11) 命令行有可追溯的「JxrEncApp 命令行:」标签（A/B 对拍用）"
+    # ── (11a2) 显式 `--bit-depth 16` ⇒ 交付升档 ⇒ TIFF 中转 + 48-bit 回读（两档各自可达，不是死分支）──
+    # ⚠ BMP 侧写 `-pix_fmt rgb24`、TIFF 侧写 `rgb48le`：**判据必须按交付档分叉**，
+    #   否则 8-bit 交付的产物会被 B 侧字节序/档位判成另一种东西（旧判据 `-match '-pix_fmt rgb48le'`
+    #   在两条臂上都成立 —— 那行的**输入侧**本来就是 rgb48le，这是一条恒真断言，已作废）。
+    $x1t = RunCli 'eng_jxr_tiff16' $sdr 'jxr' @('--bit-depth', '16')
+    $x1tff = (($x1t.log -split "`n") | Where-Object { $_ -match '\[色彩\] ffmpeg' -and $_ -match 'rawvideo' } | Select-Object -Last 1)
+    CK ($x1tff -and $x1tff -match 'in\.tiff' -and $x1tff -notmatch 'in\.bmp') `
+       "(11) --bit-depth 16 ⇒ **TIFF** 中转（JxrEncApp 自述 bmp: <=8bpc ⇒ 48-bit 中转只能走 TIFF）"
+    if ($x1.file -and $x1t.file) {
+        CK ($x1.file.Length -lt $x1t.file.Length) `
+           "(11) 同一素材：8-bit 交付 $($x1.file.Length) B < 16-bit 交付 $($x1t.file.Length) B ⇒ 载体档位不再白涨（旧行为下两格同为 16-bit，本条会红）"
+    } else {
+        CK $false "(11) 两档臂缺一（8bit=$([bool]$x1.file) 16bit=$([bool]$x1t.file)）⇒ 上面那条体积判据无从对比，判红"
+    }
     if ($x1.file) {
         # **第三方回读**：用独立解码器证明产物是真 JXR，且位深/通道与中转一致
-        $ok1 = JxrDec $x1.file.FullName "$out/_x1_back.tif" '10'
-        CK $ok1 "(11) **独立解码器 JxrDecApp 能解出产物**（第三方证明是真 JXR，不是改名的别的东西）"
+        $ok1 = JxrDec $x1.file.FullName "$out/_x1_back.bmp" '0'
+        CK $ok1 "(11) **独立解码器 JxrDecApp 能解出 8-bit 产物**（`-c 0` = 24bppBGR，码表取自工具自己的 usage）"
         $pf1 = JxrPixelFormat $x1.file.FullName
-        CK ($pf1 -match '48-bit RGB') "(11) 容器像素格式回读为 48-bit RGB（16-bit 通路，实得「$pf1」）"
+        CK ($pf1 -match '24-bit BGR') "(11) 8-bit 交付的容器像素格式回读为 24-bit BGR（实得「$pf1」）"
     }
-    # ── (11b) 8-bit 出口才走 BMP：`--bit-depth=8` + P3 源（Map + Clipping ⇒ TargetBitDepth=8）──
-    # 这一条是「BMP 分支不是死代码」的证据；没有它，上面 `out8 ? BMP : TIFF` 的 BMP 侧无人覆盖。
+    if ($x1t.file) {
+        $ok1t = JxrDec $x1t.file.FullName "$out/_x1t_back.tif" '10'
+        CK $ok1t "(11) 16-bit 交付产物可被 JxrDecApp `-c 10`（48bppRGB）独立解出"
+        # 负控：同一产物**不得**被 alpha 码解出 ⇒ 上面那条"能解"不是"随便给个码都过"
+        $neg1t = JxrDec $x1t.file.FullName "$out/_x1t_neg22.tif" '22'
+        CK (-not $neg1t) "(11) 负控：48-bit 产物**不得**被 `-c 22`（32bppBGRA）解出 ⇒ 上一条的成功有判别力"
+        $pf1t = JxrPixelFormat $x1t.file.FullName
+        CK ($pf1t -match '48-bit RGB') "(11) 16-bit 交付的容器像素格式回读为 48-bit RGB（实得「$pf1t」）"
+    }
+    # ── (11b) 显式 `--bit-depth=8` 的 P3 源（Map + Clipping ⇒ TargetBitDepth=8）──
+    # ⚠ 2026-09-30：本臂原来的职责是「BMP 分支不是死代码」的唯一证据；交付档改按目标位深后，
+    #   **默认**臂 (11a) 也落进 BMP ⇒ 本臂的职责换成「**显式请求** 8bit 与默认推断 8bit 走同一条出口判据」
+    #   （两者产物档位必须一致，否则说明有第二条独立推导路径）。16-bit 那一侧由 (11a2) 钉。
     # ⚠ 断言的是 `-pix_fmt rgb24` 而**不是** `bgr24`：出口对两条分支都用「变换后 raw 的像素格式」
     #   （`pixOut = pixIn`），BMP 的 BGR 字节序由 ffmpeg 的 BMP 编码器负责；这一点由**独立回读**
     #   （exiftool `PixelFormat : 24-bit BGR` + JxrDecApp `-c 0` 解码）钉住，比断言 ffmpeg 的入参更硬。
@@ -610,14 +763,37 @@ if ((Test-Path $jxrEnc) -and (Test-Path $jxrDec)) {
             $pf3 = JxrPixelFormat $x3.file.FullName
             CK ($pf3 -match 'RGBA|BGRA') `
                "(11) **产物容器真的含 alpha**（exiftool 回读 PixelFormat=「$pf3」）—— 不是只看命令行"
-            $ok3 = JxrDec $x3.file.FullName "$out/_x3_back.tif" '23'
-            if ($ok3) {
-                # 源与产物在**同一转换口径**（rgba64le）下比 alpha 的 YMIN：相等 ⇒ 未被拍平
-                $ayS = AlphaYMin16 $alphaSrc
-                $ayP = AlphaYMin16 "$out/_x3_back.tif"
-                CK ($ayS -gt 0 -and $ayP -gt 0 -and $ayP -eq $ayS) `
-                   "(11) 透明**未被拍平**（同一 16-bit 口径下源 alpha YMIN=$ayS，产物=$ayP）"
-            } else { CK $false "(11) alpha 产物 JxrDecApp 回读失败（无法判定是否拍平）" }
+            # ⚠ 解码码**必须由产物的 PixelFormat 决定**，不能写死 `-c 23`：
+            #   23=64bppRGBA、22=32bppBGRA（JxrDecApp 自己的 usage 表）。交付档改成跟随目标位深后，
+            #   8-bit alpha 源出的是 32bppBGRA ⇒ 写死 23 会 exit=-106，读起来像"产物坏了"。
+            #   （同族坑已由 `verify-jxr-anim-input.ps1:244` 记过一笔：判据吃的是档位不是意图。）
+            $code3 = ''; $ext3 = ''
+            if ($pf3 -match '64-bit RGBA') { $code3 = '23'; $ext3 = 'tif' }
+            elseif ($pf3 -match '32-bit BGRA') { $code3 = '22'; $ext3 = 'bmp' }
+            if ($code3 -eq '') {
+                CK $false "(11) alpha 产物的 PixelFormat「$pf3」不在已知码表内 ⇒ 无法选解码码，判红（不放行）"
+            } else {
+                $back3 = "$out/_x3_back.$ext3"
+                $ok3 = JxrDec $x3.file.FullName $back3 $code3
+                if ($ok3) {
+                    # 源与产物在**同一转换口径**（rgba64le）下比 alpha 的 YMIN：相等 ⇒ 未被拍平
+                    $ayS = AlphaYMin16 $alphaSrc
+                    $ayP = AlphaYMin16 $back3
+                    CK ($ayS -gt 0 -and $ayP -gt 0 -and $ayP -eq $ayS) `
+                       "(11) 透明**未被拍平**（同一 16-bit 口径下源 alpha YMIN=$ayS，产物=$ayP；解码码 $code3 由 $pf3 选出）"
+                } else { CK $false "(11) alpha 产物 JxrDecApp `-c $code3` 回读失败（无法判定是否拍平）" }
+            }
+            # ── (11d2) 同一 alpha 源显式 `--bit-depth 16` ⇒ 必须升到 64bppRGBA（两档都可达）──
+            $x3t = RunCli 'eng_jxr_alpha16' $alphaSrc 'jxr' @('--bit-depth', '16')
+            if ($x3t.file) {
+                $pf3t = JxrPixelFormat $x3t.file.FullName
+                CK ($pf3t -match '64-bit RGBA') `
+                   "(11) --bit-depth 16 的 alpha 交付回读为 64-bit RGBA（实得「$pf3t」）⇒ 升档臂不是死分支"
+                CK ($x3t.file.Length -gt $x3.file.Length) `
+                   "(11) 同一 alpha 素材：8-bit 交付 $($x3.file.Length) B < 16-bit 交付 $($x3t.file.Length) B（体积差由交付档解释，不是编码器换档）"
+                $ok3t = JxrDec $x3t.file.FullName "$out/_x3t_back.tif" '23'
+                CK $ok3t "(11) 64bppRGBA 产物可被 `-c 23` 独立解出"
+            } else { CK $false "(11) 升档 alpha 臂无产物 ⇒ 上面两条无从判定，判红" }
         }
     }
     # ── (11e) P9 口径回填：**无标签** 16-bit 不得被硬按 Rec.2020 解读（2026-09-18）──
@@ -659,6 +835,65 @@ if ((Test-Path $jxrEnc) -and (Test-Path $jxrDec)) {
        "(11) 中转目录已清理（跑前 $cmjxrBefore 个 / 跑后 $cmjxrAfter 个；用 File.Delete，Remove-Item 对仓外路径静默无效）"
 } else {
     CK $false "(11) 缺 JxrEncApp/JxrDecApp（publish/PLAN/artifacts）—— 本条**不给绿灯**"
+}
+
+# ── (12) 取向标签自洽：像素被旋正 ⇒ 源的 Orientation 必须丢（2026-10-01 补，实测回归）──────
+# 钉住的缺陷是**本仓自己引入的**：09-30 把 jbrd 开关默认翻成 true 之后，
+#   `CjxlService.UsesLosslessJpegRewrap`（当时只与到"输入是 JPEG"，没有目标格式条件）同时被
+#   元数据恢复当作"这次像素没动"的唯一判据 ⇒ JPEG→JPEG/PNG/AVIF/WebP 也把 Orientation=8
+#   留在了**已被解码器旋正**的像素上 ⇒ 查看器二次旋转。
+# 修前（同一出货包、同一素材，`tests/output/t76/orientation-rewrap.ps1`）：四格 coded=480,640
+#   且 Orientation=8 ⇒ 全中；修后四格 Orientation 均被丢弃，而 jxl(jbrd) 仍带走取向。
+Write-Host "`n=== (12) 取向标签 × 免解码重封装：产物自洽性 ===" -ForegroundColor Cyan
+$orIn = "$out/orient_in.jpg"
+$null = & $ff -y -hide_banner -loglevel error -f lavfi -i "gradients=s=640x480:c0=0x204060:c1=0xc07030:n=5,format=rgb24" -frames:v 1 -q:v 3 "$orIn" 2>&1
+if ((Test-Path $orIn) -and (Test-Path $et)) {
+    $null = & $et -overwrite_original -n "-EXIF:Orientation=8" "$orIn" 2>&1
+    function OrientOf([string]$p) {
+        $o = "$out/_or_$([guid]::NewGuid().ToString('N').Substring(0,6)).txt"
+        $null = Start-Process -FilePath $et -ArgumentList @('-n','-s3','-EXIF:Orientation',$p) -NoNewWindow -Wait -RedirectStandardOutput $o
+        $v = ([System.IO.File]::ReadAllText($o)).Trim()
+        if ($v -eq '') { return '<无>' }
+        return $v
+    }
+    function CodedOf([string]$p) {
+        $o = "$out/_px_$([guid]::NewGuid().ToString('N').Substring(0,6)).txt"
+        $null = Start-Process -FilePath $fp -ArgumentList @('-v','error','-select_streams','v:0','-show_entries','stream=width,height','-of','csv=p=0',$p) -NoNewWindow -Wait -RedirectStandardOutput $o
+        return (([System.IO.File]::ReadAllText($o)) -split "`r?`n" | Where-Object { $_ -match '^\s*\d+\s*,\s*\d+\s*$' } | Select-Object -First 1)
+    }
+    $oTag0 = OrientOf $orIn; $oDim0 = CodedOf $orIn
+    CK (($oTag0 -eq '8') -and ($oDim0 -replace '\s','' -eq '640,480')) `
+       "(12) 夹具自检：源 coded=640x480 且 Orientation=8（不成立则本段无从判定）：实得 coded=$oDim0 tag=$oTag0"
+    # 像素被旋正的三格：标签必须丢
+    foreach ($fmt in @('jpg','png','webp')) {
+        $x = RunCli ("or_$fmt") $orIn $fmt @()
+        $od = CodedOf $x.file.FullName; $ot = OrientOf $x.file.FullName
+        CK (($od -replace '\s','' -eq '480,640')) "(12) $fmt：像素已被旋正（coded 应成 480x640，实得 $od）"
+        CK (($ot -eq '<无>') -or ($ot -eq '1')) "(12) $fmt：旋正后不得仍带源 Orientation（否则二次旋转），实得 $ot"
+    }
+    # jbrd 那一格：像素没动 ⇒ 取向必须**被带走**（EXIF 或 JXL 容器任一处，值不得互相矛盾）
+    $xj = RunCli 'or_jxl' $orIn 'jxl' @()
+    # ⚠ JXL 的**尺寸口径与 JPEG 不同**：ffprobe 对 .jxl 返回的是**显示**尺寸（它自己应用了容器里的
+    #   Orientation），而 jxlinfo 第一行才是 **coded** 尺寸（实测：同一产物 ffprobe=480,640、
+    #   jxlinfo="JPEG XL image, 640x480"+容器 Orientation: 8）。⇒ 判"像素没动"必须用 jxlinfo，
+    #   拿 ffprobe 的 JXL 尺寸与 JPEG 的 coded 尺寸横比会造出假红（本条第一版就踩了）。
+    $jiJxl = ''
+    if (Test-Path $jxlinfo) {
+        $jo = "$out/_jior_$([guid]::NewGuid().ToString('N').Substring(0,6)).txt"
+        $null = Start-Process -FilePath $jxlinfo -ArgumentList @($xj.file.FullName) -NoNewWindow -Wait -RedirectStandardOutput $jo
+        $jiJxl = ([System.IO.File]::ReadAllText($jo))
+    }
+    $mJxl = [regex]::Match($jiJxl, 'JPEG XL image,\s*(\d+)x(\d+)')
+    $odj = $(if ($mJxl.Success) { $mJxl.Groups[1].Value + ',' + $mJxl.Groups[2].Value } else { '<未知>' })
+    $otj = OrientOf $xj.file.FullName
+    CK (($odj -replace '\s','' -eq '640,480')) "(12) jxl(jbrd)：像素应当没动（jxlinfo coded 仍是 640x480，实得 $odj）"
+    CK ($otj -eq '8') "(12) jxl(jbrd)：取向随产物带走（EXIF 读回 $otj，期望 8）"
+    # 反真空：同一目标关掉重封装 ⇒ 走像素路线 ⇒ 标签反过来必须丢
+    $xo = RunCli 'or_jxl_off' $orIn 'jxl' @('--jxl-lossless-jpeg','false')
+    $odo = CodedOf $xo.file.FullName; $oto = OrientOf $xo.file.FullName
+    CK (($oto -eq '<无>') -or ($oto -eq '1')) "(12) 反真空：jxl 关掉 jbrd ⇒ 像素被旋正，标签必须丢（实得 $oto，coded $odo）"
+} else {
+    CK $false "(12) 取向夹具或 exiftool 不可用 ⇒ 本段不给绿灯（缺 $orIn / $et）"
 }
 
 # 运行级隔离的配套：唯一目录不会被下次运行清掉 ⇒ 成功时自己清（失败则保留供排查）。

@@ -486,7 +486,9 @@ namespace FfmpegGui.Services
 
                 if (srcRes.Value.Width != encRes.Value.Width || srcRes.Value.Height != encRes.Value.Height)
                     return $"源图 ({srcRes.Value.Width}x{srcRes.Value.Height}) 与输出图 ({encRes.Value.Width}x{encRes.Value.Height}) " +
-                           $"分辨率不一致，SSIM/PSNR 要求两图尺寸完全相同";
+                           $"分辨率不一致，SSIM/PSNR 要求两图尺寸完全相同\n" +
+                           $"（尺寸为**显示口径**，即 ffmpeg 解码后含取向标签旋正在内的实际帧尺寸；" +
+                           $"开了「最长边限制」或源与产物轴向不同都会命中本条）";
 
                 return null; // 一致
             }
@@ -496,45 +498,23 @@ namespace FfmpegGui.Services
             }
         }
 
+        /// <summary>
+        /// 取文件的**显示**尺寸（= ffmpeg 解码后滤镜链里真正跑的宽高）。
+        /// <para>⚠ 2026-09-30：这里曾自写一份 `-show_entries stream=width,height`（= **coded** 尺寸）。
+        /// 对带取向标签的源（实测 TIFF <c>Orientation=8</c>：coded 6000×4000、解码帧 4000×6000）
+        /// 造成两个方向的错判 —— ①对**正确**的产物报"源图 (6000x4000) 与输出图 (4000x6000) 分辨率不一致"
+        /// 而拒绝对拍；②对**几何口径错**的产物（引擎按 coded 标注旋正像素）预检反而通过，
+        /// 直到 ffmpeg 的 ssim 报 <c>Width and height of input videos must be same</c> 才失败，
+        /// 用户只拿到 stderr 尾巴。探测口径统一收在 <see cref="ImageGeometry"/>。</para>
+        /// <para>返回 null = 探测不可用 ⇒ 调用方按既有兜底跳过预检（不得当成"尺寸为 0"）。</para>
+        /// </summary>
         private static async Task<(int Width, int Height)?> GetResolutionAsync(
             string filePath, string ffmpegPath)
         {
-            try
-            {
-                var probePath = FindFfprobe(ffmpegPath);
-                if (probePath == null) return null;
-
-                var psi = new ProcessStartInfo
-                {
-                    FileName = probePath,
-                    Arguments = $"-v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 \"{filePath}\"",
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    StandardErrorEncoding = Encoding.UTF8,
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                    StandardOutputEncoding = Encoding.UTF8
-                };
-
-                using var p = Process.Start(psi);
-                if (p == null) return null;
-                    p.BeginErrorReadLine();   // P2-3：stderr 不排空会在管道缓冲(~4KB)写满时把子进程堵死，我们等 stdout/WaitForExit 就永等（实测可复现）
-
-                var output = await p.StandardOutput.ReadToEndAsync();
-                await p.WaitForExitAsync();
-
-                // 输出格式: "1920,1080"
-                var parts = output.Trim().Split(',');
-                if (parts.Length >= 2 &&
-                    int.TryParse(parts[0], out var w) &&
-                    int.TryParse(parts[1], out var h))
-                {
-                    return (w, h);
-                }
-            }
-            catch { }
-            return null;
+            var (w, h) = await ImageGeometry.DisplaySizeAsync(filePath, FindFfprobe(ffmpegPath)).ConfigureAwait(false);
+            return w > 0 && h > 0 ? (w, h) : null;
         }
+
 
         // 匹配数值或 "inf"（无损编码时 PSNR/SSIM dB 为无穷大）
         private const string ValuePattern = @"(?:[-.\deE+]+|inf)";
