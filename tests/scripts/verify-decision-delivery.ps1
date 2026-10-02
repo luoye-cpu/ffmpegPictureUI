@@ -630,9 +630,30 @@ if (-not (Test-Path $jxlinfo)) {
            ("⑬ 直连 cjxl 路线现在也必须兑现目标：产物应读回 sRGB primaries（实得 " + $cl2 +
             "）—— 旧版在这里钉的是'仍是源语义 P3、两路有意不同'，那属 #44 缺陷，已按实测翻转")
         $ps2 = PsnrTwo $je2.file.FullName $jl2.file.FullName $graphSame
-        CK ($ps2 -ge 40.0) `
-           ("⑬ 两路像素**趋同**（同源同目标 ⇒ psnr 必须 ≥ 40 dB，实得 " + $ps2 +
-            "）：低于此值说明只有一路真转了像素（'改了标签没改像素'那一族的反向形态）")
+        # ⚠ 阈值口径改于 2026-10-02（取证见 `tests/output/capture_carrier.ps1` 与账本第十节）：
+        #   两臂**进编码器之前**的像素实测只差 max 15/65535（0.06/255）、聚合 **85.86 dB**（无损编码后逐比特同一量级），
+        #   过 `-e 7 -d 2.4` 有损后差到 **36.87 dB**（max 118/255）——差是**有损编码在硬边纯色图上放大**出来的，
+        #   不是色彩数学分歧（内核 vs zimg 在同一夹具上逐通道 max 11~15/65535）。
+        #   旧缺陷形态（#44 之前"直连不映射"）实测只有 **14.74 dB** ⇒ 把这条的下限放在 25 dB
+        #   仍可抓住那一族（相隔 10 dB），同时不再被编码噪声推着摆（历史上它一度只剩 44.43 vs 40 的余量）。
+        #   **严格的水不放在这里**：逐点趋同改由下面的无损臂 (⑬c) 守。
+        CK ($ps2 -ge 25.0) `
+           ("⑬ 两路像素**趋同**（同源同目标 ⇒ 有损档 psnr 必须 ≥ 25 dB，实得 " + $ps2 +
+            "）：明显低于此值才说明'只有一路真转了像素'那一族复发；本档不测亚 LSB 级一致性（那是 ⑬c 的活）")
+    }
+    # ── (c) 无损档：把"两路必须兑现同一份像素"这条真不变量放到**没有编码噪声**的地方测 ──
+    $je3 = RunCli 'jxl_eng_srgb_ll' $p3 'jxl' ($ENG2 + @('--color-space', 'sRGB', '--quality', '100'))
+    $jl3 = RunCli 'jxl_leg_srgb_ll' $p3 'jxl' ($LEG2 + @('--color-space', 'sRGB', '--quality', '100'))
+    CK ($je3.file -and $jl3.file -and $je3.file.Length -gt 0 -and $jl3.file.Length -gt 0) `
+       "⑬c 无损臂：两路都产出非空 jxl（$($je3.file.Length)B / $($jl3.file.Length)B）"
+    if ($je3.file -and $jl3.file) {
+        $ps3 = PsnrTwo $je3.file.FullName $jl3.file.FullName $graphSame
+        CK ($ps3 -ge 40.0) `
+           ("⑬c 无损档两路像素趋同（同源同目标 ⇒ ≥ 40 dB，实得 " + $ps3 +
+            "）——这条才是'谁没转像素'的硬尺；有损档受 4:2:0/熵编码放大，测不了亚 LSB 级一致性")
+        $ce3 = JxlCs $je3.file.FullName; $cl3 = JxlCs $jl3.file.FullName
+        CK (($ce3 -match 'sRGB primaries') -and ($cl3 -match 'sRGB primaries')) `
+           ("⑬c 无损档两路标注一致且都兑现目标（引擎「" + $ce3 + "」/ 直连「" + $cl3 + "」）")
     }
 }
 

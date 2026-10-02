@@ -212,7 +212,7 @@ $p = "tests/ServiceProbe/bin/Debug/net11.0/win-x64/ServiceProbe.exe"
 & $p thumbnail                       # 缩略图（EXIF IFD1）：逐容器「声明=数据闭合」+ 悬空负样本 + 诚实性/隐私/像素不变对照
 ```
 
-⚠ **`tooldetect` 有意不进 `$Probes` 默认清单**（上面的「23 个 mode」因此**不含**它）：它必须自己
+⚠ **`tooldetect` 有意不进 `$Probes` 默认清单**（上面的「24 个 mode」因此**不含**它）：它必须自己
 设 `FFMPEGGUI_EXT_SEARCH_DIRS` 把「系统扩展搜索」那一级钉成可控的临时根，否则判据会随本机
 装过什么应用而翻转 ⇒ 放进默认清单等于把一条**环境依赖**的断言混进确定性批次。跑法见该门禁脚本。
 
@@ -227,7 +227,8 @@ $p = "tests/ServiceProbe/bin/Debug/net11.0/win-x64/ServiceProbe.exe"
 ⚠ **2026-10-02 把 `thumbnail` 接进默认清单 ⇒ 第 23 个 mode**（单跑实测 `40/0`，2026-10-02 本机；覆盖 jpg/png/apng/webp/avif/jxl 六格逐一真跑，
 它守的是「产物声称有 EXIF IFD1 缩略图而图像数据缺席」这类**其他判据都不会响**的回归 —— 悬空指针的
 成因是 ffmpeg 的元数据 muxer 保留 IFD1 的 Offset/Length 标签却丢掉数据，实测声明 1980 B / 实取 0 B，
-既有的元数据与色彩门禁对此完全无感。变异验牙两次（改坏 `src/` 再原样改回，还原后回 `40/0`）：
+既有的元数据与色彩门禁对此完全无感。
+⚠ **2026-10-03 把 `oog` 接进默认清单 ⇒ 第 24 个 mode**（单跑实测 `6/0`，进程内 ~1 s）：它钉「越界带 H1 内核 ≡ zimg」，判据走**无损通道**（16-bit rawvideo，不经有损编码）——因为同一对像素进编码器前差 85.9 dB、过 `-d 2.4` 后差 36.9 dB，有损档的聚合 PSNR 被**两路共享的量化噪声**主导，测不了亚 LSB 级一致性（来历见 `docs/HANDOVER_2026-10-02.md` 第十节）。**546 那个求和同样不含 `oog`**。变异验牙两次（改坏 `src/` 再原样改回，还原后回 `40/0`）：
 **M1** 让嵌入步直接返回成功 ⇒ `pass=33 fail=7`（T11 六格 `rc=0/declared=0` + T17）；
 **M2** 把能力表吹大给 `gif` 开一条实测走不通的路 ⇒ `pass=38 fail=2`，且 T13 读数
 `rc=0 / declared=0` 顺带暴露 **exiftool 对 TIFF 是"0 image files updated 但退出码 0"的静默空转**。

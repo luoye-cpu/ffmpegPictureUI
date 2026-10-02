@@ -73,7 +73,9 @@ namespace FfmpegGui
             {
                 var assembly = typeof(App).Assembly;
                 // AvaloniaResource 的资源名格式：<程序集名>/<路径>
-                var resourceName = "avares://FfmpegGui/Resources/icon.ico";
+                // ⚠ 用 PNG 而不是 icon.ico：Pillow 写出的 ICO 每条目都是 PNG 载荷，Windows shell 认，
+                //   但 Avalonia/Skia 的 ICO 读取器解出来是 1×1（UiTestHost C20c 实测）⇒ 托盘会"有图标但看不见"。
+                var resourceName = "avares://FfmpegGui/Resources/icon_raw.png";
                 if (Application.Current?.Resources == null) return null;
 
                 // 使用 AssetLoader 打开资源流

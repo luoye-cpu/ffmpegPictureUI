@@ -537,9 +537,16 @@ CK ($cer -match 'bool gainMapJpeg = o\.JpegGainMap && \(fmt == "jpg" \|\| fmt ==
 CK ($cer -match 'if \(o\.JpegProgressiveId > 0 && !gainMapJpeg\)') "⑩ 源码锁：拦截判据含 !gainMapJpeg（防被改回对 GainMap 恒拦）"
 CK ($cer -notmatch 'if \(o\.JpegProgressiveId > 0\)\s*\r?\n\s*items\.Add') "⑩ 源码锁：**不得**存在不带 !gainMapJpeg 的裸判据（改回旧形态即红）"
 CK ($gjc -match '=> o\.JpegProgressiveId switch \{ 1 => 2, 0 => 0, _ => -1 \};') "⑩ 源码锁：ProgressiveLevelOf 仍是唯一映射 1=>2 / 0=>0 / 其它=>-1"
-CK ($gme -match 'Action<string>\? log = null, CancellationToken ct = default,\s+int jpegProgressiveLevel = -1\)') "⑩ 源码锁：jpegProgressiveLevel 仍是 EncodeAsync 的**末位**形参（QueueProcessor 用位置实参传 log/ct）"
+# ⚠ 锚演进（2026-10-02 重钉）：`GainMapEncoder.EncodeAsync` 末尾新增了 `container = "jpeg"`
+#   （AVIF 增益图分流，`docs/AVIF_GAINMAP_ENCODER_2026-10-02.md §1`）⇒ `jpegProgressiveLevel` 不再是末位形参。
+#   这条锁**真正防的**是"有人往 log/ct 前面插一个参数 ⇒ 主路那句位置实参 `s => …, ct` 静默错绑"。
+#   ⇒ 判据改为钉 log/ct 的**相对位置**（紧跟 sourcePrimaries 之后、任何后续可选参数之前），
+#     并把"接线不许删"从"必须以 ) 收尾"改成**具名传参**本身（两条调用路各钉一条）。
+CK ($gme -match 'string\? sourcePrimaries = null,\s+Action<string>\? log = null, CancellationToken ct = default,') "⑩ 源码锁：log/ct 仍紧跟 sourcePrimaries 之后（位置实参不错绑的前提；在其后追加 container 是合法的）"
 CK ($qpc -match 'ColorMapping\.GainMapJpegCodec\.ProgressiveLevelOf\(item\.Options\)') "⑩ 源码锁：专用管线调用点复用单一真值（不另写映射）"
-CK ($qpc -match 'jpegProgressiveLevel: gmProgLv\)') "⑩ 源码锁：专用管线确实把该值传进 EncodeAsync（防接线被删）"
+CK ($qpc -match 'jpegProgressiveLevel: gmProgLv,') "⑩ 源码锁：主路调用点具名传入 progressive 档（防接线被删）"
+CK ($qpc -match 'container: GainMapEncoder\.ContainerOf\(outputPath\)\)') "⑩ 源码锁：主路容器由单一真值决定（不许就地写死 \"jpeg\"）"
+CK (([System.IO.File]::ReadAllText("$root/src/FfmpegGui/Services/ColorMapping/RawColorPipeline.cs")) -match 'jpegProgressiveLevel: gmProgLv,') "⑩ 源码锁：引擎路调用点同样具名传入 progressive 档"
 
 # ══ ⑪ §38 锁：GainMap + `--encoder cjpegli` ⇒ 底图 ICC 不得被**源** ICC 覆盖 ════════════
 Write-Host "`n### 11) §38 GainMap + cjpegli：底图 ICC 必须与引擎一致、且不得等于源 ICC ###" -ForegroundColor Cyan

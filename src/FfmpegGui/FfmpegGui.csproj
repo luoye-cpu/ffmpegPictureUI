@@ -17,8 +17,10 @@
     <!-- 版本号 -->
     <!-- ⚠ 预发布版本必须用连字符（SemVer）：1.6.0BETA1 会使 NuGet restore 直接失败（实测 2026-09-28） -->
     <Version>1.6.0-beta4</Version>
-    <!-- 托盘/任务栏/文件图标。⚠ 真 ICO（16/24/32/48/64 五档 32bpp BMP-DIB，由 Resources/icon_raw.png 生成）；
-         旧那份"icon.ico"其实是 32×32 的 PNG 改了扩展名，既进不了 ApplicationIcon 也没被 avares 收录。 -->
+    <!-- exe/文件图标：真 ICO（16/24/32/48/64 五档，由 Resources/icon_raw.png 生成；旧那份"icon.ico"
+         其实是 32×32 的 PNG 改了扩展名，进不了 ApplicationIcon）。⚠ Pillow 写出的 ICO 每条目都是 PNG 载荷，
+         Windows shell 认，但 Avalonia/Skia 的 ICO 读取器会解成 1×1（UiTestHost C20c 实测抓到）
+         ⇒ 运行时（托盘/窗口）用 icon_raw.png（见 App.LoadTrayIcon），这份 .ico 只作 ApplicationIcon。 -->
     <ApplicationIcon>Resources\icon.ico</ApplicationIcon>
     <AssemblyVersion>1.6.0.0</AssemblyVersion>
     <FileVersion>1.6.0.0</FileVersion>
@@ -92,8 +94,11 @@
   <ItemGroup>
     <AvaloniaResource Include="**/*.xaml" />
     <!-- ⚠ 托盘图标此前**没有**被记进 AvaloniaResource ⇒ `avares://FfmpegGui/Resources/icon.ico` 不存在
-         ⇒ `App.LoadTrayIcon()` 里 `AssetLoader.Exists` 恒 false ⇒ 托盘只有菜单没有图标（静默回退）。 -->
-    <AvaloniaResource Include="Resources/icon.ico" />
+         ⇒ `App.LoadTrayIcon()` 里 `AssetLoader.Exists` 恒 false ⇒ 托盘只有菜单没有图标（静默回退）。
+         ⚠ 现在收录的是 **PNG** 而不是 ico：Pillow 写出的 ICO 每条目都是 PNG 载荷（biSize=0x89PNG），
+         Windows shell 认，但 Avalonia/Skia 的 ICO 读取器会解成 **1×1**（UiTestHost C20c 实测抓到）
+         ⇒ 运行时（托盘/窗口）用 PNG，`.ico` 只作为 `<ApplicationIcon>` 给 exe 文件图标用。 -->
+    <AvaloniaResource Include="Resources/icon_raw.png" />
   </ItemGroup>
 
   <!-- 多语言资源文件 -->

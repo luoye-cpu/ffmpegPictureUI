@@ -603,13 +603,14 @@ function Get-SemanticMatrices {
             Rationale = 'Backend compatibility is a function of format, and -pix_fmt is a single-truth mapping of (format, chroma, bitDepth); the container also clamps bit depth. None of the four is independent.'
             Evidence = @(
                 'src/FfmpegGui/Services/EncoderDetectionService.cs:38|EncoderBackend.Cjpegli => fmt is "jpg" or "jpeg" or "jpegli",',
-                # ⚠ pin 演进：763 → **796**（+33，三段都在本文件、都在这条锚点**之前**：
+                # ⚠ pin 演进：763 → **796** → **821**（+33 三段 U4b，再 +25 = 2026-10-02 AVIF 增益图
+                #   写出器那批在本文件之前的编辑；两处锚 796/748 → 821/773 已按 `grep -n` 复核实况、
                 #   2026-10-01 U4b 第一半给 libaom tune switch 补 `default:` 播报；
                 #   2026-10-02 U4b 第二半改 `NormalizeTuneToken` 的"空串两义性"并加认得集合；
                 #   2026-10-02 U4b 第三半把 default 收窄 + 加"这条后端根本没有 tune 通路"的中心播报）。
                 #   抬号前已按本仓规矩 `grep -n` 复核实况行，并确认该字面量在全文件**只出现一次**
                 #   （行号锚不容歧义）。见 docs/TESTING.md §6 第 112 条。
-                'src/FfmpegGui/Services/ColorMapping/ImageEncoderArgs.cs:796|if (fmt is "png" or "tiff" or "apng" or "jxl")'
+                'src/FfmpegGui/Services/ColorMapping/ImageEncoderArgs.cs:821|if (fmt is "png" or "tiff" or "apng" or "jxl")'
             )
         },
         @{
@@ -642,7 +643,7 @@ function Get-SemanticMatrices {
                 #   （2026-10-01 第一半补 libaom tune `default:` 播报、2026-10-02 第二半改
                 #   `NormalizeTuneToken` 的两义性、第三半加"这条后端没有 tune 通路"的中心播报）；
                 #   唯一性同样已 `grep -n` 核过。
-                'src/FfmpegGui/Services/ColorMapping/ImageEncoderArgs.cs:748|AvifMaxBitDepthForEncoder(string? encoder)',
+                'src/FfmpegGui/Services/ColorMapping/ImageEncoderArgs.cs:773|AvifMaxBitDepthForEncoder(string? encoder)',
                 'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:1008|return (null, null, null, ColorMapping.ImageEncoderArgs.AvifMaxBitDepth(options), false);',
                 'src/FfmpegGui/Services/FfmpegCommandBuilder.Decision.cs:155|options.BitDepth = capBd;'
             )

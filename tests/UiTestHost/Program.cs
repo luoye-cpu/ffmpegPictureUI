@@ -421,7 +421,7 @@ namespace UiTestHost
             {
                 Check("C20a 窗口 Icon 已由 XAML 解析", W.Icon != null,
                     $"Icon={(W.Icon == null ? "null" : W.Icon.GetType().Name)}");
-                var uri = new System.Uri("avares://FfmpegGui/Resources/icon.ico");
+                var uri = new System.Uri("avares://FfmpegGui/Resources/icon_raw.png");
                 bool exists = Avalonia.Platform.AssetLoader.Exists(uri);
                 Check("C20b AssetLoader 认得托盘用的那条 avares URI", exists,
                     "App.LoadTrayIcon() 判的就是这一步");
@@ -429,9 +429,58 @@ namespace UiTestHost
                 {
                     using var s = Avalonia.Platform.AssetLoader.Open(uri);
                     using var bmp = new Avalonia.Media.Imaging.Bitmap(s);
-                    Check("C20c 图标可解码且 ≥16px",
-                        bmp.PixelSize.Width >= 16 && bmp.PixelSize.Height >= 16,
-                        $"实得 {bmp.PixelSize.Width}x{bmp.PixelSize.Height}");
+                    // 对照：同一资源**先整读进内存**再解码。AssetLoader 返回的流若不可 seek，
+                    // Skia 的位图解码会静默给出一张退化图（1×1）——那才是真正的失效点。
+                    using var ms = new System.IO.MemoryStream();
+                    s.Position = 0; s.CopyTo(ms); ms.Position = 0;
+                    using var bmp2 = new Avalonia.Media.Imaging.Bitmap(ms);
+                    // 第二对照：**仓里那份原 PNG** 直接按文件路径解码 + 比较 avares 吐出的字节数。
+                    // 若文件解码正常而 avares 是 1×1 ⇒ 打包进去的字节就不是它（资源收录/路径问题），
+                    // 而不是解码器的问题 —— 两者的修法完全不同。
+                    var diskPath = "";
+                    for (var di = new System.IO.DirectoryInfo(AppContext.BaseDirectory); di != null; di = di.Parent)
+                    {
+                        var cand = System.IO.Path.Combine(di.FullName, "src", "FfmpegGui", "Resources", "icon_raw.png");
+                        if (System.IO.File.Exists(cand)) { diskPath = cand; break; }
+                    }
+                    int diskW = -1, diskH = -1;
+                    if (System.IO.File.Exists(diskPath))
+                    {
+                        using var b3 = new Avalonia.Media.Imaging.Bitmap(diskPath);
+                        diskW = b3.PixelSize.Width; diskH = b3.PixelSize.Height;
+                    }
+                    // 对照件：宿主自己素材目录里那张**已知 8bit PNG**（src_8bit.png）。
+                    // 对照臂不动就不能改结论 ⇒ 若连它都解成 1×1，那是 headless 宿主根本不解码位图，
+                    // 本条只能记 SKIP（判不了），绝不能记绿、也不能算产品红。
+                    var ctlPath = System.IO.Path.Combine(SrcDir, "src_8bit.png");
+                    int ctlW = -1, ctlH = -1;
+                    if (System.IO.File.Exists(ctlPath))
+                    {
+                        using var b4 = new Avalonia.Media.Imaging.Bitmap(ctlPath);
+                        ctlW = b4.PixelSize.Width; ctlH = b4.PixelSize.Height;
+                    }
+                    // C20d：收录**是不是那份字节**（原缺陷就是收录缺失；解码在本宿主判不了，
+                    // 但"路径对、内容对、exe 图标位有资源"这三条是可以硬验的）。
+                    var avBytes = ms.ToArray();
+                    long fileLen = System.IO.File.Exists(diskPath) ? new System.IO.FileInfo(diskPath).Length : -1;
+                    Check("C20d avares 吐出的就是那份 PNG",
+                          avBytes.Length == fileLen && avBytes.Length > 8
+                          && avBytes[1] == (byte)'P' && avBytes[2] == (byte)'N' && avBytes[3] == (byte)'G',
+                          $"avares={avBytes.Length} B vs 文件={fileLen} B，魔数 %PNG");
+                    bool hostDecodes = ctlW > 1 && ctlH > 1;
+                    if (!hostDecodes)
+                    {
+                        // 对照件也是 1×1 ⇒ 本宿主根本不解码位图。这条**既不能记绿也不能记红**，
+                        // 宿主没有 skip 桶，就打成显式 N/A 行留在日志里（读者看得见"没判"）。
+                        Console.WriteLine("  [N/A] C20c 位图解码尺寸：headless 宿主不解码"
+                            + $"（对照件 src_8bit.png 也解成 {ctlW}x{ctlH}），图标字节已由 C20d 验过");
+                    }
+                    else
+                    {
+                        Check("C20c 图标可解码且 ≥16px",
+                            bmp.PixelSize.Width >= 16 && bmp.PixelSize.Height >= 16,
+                            $"流直解={bmp.PixelSize.Width}x{bmp.PixelSize.Height} 对照件={ctlW}x{ctlH}");
+                    }
                 }
             });
             Safe("C21 缩略图面板随容器能力显隐", () =>
@@ -450,6 +499,8 @@ namespace UiTestHost
                     $"avif(visible={panelOn},enabled={boxOn}) tiff(visible={panelOff},复位={reset})");
             });
         }
+
+        // ══════════════ D组: 编码器下拉随格式联动 ══════════════
         static void GroupD_EncoderComboLinkage()
         {
             Console.WriteLine("\n########## D组: 编码器下拉联动 ##########");

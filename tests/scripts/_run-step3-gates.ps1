@@ -28,7 +28,11 @@
 #       红在 T8 + T13，且 T13 读数 `rc=0 / declared=0` 正是 **exiftool 对走不通的容器
 #       「0 image files updated 但退出码 0」的静默空转** ⇒ 能力位是唯一的闸、回读字节才是判据。
 #   ⚠ 该 mode 依赖 publish/PLAN 的 ffmpeg/exiftool/avifenc，缺席时逐条 **SKIP 点名**（不静默消失）。
-param([string]$Probes = 'contract,wire,verdict,selftest,iccname,plan,curve,matrix,colormath,ootf,hlgwire,bt2446,decision,engine,runner,settings,procstreams,encoding,ipc,i18n,geometry,metaraw,thumbnail',
+# ⚠ `oog`（2026-10-03 接进默认清单，第 24 个 mode；单跑实测 6/0，进程内 ~1 s）——它钉的是
+#   「**越界带 H1 内核 ≡ zimg 参照**」：两路产物过有损编码后聚合 PSNR 会被**共享量化噪声**主导
+#   （实测同一对像素：进编码器前 85.9 dB、过 `-d 2.4` 后 36.9 dB），所以那条真不变量只能放在
+#   **无损通道**上测（rawvideo/rgb48，不经任何有损档）。来历见 `docs/HANDOVER_2026-10-02.md` 第十/十一节。
+param([string]$Probes = 'contract,wire,verdict,selftest,iccname,plan,curve,matrix,colormath,ootf,hlgwire,bt2446,decision,engine,runner,settings,procstreams,encoding,ipc,i18n,geometry,metaraw,thumbnail,oog',
       [switch]$SkipScripts,
       # ⚠ 逗号分隔的**文件名**（含 .ps1），顺序不敏感；名字不在清单内 ⇒ 响亮报红而不是静默忽略。
       #   `pwsh -File` 下 `-Scripts a,b` 只会作为一个参数传入（与 $Probes 同一坑，见 :455），故这里自己切。
