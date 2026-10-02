@@ -581,7 +581,12 @@ public static partial class ColorMappingEngine
         // ⚠ --lossless 下 avifenc 强制 matrix=identity(0)，传 6/9 会报“Matrix coefficients have to be identity…”。
         ["avif"]  = new() { Format = "avif",  CanCarryArbitraryIcc = true,  CanCicp = true, CanGenerateIccFromCicp = true,  MaxBitDepth = 12, CanHdr = true,
                             UnlabeledMeansSrgb = false, CanHaveBothIccAndCicp = true, LosslessForcesIdentityMatrix = true,
-                            VerifiedBy = "E1 实测：avifenc --icc ✅ / --icc+--nclx 共存 ✅；exiftool 不能后置写" },
+                            // ⚠ 2026-10-02 起 avif 亦可承载增益图 —— **不是** JPEG 的 APP2/MPF，而是
+                            //   ISO-BMFF 的 `tmap` 派生项（由 `IsoBmffGainMapWriter` 纯托管组装）。
+                            //   三路独立验证：自家探测器 11/0 · libavif `Gain map: …` ·
+                            //   Google libultrahdr v2.0.2 `Ultra HDR Image: Yes`。
+                            SupportsGainMap = true,
+                            VerifiedBy = "E1 实测：avifenc --icc ✅ / --icc+--nclx 共存 ✅；exiftool 不能后置写；GainMap = tmap 派生项（三路验证 2026-10-02）" },
         // ❗ heic/heif：**实测本工具链完全无法写入**（ffmpeg: Unknown format 'heif'，无 heif muxer；无 heifenc/libheif）
         // → 能力必须按“不可表达”给（全部保守），否则引擎会为 HEIF 产出“看似可行”的计划。
         ["heic"]  = new() { Format = "heic",  CanCarryArbitraryIcc = false, CanCicp = false, CanGenerateIccFromCicp = false, MaxBitDepth = 8,

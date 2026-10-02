@@ -5,7 +5,10 @@
 > `Services/ColorMapping/GainMapJpegCodec.cs`、`QueueProcessor.cs`
 > 复现素材：仓库内 `tools/src/libavif/tests/data/seine_{hdr,sdr}_gainmap_srgb.avif`（**已入库，稳定夹具**）
 > 诊断脚本：`tests/output/_heicavif_probe/isobmff_scan.py`（ISO-BMFF 结构扫描，只读）
-> 门禁：`tests/scripts/verify-gainmap-isobmff.ps1`（**29/0**，已接线为第 49 条）
+> 门禁：`tests/scripts/verify-gainmap-isobmff.ps1`（**52/0**，已接线为第 49 条）
+>
+> ⚠ 本条原记 **29/0**，系早期读数；2026-10-02 按门禁自述核对（`verify-gainmap-isobmff.ps1:73`
+> 明写「断言（共 52 条）：§0 前置 6 · §1 容器层 8 · §1b HEVC 解码路径 11 · …」）已更正。
 
 ---
 

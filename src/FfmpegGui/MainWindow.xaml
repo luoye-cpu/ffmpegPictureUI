@@ -5,6 +5,7 @@
     xmlns:sys="using:System"
     xmlns:local="using:FfmpegGui.Models"
     xmlns:ext="using:FfmpegGui"
+    Icon="avares://FfmpegGui/Resources/icon.ico"
     Title="{ext:Loc app.title}"
     Height="850"
     Width="1100"
@@ -491,11 +492,12 @@
                                IsCheckedChanged="IccMode_Changed"/>
                 </StackPanel>
 
-                <!-- GainMap (Ultra HDR) 独立开关：仅 JPEG 显示；开启后影响色彩（底色域 sRGB/BT.2020） -->
-                <CheckBox x:Name="JpegGainMapEnableCheck" Content="{ext:Loc gainmap.enable}"
-                          IsVisible="False" Margin="0,6,0,0" FontSize="11"
+                <!-- HDR 实现模式（用户-facing 二选一）：GainMap（SDR 底图 + 增益图）| 传统（原生 PQ/HLG）。
+                     ⚠ 可见性由 `UpdateOptionAvailability` 按**容器能力**给（JPEG 族与 AVIF），XAML 只给初始隐藏；
+                       ItemsSource 由 `FillComboByLoc` 在代码侧按本地化键填充。 -->
+                <ComboBox x:Name="HdrModeCombo" IsVisible="False" Margin="0,6,0,0" FontSize="11"
                           ToolTip.Tip="{ext:Loc tip.gainmap.enable}"
-                          IsCheckedChanged="JpegGainMapEnable_Changed"/>
+                          SelectionChanged="HdrMode_Changed"/>
                 
                 <!-- 源色彩空间不再由用户手动指定：软件自动根据 CICP+ICC 探测判断（阶段3.6）。烘焙目标子面板已废弃移除。 -->
                 
@@ -777,6 +779,19 @@
               <TextBlock Text="{ext:Loc jxr.encoder.title}" FontSize="11"
                          Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
               <TextBlock Text="{ext:Loc jxr.encoder.desc}" FontSize="10"
+                         Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+            </StackPanel>
+            <!-- Thumbnail (EXIF IFD1 embed). Visibility/IsEnabled are capability driven:
+                 see UpdateCodecPanelVisibility + ThumbnailService.CapabilityKey. -->
+            <StackPanel x:Name="ThumbnailPanel" IsVisible="False" Spacing="4">
+              <CheckBox x:Name="EnableThumbnailCheck" Content="{ext:Loc thumbnail.label}"/>
+              <TextBlock Text="{ext:Loc thumbnail.size}" Margin="0,4,0,0" FontSize="11"/>
+              <NumericUpDown x:Name="ThumbnailSizeBox" Value="160" Minimum="16" Maximum="512" Increment="16" MinWidth="88" HorizontalAlignment="Left"/>
+              <TextBlock Text="{ext:Loc thumbnail.size.hint}" TextWrapping="Wrap" FontSize="10" Margin="0,2,0,0"
+                         Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+              <TextBlock Text="{ext:Loc thumbnail.quality}" Margin="0,4,0,0" FontSize="11"/>
+              <NumericUpDown x:Name="ThumbnailQualityBox" Value="75" Minimum="1" Maximum="100" Increment="5" MinWidth="88" HorizontalAlignment="Left"/>
+              <TextBlock Text="{ext:Loc thumbnail.quality.hint}" TextWrapping="Wrap" FontSize="10" Margin="0,2,0,0"
                          Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
             </StackPanel>
           </StackPanel>

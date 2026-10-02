@@ -87,7 +87,7 @@ namespace ServiceProbe
             InitExternalTools();          // 否则 iccgen/exiftool 类互测会静默 SKIP（假绿）
             if (args.Length == 0)
             {
-                Console.WriteLine("usage: ServiceProbe <gainmap|icc|icc-dump|cicp|color|faithful|pq|matrix|curve|plan|geometry|bench|selftest|i18n|psnr|simdswitch> ...");
+                Console.WriteLine("usage: ServiceProbe <gainmap|icc|icc-dump|cicp|color|faithful|pq|matrix|curve|plan|geometry|bench|selftest|i18n|psnr|simdswitch|thumbnail> ...");
                 return 2;
             }
             try
@@ -95,10 +95,12 @@ namespace ServiceProbe
                 switch (args[0].ToLowerInvariant())
                 {
                     case "gainmap": ProbeGainMap(args); break;
+                    case "ultrahdr": ProbeUltraHdr(args).GetAwaiter().GetResult(); break;
                     case "gainmap-isobmff": ProbeGainMapIsoBmff(args); break;
                     case "icc": ProbeIcc(args); break;
                     case "icc-dump": ProbeIccDump(args); break;
                     case "faithful": ProbeFaithful(args); break;
+                    case "thumbnail": ProbeThumbnail(args).GetAwaiter().GetResult(); break;
                     case "color": ProbeColor(args); break;
                     case "pq": ProbePq(); break;
                     case "gamut": ProbeGamut(args); break;
@@ -208,7 +210,350 @@ namespace ServiceProbe
             if (ok) _pass++; else _fail++;
         }
 
-        // ───────────────────── RAW 输入元数据保留（锁） ─────────────────────
+        // ───────────────────── 缩略图（EXIF IFD1）─────────────────────
+
+        /// <summary>
+        /// 缩略图功能的产物级判据。**核心判据不是「有没有写进去」，而是「声明与数据是否闭合」**：
+        /// `ThumbnailLength` 说 N 字节、`-b -ThumbnailImage` 就要能取到 N 字节。
+        /// 这条尺子同时抓住本项目已实测到的悬空指针缺陷（ffmpeg 的元数据 muxer 会保留 IFD1 的
+        /// Offset/Length 标签却丢掉图像数据 ⇒ 产物声称有缩略图、实际一个字节都没有）。
+        /// 因此夹具里必须有一例**真悬空**的负样本，否则这条判据是空的。
+        /// </summary>
+        private static System.Threading.Tasks.Task ProbeThumbnail(string[] args)
+        {
+            const string dir = "tests/output/validate";
+            var st = FfmpegGui.Services.AppSettingsService.Current;
+            var ff = st.FfmpegPath;
+            var et = st.ExifToolPath;
+            string avifenc = "";
+            try
+            {
+                var d = new System.IO.DirectoryInfo(AppContext.BaseDirectory);
+                for (int up = 0; d != null && up < 8; d = d.Parent, up++)
+                {
+                    var c = System.IO.Path.Combine(d.FullName, "publish", "PLAN", "artifacts", "avifenc.exe");
+                    if (System.IO.File.Exists(c)) { avifenc = c; break; }
+                }
+            }
+            catch { }
+
+            // T0 前置：能力表是**懒播种**的（`SeedLocalRules` 由 InitializeAsync 触发）。
+            // 表空时 `GetCapabilities(...) is { SupportsThumbnail: true }` 恒 false ⇒
+            // 正向断言全红的同时**负向断言集体假绿**（什么都没在比对）。先证明表非空，再谈逐格式。
+            FfmpegGui.Services.FormatCapabilitiesService.ClearCache();
+            FfmpegGui.Services.FormatCapabilitiesService.InitializeAsync(ff).GetAwaiter().GetResult();
+            var seeded = FfmpegGui.Services.FormatCapabilitiesService.GetCapabilities("jpg") != null;
+            Check(seeded, "T0 前置：格式能力表已播种（表空 ⇒ 逐格式断言全是空判据）");
+            if (!seeded) return System.Threading.Tasks.Task.CompletedTask;
+
+            // ── T1..T10 纯函数与能力表：不依赖外部编码工具 ──
+            var q100 = FfmpegGui.Services.ThumbnailService.MapQualityToQscale(100);
+            var q1 = FfmpegGui.Services.ThumbnailService.MapQualityToQscale(1);
+            Check(q100 == 2 && q1 == 31, $"T1 质量轴 1..100 → qscale 反向线性且收口 (100→{q100}, 1→{q1})");
+            var qMid = FfmpegGui.Services.ThumbnailService.MapQualityToQscale(50);
+            Check(qMid > q100 && qMid < q1 && qMid is >= 2 and <= 31, $"T2 质量轴单调 (50→{qMid})");
+            Check(FfmpegGui.Services.ThumbnailService.MapQualityToQscale(0) == q1
+                  && FfmpegGui.Services.ThumbnailService.MapQualityToQscale(999) == q100,
+                  "T3 越界质量被钳到两端（不抛、不产出非法 qscale）");
+
+            var sf = FfmpegGui.Services.ThumbnailService.BuildScaleFilter(160);
+            Check(sf.Contains("min(iw,160)") && sf.Contains("min(ih,160)") && sf.Contains("-2"),
+                  $"T4 缩放串两维都钳长边、另一维保比例取偶 [{sf}]");
+            Check(FfmpegGui.Services.ThumbnailService.ClampLongEdge(0) == 160
+                  && FfmpegGui.Services.ThumbnailService.ClampLongEdge(4000) == 512
+                  && FfmpegGui.Services.ThumbnailService.ClampLongEdge(1) == 16,
+                  "T5 长边钳制 [16,512]，0 回落到默认 160");
+
+            Check(FfmpegGui.Services.ThumbnailService.CapabilityKey("jpeg") == "jpg"
+                  && FfmpegGui.Services.ThumbnailService.CapabilityKey(".TIF") == "tiff"
+                  && FfmpegGui.Services.ThumbnailService.CapabilityKey("PNG") == "png",
+                  "T6 能力表键归一（jpeg/.TIF/PNG 都落到同一条目，避免两处口径）");
+
+            // 能力表：兑现性按 2026-10-02 逐容器实测。判据是「回读字节 == ThumbnailLength 声明」。
+            // ⚠ `no` 那四个不是"没测"，是**测了不通**：exiftool 报「0 image files updated」而**退出码仍是 0**
+            //   ⇒ 这条负断言防的是"顺手把 rc 当成功"的假绿，也防有人给 GIF/JXR/DNG 开一条走不通的路。
+            string[] yes = { "jpg", "png", "apng", "webp", "avif", "jxl" };
+            string[] no = { "tiff", "gif", "jxr", "dng" };
+            foreach (var f in yes)
+                Check(FfmpegGui.Services.FormatCapabilitiesService.GetCapabilities(f) is { SupportsThumbnail: true },
+                      $"T7 能力表 {f}=可写缩略图（实测依据见 FormatCapabilitiesService 注释）");
+            foreach (var f in no)
+                Check(FfmpegGui.Services.FormatCapabilitiesService.GetCapabilities(f) is not { SupportsThumbnail: true },
+                      $"T8 能力表 {f}=不可写（实测不通：exiftool 0 updated 但 rc=0）");
+
+            var o = new FfmpegGui.Models.FfmpegOptions { Format = "jpg" };
+            Check(FfmpegGui.Services.ThumbnailService.PrivacySkipReason(o) == null, "T9 默认态不跳过（隐私开关全关时不该拦）");
+            var oStripAll = new FfmpegGui.Models.FfmpegOptions { Format = "jpg", MetadataMode = FfmpegGui.Models.MetadataMode.StripAll };
+            var oStripExif = new FfmpegGui.Models.FfmpegOptions { Format = "jpg", StripExifAll = true };
+            Check(FfmpegGui.Services.ThumbnailService.PrivacySkipReason(oStripAll) != null
+                  && FfmpegGui.Services.ThumbnailService.PrivacySkipReason(oStripExif) != null,
+                  "T10 StripAll / StripExifAll 都能让缩略图让位（隐私不能让新功能破口）");
+
+            if (string.IsNullOrEmpty(ff) || string.IsNullOrEmpty(et))
+            {
+                Skip("T11..T20 行为断言：ffmpeg/exiftool 未定位（需 publish/PLAN 工具链）");
+                return System.Threading.Tasks.Task.CompletedTask;
+            }
+
+            Directory.CreateDirectory(dir);
+
+            // 声明-数据闭合判据：返回 (声明长度, 实取字节)
+            (int declared, int got) ReadThumb(string path)
+            {
+                // exiftool 一行一个标签：多行时**逐行**取数（整块 Substring 会把两行拼成一个
+                // 解析不出的串，`1980\r\n…` → 声明读成 0 ⇒ 判据假红）。
+                int decl = 0;
+                foreach (var line in RunCapture(et, $"-n -s -ThumbnailLength \"{path}\"").Split('\n'))
+                {
+                    var l = line.Trim();
+                    var colon = l.LastIndexOf(':');
+                    if (colon < 0) continue;
+                    if (int.TryParse(l.Substring(colon + 1).Trim(), out var v) && v > 0) { decl = v; break; }
+                }
+                var bin = path + ".thumb.bin";
+                RunCapture(et, $"-b -ThumbnailImage \"{path}\"", redirectOut: bin);
+                var got = File.Exists(bin) ? (int)new FileInfo(bin).Length : 0;
+                try { if (File.Exists(bin)) File.Delete(bin); } catch { }
+                return (decl, got);
+            }
+            bool Closed(string path) { var (d, g) = ReadThumb(path); return d > 0 && g == d; }
+
+            // ── T11..T15 五个容器逐条真跑 ──
+            foreach (var fmt in yes)
+            {
+                var outPath = $"{dir}/th_{fmt}.{fmt}";
+                if (!MakeTarget(ff, avifenc, dir, outPath, fmt)) { Skip($"T11-{fmt} 造不出 {fmt} 目标件"); continue; }
+                var opt = new FfmpegGui.Models.FfmpegOptions { Format = fmt, EnableThumbnail = true };
+                var log = new System.Text.StringBuilder();
+                var rc = RunTask(FfmpegGui.Services.ThumbnailService.ApplyAsync(outPath, opt, s => log.Append(s)));
+                var (d, g) = ReadThumb(outPath);
+                Check(rc == 0 && Closed(outPath),
+                      $"T11 [{fmt}] 缩略图声明-数据闭合 (declared={d}, extracted={g}, rc={rc})");
+            }
+
+            // ── T12 悬空负样本：ffmpeg 造的残缺 EXIF 必须被同一把尺子抓住，否则上面全是空判据 ──
+            // 两种中转件都量：png 与 apng（同一 eXIf 通路，apng 也照样漏）。
+            {
+                var src = $"{dir}/th_dangling_src.jpg";
+                var donor = $"{dir}/th_donor.jpg";
+                var withThumb = $"{dir}/th_dangling_withthumb.jpg";
+                MakeTarget(ff, avifenc, dir, src, "jpg");
+                MakeTarget(ff, avifenc, dir, donor, "jpg");
+                File.Copy(src, withThumb, true);
+                RunCapture(et, $"-overwrite_original \"-ThumbnailImage<={donor}\" \"{withThumb}\"");
+                foreach (var carrier in new[] { "png", "apng" })
+                {
+                    var dangling = $"{dir}/th_dangling.{carrier}";
+                    RunCapture(ff, $"-y -hide_banner -loglevel error -i \"{withThumb}\" -map_metadata 0 \"{dangling}\"");
+                    var (d, g) = ReadThumb(dangling);
+                    Check(d > 0 && g == 0,
+                          $"T12 [{carrier}] 悬空负样本被抓住：声明 {d} B、实取 {g} B（这条不红，T11 的判据就是假的）");
+                }
+            }
+
+            // ── T13 诚实性：能力位为 false 的容器必须**出声**拒绝，而不是静默交一张没缩略图的图 ──
+            // 逐容器真跑到分发层（不只是查表）：gif/jxr 在这里同时验证「造得出件、但这条路走不通」。
+            // dng 只在 T8 查表 ⇒ 它的产物依赖 gitignored 的 RAW 素材，不进默认清单的行为断言。
+            foreach (var (badFmt, badExt) in new[] { ("tiff", "tif"), ("gif", "gif"), ("jxr", "jxr") })
+            {
+                var badPath = $"{dir}/th_neg_{badFmt}.{badExt}";
+                if (!MakeTarget(ff, avifenc, dir, badPath, badFmt)) { Skip($"T13-{badFmt} 造不出目标件"); continue; }
+                var opt = new FfmpegGui.Models.FfmpegOptions { Format = badFmt, EnableThumbnail = true };
+                var log = new System.Text.StringBuilder();
+                var rc = RunTask(FfmpegGui.Services.ThumbnailService.ApplyAsync(badPath, opt, s => log.Append(s)));
+                var (d, _) = ReadThumb(badPath);
+                Check(rc != 0 && log.ToString().Contains("not expressible") && d == 0,
+                      $"T13 [{badFmt}] 出声拒绝而非静默丢弃 (rc={rc}, 点名={log.ToString().Contains("not expressible")}, declared={d})");
+            }
+
+            // ── T14 反真空对照：开关关掉 ⇒ 一个字不说、文件一个字节都不动 ──
+            {
+                var png = $"{dir}/th_off_ctrl.png";
+                MakeTarget(ff, avifenc, dir, png, "png");
+                var before = Sha(png);
+                var opt = new FfmpegGui.Models.FfmpegOptions { Format = "png", EnableThumbnail = false };
+                var log = new System.Text.StringBuilder();
+                var rc = RunTask(FfmpegGui.Services.ThumbnailService.ApplyAsync(png, opt, s => log.Append(s)));
+                Check(rc == 0 && log.Length == 0 && Sha(png) == before,
+                      $"T14 开关关闭时零播报且零改写 (rc={rc}, logLen={log.Length})");
+            }
+
+            // ── T15 不伤主图：嵌入前后解码像素逐字节相同 ──
+            {
+                var jpg = $"{dir}/th_pixels.jpg";
+                MakeTarget(ff, avifenc, dir, jpg, "jpg");
+                var a = $"{dir}/th_px_a.ppm"; var b = $"{dir}/th_px_b.ppm";
+                RunCapture(ff, $"-y -hide_banner -loglevel error -i \"{jpg}\" -frames:v 1 \"{a}\"");
+                var opt = new FfmpegGui.Models.FfmpegOptions { Format = "jpg", EnableThumbnail = true };
+                RunTask(FfmpegGui.Services.ThumbnailService.ApplyAsync(jpg, opt!, _ => { }));
+                RunCapture(ff, $"-y -hide_banner -loglevel error -i \"{jpg}\" -frames:v 1 \"{b}\"");
+                bool same = File.Exists(a) && File.Exists(b)
+                    && new FileInfo(a).Length == new FileInfo(b).Length
+                    && Sha(a) == Sha(b);
+                Check(same, "T15 嵌入缩略图不改动主图像素（前后解码逐字节相同）");
+            }
+
+            // ── T16 隐私优先：StripAll 开着也不能把缩略图塞回去 ──
+            {
+                var png = $"{dir}/th_privacy.png";
+                MakeTarget(ff, avifenc, dir, png, "png");
+                var opt = new FfmpegGui.Models.FfmpegOptions
+                {
+                    Format = "png", EnableThumbnail = true, MetadataMode = FfmpegGui.Models.MetadataMode.StripAll
+                };
+                var log = new System.Text.StringBuilder();
+                var rc = RunTask(FfmpegGui.Services.ThumbnailService.ApplyAsync(png, opt, s => log.Append(s)));
+                var (d, g) = ReadThumb(png);
+                Check(rc != 0 && log.ToString().Contains("skipped") && d == 0 && g == 0,
+                      $"T16 StripAll 时缩略图让位 (rc={rc}, declared={d}, extracted={g})");
+            }
+
+            // ── T17 越界尺寸只钳不炸，且仍闭合 ──
+            {
+                var png = $"{dir}/th_clamp.png";
+                MakeTarget(ff, avifenc, dir, png, "png");
+                var opt = new FfmpegGui.Models.FfmpegOptions
+                {
+                    Format = "png", EnableThumbnail = true, ThumbnailLongEdge = 9999, ThumbnailQuality = 99
+                };
+                var rc = RunTask(FfmpegGui.Services.ThumbnailService.ApplyAsync(png, opt, _ => { }));
+                Check(rc == 0 && Closed(png), $"T17 长边越界被钳到 512 后仍写出闭合缩略图 (rc={rc})");
+            }
+
+            // ── T18 命令行形状锁：探测/embed 两条串不能被人顺手改坏 ──
+            {
+                var enc = FfmpegGui.Services.ThumbnailService.BuildEncodeArgs("IN.png", "OUT.jpg", 160, 75);
+                var emb = FfmpegGui.Services.ThumbnailService.BuildEmbedArgs("T.jpg", "O.png");
+                Check(enc.Contains("-vf \"scale='if(gt(iw,ih)") && enc.Contains("-frames:v 1") && enc.Contains("-qscale:v")
+                      && emb.Contains("-ThumbnailImage<=\"T.jpg\"") && emb.Contains("-overwrite_original"),
+                      $"T18 命令行形状锁 (embed=[{emb}])");
+            }
+
+            // ── T19 色彩标签不被带入：写缩略图不得引入 ColorSpace/ICC（色彩后置保留裁决权） ──
+            {
+                var jpg = $"{dir}/th_color.jpg";
+                MakeTarget(ff, avifenc, dir, jpg, "jpg");
+                RunTask(FfmpegGui.Services.ThumbnailService.ApplyAsync(jpg,
+                    new FfmpegGui.Models.FfmpegOptions { Format = "jpg", EnableThumbnail = true }, _ => { }));
+                var cs = RunCapture(et, $"-s -ColorSpace \"{jpg}\"");
+                Check(!cs.Contains(":"),
+                      $"T19 缩略图写入不附带 ColorSpace 宣称 (读出=[{cs.Trim()}])");
+            }
+
+            // ── T20 CLI 可达性：`--thumbnail*` 必须被解析器收下（未知键会在这里暴露） ──
+            {
+                var res = FfmpegGui.CliParser.Parse(new[] {
+                    "--headless", "--input", "in.jpg", "--output", "out", "--format", "jpg",
+                    "--thumbnail=true", "--thumbnail-size=240", "--thumbnail-quality=90" });
+                res.ExtraOptions.TryGetValue("thumbnail", out var t);
+                res.ExtraOptions.TryGetValue("thumbnail-size", out var sz);
+                res.ExtraOptions.TryGetValue("thumbnail-quality", out var qq);
+                Check(t == "true" && sz == "240" && qq == "90",
+                      $"T20 CLI 收下三个键 (thumbnail={t}, size={sz}, quality={qq})");
+            }
+
+            // ── T21 结构锁：键 → 模型字段的映射只有 CliParser 里那一行负责，而它在 private 方法链里
+            //     （`BuildBaseOptions`/`ApplyExtraOption` 都不对探针可见）⇒ 只能按字面文本钉住。
+            T21_StructuralLockOnCliMapping();
+
+            return System.Threading.Tasks.Task.CompletedTask;
+        }
+
+        /// <summary>
+        /// T21：把「CLI 键 → 模型字段」的三行映射钉成结构锁。
+        /// 需要它是因为 T20 只证明解析器**收下**了键，不证明有人把值搬到 `FfmpegOptions` 上 ——
+        /// 本仓已有前例：`--jxl-modular` 曾被 UI 采集、进模型、再不被任何消费者读取（空枪）。
+        /// </summary>
+        private static void T21_StructuralLockOnCliMapping()
+        {
+            string? root = null;
+            var d = new System.IO.DirectoryInfo(AppContext.BaseDirectory);
+            for (int up = 0; d != null && up < 8; d = d.Parent, up++)
+            {
+                var c = System.IO.Path.Combine(d.FullName, "src", "FfmpegGui", "CliParser.cs");
+                if (System.IO.File.Exists(c)) { root = c; break; }
+            }
+            if (root == null) { Skip("T21 结构锁：找不到 CliParser.cs 源文件"); return; }
+
+            var src = System.IO.File.ReadAllText(root);
+            foreach (var line in new[] {
+                "case \"thumbnail\": options.EnableThumbnail = ParseBoolStrict(key, value); break;",
+                "case \"thumbnail-size\": options.ThumbnailLongEdge = ParseIntStrict(key, value); break;",
+                "case \"thumbnail-quality\": options.ThumbnailQuality = ParseIntStrict(key, value); break;" })
+                Check(src.Contains(line), $"T21 映射行在位 [{line}]");
+        }
+
+        // ───────────────────── 缩略图探针的共用小工具 ─────────────────────
+
+        /// <summary>造一个指定容器的最小目标件。avif 走 avifenc —— 本构建 ffmpeg 无 libaom-avif 编码器（实测 rc=8）。</summary>
+        private static bool MakeTarget(string ff, string avifenc, string dir, string outPath, string fmt)
+        {
+            try
+            {
+                if (File.Exists(outPath)) File.Delete(outPath);
+                if (fmt == "avif")
+                {
+                    if (string.IsNullOrEmpty(avifenc)) return false;
+                    var png = Path.Combine(dir, "th_avif_in.png");
+                    RunCapture(ff, "-y -hide_banner -loglevel error -f lavfi -i \"testsrc=s=64x48:rate=1\" -frames:v 1 "
+                                 + $"-update 1 \"{png}\"");
+                    RunCapture(avifenc, $"-q 60 \"{png}\" \"{outPath}\"");
+                }
+                else
+                {
+                    var codec = fmt switch
+                    {
+                        "jxl" => "-c:v libjxl ",
+                        "jxr" => "-c:v libjxr ",   // 本构建带 jxrlib（实测 rc=0，FileType=HDP）
+                        _ => ""
+                    };
+                    var loop = fmt == "gif" ? "-loop 0 " : "";   // gif 无调色板路径时 testsrc 直出即可
+                    RunCapture(ff, "-y -hide_banner -loglevel error -f lavfi -i \"testsrc=s=64x48:rate=1\" -frames:v 1 "
+                                 + $"{loop}{codec}-update 1 \"{outPath}\"");
+                }
+                return File.Exists(outPath) && new FileInfo(outPath).Length > 0;
+            }
+            catch { return false; }
+        }
+
+        /// <summary>
+        /// 跑外部工具并回收 stdout。<paramref name="redirectOut"/> 非空时把 stdout 当**二进制**落盘
+        /// （exiftool 的 <c>-b</c> 输出是字节流，走字符串读会毁掉 0x00）。
+        /// </summary>
+        private static string RunCapture(string exe, string args, string? redirectOut = null)
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo(exe, args)
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            using var p = System.Diagnostics.Process.Start(psi)!;
+            if (redirectOut != null)
+            {
+                using (var fs = new FileStream(redirectOut, FileMode.Create, FileAccess.Write))
+                    p.StandardOutput.BaseStream.CopyTo(fs);
+                p.StandardError.ReadToEnd();
+                p.WaitForExit();
+                return "";
+            }
+            var text = p.StandardOutput.ReadToEnd();
+            p.StandardError.ReadToEnd();
+            p.WaitForExit();
+            return text;
+        }
+
+        private static int RunTask(System.Threading.Tasks.Task<int> t)
+            => t.GetAwaiter().GetResult();
+
+        private static string Sha(string path)
+        {
+            using var sha = System.Security.Cryptography.SHA256.Create();
+            using var fs = new FileStream(path, FileMode.Open, FileAccess.Read);
+            return Convert.ToHexString(sha.ComputeHash(fs));
+        }
+
 
         /// <summary>
         /// 锁「RAW 输入的拍摄字段补回」与「队列显示名」两条**非显然**约束（2026-09-21 新增）。
@@ -382,6 +727,60 @@ namespace ServiceProbe
 
             // 复位到默认语言，避免影响同进程内的后续调用
             loc.LoadLocale("zh-CN");
+        }
+
+        // ────────────────────────────── ultrahdr ──────────────────────────────
+
+        /// <summary>
+        /// ultrahdr —— 隔离「增益图**解码**是否真的生效」，把三段分开观测：
+        /// ① 容器检测 ② 元数据读取 ③ 线性 HDR 解码。
+        ///
+        /// <para>
+        /// 存在的理由：`QueueProcessor` 的 Ultra HDR 输入解码路径（`:481-510`）在 headless 下
+        /// **不回显** `item.Log` ⇒ 无法靠日志判定它有没有执行。2026-10-02 的产物对拍发现
+        /// 「带增益图 vs 剥掉增益图」产物**逐字节相同**（见
+        /// `docs/GAINMAP_VENDOR_ANNOTATION_AUDIT_2026-10-02.md` §4）⇒ 必须有直接观测点把成因定位到某一段。
+        /// </para>
+        /// </summary>
+        private static async Task ProbeUltraHdr(string[] args)
+        {
+            if (args.Length < 2) { Console.WriteLine("usage: ServiceProbe ultrahdr <file>"); _fail++; return; }
+            var path = args[1];
+            if (!File.Exists(path)) { Console.WriteLine($"FAIL 文件不存在: {path}"); _fail++; return; }
+
+            var ext = Path.GetExtension(path).ToLowerInvariant();
+            bool isBmff = ext is ".avif" or ".heic" or ".heif";
+            var logs = new List<string>();
+            void L(string t) => logs.Add(t.TrimEnd('\n'));
+
+            bool detected = isBmff
+                ? await GainMapDecoder.IsIsoBmffGainMapAsync(path, L)
+                : await GainMapDecoder.IsUltraHdrManagedAsync(path);
+            Console.WriteLine($"[ultrahdr] {Path.GetFileName(path)}  isBmff={isBmff}  detected={detected}");
+            foreach (var l in logs) Console.WriteLine($"    log: {l}");
+            Check(detected, $"① 容器检测：应判为增益图输入（实 {detected}）");
+
+            logs.Clear();
+            var meta = await GainMapDecoder.ReadMetadataAsync(path, L);
+            Console.WriteLine(meta == null
+                ? "[ultrahdr] metadata = null"
+                : $"[ultrahdr] metadata min={meta.GainMapMin} max={meta.GainMapMax} gamma={meta.Gamma} "
+                  + $"cap=[{meta.HdrCapacityMin},{meta.HdrCapacityMax}] ch={meta.Channels} useBase={meta.UseBaseColorSpace}");
+            foreach (var l in logs) Console.WriteLine($"    log: {l}");
+            Check(meta != null, "② 元数据读取：应读出增益元数据（ISO 21496-1 或 XMP）");
+
+            logs.Clear();
+            var outRaw = Path.Combine(Path.GetTempPath(), $"uhdr_probe_{Guid.NewGuid():N}.pfm");
+            var dec = await GainMapDecoder.DecodeToLinearRawAsync(path, outRaw, L);
+            Console.WriteLine(dec == null
+                ? "[ultrahdr] decoded = null"
+                : $"[ultrahdr] decoded w={dec.Value.w} h={dec.Value.h} peakNits={dec.Value.peakNits:F1} "
+                  + $"jxlCs={dec.Value.jxlColorSpace ?? "-"} fileExists={File.Exists(outRaw)}");
+            foreach (var l in logs) Console.WriteLine($"    log: {l}");
+            Check(dec != null, "③ 线性 HDR 解码：DecodeToLinearRawAsync 应返回非 null");
+            if (dec != null)
+                Check(dec.Value.peakNits > 203f, $"④ 解码峰值应 > SDR 白点 203（实 {dec.Value.peakNits:F1}）");
+            try { if (File.Exists(outRaw)) File.Delete(outRaw); } catch { }
         }
 
         // ────────────────────────────── gainmap ──────────────────────────────
@@ -1050,13 +1449,23 @@ namespace ServiceProbe
                     $"HLG × {f} + 请求 tonemap：必须声明 OOTF 未标定（Advice={ht.Advice}）");
             }
 
-            // C4b GainMap 专项：它是“输出结构”能力（仅 JPEG 族），不是色调曲线；
-            // UI 的 IsVisible 不算门禁——契约层必须自拦，否则变成“以为有 HDR、实则被压暗”的静默降级。
-            foreach (var f in new[] { "png", "tiff", "webp", "avif", "jxl", "gif", "heic" })
+            // C4b GainMap 专项：它是“输出结构”能力（JPEG 的 APP2/MPF，或 AVIF 的 ISO-BMFF `tmap` 派生项），
+            // 不是色调曲线；UI 的 IsVisible 不算门禁——契约层必须自拦，否则变成“以为有 HDR、实则被压暗”的静默降级。
+            // ⚠ 2026-10-02：**avif 已移出本负控清单**（tmap 派生项写出已落地，三路验证见
+            //   `docs/AVIF_GAINMAP_ENCODER_2026-10-02.md`）⇒ 负控**只剩 6 个格式、不得为空**；
+            //   同时新增 avif 的**正向**断言（不得 Reject + 能力表位为真），把新旧口径各钉一颗牙。
+            foreach (var f in new[] { "png", "tiff", "webp", "jxl", "gif", "heic" })
             {
                 var gm = CE.Plan(new CI { Strategy = ST.Recommended, Source = pq2020, Format = CE.CapsFor(f), GainMapRequested = true });
                 Check(gm.Action == CA.Reject && gm.Advice.Length > 0,
                     $"GainMap × {f}：必须 Reject+建议（实为 {gm.Action}）");
+            }
+            {
+                var capsA = CE.CapsFor("avif");
+                Check(capsA.SupportsGainMap, "avif 能力表须标记 SupportsGainMap（ISO-BMFF tmap 派生项）");
+                var gmAvif = CE.Plan(new CI { Strategy = ST.Recommended, Source = pq2020, Format = capsA, GainMapRequested = true });
+                Check(gmAvif.Action != CA.Reject,
+                    $"GainMap × avif：已支持 tmap 派生项 ⇒ 不得 Reject（实为 {gmAvif.Action}）");
             }
             foreach (var f in new[] { "jpg", "jpeg", "jpegli" })
             {
@@ -2667,7 +3076,7 @@ namespace ServiceProbe
             //    判据是**实际发出的 distance**，不是 Lossless 复选框（Quality=100 也算数学无损）。
             string pnLog = "";
             Action<string> pnSink = s => pnLog += s;
-            var pnLossy = O("jxl"); pnLossy.Quality = 75; pnLossy.JxlEffort = 7;   // distance 3.8
+            var pnLossy = O("jxl"); pnLossy.Quality = 75; pnLossy.JxlEffort = 7;   // distance 2.4（2026-10-02 起按 libjxl 官方曲线；旧公式算出来是 3.8）
             var pnAutoUnresolved = O("jxl"); pnAutoUnresolved.Quality = 75; pnAutoUnresolved.JxlEffort = 7;
             pnAutoUnresolved.CjxlAutoPhotonNoise = true;   // CjxlPhotonNoiseIso 保持 0 = 未解析
             var a1 = FfmpegGui.Services.CjxlService.BuildCjxlArguments(
@@ -2738,7 +3147,9 @@ namespace ServiceProbe
             // 该开关 09-30 起默认启用，而 `FfmpegCommandBuilder` 里曾有一条
             // `if (JxlLosslessJpeg) ⇒ -distance 0` 的特例：ffmpeg 的 libjxl 做不到 jbrd（09-19 实测），
             // 这条特例只剩副作用 —— 实测 `-e Ffmpeg` 下 q=30/50/75/90 **产物全是 58.3 kB、命令行恒为
-            // -distance 0**（关掉后恢复 10.5 / 3.8 ⇒ 3.9 / 9.6 kB）。默认值一翻，这格从罕见变成常态。
+            // -distance 0**（关掉后恢复质量轴起效）。默认值一翻，这格从罕见变成常态。
+            // ⚠ 2026-10-02：下方 qa-① 的期望值随 JXL distance 公式换成 libjxl 官方曲线而更新
+            //   （旧 10.5 / 1.5 ⇒ 新 6.4 / 1.0；公式见 ImageEncoderArgs.MapJxlDistance）。
             // ⚠ 这里显式给 BitDepth，避免 BuildArguments 去探测不存在的输入而把读数搅浑。
             string JxlCmd(int q, bool lossless, bool? modular)
             {
@@ -2747,9 +3158,9 @@ namespace ServiceProbe
                 return FfmpegGui.Services.FfmpegCommandBuilder.BuildArguments(o, "in.jpg", "out.jxl");
             }
             var qa30 = JxlCmd(30, false, null); var qa90 = JxlCmd(90, false, null);
-            Check(qa30.Contains("-distance 10.5") && qa90.Contains("-distance 1.5")
+            Check(qa30.Contains("-distance 6.4") && qa90.Contains("-distance 1.0")
                     && !qa30.Contains("-distance 0") && !qa90.Contains("-distance 0"),
-                $"qa-① 开关开着也不吞质量轴：q30⇒10.5 / q90⇒1.5（实 [{qa30}] / [{qa90}]）");
+                $"qa-① 开关开着也不吞质量轴：q30⇒6.4 / q90⇒1.0（实 [{qa30}] / [{qa90}]）");
             var qaL = JxlCmd(75, true, null);
             Check(qaL.Contains("-distance 0"), $"qa-② 正控：真要无损由 Lossless 决定（{qaL}）");
             var qaM = JxlCmd(75, false, true);
@@ -6405,6 +6816,73 @@ namespace ServiceProbe
                     Check(meanA > 8 && meanT > 8, $"{name}: rgb8 出口亮度合理（均值 {meanA:F1}/{meanT:F1}，非全黑）");
                 }
 
+                // 0c) **8-bit 源降位必须恒等**（任务 #12；16 个抖动相位全扫，两条出口路径都扫）。
+                //     依据：8-bit 源经 `format=rgb48le` 升位后码值恒为 **257 的整数倍** ⇒ 16→8 是可精确还原的，
+                //     抖动在这种值上只会注入误差。旧抖动用**未居中**的 Bayer（减 2/16 而非 7.5/16）
+                //     ⇒ t ∈ [−2/16, +13/16]，16 个相位里 6 个 t ≥ 0.5 ⇒ 精确值被抬 +1（纯色/渐变上长出斑）。
+                //     居中后 |t| ≤ 0.46875 ⇒ `Round(v + t) == v` 对 16 个相位都成立 —— 这条断言就是钉这个的。
+                //     ⚠ 只在"恒等变换"那一格判：其余 4 格做了真实色彩映射，改值是本分。
+                if (name == "sRGB 自身曲线往返")
+                {
+                    var id48 = new byte[256 * 3 * 2];
+                    var want = new byte[256 * 3];
+                    for (int v = 0; v < 256; v++)
+                        for (int c = 0; c < 3; c++)
+                        {
+                            int o = (v * 3 + c) * 2;
+                            id48[o] = (byte)((v * 257) & 0xFF);
+                            id48[o + 1] = (byte)((v * 257) >> 8);
+                            want[v * 3 + c] = (byte)v;
+                        }
+                    int worstDev = 0, worstPh = -1, badPhases = 0, worstAt = -1;
+                    for (int ph = 0; ph < 16; ph++)
+                    {
+                        for (int pass = 0; pass < 2; pass++)   // 0=解析式 1=表驱动（两条路都得恒等）
+                        {
+                            var out8 = new byte[256 * 3];
+                            if (pass == 0) CK.TransformRgb48leToRgb8(id48, out8, spec, 256, null, null, 256, ph);
+                            else CK.TransformRgb48leToRgb8(id48, out8, spec, 256, tt.Item1, tt.Item2, 256, ph);
+                            int dev = 0, at = -1;
+                            for (int i = 0; i < out8.Length; i++)
+                            {
+                                int dd = Math.Abs(out8[i] - want[i]);
+                                if (dd > dev) { dev = dd; at = i; }
+                            }
+                            if (dev > 0) badPhases++;
+                            if (dev > worstDev) { worstDev = dev; worstPh = ph; worstAt = at; }
+                        }
+                    }
+                    Console.WriteLine($"    8-bit 源降位恒等：最大偏差 {worstDev}/255"
+                        + (worstAt >= 0 ? $"（相位 {worstPh}，码值 {worstAt / 3}）" : "")
+                        + $"，不恒等的相位×路径组合 {badPhases}/32");
+                    Check(worstDev == 0 && badPhases == 0,
+                        $"8-bit 源降位恒等（16 相位 × 解析/表两条路径；最大偏差 {worstDev}/255"
+                        + (worstDev > 0 ? $"，出现在相位 {worstPh} 的码值 {worstAt / 3}" : "") + "）");
+                    // ⚠ 对照组：这条断言必须**能红**。零偏差既可能是"真恒等"，也可能是"我根本没在比东西"
+                    //   （want 构错、循环空转都会给出 0）。⇒ 同一份产物与 `want+1` 比，偏差必须恰为 1，
+                    //   以此证明比较链路是活的；这一条红了说明判据本身失效，而不是产品的降位坏了。
+                    {
+                        var out8c = new byte[256 * 3];
+                        CK.TransformRgb48leToRgb8(id48, out8c, spec, 256, null, null, 256, 0);
+                        int ctlDev = int.MaxValue;
+                        for (int i = 0; i < out8c.Length; i++)
+                        {
+                            if (want[i] >= 255) continue;   // 255+1 越界：钳位后会造出假 0，必须跳过顶格
+                            int dd = Math.Abs(out8c[i] - (want[i] + 1));
+                            if (dd < ctlDev) ctlDev = dd;
+                        }
+                        // 夹具/产物都必须**非常数**：want 若退化成全 0，"逐字节相等"与"什么都没比"长得一样。
+                        int distinctWant = (int)want.Distinct().Count();
+                        int distinctOut = (int)out8c.Distinct().Count();
+                        Check(distinctWant >= 250 && distinctOut >= 250,
+                            $"对照组：夹具与产物都必须是满值域斜坡（want 去重 {distinctWant}/256，产物 {distinctOut}/256）"
+                            + " —— 常数夹具会让「恒等」与「没在比」长得一样");
+                        // 用 min 而非 max：`want+1` 与产物的**最小**可能偏差必须是 1（产物恒等 ⇒ 全体差 1；
+                        // 若这里读到 0，说明产物里存在某个码值恰好等于 want+1 ⇒ 恒等判据本身就不该报绿）。
+                        Check(ctlDev == 1, $"对照组：与 want+1 比的最小偏差应为 1（实得 {ctlDev}）—— 读到 0 说明恒等判据没在比东西");
+                    }
+                }
+
                 // 1) 快内核 == 参考实现（同一数学的两个入口不能分叉）
                 double worst = 0; int checkedCount = 0;
                 for (int i = 0; i < w * h; i += 7)
@@ -6470,6 +6948,42 @@ namespace ServiceProbe
             Check(sc1.Tier == "S" && sc1.Dop == 1, $"小图走 S 档单线程（实为 {sc1.Tier}/dop{sc1.Dop}）");
             Check(scM.Tier == "M" && !scM.Streaming, $"4K 走 M 档整帧并行（实为 {scM.Tier} stream={scM.Streaming}）");
             Check(sc2.Streaming && sc2.TileRows >= 1, $"8K 走 L 档流式（{sc2.ToLogFragment()}）");
+
+            // ── 托盘/窗口图标资源（2026-10-02 的真实缺陷：托盘只有菜单没有图标）──
+            // 成因链是**静默**的：`icon.ico` 没被记进 `<AvaloniaResource>` ⇒ `AssetLoader.Exists` 恒 false
+            // ⇒ `App.LoadTrayIcon()` 返回 null ⇒ `TrayIcon.Icon` 空。而且旧那份文件其实是 32×32 的 PNG
+            // 改了扩展名（既进不了 `ApplicationIcon`，也没有多档尺寸）。⇒ 两级各钉一条：
+            //   ① 程序集里那份 avares 清单确实收录了它（不依赖 Avalonia 运行时，纯反射读清单字节）；
+            //   ② `AssetLoader` 这条**产品真正走的路**能打开并解码。
+            {
+                var asm = typeof(FfmpegGui.App).Assembly;
+                using (var ms = asm.GetManifestResourceStream("!AvaloniaResources"))
+                {
+                    var manifest = ms == null ? Array.Empty<byte>() : new BinaryReader(ms).ReadBytes((int)ms.Length);
+                    Check(System.Text.Encoding.UTF8.GetString(manifest).Contains("Resources/icon.ico"),
+                         $"① avares 清单收录 Resources/icon.ico（清单 {manifest.Length} B；缺失 ⇒ csproj 的 AvaloniaResource 又漏了）");
+                }
+                try
+                {
+                    var uri = new Uri("avares://FfmpegGui/Resources/icon.ico");
+                    if (!Avalonia.Platform.AssetLoader.Exists(uri))
+                    {
+                        Check(false, "② AssetLoader.Exists 认得这条 avares URI");
+                    }
+                    else
+                    {
+                        using var s = Avalonia.Platform.AssetLoader.Open(uri);
+                        using var bmp = new Avalonia.Media.Imaging.Bitmap(s);
+                        Check(bmp.PixelSize.Width >= 16 && bmp.PixelSize.Height >= 16,
+                             $"② 托盘图标可解码（实得 {bmp.PixelSize.Width}x{bmp.PixelSize.Height}）");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    // 本宿主没起 Avalonia 运行时 ⇒ 这条判不了，**点名 SKIP**，不许当成通过
+                    Skip($"② AssetLoader 解码路径在本宿主判不了：{ex.GetType().Name}: {ex.Message}");
+                }
+            }
         }
 
         /// <summary>

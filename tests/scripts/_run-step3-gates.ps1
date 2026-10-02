@@ -1,8 +1,10 @@
 ﻿# _run-step3-gates.ps1 —— 步骤 3 改动后的门禁批量执行（只回显每个门禁的汇总行 + 失败明细）
 # 用法：pwsh -NoProfile -File tests/scripts/_run-step3-gates.ps1 [-Probes a,b,c] [-SkipScripts] [-Scripts a,b]
-#   ⚠ `-Scripts` = **脚本级子集**（2026-09-24 新增）。动机：此前只有"全跑 60 条(≈20min)"与
+#   ⚠ `-Scripts` = **脚本级子集**（2026-09-24 新增）。动机：此前只有"全跑 65 条"与
 #     "裸跑单个 verify-*.ps1"两种选择，而裸跑会绕开本文件的**仓库锁 / 单步超时 / STALE 新鲜度闸 /
 #     双漂移复核 / `_gate_script_*.txt` 留痕**五项保护 ⇒ 增量验证要么太贵要么不可信。
+#     ⚠ 全跑墙钟不再写死分钟数：2026-10-01 起清单含 5 条 **L3/产物级**套件（第 61~65 条），
+#       原散文里的 ≈20min 只覆盖 60 条那批，接进 L3 后已过期 ⇒ 以本轮日志末尾的耗时汇总为准。
 #     子集跑**保留**上述五项，但**不构成基线**（汇总行会点名），宣布新基线仍需一次全量。
 # ⚠ `colormath`（2026-09-26 接进默认清单，第 22 个 mode）——**必须**在默认清单里，理由是它守的是
 #   「原色表被悄悄改回缺陷值」这类**没有任何其他判据会响**的回归：`matrix` 只锁标签选路、
@@ -15,7 +17,18 @@
 #       两条各自咬一个方向：`实差 1.99E+000`（≈199% 满量程，正是"拿 DCI-P3 矩阵乘像素"的量级）
 #       + 「白名单外重复对 `smpte428≡smpte431`」。
 #   ⇒ 两条都有牙 ⇒ 才允许进默认清单。0.4 s、纯进程内、不依赖素材与外部 exe。
-param([string]$Probes = 'contract,wire,verdict,selftest,iccname,plan,curve,matrix,colormath,ootf,hlgwire,bt2446,decision,engine,runner,settings,procstreams,encoding,ipc,i18n,geometry,metaraw',
+# ⚠ `thumbnail`（2026-10-02 接进默认清单，第 23 个 mode；实测 40/0，本机 10 s）——它守的是
+#   「产物**声称**有 EXIF IFD1 缩略图、而图像数据一个字节都没有」：判据是
+#   `exiftool -b -ThumbnailImage` 取回的字节数 **== `ThumbnailLength` 声明值**，不看退出码。
+#   覆盖容器 = jpg / png / apng / webp / avif / jxl（六格逐一真跑）；tiff / gif / jxr / dng 走出声拒绝支。
+#   变异验牙（两次都改坏 `src/` 再原样改回，还原后重跑回 40/0）：
+#     · M1 让嵌入步直接返回 0（模拟"编码成功但一个缩略图都没写"）⇒ `pass=33 fail=7`，
+#       红的是 T11 六格（全部 `rc=0` 却 `declared=0`）+ T17；T12/T13/T14/T15 保持绿。
+#     · M2 把能力表吹大（给 **gif** 开一条实测走不通的路）⇒ `pass=38 fail=2`，
+#       红在 T8 + T13，且 T13 读数 `rc=0 / declared=0` 正是 **exiftool 对走不通的容器
+#       「0 image files updated 但退出码 0」的静默空转** ⇒ 能力位是唯一的闸、回读字节才是判据。
+#   ⚠ 该 mode 依赖 publish/PLAN 的 ffmpeg/exiftool/avifenc，缺席时逐条 **SKIP 点名**（不静默消失）。
+param([string]$Probes = 'contract,wire,verdict,selftest,iccname,plan,curve,matrix,colormath,ootf,hlgwire,bt2446,decision,engine,runner,settings,procstreams,encoding,ipc,i18n,geometry,metaraw,thumbnail',
       [switch]$SkipScripts,
       # ⚠ 逗号分隔的**文件名**（含 .ps1），顺序不敏感；名字不在清单内 ⇒ 响亮报红而不是静默忽略。
       #   `pwsh -File` 下 `-Scripts a,b` 只会作为一个参数传入（与 $Probes 同一坑，见 :455），故这里自己切。
@@ -28,8 +41,17 @@ param([string]$Probes = 'contract,wire,verdict,selftest,iccname,plan,curve,matri
       #   **挂死永不返回，宽超时照样抓到**（挂死 = 无限），而**紧超时在负载下会假红**。
       #   ⚠ 两个默认值都由 `Test-RunnerShape` **逐字钉住**：探针段 = **第 11 针**、脚本段 = **第 12 针**
       #     （防按各自基准悄悄调参 —— 本次即为「60 vs 120」往返多轮的根因）。
+      #   ⚠ **2026-10-02 重标：480 → 900**（同一条"max × ≈3 向上取整"规则，换了实测分布）。
+      #     依据 = 本轮整轮（清单 65 条，`tests/output/t84/round-beta4.log`）子脚本读数：
+      #       max **243.8 s** `verify-color-strategy` ｜ **163.5 s** `verify-jbrd-e2e`（第 62 条，本批新接的 L3）
+      #       ｜ **144.9 s** `verify-color-wiring` ｜ **120.4 s** `verify-encoder-knob-liveness`（第 65 条）
+      #       ｜ 脚本段合计 ≈**2015 s**（≈34 min）。243.8 × 3 = 731 ⇒ 向上取整 900（对最慢项 = 3.7×）。
+      #     ⚠ 旧的 480 早已不是"max×3"：它按 09-19 的 max 158.9 s 定，而 `verify-color-strategy` 后来长到
+      #       243.8 s ⇒ 480 只剩 2.0×，按本段自己的话"紧超时在负载下会假红"，它**会咬合法慢门禁**。
+      #       接 L3 五套只是把次高项抬了一档，触发的是**重新结算**，不是给新条目开后门。
+      #     ⇒ 第 ⑫ 针同步改成 900（两处不一致 = 运行器拒绝跑）。
       [int]$ProbeTimeoutSec = 120,
-      [int]$ScriptTimeoutSec = 480)
+      [int]$ScriptTimeoutSec = 900)
 # ⚠ geometry mode（2026-09-17 新增）**必须**在默认清单里，理由是一条实测缺陷：
 #   `RawColorPipeline.cs:94-129` 的「引擎几何缩放」在默认路径上**永不执行** ——
 #   `QueueProcessor.cs:429-496` 的**预缩放**在**路由之前**跑，并在 `:487` 改写 `captured.InputPath`
@@ -47,7 +69,7 @@ param([string]$Probes = 'contract,wire,verdict,selftest,iccname,plan,curve,matri
 #    2026-09-17 新增 verify-gamut-map.ps1；**同日按「运行级隔离（GUID）」改写，见 §6 第 66 条**；
 #    同日再新增生产者 `_probe-jpg-p3-icc.ps1`，理由见下方 ②(b) 与调序注释；
 #    同日再新增 `verify-geometry-engine.ps1`（**几何缩放死代码**的专项门禁，理由见 `$Probes` 的 `geometry` 注释））──
-#    ⚠ **清单条数以实测为准 = 60 条**（⚠ 2026-09-19 P4-A 前为 42 条；2026-09-23 由 48 经 49/50/51 到 52，2026-09-23/24 再接 `verify-ipc-extra-options.ps1` ⇒ 53，2026-09-24 再接 `_probe-settings-clone-coverage.ps1` ⇒ 54，2026-09-27 再接 `_probe-matrix-structure.ps1`（任务 #42，秒级结构自检）⇒ 55，同日再接 `_probe-stderr-merge-scan.ps1`（任务 #51，合并取数结构锁）⇒ 56，同日再接 `verify-simd-switch-fallback.ps1`（面板「SIMD 优化」声明/实现冲突 ⇒ 判据单点 `SimdKernelRouting`）⇒ 57，2026-09-30 再接 `verify-geometry-orientation.ps1` + `_probe-geometry-single-source-scan.ps1`（取向标签 ⇒ **显示尺寸**口径的专项门禁 + 唯一实现结构锁）⇒ 59，同日再接 `verify-gainmap-host.ps1`（把 `GainMapTestHost` 套件接进清单 + STALE 第 ⑤ 对）⇒ 60）（`foreach` 数组里的 `.ps1` 条目数）。
+#    ⚠ **清单条数以实测为准 = 65 条**（⚠ 2026-09-19 P4-A 前为 42 条；2026-09-23 由 48 经 49/50/51 到 52，2026-09-23/24 再接 `verify-ipc-extra-options.ps1` ⇒ 53，2026-09-24 再接 `_probe-settings-clone-coverage.ps1` ⇒ 54，2026-09-27 再接 `_probe-matrix-structure.ps1`（任务 #42，秒级结构自检）⇒ 55，同日再接 `_probe-stderr-merge-scan.ps1`（任务 #51，合并取数结构锁）⇒ 56，同日再接 `verify-simd-switch-fallback.ps1`（面板「SIMD 优化」声明/实现冲突 ⇒ 判据单点 `SimdKernelRouting`）⇒ 57，2026-09-30 再接 `verify-geometry-orientation.ps1` + `_probe-geometry-single-source-scan.ps1`（取向标签 ⇒ **显示尺寸**口径的专项门禁 + 唯一实现结构锁）⇒ 59，同日再接 `verify-gainmap-host.ps1`（把 `GainMapTestHost` 套件接进清单 + STALE 第 ⑤ 对）⇒ 60，2026-10-01 再接**首批 L3/产物级套件**5 条（`verify-package-smoke` + `verify-jbrd-e2e` + `verify-orientation-rewrap` + `verify-gainmap-thirdparty` + `verify-encoder-knob-liveness`；原居 gitignored 的 `tests/output/t{69,76,77,79}`，`git clean -xdf` 一次就没、也不在任何轮里被跑）⇒ 65）（`foreach` 数组里的 `.ps1` 条目数）。
 #      原注释写「29 个」「31 条」均与实测不符（**历史偏差**，非本轮引入），已按实测更正。
 #      2026-09-18 新增 `verify-engine-firstframe.ps1`（引擎多帧解码只取首帧，理由见该脚本头注释）
 #      ⇒ 32 → 33，已重新数过。
@@ -422,7 +444,7 @@ function Test-RunnerShape {
   $nProbeTo = '[int]$ProbeTimeoutSec' + ' = 120'
   $cPTo = ([regex]::Matches($t, [regex]::Escape($nProbeTo))).Count
   if ($cPTo -ne 1) { $bad.Add("探针超时默认值针 = $cPTo（须 1：默认值必须逐字钉住，防按各自基准悄悄调参）") }
-  $nScriptTo = '[int]$ScriptTimeoutSec' + ' = 480'
+  $nScriptTo = '[int]$ScriptTimeoutSec' + ' = 900'
   $cSTo = ([regex]::Matches($t, [regex]::Escape($nScriptTo))).Count
   if ($cSTo -ne 1) { $bad.Add("脚本超时默认值针 = $cSTo（须 1：同第 11 针，两个默认值都不许悄悄改）") }
   # ⚠ ⑬⑭ 只数**数组字面量区间内**的条目 ⇒ 不受本函数自身源码影响（见上方头部注释）。
@@ -894,7 +916,7 @@ $noSelfSummary = @('_probe-cancel-propagation-scan.ps1', '_probe-ct-chain-closur
 #   观察项**，改成必红等于**主动放弃一条覆盖**；补生产者只是**修复清单的遗漏**。
 #   ⚠ **本组正确性依赖 runner 串行**（`validate/jpgp3` 是固定共享目录）——
 #   若将来 runner 改成并行，本组必须先改成「指针/按会话隔离」（§6 第 68 条）。
-# ⚠ 受管基线：脚本清单 = **60** 条（`.workbuddy-ai/memory/MEMORY.md` / `docs/HANDOVER.md` /
+# ⚠ 受管基线：脚本清单 = **65** 条（`.workbuddy-ai/memory/MEMORY.md` / `docs/HANDOVER.md` /
 #   `docs/TESTING.md` §3.5 同记此数）。增删条目必须**同时**改此常量 + 四处文档；
 #   否则下面的条数锁会响亮报红（防「删掉一条 ⇒ 静默变 47 ⇒ 日志照常、无人发现」）。
 #   ⚠ 本锁在 `-SkipScripts` 下**不执行**（该模式走上面的早退，清单根本没被使用）——
@@ -966,7 +988,15 @@ $noSelfSummary = @('_probe-cancel-propagation-scan.ps1', '_probe-ct-chain-closur
 #     接入前实测单跑：`PASS=20 FAIL=0`、`exit=0`、stderr 0 字节。
 #     ⚠ 它要**独占 GUI 实例 + 命名管道**（脚本 :52-56 有实例即判红）⇒ 依赖运行器**串行**，
 #       且必须排在 `verify-cli-strict.ps1` **之前**（见下方清单内登记与末位约定）。）
-$expectedScriptCount = 60
+# ⚠⚠ **2026-10-01 第六次接线：60 → 65（+5）** —— 首批 **L3/产物级**套件（清单末尾第 61~65 条）。
+#   动机不是"再加几条断言"，而是**这批判据此前根本不在版本控制里**：它们住在 `tests/output/t{69,76,77,79}/`，
+#   而 `.gitignore:78` 的 `output/` 把整棵目录挡住 ⇒ 一次 `git clean -xdf` 就全没，也不在任何轮里被跑；
+#   它们跑过的读数只能靠人在结论里手抄（09-30/10-01 两轮都是这样）。
+#   迁入时改了三件事：① 路径由 `$PSScriptRoot` 运行时推导（原写死 `C:\PLAN\ffmpegPictureUI`）；
+#   ② 被测由"只打出货包"改成**两档**（默认 Release 产物 ⇒ 每轮都跑；`$env:PKG_VER` 时升 L3），
+#      两档都缺 ⇒ `exit 2` 不产出读数、**绝不回退 Debug**；③ 每条都补齐 `PASS=n FAIL=m` 规范汇总
+#      （运行器的**零断言闸**只认这个形状）。⇒ 分类账 **4 + 7 + 54 = 65**，两个数组照旧不动。
+$expectedScriptCount = 65
 $scriptList = @('verify-ps-compat.ps1','verify-color-caps.ps1','verify-color-wiring.ps1','verify-color-strategy.ps1','verify-format-regression.ps1',
                  'verify-widegamut-regression.ps1','verify-tiff-icc.ps1','verify-webp-hdr-fix.ps1','verify-decision-delivery.ps1',
                  '_probe-stderr-drain-scan.ps1','_probe-proc-encoding-scan.ps1','_probe-cancel-propagation-scan.ps1','_probe-i18n-scan.ps1','_probe-cjk-hardcode-scan.ps1','verify-png-signature.ps1','verify-gainmap-memory.ps1','verify-metadata-privacy.ps1','verify-gif-avif-framelist.ps1','verify-color-peak.ps1',
@@ -1088,7 +1118,19 @@ $scriptList = @('verify-ps-compat.ps1','verify-color-caps.ps1','verify-color-wir
                  #   ⚠ 归 **C 类**：自带 `===== … PASS= FAIL= SKIP= =====` 汇总 + 断言驱动 `exit 1`/`0`
                  #     ⇒ **不进** `$tableOnly` / `$noSelfSummary`（第 13/14 针条数不变：4 / 7）。
                  'verify-simd-switch-fallback.ps1',
-                 'verify-ui-host.ps1','verify-ui-param-matrix.ps1','verify-ui-strategy-map.ps1','verify-ui-param-defects.ps1','verify-cli-strict.ps1','verify-png-structure.ps1')
+                 'verify-ui-host.ps1','verify-ui-param-matrix.ps1','verify-ui-strategy-map.ps1','verify-ui-param-defects.ps1','verify-cli-strict.ps1','verify-png-structure.ps1',
+                 # ── 第 61~65 条：2026-10-01 首批 **L3 判据**接进清单（原居 `tests/output/t{69,76,77,79}/`，
+                 #    被 `.gitignore:78 output/` 挡在版本控制外 ⇒ 一次 `git clean -xdf` 就没了，也不在任何轮里跑）。
+                 #    ⚠ 迁入后**被测档改成两档**：默认 = 本轮刚构建的 Release 产物（每轮都跑，L2+），
+                 #      设 `$env:PKG_VER` 时才打 `publish/build/FFmpegPictureUI-v<ver>-x64-full`（L3）；
+                 #      两档都**缺即 exit 2 不产出读数、绝不回退 Debug**（异构/陈旧二进制的读数不可信）。
+                 #    ⚠ 五条**都不进** `$tableOnly` / `$noSelfSummary`：各自都有 `PASS=n FAIL=m` 汇总
+                 #      + 断言驱动 `exit 1` ⇒ 归 C 类（第 13/14 针条数不变：4 / 7）。
+                 #    ⚠ `verify-gainmap-thirdparty.ps1` 还额外依赖**本机构建的第三方参照**
+                 #      `tools/src/libultrahdr/build/Release/ultrahdr_app.exe`（不在包内、不进版本控制）⇒
+                 #      缺它时该条判红是**有意的 fail-closed**，不是产品缺陷；修法见该脚本头部。
+                 'verify-package-smoke.ps1','verify-jbrd-e2e.ps1','verify-orientation-rewrap.ps1',
+                 'verify-gainmap-thirdparty.ps1','verify-encoder-knob-liveness.ps1')
 $actualScriptCount = @($scriptList).Count
 if ($actualScriptCount -ne $expectedScriptCount) {
   Write-Output ("[FAIL] 脚本清单条数 = $actualScriptCount，受管基线 = $expectedScriptCount ⇒ 基线漂移（增删条目必须同步四处文档）")

@@ -235,7 +235,7 @@ namespace FfmpegGui
         private Border? JpegGainMapPanel;
         private StackPanel? JpegGainMapOptions;
         private CheckBox? JpegGainMapFollowMainCheck;
-        private CheckBox? JpegGainMapEnableCheck;   // GainMap 独立开关（高级色彩面板，仅 JPEG）
+        private ComboBox? HdrModeCombo;   // HDR 实现模式（GainMap | 传统）；可见性按容器能力
         private CheckBox? ColorGamutMapCheck;       // 色域映射（GMO）开关（高级色彩面板，默认关）
         private StackPanel? JpegGainMapQualityPanel;
         private TextBox? JpegGainMapQualityBox;
@@ -250,6 +250,11 @@ namespace FfmpegGui
         private CheckBox? JpegGainMapMultiChannelCheck;  // 兼容旧代码引用
         private ComboBox? TiffCompressionCombo;
         private NumericUpDown? TiffDpiBox;
+        // -- thumbnail (EXIF IFD1 embed) advanced codec panel controls --
+        private StackPanel? ThumbnailPanel;
+        private CheckBox? EnableThumbnailCheck;
+        private NumericUpDown? ThumbnailSizeBox;
+        private NumericUpDown? ThumbnailQualityBox;
         // ── cjpegli / jpegli 高级面板控件 ──
         private StackPanel? JpegliCodecPanel;
         private ComboBox? JpegliChromaCombo;
@@ -466,7 +471,7 @@ namespace FfmpegGui
             // ── Gain Map (Ultra HDR) JPEG 控件 ──
             JpegGainMapPanel = this.FindControl<Border>("JpegGainMapPanel");
             JpegGainMapOptions = this.FindControl<StackPanel>("JpegGainMapOptions");
-            JpegGainMapEnableCheck = this.FindControl<CheckBox>("JpegGainMapEnableCheck");
+            HdrModeCombo = this.FindControl<ComboBox>("HdrModeCombo");
             JpegGainMapFollowMainCheck = this.FindControl<CheckBox>("JpegGainMapFollowMainCheck");
             JpegGainMapQualityPanel = this.FindControl<StackPanel>("JpegGainMapQualityPanel");
             JpegGainMapQualityBox = this.FindControl<TextBox>("JpegGainMapQualityBox");
@@ -483,6 +488,10 @@ namespace FfmpegGui
             ColorGamutMapCheck = this.FindControl<CheckBox>("ColorGamutMapCheck");
             TiffCompressionCombo = this.FindControl<ComboBox>("TiffCompressionCombo");
             TiffDpiBox = this.FindControl<NumericUpDown>("TiffDpiBox");
+            ThumbnailPanel = this.FindControl<StackPanel>("ThumbnailPanel");
+            EnableThumbnailCheck = this.FindControl<CheckBox>("EnableThumbnailCheck");
+            ThumbnailSizeBox = this.FindControl<NumericUpDown>("ThumbnailSizeBox");
+            ThumbnailQualityBox = this.FindControl<NumericUpDown>("ThumbnailQualityBox");
             // ── cjpegli / jpegli 高级面板控件 ──
             JpegliCodecPanel = this.FindControl<StackPanel>("JpegliCodecPanel");
             JpegliChromaCombo = this.FindControl<ComboBox>("JpegliChromaCombo");
@@ -702,6 +711,9 @@ namespace FfmpegGui
             if (TiffCompressionCombo != null) TiffCompressionCombo.SelectionChanged += (_, _) => RegenerateCommand();
             if (TiffDpiBox != null) TiffDpiBox.ValueChanged += (_, _) => RegenerateCommand();
             if (TiffDpiBox != null) TiffDpiBox.ValueChanged += (_, _) => RegenerateCommand();
+            if (EnableThumbnailCheck != null) EnableThumbnailCheck.IsCheckedChanged += (_, _) => RegenerateCommand();
+            if (ThumbnailSizeBox != null) ThumbnailSizeBox.ValueChanged += (_, _) => RegenerateCommand();
+            if (ThumbnailQualityBox != null) ThumbnailQualityBox.ValueChanged += (_, _) => RegenerateCommand();
             // cjpegli / jpegli 高级选项事件
             if (JpegliChromaCombo != null) JpegliChromaCombo.SelectionChanged += (_, _) => RegenerateCommand();
             if (JpegliProgressiveCombo != null) JpegliProgressiveCombo.SelectionChanged += (_, _) => RegenerateCommand();
@@ -933,6 +945,9 @@ namespace FfmpegGui
                 "gainmap.type.gray", "gainmap.type.rgb");
             FillComboByLoc(this.FindControl<ComboBox>("JpegGainMapBaseCombo"), 0,
                 "gainmap.base.srgb", "gainmap.base.rec2020");
+            // HDR 实现模式（用户-facing 单真值 = `FfmpegOptions.HdrMode`，它是 `JpegGainMap` 的强类型视图）
+            FillComboByLoc(this.FindControl<ComboBox>("HdrModeCombo"), 0,
+                "hdr.mode.traditional", "hdr.mode.gainmap");
             FillComboByLoc(this.FindControl<ComboBox>("JpegGainMapDownsampleCombo"), 1,
                 "gainmap.ds.full", "gainmap.ds.half", "gainmap.ds.quarter",
                 "gainmap.ds.eighth", "gainmap.ds.sixteenth");
@@ -1384,6 +1399,11 @@ namespace FfmpegGui
             if (_suppressCommandRegen || string.IsNullOrWhiteSpace(_inputPath)) return;
             var fmt = NormalizeFormat(FormatCombo?.SelectedItem as string);
             var useAdvCodec = UseAdvancedCodec?.IsChecked ?? false;
+            // Thumbnail: same gate as the collection side. Containers without a verified EXIF IFD1
+            // write path hide the panel and reset the checkbox (see UpdateCodecPanelVisibility).
+            var thumbOn = useAdvCodec && (EnableThumbnailCheck?.IsChecked ?? false);
+            var thumbLongEdge = thumbOn ? (int)(ThumbnailSizeBox?.Value ?? 160) : 160;
+            var thumbQuality = thumbOn ? (int)(ThumbnailQualityBox?.Value ?? 75) : 75;
             var autoTh = AutoThreadsCheck?.IsChecked ?? true;
             var singleTh = SingleThreadCheck?.IsChecked ?? false;
             int threads = singleTh ? 1 : autoTh ? Models.FfmpegOptions.ComputeAutoThreads() : (int)(ThreadsBox?.Value ?? 4);
@@ -1453,7 +1473,8 @@ namespace FfmpegGui
                 };
                 if (CommandText != null)
                 {
-                    CommandText.Text = BuildCjpegliPreviewCommand(_inputPath, outputPath, jpegliOpts);
+                    CommandText.Text = BuildCjpegliPreviewCommand(_inputPath, outputPath, jpegliOpts)
+                        + BuildThumbnailPreviewSuffix(thumbOn, thumbLongEdge, thumbQuality);
                 }
                 return;
             }
@@ -1466,7 +1487,8 @@ namespace FfmpegGui
                 // 预览只印数字 ISO；auto 那条由运行侧解析（cjxl 无 auto 取值，见下方 A-19 注释）
                 var isJpegInput = IsJpegInput(_inputPath);
                 var qualityVal = (int)(QualitySlider?.Value ?? 90);
-                var distance = (100 - qualityVal) * 15.0 / 100.0;
+                // 2026-10-02：与实跑共用同一真值（libjxl 官方曲线），消除预览与实跑的第二份公式
+                var distance = Services.ColorMapping.ImageEncoderArgs.MapJxlDistance(qualityVal);
                 var t = threads > 0 ? $" --num_threads={threads}" : "";
 
                 var cmd = new System.Text.StringBuilder();
@@ -1510,7 +1532,7 @@ namespace FfmpegGui
                 if (photonNoise > 0) cmd.Append(" --photon_noise_iso=").Append(photonNoise);
 
                 if (CommandText != null)
-                    CommandText.Text = cmd.ToString();
+                    CommandText.Text = cmd.ToString() + BuildThumbnailPreviewSuffix(thumbOn, thumbLongEdge, thumbQuality);
 
                 return;
             }
@@ -1562,8 +1584,22 @@ namespace FfmpegGui
             if (CommandText != null)
             {
                 var args = Services.FfmpegCommandBuilder.BuildArguments(opts, _inputPath, outputPath);
-                CommandText.Text = "ffmpeg " + args;
+                CommandText.Text = "ffmpeg " + args
+                    + BuildThumbnailPreviewSuffix(opts.EnableThumbnail, opts.ThumbnailLongEdge, opts.ThumbnailQuality);
             }
+        }
+
+        /// <summary>
+        /// App level thumbnail keys for the command preview. Only non default values are printed
+        /// (same convention as the other previews); 160 / 75 mirror the FfmpegOptions defaults.
+        /// </summary>
+        private static string BuildThumbnailPreviewSuffix(bool enabled, int longEdge, int quality)
+        {
+            if (!enabled) return "";
+            var sb = new System.Text.StringBuilder(" --thumbnail=true");
+            if (longEdge != 160) sb.Append(" --thumbnail-size=").Append(longEdge);
+            if (quality != 75) sb.Append(" --thumbnail-quality=").Append(quality);
+            return sb.ToString();
         }
 
         // ── JXL 无损控件锁定/恢复 ──
@@ -2178,7 +2214,7 @@ namespace FfmpegGui
                     // （SDR 底 + 增益图，在支持的设备上显示 HDR）⇒ HDR 目标项随开关出现/消失，
                     // 而不是让用户选了再被降级。
                     bool gainMapOn = (FormatCombo?.SelectedItem as string)?.ToLowerInvariant() is "jpg" or "jpeg"
-                                     && JpegGainMapEnableCheck?.IsChecked == true;
+                                     && HdrModeCombo?.SelectedIndex == 1;
                     if (gainMapOn) hasHdr = true;
                     if (hasHdr)
                     {
@@ -2343,9 +2379,10 @@ namespace FfmpegGui
             if (JpegCodecPanel != null) JpegCodecPanel.IsVisible = false;
             if (JpegliCodecPanel != null) JpegliCodecPanel.IsVisible = false;
             if (JpegGainMapPanel != null) JpegGainMapPanel.IsVisible = false;
-            if (JpegGainMapEnableCheck != null) JpegGainMapEnableCheck.IsVisible = fmt is "jpg" or "jpeg";
+            if (HdrModeCombo != null) HdrModeCombo.IsVisible = fmt is "jpg" or "jpeg" or "avif";
             if (TiffCodecPanel != null) TiffCodecPanel.IsVisible = false;
             if (JxrCodecPanel != null) JxrCodecPanel.IsVisible = false;
+            if (ThumbnailPanel != null) ThumbnailPanel.IsVisible = false;
 
             // 恢复动图模式下可能被隐藏的控件默认值
             if (WebpLosslessPanel != null) WebpLosslessPanel.IsVisible = true;
@@ -2437,12 +2474,27 @@ namespace FfmpegGui
                     // 选择 BT.2020 HDR 色彩空间 (PQ/HLG) 时显示, 与编码器后端无关
                     // SDR 内容 (sRGB/BT.709) headroom=1 无增益意义, 不显示
                     if (JpegGainMapPanel != null)
-                        JpegGainMapPanel.IsVisible = JpegGainMapEnableCheck?.IsChecked == true
+                        JpegGainMapPanel.IsVisible = HdrModeCombo?.SelectedIndex == 1
                                             && (FormatCombo?.SelectedItem as string)?.ToLowerInvariant() is "jpg" or "jpeg";
                     break;
                 case "tiff": if (TiffCodecPanel != null) TiffCodecPanel.IsVisible = true; break;
                 case "jxr": if (JxrCodecPanel != null) JxrCodecPanel.IsVisible = true; break;
             }
+
+            // Thumbnail panel is capability driven: the container key goes through the same
+            // normalization ThumbnailService uses when it writes (or refuses) the embed.
+            // Unsupported containers hide the whole panel AND reset the checkbox, so a value that
+            // can never be honored does not stay behind an invisible control.
+            var thumbSupported = FormatCapabilitiesService.GetCapabilities(ThumbnailService.CapabilityKey(fmt))
+                is { SupportsThumbnail: true };
+            if (ThumbnailPanel != null) ThumbnailPanel.IsVisible = thumbSupported;
+            if (EnableThumbnailCheck != null)
+            {
+                EnableThumbnailCheck.IsEnabled = thumbSupported;
+                if (!thumbSupported) EnableThumbnailCheck.IsChecked = false;
+            }
+            if (ThumbnailSizeBox != null) ThumbnailSizeBox.IsEnabled = thumbSupported;
+            if (ThumbnailQualityBox != null) ThumbnailQualityBox.IsEnabled = thumbSupported;
         }
 
         /// <summary>
@@ -2807,6 +2859,8 @@ namespace FfmpegGui
 
             var useAdv = UseAdvancedColor?.IsChecked ?? false;
             var useAdvCodec = UseAdvancedCodec?.IsChecked ?? false;
+            // Thumbnail (EXIF IFD1 embed): only collected while the advanced codec panel is open.
+            var thumbOn = useAdvCodec && (EnableThumbnailCheck?.IsChecked ?? false);
             // A-10：两只 JXL 复选框按「所属面板可见才参与」取值，采集与命令预览共用同一个判定函数。
             var jxlChecks = ReadJxlAdvancedCheckStates(fmt, useAdvCodec);
             var options = new FfmpegOptions
@@ -2883,7 +2937,7 @@ namespace FfmpegGui
                 JpegHuffman = useAdvCodec ? (JpegHuffmanCombo?.SelectedItem as string) : "optimal",
                 JpegDct = useAdvCodec ? (JpegDctCombo?.SelectedItem as string is "auto" ? null : JpegDctCombo?.SelectedItem as string) : null,
                 JpegProgressiveId = useAdvCodec ? ParseJpegProgressiveId() : 0,
-                JpegGainMap = JpegGainMapEnableCheck?.IsChecked == true,
+                JpegGainMap = HdrModeCombo?.SelectedIndex == 1,
                 JpegGainMapQuality = ParseGainMapQuality(),
                 JpegGainMapTargetNits = ParseGainMapNits(),
                 // (libultrahdr hdr-cf 字段已移除)
@@ -2892,6 +2946,10 @@ namespace FfmpegGui
                 JpegGainMapBaseGamut = ParseGainMapBaseGamut(),
                 TiffCompressionAlgo = useAdvCodec ? (TiffCompressionCombo?.SelectedItem as string) : "lzw",
                 TiffDpi = useAdvCodec && TiffDpiBox?.Value > 0 ? (int?)TiffDpiBox.Value : null,
+                // -- thumbnail (EXIF IFD1 embed), 160 / 75 are the FfmpegOptions defaults --
+                EnableThumbnail = thumbOn,
+                ThumbnailLongEdge = thumbOn ? (int)(ThumbnailSizeBox?.Value ?? 160) : 160,
+                ThumbnailQuality = thumbOn ? (int)(ThumbnailQualityBox?.Value ?? 75) : 75,
                 // ── cjpegli 高级选项（2026-08-16 修复: 此前入队路径完全缺失导致全部失效）──
                 CjpegliChromaSubsampling = useAdvCodec ? (JpegliChromaCombo?.SelectedItem as string ?? "auto") : "auto",
                 CjpegliProgressiveId = useAdvCodec ? JpegliProgressiveCombo?.SelectedIndex switch { 0 => -1, 1 => 0, 2 => 2, _ => -1 } : -1,
@@ -3430,6 +3488,9 @@ namespace FfmpegGui
                 JpegGainMapMultiChannel = original.JpegGainMapMultiChannel,
                 JpegGainMapBaseGamut = original.JpegGainMapBaseGamut,
                 TiffCompressionAlgo = original.TiffCompressionAlgo,
+                EnableThumbnail = original.EnableThumbnail,
+                ThumbnailLongEdge = original.ThumbnailLongEdge,
+                ThumbnailQuality = original.ThumbnailQuality,
             };
         }
 
@@ -3707,7 +3768,7 @@ namespace FfmpegGui
             var fmt = NormalizeFormat(FormatCombo?.SelectedItem as string);
             if (fmt is not ("jpg" or "jpeg")) return;
             if (JpegGainMapPanel != null)
-                JpegGainMapPanel.IsVisible = JpegGainMapEnableCheck?.IsChecked == true
+                JpegGainMapPanel.IsVisible = HdrModeCombo?.SelectedIndex == 1
                                     && (FormatCombo?.SelectedItem as string)?.ToLowerInvariant() is "jpg" or "jpeg";
         }
 
@@ -3827,7 +3888,7 @@ namespace FfmpegGui
             }
 
             // 仅CICP（策略3）：格式不支持 CICP 时禁用该单选；JPEG 且 GainMap 开启时例外可用。
-            bool gainMapOn = JpegGainMapEnableCheck?.IsChecked == true
+            bool gainMapOn = HdrModeCombo?.SelectedIndex == 1
                 && (FormatCombo?.SelectedItem as string)?.ToLowerInvariant() is "jpg" or "jpeg";
             if (IccModeBake != null)
                 IccModeBake.IsEnabled = (_currentCapabilities?.SupportsCicp ?? true) || gainMapOn;
@@ -5511,9 +5572,9 @@ namespace FfmpegGui
         /// <summary>判断当前选择的色彩空间是否为 HDR（BT.2020 PQ/HLG 或 P3 PQ 或高级参数 PQ/HLG 传输函数）。
         /// Gain Map (Ultra HDR) 仅在 HDR 色彩下有意义（记录 HDR 高光扩展），SDR 内容 headroom=1 无增益。</summary>
         /// <summary>GainMap 独立开关变化：切换子选项面板可见性 + 刷新色彩面板（仅CICP 例外）与命令。</summary>
-        private void JpegGainMapEnable_Changed(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        private void HdrMode_Changed(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
         {
-            var on = JpegGainMapEnableCheck?.IsChecked == true;
+            var on = HdrModeCombo?.SelectedIndex == 1;
             if (JpegGainMapPanel != null)
                 JpegGainMapPanel.IsVisible = on
                     && (FormatCombo?.SelectedItem as string)?.ToLowerInvariant() is "jpg" or "jpeg";
@@ -5704,7 +5765,7 @@ namespace FfmpegGui
                 // ── 编码器后端 ──
                 EncoderBackend = GetCurrentEncoderBackend().ToString(),
                 // ── Gain Map ──
-                JpegGainMap = JpegGainMapEnableCheck?.IsChecked == true,
+                JpegGainMap = HdrModeCombo?.SelectedIndex == 1,
                 JpegGainMapQuality = ParseGainMapQuality(),
                 JpegGainMapTargetNits = ParseGainMapNits(),
                 JpegGainMapMultiChannel = ParseGainMapMultiChannel(),
@@ -5762,6 +5823,9 @@ namespace FfmpegGui
                 ColorGamutMap = GetColorGamutMap(),
                 CjxlEffort = (int?)CjxlEffortBox?.Value,
                 TiffDpi = TiffDpiBox?.Value > 0 ? (int?)TiffDpiBox.Value : null,
+                EnableThumbnail = EnableThumbnailCheck?.IsChecked ?? false,
+                ThumbnailLongEdge = ThumbnailSizeBox?.Value > 0 ? (int?)ThumbnailSizeBox.Value : null,
+                ThumbnailQuality = ThumbnailQualityBox?.Value > 0 ? (int?)ThumbnailQualityBox.Value : null,
                 AnimationFps = ParseOptionalInt(AnimationFpsBox?.Text, 1, 60),
                 AnimationLoop = ParseInt(AnimationLoopBox?.Text, 0, -1, 999),
                 AnimationScaleW = ParseOptionalInt(AnimationScaleWBox?.Text, 0, 4096) ?? 0,
@@ -5877,6 +5941,9 @@ namespace FfmpegGui
                 };
             SetComboByValue(TiffCompressionCombo, p.TiffCompressionAlgo);
             if (TiffDpiBox != null && p.TiffDpi.HasValue) TiffDpiBox.Value = p.TiffDpi.Value;
+            if (EnableThumbnailCheck != null) EnableThumbnailCheck.IsChecked = p.EnableThumbnail;
+            if (ThumbnailSizeBox != null && p.ThumbnailLongEdge.HasValue) ThumbnailSizeBox.Value = p.ThumbnailLongEdge.Value;
+            if (ThumbnailQualityBox != null && p.ThumbnailQuality.HasValue) ThumbnailQualityBox.Value = p.ThumbnailQuality.Value;
             // ── DNG 输出选项恢复 ──
             if (DngCompressionCombo != null)
                 DngCompressionCombo.SelectedIndex = p.DngCompression == 1 ? 1 : 0;
@@ -5997,7 +6064,7 @@ namespace FfmpegGui
             if (EnableMaxDimensionCheck != null) EnableMaxDimensionCheck.IsChecked = p.EnableMaxDimension;
             if (MaxDimensionBox != null && p.MaxDimension > 0) MaxDimensionBox.Value = p.MaxDimension;
             if (AppendPngExtCheck != null) AppendPngExtCheck.IsChecked = p.AppendPngExtension;
-            if (JpegGainMapEnableCheck != null) JpegGainMapEnableCheck.IsChecked = p.JpegGainMap;
+            if (HdrModeCombo != null) HdrModeCombo.SelectedIndex = p.JpegGainMap ? 1 : 0;
             SetComboByValue(JpegDctCombo, p.JpegDct);
             // ── 色彩策略单选恢复（2026-09-19 修复）──────────────────────────────────
             // 缺陷：保存侧已写规范串 ColorStrategy（BuildPresetData 内），但本方法此前**整块缺失**
@@ -6039,7 +6106,7 @@ namespace FfmpegGui
 // 修法：把这三项**移到刷新之后**再写一次。**不修改刷新函数本体** ⇒ 另外 6 个调用点
 //   （格式切换 `FormatCombo_SelectionChanged`、动图模式 `ConversionMode_SelectionChanged`、
 //   能力初始化 `InitializeCapabilitiesAsync`、简易预设 `SimplePresetCombo_SelectionChanged`、
-//   GainMap 开关 `JpegGainMapEnable_Changed`）行为**一字不变**，避免动到「切格式 ⇒ 重建候选集」的既有语义。
+//   GainMap 开关 `HdrMode_Changed`）行为**一字不变**，避免动到「切格式 ⇒ 重建候选集」的既有语义。
 //   ⚠ 2026-09-21 改：原先此处写的是**绝对行号**（`:1851`/`:1948`/`:2611`/`:4604`/`:5610`），
 //     插入任何行都会失效（本仓 `COLOR_TRAPS §十四` 已立规「行号不是稳定标识符」）⇒ 改为**具名 handler**。
             // ⚠ 不得顺手改「PNG/TIFF/APNG 强制无损」那段——那是**既定产品语义**，

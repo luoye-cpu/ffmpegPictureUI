@@ -102,6 +102,9 @@ namespace FfmpegGui.Models
             StripExifCamera = p.StripExifCamera;
             StripExifAll = p.StripExifAll;
             StripXmp = p.StripXmp;
+            EnableThumbnail = p.EnableThumbnail;
+            if (p.ThumbnailLongEdge.HasValue) ThumbnailLongEdge = p.ThumbnailLongEdge.Value;
+            if (p.ThumbnailQuality.HasValue) ThumbnailQuality = p.ThumbnailQuality.Value;
 
             if (p.JpegGainMap) JpegGainMap = p.JpegGainMap;
             if (p.JpegGainMapQuality >= 0) JpegGainMapQuality = p.JpegGainMapQuality;
@@ -321,6 +324,24 @@ namespace FfmpegGui.Models
         /// （对齐 libultrahdr writeIccProfile(UHDR_CT_SRGB, cg) / ultrahdr_color_gamut = BT709|P3|BT2100）。
         /// </summary>
         public string JpegGainMapBaseGamut { get; set; } = "srgb";
+
+        /// <summary>
+        /// **HDR 实现模式**（用户-facing 单真值）：GainMap（SDR 底图 + 增益图）还是 Traditional（原生 PQ/HLG）。
+        ///
+        /// <para>
+        /// ⚠ **这是对 <see cref="JpegGainMap"/> 的强类型视图，不是第二个存储字段** —— getter 读它、setter 写它。
+        /// 这样做的理由：`JpegGainMap` 是**已持久化**的位（旧 CLI / 旧预设 / 旧 AppSettings 都在写），
+        /// 若另起一个存储字段就必须在多处同步两个真值 —— 本仓反复修过这类「两套映射必然漂移」的缺陷。
+        /// </para>
+        /// <para>
+        /// ⇒ 消费方**读**该用本属性（语义自明）；**不要**再新增读 `JpegGainMap` 的判定点。
+        /// </para>
+        /// </summary>
+        public HdrImplementationMode HdrMode
+        {
+            get => JpegGainMap ? HdrImplementationMode.GainMap : HdrImplementationMode.Traditional;
+            set => JpegGainMap = value == HdrImplementationMode.GainMap;
+        }
         public string? TiffCompressionAlgo { get; set; }
         public int? TiffDpi { get; set; }
         public string? AvifTune { get; set; }
@@ -378,6 +399,15 @@ namespace FfmpegGui.Models
         public bool StripExifAll { get; set; } = false;
         /// <summary>删除 XMP 元数据</summary>
         public bool StripXmp { get; set; } = false;
+
+        // ── 缩略图（EXIF IFD1）──
+        /// <summary>生成并嵌入 EXIF IFD1 缩略图。只有 <see cref="Services.FormatCapabilities.SupportsThumbnail"/>
+        /// 为真的容器才兑现；不支持的容器**出声拒绝**，不静默丢弃。</summary>
+        public bool EnableThumbnail { get; set; } = false;
+        /// <summary>缩略图长边像素。默认 160 = EXIF 基线缩略图（160x128）的长边。</summary>
+        public int ThumbnailLongEdge { get; set; } = 160;
+        /// <summary>缩略图质量 1..100，映射到 ffmpeg 的 <c>-qscale:v</c>（见 <c>ThumbnailService.MapQualityToQscale</c>）。</summary>
+        public int ThumbnailQuality { get; set; } = 75;
 
         // ── 色彩策略（取代旧 IccMode；源色彩恒自动检测，不再手动）──
         /// <summary>色彩策略（推荐/携带/仅CICP/手动），色彩处理总控。</summary>
@@ -530,9 +560,10 @@ namespace FfmpegGui.Models
         public static int MapAvifCrfForward(int quality) => (int)Math.Round((100 - quality) * 63.0 / 100.0);
         public static int MapAvifCrfInverse(double crf) => (int)Math.Round(100 - Math.Clamp(crf, 0, 63) * 100.0 / 63.0);
 
-        // JXL distance 0-15（1 位小数）
-        public static double MapJxlDistanceForward(int quality) => Math.Round((100 - quality) * 15.0 / 100.0, 1);
-        public static int MapJxlDistanceInverse(double d) => (int)Math.Round(100 - Math.Clamp(d, 0, 15) * 100.0 / 15.0);
+        // JXL distance（1 位小数）。2026-10-02：不再自写公式，转调唯一真值
+        //   `ImageEncoderArgs.MapJxlDistance`（libjxl 官方曲线），消除"两处各写一遍"的双真值。
+        public static double MapJxlDistanceForward(int quality) => Services.ColorMapping.ImageEncoderArgs.MapJxlDistance(quality);
+        public static int MapJxlDistanceInverse(double d) => Services.ColorMapping.ImageEncoderArgs.MapJxlDistanceInverse(d);
 
         /// <summary>滑块值 → 格式实际参数文本（用于输入框显示）</summary>
         public static string FormatQualityForDisplay(string fmt, int quality, Services.EncoderBackend backend = Services.EncoderBackend.Ffmpeg) => fmt.ToLower() switch

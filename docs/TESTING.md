@@ -136,7 +136,9 @@ ffprobe -v error -select_streams v:0 -show_entries stream=pix_fmt -of csv=p=0 ou
 > （`-c copy`，只搬容器与元数据）。**两者都可观测**（都写进 `item.Log`），断言时**按语义选**：
 > 验「色彩变换真的执行了」用前者，验「元数据被搬运」用后者。`QueueProcessor.cs:1296` 的
 > `[ffmpeg-meta]` **有意不统一**成 `[cmd]` —— 标签差异本身就是信息（一眼可辨转码 vs 重封装）。
-> 另：`[cmd] ffmpeg` 现已覆盖全仓 **24 处** `await FfmpegRunner.RunAsync`（2026-09-17 补齐最后 14 处）。
+> 另：`[cmd] ffmpeg` 现已覆盖全仓 **25 处** `await FfmpegRunner.RunAsync`（2026-09-17 补齐最后 14 处；
+> 2026-10-02 第 25 处 = U1 后半给 float JXL 补的"ffmpeg 直读"回退支，它同样先写 `item.Command` 再打 `[cmd]`。
+> ⚠ 这个数由 `verify-ffmpeg-heartbeat.ps1` ① 的结构锁钉住 ⇒ 新增调用点必须**同时**改那一处断言）。
 > 此前 `ProcessJxrAsync` 只写 `item.Command`（UI 字段、**不进日志**）⇒ 门禁按 `[cmd]` 去取只能拿到空串，
 > 这正是「必红断言」的**土壤**（同一概念在同一代码库里只记一半），详见 §6 第 65 条。
 >
@@ -207,9 +209,10 @@ $p = "tests/ServiceProbe/bin/Debug/net11.0/win-x64/ServiceProbe.exe"
 & $p pq                              # ST 2084 EOTF/OETF 锚点值与互逆自检
 & $p colormath                       # 原色表色度常数 ↔ 双锚（zimg 矩阵 + lcms chrm）逐元素对拍；含 null/重复对白名单
 & $p tooldetect                      # 外部工具探测：开销 / 诚实性 / 可注入性（由 `_probe-tool-detect.ps1` 编排）
+& $p thumbnail                       # 缩略图（EXIF IFD1）：逐容器「声明=数据闭合」+ 悬空负样本 + 诚实性/隐私/像素不变对照
 ```
 
-⚠ **`tooldetect` 有意不进 `$Probes` 默认清单**（上面的「22 个 mode」因此**不含**它）：它必须自己
+⚠ **`tooldetect` 有意不进 `$Probes` 默认清单**（上面的「23 个 mode」因此**不含**它）：它必须自己
 设 `FFMPEGGUI_EXT_SEARCH_DIRS` 把「系统扩展搜索」那一级钉成可控的临时根，否则判据会随本机
 装过什么应用而翻转 ⇒ 放进默认清单等于把一条**环境依赖**的断言混进确定性批次。跑法见该门禁脚本。
 
@@ -221,6 +224,14 @@ $p = "tests/ServiceProbe/bin/Debug/net11.0/win-x64/ServiceProbe.exe"
 **当前基线（2026-09-19 复核；口径 = 运行器 `$Probes` 默认清单里各 mode 的 pass 之和）**：
 **22 个 mode**（⚠ 2026-09-26 把 `colormath` 接进默认清单 ⇒ 第 22 个；下面那个 **546** 是**前 21 个** mode 的求和，
 **不含** `colormath`；`colormath` 单跑实测 `12/0`，合计要等下一次整轮才并进去，此处**不预先宣布新基线**）·
+⚠ **2026-10-02 把 `thumbnail` 接进默认清单 ⇒ 第 23 个 mode**（单跑实测 `40/0`，2026-10-02 本机；覆盖 jpg/png/apng/webp/avif/jxl 六格逐一真跑，
+它守的是「产物声称有 EXIF IFD1 缩略图而图像数据缺席」这类**其他判据都不会响**的回归 —— 悬空指针的
+成因是 ffmpeg 的元数据 muxer 保留 IFD1 的 Offset/Length 标签却丢掉数据，实测声明 1980 B / 实取 0 B，
+既有的元数据与色彩门禁对此完全无感。变异验牙两次（改坏 `src/` 再原样改回，还原后回 `40/0`）：
+**M1** 让嵌入步直接返回成功 ⇒ `pass=33 fail=7`（T11 六格 `rc=0/declared=0` + T17）；
+**M2** 把能力表吹大给 `gif` 开一条实测走不通的路 ⇒ `pass=38 fail=2`，且 T13 读数
+`rc=0 / declared=0` 顺带暴露 **exiftool 对 TIFF 是"0 image files updated 但退出码 0"的静默空转**。
+**546 那个求和不含 `thumbnail`**，同样等下一次整轮才并）·
 **前 21 个 mode 合计 546 / fail=0**（**2026-09-24 逐 mode 实测求和**：原 542 + `settings` **7 → 11**（+4 = 全字段落盘往返锁，见 §6 第 110 条）；
 ⚠ 下面这些是**当时**那批数字的溯源链，**不重述**：`geometry` = **52**；`metaraw` = **17**（RAW 元数据保留：显示名 + 补漏参数形态，**不依赖素材**）；`verdict` **36 → 41**，GainMap 格新增断言；
 **`runner` 2 → 8**（#20(0919) 心跳判据锁，见下方溯源）；
@@ -246,7 +257,7 @@ $p = "tests/ServiceProbe/bin/Debug/net11.0/win-x64/ServiceProbe.exe"
 —— 计数会漂（`wire` 与 `verdict` 尤其）。⚠ **改任一 mode 的断言后必须重算总和**：
 历史上出现过「`contract` 100 → 107 改了、总数漏改、仍写 372」的错值，由复核方用「各 mode 求和 ≠ 372」抓出。
 ⚠ **某个 mode 若不在 `_run-step3-gates.ps1` 的 `$Probes` 默认值里，说明运行器清单与文档不同步**
-（可据此核对「mode 齐不齐」）。`_run-step3-gates.ps1` 的**脚本门禁清单**当前 **60 条**（2026-10-01 接线 `verify-geometry-orientation.ps1` + `_probe-geometry-single-source-scan.ps1` + `verify-gainmap-host.ps1` 后；权威复现口径 = 运行器**自己打印的** `script-list=N 条（受管基线 N）` 那一行，它比任何外部正则都可靠 —— 本文原来给的 `(?ms)^\$scriptList...` 正则实测命中 0（数组内含大量注释行，闭合 `)` 不在行首），**别再拿它当复现命令**）
+（可据此核对「mode 齐不齐」）。`_run-step3-gates.ps1` 的**脚本门禁清单**当前 **65 条**（2026-10-01 再接线：首批 5 条 **L3/产物级**套件 `verify-package-smoke.ps1` + `verify-jbrd-e2e.ps1` + `verify-orientation-rewrap.ps1` + `verify-gainmap-thirdparty.ps1` + `verify-encoder-knob-liveness.ps1`，由 60 → 65；再往前同日接的是 `verify-geometry-orientation.ps1` + `_probe-geometry-single-source-scan.ps1` + `verify-gainmap-host.ps1`（⇒ 60）；权威复现口径 = 运行器**自己打印的** `script-list=N 条（受管基线 N）` 那一行，它比任何外部正则都可靠 —— 本文原来给的 `(?ms)^\$scriptList...` 正则实测命中 0（数组内含大量注释行，闭合 `)` 不在行首），**别再拿它当复现命令**）
 （**2026-09-24 第六次接线后实测数组条目数** —— 复现命令必须**按数组锚定**（不用行号、也不用全文件 grep）：
 `$c = Get-Content -Raw tests/scripts/_run-step3-gates.ps1; [regex]::Matches([regex]::Match($c,'(?ms)^\$scriptList\s*=\s*@\((.*?)\)\r?\n\$actualScriptCount').Groups[1].Value,"'[^']+\.ps1'").Count` = **54**；
 ⚠ 本行原先给的 `grep -oE "'[^']+\.ps1'" … | sort -u | wc -l` **现已失真**：2026-09-22 实测它得 **53**，
@@ -5242,6 +5253,40 @@ test-output/
     "整块复制根本没跑"假绿；M4 反证臂"传 `dropOrientation:false` 时标签必须留得住"）。
     ⚠ 变异验牙：把排除式退回空串 ⇒ `pass=6 fail=2`，红的正是 M1/M3 两条，M4 不受影响。
     ⚠ **`rc=0` 不是证据**：排除式不生效时 exiftool 照样返回 0。
+
+122. **判据住在 gitignored 目录 = 没有判据；接入时的「两档被测 + 规范汇总」约定（2026-10-01，清单 60→65）**
+    第 120 条讲的是"套件在树里但没人跑"；本轮是它的**加强版**：五套产物级/L3 判据（包级冒烟、JPEG↔JXL
+    往返、取向×免解码重封装、GainMap 第三方、旋钮活性）整个住在 `tests/output/t{69,76,77,79}/`，
+    而 `.gitignore:78` 的 `output/` 把整棵目录挡住 ⇒ ① 不进版本控制（换机器/重 clone 就没了），
+    ② 一次 `git clean -xdf` 全没，③ 不在任何轮里被跑 —— 它们的读数**只存在于我手抄进结论的那几行**。
+    这正是第 120 条那句"根因是套件不在闸内"的极端形态，只不过这次连文件本身都不在仓里。
+    - **接入时的四点硬约定**（缺一都会造出新的假绿形状）：
+      ① 路径一律 `(Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path` 运行时推导（原写死 `C:\PLAN\...`）；
+      ② **被测两档**：默认 = 刚构建的 Release 产物（⇒ **每轮都跑**），`$env:PKG_VER` 有值时才打
+         `publish/build/FFmpegPictureUI-v<ver>-x64-full`（L3）。两档**都缺 ⇒ `exit 2` 不产出任何读数**，
+         **绝不回退 Debug**；包内 `ProductVersion` 与期望不符也 `exit 2` —— 写死版本号 = 下一版的读数
+         打在上一版的包上（本轮 beta3 那批差点就这么犯，靠"按版本解析 + 不符即拒"堵住）；
+      ③ **必须有 `PASS=n FAIL=m` 形状的汇总行**：运行器的**零断言闸**只认 `PASS\s*=\s*(\d+)`（取最大值），
+         只有"合计=N"这类自定义措辞的套件会被记成"零断言 ⇒ 可能一条都没跑"（旋钮活性套件原本就是这一形状）；
+      ④ **不判红的桶不许用 `FAIL` 前缀**：运行器把 `^ *FAIL|^FAIL` 当失败明细回显 ⇒ 绿的一步下面挂红字，
+         读者只能按"红了"理解（`越界被拒`/`未判` 一律改 `WARN`）。
+    - **条数同步是四件事不是两件**：`$expectedScriptCount` 常量 + 运行器里**三种散文形态**
+      （`清单条数以实测为准 = N 条` / `受管基线：脚本清单 = **N** 条` / `全跑 N 条`，由第 ⑰ 针逐形态命中并
+      与常量对账）+ `docs/TESTING.md` §3.5 与 `docs/HANDOVER.md` 的清单行。
+      最便宜的自证 = `pwsh -File _run-step3-gates.ps1 -Scripts verify-ps-compat.ps1 -Probes selftest`
+      —— **条数锁在子集解析之前执行**，所以一条子集就能同时验"形态 17 针 + 条数对账"，约 1 min。
+    - ⚠ **副作用要当场结算**：这 5 条是"真跑转换"的套件 ⇒ 清单墙钟远超旧散文里的 ≈20min（已把分钟数
+      从散文里撤掉，改以本轮日志的耗时为准）。单步超时默认值 `$ScriptTimeoutSec = 480` 由第 ⑫ 针逐字钉住，
+      **不许悄悄改**：要放宽就按标定规则"实测 max × ≈3"重标默认值 + 同步改第 ⑫ 针，并把实测分布写进注释。
+    - ⚠ **同批一处自我纠正**（写下来防再犯，见 §6 第 121 条的同类）：旋钮活性套件把 `--jpeg-dct` 那条臂
+      标成"面板值域被编码器拒绝 = A-20 复现"，而 A-20 修复时 `float` **已从下拉移除**
+      （`MainWindow.xaml:725-728` 只剩 auto/int/fastint）⇒ 现在只有 CLI/历史预设能送进来，
+      实测 `lo rc=0 / hi rc=1` = 响亮拒绝、**合法出口**，不是缺陷复现。
+      判据自带的**定性词**比数值更容易被读者当事实 ⇒ 引用前必须回读产品实况。
+    - `tests/scripts/verify-release-package.ps1`（出包后的独立验收，原 `tests/output/t83/verify-package.ps1`）
+      **有意不进清单**（与 `verify-oracle-matrix.ps1` 同类）：它的前置条件是磁盘上已有本次要发的包。
+      同时**去掉了写死的默认版本** —— 没给 `PKG_VER` 直接 `exit 2`（实测输出那两行拒绝文本 + 退出码 2），
+      任何默认版本都会在下一个发布日变成"拿 n 包的读数宣布 n+1 已验"。
 
 ---
 

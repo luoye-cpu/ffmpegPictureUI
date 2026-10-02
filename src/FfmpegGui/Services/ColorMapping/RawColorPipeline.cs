@@ -343,7 +343,8 @@ public static class RawColorPipeline
                 baseGamut: options.JpegGainMapBaseGamut,
                 sourcePrimaries: ep.SrcPrim,
                 log: log, ct: ct,
-                jpegProgressiveLevel: gmProgLv).ConfigureAwait(false);
+                jpegProgressiveLevel: gmProgLv,
+                container: GainMapEncoder.ContainerOf(outputPath)).ConfigureAwait(false);
             st.EncodeMs = sw3.ElapsedMilliseconds;
             if (!ok || !File.Exists(outputPath) || new FileInfo(outputPath).Length == 0)
                 throw new InvalidOperationException("GainMapEncoder 编码失败");
@@ -357,10 +358,15 @@ public static class RawColorPipeline
     /// **cjxl 出口**（2026-09-17 接入；计划位 <see cref="ColorTransformPlan.ExternalEncoderExit"/>）：
     /// 把**已变换**的 raw 像素经 **PPM/PAM 管道**喂给外部 <c>cjxl.exe</c> 编码。
     ///
-    /// 为什么必须走管道、而不是写成中间 PPM 文件：`cjxl` 的 <c>-x color_space=</c> /
-    /// <c>-x icc_pathname=</c> **只对 PPM/PAM 输入生效**（喂 PNG 等容器输入时 <c>-x</c> 被忽略、
-    /// 只认文件内嵌 ICC —— `QueueProcessor` 的 cjxl 分支已登记该实测结论）。落盘中间文件并不能
-    /// 让 <c>-x</c> 更可靠，只是多一次磁盘往返，故**不落中间 PPM**。
+    /// **载体选择（2026-10-02 起，两条腿）**：
+    /// · SDR 且源在盘 ⇒ **PNG 落盘中转**（第二输入 `-map_metadata 1` 携带源 EXIF/XMP）。
+    ///   旧结论「`-x color_space=` / `-x icc_pathname=` 只对 PPM/PAM 生效、PNG 输入被忽略」
+    ///   **已按本轮实测改正**：决定因素是**输入是否自带色彩元数据**（#44 规则，与容器/裸流无关）。
+    ///   ffmpeg 从 rawvideo 写出的 PNG 无色彩 chunk（实测 chunk 表仅 IHDR/pHYs/eXIf/IDAT/IEND）
+    ///   ⇒ `-x` 照常生效（bt2020+linear / sRGB / P3 ICC 三组对照与 PPM 读回逐字一致），
+    ///   且同一 distance 下图像部分与 PPM 逐字节同级、16-bit 不变。
+    ///   这也是唯一能救回元数据的形态：PPM/PAM 结构上不携带元数据，exiftool 事后补写 JXL 必然失败。
+    /// · alpha（PAM + alphamerge）与真 HDR 目标（PPM）⇒ 仍走管道，并点名"源 EXIF/XMP 不保留"。
     ///
     /// 与常规出口的差别只有**编码段**：解码段与变换段完全复用（raw 已是最终像素），
     /// 本方法只负责「raw → ffmpeg 管道 → cjxl → outputPath」。
@@ -469,12 +475,10 @@ public static class RawColorPipeline
         int itNits = ColorEncodingHelper.MapToIntensityTarget(hdrMeta);
         if (itNits <= 0 && ColorEncodingHelper.IsHdrDescriptor(d)) itNits = 1000;
 
-        // ── ④ 编码参数：与直连路径**共用同一个** BuildCjxlArguments（不另写一份）──
-        // 色彩语义以 override 传入（来自计划）；质量/effort/渐进/光子噪声仍由它按 options 产出。
-        var cjxlArgs = CjxlService.BuildCjxlArguments("-", outputPath, options, hdrMeta, iccFile,
-            cjxlSpace, itNits, log: log);
-
-        // ── ⑤ ffmpeg 侧：raw → PPM/PAM 流 ──
+        // ── ④⑤ 载体与编码：SDR 且源可读 ⇒ PNG 落盘中转；其余 ⇒ PPM/PAM 管道 ──────────────────
+        // 编码参数与直连路径**共用同一个** BuildCjxlArguments（不另写一份）；色彩语义以 override
+        // 传入（来自计划）；质量/effort/渐进/光子噪声仍由它按 options 产出。
+        //
         // ⚠ **`pixIn` 是盘上中间件的格式，不是交付格式**（2026-09-30 实测修，取证 `tests/output/t63/`、
         //   `t65/`、`t66/`）：原先 PPM 的样本深度直接跟 `plan.OutBitDepth`（引擎中间件档，直通恒 16），
         //   于是 8-bit 源也被 cjxl 按 **16-bit** 无损编码 —— 同一份像素 8bit 交付 11,485.5 kB、
@@ -488,43 +492,107 @@ public static class RawColorPipeline
         //   也与 `CollectDegradations` ①b 播报的那一份一致）。
         string pixIn = plan.OutBitDepth == 8 ? "rgb24" : "rgb48le";
         string ppmPix = ImageEncoderArgs.MapPixFmt("jxl", null, plan.TargetBitDepth, hdrMeta.hasAlpha, null);
-        string ffArgs;
-        if (hdrMeta.hasAlpha)
-        {
-            // 引擎 raw 通路是 rgb24/rgb48le（**无 alpha 平面**）⇒ 直接喂进去会把透明**静默拍平**。
-            // 与 GIF 出口同款解法：把**原文件**作第二输入，只取它的 alpha 平面再 merge。
-            // ⚠ 只用第二输入的 **alpha**；RGB 一律用**变换后**的像素（原文件的 RGB 是未变换的）。
-            // ⚠ 第二输入必须套**同一个**最长边 scale 滤镜：raw 在解码步已缩放，不套则两路尺寸对不上
-            //   （GIF 出口实测缺了它 ffmpeg 报 "could not choose their formats"）。
-            var scaleFilter = FfmpegCommandBuilder.BuildMaxDimensionScaleFilter(options, inputPath);
-            string alphaFmt = plan.OutBitDepth == 8 ? "rgba" : "rgba64le";  // 与 pixIn 同深，否则 alphamerge 无法协商
-            string merge = $"[1:v]{(string.IsNullOrEmpty(scaleFilter) ? "" : scaleFilter + ",")}"
-                         + $"format={alphaFmt},alphaextract[a];[0:v]format={pixIn}[b];[b][a]alphamerge,format={ppmPix}";
-            ffArgs = $"-y -hide_banner -loglevel error -f rawvideo -pix_fmt {pixIn} -video_size {w}x{h} "
-                   + $"-i \"{rawPath}\" -i \"{inputPath}\" -filter_complex \"{merge}\" "
-                   + $"-compression_level 0 -f image2pipe -c:v pam -";
-        }
-        else
-        {
-            ffArgs = $"-y -hide_banner -loglevel error -f rawvideo -pix_fmt {pixIn} -video_size {w}x{h} "
-                   + $"-i \"{rawPath}\" -vf \"format={ppmPix}\" "
-                   + $"-compression_level 0 -f image2pipe -c:v ppm -";
-        }
         if (ppmPix != pixIn)
             log?.Invoke($"[色彩] cjxl 出口：中间件 {pixIn} → 交付 {ppmPix}"
                       + $"（目标位深 {plan.TargetBitDepth}bit；16bit 载体无损编码会显著变大且并非用户所要）\n");
 
-        // 命令行必须可追溯（与 RunToEndAsync 同款理由）：A/B 对拍时"两条管线差在哪个参数"只能靠这两行
-        // ⚠ `cjxl 命令行:` 这个**显式标签不能省**：本方法后面还有若干 `[色彩] cjxl 出口：…` 的散文行，
-        //   若命令行也写成裸 `[色彩] cjxl `，两者前缀相同 ⇒ 门禁用 `-Last 1` 取命令行时**必然取到散文**
-        //   （实测 4 条断言因此假红：拿到的"命令行"是"变换后的 raw → PPM → cjxl"）。
-        log?.Invoke($"[色彩] ffmpeg {ffArgs}\n");
-        log?.Invoke($"[色彩] cjxl 命令行: {cjxlArgs}\n");
-        log?.Invoke($"[色彩] cjxl 出口：变换后的 raw → {(hdrMeta.hasAlpha ? "PAM（含 alpha，第二输入补平面）" : "PPM")}"
-                  + $" → cjxl（不落中间文件）\n");
+        // 载体判据（2026-10-02 实测后新增，本轮用户报障"RAW/16-bit TIFF → JXL 元数据全丢"的修复）：
+        //   · **SDR（目标非 PQ/HLG）且源在盘 ⇒ PNG 落盘中转** —— 唯一能同时保住「cjxl 全部参数」
+        //     与「源 EXIF/XMP」的形态。PPM/PAM 结构上不携带任何元数据 ⇒ 默认路径（RAW / 16-bit TIFF
+        //     → JXL）的产物此前连 ISO 都读不到；而 exiftool 事后补写 JXL 必然失败（实测
+        //     "Will wrap JXL codestream in ISO BMFF container"、"1 files weren't updated"）。
+        //     实测同一 distance 下 PNG 与 PPM 载体的图像部分**逐字节同级**、16-bit 不变；
+        //     ffmpeg 从 rawvideo 写出的 PNG **无色彩 chunk**（实测 chunk 表仅 IHDR/pHYs/eXIf/IDAT/IEND）
+        //     ⇒ 按 #44 规则（「输入**自带**色彩元数据时 -x 才被忽略」，与容器/裸流无关）
+        //     `-x color_space=` / `-x icc_pathname=` 照常生效 —— 三组对照全部复验：
+        //     bt2020+linear、sRGB、P3 ICC（jxlinfo 读回与 PPM 路径逐字一致）。
+        //     ⚠ 旧注释「PNG 等容器输入 -x 被忽略」**已按本轮实测改正**：那是输入**自带** ICC 的 PNG
+        //       （当时的实测素材带 iCCP）；本出口的中转 PNG 由 rawvideo 写出，天然无色彩 chunk。
+        //   · alpha ⇒ 仍走 PAM（alphamerge × PNG 落盘组合未验证，不在本刀范围）。
+        //   · 真 HDR 目标（PQ/HLG）⇒ 仍走 PPM：PNG 表达不了 HDR 语义（历史坑
+        //     `docs/archive/JXL_ISSUES_HANDOVER.md` P0-2），不拿元数据换语义风险。
+        //   · 不走 PNG 的两格都会**点名**"源 EXIF/XMP 不保留"（可用性诚实）。
+        bool hdrTarget = ColorEncodingHelper.IsHdrDescriptor(d);
+        bool usePngCarrier = !hdrMeta.hasAlpha && !hdrTarget
+            && !string.IsNullOrWhiteSpace(inputPath) && File.Exists(inputPath);
+        if (!usePngCarrier)
+            log?.Invoke("[色彩] cjxl 出口："
+                      + (hdrMeta.hasAlpha ? "带 alpha" : hdrTarget ? "真 HDR 目标" : "源文件不可读")
+                      + " ⇒ 仍走 PAM/PPM 管道（不做 PNG 中转）⇒ 本任务的源 EXIF/XMP 不会保留"
+                      + "（PPM/PAM 不携带元数据，且 exiftool 补写 JXL 必然失败）\n");
 
-        int exitCode = await PipeToEncoderAsync(ffmpegPath: AppSettingsService.Current.FfmpegPath,
-            ffArgs, cjxl, cjxlArgs, log, ct).ConfigureAwait(false);
+        string? pngTmp = null;
+        int exitCode;
+        try
+        {
+            if (usePngCarrier)
+            {
+                // PNG 中转：第二输入 = 源文件，`-map_metadata 1` 把 EXIF/XMP 带进 eXIf chunk
+                //（RAW 场景下 inputPath 已是 dngtool 的中间 TIFF —— 实测它保留 ISO=400）。
+                pngTmp = Path.Combine(PlatformServices.GetTempDir(), $"jxl_meta_{Guid.NewGuid():N}.png");
+                var ffPngArgs = $"-y -hide_banner -loglevel error -f rawvideo -pix_fmt {pixIn} -video_size {w}x{h} "
+                    + $"-i \"{rawPath}\" -i \"{inputPath}\" -map 0:v -map_metadata 1 "
+                    + $"-vf \"format={ppmPix}\" -f image2 \"{pngTmp}\"";
+                log?.Invoke($"[色彩] ffmpeg {ffPngArgs}\n");
+                log?.Invoke("[色彩] cjxl 出口：变换后的 raw → PNG（携带源 EXIF/XMP，第二输入 -map_metadata 1）→ cjxl\n");
+                // 落盘用 FfmpegRunner（-progress 心跳 + 忙等判死，本仓标准守卫），**不走** PipeToEncoderAsync
+                //（那是"ffmpeg→stdout | cjxl stdin"的双进程管道结构，PNG 落盘没有写方消费者，语义不匹配）。
+                int ffExit = await FfmpegRunner.RunAsync(ffPngArgs, log, ct: ct).ConfigureAwait(false);
+                if (ffExit != 0 || !File.Exists(pngTmp) || new FileInfo(pngTmp).Length == 0)
+                    throw new InvalidOperationException(
+                        $"cjxl 出口：PNG 中转落盘失败（ffmpeg 退出码 {ffExit}）"
+                        + " ⇒ 不回退 PPM 管道（回退 = 静默丢掉用户元数据，正是本修复要消掉的形状）");
+                var cjxlArgs = CjxlService.BuildCjxlArguments(pngTmp, outputPath, options, hdrMeta, iccFile,
+                    cjxlSpace, itNits, log: log);
+                // ⚠ `cjxl 命令行:` 显式标签不能省（门禁按它取命令行，见下方管道路径的同名注释）。
+                log?.Invoke($"[色彩] cjxl 命令行: {cjxlArgs}\n");
+                exitCode = await CjxlService.RunWithOptionsAsync(pngTmp, outputPath, options, log, iccFile, ct,
+                    cjxlSpace, itNits, hdrMeta).ConfigureAwait(false);
+            }
+            else
+            {
+                var cjxlArgs = CjxlService.BuildCjxlArguments("-", outputPath, options, hdrMeta, iccFile,
+                    cjxlSpace, itNits, log: log);
+                string ffArgs;
+                if (hdrMeta.hasAlpha)
+                {
+                    // 引擎 raw 通路是 rgb24/rgb48le（**无 alpha 平面**）⇒ 直接喂进去会把透明**静默拍平**。
+                    // 与 GIF 出口同款解法：把**原文件**作第二输入，只取它的 alpha 平面再 merge。
+                    // ⚠ 只用第二输入的 **alpha**；RGB 一律用**变换后**的像素（原文件的 RGB 是未变换的）。
+                    // ⚠ 第二输入必须套**同一个**最长边 scale 滤镜：raw 在解码步已缩放，不套则两路尺寸对不上
+                    //   （GIF 出口实测缺了它 ffmpeg 报 "could not choose their formats"）。
+                    var scaleFilter = FfmpegCommandBuilder.BuildMaxDimensionScaleFilter(options, inputPath);
+                    string alphaFmt = plan.OutBitDepth == 8 ? "rgba" : "rgba64le";  // 与 pixIn 同深，否则 alphamerge 无法协商
+                    string merge = $"[1:v]{(string.IsNullOrEmpty(scaleFilter) ? "" : scaleFilter + ",")}"
+                                 + $"format={alphaFmt},alphaextract[a];[0:v]format={pixIn}[b];[b][a]alphamerge,format={ppmPix}";
+                    ffArgs = $"-y -hide_banner -loglevel error -f rawvideo -pix_fmt {pixIn} -video_size {w}x{h} "
+                           + $"-i \"{rawPath}\" -i \"{inputPath}\" -filter_complex \"{merge}\" "
+                           + $"-compression_level 0 -f image2pipe -c:v pam -";
+                }
+                else
+                {
+                    ffArgs = $"-y -hide_banner -loglevel error -f rawvideo -pix_fmt {pixIn} -video_size {w}x{h} "
+                           + $"-i \"{rawPath}\" -vf \"format={ppmPix}\" "
+                           + $"-compression_level 0 -f image2pipe -c:v ppm -";
+                }
+
+                // 命令行必须可追溯（与 RunToEndAsync 同款理由）：A/B 对拍时"两条管线差在哪个参数"只能靠这两行
+                // ⚠ `cjxl 命令行:` 这个**显式标签不能省**：本方法后面还有若干 `[色彩] cjxl 出口：…` 的散文行，
+                //   若命令行也写成裸 `[色彩] cjxl `，两者前缀相同 ⇒ 门禁用 `-Last 1` 取命令行时**必然取到散文**
+                //   （实测 4 条断言因此假红：拿到的"命令行"是"变换后的 raw → PPM → cjxl"）。
+                log?.Invoke($"[色彩] ffmpeg {ffArgs}\n");
+                log?.Invoke($"[色彩] cjxl 命令行: {cjxlArgs}\n");
+                log?.Invoke($"[色彩] cjxl 出口：变换后的 raw → {(hdrMeta.hasAlpha ? "PAM（含 alpha，第二输入补平面）" : "PPM")}"
+                          + $" → cjxl（不落中间文件）\n");
+
+                exitCode = await PipeToEncoderAsync(ffmpegPath: AppSettingsService.Current.FfmpegPath,
+                    ffArgs, cjxl, cjxlArgs, log, ct).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            if (pngTmp != null) { try { File.Delete(pngTmp); } catch { } }
+        }
 
         // ⚠ **成功判据不只是退出码**：还要真的产出非空文件。少了这一条，cjxl 以 0 退出但没写文件
         //   （如参数拼错到它静默忽略）会被当成成功 ⇒ 调用方随后才报"未产出"，归因就错了。

@@ -130,6 +130,12 @@ namespace FfmpegGui.Models
         public bool StripExifCamera { get; set; }
         public bool StripExifAll { get; set; }
         public bool StripXmp { get; set; }
+        // 缩略图（EXIF IFD1）
+        public bool EnableThumbnail { get; set; }
+        /// <summary>缩略图长边像素 (null=沿用默认 160)</summary>
+        public int? ThumbnailLongEdge { get; set; }
+        /// <summary>缩略图质量 1..100 (null=沿用默认 75)</summary>
+        public int? ThumbnailQuality { get; set; }
         public int Concurrency { get; set; } = 2;
         public int MaxQueueSize { get; set; } = 16;
         // 动图参数

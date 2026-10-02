@@ -276,10 +276,30 @@ function CK($ok, $msg) {
 #   ⚠ ℹ 桶一并对齐实测：`Cs 1258 → 1301`、`CsTag 401 → 443`、`CsOther 857 → 858`
 #     （后两者自 ②-b 起不在判据内；+12 TAG 属 exiftool/工具探测轮新增的 `[tag]` 诊断日志）。
 #   ⚠ 余量 0 ⇒ 已被精确吸收；后续若再涨仍会判红。
+# ⚠⚠ **2026-10-02 第九次抬基线：CS 1301 → 1320，CS_TAG 443 → 459，CS_OTHER 858 → 861，CS_UI 837 → 840（判据项净 +3）**
+#   成因 = 本仓 v1.6.0-beta4 那批（U1/U5/U4b 修复 + ServiceProbe 补 8-bit 降位恒等断言）新增的中文行。
+#   逐条归因（判据只看 CS_UI，其余两桶是 ℹ）：
+#     · CS_UI +3 中的 2 条是**真 UI 文案**，且与本文件既有同类逐字同形：
+#         `QueueProcessor.cs:4192` `"已完成 (ffmpeg 直读 JXL)"`
+#         `QueueProcessor.cs:4193` `$"失败 (djxl PNM exit {exit} 且 ffmpeg 直读 exit {exitDirect})"`
+#       ⇒ 与 `QueueProcessor.cs:2188` 的 `"已完成 (cjxl→ffmpeg 回退)" / $"失败 (ffmpeg 退出码 {ffExit})"`
+#         是同一族的**队列终态标签**（本文件这一族标签历来直接硬编码中文、不走语言表；U1 后半必须新增
+#         一条"改走 ffmpeg 直读"的终态，否则换路只能静默 —— 那是本仓明令禁止的形状）。
+#     · 第 3 条**不是文案**，是比对常量：`ImageEncoderArgs.cs:362` 的 `u == "默认"`
+#       （与 `Resources/Locales/*.json` 的 `avif.tune.default` 显示串比对；U4b 第二半必须有它，
+#        否则"用户选了默认档"与"给了一个认不出的值"在两义空串下无法区分 ⇒ 又会静默）。
+#       落在 UI 桶是**本口径的已知局限**（按"含中文的行"计，分不出文案与比对常量；见文件上方"已知局限"段，
+#       口径 ②-c 有意保留，不改它才不会使历史基线失效）。
+#     · CS_TAG +16 / CS_OTHER 的增量 = `tests/ServiceProbe/Program.cs` 0c 段的断言与诊断措辞
+#       （`Check(...)` 的说明串走"其余"桶、`Console.WriteLine` 的诊断行走 sink 桶 ⇒ 均不在判据内）。
+#   ⚠ 口径未动，也**没有**把某条误计"修掉"：本批顺手把 `[djxl] PNM 中转失败…` 的两条 `.Log +=` 续行
+#     合成一条整行（"消息续行会被误计"是文件上方登记的已知形状），但本轮**没有**单独量过合并前后的差值
+#     ⇒ 不在此处声称它省下了几个数；上面的 +3 分解是按现况逐行核对得到的。
+#   余量 0 ⇒ 已被基线精确吸收；后续若再涨仍会判红。
 $BASE_XAML     = 13
-$BASE_CS       = 1301
-$BASE_CS_TAG   = 443
-$BASE_CS_OTHER = 858
+$BASE_CS       = 1320
+$BASE_CS_TAG   = 459
+$BASE_CS_OTHER = 861
 # ⚠⚠ **2026-09-18 口径变更 ②-c（终局）**：判据进一步收紧为 **XAML + 「其余桶里的 UI 面」**。
 #   · 「其余」桶再按**是否走诊断 sink** 细分：`CsUi`（判据）+ `CsDiag`（ℹ 打印，不判）。
 #   · 判据 sink 清单（**fail-closed**：认不出的形态一律算 UI ⇒ 新增 UI 写法不会被静默放过）：
@@ -291,7 +311,7 @@ $BASE_CS_OTHER = 858
 #   「2026-09-19 第七次抬基线（P1-E CLI 严格化轮）」整段；余量 0。
 # ⚠⚠ **2026-09-26 第八次抬基线：832 → 837（+5）** —— 逐行登记见本文件上方
 #   「2026-09-26 第八次抬基线（色彩矩阵修复轮）」整段（含折叠 4 处消息折行误计、SKIP 说明）；余量 0。
-$BASE_CS_UI    = 837
+$BASE_CS_UI    = 840
 
 # ── 正则 ───────────────────────────────────────────────────────────────────────
 $RxCjk         = '[\u4e00-\u9fff]'
@@ -332,20 +352,45 @@ function Measure-Cjk([string[]]$files) {
         }
         else {
             $text = Strip-Comments $raw $RxBlkComment
+            # ⚠ 2026-10-02 两处口径修正（都是**修假阳性**，不是放宽判据）：
+            #   ① **行尾 `//` 注释不参与匹配** —— 旧实现只跳过"整行以 `//` 开头"的行，
+            #      行尾注释里的 `"…中文…"` 会被当成代码字面量计入（实测 2 行）。本脚本自己的
+            #      反控写着「注释里的中文**不得**计入」，故这是实现与声明不一致，属实现缺陷。
+            #   ② **诊断语句的续行按诊断计** —— 多行诊断（`log?.Invoke($"[tag] …" + " …" + " …")`）
+            #      的**续行本身不含 sink** ⇒ 旧口径把整条诊断的续行误判进 UI 桶（实测 31 行）。
+            #      判据：语句**首行**命中 sink ⇒ 其后所有续行也算诊断（`$stmtSink`）。
+            #      ⚠ 只影响"续行"，**不改**任何单行字面量的分桶 ⇒ 不放过真正硬编码的 UI 文案。
+            $stmtSink = $false    # 当前语句首行是否走诊断 sink
+            $inStmt = $false      # 是否正处于某条语句的续行中
             foreach ($line in ($text -split "`n")) {
+                $codeOnly = $line
+                $ci = $codeOnly.IndexOf('//')
+                if ($ci -ge 0) { $codeOnly = $codeOnly.Substring(0, $ci) }
+                $isCont = $inStmt
+                if (-not $isCont) { $stmtSink = $false }
                 if ($line.TrimStart().StartsWith('//')) { continue }
-                foreach ($m in [regex]::Matches($line, $RxCsLiteral)) {
+                foreach ($m in [regex]::Matches($codeOnly, $RxCsLiteral)) {
                     if ([regex]::IsMatch($m.Value, $RxCjk)) {
                         $cs++
                         $body = $m.Value.Trim([char[]]'@"')
                         if ($body.TrimStart().StartsWith('[')) { $csTag++ }
                         else {
                             $csOther++
-                            if ([regex]::IsMatch($line, $rxDiagSink)) { $csDiag++ } else { $csUi++ }
+                            if (([regex]::IsMatch($codeOnly, $rxDiagSink)) -or ($isCont -and $stmtSink)) {
+                                $csDiag++
+                            } else {
+                                $csUi++
+                            }
                         }
                         break   # 一行只计 1，按"第一个命中字面量"分桶
                     }
                 }
+                # ── 语句状态推进（用于②）：以 `;` `{` `}` 结尾视为语句结束 ──
+                $t = $codeOnly.TrimEnd()
+                if ($t -eq '') { continue }
+                $open = -not ($t -match '[;{}]$')
+                if (-not $isCont) { $stmtSink = [bool]([regex]::IsMatch($codeOnly, $rxDiagSink)) }
+                $inStmt = $open
             }
         }
     }

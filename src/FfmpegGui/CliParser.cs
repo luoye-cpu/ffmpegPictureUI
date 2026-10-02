@@ -351,6 +351,8 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
                           engine=显式要求引擎（不可走则失败并点名）；legacy=强制传统管线（A/B 与排查用）
   --color-tone-map <reinhard|hable|mobius|bt2446a>
                           HDR→SDR 色调映射算子（默认 none 即不映射；HDR 源转 SDR 容器时必需）
+  --hdr-mode <gainmap|traditional>
+                          HDR 实现方式（默认 traditional）；与 --jpeg-gain-map 是同一开关的两种写法
   --color-hdr-peak <nits> 源峰值亮度（未给则读容器静态元数据，仍无则整帧实测）
   --color-sdr-white <nits> SDR 参考白（默认 203）
   --color-sdr-peak <nits>  SDR 峰值
@@ -745,6 +747,9 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
                     case "png-dpi": options.PngDpi = ParseIntStrict(key, value); break;
                     case "tiff-compression": options.TiffCompressionAlgo = value; break;
                     case "tiff-dpi": options.TiffDpi = ParseIntStrict(key, value); break;
+                    case "thumbnail": options.EnableThumbnail = ParseBoolStrict(key, value); break;
+                    case "thumbnail-size": options.ThumbnailLongEdge = ParseIntStrict(key, value); break;
+                    case "thumbnail-quality": options.ThumbnailQuality = ParseIntStrict(key, value); break;
                     case "jpeg-huffman":
                         // ── 2026-09-19（裁决第 2 项：严格化）──
                         // 取值域 = GUI 的两项（`MainWindow.xaml:683-685` = `default` | `optimal`），下游判据是
@@ -763,6 +768,16 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
                     case "jpeg-dct": options.JpegDct = value; break;
                     case "jpeg-progressive": options.JpegProgressiveId = ParseIntStrict(key, value); break;
                     case "jpeg-gain-map": options.JpegGainMap = ParseBoolStrict(key, value); break;
+                    // ── HDR 实现模式（用户-facing 单真值）──────────────────────────────
+                    // gainmap = SDR 底图 + 增益图（JPEG 走 APP2/MPF，AVIF 走 ISO-BMFF `tmap` 派生项）；
+                    // traditional = 原生 PQ/HLG 的 HDR 编码。
+                    // ⚠ 与 `--jpeg-gain-map` **写同一个持久位** —— `HdrMode` 是 `JpegGainMap` 的强类型视图
+                    //   （见 `FfmpegOptions.HdrMode`）⇒ 同一个开关的两种写法，**不存在两个真值**；
+                    //   两者同时给时「后出现的标志生效」（与 `--preserve-metadata` 同口径）。
+                    case "hdr-mode":
+                        options.HdrMode = ParseTokenStrict(key, value, "gainmap | traditional", "gainmap", "traditional")
+                            == "gainmap" ? HdrImplementationMode.GainMap : HdrImplementationMode.Traditional;
+                        break;
                     // ⚠ -1 是**合法哨兵**（= 用默认 75，QueueProcessor.cs:1877-1878 `>= 0 ? v : 75`），
                     //   故这里只做「能不能解析成整数」，不做范围校验（把哨兵误判成非法会破坏合法用法）。
                     case "jpeg-gain-map-quality": options.JpegGainMapQuality = ParseIntStrict(key, value); break;

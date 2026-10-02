@@ -357,10 +357,16 @@ CK ($j3.file -and $j3.file.Length -gt 0) "(9) 默认后端（Cjxl）产出非空
 CK ($j3.log -notmatch '尚未接入该路径') "(9) 默认后端**不再**被报「引擎尚未接入该路径」（契约变更）"
 CK ($j3.log -match '\[色彩\] cjxl 命令行') "(9) 默认后端确实由引擎的 **cjxl 出口**执行（日志有 cjxl 命令行）"
 
-Write-Host "`n=== (10) JXL 的 Cjxl 后端：引擎 cjxl 执行出口（2026-09-17 第二轮接入）===" -ForegroundColor Cyan
-# 出口形态：引擎（解码 → 变换）→ `ffmpeg -f rawvideo … -f image2pipe -c:v ppm|pam -` → `cjxl - out.jxl …`
-# 为什么**必须**走管道：cjxl 的 `-x color_space=` / `-x icc_pathname=` **只对 PPM/PAM 输入生效**
-#（喂 PNG 等容器输入时 `-x` 被忽略、只认文件内嵌 ICC —— `QueueProcessor` 的 cjxl 分支已登记该实测）。
+Write-Host "`n=== (10) JXL 的 Cjxl 后端：引擎 cjxl 执行出口（2026-09-17 第二轮接入；2026-10-02 SDR 改走 PNG 中转）===" -ForegroundColor Cyan
+# 出口形态（2026-10-02 起两条腿）：
+#   · SDR 且源在盘：`ffmpeg -f rawvideo … -f image2 <tmp>.png`（第二输入 -map_metadata 1 带源 EXIF/XMP）
+#     → `cjxl <tmp>.png out.jxl …` —— 唯一能同时保住 cjxl 参数与源元数据的形态
+#     （PPM/PAM 结构上不携带元数据；exiftool 补写 JXL 实测必然失败）。
+#   · alpha（PAM+alphamerge）/ 真 HDR 目标（PPM）：仍走 `… -f image2pipe -c:v pam|ppm -` 管道。
+# ⚠ 旧结论「PNG 等容器输入 -x 被忽略」已按 2026-10-02 实测**改正**：决定因素是**输入是否自带色彩
+#   元数据**（#44 规则，与容器/裸流无关）。ffmpeg 从 rawvideo 写出的 PNG 无色彩 chunk
+#   （chunk 表仅 IHDR/pHYs/eXIf/IDAT/IEND）⇒ `-x` 照常生效；三组对照
+#   （bt2020+linear / sRGB / P3 ICC）jxlinfo 读回与 PPM 逐字一致。
 # 为什么必须用 **P3 源**：无标签源会落到「无标注直通」，测不出色彩语义是否真由计划驱动。
 function AlphaYMin([string]$path) {
     $o = "$out/_aymin.txt"
@@ -394,8 +400,10 @@ CK ($c1.file -and $c1.file.Length -gt 0) "(10) cjxl 出口产出非空文件（$
 $c1Cmd = (($c1.log -split "`n") | Where-Object { $_ -match '\[色彩\] cjxl 命令行' } | Select-Object -Last 1)
 CK ($c1Cmd -and $c1Cmd -match 'icc_pathname=') `
    "(10) 携带源 ICC 的计划走 `-x icc_pathname=`（**ffmpeg-libjxl 出口做不到**这件事）"
-CK (($c1.log -split "`n") | Where-Object { $_ -match '\[色彩\] ffmpeg' -and $_ -match 'image2pipe' -and $_ -match '-c:v ppm' }) `
-   "(10) ffmpeg 侧确实走 PPM 管道（不落中间文件）"
+CK (($c1.log -split "`n") | Where-Object { $_ -match '\[色彩\] ffmpeg' -and $_ -match '-f image2 ' -and $_ -match '\.png' }) `
+   "(10) SDR 场景 ffmpeg 侧走 **PNG 落盘中转**（-map_metadata 1 保住源 EXIF/XMP；图像体积与 PPM 一致，2026-10-02 实测）"
+CK ($c1.log -notmatch 'PNG 中转落盘失败') `
+   "(10) 负控：PNG 中转未失败（失败会点名且显式不产出，不回退 PPM 以免静默丢元数据）"
 CK ($c1.log -match '跳过 exiftool 后置') `
    "(10) 已跳过 exiftool 后置（对 JXL 必然失败并打出假告警：实测退出码 1）"
 if ($c1.file -and (Test-Path $jxlinfo)) {
@@ -418,6 +426,8 @@ $c3Cmd = (($c3.log -split "`n") | Where-Object { $_ -match '\[色彩\] cjxl 命�
 CK ($c3Cmd -and $c3Cmd -match 'color_space=Rec2100PQ') "(10) HDR 目标落到 Rec2100PQ 枚举（$c3Cmd）"
 CK ($c3Cmd -and $c3Cmd -match '--intensity_target=') `
    "(10) **HDR 目标必须声明 --intensity_target**（缺了 libjxl 回落默认峰值 ⇒ 亮度语义错）"
+CK (($c3.log -split "`n") | Where-Object { $_ -match '\[色彩\] ffmpeg' -and $_ -match '-c:v ppm' }) `
+   "(10) **HDR 目标仍走 PPM 管道**（PNG 中转只给 SDR：PNG 表达不了 PQ/HLG 语义，历史坑 JXL_ISSUES_HANDOVER P0-2）"
 if ($c3.file -and (Test-Path $jxlinfo)) {
     $cs3b = JxlColorSpace $c3.file.FullName
     CK ($cs3b -match 'PQ') "(10) jxlinfo 读回 PQ 传递函数（$cs3b）"

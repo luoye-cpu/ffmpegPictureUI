@@ -206,6 +206,45 @@ namespace FfmpegGui.Services
             return ext is ".jpg" or ".jpeg" or ".jpe" or ".jfif";
         }
 
+        // 增益图探针的按路径缓存：判据被命令行/队列/命令行构造三处消费，不缓存就是每处一次 IO。
+        // 上限是防长跑批量（几万张图）把缓存变成泄漏 —— 满了就整表清空，不做 LRU（值只用于"别重复读头"）。
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, bool> _gainMapJpegCache =
+            new(StringComparer.OrdinalIgnoreCase);
+        private const int GainMapCacheCap = 512;
+        private const long GainMapHeadBytes = 256 * 1024;
+
+        /// <summary>
+        /// 这张 JPEG 是否**带增益图**（Ultra HDR / ISO 21496-1）—— 带就说明它不能免解码重封装。
+        /// <para>实测（2026-10-01，出货包）：对这类文件发 <c>--lossless_jpeg=1</c>，cjxl **不报错**，
+        /// 而是把它解成 HDR float 再编码，产物是 <c>lossy, 32-bit float (8 exponent bits) RGB</c>、
+        /// <c>jxlinfo</c> 里没有 reconstruction 盒 ⇒ "无损"宣称与实际交付不符；
+        /// 且该 float 产物连自家反向通路都吃不下（djxl 的 PPM 路报
+        /// <c>JxlDecoderSetImageOutBitDepth failed</c>，0 产物 rc=1）。取证：<c>tests/output/t76/jbrd-e2e.ps1</c> 的 ultrahdr 臂。</para>
+        /// <para>判据复用仓内既有的托管容器解析器 <see cref="GainMapDecoder.JpegContainer.IsGainMapContainer"/>
+        /// （ISO 21496-1 为权威；无 ISO 时要求 MPF≥2 幅 + 副图是同比例严格降采样，防把 MPO 3D/全景误判），
+        /// 不另写一份 JPEG 解析。只读文件头 ⇒ 大图不必整文件读入。</para>
+        /// </summary>
+        public static bool JpegCarriesGainMap(string? path)
+        {
+            if (string.IsNullOrWhiteSpace(path)) return false;
+            try
+            {
+                var fi = new FileInfo(path);
+                if (!fi.Exists) return false;
+                var key = fi.FullName;
+                if (_gainMapJpegCache.TryGetValue(key, out var hit)) return hit;
+                int len = (int)Math.Min(GainMapHeadBytes, fi.Length);
+                var head = new byte[len];
+                using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+                    fs.ReadExactly(head, 0, len);
+                bool ans = GainMapDecoder.JpegContainer.Parse(head)?.IsGainMapContainer() ?? false;
+                if (_gainMapJpegCache.Count >= GainMapCacheCap) _gainMapJpegCache.Clear();
+                _gainMapJpegCache[key] = ans;
+                return ans;
+            }
+            catch { return false; }   // 读不动 ⇒ 按"不带增益图"处理（保持原行为，不因探针失败改道）
+        }
+
         /// <summary>
         /// 本次是否**真的**走「JPEG→JXL 免解码重封装」（复制 DCT 系数、**不解码像素**）。
         /// <para>这是仓内该判据的**唯一实现**：<see cref="BuildCjxlArguments"/> 用它决定
@@ -222,26 +261,43 @@ namespace FfmpegGui.Services
             //   ⇒ 查看器二次旋转。出货包实测（`tests/output/t76/orientation-rewrap.ps1`，
             //   源 coded=640x480/Orientation=8）：jpg/png/avif/webp 四格产物 coded=480,640 且 Orientation=8。
             //   本谓词的语义是"本次**真的**走重封装"，而重封装的产物只能是 JXL ⇒ 格式条件本来就在语义里。
+            // ⚠ **第四个条件（不能是带增益图的 JPEG）同日补**：cjxl 对这类输入会**静默**放弃重封装
+            //   （解成 float 再编，不报错），于是前三个条件全真而"像素没动"为假 ⇒ 同一类"宣称≠交付"。
+            // ⚠ **第五个条件（不能同时强制模块化）**：`-m 1` 与"携带 JPEG 码流重构数据"结构上不能并存
+            //   （modular 模式装不下 jbrd），所以强制模块化时本次就是像素重编码。判据放在这里而不是只放
+            //   在命令行里，是因为 `QueueProcessor` 的取向标签决策读的是本谓词 —— 两处必须同一份实现。
+            //   只认 `== true`（与 `ImageEncoderArgs` 的 ffmpeg 路线一致）：面板的"未勾选"含义是
+            //   "不强制模块化"，而 cjxl 的 `-m 0` 是"**强制** VarDCT"，把两者划等号会改默认行为。
             => opts != null && IsJpegInputPath(inputPath) && opts.JxlLosslessJpeg
-               && string.Equals(opts.Format, "jxl", StringComparison.OrdinalIgnoreCase);
+               && string.Equals(opts.Format, "jxl", StringComparison.OrdinalIgnoreCase)
+               && !JpegCarriesGainMap(inputPath)
+               && opts.JxlModular != true;
 
         /// <summary>
         /// 使用 cjxl 将指定输入文件编码为 JXL（支持完整选项）。
         /// </summary>
         /// <param name="iccPath">输入提取的 ICC 文件路径（可选）。非 JPEG 输入且源带 ICC 时传入，
         /// 由 cjxl 嵌入输出（exiftool 无法写入 JXL 的 ICC，这是唯一嵌入路径）</param>
+        /// <param name="colorSpaceOverride">引擎 cjxl 出口专用：规划层翻译好的 color_space 名，直透
+        /// <see cref="BuildCjxlArguments"/>（2026-10-02 随 PNG 中转出口接入 —— 该出口同样要传）。</param>
+        /// <param name="intensityTargetOverride">同上，nits；与 colorSpaceOverride **成对**传。</param>
+        /// <param name="hdrMeta">输入色彩探测结果，直透 <see cref="BuildCjxlArguments"/>（默认值即可，
+        /// 仅当 colorSpaceOverride 为空时参与标注推导）。</param>
         public static async Task<int> RunWithOptionsAsync(
             string inputPath, string outputPath,
             Models.FfmpegOptions opts,
             Action<string>? logCallback = null,
             string? iccPath = null,
-            CancellationToken ct = default)
+            CancellationToken ct = default,
+            string? colorSpaceOverride = null,
+            int intensityTargetOverride = 0,
+            FfmpegCommandBuilder.ColorMetadata hdrMeta = default)
         {
             if (_detectedPath == null)
                 throw new InvalidOperationException("cjxl.exe 未找到");
 
-            var args = BuildCjxlArguments(inputPath, outputPath, opts, default, iccPath,
-                log: logCallback);
+            var args = BuildCjxlArguments(inputPath, outputPath, opts, hdrMeta, iccPath,
+                colorSpaceOverride, intensityTargetOverride, log: logCallback);
             logCallback?.Invoke($"[cjxl] {Path.GetFileName(_detectedPath)} {args}\n");
 
             var psi = new ProcessStartInfo
@@ -324,6 +380,27 @@ namespace FfmpegGui.Services
                 log?.Invoke("[cjxl] --lossless_jpeg is requested but the input is not a JPEG file"
                           + " (pipe/raw stream): DCT coefficients cannot be repacked from decoded pixels"
                           + " => this run re-encodes pixels instead of losslessly repacking the JPEG\n");
+            // ⚠ U1 点名（2026-10-01，出货包实测）：带增益图的 JPEG（Ultra HDR / ISO 21496-1）上，
+            //   cjxl 收到 --lossless_jpeg=1 时**不报错**，而是解成 HDR float 重编码，产物既无
+            //   reconstruction 盒（"无损"为假）又无法被自家反向通路读回。判据见 JpegCarriesGainMap。
+            if (opts.JxlLosslessJpeg && isJpegInput && !forPreview
+                && string.Equals(opts.Format, "jxl", StringComparison.OrdinalIgnoreCase)
+                && JpegCarriesGainMap(input))
+                log?.Invoke("[cjxl] --lossless_jpeg is requested but this JPEG carries a gain map (Ultra HDR / ISO 21496-1):"
+                          + " cjxl cannot repack its DCT coefficients and would silently re-encode it as HDR float"
+                          + " => sending --lossless_jpeg=0 and naming it instead of claiming lossless repacking\n");
+            // ⚠ U5 接线（2026-10-01）：此前 `--jxl-modular` 只在 ffmpeg/libjxl 路线落地（`ImageEncoderArgs`），
+            //   cjxl 路线 0 引用 ⇒ 同一个开关两条后端一条活一条**静默失效**（出货包实测两端产物 SHA 相同）。
+            //   cjxl 侧的写法是 `-m 1` / `--modular=1`（见其 advanced options）。
+            if (opts.JxlModular == true)
+            {
+                sb.Append(" --modular=1");
+                if (opts.JxlLosslessJpeg && isJpegInput && !forPreview
+                    && string.Equals(opts.Format, "jxl", StringComparison.OrdinalIgnoreCase))
+                    log?.Invoke("[cjxl] --jxl-modular and lossless JPEG repacking are structurally exclusive"
+                              + " (modular mode cannot carry JPEG bitstream reconstruction data)"
+                              + " => modular mode wins, this run re-encodes pixels\n");
+            }
             var effort = opts.JxlEffort ?? 7;
 
             sb.Append($" -e {effort}");
@@ -352,7 +429,7 @@ namespace FfmpegGui.Services
                 }
                 else
                 {
-                    emittedDistance = (100 - opts.Quality) * 15.0 / 100.0;
+                    emittedDistance = ColorMapping.ImageEncoderArgs.MapJxlDistance(opts.Quality);
                     sb.Append($" -d {emittedDistance:F1} --lossless_jpeg=0");
                 }
             }
@@ -365,7 +442,7 @@ namespace FfmpegGui.Services
             else
             {
                 // 有损：质量→distance 映射
-                emittedDistance = (100 - opts.Quality) * 15.0 / 100.0;
+                emittedDistance = ColorMapping.ImageEncoderArgs.MapJxlDistance(opts.Quality);
                 sb.Append($" -d {emittedDistance:F1}");
             }
 

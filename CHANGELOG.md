@@ -12,6 +12,85 @@
 
 ## 📝 更新日志
 
+### v1.6.0-beta4 (2026-10-01) — 增益图 JPEG 不再冒充无损 + float JXL 能取回来 + `--jxl-modular` 接上；首批 L3 判据进门禁清单（60→65）
+
+> **谱系**：与 beta3 不同，本条**是真行为变更** —— `src/` 下 3 个产品文件在 beta3 出包后被改动
+> （`CjxlService.cs` / `QueueProcessor.cs` / `ImageEncoderArgs.cs`），下面四条都各有产物级判据背书。
+> ⚠ 2026-10-02 追加：**新增**一节（缩略图）也落在 beta4 里，产品侧再 +1 个文件 `ThumbnailService.cs`
+> （新）+ `ExifToolService.cs` / `FormatCapabilitiesService.cs` / `QueueProcessor.cs` / `CliParser.cs` / 模型两处。
+
+**✨ 新增**
+
+- **缩略图（EXIF IFD1）：`--thumbnail` / `--thumbnail-size` / `--thumbnail-quality`**。高级编码面板加一只
+  `ThumbnailPanel`（勾选 + 长边 + 质量），只对**实测能兑现**的容器开放：`jpg / png / apng / webp / avif / jxl` 六格
+  （判据 = 写完能用 `exiftool -b -ThumbnailImage` **取回与 `ThumbnailLength` 等长的图像数据**，apng 另用
+  `cjxl`+`jxlinfo` 做第二个独立读者交叉核过：两者同为 2230 B，而 ffmpeg 造的悬空件只有 250 B）；
+  `tiff / gif / jxr / dng` 实测均被 exiftool 拒（「0 image files updated」**而退出码仍是 0** ⇒ 只看 rc 会假绿），
+  勾选状态下走这些格式会**出声拒绝**而非静默出一张没缩略图的图。GIF 结构上没有 EXIF 槽位，JXR 收得下 ICC 却收不下 IFD1。
+  实现是**后置单通道**：从**最终产物**缩一张 8-bit JPEG（`scale` 两维都钳长边、只缩不放、取偶），
+  再走 `exiftool -ThumbnailImage<=` 嵌入 ⇒ 不碰 cjxl/avifenc 命令行，也不新增第二份探测口径。
+  调用点收在**元数据阶段**（`RestoreMetadataAsync` 内、色彩后置之前），维持本仓「元数据先写、
+  色彩标签最后定」的不变量；`StripAll` / `StripExifAll` 时缩略图**让位**（隐私不能让新功能破口）。
+  门禁：新增 `ServiceProbe thumbnail` 模式 **40/0**（2026-10-02 本机实测，10 s；两次变异验牙
+  `M1 33/7`、`M2 38/2`），已接进 `$Probes` 默认清单（第 23 个 mode）。
+  ⚠ **未判**：缩略图在各查看器里是否**显示**（本机未在资源管理器/第三方 viewer 里逐项看过）；
+  广色域产物的小预览因 EXIF 无 ICC 槽位会按 sRGB 解读而略欠饱和。
+
+**🐛 修复**
+
+- **U1 前半｜携带增益图的 JPEG 不再被算成"免解码重封装"**：源 JPEG 内含 Ultra HDR / ISO 21496-1 增益图时，
+  `--lossless_jpeg=1` 的"无损"宣称会**静默退化**成 float 重编码 —— 增益图被抹平、原 JPEG 再也取不回来，
+  而日志照常报"无损"。单一裁决点 `CjxlService.UsesLosslessJpegRewrap` 从 3 条加到 **5 条**
+  （新增"源不携带增益图"“未强制模块化"；增益图由 `GainMapDecoder.JpegContainer` 读文件头 256 KB 判定，
+  带 512 项按路径缓存）。判据补在**这个谓词**而不是只补在命令行里，是因为它同时决定两件事：
+  命令行发不发 `--lossless_jpeg=1`，**以及**元数据恢复要不要把源的取向标签带走 —— 漏掉它，一条
+  "像素其实已被解成 float"的路线仍会被当作"像素一个没动"而保留 `Orientation=8` = 查看器二次旋转
+  （A-28 的同族）。`BuildCjxlArguments` 另加一条播报，点名"这份 JPEG 带增益图 ⇒ 不走无损重封装"。
+- **U1 后半｜float JXL 输入不再静默失败**：`djxl` 的 PPM/PNM 输出不支持 float 图像 ⇒ 中转必然非零退出，
+  旧代码在这里 `return false`（任务标失败、不给第二条路）。现改走 **ffmpeg 直读 `.jxl`**，
+  终态串点名用的是哪条路（`已完成 (ffmpeg 直读 JXL)`），失败时把两个退出码都报出来。
+- **U5｜`--jxl-modular` 从空枪接成实参**：该选项此前被 UI 采集、进模型、再不被任何消费者读取 ⇒
+  勾了等于没勾。现在发 `--modular=1`，且它与 jbrd 无损是**结构互斥**的（jbrd 依赖 varloss 通道），
+  两者同时给出时 modular 获胜并播报"这一把覆盖了无损重封装"。
+- **U4b｜libaom-av1 承接不了的 tune 档位不再静默丢（同日补齐第二半）**：`--avif-tune MS_SSIM`（SVT 独有）走 libaom 时
+  旧实现**既不发 tune 参数、也不说一句** ⇒ `rc=0`、产物照常出，用户以为调了（这是从代码直接可证的：
+  该值折成 `ms_ssim` 后落进 switch 的空档）。现按本仓既有原则"不可用要显式播报"打印原因与可用档位；
+  用户没选（折成空串）不播报，免得把"没选"说成"失败"。
+  **第二半**是同一个洞的另一半：`NormalizeTuneToken` 此前把**认不出**的显示串也折成空串，
+  而空串同时是"没选/选了默认档" ⇒ `--avif-tune film` 这类越界值到了分发层也是"不发也不说"；
+  另外那个 switch 只有 libaom 与 SVT 两支 ⇒ 硬件 AVIF 后端（nvenc/qsv/amf/vaapi）上任何已选 tune
+  都被整支跳过。⚠ 这条**面板直接可达**：那把 tune 下拉的默认选中项是 `avif.tune.iq`
+  （`MainWindow.xaml.cs:916-918`，`FillComboByLoc(…, 4, …)`），而它人在 `LibaomAvifPanel` 里
+  （`MainWindow.xaml:551-555`）—— 换到硬件后端后面板被藏起来、采集侧却仍按它的 `SelectedItem` 取值
+  （`MainWindow.xaml.cs:2840`，只受"高级编码选项"总开关管）⇒ 用户什么都没"选"，`tune=IQ` 就已经
+  被静默吞掉了；旧预设回放同理（`Models/PresetData.cs:168` 带 `EncoderName`）。
+  **CLI 到不了这一支**：`-e/--encoder` 收的是 EncoderBackend 枚举，没有任何旗标能设
+  `FfmpegOptions.Encoder`；传 `-e av1_nvenc` 会按既有约定**硬失败**（`未知编码器: av1_nvenc`、
+  rc≠0、零产物 —— 实测 2026-10-02，`tests/output/t84/nvenc_probe.err`）。
+  现在：默认档与空串才返回空串，其余认不出的原样返回并由分发层点名；tune switch 之后另加
+  一条中心播报，兜住"这条后端整支没有 tune 通路"的形状。
+  判据 = 旋钮活性套件（清单第 65 条）的 **N 段命名臂**：不可表达的值要么非零退出、要么有播报，
+  只有"`rc=0` 且全程没一句话"才判红（本批新增 `--avif-tune film` 一臂）。
+  ⚠ **诚实声明**：硬件后端那一支的播报**目前没有闸内判据**（CLI 走不到，只有 GUI 采集/预设回放到得了；
+  我试过用 `-e av1_nvenc` 写一臂，量出来的是"无效后端值硬失败"而不是这条播报 ⇒ 已把那条臂撤掉）。
+  ⇒ 登记为 §5.2 的缺口项，补法与命令写在 `docs/HANDOVER_2026-10-02.md`。
+
+**✅ 测试**
+
+- **`ServiceProbe` 新增 8-bit 降位恒等断言**（`PROBE RESULT: pass=39 fail=0`）：8-bit 源经 `format=rgb48le`
+  升位后的码值恒为 **257 的整数倍**（这正是"可精确还原"的前提），断言把 256 级斜坡按 `v*257` 直接摆进 16-bit
+  缓冲、再过内核的 16→8 出口，要求**逐码值恒等**；扫 16 个抖动相位 × {解析式, 表驱动} 两条出口，
+  实测最大偏差 **0/255**。带两条反真空对照（夹具与产物都须是满值域斜坡、去重数 ≥250；与 `want+1` 比的
+  最小偏差须恰为 1 —— 读到 0 就说明这条恒等判据其实没在比东西）。
+  ⇒ 这条把 #12（`BayerCenter` 居中）从"读过代码认为它对"变成**有断言背书** —— 其实现随 v1.6.0 已出货，
+  本条补的是判据。旧写法减 `2/16` 会让 16 相位里的 6 个把本可精确表示的码值抬 +1。
+- **首批 L3 判据从 gitignored 目录迁入受管清单（60 → 65）**：`t69/pkg-smoke3`、`t76/jbrd-e2e`、
+  `t76/orientation-rewrap`、`t77/gainmap-thirdparty`、`t79/knob-liveness` 此前只活在 `tests/output/`
+  （`.gitignore:78`）⇒ 一次 `git clean -xdf` 就没了，也不在任何轮里被跑。现全部落 `tests/scripts/`：
+  路径改为运行时推导（`$PSScriptRoot`），默认被测 = **刚构建的 Release 产物**（每轮都跑，缺则拒绝跑、
+  不回退 Debug），设 `$env:PKG_VER` 时才升 L3 打出货包；包不在位或包内 `ProductVersion` 与期望不符
+  ⇒ `exit 2` 且**不产出任何读数**（防"beta4 的读数打在 beta3 包上"）。
+
 ### v1.6.0-beta3 (2026-10-01) — 两台"假绿机器"修掉 + 首批打出货包（L3）的判据；含 09-30 的取向标签与几何探测批次
 
 > **谱系（重要，别把两版当成两次行为变更）**：`src/` 下自 beta2 出包（10-01 08:23）后**零个产品源文件被改动**

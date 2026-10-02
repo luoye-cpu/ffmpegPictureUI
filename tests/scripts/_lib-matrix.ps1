@@ -32,7 +32,7 @@
 #
 # ── 折叠表的取证结论（2026-09-19 逐条打开源码核对，非转述）─────────────────────
 #   F1 `--icc-mode` 4 值 -> 3 策略（无条件折叠）
-#      `Models/ColorStrategy.cs:47-53` ColorStrategyMapper.FromIccMode：
+#      `Models/ColorStrategy.cs:73-79` ColorStrategyMapper.FromIccMode：
 #      None -> Recommended（走 `_ =>` 默认分支，:52）、BakeToStandard -> Recommended（:51）、
 #      CarryIcc -> CarryIcc（:49）、BakeOnly -> BakeCicpOnly（:50）。
 #   F2 `-f jpegli` 与 `-f jpg` 等价（无条件折叠）
@@ -341,8 +341,8 @@ function Get-EquivalenceClasses {
         Representative = 'None'
         Members = @('None', 'BakeToStandard')
         Evidence = @(
-            'src/FfmpegGui/Models/ColorStrategy.cs:51|IccMode.BakeToStandard => ColorStrategy.Recommended,',
-            'src/FfmpegGui/Models/ColorStrategy.cs:52|_ => ColorStrategy.Recommended,'
+            'src/FfmpegGui/Models/ColorStrategy.cs:77|IccMode.BakeToStandard => ColorStrategy.Recommended,',
+            'src/FfmpegGui/Models/ColorStrategy.cs:78|_ => ColorStrategy.Recommended,'
         )
         Rationale = 'FromIccMode maps BakeToStandard and the default branch (None/unknown) to ColorStrategy.Recommended'
     }
@@ -351,7 +351,7 @@ function Get-EquivalenceClasses {
         ClassId = 'icc-mode-carry'
         Representative = 'CarryIcc'
         Members = @('CarryIcc')
-        Evidence = @('src/FfmpegGui/Models/ColorStrategy.cs:49|IccMode.CarryIcc => ColorStrategy.CarryIcc,')
+        Evidence = @('src/FfmpegGui/Models/ColorStrategy.cs:75|IccMode.CarryIcc => ColorStrategy.CarryIcc,')
         Rationale = 'FromIccMode maps CarryIcc to ColorStrategy.CarryIcc'
     }
     $f1c = @{
@@ -359,7 +359,7 @@ function Get-EquivalenceClasses {
         ClassId = 'icc-mode-cicp-only'
         Representative = 'BakeOnly'
         Members = @('BakeOnly')
-        Evidence = @('src/FfmpegGui/Models/ColorStrategy.cs:50|IccMode.BakeOnly => ColorStrategy.BakeCicpOnly,')
+        Evidence = @('src/FfmpegGui/Models/ColorStrategy.cs:76|IccMode.BakeOnly => ColorStrategy.BakeCicpOnly,')
         Rationale = 'FromIccMode maps BakeOnly to ColorStrategy.BakeCicpOnly'
     }
 
@@ -603,7 +603,13 @@ function Get-SemanticMatrices {
             Rationale = 'Backend compatibility is a function of format, and -pix_fmt is a single-truth mapping of (format, chroma, bitDepth); the container also clamps bit depth. None of the four is independent.'
             Evidence = @(
                 'src/FfmpegGui/Services/EncoderDetectionService.cs:38|EncoderBackend.Cjpegli => fmt is "jpg" or "jpeg" or "jpegli",',
-                'src/FfmpegGui/Services/ColorMapping/ImageEncoderArgs.cs:763|if (fmt is "png" or "tiff" or "apng" or "jxl")'
+                # ⚠ pin 演进：763 → **796**（+33，三段都在本文件、都在这条锚点**之前**：
+                #   2026-10-01 U4b 第一半给 libaom tune switch 补 `default:` 播报；
+                #   2026-10-02 U4b 第二半改 `NormalizeTuneToken` 的"空串两义性"并加认得集合；
+                #   2026-10-02 U4b 第三半把 default 收窄 + 加"这条后端根本没有 tune 通路"的中心播报）。
+                #   抬号前已按本仓规矩 `grep -n` 复核实况行，并确认该字面量在全文件**只出现一次**
+                #   （行号锚不容歧义）。见 docs/TESTING.md §6 第 112 条。
+                'src/FfmpegGui/Services/ColorMapping/ImageEncoderArgs.cs:796|if (fmt is "png" or "tiff" or "apng" or "jxl")'
             )
         },
         @{
@@ -632,7 +638,11 @@ function Get-SemanticMatrices {
             Axes = @('format', 'color-space', 'bit-depth')
             Rationale = 'Bit depth is clamped by the outlet: AVIF takes its ceiling from the encoder that actually runs (libaom/av1_nvenc 12, others 10; an empty encoder name means no -c:v, i.e. ffmpeg default = libaom-av1), WebP/JPEG are capped at 8 by the container, and RGB-native outlets only ship 8/16 - so the three axes are coupled. (2026-09-26: the former "AVIF + Display P3 + high bit depth collapses to sRGB 8-bit" clause was measured and removed; see task 39 and tests/output/t36/probe_39b.ps1.)'
             Evidence = @(
-                'src/FfmpegGui/Services/ColorMapping/ImageEncoderArgs.cs:715|AvifMaxBitDepthForEncoder(string? encoder)',
+                # ⚠ pin 演进：715 → **748**（+33），与上面 encoder-core 是同三段 U4b 编辑造成的同向漂移
+                #   （2026-10-01 第一半补 libaom tune `default:` 播报、2026-10-02 第二半改
+                #   `NormalizeTuneToken` 的两义性、第三半加"这条后端没有 tune 通路"的中心播报）；
+                #   唯一性同样已 `grep -n` 核过。
+                'src/FfmpegGui/Services/ColorMapping/ImageEncoderArgs.cs:748|AvifMaxBitDepthForEncoder(string? encoder)',
                 'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:1008|return (null, null, null, ColorMapping.ImageEncoderArgs.AvifMaxBitDepth(options), false);',
                 'src/FfmpegGui/Services/FfmpegCommandBuilder.Decision.cs:155|options.BitDepth = capBd;'
             )
@@ -1167,7 +1177,7 @@ function Invoke-MatrixSelfTest {
         ClassId = 'syn-a-fold'
         Representative = 'x'
         Members = @('x', 'y')
-        Evidence = @('src/FfmpegGui/Models/ColorStrategy.cs:49|IccMode.CarryIcc => ColorStrategy.CarryIcc,')
+        Evidence = @('src/FfmpegGui/Models/ColorStrategy.cs:75|IccMode.CarryIcc => ColorStrategy.CarryIcc,')
         Rationale = 'synthetic fold used only by the positive control'
     }
     $synFolds = @(Get-EquivalenceClasses | Where-Object { [string]$_.Axis -eq 'icc-mode' }) + @(New-FoldClass @synFoldX)
@@ -1196,7 +1206,7 @@ function Invoke-MatrixSelfTest {
             Axes        = @('syn-a', 'syn-b')
             Cases       = $synCells.ToArray()
             Rationale   = 'synthetic matrix for the positive control'
-            Evidence    = @('src/FfmpegGui/Models/ColorStrategy.cs:49|IccMode.CarryIcc => ColorStrategy.CarryIcc,')
+            Evidence    = @('src/FfmpegGui/Models/ColorStrategy.cs:75|IccMode.CarryIcc => ColorStrategy.CarryIcc,')
             RawCount    = 4
             FoldedCount = 2
         }
@@ -1232,7 +1242,7 @@ function Invoke-MatrixSelfTest {
         ClassId = 'syn-bogus'
         Representative = 'x'
         Members = @('x', 'y')
-        Evidence = @('src/FfmpegGui/Models/ColorStrategy.cs:49|IccMode.BakeOnly => ColorStrategy.BakeCicpOnly,')
+        Evidence = @('src/FfmpegGui/Models/ColorStrategy.cs:75|IccMode.BakeOnly => ColorStrategy.BakeCicpOnly,')
         Rationale = 'bogus evidence for the negative control'
     }
     $b4 = Test-MatrixStructure -Registry $synReg -Folds @($synFolds + @(New-FoldClass @bogus)) -PairwiseAxes $synAxes -PairwiseCases $synCases -Matrices $synMtx -Overrides $overrides -IccFile $icc
@@ -1241,7 +1251,7 @@ function Invoke-MatrixSelfTest {
     # B5 负控：矩阵引用了不存在的轴 => 必须转红
     $badMtx = @([pscustomobject]@{
         Name = 'syn-bad-axis'; Axes = @('syn-a', 'no-such-axis'); Cases = @()
-        Rationale = 'negative control'; Evidence = @('src/FfmpegGui/Models/ColorStrategy.cs:49|IccMode.CarryIcc => ColorStrategy.CarryIcc,')
+        Rationale = 'negative control'; Evidence = @('src/FfmpegGui/Models/ColorStrategy.cs:75|IccMode.CarryIcc => ColorStrategy.CarryIcc,')
         RawCount = 0; FoldedCount = 0
     })
     $b5 = Test-MatrixStructure -Registry $synReg -Folds $synFolds -PairwiseAxes $synAxes -PairwiseCases $synCases -Matrices $badMtx -Overrides $overrides -IccFile $icc
@@ -1258,7 +1268,7 @@ function Invoke-MatrixSelfTest {
         ClassId = 'syn-bad-rep'
         Representative = 'x'
         Members = @('y')
-        Evidence = @('src/FfmpegGui/Models/ColorStrategy.cs:49|IccMode.CarryIcc => ColorStrategy.CarryIcc,')
+        Evidence = @('src/FfmpegGui/Models/ColorStrategy.cs:75|IccMode.CarryIcc => ColorStrategy.CarryIcc,')
         Rationale = 'negative control'
     }
     $b7 = Test-MatrixStructure -Registry $synReg -Folds @($synFolds + @(New-FoldClass @badFold)) -PairwiseAxes $synAxes -PairwiseCases $synCases -Matrices $synMtx -Overrides $overrides -IccFile $icc

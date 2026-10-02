@@ -33,6 +33,12 @@ L2+ 独立读者（exiftool·jxlinfo·第三方库·哈希对撞）/ L3 出货�
 3. **harness 层（本轮抓出的假绿机制见 §二：2 条在现行门禁里、3 条在我新写的判据里，都已修）**：
    **这些会让"历史上任何一次全绿"的口径需要重述** —— 不是"改错了"，是"绿得比实际弱"。
 
+> **判词更新（同日 v1.6.0-beta4 收尾时）**：上面第 2 条（证据层不足）已被**结构性**改掉一半 ——
+> 5 套产物级/L3 套件进了清单（第 61~65 条），"没有一条门禁打真产物往返"这个状态不成立了；
+> 第 1 条里点名的两处未修（U1 的 float JXL 回读与增益图 jbrd）已在产品侧修掉（§5.1），
+> U2 经重测**否证**、U5/U4b 已修。仍未收口的是 U3、U4（判据缺口）与 A-20，见 §5.2。
+> 本批全部读数与发布过程见 §八。
+
 ---
 
 ## 二、本轮抓出的假绿机制（2.1/2.2 是门禁体系的，2.3 是我新建判据自己的；都已修）
@@ -227,7 +233,7 @@ exiftool：[MPF0] NumberOfImages : 2  [MPImage1] …
 | D-2 | `CjpegliMultiThreadAvailable` | **恒 false** ⇒ `CjpegliService.cs:264` 的线程门永不成立；三处写者全写死 false（`MainWindow.xaml.cs:1452/2902`、`QueueProcessor.cs:4864`），模型默认也 false（`FfmpegOptions.cs:368`） | `grep -rn 'CjpegliMultiThreadAvailable'` |
 | D-3 | GainMap 质量"跟随主图" | 语义是**硬编码 75**（`CliParser.cs:867` 注释自述 + `QueueProcessor.cs` 的 `-1⇒75` 哨兵）；用户改主图质量，增益图质量不跟随 | `grep -n 'JpegGainMapQuality' CliParser.cs` |
 | D-4 | TIFF"强制无损" | 引擎路线恒发 `-compression_algo raw` ⇒ 用户的 `--tiff-compression` 被覆盖（不是不可用，是**被上层否决**） | CHANGELOG 09-30 条目 + `verify-gif-avif-framelist`/`verify-tiff-icc` |
-| D-5 | `--jxl-modular` | ffmpeg 路线**接受**（实测 `-modular` 在 `libjxl` AVOptions 里），cjxl 路线 **0 引用** ⇒ 同一旋钮两条路一条活一条死（U3） | `grep -c modular Services/CjxlService.cs` = 0 |
+| D-5 | `--jxl-modular` | **【beta4 已修】** 修复前：ffmpeg 路线**接受**（实测 `-modular` 在 `libjxl` AVOptions 里），cjxl 路线 **0 引用** ⇒ 同一旋钮两条路一条活一条死（U5/A-30）。现 `BuildCjxlArguments` 发 `--modular=1`，与 jbrd 结构互斥时 modular 获胜并播报 | 修复前取证 `grep -c modular Services/CjxlService.cs` = 0；修复后判据 = `verify-jbrd-e2e.ps1` G1–G5 |
 | D-6 | GIF"关闭抖动" | ffmpeg `gif` 编码器**没有**该旋钮（只有 `gifflags/global_palette/gifimage`）⇒ 面板承诺无宿主 | `-h encoder=gif` 实测 |
 
 ### 4.4 旋钮活性实测（18 个旋钮 × 两个极端值，被测=出货包）
@@ -240,6 +246,9 @@ exiftool：[MPF0] NumberOfImages : 2  [MPImage1] …
 终轮读数（`tests/output/t78/knob-live6.log`，被测=出货包）：
 **`活=15 死(两端都没发)=1 被拒=1 未判(夹具无判别力)=1 未判(读不到命令行)=0 合计=18`**
 ⇒ 全表只有 `--jxl-modular` 一只真死旋钮、`--jpeg-dct float` 一只被拒、`--avif-row-mt` 一只判不出。
+⚠ **这一段整份是「修复前」的实况账**（那次跑的是 beta3 出货包）：`--jxl-modular` 已在 beta4 接线并判为活
+（§5.1 U5），`--jpeg-dct float` 的定性本批也纠正过（float 已不在下拉里 ⇒ 是**合法**的响亮拒绝，不是缺陷复现，
+见 §5.2 末尾与 `docs/TESTING.md` §6 第 122 条）；只有 `--avif-row-mt` 仍是判据缺口（U4）。
 
 首版（09:2x）的两处自纠，读数都留在 `tests/output/t78/knob-live.log` 里可查：
 
@@ -276,7 +285,7 @@ exiftool：[MPF0] NumberOfImages : 2  [MPImage1] …
 | `--webp-compression` | 0 / 6 | **活**：9868 B vs 7378 B（`-compression_level` 在 libwebp 上确实生效） |
 | `--tiff-dpi` | 72 / 1200 | **活**：同大小、SHA 不同 |
 | `--jxl-effort` | 1 / 9 | **活**：9332 B vs 9255 B |
-| `--jxl-modular` | false / true | **死**：9165 B、SHA **完全相同**，且 45 条 `[cmd]` 里 `modular` **命中 0** ⇒ 参数根本没发到 cjxl（= U5/A-30 的 L3 实机版） |
+| `--jxl-modular` | false / true | **死（本轮修复前的读数，现已活）**：9165 B、SHA **完全相同**，且 45 条 `[cmd]` 里 `modular` **命中 0** ⇒ 参数根本没发到 cjxl（= U5/A-30 的实证）。beta4 接线后由 `verify-jbrd-e2e.ps1` 的 G1–G5 + 本套件同一臂重测为**活**（勾与不勾产物必须不同，反真空臂）——取证行：L3 实机版，上列 SHA 为**修复前**读数 |
 | `--avif-cpu-used` | 0 / 8 | **活**：10852 B vs 11428 B |
 | `--avif-still-picture` | false / true | **活**：`-still-picture 0/1` 均下发，产物不同 |
 | `--avif-row-mt` | false / true | **未判**：`-row-mt 0/1` **都下发了**，但 512×384 单 tile 行下产物同字节 ⇒ 该夹具没有判别力，需换带 `tile-rows>1` 的大图才能判（不能算成产品缺陷） |
@@ -288,34 +297,131 @@ exiftool：[MPF0] NumberOfImages : 2  [MPImage1] …
 
 ---
 
-## 五、未修缺陷清单（本轮新抓，全部有复现）
+## 五、缺陷账（本轮新抓；**已修/已否证** 与 **仍未修** 分栏，每条都留复现口径）
 
-- **U1（L2+，出货包）HDR/增益图 JPEG → JXL：无损宣称静默退化，且产物取不回来。**
-  复现：`cjxl --lossless_jpeg=1` 吃 `src_hdr_pq.jpg`（带 MPF/APP2）⇒ `jxlinfo` 报
-  `512x384, lossy, 32-bit float (8 exponent bits) RGB`（**没有** reconstruction 盒）；
-  再把这个 `.jxl` 转回 `jpg` ⇒ 产物数 0、rc=1（`djxl` PPM 路 `JxlDecoderSetImageOutBitDepth failed`）。
-  同一 jxl 用 `.png` 目标和 ffmpeg 直读都正常 ⇒ 是**PPM 出口的位深**问题，不是容器问题。
-- **U2（L2）`--tiff-dpi` 在引擎路线上被静默降为 72。**
-  复现：`--color-engine engine` 下请求 300 dpi，产物 `Xres=72` 而 `Yres=300`（**自相矛盾**）；
-  legacy 引擎正常。`XResolution` 与 `YResolution` 分属两个标签，单值比较会看漏。
-  性质：用户参数被吃，且产物内部不一致 ⇒ 不只是"降级"，是"降级 + 破口"。
-- **U3（L2）`-lossless` 在 `libjxl` 路线上的语义与用户宣称不对齐**（既有 A-18/A-27 的同族延伸）：
-  面板"无损"映射为 `distance 0`，但 `-lossless 1` 实测**可用**且与 `--lossless_jpeg` 不同轴 ⇒ 需要在裁决点显式化。
-- **U4（L3，判据缺口）`--avif-row-mt` 的活性当前**无法判定**：`-row-mt 0/1` 确实都下发到 libaom，
+### 5.1 本批（v1.6.0-beta4）已结案
+
+- **U1 已修（两半都在产品里）**
+  - *前半｜携带增益图的 JPEG 不算免解码重封装*：`CjxlService.UsesLosslessJpegRewrap` 从 3 条加到 **5 条**
+    （新增 `!JpegCarriesGainMap(源)` 与"未强制模块化"；增益图由 `GainMapDecoder.JpegContainer` 读头 256 KB 判定，
+    512 项按路径缓存），`BuildCjxlArguments` 另加一条播报"这份 JPEG 带增益图 ⇒ 不走无损重封装"。
+    **为什么补在谓词而不是只补在命令行**：同一个布尔还被元数据恢复当作"这次像素没动"的唯一判据
+    （A-28 就是它漏了格式条件造出的二次旋转）⇒ 两处必须同一份实现。
+    判据：`verify-jbrd-e2e.ps1` 的 ultrahdr 格现在**六条同时成立** —— 产物里**没有** reconstruction 盒、
+    整条路上**任何一条** cjxl 命令都不带 `--lossless_jpeg=1`（且取到命令行才算判过，取不到记前置失败）、
+    不重封装的原因被**点名**、反向**恰好一个**产物、反向**改道被点名**、且往返像素**不**逐比特相同
+    （反真空：若两条 SHA 相同，说明这一臂没判到真东西）。
+    ⚠ 一条实况修正留在套件注释里：增益图 JPEG 在进 cjxl **之前**就被 `GainMapDecoder` 落成中间文件
+    （`uhdr_linear_*.pfm`）⇒ 主路线上 cjxl 拿到根本不是 JPEG，所以判据不能写成"必须看到 `=0`"，
+    只能写成"任何一处都不许出现 `=1`"。
+  - *后半｜float JXL 能回读*：`QueueProcessor.cs` 的 `FallbackDjxlDecodeToFile` else 支原来 `return false`
+    （djxl 的 PPM 出口不支持 float ⇒ `JxlDecoderSetImageOutBitDepth failed` ⇒ 任务静默失败）。
+    现改走 **ffmpeg 直读 `.jxl`**，终态串点名用的是哪条路，失败时把两个退出码都报出来。
+- **U2 已否证（不再是缺陷，改由门禁钉住）**：本批把这条改成**分标签断言**后重跑
+  `--color-engine engine` × `--tiff-dpi 300` × {8bit,16bit}，`Xres` 与 `Yres` **都等于 300**、
+  且 engine 与 legacy 两条路线读数一致 ⇒ 上一轮那条"engine 路线 `Xres=72`/`Yres=300`"
+  **复现不出来**（最可能成因：当时打在陈旧/异构二进制上，正是 §2.1 那台假绿机器 —— 这是推断，不是读数）。
+  处置不是撤掉，而是**接成门禁**：`verify-orientation-rewrap.ps1` 的 B 段现在**分标签**断言
+  Xres/Yres 各自 == 请求值，并要求 engine == legacy（单值比较会看漏"一半写对一半写错"）。
+- **U4b 已修（诚实性，分两半）**：`ImageEncoderArgs.cs` 的 libaom tune 分支补 `default:` —— 白名单外的**已选值**
+  不再"什么都不发也什么都不说"，改为点名播报"这个 tune 在本构建的 libaom 上不可表达 ⇒ 不发参数"
+  并给出可用档位。空串（用户没选）不播报，避免把"没选"说成"失败"。
+  判据：`verify-encoder-knob-liveness.ps1` 的 N 段命名臂（要么非零退出、要么有播报，只有
+  "rc=0 且全程没一句话"才判红）。
+  - **第二半（2026-10-02，同日自查发现的同类洞）**：`NormalizeTuneToken` 原本把**认不出**的显示串也折成
+    空串，而空串同时是"没选/选了默认档" ⇒ 一个越界值（`--avif-tune film`）到了分发层就是"不发也不说"，
+    与第一半是**同一个洞的另一半**。现在只有"空串 / `Default` / `默认`"才返回空串（默认档的显示串
+    实测只有两种，见 `Resources/Locales/*.json` 的 `avif.tune.default`），其余认不出的**原样返回**，
+    由分发层点名；另在 `BuildAvifOptions` 加一条**中心播报**兜住第二类形状：
+    **tune 那个 switch 只有 Libaom 与 Svt 两支** ⇒ 选 `av1_nvenc/qsv/amf/vaapi` 时任何已选 tune 都被整支跳过。
+    ⚠ 这条**是面板直接可达的**（我一开始判错了方向）：tune 下拉的默认选中项 = `avif.tune.iq`
+    （`MainWindow.xaml.cs:916-918` 的 `FillComboByLoc(…, 4, …)`），控件人在 `LibaomAvifPanel` 里
+    （`MainWindow.xaml:551-555`）；换到硬件后端后面板被隐藏，采集侧仍照 `SelectedItem` 取值
+    （`MainWindow.xaml.cs:2840`，只受"高级编码选项"总开关管）⇒ 用户没碰过那把下拉，`tune=IQ` 也已被吞掉。
+    旧预设回放同理（`Models/PresetData.cs:168` 带 `EncoderName`）。
+    **CLI 到不了这一支**：`-e/--encoder` 收的是 EncoderBackend 枚举，没有任何旗标能设
+    `FfmpegOptions.Encoder`。⇒ 我先前那句"CLI 也能把值送到不处理它的后端"是**错的**，已改。
+    ⚠ **硬件这一支目前没有闸内判据**：我试过给第 65 条加一臂 `--avif-tune psnr -e av1_nvenc`，
+    实测量到的是既有约定的**无效后端值硬失败**（`未知编码器: av1_nvenc`、rc≠0、零产物，
+    `tests/output/t84/nvenc_probe.err`），不是这条播报 ⇒ **那条臂已撤掉**，缺口登记在 §5.2 N-3。
+    判据（现有）：N 段 `--avif-tune film` 一臂 = 认不出的值必须出声；`--avif-tune MS_SSIM` 一臂 = 认得出但 libaom 承接不了必须出声。
+- **U5 已修并证明是活的**：`--jxl-modular` 接进 `BuildCjxlArguments` ⇒ `--modular=1`。
+  它与 jbrd 无损**结构互斥**（jbrd 依赖 varloss 通道），两者同时给出时 modular 获胜并播报覆盖关系。
+  判据：`verify-jbrd-e2e.ps1` 的 G1–G5（含反真空臂"勾与不勾的产物 SHA 必须不同"）
+  —— 上一轮这条的读数是"两端 SHA **相同** `97AFF2ED823C1FC2`、45 条 `[cmd]` 里 `modular` 命中 0"。
+- **U6 撤销**（初判来自纯色夹具，换照片样夹具后该臂明确是活的）。
+- **A-20 已修，本批另纠正一处我自己写错的标签**：knob 活性套件里 `--jpeg-dct` 那条 `rejected` 臂，
+  旧注释与旧输出把它写成"**面板值域**被编码器拒绝 = A-20 复现" ⇒ 说反了。回读 XAML 实况：
+  `MainWindow.xaml:725-728` 的下拉只剩 `auto/int/fastint`，**float 早在 A-20 修复时就移除了** ⇒
+  现在只有 CLI/历史预设能把 `float` 送进来，而实测它 **`rc=1` 响亮失败**
+  （`Unable to parse "dct" option value "float"`）= 正确出口，不是缺陷复现。
+  ⇒ 该桶改记 `WARN 越界被拒(不计入)`（既不许当"活"也不许当"红"），并补了一条硬要求：
+  `expect='rejected'` 的臂**没被拒时不许直接记活**，必须落回常规两极端值差分。
+- **#12 已实现随 v1.6.0 出货，本批补的是判据**：`BayerCenter = 7.5f/16f` 居中后 16 个相位对
+  精确可表示码值零偏移；`ServiceProbe selftest` 新增"8-bit 源降位恒等（16 相位 × 解析/表两条路径）"
+  加两条反真空对照 ⇒ 从"读过代码认为对"升级为**有断言背书**。
+
+### 5.2 仍未修（各有复现，都不是本批能收口的）
+
+- **U3（L2）`-lossless` 在 `libjxl` 路线上的语义与用户宣称不对齐**（A-18/A-27 的同族延伸）：
+  面板"无损"映射为 `distance 0`，但 `-lossless 1` 实测**可用**且与 `--lossless_jpeg` 不同轴
+  ⇒ 需要在单一裁决点显式化，不是加一条播报能了事的。
+- **U4（L3，**判据缺口**而非产品缺陷）`--avif-row-mt` 活性判不出来**：`-row-mt 0/1` 确实都下发到 libaom，
   但 512×384 单 tile 行的产物字节不受它影响 ⇒ 需要一张 `tile-rows>1` 的大图夹具才能出判词。
-  这不是产品缺陷，是**判据缺口**——把它记成"活"或"死"都是假绿/假红。
-- **U4b（L3，诚实性）`--avif-tune` 域外值被**静默**丢弃**：白名单 = `iq|ms_ssim|vmaf|psnr|ssim`
-  （`ImageEncoderArgs.cs:354-360`），`NormalizeTuneToken` 对不认识的值返回**空串**⇒ 既不报错也不播报
-  （实测 `--avif-tune film` 产物正常生成、命令行里没有任何 tune 痕迹）。本仓既有原则是
-  "编码器不可用要显式报错而非静默回退"，这一处是它的漏网。
-- **U5（既有）`--jxl-modular` 在 cjxl 后端被静默丢弃**（D-5；§4.4 已给 L3 字节证据：
-  两端产物 SHA 相同 `97AFF2ED823C1FC2`，且 45 条 `[cmd]` 里 `modular` 命中 0）。
-- **U6（撤销）`--jpeg-huffman` "无效果"的初判是错的**：换照片样夹具后该臂明确是**活的**
-  （default 20901 B vs optimal 17351 B）⇒ 上一轮"唯一死旋钮"的读数来自纯色夹具，不成立。
+  现在 `verify-encoder-knob-liveness.ps1` 把它记成 `未判(夹具无判别力)`（WARN，不计入 PASS/FAIL）——
+  记成"活"或"死"都是假绿/假红。
+- **N-1（2026-10-02 本批新登记，**待产品裁定**，不是"没修"**）强制模块化 × "JPEG 无损重封装"同开 ⇒
+  交付从"逐比特还原 JPEG"变成按质量档的有损（**已播报，但没有拒绝**）。实况：
+  `UsesLosslessJpegRewrap` 在 `JxlModular == true` 时为假 ⇒ 走 `CjxlService.cs:413-426` 的 else 支，
+  而那支的距离按**全局** `opts.Lossless` 算（与"无损重封装"那把复选框不是同一个轴）⇒
+  勾了无损重封装、又勾模块化、全局无损没开时，实际发出 `-d {(100-Quality)*15/100} --lossless_jpeg=0`。
+  播报在 `:391-394`（"modular mode wins, this run re-encodes pixels"）⇒ **不是静默**；
+  要裁的是"用户显式勾了无损而交付有损"这一条，按本仓先例（增益图不适用于非 JPEG 容器时**直接不出产物**）
+  究竟该**拒绝**还是**继续并播报**。⇒ 不在本批擅改，留作裁定项。
+  ⚠ 判据缺口：`verify-jbrd-e2e.ps1` 的 G 段只在**非 JPEG** 源上勾 modular ⇒ 上面这个组合目前**没有闸内臂**。
+- **N-2（2026-10-02）`--avif-tune` 在 SVT 后端上的活性不在闸内**：第 65 条那臂跑的是**默认后端 = libaom**，
+  而 SVT 的 tune 写法完全不同（`-svtav1-params tune=0..5`）⇒ "SVT 上 tune 真的改了产物"目前只有
+  09-26 那批的一次性手工读数背书（`tune=0/1/2` 无损成立、`tune=4/5` 会打掉无损），**没有每天有人跑**。
+  本批没有顺手补，是因为两趟 SVT 编码实测要占 200 s+ ⇒ 代价记在这里，等下一批补做。
+  ⇒ 已在套件里**登记成一条 `gap` 臂**（不跑、不计数、只打一行 SKIP），免得"未验证"被同支
+  libaom 那格的"活"冒充过去 —— 缺口登记与补做要求都写在 `verify-encoder-knob-liveness.ps1` 的 `$rows` 处。
+- **N-3（2026-10-02）硬件 AVIF 后端的 tune 播报**没有闸内判据（代码已改，判据缺）：
+  `BuildAvifOptions` 现在会对 `nvenc/qsv/amf/vaapi/未知后端` + 已选 tune 播报
+  "is not expressible on encoder '…'"，但这条**只有 GUI 采集侧与预设回放到得了**（CLI 无法设
+  `FfmpegOptions.Encoder`）⇒ 命令行型套件（第 65 条）判不到它。
+  补法（写在 `docs/HANDOVER_2026-10-02.md`）：给 `ServiceProbe` 加一个 `aviftune` mode，
+  **进程内**直调 `ImageEncoderArgs.BuildAvifOptions`（它是 `public static`），用 `Console.SetOut`
+  捕获播报，逐档断言：libaom+psnr 出 `-tune psnr` 且**不播报**、libaom+ms_ssim 不出 tune 且 libaom 文案、
+  libaom+film 只出**一条**中心文案（防双条）、nvenc+IQ 出中心文案、默认档不播报（负控）、
+  svt+ms_ssim 出 `-svtav1-params …tune=4…` 且不播报。接到 `$Probes` 默认清单要同步第 ⑪ 针与
+  `docs/TESTING.md` §3.5 的 mode 数。⇒ 本批未做（时间），代价 = 这条播报只能靠代码读证。
+- **面板能力诚实性**（§4.3 的 5 个不存在的编码器名与其余死控件）：要么补后端要么撤控件。
 
 ---
 
 ## 六、建议的覆盖范围（下一步该测什么，按"能不能抓出错"排）
+
+> ✅ **本批已落地的一条**：下面第 1~4 项所依赖的 5 套套件原居 gitignored 的 `tests/output/`
+> （`git clean -xdf` 一次就没、也不在任何轮里被跑），已于 2026-10-01 全部迁入 `tests/scripts/`
+> 并接成清单第 **61~65** 条（60 → 65）。迁入时改了三点：路径由 `$PSScriptRoot` 运行时推导、
+> 被测由"只打出货包"改成**两档**（默认 Release 产物 ⇒ **每轮都跑**；`$env:PKG_VER` 时升 L3）、
+> 每条补齐 `PASS=n FAIL=m` 规范汇总（运行器的**零断言闸**只认这个形状）。
+> ⚠ 副作用：清单墙钟变长（这 5 条是产物级、要真跑转换），因此**单步超时上限必须按实测分布重标**，
+>   标定读数与处置见 §八。
+> ⚠ 仍**没有**接进去的：`probe-gainmap-tiff.ps1`（诊断型、无 pass/fail 契约 ⇒ 按约定不进清单），
+>   本批只修了它那条 `ultrahdr_app` **死路径**（`publish/PLAN/artifacts/` 里从来没有这件工具 ⇒
+>   第三方段一直是"报错但没人看见"）。
+> ⚠ 一处**改法不同**的登记：原计划是"把第三方 GainMap 臂**折进** `verify-gainmap-managed.ps1`"，
+>   实际做法是让它**自成第 64 条**（`verify-gainmap-thirdparty.ps1`）。理由：两者判的是两件不同的事
+>   （自家日志里的宣称值 vs 第三方读回文件里的实际值），折进一条会让计数搅在一起、
+>   红了也分不清是哪一侧；分开还能让"第三方参照不在位"单独 fail-closed（第 64 条头部已写）。
+>   折进方案到此**不再执行** —— 覆盖目标（不再是孤本、每轮有人跑）由登记本身达成。
+> ⚠ 同批把 `tests/output/t83/verify-package.ps1`（出包后的独立验收）迁成
+>   `tests/scripts/verify-release-package.ps1`：它**按定义**要求磁盘上已有本次要发的包 ⇒ 与
+>   `verify-oracle-matrix.ps1` 同类，**有意不进清单**，作为出包流程里的人工一步；同时**去掉了写死的默认版本**
+>   （没给 `PKG_VER` 就 `exit 2`，实测读数见 §八）—— 任何默认版本都会在下一个发布日变成
+>   "拿 n 包的读数宣布 n+1 已验"。
+
 
 1. **把 L1 判据换成 L2+**：凡"参数是否生效"，一律做**两极端值字节差分**（`t79/knob-liveness` 的形），
    不看命令行措辞、不看日志。L1 的 19 条里除结构锁外都应升级。

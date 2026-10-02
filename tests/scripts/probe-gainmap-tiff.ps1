@@ -7,7 +7,18 @@ if (-not (Test-Path $exe)) { $exe = "$root/src/FfmpegGui/bin/Debug/net11.0/win-x
 # ⚠ 2026-09-21（TESTING.md 第 84 条处置建议 ①）：**回退是静默的** —— 门禁可能测的
 #   不是你以为的那个二进制。⇒ 一律**打印被测 exe 与构建类型**，让读数可追溯。
 Write-Output ("[gate] exe=" + $exe + $(if ($exe -like '*[/\]Debug[/\]*') { " (Debug fallback)" } else { " (Release)" }))
+# ⚠ 2026-10-01 修死路径：这里原先只查 `$root/publish/PLAN/artifacts/ultrahdr_app.exe` —— 实测该目录
+#   只有 JxrDecApp / JxrEncApp / avifenc / dngtool **四件**，ultrahdr_app 从来不在里面 ⇒
+#   两处 `Start-Process -FilePath $uhdr` 直接报"系统找不到指定的文件"，而本探针是诊断型
+#   （`$ErrorActionPreference = Continue`、无 pass/fail 计数）⇒ 那份取证输出**静默缺了整段第三方读数**。
+#   权威位置 = 本机构建的 libultrahdr 示例程序（与 `verify-gainmap-thirdparty.ps1` 同一把尺）。
 $uhdr = "$root/publish/PLAN/artifacts/ultrahdr_app.exe"
+if (-not (Test-Path $uhdr)) { $uhdr = "$root/tools/src/libultrahdr/build/Release/ultrahdr_app.exe" }
+if (-not (Test-Path $uhdr)) {
+  Write-Output "[gate] ultrahdr_app 两处都不在位 ⇒ 本探针的第三方段**无读数**（不等于「产物没有增益图」）：$uhdr"
+  Write-Output "[gate] 修法：构建 tools/src/libultrahdr（CMake + MSVC），产物在 build/Release/ultrahdr_app.exe"
+  $uhdr = $null
+}
 $et = "$root/publish/PLAN/exiftool/exiftool.exe"
 $fp = "$root/publish/PLAN/ffmpeg-full/ffprobe.exe"
 $val = "$root/tests/output/validate"
@@ -43,8 +54,15 @@ function App($argStr, $tag) {
 }
 
 Write-Host "===== ultrahdr_app usage (参考工具) =====" -ForegroundColor Cyan
-$u = Start-Process -FilePath $uhdr -ArgumentList "" -Wait -NoNewWindow -PassThru -RedirectStandardOutput "$out/uhdr_usage.out" -RedirectStandardError "$out/uhdr_usage.err"
-Get-Content "$out/uhdr_usage.out","$out/uhdr_usage.err" -ErrorAction SilentlyContinue | Select-Object -First 25
+# ⚡ 两处 ultrahdr 调用**都要先证工具在位**：本探针的既有用法（第 10 行那条死路径）就是"读数缺席但没人
+#   知道是没跑还是没产物" ⇒ 不判红（诊断型脚本无 pass/fail 契约），但把"没跑"写成一句可 grep 的留痕，
+#   别让它伪装成"跑了且无输出"。
+if ($uhdr) {
+  $u = Start-Process -FilePath $uhdr -ArgumentList "" -Wait -NoNewWindow -PassThru -RedirectStandardOutput "$out/uhdr_usage.out" -RedirectStandardError "$out/uhdr_usage.err"
+  Get-Content "$out/uhdr_usage.out","$out/uhdr_usage.err" -ErrorAction SilentlyContinue | Select-Object -First 25
+} else {
+  Write-Host "  [usage] ultrahdr_app 不在位 ⇒ 无 usage 读数（不在这里代写用法，免得把没跑的说成跑过的）"
+}
 
 Write-Host "`n===== 指令3: app 编码 Ultra HDR JPEG (src_hdr.png, 1000nits) =====" -ForegroundColor Cyan
 $q = App "--headless -i `"$val/src_hdr.png`" --format jpg --jpeg-gain-map true --jpeg-gain-map-target-nits 1000 --output `"$out/gm`"" "gm_enc"
@@ -55,7 +73,8 @@ if ($gm) {
     Write-Host "  --- exiftool 元数据 (hdrgm XMP / MPF / ISO) ---"
     (Exec $et "-G -a `"$($gm.FullName)`"") -split "`r?`n" | Select-String -Pattern "hdr|Gain|MPF|MPImage|ISO|Container|Primary" | Select-Object -First 30  # 合并取数已论证：全量标签转储按行喂 Select-String 供人读，不喂断言；保留 stderr 恰好让 exiftool 自身的报错也出现在取证输出里
     Write-Host "  --- ultrahdr_app 解码验证 (mode 探测) ---"
-    foreach ($m in 1,2) {
+    if (-not $uhdr) { Write-Host "    [SKIP] ultrahdr_app 不在位 ⇒ 下面两行 mode 读数**没有**（不是解码失败）" -ForegroundColor Yellow }
+    foreach ($m in $(if ($uhdr) { 1,2 } else { @() })) {
         $uo = Start-Process -FilePath $uhdr -ArgumentList "-m $m -i `"$($gm.FullName)`" -o `"$out/uhdr_dec_m$m.jpg`"" -Wait -NoNewWindow -PassThru -RedirectStandardOutput "$out/uhdr_dec_m$m.out" -RedirectStandardError "$out/uhdr_dec_m$m.err"
         $dec = Get-ChildItem "$out/uhdr_dec_m$m.jpg" -ErrorAction SilentlyContinue
         Write-Host "    mode=$m exit=$($uo.ExitCode) out=$(if($dec){$dec.Length}else{'none'})B  err=$((Get-Content "$out/uhdr_dec_m$m.err" -EA SilentlyContinue | Select-Object -First 1))"

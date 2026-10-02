@@ -145,6 +145,15 @@ public static class GainMapDecoder
                         (xmpMeta != null ? " + XMP 补全" : "") + "\n");
                     MergeFromXmp(meta, xmpMeta, log);
                 }
+                // ── Apple 专有方案兜底（纯托管）──────────────────────────────────────
+                // 实测：exiftool **不解析** Apple 的 `HDRGainMap` 命名空间 ⇒ 上面那条 exiftool 路径
+                // 对 iPhone 产出的 Ultra HDR **必然拿不到字段**（Apple 件实测：容器检测=true、
+                // MPF 副图已定位，但 metadata=null ⇒ 整条解码返回 null ⇒ 静默降级为 SDR）。
+                if (meta == null)
+                {
+                    meta = TryReadAppleXmpMetadata(inputPath, log);
+                    if (meta != null) log?.Invoke("[GainMap解码] 元数据来源: Apple HDRGainMap XMP (纯托管)\n");
+                }
                 if (meta == null)
                 {
                     log?.Invoke("[GainMap解码] ❌ 无法读取增益图元数据 (无 ISO 21496-1, 且 exiftool/hdrgm XMP 不可用)\n");
@@ -813,6 +822,85 @@ public static class GainMapDecoder
     /// <summary>读取 hdrgm XMP 元数据 (逐标签读取, 避免 -hdrgm:all 因 trailer 警告提前退出)</summary>
     /// <param name="log">日志回调（取消分支点名用；null ⇒ 退回 Trace.WriteLine）</param>
     /// <param name="ct">取消令牌（`#26`：调用方 `DecodeToLinearRawAsync` 一直持有它却没往下传，本次接通）</param>
+    /// <summary>
+    /// **Apple 专有增益图 XMP**（`http://ns.apple.com/HDRGainMap/1.0/`）的**纯托管**读取。
+    ///
+    /// <para>
+    /// 为什么必须纯托管：实测 exiftool **不解析**该命名空间（`-G1 -a -s` 只给出
+    /// `Apple:HDRGain` / `Apple:HDRHeadroom`，**没有** `XMP-HDRGainMap:*`）⇒ 走 exiftool 的
+    /// <see cref="ReadMetadataAsync"/> 拿不到 Apple 的字段。
+    /// </para>
+    /// <para>
+    /// Apple 只给两个字段，且语义与 ISO/Adobe 的字段**不同**，须推导：
+    /// <code>
+    /// &lt;HDRGainMap:HDRGainMapVersion&gt;131072&lt;/HDRGainMap:HDRGainMapVersion&gt;    (0x20000 = v2.0)
+    /// &lt;HDRGainMap:HDRGainMapHeadroom&gt;4.532783&lt;/HDRGainMap:HDRGainMapHeadroom&gt;   (log2)
+    /// </code>
+    /// `4.532783` 是 **log2**：`2^4.532783 = 23.1475` —— 与 Google libultrahdr 对同一样本报的
+    /// `maxContentBoost 23.1475` **精确一致**（可作回归锚）。
+    /// 映射（SDR 底图 + 单色增益图的通例）：
+    /// `GainMapMin=0`、`GainMapMax=HdrCapacityMax=Headroom`、`Gamma=1`、`Offset*=0`、`Channels=1`。
+    /// </para>
+    /// </summary>
+    private static GainMapMetadata? TryReadAppleXmpMetadata(string path, Action<string>? log)
+    {
+        try
+        {
+            if (new FileInfo(path).Length > MaxManagedParseBytes) return null;
+            var d = File.ReadAllBytes(path);
+            // 只在 XMP 段里找，避免误命中图像/其它数据
+            var marker = System.Text.Encoding.ASCII.GetBytes("http://ns.adobe.com/xap/1.0/");
+            int idx = -1;
+            for (int i = 0; i + marker.Length <= d.Length; i++)
+            {
+                if (d[i] != marker[0]) continue;
+                bool ok = true;
+                for (int k = 1; k < marker.Length; k++) { if (d[i + k] != marker[k]) { ok = false; break; } }
+                if (ok) { idx = i; break; }
+            }
+            if (idx < 0) return null;
+            int end = Math.Min(d.Length, idx + 512 * 1024);
+            var text = System.Text.Encoding.UTF8.GetString(d, idx, end - idx);
+            var mh = System.Text.RegularExpressions.Regex.Match(text,
+                @"<HDRGainMap:HDRGainMapHeadroom>\s*([0-9.]+)\s*</HDRGainMap:HDRGainMapHeadroom>");
+            float headroomLog2;
+            if (mh.Success)
+            {
+                if (!float.TryParse(mh.Groups[1].Value, System.Globalization.NumberStyles.Float,
+                        System.Globalization.CultureInfo.InvariantCulture, out headroomLog2)) return null;
+                log?.Invoke($"[GainMap解码] Apple HDRGainMap: headroom={headroomLog2:F6} (log2)\n");
+            }
+            else
+            {
+                // ── Apple **v1.0** 格式：XMP 里**没有** headroom 字段，上限是**隐式 8×** ──────────
+                // 依据（实测）：`apple_gainmap_old.jpg` 的 XMP 只有
+                //   `<HDRGainMap:HDRGainMapVersion>65536</HDRGainMap:HDRGainMapVersion>`（0x10000 = v1.0），
+                //   `HDRGainMapHeadroom` **0 命中**；而 Google libultrahdr v2.0.2 对同一件报
+                //   `maxContentBoost 8`（= 2^3）⇒ **官方也是按隐式 8× 处理的**。
+                // 若这里不补，该件会因读不到元数据而整条解码返回 null ⇒ 静默降级为 SDR。
+                if (d.Length < 1 || System.Text.Encoding.ASCII.GetString(d, idx,
+                        Math.Min(4096, d.Length - idx)).IndexOf("ns.apple.com/HDRGainMap", StringComparison.Ordinal) < 0)
+                    return null;                       // 连 Apple 命名空间都没有 ⇒ 不是本格式，别硬套
+                headroomLog2 = 3.0f;                   // log2(8)
+                log?.Invoke("[GainMap解码] Apple v1.0（无 headroom 字段）⇒ 按**隐式 8× 上限**处理（log2=3）\n");
+            }
+            if (headroomLog2 <= 0f) return null;
+            return new GainMapMetadata
+            {
+                GainMapMin = 0f,
+                GainMapMax = headroomLog2,
+                Gamma = 1f,
+                OffsetSdr = 0f,
+                OffsetHdr = 0f,
+                Channels = 1,
+                HdrCapacityMin = 0f,
+                HdrCapacityMax = headroomLog2,
+                UseBaseColorSpace = true,
+            };
+        }
+        catch { return null; }
+    }
+
     public static async Task<GainMapMetadata?> ReadMetadataAsync(string path, Action<string>? log = null,
         CancellationToken ct = default)
     {

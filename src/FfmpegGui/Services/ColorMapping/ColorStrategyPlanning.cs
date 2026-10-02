@@ -282,12 +282,12 @@ public static partial class ColorMappingEngine
         if (it.GainMapRequested && !pol.Format.SupportsGainMap)
         {
             var pg = Fresh(it.Strategy);
-            return Reject(pg, $"增益图（GainMap）不适用于 {pol.Format.Format}：它依赖 JPEG 的 APP2/XMP+MPF 结构",
+            return Reject(pg, $"增益图（GainMap）不适用于 {pol.Format.Format}：它依赖 JPEG 的 APP2/XMP+MPF 或 AVIF 的 ISO-BMFF tmap 派生项",
                 "要保留 HDR：输出改用 AVIF/JXL（原生存 PQ/HLG）；或把目标改为 JPEG 并开启增益图",
                 new[]
                 {
                     new ColorAlternative(AlternativeKind.Format, "jpg",
-                        "JPEG 族是唯一能承载 GainMap（APP2/XMP+MPF）的容器（能力表 SupportsGainMap）"),
+                        "JPEG 族与 AVIF 可承载 GainMap（APP2/XMP+MPF 或 tmap 派生项；能力表 SupportsGainMap）"),
                     new ColorAlternative(AlternativeKind.Format, "avif", "原生 PQ/HLG ⇒ 不经 GainMap 也能保 HDR"),
                     new ColorAlternative(AlternativeKind.Format, "jxl", "原生 PQ/HLG ⇒ 不经 GainMap 也能保 HDR"),
                 });

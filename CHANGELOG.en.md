@@ -13,6 +13,104 @@ All notable changes to this project are documented in this file.
 
 ## 📝 Changelog
 
+### v1.6.0-beta4 (2026-10-01) — gain-map JPEGs no longer pose as lossless, float JXL can be read back, `--jxl-modular` wired; first L3 suites join the gate manifest (60→65)
+
+> **Lineage**: unlike beta3, this **is** a behavioural change — 3 product files under `src/` were modified after
+> the beta3 package was cut (`CjxlService.cs` / `QueueProcessor.cs` / `ImageEncoderArgs.cs`), and each of the four
+> fixes below is backed by artifact-level evidence.
+> ⚠ Added 2026-10-02: a **New** section (thumbnails) also lands in beta4 — one more product file,
+> `ThumbnailService.cs` (new), plus `ExifToolService.cs` / `FormatCapabilitiesService.cs` /
+> `QueueProcessor.cs` / `CliParser.cs` / two model files.
+
+**✨ New**
+
+- **Thumbnails (EXIF IFD1): `--thumbnail` / `--thumbnail-size` / `--thumbnail-quality`.** The advanced codec
+  panel gains a `ThumbnailPanel` (enable + long edge + quality), offered only for containers where delivery
+  was **measured**: `jpg / png / apng / webp / avif / jxl` (the criterion = after writing,
+  `exiftool -b -ThumbnailImage` must return image data **exactly as long as `ThumbnailLength` declares**; apng
+  is additionally cross-checked with a second, independent reader — `cjxl` + `jxlinfo` report 2230 B for both
+  apng and png, versus 250 B for the dangling file ffmpeg produces).
+  `tiff / gif / jxr / dng` were all measured to be rejected by exiftool ("0 image files updated" **while still
+  exiting 0**, so the exit code alone would be a false green) and stay closed — with the box ticked, an unsupported container **says so out loud** instead of quietly
+  emitting a file with no thumbnail. The implementation is a **single post-pass**: shrink the **finished
+  artifact** into an 8-bit JPEG (`scale` clamps both dimensions to the long edge, never upscales, even-sized),
+  then embed it with `exiftool -ThumbnailImage<=` — no cjxl/avifenc command-line surgery and no second copy
+  of the tool-detection logic. The call is folded into the **metadata phase** (inside `RestoreMetadataAsync`, before the colour
+  post-steps), preserving this repository's invariant "metadata first, colour labels have the last word".
+  `StripAll` / `StripExifAll` take precedence — a new feature must not open a privacy hole.
+  Gate: a new `ServiceProbe thumbnail` mode, measured **40/0** (2026-10-02 on this machine, 10 s; two mutation
+  checks — M1 `33/7`, M2 `38/2`), now part of the default `$Probes` list (the 23rd mode).
+  ⚠ **Not yet determined**: whether viewers actually **display** the thumbnail (not checked in Explorer or any
+  third-party viewer here); and because EXIF has no ICC slot, a small preview of a wide-gamut artifact is
+  read as sRGB and comes out slightly under-saturated.
+
+**🐛 Fixed**
+
+- **U1 (first half) | JPEGs carrying a gain map are no longer counted as "decode-free repack"**: when the source
+  JPEG contains an Ultra HDR / ISO 21496-1 gain map, the `--lossless_jpeg=1` "lossless" claim **silently degraded**
+  into a float re-encode — the gain map is flattened, the original JPEG can never be recovered, yet the log still
+  said "lossless". The single decision point `CjxlService.UsesLosslessJpegRewrap` grew from 3 conditions to **5**
+  (new: the source must not carry a gain map, and modular mode must not be forced; the gain map is decided by
+  `GainMapDecoder.JpegContainer` reading the first 256 KB, cached per path with a 512-entry cap). The condition
+  lives in **that predicate** rather than only in the command line because the predicate decides two things at once:
+  whether `--lossless_jpeg=1` is emitted, **and** whether metadata restoration may carry the source's orientation
+  tag. Missing it means a route whose pixels really were decoded to float still counts as "pixels untouched", so
+  `Orientation=8` stays on an already-rotated image = viewers rotate it twice (same family as A-28).
+  `BuildCjxlArguments` additionally announces it: "this JPEG carries a gain map ⇒ no lossless repack".
+- **U1 (second half) | float JXL input no longer fails silently**: `djxl`'s PPM/PNM output does not support float
+  images ⇒ the relay always exits non-zero, and the old code just `return false` there (job marked failed, no
+  second route). It now falls back to **reading `.jxl` directly with ffmpeg**; the terminal status names which
+  route was used (`已完成 (ffmpeg 直读 JXL)`) and, on failure, reports both exit codes.
+- **U5 | `--jxl-modular` promoted from a blank to a real argument**: the option was collected by the UI and stored
+  in the model but never read by any consumer ⇒ ticking it did nothing. It now emits `--modular=1`. It is
+  **structurally exclusive** with jbrd losslessness (jbrd relies on the varloss channel); when both are given,
+  modular wins and the override is announced.
+- **U4b | tune values libaom-av1 cannot express are no longer dropped in silence (second half landed the same day)**:
+  `--avif-tune MS_SSIM` (SVT-only) on libaom previously emitted **neither a flag nor a word** ⇒ `rc=0`, an artifact
+  as usual, and the user believed the knob had been applied (provable straight from the code: the value normalizes
+  to `ms_ssim` and fell into the switch's gap). It now prints the reason plus the usable values, per this repo's
+  existing principle — unavailable must be announced. An empty selection stays silent, so "not chosen" is never
+  reported as "failed".
+  The **second half** is the other half of the same hole: `NormalizeTuneToken` also folded *unrecognized* display
+  strings into the empty string, and the empty string simultaneously meant "not chosen / default", so an
+  out-of-domain value like `--avif-tune film` was likewise "no flag, no word"; and that switch has only libaom and
+  SVT branches, so on the hardware AVIF backends (nvenc/qsv/amf/vaapi) any selected tune was skipped wholesale.
+  ⚠ That hardware case **is reachable straight from the panel** (my first read of it was backwards): the tune
+  combo defaults to `avif.tune.iq` (`MainWindow.xaml.cs:916-918`, `FillComboByLoc(…, 4, …)`) and lives inside
+  `LibaomAvifPanel` (`MainWindow.xaml:551-555`) — pick a hardware encoder and the panel is hidden, yet the
+  collector still reads that combo's `SelectedItem` (`MainWindow.xaml.cs:2840`, gated only by the "advanced codec
+  options" master switch), so `tune=IQ` gets swallowed without the user touching it; replaying an old preset does
+  the same (`Models/PresetData.cs:168` carries `EncoderName`). **The CLI cannot reach it**: `-e/--encoder` takes
+  the EncoderBackend enum and no flag sets `FfmpegOptions.Encoder`.
+  Now: only the empty string and the two default labels map to "silent";
+  anything unrecognized is passed through verbatim and named by the dispatch layer, and a central notice after
+  the tune switch covers "this backend has no tune path at all".
+  The judgment is the **N-segment naming arm** of the knob-liveness suite (manifest entry 65): an inexpressible
+  value must either exit non-zero or say so — only "rc=0 with not a single word" is red (a `--avif-tune film` arm
+  was added with this batch).
+
+**✅ Tests**
+
+- **New 8-bit down-convert identity assertion in `ServiceProbe`** (`PROBE RESULT: pass=39 fail=0`): an 8-bit
+  source promoted through `format=rgb48le` always yields code values that are exact multiples of **257** (that
+  is precisely the precondition for lossless recovery), so the assertion places a 256-step ramp as `v*257`
+  directly into a 16-bit buffer and pushes it through the kernel's 16→8 exit, requiring **identity per code
+  value** across all 16 dither phases × {analytic, table-driven} exits — measured max deviation **0/255**.
+  Two anti-vacuity controls ship with it (fixture and artifact must both be full-range ramps with ≥250 distinct
+  values; the minimum deviation against `want+1` must be exactly 1 — reading 0 there would mean the identity
+  assertion isn't comparing anything at all).
+  ⇒ This turns #12 (`BayerCenter` centering) from "I read the code and believe it's correct" into an asserted fact —
+  the implementation itself already shipped in v1.6.0; what this batch adds is the judgment. The old form subtracted
+  `2/16`, which pushed +1 onto 6 of the 16 phases for code values that were exactly representable.
+- **First L3 suites moved out of the gitignored directory into the managed manifest (60 → 65)**:
+  `t69/pkg-smoke3`, `t76/jbrd-e2e`, `t76/orientation-rewrap`, `t77/gainmap-thirdparty`, `t79/knob-liveness` lived
+  only under `tests/output/` (`.gitignore:78`) ⇒ one `git clean -xdf` would erase them and no round ever ran them.
+  They now live in `tests/scripts/` with runtime-derived paths (`$PSScriptRoot`). Default subject under test = the
+  **freshly built Release binary** (run every round; missing ⇒ refuse to run, no Debug fallback). Setting
+  `$env:PKG_VER` raises them to L3 against the shipped package; a missing package, or a `ProductVersion` that does
+  not match the expected version ⇒ `exit 2` with **no readings produced at all** (prevents "beta4 readings taken
+  against the beta3 package").
+
 ### v1.6.0-beta3 (2026-10-01) — two "false-green machines" fixed, first L3 (shipped-package) evidence; includes the 09-30 orientation/geometry batch
 
 > **Lineage (important — do not read this as a second behavioural change)**: zero product source files under

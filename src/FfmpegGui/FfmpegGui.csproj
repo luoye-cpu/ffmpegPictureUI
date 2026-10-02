@@ -16,7 +16,10 @@
     <DefineConstants Condition="$([MSBuild]::IsOSPlatform('Windows'))">$(DefineConstants);WINDOWS</DefineConstants>
     <!-- 版本号 -->
     <!-- ⚠ 预发布版本必须用连字符（SemVer）：1.6.0BETA1 会使 NuGet restore 直接失败（实测 2026-09-28） -->
-    <Version>1.6.0-beta3</Version>
+    <Version>1.6.0-beta4</Version>
+    <!-- 托盘/任务栏/文件图标。⚠ 真 ICO（16/24/32/48/64 五档 32bpp BMP-DIB，由 Resources/icon_raw.png 生成）；
+         旧那份"icon.ico"其实是 32×32 的 PNG 改了扩展名，既进不了 ApplicationIcon 也没被 avares 收录。 -->
+    <ApplicationIcon>Resources\icon.ico</ApplicationIcon>
     <AssemblyVersion>1.6.0.0</AssemblyVersion>
     <FileVersion>1.6.0.0</FileVersion>
     <PackageLicenseExpression>GPL-3.0-only</PackageLicenseExpression>
@@ -88,6 +91,9 @@
 
   <ItemGroup>
     <AvaloniaResource Include="**/*.xaml" />
+    <!-- ⚠ 托盘图标此前**没有**被记进 AvaloniaResource ⇒ `avares://FfmpegGui/Resources/icon.ico` 不存在
+         ⇒ `App.LoadTrayIcon()` 里 `AssetLoader.Exists` 恒 false ⇒ 托盘只有菜单没有图标（静默回退）。 -->
+    <AvaloniaResource Include="Resources/icon.ico" />
   </ItemGroup>
 
   <!-- 多语言资源文件 -->

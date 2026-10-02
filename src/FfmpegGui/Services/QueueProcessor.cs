@@ -721,6 +721,28 @@ namespace FfmpegGui.Services
                                 && captured.Options.Format.Equals("jxl", StringComparison.OrdinalIgnoreCase))
                                 await ResolveCjxlPhotonNoiseIsoAsync(captured, ct);
 
+                            // ── FFmpeg libjxl 后端的能力点名（2026-10-02 新增）───────────────────────
+                            // 实测本仓出货包 `ffmpeg -h encoder=libjxl`，其 AVOptions **只有**
+                            //   -effort / -distance / -modular / -xyb 四项
+                            // ⇒ `--photon_noise_iso` 与 `--progressive` 在这条后端上是**结构性不存在**
+                            //   （不是"支持但没接"，所以补参数无用，只能点名 + 指路）。
+                            // UI 侧这两只控件挂在 `JxlCjxlPanel` 内（仅 cjxl 后端可见）⇒ 手动操作碰不到；
+                            // 但 CLI（`--cjxl-photon-noise-iso` / `--cjxl-progressive`）与预设回放能绕开
+                            // 面板直接置位 ⇒ 必须在这里点名，否则用户拿到"勾了却没生效、日志一句都没有"
+                            // 的静默丢弃 —— 正是本仓最忌讳的形状（COLOR_TRAPS P9）。
+                            if (captured.Options.EncoderBackend != EncoderBackend.Cjxl
+                                && captured.Options.Format.Equals("jxl", StringComparison.OrdinalIgnoreCase))
+                            {
+                                if (captured.Options.CjxlAutoPhotonNoise || captured.Options.CjxlPhotonNoiseIso > 0)
+                                    captured.Log += "[jxl] ⚠ 光子噪声未生效：当前后端是 FFmpeg 的 libjxl，"
+                                                  + "它不提供 --photon_noise_iso（实测 -h encoder=libjxl 仅含"
+                                                  + " effort/distance/modular/xyb）⇒ 本次不合成噪声；"
+                                                  + "需要该功能请把后端切到 cjxl\n";
+                                if (captured.Options.CjxlProgressive)
+                                    captured.Log += "[jxl] ⚠ --progressive 未生效：FFmpeg 的 libjxl 没有该选项"
+                                                  + " ⇒ 本次不启用渐进；需要该功能请把后端切到 cjxl\n";
+                            }
+
                             // GIF → AVIF：FFmpeg 编码器丢弃 alpha，走 avifenc 两步法保留透明通道。
                             // ⚠ 可用性判断**不得写在本条件里**（P7f）：曾经写成 `&& HasAvifencAvailable()`，
                             //   于是 avifenc 缺失时整个意图会静默落到后面的通用 ffmpeg 分支（上面注释自己写着“丢 alpha”），
@@ -753,10 +775,15 @@ namespace FfmpegGui.Services
                             //   **回退路径**：显式 --color-engine legacy，或引擎不可走（如 GainMap + 最长边缩放）。
                             //   判据与主分支用同一个 ShouldRoute，避免"路由说能走、分派说不能走"两套口径。
                             else if (captured.Options.JpegGainMap
-                                && (captured.Options.Format == "jpg" || captured.Options.Format == "jpeg")
+                                && (captured.Options.Format == "jpg" || captured.Options.Format == "jpeg"
+                                    || captured.Options.Format == "avif")
                                 && !ColorMapping.ColorEngineRouter.ShouldRoute(
                                        captured.Options, finalOutputPath, inputMayHaveMultipleFrames))
                             {
+                                // ⚠ 2026-10-02 起含 `avif`：avif 的增益图走 ISO-BMFF `tmap` 派生项
+                                //   （容器由 `GainMapEncoder.EncodeAsync(container: "avif")` 分流）。
+                                //   不加这一支 ⇒ `--color-engine legacy` 下 avif+增益图会**静默丢掉增益图**
+                                //   （落到普通 avif 编码），违反"不得静默降级"。
                                 await ProcessGainMapJpegAsync(captured, finalOutputPath, ct);
                             }
                             else if (backend == EncoderBackend.Cjxl && !engineRoutable)
@@ -1568,8 +1595,25 @@ namespace FfmpegGui.Services
                && (format.Equals("png", StringComparison.OrdinalIgnoreCase)
                    || format.Equals("apng", StringComparison.OrdinalIgnoreCase));
 
-        /// <summary>外部工具编码后恢复元数据（优先 exiftool，不可用时回退 ffmpeg）</summary>
+        /// <summary>
+        /// 元数据阶段唯一入口：先恢复描述性元数据，再按需嵌缩略图（EXIF IFD1）。
+        /// <para><b>顺序即不变量</b>：缩略图属于元数据阶段，必须排在**色彩后置之前** ——
+        /// 本仓的裁决权分配是「元数据先写、色彩标签最后定」，反过来会让色彩判据看到已被二次改写的文件。
+        /// 隐私开关在这里同样生效（见 <see cref="ThumbnailService.PrivacySkipReason"/>）：
+        /// `StripAll` / `StripExifAll` 是用户明确的「产物里不要留描述性元数据」，缩略图不能让它们破口。</para>
+        /// <para>收口在本方法而不是 19 个调用点：那些点是各通路的早退分支，逐点接线必然漏。</para>
+        /// </summary>
         private async Task RestoreMetadataAsync(QueueItem item, string outputPath)
+        {
+            await RestoreMetadataCoreAsync(item, outputPath);
+
+            if (!item.Options.EnableThumbnail) return;
+            await ThumbnailService.ApplyAsync(outputPath, item.Options,
+                s => { item.Log += s; _onItemUpdated?.Invoke(item); });
+        }
+
+        /// <summary>外部工具编码后恢复元数据（优先 exiftool，不可用时回退 ffmpeg）</summary>
+        private async Task RestoreMetadataCoreAsync(QueueItem item, string outputPath)
         {
             if (item.Options.MetadataMode != Models.MetadataMode.PreserveAll)
             {
@@ -2389,7 +2433,8 @@ namespace FfmpegGui.Services
                     baseGamut: item.Options.JpegGainMapBaseGamut,
                     sourcePrimaries: srcPrim,
                     s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ct,
-                    jpegProgressiveLevel: gmProgLv);
+                    jpegProgressiveLevel: gmProgLv,
+                    container: GainMapEncoder.ContainerOf(outputPath));
 
                 item.ExitCode = ok ? 0 : -1;
                 item.Status = ok ? "已完成 (Gain Map 纯托管编码)" : "失败 (GainMapEncoder 编码失败)";
@@ -4171,9 +4216,28 @@ namespace FfmpegGui.Services
             }
             else
             {
-                item.ExitCode = exit;
-                item.Status = $"失败 (djxl 解码退出码 {exit})";
-                return false;
+                // ⚠ U1（2026-10-01）：djxl 的 PPM/PAM 写出器**吃不下 float 图像** —— 实测对
+                //   `512x384, lossy, 32-bit float (8 exponent bits) RGB` 的 .jxl 直接报
+                //   `JxlDecoderSetImageOutBitDepth failed` → `DecompressJxlToPackedPixelFile failed`（exit 1）。
+                //   这类文件的典型入口正是"带增益图的 JPEG → JXL"（cjxl 把 HDR 底编成 float）。
+                //   同一文件用 `djxl → .png` 与 `ffmpeg 直读 .jxl` 都能出图（实测 345242 B / 342726 B），
+                //   ⇒ 解码失败不该是终点，终点是换一条走得通的解码路，并且**把换路说出来**（不许静默）。
+                item.Log += $"[djxl] PNM 中转失败 (exit {exit}) ⇒ 改走 ffmpeg 直读 .jxl（djxl 的 PPM 输出不支持 float 图像）\n";
+                var argsDirect = BuildArgsAndNote(item, item.Options, item.InputPath, outputPath);
+                item.Command = "ffmpeg " + argsDirect;
+                item.Log += $"[cmd] ffmpeg {argsDirect}\n";
+                // 心跳守卫不用在这里再点一次：#15-b（2026-09-19）起它是 `RunAsync` 的**默认行为**（opt-out），
+                //   本文件里那 4 处显式写法只是 JXL 链的文档锚点（由 `verify-ffmpeg-heartbeat.ps1` ① 钉着）。
+                //   这条直读路同样吃这个默认 —— 该解复用器在畸形字节形状上会忙等（无输出 + 烧 CPU）。
+                var exitDirect = await FfmpegRunner.RunAsync(argsDirect,
+                    s => { item.Log += s; _onItemUpdated?.Invoke(item); },
+                    AppSettingsService.Current.FfmpegPath, ct);
+                item.ExitCode = exitDirect;
+                item.Status = exitDirect == 0
+                    ? "已完成 (ffmpeg 直读 JXL)"
+                    : $"失败 (djxl PNM exit {exit} 且 ffmpeg 直读 exit {exitDirect})";
+                if (exitDirect == 0) await RestoreMetadataAsync(item, outputPath);
+                return exitDirect == 0;
             }
         }
 
@@ -4852,6 +4916,10 @@ namespace FfmpegGui.Services
                 StripExifCamera = original.StripExifCamera,
                 StripExifAll = original.StripExifAll,
                 StripXmp = original.StripXmp,
+                // 缩略图（逐字段手抄的第二处克隆点，漏抄即丢 ⇒ 与 MainWindow 那处同批登记）
+                EnableThumbnail = original.EnableThumbnail,
+                ThumbnailLongEdge = original.ThumbnailLongEdge,
+                ThumbnailQuality = original.ThumbnailQuality,
                 // Cjxl/Cjpegli 选项（回退时忽略，FFmpeg 不使用）
                 CjxlProgressive = false,
                 CjxlPhotonNoiseIso = 0,

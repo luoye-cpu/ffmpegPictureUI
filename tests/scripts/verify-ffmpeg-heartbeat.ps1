@@ -266,7 +266,10 @@ CK (($hbBlock.Length -gt 0) -and ($hbBlock -match 'lastProgressTicks') -and ($hb
    "① 心跳分支的活性**只**认进度块专属的 `lastProgressTicks`（且不碰 `lastActivityTicks`）—— 任意输出不得给忙等续命"
 
 $runAsyncCount = ([regex]::Matches($qp, 'FfmpegRunner\.RunAsync')).Count
-CK ($runAsyncCount -eq 24) "① QueueProcessor 里 `FfmpegRunner.RunAsync` 调用点仍为 24 处（实 $runAsyncCount）—— 未误伤"
+# ⚠ 2026-10-02：24 → **25** —— U1 后半给 `FallbackDjxlDecodeToFile` 补的"float JXL 改走 ffmpeg 直读"
+#   新增了一个调用点（`QueueProcessor.cs` 的 djxl PNM 中转失败支）。该点**不带**显式心跳实参：
+#   #15-b 起心跳是默认行为 ⇒ 下面三条站点集合断言的集合仍是 {A,B,C,D}，只有这一处计数 +1。
+CK ($runAsyncCount -eq 25) "① QueueProcessor 里 `FfmpegRunner.RunAsync` 调用点仍为 25 处（实 $runAsyncCount）—— 未误伤"
 
 # ⚠ 断言**站点集合**而不是计数（lead 要求）：计数只能说「有 N 个」，说不清「是不是这 N 个」——
 #   把第 5 处误开、或把预期站点里的一个漏开，计数都可能凑巧还是 4。做法：

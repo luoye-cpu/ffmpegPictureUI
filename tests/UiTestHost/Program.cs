@@ -412,9 +412,44 @@ namespace UiTestHost
                 Check("C5b RAW时静态选项隐藏", still?.IsVisible == false, $"visible={still?.IsVisible}");
                 if (m != null) m.SelectedIndex = 0; Pump(8); // 复位静态模式
             });
-        }
 
-        // ══════════════ D组: 编码器下拉随格式联动 ══════════════
+            // C20/C21（2026-10-02）：托盘缺图标那一批的运行时回归锁。
+            // 旧失效链全是静默的：icon 没进 `<AvaloniaResource>` ⇒ AssetLoader.Exists=false ⇒ LoadTrayIcon()
+            // 返回 null ⇒ 托盘只有菜单。ServiceProbe 那边只能验"程序集清单收录了它"，**运行时解析**
+            // （XAML 的 `Icon="avares://…"` 字符串转 ImageSource）只有本宿主能验。
+            Safe("C20 图标资源在运行时可解析（托盘/窗口）", () =>
+            {
+                Check("C20a 窗口 Icon 已由 XAML 解析", W.Icon != null,
+                    $"Icon={(W.Icon == null ? "null" : W.Icon.GetType().Name)}");
+                var uri = new System.Uri("avares://FfmpegGui/Resources/icon.ico");
+                bool exists = Avalonia.Platform.AssetLoader.Exists(uri);
+                Check("C20b AssetLoader 认得托盘用的那条 avares URI", exists,
+                    "App.LoadTrayIcon() 判的就是这一步");
+                if (exists)
+                {
+                    using var s = Avalonia.Platform.AssetLoader.Open(uri);
+                    using var bmp = new Avalonia.Media.Imaging.Bitmap(s);
+                    Check("C20c 图标可解码且 ≥16px",
+                        bmp.PixelSize.Width >= 16 && bmp.PixelSize.Height >= 16,
+                        $"实得 {bmp.PixelSize.Width}x{bmp.PixelSize.Height}");
+                }
+            });
+            Safe("C21 缩略图面板随容器能力显隐", () =>
+            {
+                var adv = Find<CheckBox>("UseAdvancedCodec");
+                if (adv != null) adv.IsChecked = true;
+                SetFormat("AVIF");
+                bool panelOn = Find<StackPanel>("ThumbnailPanel")?.IsVisible ?? false;
+                bool boxOn = Find<NumericUpDown>("ThumbnailSizeBox")?.IsEnabled ?? false;
+                SetFormat("TIFF");
+                bool panelOff = Find<StackPanel>("ThumbnailPanel")?.IsVisible ?? true;
+                var tick = Find<CheckBox>("EnableThumbnailCheck");
+                bool reset = tick == null || tick.IsChecked != true;
+                Check("C21 能力 true(AVIF) 显示且可编辑 / 能力 false(TIFF) 隐藏并复位勾选",
+                    panelOn && boxOn && !panelOff && reset,
+                    $"avif(visible={panelOn},enabled={boxOn}) tiff(visible={panelOff},复位={reset})");
+            });
+        }
         static void GroupD_EncoderComboLinkage()
         {
             Console.WriteLine("\n########## D组: 编码器下拉联动 ##########");
@@ -1136,14 +1171,14 @@ namespace UiTestHost
         /// <summary>
         /// GroupO：**GainMap 开关不得冲掉用户已设的目标色域 / 位深 / 质量**（2026-09-20；D-1 同族残留）。
         ///
-        /// 缺陷：`JpegGainMapEnable_Changed` 调 `UpdateOptionAvailability()`，而后者会
+        /// 缺陷：`HdrMode_Changed` 调 `UpdateOptionAvailability()`，而后者会
         /// `Items.Clear()` + 重建 `ColorSpaceCombo` 与 `BitDepthCombo` 并把 `SelectedIndex` 归 0，
         /// 还会把 `QualitySlider.Value` 设为该格式默认值（见 `MainWindow.xaml.cs` 的 `UpdateOptionAvailability()`）。
         /// ⇒ 用户勾/取消「GainMap (Ultra HDR)」时**格式并未改变**，这三项却被整体重置。
         /// （D-1 只修了「应用预设」那条路径，并在注释里显式说明**不动刷新函数本体**；本组锁住开关这条路径。）
         ///
         /// 断言：O1 取值与默认值**必须不同**（反控：否则 O2/O3 恒真）· O2 开开关后三项保持 · O3 关开关后三项保持。
-        /// ⚠ 变异验证（**已实测**）：把 `JpegGainMapEnable_Changed` 里的三行回写（`SetComboByValue`×2 +
+        /// ⚠ 变异验证（**已实测**）：把 `HdrMode_Changed` 里的三行回写（`SetComboByValue`×2 +
         ///   `QualitySlider.Value`）删掉 ⇒ **O2a-c / O3a-c 六条全红**，且诊断串显示三项确实被冲成默认值
         ///   （`def cs=auto bd=auto q=92 | pick cs=Display P3 bd=8 q=82 | on cs=auto bd=auto q=92`）⇒ 缺陷真实、断言有牙。
         /// ⚠⚠ **变异写法本身有坑**（本轮踩到）：第一版变异只在真行**上方**加了几行注释掉的**副本**，
@@ -1387,11 +1422,11 @@ namespace UiTestHost
         {
             Safe("O1/O2/O3 GainMap 开关保持目标三项", () =>
             {
-                var gm = Find<CheckBox>("JpegGainMapEnableCheck");
-                if (gm == null) { Check("O1 JpegGainMapEnableCheck 存在", false, "null"); return; }
+                var gm = Find<ComboBox>("HdrModeCombo");
+                if (gm == null) { Check("O1 HdrModeCombo 存在", false, "null"); return; }
 
                 SweepReset();
-                gm.IsChecked = false; Pump(8);      // ⚠ SweepReset 不含本开关 ⇒ 本组自己归零，避免跨组串状态
+                gm.SelectedIndex = 0; Pump(8);      // ⚠ SweepReset 不含本开关 ⇒ 本组自己归零，避免跨组串状态
                 SetFormat("JPEG"); Pump(10);
 
                 var csCombo = Find<ComboBox>("ColorSpaceCombo");
@@ -1420,7 +1455,7 @@ namespace UiTestHost
                 Pump(10);
 
                 // ③ 真实 UI 路径：勾上 GainMap（XAML `IsCheckedChanged` ⇒ 处理器）
-                gm.IsChecked = true; Pump(14);
+                gm.SelectedIndex = 1; Pump(14);
                 var onCs = csCombo?.SelectedItem as string;
                 var onBd = bdCombo?.SelectedItem as string;
                 var onQ = qSlider?.Value ?? double.NaN;
@@ -1429,7 +1464,7 @@ namespace UiTestHost
                 Check("O2c 开 GainMap 后质量保持", Math.Abs(onQ - pickQ) < 0.5, $"期望={pickQ} 实={onQ}（默认={defQ}）");
 
                 // ④ 再取消 —— 双向都必须保持
-                gm.IsChecked = false; Pump(14);
+                gm.SelectedIndex = 0; Pump(14);
                 var offCs = csCombo?.SelectedItem as string;
                 var offBd = bdCombo?.SelectedItem as string;
                 var offQ = qSlider?.Value ?? double.NaN;

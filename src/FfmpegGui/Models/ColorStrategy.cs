@@ -39,6 +39,32 @@ namespace FfmpegGui.Models
         Manual = 3
     }
 
+    /// <summary>
+    /// **HDR 实现模式**（用户-facing 的二选一开关）：决定 HDR 内容怎么落地。
+    ///
+    /// <para>
+    /// ⚠ **本枚举是对既有持久位 <see cref="FfmpegOptions.JpegGainMap"/> 的强类型视图**，不是第二个存储字段 ——
+    /// 单一真值、两向不可能漂移；旧 CLI（`--jpeg-gain-map`）、旧预设、旧 AppSettings 因此**自动兼容**。
+    /// </para>
+    /// </summary>
+    public enum HdrImplementationMode
+    {
+        /// <summary>
+        /// 传统 HDR：直接输出 PQ/HLG 的 HDR 编码（AVIF / JXL 等原生 HDR 容器）。
+        /// <para>
+        /// ⚠ 对**装不下 HDR 的容器**（JPEG/PNG 8bit 等）本模式**不得静默降级** —— 要么按
+        /// 既有契约要求显式 tonemap，要么拒绝并点名。
+        /// </para>
+        /// </summary>
+        Traditional = 0,
+
+        /// <summary>
+        /// GainMap HDR：**SDR 底图 + 增益图**，兼容不支持 HDR 的查看器。
+        /// 承载形式按容器分派 —— JPEG 族走 APP2 + XMP + MPF，AVIF 走 ISO-BMFF `tmap` 派生项。
+        /// </summary>
+        GainMap = 1,
+    }
+
     /// <summary>ColorStrategy 与旧 IccMode 的迁移/映射工具。</summary>
     public static class ColorStrategyMapper
     {

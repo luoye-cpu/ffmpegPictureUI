@@ -67,6 +67,17 @@ public static class GainMapEncoder
     /// <paramref name="log"/>/<paramref name="ct"/>（`QueueProcessor.cs:1895`），插在它们之前会破坏该调用点。
     /// </para>
     /// </param>
+    /// <summary>
+    /// 由输出路径判定增益图**容器**：`.avif` ⇒ <c>"avif"</c>（ISO-BMFF `tmap` 派生项），其余 ⇒ <c>"jpeg"</c>
+    /// （Ultra HDR APP2 + XMP + MPF）。
+    /// <para>
+    /// ⚠ **单一真值**：两个调用点（`RawColorPipeline` 的引擎出口、`QueueProcessor` 的专用管线）**都**必须
+    /// 用它，不允许各自按 <c>Options.Format</c> 另写一份映射 —— 两套映射必然漂移（本仓反复修过这类缺陷）。
+    /// </para>
+    /// </summary>
+    public static string ContainerOf(string outputPath)
+        => string.Equals(Path.GetExtension(outputPath), ".avif", StringComparison.OrdinalIgnoreCase) ? "avif" : "jpeg";
+
     /// <returns>成功返回 true</returns>
     public static async Task<bool> EncodeAsync(
         float[] hdrRgbaLinear, int w, int h, string outputPath,
@@ -74,7 +85,7 @@ public static class GainMapEncoder
         bool multiChannel = false, float baseQuality = 1.5f, float gainMapQuality = 1.5f,
         int downsample = 4, string baseGamut = "srgb", string? sourcePrimaries = null,
         Action<string>? log = null, CancellationToken ct = default,
-        int jpegProgressiveLevel = -1)
+        int jpegProgressiveLevel = -1, string container = "jpeg")
     {
         try
         {
@@ -135,10 +146,31 @@ public static class GainMapEncoder
                     log?.Invoke($"[GainMap] ⚠️ 未能求出 {sourcePrimaries ?? "(未知)"} → {baseTok} 矩阵，底图将不映射（仅改标签，存在色偏风险）\n");
                 }
 
-                // ── 2. Base JPEG（始终 SDR：sdrLinear → sRGB gamma → 8bit）──
+                // ── 2. 底图 PNG（始终 SDR：sdrLinear → sRGB gamma → 8bit）──
                 var basePath = Path.Combine(tempDir, "base.jpg");
                 var basePng = Path.Combine(tempDir, "base.png");
                 await WriteBgra8PngAsync(sdrLinear, w, h, basePng, ffmpeg, log, ct);
+
+                // ── 3. 增益图计算 + 降采样 + PNG（容器无关）──
+                //   log2(HDR/SDR) ∈ [0, maxLog2Gain] → [0,255]（上映射；两侧均已在底图色域内）
+                byte[] gainMapPixels = ComputeGainMap(normHdr, sdrLinear, w, h, multiChannel, maxLog2Gain);
+                byte[] gainMapScaled = RescaleGainMap(gainMapPixels, w, h, multiChannel, downsample, out int gmW, out int gmH);
+                BufferPool.ReturnByte(gainMapPixels);
+                var gmPath = Path.Combine(tempDir, "gainmap.jpg");
+                var gmPng = Path.Combine(tempDir, "gainmap.png");
+                await WriteGrayOrRgbPngAsync(gainMapScaled, gmW, gmH, multiChannel, gmPng, ffmpeg, log, ct);
+                BufferPool.ReturnByte(gainMapScaled);
+
+                // ── 4a. AVIF 出口：ISO-BMFF `tmap` 派生项（原生容器组装）──────────────
+                // ⚠ 与 JPEG 出口**共用**上面全部像素阶段（归一化/Reinhard/底图色域映射/增益图计算），
+                //   只换容器与元数据承载方式 ⇒ 两条出口的增益语义必然一致（不允许各算一遍）。
+                if (string.Equals(container, "avif", StringComparison.OrdinalIgnoreCase))
+                {
+                    return await EncodeAvifGainMapAsync(basePng, gmPng, w, h, gmW, gmH, multiChannel,
+                        maxLog2Gain, wideBase, outputPath, ffmpeg, log, ct);
+                }
+
+                // ── 4b. JPEG 出口（Ultra HDR：XMP + MPF + ISO 21496-1 APP2）──────────
                 var baseOk = await EncodeJpegFileAsync(basePng, basePath, baseQuality, jpegProgressiveLevel, log, ct);
                 if (!baseOk)
                 {
@@ -166,15 +198,6 @@ public static class GainMapEncoder
                     }
                 }
 
-                // ── 3. 增益图计算 + 降采样 + JPEG ──
-                //   log2(HDR/SDR) ∈ [0, maxLog2Gain] → [0,255]（上映射；两侧均已在底图色域内）
-                byte[] gainMapPixels = ComputeGainMap(normHdr, sdrLinear, w, h, multiChannel, maxLog2Gain);
-                byte[] gainMapScaled = RescaleGainMap(gainMapPixels, w, h, multiChannel, downsample, out int gmW, out int gmH);
-                BufferPool.ReturnByte(gainMapPixels);
-                var gmPath = Path.Combine(tempDir, "gainmap.jpg");
-                var gmPng = Path.Combine(tempDir, "gainmap.png");
-                await WriteGrayOrRgbPngAsync(gainMapScaled, gmW, gmH, multiChannel, gmPng, ffmpeg, log, ct);
-                BufferPool.ReturnByte(gainMapScaled);
                 var gmOk = await EncodeJpegFileAsync(gmPng, gmPath, gainMapQuality, jpegProgressiveLevel, log, ct);
                 if (!gmOk)
                 {
@@ -521,6 +544,125 @@ public static class GainMapEncoder
         return fp.ExitCode == 0 && File.Exists(jpgPath) && new FileInfo(jpgPath).Length > 0;
     }
 
+    /// <summary>
+    /// AVIF 出口：底图与增益图各编一张**单图** AVIF，再交给 <see cref="IsoBmffGainMapWriter"/>
+    /// 组装成带 `tmap` 派生项的三 item 容器。
+    /// <para>
+    /// 为什么必须自行组装：ffmpeg 的 `avif` muxer **不提供**增益图授权（实测其 AVOption 只有
+    /// `movie_timescale` / `loop`），libavif CLI 的增益图选项又被编译期开关门控 ⇒ 没有可用的现成命令。
+    /// </para>
+    /// <para>
+    /// ⚠ 与 JPEG 出口**共用**全部像素阶段（归一化 / Reinhard / 底图色域映射 / 增益图计算），
+    /// 本方法只负责「容器 + 元数据承载」，两条出口的增益语义因此必然一致。
+    /// </para>
+    /// </summary>
+    private static async Task<bool> EncodeAvifGainMapAsync(string basePng, string gmPng, int w, int h, int gmW, int gmH,
+        bool multiChannel, float maxLog2Gain, bool wideBase, string outputPath,
+        string ffmpeg, Action<string>? log, CancellationToken ct)
+    {
+        var tempDir = Path.GetDirectoryName(basePng)!;
+        var baseAvif = Path.Combine(tempDir, "base.avif");
+        var gmAvif = Path.Combine(tempDir, "gainmap.avif");
+
+        // 底图色域与 JPEG 出口同口径（wideBase ⇒ Rec.2020 SDR，否则 sRGB）；
+        // AVIF 有 CICP 机制（`colr` 盒），由 ffmpeg 按下列参数写入，不需要 ICC 兜底。
+        string primaries = wideBase ? "bt2020" : "bt709";
+        string trc = wideBase ? "bt709" : "iec61966-2-1";
+        string matrix = wideBase ? "bt2020nc" : "bt709";
+
+        if (!await EncodeAvifFileAsync(basePng, baseAvif, ffmpeg, "yuv420p", primaries, trc, matrix, log, ct))
+        {
+            log?.Invoke("[GainMap] ❌ 底图 AVIF 编码失败\n");
+            return false;
+        }
+
+        // 增益图按 ISO 21496-1 惯例是**单色**；ffmpeg 用 gray(YUV400) 表达。
+        // ⚠ 若该构建不支持 gray 的 AVIF 输出则退回 yuv420p —— 但必须**点名**，不允许静默改语义
+        //   （通道数由 tmap 元数据声明，与像素平面格式是两件事）。
+        if (!await EncodeAvifFileAsync(gmPng, gmAvif, ffmpeg, "gray", null, null, null, log, ct))
+        {
+            log?.Invoke("[GainMap] ⚠️ 单色 gray 的 AVIF 编码失败 ⇒ 退回 yuv420p（增益图通道语义仍由 tmap 元数据声明）\n");
+            if (!await EncodeAvifFileAsync(gmPng, gmAvif, ffmpeg, "yuv420p", null, null, null, log, ct))
+            {
+                log?.Invoke("[GainMap] ❌ 增益图 AVIF 编码失败\n");
+                return false;
+            }
+        }
+
+        byte[] baseBytes, gmBytes;
+        try
+        {
+            baseBytes = await File.ReadAllBytesAsync(baseAvif, ct);
+            gmBytes = await File.ReadAllBytesAsync(gmAvif, ct);
+        }
+        catch (Exception ex)
+        {
+            log?.Invoke($"[GainMap] ❌ 读取 AVIF 中间产物失败: {ex.Message}\n");
+            return false;
+        }
+
+        // ⚠ SDR 输入（增益区间为 0）⇒ 与 JPEG 出口同口径：**不写增益图**，直接以底图 AVIF 作产物并点名。
+        //   绝不产出「自称带增益图、实际零增益」的假 HDR 容器（本仓最忌讳的「宣称 ≠ 交付」）。
+        if (maxLog2Gain <= 0f)
+        {
+            await File.WriteAllBytesAsync(outputPath, baseBytes, ct);
+            log?.Invoke("[GainMap] ⚠️ 输入为 SDR（headroom ≤ 1，增益区间为 0）⇒ 已按普通 AVIF 输出（未写入 tmap 增益图）。需要 HDR 请改用 HDR 输入。\n");
+            return true;
+        }
+
+        // tmap 载荷 = u8 version(0) + ISO 21496-1 GainMapMetadata —— 与 JPEG APP2 载荷**逐字节同构**，
+        // 故直接复用同一个生成器（单一真值；在写出器里再写一份必然漂移）。
+        var tmapPayload = IsoBmffGainMapWriter.BuildTmapPayload(BuildIso21496Metadata(multiChannel, maxLog2Gain));
+        // 底图 CICP：ffmpeg 不采纳 -color_primaries（实测写出 unspecified）⇒ 由写出器重写 colr。
+        // sRGB 底 = (1 bt709, 13 iec61966-2-1, 1 bt709)；Rec.2020 SDR 底 = (9, 1 bt709, 9 bt2020nc)。
+        int cPrim = wideBase ? 9 : 1;
+        int cTrc = wideBase ? 1 : 13;
+        int cMtx = wideBase ? 9 : 1;
+        var built = IsoBmffGainMapWriter.Build(baseBytes, gmBytes, tmapPayload, cPrim, cTrc, cMtx);
+        if (!built.Ok)
+        {
+            log?.Invoke($"[GainMap] ❌ AVIF 增益图容器组装失败：{built.FailReason}\n");
+            return false;
+        }
+        await File.WriteAllBytesAsync(outputPath, built.Data!, ct);
+        log?.Invoke($"[GainMap] ✅ AVIF 增益图 (tmap)：底图 {built.BaseItemBytes} B + 增益图 {built.GainMapItemBytes} B + tmap {built.TmapPayloadBytes} B，合计 {Math.Round(new FileInfo(outputPath).Length / 1024.0)} KB\n");
+        return true;
+    }
+
+    /// <summary>
+    /// 把 PNG 编成**单图 AVIF**（ffmpeg libaom-av1）。
+    /// <paramref name="primaries"/> 为 null ⇒ 不写 `colr` 语义（增益图不需要）。
+    /// </summary>
+    private static async Task<bool> EncodeAvifFileAsync(string pngPath, string avifPath, string ffmpeg,
+        string pixFmt, string? primaries, string? trc, string? matrix,
+        Action<string>? log, CancellationToken ct)
+    {
+        var colorArgs = primaries != null
+            ? $" -color_primaries {primaries} -color_trc {trc} -colorspace {matrix}"
+            : "";
+        var args = $"-y -i \"{pngPath}\" -frames:v 1 -c:v libaom-av1 -crf 18 -b:v 0 -pix_fmt {pixFmt}"
+                 + $"{colorArgs} -f avif \"{avifPath}\"";
+        var psi = new ProcessStartInfo
+        {
+            FileName = ffmpeg,
+            Arguments = args,
+            RedirectStandardOutput = true,
+            StandardOutputEncoding = Encoding.UTF8,
+            RedirectStandardError = true,
+            StandardErrorEncoding = Encoding.UTF8,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+        using var p = Process.Start(psi)!;
+        PlatformServices.SetSafePriority(p, AppSettingsService.Current.FfmpegPriority);
+        p.OutputDataReceived += (_, e) => { if (e.Data != null) log?.Invoke(e.Data + "\n"); };
+        p.ErrorDataReceived += (_, e) => { if (e.Data != null) log?.Invoke(e.Data + "\n"); };
+        p.BeginOutputReadLine();
+        p.BeginErrorReadLine();
+        await p.WaitForExitAsync(ct);
+        return p.ExitCode == 0 && File.Exists(avifPath) && new FileInfo(avifPath).Length > 0;
+    }
+
     /// <summary>线性 float [0,1] → sRGB 8-bit</summary>
     private static byte FloatToSrgb8(float v)
     {
@@ -669,7 +811,12 @@ public static class GainMapEncoder
     ///   baseHdrHeadroom = log2(1.0) = 0、alternateHdrHeadroom = log2(headroom)。
     /// ⚠️ 分母必须与 N = log2×100 匹配（旧写法负值时用分母 1 → 第三方解出 -230而非 -2.3）。
     /// </summary>
-    private static byte[] BuildIso21496Metadata(bool multiChannel, float maxLog2Gain)
+    /// <remarks>
+    /// 可见性为 <c>internal</c>：<see cref="IsoBmffGainMapWriter.BuildTmapPayload"/> 需要把同一份
+    /// ISO 21496-1 载荷（JPEG APP2 与 ISO-BMFF tmap **逐字节同构**）用于 AVIF 出口 —— 单一真值，
+    /// 不允许在写出器里再写一份（两份必然漂移）。
+    /// </remarks>
+    internal static byte[] BuildIso21496Metadata(bool multiChannel, float maxLog2Gain)
     {
         // log2 值用精确分数: log2 × 100 / 100
         int gainLog2N = (int)MathF.Round(maxLog2Gain * 100f);

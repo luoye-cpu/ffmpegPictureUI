@@ -46,10 +46,35 @@ public static class ImageEncoderArgs
     public static int MapAvifCrf(int quality) => (int)Math.Round((100 - quality) * 63.0 / 100.0);
 
     /// <summary>
-    /// 0-100 质量 → JPEG XL 的 <c>-distance</c>（0=无损，15=最低质量）。
-    /// **单一真值**（2026-09-17 从 <c>FfmpegCommandBuilder.MapJxlDistance</c> 搬入，公式一字未改）。
+    /// 0-100 质量 → JPEG XL 的 <c>-distance</c>（0=无损，25=最低质量）。
+    /// **单一真值**（2026-09-17 从 <c>FfmpegCommandBuilder.MapJxlDistance</c> 搬入）。
+    /// ⚠⚠ 2026-10-02 换用 libjxl 官方曲线（<c>JxlEncoderDistanceFromQuality</c>）。
+    ///   旧公式 <c>(100-q)*15/100</c> 与官方严重不符，是「JPEG XL 压得过头」的主因：
+    ///   6024x4024 16-bit 实测 q75 → 旧 <c>-d 3.8</c> = 507,495 B，官方 <c>-q 75</c>
+    ///   （等价于 <c>-d 2.35</c>）= 817,623 B，**产物小 38%**；q90 → 1.21 MB vs 1.71 MB（-29%）。
+    ///   新公式：<c>q≥100 → 0</c>；否则 <c>0.1 + (100-q)*0.09</c>。
+    ///   实测三点与 cjxl <c>-q</c> 产物**逐字节等长**（1200x800 16-bit）：q30→6.4 · q75→2.35 · q90→1.0。
+    /// ⚠ 诚实边界：libjxl 官方在 <c>q&lt;30</c> 段走另一条非线性曲线（实测 q20≈9.05、q10≈14.8、
+    ///   q0 对应 distance &gt; 15），本实现全段用同一条直线延长 ⇒ <c>q&lt;30</c> 档比官方**保守**
+    ///   （压得没那么狠、体积偏大）。刻意不复刻低段，是为了消除 q=29/30 处的跳变；低质量档极少使用。
     /// </summary>
-    public static double MapJxlDistance(int quality) => Math.Round((100 - quality) * 15.0 / 100.0, 1);
+    public static double MapJxlDistance(int quality)
+    {
+        int q = Math.Clamp(quality, 0, 100);
+        if (q >= 100) return 0.0;
+        return Math.Round(0.1 + (100 - q) * 0.09, 1, MidpointRounding.AwayFromZero);
+    }
+
+    /// <summary>
+    /// <see cref="MapJxlDistance"/> 的反函数（<c>-distance</c> → 0-100 质量），供 CLI 数值反解用。
+    /// ⚠ 与正函数**严格互逆**（<c>d≤0 → 100</c>；否则 <c>100-(d-0.1)/0.09</c>）。
+    ///   因正函数有 1 位小数取整，往返存在 ±1 的量化误差（如 q75 → 2.4 → 74），属预期。
+    /// </summary>
+    public static int MapJxlDistanceInverse(double distance)
+    {
+        if (distance <= 0) return 100;
+        return (int)Math.Clamp(Math.Round(100 - (distance - 0.1) / 0.09), 0, 100);
+    }
 
     /// <summary>
     /// 按格式构造**编码器参数串**（不含 <c>-i/-pix_fmt/色彩标注</c>，那些由调用方负责）。
@@ -342,10 +367,12 @@ public static class ImageEncoderArgs
     /// <c>avif.tune.iq</c> 在 zh 是 IQ (图像优化)、在 en 是 IQ (Image Optimized) ⇒ 英文界面下
     /// 整条 IQ 什么都不发；而 <c>!= 默认</c> 这类哨兵在英文下恒真（进了 switch 又落空）。
     /// <para>
-    /// 现在只认 token/前缀，zh 与 en 两种显示串折到同一个值；**默认档与不认识的档一律折成空串
-    /// = 不发参数**（旧实现正是靠中文字面量识别默认档，才在英文下变成半生效状态 ⇒ 宁可什么都不发，
-    /// 也不发一个错值）。当前 locale 里出现的 5 个值全部覆盖：默认/Default、PSNR、SSIM、VMAF、
-    /// IQ (…)；另外采集侧在简单模式下硬塞的 VMAF (主观) 这类带尾巴的写法也能按前缀认出来。
+    /// ⚠ **2026-10-02（U4b 第二半）改了尾部的两义性**：旧写法把**认不出**的显示串也折成空串，而空串在本函数
+    /// 里同时是"用户没选 / 选了默认档" ⇒ 一个越界值（实测 `--avif-tune film`）到了分发层就是
+    /// "既不发参数、也不说一句"，正好是"静默降级"的形状（本仓既有原则：不可用必须出声）。
+    /// 现在**默认档与空串**才返回空串（默认档的显示串只有两种，见 `Resources/Locales/*.json` 的
+    /// `avif.tune.default` = 「默认」/ "Default"），其余认不出的一律**原样返回大写 token**，
+    /// 由分发层（<see cref="BuildAvifOptions"/> 的中心播报 + libaom switch 的 default 支）点名。
     /// </para>
     /// </summary>
     private static string NormalizeTuneToken(string? display)
@@ -357,8 +384,14 @@ public static class ImageEncoderArgs
         if (u.Contains("VMAF", StringComparison.Ordinal)) return "vmaf";
         if (u.Contains("PSNR", StringComparison.Ordinal)) return "psnr";
         if (u.Contains("SSIM", StringComparison.Ordinal)) return "ssim";
-        return "";
+        if (u == "DEFAULT" || u == "默认") return "";   // 默认档 = 不发，且**不该**播报
+        return u;   // 认不出 ⇒ 原样交给分发层点名，不许折成空串冒充"没选"
     }
+
+    /// <summary>本构建**认得**的 tune token 全集（与 <see cref="NormalizeTuneToken"/> 的分支一一对应）。</summary>
+    private static readonly string[] KnownTuneTokens = { "iq", "ms_ssim", "vmaf", "psnr", "ssim" };
+
+    private static bool IsKnownTuneToken(string token) => Array.IndexOf(KnownTuneTokens, token) >= 0;
 
     /// <summary>
     /// SVT-AV1 的 tune 取值（A-6：旧实现整体错位一格）。域**不是**凭记忆写的，取本机库的自报：
@@ -512,11 +545,24 @@ public static class ImageEncoderArgs
                         // 本构建的 libaom **不带** VMAF tune：实测 -tune vmaf_without_preprocessing 与
                         // -tune vmaf 都是 Unable to parse、rc=127（该 AVOption 的域就到 ssim 为止），
                         // -aom-params tune=vmaf 也 rc=127 并提示需 -DCONFIG_TUNE_VMAF=1 ⇒ 发出去必崩。
-                        // 旧代码正是在这里发了个不存在的值 ⇒ 选 VMAF 的 libaom 任务 100% 失败。
+                        // 旧代码把 VMAF 折成 tune=vmaf 恰好落在这个崩溃值上 ⇒ 选 VMAF 的 libaom 任务 100% 失败。
                         Console.WriteLine("[avif/libaom-av1] tune=vmaf is not available in this libaom build "
                             + "(-tune accepts only psnr | ssim, and -aom-params tune=vmaf fails with "
                             + "CONFIG_TUNE_VMAF), so no tuning flag is emitted. Switch encoder to libsvtav1 "
                             + "for a VMAF-tuned encode.");
+                        break;
+                    default:
+                        // ⚠ U4b（2026-10-01 修）：上面 4 个 case 之外的**已选值**此前是"什么都不发、
+                        //   也什么都不说"（实测该组合 rc=0、命令行里查不到任何 tune 痕迹）。
+                        //   空串是"用户没选"，不该播报；只有"选了而这条后端承接不了"才必须点名。
+                        // ⚠ 2026-10-02 收窄成"认得出、但 libaom 承接不了"：认不出的值（`--avif-tune film`
+                        //   这类，`NormalizeTuneToken` 现在原样返回）由下面 switch **之后**的中心播报统一
+                        //   兜 ⇒ 同一个值不该挨两条措辞不同的播报。
+                        if (tuneTok.Length > 0 && IsKnownTuneToken(tuneTok))
+                            Console.WriteLine("[avif/libaom-av1] tune=" + tuneTok + " is not expressible on libaom-av1 "
+                                + "in this build (-tune domain is psnr | ssim; IQ goes via -aom-params tune=iq; "
+                                + "VMAF needs -DCONFIG_TUNE_VMAF; MS_SSIM is SVT-only) => no tuning flag is emitted. "
+                                + "Use psnr/ssim/IQ on libaom, or switch the encoder to libsvtav1.");
                         break;
                 }
                 break;
@@ -547,6 +593,18 @@ public static class ImageEncoderArgs
                         + "Use libaom-av1 for IQ.");
                 break;
         }
+        // ── U4b 第二半的另一半（2026-10-02）：这条后端**根本没有 tune 通路**也要出声 ──
+        // 上面那个 switch 只有 Libaom 与 Svt 两支 ⇒ av1_nvenc / av1_qsv / av1_amf / av1_vaapi / 未知后端
+        // 上，任何已选 tune 都被整支跳过：不发参数，也什么都不说。
+        // ⚠ 这个组合**不是**面板能直接点出来的：`AvifTuneCombo` 在 `LibaomAvifPanel` 里
+        //   （`MainWindow.xaml:551-555`），换后端那把下拉就看不见了 —— 但 CLI（`CliParser.cs:743`）
+        //   与旧预设回放（`MainWindow.xaml.cs:5847` 直接 `SetComboByValue`，不看面板可见性）
+        //   都能把值送到不处理它的后端上 ⇒ 仍然是"设了不生效且无声"，按既有原则必须点名。
+        if (backend is not (AvifBackend.Libaom or AvifBackend.Svt)
+            && (tuneTok.Length > 0 || svtTuneTok.Length > 0))
+            Console.WriteLine("[avif] tune=" + (svtTuneTok.Length > 0 ? svtTuneTok : tuneTok)
+                + " is not expressible on encoder '" + (o.Encoder ?? "") + "': this build implements a "
+                + "-tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.");
         // ── 结构/速度轴 -cpu-used：libaom 私有项（自报域 0..8）──
         // 实测对 nvenc / svt 它只会得到 Codec AVOption cpu-used has not been used ⇒ 旧代码白发。
         // SVT 的速度轴是 -preset（GUI 已有 SvtPresetBox），不在此挪用 cpu-used 的档位。

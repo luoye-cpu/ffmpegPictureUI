@@ -2243,7 +2243,7 @@ UI 宿主 **322/0** · `verify-color-strategy` **63/0** · `gainmap-isobmff` **5
      `$Probes` 默认值**同集**，可据此核对"mode 齐不齐"）。
      ⚠ 记账口径：**各 mode 的 pass 之和**才是总数 —— 曾把 `contract` 从 100 更新到 107 却漏更新总数，
      写成 372（错值），由 `general-purpose-1` 复核时用"16 项求和 ≠ 372"抓出。**改任一 mode 后必须重算总和**。
-   - **脚本门禁**：`_run-step3-gates.ps1` 清单内 **60 条**（2026-10-01；复现口径取运行器打印的 `script-list=N 条（受管基线 N）`）（⚠ 实测 `foreach` 数组条目数；此前注释写 29、后写 31~41，均已更正；第 32 条 = `verify-geometry-engine.ps1`，第 33 条 = `verify-engine-firstframe.ps1`，第 34 条 = `verify-jxl-codestream-route.ps1`，第 35 条 = `verify-anim-static-target.ps1`，第 36 条 = `verify-jxl-probe-timeout.ps1`，第 37 条 = `verify-ffmpeg-heartbeat.ps1`，第 38 条 = `_probe-sync-read-before-wait-scan.ps1`，第 39 条 = `verify-jxr-anim-input.ps1`，第 40 条 = `_probe-ct-chain-closure-scan.ps1`，第 41 条 = `verify-avif-anim-probe.ps1`，**第 42 条 = `verify-webp-anim-probe.ps1`**，**第 43 条 = `verify-ui-host.ps1`**，**第 44 条 = `verify-ui-param-matrix.ps1`**，**第 45 条 = `verify-ui-strategy-map.ps1`**，**第 46 条 = `verify-ui-param-defects.ps1`**，**第 47 条 = `verify-cli-strict.ps1`**，**第 48 条 = `verify-png-structure.ps1`**（第 43~48 条 = **2026-09-19 P4-A 接线**新增 6 条））。
+   - **脚本门禁**：`_run-step3-gates.ps1` 清单内 **65 条**（2026-10-01；复现口径取运行器打印的 `script-list=N 条（受管基线 N）`）（⚠ 实测 `foreach` 数组条目数；此前注释写 29、后写 31~41，均已更正；第 32 条 = `verify-geometry-engine.ps1`，第 33 条 = `verify-engine-firstframe.ps1`，第 34 条 = `verify-jxl-codestream-route.ps1`，第 35 条 = `verify-anim-static-target.ps1`，第 36 条 = `verify-jxl-probe-timeout.ps1`，第 37 条 = `verify-ffmpeg-heartbeat.ps1`，第 38 条 = `_probe-sync-read-before-wait-scan.ps1`，第 39 条 = `verify-jxr-anim-input.ps1`，第 40 条 = `_probe-ct-chain-closure-scan.ps1`，第 41 条 = `verify-avif-anim-probe.ps1`，**第 42 条 = `verify-webp-anim-probe.ps1`**，**第 43 条 = `verify-ui-host.ps1`**，**第 44 条 = `verify-ui-param-matrix.ps1`**，**第 45 条 = `verify-ui-strategy-map.ps1`**，**第 46 条 = `verify-ui-param-defects.ps1`**，**第 47 条 = `verify-cli-strict.ps1`**，**第 48 条 = `verify-png-structure.ps1`**（第 43~48 条 = **2026-09-19 P4-A 接线**新增 6 条；**第 61~65 条 = 2026-10-01 接线的**首批 L3/产物级**套件** `verify-package-smoke.ps1` / `verify-jbrd-e2e.ps1` / `verify-orientation-rewrap.ps1` / `verify-gainmap-thirdparty.ps1` / `verify-encoder-knob-liveness.ps1`（原居 gitignored 的 `tests/output/t{69,76,77,79}` ⇒ `git clean -xdf` 一次就全没、也不在任何轮里被跑；49~60 条的逐条登记见 `docs/TESTING.md` §3.4 表与运行器内注释））。
      ⚠⚠ **这个数字每加一个门禁脚本就变** ⇒ 改 `tests/scripts/**` 后**必须重新数**，**不要拿旧值推算**：`grep -oE "'[^']+\.ps1'" tests/scripts/_run-step3-gates.ps1 | sort -u | wc -l`。
      ⚠ **2026-09-18 实测教训**：这个数字在**同一天内被改了五次**（32→33→34→35→36），而四处文档同步总是慢一步 ⇒ 属**反复复发的漂移源**（本次同步点：本行 + `docs/TESTING.md` 的 4 处计数：「35 条」×3、「34 个 GUID」×1）。⚠ **同日续报**：该数字当天**继续漂到 41**（36→37→38→39→40→41，又新增 6 个脚本：`verify-ffmpeg-heartbeat` / `_probe-sync-read-before-wait-scan` / `verify-jxr-anim-input` / `_probe-ct-chain-closure-scan` / `verify-avif-anim-probe`）⇒ 上面的「五次」只是**当时的快照**，**漂移并未止于 36**。
    - ⚠ **脚本门禁必须双宿主兼容**（PS 7 与 PS 5.1 都要能跑）—— 运行器用**当前宿主**作子脚本解释器，
@@ -3482,6 +3482,49 @@ var encoderProtectsColor =
 - L3（打出货包）判据从零建成：`t76/jbrd-e2e.ps1` **89/2**、`t76/orientation-rewrap.ps1` 14/0、
   `t77/gainmap-thirdparty.ps1` **13/0**（libultrahdr 自己认证 Ultra HDR，且逐项与产品声明的 log2 余量对账）、
   `t69/pkg-smoke3.ps1` 17/0、`t79/knob-liveness.ps1` **18 臂 = 活 15 / 死 1 / 被拒 1 / 未判 1**。
-- 2 条红是**真缺陷**（增益图 JPEG→JXL 无损宣称静默退化为 float、且该产物取不回来），未修，复见审计文档 §五 U1。
-- ⚠ 上述 5 套 L3 判据都在 `tests/output/`（`.gitignore:78` ⇒ 不进提交、一次 `git clean -xdf` 就没了）。
-  下一批应移入 `tests/scripts/` 并接成清单条目（60→63），成本与连带要改的条数陈述见审计文档 §六。
+- 2 条红是**真缺陷**（增益图 JPEG→JXL 无损宣称静默退化为 float、且该产物取不回来），当时未修，复见审计文档 §五 U1
+  ⇒ **已于同日 beta4 修掉（两半都在产品里）**，结案记录在审计文档 §5.1。
+- ✅ 上述 5 套 L3 判据**当时**都在 `tests/output/`（`.gitignore:78` ⇒ 不进提交、一次 `git clean -xdf` 就没了），
+  当时那句"下一批应移入 `tests/scripts/` 并接成清单条目（60→63）"**已于同日 beta4 那批做完** ——
+  实际条数是 **60 → 65**（五条各自成条，**没有**折进 `verify-gainmap-managed`），改名、两档被测与
+  零断言闸的处置见审计文档 §六 与本文件的 beta4 一节。
+
+### v1.6.0-beta3 发布（同日 21:53，提交 `e7de117`）
+
+- 版本号 `1.6.0-beta2 → 1.6.0-beta3`（连字符式；`1.6.0BETA3` 那种写法会炸 NuGet restore）。
+  **产品源码零改动**：`find src \( -name '*.cs' -o -name '*.xaml' \) -newermt "2026-10-01 08:23"` 命中 0
+  ⇒ beta3 与 beta2 只差版本号一处（DLL/exe 指纹因版本串编进 assembly metadata 而变，别当成实现变更）。
+- 发布轮整轮 **83 步全部通过**，`artifact-sha16: FfmpegGui.dll=41B44697A8289D44`（`tests/output/t83/round-beta3.log`）。
+- 出包 `pack.ps1 -Mode all`：`-x64.7z` 11,093,184 B / `-x64-full.7z` 55,319,824 B，
+  包内 `ProductVersion=1.6.0-beta3+cbcf11ae`、`exe sha=E50D57D6C4C9D754`。
+- **修掉一个能产出"残缺发行件"的 fail-open**：`pack.ps1` 清理旧输出目录失败（被占用）时照压照报"打包完成"，
+  实测出现"磁盘目录 58 个文件 / 归档 580 个文件"两种状态并存 ⇒ 现清理失败即 `throw`，
+  并在压缩前加完整性闸（必需成员逐项 `Test-Path` + 文件数门槛 full≥560 / app≥8）。
+  另加独立验包 `tests/output/t83/verify-package.ps1`（**16/0**：归档条目数、必需成员、
+  **目录↔归档对账**、六件工具与 `publish/PLAN` 同指纹、包内版本串）。
+- L3 五套全部重指 beta3 包复跑（各套件 `$pkg` 改由 `$env:PKG_VER` 解析；包缺失或版本串不符即 `exit 2`，
+  杜绝"beta3 的读数打在 beta2 上"）：包级冒烟 17/0、取向×免解码重封装 14/0、GainMap 第三方 13/0、
+  旋钮活性 18 臂（活 15/死 1/被拒 1/未判 1）、JPEG↔JXL 往返 89/2（那 2 条 = 未修 U1）。
+- 提交与推送：`e7de117`（release: v1.6.0-beta3…）已推 `origin/main`；轻量标签 `1.6.0BETA3` 已推
+  （沿用仓内 `1.5.0BETA3` 的命名与类型，正式版才用附注标签）。
+- ⚠ **GitHub Release 尚未建**：本机无 `gh`，两个 `.7z` 还没挂到 Release 资产上 ⇒ 要挂需要 `gh` 或带 token 的 API 调用。
+- ⚠ 两条教训（全文见审计文档 §7.2）：`7z l` 用**反斜杠**打印路径，拿正斜杠 grep 会让六件工具恒 0 命中
+  （我据此误报过"包里缺 exiftool/artifacts"）；以及**pack.ps1 跑到一半不要 kill 后直接重跑** ——
+  残留句柄会让清理失败，而旧脚本不中止（现已中止）。
+
+---
+
+## 续：2026-10-02 v1.6.0-beta4 收尾中断处的账本
+
+本文件的 beta3 段之后没有再追加 beta4 段 —— **v1.6.0-beta4 的全部状态、已确证读数、未做项、
+下一步命令与授权状态，单独写在 `docs/HANDOVER_2026-10-02.md`**（接手的入口就是那份）。
+
+要点前置（细节与取证路径在那份文件里）：
+
+- 产品侧四条修复（U1 两半 / U5 / U4b 三段）**代码已落地**，但**未提交、未出包、未推送**。
+- 已经有一次**全部通过**的整轮（清单 65 条，`tests/output/t84/round-beta4-baseline.log`），
+  可它跑在我最后两处改动（U4b 中心播报 + 撤掉一条假臂）**之前** ⇒ 不能当 beta4 的基线用。
+- U4b 的硬件后端那支播报**目前没有闸内判据**（只有 GUI 采集与旧预设回放到得了，CLI 到不了），
+  补法（`ServiceProbe` 加 `aviftune` mode、进程内直调 `BuildAvifOptions`）已写成六条断言列在账上。
+- ⚠ `tests/output/` 整棵被 `.gitignore` 挡住 ⇒ 上面那些日志会被一次 `git clean -xdf` 抹掉；
+  关键读数已经抄进两份文档的表里，但**复现**要在清理前把日志搬出去。

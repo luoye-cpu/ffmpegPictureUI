@@ -81,9 +81,18 @@ namespace FfmpegGui.Services
         }
 
         /// <summary>
-        /// 通过 exiftool 读取图片的 ISO 感光度（EXIF PhotographicSensitivity）。
+        /// 通过 exiftool 读取图片的 ISO 感光度，用于 cjxl 的 <c>--photon_noise_iso</c>。
         /// 返回 null 表示无法读取（exiftool 不可用 / 文件无 ISO 元数据 / 解析失败）。
         /// 带 5 秒超时保护，防止 exiftool 挂起阻塞编码队列。
+        /// <para>
+        /// ⚠⚠ 2026-10-02 修复：原实现**只读** <c>-PhotographicSensitivity</c>（EXIF 2.3 的 0x8833），
+        /// 而实测 Sony 机型（含 <c>.ARW</c> 与其导出的 16-bit TIFF、以及 dngtool 生成的中间 TIFF）
+        /// **从不写这个标签** —— 三种素材实测该标签全为空、而 <c>-ISO</c> 均返回 400。
+        /// 结果是「自动读取 EXIF ISO」功能 100% 失效（用户勾了却拿不到任何噪声，只有一行无人接的日志）。
+        /// ⇒ 改为**多标签保序回退**：<c>-f</c> 强制打印缺失标签为 <c>-</c> 以保持行序，
+        ///   按 <c>ISO → PhotographicSensitivity → ISOSpeedRatings → SonyISO → ISOSetting</c>
+        ///   取第一个可解析的正整数。<c>-ISO</c> 是 exiftool 复合标签，覆盖面最广，放在最前。
+        /// </para>
         /// </summary>
         public static async Task<int?> ReadIsoAsync(string imagePath, Action<string>? log = null, CancellationToken ct = default)
         {
@@ -95,7 +104,8 @@ namespace FfmpegGui.Services
                 var psi = new ProcessStartInfo
                 {
                     FileName = exe,
-                    Arguments = $"-s -s -s -PhotographicSensitivity \"{imagePath}\"",
+                    // -f：缺标签也打印一行 "-"，保证下面的取数顺序与标签顺序一一对应
+                    Arguments = $"-f -s -s -s -ISO -PhotographicSensitivity -ISOSpeedRatings -SonyISO -ISOSetting \"{imagePath}\"",
                     RedirectStandardOutput = true,
                     StandardOutputEncoding = Encoding.UTF8,
                     RedirectStandardError = true,
@@ -113,11 +123,15 @@ namespace FfmpegGui.Services
                 {
                     var output = await p.StandardOutput.ReadToEndAsync(cts.Token);
                     await p.WaitForExitAsync(cts.Token);
-                    var line = output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
-                        .FirstOrDefault()?.Trim();
-                    // 某些相机 ISO 可能是 "200" 或带小数（"100.5"），取整数部分
-                    if (!string.IsNullOrEmpty(line) && int.TryParse(line.Split('.')[0], out var iso) && iso > 0)
-                        return iso;
+                    // 多标签保序回退：跳过 exiftool -f 为缺失标签打印的 "-"，取第一个可解析的正整数。
+                    // 某些相机 ISO 可能是 "200" 或带小数（"100.5"），取整数部分。
+                    foreach (var raw in output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+                    {
+                        var line = raw.Trim();
+                        if (string.IsNullOrEmpty(line) || line == "-") continue;
+                        if (int.TryParse(line.Split('.')[0], out var iso) && iso > 0)
+                            return iso;
+                    }
                 }
                 catch (OperationCanceledException)
                 {
@@ -820,6 +834,25 @@ namespace FfmpegGui.Services
             logCallback?.Invoke($"[exiftool] 嵌入 ICC Profile: {Path.GetFileName(iccFilePath)} → {Path.GetFileName(targetPath)}\n");
 
             return await RunWriteAsync(targetPath, args, logCallback);
+        }
+
+        /// <summary>
+        /// 把一张现成的 JPEG 嵌成目标文件的 <b>EXIF IFD1 缩略图</b>（<c>-ThumbnailImage&lt;=file</c>）。
+        /// 命令行形状由 <see cref="ThumbnailService.BuildEmbedArgs"/> 单点产出（探针直接对账那份）。
+        /// 实测：jpg / png / webp / avif / jxl 写后能回读到图像数据；tiff 会被 exiftool 拒（0 updated）。
+        /// </summary>
+        public static async Task<int> EmbedThumbnailAsync(
+            string thumbPath, string targetPath,
+            Action<string>? logCallback = null, CancellationToken ct = default)
+        {
+            if (_detectedPath == null)
+            {
+                Detect();
+                if (_detectedPath == null) return -1;
+            }
+
+            return await RunWriteAsync(targetPath, ThumbnailService.BuildEmbedArgs(thumbPath, targetPath),
+                logCallback, ct);
         }
 
         /// <summary>为 JPEG 添加 JFIF 头（提高手机兼容性）</summary>

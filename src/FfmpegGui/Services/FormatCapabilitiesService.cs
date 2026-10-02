@@ -19,6 +19,12 @@ namespace FfmpegGui.Services
         public List<string> SupportedColorSpaces { get; set; } = new List<string>();
         /// <summary>是否支持 Gain Map (Ultra HDR) 编码</summary>
         public bool SupportsGainMap { get; set; }
+        /// <summary>
+        /// 能否在产物里落一个**能被回读的 EXIF IFD1 缩略图**（见 <c>ThumbnailService</c> 的实测矩阵）。
+        /// 判据是「写入后消费者取得到图像数据」，不是「规范上允许」——所以按位赋值的依据是实测，
+        /// 未实测过的格式一律 <c>false</c>（诚实原则：不确定就不给 UI 打开这条路）。
+        /// </summary>
+        public bool SupportsThumbnail { get; set; }
         /// <summary>是否原生支持 CICP (H.273) 色彩标记 (primaries/trc/matrix)</summary>
         public bool SupportsCicp { get; set; }
         /// <summary>CICP 支持说明（用于 UI 提示）</summary>
@@ -222,6 +228,21 @@ namespace FfmpegGui.Services
                 SupportedColorSpaces = new List<string> { },
                 SupportsGainMap = false
             };
+
+            // ── 缩略图（EXIF IFD1）兑现性：按 2026-10-02 本机实测赋值 ──
+            // 测法：ffmpeg 造目标件（先验尺寸/FileType 非空）→ `exiftool -ThumbnailImage<=donor.jpg` →
+            //       `exiftool -b -ThumbnailImage` 回读，**字节数须等于 `ThumbnailLength` 声明值**。
+            // 实测通（写后取回 1980 B，首 4 字节 `ff d8 ff e0` 是真 JPEG）：
+            //   jpg / png / **apng** / webp / avif / jxl
+            //   ⇒ apng 与 png 共用 eXIf 通路，用第二个独立实现（`cjxl` 读 → `jxlinfo` 报 Exif 字节数）交叉核过：
+            //     两者同为 2230 B，而 ffmpeg 造的悬空件只有 250 B ⇒ 差额就是被 muxer 丢掉的缩略图数据。
+            //   avif 另有 `avifenc --exif FILE` 一条内嵌路（blob 逐字节往返 2152 B）。
+            // 实测不通（一律「0 image files updated」，且 **退出码仍是 0** ⇒ 只看 rc 会假绿）：
+            //   tiff / **gif** / **jxr**(FileType=HDP) / **dng**(FileType=DNG)
+            //   ⇒ GIF 结构上就没有 EXIF 槽位；JXR 能收 ICC 却收不下 IFD1；DNG 虽为 TIFF 家族但 exiftool 拒建。
+            // 未测 ⇒ 仍一律 false：无（能力表里 10 个条目已全部量过一遍）。
+            foreach (var f in new[] { "jpg", "png", "apng", "webp", "avif", "jxl" })
+                if (_cache.TryGetValue(f, out var thumbCap)) thumbCap.SupportsThumbnail = true;
         }
 
         private static async Task DetectLocalFfmpegCapabilitiesAsync(string? ffmpegPath = null)
