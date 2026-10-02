@@ -183,6 +183,29 @@ ffmpegPictureUI/
 
 ---
 
+## 📦 Extracted standalone libraries (MIT, usable on their own)
+
+Two parts of this project are **fully managed, make no process calls and read no app settings**;
+they ship as two separate public repositories under **MIT**, so you can use them without
+taking on this project's GPL-3.0:
+
+| Repo | Contains | Deliberately excludes | Pre-release self-verification (measured locally) |
+|---|---|---|---|
+| **[ColorMatrix](https://github.com/luoye-cpu/ColorMatrix)** | Color-math kernel: CICP/H.273 primaries tables and matrix derivation, Bradford chromatic adaptation, standard transfer functions (sRGB / PQ / HLG …), BT.2100 OOTF, BT.2446 Method A, tone-mapping operators, per-pixel kernels and the AVX2 path | ffmpeg / cjxl command orchestration, the planning layer, settings singletons | Build: **0 warnings, 0 errors**; zero-dependency self-test **43 PASS / 0 FAIL**; primaries table cross-checked token-by-token against zimg |
+| **[GainMapKit](https://github.com/luoye-cpu/GainMapKit)** | Gain-map container layer: Ultra HDR JPEG parsing (ISO 21496-1 metadata + MPF), and **probing and writing** the `tmap` derived item in AVIF / HEIC | pixel-level gain application, encode scheduling, XMP `hdrgm` reading | Build: **0 warnings, 0 errors**; self-test **78 PASS / 0 FAIL**, 6 of 6 targeted mutations caught; output accepted by `avifdec`, which reads back the requested CICP |
+
+**Why MIT is possible**: all code in these two parts was written by this repository's sole author
+(`git log` author de-duplication = 1 person, including every commit touching those files), and it
+contains no ffmpeg source. The only third-party **code** is one gamut-mapping operator in
+ColorMatrix ported line-by-line from libjxl (BSD-3-Clause); its attribution obligation is
+discharged by that repository's `THIRD-PARTY-NOTICES.md`.
+
+**Relationship to this repository**: the corresponding code **here remains authoritative** — the two
+libraries are extracted copies (no `ProjectReference` cutover yet), so changes to that logic must be
+made in both places. §7 of each library's README lists the deliberate differences to map back.
+
+---
+
 ## 📝 Changelog
 
 Current version **v1.6.0** (2026-09-28). Full release history: **[CHANGELOG.en.md](CHANGELOG.en.md)**.
@@ -192,6 +215,10 @@ Current version **v1.6.0** (2026-09-28). Full release history: **[CHANGELOG.en.m
 
 This project is licensed under the **GNU General Public License v3.0 (GPL 3.0)**.
 
+- ⚠ Scope: this project itself is GPL-3.0; the two libraries extracted from it —
+  **[ColorMatrix](https://github.com/luoye-cpu/ColorMatrix)** and **[GainMapKit](https://github.com/luoye-cpu/GainMapKit)** —
+  are each published separately under **MIT** and may be used independently of this project and of the GPL
+  (see the "Extracted standalone libraries" section above).
 - Full license text: [LICENSE](LICENSE)
 - Copyright and required attributions: [NOTICE](NOTICE)
 - Third-party component notices: [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)

@@ -183,6 +183,25 @@ ffmpegPictureUI/
 
 ---
 
+## 📦 已抽出的独立库（MIT，可单独取用）
+
+本项目里有两块**纯托管、零进程调用、不依赖应用设置**的实现，已抽成两个独立公开仓，
+以 **MIT** 发布 —— 你可以只用它们，而不接受本项目的 GPL-3.0：
+
+| 仓 | 装什么 | 刻意不装什么 | 出货前自证（本机实测）|
+|---|---|---|---|
+| **[ColorMatrix](https://github.com/luoye-cpu/ColorMatrix)** | 色彩数学内核：CICP/H.273 原色表与矩阵推导、Bradford 色适应、标准传递函数（sRGB / PQ / HLG …）、BT.2100 OOTF、BT.2446 Method A、色调映射算子、逐像素内核与 AVX2 路径 | ffmpeg / cjxl 命令行编排、规划层、设置单例 | 构建 **0 警告 0 错误**；自带零依赖自检 **43 PASS / 0 FAIL**；原色表逐 token 对撞 zimg |
+| **[GainMapKit](https://github.com/luoye-cpu/GainMapKit)** | 增益图容器层：Ultra HDR JPEG（ISO 21496-1 元数据 + MPF）解析，AVIF / HEIC 的 `tmap` 派生项**探测与写出** | 像素级增益合成、编码调度、XMP `hdrgm` 读取 | 构建 **0 警告 0 错误**；自检 **78 PASS / 0 FAIL**、6 处定向变异 6/6 被抓；产物被 `avifdec` 接受并读回正确 CICP |
+
+**凭什么能单独给 MIT**：这两块的代码全部出自本仓唯一作者（`git log` 全量作者去重 = 1 人，
+含触及这些文件的提交），且不含 ffmpeg 源码。唯一的第三方**代码**是 ColorMatrix 里一处按
+libjxl 移植的色域映射算子（BSD-3-Clause），其署名义务由该仓 `THIRD-PARTY-NOTICES.md` 履行。
+
+**与主仓的关系**：主仓这几处代码**仍是权威**，两个库是抽取副本（尚未切 `ProjectReference`）
+⇒ 改到这些逻辑时两边都要动；每个库 README 的 §7 记着回灌必须逐条映射的既定差异。
+
+---
+
 ## 📝 更新日志
 
 当前版本 **v1.6.0**（2026-09-28）。完整版本历史见 **[CHANGELOG.md](CHANGELOG.md)**。
@@ -192,6 +211,9 @@ ffmpegPictureUI/
 
 本项目采用 **GNU General Public License v3.0 (GPL 3.0)** 许可。
 
+- ⚠ 范围区分：本项目本身是 GPL-3.0；从中抽出的两个独立库
+  **[ColorMatrix](https://github.com/luoye-cpu/ColorMatrix)** 与 **[GainMapKit](https://github.com/luoye-cpu/GainMapKit)**
+  各自以 **MIT** 单独发布，可以脱离本项目、脱离 GPL 使用（见上节「已抽出的独立库」）。
 - 完整许可文本：[LICENSE](LICENSE)
 - 版权与必需声明：[NOTICE](NOTICE)
 - 第三方组件许可清单：[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)
