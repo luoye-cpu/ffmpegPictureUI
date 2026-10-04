@@ -69,13 +69,17 @@ internal static class IsoBmffGainMapWriter
     /// </param>
     /// <param name="baseTransfer">底图 CICP transfer；仅当 <paramref name="basePrimaries"/> ≥ 0 时生效。</param>
     /// <param name="baseMatrix">底图 CICP matrix；仅当 <paramref name="basePrimaries"/> ≥ 0 时生效。</param>
-    /// <param name="baseFullRange">底图 nclx 的 full_range 位。</param>
+    /// <param name="baseFullRangeFallback">
+    /// 底图 nclx 的 full_range 位。**兜底值**：仅当底图**不带** nclx 型 colr 盒（或那个 colr 是 ICC 型）
+    /// 时才用它；底图自带 nclx 时**一律以原 colr 的该位为准**（<see cref="PatchColr"/> 只读继承）。
+    /// ⚠ 默认 <c>false</c>（limited/tv）：yuv420p 的约定，也与 ffmpeg 实产一致（2026-10-03 实测）。
+    /// </param>
     /// <param name="alternateTransfer">
     /// 替代图（HDR 侧）的 CICP transfer，默认 16 = PQ —— 与 libavif 自家增益图样本一致
     /// （其 `Alternate image` 报 `Transfer Char. : 16`）。
     /// </param>
     public static BuildResult Build(byte[] baseAvif, byte[] gainmapAvif, byte[] tmapPayload,
-        int basePrimaries = -1, int baseTransfer = -1, int baseMatrix = -1, bool baseFullRange = true,
+        int basePrimaries = -1, int baseTransfer = -1, int baseMatrix = -1, bool baseFullRangeFallback = false,
         int alternateTransfer = 16)
     {
         var r = new BuildResult();
@@ -90,7 +94,9 @@ internal static class IsoBmffGainMapWriter
 
             // 底图色度：ffmpeg 不采纳 CLI 标志 ⇒ 由本写出器重写 colr（单一真值在调用方）。
             if (basePrimaries >= 0)
-                PatchColr(baseImg.Props, basePrimaries, baseTransfer, baseMatrix, baseFullRange);
+                // ⚠ 用写回值覆盖入参：PatchColr 会只读继承底图原 colr 的 full_range 位，
+                //   下面给 tmap 挂的 colr 必须沿用同一个值（同一份像素，range 不可能两说）。
+                baseFullRangeFallback = PatchColr(baseImg.Props, basePrimaries, baseTransfer, baseMatrix, baseFullRangeFallback);
 
             // 增益图不得大于底图（ISO 21496-1 要求增益图是底图的降采样；反向会解码错位）
             if (baseImg.Width > 0 && gmImg.Width > 0
@@ -121,7 +127,7 @@ internal static class IsoBmffGainMapWriter
             if (basePrimaries >= 0)
             {
                 ipcoChildren.Add(Box("colr", Concat(Ascii("nclx"), U16(basePrimaries), U16(alternateTransfer),
-                    U16(baseMatrix), new[] { (byte)(baseFullRange ? 0x80 : 0x00) })));
+                    U16(baseMatrix), new[] { (byte)(baseFullRangeFallback ? 0x80 : 0x00) })));
                 assocTmap.Add(ipcoChildren.Count);
             }
 
@@ -249,20 +255,51 @@ internal static class IsoBmffGainMapWriter
     /// 重写底图 `colr` 盒的 nclx 色度。**必须做**：实测 ffmpeg 的 `avif` muxer 不采纳
     /// `-color_primaries/-color_trc`（写出 `primaries=2/transfer=2` 即 unspecified），
     /// 若不自控 ⇒ 底图色度标注与像素不符（本仓最忌讳的「宣称 ≠ 交付」）。
+    ///
+    /// ⚠⚠ **2026-10-03 修正：本函数只负责修 CICP 三字段，`full_range` 位改为只读继承底图原 colr。**
+    /// 修正前该位由调用方参数决定且默认 `true`（full），而 ffmpeg 实产是 **tv** —— 实测 libaom-av1
+    /// 静态图 `ffprobe color_range=tv`、容器内 colr 盒末字节 `0x00`（`00 00 00 13 … 6e 63 6c 78 00 02 00 02 00 02 00`）。
+    /// ⇒ 每条 AVIF 增益图产物的主图都被贴成 full range，而像素明明是 limited：Y∈[16,235] 被按 [0,255] 解读，
+    /// 黑阶抬起、对比度压缩。这正是本函数注释开头宣称要消掉的形状。
+    /// 权威口径：libultrahdr `avifultrahdr.cpp:435/520` 同样是「取**实际图像**的 range」而非硬编码。
     /// </summary>
-    private static void PatchColr(List<byte[]> props, int primaries, int transfer, int matrix, bool fullRange)
+    /// <param name="fullRangeFallback">底图不带 nclx 型 colr 时才启用的兜底值。</param>
+    /// <returns>最终落到 colr 里的 full_range（供 tmap 的 colr 对齐同一份像素）。</returns>
+    private static bool PatchColr(List<byte[]> props, int primaries, int transfer, int matrix, bool fullRangeFallback)
     {
+        bool fr = fullRangeFallback;
         for (int i = 0; i < props.Count; i++)
         {
             if (!IsBox(props[i], "colr")) continue;
-            // colr 非 FullBox：content = colour_type(4) + 各 2 字节字段 + full_range 位（1 字节）
+            // ⚠ 先读原值再整盒重建：range 是 ffmpeg 如实写下的，我们无权替它改口。
+            var own = ReadNclxFullRange(props[i]);
+            if (own.HasValue) fr = own.Value;
             props[i] = Box("colr", Concat(Ascii("nclx"), U16(primaries), U16(transfer), U16(matrix),
-                new[] { (byte)(fullRange ? 0x80 : 0x00) }));
-            return;
+                new[] { (byte)(fr ? 0x80 : 0x00) }));
+            return fr;
         }
         // 原文件没有 colr ⇒ 补一个（无色彩标注比标错更安全，但既然调用方给了值就写上）
         props.Add(Box("colr", Concat(Ascii("nclx"), U16(primaries), U16(transfer), U16(matrix),
-            new[] { (byte)(fullRange ? 0x80 : 0x00) })));
+            new[] { (byte)(fr ? 0x80 : 0x00) })));
+        return fr;
+    }
+
+    /// <summary>
+    /// 从已有 `colr` 盒读出 nclx 的 full_range 位；不是 nclx 型（ICC/‘rICC’/‘prof’）或结构过短 ⇒ 返回 null。
+    /// <para>colr 不是 FullBox，content = colour_type(4) + primaries(2) + transfer(2) + matrix(2) + full_range(1)
+    /// ⇒ 最小合法盒总长 = 8(header) + 11 = 19 字节（与 ffmpeg 实测产物长度相符）。</para>
+    /// </summary>
+    private static bool? ReadNclxFullRange(byte[] colrBox)
+    {
+        if (colrBox == null || colrBox.Length < 8 + 11) return null;
+        if (Encoding.ASCII.GetString(colrBox, 8, 4) != "nclx") return null;
+        // ⚠ 用**固定偏移**读 full_range 位，**不用「末字节」**（2026-10-04 修 P2-4）：
+        //   盒布局 = size(4)+type(4) | 'nclx'(4) | primaries(2) | transfer(2) | matrix(2) | full_range(1)
+        //   ⇒ full_range 恒在偏移 8+4+2+2+2 = 18。原写法 `colrBox[Length-1]` 只在「盒恰好 19 字节」时
+        //   才等价；若上游多写了填充/未知尾字节，末字节读到的就不是 range 位（**静默读错位**比读不到更糟）。
+        //   上面的 `Length < 19` 前置已保证 [18] 在界内。
+        const int FullRangeOffset = 8 + 4 + 2 + 2 + 2;   // = 18
+        return (colrBox[FullRangeOffset] & 0x80) != 0;
     }
 
     private static byte[] BuildInfe(int itemId, string itemType)
