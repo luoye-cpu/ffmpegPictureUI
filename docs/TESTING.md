@@ -1,4 +1,4 @@
-﻿# 🧪 FFmpegPictureUI 测试规范
+# 🧪 FFmpegPictureUI 测试规范
 
 > 版本: 1.0 | 最后更新: 2026-09-06 | 适用于 v1.6.0+
 
@@ -210,9 +210,11 @@ $p = "tests/ServiceProbe/bin/Debug/net11.0/win-x64/ServiceProbe.exe"
 & $p colormath                       # 原色表色度常数 ↔ 双锚（zimg 矩阵 + lcms chrm）逐元素对拍；含 null/重复对白名单
 & $p tooldetect                      # 外部工具探测：开销 / 诚实性 / 可注入性（由 `_probe-tool-detect.ps1` 编排）
 & $p thumbnail                       # 缩略图（EXIF IFD1）：逐容器「声明=数据闭合」+ 悬空负样本 + 诚实性/隐私/像素不变对照
+& $p avifgm                          # AVIF 增益图**写出侧** colr.full_range：PatchColr 只读继承 + Build 默认 false + 端到端产物底图 0x00
+& $p gamutfit                        # `RawGamutFit`（`--raw-color-target auto` 判据内核）：矩阵同源锁 + 正反互逆 + 阈值形态 + 三态 + EpsNeg/亮度地板负控（合成数据，不依赖素材）
 ```
 
-⚠ **`tooldetect` 有意不进 `$Probes` 默认清单**（上面的「24 个 mode」因此**不含**它）：它必须自己
+⚠ **`tooldetect` 有意不进 `$Probes` 默认清单**（上面的「26 个 mode」因此**不含**它）：它必须自己
 设 `FFMPEGGUI_EXT_SEARCH_DIRS` 把「系统扩展搜索」那一级钉成可控的临时根，否则判据会随本机
 装过什么应用而翻转 ⇒ 放进默认清单等于把一条**环境依赖**的断言混进确定性批次。跑法见该门禁脚本。
 
@@ -233,7 +235,33 @@ $p = "tests/ServiceProbe/bin/Debug/net11.0/win-x64/ServiceProbe.exe"
 **M2** 把能力表吹大给 `gif` 开一条实测走不通的路 ⇒ `pass=38 fail=2`，且 T13 读数
 `rc=0 / declared=0` 顺带暴露 **exiftool 对 TIFF 是"0 image files updated 但退出码 0"的静默空转**。
 **546 那个求和不含 `thumbnail`**，同样等下一次整轮才并）·
+⚠ **2026-10-03 把 `avifgm` 接进默认清单 ⇒ 第 25 个 mode**：它钉 **AVIF 增益图写出侧**的
+`colr.full_range`（`IsoBmffGainMapWriter.PatchColr` 曾把底图该位硬写成 `0x80` full，而 ffmpeg
+`libaom-av1` 对 yuv420p 实产 **tv `0x00`** ⇒ 每条 AVIF 增益图产物主图贴错 range）。**该缺陷长期静默
+的结构性原因 = 仓库内此前没有任何判据覆盖这条写出路径**（`gainmap-isobmff` 只测**解码**侧、
+`gainmap` 测 **JPEG** Ultra HDR 容器）⇒ 补此 mode 作永久锁。三段：① 反射直调 `PatchColr` 断言
+「只读继承 + 双向」；② 反射读 `Build` 的 `baseFullRange` 默认值必须 `false`；③ 端到端（真 ffmpeg +
+产品 `EncodeAsync(container:"avif")`）断言产物底图 colr 末字节 = `0x00`。⚠ ③ 依赖 `publish/PLAN/ffmpeg-full`
+（缺席时 ③ SKIP 点名、① ② 仍跑）。**546 那个求和同样不含 `avifgm`**。
 **前 21 个 mode 合计 546 / fail=0**（**2026-09-24 逐 mode 实测求和**：原 542 + `settings` **7 → 11**（+4 = 全字段落盘往返锁，见 §6 第 110 条）；
+⚠⚠ **2026-10-04 整轮实测：默认清单 26 个 mode 合计 `688 pass / 0 fail / 1 skip`**（口径 = 运行器 `-SkipScripts` 逐 mode 实测求和；
+构成 = 旧 25 mode 的 `673/0/1` **+ `gamutfit` 15/0**）。⚠ 本行是**唯一权威现量**，下面那段 `546` 只描述**前 21 个** mode 的**历史**读数。
+⚠⚠ **2026-10-04 审查订正（原写 `669 + 15 = 688`，与实测差 4）**：该分解式**把两处独立变化混算成了一处**。
+实测逐 mode 求和（本机复核，26 mode 合计确为 `688/0/1`）：`688 − 15(gamutfit) = **673**`，不是 669。
+差值来源 = 同日 `wire` 探针自身从 **89 → 92 → 93（+4）**，与 `gamutfit` 无关：
+`w3a-2026-10-04.log`（03:10）wire=89、25 mode 合计**恰为 669**；`colorsubset-2026-10-04.log`（09:16）wire=92；
+`colorsubset3-2026-10-04.log`（11:18）起 wire=93。⇒ `669` 本身**不是伪造的读数**，而是 **03:10 的陈旧值**，
+被当成了"紧接着 gamutfit 之前"的对照值（正是本文件反复记载的漂移形态）。**正确写法：`673 + 15 = 688`。**
+⚠ **2026-10-04 把 `gamutfit` 接进默认清单 ⇒ 第 26 个 mode**（单跑实测 `15/0`，进程内 ~0.3 s）：
+它钉 `RawGamutFit`（`--raw-color-target auto` 的降级判据内核）的四类缺陷 —— ① **常量矩阵与管线脱钩**（本内核的
+`M2020To709` **派生自 `ColorSpaceRegistry.LinearMatrixBetweenPrimaries`**；⚠ 两处独立维护同一对常数时**实测差 2.7e-4**，
+会让"判据说装得下、实际却裁切"）、② **阈值方向反了**、③ **「测不出」被当成「装得下」**（三态失效）、
+④ **亮度地板失效 ⇒ 暗部噪声参与判定**。全部用**合成数据**（不依赖素材、不依赖 ffmpeg）。
+**变异验牙**（改坏 `src/` 再原样改回）：`FloorFactor = 0` + `EpsNeg = 0` ⇒ `pass=11 fail=4`，
+且红的正是**行为断言** `(d) bt709 边界内的红` 与 `(e) 越界像素全在亮度地板以下`（不只是常量形状检查）；
+还原后回 `15/0`。⚠ `EpsNeg` 的必要性有实测：**恰在 bt709 边界上的颜色**（bt709 纯红换算成 bt2020 再换回）
+会因数值误差落到 **−1.7e-5** ⇒ 判据若取 `< 0` 则该类像素被整片计成越界、`frac` 恒 1.0 ⇒ **永远判 bt2020**。
+**546 那个求和不含 `gamutfit`**。
 ⚠ 下面这些是**当时**那批数字的溯源链，**不重述**：`geometry` = **52**；`metaraw` = **17**（RAW 元数据保留：显示名 + 补漏参数形态，**不依赖素材**）；`verdict` **36 → 41**，GainMap 格新增断言；
 **`runner` 2 → 8**（#20(0919) 心跳判据锁，见下方溯源）；
 `_run-step3-gates.ps1` 的 `$Probes` 默认值已含 `geometry` ⇒ 20 个 mode）。
@@ -258,7 +286,7 @@ $p = "tests/ServiceProbe/bin/Debug/net11.0/win-x64/ServiceProbe.exe"
 —— 计数会漂（`wire` 与 `verdict` 尤其）。⚠ **改任一 mode 的断言后必须重算总和**：
 历史上出现过「`contract` 100 → 107 改了、总数漏改、仍写 372」的错值，由复核方用「各 mode 求和 ≠ 372」抓出。
 ⚠ **某个 mode 若不在 `_run-step3-gates.ps1` 的 `$Probes` 默认值里，说明运行器清单与文档不同步**
-（可据此核对「mode 齐不齐」）。`_run-step3-gates.ps1` 的**脚本门禁清单**当前 **65 条**（2026-10-01 再接线：首批 5 条 **L3/产物级**套件 `verify-package-smoke.ps1` + `verify-jbrd-e2e.ps1` + `verify-orientation-rewrap.ps1` + `verify-gainmap-thirdparty.ps1` + `verify-encoder-knob-liveness.ps1`，由 60 → 65；再往前同日接的是 `verify-geometry-orientation.ps1` + `_probe-geometry-single-source-scan.ps1` + `verify-gainmap-host.ps1`（⇒ 60）；权威复现口径 = 运行器**自己打印的** `script-list=N 条（受管基线 N）` 那一行，它比任何外部正则都可靠 —— 本文原来给的 `(?ms)^\$scriptList...` 正则实测命中 0（数组内含大量注释行，闭合 `)` 不在行首），**别再拿它当复现命令**）
+（可据此核对「mode 齐不齐」）。`_run-step3-gates.ps1` 的**脚本门禁清单**当前 **68 条**（2026-10-04 第八次接线 1 条：`_probe-gui-control-wiring.ps1`（**GUI 控件接线结构锁** —— XAML 里声明了却没初始选中/没处理器的下拉必须为 0；立锁动机是实测 P0：`--raw-color-target` 的 GUI 下拉此前**完全无效**），由 67 → 68；同日第七次再接线 2 条：`_probe-jxl-input-target.ps1`（JXL 输入时用户显式目标必须生效，含负控）+ `_probe-raw-default-tier.ps1`（RAW 默认档按**实际交付档**判 HDR 承载力），由 65 → 67；2026-10-01 再接线：首批 5 条 **L3/产物级**套件 `verify-package-smoke.ps1` + `verify-jbrd-e2e.ps1` + `verify-orientation-rewrap.ps1` + `verify-gainmap-thirdparty.ps1` + `verify-encoder-knob-liveness.ps1`，由 60 → 65；再往前同日接的是 `verify-geometry-orientation.ps1` + `_probe-geometry-single-source-scan.ps1` + `verify-gainmap-host.ps1`（⇒ 60）；权威复现口径 = 运行器**自己打印的** `script-list=N 条（受管基线 N）` 那一行，它比任何外部正则都可靠 —— 本文原来给的 `(?ms)^\$scriptList...` 正则实测命中 0（数组内含大量注释行，闭合 `)` 不在行首），**别再拿它当复现命令**）
 （**2026-09-24 第六次接线后实测数组条目数** —— 复现命令必须**按数组锚定**（不用行号、也不用全文件 grep）：
 `$c = Get-Content -Raw tests/scripts/_run-step3-gates.ps1; [regex]::Matches([regex]::Match($c,'(?ms)^\$scriptList\s*=\s*@\((.*?)\)\r?\n\$actualScriptCount').Groups[1].Value,"'[^']+\.ps1'").Count` = **54**；
 ⚠ 本行原先给的 `grep -oE "'[^']+\.ps1'" … | sort -u | wc -l` **现已失真**：2026-09-22 实测它得 **53**，
@@ -2483,8 +2511,12 @@ test-output/
       ⇒ **强烈建议按上面的口径 ② 收紧**（把 `Services/ColorMapping/**` 与 `QueueProcessor` 的诊断串排除出计数），
       否则这把锁会持续**惩罚正确的改动**，最终被训练成"**看到它红就忽略**" —— 而那**正是**第 31~58 轮漂移无人发现的成因。
       ✅ **2026-09-18 维护者裁定并已实施：②-b 起步 → ②-c 终局。**
-      **判据现在是：`XAML ≤ 13` 且 `CsUi ≤ 832`**（登记全文在 `_probe-cjk-hardcode-scan.ps1` 头部；
-      ⚠ 2026-09-19 第七次抬基线前为 **824**，该次逐行登记见下方）。
+      **判据现在是：`XAML ≤ 13` 且 `CsUi ≤ 828`**（登记全文在 `_probe-cjk-hardcode-scan.ps1` 头部；
+      ⚠ 2026-09-19 第七次抬基线前为 **824**，该次逐行登记见下方。
+      ⚠ **2026-10-03 复核把误抬的 840 改回 821**（原「+3 归因」与「+16 来自 ServiceProbe」均不成立）；
+      ⚠ **2026-10-04 抬到 822**：成因 = RAW 默认三档批新增的一个中文**描述符名**
+      （`ColorIntentFactory` 的 `FromCicp(..., "RAW 中间件（dngtool 去马赛克线性输出）")`，非 UI 文案但按 ②-c
+      fail-closed 分桶必落 UI 桶）；同批 `captured.Log +=` 那条走 sink ⇒ 记 Diag 不计。余量仍为 0）。
       · **②-b**：`[tag]` 编码日志桶与「C# 总计」**退出判据**（仍以 ℹ 打印，保留可见性）——
         该桶**整体是诊断串**，而「总计」含它 ⇒ **两者必须同时退**，否则 TAG 一涨总计仍涨。
       · **②-c（终局）**：「其余」桶再按**是否走诊断 sink** 细分 ⇒ 判据只看 **`CsUi`（UI 面）**；

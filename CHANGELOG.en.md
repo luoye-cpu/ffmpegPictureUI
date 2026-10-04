@@ -1,4 +1,4 @@
-﻿# Changelog
+# Changelog
 
 All notable changes to this project are documented in this file.
 
@@ -21,6 +21,216 @@ All notable changes to this project are documented in this file.
 > ⚠ Added 2026-10-02: a **New** section (thumbnails) also lands in beta4 — one more product file,
 > `ThumbnailService.cs` (new), plus `ExifToolService.cs` / `FormatCapabilitiesService.cs` /
 > `QueueProcessor.cs` / `CliParser.cs` / two model files.
+
+**🆕 New option (2026-10-04): `--raw-color-target` / GUI "RAW output color target", three tiers**
+
+- **`rec2020` (default) = existing behaviour, unchanged** (prefer Rec.2020 expression: HDR-transfer-capable containers
+  and TIFF ⇒ `bt2020`, everything else ⇒ `bt709`).
+- **`auto`**: adds a **content judgement** on top of that default — if the image's **actual color usage does not exceed
+  the bt709 range**, Rec.2020 is not used.
+  ⚠ **Scope is limited to the "SDR-transfer bt2020 tiers"** (currently the TIFF exception tier); **HDR-transfer tiers
+  (avif / jxl / png-16bit) are not affected** — bt2020 is part of BT.2100/PQ, and dropping only the primaries would
+  produce `bt709 + PQ`, a legal but **non-standard** combination (the log names that tier as not downgraded).
+- **`rec709`**: forces `bt709 + sRGB` (maximum compatibility), overriding container capability.
+- **Criterion**: apply the `bt2020 → bt709` matrix and take the minimum component, **counting only pixels with
+  luminance ≥ 0.25 × Y(p99.9)** — shadow noise pushes chromaticity out of gamut while being completely invisible, so it
+  must be excluded (measured: every out-of-gamut pixel in the A7II sample sits in the two darkest deciles and drops to
+  **0** past the floor, whereas the yellow-flower sample peaks at **20.98%** in the brightest decile).
+  Thresholds: out-of-gamut pixels **< 0.1%** and worst negative excursion **> −0.5%**.
+  ⚠ **Three-state**: unmeasurable (size mismatch / no pixels above the floor) ⇒ **conservatively keep `bt2020`**;
+  "unmeasurable" is never treated as "fits".
+- The option is stored in **presets**; the GUI control lives in the "advanced color parameters" panel
+  (ASCII tokens + localized label/tooltip).
+- **Measured** (ARW → TIFF, A7II white-paper/line-art sample): default ⇒ `bt2020` (**regression lock: default unchanged**);
+  `auto` ⇒ measured out-of-bt709 = **0.0000%** ⇒ **`bt709`**; `rec709` ⇒ `bt709`; invalid value ⇒ **exit code 2** naming the value domain.
+- New `ServiceProbe gamutfit` (**15 assertions**, synthetic data, no assets needed): matrix **single-source lock**
+  (this kernel's `M2020To709` is derived from `ColorSpaceRegistry`; maintaining the pair independently in two places
+  **measured 2.7e-4 apart** ⇒ would let the judgement "say it fits" while the pipeline actually clips), forward/inverse
+  consistency, threshold shape, **three-state**, plus `EpsNeg` and **luminance-floor negative controls**.
+  **Mutation-verified** (`FloorFactor=0` + `EpsNeg=0` ⇒ `pass=11 fail=4`, and the red ones are the *behavioural*
+  assertions (d)(e); restoring gives `15/0`) ⇒ probe default manifest **25 → 26 modes**, whole-round total
+  **673 → 688 / 0 fail / 1 skip**
+  (⚠ corrected during the 2026-10-04 review: it previously read `669 → 688`, off by 4. `688 − 15 (gamutfit) = 673`;
+  `669` was a stale earlier same-day reading (03:10), during which the `wire` probe itself grew **89 → 93 (+4)**,
+  unrelated to this change).
+- Maintenance: CJK gate criterion `CsUi` **822 → 828** (+6, caused by a later same-day batch of **unregistered**
+  UI-bucket Chinese text; proven unrelated to this change by a rollback-controlled experiment — commenting out the
+  6 new `[RAW]` log lines moves `[tag] 493 → 487` while `CsUi` stays put); 4 `FfmpegCommandBuilder.cs` line anchors in
+  `_lib-matrix.ps1` re-pinned by **+4** (977→981 / 987→991 / 1019→1023 / 2061→2065).
+
+**🔧 Behaviour change (RAW default output target, 2026-10-03)**
+
+- **For RAW input with no user-selected target gamut, the output target is now chosen in three tiers**
+  (previously always `bt709|bt2020 + linear`, i.e. the **linear** intermediate was delivered as-is):
+  - container can carry an HDR **transfer** (`avif` / `jxl` / 16-bit `png`, …) ⇒ **Rec.2020 + PQ**;
+  - **TIFF is the sole exception** ⇒ **16-bit + Rec.2020 + SDR** (BT.2020 primaries + sRGB curve, described
+    by a generated BT.2020 ICC); ⚠ the bit depth default of **16-bit** was **pinned explicitly on 2026-10-04** —
+    before that it merely "happened to" follow the probed source depth, so a 12-bit camera would have yielded 12-bit;
+  - everything else (`webp` / `jpg` / `jpegli` / `gif` / `jxr` / `ppm`, …) ⇒ **bt709 + sRGB** (default route).
+  An explicitly chosen target gamut still wins, and is likewise clamped by container capability
+  (`GetFormatColorCapabilities` remains the single source of truth).
+- **Incidental fix: the colour engine's "pass-through" defect on RAW jobs.** `ColorPrimaries/ColorTrc`
+  used to serve **both** as the input declaration (`BuildColorArgsSplit`, emitted before `-i`) and as the
+  output semantics (`DecideOutputColor`), while dngtool's intermediate is **linear** — one field pair
+  cannot express two values: the input was correctly tagged `linear`, yet the output was dragged along by
+  that same `linear` ⇒ **not a single pixel was transformed** (measured: the ARW→TIF product is
+  byte-identical to the intermediate). Now split: new **runtime** fields `ColorSourceDeclPrimaries/Trc`
+  feed only the input side and the engine's source descriptor, while `ColorPrimaries/ColorTrc` denote the
+  output target only **on the two RAW / JXL self-produced-intermediate paths**; the source descriptor is built via `FromCicp(...)`, whose `CicpTag` confidence
+  exactly meets the mapping gate. Measured: ARW→TIF `decision: Map`, product `bt2020/iec61966-2-1`;
+  ARW→AVIF product `yuv420p12le + color_primaries=bt2020 + color_transfer=smpte2084`.
+  ⚠ Scoped during the 2026-10-04 review: the split **only covers the RAW / JXL paths**. The branch at
+  `FfmpegCommandBuilder.cs:832-852` **still** treats `ColorPrimaries/ColorTrc` as the pre-`-i` **input
+  declaration** whenever `ColorSourceDecl*` is absent (see the comment at `:813-822` and the same finding
+  logged in `docs/review-2026-10-04/audit-B-执行落盘.md`) ⇒ read standalone, the original wording was an
+  over-broad universal claim.
+- **Fixed: `--color-space` (non-advanced mode) used to be overwritten by the RAW default target** (fixed
+  2026-10-04). The RAW default block's "did the user already pick a target?" test only looked at
+  `UseAdvancedColorParameters` + `ColorPrimaries`/`ColorTrc`, **missing `ColorSpace` in non-advanced mode** —
+  exactly the path taken by the CLI `--color-space` and by the GUI friendly colour-space name ⇒ the RAW default
+  block still fired and **overwrote** an explicit user choice (measured: `--color-space sRGB` delivered
+  `bt2020 + sRGB` instead of the BT.709 primaries the user asked for). A new `rawUserChoseTarget` test fixes it:
+  an explicit choice on **any** colour-target axis (the friendly `ColorSpace` name / `ColorPrimaries` / `ColorTrc`)
+  is no longer overwritten by the RAW defaults; the **input declaration** `ColorSourceDecl*` was moved out of that
+  test and is now **always written** (the dngtool intermediate is **still linear** even when the user picked a target).
+- **The RAW tier's HDR test switched from `CanHdrWith(JpegGainMap)` to `CanHdr`**: `jpg` + gain map is **no longer**
+  counted as the HDR tier ⇒ the default target for such output moves from **Rec.2020 + PQ** to **bt709 + sRGB**
+  (an Ultra HDR **base image** must stay SDR; counting `jpg`+gain map as HDR would write the base image as PQ,
+  which is semantically wrong).
+
+**🔧 Behaviour change (precise colour parameters take effect + checkbox semantics, 2026-10-04)**
+
+- **The CLI switches `--color-primaries` / `--color-trc` used to be dead switches.** They (and the
+  same-named dropdowns in the GUI advanced panel) only counted as the **output target** when
+  `UseAdvancedColorParameters` was true — and **that boolean is only ever set by the GUI; `CliParser`
+  never sets it** ⇒ on the command line they only landed in the **input declaration** (before `-i`) and
+  could not change the output gamut (measured: ARW→TIF delivered `bt2020` whether or not they were
+  passed; the `bt709` the user asked for never took effect). The **semantic tests are now value-derived**
+  (new `FfmpegOptions.HasExplicitColorParams` = any of primaries / transfer / matrix non-empty); 12 semantic
+  read sites no longer consult that UI boolean, and are now split by role: **wherever the target identity is
+  decided, `HasExplicitColorTarget` is used** (primaries / transfer only — `--color-matrix` is an **input
+  matrix declaration**, not a target axis), while `HasExplicitColorParams` (matrix included) is used for
+  **input declarations / "did the user give precise parameters"**. Measured ARW→TIF: `--color-primaries bt709 --color-trc srgb`
+  ⇒ product ICC measured **BT.709** (`rXYZ=[0.4360,0.2225,0.0139]`).
+- **The "Advanced Color ⚙" checkbox is now explicitly a pure UI switch** (panel visibility / whether
+  modes 2, 3, 4 can be picked) and **no longer takes part in colour decisions** — checking it and leaving
+  it unchecked **no longer produce different strategies**. The three precise-parameter dropdowns
+  (primaries / transfer / matrix) gained a first entry **`auto` (= unspecified)** as the default:
+  **mode 1 (Recommended)** allows `auto` (falling back to the automatic default: BT.2020 when the
+  container can carry it, otherwise sRGB/BT.709), while **modes 2/3/4 require a manual choice** (the UI
+  names what is missing). Previously "checked but untouched" submitted `bt709/iec61966-2-1`, a different
+  target from "unchecked"; it now submits `null`, making the two **identical**.
+- **TIFF now always declares its target colour.** A TIFF whose target came from the precise parameters
+  previously got **no target ICC** (the post-step gate only looked at the friendly colour-space name)
+  ⇒ the product carried no colour declaration at all; the **RAW default tier** (no target chosen) was
+  excluded the same way ⇒ the ARW→TIF default product had pixels zscale-converted to `bt2020` yet
+  **declared nothing** (downstream reads it as sRGB — i.e. "the log claims bt2020 while the product
+  declares nothing"). Both paths now embed the target ICC. Measured, three cells (ARW→TIF): precise
+  parameters ⇒ 584 B **BT.709**; `--color-space sRGB` ⇒ 584 B **BT.709**; default tier ⇒ 584 B **BT.2020**.
+
+**🔧 Behaviour change (full-audit fixes: JXL input target / RAW default-tier bit depth / Ultra HDR peak, 2026-10-04)**
+
+- **For a JXL *input*, an explicitly chosen target gamut used to be silently swallowed** (fixed per the
+  2026-10-04 full audit, line B P1-1). The SDR-JXL "input colour declaration" was written into
+  `ColorPrimaries/ColorTrc`, which `DecideOutputColor` treats as the **output target** ⇒
+  `-i x.jxl -f png --color-space "Display P3"` still produced CICP `bt709` (P3 swallowed, no warning).
+  It now goes through `ColorSourceDeclPrimaries/Trc` (the same path as RAW) ⇒ measured product `smpte432` ✓.
+  In the same batch, `ColorIntentFactory`'s "self-produced intermediate" branch was tightened to recognise
+  **only RAW and Ultra HDR decode**, so a `ColorSourceDecl*` set by the CLI/other paths is no longer
+  mistaken for a "known source".
+- **The RAW default tier judged "HDR capability" from the wrong bit depth** (same audit, line D P1-2):
+  the old test used `BitDepth ?? 8` (the **requested** depth) while the delivered depth **follows the source**
+  (the RAW intermediate is always 16-bit) ⇒ a 16-bit HDR-capable container was misjudged as 8-bit
+  ⇒ the default tier dropped to `bt709/sRGB` while the product was actually `rgb48be` tagged SDR.
+  It now uses the **delivered** depth ⇒ **the default tier for ARW→PNG / JXL and other 16-bit containers
+  becomes `Rec.2020 + PQ`** (measured `rgb48be, smpte2084, bt2020`); `webp` / `jpg` (8-bit cap) stay
+  `bt709/sRGB`; the **TIFF exception tier stays `16-bit + Rec.2020 + SDR`**.
+- **Ultra HDR gain-map decode path: peak wired into the intent + input-side declaration added**
+  (same audit, line D P1-1, partial fix). The decoded product is **linear** HDR (1.0 = SDR white 203 nits);
+  previously there was neither an input-side colour declaration nor any wiring of `DecodedUltraHdrPeakNits`
+  into `it.HdrPeakNits` ⇒ a user-chosen target was blocked by the confidence gate and headroom stayed 1.
+  Both are now supplied ⇒ **an explicit target works with an Ultra HDR input** (measured `--color-space sRGB`
+  ⇒ `decision: Map`).
+  ⚠ **Still open**: with **no target**, this path has no default target (`decision: None`, pass-through);
+  and because the source curve is declared `linear` while the engine recognises HDR by **curve type** (PQ/HLG),
+  `Ultra HDR → SDR` still gets **no tone mapping** (values >1.0 clipped). This needs a **planning-layer**
+  decision about how "linear HDR intermediates" are recognised and what their default target is.
+
+**🔧 Behaviour change (the GUI "RAW output gamut mode" combo was previously **entirely inert**, fixed 2026-10-04)**
+
+- **The GUI combo for `--raw-color-target` (`RawColorTargetCombo`) was a "dead control"** (P0, claim ≠ delivery):
+  it was declared in `MainWindow.xaml`, resolved via `FindControl` in the `.cs`, and read in two places —
+  but it had **neither an initial selection nor a `SelectionChanged` handler** (all 8 of its sibling combos
+  **do** get an initial selection). ⇒ With nothing selected, Avalonia's `ComboBox` reports
+  `SelectedItem == null` ⇒ `RawColorTarget` was **always null** ⇒ the `?? "rec2020"` fallback in
+  `QueueProcessor` **always won** ⇒ **choosing `auto` / `rec709` in the GUI did nothing at all**, and the
+  command preview never refreshed. ⚠ **The CLI has always worked** (measured: `rec709` yields a BT.709 ICC)
+  ⇒ the defect was **GUI-only**. Added `SelectedIndex = 0` (= the `rec2020` default tier, so no existing
+  behaviour changes) plus a `SelectionChanged` handler.
+  **Permanent lock**: new gate 68 `_probe-gui-control-wiring.ps1` — a structural lock requiring every
+  `x:Name` combo in XAML to be wired via **one of three legitimate paths** (direct `.cs` assignment /
+  `FillComboByLoc` / XAML attributes), with a control (≥ 8 judged combos, guarding against an extractor
+  that silently matches nothing) and a named `RawColorTargetCombo` lock.
+  Mutation-verified: removing that combo's init + handler ⇒ **77/0 → 73/4 red**; restoring ⇒ **77/0**.
+- **`--raw-color-target rec709` is no longer silently dropped when a target gamut is also given** (P1):
+  the `rawUserChoseTarget` gate swallows the whole default-tier block (including `rec709`); the old log
+  said only "user specified a target gamut ⇒ keeping the user's config" and **never mentioned `rec709`**
+  ⇒ users believed `rec709` had taken effect while it was discarded, contradicting the `CliParser` help text
+  ("overrides container capability"). The ruling keeps **the explicit user target winning** (priority
+  unchanged) but now **names the conflict** and gives an actionable hint (drop the explicit target gamut).
+  ⚠ Only `rec709` conflicts: `rec2020` *is* the default tier and `auto`'s scope is the TIFF SDR exception
+  tier only ⇒ neither is announced (avoiding noise).
+- **The animated-fallback clone dropped 3 fields (P1, fixed)**: `CloneOptionsForFfmpeg` copies field by field
+  and missed the newly added `ColorSourceDeclPrimaries/Trc` and `RawColorTarget` (plus the pre-existing
+  `ColorFromRawDefault`). Without them, `ColorSourceDecl*` is empty on the animated fallback ⇒
+  `BuildColorArgsSplit` falls through to the branch that **treats `ColorPrimaries/ColorTrc` (now output
+  targets) as the pre-`-i` input declaration** — exactly the defect that field pair was introduced to kill
+  ⇒ the earlier fix had covered only the non-animated path. All 4 fields are now copied.
+
+**🔧 Behaviour change (an HDR→SDR tone map that is skipped is now named out loud, 2026-10-04)**
+
+- **With no HDR headroom the engine no longer goes silently "off" — it states that the map is an identity
+  and that your request was *not* dropped.** Mechanism: `ToneMapParams.Active = Mode != None && Headroom > 1+1e-6`,
+  and `Headroom = PeakNits/SdrWhiteNits`; when the **whole-frame measured content peak ≤ the SDR reference
+  white (203 nit)**, the clamp in `ApplyMeasuredPeak` pulls `PeakNits` to exactly 203 ⇒ `Headroom == 1.0`
+  ⇒ `Active = false` ⇒ the kernel's `toneOn = false` ⇒ **an explicit `--color-tone-map hable` is never run**.
+  ⚠ This is **mathematically correct** (with no headroom Hable is an identity over that range), so the
+  **algorithm was not changed**; but the log used to contradict itself (one line said `tonemap=off` while
+  another said `tonemap=Hable`) ⇒ **the outcome could not be attributed**. A new explicit line now reads:
+  `⚠️ measured content peak 199nit ≤ SDR reference white 203nit ⇒ no HDR headroom for this image; the tone map
+  (Hable) is an **identity** here and is passed through as headroom-free (**not** a dropped user request;
+  Headroom=1.00)`.
+- **New "kernel state" audit log** (an auditability gap): whether the HLG BT.2100 OOTF is actually applied
+  **used to be unobtainable from any log** (diagnosis had to work backwards from numbers, which once caused a
+  misdiagnosis). Every run now reports the source/target curve names, `HLG source OOTF=on/off(γ)`,
+  `HLG target inverse OOTF=on/off`, and the tone map's **mode / active / headroom / adopted peak**.
+  ⚠ Mode and active are printed **separately**: `active=no` has two opposite meanings
+  ("the user did not ask" vs "asked, but this image has no headroom ⇒ identity"), so printing only one is ambiguous.
+- ⚠ Incidental **bookkeeping honesty** (wording only, not a behaviour change): the planning layer's
+  `Backend=H2(FfmpegFilter)` currently has **no executor anywhere in the tree** (execution is always fulfilled
+  by the in-process H1 kernel), so the old log's claim that "zscale executes it" did not match reality; it now
+  carries `[⚠ no H2 executor in this tier; fulfilled by the in-process H1 kernel (bookkeeping item)]`.
+  **A real H2 execution path is a separate task.**
+
+**🔧 Behaviour change (range flag of the base image in AVIF gain-map products, 2026-10-03)**
+
+- **The base image of an AVIF gain-map product no longer receives a hard-coded "full" range flag**
+  (`IsoBmffGainMapWriter.PatchColr`): `PatchColr` used to **overwrite** the `full_range` bit of the base image's
+  `colr` box from the caller's argument, and `Build()` defaulted `baseFullRangeFallback` to `true` (full) ⇒ **the base
+  image of every AVIF gain-map product** was tagged full range while the pixels are actually **limited/tv**
+  (ffmpeg emits `color_range=tv`; the last byte of the container `colr` box is `0x00`) ⇒ a downstream reader that
+  honours "full" maps Y∈[16,235] onto [0,255], i.e. **lifted blacks and compressed contrast**. Now the bit is
+  **inherited read-only from the base image's own `colr`** (new `ReadNclxFullRange`), with the fallback default
+  flipped `true → false` (limited/tv, matching what ffmpeg actually produces); when the base image carries its own
+  nclx box, that box's bit always wins, and inheritance is **bidirectional** (a genuinely full-range base image is
+  still written full).
+  ⚠ This changes the label of **already-shipped artifacts**: AVIF gain-map files produced before this change carry
+  a base-image range tag that contradicts their pixels ⇒ they should be re-exported.
+  Permanent lock: a new `ServiceProbe avifgm` mode (25th in the default manifest) checks end to end that the
+  product's base-image `colr` last byte agrees with the base image's own range (three parts: ① unit-level —
+  `PatchColr` invoked by reflection must inherit read-only and bidirectionally; ② `Build`'s `baseFullRangeFallback`
+  default must be `false`; ③ a real ffmpeg-encoded tv base image put through the product writer must still yield
+  `0x00` in the product's base image).
 
 **✨ New**
 

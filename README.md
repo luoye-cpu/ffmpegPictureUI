@@ -4,6 +4,8 @@
 
 **v1.6.0** — 2026-09-28 发布 · 基于 Avalonia UI 的跨平台批量图片 / 动图 / 视频转换工具，封装 `ffmpeg` / `ffprobe` + 外部编码器（`cjxl` / `djxl` / `cjpegli` / `JxrEncApp` / `JxrDecApp`）。
 
+> ℹ️ 本 README 记述的是**已发布的稳定版 v1.6.0**；**本工作区当前为 `v1.6.0-beta4` 开发线**（最新条目见 [CHANGELOG.md](CHANGELOG.md)）。
+
 QQ 交流群：754439779 | [点击加群](https://qm.qq.com/q/M2181PvCkW)
 
 ---
@@ -212,6 +214,10 @@ ffmpegPictureUI/
 ## 📝 更新日志
 
 当前版本 **v1.6.0**（2026-09-28）。完整版本历史见 **[CHANGELOG.md](CHANGELOG.md)**。
+
+> ℹ️ 上句中的「当前版本」指**已发布的稳定版**（对应 git tag `1.6.0` @ 2026-09-28）。
+> **本工作区当前为 `v1.6.0-beta4` 开发线**（`src/FfmpegGui/FfmpegGui.csproj` 的 `<Version>` = `1.6.0-beta4`），
+> 该开发线的变更记录见 **[CHANGELOG.md](CHANGELOG.md)** 的 `v1.6.0-beta4` 条目；README 正文未随 beta 线同步更新。
 
 
 ## 📄 许可

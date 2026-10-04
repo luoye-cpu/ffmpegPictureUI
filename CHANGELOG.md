@@ -1,4 +1,4 @@
-﻿# 更新日志
+# 更新日志
 
 本项目所有值得注意的变更都记录在此文件。
 
@@ -18,6 +18,159 @@
 > （`CjxlService.cs` / `QueueProcessor.cs` / `ImageEncoderArgs.cs`），下面四条都各有产物级判据背书。
 > ⚠ 2026-10-02 追加：**新增**一节（缩略图）也落在 beta4 里，产品侧再 +1 个文件 `ThumbnailService.cs`
 > （新）+ `ExifToolService.cs` / `FormatCapabilitiesService.cs` / `QueueProcessor.cs` / `CliParser.cs` / 模型两处。
+
+**🆕 新选项（2026-10-04）：`--raw-color-target` / GUI「RAW 输出色域模式」三档**
+
+- **`rec2020`（默认）= 既有行为一字不改**（Rec.2020 表达优先：能承载 HDR 传递的容器与 TIFF ⇒ `bt2020`，其余 ⇒ `bt709`）。
+- **`auto`**：在默认档之上叠加**内容判定** —— 若该图**实际用色未超出 bt709 范围**，就不用 Rec.2020 表达。
+  ⚠ **作用域仅限「SDR 传递的 bt2020 档位」**（当前 = TIFF 例外档）；**HDR 传递档（avif / jxl / png-16bit）不参与** ——
+  bt2020 是 BT.2100/PQ 的组成部分，只降原色会产生 `bt709 + PQ` 这个合法但**非标准**的组合（日志显式点名该档位不降级）。
+- **`rec709`**：强制 `bt709 + sRGB`（最大兼容性），覆盖容器能力。
+- **判据**：经 `bt2020 → bt709` 矩阵后取最小分量，**只统计亮度 ≥ 0.25 × Y(p99.9) 的像素** ——
+  暗部噪声会把色度甩到色域外但完全不可见，必须排除（实测：A7II 样本的"超界"像素全在最暗两档，过地板后为 **0**；
+  而黄色花卉样本集中在最亮档 **20.98%**）。阈值 = 越界像素 **< 0.1%** 且最负超出 **> −0.5%**。
+  ⚠ **三态**：测不出（尺寸不符 / 地板以上无像素）⇒ **保守保持 `bt2020`**，绝不把"测不出"当成"装得下"。
+- 选项**进预设**；GUI 位于「高级色彩参数」面板内（取值用 ASCII 记号 + 本地化标签/提示）。
+- **实测**（ARW → TIFF，A7II 白纸黑线稿样本）：默认 ⇒ `bt2020`（**回归锁：默认档未变**）；
+  `auto` ⇒ 实测超出 bt709 = **0.0000%** ⇒ **`bt709`**；`rec709` ⇒ `bt709`；非法取值 ⇒ **退出码 2** 并点名取值域。
+- 新增 `ServiceProbe gamutfit`（**15 条**，合成数据、不依赖素材）：矩阵**同源锁**（本内核的 `M2020To709` 派生自
+  `ColorSpaceRegistry`，两处独立维护同一对常数时**实测差 2.7e-4** ⇒ 会让"判据说装得下、实际却裁切"）、正反互逆、
+  阈值形态、**三态**、`EpsNeg` 与**亮度地板负控**。已**变异验证**（`FloorFactor=0` + `EpsNeg=0` ⇒ `pass=11 fail=4`，
+  红的正是行为断言 (d)(e)；还原后回 `15/0`）⇒ 探针默认清单 **25 → 26 个 mode**，整轮合计 **673 → 688 / 0 fail / 1 skip**
+  （⚠ 2026-10-04 审查订正：原写 `669 → 688` 差 4。`688 − 15(gamutfit) = 673`；
+   `669` 是同日更早（03:10）的陈旧读数，其间 `wire` 探针自身 **89 → 93（+4）**，与本次改动无关）。
+- 维护：CJK 闸判据项 `CsUi` **822 → 828**（+6，成因 = 同日上午更晚一批**未登记**的 UI 桶中文；已用可回滚对照实验
+  证明与本次改动无关 —— 注释掉本次新增的 6 条 `[RAW]` 日志后 `[tag] 493 → 487` 而 `CsUi` 不变）；
+  `_lib-matrix.ps1` 的 4 处 `FfmpegCommandBuilder.cs` 行号锚重钉 **+4**（977→981 / 987→991 / 1019→1023 / 2061→2065）。
+
+**🔧 行为变更（RAW 默认输出目标，2026-10-03）**
+
+- **RAW 输入未指定目标色域时的输出目标改为三档**（此前一律 `bt709|bt2020 + linear`，等于把**线性**中间件原样交付）：
+  - 容器能承载 HDR **传递**（`avif` / `jxl` / `png`-16bit…）⇒ **Rec.2020 + PQ**；
+  - **TIFF 为唯一例外** ⇒ **16-bit + Rec.2020 + SDR**（bt2020 原色 + sRGB 曲线，经生成的 2020 ICC 描述）；
+    ⚠ 位深默认 **16-bit** 于 2026-10-04 **显式钉住** —— 此前只是"恰好"跟随源探测位深，换一台 12-bit 的机器就会变 12-bit；
+  - 其余（`webp` / `jpg` / `jpegli` / `gif` / `jxr` / `ppm`…）⇒ **bt709 + sRGB**（默认路线）。
+  用户显式选择目标色域时仍以用户为准，并同样受容器能力钳制（`GetFormatColorCapabilities` 单一真值）。
+- **顺带修复：RAW 任务的色彩引擎「直通」缺陷**。`ColorPrimaries/ColorTrc` 此前**同时**充当「输入声明」
+  （`BuildColorArgsSplit`，写在 `-i` 之前）与「输出语义」（`DecideOutputColor`），而 dngtool 的中间件是
+  **线性**的 ⇒ 一对字段表达不了两个值：输入被正确标成 `linear`、输出却被同一份 `linear` 拖住
+  ⇒ **像素一个都没动**（实测 ARW→TIF 产物与中间件 `cmp` 逐字节相同）。现拆为：新增**运行时**字段
+  `ColorSourceDeclPrimaries/Trc` 只喂输入侧与引擎源描述符（不再兼作目标），`ColorPrimaries/ColorTrc`
+  **在 RAW / JXL 这两条自产中间件的路径上**从此只表示输出目标；源描述符改用 `FromCicp(...)` ⇒ 置信度 `CicpTag` 恰达闸门阈值 ⇒ 映射被放行。
+  ⚠ 2026-10-04 审查收窄措辞：该拆分**只覆盖 RAW / JXL 路径**。`FfmpegCommandBuilder.cs:832-852` 的
+  分支在**没有** `ColorSourceDecl*` 时**仍**把 `ColorPrimaries/ColorTrc` 当作 `-i` 前的**输入声明**
+  （见 `:813-822` 的注释与 `docs/review-2026-10-04/audit-B-执行落盘.md` 的同类登记）⇒ 原措辞
+  「从此只表示输出目标」若脱离上下文单读，是**过宽的全称断言**。
+  实测：ARW→TIF `决策：Map`、产物 `bt2020/iec61966-2-1`；ARW→AVIF 产物
+  `yuv420p12le + color_primaries=bt2020 + color_transfer=smpte2084`。
+- **修复：`--color-space`（非高级模式）此前会被 RAW 默认目标覆盖**（2026-10-04 修）。RAW 默认块的「用户是否已选
+  目标」判据原先只查 `UseAdvancedColorParameters` + `ColorPrimaries`/`ColorTrc`，**漏了非高级模式下的 `ColorSpace`**
+  （CLI `--color-space`、GUI 色空间友好名走的正是这条）⇒ 用户显式选过目标时 RAW 默认块**照样触发并覆盖**
+  （实测 `--color-space sRGB` 交付 `bt2020 + sRGB`，而用户要的是 bt709 原色）。现新增 `rawUserChoseTarget` 判定：
+  用户显式指定**任一**色彩目标轴（色空间友好名 `ColorSpace` / `ColorPrimaries` / `ColorTrc`）都不再被 RAW 默认值覆盖；
+  同时把**输入声明** `ColorSourceDecl*` 移出该判定（**恒写** —— 用户选了目标时 dngtool 中间件**仍是线性**）。
+- **RAW 三档的 HDR 档判据由 `CanHdrWith(JpegGainMap)` 改用 `CanHdr`**：`jpg`+GainMap **不再**算作 HDR 档
+  ⇒ 这类目标的默认输出由 **Rec.2020 + PQ** 变为 **bt709 + sRGB**（Ultra HDR 的**底图**必须是 SDR；把 `jpg`+GainMap
+  算进 HDR 档会让底图写成 PQ，属语义错）。
+
+**🔧 行为变更（精确色彩参数生效 + 复选框语义，2026-10-04）**
+
+- **命令行的 `--color-primaries` / `--color-trc` 此前是"死开关"**。这两个开关（以及 GUI 高级面板里的同名下拉）
+  只有在 `UseAdvancedColorParameters` 为真时才算「输出目标」，而**那个布尔只有 GUI 会置位、`CliParser` 从不设置**
+  ⇒ 命令行传它们只落到 `-i` 之前的**输入声明**，改不了输出色域（实测：ARW→TIF 传与不传都交付 `bt2020`，
+  用户要的 `bt709` 从未生效）。现把**语义判据一律改为值派生**（新增 `FfmpegOptions.HasExplicitColorParams`
+  = 原色 / 传递函数 / 矩阵任一非空），12 处语义读点不再读那个 UI 布尔，并按职责分工：
+  **判「目标是谁」用 `HasExplicitColorTarget`**（只认原色 / 传递函数 —— `--color-matrix` 是**输入矩阵声明**、
+  不是目标轴），**判「是否给了精确参数 / 输入声明」才用 `HasExplicitColorParams`**（含矩阵）。
+  实测 ARW→TIF：`--color-primaries bt709 --color-trc srgb` ⇒ 产物 ICC 实测 **BT.709**
+  （`rXYZ=[0.4360,0.2225,0.0139]`）。
+- **「高级色彩参数 ⚙」复选框明确为纯 UI 开关**（面板可见性 / 能否选模式 2、3、4），**不再参与色彩决策** ——
+  勾选与不勾选**不再造成策略差别**。三个精确参数下拉（原色 / 传递函数 / 矩阵）新增首项 **`auto`（= 不指定）**
+  并作为默认：**模式 1（Recommended）** 允许 `auto`（走自动默认：容器能承载 BT.2020 ⇒ BT.2020，否则 sRGB/BT.709），
+  **模式 2/3/4 必须手动指定**（缺项时界面点名）。此前"勾选但没动下拉"会提交 `bt709/iec61966-2-1`，与"不勾选"
+  的目标不同；现提交 `null`，两者**完全一致**。
+- **TIFF 的目标色彩声明补齐**：经精确参数指定目标的 TIFF 此前**不嵌目标 ICC**（后置门控只看色空间友好名）
+  ⇒ 交付物零色彩声明；**RAW 默认档**（未指定目标）同样被排除 ⇒ ARW→TIF 默认档像素已被 zscale 转到 `bt2020`、
+  产物却**不声明任何色彩**（下游按 sRGB 误读 —— 属"日志宣称 bt2020 而产物不声明"）。现两路都嵌目标 ICC。
+  实测三格（ARW→TIF）：精确参数 ⇒ 584 B **BT.709**；`--color-space sRGB` ⇒ 584 B **BT.709**；默认档 ⇒ 584 B **BT.2020**。
+
+**🔧 行为变更（完整审查修复：JXL 输入目标 / RAW 默认档位深 / Ultra HDR 峰值，2026-10-04）**
+
+- **JXL 作为输入时，用户显式指定的目标色域此前被静默吞掉**（2026-10-04 完整审查 线B P1-1 修）。
+  SDR JXL 的「输入色声明」原先写进 `ColorPrimaries/ColorTrc`，而这对字段在 `DecideOutputColor` 里是
+  **输出目标** ⇒ `-i x.jxl -f png --color-space "Display P3"` 产物 CICP 仍是 `bt709`（P3 被吞、无任何告警）。
+  现改走 `ColorSourceDeclPrimaries/Trc`（与 RAW 同一条路）⇒ 实测产物 `smpte432` ✓。
+  同批把 `ColorIntentFactory` 的「自产中间件」分支收紧为**只认 RAW 与 Ultra HDR 解码**两条路，
+  命令行/其它路径设的 `ColorSourceDecl*` 不再被误当"已知源"。
+- **RAW 默认档的「HDR 承载力」判据用错了位深**（同审查 线D P1-2 修）：旧判据取 `BitDepth ?? 8`（**请求**档），
+  而实际交付位深**跟随源**（RAW 中间件恒 16-bit）⇒ 16-bit 可承载 HDR 的容器被误判成 8-bit
+  ⇒ 默认档降到 `bt709/sRGB`，产物是 `rgb48be` 却标 SDR。现按**实际交付档**判 ⇒
+  **ARW→PNG / JXL 等 16-bit 容器的默认档变为 `Rec.2020 + PQ`**（实测 `rgb48be, smpte2084, bt2020`）；
+  `webp` / `jpg`（8-bit 上限）仍为 `bt709/sRGB`；**TIFF 例外档仍为 `16-bit + Rec.2020 + SDR`**。
+- **Ultra HDR 增益图解码路径：峰值接入意图 + 补输入侧声明**（同审查 线D P1-1 部分修）。
+  解码产物是**线性** HDR（1.0 = SDR 白点 203 nits），此前既无输入侧色彩声明、也没把
+  `DecodedUltraHdrPeakNits` 接进 `it.HdrPeakNits` ⇒ 用户给的目标会被置信度闸门挡住、headroom 恒为 1。
+  现两者都补 ⇒ **用户显式目标在 Ultra HDR 输入下生效**（实测 `--color-space sRGB` ⇒ `决策：Map`）。
+  ⚠ **仍未解**：**未给目标时**该路径仍无默认目标（`决策：None` 直通）；且因源曲线声明为 `linear`、
+  而引擎的 HDR 认定是**曲线类型**（PQ/HLG），`Ultra HDR → SDR` 仍**不挂色调映射**（>1.0 截顶）。
+  需在**规划层**决定「线性 HDR 中间件」的 HDR 认定与默认目标。
+
+**🔧 行为变更（GUI「RAW 输出色域模式」下拉此前**完全无效**，2026-10-04 修）**
+
+- **`--raw-color-target` 的 GUI 下拉 `RawColorTargetCombo` 此前是"死的控件"**（P0，宣称≠交付）：
+  它在 `MainWindow.xaml` 里声明、在 `.cs` 里 `FindControl` 并被两处读取，
+  但**既没有初始选中、也没有 `SelectionChanged` 处理器**（其 8 个兄弟下拉**都有**初始选中）。
+  ⇒ Avalonia 的 `ComboBox` 无选中时 `SelectedItem == null` ⇒ `RawColorTarget` 恒为 **null**
+  ⇒ `QueueProcessor` 的 `?? "rec2020"` **永远生效** ⇒ **用户在 GUI 里选 `auto` / `rec709` 完全不起作用**，
+  且命令预览不刷新。⚠ **CLI 同参数一直正常**（实测 `rec709` 产物为 BT.709 ICC）⇒ 缺陷**仅在 GUI**。
+  现补 `SelectedIndex = 0`（= `rec2020` 默认档，不改变既有行为）+ `SelectionChanged` 处理器。
+  **永久锁**：新增门禁第 68 条 `_probe-gui-control-wiring.ps1` —— 结构锁：XAML 里每个 `x:Name` 下拉
+  必须在**三条合法路径**之一被接线（`.cs` 直赋 / `FillComboByLoc` / XAML 属性），
+  带反控（白名单外 combo ≥ 8，防提取器空跑）与 `RawColorTargetCombo` 点名锁。
+  变异验证：删掉该控件的初始选中 + 处理器 ⇒ **77/0 → 73/4 转红**；恢复 ⇒ **77/0**。
+- **`--raw-color-target rec709` 与显式目标色域同时给出时，不再被静默丢弃**（P1）：
+  `rawUserChoseTarget` 门会挡住整块默认档逻辑（含 `rec709`），旧日志只说「用户已指定目标色域 ⇒
+  保留用户配置」、**一个字都不提 rec709** ⇒ 用户以为 `rec709` 生效了，实际被丢弃，
+  且与 `CliParser` 帮助文本（"覆盖容器能力"）矛盾。语义裁定**用户显式目标优先**（不改既有优先级），
+  但**必须点名冲突**并给出可执行建议（去掉显式目标色域参数）。⚠ 仅 `rec709` 有冲突：
+  `rec2020` 即默认档、`auto` 的作用域只在 TIFF 那条 SDR 例外档 ⇒ 二者**不点名**（避免噪声）。
+- **动图回退路径的克隆漏抄 3 个字段（P1，已修）**：`CloneOptionsForFfmpeg` 逐字段手抄，
+  漏了本批新增的 `ColorSourceDeclPrimaries/Trc` 与 `RawColorTarget`（另有既有的 `ColorFromRawDefault`）。
+  不补 ⇒ 动图回退时 `ColorSourceDecl*` 为空 ⇒ `BuildColorArgsSplit` 回落到**拿
+  `ColorPrimaries/ColorTrc`（现为输出目标）当 `-i` 前输入声明**的分支 —— 正是这对新字段要消灭的缺陷
+  ⇒ 修复此前只覆盖非动图路径。现已补齐 4 个字段。
+
+**🔧 行为变更（HDR→SDR 色调映射被静默跳过时**如实点名**，2026-10-04）**
+
+- **无 HDR 余量时不再"静默 off"，而是出声说明"这是恒等、不是丢弃你的请求"**。
+  机制：`ToneMapParams.Active = Mode != None && Headroom > 1+1e-6`，而 `Headroom = PeakNits/SdrWhiteNits`；
+  当**整帧实测内容峰值 ≤ SDR 参考白（203nit）**时，`ApplyMeasuredPeak` 的钳制把 `PeakNits` 拉到正好 203
+  ⇒ `Headroom == 1.0` ⇒ `Active=false` ⇒ 内核 `toneOn=false` ⇒ **用户显式 `--color-tone-map hable` 整段不执行**。
+  ⚠ 这在数学上**是正确的**（无余量时 Hable 在该区间恒等），所以**没有改算法**；
+  但此前日志自相矛盾（同一份日志里一处打 `tonemap=off`、另一处打 `tonemap=Hable`）⇒ **无法归因**。
+  现新增一条点名日志：`⚠️ 实测内容峰值 199nit ≤ SDR 参考白 203nit ⇒ 本图无 HDR 余量，色调映射（Hable）
+  在此为**恒等**、按无余量直通处理（**不是**丢弃用户请求；Headroom=1.00）`。
+- **新增「内核状态」审计日志**（可审计性缺口）：HLG 的 BT.2100 OOTF 是否真的施加，**此前任何日志都拿不到**
+  （排查只能靠反推，曾导致误判）。现每次输出源/目标曲线名、`HLG源OOTF=开/关(γ)`、`HLG目标逆OOTF=开/关`、
+  `tonemap` 的**模式 / 激活 / headroom / 采用峰值**。⚠ 模式与激活**分开打**：`激活=否` 有
+  「用户没要」与「要了但本图无余量⇒恒等」两种相反含义，只打一个无法区分。
+- ⚠ 附带**记账诚实化**（文案，非功能）：计划层 `Backend=H2(FfmpegFilter)` 目前**全仓无执行体**
+  （实际恒由 H1 进程内内核兑现），原日志单方面声称"由 zscale 执行"与事实不符；现如实加注
+  `[⚠ 本档暂无 H2 执行体，实际由 H1 进程内内核兑现（记账项）]`。**真正的 H2 执行支属独立任务**。
+
+**🔧 行为变更（AVIF 增益图主图的 range 标签，2026-10-03）**
+
+- **AVIF 增益图产物的主图 range 标签不再被写死为 full**（`IsoBmffGainMapWriter.PatchColr`）：此前 `PatchColr`
+  按调用方参数**改写**底图 `colr` 盒的 `full_range` 位，且 `Build()` 的 `baseFullRangeFallback` 默认 `true`（full）
+  ⇒ **每条 AVIF 增益图产物的主图**都被贴上 full range 标签，而像素实为 **limited/tv**（ffmpeg 实产 `color_range=tv`、
+  容器内 `colr` 末字节 `0x00`）⇒ 下游按 full 解读会把 Y∈[16,235] 当成 [0,255]，表现为**黑阶抬起、对比度压缩**。
+  现改为**只读继承底图原 `colr` 的 `full_range` 位**（新增 `ReadNclxFullRange`），默认兜底值 `true → false`
+  （limited/tv，与 ffmpeg 实产一致）；底图自带 nclx 时一律以原 `colr` 为准，且继承是**双向**的
+  （底图真为 full 时仍写 full）。
+  ⚠ 这是**已交付产物的标签发生变化**：此前产出的 AVIF 增益图文件，其主图 range 标注与像素不符 ⇒ 需重新导出。
+  永久锁：新增 `ServiceProbe avifgm` 模式（默认清单第 25 个），端到端校验产物主图 `colr` 末字节与底图一致
+  （三段：① 单元级反射直调 `PatchColr`，验证只读继承且双向；② `Build` 的 `baseFullRangeFallback` 默认值必须 `false`；
+  ③ 真 ffmpeg 编 tv 底图经产品写出器后，产物底图 `colr` 仍为 `0x00`）。
 
 **✨ 新增**
 

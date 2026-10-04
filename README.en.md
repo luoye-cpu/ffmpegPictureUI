@@ -4,6 +4,8 @@
 
 **v1.6.0** — 2026-09-28 Release · Cross-platform batch image / animation / video converter built on Avalonia UI, wrapping `ffmpeg` / `ffprobe` plus external encoders (`cjxl` / `djxl` / `cjpegli` / `JxrEncApp` / `JxrDecApp`).
 
+> ℹ️ This README documents the **released stable v1.6.0**; **this working tree is on the `v1.6.0-beta4` development line** (latest entries in [CHANGELOG.en.md](CHANGELOG.en.md)).
+
 QQ Group: 754439779 | [Join Group](https://qm.qq.com/q/M2181PvCkW)
 
 ---
@@ -219,6 +221,11 @@ made in both places. §7 of each in-repo document lists the deliberate differenc
 ## 📝 Changelog
 
 Current version **v1.6.0** (2026-09-28). Full release history: **[CHANGELOG.en.md](CHANGELOG.en.md)**.
+
+> ℹ️ "Current version" above refers to the **released stable build** (git tag `1.6.0` @ 2026-09-28).
+> **This working tree is on the `v1.6.0-beta4` development line** (`<Version>` in `src/FfmpegGui/FfmpegGui.csproj`
+> = `1.6.0-beta4`); its changes are recorded under the `v1.6.0-beta4` entry of **[CHANGELOG.en.md](CHANGELOG.en.md)**.
+> The README body has not been kept in step with the beta line.
 
 
 ## 📄 License

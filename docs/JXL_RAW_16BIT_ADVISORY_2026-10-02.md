@@ -28,6 +28,7 @@
 | **B 后端能力点名** | ✅ 已修 | `QueueProcessor`（cjxl ISO 解析之后）新增：后端非 Cjxl 且目标 jxl 且用户勾了噪声/渐进 ⇒ 写日志点名并指路 | 构建通过；UI 侧本就由 `JxlCjxlPanel` 可见性挡住，此条补 CLI/预设路径 |
 | **D 元数据** | ✅ **已修**（引擎 cjxl 出口 SDR 走 PNG 中转） | `RawColorPipeline.EncodeJxlViaCjxlAsync` 双分支 | 实机端到端：`DSC00121.ARW → .jxl`（20 s）产物 **ISO=400 / ILCE-7M2 / DateTimeOriginal / LensModel 全保留**、XMP 2.7 KB 在、6024×4024 **16-bit** 不变、带 ISOBMFF 容器；门禁 verify-color-wiring **142/0** |
 | **E 色彩标注** | ⚠ 刻意未动 | 未动 | `RAW_PIPELINE_AUDIT §3.5` 警告：当前错位是自洽的，单边改 `trc` 会破坏平衡 |
+| **G dngtool 内嵌 JXL 的 distance 公式** | ⚠ **刻意未动**（2026-10-03 复查登记） | 未动 | `tools/src/dngtool/dngtool.cpp:1392` 仍是**旧公式** `(100-q)*15/100`，与 GUI 侧已换的 libjxl 官方曲线（`ImageEncoderArgs.MapJxlDistance`）不一致 ⇒ **RAW→DNG 内嵌 JXL 与 GUI 的 JXL 体积语义不同**（同 q 档偏小）。属**跨组件**语义分歧、非静默缺陷，**刻意保持不动**待产品裁定；登记于此以免后续会话重复发现（复查取证见 `docs/review-2026-10-03/README.md` §3.2）。 |
 
 **新增探针判据同步**：`tests/ServiceProbe/Program.cs` qa-① 期望值 `10.5 / 1.5` → `6.4 / 1.0`。
 
