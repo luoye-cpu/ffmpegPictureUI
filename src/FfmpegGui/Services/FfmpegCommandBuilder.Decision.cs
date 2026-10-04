@@ -163,7 +163,14 @@ namespace FfmpegGui.Services
             var strategy = EffectiveColorStrategy(options, inputPath);
             bool preserveSource = strategy == Models.ColorStrategy.CarryIcc;
             bool stripIcc = strategy == Models.ColorStrategy.BakeCicpOnly;
-            bool advanced = options.UseAdvancedColorParameters;
+            // ⚠ 2026-10-04：语义判据改**值派生**（不再读 UI 布尔 `UseAdvancedColorParameters`）
+            //   —— 勾选/不勾选不得有策略差别；命令行设了精确参数同样生效。
+            // ⚠⚠ 必须用 **`HasExplicitColorTarget`（只认 CP/CT）**，**不能**用 `HasExplicitColorParams`
+            //   （含 `ColorMatrix`）：下面的 `hasExplicitTarget` 是**互斥**形状（`!advanced && …`），
+            //   而 `--color-matrix` 是**输入声明**、不是目标轴 ⇒ 算进来会让
+            //   `--color-matrix X --color-space Y` 把 `ColorSpace` 目标整条丢掉
+            //   （2026-10-04 实机确证：HDR(PQ) 源→png 变 `决策：None`、产物仍 `smpte2084/bt2020`）。
+            bool advanced = options.HasExplicitColorTarget;
             bool hasExplicitTarget = !advanced
                 && !string.IsNullOrWhiteSpace(options.ColorSpace)
                 && !options.ColorSpace.Equals("auto", StringComparison.OrdinalIgnoreCase);

@@ -509,6 +509,18 @@ namespace FfmpegGui.Services
                                         captured.Options.DecodedUltraHdrColorSpace =
                                             decoded.Value.jxlColorSpace ?? "RGB_D65_SRG_Rel_Lin";
                                         captured.Options.DecodedUltraHdrPeakNits = decoded.Value.peakNits;
+                                        // ⚠⚠ 同时声明**输入侧**色彩（2026-10-04 审查 线D P1-1 修）：
+                                        //   解码产物是**线性** HDR（PFM，1.0 = SDR 白点 203nits）。只写
+                                        //   `DecodedUltraHdr*` 的话，`ColorIntentFactory` 拿不到源描述符
+                                        //   ⇒ 落到 `AssumeByConvention` 的 `CodecDefault` ⇒ 规划层置信度闸门
+                                        //   （`MinConfidenceForMapping = CicpTag`）**不许改像素** ⇒ 计划 `None`
+                                        //   （直通）⇒ **不挂色调映射** ⇒ 线性 HDR 像素被按 sRGB 直接编码、
+                                        //   >1.0 截顶（实测：直通 YMAX=251 vs 往返 255；YAVG 125.5 vs 134.7）。
+                                        //   ⚠ 形状与 2026-10-03 已修的 RAW 直通缺陷**完全相同** —— 那条路当时漏了。
+                                        //   与 RAW 同一条路：走 `ColorSourceDecl*`（`BuildColorArgsSplit` 会把
+                                        //   它当 `-i` 前的输入声明，且**不**会污染输出目标）。
+                                        captured.Options.ColorSourceDeclPrimaries = "bt709";
+                                        captured.Options.ColorSourceDeclTrc = "linear";
                                         captured.Log += $"[UltraHDR] ✅ 已解码为线性 HDR PFM（峰值 {decoded.Value.peakNits:F0} nits），继续编码\n";
                                     }
                                     else
@@ -558,15 +570,65 @@ namespace FfmpegGui.Services
                                     //   ⇒ 本行只报「已完成预处理」，具体标记交给紧随其后的那条日志。
                                     captured.Log += "[RAW] ✅ 预处理完成，使用线性 TIFF 继续编码（色彩标记见下一条）。\n";
                                     captured.InputPath = rawTiff;
-                                    // 仅在用户未手动设置色彩参数时覆盖（尊重用户意图）
-                                    // RAW 预处理输出为线性 16-bit TIFF，明确标记为 bt709 + linear
-                                    // 关键修复：设置 UseAdvancedColorParameters=true，确保 ColorPrimaries/ColorTrc 优先于 ColorSpace 探测
-                                    // 同时也允许用户通过高级选项覆盖（用户手动设置的 ColorPrimaries/ColorTrc 优先）
-                                    if (!captured.Options.UseAdvancedColorParameters
-                                        && string.IsNullOrWhiteSpace(captured.Options.ColorPrimaries)
-                                        && string.IsNullOrWhiteSpace(captured.Options.ColorTrc))
+                                    // ── 输入声明：**与用户是否选目标无关，必须总是写**（2026-10-04 修）──────────
+                                    // 中间件是 dngtool 的去马赛克**线性**输出，原色是**相机原生**（宽，无标准名）
+                                    // ⇒ 输入侧取最接近的宽色域 bt2020 作工作空间近似（比 bt709 少削色）。
+                                    // ⚠ 这一对只喂输入侧（`BuildColorArgsSplit`）与引擎的源描述符，**不**兼作输出目标。
+                                    // ⚠⚠ 必须在用户判定**之外**：用户选了目标时中间件**仍是线性**，不写它就会退回
+                                    //   「探测文件 ⇒ 无色彩标签 ⇒ 惯例假定 sRGB」那条老路（置信度不够 ⇒ 计划直通）。
+                                    captured.Options.ColorSourceDeclPrimaries = "bt2020";
+                                    captured.Options.ColorSourceDeclTrc = "linear";
+
+                                    // ── 用户是否**已经**选了目标色域（2026-10-04 修，第二版）────────────────
+                                    // ⚠⚠ **三轴并列、与是否高级模式无关**：`ColorPrimaries` / `ColorTrc` /
+                                    //   `ColorSpace` 任一被用户显式指定 ⇒ 判「用户已选」⇒ RAW 默认块**不得触发**。
+                                    //   历史坑（两个方向都踩过，2026-10-04 复查定案）：
+                                    //     ① 旧版只查 `UseAdvancedColorParameters` + `ColorPrimaries`/`ColorTrc`，
+                                    //        **漏了非高级模式下的 `ColorSpace`**（CLI `--color-space sRGB`、GUI 友好名
+                                    //        走的正是这条）⇒ 用户选择被静默覆盖（实测交付 `bt2020 + sRGB`，用户要 bt709）。
+                                    //     ② 补 `ColorSpace` 时又用 `UseAdvancedColorParameters ? … : …` **二选一**，
+                                    //        ⇒ 把 `ColorPrimaries`/`ColorTrc` 那一维在非高级模式下**删掉了**
+                                    //        ⇒ CLI `--color-primaries bt709`（`CliParser` 只赋值、**不置**高级标志）照样被覆盖。
+                                    //   ⇒ 最终形态：三轴 **或** 关系，不分模式。
+                                    bool rawUserChoseTarget =
+                                        !string.IsNullOrWhiteSpace(captured.Options.ColorPrimaries)
+                                        || !string.IsNullOrWhiteSpace(captured.Options.ColorTrc)
+                                        || (!string.IsNullOrWhiteSpace(captured.Options.ColorSpace)
+                                            && !captured.Options.ColorSpace.Equals("auto", StringComparison.OrdinalIgnoreCase));
+
+                                    // ── ⚠⚠ 2026-10-04 修（P1：`rec709` 被**静默忽略**）──────────────────────
+                                    //   上面 `rawUserChoseTarget` 门挡住的**整块**默认档逻辑，其中包含
+                                    //   `--raw-color-target rec709`（"强制 bt709 + sRGB，覆盖容器能力"）。
+                                    //   后果（实测）：`--raw-color-target rec709 --color-space sRGB` 时
+                                    //   日志只说「用户已指定目标色域（sRGB）⇒ 保留用户配置」，**一个字都不提 rec709**
+                                    //   ⇒ 用户以为 `rec709` 生效了，实际被丢弃 —— 正是本仓最忌的「静默丢弃不点名」，
+                                    //   且与 `CliParser` 的帮助文本（"覆盖容器能力"）**矛盾**。
+                                    //   语义裁定：**用户显式目标优先**（既有三轴设计，不改），但**必须点名冲突**。
+                                    //   ⚠ 只 `rec709` 有冲突：`rec2020` 就是默认档（同值），`auto` 的作用域只是
+                                    //     TIFF 那条 SDR 例外档（用户已给目标时本就不参与）⇒ 二者不点名（避免噪声）。
+                                    string? rawModeEarly = captured.Options.RawColorTarget;
+                                    if (rawUserChoseTarget
+                                        && string.Equals(rawModeEarly, "rec709", StringComparison.OrdinalIgnoreCase))
                                     {
-                                        // 用户未手动指定高级色彩参数时，应用 RAW 预处理默认值。
+                                        captured.Log += "[RAW] ⚠️ --raw-color-target rec709 与显式目标色域**同时给出**："
+                                                      + "按「用户显式目标优先」处理 ⇒ **rec709 本次不生效**"
+                                                      + "（若确实要强制 bt709+sRGB，请**去掉**显式目标色域参数）\n";
+                                    }
+
+                                    // ── TIFF 例外档的**位深默认**：RAW→TIFF 默认 **16-bit**（2026-10-04 用户裁定）──
+                                    //   TIFF 例外档的用意是「广色域**保真**」：Rec.2020 + SDR 曲线，且 **16-bit**
+                                    //   以留住 dngtool 中间件的 16-bit 线性数据。
+                                    //   ⚠ 此前 16-bit 只是**恰好**（`TargetBitDepth` 跟随源探测位深）—— 换一台
+                                    //     12-bit 的机器就会变成 12-bit ⇒ 不保证。此处**显式钉住**。
+                                    //   ⚠ 仅在用户**未指定**位深时生效（用户指定优先）；⚠ 与是否选了目标**无关** ——
+                                    //     位深默认属于**容器/中间件保真**，不属于目标色域那条轴。
+                                    if (captured.Options.BitDepth == null
+                                        && captured.Options.Format.Trim().TrimStart('.').ToLowerInvariant() is "tiff" or "tif")
+                                        captured.Options.BitDepth = 16;
+
+                                    if (!rawUserChoseTarget)
+                                    {
+                                        // 用户未指定目标色域时，应用 RAW 预处理默认值。
                                         // ⚠⚠ 2026-09-20（本轮）：primaries 由「**恒** bt709」改为
                                         //   **按目标容器的 HDR 承载能力**选：
                                         //     · 目标能承载 HDR ⇒ **BT.2020** —— 相机 RAW 的色域远大于 BT.709，
@@ -577,24 +639,105 @@ namespace FfmpegGui.Services
                                         //   （Ultra HDR = SDR 底片 + 增益层）；**关掉时仍按 SDR 容器**处理。
                                         // ⚠ `ColorTrc` 恒为 `linear` 不变：dngtool 的 `-d` 输出的就是线性 RGB，
                                         //   本次改动**只动 primaries**。
+                                        // ── 输出目标三档（用户未选时的默认）──────────────────────────
+                                        //   ① 容器能承载 HDR **传递**（avif / jxl / png-16bit…）⇒ **Rec.2020 + PQ**
+                                        //   ② 否则若是 **TIFF**（唯一例外，ICC 可描述广色域但无 HDR 传递）⇒ **Rec.2020 + SDR**
+                                        //   ③ 其余（webp / jpg / jpegli / gif / jxr / ppm…）= 默认路线 ⇒ **bt709 + sRGB**
+                                        // ⚠ 判据用 `CanHdr`（**不**叠加 GainMap）：Ultra HDR 的**底图**必须是 SDR，
+                                        //   把 jpg+GainMap 算进 HDR 档会让底图变成 PQ（语义错）。
+                                        // ⚠ 仍保留 `GetFormatColorCapabilities` 那道能力钳制作安全网（单一真值）。
                                         var rawCaps = ColorMapping.ColorMappingEngine.CapsFor(captured.Options.Format);
-                                        int rawTargetBitDepth = captured.Options.BitDepth ?? 8;
-                                        bool rawTargetCanHdr = rawCaps != null
-                                            && rawCaps.CanHdrWith(captured.Options.JpegGainMap)
+                                        // ⚠⚠ 判「能否承载 HDR 传递」必须用**实际交付档**，不是"请求档 ?? 8"
+                                        //   （2026-10-04 审查 线D P1-2 修）：实际交付位深**跟随源**
+                                        //   （`ColorIntentFactory` 的 `TargetBitDepth = Min(BitDepth ?? 源位深, 容器上限)`），
+                                        //   而 RAW 中间件恒 16-bit（dngtool `-6`）⇒ 用户不指定位深时实际就是 16
+                                        //   （再按容器上限 clamp）。旧写法 `BitDepth ?? 8` 把 png/jxl 判成 8-bit
+                                        //   ⇒「不能承载 HDR 传递」⇒ 默认档降到 `bt709/sRGB`，而产物实际是
+                                        //   `rgb48be`(16-bit) ⇒ **16-bit PNG 被标 SDR**（与注释「png-16bit ⇒ Rec.2020+PQ」、
+                                        //   文档 `RAW2TIF §7.1`、以及本函数日志自己写的"位深=跟随源"三处矛盾）。
+                                        //   实测：ARW→PNG 默认档旧 = `rgb48be, bt709`；修后 = `rgb48be, smpte2084, bt2020`。
+                                        int rawTargetBitDepth = captured.Options.BitDepth ?? Math.Min(16, rawCaps.MaxBitDepth);
+                                        // ⚠ `CapsFor` 返回**非空** `FormatColorCaps`（见 `ColorTransformPlan.cs:615` 签名）
+                                        //   ⇒ 原先的 `rawCaps != null` 是**死判据**（恒真），2026-10-04 删除。
+                                        bool rawCanHdrTransfer = rawCaps.CanHdr
                                             && (!rawCaps.HdrRequiresHighBitDepth || rawTargetBitDepth > 8);
-                                        captured.Options.ColorPrimaries = rawTargetCanHdr ? "bt2020" : "bt709";
-                                        captured.Options.ColorTrc = "linear";
+                                        // ⚠ **不写 `?? ""`**：`FfmpegOptions.Format` 声明为非空（`= "jpg"`），
+                                        //   而 `x ?? ""` 会让 Roslyn **反推 `x` 可能为空**并向后传播 ⇒ 凭空产生
+                                        //   5 条 CS8602（2026-10-04 查明的根因，见 `RAW2TIF_QA_DEFECT §7.5`）。
+                                        var rawFmtTok = captured.Options.Format.Trim().TrimStart('.').ToLowerInvariant();
+                                        bool rawIsTiff = rawFmtTok is "tiff" or "tif";
+
+                                        // ── 输出色域模式（`--raw-color-target`，2026-10-04 新增，三档）────────────
+                                        //   ① rec2020（**默认**）= 上面那三档，一字不改（"Rec.2020 表达优先"）
+                                        //   ② auto   = 在默认档之上叠加**内容判定**：该图实际用色未超出 bt709 范围时不用 Rec2020
+                                        //   ③ rec709 = 强制 bt709 + sRGB（最大兼容性），覆盖容器能力
+                                        // ⚠⚠ `auto` 的作用域**仅限「SDR 传递的 bt2020 档位」**（当前 = TIFF 例外档）：
+                                        //   HDR 传递档（bt2020 + PQ）**不参与** —— bt2020 是 BT.2100/PQ 的组成部分，
+                                        //   只降原色会产生 `bt709 + PQ` 这个合法但**非标准**的组合
+                                        //   ⇒ 2026-10-04 用户裁定：HDR 档保持 bt2020 + PQ。
+                                        // ⚠ 未知取值**必须点名**再回退默认档：静默回退就是"看起来配置过"的假象
+                                        //   （与 `--color-gamut-map` 同口径）。
+                                        // ⚠⚠ 本块每条日志**必须写成单行**：`_probe-cjk-hardcode-scan` 的桶判据看
+                                        //   "第一个命中字面量"，而折行后后续行不再带 sink 标记 ⇒ 会被误计入 CsUi
+                                        //   （余量 0，fail-closed）。单行且以 `[RAW]` 开头 ⇒ 恒落 TAG 桶（不参与判据）。
+                                        // ⚠ 实测失败时**保守保持 bt2020**（三态：不把"测不出"当成"装得下"）。
+                                        bool rawGamutDowngrade = false;
+                                        string rawTargetMode = captured.Options.RawColorTarget ?? "rec2020";
+                                        if (rawTargetMode == "rec709")
+                                        {
+                                            rawGamutDowngrade = true;
+                                            captured.Log += "[RAW] 色域模式=rec709（强制 bt709 + sRGB，最大兼容性；覆盖容器能力）\n";
+                                        }
+                                        else if (rawTargetMode == "auto")
+                                        {
+                                            if (rawCanHdrTransfer)
+                                            {
+                                                captured.Log += "[RAW] 色域模式=auto：本档位为 HDR 传递档（bt2020 属 BT.2100 组成部分）⇒ 不降级；如需强制窄色域请用 --raw-color-target rec709 或显式指定目标色域\n";
+                                            }
+                                            else if (!rawIsTiff)
+                                            {
+                                                captured.Log += "[RAW] 色域模式=auto：本档位本就为 bt709（该容器不承载 Rec.2020）⇒ 无需判定\n";
+                                            }
+                                            else
+                                            {
+                                                var fit = await ColorMapping.RawGamutFit.MeasureAsync(rawTiff, ct).ConfigureAwait(false);
+                                                if (!fit.Measurable)
+                                                {
+                                                    captured.Log += $"[RAW] 色域模式=auto：用色实测不可用（{fit.Reason}）⇒ 保守保持 bt2020（不猜）\n";
+                                                }
+                                                else
+                                                {
+                                                    rawGamutDowngrade = fit.FitsIn709;
+                                                    captured.Log += $"[RAW] 色域模式=auto 用色实测：抽样 {fit.SampledPixels} 像素，地板={fit.LuminanceFloor:F5}，超出 bt709={fit.FracOutOf709:P4}（阈值<{ColorMapping.RawGamutFit.FracThreshold:P2}），最负超出={fit.MaxNegExcursion:F5}（阈值>{ColorMapping.RawGamutFit.NegThreshold:F4}）⇒ {(fit.FitsIn709 ? "装在 bt709 内 ⇒ 本档位降为 bt709 + sRGB" : "超出 bt709 ⇒ 保持 bt2020")}\n";
+                                                }
+                                            }
+                                        }
+                                        else if (rawTargetMode != "rec2020")
+                                        {
+                                            captured.Log += $"[RAW] ⚠️ 未知色域模式「{rawTargetMode}」⇒ 按默认 rec2020（Rec.2020 表达优先）处理\n";
+                                        }
+
+                                        captured.Options.ColorPrimaries =
+                                            rawGamutDowngrade ? "bt709"
+                                            : (rawCanHdrTransfer || rawIsTiff) ? "bt2020" : "bt709";
+                                        captured.Options.ColorTrc = rawCanHdrTransfer ? "pq" : "srgb";
                                         captured.Options.UseAdvancedColorParameters = true;  // 关键：启用高级模式让 CP/CT 生效
                                         // ⚠⚠ 2026-09-20：**必须同时打上「这是程序默认、不是用户意图」的标志** ——
                                         //   否则 `ColorIntentFactory` 会把「`ColorTrc` 非空」判成 `targetExplicit`
                                         //   ⇒ `it.Target` 非 null ⇒ 规划层「无色彩通路容器（GIF/JXR）⇒ 钉成 sRGB」
                                         //   那条**不生效** ⇒ **RAW → GIF 被契约拒绝**（实测；而普通 PNG → GIF 正常）。
+                                        //   ⚠ 2026-10-03：`ColorIntentFactory` 已按 `caps.HasColorPath` 细化该判据 ——
+                                        //   有色彩通路的容器判显式（让目标真正生效）、无通路的仍留非显式（保住上面那条）。
                                         captured.Options.ColorFromRawDefault = true;
-                                        captured.Log += $"[RAW] 未指定高级色彩参数 ⇒ 按目标容器能力取默认 primaries={captured.Options.ColorPrimaries}（目标 {captured.Options.Format}：能承载 HDR={rawTargetCanHdr}，GainMap={(captured.Options.JpegGainMap ? "开" : "关")}）trc=linear\n";
+                                        captured.Log += $"[RAW] 未指定高级色彩参数 ⇒ 输入声明 {captured.Options.ColorSourceDeclPrimaries}/{captured.Options.ColorSourceDeclTrc}；"
+                                            + $"输出目标 {captured.Options.ColorPrimaries}/{captured.Options.ColorTrc}"
+                                            + $"（目标 {captured.Options.Format}：能承载 HDR 传递={rawCanHdrTransfer}，TIFF 例外={rawIsTiff}，"
+                                            + $"位深={captured.Options.BitDepth?.ToString() ?? "跟随源"}，判据档={rawTargetBitDepth}）\n";
                                     }
                                     else
                                     {
-                                        captured.Log += "[RAW] 用户已设置色彩参数，保留用户配置。\n";
+                                        captured.Log += $"[RAW] 用户已指定目标色域（{captured.Options.ColorSpace ?? captured.Options.ColorPrimaries}）⇒ 保留用户配置；"
+                                            + $"输入声明已按线性中间件补齐为 {captured.Options.ColorSourceDeclPrimaries}/{captured.Options.ColorSourceDeclTrc}\n";
                                     }
                                 }
                                 else
@@ -1470,41 +1613,70 @@ namespace FfmpegGui.Services
                 // iccgen 不支持 HDR trc）。此步在元数据恢复之后，覆盖任何被回带的源 ICC。
                 // 仅 Recommended/Manual 生效；CarryIcc 保源 ICC、BakeCicpOnly 剥 ICC，均不在此嵌目标 ICC。
                 // 判据取**计划层生效策略**（与命令行同源）：S2 被覆盖（如 GainMap）后声明值不再代表实际结局。
+                // ── 2026-10-04 门控放宽（修复 P1-1）────────────────────────────────
+                // 旧门控只看 `opts.ColorSpace`，于是经「精确参数」(ColorPrimaries/ColorTrc) 指定目标的
+                // TIFF（如 CLI `--color-primaries bt709 --color-trc srgb`）被漏掉 ⇒ 交付物零色彩声明。
+                // 现与 ColorSpace 路径同义：**有显式目标**即贴对应标准 ICC。
+                // ⚠ 判据用 `HasExplicitColorTarget`（只认 CP/CT）—— `ColorMatrix` 是**输入声明**、
+                //   不是目标轴（见 `FfmpegOptions.HasExplicitColorTarget` 的说明）。
+                string? tiffPrimaries = null;
+                string? tiffMatrix = null;
+                string? tiffLabel = null;
+                if (!string.IsNullOrWhiteSpace(opts.ColorSpace)
+                    && !opts.ColorSpace.Equals("auto", StringComparison.OrdinalIgnoreCase))
+                {
+                    var csSpec = ColorSpaceRegistry.Resolve(opts.ColorSpace);
+                    if (csSpec != null)
+                    {
+                        tiffPrimaries = csSpec.OutPrimaries;
+                        tiffMatrix = csSpec.OutMatrix;
+                        tiffLabel = csSpec.Key;
+                    }
+                }
+                // ⚠ 2026-10-04：**也覆盖 RAW 预处理默认目标**（`ColorFromRawDefault=true`）。
+                //   旧口径把程序默认目标排除在外 ⇒ ARW→TIF 默认档（日志宣称"输出目标 bt2020/iec61966-2-1"）
+                //   像素被 zscale 真转到 bt2020、**却零色彩声明**（TIFF 无 CICP 通路）⇒ 下游按 sRGB 误读。
+                //   日志宣称目标而产物不声明 = 本仓最忌的「宣称 ≠ 交付」。
+                //   原先"避免覆盖 RAW 原生描述"的顾虑对**无 ICC 的线性中间件**不成立（没有可覆盖的东西）。
+                else if (opts.HasExplicitColorTarget
+                    && !string.IsNullOrWhiteSpace(opts.ColorPrimaries))
+                {
+                    tiffPrimaries = opts.ColorPrimaries;
+                    // TIFF 是 RGB 原生容器：ICС 仅描述 primaries+transfer，matrix 不影响色度学，
+                    // 故矩阵缺省时回落 bt709（与 zscale 的 SDR 默认一致）；用户显式给了则尊重。
+                    tiffMatrix = !string.IsNullOrWhiteSpace(opts.ColorMatrix) ? opts.ColorMatrix : "bt709";
+                    tiffLabel = opts.ColorPrimaries + (string.IsNullOrWhiteSpace(opts.ColorTrc) ? "" : "/" + opts.ColorTrc);
+                }
+
                 if (exitCode == 0
                     && FfmpegCommandBuilder.EffectiveColorStrategy(opts, probeInput)
                        is Models.ColorStrategy.Recommended or Models.ColorStrategy.Manual
                     && string.IsNullOrWhiteSpace(opts.FaithfulIccPath)   // 保真路径：像素未转→目标标准 ICC 会失配
                     && (opts.Format.Equals("tiff", StringComparison.OrdinalIgnoreCase)
                         || opts.Format.Equals("tif", StringComparison.OrdinalIgnoreCase))
-                    && !string.IsNullOrWhiteSpace(opts.ColorSpace)
-                    && !opts.ColorSpace.Equals("auto", StringComparison.OrdinalIgnoreCase))
+                    && !string.IsNullOrWhiteSpace(tiffPrimaries))
                 {
-                    var tiffSpec = ColorSpaceRegistry.Resolve(opts.ColorSpace);
-                    if (tiffSpec != null)
+                    // TIFF 格式能力恒将 trc 钳为 iec61966-2-1（见 GetFormatColorCapabilities），
+                    // 像素 zscale 的 dstT=capTrc 亦然；故目标 ICC 的 trc 必须恒用 iec61966-2-1，
+                    // 与像素编码精确一致（避免 Adobe RGB/BT.2020 的 spec.OutTrc=bt709 与像素 sRGB trc 失配）。
+                    var tiffTrc = "iec61966-2-1";
+                    var tiffIcc = IccProfileService.GetOrGenerateStandardIcc(
+                        probeInput, tiffPrimaries, tiffTrc, tiffMatrix,
+                        s => { captured.Log += s; _onItemUpdated?.Invoke(captured); }, ct);
+                    if (!string.IsNullOrWhiteSpace(tiffIcc))
                     {
-                        // TIFF 格式能力恒将 trc 钳为 iec61966-2-1（见 GetFormatColorCapabilities），
-                        // 像素 zscale 的 dstT=capTrc 亦然；故目标 ICC 的 trc 必须恒用 iec61966-2-1，
-                        // 与像素编码精确一致（避免 Adobe RGB/BT.2020 的 spec.OutTrc=bt709 与像素 sRGB trc 失配）。
-                        // primaries/matrix 用 spec 值（TIFF capPrimaries/capMatrix=null，像素 dstP/dstM 亦取 spec）。
-                        var tiffTrc = "iec61966-2-1";
-                        var tiffIcc = IccProfileService.GetOrGenerateStandardIcc(
-                            probeInput, tiffSpec.OutPrimaries, tiffTrc, tiffSpec.OutMatrix,
-                            s => { captured.Log += s; _onItemUpdated?.Invoke(captured); }, ct);
-                        if (!string.IsNullOrWhiteSpace(tiffIcc))
-                        {
-                            var tiffIccExit = await ExifToolService.EmbedIccProfileFromFileAsync(
-                                tiffIcc, finalOutputPath,
-                                s => { captured.Log += s; _onItemUpdated?.Invoke(captured); });
-                            captured.Log += tiffIccExit == 0
-                                ? $"[tiff] 已嵌入目标色彩空间 ICC（{tiffSpec.Key}），与转换后像素一致（遵循 JPEG XL ICC 策略）\n"
-                                : $"[tiff] ⚠️ 目标 ICC 嵌入失败（退出码 {tiffIccExit}）\n";
-                        }
-                        else
-                        {
-                            captured.Log += $"[tiff] ⚠️ 无法生成目标 ICC（{tiffSpec.Key}），TIFF 可能缺少色彩描述\n";
-                        }
-                        _onItemUpdated?.Invoke(captured);
+                        var tiffIccExit = await ExifToolService.EmbedIccProfileFromFileAsync(
+                            tiffIcc, finalOutputPath,
+                            s => { captured.Log += s; _onItemUpdated?.Invoke(captured); });
+                        captured.Log += tiffIccExit == 0
+                            ? $"[tiff] 已嵌入目标色彩空间 ICC（{tiffLabel}），与转换后像素一致（遵循 JPEG XL ICC 策略）\n"
+                            : $"[tiff] ⚠️ 目标 ICC 嵌入失败（退出码 {tiffIccExit}）\n";
                     }
+                    else
+                    {
+                        captured.Log += $"[tiff] ⚠️ 无法生成目标 ICC（{tiffLabel}），TIFF 可能缺少色彩描述\n";
+                    }
+                    _onItemUpdated?.Invoke(captured);
                 }
 
             // ── 超广色域保真 ICC 附着（点三）──
@@ -1659,7 +1831,7 @@ namespace FfmpegGui.Services
             // 原则：如果用户手动指定了色彩参数，说明用户有明确的色彩意图，
             //       不应被源文件元数据覆盖；如果一切为 auto，则恢复源文件元数据。
             var userSpecifiedColor =
-                item.Options.UseAdvancedColorParameters ||
+                item.Options.HasExplicitColorParams ||
                 (!string.IsNullOrWhiteSpace(item.Options.ColorSpace)
                  && !item.Options.ColorSpace.Equals("auto", StringComparison.OrdinalIgnoreCase));
 
@@ -4289,11 +4461,15 @@ namespace FfmpegGui.Services
                 }
                 else
                 {
-                    // SDR JXL：显式声明输入色彩（用高级参数模式，目标仍由 ColorSpace 决定）
-                    item.Options.UseAdvancedColorParameters = true;
-                    item.Options.ColorPrimaries = jxlMeta.colorPrimaries;
-                    item.Options.ColorTrc = jxlMeta.colorTrc;
-                    item.Options.ColorMatrix = jxlMeta.colorSpace ?? "bt709";
+                    // SDR JXL：声明**输入**色彩 —— 走 `ColorSourceDecl*`（与 RAW 同一条路），
+                    // ⚠⚠ **绝不**写 `ColorPrimaries/ColorTrc`：那对字段在 `DecideOutputColor` 里是
+                    //   **输出目标**，写进去会把用户显式指定的目标（`--color-space` / `--color-primaries`）
+                    //   静默覆盖成「这个 JXL 输入自带的色」—— 旧注释「目标仍由 ColorSpace 决定」**与代码相反**。
+                    //   实测（2026-10-04 审查 线B P1-1）：`-i x.jxl -f png --color-space "Display P3"`
+                    //   产物 CICP 仍是 `bt709`（P3 被吞）；对照普通 png 源同参数 ⇒ `smpte432` ✓。
+                    item.Options.ColorSourceDeclPrimaries = jxlMeta.colorPrimaries;
+                    item.Options.ColorSourceDeclTrc = jxlMeta.colorTrc;
+                    item.Options.ColorMatrix = jxlMeta.colorSpace ?? "bt709";   // 输入矩阵声明（`-i` 前 -colorspace）
                     item.Log += $"[pipe] 注入 JXL 真实色彩: p={jxlMeta.colorPrimaries} t={jxlMeta.colorTrc} m={jxlMeta.colorSpace}\n";
                 }
             }
@@ -4502,10 +4678,9 @@ namespace FfmpegGui.Services
             if (!string.IsNullOrWhiteSpace(options.FaithfulIccPath))
                 return ("", outputArgs.Trim(), options.FaithfulIccPath);
 
-            if (options.UseAdvancedColorParameters
-                && (!string.IsNullOrWhiteSpace(options.ColorPrimaries)
-                 || !string.IsNullOrWhiteSpace(options.ColorTrc)
-                 || !string.IsNullOrWhiteSpace(options.ColorMatrix)))
+            // ⚠ 2026-10-04：`HasExplicitColorParams` 本身 = CP/CT/Matrix 任一非空 ⇒ 原先的合取是冗余的；
+            //   同时不再读 UI 布尔（勾选/不勾选不得有策略差别，见 `FfmpegOptions.HasExplicitColorParams`）。
+            if (options.HasExplicitColorParams)
             {
                 if (!string.IsNullOrWhiteSpace(options.ColorPrimaries))
                     inputArgs += $"-color_primaries {options.ColorPrimaries} ";
@@ -4873,6 +5048,18 @@ namespace FfmpegGui.Services
                 Chroma = original.Chroma,
                 BitDepth = original.BitDepth,
                 ColorSpace = original.ColorSpace,
+                // ⚠⚠ 2026-10-04 修（P1：本克隆点漏抄 3 个字段 ⇒ 动图回退路径语义错位）：
+                //   本方法**逐字段手抄**（见下方 :5075 附近的既有警告「漏抄即丢」），
+                //   而 2026-10-03/04 新增了**输入声明**轴 `ColorSourceDeclPrimaries/Trc` 与 `--raw-color-target`：
+                //   不抄 ⇒ 动图回退（`IsAnimated` ⇒ `CloneOptionsForFfmpeg`）时 `ColorSourceDecl*` 为空
+                //   ⇒ `FfmpegCommandBuilder.BuildColorArgsSplit`（`:822-826` 首选 `ColorSourceDecl*`）落空，
+                //   回落到 `:832-852` 分支 —— 那条**拿 `ColorPrimaries/ColorTrc` 当 `-i` 前输入声明**，
+                //   而它们现在是**输出目标**（PQ/bt2020）⇒ 正是 `ColorSourceDecl*` 这对字段要消灭的缺陷
+                //   （该文件 `:813-817` 的注释明写此坑）⇒ 修法必须在这一处补齐，否则修复只覆盖非动图路径。
+                ColorSourceDeclPrimaries = original.ColorSourceDeclPrimaries,
+                ColorSourceDeclTrc = original.ColorSourceDeclTrc,
+                RawColorTarget = original.RawColorTarget,
+                ColorFromRawDefault = original.ColorFromRawDefault,
                 UseAdvancedColorParameters = original.UseAdvancedColorParameters,
                 ColorPrimaries = original.ColorPrimaries,
                 ColorTrc = original.ColorTrc,

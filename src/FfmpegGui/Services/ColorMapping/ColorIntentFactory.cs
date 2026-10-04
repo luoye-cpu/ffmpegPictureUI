@@ -74,6 +74,38 @@ public static class ColorIntentFactory
             }
             catch { /* 外部 ICC 不可读/不可解析：退回源内嵌 ICC 与标签路径（不静默改用近似空间） */ }
         }
+        // ── RAW 中间件：**本程序自己产出的文件，色彩语义是已知的**（2026-10-03 新增）──────────
+        // 位置在 `--icc-file`（用户显式指定）之后、探测文件之前：用户意图优先，其次才是"我们知道自己写了什么"。
+        // 为什么必须有这条：dngtool 的 `-d` 产物就是**线性 RGB**，可它**没有任何色彩标签** ⇒ 若走到
+        // 下面的 `AssumeByConvention`，置信度只有 `CodecDefault`，而规划层的置信度闸门
+        // （`MinConfidenceForMapping = CicpTag`）**不许改像素** ⇒ 计划恒为**直通**。
+        // 实测后果：ARW→TIF 的产物与中间件**逐字节相同**（像素一个都没动），却被标成目标域。
+        // ⇒ 用 `ColorSourceDecl*` 如实声明（写者见下方 `isSelfMadeIntermediate` 的两条路）。
+        // ⚠⚠ 2026-10-04 审查（线 B P1-1 / 线 D P1-1）收紧：**只认「本程序自产的中间件」**——
+        //   `RawService.IsRawFile(inputPath)`（RAW 预处理）或 `DecodedUltraHdrColorSpace` 非空
+        //   （Ultra HDR 解码）。否则**命令行/其它路径**设的 `ColorSourceDecl*`（如 SDR JXL 的
+        //   输入声明）会在这里被当成"已知源"、拿到 `NamedIcc` 置信度，**跳过真正的标签/ICC 探测**。
+        bool isSelfMadeIntermediate = RawService.IsRawFile(inputPath)
+            || !string.IsNullOrWhiteSpace(o.DecodedUltraHdrColorSpace);
+        if (src == null && isSelfMadeIntermediate && !string.IsNullOrWhiteSpace(o.ColorSourceDeclTrc))
+        {
+            src = ColorSpaceDescriptor.FromCicp(o.ColorSourceDeclPrimaries, o.ColorSourceDeclTrc,
+                RawService.IsRawFile(inputPath)
+                    ? "RAW 中间件（dngtool 去马赛克线性输出）"
+                    : "Ultra HDR 解码中间件（线性 sRGB PFM）");
+            if (src != null)
+            {
+                // ⚠⚠ 置信度**显式抬到 `NamedIcc`**（2026-10-04 修 P1-3）——`FromCicp` 默认给
+                //   `CicpTag(=2)`，**恰好等于**闸门 `MinConfidenceForMapping(=CicpTag)`，靠 `>=` 才放行。
+                //   语义上：这是**我们自己写下的中间件**，确定性高于「读到的容器标签」，理应更高一档。
+                //   若只靠"恰好等于"，则枚举一重排（在 `CodecDefault` 与 `CicpTag` 之间插成员）或闸门
+                //   抬到 `NamedIcc` ⇒ 这条路径**零告警地退回「直通」**（像素一个都不动，却仍标目标域）。
+                //   ⇒ 显式抬高、不依赖枚举序；并配 `ServiceProbe plan` 的枚举序锁断言（`EnumOrderLock`）。
+                src.Confidence = DescriptorConfidence.NamedIcc;
+                FixHdrNits(src);
+            }
+        }
+
         if (src == null)
         {
             try
@@ -116,11 +148,26 @@ public static class ColorIntentFactory
         //   ⇒ 实测 **RAW → GIF 被契约拒绝**（而普通 PNG → GIF 正常）。
         //   ⚠ 只影响**本判据**（意图装配）；**输出标注**走 `EffectiveOutputColorTokens`（另一条线），
         //     不受影响 ⇒ 「RAW 默认色域按目标 HDR 能力取值」那条功能保留。
-        bool targetExplicit = !o.ColorFromRawDefault
-            && (!o.UseAdvancedColorParameters
-                ? !string.IsNullOrWhiteSpace(o.ColorSpace)
-                  && !o.ColorSpace.Equals("auto", StringComparison.OrdinalIgnoreCase)
-                : !string.IsNullOrWhiteSpace(o.ColorTrc));
+        // ── 目标是否"显式"（决定 `it.Target` 是否为 null）────────────────────────────────
+        // 2026-10-03 变更：RAW 默认注入（`ColorFromRawDefault`）**不再一律判非显式** ——
+        //   · 容器**有**色彩通路（png/tiff/webp/jpg/avif/jxl…）⇒ **判显式**：让注入的目标
+        //     （`ColorTrc` 由 `GetFormatColorCapabilities` 按容器钳制后落定）真正生效，
+        //     否则规划层会自己挑一个目标，注入值形同虚设（实测：ARW→TIF 产物像素一个都没动）。
+        //   · 容器**无**色彩通路（gif/jxr/ppm）⇒ **必须留非显式**：只有 `it.Target == null` 才会
+        //     命中规划层那条"无通路 ⇒ 钉成 sRGB + UnlabeledAssumedSrgb"分支；判显式会绕过它，
+        //     退回"不产出无标注结果"的 Reject（历史实测：RAW→GIF 曾被契约拒绝）。
+        // ⚠ 2026-10-04：判据改**值派生**（不再读 UI 布尔 `UseAdvancedColorParameters`）
+        //   —— 精确参数在位即算显式目标；否则回退 `ColorSpace`。
+        // ⚠⚠ 必须用 **`HasExplicitColorTarget`（只认 CP/CT）**：本判据是**互斥**形状，
+        //   而 `--color-matrix` 是**输入声明**、不是目标轴 ⇒ 用含 Matrix 的 `HasExplicitColorParams`
+        //   会让 `--color-matrix X --color-space Y` 丢掉 `ColorSpace` 目标（2026-10-04 实机确证）。
+        bool userTargetExplicit = o.HasExplicitColorTarget
+            ? !string.IsNullOrWhiteSpace(o.ColorTrc)
+            : !string.IsNullOrWhiteSpace(o.ColorSpace)
+              && !o.ColorSpace.Equals("auto", StringComparison.OrdinalIgnoreCase);
+        bool targetExplicit = o.ColorFromRawDefault
+            ? caps.HasColorPath
+            : userTargetExplicit;
         ColorSpaceDescriptor? dst = null;
         if (targetExplicit)
         {
@@ -273,6 +320,15 @@ public static class ColorIntentFactory
         {
             it.HdrPeakNits = o.ColorHdrPeakNits;
             it.HdrPeakSource = "用户 --color-hdr-peak";
+        }
+        // ⚠⚠ 2026-10-04 审查（线 D P1-1）：「Ultra HDR 解码路径的峰值」必须接上 —— 它比容器静态元数据
+        //   **更权威**（是我们自己从增益图解出来的）。此前没接 ⇒ `headroom` 停在 1 ⇒ 规划层判
+        //   「无需色调映射」⇒ 线性 HDR 像素被当 SDR 映射、>1.0 截顶
+        //   （实测：`色彩损失=RoundTripQuantization` 且**无 tonemap 行**）。
+        else if (o.DecodedUltraHdrPeakNits > 0)
+        {
+            it.HdrPeakNits = o.DecodedUltraHdrPeakNits;
+            it.HdrPeakSource = "Ultra HDR 增益图解码实测";
         }
         else if (meta.peakNits > 0)
         {

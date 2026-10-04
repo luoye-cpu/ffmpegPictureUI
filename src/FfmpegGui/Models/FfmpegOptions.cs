@@ -50,6 +50,7 @@ namespace FfmpegGui.Models
             if (p.ColorMatrix != null) ColorMatrix = p.ColorMatrix;
             if (p.ColorRange != null) ColorRange = p.ColorRange;
             if (p.TonemapCurve != null) TonemapCurve = p.TonemapCurve;
+            if (p.RawColorTarget != null) RawColorTarget = p.RawColorTarget;   // null 归一 ⇒ 保持模型默认（rec2020）
             AutoThreads = p.AutoThreads;
             Threads = p.ManualThreads;
             if (!string.IsNullOrWhiteSpace(p.MetadataMode) && Enum.TryParse<MetadataMode>(p.MetadataMode, true, out var mm))
@@ -165,6 +166,53 @@ namespace FfmpegGui.Models
         public int? BitDepthRequested { get; set; } = null;
         public string? ColorSpace { get; set; }
         public bool UseAdvancedColorParameters { get; set; } = false;
+
+        /// <summary>
+        /// **值派生**判据：用户是否真的给了任一「精确色彩参数」（<see cref="ColorPrimaries"/> /
+        /// <see cref="ColorTrc"/> / <see cref="ColorMatrix"/>）。
+        /// <para>
+        /// ⚠⚠ 一切**语义**判据一律用本属性，**不要**读 <see cref="UseAdvancedColorParameters"/> ——
+        /// 后者自 2026-10-04 起只是 **UI 状态**（色彩面板是否展开 / 能否选模式 2/3/4），
+        /// 不再参与色彩决策。设计裁定（用户 2026-10-04）：勾选与不勾选**不得**造成策略差别；
+        /// 勾选只是"允许选 2/3/4 模式"，不勾选默认走**模式 1（Recommended）**。
+        /// 模式 1 下三个下拉**允许 `auto`**（= 不指定，走自动默认）；模式 2/3/4 必须手动指定。
+        /// </para>
+        /// <para>
+        /// 为什么必须值派生：命令行**从不**设置那个 UI 布尔（`CliParser` 无写点）⇒ 旧口径下
+        /// `--color-primaries bt709 --color-trc srgb` 永远进不了"精确参数"分支 ⇒ 用户设了却无效
+        /// （实测：ARW→TIF 交付 bt2020，而用户要 bt709）。
+        /// </para>
+        /// <para>
+        /// 安全前提（2026-10-04 核过）：本仓所有**内部注入**都同时置开关与值
+        /// （RAW 默认块 `QueueProcessor:620`、SDR JXL 输入声明 `:4331`）⇒ 改用本属性后行为不变；
+        /// **唯一**开关与值不一致的路径就是 CLI，也正是要修的那条。
+        /// </para>
+        /// </summary>
+        public bool HasExplicitColorParams =>
+            !string.IsNullOrWhiteSpace(ColorPrimaries)
+            || !string.IsNullOrWhiteSpace(ColorTrc)
+            || !string.IsNullOrWhiteSpace(ColorMatrix);
+
+        /// <summary>
+        /// **目标轴**判据：用户是否显式指定了**目标色域 / 传递函数**（只认 `ColorPrimaries` / `ColorTrc`）。
+        /// <para>
+        /// ⚠⚠ 与 <see cref="HasExplicitColorParams"/> 的分工（2026-10-04 修一处**实机确证的回归**）：
+        /// `ColorMatrix` 的文档语义是**输入矩阵声明**（`--color-matrix` 的 help 原话，`BuildColorArgsSplit`
+        /// 也把它当 `-i` 前的输入声明）⇒ **它不是目标轴**。若把它算进"用户选了目标"，那些**互斥型**判据
+        /// （`!advanced &amp;&amp; ColorSpace…` / `advanced ? ColorTrc非空 : ColorSpace…`）就会在
+        /// `advanced` 为真时**整条丢掉 `ColorSpace` 目标**。
+        /// 实测：`--color-matrix bt709 --color-space sRGB` 对 HDR(PQ) 源 → png ⇒ `决策：None`、
+        /// 产物仍是 `smpte2084/bt2020`（用户要的 sRGB 被静默丢弃）；去掉 `--color-matrix` 则 `决策：Map`。
+        /// </para>
+        /// <para>
+        /// ⇒ **凡判「目标是谁」的地方一律用本属性**（`DecideOutputColor` / `userTargetExplicit` /
+        /// `NeedsHdrToSdrTonemap` / `noExplicitTarget` / `ColorEncodingHelper` / `rawUserChoseTarget`）；
+        /// 判「是否给了精确参数（含输入声明）」才用 <see cref="HasExplicitColorParams"/>。
+        /// </para>
+        /// </summary>
+        public bool HasExplicitColorTarget =>
+            !string.IsNullOrWhiteSpace(ColorPrimaries)
+            || !string.IsNullOrWhiteSpace(ColorTrc);
         /// <summary>
         /// ⚠⚠ **本组色彩三元组是「程序按 RAW 预处理默认值注入」的，不是用户显式指定**（2026-09-20 新增）。
         /// <para>
@@ -182,6 +230,19 @@ namespace FfmpegGui.Models
         /// </para>
         /// </summary>
         public bool ColorFromRawDefault { get; set; } = false;
+        // ── RAW 中间件的**输入侧色彩声明**（2026-10-03 新增，运行时专用、不进预设）────────────
+        // 为什么必须有这一对：`ColorPrimaries/ColorTrc` 目前**同时**被两处消费 ——
+        //   ① `FfmpegCommandBuilder.BuildColorArgsSplit` 当作**输入声明**（写在 `-i` 之前）；
+        //   ② `FfmpegCommandBuilder.DecideOutputColor`（高级分支）当作**输出语义**。
+        // dngtool 的去马赛克产物是**线性**的，所以 ① 要 `linear`；而 ② 要的是**目标**（PQ / sRGB / …）。
+        // 一对字段表达不了两个值 ⇒ 结果就是本仓实测到的「标签与像素相反」：
+        // 输入被正确标成 linear，输出却被同一份 `linear` 拖住（`ColorTrc` 恒 linear ⇒ 目标永远是线性）。
+        // ⇒ 这一对只喂 ①（以及 `ColorIntentFactory` 的**源描述符**）；`ColorPrimaries/ColorTrc`
+        //   从此**只**表示输出目标。⚠ 运行时字段：**不要**加进 `PresetData`（预设是用户意图，不该带它）。
+        /// <summary>RAW 中间件的输入侧 primaries 声明（仅 `BuildColorArgsSplit` / 源描述符消费）。</summary>
+        public string? ColorSourceDeclPrimaries { get; set; }
+        /// <summary>RAW 中间件的输入侧 trc 声明（dngtool 产物是线性 ⇒ 恒 "linear"）。</summary>
+        public string? ColorSourceDeclTrc { get; set; }
         // ── 精确色彩三元组：**在属性入口规范化**（单一真值，2026-09-16）──
         //  这些值会原样拼进 ffmpeg 的 `-color_primaries/-color_trc/-colorspace`，而 ffmpeg 只认
         //  自己的常量名；CLI 面向用户宣传的却是友好名（`--color-trc srgb|pq|hlg`）、GUI 历史词表里
@@ -463,6 +524,37 @@ namespace FfmpegGui.Models
         /// <para>⚠ 只在自研引擎路径（H1 进程内）有意义：传统 ffmpeg/zscale 链只有钳位，没有 GMO 算子。</para>
         /// </summary>
         public string ColorGamutMap { get; set; } = "off";
+        /// <summary>
+        /// **RAW 输出色域模式**（三档，仅对 RAW 输入生效）。取值见
+        /// <see cref="Services.ColorSpaceRegistry.NormalizeRawColorTargetToken"/>。
+        /// <para>
+        /// <c>rec2020</c>（**默认**，Rec.2020 表达优先）：现状三档 —— 容器能承载 HDR 传递 / TIFF 例外档
+        /// ⇒ <c>bt2020</c>，其余（webp/jpg/gif/jxr/ppm…）⇒ <c>bt709</c>。
+        /// </para>
+        /// <para>
+        /// <c>auto</c>：在默认档之上叠加**内容判定** —— 若该图实际用色未超出 bt709 范围，
+        /// 就不用 Rec.2020 表达。⚠ **作用域仅限「SDR 传递的 bt2020 档位」**（当前 = TIFF 例外档）：
+        /// HDR 传递档（avif/jxl/png-16bit，默认 <c>bt2020 + PQ</c>）**不参与**，因为 bt2020 是
+        /// BT.2100/PQ 的组成部分，只降原色会产生 <c>bt709 + PQ</c> 这个合法但**非标准**的组合
+        /// （2026-10-04 用户裁定）。命中降级时该档位改为 <c>bt709 + srgb</c>；未命中则保持默认档。
+        /// </para>
+        /// <para>
+        /// <c>rec709</c>：**强制** <c>bt709 + srgb</c>（最大兼容性），覆盖容器能力。
+        /// </para>
+        /// <para>
+        /// ⚠ 本属性是**第三根独立的轴**（"默认档如何取"），**不得**并入
+        /// <see cref="HasExplicitColorParams"/> / <see cref="HasExplicitColorTarget"/> ——
+        /// 那两者判的是"用户是否显式指定了目标"，混入会让 <c>QueueProcessor</c> 的
+        /// <c>rawUserChoseTarget</c> 误判、进而吞掉用户显式指定的目标。
+        /// </para>
+        /// <para>⚠ 消费点**只有** <c>QueueProcessor</c> 的 RAW 预处理默认块（非 RAW 输入下为空操作）。</para>
+        /// </summary>
+        private string? _rawColorTarget;
+        public string? RawColorTarget
+        {
+            get => _rawColorTarget;
+            set => _rawColorTarget = Services.ColorSpaceRegistry.NormalizeRawColorTargetToken(value);
+        }
         /// <summary>Method A 的 SDR 目标峰值 L_SDR（nits；建议书默认 100，与参考白 203 是两个量）。</summary>
         public double ColorSdrPeakNits { get; set; } = 100;
         /// <summary>内容峰值亮度 nits（&gt;0 = 用户指定，优先一切）。0 = auto，优先级：

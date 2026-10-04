@@ -183,6 +183,34 @@ public static class RawColorPipeline
                   + $" 目标={plan.Dst?.Name ?? "auto（看齐源）"}\n"
                   + $"[色彩] {plan.Reason}\n[色彩] {sched.ToLogFragment()} 变换耗时 {st.ProcessMs}ms " +
                     $"吞吐 {st.ProcessMPixPerSecond:F1} MPix/s\n");
+                // ⚠ 2026-10-04 补（审计缺口）：HLG 的**场景光→显示光** BT.2100 OOTF 只在内核里施加，
+                //   此前**没有任何日志能证明它是否真的跑了** —— 而这正是
+                //   `verify-hlg-route` 那两条 FAIL 排查时最缺的一条读数（只能靠反推线性峰值）。
+                //   把三个决定性判据打进日志：源曲线是不是 HLG、OOTF 是否置位、tonemap 是否真的激活。
+                //   ⚠ `Active` 与 `Mode` 必须**分开**打：`Active=false` 有两种相反含义
+                //     （"用户没要"vs"要了但本图无余量⇒恒等"），只打一个会让二者不可区分。
+                if (spec.SrcIsHlgScene || spec.DstIsHlgScene || spec.Tone is { Mode: not ToneMapMode.None })
+                {
+                    // ⚠⚠ 写法约束（2026-10-04 实测踩坑，务必保持）：
+                    //   本仓 CJK 门禁按「**语句首行**是否命中诊断 sink」分桶，且**只在非续行时**重算 sink
+                    //   （`_probe-cjk-hardcode-scan.ps1:429` 的 `if (-not $isCont) { $stmtSink = ... }`）。
+                    //   ⇒ 若把 `log(` 放在 `if/else` 的**子语句位置**上（如 `if (x)` 换行 `log(...)`），
+                    //     上一行 `if (…)` / `else` 已经开了语句、`$isCont=True` ⇒ **`stmtSink` 不会被刷新**
+                    //     ⇒ 这条日志的中文被判进 `CsUi`（UI 文案）判据桶、把门禁顶红。
+                    //     实测：这样写 ⇒ `CsUi 828→839`（+11，正是本块贡献）。
+                    //   ⇒ 对策：**不要用 if/else 分两支各写一次 log**，改成把可变部分先在**纯 ASCII**
+                    //     表达式里算好（ASCII 不进任何桶），再**只写一条** `log(...)` 语句，
+                    //     使其首行就是 sink 行。这样中文只出现在 sink 语句里 ⇒ 记 Diag。
+                    string toneState = spec.Tone == null
+                        ? "None/-"
+                        : $"{spec.Tone.Mode}/{spec.Tone.Headroom:F2}/{spec.Tone.PeakNits:F0}";
+                    log($"[色彩] 内核状态：源曲线={spec.SrcCurve.Name}"
+                      + $" 目标曲线={spec.DstCurve.Name}"
+                      + $" HLG源OOTF={(spec.SrcIsHlgScene ? "开" : "关")}（γ={spec.SrcHlgSystemGamma:F4}）"
+                      + $" HLG目标逆OOTF={(spec.DstIsHlgScene ? "开" : "关")}"
+                      + $" tonemap=模式/headroom/采用峰值 {toneState}"
+                      + $" 激活={(spec.Tone != null && spec.Tone.Active ? "是" : "否")}\n");
+                }
             }
 
             // ── 编码：把变换后的 rgb48le 喂回去，色彩标注来自 Plan ──
@@ -1195,8 +1223,30 @@ public static class RawColorPipeline
         double applied = Math.Clamp(measured, tone.SdrWhiteNits, Math.Max(tone.SdrWhiteNits, nominal));
         st.MeasuredPeakNits = measured;                 // 存**原始实测值**（钳制前），便于分别审计测量与策略
         spec.Tone.PeakNits = applied;
+        // ⚠⚠ 2026-10-04 修（缺陷：**色调映射被自己关闭**）：
+        //   `ToneMapParams.Active = Mode != None && Headroom > 1 + 1e-6`，而 `Headroom = PeakNits/SdrWhiteNits`。
+        //   实测峰值低于 SDR 白（203nit）时，上面的钳制把 `PeakNits` 拉到**正好 203** ⇒ `Headroom == 1.0`
+        //   ⇒ `Active` 翻成 **false** ⇒ 内核 `toneOn=false` ⇒ **用户显式 `--color-tone-map hable`
+        //   被静默丢弃**，且 `:14` 这行日志自陈 `tonemap=off`（而 `:17` 打印的**未突变** `plan.Tone`
+        //   仍写着 `tonemap=Hable`，两行自相矛盾 —— 实测 `tests/output/hlgroute_*/` 两份日志）。
+        //   语义上"实测峰值低于参考白"= **内容本身没有 HDR 余量**，此时 tonemap 数学上恒等（hable(x)/hable(1)
+        //   在 x≤1 时≈x），**不映射是正确的**；错的是**用 Active=false 表达它** —— 那会让
+        //   「本该恒等」与「用户没要」两种情形不可区分，并把 `Mode` 一并吞掉。
+        //   ⇒ 保留 `Mode`（Active 的判据自然回落为恒等），把它如实写进日志：**不静默**。
+        //   ⚠ 不改 `Active` 的定义（它同时被 SDR 直通等路径依赖）：只补一行**点名**，
+        //     让"为什么没映射"在日志里可归因，而不是留一个自相矛盾的 `tonemap=off`。
+        bool tonemapBecameInactive = tone.Active && !spec.Tone.Active;
         log?.Invoke($"[色彩] 峰值来源=整帧实测：{measured:F0}nit ⇒ 采用 {applied:F0}nit"
                   + $"（名义兜底 {nominal:F0}nit，{spec.Tone}）\n");
+        // ⚠ 写法约束同 `内核状态` 那条：**不要把 `log?.Invoke(` 放在 `if (…)` 的无括号子语句位置**
+        //   （门禁的 sink 判定只在非续行时刷新 ⇒ 那样写会被判进 UI 桶、顶红）。改成带大括号的块，
+        //   使 `log?.Invoke(` 自己成为一条语句的**首行** ⇒ 被正确识别为诊断 sink。
+        if (tonemapBecameInactive)
+        {
+            log?.Invoke($"[色彩] ⚠️ 实测内容峰值 {measured:F0}nit ≤ SDR 参考白 {tone.SdrWhiteNits:F0}nit"
+                      + $" ⇒ 本图无 HDR 余量，色调映射（{tone.Mode}）在此为**恒等**、按无余量直通处理"
+                      + $"（**不是**丢弃用户请求；Headroom={spec.Tone.Headroom:F2}）\n");
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════

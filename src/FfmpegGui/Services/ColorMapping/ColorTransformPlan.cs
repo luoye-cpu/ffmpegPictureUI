@@ -797,15 +797,27 @@ public static partial class ColorMappingEngine
             p.Action = ColorAction.None; p.Backend = ColorBackend.None;
             p.Reason = "仅需改标注（像素等价）";
         }
-        else if (h2Possible && !needsGmo)
-        {
-            // 两侧都能按 CICP 精确命名 → 交给 zscale：省两次进程启动与 raw 管道带宽
-            p.Backend = ColorBackend.FfmpegFilter;
-            p.Reason += " 后端=H2(zscale 可精确命名两侧曲线，省进程与管道)";
-        }
+        // ⚠⚠ 2026-10-04/05 **删除 H2 死后端分支**（用户裁定，2026-10-05）：
+        //   原分支是 `else if (h2Possible && !needsGmo) { p.Backend = FfmpegFilter; ... }`，
+        //   声称"交给 zscale 执行（省两次进程启动与 raw 管道带宽）"，但**全仓无任何消费者**：
+        //     · `grep ColorBackend.FfmpegFilter` 命中**全部**在 `ColorTransformPlan.cs` 内
+        //       （置位 :803、文案 :879、自校验 :923），`FfmpegCommandBuilder` **零处**消费；
+        //     · `RawColorPipeline.cs:16-18` 又明说「zscale 作为 H2 后端时**不经过**本管道」。
+        //   ⇒ **两端互斥、却都没接** ⇒ 该分支置位后无人执行，是**死后端**；实际执行恒为
+        //     `QueueProcessor.TryRunColorEngineAsync` 无条件调用的 `RawColorPipeline.TransformFileAsync`
+        //     （= **H1** 进程内内核）。
+        //   实测证据（2026-10-04，`tests/output/hlgroute_*/`）：日志同时出现 ① `后端=H2(zscale…)`
+        //   ② `-vf "format=rgb48le"` → `变换耗时` → `-f rawvideo … `（H1 三步命令）——记账与实际不符。
+        //   ⇒ **裁定 = 承认"本档不支持 H2"，让该情形如实落 H1**（删除分支，而非继续虚报）。
+        //     这样：① 日志不再声称 zscale（消除记账不实）；② 不再存在"哪天有人给 H2 补上执行支
+        //     就会变成真缺陷"的隐雷（两套算子口径分歧：H2 的 zscale 不做 BT.2100 HLG OOTF，
+        //     而 H1 的 `Bt2100Ootf` 做 —— 这正是 `verify-hlg-route` 那条 OOTF 断言的立足点）。
+        //   ⚠ 若将来确实要拿回 H2 的性能收益：**必须先实测** zscale/tonemap 链对 HLG OOTF 的等价性，
+        //     并把 `h2Possible` 重新接进一条**真实存在**的命令构建路径（含自校验），再恢复本分支。
+        //   ⚠ `h2Possible` 变量保留（下方 H1 分支仍用它做"为何走 H1"的归因说明），不删。
         else
         {
-            // 曲线不可命名 / 需 GMO / 已在像素域 → 只能进引擎
+            // 曲线不可命名 / 需 GMO / 已在像素域 / **H2 无执行体** → 一律进引擎
             p.Backend = ColorBackend.InProcess;
             p.Reason += needsGmo ? " 后端=H1(需 GMO 色域压缩)" : " 后端=H1(进程内融合内核)";
             if (zimgDivergent && policy.Transfer709 == Transfer709Curve.Std)
@@ -856,8 +868,10 @@ public static partial class ColorMappingEngine
         if (policy.GainMapRequested)
             return " [口径=zimg 未作用于本格：GainMap 出口的底图编码由 GainMapEncoder 自持，计划层的出口曲线不被消费]";
         if (exitCurveApplied && action == ColorAction.Map)
+            // ⚠ 2026-10-05：H2 分支已删除 ⇒ `backend` 恒为 `InProcess`。此处保留**一条**文案，
+            //   并注明 H2 情形已不存在（不删参数：签名被多处调用，删了是无谓的连锁改动）。
             return backend == ColorBackend.FfmpegFilter
-                ? " [口径=zimg 已兑现(H2)：像素由 zscale 给出，其 t=bt709 本就是纯 γ(1/2.4) —— 本开关正是为此放行 H2（Std 侧由口径黑名单禁掉）]"
+                ? " [口径=zimg 已兑现(H2)：⚠ 该后端已于 2026-10-05 删除执行体，本分支不应再可达 —— 若出现请当缺陷报告]"
                 : " [口径=zimg 已兑现(H1)：出口曲线改用 zimg 的 BT.709 形态（纯 γ(1/2.4)，与 ITU-R 定义式差 ~28.1LSB@8bit）；标注仍按目标描述符写 bt709 —— 与 zscale=t=bt709 的产物同形，即本开关的用途]";
         if (action != ColorAction.Map)
             return $" [口径=zimg 未作用于本格：本次 act={action} 不改像素 ⇒ 没有出口编码可换曲线]";
@@ -900,8 +914,14 @@ public static partial class ColorMappingEngine
         bool noTransform = p.Action is ColorAction.None or ColorAction.CarryIcc or ColorAction.Reject;
         if (wantsH1 && pixelEntries > 0)
             return $"引擎(H1)已负责映射，但命令行仍含像素色彩入口 [{first}] → 双映射入口";
-        if (p.Backend == ColorBackend.FfmpegFilter && pixelEntries > 1)
-            return $"预期只有一条 H2 色彩链，实际命中 {pixelEntries} 处";
+        // ⚠⚠ 2026-10-05：H2 死后端分支已**删除**（见上文后端选择处的说明）⇒
+        //   `p.Backend == ColorBackend.FfmpegFilter` **不可能再成立**，原先的
+        //   「预期只有一条 H2 色彩链，实际命中 N 处」判据因此成了**永不可达的死代码**。
+        //   保留一段**反向自检**：万一有人日后恢复了 H2 置位却忘了同步本处契约，
+        //   这里必须**响亮报错**而不是静默放行（本仓"宣称≠交付"纪律）。
+        if (p.Backend == ColorBackend.FfmpegFilter)
+            return "计划置位了 H2(FfmpegFilter) 后端，但本档**已裁定无 H2 执行体**"
+                 + "（2026-10-05 删除该分支）⇒ 置位与执行体不匹配，必须同步修正其中之一";
         if (noTransform && pixelEntries > 0)
             return $"计划为 {p.Action}（不改像素），但命令行含像素色彩入口 [{first}]";
         return null;

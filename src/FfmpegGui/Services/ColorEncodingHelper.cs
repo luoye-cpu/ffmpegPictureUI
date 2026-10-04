@@ -16,7 +16,7 @@ namespace FfmpegGui.Services
         public static string? MapToCjxlColorSpace(Models.FfmpegOptions options)
         {
             // ── 高级模式：使用 primaries + transfer 精确映射 ──
-            if (options.UseAdvancedColorParameters
+            if (options.HasExplicitColorTarget
                 && !string.IsNullOrWhiteSpace(options.ColorPrimaries))
             {
                 return MapPrimariesTransfer(options.ColorPrimaries, options.ColorTrc);
@@ -110,7 +110,7 @@ namespace FfmpegGui.Services
         {
             // 检查是否为 HDR 传输函数
             var trc = options.ColorTrc;
-            if (options.UseAdvancedColorParameters && !string.IsNullOrWhiteSpace(trc))
+            if (options.HasExplicitColorTarget && !string.IsNullOrWhiteSpace(trc))
             {
                 if (trc.Equals("smpte2084", StringComparison.OrdinalIgnoreCase)
                     || trc.Equals("arib-std-b67", StringComparison.OrdinalIgnoreCase))
@@ -125,7 +125,7 @@ namespace FfmpegGui.Services
             // 委托 ColorSpaceRegistry（全流程单一色彩真值）判定，取代旧硬编码名单：
             // 覆盖 BT.2020 PQ/HLG/BT.2020 及 P3 PQ(已归一 Rec2100PQ)——旧名单漏 P3 PQ
             // 会令其 Rec2100PQ 标记缺峰值亮度声明（libjxl 回落默认峰值）。
-            if (!string.IsNullOrWhiteSpace(options.ColorSpace) && !options.UseAdvancedColorParameters)
+            if (!string.IsNullOrWhiteSpace(options.ColorSpace) && !options.HasExplicitColorTarget)
             {
                 var spec = ColorSpaceRegistry.Resolve(options.ColorSpace);
                 if (spec != null && (spec.OutTrc == "smpte2084" || spec.OutTrc == "arib-std-b67"))

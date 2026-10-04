@@ -810,11 +810,26 @@ namespace FfmpegGui.Services
                 return (primaries, trc, colorspace);
             }
 
+            // ── RAW 中间件专用输入声明（2026-10-03）——**必须排在最前** ──
+            // RAW 路径下 `ColorPrimaries/ColorTrc` 已被改造成**输出目标**（PQ / sRGB / …），
+            // 若仍拿它们当输入声明，就等于告诉 ffmpeg「中间件是 PQ」——而 dngtool 的产物明明是**线性**的
+            // ⇒ 标签与像素双错（本仓实测：产物像素与中间件逐字节相同、却被标成目标域）。
+            // ⇒ 只要 `ColorSourceDecl*` 在位，输入声明只认它；`ColorPrimaries/ColorTrc` 归输出侧。
+            // ⚠ 期望 `ColorSourceDeclPrimaries` / `ColorSourceDeclTrc` **成对出现**（RAW 预处理块恒成对写）。
+            //   本分支只判「任一在位」⇒ 单设其一（如只设 primaries）会返回 `trc=null`。下游对 null 安全
+            //   （不会回落去读 `ColorPrimaries`），但属**退化输入**；若日后要支持单设，请在此**显式点名**
+            //   而不是静默放行（本仓反复踩过的「静默丢弃不点名」坑型）。
+            if (!string.IsNullOrWhiteSpace(options.ColorSourceDeclTrc)
+                || !string.IsNullOrWhiteSpace(options.ColorSourceDeclPrimaries))
+            {
+                return (options.ColorSourceDeclPrimaries, options.ColorSourceDeclTrc, options.ColorMatrix);
+            }
+
             // 高级参数模式 或 管线注入的输入色彩声明（如 RAW 预处理标记 bt709/linear）。
             // 关键修复：当 UseAdvancedColorParameters=true 且 ColorPrimaries/ColorTrc 至少有一个被设置时，
             // 视为用户/预处理明确声明了输入色彩，直接使用，不再探测输入文件。
             // 这确保 RAW 预处理注入的 bt709/linear 以及用户手动设置的 CP/CT 优先于 ColorSpace 探测。
-            if (options.UseAdvancedColorParameters
+            if (options.HasExplicitColorParams
                  && (!string.IsNullOrWhiteSpace(options.ColorPrimaries)
                      || !string.IsNullOrWhiteSpace(options.ColorTrc)
                      || !string.IsNullOrWhiteSpace(options.ColorMatrix)))
@@ -823,7 +838,7 @@ namespace FfmpegGui.Services
                 trc = options.ColorTrc;
                 colorspace = options.ColorMatrix;
             }
-            else if ((!options.UseAdvancedColorParameters
+            else if ((!options.HasExplicitColorParams
                  && !string.IsNullOrWhiteSpace(options.ColorPrimaries)
                      && !string.IsNullOrWhiteSpace(options.ColorTrc))
                 && (!string.IsNullOrWhiteSpace(options.ColorPrimaries)
@@ -1149,7 +1164,7 @@ namespace FfmpegGui.Services
 
             // 「用户有没有显式指定目标」—— 两条 HDR 原生容器的豁免支（下面的 avif/jxl/jxr 与 PNG/APNG）
             // **共用同一个计算**，不要各写一份（#43 的根因就是其中一份写成了无条件豁免）。
-            bool noExplicitTarget = !options.UseAdvancedColorParameters
+            bool noExplicitTarget = !options.HasExplicitColorTarget
                 && (string.IsNullOrWhiteSpace(options.ColorSpace)
                     || options.ColorSpace.Equals("auto", StringComparison.OrdinalIgnoreCase));
 
@@ -1203,7 +1218,7 @@ namespace FfmpegGui.Services
             // → 既不 tonemap（本函数 return false）也不 zscale 转换（目标块 srcIsHdr&&!dstIsHdr 排除）
             // → PQ 像素直塞 8-bit SDR 容器 → 高光裁剪 + 整体变暗。
             bool fmtSdrOnly = fmt is "tiff" or "tif" or "jpg" or "jpeg" or "webp";
-            if (options.UseAdvancedColorParameters)
+            if (options.HasExplicitColorTarget)
             {
                 if (!fmtSdrOnly && options.ColorTrc is "smpte2084" or "arib-std-b67")
                     return false;

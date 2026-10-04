@@ -458,6 +458,33 @@ namespace FfmpegGui.Services
         }
 
         /// <summary>
+        /// RAW 输出色域**模式** token → 规范名（唯一真值）。
+        /// <para>
+        /// 取值域（三档，语义见 <c>FfmpegOptions.RawColorTarget</c>）：
+        /// <c>rec2020</c>（默认，Rec.2020 表达优先 = 现状三档）| <c>auto</c>（按内容判定）|
+        /// <c>rec709</c>（强制窄色域 / 最大兼容）。
+        /// </para>
+        /// <para>
+        /// ⚠ 别名归一（<c>bt2020</c>/<c>bt709</c>/<c>srgb</c>）是为了让预设 JSON 里手写的旧式值也能用；
+        /// **未识别值原样返回**（与 <see cref="NormalizePrimariesToken"/> 同口径），
+        /// 由消费方（<c>QueueProcessor</c> RAW 块）的 <c>default:</c> 分支显式点名并回退默认档 ——
+        /// 本方法**不做**合法性拒绝，拒绝发生在 CLI 入口（<c>ParseTokenStrict</c>）。
+        /// </para>
+        /// </summary>
+        public static string? NormalizeRawColorTargetToken(string? token)
+        {
+            var t = (token ?? "").Trim().ToLowerInvariant();
+            if (t.Length == 0) return null;
+            return t switch
+            {
+                "rec2020" or "bt2020" or "2020" => "rec2020",
+                "auto" => "auto",
+                "rec709" or "bt709" or "709" or "srgb" => "rec709",
+                _ => t,
+            };
+        }
+
+        /// <summary>
         /// 模型内矩阵 token → ffmpeg `-colorspace` 名（**界面差异的唯一转换点**）。
         /// 仅一处差异：zscale 认 `gbr`、ffmpeg 认 `rgb`（实测）。返回 null 表示该 token
         /// 在 ffmpeg 侧不存在 ⇒ 调用方**不得**把它拼进 `-colorspace`（否则整条命令 -22 失败）。

@@ -18,6 +18,7 @@ using AC = FfmpegGui.Services.ColorMapping.AnnotChoice;
 using CSC = FfmpegGui.Services.ColorMapping.CarryScope;
 using MI = FfmpegGui.Services.ColorMapping.ManualIntent;
 using CP = FfmpegGui.Services.ColorMapping.ColorTransformPlan;   // S5′ 裁决探针
+using GF = FfmpegGui.Services.ColorMapping.RawGamutFit;         // `--raw-color-target auto` 判据内核（2026-10-04）
 using VK = FfmpegGui.Services.ColorMapping.VerdictKind;          // S5′ 裁决探针
 using DG = FfmpegGui.Services.ColorMapping.DegradationCodes;     // S5′ 裁决探针
 using F709 = FfmpegGui.Services.ColorMapping.Transfer709Curve;
@@ -87,7 +88,7 @@ namespace ServiceProbe
             InitExternalTools();          // 否则 iccgen/exiftool 类互测会静默 SKIP（假绿）
             if (args.Length == 0)
             {
-                Console.WriteLine("usage: ServiceProbe <gainmap|icc|icc-dump|cicp|color|faithful|pq|matrix|curve|plan|geometry|bench|selftest|i18n|psnr|simdswitch|thumbnail|oog> ...");
+                Console.WriteLine("usage: ServiceProbe <gainmap|icc|icc-dump|cicp|color|faithful|pq|matrix|curve|plan|geometry|bench|selftest|i18n|psnr|simdswitch|thumbnail|oog|avifgm> ...");
                 return 2;
             }
             try
@@ -102,10 +103,12 @@ namespace ServiceProbe
                     case "faithful": ProbeFaithful(args); break;
                     case "thumbnail": ProbeThumbnail(args).GetAwaiter().GetResult(); break;
                     case "oog": ProbeOog().GetAwaiter().GetResult(); break;
+                    case "avifgm": ProbeAvifGainMap().GetAwaiter().GetResult(); break;
                     case "color": ProbeColor(args); break;
                     case "pq": ProbePq(); break;
                     case "gamut": ProbeGamut(args); break;
                     case "matrix": ProbeMatrix(); break;
+                    case "gamutfit": ProbeGamutFit(); break;
                     case "curve": ProbeCurve(); break;
                     case "plan": ProbePlan(args); break;
                     case "contract": ProbeContract(); break;
@@ -579,6 +582,122 @@ namespace ServiceProbe
                   $"越界带：H1 内核与 zimg 参照逐块一致（容差 128/65535 ≈ 0.5/255，实差最大 {worst}"
                   + $" = {Math.Round(worst / 257.0, 1)}/255，出现在块 {worstBlock} 的通道 {new[] { 'R', 'G', 'B' }[Math.Max(worstCh, 0)]}，"
                   + $"源值={blocks[Math.Max(worstBlock, 0)][Math.Max(worstCh, 0)]}）｜{sb}");
+        }
+
+        /// <summary>
+        /// `avifgm` —— AVIF 增益图**写出侧** `colr.full_range` 的继承锁（2026-10-03 补）。
+        /// 动机：`IsoBmffGainMapWriter.PatchColr` 曾把底图 colr 的 `full_range` 位**硬写成 full(0x80)**，
+        /// 而 ffmpeg(libaom-av1) 对 yuv420p 实产的是 **tv(0x00)** ⇒ 每条 AVIF 增益图产物的主图都被贴错
+        /// range（Y∈[16,235] 被按 [0,255] 解读 ⇒ 黑阶抬起、对比度压缩）。仓库内**此前没有任何判据覆盖
+        /// 这条写出路径**（`gainmap-isobmff` 只测**解码**侧、`gainmap` 测 **JPEG** Ultra HDR 容器）
+        /// ⇒ 该缺陷长期静默。权威口径：libultrahdr `avifultrahdr.cpp:435` 取**实际图像**的 range（非硬编码）。
+        /// 三段：① 单元级（反射直调 `PatchColr` ⇒ 只读继承、双向）
+        /// ② `Build` 的 `baseFullRangeFallback` 默认值必须 `false`（limited/tv）
+        /// ③ 端到端（真 ffmpeg 编 tv-range 底图 + 产品 `EncodeAsync(container:"avif")` ⇒ 产物底图 colr 必须 0x00）
+        /// </summary>
+        private static async Task ProbeAvifGainMap()
+        {
+            // ── ①② 单元级：确定性，不需要 ffmpeg ──
+            var t = typeof(GainMapEncoder).Assembly
+                .GetType("FfmpegGui.Services.IsoBmffGainMapWriter", throwOnError: false);
+            Check(t != null, "avifgm：找得到 internal IsoBmffGainMapWriter（否则本 mode 的锁全部真空绿）");
+            if (t == null) return;
+            var pm = t.GetMethod("PatchColr",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+            Check(pm != null, "avifgm：找得到 private static PatchColr");
+            if (pm == null) return;
+            bool Invoke(List<byte[]> props, bool fallback)
+                => (bool)pm.Invoke(null, new object[] { props, 1, 13, 1, fallback })!;
+
+            var p1 = new List<byte[]> { NclxColrBox(0x00) };
+            var r1 = Invoke(p1, true);
+            Check(!r1 && (p1[0][^1] & 0x80) == 0,
+                  $"avifgm ①底图 colr=tv(0x00) + 兜底 true ⇒ **必须只读继承 0x00**（旧代码在此写 0x80 = 本缺陷）｜实 0x{p1[0][^1]:X2}");
+
+            var p2 = new List<byte[]> { NclxColrBox(0x80) };
+            var r2 = Invoke(p2, false);
+            Check(r2 && (p2[0][^1] & 0x80) != 0,
+                  $"avifgm ①继承是**双向**的：底图 colr=full(0x80) + 兜底 false ⇒ 仍 0x80（不是一律写 tv）｜实 0x{p2[0][^1]:X2}");
+
+            var p3 = new List<byte[]>();
+            var r3 = Invoke(p3, false);
+            Check(!r3 && p3.Count == 1 && (p3[0][^1] & 0x80) == 0,
+                  $"avifgm ①底图**无** colr ⇒ 用兜底值；兜底 false ⇒ 补 0x00｜实 0x{(p3.Count == 1 ? p3[0][^1] : 0xFF):X2}");
+
+            var bp = t.GetMethod("Build",
+                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)?
+                .GetParameters().FirstOrDefault(x => x.Name == "baseFullRangeFallback");
+            Check(bp != null && bp.HasDefaultValue && bp.DefaultValue is bool dv && !dv,
+                  "avifgm ②`Build` 的 baseFullRangeFallback **默认值必须是 false**（limited/tv；旧代码 true ⇒ 每次组装都把 ffmpeg 的 tv 改口成 full）"
+                  + $"｜实 {bp?.DefaultValue?.ToString() ?? "(无此参数)"}");
+
+            // ── ③ 端到端：真 ffmpeg + 产品写出器 ──
+            var ff = AAS.Current.FfmpegPath;
+            if (string.IsNullOrEmpty(ff) || !File.Exists(ff)) { Skip("avifgm ③：ffmpeg 未定位（① ② 已跑，本条不产出读数）"); return; }
+            var work = Path.Combine(FfmpegGui.Services.PlatformServices.GetTempDir(), "avifgm_" + Guid.NewGuid().ToString("N")[..8]);
+            Directory.CreateDirectory(work);
+            try
+            {
+                string png = Path.Combine(work, "base.png"), rawAvif = Path.Combine(work, "raw_base.avif");
+                RunCap(ff, $"-y -hide_banner -loglevel error -f lavfi -i testsrc2=s=64x48 -frames:v 1 \"{png}\"");
+                // 与产品 `EncodeAvifFileAsync` 同口径：yuv420p + 三个 CICP 标志、**不传** -color_range（默认 tv）
+                RunCap(ff, $"-y -hide_banner -loglevel error -i \"{png}\" -frames:v 1 -c:v libaom-av1 -crf 18 -b:v 0 "
+                         + $"-pix_fmt yuv420p -color_primaries bt709 -color_trc iec61966-2-1 -colorspace bt709 -f avif \"{rawAvif}\"");
+                var rawN = File.Exists(rawAvif) ? FindNclx(File.ReadAllBytes(rawAvif)) : new List<(int Off, int Prim, int Trc, int Mtx, byte Fr)>();
+                Check(rawN.Count >= 1 && rawN.All(x => (x.Fr & 0x80) == 0),
+                      $"avifgm ③前提：ffmpeg 裸底图 colr.full_range 全为 tv(0x00)（实 {rawN.Count} 个 nclx）");
+
+                int w = 64, h = 48;
+                var px = new float[w * h * 4];
+                for (int i = 0; i < w * h; i++)
+                {
+                    float u = (i % w) / (float)(w - 1);
+                    px[i * 4 + 0] = 0.2f + 3.0f * u;   // 线性峰值 > 1 ⇒ HDR 高光 ⇒ 走真增益图分支
+                    px[i * 4 + 1] = 0.5f + 1.0f * u;
+                    px[i * 4 + 2] = 0.1f + 2.0f * u;
+                    px[i * 4 + 3] = 1f;
+                }
+                string outAvif = Path.Combine(work, "gm_out.avif");
+                var ok = await GainMapEncoder.EncodeAsync(px, w, h, outAvif,
+                    hdrPeakNits: 1000f, sdrWhiteNits: 203f, multiChannel: false,
+                    baseQuality: 1.5f, gainMapQuality: 1.5f, downsample: 4,
+                    log: null, container: "avif");
+                Check(ok && File.Exists(outAvif) && new FileInfo(outAvif).Length > 500,
+                      $"avifgm ③产品 AVIF 增益图写出成功（实 {(File.Exists(outAvif) ? new FileInfo(outAvif).Length : 0)} B）");
+                if (!File.Exists(outAvif)) return;
+                var n = FindNclx(File.ReadAllBytes(outAvif));
+                Check(n.Count >= 3, $"avifgm ③产物含 3 个 nclx colr（底图/增益图/tmap）｜实 {n.Count}");
+                var bc = n.Where(x => x.Prim == 1 && x.Trc == 13 && x.Mtx == 1).ToList();
+                var tc = n.Where(x => x.Trc == 16).ToList();
+                Check(bc.Count == 1 && (bc[0].Fr & 0x80) == 0,
+                      "avifgm ③**核心**：产物底图 colr.full_range = 0x00（继承 ffmpeg 实产；旧代码写 0x80）"
+                      + $"｜实 0x{(bc.Count == 1 ? bc[0].Fr : 0xFF):X2}");
+                Check(tc.Count == 1 && (tc[0].Fr & 0x80) == 0,
+                      $"avifgm ③tmap 替代图 colr 与底图同 range（同一份像素不可能两说）｜实 0x{(tc.Count == 1 ? tc[0].Fr : 0xFF):X2}");
+            }
+            finally { try { Directory.Delete(work, true); } catch { } }
+        }
+
+        /// <summary>造一个 nclx 型 `colr` 盒：size(4)+'colr'+'nclx'+prim(2)+trc(2)+mtx(2)+full_range(1) = 19 B。</summary>
+        private static byte[] NclxColrBox(byte fullRange)
+        {
+            var b = new List<byte>(19);
+            b.AddRange(new byte[] { 0, 0, 0, 19 });
+            b.AddRange(Encoding.ASCII.GetBytes("colr"));
+            b.AddRange(Encoding.ASCII.GetBytes("nclx"));
+            b.AddRange(new byte[] { 0, 1, 0, 13, 0, 1, fullRange });
+            return b.ToArray();
+        }
+
+        /// <summary>扫出字节流里所有 `nclx` 盒的 (偏移, prim, trc, mtx, full_range)。</summary>
+        private static List<(int Off, int Prim, int Trc, int Mtx, byte Fr)> FindNclx(byte[] b)
+        {
+            var res = new List<(int Off, int Prim, int Trc, int Mtx, byte Fr)>();
+            for (int i = 0; i + 11 <= b.Length; i++)
+                if (b[i] == (byte)'n' && b[i + 1] == (byte)'c' && b[i + 2] == (byte)'l' && b[i + 3] == (byte)'x')
+                    res.Add((i, (b[i + 4] << 8) | b[i + 5], (b[i + 6] << 8) | b[i + 7],
+                             (b[i + 8] << 8) | b[i + 9], b[i + 10]));
+            return res;
         }
 
         private static int[] ReadU16Le(string path)
@@ -1240,10 +1359,14 @@ namespace ServiceProbe
             if (srgb == null || p3 == null || rec2020 == null || pq2020 == null || prophoto == null || adobe == null) return;
 
             Case("sRGB→sRGB(png) 应直通", FfmpegGui.Services.ColorMapping.ColorAction.None, null, false, srgb, srgb);
-            Case("sRGB→P3 两侧可命名→H2", FfmpegGui.Services.ColorMapping.ColorAction.Map,
-                FfmpegGui.Services.ColorMapping.ColorBackend.FfmpegFilter, true, srgb, p3);
-            Case("PQ2020→sRGB 可命名→H2", FfmpegGui.Services.ColorMapping.ColorAction.Map,
-                FfmpegGui.Services.ColorMapping.ColorBackend.FfmpegFilter, true, pq2020, srgb);
+            // ⚠⚠ 2026-10-05：H2 死后端已**删除**（`ColorTransformPlan` 后端选择处有长注释）⇒
+            //   原先「两侧可命名 ⇒ FfmpegFilter(H2)」这两条契约**随执行体一起作废**。
+            //   改判**新契约**：两侧可命名也一律 `InProcess`（H1）—— 因为**没有 H2 执行体**。
+            //   ⚠ 用例名同步去掉 "→H2"，避免名字与断言再次脱钩（本仓"名字说 A、断言判 B"是踩过的坑）。
+            Case("sRGB→P3 两侧可命名→H1(H2 已删除)", FfmpegGui.Services.ColorMapping.ColorAction.Map,
+                FfmpegGui.Services.ColorMapping.ColorBackend.InProcess, true, srgb, p3);
+            Case("PQ2020→sRGB 可命名→H1(H2 已删除)", FfmpegGui.Services.ColorMapping.ColorAction.Map,
+                FfmpegGui.Services.ColorMapping.ColorBackend.InProcess, true, pq2020, srgb);
             Case("ProPhoto→sRGB 不可命名→H1", FfmpegGui.Services.ColorMapping.ColorAction.Map,
                 FfmpegGui.Services.ColorMapping.ColorBackend.InProcess, true, prophoto, srgb);
             Case("Adobe(γ2.2)→BT.2020 不可命名→H1", FfmpegGui.Services.ColorMapping.ColorAction.Map,
@@ -1630,8 +1753,12 @@ namespace ServiceProbe
                 var pc = CE.Plan(clip);
                 Check(pc.GamutOutsideDestination && !pc.GamutMap && pc.ColorLoss == CL.Clipping,
                     $"GMO 负控：开关关 ⇒ 必须回到 {CL.Clipping} 且 GamutMap=false（实为 {pc.ColorLoss}/{pc.GamutMap}）");
-                Check(pc.Backend == CB.FfmpegFilter,
-                    $"GMO 负控：未开压缩时越界本身不强制进程内后端（实为 {pc.Backend}）");
+                // ⚠⚠ 2026-10-05：H2 死后端已删除 ⇒ 原先「越界本身不强制进程内后端」这条
+                //   （其写法是"H2 应被选中"）作废。改判**新契约**：本档一律 `InProcess`；
+                //   而本条真正要守的语义（"越界**本身**不应触发 GMO 压缩"）由上面那条
+                //   `GamutMap=false` + `ColorLoss=Clipping` 断言继续承担，语义未丢。
+                Check(pc.Backend != CB.FfmpegFilter,
+                    $"GMO 负控：H2 已删除（2026-10-05）⇒ 不得再选到 H2（实为 {pc.Backend}）");
             }
 
             // C4c 策略覆盖留痕（**2026-09-16 新增**）：GainMap 接入引擎后，S3/S4 两格若不被覆盖就会
@@ -1762,10 +1889,18 @@ namespace ServiceProbe
                 var polZ = new FfmpegGui.Services.ColorMapping.PlanPolicy
                 { AllowApproximateCurve = false, ForceMapping = true, TargetExplicit = true, Transfer709 = F709.Zimg };
                 var pZ = CE.Plan(p3b, b709sdr, polZ);
-                Check(pZ.Backend == CB.FfmpegFilter, $"C7 Zimg 口径：允许回退到 H2 对齐历史产物（实为 {pZ.Backend}）");
-                // 对照：非黑名单目标（sRGB 曲线）仍应优先 H2
+                // ⚠⚠ 2026-10-05：H2 死后端已**删除**（见 `ColorTransformPlan` 后端选择处的长注释）⇒
+                //   原先「Zimg 口径允许回退到 H2 对齐历史产物」与「对照：非黑名单目标仍可走 H2」
+                //   两条契约**随之作废**（H2 不再可达）。此处改判**新契约**：
+                //   无论口径是否对齐 zimg，后端一律 `InProcess`（H1）—— 即"本档不存在 H2 执行体"。
+                //   ⚠ 这不是"为绿而放宽"：断言的方向从"H2 应当被选中"改成"**H2 不得再出现**"，
+                //     仍然是有牙的（若有人恢复 H2 置位，本条立刻转红）。
+                Check(pZ.Backend != CB.FfmpegFilter,
+                    $"C7 Zimg 口径：H2 已删除（2026-10-05）⇒ 不得再选到 H2（实为 {pZ.Backend}）");
+                // 对照：非黑名单目标同样不得走 H2
                 var pOk = CE.Plan(p3b, srgbTag, polForce);
-                Check(pOk.Backend == CB.FfmpegFilter, $"C7 对照：目标 iec61966-2-1 仍可走 H2（实为 {pOk.Backend}）");
+                Check(pOk.Backend != CB.FfmpegFilter,
+                    $"C7 对照：H2 已删除 ⇒ 任何目标都不得走 H2（实为 {pOk.Backend}）");
             }
 
             // C7b —— 缺陷 #29 的**行为锁**（此前只有 C7 那条结构锁，而像素从头到尾没被这个开关碰过）：
@@ -1869,8 +2004,11 @@ namespace ServiceProbe
                     if (p3lin2 != null)
                     {
                         var c7bH2 = CE.Plan(p3lin2, bt709Sdr, Pol709(true, gmo: false));
-                        Check(c7bH2.Backend == CB.FfmpegFilter && c7bH2.Reason.Contains("已兑现(H2)"),
-                            $"C7b 点名：H2 格要说清口径由 zscale 兑现（实 backend={c7bH2.Backend} Reason={c7bH2.Reason}）");
+                        // ⚠⚠ 2026-10-05：H2 死后端已删除 ⇒ 原「H2 格要说清口径由 zscale 兑现」作废。
+                        //   改判**新契约**：该格一律走 H1，且必须**点名"已兑现(H1)"**
+                        //   （而不是留着一条 H2 文案挂在一个不存在的执行体上）。
+                        Check(c7bH2.Backend != CB.FfmpegFilter && c7bH2.Reason.Contains("已兑现(H1)"),
+                            $"C7b 点名：H2 已删除 ⇒ 本格走 H1 且须点名「已兑现(H1)」（实 backend={c7bH2.Backend} Reason={c7bH2.Reason}）");
                     }
                     var c7bNa = CE.Plan(lin2020, srgbDst2, Pol709(true));
                     Check(c7bNa.Action == CA.Map && c7bNa.Reason.Contains("与 BT.709 编码口径无关"),
@@ -1926,16 +2064,24 @@ namespace ServiceProbe
             var pH1 = new FfmpegGui.Services.ColorMapping.ColorTransformPlan { Action = CA.Map, Backend = CB.InProcess };
             var pCarry = new FfmpegGui.Services.ColorMapping.ColorTransformPlan { Action = CA.CarryIcc, Backend = CB.None };
             var pNoop = new FfmpegGui.Services.ColorMapping.ColorTransformPlan { Action = CA.None, Backend = CB.None };
-            var pH2 = new FfmpegGui.Services.ColorMapping.ColorTransformPlan { Action = CA.Map, Backend = CB.FfmpegFilter };
+            // ⚠⚠ 2026-10-05：原有一条合成用例 `pH2 = { Action=Map, Backend=FfmpegFilter }` 用来测
+            //   「H2 计划下出现两条色彩入口要被抓到」。H2 死后端删除后，`FindPixelColorEntry`
+            //   新增了**反向自检**（置位 H2 ⇒ 直接返回"置位与执行体不匹配"）⇒ 该合成用例
+            //   必然命中那条自检、不再是"H2 单链"场景 ⇒ 用例本身失去意义，**删除**。
+            //   其覆盖不丢：真正的"双入口"检测由上面 `pH1` 那条承担（H1 计划 + zscale 链）。
             string zs = "-vf format=gbrpf32le,zscale=pin=bt709:tin=iec61966-2-1:min=gbr:p=smpte432:t=iec61966-2-1:m=bt709,format=rgb48le";
             Check(CE.FindPixelColorEntry(zs, pH1) != null, "C8 抓到双映射入口（H1 计划 + zscale 色彩链）");
             Check(CE.FindPixelColorEntry(zs, pCarry) != null, "C8 抓到违反：携带计划却带色彩链");
-            Check(CE.FindPixelColorEntry(zs + "," + zs.Replace("zscale=", "colormatrix="), pH2) != null, "C8 抓到违反：H2 计划但出现两条色彩入口");
+            // 反向自检（新，2026-10-05）：H2 置位必须**响亮报错**（而不是静默当"单链合法"）
+            var pH2Probe = new FfmpegGui.Services.ColorMapping.ColorTransformPlan { Action = CA.Map, Backend = CB.FfmpegFilter };
+            var h2Verdict = CE.FindPixelColorEntry("-vf scale=800:-1,format=rgb48le", pH2Probe);
+            Check(h2Verdict != null && h2Verdict.Contains("无 H2 执行体"),
+                $"C8 反向自检：H2 置位必须报「无 H2 执行体」（实 {h2Verdict ?? "null"}）");
             // 不误杀：iccgen（标注生成器）/ format= / 纯缩放 / -colorspace 等 CLI 标注选项 / 无参 zscale
             Check(CE.FindPixelColorEntry("-vf format=rgb48le,iccgen=color_primaries=smpte432:color_trc=iec61966-2-1:force=1 -colorspace bt709 -color_trc bt709", pNoop) == null,
                 "C8 无误杀：iccgen + CLI 标注选项不算像素入口");
-            Check(CE.FindPixelColorEntry("-vf scale=800:-1,format=rgb48le,zscale=3840:2160,iccgen", pH2) == null,
-                "C8 无误杀：纯缩放（无色彩参数）不算入口（H2 单链合法）");
+            Check(CE.FindPixelColorEntry("-vf scale=800:-1,format=rgb48le,zscale=3840:2160,iccgen", pH1) == null,
+                "C8 无误杀：纯缩放（无色彩参数）不算入口（H1 单链合法）");
             Check(CE.FindPixelColorEntry("-i in.png -c:v libjxl out.jxl", pCarry) == null, "C8 无误杀：无色彩滤镜的命令行");
 
             // C9 几何凸包包含判据（取代旧的“矩阵元素全非负”近似）：已知关系必须全部正确
@@ -3277,6 +3423,16 @@ namespace ServiceProbe
             Check(qa30.Contains("-distance 6.4") && qa90.Contains("-distance 1.0")
                     && !qa30.Contains("-distance 0") && !qa90.Contains("-distance 0"),
                 $"qa-① 开关开着也不吞质量轴：q30⇒6.4 / q90⇒1.0（实 [{qa30}] / [{qa90}]）");
+            // ⚠ P1-3（2026-10-03 复查）：`MapJxlDistanceInverse` 只是**近似**互逆（正函数 1 位小数取整），
+            //   旧注释自称"严格互逆"（自相矛盾），且旧锚点 q30/q90 恰落在互逆点上 ⇒ 结构性抓不到差异。
+            //   此处**显式钉死往返读数**并把锚点选在**非互逆点 q75**（→2.4→74，差 1）以恢复判别力：
+            //   q75 的 74 是量化的**诚实结果**（不是缺陷）—— 若日后有人"修"成严格互逆，这条会红，逼一次有意识决策。
+            int rt75 = FfmpegGui.Models.FfmpegOptions.MapJxlDistanceInverse(
+                FfmpegGui.Models.FfmpegOptions.MapJxlDistanceForward(75));
+            int rt30 = FfmpegGui.Models.FfmpegOptions.MapJxlDistanceInverse(
+                FfmpegGui.Models.FfmpegOptions.MapJxlDistanceForward(30));
+            Check(rt75 == 74 && rt30 == 30,
+                $"jxl-rt 反函数往返（近似互逆）：非互逆点 q75 ⇒ {rt75}（期望 74，差 1 属量化）；互逆点 q30 ⇒ {rt30}（期望 30）");
             var qaL = JxlCmd(75, true, null);
             Check(qaL.Contains("-distance 0"), $"qa-② 正控：真要无损由 Lossless 决定（{qaL}）");
             var qaM = JxlCmd(75, false, true);
@@ -3568,6 +3724,49 @@ namespace ServiceProbe
             }
             Check(negBad.Length == 0,
                 $"负控：引擎可走的代表格式 Block 必须为 null（非空=[{negBad}]）");
+
+            // 7) **P1-3 枚举序锁**（2026-10-04 补）────────────────────────────────────────
+            // 病因：RAW 源描述符的置信度曾**恰好等于**闸门阈值（`CicpTag == MinConfidenceForMapping`），
+            // 靠 `>=` 才放行 ⇒ 只要有人往枚举里插一个成员、或把闸门抬到 `NamedIcc`，这条刚修好的
+            // RAW 路径就**零告警地退回「直通」**（像素一个都不动，却仍标目标域）。
+            // 现修法：RAW 分支**显式**把置信度抬到 `NamedIcc`（见 `ColorIntentFactory` 的 `ColorSourceDecl*` 分支）。
+            // 下面三条把「枚举序不可随意插成员」钉死，并锁住「显式抬高」这件事本身（不再依赖枚举巧合）。
+            var minConf = FfmpegGui.Services.ColorMapping.EquivalenceTolerances.MinConfidenceForMapping;
+            Check(minConf == FfmpegGui.Services.ColorMapping.DescriptorConfidence.CicpTag,
+                $"P1-3 闸门阈值仍是 CicpTag（实 {minConf}）—— 若有意抬高，须同步确认 RAW 源描述符仍 >= 阈值");
+            Check((int)FfmpegGui.Services.ColorMapping.DescriptorConfidence.CicpTag
+                  < (int)FfmpegGui.Services.ColorMapping.DescriptorConfidence.NamedIcc,
+                "P1-3 枚举序不变：CicpTag("
+                + $"{(int)FfmpegGui.Services.ColorMapping.DescriptorConfidence.CicpTag}) < NamedIcc("
+                + $"{(int)FfmpegGui.Services.ColorMapping.DescriptorConfidence.NamedIcc})");
+            var rawDeclO = O("tiff");
+            rawDeclO.ColorSourceDeclPrimaries = "bt2020";
+            rawDeclO.ColorSourceDeclTrc = "linear";
+            // ⚠⚠ 输入路径必须是 **RAW**（用真素材，避免探测抛错）：`ColorIntentFactory` 的「自产中间件」
+            //   分支自 2026-10-04 审查起**只认 RAW 与 Ultra HDR 解码**两条路 —— 用 png 路径会让该分支
+            //   不触发 ⇒ 下面这条 P1-3 锁**假红**（实测：收紧后 `probe:wire` exit=1）。
+            //   ⇒ 这里改用 `tests/output/raw_samples/` 下的真 ARW（`RawService.IsRawFile` 是扩展名判据）。
+            const string rawDeclPath = "tests/output/raw_samples/Sony_ILCE7S.ARW";
+            var iRawDecl = FfmpegGui.Services.ColorMapping.ColorIntentFactory.FromOptions(rawDeclO, rawDeclPath, out var rRawDecl);
+            Check(iRawDecl?.Source != null
+                  && iRawDecl.Source!.Confidence == FfmpegGui.Services.ColorMapping.DescriptorConfidence.NamedIcc
+                  && iRawDecl.Source.Confidence >= minConf,
+                $"P1-3 RAW 源描述符置信度**显式** NamedIcc（实 {iRawDecl?.Source?.Confidence}，闸门 {minConf}）"
+                + $"⇒ 不依赖「恰好等于」（reason={rRawDecl ?? "无"}）");
+
+            // 8) **回归锁（2026-10-04）**：`ColorMatrix` 是**输入声明**、不是目标轴 ——
+            //    设了它**不得**吃掉 `ColorSpace` 目标。
+            //    曾踩：把「用户是否选了目标」的值派生判据写成含 `ColorMatrix` 的 `HasExplicitColorParams`，
+            //    而下游判据是**互斥**形状（`!advanced && ColorSpace…`）⇒ `--color-matrix bt709
+            //    --color-space sRGB` 会把 ColorSpace 目标**整条丢掉**。
+            //    实测后果：HDR(PQ) 源 → png 变 `决策：None`、产物仍 `smpte2084/bt2020`（用户要的 sRGB 被静默丢弃）。
+            //    ⇒ 锁住「矩阵在位 + 指定色空间 ⇒ 目标仍成立」。
+            var matO = O("png", "sRGB");
+            matO.ColorMatrix = "bt709";
+            var iMat = FfmpegGui.Services.ColorMapping.ColorIntentFactory.FromOptions(matO, sdr, out var rMat);
+            Check(iMat?.Target != null && iMat.TargetExplicit,
+                $"ColorMatrix 不得吃掉 ColorSpace 目标（Target={(iMat?.Target == null ? "null" : iMat.Target.Name)}"
+                + $"，TargetExplicit={iMat?.TargetExplicit}，reason={rMat ?? "无"}）");
 
             _ = R;
         }
@@ -7350,6 +7549,117 @@ namespace ServiceProbe
         /// 参考：ITU-R BT.2080（BT.709⇄BT.2020）、Display P3→sRGB（AAP/ASC 已发布矩阵）。
         /// 目的：保证“真的做了映射”而不是碰巧相近（漏映射/错转置会相差 ≥0.05）。
         /// </summary>
+        /// <summary>
+        /// `RawGamutFit` 的**纯函数级**判据（合成数据；不依赖素材、不依赖 ffmpeg）。
+        /// <para>
+        /// 存在理由：`--raw-color-target auto` 的降级判据若只靠端到端覆盖，则
+        /// ① 常量矩阵抄错、② 阈值方向反了、③ **「测不出」被当成「装得下」**（三态失效）、
+        /// ④ **亮度地板失效导致暗部噪声参与判定** 这四类缺陷都测不出来。本 mode 逐条钉死。
+        /// </para>
+        /// </summary>
+        private static void ProbeGamutFit()
+        {
+            // ── 1. 常量交叉锁：本内核的 M2020To709 == 产品注册表里同一对矩阵 ──
+            //     两处独立维护同一对矩阵 ⇒ 抄错一处端到端测不出来。
+            var reg = ColorSpaceRegistry.LinearMatrixBetweenPrimaries("bt2020", "bt709");
+            Check(reg != null, "gamutfit: 注册表提供 bt2020→bt709 矩阵");
+            if (reg != null)
+            {
+                double err = 0;
+                for (int i = 0; i < 3; i++)
+                    for (int j = 0; j < 3; j++)
+                        err = Math.Max(err, Math.Abs(GF.M2020To709[i, j] - reg[i * 3 + j]));
+                Console.WriteLine($"GF.M2020To709 vs ColorSpaceRegistry maxErr={err:E2}");
+                Check(err <= 1e-15, "gamutfit: M2020To709 派生自注册表（≤1e-15，非后备常数）");
+            }
+            // 派生值仍须落在 BT.2080 发布值附近（拦住"注册表整条错"这种情形）
+            {
+                var pub = new[]
+                {
+                    1.660491, -0.587641, -0.072850,
+                   -0.124550,  1.132901, -0.008350,
+                   -0.018151, -0.100581,  1.118731,
+                };
+                double e = 0;
+                for (int i = 0; i < 3; i++)
+                    for (int j = 0; j < 3; j++)
+                        e = Math.Max(e, Math.Abs(GF.M2020To709[i, j] - pub[i * 3 + j]));
+                Console.WriteLine($"GF.M2020To709 vs BT.2080 发布值 maxErr={e:E2}");
+                Check(e <= 2e-3, "gamutfit: M2020To709 与 BT.2080 发布值一致（≤2e-3）");
+            }
+
+            // ── 2. 正反矩阵互逆 ──
+            double idErr = 0;
+            for (int i = 0; i < 3; i++)
+                for (int j = 0; j < 3; j++)
+                {
+                    double s = 0;
+                    for (int k = 0; k < 3; k++) s += GF.M2020To709[i, k] * GF.M709To2020[k, j];
+                    idErr = Math.Max(idErr, Math.Abs(s - (i == j ? 1.0 : 0.0)));
+                }
+            Console.WriteLine($"M2020To709 x M709To2020 与单位阵偏差 max={idErr:E2}");
+            Check(idErr <= 1e-12, "gamutfit: 正反矩阵互逆（≤1e-12）");
+
+            // ── 3. 阈值形态（方向必须 fail-closed）──
+            Check(GF.FracThreshold > 0 && GF.FracThreshold <= 0.01,
+                  $"gamutfit: FracThreshold in (0,1%]（实 {GF.FracThreshold}）");
+            Check(GF.NegThreshold < 0, $"gamutfit: NegThreshold < 0（实 {GF.NegThreshold}）");
+            Check(GF.FloorFactor > 0 && GF.FloorFactor <= 1,
+                  $"gamutfit: FloorFactor in (0,1]（实 {GF.FloorFactor}）");
+            // ⚠ 容差必须比真实越界量级小至少 2 个数量级（否则会掩盖真越界）
+            Check(GF.EpsNeg > 0 && GF.EpsNeg <= 1e-3,
+                  $"gamutfit: EpsNeg in (0,1e-3]（实 {GF.EpsNeg}）");
+
+            // ── 4. 行为：合成数据 ──
+            static byte[] Rgb48(int n, Func<int, (int r, int g, int b)> f)
+            {
+                var a = new byte[n * 6];
+                for (int i = 0; i < n; i++)
+                {
+                    var (r, g, b) = f(i);
+                    a[i * 6 + 0] = (byte)(r & 0xFF); a[i * 6 + 1] = (byte)((r >> 8) & 0xFF);
+                    a[i * 6 + 2] = (byte)(g & 0xFF); a[i * 6 + 3] = (byte)((g >> 8) & 0xFF);
+                    a[i * 6 + 4] = (byte)(b & 0xFF); a[i * 6 + 5] = (byte)((b >> 8) & 0xFF);
+                }
+                return a;
+            }
+            const int N = 4096;
+
+            // (a) 中性灰 ⇒ bt709 里仍是灰（无负值）⇒ 判"装得下"
+            var gray = GF.MeasureRgb48(Rgb48(N, _ => (30000, 30000, 30000)), N, 1);
+            Console.WriteLine($"(a) 中性灰: measurable={gray.Measurable} frac={gray.FracOutOf709:E2} maxNeg={gray.MaxNegExcursion:E2} fits={gray.FitsIn709}");
+            Check(gray.Measurable && gray.FitsIn709, "gamutfit(a): 中性灰 ⇒ 装在 bt709 内");
+
+            // (b) 纯 bt2020 红 ⇒ bt709 的 G/B 变负（≈ −0.1246）⇒ 判"超出"
+            var red = GF.MeasureRgb48(Rgb48(N, _ => (65535, 0, 0)), N, 1);
+            Console.WriteLine($"(b) bt2020 纯红: measurable={red.Measurable} frac={red.FracOutOf709:E2} maxNeg={red.MaxNegExcursion:F4} fits={red.FitsIn709}");
+            Check(red.Measurable && !red.FitsIn709, "gamutfit(b): bt2020 纯红 ⇒ 超出 bt709");
+
+            // (c) 全黑 ⇒ 地板以上像素为 0 ⇒ 必须"测不出"（**不得**返回"装得下"）
+            var black = GF.MeasureRgb48(Rgb48(N, _ => (0, 0, 0)), N, 1);
+            Console.WriteLine($"(c) 全黑: measurable={black.Measurable} reason={black.Reason}");
+            Check(!black.Measurable, "gamutfit(c): 全黑 ⇒ 三态「测不出」（不得当成装得下）");
+            Check(!black.FitsIn709, "gamutfit(c): 测不出时 FitsIn709 必须为 false（保守）");
+
+            // (d) bt709 纯红（换算成 bt2020 表示）⇒ 恰在边界上 ⇒ 判"装得下"
+            //     ⚠ 这条钉的是 EpsNeg：去掉容差 ⇒ 边界色被整片计成越界 ⇒ 本条转红。
+            var inRed = GF.MeasureRgb48(Rgb48(N, _ => (41123, 4528, 1075)), N, 1);
+            Console.WriteLine($"(d) bt709 纯红(bt2020 表示): measurable={inRed.Measurable} frac={inRed.FracOutOf709:E2} maxNeg={inRed.MaxNegExcursion:F6} fits={inRed.FitsIn709}");
+            Check(inRed.Measurable && inRed.FitsIn709, "gamutfit(d): bt709 边界内的红 ⇒ 装在 bt709 内（EpsNeg 生效）");
+
+            // (e) **地板负控**：99% 中性灰 + 1% 极暗的越界红 ⇒ 越界像素全在地板下 ⇒ 仍判"装得下"
+            //     ⚠ 变异验证：把 FloorFactor 置 0 ⇒ 该暗红像素被计入 ⇒ 本条必须转红。
+            var floorCase = GF.MeasureRgb48(
+                Rgb48(N, i => (i % 100 == 0) ? (200, 0, 0) : (30000, 30000, 30000)), N, 1);
+            Console.WriteLine($"(e) 灰+暗越界红: measurable={floorCase.Measurable} floor={floorCase.LuminanceFloor:F5} frac={floorCase.FracOutOf709:E2} fits={floorCase.FitsIn709}");
+            Check(floorCase.Measurable && floorCase.FitsIn709,
+                  "gamutfit(e): 越界像素全在亮度地板以下 ⇒ 判「装得下」（地板负控）");
+
+            // (f) 输入长度不符 ⇒ 必须"测不出"（不得把截断数据当有效样本）
+            var bad = GF.MeasureRgb48(new byte[N * 6 - 6], N, 1);
+            Check(!bad.Measurable, "gamutfit(f): 长度不符 ⇒ 三态「测不出」");
+        }
+
         private static void ProbeMatrix()
         {
             const double Tol = 2e-3;   // 色度输入仅 3 位小数 → 与发布值差 ~1e-3

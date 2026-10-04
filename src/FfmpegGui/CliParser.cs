@@ -366,6 +366,12 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
                           允许在未标注语义不统一的容器（TIFF 类）产出无标注结果
   --color-gamut-map <off|on>
                           源色域超出目标时：off=钳位（硬裁切，默认）；on=GMO 色域压缩（去饱和，非裁切）
+  --raw-color-target <rec2020|auto|rec709>
+                          RAW 输出色域模式（仅对 RAW 输入生效；默认 rec2020）：
+                          rec2020 = Rec.2020 表达优先，即现状三档（能承载 HDR 传递 / TIFF ⇒ bt2020，其余 ⇒ bt709）；
+                          auto    = 在默认档上叠加内容判定：该图实际用色未超出 bt709 范围时不用 Rec.2020。
+                                    仅作用于「SDR 传递的 bt2020 档位」（当前 = TIFF 例外档）；HDR 传递档不参与；
+                          rec709  = 强制 bt709 + sRGB（最大兼容性），覆盖容器能力
   --icc-file <path>       用外部 ICC 文件判定**源**色彩空间
   --icc-mode <mode>       旧参数，映射为 --color-strategy（兼容用）
 
@@ -726,6 +732,20 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
                     case "color-hdr-peak": options.ColorHdrPeakNits = ParseDoubleStrict(key, value); break;
                     case "color-sdr-white": options.ColorSdrWhiteNits = ParseDoubleStrict(key, value); break;
                     case "color-sdr-peak": options.ColorSdrPeakNits = ParseDoubleStrict(key, value); break;
+                    case "raw-color-target":
+                        // ── 2026-10-04 新增（三档，仅对 RAW 输入生效）──
+                        // 取值域 = `ColorSpaceRegistry.NormalizeRawColorTargetToken` 的三个规范值：
+                        //   rec2020（**默认**，Rec.2020 表达优先 = 现状三档）| auto（按内容判定）|
+                        //   rec709（强制 bt709+sRGB / 最大兼容）。完整语义见 `FfmpegOptions.RawColorTarget`。
+                        // ⚠ 必须走 Strict：静默落默认值会让用户以为模式生效了、实际按 rec2020 跑
+                        //   （与 `--color-gamut-map` 同一口径，即 2026-09-19 P1-E 起的全表规则）。
+                        // ⚠ 别名归一（bt2020/bt709/srgb）放在属性 setter，**只对预设 JSON 有意义**；
+                        //   CLI 侧只认这三个规范值（严格入口，与 `--color-709-curve` 同口径）。
+                        // ⚠ `expected` 必须纯 ASCII：本调用行不是诊断 sink，
+                        //   加中文会让 `_probe-cjk-hardcode-scan` 的 CsUi（余量 0）立刻转红。
+                        options.RawColorTarget = ParseTokenStrict(key, value,
+                            "rec2020 | auto | rec709", "rec2020", "auto", "rec709");
+                        break;
                     case "threads": options.Threads = ParseIntStrict(key, value); break;
                     case "lossless": options.Lossless = ParseBoolStrict(key, value); break;
                     case "jxl-effort": options.JxlEffort = ParseIntStrict(key, value); break;

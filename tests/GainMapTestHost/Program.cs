@@ -196,12 +196,14 @@ public static class Program
         Check("D10 JPEG+Display P3 按目标出 P3 像素并附 ICC（不被降级为 sRGB）", d10P3);
 
         // ── RAW 预处理注入场景 (Bug#2 回归) ──
-        // QueueProcessor 预处理后注入 ColorPrimaries=bt709 + ColorTrc=linear（不设 UseAdvancedColorParameters）
-        // 修复前: 注入值被忽略 → 线性 TIFF 无 -color_trc linear → PNG 输出无 cICP → 画面过暗
+        // ⚠ 2026-10-04 更新：注入通道已由 `ColorPrimaries/ColorTrc` 改为 **`ColorSourceDeclPrimaries/Trc`**。
+        //   自 2026-10-03 起（见 CHANGELOG）`ColorPrimaries/ColorTrc` **只表示输出目标**；旧的"把注入值
+        //   写进 CP/CT 当输入声明"在新语义下会把这对值当成**输出目标**、把用户选的 sRGB 吃掉。
+        //   ⇒ 两个用例改用**当前机制**表达同一场景，**判据不变**（注入的输入声明必须被尊重）。
         var rawInjected = new FfmpegGui.Models.FfmpegOptions
         {
             Format = "png", ColorSpace = "auto", ColorStrategy = FfmpegGui.Models.ColorStrategy.Recommended, Threads = 4,
-            ColorPrimaries = "bt709", ColorTrc = "linear"   // 预处理注入（模拟 RAW 路径）
+            ColorSourceDeclPrimaries = "bt709", ColorSourceDeclTrc = "linear"   // 预处理注入（当前机制）
         };
         var cmdRaw = FfmpegCommandBuilder.BuildArguments(rawInjected, Path.Combine(outDir, "linear.tiff"),
             Path.Combine(outDir, "raw_out.png"));
@@ -213,7 +215,7 @@ public static class Program
         var rawSrgb = new FfmpegGui.Models.FfmpegOptions
         {
             Format = "png", ColorSpace = "sRGB", ColorStrategy = FfmpegGui.Models.ColorStrategy.Recommended, Threads = 4,
-            ColorPrimaries = "bt709", ColorTrc = "linear"   // 预处理注入
+            ColorSourceDeclPrimaries = "bt709", ColorSourceDeclTrc = "linear"   // 预处理注入（当前机制）
         };
         var cmdRawSrgb = FfmpegCommandBuilder.BuildArguments(rawSrgb, Path.Combine(outDir, "linear.tiff"),
             Path.Combine(outDir, "raw_srgb.png"));
