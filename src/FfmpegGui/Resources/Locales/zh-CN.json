@@ -71,6 +71,8 @@
   "color.space.quick": "色彩空间（快速选择）",
   "gamut.map.enable": "色域映射（越界色压缩而非硬裁切）",
   "tip.gamut.map": "开启后，源色域超出目标时按 GMO 向「同亮度灰」混合去饱和，而不是把越界分量直接裁到 0/1；未越界的像素逐字节不变。默认关闭（钳位硬裁切）。仅自研引擎路径有效。",
+  "raw.target.label": "RAW 输出色域模式（仅对 RAW 输入生效）",
+  "tip.raw.target": "rec2020（默认）= Rec.2020 表达优先，即现状三档：能承载 HDR 传递的容器与 TIFF 走 bt2020，其余走 bt709。auto = 在默认档之上按该图实际用色判定，未超出 bt709 范围时不用 Rec.2020；仅作用于「SDR 传递的 bt2020 档位」（当前为 TIFF 例外档），HDR 传递档不参与。rec709 = 强制 bt709 + sRGB，最大兼容性，覆盖容器能力。",
   "color.primaries": "色彩基准（primaries）",
   "color.transfer": "色彩传输函数（trc）",
   "color.matrix": "色彩矩阵（colorspace）",

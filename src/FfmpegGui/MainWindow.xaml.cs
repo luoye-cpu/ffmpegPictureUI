@@ -1,4 +1,4 @@
-﻿using Avalonia.Controls;
+using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Markup.Xaml;
 using Avalonia.Platform.Storage;
@@ -237,6 +237,7 @@ namespace FfmpegGui
         private CheckBox? JpegGainMapFollowMainCheck;
         private ComboBox? HdrModeCombo;   // HDR 实现模式（GainMap | 传统）；可见性按容器能力
         private CheckBox? ColorGamutMapCheck;       // 色域映射（GMO）开关（高级色彩面板，默认关）
+        private ComboBox? RawColorTargetCombo;      // RAW 输出色域模式（rec2020 | auto | rec709）
         private StackPanel? JpegGainMapQualityPanel;
         private TextBox? JpegGainMapQualityBox;
         private Button? GainMapQualityUpBtn;
@@ -486,6 +487,7 @@ namespace FfmpegGui
             JpegGainMapMultiChannelCheck = this.FindControl<CheckBox>("JpegGainMapMultiChannelCheck");  // XAML 已改 ComboBox，此引用为 null 兼容
             // ── 色域映射（GMO）开关 ──
             ColorGamutMapCheck = this.FindControl<CheckBox>("ColorGamutMapCheck");
+            RawColorTargetCombo = this.FindControl<ComboBox>("RawColorTargetCombo");
             TiffCompressionCombo = this.FindControl<ComboBox>("TiffCompressionCombo");
             TiffDpiBox = this.FindControl<NumericUpDown>("TiffDpiBox");
             ThumbnailPanel = this.FindControl<StackPanel>("ThumbnailPanel");
@@ -2075,7 +2077,7 @@ namespace FfmpegGui
         /// <summary>
         /// 获取当前选中的编码器后端类型
         /// </summary>
-        /// <summary>用户是否手动指定了色彩空间（简单模式 ColorSpace 或高级模式 ColorPrimaries）</summary>
+        /// <summary>用户是否手动指定了色彩空间（简单模式 ColorSpace 或高级模式精确参数）</summary>
         private bool IsColorManuallySpecified()
         {
             // 简单模式: ColorSpace != auto
@@ -2083,9 +2085,11 @@ namespace FfmpegGui
             if (!string.IsNullOrWhiteSpace(cs)
                 && !cs.Equals("auto", StringComparison.OrdinalIgnoreCase))
                 return true;
-            // 高级模式: UseAdvancedColor 勾选且 ColorPrimaries 非空
+            // 高级模式: 勾选且**精确参数**非 auto
+            // ⚠ 2026-10-04：`auto`（首项，= 不指定）**不算**"手动指定" —— 否则勾选后即便没动下拉
+            //   也会被当成"用户指定了色彩"，正是"勾选/不勾选不应有策略差别"要消除的形状。
             if (UseAdvancedColor?.IsChecked == true
-                && !string.IsNullOrWhiteSpace(ColorPrimariesCombo?.SelectedItem as string))
+                && AutoToNull(ColorPrimariesCombo?.SelectedItem as string) != null)
                 return true;
             return false;
         }
@@ -2870,11 +2874,17 @@ namespace FfmpegGui
                 Chroma = chroma,
                 BitDepth = bitdepth,
                 ColorSpace = ColorSpaceCombo?.SelectedItem as string,
+                // RAW 输出色域模式：与 `ColorGamutMap` 同口径**无条件读**（不挂在 useAdv 上）——
+                // 它是"RAW 默认档如何取"这根独立轴的取值；默认 rec2020 与历史行为逐字节相同。
+                RawColorTarget = RawColorTargetCombo?.SelectedItem as string,
                 // 高级色彩参数（2026-08-15 修复: 此前入队路径遗漏导致仅预览生效）
-                UseAdvancedColorParameters = useAdv,
-                ColorPrimaries = useAdv ? (ColorPrimariesCombo?.SelectedItem as string) : null,
-                ColorTrc = useAdv ? (ColorTrcCombo?.SelectedItem as string) : null,
-                ColorMatrix = useAdv ? (ColorMatrixCombo?.SelectedItem as string) : null,
+                UseAdvancedColorParameters = useAdv,   // ⚠ 仅 UI 状态；语义判据一律走 HasExplicitColorParams
+                // ⚠⚠ 2026-10-04 设计裁定：勾选与不勾选**不得**造成策略差别。三个下拉的首项 `auto`
+                //   在此映射为 **null** ⇒「勾选但没动下拉」提交的值与「不勾选」完全相同（都无精确参数）。
+                //   模式 1 允许 auto（走自动默认）；模式 2/3/4 必须手动指定（见 UpdateAdvancedColorValidation）。
+                ColorPrimaries = useAdv ? AutoToNull(ColorPrimariesCombo?.SelectedItem as string) : null,
+                ColorTrc = useAdv ? AutoToNull(ColorTrcCombo?.SelectedItem as string) : null,
+                ColorMatrix = useAdv ? AutoToNull(ColorMatrixCombo?.SelectedItem as string) : null,
                 ColorRange = useAdv ? GetColorRangeValue() : null,
                 TonemapCurve = null, // tonemap 曲线内部固定 hable
                 Encoder = encoderName, EncoderBackend = encoderBackend,
@@ -3844,14 +3854,41 @@ namespace FfmpegGui
         }
 
         /// <summary>仅「手动」策略：用户改三元组时实时校验 CICP 组合，非阻拦告警（仍按选择执行）。</summary>
+        /// <summary>`auto`（下拉首项，= 不指定）归一为 <c>null</c>；其余原样返回。</summary>
+        /// <remarks>
+        /// 2026-10-04 设计裁定：模式 1 允许三个下拉取 `auto`（走自动默认）；模式 2/3/4 必须手动指定。
+        /// 提交路径（`BuildOptionsFromUi`）与校验路径共用本函数 ⇒ "auto == 没指定"只有一处口径。
+        /// </remarks>
+        private static string? AutoToNull(string? v)
+            => string.IsNullOrWhiteSpace(v) || v.Equals("auto", StringComparison.OrdinalIgnoreCase) ? null : v;
+
         private void UpdateAdvancedColorValidation()
         {
             if (ColorConflictLabel == null) return;
-            if (GetColorStrategy() != Models.ColorStrategy.Manual) return;
+            var strategy = GetColorStrategy();
+            // ── 模式 2/3/4：精确参数**必须手动指定**（2026-10-04 设计裁定）──
+            //    模式 1（Recommended）允许 auto —— 由引擎按目标容器能力给自动默认
+            //    （RAW→图片：能承载 BT.2020 ⇒ BT.2020，否则 sRGB/BT.709）。
+            if (strategy != Models.ColorStrategy.Recommended)
+            {
+                var miss = new List<string>();
+                if (AutoToNull(ColorPrimariesCombo?.SelectedItem as string) == null) miss.Add("原色");
+                if (AutoToNull(ColorTrcCombo?.SelectedItem as string) == null) miss.Add("传递函数");
+                if (AutoToNull(ColorMatrixCombo?.SelectedItem as string) == null) miss.Add("矩阵");
+                if (miss.Count > 0)
+                {
+                    ColorConflictLabel.Text = $"⚠ 模式 2/3/4 需手动指定：{string.Join("、", miss)}（当前为 auto）";
+                    ColorConflictLabel.IsVisible = true;
+                    ColorConflictLabel.Foreground = Avalonia.Media.Brushes.Orange;
+                    return;
+                }
+            }
+            // 模式 4（Manual）沿用既有的三元组合法性校验
+            if (strategy != Models.ColorStrategy.Manual) { ClearColorConflict(); return; }
             var warn = ColorSpaceRegistry.ValidateCicpTriple(
-                ColorPrimariesCombo?.SelectedItem as string,
-                ColorTrcCombo?.SelectedItem as string,
-                ColorMatrixCombo?.SelectedItem as string);
+                AutoToNull(ColorPrimariesCombo?.SelectedItem as string),
+                AutoToNull(ColorTrcCombo?.SelectedItem as string),
+                AutoToNull(ColorMatrixCombo?.SelectedItem as string));
             if (warn != null)
             {
                 ColorConflictLabel.Text = "⚠ " + warn + "（仍按你的选择执行）";
@@ -3896,6 +3933,9 @@ namespace FfmpegGui
             UpdateIccPreview();
             UpdateIccCompatibility();
             DetectColorConflicts();
+            // ⚠ 2026-10-04：策略切换（模式 1 ↔ 2/3/4）会改变「精确参数是否**必须手动指定**」的判定
+            //   ⇒ 本函数被 4 个策略单选的 IsCheckedChanged 调用，在此一并刷新校验（单点接线，避免漏接）。
+            UpdateAdvancedColorValidation();
         }
 
         private async void BrowseIcc_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
@@ -5821,6 +5861,7 @@ namespace FfmpegGui
                 ConversionMode = ConversionModeCombo?.SelectedIndex,
                 EncoderName = EncoderCombo?.SelectedItem as string,
                 ColorGamutMap = GetColorGamutMap(),
+                RawColorTarget = RawColorTargetCombo?.SelectedItem as string,
                 CjxlEffort = (int?)CjxlEffortBox?.Value,
                 TiffDpi = TiffDpiBox?.Value > 0 ? (int?)TiffDpiBox.Value : null,
                 EnableThumbnail = EnableThumbnailCheck?.IsChecked ?? false,
@@ -6050,6 +6091,14 @@ namespace FfmpegGui
             if (ColorGamutMapCheck != null && !string.IsNullOrWhiteSpace(p.ColorGamutMap))
                 ColorGamutMapCheck.IsChecked =
                     string.Equals(p.ColorGamutMap, "on", StringComparison.OrdinalIgnoreCase);
+            // RAW 输出色域模式：只在预设**带了值**时回写（与上面 ColorGamutMap 同口径）——
+            // 旧预设无此字段 ⇒ 不动控件，避免把用户当前选择悄悄重置成 rec2020。
+            // ⚠ 预设里可能是别名（bt2020/bt709/srgb）⇒ 先过规范化器再落到下拉项。
+            if (RawColorTargetCombo != null && !string.IsNullOrWhiteSpace(p.RawColorTarget))
+            {
+                var wantRaw = Services.ColorSpaceRegistry.NormalizeRawColorTargetToken(p.RawColorTarget) ?? "rec2020";
+                RawColorTargetCombo.SelectedItem = wantRaw is "auto" or "rec709" ? wantRaw : "rec2020";
+            }
             if (CjxlEffortBox != null && p.CjxlEffort.HasValue)
                 CjxlEffortBox.Value = Math.Clamp(p.CjxlEffort.Value, 1, 9);
             if (GifPaletteCheck != null) GifPaletteCheck.IsChecked = p.GifPaletteOptimize;

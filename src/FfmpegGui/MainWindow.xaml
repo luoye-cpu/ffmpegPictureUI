@@ -410,15 +410,32 @@
                       ToolTip.Tip="{ext:Loc tip.gamut.map}"
                       IsCheckedChanged="ColorGamutMap_Changed"/>
 
+            <!-- ── RAW 输出色域模式（三档；仅对 RAW 输入生效）──
+                 取值用 ASCII 记号（rec2020 / auto / rec709）：XAML 硬编码中文有**硬上限**
+                 （`_probe-cjk-hardcode-scan` 的 BASE_XAML = 13，不得增加）⇒ 文案一律走 {ext:Loc}。 -->
+            <TextBlock Text="{ext:Loc raw.target.label}" FontSize="11" Margin="0,4,0,0"
+                       Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+            <ComboBox x:Name="RawColorTargetCombo" FontSize="11"
+                      ToolTip.Tip="{ext:Loc tip.raw.target}">
+              <sys:String>rec2020</sys:String>
+              <sys:String>auto</sys:String>
+              <sys:String>rec709</sys:String>
+            </ComboBox>
+
             <!-- ── 精确色彩参数 ── -->
             <TextBlock Text="{ext:Loc color.primaries}" Margin="0,6,0,0"/>
             <ComboBox x:Name="ColorPrimariesCombo">
+              <!-- ⚠ 首项 `auto` = **不指定**（模式 1 默认；提交时映射为 null）。2026-10-04 设计裁定：
+                   模式 1 允许 auto（走自动默认）；模式 2/3/4 必须手动指定（见 UpdateAdvancedColorValidation）。 -->
+              <sys:String>auto</sys:String>
               <sys:String>bt709</sys:String>
               <sys:String>bt2020</sys:String>
               <sys:String>smpte432</sys:String>
             </ComboBox>
             <TextBlock Text="{ext:Loc color.transfer}"/>
             <ComboBox x:Name="ColorTrcCombo">
+              <!-- ⚠ 首项 `auto` = 不指定（模式 1 默认；提交时映射为 null）。 -->
+              <sys:String>auto</sys:String>
               <sys:String>iec61966-2-1</sys:String>
               <sys:String>bt709</sys:String>
               <sys:String>smpte2084</sys:String>
@@ -427,6 +444,8 @@
             </ComboBox>
             <TextBlock Text="{ext:Loc color.matrix}"/>
             <ComboBox x:Name="ColorMatrixCombo">
+              <!-- ⚠ 首项 `auto` = 不指定（模式 1 默认；提交时映射为 null）。 -->
+              <sys:String>auto</sys:String>
               <!-- ⚠ 只能是**在本管线的两个角色里都真的可用**的矩阵（实测，2026-09-16）：
                    角色①「输入声明」= `-i` 前的 `-colorspace`，需 swscale 能按该矩阵做像素转换；
                    角色②「输出标注」= `-i` 后的 `-colorspace`，需目标编码器/容器能承载。

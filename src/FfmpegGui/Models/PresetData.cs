@@ -174,6 +174,12 @@ namespace FfmpegGui.Models
         public string? EncoderName { get; set; }
         /// <summary>Color gamut mapping: "on" / "off"</summary>
         public string? ColorGamutMap { get; set; }
+        /// <summary>
+        /// RAW 输出色域模式：null/"rec2020"（默认，Rec.2020 表达优先）| "auto"（按内容判定）|
+        /// "rec709"（强制窄色域 / 最大兼容）。⚠ 仅对 RAW 输入生效；语义见
+        /// <see cref="FfmpegOptions.RawColorTarget"/>。
+        /// </summary>
+        public string? RawColorTarget { get; set; }
         /// <summary>cjxl panel effort; branches with JxlEffort by backend</summary>
         public int? CjxlEffort { get; set; }
 

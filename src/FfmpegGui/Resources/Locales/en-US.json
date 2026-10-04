@@ -71,6 +71,8 @@
   "color.space.quick": "Color Space (Quick Select)",
   "gamut.map.enable": "Gamut Mapping (compress out-of-gamut instead of clipping)",
   "tip.gamut.map": "When on, out-of-gamut colors are desaturated toward same-luminance gray (GMO) instead of hard-clipping components to 0/1; in-gamut pixels stay byte-identical. Off by default (hard clipping). Only the in-process engine path honors it.",
+  "raw.target.label": "RAW Output Color Target (RAW input only)",
+  "tip.raw.target": "rec2020 (default) = prefer Rec.2020 expression, i.e. the current three-tier rule: HDR-transfer-capable containers and TIFF use bt2020, everything else uses bt709. auto = on top of that default, judge by the image's actual color usage and avoid Rec.2020 when it fits within bt709; applies only to SDR-transfer bt2020 tiers (currently the TIFF exception tier), HDR-transfer tiers are unaffected. rec709 = force bt709 + sRGB for maximum compatibility, overriding container capability.",
   "color.primaries": "Color Primaries",
   "color.transfer": "Color Transfer (trc)",
   "color.matrix": "Color Matrix (colorspace)",
