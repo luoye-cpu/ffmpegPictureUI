@@ -1,6 +1,6 @@
-﻿# _run-step3-gates.ps1 —— 步骤 3 改动后的门禁批量执行（只回显每个门禁的汇总行 + 失败明细）
+# _run-step3-gates.ps1 —— 步骤 3 改动后的门禁批量执行（只回显每个门禁的汇总行 + 失败明细）
 # 用法：pwsh -NoProfile -File tests/scripts/_run-step3-gates.ps1 [-Probes a,b,c] [-SkipScripts] [-Scripts a,b]
-#   ⚠ `-Scripts` = **脚本级子集**（2026-09-24 新增）。动机：此前只有"全跑 65 条"与
+#   ⚠ `-Scripts` = **脚本级子集**（2026-09-24 新增）。动机：此前只有"全跑 68 条"与
 #     "裸跑单个 verify-*.ps1"两种选择，而裸跑会绕开本文件的**仓库锁 / 单步超时 / STALE 新鲜度闸 /
 #     双漂移复核 / `_gate_script_*.txt` 留痕**五项保护 ⇒ 增量验证要么太贵要么不可信。
 #     ⚠ 全跑墙钟不再写死分钟数：2026-10-01 起清单含 5 条 **L3/产物级**套件（第 61~65 条），
@@ -32,7 +32,15 @@
 #   「**越界带 H1 内核 ≡ zimg 参照**」：两路产物过有损编码后聚合 PSNR 会被**共享量化噪声**主导
 #   （实测同一对像素：进编码器前 85.9 dB、过 `-d 2.4` 后 36.9 dB），所以那条真不变量只能放在
 #   **无损通道**上测（rawvideo/rgb48，不经任何有损档）。来历见 `docs/HANDOVER_2026-10-02.md` 第十/十一节。
-param([string]$Probes = 'contract,wire,verdict,selftest,iccname,plan,curve,matrix,colormath,ootf,hlgwire,bt2446,decision,engine,runner,settings,procstreams,encoding,ipc,i18n,geometry,metaraw,thumbnail,oog',
+# ⚠ `avifgm`（2026-10-03 接进默认清单，第 25 个 mode）——它钉的是 **AVIF 增益图写出侧** 的
+#   `colr.full_range`：`IsoBmffGainMapWriter.PatchColr` 曾把底图 colr 的该位**硬写成 full(0x80)**，
+#   而 ffmpeg(libaom-av1) 对 yuv420p 实产的是 **tv(0x00)** ⇒ 每条 AVIF 增益图产物的主图都被贴错 range。
+#   ⚠ 该缺陷长期静默的**结构性原因**：仓库内此前**没有任何判据覆盖这条写出路径**
+#   （`gainmap-isobmff` 只测**解码**侧、`gainmap` 测 **JPEG** Ultra HDR 容器）⇒ 补此 mode 作永久锁。
+#   三段：① 反射直调 `PatchColr` 断言「只读继承、双向」；② 反射读 `Build` 的 `baseFullRangeFallback` 默认值必须 false；
+#   ③ 端到端（真 ffmpeg + 产品 `EncodeAsync(container:"avif")`）断言产物底图 colr 末字节 = 0x00。
+#   ⚠ 依赖 `publish/PLAN/ffmpeg-full/ffmpeg.exe`（由 `InitExternalTools` 定位）；缺席时 ③ **SKIP 点名**，① ② 仍跑。
+param([string]$Probes = 'contract,wire,verdict,selftest,iccname,plan,curve,matrix,colormath,ootf,hlgwire,bt2446,decision,engine,runner,settings,procstreams,encoding,ipc,i18n,geometry,metaraw,thumbnail,oog,avifgm,gamutfit',
       [switch]$SkipScripts,
       # ⚠ 逗号分隔的**文件名**（含 .ps1），顺序不敏感；名字不在清单内 ⇒ 响亮报红而不是静默忽略。
       #   `pwsh -File` 下 `-Scripts a,b` 只会作为一个参数传入（与 $Probes 同一坑，见 :455），故这里自己切。
@@ -73,7 +81,7 @@ param([string]$Probes = 'contract,wire,verdict,selftest,iccname,plan,curve,matri
 #    2026-09-17 新增 verify-gamut-map.ps1；**同日按「运行级隔离（GUID）」改写，见 §6 第 66 条**；
 #    同日再新增生产者 `_probe-jpg-p3-icc.ps1`，理由见下方 ②(b) 与调序注释；
 #    同日再新增 `verify-geometry-engine.ps1`（**几何缩放死代码**的专项门禁，理由见 `$Probes` 的 `geometry` 注释））──
-#    ⚠ **清单条数以实测为准 = 65 条**（⚠ 2026-09-19 P4-A 前为 42 条；2026-09-23 由 48 经 49/50/51 到 52，2026-09-23/24 再接 `verify-ipc-extra-options.ps1` ⇒ 53，2026-09-24 再接 `_probe-settings-clone-coverage.ps1` ⇒ 54，2026-09-27 再接 `_probe-matrix-structure.ps1`（任务 #42，秒级结构自检）⇒ 55，同日再接 `_probe-stderr-merge-scan.ps1`（任务 #51，合并取数结构锁）⇒ 56，同日再接 `verify-simd-switch-fallback.ps1`（面板「SIMD 优化」声明/实现冲突 ⇒ 判据单点 `SimdKernelRouting`）⇒ 57，2026-09-30 再接 `verify-geometry-orientation.ps1` + `_probe-geometry-single-source-scan.ps1`（取向标签 ⇒ **显示尺寸**口径的专项门禁 + 唯一实现结构锁）⇒ 59，同日再接 `verify-gainmap-host.ps1`（把 `GainMapTestHost` 套件接进清单 + STALE 第 ⑤ 对）⇒ 60，2026-10-01 再接**首批 L3/产物级套件**5 条（`verify-package-smoke` + `verify-jbrd-e2e` + `verify-orientation-rewrap` + `verify-gainmap-thirdparty` + `verify-encoder-knob-liveness`；原居 gitignored 的 `tests/output/t{69,76,77,79}`，`git clean -xdf` 一次就没、也不在任何轮里被跑）⇒ 65）（`foreach` 数组里的 `.ps1` 条目数）。
+#    ⚠ **清单条数以实测为准 = 68 条**（⚠ 2026-09-19 P4-A 前为 42 条；2026-09-23 由 48 经 49/50/51 到 52，2026-09-23/24 再接 `verify-ipc-extra-options.ps1` ⇒ 53，2026-09-24 再接 `_probe-settings-clone-coverage.ps1` ⇒ 54，2026-09-27 再接 `_probe-matrix-structure.ps1`（任务 #42，秒级结构自检）⇒ 55，同日再接 `_probe-stderr-merge-scan.ps1`（任务 #51，合并取数结构锁）⇒ 56，同日再接 `verify-simd-switch-fallback.ps1`（面板「SIMD 优化」声明/实现冲突 ⇒ 判据单点 `SimdKernelRouting`）⇒ 57，2026-09-30 再接 `verify-geometry-orientation.ps1` + `_probe-geometry-single-source-scan.ps1`（取向标签 ⇒ **显示尺寸**口径的专项门禁 + 唯一实现结构锁）⇒ 59，同日再接 `verify-gainmap-host.ps1`（把 `GainMapTestHost` 套件接进清单 + STALE 第 ⑤ 对）⇒ 60，2026-10-01 再接**首批 L3/产物级套件**5 条（`verify-package-smoke` + `verify-jbrd-e2e` + `verify-orientation-rewrap` + `verify-gainmap-thirdparty` + `verify-encoder-knob-liveness`；原居 gitignored 的 `tests/output/t{69,76,77,79}`，`git clean -xdf` 一次就没、也不在任何轮里被跑）⇒ 65，2026-10-04 再接 `_probe-jxl-input-target.ps1` + `_probe-raw-default-tier.ps1`（色彩审查两个 P1 的判据）⇒ 67，同日再接 `_probe-gui-control-wiring.ps1`（72h 审查 P0：GUI 控件「声明了却没接线」结构锁）⇒ 68）（`foreach` 数组里的 `.ps1` 条目数）。
 #      原注释写「29 个」「31 条」均与实测不符（**历史偏差**，非本轮引入），已按实测更正。
 #      2026-09-18 新增 `verify-engine-firstframe.ps1`（引擎多帧解码只取首帧，理由见该脚本头注释）
 #      ⇒ 32 → 33，已重新数过。
@@ -920,7 +928,7 @@ $noSelfSummary = @('_probe-cancel-propagation-scan.ps1', '_probe-ct-chain-closur
 #   观察项**，改成必红等于**主动放弃一条覆盖**；补生产者只是**修复清单的遗漏**。
 #   ⚠ **本组正确性依赖 runner 串行**（`validate/jpgp3` 是固定共享目录）——
 #   若将来 runner 改成并行，本组必须先改成「指针/按会话隔离」（§6 第 68 条）。
-# ⚠ 受管基线：脚本清单 = **65** 条（`.workbuddy-ai/memory/MEMORY.md` / `docs/HANDOVER.md` /
+# ⚠ 受管基线：脚本清单 = **68** 条（`.workbuddy-ai/memory/MEMORY.md` / `docs/HANDOVER.md` /
 #   `docs/TESTING.md` §3.5 同记此数）。增删条目必须**同时**改此常量 + 四处文档；
 #   否则下面的条数锁会响亮报红（防「删掉一条 ⇒ 静默变 47 ⇒ 日志照常、无人发现」）。
 #   ⚠ 本锁在 `-SkipScripts` 下**不执行**（该模式走上面的早退，清单根本没被使用）——
@@ -999,8 +1007,24 @@ $noSelfSummary = @('_probe-cancel-propagation-scan.ps1', '_probe-ct-chain-closur
 #   迁入时改了三件事：① 路径由 `$PSScriptRoot` 运行时推导（原写死 `C:\PLAN\ffmpegPictureUI`）；
 #   ② 被测由"只打出货包"改成**两档**（默认 Release 产物 ⇒ 每轮都跑；`$env:PKG_VER` 时升 L3），
 #      两档都缺 ⇒ `exit 2` 不产出读数、**绝不回退 Debug**；③ 每条都补齐 `PASS=n FAIL=m` 规范汇总
-#      （运行器的**零断言闸**只认这个形状）。⇒ 分类账 **4 + 7 + 54 = 65**，两个数组照旧不动。
-$expectedScriptCount = 65
+#      （运行器的**零断言闸**只认这个形状）。⇒ 分类账 **4 + 7 + 57 = 68**，两个数组照旧不动。
+# ⚠⚠ **2026-10-04 第七次接线：65 → 67（+2）** —— 「色彩实现完整审查」的两个 P1 修后补判据：
+#   第 66 条 `_probe-jxl-input-target.ps1`（JXL 作为**输入**时用户显式目标必须生效；正控 + **负控**）
+#   第 67 条 `_probe-raw-default-tier.ps1`（RAW 默认档按**实际交付档**判 HDR 承载力；含 webp 反控）
+#   两条都**自带汇总**（`PASS=n FAIL=m` + 断言驱动 exit）⇒ 分类账的「其余」由 54 → 56，
+#   `$tableOnly`（4）与 `$noSelfSummary`（7）两个数组不动。
+# ⚠⚠ **2026-10-04 第八次接线：67 → 68（+1）** —— 72h 完整审查发现的 P0 补回归锁：
+#   第 68 条 `_probe-gui-control-wiring.ps1`：**结构锁** —— 「XAML 里声明了、但既无初始选中、
+#   又无 `SelectionChanged` 处理器」的 GUI 下拉必须为 **0**。立锁动机是实测的 P0：
+#   新增 `--raw-color-target` 时加了 `RawColorTargetCombo`，但它**没有初始选中**
+#   ⇒ `SelectedItem` 恒 null ⇒ `RawColorTarget` 恒 null ⇒ `QueueProcessor` 的 `?? "rec2020"`
+#   永远生效 ⇒ **GUI 选 `auto`/`rec709` 完全无效**（而 CLI 同参数正常）—— 典型「宣称≠交付」，
+#   且**任何既有门禁都抓不到**（没人去点这个下拉，所以"控件是死的"不产生红）。
+#   该锁接受本仓**三条**合法接线路径（.cs 直赋 / `FillComboByLoc` / XAML 属性），
+#   带"判据非空跑"反控（白名单外 combo ≥ 8）与 `RawColorTargetCombo` 点名锁。
+#   ⚠ 自带汇总（`PASS=n FAIL=m` + 断言驱动 exit）⇒ 分类账「其余」56 → 57，两个数组仍不动。
+#   ⚠ 实测（2026-10-04）：变异（删掉该控件的初始选中 + 处理器）⇒ **73/4 转红**，恢复 ⇒ **77/0**。
+$expectedScriptCount = 68
 $scriptList = @('verify-ps-compat.ps1','verify-color-caps.ps1','verify-color-wiring.ps1','verify-color-strategy.ps1','verify-format-regression.ps1',
                  'verify-widegamut-regression.ps1','verify-tiff-icc.ps1','verify-webp-hdr-fix.ps1','verify-decision-delivery.ps1',
                  '_probe-stderr-drain-scan.ps1','_probe-proc-encoding-scan.ps1','_probe-cancel-propagation-scan.ps1','_probe-i18n-scan.ps1','_probe-cjk-hardcode-scan.ps1','verify-png-signature.ps1','verify-gainmap-memory.ps1','verify-metadata-privacy.ps1','verify-gif-avif-framelist.ps1','verify-color-peak.ps1',
@@ -1134,7 +1158,44 @@ $scriptList = @('verify-ps-compat.ps1','verify-color-caps.ps1','verify-color-wir
                  #      `tools/src/libultrahdr/build/Release/ultrahdr_app.exe`（不在包内、不进版本控制）⇒
                  #      缺它时该条判红是**有意的 fail-closed**，不是产品缺陷；修法见该脚本头部。
                  'verify-package-smoke.ps1','verify-jbrd-e2e.ps1','verify-orientation-rewrap.ps1',
-                 'verify-gainmap-thirdparty.ps1','verify-encoder-knob-liveness.ps1')
+                 'verify-gainmap-thirdparty.ps1','verify-encoder-knob-liveness.ps1',
+                 # ── 第 66~67 条：2026-10-04 接线（「色彩实现完整审查」的两个 P1 修后补判据）───────
+                 #   第 66 条 `_probe-jxl-input-target.ps1`：锁「JXL 作为**输入**时，用户显式指定的目标必须生效」。
+                 #     病因（已修）：SDR-JXL 的「输入色声明」原先写进 `ColorPrimaries/ColorTrc`，而那对字段在
+                 #     `DecideOutputColor` 里是**输出目标** ⇒ `--color-space "Display P3"` 被**静默吞掉**。
+                 #     断言：正控（JXL + `--color-space "Display P3"` ⇒ 产物 `color_primaries=smpte432`）
+                 #     + **负控**（同输入不带目标 ⇒ 产物**不得**是 smpte432，防断言恒真）。
+                 #   第 67 条 `_probe-raw-default-tier.ps1`：锁「RAW 默认档按**实际交付档**判 HDR 承载力」。
+                 #     病因（已修）：旧判据 `BitDepth ?? 8`（**请求**档）把 16-bit 可承载 HDR 的容器误判成 8-bit
+                 #     ⇒ ARW→PNG 默认档错误地降到 `bt709/sRGB`（产物却是 `rgb48be`）。
+                 #     断言：png ⇒ `rgb48* + bt2020 + smpte2084`；webp（8-bit 上限）⇒ **不得** bt2020（防一刀切升档）；
+                 #     tiff ⇒ `16 16 16` + 有目标 ICC + 日志目标 `bt2020/iec61966-2-1`。
+                 #   ⚠ 两条都**自带汇总**（`PASS=n FAIL=m` 行 + 断言驱动 `exit 1`）⇒ **不进**
+                 #     `$tableOnly` / `$noSelfSummary`；素材缺失时 **fail-closed**（点名 + 红），不静默 SKIP。
+                 '_probe-jxl-input-target.ps1',
+                 '_probe-raw-default-tier.ps1',
+                 # ── 第 68 条：2026-10-04 接线（72h 完整审查的 P0 回归锁）────────────────────
+                 #   立锁动机（**实测 P0**）：新增 `--raw-color-target` 时加了 GUI 下拉
+                 #   `RawColorTargetCombo`，但它**既没有初始选中、也没有 `SelectionChanged`**
+                 #   ⇒ `SelectedItem` 恒 null ⇒ `RawColorTarget` 恒 null ⇒ `QueueProcessor` 的
+                 #     `?? "rec2020"` 永远生效 ⇒ **GUI 选 `auto`/`rec709` 完全无效**；
+                 #   而 **CLI 同参数正常**（实测产物 BT.709 ICC）⇒ 缺陷**只在 GUI**。
+                 #   ⚠ 为什么既有门禁抓不到：`verify-ui-*` 跑的是 UiTestHost 行为断言，
+                 #     **没人去点这个下拉** ⇒「控件是死的」不产生任何红 ⇒ 属结构性盲区。
+                 #   本锁 = 静态结构锁（毫秒级、不驱动 GUI）：XAML 里每个 `x:Name` 下拉必须
+                 #     在 **三条合法路径**之一被接线 —— ① `.cs` 直赋 `SelectedIndex` +
+                 #     `SelectionChanged +=`；② `FillComboByLoc(...)`（本地化下拉的初始化，
+                 #     其内 `combo.SelectedIndex = idx`）；③ **XAML 属性**
+                 #     `SelectedIndex=` / `SelectionChanged=`。
+                 #   ⚠ 三条都要认：只认 ① 会把 21 个**完全合法**的控件判红（本锁开发期实测），
+                 #     那是**过严的假红** —— 「不得为绿而放宽」的另一面是「不得把对的判红」。
+                 #   ⚠ 带反控：白名单外 combo **≥ 8**（掉下去 = 提取器空跑 ⇒ 判红）；
+                 #     另有 `RawColorTargetCombo` 点名锁，即使被塞进白名单也照样盯着。
+                 #   ⚠ 自带汇总（`PASS=n FAIL=m` + 断言驱动 exit）⇒ **不进**
+                 #     `$tableOnly` / `$noSelfSummary`；读不到源文件时 fail-closed（判红）。
+                 #   变异验证（2026-10-04 实测）：删掉该控件的初始选中 + 处理器 ⇒ **73/4 转红**；
+                 #     恢复 ⇒ **77/0**。⇒ 锁确有牙，且正对本次 P0。
+                 '_probe-gui-control-wiring.ps1')
 $actualScriptCount = @($scriptList).Count
 if ($actualScriptCount -ne $expectedScriptCount) {
   Write-Output ("[FAIL] 脚本清单条数 = $actualScriptCount，受管基线 = $expectedScriptCount ⇒ 基线漂移（增删条目必须同步四处文档）")

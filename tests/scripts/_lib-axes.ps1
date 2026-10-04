@@ -239,6 +239,11 @@ function Get-AxisRegistry {
         (New-Axis -Name 'color-trc' -Group 'color' -CliKey '--color-trc' -Source 'src/FfmpegGui/CliParser.cs:546' -Kind 'enum' -Values @('iec61966-2-1', 'bt709', 'smpte2084', 'arib-std-b67', 'linear')),
         (New-Axis -Name 'color-matrix' -Group 'color' -CliKey '--color-matrix' -Source 'src/FfmpegGui/CliParser.cs:547' -Kind 'enum' -Values @('bt709', 'bt2020nc', 'bt470bg', 'smpte170m', 'gbr')),
         (New-Axis -Name 'color-range' -Group 'color' -CliKey '--color-range' -Source 'src/FfmpegGui/CliParser.cs:548' -Kind 'enum' -Values @('auto', 'tv', 'pc')),
+        # ── color：RAW 输出色域模式（三档，仅对 RAW 输入生效；2026-10-04 新增）──
+        #  取值域 = CliParser:746 的 ParseTokenStrict 白名单（**只认三个规范值**）；
+        #  别名 bt2020/bt709/srgb 只在 ColorSpaceRegistry.NormalizeRawColorTargetToken 里归一，
+        #  **不对 CLI 开放**（与 `--color-709-curve` 同口径：严格入口只认规范值）。
+        (New-Axis -Name 'raw-color-target' -Group 'color' -CliKey '--raw-color-target' -Source 'src/FfmpegGui/CliParser.cs:746' -Kind 'enum' -Values @('rec2020', 'auto', 'rec709')),
 
         # ── color：亮度端点（nits，连续量取代表点）──
         (New-Axis -Name 'color-hdr-peak' -Group 'color' -CliKey '--color-hdr-peak' -Source 'src/FfmpegGui/CliParser.cs:571' -Kind 'continuous' -Values @('0', '100', '1000', '4000', '10000')),

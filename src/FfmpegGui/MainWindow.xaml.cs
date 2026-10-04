@@ -541,6 +541,11 @@ namespace FfmpegGui
             if (ColorTrcCombo != null) ColorTrcCombo.SelectedIndex = 0;
             if (ColorMatrixCombo != null) ColorMatrixCombo.SelectedIndex = 0;
             if (ColorRangeCombo != null) ColorRangeCombo.SelectedIndex = 0; // auto
+            // ⚠⚠ 2026-10-04 修（P0）：`RawColorTargetCombo` 此前**漏了这一个初始化**（其 8 个兄弟下拉都在上面 :536-543）。
+            //   不加 ⇒ `SelectedItem == null` ⇒ `RawColorTarget` 恒 null ⇒ GUI 选 `auto`/`rec709` **无效**
+            //   （`QueueProcessor.cs:666` 的 `?? "rec2020"` 兜底）。三项顺序见 `MainWindow.xaml`：rec2020 | auto | rec709，
+            //   首项 `rec2020` 正是产品默认档（与 CLI 默认一致）⇒ 选中 0 不改变既有行为，只让**控件变得可用**。
+            if (RawColorTargetCombo != null) RawColorTargetCombo.SelectedIndex = 0; // rec2020（默认档）
 
             // ── Photoshop 验证设置加载 (2026-08-15) ──
             RefreshPsPanelState();
@@ -581,6 +586,15 @@ namespace FfmpegGui
             if (ColorTrcCombo != null) ColorTrcCombo.SelectionChanged += (_, _) => { UpdateAdvancedColorValidation(); RegenerateCommand(); };
             if (ColorMatrixCombo != null) ColorMatrixCombo.SelectionChanged += (_, _) => { UpdateAdvancedColorValidation(); RegenerateCommand(); };
             if (ColorRangeCombo != null) ColorRangeCombo.SelectionChanged += (_, _) => RegenerateCommand();
+            // ⚠⚠ 2026-10-04 修（P0：**控件是死的** —— 宣称≠交付）：
+            //   本控件此前**既没有初始选中、也没有 SelectionChanged 处理器**（其 8 个兄弟下拉都有，见上面 :536-543）。
+            //   后果：Avalonia 的 ComboBox 在无选中时 `SelectedItem == null` ⇒
+            //   `RawColorTarget = RawColorTargetCombo?.SelectedItem as string`（:2879 / :5864）恒为 **null**
+            //   ⇒ `QueueProcessor.cs:666` 的 `?? "rec2020"` **永远生效** ⇒ 用户在 GUI 里选
+            //   `auto` / `rec709` **完全不起作用**，且命令预览不刷新。
+            //   实测（审查 2026-10-04）：CLI `--raw-color-target rec709` 正常（产物 BT.709 ICC），
+            //   缺陷**仅在 GUI** ⇒ 属"交付了却不能用的控件"。
+            if (RawColorTargetCombo != null) RawColorTargetCombo.SelectionChanged += (_, _) => RegenerateCommand();
             // 高级编码器选项
             if (PngPredCombo != null) PngPredCombo.SelectionChanged += (_, _) => RegenerateCommand();
             if (PngDpiBox != null) PngDpiBox.ValueChanged += (_, _) => RegenerateCommand();

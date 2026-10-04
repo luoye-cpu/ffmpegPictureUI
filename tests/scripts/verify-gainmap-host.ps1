@@ -40,7 +40,18 @@ $pass = 0; $fail = 0
 function CK($ok, $msg) { if ($ok) { $script:pass++; Write-Output "  PASS $msg" } else { $script:fail++; Write-Output "  FAIL $msg" } }
 
 Write-Host "`n### 1) 跑全量宿主（A 编码 / B 解码闭环 / C 结构 / D PNG3.0 / 像素内核）###" -ForegroundColor Cyan
-$p = Start-Process -FilePath $exe -ArgumentList @() -NoNewWindow -Wait -PassThru -RedirectStandardOutput $logf
+# ⚠⚠ 2026-10-04 修（PS5.1 双宿主合规，实测）：
+#   原写法 `-ArgumentList @()` 在 **Windows PowerShell 5.1** 下**直接抛参数绑定异常**，整条门禁
+#   在 5.1 宿主里 exit=1 且**不产出日志**（实测报错原文）：
+#     `Start-Process : Cannot validate argument on parameter 'ArgumentList'. The argument is null,
+#      empty, or an element of the argument collection contains a null value.`
+#   ⇒ 本仓铁律「静态 PARSEOK ≠ 双宿主可用」在本条上**实测成立**：`verify-ps-compat` 的静态扫描
+#     查不出它（语法合法），只有真 5.1 宿主跑一次才暴露。
+#   修法：该宿主**不需要任何参数** ⇒ 直接**省略 `-ArgumentList`**（PS5.1/PS7 都接受），
+#     而不是传 `@()` 或 `''`（前者 5.1 抛错，后者会塞进一个空字符串实参）。
+#   ⚠ 验收必须在**真 PS5.1** 下重跑（`$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe`），
+#     不能只看静态兼容门禁 —— 本缺陷正是"静态绿、真机红"。
+$p = Start-Process -FilePath $exe -NoNewWindow -Wait -PassThru -RedirectStandardOutput $logf
 if (-not (Test-Path $logf)) { Write-Output "  FAIL 宿主没有产出日志：$logf（判红，不按缺省绿）"; exit 1 }
 $log = [System.IO.File]::ReadAllText($logf)
 # 明细先原样落一份（只留汇总行会让"为什么红"无法复盘）

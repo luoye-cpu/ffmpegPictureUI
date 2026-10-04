@@ -35,7 +35,22 @@ if ($env:PKG_VER) {
   'SUBJ(被测) = Release 开发产物 (L2+)  sha=' + (Get-FileHash $exe -Algorithm SHA256).Hash.Substring(0, 16)
 }
 # T77_EXE 只换被测产品二进制（迭代时用），PLAN 仍取上面解析出的那一份
-if ($env:T77_EXE) { $exe = $env:T77_EXE }
+# ⚠ 2026-10-03 修（复查 S5）：旧写法 `if ($env:T77_EXE) { $exe = $env:T77_EXE }` 在护栏**之后**覆盖，
+#   盖完不复验 ProductVersion、也不重打 SUBJ ⇒ 版本错配（`PKG_VER` + `T77_EXE` 指向另一份）可静默绕护栏。
+#   ⇒ 覆盖后重跑同一套存在性 + 版本串校验，并补打 `SUBJ(被测,覆盖后)`（G0 行打的是覆盖后的 sha，
+#     但**版本串**此前从未对覆盖件重验过）。
+#   变异验证：① `T77_EXE=<PLAN\ffmpeg.exe>` + `PKG_VER=1.6.0-beta4` ⇒ 修复后 exit 2 并点名；
+#     ② 改回单行覆盖 ⇒ 同组环境变量下无任何红字 ⇒ 反证修复有牙。
+if ($env:T77_EXE) {
+  $exe = $env:T77_EXE
+  if (-not (Test-Path $exe)) { "FAIL T77_EXE 覆盖的被测二进制不在位：$exe ⇒ 拒绝跑（不给异构二进制出读数）"; exit 2 }
+  $ovPV = (Get-Item $exe).VersionInfo.ProductVersion
+  if ([string]::IsNullOrWhiteSpace($ovPV)) { "FAIL T77_EXE 覆盖件读不到 ProductVersion：$exe ⇒ 无从证明被测是哪一份，拒绝跑"; exit 2 }
+  if ($env:PKG_VER) {
+    if ($ovPV -notlike "$pkgVer*") { "FAIL T77_EXE 覆盖件的版本串与 PKG_VER 期望不符：期望 $pkgVer* 实得 $ovPV（$exe）"; exit 2 }
+  }
+  'SUBJ(被测,覆盖后) = ' + $exe + '  ProductVersion=' + $ovPV + '  sha=' + (Get-FileHash $exe -Algorithm SHA256).Hash.Substring(0, 16)
+}
 $uhdr = "$root\tools\src\libultrahdr\build\Release\ultrahdr_app.exe"
 # ⚠ fail-closed：第三方参照不在位 ⇒ **拒绝跑**，不产出"没有增益图"这种读数。
 #   不给它兜底（跳过 / 换成读自家日志）的理由：本条的存在意义就是"用第二个实现认证产物"，
@@ -138,7 +153,14 @@ else {
   $pb = X $uhdr ('-m 1 -P -j "' + $b.file.FullName + '"') 'probe_sdr'
   CK 'B1 第三方判该产物**不含**增益图（A2 因此不是恒真）' ($pb.text -match 'does not contain gainmap') (($pb.text -split "`r?`n" | Where-Object { $_.Trim() -ne '' } | Select-Object -First 1))
   $eb = X $et ('-a -s -G1 -MPF:all "' + $b.file.FullName + '"') 'mpf_sdr'
-  CK 'B2 exiftool 也读不到第二子图' (($eb.text -notmatch 'MPImage')) (($eb.text -split "`r?`n" | Where-Object { $_ -match 'MPImage' } | Select-Object -First 1))
+  # ⚠ 前置合取（2026-10-04 修 M6）：`($eb.text -notmatch 'MPImage')` 是裸否定式 ⇒ 取不到输出时恒真。
+  #   ⚠ 但"文本非空"**不能**当前置：实测本仓 exiftool 对**无 MPF** 的文件，合法输出就是**空文本**（exit=0）
+  #     ⇒ 用文本非空会误伤基线。而"读取失败"时 exiftool **exit=1** 且文本是 `Error: File not found …`
+  #     —— 该错误文本同样不含 MPImage ⇒ 裸否定式照样 PASS（这才是真正的假绿口）。
+  #   ⇒ 正确的"取到了"信号是**退出码 0**（exiftool 成功读取，哪怕没命中任何标签）：合取之，取不到点名判红。
+  #   变异验证：把这一格的文件参数指到不存在的路径 ⇒ 旧写法 exit=1 仍 PASS（假绿）、新写法 FAIL 并点名。
+  CK 'B2 exiftool 也读不到第二子图' (($eb.code -eq 0) -and ($eb.text -notmatch 'MPImage')) `
+    $(if ($eb.code -ne 0) { "FAIL 前置：exiftool 未成功读取（exit=$($eb.code)）⇒ 否定式判据无从成立｜" + (($eb.text -split "`r?`n" | Where-Object { $_.Trim() -ne '' } | Select-Object -First 1) -as [string]) } else { (($eb.text -split "`r?`n" | Where-Object { $_ -match 'MPImage' } | Select-Object -First 1) -as [string]) })
 }
 ''
 $bad = @($R | Where-Object { -not $_.ok }).Count

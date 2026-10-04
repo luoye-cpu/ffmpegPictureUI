@@ -383,7 +383,11 @@ function Get-EquivalenceClasses {
         Evidence = @(
             'src/FfmpegGui/Services/FfmpegCommandBuilder.Decision.cs:147|if (options.BitDepth.HasValue && options.BitDepth.Value > capBd)',
             'src/FfmpegGui/Services/FfmpegCommandBuilder.Decision.cs:155|options.BitDepth = capBd;',
-            'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:966|options.JpegGainMap ? null : "iec61966-2-1", "bt709", 8, true'
+            # ⚠ pin 演进（2026-10-04）：966 → **977**、976 → **987**（+11）
+            #   成因 = `FfmpegCommandBuilder.BuildColorArgsSplit` 顶部新增「RAW 中间件输入声明」分支
+            #   （`ColorSourceDecl*`，2026-10-03 RAW 默认三档改动），插在本文件之前。
+            #   已按 `grep -n` 复核实况、并确认两处字面量全文件唯一。
+            'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:981|options.JpegGainMap ? null : "iec61966-2-1", "bt709", 8, true'   # 2026-10-04 重钉 977→981（早前会话 +4 行，grep -n 复核实况 + 字面量唯一）
         )
         Rationale = 'JPEG container caps bit depth at 8 and DecideOutputColor rewrites options.BitDepth in place, so 8/10/12/16 are observationally equal'
     }
@@ -398,7 +402,7 @@ function Get-EquivalenceClasses {
         Evidence = @(
             'src/FfmpegGui/Services/FfmpegCommandBuilder.Decision.cs:147|if (options.BitDepth.HasValue && options.BitDepth.Value > capBd)',
             'src/FfmpegGui/Services/FfmpegCommandBuilder.Decision.cs:155|options.BitDepth = capBd;',
-            'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:976|return (null, "iec61966-2-1", "bt709", 8, true);'
+            'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:991|return (null, "iec61966-2-1", "bt709", 8, true);'   # 2026-10-04 重钉 987→991（同批 +4）
         )
         Rationale = 'WebP container caps bit depth at 8 and DecideOutputColor rewrites options.BitDepth in place, so 8/10/12/16 are observationally equal'
     }
@@ -623,7 +627,8 @@ function Get-SemanticMatrices {
                 #   →（2026-10-01 并发会话从同一文件删 5 行 ⇒ 该文件**四条 pin 同步 −5**：971→966、981→976、1013→1008、2055→2050）**2050**。
                 #   漂移由 A30 当场报出（`literal not on ...:2041 (found at line 2055)`）⇒ 抬号前先 `grep -n` 复核实况行，
                 #   并确认全文件该字面量**只出现一次**（行号锚不容歧义）。见 docs/TESTING.md §6 第 112 条。
-                'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:2050|bool exiftoolFormats = fmt is "jpg" or "jpeg" or "png" or "tiff" or "webp";'
+                # ⚠ pin 演进（2026-10-04）：2050 → **2061**（+11），同 A21 那条成因
+                'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:2065|bool exiftoolFormats = fmt is "jpg" or "jpeg" or "png" or "tiff" or "webp";'   # 2026-10-04 重钉 2061→2065（同批 +4）
             )
         },
         @{
@@ -644,7 +649,7 @@ function Get-SemanticMatrices {
                 #   `NormalizeTuneToken` 的两义性、第三半加"这条后端没有 tune 通路"的中心播报）；
                 #   唯一性同样已 `grep -n` 核过。
                 'src/FfmpegGui/Services/ColorMapping/ImageEncoderArgs.cs:773|AvifMaxBitDepthForEncoder(string? encoder)',
-                'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:1008|return (null, null, null, ColorMapping.ImageEncoderArgs.AvifMaxBitDepth(options), false);',
+                'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:1023|return (null, null, null, ColorMapping.ImageEncoderArgs.AvifMaxBitDepth(options), false);',   # 2026-10-04 重钉 1019→1023（同批 +4）
                 'src/FfmpegGui/Services/FfmpegCommandBuilder.Decision.cs:155|options.BitDepth = capBd;'
             )
         }

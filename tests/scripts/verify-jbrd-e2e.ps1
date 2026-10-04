@@ -26,7 +26,24 @@ if ($env:PKG_VER) {
   $plan = "$root\publish\PLAN"
   'SUBJ(被测) = Release 开发产物 (L2+)  sha=' + (Get-FileHash $exe -Algorithm SHA256).Hash.Substring(0, 16)
 }
-if ($env:T76_EXE) { $exe = $env:T76_EXE }
+# ⚠ 2026-10-03 修（复查 S5）：旧写法是 `if ($env:T76_EXE) { $exe = $env:T76_EXE }` 一行盖掉，
+#   盖完**既不重新校验 ProductVersion 也不重打 SUBJ** ⇒ 精心构造的版本错配
+#   （`PKG_VER=1.6.0-beta4` + `T76_EXE` 指向另一份二进制）可**静默绕过**上面那道护栏，
+#   而首行 SUBJ 还指向被盖掉的那份（= 清单第 12 项要防的形状，只是触发方式换成环境变量）。
+#   ⇒ 现在覆盖后**重跑同一套存在性 + 版本串校验**，并补打一行 `SUBJ(被测,覆盖后)`，
+#     让"这份读数到底打在哪一个二进制上"在日志里自证。
+#   变异验证：① `T76_EXE=<PLAN\ffmpeg.exe>` + `PKG_VER=1.6.0-beta4` ⇒ 修复后 exit 2 并点名版本错配；
+#     ② 改回单行覆盖 ⇒ 同一组环境变量照跑、无任何红字（护栏被绕）⇒ 反证修复有牙。
+if ($env:T76_EXE) {
+  $exe = $env:T76_EXE
+  if (-not (Test-Path $exe)) { "FAIL T76_EXE 覆盖的被测二进制不在位：$exe ⇒ 拒绝跑（不给异构二进制出读数）"; exit 2 }
+  $ovPV = (Get-Item $exe).VersionInfo.ProductVersion
+  if ([string]::IsNullOrWhiteSpace($ovPV)) { "FAIL T76_EXE 覆盖件读不到 ProductVersion：$exe ⇒ 无从证明被测是哪一份，拒绝跑"; exit 2 }
+  if ($env:PKG_VER) {
+    if ($ovPV -notlike "$pkgVer*") { "FAIL T76_EXE 覆盖件的版本串与 PKG_VER 期望不符：期望 $pkgVer* 实得 $ovPV（$exe）"; exit 2 }
+  }
+  'SUBJ(被测,覆盖后) = ' + $exe + '  ProductVersion=' + $ovPV + '  sha=' + (Get-FileHash $exe -Algorithm SHA256).Hash.Substring(0, 16)
+}
 $ff = "$plan\ffmpeg-full\ffmpeg.exe"; $fp = "$plan\ffmpeg-full\ffprobe.exe"
 $et = "$plan\exiftool\exiftool.exe"; $cjxl = "$plan\jxl\bin\cjxl.exe"
 $djxl = "$plan\jxl\bin\djxl.exe"; $jinfo = "$plan\jxl\bin\jxlinfo.exe"
@@ -160,8 +177,16 @@ $hdrSrc = "$root\tests\output\sources\src_hdr_pq.png"
 if (Test-Path $hdrSrc) {
   try {
     $u = App 'gen_uhdr' $hdrSrc 'jpg' '--jpeg-gain-map true'
-    $made['ultrahdr'] = $u.file.FullName
-    'ultrahdr 夹具 = ' + $u.file.FullName + ' (' + $u.file.Length + ' B)'
+    # ⚠ 空值防护（2026-10-04 修 M5）：`$u.file` 为 $null 时 `$u.file.FullName` **静默**得 $null，
+    #   而 `$made.Contains('ultrahdr')` 对"键在、值为 null"仍回 True ⇒ 「夹具集合完整」被绕过；
+    #   且该 null 值会在下面 `(Get-Item $made[$k]).Length` 处把整脚本炸掉（靠下游侥幸转红）。
+    #   ⇒ 取不到可入表的文件就**点名判红且不入表**，让「集合完整」再点名一次。
+    if ($u.count -ge 1 -and $u.file) {
+      $made['ultrahdr'] = $u.file.FullName
+      'ultrahdr 夹具 = ' + $u.file.FullName + ' (' + $u.file.Length + ' B)'
+    } else {
+      CK '夹具 ultrahdr 生成' $false ("产物数=" + $u.count + " rc=" + $u.code + " ⇒ 未产出可入表的文件（不入表，由「集合完整」再点名）")
+    }
   } catch { CK '夹具 ultrahdr 生成' $false $_.Exception.Message }
 }
 $photo = "$root\tests\output\sources\src_photo.jpg"
@@ -190,8 +215,9 @@ foreach ($k in @($made.Keys)) {
 }
 foreach ($k in $made.Keys) { '  {0,-14} {1,9} B' -f $k, (Get-Item $made[$k]).Length }
 # ⚠ 夹具**集合**本身要判：少一种形态 ⇒ 该形态的所有判据静默不跑（icc_exif 就是这么连漏两轮、零红）。
+#   ⚠ 值也要非空（2026-10-04 修 M5）：`Contains` 只看键在不在，"键在、值为 $null/空串"会漏过去 ⇒ 补值判。
 $want = @('baseline420','chroma444','chroma422','grayscale','large2400','progressive','icc_exif','photoicc','ultrahdr')
-$lack = @($want | Where-Object { -not $made.Contains($_) })
+$lack = @($want | Where-Object { (-not $made.Contains($_)) -or [string]::IsNullOrWhiteSpace($made[$_]) })
 CK ('夹具集合完整（应 {0} 种形态）' -f $want.Count) ($lack.Count -eq 0) $(if ($lack.Count) { '缺: ' + ($lack -join ',') } else { '齐' })
 ''
 '=== A) 每种输入形态：JPEG -> JXL -> JPEG，判"还原到什么程度" ==='
@@ -237,7 +263,13 @@ foreach ($k in $made.Keys) {
   $hRt = RawHash $b.file.FullName "A_${k}_r"; $pRt = Pix $b.file.FullName "A_${k}_rpx"
   CK ("A " + $k + "：往返**像素**逐比特相同") ($hRt -eq $hSrc) "src=$hSrc rt=$hRt（$pSrc -> $pRt）"
   CK ("A " + $k + "：往返 JPEG 与源**逐字节**相同") ((FileHash $b.file.FullName) -eq (FileHash $src)) "src=$(FileHash $src) rt=$(FileHash $b.file.FullName)"
-  CK ("A " + $k + "：色度采样/编码模式未被改") ($pRt -eq $pSrc) "$pSrc -> $pRt"
+  # ⚠ 取到了前置（2026-10-04 修 M4）：`Pix` 读不到时两侧同为 $null/空串 ⇒ `$pRt -eq $pSrc` 恒真 PASS。
+  #   同文件上面「元数据标签集不变」已用 `$tagVacuous` 同型护栏，本条原先漏了。⇒ 先断言两侧 Pix 都取到，
+  #   取不到则**点名判红**（取不到 ≠ 通过），绝不让空串流进比较。
+  #   变异验证：把 Pix 改成恒返回 ''（模拟 ffprobe 读取失败）⇒ 旧写法恒绿、新写法 FAIL 并点名。
+  $pixVacuous = ([string]::IsNullOrWhiteSpace($pSrc) -or [string]::IsNullOrWhiteSpace($pRt))
+  CK ("A " + $k + "：色度采样/编码模式未被改") ((-not $pixVacuous) -and ($pRt -eq $pSrc)) `
+    $(if ($pixVacuous) { "FAIL 前置：Pix 没取到（src=[$pSrc] rt=[$pRt]）⇒ 该格无判别力，记未判" } else { "$pSrc -> $pRt" })
   if ($metaKeys -contains $k) {
     $tS = TagSet $src "A_${k}_t"; $tR = TagSet $b.file.FullName "A_${k}_tr"
     # ⚠ 两边都空 = 这条素材根本没有元数据 ⇒ 判据无从判别，**按未判处理记 FAIL**（不许蒙成绿）

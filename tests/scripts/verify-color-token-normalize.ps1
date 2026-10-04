@@ -100,6 +100,11 @@ $xaml = [System.IO.File]::ReadAllText("$root/src/FfmpegGui/MainWindow.xaml")
 $cm = [regex]::Match($xaml, '<ComboBox x:Name="ColorMatrixCombo">(?<b>.*?)</ComboBox>', 'Singleline')
 $items = @()
 if ($cm.Success) { $items = @([regex]::Matches($cm.Groups['b'].Value, '<sys:String>([^<]+)</sys:String>') | ForEach-Object { $_.Groups[1].Value }) }
+# ⚠ 2026-10-04：下拉**首项 `auto`** 是**哨兵**（= 不指定），**不是** ffmpeg/zscale 的 token ——
+#   `MainWindow.xaml.cs` 的 `AutoToNull()` 在提交前把它映射成 `null`，**绝不会**下发到 ffmpeg
+#   ⇒ 必须从"每个选项都要被 ffmpeg/zscale 接受"的枚举里**排除**，否则本判据必然假红
+#   （实测：加 `auto` 首项后本条 30/3）。**牙齿不减**：其余**真实 token** 一个都不许不可用。
+$items = @($items | Where-Object { $_ -ne 'auto' })
 CK ($items.Count -ge 1) "从 XAML 解析到 $($items.Count) 个矩阵选项（$($items -join ', ')）"
 # 判据要按**实际界面**分两侧：同一 token 会分别进 ffmpeg 的 `-colorspace`（需经 ToFfmpeg 映射）
 # 与 zscale 的 `min=/m=`（用原名）。只拿原名去问 ffmpeg 会误判 gbr（zscale 名）为坏值。

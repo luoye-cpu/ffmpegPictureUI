@@ -58,6 +58,28 @@ function Run($tag,$inF,$fmt,$extra){
   if ($f.Count -ne 1) { throw "$tag 产物数=$($f.Count)" }
   return @{ code=$p.ExitCode; file=$f[0]; log=$log }
 }
+# ── 否定式判据的「确实读到了」前置（2026-10-03 修 S3；口径照 `verify-jbrd-e2e.ps1:51-68` 的 CmdOf + Seen）──
+#   `$log` 为空（日志捕获口径变了 / 产品不再回显命令行 / 重定向文件被截短 / PS5.1 编码差异）时
+#   `-notmatch` **恒真** ⇒ "日志里不该出现 X" 这类断言无条件 PASS。本文件 B4/C1/C2/E3 原先是
+#   **裸否定式**，正是这个形状 ⇒ 一次捕获失败 = 四条同时假绿。⇒ 否定式必须与"取到了命令行/日志"
+#   这个前置**合取**，取不到就记红并点名（取不到 ≠ 通过）。
+function CmdOf($log, $tool) {
+  # ⚠ 两趟取：先只认**产品自己报出来的命令行**（`[cmd] …` / `… 命令行: …`）；取不到才退回
+  #   "日志里形似命令行的行"。为什么不能一把梭再取末条：实测 `-e Ffmpeg` 那格日志里
+  #   ffmpeg 的**横幅行** `  configuration: --prefix=/home/dominic/ffmpeg/bin --bindir=…`
+  #   也含 `ffmpeg` + `--` ⇒ 会被当成命令行排在末条 ⇒ 前置看着"取到了"，其实取到的是横幅。
+  $ls = @(($log -split "`r?`n") | Where-Object { ($_ -match "$tool 命令行") -or ($_ -match "\[cmd\].*?$tool") })
+  if (-not $ls.Count) {
+    $ls = @(($log -split "`r?`n") | Where-Object { ($_ -match "$tool(\.exe)?\s+`"") -or ($_ -match "$tool(\.exe)?\s+--") })
+  }
+  if (-not $ls.Count) { return '' }
+  $line = $ls[-1]
+  $line = $line -replace '^.*?命令行[:：]?\s*', ''
+  $line = $line -replace '^.*?\[cmd\]\s*', ''
+  $line = $line -replace ('^\[' + $tool + '\]\s*'), ''
+  return $line.Trim()
+}
+function Seen($s) { return ($s -and $s.Trim().Length -gt 0) }
 $i = Get-Item $exe
 "包内 exe: {0}  ProductVersion={1}  sha={2}" -f $i.Directory.Name, $i.VersionInfo.ProductVersion,
     ((Get-FileHash $exe -Algorithm SHA256).Hash.Substring(0,16))
@@ -92,12 +114,17 @@ CK 'B1 命令行发出 --lossless_jpeg=1'     ($null -ne $bl) `
 CK 'B2 产物真是 jbrd 比特流重建'          ($infoB -match 'reconstruction') $infoB
 CK 'B3 重封装产物小于源 JPEG'             ($b.file.Length -lt (Get-Item "$d\s.jpg").Length) "$((KB $b.file.FullName)) kB < $jpgKB kB"
 $c = Run 'c' "$d\s.jpg" 'jxl' @('--jxl-lossless-jpeg','false')
-CK 'B4 负控：显式关掉 => 不再发 =1'       ($c.log -notmatch '--lossless_jpeg=1') "$((KB $c.file.FullName)) kB（像素重编码路线）"
+$ccmd = CmdOf $c.log 'cjxl'
+CK 'B4 负控：显式关掉 => 不再发 =1'       ((Seen $ccmd) -and ($c.log -notmatch '--lossless_jpeg=1')) `
+   ("{0} kB（像素重编码路线）｜前置: {1}" -f (KB $c.file.FullName), $(if (Seen $ccmd) { '取到 cjxl 命令行 ' + $ccmd.Substring(0, [Math]::Min(90, $ccmd.Length)) } else { 'FAIL 前置：cjxl 命令行没取到 ⇒ 否定式判据无从成立' }))
 ''
 '--- C) 自动光子噪声那三项回归 ---'
 $e = Run 'e' "$d\s8.png" 'jxl' @('--cjxl-auto-photon-noise','true','--lossless','true')
-CK 'C1 命令行不含 =auto'                  ($e.log -notmatch 'photon_noise_iso=auto') ''
-CK 'C2 无「传输错误」/无「超时」'          (($e.log -notmatch '传输错误') -and ($e.log -notmatch '超时或已取消')) "exit=$($e.code)"
+$ecmd = CmdOf $e.log 'cjxl'
+CK 'C1 命令行不含 =auto'                  ((Seen $ecmd) -and ($e.log -notmatch 'photon_noise_iso=auto')) `
+   ("前置: {0}" -f $(if (Seen $ecmd) { '取到 cjxl 命令行 ' + $ecmd.Substring(0, [Math]::Min(90, $ecmd.Length)) } else { 'FAIL 前置：cjxl 命令行没取到 ⇒ 否定式判据无从成立' }))
+CK 'C2 无「传输错误」/无「超时」'          ((Seen $e.log) -and ($e.log -notmatch '传输错误') -and ($e.log -notmatch '超时或已取消')) `
+   ("exit=$($e.code)｜前置: {0}" -f $(if (Seen $e.log) { '日志非空' } else { 'FAIL 前置：日志为空 ⇒ 否定式判据无从成立' }))
 CK 'C3 产物非空'                          ($e.file.Length -gt 0) "$((KB $e.file.FullName)) kB"
 ''
 '--- D) JXR 出口：交付档取自目标位深（不再是 16-bit 中间件）---'
@@ -126,7 +153,11 @@ $h1 = Run 'h1' "$d\s.jpg" 'jxl' @('-e','Ffmpeg','-q','30')
 $h2 = Run 'h2' "$d\s.jpg" 'jxl' @('-e','Ffmpeg','-q','90')
 CK 'E1 同一 JPEG 的两档产物**不同尺寸**（旧行为四档逐字节同尺寸）' ($h1.file.Length -ne $h2.file.Length) "q30=$((KB $h1.file.FullName)) kB vs q90=$((KB $h2.file.FullName)) kB"
 CK 'E2 做不到 jbrd 由日志点名，不静默' ($h1.log -match 'jbrd') ''
-CK 'E3 命令行不含 -distance 0 的冒充' ($h1.log -notmatch '-d 0' -and $h1.log -notmatch '-distance 0') ''
+$hcmd = CmdOf $h1.log 'ffmpeg'
+CK 'E3 命令行不含 -distance 0 的冒充' ((Seen $hcmd) -and ($h1.log -notmatch '-d 0') -and ($h1.log -notmatch '-distance 0')) `
+   ("前置: {0}" -f $(if (Seen $hcmd) { '取到 ffmpeg 命令行 ' + $hcmd.Substring(0, [Math]::Min(90, $hcmd.Length)) } else { 'FAIL 前置：ffmpeg 命令行没取到 ⇒ 否定式判据无从成立' }))
 $bad = @($R | Where-Object { -not $_.ok }).Count
 '---- 包级冒烟: PASS={0} FAIL={1} ----' -f ($R.Count - $bad), $bad
-if ($bad -gt 0) { exit 1 }
+# ⚠ 显式 exit 0（2026-10-04 修 L1）：旧写法只有 `if ($bad -gt 0) { exit 1 }`，成功路径靠"尾随隐式 0"，
+#   一旦将来在其后插入任何语句（或尾随表达式返回非零），绿就会被静默改判 ⇒ 补显式出口。
+if ($bad -gt 0) { exit 1 } else { exit 0 }

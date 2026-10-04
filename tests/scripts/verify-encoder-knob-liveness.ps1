@@ -37,7 +37,22 @@ if ($env:PKG_VER) {
   $plan = "$root\publish\PLAN"
   'SUBJ(被测) = Release 开发产物 (L2+)  sha=' + (Get-FileHash $exe -Algorithm SHA256).Hash.Substring(0, 16)
 }
-if ($env:T79_EXE) { $exe = $env:T79_EXE }
+# ⚠ 2026-10-03 修（复查 S5）：旧写法 `if ($env:T79_EXE) { $exe = $env:T79_EXE }` 在护栏**之后**覆盖，
+#   盖完不复验 ProductVersion、也不重打 SUBJ（下面 G0 行打的是覆盖**后**的 sha，但版本串没重验过）
+#   ⇒ 版本错配（`PKG_VER` + `T79_EXE` 指向另一份）可静默绕护栏。
+#   ⇒ 覆盖后重跑同一套存在性 + 版本串校验，并补打 `SUBJ(被测,覆盖后)`。
+#   变异验证：① `T79_EXE=<PLAN\ffmpeg.exe>` + `PKG_VER=1.6.0-beta4` ⇒ 修复后 exit 2 并点名；
+#     ② 改回单行覆盖 ⇒ 同组环境变量下无任何红字 ⇒ 反证修复有牙。
+if ($env:T79_EXE) {
+  $exe = $env:T79_EXE
+  if (-not (Test-Path $exe)) { "FAIL T79_EXE 覆盖的被测二进制不在位：$exe ⇒ 拒绝跑（不给异构二进制出读数）"; exit 2 }
+  $ovPV = (Get-Item $exe).VersionInfo.ProductVersion
+  if ([string]::IsNullOrWhiteSpace($ovPV)) { "FAIL T79_EXE 覆盖件读不到 ProductVersion：$exe ⇒ 无从证明被测是哪一份，拒绝跑"; exit 2 }
+  if ($env:PKG_VER) {
+    if ($ovPV -notlike "$pkgVer*") { "FAIL T79_EXE 覆盖件的版本串与 PKG_VER 期望不符：期望 $pkgVer* 实得 $ovPV（$exe）"; exit 2 }
+  }
+  'SUBJ(被测,覆盖后) = ' + $exe + '  ProductVersion=' + $ovPV + '  sha=' + (Get-FileHash $exe -Algorithm SHA256).Hash.Substring(0, 16)
+}
 $env:FFMPEGGUI_PLAN_DIR = $plan
 $d    = "$root\tests\output\validate\l3_knob"
 if (Test-Path $d) { Remove-Item -Recurse -Force $d }
@@ -53,7 +68,11 @@ function Rec($n, $st, $det) {
   $null = $res.Add([pscustomobject]@{ n = $n; st = $st; det = $det })
   # `rejected` 的前缀**不能写 FAIL**：它是"越界值被响亮拒绝"这个**合法出口**（见 $rows 处 A-20 的措辞纠正），
   #   而运行器把 `^ *FAIL|^FAIL` 的行**当失败明细回显** ⇒ 写成 FAIL 会让读者在**绿的一步**下面看到红字。
-  $pre = @{ live = 'PASS'; inert = 'FAIL'; rejected = 'WARN'; undecidable = 'WARN'; nocmd = 'WARN'; missing = 'FAIL'; gap = 'SKIP' }[$st]
+  # `crashed`（2026-10-03 加）："进程没成功且说不出为什么" ⇒ **判红**（见 N 段 M7 修复注释）
+  # ⚠ `nocmd` 前缀 = **FAIL**（2026-10-04 修 L2）：旧写法写 'WARN' 却把 nocmd 计入 `$nFail` 且进 `$hard`
+  #   ⇒ 输出行看着是"警告不判色"，实际会 exit 1 ⇒ 标签与后果不一致。脚本头 `:14` 已明写
+  #   「`nocmd` 读不到命令行 ⇒ **判红**（读不到不等于没发）」⇒ 措辞应服从该语义，改成 FAIL 对齐后果。
+  $pre = @{ live = 'PASS'; inert = 'FAIL'; rejected = 'WARN'; undecidable = 'WARN'; nocmd = 'FAIL'; missing = 'FAIL'; crashed = 'FAIL'; gap = 'SKIP' }[$st]
   '{0}  {1}   [{2}] {3}' -f $pre, $n, $st, $det
 }
 # 子进程输出：`--log-file` **不够** —— 实测 `ImageEncoderArgs` 那批"这个值本后端承接不了"的播报走的是
@@ -203,31 +222,100 @@ $naming = @(
 )
 foreach ($n in $naming) {
   $z = Conv ('nm_' + ($n.lab -replace '[^a-zA-Z0-9]', '')) $src $n.fmt $n.a
-  # 语义：**要么响亮失败（rc≠0），要么 rc=0 但把"这个值没生效"说出来**。
+  # 语义：**要么响亮失败（rc≠0 且说得清为什么），要么 rc=0 但把"这个值没生效"说出来**。
   #   只有"rc=0 且全程没一句话"才是静默欺骗 —— 那才是要打红的形状（把 rc≠0 也判红会逼产品去"假装成功"）。
+  #
+  # ⚠ 2026-10-03 修 M7：**崩溃 ≠ 诚实**。旧写法 `$honest = ($z.code -ne 0) -or $named`
+  #   把判据整个交给了 rc ⇒ 产品因为**任何**原因（参数解析崩、PLAN 缺件、夹具路径错、
+  #   `-2147450750` 这种"进程根本没起来"的码、三路输出全空）非零退出，这一臂都记 **PASS**。
+  #   ⇒ 现在把 rc≠0 拆成两半，只有"**说得出为什么**的非零退出"才算诚实拒答：
+  #     · `$named`         = 产品自己的播报命中本臂的 `$n.pat`；
+  #     · `$rejectEvidence`= 三路输出里有编码器/产品给出的**拒绝证据行**（实测 `--jpeg-dct float`
+  #                          这一臂正是这种形状：`Unable to parse "dct" option value "float"` /
+  #                          `Error setting option dct to value float.`，而它不命中 `$n.pat`）；
+  #     · `$crashed`       = 三路输出**全空**（连一句都没有）／退出码是**异常值**（非 0 且非 1，
+  #                          如 -2147450750）／rc≠0 却**没有任何**拒绝证据 ⇒ 记红并点名，不算 honest。
+  #   变异验证：把这一臂的 `$z` 换成 `code=-2147450750 / log=''`（崩溃形状）⇒ 旧写法记 PASS（崩溃即通过），
+  #     新写法记 `crashed`/FAIL 并点名 ⇒ 转红；改回后该臂回到 live（PASS）⇒ 转绿。
   $named = ($z.log -match $n.pat)
-  $honest = ($z.code -ne 0) -or $named
-  Rec ('N ' + $n.fmt + ' ' + $n.lab + '：不可表达/被拒时要么非零退出、要么有播报（不许静默成功）') $(if ($honest) { 'live' } else { 'inert' }) `
-    ("rc=$($z.code) 播报匹配 $($n.pat) = $named" + `
-     $(if ($honest) { '' } else { '｜日志里没有一句话说明这个值没生效（产物 rc=0 = 用户以为调了）' }))
+  $rejectEvidence = ($z.log -match '(?i)(unable to parse|error setting option|invalid argument|unsupported|not supported|ignoring|unknown option|无法解析|不支持|不接受|拒绝|非法|无效)')
+  $emptyOut = [string]::IsNullOrWhiteSpace($z.log)
+  $abnormalRc = (($z.code -ne 0) -and ($z.code -ne 1))
+  $crashed = ($emptyOut -or $abnormalRc -or (($z.code -ne 0) -and (-not $named) -and (-not $rejectEvidence)))
+  Rec ('N ' + $n.fmt + ' ' + $n.lab + '：不可表达/被拒时要么有说法地非零退出、要么有播报（崩溃与静默成功都判红）') `
+    $(if ($crashed) { 'crashed' } else { $(if ($named) { 'live' } else { $(if ($z.code -ne 0) { 'live' } else { 'inert' }) }) }) `
+    ("rc=$($z.code) 播报匹配 $($n.pat) = $named｜拒绝证据 = $rejectEvidence｜输出全空 = $emptyOut｜异常退出码 = $abnormalRc" + `
+     $(if ($crashed) { '｜崩溃/静默失败 ≠ 诚实拒答：进程没成功且说不出为什么，不给 PASS' } else { $(if (-not $named -and $z.code -eq 0) { '｜日志里没有一句话说明这个值没生效（产物 rc=0 = 用户以为调了）' } else { '' }) }))
 }
 ''
-$c = @{ live = 0; inert = 0; rejected = 0; undecidable = 0; nocmd = 0; missing = 0; gap = 0 }
+$c = @{ live = 0; inert = 0; rejected = 0; undecidable = 0; nocmd = 0; missing = 0; crashed = 0; gap = 0 }
 foreach ($x in $res) { $c[$x.st] = $c[$x.st] + 1 }
 '---- 旋钮活性明细桶: 活={0} 死(两端都没发)={1} 被拒(已播报)={2} 未判(夹具无判别力)={3} 未判(读不到命令行)={4} 两端未产出={5} 缺口(未做)={6} 合计={7} ----' -f `
   $c['live'], $c['inert'], $c['rejected'], $c['undecidable'], $c['nocmd'], $c['missing'], $c['gap'], $res.Count
 # 规范汇总行（接进清单时必须有一条 `PASS=n FAIL=m`：运行器的**零断言闸**只认这个形状，
 #   否则"一条断言都没跑但 exit=0"和"跑了 20 臂"在日志里长得一样）。口径与上面的记账一一对应：
-#   FAIL = 会 exit 1 的三桶（死 / 两端未产出 / 读不到命令行）；
+#   FAIL = 会 exit 1 的四桶（死 / 两端未产出 / 读不到命令行 / **崩溃≠诚实**（2026-10-03 加））
+#          + 下面那两条下限/比例闸（活臂数下限、未判比例上限）；
 #   越界被拒 = rejected（高值是编码器不认的**越界值**且被响亮拒绝 ⇒ 本臂无差分可用，单列不判色；
 #     A-20 修复时 float 已从下拉移除，只剩 CLI/历史预设能送进来，见 `MainWindow.xaml:725-728`）；
 #   未判 = undecidable（夹具两极端值产物相同 ⇒ 这一臂没有判别力，不拿它编结论）；
 #   缺口 = gap（**登记在清单里的覆盖缺口**，本批没做那两趟转换 ⇒ 既不绿也不红，只许被看见）。
-$nFail = $c['inert'] + $c['missing'] + $c['nocmd']
+# ⚠ **下限/比例闸**（2026-10-03 修 S4）：上面那道"臂数 == 应有臂数"只保证**每条臂都判了**，
+#   不保证**任何一条臂有判别力**。旧写法下，若夹具退化成纯色图（脚本头 :102-103 自陈"18 条里
+#   12 条报产物相同"）⇒ 十几条全落 `undecidable` + JXR 那臂恒活 ⇒ `PASS=1 FAIL=0` 就 **exit 0**，
+#   而汇总行还写着"未判(不计入)=18"，属"把判不出编成结论"。
+#   ⇒ 补两条闸：① 活臂数 ≥ `$minLive`（取值口径见下面 `$minLive` 处的专段：**实测值 − 明示余量**，
+#     不许贴着实测写）⇒ 全未判不再算绿；② 未判(夹具无判别力) 数 ≤ 已判臂数的 1/3 ⇒ 未判不许**淹没**判据
+#     （这条是**比例闸**而不是绝对数 ⇒ 天然带余量，不需要再留额外的绝对余量）。
+#     两条都计入 `$nFail` ⇒ 汇总行与 exit code 一致。
+#   变异验证：把夹具换成纯色 PNG（脚本头自陈的退化形状）⇒ 旧写法 exit 0（PASS=n FAIL=0，假绿），
+#     加闸后 ⇒ "活臂数下限" 与/或 "未判比例上限" 记 FAIL 并 exit 1 ⇒ 确实转红。
+$judgedArms = $c['live'] + $c['inert'] + $c['rejected'] + $c['undecidable'] + $c['nocmd'] + $c['missing']
+# ⚠ `$minLive` 取值口径（2026-10-04 修 P1-5；**改这条之前必读，不在别处重复本段**）──────────────
+#   本闸 2026-10-03 引入时写的是 `$minLive = 19`，**恰等于当时实测的活臂数 ⇒ 余量 0**
+#   ⇒ 与本轮刚治好的 CJK 门禁（`$BASE_CS_UI` 贴着实测写、换个机子/换个 ffmpeg 版本就假红）是**同一个形状**。
+#   实测后果：把夹具换成脚本头 :118-119 自陈的纯色退化形状后，活臂掉到 **18** ⇒ 这条闸立刻红
+#   （`FAIL 活臂数下限：活=18 < 19`），尽管当时红的**原因本身是真的**（gif 臂真 inert），
+#   它仍说明这条闸没有为正常的臂数波动留任何余量。
+#   ⇒ 现改为「**实测值 − 明示余量**」：
+#       实测活臂数  = 19（2026-10-04 实测，本机 Release 产物 + `publish/PLAN` 工具链 + `src_8bit.png`
+#                     照片样夹具；同批读数：被拒 1、未判 1、缺口 1、合计 22）
+#       明示余量    = 2
+#       $minLive    = 19 − 2 = **17**
+#     余量为什么留 2：本套件共 22 臂（20 旋钮臂 + 3 点名臂 − 1 缺口），**单臂/成对波动**的来源有三类 ——
+#       ① 后端/工具链换版：同一旋钮的命令行形态会变（实测 `--avif-tune IQ` 走 `-aom-params tune=iq`，
+#          另 `--avif-tune psnr` 走 `-tune psnr`），libaom/cjxl 换版后某臂的 `$pat` 取不到值即少一条活臂；
+#       ② 编码器默认值随版本变：原本能被本夹具区分的两端变成同产物 ⇒ 该臂从 live 落 undecidable；
+#       ③ JXL / GIF / AVIF 这类对输入内容敏感的编码器：换一张**合法**的照片样夹具就可能掉 1 条。
+#     2 条足够吸收上面这些正常漂移；但**远小于整批塌方**的幅度（真事故一次掉 5 条以上，那时**应该**红）
+#     ⇒ 这是一条既不许喊狼来了、也不许被当成免罚额度的刀口。
+#   ⚠ **改夹具 / 换机 / 换 PLAN 工具链 / 加臂减臂时必须先看这里**：先在新环境量出实测活臂数，
+#     再按「实测 − 2」重算；**严禁**把 `$minLive` 直接改成"刚才跑出来的那个数"（那又是余量 0）。
+#     红的时候先读上面三类来源判性质：是正常漂移（⇒ 调夹具/重新登记），还是有臂真死了（⇒ 修产品，不是抬闸）。
+#   ⚠ 同类自查（2026-10-04 全文扫过一遍）：本脚本里其它写死的数（`-q 10/95`、`--webp-compression 0/6`、
+#     `--png-dpi 72/1200` 等）是**夹具取值**、不是通过阈值；`$maxUndecidable` 与 `$wantArms` 是**按结构算出**
+#     （已判臂数的 1/3 / `$rows.Count + $naming.Count`）⇒ 不属"照实测写死"的形状，**唯一一处需留余量的就是本值**。
+$minLive = 17
+$maxUndecidable = [int][math]::Floor($judgedArms / 3)
+$boundFail = 0
+if ($c['live'] -lt $minLive) {
+  $boundFail = $boundFail + 1
+  'FAIL  活臂数下限：活={0} < {1} ⇒ 判据整体失去判别力（全未判不许算绿）' -f $c['live'], $minLive
+}
+if ($c['undecidable'] -gt $maxUndecidable) {
+  $boundFail = $boundFail + 1
+  'FAIL  未判比例上限：未判={0} > 已判臂数 {1} 的 1/3（={2}）⇒ 未判正在淹没判据' -f $c['undecidable'], $judgedArms, $maxUndecidable
+}
+$nFail = $c['inert'] + $c['missing'] + $c['nocmd'] + $c['crashed'] + $boundFail
 '---- 旋钮活性: PASS={0} FAIL={1} 越界被拒(不计入)={2} 未判(不计入)={3} 缺口(未做)={4} 合计={5} ----' -f `
   $c['live'], $nFail, $c['rejected'], $c['undecidable'], $c['gap'], $res.Count
 $wantArms = $rows.Count + $naming.Count
 if ($res.Count -ne $wantArms) { "⚠ 判据条数 $($res.Count) != 应有臂数 $wantArms ⇒ 有臂没判（记红，不给绿）"; exit 1 }
-$hard = @($res | Where-Object { $_.st -eq 'inert' -or $_.st -eq 'missing' -or $_.st -eq 'nocmd' })
-if ($hard.Count) { '--- 判红/待补明细 ---'; foreach ($x in $hard) { '   ' + $x.n + ' :: ' + $x.det }; exit 1 }
+$hard = @($res | Where-Object { $_.st -eq 'inert' -or $_.st -eq 'missing' -or $_.st -eq 'nocmd' -or $_.st -eq 'crashed' })
+if ($hard.Count -or $boundFail) {
+  '--- 判红/待补明细 ---'
+  foreach ($x in $hard) { '   ' + $x.n + ' :: ' + $x.det }
+  if ($boundFail) { '   （下限/比例闸，见上方 FAIL 行）' }
+  exit 1
+}
 exit 0
