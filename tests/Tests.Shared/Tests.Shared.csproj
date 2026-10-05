@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- ═══════════════════════════════════════════════════════════ -->
+  <!-- Tests.Shared —— 测试宿主的**共享底座**（2026-10-05 拆分）    -->
+  <!--                                                             -->
+  <!-- 为什么存在：三个宿主（ServiceProbe / UiTestHost /            -->
+  <!-- GainMapTestHost）各自是**单个巨型 Program.cs**，              -->
+  <!-- 且各自复制了一份 Check/RunCapture/路径解析/夹具生成。        -->
+  <!-- 拆成"一个部分一个测试工程"时，若每组再各带一份 helper，        -->
+  <!-- 就会出现 N 份同名不同实现的判据 —— 本仓已有「两处独立常数     -->
+  <!-- 会漂移 2.7e-4」的血泪教训。故 helper **只此一份**。           -->
+  <!--                                                             -->
+  <!-- ⚠ 本库**不含任何断言**，只有：计数器、输出格式、进程调用、     -->
+  <!--   路径/工具解析、夹具生成。断言一律留在各组里。               -->
+  <!-- ═══════════════════════════════════════════════════════════ -->
+  <PropertyGroup>
+    <TargetFramework>net11.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>Tests.Shared</AssemblyName>
+    <RootNamespace>Tests.Shared</RootNamespace>
+    <NoWarn>$(NoWarn);CS0618;MSB3884</NoWarn>
+    <!-- 引用方（宿主）是自包含 WinExe ⇒ 本库必须同为自包含，否则引用者构建失败 -->
+    <SelfContained>true</SelfContained>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 引用主项目以复用真实服务实现（与三个宿主原有的引用保持一致） -->
+    <ProjectReference Include="..\..\src\FfmpegGui\FfmpegGui.csproj" />
+  </ItemGroup>
+
+</Project>

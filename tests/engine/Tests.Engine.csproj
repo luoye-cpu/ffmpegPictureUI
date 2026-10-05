@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <!-- 测试组：engine —— 自研引擎与像素内核（2026-10-05 物理拆分）        -->
+  <!--                                                                     -->
+  <!-- 一个子系统 = 一个工程 = 一个可独立运行的测试入口。                   -->
+  <!-- 改引擎这一块 ⇒ 只 build/run 本工程，**不再跑整个 ServiceProbe**。     -->
+  <!--                                                                     -->
+  <!-- 覆盖的 mode（见 tests/Tests.Shared/TestGroups.cs）：                 -->
+  <!--   engine / gamut / gamutfit / simdswitch                            -->
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net11.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>Tests.Engine</AssemblyName>
+    <RootNamespace>Tests.Engine</RootNamespace>
+    <NoWarn>$(NoWarn);CS0618;MSB3884</NoWarn>
+    <!-- 被引用项目 FfmpegGui 是自包含 WinExe ⇒ 引用者必须同为自包含 -->
+    <SelfContained>true</SelfContained>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <PublishTrimmed>false</PublishTrimmed>
+    <PublishAot>false</PublishAot>
+    <PublishSingleFile>false</PublishSingleFile>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Tests.Shared\Tests.Shared.csproj" />
+  </ItemGroup>
+
+</Project>
