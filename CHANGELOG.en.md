@@ -13,6 +13,122 @@ All notable changes to this project are documented in this file.
 
 ## 📝 Changelog
 
+### v1.6.0-beta5 (2026-10-05) — 10 P0 fixes (incl. 2 silent data/privacy defects) + physical split of the test projects (gates 68→72)
+
+> **Lineage**: this is a large set of **real behaviour changes** — 11 product files under `src/`
+> changed (+547/−31 lines) — plus a structural overhaul of the tests and gates
+> (three monolithic test hosts → 17 per-subsystem projects). Every fix is backed by product-level evidence.
+
+**🔴 Privacy: JXL output used to retain GPS silently (P0)**
+
+- Root cause (three layers, each measured): ① `jxl` is the default output format and
+  `--jxl-lossless-jpeg` (the `jbrd` lossless rewrap) is on by default, and it copies the
+  **source JPEG codestream verbatim** (including EXIF/GPS); ② the default path went through the
+  `CopyMetadataSafeAsync` safe-copy, whose strip branch only covered `png/apng`; ③ even once covered,
+  the **exclusion form `--GPS:all` does not work on JXL** (exiftool reports "1 image files updated"
+  while GPS remains) — only the **delete form `-GPS:all=`** works.
+- **Fix**: an explicit delete after the copy; the strip trigger widened from "`--strip-metadata` only"
+  to "any strip switch enabled".
+- ⚠ **The design conflict this exposed is now explicit, never silent**: jbrd can only keep its
+  "restore the original JPEG byte-for-byte" promise if nothing touches the container metadata —
+  but that is exactly where GPS lives, so **the two are structurally incompatible**.
+  Per the ruling that "lossless repacking is the absolute default", the **default preserves
+  reversibility** and names the tradeoff (including two alternatives) on the **status line, which is
+  visible at the default log level**; an explicit `--strip-gps`/`--strip-metadata` **gives up the
+  rewrap and actually strips**.
+
+**🔴 Lossless reversibility destroyed by the tool's own step, and djxl's silent downgrade misreported (P0)**
+
+- Root cause: after `cjxl` produced a `jbrd`-carrying JXL, the metadata-restore step **rewrote the
+  container** ⇒ `djxl` **refused lossless reconstruction** and **silently downgraded** to
+  `--pixels_to_jpeg` pixel re-encoding, **still exiting 0** ⇒ the status read
+  "completed (djxl reconstructed JPEG)", **the opposite of the truth**. Result: the round trip was no
+  longer byte-identical and chroma went `yuvj420p → yuvj444p`.
+- **Fix**: skip metadata restore when `jbrd` really ran; on the reverse leg, **detect djxl's
+  downgrade signal** and name it instead of claiming a reconstruction.
+- Measured: `verify-jbrd-e2e` went **52/8 → 100/0**; mutation (reverting the fix) turns it red at 97/3.
+
+**🔴 8-bit output silently dropped tone mapping and three other operators (P0, silently wrong pixels)**
+
+- `TransformRgb48leToRgb8` only read `SrcCurve` + matrix + `GamutMap` + `Clamp` and **never read**
+  `Tone`/`LinearScale`/`EncodeScale`/`SrcIsHlgScene` ⇒ on **default-reachable** paths
+  (`-f gif`/`-f jpg`/`--bit-depth 8`) HDR→SDR applied **no tone mapping** (clipped highlights,
+  ~57% too bright) and HLG sources skipped the BT.2100 OOTF. Measured: at `--bit-depth 8`,
+  `hable`/`none`/`reinhard` produced **the same SHA**, while the log still printed "active=yes".
+- **Fix**: apply the same four operators in the **same order** as the 16-bit sibling
+  (HLG OOTF → LinearScale → ToneMap → matrix → GMO → EncodeScale → inverse OOTF → clamp), and fall
+  back to the analytic path when those operators are active.
+  Verified: 8-bit means **73.8/91.6/92.6** ≈ 16-bit **74/92/92.9** (identical before the fix).
+- Also fixed: an explicit `--color-tone-map none` was **silently upgraded to Hable** (its value was
+  indistinguishable from "unspecified") ⇒ an explicit flag now lets the explicit choice **win over**
+  the automatic fallback (`none` now takes the existing honest rejection path, exit 91).
+
+**🔴 Remaining P0s (each reproduced before fixing)**
+
+- **Malformed CLI values crashed the process**: `-q abc` exited `-532462766` (unhandled CLR exception)
+  instead of the contractual `2`. Fix: catch `ArgumentException` at the single entry point ⇒
+  `错误: …` + exit 2 (parameter errors **only**; real crashes are not disguised).
+- **Repeated `-i` silently discarded earlier inputs**: `-i a -i b -i a` reported "found **1**"
+  (the comma form reported 3) ⇒ now it **appends**.
+- **An output directory under an input root caused self-ingestion**: re-running the same command
+  re-read the previous run's output (found 1→2→3, accumulating `pic_1/pic_2.png`) ⇒ the output
+  subtree is now **excluded** during enumeration.
+- **A 135.8 s startup stall when a tool was missing** (looked like a hang): the recursive scan walked
+  every PATH directory (67,558 directories measured) ⇒ PATH directories no longer enter the recursive
+  face (PATH is still resolved non-recursively elsewhere), `Program Files` keeps only named
+  subdirectories, and the per-root budget became a "remaining total budget" ⇒ measured
+  **135.8 s → 9.2 s**, with all 8 tools still detected.
+- **Pre-existing outputs were overwritten silently** (irreversible): added `--no-overwrite`
+  (existing file ⇒ **refuse and name it**, counted as a failure, exit 1); ⚠ the default **still
+  overwrites** (existing semantics preserved).
+- **A "green measured against the wrong encoder" false green**: without `settings.json`
+  (gitignored; it holds machine-absolute paths) `JxlLibDir` is empty ⇒ the encoder **silently fell
+  back to ffmpeg's mjpeg**, and the group **still reported all-green with identical summary
+  numbers** — only the measured value in an assertion (2694B→2553B) exposed it. Fix:
+  `JxlLibDir`/`WindowsArtifactsDir` are now **derived from the repo root**, so a fresh clone gets the
+  same encoder out of the box.
+
+**🧪 Physical split of the test projects (user directive: "one test group per part, no more running the whole project for a one-line change")**
+
+- The three monolithic hosts (`ServiceProbe` 577 KB / `UiTestHost` 238 KB / `GainMapTestHost` 98 KB)
+  became **17 independent projects** plus 2 shared bases (`Tests.Shared` / `UiHostShared`). Each
+  project ships its own `Main`, runs standalone via `dotnet run`, supports `--list` and single-mode
+  runs, and **exits 2 fail-closed** on an unknown mode.
+- **Reading conservation (independently re-verified by the Lead)**: `UiTestHost` 409/409
+  (missing=0 extra=0, stable over 5 consecutive rounds and 3 alternating-order stress rounds);
+  `GainMapTestHost` **103 ✅ = 103 ✅ with zero line differences**; `ServiceProbe` identical per mode.
+- ⚠ **All three legacy hosts are retained** as the compatibility layer (**29 gate scripts** hard-code
+  their exes, and the runner's STALE gate compares the freshness of all four artifacts).
+- Four **"ordering luck" hidden dependencies** surfaced by the split are recorded and turned into
+  **named entry preconditions** (e.g. `UiHost.ApplyToolPaths()` must run **before** `BootWindow()`).
+  Such dependencies **do not show up as red — they silently run fewer assertions**, so summary
+  numbers alone can never reveal them.
+
+**🚦 Gates 68 → 72**
+
+- **#69** `_probe-test-group-coverage.ps1`: coverage consistency between the group table
+  (`TestGroups`) and the runner's `$Probes`. Its criterion ⑤ requires that every declared mode
+  **actually enters the dispatch chain** — motivated by a **false coverage** found during review:
+  the `engine` group declared 4 modes but implemented 1 ⇒ `engine` 35/0→**0/0**,
+  `simdswitch` 28/0→**0/0**, i.e. **63 assertions silently vanished** while all gates stayed green.
+- **#70/#71**: a **verbatim lock** for the UiTestHost split (17 group bodies compared line-by-line,
+  2991 lines; 19/0) and a **union lock** (the old host's assertion-name set must equal the union of
+  the 5 projects, with both difference directions empty; 9/0).
+- **#72** `verify-usability-e2e.ps1`: a **user-perceivable usability** end-to-end matrix
+  (A format conversions 8×6 + B colour-target delivery + C batch/directory + D animation frames;
+  81 cells). ⚠ It **already existed but was not on the manifest** ⇒ nobody ran it ⇒ it had
+  accumulated 2 self-defects nobody noticed (`ffprobe -of csv=p=0` emits columns **in a different
+  order than requested** ⇒ 12 HDR cells falsely red; `Start-Process -ArgumentList <array>` **does not
+  quote per element** ⇒ `"Display P3"` was split ⇒ 3 cells permanently red).
+  **Both were defects in the gate itself; the product was fine.**
+
+**📌 Gate baselines (as of this release)**
+
+- **72** managed scripts, **26** default probe modes; the authoritative full gate suite reports
+  **exit=0, "all passed"**.
+- ⚠ Counts recorded in each version entry are that release's baseline; the live authoritative values
+  are `$Probes` and `$expectedScriptCount` in `_run-step3-gates.ps1`.
+
 ### v1.6.0-beta4 (2026-10-01) — gain-map JPEGs no longer pose as lossless, float JXL can be read back, `--jxl-modular` wired; first L3 suites join the gate manifest (60→65)
 
 > **Lineage**: unlike beta3, this **is** a behavioural change — 3 product files under `src/` were modified after
