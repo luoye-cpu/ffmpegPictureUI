@@ -62,7 +62,16 @@ function Run-Cli([string]$in, [string]$outDir, [string[]]$extra) {
     $o = "$work\_o.txt"; $e = "$work\_e.txt"
     Remove-Item $o,$e -Force -ErrorAction SilentlyContinue
     $argv = @('--headless','-i',$in,'--output',$outDir,'--log-level','Debug') + $extra
-    $p = Start-Process -FilePath $exe -ArgumentList $argv -Wait -NoNewWindow -PassThru `
+    # ⚠⚠ 2026-10-05 修（含空格取值被拆成两个参数 ⇒ 该格恒红）：
+    #   `Start-Process -ArgumentList <数组>` 在 Windows 上把数组**拼成一条命令行、
+    #   *不做* 逐元素引号包裹 ⇒ `@('--color-space','Display P3')` 到达子进程时变成
+    #   `--color-space Display P3` ⇒ CLI 把 `P3` 当成位置参数、`Display` 当成取值
+    #   ⇒ 实测 exit=1、**零产物** ⇒ `B-color SDR→Display P3/*` 三格恒红（与本闸无关的产品侧没有问题：
+    #     手工对同一命令加引号跑 ⇒ 产物标注 `smiec61966-2-1,smpte432` 完全正确）。
+    #   ⇒ 逐个元素**显式加引号**（并转义元素内既有的双引号），保留含空格取值的完整性。
+    #   ⚠ 不用 `-ArgumentList ($argv -join ' ')` 那种"看起来对"的写法：仍不会给含空格元素加引号。
+    $quoted = $argv | ForEach-Object { '"' + ([string]$_).Replace('"', '\"') + '"' }
+    $p = Start-Process -FilePath $exe -ArgumentList $quoted -Wait -NoNewWindow -PassThru `
          -RedirectStandardOutput $o -RedirectStandardError $e
     $log = ((Get-Content $o -Raw -ErrorAction SilentlyContinue) + "`n" + (Get-Content $e -Raw -ErrorAction SilentlyContinue))
     return @{ Rc = $p.ExitCode; Log = $log }
@@ -76,8 +85,20 @@ function Get-Prod([string]$dir) {
 function Probe-V([string]$f) {
     $a = & $fp -v error -select_streams v:0 -show_entries stream=width,height,pix_fmt,color_primaries,color_transfer -of csv=p=0 "$f" 2>$null
     if (-not $a) { return $null }
+    # ⚠⚠ 2026-10-05 修（本闸**读反了列序** ⇒ 系统性假红）：
+    #   `ffprobe -of csv=p=0` 的列序**不按请求顺序**，而是按其内部字段顺序。
+    #   实测（同一 PNG，请求 `width,height,pix_fmt,color_primaries,color_transfer`）：
+    #     两个一起请求 ⇒ `128,96,rgb24,iec61966-2-1,bt709`
+    #     单独请求 primaries  ⇒ `bt709`
+    #     单独请求 transfer   ⇒ `iec61966-2-1`
+    #   ⇒ `[3]` 是 **transfer**、`[4]` 才是 **primaries**，**与请求顺序相反**。
+    #   旧写法按请求顺序取 `Prim=$p[3]; Trc=$p[4]` ⇒ `Prim` 拿到的是 transfer 值
+    #   ⇒ 下面「标注兑现」判据拿 `Prim` 与 `'bt709'`(sRGB 的原色) 比 ⇒ **恒不相等**
+    #   ⇒ 该闸 core 档**系统性假红**（实测 12 条 HDR→SDR 全部 '标注未兑现'，而产物标注其实正确）。
+    #   ⚠ 为什么不改成"各自单独请求"：那要跑 5 次 ffprobe；这里保留一次调用、只把**下标取对**，
+    #     并把列序事实写进注释（避免下次又被"请求顺序=输出顺序"的直觉骗到）。
     $p = ($a -split ',')[0..4]
-    return @{ W=[int]$p[0]; H=[int]$p[1]; Fmt=$p[2]; Prim=$p[3]; Trc=$p[4] }
+    return @{ W=[int]$p[0]; H=[int]$p[1]; Fmt=$p[2]; Trc=$p[3]; Prim=$p[4] }
 }
 
 function Get-Psnr([string]$a, [string]$b) {
