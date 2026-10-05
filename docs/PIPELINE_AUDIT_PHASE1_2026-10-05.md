@@ -263,6 +263,60 @@ $ FfmpegGui.exe --headless -i anim.gif -o out -f png --max-dimension-enabled tru
 
 ---
 
+## P0-8 【已确认 + 已修】exiftool 写元数据**摧毁 jbrd 无损重构**，且 djxl 静默降级、日志谎称"重构"
+
+**发现路径**：修 `verify-jbrd-e2e` 的存量红（52/8）时逐层剥出。**这条比它表现出的更严重** ——
+它让本工具对 JPEG→JXL→JPEG 的**无损承诺在默认路径上失效**。
+
+**根因链（每一段都实测）**
+1. `cjxl -d 0 --lossless_jpeg=1` 产出带 `jbrd` 重构数据的 JXL ✅（`jxlinfo` 读得到
+   `JPEG bitstream reconstruction data available`）
+2. 但正向阶段紧接着跑 `RestoreMetadataAsync` → exiftool **改写容器内 EXIF/APP 段结构**
+3. 这一改写让 **jbrd 不再能无损重构**：
+   - 纯 `cjxl` → 纯 `djxl` ⇒ **`Reconstructed to JPEG`**、SHA 与源**相同** ✅
+   - 同一 JXL 先跑一次 `exiftool -GPS:all=`（**默认就开的 GPS 隐私清理**）→ `djxl`
+     ⇒ **`Warning: could not decode losslessly to JPEG. Retrying with --pixels_to_jpeg...`** ❌
+4. 于是反向腿 `djxl` **静默降级**为像素重编码，**退出码仍是 0**
+5. 产品只看退出码 ⇒ 状态写成「**已完成 (djxl 重构 JPEG)**」= **日志与事实相反**
+6. 像素重编码 ⇒ 色度 `yuvj420p → yuvj444p`、字节不同 ⇒ 闸的 3 条断言红
+
+**实测（闸的真实夹具 `src_photo_local.jpg` 23917 B）**
+| 阶段 | 修前 | 修后 |
+|---|---|---|
+| 往返逐字节 | ❌ SHA 不同（23917 → 40269 B，444p） | ✅ **SHA 相同**（23917 → 23917 B） |
+| `verify-jbrd-e2e` | **52/8** red | **100/0** green |
+
+**修法（两处，均为"该通路不得自毁"）**
+- **正向**（`QueueProcessor` 的 cjxl 出口）：判据改用 `CjxlService.UsesLosslessJpegRewrap`
+  **同源**（旧写法只看 `isJpegInput && JxlLosslessJpeg`，会把"没走重封装"也标成"无损重封装"）；
+  真走 jbrd 时**跳过元数据恢复**（产物即原始字节，任何容器层写入都会破坏可逆性）。
+- **反向**（`ProcessJxlInputAsync` 的 djxl 重构分支）：**捕获 djxl 的静默降级**
+  （判据取它自己那行 `pixels_to_jpeg` / `could not decode losslessly`，这是唯一可靠信号），
+  命中即**点名**，状态改为「已完成 (djxl 降级为像素重编码：非无损重构)」，**不再声称"重构"**；
+  并在该情形走正常元数据阶段（此时产物已是普通重编码 JPEG）。
+  另：无损重构成功时同样**跳过**元数据恢复。
+
+### ⚠ 由此暴露的设计矛盾（已显式化，未静默）
+jbrd 把**源 JPEG 码流逐字**放进产物 ⇒ 源里的 GPS **必然**随之进入；
+而要保住可逆性就**不能**动容器元数据 —— 但 GPS 正在那里。⇒ **"隐私剥除"与"无损可逆"在
+「JPEG→JXL 且启用 jbrd」这一格上结构上不可兼得。**
+
+按用户裁定「**无损重封装是绝对默认**」，修后的行为矩阵（**实测**）：
+
+| 情形 | jbrd 可逆 | GPS | 是否点名 |
+|---|---|---|---|
+| **默认**（无损优先） | ✅ 保住 | present | ✅ **响亮点名**取舍 + 给出两条替代路径 |
+| `--strip-gps`（显式） | 放弃重封装 | ✅ **已剥除** | — |
+| `--strip-metadata`（显式） | 放弃重封装 | ✅ **已剥除** | — |
+| `--no-strip-gps`（显式保留） | ✅ 保住 | present | 无需点名 |
+
+⇒ **没有静默**：默认保住可逆性并**明确告知** GPS 未剥除及如何剥除；用户一显式要求即真的剥除。
+
+**变异验证**：把"跳过元数据恢复"改回原样 ⇒ `verify-jbrd-e2e` **立刻转红（97/3，正是原来那 3 条）**；
+恢复 ⇒ **100/0**。⇒ 修复确有牙。
+
+---
+
 ## 修复汇总（2026-10-05，全部已实施并实测验证）
 
 | # | 缺陷 | 修法 | 验证 |

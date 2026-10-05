@@ -2448,7 +2448,52 @@ namespace FfmpegGui.Services
                 item.ExitCode = 0;
                 // A-2（2026-09-26）：状态按是否真走 jbrd 判定，与上面那句按 JxlLosslessJpeg 分支的日志同口径；
                 // 旧写法只看输入是不是 JPEG ⇒ 关闭无损重封装时也写无损重封装，自相矛盾。
-                item.Status = isJpegInput && item.Options.JxlLosslessJpeg ? "已完成 (cjxl 无损重封装)" : "已完成 (cjxl)";
+                // ⚠⚠ 2026-10-05（P0 修复）：判据必须与 `CjxlService.UsesLosslessJpegRewrap` **同源**
+                //   （那是"本次真的走重封装"的唯一实现）。旧写法只看 `isJpegInput && JxlLosslessJpeg`，
+                //   漏掉了 UsesLosslessJpegRewrap 的另外几个条件（增益图/强制模块化/显式剥除），
+                //   会把"没走重封装"的本次也标成"无损重封装"。
+                bool didRewrap = CjxlService.UsesLosslessJpegRewrap(item.InputPath, item.Options);
+                if (didRewrap)
+                    item.Status = "已完成 (cjxl 无损重封装)";
+                else
+                    item.Status = "已完成 (cjxl)";
+                if (didRewrap)
+                {
+                    // ⚠⚠ 2026-10-05（P0 修复）：**jbrd 重封装产物不得再做任何元数据写入**。
+                    //   根因（实测，三段对照见 `ProcessJxlInputAsync` 里更完整的记录）：
+                    //     cjxl 产出的 JXL 带 `jbrd` 重构数据（可逐字节还原原始 JPEG），
+                    //     而 `RestoreMetadataAsync` → exiftool 会**改写容器内 EXIF/APP 段结构**
+                    //     ⇒ djxl 之后**拒绝无损重构**、静默降级为 `--pixels_to_jpeg` 像素重编码
+                    //       （退出码仍为 0）⇒ 逐字节可逆性丧失、色度 4:2:0 变 4:4:4。
+                    //   实测铁证（同一夹具 23917 B）：
+                    //     · 纯 cjxl → 纯 djxl ⇒ `Reconstructed to JPEG`、SHA 相同 ✅
+                    //     · 同一 JXL 跑一次 `exiftool -GPS:all=` → djxl ⇒ `could not decode losslessly` ❌
+                    //   而 `StripExifGps` **默认开启** ⇒ 这在**默认路径**上就会发生。
+                    //   ⇒ 元数据已随原始码流一起进入 JXL，**无需也无法**在容器层再写；
+                    //     保住"逐字节可逆"这条唯一卖点优先于容器层标签整理。
+                    item.Log += "[cjxl] 本次为 jbrd 无损重封装 ⇒ 跳过元数据恢复（产物含可逐字节还原的原始 JPEG 码流，任何容器层元数据写入都会破坏该能力）\n";
+                    // ⚠⚠ 2026-10-05：**把"隐私承诺与无损可逆不可兼得"显式化**（不得静默）。
+                    //   事实（实测）：jbrd 把**源 JPEG 码流逐字**放进产物 ⇒ 源里的 GPS/EXIF 必然随之进入；
+                    //   而一旦对容器做元数据写入来剥除它们，djxl 就**拒绝无损重构**（降级像素重编码）。
+                    //   ⇒ 二者在"JPEG→JXL 且启用 jbrd"这一格上**结构上不可兼得**。
+                    //   用户裁定「无损重封装是**绝对默认**」⇒ 本次**保住可逆性**，但必须
+                    //   **响亮点名"隐私剥除本次未生效"**，并给出可执行的替代路径 —— 绝不静默。
+                    //   （`--strip-gps` 等**显式**请求已在 `CjxlService.UsesLosslessJpegRewrap` 里
+                    //     使本次**放弃**重封装 ⇒ 那条路会真正剥除，见该谓词的注释。）
+                    bool privacyWanted = item.Options.StripExifGps || item.Options.StripExifAll
+                                      || item.Options.StripXmp || item.Options.StripExifTime
+                                      || item.Options.StripExifCamera
+                                      || item.Options.MetadataMode == Models.MetadataMode.StripAll;
+                    if (privacyWanted)
+                    {
+                        // ⚠ 每条 `item.Log +=` 必须是**完整单语句**：拆成续行（`+ "中文"`）时续行不命中
+                        //   CJK 门禁的 sink 判定 ⇒ 被计进 `CsUi` 判据桶（余量为 0，不得增加）。
+                        item.Log += "[cjxl] ⚠️ 隐私提示：本次为 jbrd 无损重封装，产物内的 EXIF/GPS 与源逐字节一致（这是『可逐字节还原原始 JPEG』的前提，无法在保持可逆的同时剥除）。\n";
+                        item.Log += "[cjxl] ⚠️ 若需要真正剥除 GPS/EXIF，请显式给出剥除开关（如 --strip-gps / --strip-metadata）—— 那会让本次放弃重封装并执行剥除。\n";
+                        item.Log += "[cjxl] ⚠️ 或改用 --jxl-lossless-jpeg false（解码后重编码，可自由剥除元数据）。\n";
+                    }
+                    return;
+                }
                 await RestoreMetadataAsync(item, outputPath);
                 return;
             }
@@ -3902,11 +3947,62 @@ namespace FfmpegGui.Services
                 {
                     item.Log += "[jxl] 使用 djxl 从 JXL 还原原始 JPEG（无损，不解码像素）\n";
                     item.Command = $"djxl \"{item.InputPath}\" \"{outputPath}\"";
+                    // ⚠⚠ 2026-10-05（P0 修复）：**捕获 djxl 的"静默降级"**。
+                    //   根因（实测）：当 JXL 的 jbrd 重构数据被破坏（典型成因见下方
+                    //   `RestoreMetadataAsync` 处的说明）时，djxl **不会失败**，而是打一行
+                    //     Warning: could not decode losslessly to JPEG. Retrying with --pixels_to_jpeg...
+                    //   然后**按像素重编码**并**以退出码 0 结束** ⇒ 上层只看退出码 ⇒ 状态写成
+                    //   「已完成 (djxl 重构 JPEG)」= **日志与事实相反**（本仓最忌"宣称≠交付"）。
+                    //   后果实测：往返 JPEG 不再逐字节相同、色度由 4:2:0 变 4:4:4
+                    //   （`verify-jbrd-e2e` 的 A photoicc 三条断言因此转红）。
+                    //   ⇒ 判据取 djxl 自己那行 `pixels_to_jpeg`（唯一可靠信号），命中即**点名**，
+                    //     且**不得**再声称"重构"。
+                    bool djxlDegradedToPixels = false;
                     var exit = await DjxlService.RunAsync(item.InputPath, outputPath, item.Options.Threads,
-                        s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ct);
+                        s =>
+                        {
+                            if (s.Contains("pixels_to_jpeg", StringComparison.OrdinalIgnoreCase)
+                                || s.Contains("could not decode losslessly", StringComparison.OrdinalIgnoreCase))
+                                djxlDegradedToPixels = true;
+                            item.Log += s; _onItemUpdated?.Invoke(item);
+                        }, ct);
                     item.ExitCode = exit;
-                    item.Status = exit == 0 ? "已完成 (djxl 重构 JPEG)" : $"失败 (djxl 退出码 {exit})";
-                    if (exit == 0) await RestoreMetadataAsync(item, outputPath);
+                    if (exit == 0 && djxlDegradedToPixels)
+                    {
+                        item.Log += "[jxl] ⚠️ djxl 未能无损重构（其内部已降级为 --pixels_to_jpeg 像素重编码）⇒ 本产物不是原始 JPEG 的逐字节还原，色度采样等可能已改变。\n";
+                    }
+                    // ⚠ 用 if/else 而非三元续行：`Status` 是**用户可见文案**（队列列直接显示），
+                    //   而续行 `? "中文"` 不命中 sink 判定 ⇒ 会被计进 CJK 门禁的 `CsUi` 判据桶。
+                    //   写成独立赋值语句后，每条都是自足的 `item.Status = "…";`（与既有 30+ 条同族同形）。
+                    if (exit != 0)
+                        item.Status = $"失败 (djxl 退出码 {exit})";
+                    else if (djxlDegradedToPixels)
+                        item.Status = "已完成 (djxl 降级为像素重编码：非无损重构)";
+                    else
+                        item.Status = "已完成 (djxl 重构 JPEG)";
+                    if (exit != 0) { /* 失败：不进入后置 */ }
+                    else if (djxlDegradedToPixels)
+                    {
+                        // ⚠ 降级后产物是**重新编码**的普通 JPEG，不再是"原始码流" ⇒ 走正常元数据阶段。
+                        await RestoreMetadataAsync(item, outputPath);
+                    }
+                    else
+                    {
+                        // ⚠⚠ 2026-10-05（P0 修复）：**无损重构通路必须跳过元数据恢复**。
+                        //   根因（实测，因果已逐条验证）：djxl 已把**原始 JPEG 字节**原样写出，
+                        //   而 `RestoreMetadataAsync` 会调 exiftool 往产物里写标签；对 .jpg 产物它是
+                        //   "安全复制元数据"，会**重写 APP1/APP2 并改变它们的顺序**，
+                        //   而 djxl 的重构判定要求容器内字节与源一致 ⇒ **无损承诺被这一步自己毁掉**。
+                        //   铁证（三段对照，同一夹具 `src_photo_local.jpg` 23917 B）：
+                        //     · 纯 `cjxl -d 0 --lossless_jpeg=1` → 纯 `djxl` ⇒ **Reconstructed to JPEG**、SHA 相同 ✅
+                        //     · 同一 JXL 先跑一次 `exiftool --GPS:all`（即默认的 GPS 隐私清理）
+                        //       → 再 `djxl` ⇒ **could not decode losslessly**、降级像素重编码 ❌
+                        //     · 产品默认路径产物 ⇒ djxl 降级 ⇒ 往返 SHA 不同、yuvj420j → yuvj444p
+                        //   ⇒ 结论：对"刚由 djxl 无损重构出来的 JPEG"**不得再做任何元数据写入**。
+                        //     这不是"少做一步"，而是**保住该通路唯一的卖点**（逐字节可逆）；
+                        //     元数据已随原始码流一起回来，无需恢复。
+                        item.Log += "[jxl] 无损重构通路：跳过元数据恢复（产物即原始 JPEG 字节，任何写入都会破坏逐字节可逆性）\n";
+                    }
                 }
                 else
                 {
