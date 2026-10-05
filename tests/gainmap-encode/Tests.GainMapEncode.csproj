@@ -1,0 +1,58 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <!-- 测试组：gainmap-encode —— GainMap/Ultra HDR **编码**侧                -->
+  <!-- （2026-10-05 从 tests/GainMapTestHost 的单个 Program.cs 物理拆出）    -->
+  <!--                                                                     -->
+  <!-- 一个子系统 = 一个工程 = 一个可独立运行的测试入口。                   -->
+  <!-- 改编码这一块 ⇒ 只 build/run 本工程，不再跑整个 GainMapTestHost。      -->
+  <!--                                                                     -->
+  <!-- 覆盖的 mode（见 tests/Tests.Shared/TestGroups.cs）：                 -->
+  <!--   gainmap-encode                                                     -->
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net11.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>Tests.GainMapEncode</AssemblyName>
+    <RootNamespace>Tests.GainMapEncode</RootNamespace>
+    <NoWarn>$(NoWarn);CS0618;MSB3884</NoWarn>
+    <!-- 被引用项目 FfmpegGui 是自包含 WinExe ⇒ 引用者必须同为自包含 -->
+    <SelfContained>true</SelfContained>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <PublishTrimmed>false</PublishTrimmed>
+    <PublishAot>false</PublishAot>
+    <PublishSingleFile>false</PublishSingleFile>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- ⚠ 与旧 GainMapTestHost 的直接 src 引用不同：这里经 Tests.Shared 传递引用，
+         与 tests/encode、tests/metadata 等已完成组工程同形（Tests.Shared 已 ProjectReference src/FfmpegGui）。 -->
+    <ProjectReference Include="..\Tests.Shared\Tests.Shared.csproj" />
+  </ItemGroup>
+
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <!-- 便携 settings.json（2026-10-05 拆分时必须补，否则读数与旧宿主分叉）  -->
+  <!--                                                                     -->
+  <!-- 【为什么必须有】`JxlLibDir` 是本组**编码路径**的关键项：                -->
+  <!--   `GainMapEncoder` 用 `CjpegliService` 出底图 JPEG，而 `CjpegliService` -->
+  <!--   只从 `AppSettings.JxlLibDir`（/CjpegliPath/CjxlPath）找 `cjpegli.exe`。-->
+  <!--   旧 `tests/GainMapTestHost/bin/.../settings.json` 带着这一项 ⇒ 用它；   -->
+  <!--   新工程若没有这份 settings.json，`JxlLibDir` 为空 ⇒ cjpegli 定位不到  -->
+  <!--   ⇒ **静默回退到 ffmpeg 的 mjpeg 编码器**（实测产物里多出 `FF FE` COM   -->
+  <!--   注释 "Lavc63.14.100"），`sdr.jpg` 从 2694B 变 2553B。                  -->
+  <!--   ⚠ 这属于"拆分引入的读数分叉"而非产品缺陷：判据（完整 JPEG / 无        -->
+  <!--   MPImage2 / 无 GainMapMax）两边都过，但**被检产物不是同一个编码器出的**，-->
+  <!--   属"构建/环境漂移"，必须修掉才能说"逐条一致"。                        -->
+  <!--   （实测：不补时 `sdr: 产物是完整 JPEG（…，2553B）`，补后 2694B 与旧宿主一致。）-->
+  <!-- ⚠ `AppSettingsService` 按 `Environment.ProcessPath` 同目录读               -->
+  <!--   `settings.json`（便携优先）⇒ 靠 `CopyToOutputDirectory` 落到 exe 旁。    -->
+  <!-- ⚠ 只复制工具链定位三项，不复制 UI 偏好。                                  -->
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <ItemGroup>
+    <None Include="settings.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

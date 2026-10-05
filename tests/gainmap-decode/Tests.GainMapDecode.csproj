@@ -1,0 +1,50 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <!-- 测试组：gainmap-decode —— GainMap/Ultra HDR **解码闭环 / 方向标签 /   -->
+  <!-- PSNR-位深域**（2026-10-05 从 tests/GainMapTestHost 物理拆出）         -->
+  <!--                                                                     -->
+  <!-- 覆盖的 mode（见 tests/Tests.Shared/TestGroups.cs）：                 -->
+  <!--   gainmap-decode                                                     -->
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net11.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>Tests.GainMapDecode</AssemblyName>
+    <RootNamespace>Tests.GainMapDecode</RootNamespace>
+    <NoWarn>$(NoWarn);CS0618;MSB3884</NoWarn>
+    <!-- 被引用项目 FfmpegGui 是自包含 WinExe ⇒ 引用者必须同为自包含 -->
+    <SelfContained>true</SelfContained>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <PublishTrimmed>false</PublishTrimmed>
+    <PublishAot>false</PublishAot>
+    <PublishSingleFile>false</PublishSingleFile>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Tests.Shared\Tests.Shared.csproj" />
+  </ItemGroup>
+
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <!-- 便携 settings.json（2026-10-05 拆分时必须补，否则读数与旧宿主分叉）  -->
+  <!--                                                                     -->
+  <!-- 【为什么必须有】旧 `tests/GainMapTestHost/bin/.../settings.json` 带     -->
+  <!--   `WindowsArtifactsDir = publish/PLAN/artifacts`，`RawService.Detect()` -->
+  <!--   正是靠它找到 `dngtool.exe` ⇒ D13（RAW 媒体信息）、D16a-c（dngtool    -->
+  <!--   命令参数）读得到东西。新组工程若没有这份 settings.json，           -->
+  <!--   `WindowsArtifactsDir` 为空 ⇒ dngtool 定位不到 ⇒ 这 4 条断言从      -->
+  <!--   **绿变红**，而原因是**拆分**、不是产品缺陷 ⇒ 就是"拆分引入的假红"。 -->
+  <!--   （实测：不补时 `通过 56, 失败 3`；补后与旧宿主读数一致。）          -->
+  <!-- ⚠ 只复制"工具链定位"三项，不复制 UI 偏好（ThemeMode/Language/…）——   -->
+  <!--   那些与本组判据无关，抄过来只会让这份文件随 UI 侧改动漂移。          -->
+  <!-- ⚠ `CopyToOutputDirectory=PreserveNewest`：AppSettingsService 按        -->
+  <!--   `Environment.ProcessPath` 同目录读 `settings.json`（便携优先）。      -->
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <ItemGroup>
+    <None Include="settings.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

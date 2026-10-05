@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <!-- 测试组：ui-color                                                        -->
+  <!--   UI 色彩：色彩管线 / ICC 选项 / 策略映射 / 编码参数分域                                                       -->
+  <!--                              （2026-10-05 从 UiTestHost 物理拆分）  -->
+  <!--                                                                     -->
+  <!-- 一个子系统 = 一个工程 = 一个可独立运行的测试入口。                   -->
+  <!-- 覆盖的 mode（见 tests/Tests.Shared/TestGroups.cs）。                 -->
+  <!--                                                                     -->
+  <!-- ⚠ 本工程**不重新实现** GUI 助手：窗口/点击/命令串 token 化等全部      -->
+  <!--   来自 tests/UiHostShared（单一真值）。本工程只承载组体断言。         -->
+  <!-- ⚠ 被引用项目 FfmpegGui 是自包含 WinExe ⇒ 引用链上每一环都必须同为    -->
+  <!--   自包含，故下方 SelfContained/RuntimeIdentifier 不可删。             -->
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net11.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>Tests.UiColor</AssemblyName>
+    <RootNamespace>Tests.UiColor</RootNamespace>
+    <NoWarn>$(NoWarn);CS0618;MSB3884</NoWarn>
+    <SelfContained>true</SelfContained>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <PublishTrimmed>false</PublishTrimmed>
+    <PublishAot>false</PublishAot>
+    <PublishSingleFile>false</PublishSingleFile>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 共享 GUI 底座（窗口 W / TempDir / 全部 GUI 与 token 助手） -->
+    <ProjectReference Include="..\UiHostShared\UiHostShared.csproj" />
+    <!-- 通用底座（计数 / PROBE RESULT 汇总行 / 子进程 / 工具链解析） -->
+    <ProjectReference Include="..\Tests.Shared\Tests.Shared.csproj" />
+  </ItemGroup>
+
+</Project>

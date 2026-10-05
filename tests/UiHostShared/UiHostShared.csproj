@@ -1,0 +1,47 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <!-- UiHostShared —— UI 测试组的**共享 GUI 底座**（2026-10-05 物理拆分）  -->
+  <!--                                                                     -->
+  <!-- 为什么存在（与 Tests.Shared 的分工）：                                -->
+  <!--   `Tests.Shared` 只有「与 UI 无关」的通用底座（计数/输出/子进程/       -->
+  <!--   工具链解析），它**不引用 Avalonia**。                               -->
+  <!--   而 UiTestHost 的 17 个组共用**一个活窗口** `W` 与一整套 GUI 助手     -->
+  <!--   （Pump / Find<T> / SetInput / Regen / Cmd / SetFormat / Click /     -->
+  <!--   Check / Safe / SweepReset / SetStrategyRadio / PickEncoder /       -->
+  <!--   ZscaleParam / UiState / ClassifyDetectLines + 纯 token 助手族）。   -->
+  <!--   若按 5 个工程各复制一份，就会出现 5 份同名不同实现的 `Cmd()`/`Pump()` -->
+  <!--   ⇒ 本仓已有「两处独立实现漂移 2.7e-4」的血泪教训 ⇒ **只此一份**。     -->
+  <!--                                                                     -->
+  <!-- 本库拥有：Avalonia 无头引导、窗口 `W`、`TempDir`、可观测性/计数管道、  -->
+  <!--          以及上面那**全部** GUI 助手。各组只写 `internal static` 的   -->
+  <!--          断言方法，调用本库。                                        -->
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <PropertyGroup>
+    <TargetFramework>net11.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>UiHostShared</AssemblyName>
+    <RootNamespace>UiHostShared</RootNamespace>
+    <NoWarn>$(NoWarn);CS0618;MSB3884</NoWarn>
+    <!-- 被引用项目 FfmpegGui 是自包含 WinExe ⇒ 引用链上每一环都必须同为自包含 -->
+    <SelfContained>true</SelfContained>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <PublishTrimmed>false</PublishTrimmed>
+    <PublishAot>false</PublishAot>
+    <PublishSingleFile>false</PublishSingleFile>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Avalonia 无头测试平台: 加载真实 XAML + 控件树, 无需显示器/鼠标 -->
+    <PackageReference Include="Avalonia.Headless" Version="12.1.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Tests.Shared\Tests.Shared.csproj" />
+    <!-- 引用主项目以复用真实 App / MainWindow / 服务 -->
+    <ProjectReference Include="..\..\src\FfmpegGui\FfmpegGui.csproj" />
+  </ItemGroup>
+
+</Project>

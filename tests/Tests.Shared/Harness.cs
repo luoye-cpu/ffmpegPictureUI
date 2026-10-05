@@ -23,7 +23,8 @@ namespace Tests.Shared
     /// </summary>
     public static class Harness
     {
-        private static int _pass, _fail, _skip;
+        private static int _pass, _fail, _skip, _known;
+        private static readonly List<string> _knownItems = new();
 
         /// <summary>通过计数。</summary>
         public static int Pass => _pass;
@@ -32,8 +33,30 @@ namespace Tests.Shared
         /// <summary>跳过计数（不计入判据，但必须打印出来供人看）。</summary>
         public static int SkipCount => _skip;
 
+        /// <summary>
+        /// **已知问题**计数（2026-10-05 拆分 GainMapTestHost 时补）。
+        /// <para><b>为什么必须有</b>：旧 <c>GainMapTestHost</c> 的汇总行是
+        /// <c>═══ 汇总: 通过 {_pass}, 失败 {_fail}, 已知问题 {_known} ═══</c>，其中 <c>_known</c> 是
+        /// <b>组内</b>计数器；而 <c>tests/scripts/verify-gainmap-host.ps1</c> 要解析这个数并断言
+        /// <c>已知问题 = 0</c>。拆分后若各组建一份自己的 known 计数，就会出现"汇总行与计数脱钩"
+        /// （本仓明令：计数只在 Harness）⇒ 与 pass/fail/skip 同处一份。</para>
+        /// <para>⚠ 与 <see cref="SkipCount"/> 的区别：skip = "本轮没跑"（不计判据）；
+        /// known = "<b>跑了</b>且确认是已知缺陷"（也不计判据，但必须打印实测值）。两者都不得被当成通过。</para>
+        /// </summary>
+        public static int KnownCount => _known;
+
+        /// <summary>已知问题明细（<c>名称 [实测] → 待修复阶段</c>），供宿主尾部原样打印。</summary>
+        public static IReadOnlyList<string> KnownList => _knownItems;
+
+        /// <summary>只增 known 计数并登记明细（打印由调用方决定 —— 与 <see cref="FailOnly()"/> 对称）。</summary>
+        public static void KnownOnly(string item)
+        {
+            _known++;
+            if (item != null) _knownItems.Add(item);
+        }
+
         /// <summary>把计数清零（一次进程内跑多组时用；单组运行时无需调用）。</summary>
-        public static void ResetCounters() { _pass = 0; _fail = 0; _skip = 0; }
+        public static void ResetCounters() { _pass = 0; _fail = 0; _skip = 0; _known = 0; _knownItems.Clear(); }
 
         /// <summary>仓库根：由 <c>AppContext.BaseDirectory</c> 向上找 <c>publish/PLAN</c> 定位。</summary>
         public static string RepoRoot { get; private set; } = "";
@@ -56,6 +79,31 @@ namespace Tests.Shared
                     st.FfmpegDirectory = Path.GetDirectoryName(ff);
                     var et = Path.Combine(dir.FullName, "publish", "PLAN", "exiftool", "exiftool.exe");
                     if (File.Exists(et)) st.ExifToolPath = et;
+                    // ⚠⚠ 2026-10-05（拆分时发现的**静默换编码器**隐患，必须在这里收口）：
+                    //   光设 `FfmpegDirectory` **不够** —— `CjpegliService`/`CjxlService` 靠
+                    //   `JxlLibDir` 定位 `cjpegli.exe`/`cjxl.exe`，而该字段**不**从 FfmpegDirectory 推导，
+                    //   只来自**便携 settings.json**（`settings.json` 被 `.gitignore` 忽略：
+                    //   `.gitignore:164`，因为它装的是**本机绝对路径**）。
+                    //   ⇒ 后果（实测，可复现）：把 `tests/gainmap-encode/…/settings.json` 删掉后，
+                    //     该组**仍然报 `通过 29, 失败 0, 已知问题 0`（exit 0）**，但同一条断言里的实测值
+                    //     由 `2694B` 变成 **`2553B`** —— 因为编码器**静默换成了 ffmpeg 的 mjpeg**
+                    //     （产物里带 `Lavc63.14.100` COM 段）。
+                    //     **这是一条"绿在错误后端上"的假绿**：汇总数字一模一样，只有实测值暴露了它。
+                    //   ⇒ 修法：**从仓库根推导**（`publish/PLAN/jxl/bin`），不再依赖那份
+                    //     gitignored 的机器专属文件 ⇒ 新克隆者开箱即得**同一个编码器**。
+                    //   ⚠ 只在文件确实存在时写入（不覆盖用户/便携配置的**有效**值）；
+                    //     不存在则保持原样，由各断言按既有方式报出真实缺失（fail-loud，不静默降级）。
+                    var jxlBin = Path.Combine(dir.FullName, "publish", "PLAN", "jxl", "bin");
+                    var cjpegli = Path.Combine(jxlBin, "cjpegli.exe");
+                    var cjxl = Path.Combine(jxlBin, "cjxl.exe");
+                    if (File.Exists(cjpegli) || File.Exists(cjxl))
+                    {
+                        if (string.IsNullOrWhiteSpace(st.JxlLibDir) || !Directory.Exists(st.JxlLibDir))
+                            st.JxlLibDir = jxlBin;
+                    }
+                    var artifacts = Path.Combine(dir.FullName, "publish", "PLAN", "artifacts");
+                    if (Directory.Exists(artifacts) && string.IsNullOrWhiteSpace(st.WindowsArtifactsDir))
+                        st.WindowsArtifactsDir = artifacts;
                     Console.WriteLine($"tools-root={dir.FullName}");
                     return;
                 }

@@ -1,0 +1,48 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <!-- 测试组：gainmap-struct —— GainMap 产物的**输出结构验证**（exiftool）  -->
+  <!-- 与 PNG 3.0 sBIT/cICP chunk（2026-10-05 从 tests/GainMapTestHost 拆出）-->
+  <!--                                                                     -->
+  <!-- 覆盖的 mode（见 tests/Tests.Shared/TestGroups.cs）：                 -->
+  <!--   gainmap-struct                                                     -->
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net11.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>Tests.GainMapStruct</AssemblyName>
+    <RootNamespace>Tests.GainMapStruct</RootNamespace>
+    <NoWarn>$(NoWarn);CS0618;MSB3884</NoWarn>
+    <!-- 被引用项目 FfmpegGui 是自包含 WinExe ⇒ 引用者必须同为自包含 -->
+    <SelfContained>true</SelfContained>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <PublishTrimmed>false</PublishTrimmed>
+    <PublishAot>false</PublishAot>
+    <PublishSingleFile>false</PublishSingleFile>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Tests.Shared\Tests.Shared.csproj" />
+  </ItemGroup>
+
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <!-- 便携 settings.json（2026-10-05 拆分时必须补，否则读数与旧宿主分叉）  -->
+  <!--                                                                     -->
+  <!-- 【为什么必须有】本组的 D13（RAW 媒体信息 dngtool JSON）走             -->
+  <!--   `MediaInfoService.GetMediaInfoAsync` → `RawService.Detect()`，     -->
+  <!--   而 dngtool 的定位依赖 `WindowsArtifactsDir`（= publish/PLAN/       -->
+  <!--   artifacts）。旧 `GainMapTestHost/bin/.../settings.json` 带这一项，  -->
+  <!--   新工程若没有 ⇒ dngtool 定位不到 ⇒ D13 从**绿变红**，而原因是拆分、  -->
+  <!--   不是产品缺陷。（实测：不补时 `通过 14, 失败 1`。）                  -->
+  <!-- ⚠ `AppSettingsService` 按 `Environment.ProcessPath` 同目录读         -->
+  <!--   `settings.json`（便携优先）⇒ 靠 `CopyToOutputDirectory` 落到 exe 旁。-->
+  <!-- ⚠ 只复制工具链定位三项，不复制 UI 偏好。                              -->
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <ItemGroup>
+    <None Include="settings.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

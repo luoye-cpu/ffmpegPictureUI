@@ -17,8 +17,18 @@
 ```
 tests/
 ├── Tests.Shared/        ← 共享底座：Harness（计数/输出/子进程/工具定位）+ TestGroups（**组表，单一真值**）
-├── engine/  color/  core/  encode/  metadata/  gainmap/  geometry/  io/  diagnostics/
-│                        ← ServiceProbe 的 46 个 mode 拆成的 9 个子系统工程
+├── UiHostShared/        ← UI 组共享底座：活窗口 W / Avalonia 引导 / ApplyToolPaths / AwaitStartupDetection 等
+│
+├── 【ServiceProbe 的 46 个 mode → 9 个子系统工程】
+│   engine/  color/  core/  encode/  metadata/  gainmap/  geometry/  io/  diagnostics/
+│
+├── 【GainMapTestHost → 3 个工程】
+│   gainmap-encode/（A 编码验证）  gainmap-decode/（B 解码闭环+方向+PSNR 域）  gainmap-struct/（C 结构+PNG 3.0）
+│
+├── 【UiTestHost 的 17 个组 → 5 个工程】
+│   ui-core/（格式/参数/面板/编码器联动/预设）  ui-mode/（简洁模式/后台/端到端/GainMap 开关）
+│   ui-color/（色彩/ICC/策略映射/编码参数域）   ui-sweep/（控件穷举/缺陷锁）  ui-cli/（CLI 口径+启动检测日志）
+│
 ├── ServiceProbe/  UiTestHost/  GainMapTestHost/     ← **旧宿主保留**（见下「契约兼容」）
 └── scripts/             ← 门禁脚本（不变）
 ```
@@ -30,7 +40,45 @@ dotnet build tests/color/Tests.Color.csproj -c Release          # 只建这一�
 tests/color/bin/Release/net11.0/win-x64/Tests.Color.exe         # 跑整组
 tests/color/bin/Release/net11.0/win-x64/Tests.Color.exe curve   # 只跑一个 mode
 tests/color/bin/Release/net11.0/win-x64/Tests.Color.exe --list  # 列出本组 mode
+# UI 组需要显式 PLAN 目录（缺它宿主会 fail-fast 拒绝启动，exit 98）：
+$env:FFMPEGGUI_PLAN_DIR = "$PWD/publish/PLAN"
+tests/ui-color/bin/Release/net11.0/win-x64/Tests.UiColor.exe
 ```
+
+**拆分完成度与验收读数**（2026-10-05，均由主 Agent 独立复核）：
+
+| 来源 | 工程 | 验收读数 |
+|---|---|---|
+| `ServiceProbe`（46 mode） | 9 | 各组与旧宿主**逐条一致** |
+| `GainMapTestHost` | 3 | **103 ✅ = 103 ✅，逐行差异 0** |
+| `UiTestHost`（17 组） | 5 | **409/409，missing=0 extra=0**；连续 5 轮 + 交替顺序压力 3 轮稳定 |
+
+⚠ **UI 组的验收口径是"并集"，不是"逐工程算期望值"**：5 个工程的分组**不是**断言名的分组
+（如 `B1 H11 …` 这类"任务 B"编号的断言写在 H/I 组块尾）⇒ 逐工程按组字母算必然对不上。
+唯一正确判据 = **旧宿主全量断言名集合 == 5 个工程输出的并集**，且双向差集都为空。
+已固化为门禁 **`verify-ui-split-union.ps1`**（第 71 条），另配
+**`verify-ui-split-verbatim.ps1`**（第 70 条，17 个组方法体逐行逐字相等）防手抄漂移。
+
+### 1.2 ⚠ 拆分暴露的「顺序运气」类隐性依赖（**后续拆分别再踩**）
+
+三个旧宿主的绿都部分依赖「**某个更早的组恰好先跑过**」——这在单文件串行宿主里看不出来，
+拆开或并行即暴露。**危险之处：它不表现为红，而是"少跑几条断言"，只看汇总数字发现不了。**
+
+| 隐性依赖 | 表现 | 成因 |
+|---|---|---|
+| `GroupG_EndToEnd` 必须先跑 | `ui-color` 整组可产出 **0 条断言** | 工具路径/输出目录只在 G 里建立（`UiTestHost/Program.cs:781-784`） |
+| `GroupP` 必须先跑 | `C3d` flaky 1/3、`N5b` flaky 3/6 | 靠 P 轮询等 7 个 fire-and-forget 启动探测落地 |
+| `GroupG` 的 `SetFormat` 副作用 | `H10` 独立跑必红 | `SetFormat` → `UpdateFormatCapabilities` → `ColorSpaceCombo.SelectedIndex = 0`（`MainWindow.xaml.cs:2245`）抹掉刚设的 "Display P3" |
+| `D13` 必须先跑（GainMap 宿主） | `D16` 秒回 | `EncodeToDngAsync` 的 `IsDngTool` 是**纯字段读**、不触发 `Detect()` |
+
+**处置原则**：都在**拆分侧**修（把隐性前提显式化成**有名字的入口前置**），**不改旧宿主**
+（它是门禁面向的基线）。已落地前置：`UiHost.ApplyToolPaths()`（⚠ **必须先于 `BootWindow()`**
+—— `FullDetectionAsync` Step 2 以 `FfmpegPath` 非空为闸，反了则 Step 2 整段跳过、
+编码器列表永不加载）、`UiHost.AwaitStartupDetection()`、`UiHost.SettleCapabilities()`、
+`UiHost.AwaitEncoderListSettled(fmt)`、`SetFormat("PNG")`（H 的入口前置）。
+
+⚠⚠ **两条铁律**：① 不得用「放宽/删除断言」换绿，也不得用 `Thread.Sleep` 冒充等待
+（必须等**正向完成条件**）；② 不得把「某组必须先跑」重新引回来当前置。
 
 **组表（单一真值）**：`tests/Tests.Shared/TestGroups.cs` 的 `Map` 是"哪些 mode 归哪个组"的**唯一**权威。
 ⚠ 不要在各工程里另写一份 —— 由门禁 `_probe-test-group-coverage.ps1`（**第 69 条**）保证
@@ -343,7 +391,7 @@ $p = "tests/ServiceProbe/bin/Debug/net11.0/win-x64/ServiceProbe.exe"
 —— 计数会漂（`wire` 与 `verdict` 尤其）。⚠ **改任一 mode 的断言后必须重算总和**：
 历史上出现过「`contract` 100 → 107 改了、总数漏改、仍写 372」的错值，由复核方用「各 mode 求和 ≠ 372」抓出。
 ⚠ **某个 mode 若不在 `_run-step3-gates.ps1` 的 `$Probes` 默认值里，说明运行器清单与文档不同步**
-（可据此核对「mode 齐不齐」）。`_run-step3-gates.ps1` 的**脚本门禁清单**当前 **69 条**（2026-10-05 第九次接线 1 条：`_probe-test-group-coverage.ps1`（**测试组覆盖一致性锁** —— 测试物理拆分后「哪些 mode 归哪个组」是手工表 `tests/Tests.Shared/TestGroups.cs`，而运行器另有独立的 `$Probes` 清单；两者漂移就会出现「某 mode **无组认领** ⇒ 永远不被任何组跑到」的**假覆盖**。判据：①`$Probes` 每 mode 有组认领 ②组表每组有工程目录 ③组表每 mode 有据可查 ④反控判据段非空跑；变异验证三次均转红后恢复 **6/0**），由 68 → 69；2026-10-04 第八次接线 1 条：`_probe-gui-control-wiring.ps1`（**GUI 控件接线结构锁** —— XAML 里声明了却没初始选中/没处理器的下拉必须为 0；立锁动机是实测 P0：`--raw-color-target` 的 GUI 下拉此前**完全无效**），由 67 → 68；同日第七次再接线 2 条：`_probe-jxl-input-target.ps1`（JXL 输入时用户显式目标必须生效，含负控）+ `_probe-raw-default-tier.ps1`（RAW 默认档按**实际交付档**判 HDR 承载力），由 65 → 67；2026-10-01 再接线：首批 5 条 **L3/产物级**套件 `verify-package-smoke.ps1` + `verify-jbrd-e2e.ps1` + `verify-orientation-rewrap.ps1` + `verify-gainmap-thirdparty.ps1` + `verify-encoder-knob-liveness.ps1`，由 60 → 65；再往前同日接的是 `verify-geometry-orientation.ps1` + `_probe-geometry-single-source-scan.ps1` + `verify-gainmap-host.ps1`（⇒ 60）；权威复现口径 = 运行器**自己打印的** `script-list=N 条（受管基线 N）` 那一行，它比任何外部正则都可靠 —— 本文原来给的 `(?ms)^\$scriptList...` 正则实测命中 0（数组内含大量注释行，闭合 `)` 不在行首），**别再拿它当复现命令**）
+（可据此核对「mode 齐不齐」）。`_run-step3-gates.ps1` 的**脚本门禁清单**当前 **71 条**（2026-10-05 第十次接线 2 条：`verify-ui-split-verbatim.ps1`（**UiTestHost 拆分逐字锁** —— 17 个组的方法体必须与旧宿主 `Program.cs` 逐行逐字相等，含缩进/全角标点；立锁动机：5 条 UI 门禁 grep 断言文本，手抄 3000+ 行必然漂移 ⇒ 把"逐字"从**声称**变成**可复核**；带反控：比较行数须 >2800、旧宿主须解析出 17 个组）+ `verify-ui-split-union.ps1`（**UiTestHost 拆分歧视锁** —— 旧宿主全量断言名集合 == 5 个工程输出的**并集**，双向差集均空且并集计数 == 409；立锁动机：5 个工程的分组**不是**断言名的分组（如 `B1 H11 …` 写在 H 组块尾）⇒ 逐工程算期望值必然对不上，**唯一正确判据是并集**；而这正是能抓出"某组整段不执行 ⇒ 静默少跑几条断言"的尺子），由 69 → 71；⚠ 实测两条分别 **19/0** 与 **9/0**，且 union 连续 5 轮 + 交替顺序压力 3 轮均 409/409、missing=0、extra=0）；2026-10-05 第九次接线 1 条：`_probe-test-group-coverage.ps1`（**测试组覆盖一致性锁** —— 测试物理拆分后「哪些 mode 归哪个组」是手工表 `tests/Tests.Shared/TestGroups.cs`，而运行器另有独立的 `$Probes` 清单；两者漂移就会出现「某 mode **无组认领** ⇒ 永远不被任何组跑到」的**假覆盖**。判据：①`$Probes` 每 mode 有组认领 ②组表每组有工程目录 ③组表每 mode **三重取证**（在 `$Probes`／被某脚本调用／在本组 `Program.cs` 里作为引号字面量分派）④反控判据段非空跑；变异验证三次均转红后恢复 **6/0**），由 68 → 69；2026-10-04 第八次接线 1 条：`_probe-gui-control-wiring.ps1`（**GUI 控件接线结构锁** —— XAML 里声明了却没初始选中/没处理器的下拉必须为 0；立锁动机是实测 P0：`--raw-color-target` 的 GUI 下拉此前**完全无效**），由 67 → 68；同日第七次再接线 2 条：`_probe-jxl-input-target.ps1`（JXL 输入时用户显式目标必须生效，含负控）+ `_probe-raw-default-tier.ps1`（RAW 默认档按**实际交付档**判 HDR 承载力），由 65 → 67；2026-10-01 再接线：首批 5 条 **L3/产物级**套件 `verify-package-smoke.ps1` + `verify-jbrd-e2e.ps1` + `verify-orientation-rewrap.ps1` + `verify-gainmap-thirdparty.ps1` + `verify-encoder-knob-liveness.ps1`，由 60 → 65；再往前同日接的是 `verify-geometry-orientation.ps1` + `_probe-geometry-single-source-scan.ps1` + `verify-gainmap-host.ps1`（⇒ 60）；权威复现口径 = 运行器**自己打印的** `script-list=N 条（受管基线 N）` 那一行，它比任何外部正则都可靠 —— 本文原来给的 `(?ms)^\$scriptList...` 正则实测命中 0（数组内含大量注释行，闭合 `)` 不在行首），**别再拿它当复现命令**）
 （**2026-09-24 第六次接线后实测数组条目数** —— 复现命令必须**按数组锚定**（不用行号、也不用全文件 grep）：
 `$c = Get-Content -Raw tests/scripts/_run-step3-gates.ps1; [regex]::Matches([regex]::Match($c,'(?ms)^\$scriptList\s*=\s*@\((.*?)\)\r?\n\$actualScriptCount').Groups[1].Value,"'[^']+\.ps1'").Count` = **54**；
 ⚠ 本行原先给的 `grep -oE "'[^']+\.ps1'" … | sort -u | wc -l` **现已失真**：2026-09-22 实测它得 **53**，

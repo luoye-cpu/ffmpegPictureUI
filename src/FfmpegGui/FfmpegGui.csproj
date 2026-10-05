@@ -82,6 +82,13 @@
   <!-- 测试宿主访问 internal 成员 (PsnrCalculator 强制路径测试钩子等) -->
   <ItemGroup>
     <InternalsVisibleTo Include="GainMapTestHost" />
+    <!-- 2026-10-05 物理拆分：GainMapTestHost 的 D 段拆成组工程后，原来靠
+         `InternalsVisibleTo("GainMapTestHost")` 才可见的测试钩子（PsnrCalculator.SquaredDiffSumForced
+         —— D27「各指令集路径数值一致性」的唯一入口）必须对**新宿主**同样可见，
+         否则 D27 的 3~4 条断言在拆分后直接编不过，只能删断言或放宽判据，两者都是覆盖塌陷。
+         ⚠ 加在这里而不是改 PsnrCalculator 的可见性：`internal` 是这只钩子的**刻意**形态
+         （它绕过 SimdKernelRouting 的生产选路，只给测试用），改成 public 会把它暴露进产品 API。 -->
+    <InternalsVisibleTo Include="Tests.GainMapDecode" />
   </ItemGroup>
 
   <!-- ═══════════════════════════════════════════════ -->
