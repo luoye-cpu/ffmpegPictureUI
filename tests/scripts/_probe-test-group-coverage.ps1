@@ -77,20 +77,41 @@ foreach ($g in $groupMap.Keys) {
 }
 CK ($missingProj.Count -eq 0) "② 组表里每个组都有工程目录（缺目录：$(if ($missingProj.Count) { $missingProj -join ', ' } else { '无' })）"
 
-# ── ③ 组表里每个 mode 都必须"有据可查" ─────────────────────────────────────
-#     有据可查 = 在 $Probes 里，**或**在整个 tests/scripts/ 里的任何脚本文本中出现过
-#     （专项门禁脚本直接调用的那 20 个 mode 属于这一类）。
+# ── ③ 组表里每个 mode 都必须是**真的**（三重取证，防拼错）────────────────────
+#     ⚠⚠ 2026-10-05 修订：原先只认「在 `$Probes` 或出现在某个 tests/scripts/*.ps1 的文本里」。
+#       该口径对 `ServiceProbe` 那批成立（它们要么在 `$Probes`、要么被专项脚本直接调），
+#       但对**新拆出来的 UI/宿主组**是**误伤**：那些组的 mode 是各自 exe 的 CLI 参数，
+#       由**组工程自身**承载，既不必进 `$Probes`、也不出现在任何 ps1 文本里。
+#       ⇒ 按本仓铁律「**不得把正确的构造判红**」，把取证扩为**任一**成立即可：
+#         (a) 在 `$Probes` 默认清单里（ServiceProbe 侧的正常归属）；
+#         (b) 出现在任何 `tests/scripts/*.ps1` 的文本里（专项门禁脚本直接调用的 20 个 mode）；
+#         (c) **所属组有自己的工程目录与 csproj**，且该 mode 名是**该组 `Program.cs` 里真实分派的分支**
+#             —— 这是 UI/宿主组这一类"mode 由组自身定义"的正确取证方式。
+#       ⚠ 判据**没有被放宽**：拼错的 mode 名（如 `simdswtich`）仍会 (a)(b)(c) 全不命中而转红
+#         （变异验证保留，见下方 ③ 的验证记录）。原来的 ③ 依旧拦得住它要拦的东西。
 $allScripts = ''
 foreach ($f in (Get-ChildItem 'tests/scripts' -Filter '*.ps1' -File)) {
     $allScripts += (Get-Content $f.FullName -Raw) + "`n"
 }
-$unregistered = @()
-foreach ($mode in $union) {
-    if ($mode -in $probes) { continue }
-    if ($allScripts -match [regex]::Escape($mode)) { continue }
-    $unregistered += $mode
+# 预先读入每个组的 Program.cs（(c) 的证据源）
+$groupProgram = @{}
+foreach ($g in $groupMap.Keys) {
+    $pf = "tests/$g/Program.cs"
+    if (Test-Path $pf) { $groupProgram[$g] = Get-Content $pf -Raw }
 }
-CK ($unregistered.Count -eq 0) "③ 组表每个 mode 都有据可查（既不在 `$Probes、也没被任何脚本调用：$(if ($unregistered.Count) { $unregistered -join ', ' } else { '无' })）"
+$unregistered = @()
+foreach ($kv in $groupMap.GetEnumerator()) {
+    $gname = $kv.Key
+    foreach ($mode in $kv.Value) {
+        if ($mode -in $probes) { continue }                                   # (a)
+        if ($allScripts -match [regex]::Escape($mode)) { continue }           # (b)
+        # (c) 该 mode 必须是本组 Program.cs 里真实出现的分派分支
+        if ($groupProgram.ContainsKey($gname) -and
+            $groupProgram[$gname] -match ('"' + [regex]::Escape($mode) + '"')) { continue }
+        $unregistered += "$gname/$mode"
+    }
+}
+CK ($unregistered.Count -eq 0) "③ 组表每个 mode 都真实存在（三重取证 a/b/c 全不命中：$(if ($unregistered.Count) { $unregistered -join ', ' } else { '无' })）"
 
 # ── 信息行：两边的计数与差集（便于人看，不参与判据）────────────────────────
 Write-Host ("ℹ      组表并集 = {0} 个 mode；运行器 `$Probes = {1} 个" -f $union.Count, $probes.Count)

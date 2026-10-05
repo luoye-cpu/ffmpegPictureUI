@@ -8,6 +8,63 @@
 
 **所有测试产生的文件必须放入 `tests/output/` 目录**，该目录已被 `.gitignore` 忽略，不会进入版本库。
 
+### 1.1 子系统测试工程（2026-10-05 物理拆分，**改哪块跑哪块**）
+
+**动机（用户原话）**：「拆分软件测试项目，改为**一个部分一个测试组**，**不再需要改一点就跑整个项目的测试**」。
+拆分前三个宿主各自是**单个巨型 `Program.cs`**（`ServiceProbe` 577 KB / `UiTestHost` 238 KB /
+`GainMapTestHost` 98 KB），改一个子系统也必须跑完整套。
+
+```
+tests/
+├── Tests.Shared/        ← 共享底座：Harness（计数/输出/子进程/工具定位）+ TestGroups（**组表，单一真值**）
+├── engine/  color/  core/  encode/  metadata/  gainmap/  geometry/  io/  diagnostics/
+│                        ← ServiceProbe 的 46 个 mode 拆成的 9 个子系统工程
+├── ServiceProbe/  UiTestHost/  GainMapTestHost/     ← **旧宿主保留**（见下「契约兼容」）
+└── scripts/             ← 门禁脚本（不变）
+```
+
+**日常用法**（改哪个子系统就只跑那个工程）：
+
+```powershell
+dotnet build tests/color/Tests.Color.csproj -c Release          # 只建这一块
+tests/color/bin/Release/net11.0/win-x64/Tests.Color.exe         # 跑整组
+tests/color/bin/Release/net11.0/win-x64/Tests.Color.exe curve   # 只跑一个 mode
+tests/color/bin/Release/net11.0/win-x64/Tests.Color.exe --list  # 列出本组 mode
+```
+
+**组表（单一真值）**：`tests/Tests.Shared/TestGroups.cs` 的 `Map` 是"哪些 mode 归哪个组"的**唯一**权威。
+⚠ 不要在各工程里另写一份 —— 由门禁 `_probe-test-group-coverage.ps1`（**第 69 条**）保证
+「运行器 `$Probes` 的每个 mode 都有组认领」+「组表每个组都有工程目录」+「组表每个 mode 有据可查」，
+三者任一漂移即转红（防「某 mode **无组认领** ⇒ 永远不被跑到」的**假覆盖**）。
+
+**契约兼容（⚠ 不可违反）**：
+- 20+ 个门禁脚本**硬编码** `ServiceProbe.exe <mode>` / `UiTestHost.exe` / `GainMapTestHost.exe`；
+  运行器 STALE 闸也比对这 4 个产物的新鲜度 ⇒ **三个旧宿主必须继续产出**。
+- 子系统 exe 的**输出契约与旧宿主逐字一致**：每行 `PASS <msg>` / `FAIL <msg>` / `SKIP <msg>`，
+  尾部 **`PROBE RESULT: pass=n fail=m`**（有跳过时追加 ` skip=k`），退出码 `0`/`1`。
+  ⚠ 必须用 `Harness.EmitProbeResult()` 产出汇总行 —— 运行器按 `PROBE RESULT` 判「**跑没跑**」
+  （缺它会被标 `⚠未执行` 且失败**不再入账**），多个门禁脚本亦按
+  `PROBE RESULT: pass=(\d+) fail=(\d+)` 正则解析。
+  ⚠ 因此**不要**用 `Harness.SummaryLine()`（那是 `PASS=n FAIL=m`，会被判未执行）。
+- 未知 mode ⇒ **exit 2 fail-closed**（响亮报错，**不**静默跑全组）。
+- 抽取自旧宿主的 `usage: ServiceProbe …` 等字面量**原样保留**（机械搬迁期不改文本，便于门禁 grep 与对拍）。
+
+**改产品代码后**：`src/FfmpegGui` 变了要重建**依赖它的全部工程**（否则 STALE 闸拒绝跑，`exit 2`）：
+
+```powershell
+dotnet build src/FfmpegGui/FfmpegGui.csproj -c Release --no-restore
+dotnet build tests/ServiceProbe/ServiceProbe.csproj  -c Release --no-restore   # 三个旧宿主
+dotnet build tests/UiTestHost/UiTestHost.csproj      -c Release --no-restore
+dotnet build tests/GainMapTestHost/GainMapTestHost.csproj -c Release --no-restore
+# 需要跑子系统工程时再逐个 build（见上）
+```
+
+**拆分时的方法论（供后续新增组参考）**：见 `docs/TEST_SPLIT_PLAN_2026-10-05.md`（方案/步序/风险）
+与 `docs/TEST_SPLIT_TEMPLATE.md`（csproj / Program / 抽取规则 / 验收）。
+⚠ 核心纪律：方法体**逐字复制**（不改逻辑、不改字符串）；helper **只此一份**
+（用一次 → 随该 probe 移入该组；跨组 → 进 `Harness`，**绝不复制**）；
+每组都要与**旧宿主逐条对拍读数**，而非"构建通过即算完成"。
+
 ```
 ffmpegPictureUI/
 ├── tests/
@@ -286,7 +343,7 @@ $p = "tests/ServiceProbe/bin/Debug/net11.0/win-x64/ServiceProbe.exe"
 —— 计数会漂（`wire` 与 `verdict` 尤其）。⚠ **改任一 mode 的断言后必须重算总和**：
 历史上出现过「`contract` 100 → 107 改了、总数漏改、仍写 372」的错值，由复核方用「各 mode 求和 ≠ 372」抓出。
 ⚠ **某个 mode 若不在 `_run-step3-gates.ps1` 的 `$Probes` 默认值里，说明运行器清单与文档不同步**
-（可据此核对「mode 齐不齐」）。`_run-step3-gates.ps1` 的**脚本门禁清单**当前 **68 条**（2026-10-04 第八次接线 1 条：`_probe-gui-control-wiring.ps1`（**GUI 控件接线结构锁** —— XAML 里声明了却没初始选中/没处理器的下拉必须为 0；立锁动机是实测 P0：`--raw-color-target` 的 GUI 下拉此前**完全无效**），由 67 → 68；同日第七次再接线 2 条：`_probe-jxl-input-target.ps1`（JXL 输入时用户显式目标必须生效，含负控）+ `_probe-raw-default-tier.ps1`（RAW 默认档按**实际交付档**判 HDR 承载力），由 65 → 67；2026-10-01 再接线：首批 5 条 **L3/产物级**套件 `verify-package-smoke.ps1` + `verify-jbrd-e2e.ps1` + `verify-orientation-rewrap.ps1` + `verify-gainmap-thirdparty.ps1` + `verify-encoder-knob-liveness.ps1`，由 60 → 65；再往前同日接的是 `verify-geometry-orientation.ps1` + `_probe-geometry-single-source-scan.ps1` + `verify-gainmap-host.ps1`（⇒ 60）；权威复现口径 = 运行器**自己打印的** `script-list=N 条（受管基线 N）` 那一行，它比任何外部正则都可靠 —— 本文原来给的 `(?ms)^\$scriptList...` 正则实测命中 0（数组内含大量注释行，闭合 `)` 不在行首），**别再拿它当复现命令**）
+（可据此核对「mode 齐不齐」）。`_run-step3-gates.ps1` 的**脚本门禁清单**当前 **69 条**（2026-10-05 第九次接线 1 条：`_probe-test-group-coverage.ps1`（**测试组覆盖一致性锁** —— 测试物理拆分后「哪些 mode 归哪个组」是手工表 `tests/Tests.Shared/TestGroups.cs`，而运行器另有独立的 `$Probes` 清单；两者漂移就会出现「某 mode **无组认领** ⇒ 永远不被任何组跑到」的**假覆盖**。判据：①`$Probes` 每 mode 有组认领 ②组表每组有工程目录 ③组表每 mode 有据可查 ④反控判据段非空跑；变异验证三次均转红后恢复 **6/0**），由 68 → 69；2026-10-04 第八次接线 1 条：`_probe-gui-control-wiring.ps1`（**GUI 控件接线结构锁** —— XAML 里声明了却没初始选中/没处理器的下拉必须为 0；立锁动机是实测 P0：`--raw-color-target` 的 GUI 下拉此前**完全无效**），由 67 → 68；同日第七次再接线 2 条：`_probe-jxl-input-target.ps1`（JXL 输入时用户显式目标必须生效，含负控）+ `_probe-raw-default-tier.ps1`（RAW 默认档按**实际交付档**判 HDR 承载力），由 65 → 67；2026-10-01 再接线：首批 5 条 **L3/产物级**套件 `verify-package-smoke.ps1` + `verify-jbrd-e2e.ps1` + `verify-orientation-rewrap.ps1` + `verify-gainmap-thirdparty.ps1` + `verify-encoder-knob-liveness.ps1`，由 60 → 65；再往前同日接的是 `verify-geometry-orientation.ps1` + `_probe-geometry-single-source-scan.ps1` + `verify-gainmap-host.ps1`（⇒ 60）；权威复现口径 = 运行器**自己打印的** `script-list=N 条（受管基线 N）` 那一行，它比任何外部正则都可靠 —— 本文原来给的 `(?ms)^\$scriptList...` 正则实测命中 0（数组内含大量注释行，闭合 `)` 不在行首），**别再拿它当复现命令**）
 （**2026-09-24 第六次接线后实测数组条目数** —— 复现命令必须**按数组锚定**（不用行号、也不用全文件 grep）：
 `$c = Get-Content -Raw tests/scripts/_run-step3-gates.ps1; [regex]::Matches([regex]::Match($c,'(?ms)^\$scriptList\s*=\s*@\((.*?)\)\r?\n\$actualScriptCount').Groups[1].Value,"'[^']+\.ps1'").Count` = **54**；
 ⚠ 本行原先给的 `grep -oE "'[^']+\.ps1'" … | sort -u | wc -l` **现已失真**：2026-09-22 实测它得 **53**，
