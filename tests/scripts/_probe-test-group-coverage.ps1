@@ -113,6 +113,31 @@ foreach ($kv in $groupMap.GetEnumerator()) {
 }
 CK ($unregistered.Count -eq 0) "③ 组表每个 mode 都真实存在（三重取证 a/b/c 全不命中：$(if ($unregistered.Count) { $unregistered -join ', ' } else { '无' })）"
 
+# ── ⑤ 声明的 mode 必须**真的被分派**（2026-10-05 审查补：堵住"声明了却没实现"）──────
+#     ⚠ 立这条的动机（审查实测发现的**真实覆盖缺口**）：`tests/Tests.Shared/TestGroups.cs`
+#       给 `engine` 组声明了 4 个 mode（`engine`/`gamut`/`gamutfit`/`simdswitch`），
+#       但 `tests/engine/Program.cs` 当初**只分派了 `gamutfit`** ⇒ 其余三个被"接受"却
+#       **静默跑 0 条断言**：`engine` 旧宿主 35/0 → 新组 **0/0**、`simdswitch` 28/0 → **0/0**。
+#       ③ 抓不到它：③ 只要求 mode **作为引号字面量出现**，而 `--list` 输出里就有它
+#       ⇒ 属"形式上存在、实质上没人跑"，正是本仓最忌的**假覆盖**。
+#     ⇒ 判据：每个声明的 mode 必须在**本组 `Program.cs` 的 `mode ==` 比较**里出现
+#       （即真的进了分派链），而非仅出现在 `--list`/注释/字符串里。
+#     ⚠ 反控：判据段必须真的解析到 ≥1 个 `mode ==` 比较（防正则失配导致恒绿）。
+$notDispatched = @()
+$dispatchParsed = 0
+foreach ($kv in $groupMap.GetEnumerator()) {
+    $gname = $kv.Key
+    if (-not $groupProgram.ContainsKey($gname)) { continue }
+    $prog = $groupProgram[$gname]
+    foreach ($mode in $kv.Value) {
+        # 真实分派形态： mode == "xxx"   或   mode is "--list" or "-l" 之外的单串比较
+        if ($prog -match ('mode\s*==\s*"' + [regex]::Escape($mode) + '"')) { $dispatchParsed++; continue }
+        $notDispatched += "$gname/$mode"
+    }
+}
+CK ($dispatchParsed -ge 40) "⑤-a 反控：解析到 ≥40 个 `mode ==` 分派（实 $dispatchParsed）—— 防正则失配导致恒绿"
+CK ($notDispatched.Count -eq 0) "⑤ 组表每个 mode 都**真的被分派**（声明了却没实现：$(if ($notDispatched.Count) { $notDispatched -join ', ' } else { '无' })）"
+
 # ── 信息行：两边的计数与差集（便于人看，不参与判据）────────────────────────
 Write-Host ("ℹ      组表并集 = {0} 个 mode；运行器 `$Probes = {1} 个" -f $union.Count, $probes.Count)
 $onlyRunner = @($probes | Where-Object { $_ -notin $union })

@@ -2453,8 +2453,23 @@ namespace FfmpegGui.Services
                 //   漏掉了 UsesLosslessJpegRewrap 的另外几个条件（增益图/强制模块化/显式剥除），
                 //   会把"没走重封装"的本次也标成"无损重封装"。
                 bool didRewrap = CjxlService.UsesLosslessJpegRewrap(item.InputPath, item.Options);
+                // ⚠⚠ 2026-10-05（审查整改）：隐私取舍必须进**状态串**，不能只写 `item.Log`。
+                //   根因（实测）：`ConsoleQueueObserver` 把 `item.Log` 以 `LogLevel.Debug` 回显
+                //   （`ConsoleQueueObserver.cs:167`，仅当该 item 失败才升为 Error）
+                //   ⇒ **默认 `--log-level Info` 下用户看不到任何 `item.Log` 告警**。
+                //   实测（默认级别跑 jbrd 重封装）：输出只有
+                //     `[1/1] base.jpg → 已完成 (cjxl 无损重封装)` + `完成 1 项, 失败 0 项`
+                //   ⇒ 用户**完全不知道产物带 GPS** = 静默，正是本仓最忌的形态。
+                //   ⇒ 状态串是默认级别**一定可见**的通道（与 `:3980` 的 djxl 降级同法），
+                //     故把"本次未按默认隐私策略剥除"写进状态，让默认级别也看得见。
+                bool privacyWanted = item.Options.StripExifGps || item.Options.StripExifAll
+                                  || item.Options.StripXmp || item.Options.StripExifTime
+                                  || item.Options.StripExifCamera
+                                  || item.Options.MetadataMode == Models.MetadataMode.StripAll;
                 if (didRewrap)
-                    item.Status = "已完成 (cjxl 无损重封装)";
+                    item.Status = privacyWanted
+                        ? "已完成 (cjxl 无损重封装；⚠ 未剥除 EXIF/GPS —— 可逆性与剥除不可兼得，需剥除请显式加 --strip-gps/--strip-metadata)"
+                        : "已完成 (cjxl 无损重封装)";
                 else
                     item.Status = "已完成 (cjxl)";
                 if (didRewrap)
@@ -2480,10 +2495,8 @@ namespace FfmpegGui.Services
                     //   **响亮点名"隐私剥除本次未生效"**，并给出可执行的替代路径 —— 绝不静默。
                     //   （`--strip-gps` 等**显式**请求已在 `CjxlService.UsesLosslessJpegRewrap` 里
                     //     使本次**放弃**重封装 ⇒ 那条路会真正剥除，见该谓词的注释。）
-                    bool privacyWanted = item.Options.StripExifGps || item.Options.StripExifAll
-                                      || item.Options.StripXmp || item.Options.StripExifTime
-                                      || item.Options.StripExifCamera
-                                      || item.Options.MetadataMode == Models.MetadataMode.StripAll;
+                    // ⚠ `privacyWanted` 在**上方状态串处**已算好并复用（一处判定，避免两处漂移）；
+                    //   且明细仍写 `item.Log`（Debug 级别可见完整理由，默认级别由上方的状态串兜住）。
                     if (privacyWanted)
                     {
                         // ⚠ 每条 `item.Log +=` 必须是**完整单语句**：拆成续行（`+ "中文"`）时续行不命中

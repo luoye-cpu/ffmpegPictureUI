@@ -41,6 +41,13 @@ namespace Tests.Engine
             }
 
             if (mode == "" || mode == "gamutfit") EngineGroup.RunGamutFit();
+            // ⚠ 2026-10-05 审查补：这三个 mode 组表早已声明，但当初**漏了分派**
+            //   ⇒ 独立跑时**静默 0 条断言**（旧宿主分别是 engine 35/0、simdswitch 28/0、
+            //     gamut 需参数故 0/0）。属"声明了却没实现"，已补齐。
+            var rest = args.Length > 1 ? args[1..] : Array.Empty<string>();
+            if (mode == "" || mode == "engine") EngineGroup.RunEngineAb();
+            if (mode == "" || mode == "simdswitch") EngineGroup.RunSimdSwitch();
+            if (mode == "" || mode == "gamut") EngineGroup.RunGamut(rest);
 
             Harness.EmitProbeResult();   // ⚠ 必须是 `PROBE RESULT:` 口径（运行器与多个门禁按它判"跑没跑"）
             return Harness.ExitCode();
