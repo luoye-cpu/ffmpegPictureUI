@@ -7658,6 +7658,32 @@ namespace ServiceProbe
             // (f) 输入长度不符 ⇒ 必须"测不出"（不得把截断数据当有效样本）
             var bad = GF.MeasureRgb48(new byte[N * 6 - 6], N, 1);
             Check(!bad.Measurable, "gamutfit(f): 长度不符 ⇒ 三态「测不出」");
+
+            // ══ (g) **小样本**：99.9 分位不得退化成 max（2026-10-05 补）══════════════════
+            //  ⚠ 与 `tests/engine/GamutFit.cs` 的同名断言**必须保持一致**（两边共用同一份
+            //    `RawGamutFit.cs`；只在一侧加会导致另一侧当基线时漏掉这条覆盖）。
+            //  缺陷：旧写法 `need = ceil(sampled*0.999)` 在 `sampled <= 999` 时恒等于 sampled
+            //    ⇒ 取到的是**最亮样本**（=max）而非分位 ⇒ 地板 `0.25×max` 被抬飞
+            //    ⇒ 越界像素落进地板下 ⇒ **静默误判「装得下」**。
+            //  夹具必须**真能区分**新旧：越界像素的 Y 要落在【正确地板, 0.25) 之间
+            //    （满量程纯红 Y=0.2627 > 0.25 ⇒ 打不中；我第一版就是这样，变异验证时才发现）。
+            const int SmallN = 100;
+            const int MidRed = 32768;   // ≈0.5 满量程 ⇒ Y≈0.1314 < 0.25
+            var smallSample = GF.MeasureRgb48(
+                Rgb48(SmallN, i => (i == 0) ? (65535, 65535, 65535) : (MidRed, 0, 0)), SmallN, 1);
+            Console.WriteLine($"(g) 小样本({SmallN})+极亮白: measurable={smallSample.Measurable} " +
+                              $"floor={smallSample.LuminanceFloor:F5} frac={smallSample.FracOutOf709:F4} " +
+                              $"maxNeg={smallSample.MaxNegExcursion:F4} fits={smallSample.FitsIn709}");
+            Check(smallSample.Measurable, "gamutfit(g): 小样本仍须「可测」（不得因样本少就报测不出）");
+            Check(!smallSample.FitsIn709,
+                  "gamutfit(g): 小样本下 99.9 分位**不得退化成 max** ⇒ 越界像素必须仍被判「超出」"
+                  + "（旧实现地板=max×0.25=0.25 > 该像素的 Y≈0.13 ⇒ 全部落地板下 ⇒ 误判装得下）");
+            Check(smallSample.LuminanceFloor < 0.10,
+                  $"gamutfit(g) 反控1: 小样本地板须显著低于极亮白（实 {smallSample.LuminanceFloor:F5}；"
+                  + "旧实现的退化地板恒为 0.25）");
+            Check(smallSample.FracOutOf709 > GF.FracThreshold,
+                  $"gamutfit(g) 反控2: 越界占比须超过判据阈值（实 {smallSample.FracOutOf709:F4} "
+                  + $"vs FracThreshold={GF.FracThreshold}）⇒ 本条不是『恰好』过的");
         }
 
         private static void ProbeMatrix()

@@ -147,6 +147,43 @@ namespace Tests.Engine
             Check(floorCase.Measurable && floorCase.FitsIn709,
                   "gamutfit(e): 越界像素全在亮度地板以下 ⇒ 判「装得下」（地板负控）");
 
+            // ══ (g) **小样本**：99.9 分位不得退化成 max ══════════════════════════════════
+            //  ⚠⚠ 2026-10-05 新增（补一个**真实的缺陷**：此前全仓无任何小样本覆盖）。
+            //  缺陷：旧写法 `need = ceil(sampled * 0.999)` 在 `sampled <= 999` 时**恒等于 sampled**
+            //    ⇒ 直方图累积到该 bin 的那一项就是**最亮样本** ⇒ `yP999 = max(Y)`，
+            //      而它**不是** 99.9 分位。地板随 `0.25 × max` 被抬飞 ⇒ 真实越界像素落进地板下
+            //      ⇒ `FracOutOf709` 被压到阈值以下 ⇒ **误判「装得下 bt709」**（静默乐观）。
+            //  可达性：抽样步长 = `pixels / 1_000_000` ⇒ 任何 **< 1000 像素**的输入都落进该区间
+            //    （缩略图 / 裁剪图 / 测试夹具），而画面里只要有一个高光坏点就会触发。
+            //  本条的构造（**刻意做成"最小可判"**——即夹具必须**真能区分**新旧行为）：
+            //    · 小样本（100 像素，落在退化区间 `sampled <= 999` 内）
+            //    · 1 个**极亮白**（max → 旧实现的地板 = 0.25 × 1.0 = **0.25**）
+            //    · 其余 99 个是**中等亮度的越界红**（≈0.5 满量程 ⇒ Y ≈ 0.1314）
+            //      ⚠ 亮度必须选得**足够暗**：早先我用满量程纯红（Y=0.2627 > 0.25），
+            //        它在**退化地板之上**照样被计入 ⇒ 新旧行为**读数相同**、断言抓不到缺陷
+            //        （我第一版就是这么写的，变异验证时发现主断言仍绿 ⇒ 夹具无效，已改正）。
+            //  ⇒ 正确地板 ≈ 0.25 × 0.1314 ≈ 0.0329 < 0.1314 ⇒ 越界像素在地板之上 ⇒ 判「超出」✅
+            //  ⇒ 退化地板 = 0.25 > 0.1314      ⇒ 越界像素全落地板下 ⇒ 判「装得下」❌（旧行为）
+            //  变异验证：删掉 `if (need >= sampled) need = sampled - 1;` ⇒ 本条**必须转红**（已实测）。
+            const int SmallN = 100;
+            const int MidRed = 32768;   // ≈0.5 满量程；Y ≈ 0.1314 < 0.25 ⇒ 能区分新旧地板
+            var smallSample = GF.MeasureRgb48(
+                Rgb48(SmallN, i => (i == 0) ? (65535, 65535, 65535) : (MidRed, 0, 0)), SmallN, 1);
+            Console.WriteLine($"(g) 小样本({SmallN})+极亮白: measurable={smallSample.Measurable} " +
+                              $"floor={smallSample.LuminanceFloor:F5} frac={smallSample.FracOutOf709:F4} " +
+                              $"maxNeg={smallSample.MaxNegExcursion:F4} fits={smallSample.FitsIn709}");
+            Check(smallSample.Measurable, "gamutfit(g): 小样本仍须「可测」（不得因样本少就报测不出）");
+            Check(!smallSample.FitsIn709,
+                  "gamutfit(g): 小样本下 99.9 分位**不得退化成 max** ⇒ 越界像素必须仍被判「超出」"
+                  + "（旧实现地板=max×0.25=0.25 > 该像素的 Y≈0.13 ⇒ 全部落地板下 ⇒ 误判装得下）");
+            // 两条反控：分别钉住"地板没被抬飞"与"确实是那些像素在起作用"
+            Check(smallSample.LuminanceFloor < 0.10,
+                  $"gamutfit(g) 反控1: 小样本地板须显著低于极亮白（实 {smallSample.LuminanceFloor:F5}；"
+                  + "旧实现的退化地板恒为 0.25）");
+            Check(smallSample.FracOutOf709 > GF.FracThreshold,
+                  $"gamutfit(g) 反控2: 越界占比须超过判据阈值（实 {smallSample.FracOutOf709:F4} "
+                  + $"vs FracThreshold={GF.FracThreshold}）⇒ 本条不是『恰好』过的");
+
             // (f) 输入长度不符 ⇒ 必须"测不出"（不得把截断数据当有效样本）
             var bad = GF.MeasureRgb48(new byte[N * 6 - 6], N, 1);
             Check(!bad.Measurable, "gamutfit(f): 长度不符 ⇒ 三态「测不出」");
