@@ -346,6 +346,40 @@ jbrd 把**源 JPEG 码流逐字**放进产物 ⇒ 源里的 GPS **必然**随之
 
 ---
 
+## P0-10 【已确认 + 已修】「绿在错误后端上」：缺 `settings.json` ⇒ **静默换编码器**，汇总数字不变
+
+**发现路径**：拆 `GainMapTestHost` 时发现 `sdr.jpg` 产物大小与基线不符（2694B vs 2553B），
+逐字节 diff 定位到产物里带 **`Lavc63.14.100`** COM 段 —— 即 **ffmpeg 的 mjpeg**，而非 cjpegli。
+
+**根因**：`CjpegliService`/`CjxlService` 靠 `JxlLibDir` 定位 `cjpegli.exe`/`cjxl.exe`，而该字段：
+- **不**从 `FfmpegDirectory` 推导；
+- **不**由 `ExternalToolsDetector.EnsureAllDetected()` 设置；
+- 只来自**便携 `settings.json`** —— 而它被 **`.gitignore:164` 忽略**（因为装的是**本机绝对路径**）。
+
+⇒ 新克隆 / 新工程缺这份文件时，`CjpegliService.IsAvailable` 为假，产品**静默退回** ffmpeg 的 mjpeg。
+
+**⚠ 为什么这条最危险（我已实测复现）**：删掉 `tests/gainmap-encode/…/settings.json` 后，
+该组**仍然报 `通过 29, 失败 0, 已知问题 0`（exit 0）** —— 汇总数字与正确时**一模一样**，
+唯一暴露它的是断言里的**实测值**（`2694B` → `2553B`）。
+⇒ 这正是本仓最忌的**假绿**形态：**判据通过、数字全对、测的却是另一个编码器**。
+若断言只断"产物是完整 JPEG"（两种后端都满足），则永远发现不了。
+
+**修法**（两个共享底座，各一处收口）：
+- `tests/Tests.Shared/Harness.cs` 的 `InitExternalTools()`（ServiceProbe 侧各组）；
+- `tests/UiHostShared/UiHost.cs` 的 `ApplyToolPaths()`（UI 侧各组）；
+
+两者都改为**从仓库根推导** `publish/PLAN/jxl/bin` → `JxlLibDir`（及 `artifacts` → `WindowsArtifactsDir`），
+**只在文件确实存在、且当前值无效时**写入（不覆盖用户/便携配置的有效值）⇒ 新克隆者开箱即得**同一个编码器**。
+
+**验证**：删掉三个 gainmap 工程的 `settings.json` 后重建复测 ⇒ **29/59/15 全绿**，
+union 与旧宿主**逐行差异 0**，`sdr` 仍为 **2694B**（cjpegli）⇒ 隐患消除。
+
+**同类提醒（可推广的教训）**：任何"**靠 gitignored 的机器专属文件才能选对后端/路径**"的设计，
+其缺失**不会红、只会静默降级**。⇒ 判据里应尽量含**可区分的实测值**（如产物字节数、
+编码器指纹），而不只是"是否成功 / 产物是否完整"。
+
+---
+
 ## 修复汇总（2026-10-05，全部已实施并实测验证）
 
 | # | 缺陷 | 修法 | 验证 |
