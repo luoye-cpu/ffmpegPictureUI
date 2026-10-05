@@ -666,6 +666,37 @@ public static class ColorKernels
                 "CurveTables 的定义域是线性 [0,1]，与 ClampLinearBeforeEncode=false 互斥 ⇒ 请送 null 表走解析式（与 TablesFor 同规则）");
         bool dither = spec.Dither == DitherMode.Ordered4x4;
         int w = Math.Max(1, width);
+        // ⚠⚠ 2026-10-05 修（P0：8-bit 出口**静默丢弃**色调映射等四个算子）：
+        //   本路径此前**只**读 `SrcCurve` + 矩阵 + `GamutMap` + `Clamp`，**从不读**
+        //   `spec.Tone` / `spec.LinearScale` / `spec.EncodeScale` / `spec.SrcIsHlgScene`
+        //   ⇒ 8-bit 出口（`-f gif`/`-f jpg`/`--bit-depth 8` 等**默认可达**路径）上：
+        //     · HDR→SDR **不做色调映射**（高光截顶、整体偏亮约 57%）；
+        //     · HLG 源**不做 BT.2100 OOTF**；
+        //     · 源/目标 nits 换算（LinearScale/EncodeScale）**整段跳过**。
+        //   实测（同一 HDR 源、`--bit-depth 8`）：`--color-tone-map` 取
+        //   `hable` / `none` / `reinhard` 三者产物**逐字节相同（同一 SHA）**；
+        //   而 `--bit-depth 16` 下 `reinhard` 明显不同 ⇒ 差异被隔离到本内核。
+        //   更糟的是日志仍打「tonemap … 激活=是」（那行读的是 `spec.Tone`，不是内核真做了什么）
+        //   ⇒ **既错又骗**。现按 16-bit 兄弟实现（`TransformRgb48leCore`）的**同一顺序**补齐四件事，
+        //   顺序不可颠倒（OOTF 是 nits 绝对值 ⇒ 必须在 LinearScale 之前；tonemap 在缩放之后、
+        //   矩阵之前；EncodeScale 在 GMO 之后、钳位之前）。
+        double scale = spec.LinearScale;
+        bool scaleOn = Math.Abs(scale - 1.0) > 1e-12;
+        bool srcHlg = spec.SrcIsHlgScene;
+        double srcHlgPeak = srcHlg ? NitsOfGamma(spec.SrcHlgSystemGamma) : 0;
+        bool toneOn = spec.Tone != null && spec.Tone.Active;
+        var tone = spec.Tone;
+        double encScale = spec.EncodeScale;
+        bool encScaleOn = Math.Abs(encScale - 1.0) > 1e-12;
+        bool dstHlg = spec.DstIsHlgScene;
+        double dstHlgPeak = dstHlg ? NitsOfGamma(spec.DstHlgSystemGamma) : 0;
+        // ⚠ 表快路径的前提被破坏时必须回退解析式（与 16-bit 的 `fast` 判据同源）：
+        //   表把「解码」与「编码」都换成了查表，而下面这几个算子（OOTF/tonemap/缩放）
+        //   在表里表达不了 ⇒ 只要它们启用，就必须走解析式，否则又会静默跳过。
+        if (tbl && (scaleOn || toneOn || encScaleOn || srcHlg || dstHlg))
+        {
+            eF = null; oF = null; tbl = false;
+        }
         // 色域映射参数（本路径是 8-bit 产物的主力出口，必须与 16-bit 路径同算子同顺序）
         bool gamut = spec.GamutMapActive;
         var gm = default(GamutMapParams);
@@ -689,11 +720,36 @@ public static class ColorKernels
                 g = (float)spec.SrcCurve.ToLinear(s[o + 1] / 65535.0);
                 b = (float)spec.SrcCurve.ToLinear(s[o + 2] / 65535.0);
             }
+            // ── 与 16-bit 主循环**同顺序**的四步（2026-10-05 补齐；此前整段缺失）──
+            //  ① HLG 源：场景光 → 显示光（BT.2100 OOTF），再归一化回「1.0 = 源峰值」域。
+            //     ⚠ 必须在 ② 之前：OOTF 的 α=L_W 使结果是 nits 绝对值，先缩放会搞错 L_W 语义。
+            if (srcHlg)
+            {
+                double nr = r, ng = g, nb = b;
+                Bt2100Ootf.Apply(ref nr, ref ng, ref nb, srcHlgPeak);
+                r = (float)(nr / srcHlgPeak); g = (float)(ng / srcHlgPeak); b = (float)(nb / srcHlgPeak);
+            }
+            //  ② 源域 → 中间工作域（1.0 = SDR 参考白）
+            if (scaleOn) { r *= (float)scale; g *= (float)scale; b *= (float)scale; }
+            //  ③ 色调映射（在缩放之后、矩阵之前；GMO 需要的是目标域线性值，故 tonemap 先做）
+            if (toneOn && tone != null) ToneMap.ApplyRgb(ref r, ref g, ref b, tone, spec.DstCurve);
             float rr = m0 * r + m1 * g + m2 * b;
             float gg = m3 * r + m4 * g + m5 * b;
             float bb = m6 * r + m7 * g + m8 * b;
             // 色域映射：矩阵之后（目标色域线性 RGB）、钳位之前（见 TransformSpec.GamutMap）
             if (gamut) GamutMapScalar(ref rr, ref gg, ref bb, in gm);
+            //  ④ 中间域 → 目标归一域（GMO 之后、钳位之前，与 16-bit 同序）
+            if (encScaleOn)
+            {
+                rr *= (float)encScale; gg *= (float)encScale; bb *= (float)encScale;
+            }
+            //  ⑤ HLG 目标：显示光 → 场景光（逆向 OOTF）
+            if (dstHlg)
+            {
+                double nr = rr * dstHlgPeak, ng = gg * dstHlgPeak, nb = bb * dstHlgPeak;
+                Bt2100Ootf.ApplyInverse(ref nr, ref ng, ref nb, dstHlgPeak);
+                rr = (float)nr; gg = (float)ng; bb = (float)nb;
+            }
             if (clamp)
             {
                 rr = Math.Clamp(rr, 0f, 1f); gg = Math.Clamp(gg, 0f, 1f); bb = Math.Clamp(bb, 0f, 1f);

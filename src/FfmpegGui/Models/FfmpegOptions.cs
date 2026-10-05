@@ -461,6 +461,19 @@ namespace FfmpegGui.Models
         /// <summary>删除 XMP 元数据</summary>
         public bool StripXmp { get; set; } = false;
 
+        /// <summary>
+        /// 用户是否**显式**给出了"剥离描述性元数据"的请求（2026-10-05 新增）。
+        /// <para><b>为什么需要它</b>：上面几个开关都有**默认值**（`StripExifGps` 默认就是 true），
+        /// 而 `jxl` 的 **jbrd 无损重封装**与"剥除元数据"在结构上**不可兼得**（jbrd 逐字复制源 JPEG
+        /// 码流，含 EXIF/GPS，而 exiftool 改不了 `jbrd` 内的字节 —— 实测）。
+        /// 若拿"含默认值的开关"去决定要不要关重封装，就会**在默认路径上悄悄关掉无损重封装**，
+        /// 而用户裁定「无损重封装是**绝对默认**」。
+        /// ⇒ 只有**用户真的在命令行/界面要求了**（`--strip-gps` / `--strip-metadata` / …）才置位，
+        /// 默认值**不**置位。这样：默认 = 无损重封装；显式要求剥除 = 放弃重封装并**点名**取舍。</para>
+        /// <para>⚠ 由 CLI/UI 在**解析到显式请求**时置位，不要从别的开关推导（那会重新引入默认值问题）。</para>
+        /// </summary>
+        public bool StripDescriptiveExplicitly { get; set; } = false;
+
         // ── 缩略图（EXIF IFD1）──
         /// <summary>生成并嵌入 EXIF IFD1 缩略图。只有 <see cref="Services.FormatCapabilities.SupportsThumbnail"/>
         /// 为真的容器才兑现；不支持的容器**出声拒绝**，不静默丢弃。</summary>
@@ -469,6 +482,19 @@ namespace FfmpegGui.Models
         public int ThumbnailLongEdge { get; set; } = 160;
         /// <summary>缩略图质量 1..100，映射到 ffmpeg 的 <c>-qscale:v</c>（见 <c>ThumbnailService.MapQualityToQscale</c>）。</summary>
         public int ThumbnailQuality { get; set; } = 75;
+
+        /// <summary>
+        /// 允许**覆盖已存在的输出文件**（2026-10-05 新增）。
+        /// <para><b>默认 `true` = 保持既有行为</b>（历史上全链路无条件带 `-y`，静默覆盖）。
+        /// 之所以默认不变：覆盖是本工具"重跑同一批"的既有语义，改成默认拒绝会打断所有人的既有脚本。</para>
+        /// <para>但**静默**覆盖是不可逆的数据损失（实测：`out\pic.png` 里的既有内容被直接替换、
+        /// 无提示、退出码 0；全仓唯一的覆盖确认在 `PresetManagerWindow`，与转换流程无关）。
+        /// ⇒ 提供 <c>--no-overwrite</c> 让用户能要求"不覆盖"：此时**存在即拒绝该文件并点名**，
+        /// 而不是默默毁掉它。GUI 侧对应"不覆盖已有文件"开关。</para>
+        /// <para>⚠ 语义是"**拒绝并点名**"而不是"自动改名"：改名会掩盖冲突（用户以为写到了目标路径），
+        /// 而本仓既有 `[output-conflict]` 自动改名那条**只处理同批内重名**，两者不冲突。</para>
+        /// </summary>
+        public bool AllowOverwriteExisting { get; set; } = true;
 
         // ── 色彩策略（取代旧 IccMode；源色彩恒自动检测，不再手动）──
         /// <summary>色彩策略（推荐/携带/仅CICP/手动），色彩处理总控。</summary>
@@ -513,6 +539,21 @@ namespace FfmpegGui.Models
         /// <summary>HDR→SDR 色调映射算子：none（默认，不映射）| reinhard | hable | mobius | bt2446a（ITU-R BT.2446-1 §4 Method A）。
         /// bt2390 已核对现行正文无 EETF 定义→不可选；需与“降 SDR”意图同时成立。</summary>
         public string ColorToneMap { get; set; } = "none";
+
+        /// <summary>
+        /// 用户是否**显式**写了 `--color-tone-map`（2026-10-05 新增）。
+        /// <para><b>为什么必须与 <see cref="ColorToneMap"/> 的值分开</b>：该属性的默认值就是 `"none"`，
+        /// 于是「用户明确要 <b>不映射</b>」与「用户没提这件事」在值上**完全同形**。
+        /// 而 `ColorIntentFactory` 有一条**自动兜底**：HDR 源 + SDR 结局 ⇒ 自动采用 Hable
+        /// （`ColorIntentFactory.cs:287-315`，动机是"GUI 不暴露曲线，否则 HDR→JPEG 无路可走"）。
+        /// 该兜底写在 `else` 分支里 ⇒ **显式 `--color-tone-map none` 会被它静默升级成 Hable**
+        /// —— 用户的明确选择被覆盖，且日志只说"自动采用"。</para>
+        /// <para>实测（2026-10-05）：`--color-tone-map none` 与 `--color-tone-map hable`
+        /// 的产物**逐字节相同**（两者实际都在跑 Hable）；内核运行时探针亦显示
+        /// `mode=Hable` 而传入的是 `none`。</para>
+        /// <para>⇒ 本标志让"显式 none"可被识别，从而**不被自动兜底覆盖**（显式选择优先）。</para>
+        /// </summary>
+        public bool ColorToneMapExplicit { get; set; } = false;
         /// <summary>
         /// 源色域超出目标时的处理方式：off（**默认**，与历史行为逐字节相同：钳位=硬裁切）| on（GMO 色域压缩）。
         /// <para>

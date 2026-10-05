@@ -284,7 +284,18 @@ public static class ColorIntentFactory
             }
             it.ToneMapRequested = true;
         }
-        else if (srcHdr && dstSdr && (targetExplicit || !caps.CanHdr))
+        else if (srcHdr && dstSdr && (targetExplicit || !caps.CanHdr)
+                 // ⚠⚠ 2026-10-05（修：显式 `none` 被自动兜底**静默覆盖**）：
+                 //   本分支是 `else`（= 用户**没有**要求映射算子），动机是"GUI 不暴露曲线，
+                 //   若还按规划层『需显式请求』拒绝，GUI 用户转 HDR→JPEG 将无路可走"。
+                 //   但 `ColorToneMap` 的**默认值就是 `"none"`** ⇒「用户明确要**不映射**」与
+                 //   「用户没提这件事」在**值上同形** ⇒ 前者也被这条兜底吞掉、静默升级成 Hable。
+                 //   实测：`--color-tone-map none` 与 `--color-tone-map hable` 产物**逐字节相同**；
+                 //   内核运行时探针显示传入 `none` 时 `mode=Hable`。
+                 //   ⇒ 显式写了 `--color-tone-map`（含 `none`）时**不再自动兜底**：显式选择优先。
+                 //     `none` 的语义就是"不映射" ⇒ 保持 None，由规划层按既有守卫处理
+                 //     （HDR 源 + SDR 目标的显式 none 属用户明确意图，不应被改写）。
+                 && !o.ColorToneMapExplicit)
         {
             // ── HDR 源 + SDR 结局 ⇒ 自动使用内部默认曲线 hable（2026-09-16）──
             // 为什么必须自动：GUI 已按设计**不再暴露** tonemap 曲线（"内部固定 hable"，见 MainWindow 各处的
