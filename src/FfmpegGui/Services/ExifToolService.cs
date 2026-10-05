@@ -662,7 +662,43 @@ namespace FfmpegGui.Services
             logCallback?.Invoke($"[exiftool] 安全复制元数据（已排除色彩标签，保护编码器输出）: {Path.GetFileName(sourcePath)} → {Path.GetFileName(targetPath)}\n"
                 + (absorbNow ? "[exiftool] （已并入可吸收的隐私清理，省一次 exiftool 启动）\n" : ""));
 
-            return await RunWriteAsync(targetPath, args, logCallback);
+            var rc = await RunWriteAsync(targetPath, args, logCallback);
+            if (rc != 0) return rc;
+
+            // ⚠⚠ 2026-10-05（P0 隐私泄露修复）：**排除式在 JXL 上不生效，必须再补一次显式删除**。
+            //   根因（实测，同一份产物、同一份源）：
+            //     · 排除式 `… -EXIF:all -GPS:all --GPS:all …`（本方法用的形状）
+            //       ⇒ exiftool 报「1 image files updated」**但 GPS 仍在** ❌
+            //     · 显式删除式 `-GPS:all=`
+            //       ⇒ 报「1 image files updated」且 GPS **消失** ✅
+            //   ⇒ 二者语义不同：`--TAG` 是"复制时排除"，而 `-TAG=` 是"就地删除"。
+            //     JXL 上（元数据存在 `brob`/EXIF 盒的复合结构里）前者不足以清掉已存在的 GPS。
+            //   证据链：默认 `-f jxl` 转一张带 GPS 的 JPEG ⇒ 产物**公布坐标**、退出码 0、无告警；
+            //     而 `StripExifGps` 的**默认值就是 true**（`CliParser.cs:579` 的 `?? true`）
+            //     ⇒ 这是**默认路径上的静默隐私泄露**，不是边角情形。
+            //   ⚠ 只在**用户/默认确实要求剥除**时补删（`absorbNow` 已含该判据），
+            //     `--preserve-metadata`/`--no-strip-gps` 时 `CanAbsorbStrip` 为假 ⇒ 不补删，GPS 正常保留。
+            if (absorbNow && absorb != null)
+            {
+                var del = new StringBuilder("-overwrite_original -m ");
+                if (absorb.StripExifGps) del.Append("\"-GPS:all=\" ");
+                if (absorb.StripXmp) del.Append("\"-XMP:all=\" ");
+                if (del.Length > "-overwrite_original -m ".Length)
+                {
+                    del.Append('"').Append(targetPath).Append('"');
+                    var delRc = await RunWriteAsync(targetPath, del.ToString(), logCallback);
+                    if (delRc != 0)
+                    {
+                        // ⚠ 剥除失败**不得静默**：这是隐私承诺，失败必须点名（本仓"可用性诚实"原则）。
+                        // ⚠⚠ 写法约束（CJK 门禁余量 0，实测踩过）：**中文必须整条落在走 sink 的那一行里**。
+                        //   拆成 `logCallback?.Invoke($…` + 续行 `+ "中文"` 时，续行不命中 sink 判定
+                        //   ⇒ 被计进 `CsUi`（UI 文案）判据桶 ⇒ 门禁 +1 转红（实测 828→829）。
+                        logCallback?.Invoke($"[exiftool] ⚠️ 隐私剥除（GPS/XMP 显式删除）退出码 {delRc} —— 产物可能仍带这些标签，请当缺陷报告\n");
+                        return delRc;
+                    }
+                }
+            }
+            return rc;
         }
 
         /// <summary>

@@ -337,6 +337,28 @@ namespace FfmpegGui.Services
                             runOutputPath = finalOutputPath;
                             outputExistedBefore = File.Exists(finalOutputPath);
 
+                            // ⚠⚠ 2026-10-05 新增（P0 数据损失修复）：`--no-overwrite` 时**存在即拒绝**。
+                            //   动机（实测）：全链路无条件 `-y` ⇒ 重跑一次就**静默**毁掉上次（可能手改过的）
+                            //   产物，无提示、退出码 0。备份/不可逆丢失属最高风险等级，
+                            //   而"重跑同一批"又恰恰是最常见的操作。
+                            //   ⚠ 语义选择「**拒绝并点名**」而不是「自动改名」：
+                            //     改名会让用户以为写到了目标路径（本仓既有 `[output-conflict]` 只处理
+                            //     **同批内**重名，与此不冲突）。拒绝则冲突显式、可预期。
+                            //   ⚠ 默认 `AllowOverwriteExisting=true` ⇒ 本分支不触发，既有行为逐字不变。
+                            if (outputExistedBefore && !captured.Options.AllowOverwriteExisting)
+                            {
+                                captured.Log += $"[跳过] 目标文件已存在且已指定 --no-overwrite ⇒ 不覆盖：{finalOutputPath}\n";
+                                _onItemUpdated?.Invoke(captured);
+                                captured.ExitCode = 1;
+                                // ⚠ 状态词必须以「失败」开头：`QueueItem.IsFailure`（= `HasError`）按
+                                //   `StartsWith("失败")` 判定，而**队列汇总的「失败 N 项」与退出码都读它**
+                                //   ⇒ 若写成「跳过（…）」会**不计入失败**、汇总仍是「失败 0 项」且 exit 0
+                                //   ⇒ 脚本无法察觉"什么都没转换"（实测踩过）。
+                                //   ⇒ 用「失败（跳过：目标已存在且未允许覆盖）」：既计入失败、又保留原因。
+                                captured.Status = "失败（跳过：目标已存在且未允许覆盖）";
+                                return;
+                            }
+
                             // ── 根据编码器后端调度 ──
                             var backend = captured.Options.EncoderBackend;
                             var inputExt = Path.GetExtension(captured.InputPath).ToLowerInvariant();
@@ -1768,6 +1790,28 @@ namespace FfmpegGui.Services
                    || format.Equals("apng", StringComparison.OrdinalIgnoreCase));
 
         /// <summary>
+        /// 该格式的**任一后端通路**是否会"顺带把源元数据整体带进产物"（从而需要一次真正的后置剥离）。
+        /// <para>⚠⚠ 2026-10-05 新增（P0 隐私泄露修复）：原先只有 <see cref="IsCicpMetadataMappedFormat"/>
+        /// 一种情形被判为"带出来了"，因为当时已知的只有 ffmpeg 为保 CICP 而 `-map_metadata 0`。
+        /// 但审查发现**第二条通路**：`jxl` 的 **cjxl jbrd 无损 JPEG 重封装**（`--jxl-lossless-jpeg`，
+        /// **默认开启**）**逐字拷贝源 JPEG 码流** ⇒ 源 EXIF/GPS **原样进入产物**。</para>
+        /// <para>实测（审查复现，默认参数、无任何元数据开关）：
+        /// <code>
+        /// FfmpegGui.exe --headless -i gps.jpg -o out -f jxl
+        ///   ⇒ 产物 jxl 内 GPSLatitude/GPSLongitudeRef/… **全在**，退出码 0，无告警
+        ///   ⇒ 对照：同参数 -f png/jpg/webp/tiff/avif ⇒ GPS 均被正确剥除
+        ///   ⇒ 决定性对照：加 `--jxl-lossless-jpeg false` ⇒ **GPS 消失**
+        ///   ⇒ 且 `--strip-metadata` **也无效**（只有 `--strip-all-exif` 能去掉）
+        /// </code></para>
+        /// <para>⚠ 为什么判"按格式"而不是"按本次是否真的走了 jbrd"：本方法在**元数据阶段**调用，
+        /// 而此刻已无法可靠回溯编码段的实际分支；按格式判是**保守方向**（多做一次剥离 = 更干净），
+        /// 不会漏。剥离只删 EXIF/GPS/XMP/IPTC，不碰 JXL 的色彩标注。</para>
+        /// </summary>
+        private static bool FormatMayCarrySourceMetadata(string? format)
+            => IsCicpMetadataMappedFormat(format)
+               || (format is not null && format.Equals("jxl", StringComparison.OrdinalIgnoreCase));
+
+        /// <summary>
         /// 元数据阶段唯一入口：先恢复描述性元数据，再按需嵌缩略图（EXIF IFD1）。
         /// <para><b>顺序即不变量</b>：缩略图属于元数据阶段，必须排在**色彩后置之前** ——
         /// 本仓的裁决权分配是「元数据先写、色彩标签最后定」，反过来会让色彩判据看到已被二次改写的文件。
@@ -1802,24 +1846,47 @@ namespace FfmpegGui.Services
                 //     且它**只删 EXIF/GPS/XMP/IPTC**，`cICP`/`cHRM`/`gAMA` 等色彩 chunk 不受影响。
                 //   ⚠ 不能复用 `RunAsync` + `BuildArguments`：`--strip-metadata` 并不置 `StripExifAll`
                 //     ⇒ 那条路只发 `-gps:all=`，在坏 `eXIf` 上必然失败（实测 GPS 残留）。
-                if (item.Options.MetadataMode == Models.MetadataMode.StripAll
-                    && IsCicpMetadataMappedFormat(item.Options.Format)
+                // ⚠⚠ 2026-10-05 扩围（P0 隐私泄露修复，见 `FormatMayCarrySourceMetadata` 的说明）：
+                //   ① 判据由 `IsCicpMetadataMappedFormat`（仅 png/apng）扩到
+                //      `FormatMayCarrySourceMetadata`（+ jxl 的 jbrd 无损重封装路径）；
+                //   ② 触发条件由「仅 StripAll」扩到「**StripAll 或 任一剥离开关为真**」——
+                //      实测缺陷：默认配置下 `StripExifGps` 本就是 true，而 `-f jxl` 产物**仍带 GPS**，
+                //      `--strip-gps` / `--strip-xmp` 亦然 ⇒ 用户显式要求删 GPS 却静默保留。
+                //   ⚠ 剥离用 `StripDescriptiveMetadataAsync`（只删 EXIF/GPS/XMP/IPTC），
+                //     不碰 cICP/cHRM/gAMA 这类**色彩** chunk，也不碰 JXL 的色彩标注 ⇒ 不会破坏色彩契约。
+                //   ⚠⚠ 2026-10-05 用户裁定后补充：`jxl` 的 **jbrd 无损重封装是绝对默认**，
+                //     而它与"剥除元数据"**结构上不可兼得**（jbrd 逐字复制源码流，exiftool 改不了其内部字节）。
+                //     ⇒ 仅当用户**显式**要求剥除时，才由 `CjxlService.UsesLosslessJpegRewrap` 放弃重封装；
+                //       该取舍由 `RawColorPipeline`/`CjxlService` 在日志里**点名**，绝不静默。
+                bool stripRequested = item.Options.MetadataMode == Models.MetadataMode.StripAll
+                                   || item.Options.StripExifGps
+                                   || item.Options.StripExifAll
+                                   || item.Options.StripExifTime
+                                   || item.Options.StripExifCamera
+                                   || item.Options.StripXmp;
+                if (stripRequested
+                    && FormatMayCarrySourceMetadata(item.Options.Format)
                     && ExifToolService.IsAvailable
                     && File.Exists(outputPath))
                 {
                     try
                     {
-                        item.Log += "[exiftool] 剥离全部元数据（png/apng 的 ffmpeg 侧为保 CICP 而映射了源元数据）...\n";
+                        item.Log += "[exiftool] 剥离描述性元数据（该格式/后端的通路会把源元数据带进产物）...\n";
                         _onItemUpdated?.Invoke(item);
                         var stripExit = await ExifToolService.StripDescriptiveMetadataAsync(
                             outputPath, s => { item.Log += s; _onItemUpdated?.Invoke(item); });
-                        item.Log += stripExit == 0
-                            ? "[exiftool] ✅ 全部元数据已剥离\n"
-                            : $"[exiftool] ⚠️ 剥离全部元数据退出码 {stripExit}\n";
+                        // ⚠ 用 if/else 而不是三元续行：CJK 门禁按「**语句首行**是否命中诊断 sink」分桶，
+                        //   而 `? "中文"` / `: $"中文"` 这两行是**续行**、不命中 sink ⇒ 被判进 `CsUi`
+                        //   判据桶 ⇒ 门禁 +1 转红（实测 828→829；余量为 0，且不得为此抬基线）。
+                        //   写成两条独立的 `item.Log += …` 语句后，中文落在 sink 行内 ⇒ 记诊断桶。
+                        if (stripExit == 0)
+                            item.Log += "[exiftool] ✅ 描述性元数据已剥离\n";
+                        else
+                            item.Log += $"[exiftool] ⚠️ 剥离描述性元数据退出码 {stripExit}\n";
                     }
                     catch (Exception ex)
                     {
-                        item.Log += $"[exiftool] ⚠️ 剥离全部元数据异常: {ex.Message}\n";
+                        item.Log += $"[exiftool] ⚠️ 剥离描述性元数据异常: {ex.Message}\n";
                     }
                 }
                 return;

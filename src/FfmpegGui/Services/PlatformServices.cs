@@ -134,7 +134,8 @@ public static class PlatformServices
 
     /// <summary>在目录及子目录中查找特定工具（优先直接匹配，其次递归）</summary>
     public static string? FindToolInDirectory(
-        string directory, string toolName, string searchWildcard, Action<string>? log = null)
+        string directory, string toolName, string searchWildcard, Action<string>? log = null,
+        int budgetSec = ExternalToolsDetector.PerRootScanBudgetSec)
     {
         if (!Directory.Exists(directory)) return null;
         var candidate = Path.Combine(directory, toolName);
@@ -142,7 +143,10 @@ public static class PlatformServices
         // ⚠ 递归必须走 EnumerateFilesSafe（预算 + 跳过 junction + 单目录不可访问不丢整棵子树）：
         //   旧写法直接把 `SearchOption.AllDirectories` 交给 .NET，实测在"PATH 含用户配置文件根目录"
         //   这种真实配置下**永不返回**（句柄 9 万 / 单核满载），把工具探测变成挂死。
-        var list = ExternalToolsDetector.EnumerateFilesSafe(directory, searchWildcard, log);
+        // ⚠⚠ 2026-10-05：`budgetSec` 改为**可传入**（调用方传"剩余总预算"）。
+        //   此前单根恒弹 15 s，而总预算只在**每根之前**检查 ⇒ 单个大根能吃满整个总预算；
+        //   加上该探测对**多个工具**各做一遍 ⇒ 实测停顿 135.8 s（用户看到的是"卡死"）。
+        var list = ExternalToolsDetector.EnumerateFilesSafe(directory, searchWildcard, log, budgetSec);
         // ⚠ 可执行性收口在 ExternalToolsDetector.ChooseBestExecutable（实测：无扩展约束的通配
         //   如 `*exiftool*` 会命中 C:\Windows\Prefetch\EXIFTOOL.EXE-*.pf）。
         if (list.Count > 0)

@@ -43,12 +43,27 @@ namespace FfmpegGui
             public bool DryRun { get; set; } = false;  // 仅打印命令，不执行
             public Dictionary<string, string> ExtraOptions { get; } = new();
 
+            /// <summary>
+            /// 允许覆盖已存在的输出文件（`--no-overwrite` 置 false）。
+            /// <para>⚠ 默认 true = 既有行为（全链路 `-y`）；false 时**存在即拒绝该文件并点名**，
+            /// 不静默毁掉用户已有的产物。动机与语义见 `FfmpegOptions.AllowOverwriteExisting`。</para>
+            /// </summary>
+            public bool AllowOverwrite { get; set; } = true;
+
             // 元数据
             public MetadataMode MetadataMode { get; set; } = MetadataMode.PreserveAll;
             // 包2-2b：GPS 删除改三态——null=用户未显式指定（不覆盖模型默认值）。
             // 此前 CLI 侧独立默认 true 与 FfmpegOptions.StripExifGps 形成两个真值，
             // 只改模型默认值不生效（变异实测 verify-metadata-privacy 仍全绿）。
             public bool? StripGps { get; set; }
+            /// <summary>
+            /// 用户是否**显式**给出过任一"剥离描述性元数据"的请求（2026-10-05 新增）。
+            /// <para>⚠ 与上面各开关的**值**不同：`StripExifGps` 默认为 true（隐私默认），
+            /// 而本标志只在用户真的写了 `--strip-gps` / `--strip-metadata` / … 时才为 true。
+            /// 用途：`jxl` 的 jbrd 无损重封装与"剥除元数据"不可兼得，而用户裁定
+            /// 「无损重封装是绝对默认」⇒ 只有**显式**请求才允许让剥除去压过重封装。</para>
+            /// </summary>
+            public bool StripExplicit { get; set; }
             public bool StripTime { get; set; } = false;
             public bool StripCamera { get; set; } = false;
             public bool StripAllExif { get; set; } = false;
@@ -115,12 +130,25 @@ namespace FfmpegGui
                         break;
 
                     // ── 输入输出 ──
+                    // ⚠⚠ 2026-10-05 修（P0：重复 `-i` **静默丢弃**前面的输入）：
+                    //   旧写法是**纯赋值** `result.InputPatterns = v.Split(…)` ⇒ 后一次 `-i`
+                    //   **覆盖**前一次。实测（`--dry-run` 读"找到 N 个输入文件"）：
+                    //     `-i a -i b -i a` ⇒ **1**（只剩最后一个）；而文档形式 `-i a,b` ⇒ 3。
+                    //   后果：`-i C:\A -i C:\B -o out` **只转换 C:\B**，报「完成 1 项, 失败 0 项」
+                    //   并 **exit 0** —— 用户以为两个目录都处理了。而"重复 `-i`"是**多数 CLI 的
+                    //   自然习惯**，`--help` 也只说"逗号分隔多个"，没说"重复会被覆盖"。
+                    //   ⇒ 改为**追加**（单次 `-i` 行为逐字不变；逗号形式照旧；两者可混用）。
                     case "-i":
                     case "--input":
                     {
                         var v = TakeValue();
                         if (v != null)
-                            result.InputPatterns = v.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                        {
+                            var parts = v.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                            result.InputPatterns = result.InputPatterns == null
+                                ? parts
+                                : result.InputPatterns.Concat(parts).ToArray();
+                        }
                         break;
                     }
                     case "-o":
@@ -131,6 +159,17 @@ namespace FfmpegGui
                             result.OutputDirectory = v;
                         break;
                     }
+                    // ⚠⚠ 2026-10-05 新增（P0 数据损失修复）：不覆盖已存在的输出文件。
+                    //   历史上全链路无条件 `-y` ⇒ 重跑一次就**静默**毁掉上次（可能手改过的）产物，
+                    //   无提示、退出码 0（实测：`out\pic.png` 的既有内容被直接替换）。
+                    //   ⚠ 默认**保持覆盖**（既有语义，改动默认会打断所有人的既有脚本）；
+                    //     本开关让需要保护的用户能要求"存在即拒绝并点名"。
+                    case "--no-overwrite":
+                        result.AllowOverwrite = false;
+                        break;
+                    case "--overwrite":
+                        result.AllowOverwrite = true;
+                        break;
                     case "--preserve-structure":
                         result.PreserveInputStructure = true;
                         break;
@@ -192,26 +231,36 @@ namespace FfmpegGui
                         break;
 
                     // ── 元数据选项 ──
+                    // ⚠⚠ 2026-10-05：每个**显式**剥除请求都要同时置 `StripExplicit=true`。
+                    //   它与"开关的值"**不是一回事**：`StripExifGps` 默认就是 true（隐私默认），
+                    //   而 `jxl` 的 jbrd 无损重封装与"剥除元数据"结构上不可兼得。
+                    //   用户裁定「无损重封装是绝对默认」⇒ 只有**用户真的要求了**才让剥除去压过重封装。
                     case "--strip-gps":
                         result.StripGps = true;
+                        result.StripExplicit = true;
                         break;
                     case "--no-strip-gps":
                         result.StripGps = false;
                         break;
                     case "--strip-time":
                         result.StripTime = true;
+                        result.StripExplicit = true;
                         break;
                     case "--strip-camera":
                         result.StripCamera = true;
+                        result.StripExplicit = true;
                         break;
                     case "--strip-all-exif":
                         result.StripAllExif = true;
+                        result.StripExplicit = true;
                         break;
                     case "--strip-xmp":
                         result.StripXmp = true;
+                        result.StripExplicit = true;
                         break;
                     case "--strip-metadata":
                         result.MetadataMode = MetadataMode.StripAll;
+                        result.StripExplicit = true;
                         break;
                     case "--preserve-metadata":
                         result.MetadataMode = MetadataMode.PreserveAll;
@@ -422,11 +471,12 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
             var items = new List<QueueItem>();
 
             // 展开输入模式（同时记录每个文件的输入根目录，供 --preserve-structure 重建结构用）
+            // ⚠ 传入输出目录 ⇒ 枚举时跳过输出子树，避免"自我吞噬"（见 ExpandInputPattern 的说明）。
             var inputFiles = new List<string>();
             var baseDirs = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             foreach (var pattern in opts.InputPatterns)
             {
-                ExpandInputPattern(pattern, inputFiles, baseDirs);
+                ExpandInputPattern(pattern, inputFiles, baseDirs, opts.OutputDirectory);
             }
 
             if (inputFiles.Count == 0)
@@ -527,11 +577,19 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
         }
 
         private static void ExpandInputPattern(string pattern, List<string> results,
-            Dictionary<string, string> baseDirs)
+            Dictionary<string, string> baseDirs, string? outputDir = null)
         {
             // 处理目录、通配符、单文件。
             // baseDirs[file] = 该文件的**输入根目录**（--preserve-structure 重建相对结构的基准）。
             // ⚠ 必须是「用户给的根」，而不是文件所在目录 —— 否则 sub\a.png 的相对路径永远算不出来。
+            // ⚠⚠ 2026-10-05 修（P0：输出目录在输入根之下 ⇒ **自我吞噬**）：
+            //   目录枚举用 `SearchOption.AllDirectories` 且**不排除输出目录** ⇒ 若 `-o` 落在任一
+            //   输入根之下（`-i <root> -o <root>\converted` 是**很自然**的用法），
+            //   第二次跑就把**上一轮的产物**当成输入。实测：同一命令连跑三次 ⇒
+            //   「找到 1 / 2 / 3 个输入文件」，产物滚成 `pic.png` + `pic_1.png` + `pic_2.png`。
+            //   ⚠ 同格式重跑（输入 jpg、输出 jpg）还会**反复转码自己的产物**（画质累积损失）。
+            //   ⇒ 枚举时**跳过输出子树**。这是"重跑同一批"这一最正常操作的正确语义。
+            var outFull = string.IsNullOrWhiteSpace(outputDir) ? null : SafeFullPath(outputDir);
             if (Directory.Exists(pattern))
             {
                 // 目录：递归查找支持的图片/视频文件
@@ -541,6 +599,7 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
                 {
                     foreach (var f in Directory.GetFiles(pattern, "*" + ext, SearchOption.AllDirectories))
                     {
+                        if (IsUnderDirectory(f, outFull)) continue;   // 自己的输出 ⇒ 不算输入
                         results.Add(f);
                         baseDirs[f] = pattern;
                     }
@@ -548,6 +607,8 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
             }
             else if (File.Exists(pattern))
             {
+                // ⚠ 用户**显式点名**的文件一律接受（哪怕它正好在输出目录里）——
+                //   那是明确意图，不是枚举的副作用；只拦"递归扫进来"的那些。
                 results.Add(pattern);
                 baseDirs[pattern] = Path.GetDirectoryName(pattern) ?? ".";
             }
@@ -559,13 +620,41 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
                 if (string.IsNullOrEmpty(dir)) dir = ".";
                 if (Directory.Exists(dir))
                 {
-                    foreach (var f in Directory.GetFiles(dir, searchPattern))
+                    // ⚠ 通配符是**非递归**的，但它可能正好位于输出目录内 ⇒ 同样排除。
+                    var dirFull = SafeFullPath(dir);
+                    bool skipAll = IsUnderDirectory(Path.Combine(dirFull, searchPattern), outFull)
+                                   || (outFull != null && string.Equals(dirFull, outFull, StringComparison.OrdinalIgnoreCase));
+                    if (!skipAll)
                     {
-                        results.Add(f);
-                        baseDirs[f] = dir;
+                        foreach (var f in Directory.GetFiles(dir, searchPattern))
+                        {
+                            results.Add(f);
+                            baseDirs[f] = dir;
+                        }
                     }
                 }
             }
+        }
+
+        /// <summary>取绝对路径；失败时退回原串（不抛）。</summary>
+        private static string SafeFullPath(string p)
+        {
+            try { return Path.GetFullPath(p).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar); }
+            catch { return p; }
+        }
+
+        /// <summary>
+        /// <paramref name="path"/> 是否位于 <paramref name="dir"/> 之内（含相等）。
+        /// ⚠ 用"前缀 + 分隔符"比较而不是裸 <c>StartsWith</c>：否则 `C:\out2` 会被误判成在 `C:\out` 之下。
+        /// 大小写不敏感（Windows）。<paramref name="dir"/> 为 null ⇒ 恒 false。
+        /// </summary>
+        private static bool IsUnderDirectory(string path, string? dir)
+        {
+            if (string.IsNullOrEmpty(dir)) return false;
+            var p = SafeFullPath(path);
+            if (string.Equals(p, dir, StringComparison.OrdinalIgnoreCase)) return true;
+            return p.StartsWith(dir + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+                || p.StartsWith(dir + Path.AltDirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
         }
 
         private static FfmpegOptions BuildBaseOptions(Result opts)
@@ -580,7 +669,12 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
                 StripExifTime = opts.StripTime,
                 StripExifCamera = opts.StripCamera,
                 StripExifAll = opts.StripAllExif,
-                StripXmp = opts.StripXmp
+                StripXmp = opts.StripXmp,
+                // ⚠ 2026-10-05：覆盖策略（--no-overwrite）随基档下发到每个队列项。
+                AllowOverwriteExisting = opts.AllowOverwrite,
+                // ⚠ 2026-10-05：**显式**标志与上面几个开关的**值**分开传。
+                //   用途见 `FfmpegOptions.StripDescriptiveExplicitly` 的说明（jbrd 与剥除不可兼得）。
+                StripDescriptiveExplicitly = opts.StripExplicit
             };
 
             // 应用预设（如果指定）
@@ -725,6 +819,12 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
                         options.ColorToneMap = ParseTokenStrict(key, value,
                             "none | reinhard | hable | mobius | bt2446a (bt2390 recognized, unsupported)",
                             "", "none", "reinhard", "hable", "mobius", "bt2446a", "bt2390");
+                        // ⚠⚠ 2026-10-05：标记"用户**显式**写了本参数"。
+                        //   动机：`ColorToneMap` 的默认值就是 `"none"` ⇒「显式要 none」与"没提"同形，
+                        //   而 `ColorIntentFactory` 的自动兜底（HDR→SDR ⇒ 自动 Hable）写在 `else` 分支里
+                        //   ⇒ **显式 `--color-tone-map none` 会被静默升级成 Hable**（实测：与 hable 产物逐字节相同）。
+                        //   ⇒ 用本标志让"显式 none"可识别，显式选择**优先于**自动兜底。
+                        options.ColorToneMapExplicit = true;
                         break;
                     // legacy 色彩链的 tonemap 曲线（BuildArguments 会读它，此前 CLI 无法设置）。
                     // 与 --color-tone-map（引擎路径）是两个不同入口，故引擎路由会明确不接受共存的歧义写法。

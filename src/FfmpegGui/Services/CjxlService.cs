@@ -271,7 +271,34 @@ namespace FfmpegGui.Services
             => opts != null && IsJpegInputPath(inputPath) && opts.JxlLosslessJpeg
                && string.Equals(opts.Format, "jxl", StringComparison.OrdinalIgnoreCase)
                && !JpegCarriesGainMap(inputPath)
-               && opts.JxlModular != true;
+               && opts.JxlModular != true
+               // ⚠⚠ **第六个条件（2026-10-05 补，P0 隐私泄露修复）**：用户**显式要求**剥离描述性元数据
+               //   时**不得**走 jbrd 重封装。
+               //   背景（实测）：jbrd 把**源 JPEG 码流逐字**放进 JXL 的 `jbrd` box（含 EXIF/GPS），
+               //   而 exiftool **改不了 `jbrd` 里的字节** —— 实测在产物 JXL 上跑
+               //   `-TagsFromFile src.jpg -EXIF:all -GPS:all --GPS:all …` 返回
+               //   「1 image files updated」**但 GPS 仍在**（`-v3` 显示 GPS 就在 `Jpeg2000_jbrd` 段内）
+               //   ⇒ 它只改 JXL 容器层的元数据盒，动不了被逐字复制的码流。
+               //   ⇒ 「无损重封装」与「剥除元数据」在这个格式上**结构上不可兼得**。
+               //   **裁定（用户，2026-10-05）：无损重封装是绝对默认** —— 它是本工具对 JPEG→JXL 的
+               //   核心承诺（不解码 DCT、快 5–10×、可逆）。⇒ 隐私剥除**不靠默认值去关它**，
+               //   而是靠**显式开关**：用户显式要剥除时，本次放弃重封装（因为二者不可兼得），
+               //   并由调用方**响亮点名**这一取舍（见 `QueueProcessor` 的对应日志），绝不静默。
+               //   ⚠ 因此判据是**"显式要求剥除"**（`StripExplicit`），**不含**默认值
+               //     —— 这正是与上一版的区别：上一版用含默认值的判据 ⇒ 默认就把重封装关了，
+               //     违背"无损重封装是绝对默认"。
+               && !opts.StripDescriptiveExplicitly;
+
+        /// <summary>
+        /// 用户是否**显式**要求剥离描述性元数据（EXIF/GPS/XMP/IPTC）。
+        /// <para>⚠⚠ 与"是否启用剥除"**不是一回事**（2026-10-05 用户裁定后重新定义）：
+        /// `StripExifGps` 的**默认值就是 true**（隐私默认），若把它算作"要求剥除"，
+        /// 则**默认就把 jbrd 无损重封装关掉** —— 而裁定是无损重封装为绝对默认。
+        /// ⇒ 只有**用户显式给出**的剥除请求才算（`StripExplicit` 由 CLI 在用户真的写了
+        /// `--strip-gps` / `--strip-metadata` / … 时置位），默认值<strong>不</strong>计入。</para>
+        /// </summary>
+        public static bool WantsDescriptiveMetadataStripped(Models.FfmpegOptions? opts)
+            => opts != null && opts.StripDescriptiveExplicitly;
 
         /// <summary>
         /// 使用 cjxl 将指定输入文件编码为 JXL（支持完整选项）。
@@ -389,6 +416,22 @@ namespace FfmpegGui.Services
                 log?.Invoke("[cjxl] --lossless_jpeg is requested but this JPEG carries a gain map (Ultra HDR / ISO 21496-1):"
                           + " cjxl cannot repack its DCT coefficients and would silently re-encode it as HDR float"
                           + " => sending --lossless_jpeg=0 and naming it instead of claiming lossless repacking\n");
+            // ⚠⚠ 2026-10-05 点名（P0 隐私泄露修复，用户裁定后定稿）：
+            //   `jbrd` 无损重封装把**源 JPEG 码流逐字**放进产物 ⇒ 源里的 EXIF/GPS **必然**随之进入产物，
+            //   而 exiftool **改不了 `jbrd` 内的字节**（实测：排除式 `--GPS:all` 报"1 image files updated"
+            //   但 GPS 仍在；只有对**容器层**元数据才有效）。
+            //   ⇒ 「无损重封装」与「剥除元数据」在这个格式上**结构上不可兼得**。
+            //   用户裁定：**无损重封装是绝对默认** ⇒ 只有用户**显式**要求剥除时才放弃重封装，
+            //   且必须**出声说明这一取舍**（本仓忌"静默降级"）。
+            if (opts.JxlLosslessJpeg && isJpegInput && !forPreview
+                && string.Equals(opts.Format, "jxl", StringComparison.OrdinalIgnoreCase)
+                && !JpegCarriesGainMap(input)
+                && opts.StripDescriptiveExplicitly)
+                log?.Invoke("[cjxl] metadata stripping was explicitly requested: lossless JPEG repacking (jbrd)"
+                          + " copies the source stream verbatim, so EXIF/GPS inside it cannot be removed afterwards"
+                          + " (exiftool cannot rewrite bytes inside the jbrd box)"
+                          + " => repacking is disabled for this run and the pixels are re-encoded so the strip can apply;"
+                          + " use --no-strip-gps (or --preserve-metadata) to keep lossless repacking\n");
             // ⚠ U5 接线（2026-10-01）：此前 `--jxl-modular` 只在 ffmpeg/libjxl 路线落地（`ImageEncoderArgs`），
             //   cjxl 路线 0 引用 ⇒ 同一个开关两条后端一条活一条**静默失效**（出货包实测两端产物 SHA 相同）。
             //   cjxl 侧的写法是 `-m 1` / `--modular=1`（见其 advanced options）。

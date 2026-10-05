@@ -293,9 +293,14 @@ namespace FfmpegGui.Services
         /// 合法根 `C:\Program Files` 全树 = 11.5 s ⇒ 留 ~30% 余量取 15 s。</summary>
         public const int PerRootScanBudgetSec = 15;
 
-        /// <summary>一次 <see cref="FindToolInExtendedPaths"/> 的**总**预算（秒）：
-        /// 实测扩展根有 35 个，只按单根收口最坏仍是分钟级 ⇒ 再收一道总口。
-        /// 合法命中实测都落在前两个根（≤ 12 s）。</summary>
+        /// <summary>
+        /// 一次 <see cref="FindToolInExtendedPaths"/> 的**总**预算（秒）。
+        /// <para>⚠⚠ 2026-10-05 加固（P0 启动停顿修复）：总预算此前**只在每根之前**检查
+        /// ⇒ 单个大根能吃掉整段预算，而本探测对**多个工具**各做一遍 ⇒ 最坏是"根数 × 15 s × 工具数"。
+        /// 现改为**把剩余预算传给每个根**（见 <see cref="FindToolInExtendedPaths"/>）：
+        /// 每根实际能用的秒数 = `min(单根预算, 总预算剩余)`，且遍历**内部**也会因预算耗尽而截断
+        /// （`EnumerateFilesSafe` 自己就带 `budgetSec` 检查）。⇒ 总耗时被**真正**钉在 60 s 量级。</para>
+        /// </summary>
         public const int ExtendedScanTotalBudgetSec = 60;
 
         /// <summary>
@@ -597,8 +602,16 @@ namespace FfmpegGui.Services
                 var progFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
                 if (Directory.Exists(progFiles))
                 {
-                    paths.Add(progFiles);
-                    // 常见子目录
+                    // ⚠⚠ 2026-10-05 修（P0 启动停顿）：**不再把整棵 `C:\Program Files` 交给递归扫描**。
+                    //   实测：整树递归 = 11.5 s/**根**（本文件 `PerRootScanBudgetSec` 的标定值就是它），
+                    //   而本探测对**多个工具**各做一遍 ⇒ 6 工具 × 11.5 s ≈ 70 s 纯等待，
+                    //   用户看到的是"点了没反应"。
+                    //   而"工具装在 Program Files 下"的真实形态几乎都是**具名子目录**
+                    //   （`Program Files\exiftool`、`\ffmpeg`）⇒ 下面那几个子目录已覆盖；
+                    //   其余情况由第⑤步 `TryFindInPath`（**非递归**）与"设置里手动指定路径"覆盖。
+                    //   ⇒ 去掉整树根，只保留具名子目录 ⇒ **不丢可发现性，去掉分钟级空转**。
+                    //   ⚠ 若确有用户把工具放在 `Program Files\<厂商>\<产品>\bin`，可用设置手动指定，
+                    //     或设 `FFMPEGGUI_EXT_SEARCH_DIRS` 显式给出根（该注入面本就有）。
                     foreach (var sub in new[] { "exiftool", "ffmpeg", "ImageMagick" })
                     {
                         var subPath = Path.Combine(progFiles, sub);
@@ -623,7 +636,20 @@ namespace FfmpegGui.Services
                         var trimmed = segment.Trim();
                         if (string.IsNullOrEmpty(trimmed) || !Directory.Exists(trimmed)) continue;
                         if (winDir.Length > 0 && IsUnderDirectory(trimmed, winDir)) continue;
-                        paths.Add(trimmed);
+                        // ⚠⚠ 2026-10-05 修（P0：工具缺失时启动**停顿数十秒~数分钟**，像卡死）：
+                        //   **PATH 里的目录一律不进"递归扩展扫描"**。
+                        //   根因（实测 + 读码）：本函数返回的每个根都会被 `FindToolInDirectory`
+                        //   以**递归**方式遍历（`EnumerateFilesSafe`），而 PATH 是**用户环境**，
+                        //   常见形态就含用户配置目录（如 `C:\Users\<me>`）⇒ 实测扫了 **67,558 个目录**、
+                        //   耗时 **135.8 s**，stdout 停在「正在检测外部工具...」不动。
+                        //   而"装在 PATH 里的工具"**另有第⑤步 `TryFindInPath` 做非递归解析**
+                        //   （本文件上方注释自己就写着这一点）⇒ 把 PATH 从递归面里摘掉**不丢任何能力**。
+                        //   ⚠ 预算不是没做（单根 15 s / 总 60 s），但它**在每根之前**检查
+                        //     ⇒ 单个大根就能吃掉整段预算，且该探测对**多个工具**各做一遍。
+                        //   ⇒ 摘掉 PATH 后：递归面只剩少数"工具安装位置"根（LocalAppData\Programs、
+                        //     Program Files 及其 exiftool/ffmpeg/ImageMagick 子目录）—— 这些才值得递归。
+                        //   ⚠ 保留 `paths.Add` 之外的**非递归**命中路径不变（见 TryFindInPath）。
+                        continue;
                     }
                 }
             }
@@ -648,7 +674,11 @@ namespace FfmpegGui.Services
                     DiagLog(log, $"[detect] {toolName} 的扩展搜索超出总预算 {ExtendedScanTotalBudgetSec}s ⇒ 放弃剩余根（可在设置里手动指定该工具路径）");
                     return null;
                 }
-                var found = PlatformServices.FindToolInDirectory(dir, toolName, searchWildcard, log);
+                // ⚠⚠ 2026-10-05：把**剩余总预算**也传给单根扫描（取两者较小）
+                //   —— 否则单个大根可以一路吃掉整个总预算（旧写法只在每根**之前**查总预算）。
+                int remain = (int)Math.Max(1, ExtendedScanTotalBudgetSec - sw.Elapsed.TotalSeconds);
+                var found = PlatformServices.FindToolInDirectory(dir, toolName, searchWildcard, log,
+                    Math.Min(PerRootScanBudgetSec, remain));
                 if (found != null) return found;
             }
             return null;

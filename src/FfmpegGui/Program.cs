@@ -20,7 +20,32 @@ namespace FfmpegGui
             try { Services.PlatformServices.CleanupZombieTempDirs(); } catch { }
 
             // 检查是否为 headless 模式
-            var cliResult = CliParser.Parse(args);
+            // ⚠⚠ 2026-10-05 修（P0：非法 CLI 取值**崩溃**而非按契约 exit 2）：
+            //   `CliParser.Parse` 里的 `ParseIntStrict`/`ParseTokenStrict` 等对非法取值**抛
+            //   `ArgumentException`**（有意的 fail-closed 设计），但此前**没有任何 try/catch**
+            //   接住它 —— 下面 `RunHeadless` 的 try/catch 只包住更晚的 `BuildJobSpecs`。
+            //   实测（Release 构建）：
+            //     `FfmpegGui.exe --headless -i a.png -o out -f png -q abc`
+            //     ⇒ `Unhandled exception. System.ArgumentException: --quality 取值无效…`
+            //     ⇒ 退出码 **-532462766 (0xE0434352, CLR 未处理异常)**，而**不是**契约的 **2**。
+            //   同样崩溃的还有 `-j/--jobs/--concurrency`、`--log-level`、`--log-format`、`-e/--encoder`。
+            //   对照：同类错误若走 `ApplyExtraOption`（`BuildJobSpecs` 内）就被正确处理
+            //   （`--bit-depth 47` ⇒ 打印「错误: …」+ exit 2）⇒ 是**接线漏了一处**，非设计分歧。
+            //   后果（用户可见）：WinExe 未处理异常 = 崩溃对话框/「程序已停止工作」，无日志、
+            //   无 exit 2 ⇒ 用户与 CI **无法区分「参数写错」与「程序崩了」**。
+            //   ⚠ 只捕 `ArgumentException`（参数错误的本类型），**不**吞其它异常 ——
+            //     其它异常仍走下方既有的全局兜底，避免把真崩溃伪装成「参数错」。
+            CliParser.Result cliResult;
+            try
+            {
+                cliResult = CliParser.Parse(args);
+            }
+            catch (ArgumentException ex)
+            {
+                Console.Error.WriteLine("错误: " + ex.Message);
+                System.Environment.ExitCode = 2;
+                return;
+            }
             if (cliResult.IsHeadless || cliResult.ShowHelp || cliResult.ShowVersion)
             {
                 ExitCode = RunHeadless(cliResult).GetAwaiter().GetResult();
