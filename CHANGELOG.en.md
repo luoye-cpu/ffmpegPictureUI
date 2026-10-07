@@ -13,6 +13,120 @@ All notable changes to this project are documented in this file.
 
 ## 📝 Changelog
 
+### v1.6.0-beta6 (2026-10-07) — 4 silent-defect fixes (incl. "you gave the flag but were told you didn't") + full audit of the advanced encoder options + second-level test split (gates 72→73)
+
+> **Lineage**: **11 product files** under `src/` changed (+346/−49 lines); the tests went through a
+> **second-level split** (5 monolithic group files → 31 one-file-per-mode files); one new gate (**#73**).
+> Every fix is backed by **product-level / byte-level** evidence (of the 73 managed gates only
+> `probe:runner` fails — and that is a **local sandbox limitation**, fully characterised as **not a product defect**).
+
+**🔴 `manual` colour strategy: giving only `--color-primaries` was wrongly rejected, with a message that contradicted the facts (and a **silent non-delivery** behind it)**
+
+- User-visible symptom (`--color-strategy manual --color-primaries bt2020`): rejected, zero products,
+  and the message claimed "**no target colour description was provided**" — while the user **had** provided primaries.
+- Root cause in **three layers**, each measured:
+  ① `ColorIntentFactory` looked at `ColorTrc` **only** once `HasExplicitColorTarget` (CP **or** CT non-empty)
+  held ⇒ with primaries alone `Target=null` ⇒ the planner rejected immediately;
+  ② `FfmpegCommandBuilder.Decision`'s advanced branch likewise keyed on `ColorTrc` only
+  ⇒ even once admitted, the artifact's labels **still carried the source's P3** (`smpte432`) —
+  a **silent non-delivery**, more insidious than the rejection;
+  ③ after relaxing the predicate, the descriptor requires **both halves to be nameable** ⇒ one half alone
+  raised `目标语义 bt2020/ 无法命名`.
+- **Fix**: the predicate is now "CP **or** CT present ⇒ explicit target", with the missing half filled in from the
+  **source semantics**; both call sites share one rule. `ManualIntent` assembly is wired up too
+  (`ManualIntent.Create` had **zero call sites repo-wide** — a "declared but not implemented" case).
+- **Measured**: `--color-primaries bt2020` ⇒ artifact `color_primaries=bt2020` (before: rc=1, no product);
+  `bt709`/`smpte432` each honoured; `--color-trc linear` ⇒ `jxlinfo` reports *Linear transfer function*.
+  ⇒ **not merely admitted, but actually delivered**.
+
+**🔴 `--dry-run` preview and real execution were not the same source ⇒ the preview **under-reported the real encoder** (which makes audits falsely negative)**
+
+- Two measured divergences: ① `-f jxr -e Jxr` preview printed only `ffmpeg`, while the real encoder is **JxrEncApp**;
+  ② `-f dng --dng-bit-depth 8` preview **omitted `-4`** and `-jxlq`, and used the **deprecated `-q`**
+  (`-q` is demosaic quality; dngtool read it as JXL quality 3 ⇒ **badly lossy**).
+- **Impact**: any audit that trusts dry-run gets a **false negative**
+  — measured: trusting dry-run alone would have reported two defects that **do not exist**
+  ("dng-bit-depth has no effect", "the JXR backend is not wired").
+- **Fix = a structural single source of truth** (not "add two arguments"): extracted
+  `RawService.BuildEncodeToDngArguments` (preview+execute 2→1) and `JxrService.ResolveQuality`
+  (two real exits + preview 3→1) ⇒ **drift is now structurally impossible**.
+
+**🟠 14 "advanced encoder option ignored/downgraded" notices were **completely invisible in the GUI****
+
+- The product is a `WinExe` (no console in GUI mode) and those notices all went through `Console.WriteLine`
+  ⇒ headless users saw them, **GUI users did not** (a "gates see it, users don't" blind spot).
+- **Fix**: keep the Console output (headless runs and gates grep that text — **byte-for-byte unchanged**) and add
+  `AsyncLocal<Action<string>?> WarnSink` + `EmitWarn()` forwarding to the GUI panel `EncoderOptionWarning`.
+  All 14 call sites now go through `EmitWarn` with the **message strings untouched**.
+- ⚠ `AsyncLocal` rather than a plain static: queue items are processed **concurrently on multiple threads**,
+  so an ambient value would leak one item's notices into another's.
+- ⚠ **Known boundary**: conversion-time (queue-run) notices still only reach headless stdout + the detail window
+  — wiring them to the panel makes `item.Log` echo back to stdout through `FlushItemLog`, **doubling the notices**
+  and breaking the gates' greps (measured, then deliberately reverted; `QueueProcessor` ended at 0 diff).
+
+**🟠 Two APIs skipped the colour-token normaliser ⇒ passing a user-facing name gave `exit -22` and no product**
+
+- `RawColorPipeline.WriteRgb48ToPngAsync` and `GainMapEncoder.EncodeAvifFileAsync` interpolated
+  `primaries/trc/matrix` straight into the command line, **bypassing** `ColorSpaceRegistry`'s normalisers
+  — while the repo's own comments state, verbatim, "not normalising ⇒ ffmpeg says `Unable to parse`
+  ⇒ **exit -22, no product**", and `FfmpegOptions`' setters **do** call them ⇒ an **inconsistent rule**.
+- **Measured**: `-color_primaries srgb` ⇒ `[Eval] Undefined constant … in 'srgb'`, no product;
+  after normalising (`srgb→bt709`) ⇒ rc=0, normal artifact. Post-fix, the `xcheck` SDR cells went from
+  a **hard crash** to **73.19 dB all-green**.
+
+**🚦 Gates 72 → 73: new `verify-dryrun-parity.ps1`**
+
+- Locks **same-source-ness** between the `--dry-run` preview and real execution: criteria
+  **A over-report / B under-report (encoder-class tools only) / C argument-level byte equality**,
+  plus negative controls and a per-arm "real side non-empty" guard; 4 arms (jxr/png/jpg/dng). Measured **16/0**, ~8 s.
+- ⚠ **Wiring it exposed a false negative in the gate itself**: the first version's header claimed it locked
+  **two** defects but had **no dng arm** ⇒ criterion ② was **locked by nothing**. Mutation test (dng preview forced
+  to 16-bit) still read `pass=10 fail=0` **all green**; after adding the dng arm + criterion C the same mutation
+  ⇒ `pass=15 fail=1` **turned red**.
+- ⚠ Boundaries (stated, not hidden): `JxrEncApp` has **no argument-level lock** (its real side goes through a
+  runtime temp name, so byte comparison would false-red); gif/webp/apng/tiff have **no arms yet**.
+  Depends on the in-repo fixture `tests/fixtures/raw_src_8bit.dng`; if missing the arm SKIPs by name (fail-closed).
+
+**🧪 Tests: second-level split — one file per mode**
+
+- Motive (the user's words): "tests should be individual projects, so you can test just one part instead of running
+  a huge suite for a one-line change".
+- Five monolithic group files (**2437 / 1274 / 1076 / 728 / 693 lines**) →
+  **five 53–136-line shared bases + 31 `Modes/<mode>.cs` files**; the classes became `partial`
+  ⇒ **`Program.cs` and every call site are unchanged, character for character**.
+- **Three acceptance checks**: ① **verbatim** — every code line in `Modes/*.cs` is found in the pre-split files
+  (zero rewrites); ② **zero reading drift** — `core 332/1`, `color 126/0`, `engine 82/1`, `geometry 75/1`,
+  `diagnostics 82/6`, identical to the digit; ③ **all structural gates green**. A single mode now runs
+  standalone (measured 113–288 ms each).
+
+**🔧 Other**
+
+- `_lib-matrix.ps1`'s A30 evidence anchors drifted when 31 lines were inserted into a source file ⇒ **re-pinned**
+  (`821→852`, `773→804`), with a mutation test proving the lock still has teeth (reverting the pin ⇒ `pass=7 fail=1`).
+- `verify-ui-split-verbatim.ps1` gained a **registered-divergence group** (exactly one: `GroupJ_`); the other 16
+  groups are still compared verbatim; mutation-tested (renaming a real assertion in `GroupL_` ⇒ immediate red).
+- **Corrected** two earlier conclusions: NVENC `-rc`'s "three visibly different outputs" **cannot be reproduced
+  here** (`av1_nvenc` reports `No capable devices found`, and no raw log backs the numbers) ⇒ P0 → P1;
+  avifenc `--target-size` measured as **stepped and missing the target** (2000→3570, 10000→7930, 60000→7930)
+  ⇒ P0 → P2.
+
+**🔧 Build hygiene**
+
+- Restored a **0-warning / 0-error** build: after the L-1 fix changed the nullable flow-analysis state,
+  `src.Curve` in `ColorIntentFactory` raised `CS8602`. Two author-side causes: ① the early returns guarantee
+  `src` is non-null, but the analyser does not converge on "reassigned across several `if`s + early exit";
+  ② my own `src?.PrimariesToken` (null-conditional) **re-widens `src` to possibly-null**. Fix = drop the
+  unnecessary `?.` and use one `!` (null-forgiving) to state the known invariant to the compiler —
+  **no runtime behaviour change**.
+  ⚠ Deliberately **not** adding an `if (src == null) { … }` guard: that would duplicate an existing Chinese
+  message, and `_probe-cjk-hardcode-scan`'s "C# UI surface" bucket **counts by line with zero headroom**
+  ⇒ it would tip to 834 > 833 (measured).
+
+**📌 Gate baseline (at this release)**: **73** managed scripts; **26** modes in `ServiceProbe`'s default probe list.
+⚠ The authoritative live values are `$Probes` and `$expectedScriptCount` in `_run-step3-gates.ps1`.
+
+---
+
 ### v1.6.0-beta5 (2026-10-05) — 10 P0 fixes (incl. 2 silent data/privacy defects) + physical split of the test projects (gates 68→72)
 
 > **Lineage**: this is a large set of **real behaviour changes** — 11 product files under `src/`

@@ -129,10 +129,18 @@ public static class ColorIntentFactory
             src = ColorSpaceIdentify.AssumeByConvention(RawService.IsRawFile(inputPath));
             if (src == null) { reason = "源色彩语义无法确定（无 ICC、无标签、惯例假定失败）"; return null; }
         }
+        // ⚠ 可空流分析收口（2026-10-07，为恢复「0 警告」构建）：上面三条路径走完后
+        //   `src` **逻辑上**必非空（最后一条分支里 `src == null` 就 `return null` 了），
+        //   但分析器对「跨多个 if 重赋值 + 早退」的组合不总能收敛 ⇒ 后续 `src.Curve` 报 CS8602。
+        //   ⇒ 用 `!`（null-forgiving）把**作者已知的不变量**写给编译器：**运行时不改行为**。
+        //   ⚠ 刻意**不**再加一条 `if (src == null) { reason = "…"; return null; }`：那会重复一条
+        //     既有中文文案，而 `_probe-cjk-hardcode-scan.ps1` 的「C# UI 面」桶**按行计数、
+        //     余量为 0** ⇒ 会当场顶成 834 > 833（本轮实测踩过，故记在此防重犯）。
+        var srcNn = src!;
         // HDR 曲线必须明确“1.0 = 多少 nits”：FromCicp 默认按 SDR 参考白（203），会让
         // PQ/HLG 源的 headroom 算成 1 ⇒ 色调映射被判定“未激活”（实测：wire 断言曾因此从
         // 另一条分支蹭到通过）。这里按曲线修正，不依赖调用方记得传参。
-        FixHdrNits(src);
+        FixHdrNits(srcNn);
 
         // ── GainMap 请求位（2026-09-16 补）────────────────────────────────────────
         // ⚠ 此前**从未装配**（全仓只有 `ColorIntent` 的字段声明与 `ToPolicy` 的传递）⇒
@@ -209,12 +217,16 @@ public static class ColorIntentFactory
                 //   `目标语义 /smpte2084 无法命名`）：
                 //   · 只给 primaries ⇒ transfer 取源曲线的 CICP token
                 //   · 只给 trc      ⇒ primaries 取源原色的 CICP token
+                // ⚠⚠ 这里**不能**写 `src?.X`（2026-10-07 实测踩过）：`src` 在上面的收口判空之后
+                //   已经**非空**，而空条件运算符会让可空流分析把 `src` **重新放宽为可能为 null**
+                //   ⇒ 后面第 322 行的 `src.Curve` 报 CS8602、破坏本仓「0 警告」构建。
+                //   （编译器只认它看得见的流，不认"作者知道非空"。）
                 var fp = !string.IsNullOrWhiteSpace(tp) ? tp
                        : (!string.IsNullOrWhiteSpace(o.ColorPrimaries) ? o.ColorPrimaries
-                                                                      : src?.PrimariesToken);
+                                                                      : src.PrimariesToken);
                 var ft = !string.IsNullOrWhiteSpace(tt) ? tt
                        : (!string.IsNullOrWhiteSpace(o.ColorTrc) ? o.ColorTrc
-                                                                 : src?.TransferToken);
+                                                                 : src.TransferToken);
                 if (!string.IsNullOrWhiteSpace(fp) && !string.IsNullOrWhiteSpace(ft))
                     dst = ColorSpaceDescriptor.FromCicp(fp, ft, DstLabel);
                 // 再退一步：源描述不可命名（如 ProPhoto 源无 CICP 等价）但用户给了**一个**轴 ⇒

@@ -12,6 +12,108 @@
 
 ## 📝 更新日志
 
+### v1.6.0-beta6 (2026-10-07) — 4 个静默缺陷修复（含「给了参数却被否认给了」）+ 高级编码选项全量核查 + 测试二分细化（门禁 72→73）
+
+> **谱系**：`src/` 下 **11 个产品文件**改动（+346/−49 行）；测试侧一次**二级细分**
+> （5 个巨型组文件 → 31 个「一个 mode 一个文件」）；新增门禁 **第 73 条**。
+> 所有修复均有**产物级 / 字节级**判据背书（全量 73 条门禁：仅 `probe:runner` 因
+> **本机沙箱限制**失败，已完整定性为**非产品缺陷**）。
+
+**🔴 `manual` 色彩策略下「只给 primaries」被误拒，且报错文案与事实不符（含**静默不交付**）**
+
+- 用户可见症状（`--color-strategy manual --color-primaries bt2020`）：命令被拒、零产物，
+  且提示「**未提供任何目标色彩描述**」—— 而用户**明明给了** primaries。
+- 根因**三层**，逐层实测：
+  ① `ColorIntentFactory` 的判据在 `HasExplicitColorTarget`（CP **或** CT 非空）成立时**只**看 `ColorTrc`
+  ⇒ 只给 primaries 时 `Target=null` ⇒ 规划层立即 `Reject`；
+  ② `FfmpegCommandBuilder.Decision` 的高级分支同样**只**看 `ColorTrc`
+  ⇒ 即便放行，也只是"命令被接受"而**产物标注仍是源的 P3**（`smpte432`）——
+  **静默不交付**，比误拒更隐蔽；
+  ③ 放宽判据后，描述符要求**两半都能命名** ⇒ 只给一半会报 `目标语义 bt2020/ 无法命名`。
+- **修法**：判据改为「CP 或 CT 任一在位即算显式目标」+ 缺失的一半按**源语义**补齐；
+  两处判据同源。`ManualIntent` 的装配同时接通（此前 `ManualIntent.Create` **全仓零调用点**，
+  属"有声明、无实现"）。
+- **实测**：`--color-primaries bt2020` ⇒ 产物 `color_primaries=bt2020`（修前 rc=1 零产物）；
+  `bt709`/`smpte432` 各自兑现；`--color-trc linear` ⇒ `jxlinfo` 报 *Linear transfer function*。
+  ⇒ **不止放行，而是真兑现**。
+
+**🔴 `--dry-run` 预览与真实执行不同源 ⇒ 预览**少报真实编码器**（会导致审计假阴性）**
+
+- 实测两处不一致：① `-f jxr -e Jxr` 预览只写 `ffmpeg`，真实核心编码器是 **JxrEncApp**；
+  ② `-f dng --dng-bit-depth 8` 预览**漏 `-4`**、漏 `-jxlq`，且用了**已废弃的 `-q`**
+  （`-q` 是 demosaic 质量，被 dngtool 当成 JXL 质量 3 ⇒ **严重有损**）。
+- **影响**：任何以 dry-run 为准的自动化审计都会得到**假阴性**
+  —— 实测若只信 dry-run，会误报两条**不存在**的缺陷（「dng-bit-depth 失效」「JXR 后端没接上」）。
+- **修法 = 结构级单一真源**（不是补两行参数）：抽出 `RawService.BuildEncodeToDngArguments`
+  （预览+执行 2→1 处）与 `JxrService.ResolveQuality`（两个真实出口+预览 3→1 处）
+  ⇒ **结构上不可能再漂移**。
+
+**🟠 14 条「高级编码选项被忽略/降级」的告警在 **GUI 里完全不可见****
+
+- 产品是 `WinExe`（GUI 无控制台），而这些告警全走 `Console.WriteLine`
+  ⇒ headless 用户看得到、**GUI 用户看不到**（属"门禁看得见、用户看不见"的盲区）。
+- **修法**：保留 Console 输出（headless 与门禁依赖其文本，**逐字未变**），
+  另加 `AsyncLocal<Action<string>?> WarnSink` + `EmitWarn()` 转发到 GUI 面板
+  `EncoderOptionWarning`。14 处调用点全部改走 `EmitWarn`，**告警文案一字未改**。
+- ⚠ 选 `AsyncLocal` 而非普通 static：队列项**多线程并发**，ambient 值会把 A 项的告警串进 B 项。
+- ⚠ **已知边界**：转换**执行期**（queue-run）的告警仍只在 headless stdout + 详情窗口
+  —— 接到 GUI 面板会让 `item.Log` 经 `FlushItemLog` **回显到 stdout ⇒ 告警翻倍**、破坏门禁 grep
+  （实测后主动回退，`QueueProcessor` 最终 0 diff）。
+
+**🟠 两个 API 未过色彩 token 规范化器 ⇒ 传用户友好名直接 `exit -22`、零产物**
+
+- `RawColorPipeline.WriteRgb48ToPngAsync` 与 `GainMapEncoder.EncodeAvifFileAsync` 直接把
+  `primaries/trc/matrix` 拼进命令行，**没过** `ColorSpaceRegistry` 的规范化器
+  —— 而本仓自己在注释里逐字写着「不规范化 ⇒ ffmpeg 报 `Unable to parse` ⇒ **退出码 -22、零产物**」，
+  且 `FfmpegOptions` 的 setter **确实**调了规范化器 ⇒ 属**口径不一致**。
+- **实测**：`-color_primaries srgb` ⇒ `[Eval] Undefined constant … in 'srgb'`、零产物；
+  过规范化器（`srgb→bt709`）后 ⇒ rc=0、产物正常。修复后 `xcheck` 的 SDR 格从**硬崩**变 **73.19 dB 全绿**。
+
+**🚦 门禁 72 → 73 条：新增 `verify-dryrun-parity.ps1`**
+
+- 锁「`--dry-run` 预览 ↔ 真实执行」的**同源性**：判据 **A 多报 / B 少报（只认编码器类工具）/
+  C 实参级逐字同源** + 负控 + 各臂「真实侧非空」反控；4 臂（jxr/png/jpg/dng）。实测 **16/0**、~8 s。
+- ⚠ **接线时发现并封住门禁自身的假阴性**：初版头注释声称锁**两处**缺陷，但**无 dng 臂**
+  ⇒ 判据②**无人锁**。变异实测（dng 预览改成恒 16 位）当时仍 `pass=10 fail=0` **全绿**；
+  补 dng 臂 + 判据 C 后同一变异 ⇒ `pass=15 fail=1` **转红**。
+- ⚠ 边界（如实登记）：`JxrEncApp` **无实参级锁**（真实侧中转是运行时临时名，逐字比会假红）、
+  gif/webp/apng/tiff **暂无臂**。依赖仓内夹具 `tests/fixtures/raw_src_8bit.dng`，缺件 ⇒ SKIP 点名（fail-closed）。
+
+**🧪 测试工程**二级细分**：一个 mode 一个文件**
+
+- 动机（用户原话）：「测试应该是一个个项目，这样可以单独测试部分项目避免一点更改就需要跑一大堆测试」。
+- 5 个巨型组文件（**2437 / 1274 / 1076 / 728 / 693 行**）→
+  **5 个 53~136 行的共享底座 + 31 个 `Modes/<mode>.cs`**；类改 `partial`
+  ⇒ **`Program.cs` 与全部调用点一字未动**。
+- **验收三道**：① **逐字性** —— `Modes/*.cs` 的每一个代码行都能在改前文件里找到（零改写）；
+  ② **读数零漂移** —— `core 332/1`、`color 126/0`、`engine 82/1`、`geometry 75/1`、`diagnostics 82/6` 逐字一致；
+  ③ **结构锁全绿**。拆分后单 mode 可独立跑（实测 113–288 ms/个）。
+
+**🔧 其它**
+
+- `_lib-matrix.ps1` 的 A30 取证锚点因源码插入 31 行而漂移 ⇒ **重 pin**（`821→852`、`773→804`），
+  并以变异验牙证明锁仍有牙（改回旧行号 ⇒ `pass=7 fail=1` 转红）。
+- `verify-ui-split-verbatim.ps1` 引入**已登记偏离组**（恰 1 项 `GroupJ_`），
+  其余 16 组仍逐字比较；变异验牙通过（改 `GroupL_` 真断言 ⇒ 立刻红）。
+- **订正**两处此前报告的结论：NVENC `-rc` 的"三档产物差异"在本机**不可复核**
+  （`av1_nvenc` 报 `No capable devices found`，且证据里无原始日志）⇒ 由 P0 降 P1；
+  avifenc `--target-size` 实测呈**阶梯且不命中**目标（2000→3570、10000→7930、60000→7930）⇒ 由 P0 降 P2。
+
+**🔧 构建卫生**
+
+- 恢复 **0 警告 / 0 错误** 构建：L-1 修复改动可空流分析状态后，`ColorIntentFactory` 的
+  `src.Curve` 报出 `CS8602`。根因是**作者侧**两处：① 早退保证 `src` 非空、但分析器对
+  「跨多个 if 重赋值 + 早退」不收敛；② 同一函数里我写的 `src?.PrimariesToken`（空条件运算符）
+  会把 `src` **重新放宽为可能为 null**。修法 = 去掉不必要的 `?.` + 用一次 `!`（null-forgiving）
+  把已知不变量写给编译器 —— **运行时不改行为**。
+  ⚠ 刻意**不**新增 `if (src == null) { … }` 判空：那会重复一条既有中文文案，而
+  `_probe-cjk-hardcode-scan` 的「C# UI 面」桶**按行计数、余量为 0** ⇒ 会顶成 834 > 833（实测踩过）。
+
+**📌 门禁基线（本次发布时）**：受管脚本 **73 条**；`ServiceProbe` 探针默认清单 **26 个 mode**。
+⚠ 实时权威值以 `_run-step3-gates.ps1` 的 `$Probes` 与 `$expectedScriptCount` 为准。
+
+---
+
 ### v1.6.0-beta5 (2026-10-05) — 10 个 P0 修复（含 2 个静默数据/隐私缺陷）+ 测试工程物理拆分（门禁 68→72）
 
 > **谱系**：本条是**大量真行为变更** —— `src/` 下 11 个产品文件被改动（+547/−31 行），
