@@ -134,6 +134,20 @@ namespace FfmpegGui.Services
         }
 
         /// <summary>
+        /// 从用户选项解析 JxrEncApp 的 `-q` 质量值 (0.0-1.0) —— **唯一真源**。
+        ///
+        /// ⚠ 抽出来的动机（2026-10-07，D-1）：JXR 有两个真实出口
+        ///   （`QueueProcessor.ProcessJxrAsync` 与 `RawColorPipeline.EncodeJxrViaJxrEncAppAsync`），
+        ///   两处都写着同一条判据「`Quality/100.0`，`Lossless` 时恒 1.0」。
+        ///   `--dry-run` 预览**此前完全没有这条判据**（只写 `ffmpeg`，见 D-1），
+        ///   若在预览里再抄一份就会变成第三处 ⇒ 迟早漂移。故收拢到本方法，三处共用。
+        /// </summary>
+        /// <param name="qualityPercent">用户质量 (0-100)</param>
+        /// <param name="lossless">无损开关（true 时恒 1.0）</param>
+        public static double ResolveQuality(int qualityPercent, bool lossless)
+            => lossless ? 1.0 : qualityPercent / 100.0;
+
+        /// <summary>
         /// 执行 JxrEncApp 编码。
         /// </summary>
         public static async Task<int> RunAsync(

@@ -145,7 +145,41 @@ function Get-AxisTokenOverrides {
     $m['animation-loop|-1']        = @('--animation-loop=-1')
     $m['jpeg-gain-map-quality|-1'] = @('--jpeg-gain-map-quality=-1')
 
+    # ── encoder 轴：⚠ **不在此处配对 `-f`**（2026-10-07 修正）────────────────────────
+    #  背景：`Get-SingleAxisCases` 的 `$base` **不含 `-f`**，而产品**默认格式是 `jxl`**
+    #    （实测 `--headless --dry-run -i x.png -o d` ⇒ `[x.png → x.png.jxl] cjxl …`）。
+    #    ⇒ 裸发 `-e Cjpegli` / `-e Jxr` / `-e Dng` 时目标格式仍是 `jxl`，与后端**结构性不相容**
+    #      ⇒ 产品**正确地**显式拒绝（`所选编码器后端 X 不适用于目标格式 jxl…`）。
+    #    ⚠ 这**不是产品缺陷**，是**L1 用例的合法域声明不完整**（`docs/TESTING.md` §6 第 65 条）。
+    #
+    #  ⚠⚠ 为什么**不能**把配对写进本表：本表是 **L1/L2/L3 共用**的 token 表，而
+    #    L2（两两正交）会把 `encoder` 轴与 `format` 轴**组合**进同一个 case
+    #    ⇒ 两条路径都发 `-f` ⇒ **重复 CLI key** ⇒ 撞 `_lib-matrix.ps1` 的 A10 卫生判据
+    #    （实测：`bad=L2-0001:-f,…` 从 0001 一路红到 L3 全部）。
+    #    这正是本仓"改一处、另一处静默受害"的典型形态，靠**结构自检 A10 当场抓到**。
+    #  ⇒ 正确位置：配对只下发在 **L1 单变量**的生成处（见 `Get-SingleAxisCases`），
+    #    那里没有 `format` 轴参与，不存在重复。L2/L3 保持"一条轴一个 token"的纯净语义。
+    #    配对表本身仍是**单一真值**，定义在 `Get-EncoderCompatibleFormat`（下方函数）。
     return $m
+}
+
+# 「编码器后端 ⇒ 其兼容的目标格式」**单一真值**（2026-10-07 新增）。
+# 用途：L1 单变量用例在发 `-e <后端>` 时，**同时**发一个与它相容的 `-f <格式>`，
+#   否则默认格式 `jxl` 会让 3/5 个后端被产品**正确拒绝**（见上方注释）。
+# 来源：`EncoderDetectionService` 的后端↔格式相容判定（`IsCompatibleWith` 一族），
+#   实机逐格验证：5 种后端各配其原生格式均 `rc=0` 且产出非空。
+#   · `Dng` ⇒ `dng` 需要 **RAW 源**；普通 PNG ⇒ 产品正确拒绝「非 RAW 输入」
+#     ⇒ 调用方按 `requires-raw-source` 前提**点名 SKIP**（不判红、也不静默）。
+function Get-EncoderCompatibleFormat {
+    param([string]$Backend)
+    switch ($Backend) {
+        'Ffmpeg'  { return 'jxl' }
+        'Cjxl'    { return 'jxl' }
+        'Cjpegli' { return 'jpg' }   # cjpegli 是 JPEG-LI 编码器，**只产 JPEG**
+        'Jxr'     { return 'jxr' }
+        'Dng'     { return 'dng' }
+        default   { return $null }
+    }
 }
 
 # 取某轴某取值对应的 CLI token 数组。
@@ -324,12 +358,32 @@ function Get-SingleAxisCases {
             $value = [string]$v
             # ⚠ 必须用 [string[]] 接收（见 Get-AxisValueTokens 上方的数组语义说明）
             [string[]]$tokens = Get-AxisValueTokens -Axis $axis -Value $value -IccFile $IccFile -Overrides $Overrides
-            $argList = @($base) + @($tokens)
+            # ── encoder 轴的**格式配对**（2026-10-07 新增，只在这里做）────────────────
+            # 为什么在 L1 生成处而不是共用的 token 表：见 `Get-AxisTokenOverrides` 上方那段
+            #   「不能写进本表」的说明 —— 写进共用表会让 L2/L3 的 encoder×format 组合**重复发 `-f`**，
+            #   当场撞 A10 卫生判据（实测 bad 从 L2-0001 一路红到 L3 全部）。
+            # 配对来源 = `Get-EncoderCompatibleFormat`（单一真值）。
+            [string[]]$pair = @()
+            if ($axis.Name -eq 'encoder') {
+                $fmt = Get-EncoderCompatibleFormat -Backend $value
+                if ($fmt) { $pair = @('-f', $fmt) }
+            }
+            $argList = @($base) + @($tokens) + @($pair)
+            # ── 前提声明（2026-10-07 新增）──────────────────────────────────────────
+            # 某些取值**只有在特定源**上才合法，喂普通 PNG 会被产品**正确拒绝**。
+            # 若不显式声明，执行层只会看到 `no-product(exit=1)` ⇒ 与真缺陷**无法区分**
+            # （本仓 §6 第 65 条：断言的『前提』本身写错）。
+            # ⚠ `dng`：编码 DNG 需要**传感器 RAW 数据**，普通 PNG 无此数据 ⇒
+            #   产品实测 `❌ 失败 (非 RAW 输入)` + `⚠️ 仅 RAW/DNG 文件可编码为 DNG`（正确行为）。
+            #   ⇒ 声明前提，由执行层判为 SKIP（点名）而非 FAIL，**不谎报红也不静默消失**。
+            $pre = ''
+            if ($value -eq 'dng') { $pre = 'requires-raw-source' }
             $case = [pscustomobject]@{
-                Id    = ('L1-{0}-{1:d2}' -f $axis.Name, $idx)
-                Axis  = $axis.Name
-                Value = $value
-                Args  = $argList
+                Id           = ('L1-{0}-{1:d2}' -f $axis.Name, $idx)
+                Axis         = $axis.Name
+                Value        = $value
+                Args         = $argList
+                Precondition = $pre
             }
             [void]$cases.Add($case)
         }

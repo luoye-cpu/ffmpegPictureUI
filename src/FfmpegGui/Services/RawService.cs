@@ -190,35 +190,31 @@ public static class RawService
     }
 
     /// <summary>
-    /// 将 RAW/DNG 文件编码为 DNG 输出 (dngtool -e)。
+    /// 构建 `dngtool -e`（DNG 编码）的实参串 —— **唯一真源**。
+    ///
+    /// ⚠ 抽出来的动机（2026-10-07，D-1）：`--dry-run` 预览曾**自己另写一份** `dngtool` 命令
+    ///   （旧 `MainWindow.BuildQueueItemCommand`），与这里**两处判据**，实测已经漂移两处：
+    ///     `--dng-bit-depth 8` 漏 `-4`，且漏 `-jxlq`（JXL 质量）。
+    ///   ⇒ 预览声称的命令与真实执行**不是同一条**，任何以 dry-run 为准的审计得到**假阴性**。
+    ///   现在预览与执行都调本方法 ⇒ 结构上不可能再漂移（判据只有一份）。
     /// </summary>
     /// <param name="rawPath">输入 RAW/DNG 文件</param>
     /// <param name="outputDngPath">输出 DNG 路径</param>
     /// <param name="compression">0=无损 JPEG, 1=JXL</param>
     /// <param name="jxlQuality">JXL 质量 (0=无损, 1-100=有损)</param>
-    /// <param name="log">日志回调</param>
-    /// <param name="ct">取消令牌</param>
     /// <param name="linear">true=输出线性 DNG（无 CFA，体积更小），false=保留 CFA (Bayer)</param>
     /// <param name="jxlEffort">JXL 编码努力 (1-9, 默认 7)</param>
     /// <param name="jxlDecodeSpeed">JXL 解码速度提示 (DNG 规范 1-4, 默认 4)</param>
     /// <param name="bitDepth">输出位深 (8 或 16)</param>
     /// <param name="highlightMode">高光模式 (LibRaw -H: 0=裁剪, 1=恢复, 2=blend)</param>
-    /// <param name="threads">多线程数 (0=自动用硬件并发, 1=单线程)。2026-08-15 新增。</param>
-    /// <returns>成功返回 true</returns>
-    public static async Task<bool> EncodeToDngAsync(
+    /// <param name="threads">多线程数 (0=自动用硬件并发, 1=单线程)</param>
+    /// <returns>dngtool 实参串（不含可执行名）</returns>
+    public static string BuildEncodeToDngArguments(
         string rawPath, string outputDngPath,
         int compression = 0, int jxlQuality = 0,
-        Action<string>? log = null, CancellationToken ct = default,
         bool linear = false, int jxlEffort = 7, int jxlDecodeSpeed = 4,
         int bitDepth = 16, int highlightMode = 1, int threads = 0)
     {
-        if (!IsDngTool)
-        {
-            log?.Invoke("[RAW] DNG 编码需要 dngtool 引擎\n");
-            return false;
-        }
-
-        log?.Invoke($"[RAW] dngtool 编码 DNG: {Path.GetFileName(rawPath)}\n");
         var args = $"-e -i \"{rawPath}\" -O \"{outputDngPath}\"";
         if (compression == 1)
         {
@@ -253,6 +249,42 @@ public static class RawService
         // 多线程 (2026-08-15): 0=自动(硬件并发), 1=单线程, N=指定
         if (threads > 0)
             args += $" -threads {threads}";
+        return args;
+    }
+
+    /// <summary>
+    /// 将 RAW/DNG 文件编码为 DNG 输出 (dngtool -e)。
+    /// </summary>
+    /// <param name="rawPath">输入 RAW/DNG 文件</param>
+    /// <param name="outputDngPath">输出 DNG 路径</param>
+    /// <param name="compression">0=无损 JPEG, 1=JXL</param>
+    /// <param name="jxlQuality">JXL 质量 (0=无损, 1-100=有损)</param>
+    /// <param name="log">日志回调</param>
+    /// <param name="ct">取消令牌</param>
+    /// <param name="linear">true=输出线性 DNG（无 CFA，体积更小），false=保留 CFA (Bayer)</param>
+    /// <param name="jxlEffort">JXL 编码努力 (1-9, 默认 7)</param>
+    /// <param name="jxlDecodeSpeed">JXL 解码速度提示 (DNG 规范 1-4, 默认 4)</param>
+    /// <param name="bitDepth">输出位深 (8 或 16)</param>
+    /// <param name="highlightMode">高光模式 (LibRaw -H: 0=裁剪, 1=恢复, 2=blend)</param>
+    /// <param name="threads">多线程数 (0=自动用硬件并发, 1=单线程)。2026-08-15 新增。</param>
+    /// <returns>成功返回 true</returns>
+    public static async Task<bool> EncodeToDngAsync(
+        string rawPath, string outputDngPath,
+        int compression = 0, int jxlQuality = 0,
+        Action<string>? log = null, CancellationToken ct = default,
+        bool linear = false, int jxlEffort = 7, int jxlDecodeSpeed = 4,
+        int bitDepth = 16, int highlightMode = 1, int threads = 0)
+    {
+        if (!IsDngTool)
+        {
+            log?.Invoke("[RAW] DNG 编码需要 dngtool 引擎\n");
+            return false;
+        }
+
+        log?.Invoke($"[RAW] dngtool 编码 DNG: {Path.GetFileName(rawPath)}\n");
+        var args = BuildEncodeToDngArguments(
+            rawPath, outputDngPath, compression, jxlQuality,
+            linear, jxlEffort, jxlDecodeSpeed, bitDepth, highlightMode, threads);
         log?.Invoke($"[RAW] dngtool {args}\n");
 
         var ok = await RunProcessAsync(_detectedPath!, args, outputDngPath, "dngtool-e", log, ct);

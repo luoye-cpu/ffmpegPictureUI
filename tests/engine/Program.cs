@@ -44,10 +44,17 @@ namespace Tests.Engine
             // ⚠ 2026-10-05 审查补：这三个 mode 组表早已声明，但当初**漏了分派**
             //   ⇒ 独立跑时**静默 0 条断言**（旧宿主分别是 engine 35/0、simdswitch 28/0、
             //     gamut 需参数故 0/0）。属"声明了却没实现"，已补齐。
-            var rest = args.Length > 1 ? args[1..] : Array.Empty<string>();
+            //
+            // ⚠⚠ 2026-10-07 修复（L-2）：**必须传完整 `args`，不能传 `args[1..]`**。
+            //   `ProbeGamut`（`GamutFit.cs:670`）是从旧宿主**逐字抽出**的，下标约定与旧宿主一致
+            //   （`args[0]` = mode 名、`args[1]` = jpeg、`args[2]` = expectedToken）。
+            //   原写法 `args[1..]` 使实参整体前移一格 ⇒ 给足实参也打 `usage:` + fail=1。
+            //   实测（2026-10-07）：`Tests.Engine.exe gamut <jpg>` ⇒ usage / fail=1（错）；
+            //   `Tests.Engine.exe gamut gamut <jpg>` ⇒ 真跑（对）。
+            //   ⚠ `engine`/`simdswitch` 本就无参，保持不传。
             if (mode == "" || mode == "engine") EngineGroup.RunEngineAb();
             if (mode == "" || mode == "simdswitch") EngineGroup.RunSimdSwitch();
-            if (mode == "" || mode == "gamut") EngineGroup.RunGamut(rest);
+            if (mode == "" || mode == "gamut") EngineGroup.RunGamut(args);
 
             Harness.EmitProbeResult();   // ⚠ 必须是 `PROBE RESULT:` 口径（运行器与多个门禁按它判"跑没跑"）
             return Harness.ExitCode();

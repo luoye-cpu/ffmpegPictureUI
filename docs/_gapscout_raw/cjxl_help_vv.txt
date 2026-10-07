@@ -1,0 +1,116 @@
+JPEG XL encoder v0.11.2 332feb1 [AVX2,SSE2]
+Usage: C:\PLAN\ffmpegPictureUI\publish\PLAN\jxl\bin\cjxl.exe INPUT OUTPUT [OPTIONS...]
+ INPUT
+    the input can be JXL, PPM, PNM, PFM, PAM, PGX, PNG, APNG, GIF, JPEG
+ OUTPUT
+    the compressed JXL output file
+
+Basic options:
+ -d DISTANCE, --distance=DISTANCE
+    Target visual distance in JND units, lower = higher quality.
+    0.0 = mathematically lossless. Default for already-lossy input (JPEG/GIF).
+    1.0 = visually lossless. Default for other input.
+    Recommended range: 0.5 .. 3.0. Allowed range: 0.0 ... 25.0. Mutually exclusive with --quality.
+ -q QUALITY, --quality=QUALITY
+    Quality setting, higher value = higher quality. This is internally mapped to --distance.
+    100 = mathematically lossless. 90 = visually lossless.
+    Quality values roughly match libjpeg quality.
+    Recommended range: 68 .. 96. Allowed range: 0 .. 100. Mutually exclusive with --distance.
+ -e EFFORT, --effort=EFFORT
+    Encoder effort setting. Range: 1 .. 10.
+    Default: 7. Higher numbers allow more computation at the expense of time.
+    For lossless, generally it will produce smaller files.
+    For lossy, higher effort should more accurately reach the target quality.
+ -V, --version
+    Print encoder library version number and exit.
+ --quiet
+    Be more silent
+ -v, --verbose
+    Verbose output; can be repeated and also applies to help (!).
+
+Advanced options:
+ -a A_DISTANCE, --alpha_distance=A_DISTANCE
+    Target visual distance for the alpha channel, lower = higher quality.
+    0.0 = mathematically lossless. 1.0 = visually lossless.
+    Default is 0.
+    Recommended range: 0.5 .. 3.0. Allowed range: 0.0 ... 25.0.
+ -p, --progressive
+    Enable (more) progressive/responsive decoding.
+ --group_order=0|1
+    Order in which 256x256 groups are stored in the codestream for progressive rendering.
+    0 = scanline order, 1 = center-first order. Default: 0.
+ --container=0|1
+    0 = Avoid the container format unless it is needed (default)
+    1 = Force using the container format even if it is not needed.
+ --compress_boxes=0|1
+    Disable/enable Brotli compression for metadata boxes. Default is 1 (enabled).
+ --brotli_effort=B_EFFORT
+    Brotli effort setting. Range: 0 .. 11.
+    Default: 9. Higher number is more effort (slower).
+ -m 0|1, --modular=0|1
+    Use modular mode (default = encoder chooses, 0 = enforce VarDCT, 1 = enforce modular mode).
+ -j 0|1, --lossless_jpeg=0|1
+    If the input is JPEG, losslessly transcode JPEG, rather than using reencode pixels. Default is 1 (losslessly transcode)
+ --num_threads=N
+    Number of worker threads (-1 == use machine default, 0 == do not use multithreading).
+ --photon_noise_iso=ISO_FILM_SPEED
+    Adds noise to the image emulating photographic film or sensor noise.
+    Higher number = grainier image, e.g. 100 gives a low amount of noise,
+    3200 gives a lot of noise. Default is 0.
+ --intensity_target=N
+    Upper bound on the intensity level present in the image, in nits.
+    Default is 0, which means 'choose a sensible default value based on the color encoding.
+ -x key=value, --dec-hints=key=value
+    This is useful for 'raw' formats like PPM that cannot store colorspace information
+    and metadata, or to strip or modify metadata in formats that do.
+    The key 'color_space' indicates an enumerated ColorEncoding, for example:
+      -x color_space=RGB_D65_SRG_Per_SRG is sRGB with perceptual rendering intent
+      -x color_space=RGB_D65_202_Rel_PeQ is Rec.2100 PQ with relative rendering intent
+    Shorthands: sRGB, DisplayP3, Rec2100PQ, Rec2100HLG
+    The key 'icc_pathname' refers to a binary file containing an ICC profile.
+    The keys 'exif', 'xmp', and 'jumbf' refer to a binary file containing metadata;
+    existing metadata of the same type will be overwritten.
+    Specific metadata can be stripped using e.g. -x strip=exif.    Stripping metadata when losslessly recompression JPEGs only works     without reconstruction, hence `--allow_jpeg_reconstruction=0`     must be passed in this case.
+
+Expert options:
+ --allow_jpeg_reconstruction=0|1
+    If --lossless_jpeg=1, store JPEG reconstruction metadata in the JPEG XL container.
+    This allows reconstruction of the JPEG codestream. Default: 1.
+ --codestream_level=K
+    The codestream level. Either `-1`, `5` or `10`.
+ --faster_decoding=0|1|2|3|4
+    0 = default, higher values improve decode speed at the expense of quality or density.
+ --premultiply=-1|0|1
+    Force premultiplied (associated) alpha.
+ --keep_invisible=0|1
+    disable/enable preserving color of invisible pixels (default: 1 if lossless, 0 if lossy).
+ --center_x=-1..XSIZE
+    Determines the horizontal position of center for the center-first group order.
+    Default -1 means 'middle of the image', values [0..xsize) set this to a particular coordinate.
+ --center_y=-1..YSIZE
+    Determines the vertical position of center for the center-first group order.
+    Default -1 means 'middle of the image', values [0..ysize) set this to a particular coordinate.
+ --progressive_ac
+    Use the progressive mode for AC.
+ --qprogressive_ac
+    Use the progressive mode for AC with shift quantization.
+ --progressive_dc=num_dc_frames
+    Progressive-DC setting. Valid values are: -1, 0, 1, 2.
+ --resampling=-1|1|2|4|8
+    Resampling for color channels. Default of -1 applies resampling only for very low quality.
+    1 = downsampling (1x1), 2 = 2x2 downsampling, 4 = 4x4 downsampling, 8 = 8x8 downsampling.
+ --ec_resampling=-1|1|2|4|8
+    Resampling for extra channels. Same as --resampling but for extra channels like alpha.
+ --already_downsampled
+    Do not downsample before encoding, but still signal that the decoder should upsample.
+ --upsampling_mode=-1|0|1
+    Upsampling mode the decoder should use. Mostly useful in combination with --already_downsampled. Value -1 means default (non-separable upsampling), 0 means nearest neighbor (useful for pixel art)
+ --epf=-1|0|1|2|3
+    Edge preserving filter level, 0-3. Default -1 means encoder chooses, 0-3 set a strength.
+ --gaborish=0|1
+    Force disable/enable the gaborish filter. Default is 'encoder chooses'
+ --override_bitdepth=BITDEPTH
+    Default is zero (use the input image bit depth); if nonzero, override the bit depth
+
+ -h, --help
+    Prints this help message. Add -v (up to a total of 4 times) to see more options.

@@ -614,7 +614,7 @@ function Get-SemanticMatrices {
                 #   2026-10-02 U4b 第三半把 default 收窄 + 加"这条后端根本没有 tune 通路"的中心播报）。
                 #   抬号前已按本仓规矩 `grep -n` 复核实况行，并确认该字面量在全文件**只出现一次**
                 #   （行号锚不容歧义）。见 docs/TESTING.md §6 第 112 条。
-                'src/FfmpegGui/Services/ColorMapping/ImageEncoderArgs.cs:821|if (fmt is "png" or "tiff" or "apng" or "jxl")'
+                'src/FfmpegGui/Services/ColorMapping/ImageEncoderArgs.cs:852|if (fmt is "png" or "tiff" or "apng" or "jxl")'
             )
         },
         @{
@@ -653,7 +653,7 @@ function Get-SemanticMatrices {
                 #   （2026-10-01 第一半补 libaom tune `default:` 播报、2026-10-02 第二半改
                 #   `NormalizeTuneToken` 的两义性、第三半加"这条后端没有 tune 通路"的中心播报）；
                 #   唯一性同样已 `grep -n` 核过。
-                'src/FfmpegGui/Services/ColorMapping/ImageEncoderArgs.cs:773|AvifMaxBitDepthForEncoder(string? encoder)',
+                'src/FfmpegGui/Services/ColorMapping/ImageEncoderArgs.cs:804|AvifMaxBitDepthForEncoder(string? encoder)',
                 'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:1023|return (null, null, null, ColorMapping.ImageEncoderArgs.AvifMaxBitDepth(options), false);',   # 2026-10-04 重钉 1019→1023（同批 +4）
                 'src/FfmpegGui/Services/FfmpegCommandBuilder.Decision.cs:155|options.BitDepth = capBd;'
             )

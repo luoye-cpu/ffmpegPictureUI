@@ -534,6 +534,91 @@ namespace UiHostShared
             }
         }
 
+        /// <summary>
+        /// 前提不满足 ⇒ **点名跳过**（2026-10-07 新增）。
+        /// <para><b>为什么必须有</b>：有些 UI 断言的真值依赖**本机环境**（如"GUI 是否提供硬件编码器项"
+        /// 取决于 GPU 检测是否落地）。此前用 <c>Check(..., cond, "no … in this environment")</c> 表达，
+        /// 环境不满足时**谎报红**（本机实测：无 <c>⚡</c> 项 ⇒ 恒定 FAIL，把环境问题记成产品缺陷）。
+        /// </para>
+        /// <para>⚠ 与 <c>docs/TESTING.md</c> §6 第 68 条「读不到前置就静默跳过 ⇒ 假绿」的**关键区别**：
+        /// 本方法**必须**打印 <c>[SKIP]</c> 行并计入 <see cref="Tests.Shared.Harness.SkipCount"/>，
+        /// **绝不**当作通过 —— 既不谎报红，也不静默消失。</para>
+        /// </summary>
+        public static void Skip(string reason)
+        {
+            Tests.Shared.Harness.SkipOnly();
+            Console.WriteLine($"[SKIP] {reason}");
+        }
+
+        /// <summary>
+        /// 选中 <c>ColorSpaceCombo</c> 的某一项，并**等异步格式联动落地**后再返回（2026-10-07 新增）。
+        /// <para><b>为什么必须有</b>：`UpdateFormatCapabilities()` 在 `hasHdr` 变化时会
+        /// <b>重建整个 Items 并把 `SelectedIndex` 复位成 0（= `auto`）</b>
+        /// （`MainWindow.xaml.cs:2222-2245`，其中 `:2245` 就是那句复位），
+        /// 而它的触发链里含 **fire-and-forget 的 `RefreshEncoderListAsync()`**（`:2051`，async）
+        /// ⇒ 直接 `combo.SelectedItem = v` 之后立刻读，可能读到**被复位后的 `auto`**。
+        /// </para>
+        /// <para><b>实测（2026-10-07，本仓 `J8` 的 flaky 根因）</b>：诊断行显示
+        /// <c>want=P3 PQ comboNow=auto</c> —— 赋值被异步复位吞掉，于是该格读到
+        /// <c>p=&lt;none&gt; t=&lt;none&gt;</c> 而判红；且红格在轮次间**漂移**
+        /// （`P3 PQ` / `BT.2020 PQ` / `J6 arib-std-b67`），正是"异步落地时机不同"的特征。
+        /// </para>
+        /// <para>⚠ 与 §6 第 68 条「读不到前置就静默跳过 ⇒ 假绿」的区别：本方法**失败时响亮抛/返回 false**，
+        /// 由调用方决定报红，**不**静默。</para>
+        /// </summary>
+        /// <returns>true = 目标项已被真正选中；false = 等不到（调用方应报红，不要静默通过）。</returns>
+        public static bool SelectColorSpaceSettled(string value, int maxPumps = 60)
+        {
+            var cs = Find<ComboBox>("ColorSpaceCombo");
+            if (cs == null) return false;
+            // 先切到一个**必然不同**的项，保证下一次赋值是真实变更（触发 SelectionChanged）。
+            for (int i = 0; i < cs.ItemCount; i++)
+            {
+                var it = cs.Items[i] as string;
+                if (it != null && it != value) { cs.SelectedIndex = i; break; }
+            }
+            Pump(6);
+            cs.SelectedItem = value;
+            // 轮询到"目标真的在位且不再被复位"：连续两轮读数相同即认为异步联动已落地。
+            string? prev = null;
+            for (int i = 0; i < maxPumps; i++)
+            {
+                Pump(4);
+                var now = cs.SelectedItem as string;
+                if (now == value && prev == value) return true;
+                prev = now;
+                if (now != value)
+                {
+                    // 被异步复位了 ⇒ 重新赋值再等
+                    cs.SelectedItem = value;
+                }
+            }
+            return (cs.SelectedItem as string) == value;
+        }
+
+        /// <summary>
+        /// 把「高级色彩参数」的三个下拉（primaries / transfer / matrix）**显式**清回 `auto`（2026-10-07 新增）。
+        /// <para><b>为什么必须有</b>：`ColorSpaceCombo` 的色域联动走
+        /// <c>SelectComboItem</c>（`MainWindow.xaml.cs:3725-3732`，**按值查下标**赋值）——
+        /// 值相同时 <c>SelectedIndex</c> 不变 ⇒ <c>SelectionChanged</c> **不触发** ⇒
+        /// 高级三元组会**停留在上一格**的值。于是「快速色域」这一格的真实驱动被上一格遮蔽，
+        /// 断言读到的是**残留状态**（实测：`J8` 的失败格在 `BT.2020 PQ` / `P3 PQ` / `J6 arib-std-b67`
+        /// 之间随轮次漂移，形态恒为 <c>p=&lt;none&gt; t=&lt;none&gt;</c>）。
+        /// </para>
+        /// <para>⚠ 选 `auto` **不足以**复位：`auto` 分支只清冲突提示
+        /// （`MainWindow.xaml.cs:3594-3600`），**不**重置高级三元组。故必须本方法显式清。</para>
+        /// <para>⚠ 用途仅限**断言前的状态复位**，不是放宽判据 —— 调用方仍按原期望值精确断言。</para>
+        /// </summary>
+        public static void ResetAdvancedColorToAuto()
+        {
+            foreach (var n in new[] { "ColorPrimariesCombo", "ColorTrcCombo", "ColorMatrixCombo" })
+            {
+                var c = Find<ComboBox>(n);
+                if (c != null && c.ItemCount > 0) c.SelectedIndex = 0;   // 三个下拉的 index 0 均为 `auto`
+            }
+            Pump(6);
+        }
+
         /// <summary>把可能抛异常的用例体包起来：异常 = 一条 <c>[FAIL] name (异常)</c>，不中断整组。</summary>
         public static void Safe(string name, Action a)
         {

@@ -151,6 +151,9 @@ namespace FfmpegGui
         private Border? GpuEncoderWarning;
         private TextBlock? GpuEncoderWarningText;
         private TextBlock? GpuEncoderWarningHint;
+        // 高级编码选项被忽略/降级提示面板（原先只走 Console，GUI 模式下无控制台 ⇒ 不可见）
+        private Border? EncoderOptionWarning;
+        private TextBlock? EncoderOptionWarningText;
         private CheckBox? UseAdvancedCodec;
         private StackPanel? AdvancedCodecPanel;
         // 动图参数
@@ -531,6 +534,8 @@ namespace FfmpegGui
             GpuEncoderWarning = this.FindControl<Border>("GpuEncoderWarning");
             GpuEncoderWarningText = this.FindControl<TextBlock>("GpuEncoderWarningText");
             GpuEncoderWarningHint = this.FindControl<TextBlock>("GpuEncoderWarningHint");
+            EncoderOptionWarning = this.FindControl<Border>("EncoderOptionWarning");
+            EncoderOptionWarningText = this.FindControl<TextBlock>("EncoderOptionWarningText");
 
             // 设置绑定和初始值
             if (FormatCombo != null) FormatCombo.SelectedIndex = 0;
@@ -1599,7 +1604,9 @@ namespace FfmpegGui
             // 原先这里那行「用预览算出的结论覆盖采集结果」已删除（它存在的唯一理由就是两侧不同式）。
             if (CommandText != null)
             {
-                var args = Services.FfmpegCommandBuilder.BuildArguments(opts, _inputPath, outputPath);
+                var args = "";
+                WithEncoderOptionWarnings(() =>
+                    args = Services.FfmpegCommandBuilder.BuildArguments(opts, _inputPath, outputPath));
                 CommandText.Text = "ffmpeg " + args
                     + BuildThumbnailPreviewSuffix(opts.EnableThumbnail, opts.ThumbnailLongEdge, opts.ThumbnailQuality);
             }
@@ -3326,17 +3333,35 @@ namespace FfmpegGui
             var inputExt = Path.GetExtension(item.InputPath).ToLowerInvariant();
 
             // ── DNG 输出 (dngtool 编码) ──
+            // D-1 2026-10-07: preview must call the SAME argument builder as the real
+            // execution path (QueueProcessor.ProcessDngAsync -> RawService.EncodeToDngAsync).
+            // Previously this branch kept its own copy of the judgement and had drifted
+            // three ways vs the real one:
+            //   1. missing `-4` for --dng-bit-depth 8 (bitDepth was not passed at all)
+            //   2. missing `-jxlq` (JXL quality never emitted)
+            //   3. emitted `-q {q}` -- the stale pre-2026-09-21 form that the real path
+            //      deliberately abandoned as severely lossy (dngtool reads -q as demosaic
+            //      quality, so it was silently reinterpreted as JXL quality 3).
+            // Sharing the builder makes a second drift structurally impossible.
             if (fmt == "dng")
             {
                 var useJxl = item.Options.DngCompression == 1;
                 var jxlQ = item.Options.DngJxlQuality;
-                var linear = item.Options.DngLinear;
-                var cmd = useJxl
-                    ? $"dngtool -e -i \"{item.InputPath}\" -O \"{item.OutputPath}\" -jxl{(jxlQ > 0 ? $" -q {jxlQ}" : "")}" +
-                      $" -effort {item.Options.DngJxlEffort} -decode_speed {item.Options.DngJxlDecodeSpeed}" +
-                      (linear ? " -linear" : "")
-                    : $"dngtool -e -i \"{item.InputPath}\" -O \"{item.OutputPath}\" -lossless" + (linear ? " -linear" : "");
-                return cmd;
+                // Same legacy-field compatibility shim as ProcessDngAsync.
+                if (!useJxl && item.Options.JxlModular == true)
+                {
+                    useJxl = true;
+                    jxlQ = item.Options.Lossless ? 0 : Math.Clamp(item.Options.Quality, 1, 100);
+                }
+                return "dngtool " + RawService.BuildEncodeToDngArguments(
+                    item.InputPath, item.OutputPath,
+                    compression: useJxl ? 1 : 0, jxlQuality: jxlQ,
+                    linear: item.Options.DngLinear,
+                    jxlEffort: item.Options.DngJxlEffort,
+                    jxlDecodeSpeed: item.Options.DngJxlDecodeSpeed,
+                    bitDepth: item.Options.DngBitDepth,
+                    highlightMode: item.Options.DngHighlightMode,
+                    threads: item.Options.Threads);
             }
 
             // ── GIF → AVIF（avifenc 两步法）──
@@ -3380,6 +3405,26 @@ namespace FfmpegGui
                 && EncoderBackendCompat.IsCompatibleWith(EncoderBackend.Cjpegli, item.Options.Format))
             {
                 return "cjpegli " + CjpegliService.BuildCjpegliArguments(item.InputPath, item.OutputPath, item.Options);
+            }
+
+            // ── JXR 后端 (JxrEncApp 编码) ──
+            // D-1 2026-10-07: the JXR backend never reaches ffmpeg. Both real exits --
+            // QueueProcessor.ProcessJxrAsync and the colour-engine exit
+            // RawColorPipeline.EncodeJxrViaJxrEncAppAsync -- decode to a BMP/TIFF
+            // intermediate and hand it to JxrEncApp. The preview used to fall through to
+            // the ffmpeg default, so a user reading `--dry-run` saw only `ffmpeg` and had
+            // no way to learn that JxrEncApp (the actual encoder) would run.
+            // The intermediate is a temp file whose name is only known at run time, so the
+            // preview names it symbolically -- the point of the preview here is *which
+            // encoder runs*, and that is now stated exactly.
+            if (item.Options.EncoderBackend == EncoderBackend.Jxr
+                && EncoderBackendCompat.IsCompatibleWith(EncoderBackend.Jxr, item.Options.Format))
+            {
+                if (!JxrService.IsAvailable)
+                    return "[JXR] JxrEncApp.exe 未检测到，真实执行将失败 (JxrEncApp 未找到)";
+                var jxrQuality = JxrService.ResolveQuality(item.Options.Quality, item.Options.Lossless);
+                var jxrIntermediate = (item.Options.BitDepth ?? 16) > 8 ? "<tmp>/input.tiff" : "<tmp>/input.bmp";
+                return "JxrEncApp " + JxrService.BuildArguments(jxrIntermediate, item.OutputPath, jxrQuality);
             }
 
             // ── 默认 FFmpeg ──
@@ -4170,10 +4215,60 @@ namespace FfmpegGui
                 }
                 else
                 {
-                    var args = FfmpegCommandBuilder.BuildArguments(options, _inputPath, _outputPath);
+                    var args = "";
+                    WithEncoderOptionWarnings(() =>
+                        args = FfmpegCommandBuilder.BuildArguments(options, _inputPath, _outputPath));
                     CommandText.Text = "ffmpeg " + args;
                 }
             }
+        }
+
+        /// <summary>
+        /// Runs one command-preview build while collecting the "advanced encoder option ignored /
+        /// downgraded" notices into the GUI panel.
+        /// <para>
+        /// Why: those notices are emitted by the encoder argument builders
+        /// (<c>ImageEncoderArgs</c> / <c>FfmpegCommandBuilder</c>) straight to
+        /// <c>Console.WriteLine</c>. This app is a WinExe with no console in GUI mode, so before this
+        /// they were visible to headless users only. The sink is AsyncLocal so concurrent queue items
+        /// cannot cross-contaminate, and it is disposed at the end of each preview build.
+        /// </para>
+        /// <para>
+        /// Dedup: one preview can rebuild the command several times (format/option linkage), so the
+        /// panel shows each distinct notice once per generation.
+        /// </para>
+        /// </summary>
+        private void WithEncoderOptionWarnings(Action build)
+        {
+            var seen = new List<string>();
+            var prev = Services.ColorMapping.ImageEncoderArgs.WarnSink.Value;
+            Services.ColorMapping.ImageEncoderArgs.WarnSink.Value = msg =>
+            {
+                var t = (msg ?? "").Trim();
+                if (t.Length == 0) return;
+                foreach (var s in seen) { if (string.Equals(s, t, StringComparison.Ordinal)) return; }
+                seen.Add(t);
+            };
+            try { build(); }
+            finally { Services.ColorMapping.ImageEncoderArgs.WarnSink.Value = prev; }
+            ShowEncoderOptionWarnings(seen);
+        }
+
+        /// <summary>Shows (or clears) the aggregated advanced-encoder-option notices.</summary>
+        private void ShowEncoderOptionWarnings(IReadOnlyList<string> notices)
+        {
+            if (EncoderOptionWarning == null || EncoderOptionWarningText == null) return;
+            if (notices.Count == 0)
+            {
+                EncoderOptionWarning.IsVisible = false;
+                EncoderOptionWarningText.Text = "";
+                return;
+            }
+            var sb = new System.Text.StringBuilder();
+            foreach (var n in notices) sb.Append(n).Append('\n');
+            EncoderOptionWarningText.Text = sb.ToString().TrimEnd('\n');
+            EncoderOptionWarning.Background = Avalonia.Media.Brush.Parse("#33FF9800");
+            EncoderOptionWarning.IsVisible = true;
         }
 
         // `StopAfterCurrent_Click` 已移除，使用队列旁的复选框 `StopAfterCurrentCheck` 控制该行为。

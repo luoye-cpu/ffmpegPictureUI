@@ -2885,8 +2885,7 @@ namespace FfmpegGui.Services
                 // Step 2: JxrEncApp 编码
                 item.Log += "[jxr] Step 2: JxrEncApp 编码 JPEG XR...\n";
                 _onItemUpdated?.Invoke(item);
-                var quality = item.Options.Quality / 100.0;
-                if (item.Options.Lossless) quality = 1.0;
+                var quality = JxrService.ResolveQuality(item.Options.Quality, item.Options.Lossless);
                 var jxrArgs = JxrService.BuildArguments(intermediatePath, outputPath, quality);
                 item.Command = "JxrEncApp " + jxrArgs;
                 var jxrExit = await JxrService.RunAsync(jxrArgs,

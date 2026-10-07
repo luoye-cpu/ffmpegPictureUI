@@ -1,0 +1,32 @@
+Usage: C:\PLAN\ffmpegPictureUI\publish\PLAN\jxl\bin\cjxl.exe INPUT OUTPUT [OPTIONS...]
+ INPUT
+    the input can be JXL, PPM, PNM, PFM, PAM, PGX, PNG, APNG, GIF, JPEG
+ OUTPUT
+    the compressed JXL output file
+
+Basic options:
+ -d DISTANCE, --distance=DISTANCE
+    Target visual distance in JND units, lower = higher quality.
+    0.0 = mathematically lossless. Default for already-lossy input (JPEG/GIF).
+    1.0 = visually lossless. Default for other input.
+    Recommended range: 0.5 .. 3.0. Allowed range: 0.0 ... 25.0. Mutually exclusive with --quality.
+ -q QUALITY, --quality=QUALITY
+    Quality setting, higher value = higher quality. This is internally mapped to --distance.
+    100 = mathematically lossless. 90 = visually lossless.
+    Quality values roughly match libjpeg quality.
+    Recommended range: 68 .. 96. Allowed range: 0 .. 100. Mutually exclusive with --distance.
+ -e EFFORT, --effort=EFFORT
+    Encoder effort setting. Range: 1 .. 10.
+JPEG XL encoder v0.11.2 332feb1 [AVX2,SSE2]
+    Default: 7. Higher numbers allow more computation at the expense of time.
+    For lossless, generally it will produce smaller files.
+    For lossy, higher effort should more accurately reach the target quality.
+ -V, --version
+    Print encoder library version number and exit.
+ --quiet
+    Be more silent
+ -v, --verbose
+    Verbose output; can be repeated and also applies to help (!).
+
+ -h, --help
+    Prints this help message. Add -v (up to a total of 4 times) to see more options.

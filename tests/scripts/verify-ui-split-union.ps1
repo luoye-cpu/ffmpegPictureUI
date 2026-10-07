@@ -115,6 +115,8 @@ if (-not $SkipOldHost) {
     $mf = [regex]::Match($r.Text, '(\d+) PASS / (\d+) FAIL')
     if ($mf.Success) { $oldFail = [int]$mf.Groups[2].Value }
     Write-Host "  old host: $oldSummary ; names=$($oldNames.Count) ; exit=$($r.ExitCode)"
+    # ⚠ 2026-10-07：旧宿主**未改**，故它的断言名数仍是 409（含那条恒假红的 J1z）。
+    #   这是"参照实现"的基线，**不随拆分侧改动而变** —— 见下方 §3 的改名白名单。
     CK ($oldNames.Count -eq 409) "1a 旧宿主断言名数 == 409（实 $($oldNames.Count)）"
     CK ($oldFail -eq 0) "1b 旧宿主 FAIL == 0（实 $oldFail）"
 } else {
@@ -166,13 +168,41 @@ Write-Host ""
 $newFailTotal = ($perMode.Values | Measure-Object -Property Fail -Sum).Sum
 CK ($newFailTotal -eq 0) "2a 5 个工程全部 mode 无 FAIL（实 $newFailTotal）"
 
+# ── 2026-10-07：一处**有意**的断言**改名 + 语义修正**（必须在账上，不能靠放宽判据消化）──
+#   `J1z` 原本是 `Check("J1z 硬件编码器可选（前置）", hw != null, "no hardware encoder item
+#   in this environment")` —— 把**环境前置**写成了硬 `FAIL`（失败文案自己就写着
+#   "in this environment"）⇒ 环境不满足时**恒定假红**，并把判据 ② 一起带红。
+#   现改为：
+#     · 无硬件项 ⇒ `Skip(...)`（点名、计 skip、不判红）；
+#     · 有硬件项 ⇒ 断言**不变量**：`-c:v` 是单个 token 且不含 `⚡`/空格/`—`
+#       （这正是 J1z 当初登记的缺陷形态：图标前缀污染 `-c:v`）。
+#   ⚠ 第一版硬编码 `== "av1_nvenc"` ⇒ 在**本机当场红**（实得 `av1_amf`）——
+#     本机 GPU 检测先命中 amd 项，而 `av1_amf` 同样是合法 token ⇒
+#     **锁了"某台机器的取值"而不是"不变量"**（本仓 §6 第 116 条同族）。已改为形态判据。
+#   ⇒ 对集合的影响是**一对一替换**（旧名出、新名入）⇒ **总数不变（仍 409）**。
+#   ⚠ 这**不是**放宽：`missing` 只白名单这一条旧名、`extra` 只白名单这一条新名，
+#     两侧各自**恰好命中 1 条**（`3a2`/`3b2` 两个反控），其余任何差集照常红。
+#   ⚠ 断言**数量**不变（旧 1 条 → 新 1 条，Skip 与 PASS 互斥）⇒ union 计数守恒。
+$renamedPairs = @(
+    @{ Old = 'J1z 硬件编码器可选（前置）'; New = 'J1z 硬件编码器名解析（`-c:v` 为单个 token、不含图标/空格）' }
+)
+$expectedOldCount = 409
+# 一对一替换 ⇒ 新旧总数相同（不是 408）
+$expectedNewCount = $expectedOldCount
+
 if (-not $SkipOldHost) {
-    $missing = @($oldNames | Where-Object { -not $newNames.Contains($_) } | Sort-Object)
-    $extra   = @($newNames | Where-Object { -not $oldNames.Contains($_) } | Sort-Object)
-    CK ($missing.Count -eq 0) "3a missing（旧有新无）== 0（实 $($missing.Count)）$(if ($missing.Count) { '：' + ($missing -join ' ⧉ ') })"
-    CK ($extra.Count -eq 0)   "3b extra（新有旧无）== 0（实 $($extra.Count)）$(if ($extra.Count) { '：' + ($extra -join ' ⧉ ') })"
-    CK ($newNames.Count -eq $oldNames.Count) "3c 并集计数 == 旧宿主计数（new=$($newNames.Count) old=$($oldNames.Count)）"
-    CK ($newNames.Count -eq 409) "3d 并集计数 == 409（实 $($newNames.Count)）"
+    $renamedOld = @($renamedPairs | ForEach-Object { $_.Old })
+    $renamedNew = @($renamedPairs | ForEach-Object { $_.New })
+    $missing = @($oldNames | Where-Object { -not $newNames.Contains($_) -and $_ -notin $renamedOld } | Sort-Object)
+    $extra   = @($newNames | Where-Object { -not $oldNames.Contains($_) -and $_ -notin $renamedNew } | Sort-Object)
+    $waivedOld = @($oldNames | Where-Object { -not $newNames.Contains($_) -and $_ -in $renamedOld } | Sort-Object)
+    $waivedNew = @($newNames | Where-Object { -not $oldNames.Contains($_) -and $_ -in $renamedNew } | Sort-Object)
+    CK ($missing.Count -eq 0) "3a missing（旧有新无、且**不在**已登记改名白名单内）== 0（实 $($missing.Count)）$(if ($missing.Count) { '：' + ($missing -join ' ⧉ ') })"
+    CK ($extra.Count -eq 0)   "3b extra（新有旧无、且**不在**已登记改名白名单内）== 0（实 $($extra.Count)）$(if ($extra.Count) { '：' + ($extra -join ' ⧉ ') })"
+    CK ($waivedOld.Count -eq $renamedPairs.Count) "3a2 白名单的**旧名**恰好命中 $($renamedPairs.Count) 条（实 $($waivedOld.Count)）—— 防白名单过期后变成""什么都放过"""
+    CK ($waivedNew.Count -eq $renamedPairs.Count) "3b2 白名单的**新名**恰好命中 $($renamedPairs.Count) 条（实 $($waivedNew.Count)）—— 防""只删不加""的静默丢断言"
+    CK ($newNames.Count -eq $oldNames.Count) "3c 并集计数 == 旧宿主计数（一对一改名 ⇒ 总数守恒）（new=$($newNames.Count) old=$($oldNames.Count)）"
+    CK ($newNames.Count -eq $expectedNewCount) "3d 并集计数 == $expectedNewCount（实 $($newNames.Count)）"
 
     # 反控：判据段必须真的读到非空集合
     CK ($oldNames.Count -gt 0 -and $newNames.Count -gt 0) "4  反控：两侧集合都非空（防路径错导致空比全绿）"
@@ -181,6 +211,12 @@ if (-not $SkipOldHost) {
         Write-Host ""
         if ($missing.Count) { Write-Host "--- missing ---" -ForegroundColor Yellow; $missing | ForEach-Object { Write-Host "  $_" } }
         if ($extra.Count)   { Write-Host "--- extra ---"   -ForegroundColor Yellow; $extra   | ForEach-Object { Write-Host "  $_" } }
+    }
+    if ($waivedOld.Count -or $waivedNew.Count) {
+        Write-Host ""
+        Write-Host "--- 已登记改名（有意差异，非缺陷）---" -ForegroundColor DarkGray
+        $waivedOld | ForEach-Object { Write-Host "  (旧) $_" -ForegroundColor DarkGray }
+        $waivedNew | ForEach-Object { Write-Host "  (新) $_" -ForegroundColor DarkGray }
     }
 }
 

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using FfmpegGui.Models;
 
 namespace FfmpegGui.Services.ColorMapping;
@@ -33,6 +34,36 @@ namespace FfmpegGui.Services.ColorMapping;
 /// </summary>
 public static class ImageEncoderArgs
 {
+    /// <summary>
+    /// Optional extra sink for the "this advanced encoder option is ignored / downgraded" notices.
+    /// <para>
+    /// Why this exists: the product is a WinExe (see FfmpegGui.csproj OutputType) with no console
+    /// in GUI mode, so the Console.WriteLine notices below are invisible to GUI users while
+    /// headless runs (stdout captured by the parent) keep showing them. The GUI log panel and the
+    /// async-local scope below give the same text a second, GUI-visible channel.
+    /// </para>
+    /// <para>
+    /// Semantics: keeps Console.WriteLine exactly as before, then forwards the identical string to
+    /// this sink when one is set. Unset (the default, and every headless/test caller) means the
+    /// observable behaviour is byte-for-byte what it was before this hook existed.
+    /// </para>
+    /// <para>
+    /// AsyncLocal (not a plain static) because queue items are processed concurrently on multiple
+    /// threads; an ambient value would leak one item's notices into another item's log.
+    /// </para>
+    /// </summary>
+    public static readonly AsyncLocal<Action<string>?> WarnSink = new();
+
+    /// <summary>
+    /// Emits one "advanced option ignored" notice on both channels: Console (unchanged, headless +
+    /// gate scripts grep it) and <see cref="WarnSink"/> when a GUI scope installed one.
+    /// </summary>
+    internal static void EmitWarn(string message)
+    {
+        Console.WriteLine(message);
+        WarnSink.Value?.Invoke(message);
+    }
+
     /// <summary>0-100 质量 → mjpeg 的 qscale（2-31，越小越好）。</summary>
     public static int MapJpegQuality(int quality) => (int)Math.Round(2 + (100 - quality) * 29.0 / 100.0);
 
@@ -96,7 +127,7 @@ public static class ImageEncoderArgs
                 // 传统管线侧另有 `FfmpegCommandBuilder` 的告警。
                 // ⚠ 文案一律 **ASCII**：`_probe-cjk-hardcode-scan.ps1` 的 `CsUi` 余量为 0。
                 if (o.Lossless)
-                    Console.WriteLine("⚠ [jpeg] --lossless true ignored: the mjpeg encoder is lossy, so the output is lossy. "
+                    EmitWarn("⚠ [jpeg] --lossless true ignored: the mjpeg encoder is lossy, so the output is lossy. "
                         + "The only lossless JPEG path here is DNG container compression (--format dng --dng-compression 0).");
                 if (o.EncoderBackend == EncoderBackend.Cjpegli)
                 {
@@ -132,7 +163,7 @@ public static class ImageEncoderArgs
                     if (o.WebpPreset is "default" or "none") { a.Add("-preset"); a.Add(o.WebpPreset); }
                     else if (!string.IsNullOrWhiteSpace(o.WebpPreset))
                         // 出声：无损模式下 preset 被**有意**丢弃，但用户看不到（ASCII 文案，理由见 jpg 分支）。
-                        Console.WriteLine("⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy "
+                        EmitWarn("⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy "
                             + "quantization and can silently degrade -lossless 1 to lossy.");
                 }
                 else
@@ -142,7 +173,7 @@ public static class ImageEncoderArgs
                     { a.Add("-preset"); a.Add(o.WebpPreset); }
                     // 出声：`-compression_level` 是无损模式的 zlib 级别，有损模式下无效（原先静默丢弃）。
                     if (o.WebpCompressionLevel.HasValue)
-                        Console.WriteLine("⚠ [webp] --webp-compression ignored for lossy WebP: it maps to the "
+                        EmitWarn("⚠ [webp] --webp-compression ignored for lossy WebP: it maps to the "
                             + "lossless-mode zlib level (0-6); use --lossless true to apply it.");
                 }
                 break;
@@ -483,7 +514,7 @@ public static class ImageEncoderArgs
                 // NVENC AV1 **没有**无损档：实测 -tune lossless 与 -rc constqp 都报 not supported、rc=127
                 // ⇒ 勾了无损只能落到 cq 下限（最好但仍有损，实测 -cq 1 的 PSNR 66.17dB 而非 inf）。
                 if (o.Lossless)
-                    Console.WriteLine("[avif/av1_nvenc] --lossless true is not honoured: the NVENC AV1 encoder "
+                    EmitWarn("[avif/av1_nvenc] --lossless true is not honoured: the NVENC AV1 encoder "
                         + "has no lossless mode (ffmpeg -tune lossless / -rc constqp both fail with not "
                         + "supported). Falling back to the best constant-quality setting (-cq 1), which "
                         + "is still lossy. Use libaom-av1 or libsvtav1 for a truly lossless AVIF.");
@@ -546,7 +577,7 @@ public static class ImageEncoderArgs
                         // -tune vmaf 都是 Unable to parse、rc=127（该 AVOption 的域就到 ssim 为止），
                         // -aom-params tune=vmaf 也 rc=127 并提示需 -DCONFIG_TUNE_VMAF=1 ⇒ 发出去必崩。
                         // 旧代码把 VMAF 折成 tune=vmaf 恰好落在这个崩溃值上 ⇒ 选 VMAF 的 libaom 任务 100% 失败。
-                        Console.WriteLine("[avif/libaom-av1] tune=vmaf is not available in this libaom build "
+                        EmitWarn("[avif/libaom-av1] tune=vmaf is not available in this libaom build "
                             + "(-tune accepts only psnr | ssim, and -aom-params tune=vmaf fails with "
                             + "CONFIG_TUNE_VMAF), so no tuning flag is emitted. Switch encoder to libsvtav1 "
                             + "for a VMAF-tuned encode.");
@@ -559,7 +590,7 @@ public static class ImageEncoderArgs
                         //   这类，`NormalizeTuneToken` 现在原样返回）由下面 switch **之后**的中心播报统一
                         //   兜 ⇒ 同一个值不该挨两条措辞不同的播报。
                         if (tuneTok.Length > 0 && IsKnownTuneToken(tuneTok))
-                            Console.WriteLine("[avif/libaom-av1] tune=" + tuneTok + " is not expressible on libaom-av1 "
+                            EmitWarn("[avif/libaom-av1] tune=" + tuneTok + " is not expressible on libaom-av1 "
                                 + "in this build (-tune domain is psnr | ssim; IQ goes via -aom-params tune=iq; "
                                 + "VMAF needs -DCONFIG_TUNE_VMAF; MS_SSIM is SVT-only) => no tuning flag is emitted. "
                                 + "Use psnr/ssim/IQ on libaom, or switch the encoder to libsvtav1.");
@@ -579,7 +610,7 @@ public static class ImageEncoderArgs
                     // 无损承诺比调优指标重，且 GUI 的 SVT tune 默认档恰好是 VMAF ⇒ 必须拦。
                     if (!o.Lossless || sv == "0" || sv == "1" || sv == "2") svtParams.Add("tune=" + sv);
                     else
-                        Console.WriteLine("[avif/libsvtav1] tune=" + sv + " dropped because lossless is on: with "
+                        EmitWarn("[avif/libsvtav1] tune=" + sv + " dropped because lossless is on: with "
                             + "lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for "
                             + "tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless "
                             + "promise wins here; turn lossless off to keep the tuning metric.");
@@ -588,7 +619,7 @@ public static class ImageEncoderArgs
                     // IQ 在 SVT 里就是 tune=3，而实测（随机访问结构下）它直接 bad parameter：
                     // Tune IQ only supports all-intra and low delay ⇒ 本构建的 GUI 没有 all-intra 通路，
                     // 故不发。旧代码把 VMAF 折成 tune=3 恰好落在这个崩溃值上（见 A-6）。
-                    Console.WriteLine("[avif/libsvtav1] tune=IQ is not usable on SVT-AV1 (tune=3 aborts with "
+                    EmitWarn("[avif/libsvtav1] tune=IQ is not usable on SVT-AV1 (tune=3 aborts with "
                         + "Tune IQ only supports all-intra and low delay), so no tuning flag is emitted. "
                         + "Use libaom-av1 for IQ.");
                 break;
@@ -602,7 +633,7 @@ public static class ImageEncoderArgs
         //   都能把值送到不处理它的后端上 ⇒ 仍然是"设了不生效且无声"，按既有原则必须点名。
         if (backend is not (AvifBackend.Libaom or AvifBackend.Svt)
             && (tuneTok.Length > 0 || svtTuneTok.Length > 0))
-            Console.WriteLine("[avif] tune=" + (svtTuneTok.Length > 0 ? svtTuneTok : tuneTok)
+            EmitWarn("[avif] tune=" + (svtTuneTok.Length > 0 ? svtTuneTok : tuneTok)
                 + " is not expressible on encoder '" + (o.Encoder ?? "") + "': this build implements a "
                 + "-tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.");
         // ── 结构/速度轴 -cpu-used：libaom 私有项（自报域 0..8）──
@@ -720,7 +751,7 @@ public static class ImageEncoderArgs
                 if (o.AvifNvencSpatialAq == true)
                 { args.Add("-aq-strength"); args.Add(Math.Clamp(aqStrength.Value, 1, 15).ToString()); }
                 else
-                    Console.WriteLine("[avif/av1_nvenc] -aq-strength dropped because spatial AQ is off: NVENC "
+                    EmitWarn("[avif/av1_nvenc] -aq-strength dropped because spatial AQ is off: NVENC "
                         + "only uses this field when -spatial-aq is 1 (verified: with spatial AQ off, "
                         + "strength 5 / strength 8 / omitting it all yield the identical file). Enable "
                         + "Spatial AQ to apply it. The value 0 means do not emit this option at all, "

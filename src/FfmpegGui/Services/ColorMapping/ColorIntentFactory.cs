@@ -161,8 +161,21 @@ public static class ColorIntentFactory
         // ⚠⚠ 必须用 **`HasExplicitColorTarget`（只认 CP/CT）**：本判据是**互斥**形状，
         //   而 `--color-matrix` 是**输入声明**、不是目标轴 ⇒ 用含 Matrix 的 `HasExplicitColorParams`
         //   会让 `--color-matrix X --color-space Y` 丢掉 `ColorSpace` 目标（2026-10-04 实机确证）。
+        // ⚠⚠ 2026-10-07 修复（L-1）：原判据在 `HasExplicitColorTarget`（= CP **或** CT 非空）成立时
+        //   **只**看 `ColorTrc` ⇒ 用户只给 `--color-primaries bt2020`（不给 trc）时
+        //   `targetExplicit=false` ⇒ `it.Target=null` ⇒ 若同时是 `manual` 策略，规划层
+        //   `PlanManual` 立即 Reject 并报「**未提供任何目标色彩描述**」——而用户**明明给了 primaries**。
+        //   实机实测（2026-10-07，`--color-strategy manual` + P3 源 → png）：
+        //     · `--color-primaries bt2020`            ⇒ rc=1、exit 91、零产物、报上述错话；
+        //     · `--color-trc pq`                      ⇒ rc=0 正常；
+        //     · 两者都给 / `--color-space "BT.2020 PQ"` ⇒ rc=0 正常。
+        //   ⇒ 判据从「只认 CT」改为「**CP 或 CT 任一在位即算显式目标**」。
+        //   ⚠ 为什么这是**正确**口径而不是放宽：CP 与 CT 同属**目标轴**（`HasExplicitColorTarget`
+        //     的定义本身就把二者并列，见 `FfmpegOptions.cs:213`）；两者都缺时才回退 `ColorSpace`。
+        //   ⚠ 仍然**不含 Matrix** —— 那是**输入声明**，含它会让 `--color-matrix X --color-space Y`
+        //     丢掉 `ColorSpace` 目标（2026-10-04 实机确证，勿回退）。
         bool userTargetExplicit = o.HasExplicitColorTarget
-            ? !string.IsNullOrWhiteSpace(o.ColorTrc)
+            ? (!string.IsNullOrWhiteSpace(o.ColorPrimaries) || !string.IsNullOrWhiteSpace(o.ColorTrc))
             : !string.IsNullOrWhiteSpace(o.ColorSpace)
               && !o.ColorSpace.Equals("auto", StringComparison.OrdinalIgnoreCase);
         bool targetExplicit = o.ColorFromRawDefault
@@ -171,7 +184,46 @@ public static class ColorIntentFactory
         ColorSpaceDescriptor? dst = null;
         if (targetExplicit)
         {
-            dst = ColorSpaceDescriptor.FromCicp(tp, tt, "目标");
+            // ⚠ 该 `name` 只是描述符的**内部标签**（`ColorSpaceDescriptor.Name`，供日志/排障读），
+            //   不是用户可见文案；这里提成局部量复用，避免在源码里重复同一串中文 ——
+            //   本仓 `_probe-cjk-hardcode-scan.ps1` 的「C# UI 面」桶**不得增加**
+            //   （维护者 2026-09-18 裁定，基线已抬升 6 次 ⇒ 新增中文字面量会当场转红）。
+            const string DstLabel = "目标";
+            dst = ColorSpaceDescriptor.FromCicp(tp, tt, DstLabel);
+            // ⚠⚠ 2026-10-07 补（L-1 第一层修复的**必要配套**，否则引入新回归）：
+            //   上面把 `userTargetExplicit` 放宽到「CP **或** CT 任一在位」之后，
+            //   **只给一半**的输入会走到这里，而 `tp/tt`（来自 `EffectiveOutputColorTokens`）
+            //   可能仍只带回那一半 ⇒ `FromCicp(bt2020, null)` 返回 null ⇒
+            //   报 `目标语义 bt2020/ 无法命名` 并整条拒绝（实测 exit 90、零产物）。
+            //   ⇒ 用**用户给的另一半**补齐再试一次（这才是"只给 primaries"的语义：
+            //     色域取用户值，传递函数回退到源/默认），仍不可命名才拒绝。
+            //   ⚠ 顺序：先按 `tp/tt` 原名（保持既有口径零变化）；失败才补齐重试。
+            //   ⚠ **不得**把这条改成"直接返回 null 让调用方回退 legacy" —— 那会把
+            //     「用户明确给了目标」静默降级成「按源直通」，属本仓反复禁止的静默降级。
+            if (dst == null)
+            {
+                // ⚠ `FromCicp` 要求 primaries **与** transfer **都能命名**（任一 null ⇒ 返回 null，
+                //   见 `ColorSpaceDescriptor.cs:76-79`）。只给一半时，另一半按**源语义**补齐 ——
+                //   这正是"用户只约束了一个轴、另一个轴沿用源"的自然语义。
+                // ⚠ 两个方向都要补（实测踩过：只补 transfer 一侧 ⇒ `--color-trc pq` 仍红
+                //   `目标语义 /smpte2084 无法命名`）：
+                //   · 只给 primaries ⇒ transfer 取源曲线的 CICP token
+                //   · 只给 trc      ⇒ primaries 取源原色的 CICP token
+                var fp = !string.IsNullOrWhiteSpace(tp) ? tp
+                       : (!string.IsNullOrWhiteSpace(o.ColorPrimaries) ? o.ColorPrimaries
+                                                                      : src?.PrimariesToken);
+                var ft = !string.IsNullOrWhiteSpace(tt) ? tt
+                       : (!string.IsNullOrWhiteSpace(o.ColorTrc) ? o.ColorTrc
+                                                                 : src?.TransferToken);
+                if (!string.IsNullOrWhiteSpace(fp) && !string.IsNullOrWhiteSpace(ft))
+                    dst = ColorSpaceDescriptor.FromCicp(fp, ft, DstLabel);
+                // 再退一步：源描述不可命名（如 ProPhoto 源无 CICP 等价）但用户给了**一个**轴 ⇒
+                // 另一轴用 sRGB/bt709 惯例值补齐（与规划层「无通路容器 ⇒ 钉成 sRGB」同口径）。
+                if (dst == null && !string.IsNullOrWhiteSpace(fp))
+                    dst = ColorSpaceDescriptor.FromCicp(fp, "iec61966-2-1", DstLabel);
+                if (dst == null && !string.IsNullOrWhiteSpace(ft))
+                    dst = ColorSpaceDescriptor.FromCicp("bt709", ft, DstLabel);
+            }
             if (dst == null) { reason = $"目标语义 {tp}/{tt} 无法命名"; return null; }
             FixHdrNits(dst);
         }
@@ -183,6 +235,25 @@ public static class ColorIntentFactory
             Target = dst,
             TargetExplicit = targetExplicit,
             Format = caps,
+            // ── 手动目标三元组（2026-10-07 修复 L-1）─────────────────────────────────────
+            // ⚠⚠ 此前 `ManualIntent.Create(...)` **全仓零调用点**、且本处**从不给 `it.Manual` 赋值**
+            //   ⇒ `it.Manual` 恒 null ⇒ `ManualIntent.HasAny` 恒 false ⇒
+            //   `ColorStrategyPlanning.PlanManual` 的 `m?.HasAny` 分支是**死代码**，
+            //   而它又是 `it.Target == null` 时**唯一**的放行通路 ⇒
+            //   「manual + 只给 primaries」必然 Reject（见上 `userTargetExplicit` 处的实测）。
+            //   本处把它接上：`Manual` 是规划层 `BuildManualTarget(m)` 的**唯一**输入
+            //   （`ColorStrategyPlanning.cs:851`），不接则那条通路永不生效。
+            // ⚠ `enabled` 取「高级色彩参数已启用」= `UseAdvancedColorParameters`：
+            //   这是本仓既有的**残留值防呆**口径（`ManualIntent` 的契约：FieldsFromUi=false 时全字段强制 null，
+            //   杜绝"取消勾选高级色彩后残留值仍流入管道"的历史缺陷）。
+            //   ⚠ 与上面 `userTargetExplicit` 的**值派生**口径**不冲突**：那个判"是否已有目标"（只看值），
+            //     这个判"三元组是否可信"（看 UI 启用位）；两者回答的是不同问题，**不要合并**。
+            Manual = ManualIntent.Create(
+                o.UseAdvancedColorParameters,
+                o.ColorSpace,
+                o.ColorPrimaries,
+                o.ColorTrc,
+                o.ColorMatrix),
             // ── 位深（2026-09-16 与 legacy 口径对齐）──
             // 用户显式指定优先；**未指定时跟随源位深**（>8 才提升，否则按 8），再按容器上限钳制。
             // 旧写法 `o.BitDepth ?? 8` 会让 16-bit 源在 PNG/TIFF 上被**静默降位**到 8-bit

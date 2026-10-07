@@ -1,0 +1,63 @@
+mjpeg -h full (progressive context):
+
+    -skip_alpha        <boolean>    .D.V....... Skip processing alpha (default false)
+    -field_order       <int>        ED.V....... Field order (from 0 to 5) (default 0)
+>      progressive     1            ED.V.......
+       tt              2            ED.V.......
+       bb              3            ED.V.......
+    -signal_standard   <int>        E.......... Force/set Signal Standard (from -1 to 7) (default -1)
+       bt601           1            E.......... ITU-R BT.601 and BT.656, also SMPTE 125M (525 and 625 line interlaced)
+>      bt1358          2            E.......... ITU-R BT.1358 and ITU-R BT.799-3, also SMPTE 293M (525 and 625 line progressive)
+       smpte347m       3            E.......... SMPTE 347M (540 Mbps mappings)
+       smpte274m       4            E.......... SMPTE 274M (1125 line)
+>      smpte296m       5            E.......... SMPTE 296M (750 line progressive)
+       smpte349m       6            E.......... SMPTE 349M (1485 Mbps mappings)
+       smpte428        7            E.......... SMPTE 428-1 DCDM
+    -signal_standard   <int>        E.......... Force/set Signal Standard (from -1 to 7) (default -1)
+       bt601           1            E.......... ITU-R BT.601 and BT.656, also SMPTE 125M (525 and 625 line interlaced)
+>      bt1358          2            E.......... ITU-R BT.1358 and ITU-R BT.799-3, also SMPTE 293M (525 and 625 line progressive)
+       smpte347m       3            E.......... SMPTE 347M (540 Mbps mappings)
+       smpte274m       4            E.......... SMPTE 274M (1125 line)
+>      smpte296m       5            E.......... SMPTE 296M (750 line progressive)
+       smpte349m       6            E.......... SMPTE 349M (1485 Mbps mappings)
+       smpte428        7            E.......... SMPTE 428-1 DCDM
+    -signal_standard   <int>        E.......... Force/set Signal Standard (from -1 to 7) (default -1)
+       bt601           1            E.......... ITU-R BT.601 and BT.656, also SMPTE 125M (525 and 625 line interlaced)
+>      bt1358          2            E.......... ITU-R BT.1358 and ITU-R BT.799-3, also SMPTE 293M (525 and 625 line progressive)
+       smpte347m       3            E.......... SMPTE 347M (540 Mbps mappings)
+       smpte274m       4            E.......... SMPTE 274M (1125 line)
+>      smpte296m       5            E.......... SMPTE 296M (750 line progressive)
+       smpte349m       6            E.......... SMPTE 349M (1485 Mbps mappings)
+       smpte428        7            E.......... SMPTE 428-1 DCDM
+  idet AVOptions:
+     intl_thres        <float>      ..FV....... set interlacing threshold (from -1 to FLT_MAX) (default 1.04)
+>    prog_thres        <float>      ..FV....... set progressive threshold (from -1 to FLT_MAX) (default 1.5)
+     rep_thres         <float>      ..FV....... set repeat threshold (from -1 to FLT_MAX) (default 3)
+     half_life         <float>      ..FV....... half life of cumulative statistics (from -1 to INT_MAX) (default 0)
+  phase AVOptions:
+     mode              <int>        ..FV.....T. set phase mode (from 0 to 8) (default A)
+>      p               0            ..FV.....T. progressive
+       t               1            ..FV.....T. top first
+       b               2            ..FV.....T. bottom first
+       bff             0            ..FV....... mark as bottom-field-first
+       tff             1            ..FV....... mark as top-field-first
+>      prog            2            ..FV....... mark as progressive
+  
+  setparams AVOptions:
+       bff             0            ..FV....... mark as bottom-field-first
+       tff             1            ..FV....... mark as top-field-first
+>      prog            2            ..FV....... mark as progressive
+     range             <int>        ..FV....... select color range (from -1 to 2) (default auto)
+       auto            -1           ..FV....... keep the same color range
+    -line_number       <unsigned>   ........B.. line number -- you probably want 9 or 11 (from 0 to 65535) (default 9)
+    -wrapping_type     <unsigned>   ........B.. wrapping type (from 0 to 255) (default vanc_frame)
+>      vanc_frame                   ........B.. VANC frame (interlaced or segmented progressive frame)
+       vanc_field_1                 ........B.. VANC field 1
+       vanc_field_2                 ........B.. VANC field 2
+>      vanc_progressive_frame              ........B.. VANC progressive frame
+    -sample_coding     <unsigned>   ........B.. payload sample coding (from 0 to 255) (default 8bit_luma)
+       8bit_luma                    ........B.. 8-bit component luma samples
+
+Unrecognized option 'progressive'.
+Error splitting the argument list: Option not found
+--- exit code recorded: -1414549496

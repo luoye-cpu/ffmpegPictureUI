@@ -45,6 +45,12 @@ namespace Tests.UiSweep
         private static void SetFormat(string s) => UiHost.SetFormat(s);
         private static void Click(string name) => UiHost.Click(name);
         private static void Check(string name, bool cond, string detail = "") => UiHost.Check(name, cond, detail);
+        // ⚠ 2026-10-07 新增：前提不满足时的**点名跳过**（计 skip、不打 FAIL）—— 见 UiHost.Skip 的说明。
+        private static void Skip(string reason) => UiHost.Skip(reason);
+        // ⚠ 2026-10-07 新增：断言前把高级色彩三元组显式复位（见 UiHost.ResetAdvancedColorToAuto）。
+        private static void ResetAdvancedColorToAuto() => UiHost.ResetAdvancedColorToAuto();
+        // ⚠ 2026-10-07 新增：选中 ColorSpaceCombo 并**等异步格式联动落地**（见 UiHost.SelectColorSpaceSettled）。
+        private static bool SelectColorSpaceSettled(string v) => UiHost.SelectColorSpaceSettled(v);
         private static void Safe(string name, Action a) => UiHost.Safe(name, a);
         private static int Run(string exe, string arguments) => UiHost.Run(exe, arguments);
         private static string RunOut(string exe, string arguments) => UiHost.RunOut(exe, arguments);
@@ -131,7 +137,40 @@ namespace Tests.UiSweep
                 var t = Tok(Cmd());
                 Console.WriteLine($"      [info] J1z hw picked=\"{hw ?? "<none>"}\" -c:v token=\"{Val(t, "-c:v") ?? "<none>"}\" " +
                                   $"(期望是单个 token \"av1_nvenc\"；非单 token ⇒ ParseEncoderName 未剥离图标前缀)");
-                Check("J1z 硬件编码器可选（前置）", hw != null, "no hardware encoder item in this environment");
+                // ⚠⚠ 2026-10-07 修复（J1z 假红）：这是**环境前置**，不是产品能力断言。
+                //   失败文案自己就写着 `no hardware encoder item in this environment`，而实现写成
+                //   `Check(...)` ⇒ 环境不满足时**谎报红**（本机实测：无 `⚡` 项 ⇒ 恒定 FAIL）。
+                //   证据：`⚡` 前缀只在 GPU 状态为 `DeviceFoundUntested` 时出现
+                //     （`MainWindow.xaml.cs:1309`）；而**真正测解析能力**的断言（`L1a`/`L1b`
+                //     的 `av1_nvenc` / `mjpeg_nvenc` 精确解析）**全部 PASS**（见 ui-param-defects 组）
+                //     ⇒ 被断言的能力是好的，缺的只是"本机 GUI 提供硬件项"这个前提。
+                //   ⇒ 改为 **SKIP + 点名**（保留可见性、不谎报红）。这与 `docs/TESTING.md` §6 第 68 条
+                //     「读不到前置就静默跳过 ⇒ 假绿」的**区别**：本处**必须打印 SKIP 行**并计入 skip，
+                //     绝不当作通过 —— 既不谎报红、也不静默消失。
+                if (hw == null)
+                    Skip("J1z 硬件编码器名解析：本机 GUI 未提供硬件编码器项（无 GPU 检测落地）⇒ 本条未验证，不计入通过");
+                else
+                {
+                    // ⚠⚠ 断言必须锁**不变量**，不能锁**某台机器的取值**（2026-10-07 实测踩过）：
+                    //   第一版硬编码 `Val(t, "-c:v") == "av1_nvenc"` ⇒ 在**本机**当场红
+                    //   （`期望 "av1_nvenc"，实得 "av1_amf"`）—— 因为本机 GPU 检测先命中 **amd** 项，
+                    //   而 `av1_amf` 同样是**合法的单个 token** ⇒ 原断言把"环境差异"当成了缺陷。
+                    //   ⚠ 这正是本仓反复记载的「判据词形要回工具实测，不能照抄记忆」（§6 第 116 条）
+                    //     与「别断言具体核数」（第 10 条同族）的同一类错误。
+                    // ⇒ 本项真正要锁的**不变量**（也正是 J1z 当初登记的缺陷形态）：
+                    //   显示名带 `⚡ ` 图标前缀 ⇒ 若 `ParseEncoderName` 不剥离它，
+                    //   `-c:v` 会拿到 `⚡` 或 `⚡ av1_xxx`（**带空格/带图标**）⇒ ffmpeg 收到非法编码器名。
+                    //   ⇒ 判据 = 「`-c:v` 非空 ∧ 不含空格 ∧ 不含 `⚡` ∧ 不含 `—`」，
+                    //     与既有同族断言 `L1b`（"无空格/无图标"）**同一口径**，且对机器差异免疫。
+                    var cv = Val(t, "-c:v") ?? "";
+                    bool clean = cv.Length > 0
+                                 && !cv.Contains(' ')
+                                 && !cv.Contains('⚡')
+                                 && !cv.Contains('—');
+                    Check("J1z 硬件编码器名解析（`-c:v` 为单个 token、不含图标/空格）",
+                          clean,
+                          $"实得 \"{cv}\"（要求非空且不含空格/⚡/—；本机先命中的硬件后端不固定，故只锁形态不锁名字）");
+                }
                 PickEncoder(s => s.StartsWith("libaom-av1 —", StringComparison.Ordinal));
                 Regen();
             });
@@ -299,7 +338,43 @@ namespace Tests.UiSweep
                 {
                     var v = cases[i, 0]; var ep = cases[i, 1]; var et = cases[i, 2];
                     var filt = cases[i, 3]; var cp = cases[i, 4]; var ct = cases[i, 5];
-                    cs.SelectedItem = v; Pump(8); Regen();
+                    // ⚠⚠ 2026-10-07 修复（J8 断言载体缺陷）：**每次选格前必须回落到 `auto`**。
+                    //   根因（读 `ColorSpaceRegistry` 的两条 Spec 定义，逐字对拍）：
+                    //     Key = "P3 PQ"        → OutPrimaries=bt2020, OutTrc=smpte2084, OutMatrix=bt2020nc
+                    //     Key = "BT.2020 PQ"   → OutPrimaries=bt2020, OutTrc=smpte2084, OutMatrix=bt2020nc
+                    //   ⇒ 这两个**面向用户的不同选项**在 ffmpeg 出口是**同一组 token**（设计如此：
+                    //     P3⊂BT.2020，超集零削色）。而 `MainWindow` 的色域联动走 `SelectComboItem`
+                    //     （**选到同值不触发变更**）⇒ 紧邻 `P3 PQ` 之后再选 `BT.2020 PQ` 时，
+                    //     高级三元组**没有发生任何变化** ⇒ 某些轮次下 `Regen()` 的产出与期望载体不符，
+                    //     表现为 `p=<none> t=<none>`（zscale 目标为空）。
+                    //   ⇒ 修法：先 `auto`（清目标）**再**选目标格，保证每次都发生一次真实跃迁。
+                    //   ⚠ 真正根因（2026-10-07 用诊断行定位，**不是**猜测）：
+                    //     `UpdateFormatCapabilities()` 在 `hasHdr` 变化时会**重建 Items 并把
+                    //     `ColorSpaceCombo.SelectedIndex` 复位成 0（= `auto`）**
+                    //     （`MainWindow.xaml.cs:2222-2245`，复位就在 `:2245`）；它的触发链含
+                    //     **fire-and-forget 的 `RefreshEncoderListAsync()`**（`:2051`，async）
+                    //     ⇒ 直接 `cs.SelectedItem = v` 后立刻读，可能读到**被复位后的 `auto`**。
+                    //     实测诊断行：`want=P3 PQ comboNow=auto gp=<none> gt=<none>` —— 赋值被吞掉。
+                    //     这也解释了红格为何在轮次间**漂移**（`P3 PQ`/`BT.2020 PQ`/`J6 HLG`）：
+                    //     异步落地时机不同。
+                    //   ⇒ 修法：改用 `SelectColorSpaceSettled`（边选边等，直到目标**稳定在位**）；
+                    //     等不到就**报红**（不静默通过）。
+                    //   ⚠ 这是**等待正向完成条件**，不是 `Thread.Sleep` 冒充等待（本仓 §1.2 铁律）。
+                    //   ⚠ 产品侧已由 CLI 反证为**正确**（`--color-space "P3 PQ"` 与 `"BT.2020 PQ"`
+                    //     实测产出**逐字相同**且都正确的 zscale `p=bt2020:t=smpte2084`）
+                    //     ⇒ **不得**为让本格变绿去改产品。
+                    //   同族记载：`docs/TESTING.md` §6 第 74 条「断言『载体』选错 ⇒ 命中另一个合法 token」。
+                    if (!SelectColorSpaceSettled(v))
+                        Check("J8 " + v + " 目标色域能稳定选中（前置，防异步复位吞掉赋值）", false,
+                              $"选中后 combo 实际停在「{cs.SelectedItem as string ?? "<null>"}」⇒ 本格读数不可信");
+                    Regen();
+                    // ⚠ 诊断行（2026-10-07）：把**真实控件状态**打出来，供定位"读到残留状态"这类缺陷。
+                    //   本仓教训：断言失败时若只有期望/实得两个值，无法区分
+                    //   ① 控件没被真正改动 ② 联动没触发 ③ 下游决策丢了 —— 三种成因修法完全不同。
+                    var csNow = cs.SelectedItem as string;
+                    var advOn = Find<CheckBox>("UseAdvancedColor")?.IsChecked;
+                    Console.WriteLine($"      [J8dbg] want={v} comboNow={csNow ?? "<null>"} advColor={advOn} " +
+                                      $"gp={ZscaleParam(Tok(Cmd()), "p") ?? "<none>"} gt={ZscaleParam(Tok(Cmd()), "t") ?? "<none>"}");
                     var t = Tok(Cmd());
                     var gp = ZscaleParam(t, "p"); var gt = ZscaleParam(t, "t");
                     bool ok;

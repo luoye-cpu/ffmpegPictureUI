@@ -45,6 +45,59 @@ $env:FFMPEGGUI_PLAN_DIR = "$PWD/publish/PLAN"
 tests/ui-color/bin/Release/net11.0/win-x64/Tests.UiColor.exe
 ```
 
+### 1.1b 二级细分：一个 mode 一个文件（2026-10-07）
+
+**动机（用户原话）**：「测试应该是一个个项目，这样可以单独测试部分项目避免一点更改就需要跑一大堆测试」。
+2026-10-05 那一轮做到了「一个**子系统**一个工程」，但工程内部仍是**单个巨型 `*Group.cs`**
+（实测 `core/CoreGroup.cs` **2437 行** / 7 mode、`diagnostics/DiagnosticsGroup.cs` **1274 行** / 8 mode）
+⇒ 改一个 mode 仍要碰整份文件、review 整份 diff。本轮做**第二级细分**：按 mode 切片。
+
+```
+tests/core/
+├── CoreGroup.cs        ← 69 行：只剩**共享底座**（`Check` helper + 7 个 `Run*` 转发入口）
+├── Program.cs          ← 入口（分派 `CoreGroup.Run<Mode>()`，**未改一字**）
+└── Modes/              ← 一个 mode 一个文件（类改成 `partial` ⇒ 调用点零改动）
+    ├── contract.cs   (905 行)  ├── verdict.cs (378)  ├── plan.cs (171)
+    ├── decision.cs   (165 行)  ├── wire.cs    (647)  ├── runner.cs (161)
+    └── settingssave.cs (181 行)
+```
+
+**已细分的 5 个工程**（共 **5 个巨型文件 → 31 个 mode 文件**）：
+
+| 工程 | 原文件 | 拆分后 | mode 数 |
+|---|---|---|---|
+| `core` | `CoreGroup.cs` 2437 行 | **69 行** + `Modes/`×7 | 7 |
+| `diagnostics` | `DiagnosticsGroup.cs` 1274 行 | **136 行** + `Modes/`×8 | 8 |
+| `geometry` | `GeometryGroup.cs` 1076 行 | **66 行** + `Modes/`×4 | 4 |
+| `color` | `ColorGroup.cs` 728 行 | **70 行** + `Modes/`×8 | 8 |
+| `engine` | `GamutFit.cs` 693 行 | **53 行** + `Modes/`×4 | 4 |
+
+**做法**（工具 = `_gen-mode-split.ps1` + `_gen-mode-split-reduce.ps1`，B 类不入列）：
+① 按**花括号配平**切出顶层成员；② 把 `Probe<Mode>` 及其**独占** helper
+（被**恰好一个** Probe 调用者）搬进 `Modes/<mode>.cs`；③ 被 ≥2 个 Probe 共用的 helper
+（如 `Check`）**留在原文件**（共享只此一份）；④ 类声明改 `partial` ⇒ **`Program.cs` 一字未动**。
+
+**验收（三道，全部实测通过）**：
+
+1. **逐字性**：把所有 `Modes/*.cs` 的**代码行**与原始备份做逐行集合比较 ⇒
+   **6243 行全部命中原文、缺失 0**（唯一新增的是工具生成的 ASCII 头注释）。
+2. **读数逐字一致**（拆分前 → 拆分后）：
+   `core` **332/1** → 332/1 ｜ `color` **126/0** → 126/0 ｜ `engine` **82/1** → 82/1 ｜
+   `geometry` **75/1** → 75/1 ｜ `diagnostics` **82/6** → 82/6。**断言零漂移**。
+3. **结构锁全绿**：`_probe-test-group-coverage` 8/0、`_probe-cjk-hardcode-scan` 14/0、
+   `verify-ps-compat` 13/0、`verify-ui-split-verbatim` 20/0。
+
+⚠ **两条纪律（改这些文件时必读）**：
+- **`Modes/*.cs` 的注释必须纯 ASCII**：`_probe-cjk-hardcode-scan.ps1` 的「C# UI 面」桶
+  **不得增加**（维护者 2026-09-18 裁定，基线已抬升 6 次）⇒ 生产线新增中文注释会当场转红。
+  ⚠ 实测踩过：我第一版在生成头里写了中文注释 ⇒ 该锁立刻报 `836 ≤ 基线 833`。
+- **`verify-ui-split-verbatim.ps1` 的「已登记偏离组」**：本锁要求 17 个 UI 组方法体与旧宿主**逐字一致**。
+  后续**有意修复**必须登记在 `$waivedGroups`（当前恰 1 项：`GroupJ_` 的 J1z 改 SKIP + J8 改等待式选中），
+  否则"改对了反而红"。⚠ 放行**不减牙**的补偿：断言数由 `verify-ui-split-union.ps1` 独立把关
+  （它要求「旧宿主断言名集合 == 5 工程输出的并集」）。
+  ✅ **变异验牙（实测）**：把 `GroupL_` 里一条真断言改名 ⇒ 该锁立刻报 `差异 1 行` 并转红；
+  而 `GroupJ_`（已登记）不参与逐字比较。
+
 **拆分完成度与验收读数**（2026-10-05，均由主 Agent 独立复核）：
 
 | 来源 | 工程 | 验收读数 |
@@ -391,7 +444,7 @@ $p = "tests/ServiceProbe/bin/Debug/net11.0/win-x64/ServiceProbe.exe"
 —— 计数会漂（`wire` 与 `verdict` 尤其）。⚠ **改任一 mode 的断言后必须重算总和**：
 历史上出现过「`contract` 100 → 107 改了、总数漏改、仍写 372」的错值，由复核方用「各 mode 求和 ≠ 372」抓出。
 ⚠ **某个 mode 若不在 `_run-step3-gates.ps1` 的 `$Probes` 默认值里，说明运行器清单与文档不同步**
-（可据此核对「mode 齐不齐」）。`_run-step3-gates.ps1` 的**脚本门禁清单**当前 **72 条**（2026-10-05 第十一次接线 1 条：`verify-usability-e2e.ps1`（**用户可感知可用性**的实机端到端矩阵：A 格式互转 8×6 + B 色彩目标兑现 SDR/HDR-PQ/HDR-HLG×3×3 + C 批量与目录 + D 动图帧数；每条带可证伪判据 ffprobe 标注 + PSNR≥25dB）。⚠ 立锁动机：该脚本**早已存在却不在清单** ⇒ 谁也不跑 ⇒ 自身累积 2 个缺陷无人发现（① `ffprobe -of csv=p=0` **列序与请求顺序相反**（实测 `128,96,rgb24,iec61966-2-1,bt709` ⇒ [3]=transfer、[4]=primaries）被按请求顺序解读 ⇒ **12 条 HDR 格系统性假红**；② `Start-Process -ArgumentList <数组>` **不逐元素加引号** ⇒ `--color-space "Display P3"` 被拆成两个参数 ⇒ **3 格恒红**）。两处修好后 **exit=0、84 PASS/0 FAIL**，产品侧无问题。⚠ 与第 54 条同族）⇒ 71 → 72；2026-10-05 第十次接线 2 条：`verify-ui-split-verbatim.ps1`（**UiTestHost 拆分逐字锁** —— 17 个组的方法体必须与旧宿主 `Program.cs` 逐行逐字相等，含缩进/全角标点；立锁动机：5 条 UI 门禁 grep 断言文本，手抄 3000+ 行必然漂移 ⇒ 把"逐字"从**声称**变成**可复核**；带反控：比较行数须 >2800、旧宿主须解析出 17 个组）+ `verify-ui-split-union.ps1`（**UiTestHost 拆分歧视锁** —— 旧宿主全量断言名集合 == 5 个工程输出的**并集**，双向差集均空且并集计数 == 409；立锁动机：5 个工程的分组**不是**断言名的分组（如 `B1 H11 …` 写在 H 组块尾）⇒ 逐工程算期望值必然对不上，**唯一正确判据是并集**；而这正是能抓出"某组整段不执行 ⇒ 静默少跑几条断言"的尺子），由 69 → 71；⚠ 实测两条分别 **19/0** 与 **9/0**，且 union 连续 5 轮 + 交替顺序压力 3 轮均 409/409、missing=0、extra=0）；2026-10-05 第九次接线 1 条：`_probe-test-group-coverage.ps1`（**测试组覆盖一致性锁** —— 测试物理拆分后「哪些 mode 归哪个组」是手工表 `tests/Tests.Shared/TestGroups.cs`，而运行器另有独立的 `$Probes` 清单；两者漂移就会出现「某 mode **无组认领** ⇒ 永远不被任何组跑到」的**假覆盖**。判据：①`$Probes` 每 mode 有组认领 ②组表每组有工程目录 ③组表每 mode **三重取证**（在 `$Probes`／被某脚本调用／在本组 `Program.cs` 里作为引号字面量分派）④反控判据段非空跑 ⑤**每个声明的 mode 必须真的进了分派链**（`mode ==` 比较；⚠ 立这条是因为审查实测发现 `engine` 组声明 4 个 mode 却只实现 1 个 ⇒ `engine` 35/0→**0/0**、`simdswitch` 28/0→**0/0** 共 **63 条断言静默消失**，而当时门禁全绿 ⇒ 属"声明了却没实现"的**假覆盖**）+ 反控 ⑤-a；变异验证：删 mode／加无目录组／拼错 mode／**去掉分派** 四次均转红后恢复 **8/0**），由 68 → 69；2026-10-04 第八次接线 1 条：`_probe-gui-control-wiring.ps1`（**GUI 控件接线结构锁** —— XAML 里声明了却没初始选中/没处理器的下拉必须为 0；立锁动机是实测 P0：`--raw-color-target` 的 GUI 下拉此前**完全无效**），由 67 → 68；同日第七次再接线 2 条：`_probe-jxl-input-target.ps1`（JXL 输入时用户显式目标必须生效，含负控）+ `_probe-raw-default-tier.ps1`（RAW 默认档按**实际交付档**判 HDR 承载力），由 65 → 67；2026-10-01 再接线：首批 5 条 **L3/产物级**套件 `verify-package-smoke.ps1` + `verify-jbrd-e2e.ps1` + `verify-orientation-rewrap.ps1` + `verify-gainmap-thirdparty.ps1` + `verify-encoder-knob-liveness.ps1`，由 60 → 65；再往前同日接的是 `verify-geometry-orientation.ps1` + `_probe-geometry-single-source-scan.ps1` + `verify-gainmap-host.ps1`（⇒ 60）；权威复现口径 = 运行器**自己打印的** `script-list=N 条（受管基线 N）` 那一行，它比任何外部正则都可靠 —— 本文原来给的 `(?ms)^\$scriptList...` 正则实测命中 0（数组内含大量注释行，闭合 `)` 不在行首），**别再拿它当复现命令**）
+（可据此核对「mode 齐不齐」）。`_run-step3-gates.ps1` 的**脚本门禁清单**当前 **73 条**（2026-10-07 第十二次接线 1 条：`verify-dryrun-parity.ps1`（**`--dry-run` 预览 ↔ 真实执行 同源性锁** —— 判据 A 多报 / B 少报（只认**编码器类**工具）/ C **实参级**逐字同源，+ 负控 + 各臂"真实侧非空"反控）。⚠ 立锁动机（两处**实测真发生过**）：① `-f jxr -e Jxr` 预览只写 `ffmpeg`，而真实核心编码器是 **JxrEncApp**（走色彩引擎出口 `RawColorPipeline.EncodeJxrViaJxrEncAppAsync`）；② `-f dng --dng-bit-depth 8` 预览**漏 `-4`**、漏 `-jxlq`、且用了**已废弃的 `-q`**（`RawService` 注释记载：`-q` 是 demosaic 质量，dngtool 把它当成 JXL 质量 3 ⇒ 严重有损）。⇒ **任何以 dry-run 为准的审计都会得到假阴性**（实测若只信 dry-run，会误报两条**不存在**的缺陷：「dng-bit-depth 失效」「JXR 后端没接上」）。⚠ 接线前该脚本**无 dng 臂** ⇒ 第 ② 处**无人锁**：变异实测（把 dng 预览改成恒 16 位）当时仍 `pass=10 fail=0` **全绿**；补 dng 臂 + 判据 C 后同一变异 ⇒ `pass=15 fail=1` **转红**。⚠ 依赖仓内夹具 `tests/fixtures/raw_src_8bit.dng`（dng 臂需真 RAW 源），缺件 ⇒ 该臂 **SKIP 点名**（fail-closed，不给绿）。实测 **16/0**、耗时 ~11 s（上限 900 s）。⚠ 边界（如实标注）：**JxrEncApp 无实参级锁**（真实侧中转是运行时临时名 `<tmp>/input.bmp`，逐字比会假红；其"用哪个编码器"由判据 B 锁住）、**gif/webp/apng/tiff 暂无臂**（未验证 ≠ 无缺陷））⇒ 72 → 73；2026-10-05 第十一次接线 1 条：`verify-usability-e2e.ps1`（**用户可感知可用性**的实机端到端矩阵：A 格式互转 8×6 + B 色彩目标兑现 SDR/HDR-PQ/HDR-HLG×3×3 + C 批量与目录 + D 动图帧数；每条带可证伪判据 ffprobe 标注 + PSNR≥25dB）。⚠ 立锁动机：该脚本**早已存在却不在清单** ⇒ 谁也不跑 ⇒ 自身累积 2 个缺陷无人发现（① `ffprobe -of csv=p=0` **列序与请求顺序相反**（实测 `128,96,rgb24,iec61966-2-1,bt709` ⇒ [3]=transfer、[4]=primaries）被按请求顺序解读 ⇒ **12 条 HDR 格系统性假红**；② `Start-Process -ArgumentList <数组>` **不逐元素加引号** ⇒ `--color-space "Display P3"` 被拆成两个参数 ⇒ **3 格恒红**）。两处修好后 **exit=0、84 PASS/0 FAIL**，产品侧无问题。⚠ 与第 54 条同族）⇒ 71 → 72；2026-10-05 第十次接线 2 条：`verify-ui-split-verbatim.ps1`（**UiTestHost 拆分逐字锁** —— 17 个组的方法体必须与旧宿主 `Program.cs` 逐行逐字相等，含缩进/全角标点；立锁动机：5 条 UI 门禁 grep 断言文本，手抄 3000+ 行必然漂移 ⇒ 把"逐字"从**声称**变成**可复核**；带反控：比较行数须 >2800、旧宿主须解析出 17 个组）+ `verify-ui-split-union.ps1`（**UiTestHost 拆分歧视锁** —— 旧宿主全量断言名集合 == 5 个工程输出的**并集**，双向差集均空且并集计数 == 409；立锁动机：5 个工程的分组**不是**断言名的分组（如 `B1 H11 …` 写在 H 组块尾）⇒ 逐工程算期望值必然对不上，**唯一正确判据是并集**；而这正是能抓出"某组整段不执行 ⇒ 静默少跑几条断言"的尺子），由 69 → 71；⚠ 实测两条分别 **19/0** 与 **9/0**，且 union 连续 5 轮 + 交替顺序压力 3 轮均 409/409、missing=0、extra=0）；2026-10-05 第九次接线 1 条：`_probe-test-group-coverage.ps1`（**测试组覆盖一致性锁** —— 测试物理拆分后「哪些 mode 归哪个组」是手工表 `tests/Tests.Shared/TestGroups.cs`，而运行器另有独立的 `$Probes` 清单；两者漂移就会出现「某 mode **无组认领** ⇒ 永远不被任何组跑到」的**假覆盖**。判据：①`$Probes` 每 mode 有组认领 ②组表每组有工程目录 ③组表每 mode **三重取证**（在 `$Probes`／被某脚本调用／在本组 `Program.cs` 里作为引号字面量分派）④反控判据段非空跑 ⑤**每个声明的 mode 必须真的进了分派链**（`mode ==` 比较；⚠ 立这条是因为审查实测发现 `engine` 组声明 4 个 mode 却只实现 1 个 ⇒ `engine` 35/0→**0/0**、`simdswitch` 28/0→**0/0** 共 **63 条断言静默消失**，而当时门禁全绿 ⇒ 属"声明了却没实现"的**假覆盖**）+ 反控 ⑤-a；变异验证：删 mode／加无目录组／拼错 mode／**去掉分派** 四次均转红后恢复 **8/0**），由 68 → 69；2026-10-04 第八次接线 1 条：`_probe-gui-control-wiring.ps1`（**GUI 控件接线结构锁** —— XAML 里声明了却没初始选中/没处理器的下拉必须为 0；立锁动机是实测 P0：`--raw-color-target` 的 GUI 下拉此前**完全无效**），由 67 → 68；同日第七次再接线 2 条：`_probe-jxl-input-target.ps1`（JXL 输入时用户显式目标必须生效，含负控）+ `_probe-raw-default-tier.ps1`（RAW 默认档按**实际交付档**判 HDR 承载力），由 65 → 67；2026-10-01 再接线：首批 5 条 **L3/产物级**套件 `verify-package-smoke.ps1` + `verify-jbrd-e2e.ps1` + `verify-orientation-rewrap.ps1` + `verify-gainmap-thirdparty.ps1` + `verify-encoder-knob-liveness.ps1`，由 60 → 65；再往前同日接的是 `verify-geometry-orientation.ps1` + `_probe-geometry-single-source-scan.ps1` + `verify-gainmap-host.ps1`（⇒ 60）；权威复现口径 = 运行器**自己打印的** `script-list=N 条（受管基线 N）` 那一行，它比任何外部正则都可靠 —— 本文原来给的 `(?ms)^\$scriptList...` 正则实测命中 0（数组内含大量注释行，闭合 `)` 不在行首），**别再拿它当复现命令**）
 （**2026-09-24 第六次接线后实测数组条目数** —— 复现命令必须**按数组锚定**（不用行号、也不用全文件 grep）：
 `$c = Get-Content -Raw tests/scripts/_run-step3-gates.ps1; [regex]::Matches([regex]::Match($c,'(?ms)^\$scriptList\s*=\s*@\((.*?)\)\r?\n\$actualScriptCount').Groups[1].Value,"'[^']+\.ps1'").Count` = **54**；
 ⚠ 本行原先给的 `grep -oE "'[^']+\.ps1'" … | sort -u | wc -l` **现已失真**：2026-09-22 实测它得 **53**，
@@ -434,6 +487,21 @@ $p = "tests/ServiceProbe/bin/Debug/net11.0/win-x64/ServiceProbe.exe"
     清理 `cleanup-structure` / `archive-diagnostics`、fixture 构造 `insert_cicp`、以及 6 个 `run-*` 旧编排器）
     ⇒ **有意不入列**。⚠ 其中 `run-color-regress.ps1` / `run-full-matrix-test*.ps1` 是**清单机制出现之前**的
     并行跑法 ⇒ 与运行器职责重复（归档要点头，不擅自删）。
+    <br>⚠ **2026-10-07 增补 2 个同类工具**（仍**有意不入列**，沿 `_gen-ui-split.ps1` / `_accept-ui-split.ps1` 先例）：
+    `_gen-mode-split.ps1`（把「一个子系统一个巨型 `*Group.cs`」**按 mode 二次切片**成 `Modes/<mode>.cs`）
+    与 `_gen-mode-split-reduce.ps1`（把原文件缩减为只含共享底座的 `partial` 另一半）。
+    两者是**一次性重构工具**、**无 `PASS/FAIL` 契约** ⇒ 入列会撞运行器的「零断言 ⇒ 红」闸。
+    ⚠ 它们**不动 `$expectedScriptCount`（仍 72）** —— 本次细分为纯文件搬迁，**未增删任何受管门禁**。
+    <br>⚠⚠ **2026-10-07 新建 1 条门禁（暂未入列，附理由）**：`verify-dryrun-parity.ps1` ——
+    「`--dry-run` 预览 ↔ 真实执行」的**双向同源性锁**（判据 A 多报 / B 少报，只认**编码器类**工具）。
+    立锁动机（实测）：`-f jxr -e Jxr` 的预览只写 `ffmpeg`，而真实核心编码器是 **JxrEncApp**
+    ⇒ 用户从预览里看不出真实要跑什么；`-f dng --dng-bit-depth 8` 的预览**漏 `-4`**。
+    ⇒ 每一条「以 dry-run 为准」的审计都会得到**假阴性**（本仓 §6 第 13 条同族）。
+    **⚠ 2026-10-07 已接线（不再是\"暂不入列\"）**：D-1 修完、该脚本 rc=0（16/0）后已入列 ⇒
+    已成为**受管第 73 条**，`$expectedScriptCount` 72→73，运行器三种散文形态与 §3.5 的清单行均已同步
+    （`shape-selfcheck=OK`、`script-list=73 条（受管基线 73）`）。
+    ⚠ 它依赖仓内夹具 `tests/fixtures/raw_src_8bit.dng` —— **该文件必须随仓提交**，
+    否则干净检出上 dng 臂会走 fail-closed SKIP（**不会假绿**，但该臂失效）。
   · **C 一次性取证 `_probe-*` = 16**（gpu-stage1..3 / zimg-* / sws-* / ztf-locate / p7d-bisect /
     jxl-webp-pixels / hdr-peak-oracle / icc-affects-decode / caps-e1-e2 / png-cicp-production …）
     ⇒ 都是某次定性调查留下的**证据脚本**，**绝大多数没有 `PASS/FAIL` 契约** ⇒ 接进清单等于改判据形状，

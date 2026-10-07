@@ -767,7 +767,7 @@ public static class RawColorPipeline
                     $"JXR 出口：raw → {(deliver8 ? "BMP" : "TIFF")} 中转失败 (exit {fx})");
 
             // ── ③ JxrEncApp 编码 ──
-            double quality = options.Lossless ? 1.0 : options.Quality / 100.0;
+            double quality = JxrService.ResolveQuality(options.Quality, options.Lossless);
             var jxrArgs = JxrService.BuildArguments(inter, outputPath, quality);
             // ⚠ `JxrEncApp 命令行:` 这个显式标签不能省：本方法前面还有 `[色彩] ffmpeg …` 与
             //   `[色彩] JXR 出口：…` 等行，门禁用宽前缀取命令行时会取到散文（cjxl 出口踩过同款）。
@@ -1280,9 +1280,25 @@ public static class RawColorPipeline
         try
         {
             await File.WriteAllBytesAsync(tmp, rgb48, ct).ConfigureAwait(false);
-            string labels = (!string.IsNullOrWhiteSpace(primaries) ? $" -color_primaries {primaries}" : "")
-                          + (!string.IsNullOrWhiteSpace(trc) ? $" -color_trc {trc}" : "")
-                          + (!string.IsNullOrWhiteSpace(matrix) ? $" -colorspace {matrix}" : "");
+            // ⚠⚠ 2026-10-07 修复（D-②）：三个 token **必须**先过 `ColorSpaceRegistry` 的规范化器。
+            //   本仓自己的契约（`ColorSpaceRegistry.cs:368-387` 逐字写着）：ffmpeg 的
+            //   `-color_primaries`/`-color_trc`/`-colorspace` **只认自己的常量名**，而面向用户的词表
+            //   是友好名（`srgb`/`pq`/`hlg`）与 zimg 风格名（`bt2020ncl`/`ycgcocn`）；**不规范化就原样拼进
+            //   命令行** ⇒ ffmpeg 报 `Unable to parse "<opt>" option value "<token>"` ⇒ **退出码 -22、零产物**。
+            //   `FfmpegOptions.cs:257/262` 的 setter **确实**调了这两个规范化器 ⇒ 本方法此前是**唯一**
+            //   没过规范化器的公开出口（口径不一致）。
+            //   实测（2026-10-07）：`-color_primaries srgb` ⇒ `[Eval] Undefined constant … in 'srgb'`、零产物；
+            //                      过规范化器后 `srgb → bt709` ⇒ rc=0、产物正常。
+            //   ⚠ `matrix` 走 `NormalizeMatrixToken`（注意两层名：zscale 认 `gbr`、ffmpeg `-colorspace` 认 `rgb`，
+            //     见 `ColorSpaceRegistry.cs:385-386`）。
+            //   ⚠ 这是**产品 API 契约缺口**（`public static`），不是"测试专用方法"——修在 API 内，
+            //     **不是**让调用方改传 `bt709`（那属改判据换绿）。
+            var np = ColorSpaceRegistry.NormalizePrimariesToken(primaries);
+            var nt = ColorSpaceRegistry.NormalizeTrcToken(trc);
+            var nm = ColorSpaceRegistry.NormalizeMatrixToken(matrix);
+            string labels = (np != null ? $" -color_primaries {np}" : "")
+                          + (nt != null ? $" -color_trc {nt}" : "")
+                          + (nm != null ? $" -colorspace {nm}" : "");
             int ec = await RunToEndAsync(ffmpeg,
                 $"-y -hide_banner -loglevel error -f rawvideo -pix_fmt rgb48le -video_size {w}x{h} -i \"{tmp}\"{labels} \"{outPath}\"", null, ct)
                 .ConfigureAwait(false);

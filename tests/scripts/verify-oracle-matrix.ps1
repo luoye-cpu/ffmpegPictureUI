@@ -670,12 +670,12 @@ if ($Smoke) {
 } else {
     if (($Layer -eq 'L1') -or ($Layer -eq 'All')) {
         $l1 = @(Get-SingleAxisCases -Source $src -OutDir $placeholder -IccFile $icc -Registry $registry)
-        foreach ($c in $l1) { [void]$selected.Add([pscustomobject]@{ Id = [string]$c.Id; Layer = 'L1'; Args = @($c.Args) }) }
+        foreach ($c in $l1) { [void]$selected.Add([pscustomobject]@{ Id = [string]$c.Id; Layer = 'L1'; Args = @($c.Args); Precondition = [string]$c.Precondition }) }
         Write-Output ('  [layer] L1 single-axis cases = ' + [string]$l1.Count)
     }
     if (($Layer -eq 'L2') -or ($Layer -eq 'All')) {
         $l2 = @(Get-PairwiseCases -Source $src -OutDir $placeholder -IccFile $icc -Registry $registry)
-        foreach ($c in $l2) { [void]$selected.Add([pscustomobject]@{ Id = [string]$c.Id; Layer = 'L2'; Args = @($c.Args) }) }
+        foreach ($c in $l2) { [void]$selected.Add([pscustomobject]@{ Id = [string]$c.Id; Layer = 'L2'; Args = @($c.Args); Precondition = [string]$c.Precondition }) }
         Write-Output ('  [layer] L2 pairwise cases = ' + [string]$l2.Count)
     }
     if (($Layer -eq 'L3') -or ($Layer -eq 'All')) {
@@ -691,7 +691,7 @@ if ($Smoke) {
             if (($MaxPerMatrix -gt 0) -and ($mc.Count -gt $MaxPerMatrix)) {
                 $mc = @($mc[0..($MaxPerMatrix - 1)])
             }
-            foreach ($c in $mc) { [void]$selected.Add([pscustomobject]@{ Id = [string]$c.Id; Layer = 'L3'; Args = @($c.Args) }) }
+            foreach ($c in $mc) { [void]$selected.Add([pscustomobject]@{ Id = [string]$c.Id; Layer = 'L3'; Args = @($c.Args); Precondition = '' }) }
             Write-Output ('  [layer] L3 ' + $m.Name + ' raw=' + [string]$m.RawCount +
                 ' folded=' + [string]$m.FoldedCount + ' selected=' + [string]$mc.Count)
         }
@@ -714,10 +714,36 @@ Write-Output ('===== running ' + [string]$caseArr.Count + ' case(s) (layer=' + $
 # 10. 主循环（每条用例单独 try/catch ⇒ 单条异常不得吞掉整轮）
 # ===========================================================================
 $results = New-Object System.Collections.ArrayList
+# 前提不满足而**点名跳过**的用例数（2026-10-07）。⚠ 不计入 pass、也不计入 fail，
+# 但**必须**打印 SKIP 行并在此计数 ⇒ 读数可审计（防"静默消失"式假绿）。
+$script:skipCases = 0
 $swAll = [System.Diagnostics.Stopwatch]::StartNew()
 $idx = 0
 foreach ($c in $caseArr) {
     $idx++
+    # ── 前提闸（2026-10-07 新增）──────────────────────────────────────────────
+    # 用例若声明了前提而当前夹具不满足 ⇒ **SKIP 并点名**，不判红也**不静默消失**。
+    # 动机：`dng` 编码需要传感器 RAW 数据，而本脚本的夹具是普通 PNG ⇒ 产品**正确拒绝**
+    # （实测 `❌ 失败 (非 RAW 输入)`）⇒ 不声明前提时它表现为 `no-product(exit=1)`，
+    # 与**真缺陷无法区分**（本仓 §6 第 65 条：断言的『前提』本身写错）。
+    # ⚠ 与 §6 第 68 条「消费者读不到前置产物就静默跳过 ⇒ 假绿」的**区别**：
+    #   这里**必须点名打印** SKIP 行，且**计入 skip 计数**，绝不当作通过。
+    $pre = ''
+    if ($c.PSObject.Properties.Name -contains 'Precondition') { $pre = [string]$c.Precondition }
+    if ($pre -eq 'requires-raw-source') {
+        $rawOk = $false
+        if (-not [string]::IsNullOrWhiteSpace($src)) {
+            $ext = [System.IO.Path]::GetExtension($src).ToLowerInvariant()
+            $rawOk = $ext -in @('.dng', '.arw', '.cr2', '.cr3', '.nef', '.raf', '.orf', '.rw2', '.pef')
+        }
+        if (-not $rawOk) {
+            $fixName = [System.IO.Path]::GetFileName($src)
+            $skipMsg = '  SKIP ' + [string]$c.Id + ' 前提不满足：' + $pre + '（当前夹具 ' + $fixName + ' 非 RAW）' + ' ⇒ 该取值本轮未验证，不计入通过'
+            Write-Output $skipMsg
+            $script:skipCases++
+            continue
+        }
+    }
     $r = $null
     try {
         $r = Invoke-MatrixCase -Case $c -LayerName ([string]$c.Layer) -Exe $exe -RefPath $src -Root $out `

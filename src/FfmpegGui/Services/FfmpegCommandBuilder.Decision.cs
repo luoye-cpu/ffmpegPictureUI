@@ -198,11 +198,27 @@ namespace FfmpegGui.Services
                 var tkName = ColorSpaceRegistry.FfmpegTokens(meta.sourceGamutName);
                 baselineNameable = tkName.primaries != null && tkName.trc != null;
             }
-            if (advanced && !string.IsNullOrWhiteSpace(options.ColorTrc))
+            // ⚠⚠ 2026-10-07 修复（L-1 第二层）：原判据只看 `ColorTrc` ⇒ 用户**只**给
+            //   `--color-primaries bt2020`（不给 trc）时**整条高级分支被跳过**，落进下面的
+            //   "源语义基线" ⇒ `outP/outT` 变成**源**的 P3 标签（实测产物 `smpte432/iec61966-2-1`），
+            //   即「命令被接受、但用户要的 bt2020 一个字节都没交付」——**静默不交付**，
+            //   比 L-1 第一层的"误拒"更隐蔽（第一层已修：见 `ColorIntentFactory.userTargetExplicit`）。
+            //   实测（2026-10-07）：`--color-strategy manual --color-primaries bt2020` 修复前
+            //   `ffprobe color_primaries=smpte432`（= 源的 P3），修复后 `bt2020`。
+            //   ⇒ 判据改为「`ColorPrimaries` **或** `ColorTrc` 任一在位即进高级分支」；
+            //     缺失的那一半按下面的既有回退取值（`capX ?? options.X ?? 源/默认`），不改其它语义。
+            //   ⚠ 仍**不含 Matrix**：`advanced` 的定义是 `HasExplicitColorTarget`（只认 CP/CT），
+            //     `--color-matrix` 是**输入声明**，含它会让 `--color-matrix X --color-space Y`
+            //     丢掉 `ColorSpace` 目标（2026-10-04 实机确证，见上 :168 的告警，勿回退）。
+            if (advanced && (!string.IsNullOrWhiteSpace(options.ColorTrc)
+                             || !string.IsNullOrWhiteSpace(options.ColorPrimaries)))
             {
                 // 高级模式：出口语义 = 用户声明（能力约束优先）
+                // ⚠ 缺哪一半就回退哪一半：只给 CP 时 outT 取 `capT`（格式钳制）→ 源 trc；
+                //   只给 CT 时 outP 取 `capP` → 源 primaries。与下面 `:204-205` 原式同源，
+                //   只是**不再**因为另一半缺失而整条落空。
                 outP = capP ?? options.ColorPrimaries ?? meta.colorPrimaries;
-                outT = capT ?? options.ColorTrc;
+                outT = capT ?? options.ColorTrc ?? meta.colorTrc;
             }
             else if (hasExplicitTarget)
             {

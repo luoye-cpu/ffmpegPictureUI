@@ -1,0 +1,100 @@
+Syntax: avifenc [options] input.[jpg|jpeg|png|y4m] output.avif
+Standard options:
+    -h,--help                         : Show syntax help (this page)
+    -V,--version                      : Show the version number
+
+Basic options:
+    -q,--qcolor Q                     : Quality for color in 0..100 where 100 is lossless
+    --qalpha Q                        : Quality for alpha in 0..100 where 100 is lossless
+    -s,--speed S                      : Encoder speed in 0..10 where 0 is the slowest, 10 is the fastest. Or 'default' or 'd' for codec internal defaults. (Default: 6)
+
+Advanced options:
+    -j,--jobs J                       : Number of jobs (worker threads), or 'all' to potentially use as many cores as possible. (Default: all)
+    --no-overwrite                    : Never overwrite existing output file
+    -o,--output FILENAME              : Instead of using the last filename given as output, use this filename
+    -l,--lossless                     : Set all defaults to encode losslessly, and emit warnings when settings/input don't allow for it
+    -d,--depth D[,Dextension]         : D is the output bit depth per channel. D must be 8, 10 or 12. (JPEG/PNG only; y4m: D must match the input bit depth, and Dextension is unsupported)
+                                        If specified, Dextension adds a hidden encoded image of Dextension bit depth in the same file as the primary image to reach 16-bit depth at decoding.
+                                        See avifSampleTransformRecipe for the supported combinations (8,8 and 12,4 and 12,8).
+    -y,--yuv FORMAT                   : Output format, one of 'auto' (default), 444, 422, 420 or 400. Ignored for y4m (y4m format is retained)
+                                        For JPEG, auto honors the JPEG's internal format, if possible. For grayscale PNG, auto defaults to 400. For all other cases, auto defaults to 444
+    -p,--premultiply                  : Premultiply color by the alpha channel and signal this in the AVIF
+    --sharpyuv                        : Use sharp RGB to YUV420 conversion (if supported). Ignored for y4m or if output is not 420.
+    --stdin                           : Read input from stdin instead of file paths. No other input is allowed. The input format is assumed to be y4m unless --input-format is specified. The output file path must still be provided.
+    --input-format FORMAT             : File format of the input data. One of: jpeg/png/y4m/auto. (Default: auto, except for stdin where auto is not supported and the default is y4m)
+    --cicp,--nclx P/T/M               : Set CICP values (nclx colr box) (3 raw numbers, use -r to set range flag)
+                                        P = color primaries
+                                        T = transfer characteristics
+                                        M = matrix coefficients
+                                        Use 2 for any you wish to leave unspecified
+    -r,--range RANGE                  : YUV range, one of 'limited' or 'l', 'full' or 'f'. (JPEG/PNG only, default: full; For y4m, range is retained)
+    --target-size S                   : Set target file size in bytes (up to 7 times slower)
+    --progressive                     : Automatically set parameters to encode a simple layered image supporting progressive rendering from a single input frame.
+    --layered                         : Encode a layered AVIF. Each input is encoded as one layer and at most 4 layers can be encoded.
+    -g,--grid MxN                     : Encode a single-image grid AVIF with M cols & N rows. Either supply MxN identical W/H/D images, or a single
+                                        image that can be evenly split into the MxN grid and follow AVIF grid image restrictions. The grid will adopt
+                                        the color profile of the first image supplied.
+    -c,--codec C                      : Codec to use (choose from versions list below)
+    --exif FILENAME                   : Provide an Exif metadata payload to be associated with the primary item (implies --ignore-exif)
+    --xmp FILENAME                    : Provide an XMP metadata payload to be associated with the primary item (implies --ignore-xmp)
+    --icc FILENAME                    : Provide an ICC profile payload to be associated with the primary item (implies --ignore-icc)
+    --timescale,--fps V               : Timescale for image sequences. If all frames are 1 timescale in length, this is equivalent to frames per second. (Default: 30)
+                                        If neither duration nor timescale are set, avifenc will attempt to use the framerate stored in a y4m header, if present.
+    --creation-time                   : Creation time for image sequences, in seconds since 1970-01-01 00:00:00 UTC (the Unix epoch). (Default: 0, use the modification time)
+    --modification-time               : Modification time for image sequences, in seconds since 1970-01-01 00:00:00 UTC (the Unix epoch). (Default: 0, use the current time)
+    -k,--keyframe INTERVAL            : Maximum keyframe interval for image sequences (any set of INTERVAL consecutive frames will have at least one keyframe). Set to 0 to disable (default).
+    --ignore-exif                     : If the input file contains embedded Exif metadata, ignore it (no-op if absent)
+    --ignore-xmp                      : If the input file contains embedded XMP metadata, ignore it (no-op if absent)
+    --ignore-profile,--ignore-icc     : If the input file contains an embedded color profile, ignore it (no-op if absent)
+    --pasp H,V                        : Add pasp property (aspect ratio). H=horizontal spacing, V=vertical spacing
+    --crop CROPX,CROPY,CROPW,CROPH    : Add clap property (clean aperture), but calculated from a crop rectangle
+    --clap WN,WD,HN,HD,HON,HOD,VON,VOD: Add clap property (clean aperture). Width, Height, HOffset, VOffset (in numerator/denominator pairs)
+    --irot ANGLE                      : Add irot property (rotation), in 0..3. Makes (90 * ANGLE) degree rotation anti-clockwise
+    --imir AXIS                       : Add imir property (mirroring). 0=top-to-bottom, 1=left-to-right
+    --clli MaxCLL,MaxPALL             : Add clli property (content light level information).
+    --repetition-count N              : Number of times an animated image sequence will be repeated, or 'infinite' for infinite repetitions. (Default: infinite)
+    --                                : Signal the end of options. Everything after this is interpreted as file names.
+
+Updatable options:
+  The following options can optionally have a :u (or :update) suffix like `-q:u Q`, to apply only to input files appearing after the option:
+    -q,--qcolor Q                     : Quality for color in 0..100 where 100 is lossless
+    --qalpha Q                        : Quality for alpha in 0..100 where 100 is lossless
+    --tilerowslog2 R                  : log2 of number of tile rows in 0..6. (Default: 0)
+                                        If specified, switch to manual tiling.
+    --tilecolslog2 C                  : log2 of number of tile columns 0..6. (Default: 0)
+                                        If specified, switch to manual tiling.
+    --autotiling                      : Set --tilerowslog2 and --tilecolslog2 automatically
+                                        If specified, switch to automatic tiling.
+                                        avifenc starts in automatic tiling mode.
+    --min QP                          : Deprecated, use -q 0..100 instead
+    --max QP                          : Deprecated, use -q 0..100 instead
+    --minalpha QP                     : Deprecated, use --qalpha 0..100 instead
+    --maxalpha QP                     : Deprecated, use --qalpha 0..100 instead
+    --scaling-mode N[/D]              : Set frame (layer) scaling mode as given fraction. If omitted, the denominator defaults to 1. (Default: 1/1)
+    --duration D                      : Frame durations (in timescales) (default: 1). This option always applies to following inputs with or without the `:u` suffix.
+    -a,--advanced KEY[=VALUE]         : Pass an advanced, codec-specific key/value string pair directly to the codec. avifenc will warn on any not used by the codec.
+
+aom-specific advanced options:
+    1. <key>=<value> applies to both the color (YUV) planes and the alpha plane (if present).
+    2. color:<key>=<value> or c:<key>=<value> applies only to the color (YUV) planes.
+    3. alpha:<key>=<value> or a:<key>=<value> applies only to the alpha plane (if present).
+       Since the alpha plane is encoded as a monochrome image, the options that refer to the chroma planes,
+       such as enable-chroma-deltaq=B, should not be used with the alpha plane. In addition, the film grain
+       options are unlikely to make sense for the alpha plane.
+
+    When used with libaom 3.0.0 or later, any key-value pairs supported by the aom_codec_set_option() function
+    can be used. When used with libaom 2.0.x or older, the following key-value pairs can be used:
+
+    aq-mode=M                         : Adaptive quantization mode. 0=off (default), 1=variance, 2=complexity, 3=cyclic refresh
+    cq-level=Q                        : Constant/Constrained Quality level in 0..63, end-usage must be set to cq or q
+    enable-chroma-deltaq=B            : Enable delta quantization in chroma planes. 0=disable (default), 1=enable
+    end-usage=MODE                    : Rate control mode, one of 'vbr', 'cbr', 'cq', or 'q'
+    sharpness=S                       : Bias towards block sharpness in rate-distortion optimization of transform coefficients in 0..7. (Default: 0)
+    tune=METRIC                       : Tune the encoder for distortion metric, one of 'psnr', 'ssim' or 'iq'.
+                                        (Default for color: still non-RGB images (libaom v3.13.0+): iq, otherwise: ssim; default for alpha: psnr)
+    film-grain-test=TEST              : Film grain test vectors in 0..16. 0=none (default), 1=test1, 2=test2, ... 16=test16
+    film-grain-table=FILENAME         : Path to file containing film grain parameters
+
+Version: 1.4.2 (dav1d [dec]:1.5.3-0-gb546257, aom [enc]:3.14.1)
+libyuv : available (1924)
+

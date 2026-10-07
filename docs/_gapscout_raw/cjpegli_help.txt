@@ -1,0 +1,25 @@
+Usage: C:\PLAN\ffmpegPictureUI\publish\PLAN\jxl\bin\cjpegli.exe INPUT OUTPUT [OPTIONS...]
+ INPUT
+    the input can be JXL, PPM, PNM, PFM, PAM, PGX, PNG, APNG, GIF, JPEG
+ OUTPUT
+    the compressed JPEG output file
+ -d maxError, --distance=maxError
+    Max. butteraugli distance, lower = higher quality.
+    1.0 = visually lossless (default).
+    Recommended range: 0.5 .. 3.0. Allowed range: 0.0 ... 25.0.
+    Mutually exclusive with --quality and --target_size.
+ -q QUALITY, --quality=QUALITY
+    Quality setting (is remapped to --distance).    Default is quality 90.
+    Quality values roughly match libjpeg quality.
+    Recommended range: 68 .. 96. Allowed range: 1 .. 100.
+    Mutually exclusive with --distance and --target_size.
+ --chroma_subsampling=444|440|422|420
+    Chroma subsampling setting.
+ -p N, --progressive_level=N
+    Progressive level setting. Range: 0 .. 2.
+    Default: 2. Higher number is more scans, 0 means sequential.
+ -v, --verbose
+    Verbose output; can be repeated, also applies to help (!).
+
+ -h, --help
+    Prints this help message. Add -v (up to a total of 2 times) to see more options.

@@ -637,8 +637,21 @@ public static class GainMapEncoder
         string pixFmt, string? primaries, string? trc, string? matrix,
         Action<string>? log, CancellationToken ct)
     {
-        var colorArgs = primaries != null
-            ? $" -color_primaries {primaries} -color_trc {trc} -colorspace {matrix}"
+        // ⚠⚠ 2026-10-07 修复（D-② 同类点）：三个 token **必须**先过 `ColorSpaceRegistry` 的规范化器。
+        //   本仓契约见 `ColorSpaceRegistry.cs:368-387`：ffmpeg 只认**自己的**常量名，而面向用户的词表是
+        //   友好名（`srgb`/`pq`/`hlg`）与 zimg 风格名（`bt2020ncl`/`ycgcocn`）；不规范化直接拼 ⇒
+        //   `Unable to parse "<opt>" option value "<token>"` ⇒ **退出码 -22、零产物**。
+        //   实测（2026-10-07）：`-color_primaries srgb` ⇒ `[Eval] Undefined constant … in 'srgb'`、零产物；
+        //   过规范化器后 `srgb → bt709` ⇒ rc=0、产物正常。
+        //   ⚠ 与 `RawColorPipeline.WriteRgb48ToPngAsync` 是**同一处口径缺口的两条通路** —— 两处都收口，
+        //     避免"修了一条、另一条还漏"（本仓反复记载的形态）。
+        var np = ColorSpaceRegistry.NormalizePrimariesToken(primaries);
+        var nt = ColorSpaceRegistry.NormalizeTrcToken(trc);
+        var nm = ColorSpaceRegistry.NormalizeMatrixToken(matrix);
+        var colorArgs = np != null
+            ? $" -color_primaries {np}"
+              + (nt != null ? $" -color_trc {nt}" : "")
+              + (nm != null ? $" -colorspace {nm}" : "")
             : "";
         var args = $"-y -i \"{pngPath}\" -frames:v 1 -c:v libaom-av1 -crf 18 -b:v 0 -pix_fmt {pixFmt}"
                  + $"{colorArgs} -f avif \"{avifPath}\"";

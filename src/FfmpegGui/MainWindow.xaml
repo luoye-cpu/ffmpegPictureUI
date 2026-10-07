@@ -358,6 +358,16 @@
                          Text="{ext:Loc gpu.encoder.warning}"/>
             </StackPanel>
           </Border>
+          <!-- Advanced-encoder-option notices: the same text that used to only go to
+               Console.WriteLine (invisible here, because this app is a WinExe with no console
+               in GUI mode). Text comes from the encoder argument builders themselves. -->
+          <Border x:Name="EncoderOptionWarning" IsVisible="False"
+                  CornerRadius="6" Padding="10,7" Margin="0,6,0,0">
+            <StackPanel Spacing="4">
+              <TextBlock x:Name="EncoderOptionWarningText" FontSize="11"
+                         TextWrapping="Wrap" Foreground="#333333"/>
+            </StackPanel>
+          </Border>
           <TextBlock Text="{ext:Loc quality}" Margin="0,8,0,0"/>
           <StackPanel Orientation="Horizontal" Spacing="8">
             <!-- 2026-09-16：左栏加宽到 300（内容区 ~260）后，不再需要为"236 临界"留余量，

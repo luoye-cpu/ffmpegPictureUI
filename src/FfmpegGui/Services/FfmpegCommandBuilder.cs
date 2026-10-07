@@ -156,11 +156,11 @@ namespace FfmpegGui.Services
                     //    `--color-engine legacy`（路由层对 legacy 恒放行 ⇒ 原先**完全静默**）
                     //    与 `auto` 的回退格（后者另有一条引擎侧日志）。
                     if (options.JpegProgressiveId > 0)
-                        Console.WriteLine("⚠ [jpeg] --jpeg-progressive ignored: ffmpeg's mjpeg encoder has no "
+                        ColorMapping.ImageEncoderArgs.EmitWarn("⚠ [jpeg] --jpeg-progressive ignored: ffmpeg's mjpeg encoder has no "
                             + "progressive support, so the output is baseline. Use -e Cjpegli for progressive JPEG.");
                     // ② 无损 JPEG：mjpeg 是**有损**编码器 ⇒ `--lossless true` 对本分支无效（原先静默产有损）。
                     if (options.Lossless)
-                        Console.WriteLine("⚠ [jpeg] --lossless true ignored: the mjpeg encoder is lossy, so the output is lossy. "
+                        ColorMapping.ImageEncoderArgs.EmitWarn("⚠ [jpeg] --lossless true ignored: the mjpeg encoder is lossy, so the output is lossy. "
                             + "The only lossless JPEG path here is DNG container compression (--format dng --dng-compression 0).");
                     if (options.EncoderBackend == EncoderBackend.Cjpegli)
                     {
@@ -230,7 +230,7 @@ namespace FfmpegGui.Services
                         {
                             // 出声：无损模式下 preset 被**有意**丢弃（会配置有损量化参数、可能让 libwebp
                             // 静默退化为有损），但用户看不到 ⇒ 原先属"看起来配置过"。ASCII 文案，理由见 jpg 分支。
-                            Console.WriteLine("⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy "
+                            ColorMapping.ImageEncoderArgs.EmitWarn("⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy "
                                 + "quantization and can silently degrade -lossless 1 to lossy.");
                         }
                     }
@@ -265,7 +265,7 @@ namespace FfmpegGui.Services
                             args.Add("-compression_level");
                             args.Add(lcl.ToString());
                             if (lossyPreset)
-                                Console.WriteLine("⚠ [webp] -compression_level is pinned by -preset "
+                                ColorMapping.ImageEncoderArgs.EmitWarn("⚠ [webp] -compression_level is pinned by -preset "
                                     + options.WebpPreset + " (measured byte-identical output for level 0/4/6); "
                                     + "use --webp-preset none to let -compression_level apply.");
                         }
