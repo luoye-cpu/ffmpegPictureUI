@@ -122,6 +122,22 @@ All notable changes to this project are documented in this file.
   message, and `_probe-cjk-hardcode-scan`'s "C# UI surface" bucket **counts by line with zero headroom**
   ⇒ it would tip to 834 > 833 (measured).
 
+**🐛 Fixed a gate false-red caused by an environment-dependent assertion name**
+
+- `verify-ui-split-union.ps1` hard-requires "old-host assertion-name union == 409 and extra == 0".
+  The previous version wrote J1z as `if (hw == null) Skip(...) else Check(...)` ⇒ the **assertion name
+  appeared/disappeared with the environment** ⇒ the union count oscillated between **409 / 408**
+  (measured: 409 earlier, then 5/5 consecutive runs took the SKIP path ⇒ 408) ⇒ periodic false red.
+- Root cause was an **author-side design defect**: the sibling `L1a`/`L1b` are stable precisely because
+  they call `Check(...)` **unconditionally**.
+- Fix = emit **both** unconditionally (same shape as `L1a`/`L1b`): `Skip` still names "not verified" only when
+  the precondition truly fails, while `Check` is unconditional with the criterion designed to **pass** when the
+  precondition is absent — because **no hardware item means no icon contamination**, which is an expected fact,
+  not "untested" (that is what the Skip names). ⇒ stable name, stable count; **neither a false red nor a silent
+  disappearance**.
+- Measured: `ui-sweep` 3 consecutive runs all **139/0 skip=1** with the assertion name always present;
+  union **11/0 (new=409 old=409)**.
+
 **📌 Gate baseline (at this release)**: **73** managed scripts; **26** modes in `ServiceProbe`'s default probe list.
 ⚠ The authoritative live values are `$Probes` and `$expectedScriptCount` in `_run-step3-gates.ps1`.
 
