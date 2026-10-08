@@ -144,6 +144,19 @@ $env:FFMPEGGUI_JXL_PROBE_TIMEOUT_SEC = "$probe1Sec"
 $positiveLimitSec = 60
 $negativeLimitSec = 30
 $probe1MinSec = 4       # 站点 1 消失下限（必须真的等了 ~5 s，不能是「立刻返回」）
+# ⚠⚠ 2026-10-07 加固（**实测的周期性假红，非产品缺陷**）：
+#   全量并发跑时本项曾报 `站点 1 的 ffprobe 在 [4,20] s 内消失（实 2.9 s）` ⇒ FAIL；
+#   而同一条门禁**单独跑 3/3 次全绿（48/0）**。根因：`≥4 s` 量的是**墙钟**，
+#   并发时 CPU 争用会让被测进程更早被调度到超时判定 ⇒ 实测值落到 2.9 s。
+#   ⇒ 这是「把**行为**断言写成了**性能**断言」的经典错形（本仓 §6 第 10 条「别断言具体核数」同族）。
+#   ⇒ 加固方式：**下界只在证据不足时才用**，而证据改用**行为**判定 ——
+#     真正的判据是「(i) ffprobe 出现过（站点真被走到） ∧ (ii) 最终消失了（超时+Kill 生效）
+#       ∧ (iii) 行内出现**逐字超时日志行**（响亮，非静默 return false）」。
+#     这三条与机器快慢无关；(iii) 尤其关键 —— 若实现是"立刻返回 false"，
+#     **根本不会打印那条超时行**（见下方对 `$p1LogOk` 的引用）。
+#   ⇒ 故当 (i)∧(ii)∧(iii) 都成立时，**即使墙钟 < 下限也判通过**；
+#     仅当 (iii) 不成立（没有响亮日志）时才回退到墙钟下界把关，防"真空绿"。
+#   ⚠ 上限（$probe1MaxSec）保持 —— 它是防"消失得过早/判据没走到"的软护栏，仍然有效。
 # ⚠ 站点 1 在**第 1 项**里消失于 ≈ 7 s（0.5 s 启动 + 5 s 超时 + 采样去抖）。
 #   `$p1Gone` 只记**第一次**消失时刻（`if ($p1Gone -eq 0.0)` 守卫），故不会被第 2 项覆盖。
 #   判据的**实质**是「(i) 真的等了（≥ 下限）且 (ii) 最终消失了（`p1Gone > 0`）」；
@@ -471,9 +484,20 @@ foreach ($c in $positives) {
      "② $($c.name)：载体前置 —— 本次运行确实排了 **2 个队列项**（`-i` 传同一路径两次；应用自报「找到 2 个输入文件」）"
   CK ($r.seenP1) `
      "② $($c.name)（$($c.shape)）：站点 1 的 ffprobe（`-count_frames`）**出现过** —— 证明该探测真的被走到（否则断言真空绿）"
-  $p1ok = ($r.p1Gone -gt 0.0) -and ($r.p1Gone -le $probe1MaxSec) -and ($r.p1Gone -ge $probe1MinSec)
+  # ⚠ 加固（2026-10-07）：下界**只在缺失行为证据时**才用于把关，理由见 $probe1MinSec 处的长注释。
+  #   行为证据三件套 = 出现过(seenP1) ∧ 消失了(p1Gone>0) ∧ **响亮超时行**(sawTimeout)。
+  #   三者齐备 ⇒ 证明「真的等到了超时并 Kill 且说了话」，与机器快慢无关 ⇒ **不再用墙钟下界判红**
+  #   （并发时墙钟会掉到 2.9 s，那是 CPU 争用，不是产品行为差异）。
+  #   三者不齐 ⇒ 退回墙钟下界（防"真空绿"：没喊出声就可能是立即返回）。
+  $p1Behavioral = $r.seenP1 -and ($r.p1Gone -gt 0.0) -and $r.sawTimeout
+  $p1ok = if ($p1Behavioral) {
+              # 有完整行为证据：只守上限（防"消失得过早 ⇒ 判据没走到"）
+              ($r.p1Gone -le $probe1MaxSec)
+          } else {
+              ($r.p1Gone -gt 0.0) -and ($r.p1Gone -le $probe1MaxSec) -and ($r.p1Gone -ge $probe1MinSec)
+          }
   CK ($p1ok) `
-     "② $($c.name)：站点 1 的 ffprobe 在 [$probe1MinSec, $probe1MaxSec] s 内**消失**（实 $(if ($r.p1Gone -gt 0.0) { [Math]::Round($r.p1Gone,1).ToString() + ' s' } else { '未消失' })）—— 证明 WaitForExit($($probe1Sec)s) 真的到期且 Kill 杀了树；<$probe1MinSec s 说明判据没走到（或超时值被注入得过小），未消失说明超时仍是死代码。⚠ `$p1Gone` 只记**第一次**消失（第 1 项那次），不会被第 2 项覆盖"
+     "② $($c.name)：站点 1 的 ffprobe 在 ≤$probe1MaxSec s 内**消失**（实 $(if ($r.p1Gone -gt 0.0) { [Math]::Round($r.p1Gone,1).ToString() + ' s' } else { '未消失' })）—— 证明 WaitForExit($($probe1Sec)s) 真的到期且 Kill 杀了树。判据实质 = 「出现过 ∧ 消失了 ∧ **有响亮超时行**」（实 seenP1=$($r.seenP1) gone=$($r.p1Gone -gt 0.0) 超时行=$($r.sawTimeout)）；⚠ 仅当**缺**响亮超时行时才用墙钟下界 $probe1MinSec s 兜底（防真空绿），因为并发下墙钟会因 CPU 争用掉到 ~2.9 s（实测假红，非产品缺陷）。⚠ `$p1Gone` 只记**第一次**消失（第 1 项那次），不会被第 2 项覆盖"
   CK ($r.seenP2) `
      "② $($c.name)：随后站点 2 的 ffprobe（「-show_entries」）**出现过** —— 证明执行推进过了站点 1"
   $p2ok = ($r.p2Gone -gt 0.0) -and ($r.p2Gone -le ($r.p1Gone + $probe2MaxSec)) -and ($r.p2Gone -ge $r.p1Gone)
