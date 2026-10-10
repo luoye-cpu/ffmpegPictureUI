@@ -12,6 +12,71 @@
 
 ## 📝 更新日志
 
+### v1.6.0-beta7 (2026-10-09) — JPEG LI「选了渐进式却拿到 baseline」四因分层 + 冲突出声 + 每图探测链合并
+
+> **谱系**：`src/` 下 **13 个产品文件**改动（+189/−17 行）；测试侧 **4 个文件**（+124/−15 行，
+> UiTestHost 与 `uicoreGroup.cs` 各新增 4 条冲突提示断言 ⇒ UI 并集断言数 **409 → 413**）；
+> 受管门禁**条数不变（73 条）**，但 `_lib-matrix.ps1` 里 **7 处行锚**随源码位移做了修正。
+> 全部改动都带**产物字节级**判据（直接读 JPEG 的 SOF 标记：SOF0=baseline / SOF1=extended-sequential /
+> SOF2=progressive）。整轮（`TMP/TEMP` 重定向臂）**73 条受管脚本逐条 `exit=0`**，26 个探针 mode 里只剩
+> `probe:runner` 一条红（本机沙箱对进程树的限制，与 beta6 定性同一条）。⚠ 默认 `%TEMP%` 臂会**成片假红**
+> —— 本会话沙箱禁止工具进程写临时目录 ⇒ `exit -13`；负/正/刷臂三侧对照与处方记在
+> `docs/JPEGLI_GAINMAP_PANEL_PLAN_2026-10-09.md §14`（同一份读数顺带**撤销**了一条被登记成"既有红"的
+> `I3 ProPhoto 保真`：重定向臂下 UI 宿主 **413 PASS / 0 FAIL**，与旧读数 412/1 总数守恒）。
+
+**🔴 选「渐进式」却输出非渐进式 —— 四个互相独立的原因（按影响排序 R0 > R1 > R2 > R3）**
+
+- **R0 后端推断空档（静默、影响最大）**：`InferDefaultBackend` 没有 jpg/jpeg/jpegli 分支 ⇒ 用户**没显式**
+  `-e Cjpegli` 时任务实际走 ffmpeg 的 `mjpeg`，而 mjpeg **根本没有渐进式能力**。面板的选择被
+  **完整接收、无声丢弃**。CLI 侧有 `EncoderBackendExplicit` 守卫所以不受影响 —— 这也解释了为什么
+  先前一次带 `-e Cjpegli` 的复测**没能重现**它（那次测的是回退出口，不是 GUI 默认路径）。
+- **R1** `--animation-fps` 一类的动图参数 ⇒ 明确回落 mjpeg（**有播报**，不属静默失效）。
+- **R2 固定码表 + 渐进式的静默降级**：`--fixed_code` 要求 `-p 0`，而界面上「优化哈夫曼编码」关掉
+  就等价于 `--fixed_code` ⇒ 此前代码**直接把 `-p 2` 改成 `-p 0` 且不留一字**。
+- **R3** 增益图采集器把隐藏的 `JpegProgressiveId` 钉为 0 ⇒ 面板值进不去。⚠ 两个出口都**如实消费**了
+  那个 0（实测三种面板设置下增益图产物 md5 **逐字节相同**）⇒ 这是采集层的口径，不是出口缺陷。
+- **本轮落地的修法**：
+  ① `CjpegliProgressiveId` 默认由 `2` 改为 `-1`（=「用户未表达」）⇒ 消掉一条**恒响的告警**
+  （恒响＝没有告警）；
+  ② R2 的降级**出声**：按 `CjxlService` 的 `log:` 形参约定走**单一通道**，`QueueProcessor` 与
+  `JxlPipelineService` 两条管道路由同步接入 ⇒ headless 与 GUI 都看得到；
+  ③ 新增第三条告警：`--cjpegli-progressive` 遇上非 JPEG LI 后端时点名「本任务由 ffmpeg mjpeg 编码，
+  它没有渐进式能力，产物是 baseline」，并直接给解法（`-e Cjpegli`）。
+- ⚠ **R0 本身本轮未动**：补齐 jpg 的默认后端推断属色彩管线 P7a-3「单一裁决点」的范围，
+  已登记在 `docs/JPEGLI_GAINMAP_PANEL_PLAN_2026-10-09.md` 的账本里。
+
+**🟠 GUI：渐进式与「优化哈夫曼编码」同时勾选时，就地给出冲突提示**
+
+- `JpegliProgressiveCombo` 下方新增 `JpegliProgConflictHint`（默认隐藏）。条件 = 高级面板在位
+  **且** 哈夫曼优化未勾 **且** 渐进式不是「顺序」档；三处刷新（`RegenerateCommand` 头部、
+  面板可见性尾部、`UseAdvancedCodec` 切换）。
+- ⚠ 首版走 `Console.WriteLine` + 中继 ⇒ 实测每个任务多打 **3 行重复 stdout**（会破坏依赖 stdout 文本的
+  门禁 grep）。改回 `log:` 单通道后 **stdout 行数与日志条数一致**。
+
+**🟠 「基线/标准(兼容性)」这个档名是假承诺 ⇒ 下拉只写身份，解释移到灰字**
+
+- 实测 `-p 0` 在**高熵内容**上产出的是 **SOF1**（extended-sequential），不是它承诺的 baseline。
+  机制在上游：jpegli 的 `is_baseline` 由**实际发出的霍夫曼槽位**决定（内容相关），
+  而 libjpeg-turbo 只看声明的 `tbl_no` —— 所以同一档位两种后端可以给出不同 SOF。
+- **修法**：`jpeg.progressive.baseline` → 「顺序 (sequential)」/「Sequential (non-progressive)」；
+  SOF0/SOF1 的边界说明移进新 tooltip `tip.jpeg.progressive.mode`。
+- ⚠ **待补**：SOF 三态的**门禁断言**本轮没进清单（新增断言会作废正在跑的整轮读数），已记账。
+
+**🟢 性能：每图一次独立的 exiftool 探测并进既有 argv（省 0.170 s/图）**
+
+- 探测链里 ICC 提取原本是**第二次**独立 exiftool 调用，外面还套着一个恒真条件
+  `!string.IsNullOrWhiteSpace(exifColorSpace) || true`（死代码，恰好掩盖了「其实每次都跑」）。
+- **修法**：把 `-b -icc_profile` 合进同一条 argv，新增 `IccProfileService.ExtractIccFromBase64`
+  直接吃返回值（长度下界 + `IsValidIccProfile` 双闸，坏值一律当「无 ICC」而不是猜）。
+- **实测**：`--dry-run` 单图墙钟 **0.797 → 0.644 s**；ICC 读回**逐字节相同**；受影响门禁 A/B 计数一致。
+- 完整口径与其余待做项（P2 后置链合并 0.34 s/图、P4 引擎路 `-threads` 本机无判据）见
+  `docs/PIPELINE_PERF_ANALYSIS_2026-10-09.md`。
+
+**📌 门禁基线（本次发布时）**：受管脚本 **73 条**；`ServiceProbe` 探针默认清单 **26 个 mode**。
+⚠ 实时权威值以 `_run-step3-gates.ps1` 的 `$Probes` 与 `$expectedScriptCount` 为准。
+
+---
+
 ### v1.6.0-beta6 (2026-10-07) — 4 个静默缺陷修复（含「给了参数却被否认给了」）+ 高级编码选项全量核查 + 测试二分细化（门禁 72→73）
 
 > **谱系**：`src/` 下 **11 个产品文件**改动（+346/−49 行）；测试侧一次**二级细分**

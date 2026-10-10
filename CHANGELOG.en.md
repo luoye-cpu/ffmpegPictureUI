@@ -13,6 +13,84 @@ All notable changes to this project are documented in this file.
 
 ## 📝 Changelog
 
+### v1.6.0-beta7 (2026-10-09) — JPEG LI "I picked progressive but got baseline": four causes split apart + the conflict now speaks + one probe call merged per image
+
+> **Lineage**: **13 product files** under `src/` changed (+189/−17 lines); **4 test files** (+124/−15 lines —
+> UiTestHost and `uicoreGroup.cs` each gain 4 conflict-hint assertions ⇒ the UI union assertion count
+> **409 → 413**); the managed gate manifest stays at **73 scripts**, but **7 line anchors** in
+> `_lib-matrix.ps1` were re-pointed after source drift. Every change carries a **byte-level product-artifact**
+> judge (reading the JPEG SOF marker directly: SOF0=baseline / SOF1=extended-sequential / SOF2=progressive).
+> The full round (with `TMP/TEMP` redirected) came out **73 managed scripts, every one `exit=0`**, and of the 26
+> probe modes only `probe:runner` stays red (a local sandbox limit on the process tree — the same item beta6 was
+> characterized against). ⚠ The default-`%TEMP%` arm produces **mass false reds**: this session's sandbox denies
+> temp writes to tool processes ⇒ `exit -13`. The negative/positive/swap-arm comparison and the prescription live in
+> `docs/JPEGLI_GAINMAP_PANEL_PLAN_2026-10-09.md §14` (the same reading **withdraws** an item previously booked as a
+> pre-existing red, `I3 ProPhoto faithful`: under the redirected arm the UI host reports **413 PASS / 0 FAIL**,
+> conserving the total against the old 412/1).
+
+**🔴 "Progressive selected, non-progressive output" — four independent causes, ranked by blast radius (R0 > R1 > R2 > R3)**
+
+- **R0, the backend-inference gap (silent, largest)**: `InferDefaultBackend` has no jpg/jpeg/jpegli branch, so a
+  task without an explicit `-e Cjpegli` is really encoded by ffmpeg's `mjpeg` — which has **no progressive
+  capability at all**. The panel's choice is **received intact and discarded without a word**. The CLI side is
+  covered by the `EncoderBackendExplicit` guard, which is exactly why an earlier re-test that passed
+  `-e Cjpegli` **failed to reproduce** it (that run exercised the fallback exit, not the GUI default route).
+- **R1**: animated-WebP flags such as `--animation-fps` ⇒ an explicit fallback to mjpeg (**announced**, so not a
+  silent failure).
+- **R2, the silent fixed-code-table downgrade**: `--fixed_code` requires `-p 0`, and unchecking
+  "Optimize Huffman coding" is exactly `--fixed_code` ⇒ the code used to **rewrite `-p 2` into `-p 0` and say
+  nothing**.
+- **R3**: the gain-map collector pins the hidden `JpegProgressiveId` to 0, so the panel value never reaches it.
+  ⚠ Both exits **consumed that 0 faithfully** — measured: gain-map artifacts are **byte-identical** across three
+  panel settings ⇒ this is a collection-layer decision, not an exit defect.
+- **What landed this round**:
+  ① `CjpegliProgressiveId` default changed from `2` to `-1` (= "the user said nothing") ⇒ removes an
+  **always-firing warning** (always firing = no warning);
+  ② the R2 downgrade now **speaks**, following `CjxlService`'s `log:` parameter convention as a **single
+  channel**, with both `QueueProcessor` and `JxlPipelineService` pipe routes wired in ⇒ visible in headless and GUI;
+  ③ a third warning: `--cjpegli-progressive` against a non-JPEG-LI backend now names the fact ("this task is
+  encoded by ffmpeg's mjpeg, which has no progressive support, so the output is baseline") and gives the remedy
+  (`-e Cjpegli`).
+- ⚠ **R0 itself is untouched this round**: completing the default-backend inference for jpg belongs to color-pipeline
+  P7a-3 ("single decision point") and is booked in `docs/JPEGLI_GAINMAP_PANEL_PLAN_2026-10-09.md`.
+
+**🟠 GUI: selecting progressive while "Optimize Huffman coding" is off now shows a conflict hint in place**
+
+- New `JpegliProgConflictHint` below `JpegliProgressiveCombo` (hidden by default). Condition = the advanced panel
+  is in view **and** Huffman optimization is unchecked **and** the progressive setting is not "sequential";
+  refreshed at three points (head of `RegenerateCommand`, tail of panel-visibility, `UseAdvancedCodec` toggle).
+- ⚠ The first version used `Console.WriteLine` + a relay ⇒ measured **3 duplicate stdout lines per task** (which
+  would break gate greps that read stdout). After switching to the single `log:` channel, **stdout line count
+  equals the log entry count**.
+
+**🟠 The "Baseline" label was a false promise ⇒ options now state identity only, explanations move to the grey hint**
+
+- Measured: `-p 0` on **high-entropy content** yields **SOF1** (extended-sequential), not the baseline it promised.
+  The mechanism is upstream: jpegli's `is_baseline` is decided by the **Huffman slot actually emitted**
+  (content-dependent), whereas libjpeg-turbo only inspects the declared `tbl_no` — so the same setting can give
+  different SOF markers on different backends.
+- **Fix**: `jpeg.progressive.baseline` → "Sequential (non-progressive)" (zh: 顺序 (sequential)); the SOF0/SOF1
+  boundary note went into the new tooltip `tip.jpeg.progressive.mode`.
+- ⚠ **Still owed**: a **gate assertion** for the SOF tri-state did not make this manifest — adding one would have
+  invalidated the round already in flight. Booked.
+
+**🟢 Performance: one separate exiftool probe per image merged into the existing argv (−0.170 s/image)**
+
+- ICC extraction used to be a **second, standalone** exiftool call, wrapped in an always-true condition
+  `!string.IsNullOrWhiteSpace(exifColorSpace) || true` (dead code that happened to hide "this runs every time").
+- **Fix**: fold `-b -icc_profile` into the same argv and add `IccProfileService.ExtractIccFromBase64` to consume
+  the return value directly (two gates: a length floor plus `IsValidIccProfile`; anything malformed is treated as
+  "no ICC" rather than guessed).
+- **Measured**: `--dry-run` single-image wall clock **0.797 → 0.644 s**; ICC read back **byte-identical**;
+  A/B gate counts unchanged on the affected scripts.
+- Full accounting and the remaining items (P2 post-pass merge, 0.34 s/image; P4 engine-route `-threads`, no
+  measurable criterion on this box) live in `docs/PIPELINE_PERF_ANALYSIS_2026-10-09.md`.
+
+**📌 Gate baseline (at this release)**: **73 managed scripts**; `ServiceProbe` default probe manifest = **26 modes**.
+⚠ Live authoritative values come from `$Probes` and `$expectedScriptCount` in `_run-step3-gates.ps1`.
+
+---
+
 ### v1.6.0-beta6 (2026-10-07) — 4 silent-defect fixes (incl. "you gave the flag but were told you didn't") + full audit of the advanced encoder options + second-level test split (gates 72→73)
 
 > **Lineage**: **11 product files** under `src/` changed (+346/−49 lines); the tests went through a
