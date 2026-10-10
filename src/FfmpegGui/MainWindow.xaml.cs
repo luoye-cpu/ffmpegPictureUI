@@ -263,6 +263,7 @@ namespace FfmpegGui
         private StackPanel? JpegliCodecPanel;
         private ComboBox? JpegliChromaCombo;
         private ComboBox? JpegliProgressiveCombo;
+        private TextBlock? JpegliProgConflictHint;
         private CheckBox? JpegliOptimizeCheck;
         private CheckBox? JpegliAdaptiveQuantCheck;
         private ComboBox? JpegliEncoderBackendCombo;
@@ -501,6 +502,7 @@ namespace FfmpegGui
             JpegliCodecPanel = this.FindControl<StackPanel>("JpegliCodecPanel");
             JpegliChromaCombo = this.FindControl<ComboBox>("JpegliChromaCombo");
             JpegliProgressiveCombo = this.FindControl<ComboBox>("JpegliProgressiveCombo");
+            JpegliProgConflictHint = this.FindControl<TextBlock>("JpegliProgConflictHint");
             JpegliOptimizeCheck = this.FindControl<CheckBox>("JpegliOptimizeCheck");
             JpegliAdaptiveQuantCheck = this.FindControl<CheckBox>("JpegliAdaptiveQuantCheck");
             JpegliEncoderBackendCombo = this.FindControl<ComboBox>("JpegliEncoderBackendCombo");
@@ -1417,6 +1419,10 @@ namespace FfmpegGui
 
         private async void RegenerateCommand()
         {
+            // 冲突提示与命令行预览**同源**刷新：JpegliOptimizeCheck / JpegliProgressiveCombo 只绑了
+            // RegenerateCommand（见事件绑定处），所以显隐必须在这里刷；而且要早于下面那行早退，
+            // 否则批量更新期间（_suppressCommandRegen）点了勾选，提示不会跟着变。
+            UpdateJpegliProgressiveConflictHint();
             if (_suppressCommandRegen || string.IsNullOrWhiteSpace(_inputPath)) return;
             var fmt = NormalizeFormat(FormatCombo?.SelectedItem as string);
             var useAdvCodec = UseAdvancedCodec?.IsChecked ?? false;
@@ -2520,6 +2526,10 @@ namespace FfmpegGui
             }
             if (ThumbnailSizeBox != null) ThumbnailSizeBox.IsEnabled = thumbSupported;
             if (ThumbnailQualityBox != null) ThumbnailQualityBox.IsEnabled = thumbSupported;
+
+            // 面板显隐刚定稿，此时才刷 JPEG LI 那条冲突提示（判据里带 JpegliCodecPanel.IsVisible，
+            // 放在上面那批 IsVisible 赋值之前会读到上一轮的旧值）。
+            UpdateJpegliProgressiveConflictHint();
         }
 
         /// <summary>
@@ -3844,6 +3854,32 @@ namespace FfmpegGui
         private void UseAdvancedCodec_IsCheckedChanged(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
         {
             if (AdvancedCodecPanel != null) AdvancedCodecPanel.IsVisible = UseAdvancedCodec?.IsChecked == true;
+            UpdateJpegliProgressiveConflictHint();
+        }
+
+        /// <summary>
+        /// 显示/收起 JPEG LI 面板里「渐进档 vs 固定 Huffman 码表」的冲突提示。
+        /// <para>
+        /// 冲突是真的、且不可两全：cjpegli 的 <c>--fixed_code</c> 只接受 <c>-p 0</c>（实测
+        /// <c>--fixed_code</c> 配 <c>-p 1/2</c> 或不配 <c>-p</c> ⇒ 退出码 1、零产物），而取消勾选
+        /// 「优化 Huffman 编码」就是发 <c>--fixed_code</c> ⇒ <see cref="CjpegliService.BuildCjpegliArguments"/>
+        /// 只能把上面的渐进档降成 <c>-p 0</c>。本行只负责**把这件事说出来**，不改这个降级。
+        /// </para>
+        /// <para>
+        /// 判据要同时成立：高级编码选项已勾选（未勾时采集侧恒按 optimize=true 走，不冲突）、
+        /// Huffman 优化被取消、且渐进档**不是**「基线」（「自动」也计入：它等于不传 <c>-p</c>，
+        /// 而 cjpegli 自身默认是 <c>-p 2</c>，被降成 0 同样是行为变化）。
+        /// 显隐还看 <c>JpegliCodecPanel</c> 本身，避免面板没露出时留一条看不懂的灰字。
+        /// </para>
+        /// </summary>
+        private void UpdateJpegliProgressiveConflictHint()
+        {
+            if (JpegliProgConflictHint == null) return;
+            var conflict = UseAdvancedCodec?.IsChecked == true
+                           && JpegliCodecPanel?.IsVisible == true
+                           && JpegliOptimizeCheck?.IsChecked != true
+                           && JpegliProgressiveCombo?.SelectedIndex != 1;
+            JpegliProgConflictHint.IsVisible = conflict;
         }
 
         /// <summary>检测色彩选项冲突并在 UI 中报告</summary>
@@ -5835,7 +5871,7 @@ namespace FfmpegGui
             return JpegProgressiveCombo?.SelectedIndex switch
             {
                 0 => -1,  // 自动
-                1 => 0,   // 基线/标准
+                1 => 0,   // 顺序 (sequential，旧文案「基线/标准」见 §13：产物可能是 SOF0 或 SOF1)
                 2 => 1,   // 渐进式
                 _ => 0
             };

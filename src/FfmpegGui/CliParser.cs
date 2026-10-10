@@ -184,8 +184,15 @@ namespace FfmpegGui
                             var fmt = v.ToLowerInvariant();
                             // 包2-2a：jpegli 是编码器后端而非容器格式——此前原样保留会拼出
                             // ".jpegli" 非法扩展名，ffmpeg 报 -22 且无任何产物（实测）。
-                            // 规范化为 jpg：用户意图即"用 jpegli 编 JPEG"，jpg 目标在
-                            // cjpegli 可用时自动走 jpegli 编码（QueueProcessor 路由）。
+                            // 规范化为 jpg 只是**归一容器名**，不改变后端选择。
+                            // ⚠ 2026-10-09 纠正：本处原文写作"jpg 目标在 cjpegli 可用时自动走 jpegli 编码
+                            //   （QueueProcessor 路由）"，实测**不成立** —— `EncoderDetectionService.cs:50-60`
+                            //   的 `InferDefaultBackend` 没有 jpg/jpeg/jpegli 分支（`_ => Ffmpeg`，唯一调用点
+                            //   `CliParser.cs:530`）⇒ 不显式 `-e Cjpegli` 时 `--format jpegli` 得到的是
+                            //   ffmpeg mjpeg、产物 Baseline（实测 `recheck.out` 的 A1/A2/A9 三臂）。
+                            //   现在这条静默已被 `FfmpegCommandBuilder` 的 ③ 告警点名；把默认后端真正切过去
+                            //   属 R0-a，前置是 P7a-3（cjpegli 出口接进色彩后置），见
+                            //   docs/JPEGLI_GAINMAP_PANEL_PLAN_2026-10-09.md §1c。
                             if (fmt == "jpegli") fmt = "jpg";
                             result.Format = fmt;
                         }

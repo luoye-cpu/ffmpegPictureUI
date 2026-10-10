@@ -167,7 +167,9 @@ namespace FfmpegGui.Services
             if (_detectedPath == null)
                 throw new InvalidOperationException("cjpegli.exe 未找到");
 
-            var args = BuildCjpegliArguments(inputPath, outputPath, opts);
+            // log 传下去 ⇒ 「选项被降级」（如固定码表逼出的 -p 0）那句说明进本次调用的日志，
+            // 而不是只在命令行串里多出一个 -p 0 让用户自己猜为什么。
+            var args = BuildCjpegliArguments(inputPath, outputPath, opts, log: logCallback);
             logCallback?.Invoke($"[cjpegli] {Path.GetFileName(_detectedPath)} {args}\n");
 
             var psi = new ProcessStartInfo
@@ -223,8 +225,14 @@ namespace FfmpegGui.Services
         /// 用于 UI 预览和实际执行。
         /// </summary>
         /// <param name="hdrMeta">auto 模式下的输入色彩探测结果（可选）</param>
+        /// <param name="log">
+        /// 「选项被降级」播报的去向。**只有真执行侧的调用方传**（预览/命令行串调用方不传），
+        /// 与本仓 <c>CjxlService.BuildCjxlArguments(…, forPreview, log)</c> 同一约定：
+        /// 本函数每次生成命令行都会被调多遍，无条件写 Console 会让一个任务刷出好几条同样的话。
+        /// </param>
         public static string BuildCjpegliArguments(string input, string output, Models.FfmpegOptions opts,
-            FfmpegCommandBuilder.ColorMetadata hdrMeta = default, string? iccPath = null, bool includeThreads = true)
+            FfmpegCommandBuilder.ColorMetadata hdrMeta = default, string? iccPath = null, bool includeThreads = true,
+            Action<string>? log = null)
         {
             var sb = new StringBuilder();
             sb.Append($"\"{input}\" \"{output}\"");
@@ -242,7 +250,21 @@ namespace FfmpegGui.Services
             var progId = opts.CjpegliProgressiveId;
             // Huffman 优化关闭 → --fixed_code 仅与 sequential (-p 0) 兼容，自动降级（2026-08-16 实测）
             if (!opts.CjpegliOptimize && progId != 0)
+            {
+                // 出声（2026-10-09 实机复现的**静默**降级）：用户要的渐进档在这里被改成 -p 0 ⇒ 产物从
+                // Progressive(SOF2) 变成非渐进。降级本身躲不掉 —— 实测 `--fixed_code` 配 `-p 1/2`
+                // 或不配 `-p` ⇒ cjpegli 退出码 1、零产物 —— 但“改了用户的选择不说话”是另一回事。
+                // 只写 log（不写 Console）的理由见本方法 log 形参：预览侧的冲突提示由
+                // MainWindow.UpdateJpegliProgressiveConflictHint 承担。
+                // ⚠ 文案必须纯 ASCII：`_probe-cjk-hardcode-scan.ps1` 的 CsUi 面余量为 0。
+                var requested = progId < 0
+                    ? "no -p (cjpegli's own default = progressive level 2)"
+                    : $"-p {progId}";
+                log?.Invoke("[cjpegli] --fixed_code requires -p 0: " + requested
+                    + " was requested while Huffman code optimization is off, so this image is encoded with"
+                    + " -p 0 (sequential/baseline) instead. Keep 'Optimize Huffman coding' enabled to get progressive output.\n");
                 progId = 0;
+            }
             if (progId >= 0)
                 sb.Append($" -p {progId}");
 

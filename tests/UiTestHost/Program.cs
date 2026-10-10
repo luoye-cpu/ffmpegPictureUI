@@ -413,6 +413,56 @@ namespace UiTestHost
                 if (m != null) m.SelectedIndex = 0; Pump(8); // 复位静态模式
             });
 
+            // C6（2026-10-09）：JPEG LI 面板里「渐进档 vs 固定 Huffman 码表」冲突提示的运行时回归锁。
+            // 为什么必须有：cjpegli 的固定码表只接受 p 0（实测与 p1/p2 同用 ⇒ 退出码 1、零产物），
+            // 所以取消「优化 Huffman 编码」时 CjpegliService.BuildCjpegliArguments 只能把用户选的渐进档
+            // 降成 -p 0 —— 这件事在加本行之前**完全静默**（实机读数：命令行只剩 -p 0、产物 Baseline、
+            // 日志一句都没有）。三条对照臂（选基线/优化开着/收起高级面板）必须**不**提示，
+            // 否则这条提示就是恒真的、判不出回归。
+            Safe("C6 JPEG LI 固定码表 vs 渐进档 冲突提示", () =>
+            {
+                var adv = Find<CheckBox>("UseAdvancedCodec");
+                var panel = Find<StackPanel>("JpegliCodecPanel");
+                var opt = Find<CheckBox>("JpegliOptimizeCheck");
+                var prog = Find<ComboBox>("JpegliProgressiveCombo");
+                var hint = Find<TextBlock>("JpegliProgConflictHint");
+                var adv0 = adv?.IsChecked;
+                var panel0 = panel?.IsVisible;
+                var opt0 = opt?.IsChecked;
+                var prog0 = prog?.SelectedIndex;
+                try
+                {
+                    if (adv != null) adv.IsChecked = true; Pump(4);
+                    // JPEG LI 面板的可见性由「编码器下拉选中项 + 工具可用性过滤」共同决定，
+                    // 本组验的是**冲突判定与刷新接线**本身 ⇒ 直接把面板置为可见（同 C3 的注入理由）。
+                    if (panel != null) panel.IsVisible = true;
+                    if (opt != null) opt.IsChecked = true; Pump(4);
+                    if (prog != null) prog.SelectedIndex = 2; Pump(4); // 2 = 渐进
+
+                    if (opt != null) opt.IsChecked = false; Pump(8);   // 勾掉优化 ⇒ 渐进会被降 ⇒ 该提示
+                    Check("C6 冲突成立→渐进选项下方提示可见", hint?.IsVisible == true, $"visible={hint?.IsVisible}");
+
+                    if (prog != null) prog.SelectedIndex = 1; Pump(8); // 对照臂①：本来就选基线 ⇒ 没降级
+                    Check("C6b 选基线（无降级）→提示隐藏", hint?.IsVisible == false, $"visible={hint?.IsVisible}");
+
+                    if (prog != null) prog.SelectedIndex = 2; Pump(8);
+                    if (opt != null) opt.IsChecked = true; Pump(8);    // 对照臂②：优化开着 ⇒ 不冲突
+                    Check("C6c 优化开着（无冲突）→提示隐藏", hint?.IsVisible == false, $"visible={hint?.IsVisible}");
+
+                    if (opt != null) opt.IsChecked = false; Pump(8);
+                    if (adv != null) adv.IsChecked = false; Pump(8);    // 对照臂③：收起高级面板 ⇒ 采集侧恒 optimize=true
+                    Check("C6d 收起高级编码面板→提示隐藏", hint?.IsVisible == false, $"visible={hint?.IsVisible}");
+                }
+                finally
+                {
+                    if (adv != null) adv.IsChecked = adv0;
+                    if (panel != null) panel.IsVisible = panel0 ?? false;
+                    if (opt != null) opt.IsChecked = opt0 ?? true;
+                    if (prog != null) prog.SelectedIndex = prog0 ?? 2;
+                    Pump(4);
+                }
+            });
+
             // C20/C21（2026-10-02）：托盘缺图标那一批的运行时回归锁。
             // 旧失效链全是静默的：icon 没进 `<AvaloniaResource>` ⇒ AssetLoader.Exists=false ⇒ LoadTrayIcon()
             // 返回 null ⇒ 托盘只有菜单。ServiceProbe 那边只能验"程序集清单收录了它"，**运行时解析**

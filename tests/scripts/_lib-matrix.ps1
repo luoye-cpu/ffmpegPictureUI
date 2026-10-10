@@ -369,7 +369,7 @@ function Get-EquivalenceClasses {
         ClassId = 'format-jpg'
         Representative = 'jpg'
         Members = @('jpg', 'jpegli')
-        Evidence = @('src/FfmpegGui/CliParser.cs:189|if (fmt == "jpegli") fmt = "jpg";')
+        Evidence = @('src/FfmpegGui/CliParser.cs:196|if (fmt == "jpegli") fmt = "jpg";')
         Rationale = 'CliParser normalizes format jpegli to jpg, so -f jpegli and -f jpg select the same container'
     }
 
@@ -387,7 +387,7 @@ function Get-EquivalenceClasses {
             #   成因 = `FfmpegCommandBuilder.BuildColorArgsSplit` 顶部新增「RAW 中间件输入声明」分支
             #   （`ColorSourceDecl*`，2026-10-03 RAW 默认三档改动），插在本文件之前。
             #   已按 `grep -n` 复核实况、并确认两处字面量全文件唯一。
-            'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:981|options.JpegGainMap ? null : "iec61966-2-1", "bt709", 8, true'   # 2026-10-04 重钉 977→981（早前会话 +4 行，grep -n 复核实况 + 字面量唯一）
+            'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:1000|options.JpegGainMap ? null : "iec61966-2-1", "bt709", 8, true'   # 2026-10-04 重钉 977→981（早前会话 +4 行，grep -n 复核实况 + 字面量唯一）
         )
         Rationale = 'JPEG container caps bit depth at 8 and DecideOutputColor rewrites options.BitDepth in place, so 8/10/12/16 are observationally equal'
     }
@@ -402,7 +402,7 @@ function Get-EquivalenceClasses {
         Evidence = @(
             'src/FfmpegGui/Services/FfmpegCommandBuilder.Decision.cs:147|if (options.BitDepth.HasValue && options.BitDepth.Value > capBd)',
             'src/FfmpegGui/Services/FfmpegCommandBuilder.Decision.cs:155|options.BitDepth = capBd;',
-            'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:991|return (null, "iec61966-2-1", "bt709", 8, true);'   # 2026-10-04 重钉 987→991（同批 +4）
+            'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:1010|return (null, "iec61966-2-1", "bt709", 8, true);'   # 2026-10-04 重钉 987→991（同批 +4）
         )
         Rationale = 'WebP container caps bit depth at 8 and DecideOutputColor rewrites options.BitDepth in place, so 8/10/12/16 are observationally equal'
     }
@@ -627,13 +627,13 @@ function Get-SemanticMatrices {
                 #   （追加式合并 + 注释）⇒ 其**下方**所有行号整体下移 ⇒ 本条 pin 必须同步。
                 #   ⚠ 这不是"改判据"：字面量与**语义**未变，只是源文件里的位置变了；
                 #     本仓 A21/A30 的设计意图正是"行号 pin 一旦失效就当场转红"，本次转红即为**设计生效**。
-                'src/FfmpegGui/CliParser.cs:265|case "--preserve-metadata":',
+                'src/FfmpegGui/CliParser.cs:272|case "--preserve-metadata":',
                 # ⚠ pin 演进：2011 →（#39/#43 插注释）2041 →（2026-09-30 显示尺寸轮往 :1641 之后插了 14 行）**2055**。
                 #   →（2026-10-01 并发会话从同一文件删 5 行 ⇒ 该文件**四条 pin 同步 −5**：971→966、981→976、1013→1008、2055→2050）**2050**。
                 #   漂移由 A30 当场报出（`literal not on ...:2041 (found at line 2055)`）⇒ 抬号前先 `grep -n` 复核实况行，
                 #   并确认全文件该字面量**只出现一次**（行号锚不容歧义）。见 docs/TESTING.md §6 第 112 条。
                 # ⚠ pin 演进（2026-10-04）：2050 → **2061**（+11），同 A21 那条成因
-                'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:2065|bool exiftoolFormats = fmt is "jpg" or "jpeg" or "png" or "tiff" or "webp";'   # 2026-10-04 重钉 2061→2065（同批 +4）
+                'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:2099|bool exiftoolFormats = fmt is "jpg" or "jpeg" or "png" or "tiff" or "webp";'   # 2026-10-04 重钉 2061→2065（同批 +4）
             )
         },
         @{
@@ -654,7 +654,7 @@ function Get-SemanticMatrices {
                 #   `NormalizeTuneToken` 的两义性、第三半加"这条后端没有 tune 通路"的中心播报）；
                 #   唯一性同样已 `grep -n` 核过。
                 'src/FfmpegGui/Services/ColorMapping/ImageEncoderArgs.cs:804|AvifMaxBitDepthForEncoder(string? encoder)',
-                'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:1023|return (null, null, null, ColorMapping.ImageEncoderArgs.AvifMaxBitDepth(options), false);',   # 2026-10-04 重钉 1019→1023（同批 +4）
+                'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:1042|return (null, null, null, ColorMapping.ImageEncoderArgs.AvifMaxBitDepth(options), false);',   # 2026-10-04 重钉 1019→1023（同批 +4）
                 'src/FfmpegGui/Services/FfmpegCommandBuilder.Decision.cs:155|options.BitDepth = capBd;'
             )
         }
@@ -1253,7 +1253,7 @@ function Invoke-MatrixSelfTest {
         ClassId = 'syn-bogus'
         Representative = 'x'
         Members = @('x', 'y')
-        Evidence = @('src/FfmpegGui/Models/ColorStrategy.cs:75|IccMode.BakeOnly => ColorStrategy.BakeCicpOnly,')
+        Evidence = @('src/FfmpegGui/Models/ColorStrategy.cs:76|IccMode.BakeOnly => ColorStrategy.BakeCicpOnly,')
         Rationale = 'bogus evidence for the negative control'
     }
     $b4 = Test-MatrixStructure -Registry $synReg -Folds @($synFolds + @(New-FoldClass @bogus)) -PairwiseAxes $synAxes -PairwiseCases $synCases -Matrices $synMtx -Overrides $overrides -IccFile $icc

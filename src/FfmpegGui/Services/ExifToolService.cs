@@ -160,7 +160,13 @@ namespace FfmpegGui.Services
                 var psi = new ProcessStartInfo
                 {
                     FileName = exe,
-                    Arguments = $"-json -G -ColorSpace -BitsPerSample -ColorType -SRGBRendering -PhotometricInterpretation \"{imagePath}\"",
+                    // ⚠ 2026-10-09 性能：合并探测。原先这里只取标签，ICC 另起一次 `-b -icc_profile`
+                    //   （`IccProfileService.ExtractIccToTempFile`），而单次 exiftool 实测 **0.170 s**
+                    //   （perl 打包版，进程本身就贵）⇒ 每张图白付一趟。`-b` 在 `-json` 下把二进制
+                    //   以 `base64:` 前缀放进同一条 JSON（实测键 `ICC_Profile:ICC_Profile`，
+                    //   且不带 `-a` 也能取到 `ICC_Profile:ProfileDescription`），故一次调用即可两样都拿到。
+                    //   消费者只有 `FfmpegCommandBuilder.ProbeInputColorMetadataCore`（全仓唯一调用点）。
+                    Arguments = $"-json -G -ColorSpace -BitsPerSample -ColorType -SRGBRendering -PhotometricInterpretation -ProfileDescription -b -icc_profile \"{imagePath}\"",
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,
                     UseShellExecute = false,

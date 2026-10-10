@@ -3450,7 +3450,10 @@ namespace FfmpegGui.Services
 
             var (pipeInputColor2, pipeOutputColor2, pipeIccPath2) = BuildPipeColorArgs(item.Options, item.InputPath,
                 s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ct);
-            var cjpegliArgs = CjpegliService.BuildCjpegliArguments("-", outputPath, item.Options, hdrMeta, pipeIccPath2);
+            // log 传下去：管道路也要把「选项被降级」（如固定码表逼出的 -p 0）说进 item.Log，
+            // 否则用户只看得到命令行里那个 -p 0，看不到它为什么被降。
+            var cjpegliArgs = CjpegliService.BuildCjpegliArguments("-", outputPath, item.Options, hdrMeta, pipeIccPath2,
+                log: s => { item.Log += s; _onItemUpdated?.Invoke(item); });
             var pipeVcodec2 = hdrMeta.hasAlpha ? "pam" : "ppm";
 
             item.Command = $"ffmpeg -y {pipeInputColor2}-i \"{item.InputPath}\" {pipeOutputColor2}-compression_level 0 -f image2pipe -c:v {pipeVcodec2} - | cjpegli {cjpegliArgs}";

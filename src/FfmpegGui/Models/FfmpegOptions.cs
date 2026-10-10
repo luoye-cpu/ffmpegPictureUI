@@ -436,8 +436,23 @@ namespace FfmpegGui.Models
         // ── cjpegli / jpegli 专属高级选项 ──
         /// <summary>色度子采样: "auto"/"444"/"422"/"420"/"440"（默认 auto 跟随输入）</summary>
         public string CjpegliChromaSubsampling { get; set; } = "auto";
-        /// <summary>渐进模式: -1=自动, 0=基线, 2=渐进（2026-08-16 实测渐进压缩率更高: 体积小 5-38%，默认 2）</summary>
-        public int CjpegliProgressiveId { get; set; } = 2;
+        /// <summary>
+        /// 渐进模式: -1=未表达（不传 `-p`，交 cjpegli 自身默认 2=渐进）, 0=基线, 2=渐进。
+        /// <para>
+        /// 默认值 2 → -1（2026-10-09）：**产物不变**，实测同一素材三臂 md5 全等
+        /// （省略 `-p` / `-p 2` / `--cjpegli-progressive -1` 均为 `9ee10590c96a079c`，
+        /// 读数 `tests/output/jpegli-prog/e2e/o_{default,prog2,progAuto}/in.jpg`）——
+        /// cjpegli 自身默认就是 `-p 2`（`-h`：Default: 2），所以"要渐进"从来不需要模型替用户填一个值。
+        /// </para>
+        /// <para>
+        /// 为什么必须让默认表示"未表达"：`FfmpegCommandBuilder` 的 ③ 告警要在"任务其实走了 ffmpeg mjpeg、
+        /// 你设的渐进档兑现不了"时点名。若默认仍是 2，每一个没碰过该选项的 CLI jpg 任务都会被当作
+        /// "用户显式要渐进"而报警 ⇒ 告警恒响＝没有告警。
+        /// 与 `PresetData.cs:109`（默认 -1）的不一致也一并消掉（`FfmpegOptions.cs:92` 是无条件覆写）。
+        /// 2026-08-16 的原始意图（默认拿渐进、体积小 5-38%）由 cjpegli 的默认档继续兑现。
+        /// </para>
+        /// </summary>
+        public int CjpegliProgressiveId { get; set; } = -1;
         /// <summary>Huffman 表优化</summary>
         public bool CjpegliOptimize { get; set; } = true;
         /// <summary>自适应量化</summary>

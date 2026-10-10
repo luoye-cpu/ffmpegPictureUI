@@ -158,6 +158,25 @@ namespace FfmpegGui.Services
                     if (options.JpegProgressiveId > 0)
                         ColorMapping.ImageEncoderArgs.EmitWarn("⚠ [jpeg] --jpeg-progressive ignored: ffmpeg's mjpeg encoder has no "
                             + "progressive support, so the output is baseline. Use -e Cjpegli for progressive JPEG.");
+                    // ③ JPEG LI 的渐进档（`--cjpegli-progressive` / GUI 的 JPEG LI 下拉，字段 `CjpegliProgressiveId`）
+                    //    落在本分支时同样兑现不了 —— 而上面那条只检查 `JpegProgressiveId`，**两个字段名不同**，
+                    //    漏掉这一个就是一整类静默：`InferDefaultBackend` 没有 jpg/jpeg/jpegli 分支
+                    //    （`EncoderDetectionService.cs:50-60`，唯一调用点 `CliParser.cs:530`）⇒ 不显式 `-e Cjpegli`
+                    //    的 jpg/jpegli 任务恒走 mjpeg ⇒ 用户设的渐进档无声消失。
+                    //    2026-10-09 实机：`--format jpegli` 与 `--format jpg --cjpegli-progressive 2`（均无 `-e`）
+                    //    ⇒ 命令行是 `ffmpeg … -q:v 5`、产物 Baseline、原本零告警。
+                    //    ⚠ 这里只**出声不拦截**：把 `ColorEngineRouter` 的未承接判据也扩到这个字段会把整批
+                    //    jpg 任务从引擎路踢回传统路（改的是路由语义），不在本轮范围。
+                    //    ⚠ 不改默认后端本身：实测带 `-e Cjpegli` 的产物**零色彩标注**（无 ICC/无 JFIF），
+                    //    而不带 `-e` 的 mjpeg 产物带 584 B ICC ⇒ 切默认值会让所有未显式指定的 jpg 任务丢标注，
+                    //    必须先按 P7a-3 把 cjpegli 出口接进色彩后置（见 docs/JPEGLI_GAINMAP_PANEL_PLAN_2026-10-09.md §1c R0-a）。
+                    //    ⚠ 护栏 `EncoderBackend != Cjpegli`：本函数也会为后端=Cjpegli 的任务生成命令行
+                    //    （预览/干跑会调它，而下面 `EncoderBackend == Cjpegli` 那条分支正是给它发
+                    //    `-distance` 的）⇒ 不加护栏会把"真的用上了 JPEG LI"的任务也报成"兑现不了"。
+                    if (options.CjpegliProgressiveId > 0 && options.EncoderBackend != EncoderBackend.Cjpegli)
+                        ColorMapping.ImageEncoderArgs.EmitWarn("⚠ [jpeg] --cjpegli-progressive ignored: this task is encoded by ffmpeg's mjpeg "
+                            + "(the backend is not JPEG LI), which has no progressive support, so the output is baseline. "
+                            + "Pass -e Cjpegli to encode with JPEG LI and keep progressive output.");
                     // ② 无损 JPEG：mjpeg 是**有损**编码器 ⇒ `--lossless true` 对本分支无效（原先静默产有损）。
                     if (options.Lossless)
                         ColorMapping.ImageEncoderArgs.EmitWarn("⚠ [jpeg] --lossless true ignored: the mjpeg encoder is lossy, so the output is lossy. "
@@ -1413,13 +1432,28 @@ namespace FfmpegGui.Services
             if (bitsPerSample != null && int.TryParse(bitsPerSample, out var exifBd) && exifBd > 0)
                 meta.bitDepth = exifBd;
 
-            // ICC 语义：提取 ICC → 解析描述 → 推断色彩空间（仅对 exiftool 可读的容器格式）
+            // ICC 语义：解析 ICC → 推断色彩空间（仅对 exiftool 可读的容器格式）
+            // ⚠ 2026-10-09 性能：这里**不再另起一次 exiftool**。原先为拿 ICC 要单独跑
+            //   `-b -icc_profile`（`ExtractIccToTempFile`），单次实测 0.170 s ⇒ 每图白付一趟进程；
+            //   现在 ICC 随上面那次 `ReadColorTagsAsync` 的 `-b -icc_profile` 一起以 base64 返回。
+            //   校验口径一字未放宽（<128 B 或非法 ICC ⇒ 按无 ICC 处理），见
+            //   `IccProfileService.ExtractIccFromBase64`。旧的条件 `|| true`（恒真）连同它一起删除，
+            //   因为"要不要试"这个判断在合并后不存在——标签与 ICC 本来就来自同一条结果。
             string? iccGuessed = null;
-            if (!string.IsNullOrWhiteSpace(exifColorSpace) || true) // 有 exiftool 即尝试 ICC（JPEG/TIFF/WebP 常见）
             {
                 try
                 {
-                    var (iccPath, iccDesc) = IccProfileService.ExtractIccToTempFile(inputPath, log, ct);
+                    string? iccB64 = null;
+                    foreach (var kv in exifColorTags)
+                    {
+                        if (kv.Key.EndsWith(":ICC_Profile", StringComparison.OrdinalIgnoreCase)
+                            || kv.Key.Equals("ICC_Profile", StringComparison.OrdinalIgnoreCase))
+                        {
+                            iccB64 = kv.Value;
+                            break;
+                        }
+                    }
+                    var (iccPath, iccDesc) = IccProfileService.ExtractIccFromBase64(iccB64);
                     if (iccPath != null)
                     {
                         // 先按**度量**（色度矩阵+曲线）定空间，描述文字只作兜底：

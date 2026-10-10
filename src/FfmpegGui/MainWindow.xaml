@@ -770,7 +770,16 @@
                 <sys:String>422</sys:String><sys:String>420</sys:String><sys:String>440</sys:String>
               </ComboBox>
               <TextBlock Text="{ext:Loc jpeg.progressive.mode}" Margin="0,4,0,0"/>
-              <ComboBox x:Name="JpegliProgressiveCombo" SelectedIndex="2"/>
+              <ComboBox x:Name="JpegliProgressiveCombo" SelectedIndex="2"
+                        ToolTip.Tip="{ext:Loc tip.jpeg.progressive.mode}"/>
+              <!-- 冲突提示：cjpegli 的固定 Huffman 码表只接受 p 0（实测与 p1/p2 同用 ⇒ 退出码 1、零产物），
+                   所以取消「优化 Huffman 编码」会把上面的渐进档强制降成基线。显隐由
+                   MainWindow.UpdateJpegliProgressiveConflictHint 按组合判定；执行侧的同一句由
+                   CjpegliService.BuildCjpegliArguments 的 log 形参发出（只有真执行路径传，
+                   预览不传 ⇒ 一个任务一条），落点是任务日志。 -->
+              <TextBlock x:Name="JpegliProgConflictHint" FontSize="10" Foreground="Orange"
+                         TextWrapping="Wrap" IsVisible="False" Margin="0,2,0,0"
+                         Text="{ext:Loc jpeg.progressive.fixedcode.conflict}"/>
               <CheckBox x:Name="JpegliOptimizeCheck" Content="{ext:Loc jpeg.optimize.huffman}" IsChecked="True" Margin="0,4,0,0"
                         ToolTip.Tip="{ext:Loc tip.jpeg.fixed.code}"/>
               <CheckBox x:Name="JpegliAdaptiveQuantCheck" Content="{ext:Loc jpeg.adaptive.quant}" IsChecked="True"

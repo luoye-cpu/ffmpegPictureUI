@@ -78,6 +78,40 @@ namespace FfmpegGui.Services
         catch { return (null, null); }
     }
 
+    /// <summary>
+    /// 从**合并探测**（exiftool 一次调用同时返回标签与 `base64:` ICC）还原出临时 ICC 文件。
+    /// <para>
+    /// 2026-10-09 性能改动：原先探测为了拿 ICC 要**再起一次 exiftool**（`-b -icc_profile`，
+    /// 单次实测 0.170 s），而 <see cref="ExifToolService.ReadColorTagsAsync"/> 加上
+    /// `-b -icc_profile` 后在同一条 JSON 里就给出 `ICC_Profile:ICC_Profile`。
+    /// </para>
+    /// <para>
+    /// 判据口径与 <see cref="ExtractIccToTempFile"/> 逐条一致（&lt;128 字节 ⇒ 视为无 ICC；
+    /// 非合法 ICC ⇒ 视为无 ICC 并删文件）——"这算不算一张真 ICC"只能有一份标准，
+    /// 合并路径不许悄悄放宽。
+    /// </para>
+    /// </summary>
+    public static (string? path, string? description) ExtractIccFromBase64(string? base64Value)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(base64Value)) return (null, null);
+            var payload = base64Value.StartsWith("base64:", StringComparison.OrdinalIgnoreCase)
+                ? base64Value.Substring("base64:".Length)
+                : base64Value;
+            // exiftool 的 base64 可能带换行/空白 ⇒ 先剥掉，别让解析器直接抛
+            payload = payload.Replace("\r", "").Replace("\n", "").Replace(" ", "").Replace("\t", "");
+            var bytes = Convert.FromBase64String(payload);
+            if (bytes.Length < 128) return (null, null);
+            var tmp = Path.Combine(PlatformServices.GetTempDir(), $"icc_extract_{Guid.NewGuid():N}.icc");
+            File.WriteAllBytes(tmp, bytes);
+            if (!IsValidIccProfile(tmp)) { TryDelete(tmp); return (null, null); }
+            var info = ParseInfo(tmp);
+            return (tmp, info?.Description);
+        }
+        catch { return (null, null); }
+    }
+
     private static void TryDelete(string path)
     {
         try { if (File.Exists(path)) File.Delete(path); } catch { }

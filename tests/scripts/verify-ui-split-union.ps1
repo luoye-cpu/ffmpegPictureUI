@@ -8,7 +8,7 @@
 #   而**唯一正确的判据**是：
 #       ① 旧宿主全量的断言名集合  ==  5 个工程各 mode 输出断言名的**并集**
 #       ② 差集两个方向都必须为空（missing = 0 且 extra = 0）
-#       ③ 并集计数 == 旧宿主汇总行里的 409
+#       ③ 并集计数 == 旧宿主汇总行里的 $expectedOldCount（登记在 §3 上方，改断言数必须同步它）
 #
 # 【步骤】
 #   1. 跑一次旧 UiTestHost（未修改，仍在仓里）→ 取它的断言名集合 + 汇总行
@@ -29,6 +29,14 @@ Set-Location $root
 
 $env:FFMPEGGUI_PLAN_DIR = (Join-Path $root 'publish/PLAN')
 $srcDir = Join-Path $root 'tests/output/sources'
+
+# ── 断言计数基线（1a / 3c / 3d 共用的**唯一真值**；不要在下面再写一遍字面量）──
+#   演进：2026-10-07 = 409；2026-10-09 = 413（旧宿主 GroupC 增 C6 组 4 条 ——
+#   JPEG LI「固定码表 vs 渐进档」冲突提示，见 UiTestHost/Program.cs 与 Tests.UiCore）。
+#   抬这个数必须同时看到 3c（新旧集合相等）仍 PASS：只抬 1a/3d 而 3c 红，就是"用改数掩盖丢断言"。
+$expectedOldCount = 413
+# 一对一改名 ⇒ 新旧总数相同（不是 408/412）
+$expectedNewCount = $expectedOldCount
 
 $pass = 0; $fail = 0
 function CK([bool]$ok, [string]$msg) {
@@ -115,9 +123,12 @@ if (-not $SkipOldHost) {
     $mf = [regex]::Match($r.Text, '(\d+) PASS / (\d+) FAIL')
     if ($mf.Success) { $oldFail = [int]$mf.Groups[2].Value }
     Write-Host "  old host: $oldSummary ; names=$($oldNames.Count) ; exit=$($r.ExitCode)"
-    # ⚠ 2026-10-07：旧宿主**未改**，故它的断言名数仍是 409（含那条恒假红的 J1z）。
-    #   这是"参照实现"的基线，**不随拆分侧改动而变** —— 见下方 §3 的改名白名单。
-    CK ($oldNames.Count -eq 409) "1a 旧宿主断言名数 == 409（实 $($oldNames.Count)）"
+    # ⚠ 基线演进：2026-10-07 为 409；2026-10-09 旧宿主新增 C6 组 4 条（JPEG LI 固定码表 vs 渐进档
+    #   冲突提示，见 UiTestHost/Program.cs GroupC 与拆出的 Tests.UiCore）⇒ **413**。
+    #   这是"参照实现"的基线，**不随拆分侧改动而变**（见下方 §3 的改名白名单）；
+    #   但它**会**随旧宿主本身增删断言而变 ⇒ 抬它时必须同时核对 3c（新旧集合相等）仍是 PASS，
+    #   否则就是"用改数掩盖丢断言"。
+    CK ($oldNames.Count -eq $expectedOldCount) "1a 旧宿主断言名数 == $expectedOldCount（实 $($oldNames.Count)）"
     CK ($oldFail -eq 0) "1b 旧宿主 FAIL == 0（实 $oldFail）"
 } else {
     Write-Host "run: UiTestHost SKIPPED (-SkipOldHost)" -ForegroundColor Yellow
@@ -179,16 +190,14 @@ CK ($newFailTotal -eq 0) "2a 5 个工程全部 mode 无 FAIL（实 $newFailTotal
 #   ⚠ 第一版硬编码 `== "av1_nvenc"` ⇒ 在**本机当场红**（实得 `av1_amf`）——
 #     本机 GPU 检测先命中 amd 项，而 `av1_amf` 同样是合法 token ⇒
 #     **锁了"某台机器的取值"而不是"不变量"**（本仓 §6 第 116 条同族）。已改为形态判据。
-#   ⇒ 对集合的影响是**一对一替换**（旧名出、新名入）⇒ **总数不变（仍 409）**。
+#   ⇒ 对集合的影响是**一对一替换**（旧名出、新名入）⇒ **总数不变**（基数见文件头 `$expectedOldCount`）。
 #   ⚠ 这**不是**放宽：`missing` 只白名单这一条旧名、`extra` 只白名单这一条新名，
 #     两侧各自**恰好命中 1 条**（`3a2`/`3b2` 两个反控），其余任何差集照常红。
 #   ⚠ 断言**数量**不变（旧 1 条 → 新 1 条，Skip 与 PASS 互斥）⇒ union 计数守恒。
 $renamedPairs = @(
     @{ Old = 'J1z 硬件编码器可选（前置）'; New = 'J1z 硬件编码器名解析（`-c:v` 为单个 token、不含图标/空格）' }
 )
-$expectedOldCount = 409
-# 一对一替换 ⇒ 新旧总数相同（不是 408）
-$expectedNewCount = $expectedOldCount
+# $expectedOldCount / $expectedNewCount 的唯一出处在文件头（与 1a 共用同一把尺；此处不再重复定义）
 
 if (-not $SkipOldHost) {
     $renamedOld = @($renamedPairs | ForEach-Object { $_.Old })

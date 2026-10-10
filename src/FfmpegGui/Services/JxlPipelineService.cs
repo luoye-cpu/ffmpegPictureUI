@@ -44,7 +44,9 @@ namespace FfmpegGui.Services
                 // 自适应量化/ICC）与本编码器直编路径一致；includeThreads=false：裸流管道下
                 // 不传 --num_threads（部分版本不支持，且管道 I/O 非 CPU 密集）。
                 // 色彩标记在下方显式补充：输入为 "-" 时 BuildCjpegliArguments 不生成 color_space。
-                var cjArgs = CjpegliService.BuildCjpegliArguments("-", "-", opts, jxlMeta, iccPath: null, includeThreads: false);
+                // log 传下去：本管道也要把「选项被降级」（如固定码表逼出的 -p 0）说进本次调用的日志。
+                var cjArgs = CjpegliService.BuildCjpegliArguments("-", "-", opts, jxlMeta, iccPath: null,
+                    includeThreads: false, log: logCallback);
                 if (!string.IsNullOrWhiteSpace(colorSpace))
                     cjArgs += $" -x color_space={colorSpace}";
 
