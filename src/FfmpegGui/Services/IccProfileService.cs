@@ -70,7 +70,7 @@ namespace FfmpegGui.Services
 
             if (ms.Length < 128) { TryDelete(tmp); return (null, null); }
             File.WriteAllBytes(tmp, ms.ToArray());
-            if (!IsValidIccProfile(tmp)) { TryDelete(tmp); return (null, null); }
+            if (!IsValidIccProfile(tmp, log)) { TryDelete(tmp); return (null, null); }
 
             var info = ParseInfo(tmp);
             return (tmp, info?.Description);
@@ -91,7 +91,7 @@ namespace FfmpegGui.Services
     /// 合并路径不许悄悄放宽。
     /// </para>
     /// </summary>
-    public static (string? path, string? description) ExtractIccFromBase64(string? base64Value)
+    public static (string? path, string? description) ExtractIccFromBase64(string? base64Value, Action<string>? log = null)
     {
         try
         {
@@ -105,7 +105,7 @@ namespace FfmpegGui.Services
             if (bytes.Length < 128) return (null, null);
             var tmp = Path.Combine(PlatformServices.GetTempDir(), $"icc_extract_{Guid.NewGuid():N}.icc");
             File.WriteAllBytes(tmp, bytes);
-            if (!IsValidIccProfile(tmp)) { TryDelete(tmp); return (null, null); }
+            if (!IsValidIccProfile(tmp, log)) { TryDelete(tmp); return (null, null); }
             var info = ParseInfo(tmp);
             return (tmp, info?.Description);
         }
@@ -537,18 +537,94 @@ namespace FfmpegGui.Services
 
     /// <summary>验证文件是否为合法 ICC v2/v4 配置文件</summary>
         public static bool IsValidIccProfile(string filePath)
+            => ValidateIccProfile(filePath, out _);
+
+        /// <summary>
+        /// ICC 结构校验。**按 ICC.1 的 MUST 项校**，并已由本机 lcms 自带的 17 个测试件标定过
+        /// （<c>tools/src/jpegli/third_party/lcms/plugins/test_profiles/*.icc</c> 等）：
+        /// 10 个合法件全部收下（含 <c>spac</c> 类的 test3/test4——它们的 PCS 实测是 <c>'Lab '</c> 而非
+        /// <c>'none'</c>，所以白名单**不必**为 abstract 扩档），三个负样本各死于**不同**判据
+        /// （<c>toosmall.icc</c>：声明 448 &gt; 实际 158；<c>bad.icc</c>：class/PCS 非四字符码；
+        /// <c>bad_mpe.icc</c>：color space 含非打印字节）。
+        /// <para>
+        /// 此前的实现只校「≥128B + 'acsp'」，上述三类负样本**全部放行**，而它同时是探测缓存命中门
+        /// 与用户 <c>--icc-file</c> 接受门 ⇒ 假 ICC 会被当真 ICC 用。
+        /// </para>
+        /// <para>
+        /// ⚠ 两格刻意的取舍：① 只拒「声明 &gt; 文件长」，**不拒**「文件比声明长」——厂商 profile 常带
+        /// 尾部填充，按"逐字节相等"校会把合法 ICC 判成"无 ICC"，那是拿**标注丢失**换一个缺陷，更糟；
+        /// ② 目录是否升序**不作要求**（实测 7/10 真件不升序）；<see cref="FindIccTag"/> 的二分前提由 L-3b 单独处理。
+        /// </para>
+        /// </summary>
+        public static bool ValidateIccProfile(string filePath, out string? reason)
         {
+            reason = null;
             try
             {
-                if (!File.Exists(filePath)) return false;
+                if (!File.Exists(filePath)) { reason = "文件不存在"; return false; }
                 var bytes = File.ReadAllBytes(filePath);
-                if (bytes.Length < 128) return false;
+                if (bytes.Length < 128) { reason = $"短于 128B 头（实 {bytes.Length}）"; return false; }
 
-                // ICC 文件魔数: bytes 36-39 = "acsp"
-                var magic = System.Text.Encoding.ASCII.GetString(bytes, 36, 4);
-                return magic == "acsp";
+                long declared = ((long)bytes[0] << 24) | ((long)bytes[1] << 16) | ((long)bytes[2] << 8) | bytes[3];
+                if (declared < 128 || declared > bytes.Length)
+                { reason = $"头 size={declared} 不自洽（须 128 ≤ size ≤ 文件长 {bytes.Length}）"; return false; }
+
+                if (System.Text.Encoding.ASCII.GetString(bytes, 36, 4) != "acsp")
+                { reason = "36-39 魔数不是 'acsp'"; return false; }
+
+                string Fourcc(int o) => System.Text.Encoding.ASCII.GetString(bytes, o, 4);
+                bool IsFourccCode(string s)
+                {
+                    if (s.Length != 4) return false;
+                    foreach (char ch in s)
+                        if (!(ch == ' ' || (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9')))
+                            return false;
+                    return true;
+                }
+
+                string cls = Fourcc(12), cs = Fourcc(16), pcs = Fourcc(20);
+                var classes = new[] { "scnr", "mntr", "prtr", "spac", "link", "named", "msng" };
+                if (!IsFourccCode(cls) || Array.IndexOf(classes, cls) < 0)
+                { reason = $"设备类别 12-15 非法（实 '{cls}'）"; return false; }
+                if (!IsFourccCode(cs))
+                { reason = $"色彩空间 16-19 不是四字符码（实 '{cs}'）"; return false; }
+                if (pcs != "XYZ " && pcs != "Lab ")
+                { reason = $"PCS 20-23 不是 'XYZ '/'Lab '（实 '{pcs}'）"; return false; }
+
+                long tagCount = ((long)bytes[128] << 24) | ((long)bytes[129] << 16) | ((long)bytes[130] << 8) | bytes[131];
+                if (tagCount <= 0 || 132 + tagCount * 12 > bytes.Length)
+                { reason = $"tag 目录越界（计数={tagCount}，需 {132 + tagCount * 12}B / 文件 {bytes.Length}B）"; return false; }
+
+                for (int i = 0; i < tagCount; i++)
+                {
+                    int e = 132 + i * 12;
+                    uint sig = ((uint)bytes[e] << 24) | ((uint)bytes[e + 1] << 16) | ((uint)bytes[e + 2] << 8) | bytes[e + 3];
+                    long off = ((long)bytes[e + 4] << 24) | ((long)bytes[e + 5] << 16) | ((long)bytes[e + 6] << 8) | bytes[e + 7];
+                    long len = ((long)bytes[e + 8] << 24) | ((long)bytes[e + 9] << 16) | ((long)bytes[e + 10] << 8) | bytes[e + 11];
+                    if (sig == 0 || len <= 0 || off < 128 || off + len > bytes.Length)
+                    { reason = $"第 {i} 个 tag 越界/空（sig={sig:x8} off={off} len={len}）"; return false; }
+                    // ⚠ 曾在此拒"目录非升序"，实测被 lcms 自己的 10 件里的 7 件否证
+                    //   （desc 排在 A2B0/cprt 之前是真常见写法）⇒ 那是**过度收紧**，会把真 ICC 判成无 ICC。
+                    //   读者侧本来就有线性扫描兜底（见 FindIccTag 的注释），故本判据零收益、已撤。
+                }
+                return true;
             }
-            catch { return false; }
+            catch (Exception ex) { reason = $"读取异常 {ex.GetType().Name}"; return false; }
+        }
+
+        /// <summary>
+        /// 「这张 ICC 算不算合法」的**唯一**判据入口：非法时**响亮点名**（区分"非法⇒按无 ICC 处理"与
+        /// "本来就没有 ICC"），绝不静默把两件事塌成一类 —— 收紧校验后若沉默，就等于新开一条静默丢标注的通道。
+        /// </summary>
+        private static bool IsValidIccProfile(string filePath, Action<string>? log)
+        {
+            if (IsValidIccProfile(filePath)) return true;
+            ValidateIccProfile(filePath, out var why);
+            var msg = $"[icc] ICC 被判非法 ⇒ 按「无 ICC」处理，原因={why ?? "未知"}（文件={Path.GetFileName(filePath)}）";
+            // 与同文件「ICC 提取被取消」那格同一响亮写法：没有 log 也要留痕（Trace），
+            // 否则收紧校验就等于新开一条静默丢标注的通道。
+            if (log != null) log(msg + "\n"); else System.Diagnostics.Trace.WriteLine(msg);
+            return false;
         }
 
         /// <summary>解析 ICC 文件的基本头信息和描述标签</summary>

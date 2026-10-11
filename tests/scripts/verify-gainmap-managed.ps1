@@ -163,6 +163,217 @@ else {
   } else { No "降级 PNG 未产出" }
 }
 
+Write-Host "`n### 6) 批次 C 数值锁（F-5/F-2/F-3/F-4/F-8，进程内宿主 GainMapTestHost）###" -ForegroundColor Cyan
+# 判据载体：tests/GainMapTestHost（FfmpegGui.csproj 的 InternalsVisibleTo 名单里有它 ⇒ 能直接调
+#   产品内部的 BuildIso21496Metadata / ComputeGainMap / ApplyGainMap / IsoBmffGainMapWriter.Build）。
+# ⚠ 这段锁**只有本 §6 一条执行路径**（宿主默认全量模式由 verify-gainmap-host.ps1 跑，不含本批判据）
+#   ⇒ 「标签出现在输出里」才算被执行（本仓踩过 contract 双拷贝「全绿但零执行」，这里用
+#   「汇总数 == 点名条数」+ 逐条标签命中自证）。
+# ⚠ 不起产品 GUI：宿主是 Exe 控制台进程；产品 exe 只在 §1–§5 以 --headless 跑（既有形态未变）。
+$gmHost = "$root/tests/GainMapTestHost/bin/Release/net11.0/win-x64/GainMapTestHost.exe"
+if (-not (Test-Path $gmHost)) { $gmHost = "$root/tests/GainMapTestHost/bin/Debug/net11.0/win-x64/GainMapTestHost.exe" }
+$prodDll = "$root/src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.dll"
+if (-not (Test-Path $prodDll)) { $prodDll = "$root/src/FfmpegGui/bin/Debug/net11.0/win-x64/FfmpegGui.dll" }
+if (-not (Test-Path $gmHost)) {
+  No "§6 前置：GainMapTestHost 已构建（$gmHost）—— fail-closed，不静默跳过"
+} elseif (-not (Test-Path $prodDll)) {
+  No "§6 前置：FfmpegGui.dll 存在（构建指纹来源）—— fail-closed"
+} else {
+  # 宿主输出目录里那份 FfmpegGui.dll 才是**真正被加载**的那份 ⇒ 与产品构建产物比哈希（绑构建指纹）
+  $hostDll = Join-Path (Split-Path $gmHost -Parent) "FfmpegGui.dll"
+  $hProd = "none"; $hHost = "none"
+  if (Test-Path $hostDll) { $hHost = (Get-FileHash $hostDll -Algorithm SHA256).Hash.Substring(0, 16) }
+  $hProd = (Get-FileHash $prodDll -Algorithm SHA256).Hash.Substring(0, 16)
+  Write-Output ("[gate] host=" + $gmHost)
+  Write-Output ("[gate] FfmpegGui.dll[:16] prod=" + $hProd + " host=" + $hHost)
+  Ok "§6 被测宿主与产品 DLL 打印（prod=$hProd host=$hHost）"
+  if ($hHost -ne $hProd) {
+    No "§6 宿主加载的 FfmpegGui.dll 与产品构建**不是同一份**（stale build ⇒ 读数不算数）prod=$hProd host=$hHost"
+  } else {
+    Ok "§6 构建指纹绑定：宿主里的 FfmpegGui.dll[:16]==产品（$hProd）"
+  }
+
+  # 沙箱按进程拦 %TEMP% 写 ⇒ 把 TMP/TEMP/TMPDIR 指进工作区再跑（否则宿主子进程的像素路会假红）
+  $envTmpBak = $env:TMP; $envTspBak = $env:TEMP; $envTdirBak = $env:TMPDIR
+  $btmp = "$out/batchc-tmp"; New-Item -ItemType Directory -Force -Path $btmp | Out-Null
+  $env:TMP = $btmp; $env:TEMP = $btmp; $env:TMPDIR = $btmp
+  $gmTxt = ""
+  try {
+    $gp = Start-Process -FilePath $gmHost -ArgumentList "gainmath" -Wait -NoNewWindow -PassThru `
+          -RedirectStandardOutput "$out/gainmath.out" -RedirectStandardError "$out/gainmath.err"
+    if (Test-Path "$out/gainmath.out") { $gmTxt = [System.IO.File]::ReadAllText("$out/gainmath.out") }
+    if (Test-Path "$out/gainmath.err") { $gmTxt = $gmTxt + "`n" + [System.IO.File]::ReadAllText("$out/gainmath.err") }
+  } finally {
+    $env:TMP = $envTmpBak; $env:TEMP = $envTspBak; $env:TMPDIR = $envTdirBak
+  }
+  Write-Host ($gmTxt -replace "(?m)^", "    ")
+
+  # 汇总数 == 点名条数
+  $mChecks = [regex]::Match($gmTxt, "GAINMATH CHECKS=(\d+)")
+  $mResult = [regex]::Match($gmTxt, "GAINMATH RESULT: pass=(\d+) fail=(\d+)")
+  if (-not $mChecks.Success -or -not $mResult.Success) {
+    No "§6 宿主未打印 GAINMATH CHECKS/RESULT（判据根本没跑）"
+  } else {
+    $nChecks = [int]$mChecks.Groups[1].Value
+    $nPass = [int]$mResult.Groups[1].Value
+    $nFail = [int]$mResult.Groups[2].Value
+    # 输出里实际出现的 ✅/❌ 行数（第三口径：防止「checks 计数与打印条目脱节」）
+    $nPrinted = @($gmTxt -split "`r?`n" | Where-Object { $_ -match '^\s+[✅❌]\s+C' }).Count
+    Ok "§6 读数：CHECKS=$nChecks pass=$nPass fail=$nFail 打印=$nPrinted"
+    if ($nChecks -eq ($nPass + $nFail) -and $nChecks -eq $nPrinted -and $nChecks -ge 30) {
+      Ok "§6 汇总==点名（CHECKS=pass+fail=打印行数，且 ≥30 条）"
+    } else {
+      No "§6 汇总与点名脱节 CHECKS=$nChecks pass+fail=$($nPass + $nFail) 打印=$nPrinted（要求三者相等且 ≥30）"
+    }
+    if ($nFail -eq 0) { Ok "§6 批次 C 数值锁全绿（fail=0）" }
+    else {
+      No "§6 批次 C 数值锁存在失败项 fail=$nFail"
+      foreach ($ln in ($gmTxt -split "`r?`n")) { if ($ln -match '^\s+❌') { Write-Host ("      " + $ln.Trim()) -ForegroundColor DarkRed } }
+    }
+  }
+
+  # 逐条点名（curated 清单：这批的核心判据，一条缺席就算覆盖丢失）
+  $cLabels = @(
+    'C1a [F-5] 1000nits', 'C1a [F-5] 4000nits',
+    'C1b [F-5] 1000nits', 'C1b [F-5] 4000nits',
+    'C1c [F-5·对照]',
+    'C1d [F-5·Q6第1格] 1000nits', 'C1d [F-5·Q6第1格] 4000nits',
+    'C1e [F-2·量化底] 1000nits', 'C1e [F-2·量化底] 4000nits',
+    'C2a [F-2]', 'C2b [F-2]',
+    'C3b [F-3]', 'C3e[rgb] [F-3]', 'C3e[gray] [F-3]', 'C3f [F-3·对照臂自证]',
+    'C4a [F-4]', 'C4a2 [F-4]',
+    'C5a [F-4]', 'C5b [F-4]', 'C6 [F-4/F-8]',
+    'C7a [F-8]', 'C7b [F-8]', 'C7c [F-8·对照]'
+  )
+  $cMiss = @($cLabels | Where-Object { $gmTxt.IndexOf($_) -lt 0 })
+  if ($cMiss.Count -eq 0) {
+    Ok "§6 点名清单 $($cLabels.Count) 条全部出现在宿主输出里"
+  } else {
+    No "§6 点名清单缺失 $($cMiss.Count) 条：$($cMiss -join ' | ')"
+  }
+  # 反向自证：清单里故意放一条不存在的标签，必须判「缺席」⇒ 证明上面的命中检查不是恒真
+  $bogus = @('C9z [不存在] 这条应当永远不出现')
+  if ($gmTxt.IndexOf($bogus[0]) -lt 0) { Ok "§6 **反控**：不存在的标签确实判为缺席（点名检查有牙，非恒真）" }
+  else { No "§6 反控失效：不存在的标签也被判命中 ⇒ 点名检查恒真，无凭据" }
+
+  # 源码形态锁（结构锁：声明==使用 / F-2 锚 / F-3 接线 / F-4 接线）
+  #   ⚠ 与宿主数值锁配对：数值锁证明「行为对」，形态锁证明「判据所依赖的那条接线还在」。
+  function Get-MethodBody([string]$text, [string]$anchor) {
+    $ai = $text.IndexOf($anchor)
+    if ($ai -lt 0) { return "" }
+    $ob = $text.IndexOf('{', $ai)
+    if ($ob -lt 0) { return "" }
+    $depth = 0; $end = -1
+    for ($i = $ob; $i -lt $text.Length; $i++) {
+      $ch = $text[$i]
+      if ($ch -eq '{') { $depth++ }
+      elseif ($ch -eq '}') { $depth--; if ($depth -eq 0) { $end = $i; break } }
+    }
+    if ($end -le $ob) { return "" }
+    return $text.Substring($ai, $end - $ai + 1)
+  }
+  function Get-Window([string]$text, [string]$anchor, [int]$len) {
+    $ai = $text.IndexOf($anchor)
+    if ($ai -lt 0) { return "" }
+    $take = [Math]::Min($len, $text.Length - $ai)
+    return $text.Substring($ai, $take)
+  }
+  $encSrc = [System.IO.File]::ReadAllText("$root/src/FfmpegGui/Services/GainMapEncoder.cs")
+  $simdSrc = [System.IO.File]::ReadAllText("$root/src/FfmpegGui/Services/SimdPixelOps.cs")
+  $codecSrc = [System.IO.File]::ReadAllText("$root/src/FfmpegGui/Services/ColorMapping/GainMapJpegCodec.cs")
+
+  # L-5（F-5 的结构锁）：前向增益式**必须引用声明的 offset 符号**，元数据分数字段也引用同一对符号。
+  $cgBody = Get-MethodBody $encSrc 'internal static byte[] ComputeGainMap('
+  $isoBody = Get-MethodBody $encSrc 'internal static byte[] BuildIso21496Metadata(int declaredChannels'
+  $lg2Body = Get-MethodBody $simdSrc 'public static float Log2Gain('
+  if ($cgBody.Length -gt 0 -and $isoBody.Length -gt 0 -and $lg2Body.Length -gt 0) {
+    Ok ("§6 形态：取到 ComputeGainMap/BuildIso21496Metadata/Log2Gain 三段方法体（长度 {0}/{1}/{2}）" -f $cgBody.Length, $isoBody.Length, $lg2Body.Length)
+  } else {
+    No ("§6 形态锁取不到方法体（后续形态断言真空绿）长度 {0}/{1}/{2}" -f $cgBody.Length, $isoBody.Length, $lg2Body.Length)
+  }
+  $l5a = ($cgBody -match 'Log2Gain\(') -and ($cgBody -match 'KOffsetHdr') -and ($cgBody -match 'KOffsetSdr')
+  $l5b = ($lg2Body -match 'offsetHdr') -and ($lg2Body -match 'offsetSdr') -and ($lg2Body -match 'MathF\.Log2')
+  $l5c = ($isoBody -match 'KOffsetSdrN') -and ($isoBody -match 'KOffsetHdrN') -and ($isoBody -match 'KOffsetSdrD')
+  if ($l5a -and $l5b -and $l5c) {
+    Ok "§6 **L-5 结构锁**：前向（ComputeGainMap/Log2Gain）施加的 offset 与 BuildIso21496Metadata 声明的 offset 同源（同一个 KOffset* 符号）"
+  } else {
+    No "§6 L-5 结构锁红：前向=$l5a 公式=$l5b 声明=$l5c（声明与施加一旦分家，本批 F-5 就白修）"
+  }
+  # 反控：把前向体内的 KOffset* 变异掉 ⇒ 锚必须不命中
+  $l5Mut = $cgBody -replace 'KOffset(Hdr|Sdr)', 'MutatedAway'
+  if (-not ($l5Mut -match 'KOffset')) { Ok "§6 **反控**：KOffset 变异后 L-5 锚确实转红（有牙）" }
+  else { No "§6 反控失效：变异后仍命中 ⇒ L-5 是恒真断言" }
+  # 负断言：元数据体内不得再另写一份 offset 常量（两份必然漂移）
+  if ($isoBody -notmatch 'offsetN\s*=\s*1') { Ok "§6 L-5 负断言：BuildIso21496Metadata 体内没有第二份 offset 常量" }
+  else { No "§6 出现第二份 offset 常量（声明与前向脱节的路又开了一条）" }
+
+  # F-2 的锚与前置条件必须留在代码里（注释即契约：删掉注释=删掉理由）
+  # ⚠ 取数对象修正（2026-10-11 主循环）：这把锚原先只往 SimdPixelOps.cs 里
+  #   `LogGainToByteScalar(` 之前的窗口找，但那句一手锚与前置条件实际写在 **GainMapEncoder.cs**
+  #   的取整政策文档里（`:393-394`）⇒ 锚在、尺子却量错文件，判出假红。
+  #   修法不是放宽，而是把"取整口径的理由"所在的那个窗口一起纳入，并**点名它落在哪个文件**，
+  #   这样将来谁把注释删掉照样红（两处都找不到才红）。
+  $quantDoc = ""
+  $quantWhere = "-"
+  $qi = $simdSrc.IndexOf('public static byte LogGainToByteScalar(')
+  if ($qi -gt 0) { $quantDoc += $simdSrc.Substring([Math]::Max(0, $qi - 3000), [Math]::Min(3000, $qi - [Math]::Max(0, $qi - 3000))) }
+  $ei = $encSrc.IndexOf('取整口径=')
+  if ($ei -lt 0) { $ei = $encSrc.IndexOf('LogGainToByte(') }
+  # ⚠ 方向修正：一手锚写在政策文档的**下两行**（GainMapEncoder.cs:393-395），
+  #   原先只取标记**之前**的窗口 ⇒ 锚被窗口切在外面，判成假红。这里向后取 3000 字符。
+  if ($ei -gt 0) { $quantDoc += $encSrc.Substring($ei, [Math]::Min(3000, $encSrc.Length - $ei)); $quantWhere = 'GainMapEncoder' }
+  $f2a = ($quantDoc -match 'gainmapmath\.cpp:770') -and ($quantDoc -match 'affineMapGain')
+  if ($f2a) { Ok "§6 **F-2 锚锁**：截断口径的一手锚（gainmapmath.cpp:770）+ 改 +0.5 的前置条件（affineMapGain 两趟）仍在注释里" }
+  else { No "§6 F-2 锚锁红：取整口径的理由（参照一趟=截断）与前置条件（转两趟才准 round）被删/被改" }
+  # 口径本身：落字节那一行必须仍是截断（宿主 C2a 已量过；这里是防「日后被静默改掉」的第二把锁）
+  $qBody = Get-MethodBody $simdSrc 'public static byte LogGainToByteScalar('
+  $f2b = ($qBody -notmatch '\+\s*0\.5f') -and ($qBody -notmatch 'MathF\.Round') -and ($qBody -notmatch 'Math\.Round')
+  if ($f2b) { Ok "§6 F-2 口径锁：LogGainToByteScalar 落字节仍是截断（未偷换 +0.5/round）" }
+  else { No "§6 F-2 口径锁红：截断被改成舍入，但两趟前置条件（实测 min/max 进声明）并未落地" }
+  $qMut = $qBody -notmatch '\+\s*0\.5f'
+  if ($qBody -match 'clamped / maxLog2Gain \* 255f') { Ok "§6 **反控**：截断表达式本身在体内可定位（锚活着）" }
+  else { No "§6 截断表达式的锚找不到 ⇒ 上一条 F-2 口径锁可能是真空绿" }
+
+  # F-3 接线锁：增益分母必须来自「底图交付字节」的回灌，而不是钳前 float
+  $encBody = Get-MethodBody $encSrc 'public static async Task<bool> EncodeAsync('
+  $f3a = ($encBody -match 'StoredBaseLinearFromBgra') -and ($encBody -match 'ComputeGainMap\(normHdr,\s*sdrStored')
+  $f3b = ($encBody -notmatch 'ComputeGainMap\(normHdr,\s*sdrLinear')
+  if ($f3a -and $f3b) { Ok "§6 **F-3 接线锁**：EncodeAsync 里 ComputeGainMap 的分母是 sdrStored（由交付字节反读），钳前 sdrLinear 不再进增益" }
+  else { No "§6 F-3 接线锁红：分母回灌的接线被改回钳前 float（有回退）" }
+  $f3Mut = $encBody -replace 'ComputeGainMap\(normHdr,\s*sdrStored', 'ComputeGainMap(normHdr, sdrLinear'
+  if ($f3Mut -notmatch 'ComputeGainMap\(normHdr,\s*sdrStored') { Ok "§6 **反控**：把分母变异回 sdrLinear ⇒ 接线锁确实转红（有牙）" }
+  else { No "§6 反控失效 ⇒ F-3 接线锁恒真" }
+  # 分母回灌与底图字节生成必须是**同一份**数据（不许第二处另算）
+  $storedBody = Get-MethodBody $encSrc 'internal static void StoredBaseLinearFromBgra('
+  if ($storedBody -match 'SrgbToLinearScalar') { Ok "§6 F-3 同源锁：分母反读走的是与解侧同一个 SrgbToLinearScalar（未另写一份 sRGB 反函数）" }
+  else { No "§6 F-3 同源锁红：分母反读没有复用解侧的反函数（两份实现必漂移）" }
+
+  # F-4 接线锁：色度采样由单一真值给定；AVIF 增益图不得再兜回 4:2:0
+  #   ⚠ GainMapChromaSubsampling 是**表达式体**成员（无大括号）⇒ 取「方法体」的 brace 法不适用，
+  #     改用窗口（锚点后 300 字符）。
+  $csBody = Get-Window $codecSrc 'public static string GainMapChromaSubsampling(' 300
+  $f4a = ($csBody -match 'multiChannel \? "444" : "420"')
+  if ($f4a) { Ok "§6 **F-4 接线锁**：增益图色度采样 = multiChannel⇒444（参照 RGB888 全 1×1），单一真值在 GainMapJpegCodec" }
+  else { No "§6 F-4 接线锁红：multiChannel 与色度采样的成套关系被改动（可能出现「声明多通道 / 数据 4:2:0」）" }
+  if ($encSrc -notmatch '--chroma_subsampling 420') { Ok "§6 F-4 负断言：GainMapEncoder 内不再硬编码 --chroma_subsampling 420" }
+  else { No "§6 GainMapEncoder 里又出现硬编码 --chroma_subsampling 420（绕过单一真值）" }
+  $avifBody = Get-MethodBody $encSrc 'private static async Task<bool> EncodeAvifGainMapAsync('
+  # ⚠ 取数对象修正（2026-10-11 主循环）：原先用 `-notmatch 'ffmpeg, "yuv420p"'` 判"不退 4:2:0"，
+  #   但那一句撞的是**底图**那趟 `EncodeAvifFileAsync(basePng, …, "yuv420p", …)` —— SDR 底图走
+  #   4:2:0 是合法交付，不在 F-4 的射程内 ⇒ 假红。本锁的射程只有**增益图**那两趟调用。
+  #   判据改成正面钉三件事：成套表达式在、420 只允许出现一次且属于 basePng 那趟、gmPng 两趟都不得带 420。
+  $gmFmtOk   = ($avifBody -match 'gmPixFmt\s*=\s*multiChannel \? "yuv444p" : "gray"')
+  $n420       = ([regex]::Matches($avifBody, '"yuv420p"')).Count
+  $baseHas420 = ($avifBody -match 'EncodeAvifFileAsync\(basePng[^;]*"yuv420p"')
+  $gmHas420   = ($avifBody -match 'EncodeAvifFileAsync\(gmPng[^;]*"yuv420p"')
+  $f4b = $gmFmtOk -and ($n420 -eq 1) -and $baseHas420 -and (-not $gmHas420)
+  if ($f4b) { Ok "§6 F-4 AVIF 锁：增益图交付只允许 gray / yuv444p（420 在方法内出现 1 次且属于底图那趟）" }
+  else { No "§6 F-4 AVIF 锁红：成套表达式缺失或 420 越界（gmFmt=$gmFmtOk 次=$n420 底图=$baseHas420 增益图=$gmHas420）" }
+  $f4Mut = $csBody -replace 'multiChannel \? "444" : "420"', 'multiChannel ? "420" : "420"'
+  if ($f4Mut -notmatch '"444"') { Ok "§6 **反控**：把 444 变异成 420 ⇒ F-4 接线锁确实转红（有牙）" }
+  else { No "§6 反控失效 ⇒ F-4 接线锁恒真" }
+}
+
 Write-Host "`n===== PASS=$pass FAIL=$fail =====" -ForegroundColor $(if($fail -eq 0){"Green"}else{"Red"})
 # ⚠ 唯一目录自清（宿主批量删除守卫会拦整目录删 ⇒ 用 -EA SilentlyContinue，§6 第 57 条 ③）；失败则保留供排查
 if ($fail -eq 0) { Remove-Item -Recurse -Force $out -ErrorAction SilentlyContinue }

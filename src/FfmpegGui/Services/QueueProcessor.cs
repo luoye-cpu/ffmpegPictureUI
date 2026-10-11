@@ -93,20 +93,36 @@ namespace FfmpegGui.Services
         }
 
         /// <summary>
-        /// 每任务内存预留（MB）。**不再用拍脑袋的固定值**——2026-09-15 实测（Release 构建，采样进程
-        /// WorkingSet64，素材为 16-bit + bt2020/PQ 的 PNG，见 docs/TESTING.md §6 第 28 条）：
-        ///   · GainMap 纯托管编码：1080p(2.07MP) 峰值 218.8MB、4K(8.29MP) 峰值 **680.3MB**
-        ///     ⇒ 线性拟合 ≈ **65MB + 74MB/百万像素**（4 份 <c>float[像素×4]</c> 线性缓冲 ≈64B/px，加 JPEG/PFM 缓冲）；
-        ///   · 普通通路 4K 峰值：**传统管线 51.9MB**（全程流式，不进托管线性缓冲）；
-        ///     **引擎（现为默认）151.5MB** —— 引擎同样要整帧解码成 rgb48le 再做托管变换。
-        ///     ⚠ 2026-09-16 更正：本注释原写「普通 ffmpeg 通路 4K 峰值仅 **53.7MB**」，
-        ///     那是**传统管线**的数字；引擎成为默认执行路径后该前提失效，`plainMB` 已相应重标。
+        /// 每任务内存预留（MB）。**不再用拍脑袋的固定值**——由 <c>tests/scripts/verify-gainmap-memory.ps1</c>
+        /// 用实测峰值钉住（声明不得低于现实）。
+        /// <para>
+        /// 2026-10-11 重标 <c>linearMB</c>：768 → **1152**。同一夹具（testsrc 生成的 16-bit rgb48le PNG，
+        /// ServiceProbe 打 cICP=9/16，采样本进程 <c>WorkingSet64</c>，Release 构建）实测：
+        /// </para>
+        /// <list type="bullet">
+        ///   <item>单任务峰值：1080p(2.07MP) <b>263.5</b> / 4K(8.29MP) <b>818.4</b> / 8K(7680×4320, 33.2MP) <b>3363.1</b> MB
+        ///         ⇒ 拟合 ≈ <b>70MB + 99MB/百万像素</b>（批次 C 前是 65 + 74/MP；多通道增益图**真的**交付 3 平面后
+        ///           每像素多 15~25B ⇒ 旧值 768 已低于现实，判据当场红了三次：817.5/818.8/817.3）。</item>
+        ///   <item>并发下的硬底线（用 <c>DOTNET_GCHeapHardLimit</c> 把可用内存钉成固定夹具，8 个 4K 增益图任务）：
+        ///         每任务可得 <b>768MB ⇒ 6/8 产出</b>、<b>896MB ⇒ 7/8</b>、<b>1024MB ⇒ 8/8</b>、<b>1152MB ⇒ 8/8</b>
+        ///         （失败是 <c>System.OutOfMemoryException</c>，逐任务捕获、退出码 92，不静默）
+        ///         ⇒ 底线落在 <b>(896, 1024]</b>；取 1152 = 通过点 1024 的 1.125 倍、单任务实测 818 的 1.41 倍。</item>
+        ///   <item>进程峰值随并发数**饱和**：C=1/2/4/6/8 ⇒ 0.82/3.72/4.47/4.97/5.35 GB。
+        ///         ⇒ 平坦除数在低并发侧不足、在高并发侧过度保守，这是**模型**的局限而非数值问题，见下面的缺口①。</item>
+        /// </list>
+        /// 普通通路（<c>plainMB</c>）2026-10-11 同批复测 4K = <b>152.3MB</b> ⇒ 192 仍够（本值未变）。
         /// 旧的固定 200MB 对 4K GainMap **低估 3.4 倍**（高并发 + 大图可 OOM），对普通通路又高估 3.7 倍
         /// （白白压低了并发）。这里按「队列里只要有走线性缓冲的任务，就按 4K 量级预留」的保守口径分两档。
         /// 判据只看**入队期已知的选项标志**（GainMap 编码 / RAW 预处理），不做文件嗅探
         /// ——读盘或调 ffprobe 不该发生在 <see cref="Start"/> 里。
-        /// ⚠ 已知缺口：**Ultra HDR JPEG 作为输入**（解码侧）没有便宜的入队期标志，仍按普通档预留；
-        ///   该通路同样会开 4K 量级线性缓冲。后续若要做，应在 <see cref="Add"/> 时做轻量头部嗅探（读几十字节即可）。
+        /// <para>
+        /// ⚠ 已知缺口（两条都是实测点名的，不是推测）：
+        /// ① <b>Ultra HDR JPEG 作为输入</b>（解码侧）没有便宜的入队期标志，仍按普通档预留；该通路同样会开
+        ///    4K 量级线性缓冲。后续若要做，应在 <see cref="Add"/> 时做轻量头部嗅探（读几十字节即可）。
+        /// ② 本常数是**不随像素缩放**的平坦值 ⇒ 8K 单任务实测 3363MB ≈ 预留的 2.9 倍（7680 是产品自己允许的最长边，
+        ///    见 <c>MaxDimension</c> 上限），大尺寸 + 高并发仍可 OOM。根治要按源像素数做准入，与"入队期不嗅探"
+        ///    这条设计约束冲突 ⇒ 属独立改动，未做。
+        /// </para>
         /// </summary>
         private int EstimatePerTaskMemoryMB()
         {
@@ -114,14 +130,14 @@ namespace FfmpegGui.Services
             //   同一 4K 素材 A/B 实测（Release，采样 WorkingSet64，同一台机器同一轮）：
             //     · 普通 + 引擎（默认，`--format jpg`）     峰值 **151.5MB**
             //     · 普通 + 传统（`--color-engine legacy`）  峰值 ** 51.9MB**
-            //     · GainMap（引擎）                        峰值 **684.2MB**
+            //     · GainMap（引擎）                        峰值 **684.2MB**  ← 2026-10-11 已涨到 818.4MB，见方法注释
             //   差异来源：引擎普通出口也要先把整帧解码成 `rgb48le` 原始缓冲再做托管变换
             //   （4K ⇒ 3840×2160×6 ≈ 49.8MB 入 + 24.9MB 出，加 GC/文件缓冲），
             //   而传统管线把色彩工作全交给 ffmpeg 子进程、本进程只走管道。
             //   ⇒ 旧值 64MB 是**按传统通路标定的**，对现在的默认通路**低估 2.4 倍**。
             //   取值 192MB = 实测 151.5MB 留 ~27% 余量（峰值随素材/编码器版本浮动）。
             const int plainMB = 192;
-            const int linearMB = 768;  // 实测 GainMap 4K = 684.2MB，留 ~12% 余量（峰值随素材/编码器版本浮动）
+            const int linearMB = 1152;  // 并发夹逼通过点 1024MB × 1.125；单任务实测 818.4MB（判据 = verify-gainmap-memory 断言 A/D）
             try
             {
                 foreach (var it in _queue)
@@ -4889,7 +4905,13 @@ namespace FfmpegGui.Services
                         // smpte2084 把 SDR 源 bake 成 PQ，却配 bt709 的 stdIcc → 像素与标签失配（变暗）。stdT 已由
                         // UltraWideNormalizeTokens 按目标 Spec + 源 HDR 正确算出（DCI-P3/超广 SDR→bt709，P3-PQ/HDR→PQ）。
                         var srcGamut = string.IsNullOrWhiteSpace(srcMeta.sourceGamutName) ? "sRGB" : srcMeta.sourceGamutName;
-                        var xform = ColorSpaceRegistry.BuildToBt2020Filter(srcGamut, stdT);
+                        // F-9（2026-10-11）：std 口径下出口 trc=bt709 由 registry 兑现成 ITU-R BT.709-6 定义式拆式
+                        //（`t=linear → lutrgb=分段 OETF → setparams=找回帧标签`）；`--color-709-curve zimg` 才保持
+                        // 裸 `t=bt709`（=zimg 纯 γ2.4，与 std 时代的历史产物逐字节相同）。
+                        // 本行是 **cjxl 两步法的前置 ffmpeg** ⇒ `--color-engine auto`（默认）也走这条路，
+                        // 缺陷体就出在默认交付上；stdT/`icc_pathname` 的标签口径不受影响（只提像素）。
+                        var xform = ColorSpaceRegistry.BuildToBt2020Filter(srcGamut, stdT,
+                            allowApproximateCurve: true, zimgCurveCaliber: ColorSpaceRegistry.IsZimgCurveCaliber(options));
                         if (xform != null)
                         {
                             outputArgs += $"-vf \"{xform}\" ";
@@ -4930,7 +4952,12 @@ namespace FfmpegGui.Services
                     bool uwHdr = hdrMeta.colorTrc == "smpte2084" || uwHlg;
                     var (stdP, stdT, stdM) = ColorSpaceRegistry.UltraWideNormalizeTokens(hdrMeta.sourceGamutName, uwHdr, uwHlg);
                     var stdIcc = IccProfileService.GetOrGenerateStandardIcc(inputPath, stdP, stdT, stdM, log, ct);
-                    var xform = ColorSpaceRegistry.BuildUltraWideToBt2020Filter(hdrMeta.sourceGamutName, uwHdr, uwHlg);
+                    // F-9（2026-10-11）：与 :4892 同一判据、同一个 helper（registry 内部按口径决定出口是
+                    // 裸 `t=bt709` 还是 `t=linear`+lutrgb(定义式)+setparams）。stdT=bt709 时这条链是
+                    // **默认 auto 引擎下 jxl 的实际交付路径**（cjxl 两步法前置）⇒ 缺陷体曾在默认出货上。
+                    // stdP/stdT/stdM 与 stdIcc 的标签口径不动（只提像素）。
+                    var xform = ColorSpaceRegistry.BuildUltraWideToBt2020Filter(hdrMeta.sourceGamutName, uwHdr, uwHlg,
+                        allowApproximateCurve: true, zimgCurveCaliber: ColorSpaceRegistry.IsZimgCurveCaliber(options));
                     if (stdIcc != null && xform != null)
                     {
                         outputArgs += $"-vf \"{xform}\" ";

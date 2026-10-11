@@ -67,6 +67,12 @@ namespace FfmpegGui.Services
             /// <summary>超广色域保真路径：像素不动，仅附着命名 ICC。</summary>
             public bool Faithful;
             public string? FaithfulIccPath;
+            /// <summary>
+            /// F-9（2026-10-11）：出口 trc=bt709 时**像素由哪条曲线编码**的一行点名（进 <see cref="Short()"/>）。
+            /// 静默是这一族缺陷的存活方式：标签 bt709 + 像素 zimg γ2.4 曾经既不报错也不出声。
+            /// 判据与拆式都在 <see cref="ColorSpaceRegistry"/>（唯一实现，三处 emit 点共用）。
+            /// </summary>
+            public string ExitCurveNote = "";
 
             /// <summary>
             /// 本次任务**实际生效**的策略（= 计划层 <c>ColorTransformPlan.EffectiveStrategy</c>，
@@ -90,7 +96,8 @@ namespace FfmpegGui.Services
             public string Short()
                 => $"出口={OutPrimaries ?? "—"}/{OutTrc ?? "—"} 直通={PixelsUnchanged} tonemapSDR={TonemappedToSdr} "
                    + $"附ICC={AttachIcc}(编码器落盘={EncoderWritesFilterIcc},后置={NeedsPostEmbedIcc}) "
-                   + $"CICP={CanWriteContainerCicp} 隐式sRGB={ImplicitSrgb} 链数={PixelChains.Count}";
+                   + $"CICP={CanWriteContainerCicp} 隐式sRGB={ImplicitSrgb} 链数={PixelChains.Count}"
+                   + ExitCurveNote;
         }
 
         /// <summary>
@@ -157,6 +164,10 @@ namespace FfmpegGui.Services
 
             var meta = string.IsNullOrEmpty(inputPath) || inputPath == "-"
                 ? new ColorMetadata() : ProbeInputColorMetadata(inputPath);
+            // ── `--color-709-curve` 的口径（F-9：传统链的出口兑现方式由它决定，判据复用计划层那份名单）──
+            // std（默认）⇒ trc=bt709 的出口必须兑现成 ITU-R BT.709-6 定义式（拆式，见 ColorSpaceRegistry）；
+            // zimg ⇒ 命令行逐字保持历史形态 `t=bt709`（=纯 γ2.4），并在 Short() 点名这是刻意的历史对齐。
+            bool zimgCurveCaliber = ColorSpaceRegistry.IsZimgCurveCaliber(options);
             // ★ 策略判定必须取**计划层的实际生效策略**，不是用户声明值（见 EffectiveColorStrategy 的说明）：
             //   S2「携带」在规划层有三种显式覆盖，声明值与生效值可能不同；直接读声明值会让传统管线
             //   漏掉覆盖后的语义（GainMap 要求底图映射、HDR 无 ICC 携带通路、容器不能携带 ICC）。
@@ -320,9 +331,20 @@ namespace FfmpegGui.Services
                     // P4: tonemap 曲线可选（hable 默认保留 param=0.5 观感；mobius/reinhard 用算法默认）。
                     var tmCurve = string.IsNullOrWhiteSpace(options.TonemapCurve) ? "hable" : options.TonemapCurve!.Trim().ToLowerInvariant();
                     var tmTone = tmCurve == "hable" ? "hable:param=0.5" : tmCurve;
+                    // ── F-9（2026-10-11）：出口 trc=bt709 ⇒ 链末**不许**再交裸 `t=bt709` ──
+                    // zimg 把 `t=bt709` 实现成纯 γ(1/2.4)，而下面 :332 把同一个 token 交出去当宣称值
+                    //（PNG 写 cICP transfer=1、其他容器写 -color_trc bt709）⇒ 标签说 A、像素是 B，
+                    // 且 CICP 里没有"γ2.4"这个编号 ⇒ 不能改标签了事（维护者定样）。
+                    // std 口径 ⇒ `t=linear` 完成 primaries/矩阵，编码交给拆式尾巴（唯一实现见
+                    //   <see cref="ColorSpaceRegistry.BuildDefinitionExitTail"/>，三处 emit 点共用）；
+                    // zimg 口径（`--color-709-curve zimg`）⇒ 原样一字不改（复刻历史产物，并在 Short() 点名）。
+                    // ⚠ 出口**标签**（tmDstT / :332 的 outT）一个字节都不动 —— 本次改的是像素。
+                    bool tmSplitExit = ColorSpaceRegistry.NeedsDefinitionExit(tmDstT, zimgCurveCaliber);
                     d.PixelChains.Add(
                         $"format=yuv444p,tonemap={tmTone},format=rgb48le," +
-                        $"zscale=pin={tmSrcP}:tin=linear:min=gbr:p={tmDstP}:t={tmDstT}:m={tmDstM}");
+                        $"zscale=pin={tmSrcP}:tin=linear:min=gbr:p={tmDstP}:t={(tmSplitExit ? "linear" : tmDstT)}:m={tmDstM}" +
+                        ColorSpaceRegistry.BuildDefinitionExitTail(tmDstP, tmDstT, tmDstM, zimgCurveCaliber));
+                    d.ExitCurveNote = ColorSpaceRegistry.DefinitionExitNote(tmDstT, zimgCurveCaliber);
                     // tonemap 末级 zscale 已把像素矩阵转为 tmDstM；同步更新输出矩阵标记。
                     // 否则沿用源 RGB 的 inputMatrix="gbr"（RGB PNG 探测值）→ 输出 -colorspace gbr
                     // 被 libwebp_anim/mjpeg 等 YUV 编码器拒绝（"Undefined constant ... in 'gbr'" → Invalid argument → 0 字节）。
@@ -376,7 +398,16 @@ namespace FfmpegGui.Services
                         // 偶数化判据按**当前**的 YUV 矩阵（含 tonemap 链已改写后的值；为空则不动尺寸）
                         var needsEven = outMatrix == "bt709" || outMatrix?.StartsWith("bt2020") == true;
                         var preScale = needsEven ? "scale=ceil(iw/2)*2:ceil(ih/2)*2:flags=lanczos," : "";
-                        d.PixelChains.Add($"format=rgb48le,{preScale}zscale=pin={srcP}:tin={srcT}:min={srcM}:p={dstP}:t={dstT}:m={dstM}");
+                        // ── F-9（2026-10-11）：同一把锁的第二个 emit 点（SDR 源 + 显式 trc=bt709 目标）──
+                        // 裸 `t=bt709` = zimg 纯 γ(1/2.4)，而 :383 把同一个 token 交出去当宣称值 ⇒ 拆式；
+                        // std 口径下出口改 `t=linear` + lutrgb(定义式) + setparams(找回标签)，标签一字不动。
+                        // ⚠ **解码端**（`tin={srcT}`，srcT 可能是 bt709 标签）仍是 zimg γ2.4 EOTF ⇒ 同族失配，
+                        //   本批未拆（ integer 域 EOTF 拆法的量化地板未实测 ⇒ 登记"未判定"，见交付账）。
+                        bool dstSplitExit = ColorSpaceRegistry.NeedsDefinitionExit(dstT, zimgCurveCaliber);
+                        d.PixelChains.Add($"format=rgb48le,{preScale}zscale=pin={srcP}:tin={srcT}:min={srcM}"
+                            + $":p={dstP}:t={(dstSplitExit ? "linear" : dstT)}:m={dstM}"
+                            + ColorSpaceRegistry.BuildDefinitionExitTail(dstP, dstT, dstM, zimgCurveCaliber));
+                        d.ExitCurveNote = ColorSpaceRegistry.DefinitionExitNote(dstT, zimgCurveCaliber);
 
                         // zscale 已完成色彩转换：输出矩阵与出口语义都以它为准
                         outMatrix = dstM;
@@ -406,19 +437,24 @@ namespace FfmpegGui.Services
                     if (fmtAllowsWide)
                     {
                         // 归入标准 BT.2020，传递函数感知 HDR（HDR→PQ/HLG，SDR→bt709）。
-                        ultraFilter = ColorSpaceRegistry.BuildUltraWideToBt2020Filter(pm.sourceGamutName, uwHdr, uwHlg);
+                        // ⚠ F-9：出口 SDR 的 trc=bt709 由 registry 按口径兑现（std=拆式，zimg=裸 t=bt709）；
+                        //   标签三件套（np/nt/nm）与本调用无关，一个字都不动。
+                        ultraFilter = ColorSpaceRegistry.BuildUltraWideToBt2020Filter(
+                            pm.sourceGamutName, uwHdr, uwHlg, allowApproximateCurve: true, zimgCurveCaliber);
                         (np, nt, nm) = ColorSpaceRegistry.UltraWideNormalizeTokens(pm.sourceGamutName, uwHdr, uwHlg);
                     }
                     else
                     {
-                        // 受限格式(仅 SDR) → 转 sRGB。
-                        ultraFilter = ColorSpaceRegistry.BuildGamutTransformFilter(pm.sourceGamutName, "sRGB");
+                        // 受限格式(仅 SDR) → 转 sRGB。出口 trc=iec61966-2-1（zimg 有真分段 sRGB ⇒ 不在 F-9 缺陷面）。
+                        ultraFilter = ColorSpaceRegistry.BuildGamutTransformFilter(
+                            pm.sourceGamutName, "sRGB", allowApproximateCurve: true, zimgCurveCaliber);
                         var (tp, tt, tm) = ColorSpaceRegistry.FfmpegTokens("sRGB");
                         np = tp!; nt = tt!; nm = tm!;
                     }
                     if (ultraFilter != null)
                     {
                         d.PixelChains.Add(ultraFilter);
+                        d.ExitCurveNote = ColorSpaceRegistry.DefinitionExitNote(nt, zimgCurveCaliber);
                         // 归一后的语义就是这条链的出口标签（旧实现只改局部变量，宣称值取不到 ⇒ 同类漏报）
                         outP = np; outT = nt;
                         outMatrix = nm;

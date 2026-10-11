@@ -173,4 +173,50 @@ public static class GainMapJpegCodec
     /// </summary>
     public static int ProgressiveLevelOf(FfmpegOptions o)
         => o.JpegProgressiveId switch { 1 => 2, 0 => 0, _ => -1 };
+
+    /// <summary>
+    /// 底图（base rendition）的 cjpegli 色度采样：**4:2:0**。
+    /// 底图是一张普通 SDR 照片，色度降采样是行业默认（也与我们出货的 Ultra HDR 底图一致）⇒ 不动。
+    /// </summary>
+    public const string BaseJpegChromaSubsampling = "420";
+
+    /// <summary>
+    /// 增益图 JPEG 的 cjpegli 色度采样（<b>与声明的通道数成套</b>，F-4，2026-10-11）。
+    /// <para>
+    /// <c>multiChannel=true ⇒ "444"</c>：参照的三通道增益图就是 **24bppRGB888 + 采样因子全 1×1**
+    /// （libultrahdr <c>jpegencoderhelper.cpp:41-42</c> 的因子表，应用点 <c>:189-192</c> 逐分量
+    /// <c>h_samp_factor/v_samp_factor</c>，<c>:197</c> RGB 非 raw YCbCr ⇒ 色度**零降采样**），
+    /// 图像格式的选择见 <c>jpegr.cpp:714-716</c>。逐通道增益写进 R/G/B 三个分量后再过 4:2:0，
+    /// G/B 的增益就被色度下采样摧毁 ⇒ 与 tmap/ISO 的 bit7 声明直接矛盾。
+    /// </para>
+    /// <para>
+    /// ⚠ 参照的读侧「<b>信流不信 flag</b>」——<c>jpegr.cpp:2843-2844</c> 按 JPEG SOF 的
+    /// <c>numComponents</c> 定输出布局——<b>救不了写侧</b>：声明与交付一致是<b>生产者</b>的义务。
+    /// </para>
+    /// <para>
+    /// <c>multiChannel=false ⇒ "420"</c>：本仓灰度增益图目前是「灰度复制成 RGB 三分量」
+    /// （见 <c>GainMapEncoder.WriteGrayOrRgbPngAsync</c>，F12 议题），三分量同值 ⇒ Y = 该值
+    /// （BT.709 加权和恰为原值），解侧按亮度取增益（<c>GainMapDecoder.BilinearGray</c>）不受色度
+    /// 降采样影响 ⇒ 4:2:0 无害、也不与「1 参数集」的声明矛盾。
+    /// 参照的更彻底形态是单分量灰度 JPEG（<c>jpegencoderhelper.cpp:27-28</c> 的 400 = 1 分量），
+    /// 那属 F12（灰度件别绕道 RGB），不在本条范围。
+    /// </para>
+    /// </summary>
+    public static string GainMapChromaSubsampling(bool multiChannel) => multiChannel ? "444" : "420";
+
+    /// <summary>
+    /// 组装 cjpegli 命令行（<b>单一真值</b>：增益图与底图共用此式，色度采样由调用方按上面两条给定）。
+    /// <para>
+    /// 为什么把它从 <c>GainMapEncoder.EncodeJpegFileAsync</c> 里搬出来：批次 C 的判据要能**直接量到**
+    /// 产品真正下发给 cjpegli 的那串参数（含 <c>--chroma_subsampling</c>），而不是在测试里再拼一遍
+    /// —— 本仓刚因「contract 两份拷贝」踩过「全绿但零执行」，同一份字符串只准有一份。
+    /// </para>
+    /// </summary>
+    /// <param name="progressiveLevel">cjpegli 的 <c>-p N</c>；<c>-1</c> = 不传，沿用 cjpegli 默认（=2 渐进）。</param>
+    public static string CjpegliCommandArguments(string pngPath, string jpgPath, float distance,
+        int progressiveLevel, string chromaSubsampling)
+    {
+        string progArg = progressiveLevel >= 0 ? $" -p {progressiveLevel}" : "";
+        return $"\"{pngPath}\" \"{jpgPath}\" --distance {distance:F1} --chroma_subsampling {chromaSubsampling}{progArg}";
+    }
 }

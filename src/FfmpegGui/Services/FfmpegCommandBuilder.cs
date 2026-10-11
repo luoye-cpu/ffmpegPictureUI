@@ -1453,7 +1453,7 @@ namespace FfmpegGui.Services
                             break;
                         }
                     }
-                    var (iccPath, iccDesc) = IccProfileService.ExtractIccFromBase64(iccB64);
+                    var (iccPath, iccDesc) = IccProfileService.ExtractIccFromBase64(iccB64, log);
                     if (iccPath != null)
                     {
                         // 先按**度量**（色度矩阵+曲线）定空间，描述文字只作兜底：

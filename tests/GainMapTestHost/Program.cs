@@ -30,6 +30,29 @@ public static class Program
 
     public static async Task<int> Main(string[] args)
     {
+        // ── 批次 C 数值锁（F-5/F-2/F-3/F-4/F-8）专用模式 ──────────────────────
+        //   `GainMapTestHost gainmath` ⇒ **只**跑本批新锁（进程内，不起产品 GUI），
+        //   由 `verify-gainmap-managed.ps1` §6 与 `verify-gainmap-isobmff.ps1` §5 调用。
+        //   ⚠ 单列一个模式的原因：默认全量模式要跑 5 组编码 + 4 组解码闭环（外部进程数十次），
+        //   本批锁需要的是**可点名、可数条**的一小组判据 ⇒ 「汇总数 == 点名条数」才立得住。
+        if (args.Length > 0 && string.Equals(args[0], "gainmath", StringComparison.OrdinalIgnoreCase))
+        {
+            var od = Path.Combine(Environment.CurrentDirectory, "tests", "output", "gainmap");
+            Directory.CreateDirectory(od);
+            //   `gainmath avifgm` ⇒ 只跑 AVIF 成套段（C5/C6），给 verify-gainmap-isobmff.ps1 用；
+            //   不带第二参 ⇒ 全跑（C0–C7），给 verify-gainmap-managed.ps1 用。
+            if (args.Length > 1 && string.Equals(args[1], "avifgm", StringComparison.OrdinalIgnoreCase))
+            {
+                int n = await AvifChannelLocksAsync(od, MathF.Log2(1000f / GainMapEncoder.KSdrWhiteNits),
+                                                   GainMapEncoder.KSdrWhiteNits);
+                Console.WriteLine($"GAINMATH CHECKS={n}");
+                Console.WriteLine($"GAINMATH RESULT: pass={_pass} fail={_fail}");
+                foreach (var f in _failures) Console.WriteLine($"  ❌ {f}");
+                return _fail == 0 ? 0 : 1;
+            }
+            return await GainMathLocksAsync(od);
+        }
+
         Console.WriteLine("═══ GainMap 测试宿主 ═══");
         Console.WriteLine($"工作目录: {Environment.CurrentDirectory}");
         Console.WriteLine($"ffmpeg 可用: {!string.IsNullOrWhiteSpace(AppSettingsService.Current.FfmpegPath)}");
@@ -607,7 +630,20 @@ public static class Program
         {
             float hLum = 0.2126f * hdr[i] + 0.7152f * hdr[i + 1] + 0.0722f * hdr[i + 2];
             float sLum = 0.2126f * sdrForGain[i] + 0.7152f * sdrForGain[i + 1] + 0.0722f * sdrForGain[i + 2];
-            float logGain = MathF.Log2(Math.Max(hLum / Math.Max(sLum, 0.001f), 1.0f));
+            // ⚠ 本臂的**参照公式过期**（2026-10-12 全量轮 D30 翻红抓到，maxDiff=6、>1LSB=194/1024）：
+            //   旧式 `log2(max(hLum/max(sLum,0.001f),1))` 正是本批 F-5 **从产品里删掉的那一行**，
+            //   拿它当参照 ⇒ 产品按声明施加 offset 之后，红的是镜像没跟着改，不是数学错。
+            // 参照 = ISO 21496-1 的默认 offset 逐点式（与 libavif src/gainmap.c:712-713
+            //   `ratio = (alt + alternateOffset) / (base + baseOffset)`、
+            //   libultrahdr gainmapmath.cpp:773-775 `log2((hdr + kHdrOffset)/(sdr + kSdrOffset))` 同形）。
+            // ⚠ 这里**刻意写字面 1/64，不取 `GainMapEncoder.KOffset*`**：取产品常数就变成"它和自己比"，
+            //   改了 offset 而元数据声明没改就抓不到 ⇒ 本式是「声明==使用」的对照臂。
+            // ⚠ 名字里的 "SIMD=标量" 是历史名：该核实测 AVX2 慢 1.9× 后已是**纯标量**
+            //   （SimdPixelOps.cs:204），本臂现在比的是「产品核 vs 声明同形参照」。标签不许改
+            //   （`verify-gainmap-host` 的 ② 按名对账 + 通过数下限绑名字）。
+            const float kDeclOffset = 1f / 64f;
+            float ratio = (hLum + kDeclOffset) / (sLum + kDeclOffset);
+            float logGain = MathF.Log2(Math.Max(ratio, 1.0f));
             gainRef[i / 4] = SimdPixelOps.LogGainToByteScalar(logGain, 2f);
         }
         int gainDiff = 0;
@@ -1703,6 +1739,520 @@ public static class Program
             return p.ExitCode;
         }
         catch (Exception ex) { Console.WriteLine($"      [exiftool] 异常 {ex.Message}"); return -1; }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  批次 C 数值锁（FIX_PLAN_2026-10-11 的 F-5 / F-2 / F-3 / F-4 / F-8）
+    //  口径 = docs/review-2026-10-11/gainmap-reference-memo.md 的 Q1–Q5 裁决。
+    //
+    //  运行：`GainMapTestHost gainmath`（进程内；不起产品 GUI）
+    //  调用者：tests/scripts/verify-gainmap-managed.ps1 §6（C0–C3 + C7）
+    //          tests/scripts/verify-gainmap-isobmff.ps1 §5（C4–C6 + avifdec 独立读回）
+    //          tests/scripts/verify-gainmap-engine.ps1 §10（C4b 产物的 JPEG 采样因子，第二读者）
+    //
+    //  ⚠ 每条锁都必须**只用修复前就存在的 API**（否则拿不到红态）；新 API 的断言一律
+    //     通过「产物/字节读回」间接判定，不直接引用新符号。
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// <summary>ISO 21496-1 载荷（独立分母模式）里通道 c 的参数块起点。</summary>
+    private static int IsoChannelOffset(int c) => 21 + c * 40;
+
+    private static void SetBe32(byte[] d, int off, int v)
+    {
+        uint u = unchecked((uint)v);
+        d[off] = (byte)(u >> 24); d[off + 1] = (byte)(u >> 16);
+        d[off + 2] = (byte)(u >> 8); d[off + 3] = (byte)(u & 0xFF);
+    }
+
+    private static int GetBe32(byte[] d, int off)
+        => unchecked((int)(((uint)d[off] << 24) | ((uint)d[off + 1] << 16) | ((uint)d[off + 2] << 8) | d[off + 3]));
+
+    private static async Task<int> GainMathLocksAsync(string outDir)
+    {
+        Console.WriteLine("═══ F. 批次 C 数值锁（F-5/F-2/F-3/F-4/F-8）═══");
+        int checks = 0;
+
+        // ───────────────────────── C0 前置 ─────────────────────────
+        const float SdrWhite = GainMapEncoder.KSdrWhiteNits;
+        float maxLog2_1000 = MathF.Log2(1000f / SdrWhite);
+        byte[] iso1 = GainMapEncoder.BuildIso21496Metadata(false, maxLog2_1000);
+        var m1 = GainMapDecoder.JpegContainer.ParseIso21496(iso1, 0, iso1.Length);
+        Check("C0 [前置] 自家 ISO 载荷可被自家解析器读回（判据载体活着）", m1 != null);
+        checks++;
+        if (m1 == null)
+        {
+            Console.WriteLine($"GAINMATH CHECKS={checks} RESULT: pass={_pass} fail={_fail}");
+            return _fail == 0 ? 0 : 1;
+        }
+        Console.WriteLine($"  [C0] 读回: min={m1.GainMapMin:F4} max={m1.GainMapMax:F4} gamma={m1.Gamma:F3} "
+                        + $"offsetSDR={m1.OffsetSdr:F6} offsetHDR={m1.OffsetHdr:F6} channels={m1.Channels}");
+
+        // ───────────────── C1 [F-5] 声明==施加 + float 域往返 ─────────────────
+        //  夹具（memo Q6 第 1 格）：底图 s≡0.5（线性、SDR 白点归一），HDR 由**声明的 offset**反解：
+        //      h = (s + offsetSdr)·2^L − offsetHdr,  L = (b+0.02)·maxLog2/255（落在 bin b 内）
+        //  ⇒ 若前向真的按声明施加 offset，前向字节必等于 b（C1a）；且解侧（同样按声明施加）
+        //     还原值 ≡ h（C1b，偏差只来自 bin 内那 0.02 步的偏置，≪1%）。
+        //  ⇒ 前向不施加时（修复前）字节漂 bin、还原偏 (boost−1)·offset ⇒ 两条同时红。
+        foreach (float peak in new[] { 1000f, 4000f })
+        {
+            float headroom = peak / SdrWhite;
+            float maxLog2 = MathF.Log2(headroom);
+            byte[] iso = GainMapEncoder.BuildIso21496Metadata(false, maxLog2);
+            var m = GainMapDecoder.JpegContainer.ParseIso21496(iso, 0, iso.Length)!;
+            float os = m.OffsetSdr, oh = m.OffsetHdr;
+            int binMiss = 0, bins = 0;
+            double worstRel = 0; float worstAbsWhite = 0; int worstBin = -1;
+            foreach (int b in new[] { 0, 64, 128, 191, 255 })
+            {
+                float L = (b + 0.02f) * maxLog2 / 255f;
+                const float s = 0.5f;
+                float h = (s + os) * MathF.Pow(2f, L) - oh;
+                var hdr = new float[] { h, h, h, 1f };
+                var sdr = new float[] { s, s, s, 1f };
+                var gb = new byte[1];
+                SimdPixelOps.ComputeGainMapGray(hdr, sdr, gb, maxLog2);   // = 编码器灰度支路的同一实现
+                bins++;
+                if (gb[0] != b) binMiss++;
+                var res = GainMapDecoder.ApplyGainMap(sdr, new[] { gb[0] / 255f, gb[0] / 255f, gb[0] / 255f, 1f },
+                    1, 1, 1, 1, m);
+                float errWhite = Math.Abs(res[0] - h);
+                double rel = errWhite / Math.Max(Math.Abs(h), 1e-6f);
+                if (rel > worstRel) { worstRel = rel; worstAbsWhite = errWhite; worstBin = b; }
+                Console.WriteLine($"    [C1 {peak:F0}nits] bin {b,3}: 前向={gb[0],3} 期望={b,3} | "
+                                + $"h={h:F6} 还原={res[0]:F6} err={errWhite * SdrWhite:F3} nits");
+            }
+            Check($"C1a [F-5] {peak:F0}nits：前向字节逐 bin 命中「按声明 offset 反解」的值（声明==施加）｜未命中 {binMiss}/{bins}",
+                binMiss == 0);
+            checks++;
+            Check($"C1b [F-5] {peak:F0}nits：float 域往返 maxErr ≤ 1%｜实 {worstRel * 100:F3}% "
+                + $"= {worstAbsWhite * SdrWhite:F2} nits（最差点 bin {worstBin}）", worstRel <= 0.01);
+            checks++;
+
+            // 备忘 Q6「第 1 格」的**同款夹具**：sdr≡0.5、hdr = sdr·headroom（boost 恰为上限）
+            //   ⇒ 修复前残差应 = (boost−1)·offsetSdr = (headroom−1)/64 白
+            //      = {(headroom - 1) / 64 * SdrWhite:F2} nits；修复后应只剩 F-2 的截断量化底。
+            {
+                const float s2 = 0.5f;
+                float h2 = s2 * headroom;
+                var gb2 = new byte[1];
+                SimdPixelOps.ComputeGainMapGray(new[] { h2, h2, h2, 1f }, new[] { s2, s2, s2, 1f }, gb2, maxLog2);
+                var m2 = GainMapDecoder.JpegContainer.ParseIso21496(
+                    GainMapEncoder.BuildIso21496Metadata(false, maxLog2), 0, iso.Length)!;
+                var res2 = GainMapDecoder.ApplyGainMap(new[] { s2, s2, s2, 1f },
+                    new[] { gb2[0] / 255f, gb2[0] / 255f, gb2[0] / 255f, 1f }, 1, 1, 1, 1, m2);
+                float errW = Math.Abs(res2[0] - h2);
+                float offsetBoundWhite = (headroom - 1f) / 64f;                 // 备忘 Q6 的上界
+                float quantBoundWhite = h2 * (MathF.Pow(2f, maxLog2 / 255f) - 1f); // 一趟截断的一步
+                Console.WriteLine($"    [C1d {peak:F0}nits] boost=headroom 夹具（s=0.5, h={h2:F4}, 字节={gb2[0]}）："
+                                + $"还原={res2[0]:F4} err={errW * SdrWhite:F2} nits ｜ "
+                                + $"offset 失配理论上界={offsetBoundWhite * SdrWhite:F2} nits "
+                                + $"截断一步上界={quantBoundWhite * SdrWhite:F2} nits");
+                Check($"C1d [F-5·Q6第1格] {peak:F0}nits boost=headroom 往返 err ≤ ½·(headroom−1)/64"
+                    + $"（={offsetBoundWhite * SdrWhite / 2:F2} nits）｜实 {errW * SdrWhite:F2} nits",
+                    errW <= 0.5f * offsetBoundWhite);
+                checks++;
+                Check($"C1e [F-2·量化底] {peak:F0}nits 同夹具 err ≤ 截断一步上界"
+                    + $"（={quantBoundWhite * SdrWhite:F2} nits，证明残差只剩取整口径）｜实 {errW * SdrWhite:F2} nits",
+                    errW <= quantBoundWhite);
+                checks++;
+            }
+        }
+        // 对照组（判据有牙的**可执行**证明）：夹具仍按**声明的 1/64** 反解，只把**解码侧**的 offset 置 0
+        // ⇒ 声明与施加一旦不一致，误差必须跳到 ≥2%（这条在修复前后都应当成立：它量的是判据的敏感度）。
+        {
+            byte[] iso = GainMapEncoder.BuildIso21496Metadata(false, maxLog2_1000);
+            var mDec = GainMapDecoder.JpegContainer.ParseIso21496(iso, 0, iso.Length)!;
+            const float osDecl = 1f / 64f, ohDecl = 1f / 64f;
+            mDec.OffsetSdr = 0f; mDec.OffsetHdr = 0f;
+            const float s = 0.5f;
+            float L = (255 + 0.02f) * maxLog2_1000 / 255f;
+            float h = (s + osDecl) * MathF.Pow(2f, L) - ohDecl;         // 按**声明**的 offset 反解
+            var gb = new byte[1];
+            SimdPixelOps.ComputeGainMapGray(new[] { h, h, h, 1f }, new[] { s, s, s, 1f }, gb, maxLog2_1000);
+            var res = GainMapDecoder.ApplyGainMap(new[] { s, s, s, 1f },
+                new[] { gb[0] / 255f, gb[0] / 255f, gb[0] / 255f, 1f }, 1, 1, 1, 1, mDec);
+            double rel = Math.Abs(res[0] - h) / h;
+            Console.WriteLine($"    [C1c 对照] 声明 1/64 / 解码 0 的同夹具：err={rel * 100:F3}%（须 ≥2% 才说明 C1b 有牙）");
+            Check($"C1c [F-5·对照] 「声明 offset 与施加不一致」时同一夹具误差 ≥2%（判据对该数敏感）｜实 {rel * 100:F3}%", rel * 100.0 >= 2.0);
+            checks++;
+        }
+
+        // ───────────────── C2 [F-2] 取整口径（本仓=一趟 ⇒ 截断） ─────────────────
+        {
+            int mid = 0, truncHits = 0, roundDiffers = 0;
+            for (int b = 0; b < 255; b++)
+            {
+                float L = (b + 0.51f) * maxLog2_1000 / 255f;
+                byte got = SimdPixelOps.LogGainToByteScalar(L, maxLog2_1000);
+                if (got == b) truncHits++;                 // 截断口径 = 参照一趟 encodeGain
+                if (got != (byte)Math.Round(L / maxLog2_1000 * 255f)) roundDiffers++;
+                mid++;
+            }
+            Console.WriteLine($"    [C2a] bin+0.51 处：截断命中 {truncHits}/{mid}，与 round 口径不同 {roundDiffers}/{mid}");
+            Check($"C2a [F-2] 一趟取整口径=截断（参照 gainmapmath.cpp:770 encodeGain 同形）｜命中 {truncHits}/{mid}",
+                truncHits == mid && roundDiffers == mid);
+            checks++;
+            // 一趟的量程 = **声明**的 headroom（min=1 ⇒ log2Min=0；除数=声明 GainMapMax）
+            float declaredMax = m1.GainMapMax, declaredMin = m1.GainMapMin;
+            bool divisorIsDeclared = Math.Abs(declaredMax - maxLog2_1000) <= 0.005f;   // 分数分母 =100 ⇒ ±1/2·10^-2
+            Console.WriteLine($"    [C2b] 声明 GainMapMin={declaredMin:F4} GainMapMax={declaredMax:F4} 前向钳位上限={maxLog2_1000:F4}");
+            Check($"C2b [F-2] 一趟量程自证：声明 min=0 且 max==前向钳位上限（±0.005，分数分母 100 的取整）｜"
+                + $"min={declaredMin:F4} max={declaredMax:F4} vs {maxLog2_1000:F4}",
+                declaredMin == 0f && divisorIsDeclared);
+            checks++;
+        }
+
+        // ───────────────── C3 [F-3] 增益分母 = 写进底图的那个值 ─────────────────
+        //   夹具：bt2020 源（纯红，线性 1.0=峰值 0.203 ⇒ 归一后 =SDR 白）+ 底图 sRGB ⇒
+        //   线性域 2020→709 矩阵后底图 R **>1**（越界），而底图交付的是钳位+8-bit 量化后的 1.0。
+        //   ⇒ 分母若用钳前 float（修复前）：增益算小 ⇒ 还原显著偏暗（实测 ~20%+）；
+        //     分母用交付值（修复后）：往返闭合（≤5%）。
+        {
+            var mtx = ColorSpaceRegistry.LinearMatrixBetweenPrimaries("bt2020", "bt709");
+            bool haveMtx = mtx is { Length: 9 };
+            Check($"C3a [F-3·前置] 2020→709 线性矩阵可求（判据载体）｜{(haveMtx ? $"R'={mtx![0]:F4}" : "null")}", haveMtx);
+            checks++;
+            if (haveMtx)
+            {
+                const int fw = 32, fh = 24;
+                float pw = 1000f / SdrWhite;
+                var px = new float[fw * fh * 4];
+                for (int i = 0; i < fw * fh; i++)
+                {
+                    px[i * 4 + 0] = 0.203f;   // 归一后恰 = SDR 白（1.0），纯 2020 红 ⇒ 矩阵后越界
+                    px[i * 4 + 1] = 0f;
+                    px[i * 4 + 2] = 0f;
+                    px[i * 4 + 3] = 1f;
+                }
+                // 与产品**同序**复算期望值：输入(1.0=峰值) → normHdr → Reinhard → 底图矩阵 → 底图字节 → 读回线性
+                float hR = (float)mtx![0], hG = (float)mtx[3], hB = (float)mtx[6];      // normHdr=(1,0,0) 过矩阵
+                float kk = SimdPixelOps.SegmentedReinhardScalar(1.0f, pw);              // maxY=1.0 → 逐通道同缩放
+                float bR = kk * hR, bG = kk * hG, bB = kk * hB;                          // 钳前 float（**旧**分母）
+                float sR = StoredLinear(bR), sG = StoredLinear(bG), sB = StoredLinear(bB); // 交付值（**新**分母）
+                static float StoredLinear(float v)
+                    => SimdPixelOps.SrgbToLinearScalar(SimdPixelOps.FloatToSrgb8Scalar(v) / 255f);
+                static float Luma(float r, float g, float b) => 0.2126f * r + 0.7152f * g + 0.0722f * b;
+                float hLum = Luma(hR, hG, hB), sLumStored = Luma(sR, sG, sB), sLumRaw = Luma(bR, bG, bB);
+                Console.WriteLine($"    [C3] 真值 R={hR:F4} G={hG:F4} B={hB:F4} luma={hLum:F4} ｜ "
+                                + $"钳前底图 float R={bR:F4}（越界 {(bR > 1.0001f ? "是" : "否")}）G={bG:F4} B={bB:F4} ｜ "
+                                + $"交付后线性读回 R={sR:F4} G={sG:F4} B={sB:F4} ｜ 分母 luma：钳前={sLumRaw:F4} 交付={sLumStored:F4}");
+                Check($"C3b [F-3] 夹具确实造出「钳前 ≠ 交付」的分母（R>1 被钳、G/B<0 被钳 ⇒ 两个 luma 不同）｜"
+                    + $"raw={bR:F4}/stored={sR:F4} lumaRaw={sLumRaw:F4}/lumaStored={sLumStored:F4}",
+                    bR > 1.0001f && sR < bR - 0.05f && Math.Abs(sLumRaw - sLumStored) > 0.02f * Math.Abs(sLumStored));
+                checks++;
+
+                // 对照臂（**读数**，不是判据）：分母若仍取钳前 float 且前向不带 offset（=修复前），
+                // 单通道件的亮度偏差会是多少 ⇒ 用来证明本锁的分叉轴就是「分母取哪个值」。
+                float declaredMax = (float)Math.Round(MathF.Log2(pw) * 100f) / 100f;
+                byte oldByte = SimdPixelOps.LogGainToByteScalar(
+                    MathF.Log2(Math.Max(hLum / Math.Max(sLumRaw, 0.001f), 1.0f)), MathF.Log2(pw));
+                float oldGain = MathF.Pow(2f, declaredMax * (oldByte / 255f));
+                float o = 1f / 64f;
+                float preFixLuma = Luma((sR + o) * oldGain - o, (sG + o) * oldGain - o, (sB + o) * oldGain - o);
+                double preFixLumaErr = Math.Abs(preFixLuma - hLum) / Math.Abs(hLum);
+                Console.WriteLine($"    [C3·对照臂预测] 旧口径（分母=钳前 float、前向无 offset）⇒ 增益字节={oldByte}，"
+                                + $"亮度还原={preFixLuma:F4} ⇒ 偏差 {preFixLumaErr * 100:F2}%（应显著大于判据阈值 3%）");
+
+                var oggm = new System.Text.StringBuilder();
+                var deLog = new System.Text.StringBuilder();
+                // 两条出口各跑一次往返：
+                //   multiChannel=true  ⇒ 逐通道增益 ⇒ 承诺的是**逐通道**自洽（比 R 通道）
+                //   multiChannel=false ⇒ 单通道（亮度）增益 ⇒ 只能承诺**亮度**自洽（比 luma）
+                //   ⚠ 拿灰度件去比 R 通道会把「单通道增益天然修不动色度」算到 F-3 头上（判据打错对象）。
+                foreach (bool mcGain in new[] { true, false })
+                {
+                    string tag = mcGain ? "rgb" : "gray";
+                    string jpg = Path.Combine(outDir, $"batchc_gamutclip_{tag}.jpg");
+                    string raw = Path.Combine(outDir, $"batchc_gamutclip_{tag}.rgba");
+                    try { if (File.Exists(jpg)) File.Delete(jpg); } catch { }
+                    try { if (File.Exists(raw)) File.Delete(raw); } catch { }
+                    oggm.Clear(); deLog.Clear();
+                    bool ok = await GainMapEncoder.EncodeAsync(px, fw, fh, jpg,
+                        hdrPeakNits: 1000f, sdrWhiteNits: SdrWhite, multiChannel: mcGain,
+                        baseQuality: 1.5f, gainMapQuality: 1.5f, downsample: 4,
+                        baseGamut: "srgb", sourcePrimaries: "bt2020",
+                        log: s => oggm.Append(s), ct: default);
+                    Check($"C3c[{tag}] [F-3] 越界夹具编码产物存在（{Path.GetFileName(jpg)}）", ok && File.Exists(jpg));
+                    checks++;
+                    if (!ok || !File.Exists(jpg)) continue;
+
+                    var rr = await GainMapDecoder.DecodeToLinearRawAsync(jpg, raw, log: s => deLog.Append(s));
+                    Check($"C3d[{tag}] [F-3] 越界夹具可纯托管往返解码（判据载体）", rr != null && File.Exists(raw));
+                    checks++;
+                    if (rr == null || !File.Exists(raw)) continue;
+
+                    var bytes = await File.ReadAllBytesAsync(raw);
+                    int n = fw * fh;
+                    var gPlane = new float[n];
+                    var bPlane = new float[n];
+                    var rPlane = new float[n];
+                    Buffer.BlockCopy(bytes, 0, gPlane, 0, n * 4);
+                    Buffer.BlockCopy(bytes, n * 4, bPlane, 0, n * 4);
+                    Buffer.BlockCopy(bytes, n * 8, rPlane, 0, n * 4);
+                    // 增益图是 1/4 降采样 ⇒ 取**块中心**（不是边缘）以免插值混边
+                    int idx = 12 * fw + 16;
+                    float gotR = rPlane[idx], gotG = gPlane[idx], gotB = bPlane[idx];
+                    float gotLum = 0.2126f * gotR + 0.7152f * gotG + 0.0722f * gotB;
+                    float wantR = hR, wantLum = hLum;
+                    double relR = Math.Abs(gotR - wantR) / Math.Abs(wantR);
+                    double relLum = Math.Abs(gotLum - wantLum) / Math.Abs(wantLum);
+                    Console.WriteLine($"    [C3e[{tag}]] 真值 R={wantR:F4} G={hG:F4} B={hB:F4} luma={wantLum:F4} ｜ "
+                                    + $"还原 R={gotR:F4} G={gotG:F4} B={gotB:F4} luma={gotLum:F4} ｜ "
+                                    + $"ΔR={relR * 100:F2}% Δluma={relLum * 100:F2}%"
+                                    + $"（钳前分母={bR:F4}/{bG:F4}/{bB:F4}，交付值={sR:F4}/{sG:F4}/{sB:F4}）");
+                    if (mcGain)
+                        Check($"C3e[rgb] [F-3] 越界通道 R 的往返恢复偏差 ≤5%（分母=写进底图的那个值）｜实 {relR * 100:F2}%", relR <= 0.05);
+                    else
+                        Check($"C3e[gray] [F-3] 单通道件的**亮度**往返恢复偏差 ≤3%（同分母口径；逐通道不归本锁管）｜实 {relLum * 100:F2}%", relLum <= 0.03);
+                    checks++;
+                }
+                Console.WriteLine($"    [C3f] 对照臂读数：分母若仍取钳前 float，单通道件的亮度偏差应为 {preFixLumaErr * 100:F2}%"
+                                + "（>判据阈值 ⇒ 分叉轴就是分母取哪个值；两侧不同分支，非同一份数学）");
+                Check($"C3f [F-3·对照臂自证] 钳前分母的预测偏差 > 判据阈值 3%（分叉确实存在）｜预测 {preFixLumaErr * 100:F2}%",
+                    preFixLumaErr > 0.03);
+                checks++;
+            }
+        }
+
+        // ───────────────── C4 [F-4] 通道声明与交付（JPEG 出口的声明半边） ─────────────────
+        {
+            byte[] isoRgb = GainMapEncoder.BuildIso21496Metadata(true, maxLog2_1000);
+            byte[] isoGray = GainMapEncoder.BuildIso21496Metadata(false, maxLog2_1000);
+            var mRgb = GainMapDecoder.JpegContainer.ParseIso21496(isoRgb, 0, isoRgb.Length);
+            var mGray = GainMapDecoder.JpegContainer.ParseIso21496(isoGray, 0, isoGray.Length);
+            bool bit7Rgb = (isoRgb[4] & 0x80) != 0, bit7Gray = (isoGray[4] & 0x80) != 0;
+            Console.WriteLine($"    [C4a] multiChannel=true ⇒ flags=0x{isoRgb[4]:X2} bit7={bit7Rgb} channels={mRgb?.Channels}；"
+                            + $"false ⇒ flags=0x{isoGray[4]:X2} bit7={bit7Gray} channels={mGray?.Channels}");
+            Check($"C4a [F-4] bit7 声明自洽：true⇒3 参数集 / false⇒1 参数集｜实 {mRgb?.Channels}/{mGray?.Channels}",
+                bit7Rgb && !bit7Gray && mRgb?.Channels == 3 && mGray?.Channels == 1);
+            checks++;
+            Check($"C4a2 [F-4] 载荷长度闭合：3 通道={isoRgb.Length} B = 21+3×40；1 通道={isoGray.Length} B = 21+40",
+                isoRgb.Length == 21 + 120 && isoGray.Length == 21 + 40);
+            checks++;
+
+            // 产物（供 §engine 的第二读者读 SOF 采样因子）
+            const int mw = 64, mh = 48;
+            var mpx = new float[mw * mh * 4];
+            for (int i = 0; i < mw * mh; i++)
+            {
+                float u = (i % mw) / (float)(mw - 1);
+                mpx[i * 4 + 0] = 0.05f + 0.9f * u; mpx[i * 4 + 1] = 0.05f + 0.3f * u;
+                mpx[i * 4 + 2] = 0.05f + 0.6f * (1f - u); mpx[i * 4 + 3] = 1f;
+            }
+            var lg = new System.Text.StringBuilder();
+            string rgbJpg = Path.Combine(outDir, "batchc_multi.jpg");
+            try { if (File.Exists(rgbJpg)) File.Delete(rgbJpg); } catch { }
+            bool okRgb = await GainMapEncoder.EncodeAsync(mpx, mw, mh, rgbJpg,
+                hdrPeakNits: 1000f, sdrWhiteNits: SdrWhite, multiChannel: true,
+                baseQuality: 1.5f, gainMapQuality: 1.5f, downsample: 4,
+                log: s => lg.Append(s), ct: default);
+            Console.WriteLine($"GAINMATH ARTIFACT: {rgbJpg}");
+            Check($"C4b [F-4] multiChannel=true 的 Ultra HDR 产物存在（供第二读者读增益图 JPEG 的 SOF 采样因子，{(okRgb ? new FileInfo(rgbJpg).Length + " B" : "失败")}）",
+                okRgb && File.Exists(rgbJpg));
+            checks++;
+        }
+
+        // ───────────────── C5/C6 [F-4/F-8] AVIF 出口：gray 与 bit7 成套 ─────────────────
+        //   （独立成方法 ⇒ verify-gainmap-isobmff.ps1 可以只跑这一段：`gainmath avifgm`）
+        checks += await AvifChannelLocksAsync(outDir, maxLog2_1000, SdrWhite);
+
+        // ───────────────── C7 [F-8] 逐通道参数：不许只取 c==0 ─────────────────
+        {
+            byte[] iso3 = GainMapEncoder.BuildIso21496Metadata(true, maxLog2_1000);
+            // 参照两趟（jpegr.cpp:1031-1034 / gainmapmetadata.cpp:386-396）**真的**会写不同的逐通道值
+            SetBe32(iso3, IsoChannelOffset(1) + 8, (int)MathF.Round((maxLog2_1000 + 0.5f) * 100f));   // ch1 gainMapMax +0.5
+            SetBe32(iso3, IsoChannelOffset(1) + 24, 2); SetBe32(iso3, IsoChannelOffset(1) + 28, 64);   // ch1 baseOffset 2/64
+            SetBe32(iso3, IsoChannelOffset(2) + 0, -30);                                               // ch2 gainMapMin −0.30
+            SetBe32(iso3, IsoChannelOffset(2) + 16, 3); SetBe32(iso3, IsoChannelOffset(2) + 20, 2);    // ch2 gamma 1.5
+            SetBe32(iso3, IsoChannelOffset(2) + 32, 1); SetBe32(iso3, IsoChannelOffset(2) + 36, 32);   // ch2 altOffset 1/32
+            var m3 = GainMapDecoder.JpegContainer.ParseIso21496(iso3, 0, iso3.Length);
+            Check($"C7p [F-8·前置] 打补丁后的 3 通道件仍可解析（判据载体）｜channels={m3?.Channels}", m3 != null && m3!.Channels == 3);
+            checks++;
+            if (m3 != null)
+            {
+                // 期望值 = 参照 libavif gainmap.c:263-267 的**逐通道**形：
+                //   g' = (b/255)^(1/γ_c); logBoost = min_c(1−g') + max_c·g'; out = (s+os_c)·2^logBoost − oh_c
+                const float s = 0.5f, gByte = 128f / 255f;
+                float[] osArr = { 1f / 64f, 2f / 64f, 1f / 64f };
+                float[] ohArr = { 1f / 64f, 1f / 64f, 1f / 32f };
+                float[] minArr = { 0f, 0f, -0.30f };
+                float[] maxArr = { maxLog2_1000, maxLog2_1000 + 0.5f, maxLog2_1000 };
+                float[] gamArr = { 1f, 1f, 1.5f };
+                var exp = new float[4];
+                for (int c = 0; c < 3; c++)
+                {
+                    float gp = gamArr[c] != 1f ? MathF.Pow(gByte, 1f / gamArr[c]) : gByte;
+                    float logB = minArr[c] * (1f - gp) + maxArr[c] * gp;
+                    exp[c] = (s + osArr[c]) * MathF.Pow(2f, logB) - ohArr[c];
+                }
+                var got = GainMapDecoder.ApplyGainMap(new[] { s, s, s, 1f },
+                    new[] { gByte, gByte, gByte, 1f }, 1, 1, 1, 1, m3);
+                double maxD = 0;
+                for (int c = 0; c < 3; c++) maxD = Math.Max(maxD, Math.Abs(got[c] - exp[c]));
+                Console.WriteLine($"    [C7a] 逐通道施加：R={got[0]:F5}/G={got[1]:F5}/B={got[2]:F5} 期望 "
+                                + $"R={exp[0]:F5}/G={exp[1]:F5}/B={exp[2]:F5} maxΔ={maxD:E2}");
+                Check($"C7a [F-8] 三通道件的逐通道 min/max/γ/offset 各自施加（照 libavif gainmap.c:263-267）｜maxΔ={maxD:E2}",
+                    maxD <= 1e-3);
+                checks++;
+                // 通道相关仿射误差 = 色偏：修复前只取 c==0 ⇒ 三通道恢复值相等（无通道差）
+                bool channelsDiffer = Math.Abs(got[1] - got[0]) > 0.01f || Math.Abs(got[2] - got[0]) > 0.01f;
+                Console.WriteLine($"    [C7b] 通道差 |G−R|={Math.Abs(got[1] - got[0]):F5} |B−R|={Math.Abs(got[2] - got[0]):F5}"
+                                + "（修复前塌成 ch0 ⇒ 全为 0 ⇒ 通道相关仿射误差=色偏）");
+                Check($"C7b [F-8] 逐通道施加真的产生**通道差**（不是只取 c==0 的三条同值）｜ΔGR={Math.Abs(got[1] - got[0]):F5} ΔGB={Math.Abs(got[2] - got[0]):F5}",
+                    channelsDiffer);
+                checks++;
+                // 对照：三套全同的件 ⇒ 施加结果必须与「按 ch0 一条」逐字节一致（收紧不得改变自家产物语义）
+                byte[] iso3same = GainMapEncoder.BuildIso21496Metadata(true, maxLog2_1000);
+                var ms = GainMapDecoder.JpegContainer.ParseIso21496(iso3same, 0, iso3same.Length)!;
+                var gotSame = GainMapDecoder.ApplyGainMap(new[] { s, s, s, 1f },
+                    new[] { gByte, gByte, gByte, 1f }, 1, 1, 1, 1, ms);
+                var m1c = GainMapDecoder.JpegContainer.ParseIso21496(
+                    GainMapEncoder.BuildIso21496Metadata(false, maxLog2_1000), 0, iso1.Length)!;
+                var gotMono = GainMapDecoder.ApplyGainMap(new[] { s, s, s, 1f },
+                    new[] { gByte, gByte, gByte, 1f }, 1, 1, 1, 1, m1c);
+                double sameMax = 0;
+                for (int c = 0; c < 3; c++) sameMax = Math.Max(sameMax, Math.Abs(gotSame[c] - gotMono[c]));
+                Console.WriteLine($"    [C7c] 参数全同的 3 通道件 vs 1 通道件：maxΔ={sameMax:E3}");
+                Check($"C7c [F-8·对照] 参数全同时逐通道施加 == 单通道施加（自家产物语义不变，maxΔ≤1e-5）｜实 {sameMax:E2}",
+                    sameMax <= 1e-5f);
+                checks++;
+            }
+        }
+
+        Console.WriteLine();
+        Console.WriteLine($"GAINMATH CHECKS={checks}");
+        Console.WriteLine($"GAINMATH RESULT: pass={_pass} fail={_fail}");
+        foreach (var f in _failures) Console.WriteLine($"  ❌ {f}");
+        return _fail == 0 ? 0 : 1;
+    }
+
+    /// <summary>
+    /// C5/C6 —— AVIF 出口的「声明 == 交付」成套锁（F-4/F-8）。
+    /// 独立成方法是为了让 `GainMapTestHost gainmath avifgm` 单跑这一段
+    /// （verify-gainmap-isobmff.ps1 用它，避免把 C1–C3/C7 的编码再跑一遍）。
+    /// </summary>
+    private static async Task<int> AvifChannelLocksAsync(string outDir, float maxLog2, float sdrWhite)
+    {
+        int checks = 0;
+        var ffmpeg = AppSettingsService.Current.FfmpegPath;
+        bool ffOk = !string.IsNullOrWhiteSpace(ffmpeg) && File.Exists(ffmpeg);
+        Check($"C5p [前置] ffmpeg 可用（AVIF 出口判据载体）｜{ffmpeg ?? "(空)"}", ffOk);
+        checks++;
+        if (!ffOk) return checks;
+
+        string png = Path.Combine(outDir, "batchc_gray_src.png");
+        string grayAvif = Path.Combine(outDir, "batchc_gray.avif");
+        int e1 = await RunToolAsync(ffmpeg!, $"-y -v error -f lavfi -i testsrc2=s=32x24 -frames:v 1 \"{png}\"");
+        int e2 = await RunToolAsync(ffmpeg!, $"-y -v error -i \"{png}\" -frames:v 1 -c:v libaom-av1 -crf 18 -b:v 0 -pix_fmt gray -f avif \"{grayAvif}\"");
+        bool haveGray = e2 == 0 && File.Exists(grayAvif);
+        byte[] grayBytes = haveGray ? await File.ReadAllBytesAsync(grayAvif) : Array.Empty<byte>();
+        var grayPixi = haveGray ? PixiChannelCounts(grayBytes) : new List<int>();
+        Console.WriteLine($"    [C5p2] 已知 gray 单图 AVIF 的 pixi 平面数：[{string.Join(",", grayPixi)}]（pixi 读法的**锚**：必须是 1）");
+        Check($"C5p2 [前置] 单色 gray 的 AVIF 造得出来且 pixi 读出 1 平面（读法先锚再生效，rc={e1}/{e2}）｜实 [{string.Join(",", grayPixi)}]",
+            haveGray && grayPixi.Count == 1 && grayPixi[0] == 1);
+        checks++;
+        if (!haveGray) return checks;
+
+        // 反方向锚：同一读法在**已知的 yuv444p** AVIF 上必须读出 3 平面
+        //（pixi 判据两头都锚过，才允许它去裁决「声明 3 / 交付 1」这种说谎组合）。
+        string avif444 = Path.Combine(outDir, "batchc_444.avif");
+        int e3 = await RunToolAsync(ffmpeg!, $"-y -v error -i \"{png}\" -frames:v 1 -c:v libaom-av1 -crf 18 -b:v 0 -pix_fmt yuv444p -f avif \"{avif444}\"");
+        var pixi444 = e3 == 0 && File.Exists(avif444)
+            ? PixiChannelCounts(await File.ReadAllBytesAsync(avif444)) : new List<int>();
+        Console.WriteLine($"    [C5p3] 已知 yuv444p AVIF 的 pixi 平面数：[{string.Join(",", pixi444)}]（必须含 3）");
+        Check($"C5p3 [前置] pixi 读法反向锚：yuv444p 的 AVIF 读出 3 平面｜实 [{string.Join(",", pixi444)}] rc={e3}",
+            pixi444.Count >= 1 && pixi444.Exists(x => x == 3));
+        checks++;
+
+        byte[] isoRgb = GainMapEncoder.BuildIso21496Metadata(true, maxLog2);
+        byte[] isoGray = GainMapEncoder.BuildIso21496Metadata(false, maxLog2);
+        var lying = IsoBmffGainMapWriter.Build(grayBytes, grayBytes,
+            IsoBmffGainMapWriter.BuildTmapPayload(isoRgb), -1, -1, -1);
+        var honest = IsoBmffGainMapWriter.Build(grayBytes, grayBytes,
+            IsoBmffGainMapWriter.BuildTmapPayload(isoGray), -1, -1, -1);
+        Console.WriteLine($"    [C5a] 声明 3 通道 / 交付 gray 单平面 ⇒ Ok={lying.Ok} 原因=「{lying.FailReason ?? "(无)"}」");
+        Check($"C5a [F-4] 写出器**拒绝**「tmap 声明 3 通道 / 增益图 item 只有 1 平面」（不许声明==数据说谎）｜Ok={lying.Ok}",
+            !lying.Ok && !string.IsNullOrWhiteSpace(lying.FailReason));
+        checks++;
+        Check($"C5b [F-4] 写出器仍接受「声明 1 通道 / 交付 gray」（收紧不得过界）｜Ok={honest.Ok} 原因=「{honest.FailReason ?? "(无)"}」",
+            honest.Ok && honest.Data is { Length: > 200 });
+        checks++;
+
+        // 产品 AVIF 的 multiChannel 出口：交付必须与声明成套（gray+bit7 的组合现在必须出局）
+        const int aw = 32, ah = 24;
+        var apx = new float[aw * ah * 4];
+        for (int i = 0; i < aw * ah; i++)
+        {
+            float u = (i % aw) / (float)(aw - 1);
+            apx[i * 4 + 0] = 0.05f + 0.9f * u; apx[i * 4 + 1] = 0.05f + 0.4f * (1f - u);
+            apx[i * 4 + 2] = 0.05f + 0.6f * u; apx[i * 4 + 3] = 1f;
+        }
+        var la = new System.Text.StringBuilder();
+        string outAvif = Path.Combine(outDir, "batchc_multi.avif");
+        try { if (File.Exists(outAvif)) File.Delete(outAvif); } catch { }
+        bool okAvif = await GainMapEncoder.EncodeAsync(apx, aw, ah, outAvif,
+            hdrPeakNits: 1000f, sdrWhiteNits: sdrWhite, multiChannel: true,
+            baseQuality: 1.5f, gainMapQuality: 1.5f, downsample: 4,
+            log: s => la.Append(s), ct: default, container: "avif");
+        Console.WriteLine($"GAINMATH AVIF ARTIFACT: {outAvif}");
+        var pixiCounts = okAvif && File.Exists(outAvif)
+            ? PixiChannelCounts(await File.ReadAllBytesAsync(outAvif))
+            : new List<int>();
+        Console.WriteLine($"    [C6] 产物内 pixi 平面数：[{string.Join(", ", pixiCounts)}]（底图 yuv420p⇒3、增益图 gray⇒1 / yuv444p⇒3）"
+                        + $"｜tmap 载荷 {IsoBmffGainMapWriter.BuildTmapPayload(isoRgb).Length - 1} B");
+        Check($"C6 [F-4/F-8] 产品 AVIF multiChannel 出口成功且**不再交付单平面 gray**（声明 3 ⇒ 交付 3）｜"
+            + $"Ok={okAvif} pixi=[{string.Join(",", pixiCounts)}]",
+            okAvif && File.Exists(outAvif) && pixiCounts.Count >= 2 && pixiCounts.All(x => x >= 3));
+        checks++;
+        return checks;
+    }
+
+    /// <summary>扫描 ISO-BMFF 文件里所有 <c>pixi</c> 盒的 channel_count（诊断「声明的通道数 vs 交付的平面数」）。</summary>
+    private static List<int> PixiChannelCounts(byte[] d)
+    {
+        var list = new List<int>();
+        var tag = new byte[] { (byte)'p', (byte)'i', (byte)'x', (byte)'i' };
+        for (int i = 0; i + 12 < d.Length; i++)
+        {
+            bool hit = true;
+            for (int k = 0; k < 4; k++) if (d[i + k] != tag[k]) { hit = false; break; }
+            if (!hit) continue;
+            // pixi 是 FullBox：size(4)+type(4)+version(1)+flags(3)+channel_count(1)
+            // ⇒ channel_count 在 'pixi' 四字节的**起点 +8**（= 盒起点 +12），不是 +9（那是第一个 bitDepth）。
+            int boxStart = i - 4;
+            if (boxStart < 0) continue;
+            int size = ((d[boxStart] << 24) | (d[boxStart + 1] << 16) | (d[boxStart + 2] << 8) | d[boxStart + 3]);
+            if (size >= 13 && size <= 64 && i + 8 < d.Length) list.Add(d[i + 8]);
+        }
+        return list;
+    }
+
+    /// <summary>跑一个外部工具（本批锁只用 ffmpeg 造灰度 AVIF 夹具），返回退出码。</summary>
+    private static async Task<int> RunToolAsync(string file, string args)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo(file, args)
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            using var p = Process.Start(psi);
+            if (p == null) return -1;
+            p.OutputDataReceived += (_, _) => { };
+            p.ErrorDataReceived += (_, _) => { };
+            p.BeginOutputReadLine();
+            p.BeginErrorReadLine();
+            await p.WaitForExitAsync();
+            return p.ExitCode;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"    [RunTool] {Path.GetFileName(file)} 异常: {ex.Message}");
+            return -1;
+        }
     }
 
     private static void Check(string name, bool ok)

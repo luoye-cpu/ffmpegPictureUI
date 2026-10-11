@@ -215,8 +215,12 @@ namespace FfmpegGui.Services
         /// ⚠️ 源传递函数若 zscale 无法精确表达（ProPhoto 1.8、DCI-P3 2.6）则返回 null：
         /// 绝不拿 sRGB/bt709 曲线凑近似（那是中间调错），由上层走保真携带 ICC 或告警。
         /// 保留旧行为）；新色彩引擎传 allowApproximateCurve=false，曲线不可表达时直接拒绝转换。
+        /// ⚠ <paramref name="zimgCurveCaliber"/> = `--color-709-curve zimg`（复刻历史产物）⇒ 出口保持裸
+        ///   `t=bt709`（=zimg 纯 γ2.4）一字不改；默认（std）⇒ 出口走 <see cref="BuildDefinitionExitTail"/>
+        ///   的拆式，把**像素**提到标签水位（F-9，见下方拆式区块的完整依据）。
         /// </summary>
-        public static string? BuildUltraWideToBt2020Filter(string? displayName, bool hdr, bool hlg, bool allowApproximateCurve = true)
+        public static string? BuildUltraWideToBt2020Filter(string? displayName, bool hdr, bool hlg,
+            bool allowApproximateCurve = true, bool zimgCurveCaliber = false)
         {
             var spec = Resolve(displayName);
             if (spec == null || !spec.NeedsBt2020Normalize) return null;
@@ -225,7 +229,7 @@ namespace FfmpegGui.Services
             var m = LinearMatrix(displayName, "BT.2020");   // 线性域 primaries 矩阵(与传递无关)
             if (m == null) return null;
             var outT = hdr ? (hlg ? "arib-std-b67" : "smpte2084") : spec.OutTrc;
-            return BuildFilter(spec.OutPrimaries, outT, spec.OutMatrix, m, encIn);
+            return BuildFilter(spec.OutPrimaries, outT, spec.OutMatrix, m, encIn, zimgCurveCaliber);
         }
 
         /// <summary>超广色域归一化后的输出描述 tokens (primaries,trc,matrix)。默认 SDR(bt709)。</summary>
@@ -244,14 +248,15 @@ namespace FfmpegGui.Services
         /// 通用线性域 primaries 转换滤镜（仅改 primaries，传递函数按源 sRGB 曲线解码/目标曲线编码）。
         /// 需 from/to 均有完整色度定义；否则返回 null。
         /// </summary>
-        public static string? BuildGamutTransformFilter(string? fromName, string? toName, bool allowApproximateCurve = true)
+        public static string? BuildGamutTransformFilter(string? fromName, string? toName,
+            bool allowApproximateCurve = true, bool zimgCurveCaliber = false)
         {
             var t = Resolve(toName);
             var m = LinearMatrix(fromName, toName);
             if (m == null || t == null) return null;
             var encIn = ResolveInputCurve(fromName, allowApproximateCurve);
             if (encIn == null) return null;
-            return BuildFilter(t.OutPrimaries, t.OutTrc, t.OutMatrix, m, encIn);
+            return BuildFilter(t.OutPrimaries, t.OutTrc, t.OutMatrix, m, encIn, zimgCurveCaliber);
         }
 
         /// <summary>
@@ -261,20 +266,25 @@ namespace FfmpegGui.Services
         /// 对 SDR 源盲用裸 "BT.2020" Spec 的 smpte2084 而把 SDR bake 成 PQ（与 bt709 ICC 失配→变暗）的行为。
         /// srcGamut 需有色度定义（LinearMatrix 可算），否则返回 null。
         /// </summary>
-        public static string? BuildToBt2020Filter(string? fromName, string outTrc, bool allowApproximateCurve = true)
+        public static string? BuildToBt2020Filter(string? fromName, string outTrc, bool allowApproximateCurve = true,
+            bool zimgCurveCaliber = false)
         {
             var m = LinearMatrix(fromName, "BT.2020");
             if (m == null) return null;
             var encIn = ResolveInputCurve(fromName, allowApproximateCurve);
             if (encIn == null) return null;
-            return BuildFilter("bt2020", outTrc, "bt2020nc", m, encIn);
+            return BuildFilter("bt2020", outTrc, "bt2020nc", m, encIn, zimgCurveCaliber);
         }
 
         // 统一生成滤镜链: 线性化 → colorchannelmixer(线性矩阵) → 回编码+声明目标帧元数据。
         // encIn = **源传递函数的 CICP 精确名**（由调用方经 ExactTransferName 得出）：
         // 旧实现固定 iec61966-2-1，使 Adobe RGB(gamma2.2)、DCI-P3(gamma2.6) 等源被按 sRGB 曲线线性化
         // → 中间调整体偏差。现在曲线不可精确表达时调用方直接不做转换。
-        private static string BuildFilter(string outP, string outT, string outM, double[] m, string encIn)
+        // ⚠ 出口 trc==bt709 时**不许**再写裸 `t=bt709`（zimg 把那个 token 实现成纯 γ(1/2.4)，与标签
+        //   声称的 ITU-R BT.709-6 定义式不是一条曲线 ⇒ F-9）。std 口径下改走
+        //   `t=linear` + <see cref="BuildDefinitionExitTail"/> 的拆式；zimg 口径原样保留（复刻历史产物）。
+        private static string BuildFilter(string outP, string outT, string outM, double[] m, string encIn,
+            bool zimgCurveCaliber = false)
         {
             string F(double v) => v.ToString("0.######", System.Globalization.CultureInfo.InvariantCulture);
             var mix = "colorchannelmixer=" +
@@ -282,8 +292,109 @@ namespace FfmpegGui.Services
                 $"gr={F(m[3])}:gg={F(m[4])}:gb={F(m[5])}:" +
                 $"br={F(m[6])}:bg={F(m[7])}:bb={F(m[8])}";
             // 末级 zscale 以 pin=p=目标primaries(恒等) 仅声明输出帧元数据，供容器 CICP + iccgen 正确读取。
+            // 拆式生效时这一级只做 primaries/矩阵（t=linear ⇒ 像素留在线性域），编码由尾巴的 lutrgb 施加，
+            // 帧标签由尾巴的 setparams 找回 ⇒ 出口宣称（outT=bt709）一字未动，只是**像素补上了定义式**。
+            var exitTrc = NeedsDefinitionExit(outT, zimgCurveCaliber) ? "linear" : outT;
             return $"format=gbrpf32le,zscale=tin={encIn}:t=linear,{mix}," +
-                   $"zscale=pin={outP}:tin=linear:p={outP}:t={outT}:m={outM}";
+                   $"zscale=pin={outP}:tin=linear:p={outP}:t={exitTrc}:m={outM}" +
+                   BuildDefinitionExitTail(outP, outT, outM, zimgCurveCaliber);
+        }
+
+        // ══════════════════════════════════════════════════════════════════════════════
+        //  F-9（2026-10-11）：BT.709 出口的「定义式拆式」—— 三处 emit 点共用的唯一实现
+        //
+        //  缺陷：传统链把 `t=bt709` 交给 zscale，同时把 `-color_trc bt709`/cICP transfer=1 交给容器。
+        //  而 **zimg 的 `t=bt709` 实测是纯幂 γ(1/2.4)**（本仓锚：ColorMapping/TransferCurve.cs 的
+        //  `Bt709Zimg`，其立项理由就是这条实测），不是 ITU-R BT.709-6 的定义式分段 ⇒ 标签说 A、像素是 B。
+        //  CICP/H.273 里**没有**"γ2.4"这个编号 ⇒ 无法靠改标签收口（维护者 2026-09-26 定样 A +
+        //  2026-10-11 复审重申"不许改标签了事"）⇒ 只能把**像素**提到标签水位。
+        //
+        //  拆式 = `zscale …:t=linear`（线性域完成 primaries/矩阵）→ `format=rgb48le` →
+        //         `lutrgb=<BT.709-6 分段 OETF>` → `setparams=<三个帧标签>`。
+        //
+        //  一手常数（不许凭记忆；本机读的）：
+        //    tools/src/dng_sdk/dng_sdk_1_7_1/dng_sdk/source/dng_color_space.h:134-140
+        //      fAlpha=1.0992968268094429  fBeta=0.0180539685108078  fSlope=4.5  fGamma=0.45
+        //    ⇒ 定义式 V = 4.5·L (L<β) ; V = α·L^0.45 − (α−1) (L≥β)。
+        //  本仓既有锚 `TransferCurve.Bt709`（ColorMapping/TransferCurve.cs:110-111）用 ITU 正文的取整系数
+        //  α=1.099/偏移 0.099 与**编码域**拐点 d=0.08125 ⇒ 线性域拐点 = C·D = 0.08125/4.5
+        //  = 0.0180555555555556（与 DNG 的 β 差 0.47 LSB@16bit，同量级）。
+        //  ⚠ 刻意**与锚同式**（镜像断言 #7「拆式表达式必须与该锚同式」；进程内引擎格的出口曲线就是这条锚
+        //  ⇒ 只有同式才谈得上"引擎==legacy 同口径"的逐点对账）。DNG 高精度 α 与本式的差实测
+        //  ≤15.89 LSB@16bit（=0.06 LSB@8bit，取证 tests/output/batche-tmp/probe-lut-vars2.log），
+        //  远小于本缺陷要消除的 6978 LSB@16bit（=27.15 LSB@8bit）。
+        //
+        //  ffmpeg 侧取值语义（**实测**于随包 ffmpeg git-2026-10-07-e5a08f7c0e，
+        //  取证 tests/output/batche-tmp/probe-lut-vars2.log / probe-final2.log / probe-fl2b.log；
+        //  本机权威份 C:\PLAN\FFmpeg 同版本、同结论）：
+        //    · lut 家族的输入码值变量名是 **`val`**，**不是**旧文档里的 `X`
+        //      （实测 `r='X'` ⇒ `[Eval] Undefined constant or missing '(' in 'X'` ⇒ exit=-22、零产物）；
+        //      随包构建另有 `maxval`/`minval`/`negval`/`clipval`（实测 maxval=65535@rgb48le、=255@rgb24）。
+        //    · ⇒ 归一化一律写 `val/maxval`，**与位深无关**（实测同一条表达式在 rgb48le 上
+        //      max|像素−解析定义式| = 0.50 LSB@16bit，在 rgb24 上 = 0.98 LSB@8bit）。
+        //    · 表达式结果**向零截断**（实测 0.5→0、1.5→1、2.5→2、32767.5→32767）并钳进 [0,maxval]
+        //      ⇒ 外面套 `floor(…+0.5)` 化为你熟悉的四舍五入，与引擎侧量化同向
+        //      （ColorKernels.ToU16 = Math.Round、ClampIdx = (int)(v+0.5f)）。
+        //    · 逗号在 `'…'` 内**两种写法都实测可解析且逐点同值**；仍统一写 `\,`（ffmpeg 官方示例口径，
+        //      且 GIF 那条链会被并进 -filter_complex ⇒ 多一层词法，转义更稳）。
+        //    · `setparams` 实测支持 `color_primaries/color_trc/colorspace`（bt709=1、iec61966-2-1=13、
+        //      linear=8），实跑回读：PNG 的 cICP 仍是 primaries=bt709/transfer=bt709 ⇒ 标签没被拆式带走。
+        //  ⚠ 随包构建的 `lutrgb` 还带一个 `gammaval709()`，实测**不是**这条定义式
+        //    （`gammaval709(val/maxval)` 逐点非单调、max|Δ| 达 59525 LSB@16bit ⇒ 不采信、不采用；
+        //    拆式自己写表达式，常数可指回 DNG 与 TransferCurve 两处一手锚）。
+        //  ⚠ 标识符 `val` 是**随包/权威份实测**的口径；更老的 ffmpeg 只认 `X` ⇒ 换 ffmpeg 目录后这条
+        //    `-vf` 会以 exit=-22 响亮失败（不是静默错像素）。已登记，未做运行期探测（本批不扩面）。
+        // ══════════════════════════════════════════════════════════════════════════════
+
+        /// <summary>BT.709-6 定义式分段 OETF 的 lutrgb 表达式（归一到 val/maxval ⇒ 位深无关；四舍五入）。</summary>
+        private const string Bt709OetfExpr =
+            "floor(if(lt(val/maxval\\,0.0180555555555556)\\,4.5*val\\,maxval*(1.099*pow(val/maxval\\,0.45)-0.099))+0.5)";
+
+        /// <summary>
+        /// 出口 trc 是否必须用定义式拆式兑现。
+        /// 判据**复用**计划层的同一份名单 <c>ColorMappingEngine.ZimgDivergentTransfer</c>
+        ///（ColorMapping/ColorTransformPlan.cs:833，禁第二套口径），
+        /// 但只在对**有实测背书的定义式**（当前唯一 = bt709）生效：名单里的 bt470bg/smpte240m 的 zimg
+        /// 形态未实测 ⇒ 宁可不兑现也不发明一条传递特性（同 ColorTransformPlan.cs:836-844 的训）。
+        /// zimg 口径（`--color-709-curve zimg`）⇒ 返回 false ⇒ 命令行逐字保持历史形态。
+        /// </summary>
+        public static bool NeedsDefinitionExit(string? outTrc, bool zimgCurveCaliber)
+            => !zimgCurveCaliber
+               && ColorMapping.ColorMappingEngine.ZimgDivergentTransfer(outTrc)
+               && string.Equals(outTrc, "bt709", StringComparison.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// 拆式生效时追加在链末的尾巴（含前导逗号）：`format=rgb48le` 钉住 lutrgb 的取值域 →
+        /// `lutrgb` 施加 BT.709-6 定义式 → `setparams` 找回被 `t=linear` 让掉的三个帧标签。
+        /// 不生效时返回空串（调用点的命令行逐字不变）。
+        /// </summary>
+        public static string BuildDefinitionExitTail(string outP, string outT, string outM, bool zimgCurveCaliber)
+        {
+            if (!NeedsDefinitionExit(outT, zimgCurveCaliber)) return "";
+            return ",format=rgb48le,lutrgb=r='" + Bt709OetfExpr + "':g='" + Bt709OetfExpr + "':b='" + Bt709OetfExpr + "'"
+                 + $",setparams=color_primaries={outP}:color_trc={outT}:colorspace={outM}";
+        }
+
+        /// <summary>
+        /// `--color-709-curve` 的口径读取点（legacy 侧唯一入口）。
+        /// ⚠ 引擎侧的同名判据在 <c>ColorMapping/ColorIntentFactory.cs:322</c>（本批不在改动面内 ⇒
+        ///   两处字符串比较暂存，已登记进交付账；合并成一处属主循环）。
+        /// </summary>
+        public static bool IsZimgCurveCaliber(FfmpegGui.Models.FfmpegOptions? options)
+            => options != null
+               && string.Equals(options.Color709Curve, "zimg", StringComparison.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// 拆式生效/口径点名的**一行诊断**（进 <c>OutputColorDecision.Short()</c>，不许静默）：
+        /// zimg 口径 ⇒ 点名"标签 bt709 / 像素 γ2.4 是刻意的历史对齐"；
+        /// std 口径 ⇒ 拆式就是默认兑现，一行说明生效（便于门禁按行匹配）。
+        /// </summary>
+        public static string DefinitionExitNote(string? outTrc, bool zimgCurveCaliber)
+        {
+            if (!string.Equals(outTrc, "bt709", StringComparison.OrdinalIgnoreCase)) return "";
+            return zimgCurveCaliber
+                ? " 出口曲线=zimg γ(1/2.4)（标签仍 bt709 ⇒ 刻意对齐历史产物，非新引入失配）"
+                : " 出口曲线=拆式(BT.709-6 定义式, lutrgb+setparams)";
         }
 
         /// <summary>
@@ -357,6 +468,7 @@ namespace FfmpegGui.Services
             {
                 "iec61966-2-1" or "srgb" => "iec61966-2-1",
                 "bt709" or "709" or "bt2020-10" or "bt2020-12" => "bt709",
+                "smpte170m" or "bt601" => "smpte170m",   // BT.601-7 = 分段 0.45 式，zimg/ZIMG_TRANSFER_SMPTE_170M 可精确表达 ⇒ 不许再落 null 走近似/带 ICC
                 "gamma2.2" or "bt470m" or "adobe" => "bt470m",      // Adobe RGB (1998) = BT.470-6 M 制 gamma2.2
                 "smpte2084" or "pq" => "smpte2084",
                 "arib-std-b67" or "hlg" => "arib-std-b67",
@@ -805,7 +917,10 @@ namespace FfmpegGui.Services
         /// </summary>
         internal static double[] BradfordAdapt(double[] srcW, double[] dstW)
         {
-            var M = new[] { 0.8951, 0.2664, -0.1614, -0.7502, 1.7135, 0.0367, 0.0389, -0.0685, 1.0633 };
+            // Bradford 锥响应矩阵。常数逐元素取 lcms2 `cmswtpnt.c`（BRADFORD）、skcms、libjxl 三处一致值，
+            // 并满足"每行之和≈1"这一自证不变量（第三行 0.0389−0.0685+1.0296=0.99999）；
+            // ⚠ 此前末项被转写成 1.0633（其余 8 个元素与 lcms 逐字相同），跨白点适应矩阵整体带偏 ~2e-4。
+            var M = new[] { 0.8951, 0.2664, -0.1614, -0.7502, 1.7135, 0.0367, 0.0389, -0.0685, 1.0296 };
             var coneS = MatVec(M, srcW);
             var coneD = MatVec(M, dstW);
             var L = new[] { coneD[0] / coneS[0], 0, 0, 0, coneD[1] / coneS[1], 0, 0, 0, coneD[2] / coneS[2] };

@@ -54,19 +54,25 @@ namespace Tests.Diagnostics
                 });
             var spec = Spec("bt709", "iec61966-2-1", "smpte432", "iec61966-2-1");
 
+            // 两条臂**交错**取样（每轮先 H2 再 H1），各取 min。旧写法是「3 次 H2 跑完再 3 次 H1」⇒
+            // 任何单向漂移（源图磁盘缓存热起来、CPU 频率爬升、后台活动进来）都**整笔落到一条臂**上，
+            // 而比值是两条臂相除 ⇒ 漂移不会被抵消，会被当成代价比放大。
+            //   实测（同一台机器、同一构建，只改取样形状）：分段跑 5 次 = 1.68/1.88/1.96/1.97/2.00，
+            //   另有两次带并发活动 = 2.09/2.53；**交错 5 轮**后 = 1.83/1.87/1.89/1.90/1.90 ⇒ 散布由
+            //   0.85× 收到 0.07×，判据 `H1 ≤ H2×2.0` 不再贴在分布边缘（余量 ~5%）。
+            //   ⇒ 阈值**没动**。剩下的事实是：H1 引擎端到端 ≈ zscale 单进程的 1.9 倍（三进程 + 整帧内存变换），
+            //   真要往下压走性能清单 S0/表折叠那条，别动这条判据（`超出则调代价模型` 原话即此意）。
             double h2 = double.MaxValue, h1 = double.MaxValue;
-            for (int i = 0; i < 3; i++)
+            for (int i = 0; i < 5; i++)
             {
-                var sw = System.Diagnostics.Stopwatch.StartNew();
+                var sw2 = System.Diagnostics.Stopwatch.StartNew();
                 RunCli(ff, $"-y -hide_banner -loglevel error -i \"{srcPng}\" -vf \"format=gbrpf32le,zscale=pin=bt709:tin=iec61966-2-1:min=gbr:p=smpte432:t=iec61966-2-1:m=bt709,format=rgb48le\" \"{dir}/h2.png\"");
-                sw.Stop(); h2 = Math.Min(h2, sw.Elapsed.TotalMilliseconds);
-            }
-            for (int i = 0; i < 3; i++)
-            {
-                var sw = System.Diagnostics.Stopwatch.StartNew();
+                sw2.Stop(); h2 = Math.Min(h2, sw2.Elapsed.TotalMilliseconds);
+
+                var sw1 = System.Diagnostics.Stopwatch.StartNew();
                 FfmpegGui.Services.ColorMapping.RawColorPipeline.TransformFileAsync(
                     srcPng, Path.Combine(dir, "h1.png"), spec, plan, null, default, 1).GetAwaiter().GetResult();
-                sw.Stop(); h1 = Math.Min(h1, sw.Elapsed.TotalMilliseconds);
+                sw1.Stop(); h1 = Math.Min(h1, sw1.Elapsed.TotalMilliseconds);
             }
             Console.WriteLine($"  端到端 2K PNG sRGB→P3： H2(zscale 单进程)={h2:F0}ms  H1(引擎 三进程+内存变换)={h1:F0}ms  比值={h1 / h2:F2}×");
             bool h1ok = File.Exists(Path.Combine(dir, "h1.png")) && new FileInfo(Path.Combine(dir, "h1.png")).Length > 0;
@@ -144,11 +150,58 @@ namespace Tests.Diagnostics
                     }
                     Console.WriteLine($"    参考（解析式单核）= {singleSlow:F1} MPix/s  快路径增益 = {single / Math.Max(1e-6, singleSlow):F1}×");
                     if (!isRelease) continue;
-                    // 门槛（Release、表驱动快路径）：单核 ≥ 40 MPix/s（全尺寸都门禁）；
-                    // 扩展比 ≥4× **只在 ≥8MPix（工作集 ≥50MB、带宽受限）的尺寸上作门禁**：
-                    //   小帧（6MB）单核已接近内存带宽上限（实测 157.8 MPix/s ≈ 6.3 GB/s），此时“扩展比”衡量的是
-                    //   调度开销而非并行能力（实测 3.4×/6.4× 飘手），作门禁无意义 → 只记录。
-                    Check(single >= 40, $"{name} 单核 ≥40MPix/s（实 {single:F1}）");
+                    // 门槛**分档**（2026-10-11，L-7：性能账此前无人看守）。阈值由"这一格**该不该**走表快路径"决定。
+                    // ⚠ 分档必须取**独立参照**，不许直接调内核那句判据 `CK.TableFastPathOperatorsAllow`：
+                    //   内核的 `fast` 现在就走它 ⇒ 判据一旦写坏，分档会跟着一起改口，实测 10× 的吞吐回落
+                    //   被"重新分档"吸收成合法低档 ⇒ **无声放过**。这不是假设：第一版就是那么写的，
+                    //   变异 M1（判据整支 `return false`）实测 `pass=16 fail=1`，唯一红的是一条无关的端到端项。
+                    //   ⇒ 独立口径 = 这一格**声明的色度学**需不需要"查表表达不了的算子"；
+                    //     另加一条「独立口径 == 内核判据」的对账断言，M1/M2 两个方向才都会红。
+                    //   · 快路径适用 ⇒ 单核 ≥40 MPix/s（实测 sRGB→P3 = 51.0、BT.2020→sRGB = 62.4）。
+                    //     这一档才是"回归看守"：内核判据被改坏、某格悄悄退回解析式（≈5 MPix/s）⇒ 立刻红。
+                    //     旧写法拿同一个 40 去套 PQ→sRGB，那格**永远**红（LinearScale=10000/203=49.26，
+                    //     查表表达不了 ⇒ 走解析式是**正确行为**），于是整条 bench 被当作"已知假红"没人看。
+                    //     ⚠ 40 这一档的实测余量**不大**（分档落地后连跑三轮：sRGB→P3 = 45.0/46.2/46.5，
+                    //     BT.2020→sRGB = 57.2/60.0/60.1，PQ 那档 = 5.6~5.8 vs 阈值 3）⇒ 最小项只剩 11%。
+                    //     整轮若在负载下假红，正确处置是**静机复跑**（本仓既有规矩"计时必须单机跑、并发期禁测"），
+                    //     或加大 best-of-N；**不许**为了凑绿灯把 40 往下调 —— 那正是 L-7 要治的"没人看守"。
+                    //   · 快路径被合法关闭 ⇒ 降到解析式水位 ≥3 MPix/s（实测 5.2/5.5，留 ~40% 余量防负载抖动）。
+                    //   · 反向自证：分档必须与**实测增益**一致。同一格两次计时只差"表给不给"这一个动作，
+                    //     所以它们的比值量的就是**内核那句判据**：判为适用却测出 ≈1× ⇒ 快路径没生效；
+                    //     判为关闭却测出 >1.3× ⇒ 有算子被跳过、或分档落后于内核。两边都会红。
+                    //   · 扩展比 ≥4× 仍**只在 ≥8MPix（工作集 ≥50MB、带宽受限）的尺寸上作门禁**：
+                    //     小帧（6MB）单核已近内存带宽上限（实测 157.8 MPix/s ≈ 6.3 GB/s），此时"扩展比"
+                    //     量的是调度开销而非并行能力（实测 3.4×/6.4× 飘手），作门禁无意义 → 只记录。
+                    // 独立口径：曲线的归一域峰值（PQ=10000nits、HLG=1000nits、其余=SDR 参考白 203nits）。
+                    // 换算与生产 `ColorTransformPlan.ToSpec()` 同口径，但**在探针里独立写一份**——
+                    // 它是内核判据的对照臂，不是它的副本。两侧都 SDR 白 ⇒ 两个 nits 系数恒为 1 ⇒ 该走表。
+                    static double NitsOf(TC c) => c.Kind switch
+                    {
+                        TC.CurveKind.Pq => TC.PqPeakNits,
+                        TC.CurveKind.Hlg => FfmpegGui.Services.ColorMapping.Bt2100Ootf.NominalPeakNits,
+                        _ => TC.SdrWhiteNits,
+                    };
+                    bool fastCell = Math.Abs(NitsOf(spec.SrcCurve) - TC.SdrWhiteNits) < 1e-9
+                                    && Math.Abs(NitsOf(spec.DstCurve) - TC.SdrWhiteNits) < 1e-9
+                                    && (spec.Tone == null || !spec.Tone.Active)
+                                    && !spec.SrcIsHlgScene && !spec.DstIsHlgScene && !spec.GamutMap;
+                    //   ⚠ GMO 这一项取**声明位** `GamutMap` 而非 `GamutMapActive`：后者还要求目标亮度系数齐
+                    //   （`DstLuminances is { Length: 3 }`）。若某格声明了 GMO 而系数没给全 ⇒ 内核会照走快路径、
+                    //   本侧判它"该关表"⇒ 对账红 —— 这正是要点名的「声明了却没生效」那一类，不该被静默放过。
+                    // 对账（牙齿所在）：独立分档与内核判据不许各说各话。
+                    //   内核把该走表的格关了 ⇒ 吞吐掉到解析式水位，本条与下面的 ≥40 档一起红（变异 M1）。
+                    //   内核把不该走表的格放开了 ⇒ 本条与"关闭档增益必须 ≈1×"一起红，且像素侧由 C20 逐字节锁兜住（变异 M2）。
+                    bool kernelFast = CK.TableFastPathOperatorsAllow(spec);
+                    Check(kernelFast == fastCell,
+                        $"{name} 快路径对账：独立分档={fastCell} ／ 内核判据={kernelFast} ⇒ 两者必须一致（不一致 = 判据被改坏或本门禁口径落后）");
+                    double floorMpix = fastCell ? 40.0 : 3.0;
+                    string tier = fastCell ? "快路径适用" : "快路径被合法关闭(解析式)";
+                    Check(single >= floorMpix, $"{name} 单核 ≥{floorMpix:F0}MPix/s（{tier}，实 {single:F1}）");
+                    double gainCell = single / Math.Max(1e-6, singleSlow);
+                    if (fastCell)
+                        Check(gainCell >= 2.0, $"{name} 分档=快路径适用 ⇒ 实测增益必须 ≥2×（实 {gainCell:F1}×；≈1× 说明快路径其实没开，判据与分档不符）");
+                    else
+                        Check(gainCell <= 1.3, $"{name} 分档=快路径关闭 ⇒ 实测增益必须 ≈1×（实 {gainCell:F1}×；>1.3 说明有算子被跳过或分档落后于内核）");
                     bool bandwidthBound = (long)w * h >= 8_000_000;
                     if (bandwidthBound)
                         Check(best / Math.Max(1e-6, single) >= 4.0, $"{name} 多核扩展比 ≥4×（实 {best / Math.Max(1e-6, single):F1}×）");

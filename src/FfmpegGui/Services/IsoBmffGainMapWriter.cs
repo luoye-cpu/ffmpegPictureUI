@@ -57,6 +57,33 @@ internal static class IsoBmffGainMapWriter
     private const int ItemGainMap = 3;
 
     /// <summary>
+    /// tmap 载荷里 ISO 21496-1 <c>flags</c> 字节的偏移：载荷首字节是 u8 version，
+    /// ISO 头 = min_version(u16) + writer_version(u16) + <c>flags</c>(u8) ⇒ 1 + 4 = 5。
+    /// 与读侧 <see cref="GainMapDecoder.JpegContainer.ParseIso21496"/>（flags 在 off+4）同一口径。
+    /// </summary>
+    internal const int TmapFlagsOffset = 1 + 4;
+
+    /// <summary>ISO 21496-1 flags 的 multi-channel 位（参照 kIsMultiChannelMask，gainmapmetadata.h:20）。</summary>
+    private const byte IsMultiChannelMask = 0x80;
+
+    /// <summary>
+    /// 从 item 的属性盒列表里读 <c>pixi</c> 的 channel_count；没有 pixi 盒 ⇒ null（无从判定，不猜）。
+    /// <para>pixi 是 FullBox：<c>size(4) type(4) version(1) flags(3) channel_count(1) bitDepth[…]</c>
+    /// ⇒ channel_count 在原始盒字节偏移 <b>12</b>（不是末字节、不是 +13）。
+    /// 最小合法长度 = 8+4+1+1 = 14 ⇒ 短于此视为不合法，不读。</para>
+    /// </summary>
+    private static int? PixiChannelCount(List<byte[]> props)
+    {
+        foreach (var p in props)
+        {
+            if (!IsBox(p, "pixi")) continue;
+            if (p.Length < 14) continue;
+            return p[12];
+        }
+        return null;
+    }
+
+    /// <summary>
     /// 组装带 `tmap` 派生项的 AVIF。
     /// </summary>
     /// <param name="baseAvif">底图（SDR）单图 AVIF 字节。</param>
@@ -104,6 +131,38 @@ internal static class IsoBmffGainMapWriter
             {
                 r.FailReason = $"[GainMap-Avif] 增益图 {gmImg.Width}x{gmImg.Height} 大于底图 {baseImg.Width}x{baseImg.Height}（应为其降采样）";
                 return r;
+            }
+
+            // ── F-4（2026-10-11）「声明 == 数据」的最后一道门 ──────────────────────
+            //   tmap 载荷 = u8 version(0) + ISO 21496-1，其 flags 是 ISO 头的第 5 字节
+            //   ⇒ 在 tmap 载荷里的偏移 = 1 + 4 = 5；bit7 = multi-channel（参数集数）。
+            //   参照两条一手依据：
+            //     · libavif 以**交付的图像格式**定通道数：
+            //       src/gainmap.c:587 `singleChannel = (gainMap->image->yuvFormat == AVIF_PIXEL_FORMAT_YUV400)`，
+            //       并在灰度时把 ch0 **复制成套**（gainmap.c:743-752 `gainMapMinLog2[singleChannel ? 0 : c]`）；
+            //     · libultrahdr 读侧**信流不信 flag**（jpegr.cpp:2843-2844 按 SOF numComponents 定布局）
+            //       ⇒ 一致性是**生产者**义务，写出器这一层必须自己核对交付的平面数。
+            //   交付的平面数从增益图 item 的 `pixi` 盒读（ffmpeg 实产：gray ⇒ channel_count=1、
+            //   yuv444p/yuv420p ⇒ 3；本机实测锚见 tests/GainMapTestHost `gainmath` 模式的 C5p2/C5p3）。
+            //   ⇒ 于是「声明 3 参数集 / 交付单平面 gray」这种说谎组合在这里**拒写**，不再静默出货。
+            //   ⚠ 本门只核**平面数**：4:2:0 在 pixi 里同样是 3 平面（色度 subsampling 记在 AV1 序列头，
+            //     不在容器属性盒）⇒ JPEG 出口的 multiChannel↔4:2:0 互斥由
+            //     `GainMapJpegCodec.GainMapChromaSubsampling` 保证，AVIF 出口由调用方只允许
+            //     {gray, yuv444p} 两种 pix_fmt 保证（见 GainMapEncoder.EncodeAvifGainMapAsync）。
+            if (tmapPayload.Length > TmapFlagsOffset)
+            {
+                bool declaredMulti = (tmapPayload[TmapFlagsOffset] & IsMultiChannelMask) != 0;
+                int declaredChannels = declaredMulti ? 3 : 1;
+                int? deliveredPlanes = PixiChannelCount(gmImg.Props);
+                if (deliveredPlanes.HasValue && deliveredPlanes.Value != declaredChannels)
+                {
+                    r.FailReason =
+                        $"[GainMap-Avif] 声明与交付不符，已拒写：tmap flags bit7={(declaredMulti ? 1 : 0)} "
+                      + $"⇒ 声明 {declaredChannels} 通道，而增益图 item 的 pixi 实为 {deliveredPlanes.Value} 平面。"
+                      + "「声明多通道而数据是单平面」=说谎（参照 libavif gainmap.c:587 以交付格式定通道数、"
+                      + "灰度时把参数复制成套 gainmap.c:743-752）⇒ 要么改交付 pix_fmt，要么改声明。";
+                    return r;
+                }
             }
 
             r.BaseItemBytes = baseImg.ItemData.Length;

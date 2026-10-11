@@ -111,6 +111,25 @@ public readonly struct TransferCurve
         1.0 / 0.45, 1.0 / 1.099, 0.099 / 1.099, 1.0 / 4.5, 0.08125, 0.0, 0.0, "bt709", "BT.709");
 
     /// <summary>
+    /// BT.601-7 / SMPTE 170M（H.273 code 13 = "smpte170m (including BT.601)"）的传递函数：
+    /// **与 <see cref="Bt709"/> 同一条分段式**（γ=0.45、α=1.099、趾段斜率 4.5、拐点 d=0.08125）。
+    /// <para>
+    /// 一手数取自本机 <c>tools/src/dng_sdk/.../dng_color_space.h:134-140</c>
+    /// （<c>fAlpha=1.0992968268094429, fBeta=0.0180539685108078, fSlope=4.5, fGamma=0.45</c>）。
+    /// </para>
+    /// <para>
+    /// ⚠ 本条**故意独立成实例**而不是复用 <see cref="Bt709"/>：两者曲线数值相同、语义不同
+    /// （CICP 一个是 13、一个是 1），复用会把"源是 170M"这件事在别处读回来时丢掉。
+    /// ⚠ 与既往实现的分歧：本仓此前把 170M 挂成纯幂 γ2.2（<see cref="Gamma22"/>），
+    /// 与 BT.601-7 定义式最大差 4.20% 满量程（≈2752 LSB@16bit）；而 zimg 的
+    /// <c>t=smpte170m</c> 实测是纯 γ2.4 —— **两个都不是定义式**，走 zimg 口径的兼容档会继续分歧，
+    /// 只能点名、不许当标准。
+    /// </para>
+    /// </summary>
+    public static readonly TransferCurve Bt601 = new(CurveKind.Parametric,
+        1.0 / 0.45, 1.0 / 1.099, 0.099 / 1.099, 1.0 / 4.5, 0.08125, 0.0, 0.0, "smpte170m", "BT.601/170M");
+
+    /// <summary>
     /// BT.709 的 **zimg 实现形态**：纯幂 γ(1/2.4)（无 α、无线性趾）。
     /// <para>
     /// ⚠ 这**不是** BT.709 的定义式（定义式见 <see cref="Bt709"/>）。两者的编码差在中间调最大约
@@ -388,7 +407,7 @@ public readonly struct TransferCurve
             "bt709" or "709" or "1" or "bt2020-10" or "bt2020-12" or "14" or "15" => Bt709,
             "bt470m" or "gamma22" or "4" => Gamma22,
             "bt470bg" or "gamma28" or "5" or "bt601-6-625" => Gamma28,
-            "smpte170m" or "6" => Gamma22,          // BT.601-525/170M 与 2.2 同族（业界按 gamma2.2 处理）
+            "smpte170m" or "6" or "bt601" => Bt601,   // BT.601-7/SMPTE 170M = 分段 0.45 式（不是纯 γ2.2，也不是 zimg 的 γ2.4）
             "smpte240m" or "7" => Smpte240M,
             "linear" or "8" => Linear,
             "smpte2084" or "pq" or "16" => Pq,

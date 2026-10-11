@@ -29,7 +29,31 @@ namespace FfmpegGui.Services;
 public static class GainMapEncoder
 {
     public const float KSdrWhiteNits = 203f;   // 行业标准 SDR 白点 (libultrahdr kSdrWhiteNits)
-    public const float KOffset = 0.015625f;    // 1/64 规范推荐 offset
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  F-5（2026-10-11）：offset 的**唯一声明处**
+    //  ─────────────────────────────────────────────────────────────────────
+    //  参照不变量（备忘 Q1 三条一手条形）：**元数据声明的 offset 与前向实际施加的 offset 是同一个数**。
+    //    · libavif：默认分数 {1,64}（src/gainmap.c:21-24 avifGainMapSetEncodingDefaults），
+    //      前向**就**用它做除法（gainmap.c:712-713），色域转换出负值时放大 offset 后
+    //      **再写回声明**（gainmap.c:653-665 调整、:745-752 写回）⇒ 声明的仍是前向用的那份数。
+    //    · libultrahdr 两趟：kSdrOffset/kHdrOffset = 1e-7（gainmapmath.h:549-550）既是前向
+    //      computeGain 的加数（gainmapmath.cpp:773-775），又被写进元数据（jpegr.cpp:1038-1040）。
+    //    · libultrahdr 一趟：声明 0（jpegr.cpp:727-728）且 encodeGain 不用（:758-771）⇒ 同样自洽。
+    //  本仓解侧（GainMapDecoder.ApplyGainMap）与 XMP/ISO 一直按 1/64 声明并施加 ⇒
+    //  与参照同形、且改动面最小的那支是「**前向按声明施加 1/64**」（备忘裁①），
+    //  不是把声明改成 0（那等于解侧一起改，且丢掉 LA 的互操作默认值）。
+    //  误差量级（备忘 Q6）：修复前 (boost−1)·offsetSdr，上界 (headroom−1)/64
+    //  ⇒ 1000nits 12.45 nits / 4000nits 59.33 nits（旧的 15.6/82.4 头条已被验证 lane 判死）。
+    // ═══════════════════════════════════════════════════════════════════════
+    internal const int KOffsetSdrN = 1, KOffsetSdrD = 64;   // ISO 21496-1 baseOffset（= 分母侧 / SDR 侧）
+    internal const int KOffsetHdrN = 1, KOffsetHdrD = 64;   // ISO 21496-1 alternateOffset（= 分子侧 / HDR 侧）
+    /// <summary>前向分母侧施加的 offset —— 与写进 ISO/XMP 声明的 baseOffset 同一个式子。</summary>
+    internal static readonly float KOffsetSdr = (float)KOffsetSdrN / KOffsetSdrD;
+    /// <summary>前向分子侧施加的 offset —— 与写进 ISO/XMP 声明的 alternateOffset 同一个式子。</summary>
+    internal static readonly float KOffsetHdr = (float)KOffsetHdrN / KOffsetHdrD;
+    /// <summary>1/64 的浮点写法；仅**兼容**既有引用，真值以上面两个 readonly 为准（= 1f/64f）。</summary>
+    public const float KOffset = 0.015625f;
 
     // ═══════════════════════════════════════════
     //  公共入口
@@ -146,14 +170,24 @@ public static class GainMapEncoder
                     log?.Invoke($"[GainMap] ⚠️ 未能求出 {sourcePrimaries ?? "(未知)"} → {baseTok} 矩阵，底图将不映射（仅改标签，存在色偏风险）\n");
                 }
 
-                // ── 2. 底图 PNG（始终 SDR：sdrLinear → sRGB gamma → 8bit）──
+                // ── 2. 底图（始终 SDR：sdrLinear → sRGB gamma → 8bit 字节 → PNG）──
+                //   ⚠ 先**落成字节**：这份字节就是交付给解码器的底图，F-3 的增益分母必须由它反推
+                //   （参照：libultrahdr 底图侧「Hard clip out-of-gamut values」发生在存储之前
+                //    jpegr.cpp:2172-2177，而增益分母采自这张已存好的 sdr_intent jpegr.cpp:871-885；
+                //    libavif 更直白——gainmap.c:676-697 直接 avifGetRGBAPixel(baseRgbImage,…) 读存储像素）。
                 var basePath = Path.Combine(tempDir, "base.jpg");
                 var basePng = Path.Combine(tempDir, "base.png");
-                await WriteBgra8PngAsync(sdrLinear, w, h, basePng, ffmpeg, log, ct);
+                byte[] baseBgra = BuildBaseBgra8(sdrLinear, pixelCount);
+                await RunFfmpegRawToPngAsync(baseBgra, w, h, pixelCount * 4, "bgra", basePng, ffmpeg, log, ct);
 
                 // ── 3. 增益图计算 + 降采样 + PNG（容器无关）──
                 //   log2(HDR/SDR) ∈ [0, maxLog2Gain] → [0,255]（上映射；两侧均已在底图色域内）
-                byte[] gainMapPixels = ComputeGainMap(normHdr, sdrLinear, w, h, multiChannel, maxLog2Gain);
+                //   ⚠ F-3：分母用 **sdrStored**（底图真正交付的值），**不是**钳前的 sdrLinear。
+                float[] sdrStored = BufferPool.RentFloat(pixelCount * 4);
+                StoredBaseLinearFromBgra(baseBgra, sdrStored, pixelCount);
+                BufferPool.ReturnByte(baseBgra);
+                byte[] gainMapPixels = ComputeGainMap(normHdr, sdrStored, w, h, multiChannel, maxLog2Gain);
+                BufferPool.ReturnFloat(sdrStored);
                 byte[] gainMapScaled = RescaleGainMap(gainMapPixels, w, h, multiChannel, downsample, out int gmW, out int gmH);
                 BufferPool.ReturnByte(gainMapPixels);
                 var gmPath = Path.Combine(tempDir, "gainmap.jpg");
@@ -171,7 +205,8 @@ public static class GainMapEncoder
                 }
 
                 // ── 4b. JPEG 出口（Ultra HDR：XMP + MPF + ISO 21496-1 APP2）──────────
-                var baseOk = await EncodeJpegFileAsync(basePng, basePath, baseQuality, jpegProgressiveLevel, log, ct);
+                var baseOk = await EncodeJpegFileAsync(basePng, basePath, baseQuality, jpegProgressiveLevel,
+                    ColorMapping.GainMapJpegCodec.BaseJpegChromaSubsampling, log, ct);
                 if (!baseOk)
                 {
                     log?.Invoke("[GainMap] ❌ Base JPEG 编码失败\n");
@@ -198,13 +233,22 @@ public static class GainMapEncoder
                     }
                 }
 
-                var gmOk = await EncodeJpegFileAsync(gmPng, gmPath, gainMapQuality, jpegProgressiveLevel, log, ct);
+                // F-4（2026-10-11）：增益图 JPEG 的色度采样必须与**声明的通道数成套**。
+                //   参照：RGB888 增益图的采样因子全 1×1（jpegencoderhelper.cpp:41-42，应用点 :189-192
+                //   ⇒ 色度**零降采样**）。本仓 multiChannel=true 时逐通道增益写进 R/G/B 三个分量，
+                //   过 4:2:0 就等于把 G/B 的增益按色度下采样摧毁 ⇒ 「flags 说多通道、数据是 4:2:0」=说谎。
+                //   参照的读侧「信流不信 flag」（jpegr.cpp:2843-2844 按 SOF numComponents 定布局）
+                //   **救不了写侧**：声明与交付一致是生产者的义务。
+                var gmOk = await EncodeJpegFileAsync(gmPng, gmPath, gainMapQuality, jpegProgressiveLevel,
+                    ColorMapping.GainMapJpegCodec.GainMapChromaSubsampling(multiChannel), log, ct);
                 if (!gmOk)
                 {
                     log?.Invoke("[GainMap] ❌ 增益图 JPEG 编码失败\n");
                     return false;
                 }
-                log?.Invoke($"[GainMap] 增益图: {gmW}x{gmH}, {Math.Round(new FileInfo(gmPath).Length / 1024.0)} KB\n");
+                log?.Invoke($"[GainMap] 增益图: {gmW}x{gmH}, {Math.Round(new FileInfo(gmPath).Length / 1024.0)} KB"
+                    + $"（通道数 {(multiChannel ? 3 : 1)}、色度采样 "
+                    + $"{ColorMapping.GainMapJpegCodec.GainMapChromaSubsampling(multiChannel)}，与 tmap/ISO 声明成套）\n");
 
                 // ── 4. 打包 (XMP + MPF + ISO 21496-1) ──
                 byte[] baseJpeg = File.ReadAllBytes(basePath);
@@ -298,11 +342,26 @@ public static class GainMapEncoder
     // ═══════════════════════════════════════════
 
     /// <summary>
-    /// 逐像素增益比计算 (2026-08-15: 灰度分支 SIMD 加速)。
+    /// 逐像素增益比计算 (2026-08-15: 灰度分支 SIMD 加速; 2026-10-11: F-5/F-3 收口)。
     /// 灰度: gain = log2(亮度(HDR)/亮度(SDR)); RGB: 三通道独立。
     /// 映射 [0, maxLog2Gain] → [0, 255] (Reinhard 保证增益 ≥ 1)。
-    /// </summary>
-    private static byte[] ComputeGainMap(float[] hdr, float[] sdr, int w, int h,
+    /// <para>
+    /// ⚠ **两侧操作数的口径**（本方法的两个入参都由调用方 <see cref="EncodeAsync"/> 按参照喂）：
+    /// <list type="bullet">
+    /// <item><b>分母</b> <paramref name="sdr"/> = 底图**真正交付**的值（钳位+8-bit 量化后回线性，
+    /// 见 StoredBaseLinearFromBgra）—— 参照的增益分母恒等于「解码器将从底图读回的那个数」（备忘 Q3）。</item>
+    /// <item><b>公式</b> = <see cref="SimdPixelOps.Log2Gain"/>，**含声明的 offset**（备忘 Q1 裁①），
+    /// 灰度支路与 RGB 支路调的是同一个式子 ⇒ 「同一份数学只有一份实现」。</item>
+    /// <item><b>量程</b> <paramref name="maxLog2Gain"/> = **声明的** headroom（log2），
+    /// 无内容统计遍 ⇒ 本仓是**一趟**形态 ⇒ 取整口径必须跟参照一趟的 encodeGain 一样是**截断**（F-2，
+    /// 见 SimdPixelOps.LogGainToByteScalar 的前置条件注释）。</item>
+    /// </list>
+    /// </para>
+    /// <remarks>
+    /// internal 而非 private：批次 C 的进程内锁（tests/GainMapTestHost `gainmath` 模式，C1/C3 段）
+    /// 必须能直接量到产品实际使用的这份数学，而不是在测试里再写一遍（双拷贝=本仓禁例）。
+    /// </remarks>
+    internal static byte[] ComputeGainMap(float[] hdr, float[] sdr, int w, int h,
         bool multiChannel, float maxLog2Gain)
     {
         int pixelCount = w * h;
@@ -312,36 +371,48 @@ public static class GainMapEncoder
         // 灰度: SIMD 批量 (亮度点积 + log2 多项式)
         if (!multiChannel)
         {
-            SimdPixelOps.ComputeGainMapGray(hdr, sdr, gain, maxLog2Gain);
+            SimdPixelOps.ComputeGainMapGray(hdr, sdr, gain, maxLog2Gain, KOffsetHdr, KOffsetSdr);
             return gain;
         }
 
         // RGB: 三通道独立 (标量; 通道数×log2 无向量收益)
-        const float eps = 0.001f;
         for (int i = 0; i < pixelCount; i++)
         {
             int o = i * 4;
             int off = i * 3;
-            gain[off] = LogGainToByte(MathF.Log2(Math.Max(hdr[o] / Math.Max(sdr[o], eps), 1.0f)), maxLog2Gain);
-            gain[off + 1] = LogGainToByte(MathF.Log2(Math.Max(hdr[o + 1] / Math.Max(sdr[o + 1], eps), 1.0f)), maxLog2Gain);
-            gain[off + 2] = LogGainToByte(MathF.Log2(Math.Max(hdr[o + 2] / Math.Max(sdr[o + 2], eps), 1.0f)), maxLog2Gain);
+            gain[off] = LogGainToByte(SimdPixelOps.Log2Gain(hdr[o], sdr[o], KOffsetHdr, KOffsetSdr), maxLog2Gain);
+            gain[off + 1] = LogGainToByte(SimdPixelOps.Log2Gain(hdr[o + 1], sdr[o + 1], KOffsetHdr, KOffsetSdr), maxLog2Gain);
+            gain[off + 2] = LogGainToByte(SimdPixelOps.Log2Gain(hdr[o + 2], sdr[o + 2], KOffsetHdr, KOffsetSdr), maxLog2Gain);
         }
         return gain;
     }
 
-    /// <summary>log2(gain) → 8-bit: 映射 [0, maxLog2Gain] → [0, 255]</summary>
+    /// <summary>
+    /// log2(gain) → 8-bit: 映射 [0, maxLog2Gain] → [0, 255]。
+    /// ⚠ **转发到 SimdPixelOps.LogGainToByteScalar，不留第二份实现**（F-2 收口 2026-10-11）：
+    /// 取整口径=**截断**（与参照一趟 encodeGain 同形，一手锚
+    /// tools/src/libultrahdr/lib/src/gainmapmath.cpp:770），要改 +0.5 必须整体转两趟
+    /// （实测 min/max 进声明，形如 gainmapmath.cpp:788 的 affineMapGain）——
+    /// 前置条件逐条写在 SimdPixelOps.LogGainToByteScalar 的注释里，本处不重复一份口径说明。
+    /// </summary>
     private static byte LogGainToByte(float logGain, float maxLog2Gain)
-    {
-        if (maxLog2Gain <= 0f) maxLog2Gain = 1f;
-        float clamped = Math.Clamp(logGain, 0f, maxLog2Gain);
-        return (byte)(clamped / maxLog2Gain * 255f);
-    }
+        => SimdPixelOps.LogGainToByteScalar(logGain, maxLog2Gain);
 
     // ═══════════════════════════════════════════
     //  降采样
     // ═══════════════════════════════════════════
 
-    /// <summary>增益图降采样 (默认 1/4 分辨率), ceiling 除法确保不丢右/下边缘像素, 块均值。</summary>
+    /// <summary>
+    /// 增益图降采样 (默认 1/4 分辨率), ceiling 除法确保不丢右/下边缘像素, 块均值。
+    /// <para>
+    /// F-2（2026-10-11）关于这里**第二段截断**的裁定：参照在本处**没有对应物**——它是**比例点采样**
+    /// （jpegr.cpp:759 / :872 的 sdr_sample_pixel_fn(..., mMapDimensionScaleFactor, x, y)），
+    /// 不平均 ⇒ 天然只有一次量化。所以「块均值再截断」不是「对齐参照」的问题，参照既不禁它也不禁改 round
+    /// （备忘 Q2 例外①：改 round 或改点采样都不违反参照，改点采样离参照更近）。
+    /// 本轮**保持截断不动**，理由与 LogGainToByteScalar 同源：本仓是一趟形态，取整口径要跟趟数一起改；
+    /// 单点换成 +0.5 会得到「声明端点仍是定值、字节序列却与参照一趟产物不等价」的半改状态（审查纪律禁止）。
+    /// </para>
+    /// </summary>
     private static byte[] RescaleGainMap(byte[] src, int w, int h, bool multiChannel,
         int factor, out int outW, out int outH)
     {
@@ -381,17 +452,18 @@ public static class GainMapEncoder
     // ═══════════════════════════════════════════
 
     /// <summary>
-    /// 线性 RGBA → sRGB gamma → bgra8 raw → ffmpeg → PNG。
-    /// ⚠️ pix_fmt=bgra 字节序 B,G,R,A（不是 RGBA）→ 通道需重排。
+    /// 底图字节生成器（**唯一**的一份「线性 SDR → 交付字节」实现）：
+    /// 线性 RGBA → sRGB gamma → bgra8 raw（池化数组，调用方负责 ReturnByte），再由
+    /// <see cref="RunFfmpegRawToPngAsync"/> 落成 PNG。
+    /// F-3（2026-10-11）：增益分母由**这份字节**反推（见 <see cref="StoredBaseLinearFromBgra"/>），
+    /// 所以本方法与底图 PNG 必须是同一次调用产出的同一份数据 ⇒ 不许再写第二份转换
+    /// （本仓刚因 contract 双拷贝踩过「全绿但零执行」）。
+    /// pix_fmt=bgra 字节序 B,G,R,A（不是 RGBA）→ 通道需重排。
     /// 2026-08-15: FloatToSrgb8 SIMD 加速（128 像素分块，避开 AVX2 gather 陙阱）。
     /// </summary>
-    private static async Task WriteBgra8PngAsync(float[] srcRgba, int w, int h, string pngPath,
-        string ffmpeg, Action<string>? log, CancellationToken ct)
+    private static byte[] BuildBaseBgra8(float[] srcRgba, int pixelCount)
     {
-        int pixelCount = w * h;
         var raw = BufferPool.RentByte(pixelCount * 4);
-        try
-        {
             // SIMD 批量转换: 线性→sRGB 8-bit (R/G/B 三通道)
             Span<float> rBuf = stackalloc float[512];
             Span<byte> bBuf = stackalloc byte[512];
@@ -412,9 +484,47 @@ public static class GainMapEncoder
             // alpha = 255
             for (int i = 0; i < pixelCount; i++)
                 raw[i * 4 + 3] = 255;
-            await RunFfmpegRawToPngAsync(raw, w, h, pixelCount * 4, "bgra", pngPath, ffmpeg, log, ct);
+        return raw;
+    }
+
+    /// <summary>
+    /// 底图**真正交付的那份字节**（sRGB 8-bit BGRA）→ 线性 float（RGBA 交错）。
+    ///
+    /// <para>
+    /// 这是 F-3（2026-10-11）的分母唯一来源：增益分母必须等于**解码器将从底图读回的那个值**，
+    /// 而不是钳位前的 float。三处一手依据（备忘 Q3）：
+    /// ① libultrahdr 底图侧「Hard clip out-of-gamut values」发生在**存储之前**
+    ///    （jpegr.cpp:2172-2177 → clampPixelFloat，钳 [0,1] 见 gainmapmath.h:559-563）；
+    /// ② 增益分母采自这张已钳已量化的底图（两趟 jpegr.cpp:871-885 用
+    ///    <code>sdr_sample_pixel_fn(sdr_intent,…)</code> 采样，一趟同形 :759-772），
+    ///    且默认 <code>sdrGamutConversionFn = identityConversion</code>（jpegr.cpp:609-622）
+    ///    ⇒ **base 侧根本不过矩阵**，">1 被钳"这一支在参照架构里结构上不存在；
+    /// ③ libavif 更直白：分母直接读存储像素（gainmap.c:676-697 avifGetRGBAPixel(baseRgbImage,…)）。
+    /// </para>
+    /// <para>
+    /// 本仓的矩阵在底图侧**也会**过（2026-09 的 useBaseColorSpace 收口），越界是真实存在的
+    /// （2020 源 → sRGB 底，验证 lane 复算越界率 32.4%、max 1.6605）⇒ 分母必须回灌钳位+量化后的值，
+    /// 否则「编码时以为底图是 1.29、解码时读回的是 1.00」⇒ 增益算小 ⇒ 高光恢复偏暗（FIX_PLAN F-6/F-3）。
+    /// </para>
+    /// <para>
+    /// 与解侧**同源**：GainMapDecoder 对底图做的正是 SimdPixelOps.SrgbToLinearRgba(存储 8-bit)，
+    /// 本方法用同一个反函数 ⇒ 「分母 == 解码器读到的值」是构造出来的恒等，不是近似。
+    /// 唯一残差：底图字节由 <see cref="SimdPixelOps.FloatToSrgb8"/> 生成，SIMD 路由开启时与标量
+    /// 差 ≤1 LSB（既有 D28 锁守这一格），1 LSB ≈ 0.4% 码值，比本项修掉的 (boost−1)·offset 量级小一个数量级。
+    /// </para>
+    /// </summary>
+    internal static void StoredBaseLinearFromBgra(byte[] bgra, float[] outRgba, int pixelCount)
+    {
+        const float inv255 = 1f / 255f;
+        for (int i = 0; i < pixelCount; i++)
+        {
+            int o = i * 4;
+            // 字节序 B,G,R,A（pix_fmt=bgra）
+            outRgba[o + 0] = SimdPixelOps.SrgbToLinearScalar(bgra[o + 2] * inv255);
+            outRgba[o + 1] = SimdPixelOps.SrgbToLinearScalar(bgra[o + 1] * inv255);
+            outRgba[o + 2] = SimdPixelOps.SrgbToLinearScalar(bgra[o + 0] * inv255);
+            outRgba[o + 3] = bgra[o + 3] * inv255;
         }
-        finally { BufferPool.ReturnByte(raw); }
     }
 
     /// <summary>增益图 → 灰度或 RGB PNG (raw → ffmpeg)</summary>
@@ -488,16 +598,17 @@ public static class GainMapEncoder
     /// </para>
     /// </summary>
     private static async Task<bool> EncodeJpegFileAsync(string pngPath, string jpgPath,
-        float distance, int progressiveLevel, Action<string>? log, CancellationToken ct)
+        float distance, int progressiveLevel, string chromaSubsampling,
+        Action<string>? log, CancellationToken ct)
     {
         if (CjpegliService.IsAvailable)
         {
-            // 渐进级别：`-1` 表示不传，交 cjpegli 自身默认（= 2 渐进）
-            var progArg = progressiveLevel >= 0 ? $" -p {progressiveLevel}" : "";
             var psi = new ProcessStartInfo
             {
                 FileName = CjpegliService.DetectedPath!,
-                Arguments = $"\"{pngPath}\" \"{jpgPath}\" --distance {distance:F1} --chroma_subsampling 420{progArg}",
+                // 命令行组装与色度采样的取值都在 GainMapJpegCodec（单一真值，见其 F-4 注释）
+                Arguments = ColorMapping.GainMapJpegCodec.CjpegliCommandArguments(
+                    pngPath, jpgPath, distance, progressiveLevel, chromaSubsampling),
                 RedirectStandardOutput = true,
                 StandardOutputEncoding = Encoding.UTF8,
                 RedirectStandardError = true,
@@ -576,17 +687,35 @@ public static class GainMapEncoder
             return false;
         }
 
-        // 增益图按 ISO 21496-1 惯例是**单色**；ffmpeg 用 gray(YUV400) 表达。
-        // ⚠ 若该构建不支持 gray 的 AVIF 输出则退回 yuv420p —— 但必须**点名**，不允许静默改语义
-        //   （通道数由 tmap 元数据声明，与像素平面格式是两件事）。
-        if (!await EncodeAvifFileAsync(gmPng, gmAvif, ffmpeg, "gray", null, null, null, log, ct))
+        // 增益图的**交付平面数**必须与 tmap 声明的**参数集数**成套（F-4/F-8，2026-10-11）：
+        //   multiChannel=true  ⇒ 3 平面（yuv444p）。参照：RGB 增益图采样因子全 1×1
+        //     （libultrahdr jpegencoderhelper.cpp:41-42），libavif 的辅助图也是
+        //     altPlaneCount==1⇒YUV400 否则 YUV444（write.c:1062）⇒ 没有「多通道却降色度」这一支。
+        //   multiChannel=false ⇒ 1 平面（gray=YUV400，参照单通道增益图=单分量灰度 jpegencoderhelper.cpp:27-28）。
+        // ⚠ 旧写法**恒** gray：multiChannel=true 时 ffmpeg 把 R/G/B 三套增益混成一个 luma，
+        //   而 tmap 照旧置 bit7 ⇒ 「声明 3 通道、数据 1 平面」=说谎（且逐通道增益已被摧毁）。
+        //   兜底也只在**同一套语义**内兜：单通道编不出 gray ⇒ 退 yuv444p 并把参数**复制成套**
+        //   （libavif gainmap.c:743-752 的 singleChannel 手法：ch0 复制给 c1/c2），
+        //   绝不退 4:2:0（既毁逐通道数据又与任何声明都不成套），也不许把声明改口去迁就交付
+        //   （「不许把降级当修复」）。
+        string gmPixFmt = multiChannel ? "yuv444p" : "gray";
+        int declaredChannels = multiChannel ? 3 : 1;
+        if (!await EncodeAvifFileAsync(gmPng, gmAvif, ffmpeg, gmPixFmt, null, null, null, log, ct))
         {
-            log?.Invoke("[GainMap] ⚠️ 单色 gray 的 AVIF 编码失败 ⇒ 退回 yuv420p（增益图通道语义仍由 tmap 元数据声明）\n");
-            if (!await EncodeAvifFileAsync(gmPng, gmAvif, ffmpeg, "yuv420p", null, null, null, log, ct))
+            if (multiChannel)
+            {
+                log?.Invoke("[GainMap] ❌ 增益图 AVIF 编码失败：multiChannel=true 必须交付 3 平面 yuv444p，"
+                          + "不退 4:2:0、也不退单平面 gray（那会写出「声明多通道、数据非逐通道」的容器）\n");
+                return false;
+            }
+            log?.Invoke("[GainMap] ⚠️ 单色 gray 的 AVIF 编码失败 ⇒ 退回 yuv444p 三平面，"
+                      + "并把 tmap 参数复制成套（声明随之为 3 参数集；不退 4:2:0）\n");
+            if (!await EncodeAvifFileAsync(gmPng, gmAvif, ffmpeg, "yuv444p", null, null, null, log, ct))
             {
                 log?.Invoke("[GainMap] ❌ 增益图 AVIF 编码失败\n");
                 return false;
             }
+            declaredChannels = 3;   // 参数成套复制（三组同值 ⇒ 与单通道施加逐字节等价）
         }
 
         byte[] baseBytes, gmBytes;
@@ -612,7 +741,9 @@ public static class GainMapEncoder
 
         // tmap 载荷 = u8 version(0) + ISO 21496-1 GainMapMetadata —— 与 JPEG APP2 载荷**逐字节同构**，
         // 故直接复用同一个生成器（单一真值；在写出器里再写一份必然漂移）。
-        var tmapPayload = IsoBmffGainMapWriter.BuildTmapPayload(BuildIso21496Metadata(multiChannel, maxLog2Gain));
+        // ⚠ 这里的通道数取 **declaredChannels**（上面按**实际交付的平面数**定），不是参数 multiChannel
+        //   —— 否则又会写出「声明与交付脱节」（F-4）。写出器还会拿 pixi 平面数复核一次。
+        var tmapPayload = IsoBmffGainMapWriter.BuildTmapPayload(BuildIso21496Metadata(declaredChannels, maxLog2Gain));
         // 底图 CICP：ffmpeg 不采纳 -color_primaries（实测写出 unspecified）⇒ 由写出器重写 colr。
         // sRGB 底 = (1 bt709, 13 iec61966-2-1, 1 bt709)；Rec.2020 SDR 底 = (9, 1 bt709, 9 bt2020nc)。
         int cPrim = wideBase ? 9 : 1;
@@ -625,7 +756,8 @@ public static class GainMapEncoder
             return false;
         }
         await File.WriteAllBytesAsync(outputPath, built.Data!, ct);
-        log?.Invoke($"[GainMap] ✅ AVIF 增益图 (tmap)：底图 {built.BaseItemBytes} B + 增益图 {built.GainMapItemBytes} B + tmap {built.TmapPayloadBytes} B，合计 {Math.Round(new FileInfo(outputPath).Length / 1024.0)} KB\n");
+        log?.Invoke($"[GainMap] ✅ AVIF 增益图 (tmap)：底图 {built.BaseItemBytes} B + 增益图 {built.GainMapItemBytes} B + tmap {built.TmapPayloadBytes} B，合计 {Math.Round(new FileInfo(outputPath).Length / 1024.0)} KB"
+            + $"（增益图交付 pix_fmt={gmPixFmt}、tmap 声明 {declaredChannels} 参数集 —— 两者由写出器复核成套）\n");
         return true;
     }
 
@@ -830,12 +962,33 @@ public static class GainMapEncoder
     /// 不允许在写出器里再写一份（两份必然漂移）。
     /// </remarks>
     internal static byte[] BuildIso21496Metadata(bool multiChannel, float maxLog2Gain)
+        => BuildIso21496Metadata(multiChannel ? 3 : 1, maxLog2Gain);
+
+    /// <summary>
+    /// 按**声明的参数集数**（1 或 3）构建 ISO 21496-1 载荷。
+    /// <para>
+    /// F-4/F-8（2026-10-11）：bit7 的语义按参照取「**参数集数**」而非「图像平面数」
+    /// （libultrahdr gainmapmetadata.cpp:127-135 写的是
+    /// <code>channelCount = allChannelsIdentical() ? 1u : 3u</code>，并自陈规范歧义；
+    /// 读回 <code>channelCount = ((flags &amp; kIsMultiChannelMask) != 0) * 2 + 1</code> :221）。
+    /// 但**交付的平面数与声明必须成套**：声明 3 参数集 ⇒ 数据必须真是逐通道（JPEG 侧 4:4:4 三分量、
+    /// AVIF 侧 3 平面）；灰度件要么声明 1，要么把参数**复制成套**（libavif gainmap.c:743-752 的
+    /// <code>gainMapMinLog2[singleChannel ? 0 : c]</code> 就是这一手）。调用方负责别写出
+    /// 「声明 3 而数据单通道/4:2:0」的组合（写出器 <see cref="IsoBmffGainMapWriter.Build"/> 现在会拦）。
+    /// </para>
+    /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException">declaredChannels 不是 1 或 3。</exception>
+    internal static byte[] BuildIso21496Metadata(int declaredChannels, float maxLog2Gain)
     {
+        if (declaredChannels != 1 && declaredChannels != 3)
+            throw new ArgumentOutOfRangeException(nameof(declaredChannels), declaredChannels,
+                "ISO 21496-1 的通道数只能是 1（单参数集）或 3（逐通道参数集）");
         // log2 值用精确分数: log2 × 100 / 100
         int gainLog2N = (int)MathF.Round(maxLog2Gain * 100f);
         const int Log2D = 100;
         const int gammaN = 1, gammaD = 1;
-        const int offsetN = 1, offsetD = 64;
+        // F-5：这里写的分数 = 前向施加的那对 offset（KOffsetSdrN/D、KOffsetHdrN/D，同一个声明处），
+        //       不许在此另写常量 ⇒ 「声明==使用」由符号本身保证。
         // 增益区间（log2）：底图始终 SDR ⇒ 恒为上映射 [0, +max]
         const int gainMinN = 0;
         int gainMaxN = gainLog2N;
@@ -844,10 +997,10 @@ public static class GainMapEncoder
         int alternateHeadroomN = gainLog2N;
         const int alternateHeadroomD = Log2D;
 
-        int channels = multiChannel ? 3 : 1;
+        int channels = declaredChannels;
         byte flags = 0;
-        if (multiChannel) flags |= 0x80;   // multi-channel
-        flags |= 0x40;                     // useBaseColorSpace (增益图在 base 色彩空间)
+        if (channels == 3) flags |= 0x80;   // multi-channel（3 组参数，见上面 F-4 注释）
+        flags |= 0x40;                      // useBaseColorSpace (增益图在 base 色彩空间)
 
         using var ms = new MemoryStream();
         var bw = new BinaryWriter(ms);
@@ -865,8 +1018,8 @@ public static class GainMapEncoder
             WriteBe32Bytes(bw, unchecked((uint)gainMinN)); WriteBe32Bytes(bw, (uint)Log2D);
             WriteBe32Bytes(bw, unchecked((uint)gainMaxN)); WriteBe32Bytes(bw, (uint)Log2D);
             WriteBe32Bytes(bw, (uint)gammaN); WriteBe32Bytes(bw, (uint)gammaD);
-            WriteBe32Bytes(bw, unchecked((uint)offsetN)); WriteBe32Bytes(bw, (uint)offsetD);
-            WriteBe32Bytes(bw, unchecked((uint)offsetN)); WriteBe32Bytes(bw, (uint)offsetD);
+            WriteBe32Bytes(bw, unchecked((uint)KOffsetSdrN)); WriteBe32Bytes(bw, (uint)KOffsetSdrD);
+            WriteBe32Bytes(bw, unchecked((uint)KOffsetHdrN)); WriteBe32Bytes(bw, (uint)KOffsetHdrD);
         }
         return ms.ToArray();
     }
@@ -884,7 +1037,8 @@ public static class GainMapEncoder
         float maxLog2 = MathF.Log2(Math.Max(headroom, 1.0f));
         const float gainMinLog2 = 0f;                 // SDR 底：无下映射
         float gainMaxLog2 = maxLog2;
-        const float offset = KOffset;
+        // F-5：声明的 offset 就是前向施加的那两个 readonly（单一声明处 ⇒ 「声明==使用」不可能漂移）
+        float offsetSdr = KOffsetSdr, offsetHdr = KOffsetHdr;
         const float gamma = 1.0f;
 
         var inv = System.Globalization.CultureInfo.InvariantCulture;
@@ -921,8 +1075,8 @@ public static class GainMapEncoder
             $"<hdrgm:GainMapMin>{gainMinLog2.ToString("0.00", inv)}</hdrgm:GainMapMin>" +
             $"<hdrgm:GainMapMax>{gainMaxLog2.ToString("0.00", inv)}</hdrgm:GainMapMax>" +
             $"<hdrgm:Gamma>{gamma.ToString("0.0", inv)}</hdrgm:Gamma>" +
-            $"<hdrgm:OffsetSDR>{offset.ToString("0.000000", inv)}</hdrgm:OffsetSDR>" +
-            $"<hdrgm:OffsetHDR>{offset.ToString("0.000000", inv)}</hdrgm:OffsetHDR>" +
+            $"<hdrgm:OffsetSDR>{offsetSdr.ToString("0.000000", inv)}</hdrgm:OffsetSDR>" +
+            $"<hdrgm:OffsetHDR>{offsetHdr.ToString("0.000000", inv)}</hdrgm:OffsetHDR>" +
             "<hdrgm:HDRCapacityMin>0</hdrgm:HDRCapacityMin>" +
             $"<hdrgm:HDRCapacityMax>{gainMaxLog2.ToString("0.00", inv)}</hdrgm:HDRCapacityMax>" +
             $"<hdrgm:Channels>{channels}</hdrgm:Channels>" +

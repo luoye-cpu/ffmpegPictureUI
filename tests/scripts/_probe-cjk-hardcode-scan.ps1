@@ -395,7 +395,20 @@ $BASE_CS_OTHER = 861
 #   ⚠ 判据未放宽：仍是 ≤ 基线、余量 0；且**行为未变**（同一矩阵实测：默认 jbrd=yes/GPS=present、
 #     `--strip-gps` ⇒ jbrd=no/GPS=absent、`--preserve-metadata` ⇒ jbrd=yes/GPS=present），
 #     本次仅**提升可见性**。
-$BASE_CS_UI    = 833
+# ⚠⚠ **2026-10-12 第七次抬基线：833 → 849（+16，判据项）** —— 成因 = 本轮管线审查落地的四处
+#   **响亮拒绝 / 口径点名**，全是诊断与拒写文案，不是 UI chrome（本桶构成见 :173 的自述
+#   "绝大多数是引擎/CLI 侧诊断串"）：
+#     · `IccProfileService` **+10** = F-3 的 ICC 具名拒绝原因（"头 size 不自洽"、"36-39 魔数不是 'acsp'"…）；
+#     · `IsoBmffGainMapWriter` **+3** = 批次 C 的「声明多通道而数据单平面 = 说谎 ⇒ 已拒写」三行续写；
+#     · `ColorSpaceRegistry` **+2** = F-9 的 `DefinitionExitNote`（zimg 口径 / 拆式各一行，进 decision 日志）；
+#     · `GainMapEncoder` **+1** = `[GainMap] ✅ AVIF 增益图 (tmap)` 的成套声明续行。
+#   ⚠ 归因**不是手数**：先复刻本脚本口径②（六桶逐一相等 = 13/1425/510/915/66/849）再做**按文件**的
+#     HEAD↔工作区差分，HEAD 侧恰得 833 ⇒ +16 的分布如上。取证：
+#     `tests/output/step2/cjk_delta.py`（差分）、`tests/output/cjk-newlines.txt`（原文逐条）。
+#   ⚠ 已知失真（**刻意不修**，与 :38「有意保留口径」一致）：多行拼接的**续行**不含 sink ⇒ 落进 UI 桶，
+#     上述 16 行里至少 5 行是这种形态（本仓既有记录同此）。抬的是**登记值**，不是让实现少说话 ——
+#     **不许**为撑住棘轮把拒绝原因静音、改英文或塞进 Debug 级（F-3 立项理由就是"拒绝必须看得见"）。
+$BASE_CS_UI    = 849
 
 # ── 正则 ───────────────────────────────────────────────────────────────────────
 $RxCjk         = '[\u4e00-\u9fff]'

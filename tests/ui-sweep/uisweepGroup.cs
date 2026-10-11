@@ -393,9 +393,17 @@ namespace Tests.UiSweep
                     }
                     else
                     {
-                        ok = gp == ep && gt == et;
+                        // `t` 有两种**合法兑现**：① 直接 `t=<期望>`（历史形态 / `--color-709-curve zimg` 口径 /
+                        //   非 BT.709 出口，拆式对那些不生效）；② F-9 的拆式 ⇒ 末级 `t=linear`，但必须
+                        //   同时有 `,lutrgb=`（定义式编码在场）与 `setparams=…color_trc=<期望>`（宣称被找回）。
+                        //   旧写法只认 ① ⇒ 拆式默认生效后 "J8 BT.709⇒p=bt709:t=bt709" 恒红（全量轮实测）。
+                        //   与 UiTestHost/Program.cs 的同名臂逐字一致（split-union 按标签对账）。
+                        var rawCmd = Cmd();
+                        bool splitExit = gt == "linear" && rawCmd.Contains(",lutrgb=")
+                                         && rawCmd.Contains("setparams=") && rawCmd.Contains("color_trc=" + et);
+                        ok = gp == ep && (gt == et || splitExit);
                         if (filt != null) ok = ok && VfHas(t, filt);
-                        det = $"p={gp ?? "<none>"} t={gt ?? "<none>"} iccgen={VfHas(t, "iccgen")}";
+                        det = $"p={gp ?? "<none>"} t={gt ?? "<none>"} 拆式={(splitExit ? "有" : "无")} iccgen={VfHas(t, "iccgen")}";
                     }
                     Check("J8 " + v + (v == "sRGB" ? "⇒无zscale+CICP=bt709/sRGB" : "⇒p=" + ep + ":t=" + et + (filt != null ? "+" + filt : "")),
                           ok, det);

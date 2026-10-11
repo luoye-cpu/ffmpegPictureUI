@@ -597,6 +597,50 @@ namespace ServiceProbe
         /// </summary>
         private static async Task ProbeAvifGainMap()
         {
+            // ── L-4 F-4 的兑现锁：三态不许塌成两态（"不知道"≠"没有"）──
+            {
+                byte[] BoxL4(string type, byte[] payload)
+                {
+                    var b = new byte[8 + payload.Length];
+                    int sz = b.Length;
+                    b[0] = (byte)(sz >> 24); b[1] = (byte)(sz >> 16); b[2] = (byte)(sz >> 8); b[3] = (byte)sz;
+                    System.Text.Encoding.ASCII.GetBytes(type).CopyTo(b, 4);
+                    payload.CopyTo(b, 8);
+                    return b;
+                }
+                var ftypL4 = BoxL4("ftyp", new byte[] { (byte)'a', (byte)'v', (byte)'i', (byte)'f', 0, 0, 0, 0,
+                                                        (byte)'a', (byte)'v', (byte)'i', (byte)'f' });
+                byte[] LieChild(string type, int lieSize)
+                {
+                    var b = new byte[12];
+                    b[0] = (byte)(lieSize >> 24); b[1] = (byte)(lieSize >> 16); b[2] = (byte)(lieSize >> 8); b[3] = (byte)lieSize;
+                    System.Text.Encoding.ASCII.GetBytes(type).CopyTo(b, 4);
+                    return b;
+                }
+
+                // ① 干净件：真没有 meta ⇒ 允许"确定·无增益图"
+                var rL4a = FfmpegGui.Services.IsoBmffGainMapProbe.Probe(ftypL4);
+                Check(rL4a.Determinate && !rL4a.HasGainMap,
+                      $"L-4 只有 ftyp 的干净件必须判「确定·无」（实 det={rL4a.Determinate} has={rL4a.HasGainMap} reason={rL4a.FailReason ?? "-"}）");
+
+                // ② 顶层 box 链截断（下一盒谎报 4000B）⇒ 必须"不知道 + 具名原因"
+                var truncTop = new byte[ftypL4.Length + 12];
+                ftypL4.CopyTo(truncTop, 0);
+                LieChild("meta", 4000).CopyTo(truncTop, ftypL4.Length);
+                var rL4b = FfmpegGui.Services.IsoBmffGainMapProbe.Probe(truncTop);
+                Check(!rL4b.Determinate && !string.IsNullOrWhiteSpace(rL4b.FailReason),
+                      $"L-4 顶层截断必须报「不知道+原因」，绝不返回「确定无」（实 det={rL4b.Determinate} has={rL4b.HasGainMap} reason={rL4b.FailReason ?? "-"}）");
+
+                // ③ meta 在、但其子 box 链断 ⇒ 同样不许冒充"确定无"
+                var metaBody = new byte[4 + 12];
+                LieChild("iloc", 3000).CopyTo(metaBody, 4);
+                var withMeta = new byte[ftypL4.Length + BoxL4("meta", metaBody).Length];
+                ftypL4.CopyTo(withMeta, 0);
+                BoxL4("meta", metaBody).CopyTo(withMeta, ftypL4.Length);
+                var rL4c = FfmpegGui.Services.IsoBmffGainMapProbe.Probe(withMeta);
+                Check(!rL4c.Determinate && (rL4c.FailReason ?? "").Contains("meta"),
+                      $"L-4 meta 子链断裂必须「不知道」且原因点名 meta（实 det={rL4c.Determinate} reason={rL4c.FailReason ?? "-"}）");
+            }
             // ── ①② 单元级：确定性，不需要 ffmpeg ──
             var t = typeof(GainMapEncoder).Assembly
                 .GetType("FfmpegGui.Services.IsoBmffGainMapWriter", throwOnError: false);
@@ -2340,6 +2384,51 @@ namespace ServiceProbe
                     }
                 Check(diffM > 0 && devM <= 1,
                     $"C13 哨兵：有矩阵且非中性输入时抖动仍要生效且只在码域展开（实际改动 {diffM}/768 处、最大偏离 {devM} 档；要求 >0 且 ≤1）");
+            }
+
+            // ── C20 表快路径与解析式必须逐算子等价（F-1 的锁；两副面孔不留）──────
+            //   `TransformRgb48leCore` 的 `fast` 判据只要漏掉一个**只在解析分支里执行**的算子，
+            //   ≥256,000 px 的任务就会**静默跳过**该算子（实测：SDR→PQ 的白场被编码成 65535 满量程，
+            //   与不建表的小图差出 49×，而两者的色彩标签完全相同）。
+            //   本锁不起产品、不落盘：同一 spec 分别「送表」与「不送表」各跑一遍，逐字节比。
+            //   ⚠ 与 tests/core/Modes/contract.cs 里的同名段落是**两份拷贝**（见本轮覆盖账），改一处要同步另一处。
+            {
+                const int nC20 = 4096;                     // 比的是码值本身，与建表阈值无关
+                var s16c20 = new byte[nC20 * 6];
+                for (int i = 0; i < nC20; i++)
+                {
+                    ushort v = (ushort)(i * 65535 / (nC20 - 1));
+                    for (int c = 0; c < 3; c++)
+                    {
+                        s16c20[i * 6 + c * 2] = (byte)(v & 0xFF);
+                        s16c20[i * 6 + c * 2 + 1] = (byte)(v >> 8);
+                    }
+                }
+                void Face20(string name, FfmpegGui.Services.ColorMapping.TransformSpec spC20)
+                {
+                    // clamp=true 是前提：内核只在 ClampLinearBeforeEncode=true 时才把表递进去
+                    var tS20 = CK.BuildTables(spC20.SrcCurve);
+                    var tD20 = CK.BuildTables(spC20.DstCurve);
+                    var withTbl = new byte[nC20 * 6];
+                    var noTbl = new byte[nC20 * 6];
+                    CK.TransformRgb48le(s16c20, withTbl, spC20, nC20, tS20, tD20);
+                    CK.TransformRgb48le(s16c20, noTbl, spC20, nC20, null, null);
+                    int firstDiff = -1, maxDiff = 0;
+                    for (int i = 0; i + 1 < withTbl.Length; i += 2)
+                    {
+                        int d = Math.Abs((withTbl[i] | (withTbl[i + 1] << 8)) - (noTbl[i] | (noTbl[i + 1] << 8)));
+                        if (d > maxDiff) maxDiff = d;
+                        if (d != 0 && firstDiff < 0) firstDiff = i / 2;
+                    }
+                    Check(firstDiff < 0 && maxDiff == 0,
+                        $"C20 {name}：算子激活时表快路径必须关掉 ⇒ 送表与不送表逐字节相同"
+                      + $"（实 首个不同码位={(firstDiff < 0 ? "无" : firstDiff.ToString())} 最大差={maxDiff}）");
+                }
+                Face20("EncodeScale≠1（SDR→PQ 目标）", Spec("bt709", "iec61966-2-1", "bt2020", "smpte2084"));
+                var spHlg20 = Spec("bt709", "iec61966-2-1", "bt2020", "arib-std-b67");
+                spHlg20.DstIsHlgScene = true;
+                spHlg20.DstHlgSystemGamma = 1.2;            // BT.2100 HLG：L_W=1000 ⇒ 系统伽马 1.2
+                Face20("DstIsHlgScene（SDR→HLG 目标）", spHlg20);
             }
 
             Console.WriteLine($"  contract: 共 {cells} 格，覆盖豁免 {exempted}，拒绝 {rejects}");
@@ -4244,6 +4333,13 @@ namespace ServiceProbe
                         string inSide = iAt >= 0 ? cmd[..iAt] : "";
                         string InGot(string key) =>
                             System.Text.RegularExpressions.Regex.Match(inSide, $"-{key} (\\S+)").Groups[1].Value;
+                        // 第六种合法形式（F-9 拆式，2026-10-11）：出口 trc 由链末 `setparams` 落帧标签，
+                        //   而 zscale 刻意只留 `t=linear`（zimg 的 `t=bt709` 实为纯幂 γ(1/2.4)，不能当定义式）。
+                        //   ⇒ 对账必须读"真正决定帧标签的那一级"，否则拆式会被误读成"宣称未落实"。
+                        //   ⚠ 这不是放宽：宣称值仍须逐格在命令行中现身，只是换了取数阶段。
+                        var setBlk = Last(@"setparams=([^""\s]+)", outSide);
+                        string setP = System.Text.RegularExpressions.Regex.Match(setBlk, @"(?:^|:)color_primaries=([^:""]+)").Groups[1].Value;
+                        string setT = System.Text.RegularExpressions.Regex.Match(setBlk, @"(?:^|:)color_trc=([^:""]+)").Groups[1].Value;
                         bool passthrough = !outSide.Contains("zscale") && !outSide.Contains("tonemap");
                         string inP = InGot("color_primaries"), inT = InGot("color_trc");
 
@@ -4262,10 +4358,12 @@ namespace ServiceProbe
                         if (implicitSrgb) implicitCount++;
                         bool pLanded = claimP == null || string.Equals(claimP, gotP, StringComparison.OrdinalIgnoreCase)
                                                    || string.Equals(claimP, zsP, StringComparison.OrdinalIgnoreCase)
+                                                   || (setP.Length > 0 && string.Equals(claimP, setP, StringComparison.OrdinalIgnoreCase))
                                                    || (passthrough && string.Equals(claimP, inP, StringComparison.OrdinalIgnoreCase))
                                                    || implicitSrgb;
                         bool tLanded = claimT == null || string.Equals(claimT, gotT, StringComparison.OrdinalIgnoreCase)
                                                    || string.Equals(claimT, zsT, StringComparison.OrdinalIgnoreCase)
+                                                   || (setT.Length > 0 && string.Equals(claimT, setT, StringComparison.OrdinalIgnoreCase))
                                                    || (passthrough && string.Equals(claimT, inT, StringComparison.OrdinalIgnoreCase))
                                                    || implicitSrgb;
                         if (!pLanded || !tLanded)
@@ -4275,7 +4373,7 @@ namespace ServiceProbe
                             // 不留给下轮去猜（本仓库多次因“只看汇总行”错过真错）。
                             string excerpt = outSide.Length > 170 ? outSide[..170] + "…" : outSide;
                             Console.WriteLine($"  ≠ {sn}/{fmt}/{tg} 宣称={(claimP ?? "—")}/{(claimT ?? "—")}  "
-                                + $"输出侧={Has(gotP)}/{Has(gotT)}  zscale={Has(zsP)}/{Has(zsT)}  输入侧={Has(inP)}/{Has(inT)} 直通={passthrough} 源sRGB={srcSrgb}");
+                                + $"输出侧={Has(gotP)}/{Has(gotT)}  zscale={Has(zsP)}/{Has(zsT)}  setparams={Has(setP)}/{Has(setT)}  输入侧={Has(inP)}/{Has(inT)} 直通={passthrough} 源sRGB={srcSrgb}");
                             Console.WriteLine($"      输出侧命令行：{excerpt}");
                         }
                         // ── 第二项对账：跑了 tonemap 就不得再宣称 HDR 传递（本探针要钉住的原缺陷）──
@@ -6543,8 +6641,91 @@ namespace ServiceProbe
         /// 我们生成的 ICC 的真实描述）再问识别结果：认对 ⇒ 保真/归一/底图原色判断有据可依；
         /// 认错或认不出 ⇒ 这些判断会**静默失效**（上一轮实测就是这个情形）。
         /// </summary>
+
+        private static string? FindRepoRoot()
+        {
+            var d = new System.IO.DirectoryInfo(AppContext.BaseDirectory);
+            for (int i = 0; i < 10 && d != null; i++, d = d.Parent)
+                if (System.IO.Directory.Exists(System.IO.Path.Combine(d.FullName, "tools", "src"))) return d.FullName;
+            return null;
+        }
+
         private static void ProbeIccName()
         {
+            // ── L-3 ICC 结构校验器：10 收 + 3 拒，**逐样本点名原因**（不许只校"拒了 N 个"）──
+            //   正样本=本机 lcms 自带测试件（含 spac 类 test3/test4，其 PCS 实测为 'Lab '）；
+            //   负样本=lcms 自己的 bad/bad_mpe/toosmall，三个各死于**不同**判据 ⇒ 原因必须逐条对得上。
+            {
+                var rootL3 = FindRepoRoot();
+                if (rootL3 == null) Console.WriteLine("  L-3 SKIP（找不到仓根，不给绿灯）");
+                else
+                {
+                    var dirL3 = System.IO.Path.Combine(rootL3, "tools", "src", "jpegli", "third_party", "lcms");
+                    string[] acceptL3 = {
+                        "plugins/test_profiles/test0.icc", "plugins/test_profiles/test1.icc",
+                        "plugins/test_profiles/test2.icc", "plugins/test_profiles/test3.icc",
+                        "plugins/test_profiles/test4.icc", "plugins/test_profiles/test5.icc",
+                        "testbed/crayons.icc", "testbed/ibm-t61.icc", "testbed/new.icc",
+                        "fuzzers/corpus/alltags.icc",
+                    };
+                    int accOk = 0;
+                    foreach (var rel in acceptL3)
+                    {
+                        var fp = System.IO.Path.Combine(dirL3, rel.Replace('/', System.IO.Path.DirectorySeparatorChar));
+                        if (!System.IO.File.Exists(fp)) { Console.WriteLine($"  L-3 缺正样本 {rel} SKIP"); continue; }
+                        var ok = IccProfileService.ValidateIccProfile(fp, out var why);
+                        if (ok) accOk++;
+                        else Console.WriteLine($"  L-3 正样本被拒 {rel}：{why}");
+                    }
+                    Check(accOk >= 9, $"L-3 合法件必须收下（实收 {accOk}/{acceptL3.Length}）⇒ 收紧校验不许把真 ICC 判成无 ICC");
+
+                    // 三条合成负样本 + lcms 自带三条，各点名它应当死在哪一判据上
+                    var tmpL3 = System.IO.Path.Combine(rootL3, "tests", "output", "l3neg");
+                    System.IO.Directory.CreateDirectory(tmpL3);
+                    string W(string name, byte[] b)
+                    {
+                        var fp = System.IO.Path.Combine(tmpL3, name);
+                        System.IO.File.WriteAllBytes(fp, b);
+                        return fp;
+                    }
+                    byte[] GoodBytes()
+                    {
+                        var fp = System.IO.Path.Combine(dirL3, "plugins", "test_profiles", "test0.icc");
+                        return System.IO.File.Exists(fp) ? System.IO.File.ReadAllBytes(fp) : System.Array.Empty<byte>();
+                    }
+                    void Neg(string label, string fp, string mustContain)
+                    {
+                        var ok = IccProfileService.ValidateIccProfile(fp, out var why);
+                        Check(!ok && (why ?? "").Contains(mustContain, StringComparison.OrdinalIgnoreCase),
+                              $"L-3 负样本「{label}」必须被拒且原因含「{mustContain}」（实 ok={ok} reason={why ?? "-"}）");
+                    }
+                    Neg("128B 全零+acsp", W("zeros128.icc",
+                        new byte[128]), "size");
+                    var g = GoodBytes();
+                    if (g.Length >= 300)
+                    {
+                        var trunc = new byte[300];
+                        System.Array.Copy(g, trunc, 300);
+                        Neg("截断 300B", W("trunc300.icc", trunc), "size");
+                        var bad = (byte[])g.Clone();
+                        bad[0] = 0x7F;   // 头 size 字段改大 ⇒ 声明 > 文件长
+                        Neg("头 size 被改坏", W("badsize.icc", bad), "size");
+                    }
+                    else Console.WriteLine("  L-3 SKIP 两条变形负样本（拿不到 test0.icc 原件）");
+                    // lcms 自带坏件：只要求"被拒 + 原因非空"。
+                    // ⚠ 曾硬性期望 bad.icc 死在「类别」上，实测它先死在 size（声明 1397245260 > 实际 331）
+                    //   ⇒ 判据的先后顺序是我的实现决定的，不该反过来要求样本符合某一格；
+                    //   "各死于不同判据"这一事实只由上面三支**合成**样本负责（那里我能控制它先撞哪条）。
+                    foreach (var rel in new[] { "testbed/bad.icc", "testbed/bad_mpe.icc", "testbed/toosmall.icc" })
+                    {
+                        var fp = System.IO.Path.Combine(dirL3, rel.Replace('/', System.IO.Path.DirectorySeparatorChar));
+                        if (!System.IO.File.Exists(fp)) { Console.WriteLine($"  L-3 缺负样本 {rel} SKIP"); continue; }
+                        var ok = IccProfileService.ValidateIccProfile(fp, out var why2);
+                        Check(!ok && !string.IsNullOrWhiteSpace(why2),
+                              $"L-3 lcms 坏件 {rel} 必须被拒且给出原因（实 ok={ok} reason={why2 ?? "-"}）");
+                    }
+                }
+            }
             var expect = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
             {
                 ["sRGB"] = "sRGB", ["Display P3"] = "Display P3",
@@ -7375,11 +7556,58 @@ namespace ServiceProbe
                     }
                     Console.WriteLine($"    参考（解析式单核）= {singleSlow:F1} MPix/s  快路径增益 = {single / Math.Max(1e-6, singleSlow):F1}×");
                     if (!isRelease) continue;
-                    // 门槛（Release、表驱动快路径）：单核 ≥ 40 MPix/s（全尺寸都门禁）；
-                    // 扩展比 ≥4× **只在 ≥8MPix（工作集 ≥50MB、带宽受限）的尺寸上作门禁**：
-                    //   小帧（6MB）单核已接近内存带宽上限（实测 157.8 MPix/s ≈ 6.3 GB/s），此时“扩展比”衡量的是
-                    //   调度开销而非并行能力（实测 3.4×/6.4× 飘手），作门禁无意义 → 只记录。
-                    Check(single >= 40, $"{name} 单核 ≥40MPix/s（实 {single:F1}）");
+                    // 门槛**分档**（2026-10-11，L-7：性能账此前无人看守）。阈值由"这一格**该不该**走表快路径"决定。
+                    // ⚠ 分档必须取**独立参照**，不许直接调内核那句判据 `CK.TableFastPathOperatorsAllow`：
+                    //   内核的 `fast` 现在就走它 ⇒ 判据一旦写坏，分档会跟着一起改口，实测 10× 的吞吐回落
+                    //   被"重新分档"吸收成合法低档 ⇒ **无声放过**。这不是假设：第一版就是那么写的，
+                    //   变异 M1（判据整支 `return false`）实测 `pass=16 fail=1`，唯一红的是一条无关的端到端项。
+                    //   ⇒ 独立口径 = 这一格**声明的色度学**需不需要"查表表达不了的算子"；
+                    //     另加一条「独立口径 == 内核判据」的对账断言，M1/M2 两个方向才都会红。
+                    //   · 快路径适用 ⇒ 单核 ≥40 MPix/s（实测 sRGB→P3 = 51.0、BT.2020→sRGB = 62.4）。
+                    //     这一档才是"回归看守"：内核判据被改坏、某格悄悄退回解析式（≈5 MPix/s）⇒ 立刻红。
+                    //     旧写法拿同一个 40 去套 PQ→sRGB，那格**永远**红（LinearScale=10000/203=49.26，
+                    //     查表表达不了 ⇒ 走解析式是**正确行为**），于是整条 bench 被当作"已知假红"没人看。
+                    //     ⚠ 40 这一档的实测余量**不大**（分档落地后连跑三轮：sRGB→P3 = 45.0/46.2/46.5，
+                    //     BT.2020→sRGB = 57.2/60.0/60.1，PQ 那档 = 5.6~5.8 vs 阈值 3）⇒ 最小项只剩 11%。
+                    //     整轮若在负载下假红，正确处置是**静机复跑**（本仓既有规矩"计时必须单机跑、并发期禁测"），
+                    //     或加大 best-of-N；**不许**为了凑绿灯把 40 往下调 —— 那正是 L-7 要治的"没人看守"。
+                    //   · 快路径被合法关闭 ⇒ 降到解析式水位 ≥3 MPix/s（实测 5.2/5.5，留 ~40% 余量防负载抖动）。
+                    //   · 反向自证：分档必须与**实测增益**一致。同一格两次计时只差"表给不给"这一个动作，
+                    //     所以它们的比值量的就是**内核那句判据**：判为适用却测出 ≈1× ⇒ 快路径没生效；
+                    //     判为关闭却测出 >1.3× ⇒ 有算子被跳过、或分档落后于内核。两边都会红。
+                    //   · 扩展比 ≥4× 仍**只在 ≥8MPix（工作集 ≥50MB、带宽受限）的尺寸上作门禁**：
+                    //     小帧（6MB）单核已近内存带宽上限（实测 157.8 MPix/s ≈ 6.3 GB/s），此时"扩展比"
+                    //     量的是调度开销而非并行能力（实测 3.4×/6.4× 飘手），作门禁无意义 → 只记录。
+                    // 独立口径：曲线的归一域峰值（PQ=10000nits、HLG=1000nits、其余=SDR 参考白 203nits）。
+                    // 换算与生产 `ColorTransformPlan.ToSpec()` 同口径，但**在探针里独立写一份**——
+                    // 它是内核判据的对照臂，不是它的副本。两侧都 SDR 白 ⇒ 两个 nits 系数恒为 1 ⇒ 该走表。
+                    static double NitsOf(TC c) => c.Kind switch
+                    {
+                        TC.CurveKind.Pq => TC.PqPeakNits,
+                        TC.CurveKind.Hlg => FfmpegGui.Services.ColorMapping.Bt2100Ootf.NominalPeakNits,
+                        _ => TC.SdrWhiteNits,
+                    };
+                    bool fastCell = Math.Abs(NitsOf(spec.SrcCurve) - TC.SdrWhiteNits) < 1e-9
+                                    && Math.Abs(NitsOf(spec.DstCurve) - TC.SdrWhiteNits) < 1e-9
+                                    && (spec.Tone == null || !spec.Tone.Active)
+                                    && !spec.SrcIsHlgScene && !spec.DstIsHlgScene && !spec.GamutMap;
+                    //   ⚠ GMO 这一项取**声明位** `GamutMap` 而非 `GamutMapActive`：后者还要求目标亮度系数齐
+                    //   （`DstLuminances is { Length: 3 }`）。若某格声明了 GMO 而系数没给全 ⇒ 内核会照走快路径、
+                    //   本侧判它"该关表"⇒ 对账红 —— 这正是要点名的「声明了却没生效」那一类，不该被静默放过。
+                    // 对账（牙齿所在）：独立分档与内核判据不许各说各话。
+                    //   内核把该走表的格关了 ⇒ 吞吐掉到解析式水位，本条与下面的 ≥40 档一起红（变异 M1）。
+                    //   内核把不该走表的格放开了 ⇒ 本条与"关闭档增益必须 ≈1×"一起红，且像素侧由 C20 逐字节锁兜住（变异 M2）。
+                    bool kernelFast = CK.TableFastPathOperatorsAllow(spec);
+                    Check(kernelFast == fastCell,
+                        $"{name} 快路径对账：独立分档={fastCell} ／ 内核判据={kernelFast} ⇒ 两者必须一致（不一致 = 判据被改坏或本门禁口径落后）");
+                    double floorMpix = fastCell ? 40.0 : 3.0;
+                    string tier = fastCell ? "快路径适用" : "快路径被合法关闭(解析式)";
+                    Check(single >= floorMpix, $"{name} 单核 ≥{floorMpix:F0}MPix/s（{tier}，实 {single:F1}）");
+                    double gainCell = single / Math.Max(1e-6, singleSlow);
+                    if (fastCell)
+                        Check(gainCell >= 2.0, $"{name} 分档=快路径适用 ⇒ 实测增益必须 ≥2×（实 {gainCell:F1}×；≈1× 说明快路径其实没开，判据与分档不符）");
+                    else
+                        Check(gainCell <= 1.3, $"{name} 分档=快路径关闭 ⇒ 实测增益必须 ≈1×（实 {gainCell:F1}×；>1.3 说明有算子被跳过或分档落后于内核）");
                     bool bandwidthBound = (long)w * h >= 8_000_000;
                     if (bandwidthBound)
                         Check(best / Math.Max(1e-6, single) >= 4.0, $"{name} 多核扩展比 ≥4×（实 {best / Math.Max(1e-6, single):F1}×）");
@@ -7416,19 +7644,25 @@ namespace ServiceProbe
                 });
             var spec = Spec("bt709", "iec61966-2-1", "smpte432", "iec61966-2-1");
 
+            // 两条臂**交错**取样（每轮先 H2 再 H1），各取 min。旧写法是「3 次 H2 跑完再 3 次 H1」⇒
+            // 任何单向漂移（源图磁盘缓存热起来、CPU 频率爬升、后台活动进来）都**整笔落到一条臂**上，
+            // 而比值是两条臂相除 ⇒ 漂移不会被抵消，会被当成代价比放大。
+            //   实测（同一台机器、同一构建，只改取样形状）：分段跑 5 次 = 1.68/1.88/1.96/1.97/2.00，
+            //   另有两次带并发活动 = 2.09/2.53；**交错 5 轮**后 = 1.83/1.87/1.89/1.90/1.90 ⇒ 散布由
+            //   0.85× 收到 0.07×，判据 `H1 ≤ H2×2.0` 不再贴在分布边缘（余量 ~5%）。
+            //   ⇒ 阈值**没动**。剩下的事实是：H1 引擎端到端 ≈ zscale 单进程的 1.9 倍（三进程 + 整帧内存变换），
+            //   真要往下压走性能清单 S0/表折叠那条，别动这条判据（`超出则调代价模型` 原话即此意）。
             double h2 = double.MaxValue, h1 = double.MaxValue;
-            for (int i = 0; i < 3; i++)
+            for (int i = 0; i < 5; i++)
             {
-                var sw = System.Diagnostics.Stopwatch.StartNew();
+                var sw2 = System.Diagnostics.Stopwatch.StartNew();
                 RunCli(ff, $"-y -hide_banner -loglevel error -i \"{srcPng}\" -vf \"format=gbrpf32le,zscale=pin=bt709:tin=iec61966-2-1:min=gbr:p=smpte432:t=iec61966-2-1:m=bt709,format=rgb48le\" \"{dir}/h2.png\"");
-                sw.Stop(); h2 = Math.Min(h2, sw.Elapsed.TotalMilliseconds);
-            }
-            for (int i = 0; i < 3; i++)
-            {
-                var sw = System.Diagnostics.Stopwatch.StartNew();
+                sw2.Stop(); h2 = Math.Min(h2, sw2.Elapsed.TotalMilliseconds);
+
+                var sw1 = System.Diagnostics.Stopwatch.StartNew();
                 FfmpegGui.Services.ColorMapping.RawColorPipeline.TransformFileAsync(
                     srcPng, Path.Combine(dir, "h1.png"), spec, plan, null, default, 1).GetAwaiter().GetResult();
-                sw.Stop(); h1 = Math.Min(h1, sw.Elapsed.TotalMilliseconds);
+                sw1.Stop(); h1 = Math.Min(h1, sw1.Elapsed.TotalMilliseconds);
             }
             Console.WriteLine($"  端到端 2K PNG sRGB→P3： H2(zscale 单进程)={h2:F0}ms  H1(引擎 三进程+内存变换)={h1:F0}ms  比值={h1 / h2:F2}×");
             bool h1ok = File.Exists(Path.Combine(dir, "h1.png")) && new FileInfo(Path.Combine(dir, "h1.png")).Length > 0;
@@ -7479,13 +7713,35 @@ namespace ServiceProbe
             //    源文件无 CICP 时（lavfi 产出的 PNG 为 gbr/unknown/unknown），只写 zscale 的 tin=
             //    会被当 unknown 处理（实测参照几乎不变，差仅 244/65535），导致“参照失效”而误判引擎错。
             string mTok = args[4] == "bt2020" ? "bt2020nc" : "bt709";
+            // ⚠ 参照臂的 trc 口径修正（F-9 后续，2026-10-11）：zimg 把 `t=bt709` 实现成**纯幂 γ(1/2.4)**，
+            //   而 CICP/标签 `bt709` 指的是 ITU-R BT.709-6 的**分段定义式** ⇒ 拿 zimg 的 `t=bt709` 当参照，
+            //   等于拿"另一个实现的说法"当标准，那 4 格豁免就是这么来的。
+            //   现在参照臂 = `zscale t=linear`（色度学仍纯 zimg）+ `lutrgb`=定义式 OETF，
+            //   常数逐字取自本机 `tools/src/dng_sdk/.../dng_color_space.h:134-140`
+            //   （α=1.0992968268094429、β=0.0180539685108078、趾段 4.5、γ=0.45）⇒ **不走本仓曲线代码**，
+            //   参照的独立性保留（只是换掉那个已知非标准的实现细节）。
+            string refT = args[5] == "bt709" ? "linear" : args[5];
+            const string DefOetf = "floor(maxval*if(lt(val/maxval\\,0.0180539685108078)\\,4.5*val/maxval\\,1.0992968268094429*pow(val/maxval\\,0.45)-0.0992968268094429)+0.5)";
+            string refTail = args[5] == "bt709"
+                ? $",lutrgb=r='{DefOetf}':g='{DefOetf}':b='{DefOetf}'" : "";
+            if (args[5] == "bt709") Console.WriteLine("  参照臂：zscale t=linear + lutrgb=BT.709-6 定义式（DNG SDK 常数）");
+            // 入口侧同形修（2026-10-11 续）：zimg 把 `tin=bt709` 也实现成纯幂 γ(1/2.4) 解码，
+            //   ⇒ `BT.2020→sRGB` 两格的分歧在**入口反解**，不是引擎错。
+            //   参照臂改为「自己按 BT.709-6 定义式反解成线性 + 告诉 zscale tin=linear」，
+            //   反解式与常数同上（编码域拐点 4.5×β=0.0812428582986351、α−1=0.0992968268094429）。
+            const string DefInv = "maxval*if(lt(val/maxval\\,0.0812428582986351)\\,(val/maxval)/4.5\\,pow(((val/maxval)+0.0992968268094429)/1.0992968268094429\\,1/0.45))";
+            string refTin = args[3] == "bt709" ? "linear" : args[3];
+            string refPre = args[3] == "bt709"
+                ? $"format=rgb48le,lutrgb=r='{DefInv}':g='{DefInv}':b='{DefInv}',format=gbrpf32le,"
+                : "format=gbrpf32le,";
+            if (args[3] == "bt709") Console.WriteLine("  参照臂：入口按 BT.709-6 定义式反解(lutrgb) + zscale tin=linear");
             string zimgPng = Path.Combine(outDir, "zimg.png");
             var ff = AppSettingsService.Current.FfmpegPath;
             var psi = new System.Diagnostics.ProcessStartInfo
             {
                 FileName = ff,
                 Arguments = $"-y -hide_banner -loglevel error -color_primaries {args[2]} -color_trc {args[3]} -i \"{input}\" "
-                  + $"-vf \"format=gbrpf32le,zscale=pin={args[2]}:tin={args[3]}:min=gbr:rin=pc:p={args[4]}:t={args[5]}:m={mTok}:r=pc,format=rgb48le\" \"{zimgPng}\"",
+                  + $"-vf \"{refPre}zscale=pin={args[2]}:tin={refTin}:min=gbr:rin=pc:p={args[4]}:t={refT}:m={mTok}:r=pc,format=rgb48le{refTail}\" \"{zimgPng}\"",
                 RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true,
             };
             using (var p = System.Diagnostics.Process.Start(psi))
@@ -7765,6 +8021,36 @@ namespace ServiceProbe
         /// </summary>
         private static void ProbeColorMathAgainstZimg()
         {
+            // ── L-10 F-10 的兑现锁（此前 17 条门禁观测不到源曲线维，全靠这几条）──
+            {
+                var b601 = FfmpegGui.Services.ColorMapping.TransferCurve.Bt601;
+                // TransferCurve 是 readonly struct ⇒ 不能与 null 比；存在性由类型系统本身保证
+                {
+                    Check(Math.Abs(b601.G - 1.0 / 0.45) < 1e-12, $"L-10 γ 必须是 1/0.45（BT.601-7 定义式；实 {b601.G}）");
+                    Check(Math.Abs(b601.C - 1.0 / 4.5) < 1e-12, $"L-10 趾段斜率必须倒数为 4.5（实 1/C={1.0 / b601.C}）");
+                    // dng_color_space.h:134-140 的 β 是**线性域**拐点，本仓 D 是**编码域**拐点 ⇒ d/4.5 才可比
+                    Check(Math.Abs(b601.D / 4.5 - 0.0180539685108078) < 2e-6,
+                          $"L-10 编码域拐点 D={b601.D} ⇒ 线性域 {b601.D / 4.5:0.0000000000} 必须贴 DNG SDK 的 β=0.0180539685108078");
+                    Check(b601.CicpToken == "smpte170m", $"L-10 曲线自带的 CICP 名必须是 smpte170m（实 {b601.CicpToken ?? "null"}）⇒ 不许图省事写成 bt709 洗掉源语义");
+                    // ExactTransferName 吃的是**友好空间名**（"BT.2100 PQ" 这种），
+                    // 拿 trc token "smpte170m" 去叫它必然 null ⇒ 那不是缺陷，是我这条锁问错了对象。
+                    // 170M **源**的命名可达性改由曲线侧正查承担，端到端那一格标为未判定（需 wiring 级判据）。
+                    var viaToken = FfmpegGui.Services.ColorMapping.TransferCurve.ForCicpTransfer("6");
+                    Check(viaToken != null && viaToken.Value.CicpToken == "smpte170m",
+                          $"L-10 CICP 码 6 必须解析到 170M 曲线且 CICP 名不回退（实 {viaToken?.CicpToken ?? "null"}）");
+                    Console.WriteLine("  L-10 未判定：170M 源的 -color_trc 端到端读回（ExactTransferName 只吃空间名 ⇒ 需 wiring 判据）");
+                    Check(ColorSpaceRegistry.ExactTransferName("Adobe RGB") == "bt470m",
+                          "L-10 反向哨兵：Adobe RGB 仍 = γ2.2 一族，不许被 170M 的改动带跑");
+                    // 往返闭合（拆式自己跟自己可逆）
+                    double worst = 0;
+                    for (int i = 1; i < 65536; i += 511)
+                    {
+                        double y = i / 65535.0, lin = b601.ToLinear(y), back = b601.FromLinear(lin);
+                        worst = Math.Max(worst, Math.Abs(back - y));
+                    }
+                    Check(worst < 1e-6, $"L-10 分段式往返闭合最大偏差={worst:0.0000000000}（趾段/幂段衔接处）");
+                }
+            }
             // token → 9 项行主序（与 LinearMatrixBetweenPrimaries 同形：out[r] = Σ m[r*3+k]·in[k]）
             //   ⚠ 每个数组都过了一道独立校验：**三行之和必须各为 1**（白→白，与白点无关）——
             //     第一版这里有 4 个 token 因为平面序重排写错，正是这条校验逐个抓出来的。
@@ -7786,14 +8072,15 @@ namespace ServiceProbe
             //   实测残差（2026-09-26，本 mode 自己打出来的 maxErr，不是估的）：
             //     bt2020 1.14e-6 · bt470bg 3.38e-6 · smpte432 3.95e-6 · smpte170m 4.91e-6
             //     · smpte240m 4.91e-6 · jedec-p22 4.92e-6  ⇒ **A 档**
-            //     bt470m 1.76e-4 · smpte431 2.36e-4        ⇒ **B 档**
+            //     bt470m 1.73e-4                                    ⇒ **B 档**（唯一残留）
             //   A 档 = 1e-5：锚 A（zimg）的读数只有 5 位小数 ⇒ 单元素舍入地板 5e-6，
             //     实测最大 4.92e-6 正贴着它 ⇒ 再严就是在抄 zimg 的舍入，而不是在验本仓的数学。
-            //   B 档 = 5e-4：这两格的残差**不来自原色抄错**，而来自"白点只给到有限位数"这一事实——
-            //     `bt470m` 用 Illuminant C (0.3101,0.3162)、`smpte431` 用影院白 (0.314,0.351)，
-            //     而色适应矩阵对白点位数远比原色敏感（残差集中在对角元 1,1 / 反对角 0,2 正是适应项）。
-            //     ⇒ 要收紧 B 档，先按权威源取更高精度的白点常数、再用同一锚复测；
-            //       **不许**把 5e-4 调到 1e-3 去"吸收"，也不许拿 A 档去判它（那会立刻假红）。
+            //   B 档 = 5e-4：**只留给 `bt470m`**。它的残差确实来自"白点只给到有限位数"
+            //     （Illuminant C 0.3101,0.3162 ⇒ 色适应对白点位数远比原色敏感，残差落在对角元 1,1）。
+            //   ⚠ 2026-10-11 更正：本档原先还收着 `smpte431`（2.36e-4），当时的理由写的也是"白点位数"——
+            //     **那句是假的**。归因实验：白点常数一个不动、只把本仓锥矩阵末项从转写错的 1.0633
+            //     改回 lcms `cmswtpnt.c` 的 1.0296，该格残差 2.36e-4 → 4.03e-6 ⇒ 它是被常数错撑起来的，
+            //     不是精度上限。⇒ `smpte431` 已收到 A 档（下表），B 档不许再拿"白点位数"吸收别的格子。
             //   ⚠ 没登记进本表的 token ⇒ 判红并点名"不知道该用哪档"：默认走宽松档就是这条锁漏齿的方式。
             var tolTier = new System.Collections.Generic.Dictionary<string, (double Tol, string Why)>
             {
@@ -7804,7 +8091,7 @@ namespace ServiceProbe
                 ["smpte240m"] = (1e-5, "A 档=锚读数舍入地板 5e-6"),
                 ["jedec-p22"] = (1e-5, "A 档=锚读数舍入地板 5e-6"),
                 ["bt470m"] = (5e-4, "B 档=白点位数上限（Illuminant C）"),
-                ["smpte431"] = (5e-4, "B 档=白点位数上限（影院白 0.314,0.351）"),
+                ["smpte431"] = (1e-5, "A 档=锚读数舍入地板 5e-6（旧 B 档 5e-4 的归因是错的：该格残差来自本仓锥矩阵末项被转写成 1.0633，2026-10-11 改回 lcms 的 1.0296 后实测 4.03e-6）"),
             };
 
             foreach (var (tok, expect) in zimg)

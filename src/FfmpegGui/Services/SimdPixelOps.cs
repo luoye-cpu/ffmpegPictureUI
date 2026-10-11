@@ -203,16 +203,58 @@ namespace FfmpegGui.Services
         /// 语义与 GainMapEncoder.ComputeGainMap 灰度分支一致（误差 &lt; 1 LSB）。
         /// ⚠️ 实测 AVX2 版 (gather log2) 慢 1.9×，故纯标量。
         /// </summary>
+        // F-5（2026-10-11）：4 参重载 = 用**元数据声明的 offset**（GainMapEncoder.KOffsetHdr / KOffsetSdr）
+        // 施加前向公式 ⇒ 「声明==使用」落在这一行；需要自定义 offset 的调用点走 6 参重载。
         public static void ComputeGainMapGray(Span<float> hdr, Span<float> sdr, Span<byte> gain, float maxLog2Gain)
+            => ComputeGainMapGray(hdr, sdr, gain, maxLog2Gain,
+                                 GainMapEncoder.KOffsetHdr, GainMapEncoder.KOffsetSdr);
+
+        /// <summary>
+        /// 前向 log2 增益的**唯一定义式**（F-5，2026-10-11）：
+        /// L = log2((hdr + offsetHdr) / (sdr + offsetSdr))
+        /// 与参照 libavif src/gainmap.c:712-713 逐字同形
+        /// （ratio = (alt + alternateOffset[c]) / (base + baseOffset[c])），
+        /// 也与 libultrahdr 两趟的 computeGain（gainmapmath.cpp:773-775，
+        /// log2((hdr + kHdrOffset) / (sdr + kSdrOffset))）同形。
+        /// 
+        /// 警告 **offset 必须由调用方按「元数据声明的那份数」传入**（灰度支路与 RGB 支路都调本式）。
+        /// 参照不变量 = 声明的 offset 与前向实际施加的 offset 是同一个数：LU 两趟声明 1e-7 且施加 1e-7
+        /// （jpegr.cpp:1038-1040 把前向用的常数写进元数据）、LU 一趟声明 0 且不用
+        /// （jpegr.cpp:727-728 + encodeGain:758-771）、LA 声明 1/64 且施加 1/64。
+        /// 本仓解侧 GainMapDecoder.ApplyGainMap 恒按声明施加
+        /// （(s + OffsetSdr)·2^L − OffsetHdr，= 参照 gainmap.c:266-267 / gainmapmath.cpp:791-797 的施加形）
+        /// ⇒ 前向一旦不用声明值，编解码就不互逆，残差 = (boost−1)·offsetSdr（FIX_PLAN F-5 / 备忘 Q1、Q6）。
+        /// 
+        /// ≥1 地板（= boost ≥ 1，"底图 SDR ⇒ 只上映射"的本仓契约）保留；它同时保住
+        /// **byte 0 ⇔ boost 1 恒等**：解码侧 (s+o)·2^0 − o = s，黑位与 SDR 区不被抬亮。
+        /// 分母不再需要 eps 地板（sdr + 1/64 > 0 恒成立，除零分支天然消失，F10 的一半因此自解）；
+        /// 仍对"比率非正"兜底，因为底图侧过完 primaries 矩阵**可以**为负
+        /// （参照同样兜这一手：gainmap.c:713 的 AVIF_MAX(ratio, kEpsilon)）。
+        /// </summary>
+        public static float Log2Gain(float hdr, float sdr, float offsetHdr, float offsetSdr)
         {
-            const float eps = 0.001f;
+            float den = sdr + offsetSdr;
+            if (den <= 0f) return 0f;                       // 底图侧负值（矩阵越界）⇒ 无上映射可言
+            float ratio = (hdr + offsetHdr) / den;
+            return MathF.Log2(Math.Max(ratio, 1.0f));
+        }
+
+        /// <summary>
+        /// 6 参重载：offset 显式给出（前向施加的必须与写进元数据的同一份数，由调用方保证 ⇒ F-5 的
+        /// 「声明==使用」在调用点可见，而不是藏在被调方里）。
+        /// 警告 分母 sdr 应当是**底图真正交付的那个值**（钳位+量化后），不是钳位前的 float
+        /// —— 见 GainMapEncoder.StoredBaseLinearFromBgra（F-3、备忘 Q3）。
+        /// </summary>
+        public static void ComputeGainMapGray(Span<float> hdr, Span<float> sdr, Span<byte> gain, float maxLog2Gain,
+            float offsetHdr, float offsetSdr)
+        {
             for (int i = 0; i + 4 <= hdr.Length; i += 4)
             {
                 float hR = hdr[i], hG = hdr[i + 1], hB = hdr[i + 2];
                 float sR = sdr[i], sG = sdr[i + 1], sB = sdr[i + 2];
                 float hLum = 0.2126f * hR + 0.7152f * hG + 0.0722f * hB;
                 float sLum = 0.2126f * sR + 0.7152f * sG + 0.0722f * sB;
-                float logGain = MathF.Log2(Math.Max(hLum / Math.Max(sLum, eps), 1.0f));
+                float logGain = Log2Gain(hLum, sLum, offsetHdr, offsetSdr);
                 gain[i / 4] = LogGainToByteScalar(logGain, maxLog2Gain);
             }
         }

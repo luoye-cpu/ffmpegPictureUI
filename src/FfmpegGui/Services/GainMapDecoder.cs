@@ -41,11 +41,81 @@ public static class GainMapDecoder
     /// <summary>解析后的 Gain Map 元数据</summary>
     public sealed class GainMapMetadata
     {
-        public float GainMapMin;
-        public float GainMapMax;
-        public float Gamma = 1.0f;
-        public float OffsetSdr;
-        public float OffsetHdr;
+        // ═══════════════════════════════════════════════════════════════════
+        //  F-8（2026-10-11）：增益参数是**逐通道**的，标量字段只是「通道 0 的别名 + 全通道赋值」。
+        //
+        //  为什么必须逐通道（备忘 Q5 裁决，三条一手依据）：
+        //    · ISO 21496-1 的 min/max/γ/baseOffset/alternateOffset 本来就**每通道一组**
+        //      （libultrahdr gainmapmetadata.cpp:386-396 逐 [i] 序列化）；
+        //    · 参照**真的**会写不同的值：两趟 multiChannel 按 per-channel 统计落
+        //      min/max_content_boost[i]（jpegr.cpp:1031-1034，统计遍 :908-911）；
+        //    · 参照的施加也是逐通道：libavif gainmap.c:263-267（含 γ 逐通道）、
+        //      LU 的 LUT 路径逐通道（gainmapmath.h:454-466 mGammaInv[i]）、
+        //      LU 的 applyGain 仿射端点/offset 逐通道（gainmapmath.cpp:812-827）。
+        //      （LU 非 LUT 路径的 γ 三通道共用 gamma[0] 属参照内部不一致 ⇒ 备忘采「从严=逐通道」。）
+        //
+        //  旧写法只取 c==0（两支解析都 `if (c == 0)`）的后果：第三方 3 参数集件被按通道 0 的
+        //  仿射解出 ⇒ ΔL_c = (min_c−min_0)(1−g) + (max_c−max_0)g，三通道恢复值出现**通道相关
+        //  log2 偏差 = 色偏**，且 display-boost 全局标度修不掉（jpegr.cpp:1680-1689 的 weight
+        //  只缩 L 不补通道差）。自家产物三通道同值 ⇒ 本改动对自家件**逐字节等价**（锁 C7c 守这点）。
+        //
+        //  「1 参数集」文件的补全在**解析层**做（参照 LU gainmapmetadata.cpp:274
+        //  "Fill the remaining values by copying those from the first channel."），不在施加层猜。
+        // ═══════════════════════════════════════════════════════════════════
+
+        /// <summary>逐通道 gainMapMin（log2 域），索引 0/1/2 = R/G/B。</summary>
+        public readonly float[] GainMapMinC = new float[3];
+        /// <summary>逐通道 gainMapMax（log2 域）。</summary>
+        public readonly float[] GainMapMaxC = new float[3];
+        /// <summary>逐通道 gamma（施加时取 1/γ）。</summary>
+        public readonly float[] GammaC = { 1f, 1f, 1f };
+        /// <summary>逐通道 baseOffset（= 分母侧 / OffsetSDR）。</summary>
+        public readonly float[] OffsetSdrC = new float[3];
+        /// <summary>逐通道 alternateOffset（= 分子侧 / OffsetHDR）。</summary>
+        public readonly float[] OffsetHdrC = new float[3];
+
+        /// <summary>通道 0 的 gainMapMin；**赋值 = 三通道一起写**（XMP/Apple 这类单值来源的正途，参照的复制语义）。</summary>
+        public float GainMapMin
+        {
+            get => GainMapMinC[0];
+            set { for (int c = 0; c < 3; c++) GainMapMinC[c] = value; }
+        }
+        public float GainMapMax
+        {
+            get => GainMapMaxC[0];
+            set { for (int c = 0; c < 3; c++) GainMapMaxC[c] = value; }
+        }
+        public float Gamma
+        {
+            get => GammaC[0];
+            set { for (int c = 0; c < 3; c++) GammaC[c] = value; }
+        }
+        public float OffsetSdr
+        {
+            get => OffsetSdrC[0];
+            set { for (int c = 0; c < 3; c++) OffsetSdrC[c] = value; }
+        }
+        public float OffsetHdr
+        {
+            get => OffsetHdrC[0];
+            set { for (int c = 0; c < 3; c++) OffsetHdrC[c] = value; }
+        }
+        /// <summary>
+        /// 把「只解析了通道 0」的单参数集件（ISO channels=1、XMP、Apple HDRGainMap）按参照
+        /// 的**解析层**补全成三通道同值（gainmapmetadata.cpp:274），使施加层可以无条件逐通道读。
+        /// </summary>
+        public void FillRemainingChannelsFromZero()
+        {
+            for (int c = 1; c < 3; c++)
+            {
+                GainMapMinC[c] = GainMapMinC[0];
+                GainMapMaxC[c] = GainMapMaxC[0];
+                GammaC[c] = GammaC[0];
+                OffsetSdrC[c] = OffsetSdrC[0];
+                OffsetHdrC[c] = OffsetHdrC[0];
+            }
+        }
+
         public int Channels = 1;          // 1=灰度, 3=RGB
         public float HdrCapacityMax = 0;  // log2 容量上限 (ISO alternateHdrHeadroom)
         public float HdrCapacityMin = 0;  // log2 容量下限 (ISO baseHdrHeadroom; SDR 基图恒 0 = 1×)
@@ -765,14 +835,13 @@ public static class GainMapDecoder
                         int gn = (int)Be32(d, p, false); p += 4;                    // gainMapGammaN
                         int sn = (int)Be32(d, p, false); p += 4;                    // baseOffsetN
                         int tn = (int)Be32(d, p, false); p += 4;                    // alternateOffsetN
-                        if (c == 0)
-                        {
-                            meta.GainMapMin = rd(mn, dn);
-                            meta.GainMapMax = rd(xn, dn);
-                            meta.Gamma = rd(gn, dn) <= 0f ? 1f : rd(gn, dn);
-                            meta.OffsetSdr = rd(sn, dn);
-                            meta.OffsetHdr = rd(tn, dn);
-                        }
+                        // F-8：**逐通道落数组**（旧写法 `if (c == 0)` ⇒ 后两组参数被整包丢弃）
+                        meta.GainMapMinC[c] = rd(mn, dn);
+                        meta.GainMapMaxC[c] = rd(xn, dn);
+                        float g = rd(gn, dn);
+                        meta.GammaC[c] = g <= 0f ? 1f : g;
+                        meta.OffsetSdrC[c] = rd(sn, dn);
+                        meta.OffsetHdrC[c] = rd(tn, dn);
                     }
                 }
                 else
@@ -789,20 +858,26 @@ public static class GainMapDecoder
                         int gn = (int)Be32(d, p, false); int gd = (int)Be32(d, p + 4, false); p += 8;
                         int sn = (int)Be32(d, p, false); int sd = (int)Be32(d, p + 4, false); p += 8;
                         int tn = (int)Be32(d, p, false); int td = (int)Be32(d, p + 4, false); p += 8;
-                        if (c == 0)
-                        {
-                            meta.GainMapMin = rd(mn, md);
-                            meta.GainMapMax = rd(xn, xd);
-                            meta.Gamma = rd(gn, gd) == 0 ? 1f : rd(gn, gd);
-                            meta.OffsetSdr = rd(sn, sd);
-                            meta.OffsetHdr = rd(tn, td);
-                        }
+                        // F-8：逐通道落数组（与公共分母支同一口径），旧写法 `if (c == 0)` 丢后两组
+                        float gmin = rd(mn, md), gmax = rd(xn, xd), gam = rd(gn, gd);
+                        meta.GainMapMinC[c] = gmin;
+                        meta.GainMapMaxC[c] = gmax;
+                        meta.GammaC[c] = gam == 0 ? 1f : gam;
+                        meta.OffsetSdrC[c] = rd(sn, sd);
+                        meta.OffsetHdrC[c] = rd(tn, td);
                     }
                 }
 
+                // 「1 参数集」的件（自家产物、LU 单通道件）⇒ 参照在**解析层**用 ch0 补全其余通道
+                //（libultrahdr gainmapmetadata.cpp:274），施加层因此可以无条件逐通道读。
+                if (channels == 1) meta.FillRemainingChannelsFromZero();
+
                 // HDR 基图推断：负 log2 增益上限 → 基图已是 HDR（由基图向 SDR 下映射）
+                //   ⚠ 判据取**通道 0**（与既有行为一致；参照也是用一组标量做此推断）。
+                //   逐通道区间此时已完整保存在 GainMap*C[] 里 ⇒ 施加仍按各自的通道走（F-8）。
                 if (meta.GainMapMax <= 0f && meta.GainMapMin < 0f) meta.BaseRenditionIsHdr = true;
-                if (meta.Gamma <= 0f) meta.Gamma = 1f;
+                for (int c = 0; c < 3; c++)
+                    if (meta.GammaC[c] <= 0f) meta.GammaC[c] = 1f;   // γ≤0 ⇒ 视作 1（参照 lu/LA 的兜底）
                 return meta;
             }
             catch { return null; }
@@ -1151,8 +1226,7 @@ public static class GainMapDecoder
         int gW   = meta.MapSecondaryWidth > 0 ? meta.MapSecondaryWidth : gmW;
         int gH   = meta.MapSecondaryHeight> 0 ? meta.MapSecondaryHeight: gmH;
 
-        // 预计算 gamma 校正后的 log 范围
-        float gammaInv = meta.Gamma != 1.0f && meta.Gamma > 0 ? 1.0f / meta.Gamma : 1.0f;
+        // γ/仿射端点/offset 一律**逐通道**在 ApplyGainChannel 里取（F-8：这里不再有共享的 gammaInv 标量）
 
         for (int y = 0; y < baseH; y++)
         {
@@ -1183,35 +1257,51 @@ public static class GainMapDecoder
                 if (isGray)
                 {
                     // 灰度: 取亮度 (BT.709) 作为增益 (三通道均值取亮度)
+                    //   增益**值**是同一份，但仿射参数仍按通道读（单参数集件在解析层已被 ch0 复制成套
+                    //   ⇒ 三通道同值，与本行的旧行为逐字节一致；3 参数集件不会走到这里）。
                     float gv = BilinearGray(gmRgba, g00, g01, g10, g11, fx, fy);
-                    if (meta.Gamma != 1.0f) gv = MathF.Pow(gv, gammaInv);
-                    float logBoost = meta.GainMapMin * (1.0f - gv) + meta.GainMapMax * gv;
-                    float gainFactor = MathF.Pow(2f, logBoost);
-
                     for (int c = 0; c < 3; c++)
-                    {
-                        float sdr = baseRgba[o + c];
-                        result[o + c] = (sdr + meta.OffsetSdr) * gainFactor - meta.OffsetHdr;
-                    }
+                        result[o + c] = ApplyGainChannel(gv, c, baseRgba[o + c], meta);
                     result[o + 3] = baseRgba[o + 3];
                 }
                 else
                 {
-                    // RGB: 三通道独立增益
+                    // RGB: 三通道独立增益 + **逐通道**仿射参数（F-8）
                     for (int c = 0; c < 3; c++)
                     {
                         float gv = BilinearChannel(gmRgba, g00, g01, g10, g11, fx, fy, c);
-                        if (meta.Gamma != 1.0f) gv = MathF.Pow(gv, gammaInv);
-                        float logBoost = meta.GainMapMin * (1.0f - gv) + meta.GainMapMax * gv;
-                        float gainFactor = MathF.Pow(2f, logBoost);
-                        float sdr = baseRgba[o + c];
-                        result[o + c] = (sdr + meta.OffsetSdr) * gainFactor - meta.OffsetHdr;
+                        result[o + c] = ApplyGainChannel(gv, c, baseRgba[o + c], meta);
                     }
                     result[o + 3] = baseRgba[o + 3];
                 }
             }
         }
         return result;
+    }
+
+    /// <summary>
+    /// 单通道施加（**唯一**的一份逆向式；灰度支路与 RGB 支路共用，不留第二份拷贝）：
+    /// <code>h = (s + baseOffset_c)·2^(lerp(min_c, max_c, (b/255)^(1/γ_c))) − alternateOffset_c</code>
+    /// <para>
+    /// 与参照 libavif src/gainmap.c:263-267 同形（该处逐通道读 gammaInv[c]/min[c]/max[c]/
+    /// baseOffset[c]/alternateOffset[c]），也与 libultrahdr gainmapmath.cpp:791-797 的
+    /// <code>((e + offset_sdr)·exp2(logBoost)) − offset_hdr</code> 同形。
+    /// </para>
+    /// <para>
+    /// ⚠ 这条式子必须与**前向**严格互逆（F-5）：前向在 GainMapEncoder/SimdPixelOps.Log2Gain 里
+    /// 施加的是**元数据声明的同一对 offset** ⇒ 代入 2^L=(h+o_h)/(s+o_s) 得 h'≡h（模 8-bit 量化）。
+    /// 单通道件在解析层已被 ch0 复制成套 ⇒ 本式对自家产物与旧的「共用通道 0」逐字节等价。
+    /// </para>
+    /// </summary>
+    /// <param name="gainNorm">归一化增益字节 (0..1，双线性插值后)。</param>
+    /// <param name="c">通道索引 0/1/2 = R/G/B。</param>
+    /// <param name="baseLinear">底图读回的线性值（1.0 = SDR 白点）。</param>
+    private static float ApplyGainChannel(float gainNorm, int c, float baseLinear, GainMapMetadata meta)
+    {
+        float gamma = meta.GammaC[c];
+        float g = (gamma != 1.0f && gamma > 0.0f) ? MathF.Pow(gainNorm, 1.0f / gamma) : gainNorm;
+        float logBoost = meta.GainMapMinC[c] * (1.0f - g) + meta.GainMapMaxC[c] * g;
+        return (baseLinear + meta.OffsetSdrC[c]) * MathF.Pow(2f, logBoost) - meta.OffsetHdrC[c];
     }
 
     /// <summary>双线性插值单通道 (处理 RGB 交错数据, 取指定通道)</summary>

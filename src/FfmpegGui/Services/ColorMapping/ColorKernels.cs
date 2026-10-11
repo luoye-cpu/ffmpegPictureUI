@@ -468,6 +468,36 @@ public static class ColorKernels
         => TransformRgb48leCore(src, dst, spec, pixelCount,
             spec.ClampLinearBeforeEncode ? srcTab : null, spec.ClampLinearBeforeEncode ? dstTab : null);
 
+    /// <summary>
+    /// 表驱动快路径的**算子侧**判据（不含"两张表是否真的传进来了"这一条，那条留在调用点）。
+    /// <para>
+    /// 与 <see cref="TransformRgb48leCore"/> 里的 `fast` 是**同一个表达式**，抽出来只为一件事：
+    /// 性能门禁（`bench`）要按"这一格的快路径是不是被**合法**关闭"分档取阈值，
+    /// 而分档一旦在测试侧另写一份，就会出现"内核改了判据、门禁还在按旧判据分档"的**静默失守**
+    /// （本仓已因"同一份数学两份拷贝"踩过两次）。
+    /// </para>
+    /// <para>关闭快路径的每一个条件都必须是**真动过像素的算子**（查表表达不了）：
+    /// 亮度域换算 <see cref="TransformSpec.LinearScale"/> / 目标域换算 <see cref="TransformSpec.EncodeScale"/>、
+    /// 色调映射、HLG 的正/逆 OOTF、色域映射。反过来 ⇒ 只改标签或加一个恒等系数都不该关掉快路径。</para>
+    /// <para>⚠ 适用范围 = <see cref="TransformRgb48leCore"/> 的 48-bit 主路径。8-bit 兄弟出口
+    /// （本文件 <c>if (tbl &amp;&amp; (scaleOn || toneOn || encScaleOn || srcHlg || dstHlg))</c> 那一处）
+    /// 的条件**刻意不同**：它的循环能在查表之后仍执行色域映射，所以 GMO 不关表 ⇒ 别拿本方法去替换那处的判据。</para>
+    /// </summary>
+    public static bool TableFastPathOperatorsAllow(in TransformSpec spec)
+    {
+        if (Math.Abs(spec.LinearScale - 1.0) > 1e-12) return false;
+        if (Math.Abs(spec.EncodeScale - 1.0) > 1e-12) return false;
+        if (spec.Tone != null && spec.Tone.Active) return false;
+        if (spec.SrcIsHlgScene || spec.DstIsHlgScene) return false;
+        if (spec.GamutMapActive)
+        {
+            var y = spec.DstLuminances!;
+            // 与内核同源：GamutMapActive 只保证系数齐了，参数本身非法时内核不会真的做映射
+            if (new GamutMapParams(y[0], y[1], y[2], spec.GamutMapPreserveSaturation).IsValid) return false;
+        }
+        return true;
+    }
+
     private static void TransformRgb48leCore(ReadOnlySpan<byte> src, Span<byte> dst, in TransformSpec spec,
         int pixelCount, CurveTables? srcTab, CurveTables? dstTab)
     {
@@ -500,8 +530,16 @@ public static class ColorKernels
             gm = new GamutMapParams(y[0], y[1], y[2], spec.GamutMapPreserveSaturation);
             gamut = gm.IsValid;
         }
-        bool fast = eotf != null && oetf != null && Math.Abs(scale - 1.0) < 1e-12 && !toneOn
-                    && !spec.SrcIsHlgScene && !gamut;
+        // 编码侧的两个算子（目标域 nits 换算 EncodeScale / HLG 目标的逆向 OOTF）与上面同理：
+        //   快循环只做「查表 + 矩阵」，这两步在表里表达不了 ⇒ 激活时必须关掉快路径，
+        //   否则目标为 PQ/HLG 时整段跳过目标域换算（与 8-bit 兄弟出口的关表判据同源）。
+        double encScale = spec.EncodeScale;
+        bool encScaleOn = Math.Abs(encScale - 1.0) > 1e-12;
+        bool dstHlg = spec.DstIsHlgScene;
+        double dstHlgPeak = dstHlg ? NitsOfGamma(spec.DstHlgSystemGamma) : 0;
+        // 算子侧判据走单一真源 `TableFastPathOperatorsAllow`（bench 门禁按它分档，不许在测试侧另写一份）；
+        // "两张表在不在"仍留在调用点。
+        bool fast = eotf != null && oetf != null && TableFastPathOperatorsAllow(spec);
         bool clamp = spec.ClampLinearBeforeEncode;
 
         if (fast)
@@ -535,10 +573,7 @@ public static class ColorKernels
         double srcHlgPeak = srcHlg ? NitsOfGamma(spec.SrcHlgSystemGamma) : 0;
         // 编码侧（与解码侧对称）：目标域换算 + HLG 目标的逆向 OOTF。旧实现在 48-bit 主循环里
         // **两者都缺** ⇒ 目标为 PQ/HLG 时产出错曝光（过曝 49× / 差 10×）。
-        double encScale = spec.EncodeScale;
-        bool encScaleOn = Math.Abs(encScale - 1.0) > 1e-12;
-        bool dstHlg = spec.DstIsHlgScene;
-        double dstHlgPeak = dstHlg ? NitsOfGamma(spec.DstHlgSystemGamma) : 0;
+        // （`encScale`/`encScaleOn`/`dstHlg`/`dstHlgPeak` 已在上面 `fast` 判据处声明，此处直接复用。）
 
         for (int i = 0; i < pixelCount; i++)
         {

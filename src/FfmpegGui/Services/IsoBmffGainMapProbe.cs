@@ -153,15 +153,23 @@ public static class IsoBmffGainMapProbe
 
             // ── 顶层 box：找 ftyp（品牌）与 meta ──
             int metaOff = -1, metaSize = 0;
+            // ⚠ 截断/非法 box 头 ⇒ 「不知道」，调用方不得当成「没有」（见 Result.Determinate 的契约）。
+            bool boxScanIncomplete = false;
             for (int p = 0; p + 8 <= d.Length;)
             {
-                if (!ReadBox(d, p, d.Length, out var type, out var size, out var hdr)) break;
+                if (!ReadBox(d, p, d.Length, out var type, out var size, out var hdr))
+                { boxScanIncomplete = true; break; }
                 if (type == "ftyp") r.Brands = ReadBrands(d, p, size, hdr);
                 else if (type == "meta") { metaOff = p; metaSize = size; }
                 p += size;
             }
             if (metaOff < 0)
             {
+                if (boxScanIncomplete)
+                {
+                    r.Determinate = false;
+                    r.FailReason = "[IsoBmff] 顶层 box 链解析中断（截断或 box 头非法）⇒ 无法断定有无增益图";
+                }
                 // 没有 meta：可能是纯 track 型 ISO-BMFF（如 .heic 的 mov 包装）⇒ 无 item 结构 ⇒ 无增益图。
                 return r;
             }
@@ -170,7 +178,8 @@ public static class IsoBmffGainMapProbe
             int bodyStart = metaOff + 8 + 4, bodyEnd = metaOff + metaSize;
             for (int p = bodyStart; p + 8 <= bodyEnd;)
             {
-                if (!ReadBox(d, p, bodyEnd, out var type, out var size, out var hdr)) break;
+                if (!ReadBox(d, p, bodyEnd, out var type, out var size, out var hdr))
+                { boxScanIncomplete = true; break; }
                 int cstart = p + hdr, cend = p + size;
                 switch (type)
                 {
@@ -290,6 +299,11 @@ public static class IsoBmffGainMapProbe
                 r.Form = "aux-21496";
                 r.Determinate = false;
                 r.FailReason = "[IsoBmff] 辅助图（auxC URN 含 21496）形式，尚未支持解码";
+            }
+            if (boxScanIncomplete && !r.HasGainMap)
+            {
+                r.Determinate = false;
+                r.FailReason = "[IsoBmff] meta 子 box 链解析中断（截断或 box 头非法）⇒ 无法断定有无增益图";
             }
             return r;
         }

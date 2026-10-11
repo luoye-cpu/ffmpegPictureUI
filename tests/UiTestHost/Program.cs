@@ -916,8 +916,14 @@ namespace UiTestHost
                 var f = (string?)R.GetMethod("BuildUltraWideToBt2020Filter", new[] { typeof(string) })!.Invoke(null, new object?[] { "Adobe RGB" });
                 var f3 = (string?)R.GetMethod("BuildUltraWideToBt2020Filter", new[] { typeof(string) })!.Invoke(null, new object?[] { "Display P3" });
                 // 必须保留 SDR 传递(bt709)，不能回退到 PQ(smpte2084)。
+                // ⚠ F-9 之后 std 口径的 SDR 出口是**拆式**：末级 zscale 留 `t=linear`（像素在线性域完成矩阵），
+                //   编码由 `,lutrgb=` 施加 BT.709-6 定义式、帧标签由 `,setparams=…color_trc=bt709` 找回。
+                //   旧断言要求整串里出现 `t=bt709` ⇒ 拆式生效时**恒假**（全量轮实测 H6 FAILED = 镜像没跟着改，
+                //   不是产品回归）。改成要求"宣称没丢 + 尾巴两件都在场"：缺 lutrgb ⇒ 像素留线性（严重欠曝），
+                //   缺 setparams ⇒ 出口标签丢了 ⇒ 两种都会判红 ⇒ 这是收紧，不是放宽。
                 Check("H6 滤镜链", f != null && f.Contains("colorchannelmixer") && f.Contains("rr=0.87")
-                      && f.Contains("t=bt709") && !f.Contains("smpte2084") && f3 == null,
+                      && f.Contains(",lutrgb=") && f.Contains("setparams=") && f.Contains("color_trc=bt709")
+                      && !f.Contains("smpte2084") && f3 == null,
                       Snip(f ?? "null") + " | p3=" + (f3 == null ? "null✓" : "NONNULL✗"));
             });
             Safe("H7 cjxl 简化模式 Display P3 → DisplayP3 (P4)", () =>
@@ -949,18 +955,27 @@ namespace UiTestHost
             });
             Safe("H14 超广归一 HDR 感知 (PQ vs SDR)", () =>
             {
-                // ⚠ 宿主过期修正（非产品回归）：ColorSpaceRegistry.cs:214 的实际签名是
-                //   BuildUltraWideToBt2020Filter(string?, bool hdr, bool hlg, bool allowApproximateCurve = true)
-                // 即 **4 参**。按 3 参 GetMethod 会返回 null ⇒ NRE。第 4 参传 true，与 1 参重载的默认行为一致
-                // （H6 用的正是 1 参重载，Adobe RGB 的 2.2 曲线在 true 下可表达）。
+                // ⚠ 宿主反射签名（第二次过期，F-9 所致；非产品回归）：
+                //   ColorSpaceRegistry.cs:222 现为 **5 参**
+                //   BuildUltraWideToBt2020Filter(string?, bool hdr, bool hlg,
+                //       bool allowApproximateCurve = true, bool zimgCurveCaliber = false)
+                //   —— F-9 给 `--color-709-curve` 加了口径参数。按 4 参 GetMethod ⇒ 返回 null ⇒ 本条恒红
+                //   （全量轮实测 "4-arg overload not found"）。
+                // ⚠ SDR 那一臂的期望也随 F-9 改：std 口径下出口是拆式 ⇒ 没有裸 `t=bt709`，
+                //   要求的是 `,lutrgb=`（定义式编码在场）+ `color_trc=bt709`（宣称被 setparams 找回）。
+                //   并加一条**对照臂**：zimg 口径必须逐字回到历史形态（`t=bt709` 且**没有** lutrgb），
+                //   否则"拆式是默认兑现"这句话没有被证过 —— 两臂不分叉的对照等于没判。
                 var mi = R.GetMethod("BuildUltraWideToBt2020Filter",
-                    new[] { typeof(string), typeof(bool), typeof(bool), typeof(bool) });
-                if (mi == null) { Check("H14 HDR-aware", false, "4-arg overload not found (宿主反射签名过期)"); return; }
-                var hdr = (string?)mi.Invoke(null, new object?[] { "Adobe RGB", true, false, true });
-                var sdr = (string?)mi.Invoke(null, new object?[] { "Adobe RGB", false, false, true });
+                    new[] { typeof(string), typeof(bool), typeof(bool), typeof(bool), typeof(bool) });
+                if (mi == null) { Check("H14 HDR-aware", false, "5-arg overload not found (宿主反射签名过期：F-9 加了 zimgCurveCaliber)"); return; }
+                var hdr = (string?)mi.Invoke(null, new object?[] { "Adobe RGB", true, false, true, false });
+                var sdr = (string?)mi.Invoke(null, new object?[] { "Adobe RGB", false, false, true, false });
+                var sdrZ = (string?)mi.Invoke(null, new object?[] { "Adobe RGB", false, false, true, true });
                 Check("H14 HDR-aware", hdr != null && hdr.Contains("t=smpte2084")
-                      && sdr != null && sdr.Contains("t=bt709") && !sdr.Contains("smpte2084"),
-                      $"hdrHasPQ={(hdr?.Contains("smpte2084"))} sdrHasBT709={(sdr?.Contains("t=bt709"))}");
+                      && sdr != null && !sdr.Contains("smpte2084")
+                      && sdr.Contains(",lutrgb=") && sdr.Contains("color_trc=bt709")
+                      && sdrZ != null && sdrZ.Contains("t=bt709") && !sdrZ.Contains("lutrgb"),
+                      $"hdrHasPQ={(hdr?.Contains("smpte2084"))} sdrSplit={(sdr?.Contains(",lutrgb="))} zimgArmBare={(sdrZ != null && sdrZ.Contains("t=bt709") && !sdrZ.Contains("lutrgb"))}");
             });
             Safe("H10 命令端到端含 smpte432 (PNG+Display P3)", () =>
             {
@@ -1982,9 +1997,17 @@ namespace UiTestHost
                     }
                     else
                     {
-                        ok = gp == ep && gt == et;
+                        // `t` 有两种**合法兑现**：① 直接 `t=<期望>`（历史形态 / `--color-709-curve zimg` 口径 /
+                        //   非 BT.709 出口，拆式对那些不生效）；② F-9 的拆式 ⇒ 末级 `t=linear`，但必须
+                        //   同时有 `,lutrgb=`（定义式编码在场）与 `setparams=…color_trc=<期望>`（宣称被找回）。
+                        //   旧写法只认 ① ⇒ 拆式默认生效后 "J8 BT.709⇒p=bt709:t=bt709" 恒红（全量轮实测）。
+                        //   ②的三个部件缺任何一个都判红 ⇒ 这是把"改标签不改像素"钉死的收紧，不是放水。
+                        var rawCmd = Cmd();
+                        bool splitExit = gt == "linear" && rawCmd.Contains(",lutrgb=")
+                                         && rawCmd.Contains("setparams=") && rawCmd.Contains("color_trc=" + et);
+                        ok = gp == ep && (gt == et || splitExit);
                         if (filt != null) ok = ok && VfHas(t, filt);
-                        det = $"p={gp ?? "<none>"} t={gt ?? "<none>"} iccgen={VfHas(t, "iccgen")}";
+                        det = $"p={gp ?? "<none>"} t={gt ?? "<none>"} 拆式={(splitExit ? "有" : "无")} iccgen={VfHas(t, "iccgen")}";
                     }
                     Check("J8 " + v + (v == "sRGB" ? "⇒无zscale+CICP=bt709/sRGB" : "⇒p=" + ep + ":t=" + et + (filt != null ? "+" + filt : "")),
                           ok, det);

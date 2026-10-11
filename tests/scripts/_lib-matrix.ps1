@@ -381,11 +381,16 @@ function Get-EquivalenceClasses {
         Members = @('8', '10', '12', '16')
         When = @{ 'format' = @('jpg', 'jpeg') }
         Evidence = @(
-            'src/FfmpegGui/Services/FfmpegCommandBuilder.Decision.cs:147|if (options.BitDepth.HasValue && options.BitDepth.Value > capBd)',
-            'src/FfmpegGui/Services/FfmpegCommandBuilder.Decision.cs:155|options.BitDepth = capBd;',
+            'src/FfmpegGui/Services/FfmpegCommandBuilder.Decision.cs:154|if (options.BitDepth.HasValue && options.BitDepth.Value > capBd)',
+            'src/FfmpegGui/Services/FfmpegCommandBuilder.Decision.cs:162|options.BitDepth = capBd;',
             # ⚠ pin 演进（2026-10-04）：966 → **977**、976 → **987**（+11）
             #   成因 = `FfmpegCommandBuilder.BuildColorArgsSplit` 顶部新增「RAW 中间件输入声明」分支
             #   （`ColorSourceDecl*`，2026-10-03 RAW 默认三档改动），插在本文件之前。
+            # ⚠ pin 演进（2026-10-12）：Decision.cs 147 → **154**、155 → **162**、144 → **151**（整片 +7）。
+            #   成因 = 本批 F-9（拆式出口 `ExitCurveNote` 字段 + `Short()` 拼串）与 F-3（ICC 响亮拒绝的回调参数）
+            #   在 Decision.cs 第 144 行**以上**共插入 7 行（`git diff -U0` 只有 `@@ -67,+6` 与 `@@ -90,+2` 两处）。
+            #   全量轮读数 = A21 `checked=11, bad=4` + A30 `checked=10, bad=2`，而 A7 两两覆盖仍 `missing=0`
+            #   ⇒ 红的是**夹具行锚**，不是覆盖轴缺失、也不是产品坏 ⇒ 只重钉行号，不登记新取值。
             #   已按 `grep -n` 复核实况、并确认两处字面量全文件唯一。
             'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:1000|options.JpegGainMap ? null : "iec61966-2-1", "bt709", 8, true'   # 2026-10-04 重钉 977→981（早前会话 +4 行，grep -n 复核实况 + 字面量唯一）
         )
@@ -400,8 +405,8 @@ function Get-EquivalenceClasses {
         Members = @('8', '10', '12', '16')
         When = @{ 'format' = @('webp') }
         Evidence = @(
-            'src/FfmpegGui/Services/FfmpegCommandBuilder.Decision.cs:147|if (options.BitDepth.HasValue && options.BitDepth.Value > capBd)',
-            'src/FfmpegGui/Services/FfmpegCommandBuilder.Decision.cs:155|options.BitDepth = capBd;',
+            'src/FfmpegGui/Services/FfmpegCommandBuilder.Decision.cs:154|if (options.BitDepth.HasValue && options.BitDepth.Value > capBd)',
+            'src/FfmpegGui/Services/FfmpegCommandBuilder.Decision.cs:162|options.BitDepth = capBd;',
             'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:1010|return (null, "iec61966-2-1", "bt709", 8, true);'   # 2026-10-04 重钉 987→991（同批 +4）
         )
         Rationale = 'WebP container caps bit depth at 8 and DecideOutputColor rewrites options.BitDepth in place, so 8/10/12/16 are observationally equal'
@@ -597,7 +602,7 @@ function Get-SemanticMatrices {
             Axes = @('format', 'color-strategy', 'color-space', 'color-engine')
             Rationale = 'Strategy decides whether/how color is converted and labelled, target gamut decides where to, container decides which labelling is even expressible (CICP vs ICC), engine decides which combinations are unroutable. The four are not independent.'
             Evidence = @(
-                'src/FfmpegGui/Services/FfmpegCommandBuilder.Decision.cs:144|var (capP, capT, capM, capBd, capIcc) = GetFormatColorCapabilities(fmt, options);',
+                'src/FfmpegGui/Services/FfmpegCommandBuilder.Decision.cs:151|var (capP, capT, capM, capBd, capIcc) = GetFormatColorCapabilities(fmt, options);',
                 'src/FfmpegGui/Services/ColorMapping/ColorEngineRouter.cs:102|!string.Equals(o.ColorEngine, "legacy", StringComparison.OrdinalIgnoreCase));'
             )
         },
@@ -655,7 +660,7 @@ function Get-SemanticMatrices {
                 #   唯一性同样已 `grep -n` 核过。
                 'src/FfmpegGui/Services/ColorMapping/ImageEncoderArgs.cs:804|AvifMaxBitDepthForEncoder(string? encoder)',
                 'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:1042|return (null, null, null, ColorMapping.ImageEncoderArgs.AvifMaxBitDepth(options), false);',   # 2026-10-04 重钉 1019→1023（同批 +4）
-                'src/FfmpegGui/Services/FfmpegCommandBuilder.Decision.cs:155|options.BitDepth = capBd;'
+                'src/FfmpegGui/Services/FfmpegCommandBuilder.Decision.cs:162|options.BitDepth = capBd;'
             )
         }
     )

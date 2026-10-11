@@ -40,7 +40,7 @@
 #   三段：① 反射直调 `PatchColr` 断言「只读继承、双向」；② 反射读 `Build` 的 `baseFullRangeFallback` 默认值必须 false；
 #   ③ 端到端（真 ffmpeg + 产品 `EncodeAsync(container:"avif")`）断言产物底图 colr 末字节 = 0x00。
 #   ⚠ 依赖 `publish/PLAN/ffmpeg-full/ffmpeg.exe`（由 `InitExternalTools` 定位）；缺席时 ③ **SKIP 点名**，① ② 仍跑。
-param([string]$Probes = 'contract,wire,verdict,selftest,iccname,plan,curve,matrix,colormath,ootf,hlgwire,bt2446,decision,engine,runner,settings,procstreams,encoding,ipc,i18n,geometry,metaraw,thumbnail,oog,avifgm,gamutfit',
+param([string]$Probes = 'contract,wire,verdict,selftest,iccname,plan,curve,matrix,colormath,ootf,hlgwire,bt2446,decision,engine,runner,settings,procstreams,encoding,ipc,i18n,geometry,metaraw,thumbnail,oog,avifgm,gamutfit,bench',
       [switch]$SkipScripts,
       # ⚠ 逗号分隔的**文件名**（含 .ps1），顺序不敏感；名字不在清单内 ⇒ 响亮报红而不是静默忽略。
       #   `pwsh -File` 下 `-Scripts a,b` 只会作为一个参数传入（与 $Probes 同一坑，见 :455），故这里自己切。
@@ -62,7 +62,12 @@ param([string]$Probes = 'contract,wire,verdict,selftest,iccname,plan,curve,matri
       #       243.8 s ⇒ 480 只剩 2.0×，按本段自己的话"紧超时在负载下会假红"，它**会咬合法慢门禁**。
       #       接 L3 五套只是把次高项抬了一档，触发的是**重新结算**，不是给新条目开后门。
       #     ⇒ 第 ⑫ 针同步改成 900（两处不一致 = 运行器拒绝跑）。
-      [int]$ProbeTimeoutSec = 120,
+      #   ⚠ **2026-10-11 重标：探针段 120 → 180**（同一条"max × ≈3 向上取整"规矩）。触发原因 =
+      #     `bench` 第一次接进默认探针清单（L-7：性能账此前**无人看守**，只被 `run-thread-tests.ps1`
+      #     这种非受管脚本调）。本机实测 **54 s**（旧 max = `geometry` 33.8 s），120 s 只剩 2.2×
+      #     ⇒ 按本段自己的规矩要**重新结算**：54 × 3 = 162 ⇒ 向上取整 **180**（对 bench = 3.3×）。
+      #     ⚠ 这条把的是**上限**、不是判据：bench 自己的绝对吞吐门槛在 `ProbeBench` 的分档注释里。
+      [int]$ProbeTimeoutSec = 180,
       [int]$ScriptTimeoutSec = 900)
 # ⚠ geometry mode（2026-09-17 新增）**必须**在默认清单里，理由是一条实测缺陷：
 #   `RawColorPipeline.cs:94-129` 的「引擎几何缩放」在默认路径上**永不执行** ——
@@ -392,8 +397,8 @@ function Read-TextShared([string]$path) {
 # 17 针：① helper 定义点 ==1；② 调用点 ==2；③ 带超时调用点 ==2（两个调用点都必须把超时当变量传，
 #   不得写字面量）；④⑤ 裸取退出码（`$p.` / `$proc.`）计数 ==0；⑥ 进程对象的退出码取法计数 ==0；
 #   ⑦ 包装层写 rc 点 ==1；⑧ helper 读 rc 点 ==1；⑨ 进程树杀法 token ==1；⑩ 超时抑制点 ==2；
-#   ⑪ 探针超时**默认值**逐字钉住 ==1（定稿 = **120**，变异方向 = 改成 60 ⇒ 必须红）；
-#   ⑫ 脚本超时**默认值**逐字钉住 ==1（= **480**，变异方向 = 改成 420 ⇒ 必须红）；
+#   ⑪ 探针超时**默认值**逐字钉住 ==1（**2026-10-11 重标 = 180**，见下面 param 段的标定注；变异方向 = 改小 ⇒ 必须红）；
+#   ⑫ 脚本超时**默认值**逐字钉住 ==1（= **900**，2026-10-02 重标；变异方向 = 改成 420 ⇒ 必须红。⚠ 本行原写 480 是那次重标时**漏改的旧值**，2026-10-11 手滔发现并纠）；
 #   ⑬ `$tableOnly` **条数** ==4；⑭ `$noSelfSummary` **条数** ==7；
 #   ⑮ 读失败分支 ==2 且 共享读引用 ==3（异常路径**不得沿用上一轮 `$txt`**）；
 #   ⑯ 运行器**自身指纹**：打印点 ==2（启动 + 收尾）· 自漂移复核引用 ==3 · 归属不明告警 ==2；
@@ -453,7 +458,7 @@ function Test-RunnerShape {
   if ($cKill -ne 1) { $bad.Add("进程树杀法 token = $cKill（须 1：PS5.1 无 Kill(true) 重载的兜底）") }
   $cSup = ([regex]::Matches($t, [regex]::Escape($nSupTok))).Count
   if ($cSup -ne 2) { $bad.Add("超时抑制点 = $cSup（须 2：两个调用段各一，只删一个也能发现）") }
-  $nProbeTo = '[int]$ProbeTimeoutSec' + ' = 120'
+  $nProbeTo = '[int]$ProbeTimeoutSec' + ' = 180'
   $cPTo = ([regex]::Matches($t, [regex]::Escape($nProbeTo))).Count
   if ($cPTo -ne 1) { $bad.Add("探针超时默认值针 = $cPTo（须 1：默认值必须逐字钉住，防按各自基准悄悄调参）") }
   $nScriptTo = '[int]$ScriptTimeoutSec' + ' = 900'

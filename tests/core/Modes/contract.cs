@@ -37,6 +37,12 @@ namespace Tests.Core
     // stay byte-identical. Assertion count MUST NOT change: acceptance = per-mode
     // readings identical before vs after the split.
     // NOTE: ASCII-only on purpose (see _probe-cjk-hardcode-scan.ps1 UI bucket).
+    // ⚠⚠ 这份 contract 断言**没有任何执行面**（2026-10-11 实证明）：
+    //   · Tests.Core.csproj 是 <OutputType>Exe</OutputType> ⇒ `dotnet test` 只还原不跑，还 exit 0；
+    //   · tests/scripts/*.ps1 与 pack.ps1 对 `Tests.Core` **零引用**（正向对照：verify-gainmap-* 确有引用）。
+    //   门禁真正跑的是 `tests/ServiceProbe/Program.cs` 里的 ProbeContract()。
+    //   ⇒ **要加断言请加在那一份上**；写在这里会"全绿但一条不执行"（本轮 C20 就是这么被骗过一次）。
+    //   本文件保留待批次 G 处置（默认档：留档+本警告；删或接进 $Probes 都需单独确认）。
     internal static partial class CoreGroup
     {
         private static FfmpegGui.Services.ColorMapping.TransformSpec Spec(
@@ -891,6 +897,55 @@ namespace Tests.Core
                     }
                 Check(diffM > 0 && devM <= 1,
                     $"C13 哨兵：有矩阵且非中性输入时抖动仍要生效且只在码域展开（实际改动 {diffM}/768 处、最大偏离 {devM} 档；要求 >0 且 ≤1）");
+            }
+
+            // ── C20 表快路径与解析式必须逐算子等价（F-1 的锁）──────────────────
+            //   `TransformRgb48leCore` 的 `fast` 判据漏掉任何一个**只在解析分支里执行**的算子，
+            //   ≥256,000 px 的任务就会**静默跳过**那个算子（实测：SDR→PQ 的白场被编码成 65535 满量程，
+            //   与不建表的小图差出 49×，而标签完全相同）。
+            //   本锁不起产品、不落盘：对同一 spec 分别「送表」与「不送表」各跑一遍，逐字节比。
+            //   ⚠ 变异验牙：把 `fast` 退回只查 4 条 ⇒ 下面两条必须转红（读数见 docs/FIX_PLAN_2026-10-11.md）。
+            {
+                const int nC20 = 4096;                       // 逐字节比的是码值本身，与建表阈值无关
+                var s16 = new byte[nC20 * 6];
+                for (int i = 0; i < nC20; i++)
+                {
+                    ushort v = (ushort)(i * 65535 / (nC20 - 1));
+                    for (int c = 0; c < 3; c++)
+                    {
+                        s16[i * 6 + c * 2] = (byte)(v & 0xFF);
+                        s16[i * 6 + c * 2 + 1] = (byte)(v >> 8);
+                    }
+                }
+                var spPq20 = Spec("bt709", "iec61966-2-1", "bt2020", "smpte2084");
+                var spHlg20 = Spec("bt709", "iec61966-2-1", "bt2020", "arib-std-b67");
+                spHlg20.DstIsHlgScene = true;
+                spHlg20.DstHlgSystemGamma = 1.2;              // BT.2100 HLG：L_W=1000 ⇒ 系统伽马 1.2
+                var facesC20 = new (string Name, FfmpegGui.Services.ColorMapping.TransformSpec Sp)[]
+                {
+                    ("EncodeScale≠1（SDR→PQ 目标）", spPq20),
+                    ("DstIsHlgScene（SDR→HLG 目标）", spHlg20),
+                };
+                foreach (var (nameC20, spC20) in facesC20)
+                {
+                    // clamp=true 是前提：`TransformRgb48le` 只在 ClampLinearBeforeEncode=true 时才把表递进内核
+                    var tS20 = CK.BuildTables(spC20.SrcCurve);
+                    var tD20 = CK.BuildTables(spC20.DstCurve);
+                    var withTbl = new byte[nC20 * 6];
+                    var noTbl = new byte[nC20 * 6];
+                    CK.TransformRgb48le(s16, withTbl, spC20, nC20, tS20, tD20);
+                    CK.TransformRgb48le(s16, noTbl, spC20, nC20, null, null);
+                    int firstDiff = -1, maxDiff = 0;
+                    for (int i = 0; i + 1 < withTbl.Length; i += 2)
+                    {
+                        int d = Math.Abs((withTbl[i] | (withTbl[i + 1] << 8)) - (noTbl[i] | (noTbl[i + 1] << 8)));
+                        if (d > maxDiff) maxDiff = d;
+                        if (d != 0 && firstDiff < 0) firstDiff = i / 2;
+                    }
+                    Check(firstDiff < 0 && maxDiff == 0,
+                        $"C20 {nameC20}：算子激活时表快路径必须关掉 ⇒ 送表与不送表逐字节相同"
+                      + $"（实 首个不同码位={(firstDiff < 0 ? "无" : firstDiff.ToString())} 最大差={maxDiff}）");
+                }
             }
 
             Console.WriteLine($"  contract: 共 {cells} 格，覆盖豁免 {exempted}，拒绝 {rejects}");
