@@ -2404,8 +2404,17 @@ namespace ServiceProbe
                         s16c20[i * 6 + c * 2 + 1] = (byte)(v >> 8);
                     }
                 }
-                void Face20(string name, FfmpegGui.Services.ColorMapping.TransformSpec spC20)
+                // 两个期望必须**同时**断言，否则有两种假绿：只查差值 ⇒ 有人把快路径整个关掉，差值归 0 反而"通过"；
+                // 只查快路径开 ⇒ 差值漂了看不见。
+                //   expectFast=false ⇒ 两支都走解析式 ⇒ 必须逐字节相同（tol 0）。
+                //   expectFast=true  ⇒ 真比较「插值查表」vs「逐点 pow + ToU16」；tol 1 = 编码侧
+                //     `EncodeLerp` 的插值误差，与既有 SDR 快路径**同量级**（不是新引入的精度损失）。
+                void Face20(string name, FfmpegGui.Services.ColorMapping.TransformSpec spC20,
+                            bool expectFast, int tolCodes = 0)
                 {
+                    bool fastNow = CK.TableFastPathOperatorsAllow(spC20);
+                    Check(fastNow == expectFast,
+                        $"C20 {name}：快路径开关须与声明一致（期望 {(expectFast ? "走表" : "关表")}，实 {fastNow}）");
                     // clamp=true 是前提：内核只在 ClampLinearBeforeEncode=true 时才把表递进去
                     var tS20 = CK.BuildTables(spC20.SrcCurve);
                     var tD20 = CK.BuildTables(spC20.DstCurve);
@@ -2420,15 +2429,59 @@ namespace ServiceProbe
                         if (d > maxDiff) maxDiff = d;
                         if (d != 0 && firstDiff < 0) firstDiff = i / 2;
                     }
-                    Check(firstDiff < 0 && maxDiff == 0,
-                        $"C20 {name}：算子激活时表快路径必须关掉 ⇒ 送表与不送表逐字节相同"
-                      + $"（实 首个不同码位={(firstDiff < 0 ? "无" : firstDiff.ToString())} 最大差={maxDiff}）");
+                    Check(maxDiff <= tolCodes,
+                        $"C20 {name}：{(expectFast ? "快路径启用 ⇒ 表与解析式差须在容差内" : "算子要求关表 ⇒ 两支都解析式，须逐字节相同")}"
+                      + $"（实 首个不同码位={(firstDiff < 0 ? "无" : firstDiff.ToString())} 最大差={maxDiff} 容差={tolCodes}）");
                 }
-                Face20("EncodeScale≠1（SDR→PQ 目标）", Spec("bt709", "iec61966-2-1", "bt2020", "smpte2084"));
+                Face20("EncodeScale≠1（SDR→PQ 目标）", Spec("bt709", "iec61966-2-1", "bt2020", "smpte2084"), false);
                 var spHlg20 = Spec("bt709", "iec61966-2-1", "bt2020", "arib-std-b67");
                 spHlg20.DstIsHlgScene = true;
                 spHlg20.DstHlgSystemGamma = 1.2;            // BT.2100 HLG：L_W=1000 ⇒ 系统伽马 1.2
-                Face20("DstIsHlgScene（SDR→HLG 目标）", spHlg20);
+                Face20("DstIsHlgScene（SDR→HLG 目标）", spHlg20, false);
+
+                // ── 2026-10-12 性能提案 (a)：解码侧常数乘进快循环 ⇒ HDR→SDR 出口回到表路径 ──
+                // ⚠ 上面两格在**本轮之前**是构造恒等：那两个算子一激活 `fast` 就为 false ⇒
+                //   "送表 vs 不送表"两支都走解析式，比出来的 maxDiff=0 什么也没证（本轮自查抓到）。
+                // 现在解码缩放格**真的**走表路径，本锁第一次比较插值与逐点求值；实测最大差 1 码@16bit、
+                //   8-bit 出口 0 码（下面 Face8 量）。
+                // ⚠ 编码侧（EncodeScale≠1，即 SDR→HDR 出口）实测**不能**走表：`CurveTables.Oetf` 按线性域
+                //   均匀采样，而 PQ 编码曲线近黑极陡 ⇒ 插值基就是错的，收窄前量到最大差 **1457 码@16bit**
+                //   （首个不同在码位 3）、8-bit 出口 **6** ⇒ 保持关表。要解这条得先做"编码域均匀采样的
+                //   第二张表"，本轮不做（已登记）。
+                Face20("LinearScale≠1（PQ→sRGB 源，快路径已启用）", Spec("bt2020", "smpte2084", "bt709", "iec61966-2-1"), true, 1);
+                Face20("LinearScale≠1 + 矩阵（PQ→Display P3）", Spec("bt2020", "smpte2084", "smpte432", "iec61966-2-1"), true, 1);
+                Face20("LinearScale≠1 + 目标换曲线（PQ→BT.2020-SDR）", Spec("bt2020", "smpte2084", "bt2020", "bt709"), true, 1);
+                // 三条**对照**：OOTF / GMO 仍必须关表（把常数乘与"真算子"分开钉死）。
+                var spSrcHlg20 = Spec("bt2020", "arib-std-b67", "bt709", "iec61966-2-1");
+                spSrcHlg20.SrcIsHlgScene = true;
+                spSrcHlg20.SrcHlgSystemGamma = 1.2;
+                Face20("SrcIsHlgScene（HLG 源 ⇒ 仍必须关表）", spSrcHlg20, false);
+                var spGm20 = Spec("bt2020", "bt709", "bt709", "iec61966-2-1");
+                spGm20.GamutMap = true;
+                spGm20.DstLuminances = new double[] { 0.2627, 0.6780, 0.0593 };
+                Face20("GamutMap 开（⇒ 仍必须关表，GMO 不是常数乘）", spGm20, false);
+
+                // ── 8-bit 兄弟出口：同一件事在**交付位深**上量一遍（解码侧开启后差必须为 0）──
+                void Face8(string name, FfmpegGui.Services.ColorMapping.TransformSpec sp8, int tolCodes)
+                {
+                    var t8s = CK.BuildTables(sp8.SrcCurve);
+                    var t8d = CK.BuildTables(sp8.DstCurve);
+                    var w8 = new byte[nC20 * 3];
+                    var n8 = new byte[nC20 * 3];
+                    CK.TransformRgb48leToRgb8(s16c20, w8, sp8, nC20, t8s, t8d, nC20, 0);
+                    CK.TransformRgb48leToRgb8(s16c20, n8, sp8, nC20, null, null, nC20, 0);
+                    int fd8 = -1, md8 = 0;
+                    for (int i = 0; i < w8.Length; i++)
+                    {
+                        int dd = Math.Abs(w8[i] - n8[i]);
+                        if (dd > md8) md8 = dd;
+                        if (dd != 0 && fd8 < 0) fd8 = i;
+                    }
+                    Check(md8 <= tolCodes,
+                        $"C20-8b {name}：8-bit 出口送表与不送表差须在容差内（实 首个不同字节={(fd8 < 0 ? "无" : fd8.ToString())} 最大差={md8} 容差={tolCodes}）");
+                }
+                Face8("PQ→sRGB 8-bit（LinearScale≠1，表路径已启用）", Spec("bt2020", "smpte2084", "bt709", "iec61966-2-1"), 0);
+                Face8("sRGB→PQ 8-bit（EncodeScale≠1 ⇒ 仍关表，两支同解析）", Spec("bt709", "iec61966-2-1", "bt2020", "smpte2084"), 0);
             }
 
             Console.WriteLine($"  contract: 共 {cells} 格，覆盖豁免 {exempted}，拒绝 {rejects}");
@@ -7503,6 +7556,11 @@ namespace ServiceProbe
                 ("sRGB→P3(矩阵同曲线)", "bt709", "iec61966-2-1", "smpte432", "iec61966-2-1"),
                 ("BT.2020→sRGB(含裁切)", "bt2020", "bt709", "bt709", "iec61966-2-1"),
                 ("PQ→sRGB(变曲线+裁切)", "bt2020", "smpte2084", "bt709", "iec61966-2-1"),
+                // ⚠ 第四格是**低档的活臂**（2026-10-12）：③(a) 把解码侧缩放接进快路径后，上面三格全部
+                //   落到"快路径适用 ⇒ ≥40"档 ⇒ ≥3 那一档在 bench 里**没有任何格子经过**，退化成死码，
+                //   它对账臂（"关表档增益必须 ≈1×"）也就永远不会红。加一格目标为 PQ 的（EncodeScale≠1
+                //   ⇒ 按实测 1457 码的插值误差必须关表）让两档都有活臂、两条对账都有对象。
+                ("sRGB→PQ(目标域换算 ⇒ 关表)", "bt709", "iec61966-2-1", "bt2020", "smpte2084"),
             };
             int cores = Environment.ProcessorCount;
             foreach (var (w, h) in sizes)
@@ -7563,7 +7621,9 @@ namespace ServiceProbe
                     //   变异 M1（判据整支 `return false`）实测 `pass=16 fail=1`，唯一红的是一条无关的端到端项。
                     //   ⇒ 独立口径 = 这一格**声明的色度学**需不需要"查表表达不了的算子"；
                     //     另加一条「独立口径 == 内核判据」的对账断言，M1/M2 两个方向才都会红。
-                    //   · 快路径适用 ⇒ 单核 ≥40 MPix/s（实测 sRGB→P3 = 51.0、BT.2020→sRGB = 62.4）。
+                    //   · 快路径适用 ⇒ 单核 ≥40 MPix/s（实测 sRGB→P3 = 45.0~56.9、BT.2020→sRGB = 57.2~78.5、
+                    //     PQ→sRGB = 117.0~154.5 —— 最后一格是 2026-10-12 ③(a) 把解码侧 nits 常数乘接进快路径
+                    //     之后从 5.5 涨上来的，多核最高 1099.6 MPix/s）。
                     //     这一档才是"回归看守"：内核判据被改坏、某格悄悄退回解析式（≈5 MPix/s）⇒ 立刻红。
                     //     旧写法拿同一个 40 去套 PQ→sRGB，那格**永远**红（LinearScale=10000/203=49.26，
                     //     查表表达不了 ⇒ 走解析式是**正确行为**），于是整条 bench 被当作"已知假红"没人看。
@@ -7571,7 +7631,10 @@ namespace ServiceProbe
                     //     BT.2020→sRGB = 57.2/60.0/60.1，PQ 那档 = 5.6~5.8 vs 阈值 3）⇒ 最小项只剩 11%。
                     //     整轮若在负载下假红，正确处置是**静机复跑**（本仓既有规矩"计时必须单机跑、并发期禁测"），
                     //     或加大 best-of-N；**不许**为了凑绿灯把 40 往下调 —— 那正是 L-7 要治的"没人看守"。
-                    //   · 快路径被合法关闭 ⇒ 降到解析式水位 ≥3 MPix/s（实测 5.2/5.5，留 ~40% 余量防负载抖动）。
+                    //   · 快路径被合法关闭 ⇒ 降到解析式水位 ≥3 MPix/s（实测 sRGB→PQ 那格两跑都是 4.2，
+                    //     余量 28%）。合法关闭的是四类：目标域换算 EncodeScale≠1（表是线性域均匀采样、
+                    //     PQ 编码近黑极陡 ⇒ 插值基不对，实测差 1457 码@16bit / 8-bit 出口 6 码）、
+                    //     色调映射、HLG 正/逆 OOTF、色域映射。源侧 nits 缩放**不再**是关闭理由（③(a)）。
                     //   · 反向自证：分档必须与**实测增益**一致。同一格两次计时只差"表给不给"这一个动作，
                     //     所以它们的比值量的就是**内核那句判据**：判为适用却测出 ≈1× ⇒ 快路径没生效；
                     //     判为关闭却测出 >1.3× ⇒ 有算子被跳过、或分档落后于内核。两边都会红。
@@ -7580,15 +7643,18 @@ namespace ServiceProbe
                     //     量的是调度开销而非并行能力（实测 3.4×/6.4× 飘手），作门禁无意义 → 只记录。
                     // 独立口径：曲线的归一域峰值（PQ=10000nits、HLG=1000nits、其余=SDR 参考白 203nits）。
                     // 换算与生产 `ColorTransformPlan.ToSpec()` 同口径，但**在探针里独立写一份**——
-                    // 它是内核判据的对照臂，不是它的副本。两侧都 SDR 白 ⇒ 两个 nits 系数恒为 1 ⇒ 该走表。
+                    // 它是内核判据的对照臂，不是它的副本。
+                    // 2026-10-12（性能提案 (a)）规则收窄到**目标侧**：源侧的 nits 换算已经是一个常数乘
+                    //   （快循环里做，与解析式同运算）⇒ **不再**构成关表理由；
+                    //   目标侧仍构成，因为 `CurveTables.Oetf` 是线性域均匀采样、PQ 编码曲线近黑极陡
+                    //   ⇒ 插值基不对（实测最大差 1457 码@16bit、8-bit 出口 6 码，见 contract 的 C20 族注释）。
                     static double NitsOf(TC c) => c.Kind switch
                     {
                         TC.CurveKind.Pq => TC.PqPeakNits,
                         TC.CurveKind.Hlg => FfmpegGui.Services.ColorMapping.Bt2100Ootf.NominalPeakNits,
                         _ => TC.SdrWhiteNits,
                     };
-                    bool fastCell = Math.Abs(NitsOf(spec.SrcCurve) - TC.SdrWhiteNits) < 1e-9
-                                    && Math.Abs(NitsOf(spec.DstCurve) - TC.SdrWhiteNits) < 1e-9
+                    bool fastCell = Math.Abs(NitsOf(spec.DstCurve) - TC.SdrWhiteNits) < 1e-9
                                     && (spec.Tone == null || !spec.Tone.Active)
                                     && !spec.SrcIsHlgScene && !spec.DstIsHlgScene && !spec.GamutMap;
                     //   ⚠ GMO 这一项取**声明位** `GamutMap` 而非 `GamutMapActive`：后者还要求目标亮度系数齐

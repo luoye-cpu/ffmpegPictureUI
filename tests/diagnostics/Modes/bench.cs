@@ -97,6 +97,11 @@ namespace Tests.Diagnostics
                 ("sRGB→P3(矩阵同曲线)", "bt709", "iec61966-2-1", "smpte432", "iec61966-2-1"),
                 ("BT.2020→sRGB(含裁切)", "bt2020", "bt709", "bt709", "iec61966-2-1"),
                 ("PQ→sRGB(变曲线+裁切)", "bt2020", "smpte2084", "bt709", "iec61966-2-1"),
+                // ⚠ 第四格是**低档的活臂**（2026-10-12）：③(a) 把解码侧缩放接进快路径后，上面三格全部
+                //   落到"快路径适用 ⇒ ≥40"档 ⇒ ≥3 那一档在 bench 里**没有任何格子经过**，退化成死码，
+                //   它对账臂（"关表档增益必须 ≈1×"）也就永远不会红。加一格目标为 PQ 的（EncodeScale≠1
+                //   ⇒ 按实测 1457 码的插值误差必须关表）让两档都有活臂、两条对账都有对象。
+                ("sRGB→PQ(目标域换算 ⇒ 关表)", "bt709", "iec61966-2-1", "bt2020", "smpte2084"),
             };
             int cores = Environment.ProcessorCount;
             foreach (var (w, h) in sizes)
@@ -157,7 +162,9 @@ namespace Tests.Diagnostics
                     //   变异 M1（判据整支 `return false`）实测 `pass=16 fail=1`，唯一红的是一条无关的端到端项。
                     //   ⇒ 独立口径 = 这一格**声明的色度学**需不需要"查表表达不了的算子"；
                     //     另加一条「独立口径 == 内核判据」的对账断言，M1/M2 两个方向才都会红。
-                    //   · 快路径适用 ⇒ 单核 ≥40 MPix/s（实测 sRGB→P3 = 51.0、BT.2020→sRGB = 62.4）。
+                    //   · 快路径适用 ⇒ 单核 ≥40 MPix/s（实测 sRGB→P3 = 45.0~56.9、BT.2020→sRGB = 57.2~78.5、
+                    //     PQ→sRGB = 117.0~154.5 —— 最后一格是 2026-10-12 ③(a) 把解码侧 nits 常数乘接进快路径
+                    //     之后从 5.5 涨上来的，多核最高 1099.6 MPix/s）。
                     //     这一档才是"回归看守"：内核判据被改坏、某格悄悄退回解析式（≈5 MPix/s）⇒ 立刻红。
                     //     旧写法拿同一个 40 去套 PQ→sRGB，那格**永远**红（LinearScale=10000/203=49.26，
                     //     查表表达不了 ⇒ 走解析式是**正确行为**），于是整条 bench 被当作"已知假红"没人看。
@@ -165,7 +172,10 @@ namespace Tests.Diagnostics
                     //     BT.2020→sRGB = 57.2/60.0/60.1，PQ 那档 = 5.6~5.8 vs 阈值 3）⇒ 最小项只剩 11%。
                     //     整轮若在负载下假红，正确处置是**静机复跑**（本仓既有规矩"计时必须单机跑、并发期禁测"），
                     //     或加大 best-of-N；**不许**为了凑绿灯把 40 往下调 —— 那正是 L-7 要治的"没人看守"。
-                    //   · 快路径被合法关闭 ⇒ 降到解析式水位 ≥3 MPix/s（实测 5.2/5.5，留 ~40% 余量防负载抖动）。
+                    //   · 快路径被合法关闭 ⇒ 降到解析式水位 ≥3 MPix/s（实测 sRGB→PQ 那格两跑都是 4.2，
+                    //     余量 28%）。合法关闭的是四类：目标域换算 EncodeScale≠1（表是线性域均匀采样、
+                    //     PQ 编码近黑极陡 ⇒ 插值基不对，实测差 1457 码@16bit / 8-bit 出口 6 码）、
+                    //     色调映射、HLG 正/逆 OOTF、色域映射。源侧 nits 缩放**不再**是关闭理由（③(a)）。
                     //   · 反向自证：分档必须与**实测增益**一致。同一格两次计时只差"表给不给"这一个动作，
                     //     所以它们的比值量的就是**内核那句判据**：判为适用却测出 ≈1× ⇒ 快路径没生效；
                     //     判为关闭却测出 >1.3× ⇒ 有算子被跳过、或分档落后于内核。两边都会红。
@@ -174,15 +184,18 @@ namespace Tests.Diagnostics
                     //     量的是调度开销而非并行能力（实测 3.4×/6.4× 飘手），作门禁无意义 → 只记录。
                     // 独立口径：曲线的归一域峰值（PQ=10000nits、HLG=1000nits、其余=SDR 参考白 203nits）。
                     // 换算与生产 `ColorTransformPlan.ToSpec()` 同口径，但**在探针里独立写一份**——
-                    // 它是内核判据的对照臂，不是它的副本。两侧都 SDR 白 ⇒ 两个 nits 系数恒为 1 ⇒ 该走表。
+                    // 它是内核判据的对照臂，不是它的副本。
+                    // 2026-10-12（性能提案 (a)）规则收窄到**目标侧**：源侧的 nits 换算已经是一个常数乘
+                    //   （快循环里做，与解析式同运算）⇒ **不再**构成关表理由；
+                    //   目标侧仍构成，因为 `CurveTables.Oetf` 是线性域均匀采样、PQ 编码曲线近黑极陡
+                    //   ⇒ 插值基不对（实测最大差 1457 码@16bit、8-bit 出口 6 码，见 contract 的 C20 族注释）。
                     static double NitsOf(TC c) => c.Kind switch
                     {
                         TC.CurveKind.Pq => TC.PqPeakNits,
                         TC.CurveKind.Hlg => FfmpegGui.Services.ColorMapping.Bt2100Ootf.NominalPeakNits,
                         _ => TC.SdrWhiteNits,
                     };
-                    bool fastCell = Math.Abs(NitsOf(spec.SrcCurve) - TC.SdrWhiteNits) < 1e-9
-                                    && Math.Abs(NitsOf(spec.DstCurve) - TC.SdrWhiteNits) < 1e-9
+                    bool fastCell = Math.Abs(NitsOf(spec.DstCurve) - TC.SdrWhiteNits) < 1e-9
                                     && (spec.Tone == null || !spec.Tone.Active)
                                     && !spec.SrcIsHlgScene && !spec.DstIsHlgScene && !spec.GamutMap;
                     //   ⚠ GMO 这一项取**声明位** `GamutMap` 而非 `GamutMapActive`：后者还要求目标亮度系数齐

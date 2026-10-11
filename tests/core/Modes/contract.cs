@@ -921,13 +921,34 @@ namespace Tests.Core
                 var spHlg20 = Spec("bt709", "iec61966-2-1", "bt2020", "arib-std-b67");
                 spHlg20.DstIsHlgScene = true;
                 spHlg20.DstHlgSystemGamma = 1.2;              // BT.2100 HLG：L_W=1000 ⇒ 系统伽马 1.2
-                var facesC20 = new (string Name, FfmpegGui.Services.ColorMapping.TransformSpec Sp)[]
+                var spSrcHlg20 = Spec("bt2020", "arib-std-b67", "bt709", "iec61966-2-1");
+                spSrcHlg20.SrcIsHlgScene = true;
+                spSrcHlg20.SrcHlgSystemGamma = 1.2;
+                var spGm20 = Spec("bt2020", "bt709", "bt709", "iec61966-2-1");
+                spGm20.GamutMap = true;
+                spGm20.DstLuminances = new double[] { 0.2627, 0.6780, 0.0593 };
+                // (名字, spec, 期望是否走表, 允许的最大码差)
+                //   2026-10-12 性能提案 (a)：解码侧 nits 缩放改成快循环内的常数乘 ⇒ 源 HDR / 目标 SDR
+                //   的格子**现在真的走表**，本锁第一次比较「插值查表」vs「逐点 pow + ToU16」；
+                //   此前这些格子是**构造恒等**（两支都解析式 ⇒ maxDiff=0 什么也没证，本轮自查抓到）。
+                //   编码侧（目标 PQ）**仍必须关表**——实测表路径与解析式最大差 1457 码@16bit、8-bit 6 码
+                //   （`Oetf` 按线性域均匀采样，PQ 编码曲线近黑极陡 ⇒ 插值基不对）。与
+                //   tests/ServiceProbe/Program.cs 的同名段逐格一致（那份才被执行，此处防分叉）。
+                var facesC20 = new (string Name, FfmpegGui.Services.ColorMapping.TransformSpec Sp, bool ExpectFast, int Tol)[]
                 {
-                    ("EncodeScale≠1（SDR→PQ 目标）", spPq20),
-                    ("DstIsHlgScene（SDR→HLG 目标）", spHlg20),
+                    ("EncodeScale≠1（SDR→PQ 目标）", spPq20, false, 0),
+                    ("DstIsHlgScene（SDR→HLG 目标）", spHlg20, false, 0),
+                    ("SrcIsHlgScene（HLG 源 ⇒ 仍必须关表）", spSrcHlg20, false, 0),
+                    ("GamutMap 开（⇒ 仍必须关表，GMO 不是常数乘）", spGm20, false, 0),
+                    ("LinearScale≠1（PQ→sRGB 源，快路径已启用）", Spec("bt2020", "smpte2084", "bt709", "iec61966-2-1"), true, 1),
+                    ("LinearScale≠1 + 矩阵（PQ→Display P3）", Spec("bt2020", "smpte2084", "smpte432", "iec61966-2-1"), true, 1),
+                    ("LinearScale≠1 + 目标换曲线（PQ→BT.2020-SDR）", Spec("bt2020", "smpte2084", "bt2020", "bt709"), true, 1),
                 };
-                foreach (var (nameC20, spC20) in facesC20)
+                foreach (var (nameC20, spC20, expectFast, tolC20) in facesC20)
                 {
+                    bool fastNow = CK.TableFastPathOperatorsAllow(spC20);
+                    Check(fastNow == expectFast,
+                        $"C20 {nameC20}：快路径开关须与声明一致（期望 {(expectFast ? "走表" : "关表")}，实 {fastNow}）");
                     // clamp=true 是前提：`TransformRgb48le` 只在 ClampLinearBeforeEncode=true 时才把表递进内核
                     var tS20 = CK.BuildTables(spC20.SrcCurve);
                     var tD20 = CK.BuildTables(spC20.DstCurve);
@@ -942,9 +963,9 @@ namespace Tests.Core
                         if (d > maxDiff) maxDiff = d;
                         if (d != 0 && firstDiff < 0) firstDiff = i / 2;
                     }
-                    Check(firstDiff < 0 && maxDiff == 0,
-                        $"C20 {nameC20}：算子激活时表快路径必须关掉 ⇒ 送表与不送表逐字节相同"
-                      + $"（实 首个不同码位={(firstDiff < 0 ? "无" : firstDiff.ToString())} 最大差={maxDiff}）");
+                    Check(maxDiff <= tolC20,
+                        $"C20 {nameC20}：{(expectFast ? "快路径启用 ⇒ 表与解析式差须在容差内" : "算子要求关表 ⇒ 两支都解析式，须逐字节相同")}"
+                      + $"（实 首个不同码位={(firstDiff < 0 ? "无" : firstDiff.ToString())} 最大差={maxDiff} 容差={tolC20}）");
                 }
             }
 

@@ -476,16 +476,27 @@ public static class ColorKernels
     /// 而分档一旦在测试侧另写一份，就会出现"内核改了判据、门禁还在按旧判据分档"的**静默失守**
     /// （本仓已因"同一份数学两份拷贝"踩过两次）。
     /// </para>
-    /// <para>关闭快路径的每一个条件都必须是**真动过像素的算子**（查表表达不了）：
-    /// 亮度域换算 <see cref="TransformSpec.LinearScale"/> / 目标域换算 <see cref="TransformSpec.EncodeScale"/>、
-    /// 色调映射、HLG 的正/逆 OOTF、色域映射。反过来 ⇒ 只改标签或加一个恒等系数都不该关掉快路径。</para>
+    /// <para>关闭快路径的每一个条件都必须是**查表 + 常数乘表达不了**的算子：
+    /// 色调映射（需要 headroom&gt;1 的线性值域，而 OETF 表定义域是 [0,1]）、HLG 的正/逆 BT.2100 OOTF、
+    /// 色域映射（要在矩阵之后、钳位之前动值，表快路径的钳位隐式塞在 <c>EncodeLerp</c> 里）。</para>
+    /// <para>⚠ 2026-10-12（性能提案 (a)）：<b>解码侧的 <see cref="TransformSpec.LinearScale"/> 不再是关闭条件</b>，
+    /// 因为它是**常数**、快循环里直接乘即可（与解析分支同运算、同顺序）。
+    /// F-1 修的是"这个乘法没人做"，从来不是"表不能乘常数"；把它当关表条件会让所有 HDR→SDR 出口
+    /// 整趟退回解析式（实测单核 5.5 MPix/s vs 表路径 45–62 MPix/s）。
+    /// 取得的代价（contract 的 C20 族锁量出，不是估计）：表路径 vs 解析式在 16-bit 域最大差 <b>1 码</b>
+    /// （来自编码侧 <c>EncodeLerp</c> 的插值，与既有 SDR 快路径**同一量级**），而 8-bit 出口量到 <b>0</b>。</para>
+    /// <para>⚠ <b>编码侧 <see cref="TransformSpec.EncodeScale"/> 必须继续关表</b>，这条是本轮实测否掉的：
+    /// <c>CurveTables.Oetf</c> 按**线性域均匀采样**，而 PQ 的编码曲线近黑极陡（γ≈1/788 一族）⇒
+    /// 在这样的表上插值不是"1 LSB 舍入"，是**插值基选错**：SDR→PQ 实测表路径与解析式
+    /// 最大差 <b>1457 码@16bit（≈2.2%，首个不同在码位 3）</b>、8-bit 出口 <b>最大差 6</b> ⇒
+    /// 超出任何"无意义精度损失"的辨界，保持解析式。要想让它也能走表，需要的是
+    /// "编码域均匀采样的第二张表"（未做，已登记）。</para>
     /// <para>⚠ 适用范围 = <see cref="TransformRgb48leCore"/> 的 48-bit 主路径。8-bit 兄弟出口
-    /// （本文件 <c>if (tbl &amp;&amp; (scaleOn || toneOn || encScaleOn || srcHlg || dstHlg))</c> 那一处）
+    /// （本文件 <c>if (tbl &amp;&amp; (toneOn || srcHlg || dstHlg))</c> 那一处）
     /// 的条件**刻意不同**：它的循环能在查表之后仍执行色域映射，所以 GMO 不关表 ⇒ 别拿本方法去替换那处的判据。</para>
     /// </summary>
     public static bool TableFastPathOperatorsAllow(in TransformSpec spec)
     {
-        if (Math.Abs(spec.LinearScale - 1.0) > 1e-12) return false;
         if (Math.Abs(spec.EncodeScale - 1.0) > 1e-12) return false;
         if (spec.Tone != null && spec.Tone.Active) return false;
         if (spec.SrcIsHlgScene || spec.DstIsHlgScene) return false;
@@ -505,6 +516,7 @@ public static class ColorKernels
         var d = MemoryMarshal.Cast<byte, ushort>(dst);
         var srcC = spec.SrcCurve; var dstC = spec.DstCurve;
         double scale = spec.LinearScale;
+        bool scaleOn = Math.Abs(scale - 1.0) > 1e-12;   // 快循环里的解码侧常数乘（见下方 fast 分支）
         bool hasMtx = spec.Matrix != null;
         var m = spec.Matrix;
         float m0 = 1, m1 = 0, m2 = 0, m3 = 0, m4 = 1, m5 = 0, m6 = 0, m7 = 0, m8 = 1;
@@ -544,13 +556,22 @@ public static class ColorKernels
 
         if (fast)
         {
-            // 热路径：3 次 f32 查表 + 3×3 乘加 + 3 次 u16 查表；零 pow、零除法。
+            // 热路径：3 次 f32 查表 +（可选）常数乘 + 3×3 乘加 +（可选）常数乘 + 3 次 u16 查表；零 pow、零除法。
             // （fast 仅在 ClampLinearBeforeEncode=true 时成立，因此线性值先钳到 [0,1] 再查表）
+            // ⚠ 两个 nits 缩放（LinearScale / EncodeScale）在快循环里**做乘法**，而不是"折进表"：
+            //   · 解码侧折表虽然位精确，但表键会多出 scale 这一维（每对曲线×每种缩放一张 768KB 的 LOH 表）；
+            //   · 编码侧折表**不位精确** —— `EncodeLerp` 是在表上线性插值，换域采样等于换插值基。
+            //   而乘法本来就是解析分支的写法 ⇒ 运算顺序与解析分支逐字对齐：
+            //     ToLinear → ×LinearScale → (tonemap) → 矩阵 → (GMO) → ×EncodeScale → (dstHlg) → EncodeLerp
+            //   tonemap / 正逆向 OOTF / GMO 仍由 `TableFastPathOperatorsAllow` 排除在快路径之外。
+            //   F-1 当年缺的是"这两个乘法**没人做**"，不是"表表达不了一个常数乘法"。
             var eF = eotf!; var oF = oetf!;
+            float fScale = (float)scale;
             for (int i = 0; i < pixelCount; i++)
             {
                 int o = i * 3;
                 float r = eF[s[o + 0]], g = eF[s[o + 1]], b = eF[s[o + 2]];
+                if (scaleOn) { r *= fScale; g *= fScale; b *= fScale; }
                 if (hasMtx)
                 {
                     float rr = m0 * r + m1 * g + m2 * b;
@@ -726,9 +747,14 @@ public static class ColorKernels
         bool dstHlg = spec.DstIsHlgScene;
         double dstHlgPeak = dstHlg ? NitsOfGamma(spec.DstHlgSystemGamma) : 0;
         // ⚠ 表快路径的前提被破坏时必须回退解析式（与 16-bit 的 `fast` 判据同源）：
-        //   表把「解码」与「编码」都换成了查表，而下面这几个算子（OOTF/tonemap/缩放）
-        //   在表里表达不了 ⇒ 只要它们启用，就必须走解析式，否则又会静默跳过。
-        if (tbl && (scaleOn || toneOn || encScaleOn || srcHlg || dstHlg))
+        //   tonemap 需要 [0,1] 以外的值域、OOTF 不是多项式、GMO 要在矩阵后钳位前动值 ——
+        //   这三类在"查表 + 常数乘"里表达不了 ⇒ 启用就走解析式，否则会被整段跳过（静默失效）。
+        // ⚠ 2026-10-12：**scaleOn / encScaleOn 已从此条件里摘掉**，因为它对本路径根本不构成理由 ——
+        //   下面第 ② / ④ 步的两个常数乘是**写在 tbl 分支之外**的，带不带表都会执行。
+        //   旧条件是从 16-bit 抄来的过度收窄（那里当初确实缺乘法，所以关表是正确修复；
+        //   16-bit 现在也改成"乘法进快循环"，两边同形 ⇒ 见 TableFastPathOperatorsAllow）。
+        //   摘掉后 HDR 源的 8-bit 出口（PQ/HLG 源 → jpg/webp 等主力 8-bit 交付）从解析式回到表路径。
+        if (tbl && (encScaleOn || toneOn || srcHlg || dstHlg))
         {
             eF = null; oF = null; tbl = false;
         }
