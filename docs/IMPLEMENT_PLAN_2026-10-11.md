@@ -200,7 +200,9 @@ SDR 参考白才该走表），换算与生产 `ColorTransformPlan.ToSpec()` 同
   ⇒ 上一轮明明「失败 1 项」而通知报"completed (exit code 0)"，判成败必须读日志自己的汇总行；
   ② 把验收脚本 `| head -8` 会 SIGPIPE 杀掉它，只留下第一行输出（本仓第 150 行那条的同族，我又犯一次）。
 
-**剩余（步骤③之后仍开）**：全量 73 条宣布新基线（等点头）；`bench` 40 档静机最小项 45.0 ⇒ 余量 11%，
+**剩余（步骤③之后仍开）**：~~全量 73 条宣布新基线~~（**已做，见文末「① 收口」，绑 `A95CCD5F80837E76`**）；
+`verify-ui-split-union` 里 `H10` 的 `Pump(6)` 换成确定性 settle（负载下 ≈11% 抖动，已归因未修，属批次 G 邻域）；
+`bench` 40 档静机最小项 45.0 ⇒ 余量 11%，
 负载下假红只能静机复跑（已写进门禁注释）；`tests/core`+`tests/diagnostics` 的断言双拷贝（批次 G，#13）；
 `F-8` 端到端量级；`L-3b` 正样本 `test4.icc`（**本机两份 lcms checkout 里都没有**，只有 test0/1/2/3/5 ⇒ 那条 SKIP 是真的）；
 ColorGainKit 未提交（现已提交，见下）。
@@ -240,3 +242,110 @@ M4 放开编码侧关表条件 ⇒ 对账红 + 最大差 **27,480 码**。终态
 正是实测 3363MB 的来源）。准入门应放在那三行租 buffer 之前，需求用实测拟合 `70MB + 99MB/MP`，
 空闲物理内存取 `GlobalMemoryStatusEx`（本仓首次 P/Invoke，全仓现 0 处；win-x64-only 可接受），
 **有上限地等、超时后响亮点名继续** ⇒ 不新增死锁面，只把"静默 OOM"换成"可见的等待"。
+
+## 性能提案 (b) 落地：大帧驻留路径的内存准入（2026-10-12）
+
+**做了什么**
+- 新文件 `src/FfmpegGui/Services/MemoryAdmission.cs`：需求 `EstimateMb(pixels) = 70MB + 99MB/百万像素`
+  （三点实测拟合：1080p 263.5 / 4K 818.4 / 8K 3363.1 MB）；空闲量取 `GlobalMemoryStatusEx.ullAvailPhys`
+  （本仓首次 P/Invoke）；不够就**有上限地等**（默认 60s、500ms 轮询）；超时后**响亮点名继续**。
+  取不到读数（非 Windows / API 失败 / 读数不自洽 `0<avail≤total ∧ load≤100`）⇒ 返回 false ⇒ 调用方**不拦**：
+  宁可没这道门，也不拿一个假读数去放行或拦住任务。
+- **接缝两处，同一道门**（这是本轮自查补的一条，见下"接缝位置的一处纠正"）：
+  `RawColorPipeline.cs:312`（引擎出口的 GainMap 整帧解码之前，传 `(long)w * h`）与
+  `QueueProcessor.cs:2708` 的 GainMap **回退管线**（`int pixelCount = width * height;` 之后、整帧
+  `ReadAllBytesAsync` 之前，传 `(long)width * height`）。
+
+**为什么不放在 `EstimatePerTaskMemoryMB`**：那里是**不随像素缩放**的平坦除数（设计约束：只读入队期已知的选项标志、
+不做文件嗅探），而这两个接缝处 `w×h` 是**已知的** ⇒ 估算能落到本帧真正要占的量上。
+⇒ 步骤② 记的两条缺口里，「平坦除数 vs 8K=3363MB ⇒ 2.9× 欠预留」这一条由 (b) 关闭；
+「`ClampConcurrencyByMemory` 用的是 `TotalAvailableMemoryBytes`（**总量**，本机 32380MB）而非空闲量 ⇒ 在本机永不生效」
+仍开着 —— 按像素/压力准入就是那条根修的第一步。
+
+**为什么是"等"而不是"拒"**：用户政策「能不拒绝就不拒绝，只警告」；等待有上限 ⇒ 两个互相等对方释放内存的任务
+不可能永久挂住；真 OOM 仍由逐任务捕获报出（(b) 只是把静默换成可见）。
+
+**判据与变异（十支，逐支只红它该红的那条）**
+探针 `ServiceProbe memadmit`（① 读数自洽 + ② 三点拟合 ≤15% ⇒ `pass=4 fail=0`，
+`tests/output/memadmit-1.log`）与 `memadmit pressure`（P-1..P-5 ⇒ `pass=5 fail=0`，同目录 `memadmit-pressure-1.log`）。
+门禁 `verify-gainmap-memory.ps1` 默认臂 **16/0 SKIP=1**（`gmmem-F5-1.log`），显式 `GMMEM_HEAVY=1` 时 **20/0 SKIP=0**
+（`gmmem-heavy-2.log`）。变异逐支读数在 `tests/output/mut-MUT*.log`：
+
+| 变异 | 改了什么 | 期望转红 | 实读 |
+|---|---|---|---|
+| MUT1 | 总物理量读 `ullTotalVirtual` | E-2 | 产品自洽判据 ① 与 P-1..5 **全绿**，门禁 `15/1` 只红 E-2（差 134,185,348MB）|
+| MUT2 | 空闲量读 `ullAvailPageFile` | E-3 | ① 仍绿，红 E-3（产品 14415MB vs CIM 9589MB，容差 2,397MB）|
+| MUT5 | `PerMpMB 99 → 60` | ② | ② 三点全红（偏差 26.2 / 30.6 / 38.7%），门禁 `13/1` |
+| MUT3 | 永远判「够」⇒ 不等不点名 | P-1/P-2/P-3 | 压力臂 `pass=2 fail=3` |
+| MUT4b | 删掉「够就静默返回」 | P-4 | P-4 红（实发 2 条）|
+| MUT6 | 摘掉**引擎出口**调用点 | F-1/F-2/F-3 | `13/3`，F-4/F-5/F-6 仍绿 |
+| MUT7 | 引擎出口需求量写成常量 | F-2 | `15/1` 只红 F-2 |
+| MUT8 | 摘掉**回退管线**调用点 | F-5/F-6 | `14/2` |
+| MUT9 | 回退管线需求量写成常量 | F-5 | `15/1`，F-6 绿 |
+| MUT10 | 把回退管线的调用点挪到整帧读入**之后** | F-6 | `15/1`，F-5 绿 |
+
+⇒ **E-2/E-3 的存在理由被 MUT1/MUT2 直接量出来了**：结构体读错字段时产品自己的自洽判据**放行**，
+只有第二个独立读者（CIM `Win32_ComputerSystem` / `Win32_OperatingSystem`）抓得到。
+⇒ F 六支是**源形锁**：变异只改源文本、不重建（重建与这条判据无关）⇒ 同轮 A–D/E 臂测的还是上一版 dll，
+不参与该判读；MUT10 是 F-6 的**独牙**证明（顺序错了 ⇒ F-5 绿而 F-6 红）。
+
+**真机行为证据（重臂，各吃十几 GB）**：G-2 引擎路 8K×4 全产出、峰值 10114.4MB ≤ 有界 16142MB；
+**G-3** 起臂前空闲 9542MB < 4 帧实测需求 13452MB 而日志确实有 `[MemoryAdmission]` 点名 ⇒ 「需求超空闲时这道门真的拦过」；
+**G-4** legacy 路 8K×4 全产出、峰值 11297.7MB ≤ 16142MB（起臂前空闲 11408MB < 需求，点名=True）。
+G-3/G-4 都是**析取式**：另一支「起臂前空闲本就够 4 帧」是诚实出口（硬要求点名 = 空闲机器上恒红）；
+需求量用**实测 3363MB × 4**，不用产品自己的拟合常数（判据从被检量派生 = 没检）。
+
+**接缝位置的一处纠正**：(a) 段末尾我预判「门应放在 `GainMapEncoder.EncodeAsync:142-186` 那三行租 buffer 之前」——
+落地时否证：`EncodeAsync` 收到的 `pixels` **已经是调用方分配好的整帧**，门装在那儿只拦得住第 4 份之后的量。
+⇒ 真实落点是两个**上游调用方**在整帧解码/读入之前。同一次落地还查出覆盖缺口：只给引擎出口装门 ⇒
+`--color-engine legacy` 或「引擎不可走」（增益图 + 最长边缩放）时轮到 `QueueProcessor` 那条专用管线，**它没门**
+（本仓老教训的同族：两条入口只改了一条，`GainMapJpegCodec` 的存在理由就是它）。
+
+**自查抓到的一处文案夸大**：`MemoryAdmission` 文档注释原写「三点各自偏差 ≤6%」，实跑是 **4.5% / 8.9% / 0.3%**
+（判据上限 15%）⇒ 已改成实测数并指到 `memadmit` ②。
+
+**没做到的（登记）**
+- 准入只管「整帧租 buffer 之前」这两处；`BufferPool`/LOH 侧、`GainMapDecoder` 的整帧读入没有接。
+- G 臂默认 SKIP ⇒ 每轮整轮只有 E/F 的 16 条在跑；「会等 / 会点名 / 会放行」的完整路径只在显式重臂里有牙。
+- 等待预算 60s 是拍的（没量过「真等多久才等得到」）；预算到了仍继续 ⇒ 极端并发下照样可能 OOM，只是不再静默。
+- legacy 那条路只有一条析取判据背书（G-4），它需要显式开关才跑。
+
+**归属**：产品码改动（`MemoryAdmission.cs` 新增 + `RawColorPipeline.cs` + `QueueProcessor.cs`）⇒ 逐工程 `-t:Rebuild`
+后 **23 枚 `FfmpegGui.dll` 同为 `A95CCD5F80837E76`**（`build-failures=0`）。
+
+## ① 收口：宣布新基线（2026-10-12，绑 `A95CCD5F80837E76`）
+
+**这一轮**：`tests/output/gates-round-2026-10-12-full5.log`，73 条受管脚本 + 27 mode 探针，
+**脚本 71 绿 / 3 红**（两条命名豁免 + 一条本轮完成归因的抖动），**探针 754 pass / 1 fail**（那 1 条就是命名豁免 ①）。
+尺与件：`runner-self-sha256=1C785039CDA1A86C lines=1364 bytes=130109`（起/收尾逐位一致），
+`FfmpegGui.dll=A95CCD5F80837E76`（23 枚同）/ `FfmpegGui.exe=18C70C341A8F2460` / `ServiceProbe.exe=2D4EBBAA395FBACD`
+/ `UiTestHost.exe=E8550650A3A4F591` / `GainMapTestHost.exe=21D9F558D135599C`；无 `.gates.lock` 残留、无超时击杀、无源码漂移。
+磁盘双采样（本轮起进启动器）：起 **32.21GB** → 收 **26.87GB** ⇒ 整轮自身留 ~5.3GB 夹具。
+
+**命名豁免 ①** `probe:runner 7/1` —— 沙箱把子进程认成 `cmd.exe` ⇒「target is not ffmpeg ⇒ 拒绝注入 `-progress pipe:1`」，
+与 beta7 / p2b / full3 逐字同读数。环境假红，**判据一字未动**。
+**命名豁免 ②** `_probe-test-group-coverage 18/2` —— 按设计红：登记 7 个零调用点 mode
+（`bitdepth`/`gainmap-decode`/`gainmap-encode`/`gainmap-struct`/`gamut` …）与 1 个非清单调用点（`icc`）。
+它锁的是"这些 mode 还没进受管清单"这件事本身 ⇒ 红就是台账，不是坏掉的判据。
+
+**第三条：本轮从"未署名抖动"变成"有名有率"**
+轮内红的是 `ui-color` mode 的 `H10 命令含smpte432且非bt2020` —— 整行由运行器的逐条留痕文件存着
+（`tests/output/_gate_script_verify-ui-split-union.ps1.txt:20`，`PASS=10 FAIL=1` 的那 1 条），
+standalone 单跑同 exe 同参数则 `15/0`。
+复现率实测（`tests/output/step2/h10_rate.py`，逐次跑 `Tests.UiColor.exe <sources> ui-color`）：
+**负载窗口 54 次运行红 6 次（≈11%）**，随后的安静窗口 **20 次全绿** ⇒ 与「两条异步命令之间睡固定时长 = 赌」
+这一已知形态同族：H10 写的是 `csCombo.SelectedItem = "Display P3"; Pump(6); SetFormat("PNG"); Regen()`，
+用**固定 pump** 等异步联动收敛，负载下没收住 ⇒ `Regen()` 按选择生效前的状态建命令。
+⚠ 失败行的命令串被 `Snip()` 截在 `-compression_lev…`，所以"读到的是哪个残留状态"这一层**没有量到**，只归到机制类。
+⇒ 判据不放宽、不改文案；欠账登记为「H10 的 `Pump(6)` 换成确定性 settle」，属批次 G 邻域
+（UI 断言三份逐字拷贝 + 413 计数钉 + verbatim/union 两把闸都在这一带），本批不动。
+
+**两条作废轮的账（写清楚，别让下一位重新猜）**
+- `full3`：跑到一半我改了一行文档注释 ⇒ 运行器漂移闸判废（「本次结论不对应当前工作区 ⇒ 必须重建后重跑」）。
+  该轮其余 71 条脚本全绿，且 `full2` 的两条 UI 分裂红（verbatim/union）在这一指纹上已复验转绿。
+- `full4`：22 条红由 **C: 写满** 摧毁。签名三件：`ffmpeg` 子进程退出 **-28 = AVERROR(ENOSPC)**、
+  红全部落在"依赖产物生成"的臂（夹具"复制失败"、`PASS=0`、两条 900s 超时击杀），纯计算臂 `contract 153/0` 照绿；
+  **第二个读者** = Windows 事件日志 05:52 `ESENT -529`「数据库无法写入日志驱动器…磁盘空间不足」（系统自己的进程也被同一件事卡住）。
+  同指纹单跑三条红脚本当场全绿（`tests/output/preflight-1.log`：`format-regression 19/0`、
+  `colorfmt-matrix WARN=4 不判红`、`gainmap-managed` 全绿）⇒ 两条都不是代码结论。
+  ⇒ 处方进的是启动器而不是判据：开局/收尾各采一次 `AvailableFreeSpace` 写进日志，低于 6GB 直接拒绝起跑。

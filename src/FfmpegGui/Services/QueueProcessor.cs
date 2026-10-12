@@ -2701,6 +2701,13 @@ namespace FfmpegGui.Services
 
                 // Step 3: 读取像素 (gbrpf32le planar: G/B/R 三平面) → RGBA 交错
                 int pixelCount = width * height;
+                // 准入门（2026-10-12）：本条**回退管线**同样按整帧驻留（RAW 12B/px + RGBA 16B/px +
+                // GainMapEncoder 三份 float[pixelCount*4]，实测 8K 单任务峰值 3363MB）。
+                // 只给引擎出口（RawColorPipeline）装门而这里不装 ⇒「--color-engine legacy」或
+                // 「引擎不可走」（增益图 + 最长边缩放）轮到这里时等于没门 ⇒ 两条入口同一道门。
+                await MemoryAdmission.WaitAsync((long)width * height,
+                    "GainMap full-frame decode (legacy route)",
+                    s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ct).ConfigureAwait(false);
                 var rawBytes = await File.ReadAllBytesAsync(rawPath, ct);
                 if (rawBytes.Length < pixelCount * 3L * 4L)
                 {

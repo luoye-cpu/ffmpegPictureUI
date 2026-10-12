@@ -305,6 +305,11 @@ public static class RawColorPipeline
 
         var st = new Stats { Width = w, Height = h };
         var sw = Stopwatch.StartNew();
+        // ── 准入门（2026-10-12）：本出口按**整帧**驻留 float[]（≈64B/px 的四份线性缓冲 + 解码中间
+        //    raw 12B/px），实测 8K 单任务峰值 3363MB ⇒ 队列层那个不随像素缩放的平坦除数拦不住它。
+        //    这里 w×h 是已知的 ⇒ 用实测拟合估本帧需求，空闲不足就**有上限地等**，超时仍继续并点名
+        //    （不新增死锁面；真 OOM 仍由逐任务捕获响亮报出）。依据与读数见 MemoryAdmission 的文档。
+        await MemoryAdmission.WaitAsync((long)w * h, "GainMap full-frame decode", log, ct).ConfigureAwait(false);
         var tmp = Path.Combine(PlatformServices.GetTempDir(), $"cms_gm_{Guid.NewGuid():N}.rgba");
         try
         {
