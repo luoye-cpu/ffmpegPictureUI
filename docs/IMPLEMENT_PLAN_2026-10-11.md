@@ -488,3 +488,133 @@ HEAD=`942af28`，无锁残留、无超时、无源码漂移。磁盘双采样 36
 - 文档过期两处（本轮只登记，未改）：`tools/BUILD_TOOLS.md` 的表写 ffmpeg=git-2026-08-06，
   实际出货件是 **git-2026-10-11-edadf711a9**（与本机 `C:\PLAN\FFmpeg` 同一构建）；同表仍把
   `ultrahdr_app` 列为"VS 自编译"，而脚本已移除它。
+
+
+---
+
+## 批次 G（UI 面）：把拆分件收回「生成物」这个身份 —— 2026-10-13
+
+**接手时的一句话事实**：`UiTestHost/Program.cs` 号称 17 个 UI 组的「唯一真值」，而它实际上已经不是了。
+先量的不是"怎么改"，而是"这句话现在还成不成立"：
+
+```
+pwsh -File tests/scripts/_gen-ui-split.ps1 -RepoRoot <一份只含 Program.cs 的空仓库根>
+     → 把 5 份生成物与活树做 sha256 逐字节对撞
+```
+
+**实测：5 份里 2 份不是生成物。**
+
+| 工程 | 生成物行数 | 活树行数 | 差在哪 |
+|---|---|---|---|
+| ui-core / ui-mode / ui-cli | — | — | 逐字节全等 |
+| ui-color | 925 | 927 | 活树多 1 个手加包装 `SelectColorSpaceSettled`（含 1 行注释） |
+| ui-sweep | 1092 | 1172 | 活树多 3 个包装（`Skip`/`ResetAdvancedColorToAuto`/`SelectColorSpaceSettled`）+ **J1z 修复 38 行** + **J8 修复 36 行** + 1 行注释各写各的 |
+
+⚠ 另有 **61 处裸 LF** 的差异不是内容：**生成器脚本自身是 LF 编码**，`$usingBlock`/`$forwarders` 两段
+here-string 于是带裸 LF 落进生成物，而活树被编辑器保存过 ⇒ 归一成纯 CRLF ⇒ **"重跑 + 比字节"这件事
+在此之前永远对不上**，与有没有人手工改过无关。这一半只有先量字节才会看见。
+
+**真正的缺陷不是"有两份拷贝"，是"真值这一侧在跑修复前的代码"**：verbatim 因此只能整组放行 `GroupJ_`
+⇒ **J 组 798 行退出逐字比较**，而参照件旧宿主还在跑 J1z 的假红断言与 J8 的 `cs.SelectedItem = v; Pump(8)`。
+`verify-ui-split-union.ps1` 还得靠一条 **J1z 改名白名单**（3a2/3b2 要求"恰好命中 1 条"）才绿——
+那两条反控当时的含义是"承认两侧不同名"。
+
+### 改法（四条，顺序要紧）
+
+1. **回灌**：J1z（环境前置改 `Skip` + 无条件形态断言）、J8（改用 `SelectColorSpaceSettled` 等异步联动落地
+   + `[J8dbg]` 诊断行）、以及旧宿主缺的 `Skip` helper，全部搬进 `Program.cs`（`+91/−3`）。
+   搬运用**从被执行那份逐行切片**（`feed_j.py`：先断言边界行内容，再取 140..178 / 346..383），不手抄。
+   回灌方向上的例外只有一处：拆分侧那句"与 UiTestHost/Program.cs 的同名臂逐字一致"是**转述**，
+   真值里该留的是原判据句（`②的三个部件缺任何一个都判红 ⇒ 钉死"改标签不改像素"`）⇒ 让生成器把它刷回拆分侧。
+2. **包装集合改为「按实际引用推导」**：`$forwarders` 变成 40 条**候选池**，生成器把池切成条目，
+   每个工程只发它的**组体 + 入口**真用到的。判据 = 剥掉行注释后的文本里出现该名字。
+   两种错都不静默：漏发 ⇒ 编译当场失败；只在字符串字面量里出现 ⇒ 多一个没人调的私有包装（无警告、无害）。
+   ⇒ 当场清掉 `ResetAdvancedColorToAuto` 这个**零调用点死包装**（每工程裁掉 12–23 条）。
+   ⚠ 入口必须一起扫：H 的 `$colorPre` 与 L 的 AVIF 定型前置都调 `SetFormat(...)`，只扫组体会裁掉入口在用的包装。
+   ⇒ 顺带把入口文本抽成 `Get-Entry`，让"参与扫描的入口"与"写进文件的入口"是同一次产出。
+3. **生成器输出统一 CRLF**（`($sb -split "`r?`n") -join "`r`n"`）⇒ 字节比对从此与编辑器保存无关。
+4. **两道旧豁免归零**（是收紧，不是放宽）：verbatim 的 `$waivedGroups = @{}` + 新增反控
+   「登记表必须为空 / 实际跳过 0 组 / 真正比较了 17 组」；union 的 `$renamedPairs = @()`（3a2/3b2 现在要求命中 **0**）。
+
+### 判据：新门 `verify-ui-split-reproducible.ps1`（受管第 74 条，清单 73 → 74）
+
+19 条，全部**源码形状**判据 ⇒ 不需要重建任何二进制（实测 ≈40 s，主要花在跑 3 次生成器）。
+R-1..R-5 五份逐字节全等 · R-6 **改真值 ⇒ 生成物必变** · R-7 量级反控（防路径错导致空文件互比"全等"）·
+R-8 纯 CRLF · R-8b 生成器**幂等**（同输入两次同一字节，防把 PID/时间戳写进生成物）· R-9 **零死包装** ·
+R-10 **双拷贝等值锁**（旧宿主与 `UiHost` 两份 `SelectColorSpaceSettled` 逐行相等，实测各 26 行、差异 0）·
+R-11 旧宿主 `Skip` 形状锁（打 `[SKIP]`、计 `_skip`、**不动** `_pass`/`_fail`）。
+
+接线同批改的四处条数陈述：`$expectedScriptCount` 73→74 + 运行器三种散文形态（`全跑 N 条`／
+`清单条数以实测为准 = N 条`／`受管基线：脚本清单 = **N** 条`，由第 ⑰ 针对账）+ 脚本段时长预算
+`2015 s → 2070 s` + `docs/TESTING.md` §3.5 链首一条。
+
+### 当场量到的读数（都有留痕）
+
+- 回灌+生成+重建后：`GENCHECK total=5 drift=0`；7 工程 `-t:Rebuild` **0 警告 0 错误**
+  （旧宿主第一版带出 1 条 `CS8604`，是拆分侧当年就有的同一处 ⇒ 真值里补 `v!` 后两侧一起归零）。
+- `verify-ui-split-verbatim` **22/0**：17 组全比、**Group J 798 行逐字一致**、比较 3263 行、登记表 0、跳过 0。
+- `verify-ui-split-union` **11/0**：旧宿主 **419 PASS / 0 FAIL**、并集 **419**、missing/extra 各 0、
+  白名单命中 **0**（两侧同名）。留痕 `tests/output/step2/union_after_feedj.log`。
+- `verify-ui-split-reproducible` **19/0**。
+- **变异四支，各只红该红那条**（`tests/output/step2/mut_g_readout.txt`，跑完逐字节还原相等）：
+  ① 活树加一行注释 ⇒ `R-1 ui-color` 红（1 条）；② 给 ui-cli 塞一个它没调用的 `Snip` 包装 ⇒ `R-9`＋`R-1`（2 条）；
+  ③ 只改 `UiHost` 那份 `Pump(6)`⇒`(7)` ⇒ `R-10` 红（读到 `行10: old=[Pump(6);] base=[Pump(7);]`）；
+  ④ 旧宿主 `Skip` 里加 `_pass++` ⇒ `R-11` 红（`误动=True`）。
+
+### 自我更正（这一轮被当场推翻的三条）
+
+1. **R-6 的牙先咬到我自己的实现**：第一版把"改真值"注入写进 `$scratch/tests/UiTestHost/Program.cs`，
+   而 `Invoke-Gen` 每次都从活树重新拷贝真值 ⇒ 注入被自己覆盖 ⇒ 该条判红。修法是给 `Invoke-Gen` 加
+   可变 `$srcAbs`，变异打在独立目录。**对照臂不动就不算对照**（[[feedback-no-unverified-narration]] 又中一次）。
+2. **G2 的靶子选错**：第一版拿 `UiState` 当"ui-cli 没用到的包装"，而 `uicliGroup.cs:63` 的 M 组**真的调用它**
+   ⇒ 造出来的是重复声明，`R-9` 不红是**对的**。换 `Snip`（该文件 `grep -w` 命中 0）才成。
+3. **注释归属写反**：条目切分第一版把"非声明行"并进**上一条**的尾巴 ⇒ `Skip` 上方两行注释挂到了 `Check`，
+   于是未引用 `Skip` 的工程照样发出那段注释、包装本体却被裁掉（注释与包装分家）。
+   这条是**我自己在 diff 里看见的**，不是编译报错——编译不会管注释。
+
+另有一条**环境假红**要记账：回灌后第一次跑 union 得 `7/4`，红的不是 UI 拆分而是
+`I3 ProPhoto保真 :: GetFaithfulIcc 返回 null`——机制 = 该服务把命名 ICC 写进 `PlatformServices.GetTempDir()`，
+而我的启动器是从 MSYS bash 起的，`TMP=/tmp` 被子进程继承 ⇒ 写不进去。
+按整轮启动器的同一姿势（`TMP/TEMP` 指到工作区 + 清 `LC_ALL/LANG/LC_CTYPE` + `FFMPEGGUI_FFMPEG_DIR`）复跑 ⇒ **11/0 @419**。
+⚠ 顺带记一条我自己的启动器缺陷：上一版只并了 `2>&1`，而门禁用 `Write-Host`（information 流）⇒ 日志 0 字节、
+读数只活在终端里。现已 `6>&1 2>&1 | Tee-Object`。
+
+### 批次 G（UI 面）没做的事（欠账，按要付的代价排）
+
+- **旧宿主的基础设施仍是第二份实现**（`Pump`/`Find`/`Check`/`TempDir`… 一整块，不只那两个 helper）：
+  它不引用 `UiHostShared`，而 `UiHost` 的 helper 绑的是 `UiHost.W` ⇒ 改成转发要连带把参照件的
+  Avalonia 引导换掉，**换了之后 union 的"参照实现"就与拆分件共享底座**（并集判据仍成立，独立性下降一档）。
+  ⇒ 这一步按 #18 的纪律**先装尺子再谈合并**，本批只做等值锁 R-10/R-11 把它钉住。
+- `UiHost.ResetAdvancedColorToAuto` 现在**全仓零调用点**（J8 的最终修法用了 `SelectColorSpaceSettled`）：
+  死包装已由推导消掉，`UiHost` 里那个 public helper 留着未删——它的文档记载了两条**真知识**
+  （`SelectComboItem` 按值查下标 ⇒ 同值不触发；选 `auto` 不足以复位高级三元组）。要删得先给这两条找落点。
+- 运行器被改 ⇒ `runner-self-sha256` 必然漂移 ⇒ **上一轮全绿不再归属当前树** ⇒ 本批收尾按纪律
+  逐工程重建 23 个目标 + 重跑整轮（读数见下面「### 整轮读数」）。
+
+### 整轮读数（`tests/output/gates-round-2026-10-13-full9.log`；起跑 00:22:33 / 首条留痕 00:24:55 / 收尾 00:57:25，执行 ≈32.5 min，清单 **74** 条）
+
+- **尺与归属**：`runner-self-sha256=FDA160BC74426619 lines=1393 bytes=133476` 起/收**一致**
+  （旧尺 `1C785039CDA1A86C lines=1364 bytes=130109` 自此作废）；`shape-selfcheck=OK（17 针）`；
+  `script-list=74 条（受管基线 74）`；无 STALE、无漂移警告、`.gates.lock` 正常释放；
+  磁盘 88.91 → 85.83 GB（开局 6 GB 闸门未触发）。
+- **被测件**：`artifact-sha16 FfmpegGui.dll=3F7ED22634403E33`（23 个目标 `-t:Rebuild` 全成功、
+  23 枚 `FfmpegGui.dll` **同一 sha**）；`FfmpegGui.exe=0D6B7E63BAE6EDD5`、`UiTestHost.exe=295C5CAEFA3F0594`、
+  `ServiceProbe.exe=6B8BBC81EB8CFA34`、`GainMapTestHost.exe=3135507C6F48B6B6`。
+- **汇总 = 失败 2 项，两条都是先前已点名的既有红，本批没有新增红**：
+  ① `probe:runner 7/1`（沙箱把子进程认成 `cmd.exe` ⇒ 拒注 `-progress pipe:1`；与 beta7/p2b/full5–full8 同读数，
+     2026-10-07 已定论「不为它改探针或产品」）；
+  ② `script:_probe-test-group-coverage`（**按设计红**：7 个零调用点 mode `bitdepth/gainmap-decode/gainmap-encode/
+     gainmap-struct/gamut/…` + 1 个非清单调用点 `icc`）。
+- 其余 **73 条脚本全 exit=0**，本批三把 UI 锁在**轮内**的留痕读数：
+  `verify-ui-split-verbatim` **22/0** · `verify-ui-split-union` **11/0**（`new=419 old=419`）·
+  `verify-ui-split-reproducible` **19/0**（轮内 `R-10` 读到「旧宿主 26 行 / UiHost 26 行、差异 0」）。
+- 参照件驱动的 5 条 UI 门禁在轮内全部打 `===== UI 测试汇总: 419 PASS / 0 FAIL =====`
+  （`verify-ui-host` / `verify-ui-param-matrix` / `verify-ui-strategy-map` / `verify-ui-param-defects` /
+  `verify-cli-strict`，该串在轮日志里恰好命中 **5** 次）
+  ⇒ **回灌后的旧宿主自己在跑修复后的 J1z/J8，且不再需要改名白名单**。
+- 顺带留档（与本批无关但下轮可比）：`bench 30/0`（full8 那条比值臂负载假红本轮安静时段不复现）、
+  `contract 153/0`、`_probe-cjk-hardcode-scan 14/0`（本批新增中文注释没顶破任何一档棘轮）、
+  `_probe-gui-control-wiring 82/0`、`verify-usability-e2e 84/0`。
+- ⇒ **新基线现值 = `3F7ED22634403E33`（74 条 = 73 绿 + `_probe-test-group-coverage` 按设计红；
+  探针段 `runner` 沙箱红）**。宣布口径沿用：**逐条点名，不压成总数**。
+

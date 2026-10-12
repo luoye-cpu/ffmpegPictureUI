@@ -1,6 +1,6 @@
 # _run-step3-gates.ps1 —— 步骤 3 改动后的门禁批量执行（只回显每个门禁的汇总行 + 失败明细）
 # 用法：pwsh -NoProfile -File tests/scripts/_run-step3-gates.ps1 [-Probes a,b,c] [-SkipScripts] [-Scripts a,b]
-#   ⚠ `-Scripts` = **脚本级子集**（2026-09-24 新增）。动机：此前只有"全跑 73 条"与
+#   ⚠ `-Scripts` = **脚本级子集**（2026-09-24 新增）。动机：此前只有"全跑 74 条"与
 #     "裸跑单个 verify-*.ps1"两种选择，而裸跑会绕开本文件的**仓库锁 / 单步超时 / STALE 新鲜度闸 /
 #     双漂移复核 / `_gate_script_*.txt` 留痕**五项保护 ⇒ 增量验证要么太贵要么不可信。
 #     ⚠ 全跑墙钟不再写死分钟数：2026-10-01 起清单含 5 条 **L3/产物级**套件（第 61~65 条），
@@ -57,7 +57,7 @@ param([string]$Probes = 'contract,wire,verdict,selftest,iccname,plan,curve,matri
       #     依据 = 本轮整轮（清单 65 条，`tests/output/t84/round-beta4.log`）子脚本读数：
       #       max **243.8 s** `verify-color-strategy` ｜ **163.5 s** `verify-jbrd-e2e`（第 62 条，本批新接的 L3）
       #       ｜ **144.9 s** `verify-color-wiring` ｜ **120.4 s** `verify-encoder-knob-liveness`（第 65 条）
-      #       ｜ 脚本段合计 ≈**2015 s**（≈34 min）。243.8 × 3 = 731 ⇒ 向上取整 900（对最慢项 = 3.7×）。
+      #       ｜ 脚本段合计 ≈**2070 s**（≈35 min）。243.8 × 3 = 731 ⇒ 向上取整 900（对最慢项 = 3.7×）。
       #     ⚠ 旧的 480 早已不是"max×3"：它按 09-19 的 max 158.9 s 定，而 `verify-color-strategy` 后来长到
       #       243.8 s ⇒ 480 只剩 2.0×，按本段自己的话"紧超时在负载下会假红"，它**会咬合法慢门禁**。
       #       接 L3 五套只是把次高项抬了一档，触发的是**重新结算**，不是给新条目开后门。
@@ -86,7 +86,7 @@ param([string]$Probes = 'contract,wire,verdict,selftest,iccname,plan,curve,matri
 #    2026-09-17 新增 verify-gamut-map.ps1；**同日按「运行级隔离（GUID）」改写，见 §6 第 66 条**；
 #    同日再新增生产者 `_probe-jpg-p3-icc.ps1`，理由见下方 ②(b) 与调序注释；
 #    同日再新增 `verify-geometry-engine.ps1`（**几何缩放死代码**的专项门禁，理由见 `$Probes` 的 `geometry` 注释））──
-#    ⚠ **清单条数以实测为准 = 73 条**（⚠ 2026-09-19 P4-A 前为 42 条；2026-09-23 由 48 经 49/50/51 到 52，2026-09-23/24 再接 `verify-ipc-extra-options.ps1` ⇒ 53，2026-09-24 再接 `_probe-settings-clone-coverage.ps1` ⇒ 54，2026-09-27 再接 `_probe-matrix-structure.ps1`（任务 #42，秒级结构自检）⇒ 55，同日再接 `_probe-stderr-merge-scan.ps1`（任务 #51，合并取数结构锁）⇒ 56，同日再接 `verify-simd-switch-fallback.ps1`（面板「SIMD 优化」声明/实现冲突 ⇒ 判据单点 `SimdKernelRouting`）⇒ 57，2026-09-30 再接 `verify-geometry-orientation.ps1` + `_probe-geometry-single-source-scan.ps1`（取向标签 ⇒ **显示尺寸**口径的专项门禁 + 唯一实现结构锁）⇒ 59，同日再接 `verify-gainmap-host.ps1`（把 `GainMapTestHost` 套件接进清单 + STALE 第 ⑤ 对）⇒ 60，2026-10-01 再接**首批 L3/产物级套件**5 条（`verify-package-smoke` + `verify-jbrd-e2e` + `verify-orientation-rewrap` + `verify-gainmap-thirdparty` + `verify-encoder-knob-liveness`；原居 gitignored 的 `tests/output/t{69,76,77,79}`，`git clean -xdf` 一次就没、也不在任何轮里被跑）⇒ 65，2026-10-04 再接 `_probe-jxl-input-target.ps1` + `_probe-raw-default-tier.ps1`（色彩审查两个 P1 的判据）⇒ 67，同日再接 `_probe-gui-control-wiring.ps1`（72h 审查 P0：GUI 控件「声明了却没接线」结构锁）⇒ 68，2026-10-05 再接 `_probe-test-group-coverage.ps1`（测试物理拆分的**组表↔探针清单覆盖一致性锁**，防「某 mode 无组认领 ⇒ 永远不被跑」的假覆盖）⇒ 69）（`foreach` 数组里的 `.ps1` 条目数）。
+#    ⚠ **清单条数以实测为准 = 74 条**（⚠ 2026-09-19 P4-A 前为 42 条；2026-09-23 由 48 经 49/50/51 到 52，2026-09-23/24 再接 `verify-ipc-extra-options.ps1` ⇒ 53，2026-09-24 再接 `_probe-settings-clone-coverage.ps1` ⇒ 54，2026-09-27 再接 `_probe-matrix-structure.ps1`（任务 #42，秒级结构自检）⇒ 55，同日再接 `_probe-stderr-merge-scan.ps1`（任务 #51，合并取数结构锁）⇒ 56，同日再接 `verify-simd-switch-fallback.ps1`（面板「SIMD 优化」声明/实现冲突 ⇒ 判据单点 `SimdKernelRouting`）⇒ 57，2026-09-30 再接 `verify-geometry-orientation.ps1` + `_probe-geometry-single-source-scan.ps1`（取向标签 ⇒ **显示尺寸**口径的专项门禁 + 唯一实现结构锁）⇒ 59，同日再接 `verify-gainmap-host.ps1`（把 `GainMapTestHost` 套件接进清单 + STALE 第 ⑤ 对）⇒ 60，2026-10-01 再接**首批 L3/产物级套件**5 条（`verify-package-smoke` + `verify-jbrd-e2e` + `verify-orientation-rewrap` + `verify-gainmap-thirdparty` + `verify-encoder-knob-liveness`；原居 gitignored 的 `tests/output/t{69,76,77,79}`，`git clean -xdf` 一次就没、也不在任何轮里被跑）⇒ 65，2026-10-04 再接 `_probe-jxl-input-target.ps1` + `_probe-raw-default-tier.ps1`（色彩审查两个 P1 的判据）⇒ 67，同日再接 `_probe-gui-control-wiring.ps1`（72h 审查 P0：GUI 控件「声明了却没接线」结构锁）⇒ 68，2026-10-05 再接 `_probe-test-group-coverage.ps1`（测试物理拆分的**组表↔探针清单覆盖一致性锁**，防「某 mode 无组认领 ⇒ 永远不被跑」的假覆盖）⇒ 69）（`foreach` 数组里的 `.ps1` 条目数）。
 #      原注释写「29 个」「31 条」均与实测不符（**历史偏差**，非本轮引入），已按实测更正。
 #      2026-09-18 新增 `verify-engine-firstframe.ps1`（引擎多帧解码只取首帧，理由见该脚本头注释）
 #      ⇒ 32 → 33，已重新数过。
@@ -933,7 +933,7 @@ $noSelfSummary = @('_probe-cancel-propagation-scan.ps1', '_probe-ct-chain-closur
 #   观察项**，改成必红等于**主动放弃一条覆盖**；补生产者只是**修复清单的遗漏**。
 #   ⚠ **本组正确性依赖 runner 串行**（`validate/jpgp3` 是固定共享目录）——
 #   若将来 runner 改成并行，本组必须先改成「指针/按会话隔离」（§6 第 68 条）。
-# ⚠ 受管基线：脚本清单 = **73** 条（`.workbuddy-ai/memory/MEMORY.md` / `docs/HANDOVER.md` /
+# ⚠ 受管基线：脚本清单 = **74** 条（`.workbuddy-ai/memory/MEMORY.md` / `docs/HANDOVER.md` /
 #   `docs/TESTING.md` §3.5 同记此数）。增删条目必须**同时**改此常量 + 四处文档；
 #   否则下面的条数锁会响亮报红（防「删掉一条 ⇒ 静默变 47 ⇒ 日志照常、无人发现」）。
 #   ⚠ 本锁在 `-SkipScripts` 下**不执行**（该模式走上面的早退，清单根本没被使用）——
@@ -1041,7 +1041,7 @@ $noSelfSummary = @('_probe-cancel-propagation-scan.ps1', '_probe-ct-chain-closur
 #   ⚠ 自带汇总（`PASS=n FAIL=m` + 断言驱动 exit）⇒ 分类账「其余」57 → 58，两个数组仍不动。
 #   ⚠ 实测（2026-10-05，三次变异）：① 从组表删一个 mode ⇒ `contract` 未认领判红；
 #     ② 加一个无工程目录的组 ⇒ 判红；③ 把 mode 拼错 ⇒ 判红；恢复 ⇒ **6/0**。
-$expectedScriptCount = 73
+$expectedScriptCount = 74
 $scriptList = @('verify-ps-compat.ps1','verify-color-caps.ps1','verify-color-wiring.ps1','verify-color-strategy.ps1','verify-format-regression.ps1',
                  'verify-widegamut-regression.ps1','verify-tiff-icc.ps1','verify-webp-hdr-fix.ps1','verify-decision-delivery.ps1',
                  '_probe-stderr-drain-scan.ps1','_probe-proc-encoding-scan.ps1','_probe-cancel-propagation-scan.ps1','_probe-i18n-scan.ps1','_probe-cjk-hardcode-scan.ps1','verify-png-signature.ps1','verify-gainmap-memory.ps1','verify-metadata-privacy.ps1','verify-gif-avif-framelist.ps1','verify-color-peak.ps1',
@@ -1239,6 +1239,35 @@ $scriptList = @('verify-ps-compat.ps1','verify-color-caps.ps1','verify-color-wir
                  #     且 union 连续 5 轮 + 交替顺序压力 3 轮均 **409/409、missing=0、extra=0**。
                  'verify-ui-split-verbatim.ps1',
                  'verify-ui-split-union.ps1',
+                 # ── 第 74 条：2026-10-12 批次 G（UI 面）接线（`verify-ui-split-reproducible.ps1`）──
+                 #   锁的是「5 个拆分件 == 生成器以旧宿主为唯一真值重新生成的结果」这件事本身（逐字节）。
+                 #   立锁动机（**本轮实测到的，不是假想**）：verbatim 只比"组体逐字"，挡不住
+                 #     "只改拆分侧、不回灌真值"——J1z/J8 的修复 2026-10-07 只手改在 `ui-sweep`，于是
+                 #     verbatim 只能整组放行 J（**J 组 798 行退出逐字比较**），而参照件旧宿主还在跑
+                 #     修复**前**的代码。同类手改累计 5 次（J1z/J8/H10/O4/O5 + 3 个包装）。
+                 #     当日"重跑生成器 + 比字节"实测 2/5 不一致：ui-color 少 1 个包装、
+                 #     ui-sweep 少 3 个包装 + 74 行组体。
+                 #   ⚠ 另一半成因是**生成器自身的保真洞**：脚本自身是 LF 编码，两段 here-string 把
+                 #     61 行裸 LF 注进生成物 ⇒ 编辑器一保存就归一回 CRLF ⇒ 字节比对永远对不上
+                 #     （现由生成器统一输出纯 CRLF，并由 R-8 钉住）。
+                 #   判据 19 条：R-1..R-5 逐字节全等 · R-6 改真值⇒生成物必变（防"生成物与真值无关"的
+                 #     假绿）· R-7 量级反控（防路径错导致空文件互比）· R-8 纯 CRLF · R-8b 生成器幂等 ·
+                 #     R-9 零死包装 · R-10 双拷贝等值锁（旧宿主 vs UiHost 的 SelectColorSpaceSettled
+                 #     逐行相等，26 行）· R-11 旧宿主 Skip 的形状锁（打 [SKIP]、计 _skip、不动 _pass/_fail）。
+                 #   变异验牙（四支各只红该红那条，跑完逐字节还原相等）：
+                 #     ① 活树加一行注释 ⇒ R-1 ui-color 红；② 给 ui-cli 塞一个它没调用的 `Snip` 包装
+                 #     ⇒ R-9 红（同时 R-1 红）；③ 只改 UiHost 那份 `Pump(6)`⇒`(7)` ⇒ R-10 红；
+                 #     ④ 旧宿主 `Skip` 里去碰 `_pass++` ⇒ R-11 红。
+                 #     ⚠ 第一版 ② 选的靶子是 `UiState`，而 ui-cli 的 M 组**真的调用它**（uicliGroup.cs:63）
+                 #       ⇒ 造出来的是"重复声明"而不是"死包装"，R-9 不红是**对的**——靶子选错时，
+                 #       先红的是我的变异设计。另 R-6 自己的牙是先咬到我：第一版把注入写进 `$scratch`
+                 #       的 Program.cs，而 `Invoke-Gen` 每次都重新拷贝活树 ⇒ 注入被覆盖 ⇒ 该条判红。
+                 #   同轮读数（2026-10-12）：verbatim **22/0**（17 组全比、登记表已空）、
+                 #     union **11/0 @419**（改名白名单已归零；旧宿主与并集同名同数）、
+                 #     reproducible **19/0**；7 个 UI 工程 `-t:Rebuild` 全部 **0 警告 0 错误**。
+                 #   ⚠ 自带汇总（PASS=n FAIL=m）+ 断言驱动 exit ⇒ **不进** $tableOnly / $noSelfSummary。
+                 #   ⚠ 纯源码形状判据，**不需要重建**任何二进制（实测 ≈40 s，主要花在跑 3 次生成器）。
+                 'verify-ui-split-reproducible.ps1',
                  # 第 72 条：erify-usability-e2e.ps1（**用户可感知可用性**的实机端到端矩阵，2026-10-05 审查时接线）。
                  #   内容：A 完整格式互转矩阵（8 输入 × 6 目标）+ B 色彩目标兑现（SDR/HDR-PQ/HDR-HLG × 3 目标 × 3 容器）
                  #        + C 批量与目录结构 + D 动图帧数守恒；每条带**可证伪**判据（ffprobe 读标注 + PSNR≥25dB），

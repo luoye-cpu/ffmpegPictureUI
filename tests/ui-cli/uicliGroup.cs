@@ -30,44 +30,25 @@ namespace Tests.UiCli
         //   而某个工程可能一个反射都不用它 ⇒ `static readonly` 会触发 CS0414
         //   （"字段已赋值但从未使用"）。const 不占字段、不产生该警告，
         //   语义也更强（编译期内联，不存在"两个实现漂移"的余地）。
-        private const BindingFlags BF = UiHost.BF;
-        private const BindingFlags BFS = UiHost.BFS;
-        private static FfmpegGui.MainWindow W { get => UiHost.W; set => UiHost.W = value; }
-        private static string RepoRoot => UiHost.RepoRoot;
         private static string SrcDir => UiHost.SrcDir;
         private static string TempDir => UiHost.TempDir;
 
         private static void Pump(int n = 6) => UiHost.Pump(n);
         private static T? Find<T>(string name) where T : Control => UiHost.Find<T>(name);
-        private static void SetInput(string path) => UiHost.SetInput(path);
         private static void Regen() => UiHost.Regen();
         private static string Cmd() => UiHost.Cmd();
         private static void SetFormat(string s) => UiHost.SetFormat(s);
-        private static void Click(string name) => UiHost.Click(name);
         private static void Check(string name, bool cond, string detail = "") => UiHost.Check(name, cond, detail);
         private static void Safe(string name, Action a) => UiHost.Safe(name, a);
-        private static int Run(string exe, string arguments) => UiHost.Run(exe, arguments);
-        private static string RunOut(string exe, string arguments) => UiHost.RunOut(exe, arguments);
         private static List<string> Tok(string s) => UiHost.Tok(s);
-        private static int IdxFrom(List<string> t, string key, int from) => UiHost.IdxFrom(t, key, from);
-        private static int Idx(List<string> t, string key) => UiHost.Idx(t, key);
         private static string? Val(List<string> t, string key) => UiHost.Val(t, key);
-        private static string? ValAfter(List<string> t, string key, int from) => UiHost.ValAfter(t, key, from);
         private static bool HasTok(List<string> t, string exact) => UiHost.HasTok(t, exact);
-        private static List<string> VfSegs(List<string> t) => UiHost.VfSegs(t);
         private static bool VfHas(List<string> t, string seg) => UiHost.VfHas(t, seg);
         private static bool VfHasPrefix(List<string> t, string prefix) => UiHost.VfHasPrefix(t, prefix);
-        private static bool TokEq(List<string> t, string a, string b) => UiHost.TokEq(t, a, b);
-        private static string TokStr(List<string> t) => UiHost.TokStr(t);
         private static void DumpCmd(string tag, string cmd) => UiHost.DumpCmd(tag, cmd);
         private static void SweepReset() => UiHost.SweepReset();
-        private static void SetStrategyRadio(string name) => UiHost.SetStrategyRadio(name);
         private static string? PickEncoder(Func<string, bool> pred) => UiHost.PickEncoder(pred);
-        private static string? PickFfmpegEncoder() => UiHost.PickFfmpegEncoder();
-        private static string? ZscaleParam(List<string> t, string key) => UiHost.ZscaleParam(t, key);
         private static string UiState() => UiHost.UiState();
-        private static int CountTok(List<string> t, string key) => UiHost.CountTok(t, key);
-        private static string Snip(string s) => UiHost.Snip(s);
         private static void ClassifyDetectLines(string? text, string[] names,
             System.Collections.Generic.List<string> verdicts,
             System.Collections.Generic.List<string> others,

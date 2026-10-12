@@ -56,7 +56,7 @@ $map = [ordered]@{
     'ui-cli'   = @('M', 'P')
 }
 
-$pass = 0; $fail = 0; $script:waivedGroupHits = 0
+$pass = 0; $fail = 0; $script:waivedGroupHits = 0; $script:comparedGroups = 0
 function CK([bool]$ok, [string]$msg) {
     if ($ok) { Write-Host "PASS $msg" -ForegroundColor Green; $script:pass++ }
     else     { Write-Host "FAIL $msg" -ForegroundColor Red;   $script:fail++ }
@@ -83,24 +83,20 @@ foreach ($p in $map.Keys) {
         # ⚠ 两侧都从**签名行**开始比（旧宿主侧 $bounds[$g][0] 就是 `static void GroupX_…`）：
         #   生成器把组体整段搬来（含方法前的注释块归上一组/本组由生成器另行排版），
         #   故比较窗口从签名行起算 —— 与 Get-MethodEnd 的结束边界配对。
-        # ── 已登记的**有意偏离组**（2026-10-07 新增）──────────────────────────────────
-        # 本锁的原始契约是「拆分 = 逐字复制」。后续的**有意修复**必须允许，否则
-        # "改对了反而红"会逼人删锁（本仓 §6 第 55 条警告的模式）。
-        # ⚠ 放行粒度 = **组**（不是行）：因为按行放行必须处理"插入导致其后整体位移"，
-        #   而那需要重同步逻辑；本轮实测三种重同步写法**都出过问题**
-        #   （① 无限制重同步 ⇒ 锁失去牙：变异测试改断言名**没能转红**；
-        #     ② 多重集比较 ⇒ 触发 `OrderedDictionary.Keys` 活视图提前终止，只跑 5 组；
-        #     ③ 变量名冲突 ⇒ 反控计数停在 610）。⇒ 取**最简单可靠**的粒度。
-        # ⚠ 放行**不减牙**的补偿：该组的**断言数不得减少**由另一把锁独立保证 ——
-        #   `verify-ui-split-union.ps1` 要求「旧宿主断言名集合 == 5 工程输出的并集」
-        #   （本次同时登记了 J1z 的改名），故"借放行偷偷删断言"会在那里转红。
-        $waivedGroups = @{
-            'J' = 'J1z 环境前置改 SKIP（原为恒定假红）+ J8 改用等异步联动落地的选中（修 flaky）'
-        }
+        # ── 有意偏离组登记表：**2026-10-12 批次 G 清空**─────────────────────────────
+        # 本锁的原始契约是「拆分 = 逐字复制」。2026-10-07 曾在 J1z/J8 上破例：修复只改在
+        #   拆分侧、没回灌旧宿主 ⇒ 只能整组放行 J（放行粒度=组，见下方历史教训），代价是
+        #   **J 组 1000+ 行从此不进逐字比较**，而旧宿主那一份还在跑**改之前**的 J1z/J8。
+        # 现已把 J1z 的「环境前置改 Skip + 无条件形态断言」与 J8 的「等异步联动落地再读」
+        #   **回灌进旧宿主**（`tests/UiTestHost/Program.cs`），登记表归零 ⇒ 17 组全部逐字比较。
+        # ⚠ 以后若真需要放行：**必须先让两份拷贝各自成立**，再在此登记并同批改下面那条
+        #   `$waivedGroups.Count -eq 0` 的反控（改锁要显式、可审，不许静默扩大放行面）。
+        $waivedGroups = @{}
         if ($waivedGroups.ContainsKey($g)) {
             $script:waivedGroupHits++
             Write-Host ("  [info] {0} / Group{1}_ 属**已登记的有意偏离组** ⇒ 跳过逐字比较：{2}" -f $p, $g, $waivedGroups[$g]) -ForegroundColor DarkGray
         } else {
+            $script:comparedGroups++
             for ($j = 0; $j -lt $orig.Count; $j++) {
                 $o = $orig[$j]
                 $n = if ($gi + $j -lt $gen.Count) { $gen[$gi + $j] } else { '<EOF>' }
@@ -119,8 +115,11 @@ foreach ($p in $map.Keys) {
 #   方法体合计 2991 行 ⇒ 门槛取 2800（留出正常维护余量，仍远高于"路径错=0"）。
 CK ($totalLines -gt 2800) "反控：比较了 $totalLines 行（>2800，防路径错导致空比）"
 CK ($bounds.Count -eq 17) "反控：旧宿主里解析出 17 个组（实 $($bounds.Count)）"
-# ⚠ 已登记偏离组的命中数必须**恰好**等于登记表大小（防登记过期后变成"什么都放过"）
-CK ($script:waivedGroupHits -ge 1) "已登记偏离组命中 $($script:waivedGroupHits) 个（>=1；其余 16 组仍逐字比较）"
+# ⚠ 偏离登记表必须**为空**（2026-10-12 起）：一旦有人往里加组，本条立刻红，
+#   逼着"要不要放行"这件事在门禁输出里可见，而不是悄悄少比一个组。
+CK ($waivedGroups.Count -eq 0) "登记表为空：没有任何组被允许跳过逐字比较（实 $($waivedGroups.Count) 个）"
+CK ($script:waivedGroupHits -eq 0) "实际跳过 0 个组（实 $($script:waivedGroupHits)）⇒ 17 组全部逐字比较"
+CK ($comparedGroups -eq 17) "反控：真正逐字比较了 17 个组（实 $($comparedGroups)）"
 
 Write-Host "===== ui-split-verbatim: PASS=$pass FAIL=$fail =====" -ForegroundColor Cyan
 if ($fail -gt 0) { exit 1 } else { exit 0 }

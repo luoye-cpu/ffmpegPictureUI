@@ -188,7 +188,8 @@ Write-Host ""
 $newFailTotal = ($perMode.Values | Measure-Object -Property Fail -Sum).Sum
 CK ($newFailTotal -eq 0) "2a 5 个工程全部 mode 无 FAIL（实 $newFailTotal）"
 
-# ── 2026-10-07：一处**有意**的断言**改名 + 语义修正**（必须在账上，不能靠放宽判据消化）──
+# ── 2026-10-07（**历史**，2026-10-12 已回灌参照件 ⇒ 白名单归零）：一处**有意**的断言
+#    **改名 + 语义修正**（必须在账上，不能靠放宽判据消化）───────────────────────────
 #   `J1z` 原本是 `Check("J1z 硬件编码器可选（前置）", hw != null, "no hardware encoder item
 #   in this environment")` —— 把**环境前置**写成了硬 `FAIL`（失败文案自己就写着
 #   "in this environment"）⇒ 环境不满足时**恒定假红**，并把判据 ② 一起带红。
@@ -203,9 +204,13 @@ CK ($newFailTotal -eq 0) "2a 5 个工程全部 mode 无 FAIL（实 $newFailTotal
 #   ⚠ 这**不是**放宽：`missing` 只白名单这一条旧名、`extra` 只白名单这一条新名，
 #     两侧各自**恰好命中 1 条**（`3a2`/`3b2` 两个反控），其余任何差集照常红。
 #   ⚠ 断言**数量**不变（旧 1 条 → 新 1 条，Skip 与 PASS 互斥）⇒ union 计数守恒。
-$renamedPairs = @(
-    @{ Old = 'J1z 硬件编码器可选（前置）'; New = 'J1z 硬件编码器名解析（`-c:v` 为单个 token、不含图标/空格）' }
-)
+# ── 断言**改名**白名单：2026-10-12 批次 G 起**清空**──────────────────────────────
+#   2026-10-07 那次 `J1z 硬件编码器可选（前置）` → `J1z 硬件编码器名解析（…）` 之所以要白名单，
+#   是因为改名只落在**拆分侧**、参照件（旧宿主）还发旧名 ⇒ 集合差 1 进 1 出，只能点名放行。
+#   现已把该修复**回灌旧宿主** ⇒ 两侧发同一个名字，`missing`/`extra` 都应真为 0。
+#   ⚠ 以后若又要改名：先在**两侧同名**之后把白名单留空；只有"参照件与拆分件暂时不同名"
+#     才允许登记，且必须同批把 `$expectedOldCount` 的演进理由写在文件头（3a2/3b2 会数命中数）。
+$renamedPairs = @()
 # $expectedOldCount / $expectedNewCount 的唯一出处在文件头（与 1a 共用同一把尺；此处不再重复定义）
 
 if (-not $SkipOldHost) {

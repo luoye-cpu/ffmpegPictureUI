@@ -226,6 +226,14 @@ using UiHostShared;
 # ⚠ 这些包装**不复制实现** —— 每一个都直接转发到 UiHostShared.UiHost，
 #   保证 5 个工程读的是**同一份** GUI 助手（否则就是 5 份实现漂移）。
 # ═══════════════════════════════════════════════════════════════════════════════
+# ⚠⚠ 下面这块是**候选池**，不是"整块照抄进每个工程"。
+#   2026-10-12 批次 G 把它改成**按组体实际引用推导**（见 `$usedEntries`）：
+#     · 池里定义了但组体没调用 ⇒ **不发**（历史上手加过一次：`ResetAdvancedColorToAuto`
+#       在 ui-sweep 里是**零调用点的死包装**，而另外 4 个工程根本没有它 ⇒ 拆分不再是纯函数）；
+#     · 组体调用了但池里没有 ⇒ 生成的工程**编译失败**（当场响，不会静默少包装）。
+#   为什么必须由"引用"推导而不是手工维护每工程清单：手工清单正是这次要消掉的错——
+#   J1z/J8 的修复当年只改了拆分侧、没回灌旧宿主，`verify-ui-split-verbatim` 只能整组放行 J。
+# ═══════════════════════════════════════════════════════════════════════════════
 $forwarders = @'
         // ══════════════ 转发包装（**不复制实现**，一律转 UiHostShared.UiHost）══════════════
         // 为什么保留裸名包装：组体是**逐字**从旧宿主搬来的（断言文本一个字未改）。
@@ -251,6 +259,12 @@ $forwarders = @'
         private static void SetFormat(string s) => UiHost.SetFormat(s);
         private static void Click(string name) => UiHost.Click(name);
         private static void Check(string name, bool cond, string detail = "") => UiHost.Check(name, cond, detail);
+        // ⚠ 2026-10-07 新增（J1z 假红的修法）：前提不满足时的**点名跳过**——打印 [SKIP]、计 skip 桶、
+        //   **不计通过**。既不谎报红、也不静默消失（docs/TESTING.md §6 第 68 条的反面）。
+        private static void Skip(string reason) => UiHost.Skip(reason);
+        // ⚠ 2026-10-07/10-12 新增（J8 flaky + H10 flaky 的修法）：选中色域并**等异步格式联动落地**，
+        //   等不到返回 false 由调用方报红（不静默通过）。见 UiHost.SelectColorSpaceSettled。
+        private static bool SelectColorSpaceSettled(string v) => UiHost.SelectColorSpaceSettled(v);
         private static void Safe(string name, Action a) => UiHost.Safe(name, a);
         private static int Run(string exe, string arguments) => UiHost.Run(exe, arguments);
         private static string RunOut(string exe, string arguments) => UiHost.RunOut(exe, arguments);
@@ -281,10 +295,91 @@ $forwarders = @'
             => UiHost.ClassifyDetectLines(text, names, verdicts, others, suspects);
 '@
 
+# ── 把候选池切成「条目」：一条 = 一个 `private static|const` 声明 + 它的续行 ──────
+#   紧贴声明**上方**的注释行归给该条（否则注释与包装分家）；
+#   池里第一条声明之前的所有行 = 固定表头（一定发出，不参与筛选）。
+$poolLines = @($forwarders -split "`r?`n")
+$firstIdx = -1
+for ($i = 0; $i -lt $poolLines.Count; $i++) {
+    if ($poolLines[$i] -match '^\s*private\s+(?:static|const)\s') { $firstIdx = $i; break }
+}
+if ($firstIdx -lt 0) { throw "候选池里解析不到任何 private static|const 条目 ⇒ 池的形状被改坏，拒绝生成" }
+$fwdHeader = @($poolLines[0..($firstIdx - 1)])
+$entries = @()
+$pending = @()
+$cur = $null
+$openDecl = $false          # 当前条目是否"声明还没写完"（未以 ; 或 } 收尾）
+for ($i = $firstIdx; $i -lt $poolLines.Count; $i++) {
+    $l = $poolLines[$i]
+    if ($l -match '^\s*private\s+(?:static|const)\s+.*?[\s<](\w+)(?:<\w+>)?\s*(?:\(|=>|\{|\s*=)') {
+        if ($cur) { $entries += $cur }
+        $cur = @{ Name = $Matches[1]; Lines = (New-Object System.Collections.ArrayList) }
+        foreach ($p in $pending) { [void]$cur.Lines.Add($p) }
+        $pending = @()
+        [void]$cur.Lines.Add($l)
+        $t = $l.TrimEnd()
+        $openDecl = -not ($t.EndsWith(';') -or $t.EndsWith('}'))
+    } elseif ($cur -and $openDecl) {
+        # 多行声明的**续行**（池里只有 ClassifyDetectLines 一处）：跟着本条目走
+        [void]$cur.Lines.Add($l)
+        $t = $l.TrimEnd()
+        $openDecl = -not ($t.EndsWith(';') -or $t.EndsWith('}'))
+    } else {
+        # 注释/空行：属于**下一个**条目的头部（不是上一条的尾巴）。
+        # ⚠ 2026-10-12 第一版把这里错并进"上一条的续行"，于是 Skip 上方那两行注释
+        #   被挂到了 Check 条目上 ⇒ 未引用 Skip 的工程照样发出 Skip 的注释、
+        #   而包装本体被裁掉（注释与包装分家）。
+        $pending += $l
+    }
+}
+if ($cur) { $entries += $cur }
+$poolNames = @($entries | ForEach-Object { $_.Name })
+if (@($poolNames | Sort-Object -Unique).Count -ne $poolNames.Count) {
+    throw "候选池里有重名条目 ⇒ 筛选结果不确定（$($poolNames -join ', ')）"
+}
+Write-Host "forwarder pool = $($poolNames.Count) entries"
+
+# ── 入口文本也参与"用到没用到"的判断（它是**调用方**，不只是组体）──────────────────
+#   实测：H 的 `$colorPre` 与 L 的 AVIF 定型前置都调 `SetFormat(...)`；若只扫组体，
+#   某个工程可能"入口用了 SetFormat 而组体没用"⇒ 包装被裁掉 ⇒ 生成的工程编译失败。
+function Get-Entry([string]$g) {
+    if ($explicitEntry.ContainsKey($g)) {
+        $out = @("        internal static void Run$g()", "        {")
+        $out += $explicitEntry[$g]
+        $out += "        }"
+        return $out
+    }
+    if ($g -eq 'P') {
+        # ⚠ P **不做**收敛前置：它的轮询本身就是被测语义（观察启动窗口），
+        #   先等一次会把"启动期还没打完"这个被测状态消掉。
+        return @(
+            "        // ⚠ P **故意不加**收敛前置：本组测的就是「启动期刚打完那 7 行」这个窗口，",
+            "        //   先调 AwaitStartupDetection() 会把被测状态本身消掉（见生成器注释）。",
+            "        internal static void RunP() => GroupP_$($methodSuffix['P'])();"
+        )
+    }
+    $out = @("        internal static void Run$g()", "        {")
+    $out += $convergePre
+    $out += "            Group$($g)_$($methodSuffix[$g])();"
+    $out += "        }"
+    return $out
+}
+
 foreach ($proj in $projects.Keys) {
     $info = $projects[$proj]
     $dir  = Join-Path 'tests' $proj
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
+
+    # ── 本工程**实际引用**了哪些包装（组体 + 入口；先剥掉行注释再扫：
+    #   注释里提到名字不该发包装，那正是 ui-sweep 里 `ResetAdvancedColorToAuto`
+    #   成为零调用点死包装的来路）──
+    $projLines = @()
+    foreach ($g in $info.groups) { $projLines += (Get-Body $g); $projLines += (Get-Entry $g) }
+    $scan = (($projLines | ForEach-Object { $_ -replace '//.*$', '' }) -join "`n")
+    $usedEntries = @($entries | Where-Object { $scan -cmatch "\b$($_.Name)\b" })
+    $usedNames   = @($usedEntries | ForEach-Object { $_.Name })
+    $dropped     = @($poolNames | Where-Object { $_ -notin $usedNames })
+    if ($dropped.Count) { Write-Host "  $proj : 未引用 ⇒ 不发 $($dropped.Count) 个包装 [$($dropped -join ', ')]" }
 
     # ── 组体文件 ──
     $sb = New-Object System.Text.StringBuilder
@@ -301,7 +396,8 @@ foreach ($proj in $projects.Keys) {
     [void]$sb.AppendLine("    /// </summary>")
     [void]$sb.AppendLine("    internal static class $($proj -replace '-','')Group")
     [void]$sb.AppendLine("    {")
-    [void]$sb.AppendLine($forwarders)
+    [void]$sb.AppendLine(($fwdHeader -join "`r`n"))
+    foreach ($e in $usedEntries) { foreach ($l in $e.Lines) { [void]$sb.AppendLine($l) } }
 
     foreach ($g in $info.groups) {
         [void]$sb.AppendLine()
@@ -310,36 +406,26 @@ foreach ($proj in $projects.Keys) {
     }
 
     # ── 入口转发（供 Program.Main 逐 mode 分派；组体保持私有原貌不动）──
+    #   文本由 `Get-Entry` 统一产出 ⇒ "参与引用扫描的入口"与"写进文件的入口"是同一份，
+    #   不会出现"扫到 SetFormat 却没发包装 / 发了包装却没扫到"两种分叉。
     [void]$sb.AppendLine()
     [void]$sb.AppendLine("        // ══════════════ 入口（供 Program.Main 逐 mode 分派）══════════════")
     [void]$sb.AppendLine("        // 只做转发 + 一个**共享收敛前置**：组体本身是逐字搬来的私有方法，保持原貌不动。")
     foreach ($g in $info.groups) {
-        if ($explicitEntry.ContainsKey($g)) {
-            [void]$sb.AppendLine("        internal static void Run$g()")
-            [void]$sb.AppendLine("        {")
-            foreach ($l in $explicitEntry[$g]) { [void]$sb.AppendLine($l) }
-            [void]$sb.AppendLine("        }")
-        } elseif ($g -eq 'P') {
-            # ⚠ P **不做**收敛前置：它的轮询本身就是被测语义（观察启动窗口），
-            #   先等一次会把"启动期还没打完"这个被测状态消掉。
-            [void]$sb.AppendLine("        // ⚠ P **故意不加**收敛前置：本组测的就是「启动期刚打完那 7 行」这个窗口，")
-            [void]$sb.AppendLine("        //   先调 AwaitStartupDetection() 会把被测状态本身消掉（见生成器注释）。")
-            [void]$sb.AppendLine("        internal static void RunP() => GroupP_$($methodSuffix['P'])();")
-        } else {
-            [void]$sb.AppendLine("        internal static void Run$g()")
-            [void]$sb.AppendLine("        {")
-            foreach ($l in $convergePre) { [void]$sb.AppendLine($l) }
-            [void]$sb.AppendLine("            Group$($g)_$($methodSuffix[$g])();")
-            [void]$sb.AppendLine("        }")
-        }
+        foreach ($l in (Get-Entry $g)) { [void]$sb.AppendLine($l) }
     }
 
     [void]$sb.AppendLine("    }")
     [void]$sb.AppendLine("}")
 
     $groupFile = Join-Path $dir "$($proj -replace '-','')Group.cs"
-    # 统一换行为 CRLF 之外保持原样：直接写字节，避免 PowerShell 追加换行
+    # ⚠ 换行尾**必须归一成 CRLF**（2026-10-12 批次 G）：本脚本自己是 LF 编码，
+    #   `$usingBlock`/`$forwarders` 两段 here-string 因此带裸 LF ⇒ 从前生成的 5 个文件
+    #   是"CRLF 主体 + 61 行裸 LF"的混合尾，而任何一次编辑器保存都会把它归一回 CRLF
+    #   ⇒ "重跑生成器 + 比字节"这件事**永远对不上**（实测 ui-color/ui-sweep 各差 61 处）。
+    #   归一后生成物与编辑器保存后的字节一致 ⇒ 可复现判据才成立。
+    $outText = ($sb.ToString() -split "`r?`n") -join "`r`n"
     [System.IO.File]::WriteAllText((Resolve-Path -LiteralPath $dir).Path + "\" + (Split-Path -Leaf $groupFile),
-        $sb.ToString(), (New-Object System.Text.UTF8Encoding($false)))
+        $outText, (New-Object System.Text.UTF8Encoding($false)))
     Write-Host "wrote $groupFile"
 }

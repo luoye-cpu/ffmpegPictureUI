@@ -31,39 +31,28 @@ namespace Tests.UiSweep
         //   （"字段已赋值但从未使用"）。const 不占字段、不产生该警告，
         //   语义也更强（编译期内联，不存在"两个实现漂移"的余地）。
         private const BindingFlags BF = UiHost.BF;
-        private const BindingFlags BFS = UiHost.BFS;
         private static FfmpegGui.MainWindow W { get => UiHost.W; set => UiHost.W = value; }
-        private static string RepoRoot => UiHost.RepoRoot;
         private static string SrcDir => UiHost.SrcDir;
-        private static string TempDir => UiHost.TempDir;
 
         private static void Pump(int n = 6) => UiHost.Pump(n);
         private static T? Find<T>(string name) where T : Control => UiHost.Find<T>(name);
-        private static void SetInput(string path) => UiHost.SetInput(path);
         private static void Regen() => UiHost.Regen();
         private static string Cmd() => UiHost.Cmd();
         private static void SetFormat(string s) => UiHost.SetFormat(s);
-        private static void Click(string name) => UiHost.Click(name);
         private static void Check(string name, bool cond, string detail = "") => UiHost.Check(name, cond, detail);
-        // ⚠ 2026-10-07 新增：前提不满足时的**点名跳过**（计 skip、不打 FAIL）—— 见 UiHost.Skip 的说明。
+        // ⚠ 2026-10-07 新增（J1z 假红的修法）：前提不满足时的**点名跳过**——打印 [SKIP]、计 skip 桶、
+        //   **不计通过**。既不谎报红、也不静默消失（docs/TESTING.md §6 第 68 条的反面）。
         private static void Skip(string reason) => UiHost.Skip(reason);
-        // ⚠ 2026-10-07 新增：断言前把高级色彩三元组显式复位（见 UiHost.ResetAdvancedColorToAuto）。
-        private static void ResetAdvancedColorToAuto() => UiHost.ResetAdvancedColorToAuto();
-        // ⚠ 2026-10-07 新增：选中 ColorSpaceCombo 并**等异步格式联动落地**（见 UiHost.SelectColorSpaceSettled）。
+        // ⚠ 2026-10-07/10-12 新增（J8 flaky + H10 flaky 的修法）：选中色域并**等异步格式联动落地**，
+        //   等不到返回 false 由调用方报红（不静默通过）。见 UiHost.SelectColorSpaceSettled。
         private static bool SelectColorSpaceSettled(string v) => UiHost.SelectColorSpaceSettled(v);
         private static void Safe(string name, Action a) => UiHost.Safe(name, a);
-        private static int Run(string exe, string arguments) => UiHost.Run(exe, arguments);
-        private static string RunOut(string exe, string arguments) => UiHost.RunOut(exe, arguments);
         private static List<string> Tok(string s) => UiHost.Tok(s);
         private static int IdxFrom(List<string> t, string key, int from) => UiHost.IdxFrom(t, key, from);
         private static int Idx(List<string> t, string key) => UiHost.Idx(t, key);
         private static string? Val(List<string> t, string key) => UiHost.Val(t, key);
-        private static string? ValAfter(List<string> t, string key, int from) => UiHost.ValAfter(t, key, from);
-        private static bool HasTok(List<string> t, string exact) => UiHost.HasTok(t, exact);
-        private static List<string> VfSegs(List<string> t) => UiHost.VfSegs(t);
         private static bool VfHas(List<string> t, string seg) => UiHost.VfHas(t, seg);
         private static bool VfHasPrefix(List<string> t, string prefix) => UiHost.VfHasPrefix(t, prefix);
-        private static bool TokEq(List<string> t, string a, string b) => UiHost.TokEq(t, a, b);
         private static string TokStr(List<string> t) => UiHost.TokStr(t);
         private static void DumpCmd(string tag, string cmd) => UiHost.DumpCmd(tag, cmd);
         private static void SweepReset() => UiHost.SweepReset();
@@ -74,11 +63,6 @@ namespace Tests.UiSweep
         private static string UiState() => UiHost.UiState();
         private static int CountTok(List<string> t, string key) => UiHost.CountTok(t, key);
         private static string Snip(string s) => UiHost.Snip(s);
-        private static void ClassifyDetectLines(string? text, string[] names,
-            System.Collections.Generic.List<string> verdicts,
-            System.Collections.Generic.List<string> others,
-            System.Collections.Generic.List<string> suspects)
-            => UiHost.ClassifyDetectLines(text, names, verdicts, others, suspects);
 
         // ══════════════════════════ 组 J ══════════════════════════
         static void GroupJ_UiSweep()
@@ -369,7 +353,8 @@ namespace Tests.UiSweep
                     //     实测产出**逐字相同**且都正确的 zscale `p=bt2020:t=smpte2084`）
                     //     ⇒ **不得**为让本格变绿去改产品。
                     //   同族记载：`docs/TESTING.md` §6 第 74 条「断言『载体』选错 ⇒ 命中另一个合法 token」。
-                    if (!SelectColorSpaceSettled(v))
+                    // ⚠ `v!`：`v` 取自下面的字面量二维数组 ⇒ 恒非 null，只是向 nullable 分析证明这一点（CS8604）。
+                    if (!SelectColorSpaceSettled(v!))
                         Check("J8 " + v + " 目标色域能稳定选中（前置，防异步复位吞掉赋值）", false,
                               $"选中后 combo 实际停在「{cs.SelectedItem as string ?? "<null>"}」⇒ 本格读数不可信");
                     Regen();
@@ -397,7 +382,7 @@ namespace Tests.UiSweep
                         //   非 BT.709 出口，拆式对那些不生效）；② F-9 的拆式 ⇒ 末级 `t=linear`，但必须
                         //   同时有 `,lutrgb=`（定义式编码在场）与 `setparams=…color_trc=<期望>`（宣称被找回）。
                         //   旧写法只认 ① ⇒ 拆式默认生效后 "J8 BT.709⇒p=bt709:t=bt709" 恒红（全量轮实测）。
-                        //   与 UiTestHost/Program.cs 的同名臂逐字一致（split-union 按标签对账）。
+                        //   ②的三个部件缺任何一个都判红 ⇒ 这是把"改标签不改像素"钉死的收紧，不是放水。
                         var rawCmd = Cmd();
                         bool splitExit = gt == "linear" && rawCmd.Contains(",lutrgb=")
                                          && rawCmd.Contains("setparams=") && rawCmd.Contains("color_trc=" + et);

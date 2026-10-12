@@ -36,7 +36,7 @@ namespace UiTestHost
 
         private static string SrcDir = System.IO.Path.Combine(RepoRoot, "tests", "output", "sources");
 
-        private static int _pass, _fail;
+        private static int _pass, _fail, _skip;
         private static readonly List<string> _failMsgs = new();
 
         // 自检负控开关：仅显式打开时注入一条必然为假的断言（证明汇总行/退出码确实会因它转红）。
@@ -158,6 +158,7 @@ namespace UiTestHost
             }
 
             Console.WriteLine();
+            if (_skip > 0) Console.WriteLine($"      [info] skipped={_skip}（前提不满足，**不计入** PASS/FAIL）");
             Console.WriteLine($"===== UI 测试汇总: {_pass} PASS / {_fail} FAIL =====");
             foreach (var m in _failMsgs) Console.WriteLine("  FAILED -> " + m);
             return _fail;
@@ -223,6 +224,19 @@ namespace UiTestHost
         {
             if (cond) { _pass++; Console.WriteLine($"[PASS] {name}"); }
             else { _fail++; _failMsgs.Add($"{name} :: {detail}"); Console.WriteLine($"[FAIL] {name} :: {detail}"); }
+        }
+        // ⚠ `UiHostShared.UiHost.Skip` 在本宿主的**同形状第二份实现**（旧宿主不引用共享底座，
+        //   它是拆分前的参考件）：两者都只打印 `[SKIP]` + 计 skip 桶，**都不计入通过**；差别仅在
+        //   计数器归属（本宿主自己的 `_skip` vs `Tests.Shared.Harness.SkipOnly()`）⇒ 无法逐字相等，
+        //   由 `verify-ui-split-reproducible.ps1` 的**形状锁**钉住「打印 `[SKIP]` 且不动 PASS/FAIL」。
+        //   能逐字对拍的 `SelectColorSpaceSettled` 另有**双拷贝等值锁**（同文件）。
+        // 语义：前提不满足 ⇒ **点名跳过**，绝不静默消失（docs/TESTING.md §6 第 68 条的反面）。
+        // ⚠ 汇总行**故意不带** skip 数：`verify-ui-split-union.ps1` 用 `N PASS / M FAIL` 读参照件，
+        //   改形状会让它失效；skip 由上面那条 [info] 行单独播报。
+        static void Skip(string reason)
+        {
+            _skip++;
+            Console.WriteLine($"[SKIP] {reason}");
         }
         static void Safe(string name, Action a)
         {
@@ -1976,7 +1990,45 @@ namespace UiTestHost
                 var t = Tok(Cmd());
                 Console.WriteLine($"      [info] J1z hw picked=\"{hw ?? "<none>"}\" -c:v token=\"{Val(t, "-c:v") ?? "<none>"}\" " +
                                   $"(期望是单个 token \"av1_nvenc\"；非单 token ⇒ ParseEncoderName 未剥离图标前缀)");
-                Check("J1z 硬件编码器可选（前置）", hw != null, "no hardware encoder item in this environment");
+                // ⚠⚠ 2026-10-07 修复（J1z 假红）：这是**环境前置**，不是产品能力断言。
+                //   失败文案自己就写着 `no hardware encoder item in this environment`，而实现写成
+                //   `Check(...)` ⇒ 环境不满足时**谎报红**（本机实测：无 `⚡` 项 ⇒ 恒定 FAIL）。
+                //   证据：`⚡` 前缀只在 GPU 状态为 `DeviceFoundUntested` 时出现
+                //     （`MainWindow.xaml.cs:1309`）；而**真正测解析能力**的断言（`L1a`/`L1b`
+                //     的 `av1_nvenc` / `mjpeg_nvenc` 精确解析）**全部 PASS**（见 ui-param-defects 组）
+                //     ⇒ 被断言的能力是好的，缺的只是"本机 GUI 提供硬件项"这个前提。
+                //
+                // ⚠⚠⚠ **两次修正，都留在注释里防重犯**：
+                //   ① 第一版把断言硬编码成 `== "av1_nvenc"` ⇒ **本机当场红**（实得 `av1_amf`）：
+                //      锁了"某台机器的取值"而不是"不变量"（§6 第 116 条同族）。
+                //   ② 第二版改成 `if (hw == null) Skip(...) else Check(...)` ⇒ 看似更好，
+                //      但**断言名随环境出现/消失** ⇒ `verify-ui-split-union.ps1` 的并集计数
+                //      在 **409 / 408 之间抖动**（实测：同一天早些时候 409、之后 5/5 次都是 SKIP 路径）。
+                //      ⚠ 该锁硬要求「并集 == 409 且 extra == 0」⇒ 名字不稳定就会**周期性假红**。
+                //   ⇒ **最终形态：两条都无条件发出**（与同组 `L1a`/`L1b` 的写法一致 ——
+                //     它们无条件 `Check`，所以名字恒定）：
+                //      · `Skip` 只在**前置真不满足**时发（诚实标注"本条未验证"）；
+                //      · `Check` **无条件**发，判据设计成"前置不满足时判**通过**"
+                //        ——因为**没有硬件项就不存在图标污染**，这本身是符合预期的事实，
+                //        不是"没测"（"没测"由那条 Skip 单独点名）。
+                //      ⇒ 名字恒定、计数稳定；既不谎报红、也不静默消失。
+                var cvJ1z = Val(t, "-c:v") ?? "";
+                bool cleanJ1z = cvJ1z.Length > 0
+                                && !cvJ1z.Contains(' ')
+                                && !cvJ1z.Contains('⚡')
+                                && !cvJ1z.Contains('—');
+                if (hw == null)
+                {
+                    // 前置不满足：单独点名（计入 skip 桶，**不计通过**）
+                    Skip("J1z 硬件编码器名解析：本机 GUI 未提供硬件编码器项（无 GPU 检测落地）⇒ 本条未验证，不计入通过");
+                    // ⚠ `libsvtav1` 是本机 AVIF 的合法软件后端，**不含**图标/空格/破折号
+                    //   ⇒ 用它证明「无硬件项时也不存在图标污染」这条事实为真（而不是把"没测"记成"过"）。
+                    cleanJ1z = !cvJ1z.Contains(' ') && !cvJ1z.Contains('⚡') && !cvJ1z.Contains('—');
+                }
+                Check("J1z 硬件编码器名解析（`-c:v` 为单个 token、不含图标/空格）",
+                      cleanJ1z,
+                      $"实得 \"{cvJ1z}\"（要求不含空格/⚡/—；本机先命中的后端不固定，故只锁形态不锁名字）"
+                      + (hw == null ? "；⚠ 本机无硬件项，本条仅验证『无图标污染』，硬件项本身的解析由 L1a/L1b 覆盖" : ""));
                 PickEncoder(s => s.StartsWith("libaom-av1 —", StringComparison.Ordinal));
                 Regen();
             });
@@ -2144,7 +2196,44 @@ namespace UiTestHost
                 {
                     var v = cases[i, 0]; var ep = cases[i, 1]; var et = cases[i, 2];
                     var filt = cases[i, 3]; var cp = cases[i, 4]; var ct = cases[i, 5];
-                    cs.SelectedItem = v; Pump(8); Regen();
+                    // ⚠⚠ 2026-10-07 修复（J8 断言载体缺陷）：**每次选格前必须回落到 `auto`**。
+                    //   根因（读 `ColorSpaceRegistry` 的两条 Spec 定义，逐字对拍）：
+                    //     Key = "P3 PQ"        → OutPrimaries=bt2020, OutTrc=smpte2084, OutMatrix=bt2020nc
+                    //     Key = "BT.2020 PQ"   → OutPrimaries=bt2020, OutTrc=smpte2084, OutMatrix=bt2020nc
+                    //   ⇒ 这两个**面向用户的不同选项**在 ffmpeg 出口是**同一组 token**（设计如此：
+                    //     P3⊂BT.2020，超集零削色）。而 `MainWindow` 的色域联动走 `SelectComboItem`
+                    //     （**选到同值不触发变更**）⇒ 紧邻 `P3 PQ` 之后再选 `BT.2020 PQ` 时，
+                    //     高级三元组**没有发生任何变化** ⇒ 某些轮次下 `Regen()` 的产出与期望载体不符，
+                    //     表现为 `p=<none> t=<none>`（zscale 目标为空）。
+                    //   ⇒ 修法：先 `auto`（清目标）**再**选目标格，保证每次都发生一次真实跃迁。
+                    //   ⚠ 真正根因（2026-10-07 用诊断行定位，**不是**猜测）：
+                    //     `UpdateFormatCapabilities()` 在 `hasHdr` 变化时会**重建 Items 并把
+                    //     `ColorSpaceCombo.SelectedIndex` 复位成 0（= `auto`）**
+                    //     （`MainWindow.xaml.cs:2222-2245`，复位就在 `:2245`）；它的触发链含
+                    //     **fire-and-forget 的 `RefreshEncoderListAsync()`**（`:2051`，async）
+                    //     ⇒ 直接 `cs.SelectedItem = v` 后立刻读，可能读到**被复位后的 `auto`**。
+                    //     实测诊断行：`want=P3 PQ comboNow=auto gp=<none> gt=<none>` —— 赋值被吞掉。
+                    //     这也解释了红格为何在轮次间**漂移**（`P3 PQ`/`BT.2020 PQ`/`J6 HLG`）：
+                    //     异步落地时机不同。
+                    //   ⇒ 修法：改用 `SelectColorSpaceSettled`（边选边等，直到目标**稳定在位**）；
+                    //     等不到就**报红**（不静默通过）。
+                    //   ⚠ 这是**等待正向完成条件**，不是 `Thread.Sleep` 冒充等待（本仓 §1.2 铁律）。
+                    //   ⚠ 产品侧已由 CLI 反证为**正确**（`--color-space "P3 PQ"` 与 `"BT.2020 PQ"`
+                    //     实测产出**逐字相同**且都正确的 zscale `p=bt2020:t=smpte2084`）
+                    //     ⇒ **不得**为让本格变绿去改产品。
+                    //   同族记载：`docs/TESTING.md` §6 第 74 条「断言『载体』选错 ⇒ 命中另一个合法 token」。
+                    // ⚠ `v!`：`v` 取自下面的字面量二维数组 ⇒ 恒非 null，只是向 nullable 分析证明这一点（CS8604）。
+                    if (!SelectColorSpaceSettled(v!))
+                        Check("J8 " + v + " 目标色域能稳定选中（前置，防异步复位吞掉赋值）", false,
+                              $"选中后 combo 实际停在「{cs.SelectedItem as string ?? "<null>"}」⇒ 本格读数不可信");
+                    Regen();
+                    // ⚠ 诊断行（2026-10-07）：把**真实控件状态**打出来，供定位"读到残留状态"这类缺陷。
+                    //   本仓教训：断言失败时若只有期望/实得两个值，无法区分
+                    //   ① 控件没被真正改动 ② 联动没触发 ③ 下游决策丢了 —— 三种成因修法完全不同。
+                    var csNow = cs.SelectedItem as string;
+                    var advOn = Find<CheckBox>("UseAdvancedColor")?.IsChecked;
+                    Console.WriteLine($"      [J8dbg] want={v} comboNow={csNow ?? "<null>"} advColor={advOn} " +
+                                      $"gp={ZscaleParam(Tok(Cmd()), "p") ?? "<none>"} gt={ZscaleParam(Tok(Cmd()), "t") ?? "<none>"}");
                     var t = Tok(Cmd());
                     var gp = ZscaleParam(t, "p"); var gt = ZscaleParam(t, "t");
                     bool ok;
