@@ -175,6 +175,43 @@ namespace UiTestHost
         }
         static string Cmd() => Find<TextBox>("CommandText")?.Text ?? "";
         static void SetFormat(string s) { var c = Find<ComboBox>("FormatCombo"); if (c != null) c.SelectedItem = s; Pump(8); }
+        // 选中 `ColorSpaceCombo` 的某一项，并**等异步格式联动落地**后再返回（2026-10-12：H10 的 flaky 修法）。
+        // ⚠ 这是 `UiHostShared.UiHost.SelectColorSpaceSettled` 在本宿主的**第二份实现** ——
+        //   旧宿主不引用共享底座（它是拆分前的参考件），而组体要求两份逐字一致 ⇒ 只能同名各自实现。
+        //   这类双拷贝正是批次 G 要消掉的东西，已登记进 `docs/IMPLEMENT_PLAN_2026-10-11.md`。
+        // 为什么要它：`UpdateOptionAvailability()` 在格式/能力联动里会**重建 Items 并把 SelectedIndex
+        //   复位成 0(=auto)**（`MainWindow.xaml.cs:2237-2258`），触发链含 fire-and-forget 的
+        //   `RefreshEncoderListAsync`（`:2051`）与启动探测收尾的 `Dispatcher.UIThread.Post`（`:1347-1351`）
+        //   ⇒ 直接 `SelectedItem = v` 后立刻读，会读到被复位后的 `auto`（实测诊断行 `comboNow=auto`）。
+        // 失败时**返回 false 由调用方报红**，不静默通过（区别见 `docs/TESTING.md` §6 第 68 条）。
+        static bool SelectColorSpaceSettled(string value, int maxPumps = 60)
+        {
+            var cs = Find<ComboBox>("ColorSpaceCombo");
+            if (cs == null) return false;
+            // 先切到一个**必然不同**的项，保证下一次赋值是真实变更（触发 SelectionChanged）。
+            for (int i = 0; i < cs.ItemCount; i++)
+            {
+                var it = cs.Items[i] as string;
+                if (it != null && it != value) { cs.SelectedIndex = i; break; }
+            }
+            Pump(6);
+            cs.SelectedItem = value;
+            // 轮询到"目标真的在位且不再被复位"：连续两轮读数相同即认为异步联动已落地。
+            string? prev = null;
+            for (int i = 0; i < maxPumps; i++)
+            {
+                Pump(4);
+                var now = cs.SelectedItem as string;
+                if (now == value && prev == value) return true;
+                prev = now;
+                if (now != value)
+                {
+                    // 被异步复位了 ⇒ 重新赋值再等
+                    cs.SelectedItem = value;
+                }
+            }
+            return (cs.SelectedItem as string) == value;
+        }
         static void Click(string name)
         {
             var b = Find<Button>(name);
@@ -981,9 +1018,29 @@ namespace UiTestHost
             {
                 var csCombo = Find<ComboBox>("ColorSpaceCombo");
                 if (csCombo == null) { Check("H10 ColorSpaceCombo存在", false, "null"); return; }
-                csCombo.SelectedItem = "Display P3"; Pump(6);
-                SetFormat("PNG"); Regen();
+                // ⚠ 顺序与等待方式（2026-10-12 修负载下 ≈11% 的抖动）：格式联动会**重建**
+                //   ColorSpaceCombo 的 Items 并把 SelectedIndex 复位成 0(=auto)
+                //   （MainWindow.xaml.cs:2237-2258，触发链含 fire-and-forget 的
+                //   RefreshEncoderListAsync :2051 与启动探测收尾的 Dispatcher.UIThread.Post :1347-1351）
+                //   ⇒ **先**走完 SetFormat，**再**用 SelectColorSpaceSettled 边选边等
+                //   （连续两轮在位才算落地，被复位就重选）。旧写法把 SetFormat 放在选中之后、
+                //   只 Pump(6) 冒充等待 —— 本仓 §1.2 铁律：两条异步命令之间睡固定时长=赌。
+                //   确定性复现过（临时夹具，验完已撤）：选中后再插一次真实格式跃迁
+                //   SetFormat("JPG"); SetFormat("PNG") ⇒ 4/4 稳定红，诊断行 comboNow=auto idx=0，
+                //   整条命令里连色彩参数都没有。
+                SetFormat("PNG");
+                if (!SelectColorSpaceSettled("Display P3"))
+                {
+                    Check("H10 Display P3 能稳定选中（前置，防异步复位吞掉赋值）", false,
+                          $"选中后 combo 实际停在「{csCombo.SelectedItem as string ?? "<null>"}」⇒ 本格读数不可信");
+                    return;
+                }
+                Regen();
                 var c = Cmd();
+                // 诊断行（同 J8 的做法）：只给期望/实得两个值，分不清
+                //   ①控件没被真正改动 ②联动没触发 ③下游决策丢了 —— 三种成因修法完全不同。
+                Console.WriteLine($"      [H10dbg] comboNow={csCombo.SelectedItem as string ?? "<null>"} " +
+                                  $"idx={csCombo.SelectedIndex}");
                 Check("H10 命令含smpte432且非bt2020", c.Contains("smpte432") && !c.Contains("bt2020"), Snip(c));
                 csCombo.SelectedIndex = 0; Pump(4);
             });
@@ -1587,6 +1644,110 @@ namespace UiTestHost
                 Check("O3a 关 GainMap 后目标色域保持", offCs == pickCs, $"期望={pickCs} 实={offCs}（默认={defCs}）");
                 Check("O3b 关 GainMap 后位深保持", offBd == pickBd, $"期望={pickBd} 实={offBd}（默认={defBd}）");
                 Check("O3c 关 GainMap 后质量保持", Math.Abs(offQ - pickQ) < 0.5, $"期望={pickQ} 实={offQ}（默认={defQ}）");
+            });
+
+            // O4（2026-10-12）：**没有换格式的晚到刷新**也不得冲掉三项 —— D-1 的同类残留。
+            //   产品里有两处这样的刷新：① 启动探测收尾的 `Dispatcher.UIThread.Post(...)`，
+            //   ② `InitializeCapabilitiesAsync()` 里 `await` 之后那一次。两处原先**裸调**
+            //   `UpdateOptionAvailability()`，而该函数内部是无条件复位（色域/位深 `SelectedIndex = 0`、
+            //   质量 = `GetDefaultQuality(格式)`，jpg 默认 92）⇒ 用户在这个窗口里选好的值被静默冲掉。
+            //   真实签名：本组的 O2/O3 间歇红，读数是 `Display P3→auto`、位深 `8→auto`、`74→92`
+            //   （92 正是那张格式默认质量表算出来的，不是"另一档编码器的默认"）。
+            //   本条**直接反射调那两处共用的保护方法** ⇒ 确定性，不靠等时机；
+            //   「两处确实调了它」另由结构锁 `_probe-gui-control-wiring.ps1` 的 ⑥ 钉住。
+            Safe("O4 晚到刷新保持目标三项", () =>
+            {
+                var csCombo = Find<ComboBox>("ColorSpaceCombo");
+                var bdCombo = Find<ComboBox>("BitDepthCombo");
+                var qSlider = Find<Slider>("QualitySlider");
+                if (csCombo == null || bdCombo == null || qSlider == null)
+                {
+                    Check("O4 三个控件齐备（前提）", false,
+                          $"cs={csCombo != null} bd={bdCombo != null} q={qSlider != null}");
+                    return;
+                }
+                SweepReset(); Pump(8);
+                SetFormat("JPEG"); Pump(10);
+                var preQ = qSlider.Value;
+                var pickCs = "Display P3";
+                var pickBd = bdCombo.Items!.Count > 1 ? (bdCombo.Items[1] as string ?? "auto") : "auto";
+                csCombo.SelectedItem = pickCs; Pump(6);
+                bdCombo.SelectedItem = pickBd; Pump(6);
+                // ⚠ 质量不能拿"请求值"当基准：Avalonia 的 Slider 会按自身刻度吸附（实测请求 88 落在 89）
+                //   ⇒ 赋一个偏移后**读回实际值** wantQ 当基准；反控只要求它比赋值前确实动了。
+                qSlider.Value = preQ > 50 ? preQ - 10 : preQ + 10; Pump(6);
+                var wantCs = csCombo.SelectedItem as string;
+                var wantBd = bdCombo.SelectedItem as string;
+                var wantQ = qSlider.Value;
+                Check("O4 前置：三项已置成与默认不同的待测值（反控，否则本组恒真）",
+                      wantCs == pickCs && Math.Abs(wantQ - preQ) >= 1.0,
+                      $"cs={wantCs ?? "<null>"} bd={wantBd ?? "<null>"} preQ={preQ:F1} wantQ={wantQ:F1}");
+                var mi = W.GetType().GetMethod("RefreshOptionsKeepingTargets",
+                    BindingFlags.NonPublic | BindingFlags.Instance);
+                if (mi == null)
+                {
+                    Check("O4 晚到刷新走「快照—回放」保护方法（反射签名）", false,
+                          "RefreshOptionsKeepingTargets 不存在 ⇒ 晚到刷新仍是裸调复位版（= 本条要抓的缺陷）");
+                    return;
+                }
+                mi.Invoke(W, null);
+                Pump(10);
+                var nowCs = csCombo.SelectedItem as string;
+                var nowBd = bdCombo.SelectedItem as string;
+                var nowQ = qSlider.Value;
+                Check("O4a 晚到刷新后目标色域保持", nowCs == wantCs, $"期望={wantCs ?? "<null>"} 实={nowCs ?? "<null>"}");
+                Check("O4b 晚到刷新后位深保持", nowBd == wantBd, $"期望={wantBd ?? "<null>"} 实={nowBd ?? "<null>"}");
+                Check("O4c 晚到刷新后质量保持", Math.Abs(nowQ - wantQ) < 0.5, $"期望={wantQ:F1} 实={nowQ:F1}");
+            });
+            // O5（2026-10-12）：同族第三处 —— **晚到的编码器列表刷新**也不得换掉用户所选的编码器。
+            //   `RefreshEncoderListAsync()` 跨一个 `await GetEncodersForFormatAsync(...)`，回来后
+            //   `Items.Clear()` + **无条件** `SelectedIndex = 该格式默认编码器` ⇒ 用户/用例刚选好的
+            //   后端会被悄悄换掉（或换到 auto 之类），正好违反该方法自己上方那段「可用性诚实：
+            //   避免…造成「实际编码器 ≠ 用户所选」」。实测签名：UI 组 J1 的 `-c:v=<none>`
+            //   （picked=mjpeg 却生成不出 -c:v），且把空转泵从 8 加到 60 仍 2/20 红 ⇒ **不是读得太早**。
+            //   本条**反射直接等完那一次刷新** ⇒ 确定性；判据只锁"所选没被换掉"，不改期望值。
+            Safe("O5 晚到的编码器列表刷新保持所选后端", () =>
+            {
+                var enc = Find<ComboBox>("EncoderCombo");
+                if (enc == null || enc.ItemCount < 2)
+                {
+                    Check("O5 编码器下拉可用（前提）", false, $"enc={enc != null} items={enc?.ItemCount}");
+                    return;
+                }
+                SetFormat("JPEG");
+                SweepReset(); Pump(8);
+                SetFormat("JPEG"); Pump(10);
+                // 挑一个**不是当前选中项**的后端当待测值（保证这是一次真实跃迁，否则本条恒真）
+                var before = enc.SelectedItem as string;
+                string? pick = null;
+                for (int i = 0; i < enc.ItemCount; i++)
+                {
+                    var s = enc.Items[i] as string;
+                    if (s != null && s != before && !s.Contains("不可用") && !s.Contains("没有")) { pick = s; break; }
+                }
+                if (pick == null)
+                {
+                    Check("O5 找到与当前不同的可选后端（反控）", false, $"items={enc.ItemCount} before={before ?? "<null>"}");
+                    return;
+                }
+                enc.SelectedItem = pick; Pump(10);
+                var mi = W.GetType().GetMethod("RefreshEncoderListAsync",
+                    BindingFlags.NonPublic | BindingFlags.Instance);
+                if (mi == null)
+                {
+                    Check("O5 反射签名 RefreshEncoderListAsync 在位（前提）", false, "方法名变了 ⇒ 本组判据失效");
+                    return;
+                }
+                ((System.Threading.Tasks.Task)mi.Invoke(W, null)!).GetAwaiter().GetResult();
+                Pump(10);
+                var now = enc.SelectedItem as string;
+                Check("O5a 晚到的编码器列表刷新后所选后端保持", now == pick, $"期望={pick} 实={now ?? "<null>"}");
+                Regen();
+                var t = Tok(Cmd());
+                var cv = Val(t, "-c:v");
+                var want = pick.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries)[0];
+                Check("O5b 命令里的 -c:v 仍是所选后端", cv != null && cv.StartsWith(want, StringComparison.Ordinal),
+                      $"picked={pick} -c:v={cv ?? "<none>"}");
             });
         }
 

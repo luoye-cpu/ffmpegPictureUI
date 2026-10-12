@@ -1348,7 +1348,10 @@ namespace FfmpegGui
                 {
                     try { _ = RefreshEncoderListAsync(); } catch { }
                     UpdateExifToolPanelState();
-                    UpdateOptionAvailability();
+                    // ⚠ 2026-10-12：这一拍排在 `[detect] 全部检测完成` **之后** ⇒ 用户完全可能已经选了值，
+                    //   而裸调 `UpdateOptionAvailability()` 会无条件把色域/位深复位、把质量写成格式默认值
+                    //   ⇒ 静默冲掉用户的三项（GroupO 的 O2/O3 间歇红就是它）。这里**没有换格式** ⇒ 走保护方法。
+                    RefreshOptionsKeepingTargets();
                     RefreshPsPanelState();
                     RefreshToolsStatusBar();
                 });
@@ -2079,6 +2082,8 @@ namespace FfmpegGui
             if (isAnimMode && fmt1 == "jxl")
                 encoders = encoders.Where(e => e.Backend != EncoderBackend.Cjxl).ToList();
 
+            // 用户当前所选（必须在 Clear 之前取，Clear 之后 SelectedItem 就没了）
+            var keepEncoder = EncoderCombo.SelectedItem as string;
             EncoderCombo.Items!.Clear();
             if (encoders.Count > 0)
             {
@@ -2090,7 +2095,17 @@ namespace FfmpegGui
                 // 尝试选中默认编码器
                 var defaultEnc = EncoderDetectionService.GetDefaultEncoder(fmt1);
                 var idx = encoders.FindIndex(e => e.Name.Equals(defaultEnc, StringComparison.OrdinalIgnoreCase));
-                EncoderCombo.SelectedIndex = idx >= 0 ? idx : 0;
+                // ── D-1 同族第三处（2026-10-12）：**新列表里还有用户当前所选项就保留它**，没有才回落默认 ──
+                //   原先这里**无条件**选默认编码器，而本方法跨一个 `await GetEncodersForFormatAsync(...)`：
+                //   ⇒ 任何一次列表刷新（切格式的异步收尾、启动探测收尾那拍）都会把用户刚选好的后端
+                //   悄悄换掉，与本方法上方那段「可用性诚实 … 避免造成「实际编码器 ≠ 用户所选」」
+                //   立的规矩**正好相反**。实测签名：UI 组 J1 的 `-c:v=<none>`（picked=mjpeg 却生成不出
+                //   -c:v），且把空转泵从 8 加到 60 仍 2/20 红 ⇒ 不是"读得太早"，是产品换了选择。
+                //   判据：GroupO 的 O5a/O5b（反射直接跑完这一次刷新 ⇒ 确定性，不靠时机）。
+                //   回落分支保持原语义：格式变了 ⇒ 旧后端不在新列表 ⇒ 仍按默认选（不写进非法值）。
+                var keepEnc = keepEncoder;
+                int keepIdx = keepEnc == null ? -1 : encoders.FindIndex(e => e.ToString() == keepEnc);
+                EncoderCombo.SelectedIndex = keepIdx >= 0 ? keepIdx : (idx >= 0 ? idx : 0);
                 EncoderCombo.IsEnabled = true;
             }
             else
@@ -2750,7 +2765,8 @@ namespace FfmpegGui
             if (LogText != null) LogText.Text += "正在检测本地 ffmpeg 能力...\n";
             await FormatCapabilitiesService.InitializeAsync();
             if (LogText != null) LogText.Text += "能力检测完成。\n";
-            UpdateOptionAvailability();
+            // ⚠ 2026-10-12：同 ①——`await` 之后这一拍也没换格式，裸调会冲掉用户已选的三项 ⇒ 走保护方法。
+            RefreshOptionsKeepingTargets();
         }
 
         private async void SelectFile_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
@@ -5756,6 +5772,42 @@ namespace FfmpegGui
         /// </summary>
         /// <summary>判断当前选择的色彩空间是否为 HDR（BT.2020 PQ/HLG 或 P3 PQ 或高级参数 PQ/HLG 传输函数）。
         /// Gain Map (Ultra HDR) 仅在 HDR 色彩下有意义（记录 HDR 高光扩展），SDR 内容 headroom=1 无增益。</summary>
+        /// <summary>刷新选项可用性，但**保住用户已设的目标色域 / 位深 / 质量**（D-1 的「快照—回放」抽成方法，2026-10-12）。
+        /// <para><b>为什么必须有</b>：<c>UpdateOptionAvailability()</c> 内部是**无条件复位**——位深与色域都是
+        /// <c>Items.Clear()</c> + 重建后 <c>SelectedIndex = 0</c>（见该方法内 <c>BitDepthCombo</c> 与
+        /// <c>ColorSpaceCombo</c> 那两段），质量被写成该格式的默认值（<c>GetDefaultQuality(fmt3)</c>，
+        /// jpg = 92，见 <c>Models/FfmpegOptions.cs</c> 那张表）。
+        /// 「用户改了格式」时这是**期望行为**（候选集变了，旧值可能已非法）；但**没换格式**的刷新
+        /// ——启动探测收尾的 <c>Dispatcher.UIThread.Post</c>、<c>InitializeCapabilitiesAsync()</c> 的
+        /// <c>await</c> 之后那一次——会把用户刚选好的三项静默冲掉。
+        /// 2026-10-12 由 GroupO 的 O2/O3 <b>间歇红</b>抓到，读数是 <c>Display P3→auto</c>、
+        /// 位深 <c>8→auto</c>、质量 <c>74→92</c>（92 正是那张默认表算出来的）；同一二进制秒级重跑可绿，
+        /// 说明它取决于「那拍何时落地」而非用例本身。</para>
+        /// <para><b>语义与 2026-09-20 的 D-1 修法逐字相同</b>（原先内联在 <c>HdrMode_Changed</c> 里）：
+        /// 回写一律走 <c>SetComboByValue</c> ⇒ 值若不在新候选集里就**保持刷新后的默认**，绝不写进非法值；
+        /// 顺序色域先、位深后（HDR 色域会联动位深 ⇒ 用户的显式位深必须是最后一次写入）；
+        /// 纯无损格式（png/tiff/apng）的质量被产品语义锁定 100，不回写。</para>
+        /// <para>⚠ 只给「**没有换格式**」的刷新点用。<c>FormatCombo_SelectionChanged</c>、
+        /// 预设应用、格式列表重建那三处**一字不变**（D-1 明确限定，避免动到「切格式 ⇒ 重建候选集」的既有语义）。</para>
+        /// </summary>
+        private void RefreshOptionsKeepingTargets()
+        {
+            var keepColorSpace = ColorSpaceCombo?.SelectedItem as string;
+            var keepBitDepth = BitDepthCombo?.SelectedItem as string;
+            var keepQuality = QualitySlider?.Value ?? double.NaN;
+            var keepFmt = NormalizeFormat(FormatCombo?.SelectedItem as string);
+            UpdateOptionAvailability();
+            // ⚠ 顺序：色域先、位深后。HDR 色域会触发位深自动联动（`ColorSpaceCombo_SelectionChanged`）
+            //   ⇒ 后写位深 = 用户的显式位深是**最后一次写入**（与「用户选择即终态」的语义一致）。
+            SetComboByValue(ColorSpaceCombo, keepColorSpace);
+            SetComboByValue(BitDepthCombo, keepBitDepth);
+            if (QualitySlider != null && !double.IsNaN(keepQuality)
+                && keepFmt is not ("png" or "tiff" or "apng"))
+            {
+                QualitySlider.Value = keepQuality;
+            }
+        }
+
         /// <summary>GainMap 独立开关变化：切换子选项面板可见性 + 刷新色彩面板（仅CICP 例外）与命令。</summary>
         private void HdrMode_Changed(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
         {
@@ -5764,35 +5816,18 @@ namespace FfmpegGui
                 JpegGainMapPanel.IsVisible = on
                     && (FormatCombo?.SelectedItem as string)?.ToLowerInvariant() is "jpg" or "jpeg";
             UpdateIccPanelVisibility();
-            // ── D-1 同族修复（2026-09-20）：刷新会**冲掉**用户已设的目标色域 / 位深 / 质量 ──────────
-            // 缺陷：`UpdateOptionAvailability()` 会 `Items.Clear()` + 重建 `ColorSpaceCombo`（见 `UpdateOptionAvailability()` 内那几行）
-            //   与 `BitDepthCombo` 并把 `SelectedIndex` 归 0，还会把 `QualitySlider.Value`
-            //   设为该格式默认值（同见该方法）。⇒ 用户勾/取消「GainMap (Ultra HDR)」时**格式并未改变**，
-            //   这三项却被重置（与 D-1 的「应用预设后三项留不住」**同族**，`§11.4` 登记的残留即此）。
-            // 修法：**刷新前快照、刷新后回写** —— 与 `ApplyPresetData` 的 D-1 修法**同一模式**。
-// ⚠ 只改**本处理器**：刷新函数本体与另外 5 个调用点（能力检测后的 UI 刷新回调、
-//   格式切换 `FormatCombo_SelectionChanged`、动图模式 `ConversionMode_SelectionChanged`、
-//   能力初始化 `InitializeCapabilitiesAsync`、简易预设 `SimplePresetCombo_SelectionChanged`）
-//   行为**一字不变**（D-1 明确要求，避免动到「切格式 ⇒ 重建候选集」的既有语义）。
-//   ⚠ 2026-09-21 改：原先此处写的是**绝对行号**（`:1275`/`:1851`/`:1948`/`:2611`/`:4604`）
-//     ⇒ 插入任何行都会失效（`COLOR_TRAPS §十四`）⇒ 改为**具名 handler**。
-            // ⚠ 回写一律走 `SetComboByValue`：值若不在新候选集里（例如**关掉** GainMap 后 HDR 色域项消失）
-            //   就**保持刷新后的默认值**（= 今天的行为），绝不写进非法值。
-            var keepColorSpace = ColorSpaceCombo?.SelectedItem as string;
-            var keepBitDepth = BitDepthCombo?.SelectedItem as string;
-            var keepQuality = QualitySlider?.Value ?? double.NaN;
-            var keepFmt = NormalizeFormat(FormatCombo?.SelectedItem as string);
-            UpdateOptionAvailability();   // 开关会改变 JPEG 的 HDR 能力⇒ 目标色域列表需重新过滤
-            // ⚠ 顺序：色域先、位深后。HDR 色域会触发位深自动联动（`ColorSpaceCombo_SelectionChanged:3440`）
-            //   ⇒ 后写位深 = 用户的显式位深是**最后一次写入**（与「用户选择即终态」的语义一致）。
-            SetComboByValue(ColorSpaceCombo, keepColorSpace);
-            SetComboByValue(BitDepthCombo, keepBitDepth);
-            // ⚠ 纯无损格式（PNG/TIFF/APNG）的质量被**产品语义**锁定 100（见本文件中「PNG/TIFF/APNG 纯无损格式，强制勾选且锁定」那段），不得回写（同 D-1）。
-            if (QualitySlider != null && !double.IsNaN(keepQuality)
-                && keepFmt is not ("png" or "tiff" or "apng"))
-            {
-                QualitySlider.Value = keepQuality;
-            }
+            // ── D-1（2026-09-20）+ 2026-10-12 扩展：所有**没换格式**的刷新都走同一个保护方法 ──────
+            //   勾/取消「GainMap (Ultra HDR)」会改变 JPEG 的 HDR 能力 ⇒ 目标色域列表需重新过滤，
+            //   但用户已选的色域 / 位深 / 质量必须留住。快照—回放的语义（含「值不在新候选集里就不回写」
+            //   ⇒ 保持刷新后的默认，绝不写进非法值；顺序色域先、位深后；纯无损格式的质量不回写）
+            //   见 `RefreshOptionsKeepingTargets()` 的文档注释。
+            //   ⚠ 2026-10-12：原先这段只保护**本处理器**，注释也写着"另外 5 个调用点一字不变"；
+            //     但启动探测收尾的 Post 与 `InitializeCapabilitiesAsync()` 的 await 之后那两次
+            //     **同样没换格式**的刷新仍在裸调 ⇒ GroupO 的 O2/O3 间歇红（读数 auto/auto/92）。
+            //     现已两处改走保护方法。**仍然裸调**的是"切格式 ⇒ 重建候选集"那三处
+            //     （`FormatCombo_SelectionChanged`、格式列表重建的兜底分支、简易预设）与预设应用，
+            //     它们的复位是**期望行为**，行为一字未动。
+            RefreshOptionsKeepingTargets();
             UpdateQualityLabel();
             RegenerateCommand();
         }

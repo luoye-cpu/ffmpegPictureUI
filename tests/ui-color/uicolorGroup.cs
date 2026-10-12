@@ -43,6 +43,8 @@ namespace Tests.UiColor
         private static void Regen() => UiHost.Regen();
         private static string Cmd() => UiHost.Cmd();
         private static void SetFormat(string s) => UiHost.SetFormat(s);
+        // ⚠ 2026-10-12 新增（H10 的 flaky 修法）：选中色域并**等异步格式联动落地**，见 UiHost.SelectColorSpaceSettled。
+        private static bool SelectColorSpaceSettled(string v) => UiHost.SelectColorSpaceSettled(v);
         private static void Click(string name) => UiHost.Click(name);
         private static void Check(string name, bool cond, string detail = "") => UiHost.Check(name, cond, detail);
         private static void Safe(string name, Action a) => UiHost.Safe(name, a);
@@ -193,9 +195,29 @@ namespace Tests.UiColor
             {
                 var csCombo = Find<ComboBox>("ColorSpaceCombo");
                 if (csCombo == null) { Check("H10 ColorSpaceCombo存在", false, "null"); return; }
-                csCombo.SelectedItem = "Display P3"; Pump(6);
-                SetFormat("PNG"); Regen();
+                // ⚠ 顺序与等待方式（2026-10-12 修负载下 ≈11% 的抖动）：格式联动会**重建**
+                //   ColorSpaceCombo 的 Items 并把 SelectedIndex 复位成 0(=auto)
+                //   （MainWindow.xaml.cs:2237-2258，触发链含 fire-and-forget 的
+                //   RefreshEncoderListAsync :2051 与启动探测收尾的 Dispatcher.UIThread.Post :1347-1351）
+                //   ⇒ **先**走完 SetFormat，**再**用 SelectColorSpaceSettled 边选边等
+                //   （连续两轮在位才算落地，被复位就重选）。旧写法把 SetFormat 放在选中之后、
+                //   只 Pump(6) 冒充等待 —— 本仓 §1.2 铁律：两条异步命令之间睡固定时长=赌。
+                //   确定性复现过（临时夹具，验完已撤）：选中后再插一次真实格式跃迁
+                //   SetFormat("JPG"); SetFormat("PNG") ⇒ 4/4 稳定红，诊断行 comboNow=auto idx=0，
+                //   整条命令里连色彩参数都没有。
+                SetFormat("PNG");
+                if (!SelectColorSpaceSettled("Display P3"))
+                {
+                    Check("H10 Display P3 能稳定选中（前置，防异步复位吞掉赋值）", false,
+                          $"选中后 combo 实际停在「{csCombo.SelectedItem as string ?? "<null>"}」⇒ 本格读数不可信");
+                    return;
+                }
+                Regen();
                 var c = Cmd();
+                // 诊断行（同 J8 的做法）：只给期望/实得两个值，分不清
+                //   ①控件没被真正改动 ②联动没触发 ③下游决策丢了 —— 三种成因修法完全不同。
+                Console.WriteLine($"      [H10dbg] comboNow={csCombo.SelectedItem as string ?? "<null>"} " +
+                                  $"idx={csCombo.SelectedIndex}");
                 Check("H10 命令含smpte432且非bt2020", c.Contains("smpte432") && !c.Contains("bt2020"), Snip(c));
                 csCombo.SelectedIndex = 0; Pump(4);
             });

@@ -34,7 +34,16 @@ $srcDir = Join-Path $root 'tests/output/sources'
 #   演进：2026-10-07 = 409；2026-10-09 = 413（旧宿主 GroupC 增 C6 组 4 条 ——
 #   JPEG LI「固定码表 vs 渐进档」冲突提示，见 UiTestHost/Program.cs 与 Tests.UiCore）。
 #   抬这个数必须同时看到 3c（新旧集合相等）仍 PASS：只抬 1a/3d 而 3c 红，就是"用改数掩盖丢断言"。
-$expectedOldCount = 413
+#   2026-10-12 = 417（GroupO 增 **O4 四条**：`O4 前置(反控)` + `O4a/O4b/O4c` 晚到刷新保持色域/位深/质量；
+#   配套产品侧把 D-1 的「快照—回放」扩到两处**没换格式**的晚到刷新 ——
+#   立条动机：O2/O3 长期间歇红，同一份二进制秒级连跑一次红一次绿，红的读数是 `auto/auto/92`
+#   （92 = `GetDefaultQuality("jpg")`）⇒ 根因在 `Dispatcher.UIThread.Post` 那拍，不在开关处理器。
+#   实测旧宿主 `417 PASS / 0 FAIL`、拆分并集同数 ⇒ 3c 仍 PASS 才允许抬。）
+#   2026-10-12 再 = 419（同组增 **O5 两条**：`O5a` 晚到的**编码器列表**刷新保持所选后端 + `O5b` 命令里
+#   `-c:v` 仍是它。产品侧同族第三处：`RefreshEncoderListAsync` 跨 await 后**无条件**选默认编码器
+#   ⇒ 与它自己上方"可用性诚实…避免『实际编码器 ≠ 用户所选』"相反。判据确定性（反射跑完那次刷新）：
+#   修前 3/3 红、修后 13/0。⚠ 抬数同时 3c 必须仍 PASS —— 实测旧宿主与拆分并集同为 419。）
+$expectedOldCount = 419
 # 一对一改名 ⇒ 新旧总数相同（不是 408/412）
 $expectedNewCount = $expectedOldCount
 

@@ -201,7 +201,9 @@ SDR 参考白才该走表），换算与生产 `ColorTransformPlan.ToSpec()` 同
   ② 把验收脚本 `| head -8` 会 SIGPIPE 杀掉它，只留下第一行输出（本仓第 150 行那条的同族，我又犯一次）。
 
 **剩余（步骤③之后仍开）**：~~全量 73 条宣布新基线~~（**已做，见文末「① 收口」，绑 `A95CCD5F80837E76`**）；
-`verify-ui-split-union` 里 `H10` 的 `Pump(6)` 换成确定性 settle（负载下 ≈11% 抖动，已归因未修，属批次 G 邻域）；
+~~`verify-ui-split-union` 里 `H10` 的 `Pump(6)` 换成确定性 settle~~（**同日已修**：交错 A/B 13/48→0/48，
+见《H10 的固定时长等待换成确定性收敛》）；**新查出同形状但不同类的一条**：`ui-gainmap-toggle`（组 O）
+轮内红 6 条、单跑 8/8 绿 ⇒ 判"读在重建中间窗口"还是"产品真冲掉选项"的实验已设计好，单列一批；
 `bench` 40 档静机最小项 45.0 ⇒ 余量 11%，
 负载下假红只能静机复跑（已写进门禁注释）；`tests/core`+`tests/diagnostics` 的断言双拷贝（批次 G，#13）；
 `F-8` 端到端量级；`L-3b` 正样本 `test4.icc`（**本机两份 lcms checkout 里都没有**，只有 test0/1/2/3/5 ⇒ 那条 SKIP 是真的）；
@@ -339,6 +341,7 @@ standalone 单跑同 exe 同参数则 `15/0`。
 ⚠ 失败行的命令串被 `Snip()` 截在 `-compression_lev…`，所以"读到的是哪个残留状态"这一层**没有量到**，只归到机制类。
 ⇒ 判据不放宽、不改文案；欠账登记为「H10 的 `Pump(6)` 换成确定性 settle」，属批次 G 邻域
 （UI 断言三份逐字拷贝 + 413 计数钉 + verbatim/union 两把闸都在这一带），本批不动。
+**（更正：这条在同一个交易日里已经做完，见下一节《H10 的固定时长等待换成确定性收敛》；本节保留当时读数原样。）**
 
 **两条作废轮的账（写清楚，别让下一位重新猜）**
 - `full3`：跑到一半我改了一行文档注释 ⇒ 运行器漂移闸判废（「本次结论不对应当前工作区 ⇒ 必须重建后重跑」）。
@@ -349,3 +352,139 @@ standalone 单跑同 exe 同参数则 `15/0`。
   同指纹单跑三条红脚本当场全绿（`tests/output/preflight-1.log`：`format-regression 19/0`、
   `colorfmt-matrix WARN=4 不判红`、`gainmap-managed` 全绿）⇒ 两条都不是代码结论。
   ⇒ 处方进的是启动器而不是判据：开局/收尾各采一次 `AvailableFreeSpace` 写进日志，低于 6GB 直接拒绝起跑。
+
+## H10 的固定时长等待换成确定性收敛（2026-10-12，基线第三条红的收口）
+
+**读数先摆**（交错 A/B/A/B，同一个 I/O 负载夹具，每臂 24 跑；`tests/output/h10-ab-io.log`）：
+
+| 臂 | 内容 | 红/总 |
+|---|---|---|
+| A1 | 修好前 | **8/24** |
+| B1 | 修好后 | 0/24 |
+| A2 | 修好前 | **5/24** |
+| B2 | 修好后 | 0/24 |
+
+合计 修好前 **13/48**、修好后 **0/48**；Fisher 单侧 **p≈4.8e-5**；若真率仍是 27%，48 跑全绿的概率只有 **2.6e-7**。
+换臂读数跟着翻 ⇒ 归属到这次改动，不是时段漂移。
+
+⚠ **一条负结论**：纯 CPU 负载（20 个满载 `while($true){}`）**复现不出**（修好前 0/20，见 `load_and_rate.ps1`）；
+换成 I/O 负载（4 个 ffmpeg 反复写 4K 无损大文件再删，`io_and_rate.ps1`）才复现 ⇒ **争的是磁盘不是算力**，
+这正好解释它为什么只在整轮里出现、单跑恒绿。证伪夹具要挑对被检量的那根轴（[[feedback-adversarial-fixture-order]]）。
+
+**机制是量到的，不是推的**：把「选中之后再走一次真实格式跃迁」（`SetFormat("JPG"); SetFormat("PNG")`）插进组体
+⇒ **4/4 稳定红**，诊断行 `comboNow=auto idx=0`，**整条命令里连色彩参数都没有**。
+根因 = `UpdateOptionAvailability()` 重建 `ColorSpaceCombo` 的 Items 并把 `SelectedIndex` 复位成 0
+（`MainWindow.xaml.cs:2237-2258`），触发链含 fire-and-forget 的 `RefreshEncoderListAsync`（`:2051`）
+与启动探测收尾的 `Dispatcher.UIThread.Post`（`:1347-1351`）。旧写法 `SelectedItem = …; Pump(6); SetFormat("PNG")`
+同时踩两条：**顺序错**（格式联动排在选中之后）+ **拿固定轮数冒充等待**（§1.2 铁律：两条异步命令之间睡固定时长=赌）。
+
+**改法（只动测试侧，产品一字未改）**：`SetFormat("PNG")` 先走完，再用**既有**的
+`UiHost.SelectColorSpaceSettled`（`:570-597`，2026-10-07 为 J8 同一个坑加的：先切到必然不同的项保证真实跃迁，
+再轮询到"连续两轮在位"，被复位就重选，等不到返回 false）。等不到时新增一条**响亮报红**的前置断言
+`H10 Display P3 能稳定选中（前置，防异步复位吞掉赋值）`，并留一行 `[H10dbg] comboNow=… idx=…` 诊断（与 J8 同法）。
+**原断言名与期望一字未动** ⇒ 绿态断言名集合不变 ⇒ union 的 413 计数钉照旧（旧宿主实跑 `413 PASS / 0 FAIL`）。
+
+**三份拷贝的代价（诚实记账）**：组体必须在 `tests/UiTestHost/Program.cs` 与 `tests/ui-color/uicolorGroup.cs`
+逐字一致（GroupH 不在 verbatim 的豁免表里）⇒ 同步成 **2342 字节**两侧同段逐字相等，`verbatim 20/0`（比对行数 3064→3084）。
+为此在旧宿主里补了一份**同名本地实现**——旧宿主不引用 `UiHostShared`，且它自己的 `W` 与共享底座的 `W`
+是两个窗口 ⇒ 没法转发。**这是新增的第二份实现**，记进批次 G 的账（#13）。
+
+**两支牙**（脚本 `tests/output/step2/h10_teeth.py`，两支都 `REVERTED identical=True` 后逐工程重建）：
+- **CT1 产品变异**：`ColorSpaceRegistry.cs` 把 Display P3 的 `OutPrimaries` 改成 `bt2020` ⇒ **原断言**红
+  （命令实际变成 `-color_primaries bt709 …`）⇒ 当场证明"等正向条件"没把判据做成恒真；同轮 `H1` 一起红（同一张表，预期）。
+- **CT2 夹具变异**：settle 的目标改成不存在的色域 ⇒ **新前置断言**红，读数
+  `选中后 combo 实际停在「<null>」⇒ 本格读数不可信`。
+
+**顺手量到一条会影响所有历史结论的事实**：`FfmpegGui.dll` 烤进了
+`AssemblyInformationalVersion = 1.6.0-beta7+<完整 commit sha>`（SDK 的 SourceRevisionId 默认行为，
+`Directory.Build.props`/csproj 里查不到任何相关开关）⇒ **代码一字不动、只多一个提交，sha16 就变**
+（`A95CCD5F80837E76`@`559d871` → `46FE4D894871042B`@`942af28`；23 枚宿主仍一致、`git diff HEAD -- src` 为空）。
+⇒ 报"某轮绑 X 指纹"必须**同时写当时的 HEAD**。取证一行：
+`py -c "d=open(dll,'rb').read(); i=d.find(b'<短sha>'); print(d[i-40:i+50])"`。
+
+**新登记的一条红（H10 的同族形状，但**不能**照搬修法）**：`ui-gainmap-toggle`（组 O）在子集轮里红 6 条
+（`O2a/O2b/O2c/O3a/O3b/O3c`：色域 `Display P3→auto`、位深 `8→auto`、质量 `74→92` 而默认是 84），
+随后单跑 8/8 全绿。它断言的**就是"三项必须保持"** ⇒ 用"边等边重选"去让它变绿，等于把"产品真把用户选项冲掉了"
+这件事抹掉。判别的读数设计好了：把 `gm.SelectedIndex` 变更后的取值改成"轮询三个控件连续 K 次读数不变再取"——
+稳态回到 pick ⇒ 读在重建的中间窗口（改测试）；稳态仍是默认 ⇒ 产品缺陷（改产品，且当场量到红）。
+这条要动 `ui-mode` 的组体 ⇒ 牵动旧宿主同段与 verbatim/union 两把闸 ⇒ **单列一批**，不混进本批。
+
+## D-1 同族扩展：三处「没换格式的晚到刷新」不再冲掉用户所选（2026-10-12）
+
+**触发点是宣布基线时的第三条红**，追下去发现它不是 H10 那一条，而是同一族的三类无条件复位
+（`UpdateOptionAvailability()` 与 `RefreshEncoderListAsync()`）。整条链每一步都有日志，包括**否证我自己解释**的那一步。
+
+1. **间歇红复现**：union 子集轮里 GroupO 的 `O2/O3` 六条红，读数 `Display P3→auto`、位深 `8→auto`、质量 `74→92`；
+   同一份二进制 standalone 单跑 `ui-gainmap-toggle` 8 次全绿 ⇒ 频次型，不是确定性回归。
+2. **机制定位（读产品码，不靠猜）**：`HdrMode_Changed` **本来就有** D-1 的快照—回放；冲掉三项的是
+   `FullDetectionAsync` 收尾那拍 —— `Dispatcher.UIThread.Post{ RefreshEncoderListAsync; UpdateExifToolPanelState;
+   UpdateOptionAvailability; … }` 排在 `[detect] 全部检测完成` **之后**入队，那拍**裸调**刷新 ⇒
+   落地即永久复位（没有任何东西会把它写回来）。`92` 的出处是 `FfmpegOptions.GetDefaultQuality("jpg")` 的
+   `_ => 92`，不是我一开始猜的"另一档编码器的默认"。
+3. **产品修法**：把 D-1 的快照—回放抽成 `RefreshOptionsKeepingTargets()`，让两处**没换格式**的晚到刷新
+   （探测收尾 Post、`InitializeCapabilitiesAsync` 的 `await` 之后）走它；**切格式 / 应用预设那几处仍然裸调**
+   ——「切格式 ⇒ 重建候选集 ⇒ 回默认」是期望语义，一字没动。
+4. **新判据 O4**：反射直接调那两处共用的保护方法 ⇒ **确定性**，不靠等时机。
+   修前读数 `FAIL O4 … RefreshOptionsKeepingTargets 不存在`；修后 `O4a/O4b/O4c` 全绿。
+5. **顺手查出第三处，而且比前两处严重**：`RefreshEncoderListAsync` 跨 `await GetEncodersForFormatAsync` 之后
+   **无条件** `SelectedIndex = 该格式默认` ⇒ 任何一次列表刷新都会悄悄把用户所选后端换掉，
+   正好违反该方法上方自己写的「可用性诚实…避免造成『实际编码器 ≠ 用户所选』」。
+   - 我先给出**错误解释**："读得太早"。于是做机制判决：把空转泵 `Pump(8) → Pump(60)` ⇒
+     **仍 2/20 红** ⇒ 我自己的假设被自己否证（不是读晚了，是产品换了选择）。
+   - 加 `O5`：反射**跑完**那一次刷新再断言所选后端 + 命令里的 `-c:v` ⇒ 修前 **3/3 确定性红**
+     （`期望=mjpeg — MJPEG (Motion JPEG)`）；修后 13/0。
+   - 修法与 `SetComboByValue` 同语义：**新列表里还有原选项就保留，没有才回落默认**
+     （切格式 ⇒ 旧后端不在新列表 ⇒ 行为与今天完全一致）。
+   - 兑现读数：同一条 I/O 负载夹具，`ui-sweep` 修前 **2/20 红**（J1/J2 之间换位置红）、修后 **0/20**。
+6. **结构锁扩到 ⑥**（`_probe-gui-control-wiring.ps1` 77→82）：保护方法调用点必须 == 3、能力初始化体内
+   必须走它且不得裸调、探测收尾 Post 必须带它；再加一条**反向对账**——「切格式那处仍然裸调」，
+   防我"顺手把所有刷新都包起来"偷偷改语义。牙（全部 `REVERTED identical=True` 后重建）：
+   MUT-W1 把 Post 改回裸调 ⇒ `80/2`；MUT-W2 把能力初始化改回裸调 ⇒ `79/3`；
+   MUT-W3 摘掉两条回写 ⇒ `O2a/O2b/O3a/O3b/O4a/O4b` 六条红（证明行为判据也咬，不只签名）。
+7. **计数钉两次抬** 413→417→419（O4 四条 + O5 两条），每次都在旧宿主与拆分并集**量到同数**之后才抬；
+   verbatim 比对行数 3064→3188，GroupO 方法体两份逐字 10678 字节一致。
+
+**边界（不写成已完成）**
+- `UpdateOptionAvailability()` 本体没动（内部仍是无条件复位），只换调用点 ⇒ 语义面收敛在两处晚到刷新。
+- 还有一类**没被免疫**：`RegenerateCommand()` 是 `async void`，用例在它的 await 窗口里读 `CommandText`
+  仍可能读到上一版。O4/O5 是"反射等真正完成"绕开的；判据面要彻底免疫需要产品给一个**完成信号**
+  （seam），这条登记着、本批没做。
+- 调查中一条子代理回报**编造了两个不存在的 helper 名与行号**（`RestoreInputsBeforeOptionRefresh` /
+  `SelectComboItemKeepScroll`，我 grep 命中 0 当场否证）⇒ 转抄二手证据句之前必须自己 grep 一遍（老规矩再兑现一次）。
+
+## full8：重绑基线 + 工具链恢复（2026-10-12 晚）
+
+**基线读数**（`tests/output/gates-round-2026-10-12-full8.log`，17:4x–19:08）：73 条受管脚本
+**72 绿 / 1 红**（唯一红 `_probe-test-group-coverage` = 按设计登记零调用点 mode），探针 27 mode
+**红 2 条**（`runner` 沙箱假红、`bench` 见下），尺 `1C785039CDA1A86C`，
+被测件 `FfmpegGui.dll=224ACA81AB6591BA` / `FfmpegGui.exe=B2C457DCCB092C4B` /
+`ServiceProbe.exe=B1672D72ED2606B9` / `UiTestHost.exe=FF86AFE5AAF401F7` / `GainMapTestHost.exe=BAB1C182671DCC37`，
+HEAD=`942af28`，无锁残留、无超时、无源码漂移。磁盘双采样 36.15GB → 99.93GB（这台机器的清理器在轮跑期间腾了 60GB）。
+
+**`probe:bench` 那条红归因到负载，不是代码**：红的不是吞吐档而是**对账臂**
+（关表档"实测增益必须 ≈1×"，轮内实读 **1.4×** > 阈值 1.3），且该 mode 用时 **71.6s vs 平时 57-59s**
+⇒ 整段被外部 I/O 拖慢。静机同二进制复跑两次：**30/0，比值 1.1× / 1.0×**（`bench-quiet-{1,2}.log`）。
+⇒ 登记一条方法账：吞吐档早就改成"best-of-N 取最优"，这条**比值型对账臂仍是单样本**；
+把它也改成 min-of-N 是估计算法对齐、**不是放宽阈值**，但改完必须用变异重验
+（放开编码侧关表条件 ⇒ 比值仍要 >1.3 转红）——本批未做，排在批次 G 之后。
+
+**工具链被清理器删掉的三件（`publish/PLAN/artifacts/` 是 gitignored，git 恢复不了）**：
+`avifenc.exe`、`dngtool.exe`、`ultrahdr_app.exe`。恢复过程与两处新发现：
+- `avifenc` 不必重编：`tools/src/libavif/build/Release/avifenc.exe` 就在盘上，
+  跑出来 `Version: 1.4.2 (aom [enc]:3.15.0)`（与 `BUILD_TOOLS.md` 钉的死值一致）。
+  ⚠ 只拷 exe 不够：它动态依赖同目录 `avif.dll`（实测 `error while loading shared libraries: avif.dll`），
+  部署清单本来就是**两个文件**（`tools/build_tools.ps1:354-358`）⇒ 一次"恢复工具链"要按清单整批拷，别凭印象挑。
+- `dngtool` 也不必重编库：`tools/src/dngtool/build` 里 168 个 obj + `dng_sdk.lib` + `libjxl/build/lib/Release/jxl.lib`
+  都在 ⇒ 只做增量链接就出 `dngtool.exe`。
+  ⚠ 顺带查出 `build_tools.ps1` 自身两个会让恢复变灾难的缺陷：① 7a 的"已构建"守卫查
+  `libjxl/build/Release/jxl.lib`，而 CMake 实际输出在 `build/lib/Release/jxl.lib` ⇒ 照脚本跑会**白重编整个 libjxl 0.8**；
+  ② 7b 起手 `Remove-Item -Recurse -Force $DngToolBuild` ⇒ 会把可增量链接的树连 obj 一起删光。
+  两条都登记未改（改守卫就要配一支"守卫路径 == 部署路径"的判据，否则改完还是假的）。
+- `ultrahdr_app` **不需要恢复**：`build_tools.ps1:215/347` 已把它从工具链移除（纯 C# GainMapEncoder 取代），
+  只有第三方见证门禁引用它，而那门禁缺件时是**正确 SKIP**（不是假绿）。
+- 恢复后受影响 5 条门禁当场转绿：`verify-color-caps`、`verify-metadata-privacy`、
+  `verify-gif-avif-framelist`（原为整批 SKIP ⇒ 现在真跑真过）、`_probe-raw-default-tier`、
+  `verify-usability-e2e 84/0`（含之前红的 `gif→avif` 格）。
+- 文档过期两处（本轮只登记，未改）：`tools/BUILD_TOOLS.md` 的表写 ffmpeg=git-2026-08-06，
+  实际出货件是 **git-2026-10-11-edadf711a9**（与本机 `C:\PLAN\FFmpeg` 同一构建）；同表仍把
+  `ultrahdr_app` 列为"VS 自编译"，而脚本已移除它。

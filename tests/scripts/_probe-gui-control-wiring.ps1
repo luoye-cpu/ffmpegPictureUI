@@ -116,5 +116,29 @@ CK ([regex]::IsMatch($csCode, 'RawColorTargetCombo\.SelectedIndex\s*=')) `
 CK ([regex]::IsMatch($csCode, 'RawColorTargetCombo\.SelectionChanged\s*\+=')) `
    "RawColorTargetCombo: SelectionChanged attached (P0 regression lock, 2026-10-04)"
 
+# ── ⑥ D-1 extension lock (2026-10-12): the "late, no-format-change" refreshes must be protected ──
+#   `UpdateOptionAvailability()` resets colour-space / bit-depth to index 0 and quality to the
+#   format default (jpg = 92). That is correct when the USER changes the format, but two refreshes
+#   fire with **no** format change: (a) the UI refresh posted at the tail of `FullDetectionAsync`,
+#   which is enqueued AFTER the "[detect] done" line, and (b) `InitializeCapabilitiesAsync` right
+#   after its await. Both silently destroy picks the user made in that window -- seen in the wild as
+#   GroupO O2/O3 reddening intermittently (same binary, red then green seconds apart) with the
+#   reading auto/auto/92. They must now call `RefreshOptionsKeepingTargets()`.
+#   Why a source-shape lock at all: the behavioural judge (GroupO O4) invokes the protecting method
+#   directly, so rewiring one of these two sites back to the raw call keeps O4 GREEN -- only this
+#   lock sees the wiring. Teeth proven by mutation (MUT-W1 / MUT-W2 in docs/IMPLEMENT_PLAN_2026-10-11.md).
+$wrapCalls = ([regex]::Matches($csCode, 'RefreshOptionsKeepingTargets\(\);')).Count
+CK ($wrapCalls -eq 3) ("D-1 extension: RefreshOptionsKeepingTargets call sites == 3 (detect-tail post + capability init + HdrMode handler), actual $wrapCalls")
+$capInit = ([regex]::Matches($csCode, '(?s)private async Task InitializeCapabilitiesAsync\(\).{0,420}?RefreshOptionsKeepingTargets\(\);')).Count
+CK ($capInit -eq 1) "D-1 extension: InitializeCapabilitiesAsync body goes through the protecting wrapper (matched $capInit, expect 1)"
+$capRaw = ([regex]::Matches($csCode, '(?s)private async Task InitializeCapabilitiesAsync\(\).{0,420}?UpdateOptionAvailability\(\);')).Count
+CK ($capRaw -eq 0) "D-1 extension: InitializeCapabilitiesAsync must NOT call the raw reset refresh (matched $capRaw, expect 0)"
+$detPost = ([regex]::Matches($csCode, '(?s)Dispatcher\.UIThread\.Post\(\(\) =>.{0,260}?RefreshOptionsKeepingTargets\(\);')).Count
+CK ($detPost -ge 1) "D-1 extension: the detect-tail Dispatcher.UIThread.Post carries the protecting wrapper (matched $detPost, expect >= 1)"
+#   反向对账（防"顺手把所有刷新都包起来"）：**换格式**的那几处必须仍然裸调，否则「切格式 ⇒ 重建候选集」
+#   的既有语义被悄悄改掉。`FormatCombo_SelectionChanged` 是其中之一。
+$fmtRaw = ([regex]::Matches($csCode, '(?s)private void FormatCombo_SelectionChanged\(.{0,900}?UpdateOptionAvailability\(\);')).Count
+CK ($fmtRaw -ge 1) "scope guard: FormatCombo_SelectionChanged still calls the raw refresh (format change => reset is intended), matched $fmtRaw"
+
 Write-Output ("PASS={0} FAIL={1}" -f $script:pass, $script:fail)
 if ($script:fail -gt 0) { exit 1 } else { exit 0 }

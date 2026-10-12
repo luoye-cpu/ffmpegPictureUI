@@ -429,6 +429,110 @@ namespace Tests.UiMode
                 Check("O3b 关 GainMap 后位深保持", offBd == pickBd, $"期望={pickBd} 实={offBd}（默认={defBd}）");
                 Check("O3c 关 GainMap 后质量保持", Math.Abs(offQ - pickQ) < 0.5, $"期望={pickQ} 实={offQ}（默认={defQ}）");
             });
+
+            // O4（2026-10-12）：**没有换格式的晚到刷新**也不得冲掉三项 —— D-1 的同类残留。
+            //   产品里有两处这样的刷新：① 启动探测收尾的 `Dispatcher.UIThread.Post(...)`，
+            //   ② `InitializeCapabilitiesAsync()` 里 `await` 之后那一次。两处原先**裸调**
+            //   `UpdateOptionAvailability()`，而该函数内部是无条件复位（色域/位深 `SelectedIndex = 0`、
+            //   质量 = `GetDefaultQuality(格式)`，jpg 默认 92）⇒ 用户在这个窗口里选好的值被静默冲掉。
+            //   真实签名：本组的 O2/O3 间歇红，读数是 `Display P3→auto`、位深 `8→auto`、`74→92`
+            //   （92 正是那张格式默认质量表算出来的，不是"另一档编码器的默认"）。
+            //   本条**直接反射调那两处共用的保护方法** ⇒ 确定性，不靠等时机；
+            //   「两处确实调了它」另由结构锁 `_probe-gui-control-wiring.ps1` 的 ⑥ 钉住。
+            Safe("O4 晚到刷新保持目标三项", () =>
+            {
+                var csCombo = Find<ComboBox>("ColorSpaceCombo");
+                var bdCombo = Find<ComboBox>("BitDepthCombo");
+                var qSlider = Find<Slider>("QualitySlider");
+                if (csCombo == null || bdCombo == null || qSlider == null)
+                {
+                    Check("O4 三个控件齐备（前提）", false,
+                          $"cs={csCombo != null} bd={bdCombo != null} q={qSlider != null}");
+                    return;
+                }
+                SweepReset(); Pump(8);
+                SetFormat("JPEG"); Pump(10);
+                var preQ = qSlider.Value;
+                var pickCs = "Display P3";
+                var pickBd = bdCombo.Items!.Count > 1 ? (bdCombo.Items[1] as string ?? "auto") : "auto";
+                csCombo.SelectedItem = pickCs; Pump(6);
+                bdCombo.SelectedItem = pickBd; Pump(6);
+                // ⚠ 质量不能拿"请求值"当基准：Avalonia 的 Slider 会按自身刻度吸附（实测请求 88 落在 89）
+                //   ⇒ 赋一个偏移后**读回实际值** wantQ 当基准；反控只要求它比赋值前确实动了。
+                qSlider.Value = preQ > 50 ? preQ - 10 : preQ + 10; Pump(6);
+                var wantCs = csCombo.SelectedItem as string;
+                var wantBd = bdCombo.SelectedItem as string;
+                var wantQ = qSlider.Value;
+                Check("O4 前置：三项已置成与默认不同的待测值（反控，否则本组恒真）",
+                      wantCs == pickCs && Math.Abs(wantQ - preQ) >= 1.0,
+                      $"cs={wantCs ?? "<null>"} bd={wantBd ?? "<null>"} preQ={preQ:F1} wantQ={wantQ:F1}");
+                var mi = W.GetType().GetMethod("RefreshOptionsKeepingTargets",
+                    BindingFlags.NonPublic | BindingFlags.Instance);
+                if (mi == null)
+                {
+                    Check("O4 晚到刷新走「快照—回放」保护方法（反射签名）", false,
+                          "RefreshOptionsKeepingTargets 不存在 ⇒ 晚到刷新仍是裸调复位版（= 本条要抓的缺陷）");
+                    return;
+                }
+                mi.Invoke(W, null);
+                Pump(10);
+                var nowCs = csCombo.SelectedItem as string;
+                var nowBd = bdCombo.SelectedItem as string;
+                var nowQ = qSlider.Value;
+                Check("O4a 晚到刷新后目标色域保持", nowCs == wantCs, $"期望={wantCs ?? "<null>"} 实={nowCs ?? "<null>"}");
+                Check("O4b 晚到刷新后位深保持", nowBd == wantBd, $"期望={wantBd ?? "<null>"} 实={nowBd ?? "<null>"}");
+                Check("O4c 晚到刷新后质量保持", Math.Abs(nowQ - wantQ) < 0.5, $"期望={wantQ:F1} 实={nowQ:F1}");
+            });
+            // O5（2026-10-12）：同族第三处 —— **晚到的编码器列表刷新**也不得换掉用户所选的编码器。
+            //   `RefreshEncoderListAsync()` 跨一个 `await GetEncodersForFormatAsync(...)`，回来后
+            //   `Items.Clear()` + **无条件** `SelectedIndex = 该格式默认编码器` ⇒ 用户/用例刚选好的
+            //   后端会被悄悄换掉（或换到 auto 之类），正好违反该方法自己上方那段「可用性诚实：
+            //   避免…造成「实际编码器 ≠ 用户所选」」。实测签名：UI 组 J1 的 `-c:v=<none>`
+            //   （picked=mjpeg 却生成不出 -c:v），且把空转泵从 8 加到 60 仍 2/20 红 ⇒ **不是读得太早**。
+            //   本条**反射直接等完那一次刷新** ⇒ 确定性；判据只锁"所选没被换掉"，不改期望值。
+            Safe("O5 晚到的编码器列表刷新保持所选后端", () =>
+            {
+                var enc = Find<ComboBox>("EncoderCombo");
+                if (enc == null || enc.ItemCount < 2)
+                {
+                    Check("O5 编码器下拉可用（前提）", false, $"enc={enc != null} items={enc?.ItemCount}");
+                    return;
+                }
+                SetFormat("JPEG");
+                SweepReset(); Pump(8);
+                SetFormat("JPEG"); Pump(10);
+                // 挑一个**不是当前选中项**的后端当待测值（保证这是一次真实跃迁，否则本条恒真）
+                var before = enc.SelectedItem as string;
+                string? pick = null;
+                for (int i = 0; i < enc.ItemCount; i++)
+                {
+                    var s = enc.Items[i] as string;
+                    if (s != null && s != before && !s.Contains("不可用") && !s.Contains("没有")) { pick = s; break; }
+                }
+                if (pick == null)
+                {
+                    Check("O5 找到与当前不同的可选后端（反控）", false, $"items={enc.ItemCount} before={before ?? "<null>"}");
+                    return;
+                }
+                enc.SelectedItem = pick; Pump(10);
+                var mi = W.GetType().GetMethod("RefreshEncoderListAsync",
+                    BindingFlags.NonPublic | BindingFlags.Instance);
+                if (mi == null)
+                {
+                    Check("O5 反射签名 RefreshEncoderListAsync 在位（前提）", false, "方法名变了 ⇒ 本组判据失效");
+                    return;
+                }
+                ((System.Threading.Tasks.Task)mi.Invoke(W, null)!).GetAwaiter().GetResult();
+                Pump(10);
+                var now = enc.SelectedItem as string;
+                Check("O5a 晚到的编码器列表刷新后所选后端保持", now == pick, $"期望={pick} 实={now ?? "<null>"}");
+                Regen();
+                var t = Tok(Cmd());
+                var cv = Val(t, "-c:v");
+                var want = pick.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries)[0];
+                Check("O5b 命令里的 -c:v 仍是所选后端", cv != null && cv.StartsWith(want, StringComparison.Ordinal),
+                      $"picked={pick} -c:v={cv ?? "<none>"}");
+            });
         }
 
         // ══════════════ 入口（供 Program.Main 逐 mode 分派）══════════════
