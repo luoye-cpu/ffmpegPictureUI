@@ -17,7 +17,7 @@
 - C-1 **F-5 offset 互逆**：按 memo 裁决二选一（前向施加声明的 offset / 声明改为实际值），锁 = 往返 `‖decode(encode(x))−x‖` 上界（进程内 `GainMapTestHost`，**不起产品 exe**）+ 一条"元数据声明 == 前向实际用"的结构锁。
 - C-2 **F-2 取整**：先定趟数（一趟 or 两趟），取整口径**跟趟数走**；锁 = 与参照同一趟式逐点比对。
 - C-3 **F-3 钳位顺序**：分母取参照所取的那个值；判据只能打"编解码自洽"，**不许**打"更好看"。越界率（正确矩阵复算 = 32.4%）与恢复暗度（≈39%）各测一次做前后对照。
-- C-4 **F-4/F-8 通道与色度采样**：先把"声明"降到与实现同一句话（flags 说多通道而数据 4:2:0 = 说谎），再把实现提到声明水位；第三方读回必须由**第二个独立读者**命中同一事实。
+- C-4 **F-7 通道与色度采样**（原文写作「F-4/F-8」= **lane 取证号 F4/F5/F8**，不是 FIX_PLAN 的 F-4/F-8；⚠ 命名空间撞车：FIX_PLAN 里 F-4=增益图探针三态、F-8=**表缓存**，而 F-7 才是本条）：先把"声明"降到与实现同一句话（flags 说多通道而数据 4:2:0 = 说谎），再把实现提到声明水位；第三方读回必须由**第二个独立读者**命中同一事实。
 - 每项都要先红后绿，且 F-1 那族"两副面孔"的教训适用：**同一份数学不许有两份实现拷贝**（本仓已因 `contract` 两份拷贝踩过一次）。
 
 ## 批次 D —— 兑现锁（欠账清零）
@@ -33,8 +33,9 @@
 F-8 表缓存（保 F-1 修复后的吞吐，键必须含曲线对/位深/clamp）→ F-12 探测链剩余 2 次 exiftool → F-11 元数据链的点名补齐（真合并仍待点头）。每条要"墙钟下降 **且** 点行数不减"双判据，且**计时必须单机跑**（并发期禁测）。
 
 ## 批次 G —— 跨仓与收尾
-- `C:\PLAN\ColorGainKit\src\ColorMatrix\ColorSpaceRegistry.cs:780` 的同一个 `1.0633`：**另一个公开仓，需点头**才改；改法与本仓一致（附 lcms/skcms/libjxl 三锚 + 行和≈1）。
-- `contract` 两份拷贝的消除（保留被执行的一份，另一份要么删要么改成转发）——这是本轮踩坑的根因修复。
+- ~~`C:\PLAN\ColorGainKit\src\ColorMatrix\ColorSpaceRegistry.cs:780` 的同一个 `1.0633`：**另一个公开仓，需点头**才改~~ ⇒ ✅ **已落地并已提交**（2026-10-13 复核）：改法与本仓一致（附 lcms/skcms/libjxl 三锚 + 行和≈1）。
+  取证：那仓 `src/ColorMatrix/ColorSpaceRegistry.cs:785` 现读 `…, -0.0685, 1.0296 }`，`git log -S"1.0296"` 命中 **`79c3f4b`**（该文件 `git status` 干净 ⇒ 非在飞改动），本地领先 origin **1 笔** ⇒ **只剩 push**（远端动作，仍要点头）。
+- `contract` 两份拷贝的消除（保留被执行的一份，另一份要么删要么改成转发）——这是本轮踩坑的根因修复。⚠ 2026-10-13 更正：先前把这条记成「UI 三份拷贝的编号错」时我差点写错——`F4/F5/F8` 是 **lane 取证号**（见上面 C-4 那条的消歧），不是账本编号混用；先回读原文再下「这是错」的判语。
 - 收尾账：`docs/PIPELINE_AUDIT_ADVISORY_2026-10-11.md` 的撤回清单与"未证边界"按实际落地情况更新；**不主动 commit/push/tag**。
 
 ## 每批统一的验收口径
@@ -59,7 +60,7 @@ F-8 表缓存（保 F-1 修复后的吞吐，键必须含曲线对/位深/clamp�
   **F-5** `KOffsetSdr/KOffsetHdr` 同进前向（`Log2Gain(hdr, sdr, KOffsetHdr, KOffsetSdr)`、`ComputeGainMapGray(...)`），产物读回 `offsetSDR=0.0156 offsetHDR=0.0156` ⇒ "声明==使用"成立；
   **F-2 依参照保留截断**（未被"顺手改成 +0.5"），并留 C2a 哨兵（一趟口径=截断，锚 `gainmapmath.cpp:770`，改 round 的前置=整体转两趟）；
   **F-3** 分母改用 `sdrStored`，C3b 证明夹具造出"钳前≠交付"（`raw=1.2923/stored=1.0000`，luma `0.2044/0.2126`）；
-  **F-4/F-8** AVIF 出口 `gmPixFmt = multiChannel ? "yuv444p" : "gray"`，兜底只在同语义内兜、绝不退 4:2:0；解侧逐通道 min/max/γ/offset 各自施加（C7a `maxΔ=2.57e-4`、C7b 通道差 `ΔGR=0.2595 ΔGB=0.1438`）。
+  **F-7**（lane F4/F5/F8）AVIF 出口 `gmPixFmt = multiChannel ? "yuv444p" : "gray"`，兜底只在同语义内兜、绝不退 4:2:0；解侧逐通道 min/max/γ/offset 各自施加（C7a `maxΔ=2.57e-4`、C7b 通道差 `ΔGR=0.2595 ΔGB=0.1438`）。
   读数：`verify-gainmap-managed **43/0**`、`verify-gainmap-isobmff **52/0**`、`verify-gainmap-engine **140/0**`（日志 `tests/output/gates-2026-10-11-batchc{,2,3}.log`）。
 - **两条红都判为"尺子的取数对象错"，不是产品缺陷**（逐条给证据）：
   ① lane 写的 F-4 AVIF 锁用 `-notmatch 'ffmpeg, "yuv420p"'`，撞上的却是**底图**那趟 `EncodeAvifFileAsync(basePng, …, "yuv420p", …)`——SDR 底图走 4:2:0 合法、不在 F-4 射程内。改成正面钉三件事：成套表达式在、方法内 420 只出现一次且属于 basePng 那趟、`gmPng` 两趟都不得带 420 ⇒ 若谁把增益图改成 420 仍必红。
@@ -617,4 +618,423 @@ R-11 旧宿主 `Skip` 形状锁（打 `[SKIP]`、计 `_skip`、**不动** `_pass
   `_probe-gui-control-wiring 82/0`、`verify-usability-e2e 84/0`。
 - ⇒ **新基线现值 = `3F7ED22634403E33`（74 条 = 73 绿 + `_probe-test-group-coverage` 按设计红；
   探针段 `runner` 沙箱红）**。宣布口径沿用：**逐条点名，不压成总数**。
+- ⚠ **但这枚指纹绑的是「提交前那一刻」的构建件**（本批是**先跑整轮、后提交**）：实测盘上
+  `src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.dll` 里烧的版本串 =
+  `1.6.0-beta7+5fee5b991f779beb254a32809433297d2dbe4069`，即批次 G（UI 面）那笔提交的**父提交**
+  （本批落在 `39397db`）。⇒ **`src/**` 一字节没动也会让 dll 指纹变**：这是 .NET 8+ 的 SDK **默认**行为 ——
+  `IncludeSourceRevisionInInformationalVersion` 默认 `true`，把 `SourceRevisionId`（= commit sha）追加进
+  `AssemblyInformationalVersion`（权威口径取 MS Learn 该属性条目原文「controls whether the `SourceRevisionId`
+  value is appended to the `InformationalVersion` assembly attribute」；全仓 `*.csproj`/`*.props`/`*.targets`
+  grep 该属性与 `AssemblyInformationalVersion` **命中 0**，且本仓**根本没有 `Directory.Build.props`**
+  （`ls` 报 No such file ⇒ 不是「找到了但没设」，是这层文件不存在）⇒ 走的确实是 SDK 默认，
+  实测 dll 里就是 `+5fee5b9…`）。
+  ⚠ 两处我自己的错，留在账上：① 第一版把这句写成「不是我能选的行为」是**夸大** —— 它可以选
+    （显式置 `false` 或钉死版本串），但那是产品级发布元数据的决定（会改对外版本口径、要配自己的判据）
+    ⇒ 登记为未做，不在本批范围；② 第一次「取证」跑的是 `grep … Directory.Build.props FfmpegGui.csproj`，
+    stdout 空我就当成「查过、没设」—— 实测该命令**退出码是 2**（`Directory.Build.props` 在本仓根本不存在，
+    stderr 明写 `No such file or directory`）。⇒ **grep 并不静默，是我丢掉了退出码和 stderr**：
+    退出码 **0=命中 / 1=真没命中 / 2=目标有问题**，2 与 1 是两个不同结论；下缺席断言要当场 `; echo exit=$?`，
+    并加一层**目标正对照**（实测 `grep -c net11.0 FfmpegGui.csproj` = 3、exit=0，证这条命令能命中东西）。
+  ⇒ 下一轮整轮会绑一个新 sha16；**跨轮比数要同时带 `runner-self-sha256` + 提交号**，
+    只写 sha16 不够（同族旧账：`97DFCB9A`→`224ACA81`→现值，每一跳都混着「改码」与「只是提交了」两种原因）。
 
+
+---
+
+## 批次 G（探针面）与批次 F 首批 + 台账卫生（2026-10-13 下午，绑 `full10`）
+
+### 1. 探针面先装尺（#18 的第一半，`verify-probe-mirror-parity.ps1` = 受管第 75 条）
+
+内核断言有**两份拷贝**：被执行的那份是 `tests/ServiceProbe/Program.cs`（`$Probes` 只调它），
+镜像是 `tests/core/Modes/*.cs` + `tests/diagnostics/Modes/*.cs` —— 两边都是 `Exe`，
+`dotnet test` 打 Exe 只还原不跑还 exit 0，且全仓除生成器注释外**零调用者**
+⇒ 往镜像写断言的真实结果是「全绿但一条不执行」（本仓 2026-10-11 实测踩过 C20 一次）。
+
+**先量再谈合并**（一手读数，`tests/output/step2/probe_mirror_ruler.py` 与门禁是**两个独立实现**）：
+
+| mode | 被执行那份 | 镜像 | 标签多重集 |
+|---|---|---|---|
+| contract | 92 | 91 | 差**恰好 1 条**（`C20-8b`） |
+| bench / selftest / tooldetect / i18n / xcheck / psnr / peak | 5 / 18 / 27 / 5 / 6 / 2 / 8 | 同左 | **完全相等** |
+
+判据 = `Check(...)` 里的**字面片段**拼成标签、`{...}` 插值槽位归一（**变量名不算差异、文案算**）后比多重集；
+不比整文件 —— 两份的注释与变量名本来就不同（SP `{name}` vs 镜像 `{nameC20}`），比字节的锁活不过第一次合理改名。
+
+**那 1 条差是登记，不是豁免**：镜像 `contract.cs:44` 自己写着「要加断言请加在那一份上；
+写在这里会全绿但一条不执行」⇒ 它是**冻结参照件**，把新断言搬进死代码只会制造「以为有人执行」的更坏假象。
+登记项由反控逼「恰好 1 条 × 1 次」⇒ 哪天被同步掉（命中 0）或又漂出第二条，**当场红**。
+
+变异验牙四支（`tests/output/step2/mut_parity_readout.txt`，逐字节还原相等）：
+只改镜像一条标签**文案** ⇒ `tooldetect` 红（1 条）；把镜像一条 `Check(` **改名** ⇒ `peak` 红（只SP 1、只镜像 0）；
+只改被执行那份的 `C20-8b` ⇒ `contract` **两格**红（未登记差 + 登记命中 0）；
+**两侧同步**改同一条 ⇒ 必须全绿（假阳性对照：这把尺量「漂」不是量「变」）。读数 28/0。
+
+### 2. 批次 F 首批 = `F-11` 的「分步点名」那一半，并当场量出一条新缺陷 `F-13`
+
+`ExifToolService.EnsureJfifHeaderAsync` 原先**不传日志回调 + `catch { }` 全吞**，
+调用方 `QueueProcessor` 紧接着就打「元数据恢复完成」⇒ 把「没做成」记成「做完了」。
+改法（不合并调用，性能账留给 `F-12`）：返回 rc、接收 `Action<string>?`、调用点接上 `item.Log`、
+异常与「exiftool 不可用」各自点名（新增 `SkippedNoExiftool` 哨兵，**跳过 ≠ 成功**）。
+
+`metaraw` 探针新增 D 组三条判据（加在**被执行那份**里；`metaraw` 不在那张 8-mode 表内 ⇒ 不引入新漂移）：
+D1 交付件确实带 JFIF（exiftool 读回，第二个读者）｜ D2 这一步必须留痕（见证行 `[exiftool] JFIF 头写入 rc=`）｜
+D3 见证行里的 rc **必须等于**方法返回的 rc（防日志与行为脱钩）。实测 `metaraw 20/0`。
+
+**⚠ 新发现 `F-13`（实测，登记）**：`exiftool 13.59` 对本仓 ffmpeg 产的 JPEG 写 `-JFIFVersion=1.02`
+**恒失败**（`Warning: Sorry, JFIFVersion is not writable` + rc=1，分组限定写法同样被拒），
+而产物**本来就带** `[JFIF] JFIFVersion : 1.02`（APP0 由编码器写）⇒ 这一步是**常驻 no-op**，
+手机兼容性目标实际由编码器兑现。修复前这件事**在日志里完全看不见**。
+未证边界：只量了 `lavfi testsrc → mjpeg` 一条路径，**未逐出口（cjpegli / libjpeg-turbo / jxl→jpg 中转）量过 APP0 是否恒在**
+⇒ 不把「所有 JPEG 出口都自带 JFIF」写成结论。D1 断言的是**这一格产物**，正是为此。
+
+变异验牙（把"点名"退回修复前的静默）：`metaraw 18/2` —— **D1 仍绿、D2/D3 双红**，
+证明红的是"没留痕"而不是产物；还原后 sha 回到 `5a86e88d3b5f7db9`、重建 ⇒ `20/0`。
+
+### 3. 三条被我自己证伪的账本记载（改账本，不是改代码）
+
+- **`bench` 比值臂「还是单样本」是错的**：两臂自 `a4c7cfd`（10-07 14:44）起就都是 **min-of-3**
+  （快臂 `ms = Math.Min(...)`、慢臂 `slowMs = Math.Min(...)`），比 full8 早五天
+  ⇒ full8 那条 `1.4×>1.3` 的真实成因是**负载**（同 mode 用时 71.6 s vs 平时 57–59 s），不是采样数。
+  ⇒ 本批**不动任何阈值**（放宽判据要授权），只补**极差读数**：两臂各自 3 次的 max−min 打进参考行
+  （实测极差 0.3–33 ms 不等 ⇒ 负载下的比值本来就该带这个上下文看）。
+  ⚠ 过程错两条也记上：① 我先误把极差读数打到了**镜像** `tests/diagnostics/Modes/bench.cs`
+  ——`bench` 实际由 `ServiceProbe.exe` 执行 ⇒ 已 `git checkout` 还原再改被执行那份；
+  ② 我为了跑 bench 直接起 `Tests.Diagnostics.exe` 得 rc=2 —— 那个宿主根本不跑 bench（又一次"探针活着才能问能力"）。
+- **`verify-gainmap-managed` 的「6 条 HDR 底陈旧断言待 P6 清理」是过期记载**：
+  该门禁 `:134-146` 已在 2026-10-11 把它们换成「废弃开关必须无效 + 带它与不带它的产物逐像素一致
+  （降级后 PSNR ≥ 50 dB）」并自带负控 ⇒ 要改的是账本，不是代码。
+- **「整轮自留 ~5.3GB 夹具（`gmmem_*`）」量错了**：实测残留 `tests/output/gmmem_*` **21 个目录合计 27130 KB**
+  （≈4 MB/个，不是 70 MB/个）；且在本沙箱环境里 `Remove-Item -Recurse -Force` **删得掉**
+  （拿真实遗留目录做实验，`Test-Path` 转假）⇒ 旧注释说的"沙箱拦截致静默失败"不成立。
+  堆积的真实原因是「**失败臂有意保留**供排查」+「被中途叫停的重压臂来不及跑到收尾」。
+  ⇒ 现在 `verify-gainmap-memory.ps1` 开局清扫 30 分钟外的旧 `gmmem_*`（时间护栏避开并发实例）、
+  收尾改成重试 + `cmd rmdir` 兜底 + 删不净就点名；默认臂读数不退化（**16/0 SKIP=1**）。
+
+### 4. 台账卫生两处（#19）
+
+- `IMPLEMENT_PLAN` 把 AVIF 通道/色度那件事写成「F-4/F-8」，而 `FIX_PLAN` 里 **F-7** 才是它
+  （F-4=探针三态、F-8=表缓存）⇒ 已改成「F-7（lane 取证号 F4/F5/F8）」并加命名空间提示；
+  ⚠ 我第一版判它是"编号错"，回读 `FIX_PLAN:56` 才发现括号里的 `F4/F5/F8` 是** lane 取证号**——
+  先回读原文再下"这是错"的判语。
+- 批次 G 首条「跨仓 `1.0633` 需点头才改」**已落地**：`ColorGainKit/src/ColorMatrix/ColorSpaceRegistry.cs:785`
+  现读 `1.0296`，`git log -S"1.0296"` 命中 `79c3f4b`（该文件 `git status` 干净）⇒ 只剩 push。
+- `tools/BUILD_TOOLS.md` 两行过期按实测改：ffmpeg 写 `git-2026-08-06` 而 `ffmpeg.exe -version` 是
+  `git-2026-10-11-edadf711a9`；`ultrahdr_app` 仍列「VS 自编译」而 `build_tools.ps1:8/215/348` 已移除它
+  （并进了 `$obsolete`）⇒ 表行划废 + `artifacts/` 目录行改列现存件 + 那段"4. libultrahdr"加"已不执行"警示。
+
+### 5. 接线与整轮（`full10`）
+
+清单 74 → **75**：`$expectedScriptCount` + 运行器三种散文形态（第 ⑰ 针对账）+ 数组条目 + `TESTING.md` §3.5。
+⚠ **第一轮被自己的条数锁拦下**：我插了"第 75 条"的注释块却**忘了加数组元素** ⇒
+`运行器汇总：失败 3 项 … runner:脚本清单条数 74 ≠ 基线 75` —— 这道锁正是为这种事设计的（不是误报）。
+补上元素后 `script-list=75 条（受管基线 75）`，子集轮 `全部通过`。
+
+### 整轮读数（full10，日志 `tests/output/gates-round-2026-10-13-full10.log`；起跑 18:05 前后 / 收尾 18:48:06）
+
+- 尺：`runner-self-sha256=2F006D117E640FBB lines=1419 bytes=136734`（起/收**一致**）；`shape-selfcheck=OK`；
+  `script-list=75 条（受管基线 75）`；无 STALE、无漂移警告；磁盘 77.68 → 77.5 GB。
+- 件：`FfmpegGui.dll=FCF8849390AA6786`、`ServiceProbe.exe=54B919EFFAAF44B6`、`UiTestHost.exe=DC2F23D5816BAC82`
+  （**新基线值**；上一值 `3F7ED22634403E33` 随本批 `src/**` 改动作废）。
+- 脚本段 **74 条 exit=0 / 1 条非 0**；汇总**失败 2 项，仍是先前点名的两条既有红**：
+  `probe:runner 7/1`（沙箱 `cmd.exe`）· `script:_probe-test-group-coverage`（按设计红：7 零调用点 + `icc` 非清单调用点）。
+- 本链路门禁轮内留痕：verbatim **22/0** · union **11/0** · reproducible **19/0** ·
+  **probe-mirror-parity 28/0**（新锁首轮进清单即绿）· `_probe-gui-control-wiring` **82/0** · `verify-ps-compat` **13/0**。
+- 参照件驱动的五条 UI 门禁轮内 `UI 测试汇总: N PASS / 0 FAIL` 命中 **5** 次；
+  `bench 30/0`、`contract 153/0`、`cjk-hardcode 14/0`、`verify-gainmap-memory 16/0 SKIP=1`。
+- ⚠ **留痕文件名教训**：本轮之前我用同一启动器**复跑了一次 full9**，写死的 `$log` 把第一轮证据
+  原地覆盖（账本引用的文件名与内容错位）⇒ 启动器现在默认带时间戳 Tag，旧的那份已改名保住
+  （`gates-round-2026-10-13-full9b-partial.log` = 漏数组元素那轮的现场）。
+
+### 6. 这批仍没做的（按代价与授权排，不含糊过去）
+
+- **`F-12`（探测链剩余 2 次 exiftool）未动**：`ColorIntentFactory:113` 仍走旧两步法抽 ICC。
+  它要改产品探测路径 + 按账本原判据量「`--dry-run` 墙钟下降**且** exiftool 点名单元不减」⇒ 需要独立的
+  计时 A/B 与 `decision`/像素链验收，不适合塞在装尺这批的尾巴上做半截。
+- **两份拷贝的"合并"没做**（本批只装尺）：合并 = 让 `tests/core`/`tests/diagnostics` 那份消失或转成转发，
+  需要执行面判据（否则等于把"没有执行者"这个根因原样搬走）。
+- `UiHost.ResetAdvancedColorToAuto` 仍零调用点（删它之前要先给「选 `auto` 不足以复位高级三元组」那条
+  规范事实找落点，现在只有它的注释记着）。
+- `L-3b` 正样本 `test4.icc` 本机仍无（`find` 实测两份 lcms checkout 只有 test0/1/2/3/5）⇒ 那条 SKIP 依旧为真。
+- push / tag / 本批提交：等用户点头（远端动作与提交都是逐次授权）。
+
+---
+
+## 批次 F（F-12 落地）+ ⑱ 探针面第二半（方向锁）+ L-3b 收口（2026-10-13 晚）
+
+取证目录：`tests/output/f12/`（`toolshim` 源码 + `f12-exiftool-count.ps1` + `gps-exclusion-probe.ps1`
++ `mut13.py` / `mut75.py` / `mut-clone-dynamic.py` + 各臂日志）。全部 gitignored，但每条读数都有文件名可指。
+
+### 1. F-12 改了什么（探测链剩余的第 1 次 exiftool）
+
+| 文件 | 动作 |
+|---|---|
+| `ColorMapping/ColorSpaceIdentify.cs` | 新增 `IdentifyIcc(iccPath, hint) → (descriptor, name)`；`IdentifyIccSpaceName` 改成对它的一行委托 ⇒ "怎么认 ICC 空间"仍只有一份实现 |
+| `FfmpegCommandBuilder.cs` | `ColorMetadata` 加 `iccDescriptor` 字段；探测核改调 `IdentifyIcc` 并把描述符**接回 struct**；新增公开入口 `ProbeInputIccDescriptor()`（返回 `Clone()`） |
+| `ColorMapping/ColorSpaceDescriptor.cs` | 新增 `Clone()`（含 9 元素矩阵与四组色度数组的深拷贝） |
+| `ColorMapping/ColorIntentFactory.cs` | 删掉旧两步法整块（`ExtractIccToTempFile` → `FromIccFile` → `TryDeleteIcc`），改为一次 `ProbeInputIccDescriptor(inputPath)` |
+| `ExifToolService.cs` | 合并探测的取消/超时点名改成同时说出「ICC 一并失去 ⇒ 按无 ICC、无语义标签处理」（FIX_PLAN 那条"等价点名"风险条的兑现） |
+| `ColorMapping/RawColorPipeline.cs` | 只改注释：它点名了被删掉的旧路径（`ColorIntentFactory` 走 `ExtractIccToTempFile`），改成"两种形态下 `SourceIccPath` 都指向已回收的临时件" |
+
+### 2. 判据换形（撤回我自己先前引用的一条，并给替代读数）
+
+**FIX_PLAN 写的「`--dry-run` 墙钟下降」量不到这件事** —— 实测：dry-run 一臂 `exiftool` 进程数
+**before=1 / after=1（差 0）**，因为 `ColorIntentFactory.FromOptions` 在 dry-run **不可达**
+（坐实 lane C1 §C1-8 的静态判断；也把我先前引用的 P1-a「dry-run 计时反映探测合并收益」的适用面否掉——
+P1-a 省的那次在探测核里，dry-run 走得到；F-12 省的这次在装配层，dry-run 走不到）。
+⇒ 判据换成三条可动的：**完整任务 exiftool 进程数 −1**、**完整任务墙钟下降**、**产物等价**。
+
+取数方法：把 `FFMPEGGUI_EXIFTOOL_PATH` 指向一个「记录 argv 后逐字节转发」的 shim
+（`tests/output/f12/shim`，.NET apphost）。**为什么不用日志行数**：lane C1 §0 注 1 已证
+「`[exiftool]` 行数 ≠ 进程数」；**为什么不用 WMI 轮询**：只能给下界。
+shim 自己的保真自检（用前必检，它自己是错误源的话整张表作废）：
+stdout 逐字节相同（含 `-b` 的二进制与 `-json` 的文本）、退出码相同、一次调用恰记一行、
+`SHIM_REAL` 缺失必须 rc=95 出声（不许把"没跑"记成"跑了"）、少传一段参数 ⇒ 输出立刻不同（比对有牙）。
+
+夹具：320×240 PNG 内嵌 Display P3 ICC（584 B，读回 sha 与参照件 `p3.icc` **同**；夹具守卫：`<128 B` 直接停）。
+A/B 用的是两个真实构建件换进同一个 `FfmpegGui.exe`（apphost 只认同目录的 dll）：
+`before=FCF8849390AA6786`（full10 绑定的那枚，仍留在 23 份测试宿主目录里）/ `after=ECBCCEDFAB4577C2`。
+
+| 臂（同输入同命令，只差 dll） | exiftool 进程数 | 完整任务墙钟 min-of-5 |
+|---|---|---|
+| png → png（引擎 auto） | 4 → **3** | 2.243 → **2.001 s**（−0.242） |
+| png → png（`--color-engine legacy`） | 4 → **3** | — |
+| png → jpg（引擎 auto） | 5 → **4** | 2.636 → **2.242 s**（−0.394） |
+| **对照臂** `--dry-run` | 1 → 1（差 0） | 0.929 → 0.937 s（+0.008 ⇒ 本轮噪声地板） |
+
+- 单进程定价（同一条合并探测 argv，best-of-7 单机）：**min 282 ms / 中位 289 ms**。
+  ⇒ 与 P1-a 记的 **0.170 s** 不同，也与源码注释的 **850 ms** 不同 —— lane C1 §2 那条
+  「两个口径差 5 倍、谁都没在 HEAD 复测」的未定案，本机今日有了第三个数；上表的墙钟降幅（0.24–0.39 s）
+  与它同量级，**不是**与 0.170 s 同量级。所有按 0.170 s 折算的历史收益估算都要按这个口径重读。
+- **产物等价**（两臂各跑一次，逐件对撞三样）：解码像素 sha256 同 / 读回 ICC sha 同 /
+  exiftool 标签名集合同（png、jpg 两格都同，产物字节数也同）。
+  ⚠ 刻意**不**比产物整件 sha256：exiftool 重写会带时间戳类字段，逐字节不同 ≠ 内容不同（本仓既有口径）。
+- ⚠ **反空转闸（实踩过一次才加的）**：第一版计时臂中途崩掉，产品目录里留下旧 dll ⇒
+  下一轮开头"备份新件"备份到的是旧件 ⇒ 两臂跑**同一个二进制**，读数会"几乎相等"，
+  看上去像"这个改动不影响墙钟"。现在脚本开头硬拦 `在盘 == 旧备份` 并 throw，且换臂包在
+  `try/finally` 里（崩了也还原）。上面那组"相等"的废读数没进任何结论。
+
+### 3. 锁与变异（每条都有红态）
+
+- 探针 `wire` 加 **5 条**（`wire` 93 → **98/0**）：前置两侧都取到描述符（任一侧 null 就点名，
+  防"两边都空 ⇒ 相等"）· ① 与独立两步法逐字段相同（参照臂用**旧生产实现** `ExtractIccToTempFile` →
+  `FromIccFile`，它仍被 QueueProcessor/GainMapDecoder 消费，不是我造的平行口径）· ①b 九元素矩阵
+  **逐个精确相等**（两臂解析同一份 ICC 字节 ⇒ 容差 0）· ② 消费者写的四个字段（Name/Confidence/Nits/矩阵[0]）
+  都不回流缓存 · ③ 装配的源描述符仍是 `IccMetric`+`IsIccDerived`。
+  - 变异（重建两轮做动态实验）：把 `ProbeInputIccDescriptor` 的 `.Clone()` 摘掉 ⇒
+    **②③ 两条红**（③ 也红 = 被写坏的那份直接流进了装配），还原后 98/0。
+- `verify-color-wiring.ps1` 新增 **(13) 段，8 条结构锁**（纯静态、不起进程、剥整行注释后再匹配 ——
+  本仓的注释会点名"被折叠掉的旧 API"，全文子串会把"注释提到"读成"代码在用"）：
+  装配侧 `ExtractIccToTempFile` 命中 0 · 正向对照同正则在 QueueProcessor 命中 6 ·
+  `ProbeInputIccDescriptor` 入口恰 1 · `.iccDescriptor?.Clone()` 恰 1 ·
+  `meta.iccDescriptor = ` 恰 1（struct 按值改必须接回）· argv 确实带 `-b -icc_profile` ·
+  取消/超时点名恰一条且**同时**说 `色彩标签+ICC` 与 `按无 ICC` · `GuessColorSpace` 兜底口径只有一份。
+  - 变异六发，各只红该红那条（还原后全绿）：M1 摘 Clone / M2 装配侧退回旧两步法（红 2 条）/
+    M3 探测核漏接回 struct / M4 点名删掉 ICC 后果 / M6 点名主语去掉 ICC / M5 复制出第二份兜底口径。
+  - ⚠ **M4 第一版打偏**：只替换了前半句 `色彩标签+ICC`→`色彩标签`，尾巴「ICC 一并失去」还在 ⇒
+    锁"没牙"是我判据写错（判字形不判语义），不是锁弱。改成要求同一行同时含 `色彩标签+ICC` **与**
+    `按无 ICC` 之后，删后果、删主语两发都当场红。
+  - ⚠ 还修了一条**过宽**判据：第一版写"所有 `被取消/超时` 行都要含 ICC"，实测 `1/3` 红 —— 该文件里
+    ISO 探测、通用标签读取各有自己的取消行，与 ICC 无关。定点只管合并探测那一条。
+
+### 4. ⑱ 探针面第二半：尺从 8 个 mode 扩到 31 个（方向锁），**合并仍未做**
+
+`verify-probe-mirror-parity.ps1` 加了 `-Census`（用**同一批取样函数**，不另造尺）与**方向锁**段：
+- 普查读数：`tests/*/Modes/*.cs` 共 **31** 份，**全部**在执行面有同名方法（零孤本）；
+  **25 份零漂移**；6 份有漂，方向清一色「只在被执行那份有」（只镜像那份 = 0 条）；
+  漂移标签总数：只执行面 **65** 条、只镜像 **0** 条。最大的三格：
+  `ProbeSettingsSave` 56 vs 11（+45）、`ProbeWire` 99 vs 93（+6，含本批 5 条）、
+  `ProbeColorMathAgainstZimg` 12 vs 5（+7）、`ProbeIccName` 9 vs 6（+3）、`ProbeContract` 92 vs 91（+1，已登记）。
+- 方向锁（31 格逐格 + 3 条总账 + 1 条取样反控）：
+  **镜像独有标签必须为 0**（正是本批踩过的事故形态：写进死代码 ⇒ 全绿但一条没跑）；
+  执行面条数 **不得少于**镜像（少 = 执行面丢了断言）；一格都不许取样塌 0。
+  ⚠ 刻意**不**判"两侧相等"：镜像按定案是冻结参照件，要求相等就是要求往死代码里搬断言。
+  相等判据仍保留在原 8 个 mode 的受管段（含 `C20-8b` 那条登记差，复验恰好 1×1）。
+- **标签身份改形（这一把尺自己也被实测打回一次）**：第一版把一条 `Check(...)` 里的**所有**字面量拼成
+  一个标签 ⇒ 造出 **981 字符**的"标签"，两侧只要语句顺序不同就整条判成漂 —— 实测 `gamutfit` 报了
+  3 条"镜像独有"假红（逐字节对撞见 `tests/output/f12/gamutfit_diff.py`：两边是同几条断言，
+  差在 (f)/(g) 先后与一句详情文案）。⇒ 标签改成**只取第一个像名字的片段**。
+  换口径后重验三例：T1 只改执行面文案 ⇒ 该 mode 红（且旧文案在镜像里成孤儿 ⇒ 方向锁也红，正确）；
+  T2 只往镜像加断言 ⇒ 方向锁红；T4 两侧同步改 ⇒ **零红**（这把尺量「漂」不是量「变」）。
+  本门禁判定数 **28 → 63**。
+
+### 5. L-3b 收口：不是缺素材，是我清单里的路径写错（先前那条登记作废）
+
+`iccname` 的 L-3 正样本清单原先写 `plugins/test_profiles/test4.icc`，而 vendored lcms 那个目录里
+**根本没有 test4**（实测只有 test0/1/2/3/5）；仓内实存的是 **`testbed/test4.icc`**
+（头实测 `class=spac data=RGB PCS=Lab`，61,020 B —— 与该段注释本意「含 spac 类 test3/test4」同族）。
+⇒ 改路径，并把判据从 `accOk >= 9`（缺件恰好被余量吸收 = 分母自己缩小）改成
+**`accMissing == 0 && accOk == 清单条数`**。读数：`清单 10、在位 10、收下 10` PASS，那条
+`L-3 缺正样本 … SKIP` 消失，`iccname 17/0`。
+⚠ 撤回先前那句登记：「本机两份 lcms checkout 只有 test0/1/2/3/5」—— `testbed/` 里 test0–test5 是全的，
+缺的是我没核对第二个目录，不是上游要 fetch。
+
+### 6. F-12 标题里的第 2 次 exiftool：按实测**作废**（不动它，所以不需要点头）
+
+第 2 次是复制之后那次无条件的 GPS/XMP 显式删除（lane C1 的 C1-2，「谁点头：用户」）。
+§4-E 的配方跑完了（`gps-exclusion-probe.ps1`；命令形态**从产品自己的 argv 里抓**，不手抄）：
+
+| 目标容器 | 目标原有 GPS | 只靠排除式后 | 结论 |
+|---|---|---|---|
+| jpg | 5 条 | **5 条** | 排除式不够 ⇒ 显式删除必须留 |
+| webp | 5 条 | **5 条** | 同上 |
+| tiff | 5 条 | **5 条** | 同上 |
+| png | 5 条 | **0 条** | 够用（它的复制命令自带 `-EXIF:all=` 复位） |
+| jxl | — | 不判定 | 这一轮产品**根本没走复制步骤**（只起了 MPImage2 探测 + 合并探测 2 条） |
+
+反空转成立：jpg/webp/tiff 三格都残留 ⇒ 读回口径是活的，「png 那格干净」不是"大家都干净"的同义反复。
+⇒ "省 1 次 exiftool/任务"在默认出货族（jpg/webp/tiff）上**不成立**；最多只在 png 族省 1 次，
+代价是给隐私动作加一条按容器分叉的规则（分错一次就是坐标泄露）。**本批不动它**，
+并把 C1-2 从"待点头的性能项"改判为"实测否决"。顺带一条与 C1 表的出入待查：
+jxl 臂这轮没跑复制/删除（C1 把 GPS 删除记成"与目标格式无关"），本轮不再补测，登记在此。
+
+### 7. 本轮链路读数（子集轮 `tests/output/gates-round-f12-probes.log`，`-SkipScripts`）
+
+`contract 153/0` · `wire 98/0` · `verdict 41/0` · `iccname 17/0`（SKIP 已消）· `plan 39/0` ·
+`decision 4/0`（60 格：宣称未落实 0、跑了 tonemap 仍宣称 HDR 0、ICC 后置判据不符 0）·
+`engine 35/0` · `metaraw 20/0` · `colormath 19/0` · `curve 44/0` · `matrix 15/0` ·
+`settings 11/0` · `encoding 6/0` · `verify-ps-compat 13/0` · 产品构建 **0 警告 0 错误**。
+整轮（75 条）与 23 份构建件指纹在下一节重绑。
+
+### 8. 这批仍没做 / 要点头的
+
+- **两份拷贝的合并或删除**：尺已覆盖 31 格，**合并本身**仍未做。三档（含代价）见下，等一句选择：
+  ① 删 31 份镜像（`git rm`，一次性；实测"只镜像 0 条" ⇒ 按标签口径不丢断言，但注释/详情文案会丢，
+  且 6 格差集要逐格确认；收益 = 本仓不再有"两份拷贝"这一类缺陷的土壤）；
+  ② 镜像转成转发（把每个 `Probe*` 换成调 ServiceProbe 那份 —— 同一份数学获得**第二个执行者**，
+  与"同一份数学只一份实现"相冲，先前定案已否过）；
+  ③ 原样留着 + 方向锁看着（当前状态，零风险，代价是 31 份死代码继续长肉）。
+- `L-*` 里 L-3b 已收口；跨仓同错那一档仍按前定（不在本仓动）。
+- 提交：本批 **9 改 + 1 新**（含 `tests/output/f12/` 之外的 6 个产品/门禁文件）等点头；push/tag 不动。
+
+### 9. full12：重绑基线（2026-10-13 晚，日志 `tests/output/gates-round-2026-10-13-full12.log`）
+
+**先更正上一条**：那句「本批 9 改 + 1 新」是写早了（它描述的是装尺那一批）。本批收口时实况 =
+**17 改 + 1 新（`tests/scripts/verify-probe-mirror-parity.ps1`），`git diff --shortstat` = 791 insertions / 45 deletions**。
+
+- 尺：`runner-self-sha256=2F006D117E640FBB lines=1419 bytes=136734`（起/收**一致** ⇒ 与 full10 同一把尺，跨轮可比）；
+  `shape-selfcheck=OK（17 针）`；`script-list=75 条（受管基线 75）`；无 STALE、无漂移警告；磁盘 67.08 → 66.48 GB。
+- **新基线件 = `FfmpegGui.dll=ECBCCEDFAB4577C2`**（取代 full10 的 `FCF8849390AA6786`）；
+  `FfmpegGui.exe=BE0A3023826123AE`、`ServiceProbe.exe=54B919EFFAAF44B6`、`UiTestHost.exe=DC2F23D5816BAC82`、
+  `GainMapTestHost.exe=0B1510ADA80D8606`。23 份宿主内层 `FfmpegGui.dll` 逐份同 sha（重建后实测 23/23 相同）。
+- 汇总 **失败 2 项，仍是先前点名的两条既有红**：`probe:runner 7/1`（沙箱 `cmd.exe`）·
+  `script:_probe-test-group-coverage`（按设计红：7 个零调用点 + `icc` 非清单调用点）。其余 **73 条 exit=0**。
+- 本批改动的门禁面读数（逐条，不压总数）：探针段 `wire 98/0`（**93 → 98**，F-12 的 5 条）、
+  `contract 153/0`、`iccname 17/0`（**L-3 的 `缺正样本 SKIP` 已消失**）、`decision 4/0`（60 格零不符）、
+  `plan 39/0`、`verdict 41/0`、`engine 35/0`、`metaraw 20/0`、`geometry 52/0`、`bench 30/0`、`gamutfit 19/0`。
+  脚本段 `verify-color-wiring **142/0 → 150/0**`（(13) 段 +8）、`verify-probe-mirror-parity **28/0 → 63/0**`
+  （方向锁 31 格 + 普查开关）、`_probe-matrix-structure 38/0`（A30 行锚重钉 2099→2132 后复绿）、
+  `verify-gainmap-host 18/0`、`verify-webp-anim-probe 44/0`、`verify-decision-delivery`/
+  `verify-format-regression 19/0`/`verify-color-caps 16/0`/`verify-metadata-privacy 7/0`/
+  `verify-gainmap-memory 16/0`、`_probe-cjk-hardcode 14/0`（**余量未动** ⇒ 本批没有新增中文硬编码行）、
+  `verify-ps-compat 13/0`、UI 三锁 `22/0`、`11/0 @419`、`19/0`。产品构建 **0 警告 0 错误**（23 目标各一遍）。
+- ⚠ **上一轮（full11）的三条新红已逐条归因，且有一条确实是我的**：
+  · `_probe-matrix-structure` —— **确定性、属本批**：F-12 往 `FfmpegCommandBuilder.cs` 插了 33 行 ⇒
+    `metadata-core` 的 A30 行锚 `2099 → 2132`。按既有惯例重钉并附成因（`grep -n` 复核实况行 + 确认该
+    字面量全文件唯一），复跑 `38/0` ⇒ 这条红是**设计生效**，不是误报。
+  · `verify-gainmap-host` 的 `D16d 多线程不慢于单线程` 与 `verify-webp-anim-probe` 的 `③(b)/③(d)` ——
+    **争用窗口**：判据不是"哪一格红"（两轮红在**完全不同的格**），而是**每格耗时**：该门禁自己的注释写
+    "实测每个用例 2~5 s 自行结束；60 s 是余量上限"，红态同一格 34.1 s / 触顶 60.3 s 无退出码，
+    绿态回到 1.2–2.8 s。full12 两格都 `18/0`、`44/0` ⇒ 与本批代码无关。
+    ⚠ 归因过程中踩到一条**新的臂失效**：为了跑「交错 A/B/A + 改动前二进制」去取旧件，发现
+    23 份宿主的 `-t:Rebuild` 已把全仓那枚 `FCF8…` **全部覆盖**，而我留的换臂备份又被更早一次中途崩掉的
+    换臂污染成同一个哈希 ⇒ 换臂脚本的**反空转闸**当场拒绝（两臂同件即 throw）。
+    教训 = 对照用的旧二进制要在重建**之前**落成带哈希命名的私有快照；没有它就不许写"两臂一致所以非我"。
+    所以这两条红的归属证据是「同件复绿 + 耗时对照」，**不是** A/B/A —— 报告里按前者引用。
+
+### 10. 现在仍未做的（不含糊过去）
+
+- **探针面 31 份镜像的合并/删除**（§8 三档，等选）——本批把尺扩到了 31 格，但没动镜像本体。
+- `UiHost.ResetAdvancedColorToAuto` 的落点问题（同上批登记，未变）。
+- **F-10 `smpte170m` 传递函数**：仍按"等一手标准原文"挂着，本批未动（冲突口径未解，见 FIX_PLAN F-10）。
+- push / tag / 提交：逐次授权，等用户点头。
+
+---
+
+## 10. 本批尾巴上的四件补做（2026-10-13 深夜，full12 之后；用户令"没做完的去做完"）
+
+**① (a) 的"没量吞吐"那一半 —— 量出一个真缺陷并修掉**
+欠账原文：性能提案 (a) 的 HDR→SDR 表快路径只在 **16-bit** 出口量了吞吐，8-bit 交付出口只量了等价性。
+取数工装 `tests/output/f8bench8/`：同 spec 构造规则、同合成帧、同"单核 min-of-3"，只把被计时的内核
+从 `TransformRgb48le` 换成 `TransformRgb48leToRgb8`。
+
+| 8-bit 交付出口 | 修前 MPix/s | 修后 MPix/s | 表 vs 解析增益（修后） | 同 spec 的 16-bit 出口（修后） |
+|---|---|---|---|---|
+| PQ→sRGB（HDR→jpg/png 主力） | 22.7 | **64.0 ~ 69.9** | 8.2 ~ 8.6× | 135 ~ 150 |
+| sRGB→P3 | 16.4 | **45.8 ~ 49.2** | 4.4 ~ 5.3× | 89 ~ 97 |
+| BT.2020→sRGB | 14.8 | **27.8 ~ 61.3** | 3.9 ~ 5.2× | 89 ~ 139 |
+| sRGB→PQ（编码侧 ⇒ 必须关表） | 5.5 | 4.3 ~ 5.7 | **1.0×**（两臂同解析 ⇒ 自洽） | 4.0 ~ 5.2 |
+
+- 根因（读码即得）：`ColorKernels.EncodeTo8` **无条件**先算 `curve.FromLinear(linear)`（幂函数 + 分段），
+  再在 `oetf != null` 时把结果**扔掉** ⇒ 每像素白做三次 pow。那 6× 的"16-bit 比 8-bit 快"不是位深属性，是这颗白算。
+- 修法：两支各算各的（有表只做 `EncodeLerp`）。**输出逐字节不变** —— 凭据是 `C20-8b`（送表 ≡ 不送表，容差 0）
+  照旧 PASS + 整轮里的像素链门禁复跑，不是我一句"应该一样"。
+- 看守：`bench` 加两格 8-bit 出口档 ⇒ `bench 30/0 → 37/0`（前置 + ≥25MPix/s + 增益 ≥2× + 档位数量）。
+  阈值钉在**修前值之上**（25 vs 16.4~22.7）：变异 M9 把白算的 pow 加回来 ⇒ 实测两格红（20.1 / 11.7），还原 37/0。
+
+**② 8-bit 出口的快路径判据提成具名方法（同一轮的第二条锁）**
+`TransformRgb48leToRgb8` 原先把"哪些算子要关表"裸写在循环前一句 `if (tbl && (encScaleOn || toneOn || srcHlg || dstHlg))` 里 ⇒
+①测试侧只能再抄一份条件；②**它和自己的注释已经漂过一次** —— 注释声称 `encScaleOn` 已摘掉，代码里它一直在
+（真实只摘过 `scaleOn`），而 `TableFastPathOperatorsAllow` 的文档又把 8-bit 条件引成少一项的另一副面孔
+⇒ 两处注释都在描述一个不存在的实现（这正是"注释自洽可以为假话"的实例）；③它与 16-bit 判据只差 GMO 一轴，
+而这件"只差一轴"的事实代码里无处可查。
+- 处置：新增 `ColorKernels.TableFastPathOperatorsAllowRgb8(spec)`，内核改调它；注释按代码实况重写并写明
+  `encScaleOn` 为什么**必须留**（编码侧表是线性域均匀采样 ⇒ 实测差 1457 码@16bit / **8-bit 出口 6 码**）。
+- 行为锁：contract 的 **`C20-AX`** 六轴逐格点名两条判据（GMO 那轴实得 `16-bit=False / 8-bit=True`）
+  ⇒ `contract 153/0 → 160/0`。结构锁：`verify-color-wiring (13)` 加 3 条（具名判据命中 2、
+  16-bit 侧正向对照也 2、裸写条件残留 0）⇒ (13) 由 8 条变 **11 条**，门禁合计 `142/0 → 150/0`（F-12 的 8 条 + 这 3 条… 实为 11 条，读数见整轮）。
+- 变异：M7 把 GMO 一轴合成一条 ⇒ `C20-AX GamutMap` 单条红；M8 把条件裸写回去 ⇒ (13) 两条红；均逐字节还原复绿。
+- ⚠ 顺带修了 #75 自己的两处口径：① 差集元素的字段名 `Count` 会被 PowerShell 的成员枚举语义吃掉
+  （打印出来"3 条/共 3 次"而不是"3 条/共 6 次"）⇒ 改名 `Times`；② 这把尺量的是**源文本**，
+  循环体只有一份源文本 ⇒ 两格共用同一模板时次数只算 1，"每一档都还在"**不能**指望它，
+  改由 `8b 档位数量` 那条**运行时**断言钉（跑过的格数 == 声明格数 == 2）。登记表现在是带计数的
+  `@{Prefix;Labels;Times}`：`C20-8b` 1×1、`C20-AX` 7×7、`8b ` 4×4 ⇒ `probe-mirror-parity 63/0 → 65/0`。
+
+**③ `UiHost.ResetAdvancedColorToAuto` 的落点 —— 收口（连带删掉死包装）**
+当时不敢删，是因为"选 `auto` **不足以**复位高级三元组"这条产品行为（`MainWindow.xaml.cs:3594-3600` 的 `auto`
+分支只清冲突提示；色域联动本身按值查下标赋值 ⇒ 同值不触发 `SelectionChanged`）只有那个死包装的注释记着。
+⇒ 新增 **`J8d`** 把事实变成断言（把高级 trc 设为非 auto → 选 `ColorSpaceCombo=auto` → 断言 trc **保持原值**；
+结尾恢复控件，不污染后续组），事实有落点之后才删死包装（`UiHost.cs` −23 行）+ 重跑生成器（`ui-sweep` +30 行）。
+⇒ verbatim **22/0**、reproducible **19/0**、union **11/0 @421**（`$expectedOldCount` 419→421，同前例附成因，
+且 3c 新旧集仍相等才抬）；`UiTestHost` 运行时 **421 PASS / 0 FAIL**。
+⚠ 我先前**直接从 bash 跑** `verify-ui-host.ps1` 拿到一条 `I3 ProPhoto保真 :: GetFaithfulIcc 返回 null` 红 ——
+那是本仓已定论的 `TMP=/tmp` 环境红（继承 MSYS 的 TMP），换回整轮启动器的姿势即 0 FAIL；不是产品问题，也没拿它当结论。
+
+**④ `F-10 smpte170m`：按 FIX_PLAN 的准入条件保持"未判定"，本批不动代码**
+计划写的是"必须先取 SMPTE 170M / ITU-R H.273 表 3 一手文本，取到前登记为未判定，不许按 4.20% 改代码"。
+本轮把两条取数路都走了：
+- 本机 checkout：`tools/src/**` 的 C/C++ 源里按 `transfer…170m` / `170m…(gamma|2.2|0.45|2.4)` 搜 ⇒ **0 命中**；
+  实存的是三个**互不相同**的实现口径（libavif `colr.c` 无趾段 0.45 幂、zimg `t=smpte170m` 纯 γ2.4、
+  DNG SDK 给 709/601 同一条分段常数）⇒ 实现之间不能互相当标准。
+- 网络：命中的全是**二手转录**（RFC 9559 把 H.273 表 3 抄进 Matroska、HarmonyOS 头文件、博客），
+  按本仓纪律（二手聚合页不能当标准/能力结论）**不判**。
+⇒ 现状维持 `smpte170m` 挂纯 γ2.2，账上继续记"未判定 + 要的是 SMPTE ST 170 / ITU-R BT.601-7 正文"。
+   要推进需要一个能读到正文的入口，不是再多几条二手对照 —— 这条不在本轮凑。
+
+**构建面**：产品 + 7 个 UI 工程 + ServiceProbe 全部 **0 警告 0 错误**。①② 都动了产品代码 ⇒
+`FfmpegGui.dll` 指纹再变，**full12 那枚 `ECBCCEDFAB4577C2` 已过期** ⇒ 基线须在补跑的那一轮上重绑。
+
+### 11. full13：重绑基线（2026-10-13 23:13:51 收，日志 `tests/output/gates-round-2026-10-13-full13.log`）
+
+- 尺：`runner-self-sha256=2F006D117E640FBB lines=1419 bytes=136734`（起/收一致 ⇒ 与 full10/full12 **同一把尺**）；
+  `shape-selfcheck=OK（17 针）`；`script-list=75 条（受管基线 75）`；无 STALE、无漂移；磁盘 64.59 → 63.19 GB。
+- **新基线件 = `FfmpegGui.dll=6210C29DC28A18F4`**（取代 `ECBCCEDFAB4577C2`）；
+  `FfmpegGui.exe=BE0A3023826123AE`、`ServiceProbe.exe=54B919EFFAAF44B6`、`UiTestHost.exe=DC2F23D5816BAC82`、
+  `GainMapTestHost.exe=0B1510ADA80D8606`。23 份宿主的 `FfmpegGui.dll` 逐份同 sha（实测 24 份含产品 bin 全等）；
+  已在重建**之前**把该件另存 `tests/output/f12/FfmpegGui.6210C29DC28A18F4.dll`（上一轮教训：重建会吃掉对照臂）。
+- **73 条 exit=0 / 失败 2 项，仍是先前点名的两条既有红**：`probe:runner 7/1`（沙箱 `cmd.exe`）、
+  `script:_probe-test-group-coverage`（按设计红：7 零调用点 + `icc` 非清单调用点）。
+  ⚠ full11 那两条负载计时红本轮**没有复现**（`verify-gainmap-host 18/0`、`verify-webp-anim-probe 44/0`），
+  且本轮新增的计时档也在同一次负载下过了 ⇒ 与 §9 的归因一致（争用窗口，不是代码）。
+- 本批改动相关的读数（逐条，不压总数）：
+  `contract **160/0**`（153 → +7 条 C20-AX）、`wire **98/0**`（+5 条 F-12）、
+  `selftest 40/0`、`iccname **17/0 且 L-3 的缺正样本 SKIP 已消失**`、`decision 4/0`（60 格零不符）、
+  `metaraw 20/0`、`bench **37/0**`（30 → +7：8-bit 出口两格 ×3 条 + 档位数量 + 前置）、
+  `verify-color-wiring **153/0**`（142 → +11：F-12 的 8 条 + 8-bit 判据 3 条）、
+  `verify-probe-mirror-parity **65/0**`（28 → 65：方向锁 31 格 + 登记制带计数）、
+  `_probe-matrix-structure 38/0`（A30 行锚 2099→2132 重钉后）、
+  UI 三面 `verbatim 22/0`、`union 11/0 @421`、`reproducible 19/0`、`verify-ui-host 421 PASS / 0 FAIL`、
+  `_probe-gui-control-wiring 82/0`、`verify-ps-compat 13/0`、`_probe-cjk-hardcode 14/0`（**余量未动**）、
+  `verify-format-regression 19/0`、`verify-color-caps 16/0`、`verify-metadata-privacy 7/0`、
+  `verify-decision-delivery pass=1/0`、`verify-gainmap-memory 16/0`、`verify-usability-e2e 84/0 (81 格)`。
+- 未提交量 = **17 改 + 1 新**（`tests/scripts/verify-probe-mirror-parity.ps1` 未跟踪）。
+  本轮之后仍未做的只有两件，都要用户开口才动：① 31 份镜像的合并/删除（§8 三档）；② 本地提交的分笔授权。
