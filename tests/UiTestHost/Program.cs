@@ -2270,6 +2270,36 @@ namespace UiTestHost
                       $"p={ZscaleParam(tB, "p") ?? "<none>"} iccgen={VfHas(tB, "iccgen")}");
             });
 
+            // ── J8d 规范事实的落点：**选 `auto` 不足以复位高级三元组**（2026-10-13 补）──────
+            // 为什么单独有一条：`UiHostShared.UiHost.ResetAdvancedColorToAuto`（断言前的显式复位 helper）
+            //   在 J8 换成 `SelectColorSpaceSettled` 之后**全仓零调用点**。当时没敢删它，因为
+            //   "为什么必须显式清"这件事只有它的注释记着 —— 而注释会随代码一起消失，
+            //   这条产品行为（`auto` 分支只清冲突提示、**不**重置 primaries/trc/matrix，
+            //   见 `MainWindow.xaml.cs:3594-3600`；而色域联动本身走 `SelectComboItem` 的
+            //   "按值查下标"赋值 = `MainWindow.xaml.cs:3725-3732`，值相同 ⇒ SelectionChanged 不触发）
+            //   就没有任何地方在测它。
+            //   ⇒ 把该事实变成**断言**（下面这条会红，如果哪天产品改成"auto 顺手清三元组"），
+            //     事实有了落点，那个死包装才可以删（本批同时删掉它 + 生成器池里的候选条目）。
+            // ⚠ 本条只**观察产品行为**，不新增复位；结尾把控件恢复原状，避免污染后面的 J9/J10。
+            Safe("J8d auto 不复位高级三元组", () =>
+            {
+                var trc = Find<ComboBox>("ColorTrcCombo");
+                var cs2 = Find<ComboBox>("ColorSpaceCombo");
+                if (trc == null || cs2 == null) { Check("J8d 两个控件都在", false, "trc=" + (trc == null) + " cs=" + (cs2 == null)); return; }
+                int restoreIdx = trc.SelectedIndex;
+                if (trc.ItemCount < 2) { Check("J8d 前置：trc 下拉有非 auto 项可设（实 " + trc.ItemCount + "）", false, "ItemCount<2"); return; }
+                trc.SelectedIndex = 1; Pump(6);
+                var setTo = trc.SelectedItem as string;
+                Check("J8d 前置：高级 trc 已设为非 auto（实 " + (setTo ?? "<null>") + "）",
+                      setTo != null && setTo != "auto", "setTo=" + (setTo ?? "<null>"));
+                cs2.SelectedItem = "auto"; Pump(8);
+                var afterAuto = trc.SelectedItem as string;
+                Check("J8d 选 ColorSpaceCombo=auto ⇒ 高级 trc **保持原值**（这就是复位必须显式做的原因）",
+                      afterAuto == setTo,
+                      $"auto 之前={setTo ?? "<null>"} auto 之后={afterAuto ?? "<null>"}（若产品将来改成 auto 顺手清三元组，这一条会红 ⇒ 同时更新 J8 的每格复位策略）");
+                trc.SelectedIndex = restoreIdx; Pump(6);
+            });
+
             // ── J9 LosslessCheck ──
             // ⚠ 实测：PNG/TIFF/APNG 被 `UpdateOptionAvailability` **强制无损并锁定**
             //   （LosslessCheck.IsEnabled=false + IsChecked=true + 质量锁 100）⇒ PNG 下无法做

@@ -43,7 +43,14 @@ $srcDir = Join-Path $root 'tests/output/sources'
 #   `-c:v` 仍是它。产品侧同族第三处：`RefreshEncoderListAsync` 跨 await 后**无条件**选默认编码器
 #   ⇒ 与它自己上方"可用性诚实…避免『实际编码器 ≠ 用户所选』"相反。判据确定性（反射跑完那次刷新）：
 #   修前 3/3 红、修后 13/0。⚠ 抬数同时 3c 必须仍 PASS —— 实测旧宿主与拆分并集同为 419。）
-$expectedOldCount = 419
+#   2026-10-13 = 421（GroupJ 增 **J8d 两条**：`J8d 前置：高级 trc 已设为非 auto` +
+#   `J8d 选 ColorSpaceCombo=auto ⇒ 高级 trc 保持原值`。这**不是**新增产品行为，而是给一条
+#   原本只写在注释里的规范事实找落点 —— 事实：`auto` 分支只清冲突提示（`MainWindow.xaml.cs:3594-3600`），
+#   **不**复位高级三元组 ⇒ 断言前的复位必须显式做。它原先由死包装 `UiHost.ResetAdvancedColorToAuto`
+#   的注释独家承载（该包装自 J8 换成 `SelectColorSpaceSettled` 后全仓零调用点）；
+#   事实进了断言 ⇒ 同一批把死包装删掉（`R-9 零死包装` 与 `R-1..R-5 逐字节` 仍 19/0、22/0）。
+#   ⚠ 抬数同前例：3c 仍 PASS（实测旧宿主 421 PASS / 0 FAIL，拆分并集同数）。
+$expectedOldCount = 421
 # 一对一改名 ⇒ 新旧总数相同（不是 408/412）
 $expectedNewCount = $expectedOldCount
 

@@ -596,29 +596,6 @@ namespace UiHostShared
             return (cs.SelectedItem as string) == value;
         }
 
-        /// <summary>
-        /// 把「高级色彩参数」的三个下拉（primaries / transfer / matrix）**显式**清回 `auto`（2026-10-07 新增）。
-        /// <para><b>为什么必须有</b>：`ColorSpaceCombo` 的色域联动走
-        /// <c>SelectComboItem</c>（`MainWindow.xaml.cs:3725-3732`，**按值查下标**赋值）——
-        /// 值相同时 <c>SelectedIndex</c> 不变 ⇒ <c>SelectionChanged</c> **不触发** ⇒
-        /// 高级三元组会**停留在上一格**的值。于是「快速色域」这一格的真实驱动被上一格遮蔽，
-        /// 断言读到的是**残留状态**（实测：`J8` 的失败格在 `BT.2020 PQ` / `P3 PQ` / `J6 arib-std-b67`
-        /// 之间随轮次漂移，形态恒为 <c>p=&lt;none&gt; t=&lt;none&gt;</c>）。
-        /// </para>
-        /// <para>⚠ 选 `auto` **不足以**复位：`auto` 分支只清冲突提示
-        /// （`MainWindow.xaml.cs:3594-3600`），**不**重置高级三元组。故必须本方法显式清。</para>
-        /// <para>⚠ 用途仅限**断言前的状态复位**，不是放宽判据 —— 调用方仍按原期望值精确断言。</para>
-        /// </summary>
-        public static void ResetAdvancedColorToAuto()
-        {
-            foreach (var n in new[] { "ColorPrimariesCombo", "ColorTrcCombo", "ColorMatrixCombo" })
-            {
-                var c = Find<ComboBox>(n);
-                if (c != null && c.ItemCount > 0) c.SelectedIndex = 0;   // 三个下拉的 index 0 均为 `auto`
-            }
-            Pump(6);
-        }
-
         /// <summary>把可能抛异常的用例体包起来：异常 = 一条 <c>[FAIL] name (异常)</c>，不中断整组。</summary>
         public static void Safe(string name, Action a)
         {
