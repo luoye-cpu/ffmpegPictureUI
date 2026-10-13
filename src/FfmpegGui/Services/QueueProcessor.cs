@@ -2023,8 +2023,15 @@ namespace FfmpegGui.Services
                         await RestoreRawCaptureFieldsAsync(item, outputPath);
 
                         // JPEG 输出添加 JFIF 头（提高手机兼容性）
+                        // ⚠ F-11：这一步必须**接上 item.Log** —— 不接的话失败一行不留，
+                        //   而下一行照样打「元数据恢复完成」⇒ 把"没做成"记成"做完了"。
                         if (IsJpegOutput(item))
-                            await ExifToolService.EnsureJfifHeaderAsync(outputPath);
+                        {
+                            var jfifRc = await ExifToolService.EnsureJfifHeaderAsync(
+                                outputPath, m => item.Log += m + "\n");
+                            if (jfifRc == FfmpegGui.Services.ExifToolService.SkippedNoExiftool)
+                                item.Log += "[warn] JFIF 头这一步被跳过（exiftool 不可用）\n";
+                        }
                         item.Log += "[exiftool] 元数据恢复完成\n";
                         return;
                     }

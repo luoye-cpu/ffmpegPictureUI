@@ -492,8 +492,11 @@ public static class ColorKernels
     /// 超出任何"无意义精度损失"的辨界，保持解析式。要想让它也能走表，需要的是
     /// "编码域均匀采样的第二张表"（未做，已登记）。</para>
     /// <para>⚠ 适用范围 = <see cref="TransformRgb48leCore"/> 的 48-bit 主路径。8-bit 兄弟出口
-    /// （本文件 <c>if (tbl &amp;&amp; (toneOn || srcHlg || dstHlg))</c> 那一处）
-    /// 的条件**刻意不同**：它的循环能在查表之后仍执行色域映射，所以 GMO 不关表 ⇒ 别拿本方法去替换那处的判据。</para>
+    /// 的判据是**另一个**方法 <see cref="TableFastPathOperatorsAllowRgb8"/>（条件**刻意不同**，
+    /// 差在 GMO 一轴 —— 8-bit 的循环在查表**之后**仍做色域映射，所以 GMO 不构成关表理由）。
+    /// ⚠ 别拿本方法去替换那处的判据，也别把两轴合成一条：合成一条会把 8-bit 交付（jpg/webp/gif
+    /// 与 <c>--bit-depth 8</c>）无谓地退回解析式，或者反过来把 16-bit 的 GMO 格放开到表路径上。
+    /// 两者的差由 contract 的 <c>C20</c> 族逐格钉住。</para>
     /// </summary>
     public static bool TableFastPathOperatorsAllow(in TransformSpec spec)
     {
@@ -506,6 +509,35 @@ public static class ColorKernels
             // 与内核同源：GamutMapActive 只保证系数齐了，参数本身非法时内核不会真的做映射
             if (new GamutMapParams(y[0], y[1], y[2], spec.GamutMapPreserveSaturation).IsValid) return false;
         }
+        return true;
+    }
+
+    /// <summary>
+    /// <see cref="TransformRgb48leToRgb8"/>（8-bit 交付出口）的**算子侧**快路径判据。
+    /// <para>
+    /// 为什么要有这个方法：8-bit 循环此前把这条判据**写在循环前的 if 里**，于是
+    /// ①测试侧无法在不复制一份条件的前提下断言"这一格的快路径到底开没开"，
+    /// ②它与自己那段注释已经漂过一次（注释声称 <c>encScaleOn</c> 已从条件里摘掉，代码里它还在），
+    /// ③它与 16-bit 的 <see cref="TableFastPathOperatorsAllow"/> **只在 GMO 一轴上不同**，
+    ///    而这件"只差一轴"的事实在代码里没有任何地方可查。
+    /// ⇒ 抽成具名判据：内核调它、contract 逐格调它、两轴的差由断言钉，不再靠注释。
+    /// </para>
+    /// <para>关闭快路径的条件（每一条都必须是"查表 + 常数乘"表达不了的算子）：
+    /// 编码侧 nits 换算 <see cref="TransformSpec.EncodeScale"/>（<c>CurveTables.Oetf</c> 按**线性域均匀采样**，
+    /// 而 PQ 编码曲线近黑极陡 ⇒ 插值基错；实测表 vs 解析最大差 <b>1457 码@16bit</b>、<b>8-bit 出口 6 码</b>）、
+    /// 色调映射、HLG 的正/逆 BT.2100 OOTF。</para>
+    /// <para>⚠ **不**关闭的三项，各有实测依据，别"顺手统一"掉：
+    /// 解码侧 <see cref="TransformSpec.LinearScale"/> 是常数（快循环里乘，与解析式同运算同顺序，
+    /// 2026-10-12 提案 (a) 量到 16-bit 差 ≤1 码、8-bit 差 0）；
+    /// <b>GMO</b> 在 8-bit 循环里是"查表之后、钳位之前"的一步（第 ③→④ 步之间），表路径容得下它；
+    /// 抖动 <see cref="TransformSpec.Dither"/> 只影响编码那一下（<c>EncodeTo8</c> 的 <c>t8</c> 加数），
+    /// 与查不查表无关。</para>
+    /// </summary>
+    public static bool TableFastPathOperatorsAllowRgb8(in TransformSpec spec)
+    {
+        if (Math.Abs(spec.EncodeScale - 1.0) > 1e-12) return false;
+        if (spec.Tone != null && spec.Tone.Active) return false;
+        if (spec.SrcIsHlgScene || spec.DstIsHlgScene) return false;
         return true;
     }
 
@@ -746,15 +778,16 @@ public static class ColorKernels
         bool encScaleOn = Math.Abs(encScale - 1.0) > 1e-12;
         bool dstHlg = spec.DstIsHlgScene;
         double dstHlgPeak = dstHlg ? NitsOfGamma(spec.DstHlgSystemGamma) : 0;
-        // ⚠ 表快路径的前提被破坏时必须回退解析式（与 16-bit 的 `fast` 判据同源）：
-        //   tonemap 需要 [0,1] 以外的值域、OOTF 不是多项式、GMO 要在矩阵后钳位前动值 ——
-        //   这三类在"查表 + 常数乘"里表达不了 ⇒ 启用就走解析式，否则会被整段跳过（静默失效）。
-        // ⚠ 2026-10-12：**scaleOn / encScaleOn 已从此条件里摘掉**，因为它对本路径根本不构成理由 ——
-        //   下面第 ② / ④ 步的两个常数乘是**写在 tbl 分支之外**的，带不带表都会执行。
-        //   旧条件是从 16-bit 抄来的过度收窄（那里当初确实缺乘法，所以关表是正确修复；
-        //   16-bit 现在也改成"乘法进快循环"，两边同形 ⇒ 见 TableFastPathOperatorsAllow）。
-        //   摘掉后 HDR 源的 8-bit 出口（PQ/HLG 源 → jpg/webp 等主力 8-bit 交付）从解析式回到表路径。
-        if (tbl && (encScaleOn || toneOn || srcHlg || dstHlg))
+        // 表快路径的前提被破坏时必须回退解析式。判据已抽成**具名方法**
+        // <see cref="TableFastPathOperatorsAllowRgb8"/>（本行以前把条件裸写在循环前，测试侧只能再抄一份，
+        // 而那段注释已经漂过一次 —— 它声称 `encScaleOn` 被摘掉了，代码里其实一直在；真实情况是
+        // **只摘过 `scaleOn`**：解码侧 nits 换算是常数乘、写在 tbl 分支之外，带不带表都会执行，
+        // 所以它不构成关表理由（2026-10-12 提案 (a)，16-bit 差 ≤1 码 / 8-bit 差 0）；
+        // 而**编码侧** `encScaleOn` 必须继续关表：`CurveTables.Oetf` 按线性域均匀采样，PQ 编码近黑极陡
+        // ⇒ 插值基错，实测表 vs 解析最大差 1457 码@16bit、**8-bit 出口 6 码**。
+        // GMO 与抖动都不关表（GMO 在查表之后、钳位之前；抖动只动 `EncodeTo8` 的加数）——
+        // 这三条轴的开/关由 contract 的 C20 族逐格断言，不再靠本注释自证。）
+        if (tbl && !TableFastPathOperatorsAllowRgb8(spec))
         {
             eF = null; oF = null; tbl = false;
         }
@@ -835,8 +868,16 @@ public static class ColorKernels
     /// </summary>
     private static byte EncodeTo8(ushort[]? oetf, TransferCurve curve, float linear, bool clamp, float t8)
     {
-        double e = clamp ? Math.Clamp(curve.FromLinear(linear), 0.0, 1.0) : curve.FromLinear(linear);
-        double code16 = oetf != null ? EncodeLerp(oetf, linear) : Math.Round(e * 65535.0);
+        // ⚠ **表分支一行都不许碰解析式**（2026-10-13 实测才抓到）：原先这里无条件先算
+        //   `curve.FromLinear(linear)`（幂函数 + 分段），再在 `oetf != null` 时把它**扔掉**。
+        //   8-bit 出口每像素白做三次 ⇒ 整条主力交付路（jpg/webp/gif/`--bit-depth 8` 的 png）
+        //   实测只有 22.7 MPix/s，而同一条 spec 的 16-bit 出口是 135 MPix/s —— 那 6× 的差
+        //   主要就是这颗白算的 pow，不是"8-bit 出口本来就慢"。
+        //   ⇒ 两支各算各的：有表就只做 `EncodeLerp`，没表才走解析式。**输出逐字节不变**
+        //     （C20-8b 的"送表 ≡ 不送表"与像素链路门禁一起当等价性凭据，bench 的 8b 档当回归看守）。
+        double code16 = oetf != null
+            ? EncodeLerp(oetf, linear)
+            : Math.Round((clamp ? Math.Clamp(curve.FromLinear(linear), 0.0, 1.0) : curve.FromLinear(linear)) * 65535.0);
         double v = code16 / 65535.0 * 255.0 + t8;
         return (byte)Math.Clamp((long)Math.Round(v), 0, 255);
     }

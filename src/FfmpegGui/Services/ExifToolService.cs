@@ -191,7 +191,7 @@ namespace FfmpegGui.Services
                 catch (OperationCanceledException)
                 {
                     try { p.Kill(entireProcessTree: true); } catch { }
-                    var msg = $"[exiftool] 色彩标签读取被取消/超时（5s）⇒ 已终止：{Path.GetFileName(imagePath)}";
+                    var msg = $"[exiftool] 色彩标签+ICC 读取被取消/超时（5s）⇒ 已终止：{Path.GetFileName(imagePath)}（同一条命令里的 ICC 一并失去 ⇒ 按无 ICC、无语义标签处理）";
                     if (log != null) log(msg + "\n"); else System.Diagnostics.Trace.WriteLine(msg);
                     return result;
                 }
@@ -897,21 +897,44 @@ namespace FfmpegGui.Services
                 logCallback, ct);
         }
 
-        /// <summary>为 JPEG 添加 JFIF 头（提高手机兼容性）</summary>
-        public static async Task EnsureJfifHeaderAsync(string targetPath)
+        /// <summary>
+        /// 为 JPEG 添加 JFIF 头（提高手机兼容性）。
+        /// <para>⚠ `F-11` 的这一半（2026-10-13）：原先**不传日志回调**且 `catch { }` 全吞 ⇒
+        /// 这一步失败时一行证据都不留，而队列日志紧接着就打「元数据恢复完成」，
+        /// 等于把「没做成」记成「做完了」（本仓忌的静默降级）。本方法**没有**把它并进
+        /// 常规恢复那一次 exiftool 调用（那是 `F-11` 的性能账，未做），只把**分步点名**补回来。</para>
+        /// </summary>
+        /// <param name="logCallback">这一步结论的去处（成功与失败都点名；null = 只回 rc）。</param>
+        /// <returns>exiftool 退出码。0=写成；&gt;0=exiftool 自己报错；
+        /// <see cref="SkippedNoExiftool"/>=exiftool 不可用而**跳过**（跳过 ≠ 成功，调用方须播报）。</returns>
+        public static async Task<int> EnsureJfifHeaderAsync(string targetPath, Action<string>? logCallback = null)
         {
             if (_detectedPath == null)
             {
                 Detect();
-                if (_detectedPath == null) return;
+                if (_detectedPath == null)
+                {
+                    logCallback?.Invoke("[exiftool] JFIF 头**未写入**：exiftool 不可用（这一步被跳过，不是成功）");
+                    return SkippedNoExiftool;
+                }
             }
             try
             {
                 var args = $"-overwrite_original -JFIFVersion=1.02 \"{targetPath}\"";
-                await RunWriteAsync(targetPath, args);
+                var rc = await RunWriteAsync(targetPath, args, logCallback);
+                logCallback?.Invoke($"[exiftool] JFIF 头写入 rc={rc}" + (rc == 0 ? "" : "（失败：产物保持原样）"));
+                return rc;
             }
-            catch { }
+            catch (Exception ex)
+            {
+                // ⚠ 不许静默：这一步真出问题时，必须留下"是哪一步、为什么"
+                logCallback?.Invoke($"[exiftool] JFIF 头写入异常：{ex.GetType().Name} {ex.Message}");
+                return -1;
+            }
         }
+
+        /// <summary>`EnsureJfifHeaderAsync` 在 exiftool 不可用时的返回值（**与"成功"区分开**）。</summary>
+        public const int SkippedNoExiftool = int.MinValue;
 
         /// <summary>读取单个标签值（带 5 秒超时保护，防止 exiftool 挂起阻塞队列）</summary>
         public static async Task<string?> GetTagAsync(string path, string tag, Action<string>? log = null, CancellationToken ct = default)

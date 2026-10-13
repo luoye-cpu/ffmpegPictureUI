@@ -441,7 +441,8 @@ public static class RawColorPipeline
                     inputPath, plan.IccPrimaries, plan.IccTrc, plan.IccMatrix, log, ct);
             // ── 源 ICC 的**重新提取**（2026-09-17 实测踩到）──────────────────────────────
             // `CarryIcc` 计划的 `IccPath` 指向**源** ICC，而该临时文件在识别阶段就被回收了：
-            // `ColorIntentFactory` 走 `ExtractIccToTempFile` → `FromIccFile`（度量）→ `TryDeleteIcc`
+            // 意图装配拿到的描述符来自合并探测（F-12 之前是 `ExtractIccToTempFile` → `FromIccFile`，
+            // 之后是 `ProbeInputIccDescriptor`，**两种形态下 `SourceIccPath` 都指向已删除的临时件**）
             // ⇒ 计划里的路径**已经悬空**。此前不暴露，是因为 CarryIcc 一律在
             // `QueueProcessor.TryRunColorEngineAsync` 里提前返回 `(false,0,plan)`（引擎不参与、
             // 传统管线重新提取）—— 本次 cjxl 出口让引擎**真的执行**了这类计划，悬空路径就露出来了。

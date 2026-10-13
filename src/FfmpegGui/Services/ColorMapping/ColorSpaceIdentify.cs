@@ -128,10 +128,26 @@ public static class ColorSpaceIdentify
     /// “超广色域保真 / 归一 BT.2020 / GainMap 底图原色” 这些依赖 sourceGamutName 的判断**静默失效**。
     /// </summary>
     public static string? IdentifyIccSpaceName(string? iccPath, string? descriptionHint = null)
+        => IdentifyIcc(iccPath, descriptionHint).name;
+
+    /// <summary>
+    /// 同一次 ICC 度量识别的**两个产物**：描述符（映射要用）与规范名（标注/保真判定要用）。
+    ///
+    /// 为何要合并成一个入口（F-12，2026-10-13）：探测侧为拿名字已经构造过一次描述符
+    /// （<see cref="IdentifyIccSpaceName"/> 内部就是 <see cref="FromIccFile"/>），而意图装配侧
+    /// 为了拿描述符**又起一次 exiftool** 把同一份 ICC 再抽一遍、再认一次
+    /// ⇒ 每图白付一趟进程（单次实测 0.170 s），且"认空间"这件事有了两个调用点。
+    /// ⇒ 由探测侧一次算出、把描述符随探测结果一并带回；**这里只有一份"怎么认"的实现**。
+    /// ⚠ `name` 的口径必须与 `IdentifyIccSpaceName` 逐字同一（先度量名、退描述猜测），
+    ///    否则两条消费者会对同一张图给出不同的 `sourceGamutName`。
+    /// </summary>
+    public static (ColorSpaceDescriptor? descriptor, string? name) IdentifyIcc(
+        string? iccPath, string? descriptionHint = null)
     {
         var d = FromIccFile(iccPath, descriptionHint);
-        if (!string.IsNullOrWhiteSpace(d?.KnownSpaceName)) return d!.KnownSpaceName;
-        return IccProfileService.GuessColorSpace(descriptionHint);   // 度量认不出时才拿描述当线索
+        if (!string.IsNullOrWhiteSpace(d?.KnownSpaceName)) return (d, d!.KnownSpaceName);
+        // 度量认不出时才拿描述当线索：描述符照旧返回（任意 ICC 仍可映射），名字可能为 null。
+        return (d, IccProfileService.GuessColorSpace(descriptionHint));
     }
 
     /// <summary>

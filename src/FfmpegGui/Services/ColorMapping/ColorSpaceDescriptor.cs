@@ -160,6 +160,34 @@ public sealed class ColorSpaceDescriptor
     //  使用
     // ═══════════════════════════════════════════════════════════════════
 
+    /// <summary>
+    /// 深拷贝（含 9 元素矩阵与四组色度坐标数组）。
+    ///
+    /// 为什么必须有：本类型是**可变引用对象**，而它现在会被放进
+    /// <c>FfmpegCommandBuilder.ProbeCache</c>（键=路径、TTL 10 s）里随探测结果一起返回。
+    /// 装配层会写它的字段（<c>FixHdrNits</c> 抬 <c>NitsOfLinearOne</c>、
+    /// <c>--icc-file</c> 分支清 <c>SourceIccPath</c> 并改 <c>Name</c>），
+    /// 规划层 <c>BuildManualTarget</c> 一类还会改 <c>Confidence</c>
+    /// ⇒ 不复制就是把**缓存里的那一份**交给单个任务改：10 秒内第二个消费者
+    /// 读到的是上一个任务留下的值（"两处恰好写同一个值"不是保证，是运气）。
+    /// </summary>
+    public ColorSpaceDescriptor Clone() => new()
+    {
+        Name = Name,
+        RgbToXyzD50 = (double[]?)RgbToXyzD50?.Clone(),
+        Rp = (double[]?)Rp?.Clone(),
+        Gp = (double[]?)Gp?.Clone(),
+        Bp = (double[]?)Bp?.Clone(),
+        Wp = (double[]?)Wp?.Clone(),
+        Curve = Curve,
+        PrimariesToken = PrimariesToken,
+        KnownSpaceName = KnownSpaceName,
+        IsIccDerived = IsIccDerived,
+        Confidence = Confidence,
+        NitsOfLinearOne = NitsOfLinearOne,
+        SourceIccPath = SourceIccPath,
+    };
+
     /// <summary>能否参与映射：必须持有完整的 RGB→XYZ(D50) 矩阵（曲线为表型时仍可映射，精度由表保证）。</summary>
     public bool IsMappable => RgbToXyzD50 is { Length: 9 };
 

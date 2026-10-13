@@ -1287,6 +1287,13 @@ namespace FfmpegGui.Services
             public bool hasIccSemantics;
             /// <summary>探测到的源色彩空间规范名（如 "Adobe RGB"/"ProPhoto RGB"），供超广色域归一化到 BT.2020 判定</summary>
             public string? sourceGamutName;
+            /// <summary>
+            /// 由**源内嵌 ICC** 度量出的描述符（F-12，2026-10-13：随合并探测一次算出，供意图装配复用）。
+            /// ⚠ 本字段是**缓存里的那一份**（键=路径、TTL 10 s、跨任务共享）⇒ 消费者必须走
+            /// <see cref="FfmpegCommandBuilder.ProbeInputIccDescriptor"/> 取副本，不得直接改这里的对象。
+            /// null = 无 ICC / ICC 读不出度量（调用方按 CICP 标签路径继续）。
+            /// </summary>
+            public ColorMapping.ColorSpaceDescriptor? iccDescriptor;
             /// <summary>源峰值亮度 (nits)，来自 HDR 静态元数据；0=未读到（调用方必须回退到源曲线名义峰值并写明来源）。</summary>
             public double peakNits;
             /// <summary>peakNits 的来源（"MaxCLL" / "BS.2086 mastering"，null=未读到）——日志须能自证峰值不是猜的。</summary>
@@ -1342,6 +1349,23 @@ namespace FfmpegGui.Services
         public static ColorMetadata ProbeInputColorMetadata(string inputPath,
             Action<string>? log = null, CancellationToken ct = default)
             => GetCachedProbe(inputPath, log, ct);
+
+        /// <summary>
+        /// 源**内嵌 ICC** 的度量描述符（色度矩阵 + 曲线 + 置信度），与
+        /// <see cref="ProbeInputColorMetadata"/> 共用同一次探测、同一份缓存 ⇒ **不再另起 exiftool**。
+        /// <para>
+        /// ⚠ 返回的是**副本**（<c>ColorSpaceDescriptor.Clone()</c>）：缓存里那一份在 10 s TTL 内
+        /// 被同批其它任务共享，而装配层会写描述符字段（nits / 置信度 / SourceIccPath）。
+        /// </para>
+        /// <para>
+        /// 无 ICC、或 ICC 读不出度量 ⇒ null（调用方按容器 CICP 标签路径继续，**不猜**）。
+        /// 描述符的 <c>SourceIccPath</c> 指向识别阶段就已回收的临时件 ⇒ 与旧两步法**同形态**
+        /// （路径在位但文件不存在），携带 ICC 的执行侧仍各自负责重新定位。
+        /// </para>
+        /// </summary>
+        public static ColorMapping.ColorSpaceDescriptor? ProbeInputIccDescriptor(string inputPath,
+            Action<string>? log = null, CancellationToken ct = default)
+            => GetCachedProbe(inputPath, log, ct).iccDescriptor?.Clone();
 
         /// <summary>
         /// 点三：判定并解析超广色域「像素原样 + 仅靠 ICC 描述」的保真 ICC。全部条件满足才生效：
@@ -1440,6 +1464,7 @@ namespace FfmpegGui.Services
             //   `IccProfileService.ExtractIccFromBase64`。旧的条件 `|| true`（恒真）连同它一起删除，
             //   因为"要不要试"这个判断在合并后不存在——标签与 ICC 本来就来自同一条结果。
             string? iccGuessed = null;
+            ColorMapping.ColorSpaceDescriptor? iccDescriptor = null;
             {
                 try
                 {
@@ -1458,12 +1483,20 @@ namespace FfmpegGui.Services
                     {
                         // 先按**度量**（色度矩阵+曲线）定空间，描述文字只作兜底：
                         // 本仓库生成的标准 ICC 描述就是“RGB built-in”，只按描述猜会让广色域判断静默失效。
-                        iccGuessed = ColorMapping.ColorSpaceIdentify.IdentifyIccSpaceName(iccPath, iccDesc);
+                        // ⚠ `IdentifyIcc` 一次给出**名字与描述符两样**（F-12）：描述符此前在这里被丢掉，
+                        //   而意图装配（`ColorIntentFactory`）为了拿它又起一次 exiftool 把同一张图重抽一遍
+                        //   ⇒ 每图白付一趟进程。认空间仍只有这一份实现。
+                        var idf = ColorMapping.ColorSpaceIdentify.IdentifyIcc(iccPath, iccDesc);
+                        iccDescriptor = idf.descriptor;
+                        iccGuessed = idf.name;
                         IccProfileService.TryDeleteIcc(iccPath);
                     }
                 }
                 catch { }
             }
+            // 随探测结果一起带回：下面 `meta = ApplyIccSemantics(meta, …)` 是按值改后**接回**，
+            // 不会抹掉本行（本仓踩过"按值传参丢弃修改"的同族缺陷，见下方 ⚠️ 注释）。
+            meta.iccDescriptor = iccDescriptor;
 
             // ── 色彩语义决策：ICC > EXIF ColorSpace ──
             // ⚠ EXIF 的 `ColorSpace` 这里只先记成**候选**（`exifPrim`/`exifTrc`），是否采用要等 ffprobe 的

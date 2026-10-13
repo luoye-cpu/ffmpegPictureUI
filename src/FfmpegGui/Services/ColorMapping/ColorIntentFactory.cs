@@ -108,13 +108,15 @@ public static class ColorIntentFactory
 
         if (src == null)
         {
-            try
-            {
-                var (iccPath, iccDesc) = IccProfileService.ExtractIccToTempFile(inputPath);
-                src = ColorSpaceIdentify.FromIccFile(iccPath, iccDesc);
-                IccProfileService.TryDeleteIcc(iccPath);
-            }
-            catch { /* 无 ICC 或解析失败：继续走标签路径 */ }
+            // ── 源内嵌 ICC：复用上面那次**合并探测**的度量结果（F-12，2026-10-13）──────────
+            // 这里原先是旧两步法：`IccProfileService.ExtractIccToTempFile`（**另起一次 exiftool**，
+            // 单次实测 0.170 s）→ `ColorSpaceIdentify.FromIccFile`。而 `:49` 的探测为了定空间
+            // 已经把同一张图的 ICC 取回并 `FromIccFile` 认过一遍，只是当时只留名字、丢了描述符
+            // ⇒ 同一份 ICC 被抽两次、认两次。现在探测侧一次算出两样（`IdentifyIcc`），
+            // 装配侧拿副本 ⇒ "这算不算一张真 ICC"与"怎么认空间"仍各只有一份实现。
+            // ⚠ 返回的是副本：缓存里那一份在 10 s TTL 内被同批其它任务共享。
+            // ⚠ 异常口径不变：无 ICC / 度量读不出 ⇒ null，继续走下面的容器标签路径（不猜）。
+            src = FfmpegCommandBuilder.ProbeInputIccDescriptor(inputPath);
         }
 
         bool srcFromTag = false;

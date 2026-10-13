@@ -638,7 +638,12 @@ function Get-SemanticMatrices {
                 #   漂移由 A30 当场报出（`literal not on ...:2041 (found at line 2055)`）⇒ 抬号前先 `grep -n` 复核实况行，
                 #   并确认全文件该字面量**只出现一次**（行号锚不容歧义）。见 docs/TESTING.md §6 第 112 条。
                 # ⚠ pin 演进（2026-10-04）：2050 → **2061**（+11），同 A21 那条成因
-                'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:2099|bool exiftoolFormats = fmt is "jpg" or "jpeg" or "png" or "tiff" or "webp";'   # 2026-10-04 重钉 2061→2065（同批 +4）
+                # ⚠ pin 演进（2026-10-13 F-12）：2099 → **2132**（+33）。成因同前例，**不是改判据**：
+                #   F-12 往同一文件插了 33 行（`ColorMetadata.iccDescriptor` 字段 + `ProbeInputIccDescriptor()`
+                #   新入口 + 探测核带回描述符的注释）⇒ 其**下方**行号整体下移。字面量与语义一字未动。
+                #   漂移仍由 A30 当场报出（本轮实测报 `literal not on ...:2099 (found at line 2132)`）
+                #   ⇒ 抬号前 `grep -n` 复核实况行并确认该字面量**全文件只出现一次**（行号锚不容歧义）。
+                'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:2132|bool exiftoolFormats = fmt is "jpg" or "jpeg" or "png" or "tiff" or "webp";'
             )
         },
         @{
