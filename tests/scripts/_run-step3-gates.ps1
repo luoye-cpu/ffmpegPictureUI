@@ -1,6 +1,6 @@
 # _run-step3-gates.ps1 —— 步骤 3 改动后的门禁批量执行（只回显每个门禁的汇总行 + 失败明细）
 # 用法：pwsh -NoProfile -File tests/scripts/_run-step3-gates.ps1 [-Probes a,b,c] [-SkipScripts] [-Scripts a,b]
-#   ⚠ `-Scripts` = **脚本级子集**（2026-09-24 新增）。动机：此前只有"全跑 74 条"与
+#   ⚠ `-Scripts` = **脚本级子集**（2026-09-24 新增）。动机：此前只有"全跑 75 条"与
 #     "裸跑单个 verify-*.ps1"两种选择，而裸跑会绕开本文件的**仓库锁 / 单步超时 / STALE 新鲜度闸 /
 #     双漂移复核 / `_gate_script_*.txt` 留痕**五项保护 ⇒ 增量验证要么太贵要么不可信。
 #     ⚠ 全跑墙钟不再写死分钟数：2026-10-01 起清单含 5 条 **L3/产物级**套件（第 61~65 条），
@@ -86,7 +86,7 @@ param([string]$Probes = 'contract,wire,verdict,selftest,iccname,plan,curve,matri
 #    2026-09-17 新增 verify-gamut-map.ps1；**同日按「运行级隔离（GUID）」改写，见 §6 第 66 条**；
 #    同日再新增生产者 `_probe-jpg-p3-icc.ps1`，理由见下方 ②(b) 与调序注释；
 #    同日再新增 `verify-geometry-engine.ps1`（**几何缩放死代码**的专项门禁，理由见 `$Probes` 的 `geometry` 注释））──
-#    ⚠ **清单条数以实测为准 = 74 条**（⚠ 2026-09-19 P4-A 前为 42 条；2026-09-23 由 48 经 49/50/51 到 52，2026-09-23/24 再接 `verify-ipc-extra-options.ps1` ⇒ 53，2026-09-24 再接 `_probe-settings-clone-coverage.ps1` ⇒ 54，2026-09-27 再接 `_probe-matrix-structure.ps1`（任务 #42，秒级结构自检）⇒ 55，同日再接 `_probe-stderr-merge-scan.ps1`（任务 #51，合并取数结构锁）⇒ 56，同日再接 `verify-simd-switch-fallback.ps1`（面板「SIMD 优化」声明/实现冲突 ⇒ 判据单点 `SimdKernelRouting`）⇒ 57，2026-09-30 再接 `verify-geometry-orientation.ps1` + `_probe-geometry-single-source-scan.ps1`（取向标签 ⇒ **显示尺寸**口径的专项门禁 + 唯一实现结构锁）⇒ 59，同日再接 `verify-gainmap-host.ps1`（把 `GainMapTestHost` 套件接进清单 + STALE 第 ⑤ 对）⇒ 60，2026-10-01 再接**首批 L3/产物级套件**5 条（`verify-package-smoke` + `verify-jbrd-e2e` + `verify-orientation-rewrap` + `verify-gainmap-thirdparty` + `verify-encoder-knob-liveness`；原居 gitignored 的 `tests/output/t{69,76,77,79}`，`git clean -xdf` 一次就没、也不在任何轮里被跑）⇒ 65，2026-10-04 再接 `_probe-jxl-input-target.ps1` + `_probe-raw-default-tier.ps1`（色彩审查两个 P1 的判据）⇒ 67，同日再接 `_probe-gui-control-wiring.ps1`（72h 审查 P0：GUI 控件「声明了却没接线」结构锁）⇒ 68，2026-10-05 再接 `_probe-test-group-coverage.ps1`（测试物理拆分的**组表↔探针清单覆盖一致性锁**，防「某 mode 无组认领 ⇒ 永远不被跑」的假覆盖）⇒ 69）（`foreach` 数组里的 `.ps1` 条目数）。
+#    ⚠ **清单条数以实测为准 = 75 条**（⚠ 2026-09-19 P4-A 前为 42 条；2026-09-23 由 48 经 49/50/51 到 52，2026-09-23/24 再接 `verify-ipc-extra-options.ps1` ⇒ 53，2026-09-24 再接 `_probe-settings-clone-coverage.ps1` ⇒ 54，2026-09-27 再接 `_probe-matrix-structure.ps1`（任务 #42，秒级结构自检）⇒ 55，同日再接 `_probe-stderr-merge-scan.ps1`（任务 #51，合并取数结构锁）⇒ 56，同日再接 `verify-simd-switch-fallback.ps1`（面板「SIMD 优化」声明/实现冲突 ⇒ 判据单点 `SimdKernelRouting`）⇒ 57，2026-09-30 再接 `verify-geometry-orientation.ps1` + `_probe-geometry-single-source-scan.ps1`（取向标签 ⇒ **显示尺寸**口径的专项门禁 + 唯一实现结构锁）⇒ 59，同日再接 `verify-gainmap-host.ps1`（把 `GainMapTestHost` 套件接进清单 + STALE 第 ⑤ 对）⇒ 60，2026-10-01 再接**首批 L3/产物级套件**5 条（`verify-package-smoke` + `verify-jbrd-e2e` + `verify-orientation-rewrap` + `verify-gainmap-thirdparty` + `verify-encoder-knob-liveness`；原居 gitignored 的 `tests/output/t{69,76,77,79}`，`git clean -xdf` 一次就没、也不在任何轮里被跑）⇒ 65，2026-10-04 再接 `_probe-jxl-input-target.ps1` + `_probe-raw-default-tier.ps1`（色彩审查两个 P1 的判据）⇒ 67，同日再接 `_probe-gui-control-wiring.ps1`（72h 审查 P0：GUI 控件「声明了却没接线」结构锁）⇒ 68，2026-10-05 再接 `_probe-test-group-coverage.ps1`（测试物理拆分的**组表↔探针清单覆盖一致性锁**，防「某 mode 无组认领 ⇒ 永远不被跑」的假覆盖）⇒ 69）（`foreach` 数组里的 `.ps1` 条目数）。
 #      原注释写「29 个」「31 条」均与实测不符（**历史偏差**，非本轮引入），已按实测更正。
 #      2026-09-18 新增 `verify-engine-firstframe.ps1`（引擎多帧解码只取首帧，理由见该脚本头注释）
 #      ⇒ 32 → 33，已重新数过。
@@ -933,7 +933,7 @@ $noSelfSummary = @('_probe-cancel-propagation-scan.ps1', '_probe-ct-chain-closur
 #   观察项**，改成必红等于**主动放弃一条覆盖**；补生产者只是**修复清单的遗漏**。
 #   ⚠ **本组正确性依赖 runner 串行**（`validate/jpgp3` 是固定共享目录）——
 #   若将来 runner 改成并行，本组必须先改成「指针/按会话隔离」（§6 第 68 条）。
-# ⚠ 受管基线：脚本清单 = **74** 条（`.workbuddy-ai/memory/MEMORY.md` / `docs/HANDOVER.md` /
+# ⚠ 受管基线：脚本清单 = **75** 条（`.workbuddy-ai/memory/MEMORY.md` / `docs/HANDOVER.md` /
 #   `docs/TESTING.md` §3.5 同记此数）。增删条目必须**同时**改此常量 + 四处文档；
 #   否则下面的条数锁会响亮报红（防「删掉一条 ⇒ 静默变 47 ⇒ 日志照常、无人发现」）。
 #   ⚠ 本锁在 `-SkipScripts` 下**不执行**（该模式走上面的早退，清单根本没被使用）——
@@ -1041,7 +1041,7 @@ $noSelfSummary = @('_probe-cancel-propagation-scan.ps1', '_probe-ct-chain-closur
 #   ⚠ 自带汇总（`PASS=n FAIL=m` + 断言驱动 exit）⇒ 分类账「其余」57 → 58，两个数组仍不动。
 #   ⚠ 实测（2026-10-05，三次变异）：① 从组表删一个 mode ⇒ `contract` 未认领判红；
 #     ② 加一个无工程目录的组 ⇒ 判红；③ 把 mode 拼错 ⇒ 判红；恢复 ⇒ **6/0**。
-$expectedScriptCount = 74
+$expectedScriptCount = 75
 $scriptList = @('verify-ps-compat.ps1','verify-color-caps.ps1','verify-color-wiring.ps1','verify-color-strategy.ps1','verify-format-regression.ps1',
                  'verify-widegamut-regression.ps1','verify-tiff-icc.ps1','verify-webp-hdr-fix.ps1','verify-decision-delivery.ps1',
                  '_probe-stderr-drain-scan.ps1','_probe-proc-encoding-scan.ps1','_probe-cancel-propagation-scan.ps1','_probe-i18n-scan.ps1','_probe-cjk-hardcode-scan.ps1','verify-png-signature.ps1','verify-gainmap-memory.ps1','verify-metadata-privacy.ps1','verify-gif-avif-framelist.ps1','verify-color-peak.ps1',
@@ -1267,7 +1267,33 @@ $scriptList = @('verify-ps-compat.ps1','verify-color-caps.ps1','verify-color-wir
                  #     reproducible **19/0**；7 个 UI 工程 `-t:Rebuild` 全部 **0 警告 0 错误**。
                  #   ⚠ 自带汇总（PASS=n FAIL=m）+ 断言驱动 exit ⇒ **不进** $tableOnly / $noSelfSummary。
                  #   ⚠ 纯源码形状判据，**不需要重建**任何二进制（实测 ≈40 s，主要花在跑 3 次生成器）。
+                 # ── 第 75 条：2026-10-13 批次 G（探针面）接线（`verify-probe-mirror-parity.ps1`）──
+                 #   锁「内核断言两份拷贝不许静默漂」：被执行那份 = `tests/ServiceProbe/Program.cs`
+                 #   （`$Probes` 只调它），镜像 = `tests/core/Modes/*.cs` + `tests/diagnostics/Modes/*.cs`
+                 #   （`Exe` ⇒ `dotnet test` 只还原不跑还 exit 0，全仓除生成器注释外**零调用者**）。
+                 #   立锁动机（本仓实测踩过）：只把 C20 写进镜像 ⇒ `contract` 报 137/0 **全绿而一条没跑**。
+                 #   判据不是整文件比字节：两份的**插值变量名与注释本就不同**（`{name}` vs `{nameC20}`），
+                 #     ⇒ 取 `Check(...)` 的字面片段拼标签、`{...}` 归一成同一个槽位（**变量名不算差异、文案算**），
+                 #     再比 8 个 mode 的**多重集**；另有 4 条反控（方法体两侧都解析到 / 条数下限 /
+                 #     归一化没把标签压成一个 / 模式表 8 项）。
+                 #   唯一有意差 `C20-8b`（只在被执行那份）= **登记**而非豁免：镜像第 44 行自己声明「要加断言
+                 #     请加在那一份上；写在这里会全绿但一条不执行」⇒ 它是冻结参照件，把断言搬进死代码只会
+                 #     制造「以为有人执行」的更坏假象。反控逼这条登记**恰好命中 1 条 × 1 次** ⇒ 哪天同步掉了
+                 #     或又漂出第二条，当场红。
+                 #   与 Python 取样器 `tests/output/step2/probe_mirror_ruler.py` 是**两个独立实现**，
+                 #     实测逐 mode 一致：92/91、5/5、18/18、27/27、5/5、6/6、2/2、8/8（合计 163/162）。
+                 #   变异验牙四支（各只红该红那格、逐字节还原相等）：只改镜像标签文案 ⇒ tooldetect 红；
+                 #     把镜像一条 `Check(` 改名 ⇒ peak 红（只SP 1、只镜像 0）；只改被执行那份的 C20-8b ⇒
+                 #     contract **两格**红（未登记差 + 登记命中 0）；**两侧同步**改同一条 ⇒ 必须全绿
+                 #     （假阳性对照：这把尺量「漂」不是量「变」）。读数 `tests/output/step2/mut_parity_readout.txt`。
+                 #   ⚠ 本门禁第一版死于 PS 自己的坑：差集用 `@($k,$d)` 再 `+=` ⇒ 数组被**摊平**、`$e[0]` 成 Char，
+                 #     于是它**打完几条 PASS 之后**才 InvalidOperation 崩掉 ⇒ 只看结尾会误读成「没红」；
+                 #     现改用 `[pscustomobject]`。⇒ 崩在中间的门禁比一上来就红更危险，采集必须并 6>&1。
+                 #   ⚠ 自带汇总（PASS=n FAIL=m）+ 断言驱动 exit ⇒ **不进** $tableOnly / $noSelfSummary。
+                 #   实测 0.1–0.3 s（纯源码文本，不起进程、不重建）⇒ 脚本段预算 ≈2070 s 不必调。
+                 #   ⚠ 本条只**装尺**，不合并、不删镜像 ⇒ 合并（保留被执行的一份）是下一步，需自己的判据。
                  'verify-ui-split-reproducible.ps1',
+                 'verify-probe-mirror-parity.ps1',
                  # 第 72 条：erify-usability-e2e.ps1（**用户可感知可用性**的实机端到端矩阵，2026-10-05 审查时接线）。
                  #   内容：A 完整格式互转矩阵（8 输入 × 6 目标）+ B 色彩目标兑现（SDR/HDR-PQ/HDR-HLG × 3 目标 × 3 容器）
                  #        + C 批量与目录结构 + D 动图帧数守恒；每条带**可证伪**判据（ffprobe 读标注 + PSNR≥25dB），

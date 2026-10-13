@@ -906,6 +906,60 @@ if ((Test-Path $orIn) -and (Test-Path $et)) {
     CK $false "(12) 取向夹具或 exiftool 不可用 ⇒ 本段不给绿灯（缺 $orIn / $et）"
 }
 
+# ── (13) 探测链「一次读取、两处消费」的结构锁（F-12，2026-10-13；纯静态、不起进程）──────
+# 立锁动机：F-12 把意图装配的旧两步法抽 ICC 折进了合并探测。这类"折叠"最容易在下一轮被改回去
+#   （或折一半、留下两套"怎么认空间"的实现）⇒ 折叠关系本身要能被静态判出，不能只靠一次实测读数。
+# ⚠ **负断言一律配正向对照**：同一个正则在别处必须命中 ≥1，否则"搜不到"会被读成"没有"
+#   （本仓踩过：缺席断言的 grep 必须先对已知存在的串命中一次）。
+# ⚠ 这些判据绑的是**当前形态**：若将来 `ExtractIccToTempFile` 被全仓删除（合并到别处），
+#   第 2 条会因失去正向对照而红 ⇒ 那时要连正则一起改，而不是删掉这条。
+# ⚠ 一律**先剥整行注释再匹配**：本仓的注释会点名"被折叠掉的旧 API"（下面几处就是这样），
+#   全文子串匹配会把"注释里提到"读成"代码里在用"（同族教训见 §6）。
+function Get-CodeText([string]$text) {
+    return ((($text -split "`r?`n") | Where-Object { $_ -notmatch '^\s*(//|///)' }) -join "`n")
+}
+$cifTxt = Get-CodeText ([System.IO.File]::ReadAllText((Join-Path $root 'src/FfmpegGui/Services/ColorMapping/ColorIntentFactory.cs')))
+$fcbTxt = Get-CodeText ([System.IO.File]::ReadAllText((Join-Path $root 'src/FfmpegGui/Services/FfmpegCommandBuilder.cs')))
+$etsTxt = Get-CodeText ([System.IO.File]::ReadAllText((Join-Path $root 'src/FfmpegGui/Services/ExifToolService.cs')))
+$qpTxt  = Get-CodeText ([System.IO.File]::ReadAllText((Join-Path $root 'src/FfmpegGui/Services/QueueProcessor.cs')))
+$csiTxt = Get-CodeText ([System.IO.File]::ReadAllText((Join-Path $root 'src/FfmpegGui/Services/ColorMapping/ColorSpaceIdentify.cs')))
+$nOldInFactory = ([regex]::Matches($cifTxt, 'ExtractIccToTempFile')).Count
+$nStillElsewhere = ([regex]::Matches($qpTxt, 'ExtractIccToTempFile')).Count
+CK ($nOldInFactory -eq 0) "(13) 意图装配不再自己起 exiftool 抽 ICC（ColorIntentFactory 命中 $nOldInFactory 次）"
+CK ($nStillElsewhere -ge 1) "(13) 正向对照：同一正则在 QueueProcessor 命中 $nStillElsewhere 次 ⇒ 上一条的 0 是「真没有」而不是正则失效"
+$nEntryInFactory = ([regex]::Matches($cifTxt, 'ProbeInputIccDescriptor')).Count
+CK ($nEntryInFactory -eq 1) "(13) 装配侧只有**一个** ICC 描述符入口（ProbeInputIccDescriptor 命中 $nEntryInFactory，期望 1）"
+CK (([regex]::Matches($fcbTxt, [regex]::Escape('.iccDescriptor?.Clone()'))).Count -eq 1) "(13) 缓存描述符对外只经 Clone 出口（.iccDescriptor?.Clone() 命中 1 次）⇒ 摘掉它就是把缓存里的对象交给单个任务改"
+CK (([regex]::Matches($fcbTxt, [regex]::Escape('meta.iccDescriptor = iccDescriptor;'))).Count -eq 1) "(13) 探测核把描述符**接回** struct（meta.iccDescriptor 赋值命中 1 次）⇒ ColorMetadata 是 struct，漏接回就是『按值传参丢弃修改』同族缺陷"
+# 合并后"失败要响"的等价性：合并探测那一条的取消/超时点名必须同时说出 **ICC 一起失去**，
+# 否则旧两步法留下的『ICC 提取超时』独立点名就随进程一起没了（FIX_PLAN F-12 的风险条）。
+# ⚠ 只**定点管那一条**：本文件里 `被取消/超时` 有三条（ISO 探测、色彩标签+ICC、通用标签读取），
+#   另两条与 ICC 无关 ⇒ 判"所有 被取消/超时 行都要含 ICC"会把无关点名算进分母（实测 1/3 红）。
+$nArgv = ([regex]::Matches($etsTxt, [regex]::Escape('-b -icc_profile'))).Count
+$probeCancel = @([regex]::Matches($etsTxt, '(?m)^.*色彩标签.*被取消/超时.*$') | ForEach-Object { $_.Value })
+# 一条合格的点名要同时说出**两件事**：这次连 ICC 一起读（`色彩标签+ICC`），并且失败后按什么算（`按无 ICC`）。
+# ⚠ 只判"含不含 ICC 字样"是不够的（实测：把尾巴『ICC 一并失去 ⇒ 按无 ICC 处理』整段删掉，
+#   前半句里还剩一个 ICC 顶着 ⇒ 锁照绿）。判语义，不判字形。
+$probeCancelNamingIcc = @($probeCancel | Where-Object { $_ -match '色彩标签\+ICC' -and $_ -match '按无 ICC' })
+CK ($nArgv -ge 1) "(13) 正向对照：合并探测的 argv 确实带着 ICC（`-b -icc_profile` 命中 $nArgv 次）⇒ 下面的点名不是空对空"
+CK ($probeCancel.Count -eq 1 -and $probeCancelNamingIcc.Count -eq 1) "(13) 合并探测的取消/超时点名恰一条且说出 ICC 一起失去（$($probeCancelNamingIcc.Count)/$($probeCancel.Count)）"
+# 「怎么认 ICC 空间」必须只有一份：度量名认不出才退描述猜测 —— 复制粘贴会变成两份实现。
+$guessHits = ([regex]::Matches($csiTxt, [regex]::Escape('IccProfileService.GuessColorSpace('))).Count
+CK ($guessHits -eq 1) "(13) ICC→空间名的兜底口径只有一份（ColorSpaceIdentify 内 GuessColorSpace 命中 $guessHits，期望 1）"
+# ── 8-bit 交付出口的快路径判据也必须**具名同源**（2026-10-13，量吞吐那一轮带出来的发现）──
+# 背景：`TransformRgb48leToRgb8` 原先把"哪些算子要关表"裸写在循环前的一句 `if (tbl && (...))` 里，
+#   于是 ①测试侧只能再抄一遍条件（抄一份判据 = 判不了），②它与自己的注释已经漂过一次
+#   （注释声称 encScaleOn 已摘掉，代码里它一直在 —— 真实只摘过 scaleOn），
+#   ③它与 16-bit 的 `TableFastPathOperatorsAllow` 差在 GMO 一轴，而这件"只差一轴"的事无处可查。
+#   ⇒ 现在两侧各有一个具名判据；行为面由 contract 的 `C20-AX` 逐轴点名，这里只钉"同名同源"。
+$ckTxt = Get-CodeText ([System.IO.File]::ReadAllText((Join-Path $root 'src/FfmpegGui/Services/ColorMapping/ColorKernels.cs')))
+$nR8 = ([regex]::Matches($ckTxt, 'TableFastPathOperatorsAllowRgb8')).Count
+$n16 = ([regex]::Matches($ckTxt, [regex]::Escape('TableFastPathOperatorsAllow('))).Count
+$nBare = ([regex]::Matches($ckTxt, [regex]::Escape('(encScaleOn || toneOn || srcHlg || dstHlg)'))).Count
+CK ($nR8 -eq 2) "(13) 8-bit 快路径判据具名且同源：TableFastPathOperatorsAllowRgb8 命中 $nR8（须 2 = 定义 + 内核唯一调用点）⇒ 谁把条件再裸写回 if 里，这一条掉到 1 就红"
+CK ($n16 -eq 2) "(13) 正向对照：16-bit 侧同名族判据 TableFastPathOperatorsAllow( 命中 $n16（须 2）⇒ 上一条的计数不是正则空转"
+CK ($nBare -eq 0) "(13) 8-bit 出口不得再留裸写的算子条件（旧形式命中 $nBare，须 0）"
+
 # 运行级隔离的配套：唯一目录不会被下次运行清掉 ⇒ 成功时自己清（失败则保留供排查）。
 # ⚠ 宿主批量删除守卫会拦整目录删 ⇒ 必须 `-EA SilentlyContinue`（§6 第 57 条 ③ 的既定口径）。
 if ($fail -eq 0) { Remove-Item -Recurse -Force $out -EA SilentlyContinue }

@@ -9,12 +9,12 @@
 
 | 工具 | 源码 | 当前版本 | 编译方式 | SIMD | 用途 |
 |------|------|---------|---------|------|------|
-| **ffmpeg** | 预编译 | git-2026-08-06 | mingw64 (x86-64-v3) | v3 | 主转码引擎 |
+| **ffmpeg** | 预编译 | git-2026-10-11（`edadf711a9`）| mingw64 (x86-64-v3) | v3 | 主转码引擎 |
 | **ffprobe** | 预编译 | git-2026-08-06 | mingw64 | - | 媒体探测 |
 | **cjxl** | libjxl | **v0.12.0** | VS 2026 自编译 | AVX2/AVX512 | JPEG→JXL / 渐进无损 -40% |
 | **djxl** | libjxl | **v0.12.0** | VS 2026 自编译 | AVX2/AVX512 | JXL→图像 / 解码加速 |
 | **cjpegli** | libjxl | **v0.12.0** | VS 2026 自编译 | AVX2/AVX512 | JPEG 编码 (独立 jpegli) |
-| **ultrahdr_app** | libultrahdr | **v2.0.2** | VS 2026 自编译 | AVX2/AVX512 | Ultra HDR (含 HEIF/AVIF 容器) |
+| ~~**ultrahdr_app**~~ | libultrahdr | ~~v2.0.2~~ | **已移除**，不再编译 | — | Ultra HDR 改由纯 C# `GainMapEncoder`/`GainMapDecoder` 承担（取证见下方脚注）|
 | **JxrEncApp** | jxrlib | 2026-07-14 | VS 2026 CMake 自编译 | AVX2 | JPEG XR 编码 |
 | **JxrDecApp** | jxrlib | 2026-07-14 | VS 2026 CMake 自编译 | AVX2 | JXR 解码 |
 | **avifenc** | libavif | 1.4.2 | VS 2026 自编译 | AVX2/AVX512 | AVIF 编码 (链接本地 aom 3.15.0) |
@@ -68,7 +68,7 @@ cd tools
 
 ```
 publish/PLAN/
-├── artifacts/           ← ultrahdr_app, JxrEncApp, JxrDecApp, avifenc, dngtool
+├── artifacts/           ← JxrEncApp, JxrDecApp, avifenc(+avif.dll), dngtool（ultrahdr_app 已移除）
 ├── ffmpeg-full/         ← ffmpeg, ffprobe (预编译)
 ├── jxl/bin/             ← cjxl, djxl, cjpegli, djpegli, jxlinfo (自编译 0.12.0)
 └── exiftool/            ← exiftool (预编译)
@@ -143,7 +143,11 @@ cmake -S "$SRC_DIR/libavif" -B "$SRC_DIR/libavif/build" \
     -DCMAKE_PREFIX_PATH="$INSTALL_DIR/aom;$INSTALL_DIR/zlib"
 cmake --build "$SRC_DIR/libavif/build" -j$JOBS
 
-# 4. libultrahdr (v2.0.2) — 启用 HEIF/AVIF
+# ⚠ 2026-10-13 更正：下面这一段**已不执行** —— `build_tools.ps1:8/215` 明写 libultrahdr 已移除
+#    （纯 C# GainMapEncoder/GainMapDecoder 取代），`:348` 还把 `ultrahdr_app.exe` 列进 `$obsolete` 清理。
+#    保留这段只为历史可追溯；**照它跑会白编一个不再部署的库**。仍在用的第三方见证件只有
+#    `verify-gainmap-thirdparty`，而它在缺 `ultrahdr_app` 时是**正确 SKIP**（不是假绿）。
+# 4. libultrahdr (v2.0.2) — 启用 HEIF/AVIF（已废弃，保留作历史）
 git -C "$SRC_DIR/libultrahdr" fetch --tags --depth 1 origin
 git -C "$SRC_DIR/libultrahdr" checkout v2.0.2
 cmake -S "$SRC_DIR/libultrahdr" -B "$SRC_DIR/libultrahdr/build" \

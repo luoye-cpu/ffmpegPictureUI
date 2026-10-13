@@ -41,6 +41,28 @@ Write-Output ("[gate] exe=" + $prb + $(if ($prb -like '*[/\]Debug[/\]*') { " (De
 $src = "$root/src/FfmpegGui/Services/QueueProcessor.cs"
 $val = "$root/tests/output/gmmem_$([guid]::NewGuid().ToString('N').Substring(0, 8))"
 
+# ── 开局清扫**上一批**遗留的 gmmem_*（自己的 scratch 自己收尾，别把 80MB×N 留给别人）──
+# ⚠ 时间护栏 = 30 min：只删「最近 30 分钟没被写过」的目录 ⇒ 与**并发跑的另一个实例**不冲突
+#   （本门禁的 G 臂要起进程、写盘，活跃目录的 mtime 一直在动）。
+function Remove-GmmemTree([string]$p) {
+    for ($k = 0; $k -lt 4; $k++) {
+        Remove-Item -Recurse -Force $p -ErrorAction SilentlyContinue
+        if (-not (Test-Path $p)) { return $true }
+        # 兜底：句柄滞留时 PS 的 -Recurse 会失败，cmd 的 rmdir /s /q 通常能过
+        & cmd.exe /c "rmdir" "/s" "/q" $p 2>$null | Out-Null
+        if (-not (Test-Path $p)) { return $true }
+        Start-Sleep -Milliseconds 250
+    }
+    return -not (Test-Path $p)
+}
+$stale = @(Get-ChildItem -LiteralPath "$root/tests/output" -Directory -Filter 'gmmem_*' -ErrorAction SilentlyContinue |
+           Where-Object { $_.FullName -ne $val -and ((Get-Date) - $_.LastWriteTime).TotalMinutes -gt 30 })
+if ($stale.Count -gt 0) {
+    $kept = 0
+    foreach ($d in $stale) { if (-not (Remove-GmmemTree $d.FullName)) { $kept++ } }
+    Write-Output ("[scratch] 清掉上一批遗留 gmmem_* {0} 个（残留未删净 {1} 个）" -f $stale.Count, $kept)
+}
+
 $pass = 0; $fail = 0; $skip = 0
 # ⚠ 2026-09-21（`TESTING.md` 第 81 条同族 · 口径统一）：**整门禁跳过也打印汇总并计数**。
 #   原先三条前置守卫直接 `exit 0`、**不打印汇总** ⇒ 门禁在「有汇总」与「无汇总」两种形态间摇摆，
@@ -381,9 +403,15 @@ if ($env:GMMEM_HEAVY -eq '1') {
 }
 
 Write-Output "`n===== PASS=$pass FAIL=$fail SKIP=$skip ====="
-# 成功即清理本次工作目录；失败则保留供排查。
-# ⚠ 在**被沙箱接管的 agent 环境**里 `Remove-Item -Recurse` 会被拦截并静默失败（实测两次跑完仍留目录），
-#   所以在那种环境里会在 tests/output/ 下累积 gmmem_* 目录（每个约 70MB，含 4K 素材）——正常 shell 下不会有此问题。
-if ($fail -eq 0) { Remove-Item -Recurse -Force $val -ErrorAction SilentlyContinue }
-else { Write-Output "工作目录保留供排查: $val" }
+# 成功即清理本次工作目录；失败则**有意**保留供排查（这是设计，不是漏）。
+# ⚠ 2026-10-13 更正本注释的旧说法：原文写「沙箱会拦截 Remove-Item -Recurse 并静默失败 ⇒ 累积、
+#   每个约 70MB」——**两条都被实测否证**：① 拿一个真实遗留目录做实验，`Remove-Item -Recurse -Force`
+#   返回 `Test-Path` 假 ⇒ 删得掉（`PS-OK`）；② `du -sk` 实测 21 个目录合计 27130 KB ⇒ **每个 ≈ 4 MB**，
+#   不是 70 MB。⇒ 目录堆积的真因是「失败臂有意保留」+「被中途叫停的重压臂（G-2 要吃十几 GB）
+#   来不及跑到收尾」。⇒ 现在改为：开局清扫 30 分钟外的旧目录 + 收尾带重试与 `cmd rmdir` 兜底 +
+#   删不净就**点名**（不静默），这样「堆积」这件事既被自动回收也可在读数里看见。
+if ($fail -eq 0) {
+    if (Remove-GmmemTree $val) { Write-Output "[scratch] 本次工作目录已清理: $val" }
+    else { Write-Output "[scratch] ⚠ 本次工作目录没删净（句柄滞留）：$val ⇒ 下轮开局会再试" }
+} else { Write-Output "工作目录保留供排查: $val" }
 exit $(if ($fail -eq 0) { 0 } else { 1 })

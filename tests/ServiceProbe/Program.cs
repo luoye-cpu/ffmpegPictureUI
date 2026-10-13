@@ -911,6 +911,79 @@ namespace ServiceProbe
             var camOn = ExifToolService.BuildRawCaptureFieldsArgs(@"D:\a.CR2", @"D:\o.jpg",
                 new FfmpegGui.Models.FfmpegOptions { StripExifCamera = true });
             Check(!camOn.Contains("-LensModel"), "C5 StripExifCamera 时不得带 -LensModel");
+
+            // ── D. JFIF 头这一步**必须留证据**（`F-11` 的那一半：不合并 exiftool 调用，但失败不许静默）──
+            //   实测（exiftool 13.59 + 本仓 publish/PLAN/ffmpeg-full，2026-10-13）三条，判据按它们写：
+            //     ① 这一步 `-JFIFVersion=1.02` 在 ffmpeg mjpeg 产物上**恒失败**
+            //        （`Warning: Sorry, JFIFVersion is not writable` + rc=1；分组限定写法同样被拒）；
+            //     ② 而产物**本来就带** `[JFIF] JFIFVersion : 1.02`（APP0 由编码器写）⇒ 兼容性目标没掉；
+            //     ③ 修复前这两条**在日志里完全看不见**（不传回调 + `catch { }`），下一行照样打「元数据恢复完成」。
+            //   ⇒ 所以这里**不**断"这一步 rc=0"（那是把编码器的功劳记到这一步头上，且与实测相反），
+            //     改断三件：交付件确实带 JFIF（第二个读者读回）｜ 这一步必须点名（见证行）｜
+            //     见证行里的 rc 必须等于方法返回的 rc（防"日志说的和实际做的不一致"）。
+            //   ⚠ 本组加在**被执行那份**里；`metaraw` 不在 `verify-probe-mirror-parity.ps1` 的 8-mode 表内
+            //     ⇒ 不引入新漂移（若以后并入镜像，必须同批把 mode 加进那张表，否则尺子漏一个 mode=假覆盖）。
+            if (!ExifToolService.IsAvailable)
+            {
+                Skip("D1..D3 JFIF 分步点名：exiftool 不可用（需 publish/PLAN 工具链）⇒ 本组未验证，不计通过");
+            }
+            else
+            {
+                var jdir = System.IO.Path.Combine(FfmpegGui.Services.PlatformServices.GetTempDir(),
+                                                 "jfifprobe_" + System.Guid.NewGuid().ToString("N"));
+                var okJpg = System.IO.Path.Combine(jdir, "ok.jpg");
+                bool made = false;
+                try
+                {
+                    System.IO.Directory.CreateDirectory(jdir);
+                    var jff = FfmpegGui.Services.AppSettingsService.Current.FfmpegPath;
+                    // 夹具用**真 ffmpeg 产物**（与产品同编码器），不手搓字节
+                    RunCapture(jff, $"-y -v error -f lavfi -i testsrc=size=32x32:rate=1 -frames:v 1 \"{okJpg}\"");
+                    made = System.IO.File.Exists(okJpg);
+                }
+                catch (System.Exception ex)
+                {
+                    Console.WriteLine("      [skip-ctx] 造 JFIF 夹具异常：" + ex.GetType().Name + " " + ex.Message);
+                }
+                if (!made)
+                {
+                    Skip("D1..D3 JFIF 分步点名：造不出 JPEG 夹具（ffmpeg 未产出或临时目录不可写）⇒ 本组未验证");
+                }
+                else
+                {
+                    try
+                    {
+                        var logJ = new System.Text.StringBuilder();
+                        int rcJ = RunTask(ExifToolService.EnsureJfifHeaderAsync(okJpg, m => logJ.Append(m).Append('\n')));
+                        var sJ = logJ.ToString();
+                        var etPath = ExifToolService.DetectedPath ?? "";
+                        string Cut2(string v)   // 日志可能带 exiftool 的整段 warning，截断后再进断言消息
+                        {
+                            var one = v.Replace((char)13, ' ').Replace((char)10, ' ').Trim();
+                            return one.Length > 90 ? one.Substring(0, 90) + "…" : one;
+                        }
+
+                        // D1 交付件带 JFIF —— 由**第二个读者**（exiftool 读回）证明，不看这一步的返回值
+                        var readBack = RunCapture(etPath, $"-a -G1 -s -jfif:all \"{okJpg}\"");
+                        Check(readBack.Contains("JFIFVersion"),
+                              $"D1 交付 JPEG 必须真的带 JFIF（exiftool 读回；实得「{Cut2(readBack)}」）");
+
+                        // D2 这一步必须点名：`[exiftool] JFIF 头写入 rc=` 是**只有新代码会打**的见证行
+                        Check(sJ.Contains("[exiftool] JFIF 头写入 rc="),
+                              $"D2 JFIF 这一步必须留痕（修复前不传回调 + catch 全吞 ⇒ 日志一行不留）。实得「{Cut2(sJ)}」");
+
+                        // D3 日志说的 rc 必须等于方法返回的 rc（两个读者对账，防"日志与行为脱钩"）
+                        var mrc = System.Text.RegularExpressions.Regex.Match(sJ, @"JFIF 头写入 rc=(-?\d+)");
+                        Check(mrc.Success && int.Parse(mrc.Groups[1].Value) == rcJ,
+                              $"D3 见证行里的 rc 必须等于返回值（日志={(mrc.Success ? mrc.Groups[1].Value : "<无>")} 返回={rcJ}）");
+                        Console.WriteLine($"      [info] D 组夹具实测 rc={rcJ}（exiftool 对本仓 mjpeg 产物**恒**返回非 0 ⇒ 见 F-13）");
+                    }
+                    finally
+                    {
+                        try { System.IO.Directory.Delete(jdir, true); } catch { }
+                    }
+                }
+            }
         }
 
         // ────────────────────────────── i18n ──────────────────────────────
@@ -2484,6 +2557,46 @@ namespace ServiceProbe
                 }
                 Face8("PQ→sRGB 8-bit（LinearScale≠1，表路径已启用）", Spec("bt2020", "smpte2084", "bt709", "iec61966-2-1"), 0);
                 Face8("sRGB→PQ 8-bit（EncodeScale≠1 ⇒ 仍关表，两支同解析）", Spec("bt709", "iec61966-2-1", "bt2020", "smpte2084"), 0);
+
+                // ── C20-AX：逐轴点名**两条**快路径判据的开/关（2026-10-13 补）────────────────
+                // 要守的事：`(a) 的收益在 8-bit 交付上到底有没有生效`。以前这件事只能靠
+                //   ①把内核里裸写的条件在测试侧再抄一遍（= 抄一份判据，判不了）或
+                //   ②加一条计时格（负载下会假红，且"慢"不等于"没走上表"）。
+                //   现在内核那两个条件已抽成具名判据（`TableFastPathOperatorsAllow` / `…AllowRgb8`），
+                //   ⇒ 直接逐轴断言开/关，确定性、与机器负载无关。
+                //   GMO 那一轴是两条判据**唯一记录在案的差**（16-bit 关表、8-bit 开表：8-bit 循环在
+                //   查表之后、钳位之前做 GMO）⇒ 谁把两条合成一条，这里当场红：
+                //   合成 = 要么 8-bit 主力交付（jpg/webp/gif/--bit-depth 8）无谓退回解析式，
+                //   要么 16-bit 的 GMO 格被放上表路径。
+                // ⚠ 每条 Check 的**标签前缀必须是字面量**（轴名不能只走 `{name}` 插值）：
+                //   #75 那把尺把 `{...}` 归一成同一个槽位（"变量名不算差异、文案算"），
+                //   轴名放进插值就会让六条压成同一个 key ⇒ 登记只剩"总次数"这一维，
+                //   红的时候指不出是哪一轴。实测踩到过（登记声明 7 条、尺只报 2 条）。
+                bool AllowBoth(FfmpegGui.Services.ColorMapping.TransformSpec spAx, bool want16, bool want8, out string got)
+                {
+                    bool a16 = CK.TableFastPathOperatorsAllow(spAx);
+                    bool a8 = CK.TableFastPathOperatorsAllowRgb8(spAx);
+                    got = $"实得 16-bit={a16}／8-bit={a8}（声明 {want16}/{want8}）";
+                    return a16 == want16 && a8 == want8;
+                }
+                bool ax1 = AllowBoth(Spec("bt2020", "smpte2084", "bt709", "iec61966-2-1"), true, true, out string g1);
+                Check(ax1, "C20-AX 轴=解码侧 LinearScale（PQ→sRGB）：两档都**开**表 —— " + g1);
+                bool ax2 = AllowBoth(Spec("bt709", "iec61966-2-1", "bt2020", "smpte2084"), false, false, out string g2);
+                Check(ax2, "C20-AX 轴=编码侧 EncodeScale（sRGB→PQ）：两档都**关**表（实测差 1457 码@16bit / 6 码@8bit）—— " + g2);
+                bool ax3 = AllowBoth(spGm20, false, true, out string g3);
+                Check(ax3, "C20-AX 轴=GamutMap：两条判据**唯一记录在案的差**（16-bit 关、8-bit 开）—— " + g3);
+                bool ax4 = AllowBoth(spSrcHlg20, false, false, out string g4);
+                Check(ax4, "C20-AX 轴=SrcIsHlgScene（正向 OOTF 非常数）：两档都关 —— " + g4);
+                bool ax5 = AllowBoth(spHlg20, false, false, out string g5);
+                Check(ax5, "C20-AX 轴=DstIsHlgScene（逆向 OOTF）：两档都关 —— " + g5);
+                var spToneAx = Spec("bt2020", "smpte2084", "bt709", "iec61966-2-1");
+                // `Active` 是算出来的（Mode≠None 且 headroom>1）⇒ 给 1000nit 峰值才真的激活，
+                // 拿 PeakNits=203 会得 headroom≈1 ⇒ "激活"是假的，这一格就白测。
+                spToneAx.Tone = new FfmpegGui.Services.ColorMapping.ToneMapParams
+                { Mode = FfmpegGui.Services.ColorMapping.ToneMapMode.Bt2446A, PeakNits = 1000 };
+                Check(spToneAx.Tone.Active, $"C20-AX 前置：tonemap 这一格必须**真的激活**（实 {spToneAx.Tone}）");
+                bool ax6 = AllowBoth(spToneAx, false, false, out string g6);
+                Check(ax6, "C20-AX 轴=ToneMap 激活（需要 headroom>1 的线性值域）：两档都关 —— " + g6);
             }
 
             Console.WriteLine($"  contract: 共 {cells} 格，覆盖豁免 {exempted}，拒绝 {rejects}");
@@ -3911,6 +4024,83 @@ namespace ServiceProbe
             Check(iMat?.Target != null && iMat.TargetExplicit,
                 $"ColorMatrix 不得吃掉 ColorSpace 目标（Target={(iMat?.Target == null ? "null" : iMat.Target.Name)}"
                 + $"，TargetExplicit={iMat?.TargetExplicit}，reason={rMat ?? "无"}）");
+
+            // 9) **F-12 合并等价锁（2026-10-13）**：意图装配的 ICC 描述符改由**合并探测**提供
+            //   （`ColorIntentFactory` 不再另起一次 exiftool）。⇒ 要钉三件事：
+            //   ① 合并侧与**独立两步法**（`ExtractIccToTempFile` → `FromIccFile`）逐字段相同 ——
+            //      参照臂不是我新造的平行口径，它就是旧生产实现（仍被 QueueProcessor/GainMapDecoder 消费），
+            //      所以它能裁决"合并有没有把识别改坏"。
+            //   ② 探测缓存里那一份描述符**不能被消费者写坏**（TTL 10 s、键只有路径 ⇒ 不复制就是跨任务串味）。
+            //   ③ 装配层**确实用上了** ICC 度量描述符（置信度 IccMetric），而不是悄悄退回 CICP 标签路径。
+            var iccJpg = "tests/output/sources/src_photo.jpg";   // 内嵌 sRGB ICC（generate-sources 产出）
+            if (!File.Exists(iccJpg))
+            {
+                Check(false, $"F-12 前置：ICC 素材缺失（{iccJpg}）⇒ 本条不给绿灯");
+            }
+            else
+            {
+                var merged = FfmpegGui.Services.FfmpegCommandBuilder.ProbeInputIccDescriptor(iccJpg);
+                var (refIccPath, refIccDesc) = FfmpegGui.Services.IccProfileService.ExtractIccToTempFile(iccJpg);
+                var refer = FfmpegGui.Services.ColorMapping.ColorSpaceIdentify.FromIccFile(refIccPath, refIccDesc);
+                FfmpegGui.Services.IccProfileService.TryDeleteIcc(refIccPath);
+                Check(FfmpegGui.Services.ExifToolService.IsAvailable && merged != null && refer != null,
+                      "F-12 前置：两侧都取到了 ICC 描述符（exiftool 可用="
+                    + $"{FfmpegGui.Services.ExifToolService.IsAvailable} 合并={merged?.Name ?? "<null>"}"
+                    + $" 参照={refer?.Name ?? "<null>"}）——任一侧 null 就是「两边都空 ⇒ 相等」的假绿");
+                if (merged != null && refer != null)
+                {
+                    var diff = new List<string>();
+                    if (merged.Name != refer.Name) diff.Add($"Name[{merged.Name}|{refer.Name}]");
+                    if (merged.KnownSpaceName != refer.KnownSpaceName) diff.Add($"Known[{merged.KnownSpaceName}|{refer.KnownSpaceName}]");
+                    if (merged.PrimariesToken != refer.PrimariesToken) diff.Add($"Prim[{merged.PrimariesToken}|{refer.PrimariesToken}]");
+                    if (merged.TransferToken != refer.TransferToken) diff.Add($"Trc[{merged.TransferToken}|{refer.TransferToken}]");
+                    if (merged.Confidence != refer.Confidence) diff.Add($"Conf[{merged.Confidence}|{refer.Confidence}]");
+                    if (merged.IsIccDerived != refer.IsIccDerived) diff.Add($"IccDerived[{merged.IsIccDerived}|{refer.IsIccDerived}]");
+                    if (Math.Abs(merged.NitsOfLinearOne - refer.NitsOfLinearOne) > 0.0) diff.Add($"Nits[{merged.NitsOfLinearOne}|{refer.NitsOfLinearOne}]");
+                    // 悬空路径的**在位性**也要同形：两臂都必须"有路径、文件已回收"，
+                    // 否则 CarryIcc 类计划的判据 `Src.SourceIccPath != null` 会因合并而翻面。
+                    if ((merged.SourceIccPath != null) != (refer.SourceIccPath != null))
+                        diff.Add($"SourceIccPath 在位性[{merged.SourceIccPath != null}|{refer.SourceIccPath != null}]");
+                    Check(diff.Count == 0,
+                        $"F-12① 合并描述符 ≡ 独立两步法（差异 {diff.Count} 项{(diff.Count > 0 ? "：" + string.Join(" ", diff) : "")}）");
+
+                    // 矩阵**逐元素精确相等**（两臂解析的是同一份 ICC 字节 ⇒ 容差 0；
+                    // 任何"顺手重算一遍/换个锥矩阵"都会在这里红，而不是藏在 1e-9 里）。
+                    var mm = merged.RgbToXyzD50; var mr = refer.RgbToXyzD50;
+                    int firstDiff = -1;
+                    bool matEq = mm is { Length: 9 } && mr is { Length: 9 };
+                    if (matEq && mm != null && mr != null)
+                        for (int i = 0; i < 9; i++) if (mm[i] != mr[i]) { firstDiff = i; matEq = false; break; }
+                    string mm0 = mm is { Length: 9 } ? mm[0].ToString("R") : "<无矩阵>";
+                    string mr0 = mr is { Length: 9 } ? mr[0].ToString("R") : "<无矩阵>";
+                    Check(matEq, $"F-12①b RGB→XYZ(D50) 九元素逐个精确相等（首个不等 i={(firstDiff < 0 ? "-" : firstDiff)} 合并[0]={mm0} 参照[0]={mr0}）");
+
+                    // ② 缓存独立性：改第一次拿到的对象，第二次必须看不到这次改动。
+                    //    变异 = 把 `ProbeInputIccDescriptor` 的 `.Clone()` 摘掉 ⇒ 本条必红。
+                    var h1 = FfmpegGui.Services.FfmpegCommandBuilder.ProbeInputIccDescriptor(iccJpg);
+                    if (h1 != null)
+                    {
+                        h1.Name = "MUT-BY-CONSUMER";
+                        h1.Confidence = DC.None;
+                        h1.NitsOfLinearOne = 12345.0;
+                        if (h1.RgbToXyzD50 is { Length: 9 }) h1.RgbToXyzD50[0] = -999.0;
+                    }
+                    var h2 = FfmpegGui.Services.FfmpegCommandBuilder.ProbeInputIccDescriptor(iccJpg);
+                    Check(h2 != null && h2.Name != "MUT-BY-CONSUMER"
+                          && h2.Confidence != DC.None && Math.Abs(h2.NitsOfLinearOne - 12345.0) > 1.0
+                          && h2.RgbToXyzD50 is { Length: 9 } && h2.RgbToXyzD50[0] != -999.0,
+                          "F-12② 消费者写的四个字段都不回流缓存（Name/Confidence/Nits/矩阵[0] 逐项验，实得 "
+                        + $"{h2?.Name}/{h2?.Confidence}/{h2?.NitsOfLinearOne}/{(h2?.RgbToXyzD50 is { Length: 9 } m0 ? m0[0].ToString("R") : "<无矩阵>")}"
+                        + "）⇒ 10 s TTL 内第二个任务读到的不是上一个任务的残值");
+
+                    // ③ 装配层用上了它：源描述符必须仍是 ICC 度量档（不是 CICP 标签档）。
+                    var iIcc = FfmpegGui.Services.ColorMapping.ColorIntentFactory.FromOptions(O("png"), iccJpg, out var rIcc);
+                    Check(iIcc?.Source != null && iIcc.Source!.IsIccDerived
+                          && iIcc.Source.Confidence == DC.IccMetric,
+                          $"F-12③ 装配的源描述符来自 ICC 度量（实 {iIcc?.Source?.Name ?? "<null>"}"
+                        + $"/{iIcc?.Source?.Confidence.ToString() ?? "<null>"}，reason={rIcc ?? "无"}）");
+                }
+            }
 
             _ = R;
         }
@@ -6716,23 +6906,33 @@ namespace ServiceProbe
                 else
                 {
                     var dirL3 = System.IO.Path.Combine(rootL3, "tools", "src", "jpegli", "third_party", "lcms");
+                    // ⚠ 2026-10-13 修 L-3b 的**路径错**（不是降级）：本清单原先写
+                    //   `plugins/test_profiles/test4.icc`，而 vendored lcms 的 `plugins/test_profiles/` 里
+                    //   只有 test0/1/2/3/5 —— **根本没有 test4**（实测 `ls` 与下面这条 SKIP 行）。
+                    //   仓内实存的那一件是 `testbed/test4.icc`（实测头：class=`spac` data=`RGB` PCS=`Lab`，
+                    //   61,020 B），与注释本意「含 spac 类 test3/test4」正是同一族 ⇒ 取它。
+                    //   其余 9 件路径逐字未动。
                     string[] acceptL3 = {
                         "plugins/test_profiles/test0.icc", "plugins/test_profiles/test1.icc",
                         "plugins/test_profiles/test2.icc", "plugins/test_profiles/test3.icc",
-                        "plugins/test_profiles/test4.icc", "plugins/test_profiles/test5.icc",
+                        "testbed/test4.icc", "plugins/test_profiles/test5.icc",
                         "testbed/crayons.icc", "testbed/ibm-t61.icc", "testbed/new.icc",
                         "fuzzers/corpus/alltags.icc",
                     };
-                    int accOk = 0;
+                    int accOk = 0; int accMissing = 0;
                     foreach (var rel in acceptL3)
                     {
                         var fp = System.IO.Path.Combine(dirL3, rel.Replace('/', System.IO.Path.DirectorySeparatorChar));
-                        if (!System.IO.File.Exists(fp)) { Console.WriteLine($"  L-3 缺正样本 {rel} SKIP"); continue; }
+                        if (!System.IO.File.Exists(fp)) { accMissing++; Console.WriteLine($"  L-3 缺正样本 {rel} SKIP"); continue; }
                         var ok = IccProfileService.ValidateIccProfile(fp, out var why);
                         if (ok) accOk++;
                         else Console.WriteLine($"  L-3 正样本被拒 {rel}：{why}");
                     }
-                    Check(accOk >= 9, $"L-3 合法件必须收下（实收 {accOk}/{acceptL3.Length}）⇒ 收紧校验不许把真 ICC 判成无 ICC");
+                    // 分母是**清单条数**，不是"找得到的条数"：缺件必须显式报出来（原写法 `>=9/10`
+                    // 在缺一件时恰好等于 9 ⇒ 缺件被吸收进余量，看板照绿 —— 正是本仓忌的静默降档）。
+                    Check(accMissing == 0 && accOk == acceptL3.Length,
+                        $"L-3 合法件必须**逐件**收下（清单 {acceptL3.Length}、在位 {acceptL3.Length - accMissing}、"
+                      + $"收下 {accOk}）⇒ 收紧校验不许把真 ICC 判成无 ICC，也不许用『缺素材』把分母缩小");
 
                     // 三条合成负样本 + lcms 自带三条，各点名它应当死在哪一判据上
                     var tmpL3 = System.IO.Path.Combine(rootL3, "tests", "output", "l3neg");
@@ -7638,10 +7838,14 @@ namespace ServiceProbe
                     var spec = Spec(sp, st, dp, dt);
                     var ttS = CK.BuildTables(spec.SrcCurve); var ttD = CK.BuildTables(spec.DstCurve);
                     double single = 0, best = 0, singleSlow = 0, bestSlow = 0;
+                    double singleSpreadMs = 0, singleSlowSpreadMs = 0;
                     foreach (int dop in new[] { 1, Math.Min(2, cores), Math.Min(4, cores), Math.Min(8, cores), cores })
                     {
                         // 每档取 N 次最优（min 耗时）：单样本估扩展比噪声大（实测同一用例 2.9×/3.2×/5.2× 飘）
                         double ms = double.MaxValue, slowMs = double.MaxValue;
+                        // 极差（3 次重复的 max-min）。判据**不变**（仍是 min/min 与同一阈值），只是红的时候能当场分清「这格真慢」与「这台机器在忙」——
+                        //   full8 那条 1.4×>1.3 就是负载（同 mode 用时 71.6 s vs 平时 57–59 s），当时无从区分（账本原先记成「比值臂还是单样本」是错的：两臂自 `a4c7cfd`(10-07) 起就都是 min-of-3）。
+                        double msWorst = 0, slowMsWorst = 0;
                         for (int rep = 0; rep < 3; rep++)
                         {
                             Array.Clear(dst);
@@ -7656,6 +7860,7 @@ namespace ServiceProbe
                             });
                             sw.Stop();
                             ms = Math.Min(ms, sw.Elapsed.TotalMilliseconds);
+                            msWorst = Math.Max(msWorst, sw.Elapsed.TotalMilliseconds);
                         }
                         double mpxs = (long)w * h / 1e6 / Math.Max(1e-6, ms / 1000.0);
                         double mbs = src.Length * 2.0 / 1048576.0 / Math.Max(1e-6, ms / 1000.0);
@@ -7669,15 +7874,21 @@ namespace ServiceProbe
                                 CK.TransformRgb48le(src, dst, spec, w * h);
                                 sw2.Stop();
                                 slowMs = Math.Min(slowMs, sw2.Elapsed.TotalMilliseconds);
+                                slowMsWorst = Math.Max(slowMsWorst, sw2.Elapsed.TotalMilliseconds);
                             }
                             double slow = (long)w * h / 1e6 / Math.Max(1e-6, slowMs / 1000.0);
                             if (dop == 1) singleSlow = slow; else bestSlow = slow;
                         }
                         Console.WriteLine($"  {name,-24} dop={dop,-2} {ms,8:F1}ms  {mpxs,6:F1} MPix/s  {mbs,6:F0} MB/s(读+写)");
-                        if (dop == 1) single = mpxs;
+                        if (dop == 1)
+                        {
+                            single = mpxs;
+                            singleSpreadMs = msWorst - ms;
+                            singleSlowSpreadMs = slowMsWorst - slowMs;
+                        }
                         best = Math.Max(best, mpxs);
                     }
-                    Console.WriteLine($"    参考（解析式单核）= {singleSlow:F1} MPix/s  快路径增益 = {single / Math.Max(1e-6, singleSlow):F1}×");
+                    Console.WriteLine($"    参考（解析式单核）= {singleSlow:F1} MPix/s  [3 次极差] 快路径 {singleSpreadMs:F1}ms / 解析式 {singleSlowSpreadMs:F1}ms  快路径增益 = {single / Math.Max(1e-6, singleSlow):F1}×");
                     if (!isRelease) continue;
                     // 门槛**分档**（2026-10-11，L-7：性能账此前无人看守）。阈值由"这一格**该不该**走表快路径"决定。
                     // ⚠ 分档必须取**独立参照**，不许直接调内核那句判据 `CK.TableFastPathOperatorsAllow`：
@@ -7745,6 +7956,70 @@ namespace ServiceProbe
                     else
                         Console.WriteLine($"    (小帧扩展比 {best / Math.Max(1e-6, single):F1}× 仅记录：单核已近带宽上限，不作门禁)");
                 }
+            }
+
+            // ── 8b：8-bit **交付出口**的吞吐档（2026-10-13，补 (a) 欠账"只量了等价性、没量吞吐"）──
+            // 为什么必须单独有一档：上面那 4 格量的是 `TransformRgb48le`（16-bit 出口），
+            //   而 jpg/webp/gif 与 `--bit-depth 8` 的 png 走的是**另一个内核** `TransformRgb48leToRgb8`。
+            //   本档一接上就抓到一个真缺陷：`EncodeTo8` 无条件先算 `curve.FromLinear`（幂函数）再在
+            //   有表时扔掉 ⇒ 每像素白算三次，8-bit 出口实测只有 22.7 MPix/s（同 spec 的 16-bit 出口 135）。
+            //   修后复测 64.0（PQ→sRGB）/ 45.8（sRGB→P3）。阈值就钉在**修前值之上**：
+            //   floor=25 ⇒ 白算那颗 pow 若被加回来（16.4/22.7）当场红；同时**不贴**在分布边缘
+            //   （修后最小项 45.8 = 阈值的 1.8 倍，与既有 ≥40 档同量级余量）。
+            // ⚠ 与 16-bit 档同一纪律：分档取**独立口径**（这里用声明的色度学），并另加一条
+            //   「实测增益 ≥2×」的对账臂 —— 只钉绝对值的话，机器整体变慢会假红，而"快路径没开"
+            //   反而可能被一起放宽掉；比值那条量的才是内核判据本身。
+            {
+                var (w8b, h8b) = (1920, 1080);
+                var src8b = SyntheticFrame16(w8b, h8b);
+                var dst8b = new byte[w8b * h8b * 3];
+                Console.WriteLine($"\n--- 8-bit 交付出口 {w8b}x{h8b}（rgb48 入 → rgb8 出）---");
+                // ⚠ 标签里的 `{name}` 会被 #75 归一成同一个槽位 ⇒ 两格的同类断言压成同一个 key，
+                //   所以登记写的是"3 个模板 × 每模板 2 次"（Labels=3 / Times=6），不是"6 个不同标签"。
+                var cells8b = new (string name, string sp, string st, string dp, string dt)[] {
+                    ("PQ→sRGB（HDR 源走主力 8-bit 交付）", "bt2020", "smpte2084", "bt709", "iec61966-2-1"),
+                    ("sRGB→P3（纯 SDR 快路径）", "bt709", "iec61966-2-1", "smpte432", "iec61966-2-1"),
+                };
+                int seen8b = 0;
+                foreach (var (name, sp, st, dp, dt) in cells8b)
+                {
+                    var spec8b = Spec(sp, st, dp, dt);
+                    var tS8b = CK.BuildTables(spec8b.SrcCurve);
+                    var tD8b = CK.BuildTables(spec8b.DstCurve);
+                    int n8b = w8b * h8b;
+                    double msFast = double.MaxValue, msSlow = double.MaxValue;
+                    for (int rep = 0; rep < 3; rep++)
+                    {
+                        Array.Clear(dst8b);
+                        var swA = System.Diagnostics.Stopwatch.StartNew();
+                        CK.TransformRgb48leToRgb8(src8b, dst8b, spec8b, n8b, tS8b, tD8b, w8b, 0);
+                        swA.Stop();
+                        msFast = Math.Min(msFast, swA.Elapsed.TotalMilliseconds);
+                    }
+                    for (int rep = 0; rep < 3; rep++)
+                    {
+                        Array.Clear(dst8b);
+                        var swB = System.Diagnostics.Stopwatch.StartNew();
+                        CK.TransformRgb48leToRgb8(src8b, dst8b, spec8b, n8b, null, null, w8b, 0);
+                        swB.Stop();
+                        msSlow = Math.Min(msSlow, swB.Elapsed.TotalMilliseconds);
+                    }
+                    double mpFast = n8b / 1e6 / Math.Max(1e-9, msFast / 1000.0);
+                    double mpSlow = n8b / 1e6 / Math.Max(1e-9, msSlow / 1000.0);
+                    bool allow8b = CK.TableFastPathOperatorsAllowRgb8(spec8b);
+                    seen8b++;
+                    Console.WriteLine($"  {name,-42} 表={mpFast:F1} 解析={mpSlow:F1} MPix/s 增益={mpFast / Math.Max(1e-9, mpSlow):F1}× 判据={allow8b}");
+                    if (!isRelease) continue;
+                    Check(allow8b, $"8b {name} 前置：这一格**该**走表路径（内核 8-bit 判据={allow8b}）——否则下面的增益档无从判定");
+                    Check(mpFast >= 25.0, $"8b {name} 单核 ≥25MPix/s（实 {mpFast:F1}；修前实测 16.4~22.7，白算的 FromLinear 一回来就红）");
+                    Check(mpFast / Math.Max(1e-9, mpSlow) >= 2.0,
+                        $"8b {name} 表 vs 解析增益 ≥2×（实 {mpFast / Math.Max(1e-9, mpSlow):F1}×；≈1× 说明表路径实际没生效）");
+                }
+                // ⚠ 这一条是**运行时**格子数锁：#75 那把尺量的是**源文本**，循环体只有一份源文本 ⇒
+                //   两格跑同一份 Check 源码，删掉 `cells8b` 里的一格，#75 的标签条数**不会变**。
+                //   所以"每一档都还在"必须由这里钉（跑过几格 == 声明几格），而不是指望标签计数。
+                Check(seen8b == cells8b.Length && seen8b == 2,
+                    $"8b 档位数量：声明 {cells8b.Length} 格、实跑 {seen8b} 格（须 2）——少一格就是某条交付路口的看守消失");
             }
 
             // 端到端：引擎（H1，解→变换→编）vs 传统 zscale（H2，单进程）
