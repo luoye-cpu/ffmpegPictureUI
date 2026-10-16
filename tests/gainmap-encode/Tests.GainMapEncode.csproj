@@ -28,8 +28,10 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- ⚠ 与旧 GainMapTestHost 的直接 src 引用不同：这里经 Tests.Shared 传递引用，
-         与 tests/encode、tests/metadata 等已完成组工程同形（Tests.Shared 已 ProjectReference src/FfmpegGui）。 -->
+    <!-- ⚠ 与旧 GainMapTestHost 的直接 src 引用不同：这里经 Tests.Shared 传递引用
+         （Tests.Shared 已 ProjectReference src/FfmpegGui）。
+         2026-10-16 A-1：同形的四份**镜像**工程 tests/{encode,io,metadata,gainmap} 已整体删除
+         —— 它们的 exe 没有任何门禁执行；本工程的 exe 由第 60 条 `verify-gainmap-host.ps1` §4b 执行。 -->
     <ProjectReference Include="..\Tests.Shared\Tests.Shared.csproj" />
   </ItemGroup>
 

@@ -62,10 +62,15 @@
 #     `pq`、`ultrahdr`）+ 只有非清单调用点 1 个（`icc`，唯一真调用点在 `ensure-fixtures.ps1:L97`）。
 #   **2026-10-12（L-7）**：`bench` 已接进 `$Probes` ⇒ 零调用点剩 **7** 个（`bitdepth`、`gamut`、
 #     `gainmap-encode`、`gainmap-decode`、`gainmap-struct`、`pq`、`ultrahdr`；实跑 `PASS=18 FAIL=2`，
-#     档① 由 26 变 27）。本守卫**仍是红的**，直到剩下这些被接进 `$Probes` 或某条受管门禁 —— 这是它
-#     **要抓的东西**，不是误伤；放宽判据来消红 = 把 D1 §0 第 2 条重新埋回去。
-#     ⚠ `docs/TESTING.md:87` 记的「`_probe-test-group-coverage` 8/0」与 `_run-step3-gates.ps1:1033-1038`
-#       对第 69 条判据的复述都已过期，须由主循环同步（本 lane 范围只这一只脚本）。
+#     档① 由 26 变 27）。本守卫**当时仍是红的** —— 那是它**要抓的东西**，不是误伤；放宽判据来消红
+#     = 把 D1 §0 第 2 条重新埋回去。
+#   ✅ **2026-10-15/16 全部接线 ⇒ 本守卫转绿，现值 `PASS=20 FAIL=0`**（上面那句"仍是红的"自此失效，
+#     读数归属本轮：档① 27 / 档② 40 / 档③ 0 / 档④ 0；组表并集 67、`$Probes` 27、受管基线 76）。
+#     七条各自的落点（由 ⑥ 的逐名点名打印，不是手写）：`bitdepth`←verify-format-regression:78、
+#     `gamut`←verify-widegamut-regression:83、`pq`←verify-color-tonemap:94、`ultrahdr`←verify-gainmap-managed:385、
+#     `gainmap-encode/decode/struct`←verify-gainmap-host §4b（拆分件由"生成物"身份改回**被真跑**）。
+#     ⚠ 上面两条过期 cross-ref（`docs/TESTING.md` 的 `8/0`、运行器第 69 条复述里的 `$Probes` 26 个）
+#       属**历史链**（当日为真），已按本仓规矩保留原文 + 就地加现值指针，不改写数字。
 # ═══════════════════════════════════════════════════════════════════════════════
 
 $ErrorActionPreference = 'Continue'
@@ -182,7 +187,12 @@ foreach ($p in @($groupsCs, $runnerPs1)) {
 # ── 读组表：从 TestGroups.cs 解析 `["组名"] = new[] { "m1", "m2" },` ──────────
 $gText = Get-Content $groupsCs -Raw
 $groupMap = @{}
-foreach ($m in [regex]::Matches($gText, '\["(?<g>[a-z0-9\-]+)"\]\s*=\s*new\[\]\s*\{(?<modes>[^}]*)\}')) {
+# ⚠ 组名字符集从 `[a-z0-9\-]+` 放宽到 `[A-Za-z0-9\-]+`（2026-10-14，镜像 5 工程删除那一批）：
+#   那 31 个 mode 改由**目录本名就叫 `tests/ServiceProbe`** 的组认领，而本门禁的契约是
+#   "组名 = 工程目录名"（见 ② 的 `tests/<组名>`）。旧字符集静默漏掉带大写的键 ⇒
+#   整组不可见，表现为 ① "20 个 mode 无组认领" + ④-c 并集塌到 35 —— 是**解析失配**不是覆盖丢失。
+#   失配方向在这里是"转红"（不是假绿），但红得没有信息量，故修正则而不是改组名。
+foreach ($m in [regex]::Matches($gText, '\["(?<g>[A-Za-z0-9\-]+)"\]\s*=\s*new\[\]\s*\{(?<modes>[^}]*)\}')) {
     $modes = [regex]::Matches($m.Groups['modes'].Value, '"([^"]+)"') | ForEach-Object { $_.Groups[1].Value }
     $groupMap[$m.Groups['g'].Value] = @($modes)
 }
@@ -558,8 +568,13 @@ foreach ($kv in $groupMap.GetEnumerator()) {
     if (-not $groupProgram.ContainsKey($kv.Key)) { continue }
     $prog = $groupProgram[$kv.Key]
     foreach ($mode in $kv.Value) {
-        # 真实分派形态： mode == "xxx"（进了分派链），而非仅出现在 `--list`/注释/字符串里
-        if ($prog -match ('mode\s*==\s*"' + [regex]::Escape($mode) + '"')) { $dispatchParsed++; continue }
+        # 真实分派形态有两种，都必须认：
+        #   (i)  拆分工程的 `mode == "xxx"`；
+        #   (ii) ServiceProbe 的 `case "xxx":`（switch 分派）—— 2026-10-14 那 31 个 mode 改由
+        #        `["ServiceProbe"]` 认领后，本条按旧单一形态把它们全判成"声明了却没实现"。
+        #        上面 Get-OwnerHint 早就认 `case "mode"`（:508），两处口径此前不一致。
+        if ($prog -match ('mode\s*==\s*"' + [regex]::Escape($mode) + '"') -or
+            $prog -match ('(?m)^[^\S\r\n]*case\s+"' + [regex]::Escape($mode) + '"\s*:')) { $dispatchParsed++; continue }
         $notDispatched += "$($kv.Key)/$mode"
     }
 }

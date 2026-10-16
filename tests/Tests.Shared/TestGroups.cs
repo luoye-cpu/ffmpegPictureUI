@@ -20,23 +20,51 @@ namespace Tests.Shared
         public static readonly IReadOnlyDictionary<string, string[]> Map =
             new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
         {
-            // ── 决策层：契约 / 裁决 / 计划 / 路由 / 落盘 ──
-            ["core"] = new[] { "contract", "verdict", "plan", "decision", "wire", "runner", "settings" },
+            // ── 内核断言：全部归**被执行那一份** ServiceProbe（2026-10-14 删掉五个镜像工程后）──────
+            // 原先这里有 5 个组（core / color / engine / geometry / diagnostics），每组指向一个
+            // `tests/<组名>` 工程 —— 那些工程是 ServiceProbe 同名 mode 的**第二份拷贝**：
+            //   · `<OutputType>Exe</OutputType>` ⇒ `dotnet test` 只还原不跑还 exit 0；
+            //   · 全仓没有任何门禁/运行器/`.sln` 引用它们（2026-10-13 逐名 grep 为证）；
+            //   · 门禁实测"只镜像那份独有的断言 = 0 条"⇒ 按断言口径删掉不丢任何东西。
+            // ⇒ 双拷贝连同"改了执行面、镜像没人管"这类缺陷的土壤一起删除；组表把它们的 mode
+            //   原样交给 `ServiceProbe`（目录 `tests/ServiceProbe` 存在、`Program.cs` 里有
+            //   `case "<mode>":` 分派 ⇒ 覆盖账的 ②③⑤ 三条取证都仍然成立）。
+            // ⚠ 曾经的中间形态（`Modes/<mode>.cs` 由 `_gen-mode-split.ps1` 从组体切片）也一并删除；
+            //   "不许再长出第二份"由第 75 条门禁的存在锁看着（它现在量的不再是指纹对拍，而是"只此一份"）。
+            ["ServiceProbe"] = new[] {
+                "contract", "verdict", "plan", "decision", "wire", "runner", "settings",
+                "matrix", "curve", "ootf", "hlgwire", "bt2446", "pq", "colormath", "iccname",
+                "engine", "gamut", "gamutfit", "simdswitch",
+                "geometry", "firstframe", "orientation", "orientmeta",
+                "bench", "peak", "peakmeasure", "psnr", "xcheck", "selftest", "tooldetect", "i18n",
+                // 2026-10-15 T12/R6：厂商 HDR 尾注断言只在 ServiceProbe 里有实现（**没有镜像**，
+                // 与上面那 31 个「镜像已整体删除」的 mode 同一形态）；调用者 = 在册第 49 条
+                // `verify-gainmap-isobmff.ps1` 的 §3d ⇒ 覆盖账的 ⑥-c 不会把它算成零调用点。
+                // ⚠ 这个块里**注释也不许出现 ASCII 双引号**：#69 的组表取数扫的是数组块内所有
+                //   双引号字面量（不分注释/代码）⇒ 注释里写「双引号包中文」会凭空多出一个 mode，
+                //   当场把 ⑥-c 的零调用点抬一级、账目从 67 变 69（2026-10-15 我自己连踩两次，
+                //   第二次就踩在这句警告自己的引号上 ⇒ 只能用「」）。
+                "vendor-hdr",
+                // 2026-10-16（价值普查 A-1）：下面这四组原本各指一个**镜像工程**目录
+                // （encode / metadata / gainmap / io），共 1,773 行、134 个 Check 调用，但全仓
+                // 没有任何门禁执行它们的 exe —— 唯一提到它们的地方是第 75/76 条的登记表，
+                // 而该锁自己的判据写死「镜像那份独有的断言 = 0 条」⇒ 按断言口径并入不丢任何东西。
+                // 这 15 个 mode **全都活着**，只是执行体一直是 ServiceProbe：其中 7 个在运行器默认
+                // 探针清单里由运行器直接起（encoding / ipc / procstreams / metaraw / thumbnail /
+                // oog / avifgm），另外 8 个由在册门禁按参数位置调用（bitdepth / png3 / icc /
+                // icc-dump / faithful / gainmap / gainmap-isobmff / ultrahdr）。
+                // ⚠ 本块注释里**仍然不许出现 ASCII 双引号**（#69 取数扫数组块内全部双引号字面量，
+                //   见上面那句 2026-10-15 的自身反例）⇒ 需要引号处一律用「」。
+                "encoding", "bitdepth", "png3", "thumbnail",
+                "metaraw", "icc", "icc-dump", "faithful",
+                "gainmap", "ultrahdr", "gainmap-isobmff", "oog", "avifgm",
+                "ipc", "procstreams",
+            },
 
-            // ── 色彩基元与数学 ──
-            ["color"] = new[] { "matrix", "curve", "ootf", "hlgwire", "bt2446", "pq", "colormath", "iccname" },
-
-            // ── 自研引擎与像素内核 ──
-            ["engine"] = new[] { "engine", "gamut", "gamutfit", "simdswitch" },
-
-            // ── 编码参数与产物 ──
-            ["encode"] = new[] { "encoding", "bitdepth", "png3", "thumbnail" },
-
-            // ── 元数据与 ICC ──
-            ["metadata"] = new[] { "metaraw", "icc", "icc-dump", "faithful" },
-
-            // ── 增益图 / Ultra HDR ──
-            ["gainmap"] = new[] { "gainmap", "ultrahdr", "gainmap-isobmff", "oog", "avifgm" },
+            // ── 编码参数与产物 / 元数据与 ICC / 增益图与 Ultra HDR / 进程与 IPC ──
+            // 这四组原先各指向一份镜像工程（tests/encode、tests/metadata、tests/gainmap、tests/io），
+            // 2026-10-16 价值普查 A-1 判定为**无人执行的拷贝**并删除 ⇒ 它们的 mode 全部并入上面的
+            // `ServiceProbe` 组（见那一段的来历注释）。**执行体只有 ServiceProbe 这一份。**
 
             // ── 增益图宿主（GainMapTestHost）三段物理拆分（2026-10-05）──
             // ⚠ 旧宿主是三段**串行**单文件（A 编码 → B 解码闭环 / C 结构；B、C 消费 A 的产物）。
@@ -45,15 +73,6 @@ namespace Tests.Shared
             ["gainmap-encode"] = new[] { "gainmap-encode" },   // A 编码验证 + D23–D38 位深/域 PSNR
             ["gainmap-decode"] = new[] { "gainmap-decode" },   // B 解码闭环 + E 方向标签 + D15–D32
             ["gainmap-struct"] = new[] { "gainmap-struct" },   // C 输出结构（exiftool）+ D PNG 3.0 sBIT/cICP
-
-            // ── 几何：缩放 / 首帧 / 取向 ──
-            ["geometry"] = new[] { "geometry", "firstframe", "orientation", "orientmeta" },
-
-            // ── 进程与 IPC ──
-            ["io"] = new[] { "ipc", "procstreams" },
-
-            // ── 诊断与性能 ──
-            ["diagnostics"] = new[] { "bench", "peak", "peakmeasure", "psnr", "xcheck", "selftest", "tooldetect", "i18n" },
 
             // ── UI 行为（Avalonia.Headless 加载真实 MainWindow；2026-10-05 从 UiTestHost 拆分）──
             // ⚠ 这 5 个工程与上面各组的**关键差别**：它们共用一个**活窗口** `W`
