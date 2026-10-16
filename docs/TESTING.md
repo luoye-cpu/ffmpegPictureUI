@@ -21,6 +21,12 @@ tests/
 │
 ├── 【ServiceProbe 的 46 个 mode → 9 个子系统工程】
 │   engine/  color/  core/  encode/  metadata/  gainmap/  geometry/  io/  diagnostics/
+│   ⚠ 2026-10-14：其中 **engine/color/core/geometry/diagnostics 5 份已整体删除**（详见 §1.1c）
+│   ⚠ 2026-10-16 A-1：**剩下那 4 份（encode/ metadata/ gainmap/ io/）也已整体删除** ⇒
+│     它们同样是 ServiceProbe 的**镜像副本**（1,773 行 / 134 个 Check），但**没有任何门禁执行其 exe**，
+│     而第 75/76 条自己的判据写死「镜像独有断言 = 0」⇒ 按断言口径删除不丢东西；
+│     它们的 15 个 mode 名并入 `TestGroups.cs` 的 `["ServiceProbe"]` 组（组表并集 67 不变）。
+│     ⇒ **镜像形态到此归零**，第 75 条的 ④⑤ 从"方向锁"换成「只此一份锁」（见 §6 第 108 条旁注）。
 │
 ├── 【GainMapTestHost → 3 个工程】
 │   gainmap-encode/（A 编码验证）  gainmap-decode/（B 解码闭环+方向+PSNR 域）  gainmap-struct/（C 结构+PNG 3.0）
@@ -36,16 +42,23 @@ tests/
 **日常用法**（改哪个子系统就只跑那个工程）：
 
 ```powershell
-dotnet build tests/color/Tests.Color.csproj -c Release          # 只建这一块
-tests/color/bin/Release/net11.0/win-x64/Tests.Color.exe         # 跑整组
-tests/color/bin/Release/net11.0/win-x64/Tests.Color.exe curve   # 只跑一个 mode
-tests/color/bin/Release/net11.0/win-x64/Tests.Color.exe --list  # 列出本组 mode
+# 2026-10-16 A-1 之后，"一个子系统一个工程"只剩 **GainMapTestHost 的三段拆分** 与 **UI 的五段拆分**；
+# ServiceProbe 那侧的镜像工程（encode/metadata/gainmap/io）已全部删除 ⇒ 内核 mode 只有一个执行面。
+dotnet build tests/gainmap-decode/Tests.GainMapDecode.csproj -c Release   # 只建这一块
+tests/gainmap-decode/bin/Release/net11.0/win-x64/Tests.GainMapDecode.exe  # 跑整组（mode 名 = gainmap-decode）
+tests/gainmap-decode/bin/Release/net11.0/win-x64/Tests.GainMapDecode.exe --list  # 列出本组 mode
+# ⚠ 2026-10-14 后，色彩/内核/几何/诊断那 31 个 mode 的唯一执行面是 ServiceProbe（镜像工程已删）：
+tests/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.exe curve
+# ⚠ 2026-10-16 A-1 后，encode/metadata/gainmap/io 那 15 个 mode 也只剩 ServiceProbe 这一个执行面：
+tests/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.exe thumbnail
 # UI 组需要显式 PLAN 目录（缺它宿主会 fail-fast 拒绝启动，exit 98）：
 $env:FFMPEGGUI_PLAN_DIR = "$PWD/publish/PLAN"
 tests/ui-color/bin/Release/net11.0/win-x64/Tests.UiColor.exe
 ```
 
-### 1.1b 二级细分：一个 mode 一个文件（2026-10-07）
+### 1.1b 二级细分：一个 mode 一个文件（2026-10-07，**2026-10-14 已撤销** ⇒ 见 §1.1c）
+
+⚠ 本节描述的 5 个工程与 `Modes/` 形态**已不存在**（下表与验收读数保留作历史，不是现状）。
 
 **动机（用户原话）**：「测试应该是一个个项目，这样可以单独测试部分项目避免一点更改就需要跑一大堆测试」。
 2026-10-05 那一轮做到了「一个**子系统**一个工程」，但工程内部仍是**单个巨型 `*Group.cs`**
@@ -86,6 +99,11 @@ tests/core/
    `geometry` **75/1** → 75/1 ｜ `diagnostics` **82/6** → 82/6。**断言零漂移**。
 3. **结构锁全绿**：`_probe-test-group-coverage` 8/0、`_probe-cjk-hardcode-scan` 14/0、
    `verify-ps-compat` 13/0、`verify-ui-split-verbatim` 20/0。
+   ⚠ **上面是 2026-10-05 当日的读数，按历史链规矩逐字保留、不改写**；现值另记：
+   `_probe-test-group-coverage` **20/0**（2026-10-16 实跑，档① 27／档② 40／档③ 0／档④ 0，零调用点已清零）、
+   `verify-ui-split-verbatim` **22/0**（登记表清空后 17 组全部逐字比较，见本文第 74 条正文）、
+   `_probe-cjk-hardcode-scan` **14/0** 与 `verify-ps-compat` **13/0**（本批记录于 `docs/FIX_PLAN_2026-10-14.md`，
+   整轮复跑前它们是"上一轮读数"而不是"本轮读数"）。
 
 ⚠ **两条纪律（改这些文件时必读）**：
 - **`Modes/*.cs` 的注释必须纯 ASCII**：`_probe-cjk-hardcode-scan.ps1` 的「C# UI 面」桶
@@ -103,21 +121,41 @@ tests/core/
     `SelectColorSpaceSettled` 各有一份本地实现 ⇒ 能逐字对拍的那份由 **R-10** 钉住，`Skip` 由 **R-11** 钉形状。
     把旧宿主改成转发（共享同一实现）是批次 G 的下一步，它要连带换掉参照件的 Avalonia 引导 ⇒ 需要自己的判据。
   ✅ **变异验牙（实测）**：改名一条真断言 ⇒ verbatim 报 `差异 1 行` 转红；四支可复现变异见上一节。
-- **探针面双拷贝的两把尺（第 75 条 `verify-probe-mirror-parity.ps1`，2026-10-13 晚扩到 63 条判定）**：
-  · **受管段**（8 个 mode）＝ `Check` 标签**多重集相等**，唯一有意差走「登记 + 恰好命中 1 条 × 1 次」的反控
-    （`C20-8b`），不用豁免表 —— 镜像自己声明是冻结参照件，把断言搬进死代码是更坏的假象。
-  · **方向锁段**（全部 **31** 份 `tests/*/Modes/*.cs`）＝ 只判**方向**：镜像侧独有标签必须 **0 条**
-    （这正是本仓踩过的「写进镜像 ⇒ 全绿但一条没跑」）、执行面条数**不得少于**镜像、且不许有格子取样塌成 0。
-    ⚠ 刻意不判"两侧相等"：镜像是冻结件，要求相等等于要求往死代码里搬断言。
-  · **`-Census`**＝ 合并/删除决策的取数入口（同一批取样函数，不另造尺）。当日读数：31 份**全部**在执行面
-    有同名方法（零孤本）、25 份零漂移、6 份有漂且**清一色「只在被执行那份」**（只镜像 0 条）；
-    最大三格 `ProbeSettingsSave` 56 vs 11、`ProbeWire` 99 vs 93、`ProbeColorMathAgainstZimg` 12 vs 5。
-  ⚠ 标签身份改过一次：原先把一条 `Check` 里所有字面量**拼成**标签 ⇒ 造出 981 字符的"标签"，两份只差
-    **语句顺序**就整条判漂（`gamutfit` 三条假红，逐字节对撞见 `tests/output/f12/gamutfit_diff.py`）。
-    现只取**第一个像名字的片段**（断言名本身），详情文案不参与身份判定。
-  ✅ **变异验牙（换口径后重验，三例全符合）**：只改执行面文案 ⇒ 该 mode 多重集红（旧文案在镜像里成孤儿 ⇒
-    方向锁同时红，正确）；只往**镜像**加一条断言 ⇒ 方向锁红；**两侧同步**改同一条 ⇒ **零红**（假阳性对照）。
-  ⚠ **合并或删除镜像本身仍未做**（需要单独点头，三档见 `docs/IMPLEMENT_PLAN_2026-10-11.md` 批次 F 节 §8）。
+- **探针面「不许再有第二份拷贝」锁（第 75 条 `verify-probe-mirror-parity.ps1`，2026-10-14 换形，实测 108/0）**：
+  镜像删除前它是**两份拷贝的漂移尺**（拿 `tests/{core,diagnostics}/Modes/*.cs` 当参照件比 `Check` 标签多重集，
+  65/0）；参照件没了 ⇒ 现在管三件事，**都读源文本、都不需要重建**：
+  · **② 存在锁**＝ 5 个镜像目录不在盘 ＋ 全仓 `tests/**/Modes/*.cs` == 0 ＋ 生成器 `_gen-mode-split.ps1` 不在位
+    ＋ **`git ls-files` 里五目录 0 条目**（想靠 `git checkout` 把镜像捞回来也会红）。
+  · **③ 条数锁**＝ 56 个**派发 mode** 各自的 `Check` 标签条数逐名钉死（合计 813），**只许升不许降**：
+    少 = 执行面丢了断言（本锁存在的理由），多 = 加了断言要抬该格并写来历（抬一格**只改那一格**——
+    总量判据是"各格之和"，不再单独钉一个总数，避免三处联改）。
+    塌 0 的 5 个 mode（`color`/`icc-dump`/`tonemapcurve`/`ipc-server`/`piperaw-server`）逐名登记为"取数器/驻留端"，
+    并由 ③-d 要求"实塌 0 的集合 == 登记集合"⇒ 取样器整体失配时这里先接住。
+  · **④⑤ 剩余双拷贝**＝ 15 个同名 `Probe*` 的第二份定义点**逐名等于登记**（新增第二份当场点名 = ④-z；
+    合并掉也必须回来改登记）＋ 方向锁（镜像侧独有标签必须 0、执行面 ⊇ 镜像）＋ ⑤-a「两侧同塌 0 的格
+    恰好 `ProbeIccDump`」＋ ⑤-c 总账。
+  ✅ **变异验牙七支**（各只红该红那一格/那一对，跑完逐字节还原相等）：
+    删执行面一条 Check ⇒ ③ 该 mode + ③-e；镜像加一条 ⇒ ⑤ 该格 + ⑤-c；加未登记派发 case ⇒ 只 ③-a；
+    新增第二份 `ProbeMatrix` 定义 ⇒ 只 ④-z；重造 `tests/core/Modes/contract.cs` ⇒ ② 目录 + ② Modes；
+    把 `tests/encode` 也写进"该消失的目录" ⇒ ② 目录 + ② git 索引（**这条就是 git 那枚针的牙**）；
+    **反控**：执行面加一条 Check **同时**抬该格 ⇒ **全绿**（锁不是恒红、"只许升"这条路走得通）。
+  ⚠⚠ **2026-10-16 A-1 换形（上面那段是 10-14 的历史读数，逐字保留；以下几格已不存在）**：
+    `tests/{encode,io,metadata,gainmap}` 这四份镜像工程被**整体删除**（价值普查
+    `docs/review-2026-10-16/test-value-audit.md` A-1：1,773 行 / 134 个 `Check` / exe 无人执行，
+    且 #76 自己的判据写死"镜像独有断言 = 0"⇒ 按断言口径删除不丢东西）。它们的 15 个 mode 名并入
+    `TestGroups.cs` 的 `["ServiceProbe"]` 组（mode 一个没少：组表并集删前删后都是 **67**，`_probe-test-group-coverage` **20/0**）。
+    ⇒ **④ 的登记表从 16 名塌到 1 名**（只剩 `ProbeCodedSizeForTestAsync` 那对同名私有 helper）；
+    ⇒ **⑤ 从"方向锁"换成"只此一份锁"**：执行面 56 个 `Probe*` 方法，任何一长出第二份定义点当场点名；
+      旧的 ⑤-a/⑤-b/⑤-c 三条**整条撤下**（镜像没了，"两边同塌 0 逐名等于登记"会退化成 `0 == 0` 的恒真格），
+      随它们死掉的 `$zeroMirrorCells` 与差集比较器 `Cmp-Multiset` 一并删除（不留死代码）；④-z 并进 ⑤-z。
+    ✅ **新 ⑤ 的变异验牙（2026-10-16 实跑，逐字节还原相等）**：往 `tests/gainmap-decode/GainMapDecodeGroup.cs`
+      追加一个同名的 `internal static void ProbeOog(string[] args) { }` ⇒ `⑤ 长出第二份定义 = 1 条
+      （实 ProbeOog@tests/gainmap-decode/GainMapDecodeGroup.cs）` + `⑤-z 实 1：ProbeOog` ⇒ **80/2 转红**；
+      还原后 `PASS=82 FAIL=0`（换形前是 109/0，少的 27 格正是 15 个镜像格 × 方向锁那几臂）。
+    ⚠ ① 的前置阈值随扫描域变小：`tests/**/*.cs` 由 31 → **23** ⇒ 该针从 `>=28` 改 `>=20`（它只管"扫描域被清空"）。
+  ⚠ 取样器修掉一条旧坑：方法体正则原先**不排除表达式体包装**（`internal static void RunBitDepth(...) => ProbeBitDepth(a)`），
+    于是从包装行往后找 `{` ⇒ 该格条数**塌成 0**（实测 `tests/encode` 的 `ProbeBitDepth` 被量成 0，真值 7）
+    ⇒ "SP ≥ 镜像 / 镜像独有 0"两条会**双双恒真**。现：签名行含 `=>` 不算定义点，且定义点**按文件去重**。
 - **F-12（探测链合并）的门禁面**（2026-10-13）：`verify-color-wiring.ps1` 新增 **(13) 段 8 条结构锁**
   （纯静态、不起进程、**先剥整行注释再匹配** —— 本仓注释会点名"被折叠掉的旧 API"，全文子串会把
   「注释里提到」读成「代码里在用」）。六支变异各只红该红那条：摘 `.Clone()`／装配侧退回旧两步法／
@@ -129,7 +167,39 @@ tests/core/
   ⚠ 行为面另由 `wire` 探针的 5 条锁住（与独立两步法逐字段 ≡、九元素矩阵逐个精确相等、
   **缓存对象不被消费者写坏**、装配仍取到 `IccMetric`）；变异摘 `.Clone()` ⇒ 其中**两条**红。
 
-**拆分完成度与验收读数**（2026-10-05，均由主 Agent 独立复核）：
+### 1.1c 探针面镜像的删除（2026-10-14，维护者选档「整体删 5 个镜像工程」）
+
+**为什么删**：§1.1b 那 5 份工程是**无人执行的镜像** —— `<OutputType>Exe</OutputType>` 但运行器
+`$Probes` 只调 `ServiceProbe.exe`，`dotnet test` 打在 Exe 上**只还原不跑还 exit 0**；
+`tests/scripts/*.ps1`、`pack.ps1` 对 `Tests.{Core,Color,Engine,Geometry,Diagnostics}` **零引用**
+（正向对照：`Tests.UiCore` 等确实被 `verify-ui-split-union.ps1` 起）。
+本仓实测踩过一次「断言只写进镜像 ⇒ `contract` 报 137/0 全绿而那条**一条没跑**」。
+
+**删了什么**：`git rm -r tests/{core,color,diagnostics,engine,geometry}`
+= **31 份 `Modes/*.cs` + 5 份组体 + 5 份 `Program.cs` + 5 份 csproj（约 7,000 行）**，
+外加切片生成器 `tests/scripts/_gen-mode-split.ps1`（它在 ⇒ 随时能把组体再切成一批无人执行的镜像）。
+那 31 个 mode 改由 `TestGroups.cs` 里新增的 **`["ServiceProbe"]`** 一组认领（组名 = 工程目录名）。
+
+**镜像没了之后，谁当"丢断言"的见证人**：原先第 75 条是拿镜像当参照件比多重集；参照件没了 ⇒
+同一件事改由**执行面逐派发 mode 的 `Check` 标签条数**钉住（56 个 mode / 合计 813 条，只许升）。
+
+**连带修正则（两处失配都是"转红"不是假绿，但红得没有信息量）**：
+`_probe-test-group-coverage`（第 69 条）原先假设「组名一律小写」＋「分派形态只有 `mode == "x"`」，
+新的 `["ServiceProbe"]` 组同时踩中两条 ⇒ ①"20 个 mode 无组认领"、⑤"31 个 mode 声明了却没实现"。
+已把组名字符集放宽到 `[A-Za-z0-9\-]+`、⑤ 同时认 `case "x":`（`Get-OwnerHint` 早就认这个形态，
+两处口径此前不一致）。牙齿复验：把 `case "gamutfit":` 改名 ⇒ **只有** ⑤ 红并逐名点名。
+修正后 #69 = **18/2**，两条红与删除前**逐名同集**（7 个零调用点 + `icc` 非清单调用点，按设计红）。
+
+**还剩的第二份拷贝（未授权删除，已由 #75 逐名登记 + 锁方向）**：
+`tests/{encode,gainmap,io,metadata}` 里 **15 个**与 ServiceProbe 同名的 `Probe*` 方法
+（实测镜像侧独有标签 **0** 条、执行面 ⊇ 镜像 ⇒ 现状安全，但它们仍是死代码）。
+另有 `ProbeCodedSizeForTestAsync` 是 `GainMapTestHost` 与 `gainmap-decode` 之间的同名私有 helper
+（ServiceProbe 里没有 ⇒ 只登记不参与方向锁）。
+
+**构建面**：重建清单由 **23 个目标 → 18 个**（1 产品 + 17 测试工程；
+`.sln` 仍只登记 4 个工程，**必须逐工程 `-t:Rebuild`** 这条没变）。
+
+**拆分完成度与验收读数**（2026-10-05，均由主 Agent 独立复核；⚠ 下表 9 份工程中的 5 份已于 2026-10-14 删除）：
 
 | 来源 | 工程 | 验收读数 |
 |---|---|---|
@@ -191,7 +261,12 @@ dotnet build src/FfmpegGui/FfmpegGui.csproj -c Release --no-restore
 dotnet build tests/ServiceProbe/ServiceProbe.csproj  -c Release --no-restore   # 三个旧宿主
 dotnet build tests/UiTestHost/UiTestHost.csproj      -c Release --no-restore
 dotnet build tests/GainMapTestHost/GainMapTestHost.csproj -c Release --no-restore
-# 需要跑子系统工程时再逐个 build（见上）
+# ⚠ 宣布基线那一轮必须是 **18 个目标**逐个 `-t:Rebuild`（2026-10-14 起；原先 23 个里的 5 个镜像工程已删）：
+#   1 产品 + 17 测试工程 = FfmpegGui, Tests.Shared, UiHostShared, ServiceProbe, UiTestHost, GainMapTestHost,
+#   encode, gainmap, io, metadata, gainmap-encode, gainmap-decode, gainmap-struct,
+#   ui-core, ui-mode, ui-color, ui-sweep, ui-cli
+#   （`dotnet build ffmpegPictureUI.sln -t:Rebuild` **不够** —— solution 只登记 4 个工程，
+#     实测其余宿主目录里仍带旧 dll ⇒ 判据读数与源码不符。验收读数 = 各份 `FfmpegGui.dll` **同一 sha**。）
 ```
 
 **拆分时的方法论（供后续新增组参考）**：见 `docs/TEST_SPLIT_PLAN_2026-10-05.md`（方案/步序/风险）
@@ -478,7 +553,17 @@ $p = "tests/ServiceProbe/bin/Debug/net11.0/win-x64/ServiceProbe.exe"
 —— 计数会漂（`wire` 与 `verdict` 尤其）。⚠ **改任一 mode 的断言后必须重算总和**：
 历史上出现过「`contract` 100 → 107 改了、总数漏改、仍写 372」的错值，由复核方用「各 mode 求和 ≠ 372」抓出。
 ⚠ **某个 mode 若不在 `_run-step3-gates.ps1` 的 `$Probes` 默认值里，说明运行器清单与文档不同步**
-（可据此核对「mode 齐不齐」）。`_run-step3-gates.ps1` 的**脚本门禁清单**当前 **75 条**（2026-10-13 第十四次接线 1 条：`verify-probe-mirror-parity.ps1`（**内核断言两份拷贝的同形态尺** —— 被执行那份 `ServiceProbe/Program.cs` vs 镜像 `tests/core/Modes/*.cs`+`tests/diagnostics/Modes/*.cs`，比 8 个 mode 的 **Check 标签多重集**（插值 `{...}` 归一 ⇒ 变量名不算差异、文案算），立锁动机是本仓实测「只写进镜像 ⇒ `contract` 137/0 全绿而一条没跑」；唯一有意差 `C20-8b` 走**登记 + 恰好命中 1 次**的反控而非豁免（镜像自己声明是冻结参照件，把断言搬进死代码更坏）；变异四支各只红该红那格、含一支**两侧同步改必须全绿**的假阳性对照；实测 0.1–0.3 s）⇒ 74 → 75；2026-10-13 第十三次接线 1 条：`verify-ui-split-reproducible.ps1`（**UI 拆分的「可复现」锁** —— 5 个 `tests/ui-*/*Group.cs` 必须**逐字节等于** `_gen-ui-split.ps1` 以旧宿主 `Program.cs` 为唯一真值重新生成的结果。⚠ 立锁动机（**本轮实测到的，不是假想**）：verbatim 只比「组体逐字」，**挡不住「只改拆分侧、不回灌真值」**——J1z/J8 的修复 2026-10-07 只手改在 `ui-sweep`，于是 verbatim 只能整组放行 J（**J 组 798 行退出逐字比较**），而参照件旧宿主还在跑**修复前**的代码 ⇒「唯一真值」名存实亡；同类手改累计 5 次（J1z/J8/H10/O4/O5 + 3 个包装）。当日实测「重跑生成器 + 比字节」得 **2/5 不一致**（ui-color 少 1 个包装、ui-sweep 少 3 个包装 + 74 行组体）。另一半成因是**生成器自身的保真洞**：脚本自身是 LF 编码 ⇒ 两段 here-string 把 61 行裸 LF 注进生成物，而编辑器一保存就归一回 CRLF ⇒ 「重跑 + cmp」这件事**永远对不上**（现由生成器统一输出纯 CRLF，并由 R-8 钉住）。包装集合同时改成**按组体/入口的实际引用推导**（候选池 40 条 ⇒ 每个工程只发它用得上的，顺带清掉当年手加的零调用点死包装 `ResetAdvancedColorToAuto`）。判据 19 条：R-1..R-5 逐字节全等 ｜ R-6 **改真值 ⇒ 生成物必变**（防「生成物与真值无关」的假绿）｜ R-7 量级反控（防路径错导致空文件互比）｜ R-8 纯 CRLF ｜ R-8b 生成器幂等 ｜ R-9 零死包装 ｜ R-10 **双拷贝等值锁**（旧宿主与 UiHost 两份 `SelectColorSpaceSettled` 逐行相等，实测 26 行）｜ R-11 旧宿主 `Skip` 形状锁（打 `[SKIP]`、计 `_skip`、**不动** `_pass`/`_fail`——参照件的汇总行形状被 union 按 `N PASS / M FAIL` 读取，改形状会让参照失效）。变异验牙四支**各只红该红那条**、跑完逐字节还原相等：活树加一行注释 ⇒ R-1 ui-color；给 ui-cli 塞一个它没调用的 `Snip` 包装 ⇒ R-9（同时 R-1）；只改 UiHost 那份 `Pump(6)`⇒`(7)` ⇒ R-10；旧宿主 `Skip` 里去碰 `_pass++` ⇒ R-11。⚠ 两支**靶子选错**也如实记：G2 第一版选 `UiState`，而 ui-cli 的 M 组**真的调用它**（`uicliGroup.cs:63`）⇒ 造出来的是重复声明而非死包装，R-9 不红是**对的**；R-6 第一版把注入写进 `$scratch` 的 `Program.cs`，而 `Invoke-Gen` 每次都重新拷贝活树 ⇒ 注入被自己覆盖⇒ **该条先红的是我自己的判据实现**。同轮读数：reproducible **19/0**、verbatim 由 20/0 变 **22/0**（登记表已空 ⇒ 17 组全部逐字比较）、union **11/0 @ 419**（`$renamedPairs` 改名白名单**归零**后两侧同名同数）；7 个 UI 工程 `-t:Rebuild` 全部 **0 警告 0 错误**。⚠ 纯源码形状判据，**不需要重建**二进制，实测 ≈40 s（主要花在跑 3 次生成器））⇒ 73 → 74；2026-10-07 第十二次接线 1 条：`verify-dryrun-parity.ps1`（**`--dry-run` 预览 ↔ 真实执行 同源性锁** —— 判据 A 多报 / B 少报（只认**编码器类**工具）/ C **实参级**逐字同源，+ 负控 + 各臂"真实侧非空"反控）。⚠ 立锁动机（两处**实测真发生过**）：① `-f jxr -e Jxr` 预览只写 `ffmpeg`，而真实核心编码器是 **JxrEncApp**（走色彩引擎出口 `RawColorPipeline.EncodeJxrViaJxrEncAppAsync`）；② `-f dng --dng-bit-depth 8` 预览**漏 `-4`**、漏 `-jxlq`、且用了**已废弃的 `-q`**（`RawService` 注释记载：`-q` 是 demosaic 质量，dngtool 把它当成 JXL 质量 3 ⇒ 严重有损）。⇒ **任何以 dry-run 为准的审计都会得到假阴性**（实测若只信 dry-run，会误报两条**不存在**的缺陷：「dng-bit-depth 失效」「JXR 后端没接上」）。⚠ 接线前该脚本**无 dng 臂** ⇒ 第 ② 处**无人锁**：变异实测（把 dng 预览改成恒 16 位）当时仍 `pass=10 fail=0` **全绿**；补 dng 臂 + 判据 C 后同一变异 ⇒ `pass=15 fail=1` **转红**。⚠ 依赖仓内夹具 `tests/fixtures/raw_src_8bit.dng`（dng 臂需真 RAW 源），缺件 ⇒ 该臂 **SKIP 点名**（fail-closed，不给绿）。实测 **16/0**、耗时 ~11 s（上限 900 s）。⚠ 边界（如实标注）：**JxrEncApp 无实参级锁**（真实侧中转是运行时临时名 `<tmp>/input.bmp`，逐字比会假红；其"用哪个编码器"由判据 B 锁住）、**gif/webp/apng/tiff 暂无臂**（未验证 ≠ 无缺陷））⇒ 72 → 73；2026-10-05 第十一次接线 1 条：`verify-usability-e2e.ps1`（**用户可感知可用性**的实机端到端矩阵：A 格式互转 8×6 + B 色彩目标兑现 SDR/HDR-PQ/HDR-HLG×3×3 + C 批量与目录 + D 动图帧数；每条带可证伪判据 ffprobe 标注 + PSNR≥25dB）。⚠ 立锁动机：该脚本**早已存在却不在清单** ⇒ 谁也不跑 ⇒ 自身累积 2 个缺陷无人发现（① `ffprobe -of csv=p=0` **列序与请求顺序相反**（实测 `128,96,rgb24,iec61966-2-1,bt709` ⇒ [3]=transfer、[4]=primaries）被按请求顺序解读 ⇒ **12 条 HDR 格系统性假红**；② `Start-Process -ArgumentList <数组>` **不逐元素加引号** ⇒ `--color-space "Display P3"` 被拆成两个参数 ⇒ **3 格恒红**）。两处修好后 **exit=0、84 PASS/0 FAIL**，产品侧无问题。⚠ 与第 54 条同族）⇒ 71 → 72；2026-10-05 第十次接线 2 条：`verify-ui-split-verbatim.ps1`（**UiTestHost 拆分逐字锁** —— 17 个组的方法体必须与旧宿主 `Program.cs` 逐行逐字相等，含缩进/全角标点；立锁动机：5 条 UI 门禁 grep 断言文本，手抄 3000+ 行必然漂移 ⇒ 把"逐字"从**声称**变成**可复核**；带反控：比较行数须 >2800、旧宿主须解析出 17 个组）+ `verify-ui-split-union.ps1`（**UiTestHost 拆分歧视锁** —— 旧宿主全量断言名集合 == 5 个工程输出的**并集**，双向差集均空且并集计数 == 409；立锁动机：5 个工程的分组**不是**断言名的分组（如 `B1 H11 …` 写在 H 组块尾）⇒ 逐工程算期望值必然对不上，**唯一正确判据是并集**；而这正是能抓出"某组整段不执行 ⇒ 静默少跑几条断言"的尺子），由 69 → 71；⚠ 实测两条分别 **19/0** 与 **9/0**，且 union 连续 5 轮 + 交替顺序压力 3 轮均 409/409、missing=0、extra=0）；2026-10-05 第九次接线 1 条：`_probe-test-group-coverage.ps1`（**测试组覆盖一致性锁** —— 测试物理拆分后「哪些 mode 归哪个组」是手工表 `tests/Tests.Shared/TestGroups.cs`，而运行器另有独立的 `$Probes` 清单；两者漂移就会出现「某 mode **无组认领** ⇒ 永远不被任何组跑到」的**假覆盖**。判据：①`$Probes` 每 mode 有组认领 ②组表每组有工程目录 ③组表每 mode **三重取证**（在 `$Probes`／被某脚本调用／在本组 `Program.cs` 里作为引号字面量分派）④反控判据段非空跑 ⑤**每个声明的 mode 必须真的进了分派链**（`mode ==` 比较；⚠ 立这条是因为审查实测发现 `engine` 组声明 4 个 mode 却只实现 1 个 ⇒ `engine` 35/0→**0/0**、`simdswitch` 28/0→**0/0** 共 **63 条断言静默消失**，而当时门禁全绿 ⇒ 属"声明了却没实现"的**假覆盖**）+ 反控 ⑤-a；变异验证：删 mode／加无目录组／拼错 mode／**去掉分派** 四次均转红后恢复 **8/0**），由 68 → 69；2026-10-04 第八次接线 1 条：`_probe-gui-control-wiring.ps1`（**GUI 控件接线结构锁** —— XAML 里声明了却没初始选中/没处理器的下拉必须为 0；立锁动机是实测 P0：`--raw-color-target` 的 GUI 下拉此前**完全无效**），由 67 → 68；同日第七次再接线 2 条：`_probe-jxl-input-target.ps1`（JXL 输入时用户显式目标必须生效，含负控）+ `_probe-raw-default-tier.ps1`（RAW 默认档按**实际交付档**判 HDR 承载力），由 65 → 67；2026-10-01 再接线：首批 5 条 **L3/产物级**套件 `verify-package-smoke.ps1` + `verify-jbrd-e2e.ps1` + `verify-orientation-rewrap.ps1` + `verify-gainmap-thirdparty.ps1` + `verify-encoder-knob-liveness.ps1`，由 60 → 65；再往前同日接的是 `verify-geometry-orientation.ps1` + `_probe-geometry-single-source-scan.ps1` + `verify-gainmap-host.ps1`（⇒ 60）；权威复现口径 = 运行器**自己打印的** `script-list=N 条（受管基线 N）` 那一行，它比任何外部正则都可靠 —— 本文原来给的 `(?ms)^\$scriptList...` 正则实测命中 0（数组内含大量注释行，闭合 `)` 不在行首），**别再拿它当复现命令**）
+（可据此核对「mode 齐不齐」）。`_run-step3-gates.ps1` 的**脚本门禁清单**当前 **76 条**（2026-10-14 批次 T8 接线 1 条：`_probe-tilegrid-chain-lock.ps1`（**分块（Tile Grid）流组的「简单 vs 复合滤镜」形态结构锁** —— ffmpeg ≥2025-10-30 对 Tile Grid 流组自动建 xstack 复合图，同一条流再挂裸 `-vf` 直接 EINVAL、零产物；缺陷的复发方式是「有人在新地方又写了一条裸 `-vf`」而不是判据算错 ⇒ 用**词法**锁住发射点集合：收口内新建点恰好 1 处 + 行内豁免 `tile-lock: flattened-input` 必须点名其输入已拍平。有牙自检 = 把带裸 `-vf` 的副本指给 `-Files` 必须判红。实测 **5/0**（新建点=1、行内豁免=3））⇒ 75 → 76；⚠ **本条只改了运行器常量与它自己的三种散文形态**（条数锁读的是运行器源码，不含本文），本文这处现量陈述直到 2026-10-16 审查才补齐 ⇒ 「散文不在锁里」的老病**又复现一次**（见 §6 第 108 条的同一成因）；2026-10-13 第十四次接线 1 条：`verify-probe-mirror-parity.ps1`（**内核断言两份拷贝的同形态尺** —— 被执行那份 `ServiceProbe/Program.cs` vs 镜像 `tests/core/Modes/*.cs`+`tests/diagnostics/Modes/*.cs`，比 8 个 mode 的 **Check 标签多重集**（插值 `{...}` 归一 ⇒ 变量名不算差异、文案算），立锁动机是本仓实测「只写进镜像 ⇒ `contract` 137/0 全绿而一条没跑」；唯一有意差 `C20-8b` 走**登记 + 恰好命中 1 次**的反控而非豁免（镜像自己声明是冻结参照件，把断言搬进死代码更坏）；变异四支各只红该红那格、含一支**两侧同步改必须全绿**的假阳性对照；实测 0.1–0.3 s）⇒ 74 → 75；2026-10-13 第十三次接线 1 条：`verify-ui-split-reproducible.ps1`（**UI 拆分的「可复现」锁** —— 5 个 `tests/ui-*/*Group.cs` 必须**逐字节等于** `_gen-ui-split.ps1` 以旧宿主 `Program.cs` 为唯一真值重新生成的结果。⚠ 立锁动机（**本轮实测到的，不是假想**）：verbatim 只比「组体逐字」，**挡不住「只改拆分侧、不回灌真值」**——J1z/J8 的修复 2026-10-07 只手改在 `ui-sweep`，于是 verbatim 只能整组放行 J（**J 组 798 行退出逐字比较**），而参照件旧宿主还在跑**修复前**的代码 ⇒「唯一真值」名存实亡；同类手改累计 5 次（J1z/J8/H10/O4/O5 + 3 个包装）。当日实测「重跑生成器 + 比字节」得 **2/5 不一致**（ui-color 少 1 个包装、ui-sweep 少 3 个包装 + 74 行组体）。另一半成因是**生成器自身的保真洞**：脚本自身是 LF 编码 ⇒ 两段 here-string 把 61 行裸 LF 注进生成物，而编辑器一保存就归一回 CRLF ⇒ 「重跑 + cmp」这件事**永远对不上**（现由生成器统一输出纯 CRLF，并由 R-8 钉住）。包装集合同时改成**按组体/入口的实际引用推导**（候选池 40 条 ⇒ 每个工程只发它用得上的，顺带清掉当年手加的零调用点死包装 `ResetAdvancedColorToAuto`）。判据 19 条：R-1..R-5 逐字节全等 ｜ R-6 **改真值 ⇒ 生成物必变**（防「生成物与真值无关」的假绿）｜ R-7 量级反控（防路径错导致空文件互比）｜ R-8 纯 CRLF ｜ R-8b 生成器幂等 ｜ R-9 零死包装 ｜ R-10 **双拷贝等值锁**（旧宿主与 UiHost 两份 `SelectColorSpaceSettled` 逐行相等，实测 26 行）｜ R-11 旧宿主 `Skip` 形状锁（打 `[SKIP]`、计 `_skip`、**不动** `_pass`/`_fail`——参照件的汇总行形状被 union 按 `N PASS / M FAIL` 读取，改形状会让参照失效）。变异验牙四支**各只红该红那条**、跑完逐字节还原相等：活树加一行注释 ⇒ R-1 ui-color；给 ui-cli 塞一个它没调用的 `Snip` 包装 ⇒ R-9（同时 R-1）；只改 UiHost 那份 `Pump(6)`⇒`(7)` ⇒ R-10；旧宿主 `Skip` 里去碰 `_pass++` ⇒ R-11。⚠ 两支**靶子选错**也如实记：G2 第一版选 `UiState`，而 ui-cli 的 M 组**真的调用它**（`uicliGroup.cs:63`）⇒ 造出来的是重复声明而非死包装，R-9 不红是**对的**；R-6 第一版把注入写进 `$scratch` 的 `Program.cs`，而 `Invoke-Gen` 每次都重新拷贝活树 ⇒ 注入被自己覆盖⇒ **该条先红的是我自己的判据实现**。同轮读数：reproducible **19/0**、verbatim 由 20/0 变 **22/0**（登记表已空 ⇒ 17 组全部逐字比较）、union **11/0 @ 419**（`$renamedPairs` 改名白名单**归零**后两侧同名同数）；7 个 UI 工程 `-t:Rebuild` 全部 **0 警告 0 错误**。⚠ 纯源码形状判据，**不需要重建**二进制，实测 ≈40 s（主要花在跑 3 次生成器））⇒ 73 → 74；2026-10-07 第十二次接线 1 条：`verify-dryrun-parity.ps1`（**`--dry-run` 预览 ↔ 真实执行 同源性锁** —— 判据 A 多报 / B 少报（只认**编码器类**工具）/ C **实参级**逐字同源，+ 负控 + 各臂"真实侧非空"反控）。⚠ 立锁动机（两处**实测真发生过**）：① `-f jxr -e Jxr` 预览只写 `ffmpeg`，而真实核心编码器是 **JxrEncApp**（走色彩引擎出口 `RawColorPipeline.EncodeJxrViaJxrEncAppAsync`）；② `-f dng --dng-bit-depth 8` 预览**漏 `-4`**、漏 `-jxlq`、且用了**已废弃的 `-q`**（`RawService` 注释记载：`-q` 是 demosaic 质量，dngtool 把它当成 JXL 质量 3 ⇒ 严重有损）。⇒ **任何以 dry-run 为准的审计都会得到假阴性**（实测若只信 dry-run，会误报两条**不存在**的缺陷：「dng-bit-depth 失效」「JXR 后端没接上」）。⚠ 接线前该脚本**无 dng 臂** ⇒ 第 ② 处**无人锁**：变异实测（把 dng 预览改成恒 16 位）当时仍 `pass=10 fail=0` **全绿**；补 dng 臂 + 判据 C 后同一变异 ⇒ `pass=15 fail=1` **转红**。⚠ 依赖仓内夹具 `tests/fixtures/raw_src_8bit.dng`（dng 臂需真 RAW 源），缺件 ⇒ 该臂 **SKIP 点名**（fail-closed，不给绿）。实测 **16/0**、耗时 ~11 s（上限 900 s）。⚠ 边界（如实标注）：**JxrEncApp 无实参级锁**（真实侧中转是运行时临时名 `<tmp>/input.bmp`，逐字比会假红；其"用哪个编码器"由判据 B 锁住）、**gif/webp/apng/tiff 暂无臂**（未验证 ≠ 无缺陷））⇒ 72 → 73；2026-10-05 第十一次接线 1 条：`verify-usability-e2e.ps1`（**用户可感知可用性**的实机端到端矩阵：A 格式互转 8×6 + B 色彩目标兑现 SDR/HDR-PQ/HDR-HLG×3×3 + C 批量与目录 + D 动图帧数；每条带可证伪判据 ffprobe 标注 + PSNR≥25dB）。⚠ 立锁动机：该脚本**早已存在却不在清单** ⇒ 谁也不跑 ⇒ 自身累积 2 个缺陷无人发现（① `ffprobe -of csv=p=0` **列序与请求顺序相反**（实测 `128,96,rgb24,iec61966-2-1,bt709` ⇒ [3]=transfer、[4]=primaries）被按请求顺序解读 ⇒ **12 条 HDR 格系统性假红**；② `Start-Process -ArgumentList <数组>` **不逐元素加引号** ⇒ `--color-space "Display P3"` 被拆成两个参数 ⇒ **3 格恒红**）。两处修好后 **exit=0、84 PASS/0 FAIL**，产品侧无问题。⚠ 与第 54 条同族）⇒ 71 → 72；2026-10-05 第十次接线 2 条：`verify-ui-split-verbatim.ps1`（**UiTestHost 拆分逐字锁** —— 17 个组的方法体必须与旧宿主 `Program.cs` 逐行逐字相等，含缩进/全角标点；立锁动机：5 条 UI 门禁 grep 断言文本，手抄 3000+ 行必然漂移 ⇒ 把"逐字"从**声称**变成**可复核**；带反控：比较行数须 >2800、旧宿主须解析出 17 个组）+ `verify-ui-split-union.ps1`（**UiTestHost 拆分歧视锁** —— 旧宿主全量断言名集合 == 5 个工程输出的**并集**，双向差集均空且并集计数 == 409；立锁动机：5 个工程的分组**不是**断言名的分组（如 `B1 H11 …` 写在 H 组块尾）⇒ 逐工程算期望值必然对不上，**唯一正确判据是并集**；而这正是能抓出"某组整段不执行 ⇒ 静默少跑几条断言"的尺子），由 69 → 71；⚠ 实测两条分别 **19/0** 与 **9/0**，且 union 连续 5 轮 + 交替顺序压力 3 轮均 409/409、missing=0、extra=0）；2026-10-05 第九次接线 1 条：`_probe-test-group-coverage.ps1`（**测试组覆盖一致性锁** —— 测试物理拆分后「哪些 mode 归哪个组」是手工表 `tests/Tests.Shared/TestGroups.cs`，而运行器另有独立的 `$Probes` 清单；两者漂移就会出现「某 mode **无组认领** ⇒ 永远不被任何组跑到」的**假覆盖**。判据：①`$Probes` 每 mode 有组认领 ②组表每组有工程目录 ③组表每 mode **三重取证**（在 `$Probes`／被某脚本调用／在本组 `Program.cs` 里作为引号字面量分派）④反控判据段非空跑 ⑤**每个声明的 mode 必须真的进了分派链**（`mode ==` 比较；⚠ 立这条是因为审查实测发现 `engine` 组声明 4 个 mode 却只实现 1 个 ⇒ `engine` 35/0→**0/0**、`simdswitch` 28/0→**0/0** 共 **63 条断言静默消失**，而当时门禁全绿 ⇒ 属"声明了却没实现"的**假覆盖**）+ 反控 ⑤-a；变异验证：删 mode／加无目录组／拼错 mode／**去掉分派** 四次均转红后恢复 **8/0**），由 68 → 69；2026-10-04 第八次接线 1 条：`_probe-gui-control-wiring.ps1`（**GUI 控件接线结构锁** —— XAML 里声明了却没初始选中/没处理器的下拉必须为 0；立锁动机是实测 P0：`--raw-color-target` 的 GUI 下拉此前**完全无效**），由 67 → 68；同日第七次再接线 2 条：`_probe-jxl-input-target.ps1`（JXL 输入时用户显式目标必须生效，含负控）+ `_probe-raw-default-tier.ps1`（RAW 默认档按**实际交付档**判 HDR 承载力），由 65 → 67；2026-10-01 再接线：首批 5 条 **L3/产物级**套件 `verify-package-smoke.ps1` + `verify-jbrd-e2e.ps1` + `verify-orientation-rewrap.ps1` + `verify-gainmap-thirdparty.ps1` + `verify-encoder-knob-liveness.ps1`，由 60 → 65；再往前同日接的是 `verify-geometry-orientation.ps1` + `_probe-geometry-single-source-scan.ps1` + `verify-gainmap-host.ps1`（⇒ 60）；权威复现口径 = 运行器**自己打印的** `script-list=N 条（受管基线 N）` 那一行，它比任何外部正则都可靠 —— 本文原来给的 `(?ms)^\$scriptList...` 正则实测命中 0（数组内含大量注释行，闭合 `)` 不在行首），**别再拿它当复现命令**）
+⚠ **2026-10-14 第 75 条换形（不是新接线，清单条数不变）**：`verify-probe-mirror-parity.ps1` 从
+「两份拷贝的漂移尺」改成「**不许再有第二份拷贝**」存在锁 + 执行面逐派发 mode 的条数锁 ——
+成因是那 5 个参照件工程已被整体删除（31 份 `Modes/*.cs` + 5 组体 + 5 入口 + 5 csproj ≈ 7,000 行，
+外加切片生成器 `_gen-mode-split.ps1`），判定数 **65 → 108**。同批修掉 `_probe-test-group-coverage`
+的两处解析失配（组名字符集不容大写 ⇒ 31 个 mode 一度"无组认领"；⑤ 只认 `mode == "x"` 不认
+`case "x":` ⇒ 同一批 mode 一度"声明了却没实现"）⇒ 修后 **18/2**，两条红与删除前**逐名同集**
+（7 个零调用点 + `icc` 非清单调用点，按设计红）。重建清单 **23 个目标 → 18 个**
+（1 产品 + 17 测试工程；`.sln` 仍只登记 4 个工程 ⇒ 逐工程 `-t:Rebuild` 这条没变）。
+细节见 §1.1c 与 §1.1 的「探针面『不许再有第二份拷贝』锁」条。
+
 （**2026-09-24 第六次接线后实测数组条目数** —— 复现命令必须**按数组锚定**（不用行号、也不用全文件 grep）：
 `$c = Get-Content -Raw tests/scripts/_run-step3-gates.ps1; [regex]::Matches([regex]::Match($c,'(?ms)^\$scriptList\s*=\s*@\((.*?)\)\r?\n\$actualScriptCount').Groups[1].Value,"'[^']+\.ps1'").Count` = **54**；
 ⚠ 本行原先给的 `grep -oE "'[^']+\.ps1'" … | sort -u | wc -l` **现已失真**：2026-09-22 实测它得 **53**，

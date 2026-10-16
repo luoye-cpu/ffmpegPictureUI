@@ -5,10 +5,15 @@
 > `Services/ColorMapping/GainMapJpegCodec.cs`、`QueueProcessor.cs`
 > 复现素材：仓库内 `tools/src/libavif/tests/data/seine_{hdr,sdr}_gainmap_srgb.avif`（**已入库，稳定夹具**）
 > 诊断脚本：`tests/output/_heicavif_probe/isobmff_scan.py`（ISO-BMFF 结构扫描，只读）
-> 门禁：`tests/scripts/verify-gainmap-isobmff.ps1`（**52/0**，已接线为第 49 条）
+> 门禁：`tests/scripts/verify-gainmap-isobmff.ps1`（**60/0**，已接线为第 49 条）
 >
 > ⚠ 本条原记 **29/0**，系早期读数；2026-10-02 按门禁自述核对（`verify-gainmap-isobmff.ps1:73`
 > 明写「断言（共 52 条）：§0 前置 6 · §1 容器层 8 · §1b HEVC 解码路径 11 · …」）已更正。
+> ⚠ 现值 **60 条**（2026-10-15 T12/R6 再扩）：新增 **§3d 厂商 HDR 尾注执行面 4 条**
+> （跑 `ServiceProbe vendor-hdr`，钉 `PROBE RESULT: pass=15 fail=0` + `^PASS V`=15 逐条点名 +
+> V6/V7 **拒因**点名 + V8/V9 与标准承载互斥）与 **§3e 底图取法 A/B 4 条**
+> （`--gain-map-base-from-source` 两臂点名、产物 sha 分叉、`|ΔA|<|ΔB|` 相对忠实度、两出口单一取底图入口）。
+> 两对变异都有牙：`P_MAX_X256 44→45` ⇒ 54/2 exit=1；accessor 无视开关 ⇒ 57/3 exit=1（还原后 60/0）。
 
 ---
 
