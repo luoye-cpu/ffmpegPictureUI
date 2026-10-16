@@ -53,6 +53,16 @@
 #   ⑦ **账目自证**：各档"汇总条数"必须与"逐名点名的条数"相等，且四档相加 == 组表并集条数
 #      （不相等就判红；本仓铁律「汇总数量必须与点名条数相等」，不许把红压成总数）。
 #   ⑧ **清单逐名在盘**：`$scriptList` 里点名却不存在的脚本 ⇒ 红（取证域塌了不能让绿继续）。
+#   ⑨ **mode 派生域**（2026-10-16 可见性普查）：全集**从代码派生**（`Program.cs` 里的 `case "<mode>":`
+#      且其后 400 字符内真调用 `Probe*/Dump*(` ⇒ 实测 57 个），不再只信手抄的组表/`$Probes`；
+#      「派生全集 − 已认领」必须逐名落进**豁免表**（只收零调用点的手工工具，每行写 类别｝理由｝复验日）。
+#      判据：⑨-a 有调用点却没进账 = 0（**修法 = 并进组表，不是加进豁免表**） ｜ ⑨-b 门外 mode 全部登记
+#      ｜ ⑨-c 豁免表无陈既行 ｜ ⑨-d 表行数 == 实际挨住的个数。
+#   ⑩ **可达性域**：ServiceProbe 里「含断言但任何派发 mode 都到不了」的方法必须为 0。
+#      与第 76 条的分工：**⑤ 防「再抄一份」，⑩ 防「抄了但没人能跑到」**。
+#   ⑪ **归属域**：`tests/scripts` 里不在 `$scriptList` 的脚本，必须「被在册脚本点名」或落进
+#      一个**有理由的族 / 显式登记表**；⑪-d 只 WARN（有判据却不进轮的欠账），⑪-e 做账目守恒。
+#   ⑨-pre / ⑩-pre / ⑪-pre **反控**：合成输入走**同一份**分类器，方向判据必须逐项符合。
 #
 # 【口径说明】③ 只要求"名字真实存在"，**不要求**有人跑它 —— "有没有人跑"是 ⑥ 的职责。
 #   两者分开是有意的：拼错 mode 名（③ 抓）与"实现了却没人跑"（⑥ 抓）是两类不同的失效，
@@ -71,6 +81,15 @@
 #     `gainmap-encode/decode/struct`←verify-gainmap-host §4b（拆分件由"生成物"身份改回**被真跑**）。
 #     ⚠ 上面两条过期 cross-ref（`docs/TESTING.md` 的 `8/0`、运行器第 69 条复述里的 `$Probes` 26 个）
 #       属**历史链**（当日为真），已按本仓规矩保留原文 + 就地加现值指针，不改写数字。
+#   ✅ **2026-10-16 晚些时候（⑨⑪⑩ 落地）现值 `PASS=36 FAIL=0`**：上面那句 `20/0`、`档② 40`、`并集 67`
+#     是被 ⑨-a 判红之前的旧账 —— ⑨-a 当场抓出 **3 个「每轮真在被执行却没进账」的 mode**
+#     （`memadmit`←verify-gainmap-memory:234,341、`tonemapcurve`←verify-color-tonemap:36、
+#     `color`←verify-gainmap-isobmff:484,485），三个都并进 `["ServiceProbe"]` 组
+#     ⇒ 现 档① 27 / 档② 43 / 档③ 0 / 档④ 0，组表并集 70、门外 7 个（全部逐名登记在豁免表）。
+#     ⚠ 本守卫第一版把 `color` 当成「零调用点的手工工具」写进了豁免表，**⑨-a 直接判红**把真相逼出来：
+#     它的调用者在**在册**门禁里，且 stdout 喂给§3b 两条 CK ⇒ 按「有调用点就必须进账」并组、删豁免行。
+#     同轮其余两域读数：⑩ 含断言的孤儿方法 = 0（方法块 74、闭包可达 76）｜
+#     ⑪ 清单外 40 攫 = 被点名 7 + 族内 20 + 显式表 13 + 未归属 0（⑪-d WARN 8 攫，见价值普查文档）。
 # ═══════════════════════════════════════════════════════════════════════════════
 
 $ErrorActionPreference = 'Continue'
@@ -633,6 +652,312 @@ $namedAll = @($tierProbes).Count + @($tierManaged).Count + $umNamed + $zeroNamed
 CK ($sumTiers -eq $union.Count) "⑦-a 账目：四档汇总 $sumTiers 条 == 组表并集 $($union.Count) 条（不等即有点名被吞或重复计数）"
 CK ($namedAll -eq $sumTiers) "⑦-b 账目：逐名点名 $namedAll 条 == 汇总 $sumTiers 条"
 
+# ══════════════════════════════════════════════════════════════════════════
+# ⑨⑩⑪ 可见性账（2026-10-16 价值普查的后续；账见 `docs/review-2026-10-16/test-value-audit.md` 第二轮）
+#
+# 【为什么要这三节】①–⑧ 的「全集」全是**手抄的**（组表、`$Probes`、`$scriptList`）⇒
+#   「差集为空」这类判据在**全集自己缩水**时恒绿。实测代价：`memadmit` 与 `tonemapcurve`
+#   **每轮真在被在册门禁执行**（`verify-gainmap-memory.ps1:234,341`、`verify-color-tonemap.ps1:36`），
+#   却因为没写进组表而四档全不进，而 ⑦-a「四档相加 == 组表并集」照样成立
+#   ⇒ 两份手抄互相对表，谁都不对代码。三条共同形状：**派生全集 − 已认领 = 显式豁免表**，
+#   且豁免表自己也要被看着（新增未登记 ⇒ 红；已归位还留着 ⇒ 也红）。
+#
+# 【F 条：这三把尺自己也要正控/反控】我这一轮连着三次栽在尺子上，都记在这儿，别再犯第四次：
+#   ① 把 `tonemapcurve` 判成死分支（grep 只搜独立引号形 `"x"`，没搜「引号内开头 + 空格 + 参数」）；
+#   ② 把变量拼出来的 exe 路径判成「未被执行」（正解：以整轮日志里该宿主的汇总行为准）；
+#   ③ ⑩ 的第一版把全集定义成「任何 `case "x":` 标签」⇒ CliParser 的 `png/bt2020/srgb` 混进来，
+#      **尺一变宽反而把 42 个有调用点的 mode 读成零调用点**。⇒ 派发 mode 的定义与 #76 对齐：
+#      `case "x":` 之后 400 字符内出现 `Probe*/Dump*(` 才算数（实测 57 个）。
+#   ⇒ 下面每节都配内存合成件反控（⑨-pre/⑩-pre/⑪-pre）与「确知存在」的正控，不落盘、不起进程。
+# ══════════════════════════════════════════════════════════════════════════
+
+# 共用分类器：真实账与合成件反控走同一份逻辑（否则反控测的不是上线那把尺）
+function Split-OffBook([string[]]$universe, [string[]]$claimed, [hashtable]$callIdx, [hashtable]$exempt) {
+    $mustClaim = @(); $unregistered = @(); $stale = @(); $okExempt = @()
+    $cl = @($claimed | Sort-Object -Unique)
+    foreach ($it in $universe) {
+        if ($cl -contains $it) { continue }
+        $ev = @()
+        if ($callIdx.ContainsKey($it)) { $ev = @($callIdx[$it]) }
+        if ($ev.Count -gt 0) { $mustClaim += $it; continue }
+        if ($exempt.ContainsKey($it)) { $okExempt += $it } else { $unregistered += $it }
+    }
+    foreach ($ky in $exempt.Keys) { if ($universe -notcontains $ky) { $stale += $ky } }
+    return @{ MustClaim = $mustClaim; Unregistered = $unregistered; Stale = $stale; OkExempt = $okExempt }
+}
+
+# ── ⑨ mode 派生域：全集 = ServiceProbe 的 case 派发表（不是手抄组表）─────────
+$repoRoot = (Get-Location).Path
+$spPath = Join-Path $repoRoot 'tests/ServiceProbe/Program.cs'
+$spText = ''
+if (Test-Path $spPath) { $spText = [System.IO.File]::ReadAllText($spPath) }
+$dispatchAll = @()
+foreach ($mmd in [regex]::Matches($spText, '(?m)^[ \t]*case\s+"(?<m>[a-z0-9\-]+)"\s*:')) {
+    $dfrom = $mmd.Index + $mmd.Length
+    if ($dfrom + 400 -ge $spText.Length) { continue }
+    if ($spText.Substring($dfrom, 400) -notmatch '\b(Probe|Dump)[A-Za-z0-9_]+[ \t]*\(') { continue }
+    $dv = $mmd.Groups['m'].Value
+    if ($dispatchAll -notcontains $dv) { $dispatchAll += $dv }
+}
+CK ($dispatchAll.Count -ge 50) ('⑨ 前置：从 case 表派生出派发 mode ' + $dispatchAll.Count + ' 个（≥50 ⇒ 全集取自代码，不取自手抄表）')
+$posMiss = @()
+foreach ($pc in @('contract', 'vendor-hdr', 'settings', 'thumbnail')) {
+    if ($dispatchAll -notcontains $pc) { $posMiss += $pc }
+}
+$pmLine = '无'
+if (@($posMiss).Count) { $pmLine = ($posMiss -join ', ') }
+CK (@($posMiss).Count -eq 0) ('⑨ 正控：四个确知存在的派发 mode 必须都被全集取到（缺：' + $pmLine + '）—— 全集漏取会让下面的差集判据整体失真')
+
+$outside = @($dispatchAll | Where-Object { ($union + $probes) -notcontains $_ } | Sort-Object)
+$outIdx = @{}
+foreach ($fi2 in $allPs) {
+    $tag2 = $fi2.Name
+    if ($tag2 -eq $selfName) { continue }
+    $txt2 = ''
+    if ($rawText.ContainsKey($tag2)) { $txt2 = $rawText[$tag2] } else { $txt2 = (Get-Content $fi2.FullName -Raw) }
+    if (@($outside).Count -eq 0) { break }
+    if (-not (Test-AnyModeToken $txt2 $outside)) { continue }
+    $info2 = Get-PsAst $fi2.FullName
+    if (-not $info2.Ast -or @($info2.Errors).Count -gt 0) { continue }
+    foreach ($r2 in (Get-CallSites $info2.Ast $tag2 $outside).Rows) {
+        if (-not $outIdx.ContainsKey($r2.Mode)) { $outIdx[$r2.Mode] = @() }
+        $outIdx[$r2.Mode] += @{ Script = $r2.Script; Line = $r2.Line; Kind = $r2.Kind; Managed = [bool]$managedSet.ContainsKey($r2.Script) }
+    }
+}
+# 豁免表：只有「没有任何调用点的手工工具」才有资格进来；每行必须写 类别 ｜ 理由 ｜ 复验日
+$modeExempt = [ordered]@{
+    'ipc-server'     = '驻留端诊断工具 ｜ 往返用例进门禁会挂死整条门禁（docs/TESTING.md:1115 明文保留） ｜ 复验 2026-10-16'
+    'ipc-client'     = '跨进程客户端诊断 ｜ 与 ipc-server 同一保留理由 ｜ 复验 2026-10-16'
+    'ipc-raw-client' = '跨进程客户端诊断（环境对照） ｜ 同上 ｜ 复验 2026-10-16'
+    'ipc-submit'     = '手工提交工具（向驻留端投任务） ｜ 无自动调用者 ｜ 复验 2026-10-16'
+    'piperaw-server' = '环境对照（自包含裸管道） ｜ 明文保留为诊断工具 ｜ 复验 2026-10-16'
+    'piperaw-client' = '环境对照（自包含裸管道） ｜ 明文保留为诊断工具 ｜ 复验 2026-10-16'
+    'tonemap'        = '手工对照工具 ｜ 宽形 grep 的 28 处命中逐行核过全是 ffmpeg 的 tonemap= 滤镜名与门禁文件名，不是 mode 调用点 ｜ 复验 2026-10-16'
+}
+$split9 = Split-OffBook $dispatchAll (@($union + $probes)) $outIdx $modeExempt
+$mcLine = '无'
+if (@($split9.MustClaim).Count) {
+    $mcArr = @()
+    foreach ($mk in $split9.MustClaim) {
+        $firstEv = @($outIdx[$mk]) | Where-Object { $_.Managed } | Select-Object -First 1
+        $mcArr += ($mk + '<-' + $firstEv.Script + ':L' + $firstEv.Line)
+    }
+    $mcLine = ($mcArr -join ', ')
+}
+CK (@($split9.MustClaim).Count -eq 0) ('⑨-a 每轮真在被执行却没进账的 mode = 0（实 ' + @($split9.MustClaim).Count + '：' + $mcLine + '）—— 修法是把名字并进 TestGroups 对应组，不是加进豁免表')
+$urLine = '无'
+if (@($split9.Unregistered).Count) { $urLine = ($split9.Unregistered -join ', ') }
+CK (@($split9.Unregistered).Count -eq 0) ('⑨-b 门外 mode 全部逐名登记（未登记 ' + @($split9.Unregistered).Count + ' 个：' + $urLine + '）—— 新增一个既不进账也不登记的 mode 在这里红')
+$stLine = '无'
+if (@($split9.Stale).Count) { $stLine = ($split9.Stale -join ', ') }
+CK (@($split9.Stale).Count -eq 0) ('⑨-c 豁免表里没有已消失/已归位的陈旧行（陈旧 ' + @($split9.Stale).Count + ' 条：' + $stLine + '）—— 防豁免表变成第二份没人读的登记表')
+CK (@($split9.OkExempt).Count -eq $modeExempt.Count) ('⑨-d 账目：豁免表 ' + $modeExempt.Count + ' 行 == 实际按住的 ' + @($split9.OkExempt).Count + ' 个（不等即有点名被吞或表多行）')
+$outLine = '无'
+if (@($outside).Count) { $outLine = ($outside -join ', ') }
+Write-Host ('ℹ      ⑨ 派生全集 ' + $dispatchAll.Count + ' ｜ 已认领（$Probes ∪ 组表）' + @(@($union + $probes) | Sort-Object -Unique).Count + ' ｜ 门外 ' + @($outside).Count + ' 个 = ' + $outLine)
+
+# ── ⑨-pre 反控：合成输入验 Split-OffBook 的四个方向 ─────────────────────────
+$synA = Split-OffBook @('m_has', 'm_exempt') @('claimed') @{ m_has = @(@{ Script = 'verify-x.ps1'; Line = 7; Managed = $true }) } @{ m_exempt = 'r' }
+$synB = Split-OffBook @('m_plain') @('claimed') @{} @{ m_gone = 'r' }
+$teeth9 = @()
+if (@($synA.MustClaim).Count -ne 1 -or $synA.MustClaim[0] -ne 'm_has') { $teeth9 += 'A 有调用点的门外 mode 没被判成必须进账' }
+if (@($synA.Unregistered).Count -ne 0) { $teeth9 += 'A 已登记豁免行被判成未登记' }
+if (@($synB.MustClaim).Count -ne 0) { $teeth9 += 'B 无调用点的 mode 被误判成必须进账' }
+if (@($synB.Stale).Count -ne 1 -or $synB.Stale[0] -ne 'm_gone') { $teeth9 += 'B 陈旧豁免行没被抓住' }
+if (@($synB.Unregistered).Count -ne 1) { $teeth9 += 'B 未登记项没被判红' }
+$t9Line = '全部符合（有调用点⇒必进账 / 已登记⇒放行 / 未登记⇒红 / 表多行⇒红）'
+if ($teeth9.Count) { $t9Line = ($teeth9 -join ' | ') }
+CK ($teeth9.Count -eq 0) ('⑨-pre 有牙自证：合成件 2 组 5 项方向判据（' + $t9Line + '）')
+
+# ── ⑩ 可达性域：活在执行文件里、任何派发 mode 都到不了的断言 ────────────────
+#   与 #76 的分工：**⑤ 防「再抄一份」，⑩ 防「抄了但没人能跑到」**；
+#   还抓住「把断言搬进一个没人调的 helper」这种规避（镜像归零后剩下的同族失效形态）。
+function Get-MethodBlocks([string]$text) {
+    $lss = $text -split "`r?`n"
+    $res = @()
+    $kk = 0
+    while ($kk -lt $lss.Count) {
+        $ln2 = $lss[$kk]
+        $isSig = ($ln2 -match '^[ \t]+(?:(?:private|internal|public|static|async)[ \t]+)+[^\n;=]*?\b([A-Za-z][A-Za-z0-9_]*)[ \t]*\(') -and ($ln2 -notmatch '=>')
+        if (-not $isSig) { $kk++; continue }
+        $nm = $Matches[1]
+        $jj = $kk; $opened = $false
+        while ($jj -lt $lss.Count -and $jj -le $kk + 6) {
+            if ($lss[$jj].Contains('{')) { $opened = $true; break }
+            $tt = $lss[$jj].Trim()
+            if ($tt.EndsWith(';') -or $tt.EndsWith(',')) { break }
+            $jj++
+        }
+        if (-not $opened) { $kk++; continue }
+        $dep = 0; $mm2 = $jj; $body = ''
+        while ($mm2 -lt $lss.Count) {
+            $line2 = $lss[$mm2]
+            $body += $line2 + "`n"
+            foreach ($ch in $line2.ToCharArray()) {
+                if ($ch -eq '{') { $dep++ } elseif ($ch -eq '}') { $dep-- }
+            }
+            if ($dep -le 0) { break }
+            $mm2++
+        }
+        $res += [pscustomobject]@{ Name = $nm; A = $kk + 1; B = $mm2 + 1; Text = $body }
+        $kk = $mm2 + 1
+    }
+    return $res
+}
+function Get-Reachable([object[]]$blks, [string[]]$seedList) {
+    $byN = @{}
+    foreach ($b in $blks) { if (-not $byN.ContainsKey($b.Name)) { $byN[$b.Name] = $b } }
+    $seen2 = @{}
+    $qq = New-Object System.Collections.Generic.Queue[string]
+    foreach ($s in ($seedList | Sort-Object -Unique)) { $qq.Enqueue($s) }
+    while ($qq.Count -gt 0) {
+        $cn2 = $qq.Dequeue()
+        if ($seen2.ContainsKey($cn2)) { continue }
+        $seen2[$cn2] = $true
+        if (-not $byN.ContainsKey($cn2)) { continue }
+        foreach ($c2 in [regex]::Matches($byN[$cn2].Text, '\b([A-Z][A-Za-z0-9_]{3,})[ \t]*\(')) {
+            $nx = $c2.Groups[1].Value
+            if (-not $seen2.ContainsKey($nx) -and $byN.ContainsKey($nx)) { $qq.Enqueue($nx) }
+        }
+    }
+    return $seen2
+}
+function Get-DispatchSeeds([string]$text) {
+    $sd = @('Main')
+    foreach ($m3 in [regex]::Matches($text, '(?m)^[ \t]*case\s+"[a-z0-9\-]+"\s*:')) {
+        $f3 = $m3.Index + $m3.Length
+        if ($f3 + 400 -ge $text.Length) { continue }
+        foreach ($c3 in [regex]::Matches($text.Substring($f3, 400), '\b((?:Probe|Dump|Run|Handle)[A-Za-z0-9_]+)[ \t]*\(')) {
+            $sd += $c3.Groups[1].Value
+        }
+    }
+    return $sd
+}
+$judgePat = '(?m)(?<![\w.])(?:Check|Ok|No|CK)[ \t]*\('
+$blk10 = Get-MethodBlocks $spText
+$reach10 = Get-Reachable $blk10 (Get-DispatchSeeds $spText)
+$orphan10 = @($blk10 | Where-Object { (-not $reach10.ContainsKey($_.Name)) -and [regex]::IsMatch($_.Text, $judgePat) })
+CK ($blk10.Count -ge 60) ('⑩ 前置：扫到方法块 ' + $blk10.Count + ' 个（≥60 ⇒ 扫描器自己没瞎；「0 孤儿」才是结论而不是「没扫到」）')
+$knownMiss = @()
+foreach ($kn in @('Main', 'ProbeContract', 'ProbeVendorHdr', 'ProbeIpcSubmitToRunning')) {
+    $hitK = @($blk10 | Where-Object { $_.Name -eq $kn })
+    if ($hitK.Count -eq 0) { $knownMiss += ($kn + '（没扫到）') }
+    elseif (-not $reach10.ContainsKey($kn)) { $knownMiss += ($kn + '（扫到但闭包到不了）') }
+}
+$kmLine = '无'
+if (@($knownMiss).Count) { $kmLine = ($knownMiss -join ', ') }
+CK (@($knownMiss).Count -eq 0) ('⑩ 正控：四个确知可达的方法必须既被扫到又在闭包内（实 ' + $kmLine + '）—— 其中 ProbeIpcSubmitToRunning 走的是跨行 case 体，专治「种子漏了 switch 里的调用」这种假孤儿')
+$orLine10 = '无'
+if ($orphan10.Count) { $orLine10 = (@($orphan10 | ForEach-Object { $_.Name + ':' + $_.A + '（断言 ' + ([regex]::Matches($_.Text, $judgePat)).Count + ' 处）' }) -join ', ') }
+CK ($orphan10.Count -eq 0) ('⑩ 含断言却任何派发 mode 都到不了的方法 = 0（实 ' + $orphan10.Count + '：' + $orLine10 + '）—— 这就是活在执行文件里的镜像：要么接上，要么删掉，不许留着')
+
+# ── ⑩-pre 反控：合成源文本上，四种方向都必须按预期 ─────────────────────────
+$syn10 = @'
+class T {
+    static void Main() { ProbeA(); }
+    static void ProbeA() { Check("a", true); Helper(); }
+    static void Helper() { Check("h", true); }
+    static void DeadEnd() { Check("d", true); }
+    static void EmptyNoCaller() { DoSomethingElse(); }
+}
+'@
+$blkSyn = Get-MethodBlocks $syn10
+$reachSyn = Get-Reachable $blkSyn (Get-DispatchSeeds $syn10)
+$orphSyn = @($blkSyn | Where-Object { (-not $reachSyn.ContainsKey($_.Name)) -and [regex]::IsMatch($_.Text, $judgePat) })
+$teeth10 = @()
+if ($blkSyn.Count -lt 5) { $teeth10 += ('合成件只扫到 ' + $blkSyn.Count + '/5 个方法') }
+if ($orphSyn.Count -ne 1 -or $orphSyn[0].Name -ne 'DeadEnd') { $teeth10 += ('孤儿应恰好是 DeadEnd，实 ' + (@($orphSyn | ForEach-Object { $_.Name }) -join ',')) }
+foreach ($must in @('Main', 'ProbeA', 'Helper')) {
+    if (-not $reachSyn.ContainsKey($must)) { $teeth10 += ($must + ' 应可达却判不可达（Helper 只能经 ProbeA 一跳到达 ⇒ 闭包断了）') }
+}
+if ($reachSyn.ContainsKey('EmptyNoCaller')) { $teeth10 += 'EmptyNoCaller 无人调用却判可达' }
+$t10Line = '全部符合（不可达+含断言⇒抓到 / 经一跳可达⇒放行 / 无人调用且无断言⇒不算）'
+if ($teeth10.Count) { $t10Line = ($teeth10 -join ' | ') }
+CK ($teeth10.Count -eq 0) ('⑩-pre 有牙自证：合成件 4 项方向判据（' + $t10Line + '）')
+
+# ── ⑪ 归属域：清单外的脚本必须「被在册脚本点名」或「落进一个有理由的族」──────
+$offFamilies = @(
+    @{ Pat = '^_lib-';       Why = '库/共享底座：由在册门禁 dot-source，本身不是门禁' }
+    @{ Pat = '^_gen-';       Why = '生成器：被可复现锁（第 74 条）当执行对象' }
+    @{ Pat = '^_probe-|^probe-'; Why = '一次性取证工具：起被测二进制但不进轮（取证用）' }
+    @{ Pat = '^ensure-|^generate-'; Why = '生产者：造 tests/output 下的夹具' }
+    @{ Pat = '^_accept';     Why = '脚手架：人工验收脚本，判据与 union 重叠' }
+)
+$offExplicit = [ordered]@{
+    'verify-oracle-matrix.ps1'     = '手工长跑（5015 臂 ≈2.5 h，远超 ScriptTimeoutSec ⇒ 运行器注释里登记了不入清单的理由）'
+    'verify-color-matrix-full.ps1' = '手工长跑（全层网格 360 臂；同上一条理由）'
+    'verify-release-package.ps1'   = '发布套件（L3/打包期手工跑，产物级判据在 pack 之后才有意义）'
+    'run-full-matrix-test.ps1'     = '旧一次性驱动（包装 matrix-full；待逐支证明判据已被覆盖后再删）'
+    'run-full-matrix-test-safe.ps1' = '旧一次性驱动（同上，带安全阀）'
+    'run-color-tests.ps1'          = '旧一次性驱动（判据已被 verify-color-* 覆盖 ⇒ 待证后删）'
+    'run-color-regress.ps1'        = '旧一次性驱动（同上）'
+    'run-quality-tests.ps1'        = '旧一次性驱动（同上）'
+    'run-thread-tests.ps1'         = '旧一次性驱动（同上）'
+    'run-ps-verify.ps1'            = '旧一次性驱动（PS 兼容性由 verify-ps-compat 覆盖 ⇒ 待证后删）'
+    'archive-diagnostics.ps1'      = '脚手架（诊断留档）'
+    'cleanup-structure.ps1'        = '脚手架（结构清理）'
+    'insert_cicp.ps1'              = '脚手架（历史一次性 PNG cICP 注入）'
+}
+$managedBlob = ''
+foreach ($f5 in $scriptListAll) {
+    if (-not $rawText.ContainsKey($f5)) { continue }
+    foreach ($ln5 in ($rawText[$f5] -split "`r?`n")) {
+        if ($ln5.Trim().StartsWith('#')) { continue }
+        $managedBlob += $ln5 + "`n"
+    }
+}
+$named11 = @(); $fam11 = @(); $expl11 = @(); $orph11 = @()
+foreach ($fi5 in $allPs) {
+    $f5n = $fi5.Name
+    if ($f5n -eq '_run-step3-gates.ps1') { continue }
+    if ($managedSet.ContainsKey($f5n)) { continue }
+    $stem5 = $f5n -replace '\.ps1$', ''
+    $isNamed = ($managedBlob.Contains($f5n)) -or ($managedBlob -match ('(?<![\w\-.])' + [regex]::Escape($stem5) + '(?![\w\-])'))
+    if ($isNamed) { $named11 += $f5n; continue }
+    if ($offExplicit.Contains($f5n)) { $expl11 += $f5n; continue }
+    $famHit = $null
+    foreach ($fam in $offFamilies) { if ($f5n -match $fam.Pat) { $famHit = $fam; break } }
+    if ($famHit) { $fam11 += $f5n; continue }
+    $orph11 += $f5n
+}
+$or11Line = '无'
+if (@($orph11).Count) { $or11Line = ($orph11 -join ', ') }
+CK (@($orph11).Count -eq 0) ('⑪-a 清单外脚本要么被在册脚本点名、要么落进有理由的族/显式表（未归属 ' + @($orph11).Count + ' 支：' + $or11Line + '）—— 新写一支脚本不登记就在这里红')
+$stale11 = @($offExplicit.Keys | Where-Object { -not (Test-Path (Join-Path $scriptsDir $_)) })
+$badList11 = @($offExplicit.Keys | Where-Object { $managedSet.ContainsKey($_) })
+$sl11Line = '无'
+if (@($stale11).Count) { $sl11Line = ($stale11 -join ', ') }
+CK (@($stale11).Count -eq 0) ('⑪-b 显式归属表里没有已不在盘的行（陈旧 ' + @($stale11).Count + ' 条：' + $sl11Line + '）')
+$bl11Line = '无'
+if (@($badList11).Count) { $bl11Line = ($badList11 -join ', ') }
+CK (@($badList11).Count -eq 0) ('⑪-c 已进受管清单的脚本必须从归属表删掉（漏删 ' + @($badList11).Count + ' 条：' + $bl11Line + '）')
+$debt11 = @()
+foreach ($k6 in @($expl11 + $fam11 + $named11)) {
+    $p6 = Join-Path $scriptsDir $k6
+    if (-not (Test-Path $p6)) { continue }
+    $t6 = [System.IO.File]::ReadAllText($p6)
+    $j6 = ([regex]::Matches($t6, $judgePat)).Count
+    if ($j6 -eq 0) { continue }
+    if ($managedSet.ContainsKey($k6)) { continue }
+    $debt11 += ('{0}（判据 {1} 处）' -f $k6, $j6)
+}
+if (@($debt11).Count) {
+    Write-Host ('WARN ⑪-d 有判据却不进整轮的清单外脚本 = ' + @($debt11).Count + ' 支：' + (($debt11 | Select-Object -First 6) -join ', ') + ' ⇒ 要么接进清单，要么按 A-1 的先证明再逐支删（本条只警告不判红：历史上有意的长跑例外）') -ForegroundColor Yellow
+}
+$acc11 = @($named11).Count + @($fam11).Count + @($expl11).Count + @($orph11).Count
+$offTotal11 = @($allPs).Count - @($scriptListAll).Count - 1
+CK ($acc11 -eq $offTotal11) ('⑪-e 账目：清单外 ' + $offTotal11 + ' 支 == 被点名 ' + @($named11).Count + ' + 族内 ' + @($fam11).Count + ' + 显式表 ' + @($expl11).Count + ' + 未归属 ' + @($orph11).Count + '（实 ' + $acc11 + '；不等即有点名被吞或重复计数）')
+Write-Host ('ℹ      ⑪ 清单外 ' + $offTotal11 + ' 支 = 被在册脚本点名 ' + @($named11).Count + ' ｜ 族归属 ' + @($fam11).Count + ' ｜ 显式登记 ' + @($expl11).Count + ' ｜ 未归属 ' + @($orph11).Count)
+
+# ── ⑪-pre 反控：换一批合成输入，验证 ⑪ 用的还是同一把分类尺 ────────────────
+$syn11a = Split-OffBook @('s_plain') @() @{} @{ s_plain = '手工工具' }
+$syn11b = Split-OffBook @('s_new') @() @{} @{}
+$teeth11 = @()
+if (@($syn11a.OkExempt).Count -ne 1) { $teeth11 += '已登记的清单外脚本应放行' }
+if (@($syn11b.Unregistered).Count -ne 1) { $teeth11 += '新增一支未登记的脚本没被判红' }
+$t11Line = '全部符合（已登记⇒放行 / 新增未登记⇒红）'
+if ($teeth11.Count) { $t11Line = ($teeth11 -join ' | ') }
+CK ($teeth11.Count -eq 0) ('⑪-pre 有牙自证：合成件 2 项方向判据（' + $t11Line + '）')
 # ── 信息行：两边的计数与差集（逐名，不压成总数）────────────────────────────
 Write-Host ""
 Write-Host ("ℹ      组表并集 = {0} 个 mode；运行器 `$Probes` = {1} 个；受管基线 = {2} 条（证据源 {3} 条，去掉守卫自己）" -f $union.Count, $probes.Count, $scriptListAll.Count, $evidenceScripts.Count)

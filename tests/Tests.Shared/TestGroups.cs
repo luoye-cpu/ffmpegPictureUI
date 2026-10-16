@@ -59,6 +59,14 @@ namespace Tests.Shared
                 "metaraw", "icc", "icc-dump", "faithful",
                 "gainmap", "ultrahdr", "gainmap-isobmff", "oog", "avifgm",
                 "ipc", "procstreams",
+                // 2026-10-16 可见性普查 ⑨：这三个 mode **每轮真的在被执行**（`verify-gainmap-memory.ps1:234,341`
+                // 跑 memadmit、`verify-color-tonemap.ps1:36` 跑 tonemapcurve、
+                // `verify-gainmap-isobmff.ps1:484,485` 跑 color），但此前既不在 `$Probes` 也不在本表
+                // ⇒ 四档账把它们当不存在（⑦-a 的 67==67 只是「两份手抄互相对表」，不是对代码）。
+                // ⚠ 本仓第一版 ⑨ 落地时把 `color` 登记成了「零调用点的门外手工工具」，当场被 ⑨-a 判红：
+                //   它的调用者是**在册**门禁（起 `$sp` = ServiceProbe.exe，stdout 喂给 §3b 两条 CK）
+                //   ⇒ 按「有调用点就必须进账」的规矩并进本组，而不是留在 #69 的豁免表里。
+                "memadmit", "tonemapcurve", "color",
             },
 
             // ── 编码参数与产物 / 元数据与 ICC / 增益图与 Ultra HDR / 进程与 IPC ──
