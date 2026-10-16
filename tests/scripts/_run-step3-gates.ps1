@@ -1,6 +1,6 @@
 # _run-step3-gates.ps1 —— 步骤 3 改动后的门禁批量执行（只回显每个门禁的汇总行 + 失败明细）
 # 用法：pwsh -NoProfile -File tests/scripts/_run-step3-gates.ps1 [-Probes a,b,c] [-SkipScripts] [-Scripts a,b]
-#   ⚠ `-Scripts` = **脚本级子集**（2026-09-24 新增）。动机：此前只有"全跑 75 条"与
+#   ⚠ `-Scripts` = **脚本级子集**（2026-09-24 新增）。动机：此前只有"全跑 76 条"与
 #     "裸跑单个 verify-*.ps1"两种选择，而裸跑会绕开本文件的**仓库锁 / 单步超时 / STALE 新鲜度闸 /
 #     双漂移复核 / `_gate_script_*.txt` 留痕**五项保护 ⇒ 增量验证要么太贵要么不可信。
 #     ⚠ 全跑墙钟不再写死分钟数：2026-10-01 起清单含 5 条 **L3/产物级**套件（第 61~65 条），
@@ -86,7 +86,7 @@ param([string]$Probes = 'contract,wire,verdict,selftest,iccname,plan,curve,matri
 #    2026-09-17 新增 verify-gamut-map.ps1；**同日按「运行级隔离（GUID）」改写，见 §6 第 66 条**；
 #    同日再新增生产者 `_probe-jpg-p3-icc.ps1`，理由见下方 ②(b) 与调序注释；
 #    同日再新增 `verify-geometry-engine.ps1`（**几何缩放死代码**的专项门禁，理由见 `$Probes` 的 `geometry` 注释））──
-#    ⚠ **清单条数以实测为准 = 75 条**（⚠ 2026-09-19 P4-A 前为 42 条；2026-09-23 由 48 经 49/50/51 到 52，2026-09-23/24 再接 `verify-ipc-extra-options.ps1` ⇒ 53，2026-09-24 再接 `_probe-settings-clone-coverage.ps1` ⇒ 54，2026-09-27 再接 `_probe-matrix-structure.ps1`（任务 #42，秒级结构自检）⇒ 55，同日再接 `_probe-stderr-merge-scan.ps1`（任务 #51，合并取数结构锁）⇒ 56，同日再接 `verify-simd-switch-fallback.ps1`（面板「SIMD 优化」声明/实现冲突 ⇒ 判据单点 `SimdKernelRouting`）⇒ 57，2026-09-30 再接 `verify-geometry-orientation.ps1` + `_probe-geometry-single-source-scan.ps1`（取向标签 ⇒ **显示尺寸**口径的专项门禁 + 唯一实现结构锁）⇒ 59，同日再接 `verify-gainmap-host.ps1`（把 `GainMapTestHost` 套件接进清单 + STALE 第 ⑤ 对）⇒ 60，2026-10-01 再接**首批 L3/产物级套件**5 条（`verify-package-smoke` + `verify-jbrd-e2e` + `verify-orientation-rewrap` + `verify-gainmap-thirdparty` + `verify-encoder-knob-liveness`；原居 gitignored 的 `tests/output/t{69,76,77,79}`，`git clean -xdf` 一次就没、也不在任何轮里被跑）⇒ 65，2026-10-04 再接 `_probe-jxl-input-target.ps1` + `_probe-raw-default-tier.ps1`（色彩审查两个 P1 的判据）⇒ 67，同日再接 `_probe-gui-control-wiring.ps1`（72h 审查 P0：GUI 控件「声明了却没接线」结构锁）⇒ 68，2026-10-05 再接 `_probe-test-group-coverage.ps1`（测试物理拆分的**组表↔探针清单覆盖一致性锁**，防「某 mode 无组认领 ⇒ 永远不被跑」的假覆盖）⇒ 69）（`foreach` 数组里的 `.ps1` 条目数）。
+#    ⚠ **清单条数以实测为准 = 76 条**（⚠ 2026-09-19 P4-A 前为 42 条；2026-09-23 由 48 经 49/50/51 到 52，2026-09-23/24 再接 `verify-ipc-extra-options.ps1` ⇒ 53，2026-09-24 再接 `_probe-settings-clone-coverage.ps1` ⇒ 54，2026-09-27 再接 `_probe-matrix-structure.ps1`（任务 #42，秒级结构自检）⇒ 55，同日再接 `_probe-stderr-merge-scan.ps1`（任务 #51，合并取数结构锁）⇒ 56，同日再接 `verify-simd-switch-fallback.ps1`（面板「SIMD 优化」声明/实现冲突 ⇒ 判据单点 `SimdKernelRouting`）⇒ 57，2026-09-30 再接 `verify-geometry-orientation.ps1` + `_probe-geometry-single-source-scan.ps1`（取向标签 ⇒ **显示尺寸**口径的专项门禁 + 唯一实现结构锁）⇒ 59，同日再接 `verify-gainmap-host.ps1`（把 `GainMapTestHost` 套件接进清单 + STALE 第 ⑤ 对）⇒ 60，2026-10-01 再接**首批 L3/产物级套件**5 条（`verify-package-smoke` + `verify-jbrd-e2e` + `verify-orientation-rewrap` + `verify-gainmap-thirdparty` + `verify-encoder-knob-liveness`；原居 gitignored 的 `tests/output/t{69,76,77,79}`，`git clean -xdf` 一次就没、也不在任何轮里被跑）⇒ 65，2026-10-04 再接 `_probe-jxl-input-target.ps1` + `_probe-raw-default-tier.ps1`（色彩审查两个 P1 的判据）⇒ 67，同日再接 `_probe-gui-control-wiring.ps1`（72h 审查 P0：GUI 控件「声明了却没接线」结构锁）⇒ 68，2026-10-05 再接 `_probe-test-group-coverage.ps1`（测试物理拆分的**组表↔探针清单覆盖一致性锁**，防「某 mode 无组认领 ⇒ 永远不被跑」的假覆盖）⇒ 69）（`foreach` 数组里的 `.ps1` 条目数）。
 #      原注释写「29 个」「31 条」均与实测不符（**历史偏差**，非本轮引入），已按实测更正。
 #      2026-09-18 新增 `verify-engine-firstframe.ps1`（引擎多帧解码只取首帧，理由见该脚本头注释）
 #      ⇒ 32 → 33，已重新数过。
@@ -717,6 +717,30 @@ $gmExe = Get-Item "$root/tests/GainMapTestHost/bin/Release/net11.0/win-x64/GainM
 if ($gmSrc -and $gmExe -and $gmExe.LastWriteTime -lt $gmSrc.LastWriteTime) {
   $stale += ("GainMapTestHost.exe {0} < tests/GainMapTestHost 源码 {1}（{2}）" -f $gmExe.LastWriteTime, $gmSrc.LastWriteTime, $gmSrc.Name)
 }
+# ── 第 ⑥⑦⑧ 对（2026-10-16 审查补）：三段**拆分宿主**的 exe ↔ 各自源码 ────────────────────
+#   动因：`tests/gainmap-{encode,decode,struct}` 是 2026-10-05 从 `GainMapTestHost` **物理拆分**出来的三段，
+#   2026-10-15 才由清单第 60 条 `verify-gainmap-host.ps1` §4b **真跑**（此前是 #69 在册的零调用点）。
+#   进了执行面却**没进本闸** ⇒ §4b 会拿陈旧拆分件报绿，而它的读数被算成"本轮实测"。同一坑第 ⑤ 对
+#   已经赔过一次（`GainMapTestHost` 的 4 条过期期望在树里红了 10 天）。
+#   ⚠ 三段各自**独立工程**：源码只与自己的目录比，别拿 `tests/GainMapTestHost` 的 mtime 去比拆分件，
+#     那会造出与产物无关的假 STALE（与上面 UiTestHost 那条同规）。
+$segPairs = @(
+    @{ proj = 'gainmap-encode'; asm = 'Tests.GainMapEncode' },
+    @{ proj = 'gainmap-decode'; asm = 'Tests.GainMapDecode' },
+    @{ proj = 'gainmap-struct'; asm = 'Tests.GainMapStruct' }
+)
+$segExes = @()
+foreach ($sp in $segPairs) {
+    $sSrc = Get-NewestSrc "$root/tests/$($sp.proj)"
+    $sExe = Get-Item "$root/tests/$($sp.proj)/bin/Release/net11.0/win-x64/$($sp.asm).exe" -ErrorAction SilentlyContinue
+    $segExes += ,@($sp.asm, $sExe)
+    if ($sSrc -and $sExe -and $sExe.LastWriteTime -lt $sSrc.LastWriteTime) {
+        $stale += ("$($sp.asm).exe {0} < tests/$($sp.proj) 源码 {1}（{2}）" -f $sExe.LastWriteTime, $sSrc.LastWriteTime, $sSrc.Name)
+    }
+    if (-not $sExe) {
+        $stale += ("$($sp.asm).exe 不存在（tests/$($sp.proj)/bin/Release）⇒ §4b 会静默回退 Debug 或判红，本轮不可绑定该段读数")
+    }
+}
 # ── 2026-10-01 补：**不存在**也必须拒（此前只判"旧"）──────────────────────────────────
 #   动因是本轮实测到的假绿链：`bin/Release` 的产物会被外部 `dotnet build`/清理整时段打回，而 `bin/`
 #   在 .gitignore 里 ⇒ 这种打回**git 看不见**；35 个子脚本的 exe 解析是「Release 缺 ⇒ 静默换 Debug」，
@@ -731,8 +755,9 @@ if (-not $gmExe)  { $stale += 'GainMapTestHost.exe 不存在 ⇒ GainMap 宿主�
 if ($stale.Count -gt 0) {
   Write-Output "[STALE] 被执行的产物缺失或比它的源码旧，拒绝跑（否则结论不可信）"
   $stale | ForEach-Object { Write-Output ("        " + $_) }
-  Write-Output  "        重建（同批、各自 -c Release）：src/FfmpegGui | tests/ServiceProbe | tests/UiTestHost | tests/GainMapTestHost"
+  Write-Output  "        重建（同批、各自 -c Release）：src/FfmpegGui | tests/ServiceProbe | tests/UiTestHost | tests/GainMapTestHost | tests/gainmap-{encode,decode,struct}"
   Write-Output  "        ⚠ tests/GainMapTestHost 自 2026-09-30 起**已进闸**（清单第 60 条 `verify-gainmap-host.ps1` + 上面第 ⑤ 对）"
+  Write-Output  "        ⚠ 三段拆分件（Tests.GainMap{Encode,Decode,Struct}.exe）自 2026-10-16 起进闸（第 ⑥⑦⑧ 对；§4b 执行它们）"
   # ⚠ 2026-09-19 修（实施 #147 C 锁时漏掉的退出点）：此处**必须**先释放仓库级锁 ——
   #   否则「正常拒绝」也会留下残留锁（实测：STALE 拒跑后 `跑后锁残留=True`，下次运行会被
   #   自己的锁挡住并报「疑似残留锁」）。`Release-GatesLock` 只删**自己写的**锁（pid 校验）。
@@ -933,7 +958,7 @@ $noSelfSummary = @('_probe-cancel-propagation-scan.ps1', '_probe-ct-chain-closur
 #   观察项**，改成必红等于**主动放弃一条覆盖**；补生产者只是**修复清单的遗漏**。
 #   ⚠ **本组正确性依赖 runner 串行**（`validate/jpgp3` 是固定共享目录）——
 #   若将来 runner 改成并行，本组必须先改成「指针/按会话隔离」（§6 第 68 条）。
-# ⚠ 受管基线：脚本清单 = **75** 条（`.workbuddy-ai/memory/MEMORY.md` / `docs/HANDOVER.md` /
+# ⚠ 受管基线：脚本清单 = **76** 条（`.workbuddy-ai/memory/MEMORY.md` / `docs/HANDOVER.md` /
 #   `docs/TESTING.md` §3.5 同记此数）。增删条目必须**同时**改此常量 + 四处文档；
 #   否则下面的条数锁会响亮报红（防「删掉一条 ⇒ 静默变 47 ⇒ 日志照常、无人发现」）。
 #   ⚠ 本锁在 `-SkipScripts` 下**不执行**（该模式走上面的早退，清单根本没被使用）——
@@ -972,6 +997,11 @@ $noSelfSummary = @('_probe-cancel-propagation-scan.ps1', '_probe-ct-chain-closur
 #       （清单内 27 条内嵌该路径；会打印 `(Debug fallback)` 因而**可追溯**，但**不拦**），而 **Debug 不在本闸内**，
 #       且本闸各对（2026-09-30 起为**五对**）都是"产物不存在 ⇒ 该对跳过" ⇒ 「缺失即拒跑」与否是**待决策**，
 #       见 `docs/HANDOVER_2026-09-22.md` §4 第 9 行与 `docs/TESTING.md` §6 第 106 条末段。
+#       ⚠ **【2026-10-01 与 2026-10-16 两次处置，上面两句现值已变，按历史链逐字保留】**：
+#         · "该对跳过"已作废 ⇒ 2026-10-01 起**五对全部**改成"不存在也拒跑"（见上面 `-not $guiDll … -not $gmExe` 五条）；
+#         · "待决策"已决策 ⇒ 现共 **八对**（2026-10-16 补第 ⑥⑦⑧ 对：三段拆分宿主 exe，含"不存在即拒"）；
+#         · **仍然未进闸的是 Debug 兜底那份**（清单内脚本会打印 `(Debug fallback)`，可追溯但不拦）——
+#           这一条不在上面的处置范围内，仍是**开口**。
 #   ⚠ 不接入的长跑门禁：`verify-oracle-matrix.ps1`（本轮新建，5010 条组合 + 独立裁判）
 #     实测 **1.6~2.0 s/用例 ⇒ 全量约 2.5 h**，远超 `ScriptTimeoutSec 480` ⇒ **有意不入清单**，
 #     按**手工长跑**执行（`-Layer L1` ≈ 6 min / `-Layer L2` ≈ 5 min / `-Smoke` ≈ 8 s）。
@@ -1041,7 +1071,7 @@ $noSelfSummary = @('_probe-cancel-propagation-scan.ps1', '_probe-ct-chain-closur
 #   ⚠ 自带汇总（`PASS=n FAIL=m` + 断言驱动 exit）⇒ 分类账「其余」57 → 58，两个数组仍不动。
 #   ⚠ 实测（2026-10-05，三次变异）：① 从组表删一个 mode ⇒ `contract` 未认领判红；
 #     ② 加一个无工程目录的组 ⇒ 判红；③ 把 mode 拼错 ⇒ 判红；恢复 ⇒ **6/0**。
-$expectedScriptCount = 75
+$expectedScriptCount = 76
 $scriptList = @('verify-ps-compat.ps1','verify-color-caps.ps1','verify-color-wiring.ps1','verify-color-strategy.ps1','verify-format-regression.ps1',
                  'verify-widegamut-regression.ps1','verify-tiff-icc.ps1','verify-webp-hdr-fix.ps1','verify-decision-delivery.ps1',
                  '_probe-stderr-drain-scan.ps1','_probe-proc-encoding-scan.ps1','_probe-cancel-propagation-scan.ps1','_probe-i18n-scan.ps1','_probe-cjk-hardcode-scan.ps1','verify-png-signature.ps1','verify-gainmap-memory.ps1','verify-metadata-privacy.ps1','verify-gif-avif-framelist.ps1','verify-color-peak.ps1',
@@ -1329,6 +1359,13 @@ $scriptList = @('verify-ps-compat.ps1','verify-color-caps.ps1','verify-color-wir
                  #   ⚠ 归 **C 类**：自带 `DRYRUNPARITY RESULT: pass=n fail=m` + 断言驱动 exit
                  #     ⇒ **不进** `$tableOnly` / `$noSelfSummary`。
                  #   ⚠ 实测耗时 ~11 s（单步上限 900 s，余量充足）；纯 dry-run + 4 次小图真跑。
+# ── 第 76 条：2026-10-14 接线（`_probe-tilegrid-chain-lock.ps1`）──────────────────
+#   覆盖「分块（Tile Grid）流组的输入只能挂复合滤镜」这条形态判据**不被绕过**：全仓新建
+#   `-vf` 只许出现在 sink（CreateVideoChain）里 1 处；已拍平中间件的通路按行内标记
+#   `tile-lock: flattened-input` 豁免（**不按 文件:行号** —— 行号会随任何插行漂移失效）。
+#   立锁动因：发射点共 5 处（:348/:373/:409/:456/:1980），漏改任一处就等于把零产物留给用户；
+#   有牙自检：把带裸 -vf 的副本喂给 -Files ⇒ 恰 1 条红，标记行与只读 FindIndex 行都不误报。
+                 '_probe-tilegrid-chain-lock.ps1',
                  'verify-dryrun-parity.ps1')
 $actualScriptCount = @($scriptList).Count
 if ($actualScriptCount -ne $expectedScriptCount) {

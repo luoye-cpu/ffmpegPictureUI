@@ -66,6 +66,25 @@ foreach ($f in @("jpg", "png", "tiff", "gif")) { Run-Case "hdr8" $hdr8 $f @("--c
 Write-Host "`n### SDR 源 (auto) 回归 ###" -ForegroundColor Cyan
 foreach ($f in $formats) { Run-Case "sdr" $sdr $f @() }
 
+Write-Host "`n### bitdepth mode：位宽单元必须被执行面调用（#69 零调用点，2026-10-15 补）###" -ForegroundColor Cyan
+#   `ServiceProbe bitdepth` 自建一张 16-bit 输入、只验**位宽**（不验内容），此前没有任何在册脚本调它
+#   ⇒ 只有代码、没有执行面。本门禁逐位深跑过各格式，是最贴近的归属。
+#   判据钉**条数**（pass=11 fail=0）：只钉 fail=0 的话，断言整段没跑也是绿。
+$prB = "$root/tests/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.exe"
+if (-not (Test-Path $prB)) { $prB = "$root/tests/ServiceProbe/bin/Debug/net11.0/win-x64/ServiceProbe.exe" }
+if (-not (Test-Path $prB)) {
+    Write-Host "  FAIL bitdepth 臂：ServiceProbe 未构建 ⇒ 判红（不按未评估放行）" -ForegroundColor Red; $script:fail++
+} else {
+    $b1 = ExecOut $prB "bitdepth"
+    if ($b1 -match 'PROBE RESULT: pass=11 fail=0') {
+        Write-Host "  PASS bitdepth = 11/0（自建 16-bit 输入，逐位宽判据全过）" -ForegroundColor Green; $script:pass++
+    } else {
+        Write-Host ("  FAIL bitdepth 读数不符（须 PROBE RESULT: pass=11 fail=0，实 " +
+            (($b1 -split "`r?`n" | Where-Object { $_ -match 'PROBE RESULT|^FAIL' } | Select-Object -First 3) -join ' | ') + "）") -ForegroundColor Red
+        $script:fail++
+    }
+}
+
 Write-Host "`n===== PASS=$pass FAIL=$fail =====" -ForegroundColor $(if ($fail -eq 0) { "Green" } else { "Red" })
 # ⚠ 唯一目录自清（宿主批量删除守卫会拦整目录删 ⇒ 用 -EA SilentlyContinue，§6 第 57 条 ③）；失败则保留供排查
 if ($fail -eq 0) { Remove-Item -Recurse -Force $out -ErrorAction SilentlyContinue }

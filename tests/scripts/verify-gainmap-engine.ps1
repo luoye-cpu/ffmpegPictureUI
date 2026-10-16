@@ -545,7 +545,11 @@ CK ($gjc -match '=> o\.JpegProgressiveId switch \{ 1 => 2, 0 => 0, _ => -1 \};')
 CK ($gme -match 'string\? sourcePrimaries = null,\s+Action<string>\? log = null, CancellationToken ct = default,') "⑩ 源码锁：log/ct 仍紧跟 sourcePrimaries 之后（位置实参不错绑的前提；在其后追加 container 是合法的）"
 CK ($qpc -match 'ColorMapping\.GainMapJpegCodec\.ProgressiveLevelOf\(item\.Options\)') "⑩ 源码锁：专用管线调用点复用单一真值（不另写映射）"
 CK ($qpc -match 'jpegProgressiveLevel: gmProgLv,') "⑩ 源码锁：主路调用点具名传入 progressive 档（防接线被删）"
-CK ($qpc -match 'container: GainMapEncoder\.ContainerOf\(outputPath\)\)') "⑩ 源码锁：主路容器由单一真值决定（不许就地写死 \"jpeg\"）"
+# ⚠ 锚演进（2026-10-15 T12/R3 重钉）：主路调用点在 `container:` 之后又追加了两个**具名**可选实参
+#   （`sourceBaseRaw:` / `inputIsSdrWhiteUnit:`，配对重封装与单位约定），所以这里**不再要求 `)` 紧跟其后**
+#   —— 本锁真正防的是「就地写死 "jpeg"」，不是「container 必须是最后一个实参」（与 :543 的判据同源）。
+CK ($qpc -match 'container: GainMapEncoder\.ContainerOf\(outputPath\)') "⑩ 源码锁：主路容器由单一真值决定（不许就地写死 \"jpeg\"）"
+
 CK (([System.IO.File]::ReadAllText("$root/src/FfmpegGui/Services/ColorMapping/RawColorPipeline.cs")) -match 'jpegProgressiveLevel: gmProgLv,') "⑩ 源码锁：引擎路调用点同样具名传入 progressive 档"
 
 # ══ ⑪ §38 锁：GainMap + `--encoder cjpegli` ⇒ 底图 ICC 不得被**源** ICC 覆盖 ════════════

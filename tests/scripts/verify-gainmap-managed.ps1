@@ -331,7 +331,9 @@ if (-not (Test-Path $gmHost)) {
   if ($f2b) { Ok "§6 F-2 口径锁：LogGainToByteScalar 落字节仍是截断（未偷换 +0.5/round）" }
   else { No "§6 F-2 口径锁红：截断被改成舍入，但两趟前置条件（实测 min/max 进声明）并未落地" }
   $qMut = $qBody -notmatch '\+\s*0\.5f'
-  if ($qBody -match 'clamped / maxLog2Gain \* 255f') { Ok "§6 **反控**：截断表达式本身在体内可定位（锚活着）" }
+  # 锚 = 落字节那一行的**实际形状**（T12/R2 起为双侧仿射；单侧是 min=0 的退化情形）
+  $truncAnchor = ($qBody -match '\(clamped - minLog2Gain\) / span \* 255f') -and ($qBody -match 'span = maxLog2Gain - minLog2Gain')
+  if ($truncAnchor) { Ok "§6 **反控**：截断表达式在体内可定位（锚活着，且量程确为 [minLog2Gain, maxLog2Gain] 双侧）" }
   else { No "§6 截断表达式的锚找不到 ⇒ 上一条 F-2 口径锁可能是真空绿" }
 
   # F-3 接线锁：增益分母必须来自「底图交付字节」的回灌，而不是钳前 float
@@ -372,6 +374,17 @@ if (-not (Test-Path $gmHost)) {
   $f4Mut = $csBody -replace 'multiChannel \? "444" : "420"', 'multiChannel ? "420" : "420"'
   if ($f4Mut -notmatch '"444"') { Ok "§6 **反控**：把 444 变异成 420 ⇒ F-4 接线锁确实转红（有牙）" }
   else { No "§6 反控失效 ⇒ F-4 接线锁恒真" }
+}
+
+Write-Host "`n### 7) ultrahdr mode 必须被执行面调用（#69 在册零调用点之一，2026-10-15 补）###" -ForegroundColor Cyan
+#   存在的理由：`ServiceProbe ultrahdr <file>` 这条读回单元在**任何在册脚本里都没有调用点**
+#   ⇒ 只有代码、没有执行面（#69 的 ⑥-c 把它报成零调用点）。这里把它接在本门禁**已经产出**的
+#   UltraHDR JPEG 上，判据钉**条数**（pass=4 且 fail=0）而不是只钉 fail=0 ⇒ 断言整段没跑也会红。
+if (-not (Test-Path $probe)) { No "§7 ServiceProbe 未构建（$probe）⇒ 判红，不按未评估放行" }
+else {
+  $u7 = Exec $probe "ultrahdr `"$jpg`""
+  if ($u7 -match 'PROBE RESULT: pass=4 fail=0') { Ok "§7 ultrahdr 在真 UltraHDR 件上 4/0（产物 $([int]((Get-Item $jpg).Length/1024)) KB）" }
+  else { No "§7 ultrahdr 读数不符（须 PROBE RESULT: pass=4 fail=0，实 $((($u7 -split "`r?`n" | Where-Object { $_ -match 'PROBE RESULT|^FAIL' }) | Select-Object -First 3) -join ' | ')）" }
 }
 
 Write-Host "`n===== PASS=$pass FAIL=$fail =====" -ForegroundColor $(if($fail -eq 0){"Green"}else{"Red"})

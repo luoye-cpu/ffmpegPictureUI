@@ -98,6 +98,17 @@ if (Test-Path $probe) {
   $fo = Exec $probe "faithful `"ProPhoto RGB`" yes"
   $mm = [regex]::Match($fo, "icc=(\S+?\.icc)")
   if ($mm.Success) { $ppIcc = $mm.Groups[1].Value.Trim() }
+  # ── `icc` mode 必须被执行面调用（#69 的 ⑥-d：此前 `icc` 的**唯一**调用点在 `ensure-fixtures.ps1`，
+  #    那份脚本不在受管清单里 ⇒ "有调用点"不等于"担保跑到"）。本格钉条数 4/0。
+  $ic7 = Exec $probe "icc `"ProPhoto RGB`""
+  # ⚠ 读数尾巴**先在串外算好**再拼接：把 `"`r?`n"` 这类嵌套双引号塞进外层双引号串里，
+  #   PS 会把外层串提前终止（实测解析错 5 条，报错点在**下一行注释**上——串把注释吞掉了）。
+  $ic7Tail = (($ic7 -split "`r?`n" | Where-Object { $_ -match 'PROBE RESULT|^FAIL' } | Select-Object -First 3) -join ' | ')
+  if ($ic7 -match 'PROBE RESULT: pass=4 fail=0') { Ok "§icc mode 在 ProPhoto 上 4/0（ICC **结构**单元：解析/魔数/desc/wtpt 四项；**确定性不在这一格** —— 重复生成同字节由上面的 `faithful` 臂量）" }
+  else { No ("§icc mode 读数不符（须 PROBE RESULT: pass=4 fail=0，实 " + $ic7Tail + "）") }
+  # ⚠ 登记一条**未判**的观察（不当判据用）：`icc <随便一个不存在的空间>` 实测同样 4/0 ⇒
+  #   本 mode 验的是"生成的 ICC 结构自洽"，**不是**"请求的空间被兑现"；后者由 faithful/iccname 两格覆盖。
+  #   ⇒ 不许把"未知空间也 4/0"读成缺陷，也不许在这里给它加红（那是另一条判据，要立就得单独立）。
 }
 if (-not $ppIcc -or -not (Test-Path $ppIcc)) { No "无法定位纯托管生成的 ProPhoto ICC"; Write-Host "`n===== PASS=$pass FAIL=$fail =====" -ForegroundColor Red; exit 1 }
 Ok "保真 ICC: $(Split-Path -Leaf $ppIcc) ($((Get-Item $ppIcc).Length) B)"

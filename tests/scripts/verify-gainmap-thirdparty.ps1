@@ -162,6 +162,63 @@ else {
   CK 'B2 exiftool 也读不到第二子图' (($eb.code -eq 0) -and ($eb.text -notmatch 'MPImage')) `
     $(if ($eb.code -ne 0) { "FAIL 前置：exiftool 未成功读取（exit=$($eb.code)）⇒ 否定式判据无从成立｜" + (($eb.text -split "`r?`n" | Where-Object { $_.Trim() -ne '' } | Select-Object -First 1) -as [string]) } else { (($eb.text -split "`r?`n" | Where-Object { $_ -match 'MPImage' } | Select-Object -First 1) -as [string]) })
 }
+'=== D) 增益图**输入**再出口：双端点必须由第三方读回（A 路 vs B 路，仓库内合成件；2026-10-15 T12/R4）==='
+# 为什么必须有一格：`minContentBoost < 1` 是「暗部下沿没被抹平」的**唯一外部证据**。
+#   产品自己日志里的 log2 分位数只能证明"它这么说"，不能证明"文件里真是这样"。
+# 判据用**两臂对照**（同素材、同 `--jpeg-gain-map true`，只变 `--gain-map-base-from-source`）：
+#   A 路（底图=源）⇒ 第三方必须读到 <1 的下沿；B 路（出口自造 Reinhard）⇒ 必须读回恰好 1
+#   ⇒ 这条既钉住"下沿保住了"，也钉住"B 路确实会丢"（不是两臂同绿的假对照）。
+# 实测（本仓 `tests/data/synth_heic_gainmap.heic`，声明 min=-0.257 max=1.277 γ=0.95）：
+#   A ⇒ minContentBoost 0.817902 / maxContentBoost 2.46229   B ⇒ minContentBoost 1 / max 2.46229
+$syn3 = "$root\tests\data\synth_heic_gainmap.heic"
+if (-not (Test-Path $syn3)) {
+  CK 'D0 仓库内合成增益图夹具在位' $false "缺 $syn3 ⇒ 本段**判红**（本门禁只有 PASS/FAIL 两态，无 SKIP；fail-closed 而不是静默放行）。个人素材不入仓，这里只用合成件"
+} else {
+  $dA = AppRun 'gm3_A' $syn3 '--jpeg-gain-map true'
+  $dB = AppRun 'gm3_B' $syn3 '--jpeg-gain-map true --gain-map-base-from-source false'
+  CK 'D1 两臂各产出唯一 jpg' (($dA.count -eq 1) -and ($dB.count -eq 1)) "A=$($dA.count) B=$($dB.count) rc=$($dA.code)/$($dB.code)"
+  $pA = X $uhdr ('-m 1 -P -j "' + $dA.file.FullName + '"') 'd3a'
+  $pB = X $uhdr ('-m 1 -P -j "' + $dB.file.FullName + '"') 'd3b'
+  # ⚠ 变量名**大小写无关**是 PowerShell 的语义（`$mA` 与 `$Ma` 是同一个变量）：
+  #   第一版用 `$mA/$Ma`、`$mB/$Mb` 成对存 min/max ⇒ 后一次赋值直接覆盖前一次，
+  #   D2 把 max 的 2.46229 当 min 读出来 ⇒ 判据"假红"（而 D3 因 ≥0.999 恰好"假绿"，两格一起骗人）。
+  #   ⇒ 这里一律用不重叠的名字。`verify-ps-compat` 抓不到这类（它只管解析与 PS7 语法）。
+  $mnA = [regex]::Match($pA.text, '--minContentBoost\s+([0-9.]+)');  $mxA = [regex]::Match($pA.text, '--maxContentBoost\s+([0-9.]+)')
+  $mnB = [regex]::Match($pB.text, '--minContentBoost\s+([0-9.]+)');  $mxB = [regex]::Match($pB.text, '--maxContentBoost\s+([0-9.]+)')
+  CK 'D2 A 路：第三方读到 sub-1 的暗部下沿' `
+     ($mnA.Success -and $mxA.Success -and ([double]$mnA.Groups[1].Value -lt 0.95) -and ([double]$mxA.Groups[1].Value -gt 1.3)) `
+     "minContentBoost=$(if($mnA.Success){$mnA.Groups[1].Value}else{'-'}) maxContentBoost=$(if($mxA.Success){$mxA.Groups[1].Value}else{'-'})"
+  CK 'D3 B 路（对照臂）：同一件关到 B 路时下沿必须塌回 1' `
+     ($mnB.Success -and ([double]$mnB.Groups[1].Value -ge 0.999) -and ([double]$mnB.Groups[1].Value -lt 1.05)) `
+     "minContentBoost=$(if($mnB.Success){$mnB.Groups[1].Value}else{'-'})（读到 1 = 底图被出口重造，暗部带丢失 ⇒ 这正是 A 路存在的理由）"
+  CK 'D4 两臂只差在下沿、上沿相同（对照臂不是换了另一件事）' `
+     ($mxA.Success -and $mxB.Success -and ([Math]::Abs([double]$mxA.Groups[1].Value - [double]$mxB.Groups[1].Value) -lt 0.02)) `
+     "maxA=$(if($mxA.Success){$mxA.Groups[1].Value}else{'-'}) maxB=$(if($mxB.Success){$mxB.Groups[1].Value}else{'-'})"
+  # D5：**同一份文件的两处声明必须同源**（ISO APP2 与 XMP hdrgm）。
+  #   这一格的存在理由 = 审查抓到的阻断缺陷：`BuildXmpMetadata` 曾经**没接** `minLog2Gain`
+  #   ⇒ 形参默认 0 ⇒ XMP 写 `GainMapMin=0.0`、ISO 写 −0.29 ⇒ 按 XMP 读的消费者丢下沿，
+  #   而自家 `MergeXmpIntoMetadata` 也当场报「ISO 与 XMP 增益范围不一致」。修后两处一致。
+  #   ⚠ 单位换算由**两个不同实现各报一次**再对撞：ISO 只给线性 boost（libultrahdr 读回），
+  #     XMP 直接给 log2 ⇒ 必须把 ISO 的值取 log2 再比，不然两把尺根本不在同一域。
+  $x5 = X $et ('-a -s -G1 -XMP-hdrgm:GainMapMin -XMP-hdrgm:GainMapMax "' + $dA.file.FullName + '"') 'xmp_a'
+  #   取值正则的正确形状是 `名字\s*:\s*值` —— exiftool 的输出里标签与冒号之间有一串**对齐空白**，
+  #   写 `GainMapMin:` 会命中 0 次（实测），写 `GainMapMin\D*(...)` 又会把负号当"非数字"跳过（也实测）。
+  $rxMin = [regex]::Match($x5.text, 'GainMapMin\s*:\s*(-?[0-9.]+)')
+  $rxMax = [regex]::Match($x5.text, 'GainMapMax\s*:\s*(-?[0-9.]+)')
+  $isoLog2Min = [Math]::Log([double]$mnA.Groups[1].Value) / [Math]::Log(2.0)
+  $isoLog2Max = [Math]::Log([double]$mxA.Groups[1].Value) / [Math]::Log(2.0)
+  $d5ok = ($x5.code -eq 0) -and $rxMin.Success -and $rxMax.Success `
+          -and ([Math]::Abs([double]$rxMin.Groups[1].Value - $isoLog2Min) -lt 0.02) `
+          -and ([Math]::Abs([double]$rxMax.Groups[1].Value - $isoLog2Max) -lt 0.02)
+  CK 'D5 两处声明同源：XMP hdrgm 的 log2 与 ISO 读回取 log2 后一致（±0.02）' $d5ok `
+     ("XMP[min,max]=[" + $(if($rxMin.Success){$rxMin.Groups[1].Value}else{'-'}) + "," +
+      $(if($rxMax.Success){$rxMax.Groups[1].Value}else{'-'}) + "] ISO 换算=[" +
+      $isoLog2Min.ToString('0.000') + "," + $isoLog2Max.ToString('0.000') + "] exiftool exit=" + $x5.code)
+  # 反真空：XMP 若被写回 0（旧缺陷形态），上面必须红 ⇒ 用一条"必须不等"的正向自证锁住这把尺没坏
+  CK 'D5b 反控：A 臂的 XMP 下沿必须**不是** 0.0（0.0 就是修前形态：声明了却没传参）' `
+     ($rxMin.Success -and ([double]$rxMin.Groups[1].Value -lt -0.05)) `
+     "GainMapMin=$(if($rxMin.Success){$rxMin.Groups[1].Value}else{'-'})"
+}
 ''
 $bad = @($R | Where-Object { -not $_.ok }).Count
 '---- GainMap 第三方判据: PASS={0} FAIL={1} ----' -f ($R.Count - $bad), $bad

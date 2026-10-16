@@ -392,7 +392,14 @@ function Get-EquivalenceClasses {
             #   全量轮读数 = A21 `checked=11, bad=4` + A30 `checked=10, bad=2`，而 A7 两两覆盖仍 `missing=0`
             #   ⇒ 红的是**夹具行锚**，不是覆盖轴缺失、也不是产品坏 ⇒ 只重钉行号，不登记新取值。
             #   已按 `grep -n` 复核实况、并确认两处字面量全文件唯一。
-            'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:1000|options.JpegGainMap ? null : "iec61966-2-1", "bt709", 8, true'   # 2026-10-04 重钉 977→981（早前会话 +4 行，grep -n 复核实况 + 字面量唯一）
+# ⚠ pin 演进（2026-10-14）：1000 → 1015、1010 → 1025（+15）；1042 → 1057（+15）；2132 → 2397（+265）。
+#   成因 = 分块（Tile Grid）流组的形态判据轮在**本文件之前**插入代码：`FfmpegCommandBuilder.cs`
+#   新增 InputIsGroupDerived/ProbeGroup/GroupChainLabelReset/CreateVideoChain/ChainArgs* 六个入口
+#   （+260 行），把其上、其下所有 pin 整体下移。字面量与语义一字未改（`grep` 复核四条均**全文件唯一**，
+#   实况行 = 1015/1025/1057/**2322**），A21/A30 本次转红正是该锁"行号失效即当场报"的设计生效。
+#   ⚠ 上面那句里的 2397 是 **2026-10-14 当日**的实况；T12 轮（10-15）该条已再重钉 2397 → 2322（−75，
+#   成因见 :651）。四条现值由 `sed -n '1015p;1025p;1057p;2322p'` 对本文件逐字对撞复验。
+            'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:1015|options.JpegGainMap ? null : "iec61966-2-1", "bt709", 8, true'   # 2026-10-04 重钉 977→981（早前会话 +4 行，grep -n 复核实况 + 字面量唯一）
         )
         Rationale = 'JPEG container caps bit depth at 8 and DecideOutputColor rewrites options.BitDepth in place, so 8/10/12/16 are observationally equal'
     }
@@ -407,7 +414,7 @@ function Get-EquivalenceClasses {
         Evidence = @(
             'src/FfmpegGui/Services/FfmpegCommandBuilder.Decision.cs:154|if (options.BitDepth.HasValue && options.BitDepth.Value > capBd)',
             'src/FfmpegGui/Services/FfmpegCommandBuilder.Decision.cs:162|options.BitDepth = capBd;',
-            'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:1010|return (null, "iec61966-2-1", "bt709", 8, true);'   # 2026-10-04 重钉 987→991（同批 +4）
+            'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:1025|return (null, "iec61966-2-1", "bt709", 8, true);'   # 2026-10-04 重钉 987→991（同批 +4）
         )
         Rationale = 'WebP container caps bit depth at 8 and DecideOutputColor rewrites options.BitDepth in place, so 8/10/12/16 are observationally equal'
     }
@@ -643,7 +650,11 @@ function Get-SemanticMatrices {
                 #   新入口 + 探测核带回描述符的注释）⇒ 其**下方**行号整体下移。字面量与语义一字未动。
                 #   漂移仍由 A30 当场报出（本轮实测报 `literal not on ...:2099 (found at line 2132)`）
                 #   ⇒ 抬号前 `grep -n` 复核实况行并确认该字面量**全文件只出现一次**（行号锚不容歧义）。
-                'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:2132|bool exiftoolFormats = fmt is "jpg" or "jpeg" or "png" or "tiff" or "webp";'
+                # ⚠ pin 演进（2026-10-15 T12 轮）：2397 → **2322**（−75）。成因 = **我自己的 T6 回退**
+                #   （`tests/output/_tilegrid_probe/MutatedQueueProcessor.cs` 那次「自伤实现」撤销后，本文件净缩 75 行）
+                #   ⇒ 报的是 `line 2397 beyond EOF (2346 lines)`，不是「literal not on line」。字面量与语义一字未动，
+                #   抬号前已 `grep -n -F` 复核：该字面量全文件**只命中 1 次**，实况行 = 2322。
+                'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:2322|bool exiftoolFormats = fmt is "jpg" or "jpeg" or "png" or "tiff" or "webp";'
             )
         },
         @{
@@ -664,7 +675,7 @@ function Get-SemanticMatrices {
                 #   `NormalizeTuneToken` 的两义性、第三半加"这条后端没有 tune 通路"的中心播报）；
                 #   唯一性同样已 `grep -n` 核过。
                 'src/FfmpegGui/Services/ColorMapping/ImageEncoderArgs.cs:804|AvifMaxBitDepthForEncoder(string? encoder)',
-                'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:1042|return (null, null, null, ColorMapping.ImageEncoderArgs.AvifMaxBitDepth(options), false);',   # 2026-10-04 重钉 1019→1023（同批 +4）
+                'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:1057|return (null, null, null, ColorMapping.ImageEncoderArgs.AvifMaxBitDepth(options), false);',   # 2026-10-04 重钉 1019→1023（同批 +4）
                 'src/FfmpegGui/Services/FfmpegCommandBuilder.Decision.cs:162|options.BitDepth = capBd;'
             )
         }

@@ -168,7 +168,12 @@ else {
         CK ([math]::Abs($c[0] - 0.680) -lt 0.005) "p3/webp 的 ICC 量出来就是 Display P3（红 x=$($c[0])，非 sRGB 0.640/非 2020 0.708）"
     } else { CK $false "p3/webp 的 ICC 色度读不出（后置嵌入的 ICC 无效？）" }
     # 出口语义必须是 P3：无标注的 webp 会被按 sRGB 解读 ⇒ 上面两条就是全部证据
-    CK ($r.log -match '已嵌入出口语义 ICC|已嵌入目标 ICC') "p3/webp 日志写明后置嵌入这一步真的发生了"
+    # ⚠ 2026-10-14 重定（不是放宽）：携带格写入 ICC 的**机制**变了 —— 源 ICC 由元数据恢复回带，
+    #   生成 ICC 那步被"先读回产物"的守卫挡下（见 QueueProcessor.EmbedDroppedFilterIccAsync），
+    #   故日志改打 `[color] artifact already carries the source ICC …`。本条只证明"非静默"，
+    #   **真正判交付对错的是上面 :168 的 P3 色度断言**（字节级，与哪一步写入无关）；
+    #   回带失败时仍会落回"已嵌入出口语义 ICC"那条路径 ⇒ 三个合法出口都要认，缺一即判红。
+    CK ($r.log -match '已嵌入出口语义 ICC|已嵌入目标 ICC|already carries the source ICC') "p3/webp 日志写明后置嵌入这一步真的发生了"
 }
 
 # ── ② sRGB 源 → WebP：出口语义 = sRGB ⇒ 未标注即正确，不该多嵌一张无用 ICC ──
@@ -914,6 +919,81 @@ CK ($mP -eq 'bt709') `
 CK ((-not ($a17.cmd -match 'tonemap')) -and ($aT -eq 'smpte2084')) `
    ('⑰b 不误伤锁：legacy 未指定目标（auto）⇒ 命令行不许出现 tonemap（实得含=' + ($a17.cmd -match 'tonemap') +
     '）且产物 trc 必须仍是 smpte2084（实得 ' + $aT + '）——豁免支的谓词一旦写反，这一格第一个红')
+
+# ── ⑱ HDR AVIF 出口的 CICP：三个独立读者必须同向（R5 的交付端锁；2026-10-15）────────────
+# 立项经过必须写清（这条曾经被记成"缺陷"，实际是**我读错偏移**造出来的假案）：
+#   T11/P5 原记「`-color_trc smpte2084` 传了但 nclx 写 bt709/transfer=0」。重量：`colr` **不是 FullBox**
+#   —— `[size]['colr']['nclx']` 之后**紧接** primaries(2BE) transfer(2BE) matrix(2BE) range(1)，
+#   数据起点 = fourcc **+4** 而不是 +8。按 +8 读会把 transfer 当 primaries、把 range 当 transfer
+#   （同一条读法在 avifenc 的真 PQ 件上给出 `transfer=32768` 这种**不存在的码值** ⇒ 失配信号）。
+#   用权威布局重量：产品引擎出口的 nclx **本来就写对**（P/T 前置到 `-i` 之前，形状见 RawColorPipeline
+#   的 `labelOnInput`）⇒ **R5 的缺陷陈述撤回**（见 docs/FIX_PLAN_2026-10-14.md 的 P5 读数更正）。
+#   但 P5 要求的那条判据（"三个读者同向"）此前一条都没落 ⇒ 本段把它落成常驻锁，
+#   并带两条**反真空臂**：SDR 对照 + 手工把同一对标签放到输出侧（证明第 2 条量的是容器字节，不是工具套话）。
+$avd = "$root/tools/src/libavif/build/Release/avifdec.exe"
+function AvifdecNum([string]$path, [string]$label) {
+    if (-not (Test-Path $path) -or -not (Test-Path $avd)) { return '' }
+    $t = ExecOut $avd "--info `"$path`""
+    $m = [regex]::Match($t, [regex]::Escape($label) + '\s*:?\s*(\d+)')
+    if ($m.Success) { return $m.Groups[1].Value }
+    return ''
+}
+function ExifNum([string]$path, [string]$tag) {
+    if (-not (Test-Path $path)) { return '' }
+    $t = ExifTool $path @('-n', '-s', "-$tag")
+    $m = [regex]::Match($t, [regex]::Escape($tag) + '\s*:\s*(\d+)')
+    if ($m.Success) { return $m.Groups[1].Value }
+    return ''
+}
+$h18 = RunAvif 'd18_hdr_pq'   @('--bit-depth', '10', '--color-space', 'BT.2020 PQ') $hdr
+$s18 = RunAvif 'd18_hdr_srgb' @('--bit-depth', '10', '--color-space', 'sRGB') $hdr
+$c18 = "$out/d18_ctl_outputside.avif"
+$null = Exec $ff ("-y -v error -i `"$sdr`" -c:v libaom-av1 -crf 20 -pix_fmt yuv420p10le " +
+                  '-color_primaries bt2020 -color_trc smpte2084 -colorspace bt2020nc ' + "`"$c18`"")
+if (-not (Test-Path $avd)) {
+    SKIP "⑱：本机没有 avifdec（$avd）⇒ 第三个读者缺席，本段 5 条断言未运行，不是通过（也不许退化成只读 ffprobe）" 5
+} elseif (-not ($h18.file -and $s18.file -and (Test-Path $c18))) {
+    SKIP ("⑱：三件产物不齐（PQ 臂=" + [bool]$h18.file + ' SDR 对照=' + [bool]$s18.file +
+          ' 输出侧控制=' + (Test-Path $c18) + '）⇒ 本段 5 条断言未运行，不是通过') 5
+} else {
+    $f18 = $h18.file.FullName
+    $fp18P = CicpField $f18 'color_primaries'; $fp18T = CicpField $f18 'color_transfer'
+    $ex18P = ExifNum $f18 'ColorPrimaries';    $ex18T = ExifNum $f18 'TransferCharacteristics'
+    $av18P = AvifdecNum $f18 'Color Primaries'; $av18T = AvifdecNum $f18 'Transfer Char.'
+    $avSP = AvifdecNum $s18.file.FullName 'Color Primaries'; $avST = AvifdecNum $s18.file.FullName 'Transfer Char.'
+    $avCP = AvifdecNum $c18 'Color Primaries';               $avCT = AvifdecNum $c18 'Transfer Char.'
+    Write-Output ('  ⑱ PQ 臂: ffprobe[' + $fp18P + '/' + $fp18T + '] exiftool[' + $ex18P + '/' + $ex18T +
+                  '] avifdec[' + $av18P + '/' + $av18T + ']')
+    Write-Output ('  ⑱ 对照臂 SDR: avifdec[' + $avSP + '/' + $avST + ']   控制臂(标签放输出侧): avifdec[' +
+                  $avCP + '/' + $avCT + ']')
+    CK (($fp18P -eq 'bt2020') -and ($fp18T -eq 'smpte2084') -and ($ex18P -eq '9') -and ($ex18T -eq '16') `
+        -and ($av18P -eq '9') -and ($av18T -eq '16')) `
+       ('⑱-1 请求 BT.2020 PQ ⇒ 三个独立读者同向：ffprobe=bt2020/smpte2084、exiftool(-n)=9/16、avifdec=9/16' +
+        '（实得 ffprobe[' + $fp18P + '/' + $fp18T + '] exiftool[' + $ex18P + '/' + $ex18T + '] avifdec[' +
+        $av18P + '/' + $av18T + ']）')
+    # ⚠ 两条反真空臂**必须先看读数是不是数字**（2026-10-16 审查修正）：`AvifdecNum` 在标签不命中/
+    #   文件读不出时返回**空串**，而旧写法 `$avST -ne '16'` 对空串**恒真** ⇒ 两臂一起退化（读不到任何
+    #   CICP）时 ⑱-2/⑱-3 仍报绿，而它们正是用来证明 ⑱-1 量的是容器字节的。
+    #   本机实得（avifdec --info，同一轮三件产物）：PQ 臂 9/16，SDR 对照臂 1/13，输出侧控制臂 2/2（=unspecified）。
+    CK (($avSP -match '^\d+$') -and ($avST -match '^\d+$') -and ($avST -ne '16') -and ($avSP -ne '9') `
+        -and ($av18P -eq '9') -and ($av18T -eq '16')) `
+       ('⑱-2 反真空（SDR 对照臂必须不同向）：同一素材只把目标换成 sRGB ⇒ avifdec 必须**读到数字**且' +
+        'primaries 不是 9、transfer 不是 16（实得 [' + $avSP + '/' + $avST + ']，PQ 臂 [' + $av18P + '/' + $av18T +
+        ']）——两臂读数相同或读不出，都说明 ⑱-1 只是在匹配套话')
+    CK (($avCP -match '^\d+$') -and ($avCT -match '^\d+$') -and ($avCP -ne '9') -and ($avCT -ne '16')) `
+       ('⑱-3 反真空（输出侧标签不算）：手工把同一对 `-color_primaries bt2020 -color_trc smpte2084` 放到 `-i` ' +
+        '**之后** ⇒ avifdec 必须**读到数字**且不是 9/16（实得 [' + $avCP + '/' + $avCT +
+        ']）——这条证明 ⑱-1 量的是容器里的字节；' +
+        '产品把 P/T 前置正是为此（RawColorPipeline 的 labelOnInput）')
+    $iCmd = $h18.cmd
+    $posTrc = $iCmd.IndexOf('-color_trc'); $posIn = $iCmd.IndexOf(' -i ')
+    CK (($posTrc -ge 0) -and ($posIn -gt 0) -and ($posTrc -lt $posIn)) `
+       ('⑱-4 形状锁：PQ 臂的真实命令行里 `-color_trc` 必须出现在 `-i` **之前**' +
+        '（实得 color_trc 位置=' + $posTrc + '，`-i` 位置=' + $posIn + '）——放到输出侧就退化成 ⑱-3 那一格')
+    CK (($h18.code -eq 0) -and ($h18.file.Length -gt 200)) `
+       ('⑱-5 前置条件：PQ 臂 exit=' + $h18.code + ' 产物=' + $h18.file.Length + 'B（>200B）' +
+        '——标签对了但产物是空的，同样不算交付')
+}
 
 Write-Output "  ── decision-delivery: pass=$pass fail=$fail skip=$skip"
 if ($fail -gt 0) { exit 1 } else { exit 0 }

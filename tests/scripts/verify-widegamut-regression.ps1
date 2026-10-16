@@ -68,6 +68,40 @@ foreach ($f in @("jpg","png","webp","avif")) { Run-Case "p3pq-$f-auto" $p3pq $f 
 Write-Host "`n### P3-PQ HDR → BT.2020 PQ 目标 ###" -ForegroundColor Cyan
 foreach ($f in @("png","avif","webp")) { Run-Case "p3pq-$f-pq" $p3pq $f @("--color-space","BT.2020 PQ") }
 
+Write-Host "`n### gamut mode 读回：P3 出口 JPEG 的底图 ICC 必须被第二个读者认出（#69 零调用点，2026-10-15 补）###" -ForegroundColor Cyan
+#   `ServiceProbe gamut <jpeg> [token]` = `GainMapDecoder.DetectBasePrimaries`，此前**没有任何在册脚本调它**
+#   ⇒ 只有代码、没有执行面。挂在"产品自己写出的 P3 JPEG"上判：读回必须是 `smpte432`，
+#   并配一条**问错必须判红**的反控（同一件问 bt709 ⇒ 必须 fail=1）⇒ 证明 ①探针活着 ②token 那臂有牙。
+$prG = "$root/tests/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.exe"
+if (-not (Test-Path $prG)) { $prG = "$root/tests/ServiceProbe/bin/Debug/net11.0/win-x64/ServiceProbe.exe" }
+$jpgG = Get-ChildItem -Recurse "$out" -Filter *.jpg -EA SilentlyContinue | Where-Object { $_.Length -gt 500 } | Select-Object -First 1
+# ⚠ 为什么 `-First 1` 在这里不构成"靠枚举顺序选材"的风险（2026-10-16 审查复核，:16）：
+#   ① `$out` 每次运行 GUID 隔离 ⇒ 不会拿到上一轮留下的 jpg（"本轮没产出却被旧件蒙过"这条路不存在）；
+#   ② 挑错的**方向是判红不是判绿**：正交臂问 `smpte432` 须 2/0、反控臂问 `bt709` 须 1/1，
+#      两臂读**同一个** `$jpgG` ⇒ 选中 sRGB/bt2020 那件时第一臂当场红。
+if (-not (Test-Path $prG)) {
+    Write-Host "  FAIL gamut 臂：ServiceProbe 未构建 ⇒ 判红（不按未评估放行）" -ForegroundColor Red; $script:fail++
+} elseif (-not $jpgG) {
+    Write-Host "  FAIL gamut 臂：本门禁没产出任何 jpg ⇒ 前置不成立，判红（不许当未评估放行）" -ForegroundColor Red; $script:fail++
+} else {
+    $g1 = ExecOut $prG ("gamut `"$($jpgG.FullName)`" smpte432")
+    if (($g1 -match 'PROBE RESULT: pass=2 fail=0') -and ($g1 -match 'base_primaries=smpte432')) {
+        Write-Host "  PASS gamut 读回 $($jpgG.Name)：底图 ICC 的 primaries == smpte432（探针 2/0）" -ForegroundColor Green; $script:pass++
+    } else {
+        Write-Host ("  FAIL gamut 读回（须 base_primaries=smpte432 且 pass=2 fail=0，实 " +
+            (($g1 -split "`r?`n" | Where-Object { $_ -match 'base_primaries|PROBE RESULT|^FAIL' } | Select-Object -First 3) -join ' | ') + "）") -ForegroundColor Red
+        $script:fail++
+    }
+    $g2 = ExecOut $prG ("gamut `"$($jpgG.FullName)`" bt709")
+    if ($g2 -match 'PROBE RESULT: pass=1 fail=1') {
+        Write-Host "  PASS gamut 反控：同一件改问 bt709 ⇒ 必须恰有一条红（证明 token 那臂不是恒真）" -ForegroundColor Green; $script:pass++
+    } else {
+        Write-Host ("  FAIL gamut 反控失效（须 pass=1 fail=1，实 " +
+            (($g2 -split "`r?`n" | Where-Object { $_ -match 'PROBE RESULT' } | Select-Object -First 1) -join '') + "）") -ForegroundColor Red
+        $script:fail++
+    }
+}
+
 Write-Host "`n===== PASS=$pass FAIL=$fail =====" -ForegroundColor $(if ($fail -eq 0) { "Green" } else { "Red" })
 # ⚠ 唯一目录自清（宿主批量删除守卫会拦整目录删 ⇒ 用 -EA SilentlyContinue，§6 第 57 条 ③）；失败则保留供排查
 if ($fail -eq 0) { Remove-Item -Recurse -Force $out -ErrorAction SilentlyContinue }

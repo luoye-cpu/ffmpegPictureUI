@@ -85,8 +85,19 @@ Write-Host "`n=== SKIP（未实现，不给绿灯）===" -ForegroundColor Yellow
 Write-Output "  SKIP BT.2390：ITU-R Report BT.2390 公式原文尚未取得（只查到描述：带线性段的 Hermite 样条滚降、拐点偏移规范值 0.5）。"
 Write-Output "       引擎里 Bt2390 枚举存在但 Apply() 会原样返回并被策略层当作'未就绪'，绝不静默降级成别的曲线。"
 
+Write-Host "`n### 7) pq mode 必须被执行面调用（#69 在册零调用点之一，2026-10-15 补）###" -ForegroundColor Cyan
+#   `ServiceProbe pq` 钉的是 ST 2084 的公开锚点（0.5→92.7nits、0.5799→203、0.7516→1000、1.0→10000）。
+#   它在**任何在册脚本里都没有调用点** ⇒ 只有代码、没有执行面；本条色调映射门禁是最贴近的归属。
+#   判据钉**条数**（pass=13 fail=0）而不是只钉 fail=0 ⇒ 断言整段没跑也会红。
+#   ⚠ 这一段必须在**汇总行之前**：第一版插在汇总行后面，`$pass` 已经打印过 ⇒ 读数少 1 条（15 而非 16），
+#     红的时候更糟——汇总说绿、退出码说红。挪到汇总前就一致了。
+$pq7 = Exec $pr "pq"
+CK ($pq7 -match 'PROBE RESULT: pass=13 fail=0') `
+   "§7 ServiceProbe pq = 13/0（实 $((($pq7 -split "`r?`n" | Where-Object { $_ -match 'PROBE RESULT|^FAIL' }) | Select-Object -First 3) -join ' | ')）"
+
 Write-Host ""
 Write-Host "===== tonemap 对拍: PASS=$pass FAIL=$fail =====" -ForegroundColor $(if ($fail -eq 0) { "Green" } else { "Red" })
+
 # ⚠ 运行级隔离配套：结尾自清（跑绿才清；跑红**保留**供排查 —— 那是证据，不是残留）。⚠ 必须在 `exit` **之前**。
 if ($fail -eq 0) { Remove-Item -Recurse -Force $d -ErrorAction SilentlyContinue }
 exit $(if ($fail -eq 0) { 0 } else { 1 })

@@ -110,6 +110,44 @@ foreach ($k in $orient) {
     CK ([regex]::IsMatch($log, $k)) "④ 在位：$k"
 }
 
+Write-Host "`n### 4b) 三段拆分宿主的 exe 必须真被跑（#69 在册零调用点里最肥的三条）###" -ForegroundColor Cyan
+# 存在的理由（2026-10-15 实测）：`tests/gainmap-{encode,decode,struct}` 是 2026-10-05 从本宿主
+#   **物理拆分**出来的三段，拆分后**没有任何门禁执行它们的 exe**（#69 把三个 mode 报成零调用点）。
+#   后果当场量到：F-5（2026-10-11）把前向公式的 offset 落进产品后，宿主这份 D30 在 10-12 的全量轮
+#   翻红并被修；**拆分那份拷贝没跟着改 ⇒ 一直红着、没人看见**（本次实测 `58/1`，
+#   `D30 ComputeGainMapGray maxDiff=6, >1LSB=194/1024`，红的是过期参照不是数学）。
+#   ⇒ 这一节把三段接进执行面，并**逐段钉通过数**（钉死相等，不钉下限：这三段的断言数就是它们的账，
+#     少了要当场红——本仓 #76「只在死代码里有的断言」那条同族；2026-10-16 A-1 之后该锁改叫「只此一份锁」⑤）。
+$segExp = @(
+    @{ mode = 'gainmap-encode'; proj = 'gainmap-encode'; asm = 'Tests.GainMapEncode'; pass = 29 },
+    @{ mode = 'gainmap-decode'; proj = 'gainmap-decode'; asm = 'Tests.GainMapDecode'; pass = 59 },
+    @{ mode = 'gainmap-struct'; proj = 'gainmap-struct'; asm = 'Tests.GainMapStruct'; pass = 15 }
+)
+foreach ($s in $segExp) {
+    $se = "$root/tests/$($s.proj)/bin/Release/net11.0/win-x64/$($s.asm).exe"
+    $sTag = ' (Release)'
+    if (-not (Test-Path $se)) {
+        $se = "$root/tests/$($s.proj)/bin/Debug/net11.0/win-x64/$($s.asm).exe"
+        $sTag = ' (Debug fallback)'
+    }
+    if (-not (Test-Path $se)) { CK $false "④b $($s.mode) 宿主未构建 ⇒ 判红（先 dotnet build tests/$($s.proj) -c Release）"; continue }
+    $sf = "$val/gmhost_$($s.mode)_${gid}.txt"
+    # ⚠ PS5.1 合规：`-ArgumentList @($mode)` 非空数组合法；**不许**写 `@()`（空数组在 5.1 抛绑定异常，见本文件 §1 的实测记录）
+    $sp2 = Start-Process -FilePath $se -ArgumentList @($s.mode) -NoNewWindow -Wait -PassThru -RedirectStandardOutput $sf
+    $slog = ''; if (Test-Path $sf) { $slog = [System.IO.File]::ReadAllText($sf) }
+    Remove-Item -Force $sf -ErrorAction SilentlyContinue
+    $mSum = [regex]::Match($slog, 'PROBE RESULT: pass=(\d+) fail=(\d+)')
+    $okSum = $mSum.Success -and [int]$mSum.Groups[1].Value -eq $s.pass -and [int]$mSum.Groups[2].Value -eq 0
+    CK ($okSum -and ($sp2.ExitCode -eq 0)) `
+       ("④b $($s.mode)$sTag 必须 exit=0 且 PROBE RESULT: pass=$($s.pass) fail=0（实得 " +
+        $(if ($mSum.Success) { $mSum.Value } else { '(汇总行缺失)' }) + " exit=" + $sp2.ExitCode + "）")
+    # ⚠ 只数**宿主明细形**（行首空白 + ❌），不数产品诊断：`gainmap-decode` 里有一条
+    #   `[GainMap解码] ❌ 无法读取增益图元数据…` 属于**通过中的负控**（"零余量产物被判非 UltraHDR"）
+    #   ⇒ 按"行里有没有 ❌"判会把合法诊断算成失败（本次实测就是这么假红的）。
+    $sBad = @($slog -split "`r?`n" | Where-Object { $_ -match '^[ \t]+❌' })
+    CK ($sBad.Count -eq 0) "④b $($s.mode) 明细里不许有 ❌（实 $($sBad.Count) 条$(if ($sBad.Count) { ': ' + (($sBad | Select-Object -First 2) -join ' | ') }))"
+}
+
 Write-Host "`n### 5) 残留自证 ###" -ForegroundColor Cyan
 CK ($p.ExitCode -eq 0 -and $log -match '汇总') "⑤ 宿主跑完（未中途异常退出）"
 

@@ -70,9 +70,10 @@
 #     ⇒ 下一步若要真素材，优先走 **注册 imaging.org 免费下载**（CC BY-NC 4.0）或**用手机拍一张
 #       Adaptive HDR 照片**（iPhone 15+ / 部分 Android）。
 #
-# 断言（共 52 条）：§0 前置 6 · §1 容器层 8 · §1b HEVC 解码路径 11（含 2 条负控 + 1 条反控）·
+# 断言（共 60 条）：§0 前置 6 · §1 容器层 8 · §1b HEVC 解码路径 11（含 2 条负控 + 1 条反控）·
 #                   §2 源码形态 6（含反控）· §2b 缺陷 C 源码形态 3（含反控）· §3 行为 8 ·
-#                   §3b 缺陷 C 行为 4（含负控与素材形态自检）· **§3c HEIC 端到端行为 5（含负控）** · §4 收尾 1
+#                   §3b 缺陷 C 行为 4（含负控与素材形态自检）· **§3c HEIC 端到端行为 5（含负控）** ·
+#                   **§3d 厂商尾注执行面 4（含拒因与互斥点名）** · **§3e 底图取法 A/B 4（含对照臂分叉）** · §4 收尾 1
 #   ⚠ **两条弱断言**（都实测过「变异后仍然通过」，别只信它们）：
 #     · §1b「转换成功」：只看 `determinate` / `ffmpegFmt=hevc` / `gmData>0` —— **原样透传不转换**也能过；
 #     · §3c「识别并产出」：只看「日志出现『检测到 ISO-BMFF 增益图』」+ 有产物 —— **退回 fail-closed** 也能过。
@@ -189,11 +190,11 @@ function KillTree([int]$rootPid) {
 $script:spawned = @()
 
 # 单条用例：起应用（headless + debug 日志）。判据一律用「产物数 + 日志形状」，不用退出码。
-function RunApp([string]$inPath, [string]$fmt, [string]$tag) {
+function RunApp([string]$inPath, [string]$fmt, [string]$tag, [string[]]$appExtra = @()) {
   $outdir = "$work/out_$tag"
   $so = "$work/$tag.app.out"; $se = "$work/$tag.app.err"
   $p = Start-Process -FilePath $exe `
-       -ArgumentList @("--headless", "--log-level", "debug", "-i", $inPath, "-o", $outdir, "--format", $fmt) `
+       -ArgumentList ((@("--headless", "--log-level", "debug", "-i", $inPath, "-o", $outdir, "--format", $fmt) + $appExtra)) `
        -PassThru -NoNewWindow -RedirectStandardOutput $so -RedirectStandardError $se
   $script:spawned += [int]$p.Id
   $sw = [System.Diagnostics.Stopwatch]::StartNew()
@@ -497,6 +498,82 @@ CK (($bHdrJpg.terminated) -and ($bHdrJpg.prods -ge 1)) `
 #   ⇒ 那些代码**静默不执行**（症状：`PASS` 总数偏少、且「注释行」竟然出现在输出里）。
 #   ⚠ 这不是语法错误（解析器不报错）⇒ `verify-ps-compat` 与 `Parser.ParseFile` **都抓不到**。
 #   ⇒ **纪律**：双引号串里不要用反引号包裹代码片段（改裸写或用「」）；尤其**尾反引号不得紧贴引号**。
+
+# ── §3d 厂商 HDR 尾注：V1–V18 必须在**执行面**跑，且条数钉死 ──────────────────────────
+#   为什么落 ServiceProbe 而不是 tests/gainmap：那四份镜像工程（tests/{encode,io,metadata,gainmap}）的 exe
+#     从来不被任何门禁执行，只是源文本拷贝 ⇒ 断言写在那里＝「只在死代码里有的断言」。
+#     2026-10-15 先把 V1–V18 那段从镜像删掉；2026-10-16 价值普查 A-1 把四份镜像工程整体删除
+#     （`docs/review-2026-10-16/test-value-audit.md`），#76 的 ⑤-c 同批改成「只此一份锁」⑤。
+#   为什么钉 pass=18 而不只钉 fail=0：本段的牙是**条数** —— 早退/改名会让断言整段不跑而 fail 照旧 0。
+#     #76 ③ 量的是源文本里的调用位，这里量实际执行并通过的数 ⇒ 两把尺互补，不重复。
+#   两臂天然分叉（不是自身对照）：识别若退化成「见到字段名就放行」⇒ V6/V7/V8 红；
+#     识别若整体失效 ⇒ V1/V2/V3 红 ⇒ 任一侧坏都有活格子。
+Write-Host "`n### §3d 厂商 HDR 尾注（ServiceProbe vendor-hdr，V1–V18）###" -ForegroundColor Cyan
+$vh = ExecOut $sp "vendor-hdr" "vendor_hdr"
+$vhSum = ($vh.text -split "\r?\n" | Where-Object { $_ -match "PROBE RESULT" } | Select-Object -First 1)
+CK ($vh.text -match "PROBE RESULT: pass=18 fail=0") "§3d vendor-hdr 18 条全绿（实 $vhSum）"
+$vPass = @([regex]::Matches($vh.text, "(?m)^PASS V")).Count
+CK ($vPass -eq 18) "§3d 逐条点名：以 PASS V 开头的行 = 18（实 $vPass）⇒ 汇总数不是靠早退蒙对"
+#   两条「必须拒」的臂只钉 Found=False 是不够的（任何解析失步都会 False）⇒ 必须钉**拒因**。
+CK (($vh.text -match "no JPEG matches the declared mask length") -and ($vh.text -match "expected 144")) `
+   "§3d 拒因点名：V6 声明长度不符 / V7 参数块非 144（两条各死于自己那条判据，不是顺带没认出）"
+CK ($vh.text -match "V8/V9 vendorFound=False isoHasGainMap=True isoForm=tmap") `
+   "§3d 与标准承载互斥：真 tmap 件厂商支不认、ISO 支仍认（同一行读数钉住两侧）"
+
+# ── §3e 底图取法 A/B（--gain-map-base-from-source）：开关必须**可测**，A 必须**更忠实** ────────
+#   为什么判据用**相对**口径（|ΔA| < |ΔB|）而不是绝对阈值：合成件只有 64x48，JPEG 重编码本身就带来
+#   ~2 code 的均值漂移，钉绝对数会随夹具尺寸假红。真机件（26 MP 一加原片）上的绝对数是
+#   源 124.77 / A 124.29(Δ0.48) / B 130.53(Δ5.76)，那一份**不进门禁**（个人素材不入仓）。
+#   ⚠ 对照臂必须先证明**真的分叉**（本仓老规矩）：CK-1 钉两臂各自点名、CK-2 钉两臂产物字节不同。
+Write-Host "`n### §3e 底图取法 A/B（两臂点名 + 相对忠实度 + 单一真值）###" -ForegroundColor Cyan
+$abA = RunApp $heicPos "jpg" "ab_A" @("--jpeg-gain-map", "true", "--gain-map-base-from-source", "true")
+$abB = RunApp $heicPos "jpg" "ab_B" @("--jpeg-gain-map", "true", "--gain-map-base-from-source", "false")
+$fa = Get-ChildItem "$work/out_ab_A" -Filter *.jpg -ErrorAction SilentlyContinue | Select-Object -First 1
+$fb = Get-ChildItem "$work/out_ab_B" -Filter *.jpg -ErrorAction SilentlyContinue | Select-Object -First 1
+$srcRgb = "$work/ab_src.rgb"; $aRgb = "$work/ab_A.rgb"; $bRgb = "$work/ab_B.rgb"
+$null = Exec $ff "-y -v error -i `"$heicPos`" -map 0:0 -frames:v 1 -f rawvideo -pix_fmt rgb24 `"$srcRgb`"" "abff_src"
+if ($fa) { $null = Exec $ff "-y -v error -i `"$($fa.FullName)`" -frames:v 1 -f rawvideo -pix_fmt rgb24 `"$aRgb`"" "abff_a" }
+if ($fb) { $null = Exec $ff "-y -v error -i `"$($fb.FullName)`" -frames:v 1 -f rawvideo -pix_fmt rgb24 `"$bRgb`"" "abff_b" }
+function MeanRgb([string]$p) {
+  if (-not (Test-Path $p)) { return -1.0 }
+  $bb = [System.IO.File]::ReadAllBytes($p)
+  if ($bb.Length -eq 0) { return -1.0 }
+  $s = [long]0; foreach ($x in $bb) { $s += [long]$x }
+  return ($s / $bb.Length)
+}
+$mS = MeanRgb $srcRgb; $mA = MeanRgb $aRgb; $mB = MeanRgb $bRgb
+Write-Output ("  [ab] 源底图均值={0:N3} A臂={1:N3} B臂={2:N3}  |dA|={3:N3} |dB|={4:N3}" -f `
+  $mS, $mA, $mB, [Math]::Abs($mA - $mS), [Math]::Abs($mB - $mS))
+#   ⚠ **前置自证**：两臂必须各自打出「✅ Ultra HDR JPEG」—— 第一版没带 `--jpeg-gain-map=true`，
+#   两臂都走成普通管线（均值 48.088/48.088、日志无「底图=」点名），§3e-3 的相对比较变成真空判定。
+CK (($abA.text -match 'Ultra HDR JPEG') -and ($abB.text -match 'Ultra HDR JPEG') `
+    -and ($abA.text -match '底图=源 SDR 底图') -and ($abB.text -notmatch '底图=源 SDR 底图') `
+    -and ($abB.text -match '分段 Reinhard')) `
+   "§3e-1 两臂都真产出增益图，且各自点名（A=底图=源 / B=自造 Reinhard，互不出现对方点名）"
+$shaA = ""; $shaB = ""
+if ($fa) { $shaA = (Get-FileHash -Algorithm SHA256 $fa.FullName).Hash }
+if ($fb) { $shaB = (Get-FileHash -Algorithm SHA256 $fb.FullName).Hash }
+$shaAd = if ($shaA.Length -ge 12) { $shaA.Substring(0, 12) } else { "(无产物)" }
+$shaBd = if ($shaB.Length -ge 12) { $shaB.Substring(0, 12) } else { "(无产物)" }
+CK (($shaA.Length -eq 64) -and ($shaB.Length -eq 64) -and ($shaA -ne $shaB)) `
+   "§3e-2 对照臂真的分叉：两臂产物 sha256 不同（实 $shaAd… vs $shaBd…）⇒ 不是死旋钮"
+CK (($mS -ge 0) -and ($mA -ge 0) -and ($mB -ge 0) -and ([Math]::Abs($mA - $mS) -lt [Math]::Abs($mB - $mS))) `
+   "§3e-3 A 更接近源底图：|dA| < |dB|（读数见上一行）⇒ 「底图=源」是更忠实的一档"
+# 单一真值：两个出口必须都走 accessor，不许再各自按 Options 判一次
+$optFiles = @("$root/src/FfmpegGui/Services/QueueProcessor.cs",
+              "$root/src/FfmpegGui/Services/ColorMapping/RawColorPipeline.cs")
+$bare = 0; $via = 0
+foreach ($f in $optFiles) {
+  if (-not (Test-Path $f)) { CK $false "§3e-4 出口文件在位（缺 $f）"; continue }
+  $code = @()
+  foreach ($ln in (([System.IO.File]::ReadAllText($f)) -split "`r?`n")) { if ($ln -notmatch '^\s*//') { $code += $ln } }
+  $t = $code -join "`n"
+  $via += ([regex]::Matches($t, 'GainMapSourceBaseRawForEncode')).Count
+  # 裸读 = 出现 `.GainMapSourceBaseRaw` 且**后面不是** `=`（赋值给它是合法的，读它才是要禁的）
+  $bare += ([regex]::Matches($t, '\.GainMapSourceBaseRaw(?!ForEncode)(?!\s*=)')).Count
+}
+CK (($via -eq 2) -and ($bare -eq 0)) `
+   "§3e-4 两个出口都只读唯一取底图入口（ForEncode 命中 $via 须 2、裸读 GainMapSourceBaseRaw 命中 $bare 须 0）"
 
 # ── §4 收尾 ────────────────────────────────────────────────────────────────────
 # ── §3c HEIC 端到端：合成件的增益图**真被解码并应用**（含负控）──────────────────────────

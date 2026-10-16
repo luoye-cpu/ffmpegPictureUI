@@ -346,7 +346,13 @@ namespace Tests.GainMapDecode
             {
                 float hLum = 0.2126f * hdr[i] + 0.7152f * hdr[i + 1] + 0.0722f * hdr[i + 2];
                 float sLum = 0.2126f * sdrForGain[i] + 0.7152f * sdrForGain[i + 1] + 0.0722f * sdrForGain[i + 2];
-                float logGain = MathF.Log2(Math.Max(hLum / Math.Max(sLum, 0.001f), 1.0f));
+                // 参照 = ISO 21496-1 默认 offset 的逐点式，**与全量宿主逐字同形**（本份曾是拆分时的
+                //   过期拷贝：旧式 `log2(max(hLum/max(sLum,0.001f),1))` 正是 F-5 从产品里删掉的那一行，
+                //   2026-10-12 宿主那侧翻红后已修，拆分这份**没人跑 ⇒ 一直红着没人看见**，2026-10-15 补齐）。
+                // ⚠ 刻意写字面 1/64，不取 `GainMapEncoder.KOffset*`：取产品常数就变成"它和自己比"。
+                const float kDeclOffset = 1f / 64f;
+                float ratio = (hLum + kDeclOffset) / (sLum + kDeclOffset);
+                float logGain = MathF.Log2(Math.Max(ratio, 1.0f));
                 gainRef[i / 4] = SimdPixelOps.LogGainToByteScalar(logGain, 2f);
             }
             int gainDiff = 0;
