@@ -153,6 +153,14 @@ public static class ImageGeometry
             var json = await outTask.ConfigureAwait(false);
             var err = await errTask.ConfigureAwait(false);
             var (w, h) = ParseDisplaySize(json);
+            // ── 分块源必须以**组的整幅尺寸**为准：上面那条 stream 探测取的 v:0 是第一块 ──
+            // 实测真图（5888×4416，108 块 512×512）：不覆盖时本函数返回 512×512，
+            // 于是「最长边」判据以为已经够小 ⇒ 静默不缩放（这条是 #3 的用户可见后果）。
+            // 只有 tiles>1 才覆盖：tiles==1 时 ffmpeg 不建图，v:0 就是整幅，覆盖反而多此一举。
+            // 取不到组（旧 ffmpeg / 非 ISOBMFF 图像）⇒ 原样返回，不猜。
+            if (TryGetTileGroupInfo(path, out int gt, out int gw, out int gh, log, ct)
+                && gt > 1 && gw > 0 && gh > 0)
+                return (gw, gh);
             if (w <= 0 || h <= 0)
             {
                 var msg = $"[probe] 显示尺寸探测无结果：{Path.GetFileName(path)}"
@@ -167,5 +175,129 @@ public static class ImageGeometry
             if (log != null) log(msg + "\n"); else Trace.WriteLine(msg);
             return (0, 0);
         }
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    //  分块（Tile Grid）流组 —— 整幅显示尺寸的唯一来源
+    // ══════════════════════════════════════════════════════════════════
+    //
+    // 为什么必须在这里：上面那条 stream 探测写的是 `-select_streams v:0`，而**分块图的 v:0 是第一块**。
+    // 实测（真图 5888×4416，108 块 512×512）：stream 口径给出 **512×512** ⇒ 一切按显示尺寸做的算术
+    // 都错且不报错，最要命的是 `BuildMaxDimensionScaleFilter` 的"锁哪条边"判据——它据此判定
+    // 「512 ≤ 1920，无需缩放」⇒ 用户勾的最长边被**静默丢弃**，交付 5888 宽。
+    // 组的 `components[0].width/height` 由容器分块表直接给出（同文件 coded 6144×4608 / display 5888×4416），
+    // 属于"整幅"口径，且与 `ProbeWithFfprobe` 的 coded 口径互不干扰。
+    //
+    // ⚠ 版本相关：`stream_groups` 自 2025-10-30 起才有（`fftools/ffmpeg_demux.c::istg_parse_tile_grid`）。
+    //   取不到 ⇒ 本函数返回 false ⇒ 调用方**保留原值**（宁可维持旧行为，也不猜一个尺寸）。
+    private const double GroupCacheTtlSeconds = 10.0;
+    private static readonly Dictionary<string, (DateTime Time, int Tiles, int W, int H)> GroupCache = new();
+    private static readonly object GroupCacheLock = new();
+
+    /// <summary>能携带 tile grid 的容器（ISOBMFF 图像家族）。只有它们才付这次额外探测。</summary>
+    private static readonly string[] TileCapableExtensions =
+        { ".heic", ".heics", ".heif", ".heifs", ".hif", ".avif", ".avifs" };
+
+    public static bool IsTileCapableContainer(string path)
+        => !string.IsNullOrEmpty(path)
+           && Array.Exists(TileCapableExtensions,
+                e => path.EndsWith(e, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// 解析该文件的 Tile Grid 流组：<paramref name="tiles"/> = 块数，
+    /// <paramref name="displayW/H"/> = 组声明的**整幅显示**尺寸（取不到时 0）。
+    /// 返回 true 只表示"读到了 Tile Grid 组信息"；<c>tiles == 1</c> 时 ffmpeg 不建图、v:0 就是整幅，
+    /// 调用方**不得**用组值覆盖 stream 值（故两者都判）。
+    /// </summary>
+    public static bool TryGetTileGroupInfo(string path, out int tiles, out int displayW, out int displayH,
+        Action<string>? log = null, CancellationToken ct = default)
+    {
+        tiles = 0; displayW = 0; displayH = 0;
+        if (string.IsNullOrEmpty(path) || path == "-" || !IsTileCapableContainer(path)) return false;
+        lock (GroupCacheLock)
+        {
+            if (GroupCache.TryGetValue(path, out var hit)
+                && (DateTime.UtcNow - hit.Time).TotalSeconds < GroupCacheTtlSeconds)
+            {
+                tiles = hit.Tiles; displayW = hit.W; displayH = hit.H;
+                return hit.Tiles > 0;
+            }
+        }
+        try
+        {
+            var ffprobe = PlatformServices.ResolveFfprobePath(AppSettingsService.Current.FfmpegPath);
+            if (string.IsNullOrWhiteSpace(ffprobe) || !File.Exists(ffprobe)) return false;
+            using var p = Process.Start(new ProcessStartInfo
+            {
+                FileName = ffprobe,
+                Arguments = $"-v error -show_stream_groups -of json \"{path}\"",
+                RedirectStandardOutput = true,
+                StandardOutputEncoding = System.Text.Encoding.UTF8,
+                RedirectStandardError = true,   // 与本文件 DisplaySizeAsync 同纪律：管道必须排空
+                StandardErrorEncoding = System.Text.Encoding.UTF8,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            });
+            if (p == null) return false;
+            var outTask = p.StandardOutput.ReadToEndAsync();
+            var errTask = p.StandardError.ReadToEndAsync();
+            // 本方法是**同步**入口（被发射判据与 DisplaySizeAsync 双向调用）⇒ 按本仓既有纪律：
+            // 先挂两个读取任务再 WaitForExit(ms)，超时/取消都杀进程树；绝不在退出前 await 读（那会让超时成死代码）。
+            using var reg = ct.Register(() => { try { p.Kill(entireProcessTree: true); } catch { } });
+            if (!p.WaitForExit(TimeoutMs))
+            {
+                try { p.Kill(entireProcessTree: true); } catch { }
+                var kind = ct.IsCancellationRequested ? "被取消" : $"超时（{TimeoutMs / 1000}s）";
+                var msg = $"[probe] 流组探测{kind} ⇒ 已终止：{Path.GetFileName(path)}（按非组处理）";
+                if (log != null) log(msg + "\n"); else Trace.WriteLine(msg);
+                return false;
+            }
+            var json = outTask.GetAwaiter().GetResult();
+            errTask.GetAwaiter().GetResult();
+            ParseTileGroup(json, out tiles, out displayW, out displayH);
+        }
+        catch (Exception ex)
+        {
+            var msg = $"[probe] 流组探测异常：{Path.GetFileName(path)} ⇒ {ex.Message}（按非组处理）";
+            if (log != null) log(msg + "\n"); else Trace.WriteLine(msg);
+            tiles = 0; displayW = 0; displayH = 0;
+            return false;
+        }
+        lock (GroupCacheLock)
+        {
+            if (GroupCache.Count >= 256) GroupCache.Clear();
+            GroupCache[path] = (DateTime.UtcNow, tiles, displayW, displayH);
+        }
+        return tiles > 0;
+    }
+
+    /// <summary>
+    /// 纯函数：从 `-show_stream_groups` 的 JSON 里取 Tile Grid 分量。
+    /// 用 <see cref="JsonDocument"/> 而不是扫键名——本文件 :56 已写明理由（<c>"width"</c> 会撞上
+    /// <c>"coded_width"</c>，而组的两个口径必须分清：display 5888×4416 与 coded 6144×4608）。
+    /// </summary>
+    public static void ParseTileGroup(string ffprobeJson, out int tiles, out int displayW, out int displayH)
+    {
+        tiles = 0; displayW = 0; displayH = 0;
+        if (string.IsNullOrWhiteSpace(ffprobeJson)) return;
+        try
+        {
+            using var doc = JsonDocument.Parse(ffprobeJson);
+            if (!doc.RootElement.TryGetProperty("stream_groups", out var groups)
+                || groups.ValueKind != JsonValueKind.Array) return;
+            foreach (var g in groups.EnumerateArray())
+            {
+                if (!g.TryGetProperty("type", out var ty) || ty.ValueKind != JsonValueKind.String) continue;
+                if (!string.Equals(ty.GetString(), "Tile Grid", StringComparison.OrdinalIgnoreCase)) continue;
+                if (!g.TryGetProperty("components", out var comps)
+                    || comps.ValueKind != JsonValueKind.Array || comps.GetArrayLength() == 0) return;
+                var c = comps[0];
+                tiles = ReadInt(c, "nb_tiles");
+                displayW = ReadInt(c, "width");
+                displayH = ReadInt(c, "height");
+                return;
+            }
+        }
+        catch (JsonException) { tiles = 0; displayW = 0; displayH = 0; }
     }
 }

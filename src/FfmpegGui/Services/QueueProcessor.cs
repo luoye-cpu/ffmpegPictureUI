@@ -519,8 +519,14 @@ namespace FfmpegGui.Services
                             //   故此处返回 false 不等于静默丢弃。
                             var isIsoBmffGainMapInput = inputExt is ".avif" or ".heic" or ".heif"
                                 && await GainMapDecoder.IsIsoBmffGainMapAsync(captured.InputPath, s => captured.Log += s, ct);
+                            // 第三条承载：厂商私有尾注（OnePlus/OPPO `local.hdr.linear.mask`）。
+                            // 只在标准 ISO 承载没命中时才付这次整文件读，且两判据互斥（见 VendorHdrTrailer）。
+                            var isVendorGainMapInput = !isIsoBmffGainMapInput
+                                && inputExt is ".avif" or ".heic" or ".heif" or ".jpg" or ".jpeg"
+                                && await GainMapDecoder.IsVendorHdrTrailerAsync(captured.InputPath, s => captured.Log += s, ct, captured.Options);
                             if (!isJxrOutput
                                 && (isIsoBmffGainMapInput
+                                    || isVendorGainMapInput
                                     || (inputExt is ".jpg" or ".jpeg"
                                         && await IsUltraHdrJpegAsync(captured.InputPath, s => captured.Log += s, ct))))
                             {
@@ -534,6 +540,8 @@ namespace FfmpegGui.Services
                                 {
                                     if (isIsoBmffGainMapInput)
                                         captured.Log += "[UltraHDR] 检测到 AVIF/HEIC 增益图（ISO-BMFF tmap 项），GainMapDecoder 应用增益图恢复 HDR...\n";
+                                    else if (isVendorGainMapInput)
+                                        captured.Log += "[vendor-hdr] vendor HDR layer (see [vendor-hdr] lines above) will be applied as a gain map...\n";
                                     else
                                         captured.Log += "[UltraHDR] 检测到 Ultra HDR JPEG，GainMapDecoder 应用增益图恢复 HDR...\n";
                                     _onItemUpdated?.Invoke(captured);
@@ -547,6 +555,10 @@ namespace FfmpegGui.Services
                                         captured.Options.DecodedUltraHdrColorSpace =
                                             decoded.Value.jxlColorSpace ?? "RGB_D65_SRG_Rel_Lin";
                                         captured.Options.DecodedUltraHdrPeakNits = decoded.Value.peakNits;
+                                        captured.Options.GainMapSourceBaseRaw = decoded.Value.basePath;
+                                        // PFM 里 1.0 = SDR 白点（解码器契约），而 zscale 路的约定是 1.0 = 峰值
+                                        // ⇒ 必须把单位告诉编码器，否则它再乘一次 peak/white。
+                                        captured.Options.GainMapInputIsSdrWhiteUnit = true;
                                         // ⚠⚠ 同时声明**输入侧**色彩（2026-10-04 审查 线D P1-1 修）：
                                         //   解码产物是**线性** HDR（PFM，1.0 = SDR 白点 203nits）。只写
                                         //   `DecodedUltraHdr*` 的话，`ColorIntentFactory` 拿不到源描述符
@@ -557,7 +569,17 @@ namespace FfmpegGui.Services
                                         //   ⚠ 形状与 2026-10-03 已修的 RAW 直通缺陷**完全相同** —— 那条路当时漏了。
                                         //   与 RAW 同一条路：走 `ColorSourceDecl*`（`BuildColorArgsSplit` 会把
                                         //   它当 `-i` 前的输入声明，且**不**会污染输出目标）。
-                                        captured.Options.ColorSourceDeclPrimaries = "bt709";
+                                        // 输入侧 primaries 必须跟着**底图实际原色**走：厂商件的底图是 Display P3
+                                        // （解码端已报 `底图原色=smpte432 / RGB_D65_P3_Rel_Lin`），写死 bt709 会把
+                                        // P3 线性像素当 709 解释 ⇒ 色偏。Ultra HDR JPEG 的底图是 sRGB ⇒ 仍旧 bt709
+                                        // （字符串不含 P3/202 ⇒ 与改动前逐字一致，不动既有门禁口径）。
+                                        string declPrimaries = captured.Options.DecodedUltraHdrColorSpace switch
+                                        {
+                                            var cs when cs != null && cs.Contains("_P3_", StringComparison.Ordinal) => "smpte432",
+                                            var cs when cs != null && cs.Contains("_202_", StringComparison.Ordinal) => "bt2020",
+                                            _ => "bt709",
+                                        };
+                                        captured.Options.ColorSourceDeclPrimaries = declPrimaries;
                                         captured.Options.ColorSourceDeclTrc = "linear";
                                         captured.Log += $"[UltraHDR] ✅ 已解码为线性 HDR PFM（峰值 {decoded.Value.peakNits:F0} nits），继续编码\n";
                                     }
@@ -845,8 +867,8 @@ namespace FfmpegGui.Services
                                         inputColorArgs += $"-color_trc {colorMeta.colorTrc} ";
 
                                     var scaleArgs = inputIsJxl
-                                        ? $"-y {inputColorArgs}-i \"{captured.InputPath}\" -vf \"{maxFilter}\" -distance 0 \"{scaledInput}\""
-                                        : $"-y {inputColorArgs}-i \"{captured.InputPath}\" -vf \"{maxFilter}\" -compression_level 0 \"{scaledInput}\"";
+                                        ? $"-y {inputColorArgs}-i \"{captured.InputPath}\" {FfmpegCommandBuilder.ChainArgs(captured.InputPath, maxFilter)} -distance 0 \"{scaledInput}\""
+                                        : $"-y {inputColorArgs}-i \"{captured.InputPath}\" {FfmpegCommandBuilder.ChainArgs(captured.InputPath, maxFilter)} -compression_level 0 \"{scaledInput}\"";
 
                                     // 实际执行
                                     captured.Log += $"[cmd] ffmpeg {scaleArgs}\n";
@@ -862,7 +884,7 @@ namespace FfmpegGui.Services
                                         captured.Log += "[MaxDimension] ⚠️ JXL 中转缩放失败，回退 PNG 中转（HDR 输入可能削顶）\n";
                                         _onItemUpdated?.Invoke(captured);
                                         scaledInput = Path.Combine(scaleDir, $"scaled_{Guid.NewGuid():N}.png");
-                                        var pngScaleArgs = $"-y {inputColorArgs}-i \"{captured.InputPath}\" -vf \"{maxFilter}\" -compression_level 0 \"{scaledInput}\"";
+                                        var pngScaleArgs = $"-y {inputColorArgs}-i \"{captured.InputPath}\" {FfmpegCommandBuilder.ChainArgs(captured.InputPath, maxFilter)} -compression_level 0 \"{scaledInput}\"";
                                         captured.Log += $"[cmd] ffmpeg {pngScaleArgs}\n";
                                         scaleExit = await FfmpegRunner.RunAsync(pngScaleArgs, s =>
                                         {
@@ -1118,7 +1140,7 @@ namespace FfmpegGui.Services
                                 // 确保 ICC 色彩描述、XMP、Exif 等完整保留。AVIF muxer 尤为严重，
                                 // 其他格式（TIFF/PNG/WebP/JXL）也存在不同程度的丢失。
                                 if (exitCode == 0)
-                                    await RestoreMetadataAsync(captured, finalOutputPath);
+                                    await RestoreMetadataAsync(captured, finalOutputPath, engPlan);
 
                                 // ── 色彩后置全套（sBIT / cICP / 引擎 ICC / 裁决点 ICC / TIFF ICC / 保真 ICC）──
                                 // 与链尾已登记的专用通路**共用同一入口** ⇒ 判据不再有两份（P7a-3 第三轮）。
@@ -1502,6 +1524,34 @@ namespace FfmpegGui.Services
             bool engineUsed, bool mainBranch, ColorMapping.ColorTransformPlan? engPlan,
             CancellationToken ct = default)
         {
+                // ── T7：分块组的**产物尺寸对账**（防「只出一块」的静默错图）──
+                // 为什么只对组做：组是唯一「按流探测到的尺寸 ≠ 应交付尺寸」的形态——实测单 tile 流报
+                // 512×512，而组分量声明的显示尺寸是 5888×4416。用流尺寸当期望值会把正确产物判坏。
+                // `<2025-10-30` 的 ffmpeg 不建组 ⇒ 这里拿不到期望值 ⇒ 整段跳过（**不猜**）。
+                // 用户请求了几何缩放时同样跳过：那时尺寸不符是需求，不是缺陷。
+                // 只警告不拒（维护者政策：能算出来的声明别停下要），但把两侧数字与两条成因都点名。
+                if (exitCode == 0
+                    && FfmpegCommandBuilder.TryGetTileGroupDisplaySize(probeInput, out int grpW, out int grpH,
+                         s => { captured.Log += s; _onItemUpdated?.Invoke(captured); }, ct)
+                    && string.IsNullOrEmpty(FfmpegCommandBuilder.BuildMaxDimensionScaleFilter(opts, probeInput)))
+                {
+                    var (artW, artH) = await ProbeImageSizeAsync(finalOutputPath,
+                        AppSettingsService.Current.FfmpegPath,
+                        s => { captured.Log += s; _onItemUpdated?.Invoke(captured); }, ct);
+                    // 比较必须**容许转置**：组声明的 width/height 是未经旋转的整幅几何，
+                    // 而 ffmpeg 对组同样应用 autorotate（`istg_parse_tile_grid` 置 OFILTER_FLAG_AUTOROTATE）
+                    // ⇒ Orientation∈{5,6,7,8} 的源产物会交换长短边。本判据要问的是"块拼没拼成一幅"，
+                    // 与朝向无关 ⇒ 有序比较会在那些源上造假告警。
+                    bool sizeMatches = (artW == grpW && artH == grpH) || (artW == grpH && artH == grpW);
+                    if (artW > 0 && artH > 0 && !sizeMatches)
+                        captured.Log += $"[tilegrid] WARN: artifact is {artW}x{artH} but the source Tile Grid group "
+                                      + $"declares {grpW}x{grpH} => the tiles were NOT assembled into one image "
+                                      + "(single-tile output). Check the ffmpeg build (auto-merge needs >= 2025-10-30) "
+                                      + "and that this job's chain went out as -filter_complex, not -vf.\n";
+                    else if (artW > 0 && artH > 0)
+                        captured.Log += $"[tilegrid] artifact {artW}x{artH} matches source group {grpW}x{grpH} => assembled OK\n";
+                    _onItemUpdated?.Invoke(captured);
+                }
                 // ── PNG 3.0: 10/12-bit 有效位 (sBIT chunk) ──
                 // ffmpeg PNG 编码器无 sBIT 能力（10/12-bit 输入自动提升为 16-bit 容器，
                 // 有效位语义丢失）。编码完成后以二进制写入 sBIT chunk，
@@ -1639,7 +1689,8 @@ namespace FfmpegGui.Services
                 // ── legacy 路径的 ICC 后置（步骤 3：单一裁决点判“要附而编码器不落盘”）──
                 // 非主分支的专用通路走同一个入口（见链尾的同名调用），避免“同一缺陷只有一条路径被修”。
                 await EmbedDroppedFilterIccAsync(captured, finalOutputPath, probeInput,
-                    engineUsed: engineUsed, mainBranch: mainBranch, exitCode: exitCode, decisionOptions: opts, ct: ct);
+                    engineUsed: engineUsed, mainBranch: mainBranch, exitCode: exitCode, decisionOptions: opts,
+                    plan: engPlan, ct: ct);
 
                 // ── TIFF 目标色彩空间 ICC 嵌入（遵循 JPEG XL 的 ICC 策略）──
                 // 2026-09-15 复测纠正（docs/TESTING.md 六.18）：本构建 ffmpeg 的 **tiff 编码器会**落盘 iccgen
@@ -1744,7 +1795,7 @@ namespace FfmpegGui.Services
         /// <param name="ct">取消令牌（`#26`：唯一调用方 `ApplyColorPostStepsAsync` 持有它，本跳之前是断点）</param>
         private async Task EmbedDroppedFilterIccAsync(QueueItem item, string outputPath, string actualInput,
             bool engineUsed, bool mainBranch, int exitCode = 0, FfmpegOptions? decisionOptions = null,
-            CancellationToken ct = default)
+            ColorMapping.ColorTransformPlan? plan = null, CancellationToken ct = default)
         {
             // 引擎路径不跑 iccgen（像素在本进程转换），它的目标 ICC 由 P7a 那段后置逻辑负责。
             if (exitCode != 0 || engineUsed) return;
@@ -1771,6 +1822,17 @@ namespace FfmpegGui.Services
             if (!string.IsNullOrWhiteSpace(copts.FaithfulIccPath)) return;
             var dec = FfmpegCommandBuilder.DecideOutputColor(copts, actualInput);
             if (!dec.NeedsPostEmbedIcc) return;
+            // 计划承诺携带时**先读回产物**再决定叠不叠生成 ICC。本仓顺序是"元数据恢复在前、色彩后置在后"，
+            // 不读回就会用生成 ICC 覆盖刚落位的源字节——而携带的承诺恰恰是"像素未动 ⇒ 源描述才真"。
+            // 读不到 ICC（回带失败 / 容器不收）⇒ 照常嵌入并点名，绝不留静默空档。
+            // 文案 ASCII：`_probe-cjk-hardcode-scan` 把 item.Log 的中文行算进 UI 面棘轮。
+            if (plan is { Action: ColorMapping.ColorAction.CarryIcc, GainMap: false })
+            {
+                var (carriedIcc, carriedDesc) = IccProfileService.ExtractIccToTempFile(outputPath, s2 => { item.Log += s2; _onItemUpdated?.Invoke(item); }, ct);
+                if (!string.IsNullOrWhiteSpace(carriedIcc)) { item.Log += $"[color] artifact already carries the source ICC (desc={carriedDesc ?? "n/a"}) => skipping the generated-profile overlay (pixels were never converted, plan Action=CarryIcc)\n"; _onItemUpdated?.Invoke(item); return; }
+                item.Log += "[color] WARN: plan promised CarryIcc but the artifact carries no ICC => falling back to the generated exit-semantics profile below (source re-copy failed or the container rejected it)\n";
+                _onItemUpdated?.Invoke(item);
+            }
             string? wIcc = IccProfileService.GetOrGenerateStandardIcc(actualInput,
                 dec.OutPrimaries!, dec.OutTrc!, dec.MatrixForOutput ?? "bt709",
                 s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ct);
@@ -1835,9 +1897,10 @@ namespace FfmpegGui.Services
         /// `StripAll` / `StripExifAll` 是用户明确的「产物里不要留描述性元数据」，缩略图不能让它们破口。</para>
         /// <para>收口在本方法而不是 19 个调用点：那些点是各通路的早退分支，逐点接线必然漏。</para>
         /// </summary>
-        private async Task RestoreMetadataAsync(QueueItem item, string outputPath)
+        private async Task RestoreMetadataAsync(QueueItem item, string outputPath,
+            ColorMapping.ColorTransformPlan? engPlan = null)
         {
-            await RestoreMetadataCoreAsync(item, outputPath);
+            await RestoreMetadataCoreAsync(item, outputPath, engPlan);
 
             if (!item.Options.EnableThumbnail) return;
             await ThumbnailService.ApplyAsync(outputPath, item.Options,
@@ -1845,7 +1908,8 @@ namespace FfmpegGui.Services
         }
 
         /// <summary>外部工具编码后恢复元数据（优先 exiftool，不可用时回退 ffmpeg）</summary>
-        private async Task RestoreMetadataCoreAsync(QueueItem item, string outputPath)
+        private async Task RestoreMetadataCoreAsync(QueueItem item, string outputPath,
+            ColorMapping.ColorTransformPlan? engPlan = null)
         {
             if (item.Options.MetadataMode != Models.MetadataMode.PreserveAll)
             {
@@ -1986,7 +2050,18 @@ namespace FfmpegGui.Services
                         // 推荐/手动——像素已转换到目标（目标 ICC 由 iccgen/exiftool 生成），回带源 ICC 会失配，故不回带。
                         // ⚠ 用声明值会让 S2 被覆盖（如 GainMap 要求底图映射）后仍回带源 ICC ⇒ 与已映射的像素失配。
                         bool effCarry = FfmpegCommandBuilder.EffectiveColorStrategy(item.Options, item.InputPath)
-                                        == Models.ColorStrategy.CarryIcc;
+                                        == Models.ColorStrategy.CarryIcc
+                                        // L1 无损优先的升格**只写进 p.Action**（ColorStrategyPlanning.cs:702-715，支在
+                                        // PlanRecommended 内），EffectiveStrategy 仍是 Recommended ⇒ 只读策略枚举的旧判据
+                                        // 永远看不见这次携带：日志宣称"源 ICC 由后置步骤嵌入"，而三个后置消费者一个都不贴。
+                                        // Action 才是"这一格像素动没动"的真值：CarryIcc ⇒ 像素未转 ⇒ 源 ICC 是唯一诚实描述。
+                                        // ⚠ 刻意**不**放开 EffectiveColorStrategy 的单向下限（:584 是省每图 ~250ms 的成本闸），
+                                        //   也不改命令行生成 ⇒ 命令行侧 -map_metadata 的口径分歧仍按 T5 留着，不混批。
+                                        // ⚠ **必须排除 GainMap**（§38 由整轮实测撞出）：GainMap 的底图是被 tone-map/
+                                        //   色域映射**重画过**的，其底图 ICC 由 GainMapEncoder 自己写；而计划层的
+                                        //   L1 升格不看 GainMap ⇒ 少这条排除就会把源 ICC 盖回底图 = ⑪a/⑪b 拦的那件事
+                                        //   （实测：未排除时引擎底图 ICC 与源 ICC 同为 A75F2C68…）。
+                                        || engPlan is { Action: ColorMapping.ColorAction.CarryIcc, GainMap: false };
                         // ⚠ 「用户指定了色彩空间」这一条**不能**一概跳过源 ICC 恢复（2026-09-26 实测缺陷）：
                         //   对**编码器会丢弃 ICC 的容器**（能力表 `EncoderWritesGeneratedIcc=false`，本构建实测只有 webp），
                         //   这里的跳过 + P7a 后置的 `Action != CarryIcc` 排除**叠加**后，没有任何一方负责嵌入 ⇒
@@ -2677,17 +2752,24 @@ namespace FfmpegGui.Services
 
                 var rawPath = Path.Combine(tempDir, "hdr.rgba");
                 // 尝试 1: zscale 转线性 (HDR PQ/HLG 输入)；pin= 锁定原色语义
+                //   但**输入已是线性**（解码出来的 Ultra HDR / tmap / 厂商尾注 PFM）时不能套 zscale：
+                //   那会对线性值再做一次 PQ EOTF ⇒ 整图压暗、headroom 归零 ⇒ 增益图又被丢掉。
                 item.Log += $"[GainMap] Step 2: ffmpeg 解码为线性 RGB 浮点 " +
-                    $"({(isHdrInput ? $"HDR PQ/HLG npl={nits}" : "SDR")})...\n";
+                    $"({(gp.AlreadyLinear ? "已是线性（解码产物）" : isHdrInput ? $"HDR PQ/HLG npl={nits}" : "SDR")})...\n";
                 _onItemUpdated?.Invoke(item);
-                var linArgs = ColorMapping.GainMapJpegCodec.LinearDecodeArgs(item.InputPath, rawPath, nits, srcPrim);
+                var linArgs = gp.AlreadyLinear
+                    ? ColorMapping.GainMapJpegCodec.DirectDecodeArgs(item.InputPath, rawPath)
+                    : ColorMapping.GainMapJpegCodec.LinearDecodeArgs(item.InputPath, rawPath, nits, srcPrim);
                 item.Log += $"[cmd] ffmpeg {linArgs}\n";
                 var decodeExit = await FfmpegRunner.RunAsync(
                     linArgs,
                     s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ffmpegPath, ct);
                 // 尝试 2: zscale 失败 (无色彩元数据的线性输入如 dngtool TIFF) → 直接解码
-                if (decodeExit != 0 || !File.Exists(rawPath))
+                //   ⚠ 已是线性的输入（解码出的 HDR PFM）没有第二条路：兜底支就是刚跑过的那条，
+                //     再跑一遍还会打出「zscale 线性转换失败」这句与事实不符的话 ⇒ 直接落下面的点名。
+                if ((decodeExit != 0 || !File.Exists(rawPath)) && !gp.AlreadyLinear)
                 {
+
                     item.Log += "[GainMap] ⚠️ zscale 线性转换失败，尝试直接解码 (输入可能已是线性)...\n";
                     _onItemUpdated?.Invoke(item);
                     var dirArgs = ColorMapping.GainMapJpegCodec.DirectDecodeArgs(item.InputPath, rawPath);
@@ -2761,7 +2843,9 @@ namespace FfmpegGui.Services
                     sourcePrimaries: srcPrim,
                     s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ct,
                     jpegProgressiveLevel: gmProgLv,
-                    container: GainMapEncoder.ContainerOf(outputPath));
+                    container: GainMapEncoder.ContainerOf(outputPath),
+                    sourceBaseRaw: item.Options.GainMapSourceBaseRawForEncode,
+                    inputIsSdrWhiteUnit: item.Options.GainMapInputIsSdrWhiteUnit);
 
                 item.ExitCode = ok ? 0 : -1;
                 item.Status = ok ? "已完成 (Gain Map 纯托管编码)" : "失败 (GainMapEncoder 编码失败)";
@@ -2857,7 +2941,9 @@ namespace FfmpegGui.Services
                     {
                         // 逗号串照主构建器的 `-vf` 形态；链尾再收一口 `format={pixFmt}`（与被删除的旧守卫同形），
                         // 保证中转 BMP/TIFF 拿到的正是本分支要写的像素格式。
-                        filterArg = $"-vf \"{string.Join(",", jxrDecision.PixelChains)},format={pixFmt}\" ";
+                        filterArg = FfmpegCommandBuilder.ChainArgsFromDecision(
+                                        item.InputPath, jxrDecision,
+                                        $"\"{string.Join(",", jxrDecision.PixelChains)},format={pixFmt}\"") + " ";
                         jxrPixelsRemapped = true;
                     }
                     // ⚠ ICC 的生成**不能**挂在"像素转了没有"这个条件里（2026-09-27 由 #49 的 LEGACY 层实测抓出）：
@@ -3173,21 +3259,24 @@ namespace FfmpegGui.Services
         /// 避免旧 .rgba 无头裸流不可读、以及 PPM(rgb48le 整数) 管道削顶线性 HDR 的问题。
         /// 返回 (PFM 路径, 峰值亮度 nits, 线性像素原色语义的 cjxl color_space)。
         /// </summary>
-        private async Task<(string path, float peakNits, string? jxlColorSpace, string tempDir)?> DecodeUltraHdrToLinearAsync(QueueItem item, string inputPath, CancellationToken ct)
+        private async Task<(string path, float peakNits, string? jxlColorSpace, string tempDir, string? basePath)?> DecodeUltraHdrToLinearAsync(QueueItem item, string inputPath, CancellationToken ct)
         {
             var tempDir = Path.Combine(PlatformServices.GetTempDir(), $"uhdr_linear_{Guid.NewGuid():N}");
             Directory.CreateDirectory(tempDir);
             try
             {
                 var rawPath = Path.Combine(tempDir, "hdr.rgba");
+                // 源底图的落点必须在本 tempDir 内（由本项登记清理），且由解码器在**它自己删目录之前**
+                // 移动过来 —— 否则拿到的是一条已不存在的路径（A 路会静默失效）。
+                var srcBasePath = Path.Combine(tempDir, "srcbase.rgba");
                 var result = await GainMapDecoder.DecodeToLinearRawAsync(inputPath, rawPath,
-                    s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ct);
+                    s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ct, item.Options, srcBasePath);
                 if (result == null || !File.Exists(rawPath))
                 {
                     try { Directory.Delete(tempDir, true); } catch { }
                     return null;
                 }
-                var (w, h, peakNits, jxlColorSpace) = result.Value;
+                var (w, h, peakNits, jxlColorSpace, baseRawPath) = result.Value;
                 // gbrpf32le 无头裸流 → 自描述 PFM 浮点（ffmpeg/cjxl 原生可读，保留线性 HDR >1.0，不削顶）
                 var pfmPath = Path.Combine(tempDir, "hdr.pfm");
                 var convArgs = $"-y -f rawvideo -pix_fmt gbrpf32le -s {w}x{h} -i \"{rawPath}\" -pix_fmt gbrpf32le \"{pfmPath}\"";
@@ -3201,9 +3290,22 @@ namespace FfmpegGui.Services
                     return null;
                 }
                 PlatformServices.MarkAsTemporaryFile(pfmPath);
+                // ── 源底图（配对重封装 A 路的出口底图）：解码器已把它**移动**进本 tempDir ──
+                //   搬运失败/源没有底图 ⇒ 显式点名，绝不静默（否则用户看到的就是「HDR 层凭空丢掉」）。
+                string? basePath = null;
+                if (!string.IsNullOrEmpty(baseRawPath) && File.Exists(baseRawPath))
+                {
+                    PlatformServices.MarkAsTemporaryFile(baseRawPath);
+                    basePath = baseRawPath;
+                }
+                else
+                {
+                    item.Log += "[gainmap] WARN: no source base handed over => gain-map exits will use their own"
+                              + " Reinhard base, so a source floor below 1.0x (shadow attenuation) is NOT expressible\n";
+                }
+                return (pfmPath, peakNits, jxlColorSpace, tempDir, basePath);
                 // tempDir 交给调用方登记到**本项**的 tempDirsToCleanup：项一结束就删。
                 // 旧写法塞进 _pendingRawDirs，而那个列表只在 Stop() 时处理 ⇒ 正常跑完一批全留在盘上（P1-6）。
-                return (pfmPath, peakNits, jxlColorSpace, tempDir);
             }
             catch
             {
@@ -3404,7 +3506,7 @@ namespace FfmpegGui.Services
                 var scaleFilter = FfmpegCommandBuilder.BuildMaxDimensionScaleFilter(item.Options, item.InputPath);
                 if (!string.IsNullOrEmpty(scaleFilter))
                     chain = FfmpegCommandBuilder.InsertScaleFilterAtChainHead(chain, scaleFilter);
-                outArgs += $"-vf {chain} ";
+                outArgs += FfmpegCommandBuilder.ChainArgsFromDecision(item.InputPath, dec, chain) + " ";
 
                 var pipeVcodec = inMeta.hasAlpha ? "pam" : "ppm";
                 ffArgs = $"-y {inArgs}-i \"{item.InputPath}\" {outArgs}-compression_level 0 "
@@ -3768,7 +3870,7 @@ namespace FfmpegGui.Services
                     }
                     else
                     {
-                        encodeArgs = $"-y -framerate {fps} -start_number 0 -i \"{tempDir}\\c_%04d.png\" -vf \"split[a][b];[a]palettegen=stats_mode=full:max_colors=256[p];[b][p]paletteuse{dither}\" -loop 0 \"{outputPath}\"";
+                        encodeArgs = $"-y -framerate {fps} -start_number 0 -i \"{tempDir}\\c_%04d.png\" -vf \"split[a][b];[a]palettegen=stats_mode=full:max_colors=256[p];[b][p]paletteuse{dither}\" -loop 0 \"{outputPath}\""; // tile-lock: flattened-input
                     }
                 }
                 else // webp
@@ -4928,7 +5030,7 @@ namespace FfmpegGui.Services
                             allowApproximateCurve: true, zimgCurveCaliber: ColorSpaceRegistry.IsZimgCurveCaliber(options));
                         if (xform != null)
                         {
-                            outputArgs += $"-vf \"{xform}\" ";
+                            outputArgs += FfmpegCommandBuilder.ChainArgs(inputPath, xform, withLabelReset: true) + " ";
                             // SDR 归一化目标携带标准 BT.2020 ICC；HDR(stdIcc==null) 由 cjxl color_space/CICP 表达。
                             var stdIcc = IccProfileService.GetOrGenerateStandardIcc(inputPath, stdP, stdT, stdM, log, ct);
                             if (stdIcc != null) iccPath = stdIcc;
@@ -4939,7 +5041,7 @@ namespace FfmpegGui.Services
                         inputArgs += $"-color_primaries {pP} -color_trc {pT} ";
                         // HDR 目标（PQ/HLG）：源 gamma → 目标传递函数烘焙（format=rgb48le 前置规避 libzimg 尺寸整除/无标签错误）
                         if (pT == "smpte2084" || pT == "arib-std-b67")
-                            outputArgs += $"-vf \"format=rgb48le,zscale=transferin=bt709:transfer={pT}\" ";
+                            outputArgs += FfmpegCommandBuilder.ChainArgs(inputPath, $"format=rgb48le,zscale=transferin=bt709:transfer={pT}") + " ";
                         outputArgs += $"-colorspace {pM} ";
                     }
                 }
@@ -4974,7 +5076,7 @@ namespace FfmpegGui.Services
                         allowApproximateCurve: true, zimgCurveCaliber: ColorSpaceRegistry.IsZimgCurveCaliber(options));
                     if (stdIcc != null && xform != null)
                     {
-                        outputArgs += $"-vf \"{xform}\" ";
+                        outputArgs += FfmpegCommandBuilder.ChainArgs(inputPath, xform, withLabelReset: true) + " ";
                         return (inputArgs, outputArgs, stdIcc);
                     }
                     // 回退: 生成失败则携带源 ICC(色彩正确, 避免误标 sRGB)。
@@ -5024,7 +5126,7 @@ namespace FfmpegGui.Services
                             else if (primariesIn != null)
                             {
                                 // 可映射的广色域 ICC（Display P3 / Rec.2020）→ zscale 烘焙到 sRGB
-                                outputArgs += $"-vf \"format=rgb48le,zscale=primariesin={primariesIn}:primaries=bt709:transferin={transferIn}:transfer=iec61966-2-1\" ";
+                                outputArgs += FfmpegCommandBuilder.ChainArgs(inputPath, $"format=rgb48le,zscale=primariesin={primariesIn}:primaries=bt709:transferin={transferIn}:transfer=iec61966-2-1") + " ";
                                 TryDeleteIcc(extractedIcc); // 已烘焙，无需携带
                             }
                             else
@@ -5040,7 +5142,7 @@ namespace FfmpegGui.Services
                             // 其余无标签 16-bit 输入保守按 sRGB（不猜测/不转换），避免误判。
                             TryDeleteIcc(extractedIcc);
                             if (RawService.IsRawFile(inputPath))
-                                outputArgs += "-vf \"format=rgb48le,zscale=primariesin=bt2020:primaries=bt709:transferin=bt709:transfer=iec61966-2-1\" ";
+                                outputArgs += FfmpegCommandBuilder.ChainArgs(inputPath, "format=rgb48le,zscale=primariesin=bt2020:primaries=bt709:transferin=bt709:transfer=iec61966-2-1") + " ";
                             else
                                 outputArgs += "-colorspace bt709 ";
                         }
@@ -5093,7 +5195,7 @@ namespace FfmpegGui.Services
                 }
                 else
                 {
-                    outputArgs += $"-vf \"{scaleFilter}\" ";
+                    outputArgs += FfmpegCommandBuilder.ChainArgs(inputPath, scaleFilter) + " ";
                 }
             }
 

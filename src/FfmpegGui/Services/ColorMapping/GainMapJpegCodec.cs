@@ -42,7 +42,10 @@ public static class GainMapJpegCodec
     /// **按 `w×h` 单帧**解释（`raw.Length < pixelCount*12` 只做**下界**检查 ⇒ 多帧会被静默放行，
     /// 再按单帧切平面 ⇒ 底图错位）。`-frames:v` 是**输出侧**选项，必须放在 `-i` **之后**。</summary>
     public static string LinearDecodeArgs(string inputPath, string rawPath, double nits, string srcPrim)
-        => $"-y -i \"{inputPath}\" -frames:v 1 -vf \"{LinearDecodeFilter(nits, srcPrim)}\" -pix_fmt gbrpf32le -f rawvideo \"{rawPath}\"";
+        // 形态由输入的图形态决定（分块流组 ⇒ -filter_complex，见 FfmpegCommandBuilder.ChainArgs）；
+        // withLabelReset=true 是必需的：zscale 要读**帧 trc**，而自动拼图的输出帧 trc 被洗成 unknown
+        //（实测组路径报 pc, smpte170m/unknown/unknown ⇒ zscale 报 code 3074: no path between colorspaces）。
+        => $"-y -i \"{inputPath}\" -frames:v 1 {FfmpegCommandBuilder.ChainArgs(inputPath, LinearDecodeFilter(nits, srcPrim), withLabelReset: true)} -pix_fmt gbrpf32le -f rawvideo \"{rawPath}\"";
 
     /// <summary>
     /// 回退解码命令行：输入**已是线性**（如 dngtool 产出的线性 TIFF）时 zscale 无法命名其传递特性
@@ -82,6 +85,12 @@ public static class GainMapJpegCodec
     {
         /// <summary>源是否为 HDR 传递（PQ/HLG）。SDR 源 ⇒ 无增益（headroom=1）。</summary>
         public bool IsHdrInput;
+        /// <summary>
+        /// 源**已经是线性光**（Ultra HDR / tmap / 厂商尾注经 GainMapDecoder 解码出的 PFM）。
+        /// 这类输入必须跳过 zscale 的 PQ/HLG EOTF —— 再套一次会把整张图压暗，且 PFM 没有容器标签，
+        /// 按 ffprobe 判只会得到「SDR」，于是刚恢复出来的 HDR 层在出口又被丢掉。
+        /// </summary>
+        public bool AlreadyLinear;
         /// <summary>zscale <c>npl</c> 用的名义峰值 nits（HDR 才有意义）。</summary>
         public double Nits;
         /// <summary>传给编码器的 HDR 峰值 nits（SDR 源固定 = SDR 白点 ⇒ headroom=1）。</summary>
@@ -105,6 +114,28 @@ public static class GainMapJpegCodec
         var p = new EncodeParams();
         try
         {
+            // ── 已解码的线性 HDR 输入（Ultra HDR JPEG / ISO-BMFF tmap / 厂商 local.hdr 尾注）──────
+            //   GainMapDecoder 把这类输入换成 **PFM**：线性、1.0 = SDR 白点，峰值与底图原色在解码期
+            //   就登记到 Options 上了。PFM 没有容器色彩标签 ⇒ 只看 ffprobe 必然得出
+            //   「SDR ⇒ headroom 1.0 ⇒ 不写增益图」，于是刚恢复的 HDR 层在出口又被丢掉
+            //   （2026-10-14 实测：OnePlus 分块 HEIC → AVIF，产物 `tmap` 计数 0、峰值报 203）。
+            //   ⇒ 以 DecodedUltraHdr* 为权威，并让调用方据此跳过 zscale。
+            if (o.DecodedUltraHdrPeakNits > 0)
+            {
+                p.AlreadyLinear = true;
+                p.PeakNits = o.DecodedUltraHdrPeakNits;
+                p.Nits = p.PeakNits;
+                p.MetaPeak = p.PeakNits;
+                p.IsHdrInput = p.PeakNits > GainMapEncoder.KSdrWhiteNits * 1.001f;
+                p.SrcPrim = o.DecodedUltraHdrColorSpace switch
+                {
+                    var cs when cs != null && cs.Contains("_P3_", StringComparison.Ordinal) => "smpte432",
+                    var cs when cs != null && cs.Contains("_202_", StringComparison.Ordinal) => "bt2020",
+                    _ => "bt709",
+                };
+                p.PeakSourceText = "解码后的线性 HDR（DecodedUltraHdrPeakNits）";
+                return p;
+            }
             var meta = FfmpegCommandBuilder.ProbeInputColorMetadata(inputPath);
             p.MetaPeak = (float)meta.peakNits;
             string metaPeakFrom = string.IsNullOrWhiteSpace(meta.peakSource) ? "元数据" : meta.peakSource!;

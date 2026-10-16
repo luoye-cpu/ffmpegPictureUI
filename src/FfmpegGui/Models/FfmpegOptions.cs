@@ -113,6 +113,8 @@ namespace FfmpegGui.Models
             JpegGainMapDownsample = p.JpegGainMapDownsample;
             JpegGainMapMultiChannel = p.JpegGainMapMultiChannel;
             if (!string.IsNullOrEmpty(p.JpegGainMapBaseGamut)) JpegGainMapBaseGamut = p.JpegGainMapBaseGamut;
+            // 注：`VendorGm*` 三个覆盖位**不进预设合并** —— 它们是 CLI/诊断用的校准参数，
+            // 存进预设会让一台机器的临时校准悄悄影响另一台机器的预设。
 
             if (p.DngCompression >= 0) DngCompression = p.DngCompression;
             if (p.DngJxlQuality >= 0) DngJxlQuality = p.DngJxlQuality;
@@ -378,6 +380,51 @@ namespace FfmpegGui.Models
         public int JpegGainMapDownsample { get; set; } = 2;
         /// <summary>多通道增益图: true=RGB, false=灰度(默认,更小体积)</summary>
         public bool JpegGainMapMultiChannel { get; set; } = false;
+        // ── 厂商增益图（OnePlus/OPPO `local.hdr.*`）参数覆盖：null = 不覆盖，沿用尾注实测值 ──
+        // 存在的理由：144 B 参数块无公开规范，min/max 有两条独立读数互证、γ 只有单读数推断；
+        // 留出覆盖位，将来拿到规范或对照样机时不必改代码就能校准（非法值只警告并回落实测）。
+        // ⚠ 必须是 `float?` 而**不能是 float + NaN**：本类会被 System.Text.Json 序列化，
+        //   而它默认**拒绝** NaN/Infinity（实测抛
+        //   「The entry with key 'VendorGmGamma' could not be written because it was a NaN or Infinity value」
+        //   ⇒ 设置落盘一炸，整个产品退出码 2、零产物，表现为一大片无关门禁红）。
+        /// <summary>覆盖厂商 log2 增益下限（线性域取 2^值）；null=用尾注值。</summary>
+        public float? VendorGmMin { get; set; }
+        /// <summary>覆盖厂商 log2 增益上限；null=用尾注值。</summary>
+        public float? VendorGmMax { get; set; }
+        /// <summary>覆盖厂商 γ（施加时为 g^(1/γ)）；null=用尾注值。</summary>
+        public float? VendorGmGamma { get; set; }
+        /// <summary>
+        /// **本次运行**解出的源 SDR 底图（gbrpf32le 无头裸流路径，值域 0..1 的 sRGB 编码值）。
+        /// 增益图出口用它当出口底图 ⇒ `hdr/sdr` 才能出现 &lt;1 的暗部端点（T12/A 路配对重封装）。
+        /// <para>标 `[JsonIgnore]`：这是流水线的中间产物路径，不是用户设置——进 settings/preset
+        /// 会把一次运行的临时路径钉到下一次运行/另一台机器上。</para>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonIgnore]
+        public string? GainMapSourceBaseRaw { get; set; }
+        /// <summary>
+        /// 增益图出口的底图取法（T12 审查第 6 条要的**回退粒度**）：<c>true</c>（默认）= A 路，
+        /// 底图用源自己的 SDR 底图（<see cref="GainMapSourceBaseRaw"/>）；<c>false</c> = B 路，
+        /// 出口自造 Reinhard 底图 —— 即 2026-10-15 之前的行为，用作对照臂与安全网。
+        /// <para>为什么只留两态：三态里的 “on” 与默认态行为相同 ⇒ 死旋钮，按《产品选项设计的成本论据与隐藏原则》删掉。</para>
+        /// </summary>
+        public bool GainMapBaseFromSource { get; set; } = true;
+        /// <summary>
+        /// 两个出口（引擎 <c>RawColorPipeline</c> 与队列专用管线）**共用的唯一取底图入口**：
+        /// 关掉 A 路时返回 null ⇒ 编码器自然回落 Reinhard。写在这里而不是各调用点判一次，
+        /// 是因为两处各写一遍必然漂移（本仓反复修过这类缺陷）。
+        /// </summary>
+        [System.Text.Json.Serialization.JsonIgnore]
+        public string? GainMapSourceBaseRawForEncode => GainMapBaseFromSource ? GainMapSourceBaseRaw : null;
+        /// <summary>
+        /// 交给 GainMap 编码器的线性数组用的是哪一种单位：<c>true</c> = **1.0 是 SDR 白点**
+        /// （解码器产出的 PFM 就是这一种），<c>false</c> = 1.0 是**峰值亮度**（zscale npl 语义，
+        /// 编码器要再乘 peak/white 归一）。
+        /// <para>存在理由：`AlreadyLinear` 支不走 zscale，值域原样是「1.0=SDR 白点」；若编码器
+        /// 再乘一次 peakOverWhite，整张图被抬 1.217× ⇒ 源声明的 &lt;1 暗部端点被推到 0 以上，
+        /// A 路的 gainMapMin 就永远测不出来（2026-10-15 实测 1% 分位 = 0.00000）。</para>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonIgnore]
+        public bool GainMapInputIsSdrWhiteUnit { get; set; }
         /// <summary>
         /// GainMap 底图（base rendition）色域："srgb"（默认）或 "bt2020"。
         /// 两者均为 **SDR** 底（sRGB 传递 + 203nits 白点），HDR 完全由增益图承载；

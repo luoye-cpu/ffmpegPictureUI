@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using FfmpegGui.Models;
 
@@ -75,6 +75,23 @@ namespace FfmpegGui.Services
                 args.Add("-color_range"); args.Add(inputColorRange);
             }
 
+            // ── 输入图形态（分块流组 ⇒ 复合滤镜）：惰性探测，只在**真有链要发**时付这一次进程 ──
+            // C# 实参求值顺序是**从左到右** ⇒ 发射点一律写成
+            //   `AppendVideoFilter(args, f, EnsureGroupForm(), groupLabelReset)`
+            // 时 `EnsureGroupForm()` 先跑、把 `groupLabelReset` 填好，随后才被读取。
+            // 这个顺序是契约：把实参换成先取 `groupLabelReset` 的写法会让组路径丢掉标签回灌。
+            // 声明位置也**必须晚于** `inputColorRange`（本地函数不能引用声明在它之前的局部量）。
+            bool? groupForm = null;
+            string? groupLabelReset = null;
+            bool EnsureGroupForm()
+            {
+                if (groupForm.HasValue) return groupForm.Value;
+                groupForm = InputIsGroupDerived(probeInput);
+                if (groupForm.Value) groupLabelReset = GroupChainLabelReset(dec, inputColorRange);
+                return groupForm.Value;
+            }
+
+
             var isGifToAvif = inputPath.EndsWith(".gif", StringComparison.OrdinalIgnoreCase)
                            && options.Format.Equals("avif", StringComparison.OrdinalIgnoreCase);
 
@@ -121,7 +138,7 @@ namespace FfmpegGui.Services
             var strategy = options.ColorStrategy;
 
             // ── 按决定写色彩链（唯一的“决定→命令行”换算点；换算规则见 DecideOutputColor）──
-            foreach (var chain in dec.PixelChains) AppendVideoFilter(args, chain);
+            foreach (var chain in dec.PixelChains) AppendVideoFilter(args, chain, EnsureGroupForm(), groupLabelReset);
 
             // ═══════════════════════════════════════════════════
             //  多帧输入 → 单帧容器规范化（强制取首帧）
@@ -312,7 +329,7 @@ namespace FfmpegGui.Services
                             webpFilters.Add($"fps={options.AnimationFps.Value}");
                         if (options.AnimationScaleW > 0)
                             webpFilters.Add($"scale={options.AnimationScaleW}:-1:flags=lanczos");
-                        AppendVideoFilter(args, string.Join(",", webpFilters));
+                        AppendVideoFilter(args, string.Join(",", webpFilters), EnsureGroupForm(), groupLabelReset);
                     }
                     break;
                 case "gif":
@@ -345,8 +362,7 @@ namespace FfmpegGui.Services
                         }
                         else
                         {
-                            args.Add("-vf");
-                            args.Add(gifChain);
+                            CreateVideoChain(args, gifChain, EnsureGroupForm(), groupLabelReset);
                         }
                     }
                     args.AddRange(ColorMapping.ImageEncoderArgs.BuildGifOptions(options));
@@ -370,7 +386,7 @@ namespace FfmpegGui.Services
                     if (options.AnimationScaleW > 0)
                         filters.Add($"scale={options.AnimationScaleW}:-1:flags=lanczos");
                     if (filters.Count > 0)
-                    { args.Add("-vf"); args.Add(string.Join(",", filters)); }
+                    { CreateVideoChain(args, string.Join(",", filters), EnsureGroupForm(), groupLabelReset); }
                     // ── A-16（2026-09-26 修）：APNG 能力被静默截短 ──
                     // PNG 分支一直在发的 -pred / -dpi 此前在 APNG 下**一个都不发**，而 `apng` 编码器
                     // 与 `png` 编码器共用同一族 AVOptions：`ffmpeg -h encoder=apng` 列出的就是
@@ -406,8 +422,7 @@ namespace FfmpegGui.Services
                     // GIF → AVIF：两步滤镜链 —— pal8→rgba（保留透明索引→alpha）+ rgba→yuva420p（编码器格式）
                     if (inputPath.EndsWith(".gif", StringComparison.OrdinalIgnoreCase))
                     {
-                        args.Add("-vf");
-                        args.Add("format=rgba,format=yuva420p");
+                        CreateVideoChain(args, "format=rgba,format=yuva420p", EnsureGroupForm(), groupLabelReset);
                     }
                     break;
                 case "tiff":
@@ -453,7 +468,7 @@ namespace FfmpegGui.Services
                         if (options.AnimationScaleW > 0)
                             jxlFilters.Add($"scale={options.AnimationScaleW}:-1:flags=lanczos");
                         if (jxlFilters.Count > 0)
-                        { args.Add("-vf"); args.Add(string.Join(",", jxlFilters)); }
+                        { CreateVideoChain(args, string.Join(",", jxlFilters), EnsureGroupForm(), groupLabelReset); }
 
                         // 质量参数
                         if (options.Lossless)
@@ -633,8 +648,8 @@ namespace FfmpegGui.Services
             {
                 // 高位深 YUV 输入 → iccgen 前先转 RGB（iccgen 仅支持 RGB 输入）；
                 // 若还需 tonemap，tonemap 链已在前面处理过，这里只负责格式转换。
-                if (dec.IccgenNeedsRgb) AppendVideoFilter(args, "format=rgb48le");
-                AppendVideoFilter(args, "iccgen");
+                if (dec.IccgenNeedsRgb) AppendVideoFilter(args, "format=rgb48le", EnsureGroupForm(), groupLabelReset);
+                AppendVideoFilter(args, "iccgen", EnsureGroupForm(), groupLabelReset);
             }
 
             // ── 输出色彩矩阵（YUV colorspace，必须在 -i 之后写入输出流）──
@@ -677,7 +692,7 @@ namespace FfmpegGui.Services
             {
                 var scaleFilter = BuildMaxDimensionScaleFilter(options, inputPath);
                 if (!string.IsNullOrEmpty(scaleFilter))
-                    InsertScaleFilterAtChainHead(args, scaleFilter);
+                    InsertScaleFilterAtChainHead(args, scaleFilter, EnsureGroupForm(), groupLabelReset);
             }
 
             // ── 单帧容器首帧选择 ──
@@ -1765,6 +1780,57 @@ namespace FfmpegGui.Services
             return null;
         }
 
+        // ── 输入图形态：分块（Tile Grid）流组 ⇒ 该流只能用复合滤镜 ──
+        // 探测本身收在 ImageGeometry（仓内宽高与流组探测的唯一实现，`_probe-geometry-single-source-scan`
+        // 锁着"不能再长出第五份"）⇒ 这里**只做语义转发**，不留第二份缓存、不留第二趟 ffprobe。
+        // 依据（实测本机 2026-09-24 / 10-11 两构建 + 上游 commit e5a08f7c0e 源码同判）：
+        //  • istg_parse_tile_grid 对 nb_tiles>1 自动建 xstack 图（nb_tiles==1 直接返回）；
+        //  • 自动选流命中该组 ⇒ 输出流由复合图喂 ⇒ 再挂 -vf 必 EINVAL、零产物。
+        // ⚠ 探测按扩展名门控（只有 ISOBMFF 图像家族能带 tile grid）⇒ PNG/JPEG 那条链反而**少一次**进程；
+        //   代价是把分块图改名成 .jpg 会退回旧行为（发 -vf ⇒ 显式 EINVAL，不是静默错图）。
+
+        /// <summary>输入是否会被 ffmpeg 自动拼成复合图（Tile Grid 流组且 nb_tiles 大于 1）。</summary>
+        public static bool InputIsGroupDerived(string inputPath, Action<string>? log = null,
+            CancellationToken ct = default)
+            => ImageGeometry.TryGetTileGroupInfo(inputPath, out int tiles, out _, out _, log, ct) && tiles > 1;
+
+        /// <summary>
+        /// 分块组的**整幅显示尺寸**。参考值必须来自**组**而不是流：单 tile 流报 512×512，
+        /// 而应交付的是整幅 5888×4416（自 #3 起 ImageGeometry.DisplaySizeAsync 也自动按组覆盖，
+        /// 本方法留给"必须直接拿组值"的产物尺寸对账点）。
+        /// 非组 / 读不到 ⇒ false 且两值清零 ⇒ 调用方必须**跳过对账**，不得据此判红。
+        /// </summary>
+        public static bool TryGetTileGroupDisplaySize(string inputPath, out int width, out int height,
+            Action<string>? log = null, CancellationToken ct = default)
+        {
+            var seen = ImageGeometry.TryGetTileGroupInfo(inputPath, out int tiles,
+                         out width, out height, log, ct) && tiles > 1;
+            if (!seen || width <= 0 || height <= 0) { width = 0; height = 0; return false; }
+            return true;
+        }
+
+        /// <summary>
+        /// 组路径的**链首标签回灌**串。为什么必须它：自动拼图的输出帧只保住 range 与 matrix，
+        /// primaries 与 trc 被洗成 unknown（实测组路径报 <c>pc, smpte170m/unknown/unknown</c>，
+        /// 而源 tile 流是 <c>pc / primaries=bt470bg / trc=iec61966-2-1 / matrix=smpte170m</c>）
+        /// ⇒ 凡依赖帧色彩标签的滤镜都拿不到操作数（zscale 报 <c>code 3074: no path between colorspaces</c>，
+        /// iccgen 则按 unknown 猜）。
+        /// <para>取值一律来自裁决点的输入声明 <c>dec.Decl*</c>（含**源 ICC** 探得的 primaries/trc），
+        /// **不读帧标签**——「iccgen 读帧标签」正是它在「colr 挂 P3 + VUI 标 bt470bg」这类源上
+        /// 生成 sRGB 色度 ICC 的根因。三元组任一缺失 ⇒ null（不猜，链原样发）。</para>
+        /// </summary>
+        private static string? GroupChainLabelReset(OutputColorDecision dec, string? range)
+        {
+            if (string.IsNullOrWhiteSpace(dec.DeclPrimaries) || string.IsNullOrWhiteSpace(dec.DeclTrc))
+                return null;
+            var s = $"setparams=color_primaries={dec.DeclPrimaries}:color_trc={dec.DeclTrc}";
+            var m = ColorSpaceRegistry.ToFfmpegInputMatrixName(dec.DeclMatrix);
+            if (!string.IsNullOrWhiteSpace(m)) s += $":colorspace={m}";
+            if (!string.IsNullOrWhiteSpace(range)) s += $":range={range}";
+            return s;
+        }
+
+
         /// <summary>
         /// P8/P4c：读 HDR 静态元数据的**内容峰值**（nits）及其来源。
         ///
@@ -1952,15 +2018,30 @@ namespace FfmpegGui.Services
                    $":p={dst.primaries}:t={dst.trc}:m={dst.matrix}";
         }
 
-        /// <summary>向现有视频滤镜链追加滤镜，兼容 -vf 和 -filter_complex 两种模式</summary>
-        private static void AppendVideoFilter(List<string> args, string filter)
+        /// <summary>
+        /// 向现有视频滤镜链追加滤镜，兼容 -vf 和 -filter_complex 两种模式。
+        /// <para>
+        /// <paramref name="groupDerived"/>=true 时链**只能**是复合形态（见 <see cref="InputIsGroupDerived"/>），
+        /// 且链首必须带 <paramref name="labelReset"/> 的标签回灌串（见 <see cref="GroupChainLabelReset"/>）。
+        /// 默认值 = 历史行为**逐字不变**（非组任务零漂移）。
+        /// </para>
+        /// </summary>
+        private static void AppendVideoFilter(List<string> args, string filter,
+            bool groupDerived = false, string? labelReset = null)
         {
             // 优先查找 -vf
             var vfIdx = args.FindIndex(a => a == "-vf");
             if (vfIdx >= 0 && vfIdx + 1 < args.Count)
             {
-                args[vfIdx + 1] = args[vfIdx + 1] + "," + filter;
-                return;
+                if (!groupDerived)
+                {
+                    args[vfIdx + 1] = args[vfIdx + 1] + "," + filter;
+                    return;
+                }
+                // 组形态：一条命令只许一种形态。已存在的独立 -vf 就地改写，
+                // 否则改完的部分仍在 -vf 上 ⇒ ffmpeg 依旧 EINVAL（形态由**第一次新建**决定，
+                // 但格式分支可能先建了 -vf，故这里必须能收回来）。
+                ConvertVfToComplexSlot(args, vfIdx, labelReset);
             }
             // 其次查找 -filter_complex（GIF 等使用复杂滤镜图）
             var fcIdx = args.FindIndex(a => a == "-filter_complex");
@@ -1972,13 +2053,121 @@ namespace FfmpegGui.Services
                 var splitIdx = complex.IndexOf(",split", StringComparison.Ordinal);
                 if (splitIdx > 0)
                     args[fcIdx + 1] = complex.Insert(splitIdx, "," + filter);
+                else if (groupDerived)
+                    // 组链走**追加**语义，与历史 `-vf` 分支同序（iccgen 依赖"链尾"位置，
+                    // 见 InsertScaleFilterAtChainHead 的那段"不复用 AppendVideoFilter"理由）：
+                    // 组链首是 setparams 回灌串，前插会让 iccgen 跑在它之前 ⇒ 又读到脏标签。
+                    args[fcIdx + 1] = AppendIntoChainTail(complex, filter);
                 else
                     args[fcIdx + 1] = filter + "," + complex;
                 return;
             }
-            // 无现有滤镜：新建 -vf
+            // 无现有滤镜：按输入图形态新建
+            CreateVideoChain(args, filter, groupDerived, labelReset);
+        }
+
+        /// <summary>
+        /// 滤镜链槽位的**唯一新建入口**。历史上有 5 处直接 <c>args.Add("-vf")</c>
+        ///（GIF 无调色板支 / WebP 动画 / APNG 动画 / GIF→AVIF / JXL 动画 + 本文件的追加兜底），
+        /// 组形态下它们若各自新建就会**先**建出独立 <c>-vf</c> ⇒ 后面的色彩链无处可挂。
+        /// 五个新建点因此一律改走这里：<c>groupDerived==false</c> ⇒ 仍写 <c>-vf</c>（逐字不变）；
+        /// <c>true</c> ⇒ 写**无标签** <c>-filter_complex "&lt;链&gt;"</c>
+        ///（实测同链两形态在非组源上产物 **md5 相同** ⇒ 换写法的语义中性是量出来的，不是假设）。
+        /// </summary>
+        private static void CreateVideoChain(List<string> args, string chain,
+            bool groupDerived = false, string? labelReset = null)
+        {
+            if (groupDerived)
+            {
+                args.Add("-filter_complex");
+                args.Add(string.IsNullOrWhiteSpace(labelReset) ? chain : QuoteAwarePrepend(chain, labelReset!));
+                return;
+            }
             args.Add("-vf");
-            args.Add(filter);
+            args.Add(chain);
+        }
+
+        /// <summary>把已存在的独立 <c>-vf</c> 槽位就地改写成复合形态（组路径专用）。</summary>
+        private static void ConvertVfToComplexSlot(List<string> args, int vfIdx, string? labelReset)
+        {
+            args[vfIdx] = "-filter_complex";
+            if (!string.IsNullOrWhiteSpace(labelReset) && !args[vfIdx + 1].Contains("setparams=", StringComparison.Ordinal))
+                args[vfIdx + 1] = QuoteAwarePrepend(args[vfIdx + 1], labelReset!);
+        }
+
+        /// <summary>把 filter 追加到链**尾**（与 `-vf` 分支同语义）。链尾带字面引号时插到引号**内**
+        ///——引号必须在最外层，否则 ffmpeg 解析失败（实测退出码 <c>-22</c>，同 InsertScaleFilter 的守卫）。</summary>
+        private static string AppendIntoChainTail(string chain, string filter)
+            => chain.EndsWith('"', StringComparison.Ordinal)
+                ? chain.Substring(0, chain.Length - 1) + "," + filter + "\""
+                : chain + "," + filter;
+
+        /// <summary>引号感知地把 <paramref name="head"/> 拼到链首（引号是字符串的一部分，见 InsertScaleFilter 的同条守卫）。</summary>
+        private static string QuoteAwarePrepend(string chain, string head)
+            => chain.StartsWith('"') ? "\"" + head + "," + chain.Substring(1) : head + "," + chain;
+
+        // ── 「整串拼参数」通路的同形态入口（T4）──
+        // 引擎解码 / GainMap 解码 / 缩略图 / 预缩放 / JXR 出口 / 传统直编那几处发的不是 List<string>
+        // 而是**整条参数字符串**，接不进 CreateVideoChain ⇒ 若各自硬写 `-vf`，分块源同样 EINVAL
+        //（真图实测：`-vf "format=rgb48le"` 与 `-vf "scale=…"` 两条形态都是 rc=127、零产物）。
+        // 本组入口把「形态判据」收成一份，站点只负责把自己那条链交给它。
+
+        /// <summary>按输入图形态发出滤镜参数（<paramref name="chain"/> **不带引号**，由本函数加）。</summary>
+        public static string ChainArgs(string? inputPath, string chain, bool withLabelReset = false)
+            => ChainArgsCore(inputPath, chain, withLabelReset, quoted: false);
+
+        /// <summary>同上，但调用方交出的是**已带字面引号**的链（如 R1 的 InsertScaleFilterAtChainHead 契约要求引号在最外层）。</summary>
+        public static string ChainArgsQuoted(string? inputPath, string quotedChain, bool withLabelReset = false)
+            => ChainArgsCore(inputPath, quotedChain, withLabelReset, quoted: true);
+
+        /// <summary>
+        /// 供**手上有裁决点结果**的通路（JXR 出口、管道编码出口）用同一份形态判据，
+        /// 标签回灌串取 <paramref name="dec"/> 的输入声明（与主构建器 <see cref="CreateVideoChain"/> **同源**，
+        /// 不另算一套——「三处映射不一致」正是本仓反复修的缺陷族）。
+        /// <paramref name="quotedChain"/> 必须是调用方今天交给 `-vf` 的那个**带引号**原串。
+        /// </summary>
+        public static string ChainArgsFromDecision(string inputPath, OutputColorDecision dec,
+            string quotedChain, string? range = null)
+        {
+            if (!InputIsGroupDerived(inputPath)) return "-vf " + quotedChain;
+            var reset = GroupChainLabelReset(dec, range);
+            return "-filter_complex " + (string.IsNullOrWhiteSpace(reset)
+                ? quotedChain : QuoteAwarePrepend(quotedChain, reset!));
+        }
+
+        private static string ChainArgsCore(string? inputPath, string chain, bool withLabelReset, bool quoted)
+        {
+            var body = quoted ? chain : "\"" + chain + "\"";
+            // null / stdin("-") ⇒ InputIsGroupDerived 返回 false ⇒ 落回历史 `-vf` 形态（与改动前逐字一致）
+            if (string.IsNullOrEmpty(inputPath) || !InputIsGroupDerived(inputPath)) return "-vf " + body;
+            if (withLabelReset)
+            {
+                var reset = ProbeLabelResetTokens(inputPath);
+                if (!string.IsNullOrWhiteSpace(reset)) body = QuoteAwarePrepend(body, reset!);
+            }
+            return "-filter_complex " + body;
+        }
+
+        /// <summary>
+        /// 供**没有 <see cref="OutputColorDecision"/> 在手**的通路使用的标签回灌串：三元组取自合并缓存
+        /// （<see cref="GetCachedProbe"/>，即容器/码流自己声明的那份）。
+        /// <para>为什么这里用 VUI 而不是源 ICC：这些通路跑的是 zscale/format/scale——它们要的是
+        /// **ffmpeg 解码时真正采用的那套语义**（帧标签），不是产物宣称值；iccgen 那条「要按源 ICC 写标签」
+        /// 的判据留在裁决点侧（<see cref="GroupChainLabelReset"/>），两处各自有名、不混用。</para>
+        /// <para>缺任一项 ⇒ null（不猜）。</para>
+        /// </summary>
+        private static string? ProbeLabelResetTokens(string inputPath)
+        {
+            var meta = GetCachedProbe(inputPath);
+            if (string.IsNullOrWhiteSpace(meta.colorPrimaries) || string.IsNullOrWhiteSpace(meta.colorTrc)
+                || meta.colorPrimaries == "unknown" || meta.colorTrc == "unknown")
+                return null;
+            var s = $"setparams=color_primaries={meta.colorPrimaries}:color_trc={meta.colorTrc}";
+            if (!string.IsNullOrWhiteSpace(meta.colorSpace) && meta.colorSpace != "unknown")
+                s += $":colorspace={meta.colorSpace}";
+            if (!string.IsNullOrWhiteSpace(meta.colorRange))
+                s += $":range={meta.colorRange}";
+            return s;
         }
 
         /// <summary>「色彩变换」滤镜的 token 前缀 —— 顺序统一 R1 的锚点（插在它们**之前**）</summary>
@@ -2078,7 +2267,8 @@ namespace FfmpegGui.Services
         /// 「链首」就等于新建的 <c>-vf</c>，行为与改动前逐字一致），后者由
         /// <see cref="InsertScaleFilterAtChainHead(string,string)"/> 守卫 2 原样返回、**不注入**。
         /// </summary>
-        private static void InsertScaleFilterAtChainHead(List<string> args, string scaleFilter)
+        private static void InsertScaleFilterAtChainHead(List<string> args, string scaleFilter,
+            bool groupDerived = false, string? labelReset = null)
         {
             var vfIdx = args.FindIndex(a => a == "-vf");
             if (vfIdx >= 0 && vfIdx + 1 < args.Count)
@@ -2093,7 +2283,7 @@ namespace FfmpegGui.Services
                 return;
             }
             // 无现有滤镜 ⇒ 链不存在，「链首」即新建的 -vf（委托兜底，与改动前一致）
-            AppendVideoFilter(args, scaleFilter);
+            AppendVideoFilter(args, scaleFilter, groupDerived, labelReset);
         }
 
         /// <summary>

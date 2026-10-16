@@ -146,9 +146,18 @@ public static class GainMapDecoder
     /// <param name="log">日志回调</param>
     /// <param name="ct">取消令牌</param>
     /// <returns>成功返回 (宽度, 高度, 峰值亮度nits, 线性像素的 cjxl color_space 原色语义), 失败返回 null</returns>
-    public static async Task<(int w, int h, float peakNits, string? jxlColorSpace)?> DecodeToLinearRawAsync(
+    /// <summary>
+    /// 解出**线性 HDR**（1.0 = SDR 白点）并落到 `outputRawPath`（gbrpf32le 无头裸流）。
+    /// <para>第 5 个返回字段 `baseRawPath` = **源自己的 SDR 底图**（同尺寸 gbrpf32le，值域 0..1 的
+    /// sRGB 编码值）。HDR 出口不需要它；增益图出口需要它——用源底图当出口底图，`hdr/sdr` 才会
+    /// 出现 &lt;1 的暗部端点（自造 Reinhard 底图时恒 ≥1，源声明的下压带在结构上无法表达）。
+    /// ⇒ T12 的 A 路（配对重封装）靠它贯通双端点。</para>
+    /// </summary>
+    public static async Task<(int w, int h, float peakNits, string? jxlColorSpace, string? baseRawPath)?> DecodeToLinearRawAsync(
         string inputPath, string outputRawPath,
-        Action<string>? log = null, CancellationToken ct = default)
+        Action<string>? log = null, CancellationToken ct = default,
+        FfmpegGui.Models.FfmpegOptions? options = null, string? baseOutPath = null)
+
     {
         try
         {
@@ -170,13 +179,21 @@ public static class GainMapDecoder
                 //   JPEG 与 ISO-BMFF 的识别头互斥（`FF D8` vs `ftyp`）⇒ 可先后尝试，不会互相误判。
                 JpegContainer? container = null;
                 IsoBmffGainMapProbe.Result? bmff = null;
+                VendorHdrTrailerResult? vendor = null;
                 try
                 {
                     if (new FileInfo(inputPath).Length <= MaxManagedParseBytes)
                     {
                         var headBytes = await File.ReadAllBytesAsync(inputPath, ct);
                         container = JpegContainer.Parse(headBytes);
-                        if (container == null) bmff = IsoBmffGainMapProbe.Probe(headBytes);
+                        if (container == null)
+                        {
+                            bmff = IsoBmffGainMapProbe.Probe(headBytes);
+                            // 标准承载（`tmap` 派生项 / `auxC`+21496）没有 ⇒ 再问一次**厂商私有尾注**。
+                            // 两条判据互斥且都是纯字节判据：标准件的 `local.hdr.*` 清单计数恒 0、
+                            // 厂商件的 `tmap`/`auxc`/`21496` 计数恒 0 ⇒ 不会互相抢（探针 C1/C3 锁这点）。
+                            if (bmff?.HasGainMap != true) vendor = VendorHdrTrailer.Probe(headBytes);
+                        }
                     }
                     else
                         log?.Invoke("[GainMap解码] ℹ️ 文件过大，跳过纯托管容器解析（走 exiftool）\n");
@@ -224,6 +241,37 @@ public static class GainMapDecoder
                     meta = TryReadAppleXmpMetadata(inputPath, log);
                     if (meta != null) log?.Invoke("[GainMap解码] 元数据来源: Apple HDRGainMap XMP (纯托管)\n");
                 }
+                // ── 厂商私有 HDR 层（OnePlus/OPPO 的 `local.hdr.linear.mask` 尾注）───────────
+                //   这类文件既没有 ISO 21496-1 载荷、也没有 XMP/MPF ⇒ 上面三条路必然全落空；
+                //   不接这一支，手机相册里的「GainMap」在转换后就静默消失了（2026-10-14 用户报障）。
+                if (meta == null && vendor is { Found: true })
+                {
+                    meta = VendorHdrTrailer.BuildMetadata(vendor, options, log);
+                    if (meta != null)
+                        log?.Invoke("[vendor-hdr] metadata source: vendor trailer (device=" + vendor.Device
+                            + $", mask {vendor.MaskWidth}x{vendor.MaskHeight}x{vendor.MaskDepth}"
+                            + $", header ratio {vendor.DeclaredRatio:0.####}, manifest slack {vendor.DeclaredSlack} B). "
+                            + "WARN: the 144-byte vendor param block has no public spec; min/max are read as log2*256 "
+                            + "and cross-checked against the header float, gamma is read as-is; unused fields are dumped verbatim.\n"
+                            + (meta.HdrCapacityMin < 0f
+                                ? (options == null || options.GainMapBaseFromSource
+                                    // 审查（2026-10-15）改文案：A 路默认生效后，"下沿一定会被归一化掉"这句**已经不成立**
+                                    //   （第三方读回实测：合成件 A 臂 minContentBoost=0.817902、B 臂=1）。
+                                    //   ⇒ 文案改成说真话：下沿**由实测 1% 分位决定**，取不到就是 1.0（本件就取不到）。
+                                    ? "[vendor-hdr] NOTE: source declares a headroom floor below 1.0x (shadows are pulled DOWN). "
+                                      + "The gain-map exit keeps the SOURCE base (A path), so the declared floor is re-measured "
+                                      + "from the delivered pixels and written as gainMapMin only if the content actually reaches it "
+                                      + "(if it never does, minContentBoost legitimately comes back as 1.0). "
+                                      + "Disable with --gain-map-base-from-source false to reproduce the old behaviour.\n"
+                                    : "[vendor-hdr] NOTE: source declares a headroom floor below 1.0x (shadows are pulled DOWN), "
+                                      + "but the exit is re-deriving its own Reinhard base (--gain-map-base-from-source false) "
+                                      + "=> that band is normalized away downstream (minContentBoost will come back as 1.0).\n")
+                                : "")
+                            + "[vendor-hdr] raw144=" + VendorHdrTrailer.DumpBlock(vendor) + "\n");
+                    else
+                        log?.Invoke("[vendor-hdr] WARN: vendor HDR trailer found but its parameters are unusable "
+                            + "(direction not forward, or block implausible) => converting the SDR base only and discarding the HDR layer\n");
+                }
                 if (meta == null)
                 {
                     log?.Invoke("[GainMap解码] ❌ 无法读取增益图元数据 (无 ISO 21496-1, 且 exiftool/hdrgm XMP 不可用)\n");
@@ -236,7 +284,9 @@ public static class GainMapDecoder
                 // 反向方向（底图已是 HDR）：增益图的用途是把 HDR 下映射成 **SDR 预览**，本工具不需要它；
                 // 而按 SDR 底解读会产出错图 ⇒ 明确点名并把决定权交回调用方（按普通 HDR 输入处理）。
                 // ⚠ 仅对 ISO-BMFF 生效：JPEG 路径的历史行为（告警后仍按 SDR 底解读）**保持不变**，不动既有门禁口径。
-                if (bmff != null && meta.BaseRenditionIsHdr)
+                // ⚠ 生效范围 = ISO-BMFF **与厂商尾注两条路**：两者的方向都只能由 headroom 比较推出，
+                //   而 JPEG 路的历史行为（告警后仍按 SDR 底解读）**保持不变**，不动既有门禁口径。
+                if ((bmff != null || vendor != null) && meta.BaseRenditionIsHdr)
                 {
                     log?.Invoke("[GainMap解码] ⚠️ 增益图方向为「HDR 底图 → SDR」(backward)：底图本身已是 HDR，本工具不使用增益图\n");
                     return null;
@@ -263,6 +313,15 @@ public static class GainMapDecoder
                     gmOk = true;
                     log?.Invoke($"[GainMap解码] 增益图来源: ISO-BMFF item {bmff.GainMapItemId}（{bmff.GainMapCodec}，{bmff.GainMapItemData.Length} B）\n");
                 }
+                else if (vendor is { Found: true } && vendor.MaskJpeg is { Length: > 100 })
+                {
+                    // mask 是**带完整 JPEG 段的 gray JPEG** ⇒ 不需要裸流解复用器（gmFmtArgs 保持空串）。
+                    // 半尺寸/单通道由施加端负责（ApplyGainMap 的双线性上采样 + BilinearGray 已是这条路）。
+                    await File.WriteAllBytesAsync(gmPath, vendor.MaskJpeg, ct);
+                    gmOk = true;
+                    log?.Invoke($"[vendor-hdr] gain map source: vendor trailer mask ({vendor.MaskJpeg.Length} B gray JPEG, "
+                        + $"{vendor.MaskWidth}x{vendor.MaskHeight})\n");
+                }
                 else
                 {
                     gmOk = TryWriteSecondaryManaged(container, gmPath, log);
@@ -288,7 +347,13 @@ public static class GainMapDecoder
                 //   会把底图、**增益图**（乃至缩略图）各暴露成一条视频流，不写 `-map` 时的选择是隐式的；
                 //   而 rawvideo **无头**，下游只做「长度下界」检查 ⇒ 错流/多帧会被静默放行。
                 //   （`-map`/`-frames:v` 都是**输出侧**选项，必须放在 `-i` 之后。）
-                var baseArgs = bmff != null
+                //   ⇒ 但**分块 HEIF/HEIC 连 `-map 0:0` 都不行**：那种源的 v:0 只是第一块（512×512），
+                //     而 ProbeSizeAsync 报的是**组**的显示尺寸 ⇒ 下面的长度自检必然判「像素数据不完整」
+                //     ⇒ 整条解码返回 null ⇒ 又回到静默 SDR。组源只能走复合图，由 ffmpeg 自己拼 tile。
+                bool groupBase = FfmpegCommandBuilder.InputIsGroupDerived(inputPath, log, ct);
+                var baseArgs = groupBase
+                    ? $"-y -i \"{inputPath}\" -filter_complex \"[0:g:0]format=gbrpf32le[o]\" -map \"[o]\" -frames:v 1 -pix_fmt gbrpf32le -f rawvideo \"{baseRawPath}\""
+                    : bmff != null
                     ? $"-y -i \"{inputPath}\" -map 0:0 -frames:v 1 -pix_fmt gbrpf32le -f rawvideo \"{baseRawPath}\""
                     : $"-y -i \"{inputPath}\" -pix_fmt gbrpf32le -f rawvideo \"{baseRawPath}\"";
                 var baseExit = await RunFfmpegAsync(baseArgs, ffmpeg, log, ct);
@@ -419,7 +484,34 @@ public static class GainMapDecoder
                 };
                 log?.Invoke($"[GainMap解码] ✅ HDR 线性像素: {baseW}x{baseH} (1.0=SDR白点, 峰值 {peakNits:F0}nits, " +
                     $"底图原色={basePrim}, {jxlColorSpace})\n");
-                return (baseW, baseH, peakNits, jxlColorSpace);
+                // ── 出口要留源底图 ⇒ 必须在本函数 finally 删掉整个 tempDir **之前**把它搬出去 ──
+                //   （旧写法返回 tempDir 里的路径给调用方，而 finally 随即 Directory.Delete ⇒
+                //    调用方看到的是「文件不存在」，A 路静默不生效，产物仍写 minContentBoost=1。）
+                //    同卷 File.Move = 改名，不复制 312 MB；落点由调用方登记清理。
+                // ⚠ 审查（2026-10-15）：`baseOutPath` 缺省时**一律返回 null**，不再把 tempDir 里那个
+                //   马上要被 finally 删掉的路径交出去 —— 那是一条"调用方拿到就失效"的 API 陷阱
+                //   （产品调用方一直传，测试/将来的调用方不传就会踩）。要源底图就必须给落点。
+                string? keptBase = null;
+                if (!string.IsNullOrEmpty(baseOutPath))
+                {
+                    try
+                    {
+                        if (File.Exists(baseRawPath))
+                        {
+                            File.Move(baseRawPath, baseOutPath!, overwrite: true);
+                            keptBase = baseOutPath;
+                        }
+                        else keptBase = null;
+                    }
+                    catch (Exception ex)
+                    {
+                        keptBase = null;
+                        log?.Invoke($"[gainmap] WARN: source base handoff failed ({ex.GetType().Name}: {ex.Message})"
+                            + " => the gain-map exit falls back to its own Reinhard base;"
+                            + " a declared <1 shadow floor cannot be expressed\n");
+                    }
+                }
+                return (baseW, baseH, peakNits, jxlColorSpace, keptBase);
             }
             finally
             {
@@ -522,6 +614,50 @@ public static class GainMapDecoder
                 return false;
             }
             log?.Invoke($"[GainMap解码] 检测到 ISO-BMFF 增益图（tmap item，{bmff.TmapPayload.Length} B），方向为「SDR 底图 → HDR」\n");
+            return true;
+        }
+        catch (OperationCanceledException) { throw; }
+        catch { return false; }
+    }
+
+    /// <summary>
+    /// 纯托管判定：文件是否带**厂商私有** HDR 层（当前实现 = OnePlus/OPPO 的
+    /// <c>local.hdr.linear.mask</c> 尾注），且参数可用、方向为正向。
+    /// <para>与 <see cref="IsIsoBmffGainMapAsync"/> 互斥：标准承载命中时本函数一律 false，
+    /// 谁负责哪一种容器由 <c>tests/scripts/verify-gainmap-isobmff.ps1</c> 的 §3d 双向对照锁住（V8/V9：真 tmap 件厂商支必须不认、ISO 支仍要认）。</para>
+    /// <para>返回 false **不等于**「文件里没有 HDR 层」——检出了但参数不可用时必须点名，
+    /// 否则用户会以为转换把它吃掉了（可用性诚实原则）。</para>
+    /// </summary>
+    public static async Task<bool> IsVendorHdrTrailerAsync(string path,
+        Action<string>? log = null, CancellationToken ct = default,
+        Models.FfmpegOptions? options = null)
+    {
+        try
+        {
+            var fi = new FileInfo(path);
+            if (!fi.Exists || fi.Length > MaxManagedParseBytes) return false;
+            var v = VendorHdrTrailer.Probe(await File.ReadAllBytesAsync(path, ct));
+            if (!v.Found)
+            {
+                // ⚠ 审查（2026-10-15）改判据：原先只在 `!Determinate` 时打日志 ⇒ 清单里**明明点名了**
+                //   `local.hdr.linear.mask`、但长度/自洽核对不上的那些失败路径（FailReason 非空而
+                //   Determinate=true）会**一声不响**地把厂商 HDR 层丢掉，用户只看到"转成功了"。
+                //   结果类的契约本来就写着「Determinate=false **或** FailReason 非空 ⇒ 不许当作没有增益图」。
+                if (!string.IsNullOrEmpty(v.FailReason))
+                    log?.Invoke($"{v.FailReason} => not counted as a vendor HDR layer" +
+                        " (the manifest names one; the structure checks below did not pass)\n");
+                return false;
+            }
+            var m = VendorHdrTrailer.BuildMetadata(v, options, log);
+            if (m == null)
+            {
+                log?.Invoke("[vendor-hdr] WARN: vendor HDR layer detected but its parameters are unusable "
+                    + "=> the layer will be discarded (SDR base only)\n");
+                return false;
+            }
+            log?.Invoke($"[vendor-hdr] vendor HDR layer: device={v.Device}, mask {v.MaskWidth}x{v.MaskHeight}x{v.MaskDepth}, "
+                + $"headroom log2 [{m.HdrCapacityMin:0.0000}..{m.HdrCapacityMax:0.0000}] "
+                + $"= {MathF.Pow(2f, m.HdrCapacityMin):0.000}x..{MathF.Pow(2f, m.HdrCapacityMax):0.000}x => it will participate in conversion\n");
             return true;
         }
         catch (OperationCanceledException) { throw; }

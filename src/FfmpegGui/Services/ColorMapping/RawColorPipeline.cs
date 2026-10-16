@@ -130,7 +130,7 @@ public static class RawColorPipeline
             //   唯一非任意的 `h ≤ h0` 在 `scale=-2` 偶数取整下对退化输入会取到 2 > 1（如 3x1 → 2x2）⇒ 引入假红。
             //   守卫放**门禁层**（`verify-engine-firstframe.ps1`；变异实测：去掉 `-frames:v 1` ⇒ 产物 128x960 ⇒ 转红）。
             var dec = await RunToEndAsync(ffmpeg,
-                $"-y -hide_banner -loglevel error -i \"{inputPath}\" -frames:v 1 -vf \"{vf}\" -f rawvideo \"{tmp}\"",
+                $"-y -hide_banner -loglevel error -i \"{inputPath}\" -frames:v 1 {FfmpegCommandBuilder.ChainArgs(inputPath, vf, withLabelReset: true)} -f rawvideo \"{tmp}\"",
                 log, ct).ConfigureAwait(false);
             st.DecodeMs = sw.ElapsedMilliseconds;
             if (dec != 0 || !File.Exists(tmp))
@@ -313,13 +313,25 @@ public static class RawColorPipeline
         var tmp = Path.Combine(PlatformServices.GetTempDir(), $"cms_gm_{Guid.NewGuid():N}.rgba");
         try
         {
-            // ── 解码：zscale 线性化（首选）→ 已是线性的输入（dngtool TIFF）回退直解 ──
+            // ── 解码：zscale 线性化（首选）→ 已是线性的输入（dngtool TIFF / 解码出的 HDR PFM）直解 ──
+            //   ep.AlreadyLinear ⇒ **先**直解：对线性值再套一次 PQ EOTF 会压暗整图并把 headroom 归零
+            //   （判据与 QueueProcessor 旧专用管线同源，两处都必须走同一支）。
             log?.Invoke($"[GainMap] Step 2: ffmpeg 解码为线性 RGB 浮点 "
-                      + $"({(ep.IsHdrInput ? $"HDR PQ/HLG npl={ep.Nits}" : "SDR")})...\n");
-            var dec = await RunToEndAsync(ffmpeg,
-                GainMapJpegCodec.LinearDecodeArgs(inputPath, tmp, ep.Nits, ep.SrcPrim), log, ct).ConfigureAwait(false);
+                      + $"({(ep.AlreadyLinear ? "已是线性（解码产物）" : ep.IsHdrInput ? $"HDR PQ/HLG npl={ep.Nits}" : "SDR")})...\n");
+            var dec = ep.AlreadyLinear
+                ? await RunToEndAsync(ffmpeg, GainMapJpegCodec.DirectDecodeArgs(inputPath, tmp), log, ct).ConfigureAwait(false)
+                : await RunToEndAsync(ffmpeg,
+                    GainMapJpegCodec.LinearDecodeArgs(inputPath, tmp, ep.Nits, ep.SrcPrim), log, ct).ConfigureAwait(false);
             if (dec != 0 || !File.Exists(tmp))
             {
+                // 已是线性的输入没有第二条路可试（兜底支就是刚试过的那条）⇒ 不许再跑一遍并报
+                // 「zscale 线性转换失败」这种与事实不符的话，直接落到下面的失败点名。
+                if (ep.AlreadyLinear)
+                {
+                    st.DecodeMs = sw.ElapsedMilliseconds;
+                    throw new InvalidOperationException(
+                        $"GainMap 线性解码失败 (already-linear input, exit {dec})");
+                }
                 log?.Invoke("[GainMap] ⚠️ zscale 线性转换失败，尝试直接解码 (输入可能已是线性)...\n");
                 dec = await RunToEndAsync(ffmpeg,
                     GainMapJpegCodec.DirectDecodeArgs(inputPath, tmp), log, ct).ConfigureAwait(false);
@@ -377,7 +389,9 @@ public static class RawColorPipeline
                 sourcePrimaries: ep.SrcPrim,
                 log: log, ct: ct,
                 jpegProgressiveLevel: gmProgLv,
-                container: GainMapEncoder.ContainerOf(outputPath)).ConfigureAwait(false);
+                container: GainMapEncoder.ContainerOf(outputPath),
+                sourceBaseRaw: options.GainMapSourceBaseRawForEncode,
+                inputIsSdrWhiteUnit: options.GainMapInputIsSdrWhiteUnit).ConfigureAwait(false);
             st.EncodeMs = sw3.ElapsedMilliseconds;
             if (!ok || !File.Exists(outputPath) || new FileInfo(outputPath).Length == 0)
                 throw new InvalidOperationException("GainMapEncoder 编码失败");
@@ -566,7 +580,7 @@ public static class RawColorPipeline
                 pngTmp = Path.Combine(PlatformServices.GetTempDir(), $"jxl_meta_{Guid.NewGuid():N}.png");
                 var ffPngArgs = $"-y -hide_banner -loglevel error -f rawvideo -pix_fmt {pixIn} -video_size {w}x{h} "
                     + $"-i \"{rawPath}\" -i \"{inputPath}\" -map 0:v -map_metadata 1 "
-                    + $"-vf \"format={ppmPix}\" -f image2 \"{pngTmp}\"";
+                    + $"-vf \"format={ppmPix}\" -f image2 \"{pngTmp}\""; // tile-lock: flattened-input
                 log?.Invoke($"[色彩] ffmpeg {ffPngArgs}\n");
                 log?.Invoke("[色彩] cjxl 出口：变换后的 raw → PNG（携带源 EXIF/XMP，第二输入 -map_metadata 1）→ cjxl\n");
                 // 落盘用 FfmpegRunner（-progress 心跳 + 忙等判死，本仓标准守卫），**不走** PipeToEncoderAsync
@@ -606,7 +620,7 @@ public static class RawColorPipeline
                 else
                 {
                     ffArgs = $"-y -hide_banner -loglevel error -f rawvideo -pix_fmt {pixIn} -video_size {w}x{h} "
-                           + $"-i \"{rawPath}\" -vf \"format={ppmPix}\" "
+                           + $"-i \"{rawPath}\" -vf \"format={ppmPix}\" " // tile-lock: flattened-input
                            + $"-compression_level 0 -f image2pipe -c:v ppm -";
                 }
 
@@ -1270,7 +1284,7 @@ public static class RawColorPipeline
             //   （`Psnr16` 逐字节对拍、按 `w*h` 分帧）⇒ 多帧容器必须只取首帧，否则返回 N 帧拼接、
             //   对拍结论失去意义（与 `TransformFileAsync` 主解码同一个缺陷形态，2026-09-18 同批修）。
             int ec = await RunToEndAsync(ffmpeg,
-                $"-y -hide_banner -loglevel error -i \"{path}\" -frames:v 1 -vf \"format=rgb48le\" -f rawvideo \"{tmp}\"", null, ct).ConfigureAwait(false);
+                $"-y -hide_banner -loglevel error -i \"{path}\" -frames:v 1 {FfmpegCommandBuilder.ChainArgs(path, "format=rgb48le")} -f rawvideo \"{tmp}\"", null, ct).ConfigureAwait(false);
             if (ec != 0 || !File.Exists(tmp)) throw new InvalidOperationException($"解码失败 exit={ec}");
             return await File.ReadAllBytesAsync(tmp, ct).ConfigureAwait(false);
         }

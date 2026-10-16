@@ -62,7 +62,7 @@ namespace FfmpegGui.Services
         /// <summary>缩略图编码命令行（从产物 → 临时 JPEG）。</summary>
         public static string BuildEncodeArgs(string fromPath, string thumbPath, int longEdge, int quality)
             => $"-y -hide_banner -loglevel error -i \"{fromPath}\" "
-             + $"-vf \"{BuildScaleFilter(longEdge)}\" "
+             + $"{FfmpegCommandBuilder.ChainArgs(fromPath, BuildScaleFilter(longEdge))} "
              + $"-frames:v 1 -qscale:v {MapQualityToQscale(quality).ToString(CultureInfo.InvariantCulture)} "
              + $"-update 1 \"{thumbPath}\"";
 

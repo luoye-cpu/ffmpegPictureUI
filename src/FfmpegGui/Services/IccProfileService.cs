@@ -348,13 +348,15 @@ namespace FfmpegGui.Services
             var inArg = (!string.IsNullOrEmpty(carrier) && File.Exists(carrier))
                 ? $"-i \"{carrier}\""
                 : "-f lavfi -i color=c=gray:s=2x2";
+            // 只有真的拿真实图当载体时才参与「输入图形态」判据（lavfi 纯色源不是流组 ⇒ null）
+            var iccCarrierInput = (!string.IsNullOrEmpty(carrier) && File.Exists(carrier)) ? carrier : null;
             var png = Path.Combine(tmpDir, $"stdicc_{primaries}_{trc}_{matrix}_{Guid.NewGuid():N}.png");
             var vf = "format=rgb48le,"
                 + $"zscale=pin=bt709:tin=iec61966-2-1:min=bt709:p={primaries}:t={trc}:m={matrix},iccgen";
             using (var p = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
             {
                 FileName = ffmpeg,
-                Arguments = $"-y -hide_banner -loglevel error {inArg} -vf \"{vf}\" -frames:v 1 \"{png}\"",
+                Arguments = $"-y -hide_banner -loglevel error {inArg} {FfmpegCommandBuilder.ChainArgs(iccCarrierInput, vf)} -frames:v 1 \"{png}\"",
                 RedirectStandardOutput = true, RedirectStandardError = true,
                 StandardOutputEncoding = System.Text.Encoding.UTF8,
                 StandardErrorEncoding = System.Text.Encoding.UTF8,

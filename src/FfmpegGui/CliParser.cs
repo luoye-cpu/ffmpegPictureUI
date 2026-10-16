@@ -409,6 +409,10 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
                           HDR→SDR 色调映射算子（默认 none 即不映射；HDR 源转 SDR 容器时必需）
   --hdr-mode <gainmap|traditional>
                           HDR 实现方式（默认 traditional）；与 --jpeg-gain-map 是同一开关的两种写法
+  --gain-map-base-from-source <true|false>
+                          增益图出口的**底图取法**（默认 true）：true=输入自带增益图时，出口底图用
+                          源自己的 SDR 底图（配对重封装，暗部 <1 端点得以保留、底图不漂移）；
+                          false=出口自造 Reinhard 底图（旧行为，作 A/B 对照与排查用）
   --color-hdr-peak <nits> 源峰值亮度（未给则读容器静态元数据，仍无则整帧实测）
   --color-sdr-white <nits> SDR 参考白（默认 203）
   --color-sdr-peak <nits>  SDR 峰值
@@ -911,6 +915,11 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
                     case "jpeg-gain-map-target-nits": options.JpegGainMapTargetNits = ParseIntStrict(key, value); break;
                     case "jpeg-gain-map-downsample": options.JpegGainMapDownsample = ParseIntStrict(key, value); break;
                     case "jpeg-gain-map-multi-channel": options.JpegGainMapMultiChannel = ParseBoolStrict(key, value); break;
+                    // 厂商增益图（`local.hdr.*`）参数覆盖：这三个数来自无公开规范的 144 B 块，
+                    // 留覆盖位是为了「拿到规范/样机后不改代码就能校准」。非法值不拒（只警告并回落实测值）。
+                    case "vendor-gm-min": options.VendorGmMin = ParseFloatStrict(key, value); break;
+                    case "vendor-gm-max": options.VendorGmMax = ParseFloatStrict(key, value); break;
+                    case "vendor-gm-gamma": options.VendorGmGamma = ParseFloatStrict(key, value); break;
                     case "jpeg-gain-map-base-gamut":
                         // 底图色域（两者均为 SDR 底，HDR 由增益图承载）：srgb(默认) | bt2020
                         options.JpegGainMapBaseGamut = value.Trim().ToLowerInvariant() switch
@@ -963,6 +972,9 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
                         options.ColorStrategy = cs;
                         break;
                     case "icc-file": options.IccFilePath = value; break;
+                    // 增益图出口的底图取法（T12/A 路的回退粒度）：false ⇒ 回落自造 Reinhard 底图
+                    //（= 2026-10-15 之前行为，供对照臂与"<1 暗部端点丢失"排查用）。默认 true。
+                    case "gain-map-base-from-source": options.GainMapBaseFromSource = ParseBoolStrict(key, value); break;
 
                     // ── 未知选项不得静默忽略 ──
                     // 走到这里 ⇒ 该 `--key` 既不在显式 switch、也不在本映射表：用户拼错，或用了

@@ -231,12 +231,31 @@ namespace FfmpegGui.Services
         /// 仍对"比率非正"兜底，因为底图侧过完 primaries 矩阵**可以**为负
         /// （参照同样兜这一手：gainmap.c:713 的 AVIF_MAX(ratio, kEpsilon)）。
         /// </summary>
-        public static float Log2Gain(float hdr, float sdr, float offsetHdr, float offsetSdr)
+        public static float Log2Gain(float hdr, float sdr, float offsetHdr, float offsetSdr, bool floorAtOne = true)
         {
             float den = sdr + offsetSdr;
             if (den <= 0f) return 0f;                       // 底图侧负值（矩阵越界）⇒ 无上映射可言
             float ratio = (hdr + offsetHdr) / den;
-            return MathF.Log2(Math.Max(ratio, 1.0f));
+            if (floorAtOne) return MathF.Log2(Math.Max(ratio, 1.0f));
+            // 允许衰减（floorAtOne=false）：比值非正时无 log2 可言 ⇒ 给一个会被量化端钳到 min 的下界哨兵，
+            // 而不是伪造 0（0 = boost 1，会把「不可表达」静默说成「无增益」）。
+            return ratio > 0f ? MathF.Log2(ratio) : -100f;
+        }
+
+        /// <summary>
+        /// log2(gain) → 8-bit。量程默认 <c>[0, max]</c>（本仓「底图 SDR ⇒ 只上映射」的历史口径）；
+        /// <paramref name="minLog2Gain"/> 给负值时才启用双侧仿射（源底图被原样保留的场合，
+        /// 例如厂商 <c>local.hdr.linear.mask</c> 声明了 &lt;1 的暗部端点）。
+        /// <para>⚠ min=0 时与改动前**逐字节相同**（含 `max&lt;=0 ⇒ 视作 1` 那条历史兜底），
+        /// 因此所有既有路径与门禁期望不受影响；双侧是显式选择的超集。</para>
+        /// </summary>
+        public static byte LogGainToByteScalar(float logGain, float maxLog2Gain, float minLog2Gain = 0f)
+        {
+            if (minLog2Gain == 0f && maxLog2Gain <= 0f) maxLog2Gain = 1f;   // 历史口径，逐字节保持
+            float span = maxLog2Gain - minLog2Gain;
+            if (span <= 0f) return 0;                                       // 区间宽度 0 ⇒ 无可承载增益
+            float clamped = Math.Clamp(logGain, minLog2Gain, maxLog2Gain);
+            return (byte)((clamped - minLog2Gain) / span * 255f);
         }
 
         /// <summary>
@@ -246,7 +265,7 @@ namespace FfmpegGui.Services
         /// —— 见 GainMapEncoder.StoredBaseLinearFromBgra（F-3、备忘 Q3）。
         /// </summary>
         public static void ComputeGainMapGray(Span<float> hdr, Span<float> sdr, Span<byte> gain, float maxLog2Gain,
-            float offsetHdr, float offsetSdr)
+            float offsetHdr, float offsetSdr, float minLog2Gain = 0f)
         {
             for (int i = 0; i + 4 <= hdr.Length; i += 4)
             {
@@ -254,17 +273,10 @@ namespace FfmpegGui.Services
                 float sR = sdr[i], sG = sdr[i + 1], sB = sdr[i + 2];
                 float hLum = 0.2126f * hR + 0.7152f * hG + 0.0722f * hB;
                 float sLum = 0.2126f * sR + 0.7152f * sG + 0.0722f * sB;
-                float logGain = Log2Gain(hLum, sLum, offsetHdr, offsetSdr);
-                gain[i / 4] = LogGainToByteScalar(logGain, maxLog2Gain);
+                // 双侧（min<0）时才放开 ≥1 地板；默认单侧 ⇒ 与改动前逐字节相同
+                float logGain = Log2Gain(hLum, sLum, offsetHdr, offsetSdr, floorAtOne: minLog2Gain >= 0f);
+                gain[i / 4] = LogGainToByteScalar(logGain, maxLog2Gain, minLog2Gain);
             }
-        }
-
-        /// <summary>log2(gain) → 8-bit 标量参考</summary>
-        public static byte LogGainToByteScalar(float logGain, float maxLog2Gain)
-        {
-            if (maxLog2Gain <= 0f) maxLog2Gain = 1f;
-            float clamped = Math.Clamp(logGain, 0f, maxLog2Gain);
-            return (byte)(clamped / maxLog2Gain * 255f);
         }
 
         // ═══════════════════════════════════════════════════
