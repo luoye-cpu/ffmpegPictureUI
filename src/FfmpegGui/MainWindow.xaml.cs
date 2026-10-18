@@ -3387,7 +3387,8 @@ namespace FfmpegGui
                     jxlDecodeSpeed: item.Options.DngJxlDecodeSpeed,
                     bitDepth: item.Options.DngBitDepth,
                     highlightMode: item.Options.DngHighlightMode,
-                    threads: item.Options.Threads);
+                    threads: item.Options.Threads,
+                    carryRawMetadata: Services.QueueProcessor.DngCarriesRawMetadata(item.Options));
             }
 
             // ── GIF → AVIF（avifenc 两步法）──

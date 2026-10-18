@@ -420,6 +420,23 @@ public static class PlatformServices
     // ═══════════════════════════════════════════════
 
     /// <summary>设置进程优先级。当前在 Windows 上使用 ProcessPriorityClass</summary>
+    /// <summary>
+    /// P2-3：读子进程 stdout 时**必须同时排空 stderr**。两个管道都是固定缓冲（Windows 上约 4KB），
+    /// 只读 stdout 时，子进程往 stderr 写满缓冲就会阻塞在写上，而我们又永远等不到 stdout ⇒ 整项卡死
+    /// （表现为“探测不返回”，队列槽位被永久占住）。这里把两条流并发读干，返回 stdout。
+    /// <para>原先是 <c>QueueProcessor</c> 的 private 方法；收口到这里是因为 <c>RawService</c>
+    /// 也需要起子进程读 stdout —— 两处各写一遍就是这条判据要防的漂移源
+    /// （<c>_probe-stderr-drain-scan</c> 按方法计数，漏排空的那一份正是它要抓的形状）。</para>
+    /// </summary>
+    public static async Task<string> ReadStdoutDrainingStderrAsync(Process p)
+    {
+        var outTask = p.StandardOutput.ReadToEndAsync();
+        var errTask = p.StandardError.ReadToEndAsync();   // 读完即弃：这些探测只要 stdout
+        var stdout = await outTask;
+        try { await errTask; } catch { /* 排空失败不影响探测结果 */ }
+        return stdout;
+    }
+
     public static void SetSafePriority(Process process, int priorityLevel)
     {
         try

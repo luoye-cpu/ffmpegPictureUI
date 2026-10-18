@@ -933,6 +933,47 @@ namespace FfmpegGui.Services
             }
         }
 
+        /// <summary>
+        /// 把索尼 IDC 的**版本时间戳**写进 DNG 的标准 XMP 位（<c>ApplicationNotes</c>=700 ⇒
+        /// <c>xmp:CreateDate</c> / <c>xmp:ModifyDate</c>）。
+        /// <para>为什么值可以直抄：IDC 的 0xD100/0xD101 存的就是 20 字符
+        /// <c>YYYY:MM:DD HH:MM:SS</c>，与 XMP 日期形式同形 ⇒ **零换算**（换算一律不做，
+        /// 因为索尼档位整数与别的值域之间没有一手对应材料）。</para>
+        /// <para>两个值都由调用方保证是 <see cref="RawService.IsXmpDateForm"/> 通过的字符串；
+        /// 这里仍再检一遍 —— 拼命令行的操作数不许有第三种来源。</para>
+        /// </summary>
+        public static string BuildIdcXmpDatesArgs(string? create, string? modify, string targetPath)
+        {
+            var sb = new StringBuilder("-overwrite_original ");
+            if (create is not null) sb.Append($"-XMP:CreateDate=\"{create}\" ");
+            if (modify is not null) sb.Append($"-XMP:ModifyDate=\"{modify}\" ");
+            sb.Append($"\"{targetPath}\"");
+            return sb.ToString();
+        }
+
+        /// <summary><see cref="BuildIdcXmpDatesArgs"/> 的写操作封装；两条都缺 ⇒ 不调用 exiftool（返回 <see cref="SkippedNoExiftool"/> 语义由调用方播报）。</summary>
+        public static async Task<int> WriteIdcXmpDatesAsync(
+            string targetPath, string? create, string? modify,
+            Action<string>? logCallback = null, CancellationToken ct = default)
+        {
+            if (create is null && modify is null) return 0;
+            foreach (var v in new[] { create, modify })
+                if (v is not null && !RawService.IsXmpDateForm(v))
+                {
+                    logCallback?.Invoke("[exiftool] IDC 版本时间戳形状不合 XMP 日期形式 ⇒ 拒绝写入（不拼未校验的操作数）\n");
+                    return -2;
+                }
+            if (_detectedPath == null)
+            {
+                Detect();
+                if (_detectedPath == null)
+                    return SkippedNoExiftool;
+            }
+            var args = BuildIdcXmpDatesArgs(create, modify, targetPath);
+            logCallback?.Invoke($"[exiftool] {args}\n");
+            return await RunWriteAsync(targetPath, args, logCallback, ct);
+        }
+
         /// <summary>`EnsureJfifHeaderAsync` 在 exiftool 不可用时的返回值（**与"成功"区分开**）。</summary>
         public const int SkippedNoExiftool = int.MinValue;
 

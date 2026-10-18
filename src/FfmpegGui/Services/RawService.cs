@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.Json;
 
 namespace FfmpegGui.Services;
 
@@ -213,7 +214,8 @@ public static class RawService
         string rawPath, string outputDngPath,
         int compression = 0, int jxlQuality = 0,
         bool linear = false, int jxlEffort = 7, int jxlDecodeSpeed = 4,
-        int bitDepth = 16, int highlightMode = 1, int threads = 0)
+        int bitDepth = 16, int highlightMode = 1, int threads = 0,
+        bool carryRawMetadata = true)
     {
         var args = $"-e -i \"{rawPath}\" -O \"{outputDngPath}\"";
         if (compression == 1)
@@ -249,6 +251,10 @@ public static class RawService
         // 多线程 (2026-08-15): 0=自动(硬件并发), 1=单线程, N=指定
         if (threads > 0)
             args += $" -threads {threads}";
+        // 隐私剥除请求 ⇒ 让 dngtool 连嵌入原件/预览/拍摄字段一起不写（这三样 exiftool 事后删不干净：
+        // 嵌入原件是规范 50828 里的完整源文件字节，预览 JPEG 内部还各自带 EXIF）。
+        if (!carryRawMetadata)
+            args += " -no-raw-meta";
         return args;
     }
 
@@ -273,7 +279,8 @@ public static class RawService
         int compression = 0, int jxlQuality = 0,
         Action<string>? log = null, CancellationToken ct = default,
         bool linear = false, int jxlEffort = 7, int jxlDecodeSpeed = 4,
-        int bitDepth = 16, int highlightMode = 1, int threads = 0)
+        int bitDepth = 16, int highlightMode = 1, int threads = 0,
+        bool carryRawMetadata = true)
     {
         if (!IsDngTool)
         {
@@ -284,13 +291,106 @@ public static class RawService
         log?.Invoke($"[RAW] dngtool 编码 DNG: {Path.GetFileName(rawPath)}\n");
         var args = BuildEncodeToDngArguments(
             rawPath, outputDngPath, compression, jxlQuality,
-            linear, jxlEffort, jxlDecodeSpeed, bitDepth, highlightMode, threads);
+            linear, jxlEffort, jxlDecodeSpeed, bitDepth, highlightMode, threads,
+            carryRawMetadata);
         log?.Invoke($"[RAW] dngtool {args}\n");
 
         var ok = await RunProcessAsync(_detectedPath!, args, outputDngPath, "dngtool-e", log, ct);
         if (ok)
             log?.Invoke($"[RAW] ✅ DNG 编码完成 ({(compression == 1 ? "JXL" : "无损 JPEG")}{(linear ? ", 线性" : ", CFA")})\n");
         return ok;
+    }
+
+    /// <summary>`dngtool -idc` 的参数（只读探测，不产出文件）。</summary>
+    public static string BuildIdcArguments(string inputPath) => $"-idc \"{inputPath}\"";
+
+    /// <summary>
+    /// 读源文件索尼 IDC 生效版本的两条版本时间戳（tag 0xD100/0xD101）。
+    /// <para>非索尼、无 IDC 链、dngtool 缺席或读不到 ⇒ <c>(null, null)</c>，这**不是失败**。</para>
+    /// <para>⚠ 文本是**源文件里的内容**，而它接下来要拼进 exiftool 的命令行 ⇒ 只接受
+    /// XMP 日期形状 <c>YYYY:MM:DD HH:MM:SS</c> 的值，其余一律当读不到（不校验就等于把
+    /// 未验证的字节交进另一条命令行）。</para>
+    /// </summary>
+    public static async Task<(string? create, string? modify)> ReadIdcVersionDatesAsync(
+        string inputPath, Action<string>? log = null, CancellationToken ct = default)
+    {
+        if (!IsDngTool) return (null, null);
+        Process? p = null;
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = _detectedPath!,
+                Arguments = BuildIdcArguments(inputPath),
+                RedirectStandardOutput = true,
+                StandardOutputEncoding = System.Text.Encoding.UTF8,
+                RedirectStandardError = true,
+                StandardErrorEncoding = System.Text.Encoding.UTF8,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            p = Process.Start(psi);
+            if (p is null) return (null, null);
+            PlatformServices.SetSafePriority(p, AppSettingsService.Current.FfmpegPriority);
+            // ⚠ 两条管道都要排空：只读 stdout 时 dngtool 把 stderr 缓冲写满就阻塞在写上，
+            //   我们永远等不到 stdout ⇒ 队列槽位被永久占住（P2-3 治过的同一形状）。
+            var stdout = await PlatformServices.ReadStdoutDrainingStderrAsync(p);
+            await p.WaitForExitAsync(ct);
+            if (p.ExitCode != 0) return (null, null);
+            return ParseIdcVersionDates(stdout);
+        }
+        catch (OperationCanceledException)
+        {
+            // 取消 ≠ 读不到：先杀进程（不留孤儿继续跑），再原样抛给队列
+            try { if (p is { HasExited: false }) p.Kill(entireProcessTree: true); } catch { }
+            throw;
+        }
+        catch (Exception ex)
+        {
+            log?.Invoke($"[RAW] dngtool -idc 探测异常：{ex.GetType().Name}\n");
+            return (null, null);
+        }
+        finally
+        {
+            p?.Dispose();
+        }
+    }
+
+    /// <summary>从 `-idc` 的 JSON 里取两条版本时间戳（与进程解耦，便于直接喂样本对账）。</summary>
+    public static (string? create, string? modify) ParseIdcVersionDates(string json)
+    {
+        string? create = null, modify = null;
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            if (!doc.RootElement.TryGetProperty("entries", out var entries)
+                || entries.ValueKind != JsonValueKind.Array)
+                return (null, null);
+            foreach (var e in entries.EnumerateArray())
+            {
+                var tag = e.TryGetProperty("tag", out var t) ? t.GetString() : null;
+                var txt = e.TryGetProperty("text", out var x) ? x.GetString() : null;
+                if (tag is null || txt is null || !IsXmpDateForm(txt)) continue;
+                if (string.Equals(tag, "0xD100", StringComparison.OrdinalIgnoreCase)) create = txt;
+                else if (string.Equals(tag, "0xD101", StringComparison.OrdinalIgnoreCase)) modify = txt;
+            }
+        }
+        catch (JsonException)
+        {
+            return (null, null);
+        }
+        return (create, modify);
+    }
+
+    /// <summary>定长手检 <c>YYYY:MM:DD HH:MM:SS</c>（不引正则：这条跑在每次 DNG 编码的尾巴上）。</summary>
+    public static bool IsXmpDateForm(string s)
+    {
+        if (s.Length != 19 || s[4] != ':' || s[7] != ':' || s[10] != ' '
+            || s[13] != ':' || s[16] != ':')
+            return false;
+        foreach (var i in new[] { 0, 1, 2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 17, 18 })
+            if (!char.IsAsciiDigit(s[i])) return false;
+        return true;
     }
 
     /// <summary>运行 RAW 解码进程 (dngtool 通用执行器)</summary>

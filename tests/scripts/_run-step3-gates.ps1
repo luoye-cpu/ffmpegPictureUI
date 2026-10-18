@@ -1,6 +1,6 @@
 # _run-step3-gates.ps1 —— 步骤 3 改动后的门禁批量执行（只回显每个门禁的汇总行 + 失败明细）
 # 用法：pwsh -NoProfile -File tests/scripts/_run-step3-gates.ps1 [-Probes a,b,c] [-SkipScripts] [-Scripts a,b]
-#   ⚠ `-Scripts` = **脚本级子集**（2026-09-24 新增）。动机：此前只有"全跑 76 条"与
+#   ⚠ `-Scripts` = **脚本级子集**（2026-09-24 新增）。动机：此前只有"全跑 77 条"与
 #     "裸跑单个 verify-*.ps1"两种选择，而裸跑会绕开本文件的**仓库锁 / 单步超时 / STALE 新鲜度闸 /
 #     双漂移复核 / `_gate_script_*.txt` 留痕**五项保护 ⇒ 增量验证要么太贵要么不可信。
 #     ⚠ 全跑墙钟不再写死分钟数：2026-10-01 起清单含 5 条 **L3/产物级**套件（第 61~65 条），
@@ -86,7 +86,7 @@ param([string]$Probes = 'contract,wire,verdict,selftest,iccname,plan,curve,matri
 #    2026-09-17 新增 verify-gamut-map.ps1；**同日按「运行级隔离（GUID）」改写，见 §6 第 66 条**；
 #    同日再新增生产者 `_probe-jpg-p3-icc.ps1`，理由见下方 ②(b) 与调序注释；
 #    同日再新增 `verify-geometry-engine.ps1`（**几何缩放死代码**的专项门禁，理由见 `$Probes` 的 `geometry` 注释））──
-#    ⚠ **清单条数以实测为准 = 76 条**（⚠ 2026-09-19 P4-A 前为 42 条；2026-09-23 由 48 经 49/50/51 到 52，2026-09-23/24 再接 `verify-ipc-extra-options.ps1` ⇒ 53，2026-09-24 再接 `_probe-settings-clone-coverage.ps1` ⇒ 54，2026-09-27 再接 `_probe-matrix-structure.ps1`（任务 #42，秒级结构自检）⇒ 55，同日再接 `_probe-stderr-merge-scan.ps1`（任务 #51，合并取数结构锁）⇒ 56，同日再接 `verify-simd-switch-fallback.ps1`（面板「SIMD 优化」声明/实现冲突 ⇒ 判据单点 `SimdKernelRouting`）⇒ 57，2026-09-30 再接 `verify-geometry-orientation.ps1` + `_probe-geometry-single-source-scan.ps1`（取向标签 ⇒ **显示尺寸**口径的专项门禁 + 唯一实现结构锁）⇒ 59，同日再接 `verify-gainmap-host.ps1`（把 `GainMapTestHost` 套件接进清单 + STALE 第 ⑤ 对）⇒ 60，2026-10-01 再接**首批 L3/产物级套件**5 条（`verify-package-smoke` + `verify-jbrd-e2e` + `verify-orientation-rewrap` + `verify-gainmap-thirdparty` + `verify-encoder-knob-liveness`；原居 gitignored 的 `tests/output/t{69,76,77,79}`，`git clean -xdf` 一次就没、也不在任何轮里被跑）⇒ 65，2026-10-04 再接 `_probe-jxl-input-target.ps1` + `_probe-raw-default-tier.ps1`（色彩审查两个 P1 的判据）⇒ 67，同日再接 `_probe-gui-control-wiring.ps1`（72h 审查 P0：GUI 控件「声明了却没接线」结构锁）⇒ 68，2026-10-05 再接 `_probe-test-group-coverage.ps1`（测试物理拆分的**组表↔探针清单覆盖一致性锁**，防「某 mode 无组认领 ⇒ 永远不被跑」的假覆盖）⇒ 69）（`foreach` 数组里的 `.ps1` 条目数）。
+#    ⚠ **清单条数以实测为准 = 77 条**（⚠ 2026-09-19 P4-A 前为 42 条；2026-09-23 由 48 经 49/50/51 到 52，2026-09-23/24 再接 `verify-ipc-extra-options.ps1` ⇒ 53，2026-09-24 再接 `_probe-settings-clone-coverage.ps1` ⇒ 54，2026-09-27 再接 `_probe-matrix-structure.ps1`（任务 #42，秒级结构自检）⇒ 55，同日再接 `_probe-stderr-merge-scan.ps1`（任务 #51，合并取数结构锁）⇒ 56，同日再接 `verify-simd-switch-fallback.ps1`（面板「SIMD 优化」声明/实现冲突 ⇒ 判据单点 `SimdKernelRouting`）⇒ 57，2026-09-30 再接 `verify-geometry-orientation.ps1` + `_probe-geometry-single-source-scan.ps1`（取向标签 ⇒ **显示尺寸**口径的专项门禁 + 唯一实现结构锁）⇒ 59，同日再接 `verify-gainmap-host.ps1`（把 `GainMapTestHost` 套件接进清单 + STALE 第 ⑤ 对）⇒ 60，2026-10-01 再接**首批 L3/产物级套件**5 条（`verify-package-smoke` + `verify-jbrd-e2e` + `verify-orientation-rewrap` + `verify-gainmap-thirdparty` + `verify-encoder-knob-liveness`；原居 gitignored 的 `tests/output/t{69,76,77,79}`，`git clean -xdf` 一次就没、也不在任何轮里被跑）⇒ 65，2026-10-04 再接 `_probe-jxl-input-target.ps1` + `_probe-raw-default-tier.ps1`（色彩审查两个 P1 的判据）⇒ 67，同日再接 `_probe-gui-control-wiring.ps1`（72h 审查 P0：GUI 控件「声明了却没接线」结构锁）⇒ 68，2026-10-05 再接 `_probe-test-group-coverage.ps1`（测试物理拆分的**组表↔探针清单覆盖一致性锁**，防「某 mode 无组认领 ⇒ 永远不被跑」的假覆盖）⇒ 69）（`foreach` 数组里的 `.ps1` 条目数）。
 #      原注释写「29 个」「31 条」均与实测不符（**历史偏差**，非本轮引入），已按实测更正。
 #      2026-09-18 新增 `verify-engine-firstframe.ps1`（引擎多帧解码只取首帧，理由见该脚本头注释）
 #      ⇒ 32 → 33，已重新数过。
@@ -958,7 +958,7 @@ $noSelfSummary = @('_probe-cancel-propagation-scan.ps1', '_probe-ct-chain-closur
 #   观察项**，改成必红等于**主动放弃一条覆盖**；补生产者只是**修复清单的遗漏**。
 #   ⚠ **本组正确性依赖 runner 串行**（`validate/jpgp3` 是固定共享目录）——
 #   若将来 runner 改成并行，本组必须先改成「指针/按会话隔离」（§6 第 68 条）。
-# ⚠ 受管基线：脚本清单 = **76** 条（`.workbuddy-ai/memory/MEMORY.md` / `docs/HANDOVER.md` /
+# ⚠ 受管基线：脚本清单 = **77** 条（`.workbuddy-ai/memory/MEMORY.md` / `docs/HANDOVER.md` /
 #   `docs/TESTING.md` §3.5 同记此数）。增删条目必须**同时**改此常量 + 四处文档；
 #   否则下面的条数锁会响亮报红（防「删掉一条 ⇒ 静默变 47 ⇒ 日志照常、无人发现」）。
 #   ⚠ 本锁在 `-SkipScripts` 下**不执行**（该模式走上面的早退，清单根本没被使用）——
@@ -1071,7 +1071,7 @@ $noSelfSummary = @('_probe-cancel-propagation-scan.ps1', '_probe-ct-chain-closur
 #   ⚠ 自带汇总（`PASS=n FAIL=m` + 断言驱动 exit）⇒ 分类账「其余」57 → 58，两个数组仍不动。
 #   ⚠ 实测（2026-10-05，三次变异）：① 从组表删一个 mode ⇒ `contract` 未认领判红；
 #     ② 加一个无工程目录的组 ⇒ 判红；③ 把 mode 拼错 ⇒ 判红；恢复 ⇒ **6/0**。
-$expectedScriptCount = 76
+$expectedScriptCount = 77
 $scriptList = @('verify-ps-compat.ps1','verify-color-caps.ps1','verify-color-wiring.ps1','verify-color-strategy.ps1','verify-format-regression.ps1',
                  'verify-widegamut-regression.ps1','verify-tiff-icc.ps1','verify-webp-hdr-fix.ps1','verify-decision-delivery.ps1',
                  '_probe-stderr-drain-scan.ps1','_probe-proc-encoding-scan.ps1','_probe-cancel-propagation-scan.ps1','_probe-i18n-scan.ps1','_probe-cjk-hardcode-scan.ps1','verify-png-signature.ps1','verify-gainmap-memory.ps1','verify-metadata-privacy.ps1','verify-gif-avif-framelist.ps1','verify-color-peak.ps1',
@@ -1366,7 +1366,94 @@ $scriptList = @('verify-ps-compat.ps1','verify-color-caps.ps1','verify-color-wir
 #   立锁动因：发射点共 5 处（:348/:373/:409/:456/:1980），漏改任一处就等于把零产物留给用户；
 #   有牙自检：把带裸 -vf 的副本喂给 -Files ⇒ 恰 1 条红，标记行与只读 FindIndex 行都不误报。
                  '_probe-tilegrid-chain-lock.ps1',
-                 'verify-dryrun-parity.ps1')
+                 'verify-dryrun-parity.ps1',
+                 # ── 第 77 条：2026-10-17 接线（`verify-dng-metadata-transport.ps1`）───────────────
+                 #   锁 `dngtool -e` 对**非 DNG 源 RAW** 的三段元数据搬运：按规范 50828 嵌入的整个原件、
+                 #   内嵌预览与缩略图原字节、ExifIFD 拍摄字段。立锁动因 = 2026-10-16 索尼 ARW 审计：
+                 #   420 条 → 66 条，且**在册清单里没有一条把非 DNG RAW 喂给 -e** ⇒ 缺陷无人看着。
+                 #   ⚠ 载体必须是规范标签：2026-10-17 把自造的 'DMSL' 块（写在 DNGPrivateData 里）删掉 ——
+                 #     规范把 DNGPrivateData 定义为厂商给自己 raw 转换器的私有数据, 且要求块内偏移一律
+                 #     相对该块起点, 原文件的 TIFF 偏移不满足 ⇒ 不合规; 50828 才是规范给的位置。
+                 #   ⚠ 判据一律"按区间算 SHA256 对撞"，读数由 exiftool 独立给出（解码方 = 它的 DNG.pm），不信 dngtool 自己的日志串。
+                 #   ⚠ 负控 = 同输入再跑一臂 `-no-raw-meta`：嵌入件/ExifIFD/预览必须全为零（防②③④恒真），
+                 #     而 `NewRawImageDigest` 两臂必须相同（证明搬运不动像素）。
+                 #   ⚠ 另有 DNG→DNG 臂锁住"不进非 DNG 分支"（WhiteLevel 仍 65535、源无 50828 时不得无中生有）。
+                 #   ⑦ 组锁**语义恢复**而不止字节在位：`dngtool -idc` 在源 RAW 与产物里嵌入的原件上必须读出
+                 #   逐字节相同的 JSON（只去掉 origin 一段, 连 sr2Dir/idcDir 两个绝对偏移都要求相同），
+                 #   并配 ⑦b 条目数下限（防空跑：两边同时读空也相等）+ ⑦c 负控（`-no-raw-meta` 产物上
+                 #   `-idc` 必须非零退出）。⚠ 这组**不能**用 7S 那份素材：它的 0x7240 指向**空目录**
+                 #   （exiftool: "SonyIDC directory with 0 entries"）⇒ 恢复判据会退化成恒真。
+                 #   ⑧ 组锁**非 ASCII 输入名**：LibRaw 的窄路径重载把 char 逐个零扩展成 wchar_t 再
+                 #   CreateFileW ⇒ 中文名必 rc=2（2026-10-17 在未修复件上实测），产物名用码点拼不写字面量。
+                 #   ⑨⑩⑪ 锁**"源到底被改了什么"**：索尼把编辑写在 IDC 的**两个版本目录**里（hop 0 = 机身
+                 #   初值，生效版 = 导出后的值；本机四件实测各 14/15 项差异）⇒ 不标定也能读"改了什么"。
+                 #   ⑨ `_crosscheck-idc-changed.py` 用 exiftool 两版各读一遍按 tag 求差、与我方 changed 逐条比
+                 #   集合与数值（⚠ exiftool 把 0x0201/0x0202 的"存 0"按 IsOffset 解析成各自目录基址 ⇒ 伪差异，
+                 #   读手显式排除并点名；名字表 hex 位数必须按 3~4 位匹配，`0x201` 三位数会整条漏掉）；
+                 #   ⑩ 编码器 stderr 的 ASCII 键 `idc-changed=N` 必须等于 exiftool 侧的数（拿中文串当解析
+                 #   锚点会在非 UTF-8 码页机器上假红）；⑪ 精度臂：`_make-synth-idc-revert.py` 抹平单项后
+                 #   changed / 日志 / 产物嵌入件三处必须同步降 1 ⇒ 判据读的是数据不是常数。
+                 #   ⑫⑬⑭ 锁**标准位真落地**：`-idc-look` 把外部给的曲线写进**主 profile 的
+                 #   ProfileToneCurve**(50940, 规范 Usage="IFD0 or Camera Profile IFD")。不走 ExtraCameraProfiles
+                 #   是实测否证的：SDK 1.7.1 两段式预算不闭合，extras 块头后面紧跟的就是 StripOffsets(=块址+8)
+                 #   ⇒ 条带数据盖掉 profile 目录。读手 `_readback-dng-profile.py` 自解 TIFF（exiftool 对本机
+                 #   产物的 profile 报 "Bad format" 后放弃解析），判据取**IFD0 标签集合的差恰好 +0xC6FC**
+                 #   —— 同时排除"挤掉别的标签"与"多写别的标签"。⑬ = 不加参数时不得出现该标签（⑫ 的反控）；
+                 #   ⑭ = 缺 curve 行 / x 不递增 / 不认识的键 ⇒ 非零退出且**不产出**（⚠ "缺 curve 行"必须显式判:
+                 #   dng_tone_curve 默认值是 SetNull() 的 (0,0)(1,1) 恒等线, 它 IsValid() 为真, 实测放过一次）。
+                 #   ⑮ 组锁**GPS 不许把整条搬运降级**（2026-10-17）：夹具 = 把 7S 那份副本用 exiftool 注入
+                 #   GPS（本机四件真件全无 GPS ⇒ 前置条件本身判红, 不拿无 GPS 的源空跑）。三段照嵌 + 解回的
+                 #   嵌入件与 GPS 源同 SHA256 + 产物可见标签读不出 GPS + stderr 的 ASCII 键
+                 #   `gps-in-embedded-original=1` 命中; 负控 = `-no-raw-meta` 臂上那个键必须消失。
+                 #   变异读数: 复刻"源含 GPS ⇒ 关整条搬运"那一版 ⇒ 只红 ⑮a/⑮c（30/2）; 误把赋值写在裸
+                 #   fprintf 之外（无花括号）⇒ 对所有源都关搬运 ⇒ 15/17（②③④⑦⑧⑩⑪ 一起红）。
+                 #   ⑯ 组锁**分通道曲线的规范位**：`-idc-look` 的 `curveR/G/B` → `OpcodeList3`(51022) 三支
+                 #   MapTable（每支 fPlane=0/1/2、fPlanes=1、表 65536 项 uint16；list 3 才是 post demosaic）。
+                 #   ⚠ 立锁起因是本轮自己踩的静默坏件：按 SDK 头文件注释"空 area = 整幅"写第一版 ⇒ 读者侧
+                 #   dng_area_spec::GetData 先把 pitch 钳成 0 再判坏（dng_misc_opcodes.cpp:141-155），Adobe
+                 #   dng_validate 与自家 -verify 双双 error 100006，而编码侧 rc=0、日志照打。判据交给第二个实现
+                 #   `_readback-dng-opcodes.py`（落 byteCount/area 非空/pitch=1/表逐点回算）；恒等表不写并按 ASCII
+                 #   键 opcode-skipped 点名；curve 与 curveR/G/B 互斥（读者会施加两次）。重组 DNGOPC_HEAVY=1 用
+                 #   Adobe `dng_validate -3` 三臂渲染对账"读者真施加"（恒等臂逐字节==基准；非恒等臂 72,721,702 个
+                 #   平面值不同且==LUT，最大 1 码 = 黑电平调整舍入地板 ⇒ 判据 2 码）。两支变异各只红自己那条：
+                 #   空 area 版 ⇒ 35/1 只红 ⑯a；摘掉恒等跳过 ⇒ 35/1 只红 ⑯c。
+                 #   ⑰ 组锁 **IDC 版本时间戳 → 标准 XMP 位**（ApplicationNotes/700 里的 xmp:CreateDate/ModifyDate）：
+                 #   这是唯一"零换算"的一条可救编辑（IDC 存的文本本身就是 XMP 日期形状）。dngtool 自己写不了 XMP
+                 #   （本仓 SDK 以 qDNGUseXMP=0 配，dng_xmp_sdk 要 Adobe Toolkit）⇒ 落点是产品侧既有的 exiftool
+                 #   后处理。⑰a 源侧形状、⑰b 按产品同法写入后独立读手逐字相等、⑰c 写完 dngtool -verify 仍过、
+                 #   ⑰d 无 IDC 链那份 -idc 非零（读不到就不写）、⑰e **产品接线的源形锁**：守卫
+                 #   `carryRawMetadata ∧ ¬StripExifTime` 必须紧贴调用点（隐私请求优先）+ RawService/ExifToolService
+                 #   两处形状复检都在位（操作数来自源文件 ⇒ 不校验就是注入面）。变异：守卫改成 `if (success)`
+                 #   ⇒ 40/1 只红 ⑰e；还原后与备份 diff 逐字相同。
+                 #   ⑱ 组锁 **源 RAW 的镜头三表 → 规范 opcode**（`dngtool -lens-corr`，默认关 ⇒ 它改渲染
+                 #   像素，且产物与 Adobe 的转换结果分叉）。写进 OpcodeList3 的是 FixVignetteRadial(required)
+                 #   + [WarpRectilinear2 optional] + [WarpRectilinear(required, 只含偶次项)] 三支 —— 成对且
+                 #   **相邻**是硬条件：规范 p.105 的跳过规则只在 optional 的 14 紧跟一条 1 时生效，本机用
+                 #   Adobe dng_validate 实测到"像素与只发 14 逐点相同"，而 [14 required]+[1 required] 两支都施加。
+                 #   换算口径全部回一手材料：结点 r=(i+0.5)/(nc−1)（dt lens.cc:2225）、畸变/CA = 半径比例
+                 #   Rin/Rout（dt :2231-2240 + :2409-2421 注释，与 SDK `r_real = r_ideal*f(r_ideal)` 同向 ⇒ 不取
+                 #   倒数）、暗角 = 乘增益（SDK dng_lens_correction.h:669-680；dt 存的是它的倒数）、CA 前 nc=R
+                 #   后 nc=B（dt exif.cc:1398-1406 逐字取数 + 硬校验 2*nc==CA 计数 ⇒ 撤回我 10-18 的"索引未定"）。
+                 #   判据 = 第二实现 `tests/scripts/_readback-dng-lens.py`：自己解源 ARW 的小端 TIFF 与产物的
+                 #   大端列表，**逐结点回算**与源表对撞（死线 0.0025/0.0006 写在该文件里，不读被检方常数），
+                 #   再判 flags、[14][1] 相邻、v1 支无奇次项。六臂：⑱a 换算等价（实测残差 0.000319，写侧读侧
+                 #   同一个数）｜⑱b 不加 -lens-corr 必须缺席｜⑱c 无三表的输入点名 lens-tables=absent｜
+                 #   ⑱d **验牙**：把暗角 k4 放大 20% ⇒ 残差 0.000319→0.021154 判红｜⑱e 与 -idc-look 共存
+                 #   （这条当场把我自己的表读手抓红：放宽到已知 ID 集合时漏改两处仍在遍历全部 ops 的比较 ⇒
+                 #   plane=None 参与排序抛 TypeError ⇒ 教训：判据放宽要按"每一处遍历"核一遍）｜⑱f 重臂
+                 #   DNGLENS_HEAVY=1：Adobe 渲染"基准 vs 施加"的角/中增益比必须上升且与**源表**角部增益差 ≤2%。
+                 #   ⚠ 开关标签的真实形状是 type=3(SHORT) count=1（7M2 = 257/1/1），按参数表那种 type=8 去读
+                 #   会读失败 ⇒ 开关必须是三态（读不出 ≠ 关，只有明确 0 才跳过；dt 根本不查它）。
+                 #   ⚠ 0x14A 在 cnt==1 时值字段**本身就是** SubIFD 偏移，再解引用一次就读进缩略图 IFD ⇒
+                 #   7M2 曾被误判成"无镜头表"。另：两条 #77 并发会互相 Remove-Item $d ⇒ 假红长成"嵌入件=[]"。
+                 #   ⚠ 素材链外（`tests/output/raw_samples/Sony_ILCE7S.ARW` 与 `_probe-raw-default-tier`
+                 #     同一份；`Sony_ILCE7M2_IDC.ARW` = 2026-10-16 审计原图, 带 58 条 IDC 生效版本）
+                 #     ⇒ 缺失即点名红，不降级 SKIP。归 **C 类**（自带 `PASS=n FAIL=m` + 断言级 exit）。
+                 #   ⚠ 实测 46/0、75 s（独跑墙钟；两把重臂都开（DNGOPC_HEAVY=1 DNGLENS_HEAVY=1）时 48/0。
+                 #     演进：32 → 36（⑯）→ 41（⑰）→ 46（⑱ 五臂 + 表读手放宽到已知 ID 集合））：
+                 #     产出十五件编码 + 一次 DNG→DNG 重编码 + 九次 py 读手
+                 #     + 二十余次 exiftool；另有三张坏规格在解码前就退出，不计入编码次数。
+                 'verify-dng-metadata-transport.ps1')
 $actualScriptCount = @($scriptList).Count
 if ($actualScriptCount -ne $expectedScriptCount) {
   Write-Output ("[FAIL] 脚本清单条数 = $actualScriptCount，受管基线 = $expectedScriptCount ⇒ 基线漂移（增删条目必须同步四处文档）")

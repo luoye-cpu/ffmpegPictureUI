@@ -1887,7 +1887,60 @@ namespace FfmpegGui.Services
         /// </summary>
         private static bool FormatMayCarrySourceMetadata(string? format)
             => IsCicpMetadataMappedFormat(format)
-               || (format is not null && format.Equals("jxl", StringComparison.OrdinalIgnoreCase));
+               || (format is not null && format.Equals("jxl", StringComparison.OrdinalIgnoreCase))
+               // dng: dngtool 的搬运通道写的是容器内 EXIF / 内嵌预览 / 按规范 50828 嵌入的
+               //      原件三样，显式剥除请求下容器层也要过一遍（与 -no-raw-meta 互为双保险）。
+               || (format is not null && format.Equals("dng", StringComparison.OrdinalIgnoreCase));
+
+        /// <summary>
+        /// DNG 编码是否搬运源 RAW 元数据（嵌入原件 / 内嵌预览 / 拍摄字段）。
+        /// **单一真值**：执行侧 `ProcessDngAsync` 与预览侧 `MainWindow` 的 dng 臂都调它 ——
+        /// 预览若各自算一遍，就是 dry-run 同源性锁（第 73 条判据 C）钉的那种漂移。
+        /// 裁法沿用本仓对 cjxl/jbrd 的既有裁定：只有"整组描述性元数据都不要"才放弃搬运；
+        /// 仅 GPS 开关（默认即 true）时仍然搬运，否则 Imaging Edge 的编辑值在默认档位又回到全丢。
+        /// </summary>
+        public static bool DngCarriesRawMetadata(Models.FfmpegOptions o)
+            => !(o.MetadataMode == Models.MetadataMode.StripAll || o.StripExifAll);
+
+        /// <summary>
+        /// 用户是否要求剥除描述性元数据（隐私意图）。**判据只此一份**：
+        /// 原先同一组六项或式在 cjxl 状态串与元数据阶段各写了一遍，DNG 接同一条政策时
+        /// 再抄第三遍就是三处漂移源 —— 收成一个谓词，三处共用。
+        /// </summary>
+        private static bool IsStripRequested(Models.FfmpegOptions o)
+            => o.MetadataMode == Models.MetadataMode.StripAll
+               || o.StripExifGps || o.StripExifAll || o.StripExifTime
+               || o.StripExifCamera || o.StripXmp;
+
+        /// <summary>
+        /// DNG 出口专用：把源文件索尼 IDC 的两条版本时间戳写进 <c>xmp:CreateDate/xmp:ModifyDate</c>
+        /// （DNG 规范指定的位置是 <c>ApplicationNotes</c>=700，本机实测由 exiftool 落地并通过
+        /// Adobe <c>dng_validate</c>）。
+        /// <para>三种"不写"都要点名，绝不静默：exiftool 缺席（跳过 ≠ 成功）、源无 IDC 链
+        /// （非索尼 RAW 或读不到）、形状不合 XMP 日期式（由 <see cref="ExifToolService.WriteIdcXmpDatesAsync"/>
+        /// 拒收）。⇒ 一条日志就能区分"这条源本来没有"与"有但没写进去"。</para>
+        /// </summary>
+        private async Task WriteIdcVersionDatesAsync(QueueItem item, string inputPath,
+            string outputPath, CancellationToken ct)
+        {
+            var (create, modify) = await RawService.ReadIdcVersionDatesAsync(
+                inputPath, s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ct);
+            if (create is null && modify is null)
+            {
+                item.Log += "[xmp] 源里没有 IDC 版本时间戳（非索尼 RAW、无 IDC 链，或 dngtool 缺席）⇒ 不写 XMP。\n";
+                _onItemUpdated?.Invoke(item);
+                return;
+            }
+            var rc = await ExifToolService.WriteIdcXmpDatesAsync(outputPath, create, modify,
+                s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ct);
+            if (rc == 0)
+                item.Log += "[xmp] ✅ IDC 版本时间戳已落进标准位 xmp:CreateDate/xmp:ModifyDate。\n";
+            else if (rc == ExifToolService.SkippedNoExiftool)
+                item.Log += "[xmp] ⚠️ 未写入：exiftool 不可用（这是跳过，不是成功）。\n";
+            else
+                item.Log += $"[xmp] ⚠️ 写入退出码 {rc}（产物保持原样）。\n";
+            _onItemUpdated?.Invoke(item);
+        }
 
         /// <summary>
         /// 元数据阶段唯一入口：先恢复描述性元数据，再按需嵌缩略图（EXIF IFD1）。
@@ -1938,12 +1991,7 @@ namespace FfmpegGui.Services
                 //     而它与"剥除元数据"**结构上不可兼得**（jbrd 逐字复制源码流，exiftool 改不了其内部字节）。
                 //     ⇒ 仅当用户**显式**要求剥除时，才由 `CjxlService.UsesLosslessJpegRewrap` 放弃重封装；
                 //       该取舍由 `RawColorPipeline`/`CjxlService` 在日志里**点名**，绝不静默。
-                bool stripRequested = item.Options.MetadataMode == Models.MetadataMode.StripAll
-                                   || item.Options.StripExifGps
-                                   || item.Options.StripExifAll
-                                   || item.Options.StripExifTime
-                                   || item.Options.StripExifCamera
-                                   || item.Options.StripXmp;
+                bool stripRequested = IsStripRequested(item.Options);
                 if (stripRequested
                     && FormatMayCarrySourceMetadata(item.Options.Format)
                     && ExifToolService.IsAvailable
@@ -2560,10 +2608,7 @@ namespace FfmpegGui.Services
                 //   ⇒ 用户**完全不知道产物带 GPS** = 静默，正是本仓最忌的形态。
                 //   ⇒ 状态串是默认级别**一定可见**的通道（与 `:3980` 的 djxl 降级同法），
                 //     故把"本次未按默认隐私策略剥除"写进状态，让默认级别也看得见。
-                bool privacyWanted = item.Options.StripExifGps || item.Options.StripExifAll
-                                  || item.Options.StripXmp || item.Options.StripExifTime
-                                  || item.Options.StripExifCamera
-                                  || item.Options.MetadataMode == Models.MetadataMode.StripAll;
+                bool privacyWanted = IsStripRequested(item.Options);
                 if (didRewrap)
                     item.Status = privacyWanted
                         ? "已完成 (cjxl 无损重封装；⚠ 未剥除 EXIF/GPS —— 可逆性与剥除不可兼得，需剥除请显式加 --strip-gps/--strip-metadata)"
@@ -3213,6 +3258,17 @@ namespace FfmpegGui.Services
                         $"{(item.Options.DngLinear ? ", 线性 DNG (无 CFA)" : ", 保留 CFA (Bayer)")})...\n";
             _onItemUpdated?.Invoke(item);
 
+            // 保真通道 vs 隐私剥除：沿用本仓对 cjxl/jbrd 的同一裁法 —— 只有"整组描述性元数据
+            // 都不要"（StripAll / StripExifAll）才放弃搬运。仅 GPS 开关（它默认就是 true）时
+            // 仍然搬运，否则 Imaging Edge 编辑值在默认档位上又回到"全丢"，等于这次修复没生效。
+            // 代价必须响亮点名，绝不静默：容器层的 GPS 已由复制阶段的 absorb 排除项处理，
+            // 而 50828 存的是**整个源文件**，源若含 GPS 会随嵌入原件一起进产物（按规范存原件，不删改）。
+            bool carryRawMetadata = DngCarriesRawMetadata(item.Options);
+            if (!carryRawMetadata)
+                item.Log += "[dng] ⚠️ 按整组剥除请求放弃源 RAW 元数据搬运（拍摄字段/嵌入原件/内嵌预览均不写入产物）。\n";
+            if (carryRawMetadata && IsStripRequested(item.Options))
+                item.Log += "[dng] ⚠️ 本次仍搬运源 RAW 元数据：嵌入原件按规范存的是整个源文件，源若含 GPS 会随之进产物（容器层 GPS 已按请求排除）。要严格剥除请用 --strip-metadata。\n";
+
             var success = await RawService.EncodeToDngAsync(
                 item.InputPath, outputPath, compression, jxlQuality,
                 s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ct,
@@ -3221,7 +3277,8 @@ namespace FfmpegGui.Services
                 jxlDecodeSpeed: item.Options.DngJxlDecodeSpeed,
                 bitDepth: item.Options.DngBitDepth,
                 highlightMode: item.Options.DngHighlightMode,
-                threads: item.Options.Threads);   // 2026-08-15: UI 线程选项生效
+                threads: item.Options.Threads,          // 2026-08-15: UI 线程选项生效
+                carryRawMetadata: carryRawMetadata);
 
             item.ExitCode = success ? 0 : -1;
             item.Status = success
@@ -3230,6 +3287,12 @@ namespace FfmpegGui.Services
 
             if (success)
                 await RestoreMetadataAsync(item, outputPath);
+
+            // IDC 版本时间戳 → 标准 XMP 位（ApplicationNotes/700 的 xmp:CreateDate/ModifyDate）。
+            // 值零换算：IDC 存的就是 XMP 日期形状的文本。关掉搬运（整组剥除）或被
+            // `--strip-time` 挡住时**不写** —— 时间戳属于描述性元数据，隐私请求优先。
+            if (success && carryRawMetadata && !item.Options.StripExifTime)
+                await WriteIdcVersionDatesAsync(item, item.InputPath, outputPath, ct);
         }
 
         // #44-① 插点 C：原 `BuildJxrColorArgs`（JXR 第一步自算的那套色彩判定）**已退役** ——
@@ -3321,20 +3384,6 @@ namespace FfmpegGui.Services
             return fmt is "jpg" or "jpeg" or "jpegli";
         }
 
-        /// <summary>
-        /// P2-3：读子进程 stdout 时**必须同时排空 stderr**。两个管道都是固定缓冲（Windows 上约 4KB），
-        /// 只读 stdout 时，子进程往 stderr 写满缓冲就会阻塞在写上，而我们又永远等不到 stdout ⇒ 整项卡死
-        /// （表现为“探测不返回”，队列槽位被永久占住）。这里把两条流并发读干，返回 stdout。
-        /// </summary>
-        private static async Task<string> ReadStdoutDrainingStderrAsync(Process p)
-        {
-            var outTask = p.StandardOutput.ReadToEndAsync();
-            var errTask = p.StandardError.ReadToEndAsync();   // 读完即弃：这些探测只要 stdout
-            var stdout = await outTask;
-            try { await errTask; } catch { /* 排空失败不影响探测结果 */ }
-            return stdout;
-        }
-
         /// <summary>用 ffprobe 探测输入文件的位深</summary>
         /// <param name="log">日志回调（取消分支点名用；null ⇒ 退回 Trace.WriteLine）</param>
         /// <param name="ct">取消令牌（`#26`：调用方一直持有它却没往下传，本次接通）</param>
@@ -3363,7 +3412,7 @@ namespace FfmpegGui.Services
                 // `#26`：本方法原本**没有任何超时**；本次只接上调用方的取消令牌 ⇒ 取消即杀树，
                 // 按既有兜底返回 8（**不新增超时**，不扩大本次范围）。
                 using var reg = ct.Register(() => { try { p.Kill(entireProcessTree: true); } catch { } });
-                var output = (await ReadStdoutDrainingStderrAsync(p)).Trim();
+                var output = (await PlatformServices.ReadStdoutDrainingStderrAsync(p)).Trim();
                 await p.WaitForExitAsync();
                 if (ct.IsCancellationRequested)
                 {
@@ -5621,7 +5670,7 @@ namespace FfmpegGui.Services
                     try { proc.Kill(entireProcessTree: true); } catch { }
                 });
 
-                var output = await ReadStdoutDrainingStderrAsync(proc);
+                var output = await PlatformServices.ReadStdoutDrainingStderrAsync(proc);
                 await proc.WaitForExitAsync();
 
                 if (ct.IsCancellationRequested) { Indeterminate("被取消"); return (false, false); }
@@ -5752,7 +5801,7 @@ namespace FfmpegGui.Services
                 try { proc.Kill(entireProcessTree: true); } catch { }
             });
 
-            var output = await ReadStdoutDrainingStderrAsync(proc);
+            var output = await PlatformServices.ReadStdoutDrainingStderrAsync(proc);
             await proc.WaitForExitAsync();
 
             if (ct.IsCancellationRequested) return ("", "被取消");
