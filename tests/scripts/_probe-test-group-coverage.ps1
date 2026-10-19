@@ -58,8 +58,12 @@
 #      「派生全集 − 已认领」必须逐名落进**豁免表**（只收零调用点的手工工具，每行写 类别｝理由｝复验日）。
 #      判据：⑨-a 有调用点却没进账 = 0（**修法 = 并进组表，不是加进豁免表**） ｜ ⑨-b 门外 mode 全部登记
 #      ｜ ⑨-c 豁免表无陈既行 ｜ ⑨-d 表行数 == 实际挨住的个数。
-#   ⑩ **可达性域**：ServiceProbe 里「含断言但任何派发 mode 都到不了」的方法必须为 0。
+#   ⑩ **可达性域**：ServiceProbe 里「含断言、但任何派发 mode 都到不了」的方法必须为 0。
 #      与第 76 条的分工：**⑤ 防「再抄一份」，⑩ 防「抄了但没人能跑到」**。
+#      ⚠ 口径（2026-10-19 修）：扫描器**不跳过方法体**、且**表达式体定义（`=>`）也算方法** ⇒
+#        实扫 106 块 / 7 条 `=>`（旧形状是"整行排除 =>"+"跳着走"，只取到 74 块 ⇒ 那一类整类隐形，
+#        而 `static void W() => ProbeX();` 还是 BFS 的一条边，漏了它连"经包装转发的真探针"都会误判成孤儿）。
+#        反控三条都在 ⑩-pre 里（合成件 8 项方向判据：表达式体死断言必须抓到、经 `=>` 包装可达必须放行）。
 #   ⑪ **归属域**：`tests/scripts` 里不在 `$scriptList` 的脚本，必须「被在册脚本点名」或落进
 #      一个**有理由的族 / 显式登记表**；⑪-d 只 WARN（有判据却不进轮的欠账），⑪-e 做账目守恒。
 #   ⑨-pre / ⑩-pre / ⑪-pre **反控**：合成输入走**同一份**分类器，方向判据必须逐项符合。
@@ -81,7 +85,7 @@
 #     `gainmap-encode/decode/struct`←verify-gainmap-host §4b（拆分件由"生成物"身份改回**被真跑**）。
 #     ⚠ 上面两条过期 cross-ref（`docs/TESTING.md` 的 `8/0`、运行器第 69 条复述里的 `$Probes` 26 个）
 #       属**历史链**（当日为真），已按本仓规矩保留原文 + 就地加现值指针，不改写数字。
-#   ✅ **2026-10-16 晚些时候（⑨⑪⑩ 落地）现值 `PASS=36 FAIL=0`**：上面那句 `20/0`、`档② 40`、`并集 67`
+#   ✅ **2026-10-16 晚些时候（⑨⑪⑩ 落地）现值 `PASS=37 FAIL=0`**：上面那句 `20/0`、`档② 40`、`并集 67`
 #     是被 ⑨-a 判红之前的旧账 —— ⑨-a 当场抓出 **3 个「每轮真在被执行却没进账」的 mode**
 #     （`memadmit`←verify-gainmap-memory:234,341、`tonemapcurve`←verify-color-tonemap:36、
 #     `color`←verify-gainmap-isobmff:484,485），三个都并进 `["ServiceProbe"]` 组
@@ -434,6 +438,29 @@ foreach ($fi in $allPs) {
 #   ⇒ 每条判据都配**正例 + 负例**，正例必须命中、负例必须不命中，任何一边反了就转红。
 $teethCases = @(
     @{
+        Name = 'argv 是**内联数组**且宿主走 dotnet 间接（ensure-fixtures 的真实形态）'
+        ExpectHit  = @('color')
+        ExpectMiss = @('pq')
+        Src = @'
+$prb = "$root/tests/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.exe"
+$fx = "$root/tests/fixtures"
+Write-Host "顺带提一句 pq，这段只是文案"
+$null = Start-Process -FilePath "dotnet" -ArgumentList @("`"$prb`"", 'color', "$fx/a.png", 'png', $prb) `
+        -NoNewWindow -Wait -PassThru -RedirectStandardOutput "$val/_iccc.txt"
+'@
+    }
+    @{
+        Name = 'argv 是内联数组但 -FilePath 直接就是宿主'
+        ExpectHit  = @('gamutfit')
+        ExpectMiss = @('icc-dump')
+        Src = @'
+$prb = "$root/tests/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.exe"
+$names = @('icc-dump')
+Write-Output "孤立表里的 icc-dump 不作证"
+Start-Process -FilePath $prb -ArgumentList @('gamutfit', 'out') -Wait -NoNewWindow | Out-Null
+'@
+    }
+    @{
         Name = 'argv 位（含 D1 §3-C 点名的"守卫自己的注释"形态）'
         ExpectHit  = @('bitdepth')                    # 真被执行：Exec $probe "bitdepth …"
         ExpectMiss = @('bench', 'gainmap-struct')     # 只出现在注释/文案里 ⇒ 不许作证
@@ -778,9 +805,26 @@ function Get-MethodBlocks([string]$text) {
     $kk = 0
     while ($kk -lt $lss.Count) {
         $ln2 = $lss[$kk]
-        $isSig = ($ln2 -match '^[ \t]+(?:(?:private|internal|public|static|async)[ \t]+)+[^\n;=]*?\b([A-Za-z][A-Za-z0-9_]*)[ \t]*\(') -and ($ln2 -notmatch '=>')
+        $isSig = ($ln2 -match '^[ \t]+(?:(?:private|internal|public|static|async)[ \t]+)+[^\n;=]*?\b([A-Za-z][A-Za-z0-9_]*)[ \t]*\(')
         if (-not $isSig) { $kk++; continue }
         $nm = $Matches[1]
+        # 表达式体定义（2026-10-19 补）：旧尺子整行排除 `=>` ⇒ 这一**整类**从来没进过 ⑩ 的域
+        #   （实测漏掉 `Be`/`Tok`/`Fmt`/`NitsOf`/`ReadBe16`/`ScopeAllows`/`IsEvenGuard` 七条），
+        #   「0 孤儿」于是只是这条口径下的结论；而 `static void W() => ProbeX();` 这种包装还兼作
+        #   BFS 的一条边 ⇒ 漏它不仅看不见"死在表达式体里的断言"，还会把经它转发的真探针误判成不可达。
+        #   收尾规则：取到第一个以 `;` 结尾的行（单行体就是自己）；取不到就不臆造方法体。
+        if ($ln2 -match '=>') {
+            $mm3 = $kk; $end3 = -1
+            while ($mm3 -lt $lss.Count -and $mm3 -le $kk + 14) {
+                if ($lss[$mm3].Trim().EndsWith(';')) { $end3 = $mm3; break }
+                $mm3++
+            }
+            if ($end3 -lt 0) { $kk++; continue }
+            $body3 = (($lss[$kk..$end3] -join "`n") + "`n")
+            $res += [pscustomobject]@{ Name = $nm; A = $kk + 1; B = $end3 + 1; Expr = $true; Text = $body3 }
+            $kk++   # 不跳过整段方法体：跳着走会把后一条定义连同嵌套局部函数一起吞掉（实测只取到 74/101 条签名）
+            continue
+        }
         $jj = $kk; $opened = $false
         while ($jj -lt $lss.Count -and $jj -le $kk + 6) {
             if ($lss[$jj].Contains('{')) { $opened = $true; break }
@@ -799,8 +843,8 @@ function Get-MethodBlocks([string]$text) {
             if ($dep -le 0) { break }
             $mm2++
         }
-        $res += [pscustomobject]@{ Name = $nm; A = $kk + 1; B = $mm2 + 1; Text = $body }
-        $kk = $mm2 + 1
+        $res += [pscustomobject]@{ Name = $nm; A = $kk + 1; B = $mm2 + 1; Expr = $false; Text = $body }
+        $kk++   # 不跳过整段方法体：跳着走会把后一条定义连同嵌套局部函数一起吞掉（实测只取到 74/101 条签名）
     }
     return $res
 }
@@ -835,9 +879,13 @@ function Get-DispatchSeeds([string]$text) {
 }
 $judgePat = '(?m)(?<![\w.])(?:Check|Ok|No|CK)[ \t]*\('
 $blk10 = Get-MethodBlocks $spText
+$exprBlks10 = @($blk10 | Where-Object { $_.Expr })
 $reach10 = Get-Reachable $blk10 (Get-DispatchSeeds $spText)
 $orphan10 = @($blk10 | Where-Object { (-not $reach10.ContainsKey($_.Name)) -and [regex]::IsMatch($_.Text, $judgePat) })
 CK ($blk10.Count -ge 60) ('⑩ 前置：扫到方法块 ' + $blk10.Count + ' 个（≥60 ⇒ 扫描器自己没瞎；「0 孤儿」才是结论而不是「没扫到」）')
+$ebLine = '无'
+if ($exprBlks10.Count) { $ebLine = (@($exprBlks10 | ForEach-Object { $_.Name }) -join ', ') }
+CK ($exprBlks10.Count -ge 1) ('⑩ 前置：扫到的块里表达式体（=>）必须 ≥1 条（实 ' + $exprBlks10.Count + '：' + $ebLine + '）—— 这一类塌成 0 ⇒ 整类又变成不可见，「0 孤儿」立刻退回成下界')
 $knownMiss = @()
 foreach ($kn in @('Main', 'ProbeContract', 'ProbeVendorHdr', 'ProbeIpcSubmitToRunning')) {
     $hitK = @($blk10 | Where-Object { $_.Name -eq $kn })
@@ -854,10 +902,13 @@ CK ($orphan10.Count -eq 0) ('⑩ 含断言却任何派发 mode 都到不了的�
 # ── ⑩-pre 反控：合成源文本上，四种方向都必须按预期 ─────────────────────────
 $syn10 = @'
 class T {
-    static void Main() { ProbeA(); }
+    static void Main() { ProbeA(); WrapExpr(); }
     static void ProbeA() { Check("a", true); Helper(); }
     static void Helper() { Check("h", true); }
+    static void WrapExpr() => ProbeB();
+    static void ProbeB() { Check("b", true); }
     static void DeadEnd() { Check("d", true); }
+    static void DeadExpr() => Check("de", true);
     static void EmptyNoCaller() { DoSomethingElse(); }
 }
 '@
@@ -865,15 +916,18 @@ $blkSyn = Get-MethodBlocks $syn10
 $reachSyn = Get-Reachable $blkSyn (Get-DispatchSeeds $syn10)
 $orphSyn = @($blkSyn | Where-Object { (-not $reachSyn.ContainsKey($_.Name)) -and [regex]::IsMatch($_.Text, $judgePat) })
 $teeth10 = @()
-if ($blkSyn.Count -lt 5) { $teeth10 += ('合成件只扫到 ' + $blkSyn.Count + '/5 个方法') }
-if ($orphSyn.Count -ne 1 -or $orphSyn[0].Name -ne 'DeadEnd') { $teeth10 += ('孤儿应恰好是 DeadEnd，实 ' + (@($orphSyn | ForEach-Object { $_.Name }) -join ',')) }
-foreach ($must in @('Main', 'ProbeA', 'Helper')) {
-    if (-not $reachSyn.ContainsKey($must)) { $teeth10 += ($must + ' 应可达却判不可达（Helper 只能经 ProbeA 一跳到达 ⇒ 闭包断了）') }
+$t10n = 0
+$t10n++; if ($blkSyn.Count -lt 8) { $teeth10 += ('合成件只扫到 ' + $blkSyn.Count + '/8 个方法') }
+$t10n++; $orNames = (@($orphSyn | ForEach-Object { $_.Name } | Sort-Object) -join ',')
+if ($orNames -ne 'DeadEnd,DeadExpr') { $teeth10 += ('孤儿应恰好是 DeadEnd,DeadExpr，实 ' + $orNames) }
+foreach ($must in @('Main', 'ProbeA', 'Helper', 'WrapExpr', 'ProbeB')) {
+    $t10n++
+    if (-not $reachSyn.ContainsKey($must)) { $teeth10 += ($must + ' 应可达却判不可达（ProbeB 只能经表达式体包装 WrapExpr 到达 ⇒ 闭包漏了 =>）') }
 }
-if ($reachSyn.ContainsKey('EmptyNoCaller')) { $teeth10 += 'EmptyNoCaller 无人调用却判可达' }
-$t10Line = '全部符合（不可达+含断言⇒抓到 / 经一跳可达⇒放行 / 无人调用且无断言⇒不算）'
+$t10n++; if ($reachSyn.ContainsKey('EmptyNoCaller')) { $teeth10 += 'EmptyNoCaller 无人调用却判可达' }
+$t10Line = '全部符合（不可达+含断言⇒抓到 / 经一跳可达⇒放行 / 经表达式体包装可达⇒放行 / 无人调用且无断言⇒不算）'
 if ($teeth10.Count) { $t10Line = ($teeth10 -join ' | ') }
-CK ($teeth10.Count -eq 0) ('⑩-pre 有牙自证：合成件 4 项方向判据（' + $t10Line + '）')
+CK ($teeth10.Count -eq 0) ('⑩-pre 有牙自证：合成件 ' + $t10n + ' 项方向判据（' + $t10Line + '）')
 
 # ── ⑪ 归属域：清单外的脚本必须「被在册脚本点名」或「落进一个有理由的族」──────
 $offFamilies = @(
