@@ -70,10 +70,10 @@
 #     ⇒ 下一步若要真素材，优先走 **注册 imaging.org 免费下载**（CC BY-NC 4.0）或**用手机拍一张
 #       Adaptive HDR 照片**（iPhone 15+ / 部分 Android）。
 #
-# 断言（共 60 条）：§0 前置 6 · §1 容器层 8 · §1b HEVC 解码路径 11（含 2 条负控 + 1 条反控）·
+# 断言（共 70 条）：§0 前置 6 · §1 容器层 8 · §1b HEVC 解码路径 11（含 2 条负控 + 1 条反控）·
 #                   §2 源码形态 6（含反控）· §2b 缺陷 C 源码形态 3（含反控）· §3 行为 8 ·
 #                   §3b 缺陷 C 行为 4（含负控与素材形态自检）· **§3c HEIC 端到端行为 5（含负控）** ·
-#                   **§3d 厂商尾注执行面 4（含拒因与互斥点名）** · **§3e 底图取法 A/B 4（含对照臂分叉）** · §4 收尾 1
+#                   **§3d 厂商尾注执行面 4（含拒因与互斥点名）** · **§3e 底图取法 A/B 4（含对照臂分叉）** · **§3f HEIC→BT.2020/PQ 出口 10（三读者 + 码域分叉 + 2 条对照）** · §4 收尾 1
 #   ⚠ **两条弱断言**（都实测过「变异后仍然通过」，别只信它们）：
 #     · §1b「转换成功」：只看 `determinate` / `ffmpegFmt=hevc` / `gmData>0` —— **原样透传不转换**也能过；
 #     · §3c「识别并产出」：只看「日志出现『检测到 ISO-BMFF 增益图』」+ 有产物 —— **退回 fail-closed** 也能过。
@@ -574,6 +574,159 @@ foreach ($f in $optFiles) {
 }
 CK (($via -eq 2) -and ($bare -eq 0)) `
    "§3e-4 两个出口都只读唯一取底图入口（ForEncode 命中 $via 须 2、裸读 GainMapSourceBaseRaw 命中 $bare 须 0）"
+
+# ── §3f HEIC 解码 → 宽色域/PQ 出口（产品级 · 三个独立读者 · 码域分叉判据）────────
+#   立 §3f 的原因：§3c/§3e 只把 HEIC 转到 **jpg**，而 jpg 结构上承载不了 PQ
+#   （`FfmpegCommandBuilder.cs:1011-1015`：无增益图时 trc 被钳成 iec61966-2-1）⇒
+#   「HEIC 解码出来的 HDR 能不能带着 BT.2020 + PQ 走出去」这件事**全仓一条判据都没有**。
+#   我因此在两条错误读数上各浪费一轮（其中一条是我自己的传参被拆成两个 token）。
+#   本段把这条链钉成三件事：① 标注被**三个互不依赖的读者**同向读出；② 增益图**真被解码**
+#   （日志点名 item，反"exit=0 但其实没解增益图"的真空）；③ 像素确实落在 PQ 色调域
+#   （用同素材的 sRGB 对照臂做**相对**判据，不用魔法常数）。
+#   另两条口径：① 第三个读者 avifdec **不在位时本段转「未判」WARN**，不许退化成"只读两个读者还说三读者同向"；
+#             ② §3f-10 是**已知缺陷的可见性行**（当前只 WARN 不判红）——修点在别人正改的 CliParser.cs 上，
+#                等 --color-space 的取值校验上线后，本行会自己转 PASS，那时才该把它翻成 CK。
+$avd = "$root/tools/src/libavif/build/Release/avifdec.exe"
+
+function NclxNum([string]$path, [string]$tag) {
+    $t = (ExecOut $et "-n -s -ColorPrimaries -TransferCharacteristics -MatrixCoefficients `"$path`"" "nx_$tag").text
+    $p = ''; $q = ''; $m = ''
+    if ($t -match 'ColorPrimaries\s*:\s*(\d+)')         { $p = $Matches[1] }
+    if ($t -match 'TransferCharacteristics\s*:\s*(\d+)') { $q = $Matches[1] }
+    if ($t -match 'MatrixCoefficients\s*:\s*(\d+)')      { $m = $Matches[1] }
+    return @($p, $q, $m)
+}
+function FpPair([string]$path, [string]$tag) {
+    $t = (ExecOut $fp "-v error -select_streams v:0 -show_entries stream=color_primaries,color_transfer -of default=nw=1 `"$path`"" "fx_$tag").text
+    $p = ''; $q = ''
+    if ($t -match 'color_primaries=(\S+)') { $p = $Matches[1].Trim() }
+    if ($t -match 'color_transfer=(\S+)')  { $q = $Matches[1].Trim() }
+    return @($p, $q)
+}
+function AvdPair([string]$path, [string]$tag) {
+    if (-not (Test-Path $avd)) { return @('', '', '') }
+    $t = (ExecOut $avd "--info `"$path`"" "ad_$tag").text
+    $p = ''; $q = ''; $alt = ''
+    if ($t -match 'Color Primaries\s*:\s*(\d+)')          { $p = $Matches[1] }
+    if ($t -match 'Transfer Char\.\s*:\s*(\d+)')          { $q = $Matches[1] }
+    if ($t -match 'Alternate Headroom\s+([-\d.]+)')          { $alt = $Matches[1] }   # avifdec 的真实形状是「Alternate Headroom 1.30 (HDR)」——**没有冒号**
+    $allT = (([regex]::Matches($t, 'Transfer Char\.\s*:\s*(\d+)') | ForEach-Object { $_.Groups[1].Value }) -join '/')
+    return @($p, $q, $alt, $allT)
+}
+function FrameTop([string]$path, [string]$tag) {
+    # 码域 Ymax（10bit）：只扫 Y 平面（前 W*H 个样本），避免把色度分量当成亮度
+    $dh = (ExecOut $fp "-v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 `"$path`"" "dm_$tag").text
+    $mm = [regex]::Match($dh, '(\d+)\D+(\d+)')
+    if (-not $mm.Success) { return -1 }
+    $n = ([int]$mm.Groups[1].Value) * ([int]$mm.Groups[2].Value) * 2
+    $raw = "$work/top_$tag.raw"
+    $null = Exec $ff "-y -v error -c:v libdav1d -i `"$path`" -frames:v 1 -pix_fmt yuv420p10le -f rawvideo `"$raw`"" "dy_$tag"
+    if (-not (Test-Path $raw)) { return -1 }
+    $b = [System.IO.File]::ReadAllBytes($raw)
+    if ($b.Length -lt $n) { $n = $b.Length - ($b.Length % 2) }
+    $best = 0
+    for ($i = 0; $i + 1 -lt $n; $i += 2) {
+        $v = [int]$b[$i] + ([int]$b[$i + 1] * 256)
+        if ($v -gt $best) { $best = $v }
+    }
+    return $best
+}
+function PngCicp([string]$path) {
+    $b = [System.IO.File]::ReadAllBytes($path)
+    $i = 8
+    while ($i + 12 -le $b.Length) {
+        $ln = ([int]$b[$i] * 16777216) + ([int]$b[$i + 1] * 65536) + ([int]$b[$i + 2] * 256) + [int]$b[$i + 3]
+        $t = [System.Text.Encoding]::ASCII.GetString($b, $i + 4, 4)
+        if (($t -eq 'cICP') -and ($ln -ge 4)) {
+            return @([int]$b[$i + 8], [int]$b[$i + 9], [int]$b[$i + 10], ([int]$b[$i + 11] -band 1))
+        }
+        if (($t -eq 'IDAT') -or ($ln -le 0)) { break }
+        $i += 12 + $ln
+    }
+    return @(-1, -1, -1, -1)
+}
+function FirstFile([string]$dir, [string]$ext) {
+    $f = @(Get-ChildItem -LiteralPath $dir -Filter ("*." + $ext) -File -EA SilentlyContinue)
+    if ($f.Count) { return $f[0].FullName }
+    return ''
+}
+
+Write-Host "`n### §3f HEIC → BT.2020/PQ 出口（三读者 + 码域分叉）###" -ForegroundColor Cyan
+$g3fPq = RunApp $heicPos "avif" "f3_pq" @('--bit-depth', '10', '--color-space', '"BT.2020 PQ"', '--hdr-mode', 'traditional')
+$g3fSd = RunApp $heicPos "avif" "f3_sdr" @('--bit-depth', '10', '--color-space', 'sRGB')
+$f3Pq = FirstFile $g3fPq.dir 'avif'
+$f3Sd = FirstFile $g3fSd.dir 'avif'
+CK (($f3Pq -ne '') -and ($f3Sd -ne '')) `
+   "§3f-0 前置：两臂都必须产出 AVIF（PQ 臂=$($f3Pq -ne '') 对照臂=$($f3Sd -ne '')）—— 缺件则下面全部无凭据"
+
+if (($f3Pq -ne '') -and ($f3Sd -ne '')) {
+    $nPq = NclxNum $f3Pq 'pq'; $nSd = NclxNum $f3Sd 'sd'
+    $xPq = FpPair  $f3Pq 'pq'
+    $aPq = AvdPair $f3Pq 'pq'
+    CK (($nPq[0] -eq '9') -and ($nPq[1] -eq '16') -and ($nPq[2] -eq '9')) `
+       "§3f-1 读者①exiftool(-n)：请求 BT.2020 PQ ⇒ 容器 nclx 必须 9/16/9（实 $($nPq -join '/'))"
+    CK (($xPq[0] -eq 'bt2020') -and ($xPq[1] -eq 'smpte2084')) `
+       "§3f-2 读者②ffprobe：必须 bt2020/smpte2084（实 $($xPq -join '/'))——与①不同实现，互不遮蔽"
+    if (($aPq[0] -eq '') -and (-not (Test-Path $avd))) {
+        Write-Host "WARN §3f-3 读者③avifdec 不在位（$avd）⇒ 本条**未判**；§3f-1/2 只算两读者，不许对外说三读者同向" -ForegroundColor Yellow
+    } else {
+        CK (($aPq[0] -eq '9') -and ($aPq[1] -eq '16')) `
+           "§3f-3 读者③avifdec --info：必须 9/16（实 $($aPq[0])/$($aPq[1])）"
+    }
+    CK ($g3fPq.text -match '增益图来源: ISO-BMFF item') `
+       "§3f-4 反真空：PQ 臂日志必须点名「增益图来源: ISO-BMFF item…」⇒ 这条真走了 HEIC 增益图解码，不是普通转码"
+    $yPq = FrameTop $f3Pq 'pq'; $ySd = FrameTop $f3Sd 'sd'
+    CK (($yPq -gt 0) -and ($ySd -gt 0) -and (($ySd - $yPq) -ge 200) -and ($yPq -lt (0.8 * $ySd))) `
+       "§3f-5 标签↔像素一致（码域分叉）：同素材同尺寸，PQ 臂 Ymax 必须显著低于 sRGB 臂，换的才只是矩阵不会造成这个量级（实 PQ=$yPq / SDR=$ySd；判据 差≥200 且 PQ<0.8×SDR）"
+    CK (-not (($nSd[0] -eq '9') -and ($nSd[1] -eq '16'))) `
+       "§3f-6 对照臂不得同向：sRGB 臂必须**不是** 9/16（实 $($nSd -join '/'))——否则 §3f-1 只是在匹配恒真"
+}
+
+$g3fPng = RunApp $heicPos "png" "f3_png" @('--bit-depth', '16', '--color-space', '"BT.2020 PQ"', '--hdr-mode', 'traditional')
+$f3Png = FirstFile $g3fPng.dir 'png'
+if ($f3Png -ne '') {
+    $c3f = PngCicp $f3Png
+    CK (($c3f[0] -eq 9) -and ($c3f[1] -eq 16) -and ($c3f[3] -eq 1)) `
+       "§3f-7 PNG 出口：本门禁自己解析 cICP 块必须 = primaries 9 / trc 16 / fullrange 1（实 $($c3f -join '/'))——不借任何产品侧读者"
+} else {
+    CK $false "§3f-7 PNG 出口未产出（$($g3fPng.dir)）⇒ 本条无凭据"
+}
+
+$g3fGm = RunApp $heicPos "avif" "f3_gm" @('--hdr-mode', 'gainmap', '--jpeg-gain-map', 'true', '--jpeg-gain-map-base-gamut', 'bt2020')
+$f3Gm = FirstFile $g3fGm.dir 'avif'
+if ($f3Gm -ne '') {
+    $bg = [System.IO.File]::ReadAllBytes($f3Gm)
+    $tx = [System.Text.Encoding]::GetEncoding(28591).GetString($bg)
+    $aGm = AvdPair $f3Gm 'gm'
+    CK ($tx.Contains('tmap') -and $tx.Contains('dimg')) `
+       "§3f-8 增益图出口：容器里必须同时有 tmap 与 dimg（实 tmap=$($tx.Contains('tmap')) dimg=$($tx.Contains('dimg'))）"
+    if (-not (Test-Path $avd)) {
+        Write-Host "WARN §3f-9 avifdec 不在位 ⇒ 「第三方读者认这份增益图」未判" -ForegroundColor Yellow
+    } else {
+        CK (($aGm[2] -ne '') -and ($aGm[3] -match '16')) `
+           "§3f-9 第三方读者解析成功：avifdec 读出 Alternate Headroom=$($aGm[2])，且文件里存在 trc=16 的 HDR 表示（读者报出的 Transfer Char 序列=$($aGm[3])）⇒ 这份增益图能被 libavif 理解；读不出就是写错了"
+    }
+} else {
+    CK $false "§3f-8 增益图出口未产出（$($g3fGm.dir)）⇒ 本条无凭据"
+}
+
+# ── 已知缺陷的可见性行（**不判红**，但必须把现象打在输出里）────────────────────
+#   现象（HEAD c694f27 实测）：`--color-space` 无取值校验（CliParser.cs:760）+ Resolve 用子串关键词
+#   匹配（ColorSpaceRegistry.cs:150-185）⇒ 拼错的 "BT.2020 PPP" 与合法的 "BT.2020" **逐字节相同**、
+#   exit=0、零警告。修点在别人正在写的 CliParser.cs 上 ⇒ 本轮不动它；这里先把现象钉成可见读数，
+#   等校验上线后本行自动转 PASS（那时应把它翻成 CK：非法值 ⇒ 非零退出 + 不产出 + 点名）。
+$g3fBad = RunApp $heicPos "avif" "f3_bad" @('--bit-depth', '10', '--color-space', '"BT.2020 PPP"')
+$g3fNear = RunApp $heicPos "avif" "f3_near" @('--bit-depth', '10', '--color-space', '"BT.2020"')
+$fbBad = FirstFile $g3fBad.dir 'avif'; $fbNear = FirstFile $g3fNear.dir 'avif'
+if (($fbBad -ne '') -and ($fbNear -ne '')) {
+    $hBad = (Get-FileHash -Algorithm SHA256 -LiteralPath $fbBad).Hash
+    $hNear = (Get-FileHash -Algorithm SHA256 -LiteralPath $fbNear).Hash
+    if ($hBad -eq $hNear) {
+        Write-Host ("WARN §3f-10 已知缺陷仍在：拼错的 BT.2020 PPP 与合法的 BT.2020 产物逐字节相同（sha12=" + $hBad.Substring(0, 12) + "）且 exit=0 ⇒ 外部不可区分。处方 = --color-space 走 ParseTokenStrict/BadValue（同文件 :772/:924 的先例）+ 一条「拼错词必须与合法近邻字节不同」的判据") -ForegroundColor Yellow
+    } else {
+        Write-Host "§3f-10 拼错词与合法近邻已可区分（校验已上线）⇒ 本行应翻成 CK" -ForegroundColor Green
+    }
+}
 
 # ── §4 收尾 ────────────────────────────────────────────────────────────────────
 # ── §3c HEIC 端到端：合成件的增益图**真被解码并应用**（含负控）──────────────────────────
