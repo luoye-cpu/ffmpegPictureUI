@@ -67,6 +67,9 @@ namespace Tests.Shared
                 //   它的调用者是**在册**门禁（起 `$sp` = ServiceProbe.exe，stdout 喂给 §3b 两条 CK）
                 //   ⇒ 按「有调用点就必须进账」的规矩并进本组，而不是留在 #69 的豁免表里。
                 "memadmit", "tonemapcurve", "color",
+                // 2026-10-20 P0-2：Apple 两代 JPEG 的**像素级**施加证据（读回 gbrpf32le 线性像素）。
+                // 调用者 = 在册门禁 `verify-gainmap-engine.ps1` §12（经 ProbeStats 辅助函数起 ServiceProbe）。
+                "gainmap-stats",
             },
 
             // ── 编码参数与产物 / 元数据与 ICC / 增益图与 Ultra HDR / 进程与 IPC ──

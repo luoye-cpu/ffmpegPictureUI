@@ -192,7 +192,10 @@ public static class GainMapDecoder
                             // 标准承载（`tmap` 派生项 / `auxC`+21496）没有 ⇒ 再问一次**厂商私有尾注**。
                             // 两条判据互斥且都是纯字节判据：标准件的 `local.hdr.*` 清单计数恒 0、
                             // 厂商件的 `tmap`/`auxc`/`21496` 计数恒 0 ⇒ 不会互相抢（探针 C1/C3 锁这点）。
-                            if (bmff?.HasGainMap != true) vendor = VendorHdrTrailer.Probe(headBytes);
+                            // 只有「标准承载且真能用」才独占判据；识别成**尚不能解**的辅助图形式时仍要问厂商尾注，
+                            // 否则「检测到了但用不了」会把唯一可用的通路一起挡掉。
+                            if (bmff is null || bmff.HasGainMap != true || bmff.Form != "tmap")
+                                vendor = VendorHdrTrailer.Probe(headBytes);
                         }
                     }
                     else
@@ -303,7 +306,7 @@ public static class GainMapDecoder
                 var gmPath = Path.Combine(tempDir, "gainmap.jpg");
                 string gmFmtArgs = "";
                 bool gmOk;
-                if (bmff?.HasGainMap == true)
+                if (bmff?.HasGainMap == true && bmff.Form == "tmap")
                 {
                     if (bmff.GainMapItemData == null || bmff.GainMapItemData.Length <= 100
                         || bmff.GainMapFfmpegFormat == null)

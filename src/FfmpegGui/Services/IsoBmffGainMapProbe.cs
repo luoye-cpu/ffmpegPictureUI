@@ -63,7 +63,7 @@ public static class IsoBmffGainMapProbe
 
         /// <summary>是否存在增益图。</summary>
         public bool HasGainMap;
-        /// <summary>承载形式：`tmap`（可解） / `aux-21496`（辅助图形式，本工具尚未解）。</summary>
+        /// <summary>承载形式：`tmap`（可解） / `aux-21496`（ISO 辅助图形式，尚未解） / `aux-apple-hdrgainmap`（Apple 早期辅助图，尚未解）。</summary>
         public string? Form;
 
         public int PrimaryItemId = -1;
@@ -149,6 +149,7 @@ public static class IsoBmffGainMapProbe
             var ipmaMap = new Dictionary<int, List<int>>();
             int primary = -1;
             bool sawAux21496 = false;
+            bool sawAuxApple = false;
             bool itemTypeUnknown = false;
 
             // ── 顶层 box：找 ftyp（品牌）与 meta ──
@@ -201,7 +202,7 @@ public static class IsoBmffGainMapProbe
                         ParseIref(d, cstart, cend, refs);
                         break;
                     case "iprp":
-                        ParseIprp(d, cstart, cend, ipcoProps, ipmaMap, ref sawAux21496);
+                        ParseIprp(d, cstart, cend, ipcoProps, ipmaMap, ref sawAux21496, ref sawAuxApple);
                         break;
                 }
                 p += size;
@@ -299,6 +300,15 @@ public static class IsoBmffGainMapProbe
                 r.Form = "aux-21496";
                 r.Determinate = false;
                 r.FailReason = "[IsoBmff] 辅助图（auxC URN 含 21496）形式，尚未支持解码";
+            }
+            // ── 判定 2b（次级）：Apple 早期辅助图形式（auxC URN 含 hdrgainmap，**不是** ISO 21496-1）──
+            //   本工具尚未支持施加，但必须「认出来并点名」，不得退化成「没有增益图」。
+            if (sawAuxApple)
+            {
+                r.HasGainMap = true;
+                r.Form = "aux-apple-hdrgainmap";
+                r.Determinate = false;
+                r.FailReason = "[IsoBmff] Apple 早期辅助图形式（auxC URN 含 hdrgainmap，非 ISO 21496-1）⇒ 尚未支持解码；不得按「无增益图」静默走 SDR";
             }
             if (boxScanIncomplete && !r.HasGainMap)
             {
@@ -450,7 +460,7 @@ public static class IsoBmffGainMapProbe
     /// 同时保留旧判据「`ipco` 里存在 URN 含 `21496` 的 `auxC`」。
     /// </summary>
     private static void ParseIprp(byte[] d, int start, int end,
-        List<(string Type, int Off, int Size)> props, Dictionary<int, List<int>> ipma, ref bool sawAux21496)
+        List<(string Type, int Off, int Size)> props, Dictionary<int, List<int>> ipma, ref bool sawAux21496, ref bool sawAuxApple)
     {
         for (int p = start; p + 8 <= end;)
         {
@@ -467,7 +477,16 @@ public static class IsoBmffGainMapProbe
                         int s = q + h2 + 4, e2 = q + s2;    // auxC 是 FullBox
                         int z = s;
                         while (z < e2 && d[z] != 0) z++;
-                        if (z > s && Encoding.ASCII.GetString(d, s, z - s).Contains("21496")) sawAux21496 = true;
+                        if (z > s)
+                        {
+                            var urn = Encoding.ASCII.GetString(d, s, z - s);
+                            if (urn.Contains("21496")) sawAux21496 = true;
+                            // Apple 早期 HEIF 辅助图（iPhone 12 起的 HDR Gain Map）：URN 形如
+                            // `urn:com:apple:photo:2020:aux:hdrgainmap`，**不含 21496** ⇒ 旧判据对它完全
+                            // 无感，会被报成「无增益图」而静默按 SDR 处理（= 可用性不诚实）。
+                            // 这里只做到「认出并点名」，解码施加仍未支持 ⇒ Determinate=false，交给调用方播报。
+                            else if (urn.Contains("hdrgainmap", StringComparison.OrdinalIgnoreCase)) sawAuxApple = true;
+                        }
                     }
                     q += s2;
                 }

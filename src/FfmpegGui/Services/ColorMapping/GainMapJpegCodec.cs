@@ -101,6 +101,8 @@ public static class GainMapJpegCodec
         public float MetaPeak;
         /// <summary>峰值来源文本（日志自证用：用户指定 / 静态元数据 xxx / 名义 1000）。</summary>
         public string PeakSourceText = "";
+        /// <summary>源是否带 alpha（AVIF 增益图出口当前不携带 ⇒ 必须点名，不得静默拍平）。</summary>
+        public bool HasAlpha;
     }
 
     /// <summary>
@@ -137,6 +139,7 @@ public static class GainMapJpegCodec
                 return p;
             }
             var meta = FfmpegCommandBuilder.ProbeInputColorMetadata(inputPath);
+            p.HasAlpha = meta.hasAlpha;
             p.MetaPeak = (float)meta.peakNits;
             string metaPeakFrom = string.IsNullOrWhiteSpace(meta.peakSource) ? "元数据" : meta.peakSource!;
             p.IsHdrInput = meta.colorTrc is "smpte2084" or "arib-std-b67";

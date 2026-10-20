@@ -98,6 +98,7 @@ namespace ServiceProbe
                     case "gainmap": ProbeGainMap(args); break;
                     case "ultrahdr": ProbeUltraHdr(args).GetAwaiter().GetResult(); break;
                     case "gainmap-isobmff": ProbeGainMapIsoBmff(args); break;
+                    case "gainmap-stats": ProbeGainMapStats(args); break;
                     case "vendor-hdr": ProbeVendorHdr(); break;
                     case "icc": ProbeIcc(args); break;
                     case "icc-dump": ProbeIccDump(args); break;
@@ -1191,17 +1192,19 @@ namespace ServiceProbe
 
         /// <summary>
         /// ISO-BMFF（AVIF/HEIC）增益图探测。用法：
-        /// <c>ServiceProbe gainmap-isobmff &lt;file&gt; [outGainMapRaw] [gainmap|none]</c>
+        /// <c>ServiceProbe gainmap-isobmff &lt;file&gt; [outGainMapRaw] [gainmap|none|auxapple]</c>
         /// <para>
-        /// 第 4 个位置参数声明**期望**：<c>gainmap</c>（默认）或 <c>none</c>
-        /// （负控：普通 AVIF/HEIC 必须判「无增益图」，用来证明判据**有牙**而不是恒真）。
+        /// 第 4 个位置参数声明**期望**：<c>gainmap</c>（默认）/ <c>none</c>
+        /// （负控：普通 AVIF/HEIC 必须判「无增益图」，用来证明判据**有牙**而不是恒真）/
+        /// <c>auxapple</c>（Apple 早期 `auxC` 辅助图：必须认出并点名，但 `determinate=false` 且无字节）/
+        /// <c>auxiso</c>（ISO 21496-1 辅助图：同契约，回归用 —— 新分支不得吞掉旧分支）。
         /// </para>
         /// </summary>
         private static void ProbeGainMapIsoBmff(string[] args)
         {
-            if (args.Length < 2) { Console.WriteLine("usage: ServiceProbe gainmap-isobmff <file> [outRaw] [gainmap|none]"); _fail++; return; }
+            if (args.Length < 2) { Console.WriteLine("usage: ServiceProbe gainmap-isobmff <file> [outRaw] [gainmap|none|auxapple|auxiso]"); _fail++; return; }
             var path = args[1];
-            // ⚠ 位置参数**与开关混排**：`none` / `gainmap` 是开关（可出现在任意位置），
+            // ⚠ 位置参数**与开关混排**：`none` / `gainmap` / `auxapple` 是开关（可出现在任意位置），
             //   其余第一个非开关参数才是 outRaw —— 旧写法写死 args[3] ⇒ `gainmap-isobmff <f> none`
             //   会被当成 outRaw 并静默退回默认期望，负控**整段失效**（实测已踩）。
             var expect = "gainmap";
@@ -1210,6 +1213,8 @@ namespace ServiceProbe
             {
                 if (args[i].Equals("none", StringComparison.OrdinalIgnoreCase)) expect = "none";
                 else if (args[i].Equals("gainmap", StringComparison.OrdinalIgnoreCase)) expect = "gainmap";
+                else if (args[i].Equals("auxapple", StringComparison.OrdinalIgnoreCase)) expect = "auxapple";
+                else if (args[i].Equals("auxiso", StringComparison.OrdinalIgnoreCase)) expect = "auxiso";
                 else outRaw = args[i];
             }
             var bytes = File.ReadAllBytes(path);
@@ -1224,6 +1229,24 @@ namespace ServiceProbe
                 $"tmapPayload={r.TmapPayload?.Length ?? -1} gmData={r.GainMapItemData?.Length ?? -1}");
 
             Check(r.IsIsoBmff, "识别为 ISO-BMFF（ftyp 存在）");
+            if (expect == "auxapple")
+            {
+                // 契约：认出来并点名（不得退化成「无增益图」），但**尚未支持解码** ⇒ 不是确定态、没有字节。
+                Check(!r.Determinate, $"未支持的形式必须 determinate=false（实 {r.Determinate}）");
+                Check(r.HasGainMap, "检测到 Apple 早期辅助图增益图（hasGainMap=true）");
+                Check(r.Form == "aux-apple-hdrgainmap", $"承载形式为 aux-apple-hdrgainmap（实 {r.Form ?? "-"}）");
+                Check((r.FailReason ?? "").Contains("hdrgainmap"), $"failReason 点名 hdrgainmap（实 {r.FailReason ?? "-"}）");
+                Check(r.GainMapItemData == null, "未支持解码 ⇒ 不得给出可解字节（gmData 必须为空）");
+                return;
+            }
+            if (expect == "auxiso")
+            {
+                Check(!r.Determinate, $"未支持的形式必须 determinate=false（实 {r.Determinate}）");
+                Check(r.HasGainMap, "检测到 ISO 21496-1 辅助图增益图（hasGainMap=true）");
+                Check(r.Form == "aux-21496", $"承载形式为 aux-21496（实 {r.Form ?? "-"}）");
+                Check(r.GainMapItemData == null, "未支持解码 ⇒ 不得给出可解字节（gmData 必须为空）");
+                return;
+            }
             Check(r.Determinate, $"解析确定（failReason={r.FailReason ?? "-"}）");
             if (expect == "none")
             {
@@ -1259,6 +1282,71 @@ namespace ServiceProbe
                 File.WriteAllBytes(outRaw, r.GainMapItemData);
                 Console.WriteLine($"gainmap_raw_written={outRaw} bytes={r.GainMapItemData.Length}");
             }
+        }
+
+        /// <summary>
+        /// 解码 Ultra HDR JPEG → 线性 HDR 浮点（gbrpf32le，1.0 = SDR 白点），把**像素实测**读数打出来。
+        /// 用法：<c>ServiceProbe gainmap-stats &lt;file&gt; [none]</c>
+        /// <para>
+        /// 存在理由：P0-2 要证明 Apple 两代样本「施加后峰值 &gt; 底图峰值」，而产品日志里的
+        /// 「峰值 N nits」是**由元数据算的**（`203 × 2^HDRCapacityMax`，见 `GainMapDecoder` 的 peakNits），
+        /// 不是像素读数 —— 拿它当施加证据就是让声明给自己作证。这里读回解码器**真正写出**的线性像素，
+        /// 给出 max / mean / 超过 SDR 白点的分量数；`capLinear` 只是同一条元数据上限，用作**上界**判据。
+        /// </para>
+        /// <para>
+        /// 负控（`none`）：普通 JPEG / 剥掉增益图的同一底图 ⇒ 解码器必须返回 `null`（不得凭空造增益）。
+        /// </para>
+        /// </summary>
+        private static void ProbeGainMapStats(string[] args)
+        {
+            if (args.Length < 2) { Console.WriteLine("usage: ServiceProbe gainmap-stats <file> [none]"); _fail++; return; }
+            var path = args[1];
+            var expect = "gainmap";
+            for (int i = 2; i < args.Length; i++)
+                if (args[i].Equals("none", StringComparison.OrdinalIgnoreCase)) expect = "none";
+            // ⚠ 落进**子目录**而不是 %TEMP% 根：本机沙箱对部分进程拒写 %TEMP% 根（`Access denied`，
+            //   实测 2026-10-20），而同一进程写 `%TEMP%\gmdecode_…\` 子目录是允许的。
+            var rawDir = Path.Combine(Path.GetTempPath(), $"probe_gmstats_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(rawDir);
+            var raw = Path.Combine(rawDir, "hdr.rgba");
+            try
+            {
+                var res = GainMapDecoder.DecodeToLinearRawAsync(path, raw, log: s => Console.Write(s)).GetAwaiter().GetResult();
+                Console.WriteLine($"file={path} expect={expect}");
+                if (res == null || !File.Exists(raw))
+                {
+                    Console.WriteLine("stats decoded=null");
+                    Check(expect == "none", "负控：判为非增益图（解码器返回 null）");
+                    return;
+                }
+                var (w, h, peakNits, _, _) = res.Value;
+                var b = File.ReadAllBytes(raw);
+                int n = w * h;
+                double max = double.NegativeInfinity, sum = 0;
+                long over = 0;
+                for (int i = 0; i < n * 3; i++)
+                {
+                    float v = BitConverter.ToSingle(b, i * 4);
+                    if (v > max) max = v;
+                    sum += v;
+                    if (v > 1.0f) over++;
+                }
+                double mean = n > 0 ? sum / (n * 3) : 0;
+                double cap = peakNits / GainMapEncoder.KSdrWhiteNits;
+                Console.WriteLine($"stats w={w} h={h} peakNits={peakNits:F0} capLinear={cap:F4} " +
+                    $"maxLinear={max:F4} meanLinear={mean:F4} over1={over} total={n * 3}");
+                Check(expect != "none", $"正向：解码成功且写出线性像素（{w}x{h}）");
+                if (expect == "none") return;
+                Check(max > 1.0, $"施加后像素峰值超过 SDR 白点（maxLinear={max:F4} > 1.0）");
+                Check(over > 0, $"确有像素高于 SDR 白点（over1={over}/{n * 3}）");
+                Check(max <= cap * 1.001, $"像素峰值不得超过元数据上限（maxLinear={max:F4} ≤ capLinear={cap:F4}）");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"stats 异常: {ex.GetType().Name}: {ex.Message}");
+                Check(false, "gainmap-stats 执行异常");
+            }
+            finally { try { if (Directory.Exists(rawDir)) Directory.Delete(rawDir, true); } catch { } }
         }
 
         /// <summary>

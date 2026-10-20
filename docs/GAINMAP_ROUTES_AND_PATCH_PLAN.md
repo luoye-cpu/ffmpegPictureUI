@@ -5,7 +5,8 @@
 
 ## 0. 结论摘要
 
-1. **读侧最大的洞在 Apple 早期 HEIF 辅助图**：我们的探测判据只认 `auxC` 的 URN 里含 `21496`
+1. **读侧最大的洞在 Apple 早期 HEIF 辅助图**（2026-10-20 已修：认出并点名，见 P0-1；解码施加仍未支持）：
+   我们的探测判据原先只认 `auxC` 的 URN 里含 `21496`
    （[IsoBmffGainMapProbe.cs:470](file:///c:/PLAN/ffmpegPictureUI/src/FfmpegGui/Services/IsoBmffGainMapProbe.cs#L470)），
    而 iPhone 12 起的 HDR Gain Map 用的 URN 是 `urn:com:apple:photo:2020:aux:hdrgainmap`，**不含 21496**
    ⇒ 这类文件被报成「无增益图」，静默按 SDR 走。这是"检测不到"而不是"检测到了不支持"，属于可用性不诚实。
@@ -49,7 +50,7 @@
 | JPEG Ultra HDR | `APP1 XMP` + `APP2 MPF` + 副图；GContainer 可**不带 MPF**（MediaInfo 25.07 明确支持两种） | XMP `hdrgm:*` + 副图上的 `APP2 urn:iso:std:iso:ts:21496:-1` | ✅ 写 MPF+XMP+ISO；读 MPF/ISO/Apple XMP |
 | HEIC / HEIF（标准） | `tmap` 派生项 + `dimg` 引用 | `tmap` 载荷 = `u8 version` + ISO 元数据 | ✅ 读（`form=tmap`，含 hvc1/av01）；写侧 HEIC 无通路 |
 | HEIC / HEIF（ISO 草案辅助图） | `ipco/auxC`，URN 含 `21496` | 随辅助图 | ⚠ 识别为 `aux-21496`，**不解码**（`Determinate=false`） |
-| HEIC / HEIF（Apple 早期） | `ipco/auxC`，URN = `urn:com:apple:photo:2020:aux:hdrgainmap` | Apple 私有（MakerApple 33 `HDRGainMapVersion` / 48 `DisplayHeadroom`，或 XMP `ns.apple.com/HDRGainMap/1.0/`） | ❌ **完全不识别** ⇒ 报"无增益图"（P0-1） |
+| HEIC / HEIF（Apple 早期） | `ipco/auxC`，URN = `urn:com:apple:photo:2020:aux:hdrgainmap` | Apple 私有（MakerApple 33 `HDRGainMapVersion` / 48 `DisplayHeadroom`，或 XMP `ns.apple.com/HDRGainMap/1.0/`） | ⚠ 识别为 `aux-apple-hdrgainmap`，**不解码**（`Determinate=false`）；JPEG 版 Apple XMP 可由纯托管路径解码（P0-1/P0-2） |
 | 纯 track 型 HEIC（mov 包装） | 无 `meta` ⇒ 无 item 结构 | — | ✅ 明确"无 item 结构"，不猜（`IsoBmffGainMapProbe.cs:173`） |
 | AVIF | `tmap` 派生项（libavif 侧为实验特性） | 同 ISO | ✅ 写 + 读；§4 P1-1 已钉第三方读者判据 |
 | PNG / JXL | 生态已有实现（MediaInfo 解析 PNG 的 ISO 元数据；ACR 可给 JXL/PNG 嵌增益图，base 可为 SDR 或 HDR） | ISO 元数据 | ❌ 未支持（登记，不擅自写，见 P2-1） |
@@ -79,13 +80,21 @@
   `ServiceProbe gainmap-isobmff <件>`，断言打印 `hasGainMap=True`、`form=aux-apple-hdrgainmap`、
   `determinate=False`；再加一支**反控**：同结构但 URN 换成 `urn:com:example:other` ⇒ 必须仍是
   `hasGainMap=False`（证明新判据不是"看见 auxC 就报"）。
-- 状态：**补丁已写好但尚未提交**（98 行，存 `tests/output/gainmap-apple-aux-20261020.patch`）。
-  在隔离工作树上验过 **HEAD + 补丁 = 0 警告 0 错误**；行为验收**未完成**——我先做的最小合成件没有被探针识别
-  （`hasGainMap=False`，与真件 `form=tmap` 对照说明是合成件结构不够，原因未定位），
-  而主树此刻因并发会话在写的 `CliParser.cs:475` 语法不过而整体编不动 ⇒ 不在无法构建的树上盲提产品代码。
+- 状态（2026-10-20）：**已实现并验收**（隔离工作树 `gainmap-metadata-spec-fix`；原补丁
+  `tests/output/gainmap-apple-aux-20261020.patch` 已落分支）。
+  合成件 = `ftyp` + `meta(pitm + iprp/ipco/auxC)`，由门禁 §1c 现场生成。
+  实测：Apple URN ⇒ `hasGainMap=True / form=aux-apple-hdrgainmap / determinate=False`，
+  `failReason` 点名 hdrgainmap、`tmap=-1 / gmData=-1`（不伪造可解字节）；
+  **URN 反控**（同结构换 `urn:com:example:other`）⇒ `hasGainMap=False / determinate=True`；
+  **回归臂**（URN 含 21496）⇒ 仍走 `aux-21496`。§1c 新增 4 条；整条门禁 **80/0**
+  （§1c 之外还含 P1-4 的 §3f-11 与 §3g，见后）。
+  ⚠ 早期"合成件没被识别"的原因：那一版没有 `meta` 容器（本探针从 `ftyp` 后的顶层 box 找 `meta`，
+  再按 FullBox 跳过 4 字节读子 box）；门禁里的生成器是修好后的形态，不是探针放宽了判据。
 - 复现命令：
-  `git worktree add --detach tests/output/_wt3 HEAD` → 拷入补丁的两个文件 →
-  `dotnet build src/FfmpegGui/FfmpegGui.csproj -c Release` → `dotnet build tests/ServiceProbe/ServiceProbe.csproj -c Release`。
+  `git worktree add tests/output/_wt_gm3 gainmap-metadata-spec-fix` →
+  `dotnet build tests/ServiceProbe/ServiceProbe.csproj -c Release` →
+  `pwsh -File tests/scripts/verify-gainmap-isobmff.ps1`（工作树需能看到 `publish/` 与
+  `tools/src/{libavif,libultrahdr}`，本轮用目录联接借主树；跑完摘除）。
 
 ### P0-2 拿一份真 Apple HEIC 样本，把"点名未决"做成"能读能施加"
 
@@ -94,6 +103,16 @@
 - 样本来源候选：`tools/src/libultrahdr/tests/data/apple_gainmap_old.jpg` / `apple_gainmap_new.jpg`（**JPEG**，本机已有，
   可先把 JPEG 侧的 Apple 读路径判据补上）；HEIC 侧需要 iPhone 拍摄或 libheif 测试集。
 - 验收判据：同 §3c 的形状 —— 正向"识别 + 元数据非空 + 施加后峰值 > 底图峰值"，负控"普通 HEIC 不得走增益图路径"。
+- 状态（2026-10-20）：**JPEG 侧两代样本已验收；HEIC 侧仍缺样本（未做，不猜）**。
+  判据落在 `verify-gainmap-engine.ps1` §12（9 条）：
+  ① new/old 均识别为 `Apple HDRGainMap XMP (纯托管)`、元数据非空（显式 `4.532783` / 隐式 8×）、走完解码并产出；
+  ② **像素级**（`ServiceProbe gainmap-stats` 读回 gbrpf32le 线性像素，1.0 = SDR 白点）：
+     new `maxLinear=8.798`、old `4.2149`，均 `>1.0`、`over1>0`、且 `<= 203×2^headroom`；两臂分叉 >1.5×
+     ⇒ 参数真的进了增益公式。⚠ 产品日志的「峰值 4699/1624 nits」是 `203×2^HDRCapacityMax` **由元数据算的**，
+     **不能**当施加证据（本轮差点拿它当判据，被 `gainmap-stats` 的像素读数纠正）。
+  ③ 负控：`exiftool -all=` 剥掉全部元数据后，产品不走增益图路径、解码器返回 null。
+     ⚠ `-MPF:all= -XMP:all=` **不够**：Apple 的 XMP（APP1，未知命名空间）仍在，负控会假绿（实测 50824→50734 B）。
+  整条门禁 **182/0**。真实 Apple HEIC 仍未获得（iPhone 拍摄或 libheif 测试集）；HEIC 的施加公式/参数来源未验证。
 
 ### P0-3 底图缺 ISO 21496-1「版本裸桩」（已实现 + 已验收，补丁待落主树）
 
@@ -187,6 +206,39 @@ xmp+RGB 臂 48896/49152 有差（99.5%），证明 RGB 臂交付的是**真逐�
   实测我们：`SOI → APP2(ICC) → DQT → SOF → DHT → APP1(XMP) → [P0-3 后：APP2(ISO 桩)] → APP2(MPF) → SOS`。
 - 为什么暂不判红：按 marker 扫描的解析器不受位置影响，而"有没有按位置取 APP1 的消费者"本机无一手证据 ⇒
   **未判定**。等 P0-4 一起做时再决定是否重排（重排会动 `baseHeaderLen` 的切分口径，属另一笔账）。
+- 判定（2026-10-20）：**不重排**。三条一手证据：① libultrahdr 自己的解码器用 libjpeg
+  `jpeg_save_markers(kAPP1)` 后**按命名空间**提取 XMP/EXIF（`tools/src/libultrahdr/lib/src/jpegdecoderhelper.cpp:220-235`），
+  与 APP1 出现在 SOS 前的哪个位置无关；② 第三方判据 D5e 用 libultrahdr 直读我们段序不同的 `xmp+RGB` 产物，
+  成功读出 `max=2.46229` ⇒ 该消费者不依赖顺序；③ 本仓解析器同样按 marker 扫描。
+  剩下"按位置取段"的消费者本机无一手证据 ⇒ 只登记、未判定；不为一个未证实的假设改 MPF/XMP 长度切分
+  （那会动 `baseHeaderLen` 与 `Item:Length` 的整本账）。若将来拿到按位置取段的真实消费者，再按新证据重排。
+
+### P1-4 AVIF tmap 与参考实现对照（2026-10-21）：补 tmap `pixi`、点名 alpha 拍平
+
+**定位**：HEIC **只做解码**（本机无 heif muxer / `heifenc.exe` / `libheif.dll`，见 P1-2 的 tripwire；
+将来工具链具备时 (h) 段当场判红要求重测）。可写的增益图容器是 **AVIF**（`IsoBmffGainMapWriter`）。
+
+**与参考逐盒对照**（两份一手参照）：
+
+| 参照 | 结构 |
+| --- | --- |
+| libavif 样本 `tools/src/libavif/tests/data/seine_sdr_gainmap_srgb.avif` | `iinf`: 1=av01 / 2=tmap / 3=av01 / 4=Exif / 5=mime；`iref dimg 2→[1,3]`（带 count=2）；`altr=[2,1]`；**tmap 的 ipma = ispe + pixi + colr(替代图 NCLX)**；增益图 item 与底图同尺寸时**共享** ispe/pixi/av1C |
+| libheif `heif_context_encode_gain_map_image`（`third_party/libheif/.../api/libheif/heif.cc:3565-3660`） | tmap 载荷 = `version 0` + ISO 元数据；tmap 显式写 **ispe + pixi + colr(derived nclx)**；`dimg` 与 `altr` 同形；**增益图 item 不写 auxC** |
+
+我们的写出器在 `ftyp` / `iinf` / `dimg` / `altr` / tmap 载荷 / 底图 colr 上与参照同形，**唯一缺口**：
+tmap item 没有 `pixi` ⇒ `avifdec --info` 的「Alternate image」**整段不报 Bit Depth / Planes**
+（2026-10-21 实测旧产物）。已修：把底图的 `pixi` 关联给 tmap（与 libavif 样本同形；派生图精度不低于底图）。
+修后 `avifdec --info` 报 `Bit Depth: 8 / Planes: 3`，门禁 §3f-11 钉住
+（`Bit Depth` 必须等于底图、`Planes` 必须为 3；缺 pixi 时这两行不出现）。整条 isobmff 门禁 **80/0**。
+
+**alpha（已点名，未携带）**：AVIF 容器支持 alpha，但增益图出口的底图按 `yuv420p` 编码、容器只装
+底图/增益图/tmap 三个 item ⇒ 源带 alpha 时**被拍平**。实测：RGBA HDR PNG → AVIF 增益图，
+`avifdec --info` 报 `Alpha: Absent`；同一源走普通 PNG 出口保留 `rgba64be`。已在出口日志**点名**
+（`[GainMap] ⚠️ 源带 alpha…透明会被拍平`），门禁 §3g 用「PQ + 非平凡 alpha」夹具 + PNG 对照钉住。
+**携带 alpha 属未实现能力**（要新增 alpha aux item 与 iref 关系），不在本轮范围；需要透明请走普通 AVIF 出口。
+
+**元数据边界**：tmap 只承载 ISO 21496-1（`--jpeg-gain-map-metadata xmp/both` 对 AVIF 出口无效并播报）；
+参照的 `clli`/alternate ICC 在其自身代码里也是 TODO（`avifultrahdr.cpp:517`），我方未写、未宣称。
 
 ### P1-1 AVIF 增益图的第三方读者常驻判据（已完成）
 
@@ -205,6 +257,10 @@ xmp+RGB 臂 48896/49152 有差（99.5%），证明 RGB 臂交付的是**真逐�
   将来有人构建出 libheif+编码器，判据必须当场变红提醒重测。
 - 验收判据：在 (h) 段加第 4 个条件（`heifultrahdr.h` 在位 ⇒ 打印它，并在 `heifenc.exe`/`libheif.dll`
   任一出现时把"能力表需重测"从提示升级为判红）。
+- 状态（2026-10-20）：**已落地 + 两臂变异验证**。`(h)` 打印 `heifultrahdr.h` 在位情况；搜索面扩到
+  `publish` + `tools`，`heifenc.exe` / `libheif.dll` 任一出现 ⇒ 判红并打 ❌ 要求重测。
+  实测 `caps 自检: PASS=16 FAIL=0`；分别放一个空文件做变异 ⇒ 各自 `15/1`，红行点名对应操作数
+  （`heifenc 存在=True` / `libheif.dll 存在=True`），删除后回绿。
 
 ### P2-1 PNG / JXL 增益图：先量生态再决定
 
@@ -218,18 +274,22 @@ xmp+RGB 臂 48896/49152 有差（99.5%），证明 RGB 臂交付的是**真逐�
 | --- | --- |
 | ISO 二进制字段读写对齐（§1 全表） | **已核**（本机 libultrahdr 一手代码 vs 我们的 `ParseIso21496` 逐条比） |
 | `HDRCapacityMin=0`、`hdrgm:Version=1.0` | **已核为与参考实现一致**（上一轮的怀疑撤回） |
-| Apple HEIF aux 不识别 | **已核**（代码只匹配 `21496`） |
+| Apple HEIF aux 识别 | **已修并验收**：`auxC` URN 含 `hdrgainmap` ⇒ `form=aux-apple-hdrgainmap / determinate=false`；URN 反控 + 21496 回归臂；isobmff **74/0** |
 | P0-1 补丁编译 | **已核**：隔离工作树 HEAD+补丁 = 0 警 0 错 |
-| P0-1 补丁行为 | **未核**（合成件未触达分支，原因未定位；主树因并发写者的 `CliParser.cs:475` 编不动） |
+| P0-1 补丁行为 | **已核**：合成件 `ftyp+meta(pitm+iprp/ipco/auxC)` ⇒ `form=aux-apple-hdrgainmap / determinate=False`；URN 反控仍判无增益图；21496 回归臂不动。`verify-gainmap-isobmff` **80/0**（含 P1-4 新增） |
 | P1-1 第三方读者判据 | **已核并落地**（70/0，含两支变异验牙） |
-| P1-2 / P0-2 / P2-1 | **未做**（P0-2 卡在样本） |
+| P1-2 | **已做并变异验证**：`(h)` 打印 `heifultrahdr.h`，`heifenc.exe`/`libheif.dll` 任一出现即红；`caps 16/0`，两臂变异各 `15/1` |
+| P0-2 | **JPEG 侧已核**（§12 9 条；像素 `maxLinear 8.798/4.2149`，剥元数据负控；engine **182/0**）；**HEIC 侧未做**（仍缺真实样本） |
+| P2-1 | **未做**（先量生态再决定） |
 | P0-3 底图 ISO 裸桩 | **已实现并验收**：工作树构建 0 警 0 错；门禁 §1b/§1c 红绿对撞（见下一行）；MPF 由 exiftool 独立复核 |
 | P0-4 次图 XMP | **已实现并验收**：§1c 两条"声明长度==实测次图长度"闭合（both 2358/2358、xmp 2265/2265；属性化后长度较旧元素形式缩短） |
 | 元数据方式三档（默认 iso） | **已实现并验收（2026-10-20 二次复验）**：`verify-gainmap-engine` **162/0**（新增：xmp+RGB 的逐通道数据判据、⑤b 九项字段锁）；`verify-gainmap-thirdparty` **22/0**（D5 两处声明 `XMP[-0.29,1.30] == ISO[-0.290,1.300]`、D5c 默认档无 XMP、D5d 自造字段 0 命中、D5e libultrahdr 直读 xmp+RGB `max=2.46229`）；`ui-cli` **72/0**；`ui-mode` **52/1**（O6a–g 全 PASS；唯一红 G1 是工作树嵌在第 10 层、宿主只向上找 8 层的既有环境限制，把同一份构建产物放浅路径后 G1 **1/0**） |
 | UI 联动的实机读数 | **已核**：G 组（GUI 驱动真实转换）先前在隔离工作树红，机制是宿主 `InitExternalTools` 只从 exe 目录向上找 8 层、工作树嵌在第 10 层；把同一份构建产物放到浅路径后 `tools-root=C:\PLAN\ffmpegPictureUI` 被找到，G1 PASS ⇒ 归因成立 |
 | AVIF 档位提示 | **已核**：`--format avif --jpeg-gain-map-metadata both` 的日志出现「元数据方式「both」对 AVIF 出口无效：tmap 只承载 ISO 21496-1 二进制，XMP 不写」 |
 | P0-5 XMP 字段集/序列化 | **已核并修**：规范九项、五个自造字段绝迹；hdrgm 改为属性形式（第三方 D5e 直读通过） |
-| P1-3 段序 | **只登记**（消费者是否按位置取段：未判定） |
+| P1-3 段序 | **判定不重排**：libultrahdr 解码器按 marker 命名空间取 APP1（`jpegdecoderhelper.cpp:220-235`），且 D5e 直读我们不同段序的产物成功 ⇒ 无一手证据支持重排 |
+| P1-4 AVIF tmap `pixi` | **已修并验收**：tmap 关联底图 pixi ⇒ `avifdec --info` 的 Alternate image 报 `Bit Depth=8 / Planes=3`；isobmff **80/0**（§3f-11） |
+| P1-4 AVIF alpha | **已点名未携带**：RGBA HDR → AVIF 增益图 `Alpha: Absent`（同源 PNG 保留 alpha）；日志点名 + §3g 5 条。携带 alpha 未实现 |
 | 「标记方法两种/三种」与是否加下拉 | 见 §6；结论已被维护者裁决更新：**做三档、默认 iso**（原"不加下拉"的判词作废） |
 
 ## 6. 元数据标记方法到底几种？要不要在 JPEG 高级色彩选项加下拉

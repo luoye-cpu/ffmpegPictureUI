@@ -90,6 +90,15 @@ function ProbeOut([string]$mode, [string]$arg, [string]$arg2) {
     Start-Process -FilePath $pr -ArgumentList $al -NoNewWindow -Wait -PassThru -RedirectStandardOutput $o | Out-Null
     return ([System.IO.File]::ReadAllText($o))
 }
+# 像素级读数：ServiceProbe gainmap-stats 读回**解码器真正写出**的线性像素（gbrpf32le，1.0 = SDR 白点）。
+# ⚠ 不能用产品日志里的「峰值 N nits」充当施加证据 —— 那是 `203 × 2^HDRCapacityMax` 由元数据算的。
+function ProbeStats([string]$path, [string]$expect) {
+    $o = "$out/_stats.txt"
+    $al = @('gainmap-stats', ('"' + $path + '"'))
+    if ($expect) { $al += $expect }
+    Start-Process -FilePath $pr -ArgumentList $al -NoNewWindow -Wait -PassThru -RedirectStandardOutput $o | Out-Null
+    return ([System.IO.File]::ReadAllText($o))
+}
 # 实测宽高：由 ffprobe 读回，不靠产品自己的解析器自证。多幅图容器取第一行（主图）。
 function FfprobeSize([string]$path) {
     if (-not (Test-Path $path)) { return "-" }
@@ -898,6 +907,57 @@ CK ($ecInit.Value -match 'Cjpegli && item\.Options\.JpegGainMap') `
    "⑪ 源码锁B：GainMap 变体例外确实在 encoderProtectsColor 初始化式「内」（挪到别处/删掉即红）"
 $commentedOut = @($qpcText -split "`r?`n" | Where-Object { $_ -match 'Cjpegli\s*&&\s*item\.Options\.JpegGainMap' -and $_.Trim().StartsWith('//') })
 CK ($commentedOut.Count -eq 0) "⑪ 源码锁C：该例外不得以整行注释形态存在（注释掉即红，实得 $($commentedOut.Count) 行）"
+
+Write-Host "`n### 12) 输入侧：Apple 两代 Ultra HDR JPEG（第三方样本；像素级施加证据）###" -ForegroundColor Cyan
+# 为什么这一段必须存在：
+#   · Apple 用私有 XMP 命名空间（`HDRGainMap:` / `apdi:`），exiftool **不解析**它 ⇒ 纯托管兜底
+#     `TryReadAppleXmpMetadata` 是唯一读通路；若它坏了，样本会被静默当 SDR。
+#   · 产品日志里的「峰值 N nits」是 `203 × 2^HDRCapacityMax`，由**元数据**算出，不是像素读数。
+#     §3c/本段的「施加后峰值 > 底图峰值」必须由**像素**证明 ⇒ `gainmap-stats` 读回解码器写出的线性像素。
+#   · 两代样本的 headroom 来源不同（new：XMP 显式 4.532783；old：v1.0 无字段 ⇒ 隐式 8×）
+#     ⇒ 两臂的最大线性值必须分叉；两臂同值就说明参数根本没进增益公式。
+#   · 负控用 `exiftool -all=` 剥掉**全部**元数据（实测 `-MPF:all= -XMP:all=` 只去掉一根 APP2，
+#     Apple 的 XMP 仍在 ⇒ 负控会假绿，2026-10-20 实测）。
+$appleNew = "$root/tools/src/libultrahdr/tests/data/apple_gainmap_new.jpg"
+$appleOld = "$root/tools/src/libultrahdr/tests/data/apple_gainmap_old.jpg"
+CK ((Test-Path $appleNew) -and (Test-Path $appleOld)) `
+   "⑫ 前提：Apple 两代样本在位（libultrahdr tests/data）—— 缺则本段无凭据（fail-closed，不静默跳过）"
+$newRun = RunCli "apple_new" $appleNew "png" @()
+$oldRun = RunCli "apple_old" $appleOld "png" @()
+CK (($null -ne $newRun.file) -and (Test-Path $newRun.file) -and ($newRun.log -match '检测到 Ultra HDR JPEG') -and ($newRun.log -match '元数据来源: Apple HDRGainMap XMP') -and ($newRun.log -match 'headroom=4\.532783') -and ($newRun.log -match '已解码为线性 HDR PFM（峰值 4699 nits）')) `
+   "⑫ new：识别 + 元数据非空（显式 headroom=4.532783）+ 走完解码并产出"
+CK (($null -ne $oldRun.file) -and (Test-Path $oldRun.file) -and ($oldRun.log -match '检测到 Ultra HDR JPEG') -and ($oldRun.log -match '元数据来源: Apple HDRGainMap XMP') -and ($oldRun.log -match '隐式 8× 上限') -and ($oldRun.log -match '已解码为线性 HDR PFM（峰值 1624 nits）')) `
+   "⑫ old：v1.0 无 headroom 字段 ⇒ 按隐式 8× 处理，仍走完解码并产出"
+$stNew = ProbeStats $appleNew ""
+$stOld = ProbeStats $appleOld ""
+Write-Output ($stNew -split "`r?`n" | Where-Object { $_ -match '^stats ' })
+Write-Output ($stOld -split "`r?`n" | Where-Object { $_ -match '^stats ' })
+$mxn = 0.0; $mxo = 0.0
+$mm = [regex]::Match($stNew, 'maxLinear=([0-9.]+)')
+if ($mm.Success) { $mxn = [double]$mm.Groups[1].Value }
+$mm = [regex]::Match($stOld, 'maxLinear=([0-9.]+)')
+if ($mm.Success) { $mxo = [double]$mm.Groups[1].Value }
+CK (($stNew -match 'PROBE RESULT: pass=4 fail=0') -and ($mxn -gt 1.0) -and ($stNew -match 'over1=[1-9][0-9]*')) `
+   "⑫ new 像素级：maxLinear=$mxn > 1.0（SDR 白点）且确有像素越白点 ⇒ 增益真被施加（不是只读了元数据）"
+CK (($stOld -match 'PROBE RESULT: pass=4 fail=0') -and ($mxo -gt 1.0) -and ($stOld -match 'over1=[1-9][0-9]*')) `
+   "⑫ old 像素级：maxLinear=$mxo > 1.0 ⇒ 隐式 8× 参数真的进了公式"
+CK (($mxn -gt 0.0) -and ($mxo -gt 0.0) -and ($mxn -gt ($mxo * 1.5))) `
+   "⑫ 剂量分叉：new（显式 headroom，实测 $mxn）必须明显亮于 old（隐式 8×，实测 $mxo）—— 两臂同值说明参数被忽略"
+# 负控：剥掉全部元数据（含 Apple XMP 与 MPF）⇒ 同一底图不得再走增益图路径。
+# ⚠ `-all=` 会连 ICC 一起剥掉；本段只判「不走增益图路径」，不做色彩断言。
+$strippedNew = "$out/apple_new_stripped.jpg"
+$strippedOld = "$out/apple_old_stripped.jpg"
+Start-Process -FilePath $et -ArgumentList @('-all=','-o',$strippedNew,$appleNew) -NoNewWindow -Wait -PassThru `
+    -RedirectStandardOutput "$out/_ets1.out" -RedirectStandardError "$out/_ets1.err" | Out-Null
+Start-Process -FilePath $et -ArgumentList @('-all=','-o',$strippedOld,$appleOld) -NoNewWindow -Wait -PassThru `
+    -RedirectStandardOutput "$out/_ets2.out" -RedirectStandardError "$out/_ets2.err" | Out-Null
+$negProd = RunCli "apple_new_stripped" $strippedNew "png" @()
+$negNew = ProbeStats $strippedNew "none"
+$negOld = ProbeStats $strippedOld "none"
+CK (($null -ne $negProd.file) -and (Test-Path $negProd.file) -and ($negProd.log -notmatch '检测到 Ultra HDR JPEG') -and ($negProd.log -notmatch 'Apple HDRGainMap')) `
+   "⑫ **负控**：同一底图剥掉全部元数据（exiftool -all=）⇒ 产品不走增益图路径，但产物照出（证明正控的日志来自增益层）"
+CK ($negNew -match 'PROBE RESULT: pass=1 fail=0') "⑫ **负控**：剥元数据后的 new 底图 ⇒ 解码器返回 null（pass=1 fail=0）"
+CK ($negOld -match 'PROBE RESULT: pass=1 fail=0') "⑫ **负控**：剥元数据后的 old 底图 ⇒ 解码器返回 null（pass=1 fail=0）"
 
 Write-Host ""
 Write-Host "===== gainmap-engine: PASS=$pass FAIL=$fail =====" -ForegroundColor $(if ($fail -eq 0) { "Green" } else { "Red" })
