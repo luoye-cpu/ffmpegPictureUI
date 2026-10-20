@@ -1272,6 +1272,22 @@ public static class GainMapEncoder
               + "</rdf:Seq></Container:Directory>"
             : string.Empty;
 
+        // 规范：增益元数据存在**增益图像**的 XMP 里（主要图片只靠 hdrgm:Version="1.0" 作格式信号）。
+        // 参考实现同形：主图 XMP = Version + Container:Directory，次图 XMP = 九项全量。
+        // 主图多写数值虽然不违规，但会掩盖读侧缺陷——2026-10-20 用参考件实测发现自家解码器
+        // 认不出"元数据只在次图 XMP"的合规文件 ⇒ 从此按参考形状写。
+        string hdrgmAttrs = withDirectory
+            ? "hdrgm:Version=\"1.0\" "
+            : "hdrgm:Version=\"1.0\" " +
+              "hdrgm:BaseRenditionIsHDR=\"False\" " +
+              $"hdrgm:GainMapMin=\"{gainMinLog2.ToString("0.00", inv)}\" " +
+              $"hdrgm:GainMapMax=\"{gainMaxLog2.ToString("0.00", inv)}\" " +
+              $"hdrgm:Gamma=\"{gamma.ToString("0.0", inv)}\" " +
+              $"hdrgm:OffsetSDR=\"{offsetSdr.ToString("0.000000", inv)}\" " +
+              $"hdrgm:OffsetHDR=\"{offsetHdr.ToString("0.000000", inv)}\" " +
+              "hdrgm:HDRCapacityMin=\"0\" " +
+              $"hdrgm:HDRCapacityMax=\"{gainMaxLog2.ToString("0.00", inv)}\" ";
+
         string xmp =
             "<?xpacket begin=\"\uFEFF\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>" +
             "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\">" +
@@ -1283,15 +1299,7 @@ public static class GainMapEncoder
             "<rdf:Description rdf:about=\"\" xmlns:hdrgm=\"http://ns.adobe.com/hdr-gain-map/1.0/\" " +
             "xmlns:Container=\"http://ns.google.com/photos/1.0/container/\" " +
             "xmlns:Item=\"http://ns.google.com/photos/1.0/container/item/\" " +
-            "hdrgm:Version=\"1.0\" " +
-            "hdrgm:BaseRenditionIsHDR=\"False\" " +
-            $"hdrgm:GainMapMin=\"{gainMinLog2.ToString("0.00", inv)}\" " +
-            $"hdrgm:GainMapMax=\"{gainMaxLog2.ToString("0.00", inv)}\" " +
-            $"hdrgm:Gamma=\"{gamma.ToString("0.0", inv)}\" " +
-            $"hdrgm:OffsetSDR=\"{offsetSdr.ToString("0.000000", inv)}\" " +
-            $"hdrgm:OffsetHDR=\"{offsetHdr.ToString("0.000000", inv)}\" " +
-            "hdrgm:HDRCapacityMin=\"0\" " +
-            $"hdrgm:HDRCapacityMax=\"{gainMaxLog2.ToString("0.00", inv)}\">" +
+            hdrgmAttrs + ">" +
             directoryBlock +
             "</rdf:Description></rdf:RDF></x:xmpmeta>" +
             "<?xpacket end=\"w\"?>";

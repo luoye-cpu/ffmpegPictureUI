@@ -74,6 +74,15 @@ function RunCli([string]$tag, [string]$in, [string]$fmt, [string[]]$extra) {
     $f = Get-ChildItem -Recurse "$out/$tag" -Include "*.$fmt" -EA SilentlyContinue | Select-Object -First 1
     return @{ code = $p.ExitCode; log = $log; file = $f }
 }
+# 读侧：把一条 Ultra HDR 产物重新交给同一个产品解码（--format png）。
+function RunDecode([string]$tag, [string]$inFile) {
+    $a = @('--headless', '-i', $inFile, '--format', 'png', '--output', "$out/dec_$tag", '--log-level', 'Debug')
+    $p = Start-Process -FilePath $exe -ArgumentList $a -Wait -NoNewWindow -PassThru `
+         -RedirectStandardOutput "$out/dec_$tag.o" -RedirectStandardError "$out/dec_$tag.e"
+    $log = [System.IO.File]::ReadAllText("$out/dec_$tag.o") + [System.IO.File]::ReadAllText("$out/dec_$tag.e")
+    $f = Get-ChildItem -Recurse "$out/dec_$tag" -Include '*.png' -EA SilentlyContinue | Select-Object -First 1
+    return @{ code = $p.ExitCode; log = $log; file = $f }
+}
 function ProbeOut([string]$mode, [string]$arg, [string]$arg2) {
     $o = "$out/_probe.txt"
     $al = @($mode, ('"' + $arg + '"'))
@@ -103,10 +112,13 @@ function FfprobeTrc([string]$path) {
 }
 # 第三方判据：exiftool 直读产物/素材的标签（**不经产品自己的解析器或日志散文**）。
 # ⚠ exiftool 是 perl 脚本，stderr 常带 locale 警告 ⇒ 必须单独重定向，只读 stdout。
-function ExifTag([string]$path, [string]$tag) {
+function ExifTag([string]$path, [string]$tag, [switch]$EE) {
     if (-not (Test-Path $path)) { return "" }
     $o = "$out/_et.out"; $e = "$out/_et.err"
-    Start-Process -FilePath $et -ArgumentList @('-s', '-s', "-$tag", $path) `
+    $al = @('-s', '-s')
+    if ($EE) { $al += '-ee' }
+    $al += "-$tag"; $al += $path
+    Start-Process -FilePath $et -ArgumentList $al `
         -NoNewWindow -Wait -RedirectStandardOutput $o -RedirectStandardError $e | Out-Null
     $t = ([System.IO.File]::ReadAllText($o)).Trim()
     $i = $t.IndexOf(': ')
@@ -330,6 +342,28 @@ if ($armIso.file -and $armXmp.file -and $armBoth.file -and $armXmpRgb.file) {
     CK ($fBoth.Images -eq 2 -and $fXmp.Images -eq 2 -and $fIso.Images -eq 2) ("①c 三档都是两幅图（实 " + $fIso.Images + '/' + $fXmp.Images + '/' + $fBoth.Images + '）—— 拒绝对外不是"普通 JPEG 改名"')
 } else { CK $false '①c 三档缺产物，指纹判据无法进行' }
 
+# ── 1d) 读侧：iso / xmp / both 三档产物都必须被自家解码器识别 ─────────────────
+#   为什么读侧要单列：写侧"有元数据"不等于读侧认得出。规范把增益元数据放在**次图** XMP，
+#   主图只留 hdrgm:Version；不带 -ee 的读取器只读主图 ⇒ 会把合规的 XMP-only 文件当普通 JPEG
+#   （2026-10-20 用参考实现生成的 ref_xmp 实测：修前输出 SDR 53120 B，修后 117451 B + HDR 日志）。
+Write-Host "`n### 1d) 读侧：三档产物都能被自家解码器识别 ###" -ForegroundColor Cyan
+foreach ($a in @(
+        @{ n = 'iso';  r = $armIso;  want = 'ISO 21496-1 APP2' },
+        @{ n = 'xmp';  r = $armXmp;  want = 'hdrgm XMP' },
+        @{ n = 'both'; r = $armBoth; want = 'ISO 21496-1 APP2' })) {
+    if (-not $a.r.file) { CK $false ("①d " + $a.n + " 缺产物，读侧判据无法进行"); continue }
+    $d = RunDecode $a.n $a.r.file.FullName
+    CK ($d.code -eq 0 -and $d.file) ("①d " + $a.n + " 档可回解并产出 png（code=" + $d.code + '）')
+    CK ($d.log -match ('元数据来源: ' + [regex]::Escape($a.want))) ("①d " + $a.n + " 档被识别为 " + $a.want)
+    CK ($d.log -match '已解码为线性 HDR PFM') ("①d " + $a.n + " 档确实按增益图恢复 HDR（不是只解底图）")
+}
+# 反控：同输入**不写**增益图 ⇒ 解码器不得报任何元数据来源（否则上面的"识别"可能对任何 jpg 都成立）
+$plainJpg = RunCli 'plain_jpg' $hdr 'jpg' @()
+if ($plainJpg.file) {
+    $decPlain = RunDecode 'plain' $plainJpg.file.FullName
+    CK (-not ($decPlain.log -match '元数据来源:')) ("①d 反控：普通 JPEG（无增益图）不得出现元数据来源行")
+} else { CK $false '①d 反控缺产物' }
+
 Write-Host "`n### 2) 底图与增益图都真实存在（不是「普通 JPEG 改名」）###" -ForegroundColor Cyan
 if ($e1.file) {
     $prodLen = (Get-Item $e1.file.FullName).Length
@@ -452,17 +486,22 @@ $g2b = RunCli 'g2_both' $hdr 'jpg' @('--jpeg-gain-map', 'true', '--jpeg-gain-map
 CK ($e1b.code -eq 0 -and $e1b.file) "⑤b both 档（单通道）正常产出（实得 code=$($e1b.code)）"
 CK ($g2b.code -eq 0 -and $g2b.file) "⑤b both 档（三通道）正常产出（实得 code=$($g2b.code)）"
 if ($g2b.file -and $e1b.file) {
-    # 正控：读尺活着（同一 rdf:Description 里读得到规范字段）
-    $g2max = ExifTag $g2b.file.FullName 'XMP-hdrgm:GainMapMax'
+    # 正控：读尺活着（同一份文件里，次图 XMP 读得到规范字段）
+    # 规范把增益元数据放在**次图** XMP（主图只有 Version）⇒ 必须带 -ee 提取内嵌图。
+    $g2max = ExifTag $g2b.file.FullName 'XMP-hdrgm:GainMapMax' -EE
     CK ($g2max -ne '') ("⑤b 读到规范字段 GainMapMax（读尺正控；实得「" + $g2max + '」）')
     # 反控/负断言：Ultra HDR v1.1 的 hdrgm 表只有九项 ⇒ 我方曾自造的五个字段必须绝迹
     $madeUp = @('Channels', 'UseBaseRenderingColorSpace', 'MapPrimary', 'MapSecondary', 'MapImageRatio')
     $hits = @()
     foreach ($nm in $madeUp) {
-        $v = ExifTag $g2b.file.FullName ('XMP-hdrgm:' + $nm)
+        $v = ExifTag $g2b.file.FullName ('XMP-hdrgm:' + $nm) -EE
         if ($v -ne '') { $hits += ($nm + '=' + $v) }
     }
     CK ($hits.Count -eq 0) ("⑤b XMP 只含规范九项：自造字段命中 " + $hits.Count + ' 个' + $(if ($hits.Count -gt 0) { '［' + ($hits -join ',') + '］' } else { '' }))
+    # 主图 XMP 只留格式信号（Version），数值只在次图：这是参考实现与规范的写法
+    $priMax = ExifTag $g2b.file.FullName 'XMP-hdrgm:GainMapMax'
+    $priVer = ExifTag $g2b.file.FullName 'XMP-hdrgm:Version'
+    CK ($priVer -eq '1.0' -and $priMax -eq '') ("⑤b 主图 XMP＝Version 1.0、无数值（实 Version=「" + $priVer + '」 GainMapMax=「' + $priMax + '」）')
 } else { CK $false "⑤b 缺 both 档产物，无法做 XMP 字段判别" }
 # ⑤b' 像素级判别（比 ICC 更硬）：**SDR 源(bt709)** + base=bt2020 ⇒ 底图**像素真的被转换**，
 #   不是"只改 ICC 标签"。原理：srgb 底走 bt709→bt709（**恒等 ⇒ 无映射**）；bt2020 底走

@@ -1140,6 +1140,18 @@ public static class GainMapDecoder
             if (root.ValueKind != System.Text.Json.JsonValueKind.Array || root.GetArrayLength() == 0)
                 return null;
             var first = root[0];
+            // `-ee` 会连**内嵌图**一起读：规范把增益元数据放在次图 XMP、主图只留 Version
+            // （参考实现产物即此形）。若 exiftool 返回多个对象，取带 GainMapMax 的那个，
+            // 而不是盲取第一个（第一个可能只是主图的 Version）。
+            if (root.GetArrayLength() > 1)
+            {
+                foreach (var el in root.EnumerateArray())
+                {
+                    if (el.TryGetProperty("XMP-hdrgm:GainMapMax", out _)
+                        || el.TryGetProperty("XMP-gainmap:GainMapMax", out _))
+                    { first = el; break; }
+                }
+            }
 
             // 从 JSON 属性中查找标签（属性名形如 "XMP-gainmap:GainMapMin"）。
             //
@@ -1254,7 +1266,9 @@ public static class GainMapDecoder
             var psi = new ProcessStartInfo
             {
                 FileName = ExifToolService.DetectedPath!,
-                Arguments = $"-json -G \"{path}\"",
+                // `-ee`：Ultra HDR 的增益元数据在**次图** XMP 里（主图只有 hdrgm:Version）。
+                // 不带 -ee 时 exiftool 只读主图 ⇒ 会把合规的 XMP-only 文件误判成普通 JPEG。
+                Arguments = $"-ee -json -G \"{path}\"",
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,

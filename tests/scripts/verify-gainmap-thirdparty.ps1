@@ -209,7 +209,8 @@ if (-not (Test-Path $syn3)) {
     $pX = X $uhdr ('-m 1 -P -j "' + $dX.file.FullName + '"') 'd5_iso'
     $mnX = [regex]::Match($pX.text, '--minContentBoost\s+([0-9.]+)')
     $mxX = [regex]::Match($pX.text, '--maxContentBoost\s+([0-9.]+)')
-    $x5 = X $et ('-a -s -G1 -XMP-hdrgm:GainMapMin -XMP-hdrgm:GainMapMax "' + $dX.file.FullName + '"') 'xmp_a'
+    # 规范把增益元数据放在**次图** XMP（主图只有 Version）⇒ 这里必须带 -ee 提取内嵌图。
+    $x5 = X $et ('-ee -a -s -G1 -XMP-hdrgm:GainMapMin -XMP-hdrgm:GainMapMax "' + $dX.file.FullName + '"') 'xmp_a'
     #   取值正则的正确形状是 `名字\s*:\s*值` —— exiftool 的输出里标签与冒号之间有一串**对齐空白**，
     #   写 `GainMapMin:` 会命中 0 次（实测），写 `GainMapMin\D*(...)` 又会把负号当"非数字"跳过（也实测）。
     $rxMin = [regex]::Match($x5.text, 'GainMapMin\s*:\s*(-?[0-9.]+)')
@@ -237,12 +238,18 @@ if (-not (Test-Path $syn3)) {
   }
   # D5d：字段集合法性（Ultra HDR v1.1 的 hdrgm 表只有九项）。正控 = 同一份 XMP 里读得到 GainMapMax；
   #   负断言 = 我方曾自造的五个字段绝迹（Channels/UseBaseRenderingColorSpace/MapPrimary/MapSecondary/MapImageRatio）。
-  $xAll = X $et ('-a -s -G1 -XMP-hdrgm:all "' + $dX.file.FullName + '"') 'xmp_all'
+  $xAll = X $et ('-ee -a -s -G1 -XMP-hdrgm:all "' + $dX.file.FullName + '"') 'xmp_all'
   $madeUp = @('Channels', 'UseBaseRenderingColorSpace', 'MapPrimary', 'MapSecondary', 'MapImageRatio')
   $hit = @($madeUp | Where-Object { $xAll.text -match ('(?m)\b' + $_ + '\s*:') })
   CK 'D5d XMP 只含 Ultra HDR v1.1 的九项（五个自造字段绝迹）' `
      (($xAll.text -match 'GainMapMax\s*:') -and $hit.Count -eq 0) `
      ("GainMapMax 可读=" + [bool]($xAll.text -match 'GainMapMax\s*:') + " 自造命中=" + $hit.Count + $(if ($hit.Count -gt 0) { '［' + ($hit -join ',') + '］' } else { '' }))
+  # D5f：元数据位置与规范一致——主图 XMP 只有 Version（格式信号），数值在次图 XMP。
+  $xP = X $et ('-a -s -G1 -XMP-hdrgm:Version -XMP-hdrgm:GainMapMax "' + $dX.file.FullName + '"') 'xmp_primary'
+  $xE = X $et ('-ee -a -s -G1 -XMP-hdrgm:GainMapMax "' + $dX.file.FullName + '"') 'xmp_embedded'
+  CK 'D5f 主图 XMP＝Version、无数值；次图 XMP 有数值（规范位置）' `
+     (($xP.text -match 'Version\s*:\s*1') -and ($xP.text -notmatch 'GainMapMax\s*:') -and ($xE.text -match 'GainMapMax\s*:')) `
+     ("主图 Version=" + [bool]($xP.text -match 'Version\s*:\s*1') + " 主图 Max=" + [bool]($xP.text -match 'GainMapMax\s*:') + " 次图 Max=" + [bool]($xE.text -match 'GainMapMax\s*:'))
   # D5e：xmp 档 + 三通道（无 ISO）也必须被第三方读者认成 Ultra HDR 并读出增益上限。
   $dXR = AppRun 'gm3_XR' $syn3 '--jpeg-gain-map true --jpeg-gain-map-metadata xmp --jpeg-gain-map-multi-channel true'
   if ($dXR.count -eq 1) {

@@ -154,8 +154,10 @@
   （[jpegrutils.cpp:455-463](file:///c:/PLAN/ffmpegPictureUI/tools/src/libultrahdr/lib/src/jpegrutils.cpp#L455)），
   且它只在 `AttributeName` 里认这九个名字（[:178-210](file:///c:/PLAN/ffmpegPictureUI/tools/src/libultrahdr/lib/src/jpegrutils.cpp#L178)）。
 - 原文另两条定位：①「此元数据存储在增益图像的 XMP 数据包中」；②格式信号 = **主要图片**的 XMP 里存在
-  `hdrgm:Version="1.0"`。我们的实现：次图写全量、底图也写全量（底图那份同时承载 Container:Directory，
-  多写九项不违反规范，且让只读底图 XMP 的消费者也能拿到数值；参考实现只在底图写 Version + Directory）。
+  `hdrgm:Version="1.0"`。我们的实现：次图写九项全量、底图只写 `Version` + `Container:Directory`
+  （与参考实现同形；2026-10-20 审查轮用参考件实测后从"底图也写全量"改过来——多写会掩盖
+  读侧只读主图的缺陷，见 §5 的三档识别矩阵）。
+- **读侧配套**：exiftool 必须带 `-ee` 才能读次图 XMP；不带时合规的 XMP-only 文件会被当普通 JPEG。
 
 **本轮抓到并修掉的两处**（都由判据逼出来，不是读代码猜的）：
 
@@ -274,4 +276,33 @@ xmp+RGB 臂 48896/49152 有差（99.5%），证明 RGB 臂交付的是**真逐�
 - 默认值变更本身有锁：`ui-cli` 里断言 `new FfmpegOptions().JpegGainMapMetadata == "iso"`。
 - AVIF 出口与此开关无关（tmap 承载的就是 ISO 二进制），选了非默认档会**点名**"对 AVIF 无效"。
 - P0-5 已结案：XMP 字段集收紧到规范九项，且改为 `rdf:Description` 属性形式（详见 §4 P0-5）。
+
+## 7. 三档识别对照（2026-10-20，参考件实测）
+
+**参考件怎么来**（可复现）：
+1. libultrahdr v2.0.2 用 CMake 编译三个写侧档（`UHDR_WRITE_XMP=ON/ISO=OFF`、`ON/ON`、`OFF/ON`；
+   HEIF/AVIF 关闭不影响 JPEG 路径）。
+2. HDR 输入：`ffmpeg -i tests/output/sources/src_hdr_pq.png -pix_fmt p010le -f rawvideo hdr.p010`。
+3. 编码：`ultrahdr_app -m 0 -p hdr.p010 -w 512 -h 384 -a 0 -C 2 -t 2 -q 95 -z ref_<mode>.jpg`。
+4. 另取 `tools/src/libultrahdr/tests/data/apple_gainmap_{new,old}.jpg` 作两代 Apple 样本，
+   `jpeg_image.jpg` 作负控。
+
+**矩阵**（`-P`/decode = libultrahdr；来源 = 自家 CLI）：
+
+| 件 | libultrahdr `-P` | libultrahdr decode | 自家解码器来源 | exiftool 主图 | `-ee` |
+| --- | --- | --- | --- | --- | --- |
+| our_iso | Yes 4.92458 | 786432 B | ISO 21496-1 | — | — |
+| our_xmp | Yes 4.92458 | 786432 B | hdrgm XMP (ch=3) | Version | 九项 |
+| our_both | Yes 4.92458 | 786432 B | ISO + XMP | Version | 九项 |
+| ref_iso | Yes 49.2611 | 786432 B | ISO 21496-1 | — | — |
+| ref_xmp | Yes 49.2612 | 786432 B | hdrgm XMP (ch=3) | Version | 九项 |
+| ref_both | Yes 49.2611 | 786432 B | ISO + XMP | Version | 九项 |
+| apple_new | Yes 23.1475 | — | Apple HDRGainMap | — | — |
+| apple_old | Yes 8 | — | Apple HDRGainMap | — | — |
+| jpeg_image | No gainmap | — | 无 | — | — |
+
+**读侧缺陷（本轮发现并修）**：参考 XMP-only 件主图只有 `Version`、九项在次图 XMP；
+自家解码器不带 `-ee` 时只读主图 ⇒ 把它当普通 JPEG（修前 PNG 53120 B / 无解码日志，
+修后 117451 B / `hdrgm XMP`）。修法 = 写入侧改成参考形状 + 读取侧 `-ee`（详见 FIX_PLAN 本轮账目）。
+门禁锁：engine §1d 三档回解、⑤b 主图形状、thirdparty D5f 位置判据。
 
