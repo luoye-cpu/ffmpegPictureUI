@@ -18,8 +18,10 @@
 #      负控：显式 legacy + **非** GainMap ⇒ 仍不得出现任何引擎日志（逃生门零污染未被放宽）；
 #   ⑤ 引擎出口的底图色域与增益图通道数（`--jpeg-gain-map-base-gamut` / `-multi-channel` 真透传）；
 #   ⑤b **第三方判据**（2026-09-19 补，C⑥）：exiftool 直读产物 —— bt2020 底图内嵌 ICC 的红原色
-#      色度（≈0.708）与默认 sRGB 底（≈0.640）**不同**；multi-channel 的 XMP hdrgm `Channels=3`
-#      与默认 `1` 不同。⚠ 原 ⑤ 对 bt2020 只有**产品日志散文** + `channels=1`（后者与默认相同、
+#      色度（≈0.708）与默认 sRGB 底（≈0.640）**不同**；XMP hdrgm 只许出现 Ultra HDR v1.1 的九项
+#      （Channels/UseBaseRenderingColorSpace/MapPrimary/MapSecondary/MapImageRatio 是自造字段，必须绝迹），
+#      通道数由增益图 JPEG 的 SOF 分量数表达（§1c 的 Nf 判据）。
+#      ⚠ 原 ⑤ 对 bt2020 只有**产品日志散文** + `channels=1`（后者与默认相同、
 #      无判别力）⇒ 本节补上第三方可证判据（见 §5 末）。另有 ⑤b'：SDR 源 + bt2020 底 ⇒ 用 ffmpeg
 #      解出主图 raw 比字节，证明底图**像素真被转换**（不是"只改 ICC 标签"）。
 #   ⑤c `--jpeg-gain-map-base-gamut` 的**取值校验**此前无门禁：非法值必须硬失败 + 不产出 + 点名。
@@ -129,6 +131,204 @@ if ($e1.file) {
     CK ($p1 -match 'mpf\[1\].*soi=True') "① MPF 副图偏移命中 SOI（增益图可定位）"
     CK ($p1 -match 'PROBE RESULT: pass=\d+ fail=0') "① 探针容器结构断言全通过（含「ISO 增益区间非零」）"
 } else { CK $false "① 无产物，容器结构断言无法进行" }
+
+# ── 1b) 底图的 ISO 21496-1「版本裸桩」────────────────────────────────────────
+#   Ultra HDR / ISO 21496-1 把这一列标成 Required：底图也要有一根 APP2，体 = 命名空间 +
+#   minimum_version(0000) + writer_version(0000)，**只有版本、没有数值**（数值只在次图那根里）。
+#   参考实现 libultrahdr v2.0.2：声明见 jpegr.cpp:1074-1078，写入见 :1278-1292。
+#   本仓此前只在次图写了全量 ISO（GainMapEncoder 组装段里没有它）⇒ 只读底图找 21496 的消费者
+#   认不出这是增益图，而我们的日志却宣称「双元数据」。⇒ 这条判据就是那笔账的锁。
+# 唯一的标记扫描器：§1b 的裸桩判据与 §1c 的三档指纹**共用它**（两处各写一份扫描 = #69 ⑤ 要抓的镜像）。
+# 返回 @{ Starts=每张图的 SOI 偏移; Segs=按偏移排序的 (marker,len,off) 表 }。
+# 扫描数据里 0xFF 后必然跟 0x00（JPEG 的字节填充），所以遇到 FFxx(x≠0) 一定是真标记 ⇒ 线性扫可行。
+function Get-JpegSegmentWalk([byte[]]$b) {
+    $starts = @()
+    $segs = @()
+    $i = 0
+    while ($i + 1 -lt $b.Length) {
+        if ($b[$i] -ne 0xFF) { $i++; continue }
+        $m = $b[$i + 1]
+        if ($m -eq 0xD8) { $starts += $i; $i += 2; continue }
+        if ($m -eq 0xD9 -or $m -eq 0x00 -or $m -eq 0xFF -or $m -eq 0x01 -or ($m -ge 0xD0 -and $m -le 0xD7)) { $i += 2; continue }
+        if ($i + 3 -ge $b.Length) { break }
+        $len = ($b[$i + 2] * 256) + $b[$i + 3]
+        if ($len -lt 2) { break }
+        $segs += [pscustomobject]@{ Off = $i; Marker = $m; Len = $len }
+        $i += 2 + $len
+    }
+    return @{ Starts = $starts; Segs = $segs }
+}
+
+# 从 $from 开始找第一根 SOF，返回 Nf（分量数）。XMP-only 没有通道数字段（Ultra HDR v1.1 的 hdrgm 只有九项）；
+# 通道语义由增益图 image 本身表达——本实现的「灰度」也编成 3 分量 YCbCr（三通道相等），
+# 所以 Nf 只是结构事实，灰/彩的判别要看解码后的数据（Get-ChannelSpread）。
+function Get-JpegSofComponents([byte[]]$b, [int]$from) {
+    if ($from -lt 0 -or $from -ge $b.Length) { return -1 }
+    $i = $from
+    while ($i + 3 -lt $b.Length) {
+        if ($b[$i] -ne 0xFF) { $i++; continue }
+        $m = $b[$i + 1]
+        if ($m -eq 0xD8 -or $m -eq 0xD9 -or $m -eq 0x00 -or $m -eq 0xFF -or $m -eq 0x01 -or ($m -ge 0xD0 -and $m -le 0xD7)) { $i += 2; continue }
+        $len = ($b[$i + 2] * 256) + $b[$i + 3]
+        if ($len -lt 2) { break }
+        if ($m -ge 0xC0 -and $m -le 0xCF -and $m -ne 0xC4 -and $m -ne 0xC8 -and $m -ne 0xCC -and $len -ge 8 -and ($i + 9) -lt $b.Length) {
+            return [int]$b[$i + 9]          # payload 起于 i+4；Nf = payload+5
+        }
+        $i += 2 + $len
+    }
+    return -1
+}
+
+# 解码后的增益图（rgb24）里有多少像素三通道不相等：灰度增益=0，逐通道增益≈全量。
+function Get-ChannelSpread([string]$path) {
+    if (-not (Test-Path $path)) { return @{ Pixels = 0; Differ = 0 } }
+    $b = [System.IO.File]::ReadAllBytes($path)
+    $d = 0
+    for ($i = 0; $i + 2 -lt $b.Length; $i += 3) {
+        if (-not ($b[$i] -eq $b[$i + 1] -and $b[$i + 1] -eq $b[$i + 2])) { $d++ }
+    }
+    return @{ Pixels = [int]($b.Length / 3); Differ = $d }
+}
+
+function Get-BaseIsoStub([byte[]]$b) {
+    $urn = [System.Text.Encoding]::ASCII.GetBytes('urn:iso:std:iso:ts:21496:-1')
+    $res = @{ Found = $false; Off = -1; Len = 0; Tail = ''; Why = '主图 SOS 之前没有段长=34 且命名空间命中的 APP2' }
+    $walk = Get-JpegSegmentWalk $b
+    $secStart = -1
+    if (@($walk.Starts).Count -ge 2) { $secStart = @($walk.Starts)[1] }
+    foreach ($sg in $walk.Segs) {
+        if ($secStart -ge 0 -and $sg.Off -ge $secStart) { break }     # 只看底图
+        if ($sg.Marker -ne 0xE2 -or $sg.Len -ne 34) { continue }
+        $o = $sg.Off + 4
+        $same = $true
+        for ($k = 0; $k -lt 27; $k++) { if ($b[$o + $k] -ne $urn[$k]) { $same = $false; break } }
+        if (-not $same -or ($b[$o + 27] -ne 0)) { continue }
+        $tail = ''
+        for ($t = 28; $t -lt 32; $t++) { $tail = $tail + ('{0:x2}' -f $b[$o + $t]) }
+        $res.Found = $true; $res.Off = $sg.Off; $res.Len = $sg.Len; $res.Tail = $tail; $res.Why = ''
+        return $res
+    }
+    return $res
+}
+
+# 三档的容器指纹：ISO 命名空间与 hdrgm 命名空间各在**底图/次图**出现几次。
+# 只数"全文件共几次"是不够的——档内两处都可能落在同一张图上。
+function Get-GmMetaFingerprint([string]$path) {
+    $b = [System.IO.File]::ReadAllBytes($path)
+    $walk = Get-JpegSegmentWalk $b
+    $txt = [System.Text.Encoding]::ASCII.GetString($b)
+    $secStart = -1
+    if (@($walk.Starts).Count -ge 2) { $secStart = @($walk.Starts)[1] }
+    $isoBase = 0; $isoSec = 0; $xmpBase = 0; $xmpSec = 0
+    foreach ($pat in @('urn:iso:std:iso:ts:21496:-1')) {
+        $at = 0
+        while ($true) {
+            $j = $txt.IndexOf($pat, $at)
+            if ($j -lt 0) { break }
+            if ($secStart -ge 0 -and $j -ge $secStart) { $isoSec++ } else { $isoBase++ }
+            $at = $j + 1
+        }
+    }
+    foreach ($pat in @('http://ns.adobe.com/hdr-gain-map/1.0/')) {
+        $at = 0
+        while ($true) {
+            $j = $txt.IndexOf($pat, $at)
+            if ($j -lt 0) { break }
+            if ($secStart -ge 0 -and $j -ge $secStart) { $xmpSec++ } else { $xmpBase++ }
+            $at = $j + 1
+        }
+    }
+    # 底图 XMP 自声明的次图长度 vs 实测次图长度（P0-4 加了次图 XMP 后，这个账必须仍然闭合）
+    $declared = ''
+    if ($txt -match 'Item:Length="(\d+)"') { $declared = $Matches[1] }
+    $secActual = 0
+    if ($secStart -ge 0) { $secActual = $b.Length - $secStart }
+    return @{ Images = @($walk.Starts).Count; IsoBase = $isoBase; IsoSec = $isoSec
+              XmpBase = $xmpBase; XmpSec = $xmpSec; DeclaredLen = $declared; ActualLen = $secActual
+              Stub = (Get-BaseIsoStub $b) }
+}
+
+# 变异臂：在原字节里把那根裸桩摘掉（不落盘、不重建），用来证明上面那把尺有牙。
+function Remove-BaseIsoStub([byte[]]$b) {
+    $f = Get-BaseIsoStub $b
+    if (-not $f.Found) { return ,$b }
+    $span = 2 + $f.Len
+    $out = New-Object 'byte[]' ($b.Length - $span)
+    [Array]::Copy($b, 0, $out, 0, $f.Off)
+    [Array]::Copy($b, $f.Off + $span, $out, $f.Off, $b.Length - $f.Off - $span)
+    return ,$out
+}
+
+Write-Host "`n### 1b) 底图带 ISO 21496-1 版本裸桩（规范列为 Required）###" -ForegroundColor Cyan
+if ($e1.file) {
+    $bytes1 = [System.IO.File]::ReadAllBytes($e1.file.FullName)
+    $stub = Get-BaseIsoStub $bytes1
+    CK ($stub.Found) ("①b 默认档(=iso)：底图存在 APP2 ISO 裸桩（段长=34 off=" + $stub.Off + ' 版本双字段=' + $stub.Tail + '）' + $stub.Why)
+    $noStub = Get-BaseIsoStub (Remove-BaseIsoStub $bytes1)
+    CK (-not $noStub.Found) ("①b 反控：把裸桩从字节里摘掉后，同一把尺必须判无（实 Found=" + $noStub.Found + '）')
+    $urnAll = ([regex]::Matches([System.Text.Encoding]::ASCII.GetString($bytes1), 'urn:iso:std:iso:ts:21496:-1')).Count
+    CK ($urnAll -eq 2) ("①b ISO 命名空间恰好 2 处（底图裸桩 + 次图全量），实 " + $urnAll + ' —— 多了是重复插入，少了是某一侧丢了')
+} else { CK $false "①b 无产物，裸桩断言无法进行" }
+
+# ── 1c) 元数据方式三档必须**真的分叉**（iso / xmp / both）───────────────────────
+#   为什么不能只测"读得回"：三档都读得回时，"开关没生效"与"生效了"在探针输出上同形。
+#   ⇒ 打字节指纹：两种命名空间各自落在底图还是次图，外加次图自声明长度的账是否闭合。
+Write-Host "`n### 1c) 元数据方式三档的容器指纹 ###" -ForegroundColor Cyan
+$armIso = RunCli 'meta_iso'  $hdr 'jpg' @('--jpeg-gain-map', 'true', '--jpeg-gain-map-metadata', 'iso')
+$armXmp = RunCli 'meta_xmp'  $hdr 'jpg' @('--jpeg-gain-map', 'true', '--jpeg-gain-map-metadata', 'xmp')
+$armBoth = RunCli 'meta_both' $hdr 'jpg' @('--jpeg-gain-map', 'true', '--jpeg-gain-map-metadata', 'both')
+$armXmpRgb = RunCli 'meta_xmp_rgb' $hdr 'jpg' @('--jpeg-gain-map', 'true', '--jpeg-gain-map-metadata', 'xmp',
+                                             '--jpeg-gain-map-multi-channel', 'true')
+foreach ($a in @(@{ n = 'iso'; r = $armIso }, @{ n = 'xmp'; r = $armXmp }, @{ n = 'both'; r = $armBoth })) {
+    CK ($a.r.code -eq 0 -and $a.r.file) ("①c " + $a.n + " 档正常产出（实得 code=" + $a.r.code + '）')
+}
+# 2026-10-20：Ultra HDR v1.1 的 hdrgm 只有九项，GainMapMin/Max 等参数允许「单个 Real 适用于全部通道」，
+# 参考实现也只拒绝各通道参数**不相同**的 XMP 编码（jpegr.cpp:1120，!are_all_channels_identical）。
+# 本实现的逐通道参数恒相同 ⇒ xmp + RGB 是合法组合，必须产出而不是拒绝。
+CK ($armXmpRgb.code -eq 0 -and $armXmpRgb.file) ("①c xmp + RGB 三通道可产出（实得 code=" + $armXmpRgb.code + '）')
+if ($armIso.file -and $armXmp.file -and $armBoth.file -and $armXmpRgb.file) {
+    $fIso = Get-GmMetaFingerprint $armIso.file.FullName
+    $fXmp = Get-GmMetaFingerprint $armXmp.file.FullName
+    $fBoth = Get-GmMetaFingerprint $armBoth.file.FullName
+    $fXmpRgb = Get-GmMetaFingerprint $armXmpRgb.file.FullName
+    CK ($fIso.IsoBase -eq 1 -and $fIso.IsoSec -eq 1 -and $fIso.XmpBase -eq 0 -and $fIso.XmpSec -eq 0) ("①c iso 档＝底图 1 根 ISO 桩/次图 1 份 ISO 全量、两份 XMP 都不写（实 底ISO=" + $fIso.IsoBase + ' 次ISO=' + $fIso.IsoSec + ' 底XMP=' + $fIso.XmpBase + ' 次XMP=' + $fIso.XmpSec + '）')
+    CK ($fXmp.IsoBase -eq 0 -and $fXmp.IsoSec -eq 0 -and $fXmp.XmpBase -eq 1 -and $fXmp.XmpSec -eq 1) ("①c xmp 档＝两份 XMP（底图+次图）且不写 ISO（实 底ISO=" + $fXmp.IsoBase + ' 次ISO=' + $fXmp.IsoSec + ' 底XMP=' + $fXmp.XmpBase + ' 次XMP=' + $fXmp.XmpSec + '）')
+    CK ($fBoth.IsoBase -eq 1 -and $fBoth.IsoSec -eq 1 -and $fBoth.XmpBase -eq 1 -and $fBoth.XmpSec -eq 1) ("①c both 档＝四种全在（实 底ISO=" + $fBoth.IsoBase + ' 次ISO=' + $fBoth.IsoSec + ' 底XMP=' + $fBoth.XmpBase + ' 次XMP=' + $fBoth.XmpSec + '）')
+    # 三档互不相同 = 开关确实改变产物（若某一档空转，这三条里必有一条相等而判红）
+    CK (($fIso.XmpBase + $fXmp.XmpBase) -eq 1 -and ($fIso.IsoBase + $fXmp.IsoBase) -eq 1) ("①c 反控：iso 与 xmp 两档的**底图**指纹必须相反（实 iso底XMP=" + $fIso.XmpBase + ' xmp底XMP=' + $fXmp.XmpBase + ' / iso底ISO=' + $fIso.IsoBase + ' xmp底ISO=' + $fXmp.IsoBase + '）')
+    # 次图自声明长度 == 实测次图长度（P0-4 之后次图自己多带一段 XMP，这笔账最容易漏）
+    CK ($fBoth.DeclaredLen -eq [string]$fBoth.ActualLen) ("①c both 档：底图 XMP 声明的 Item:Length=" + $fBoth.DeclaredLen + ' 必须等于实测次图 ' + $fBoth.ActualLen + ' 字节')
+    CK ($fXmp.DeclaredLen -eq [string]$fXmp.ActualLen) ("①c xmp 档：同一笔账闭合（声明 " + $fXmp.DeclaredLen + ' vs 实测 ' + $fXmp.ActualLen + '）')
+    CK ($fXmpRgb.IsoBase -eq 0 -and $fXmpRgb.IsoSec -eq 0 -and $fXmpRgb.XmpBase -eq 1 -and $fXmpRgb.XmpSec -eq 1) ("①c xmp+RGB 档＝两份 XMP、不写 ISO（实 底ISO=" + $fXmpRgb.IsoBase + ' 次ISO=' + $fXmpRgb.IsoSec + ' 底XMP=' + $fXmpRgb.XmpBase + ' 次XMP=' + $fXmpRgb.XmpSec + '）')
+    CK ($fXmpRgb.DeclaredLen -eq [string]$fXmpRgb.ActualLen) ("①c xmp+RGB 档：Item:Length 账闭合（声明 " + $fXmpRgb.DeclaredLen + ' vs 实测 ' + $fXmpRgb.ActualLen + '）')
+    CK ($fXmpRgb.Images -eq 2) ("①c xmp+RGB 档仍是两幅图（实 " + $fXmpRgb.Images + '）')
+    # SOF 分量数（结构事实）
+    $bRgb = [System.IO.File]::ReadAllBytes($armXmpRgb.file.FullName)
+    $wRgb = Get-JpegSegmentWalk $bRgb
+    $sRgb = -1; if (@($wRgb.Starts).Count -ge 2) { $sRgb = [int]@($wRgb.Starts)[1] }
+    $nfRgb = Get-JpegSofComponents $bRgb $sRgb
+    $bGray = [System.IO.File]::ReadAllBytes($armXmp.file.FullName)
+    $wGray = Get-JpegSegmentWalk $bGray
+    $sGray = -1; if (@($wGray.Starts).Count -ge 2) { $sGray = [int]@($wGray.Starts)[1] }
+    $nfGray = Get-JpegSofComponents $bGray $sGray
+    # 通道语义的载体分两层：JPEG 恒为 3 分量（灰度也编成 YCbCr，三通道相等）；
+    #   真正的「逐通道增益」要看解码后的数据，SOF 不区分灰/彩。
+    $ffm3 = Join-Path (Split-Path $fp) 'ffmpeg.exe'
+    $secG = "$out/sec_xmp_gray.jpg"; $secC = "$out/sec_xmp_rgb.jpg"
+    $null = ProbeOut 'gainmap' $armXmp.file.FullName $secG
+    $null = ProbeOut 'gainmap' $armXmpRgb.file.FullName $secC
+    $rawG = "$out/sec_xmp_gray.rgb"; $rawC = "$out/sec_xmp_rgb.rgb"
+    Start-Process -FilePath $ffm3 -ArgumentList @('-v', 'error', '-y', '-i', $secG,
+        '-f', 'rawvideo', '-pix_fmt', 'rgb24', $rawG) -NoNewWindow -Wait | Out-Null
+    Start-Process -FilePath $ffm3 -ArgumentList @('-v', 'error', '-y', '-i', $secC,
+        '-f', 'rawvideo', '-pix_fmt', 'rgb24', $rawC) -NoNewWindow -Wait | Out-Null
+    $sprG = Get-ChannelSpread $rawG
+    $sprC = Get-ChannelSpread $rawC
+    CK ($nfGray -eq 3 -and $nfRgb -eq 3) ("①c 增益图 JPEG 恒为 3 分量（实 " + $nfGray + '/' + $nfRgb + '）—— SOF 不区分灰/彩，通道语义在数据里')
+    CK ($sprG.Pixels -gt 1000 -and $sprG.Differ -eq 0) ("①c xmp 单通道臂：增益图逐像素三通道相等（有差像素=" + $sprG.Differ + '/' + $sprG.Pixels + '）')
+    CK ($sprC.Pixels -gt 1000 -and $sprC.Differ -gt [int]($sprC.Pixels / 2)) ("①c xmp+RGB 臂：增益图逐通道数据真的不同（有差像素=" + $sprC.Differ + '/' + $sprC.Pixels + '）⇒ 上一条有判别力')
+    CK ($fBoth.Images -eq 2 -and $fXmp.Images -eq 2 -and $fIso.Images -eq 2) ("①c 三档都是两幅图（实 " + $fIso.Images + '/' + $fXmp.Images + '/' + $fBoth.Images + '）—— 拒绝对外不是"普通 JPEG 改名"')
+} else { CK $false '①c 三档缺产物，指纹判据无法进行' }
 
 Write-Host "`n### 2) 底图与增益图都真实存在（不是「普通 JPEG 改名」）###" -ForegroundColor Cyan
 if ($e1.file) {
@@ -243,12 +443,27 @@ if ($g1.file -and $e1.file) {
     CK ($e1Red -match '^0\.64') "⑤b 默认底：exiftool 读底图 ICC 红原色 == sRGB 0.64（实得「$e1Red」）⇒ 上一条有判别力"
     CK ($g1Red -ne $e1Red -and $g1Red -ne "") "⑤b bt2020 与默认的底图 ICC 色度**不同**（$g1Red vs $e1Red）⇒ bt2020 真改了底图色域"
 } else { CK $false "⑤b 缺产物，无法做 exiftool 色度判别" }
-if ($g2.file -and $e1.file) {
-    $g2ch = ExifTag $g2.file.FullName 'XMP-hdrgm:Channels'
-    $e1ch = ExifTag $e1.file.FullName 'XMP-hdrgm:Channels'
-    CK ($g2ch -eq '3') "⑤b multi-channel：exiftool 读 XMP hdrgm Channels=3（实得「$g2ch」）"
-    CK ($e1ch -eq '1') "⑤b 默认：exiftool 读 XMP hdrgm Channels=1（实得「$e1ch」）⇒ 上一条有判别力"
-} else { CK $false "⑤b 缺产物，无法做 exiftool 通道数判别" }
+# ⚠ 2026-10-20：默认档改成 iso（不再写 XMP）⇒ 原先直接读 `$e1`/`$g2` 的 XMP 标签会恒空。
+#   XMP 侧只测**规范九项**与「自造字段绝迹」；通道数由 §1c 的 SOF Nf 判据表达（hdrgm 没有通道数字段）。
+#   仍为它另起两条 both 档臂，不去改 $e1/$g2 —— 那两条表达的是"默认行为"，改了就把默认值的回归掩盖掉。
+$e1b = RunCli 'e1_both' $hdr 'jpg' @('--jpeg-gain-map', 'true', '--jpeg-gain-map-metadata', 'both')
+$g2b = RunCli 'g2_both' $hdr 'jpg' @('--jpeg-gain-map', 'true', '--jpeg-gain-map-metadata', 'both',
+                                     '--jpeg-gain-map-multi-channel', 'true')
+CK ($e1b.code -eq 0 -and $e1b.file) "⑤b both 档（单通道）正常产出（实得 code=$($e1b.code)）"
+CK ($g2b.code -eq 0 -and $g2b.file) "⑤b both 档（三通道）正常产出（实得 code=$($g2b.code)）"
+if ($g2b.file -and $e1b.file) {
+    # 正控：读尺活着（同一 rdf:Description 里读得到规范字段）
+    $g2max = ExifTag $g2b.file.FullName 'XMP-hdrgm:GainMapMax'
+    CK ($g2max -ne '') ("⑤b 读到规范字段 GainMapMax（读尺正控；实得「" + $g2max + '」）')
+    # 反控/负断言：Ultra HDR v1.1 的 hdrgm 表只有九项 ⇒ 我方曾自造的五个字段必须绝迹
+    $madeUp = @('Channels', 'UseBaseRenderingColorSpace', 'MapPrimary', 'MapSecondary', 'MapImageRatio')
+    $hits = @()
+    foreach ($nm in $madeUp) {
+        $v = ExifTag $g2b.file.FullName ('XMP-hdrgm:' + $nm)
+        if ($v -ne '') { $hits += ($nm + '=' + $v) }
+    }
+    CK ($hits.Count -eq 0) ("⑤b XMP 只含规范九项：自造字段命中 " + $hits.Count + ' 个' + $(if ($hits.Count -gt 0) { '［' + ($hits -join ',') + '］' } else { '' }))
+} else { CK $false "⑤b 缺 both 档产物，无法做 XMP 字段判别" }
 # ⑤b' 像素级判别（比 ICC 更硬）：**SDR 源(bt709)** + base=bt2020 ⇒ 底图**像素真的被转换**，
 #   不是"只改 ICC 标签"。原理：srgb 底走 bt709→bt709（**恒等 ⇒ 无映射**）；bt2020 底走
 #   bt709→bt2020（**真转换**）⇒ 两者的底图像素必然不同。判据 = 用**第三方解码器**（ffmpeg）
@@ -401,17 +616,22 @@ $n1 = RunCli 'icc_noicc' $noicc 'jpg' @('--jpeg-gain-map', 'true')
 CK ($m1.code -eq 0 -and $m1.file) "⑨ 混合件（cICP=PQ + ICC=sRGB）正常产出（实得 code=$($m1.code)）"
 CK ($n1.code -eq 0 -and $n1.file) "⑨ 去 ICC 对照件正常产出（实得 code=$($n1.code)）"
 if ($m1.file) {
-    $mm = ExifTag $m1.file.FullName 'XMP-hdrgm:GainMapMax'
-    # ⚠ 2026-09-20 裁定（**SDR ⇒ 普通 JPEG**）：SDR 输入（headroom ≤ 1）**不写增益图** ⇒ 产物是**普通 JPEG**
-    #   ⇒ `GainMapMax` **为空**。原断言 `-eq '0.00'`（= 假 Ultra HDR）已被该裁定**推翻**，故此处同步改判据。
-    #   ⚠ 判据**不弱化**：由「读到一个 0.00 的标签」改为「**必须没有**增益图标签」+「**必须点名**为何未启用」，
-    #     后者直接证明走的是 SDR 路（比原探针更贴近本格的用意：ICC 判据压过 cICP/ffprobe）。
-    CK ([string]::IsNullOrWhiteSpace($mm)) "⑨ 实测：混合件走 **SDR** 路 ⇒ **不写增益图**（XMP GainMapMax 为空，实得「$mm」）⇒ ICC 判据压过 cICP/ffprobe"
+    # ⚠ 2026-10-20：默认档改成 iso ⇒ 这里**不再读 XMP 标签**（原来读 `XMP-hdrgm:GainMapMax`，
+    #   在默认档下两侧都会变成"空"，那条"SDR ⇒ 标签为空"的判据会退化成恒真）。
+    #   改用**自家探针的 ISO 读数**当同一件事的读数，并用下一条的 2.3 当它的对照臂 ⇒ 判别力不变。
+    $p9m = ProbeOut 'gainmap' $m1.file.FullName "$out/sec9m.jpg"
+    $mmIso = ''
+    if ($p9m -match 'iso min=([^\r\n]*)') { $mmIso = $Matches[1].Trim() }
+    $mmMax = ''
+    if ($mmIso -match 'max=([-0-9.]+)') { $mmMax = $Matches[1] }
+    CK ($mmMax -eq '') "⑨ 实测：混合件走 **SDR** 路 ⇒ 产物里没有 ISO 增益区间（实得「$mmIso」）⇒ ICC 判据压过 cICP/ffprobe"
     CK ($m1.log -match '输入为 SDR') "⑨ 实测：日志**点名**「输入为 SDR…已按普通 JPEG 输出」（可用性诚实，非静默降级）"
 } else { CK $false "⑨ 混合件无产物" }
 if ($n1.file) {
-    $nn = ExifTag $n1.file.FullName 'XMP-hdrgm:GainMapMax'
-    CK ($nn -eq '2.30') "⑨ 对照：去 ICC 后走 **HDR** 路（XMP GainMapMax=$nn）⇒ 唯一变量 ICC 决定了分类"
+    $p9n = ProbeOut 'gainmap' $n1.file.FullName "$out/sec9n.jpg"
+    $nnMax = ''
+    if ($p9n -match 'iso min=[^\r\n]*max=([-0-9.]+)') { $nnMax = $Matches[1] }
+    CK ($nnMax -eq '2.3') "⑨ 对照：去 ICC 后走 **HDR** 路（ISO 声明 max=$nnMax，上一条因此不是恒真）⇒ 唯一变量 ICC 决定了分类"
 } else { CK $false "⑨ 对照件无产物" }
 if ($m1.file -and $n1.file) {
     $mIso = ProbeOut 'gainmap' $m1.file.FullName "$out/sec9.jpg"

@@ -386,6 +386,7 @@ public static class RawColorPipeline
                 baseQuality: baseDist, gainMapQuality: gmDist,
                 downsample: Math.Max(options.JpegGainMapDownsample, 1),
                 baseGamut: options.JpegGainMapBaseGamut,
+                gainMapMetadata: options.JpegGainMapMetadata,
                 sourcePrimaries: ep.SrcPrim,
                 log: log, ct: ct,
                 jpegProgressiveLevel: gmProgLv,

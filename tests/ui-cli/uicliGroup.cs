@@ -136,6 +136,7 @@ namespace Tests.UiCli
                     { "color-engine",            "bogus" },
                     { "color-gamut-map",         "bogus" },
                     { "jpeg-gain-map-base-gamut","bogus" },
+                    { "jpeg-gain-map-metadata",  "isoo" },
                     { "bit-depth",               "banana" },
                     { "threads",                 "abc" },
                     { "lossless",                "yes-please" },
@@ -179,6 +180,13 @@ namespace Tests.UiCli
                     ok &= applyOpts("color-engine", "LEGACY").ColorEngine == "legacy";
                     ok &= applyOpts("color-gamut-map", "ON").ColorGamutMap == "on";
                     ok &= applyOpts("jpeg-gain-map-base-gamut", "BT2020").JpegGainMapBaseGamut == "bt2020";
+                    // 元数据方式：三档全部合法取值 + 大小写归一 + 两个别名（2026-10-20 新增轴）
+                    ok &= applyOpts("jpeg-gain-map-metadata", "iso").JpegGainMapMetadata == "iso";
+                    ok &= applyOpts("jpeg-gain-map-metadata", "XMP").JpegGainMapMetadata == "xmp";
+                    ok &= applyOpts("jpeg-gain-map-metadata", "Dual").JpegGainMapMetadata == "both";
+                    ok &= applyOpts("jpeg-gain-map-metadata", "21496").JpegGainMapMetadata == "iso";
+                    // 默认必须是 iso（不是 both）—— 这条就是"默认值改了"这件事的锁
+                    ok &= new FfmpegGui.Models.FfmpegOptions().JpegGainMapMetadata == "iso";
                     // ── 2026-09-19（裁决第 2 项：严格化）正控：6 个新收口轴的**全部**合法取值 ──
                     // ⚠ 本段同时是「**分层语义**」的守卫：`4:4:4`（chroma）与 `bt2390`（tone-map）都是
                     //   「**能识别但本管线不支持**」⇒ 必须被 CLI **接受**、由引擎层响亮拒绝

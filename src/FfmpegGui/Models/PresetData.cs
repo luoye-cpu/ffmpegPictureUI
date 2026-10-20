@@ -53,6 +53,8 @@ namespace FfmpegGui.Models
         public int JpegGainMapDownsample { get; set; } = 2;
         /// <summary>底图色域（均为 SDR 底）："srgb"(默认) / "bt2020"(Rec.2020 广色域底)</summary>
         public string? JpegGainMapBaseGamut { get; set; }
+        /// <summary>元数据标记方式："iso"(默认) / "xmp" / "both"；null 按 "iso" 处理</summary>
+        public string? JpegGainMapMetadata { get; set; }
         // ── 编码器后端选择 ──
         /// <summary>编码器后端名称: Ffmpeg/Cjpegli/Cjxl/Ultrahdr/Jxr</summary>
         public string? EncoderBackend { get; set; }

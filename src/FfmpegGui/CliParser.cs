@@ -915,6 +915,18 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
                     case "jpeg-gain-map-target-nits": options.JpegGainMapTargetNits = ParseIntStrict(key, value); break;
                     case "jpeg-gain-map-downsample": options.JpegGainMapDownsample = ParseIntStrict(key, value); break;
                     case "jpeg-gain-map-multi-channel": options.JpegGainMapMultiChannel = ParseBoolStrict(key, value); break;
+                    case "jpeg-gain-map-metadata":
+                        // 元数据标记方式：iso(默认，只写 ISO 21496-1) | xmp(只写 hdrgm XMP，兼容旧栈) | both
+                        // 组合合法性（xmp 配 RGB 三通道无法声明）不在这里判 —— 由
+                        // `GainMapEncoder.ValidateGainMapMetadata` 单点裁决，避免两份口径。
+                        options.JpegGainMapMetadata = value.Trim().ToLowerInvariant() switch
+                        {
+                            "iso" or "21496" => "iso",
+                            "xmp" or "hdrgm" => "xmp",
+                            "both" or "dual" => "both",
+                            _ => throw BadValue(key, value, "支持 iso | xmp | both"),
+                        };
+                        break;
                     // 厂商增益图（`local.hdr.*`）参数覆盖：这三个数来自无公开规范的 144 B 块，
                     // 留覆盖位是为了「拿到规范/样机后不改代码就能校准」。非法值不拒（只警告并回落实测值）。
                     case "vendor-gm-min": options.VendorGmMin = ParseFloatStrict(key, value); break;
