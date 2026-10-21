@@ -402,6 +402,59 @@ if ($env:GMMEM_HEAVY -eq '1') {
     Write-Output "SKIP G 准入门压力臂未跑（G-1 要起进程、G-2 要吃十几 GB）⇒ 显式 GMMEM_HEAVY=1 才跑；**不是**通过"
 }
 
+# ── 断言 H：无头裸流的**帧长溢出**必须在分配前被显式拒绝（2026-10-21 新增，**源形锁**）──
+# 缺陷形状（同一轮管道审查第 6 项）：`int pixelCount = w * h` 在超大尺寸下回绕。
+#   回绕成**负数**时下游 `ArrayPool.Rent` / `new T[]` 会响亮抛（实测 ArgumentOutOfRangeException /
+#   OverflowException）；回绕成**正数**时缓冲只是变小、循环只是少跑 ⇒ 交出一张小图而不自知。
+#   ⚠ 这三处**造不出真实夹具**（需 > 5.36 亿像素 = EncodeAsync 分支的 `int.MaxValue/4` 上限）⇒
+#     本组只做**源形锁**：断言"按 long 量 + 点名拒绝"的形态在，**行为未实机验**（不记绿、也不冒充读数）。
+#   ⚠ 牙齿限度：把 `(long)` 改回 `int` 对小图行为零变化 ⇒ 这条锁**没有行为牙**，它防的是形态回退。
+$gmSrc = "$root/src/FfmpegGui/Services/GainMapEncoder.cs"
+$qSrc  = "$root/src/FfmpegGui/Services/QueueProcessor.cs"
+$hChecks = @(
+    @{ id='H-1'; file=$gmSrc; name='GainMapEncoder 入口'; prod='long pixelCountCheck = (long)w * h;'; guard='pixelCountCheck > int.MaxValue / 4L'; reject='超出 int 索引可承载上限' },
+    @{ id='H-2'; file=$qSrc;  name='QueueProcessor 增益图回退路'; prod='long pixelCountLong = (long)width * height;'; guard='pixelCountLong > int.MaxValue'; reject='失败 (帧长溢出，已拒绝)' },
+    @{ id='H-3'; file=$qSrc;  name='Radiance HDR 转换'; prod='long expectedSize = (long)width * height * 4L;'; guard='expectedSize > int.MaxValue'; reject='帧长超出单缓冲上限' }
+)
+foreach ($h in $hChecks) {
+    if (-not (Test-Path $h.file)) {
+        $fail++; Write-Output ("  FAIL {0} 找不到 {1} ⇒ 无法核对帧长守卫（文件搬走也要有人知道）" -f $h.id, $h.file)
+        continue
+    }
+    $txt = Get-Content $h.file -Raw
+    $hasProd = $txt.Contains($h.prod); $hasGuard = $txt.Contains($h.guard); $hasReject = $txt.Contains($h.reject)
+    if ($hasProd -and $hasGuard -and $hasReject) {
+        $pass++; Write-Output ("  PASS {0} {1}：按 long 量积 + 上限判定 + 点名拒绝三者齐" -f $h.id, $h.name)
+    } else {
+        $fail++; Write-Output ("  FAIL {0} {1}：long 乘积={2} / 上限判定={3} / 点名拒绝={4} ⇒ 回绕会静默成小图" -f $h.id, $h.name, $hasProd, $hasGuard, $hasReject)
+    }
+}
+# H-4：GainMapEncoder 内 `int pixelCount = w * h` 仍是 **4 处**（本批口径是"在入口兜住、不改这四处"）。
+#   数量漂移（有人悄悄改掉一两处 / 又加了一处）⇒ 这条锁点名的覆盖范围就变了，必须先重判再改数。
+$nPc = ([regex]::Matches((Get-Content $gmSrc -Raw), 'int pixelCount = w \* h;')).Count
+if ($nPc -eq 4) { $pass++; Write-Output "  PASS H-4 GainMapEncoder 的 int 像素数站点仍为 4 处（入口守卫的覆盖范围未漂移）" }
+else { $fail++; Write-Output ("  FAIL H-4 GainMapEncoder 的 int 像素数站点实测 {0} 处（登记口径 4）⇒ 入口守卫的覆盖声明要重判" -f $nPc) }
+# H-5 正控：同一套 Contains/正则读法必须在一个**已知存在**的串上命中一次 ⇒ 否则 H-1..H-4 的"缺席"
+#   可能只是读不到文件/编码不对（本仓「缺席断言先做正控」）。
+if ((Get-Content $qSrc -Raw).Contains('MemoryAdmission.WaitAsync(')) {
+    $pass++; Write-Output "  PASS H-5 正控：同一读法在 QueueProcessor 命中已知存在的 MemoryAdmission.WaitAsync("
+} else {
+    $fail++; Write-Output "  FAIL H-5 正控失败：连已知存在的 MemoryAdmission.WaitAsync( 都读不到 ⇒ H-1..H-3 的缺席断言不可信"
+}
+
+# H-6 **动态**自证（不只是源形锁）：走 ServiceProbe 的 `framelen` 臂在**进程内**调
+#   `GainMapEncoder.EncodeAsync(new float[1], 65536, 65536, …)`。守卫在任何分配/工具检查之前 ⇒
+#   不需要 5.36 亿像素的夹具也能走到它。判别器：旧实现 `int 65536*65536` 回绕成 **0**，日志里
+#   既无「帧长」也无 4294967296，且会先打出「参数」行（实发条数 >1）。
+$flg = (& $prb 'framelen') 2>&1 | Out-String
+$mF = [regex]::Match($flg, 'PROBE RESULT: pass=(\d+) fail=(\d+)')
+if ($mF.Success -and [int]$mF.Groups[2].Value -eq 0 -and [int]$mF.Groups[1].Value -ge 4) {
+    $pass++; Write-Output ("  PASS H-6 帧长守卫**动态**自证 {0}/{1}（超大声明的帧被拒 + 按 long 点名 4294967296 + 只发一条拒绝）" -f [int]$mF.Groups[1].Value, [int]$mF.Groups[1].Value)
+} else {
+    $fail++; Write-Output ("  FAIL H-6 帧长守卫动态自证不过（读数={0}）⇒ 守卫没在分配之前拦住，或乘积不是 long" -f $mF.Value)
+    ($flg -split "`r?`n" | Where-Object { $_ -match '^FAIL' }) | ForEach-Object { Write-Output ("      " + $_) }
+}
+
 Write-Output "`n===== PASS=$pass FAIL=$fail SKIP=$skip ====="
 # 成功即清理本次工作目录；失败则**有意**保留供排查（这是设计，不是漏）。
 # ⚠ 2026-10-13 更正本注释的旧说法：原文写「沙箱会拦截 Remove-Item -Recurse 并静默失败 ⇒ 累积、

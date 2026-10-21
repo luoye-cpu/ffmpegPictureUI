@@ -176,6 +176,8 @@ namespace ServiceProbe
                     case "bench": ProbeBench(args); break;
                     // memadmit [pressure] —— 大缓冲准入门的自证（见方法注释；由 verify-gainmap-memory.ps1 调用）
                     case "memadmit": ProbeMemAdmit(args); break;
+                    // framelen —— GainMapEncoder 入口**帧长守卫**的动态自证（由 verify-gainmap-memory.ps1 调用）
+                    case "framelen": ProbeFrameLengthGuard().GetAwaiter().GetResult(); break;
                     case "xcheck": ProbeXcheck(args).GetAwaiter().GetResult(); break;
                     default:
                         Console.WriteLine($"unknown command: {args[0]}");
@@ -7982,6 +7984,41 @@ namespace ServiceProbe
                     $"② 拟合 {mp:F2}MP ⇒ 估 {est:F0}MB vs 实测 {measured:F1}MB（偏差 {dev:P1}，上限 15%）");
             }
             Console.WriteLine($"  ADMIT availMB={avail:F0} totalMB={total:F0} load={load}");
+        }
+
+        /// <summary>
+        /// framelen —— <c>GainMapEncoder.EncodeAsync</c> 的**帧长守卫**动态自证（2026-10-21 复核后补）。
+        /// <para>为什么必须动态测：那三处守卫要 &gt;5.36 亿像素才触发，**造不出真实夹具**；但入口守卫位于
+        ///   任何分配与外部工具检查**之前**，所以「1 个元素的输入 + 声明 65536×65536」就能走到它。</para>
+        /// <para>判别器（修复前后真的分叉，不是"看着合理"）：修复前 `int 65536*65536` **回绕成 0**
+        ///   ⇒ 守卫不存在，函数继续往下打印参数行并以空缓冲继续跑，日志里既没有「帧长」也不会出现
+        ///   4294967296；修复后**立刻**返回 false，且只发一条把 long 真乘积点名的拒绝行。</para>
+        /// </summary>
+        private static async Task ProbeFrameLengthGuard()
+        {
+            var logs = new System.Collections.Generic.List<string>();
+            bool ok;
+            try
+            {
+                ok = await FfmpegGui.Services.GainMapEncoder.EncodeAsync(
+                    new float[1], 65536, 65536,
+                    System.IO.Path.Combine(System.IO.Path.GetTempPath(), "framelen_probe.jpg"),
+                    log: s => logs.Add(s));
+            }
+            catch (Exception ex)
+            {
+                Check(false, $"P-1 守卫必须早于一切分配 ⇒ 不得抛异常（实抛 {ex.GetType().Name}: {ex.Message}）");
+                return;
+            }
+            string all = string.Concat(logs);
+            Check(!ok, "P-1 超大声明帧长 ⇒ 返回 false（不是把回绕后的 0 像素当「空图」继续跑）");
+            Check(all.Contains("帧长") && all.Contains("65536x65536"),
+                $"P-2 拒绝原因点名尺寸（65536x65536；实发 {logs.Count} 条）");
+            Check(all.Contains("4294967296"),
+                "P-3 乘积按 **long** 计算（4294967296）；int 回绕成 0 的旧实现永远不会出现这句");
+            Check(logs.Count == 1,
+                $"P-4 守卫在**第一步**就返回（实发 {logs.Count} 条；先打「参数」行说明没拦住）");
+            Console.WriteLine("  FRAMELEN lines=" + logs.Count);
         }
 
         /// <summary>

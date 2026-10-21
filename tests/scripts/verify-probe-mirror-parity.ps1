@@ -73,7 +73,7 @@ $counts = [ordered]@{
     'engine' = 20; 'faithful' = 10; 'firstframe' = 15; 'gainmap' = 6; 'gainmap-isobmff' = 12
     'gamut' = 2; 'gamutfit' = 19; 'geometry' = 43; 'hlgwire' = 3; 'i18n' = 5
     'icc' = 5; 'icc-dump' = 0; 'iccname' = 9; 'ipc' = 13; 'ipc-client' = 2
-    'ipc-raw-client' = 4; 'ipc-server' = 0; 'ipc-submit' = 3; 'matrix' = 13; 'memadmit' = 7
+    'ipc-raw-client' = 4; 'ipc-server' = 0; 'ipc-submit' = 3; 'matrix' = 13; 'memadmit' = 7; 'framelen' = 5
     'metaraw' = 20; 'oog' = 7; 'ootf' = 11; 'orientmeta' = 11; 'orientation' = 19
     'peak' = 8; 'peakmeasure' = 14; 'piperaw-client' = 5; 'piperaw-server' = 0; 'plan' = 18
     'png3' = 1; 'pq' = 5; 'procstreams' = 3; 'psnr' = 2; 'runner' = 8

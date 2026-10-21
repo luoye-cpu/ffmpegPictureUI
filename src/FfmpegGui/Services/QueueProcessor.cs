@@ -2834,7 +2834,20 @@ namespace FfmpegGui.Services
                 PlatformServices.MarkAsTemporaryFile(rawPath);
 
                 // Step 3: 读取像素 (gbrpf32le planar: G/B/R 三平面) → RGBA 交错
-                int pixelCount = width * height;
+                // ⚠ 乘积必须走 long（2026-10-21 审查）：`int pixelCount = width*height` 在超大尺寸下**回绕成负**，
+                //   而下面那道长度自检是 `rawBytes.Length < pixelCount * 3L * 4L` —— 右边变负 ⇒ 恒假 ⇒ 守卫被架空，
+                //   截断/半截的裸流会被当成完整帧继续切像素。TIFF/SPEX 类容器报 65535x65535 是可达的形状，
+                //   所以这里既要不回绕、也要**明确拒绝**超出可索引范围的帧（不做"悄悄按小图处理"）。
+                long pixelCountLong = (long)width * height;
+                if (pixelCountLong > int.MaxValue)
+                {
+                    item.Log += $"[GainMap] ❌ 尺寸 {width}x{height} 的帧长 {pixelCountLong} 超出可索引上限(int.MaxValue) ⇒ 拒绝（不回绕成负数后按小图处理）\n";
+                    _onItemUpdated?.Invoke(item);
+                    item.ExitCode = -1;
+                    item.Status = "失败 (帧长溢出，已拒绝)";
+                    return;
+                }
+                int pixelCount = (int)pixelCountLong;
                 // 准入门（2026-10-12）：本条**回退管线**同样按整帧驻留（RAW 12B/px + RGBA 16B/px +
                 // GainMapEncoder 三份 float[pixelCount*4]，实测 8K 单任务峰值 3363MB）。
                 // 只给引擎出口（RawColorPipeline）装门而这里不装 ⇒「--color-engine legacy」或
@@ -2947,13 +2960,35 @@ namespace FfmpegGui.Services
 
                 // ── 常规输入：ffmpeg 解码 → BMP/TIFF ──
                 {
-                    int bitDepth = item.Options.BitDepth ?? await ProbeBitDepthAsync(item.InputPath, ffmpegPath,
+                    // ⚠ 浮点档必须**先于**整数位深规则判：`gbrapf32le`/`rgbaf32le` 只含 "32"、旧规则会落到
+                    //   「都不是 16/48/64/12 ⇒ 8-bit」，于是 `isHdr=false` ⇒ 载体选 `bgr24` BMP ⇒ 线性浮点源的
+                    //   >1.0 余量在 swscale 处被**静默**截成 8-bit（2026-10-21 实测：64×48 PFM 峰值 2.5 走
+                    //   `--color-engine legacy -f jxr`，日志自称「检测位深: 8-bit, 像素格式: bgr24」）。
+                    var (probedDepth, srcIsFloatPixFmt) = await ProbeBitDepthAsync(item.InputPath, ffmpegPath,
                         s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ct);
+                    int bitDepth = item.Options.BitDepth ?? probedDepth;
                     isHdr = bitDepth > 8;
-                    var intermediateExt = isHdr ? ".tiff" : ".bmp";
+                    // ⚠ alpha 必须一起探（2026-10-21 管道审查）：旧写法只看位深 ⇒ 8-bit 源恒 `bgr24` BMP，
+                    //   透明源被**静默**拍平，而引擎出口的 JXR 分支是带 alpha 第二输入的 ⇒ 同一出口两套口径。
+                    var srcHasAlpha = FfmpegCommandBuilder.ProbeInputColorMetadata(item.InputPath,
+                        s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ct).hasAlpha;
+                    var intermediateExt = (isHdr || srcHasAlpha) ? ".tiff" : ".bmp";
                     intermediatePath = Path.Combine(tempDir, $"input{intermediateExt}");
-                    var pixFmt = isHdr ? "rgb48le" : "bgr24";
-                    item.Log += $"[jxr] 检测位深: {bitDepth}-bit, 像素格式: {pixFmt}\n";
+                    var pixFmt = (isHdr, srcHasAlpha) switch
+                    {
+                        (true, true) => "rgba64le",
+                        (true, false) => "rgb48le",
+                        (false, true) => "rgba",
+                        _ => "bgr24",
+                    };
+                    item.Log += $"[jxr] 检测位深: {bitDepth}-bit, alpha: {(srcHasAlpha ? "有" : "无")}, 像素格式: {pixFmt}\n";
+                    if (srcIsFloatPixFmt)
+                    {
+                        // ⚠ 中文串必须**整行**落在 `item.Log +=` 这个 sink 上：折行会让续行不含 sink，
+                        //   被 `_probe-cjk-hardcode-scan` 计进「UI 面文案」桶（本文件 :383 登记过同因漂移）。
+                        item.Log += "[jxr] ⚠ 源像素格式是**浮点**（含 >1.0 余量），本出口只能落整数载体 ⇒ 高光在 1.0 处钳位。\n";
+                        item.Log += "[jxr]   要保住头程请走色彩引擎（`--color-tone-map reinhard|bt2446a`）或 JXL/PFM 出口\n";
+                    }
 
                     item.Log += $"[jxr] Step 1: ffmpeg 解码为 {intermediateExt.ToUpper()}（{pixFmt}）...\n";
                     _onItemUpdated?.Invoke(item);
@@ -2975,7 +3010,10 @@ namespace FfmpegGui.Services
                     var jxrDeclMatrix = ColorSpaceRegistry.ToFfmpegInputMatrixName(jxrDecision.DeclMatrix);
                     if (jxrDeclMatrix != null)
                         colorArgs += $"-colorspace {jxrDeclMatrix} ";
-                    var tiffExtra = isHdr ? " -compression_algo raw -pred none" : "";
+                    // ⚠ 判据必须挂在**载体是不是 TIFF**上，不是 isHdr：JxrEncApp 拒收压缩 TIFF
+                    //   （ffmpeg 默认给 16-bit/RGBA TIFF 写 259=32773 Adobe Deflate ⇒ rc=-106），
+                    //   带 alpha 的 8-bit 源现在也走 .tiff 载体，沿用 isHdr 会漏掉这两个旗标。
+                    var tiffExtra = intermediateExt == ".tiff" ? " -compression_algo raw -pred none" : "";
 
                     // 无标签 >8bit 一律**不猜**：旧口径「仅 RAW 来源才做 Rec.2020→sRGB 的 HDR 猜测(P9)」此前
                     // 已在 2026-09-18 被实测证伪为不可达（RAW 在上游被 dngtool 预解码成 `*_raw.tiff` 并注入
@@ -3103,26 +3141,44 @@ namespace FfmpegGui.Services
             }
         }
 
-        /// <summary>将 HDR 色彩元数据写入 JXR（JxrEncApp 不支持色彩配置，最佳努力写入 EXIF/XMP）</summary>
+        /// <summary>
+        /// 将 HDR 色彩元数据写入 JXR（JxrEncApp 不支持嵌入色彩配置，只能后置 EXIF）。
+        /// <para>⚠ 描述必须由**探测到的传递特性**决定（2026-10-21 管道审查确证）：本出口的 `isHdr` 判据
+        ///   只是"位深 &gt; 8"，16-bit 线性 scRGB、HLG、逐位深 SDR 源都会走进来，旧写法无条件写
+        ///   `ImageDescription="HDR Rec.2100 PQ"` 是**假标签**，日志还宣称"HDR 元数据已写入"。
+        ///   认不出 PQ/HLG 就**不写描述**（宁缺不假），只保留 ColorSpace 并点名为什么没写。</para>
+        /// </summary>
         private async Task WriteJxrHdrMetadataAsync(QueueItem item, string outputPath, CancellationToken ct = default)
         {
             if (!ExifToolService.IsAvailable) return;
             try
             {
-                item.Log += "[jxr] 写入 HDR 色彩元数据...\n";
+                var meta = FfmpegCommandBuilder.ProbeInputColorMetadata(item.InputPath,
+                    s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ct);
+                var trc = (meta.colorTrc ?? "").Trim().ToLowerInvariant();
+                string desc = trc switch
+                {
+                    "smpte2084" or "pq" => "HDR Rec.2100 PQ",
+                    "arib-std-b67" or "hlg" => "HDR Rec.2100 HLG",
+                    _ => "",
+                };
+
+                // ⚠ 中文串整行挂在 `item.Log +=` 上（折行/三元续行不含 sink ⇒ 被 cjk 棘轮计进 UI 桶，见 :383）
+                var trcShown = trc.Length == 0 ? "无" : trc;
+                if (desc.Length > 0) item.Log += $"[jxr] 写入 HDR 色彩元数据（探测到 trc={trcShown} ⇒ 描述 {desc}）...\n";
+                if (desc.Length == 0) item.Log += $"[jxr] ⚠ 未探测到 PQ/HLG 传递特性（trc={trcShown}）⇒ 不写 HDR 描述，避免把 HLG/线性浮点/SDR 源标成 Rec.2100 PQ\n";
                 _onItemUpdated?.Invoke(item);
 
                 var args = $"-overwrite_original -m " +
                     $"-EXIF:ColorSpace=Uncalibrated " +
-                    $"-EXIF:ImageDescription=\"HDR Rec.2100 PQ\" " +
+                    (desc.Length > 0 ? $"-EXIF:ImageDescription=\"{desc}\" " : "") +
                     $"\"{outputPath}\"";
 
                 var exit = await ExifToolService.RunRawAsync(args,
                     s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ct);
-                if (exit == 0)
-                    item.Log += "[jxr] HDR 元数据已写入 (Uncalibrated + Rec.2100 PQ 描述)\n";
-                else
-                    item.Log += $"[jxr] ⚠️ HDR 元数据写入警告 (退出码 {exit})\n";
+                if (exit == 0 && desc.Length > 0) item.Log += $"[jxr] HDR 元数据已写入 (Uncalibrated + {desc})\n";
+                if (exit == 0 && desc.Length == 0) item.Log += "[jxr] 元数据已写入 (仅 Uncalibrated，未写 HDR 描述)\n";
+                if (exit != 0) item.Log += $"[jxr] ⚠️ HDR 元数据写入警告 (退出码 {exit})\n";
             }
             catch (Exception ex)
             {
@@ -3139,7 +3195,15 @@ namespace FfmpegGui.Services
             try
             {
                 var rawBytes = await File.ReadAllBytesAsync(rawPath);
-                var expectedSize = width * height * 4;
+                // 位深/尺寸探测给的 w,h 相乘可以超出 int：`width * height * 4` 一旦回绕成负数，
+                // 下面的 `rawBytes.Length < expectedSize` 就恒不成立（负数永远小于文件长度），
+                // 于是拿回绕后的行偏移去读数组 —— 这是静默读错，不是报错。先按 long 量一次并拒绝。
+                long expectedSize = (long)width * height * 4L;
+                if (expectedSize > int.MaxValue)
+                {
+                    logCallback?.Invoke($"[jxr-hdr] 帧长超出单缓冲上限 ({width}x{height})，已拒绝而非静默回绕\n");
+                    return null;
+                }
                 if (rawBytes.Length < expectedSize)
                 {
                     logCallback?.Invoke($"[jxr-hdr] RAW size mismatch: {rawBytes.Length} vs {expectedSize}\n");
@@ -3157,7 +3221,7 @@ namespace FfmpegGui.Services
                 var rgbeRow = new byte[width * 4];
                 for (int y = 0; y < height; y++)
                 {
-                    int rowOffset = y * width * 4;
+                    int rowOffset = (int)((long)y * width * 4L);
                     for (int x = 0; x < width; x++)
                     {
                         int i = rowOffset + x * 4;
@@ -3384,10 +3448,14 @@ namespace FfmpegGui.Services
             return fmt is "jpg" or "jpeg" or "jpegli";
         }
 
-        /// <summary>用 ffprobe 探测输入文件的位深</summary>
+        /// <summary>
+        /// 用 ffprobe 探测输入文件的位深。<b>第二个返回值 = 该像素格式是不是浮点</b>
+        /// （`*f16*`/`*f32*`）——浮点档带着 >1.0 的余量，整数位深规则对它无意义，调用方据此必须
+        /// 点名"整数载体会在 1.0 处钳位"（2026-10-21 实测的静默削顶就是这么来的）。
+        /// </summary>
         /// <param name="log">日志回调（取消分支点名用；null ⇒ 退回 Trace.WriteLine）</param>
         /// <param name="ct">取消令牌（`#26`：调用方一直持有它却没往下传，本次接通）</param>
-        private static async Task<int> ProbeBitDepthAsync(string inputPath, string ffmpegPath,
+        private static async Task<(int bitDepth, bool isFloatPixFmt)> ProbeBitDepthAsync(string inputPath, string ffmpegPath,
             Action<string>? log = null, CancellationToken ct = default)
         {
             try
@@ -3408,7 +3476,7 @@ namespace FfmpegGui.Services
                     CreateNoWindow = true
                 };
                 using var p = Process.Start(psi);
-                if (p == null) return 8;
+                if (p == null) return (8, false);
                 // `#26`：本方法原本**没有任何超时**；本次只接上调用方的取消令牌 ⇒ 取消即杀树，
                 // 按既有兜底返回 8（**不新增超时**，不扩大本次范围）。
                 using var reg = ct.Register(() => { try { p.Kill(entireProcessTree: true); } catch { } });
@@ -3418,20 +3486,15 @@ namespace FfmpegGui.Services
                 {
                     var msg = $"[probe] 位深探测被取消 ⇒ 已终止：{Path.GetFileName(inputPath)}（按 8bit 处理）";
                     if (log != null) log(msg + "\n"); else System.Diagnostics.Trace.WriteLine(msg);
-                    return 8;
+                    return (8, false);
                 }
 
-                // 从像素格式推断位深
-                return output switch
-                {
-                    string s when s.Contains("16") || s.Contains("48") || s.Contains("64") => 16,
-                    string s when s.Contains("12") => 12,
-                    string s when s.Contains("10") => 10,
-                    string s when s.Contains("p010") || s.Contains("p012") => 10,
-                    _ => 8
-                };
+                // 从像素格式推断位深：**委托给仓内唯一口径**（原本这里自带一套 Contains 规则，
+                // 会把 `gbrapf32le` 判成 8-bit、把 `yuv410p` 判成 10-bit ⇒ 浮点源的 >1.0 余量被静默削掉）。
+                return (FfmpegCommandBuilder.ParseBitDepthFromPixFmt(output),
+                        FfmpegCommandBuilder.IsFloatPixFmt(output));
             }
-            catch { return 8; }
+            catch { return (8, false); }
         }
 
         /// <summary>
@@ -3896,7 +3959,19 @@ namespace FfmpegGui.Services
                 if (!hasAlpha && alphaArgs != null)
                 {
                     item.Log += $"[cmd] ffmpeg {alphaArgs}\n";
-                    await FfmpegRunner.RunAsync(alphaArgs, s => { }, AppSettingsService.Current.FfmpegPath, ct);
+                    var alphaExit = await FfmpegRunner.RunAsync(alphaArgs, s => { item.Log += s; }, AppSettingsService.Current.FfmpegPath, ct);
+                    hasAlpha = Directory.GetFiles(tempDir, "a_*.png").Length > 0;
+                    // alpha 流是**计划内**的（alphaArgs 非空），"子跑失败"与"源真的没有 alpha"是两回事。
+                    // 旧写法把返回值整个丢掉 ⇒ 两者都落进 hasAlpha=false，于是一张该带透明的图
+                    // 以「已完成」交出不透明版本（本仓忌讳的静默降级）。
+                    if (alphaExit != 0 && !hasAlpha)
+                    {
+                        item.ExitCode = alphaExit;
+                        item.Status = $"失败 (alpha 流解码退出码 {alphaExit}，颜色流已解出，但不静默丢透明)";
+                        return;
+                    }
+                    if (alphaExit != 0)
+                        item.Log += $"[avif→{fmt}] ⚠ alpha 子跑退出码 {alphaExit}，但帧已解出 ⇒ 继续\n";
                 }
                 hasAlpha = Directory.GetFiles(tempDir, "a_*.png").Length > 0;
 
@@ -3904,6 +3979,10 @@ namespace FfmpegGui.Services
                 item.Log += $"[avif→{fmt}]   颜色 {colorFiles.Length} 帧, alpha {(hasAlpha ? "有" : "无")}\n";
 
                 var fps = item.Options.AnimationFps ?? 33;
+                // 这一出口的 Step1 用 `-fps_mode passthrough` 抽帧、Step2 用 `-framerate {fps}` 恒定帧率
+                // 重建 ⇒ 源的不均延时同样被抹平（与 gif→avif 同一类），必须同样点名。
+                // 本出口不对质量设自设下限（webp 走 `-q:v` 原值）⇒ applied==requested，质量那行天然静默。
+                await AnnounceAnimationOverridesAsync(item, $"avif→{fmt}", fps, item.Options.Quality, item.Options.Quality, ct);
                 string encodeArgs;
 
                 if (fmt == "gif")
@@ -4017,8 +4096,9 @@ namespace FfmpegGui.Services
                 item.Log += "[gif→avif] Step2: avifenc 编码...\n";
                 _onItemUpdated?.Invoke(item);
 
-                var fps = item.Options.AnimationFps ?? 33; // 默认 33fps（接近原始 GIF）
-                var quality = Math.Max(20, Math.Min(100, item.Options.Quality)); // avifenc -q 范围 0-100
+                var fps = item.Options.AnimationFps ?? 33; // 恒定帧率；33 只是既有默认值，**不是**"接近原始 GIF"的实测结论
+                var quality = Math.Max(20, Math.Min(100, item.Options.Quality)); // 20 是本仓下限（avifenc 实测支持 0..100）
+                await AnnounceAnimationOverridesAsync(item, "gif→avif", fps, item.Options.Quality, quality, ct);
                 var speed = Math.Clamp(item.Options.AvifCpuUsed ?? 5, 0, 10);
                 // ⚠ P7h（实测）：avifenc 1.4.2 在 `-j 1` 且**帧数 ≥4** 时段错误（0xC0000005 / 退出码 -1073741819），
                 //   与 alpha 平面、--repetition-count 均无关；-j 2/4/8 或不传 -j 全部正常。
@@ -4357,7 +4437,11 @@ namespace FfmpegGui.Services
             if (string.IsNullOrEmpty(jxrDecPath))
             {
                 item.Log += "[jxr] JxrDecApp.exe 未检测到，无法解码 JXR 文件\n";
-                item.Log += "[jxr] FFmpeg 不支持 JXR 格式，请将 JxrDecApp.exe 放入 PLAN/artifacts/ 目录\n";
+                // ⚠ 措辞更正（2026-10-21 实测）：本工具链的 ffmpeg **有** libjxr 解码腿（`-decoders | grep libjxr`），
+                //   但它把 planar alpha 塌成 0（真值恒 1.0）、且不施加 scRGB→sRGB（左上 255/106/90 vs WIC 255/172/160），
+                //   swscale 又不收 rgbaf32le 作源 ⇒ 拿它当替代腿会**静默改色改 alpha**，比不出片更坏。
+                //   所以这里仍要 JxrDecApp，但理由不是"ffmpeg 不支持 JXR"。
+                item.Log += "[jxr] 请把 JxrDecApp.exe 放入 PLAN/artifacts/（ffmpeg 的 libjxr 解码腿会丢 planar alpha 且不转 scRGB，不作替代）\n";
                 item.ExitCode = -1;
                 item.Status = "失败 (JXR 解码器不可用)";
                 return;
@@ -4371,11 +4455,27 @@ namespace FfmpegGui.Services
 
             try
             {
-                // Step 1: JxrDecApp 解码 JXR → BMP/TIF
+                // Step 1: JxrDecApp 解码 JXR → BMP/TIF/PAM
                 // 注意: JxrDecApp 的 BMP 写入器仅支持 ≤32bpp 常规格式 (24bpp/32bppBGRA/8bit灰度等)。
                 // NVIDIA 等工具导出的 HDR JXR (128bppRGBAFloat scRGB) 无法输出 BMP → 自动回退
                 // "TIF + -c 0" (24bppRGB)，补丁版 JxrDecApp 内置 scRGB→sRGB 转换 (Convert_Float_To_U8)。
-                var intermediatePath = Path.Combine(tempDir, "decoded.bmp");
+                //
+                // ⚠ 2026-10-21：上面那段回退**只对 128bppRGBAFloat 一档成立**。实测 Xbox Game DVR 的
+                //   2560×1600 JXR 是 4×16bit IEEE 半浮点（线性 scRGB）+ planar alpha，而 jxrlib 的
+                //   转换表里 `64bppRGBAHalf` 只有 →32bppRGBA / →128bppRGBAFloat 两条出边 ⇒ BMP 臂撞
+                //   `JXRTestBmp.c` 的 WriteBMPHeader 尾支、`-c 0` 臂撞 `JXRGluePFC.c:2291`，**两臂同报
+                //   WMP_errUnsupportedFormat(-106)**；旧日志那句「scRGB→sRGB 转换完成」在该通路上
+                //   压根没调转换函数（属误导，本批一并撤）。⇒ 先走高位深直通臂，失败才回旧两臂。
+                var (highPrecisionPath, hpChannels) = await TryJxrHighPrecisionAsync(item, jxrDecPath, tempDir, ct);
+                string intermediatePath;
+
+                if (highPrecisionPath != null)
+                {
+                    intermediatePath = highPrecisionPath;
+                }
+                else
+                {
+                intermediatePath = Path.Combine(tempDir, "decoded.bmp");
                 item.Log += "[jxr] Step 1: JxrDecApp 解码 JXR → BMP...\n";
                 _onItemUpdated?.Invoke(item);
 
@@ -4387,8 +4487,10 @@ namespace FfmpegGui.Services
                 if (decExit != 0 || !File.Exists(intermediatePath))
                 {
                     // BMP 输出失败（典型：高位深 / float 像素格式，如 NVIDIA HDR 截图 128bppRGBAFloat）
-                    // -c 0 输出 8-bit sRGB TIF（BMP 扩展名会把目标映射为 BGR 导致转换表缺失，故用 TIF）
-                    item.Log += $"[jxr]   BMP 输出不支持该像素格式 (退出码 {decExit})，回退 TIF + -c 0 (8-bit sRGB)...\n";
+                    // -c 0 输出 24bppRGB TIF（BMP 扩展名会把目标映射为 BGR 导致转换表缺失，故用 TIF）
+                    // ⚠ 该臂**不覆盖** 64bpp 系（半浮点/16-bit 整数 RGBA）：它们没有 →24bppRGB 的表条目，
+                    //   由上面的高位深直通臂承担；这里留作 48bppRGB / 128bppRGBAFloat 一档的既有通路。
+                    item.Log += $"[jxr]   BMP 输出不支持该像素格式 (退出码 {decExit})，回退 TIF + -c 0...\n";
                     _onItemUpdated?.Invoke(item);
                     intermediatePath = Path.Combine(tempDir, "decoded.tif");
                     decArgs = $"-i \"{item.InputPath}\" -o \"{intermediatePath}\" -c 0";
@@ -4402,7 +4504,10 @@ namespace FfmpegGui.Services
                         item.Status = $"失败 (JxrDecApp 退出码 {decExit})";
                         return;
                     }
-                    item.Log += "[jxr]   TIF 解码成功 (scRGB→sRGB 转换完成)\n";
+                    // 措辞按实测收紧：`-c 0` 只有在源是 128bppRGBAFloat 时才会真的过 Convert_Float_To_U8；
+                    // 其余档（如 24bppRGB）本就没有传递函数可做 ⇒ 不再声称"转换完成"。
+                    item.Log += "[jxr]   TIF 解码成功 (-c 0 出口档；是否内含 scRGB→sRGB 由源格式决定)\n";
+                }
                 }
                 var intermediateSize = new FileInfo(intermediatePath).Length;
                 item.Log += $"[jxr]   解码完成: {intermediateSize / 1024}KB {Path.GetExtension(intermediatePath).TrimStart('.').ToUpperInvariant()}\n";
@@ -4485,11 +4590,40 @@ namespace FfmpegGui.Services
                 }
                 else if (useJxrEnc)
                 {
+                    // 高位深中间件（PAM）与 JxrEncApp 之间补一跳"封装"，**不改投 ffmpeg 的 libjxr**。
+                    // 依据（本机实测）：JxrEncApp 拒收的不是"16-bit TIFF"，而是**压缩 TIFF**——ffmpeg 默认
+                    //   给 16-bit TIFF 写 `259 Compression=32773`（Adobe Deflate）⇒ rc=-106；带上
+                    //   `-compression_algo raw -pred none`（⇒ 259=1）后 16-bit RGB/RGBA TIFF 正常 rc=0，
+                    //   产物 exiftool 回读 `64-bit RGBA`、WIC 与 JxrDecApp 都能解 ⇒ 16-bit 保到出口。
+                    //   而 ffmpeg 的 libjxr **零条私有 AVOption**（实测 `-h encoder=libjxr` 只列像素格式、
+                    //   七种质量旗标产物逐字节相同）⇒ 走它会把用户的质量/无损**静默吞掉**，不是等价替代。
+                    //   （JxrEncApp 的质量轴实测有效：同一张图 q35/q75/q100 = 10856/4533/1991 B。）
+                    string jxrEncInput = intermediatePath;
+                    if (intermediatePath.EndsWith(".pam", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var pix = hpChannels == 4 ? "rgba64le" : "rgb48le";
+                        jxrEncInput = Path.Combine(tempDir, hpChannels == 4 ? "encode_rgba.tiff" : "encode_rgb.tiff");
+                        var wrapArgs = $"-y -i \"{intermediatePath}\" -pix_fmt {pix} -compression_algo raw -pred none \"{jxrEncInput}\"";
+                        item.Log += $"[jxr] Step 2a: 16-bit PAM → 未压缩 {pix} TIFF（JxrEncApp 只吃未压缩 BMP/TIFF）...\n";
+                        item.Command = "ffmpeg " + wrapArgs;
+                        _onItemUpdated?.Invoke(item);
+                        var wrapExit = await FfmpegRunner.RunAsync(wrapArgs,
+                            s => { item.Log += s; _onItemUpdated?.Invoke(item); },
+                            AppSettingsService.Current.FfmpegPath, ct);
+                        if (wrapExit != 0 || !File.Exists(jxrEncInput))
+                        {
+                            // 显式失败，不悄悄改投 libjxr（那会把质量/无损吞掉，正是本仓忌讳的静默降级）
+                            item.ExitCode = wrapExit;
+                            item.Status = $"失败 (PAM→未压缩 TIFF 封装退出码 {wrapExit})";
+                            return;
+                        }
+                    }
+
                     // ── JXR → JXR：重新编码（可调整质量/无损）──
                     item.Log += "[jxr] Step 2: JxrEncApp 重新编码 → JXR...\n";
                     _onItemUpdated?.Invoke(item);
                     var quality = item.Options.Lossless ? 1.0 : item.Options.Quality / 100.0;
-                    var encArgs = JxrService.BuildArguments(intermediatePath, outputPath, quality);
+                    var encArgs = JxrService.BuildArguments(jxrEncInput, outputPath, quality);
                     item.Command = "JxrEncApp " + encArgs;
                     var encExit = await JxrService.RunAsync(encArgs,
                         s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ct);
@@ -4531,6 +4665,222 @@ namespace FfmpegGui.Services
             finally
             {
                 try { Directory.Delete(tempDir, true); } catch { }
+            }
+        }
+
+        /// <summary>
+        /// JXR 高位深直通臂：JxrDecApp 出「与源同格式」的 TIFF → 托管读取 → sRGB 编码（可选 Reinhard）
+        /// → 16-bit PAM。返回 <c>(null, 0)</c> 表示本臂不适用，调用方原样回退到 BMP / `-c 0` 两臂。
+        /// 为什么必须有这一层、以及各前提的实测依据，见 <see cref="JxrHighPrecisionDecode"/>。
+        /// </summary>
+        private async Task<(string? pamPath, int channels)> TryJxrHighPrecisionAsync(
+            QueueItem item, string jxrDecPath, string tempDir, CancellationToken ct)
+        {
+            // ① 选臂依据 = ffmpeg/libjxr 报出的 pix_fmt（实测三档互不相同：bgr24 / rgba64le / rgbaf16le）。
+            //    它是**提示**而非前提：探不到、或不是高位档 ⇒ 本臂不适用，既有行为逐字不变。
+            var ffprobe = PlatformServices.ResolveFfprobePath(AppSettingsService.Current.FfmpegPath);
+            string? pixFmt = null;
+            if (!string.IsNullOrEmpty(ffprobe) && File.Exists(ffprobe))
+            {
+                var (stdout, fail) = await RunFfprobeWithWatchdogAsync(ffprobe,
+                    $"-v error -select_streams v:0 -show_entries stream=pix_fmt -of csv=p=0 \"{item.InputPath}\"",
+                    10, ct);
+                if (fail == null) pixFmt = stdout.Trim();
+                else item.Log += $"[jxr]   源格式探测未成（{fail}）⇒ 高位深直通臂不适用\n";
+            }
+            else
+            {
+                item.Log += "[jxr]   无 ffprobe ⇒ 高位深直通臂不适用\n";
+            }
+
+            var arm = JxrHighPrecisionDecode.ChoosePassthroughArm(pixFmt);
+            if (arm == null)
+            {
+                item.Log += $"[jxr]   源 pix_fmt={(string.IsNullOrWhiteSpace(pixFmt) ? "未知" : pixFmt)} 不是高位深直通档 ⇒ 走既有 BMP/-c 0 通路\n";
+                return (null, 0);
+            }
+
+            // ② 直通取帧：from==to ⇒ 不查 jxrlib 转换表 ⇒ 不会撞 -106，也不会在 jxrlib 里偷偷钳位。
+            var tifPath = Path.Combine(tempDir, $"decoded_hp{arm}.tif");
+            var hpArgs = $"-i \"{item.InputPath}\" -o \"{tifPath}\" -c {arm}";
+            item.Log += $"[jxr] Step 1(高位深直通): pix_fmt={pixFmt} → JxrDecApp -c {arm}（与源同格式，零转换）\n";
+            item.Command = $"JxrDecApp {hpArgs}";
+            _onItemUpdated?.Invoke(item);
+            var hpExit = await RunJxrDecAppAsync(jxrDecPath, hpArgs,
+                s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ct);
+            if (hpExit != 0 || !File.Exists(tifPath))
+            {
+                item.Log += $"[jxr]   直通臂退出码 {hpExit} ⇒ 回既有 BMP/-c 0 通路\n";
+                return (null, 0);
+            }
+
+            if (!JxrHighPrecisionDecode.TryReadTiff(tifPath, out var frame, out var readErr) || frame == null)
+            {
+                item.Log += $"[jxr]   ❌ 高位 TIFF 拒读：{readErr} ⇒ 回既有 BMP/-c 0 通路\n";
+                return (null, 0);
+            }
+
+            // ③ tone-map 选择：本通路只认既有的 `reinhard`（它按线性 RGBA 交错实现）。
+            //    其余算子的语义是 PQ/HLG，吃线性 scRGB 是错的 ⇒ 按「选项未生效必须点名」的规矩播报。
+            var tm = (item.Options.ColorToneMap ?? "none").Trim().ToLowerInvariant();
+            bool useReinhard = tm == "reinhard";
+            if (!useReinhard && tm.Length > 0 && tm != "none")
+                item.Log += $"[jxr] ⚠ 源是线性 scRGB 浮点，`--color-tone-map {tm}` 是 PQ/HLG 域算子 ⇒ 本通路**不消费**该选项（未生效）\n";
+            if (useReinhard && !JxrHighPrecisionDecode.CanToneMap(frame))
+            {
+                item.Log += "[jxr] ⚠ 3 通道浮点帧不满足 Reinhard 算子的 RGBA 交错前提 ⇒ 本帧改走钳位出口\n";
+                useReinhard = false;
+            }
+            // 整数档（-c 23/10）的样本是**已编码值**，Reinhard 的线性域前提不成立 ⇒ 不允许在
+            // `map=` 读数里冒充"映射过"（否则门禁与用户看到的都是假话）。
+            if (useReinhard && frame.Kind == JxrSampleKind.UInt16)
+            {
+                item.Log += "[jxr] ⚠ 源是 16-bit **整数**档（已是编码值）⇒ Reinhard 的线性域前提不成立，本帧按原值搬运（选项未生效）\n";
+                useReinhard = false;
+            }
+
+            var pamPath = Path.Combine(tempDir, "decoded.pam");
+            JxrFrameStats st;
+            try
+            {
+                st = JxrHighPrecisionDecode.EncodeToPam16(frame, pamPath, useReinhard);
+            }
+            catch (Exception ex)
+            {
+                item.Log += $"[jxr]   ❌ 高位帧映射异常（{ex.GetType().Name}: {ex.Message}）⇒ 回既有 BMP/-c 0 通路\n";
+                return (null, 0);
+            }
+            if (!File.Exists(pamPath) || new FileInfo(pamPath).Length == 0)
+            {
+                item.Log += "[jxr]   ❌ 16-bit PAM 未产出 ⇒ 回既有 BMP/-c 0 通路\n";
+                return (null, 0);
+            }
+            PlatformServices.MarkAsTemporaryFile(pamPath);
+
+            // ④ 读数播报。`HP-METRICS` 那一行是**给门禁吃的 ASCII 键值缝**（判据不靠中文散文匹配），
+            //    数字与中文行同源同一次计算 ⇒ 门禁验的就是用户看到的那份数。
+            item.Log += $"[jxr]   高位帧 {frame.Width}x{frame.Height}/{frame.Channels}ch 类型={frame.Kind} " +
+                        $"→ 16-bit PAM（{new FileInfo(pamPath).Length / 1024}KB）\n";
+            item.Log += "[jxr]   HP-METRICS"
+                      + $" size={frame.Width}x{frame.Height}"
+                      + $" channels={frame.Channels}"
+                      + $" kind={frame.Kind}"
+                      + $" arm={arm.Value}"
+                      + $" peak={st.Peak.ToString("F4", System.Globalization.CultureInfo.InvariantCulture)}"
+                      + $" overWhite={st.OverWhite}/{st.RgbSampleCount}"
+                      + $" alphaMin={st.AlphaMin.ToString("F3", System.Globalization.CultureInfo.InvariantCulture)}"
+                      + $" alphaMax={st.AlphaMax.ToString("F3", System.Globalization.CultureInfo.InvariantCulture)}"
+                      + $" map={(frame.Kind == JxrSampleKind.UInt16 ? "int-copy" : (useReinhard ? "reinhard" : "srgb-clamp"))}\n";
+            if (st.OverWhite > 0 && !useReinhard)
+                item.Log += "[jxr] ⚠ 未请求色调映射 ⇒ 高光在 1.0 处钳位（与 Windows 显示同口径）；要保高光请 `--color-tone-map reinhard`\n";
+            if (frame.Channels == 4 && st.AlphaMin < 0.999f)
+                item.Log += "[jxr] 注: 源 alpha 非恒定 ⇒ 已由 PAM 的 RGB_ALPHA 载体带到出口（出口容器能不能装 alpha 由既有能力层判）\n";
+            return (pamPath, frame.Channels);
+        }
+
+        /// <summary>
+        /// 源逐帧时长探测：返回相邻帧 pts_time 差值的 (min, max) 与帧数（末帧无后继 ⇒ 不计入差值）。
+        /// <para>只用 <c>frame=pts_time</c>：本构建的 <c>pkt_duration_time</c> /
+        ///   <c>best_effort_duration_time</c> 实测**为空**（2026-10-21，4 帧 GIF 上验），拿它们做判据会得到
+        ///   "零时长"的假读数。</para>
+        /// <para>⚠ **不得写死 <c>v:0</c>**（与 P7e 的 <c>-map 0:2</c> 同一类坑，2026-10-21 实测）：
+        ///   本工具链 avifenc 产的 3 帧 AVIF 有 4 条流，<c>index=0</c> 是**只有 1 帧**的主图，动画在
+        ///   <c>index=2</c>（<c>nb_frames=3</c>）⇒ 探 v:0 只会拿到 1 个时间戳并把"时长不均"洗成"无延时可抹平"
+        ///   （假绿）。故选**帧数最多的那条流**；GIF/APNG 只有一条流 ⇒ 与旧写法等价，零行为变化。</para>
+        /// <para>探测失败 ⇒ frames = <c>-1</c>（调用方必须报"未判定"）；单帧 ⇒ frames &lt; 2（本就无延时可抹平）。</para>
+        /// </summary>
+        private static async Task<(double minMs, double maxMs, int frames)> ProbeFrameDelaysAsync(
+            string path, string ffprobe, CancellationToken ct)
+        {
+            // 候选流：按 nb_frames 降序（N/A 记 -1 ⇒ 排最后）
+            var candidates = new List<int>();
+            long maxClaimedFrames = -1;
+            var (listOut, listFail) = await RunFfprobeWithWatchdogAsync(ffprobe,
+                "-v error -select_streams v -show_entries stream=index,nb_frames -of csv=p=0 " + $"\"{path}\"", 10, ct);
+            if (listFail == null)
+            {
+                var ordered = new List<(int idx, long frames)>();
+                foreach (var raw in listOut.Split('\n'))
+                {
+                    var parts = raw.Trim().Split(',');
+                    if (parts.Length != 2) continue;
+                    if (!int.TryParse(parts[0], out var idx)) continue;
+                    if (!long.TryParse(parts[1].Trim(), out var nf)) nf = -1;
+                    ordered.Add((idx, nf));
+                    if (nf > maxClaimedFrames) maxClaimedFrames = nf;
+                }
+                candidates.AddRange(ordered.OrderByDescending(o => o.frames).Select(o => o.idx));
+            }
+            if (candidates.Count == 0) candidates.Add(0);   // 退路：探不到流清单时按老写法取首流
+
+            bool anyProbeRan = false;
+            foreach (var streamIdx in candidates.Take(4))
+            {
+                var (stdout, fail) = await RunFfprobeWithWatchdogAsync(ffprobe,
+                    $"-v error -select_streams {streamIdx} -show_entries frame=pts_time -of csv=p=0 \"{path}\"", 10, ct);
+                if (fail != null) continue;
+                anyProbeRan = true;
+
+                var stamps = new List<double>();
+                foreach (var raw in stdout.Split('\n'))
+                {
+                    var s = raw.Trim();
+                    if (s.Length == 0) continue;
+                    if (double.TryParse(s, System.Globalization.NumberStyles.Float,
+                            System.Globalization.CultureInfo.InvariantCulture, out var sec))
+                        stamps.Add(sec * 1000.0);
+                }
+                if (stamps.Count < 2) continue;   // 该流只解出主图/单帧 ⇒ 换下一条候选
+
+                double min = double.MaxValue, max = 0;
+                for (int i = 1; i < stamps.Count; i++)
+                {
+                    var d = stamps[i] - stamps[i - 1];
+                    if (d <= 0) continue;
+                    if (d < min) min = d;
+                    if (d > max) max = d;
+                }
+                return (min == double.MaxValue ? 0 : min, max, stamps.Count);
+            }
+            // 所有候选都只给出 <2 个时间戳。此处**不能**一律当"单帧"：只有清单**明确**说 1 帧
+            // （maxClaimedFrames == 1）才敢静默；清单说 ≥2 帧或压根读不到帧数（N/A/-1）= **探测瞎** ⇒ 未判定。
+            if (!anyProbeRan) return (0, 0, -1);
+            return maxClaimedFrames == 1 ? (0, 0, 1) : (0, 0, -1);
+        }
+
+        /// <summary>
+        /// 动画出口的两条**自我设定覆盖**必须点名（沿用本文件 `-j 1 段错误规避` 的既有形状）：
+        /// ① 出口只会用**恒定帧率**重建，源若不均匀延时会被抹平（实测 3 帧 GIF 的 120/480/200ms
+        ///   经 gif→avif 后全部变成 1/33s，日志此前一字未提）；
+        /// ② 质量下限 20 是**本仓自设**——实测 avifenc `-q` 合法范围 0..100，不是编码器限制。
+        /// 用户显式给了 <c>--animation-fps</c> 时 ①不再播报（那是他选的恒定值）；②只在真的被抬时播报。
+        /// 本函数**不改变行为**，只把已经发生的降级说清楚（政策：能不拒绝就不拒绝，但代价必须可见）。
+        /// </summary>
+        private async Task AnnounceAnimationOverridesAsync(QueueItem item, string label, double fps,
+            int requestedQuality, int appliedQuality, CancellationToken ct)
+        {
+            if (appliedQuality != requestedQuality)
+                item.Log += $"[{label}] ⚠ 质量 {requestedQuality} 被抬到 {appliedQuality}（本仓自设下限，实测 avifenc -q 合法范围 0..100 ⇒ 不是编码器限制）\n";
+            if (item.Options.AnimationFps.HasValue) return;
+
+            var ffprobe = PlatformServices.ResolveFfprobePath(AppSettingsService.Current.FfmpegPath);
+            if (string.IsNullOrEmpty(ffprobe) || !File.Exists(ffprobe))
+            {
+                item.Log += $"[{label}] ⚠ 无 ffprobe ⇒ 无法判定源逐帧时长是否被恒定 {fps:F0}fps 抹平（未判定，不当作已保留）\n";
+                _onItemUpdated?.Invoke(item);
+                return;
+            }
+            var (minMs, maxMs, frames) = await ProbeFrameDelaysAsync(item.InputPath, ffprobe, ct);
+            if (frames < 0)
+            {
+                item.Log += $"[{label}] ⚠ 源逐帧时长探测失败 ⇒ 恒定 {fps:F0}fps 是否抹平延时属未判定（不当作已保留）\n";
+                _onItemUpdated?.Invoke(item);
+                return;
+            }
+            if (frames >= 2 && maxMs > 0 && maxMs > minMs * 1.25 + 1)
+            {
+                item.Log += $"[{label}] ⚠ 源逐帧时长不均（实测 {minMs:F0}..{maxMs:F0}ms，探测到 {frames} 帧），本出口按恒定 {fps:F0}fps 重建 ⇒ 延时被抹平；恒定帧率是本出口的现有能力边界，非逐帧保真\n";
+                _onItemUpdated?.Invoke(item);
             }
         }
 
@@ -4660,7 +5010,17 @@ namespace FfmpegGui.Services
 
                 await djLogTask; await cjLogTask; await cjOutTask;
 
-                var exitCode = procCj.HasExited ? procCj.ExitCode : -1;
+                // ⚠ 读侧退出码参与判定，但**只采信 djxl 自己退出的非 0**：写侧先收尾（正常路径）时 pump
+                //   报 EPIPE ⇒ transferError 非空 ⇒ 是我们把读侧杀的 ⇒ 它的 rc 必然非 0，把它算成失败
+                //   会把所有正常 JXL 转换洗成红（本仓既有实测教训：判据要按操作数来源收窄）。
+                //   真·解码失败（坏 JXL）时 pump 只看到 EOF、不报错，写侧可能拿截断 stdin 产出并退 0
+                //   ⇒ 这条判据抓的正是那种"已完成但内容不完整"。
+                var djxlSelfExited = procDj.HasExited && transferError == null && !ct.IsCancellationRequested;
+                var djxlExit = djxlSelfExited ? procDj.ExitCode : 0;
+                if (djxlExit != 0)
+                    item.Log += $"[pipe] ❌ 读侧 djxl 自行以退出码 {djxlExit} 结束 ⇒ 整条管道判失败（不采信写侧的 0）\n";
+                var exitCode = djxlExit != 0 ? djxlExit
+                             : (procCj.HasExited ? procCj.ExitCode : -1);
                 // ⚠ 判据必须含 `transferError == null`：只认 cjxl 退出码，会在一截**半截流**上判成功
                 //（cjxl 收到被截断的 PNM 也可能以 0 退出）。与 `PipeFfmpegToExternalEncoderAsync`
                 //  和 `JxlPipelineService` 同一条成功契约。
@@ -4968,10 +5328,16 @@ namespace FfmpegGui.Services
                     item.Log += $"[pipe] ffmpeg 退出码 0，但管道传输失败 ⇒ 判失败、不恢复元数据（半截流产出的文件不能当成功）：{transferError.Message}\n";
                     ffExitCode = -1;
                 }
+                // 读侧自判（与 `PipeDjxlToCjxlAsync` 同一条契约）：只采信 djxl **自己**退出的非 0
+                // （transferError 非空那类是写侧先收尾、我们杀读侧的正常路径，不算它的错）。
+                var djxlSelf = procDj.HasExited && transferError == null && !linkedToken.IsCancellationRequested;
+                var djxlExit = djxlSelf ? procDj.ExitCode : 0;
+                if (djxlExit != 0)
+                    item.Log += $"[pipe] ❌ 读侧 djxl 自行以退出码 {djxlExit} 结束 ⇒ 判失败（不采信写侧的 0）\n";
                 // 成功判据与另外三条管道**同一条契约**（`transferError == null` 出现在正向条件里，
                 // 由 `verify-color-wiring.ps1 (10h)` 逐站点比对）：只认进程退出码，会在一截半截流上判成功。
-                var pipeOk = (ffExitCode == 0 && transferError == null);
-                item.ExitCode = ffExitCode;
+                var pipeOk = (ffExitCode == 0 && transferError == null && djxlExit == 0);
+                item.ExitCode = djxlExit != 0 ? djxlExit : ffExitCode;
                 item.Status = pipeOk ? "已完成 (djxl→ffmpeg 管道)" : $"失败 (ffmpeg 退出码 {ffExitCode})";
                 if (pipeOk) await RestoreMetadataAsync(item, outputPath);
             }

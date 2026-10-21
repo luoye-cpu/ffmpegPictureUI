@@ -67,6 +67,10 @@ namespace Tests.Shared
                 //   它的调用者是**在册**门禁（起 `$sp` = ServiceProbe.exe，stdout 喂给 §3b 两条 CK）
                 //   ⇒ 按「有调用点就必须进账」的规矩并进本组，而不是留在 #69 的豁免表里。
                 "memadmit", "tonemapcurve", "color",
+                // 2026-10-21 ⑨ 再次开口：`framelen` 由 `verify-gainmap-memory.ps1` 的 H-6 **每轮执行**
+                // （进程内调 `GainMapEncoder.EncodeAsync` 的帧长守卫）⇒ 按「有调用点就必须进账」并进本组，
+                // 不进任何豁免表。它不读外部工具、不落盘（守卫在第一步返回），所以没有夹具依赖。
+                "framelen",
             },
 
             // ── 编码参数与产物 / 元数据与 ICC / 增益图与 Ultra HDR / 进程与 IPC ──

@@ -97,6 +97,24 @@ namespace FfmpegGui.Services
             return (byte)Math.Clamp(MathF.Round(s * 255f), 0, 255);
         }
 
+        /// <summary>
+        /// 标量 线性 → sRGB **16-bit** 编码。与 <see cref="FloatToSrgb8Scalar"/> **共用同一组曲线常数**
+        /// （<see cref="SrgbLinearThreshold"/>/<see cref="SrgbLinearSlope"/>/<see cref="SrgbA"/>/
+        /// <see cref="SrgbB"/>/<see cref="SrgbGamma"/>），不留第二份 sRGB 定义。
+        /// <para>
+        /// 调用方 = JXR 高位深通路（scRGB 线性浮点 → 16-bit 编码中间件）。本函数**只**做编码与钳位：
+        /// &gt;1.0 的越界量必须先由调用方映射（钳位次数由调用方统计并播报），否则钳位是静默的。
+        /// </para>
+        /// </summary>
+        public static ushort FloatToSrgb16Scalar(float v)
+        {
+            if (v <= 0f) return 0;
+            float s = v <= SrgbLinearThreshold
+                ? SrgbLinearSlope * v
+                : SrgbA * MathF.Pow(v, SrgbGamma) - SrgbB;
+            return (ushort)Math.Clamp(MathF.Round(Math.Clamp(s, 0f, 1f) * 65535f), 0, 65535);
+        }
+
         /// <summary>AVX2: 8 路 float，log2/exp2 用 LUT 查表 + 线性插值</summary>
         private static unsafe void FloatToSrgb8Avx2(Span<float> src, Span<byte> dst)
         {

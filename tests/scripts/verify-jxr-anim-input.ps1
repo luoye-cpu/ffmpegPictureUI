@@ -110,6 +110,18 @@ function ExecOut([string]$file, [string]$argStr, [string]$tag) {
   return @{ code = $p.ExitCode; text = $t }
 }
 
+# 交付形态 → 解码码（**按产物实测现推**，不拿表里的硬编码值冒充实测；码表逐字取自 JxrDecApp usage）。
+# ⚠ 2026-10-21 上移到本节之前：② 也要用同一份推导（legacy JXR 出口现在会探 alpha 并选
+#   rgba/rgba64le 载体，透明源的交付从 24-bit BGR 变 32-bit BGRA ⇒ 硬编码 `-c 0` 必然假红）。
+#   （`JxrPixelFormat` 早已在本文件上方定义，② 直接复用，不留第二份。）
+function JxrDecodeCode([string]$pf) {
+  if ($pf -match '24-bit BGR')  { return '0' }
+  if ($pf -match '48-bit RGB')  { return '10' }
+  if ($pf -match '32-bit BGRA') { return '22' }
+  if ($pf -match '64-bit RGBA') { return '23' }
+  return ''
+}
+
 # 真实帧数：ffprobe `-count_frames`（**不用**日志里的 `frame=` 字段：本工程已实测不可靠）。
 # ⚠ 只认**整行就是数字**的输出行：ffprobe 报错会带上含数字的路径（GUID 目录名）⇒ 宽松匹配会假绿。
 # ⚠ 取数用 `ExecOut` 的理由（实测 laneB）：ffprobe 的 csv 值**全在 stdout**、本机 ffprobe 的 stderr 在
@@ -238,13 +250,13 @@ $cases = @(
   #   解码码必须是 `-c 0`（用 `-c 23` 会 exit=-106 假红）。
   #   ⚠ 这正是 B2 的**预期行为**（引擎按单帧处理会丢帧）—— 本门禁**不再**要求动画输入走引擎出口。
   @{ src = $animW; name = "anim.webp(10帧)";        eng = "auto";   tag = "p_auto_animwebp";    cdec = "0" },
-  @{ src = $animA; name = "anim_alpha.apng(10帧)";  eng = "legacy"; tag = "p_legacy_animalpha"; cdec = "0" },
+  @{ src = $animA; name = "anim_alpha.apng(10帧)";  eng = "legacy"; tag = "p_legacy_animalpha"; cdec = "0"; wantAlpha = $true },
   # ⚠ `.apng` 被 `IsAnimated` 判定为动画 ⇒ `ColorEngineRouter` 的 BlockReason=AnimatedInput ⇒
   #   **auto 也走 legacy**（实测日志：`本次由 外部编码器 Jxr 处理，色彩引擎尚未接入该路径`）
   #   ⇒ 该格的中转是 24bppBGR（无 alpha 平面），解码码必须是 `-c 0`（用 `-c 23` 会 exit=-106 假红）。
   #   ⚠ 站点 B（引擎 alpha 分支）的覆盖**不再**由动画输入承担 —— 见下面 ② 的「真空绿守卫」，
   #     它的载体已换成**静态带 alpha** 输入（`single_alpha.png`）。
-  @{ src = $animA; name = "anim_alpha.apng(10帧)";  eng = "auto";   tag = "p_auto_animalpha";   cdec = "0" }
+  @{ src = $animA; name = "anim_alpha.apng(10帧)";  eng = "auto";   tag = "p_auto_animalpha";   cdec = "0"; wantAlpha = $true }
 )
 foreach ($c in $cases) {
   $outdir = "$work/$($c.tag)"
@@ -252,15 +264,26 @@ foreach ($c in $cases) {
   if ($c.eng -eq "legacy") { $extra = " --color-engine legacy" }
   $r = Exec $exe ('--headless --log-level debug -i "' + $c.src + '" -o "' + $outdir + '" --format jxr' + $extra) "run_$($c.tag)"
   $p = Product $outdir @(".jxr")
-  $dec = $false
-  if ($null -ne $p) { $dec = JxrDec $p.FullName "$work/_back_$($c.tag).tif" $c.cdec }
+  # 解码码按**产物实测形态**现推（表里的 cdec 只作回退值）：legacy JXR 出口自 2026-10-21 起会探 alpha，
+  # 这些动画源的交付从 `24-bit BGR` 变成 `32-bit BGRA` ⇒ 拿硬编码 `-c 0` 去解必然 -106 假红。
+  $dec = $false; $pfJ = ""; $code = $c.cdec
+  if ($null -ne $p) {
+    $pfJ = JxrPixelFormat $p.FullName
+    $derived = JxrDecodeCode $pfJ
+    if ($derived -ne '') { $code = $derived }
+    $dec = JxrDec $p.FullName "$work/_back_$($c.tag).tif" $code
+  }
   $nWrite = ([regex]::Matches($r.text, 'Cannot write more than one file')).Count
-  Write-Host ("  [{0} → jxr / {1}] exit={2} 产物={3} 可解={4} 缺陷签名(Cannot write…)=x{5}" -f `
-    $c.name, $c.eng, $r.code, $(if ($null -ne $p) { $p.Name + ':' + $p.Length + 'B' } else { "(无)" }), $dec, $nWrite)
+  Write-Host ("  [{0} → jxr / {1}] exit={2} 产物={3} 形态=「{4}」 解码码={5} 可解={6} 缺陷签名(Cannot write…)=x{7}" -f `
+    $c.name, $c.eng, $r.code, $(if ($null -ne $p) { $p.Name + ':' + $p.Length + 'B' } else { "(无)" }), $pfJ, $code, $dec, $nWrite)
   CK ($r.code -eq 0) "② $($c.name) → jxr/$($c.eng)：exit == 0（实 $($r.code)）"
   CK ($null -ne $p) "② $($c.name) → jxr/$($c.eng)：**有产物**（不是 0 个）"
-  CK $dec "② $($c.name) → jxr/$($c.eng)：**独立解码器 JxrDecApp 能解出产物**（第三方证明是真 JXR）"
+  CK $dec "② $($c.name) → jxr/$($c.eng)：**独立解码器 JxrDecApp 能解出产物**（第三方证明是真 JXR，解码码按形态现推）"
   CK ($nWrite -eq 0) "② $($c.name) → jxr/$($c.eng)：日志里**没有** `image2` 固定文件名的缺陷签名（实 x$nWrite）"
+  CK ($pfJ.Length -gt 0) "② $($c.name) → jxr/$($c.eng)：exiftool 回读到交付形态「$pfJ」（判据不吃命令行）"
+  if ($c.wantAlpha) {
+    CK ($pfJ -match 'BGRA|RGBA') "② $($c.name) → jxr/$($c.eng)：**真带 alpha 的源没被拍平**（legacy 出口交付形态=$pfJ）"
+  }
 }
 # ⚠⚠ **真空绿守卫**（2026-09-18 **换载体**）：站点 B（引擎 JXR 出口的 alpha 分支）**必须**被一条
 #   *app 级* 路径真的走到。**守卫本身没变，载体换了**：
@@ -316,14 +339,7 @@ $singleCases = @(
   @{ src = $single;  name = "single.png(1帧)";       eng = "auto";   tag = "n_auto_single";   cdec = "0";  wantPf = '24-bit BGR' },
   @{ src = $singleA; name = "single_alpha.png(1帧)"; eng = "auto";   tag = "n_auto_singleA";  cdec = "22"; wantPf = '32-bit BGRA' }
 )
-# 码表逐字取自 `JxrDecApp` 自己的 usage（22=32bppBGRA、23=64bppRGBA；工具对扩展名不敏感，实测 `.bin` 也可）。
-function JxrDecodeCode([string]$pf) {
-  if ($pf -match '24-bit BGR')  { return '0' }
-  if ($pf -match '48-bit RGB')  { return '10' }
-  if ($pf -match '32-bit BGRA') { return '22' }
-  if ($pf -match '64-bit RGBA') { return '23' }
-  return ''
-}
+# 码表与推导见文件上方 `JxrDecodeCode`（② 与 ③ 共用同一份，不留第二套）。
 foreach ($c in $singleCases) {
   $outdir = "$work/$($c.tag)"
   $extra = ""
@@ -457,8 +473,16 @@ if ($in2 -ge 0) {
 CK (($noAlphaLine.Length -gt 0) -and ($noAlphaLine -notmatch 'frames:v')) `
    "④ 站点 B 的**非 alpha** 分支**没有**被顺手加上 `-frames:v 1`（它恒为单帧，不需要；防止一概而论）"
 # 站点 A 的 `intermediateExt` 只能是 .bmp/.tiff（单帧容器）—— 前提自检，否则"恒插"这个判据不成立。
-CK ($qp -match 'var intermediateExt = isHdr \? "\.tiff" : "\.bmp";') `
+# ⚠ 2026-10-21：载体选择从 `isHdr` 改成 `(isHdr || srcHasAlpha)`（透明源此前被静默拍平），
+#   前提本身不变（仍恒为单帧容器），但判据必须跟着现役形状走，否则这条锁会变成空断言。
+CK ($qp -match 'var intermediateExt = \(isHdr \|\| srcHasAlpha\) \? "\.tiff" : "\.bmp";') `
    "④ 前提：站点 A 的中转容器恒为 .bmp/.tiff（单帧容器）⇒ 「恒插 `-frames:v 1`」与 #139 判据一致"
+# 新增（同批审查）：未压缩旗标必须挂在**载体扩展名**上而不是 isHdr —— JxrEncApp 拒收压缩 TIFF
+#   （实测 ffmpeg 默认给 16-bit/RGBA TIFF 写 `259 Compression=32773` ⇒ rc=-106），
+#   而带 alpha 的 8-bit 源现在也走 .tiff 载体。旧写法 `isHdr ? …` 会把这档漏成压缩件。
+CK ($qp -match 'var tiffExtra = intermediateExt == "\.tiff" \?') `
+   "④ 站点 A 的 `-compression_algo raw -pred none` 判据挂在载体上（不是 isHdr）⇒ 8-bit+alpha 的 TIFF 中转不会被 JxrEncApp 拒收"
+CK ($qp -match 'srcHasAlpha') "④ 站点 A 确实探了 alpha（透明源不再被静默拍平成 bgr24）"
 
 # ── ④-b 本脚本自身的语法卫生自检 ────────────────────────────────────────────────
 # ⚠ 为什么门禁要检查**自己**：2026-09-18 实测踩过 —— 在双引号消息里写「反引号 + `-frames:v 1` +

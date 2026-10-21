@@ -654,7 +654,11 @@ function Get-SemanticMatrices {
                 #   （`tests/output/_tilegrid_probe/MutatedQueueProcessor.cs` 那次「自伤实现」撤销后，本文件净缩 75 行）
                 #   ⇒ 报的是 `line 2397 beyond EOF (2346 lines)`，不是「literal not on line」。字面量与语义一字未动，
                 #   抬号前已 `grep -n -F` 复核：该字面量全文件**只命中 1 次**，实况行 = 2322。
-                'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:2322|bool exiftoolFormats = fmt is "jpg" or "jpeg" or "png" or "tiff" or "webp";'
+                # ⚠ pin 演进（2026-10-21 JXR 高位深轮）：2322 → **2378**（+56）。成因 = 本轮往同一文件
+                #   `FfmpegCommandBuilder.cs` 的 :1154 区插了「位深唯一口径 + alpha 前缀白名单」约 56 行
+                #   ⇒ 其**下方**行号整体下移；字面量与语义一字未动。抬号前 `grep -n -F` 复核：全文件只命中 1 次，
+                #   实况行 = 2378。本条由 `_probe-matrix-structure.ps1`（在册第 55 条）当场报出，是它的设计生效。
+                'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:2378|bool exiftoolFormats = fmt is "jpg" or "jpeg" or "png" or "tiff" or "webp";'
             )
         },
         @{

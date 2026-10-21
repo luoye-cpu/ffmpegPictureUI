@@ -269,7 +269,9 @@ $runAsyncCount = ([regex]::Matches($qp, 'FfmpegRunner\.RunAsync')).Count
 # ⚠ 2026-10-02：24 → **25** —— U1 后半给 `FallbackDjxlDecodeToFile` 补的"float JXL 改走 ffmpeg 直读"
 #   新增了一个调用点（`QueueProcessor.cs` 的 djxl PNM 中转失败支）。该点**不带**显式心跳实参：
 #   #15-b 起心跳是默认行为 ⇒ 下面三条站点集合断言的集合仍是 {A,B,C,D}，只有这一处计数 +1。
-CK ($runAsyncCount -eq 25) "① QueueProcessor 里 `FfmpegRunner.RunAsync` 调用点仍为 25 处（实 $runAsyncCount）—— 未误伤"
+# ⚠ 2026-10-21：25 → **26** —— JXR 高位深直通臂的「16-bit PAM → 未压缩 TIFF」一跳（`TryJxrHighPrecisionAsync`
+#   之后的 `wrapArgs`）新增了一个 `FfmpegRunner.RunAsync`，同样**不带**显式心跳实参 ⇒ 站点集合不变、仅计数 +1。
+CK ($runAsyncCount -eq 26) "① QueueProcessor 里 `FfmpegRunner.RunAsync` 调用点仍为 26 处（实 $runAsyncCount）—— 未误伤"
 
 # ⚠ 断言**站点集合**而不是计数（lead 要求）：计数只能说「有 N 个」，说不清「是不是这 N 个」——
 #   把第 5 处误开、或把预期站点里的一个漏开，计数都可能凑巧还是 4。做法：

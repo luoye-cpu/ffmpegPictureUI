@@ -1141,10 +1141,24 @@ namespace FfmpegGui.Services
             return GetCachedProbe(inputPath).bitDepth;
         }
 
-        /// <summary>从像素格式字符串中提取位深（正确处理 yuvj420p→8, yuv420p10le→10, rgb48le→16 等）</summary>
-        private static int ParseBitDepthFromPixFmt(string? pixFmt)
+        /// <summary>
+        /// 从像素格式字符串中提取位深（正确处理 yuvj420p→8, yuv420p10le→10, rgb48le→16 等）。
+        /// <para>⚠ 本方法是仓内**唯一**的「pix_fmt → 位深」口径（2026-10-21 收口）：
+        ///   <see cref="QueueProcessor"/> 的位深探测原本自带一套 `Contains("16"/"48"/"64"/"12"/"10")`，
+        ///   实测两处对同一批 token 给不同答案（`gbrapf32le` 这里 32/3=10、那里落 `_ => 8`；
+        ///   `yuv410p` 那里判 10、这里判 8；`p012le` 那里那条 `Contains("p012")` 分支被前面的规则吃成恒不可达）。
+        ///   ⇒ 探测改委托到本方法，规则只此一份。</para>
+        /// <para><b>浮点档最先判</b>：`*f16*`/`*f32*` 是每通道浮点，把数字当"打包位宽"除会得 8/10 这种
+        ///   假整数档 ⇒ 下游按 8-bit 载体走就把 >1.0 的余量静默削掉（本次收口的动因）。</para>
+        /// </summary>
+        internal static int ParseBitDepthFromPixFmt(string? pixFmt)
         {
             if (string.IsNullOrWhiteSpace(pixFmt)) return 0;
+            // 浮点格式（rgbaf16le / gbrapf32le / grayf16le / rgbf16le …）：按每通道浮点宽度报，
+            // 语义是「至少 16-bit 载体 + 带 >1.0 余量」，调用方须据此点名钳位。
+            if (pixFmt!.Contains("f32", StringComparison.Ordinal)) return 32;
+            if (pixFmt.Contains("f16", StringComparison.Ordinal)) return 16;
+
             // 常见格式:
             //   rgb48le/rgb48be → 48/3 = 16
             //   rgba64le → 64/4 = 16
@@ -1179,11 +1193,52 @@ namespace FfmpegGui.Services
             if (pixFmt.StartsWith("yuv") || pixFmt.StartsWith("yuva") || pixFmt.StartsWith("nv"))
                 return 8;
 
+            // ⚠ 无数字的 8-bit 族必须显式列出（2026-10-21 实测：委托到本函数后 `gray`/`rgba` 这类
+            //   token 一路走到兜底 `return 0`，日志变成「检测位深: 0-bit」——**探测返 0 本身就是又一条
+            //   "读数与事实不符"**，正是本轮在修的那一类，不能再造一条）。
+            //   `rgba`/`bgr0`/`0rgb` 等"每通道 8bit、无深度数字"的打包格式都在此列。
+            if (pixFmt.StartsWith("ya") || pixFmt == "gray" || pixFmt.StartsWith("pal")
+                || pixFmt.StartsWith("monow") || pixFmt.StartsWith("monob")
+                || pixFmt.StartsWith("rgb") || pixFmt.StartsWith("bgr") || pixFmt.StartsWith("gbr")
+                || pixFmt.StartsWith("argb") || pixFmt.StartsWith("abgr")
+                || pixFmt.StartsWith("ayuv") || pixFmt.StartsWith("vuya") || pixFmt.StartsWith("uyva"))
+                return 8;
+
             // 兜底：数字后跟 le/be（如 gray16le 已处理，其他格式）
             var tail = System.Text.RegularExpressions.Regex.Match(pixFmt, @"(\d+)(le|be)$");
             if (tail.Success) return int.Parse(tail.Groups[1].Value);
 
             return 0;
+        }
+
+        /// <summary>
+        /// 该 pix_fmt 是否每通道浮点（带 &gt;1.0 余量）。与 <see cref="ParseBitDepthFromPixFmt"/> 同处定义，
+        /// 免得调用方各自再猜一遍字符串规则（<c>Contains("32")</c> 这类猜测就是本次要收的口）。
+        /// </summary>
+        internal static bool IsFloatPixFmt(string? pixFmt)
+            => !string.IsNullOrEmpty(pixFmt)
+               && (pixFmt.Contains("f32", StringComparison.Ordinal) || pixFmt.Contains("f16", StringComparison.Ordinal));
+
+        /// <summary>
+        /// 该 pix_fmt 是否真的带 alpha 平面。<b>前缀白名单，不是子串</b>：旧写法
+        /// <c>pixFmt.Contains('a')</c> 把 <c>gray</c>/<c>gray16le</c>/<c>bayer_*</c>/<c>pal8</c> 全判成"有 alpha"
+        /// ⇒ 无 alpha 源被强塞 PAM 载体 + <c>alphaextract</c> 造一张恒不透明平面，还会把
+        /// <c>-pix_fmt rgba64le</c> 一类分支带偏（2026-10-21 实测：256×160 的 <c>gray</c> PNG → jxl 走 pam）。
+        /// 覆盖 ffmpeg 侧全部带 alpha 的族：<c>yuva*</c> <c>gbrap*</c> <c>ya*</c> <c>rgba*</c> <c>bgra*</c>
+        /// <c>argb*</c> <c>abgr*</c> <c>ayuv*</c> <c>vuya</c> <c>uyva</c>；反向排除 <c>xbgr</c>/<c>xrgb</c>/
+        /// <c>rgb0</c>/<c>0rgb</c>（同字长但无 alpha）。
+        /// </summary>
+        internal static bool HasAlphaPlane(string? pixFmt)
+        {
+            if (string.IsNullOrWhiteSpace(pixFmt)) return false;
+            var s = pixFmt.Trim().ToLowerInvariant();
+            ReadOnlySpan<string> alphaPrefixes = new[]
+            {
+                "yuva", "gbrap", "rgba", "bgra", "argb", "abgr", "ayuv", "vuya", "uyva", "ya",
+            };
+            foreach (var p in alphaPrefixes)
+                if (s.StartsWith(p, StringComparison.Ordinal)) return true;
+            return false;
         }
 
         /// <summary>
@@ -1701,9 +1756,10 @@ namespace FfmpegGui.Services
                 {
                     var pixFmt = parts[2];
                     meta.bitDepth = ParseBitDepthFromPixFmt(pixFmt);
-                    // Alpha 检测：pix_fmt 含 'a' 字符（rgba/bgra/argb/ya8 等）。
-                    // pal8 也含 'a' 但它是 8-bit 调色板（无透明通道语义），仅在 >8bit 分支使用时无影响。
-                    meta.hasAlpha = pixFmt.Contains('a');
+                    // Alpha 检测走**前缀白名单**（<see cref="HasAlphaPlane"/>），不再用 Contains('a')：
+                    // 后者把 gray/gray16le/bayer_*/pal8 全判成有 alpha（pal8 连"仅 >8bit 无影响"都不成立，
+                    // 它在管道里就选过一次 pam 载体）。
+                    meta.hasAlpha = HasAlphaPlane(pixFmt);
                     // RGB 系列像素格式（全范围 0-255/0-65535）→ pc range
                     meta.isRgb = pixFmt.StartsWith("rgb", StringComparison.OrdinalIgnoreCase)
                               || pixFmt.StartsWith("bgr", StringComparison.OrdinalIgnoreCase)

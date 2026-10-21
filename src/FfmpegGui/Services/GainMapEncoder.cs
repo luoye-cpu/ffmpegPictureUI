@@ -114,6 +114,19 @@ public static class GainMapEncoder
     {
         try
         {
+            // ── 帧长守卫（2026-10-21 审查第 6 项）──
+            // 本方法内四处 `int pixelCount = w * h`（:146/:349/:407/:653）与它们的 `*3`/`*4` 乘积全是 int。
+            // 回绕成**负数**时会被 `ArrayPool.Rent` / `new T[]` 响亮拒收（实测 ArgumentOutOfRangeException /
+            // OverflowException，见下），但回绕成**正数**时缓冲只是变小、循环只是少跑 ⇒ 交出一张小图而不自知。
+            // 所以守卫按最紧的下游需求 `w*h*4 ≤ int.MaxValue` 来设，而不是只挡负数。
+            long pixelCountCheck = (long)w * h;
+            if (pixelCountCheck > int.MaxValue / 4L)
+            {
+                log?.Invoke($"[GainMap] ❌ 尺寸 {w}x{h} 的帧长 {pixelCountCheck} 超出 int 索引可承载上限" +
+                    $"（本管线需 w*h*4 ≤ {int.MaxValue}）⇒ 拒绝，不回绕成小图处理\n");
+                return false;
+            }
+
             var ffmpeg = AppSettingsService.Current.FfmpegPath;
             bool cjpegliAvail = CjpegliService.IsAvailable;
             bool ffmpegAvail = !string.IsNullOrWhiteSpace(ffmpeg) && File.Exists(ffmpeg);

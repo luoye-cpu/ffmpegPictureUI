@@ -29,6 +29,8 @@ $avifenc = "$root/publish/PLAN/artifacts/avifenc.exe"
 #     可忽略（若不实测，很容易误以为这里很贵而放弃隔离）。
 $work = "$root/tests/output/gifavif_$([guid]::NewGuid().ToString('N').Substring(0, 8))"
 New-Item -ItemType Directory -Path $work -Force | Out-Null
+# 沙箱按进程拦 %TEMP% 写（ffmpeg 子进程被拒 ⇒ 像素路 exit -13 假红，见 §6 沙箱一条）⇒ 本运行目录兼作 TMP/TEMP。
+$env:TMP = $work; $env:TEMP = $work
 
 # 取子进程 stdout 一律走 Start-Process（`& exe` 在部分宿主静默失败：输出为空 ⇒ 假红/空值）
 function Exec([string]$file, [string]$argStr){
@@ -72,11 +74,11 @@ $gif3000 = Make-Gif "frames3000.gif" 3000
 
 # ── 跑一次 headless 队列，回传 stdout 文本与退出码 ───────────────────────────────
 # ⚠ 成功项的 item.Log 只在 Debug 级别才刷出（失败项才按 Error 刷）⇒ 要看 avifenc 回显必须 --log-level debug。
-function Run-Queue([string]$inFile, [string]$outDir, [string[]]$extra = @()) {
+function Run-Queue([string]$inFile, [string]$outDir, [string[]]$extra = @(), [string]$fmt = 'avif', [int]$q = 60) {
   if (Test-Path $outDir) { Remove-Item $outDir -Recurse -Force -ErrorAction SilentlyContinue }
   New-Item -ItemType Directory -Path $outDir -Force | Out-Null
   $log = Join-Path $work ("run_" + (Split-Path $outDir -Leaf) + ".txt")
-  $argv = @('--headless', '-i', $inFile, '-o', $outDir, '-f', 'avif', '-q', '60') + $extra
+  $argv = @('--headless', '-i', $inFile, '-o', $outDir, '-f', $fmt, '-q', "$q") + $extra
   $p = Start-Process -FilePath $exe -ArgumentList $argv `
         -NoNewWindow -Wait -PassThru -RedirectStandardOutput $log -RedirectStandardError "$log.err"
   return @{ code = $p.ExitCode; text = [System.IO.File]::ReadAllText($log) }
@@ -139,6 +141,73 @@ $pm = Start-Process -FilePath $exe -ArgumentList @('--headless', '-i', "$mix/src
 $tm = [System.IO.File]::ReadAllText($logm)
 CK ($tm -match '完成 2 项, 失败 1 项') "混合队列汇总「完成 2 项, 失败 1 项」（成功项未被吞）"
 CK ($pm.ExitCode -eq 1) "混合队列退出码 1（存在失败项）"
+
+# ── ⑤ 自我设定覆盖必须点名：恒定帧率抹平不均延时 + 自设质量下限（2026-10-21 补）───────────
+# 缺陷形状：两条两步法出口（gif→avif / avif→{gif,webp}）都用**恒定帧率**重建（`-framerate N`，
+#   无 --animation-fps 时为写死的 33），而源的不均延时在 PNG 中间件处丢失；gif→avif 另有
+#   `Math.Max(20, quality)` 把用户的质量下限抬高。修前两者都一字不提（实测 -q 5 静默成 -q 20）。
+# 本段同时锁**探针不写死 v:0**：本工具链 avifenc 产的动画 AVIF 有 4 条流，v:0 只有 1 帧（主图），
+#   探 v:0 会把"延时不均"洗成"无延时可抹平"⇒ 必须按 nb_frames 选**帧数最多**的那条流。
+Write-Host "`n── ⑤ 恒定帧率/质量下限必须点名（含 AVIF 多流选流臂）──" -ForegroundColor Cyan
+$ufd = Join-Path $work "uneven_src"
+New-Item -ItemType Directory -Path $ufd -Force | Out-Null
+foreach ($c in @('red', 'green', 'blue')) {
+  # ⚠ `${c}:` 必须带花括号：PowerShell 会把 `$c:s` 解析成「作用域 c 的变量 s」（空值）⇒ 滤镜串被削坏、PNG 一个都造不出来。
+  $null = Exec $ff "-y -hide_banner -loglevel error -f lavfi -i `"color=c=${c}:s=64x64:d=1`" -frames:v 1 `"$ufd/$c.png`""
+}
+# 逐帧 duration：120 / 480 / 200 ms（末帧重复一次，让前 3 帧都有后继 ⇒ 3 段可测差值）
+$lst = Join-Path $ufd "list.txt"
+$u = ($ufd -replace '\\', '/')
+$lstLines = @("file '$u/red.png'", 'duration 0.12',
+              "file '$u/green.png'", 'duration 0.48',
+              "file '$u/blue.png'", 'duration 0.20',
+              "file '$u/blue.png'")
+# ⚠ concat 清单必须 **LF**：Set-Content 在 Windows 上写 CRLF，`\r` 会被并进文件名/时长 token。
+[System.IO.File]::WriteAllText($lst, ($lstLines -join "`n") + "`n")
+$unevenGif = Join-Path $ufd "uneven.gif"
+$null = Exec $ff "-y -hide_banner -loglevel error -f concat -safe 0 -i `"$lst`" -fps_mode vfr `"$unevenGif`""
+$up = (ExecOut $fp "-v error -select_streams 0 -show_entries frame=pts_time -of csv=p=0 `"$unevenGif`"") -split "`r?`n" | Where-Object { $_ -ne '' }
+CK ($up.Count -eq 4) "夹具自检：不等延时 GIF 实测 $($up.Count) 帧时间戳（期望 4）"
+if ($up.Count -ge 2) {
+  $d1 = [math]::Round(([double]$up[1] - [double]$up[0]) * 1000); $d2 = [math]::Round(([double]$up[2] - [double]$up[1]) * 1000)
+  CK ($d1 -eq 120 -and $d2 -eq 480) "夹具自检：前两段延时实测 $d1/$d2 ms（期望 120/480，否则本段无牙）"
+} else { SKIP "夹具时间戳不足 ⇒ 无牙判据不执行（不给假绿）" }
+
+# 臂 A：gif→avif，-q 5（低于本仓自设下限 20）
+$rA = Run-Queue $unevenGif (Join-Path $work "uneven_a") @('--log-level', 'debug') 'avif' 5
+CK ($rA.text -match '质量 5 被抬到 20') "臂A：质量下限被抬时**点名**（-q 5 ⇒ 日志出现「质量 5 被抬到 20」）"
+CK ($rA.text -match '源逐帧时长不均' -and $rA.text -match '120\.\.480ms') "臂A：不均延时被抹平时**点名**（实测 120..480ms）"
+CK ($rA.text -match '恒定帧率是本出口的现有能力边界') "臂A：点名时写清这是能力边界，不是逐帧保真"
+
+# 臂 B（正控）：把同一份延时编成**动画 AVIF**（4/16/8 @ timescale 10 ⇒ 400/1600ms），
+#   再走 avif→webp。这条只有在**按 nb_frames 选流**时才可能报警（v:0 只有主图 1 帧）。
+$ufr = Join-Path $work "uneven_frames"
+New-Item -ItemType Directory -Path $ufr -Force | Out-Null
+$null = Exec $ff "-y -hide_banner -loglevel error -i `"$unevenGif`" -fps_mode passthrough -start_number 1 `"$ufr/f_%04d.png`""
+$ufiles = @(Get-ChildItem $ufr -Filter 'f_*.png' | Sort-Object Name)
+CK ($ufiles.Count -ge 3) "臂B 前置：从不等 GIF 抽出 $($ufiles.Count) 帧 PNG（需 ≥3）"
+$unevenAvif = Join-Path $work "uneven_delay.avif"
+if ($ufiles.Count -ge 3) {
+  $null = Exec $avifenc "-j 4 --timescale 10 --duration 4 `"$($ufiles[0].FullName)`" --duration 16 `"$($ufiles[1].FullName)`" --duration 8 `"$($ufiles[2].FullName)`" `"$unevenAvif`""
+  CK (Test-Path $unevenAvif) "臂B 前置：不等延时 AVIF 已生成"
+} else { SKIP "臂B 前置不足 ⇒ 跳过多流选流臂（不给假绿）" }
+if (Test-Path $unevenAvif) {
+  # 前提自锁：v:0（主图）只有 1 帧 —— 若构建变了导致 v:0 就有多帧，本臂的"选流"意义要重新评估
+  $v0n = ((ExecOut $fp "-v error -select_streams v:0 -show_entries stream=nb_frames -of csv=p=0 `"$unevenAvif`"") -split "`r?`n" | Where-Object { $_ -ne '' } | Select-Object -First 1)
+  CK ("$v0n".Trim() -eq '1') "臂B 前提：v:0（主图）实测只有 1 帧（实 $("$v0n".Trim())）⇒ 写死 v:0 必洗白"
+  $rB = Run-Queue $unevenAvif (Join-Path $work "uneven_b") @('--log-level', 'debug') 'webp' 5
+  CK ($rB.text -match '源逐帧时长不均' -and $rB.text -match '400\.\.1600ms') "臂B：AVIF 输入的不均延时同样点名（实测 400..1600ms ⇒ 选中的是动画流，不是主图）"
+  CK ($rB.text -notmatch '被抬到') "臂B：avif→webp 不设质量下限 ⇒ 不得出现「被抬到」（-q 5 原样下发）"
+}
+
+# 臂 C（负控）：臂 A 的产物是**恒定 33fps** 重建的 ⇒ 延时已均匀，本段判据必须一声不响。
+#   没有这条，臂 A/B 的"有报警"可能来自任何无条件打印（判据无区分力）。
+$flatAvif = Join-Path $work "uneven_a/uneven.avif"
+if (Test-Path $flatAvif) {
+  $rC = Run-Queue $flatAvif (Join-Path $work "flat_c") @('--log-level', 'debug') 'webp' 5
+  CK ($rC.text -match '颜色 \d+ 帧') "臂C 正控：负控臂确实跑到选流/编码段（日志有颜色帧数）"
+  CK (($rC.text -split "`n" | Where-Object { $_ -match '时长不均|被抬到' }).Count -eq 0) "臂C 负控：恒定帧率源的产物**不得**报延时不均（判据有区分力）"
+} else { SKIP "负控输入缺失（臂A 产物不在）⇒ 不执行（不给假绿）" }
 
 Write-Host "`n===== PASS=$pass FAIL=$fail SKIP=$skip =====" -ForegroundColor $(if ($fail -eq 0) { "Green" } else { "Red" })
 # 跑绿自清（跑红保留 GUID 目录供排查）—— 必须在 exit 之前，且用显式 if/else 给出退出码（§6 第 66/67 条）。
