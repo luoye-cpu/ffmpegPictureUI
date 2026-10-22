@@ -138,7 +138,7 @@ tools/src/libraw/.git/
 **/ffmpeg.exe
 **/ffprobe.exe
 **/plan_test.json
-tests/GainMapTestHost/PLAN/
+tests/projects/GainMapTestHost/PLAN/
 
 # ── 临时杂项 ──
 .fake
@@ -178,3 +178,10 @@ settings.json
 # ═══ 本机 AI 助手的工作目录（含会话记忆，绝不进公开仓）═══
 .commandcode/
 .workbuddy/
+# 在册门禁 #77 的 py 工具会互相 import（_mutate-dng-lens.py 读 _readback-dng-lens.py 的解析器）
+# ⇒ 每次跑都在 tests/scripts 就地落一份字节码目录，不是任何人的产物
+__pycache__/
+*.pyc
+
+# Qoder 会话/工作树缓存目录（本机助手状态，非项目内容）
+.qoder/

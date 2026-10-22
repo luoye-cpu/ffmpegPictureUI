@@ -119,6 +119,7 @@ namespace FfmpegGui.Models
             if (p.DngCompression >= 0) DngCompression = p.DngCompression;
             if (p.DngJxlQuality >= 0) DngJxlQuality = p.DngJxlQuality;
             DngLinear = p.DngLinear;
+            DngLensCorrection = p.DngLensCorrection;
             if (p.DngJxlEffort > 0) DngJxlEffort = p.DngJxlEffort;
             if (p.DngJxlDecodeSpeed > 0) DngJxlDecodeSpeed = p.DngJxlDecodeSpeed;
             if (p.DngHighlightMode >= 0) DngHighlightMode = p.DngHighlightMode;
@@ -363,6 +364,14 @@ namespace FfmpegGui.Models
         public int DngHighlightMode { get; set; } = 1;
         /// <summary>DNG 位深: 8/16 (dngtool -4/-6 即 8/16bit, 默认 16 保留原始位深)</summary>
         public int DngBitDepth { get; set; } = 16;
+        /// <summary>
+        /// DNG 镜头校正: 把**源 RAW 自己的**暗角/畸变/横向色差三张表换算成规范 OpcodeList3 opcode
+        /// (FixVignetteRadial + [WarpRectilinear2 optional] + [WarpRectilinear required])。
+        /// <para>默认 false —— 与其余 DNG 旋钮不同，它**改变渲染像素**，且产物与 Adobe 转换器的结果
+        /// 分叉（Adobe 只把索尼标签原样塞进私有位，不换算成 opcode；见 docs/DNG_SONY_IDC.md §5e）。
+        /// 源没有这三张表时 dngtool 点名 `lens-tables=absent` 且一个像素都不动，不是失败。</para>
+        /// </summary>
+        public bool DngLensCorrection { get; set; } = false;
         public string? JpegHuffman { get; set; }
         /// <summary>JPEG DCT 算法: "int" / "fastint" / "float"</summary>
         public string? JpegDct { get; set; }
@@ -512,8 +521,10 @@ namespace FfmpegGui.Models
         public bool CjpegliMultiThreadAvailable { get; set; } = false;
 
         // ── ExifTool 隐私清理选项（仅在 exiftool 可用时生效）──
-        /// <summary>删除 GPS 位置信息（默认开启，与 UI/PresetData 一致）</summary>
-        public bool StripExifGps { get; set; } = true;
+        /// <summary>删除 GPS 位置信息。
+        /// <para><b>默认 false（=全保留）</b>：产品口径是"默认不勾选、全保留"，剥除只在用户显式要求时发生（GUI 勾选 / <c>--strip-gps</c> / <c>--strip-metadata</c>）。
+        /// ⚠ 2026-10-20 之前这里是 true（当年按"隐私默认"定），与 GUI 的未勾选初值互相矛盾，且 CLI 的 <c>?? true</c> 会把第二个真值请回来 ⇒ 四处默认已统一。</para></summary>
+        public bool StripExifGps { get; set; } = false;
         /// <summary>删除拍摄时间日期</summary>
         public bool StripExifTime { get; set; } = false;
         /// <summary>删除相机/镜头型号与拍摄参数</summary>
@@ -525,7 +536,7 @@ namespace FfmpegGui.Models
 
         /// <summary>
         /// 用户是否**显式**给出了"剥离描述性元数据"的请求（2026-10-05 新增）。
-        /// <para><b>为什么需要它</b>：上面几个开关都有**默认值**（`StripExifGps` 默认就是 true），
+        /// <para><b>为什么需要它</b>：上面几个开关都有**默认值**（`StripExifGps` 现默认 false；旧史是 true），
         /// 而 `jxl` 的 **jbrd 无损重封装**与"剥除元数据"在结构上**不可兼得**（jbrd 逐字复制源 JPEG
         /// 码流，含 EXIF/GPS，而 exiftool 改不了 `jbrd` 内的字节 —— 实测）。
         /// 若拿"含默认值的开关"去决定要不要关重封装，就会**在默认路径上悄悄关掉无损重封装**，

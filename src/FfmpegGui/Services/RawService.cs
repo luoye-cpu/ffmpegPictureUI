@@ -209,13 +209,19 @@ public static class RawService
     /// <param name="bitDepth">输出位深 (8 或 16)</param>
     /// <param name="highlightMode">高光模式 (LibRaw -H: 0=裁剪, 1=恢复, 2=blend)</param>
     /// <param name="threads">多线程数 (0=自动用硬件并发, 1=单线程)</param>
+    /// <param name="lensCorrection">true = 让 dngtool 读源 RAW 的镜头三表并换算成规范 OpcodeList3</param>
+    /// <param name="suppressGps">true = 让 dngtool **不写**源的 GPS 标准位。
+    /// ⚠ 工具侧**默认搬**（GPS 有 EXIF 标准位，静默丢掉就是本轮修的缺陷），所以"不搬"只能由
+    /// 调用方显式请求。产品口径 = **默认不勾选、全保留**（<c>StripExifGps</c> 默认 false，2026-10-20 四处统一），
+    /// 只有界面勾了删除 GPS 或 CLI 给了 --strip-gps 才传 true。也不走"事后删"：2026-10-05 实测过排除式在部分容器上
+    /// 报 updated 而 GPS 仍在 ⇒ 必须由写侧一开始就不写。</param>
     /// <returns>dngtool 实参串（不含可执行名）</returns>
     public static string BuildEncodeToDngArguments(
         string rawPath, string outputDngPath,
         int compression = 0, int jxlQuality = 0,
         bool linear = false, int jxlEffort = 7, int jxlDecodeSpeed = 4,
         int bitDepth = 16, int highlightMode = 1, int threads = 0,
-        bool carryRawMetadata = true)
+        bool carryRawMetadata = true, bool lensCorrection = false, bool suppressGps = false)
     {
         var args = $"-e -i \"{rawPath}\" -O \"{outputDngPath}\"";
         if (compression == 1)
@@ -255,6 +261,13 @@ public static class RawService
         // 嵌入原件是规范 50828 里的完整源文件字节，预览 JPEG 内部还各自带 EXIF）。
         if (!carryRawMetadata)
             args += " -no-raw-meta";
+        // 镜头校正: 源有没有表由 dngtool 自己判并点名（lens-tables=absent），这里只表达"请求过"
+        if (lensCorrection)
+            args += " -lens-corr";
+        // 用户要求剥 GPS（默认 false=不剥）⇒ 显式请求 dngtool 不写 GPS 标准位（写侧就不写，
+        // 不靠事后删）；工具会点名 gps-suppressed=1，不会静默。
+        if (suppressGps)
+            args += " -no-gps";
         return args;
     }
 
@@ -273,6 +286,7 @@ public static class RawService
     /// <param name="bitDepth">输出位深 (8 或 16)</param>
     /// <param name="highlightMode">高光模式 (LibRaw -H: 0=裁剪, 1=恢复, 2=blend)</param>
     /// <param name="threads">多线程数 (0=自动用硬件并发, 1=单线程)。2026-08-15 新增。</param>
+    /// <param name="lensCorrection">true = 源 RAW 镜头三表 → 规范 opcode（默认关，它改渲染像素）</param>
     /// <returns>成功返回 true</returns>
     public static async Task<bool> EncodeToDngAsync(
         string rawPath, string outputDngPath,
@@ -280,7 +294,7 @@ public static class RawService
         Action<string>? log = null, CancellationToken ct = default,
         bool linear = false, int jxlEffort = 7, int jxlDecodeSpeed = 4,
         int bitDepth = 16, int highlightMode = 1, int threads = 0,
-        bool carryRawMetadata = true)
+        bool carryRawMetadata = true, bool lensCorrection = false, bool suppressGps = false)
     {
         if (!IsDngTool)
         {
@@ -292,12 +306,12 @@ public static class RawService
         var args = BuildEncodeToDngArguments(
             rawPath, outputDngPath, compression, jxlQuality,
             linear, jxlEffort, jxlDecodeSpeed, bitDepth, highlightMode, threads,
-            carryRawMetadata);
+            carryRawMetadata, lensCorrection, suppressGps);
         log?.Invoke($"[RAW] dngtool {args}\n");
 
         var ok = await RunProcessAsync(_detectedPath!, args, outputDngPath, "dngtool-e", log, ct);
         if (ok)
-            log?.Invoke($"[RAW] ✅ DNG 编码完成 ({(compression == 1 ? "JXL" : "无损 JPEG")}{(linear ? ", 线性" : ", CFA")})\n");
+            log?.Invoke($"[RAW] ✅ DNG 编码完成 ({(compression == 1 ? "JXL" : "无损 JPEG")}{(linear ? ", 线性" : ", CFA")}{(lensCorrection ? ", 已请求镜头校正" : "")})\n");
         return ok;
     }
 

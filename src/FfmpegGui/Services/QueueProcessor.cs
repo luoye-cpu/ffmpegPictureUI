@@ -307,8 +307,8 @@ namespace FfmpegGui.Services
                         //   **把源元数据整体复制** ⇒ 产物**原样带出 GPS**，且日志**无任何点名**、任务报成功。
                         // 处置沿用本文件既有先例（DNG/dngtool 的「**可用性诚实原则**」）：
                         //   · **显式选了「删除全部」**（用户明确要求剥离）⇒ **点名 + 失败**（不静默降级）；
-                        //   · 仅**个别开关**为真 ⇒ 只**点名警告**、**不失败** —— 因为 `StripExifGps` 的
-                        //     **默认值就是 true**（隐私默认），若也失败则「缺 exiftool」会把**每个**任务都判失败。
+                        //   · 仅**个别开关**为真 ⇒ 只**点名警告**、**不失败** —— 判的是**开关的值**（`StripExifGps` 现默认 false，
+                        //     旧史默认 true 时，若这里也失败，「缺 exiftool」会把**每个**任务都判失败 ⇒ 该不对称留作原样）。
                         // ⚠ 消息一律 **ASCII**：`_probe-cjk-hardcode-scan` 的余量为 0，新增中文行会立刻顶红。
                         bool stripAllRequested = captured.Options.MetadataMode == Models.MetadataMode.StripAll;
                         bool stripFlagsOn = captured.Options.StripExifTime || captured.Options.StripExifCamera
@@ -2033,6 +2033,32 @@ namespace FfmpegGui.Services
         }
 
         /// <summary>
+        /// DNG 出口专用：把 SDK 的 <c>WriteDNG</c> **没有发射路径**的 10 个标准位
+        /// （0x011A/0x011B/0x0128 + 0x9101/0x9102/0xA000/0xA002/0xA003 + Interop 0x0001/0x0002）
+        /// 由 exiftool 从源件抄进产物。
+        /// <para>为什么要有这一步：这 10 件都有 EXIF/TIFF 标准位，PS/Camera Raw 一类读者能正常解码
+        /// ⇒ 按"能被正确解码的不许丢"的规矩它们必须在场；缺席的唯一原因是 Adobe SDK 的 DNG 出口
+        /// 不发射它们（逐条实测见 <see cref="ExifToolService.BuildDngStdTagsCarryArgs"/> 的注释），
+        /// 那是**我方工具链的边界**，不是格式边界，所以不登记成"无法搬运"。</para>
+        /// <para>三种结果都点名，绝不静默：抄成功 / exiftool 缺席（跳过 ≠ 成功）/ 退出码非 0。
+        /// 是否真落到产物里由门禁拿独立读手（exiftool 读 + LibRaw 解 + Adobe dng_validate 判合规）对撞，
+        /// 不采信这里的日志串。</para>
+        /// </summary>
+        private async Task CarryStdTagsUnwritableBySdkAsync(QueueItem item, string inputPath,
+            string outputPath, CancellationToken ct)
+        {
+            var rc = await ExifToolService.CarryStdTagsToDngAsync(inputPath, outputPath, item.Options,
+                s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ct);
+            if (rc == 0)
+                item.Log += "[exif] ✅ 源件里 exiftool 认得的标准 EXIF/GPS 位已抄进产物（SDK 没有发射点的那批 + 源容器不是 TIFF 头的那批）。\n";
+            else if (rc == ExifToolService.SkippedNoExiftool)
+                item.Log += "[exif] ⚠️ 未抄：exiftool 不可用（这是跳过，不是成功）⇒ 产物里这批标准位缺席。\n";
+            else
+                item.Log += $"[exif] ⚠️ 抄写退出码 {rc}（产物保持原样）⇒ 产物里这批标准位缺席。\n";
+            _onItemUpdated?.Invoke(item);
+        }
+
+        /// <summary>
         /// 元数据阶段唯一入口：先恢复描述性元数据，再按需嵌缩略图（EXIF IFD1）。
         /// <para><b>顺序即不变量</b>：缩略图属于元数据阶段，必须排在**色彩后置之前** ——
         /// 本仓的裁决权分配是「元数据先写、色彩标签最后定」，反过来会让色彩判据看到已被二次改写的文件。
@@ -2073,7 +2099,7 @@ namespace FfmpegGui.Services
                 //   ① 判据由 `IsCicpMetadataMappedFormat`（仅 png/apng）扩到
                 //      `FormatMayCarrySourceMetadata`（+ jxl 的 jbrd 无损重封装路径）；
                 //   ② 触发条件由「仅 StripAll」扩到「**StripAll 或 任一剥离开关为真**」——
-                //      实测缺陷：默认配置下 `StripExifGps` 本就是 true，而 `-f jxl` 产物**仍带 GPS**，
+                //      实测缺陷：当时的默认配置下 `StripExifGps` 本就是 true，而 `-f jxl` 产物**仍带 GPS**，
                 //      `--strip-gps` / `--strip-xmp` 亦然 ⇒ 用户显式要求删 GPS 却静默保留。
                 //   ⚠ 剥离用 `StripDescriptiveMetadataAsync`（只删 EXIF/GPS/XMP/IPTC），
                 //     不碰 cICP/cHRM/gAMA 这类**色彩** chunk，也不碰 JXL 的色彩标注 ⇒ 不会破坏色彩契约。
@@ -2716,7 +2742,7 @@ namespace FfmpegGui.Services
                     //   实测铁证（同一夹具 23917 B）：
                     //     · 纯 cjxl → 纯 djxl ⇒ `Reconstructed to JPEG`、SHA 相同 ✅
                     //     · 同一 JXL 跑一次 `exiftool -GPS:all=` → djxl ⇒ `could not decode losslessly` ❌
-                    //   而 `StripExifGps` **默认开启** ⇒ 这在**默认路径**上就会发生。
+                    //   而 `StripExifGps` **当时默认开启** ⇒ 这在**默认路径**上就会发生（2026-10-20 起默认 false）。
                     //   ⇒ 元数据已随原始码流一起进入 JXL，**无需也无法**在容器层再写；
                     //     保住"逐字节可逆"这条唯一卖点优先于容器层标签整理。
                     item.Log += "[cjxl] 本次为 jbrd 无损重封装 ⇒ 跳过元数据恢复（产物含可逐字节还原的原始 JPEG 码流，任何容器层元数据写入都会破坏该能力）\n";
@@ -3409,19 +3435,20 @@ namespace FfmpegGui.Services
             }
 
             item.Log += $"[dng] 编码 DNG ({(compression == 1 ? $"JXL q={jxlQuality}" : "无损 JPEG")}" +
-                        $"{(item.Options.DngLinear ? ", 线性 DNG (无 CFA)" : ", 保留 CFA (Bayer)")})...\n";
+                        $"{(item.Options.DngLinear ? ", 线性 DNG (无 CFA)" : ", 保留 CFA (Bayer)")}" +
+                        $"{(item.Options.DngLensCorrection ? " + 镜头校正(源三表→opcode)" : "")})...\n";
             _onItemUpdated?.Invoke(item);
 
             // 保真通道 vs 隐私剥除：沿用本仓对 cjxl/jbrd 的同一裁法 —— 只有"整组描述性元数据
             // 都不要"（StripAll / StripExifAll）才放弃搬运。仅 GPS 开关（它默认就是 true）时
             // 仍然搬运，否则 Imaging Edge 编辑值在默认档位上又回到"全丢"，等于这次修复没生效。
-            // 代价必须响亮点名，绝不静默：容器层的 GPS 已由复制阶段的 absorb 排除项处理，
-            // 而 50828 存的是**整个源文件**，源若含 GPS 会随嵌入原件一起进产物（按规范存原件，不删改）。
+            // 代价必须响亮点名，绝不静默：搬运档下 GPS 与拍摄字段是**按 EXIF/GPS 标准位**写进产物的
+            // （2026-10-19 起默认不再嵌整个源文件 ⇒ 不再有"随原件一起进产物"这一层，见 -embed-raw）。
             bool carryRawMetadata = DngCarriesRawMetadata(item.Options);
             if (!carryRawMetadata)
-                item.Log += "[dng] ⚠️ 按整组剥除请求放弃源 RAW 元数据搬运（拍摄字段/嵌入原件/内嵌预览均不写入产物）。\n";
+                item.Log += "[dng] ⚠️ 按整组剥除请求放弃源 RAW 元数据搬运（拍摄字段/标准 EXIF 与 GPS 位/内嵌预览均不写入产物）。\n";
             if (carryRawMetadata && IsStripRequested(item.Options))
-                item.Log += "[dng] ⚠️ 本次仍搬运源 RAW 元数据：嵌入原件按规范存的是整个源文件，源若含 GPS 会随之进产物（容器层 GPS 已按请求排除）。要严格剥除请用 --strip-metadata。\n";
+                item.Log += "[dng] ⚠️ 本次仍搬运源 RAW 元数据：拍摄字段与 GPS 按 EXIF/GPS 标准位写入产物（单项剥除只排除容器层的对应项）。要严格剥除请用 --strip-metadata。\n";
 
             var success = await RawService.EncodeToDngAsync(
                 item.InputPath, outputPath, compression, jxlQuality,
@@ -3432,7 +3459,9 @@ namespace FfmpegGui.Services
                 bitDepth: item.Options.DngBitDepth,
                 highlightMode: item.Options.DngHighlightMode,
                 threads: item.Options.Threads,          // 2026-08-15: UI 线程选项生效
-                carryRawMetadata: carryRawMetadata);
+                carryRawMetadata: carryRawMetadata,
+                lensCorrection: item.Options.DngLensCorrection,
+                suppressGps: item.Options.StripExifGps);
 
             item.ExitCode = success ? 0 : -1;
             item.Status = success
@@ -3441,6 +3470,13 @@ namespace FfmpegGui.Services
 
             if (success)
                 await RestoreMetadataAsync(item, outputPath);
+
+            // SDK 的 WriteDNG 没有发射路径的 10 个标准位 ⇒ 由 exiftool 从源件抄进产物。
+            // 只在搬运档做（整组剥除 = 用户明确不要描述性元数据）。排在 XMP 步之前，
+            // 两步都是对同一产物的元数据级改写，顺序不影响像素（实测：抄完的 DNG 与抄前
+            // 解出的 sensor 平面逐位相同，不同点数 0）。
+            if (success && carryRawMetadata)
+                await CarryStdTagsUnwritableBySdkAsync(item, item.InputPath, outputPath, ct);
 
             // IDC 版本时间戳 → 标准 XMP 位（ApplicationNotes/700 的 xmp:CreateDate/ModifyDate）。
             // 值零换算：IDC 存的就是 XMP 日期形状的文本。关掉搬运（整组剥除）或被

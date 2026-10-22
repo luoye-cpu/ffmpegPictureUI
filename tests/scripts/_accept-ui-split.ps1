@@ -166,7 +166,7 @@ $results = New-Object System.Collections.Generic.List[object]
 
 foreach ($mode in $modes.Keys) {
     $m = $modes[$mode]
-    $exe = Join-Path $root "tests/$($m.proj)/bin/Release/net11.0/win-x64/$($m.exe).exe"
+    $exe = Join-Path $root "tests/projects/$($m.proj)/bin/Release/net11.0/win-x64/$($m.exe).exe"
     if (-not (Test-Path $exe)) { CK $false "$mode : exe 存在（$exe）"; continue }
 
     $r = Invoke-Exe $exe @($srcDir, $mode) ($TimeoutSec * 1000)
@@ -235,7 +235,7 @@ $expectList = @{
 }
 $exeOf = @{ 'ui-core'='Tests.UiCore'; 'ui-mode'='Tests.UiMode'; 'ui-color'='Tests.UiColor'; 'ui-sweep'='Tests.UiSweep'; 'ui-cli'='Tests.UiCli' }
 foreach ($p in $expectList.Keys) {
-    $exe = Join-Path $root "tests/$p/bin/Release/net11.0/win-x64/$($exeOf[$p]).exe"
+    $exe = Join-Path $root "tests/projects/$p/bin/Release/net11.0/win-x64/$($exeOf[$p]).exe"
     $r = Invoke-Exe $exe @('--list') 60000
     # ⚠ 过滤掉宿主的前置信息行（`PLAN dir = …`）：它不是 mode 列表的一部分。
     $got = @(($r.Text -split "`r?`n") | ForEach-Object { $_.Trim() } |

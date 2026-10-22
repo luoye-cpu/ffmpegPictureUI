@@ -74,9 +74,9 @@
   <!-- NuGet 依赖                                         -->
   <!-- ═══════════════════════════════════════════════ -->
   <ItemGroup>
-    <PackageReference Include="Avalonia" Version="12.0.4" />
-    <PackageReference Include="Avalonia.Desktop" Version="12.0.4" />
-    <PackageReference Include="Avalonia.Themes.Fluent" Version="12.0.4" />
+    <PackageReference Include="Avalonia" Version="12.1.4" />
+    <PackageReference Include="Avalonia.Desktop" Version="12.1.4" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="12.1.4" />
   </ItemGroup>
 
   <!-- 测试宿主访问 internal 成员 (PsnrCalculator 强制路径测试钩子等) -->

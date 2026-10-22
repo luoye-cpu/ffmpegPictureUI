@@ -55,7 +55,7 @@ Write-Output "gates-lock=$script:gatesLockPath (pid=$PID, script=ensure-fixtures
 
 $ff   = "$root/publish/PLAN/ffmpeg-full/ffmpeg.exe"
 $ex   = "$root/publish/PLAN/exiftool/exiftool.exe"
-$prb  = "$root/tests/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.dll"
+$prb  = "$root/tests/projects/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.dll"
 $val  = "$root/tests/output/validate"
 $col  = "$root/tests/output/results/color"
 $srcs = "$root/tests/output/sources"

@@ -72,8 +72,8 @@ Write-Host "`n### gamut mode 读回：P3 出口 JPEG 的底图 ICC 必须被第�
 #   `ServiceProbe gamut <jpeg> [token]` = `GainMapDecoder.DetectBasePrimaries`，此前**没有任何在册脚本调它**
 #   ⇒ 只有代码、没有执行面。挂在"产品自己写出的 P3 JPEG"上判：读回必须是 `smpte432`，
 #   并配一条**问错必须判红**的反控（同一件问 bt709 ⇒ 必须 fail=1）⇒ 证明 ①探针活着 ②token 那臂有牙。
-$prG = "$root/tests/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.exe"
-if (-not (Test-Path $prG)) { $prG = "$root/tests/ServiceProbe/bin/Debug/net11.0/win-x64/ServiceProbe.exe" }
+$prG = "$root/tests/projects/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.exe"
+if (-not (Test-Path $prG)) { $prG = "$root/tests/projects/ServiceProbe/bin/Debug/net11.0/win-x64/ServiceProbe.exe" }
 $jpgG = Get-ChildItem -Recurse "$out" -Filter *.jpg -EA SilentlyContinue | Where-Object { $_.Length -gt 500 } | Select-Object -First 1
 # ⚠ 为什么 `-First 1` 在这里不构成"靠枚举顺序选材"的风险（2026-10-16 审查复核，:16）：
 #   ① `$out` 每次运行 GUID 隔离 ⇒ 不会拿到上一轮留下的 jpg（"本轮没产出却被旧件蒙过"这条路不存在）；

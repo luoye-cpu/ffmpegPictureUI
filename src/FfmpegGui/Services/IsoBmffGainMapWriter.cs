@@ -143,7 +143,7 @@ internal static class IsoBmffGainMapWriter
             //     · libultrahdr 读侧**信流不信 flag**（jpegr.cpp:2843-2844 按 SOF numComponents 定布局）
             //       ⇒ 一致性是**生产者**义务，写出器这一层必须自己核对交付的平面数。
             //   交付的平面数从增益图 item 的 `pixi` 盒读（ffmpeg 实产：gray ⇒ channel_count=1、
-            //   yuv444p/yuv420p ⇒ 3；本机实测锚见 tests/GainMapTestHost `gainmath` 模式的 C5p2/C5p3）。
+            //   yuv444p/yuv420p ⇒ 3；本机实测锚见 tests/projects/GainMapTestHost `gainmath` 模式的 C5p2/C5p3）。
             //   ⇒ 于是「声明 3 参数集 / 交付单平面 gray」这种说谎组合在这里**拒写**，不再静默出货。
             //   ⚠ 本门只核**平面数**：4:2:0 在 pixi 里同样是 3 平面（色度 subsampling 记在 AV1 序列头，
             //     不在容器属性盒）⇒ JPEG 出口的 multiChannel↔4:2:0 互斥由

@@ -326,6 +326,7 @@ function Get-AxisRegistry {
         (New-Axis -Name 'dng-jxl-effort' -Group 'encoder' -CliKey '--dng-jxl-effort' -Source 'src/FfmpegGui/CliParser.cs:619' -Kind 'continuous' -Values @('1', '7', '9')),
         (New-Axis -Name 'dng-linear' -Group 'encoder' -CliKey '--dng-linear' -Source 'src/FfmpegGui/CliParser.cs:620' -Kind 'bool' -Values @('true', 'false')),
         (New-Axis -Name 'dng-bit-depth' -Group 'encoder' -CliKey '--dng-bit-depth' -Source 'src/FfmpegGui/CliParser.cs:621' -Kind 'enum' -Values @('8', '16')),
+        (New-Axis -Name 'dng-lens-correction' -Group 'encoder' -CliKey '--dng-lens-correction' -Source 'src/FfmpegGui/CliParser.cs:944' -Kind 'bool' -Values @('true', 'false')),
         (New-Axis -Name 'dng-highlight-mode' -Group 'encoder' -CliKey '--dng-highlight-mode' -Source 'src/FfmpegGui/CliParser.cs:622' -Kind 'enum' -Values @('0', '1', '2'))
     )
 }

@@ -1,12 +1,15 @@
 # verify-metadata-privacy.ps1 —— 元数据隐私门禁（2026-09-15 新增）
-# 背景：`FfmpegOptions.StripExifGps` 默认 **true** ⇒「默认剥掉 GPS」是面向用户的**隐私承诺**，
-#   但此前**没有任何自动化覆盖**（既存门禁只查色彩标签，没人查 GPS 是否真的被剥掉）。
+# 政策口径（2026-10-20 用户裁定统一）：**默认不勾选 = 全保留**，剥除只在用户显式要求时发生。
+#   背景：本闸 2026-09-15 立项时 `StripExifGps` 的默认值是 true（"隐私默认"），
+#   而 GUI 的复选框初值从来没勾 ⇒ 两个真值互相矛盾（CLI/模型/预设剥、界面不剥）。现四处默认统一成 false，
+#   于是这个闸的两条默认断言随之翻向：默认**保留** GPS，显式 `--strip-gps` 才**必须剥**。
 #   同一段后置链还负责「把源文件的描述性元数据复制回来」，两者都会**静默失效**：
 #   不报错、退出码 0、日志照样写"隐私清理完成" ⇒ 只能靠断言守护。
 # 断言：
-#   ① 默认转换：输出**无 GPS**（隐私承诺生效）；
-#   ② 默认转换：输出**仍有**描述性元数据（ImageDescription / Make）⇒ 证明不是"把元数据全剥了"；
-#   ③ **负控**：`--no-strip-gps` 时输出**有 GPS** ⇒ 证明 ① 的断言能识别 GPS 的有无（非空跑）。
+#   ① 默认转换：输出**仍有 GPS**（默认全保留这条政策生效）；
+#   ② 默认转换：输出**仍有**描述性元数据（ImageDescription / Make）⇒ 证明 ① 不是因为"整条后置没跑"；
+#   ③ **反向活格子**：`--strip-gps` 时输出**无 GPS** ⇒ ① 与 ③ 同尺两向分叉，谁把默认改回"剥"
+#      或把显式剥除改成空转，都会当场红一条（只有一条断言时无法区分这两种坏法）。
 #   ④ `--strip-metadata` + **png** ⇒ 产物无 GPS、无描述性元数据（2026-09-21 新增：
 #      png/apng 的 ffmpeg 侧用 `-map_metadata 0` 保 CICP，会绕过隐私删除）；
 #   ⑤ **负控**：`--preserve-metadata` + png ⇒ 产物**有 GPS** ⇒ 证明 ④ 非空跑。
@@ -67,7 +70,7 @@ $gpsIn = Et "-s3 -GPSLatitude `"$src`""
 if ([string]::IsNullOrWhiteSpace($gpsIn)) { SkipAll "素材写入 GPS 失败（exiftool 未生效）" }
 Say "素材已带 GPS=$gpsIn"
 
-# ── ① 默认：应剥掉 GPS；② 描述性元数据应仍在 ──
+# ── ① 默认：应保留 GPS（2026-10-20 政策）；② 描述性元数据应仍在 ──
 $d1 = "$val/default"; New-Item -ItemType Directory -Path $d1 -Force | Out-Null
 Run-Exe $exe "--headless -i `"$src`" --format jpg --output `"$d1`" --log-file `"$d1/log.txt`"" 'app-default'
 $o1 = Get-ChildItem "$d1/*" -File -ErrorAction SilentlyContinue |
@@ -75,8 +78,8 @@ $o1 = Get-ChildItem "$d1/*" -File -ErrorAction SilentlyContinue |
 if (-not $o1) { $fail++; Say "FAIL 默认转换未产出 jpg" }
 else {
     $g = Et "-s3 -GPSLatitude `"$($o1.FullName)`""
-    if ([string]::IsNullOrWhiteSpace($g)) { $pass++; Say "PASS ① 默认输出无 GPS（隐私承诺生效）" }
-    else { $fail++; Say "FAIL ① 默认输出仍有 GPS=「$g」⇒ 隐私承诺失效（StripExifGps 默认应为 true）" }
+    if (-not [string]::IsNullOrWhiteSpace($g)) { $pass++; Say "PASS ① 默认输出保留 GPS=「$g」（政策=默认不勾选全保留）" }
+    else { $fail++; Say "FAIL ① 默认输出 GPS 被剥掉了 ⇒ 默认值又被改回 true（或后置的显式删除在无请求时触发）" }
 
     $desc = Et "-s3 -ImageDescription `"$($o1.FullName)`""
     $make = Et "-s3 -Make `"$($o1.FullName)`""
@@ -88,19 +91,19 @@ else {
     }
 }
 
-# ── ③ 负控：--no-strip-gps ⇒ GPS 应保留 ──
-$d2 = "$val/nostrip"; New-Item -ItemType Directory -Path $d2 -Force | Out-Null
-Run-Exe $exe "--headless -i `"$src`" --format jpg --output `"$d2`" --no-strip-gps --log-file `"$d2/log.txt`"" 'app-nostrip'
+# ── ③ 反向活格子：--strip-gps（显式请求）⇒ GPS 必须被剥掉 ──
+$d2 = "$val/strip"; New-Item -ItemType Directory -Path $d2 -Force | Out-Null
+Run-Exe $exe "--headless -i `"$src`" --format jpg --output `"$d2`" --strip-gps --log-file `"$d2/log.txt`"" 'app-strip'
 $o2 = Get-ChildItem "$d2/*" -File -ErrorAction SilentlyContinue |
     Where-Object { $_.Extension -in @('.jpg', '.jpeg') } | Select-Object -First 1
-if (-not $o2) { $fail++; Say "FAIL 负控转换未产出 jpg" }
+if (-not $o2) { $fail++; Say "FAIL ③ 显式 --strip-gps 转换未产出 jpg" }
 else {
     $g2 = Et "-s3 -GPSLatitude `"$($o2.FullName)`""
-    if (-not [string]::IsNullOrWhiteSpace($g2)) {
-        $pass++; Say "PASS ③ 负控 --no-strip-gps 时 GPS 保留（$g2）⇒ ① 的断言能识别 GPS 有无，非空跑"
+    if ([string]::IsNullOrWhiteSpace($g2)) {
+        $pass++; Say "PASS ③ 显式 --strip-gps 时 GPS 确被剥掉（读回=[$g2]）⇒ 与 ① 同尺两向分叉，两条都不是空跑"
     }
     else {
-        $fail++; Say "FAIL ③ 负控 --no-strip-gps 时 GPS 仍被剥掉 ⇒ ① 的断言无法区分 GPS 有无，属空跑"
+        $fail++; Say "FAIL ③ 显式 --strip-gps 时 GPS 仍在（$g2）⇒ 用户明确要求剥除却静默保留（2026-10-05 那条 P0 的形状复发）"
     }
 }
 

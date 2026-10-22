@@ -19,6 +19,9 @@
 5. **AVIF 的增益图在参考库里仍是实验特性**（libavif 1.1.0 起 `AVIF_ENABLE_EXPERIMENTAL_GAIN_MAP`，
    官方 changelog 自述"Files created now might not decode in a future version"）
    ⇒ 我们自写 tmap 的正确性只能靠"常驻第三方读者判据"盯住，这条已经落地（见 §4 P1-1）。
+6. **"标记方法"已按维护者裁决做成运行期三档**（`iso` 默认 / `xmp` / `both`，§6.4）：参考实现是编译期开关、
+   上游默认 ISO-only；`xmp` 与三通道**不互斥**（hdrgm 用单值表达"适用于全部通道"，本实现逐通道参数恒相同）。
+   落地时一并修了 §4 P0-3（底图 ISO 裸桩）、P0-4（次图 XMP）与 P0-5（字段集/序列化形式）。
 
 ## 1. 字段对照：ISO 21496-1 二进制元数据
 
@@ -92,6 +95,99 @@
   可先把 JPEG 侧的 Apple 读路径判据补上）；HEIC 侧需要 iPhone 拍摄或 libheif 测试集。
 - 验收判据：同 §3c 的形状 —— 正向"识别 + 元数据非空 + 施加后峰值 > 底图峰值"，负控"普通 HEIC 不得走增益图路径"。
 
+### P0-3 底图缺 ISO 21496-1「版本裸桩」（已实现 + 已验收，补丁待落主树）
+
+- 一手出处（参考实现 libultrahdr v2.0.2，本仓 `tools/src/libultrahdr` 干净检出，`git status` 无改动）：
+  结构声明 [jpegr.cpp:1074-1078](file:///c:/PLAN/ffmpegPictureUI/tools/src/libultrahdr/lib/src/jpegr.cpp#L1074)
+  把底图这一列标成 **`(Required, ISO 21496-1 metadata, version only)`**，写入代码在
+  [jpegr.cpp:1278-1292](file:///c:/PLAN/ffmpegPictureUI/tools/src/libultrahdr/lib/src/jpegr.cpp#L1278)：
+  `APP2` + 段长 `2+28+4` + `urn:iso:std:iso:ts:21496:-1\0` + `minimum_version(0000)` + `writer_version(0000)`。
+  数值只在**次图**那一根里（同文件 :1394-1404）。
+- 我们差在哪：组装段只写了 XMP 与 MPF（[GainMapEncoder.cs:1003-1006](file:///c:/PLAN/ffmpegPictureUI/src/FfmpegGui/Services/GainMapEncoder.cs#L1003)），
+  ISO 只进次图（同文件 :976-977）。
+- 实测（字节级，`tests/output/_gm_jpeg_layout2.py`，两份不同批次产物同形）：
+  `tests/output/heic-bt2020/head/gm_2020_jpg/synth_heic_gainmap.jpg` = `#1 ICC/DQT/SOF/DHT/XMP/MPF/SOS`（**无 ISO**），
+  `#2 ISO(full,61B)`；全文件 `urn:iso…` 计数 = **1**。
+- 后果边界：我们自己的读侧不受影响（元数据从次图取，参考实现也从次图取，见 :1499-1500）；
+  受损的是**只看底图就判定"这是 21496-1 增益图"**的消费者。具体哪家会这样，**未判定**（本机没有可跑的 Android/JPEGLib 栈），
+  所以这条按"规范 Required 而我们不写"立项，不按"某机型坏"立项。
+- 改动（3 处，全在 `GainMapEncoder.cs` 的组装段）：`IsoVersionOnlyStub()` + 主图写 `APP2` +
+  `primarySize` / `mpfDataStart` 同步 +34 字节（漏一处就会写出错位的 MPF）。
+- 验收判据：`verify-gainmap-engine.ps1` 新增 **§1b** 三条 ——
+  ①b-1 底图 SOS 之前必须存在"段长=34 且命名空间命中"的 APP2，并打印 off 与 4 字节版本读数；
+  ①b-2 **内存变异臂**：把这根桩从字节里摘掉后，同一把尺必须判无（不落盘、不重建）；
+  ①b-3 全文件命名空间计数**恰好 2**（底图桩 + 次图全量），防重复插入与防某一侧丢。
+- 读数（同一支门禁脚本，只换被测二进制）：打了补丁的工作树件 **PASS=143 FAIL=0**；
+  主树未打补丁件 **PASS=141 FAIL=2**，红的正是 ①b-1 与 ①b-3 —— 判据有牙且其余 141 条无回归。
+- MPF 独立复核（exiftool，第三方读者）：补丁件 `MPImageStart=11546`（== 实测次图 SOI 位置）、
+  `MPImageLength=1523`（== 13069−11546）、`NumberOfImages=2` ⇒ +34 字节的偏移账是对的。
+- 补丁文件：`tests/output/gainmap-base-iso-stub-20261020.patch`（未落主树：主树被并发写者的
+  `src/FfmpegGui/CliParser.cs` 占着，12 个文件未提交，不能替他们构建/提交）。
+
+### P0-4 次图缺 XMP（已实现，随元数据方式档一起落）
+
+- 参考实现把 XMP 写**两处**：底图 [jpegr.cpp:1252-1263](file:///c:/PLAN/ffmpegPictureUI/tools/src/libultrahdr/lib/src/jpegr.cpp#L1252)、
+  次图 [jpegr.cpp:1381-1391](file:///c:/PLAN/ffmpegPictureUI/tools/src/libultrahdr/lib/src/jpegr.cpp#L1381)；
+  ISO 同样写两处（桩 + 全量）。改之前的形状是"一人一份"：底图只有 XMP，次图只有 ISO。
+- 真实文件支持"次图也该带 XMP"：`tools/src/libultrahdr/tests/data/apple_gainmap_new.jpg` 的 `#2` 就是一根
+  `APP1[XMP](len=758)`（Apple aux 那一代），实测 `urn:com:apple:photo:2020:aux:hdrgainmap` 命中 1 次、`hdrgm`/`urn:iso` 命中 0 次。
+- 实现要点（这笔账必须一起改，漏一处就写出错的长度）：次图多出 `2+2+29+len(xmpSec)` 字节 ⇒
+  底图 XMP 的 `Container:Item Item:Length` 与 MPF 的 secondary size 都要用**含次图 XMP 的**总长；
+  组装顺序因此倒过来——先算次图总长（参考同序，[jpegr.cpp:1164-1170](file:///c:/PLAN/ffmpegPictureUI/tools/src/libultrahdr/lib/src/jpegr.cpp#L1164)），
+  再生成底图 XMP。次图那份 XMP **不带** `Container:Directory`（`BuildXmpMetadata(withDirectory:false)`），
+  否则 `Item:Length` 自指。
+- 验收判据：`verify-gainmap-engine.ps1` §1c 里两条"声明长度 == 实测次图长度"（both/xmp 各一条）+ 三档指纹矩阵。
+  实测读数 `both：声明 2603 == 实测 2603`、`xmp：声明 2510 == 实测 2510`。
+
+### P0-5 hdrgm XMP 的字段集与序列化形式（2026-10-20 结案：两处都已证伪并修）
+
+**权威原文**：Ultra HDR 图片格式 v1.1（Android Developers，已抓存 `tests/output/spec_ultrahdr_zh.html`，
+358,656 B；解析脚本 `tests/output/_parse_spec.py`）。
+
+- hdrgm 表**恰好九项**：`Version`（文本，必填，1.0）、`BaseRenditionIsHDR`（布尔，必须 False）、
+  `GainMapMin`（实数或有序实数数组）、`GainMapMax`（同上，**必填**）、`Gamma`（同上）、
+  `OffsetSDR` / `OffsetHDR`（同上）、`HDRCapacityMin`（实数）、`HDRCapacityMax`（实数，**必填**）。
+  原文对前五项的类型写的是「单个 Real 或有序 Real 数组……一个适用于所有通道的项，或分别针对 R/G/B 三个项」
+  ⇒ **多通道靠数组或单值表达，规范里没有通道数字段**。
+- 原文关键词检索：`UseBaseRenderingColorSpace`、`hdrgm:Channels`、`MapPrimary`、`MapSecondary`、
+  `MapImageRatio` **全部 0 命中**（原始 HTML 与可见文本两条路都查了）；参考实现的字段清单同样只有九项
+  （[jpegrutils.cpp:455-463](file:///c:/PLAN/ffmpegPictureUI/tools/src/libultrahdr/lib/src/jpegrutils.cpp#L455)），
+  且它只在 `AttributeName` 里认这九个名字（[:178-210](file:///c:/PLAN/ffmpegPictureUI/tools/src/libultrahdr/lib/src/jpegrutils.cpp#L178)）。
+- 原文另两条定位：①「此元数据存储在增益图像的 XMP 数据包中」；②格式信号 = **主要图片**的 XMP 里存在
+  `hdrgm:Version="1.0"`。我们的实现：次图写九项全量、底图只写 `Version` + `Container:Directory`
+  （与参考实现同形；2026-10-20 审查轮用参考件实测后从"底图也写全量"改过来——多写会掩盖
+  读侧只读主图的缺陷，见 §5 的三档识别矩阵）。
+- **读侧配套**：exiftool 必须带 `-ee` 才能读次图 XMP；不带时合规的 XMP-only 文件会被当普通 JPEG。
+
+**本轮抓到并修掉的两处**（都由判据逼出来，不是读代码猜的）：
+
+1. **五个自造字段**（`hdrgm:Channels` / `UseBaseRenderingColorSpace` / `MapPrimary` / `MapSecondary` /
+   `MapImageRatio`）已从模板删除。原先的"通道数"语义改由两层承载：ISO 的 flags bit7（有 ISO 时）、
+   以及增益图 image 自身的通道（XMP-only 时）。判据：engine ⑤b 用 exiftool 先做正控
+   （同一份 XMP 读得到 `GainMapMax=2.30`），再断言五个名字命中数 == 0。
+2. **序列化形式**：我们原来把 hdrgm 写成 `<hdrgm:Version>1.0</hdrgm:Version>` **子元素**；规范示例与
+   参考实现都是 `rdf:Description` 上的**属性**（`hdrgm:Version="1.0"`）。exiftool 两种都读得出，所以此前
+   一直没暴露；第三方判据 D5e（xmp+RGB、无 ISO）让 libultrahdr 直读时报
+   `xml parse error, could not find attribute hdrgm:Version`。改成属性后 D5e 通过
+   （`Ultra HDR Image: Yes  max=2.46229`）。
+
+**`xmp` + RGB 不再拒绝**：参考实现拒绝的是"各通道参数**不相同**"的 XMP 编码
+（[jpegr.cpp:1120-1127](file:///c:/PLAN/ffmpegPictureUI/tools/src/libultrahdr/lib/src/jpegr.cpp#L1120)
+的 `!are_all_channels_identical()`），本编码器的逐通道参数**恒相同**（`BuildIso21496Metadata` 成套复制），
+于是 XMP 单值与 ISO 三参数集逐值等价 ⇒ 这是合法组合。判据（engine §1c）不只测"能产出"：
+把两条臂的增益图解码成 rgb24 后逐像素比通道 —— 单通道臂 0/49152 像素三通道有差，
+xmp+RGB 臂 48896/49152 有差（99.5%），证明 RGB 臂交付的是**真逐通道数据**、不是静默灰度。
+自家解码器同步补了 XMP-only 的通道推断（没有 ISO flags 时按增益图 SOF 分量数取 1/3；
+本实现的"灰度"增益图实际也编成 3 分量 YCbCr、三通道相等，逐通道施加与灰度施加逐值等价）。
+
+### P1-3 段序与参考不同（只登记，不判红）
+
+- 参考声明的标准序（[jpegr.cpp:1295](file:///c:/PLAN/ffmpegPictureUI/tools/src/libultrahdr/lib/src/jpegr.cpp#L1295)）：
+  `SOI → APP0(JFIF) → APP1(XMP) → APP2(ICC) → APP2(ISO) → DQT/SOF/DHT → APP2(MPF) → SOS`。
+  实测我们：`SOI → APP2(ICC) → DQT → SOF → DHT → APP1(XMP) → [P0-3 后：APP2(ISO 桩)] → APP2(MPF) → SOS`。
+- 为什么暂不判红：按 marker 扫描的解析器不受位置影响，而"有没有按位置取 APP1 的消费者"本机无一手证据 ⇒
+  **未判定**。等 P0-4 一起做时再决定是否重排（重排会动 `baseHeaderLen` 的切分口径，属另一笔账）。
+
 ### P1-1 AVIF 增益图的第三方读者常驻判据（已完成）
 
 - 判据已落在 `verify-gainmap-isobmff.ps1` 的 §3f-9：`avifdec --info` 必须读出 `Alternate Headroom`
@@ -127,3 +223,86 @@
 | P0-1 补丁行为 | **未核**（合成件未触达分支，原因未定位；主树因并发写者的 `CliParser.cs:475` 编不动） |
 | P1-1 第三方读者判据 | **已核并落地**（70/0，含两支变异验牙） |
 | P1-2 / P0-2 / P2-1 | **未做**（P0-2 卡在样本） |
+| P0-3 底图 ISO 裸桩 | **已实现并验收**：工作树构建 0 警 0 错；门禁 §1b/§1c 红绿对撞（见下一行）；MPF 由 exiftool 独立复核 |
+| P0-4 次图 XMP | **已实现并验收**：§1c 两条"声明长度==实测次图长度"闭合（both 2358/2358、xmp 2265/2265；属性化后长度较旧元素形式缩短） |
+| 元数据方式三档（默认 iso） | **已实现并验收（2026-10-20 二次复验）**：`verify-gainmap-engine` **162/0**（新增：xmp+RGB 的逐通道数据判据、⑤b 九项字段锁）；`verify-gainmap-thirdparty` **22/0**（D5 两处声明 `XMP[-0.29,1.30] == ISO[-0.290,1.300]`、D5c 默认档无 XMP、D5d 自造字段 0 命中、D5e libultrahdr 直读 xmp+RGB `max=2.46229`）；`ui-cli` **72/0**；`ui-mode` **52/1**（O6a–g 全 PASS；唯一红 G1 是工作树嵌在第 10 层、宿主只向上找 8 层的既有环境限制，把同一份构建产物放浅路径后 G1 **1/0**） |
+| UI 联动的实机读数 | **已核**：G 组（GUI 驱动真实转换）先前在隔离工作树红，机制是宿主 `InitExternalTools` 只从 exe 目录向上找 8 层、工作树嵌在第 10 层；把同一份构建产物放到浅路径后 `tools-root=C:\PLAN\ffmpegPictureUI` 被找到，G1 PASS ⇒ 归因成立 |
+| AVIF 档位提示 | **已核**：`--format avif --jpeg-gain-map-metadata both` 的日志出现「元数据方式「both」对 AVIF 出口无效：tmap 只承载 ISO 21496-1 二进制，XMP 不写」 |
+| P0-5 XMP 字段集/序列化 | **已核并修**：规范九项、五个自造字段绝迹；hdrgm 改为属性形式（第三方 D5e 直读通过） |
+| P1-3 段序 | **只登记**（消费者是否按位置取段：未判定） |
+| 「标记方法两种/三种」与是否加下拉 | 见 §6；结论已被维护者裁决更新：**做三档、默认 iso**（原"不加下拉"的判词作废） |
+
+## 6. 元数据标记方法到底几种？要不要在 JPEG 高级色彩选项加下拉
+
+### 6.1 事实：参考实现把它做成**编译期**开关，不是逐文件选项
+
+- `UHDR_WRITE_XMP` / `UHDR_WRITE_ISO` 是 CMake 选项，且**上游默认已经是"只写 ISO"**：
+  [CMakeLists.txt:135-136](file:///c:/PLAN/ffmpegPictureUI/tools/src/libultrahdr/CMakeLists.txt#L135)
+  （`UHDR_WRITE_XMP` 默认 `FALSE`，`UHDR_WRITE_ISO` 默认 `TRUE`）。
+- 编译期常数 [jpegr.cpp:51-60](file:///c:/PLAN/ffmpegPictureUI/tools/src/libultrahdr/lib/src/jpegr.cpp#L51)，
+  加 `static_assert` 只禁止"两者都不写" [jpegr.cpp:65-66](file:///c:/PLAN/ffmpegPictureUI/tools/src/libultrahdr/lib/src/jpegr.cpp#L65)
+  ⇒ 合法组合是 **XMP-only / ISO-only / 双写** 三档，构建时定死，编码 API 里没有运行期选择。
+- 本机 `tools/src/libultrahdr/build/CMakeCache.txt:264-267` 实测就是 `UHDR_WRITE_ISO:BOOL=ON` + `UHDR_WRITE_XMP:BOOL=OFF`；
+  `build/libheif/src/libheif-build/CMakeCache.txt:44` 的 `CMAKE_CXX_FLAGS` 里带 `-DUHDR_WRITE_ISO`（libheif 侧同档）。
+
+### 6.2 XMP-only 对本实现不是"严格更弱"的一档（2026-10-20 按规范原文更正）
+
+- 多通道增益图元数据：参考实现只拒绝**各通道参数不相同**的 XMP 编码
+  （[jpegr.cpp:1120-1127](file:///c:/PLAN/ffmpegPictureUI/tools/src/libultrahdr/lib/src/jpegr.cpp#L1120)
+  的 `!are_all_channels_identical()`）；参数相同时允许，并在 XMP 里写**单值**（`[0]`）应用全部通道。
+  本实现的逐通道参数恒相同（`BuildIso21496Metadata` 成套复制）⇒ XMP 单值与 ISO 三参数集逐值等价。
+- `use_base_cg`：XMP 写不出"增益图在 alternate 空间"的声明；本实现的增益图恒在底图色彩空间
+  （ISO flags bit6 恒置）⇒ 不受这条影响。
+- 所以对本实现，两份声明的**数值**完全同源；三档的差别只剩"哪些读者认哪个命名空间"。
+  历史判词"XMP-only 会静默缩小声明能力"只对"逐通道参数不同 / alternate 空间"的编码成立，不适用于本仓。
+
+### 6.3 "旧标准"（Apple aux）我们**写不出来**，不能放进写侧下拉
+
+- Apple 那一代的载体是 HEIF/MakerApple（`urn:com:apple:photo:2020:aux:hdrgainmap`，8-bit 单通道辅助图），
+  本机无 HEIF 写通路（ffmpeg 无 heif muxer、无 `heifenc.exe`/`libheif.dll`，见 §4 P1-2 的实测）。
+- 下拉里放一个必然失败或必然静默降级的选项，违反本仓「编码器不可用应显式报错而非静默回退」的诚实原则
+  ⇒ Apple aux 只该出现在**读侧**与探针的 `Form` 标签里（P0-1 正在做这件事）。
+
+### 6.4 结论（2026-10-20 更新：维护者已裁决"做开关，默认 iso"）
+
+我原先的判词是"不加下拉"，理由是：①参考实现把它当构建期能力；②最大兼容解就是双写；③Apple aux 写不出。
+维护者的裁决取代其中第 ②条：**三档都做，默认从"两份都写"改成"只写 ISO"**（与 libultrahdr 上游默认一致），
+`xmp` 档保留给"只认 hdrgm 的老栈"，`both` 档保留最大兼容解。落地口径：
+
+- 取值域只有一处定义：`GainMapEncoder.GainMapMetadataModes`（`iso` / `xmp` / `both`），UI 下拉顺序与 CLI 别名都从它取。
+- 组合合法性只有一个裁决点：`ValidateGainMapMetadata(mode)` —— 取值域之外一律点名拒绝；
+  `xmp` + RGB **合法**（hdrgm 用单值表达"适用于全部通道"，本实现的逐通道参数恒相同；
+  参考实现也只拒绝各通道参数不相同的 XMP 编码）。UI 不再灰化"增益图类型"。
+- 默认值变更本身有锁：`ui-cli` 里断言 `new FfmpegOptions().JpegGainMapMetadata == "iso"`。
+- AVIF 出口与此开关无关（tmap 承载的就是 ISO 二进制），选了非默认档会**点名**"对 AVIF 无效"。
+- P0-5 已结案：XMP 字段集收紧到规范九项，且改为 `rdf:Description` 属性形式（详见 §4 P0-5）。
+
+## 7. 三档识别对照（2026-10-20，参考件实测）
+
+**参考件怎么来**（可复现）：
+1. libultrahdr v2.0.2 用 CMake 编译三个写侧档（`UHDR_WRITE_XMP=ON/ISO=OFF`、`ON/ON`、`OFF/ON`；
+   HEIF/AVIF 关闭不影响 JPEG 路径）。
+2. HDR 输入：`ffmpeg -i tests/output/sources/src_hdr_pq.png -pix_fmt p010le -f rawvideo hdr.p010`。
+3. 编码：`ultrahdr_app -m 0 -p hdr.p010 -w 512 -h 384 -a 0 -C 2 -t 2 -q 95 -z ref_<mode>.jpg`。
+4. 另取 `tools/src/libultrahdr/tests/data/apple_gainmap_{new,old}.jpg` 作两代 Apple 样本，
+   `jpeg_image.jpg` 作负控。
+
+**矩阵**（`-P`/decode = libultrahdr；来源 = 自家 CLI）：
+
+| 件 | libultrahdr `-P` | libultrahdr decode | 自家解码器来源 | exiftool 主图 | `-ee` |
+| --- | --- | --- | --- | --- | --- |
+| our_iso | Yes 4.92458 | 786432 B | ISO 21496-1 | — | — |
+| our_xmp | Yes 4.92458 | 786432 B | hdrgm XMP (ch=3) | Version | 九项 |
+| our_both | Yes 4.92458 | 786432 B | ISO + XMP | Version | 九项 |
+| ref_iso | Yes 49.2611 | 786432 B | ISO 21496-1 | — | — |
+| ref_xmp | Yes 49.2612 | 786432 B | hdrgm XMP (ch=3) | Version | 九项 |
+| ref_both | Yes 49.2611 | 786432 B | ISO + XMP | Version | 九项 |
+| apple_new | Yes 23.1475 | — | Apple HDRGainMap | — | — |
+| apple_old | Yes 8 | — | Apple HDRGainMap | — | — |
+| jpeg_image | No gainmap | — | 无 | — | — |
+
+**读侧缺陷（本轮发现并修）**：参考 XMP-only 件主图只有 `Version`、九项在次图 XMP；
+自家解码器不带 `-ee` 时只读主图 ⇒ 把它当普通 JPEG（修前 PNG 53120 B / 无解码日志，
+修后 117451 B / `hdrgm XMP`）。修法 = 写入侧改成参考形状 + 读取侧 `-ee`（详见 FIX_PLAN 本轮账目）。
+门禁锁：engine §1d 三档回解、⑤b 主图形状、thirdparty D5f 位置判据。
+

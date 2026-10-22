@@ -3,7 +3,7 @@
 #
 # ⚠ **输入自备**（2026-09-17 补，理由同 §6 第 64 条「门禁依赖别脚本的遗留产物」）：
 #   此前这里读 `tests/output/gainmap/png3_cicp.png` —— 那是**链外的 `GainMapTestHost`**
-#   （`tests/GainMapTestHost/Program.cs:83-136`）产出的**遗留文件** ⇒ 干净 `tests/output` 上本脚本
+#   （`tests/projects/GainMapTestHost/Program.cs:83-136`）产出的**遗留文件** ⇒ 干净 `tests/output` 上本脚本
 #   会直接 `exit 1`。而本轮要把它加进 `_run-step3-gates.ps1` 的必跑清单（作为 `validate/jpgp3` 的
 #   生产者），**必须自己生成** ⇒ 否则等于把「静默假绿」换成「需要手工前置步骤的红」，代价不对等。
 #   生成方式与 GainMapTestHost **逐字一致**（testsrc2 128x96 → rgb48be PNG，再用**生产代码**
@@ -17,8 +17,8 @@ $d  = "$root/tests/output/validate/jpgp3"
 if (Test-Path $d) { Remove-Item -Recurse -Force $d -ErrorAction SilentlyContinue }
 New-Item -ItemType Directory -Force -Path $d | Out-Null
 $in = "$d/src_cicp.png"
-$prExe = "$root/tests/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.exe"
-if (-not (Test-Path $prExe)) { $prExe = "$root/tests/ServiceProbe/bin/Debug/net11.0/win-x64/ServiceProbe.exe" }
+$prExe = "$root/tests/projects/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.exe"
+if (-not (Test-Path $prExe)) { $prExe = "$root/tests/projects/ServiceProbe/bin/Debug/net11.0/win-x64/ServiceProbe.exe" }
 # ⚠ 2026-09-21（TESTING.md 第 84 条处置建议 ①）：**回退是静默的** —— 门禁可能测的
 #   不是你以为的那个二进制。⇒ 一律**打印被测 exe 与构建类型**，让读数可追溯。
 Write-Output ("[gate] exe=" + $prExe + $(if ($prExe -like '*[/\]Debug[/\]*') { " (Debug fallback)" } else { " (Release)" }))

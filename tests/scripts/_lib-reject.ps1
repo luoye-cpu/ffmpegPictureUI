@@ -1326,7 +1326,7 @@ if ($SelfTest) {
 #
 # N6. 触发前置条件全部来自**源码推导**，没有一条由本波次端到端实测
 #     原因：本波次有并行的构建子代理，硬约束禁止本代理跑 `dotnet build`、
-#     也禁止运行 `src/FfmpegGui/bin/**` 与 `tests/ServiceProbe/bin/**` 下的 exe。
+#     也禁止运行 `src/FfmpegGui/bin/**` 与 `tests/projects/ServiceProbe/bin/**` 下的 exe。
 #     时间戳核对（本文件写盘时）：
 #       · 被测源码最新 = ColorEngineRouter.cs  2026-09-19 10:39:57
 #                        QueueProcessor.cs    2026-09-19 10:02:22

@@ -11,7 +11,7 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 Set-Location $root
 
-$src = Get-Content 'tests/UiTestHost/Program.cs' -Encoding utf8
+$src = Get-Content 'tests/projects/UiTestHost/Program.cs' -Encoding utf8
 
 # 旧宿主里每个 GroupX_ 的行区间
 $starts = [ordered]@{}
@@ -66,7 +66,7 @@ Write-Host "===== ui-split-verbatim =====" -ForegroundColor Cyan
 
 $totalLines = 0
 foreach ($p in $map.Keys) {
-    $file = "tests/$p/$($p -replace '-','')Group.cs"
+    $file = "tests/projects/$p/$($p -replace '-','')Group.cs"
     if (-not (Test-Path $file)) { CK $false "$file exists"; continue }
     $gen = Get-Content $file -Encoding utf8
 
@@ -88,7 +88,7 @@ foreach ($p in $map.Keys) {
         #   拆分侧、没回灌旧宿主 ⇒ 只能整组放行 J（放行粒度=组，见下方历史教训），代价是
         #   **J 组 1000+ 行从此不进逐字比较**，而旧宿主那一份还在跑**改之前**的 J1z/J8。
         # 现已把 J1z 的「环境前置改 Skip + 无条件形态断言」与 J8 的「等异步联动落地再读」
-        #   **回灌进旧宿主**（`tests/UiTestHost/Program.cs`），登记表归零 ⇒ 17 组全部逐字比较。
+        #   **回灌进旧宿主**（`tests/projects/UiTestHost/Program.cs`），登记表归零 ⇒ 17 组全部逐字比较。
         # ⚠ 以后若真需要放行：**必须先让两份拷贝各自成立**，再在此登记并同批改下面那条
         #   `$waivedGroups.Count -eq 0` 的反控（改锁要显式、可审，不许静默扩大放行面）。
         $waivedGroups = @{}

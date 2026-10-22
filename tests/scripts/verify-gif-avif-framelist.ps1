@@ -209,6 +209,40 @@ if (Test-Path $flatAvif) {
   CK (($rC.text -split "`n" | Where-Object { $_ -match '时长不均|被抬到' }).Count -eq 0) "臂C 负控：恒定帧率源的产物**不得**报延时不均（判据有区分力）"
 } else { SKIP "负控输入缺失（臂A 产物不在）⇒ 不执行（不给假绿）" }
 
+# ── ⑥ 输入侧「绕过引擎」的点名必须与真实分派支逐条对齐（2026-10-22 普查抓到的假陈述）──────
+# 缺陷形状（实测）：旧名单写的是 `inputExt is ".jxl" or ".jxr" or ".avif"`，可 `.avif` **只有** → gif/webp
+#   才真的走两步法专用管线；`.avif → png` 由引擎执行 ⇒ 同一份日志里既有「本次由 .avif 专用输入管线 处理，
+#   色彩引擎尚未接入该路径」又有「[色彩引擎] 决策：…」＝**宣称没接、其实接了**。
+#   另一头 `.gif → avif`（avifenc 两步法）**根本不在名单里** ⇒ 那条绕过是静默的。
+#   ⇒ 本段用「同容器、不同输出」的判别对钉住两个方向：该点名的一定要点名，不该点名的绝对不许说。
+Write-Host "`n── ⑥ 绕过引擎的点名与真实分派支对齐（avif→png 不许谎报 / gif→avif 不许静默）──" -ForegroundColor Cyan
+$e6gif = Join-Path $work "e6_gif2avif"
+$r6a = Run-Queue $unevenGif $e6gif @('--log-level', 'debug') 'avif' 60
+CK (($r6a.text -match '\.gif 专用输入管线') -and ($r6a.text -match '尚未接入该路径')) `
+   "⑥ .gif → .avif：绕过引擎必须**点名**（旧名单漏了 .gif ⇒ 修复前该红：静默绕过）"
+$e6a2g = Join-Path $work "e6_avif2gif"
+$r6b = Run-Queue $unevenAvif $e6a2g @('--log-level', 'debug') 'gif' 60
+CK (($r6b.text -match '\.avif 专用输入管线') -and ($r6b.text -match '尚未接入该路径')) `
+   "⑥ .avif → .gif：真绕过 ⇒ 必须点名（与上一臂同形，判据不是只对着新加的那条写）"
+# 判别对必须用**静图** AVIF：动画 AVIF → png 会被 `ShouldRoute` 的 AnimatedInput 拦下（引擎本来就不该按
+#   单帧处理动画）⇒ 拿它当"引擎应当执行"的正控会假红（本机第一次跑就撞上了）。
+$redPng = Join-Path $ufd "red.png"
+$stillDir = Join-Path $work "e6_still"
+$r6p0 = Run-Queue $redPng $stillDir @() 'avif' 60
+$stillAvif = Join-Path $stillDir "red.avif"
+CK (((Test-Path $stillAvif)) -or ($r6p0.code -eq 0)) "⑥ 前置：由静图 PNG 造出静图 AVIF 夹具（$stillAvif 在盘=$([bool](Test-Path $stillAvif))）"
+$e6a2p = Join-Path $work "e6_avif2png"
+$r6c = Run-Queue $stillAvif $e6a2p @('--log-level', 'debug') 'png' 60
+CK ($r6c.text -match '\[色彩引擎\] 决策') "⑥ 正控：静图 .avif → .png 这一臂**确实**由引擎执行（日志有决策行）"
+CK ($r6c.text -notmatch '尚未接入该路径') `
+   "⑥ 静图 .avif → .png：**不得**谎报「引擎尚未接入」（旧写法必红：引擎明明跑了却报没接）"
+$qpFile6 = Join-Path $root 'src/FfmpegGui/Services/QueueProcessor.cs'
+$qp6 = [System.IO.File]::ReadAllText($qpFile6)
+CK (($qp6 -match 'inputBypassedEngine') -and ($qp6 -notmatch 'inputExt is "\.jxl" or "\.jxr" or "\.avif"')) `
+   "⑥ 形态锁（防再抄）：判据抽成 inputBypassedEngine，且 `.avif` 不再作为**裸项**混在输入名单里"
+CK ((($qp6 -split 'ProcessAvifToGifWebpAsync').Count - 1) -ge 1) `
+   "⑥ 上一条负断言的扫描面非空（同文件确有 ProcessAvifToGifWebpAsync ⇒ 不是读错文件的空命中）"
+
 Write-Host "`n===== PASS=$pass FAIL=$fail SKIP=$skip =====" -ForegroundColor $(if ($fail -eq 0) { "Green" } else { "Red" })
 # 跑绿自清（跑红保留 GUID 目录供排查）—— 必须在 exit 之前，且用显式 if/else 给出退出码（§6 第 66/67 条）。
 if ($fail -eq 0) { Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue }

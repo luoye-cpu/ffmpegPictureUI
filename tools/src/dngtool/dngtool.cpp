@@ -10,13 +10,13 @@
 //                                      → 编码 DNG (任意 RAW → DNG)
 //
 //  dcraw 兼容参数说明:
-//    -4  16-bit 线性输出
+//    -4  编码侧 8-bit 传感器输出 (产物 BitsPerSample=8；实测口径，非 dcraw 的 16-bit 线性)
 //    -T  输出 TIFF
 //    -o 0  原始相机色彩空间
 //    -q 3  AHD 高质量去马赛克
 //    -W  相机白平衡
 //    -H 1 高光保留
-//    -6  16-bit 位深
+//    -6  16-bit 位深（编码侧默认值；-d 解码路径写死 16-bit，两把都不起作用）
 //    -O <path>  输出路径 (dcraw 无此参数, dngtool 扩展)
 // ═══════════════════════════════════════════════════════════
 #include <cstdio>
@@ -54,6 +54,7 @@
 #include "dng_camera_profile.h"
 #include "dng_misc_opcodes.h"   // dng_opcode_MapTable + dng_area_spec (规范 51022 OpcodeList3)
 #include "dng_lens_correction.h" // FixVignetteRadial(3)/WarpRectilinear(1)/WarpRectilinear2(14) + 参数类
+#include "dng_bad_pixels.h"      // FixBadPixelsList(5) + dng_bad_pixel_list（IIQ SensorDefects 的规范落点）
 #include <cmath>                 // pow()/fabs(): 镜头表到标准形式的拟合
 #include "dng_preview.h"
 #include "dng_date_time.h"
@@ -65,6 +66,10 @@
 #include "dng_jpeg_image.h"
 #include "dng_jxl.h"
 #include "dng_tag_values.h"
+#include "dng_tag_codes.h"    // tcExifIFD / tcGPSInfo / tcInteroperabilityIFD (标准 EXIF 搬运按 IFD 归属分派)
+#include "dng_shared.h"       // dng_exif::ParseTag 的 dng_shared & 形参
+#include "dng_orientation.h"  // dng_orientation::SetTIFF + dng_metadata::SetBaseOrientation (源 0x0112)
+#include "dng_tag_types.h"    // TagTypeSize(): 内联/外置判据的唯一权威来源（自建表已实测抄错过一次）
 #include "dng_utils.h"
 #include "dng_area_task.h"
 #endif
@@ -282,6 +287,7 @@ static void PrintUsage(const char* prog)
     printf("  -info <file>      print media info as JSON\n");
     printf("  -idc <file>       dump the ACTIVE SonyIDC version of a Sony ARW, or of a\n");
     printf("                    DNG whose OriginalRawFileData holds one\n");
+    printf("                    (⚠ 默认不嵌原文件 ⇒ 只有 -embed-raw 生成的 DNG 才带 50828)\n");
     printf("                    (JSON to stdout; tag ids only, no value interpretation)\n");
     printf("  -engines          list engines and exit\n");
     printf("  -i <file>         input file\n");
@@ -290,7 +296,9 @@ static void PrintUsage(const char* prog)
     printf("  -q <n>            demosaic quality (3=AHD)\n");
     printf("  -W                use camera white balance\n");
     printf("  -H <n>            highlight mode\n");
-    printf("  -4 / -6           bit depth (16)\n");
+    printf("  -4 / -6           encode-mode sensor bit depth: -4 = 8-bit, -6 = 16-bit\n");
+    printf("                    (default = 16-bit; measured via BitsPerSample of the artifact —\n");
+    printf("                     -decode mode ignores both, it is fixed at 16-bit)\n");
     printf("  -T                output TIFF\n");
     printf("  -v                verbose\n");
     printf("  --- encode mode ---\n");
@@ -303,6 +311,11 @@ static void PrintUsage(const char* prog)
     printf("  -linear           write linear DNG (no CFA, for linear/demosaiced input)\n");
     printf("  -no-raw-meta      drop the source-RAW transport: no EXIF capture fields,\n");
     printf("                    no embedded original raw (OriginalRawFileData), no previews\n");
+    printf("  -embed-raw        (opt-in; OFF by default since 2026-10-19) embed the whole source\n");
+    printf("                    raw file into spec tag 50828 so vendor-private data stays recoverable.\n");
+    printf("                    Off = those entries are discarded: they have no standard slot and\n");
+    printf("                    ordinary readers cannot see them (measured: LibRaw 0 hits). Pixels are\n");
+    printf("                    unaffected - the DNG's own sensor plane is bit-identical either way.\n");
     printf("  -idc-look FILE    write FILE's curve into a standard DNG slot\n");
     printf("                    curve=x:y ...   -> main profile's ProfileToneCurve (50940)\n");
     printf("                    curveR/G/B=...  -> OpcodeList3 (51022) MapTable per plane\n");
@@ -313,6 +326,11 @@ static void PrintUsage(const char* prog)
     printf("                     [WarpRectilinear2 optional] + [WarpRectilinear]; OFF by default\n");
     printf("                     because it changes rendered pixels. Absent / switched-off / identity\n");
     printf("                     tables are named on stderr as lens-skipped=... and written as nothing)\n");
+    printf("  -no-gps           do NOT write the source's GPS standard tags into the artifact.\n");
+    printf("                    The tool carries them by default (GPS has an EXIF standard slot, so\n");
+    printf("                    dropping it silently would be a loss); the product passes this flag\n");
+    printf("                    when the user's --strip-gps privacy request is set, and the tool then\n");
+    printf("                    names it on stderr as gps-suppressed=1 instead of staying quiet.\n");
 }
 
 // 引擎能力描述
@@ -516,7 +534,8 @@ static int Decode(
 #endif
 
     // dcraw 兼容参数
-    processor.imgdata.params.output_bps = 16;    // -4 / -6
+    // ⚠ 解码路径的位深与此处两个开关无关（-4/-6 只作用于 -e 编码路径，见 EncodeDng）
+    processor.imgdata.params.output_bps = 16;    // 解码固定 16-bit
     processor.imgdata.params.output_color = outputColor;
     processor.imgdata.params.user_qual = quality;
     processor.imgdata.params.use_camera_wb = useCameraWb;
@@ -1327,13 +1346,24 @@ static bool FindIfd0Tag (const std::vector<uint8>& f, uint32 want, uint32& ty, u
     if (f.size () < 8) return false;
     bool le = (f [0] == 'I' && f [1] == 'I');
     if (!le && !(f [0] == 'M' && f [1] == 'M')) return false;
-    auto rd16 = [&] (size_t o) { return le ? (uint32) (f [o] | (f [o + 1] << 8))
-                                           : (uint32) (f [o + 1] | (f [o] << 8)); };
-    auto rd32 = [&] (size_t o) { return le ? (uint32) (f [o] | (f [o + 1] << 8) | ((uint32) f [o + 2] << 16) | ((uint32) f [o + 3] << 24))
-                                           : (uint32) (((uint32) f [o] << 24) | ((uint32) f [o + 1] << 16) |
-                                                       ((uint32) f [o + 2] << 8) | (uint32) f [o + 3]); };
+    // ⚠ 必须带边界：`TagBytesFromPath` 先只喂 4 MiB 头部缓冲，而 PhaseOne IIQ 的 IFD0 在
+    //   10,971,056 处 ⇒ 不查边界的 `f [o]` 直接越界 ⇒ **段错误**（实测 rc=0xC0000005，beta7 件不崩
+    //   是因为那时还没有这条 GPS 探针）。越界一律返回 0 ⇒ 上层按"读不出"处理。
+    auto inR = [&] (size_t o, size_t k) { return o + k <= f.size (); };
+    auto rd16 = [&] (size_t o) -> uint32 {
+        if (!inR (o, 2)) return 0xFFFFu;
+        return le ? (uint32) (f [o] | (f [o + 1] << 8)) : (uint32) (f [o + 1] | (f [o] << 8)); };
+    auto rd32 = [&] (size_t o) -> uint32 {
+        if (!inR (o, 4)) return 0u;
+        return le ? (uint32) (f [o] | (f [o + 1] << 8) | ((uint32) f [o + 2] << 16) | ((uint32) f [o + 3] << 24))
+                      : (uint32) (((uint32) f [o] << 24) | ((uint32) f [o + 1] << 16) |
+                                  ((uint32) f [o + 2] << 8) | (uint32) f [o + 3]); };
     if (rd16 (2) != 42) return false;                    // 只处理经典 TIFF (本工具产物都是)
-    uint32 n = rd16 (rd32 (4));
+    const uint32 ifd0 = rd32 (4);
+    // IFD0 偏移可以落在头部缓冲之外（IIQ 就在 10.9 MB 处）⇒ 这不是"文件坏了"，
+    // 而是"这次只给了前 4 MiB" ⇒ 如实返回 false，让调用方换成整份缓冲再试一次。
+    if (ifd0 < 8 || (size_t) ifd0 + 2 > f.size ()) return false;
+    uint32 n = rd16 (ifd0);
     if (n < 1 || n > 600) return false;
     static const uint32 SZ [] = { 1, 1, 1, 2, 4, 8, 1, 1, 2, 4, 8, 4, 8, 1 };
     for (uint32 j = 0; j < n; j++)
@@ -1562,8 +1592,19 @@ static bool JpegPeek(const std::vector<uint8>& j, uint32& w, uint32& h, uint32& 
 // 把一段现成的 JPEG 字节作为 DNG preview 挂进 preview_list: 只借 dng_simple_image
 // 传尺寸给 SetIFDInfo (它只读 Width/Height/Planes/PixelType), 随后 SetCompressedData
 // 会把那份占位图像丢掉 ⇒ 不重新编码, 原字节入档。
+// ⚠ positioning：SDK 对 YCbCr 预览**无条件**写 0x0213（dng_preview.cpp:346），值取自
+//    dng_ifd::fYCbCrPositioning 而那里默认 0 ⇒ 产物会声明一个 EXIF 不允许的 "Unknown (0)"。
+//    fIFD 是 protected ⇒ 用派生类合法地设它（不改第三方源码）。传 0 表示源件没这条声明，
+//    按 EXIF/JFIF 的默认值 1(Centered) 落，而不是留 0。
+class JpegPreviewWithPositioning : public dng_jpeg_preview
+{
+public:
+    void SetYCbCrPositioning (uint32 pos) { fIFD.fYCbCrPositioning = pos; }
+};
+
 static bool AppendJpegPreview(dng_host& host, dng_preview_list& list,
-                              const std::vector<uint8>& jpeg, bool isPrimary, bool verbose)
+                              const std::vector<uint8>& jpeg, bool isPrimary,
+                              int positioning, bool verbose)
 {
     uint32 w = 0, h = 0, comp = 0, hs = 0, vs = 0, prec = 0;
     if (!JpegPeek(jpeg, w, h, comp, hs, vs, prec))
@@ -1572,14 +1613,22 @@ static bool AppendJpegPreview(dng_host& host, dng_preview_list& list,
         return false;
     }
 
-    AutoPtr<dng_jpeg_preview> prev(new dng_jpeg_preview);
+    AutoPtr<JpegPreviewWithPositioning> prev(new JpegPreviewWithPositioning);
     prev->fInfo.fIsPrimary = isPrimary;
     prev->fInfo.fRawToPreviewGain = 1.0;
 
     AutoPtr<dng_image> stub(new dng_simple_image(dng_rect(dng_point((int32)h, (int32)w)),
                                                  comp, ttByte));
     prev->SetIFDInfo(host, *stub.Get());
-    if (comp == 3) prev->SetYCbCr(hs ? hs : 1, vs ? vs : 1);
+    if (comp == 3)
+    {
+        prev->SetYCbCr(hs ? hs : 1, vs ? vs : 1);
+        const uint32 pos = (positioning == 1 || positioning == 2) ? (uint32)positioning : 1u;
+        prev->SetYCbCrPositioning (pos);
+        if (verbose && pos == 1u && positioning != 1)
+            fprintf(stderr, "[dngtool-e] %s 的 0x0213 源件未声明(=%d) ⇒ 按 EXIF/JFIF 默认写 1(Centered)\n",
+                    isPrimary ? "预览" : "缩略图", positioning);
+    }
 
     AutoPtr<dng_memory_block> data(new dng_malloc_block((uint32)jpeg.size()));
     memcpy(data->Buffer(), jpeg.data(), jpeg.size());
@@ -1588,8 +1637,10 @@ static bool AppendJpegPreview(dng_host& host, dng_preview_list& list,
     AutoPtr<dng_preview> p(prev.Release ());
     list.Append(p);
     if (verbose)
-        fprintf(stderr, "[dngtool-e] %s 嵌入: %ux%u comp=%u samp=%u:%u %u B\n",
-                isPrimary ? "预览" : "缩略图", w, h, comp, hs, vs, (unsigned)jpeg.size());
+        fprintf(stderr, "[dngtool-e] %s 嵌入: %ux%u comp=%u samp=%u:%u pos=%u %u B\n",
+                isPrimary ? "预览" : "缩略图", w, h, comp, hs, vs,
+                (unsigned)(comp == 3 ? (uint32)((positioning == 1 || positioning == 2) ? positioning : 1) : 0u),
+                (unsigned)jpeg.size());
     return true;
 }
 
@@ -1884,13 +1935,41 @@ static void ApplyLookFallback (dng_negative &negative, const LookSpec &ls)
 
 struct LensTables
 {
+    enum Kind { kSony = 0, kFuji = 1, kPanasonic = 2 };
+
     bool                ok;
     std::string         why;         // 读不到时的点名（ASCII 可 grep）
     uint32              frameW, frameH;
-    std::vector<int16>  vig, dist, ca;   // 原始 int16 序列（首字 = 样本数）
+    std::vector<int16>  vig, dist, ca;   // Sony: 原始 int16 序列（首字 = 样本数）
     int                 swVig, swDist, swCa;   // 机内开关三态: -1 读不出 / 0 明确关 / 1 开
+    int                 kind;
+
+    // ── Fuji（一手换算取自 darktable master `src/common/exif.cc:1408-1493` 与
+    //    `src/iop/lens.cc:2099-2133`）：
+    //    结点 r 是"裁切图半对角"的比例；dist 是百分数（f = 1 + D/100）；ca 直接相加；
+    //    vig 是透射百分数（增益 = 100/V）；cropf=1.25 仅 CropMode 2/4。
+    uint32              fxNc;
+    double              fxCropf;
+    double              fxKnot[16], fxDist[16], fxCaR[16], fxCaB[16], fxVig[16];
+
+    // ── Panasonic（darktable `src/common/exif.cc:1541-1596` + `src/iop/lens.cc:2445-2493`）：
+    //    Ru = Rd + scale*(a Rd^3 + b Rd^5 + c Rd^7)，半径归一到半对角；
+    //    a=v[8]/32768, b=v[4]/32768, c=v[11]/32768, scale=1/(1+v[5]/32768)；
+    //    开关 = (v[7] & 0x0f) == 1。
+    double              pnScale, pnA, pnB, pnC;
+
+    // 归一化：表半径（裁切图半对角）→ DNG 读者的半径（图幅最远角）。
+    // r_dng = r_table * xScale；center 是 DNG 图幅内的归一化光心（= 裁切图中心）。
+    double              xScale, centerH, centerV;
+
     LensTables () : ok (false), why ("未读"), frameW (0), frameH (0),
-                    swVig (-1), swDist (-1), swCa (-1) {}
+                    swVig (-1), swDist (-1), swCa (-1), kind (kSony),
+                    fxNc (0), fxCropf (1.0),
+                    pnScale (1.0), pnA (0.0), pnB (0.0), pnC (0.0),
+                    xScale (1.0), centerH (0.5), centerV (0.5)
+    {
+        for (int i = 0; i < 16; i++) { fxKnot[i] = fxDist[i] = fxCaR[i] = fxCaB[i] = fxVig[i] = 0.0; }
+    }
 };
 
 static bool RdU16 (FILE* fp, uint64 off, uint32& out)
@@ -1909,6 +1988,25 @@ static bool RdU32 (FILE* fp, uint64 off, uint32& out)
     for (int i = 0; i < 4; i++)
         { int c = fgetc (fp); if (c == EOF) return false; v |= ((uint32)c) << (8 * i); }
     out = v;
+    return true;
+}
+
+// 同一对读法按**源件自己的字节序**解释（`II`=小端 / `MM`=大端）。大端件是真实存在的：
+// 本机实测 Olympus E10 的 ORF、Pentax *ist DL 的 PEF、Samsung EX1 的 SRW 全是 `MM`，
+// 而我第一版只认 `II` ⇒ 那三家的标准位一条都没搬（`exif-std-unmapped=notII`，读数见闸 ㉑）。
+static bool RdU16o (FILE* fp, uint64 off, bool le, uint32& out)
+{
+    if (!RdU16 (fp, off, out)) return false;
+    if (!le) out = ((out & 0xFFu) << 8) | (out >> 8);
+    return true;
+}
+
+static bool RdU32o (FILE* fp, uint64 off, bool le, uint32& out)
+{
+    if (!RdU32 (fp, off, out)) return false;
+    if (!le)
+        out = ((out & 0xFFu) << 24) | (((out >> 8) & 0xFFu) << 16) |
+              (((out >> 16) & 0xFFu) << 8) | (out >> 24);
     return true;
 }
 
@@ -1959,10 +2057,1140 @@ static bool TagInt16Seq (FILE* fp, uint64 ifdOff, uint32 want, std::vector<int16
     return false;
 }
 
-static bool ReadLensTables (const char* path, LensTables& t, bool verbose)
+// ── 标准 EXIF 语义位的搬运（2026-10-19，丢弃厂商私有件之后立的新规矩）────────────
+// 规矩：**凡"有 EXIF 标准位、任何 conformant 读者都能解释"的，必须出现在产物里**；
+// 源里有而 dng_exif/SDK 写不出的 ⇒ 点名 exif-std-unmapped=<tagID 列表>，绝不静默跳过。
+// 只按标准 tag ID 取（IFD0 0x011A/0x011B/0x0128、ExifIFD 0x88xx/0x9xxx/0xAxxx、GPS IFD 0x000x…）；
+// Sony 自己的 0x70xx/0xb0xx/IDC/SR2 一个都不读——那批按规则已丢弃，读它们就要重新偷渡容器。
+struct TiffEntry
+{
+    bool   ok   = false;
+    uint32 ty   = 0;
+    uint32 cnt  = 0;
+    uint64 base = 0;            // 载荷首地址（总长 ≤4 字节时就是 entry+8，TIFF 的内联规则）
+};
+
+// 每种 TIFF 类型占几字节 —— **只用 SDK 的 TagTypeSize()**，不自建表。
+// 教训（2026-10-19 实测踩到）：我第一版自己手抄了一张 13 项的类型尺寸表，把 ttUndefined(7) 抄成
+// 4、ttSRational(10) 也抄成 4 ⇒ 把
+// ttUndefined(7) 抄成 4、ttSRational(10) 抄成 4 ⇒ "内联还是外置"判错：0x9203/0x9204 这两条
+// SRATIONAL 被当成 ≤4 字节内联 ⇒ 产物里写进去的是**源件的指针**(4240)和**下一条的 tag+type**
+// (0x000A9204)，读手看着就是"有这条标签、值是乱数"。⇒ 布局常数一律回权威实现取值。
+static inline uint64 EntryBase (uint64 e, uint32 ty, uint32 cnt, uint32 val)
+{
+    const uint32 sz = TagTypeSize (ty);
+    if (sz == 0 || cnt == 0) return 0;                       // 类型不认识 ⇒ 不猜
+    return ((uint64)cnt * sz <= 4) ? (e + 8) : (uint64)val;  // 载荷 ≤4 字节 ⇒ TIFF 内联在值字段
+}
+
+static bool FindEntry (FILE* fp, uint64 ifdOff, uint32 want, TiffEntry& out, bool le)
+{
+    uint32 n = 0;
+    if (!RdU16o (fp, ifdOff, le, n) || n == 0 || n > 1024) return false;
+    for (uint32 i = 0; i < n; i++)
+    {
+        uint64 e = ifdOff + 2 + 12 * (uint64)i;
+        uint32 tag = 0, ty = 0, cnt = 0, val = 0;
+        if (!RdU16o (fp, e, le, tag) || !RdU16o (fp, e + 2, le, ty) ||
+            !RdU32o (fp, e + 4, le, cnt) || !RdU32o (fp, e + 8, le, val)) continue;
+        if (tag != want) continue;
+        if (ty == 0 || TagTypeSize (ty) == 0 || cnt == 0 || cnt > 4096) return false;   // 形状不认 ⇒ 不猜
+        out.base = EntryBase (e, ty, cnt, val);
+        if (out.base == 0) return false;
+        out.ok  = true;
+        out.ty  = ty;
+        out.cnt = cnt;
+        return true;
+    }
+    return false;
+}
+
+static bool SubIfdAt (FILE* fp, uint64 ifdOff, uint32 linkTag, uint64& sub, bool le)
+{
+    TiffEntry te;
+    if (!FindEntry (fp, ifdOff, linkTag, te, le) || te.cnt != 1) return false;
+    uint32 v = 0;
+    if (!te.ok || !RdU32o (fp, te.base, le, v) || v < 8) return false;
+    sub = v;
+    return true;
+}
+
+// ── F 类普查：源 DNG 挂了几张次级 IFD、各自 NewSubFileType(0x00FE) 是什么 ─────────────
+// 为什么要有这一段（第 77 条 ㉖，读数见 tests/output/lane-crash/REPORT.md）：
+// DNG 的透明遮罩(NSFT=4)/深度图(8)/语义遮罩(0x10004)/预览(1)/备用预览(0x10001) 都住在主 IFD
+// 的 SubIFDs(0x014A) 指过去的**次级 IFD** 里。本工具这条路（LibRaw 解像素 + 新建 dng_negative）
+// 自己不解析次级 IFD ⇒ 修前实测 DNG→DNG 重编码把输入里的次级 IFD **整张丢掉**
+// （输入 NSFT=[0,1,4,8,65540] ⇒ 输出只剩 [0]），主 IFD 的 XMP 包(0x02BC) 也一样不落。
+// 现在的分档（三档，各有自己的出口，见 EncodeDng 里两处调用点）：
+//   1) **可搬**：NSFT 逐值等于 4/8/0x10004 ⇒ 用 DNG SDK 自己的读取器
+//      `dng_negative::ReadTransparencyMask / ReadDepthMap / ReadSemanticMasks`
+//      （dng_negative.cpp:7479/7607/7817）读进来，写侧 SDK 本来就会写这三类 IFD
+//      （dng_image_writer.cpp:8919/8950/9232）⇒ 真搬运；读失败就拒绝出件，不静默丢。
+//      ⚠ 只认**整值**：dng_info 分类就是这么写的（dng_info.cpp:2789/2819/2879 都是 ==），
+//      规范里 5/9/0x10005（预览+遮罩组合）不在这三条里 ⇒ 归下一档。
+//   2) **读不懂/搬不动**：5/9/0x10005 组合档、读不到 0x00FE、以及规范之外的值
+//      ⇒ 按既有形状（refuse-dng-opcode-loss / refuse-linearraw-without-colormatrix）
+//      **拒绝出件并点名** ASCII 键 refuse-secondary-ifd-loss。
+//   3) **预览/替代图**（0/1/16/17/32/33/0x10001）：本轮只出声点名
+//      （carry-skipped=secondary-ifd-other），记成在册欠账。理由：拿它拒绝会把 ②d/⑱c
+//      两条既有 PASS 臂改成红 ⇒ 那是改闸不是修行为（本仓 ARW→DNG 产物 onE.dng 的次级
+//      NSFT=[0,65537] 就落在这一档）。
+// ⚠ 别把 `-embed-raw` 当成第 1 档的替代：它对 **DNG 输入**只搬"源里已有的 50828"，
+//   不会把输入文件本身嵌进去（dngtool.cpp 的 `isDngInput && embedOriginal` 分支）⇒
+//   对没有 50828 的 DNG，开了它这些次级 IFD 一样丢。实测过：加 -embed-raw 后产物
+//   2958 B、无 50828，旧版判词"整件嵌进 50828 原样带走"是假的，已撤。
+struct SubIfdSurvey
+{
+    bool        isDng = false;        // 主 IFD 带 DNGVersion(0xC612) ⇒ 只有 DNG 输入在本条射程内
+    bool        haveLink = false;     // 主 IFD 带 0x014A SubIFDs
+    bool        le = true;            // 源件字节序（读预览 JPEG 时要用）
+    uint32      count = 0;            // 成功读到的次级 IFD 张数
+    std::vector<uint32> nsfts;        // 每张的 NSFT（读不到 0x00FE ⇒ 记 0xFFFFFFFF = 读不懂）
+    std::vector<uint32> carryable;    // 4/8/0x10004 ⇒ SDK 有读写器，真搬运
+    std::vector<uint32> refused;      // 组合档/读不懂 ⇒ 触发拒绝的那些 NSFT
+    std::vector<uint32> other;        // 预览/替代那一档（能读到 JPEG 就搬，否则点名）
+    std::vector<uint64> otherOffs;    // 与 other 一一对应的 IFD 偏移（搬 JPEG 用）
+    std::vector<uint32> subTags;      // 被拒的那些次级 IFD 里的标签号（去重排序）
+    std::vector<uint32> otherTags;    // 预览族的标签号（供点名）
+    std::vector<uint32> mainBits;     // 主 IFD 里同样不搬的规范内容位 0x02BC / 0x0C68E
+    std::string why;                  // openfail / notTiff / badIfd（非零 ⇒ 尺子没量到，不出判词）
+};
+
+// 列一个 IFD 的标签号。形状不认识就**不猜**（沿用 FindEntry 的口径：ty/cnt 认不出 ⇒ 跳过）。
+static void EnumIfdTags (FILE* fp, uint64 ifdOff, bool le, std::vector<uint32>& tags)
+{
+    uint32 n = 0;
+    if (!RdU16o (fp, ifdOff, le, n) || n == 0 || n > 1024) return;
+    for (uint32 i = 0; i < n; i++)
+    {
+        uint64 e = ifdOff + 2 + 12 * (uint64)i;
+        uint32 tag = 0, ty = 0, cnt = 0, val = 0;
+        if (!RdU16o (fp, e, le, tag) || !RdU16o (fp, e + 2, le, ty) ||
+            !RdU32o (fp, e + 4, le, cnt) || !RdU32o (fp, e + 8, le, val)) continue;
+        if (ty == 0 || TagTypeSize (ty) == 0 || cnt == 0 || cnt > 4096) continue;
+        tags.push_back (tag);
+    }
+}
+
+// 读一个标量标签的值（SHORT/RATIONAL-ish 的 count=1 都收，其它形状 ⇒ 返回 false 不猜）。
+static bool ReadTagScalarU32 (FILE* fp, uint64 ifdOff, uint32 want, bool le, uint32& out)
+{
+    TiffEntry te;
+    if (!FindEntry (fp, ifdOff, want, te, le)) return false;
+    if (te.cnt != 1) return false;
+    if (te.ty == 4 || te.ty == 9 || te.ty == 13) return RdU32o (fp, te.base, le, out);
+    if (te.ty == 3 || te.ty == 8 || te.ty == 16)
+        { uint32 v = 0; if (!RdU32o (fp, te.base, le, v)) return false; out = v & 0xFFFFu; return true; }
+    return false;
+}
+
+static SubIfdSurvey SurveySecondaryIfds (const char* path)
+{
+    SubIfdSurvey s;
+    FILE* fp = fopen (path, "rb");
+    if (!fp) { s.why = "openfail"; return s; }
+    uint32 bo = 0, ifd0 = 0;
+    if (!RdU16 (fp, 0, bo) || (bo != 0x4949 && bo != 0x4D4D))
+        { fclose (fp); s.why = "notTiff"; return s; }
+    const bool le = (bo == 0x4949);
+    s.le = le;
+    if (!RdU32o (fp, 4, le, ifd0) || ifd0 < 8)
+        { fclose (fp); s.why = "badIfd"; return s; }
+
+    std::vector<uint32> mainTags;
+    EnumIfdTags (fp, ifd0, le, mainTags);
+    for (size_t i = 0; i < mainTags.size (); i++)
+        {
+            if (mainTags[i] == 0xC612) s.isDng = true;                       // DNGVersion
+            if (mainTags[i] == 0x02BC || mainTags[i] == 0x0C68E) s.mainBits.push_back (mainTags[i]);
+        }
+    if (!s.isDng) { fclose (fp); return s; }          // 非 DNG 输入不在本条政策射程（厂商 RAW 走原路）
+    std::sort (s.mainBits.begin (), s.mainBits.end ());
+    s.mainBits.erase (std::unique (s.mainBits.begin (), s.mainBits.end ()), s.mainBits.end ());
+
+    TiffEntry link;
+    if (FindEntry (fp, ifd0, 0x014A, link, le) && (link.ty == 4 || link.ty == 3))
+    {
+        s.haveLink = true;
+        const uint32 stride = (link.ty == 4) ? 4u : 2u;
+        for (uint32 i = 0; i < link.cnt && i < 64; i++)
+        {
+            uint32 off = 0;
+            if (!RdU32o (fp, link.base + (uint64)stride * i, le, off)) continue;
+            if (link.ty == 3) off &= 0xFFFFu;
+            if (off < 8) continue;
+            s.count++;
+            uint32 nsft = 0xFFFFFFFFu;
+            if (!ReadTagScalarU32 (fp, off, 0x00FE, le, nsft)) nsft = 0xFFFFFFFFu;
+            s.nsfts.push_back (nsft);
+            std::vector<uint32> tg;
+            EnumIfdTags (fp, off, le, tg);
+            // NewSubFileType 在本规范里是**枚举值**、不是独立位域（dng_tag_values.h:29-62）：
+            //   sfPreviewImage=1  sfTransparencyMask=4  sfPreviewMask=1+4=5  sfDepthMap=8
+            //   sfPreviewDepthMap=1+8=9  sfEnhancedImage=16  sfGainMap=32
+            //   sfAltPreviewImage=0x10001  sfSemanticMask=0x10004  sfPreviewSemanticMask=0x10005
+            // ⇒ 必须**逐值比**。拿 &0x10004 之类的位测会把 0x10001（备用预览）误判成语义遮罩
+            // （两者共有 0x10000 那一档）⇒ 实测会把 dngtool 自己的产物 onE/lensOff 拒绝掉，
+            //   那是拿判据打人，不是修行为。
+            const bool carryable =     // 整值 4/8/0x10004：SDK 读取器 + 写侧都有（见上注释）
+                (nsft == 4u || nsft == 8u || nsft == 0x10004u);
+            const bool knownOther =    // 预览/增强/增益图那一族 ⇒ 本轮只点名，不拒绝（见上）
+                (nsft == 0u || nsft == 1u || nsft == 16u || nsft == 17u ||
+                 nsft == 32u || nsft == 33u || nsft == 0x10001u);
+            if (carryable)
+            {
+                s.carryable.push_back (nsft);
+            }
+            else if (knownOther)
+            {
+                s.other.push_back (nsft);
+                s.otherOffs.push_back (off);
+                for (size_t k = 0; k < tg.size (); k++) s.otherTags.push_back (tg[k]);
+            }
+            else
+            {
+                // 组合档 5/9/0x10005、读不到 0x00FE(0xFFFFFFFF) 与规范之外的陌生值
+                // ⇒ 一并按"读不懂/搬不动"拒绝（政策：读不懂的不静默出件）。
+                s.refused.push_back (nsft);
+                for (size_t k = 0; k < tg.size (); k++) s.subTags.push_back (tg[k]);
+            }
+        }
+    }
+    fclose (fp);
+
+    std::sort (s.subTags.begin (), s.subTags.end ());
+    s.subTags.erase (std::unique (s.subTags.begin (), s.subTags.end ()), s.subTags.end ());
+    std::sort (s.otherTags.begin (), s.otherTags.end ());
+    s.otherTags.erase (std::unique (s.otherTags.begin (), s.otherTags.end ()), s.otherTags.end ());
+    std::sort (s.refused.begin (), s.refused.end ());
+    s.refused.erase (std::unique (s.refused.begin (), s.refused.end ()), s.refused.end ());
+    std::sort (s.other.begin (), s.other.end ());
+    s.other.erase (std::unique (s.other.begin (), s.other.end ()), s.other.end ());
+    return s;
+}
+
+static std::string HexList (const std::vector<uint32>& v)
+{
+    std::string r;
+    char b[16];
+    for (size_t i = 0; i < v.size (); i++)
+        { sprintf (b, "%s0x%04X", i ? "," : "", v[i]); r += b; }
+    return r;
+}
+
+// 十进制版（NSFT 值给判据当锚点用，别拿 hex 猜）
+static std::string DecList (const std::vector<uint32>& v)
+{
+    std::string r;
+    char b[16];
+    for (size_t i = 0; i < v.size (); i++)
+        { sprintf (b, "%s%u", i ? "," : "", v[i]); r += b; }
+    return r;
+}
+
+// ── 预览族次级 IFD：取 JPEG **原字节**（不重编码）──────────────────────────────────
+// 只认 Compression=7（ccJPEG）。数据位置两形都收：
+//   · JPEGInterchangeFormat(0x0201) + Length(0x0202)（JPEG 交换格式）
+//   · 条带 0x0111(StripOffsets) + 0x0117(StripByteCounts)（DNG 预览更常见；多段按序拼接）
+// 其它压缩（未压缩 RGB / Deflate）不猜 ⇒ 返回 false，由调用方点名（在册欠账）。
+static bool ReadFileRange (FILE* fp, uint64 off, uint32 len, std::vector<uint8>& out)
+{
+    if (!len) return false;
+#ifdef _WIN32
+    if (_fseeki64 (fp, (__int64)off, SEEK_SET) != 0) return false;
+#else
+    if (fseeko (fp, (off_t)off, SEEK_SET) != 0) return false;
+#endif
+    out.resize (len);
+    return fread (out.data (), 1, len, fp) == (size_t)len;
+}
+
+static bool ReadSubIfdJpeg (FILE* fp, uint64 ifdOff, bool le, std::vector<uint8>& out, std::string& why)
+{
+    uint32 comp = 0;
+    if (!ReadTagScalarU32 (fp, ifdOff, 0x0103, le, comp)) { why = "no-compression"; return false; }
+    // 6 = JPEG(old-style，表可能在 0x0200 JPEGTables)、7 = JPEG(new-style)
+    if (comp != 6u && comp != 7u) { why = "compression!=6/7"; return false; }
+
+    out.clear ();
+    uint32 off = 0, len = 0;
+    if (ReadTagScalarU32 (fp, ifdOff, 0x0201, le, off) &&
+        ReadTagScalarU32 (fp, ifdOff, 0x0202, le, len) && off >= 8 && len > 0)
+        {
+        std::vector<uint8> data;
+        if (!ReadFileRange (fp, off, len, data)) { why = "jpeg-read"; return false; }
+        // JPEGTables(0x0200)：old-style 的量化/哈夫曼表单独存放 ⇒ 插回 SOI 之后才是完整码流
+        TiffEntry tj;
+        if (FindEntry (fp, ifdOff, 0x0200, tj, le) && tj.ok && tj.cnt > 0 && tj.cnt <= 65535)
+            {
+            std::vector<uint8> tab;
+            if (!ReadFileRange (fp, (uint64)tj.base, tj.cnt, tab)) { why = "tables-read"; return false; }
+            if (tab.size () >= 2 && data.size () >= 2 &&
+                data[0] == 0xFF && data[1] == 0xD8)
+                {
+                out.push_back (0xFF); out.push_back (0xD8);
+                out.insert (out.end (), tab.begin (), tab.end ());
+                out.insert (out.end (), data.begin () + 2, data.end ());
+                }
+            else
+                { why = "tables-shape"; return false; }
+            }
+        else
+            out = data;
+        if (out.size () < 4 || out[0] != 0xFF || out[1] != 0xD8) { why = "not-jpeg"; return false; }
+        return true;
+        }
+
+    TiffEntry so, sc;
+    if (!FindEntry (fp, ifdOff, 0x0111, so, le) || !so.ok ||
+        !FindEntry (fp, ifdOff, 0x0117, sc, le) || !sc.ok ||
+        so.cnt == 0 || so.cnt != sc.cnt || so.cnt > 64 ||
+        (so.ty != 3 && so.ty != 4) || (sc.ty != 3 && sc.ty != 4))
+        { why = "no-jpeg-location"; return false; }
+    for (uint32 i = 0; i < so.cnt; i++)
+    {
+        uint32 o = 0, l = 0;
+        if (!RdU32o (fp, so.base + (uint64)((so.ty == 3) ? 2 : 4) * i, le, o)) { why = "strip-off"; return false; }
+        if (!RdU32o (fp, sc.base + (uint64)((sc.ty == 3) ? 2 : 4) * i, le, l)) { why = "strip-len"; return false; }
+        if (so.ty == 3) o &= 0xFFFFu;
+        if (sc.ty == 3) l &= 0xFFFFu;
+        if (o < 8 || l == 0) { why = "strip-range"; return false; }
+        std::vector<uint8> seg;
+        if (!ReadFileRange (fp, o, l, seg)) { why = "strip-read"; return false; }
+        out.insert (out.end (), seg.begin (), seg.end ());
+    }
+    if (out.size () < 4 || out[0] != 0xFF || out[1] != 0xD8)
+        { why = "not-jpeg"; return false; }
+    return true;
+}
+
+// ── F 类真搬运：DNG→DNG 的透明遮罩 / 深度图 / 语义遮罩 / MaskedAreas ──────────────
+// 源件用 SDK 自己的读取器解（dng_negative.cpp:7479/7607/7817），写侧 SDK 本来就会写
+// 这三类 IFD（dng_image_writer.cpp:8919/8950/9232）⇒ 不是"先读后丢"，是真搬运。
+// 返回空串 = 成功；非空 = 失败原因 ⇒ 调用方拒绝出件（exit 9），绝不静默降级。
+// ⚠ XMP(0x02BC) 不在这里：本构建 qDNGUseXMP=0（tools/src/dngtool/CMakeLists.txt:59），
+//   dng_negative::SetXMP 被编译掉 ⇒ dngtool 没有 XMP 写通路；产品侧由 exiftool 后置
+//   （第 77 条 ⑰ 组就是拿 exiftool 写 700 验的）。这条只能点名，不能写成搬运。
+struct SecondaryCarry
+{
+    bool mask = false, depth = false, semantic = false;
+    uint32 maskedAreas = 0;
+    std::vector<std::string> notes;   // 每条搬运的读数（verbose 时打印）
+    std::string fail;                 // 非空 ⇒ 搬运没做成，调用方拒绝出件
+};
+
+static bool ReadMaskedAreasTag (FILE* fp, uint64 ifd0, bool le, std::vector<dng_rect>& out, std::string& why)
+{
+    TiffEntry te;
+    if (!FindEntry (fp, ifd0, 0x0C68E, te, le)) return true;      // 没有这个标签 = 没有要搬的，不是错
+    if (!te.ok || (te.ty != 3 && te.ty != 4) || te.cnt == 0 || (te.cnt % 4) != 0)
+        { why = "shape"; return false; }
+    const uint32 n = te.cnt / 4;
+    if (n > 8) { why = "too-many"; return false; }                // SDK kMaxMaskedAreas
+    for (uint32 i = 0; i < n; i++)
+    {
+        uint32 v[4] = {0, 0, 0, 0};
+        for (int k = 0; k < 4; k++)
+        {
+            const uint64 off = te.base + (uint64)((te.ty == 3) ? 2 : 4) * (4 * i + k);
+            if (!RdU32o (fp, off, le, v[k])) { why = "read"; return false; }
+            if (te.ty == 3) v[k] &= 0xFFFFu;
+        }
+        // 规范/读取器口径：每条 4 个整数，顺序 T,L,B,R（dng_ifd.cpp:2079-2084）
+        out.push_back (dng_rect ((int32)v[0], (int32)v[1], (int32)v[2], (int32)v[3]));
+    }
+    return true;
+}
+
+static SecondaryCarry CarrySecondaryIfds (dng_host& host, const char* path, dng_negative& negative,
+                                          const SubIfdSurvey& s, int outW, int outH, bool verbose)
+{
+    SecondaryCarry r;
+    try
+    {
+        dng_file_stream stream (path, false);
+        dng_info info;
+        info.Parse (host, stream);
+        info.PostParse (host);
+        if (!info.IsValidDNG ()) { r.fail = "DNG SDK 解析后 IsValidDNG=0"; return r; }
+
+        for (size_t i = 0; i < s.carryable.size (); i++)
+        {
+            const uint32 nsft = s.carryable[i];
+            char b[160];
+            if (nsft == 4u)
+            {
+                if (info.fMaskIndex < 0) { r.fail = "NSFT=4 但 dng_info 没认出 mask IFD"; return r; }
+                negative.ReadTransparencyMask (host, stream, info);
+                const dng_image* m = negative.TransparencyMask ();
+                if (!m) { r.fail = "ReadTransparencyMask 之后 TransparencyMask 为空"; return r; }
+                r.mask = true;
+                sprintf (b, "transparencyMask %dx%d %u-bit (rawBitDepth=%u)",
+                         (int)m->Bounds ().W (), (int)m->Bounds ().H (),
+                         (unsigned)(m->PixelSize () * 8), (unsigned)negative.RawTransparencyMaskBitDepth ());
+                r.notes.push_back (b);
+            }
+            else if (nsft == 8u)
+            {
+                if (info.fDepthIndex < 0) { r.fail = "NSFT=8 但 dng_info 没认出 depth IFD"; return r; }
+                negative.ReadDepthMap (host, stream, info);
+                const dng_image* d = negative.DepthMap ();
+                if (!d) { r.fail = "ReadDepthMap 之后 DepthMap 为空"; return r; }
+                // 深度语义位在 dng_shared 里（protected），靠源 negative 的公开 getter 取
+                AutoPtr<dng_negative> srcNeg (host.Make_dng_negative ());
+                srcNeg->Parse (host, stream, info);
+                negative.SetDepthFormat     (srcNeg->DepthFormat ());
+                negative.SetDepthNear       (srcNeg->DepthNear ());
+                negative.SetDepthFar        (srcNeg->DepthFar ());
+                negative.SetDepthUnits      (srcNeg->DepthUnits ());
+                negative.SetDepthMeasureType(srcNeg->DepthMeasureType ());
+                r.depth = true;
+                sprintf (b, "depthMap %dx%d %u-bit format=%u units=%u",
+                         (int)d->Bounds ().W (), (int)d->Bounds ().H (),
+                         (unsigned)(d->PixelSize () * 8),
+                         (unsigned)srcNeg->DepthFormat (), (unsigned)srcNeg->DepthUnits ());
+                r.notes.push_back (b);
+            }
+            else if (nsft == 0x10004u)
+            {
+                if (info.fSemanticMaskIndices.empty ())
+                    { r.fail = "NSFT=65540 但 dng_info 没认出语义遮罩"; return r; }
+                negative.ReadSemanticMasks (host, stream, info);
+                if (negative.NumSemanticMasks () != info.fSemanticMaskIndices.size ())
+                {
+                    sprintf (b, "读语义遮罩数 %u ≠ 源 IFD 数 %u",
+                             (unsigned)negative.NumSemanticMasks (),
+                             (unsigned)info.fSemanticMaskIndices.size ());
+                    r.fail = b; return r;
+                }
+                r.semantic = true;
+                sprintf (b, "semanticMask x%u", (unsigned)negative.NumSemanticMasks ());
+                r.notes.push_back (b);
+            }
+        }
+
+        // MaskedAreas(50830)：坐标是**存储整幅**的绝对坐标（dng_ifd.cpp:2079 起按 T,L,B,R 读）
+        // ⇒ 只有产物存储幅面与源件一致时才能原样搬；不一致就拒绝，别把坐标指到别的像素。
+        // ⚠ 这条与 carryable 无关：有的 DNG 只有 50830、没有遮罩族次级 IFD ⇒ 调用方必须也放它进来，
+        //   否则这里静默跳过 = 静默丢位（判据 ㉖b 的夹具正好两者都有，量不到这个空档）。
+        FILE* fp = fopen (path, "rb");
+        if (!fp) { r.fail = "MaskedAreas 读取时打不开源文件"; return r; }
+        {
+            uint32 bo = 0;
+            std::vector<dng_rect> areas;
+            std::string why;
+            bool ok = false;
+            if (RdU16 (fp, 0, bo) && (bo == 0x4949 || bo == 0x4D4D))
+            {
+                uint32 ifd0 = 0;
+                if (RdU32o (fp, 4, bo == 0x4949, ifd0))
+                    ok = ReadMaskedAreasTag (fp, ifd0, bo == 0x4949, areas, why);
+            }
+            fclose (fp);
+            if (!ok) { r.fail = "MaskedAreas 解析失败 (" + why + ")"; return r; }
+            if (!areas.empty ())
+            {
+                TiffEntry iw, ih;
+                FILE* f2 = fopen (path, "rb");
+                uint32 sw = 0, sh = 0;
+                bool dimOk = false;
+                if (f2)
+                {
+                    uint32 bo2 = 0;
+                    if (RdU16 (f2, 0, bo2) && (bo2 == 0x4949 || bo2 == 0x4D4D))
+                    {
+                        const bool le2 = (bo2 == 0x4949);
+                        uint32 ifd02 = 0;
+                        if (RdU32o (f2, 4, le2, ifd02) &&
+                            FindEntry (f2, ifd02, 256, iw, le2) && iw.ok && iw.cnt == 1 &&
+                            FindEntry (f2, ifd02, 257, ih, le2) && ih.ok && ih.cnt == 1)
+                        {
+                            uint32 a = 0, b2 = 0;
+                            if (RdU32o (f2, iw.base, le2, a) && RdU32o (f2, ih.base, le2, b2))
+                                { sw = a; sh = b2; dimOk = true; }
+                        }
+                    }
+                    fclose (f2);
+                }
+                if (!dimOk) { r.fail = "MaskedAreas 存在但读不到源存储幅面"; return r; }
+                if ((int)sw != outW || (int)sh != outH)
+                {
+                    char b[160];
+                    sprintf (b, "MaskedAreas 坐标参照的源存储幅面 %ux%u ≠ 产物 %dx%d",
+                             (unsigned)sw, (unsigned)sh, outW, outH);
+                    r.fail = b; return r;
+                }
+                negative.SetMaskedAreas ((uint32)areas.size (), areas.data ());
+                r.maskedAreas = (uint32)areas.size ();
+                char b[64]; sprintf (b, "maskedAreas x%u", (unsigned)areas.size ());
+                r.notes.push_back (b);
+            }
+        }
+        return r;
+    }
+    catch (dng_exception& e)
+    {
+        char b[96]; sprintf (b, "dng_exception code %d", (int)e.ErrorCode ()); r.fail = b; return r;
+    }
+    catch (...)
+    {
+        r.fail = "unknown exception"; return r;
+    }
+}
+
+struct StdExifCarry
+{
+    int         present = 0;      // 源里属于"标准位"这一档的条目数
+    int         mapped  = 0;      // Adobe 的 ParseTag 认下（= dng_exif 里有字段）的条数
+    int         gpsN    = 0;      // GPS IFD 里搬成的条数（源含 GPS 而它=0 ⇒ 我方缺陷，要响）
+    int         orient  = 0;      // 源 IFD0 的 0x0112 Orientation（1..8；0=源里没有）
+    int         previewPos = 0;   // 源 IFD0 的 0x0213 YCbCrPositioning（预览那张 JPEG 的）
+    int         thumbPos   = 0;   // 源 IFD1 的 0x0213 YCbCrPositioning（缩略图那张 JPEG 的）
+    bool        le = true;        // 源件自己的字节序（II=true / MM=false）⇒ 整条枚举按它解释
+    std::string unmapped;         // SDK 无字段/无发射路径 ⇒ 必须点名的 tag ID
+};
+
+static void NoteUnmapped (StdExifCarry& c, uint32 tag)
+{
+    char b[16];
+    sprintf (b, "%s%04X", c.unmapped.empty () ? "" : ",", tag);
+    c.unmapped += b;
+}
+
+// 枚举一个 IFD，逐条交给 **Adobe 自己的路由** dng_exif::ParseTag（dng_exif.cpp:822；
+// dng_info.cpp:185 正常解析 TIFF 时走的正是这条路）。
+// 为什么不手写映射表：手写表就是"我记得的标签清单"，漏一个就静默丢一个（我第一版抄了
+// 21 条，实测就把 0x829D/0x920A/0xA434 之外的多条漏在了表外）；而 SDK 的 Parse_* 分支
+// 本身就是"标准位 → dng_exif 字段"的完整表，它返回 false 等价于"SDK 里没有这个字段"
+// ⇒ 正好是要点名（exif-std-unmapped）的那一类，不必我猜。
+// 喂进去的口径 = 只喂标准位，厂商私有一律不喂（政策：无法被正确软件解码的不保留）：
+//   IFD0     只喂描述性标签（结构标签 0x00FE/0x0103/0x0111.. 必须留给 DNG 自己描述 ⇒
+//            从源件搬进来会让产物对着自己的像素说谎）
+//   ExifIFD  全喂，除 0x927C MakerNote（厂商私有）与三个子目录指针（自己枚举）
+//   GPS / Interop  全喂
+// tagOffset 传值字段地址：SDK 的调用约定就是先 SetReadPosition 到值字段
+// （dng_info.cpp:908 用 ifdOffset + 2 + i*12 + 8，内联值时就是 entry+8 ⇒ 与 TiffEntry::base 同义）。
+static void CarryIfd (FILE* fp, dng_stream& src, dng_shared& shared, dng_exif* exif,
+                      uint64 ifdOff, uint32 parentCode, const uint32* only,
+                      StdExifCarry& c, bool isGps)
+{
+    const bool le = c.le;
+    uint32 n = 0;
+    if (!RdU16o (fp, ifdOff, le, n) || n == 0 || n > 1024) return;
+    for (uint32 i = 0; i < n; i++)
+    {
+        uint64 e = ifdOff + 2 + 12 * (uint64)i;
+        uint32 tag = 0, ty = 0, cnt = 0, val = 0;
+        if (!RdU16o (fp, e, le, tag) || !RdU16o (fp, e + 2, le, ty) ||
+            !RdU32o (fp, e + 4, le, cnt) || !RdU32o (fp, e + 8, le, val)) continue;
+        if (tag == 0x927C || tag == 0x8769 || tag == 0x8825 || tag == 0xA005) continue;
+        if (only)
+        {
+            bool hit = false;
+            for (int k = 0; only[k]; k++) if (only[k] == tag) { hit = true; break; }
+            if (!hit) continue;
+        }
+        if (ty == 0 || TagTypeSize (ty) == 0 || cnt == 0 || cnt > 4096) continue;   // 形状不认 ⇒ 不猜
+        uint64 base = EntryBase (e, ty, cnt, val);
+        if (base == 0) continue;
+        c.present++;
+        bool ok = false;
+        try
+        {
+            src.SetReadPosition (base);
+            ok = exif->ParseTag (src, shared, parentCode, false, tag, ty, cnt, base);
+        }
+        catch (...) { ok = false; }                                  // SDK 对畸形件的兜底
+        if (ok) { c.mapped++; if (isGps) c.gpsN++; }
+        else NoteUnmapped (c, tag);
+    }
+}
+
+// 从源文件（TIFF 结构的 ARW/CR2/ORF/PEF/SRW/DNG…）把标准位搬进 exif。
+// 字节序**跟着源件走**：II 小端、MM 大端都收。2026-10-20 实测：本机 Olympus E10 的 ORF、
+// Pentax *ist DL 的 PEF、Samsung EX1 的 SRW 都是 MM，而我第一版只认 II ⇒ 那三家的标准位
+// 一条都没搬（写侧点名 notII），可那些标签照样是"任何 conformant 读者都能解码"的那一档。
+// 非 TIFF 容器（CR3=ISO-BMFF、RAF/MRW/X3F 自家头）仍旧点名 notTiff，不猜。
+static void CarryStdExifFromSource (const char* path, dng_exif* exif, bool suppressGps, StdExifCarry& c)
+{
+    FILE* fp = fopen (path, "rb");
+    if (!fp) { c.unmapped = "openfail"; return; }
+    uint32 bo = 0, ifd0 = 0;
+    if (!RdU16 (fp, 0, bo) || (bo != 0x4949 && bo != 0x4D4D))
+    {
+        fclose (fp);
+        c.unmapped = "notTiff";
+        return;
+    }
+    c.le = (bo == 0x4949);
+    if (!RdU32o (fp, 4, c.le, ifd0) || ifd0 < 8)
+    {
+        fclose (fp);
+        c.unmapped = "badIfd";
+        return;
+    }
+
+    dng_file_stream src (path);
+    src.SetLittleEndian (c.le);      // dng_stream 默认大端 ⇒ 只有 II 源才切小端
+    dng_shared shared;
+
+    // IFD0 只搬"描述性"标签。0x011A/0x011B/0x0128 留在名单里是故意的：dng_exif 里没有
+    // 对应字段（只有 FocalPlaneX/YResolution），ParseTag 必返回 false ⇒ 它们会出现在
+    // exif-std-unmapped 里，由门禁点名，而不是被我的白名单静默排除。
+    static const uint32 kIfd0Desc[] = { 0x010E, 0x010F, 0x0110, 0x011A, 0x011B,
+                                        0x0128, 0x0131, 0x0132, 0x013B, 0x8298, 0 };
+    CarryIfd (fp, src, shared, exif, ifd0, 0, kIfd0Desc, c, false);
+
+    // 0x0112 Orientation 单独取（不进上面的表）：它归 dng_shared 管，dng_exif::ParseTag 不认领；
+    // 而 DNG 出口的这条值来自 `dng_negative::ComputeOrientation` ⇒ `dng_metadata::BaseOrientation()`
+    // (dng_image_writer.cpp:8488)。不显式设的话 SDK 恒写 1 ⇒ 实测：源 Orientation=6 的件
+    // 转出来的 DNG 报 1（显示方向错）。这里只把源的值读出来，交给调用方去 SetBaseOrientation。
+    {
+        TiffEntry te;
+        if (FindEntry (fp, ifd0, 0x0112, te, c.le))
+        {
+            c.present++;
+            uint32 v = 0;
+            if (te.ty == 3 && RdU16o (fp, te.base, c.le, v)) { c.orient = (int)v; c.mapped++; }
+            else if (te.ty == 4 && RdU32o (fp, te.base, c.le, v)) { c.orient = (int)v; c.mapped++; }
+            else NoteUnmapped (c, 0x0112);              // 形状不认识 ⇒ 点名，不静默留 1
+        }
+    }
+
+    // 0x0213 YCbCrPositioning 也单独取（它属于 IFD/预览这一层，dng_exif 没有字段）：
+    // SDK 的 preview 写手 **无条件发射**这条（dng_preview.cpp:346），值取自 dng_ifd 的
+    // fYCbCrPositioning，而那个字段默认 0 ⇒ 产物里写的是 "Unknown (0)"，EXIF 只允许 1/2。
+    // 预览与缩略图是按原字节从源件搬来的 ⇒ 源件对这两张 JPEG 声明的定位方式就是正确值。
+    // （实测源：IFD0=Co-sited(2)、IFD1=Co-sited(2)；旧产物两处都是 0。）
+    {
+        TiffEntry te;
+        uint32 v = 0;
+        if (FindEntry (fp, ifd0, 0x0213, te, c.le) &&
+            ((te.ty == 3 && RdU16o (fp, te.base, c.le, v)) || (te.ty == 4 && RdU32o (fp, te.base, c.le, v))))
+            c.previewPos = (int)v;
+        uint32 n0 = 0, ifd1w = 0;
+        uint64 ifd1 = 0;
+        v = 0;
+        if (RdU16o (fp, ifd0, c.le, n0) && n0 && n0 <= 1024 &&
+            RdU32o (fp, ifd0 + 2 + 12 * (uint64)n0, c.le, ifd1w) && (ifd1 = ifd1w) >= 8 &&
+            FindEntry (fp, ifd1, 0x0213, te, c.le) &&
+            ((te.ty == 3 && RdU16o (fp, te.base, c.le, v)) || (te.ty == 4 && RdU32o (fp, te.base, c.le, v))))
+            c.thumbPos = (int)v;
+    }
+
+    uint64 exifIfd = 0;
+    if (SubIfdAt (fp, ifd0, 0x8769, exifIfd, c.le))
+    {
+        CarryIfd (fp, src, shared, exif, exifIfd, tcExifIFD, NULL, c, false);
+
+        if (!suppressGps)
+        {
+            uint64 gpsIfd = 0;
+            if (!SubIfdAt (fp, exifIfd, 0x8825, gpsIfd, c.le))
+                SubIfdAt (fp, ifd0, 0x8825, gpsIfd, c.le);         // 索尼件把 GPS 挂在 IFD0（⑮ 实测）
+            if (gpsIfd != 0)
+                CarryIfd (fp, src, shared, exif, gpsIfd, tcGPSInfo, NULL, c, true);
+        }
+
+        uint64 interIfd = 0;
+        if (SubIfdAt (fp, exifIfd, 0xA005, interIfd, c.le))
+            CarryIfd (fp, src, shared, exif, interIfd, tcInteroperabilityIFD, NULL, c, false);
+    }
+    fclose (fp);
+}
+
+// ── Fuji / Panasonic 私有镜头表：读法与换算全部取自一手实现（darktable master）──
+// 富士：src/common/exif.cc:1408-1493（结点/百分数/CA 相加/cropf 1.25）
+//       src/iop/lens.cc:2099-2133（f = 1 + D/100；增益 = 100/V；CA = 1+ca）
+// 松下：src/common/exif.cc:1541-1596（a=w8,b=w4,c=w11,scale=1/(1+w5/32768),开关=(w7&0xf)==1）
+//       src/iop/lens.cc:2445-2493（Ru = Rd + scale*(a Rd^3+b Rd^5+c Rd^7)，两点不动点反解）
+// 归一化：两家表都以"裁切图半对角"为 1；DNG 读者以"图幅最远角"为 1 ⇒ 乘 xScale。
+static bool FindTagRaw (FILE* fp, uint64 ifd, uint32 want, bool le,
+                        uint32& ty, uint32& cnt, uint32& val)
+{
+    uint32 n = 0;
+    if (!RdU16o (fp, ifd, le, n) || n == 0 || n > 1024) return false;
+    for (uint32 i = 0; i < n; i++)
+    {
+        uint64 e = ifd + 2 + 12 * (uint64)i;
+        uint32 tag = 0;
+        if (!RdU16o (fp, e, le, tag)) continue;
+        if (tag != want) continue;
+        ty = 0; cnt = 0; val = 0;
+        if (!RdU16o (fp, e + 2, le, ty) || !RdU32o (fp, e + 4, le, cnt) ||
+            !RdU32o (fp, e + 8, le, val)) return false;
+        return ty != 0 && cnt != 0;
+    }
+    return false;
+}
+
+static bool RdS32o (FILE* fp, uint64 off, bool le, int32& out)
+{
+    uint32 v = 0;
+    if (!RdU32o (fp, off, le, v)) return false;
+    out = (int32)v;
+    return true;
+}
+
+// Fuji 的 SRATIONAL 数组（type=10）。值偏移**相对 Fuji TIFF base**（不是文件绝对偏移）：
+// 实测 two chains 都满足 base 0x9cefd8 + 0xf0 → 0x9cf0c8（exiftool -v3 对过）。
+static bool TagRatSeq (FILE* fp, uint64 ifd, uint64 tiffBase, bool le, uint32 want,
+                       std::vector<double>& out)
+{
+    uint32 ty = 0, cnt = 0, val = 0;
+    if (!FindTagRaw (fp, ifd, want, le, ty, cnt, val)) return false;
+    if (ty != 10 || cnt == 0 || cnt > 256) return false;
+    uint64 bytes = (uint64)cnt * 8;
+    if (bytes <= 4) return false;                       // 这些表最短 19 项, 不可能内联
+    uint64 base = (uint64)val + tiffBase;
+    out.clear ();
+    for (uint32 i = 0; i < cnt; i++)
+    {
+        int32 num = 0, den = 0;
+        if (!RdS32o (fp, base + 8 * (uint64)i, le, num) ||
+            !RdS32o (fp, base + 8 * (uint64)i + 4, le, den)) { out.clear (); return false; }
+        out.push_back (den ? (double)num / (double)den : 0.0);
+    }
+    return true;
+}
+
+static void ComputeLensNorm (LensTables& t, const libraw_image_sizes_t& S)
+{
+    const double cw = (double)S.width, ch = (double)S.height;
+    const double cx = (double)S.left_margin + cw * 0.5;
+    const double cy = (double)S.top_margin  + ch * 0.5;
+    const double maxR = hypot (std::max (cx, (double)S.raw_width  - cx),
+                               std::max (cy, (double)S.raw_height - cy));
+    const double half = hypot (cw * 0.5, ch * 0.5);
+    t.xScale  = (maxR > 1e-9) ? (half / maxR) : 1.0;
+    t.centerH = (S.raw_width  > 0) ? (cx / (double)S.raw_width ) : 0.5;
+    t.centerV = (S.raw_height > 0) ? (cy / (double)S.raw_height) : 0.5;
+}
+
+static bool ReadFujiLens (FILE* fp, LensTables& t, const libraw_image_sizes_t& S, bool verbose)
+{
+    bool found = false;
+    const uint64 chainOff [2] = { 0x64, 0x80 };       // RAF 头 BE：FujiIFD / FujiIFD1
+    for (int q = 0; q < 2 && !found; q++)
+    {
+        uint32 b = 0;
+        if (!RdU32o (fp, chainOff [q], false, b) || b < 16) continue;
+        uint32 magic = 0;
+        if (!RdU16 (fp, b, magic)) continue;
+        bool le = true;
+        if (magic == 0x4949) le = true;
+        else if (magic == 0x4D4D) le = false;
+        else continue;
+        uint32 rel = 0;
+        if (!RdU32o (fp, b + 4, le, rel) || rel < 8) continue;
+        uint64 ifd0 = (uint64)b + rel;
+        uint64 sub  = ifd0;
+        {
+            uint32 ty = 0, cnt = 0, val = 0;
+            // 0xf000 = 子目录偏移，**相对 TIFF base**（LibRaw tiff.cpp:567-569 同读法）
+            if (FindTagRaw (fp, ifd0, 0xf000, le, ty, cnt, val) && val >= 8)
+                sub = (uint64)b + val;
+        }
+        std::vector<double> d, c, v;
+        if (!TagRatSeq (fp, sub, b, le, 0xf00b, d)) continue;
+        if (!TagRatSeq (fp, sub, b, le, 0xf00f, c)) continue;
+        if (!TagRatSeq (fp, sub, b, le, 0xf010, v)) continue;
+
+        const uint32 nd = (uint32)d.size (), ncc = (uint32)c.size (), nv = (uint32)v.size ();
+        uint32 nc = 0, distOff = 0, vigOff = 0, caROff = 0, caBOff = 0;
+        bool caZero0 = false;
+        if (nd == 23 && ncc == 31 && nv == 23)
+            { nc = 11; distOff = 12; vigOff = 12; caROff = 10; caBOff = 20; caZero0 = true; }
+        else if (nd == 19 && ncc == 29 && nv == 19)
+            { nc = 9;  distOff = 10; vigOff = 10; caROff = 10; caBOff = 19; }
+        else
+            { t.why = "Fuji 表 count 不在已证布局 (23/31/23 或 19/29/19)"; continue; }
+
+        for (uint32 i = 0; i < nc; i++)
+        {
+            t.fxKnot[i] = d [1 + i];
+            t.fxDist[i] = d [distOff + i];
+            t.fxVig [i] = v [vigOff + i];
+            if (caZero0 && i == 0) { t.fxCaR[i] = 0.0; t.fxCaB[i] = 0.0; }
+            else { t.fxCaR[i] = c [caROff + i]; t.fxCaB[i] = c [caBOff + i]; }
+        }
+        t.fxNc = nc;
+        t.fxCropf = 1.0;
+        uint32 cm = 0;
+        {
+            uint32 ty = 0, cnt = 0, val = 0;
+            bool have = FindTagRaw (fp, ifd0, 0x104d, le, ty, cnt, val);
+            if (!have) have = FindTagRaw (fp, sub, 0x104d, le, ty, cnt, val);
+            if (have && (ty == 3 || ty == 8) && cnt >= 1)
+            {
+                cm = val & 0xFFFFu;
+                if (cm == 2 || cm == 4) t.fxCropf = 1.25;   // dt exif.cc:1443-1448 / 1487-1492
+            }
+        }
+        t.kind = LensTables::kFuji;
+        t.frameW = S.raw_width; t.frameH = S.raw_height;
+        ComputeLensNorm (t, S);
+        t.ok = true;
+        found = true;
+        if (verbose)
+            fprintf (stderr, "[dngtool-e] lens-kind=fuji nc=%u cropMode=%u cropf=%.2f xScale=%.6f center=(%.4f,%.4f)\n",
+                     nc, cm, t.fxCropf, t.xScale, t.centerH, t.centerV);
+    }
+    if (!found && t.why == "未读") t.why = "RAF 里没有 FujiIFD 镜头三表";
+    return found;
+}
+
+static bool ReadPanasonicLens (FILE* fp, LensTables& t, const libraw_image_sizes_t& S, bool verbose)
+{
+    uint32 off0 = 0;
+    if (!RdU32 (fp, 4, off0) || off0 < 8 || off0 > 0x00FFFFFFu)
+        { t.why = "RW2 IFD0 偏移不可信"; return false; }
+    uint32 ty = 0, cnt = 0, val = 0;
+    if (!FindTagRaw (fp, off0, 0x0119, true, ty, cnt, val))
+        { t.why = "IFD0 无 0x0119 DistortionInfo"; return false; }
+    if (ty != 7 || cnt != 32)
+        { t.why = "0x0119 不是 UNDEFINED[32]"; return false; }
+    int16 v [16];
+    for (int i = 0; i < 16; i++)
+    {
+        uint32 w = 0;
+        if (!RdU16 (fp, (uint64)val + 2 * (uint64)i, w)) { t.why = "0x0119 载荷越界"; return false; }
+        v [i] = (int16)w;
+    }
+    t.kind = LensTables::kPanasonic;
+    t.frameW = S.raw_width; t.frameH = S.raw_height;
+    ComputeLensNorm (t, S);
+    t.ok = true;
+    t.swDist = ((v [7] & 0x0f) == 1) ? 1 : 0;
+    if (t.swDist == 1)
+    {
+        t.pnScale = 1.0 / (1.0 + (double)v [5] / 32768.0);
+        t.pnA = (double)v [8]  / 32768.0;
+        t.pnB = (double)v [4]  / 32768.0;
+        t.pnC = (double)v [11] / 32768.0;
+    }
+    if (verbose)
+        fprintf (stderr, "[dngtool-e] lens-kind=panasonic enabled=%d scale=%.6f a=%.6f b=%.6f c=%.6f xScale=%.6f center=(%.4f,%.4f)\n",
+                 t.swDist, t.pnScale, t.pnA, t.pnB, t.pnC, t.xScale, t.centerH, t.centerV);
+    if (t.swDist == 0) t.why = "DistortionCorrection=off";
+    return true;
+}
+
+// ── Phase One / Leaf 的 IIQ SensorDefects → 规范 OpcodeList1(51008) 的 FixBadPixelsList(ID=5) ──
+// 容器路径（一手，照抄 LibRaw 的走法，不另发明）：
+//   identify.cpp:540-542  头 32 字节里找 IIII/MMMM 当 base；
+//   mediumformat.cpp:21-45 base+4 处 (get4()>>8) 必须 == 0x526177（'Raw'），base+8 处 u32 = 目录相对 base；
+//                        记录 = (tag,type,len,data) 四个 u32；**tag 0x0110 的 data 是内联值**（块偏移，相对 base）；
+//   load_mfbacks.cpp:216-224 块头 u16 字节序标记 + 跳 6 字节 + u32 = 目录相对块首；目录 = u32 条数 + u32 保留；
+//                        记录 = (tag,len,data) 三个 u32，data 相对块首；tag 0x0400 = SensorDefects；
+//   load_mfbacks.cpp:250-262 每条 8 字节 = col,row,type,pad 四个 u16；type 129=坏点、131/137=坏列。
+// 坐标基与相位档 = 本机夹具实测（账本 §27）：坐标是**存储整幅的绝对坐标**（ActiveArea 不重新定基），
+// BayerPhase 只看存储 (0,0) 是不是绿点：绿 ⇒ {0,3}，非绿 ⇒ {1,2}（取低档 0 / 1）。
+struct SensorDefects
+{
+    bool                   ok;
+    std::string            why;
+    std::vector<dng_point> pts;
+    std::vector<uint32>    cols;
+    uint32                 nRaw;
+    uint32                 nOob;
+    uint32                 nUnknown;
+    SensorDefects () : ok (false), nRaw (0), nOob (0), nUnknown (0) {}
+};
+
+static bool ReadPhaseOneDefects (const char* path, SensorDefects& sd,
+                                 uint32 rawW, uint32 rawH, bool verbose)
+{
+    FILE* fp = fopen (path, "rb");
+    if (!fp) { sd.why = "源打不开"; return false; }
+
+    do
+        {
+        unsigned char head [32];
+        if (fread (head, 1, 32, fp) != 32) { sd.why = "头不足 32 字节"; break; }
+
+        int  base = -1;
+        bool le   = true;
+        for (int i = 0; i + 4 <= 32 && base < 0; i++)
+            {
+            if (head [i] == 0x49 && head [i + 1] == 0x49 && head [i + 2] == 0x49 && head [i + 3] == 0x49)
+                { base = i; le = true; }
+            else if (head [i] == 0x4D && head [i + 1] == 0x4D && head [i + 2] == 0x4D && head [i + 3] == 0x4D)
+                { base = i; le = false; }
+            }
+        if (base < 0) { sd.why = "头 32 字节里没有 IIII/MMMM（非 IIQ）"; break; }
+
+        uint32 sig = 0, dirOff = 0;
+        if (!RdU32o (fp, (uint64)base + 4, le, sig) || (sig >> 8) != 0x526177u)
+            { sd.why = "不是 Phase One 的 Raw 块"; break; }
+        if (!RdU32o (fp, (uint64)base + 8, le, dirOff) || dirOff < 8)
+            { sd.why = "MOBJ 目录偏移不可信"; break; }
+
+        const uint64 dir = (uint64)base + dirOff;
+        uint32 entries = 0, pad = 0;
+        if (!RdU32o (fp, dir, le, entries) || entries == 0 || entries > 8192 ||
+            !RdU32o (fp, dir + 4, le, pad))
+            { sd.why = "MOBJ 目录条数异常"; break; }
+
+        uint32 metaRel = 0;
+        bool   haveBlk = false;
+        for (uint32 i = 0; i < entries && !haveBlk; i++)
+            {
+            uint32 tag = 0, ty = 0, ln = 0, dt = 0;
+            const uint64 r = dir + 8 + 16 * (uint64)i;
+            if (!RdU32o (fp, r, le, tag) || !RdU32o (fp, r + 4, le, ty) ||
+                !RdU32o (fp, r + 8, le, ln) || !RdU32o (fp, r + 12, le, dt))
+                break;
+            if (tag == 0x0110 && ln >= 8) { metaRel = dt; haveBlk = true; }
+            }
+        if (!haveBlk) { sd.why = "MOBJ 里没有 tag 0x0110 元数据块"; break; }
+
+        const uint64 mb = (uint64)base + metaRel;
+        uint32 marker = 0;
+        if (!RdU16 (fp, mb, marker)) { sd.why = "元数据块头读不到"; break; }
+        bool ble = true;
+        if (marker == 0x4949)      ble = true;
+        else if (marker == 0x4D4D) ble = false;
+        else { sd.why = "元数据块头的字节序标记不认识"; break; }
+
+        uint32 blkDir = 0;
+        if (!RdU32o (fp, mb + 8, ble, blkDir) || blkDir < 8) { sd.why = "块内目录偏移不可信"; break; }
+        const uint64 bd = mb + blkDir;
+        uint32 ent = 0, pad2 = 0;
+        if (!RdU32o (fp, bd, ble, ent) || ent == 0 || ent > 8192 || !RdU32o (fp, bd + 4, ble, pad2))
+            { sd.why = "块内目录条数异常"; break; }
+
+        uint32 dLen = 0, dRel = 0;
+        bool   have = false;
+        for (uint32 i = 0; i < ent && !have; i++)
+            {
+            uint32 tag = 0, ln = 0, dt = 0;
+            const uint64 r = bd + 8 + 12 * (uint64)i;
+            if (!RdU32o (fp, r, ble, tag) || !RdU32o (fp, r + 4, ble, ln) || !RdU32o (fp, r + 8, ble, dt))
+                break;
+            if (tag == 0x0400) { dLen = ln; dRel = dt; have = true; }
+            }
+        if (!have) { sd.why = "元数据块里没有 tag 0x0400 SensorDefects"; break; }
+        if (dLen < 8 || (dLen % 8) != 0 || dLen > 8u * 1024u * 1024u)
+            { sd.why = "SensorDefects 长度不成条"; break; }
+
+        const uint64 at = mb + dRel;
+        const uint32 n  = dLen / 8;
+        for (uint32 i = 0; i < n; i++)
+            {
+            uint32 col = 0, row = 0, ty = 0, pd = 0;
+            const uint64 r = at + 8 * (uint64)i;
+            if (!RdU16o (fp, r, ble, col) || !RdU16o (fp, r + 2, ble, row) ||
+                !RdU16o (fp, r + 4, ble, ty) || !RdU16o (fp, r + 6, ble, pd))
+                { sd.why = "记录读越界"; break; }
+            sd.nRaw++;
+            if (ty == 129)
+                {
+                if (row >= rawH || col >= rawW) sd.nOob++;
+                else sd.pts.push_back (dng_point ((int32) row, (int32) col));
+                }
+            else if (ty == 131 || ty == 137)
+                {
+                if (col >= rawW) sd.nOob++;
+                else sd.cols.push_back (col);
+                }
+            else sd.nUnknown++;        // 认不出的类型不猜（本机 P40 有 2 条 type=138）
+            }
+
+        sd.ok = !sd.pts.empty () || !sd.cols.empty ();
+        if (!sd.ok && sd.why.empty ()) sd.why = "表在场但一条可用记录都没有";
+        if (verbose && sd.ok)
+            fprintf (stderr, "[dngtool-e] badpix-src raw=%u pts=%zu rects=%zu oob=%u unknown-type=%u 幅面=%ux%u\n",
+                     sd.nRaw, sd.pts.size (), sd.cols.size (), sd.nOob, sd.nUnknown, rawW, rawH);
+        }
+    while (false);
+
+    fclose (fp);
+    return sd.ok;
+}
+
+// ── Sony 旧制式的第二条路由：SR2Private → SR2SubIFD（2026-10-22，账本 §41）──────────
+// 动因：Hasselblad Lunar（索尼机身，旧制式）在图像 SubIFD 里**确实没有** 0x7032/0x7035/0x7037
+//   ⇒ 现有通路如实点名 `lens-tables=absent`。但同一件里那三张表在场，只是换了一个存放位，而且要先解密：
+//   IFD0 的 0xC634 = SR2Private IFD；块内 0x7200=SR2SubIFD 偏移、0x7201=长度、0x7221=密钥（type 7 内联 u32）；
+//   解密后的 SR2SubIFD 里 0x797D=vig、0x7980=ca、0x7982=dist（int16 串，**带计数前缀**），
+//   开关按"紧跟各自表的前一个 ID"= 0x797C/0x797F/0x7981。
+// 为什么可以直接喂给现成的换算（这条是本次动手的前提，不是推断）：
+//   同一件 ILCE-7M2 **两种存放同时在场**，实测 0x797D/0x7980/0x7982 与图像 SubIFD 的 0x7032/0x7035/0x7037
+//   **整段逐字节相等**，三个开关也逐个相等 ⇒ 同一张表、同一约定，只是换了位（取证读数
+//   tests/output/sony-enciph/readout.txt；独立实现 tests/scripts/_probe-sony-enciphered-lens.py，
+//   该实现与 exiftool 逐值对撞通过 ⇒ 本函数与它互为第二实现）。
+// 密码形状（照 exiftool Sony.pm:11488 `sub Decrypt` 的口径，逐字自写不抄表）：
+//   按 4 字节一读、**大端**解释成 u32、与 key-stream 异或、再大端写回；len 不是 4 的倍数时
+//   尾字节不参与（words = int(len/4)）。key-stream = 128 项 pad[]，初值由 key 走一条 LCG。
+static void SonySr2KeyStream (std::vector<unsigned char>& blk, uint32 key)
+{
+    const uint32 nw = (uint32)blk.size () / 4;             // 尾字节不参与（与权威口径同形）
+    if (nw == 0) return;
+    uint32 pad [128];
+    for (int i = 0; i < 128; i++) pad [i] = 0;
+    uint32 k = key;
+    for (int i = 0; i < 4; i++)
+    {
+        uint32 lo = (k & 0xFFFFu) * 0x0EDDu + 1u;
+        uint32 hi = (k >> 16) * 0x0EDDu + (k & 0xFFFFu) * 0x02E9u + (lo >> 16);
+        k = ((hi & 0xFFFFu) << 16) + (lo & 0xFFFFu);
+        pad [i] = k;
+    }
+    pad [3] = (pad [3] << 1) | ((pad [0] ^ pad [2]) >> 31);
+    for (int i = 4; i < 0x7F; i++)
+        pad [i] = (((pad [i - 4] ^ pad [i - 2]) << 1) | ((pad [i - 3] ^ pad [i - 1]) >> 31));
+    uint32 p = 0x7F;
+    for (uint32 j = 0; j < nw; j++)
+    {
+        const uint32 v = pad [(p + 1) & 0x7F] ^ pad [(p + 65) & 0x7F];
+        pad [p & 0x7F] = v;
+        unsigned char* q = &blk [(size_t)j * 4];
+        uint32 w = ((uint32)q [0] << 24) | ((uint32)q [1] << 16) | ((uint32)q [2] << 8) | (uint32)q [3];
+        w ^= v;
+        q [0] = (unsigned char)(w >> 24); q [1] = (unsigned char)(w >> 16);
+        q [2] = (unsigned char)(w >> 8);  q [3] = (unsigned char)(w);
+        p++;
+    }
+}
+
+// 从内存里的一段（已解密的 SR2SubIFD）取一条 int16 序列。值指针按 **TIFF 绝对偏移**存储
+// ⇒ 块内下标 = 存储值 - 块起点（这一条口径不是猜的：同一件里两种基址口径都算过，只有绝对口径
+// 取到的三份表与 exiftool/新制式逐字节相等；另一种"相对块起点"已被否证，见 readout 的 blkrel 行）。
+static bool BlkInt16Seq (const std::vector<unsigned char>& blk, uint64 blkStart,
+                         uint32 ifdPos, uint32 want, std::vector<int16>& out)
+{
+    if (ifdPos + 2 > blk.size ()) return false;
+    const uint32 n = (uint32)((uint32)blk [ifdPos] | ((uint32)blk [ifdPos + 1] << 8));
+    if (n == 0 || n > 4096) return false;
+    for (uint32 i = 0; i < n; i++)
+    {
+        const uint64 e = ifdPos + 2 + 12 * (uint64)i;
+        if (e + 12 > blk.size ()) return false;
+        const uint32 tag = (uint32)blk [e] | ((uint32)blk [e + 1] << 8);
+        const uint32 ty  = (uint32)blk [e + 2] | ((uint32)blk [e + 3] << 8);
+        uint32 cnt = 0, val = 0;
+        for (int b = 0; b < 4; b++) { cnt |= (uint32)blk [e + 4 + b] << (8 * b); val |= (uint32)blk [e + 8 + b] << (8 * b); }
+        if (tag != want) continue;
+        if (ty != 8 || cnt == 0 || cnt > 8192) return false;      // 形状不认 ⇒ 不猜
+        const uint64 bytes = (uint64)cnt * 2;
+        uint64 idx = 0;
+        if (bytes <= 4) idx = e + 8;
+        else
+        {
+            if ((uint64)val < blkStart) return false;             // 指针在块前 ⇒ 口径不对，不猜
+            idx = (uint64)val - blkStart;
+        }
+        if (idx + bytes > blk.size ()) return false;
+        out.clear ();
+        for (uint64 k = 0; k + 1 < bytes; k += 2)
+            out.push_back ((int16)((int32)blk [idx + k] | ((int32)blk [idx + k + 1] << 8)));
+        return true;
+    }
+    return false;
+}
+
+static bool BlkSwitch (const std::vector<unsigned char>& blk, uint32 ifdPos, uint32 want, int& out)
+{
+    if (ifdPos + 2 > blk.size ()) return false;
+    const uint32 n = (uint32)((uint32)blk [ifdPos] | ((uint32)blk [ifdPos + 1] << 8));
+    if (n == 0 || n > 4096) return false;
+    for (uint32 i = 0; i < n; i++)
+    {
+        const uint64 e = ifdPos + 2 + 12 * (uint64)i;
+        if (e + 12 > blk.size ()) return false;
+        const uint32 tag = (uint32)blk [e] | ((uint32)blk [e + 1] << 8);
+        const uint32 ty  = (uint32)blk [e + 2] | ((uint32)blk [e + 3] << 8);
+        uint32 cnt = 0, val = 0;
+        for (int b = 0; b < 4; b++) { cnt |= (uint32)blk [e + 4 + b] << (8 * b); val |= (uint32)blk [e + 8 + b] << (8 * b); }
+        if (tag != want) continue;
+        if (ty == 3 && cnt >= 1) { out = (int)(int16_t)(val & 0xFFFFu); return true; }
+        return false;
+    }
+    return false;
+}
+
+// IFD0 里取一个 u32 标量（0xC634 的 type=1 count=4 是**内联**的偏移，别再去引用一次）。
+static bool IfdU32Scalar (FILE* fp, uint64 ifdOff, uint32 want, uint32& out)
+{
+    uint32 n = 0;
+    if (!RdU16 (fp, ifdOff, n) || n == 0 || n > 4096) return false;
+    for (uint32 i = 0; i < n; i++)
+    {
+        uint64 e = ifdOff + 2 + 12 * (uint64)i;
+        uint32 tag = 0, ty = 0, cnt = 0, val = 0;
+        if (!RdU16 (fp, e, tag) || !RdU16 (fp, e + 2, ty) ||
+            !RdU32 (fp, e + 4, cnt) || !RdU32 (fp, e + 8, val)) continue;
+        if (tag != want) continue;
+        // 只认**内联**标量：type 1/7 的 count≤4、type 4/13 的 count==1、type 3 的 count==1。
+        // 不认外链 ⇒ 宁可不搬，也不把"偏移"当成"值"去解密（那会造出一张内容不明的表）。
+        if ((ty == 1 || ty == 7) && cnt >= 1 && cnt <= 4) { out = val; return true; }
+        if ((ty == 4 || ty == 13) && cnt == 1) { out = val; return true; }
+        if (ty == 3 && cnt == 1) { out = val & 0xFFFFu; return true; }
+        return false;
+    }
+    return false;
+}
+
+static bool ReadSonySr2Lens (FILE* fp, uint32 off0, LensTables& t, bool verbose)
+{
+    uint32 priv = 0;
+    if (!IfdU32Scalar (fp, off0, 0xC634, priv) || priv < 8)
+        { t.why += "；SR2 路由缺席（IFD0 无 0xC634 SR2Private）"; return false; }
+    uint32 subOff = 0, subLen = 0, subKey = 0;
+    if (!IfdU32Scalar (fp, priv, 0x7200, subOff) ||
+        !IfdU32Scalar (fp, priv, 0x7201, subLen) ||
+        !IfdU32Scalar (fp, priv, 0x7221, subKey))
+        { t.why += "；SR2 路由取不到（SR2Private 缺 0x7200/0x7201/0x7221 任一键）"; return false; }
+    if (subLen == 0 || subLen > 8u * 1024u * 1024u)
+        { t.why += "；SR2 路由取不到（块长不合理）"; return false; }
+    std::vector<unsigned char> blk;
+    if (!ReadFileRange (fp, subOff, subLen, blk))
+        { t.why += "；SR2 路由取不到（块读不满）"; return false; }
+    SonySr2KeyStream (blk, subKey);
+    std::vector<int16> v, d, c;
+    const bool haveVig  = BlkInt16Seq (blk, subOff, 0, 0x797D, v);
+    const bool haveCa   = BlkInt16Seq (blk, subOff, 0, 0x7980, c);
+    const bool haveDist = BlkInt16Seq (blk, subOff, 0, 0x7982, d);
+    if (!haveVig && !haveCa && !haveDist)
+        { t.why += "；SR2 路由取不到（解密后的 SR2SubIFD 里没有 0x797D/0x7980/0x7982）"; return false; }
+    if (haveVig)  t.vig  = v;
+    if (haveCa)   t.ca   = c;
+    if (haveDist) t.dist = d;
+    int sv = -1;
+    if (haveVig  && BlkSwitch (blk, 0, 0x797C, sv)) t.swVig  = sv;
+    if (haveCa   && BlkSwitch (blk, 0, 0x797F, sv)) t.swCa   = sv;
+    if (haveDist && BlkSwitch (blk, 0, 0x7981, sv)) t.swDist = sv;
+    t.ok = true;
+    t.why = "SR2SubIFD(解密)";
+    fprintf (stderr, "[dngtool-e] lens=SR2SubIFD 旧制式路由命中（密钥 0x%08X 块 %lu B）"
+                     " 三表可见性 vig=%d ca=%d dist=%d 开关 vig=%d ca=%d dist=%d\n",
+             subKey, (unsigned long)blk.size (), (int)haveVig, (int)haveCa, (int)haveDist,
+             t.swVig, t.swCa, t.swDist);
+    return true;
+}
+
+static bool ReadLensTables (const char* path, LensTables& t, const libraw_image_sizes_t& S, bool verbose)
 {
     FILE* fp = fopen (path, "rb");
     if (!fp) { t.why = "源打不开"; return false; }
+    {
+        // 容器分派：Fuji RAF / Panasonic RW2/RWL 各有自己的私有表（Sony 继续走下面的 SubIFD 0x7032/35/37）
+        char m [16] = { 0 };
+        size_t got = fread (m, 1, 15, fp);
+        if (got == 15 && memcmp (m, "FUJIFILMCCD-RAW", 15) == 0)
+        {
+            bool r = ReadFujiLens (fp, t, S, verbose);
+            fclose (fp);
+            return r;
+        }
+        if (got >= 4 && m [0] == 'I' && m [1] == 'I' && m [2] == 'U' && m [3] == 0)
+        {
+            bool r = ReadPanasonicLens (fp, t, S, verbose);
+            fclose (fp);
+            return r;
+        }
+    }
     uint32 bo = 0, off0 = 0;
     if (!RdU16 (fp, 0, bo) || !RdU32 (fp, 4, off0) || bo != 0x4949 || off0 < 8)
         { t.why = "非 LE TIFF 头"; fclose (fp); return false; }
@@ -1982,7 +3210,13 @@ static bool ReadLensTables (const char* path, LensTables& t, bool verbose)
                 { subBase = val; subCnt = cnt; subInline = (cnt == 1) ? 1 : 0; }
         }
     }
-    if (subBase == 0) { t.why = "IFD0 无 0x14A SubIFDs"; fclose (fp); return false; }
+    if (subBase == 0)
+    {
+        t.why = "IFD0 无 0x14A SubIFDs";
+        const bool r = ReadSonySr2Lens (fp, off0, t, verbose);
+        fclose (fp);
+        return r;
+    }
     // 0x14A 的值字段是 SubIFD 偏移**数组**（TIFF 规则: 计数在表项里, 数组本身不带计数头）⇒
     // 早先按"首字是数量"去解会把一个偏移当计数。另一条更阴: cnt==1 时 TIFF 把值**内联**在值字段里,
     // 那个字段本身就是偏移, 再去解引用一次就读到了缩略图 IFD 的头 ⇒ 7M2 会被误判成"无镜头表"。
@@ -2014,8 +3248,9 @@ static bool ReadLensTables (const char* path, LensTables& t, bool verbose)
         if (t.ok) { fclose (fp); if (verbose) fprintf (stderr, "[dngtool-e] lens: SubIFD#%u 命中三表可见性 vig=%d dist=%d ca=%d\n", s, (int)haveVig, (int)haveDist, (int)haveCa); return true; }
     }
     t.why = "图像 SubIFD 里没有 0x7032/0x7037/0x7035";
+    const bool sr2 = ReadSonySr2Lens (fp, off0, t, verbose);
     fclose (fp);
-    return false;
+    return sr2;
 }
 
 // 基函数最小二乘：y ≈ Σ coef[j]·x^powers[j]。正规方程 + 部分主元消元，本机自算不引库；
@@ -2106,6 +3341,98 @@ static bool RadialMapMonotone (const std::vector<double>& coef, const std::vecto
     return true;
 }
 
+// 把"目的半径 r → 源/目的比例 f(r)"的采样拟合进标准 opcode：
+//   WarpRectilinear2(14, optional)：逐平面全阶（横向色散靠它分平面）
+//   WarpRectilinear(1, required)：只收偶次项 {0,2,4,6}，绿色平面（几何）——DNG1.3 读者只认这条
+static uint32 EmitWarpSamples (dng_negative& negative,
+                               const std::vector<double>& xs,
+                               const std::vector<double> ys [3],
+                               double centerH, double centerV,
+                               const char* tag, bool verbose)
+{
+    uint32 written = 0;
+    std::vector<double> coefV2 [3];
+    std::vector<int> powV2 [3];
+    double resV2 [3] = { 0.0, 0.0, 0.0 };
+    bool ok = true;
+    for (int p = 0; p < 3 && ok; p++)
+    {
+        bool found = false;
+        for (int deg = 1; deg <= 14; deg++)
+        {
+            std::vector<int> pw; for (int q = 0; q <= deg; q++) pw.push_back (q);
+            std::vector<double> cf; double res = 0.0;
+            if (!FitPowers (xs, ys [p], pw, cf, res)) continue;
+            double minScale = 0.0;
+            if (!RadialMapMonotone (cf, pw, minScale)) continue;
+            if (res > 0.0005 && deg < 14) continue;
+            if (res > 0.0020) { found = false; break; }
+            coefV2 [p] = cf; powV2 [p] = pw; resV2 [p] = res; found = true; break;
+        }
+        if (!found) { ok = false; }
+    }
+    if (!ok)
+        { fprintf (stderr, "[dngtool-e] lens-skipped=distortion:%s:fit\n", tag); return 0; }
+
+    bool ident = true;
+    for (int p = 0; p < 3 && ident; p++)
+        for (size_t q = 0; q < powV2 [p].size (); q++)
+        {
+            double expect = (powV2 [p] [q] == 0) ? 1.0 : 0.0;
+            if (fabs (coefV2 [p] [q] - expect) > 1e-12) { ident = false; break; }
+        }
+    if (ident)
+        { fprintf (stderr, "[dngtool-e] lens-skipped=distortion:%s:identity\n", tag); return 0; }
+
+    dng_warp_params_radial rad;
+    for (uint32 p = 0; p < 3; p++)
+        for (uint32 q = 0; q < dng_warp_params_radial::kMaxTerms; q++)
+            rad.fData [p] [q] = (q < coefV2 [p].size ()) ? coefV2 [p] [q] : 0.0;
+    for (uint32 p = 0; p < 3; p++) { rad.fValidRange [p] [0] = 0.0; rad.fValidRange [p] [1] = 1.0; }
+    rad.fUseReciprocal = false;
+    dng_vector tanP [3];
+    for (uint32 p = 0; p < 3; p++) { tanP [p] = dng_vector (2); tanP [p] [0] = 0.0; tanP [p] [1] = 0.0; }
+    dng_point_real64 center; center.h = centerH; center.v = centerV;
+    dng_warp_params_rectilinear wp (3, rad, tanP, center);
+    AutoPtr<dng_opcode> op2 (new dng_opcode_WarpRectilinear2 (wp, dng_opcode::kFlag_Optional));
+    negative.OpcodeList3 ().Append (op2);
+    written++;
+    fprintf (stderr, "[dngtool-e] lens-warp2=applied kind=%s planes=3 maxres=%.6f/%.6f/%.6f center=(%.4f,%.4f)\n",
+             tag, resV2 [0], resV2 [1], resV2 [2], centerH, centerV);
+
+    {
+        std::vector<int> pw; pw.push_back (0); pw.push_back (2); pw.push_back (4); pw.push_back (6);
+        std::vector<double> cf; double res = 0.0;
+        double minScale = 0.0;
+        if (FitPowers (xs, ys [1], pw, cf, res) && RadialMapMonotone (cf, pw, minScale) && res <= 0.0020)
+        {
+            dng_warp_params_radial rad1;
+            for (uint32 p = 0; p < 3; p++)
+                for (uint32 q = 0; q < dng_warp_params_radial::kMaxTerms; q++) rad1.fData [p] [q] = 0.0;
+            for (uint32 p = 0; p < 3; p++)
+                for (size_t j = 0; j < pw.size (); j++) rad1.fData [p] [pw [j]] = cf [j];
+            for (uint32 p = 0; p < 3; p++) { rad1.fValidRange [p] [0] = 0.0; rad1.fValidRange [p] [1] = 1.0; }
+            rad1.fUseReciprocal = false;
+            dng_warp_params_rectilinear wp1 (3, rad1, tanP, center);
+            AutoPtr<dng_opcode> op1 (new dng_opcode_WarpRectilinear (wp1, dng_opcode::kFlag_None));
+            negative.OpcodeList3 ().Append (op1);
+            written++;
+            fprintf (stderr, "[dngtool-e] lens-warp1=applied maxres=%.6f\n", res);
+        }
+        else
+            fprintf (stderr, "[dngtool-e] lens-skipped=warp-legacy:residual=%.6f（DNG1.3 只收偶次项）\n", res);
+    }
+    if (verbose)
+        for (uint32 p = 0; p < 3; p++)
+        {
+            fprintf (stderr, "[dngtool-e] warp2 plane=%u coef=", p);
+            for (size_t q = 0; q < coefV2 [p].size (); q++)
+                fprintf (stderr, "%s%.9g", q ? "," : "", coefV2 [p] [q]);
+            fprintf (stderr, "\n");
+        }
+    return written;
+}
+
 // 一整套镜头 opcode 的落点。返回写进 OpcodeList3 的支数；每条臂的取舍都用 ASCII 键点名。
 static uint32 ApplyLensOpcodes (dng_negative &negative, const LensTables &t,
                                 const dng_rect &stage3Bounds, bool verbose)
@@ -2113,7 +3440,56 @@ static uint32 ApplyLensOpcodes (dng_negative &negative, const LensTables &t,
     uint32 written = 0;
 
     // ── 1) 暗角 → FixVignetteRadial(ID=3, v1.3.0.0)，g = 1 + k0r² + … + k4r¹⁰ ──
-    if (!t.vig.empty ())
+    // Fuji：表是透射百分数 ⇒ 增益 100/V（darktable lens.cc:2123 的 1-(1-V/100) 即 V/100）；
+    //       半径 = cropf·knot·xScale（cropf 处理 1.25x 裁切）。
+    if (t.kind == LensTables::kFuji && t.fxNc >= 5)
+    {
+        std::vector<double> xs, ys;
+        for (uint32 i = 0; i < t.fxNc; i++)
+        {
+            double V = t.fxVig [i];
+            if (!(V > 1.0)) continue;
+            double r = t.fxCropf * t.fxKnot [i] * t.xScale;
+            xs.push_back (r * r);
+            ys.push_back (100.0 / V - 1.0);
+        }
+        std::vector<int> powers; for (int q = 1; q <= 5; q++) powers.push_back (q);
+        std::vector<double> coef; double res = 0.0;
+        if (xs.size () < powers.size () || !FitPowers (xs, ys, powers, coef, res))
+            fprintf (stderr, "[dngtool-e] lens-skipped=vignette:fuji-fit-singular\n");
+        else if (res > 0.010)
+            fprintf (stderr, "[dngtool-e] lens-skipped=vignette:fuji-residual=%.6f>0.010\n", res);
+        else
+        {
+            bool mono = true;
+            for (int i = 0; i <= 200 && mono; i++)
+            {
+                double q = (double)i / 200.0;
+                if (1.0 + EvalPowers (coef, powers, q * q) <= 0.0) mono = false;
+            }
+            bool ident = true;
+            for (size_t q = 0; q < coef.size (); q++) if (fabs (coef [q]) > 1e-9) ident = false;
+            if (!mono) fprintf (stderr, "[dngtool-e] lens-skipped=vignette:fuji-gain<=0\n");
+            else if (ident) fprintf (stderr, "[dngtool-e] lens-skipped=vignette:fuji-identity\n");
+            else
+            {
+                dng_std_vector<real64> vp (5);
+                for (int q = 0; q < 5; q++) vp [q] = coef [q];
+                dng_point_real64 center; center.h = t.centerH; center.v = t.centerV;
+                dng_vignette_radial_params params (vp, center);
+                AutoPtr<dng_opcode> op (new dng_opcode_FixVignetteRadial (params, dng_opcode::kFlag_None));
+                negative.OpcodeList3 ().Append (op);
+                written++;
+                fprintf (stderr, "[dngtool-e] lens-vignette=applied kind=fuji nc=%u maxres=%.6f cornergain=%.6f center=(%.4f,%.4f)\n",
+                         t.fxNc, res, 100.0 / t.fxVig [t.fxNc - 1], t.centerH, t.centerV);
+                if (verbose)
+                    fprintf (stderr, "[dngtool-e] FixVignetteRadial k=%g %g %g %g %g center=(%.4f,%.4f)\n",
+                             coef [0], coef [1], coef [2], coef [3], coef [4], center.h, center.v);
+            }
+        }
+    }
+
+    if (t.kind == LensTables::kSony && !t.vig.empty ())
     {
         uint32 nc = (uint32)t.vig [0];
         if (t.swVig == 0)     fprintf (stderr, "[dngtool-e] lens-skipped=vignette:switch-off\n");
@@ -2173,15 +3549,74 @@ static uint32 ApplyLensOpcodes (dng_negative &negative, const LensTables &t,
     }
 
     // ── 2) 畸变(±横向色差) → [WarpRectilinear2 optional] + [WarpRectilinear required] ──
-    if (!t.dist.empty ())
+    // Fuji：f = 1 + D/100（几何）；R/B 平面再乘 (1+ca)（darktable lens.cc:2109-2118）
+    if (t.kind == LensTables::kFuji && t.fxNc >= 3)
+    {
+        std::vector<double> xs; std::vector<double> ys [3];
+        for (uint32 i = 0; i < t.fxNc; i++)
+        {
+            double r = t.fxCropf * t.fxKnot [i] * t.xScale;
+            double geo = 1.0 + t.fxDist [i] / 100.0;
+            xs.push_back (r);
+            ys [0].push_back (geo * (1.0 + t.fxCaR [i]));
+            ys [1].push_back (geo);
+            ys [2].push_back (geo * (1.0 + t.fxCaB [i]));
+        }
+        written += EmitWarpSamples (negative, xs, ys, t.centerH, t.centerV, "fuji", verbose);
+    }
+    // Panasonic：Ru = Rd + scale*(a Rd^3+b Rd^5+c Rd^7)，两点不动点反解 Rd/Ru
+    // （darktable lens.cc:2445-2493；半径归一到裁切图半对角，再乘 xScale 换到 DNG 读者口径）
+    else if (t.kind == LensTables::kPanasonic)
+    {
+        if (t.swDist == 0)
+            fprintf (stderr, "[dngtool-e] lens-skipped=distortion:switch-off (Panasonic DistortionCorrection=off)\n");
+        else
+        {
+            std::vector<double> xs; std::vector<double> ys [3];
+            const int kN = 64;
+            for (int i = 0; i <= kN; i++)
+            {
+                double r = (double)i / (double)kN;
+                double rd = r;
+                for (int k = 0; k < 2; k++)
+                {
+                    double rd2 = rd * rd;
+                    double f = 1.0 + t.pnScale * (t.pnA * rd2 + t.pnB * rd2 * rd2 + t.pnC * rd2 * rd2 * rd2);
+                    rd = (f > 1e-6) ? (r / f) : r;
+                }
+                double dr = (r > 0.0) ? (rd / r) : 1.0;
+                xs.push_back (r * t.xScale);
+                ys [0].push_back (dr); ys [1].push_back (dr); ys [2].push_back (dr);
+            }
+            written += EmitWarpSamples (negative, xs, ys, t.centerH, t.centerV, "panasonic", verbose);
+        }
+    }
+
+    if (t.kind == LensTables::kSony && !t.dist.empty ())
     {
         uint32 nc = (uint32)t.dist [0];
         bool caUsable = (!t.ca.empty () && (uint32)t.ca [0] == 2 * nc && t.ca.size () >= (size_t)(1 + 2 * nc));
-        if (t.swDist == 0)  fprintf (stderr, "[dngtool-e] lens-skipped=distortion:switch-off\n");
-        else if (nc < 3 || t.dist.size () < (size_t)(1 + nc))
+        // 畸变开关关 ≠ CA 也关：机内声明 ca=1、两表同 cnt 时，CA 单独走「几何恒等(s≡1) + 逐平面缩放」
+        // 的 WarpRectilinear2(optional)。WarpRectilinear(1) 只带几何、不区分平面 ⇒ 这一格不发它。
+        const bool caOnly = (t.swDist == 0 && t.swCa != 0 && caUsable &&
+                             nc >= 3 && nc <= 16 && t.dist.size () >= (size_t)(1 + nc));
+        if (t.swDist == 0 && !caOnly)
+        {
+            fprintf (stderr, "[dngtool-e] lens-skipped=distortion:switch-off\n");
+            if (!t.ca.empty () && t.swCa != 0)
+                fprintf (stderr, "[dngtool-e] lens-skipped=chromatic-aberration:distortion-off-and-ca-table-unusable"
+                                 " (CA 表在场 cnt=%u、机内开关=%d ⇒ 不成对（需 2*nc=%u）或越界, 不猜)\n",
+                         (uint32)t.ca [0], t.swCa, (unsigned)(2 * nc));
+        }
+        else if (!caOnly && (nc < 3 || t.dist.size () < (size_t)(1 + nc)))
                             fprintf (stderr, "[dngtool-e] lens-skipped=distortion:count(nc=%u)\n", nc);
         else
         {
+            if (caOnly)
+            {
+                fprintf (stderr, "[dngtool-e] lens-skipped=distortion:switch-off\n");
+                fprintf (stderr, "[dngtool-e] lens-ca=standalone 畸变关、CA 开 ⇒ warp2 几何恒等 + 逐平面缩放 nc=%u\n", nc);
+            }
             std::vector<double> knots;
             BuildKnots (nc, knots);
             double caScale [2] [16];     // 只在 nc ≤ 16 时用（本机两件都是 16; 超了就退回无 CA）
@@ -2194,6 +3629,10 @@ static uint32 ApplyLensOpcodes (dng_negative &negative, const LensTables &t,
             if (t.swCa == 0 && !t.ca.empty ()) fprintf (stderr, "[dngtool-e] lens-skipped=chromatic-aberration:switch-off\n");
 
             const int kMaxDeg = (int)dng_warp_params_radial::kMaxTerms - 1;
+            const char* skipTag = caOnly ? "chromatic-aberration" : "distortion";
+            // CA-only 格没有几何项可摊，整条 warp 就是 CA 本身 ⇒ 5e-5 以下的拟合才收
+            // （Lunar 实测：一次项 2.6e-4 ≈ 边缘 1.6 px 的残余色散，二次项 4.0e-5 ≈ 0.3 px）。
+            const double adequate = caOnly ? 5e-5 : 5e-4;
             std::vector<double> coefV2 [3];
             std::vector<int>      powV2 [3];
             double                resV2 [3] = { 0.0, 0.0, 0.0 };
@@ -2203,7 +3642,7 @@ static uint32 ApplyLensOpcodes (dng_negative &negative, const LensTables &t,
                 std::vector<double> ys (nc, 0.0);
                 for (uint32 i = 0; i < nc; i++)
                 {
-                    double s = 1.0 + (double)t.dist [1 + i] / 16384.0;
+                    double s = caOnly ? 1.0 : 1.0 + (double)t.dist [1 + i] / 16384.0;
                     if (caUsable) s *= (p == 0) ? caScale [0][i] : (p == 2) ? caScale [1][i] : 1.0;
                     ys [i] = s;
                 }
@@ -2216,11 +3655,11 @@ static uint32 ApplyLensOpcodes (dng_negative &negative, const LensTables &t,
                     if (!FitPowers (knots, ys, pw, cf, res)) continue;
                     double minScale = 0.0;
                     if (!RadialMapMonotone (cf, pw, minScale)) continue;
-                    if (res > 0.0005 && deg < kMaxDeg) continue;
-                    if (res > 0.0020) { fprintf (stderr, "[dngtool-e] lens-skipped=distortion:residual=%.6f>0.0020 plane=%u\n", res, p); planeOk = false; break; }
+                    if (res > adequate && deg < kMaxDeg) continue;
+                    if (res > 0.0020) { fprintf (stderr, "[dngtool-e] lens-skipped=%s:residual=%.6f>0.0020 plane=%u\n", skipTag, res, p); planeOk = false; break; }
                     coefV2 [p] = cf; powV2 [p] = pw; resV2 [p] = res; found = true;
                 }
-                if (!found && planeOk) { fprintf (stderr, "[dngtool-e] lens-skipped=distortion:fit plane=%u 无合格阶数\n", p); planeOk = false; }
+                if (!found && planeOk) { fprintf (stderr, "[dngtool-e] lens-skipped=%s:fit plane=%u 无合格阶数\n", skipTag, p); planeOk = false; }
             }
             if (planeOk)
             {
@@ -2242,19 +3681,24 @@ static uint32 ApplyLensOpcodes (dng_negative &negative, const LensTables &t,
                         if (powV2 [p] [q] == 0) continue;
                         if (fabs (coefV2 [p] [q]) > 1e-12) { ident = false; break; }
                     }
-                if (ident) fprintf (stderr, "[dngtool-e] lens-skipped=distortion:identity\n");
+                if (ident)
+                    fprintf (stderr, caOnly ? "[dngtool-e] lens-skipped=chromatic-aberration:identity\n"
+                                            : "[dngtool-e] lens-skipped=distortion:identity\n");
                 else
                 {
                     AutoPtr<dng_opcode> op2 (new dng_opcode_WarpRectilinear2 (wp, dng_opcode::kFlag_Optional));
                     negative.OpcodeList3 ().Append (op2);
                     written++;
-                    fprintf (stderr, "[dngtool-e] lens-warp2=applied planes=3 sw=%d ca=%s maxres=%.6f/%.6f/%.6f\n",
-                             t.swDist, caUsable ? "per-plane" : "off", resV2 [0], resV2 [1], resV2 [2]);
+                    fprintf (stderr, "[dngtool-e] lens-warp2=applied planes=3 sw=%d ca=%s geo=%s maxres=%.6f/%.6f/%.6f\n",
+                             t.swDist, caUsable ? "per-plane" : "off", caOnly ? "identity" : "dist",
+                             resV2 [0], resV2 [1], resV2 [2]);
 
                     // v1 支只允许偶次项（PutData 取 fData[0,2,4,6]，dng_lens_correction.cpp:1908-1911）
-                    // ⇒ 单独拟一条只含 {1,r²,r⁴,r⁶} 的；拟不到水位就不发兜底支，不硬凑
+                    // ⇒ 单独拟一条只含 {1,r²,r⁴,r⁶} 的；拟不到水位就不发兜底支，不硬凑。
+                    // CA-only 格不发：v1 不分平面，几何又是恒等 ⇒ 发了不改变任何像素。
                     std::vector<double> coefV1; std::vector<int> powV1; double resV1 = 0.0;
                     bool v1ok = false;
+                    if (!caOnly)
                     {
                         std::vector<double> ys (nc, 0.0);
                         for (uint32 i = 0; i < nc; i++) ys [i] = 1.0 + (double)t.dist [1 + i] / 16384.0;
@@ -2297,6 +3741,42 @@ static uint32 ApplyLensOpcodes (dng_negative &negative, const LensTables &t,
                          "            与源解码幅面 %ux%u 不同只会带来角外比例差, 不改变角=1 的定义\n",
                  t.frameW, t.frameH);
     return written;
+}
+
+// 源声明的坏点表 → 规范 OpcodeList1(51008) 的 FixBadPixelsList(ID=5)。
+// 为什么写在这里而不是挂在 -lens-corr 上：这是"忠实还原本次拍摄的传感器内容"，不是风格选择；
+// 不写的话 DNG 会把机身本来会藏掉的坏点显形（比源 RAW 更难看），而这张表有标准位、Adobe 读者会施加。
+// greenAtStored = 存储整幅的 (0,0) 是不是绿点（账本 §27 实测的档位判据）。
+static uint32 ApplyBadPixelOpcode (dng_negative &negative, const SensorDefects &sd,
+                                   uint32 rawH, bool greenAtStored, bool verbose)
+{
+    if (sd.pts.empty () && sd.cols.empty ()) return 0;
+
+    AutoPtr<dng_bad_pixel_list> list (new dng_bad_pixel_list);
+
+    for (size_t i = 0; i < sd.pts.size (); i++)
+        list->AddPoint (sd.pts [i]);
+
+    // 坏列：表里只给了列号（dcraw 也只在 type=131/137 时按整列处理），
+    //       规范这一侧的对应形状是 rect，列跨度 [col, col+1)、行覆盖整幅存储高度。
+    for (size_t i = 0; i < sd.cols.size (); i++)
+        list->AddRect (dng_rect (0, (int32) sd.cols [i], (int32) rawH, (int32) sd.cols [i] + 1));
+
+    const uint32 phase = greenAtStored ? 0u : 1u;
+
+    AutoPtr<dng_opcode> op (new dng_opcode_FixBadPixelsList (list, phase));
+    negative.OpcodeList1 ().Append (op);
+
+    fprintf (stderr, "[dngtool-e] badpix-list=applied points=%u rects=%u bayerPhase=%u"
+                     " 丢弃越界=%u 丢弃不认类型=%u\n",
+             (unsigned) sd.pts.size (), (unsigned) sd.cols.size (), phase, sd.nOob, sd.nUnknown);
+    if (sd.nUnknown)
+        fprintf (stderr, "[dngtool-e] WARNING: badpix-unknown-type=%u 条 IIQ 记录的类型不在已证集合"
+                         " (129 坏点/131,137 坏列) ⇒ 不猜语义、一条不写\n", sd.nUnknown);
+    if (sd.nOob)
+        fprintf (stderr, "[dngtool-e] WARNING: badpix-out-of-range=%u 条坐标超出存储幅面 ⇒ 丢掉"
+                         "（Adobe 读者不拒越界坐标，写进去会静默改到别处）\n", sd.nOob);
+    return 1;
 }
 
 // 分通道曲线 → 规范 51022 OpcodeList3 的三支 MapTable（每支只管一个 plane）。
@@ -2351,8 +3831,14 @@ static int EncodeDng(
     int outputBps,         // 输出位深 (8/16) 2026-08-14
     uint32 threadCount,    // 多线程数 (2026-08-15)
     bool carryRawMetadata, // 假 = 放弃源 RAW 元数据搬运 (隐私剥除请求下由产品侧传入)
+    bool embedOriginal,    // 真 = 按规范 50828 嵌入整个原文件 (2026-10-19 起**默认关**：
+                           //   厂商私有件 303 条 Sony/IDC/SR2 无标准位、普通读者读不到 ⇒ 丢弃；
+                           //   实测像素与不嵌时逐位相同，所以这一步只动元数据，不动图像)
     const char* lookSpecPath, // 非空 = 按该规格给主 profile 写 ProfileToneCurve
     bool lensCorr,           // 真 = 把源 RAW 自己的镜头三表换算成规范 opcode (默认关: 它改渲染像素)
+    bool suppressGps,        // 真 = 不把源的 GPS 标准位写进产物 (产品的 `--strip-gps` 隐私默认)
+                             //   ⚠ GPS 有 EXIF 标准位 ⇒ 工具**默认搬**；不搬必须由调用方显式请求，
+                             //   且搬不了/被要求不搬都要点名（gps-suppressed / gps-not-carried）
     bool verbose)
 {
 #ifdef USE_DNGSDK
@@ -2403,6 +3889,46 @@ static int EncodeDng(
         fprintf(stderr, "[dngtool-e] ERROR: cannot open %s: %s\n",
                 inputPath, libraw_strerror(ret));
         return 2;
+    }
+
+    // ── F 类：源 DNG 的次级 IFD 分三档（可搬 / 拒绝 / 点名），见 SubIfdSurvey 上方注释 ──────
+    //    形状照既有两条：refuse-dng-opcode-loss（解析失败 ⇒ exit 9）、
+    //    refuse-linearraw-without-colormatrix（读不出标定 ⇒ exit 9）。
+    //    拒绝位置刻意在 unpack 之前：拒绝不该先解一遍像素，更不该已经碰过输出文件；
+    //    可搬档的实体读取在 negative 建好之后（EncodeDng 尾部 CarrySecondaryIfds）。
+    //    判据 = 第 77 条 ㉖b（tests/scripts/_probe-dng-secondary-ifd-carry.py）。
+    SubIfdSurvey sub = SurveySecondaryIfds (inputPath);
+    {
+        if (!sub.refused.empty ())
+        {
+            fprintf (stderr,
+                     "[dngtool-e] ERROR: refuse-secondary-ifd-loss: 输入是 DNG，主 IFD 的 "
+                     "SubIFDs(0x014A) 挂了 %u 张次级 IFD，其中 dngtool **读不懂或搬不动**的 "
+                     "NewSubFileType=[%s]（5/9/65541=预览+遮罩组合档，dng_info 只按整值认 "
+                     "4/8/65540；4294967295=读不到 0x00FE；其余=规范之外的值）；"
+                     "这些次级 IFD 内含标签=[%s]；"
+                     "主 IFD 里同样不搬运的规范内容位=[%s]（0x02BC=XMP 包 0x0C68E=MaskedAreas）"
+                     "⇒ 拒绝出件，不静默丢位。保留原文件是唯一不丢这些位的办法"
+                     "（-embed-raw 对 DNG 输入只搬源里已有的 50828，不会把本件嵌进去）。\n",
+                     sub.count, DecList (sub.refused).c_str (),
+                     HexList (sub.subTags).c_str (), HexList (sub.mainBits).c_str ());
+            processor.recycle();
+            return 9;
+        }
+        // 预览/替代那一档（NSFT 0/1/16/32/0x10001…）**在显影之后**处理：能读成 JPEG 的按原字节
+        // 搬成产物 preview；读不出来的（非 JPEG 压缩等）才点名 carry-skipped=secondary-ifd-other。
+        // 不在这里点名，是因为这里还不知道搬不搬得成（2026-10-21 改成真搬）。
+        // 到这里的都是**没有**走 refuse 分支的路径（那条已经 return 9，且它的判词里已经点过
+        // mainBits 的名），所以这一行不需要再判断有没有拒绝过。
+        // ⚠ 0x0C68E(MaskedAreas) 不在这句里：它在尾部 CarrySecondaryIfds 真搬（存储幅面
+        //   不一致就拒绝）；只有 0x02BC(XMP) 是真缺席 —— 本构建 qDNGUseXMP=0 ⇒ dngtool 写不了
+        //   XMP，产品侧由 exiftool 后置（第 77 条 ⑰ 组）。这句点的是 dngtool 单跑的事实。
+        for (size_t i = 0; i < sub.mainBits.size (); i++)
+            if (sub.mainBits[i] == 0x02BC)
+                fprintf (stderr,
+                         "[dngtool-e] WARN carry-skipped=dng-main-content-bit: 主 IFD 的 0x02BC(XMP 包)"
+                         "在 dngtool 里没有写通路（qDNGUseXMP=0）⇒ 单跑时产物里缺席；"
+                         "产品侧由 exiftool 后置搬（在册欠账，不算已搬）\n");
     }
 
 #ifdef USE_DNGSDK
@@ -2463,6 +3989,7 @@ static int EncodeDng(
     // ── 数据布局安全检查 ──
     // isBayer 判定: filters!=0 && filters!=9 && !forceLinear
     bool isBayer = (filters != 0) && (filters != 9) && !forceLinear;
+    int  cfa00Color = -1;        // 有效区原点 (top,left) 的颜色（dcraw 编码 0=R,1=G,2=B），坏点表要用来推相位
     // ⚠️ X-Trans (filters==9): DNG 规范不支持 X-Trans CFA 映射, 且
     //    单通道数据按 3 平面交错读会损坏 → 拒绝
     if (filters == 9)
@@ -2512,6 +4039,7 @@ static int EncodeDng(
         // dcraw 颜色编码: 0=R, 1=G, 2=B, 3=G2（第二个绿）⇒ 先把 G2 归一化成 G 再匹配相位
         auto normG = [](int c) { return c == 3 ? 1 : c; };
         int c00 = normG((filters >> 0) & 3);   // (row0,col0)
+        cfa00Color = c00;                      // 留给坏点表算"存储 (0,0) 是不是绿点"
         int c01 = normG((filters >> 2) & 3);   // (row0,col1)
         int c10 = normG((filters >> 4) & 3);   // (row1,col0)
         int c11 = normG((filters >> 6) & 3);   // (row1,col1)
@@ -2549,8 +4077,66 @@ static int EncodeDng(
     //   但产物同样带着错误的裁剪框（换解码器/换软件就可能暴露）。
     negative->SetActiveArea(dng_rect(topMargin, leftMargin,
                                      topMargin + activeH, leftMargin + activeW));
-    negative->SetDefaultCropSize(activeW, activeH);
-    negative->SetDefaultCropOrigin(0, 0);
+
+    // ── DefaultCrop ← 厂商内嵌裁剪（2026-10-23，审计 §44）──────────────────────
+    // 现状（旧）：DefaultCrop = 整个 ActiveArea，厂商"默认取景框"没进标准位 ⇒
+    //   产物比机身 JPEG 多出 4~28 px 的边框（Canon sRAW 4/3、Fuji 16/14、
+    //   Panasonic 8/6、Pentax 16/8）。像素没丢，但取景框这件事实丢了。
+    // 证据链：
+    //   · LibRaw 0.20 Changelog：`raw_inset_crops[0]` = "vendor specified crop"，
+    //     并注明"may be fooled by metadata, use some correctness check before use"；
+    //   · ExifTool 文档化这些标签的语义：Canon CameraInfo CroppedImage*、Fuji RAF 0x110
+    //     "top margin first, then left margin"、PanasonicRaw CropTop/Left/Bottom/Right、
+    //     Nikon 0x0045 "upper left pixel (x,y), size (width,height)"、Pentax ImageAreaOffset；
+    //   · Adobe 官方样例 dng_sdk_1_7_1/sample_files/03_jxl_bayer_raw_integer.dng：
+    //     ActiveArea 0 0 6376 9600 而 DefaultCrop 9504x6336@(32,20)
+    //     ⇒ DefaultCrop 可以小于 ActiveArea 且带原点，这是规范内的正常形态。
+    // ⚠ 只采用"厂商真的给了原点"的解析器：Sony 0xb02b 只有宽高（sony.cpp:2149），
+    //   cleft/ctop 留在 0 是 LibRaw 的缺省值、不是厂商说"从 0 开始" ⇒ 不采信原点。
+    // ⚠ 越界或过小（<55%，与 LibRaw adjust_to_raw_inset_crop 的 maxcrop 同阈）⇒ 拒绝并点名。
+    int cropX = 0, cropY = 0, cropW = activeW, cropH = activeH;
+    {
+        const libraw_raw_inset_crop_t& ic = S.raw_inset_crops[0];
+        std::string mk = idata.make;
+        for (size_t i = 0; i < mk.size (); i++)
+            if (mk[i] >= 'a' && mk[i] <= 'z') mk[i] = (char)(mk[i] - 32);
+        const bool vendorOffsets =
+            mk.compare (0, 5, "CANON") == 0 || mk.compare (0, 8, "FUJIFILM") == 0 ||
+            mk.compare (0, 9, "PANASONIC") == 0 || mk.compare (0, 5, "LEICA") == 0 ||
+            mk.compare (0, 6, "PENTAX") == 0 || mk.compare (0, 5, "NIKON") == 0 ||
+            mk.compare (0, 7, "OLYMPUS") == 0 || mk.compare (0, 5, "KODAK") == 0 ||
+            mk.compare (0, 5, "EPSON") == 0;
+        const uint32 minW = (uint32)(activeW * 55 / 100);
+        const uint32 minH = (uint32)(activeH * 55 / 100);
+        const bool present = ic.cwidth || ic.cheight;
+        int cx = (int)ic.cleft - leftMargin;
+        int cy = (int)ic.ctop - topMargin;
+        const char* why = nullptr;
+        if (!present) {
+        } else if (!vendorOffsets) {
+            why = "vendor-wh-only(no origin)";
+        } else if (ic.cwidth < minW || ic.cheight < minH) {
+            why = "below-55%";
+        } else if (cx < 0 || cy < 0 ||
+                   cx + (int)ic.cwidth > activeW || cy + (int)ic.cheight > activeH) {
+            why = "outside-active";
+        } else {
+            cropX = cx; cropY = cy; cropW = (int)ic.cwidth; cropH = (int)ic.cheight;
+        }
+        if (why)
+            fprintf (stderr, "[dngtool-e] default-crop=active (vendor inset %ux%u@%u,%u rejected: %s)\n",
+                     (unsigned)ic.cwidth, (unsigned)ic.cheight, (unsigned)ic.cleft,
+                     (unsigned)ic.ctop, why);
+        else if (present)
+            fprintf (stderr, "[dngtool-e] default-crop=vendor %dx%d@%d,%d (active %dx%d; raw_inset_crops[0])\n",
+                     cropW, cropH, cropX, cropY, activeW, activeH);
+        else if (verbose)
+            fprintf (stderr, "[dngtool-e] default-crop=active %dx%d (源无厂商内嵌裁剪)\n",
+                     activeW, activeH);
+    }
+
+    negative->SetDefaultCropSize(cropW, cropH);
+    negative->SetDefaultCropOrigin(cropX, cropY);
     negative->SetDefaultScale(dng_urational(1, 1), dng_urational(1, 1));
 
     // ⚠️ OriginalDefaultFinalSize 必须 = DefaultFinalSize!
@@ -2562,8 +4148,8 @@ static int EncodeDng(
     negative->SetOriginalDefaultFinalSize(dng_point(activeH, activeW));
     // OriginalDefaultCropSize 同样需 = DefaultCropSize (默认 0/0=undef 时
     // writer 仍会写出 OriginalDefaultCropSize: undef undef)
-    negative->SetOriginalDefaultCropSize(dng_urational(activeW, 1),
-                                         dng_urational(activeH, 1));
+    negative->SetOriginalDefaultCropSize(dng_urational(cropW, 1),
+                                         dng_urational(cropH, 1));
 
     // EXIF 尺寸 + 制造商/型号
     dng_exif* exif = negative->GetExif();
@@ -2588,9 +4174,22 @@ static int EncodeDng(
     uint32 white;
     if (outFloat)
         white = 1;
-    else if (outputBps <= 8)
-        white = 255;                 // 8-bit 输出 (2026-08-14)
-    else if (!isBayer || colordata.raw_bps >= 16)
+    else if (!isBayer)
+        {
+        // 线性/多平面源（Foveon X3F 等）**不一定**是 16-bit 全范围。实测 Sigma DP1 X3F：
+        // raw_bps=12、colordata.maximum=2100、存储值 ≤2100；旧代码给"非 Bayer"一律写 65535 ⇒
+        // 读者按 65535 归一化 ⇒ 整幅只剩 2100/65535 ≈ 3%（rawpy 后处理均值 0.62 vs 31.5，
+        // Adobe 侧同一条公式）。⇒ 源有声明的按源声明写，只有 maximum 缺失/满幅时才用 65535。
+        if (colordata.maximum > 0 && colordata.maximum < 0xFFFFu)
+            {
+            white = colordata.maximum;
+            if (verbose)
+                fprintf(stderr, "[dngtool-e] WhiteLevel: 线性源按源声明 %u（不是 65535）\n", white);
+            }
+        else
+            white = 0xFFFF;
+        }
+    else if (colordata.raw_bps >= 16)
         white = 0xFFFF;
     else if (colordata.maximum > 0)
         {
@@ -2612,14 +4211,57 @@ static int EncodeDng(
         }
     else
         white = (1u << (colordata.raw_bps > 0 ? colordata.raw_bps : 14)) - 1;
-    negative->SetWhiteLevel(white);
     // 黑电平: 优先 cblack[0] (DNG 每通道黑电平, 官方样本 03 = 512)
     // LibRaw 对 DNG 输入将 BlackLevel 存于 cblack, black 常为 0
-    // 8-bit 输出时按位深缩放 (2026-08-14)
     uint32 blackLevel = colordata.black;
     if (blackLevel == 0 && colordata.cblack[0] > 0)
         blackLevel = colordata.cblack[0];
-    if (outputBps <= 8) blackLevel = (blackLevel + 128) / 256;
+
+    // ── Phase One / Leaf IIQ 的黑电平口径对齐 (只改声明, 不动像素) ──
+    // LibRaw 把 0x021D 存进 color.phase_one_data.t_black, 但扣减只发生在 raw2image()
+    // (phase_one_subtract_black), 而 phase_one_load_raw_c 顺手把 maximum 写成
+    // 0xfffc - t_black, 即"扣减后"的上限。我们走 unpack() ⇒ 平面仍带着偏置,
+    // 却按"扣减后"的跨度声明 WhiteLevel 而 BlackLevel 留 0。后果由读者兑现:
+    //   真黑 sample=t_black ⇒ 渲染成 t_black/maximum (实测 1024/64508 = 1.587% 满量程灰),
+    //   而 sample ∈ (maximum, 0xfffc] 这一段 (实测最高到 65508) 被当成过曝削掉。
+    // 改声明为 BlackLevel=t_black / WhiteLevel=0xfffc。⚠ 别把"跨度不变"读成"渲染不变":
+    //   读者算的是 (v-BlackLevel)/(WhiteLevel-BlackLevel), 旧声明少扣了一次黑电平 ⇒
+    //   **每个未饱和样本都被抬高 1040/65535** (㉓f 用 Adobe 自己的渲染量到, p0.1 与中位的差相同);
+    //   逐位不动的是**存储平面** (㉓c: 10363904 点全等)。恒等式 t_black+maximum<=65535 兼作口径自检。
+    if (isBayer && !outFloat && processor.imgdata.idata.dng_version == 0 &&
+        blackLevel == 0 && colordata.maximum > 0 && colordata.phase_one_data.t_black > 0)
+    {
+        const uint32 p1Black = (uint32) colordata.phase_one_data.t_black;
+        if (p1Black + (uint32) colordata.maximum <= 65535u)
+        {
+            if (verbose)
+                fprintf (stderr, "[dngtool-e] p1-levels: BlackLevel 0 -> %u (源 0x021D), "
+                                "WhiteLevel %u -> %u (跨度 %u 不变; 存储像素逐位不动)\n",
+                         p1Black, white,
+                         white == (uint32) colordata.maximum ? white + p1Black : white,
+                         white);
+            blackLevel = p1Black;
+            // 8-bit 出口时 white 已是 255 (0xfffc>>8 同为 255), 只补黑电平。
+            if (white == (uint32) colordata.maximum)
+                white += p1Black;
+        }
+    }
+
+    // 8-bit 出口：平面是被 >>8 搬下来的（实测 Sony 8bit 件 max=63 = 16383>>8，不是归一化到 255），
+    // 所以白电平必须跟黑电平走**同一条缩放**。旧代码把 WhiteLevel 写死 255 而黑电平照样缩放 ⇒
+    // 分母被吹大 ~4 倍，Adobe 把整幅渲染得暗 3.7-4.2 倍（与 §30 刚修的"分子没扣"同一族假标签）。
+    // 上限钳在 (1<<bps)-1：IIQ 的 65532/256 = 255.98 会进位到 256，超出 8-bit 可表达范围。
+    if (!outFloat && outputBps <= 8)
+        {
+        white = (white + 128) / 256;
+        const uint32 cap = (outputBps >= 32) ? 0xFFFFFFFFu : ((1u << outputBps) - 1u);
+        if (white > cap) white = cap;
+        if (verbose)
+            fprintf (stderr, "[dngtool-e] bps-downgrade=16->%u white=%u (黑电平同条缩放后=%u)\n",
+                     outputBps, white, (blackLevel + 128) / 256);
+        }
+    negative->SetWhiteLevel(white);
+    if (outputBps <= 8) blackLevel = (blackLevel + 128) / 256;   // 2026-08-14
     if (blackLevel > 0)
         negative->SetBlackLevel(blackLevel, 0);
 
@@ -2744,6 +4386,10 @@ static int EncodeDng(
     //     → 直接作为 ColorMatrix2 (illum D65); ColorMatrix1 (illum A) 用 Bradford
     //     色适应近似推导 (优于旧版 Invert(cam_xyz) 的错误方向)
     const bool isDngInput = (processor.imgdata.idata.dng_version > 0);
+    // 只有"真的写进了一个非退化色彩矩阵"才算数。规范 p.33 原文：
+    // "The ColorMatrix1 tag is required for all non-monochrome DNG files."
+    // 且它的 Count = ColorPlanes * 3 ⇒ 平面数**只能**由这个矩阵声明（1.7.1 无 ColorPlanes 标签）。
+    bool colorMatrixUsable = false;
     {
         bool profileOk = false;
 
@@ -2819,6 +4465,7 @@ static int EncodeDng(
                         }
                     negative->AddProfile(profile);
                     profileOk = true;
+                    colorMatrixUsable = true;
                     if (verbose)
                         fprintf(stderr, "[dngtool-e] DNG input: copied ColorMatrix1/2 + ForwardMatrix1/2 + Calibration1/2 (无损保留)\n");
                 }
@@ -2835,8 +4482,17 @@ static int EncodeDng(
                 colordata.cam_xyz[2][0], colordata.cam_xyz[2][1], colordata.cam_xyz[2][2]
             };
             bool valid = true;
+            real64 maxAbs = 0.0;
             for (int i = 0; i < 9; i++)
                 if (!(cm[i] > -100.0 && cm[i] < 100.0)) { valid = false; break; }
+                else if (fabs(cm[i]) > maxAbs) maxAbs = fabs(cm[i]);
+            // 全零矩阵也能过上面的区间检查（0 在 -100..100 内）⇒ 必须再验非退化。
+            // 实测 Nikon COOLSCAN 的 cam_xyz 全零，原先会走进去写一个零矩阵，SDK 写件时丢掉
+            // ⇒ 产物成了无 ColorMatrix1 的 3 平面 LinearRaw，Adobe dng_validate rc=106。
+            const real64 det = cm[0] * (cm[4] * cm[8] - cm[5] * cm[7])
+                             - cm[1] * (cm[3] * cm[8] - cm[5] * cm[6])
+                             + cm[2] * (cm[3] * cm[7] - cm[4] * cm[6]);
+            if (valid && (maxAbs < 1e-6 || fabs(det) < 1e-6)) valid = false;
 
             if (valid)
             {
@@ -2950,6 +4606,7 @@ static int EncodeDng(
                         lookApplied = true;
                         }
                     negative->AddProfile(profile);
+                    colorMatrixUsable = true;
                     if (verbose)
                         fprintf(stderr, "[dngtool-e] private RAW: ColorMatrix2=dcraw(D65, 同Adobe) + ColorMatrix1=Bradford近似(A)\n");
                 }
@@ -2984,18 +4641,17 @@ static int EncodeDng(
         }
     }
 
-    // 嵌入件是**整个原文件** ⇒ 源里的 GPS 随件在档。不改它：改过的嵌入件就不是原件,
-    // 而规范 50828 要存的正是原件; 整条搬运也不该为一个标签就关掉 (降级不是修复)。
-    // 代价响亮点名: 容器层的 GPS 仍由产品侧复制阶段的 absorb 排除项处理,
-    // 要严格剥除走已有的 -no-raw-meta (拍摄字段/嵌入原件/预览一起关)。
+    // GPS 的存在性先量出来（GPS 是 EXIF 标准位 ⇒ 归下面的 CarryStdExifFromSource 搬；
+    // 只有它搬不动时才点名 gps-not-carried，绝不静默）。归档档另说一句"GPS 随原件在档"。
+    bool srcHasGps = false;
     if (!isDngInput && carryRawMetadata)
     {
         std::vector<uint8> gb;
         std::string gwhy;
-        if (TagBytesFromPath (inputPath, 0x8825, gb, gwhy))
-            fprintf (stderr, "[dngtool-e] gps-in-embedded-original=1 源含 GPS (IFD0 0x8825) ⇒ 嵌入的原件内含同一份 GPS "
-                            "(按规范存原件, 不删改) —— 产物可见标签仍无 GPS; "
-                            "要严格剥除请用 -no-raw-meta 关掉整条搬运\n");
+        srcHasGps = TagBytesFromPath (inputPath, 0x8825, gb, gwhy);
+        if (srcHasGps && embedOriginal)
+            fprintf (stderr, "[dngtool-e] gps-in-embedded-original=1 源含 GPS (0x8825) ⇒ 嵌入的原件内含同一份 GPS"
+                             "（按规范存原件，不删改）\n");
     }
 
     // ── 元数据搬运 (仅非 DNG 输入) ──
@@ -3005,6 +4661,36 @@ static int EncodeDng(
     if (!isDngInput && carryRawMetadata)
     {
         FillExifCapture(exif, processor.imgdata.other, processor.imgdata.lens, verbose);
+
+        // 标准 EXIF/GPS 语义位：**源里有、且任何 conformant 读者都能解码的，一个都不许丢**。
+        // 写不进去的点名 exif-std-unmapped（不静默跳过）；源含 GPS 而没搬成 ⇒ 点名 gps-not-carried。
+        StdExifCarry sec;
+        CarryStdExifFromSource (inputPath, exif, suppressGps, sec);
+        // 源的方向位交给 SDK 自己的出口：WriteDNG 写的 0x0112 = negative.BaseOrientation()，
+        // 不设就是恒 1 ⇒ 转过的源件会被说成没转（显示方向错，PS/Camera Raw 都按它摆正）。
+        if (sec.orient >= 1 && sec.orient <= 8)
+        {
+            dng_orientation ori;
+            ori.SetTIFF ((uint32)sec.orient);
+            negative->SetBaseOrientation (ori);
+        }
+        fprintf(stderr, "[dngtool-e] exif-std=%d/%d 已交给 SDK 自己的 dng_exif 路由（"
+                        "产物里到底有没有、值对不对，由独立读手 exiftool 对撞判；注意"
+                        "**SDK 认字段 != SDK 会发射**：0x9101/0x9102/0xA000/0xA002/0xA003 与 "
+                        "Interop 全族、IFD0 的 0x011A/0x011B/0x0128 在 DNG 出口没有发射点 ⇒ "
+                        "由产品后置从源件抄进）orientation=%d ycbin=%d/%d%s\n",
+                sec.mapped, sec.present, sec.orient, sec.previewPos, sec.thumbPos,
+                sec.gpsN ? "（含 GPS IFD）" : "");
+        if (!sec.unmapped.empty())
+            fprintf(stderr, "[dngtool-e] exif-std-unmapped=%s "
+                            "(dng_exif 里没有对应字段 ⇒ 这一版写不了，如实挂着，不静默跳过；源字节序=%s)\n",
+                    sec.unmapped.c_str(), sec.le ? "II" : "MM");
+        if (srcHasGps && suppressGps)
+            fprintf(stderr, "[dngtool-e] gps-suppressed=1 按 --strip-gps 隐私请求**不写** GPS 标准位 "
+                            "（工具默认是搬的；不搬也必须点名，绝不静默）\n");
+        else if (srcHasGps && sec.gpsN == 0)
+            fprintf(stderr, "[dngtool-e] gps-not-carried=1 源含 GPS 但 GPS IFD 没搬进产物 "
+                            "⇒ GPS 有 EXIF 标准位，这是我方缺陷，不是格式边界\n");
 
         uint64 fsize = 0;
         {
@@ -3024,27 +4710,38 @@ static int EncodeDng(
         RawMetaSlabs slabs;
         ReadRawMetaWindows(inputPath, fsize, slabs);
 
-        // 规范 50828: 把**整个原文件**按 ZIP 分块嵌进 DNG (原件就是权威载体,
-        // 厂商注记/SR2/IDC 都以它自己的格式原样在档, 任何 conformant 读者都能取出)。
-        // 这一步不依赖 slab —— slab 只服务下面的预览定位与改动点名。
-        uint64 rawSize = 0;
-        std::string owhy;
-        AutoPtr<dng_memory_block> orig = BuildOriginalRawFileData (host, inputPath, rawSize, owhy);
-        if (orig.Get())
+        // 规范 50828 的载体本身是标准的，但它装的是**整个原文件**——里面绝大多数条目
+        // (本机实测：Sony 157 + IDC 两版 104 + SR2/SonyIDC 26 + 私有镜头原表等 = 303 条)
+        // 在官方规范里没有对应标签，普通读者 (LibRaw/rawpy 实测 0 命中) 也读不到。
+        // 2026-10-19 政策：默认**丢弃**——不嵌。承重事实：实测过 DNG 自己的 sensor 平面与源
+        // 逐位相同 (不同点数 0, max|Δ| 0)，所以这一步只动元数据、不动图像。
+        // 要归档档 (原件字节必须可回取) 用显式的 -embed-raw。
+        if (!embedOriginal)
         {
-            negative->SetOriginalRawFileName (BaseNameOf (inputPath));
-            uint32 encLen = orig->LogicalSize();
-            negative->SetOriginalRawFileData (orig);            // 接管所有权
-            negative->SetHasOriginalRawFileData (true);
-            fprintf(stderr, "[dngtool-e] 原文件按规范嵌入 OriginalRawFileData: %llu B -> %llu B (%.1f%%)\n",
-                    (unsigned long long) rawSize, (unsigned long long) encLen,
-                    rawSize ? 100.0 * (double) encLen / (double) rawSize : 0.0);
-            if (verbose && encLen >= rawSize)
-                fprintf(stderr, "[dngtool-e]   (索尼原件已是无损压缩 ⇒ ZIP 再压不省, 这是规范载体的固有代价)\n");
+            fprintf(stderr, "[dngtool-e] original-embed=off 按政策不嵌整个原文件 (不写 50828/50973) "
+                            "⇒ 厂商私有项不入产物；拍摄字段与预览仍写标准位。归档档请用 -embed-raw\n");
         }
         else
-            fprintf(stderr, "[dngtool-e] WARNING: 原文件未嵌入 (%s) ⇒ 厂商注记/SR2/IDC 链不进产物\n",
-                    owhy.empty() ? "未知原因" : owhy.c_str());
+        {
+            uint64 rawSize = 0;
+            std::string owhy;
+            AutoPtr<dng_memory_block> orig = BuildOriginalRawFileData (host, inputPath, rawSize, owhy);
+            if (orig.Get())
+            {
+                negative->SetOriginalRawFileName (BaseNameOf (inputPath));
+                uint32 encLen = orig->LogicalSize();
+                negative->SetOriginalRawFileData (orig);            // 接管所有权
+                negative->SetHasOriginalRawFileData (true);
+                fprintf(stderr, "[dngtool-e] 原文件按规范嵌入 OriginalRawFileData: %llu B -> %llu B (%.1f%%)\n",
+                        (unsigned long long) rawSize, (unsigned long long) encLen,
+                        rawSize ? 100.0 * (double) encLen / (double) rawSize : 0.0);
+                if (verbose && encLen >= rawSize)
+                    fprintf(stderr, "[dngtool-e]   (索尼原件已是无损压缩 ⇒ ZIP 再压不省, 这是规范载体的固有代价)\n");
+            }
+            else
+                fprintf(stderr, "[dngtool-e] WARNING: 原文件未嵌入 (%s) ⇒ 厂商注记/SR2/IDC 链不进产物\n",
+                        owhy.empty() ? "未知原因" : owhy.c_str());
+        }
 
         if (!slabs.ok)
         {
@@ -3087,13 +4784,13 @@ static int EncodeDng(
             std::vector<uint8> pj, tj;
             if (slabs.previewLen) ReadRange(inputPath, slabs.previewOff, slabs.previewLen, pj);
             if (slabs.thumbLen)   ReadRange(inputPath, slabs.thumbOff,   slabs.thumbLen,   tj);
-            if (!pj.empty() && AppendJpegPreview(host, previews, pj, true,  verbose)) previewCount++;
-            if (!tj.empty() && AppendJpegPreview(host, previews, tj, false, verbose)) previewCount++;
+            if (!pj.empty() && AppendJpegPreview(host, previews, pj, true,  sec.previewPos, verbose)) previewCount++;
+            if (!tj.empty() && AppendJpegPreview(host, previews, tj, false, sec.thumbPos,   verbose)) previewCount++;
             if (verbose && pj.empty() && tj.empty())
                 fprintf(stderr, "[dngtool-e] 源文件里没有可解析的 JPEG 预览/缩略图\n");
         }
     }
-    else if (isDngInput && carryRawMetadata)
+    else if (isDngInput && carryRawMetadata && embedOriginal)
     {
         // DNG→DNG: 上一轮按规范嵌进 50828 的原文件必须跟着过重编码,
         // 否则"保真通道"在一次再压缩后就静默消失。
@@ -3124,12 +4821,36 @@ static int EncodeDng(
             fprintf (stderr, "[dngtool-e] 输入 DNG 无 50828 原文件 (%s)\n", owhy.c_str ());
     }
     else if (!isDngInput && !carryRawMetadata && verbose)
-        fprintf(stderr, "[dngtool-e] -no-raw-meta: 放弃源 RAW 保真搬运 (拍摄字段/嵌入原文件/预览均不写)\n");
+        fprintf(stderr, "[dngtool-e] -no-raw-meta: 放弃源 RAW 搬运 (拍摄字段/预览均不写；"
+                        "嵌入原件本来就默认关，开了 -embed-raw 才一起关掉)\n");
+    else if (isDngInput && carryRawMetadata && !embedOriginal && verbose)
+        fprintf(stderr, "[dngtool-e] original-embed=off 输入是 DNG ⇒ 本次重编码不搬运它可能携带的 50828 (政策)\n");
 
     // ── 构造 dng_image ──
     // 数据源: raw_alloc/raw_image (16-bit Bayer 或 linear) 或
     //         float3_image/color3_image (float linear, 如 JXL-DNG float 输入)
     uint32 planes = isBayer ? 1 : 3;
+
+    // ── 拒绝出"读不了"的件：非 CFA 多平面 ⇒ 只能写 LinearRaw，而规范 p.33 要求
+    //    "The ColorMatrix1 tag is required for all non-monochrome DNG files."，
+    //    且 ColorMatrix1 的 Count = ColorPlanes * 3（p.33）是平面数的唯一声明方式。
+    //    没有非退化矩阵还硬写，产物会被 Adobe dng_validate 直接判 106
+    //    （实测 Nikon COOLSCAN V：Missing or invalid SamplesPerPixel / 平面数未知）。
+    //    按"不编造标定"的规矩拒绝并点名，而不是出一个 PS/Camera Raw 打不开的文件。
+    if (planes > 1 && !colorMatrixUsable)
+    {
+        fprintf(stderr,
+                "[dngtool-e] ERROR: refuse-linearraw-without-colormatrix: "
+                "%s %s (Software=\"%s\") 的数据是 %u 平面非 CFA 线性 RGB；"
+                "DNG 1.7.1 要求非单色 DNG 必须带 ColorMatrix1（规范 p.33），"
+                "色平面数只能由它的元素个数声明，而源件与参考解码器都没有"
+                "相机原生→XYZ 基线标定（cam_xyz 全零或不可逆）"
+                "⇒ 拒绝出件，不编造矩阵。请改用 TIFF 导出，或保留原文件。\n",
+                idata.make, idata.model, idata.software, planes);
+        processor.recycle();
+        return 9;
+    }
+
     bool isFloatData = false;
     bool sourceIsFloat = false;
     void* rawSrc = (void*)processor.imgdata.rawdata.raw_alloc;
@@ -3341,13 +5062,49 @@ static int EncodeDng(
     if (lookOn && look.hasChannels && negative->Stage1Image ())
         ApplyChannelOpcodes (host, *negative, look, negative->Stage1Image ()->Bounds (), verbose);
 
+    // ── DNG→DNG：源件的三张 opcode 列表必须原样带上 ──
+    // 动因（实测）：本路径以前**一条都不带** —— 同一份带 752 B OpcodeList3 的产物再编码一次，
+    // 51022 消失；带 23,056 B OpcodeList1 的再编码一次，51008 消失 ⇒ 刚写进去的 ⑯ 曲线/⑱ 镜头校正/
+    // ㉒ 坏点表在"再编码"这一步静默蒸发，正是本轮修的那类缺陷的镜像面。
+    // 一手依据：LibRaw 把 51008/51009/51022 的原始字节收进公开字段 dng_levels.rawopcodes[0..2]
+    //（tiff.cpp:1700-1726 + identify.cpp:1530-1540），列表内坐标的参照系（幅面/ActiveArea/DefaultCrop/
+    // 黑白电平）在本路径逐字段照抄 ⇒ 坐标仍然有效。解析不了 ⇒ 拒绝出件，不静默换渲染。
+    if (isDngInput)
+        {
+        static const char *OPCN [3] = { "OpcodeList1(51008)", "OpcodeList2(51009)", "OpcodeList3(51022)" };
+        for (int q = 0; q < 3; q++)
+            {
+            const libraw_dng_rawopcode_t &ro = processor.imgdata.color.dng_levels.rawopcodes [q];
+            if (!ro.data || ro.len <= 4) continue;
+            dng_opcode_list *lst = (q == 0) ? &negative->OpcodeList1 ()
+                              : (q == 1)   ? &negative->OpcodeList2 ()
+                                           : &negative->OpcodeList3 ();
+            try
+                {
+                dng_stream st (ro.data, ro.len);
+                lst->Parse (host, st, ro.len, 0);
+                fprintf (stderr, "[dngtool-e] dng-opcode-preserved=%s bytes=%u 支数=%u\n",
+                         OPCN [q], (unsigned) ro.len, (unsigned) lst->Count ());
+                }
+            catch (dng_exception &e)
+                {
+                fprintf (stderr, "[dngtool-e] ERROR: refuse-dng-opcode-loss: %s (bytes=%u reason=%d)\n"
+                                 "            SDK 解析不了源件这张列表，而带它的读者会照它渲染 ⇒ 丢掉就是**换个渲染**，"
+                                 "宁可不出件也不静默降级\n",
+                         OPCN [q], (unsigned) ro.len, (int) e.ErrorCode ());
+                processor.recycle ();
+                return 9;
+                }
+            }
+        }
+
     // ── `-lens-corr`: 源 RAW 的镜头三表 → 规范 51022 OpcodeList3 ──
     // 读不到 / 机内开关关 / 恒等 / 残差超上界 / 映射非单调 ⇒ ApplyLensOpcodes 逐条点名并一条不写;
     // 这里只补"整件没有这三张表"那一层, 让非索尼源也讲得清为什么没动。
     if (lensCorr && negative->Stage1Image ())
         {
         LensTables lt;
-        if (ReadLensTables (inputPath, lt, verbose))
+        if (ReadLensTables (inputPath, lt, S, verbose))
             {
             uint32 n = ApplyLensOpcodes (*negative, lt, negative->Stage1Image ()->Bounds (), verbose);
             if (n == 0)
@@ -3358,10 +5115,129 @@ static int EncodeDng(
                      lt.why.c_str ());
         }
 
+    // ── 源声明的传感器坏点表 → 规范 51008 OpcodeList1（**无条件**，不设开关）──
+    // 判据来自用户 2026-10-21 那条"PS 能正确识别就搬"：本机实测 ACR 的实现带 FixBadPixelsList 的
+    // 反序列化构造，Adobe 参考读者会真施加（账本 §27）。与 -lens-corr 的区别：镜头表是风格选择
+    // （默认关），这张表是"本次拍摄的传感器内容"——不写就等于让机身会藏的点在 DNG 里显形。
+    if (isBayer && negative->Stage1Image ())
+        {
+        SensorDefects sd;
+        if (ReadPhaseOneDefects (inputPath, sd, rawWidth, rawHeight, verbose))
+            {
+            // CFAPattern 的原点在有效区 (top,left) ⇒ 边界和为奇数时，存储 (0,0) 的颜色翻转一档
+            const bool greenAtActive  = (cfa00Color == 1);
+            const bool parityShift    = ((topMargin + leftMargin) & 1) != 0;
+            const bool greenAtStored  = parityShift ? !greenAtActive : greenAtActive;
+            ApplyBadPixelOpcode (*negative, sd, rawHeight, greenAtStored, verbose);
+            }
+        else if (verbose)
+            fprintf (stderr, "[dngtool-e] badpix=absent (%s) ⇒ 源没声明坏点，像素不动\n",
+                     sd.why.c_str ());
+        }
+
+    // ── F 类真搬运：遮罩/深度/语义遮罩/MaskedAreas（DNG 输入才有）──────────────────
+    //    读失败 ⇒ 拒绝出件。理由同 refuse-dng-opcode-loss：宁可不出件，也不出一件
+    //    "看起来成功、实际把子图丢了"的 DNG（政策：能被 PS 等正确解码的内容必须搬）。
+    // 50830 可以**单独存在**（没有遮罩族次级 IFD）⇒ 只要主 IFD 有它也要进搬运，别让判据夹具的形状
+    // （两者都有）掩盖这个空档。
+    bool hasMaskedAreasTag = false;
+    for (size_t i = 0; i < sub.mainBits.size (); i++)
+        if (sub.mainBits[i] == 0x0C68E) hasMaskedAreasTag = true;
+    if (isDngInput && (!sub.carryable.empty () || hasMaskedAreasTag))
+    {
+        SecondaryCarry sc = CarrySecondaryIfds (host, inputPath, *negative, sub, rawWidth, rawHeight, verbose);
+        if (!sc.fail.empty ())
+        {
+            fprintf (stderr,
+                     "[dngtool-e] ERROR: refuse-secondary-ifd-loss: 输入次级 IFD NewSubFileType=[%s] "
+                     "读不进来（%s）⇒ 拒绝出件，不静默丢位。保留原文件是唯一不丢这些位的办法。\n",
+                     DecList (sub.carryable).c_str (), sc.fail.c_str ());
+            processor.recycle ();
+            return 9;
+        }
+        fprintf (stderr, "[dngtool-e] secondary-ifd=carried NSFT=[%s] mask=%d depth=%d semantic=%d "
+                         "maskedAreas=%u\n",
+                 DecList (sub.carryable).c_str (), (int)sc.mask, (int)sc.depth,
+                 (int)sc.semantic, (unsigned)sc.maskedAreas);
+        if (verbose)
+            for (size_t i = 0; i < sc.notes.size (); i++)
+                fprintf (stderr, "[dngtool-e] secondary-ifd-carried: %s\n", sc.notes[i].c_str ());
+    }
+
+    // ── 预览/替代族次级 IFD：按 JPEG **原字节**搬成产物 preview（不重编码）──────────
+    // 与上面的遮罩族分开：这里只认 Compression=7，读不出来就点名（不猜、不重编码）。
+    if (isDngInput && !sub.other.empty ())
+    {
+        FILE* pf = fopen (inputPath, "rb");
+        std::vector<uint32> carriedNs, skippedNs;
+        for (size_t i = 0; i < sub.other.size (); i++)
+        {
+            std::vector<uint8> jb; std::string jwhy;
+            const bool readOk = (pf != NULL) &&
+                                ReadSubIfdJpeg (pf, sub.otherOffs[i], sub.le, jb, jwhy);
+            const bool primary = carriedNs.empty () &&
+                                 (sub.other[i] == 0u || sub.other[i] == 1u);
+            if (readOk && AppendJpegPreview (host, previews, jb, primary, 0, verbose))
+            {
+                previewCount++;
+                carriedNs.push_back (sub.other[i]);
+            }
+            else
+            {
+                skippedNs.push_back (sub.other[i]);
+                if (verbose)
+                    fprintf (stderr, "[dngtool-e] secondary-ifd-preview-skip NSFT=%u (%s)\n",
+                             (unsigned)sub.other[i],
+                             readOk ? "AppendJpegPreview=false" : jwhy.c_str ());
+            }
+        }
+        if (pf) fclose (pf);
+        if (!carriedNs.empty ())
+            fprintf (stderr, "[dngtool-e] secondary-ifd=carried-preview NSFT=[%s]"
+                             "（JPEG 原字节，未重编码）\n", DecList (carriedNs).c_str ());
+        if (!skippedNs.empty ())
+            fprintf (stderr,
+                     "[dngtool-e] WARN carry-skipped=secondary-ifd-other: 输入次级 IFD 的 "
+                     "NewSubFileType=[%s] 读不成 JPEG（只认 Compression=7；未压缩/Deflate 预览不猜）"
+                     "⇒ 产物里这些位缺席，在册欠账，不静默\n",
+                     DecList (skippedNs).c_str ());
+    }
+
     // ── 写 DNG ──
     if (verbose) fprintf(stderr, "[dngtool-e] writing %s ...\n", outputPath);
 
-    dng_file_stream stream(outputPath, true);
+    // ⚠ 崩溃修复（第 77 条 ㉖c，根因读数见 tests/output/lane-crash/REPORT.md）：
+    //   这一行**原来在 try 之外**（包写件的 try 从下面的 writer.WriteDNG 才开始）。
+    //   本构建带 qDNGValidate=1（tools/src/dngtool/CMakeLists.txt:60），
+    //   dng_file_stream 打不开输出文件时走 dng_file_stream.cpp:39-41
+    //   ⇒ ReportError("Unable to open file") + ThrowSilentError()
+    //   ⇒ dng_exceptions.h:151 Throw_dng_error(dng_error_silent) ⇒ **throw dng_exception**。
+    //   而 dng_exception 不派生自 std::exception（dng_exceptions.h:51），main（:4683 分发到
+    //   EncodeDng）又没有任何 try ⇒ 未捕获 C++ 异常 ⇒ std::terminate ⇒ UCRT abort()
+    //   ⇒ __fastfail ⇒ 退出码 0xC0000409 = 3221226505 且**没有产物**。
+    //   实测最小触发集：`-e -i <任意输入> -O <父目录不存在的输出>`（`-O` 指到已存在的目录名上
+    //   同样），与输入有没有次级 IFD **无关**（无次级 IFD 的 p40.dng 一样崩）。
+    //   现在把构造收进它自己的 try ⇒ 干净退出 6 并点名 ASCII 键 refuse-output-unopenable。
+    AutoPtr<dng_file_stream> stream;
+    try
+    {
+        stream.Reset (new dng_file_stream(outputPath, true));
+    }
+    catch (dng_exception& e)
+    {
+        fprintf(stderr, "[dngtool-e] ERROR: refuse-output-unopenable: 输出文件打不开 %s "
+                        "(SDK error code %d) ⇒ 拒绝出件（不静默、不 fastfail）\n",
+                outputPath, (int)e.ErrorCode());
+        processor.recycle();
+        return 6;
+    }
+    catch (...)
+    {
+        fprintf(stderr, "[dngtool-e] ERROR: refuse-output-unopenable: 输出文件打不开 %s "
+                        "(unknown) ⇒ 拒绝出件（不静默、不 fastfail）\n", outputPath);
+        processor.recycle();
+        return 6;
+    }
     dng_image_writer writer;
 
     uint32 maxBackwardVersion = dngVersion_1_7_0_0;
@@ -3393,6 +5269,16 @@ static int EncodeDng(
 
         jxlImage->Encode(host, writer, *negative->Stage1Image(), *settings);
 
+        // ASCII 键（门禁锚点）：有损档必须**出声**。此前只有 SDK 自己那行
+        // `JXL encode … distance = …`（中文码页下形状不稳、且不带"这一档是有损"的判定），
+        // 无损档 (quality<=0) 一律不打这个键 ⇒ 闸能拿它当两档的分叉判据。
+        if (quality > 0)
+            fprintf(stderr, "[dngtool-e] jxl-lossy=1 q=%d distance=%.2f useCase=%d\n",
+                    quality, settings->Distance(), (int)useCase);
+        else
+            fprintf(stderr, "[dngtool-e] jxl-lossless=1 distance=%.2f useCase=%d\n",
+                    settings->Distance(), (int)useCase);
+
         // DNG 1.7 规范标签 (JXLDistance / JXLEffort / JXLDecodeSpeed)
         // 由 EncodeTiles 自动从 settings 写入, 无需手动设置
         // (Adobe Camera Raw 校验必需; 缺省会省略标签导致 ACR 拒绝打开)
@@ -3412,10 +5298,10 @@ static int EncodeDng(
 
     try
     {
-        writer.WriteDNG(host, stream, *negative.Get(),
+        writer.WriteDNG(host, *stream.Get(), *negative.Get(),
                         previewCount ? &previews : NULL,
                         maxBackwardVersion, uncompressed, true);
-        stream.Flush();
+        stream->Flush();
     }
     catch (dng_exception& e)
     {
@@ -3469,8 +5355,11 @@ int main(int argc, char* argv[])
     bool verifyMode = false;
     int encodeCompression = 0;  // 0=lossless JPEG, 1=JXL
     bool carryRawMetadata = true;   // 源 RAW 元数据搬运开关 (默认开)
+    bool embedOriginal = false;     // 50828 嵌入整个原文件：2026-10-19 政策改为**默认关** (-embed-raw 显式开)
     std::string lookSpec;           // -idc-look <file>: 给主 profile 写 ProfileToneCurve 的规格 (默认不写)
     bool lensCorr = false;          // -lens-corr: 源镜头三表 → 规范 OpcodeList3 (默认关)
+    bool suppressGps = false;       // -no-gps: 不写源 GPS 标准位（产品隐私开关 StripExifGps 现默认
+                                   //   false = 全保留，账本 §18；只有用户显式 --strip-gps 时产品才传本开关）
     int jxlQuality = 0;         // JXL 质量 (0=无损)
     bool forceLinear = false;
     int jxlEffort = 7;          // JXL 编码努力 (1-9)
@@ -3502,8 +5391,10 @@ int main(int argc, char* argv[])
         else if (strcmp(a, "-jxl") == 0) encodeCompression = 1;
         else if (strcmp(a, "-linear") == 0) forceLinear = true;
         else if (strcmp(a, "-no-raw-meta") == 0) carryRawMetadata = false;
+        else if (strcmp(a, "-embed-raw") == 0) embedOriginal = true;
         else if (strcmp(a, "-idc-look") == 0 && i + 1 < argc) lookSpec = argv[++i];
         else if (strcmp(a, "-lens-corr") == 0) lensCorr = true;
+        else if (strcmp(a, "-no-gps") == 0) suppressGps = true;
         else if (strcmp(a, "-effort") == 0 && i + 1 < argc) jxlEffort = atoi(argv[++i]);
         else if (strcmp(a, "-decode_speed") == 0 && i + 1 < argc) jxlDecodeSpeed = atoi(argv[++i]);
         // ⚠⚠ 2026-09-21：**JXL 质量独立参数**（`-jxlq`，0 = 无损，默认 0）。
@@ -3545,8 +5436,8 @@ int main(int argc, char* argv[])
         return EncodeDng(inputPath.c_str(), outputPath.c_str(),
                          encodeCompression, jxlQuality, forceLinear,
                          jxlEffort, jxlDecodeSpeed, highlight, outputBps,
-                         threadCount, carryRawMetadata,
-                         lookSpec.empty () ? NULL : lookSpec.c_str (), lensCorr, verbose);
+                         threadCount, carryRawMetadata, embedOriginal,
+                         lookSpec.empty () ? NULL : lookSpec.c_str (), lensCorr, suppressGps, verbose);
     }
 
     if (!idcPath.empty())

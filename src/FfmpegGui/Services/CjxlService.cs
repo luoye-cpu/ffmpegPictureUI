@@ -292,7 +292,7 @@ namespace FfmpegGui.Services
         /// <summary>
         /// 用户是否**显式**要求剥离描述性元数据（EXIF/GPS/XMP/IPTC）。
         /// <para>⚠⚠ 与"是否启用剥除"**不是一回事**（2026-10-05 用户裁定后重新定义）：
-        /// `StripExifGps` 的**默认值就是 true**（隐私默认），若把它算作"要求剥除"，
+        /// `StripExifGps` 是**带默认值的开关**（2026-10-20 起默认 false=不剥；旧史是 true），若把它算作"要求剥除"，
         /// 则**默认就把 jbrd 无损重封装关掉** —— 而裁定是无损重封装为绝对默认。
         /// ⇒ 只有**用户显式给出**的剥除请求才算（`StripExplicit` 由 CLI 在用户真的写了
         /// `--strip-gps` / `--strip-metadata` / … 时置位），默认值<strong>不</strong>计入。</para>

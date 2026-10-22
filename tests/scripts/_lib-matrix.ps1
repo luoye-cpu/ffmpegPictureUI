@@ -369,7 +369,7 @@ function Get-EquivalenceClasses {
         ClassId = 'format-jpg'
         Representative = 'jpg'
         Members = @('jpg', 'jpegli')
-        Evidence = @('src/FfmpegGui/CliParser.cs:196|if (fmt == "jpegli") fmt = "jpg";')
+        Evidence = @('src/FfmpegGui/CliParser.cs:197|if (fmt == "jpegli") fmt = "jpg";')
         Rationale = 'CliParser normalizes format jpegli to jpg, so -f jpegli and -f jpg select the same container'
     }
 
@@ -639,7 +639,7 @@ function Get-SemanticMatrices {
                 #   （追加式合并 + 注释）⇒ 其**下方**所有行号整体下移 ⇒ 本条 pin 必须同步。
                 #   ⚠ 这不是"改判据"：字面量与**语义**未变，只是源文件里的位置变了；
                 #     本仓 A21/A30 的设计意图正是"行号 pin 一旦失效就当场转红"，本次转红即为**设计生效**。
-                'src/FfmpegGui/CliParser.cs:272|case "--preserve-metadata":',
+                'src/FfmpegGui/CliParser.cs:273|case "--preserve-metadata":',
                 # ⚠ pin 演进：2011 →（#39/#43 插注释）2041 →（2026-09-30 显示尺寸轮往 :1641 之后插了 14 行）**2055**。
                 #   →（2026-10-01 并发会话从同一文件删 5 行 ⇒ 该文件**四条 pin 同步 −5**：971→966、981→976、1013→1008、2055→2050）**2050**。
                 #   漂移由 A30 当场报出（`literal not on ...:2041 (found at line 2055)`）⇒ 抬号前先 `grep -n` 复核实况行，

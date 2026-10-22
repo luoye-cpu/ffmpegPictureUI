@@ -407,7 +407,7 @@ function Read-TextShared([string]$path) {
 #   ⑯ 运行器**自身指纹**：打印点 ==2（启动 + 收尾）· 自漂移复核引用 ==3 · 归属不明告警 ==2；
 #   ⑰ 清单**散文条数** == `$expectedScriptCount` 常量（常量定义点 ==1；三种散文形态各命中 ≥1 且数字相同）。
 # ⚠ ⑯ 的理由（2026-09-19 #28，gp-1 与 gp-3 各自独立查出）：`Check-SrcDrift` **只覆盖
-#   `src/FfmpegGui` 与 `tests/ServiceProbe`** ⇒ **运行器自身既不在覆盖范围、也不哈希自身**。
+#   `src/FfmpegGui` 与 `tests/projects/ServiceProbe`** ⇒ **运行器自身既不在覆盖范围、也不哈希自身**。
 #   有人在整轮进行中改运行器 ⇒ 那一轮读数**归属不明**（跑的是旧版还是新版？）而**无任何告警**。
 #   ⚠ 不是假想：2026-09-19 实测运行器在 12:37:02 → :16 → :37 → :49 被改**四次**（671 → 734 行），
 #     发现方式只是**手工测指纹**。⚠ 与 STALE 闸分工不同：STALE 管**被测产物**，本条管**运行器自己**。
@@ -533,7 +533,7 @@ function Test-RunnerShape {
 }
 
 # ── ⚠ #28（2026-09-19）：运行器**自身指纹**（防「跑期间自己被改 ⇒ 读数归属不明」）──────────
-# 为什么必须有：`Check-SrcDrift` **只覆盖两个目录**（`src/FfmpegGui` 与 `tests/ServiceProbe`）
+# 为什么必须有：`Check-SrcDrift` **只覆盖两个目录**（`src/FfmpegGui` 与 `tests/projects/ServiceProbe`）
 #   ⇒ **运行器脚本自身既不在覆盖范围内、也不哈希自身**。若有人在**整轮进行中**改运行器，
 #   那一轮的读数**归属不明**（跑的是旧版还是新版？），而现有机制**无任何告警**。
 #   ⚠ **不是假想**：2026-09-19 实测运行器在 12:37:02 → :16 → :37 → :49 被改了**四次**（671 → 734 行），
@@ -655,8 +655,8 @@ $env:FFMPEGGUI_FFMPEG_DIR = "$root/publish/PLAN/ffmpeg-full"
 foreach ($v in @('LC_ALL', 'LANG', 'LC_CTYPE')) { Remove-Item "Env:$v" -ErrorAction SilentlyContinue }
 # 打印一行，让"这一轮是在干净环境下跑的"成为可追溯读数（与 `[gate] exe=` 同族）。
 Write-Output "env-cleaned=LC_ALL,LANG,LC_CTYPE (exiftool 的 perl locale warning 源头掐掉；本轮起有效)"
-$pr = "$root/tests/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.exe"
-if (-not (Test-Path $pr)) { $pr = "$root/tests/ServiceProbe/bin/Debug/net11.0/win-x64/ServiceProbe.exe" }
+$pr = "$root/tests/projects/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.exe"
+if (-not (Test-Path $pr)) { $pr = "$root/tests/projects/ServiceProbe/bin/Debug/net11.0/win-x64/ServiceProbe.exe" }
 # ⚠ 2026-09-21（TESTING.md 第 84 条处置建议 ①）：**回退是静默的** —— 门禁可能测的
 #   不是你以为的那个二进制。⇒ 一律**打印被测 exe 与构建类型**，让读数可追溯。
 Write-Output ("[gate] exe=" + $pr + $(if ($pr -like '*[/\]Debug[/\]*') { " (Debug fallback)" } else { " (Release)" }))
@@ -676,7 +676,7 @@ function Get-NewestSrc([string]$p) {
     Sort-Object LastWriteTime -Descending | Select-Object -First 1
 }
 $guiSrc = Get-NewestSrc "$root/src/FfmpegGui"
-$prbSrc = Get-NewestSrc "$root/tests/ServiceProbe"
+$prbSrc = Get-NewestSrc "$root/tests/projects/ServiceProbe"
 $guiDll = Get-Item (Join-Path $binDir 'FfmpegGui.dll') -ErrorAction SilentlyContinue
 $prbExe = Get-Item $pr -ErrorAction SilentlyContinue
 # ── 2026-09-24 补两对配对（此前 STALE 只管两对 ⇒ 另两个"真正被执行的产物"靠手工）──────────
@@ -692,8 +692,8 @@ $prbExe = Get-Item $pr -ErrorAction SilentlyContinue
 #      缺判据这件事本身就够严重（§6 第 50 条 ⑤ 已经因为"闸看不到子脚本 exe"赔过一次整批数字）。
 #   ⚠ 本闸的语义边界（不要高估）：mtime 配对只回答"**产物不比源码旧**"，**不**回答"这次改动真的进了产物"
 #      （增量构建可能保留旧 mtime ⇒ 要证后者得拿 dll 的 SHA 与参照对撞）。见 §6 第 106 条末段。
-$uiSrc  = Get-NewestSrc "$root/tests/UiTestHost"
-$uiExe  = Get-Item "$root/tests/UiTestHost/bin/Release/net11.0/win-x64/UiTestHost.exe" -ErrorAction SilentlyContinue
+$uiSrc  = Get-NewestSrc "$root/tests/projects/UiTestHost"
+$uiExe  = Get-Item "$root/tests/projects/UiTestHost/bin/Release/net11.0/win-x64/UiTestHost.exe" -ErrorAction SilentlyContinue
 $guiExe = Get-Item "$root/src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.exe" -ErrorAction SilentlyContinue
 $stale = @()
 if ($guiSrc -and $guiDll -and $guiDll.LastWriteTime -lt $guiSrc.LastWriteTime) {
@@ -706,26 +706,26 @@ if ($prbSrc -and $prbExe -and $prbExe.LastWriteTime -lt $prbSrc.LastWriteTime) {
   $stale += ("ServiceProbe.exe {0} < src {1}（{2}）" -f $prbExe.LastWriteTime, $prbSrc.LastWriteTime, $prbSrc.Name)
 }
 # ⚠ UiTestHost **只与自己的源码比**：它引用 FfmpegGui，但 src 侧的陈旧由上面两对负责；
-#   拿 `tests/UiTestHost` 的源码去比 src 的 mtime 会造出与产品无关的假 STALE。
+#   拿 `tests/projects/UiTestHost` 的源码去比 src 的 mtime 会造出与产品无关的假 STALE。
 if ($uiSrc -and $uiExe -and $uiExe.LastWriteTime -lt $uiSrc.LastWriteTime) {
-  $stale += ("UiTestHost.exe {0} < tests/UiTestHost 源码 {1}（{2}）" -f $uiExe.LastWriteTime, $uiSrc.LastWriteTime, $uiSrc.Name)
+  $stale += ("UiTestHost.exe {0} < tests/projects/UiTestHost 源码 {1}（{2}）" -f $uiExe.LastWriteTime, $uiSrc.LastWriteTime, $uiSrc.Name)
 }
-# ── 第 ⑤ 对（2026-09-30）：`GainMapTestHost.exe` ↔ `tests/GainMapTestHost/**` ─────────────
+# ── 第 ⑤ 对（2026-09-30）：`GainMapTestHost.exe` ↔ `tests/projects/GainMapTestHost/**` ─────────────
 #   动机就是本次要处理的遗留：该宿主的套件此前**不被任何门禁执行**（运行器自己在下面一行登记着这件事），
 #   于是 09-20「SDR ⇒ 普通 JPEG」裁定作废的 4 条期望在树里**红了 10 天**没人被拦。
 #   现已接成清单第 60 条 `verify-gainmap-host.ps1` ⇒ 它执行的产物必须进新鲜度闸，
 #   否则该门禁会拿**陈旧宿主**报绿（与 09-24 给 UiTestHost 补对同族）。
-$gmSrc = Get-NewestSrc "$root/tests/GainMapTestHost"
-$gmExe = Get-Item "$root/tests/GainMapTestHost/bin/Release/net11.0/win-x64/GainMapTestHost.exe" -ErrorAction SilentlyContinue
+$gmSrc = Get-NewestSrc "$root/tests/projects/GainMapTestHost"
+$gmExe = Get-Item "$root/tests/projects/GainMapTestHost/bin/Release/net11.0/win-x64/GainMapTestHost.exe" -ErrorAction SilentlyContinue
 if ($gmSrc -and $gmExe -and $gmExe.LastWriteTime -lt $gmSrc.LastWriteTime) {
-  $stale += ("GainMapTestHost.exe {0} < tests/GainMapTestHost 源码 {1}（{2}）" -f $gmExe.LastWriteTime, $gmSrc.LastWriteTime, $gmSrc.Name)
+  $stale += ("GainMapTestHost.exe {0} < tests/projects/GainMapTestHost 源码 {1}（{2}）" -f $gmExe.LastWriteTime, $gmSrc.LastWriteTime, $gmSrc.Name)
 }
 # ── 第 ⑥⑦⑧ 对（2026-10-16 审查补）：三段**拆分宿主**的 exe ↔ 各自源码 ────────────────────
 #   动因：`tests/gainmap-{encode,decode,struct}` 是 2026-10-05 从 `GainMapTestHost` **物理拆分**出来的三段，
 #   2026-10-15 才由清单第 60 条 `verify-gainmap-host.ps1` §4b **真跑**（此前是 #69 在册的零调用点）。
 #   进了执行面却**没进本闸** ⇒ §4b 会拿陈旧拆分件报绿，而它的读数被算成"本轮实测"。同一坑第 ⑤ 对
 #   已经赔过一次（`GainMapTestHost` 的 4 条过期期望在树里红了 10 天）。
-#   ⚠ 三段各自**独立工程**：源码只与自己的目录比，别拿 `tests/GainMapTestHost` 的 mtime 去比拆分件，
+#   ⚠ 三段各自**独立工程**：源码只与自己的目录比，别拿 `tests/projects/GainMapTestHost` 的 mtime 去比拆分件，
 #     那会造出与产物无关的假 STALE（与上面 UiTestHost 那条同规）。
 $segPairs = @(
     @{ proj = 'gainmap-encode'; asm = 'Tests.GainMapEncode' },
@@ -734,14 +734,14 @@ $segPairs = @(
 )
 $segExes = @()
 foreach ($sp in $segPairs) {
-    $sSrc = Get-NewestSrc "$root/tests/$($sp.proj)"
-    $sExe = Get-Item "$root/tests/$($sp.proj)/bin/Release/net11.0/win-x64/$($sp.asm).exe" -ErrorAction SilentlyContinue
+    $sSrc = Get-NewestSrc "$root/tests/projects/$($sp.proj)"
+    $sExe = Get-Item "$root/tests/projects/$($sp.proj)/bin/Release/net11.0/win-x64/$($sp.asm).exe" -ErrorAction SilentlyContinue
     $segExes += ,@($sp.asm, $sExe)
     if ($sSrc -and $sExe -and $sExe.LastWriteTime -lt $sSrc.LastWriteTime) {
-        $stale += ("$($sp.asm).exe {0} < tests/$($sp.proj) 源码 {1}（{2}）" -f $sExe.LastWriteTime, $sSrc.LastWriteTime, $sSrc.Name)
+        $stale += ("$($sp.asm).exe {0} < tests/projects/$($sp.proj) 源码 {1}（{2}）" -f $sExe.LastWriteTime, $sSrc.LastWriteTime, $sSrc.Name)
     }
     if (-not $sExe) {
-        $stale += ("$($sp.asm).exe 不存在（tests/$($sp.proj)/bin/Release）⇒ §4b 会静默回退 Debug 或判红，本轮不可绑定该段读数")
+        $stale += ("$($sp.asm).exe 不存在（tests/projects/$($sp.proj)/bin/Release）⇒ §4b 会静默回退 Debug 或判红，本轮不可绑定该段读数")
     }
 }
 # ── 2026-10-01 补：**不存在**也必须拒（此前只判"旧"）──────────────────────────────────
@@ -758,8 +758,8 @@ if (-not $gmExe)  { $stale += 'GainMapTestHost.exe 不存在 ⇒ GainMap 宿主�
 if ($stale.Count -gt 0) {
   Write-Output "[STALE] 被执行的产物缺失或比它的源码旧，拒绝跑（否则结论不可信）"
   $stale | ForEach-Object { Write-Output ("        " + $_) }
-  Write-Output  "        重建（同批、各自 -c Release）：src/FfmpegGui | tests/ServiceProbe | tests/UiTestHost | tests/GainMapTestHost | tests/gainmap-{encode,decode,struct}"
-  Write-Output  "        ⚠ tests/GainMapTestHost 自 2026-09-30 起**已进闸**（清单第 60 条 `verify-gainmap-host.ps1` + 上面第 ⑤ 对）"
+  Write-Output  "        重建（同批、各自 -c Release）：src/FfmpegGui | tests/projects/ServiceProbe | tests/projects/UiTestHost | tests/projects/GainMapTestHost | tests/gainmap-{encode,decode,struct}"
+  Write-Output  "        ⚠ tests/projects/GainMapTestHost 自 2026-09-30 起**已进闸**（清单第 60 条 `verify-gainmap-host.ps1` + 上面第 ⑤ 对）"
   Write-Output  "        ⚠ 三段拆分件（Tests.GainMap{Encode,Decode,Struct}.exe）自 2026-10-16 起进闸（第 ⑥⑦⑧ 对；§4b 执行它们）"
   # ⚠ 2026-09-19 修（实施 #147 C 锁时漏掉的退出点）：此处**必须**先释放仓库级锁 ——
   #   否则「正常拒绝」也会留下残留锁（实测：STALE 拒跑后 `跑后锁残留=True`，下次运行会被
@@ -797,8 +797,8 @@ foreach ($ap in @(
     @{ n = 'FfmpegGui.dll';         p = (Join-Path $binDir 'FfmpegGui.dll') },
     @{ n = 'FfmpegGui.exe';         p = "$root/src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.exe" },
     @{ n = 'ServiceProbe.exe';      p = $pr },
-    @{ n = 'UiTestHost.exe';        p = "$root/tests/UiTestHost/bin/Release/net11.0/win-x64/UiTestHost.exe" },
-    @{ n = 'GainMapTestHost.exe';   p = "$root/tests/GainMapTestHost/bin/Release/net11.0/win-x64/GainMapTestHost.exe" })) {
+    @{ n = 'UiTestHost.exe';        p = "$root/tests/projects/UiTestHost/bin/Release/net11.0/win-x64/UiTestHost.exe" },
+    @{ n = 'GainMapTestHost.exe';   p = "$root/tests/projects/GainMapTestHost/bin/Release/net11.0/win-x64/GainMapTestHost.exe" })) {
   $h = ''
   try { if (Test-Path $ap.p) { $h = (Get-FileHash $ap.p -Algorithm SHA256 -ErrorAction Stop).Hash.Substring(0, 16) } } catch { $h = '读失败' }
   $artFp += ('{0}={1}' -f $ap.n, $(if ($h) { $h } else { '缺失' }))
@@ -810,7 +810,7 @@ Write-Output ("artifact-sha16: " + ($artFp -join '  ') + "  (被测产物；跑�
 # 不再对应当前工作区。显式告警，避免把“别人的中途状态”当成自己的基线。
 function Check-SrcDrift {
   $guiAfter = Get-NewestSrc "$root/src/FfmpegGui"
-  $prbAfter = Get-NewestSrc "$root/tests/ServiceProbe"
+  $prbAfter = Get-NewestSrc "$root/tests/projects/ServiceProbe"
   $pairs = [System.Collections.Generic.List[object]]::new()
   $pairs.Add(@($guiSrc, $guiAfter))
   $pairs.Add(@($prbSrc, $prbAfter))
@@ -981,12 +981,12 @@ $noSelfSummary = @('_probe-cancel-propagation-scan.ps1', '_probe-ct-chain-closur
 #   ⇒ 6 条**合计仅 32.4 s**（对整轮 ~950 s 是 +3.4%）⇒ 时长预算无碍。
 #   ⚠ 这 6 条**都带自身计数汇总**（`PASS=n FAIL=m` + 显式 `exit 1/else exit 0`）
 #     ⇒ **都不进** `$tableOnly` / `$noSelfSummary`（第 13/14 针的条数锁因此不变：4 / 7）。
-#   ⚠ 前 5 条都跑同一个 `tests/UiTestHost.exe`（各跑一遍**全量**宿主，只在锚点断言上分工）
+#   ⚠ 前 5 条都跑同一个 `tests/projects/UiTestHost.exe`（各跑一遍**全量**宿主，只在锚点断言上分工）
 #     ⇒ 有**受控冗余**（4 次重复执行宿主 ≈ 24 s），换来的是「某个分组被静默删掉」能被各自锚点抓住。
-#   ⚠⚠ **曾有的覆盖缺口（2026-09-24 已处置）**：`tests/UiTestHost` 是**第三个项目**，而本运行器的
-#     新鲜度（STALE）闸原先**只覆盖 `src/FfmpegGui` + `tests/ServiceProbe` 两个** ⇒ 只重建那两者时，
+#   ⚠⚠ **曾有的覆盖缺口（2026-09-24 已处置）**：`tests/projects/UiTestHost` 是**第三个项目**，而本运行器的
+#     新鲜度（STALE）闸原先**只覆盖 `src/FfmpegGui` + `tests/projects/ServiceProbe` 两个** ⇒ 只重建那两者时，
 #     这 5 条会拿**陈旧的 `UiTestHost.exe`** 跑出「绿」，当时靠**手工**保证三者同批重建。
-#     ⇒ 现已把 `UiTestHost.exe ↔ tests/UiTestHost/**` 与被 28 条端到端门禁执行的
+#     ⇒ 现已把 `UiTestHost.exe ↔ tests/projects/UiTestHost/**` 与被 28 条端到端门禁执行的
 #       `src/**/FfmpegGui.exe ↔ src/FfmpegGui/**` 两对补进同一条闸（见上方 `[STALE]` 段）；
 #       ⚠ **【2026-09-30 更新】该宿主当时"仍不在闸内"，现已进闸**：接成清单第 60 条
 #       `verify-gainmap-host.ps1`，并补了上面 STALE 的**第 ⑤ 对**（`GainMapTestHost.exe` ↔ 自己的源码）。
@@ -1064,7 +1064,7 @@ $noSelfSummary = @('_probe-cancel-propagation-scan.ps1', '_probe-ct-chain-closur
 #   ⚠ 实测（2026-10-04）：变异（删掉该控件的初始选中 + 处理器）⇒ **73/4 转红**，恢复 ⇒ **77/0**。
 # ⚠⚠ **2026-10-05 第九次接线：68 → 69（+1）** —— 测试物理拆分（一个子系统一个工程）的**覆盖一致性锁**：
 #   第 69 条 `_probe-test-group-coverage.ps1`：拆分后「哪些 mode 归哪个组」是**手工维护**的表
-#   （`tests/Tests.Shared/TestGroups.cs`），而**本运行器**另有一份独立的默认探针清单（`$Probes`，26 个）。
+#   （`tests/projects/Tests.Shared/TestGroups.cs`），而**本运行器**另有一份独立的默认探针清单（`$Probes`，26 个）。
 #   两者漂移就会出现「运行器要跑某 mode，但**没有任何组**认领它」⇒ 该 mode **永远不被任何组跑到**
 #   = **假覆盖**（看板全绿、实际无人跑）。立锁动机同第 54 条前车之鉴：
 #   `_probe-settings-clone-coverage.ps1` 曾**存在但没上清单** ⇒ 谁也不跑。
@@ -1301,7 +1301,7 @@ $scriptList = @('verify-ps-compat.ps1','verify-color-caps.ps1','verify-color-wir
                  #   ⚠ 自带汇总（PASS=n FAIL=m）+ 断言驱动 exit ⇒ **不进** $tableOnly / $noSelfSummary。
                  #   ⚠ 纯源码形状判据，**不需要重建**任何二进制（实测 ≈40 s，主要花在跑 3 次生成器）。
                  # ── 第 75 条：2026-10-13 批次 G（探针面）接线（`verify-probe-mirror-parity.ps1`）──
-                 #   锁「内核断言两份拷贝不许静默漂」：被执行那份 = `tests/ServiceProbe/Program.cs`
+                 #   锁「内核断言两份拷贝不许静默漂」：被执行那份 = `tests/projects/ServiceProbe/Program.cs`
                  #   （`$Probes` 只调它），镜像 = `tests/core/Modes/*.cs` + `tests/diagnostics/Modes/*.cs`
                  #   （`Exe` ⇒ `dotnet test` 只还原不跑还 exit 0，全仓除生成器注释外**零调用者**）。
                  #   立锁动机（本仓实测踩过）：只把 C20 写进镜像 ⇒ `contract` 报 137/0 **全绿而一条没跑**。
@@ -1406,7 +1406,8 @@ $scriptList = @('verify-ps-compat.ps1','verify-color-caps.ps1','verify-color-wir
                  #   dng_tone_curve 默认值是 SetNull() 的 (0,0)(1,1) 恒等线, 它 IsValid() 为真, 实测放过一次）。
                  #   ⑮ 组锁**GPS 不许把整条搬运降级**（2026-10-17）：夹具 = 把 7S 那份副本用 exiftool 注入
                  #   GPS（本机四件真件全无 GPS ⇒ 前置条件本身判红, 不拿无 GPS 的源空跑）。三段照嵌 + 解回的
-                 #   嵌入件与 GPS 源同 SHA256 + 产物可见标签读不出 GPS + stderr 的 ASCII 键
+                 #   嵌入件与 GPS 源同 SHA256 + 产物可见标签读得出 GPS 且与源同值（2026-10-20 的 ⑳ 组把
+                 #   GPS 补成了标准位，⑮b 由"不许静默丢弃"翻向"必须搬成"）+ stderr 的 ASCII 键
                  #   `gps-in-embedded-original=1` 命中; 负控 = `-no-raw-meta` 臂上那个键必须消失。
                  #   变异读数: 复刻"源含 GPS ⇒ 关整条搬运"那一版 ⇒ 只红 ⑮a/⑮c（30/2）; 误把赋值写在裸
                  #   fprintf 之外（无花括号）⇒ 对所有源都关搬运 ⇒ 15/17（②③④⑦⑧⑩⑪ 一起红）。
@@ -1439,12 +1440,37 @@ $scriptList = @('verify-ps-compat.ps1','verify-color-caps.ps1','verify-color-wir
                  #   后 nc=B（dt exif.cc:1398-1406 逐字取数 + 硬校验 2*nc==CA 计数 ⇒ 撤回我 10-18 的"索引未定"）。
                  #   判据 = 第二实现 `tests/scripts/_readback-dng-lens.py`：自己解源 ARW 的小端 TIFF 与产物的
                  #   大端列表，**逐结点回算**与源表对撞（死线 0.0025/0.0006 写在该文件里，不读被检方常数），
-                 #   再判 flags、[14][1] 相邻、v1 支无奇次项。六臂：⑱a 换算等价（实测残差 0.000319，写侧读侧
+                 #   再判 flags、[14][1] 相邻、镜头支不重复；`--stderr` 把**点名过的跳过**与**静默缺席**分开判
+                 #   （前者放行、后者判红 ⇒ 不必假设"三支恒在场"）。v1 支判的是**四项偶次模型对源表的残差**，
+                 #   不是"奇次位为 0"（v1 载荷只有四个偶次项，奇次位是读手自己填的 0 ⇒ 那条永不触发，
+                 #   2026-10-19 审查删掉的死牙）。九臂（⑱a–⑱h + ⑱g2）：⑱a 换算等价（实测残差 0.000319，写侧读侧
                  #   同一个数）｜⑱b 不加 -lens-corr 必须缺席｜⑱c 无三表的输入点名 lens-tables=absent｜
-                 #   ⑱d **验牙**：把暗角 k4 放大 20% ⇒ 残差 0.000319→0.021154 判红｜⑱e 与 -idc-look 共存
+                 #   ⑱d **验牙**：十支变异**各打各的判据**（k4/v1val/flags14/vigopt/center/order/dup14/
+                 #   dropvig/dropw1/dropboth，造件交给独立的 `_mutate-dng-lens.py`，读手必须红在指定那一条
+                 #   的点名文字上，"红了但没有 FAIL 行"同样算破坏）+ 摘支的三件配一份点名过的 stderr 必须
+                 #   **判绿**（新分支两个方向都要有活格子）；暗角 k4 放大 20% ⇒ 残差 0.000319→0.021154｜
+                 #   ⑱e 与 -idc-look 共存
                  #   （这条当场把我自己的表读手抓红：放宽到已知 ID 集合时漏改两处仍在遍历全部 ops 的比较 ⇒
                  #   plane=None 参与排序抛 TypeError ⇒ 教训：判据放宽要按"每一处遍历"核一遍）｜⑱f 重臂
-                 #   DNGLENS_HEAVY=1：Adobe 渲染"基准 vs 施加"的角/中增益比必须上升且与**源表**角部增益差 ≤2%。
+                 #   DNGLENS_HEAVY=1：Adobe 渲染"基准 vs 施加"，取 r∈[0.90,0.98) **环带**的增益比必须上升
+                 #     且与源表角部增益差 ≤5%（实测 1.0946/1.0943/1.0954 对 1.1117，2 万点抽样 19,985 不同；
+                 #     10-19 审查把 10% 收到 5% —— 10% 时接受区间 [1.02, 1.223] 连"只施加了 2%"都放行，
+                 #     区间形同虚设；本臂**不锁幅度精确性**，那条由 ⑱a 的逐结点回算锁）。
+                 #     ⚠ 测量点不能取最外 32 像素：同一对渲染角块给 1.45/1.48/1.53，与环带为何背离未判定。
+                 #   ⑱g 产品入口的源形锁：`--dng-lens-correction` / GUI 勾选 / 预设三份账 + `-lens-corr` 只由
+                 #     `BuildEncodeToDngArguments` 一处追加；六件事缺一即红（真源追加·异步转参·执行侧调用·
+                 #     预览侧调用·CLI 入口·双语词条）。判据抽成纯函数 `Get-LensPlumbingBreaks` ⇒ ⑱g 判真源码、
+                 #     ⑱g2 用同一份判据判六个"各删一处"的内存副本，六处必须**各只红自己那条**（实测 6/6；
+                 #     摊在脚本里的六条 if 没法喂变异件 ⇒ 这条锁过去从没被验过牙）。变异=摘掉预览侧传参 ⇒
+                 #     只红 ⑱g（46/1）。端到端实测：
+                 #     `--headless --dng-lens-correction true` 5.8 s 出的产品 DNG 被独立读手判 OK（残差同数）。
+                 #   ⑱h 把**源** ARW 图像 SubIFD 里的机内开关标签清零（type=3/count=1、值内联）造合法的
+                 #     "明确关"素材 ⇒ 走真写侧：必须点名 lens-skipped=<项>:switch-off 且不写那一支；读手拿到
+                 #     同一份点名必须放行，**不给点名时必须红**。这一臂是本轮修掉的潜在假红的活格子：源有 CA
+                 #     表而 CA 开关明确为 0 时，读手原来仍按"表在 ⇒ 期望 CA 因子"算 ⇒ 写侧跳过是对的也判红。
+                 #     判别读数：CA 在场三支残差各不相同 0.000058/0.000074/0.000175，CA 关掉三支恒等
+                 #     0.000074/0.000074/0.000074。写侧与读侧的"三态开关"必须是同一把尺（10-19 早些时候
+                 #     已因"按 type=8 读开关"把三条腿全判成关过一次）。
                  #   ⚠ 开关标签的真实形状是 type=3(SHORT) count=1（7M2 = 257/1/1），按参数表那种 type=8 去读
                  #   会读失败 ⇒ 开关必须是三态（读不出 ≠ 关，只有明确 0 才跳过；dt 根本不查它）。
                  #   ⚠ 0x14A 在 cnt==1 时值字段**本身就是** SubIFD 偏移，再解引用一次就读进缩略图 IFD ⇒
@@ -1452,10 +1478,28 @@ $scriptList = @('verify-ps-compat.ps1','verify-color-caps.ps1','verify-color-wir
                  #   ⚠ 素材链外（`tests/output/raw_samples/Sony_ILCE7S.ARW` 与 `_probe-raw-default-tier`
                  #     同一份；`Sony_ILCE7M2_IDC.ARW` = 2026-10-16 审计原图, 带 58 条 IDC 生效版本）
                  #     ⇒ 缺失即点名红，不降级 SKIP。归 **C 类**（自带 `PASS=n FAIL=m` + 断言级 exit）。
-                 #   ⚠ 实测 46/0、75 s（独跑墙钟；两把重臂都开（DNGOPC_HEAVY=1 DNGLENS_HEAVY=1）时 48/0。
-                 #     演进：32 → 36（⑯）→ 41（⑰）→ 46（⑱ 五臂 + 表读手放宽到已知 ID 集合））：
-                 #     产出十五件编码 + 一次 DNG→DNG 重编码 + 九次 py 读手
-                 #     + 二十余次 exiftool；另有三张坏规格在解码前就退出，不计入编码次数。
+                 #   ⚠ 实测 55/0 @43 s；两把重臂同开（DNGOPC_HEAVY=1 DNGLENS_HEAVY=1）独跑 57/0 @54 s。演进：
+                 #     32 → 36（⑯）→ 41（⑰）→ 47（⑱ 七臂 + 表读手放宽到已知 ID 集合）→ 48（⑱d 换成十支
+                 #     变异各打各的判据 + 三支点名放行、⑱g2 给 ⑱g 补上自验牙；整轮 full23 内首跑 63.6 s）
+                 #     → 49（⑱h 用真素材钉"写侧点名跳过 ↔ 读侧同一把尺"）→ 51（②e/②f 嵌入原件的完整性锁 + 一支变异牙）→ 55（⑲ 丢弃政策锁四条，②/⑦/⑧/⑪/⑮c 改指归档档）→ **67**（⑳ 标准位补全 12 臂，2026-10-20；重臂同开 69）→ **70**（同日跨厂商 14 件实测后再加 ⑳n/⑳o/⑳p 三臂，**这三臂跑的是产品 `--headless` 链路而不是闸里另写的名单**：CR3/RAF/MRW 这类非 TIFF 头容器与 RW2/RWL 的嵌套 IFD，只有产品后置补得上；⑳h 同时改成"锁名单形状 + 条数下限 + 4 条 APEX 不得进后置"。⚠ 两把重臂本轮未重跑 ⇒ 旧值 69 当前不成立）→ **72**（同日 ⑱x/⑱y：Fuji RAF 三表 / Panasonic RW2 畸变落地为标准 opcode，换算一手来源 = darktable master；判据 = Adobe 解析形状 + 独立读手从源表逐结点复算 + 开关 off 负控。见账本 §26）→ **75**（**㉒ 组三臂**：IIQ SensorDefects → 规范 OpcodeList1 的 FixBadPixelsList；判据 = ①独立读手把源表与产物点集逐条对撞（不认类型/越界必须没偷带）②Adobe dng_validate 打印 `Opcode: FixBadPixelsList` + `Bayer Phase` 且 Validation complete ③非 IIQ 源（Fuji）产物必须没有这一支。重臂 ㉒d 在真 P40 上做**相位分叉**：把产物里 4 字节的相位翻档 ⇒ 两臂只有列点 ±2 内的 2239 个像素不同、5966 个远离列点的对照点逐点相同、列点偏差中位 45.0 vs 167.5。见账本 §27/§28）→ 重臂档再加 **㉑ 两臂**（`DNGPRIV_HEAVY=1`：Adobe `dng_validate` 逐厂商
+                 #     + 私有件携带锁 `_check-dng-private-carry.py`，都跑产品链路；实测 8 件 ⇒ 默认档 **76/0** 外加一行 SKIP；
+                 #     ㉒ 组四臂：a 内容逐条对撞 / b Adobe 认这条 opcode / c 非 IIQ 源不得写 / **f DNG→DNG 不丢也不重复
+                 #       opcode 列表**（2026-10-21 实测的缺陷：再编码一次会把 ⑯ 曲线、⑱ 镜头校正、㉒ 坏点表全丢掉，见账本 §29）；
+                 #     重臂两臂 d/e 要 `DNGBADPIX_HEAVY=1`：d = 真 P40 上的**相位分叉**（两臂只有列点 ±2 内 2239 像素不同、
+                 #     5966 个对照点逐点相同、偏差中位 45.0 vs 167.5）；e = 真素材没有的**坏列/越界**分支用只改缺陷表的 Leaf 夹具补活格子。
+                 #     实测读数：默认档 76/0（`_gate77_default_final.log`）、只开 `DNGBADPIX_HEAVY=1` 78/0（`_gate77_dngreenc.log`）；
+                 #     三把重臂同开 75/0 记在 `_gate77_allheavy_20261021.log`（那是㉒f 之前）；**四把同开未测** ⇒ 按构造 81，不记绿。
+                 #     ㉑ 的立组动因：厂商注记原先**完全由复制阶段 `-all:all` 的副作用决定，一条判据都没有** ⇒ 静默带与静默丢长得一样；
+                 #     分档由 exiftool 的回话裁决（`No writable tags set` ⇒ 格式边界、只能靠换算），而 CR3 的 198 条注记是**可修缺口**
+                 #     （实测拿已有注记块的 DNG 当目标能带进 93 条）⇒ 打 WARN 点名；新增同类整组丢失判红。。⑳ 组的立组动因：用户否掉"先不补"——**能被 conformant 读者解码的一律搬进标准位、搬不动的必须点名**；同日另把"默认剥 GPS"的 stale 默认统一成"默认不勾选=全保留"（四处：界面/CLI/模型/预设），并把第 58 条闸的 ①③ 两条断言按新政策翻向。
+                 #   ⑲ 丢弃政策锁（2026-10-19 用户定：既不在官方规范、普通软件又完全读不到的 ⇒ 丢弃，不靠 50828 偷渡）：默认**不嵌**整个原文件（-embed-raw 才嵌）。四条臂：⑲a 默认产物无 50828/50973/OriginalRawFileName 且 stderr 点名 original-embed=off；⑲b 标准位一条没掉（ExifIFD 四项 + 预览 + 镜头 OpcodeList3）；⑲c 默认产物上 -idc 必须非零退出且点名缺 50828；⑲d 承重事实由独立实现逐位量过 —— 源 ↔ 默认产物的 sensor 平面 24,337,152 点全等 ⇒ 丢弃只动元数据不动图像。② 组与 ⑦/⑧/⑪/⑮c 改指显式 `-embed-raw` 的归档档（那些判据本身不变，只是载体变成"选了才有"）。代价实测：7S 12,437,330→6,557,228 B（−47.3%）；7M2 68,065,690→28,543,570 B（−58.1%）。⚠ 当时登记的漏项（约 28 条有 EXIF 标准位的字段与 GPS）已由下面的 ⑳ 组补完 ⇒ 见该行。
+                 #     规模按脚本里的**调用点**计（循环不展开；2026-10-20 复量）：dngtool 31 处、py 33 处、
+                 #     exiftool 9 处；⑱d/放行/⑱h 三处
+                 #     循环各自展开（10+3 对造件判件、2 件真素材）⇒ 变异件每件 68 MB（整幅无损 DNG）
+                 #     ⇒ 判完即删，峰值只多一件。另有三张坏规格在解码前就退出，不计入编码次数。
+                 #     ⚠ 终件两次独跑（43 s / 54 s）期间无其他门禁并发（bench 复跑正卡在"等编译进程退场"
+                 #       的循环里），但本机有一个 ffmpeg 静态编译在跑 ⇒ 墙钟是含负载值，只作量级不作判据；
+                 #       full23 轮内那次 48/0 @63.6 s 是加 ⑱h 之前的同一份被测件。
                  'verify-dng-metadata-transport.ps1')
 $actualScriptCount = @($scriptList).Count
 if ($actualScriptCount -ne $expectedScriptCount) {

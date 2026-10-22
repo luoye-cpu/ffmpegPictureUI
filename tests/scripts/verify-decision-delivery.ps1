@@ -728,8 +728,8 @@ if (-not $hdr15.file -or -not $chainT) {
     # ── 负控：用**生产代码**（`ServiceProbe png3`）把产物标签改成 cICP=1/1 ⇒ ① 那条判据必须转红 ──
     $neg15 = "$out/d15_neg_cicp1.png"
     Copy-Item -LiteralPath $hdr15.file.FullName -Destination $neg15 -Force
-    $prExe15 = "$root/tests/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.exe"
-    if (-not (Test-Path $prExe15)) { $prExe15 = "$root/tests/ServiceProbe/bin/Debug/net11.0/win-x64/ServiceProbe.exe" }
+    $prExe15 = "$root/tests/projects/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.exe"
+    if (-not (Test-Path $prExe15)) { $prExe15 = "$root/tests/projects/ServiceProbe/bin/Debug/net11.0/win-x64/ServiceProbe.exe" }
     if (Test-Path $prExe15) {
         Start-Process -FilePath $prExe15 -ArgumentList "png3 `"$neg15`" 0 1 1" -NoNewWindow -Wait | Out-Null
         $labNeg = CicpField $neg15 'color_transfer'

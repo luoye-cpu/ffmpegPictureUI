@@ -7,7 +7,7 @@ $root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path; Set-Location $roo
 $ff    = "$root/publish/PLAN/ffmpeg-full/ffmpeg.exe"
 $fp    = "$root/publish/PLAN/ffmpeg-full/ffprobe.exe"
 $ex    = "$root/publish/PLAN/exiftool/exiftool.exe"
-$pr    = "$root/tests/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.exe"
+$pr    = "$root/tests/projects/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.exe"
 # ⚠ 运行级隔离（GUID，2026-09-17）：固定 `$d` + 开头整目录删，会被**并发的同名实例**互删 ⇒ 假红（§6 第 66 条）。
 #   注：本脚本 ④ 段仍**跨读** jpgp3 组共享目录（`validate/jpgp3/p3.icc`）—— 那是 C 类生产者簇，按裁定 (b) 保持固定目录，不在本轮隔离范围。
 $d     = "$root/tests/output/validate/png3_$([guid]::NewGuid().ToString('N').Substring(0, 8))"

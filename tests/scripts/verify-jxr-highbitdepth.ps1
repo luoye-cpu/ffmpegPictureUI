@@ -59,11 +59,13 @@ New-Item -ItemType Directory -Force -Path $work | Out-Null
 $env:TMP = $work
 $env:TEMP = $work
 
-$pass = 0; $fail = 0
+$pass = 0; $fail = 0; $skip = 0
 function CK($ok, $msg) {
   if ($ok) { $script:pass++; Write-Host "PASS $msg" -ForegroundColor Green }
   else     { $script:fail++; Write-Host "FAIL $msg" -ForegroundColor Red }
 }
+# 「本机条件下这条判不了」必须**计数并点名**，既不许静默消失、也不许记成 PASS（与 ServiceProbe 的 Skip 同法）。
+function SK($msg) { $script:skip++; Write-Host "SKIP $msg" -ForegroundColor Yellow }
 function Exec([string]$file, [string]$argStr, [string]$tag) {
   $o = "$work/$tag.out"; $e = "$work/$tag.err"
   $p = Start-Process -FilePath $file -ArgumentList $argStr -Wait -NoNewWindow -PassThru `
@@ -322,14 +324,70 @@ if ($pfU16 -eq 'rgba64le') {
   }
 }
 
-# ── ③ 回归：8bit 源必须仍走 BMP 臂 ───────────────────────────────────────────────Write-Host "`n### ③ 回归：8-bit JXR 源不得被改道 ###" -ForegroundColor Cyan
+# ── ③ 内容分档：8-bit 无 alpha 不许绕过引擎；带 alpha 必须绕过**且说出依据** ─────────────
+# 2026-10-22 契约变更（用户定案：绕过要由**内容**裁决，不由扩展名裁决）。旧写法按扩展名整族绕过，
+#   实测代价：同一件 8bit 无 alpha 的 JXR，**ffmpeg 的解码腿与 JxrDecApp 腿逐字节相同**
+#   （两腿产出 PNG 的 sha 相同、`blend=difference` 9216 字节全 0 ⇒ 见本仓交付记录），
+#   却整族拿不到色彩裁决 ⇒ 那一档的绕过没有依据，现在必须进引擎。
+#   反过来 alpha 档确有依据：ffmpeg 的 libjxr 解码腿把 alpha **塌成 0**（实测 min=0/max=0，
+#   而 JxrDecApp 腿 min=0/max=255）⇒ 仍绕过，但必须点名是哪一条内容条件。
+Write-Host "`n### ③ 内容分档：8-bit 无 alpha 进引擎 / 带 alpha 绕过并点名依据 ###" -ForegroundColor Cyan
 $dirS = "$work/run_sdr8"; New-Item -ItemType Directory -Force -Path $dirS | Out-Null
 $rS = Exec $exe ('--headless --log-level debug -i "' + "$work/sdr8.jxr" + '" -o "' + $dirS + '" --format jpg') "run_sdr8"
 $pS = Product $dirS @(".jpg", ".jpeg")
 Write-Host ("  [8bit] exit=" + $rS.code + " 产物=" + $(if ($null -ne $pS) { $pS.Name + ':' + $pS.Length + 'B' } else { "(无)" }))
 CK (($rS.code -eq 0) -and ($null -ne $pS)) "③ 8bit JXR → jpg 仍 exit 0 且有产物"
-CK (($rS.text -match '\[jxr\] Step 1: JxrDecApp') -and ($rS.text -notmatch 'HP-METRICS')) `
-   "③ 8bit 档走的仍是**原 BMP 臂**且没有 HP 指标行（直通臂没有越界抢单）"
+CK ($rS.text -match '\[色彩引擎\] 决策') "③ **新契约**：8-bit 无 alpha 单帧的 JXR 输入必须交给引擎（日志有决策行）——旧写法该红"
+CK (($rS.text -notmatch '\[jxr\] Step 1: JxrDecApp') -and ($rS.text -notmatch 'HP-METRICS')) `
+   "③ 8bit 档**不得**再被扩展名整族截走（没有 JxrDecApp 取帧行、也没有 HP 指标行）"
+CK ($rS.text -notmatch '尚未接入该路径') "③ 8bit 档不得报「色彩引擎尚未接入该路径」（既然接了就是没接≠接了）"
+
+# ③b alpha 档：绕过仍然成立，但**依据必须被每轮重新量出来**，不许只复述注释。
+$src32 = "$work/alpha32.png"
+$null = Exec $ff ('-y -hide_banner -loglevel error -f lavfi -i "color=magenta:s=64x64" -frames:v 1 "' + "$work/mag.png" + '"') "mag"
+$null = Exec $ff ('-y -hide_banner -loglevel error -f lavfi -i "testsrc=s=64x64" -format gray -frames:v 1 "' + "$work/g.png" + '"') "gr"
+$null = Exec $ff ('-y -hide_banner -loglevel error -i "' + "$work/mag.png" + '" -i "' + "$work/g.png" + '" -filter_complex "[0][1]alphamerge" -frames:v 1 "' + $src32 + '"') "am"
+$b32 = "$work/alpha32.bmp"
+$null = Exec $ff ('-y -hide_banner -loglevel error -i "' + $src32 + '" "' + $b32 + '"') "b32"
+$a32 = "$work/alpha32.jxr"
+$rA32 = Exec $jxrEnc ('-i "' + $b32 + '" -o "' + $a32 + '"') "enc_a32"
+CK (($rA32.code -eq 0) -and (Test-Path $a32)) "③b 前置：造出 8-bit **带 alpha** 的 JXR（JxrEncApp rc=$($rA32.code)）⇒ 没有这一格，alpha 判据无从判别"
+if (Test-Path $a32) {
+  $dirA = "$work/run_a32"; New-Item -ItemType Directory -Force -Path $dirA | Out-Null
+  $rA = Exec $exe ('--headless --log-level debug -i "' + $a32 + '" -o "' + $dirA + '" --format png') "run_a32"
+  $pA = Product $dirA @(".png")
+  CK (($rA.code -eq 0) -and ($null -ne $pA)) "③b alpha 档 → png exit 0 且有产物"
+  CK (($rA.text -match '\.jxr 专用输入管线') -and ($rA.text -match '尚未接入该路径') -and ($rA.text -match '内容依据：[^\r\n]*alpha')) `
+     "③b alpha 档仍绕过，且**点名是哪条内容条件**（旧写法只说「尚未接入」，读起来像待办而不是决定）"
+  # 依据本身要重新量：ffmpeg 直解同一件 → 读 alpha 平面，必须**塌成 0**（这正是不能交给引擎的实测理由）
+  $rawF = "$work/a32_ffmpeg_leg.raw"; $rawR = "$work/a32_jxrdecapp_leg.raw"
+  $null = Exec $ff ('-y -v error -i "' + $a32 + '" -frames:v 1 -f rawvideo -pix_fmt rgba "' + $rawF + '"') "ffleg"
+  $bmpRef = "$work/a32_ref.bmp"
+  $null = Exec $jxrDec ('-i "' + $a32 + '" -o "' + $bmpRef + '"') "decleg"
+  $null = Exec $ff ('-y -v error -i "' + $bmpRef + '" -frames:v 1 -f rawvideo -pix_fmt rgba "' + $rawR + '"') "decleg2png"
+  function AlphaRange([string]$p) {
+    if (-not (Test-Path $p)) { return $null }
+    $b = [System.IO.File]::ReadAllBytes($p); $mn = 255; $mx = 0
+    for ($i = 3; $i -lt $b.Length; $i += 4) { if ($b[$i] -lt $mn) { $mn = $b[$i] }; if ($b[$i] -gt $mx) { $mx = $b[$i] } }
+    return @{ mn = $mn; mx = $mx }
+  }
+  $aF = AlphaRange $rawF; $aR = AlphaRange $rawR
+  Write-Host ("  [两腿 alpha 平面] ffmpeg 腿 = " + $(if ($aF) { "$($aF.mn)..$($aF.mx)" } else { "(读不出)" }) +
+              "  JxrDecApp 腿 = " + $(if ($aR) { "$($aR.mn)..$($aR.mx)" } else { "(读不出)" }))
+  CK (($null -ne $aF) -and ($null -ne $aR) -and ($aR.mx -gt 0) -and ($aF.mx -eq 0)) `
+     "③b 依据**本轮重新量出**：JxrDecApp 腿 alpha 有层次（max=$($(if($aR){$aR.mx}else{'-'}))）而 ffmpeg 腿塌成 0（max=$($(if($aF){$aF.mx}else{'-'}))) ⇒ 绕过确有内容依据，不是叙述"
+  $pfA = PixFmt $pA.FullName
+  CK ($pfA -match 'a') "③b 走专用管线的产物保住了 alpha 载体（实 $pfA）"
+}
+
+# ③c 形态锁（防再抄）：绕过判据必须是**一次求值、两处共用**的内容判据，不许退回扩展名整族。
+$qpS = [System.IO.File]::ReadAllText($qpFile)
+CK (($qpS -match 'contentMustBypass') -and ($qpS -match 'inputExt == "\.jxr" && contentMustBypass') `
+    -and ($qpS -match 'inputExt == "\.jxl" && contentMustBypass')) `
+   "③c 分派支与播报共用同一个内容判据（两条 else if 都带 contentMustBypass）⇒ 不是又一份按扩展名的第二口径"
+CK ($qpS -notmatch 'else if \(inputExt == "\.jxr"\)\s*\r?\n\s*\{') `
+   "③c 旧的「扩展名无条件截走」形态不得复活（无条件 else if 分支不存在）"
+CK ((($qpS -split 'ProbeInputColorMetadata').Count - 1) -ge 2) "③c 正控：内容判据确实在读同一份合并探测（同文件命中 ≥2 处，上一条负断言不是空扫描）"
 
 # ── ④ 设计前提锁 ─────────────────────────────────────────────────────────────────
 Write-Host "`n### ④ 前提锁：为什么浮点中间件必须托管读，不能交给 ffmpeg ###" -ForegroundColor Cyan
@@ -392,6 +450,98 @@ CK ((($qp -match 'Arm64RgbAHalf') -or ($hp -match 'Arm64RgbAHalf')) -and ($hp -m
    "⑤ 四条直通臂常量都在（防被删空导致 ChoosePassthroughArm 恒 null ⇒ 空转假绿）"
 CK ($qp -match 'HP-METRICS') "⑤ 指标行由 QueueProcessor 拼接（门禁吃的那条缝有生成点）"
 
+# ── ⑦ 告警分级可见性（P0）──────────────────────────────────────────────────────
+# ⚠ 这一节为什么归本门禁：`ConsoleQueueObserver.FlushItemLog` 旧写法把 `item.Log` **整段**按
+#   `LogLevel.Debug` 回显 ⇒ 默认档（Info）下削顶/降级这类告警一条都看不见。`:4810` 那条
+#   「未请求色调映射 ⇒ 高光在 1.0 处钳位」正是本门禁 §② 的夹具天然会触发的告警 ⇒ 就地钉。
+Write-Host "`n### ⑦ 告警分级可见性（log-level 矩阵）###" -ForegroundColor Cyan
+$f16 = "$work/hp_f16.jxr"
+$clipPat = '高光在 1\.0 处钳位'
+$lvText = @{}
+foreach ($lv in @('default','Warn','Error','Debug')) {
+  $d = "$work/lv_$lv"; New-Item -ItemType Directory -Force -Path $d | Out-Null
+  $extra = $(if ($lv -eq 'default') { '' } else { ' --log-level ' + $lv })
+  $r = Exec $exe ('--headless -i "' + $f16 + '" -o "' + $d + '" --format png --overwrite' + $extra) ("lv_$lv")
+  $lvText[$lv] = $r.text
+  CK ($r.code -eq 0) "⑦ $lv 档：exit == 0（实 $($r.code)）"
+}
+CK (($lvText['default'] -match $clipPat)) "⑦ **默认档就能看到削顶告警**（修复前该红：旧写法整段压 Debug，实测默认档输出 283B/0 命中）"
+CK (($lvText['Warn'] -match $clipPat))    "⑦ Warn 档同样看到（分级不是只放开 Info）"
+CK (($lvText['Error'] -notmatch $clipPat)) "⑦ Error 档**不得**出现告警行 ⇒ 级别过滤仍在，不是把一切无条件打印"
+CK (($lvText['Debug'] -match $clipPat) -and ($lvText['Debug'] -match 'HP-METRICS')) "⑦ Debug 档既见告警也见 ASCII 读数行（原有明细没被打掉）"
+# 缺席断言必须带正控：否则「默认档没有 HP-METRICS」可能只是因为压根没输出。
+$ctrlDefault = ($lvText['default'] -match '队列处理完毕')
+CK ($ctrlDefault -and ($lvText['default'] -notmatch 'HP-METRICS')) `
+   "⑦ 提升是**按行分级**而非整段上提：默认档确有内容（正控「队列处理完毕」命中）却不含非告警的 HP-METRICS 读数行"
+$cqo = [System.IO.File]::ReadAllText("$root/src/FfmpegGui/Services/ConsoleQueueObserver.cs")
+CK (($cqo -match "line\.Contains\('⚠'\)") -and ($cqo -match 'Write\(LogLevel\.Warn, "item_log"')) `
+   "⑦ 形态锁：FlushItemLog 内确实按字形分级（⚠ ⇒ Warn 的判据 + 发射点都在）"
+CK ($cqo -notmatch '_logLevel < LogLevel\.Debug\) \{ return; \}') "⑦ 防再抄：旧的「整段在 Debug 阈值前直接早退」那句不得复活"
+CK ((($cqo -split 'LogLevel\.Debug').Count - 1) -ge 1) "⑦ 正控：上一条负断言不是空扫描（同文件确有 LogLevel.Debug 在场）"
+
+# ── ⑧ 同一色彩请求的两臂对账（.jxr 专用管线 vs 色彩引擎）───────────────────────
+# 背景（本机实测）：`.jxr` 输入在分派层就被专用管线截走，而 `ColorEngineRouter.ShouldRoute` 只看
+#   **输出**扩展名 ⇒ 引擎对 JXR 输入永不调度；于是同一句 `--color-space "Display P3"` 由**两个执行体**
+#   各自实现（专用管线靠 ffmpeg 旗标 + 托管步，引擎走 H1 融合内核）。2560x1600 真件实测两臂
+#   max|Δ|=523 码、仅 25.4% 样本相同 ⇒ 必须先锁住"两臂确实是不同执行体"，再谈等价与否。
+# ⚠ 本节只打**能判的**：标签兑现、两臂都真换算过、两臂分叉成立；两臂像素等价的**阈值**要等第三个
+#   实现（zimg/libavif 口径）裁决 ⇒ 按仓库规矩走 SKIP（未判定 + 点名读数），不许冒充绿。
+Write-Host "`n### ⑧ 同一色彩请求的两臂对账（JXR 专用管线 vs 引擎）###" -ForegroundColor Cyan
+function ColorLabel([string]$path) {
+  $r = ExecOut $fp ('-v error -select_streams v:0 -show_entries stream=color_primaries,color_transfer -of default=nw=1:nk=0 "' + $path + '"') ('lab_' + [guid]::NewGuid().ToString('N').Substring(0, 6))
+  $p = ''; $t = ''
+  foreach ($ln in ($r.text -split "`r?`n")) {
+    if ($ln -match 'color_primaries=([a-z0-9_\-]+)') { $p = $Matches[1] }
+    if ($ln -match 'color_transfer=([a-z0-9_\-]+)')  { $t = $Matches[1] }
+  }
+  return ($p + '/' + $t)
+}
+function Dump16([string]$png, [string]$tag) {
+  $rawf = "$work/$tag.raw"
+  Exec $ff ('-y -v error -i "' + $png + '" -pix_fmt rgb48le -f rawvideo "' + $rawf + '"') ("dump_$tag") | Out-Null
+  if (-not (Test-Path $rawf)) { return $null }
+  return [System.IO.File]::ReadAllBytes($rawf)
+}
+function MaxAbsDiff($a, $b) {
+  if ($null -eq $a -or $null -eq $b -or $a.Length -ne $b.Length -or $a.Length -eq 0) { return $null }
+  $max = 0; $sum = 0; $n = $a.Length / 2
+  for ($i = 0; $i -lt $a.Length; $i += 2) {
+    $x = [int]$a[$i] + (([int]$a[$i + 1]) -shl 8); $y = [int]$b[$i] + (([int]$b[$i + 1]) -shl 8)
+    $dd = [Math]::Abs($x - $y); if ($dd -gt $max) { $max = $dd }; $sum += $dd
+  }
+  return @{ max = $max; mean = ($sum / [Math]::Max(1, $n)) }
+}
+function New-Dir([string]$p) { New-Item -ItemType Directory -Force -Path $p | Out-Null; return $p }
+$dirM = New-Dir "$work/arm_mid"; $dirA = New-Dir "$work/arm_A"; $dirB = New-Dir "$work/arm_B"
+# 中间件：JXR → 默认档 PNG（未做色域换算的像素基准）
+$rM = Exec $exe ('--headless -i "' + $f16 + '" -o "' + $dirM + '" --format png --overwrite') "armMid"
+$pM = Product $dirM @('.png')
+# 臂 A：JXR 输入 + 同一请求 ⇒ 走 .jxr 专用管线
+$rA = Exec $exe ('--headless --log-level debug -i "' + $f16 + '" -o "' + $dirA + '" --format png --overwrite --color-space "Display P3"') "armA"
+$pA = Product $dirA @('.png')
+# 臂 B：把中间件 PNG 喂回产品，同一请求 ⇒ png 输入**会**进引擎
+$rB = Exec $exe ('--headless --log-level debug -i "' + $pM.FullName + '" -o "' + $dirB + '" --format png --overwrite --color-space "Display P3"') "armB"
+$pB = Product $dirB @('.png')
+CK (($null -ne $pM) -and ($null -ne $pA) -and ($null -ne $pB)) "⑧ 三件产物齐（中间件/臂 A/臂 B），否则本节无从对账"
+if (($null -ne $pM) -and ($null -ne $pA) -and ($null -ne $pB)) {
+  CK (($rA.text -match '\.jxr 专用输入管线') -and ($rA.text -notmatch '后端=H1')) `
+     "⑧ 分叉前提·臂 A：走 .jxr 专用管线（点名它在、引擎内核行不在）"
+  CK (($rB.text -match '(后端=H1|\[色彩引擎\] 决策)') -and ($rB.text -notmatch '\.jxr 专用输入管线')) `
+     "⑧ 分叉前提·臂 B：真的进了色彩引擎 ⇒ 两臂是**不同执行体**，比较才有意义"
+  $labM = ColorLabel $pM.FullName; $labA = ColorLabel $pA.FullName; $labB = ColorLabel $pB.FullName
+  Write-Host ("  [标签] 中间件=" + $labM + "  臂A=" + $labA + "  臂B=" + $labB)
+  CK (($labA -match 'smpte432') -and ($labB -match 'smpte432')) "⑧ 两臂都必须把请求的 P3 原色标出来（实 A=$labA / B=$labB）"
+  $rawM = Dump16 $pM.FullName 'raw_mid'; $rawA = Dump16 $pA.FullName 'raw_A'; $rawB = Dump16 $pB.FullName 'raw_B'
+  $dA = MaxAbsDiff $rawA $rawM; $dB = MaxAbsDiff $rawB $rawM; $dAB = MaxAbsDiff $rawA $rawB
+  CK (($null -ne $dA) -and ($dA.max -gt 0)) ("⑧ 臂 A 相对未换算档**确实换过像素**（max|Δ|=" + $dA.max + '）⇒ 不是只贴标签')
+  CK (($null -ne $dB) -and ($dB.max -gt 0)) ("⑧ 臂 B 相对未换算档**确实换过像素**（max|Δ|=" + $dB.max + '）')
+  if ($null -ne $dAB) {
+    Write-Host ("  [读数] 两臂互比 max|Δ|=" + $dAB.max + "  均值=" + ('{0:F1}' -f $dAB.mean) + "  （64x48 夹具；真件 2560x1600 实测 max=523）")
+    CK ($dAB.max -le 65535) "⑧ 两臂互比的读数缝在场（取到数即可判『能测』，等价与否另计）"
+    SK ("⑧ 两臂像素**等价阈值未判定**：需第三个实现（zimg/libavif 口径）裁决谁对；本轮读数 max|Δ|=" + $dAB.max + "、均值=" + ('{0:F1}' -f $dAB.mean))
+  } else { CK $false "⑧ 两臂互比取不到读数 ⇒ 无读数缝" }
+} else { CK $false "⑧ 前置不成立（缺产物），两臂对账未判定" }
+
 # ── ⑥ mtime + 残留 ───────────────────────────────────────────────────────────────
 Write-Host "`n### ⑥ 被测 exe mtime 与残留自证 ###" -ForegroundColor Cyan
 $exeMtimeAfter = (Get-Item $exe).LastWriteTimeUtc
@@ -404,5 +554,5 @@ if ($fail -eq 0) {
 }
 
 Write-Host ""
-Write-Host "===== jxr-highbitdepth: PASS=$pass FAIL=$fail =====" -ForegroundColor $(if ($fail -eq 0) { "Green" } else { "Red" })
+Write-Host "===== jxr-highbitdepth: PASS=$pass FAIL=$fail SKIP=$skip =====" -ForegroundColor $(if ($fail -eq 0) { "Green" } else { "Red" })
 if ($fail -gt 0) { exit 1 } else { exit 0 }

@@ -217,7 +217,7 @@ namespace FfmpegGui.Services
         /// 心跳可用性自检（两道），任一不满足即**拒绝**注入 `-progress pipe:1`：
         /// <list type="number">
         /// <item><b>目标必须是 ffmpeg</b>（见 <see cref="IsFfmpegTarget"/>）—— `-progress` 是 ffmpeg 专有选项，
-        /// 注入到别的可执行文件会**改坏它的命令行**：探针（`tests/ServiceProbe` 的 `runner` mode）用
+        /// 注入到别的可执行文件会**改坏它的命令行**：探针（`tests/projects/ServiceProbe` 的 `runner` mode）用
         /// <c>cmd.exe</c> 当子进程替身，`/c PING.EXE -n 3 127.0.0.1 &gt;nul` 被追加 `-progress pipe:1` 后
         /// ping 收到未知选项、**0.0 s 退 1** ⇒ 探针「静默正常退出不被误杀」「取消抛 OCE」两条同时转红
         /// （2026-09-19 E⑫ 整轮实测：`runner` 由 2/0 变 0/2）。

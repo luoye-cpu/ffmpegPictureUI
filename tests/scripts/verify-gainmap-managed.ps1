@@ -44,7 +44,7 @@ if(-not $jpg -or (Get-Item $jpg).Length -eq 0){
 Ok "编码产出 Ultra HDR ($((Get-Item $jpg).Length) B)"
 
 Write-Host "`n### 1b) 服务级探针 (ServiceProbe gainmap — 纯托管容器解析单元断言) ###" -ForegroundColor Cyan
-$probe = "$root/tests/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.exe"
+$probe = "$root/tests/projects/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.exe"
 if(Test-Path $probe){
   $po = Exec $probe "gainmap `"$jpg`" `"$out/sec.jpg`""
   Write-Host ($po -replace "(?m)^", "    ")
@@ -164,14 +164,14 @@ else {
 }
 
 Write-Host "`n### 6) 批次 C 数值锁（F-5/F-2/F-3/F-4/F-8，进程内宿主 GainMapTestHost）###" -ForegroundColor Cyan
-# 判据载体：tests/GainMapTestHost（FfmpegGui.csproj 的 InternalsVisibleTo 名单里有它 ⇒ 能直接调
+# 判据载体：tests/projects/GainMapTestHost（FfmpegGui.csproj 的 InternalsVisibleTo 名单里有它 ⇒ 能直接调
 #   产品内部的 BuildIso21496Metadata / ComputeGainMap / ApplyGainMap / IsoBmffGainMapWriter.Build）。
 # ⚠ 这段锁**只有本 §6 一条执行路径**（宿主默认全量模式由 verify-gainmap-host.ps1 跑，不含本批判据）
 #   ⇒ 「标签出现在输出里」才算被执行（本仓踩过 contract 双拷贝「全绿但零执行」，这里用
 #   「汇总数 == 点名条数」+ 逐条标签命中自证）。
 # ⚠ 不起产品 GUI：宿主是 Exe 控制台进程；产品 exe 只在 §1–§5 以 --headless 跑（既有形态未变）。
-$gmHost = "$root/tests/GainMapTestHost/bin/Release/net11.0/win-x64/GainMapTestHost.exe"
-if (-not (Test-Path $gmHost)) { $gmHost = "$root/tests/GainMapTestHost/bin/Debug/net11.0/win-x64/GainMapTestHost.exe" }
+$gmHost = "$root/tests/projects/GainMapTestHost/bin/Release/net11.0/win-x64/GainMapTestHost.exe"
+if (-not (Test-Path $gmHost)) { $gmHost = "$root/tests/projects/GainMapTestHost/bin/Debug/net11.0/win-x64/GainMapTestHost.exe" }
 $prodDll = "$root/src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.dll"
 if (-not (Test-Path $prodDll)) { $prodDll = "$root/src/FfmpegGui/bin/Debug/net11.0/win-x64/FfmpegGui.dll" }
 if (-not (Test-Path $gmHost)) {

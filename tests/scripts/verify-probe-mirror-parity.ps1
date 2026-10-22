@@ -51,7 +51,7 @@ function CK([bool]$ok, [string]$msg) {
 }
 Write-Host "===== probe-mirror-parity（存在锁 + 执行面条数锁 + 只此一份锁）=====" -ForegroundColor Cyan
 
-$SP = 'tests/ServiceProbe/Program.cs'
+$SP = 'tests/projects/ServiceProbe/Program.cs'
 
 # ── 登记表 1：镜像工程删除登记（形态不许回来）──
 #   2026-10-14 删 5 份（core/color/diagnostics/engine/geometry，31 份 Modes/*.cs + 组体 + csproj）；
@@ -69,19 +69,30 @@ $genScript = 'tests/scripts/_gen-mode-split.ps1'    # 把「一组一文件」�
 #   也钉住 ⇒ 取样器若整体失配（方法体取不到、塌 0 变多），当场红而不是静默放行。
 $counts = [ordered]@{
     'avifgm' = 14; 'bench' = 9; 'bitdepth' = 7; 'bt2446' = 18; 'color' = 0
-    'colormath' = 12; 'contract' = 99; 'curve' = 14; 'decision' = 5; 'encoding' = 6
+    'colormath' = 12; 'contract' = 99; 'curve' = 14; 'decision' = 5; 'dng-xmp-args' = 2
+    'encoding' = 6
     'engine' = 20; 'faithful' = 10; 'firstframe' = 15; 'gainmap' = 6; 'gainmap-isobmff' = 12
     'gamut' = 2; 'gamutfit' = 19; 'geometry' = 43; 'hlgwire' = 3; 'i18n' = 5
     'icc' = 5; 'icc-dump' = 0; 'iccname' = 9; 'ipc' = 13; 'ipc-client' = 2
     'ipc-raw-client' = 4; 'ipc-server' = 0; 'ipc-submit' = 3; 'matrix' = 13; 'memadmit' = 7; 'framelen' = 5
+    # 2026-10-22 P3 跨仓对撞（宿主 vs ColorGainKit，同进程反射）。口径同样是**源文本调用位**：
+    #   运行时会跑 10 条（`Log2Gain` 那一格在 foreach 里、两个 floorAtOne 各跑一次），但**条数锁量的是形状**，
+    #   与上面 `framelen` 同形。Census 实测 got=9 ⇒ 登记 9（抬数需同轮写来历，不许凭运行读数抬）。
+    'cgkparity' = 9
     'metaraw' = 20; 'oog' = 7; 'ootf' = 11; 'orientmeta' = 11; 'orientation' = 19
     'peak' = 8; 'peakmeasure' = 14; 'piperaw-client' = 5; 'piperaw-server' = 0; 'plan' = 18
     'png3' = 1; 'pq' = 5; 'procstreams' = 3; 'psnr' = 2; 'runner' = 8
-    'selftest' = 18; 'settings' = 56; 'simdswitch' = 18; 'thumbnail' = 21; 'tonemap' = 22
+    # ⚠ `settings` 56 → **11**（2026-10-22 修尺，不是"发现执行面丢了 45 条断言"）：旧 `Get-MethodText`
+    #   朴素数花括号 ⇒ 字符串里的 `{0}` 也计入深度 ⇒ `ProbeSettingsSave` 那一格从第 6790 行一路吃到
+    #   第 7870 行，把 ProbeRunnerGuard / cgkparity / ProbeIccName 等**邻居方法的 45 个 Check 吞进来**。
+    #   配对器改成跳注释/跳字符串后重跑 `-Census`：60 格里**只有这一格**变（其余逐格相同），
+    #   总量 848 → 803（差的正是被吞的 45）。⇒ 登记值以修好的尺为准；两把尺（源文本调用位 vs 运行次数）不许对齐这条不变。
+    'selftest' = 18; 'settings' = 11; 'simdswitch' = 18; 'thumbnail' = 21; 'tonemap' = 22
     'tonemapcurve' = 0; 'tooldetect' = 27; 'ultrahdr' = 4; 'vendor-hdr' = 19; 'verdict' = 35; 'wire' = 99
     'xcheck' = 6
 }
-# 登记表各值之和 = 2026-10-14 实测 813；2026-10-15 加 `vendor-hdr` ⇒ 829，同日审查再加 V16/V17/V18 ⇒ 832。
+# 登记表各值之和 = 2026-10-14 实测 813；2026-10-15 加 `vendor-hdr` ⇒ 829，同日审查再加 V16/V17/V18 ⇒ 832，
+# 2026-10-21 夜加 `dng-xmp-args`（产品侧 XMP 两臂串，账本 §40.9）⇒ **834**。
 #   `vendor-hdr` = **19 个源文本调用位**，而 `gainmap-isobmff` §3d 的**运行时**通过数 = **18**；差 1 的两处成因不同：
 #     ① V8/V9 与「夹具缺席」那条 fail-closed 支互斥（源文本 2 条、执行 1 条）；
 #     ② V16/V17 是**一个 foreach 调用位跑两格**（源文本 1 条、执行 2 条）。
@@ -99,7 +110,7 @@ $zeroModes = @('color', 'icc-dump', 'ipc-server', 'piperaw-server', 'tonemapcurv
 #   剩下的这名 `ProbeCodedSizeForTestAsync` 是 GainMapTestHost 与其三段拆分之一之间的**同名私有 helper**
 #   （ServiceProbe 里没有 ⇒ 不参与 ⑤ 的"只此一份"判据，只登记"这个重名是有的"）。
 $dups = [ordered]@{
-    'ProbeCodedSizeForTestAsync' = @('tests/GainMapTestHost/Program.cs', 'tests/gainmap-decode/GainMapDecodeGroup.cs')
+    'ProbeCodedSizeForTestAsync' = @('tests/projects/GainMapTestHost/Program.cs', 'tests/projects/gainmap-decode/GainMapDecodeGroup.cs')
 }
 # 两侧同塌 0 的镜像格登记表：**2026-10-16 随最后四份镜像一起清空**（原 `ProbeIccDump` 那格）。
 # 清空后如果照旧保留"两边同塌 0 的格 == 登记"这条判据，它就成了 `0 == 0` 的恒真格 ⇒ 整条撤下，
@@ -115,11 +126,57 @@ function Get-MethodText([string]$text, [string]$name) {
     if (-not $m.Success) { return $null }
     $ob = $text.IndexOf('{', $m.Index + $m.Length)
     if ($ob -lt 0) { return $null }
+    # ⚠ 配对器必须**跳过注释与字符串**（2026-10-22 修，测量见 §③ 注释与
+    #   tests/output/ruler_census/）：旧写法把 `"…{0}…"` 里的花括号当代码深度数 ⇒
+    #   `settings` 那一格从第 6790 行一路吃到第 7870 行，把 ProbeRunnerGuard / cgkparity /
+    #   ProbeIccName 等邻居方法的 45 个 `Check` 全吞进自己 ⇒ 登记值 56 其实是**坏尺的产物**
+    #   （真值 11），而且我新写一个方法插在那段区间里，就会让 `settings` 当场 +9 假漂移。
     $depth = 0
-    for ($j = $ob; $j -lt $text.Length; $j++) {
+    $j = $ob
+    $n = $text.Length
+    while ($j -lt $n) {
         $c = $text[$j]
+        if ($c -eq '/' -and ($j + 1) -lt $n -and $text[$j + 1] -eq '/') {
+            $k = $text.IndexOf("`n", $j); if ($k -lt 0) { return $null }; $j = $k + 1; continue
+        }
+        if ($c -eq '/' -and ($j + 1) -lt $n -and $text[$j + 1] -eq '*') {
+            $k = $text.IndexOf('*/', $j + 2); if ($k -lt 0) { return $null }; $j = $k + 2; continue
+        }
+        if ($c -eq '"' -and ($j - 1) -ge 0 -and $text[$j - 1] -eq '@') {
+            $k = $j + 1
+            while ($k -lt $n) {
+                if ($text[$k] -eq '"') {
+                    if (($k + 1) -lt $n -and $text[$k + 1] -eq '"') { $k += 2; continue }
+                    break
+                }
+                $k++
+            }
+            $j = $k + 2; continue
+        }
+        if ($c -eq '"') {
+            $k = $j + 1
+            while ($k -lt $n) {
+                if ($text[$k] -eq '\') { $k += 2; continue }
+                if ($text[$k] -eq '"') { break }
+                $k++
+            }
+            $j = $k + 1; continue
+        }
+        if ($c -eq "'") {
+            $k = $j + 1
+            while ($k -lt $n) {
+                if ($text[$k] -eq '\') { $k += 2; continue }
+                if ($text[$k] -eq "'") { break }
+                $k++
+            }
+            $j = $k + 1; continue
+        }
         if ($c -eq '{') { $depth++ }
-        elseif ($c -eq '}') { $depth--; if ($depth -eq 0) { return $text.Substring($m.Index, $j - $m.Index + 1) } }
+        elseif ($c -eq '}') {
+            $depth--
+            if ($depth -eq 0) { return $text.Substring($m.Index, $j - $m.Index + 1) }
+        }
+        $j++
     }
     return $null
 }

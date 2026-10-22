@@ -411,7 +411,7 @@ public static class GainMapEncoder
     /// </list>
     /// </para>
     /// <remarks>
-    /// internal 而非 private：批次 C 的进程内锁（tests/GainMapTestHost `gainmath` 模式，C1/C3 段）
+    /// internal 而非 private：批次 C 的进程内锁（tests/projects/GainMapTestHost `gainmath` 模式，C1/C3 段）
     /// 必须能直接量到产品实际使用的这份数学，而不是在测试里再写一遍（双拷贝=本仓禁例）。
     /// </remarks>
     internal static byte[] ComputeGainMap(float[] hdr, float[] sdr, int w, int h,

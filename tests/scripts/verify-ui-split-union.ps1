@@ -130,7 +130,7 @@ $oldNames = New-Object 'System.Collections.Generic.HashSet[string]'
 $oldSummary = ''
 $oldFail = -1
 if (-not $SkipOldHost) {
-    $oldExe = Join-Path $root 'tests/UiTestHost/bin/Release/net11.0/win-x64/UiTestHost.exe'
+    $oldExe = Join-Path $root 'tests/projects/UiTestHost/bin/Release/net11.0/win-x64/UiTestHost.exe'
     if (-not (Test-Path $oldExe)) { CK $false "旧宿主 exe 存在（$oldExe）"; exit 1 }
     Write-Host "run: UiTestHost (reference implementation) ..."
     $r = Invoke-Exe $oldExe @($srcDir) ($TimeoutSec * 1000)
@@ -166,7 +166,7 @@ Write-Host ("{0,-26} {1,-9} {2,-9} {3}" -f 'mode','project','PASS','FAIL')
 Write-Host ("{0,-26} {1,-9} {2,-9} {3}" -f ('-'*26),('-'*9),('-'*9),('-'*4))
 
 foreach ($proj in $modes.Keys) {
-    $exe = Join-Path $root "tests/$proj/bin/Release/net11.0/win-x64/$($modes[$proj].exe).exe"
+    $exe = Join-Path $root "tests/projects/$proj/bin/Release/net11.0/win-x64/$($modes[$proj].exe).exe"
     if (-not (Test-Path $exe)) { CK $false "$proj exe 存在（$exe）"; continue }
     foreach ($mode in $modes[$proj].modes) {
         $r = Invoke-Exe $exe @($srcDir, $mode) ($TimeoutSec * 1000)

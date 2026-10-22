@@ -70,8 +70,8 @@ Write-Host "`n### bitdepth mode：位宽单元必须被执行面调用（#69 零
 #   `ServiceProbe bitdepth` 自建一张 16-bit 输入、只验**位宽**（不验内容），此前没有任何在册脚本调它
 #   ⇒ 只有代码、没有执行面。本门禁逐位深跑过各格式，是最贴近的归属。
 #   判据钉**条数**（pass=11 fail=0）：只钉 fail=0 的话，断言整段没跑也是绿。
-$prB = "$root/tests/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.exe"
-if (-not (Test-Path $prB)) { $prB = "$root/tests/ServiceProbe/bin/Debug/net11.0/win-x64/ServiceProbe.exe" }
+$prB = "$root/tests/projects/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.exe"
+if (-not (Test-Path $prB)) { $prB = "$root/tests/projects/ServiceProbe/bin/Debug/net11.0/win-x64/ServiceProbe.exe" }
 if (-not (Test-Path $prB)) {
     Write-Host "  FAIL bitdepth 臂：ServiceProbe 未构建 ⇒ 判红（不按未评估放行）" -ForegroundColor Red; $script:fail++
 } else {

@@ -142,13 +142,17 @@ namespace FfmpegGui.Services
 
         /// <summary>
         /// 增量输出项级日志：只打印自上次以来新追加的部分。
-        /// 失败项以 Error 级输出（headless 下可诊断）；其余仅 Debug/Trace 阈值下输出。
+        /// 失败项以 Error 级输出（headless 下可诊断）；其余**按行内告警字形分级**：
+        /// `❌` ⇒ Error、`⚠` ⇒ Warn、其余 ⇒ Debug。
+        /// ⚠ 为什么必须分级而不是整段压在 Debug：本类旧写法把 `item.Log` **一律**按 Debug 回显
+        ///   ⇒ 默认 `--log-level Info` 下任何项级告警都不可见（削顶/降级这类"源比出口宽"的声明
+        ///   只有 `--log-level debug` 才看得见）。字形是各产出点**已经写好的**告警标记，
+        ///   用它做分级 = 不新增任何用户可见串、也不需要 60 处产出点各自改道。
         /// </summary>
         private void FlushItemLog(QueueItem item, bool final)
         {
             var log = item.Log ?? "";
             bool asError = final && ItemHasError(item);
-            if (!asError && _logLevel < LogLevel.Debug) { return; }
 
             string tail;
             lock (_writeLock)
@@ -164,12 +168,15 @@ namespace FfmpegGui.Services
                 _itemLogSeen[item] = log.Length;
             }
 
-            var lv = asError ? LogLevel.Error : LogLevel.Debug;
             foreach (var raw in tail.Split('\n'))
             {
                 var line = raw.TrimEnd('\r');
                 if (line.Trim().Length == 0) continue;
-                Write(lv, "item_log", line, file: item.OutputPath ?? item.InputPath);
+                // 失败项整段仍按旧行为走 Error（不加 verbatim ⇒ 保持既有的 ❌ 前缀形态）。
+                if (asError) { Write(LogLevel.Error, "item_log", line, file: item.OutputPath ?? item.InputPath); continue; }
+                if (line.Contains('❌')) Write(LogLevel.Error, "item_log", line, file: item.OutputPath ?? item.InputPath);
+                else if (line.Contains('⚠')) Write(LogLevel.Warn, "item_log", line, file: item.OutputPath ?? item.InputPath, verbatim: true);
+                else Write(LogLevel.Debug, "item_log", line, file: item.OutputPath ?? item.InputPath);
             }
         }
 
@@ -191,7 +198,8 @@ namespace FfmpegGui.Services
         private static bool ItemHasError(QueueItem item) => item.IsFailure;
 
         private void Write(LogLevel level, string category, string message,
-            string? file = null, int? progress = null, int? total = null, double? durationSec = null, int? exitCode = null)
+            string? file = null, int? progress = null, int? total = null, double? durationSec = null, int? exitCode = null,
+            bool verbatim = false)
         {
             // 级别过滤：枚举值越小越严重 (Error=0 … Trace=4)，故仅输出「严重度 ≥ 阈值」的消息。
             // 修正旧反向比较（level >= _logLevel）：默认 Info 阈值下 ❌ 错误消息永不可见、
@@ -220,26 +228,31 @@ namespace FfmpegGui.Services
                 {
                     // Text 格式
                     string text;
-                    if (level == LogLevel.Error) text = $"❌ {message}";
+                    if (verbatim) text = message;
+                    else if (level == LogLevel.Error) text = $"❌ {message}";
                     else if (level == LogLevel.Warn) text = $"⚠️  {message}";
                     else if (category == "queue_completed") text = $"═══ {message}";
                     else text = message;
 
-                    WriteToOutputs(text);
+                    WriteToOutputs(text, verbatim ? level : (LogLevel?)null);
                 }
             }
         }
 
-        private void WriteToOutputs(string text)
+        private void WriteToOutputs(string text, LogLevel? levelHint = null)
         {
             // 控制台（带颜色）
             if (_logFormat == LogFormat.Text)
             {
                 var prev = Console.ForegroundColor;
+                // 先按前缀字形判色（既有形态）；判不出再按级别判 —— 项级告警行是**原样输出**的
+                // （`verbatim`，字形在 `[tag]` 之后而非行首，前缀判色认不到）。
                 if (text.StartsWith("❌")) Console.ForegroundColor = ConsoleColor.Red;
                 else if (text.StartsWith("⚠️")) Console.ForegroundColor = ConsoleColor.Yellow;
                 else if (text.StartsWith("✅")) Console.ForegroundColor = ConsoleColor.Green;
                 else if (text.StartsWith("═══")) Console.ForegroundColor = ConsoleColor.Green;
+                else if (levelHint == LogLevel.Error) Console.ForegroundColor = ConsoleColor.Red;
+                else if (levelHint == LogLevel.Warn) Console.ForegroundColor = ConsoleColor.Yellow;
                 Console.WriteLine(text);
                 Console.ForegroundColor = prev;
             }

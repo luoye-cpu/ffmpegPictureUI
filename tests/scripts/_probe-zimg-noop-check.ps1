@@ -1,6 +1,6 @@
 $ErrorActionPreference = "Continue"
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path; Set-Location $root
-$pr = "$root/tests/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.exe"
+$pr = "$root/tests/projects/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.exe"
 $ff = "$root/publish/PLAN/ffmpeg-full/ffmpeg.exe"
 $d  = "$root/tests/output/validate/cmsx"
 

@@ -70,6 +70,8 @@ namespace FfmpegGui.Models
         public int DngHighlightMode { get; set; } = 1;
         /// <summary>DNG 位深 (8/16)。默认 16</summary>
         public int DngBitDepth { get; set; } = 16;
+        /// <summary>DNG 镜头校正（源 RAW 三表 → 规范 opcode）。默认 false：它改渲染像素</summary>
+        public bool DngLensCorrection { get; set; } = false;
         /// <summary>WebP 无损压缩级别 (0-6)</summary>
         public int? WebpCompressionLevel { get; set; }
         /// <summary>输出文件名追加 .png 后缀（仅 JXL/AVIF）</summary>
@@ -125,7 +127,7 @@ namespace FfmpegGui.Models
         /// <summary>TIFF DPI (0=不写入)</summary>
         public int? TiffDpi { get; set; }
         // ExifTool 选择性剥离选项
-        public bool StripExifGps { get; set; } = true;
+        public bool StripExifGps { get; set; } = false;   // 默认不勾选=全保留（与 FfmpegOptions 同一个默认，见其注释）
         public bool StripExifTime { get; set; }
         public bool StripExifCamera { get; set; }
         public bool StripExifAll { get; set; }

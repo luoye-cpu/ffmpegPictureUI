@@ -103,7 +103,7 @@ if (-not (Test-Path $exe)) { $exe = "$root/src/FfmpegGui/bin/Debug/net11.0/win-x
 # ⚠ 2026-09-21（TESTING.md 第 84 条处置建议 ①）：**回退是静默的** —— 门禁可能测的
 #   不是你以为的那个二进制。⇒ 一律**打印被测 exe 与构建类型**，让读数可追溯。
 Write-Output ("[gate] exe=" + $exe + $(if ($exe -like '*[/\]Debug[/\]*') { " (Debug fallback)" } else { " (Release)" }))
-$sp  = "$root/tests/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.exe"
+$sp  = "$root/tests/projects/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.exe"
 $ff  = "$root/publish/PLAN/ffmpeg-full/ffmpeg.exe"
 $fp  = "$root/publish/PLAN/ffmpeg-full/ffprobe.exe"
 $avifenc = "$root/tools/src/libavif/build/Release/avifenc.exe"

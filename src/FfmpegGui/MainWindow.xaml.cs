@@ -39,6 +39,7 @@ namespace FfmpegGui
         /// 而 UI 原先把「线性」与「保留 CFA」并列为可选且**无任何提示** ⇒ 「UI 与真实不符」。
         /// </summary>
         private TextBlock? DngLinearHint;
+        private CheckBox? DngLensCheck;
         private ComboBox? DngBitDepthCombo;
         private ComboBox? DngHighlightCombo;
         private TextBlock? RawEngineStatus;
@@ -325,6 +326,7 @@ namespace FfmpegGui
             DngJxlDecodeSpeedBox = this.FindControl<NumericUpDown>("DngJxlDecodeSpeedBox");
             DngLinearCombo = this.FindControl<ComboBox>("DngLinearCombo");
             DngLinearHint = this.FindControl<TextBlock>("DngLinearHint");
+            DngLensCheck = this.FindControl<CheckBox>("DngLensCheck");
             DngBitDepthCombo = this.FindControl<ComboBox>("DngBitDepthCombo");
             DngHighlightCombo = this.FindControl<ComboBox>("DngHighlightCombo");
             RawEngineStatus = this.FindControl<TextBlock>("RawEngineStatus");
@@ -3015,7 +3017,7 @@ namespace FfmpegGui
                 CjpegliEncoderBackend = useAdvCodec ? (JpegliEncoderBackendCombo?.SelectedIndex == 1 ? "sjpeg" : "libjpeg") : "libjpeg",
                 CjpegliPsnrTarget = useAdvCodec ? (float)(JpegliPsnrBox?.Value ?? 0) : 0,
                 CjpegliMultiThreadAvailable = false,
-                StripExifGps = StripExifGpsCheck?.IsChecked ?? true,
+                StripExifGps = StripExifGpsCheck?.IsChecked ?? false,   // 控件缺席时按产品默认=不勾选（全保留）
                 StripExifTime = StripExifTimeCheck?.IsChecked ?? false,
                 StripExifCamera = StripExifCameraCheck?.IsChecked ?? false,
                 StripExifAll = StripExifAllCheck?.IsChecked ?? false,
@@ -3053,6 +3055,7 @@ namespace FfmpegGui
                 options.DngLinear = DngLinearCombo?.SelectedIndex == 1;
                 options.DngBitDepth = DngBitDepthCombo?.SelectedIndex == 0 ? 8 : 16;
                 options.DngHighlightMode = DngHighlightCombo?.SelectedIndex ?? 1;
+                options.DngLensCorrection = DngLensCheck?.IsChecked ?? false;
                 // 兼容旧字段（供其他路径读取）
                 options.JxlModular = useJxl;
                 options.Lossless = !useJxl || jxlQ <= 0;
@@ -3388,7 +3391,9 @@ namespace FfmpegGui
                     bitDepth: item.Options.DngBitDepth,
                     highlightMode: item.Options.DngHighlightMode,
                     threads: item.Options.Threads,
-                    carryRawMetadata: Services.QueueProcessor.DngCarriesRawMetadata(item.Options));
+                    carryRawMetadata: Services.QueueProcessor.DngCarriesRawMetadata(item.Options),
+                    lensCorrection: item.Options.DngLensCorrection,
+                    suppressGps: item.Options.StripExifGps);
             }
 
             // ── GIF → AVIF（avifenc 两步法）──
@@ -6021,7 +6026,7 @@ namespace FfmpegGui
                 CjxlProgressive = CjxlProgressiveCheck?.IsChecked ?? false,
                 CjxlPhotonNoiseIso = (int)(CjxlPhotonNoiseBox?.Value ?? 0),
                 CjxlAutoPhotonNoise = CjxlAutoPhotonNoiseCheck?.IsChecked ?? false,
-                StripExifGps = StripExifGpsCheck?.IsChecked ?? true,
+                StripExifGps = StripExifGpsCheck?.IsChecked ?? false,   // 控件缺席时按产品默认=不勾选（全保留）
                 StripExifTime = StripExifTimeCheck?.IsChecked ?? false,
                 StripExifCamera = StripExifCameraCheck?.IsChecked ?? false,
                 StripExifAll = StripExifAllCheck?.IsChecked ?? false,
@@ -6035,6 +6040,7 @@ namespace FfmpegGui
                 DngJxlDecodeSpeed = (int)(DngJxlDecodeSpeedBox?.Value ?? 4),
                 DngHighlightMode = DngHighlightCombo?.SelectedIndex ?? 1,
                 DngBitDepth = DngBitDepthCombo?.SelectedIndex == 0 ? 8 : 16,
+                DngLensCorrection = DngLensCheck?.IsChecked ?? false,
                 // ── Snapshot backfill: axes BuildPresetData never wrote (2026-09-26) ──
                 // Without these the round trip Build -> Apply silently dropped them, and since
                 // simple mode now enqueues from the advanced-mode UI state, a preset that cannot
@@ -6179,6 +6185,8 @@ namespace FfmpegGui
                 DngJxlDecodeSpeedBox.Value = Math.Clamp(p.DngJxlDecodeSpeed, 1, 4);
             if (DngHighlightCombo != null)
                 DngHighlightCombo.SelectedIndex = Math.Clamp(p.DngHighlightMode, 0, 2);
+            if (DngLensCheck != null)
+                DngLensCheck.IsChecked = p.DngLensCorrection;
             if (DngBitDepthCombo != null)
                 DngBitDepthCombo.SelectedIndex = p.DngBitDepth <= 8 ? 0 : 1;
             // ── 编码器后端 ──

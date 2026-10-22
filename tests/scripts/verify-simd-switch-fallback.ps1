@@ -62,14 +62,14 @@ function Grab($text, $key) {
 $runDir = Join-Path $root 'tests/output/_simd-switch-fallback'
 $null = New-Item -ItemType Directory -Force -Path $runDir
 
-$pr = "$root/tests/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.exe"
+$pr = "$root/tests/projects/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.exe"
 $fellBack = $false
 if (-not (Test-Path $pr)) {
-    $pr = "$root/tests/ServiceProbe/bin/Debug/net11.0/win-x64/ServiceProbe.exe"; $fellBack = $true
+    $pr = "$root/tests/projects/ServiceProbe/bin/Debug/net11.0/win-x64/ServiceProbe.exe"; $fellBack = $true
 }
 Say ('[gate] exe=' + $pr + $(if ($fellBack) { ' (Debug fallback)' } else { ' (Release)' }))
 if (-not (Test-Path $pr)) {
-    CK $false '前置：ServiceProbe exe 在（缺 ⇒ 先构建 tests/ServiceProbe，不静默给绿）'
+    CK $false '前置：ServiceProbe exe 在（缺 ⇒ 先构建 tests/projects/ServiceProbe，不静默给绿）'
 } else {
     CK $true '前置：ServiceProbe exe 在（路径见上一行）'
 }

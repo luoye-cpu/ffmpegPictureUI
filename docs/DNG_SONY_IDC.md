@@ -259,10 +259,43 @@ fail-closed 的形状：机内开关明确为 0 ⇒ `lens-skipped=<项>:switch-o
 `lens-tables=absent (<点名>)`；结点 <5（暗角五项）或 <3（warp）/ 残差超界 / 映射非单调 / 系数恒等
 ⇒ 逐条点名且**一条不写**。开关是**三态**（-1 读不出 / 0 明确关 / 非 0 开）：读不出时按 dt 口径照常
 校正，不把它当成"关"—— 开关的真实形状是 `type=3(SHORT) count=1`（7M2 = 257/1/1），
-按参数表那种 `type=8` 去读会读失败。
+按参数表那种 `type=8` 去读会读失败。**读侧必须用同一把尺**：源里有 CA 表但 CA 开关明确为 0 时，
+读手不得再期望 R/B 带 CA 因子（本轮修掉的一条潜在假红 —— 写侧跳过是对的、读侧照旧期望就是假红）。
+两件事由 ⑱h 用**真素材**钉住：把源 SubIFD 的开关标签清零后编码，写侧必须点名 `switch-off`、读手
+必须放行（不点名时必须红）。判别特征：CA 在场时三支残差各不相同（0.000058/0.000074/0.000175），
+CA 关掉后三支恒等（0.000074/0.000074/0.000074）。
 
-在册锁：第 77 条新增 **⑱ 组**（a 换算等价 · b 反控 · c 无表负控 · d 变异验牙 · e 与 look 通道共存 ·
-f 像素级"读者真施加"）。默认档 **46/0**、重臂档 **47/0**（`DNGOPC_HEAVY=1 DNGLENS_HEAVY=1`）。
+在册锁：第 77 条新增 **⑱ 组九臂**（a 换算等价 · b 反控 · c 无表负控 · d 十支变异各打各的判据 + 三支
+点名放行 · e 与 look 通道共存 · f 像素级"读者真施加" · g **产品入口的源形锁** · g2 这条锁的自验牙 ·
+h 机内开关清零的**真素材**两格、⑲ 丢弃政策锁四条）。⑲ 的内容：2026-10-19 深夜按用户规则改为**默认不嵌整个原文件**（`-embed-raw` 才嵌），因为它们在 DNG 可见层 0 命中、用于成像的解码器（LibRaw 0.22.1/rawpy 0.27.1）也不消费（exiftool 能逐个命名读出，所以不说"任何软件都读不到"），且 Sony 这批不在 MakerNote 里（实测 0 字节）、跨 IFD 偏移又不满足 50740 的自包含要求 ⇒ 无合规容器可放，按规则应当丢弃；承重事实是源与默认产物的 sensor 平面 **24,337,152 点逐位相同**（LibRaw 量）⇒ 丢弃只动元数据不动图像；代价实测 7S −47.3%、7M2 −58.1%。默认档 **55/0**、两把重臂同开 **57/0**（⚠ 10-20 加 §5h 的 ⑳ 组 12 臂后现值 = **67/0** 与 **69/0**）
+（`DNGOPC_HEAVY=1 DNGLENS_HEAVY=1`）。
+
+## 5f 产品侧入口（10-19 同日补）
+
+勾选项 + CLI + 预设三份齐账，**默认关**：
+
+- 选项：`FfmpegOptions.DngLensCorrection`（false）· 预设 `PresetData.DngLensCorrection` +
+  `ApplyPreset` 的合并行（漏了它 = 预设往返静默丢档）
+- CLI：`--dng-lens-correction true|false`（`ParseBoolStrict` ⇒ 非法值直接报错并给值域，实测
+  `'maybe'` ⇒ `错误: --dng-lens-correction 取值无效`）
+- GUI：DNG 段 `DngLensCheck` 勾选框，**说明只放灰字提示行**（标签只写身份）；采集/预设采集/预设回放三处接线
+- 实参：只由 `RawService.BuildEncodeToToDngArguments` 的 `lensCorrection` 参数追加 `-lens-corr` ——
+  该方法是 `dngtool -e` 实参的**唯一真源**，`--dry-run` 预览与真实执行都调它 ⇒ 结构上不会再分叉
+  （2026-10-07 D-1 收口的就是这件事）
+
+端到端实测（同一件 `Sony_ILCE7M2_IDC.ARW`）：
+
+```
+$ FfmpegGui --headless --dry-run ... --dng-lens-correction true
+  dngtool -e -i ... -O ... -jxl -jxlq 0 -effort 7 -decode_speed 1 -lens-corr
+$ 不带该参数 / =false ⇒ 末段没有 -lens-corr
+$ FfmpegGui --headless -i <ARW> --format dng --dng-lens-correction true   # 5.8 s, 67,440,788 B
+LENS-READ OK ... → 3 支 [3,14,1] | 暗角: 残差=0.000319 ... warp2: flags=1 ... warp1: flags=0
+```
+
+⑱g 的牙：把预览侧那一处传参摘掉 ⇒ **只红 ⑱g 一条**（读数 46/1，消息点名
+"--dry-run 预览侧调用点漏传 ⇒ 预览与实参会分叉"），还原后 47/0 且文件逐字节相符。
+
 
 ⚠ **撤回**先前两条说法：「RawSpeed 会对非 optional 硬失败 ⇒ 我们标不了 optional」（SDK 三个镜头类的构造函数
 就把 flags 当入参：`dng_lens_correction.h:580/605/735`）与「必须标 optional 才安全」（Adobe 自带的
@@ -275,6 +308,94 @@ RawSpeed 整条不看，darktable 的解析器不认 ID=7（只打印）。⇒ "
 不是假设，是上面这张表的同一机制。
 
 
+
+## 5g 「真损失部分能不能被正确读取」的三层实测（10-19 深夜，本机 PowerShell）
+
+跑法与逐条读数见 `docs/IMPLEMENT_PLAN_2026-10-11.md` §17.9 与
+`tests/output/lens-probe/loss-roundtrip-test.ps1`／`loss-roundtrip.log`。要点三条：
+
+1. **只读 DNG 可见层**：`Sony*`／IDC 两个版本目录／`SonyIDC`+`SR2`／镜头原表／GPS 全部 **0 条在场**
+   ⇒ 这些就是"真损失"的内容，标准读者看不见它们（LibRaw/rawpy 亦不知其存在）。
+2. **按规范解回 50828 后再读**：三件素材的元数据 census 与源**逐行相同**（391／276／281 行，
+   `Compare-Object` 差异 0 行），分族计数也与源一一对齐（厂商私有 157／148、IDC 104、SR2 26／25、
+   镜头原表 28／20、GPS 5）。LibRaw 再读**解回件**与源**逐项一致（差异 0 项）**；
+   而 LibRaw 读 DNG 与读源差 5 项（`white_level` 16383→15360、`color_matrix` 全 0→真矩阵、
+   `sizes.crop_*` 6000×4000→0、`tone_curve`），拍摄参数与镜头名两边相同 ⇒ ④ 组那条搬运是真的被读到。
+   ⇒ 结论：**损失在可见层，不在字节。**
+3. **完整性没人替我们查**：翻掉载荷一个字节后 Adobe `dng_validate` 与自家 `-verify` 都仍 rc=0 ⇒
+   新增 ②e/②f 用规范 p.55 的定义自己钉（`_check-dng-original-digest.py`）。
+
+## 5h 标准位搬运的三层实现（10-20）
+
+`dngtool -e` 对非 DNG 源的元数据只走**规范/标准位**，分三层，每层各管一类：
+
+**第一层 —— 交给 Adobe 自己的路由**（`CarryStdExifFromSource`/`CarryIfd`，`dngtool.cpp`）
+枚举源件的 ExifIFD、GPS IFD、Interop IFD，以及 IFD0 的**描述性白名单**
+（`0x010E 0x010F 0x0110 0x011A 0x011B 0x0128 0x0131 0x0132 0x013B 0x8298`），
+每条原样喂给 `dng_exif::ParseTag(stream, shared, parentCode, isMainIFD, tag, type, count, valuePos)`
+（`dng_exif.cpp:822`；正常解析 TIFF 时 `dng_info.cpp:185` 走的同一条，`valuePos` 的取法见
+`dng_info.cpp:908` = `ifdOffset + 2 + i*12 + 8`，非内联时再解引用一次）。
+不喂的：`0x927C` MakerNote（厂商私有）与 `0x8769/0x8825/0xA005` 三个子目录指针（自己枚举）。
+IFD0 的结构标签（`0x00FE/0x0103/0x0111/0x0117/…`）不喂 —— 它们必须描述产物自己的像素。
+SDK 不认领的条目 ⇒ stderr 点名 `exif-std-unmapped=<tagID,…>`。
+类型尺寸与"内联还是外置"一律用 `TagTypeSize()`，不许自建表。
+
+**第二层 —— SDK 认字段但值来自别处的两条**
+- `0x0112 Orientation`：`dng_exif` 无字段，DNG 出口的值来自 `dng_negative::ComputeOrientation`
+  ⇒ `dng_metadata::BaseOrientation()`（`dng_image_writer.cpp:8488`）⇒ 用 `SetBaseOrientation`
+  （`dng_orientation::SetTIFF` 取源值）；不设则恒写 1。
+- `0x0213 YCbCrPositioning`：`dng_preview.cpp:346` 对 YCbCr 预览**无条件**发射，值取
+  `dng_ifd::fYCbCrPositioning`（默认 0，EXIF 只允许 1/2）。写手是 `dng_jpeg_preview` 的
+  protected `fIFD` ⇒ 用派生类 `JpegPreviewWithPositioning` 设它（不改第三方源码）；
+  源未声明时按 EXIF/JFIF 默认落 1。
+
+**第三层 —— DNG 出口没有发射点的 10 条**（逐条实测，常数在 `dng_image_writer.cpp` 里 0 命中）
+`0x011A 0x011B 0x0128`（发射点只在 `WriteTIFFWithProfile`，`WriteDNG` 的形参没有 `dng_resolution`）、
+`0x9101 0x9102 0xA000 0xA002 0xA003`、Interop `0x0001 0x0002`。
+由产品侧后置 `ExifToolService.CarryStdTagsToDngAsync` 用 `exiftool -TagsFromFile <源> …` 抄进产物
+⇒ 值由 exiftool 自己从源件读，本方法不接触任何来自源文件内容的字符串。
+不抄 `0x0201/0x0202`（预览/缩略图的**字节偏移与长度**）：那是这份文件自己的布局。
+
+**隐私**：`dngtool -no-gps` ⇒ 不枚举 GPS IFD，且点名 `gps-suppressed=1`。产品按
+`Options.StripExifGps` 传入（**2026-10-20 政策统一：默认 false = 不勾选 = 全保留**；GUI/CLI/模型/预设
+四处默认此前互相矛盾，只有界面是没勾的），执行侧与 `--dry-run` 预览侧同用一个真源
+（`RawService.BuildEncodeToDngArguments`）。工具的默认是搬，"不搬"必须是用户的显式请求。
+复制阶段的 GPS/XMP 补删（`-GPS:all=`）收在 `ExifToolService.ApplyAbsorbStripAfterCopyAsync`
+一处，`CopyMetadataAsync` 与 `CopyMetadataSafeAsync` 两个变体都调它。
+
+在册锁 = 第 77 条 **⑳ 组 15 臂**（a–m + n/o/p；`tests/scripts/_check-exif-standard-coverage.py` 是独立读手，默认档现值 **82/0**（⑱x/⑱y 之后 72/0，加 ㉒ 组四臂 → 76/0，加 ㉓ 组五臂 → 81/0，加 ㉓g → 82/0；见账本 §26/§28/§29/§30/§37），`tests/output/results/_main/gate77-after-bpsfix.log`）。
+
+
+### 5h-2 后置名单的形状（10-20 下午，跨厂商 14 件之后）
+
+- 唯一载体：`ExifToolService.DngCarry{Ifd0,Time,Camera,Exif,Interop}` 五张分组数组，共 61 条名字。
+  每条拼成 `-Group:Name<Group:Name`（目的侧 + 源侧都限定），值全部由 exiftool 自己从源件读。
+- 三道隐私开关各自成组跳过：`StripExifTime`（含 IFD0 的 `ModifyDate`）、`StripExifCamera`（镜头五件）、
+  `StripExifGps`（`-GPS:all` 整组）。整组剥除（`MetadataMode.StripAll` / `StripExifAll`）时
+  由调用点的 `carryRawMetadata` 直接不跑后置。
+- **只补没有发射点的**：0x9201/0x9202/0x9203/0x9205（APEX 那一族）由 SDK 从解析像素的同一句柄发出，
+  后置不得覆盖（覆盖会把逐位相同的分数换成连分数近似）；这一条由 ⑳h 判红，不是靠注释。
+- 不搬的三件：0x927C MakerNote、0x0201/0x0202（字节布局自指）、Make/Model/Software/ExifVersion
+  （生产者身份件由产物自己声明，PS 按 SDK 的机型名查库）。
+- 判据：⑳a–⑳l 判 dngtool + 名单本身；**⑳n/⑳o/⑳p 判产品端到端**（14 件跨厂商里 CR3/RAF/MRW
+  这类非 TIFF 头容器与 RW2/RWL 的嵌套 IFD，只有这条通道补得上）。
+## 5i 厂商私有件的三档去向与 `㉑` 锁（10-20 晚）
+
+私有内容按"**第二个实现能不能把它写进 DNG**"分档，档位由 exiftool 的回话裁决，不由推测：
+
+| 档 | 内容住在哪 | 工具回话 | 去向 |
+|---|---|---|---|
+| 1 | ExifIFD `0x927C` MakerNote **块**内 | 块整体可写 | 随复制阶段进产物；`㉑b` 要求**同名键同值、组内一条不缺** |
+| 2 | 厂商**自己的 IFD 表**（RAF 的 `FujiIFD/FujiIFD2/RAF/RAF2`、ARW 的 `SonyIDC/SR2*/Version0-1`、RW2 的 `PanasonicRaw`、MRW 的 `MinoltaRaw`…） | `Warning: No writable tags set`（或"0 updated / 1 unchanged"且到达条目 +0） | **进不了搬运通路**；`㉑b` 按组点名条数。这类里的镜头三表另有标准载体 ⇒ 要做的是**换算**（见 §5e），不是搬运 |
+| 3 | 布局/载荷自指（`Strip*`、`*Offsets/*Lengths/*Start`、`BitsPerSample`、`Compression`、`RawData`、ICC 的 `Matrix*`…） | —— | 照抄即撒谎 ⇒ 不参与对撞（同一内容由产物自己的结构位承载，见 ⑳j） |
+
+读手：`tests/scripts/_check-dng-private-carry.py`（对源与产物各做一次 `exiftool -a -u -G1 -s -e`，
+按"组:名"对撞；源里私有条目参与对撞不足 30 条 ⇒ 打 `SKIP` 不给绿灯，防整批空跑）。
+闸：`㉑a` Adobe `dng_validate` 逐厂商（点名表已清空；`Nikon_CoolscanV` 自 2026-10-20 起改为
+**拒绝出件**：3 样点 LinearRaw 无 `ColorMatrix1`、该机 `cam_xyz` 全零 ⇒ dngtool exit 9 并点名
+`refuse-linearraw-without-colormatrix`，不再产出 Adobe 判 106 的件）；
+`㉑b` 上表的档 1 逐条锁 + 档 2/3 的丢弃条数点名。两臂都在 `DNGPRIV_HEAVY=1` 的重臂档，且跑**产品链路**
+（实测 dngtool-only 的 Canon 产物 Canon 组 = 0 条、产品 = 267 条 ⇒ 用 dngtool 产物判这件事等于没判）。
 
 ## 6. 标定夹具
 
@@ -298,8 +419,9 @@ RawSpeed 整条不看，darktable 的解析器不认 ID=7（只打印）。⇒ "
 ⑩日志 `idc-changed=N` 等于 exiftool 侧的数、⑪抹平单项后三处同步降 1、
 ⑫`-idc-look` 的曲线逐点落进 IFD0 的 `ProfileToneCurve` 且标签集合差恰好"只多 0xC6FC"、
 ⑬不加该参数时不得出现 `ProfileToneCurve`（⑫ 的反控）、⑭三张坏规格必须非零退出且**不产出**、
-⑮GPS 臂（夹具由 exiftool 现场把 GPS 写进 7S 那份的副本；照嵌 + 容器层无 GPS + ASCII 键点名，
-`-no-raw-meta` 臂上键必须消失）、
+⑮GPS 臂（夹具由 exiftool 现场把 GPS 写进 7S 那份的副本；**2026-10-20 起 GPS 落进容器标准位**：
+照嵌 + 整档在场且逐字同值 + 搬不动才点名 `gps-not-carried`，`-no-raw-meta` 臂上键必须消失；
+`-no-gps` 那一臂点名 `gps-suppressed` ⇒ 见 §5h）、
 ⑯分通道曲线落 `OpcodeList3`：⑯a 结构由独立读手判（落边界 / area 非空 / pitch=1 / 表逐点回算），
 ⑯b 不加参数时 51022 必须缺席，⑯c 恒等表**不写**且按 `opcode-skipped` 点名，⑯d 混给 `curve`+`curveR`
 与不认识的键 ⇒ 非零退出不产出，⑯e（重臂）三臂渲染对账"读者真施加"，

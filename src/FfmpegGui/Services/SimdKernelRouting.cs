@@ -43,7 +43,7 @@ namespace FfmpegGui.Services
         ///
         /// ⚠ 默认（开）路径与加这个开关前**逐位一致**：同样的三级 IsSupported 优先级、
         ///   同样的四个内核、同样的调用点，只是判据搬到了本函数里。
-        ///   数值等价的实证锁在 tests/ServiceProbe 的 simdswitch mode（S2：两条路 SSE 必须相等，
+        ///   数值等价的实证锁在 tests/projects/ServiceProbe 的 simdswitch mode（S2：两条路 SSE 必须相等，
         ///   并与探针自带的第三份独立标量实现逐字节对照）。
         /// </summary>
         public static string ResolvePixelKernelPath()

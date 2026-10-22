@@ -1,8 +1,8 @@
-# verify-gainmap-host.ps1 —— 把 `tests/GainMapTestHost` 全量套件接进清单（2026-09-30 新增，清单第 60 条）
+# verify-gainmap-host.ps1 —— 把 `tests/projects/GainMapTestHost` 全量套件接进清单（2026-09-30 新增，清单第 60 条）
 #
 # 为什么需要（这条门禁存在的理由本身就是遗留问题的答案）：
 #   该宿主此前**不被任何门禁执行** —— 运行器自己在 `_run-step3-gates.ps1` 里登记着
-#   「tests/GainMapTestHost 不在本闸内（其 exe 不被任何门禁执行）」。于是里面 **4 条红稳定存在了 10 天**
+#   「tests/projects/GainMapTestHost 不在本闸内（其 exe 不被任何门禁执行）」。于是里面 **4 条红稳定存在了 10 天**
 #   （09-20 的「SDR ⇒ 普通 JPEG」裁定把 `sdr` 格的 UltraHDR 期望作废，测试端没跟着改），
 #   每次都是**手工**跑宿主才偶然看见。⇒ 与 2026-09-19 P4-A 那批「有锁但不上锁」同性质。
 #
@@ -16,8 +16,8 @@
 #      其中 **E2g2 是"判据没被放宽"的证据**：轴向真不一致的产物仍必须被拒；
 #   ⑤ 宿主 exe 缺失 ⇒ **判红**（不静默跳过）；并打印被测产物路径与构建类型（TESTING 第 84 条）。
 #
-# ⚠ 本门禁跑的是 `tests/GainMapTestHost/bin/Release/.../GainMapTestHost.exe`，
-#   其新鲜度由运行器的 STALE 第 ⑤ 对负责（该 exe vs `tests/GainMapTestHost` 源码）。
+# ⚠ 本门禁跑的是 `tests/projects/GainMapTestHost/bin/Release/.../GainMapTestHost.exe`，
+#   其新鲜度由运行器的 STALE 第 ⑤ 对负责（该 exe vs `tests/projects/GainMapTestHost` 源码）。
 #
 # 退出码：0 = 全绿，1 = 有失败。
 #
@@ -25,12 +25,12 @@
 #   禁止三元 `? :` / `??` / `?.` / `&&` / `||`；双引号串内禁止全角弯引号（用 「」）。
 $ErrorActionPreference = "Continue"
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path; Set-Location $root
-$exe = "$root/tests/GainMapTestHost/bin/Release/net11.0/win-x64/GainMapTestHost.exe"
-if (-not (Test-Path $exe)) { $exe = "$root/tests/GainMapTestHost/bin/Debug/net11.0/win-x64/GainMapTestHost.exe" }
+$exe = "$root/tests/projects/GainMapTestHost/bin/Release/net11.0/win-x64/GainMapTestHost.exe"
+if (-not (Test-Path $exe)) { $exe = "$root/tests/projects/GainMapTestHost/bin/Debug/net11.0/win-x64/GainMapTestHost.exe" }
 $tag = " (Release)"
 if ($exe -like '*[/\]Debug[/\]*') { $tag = " (Debug fallback)" }
 Write-Output ("[gate] exe=" + $exe + $tag)
-if (-not (Test-Path $exe)) { Write-Output "  FAIL 宿主未构建：$exe（先 dotnet build tests/GainMapTestHost -c Release）"; exit 1 }
+if (-not (Test-Path $exe)) { Write-Output "  FAIL 宿主未构建：$exe（先 dotnet build tests/projects/GainMapTestHost -c Release）"; exit 1 }
 
 $val  = "$root/tests/output/validate"
 $gid  = [guid]::NewGuid().ToString('N').Substring(0, 8)
@@ -124,13 +124,13 @@ $segExp = @(
     @{ mode = 'gainmap-struct'; proj = 'gainmap-struct'; asm = 'Tests.GainMapStruct'; pass = 15 }
 )
 foreach ($s in $segExp) {
-    $se = "$root/tests/$($s.proj)/bin/Release/net11.0/win-x64/$($s.asm).exe"
+    $se = "$root/tests/projects/$($s.proj)/bin/Release/net11.0/win-x64/$($s.asm).exe"
     $sTag = ' (Release)'
     if (-not (Test-Path $se)) {
-        $se = "$root/tests/$($s.proj)/bin/Debug/net11.0/win-x64/$($s.asm).exe"
+        $se = "$root/tests/projects/$($s.proj)/bin/Debug/net11.0/win-x64/$($s.asm).exe"
         $sTag = ' (Debug fallback)'
     }
-    if (-not (Test-Path $se)) { CK $false "④b $($s.mode) 宿主未构建 ⇒ 判红（先 dotnet build tests/$($s.proj) -c Release）"; continue }
+    if (-not (Test-Path $se)) { CK $false "④b $($s.mode) 宿主未构建 ⇒ 判红（先 dotnet build tests/projects/$($s.proj) -c Release）"; continue }
     $sf = "$val/gmhost_$($s.mode)_${gid}.txt"
     # ⚠ PS5.1 合规：`-ArgumentList @($mode)` 非空数组合法；**不许**写 `@()`（空数组在 5.1 抛绑定异常，见本文件 §1 的实测记录）
     $sp2 = Start-Process -FilePath $se -ArgumentList @($s.mode) -NoNewWindow -Wait -PassThru -RedirectStandardOutput $sf

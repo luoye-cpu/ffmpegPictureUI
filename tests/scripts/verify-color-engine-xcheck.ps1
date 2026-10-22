@@ -11,7 +11,7 @@
 $ErrorActionPreference = "Continue"
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path; Set-Location $root
 $ff  = "$root/publish/PLAN/ffmpeg-full/ffmpeg.exe"
-$pr  = "$root/tests/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.exe"
+$pr  = "$root/tests/projects/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.exe"
 # ⚠ 运行级隔离（GUID，2026-09-17）：固定 `$d` + 开头整目录删，会被**并发的同名实例**互删 ⇒ 假红（§6 第 66 条）。
 #   本脚本在必跑清单内 ⇒ 自并发是**真实**风险（不是理论风险），故隔离。
 #   代价评估（已实测/已核）：清单内**无**消费者读 `cmsx`；唯一的清单外消费者
@@ -131,6 +131,30 @@ if ((Test-Path $xexe) -and (Test-Path $animIn)) {
 } else {
   Chk $false "契约点名的前置缺位（exe 或动画夹具不存在）⇒ 该判据本轮未跑，不判绿"
 }
+# ── 跨仓同进程对撞（2026-10-22，P3）────────────────────────────────────────────
+#   `C:\PLAN\ColorGainKit` 是本仓色彩数学 + 增益图容器层的**抽取副本**。两仓各自自检全绿
+#   **互不证明同一件事**：2026-10-22 首次同进程对撞就抓到库侧 `SimdPixelOps.ComputeGainMapGray`
+#   仍停在 F-5 之前的 `eps=0.001` 分母地板 ⇒ 140 格里 11 格不一致、最大差 133/255，
+#   而宿主各闸与库侧 `ColorMatrix.SelfTest`（当时对该函数 0 条用例）都看不见它。
+#   ⇒ 固化成每轮一次的形状判据：宿主实现 vs 库实现**逐码全等**（同式同 float ⇒ 容差 0）。
+#   ⚠ 库不在盘时探针自己打 `SKIP` ⇒ 本段记**未判定**（点名），不记绿也不判红：
+#     这是本仓「无料可量打 SKIP 不给绿灯」的既有口径；但 `pass=0 且 fail=0`（空转）必须红，
+#     否则"库缺席"会被洗成"没有失败"。
+Write-Host "`n=== 跨仓同进程对撞：宿主实现 vs ColorGainKit ===" -ForegroundColor Cyan
+$cpRaw = (Exec $pr "cgkparity") | Out-String
+$cpM = [regex]::Match($cpRaw, 'PROBE RESULT: pass=(\d+) fail=(\d+)(?:\s+skip=(\d+))?')
+if (-not $cpM.Success) {
+    ($cpRaw -split "`n" | Where-Object { $_.Trim() -ne '' } | Select-Object -Last 6) | ForEach-Object { Write-Host "    |$($_.Trim())" }
+    Chk ([bool]$false) '跨仓对撞：取到 PROBE RESULT 汇总行（取不到 = 探针崩溃/参数错，不许当没失败）'
+} else {
+    $cpPass = [int]$cpM.Groups[1].Value; $cpFail = [int]$cpM.Groups[2].Value
+    $cpSkip = if ($cpM.Groups[3].Success) { [int]$cpM.Groups[3].Value } else { 0 }
+    Chk ($cpPass -gt 0) "跨仓对撞前置：两侧确有可比项在被比（实 pass=$cpPass fail=$cpFail skip=$cpSkip）⇒ 不是空扫描"
+    Chk ($cpFail -eq 0) "跨仓对撞：宿主实现与 ColorGainKit 逐码全等（fail=$cpFail；标量式/曲线取值/容器读手逐字段）"
+    if ($cpSkip -gt 0) { Write-Host "    ↳ SKIP $cpSkip 项：库不在盘 ⇒ 本轮跨仓等价**未判定**（不记绿）" -ForegroundColor Yellow }
+    ($cpRaw -split "`n" | Where-Object { $_ -match '^SKIP' } | Select-Object -First 2) | ForEach-Object { Write-Host "    $($_.Trim())" }
+}
+
 Write-Host "`n===== xcheck 总结: $(if ($allOk) {'全部通过'} else {'存在失败'})（白名单豁免 $waived 格） =====" -ForegroundColor $(if ($allOk) {"Green"} else {"Red"})
 # ── 退出码语义（2026-09-17 新增）────────────────────────────────────────────────
 #   **除白名单外的任何一格失败 ⇒ exit 1**；白名单内那 6 格不判红（依据见上方 `$knownNonDefects`）。

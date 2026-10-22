@@ -2,7 +2,7 @@
 # verify-ui-split-reproducible.ps1 —— 「UI 拆分是**生成物**」这件事的可执行判据（2026-10-12 批次 G）
 #
 # 【要钉住的性质】5 个 `tests/ui-*/*Group.cs` 必须**逐字节等于**
-#   `tests/scripts/_gen-ui-split.ps1` 以 `tests/UiTestHost/Program.cs` 为唯一真值重新生成的结果。
+#   `tests/scripts/_gen-ui-split.ps1` 以 `tests/projects/UiTestHost/Program.cs` 为唯一真值重新生成的结果。
 #
 # 【为什么必须有它】2026-10-05 物理拆分时立约「组体逐字搬、断言文本一字未改」，
 #   并由 `verify-ui-split-verbatim.ps1` 逐行比旧宿主与拆分件。但**逐字比**这件事本身
@@ -44,7 +44,7 @@ function CK([bool]$ok, [string]$msg) {
 Write-Host "===== ui-split-reproducible =====" -ForegroundColor Cyan
 
 $gen     = 'tests/scripts/_gen-ui-split.ps1'
-$srcTruth = 'tests/UiTestHost/Program.cs'
+$srcTruth = 'tests/projects/UiTestHost/Program.cs'
 $projs   = [ordered]@{
     'ui-core'  = 'uicoreGroup'
     'ui-mode'  = 'uimodeGroup'
@@ -56,7 +56,7 @@ $projs   = [ordered]@{
 # ── 前置：三样东西必须在位（缺一样就红，不许"没得比 ⇒ 不判"）──────────────────
 CK (Test-Path $gen)      "前置：生成器在位（$gen）"
 CK (Test-Path $srcTruth) "前置：唯一真值在位（$srcTruth）"
-$liveMissing = @($projs.Keys | Where-Object { -not (Test-Path "tests/$_/$($projs[$_]).cs") })
+$liveMissing = @($projs.Keys | Where-Object { -not (Test-Path "tests/projects/$_/$($projs[$_]).cs") })
 CK ($liveMissing.Count -eq 0) "前置：5 个拆分件都在位（缺 $(if($liveMissing.Count){$liveMissing -join ','}else{'0'})）"
 if ($fail -gt 0) {
     Write-Host "===== ui-split-reproducible: PASS=$pass FAIL=$fail（前置不成立，拒绝出绿）=====" -ForegroundColor Red
@@ -85,13 +85,13 @@ function Invoke-Gen([string]$dst, [string]$srcAbs = (Join-Path $root $srcTruth))
     # ⚠ `$srcAbs` 必须可换：R-6 要把**改过的真值副本**喂进去；若这里恒拷活树那一份，
     #   注入会被自己的拷贝覆盖 ⇒ 对照臂永远"没变"（第一次跑 R-6 就是这样判红的——
     #   判据的假红最先暴露的永远是**判据自己**的洞）。
-    New-Item -ItemType Directory -Force -Path (Join-Path $dst 'tests/UiTestHost') | Out-Null
-    Copy-Item $srcAbs (Join-Path $dst 'tests/UiTestHost/Program.cs') -Force
+    New-Item -ItemType Directory -Force -Path (Join-Path $dst 'tests/projects/UiTestHost') | Out-Null
+    Copy-Item $srcAbs (Join-Path $dst 'tests/projects/UiTestHost/Program.cs') -Force
     $out = & (Join-Path $root $gen) -RepoRoot $dst 2>&1
     return @{ Text = ($out | Out-String); Threw = (@($out | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] })).Count -gt 0 }
 }
 function GenFile([string]$dst, [string]$proj) {
-    return Join-Path $dst ("tests/{0}/{1}.cs" -f $proj, $projs[$proj])
+    return Join-Path $dst ("tests/projects/{0}/{1}.cs" -f $proj, $projs[$proj])
 }
 function Sha([string]$p) { return (Get-FileHash -Algorithm SHA256 -LiteralPath $p).Hash }
 
@@ -102,7 +102,7 @@ try {
     $genOk = $true
     foreach ($proj in $projs.Keys) {
         $nf = GenFile $scratch $proj
-        $lf = "tests/$proj/$($projs[$proj]).cs"
+        $lf = "tests/projects/$proj/$($projs[$proj]).cs"
         if (-not (Test-Path $nf)) { CK $false "R $proj：生成器没产出文件"; $genOk = $false; continue }
         $hN = (Sha $nf).Substring(0, 16); $hL = (Sha (Join-Path $root $lf)).Substring(0, 16)
         $lnN = ([System.IO.File]::ReadAllLines($nf)).Count; $lnL = ([System.IO.File]::ReadAllLines((Join-Path $root $lf))).Count
@@ -137,7 +137,7 @@ try {
     $thin = @()
     $bareLf = @{}
     foreach ($proj in $projs.Keys) {
-        $lf = Join-Path $root ("tests/{0}/{1}.cs" -f $proj, $projs[$proj])
+        $lf = Join-Path $root ("tests/projects/{0}/{1}.cs" -f $proj, $projs[$proj])
         $b  = [System.IO.File]::ReadAllBytes($lf)
         $s  = [System.Text.Encoding]::UTF8.GetString($b)
         $lines = ($s -split "`r?`n").Count
@@ -157,7 +157,7 @@ try {
     #   每个包装名必须在**使用区**（剥掉行注释后）出现；出现即算引用（漏判会编译失败，误判只多留包装）。
     $dead = @()
     foreach ($proj in $projs.Keys) {
-        $lf = Join-Path $root ("tests/{0}/{1}.cs" -f $proj, $projs[$proj])
+        $lf = Join-Path $root ("tests/projects/{0}/{1}.cs" -f $proj, $projs[$proj])
         $ls = [System.IO.File]::ReadAllLines($lf)
         $grpIdx = -1
         for ($i = 0; $i -lt $ls.Count; $i++) { if ($ls[$i] -match '组 [A-Z] ═+$') { $grpIdx = $i; break } }
@@ -189,7 +189,7 @@ try {
         return $null
     }
     $old  = [System.IO.File]::ReadAllLines((Join-Path $root $srcTruth))
-    $base = [System.IO.File]::ReadAllLines((Join-Path $root 'tests/UiHostShared/UiHost.cs'))
+    $base = [System.IO.File]::ReadAllLines((Join-Path $root 'tests/projects/UiHostShared/UiHost.cs'))
     $bOld  = Get-MethodBodyLines $old  '^\s*(?:private\s+)?static\s+bool\s+SelectColorSpaceSettled\('
     $bBase = Get-MethodBodyLines $base '^\s*public\s+static\s+bool\s+SelectColorSpaceSettled\('
     CK ($bOld -ne $null -and $bBase -ne $null) "R-10 前置：两份 SelectColorSpaceSettled 都解析到方法体（旧宿主 $(if($bOld){$bOld.Count}else{'null'}) 行 / UiHost $(if($bBase){$bBase.Count}else{'null'}) 行）"

@@ -146,7 +146,7 @@ function CK($ok, $msg) {
 #     · **其余 7 行定位 6 行**：`QueueProcessor.cs:831`（**S7** `LogAlternatives` 的 `可替代方案：`）、
 #       `ColorStrategyPlanning.cs:170/171`（Part A 的 `ToneMapNotAppliedToGainMap` 文案）、
 #       `FfmpegCommandBuilder.Decision.cs:91/92/93`（`Short()` 摘要串 —— ⚠ **它是活代码**：
-#       `tests/ServiceProbe/Program.cs:2677` 的 `decision` mode 在**失配分支**里调用它）。
+#       `tests/projects/ServiceProbe/Program.cs:2677` 的 `decision` mode 在**失配分支**里调用它）。
 #     · ⚠ **仍不可判定 1 行**（其余桶）；候选池 4 个，全是 `ColorStrategyPlanning.cs` 的引擎降级码文案
 #       （`:124` / `:143` / `:152` / `:155`），与**同函数另外 8 条同类同形** ⇒ 无论命中哪个，性质判定一致。
 #     · **0 行**属于「应走 `loc[...]` 的真 UI 文案」；已归属的行里 **9 行是门禁断言的匹配关键词**
@@ -237,7 +237,7 @@ function CK($ok, $msg) {
 #   **取证法（可复现，且不依赖任何源码快照）**：把候选中文串编成 **UTF-16LE 字节**，在**三个不同时刻的
 #   `FfmpegGui.dll`** 上做**存在性检索** ——
 #     `tests/output/archive/runner-pre-fix-10.40.13/FfmpegGui.dll`（10:40:13）·
-#     `tests/GainMapTestHost/bin/Release/net11.0/win-x64/FfmpegGui.dll`（11:48:53 = 本会话改动前）·
+#     `tests/projects/GainMapTestHost/bin/Release/net11.0/win-x64/FfmpegGui.dll`（11:48:53 = 本会话改动前）·
 #     `src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.dll`（16:54:22 = 当前）。
 #   再用 11:21 的历史读数（`tests/output/cjk_fix_ps7.log` = `UI 824 / TAG 401 / 其余 849 / 总 1250`）
 #   把增量窗口夹定为 **11:21 → 16:54**，并用 mtime 证明窗口内 `src/FfmpegGui` 只有 7 个文件被写过
@@ -290,7 +290,7 @@ function CK($ok, $msg) {
 #        否则"用户选了默认档"与"给了一个认不出的值"在两义空串下无法区分 ⇒ 又会静默）。
 #       落在 UI 桶是**本口径的已知局限**（按"含中文的行"计，分不出文案与比对常量；见文件上方"已知局限"段，
 #       口径 ②-c 有意保留，不改它才不会使历史基线失效）。
-#     · CS_TAG +16 / CS_OTHER 的增量 = `tests/ServiceProbe/Program.cs` 0c 段的断言与诊断措辞
+#     · CS_TAG +16 / CS_OTHER 的增量 = `tests/projects/ServiceProbe/Program.cs` 0c 段的断言与诊断措辞
 #       （`Check(...)` 的说明串走"其余"桶、`Console.WriteLine` 的诊断行走 sink 桶 ⇒ 均不在判据内）。
 #   ⚠ 口径未动，也**没有**把某条误计"修掉"：本批顺手把 `[djxl] PNM 中转失败…` 的两条 `.Log +=` 续行
 #     合成一条整行（"消息续行会被误计"是文件上方登记的已知形状），但本轮**没有**单独量过合并前后的差值
@@ -303,7 +303,7 @@ function CK($ok, $msg) {
 #       ⇒ 口径变更本身把读数整体**下移**。同一份**旧代码**（`e7de117`）在新口径下实测 **810**
 #       （本轮独立复现：`git archive e7de117 src/FfmpegGui | tar -x` 到临时树、把本脚本原样放进去跑
 #       ⇒ `UI 面 = 810`）。旧基线 **837 是旧口径**下的数 ⇒ `837 + 3` 属跨口径相加，基数就不对。
-#   (2) **归因错**：原段称「CS_TAG +16 的增量 = `tests/ServiceProbe/Program.cs` 0c 段」——
+#   (2) **归因错**：原段称「CS_TAG +16 的增量 = `tests/projects/ServiceProbe/Program.cs` 0c 段」——
 #       本脚本语料是 `$root/src/FfmpegGui`（见下方 `Get-ChildItem -Path "$root/src/FfmpegGui"`），
 #       **根本不扫 `tests/`** ⇒ 该归因不成立（+29 的 TAG 全来自 `src/FfmpegGui`）。
 #   ⇒ 正确基数 = 旧代码新口径 **810** + 本批真实净增 **+11** = **821**（HEAD 实测，本轮复现）。

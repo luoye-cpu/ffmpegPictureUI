@@ -25,10 +25,10 @@ $ErrorActionPreference = "Continue"
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path; Set-Location $root
 $budget = if ($args.Count -gt 0) { $args[0] } else { "20" }
 
-$pr = "$root/tests/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.exe"
+$pr = "$root/tests/projects/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.exe"
 $fellBack = $false
 if (-not (Test-Path $pr)) {
-    $pr = "$root/tests/ServiceProbe/bin/Debug/net11.0/win-x64/ServiceProbe.exe"; $fellBack = $true
+    $pr = "$root/tests/projects/ServiceProbe/bin/Debug/net11.0/win-x64/ServiceProbe.exe"; $fellBack = $true
 }
 # ⚠ 一律打印**被测二进制**（TESTING.md 第 84 条建议 ①：Debug 回退是静默的 ⇒ 读数不可追溯）
 Write-Output ("[gate] exe=" + $pr + $(if ($fellBack) { " (Debug fallback)" } else { " (Release)" }))

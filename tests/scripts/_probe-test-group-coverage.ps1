@@ -2,7 +2,7 @@
 # _probe-test-group-coverage.ps1 —— 测试组覆盖一致性（2026-10-05 物理拆分时新增）
 #
 # 【为什么必须有】
-#   拆分后「哪些 mode 归哪个组」是**手工维护**的表（`tests/Tests.Shared/TestGroups.cs`），
+#   拆分后「哪些 mode 归哪个组」是**手工维护**的表（`tests/projects/Tests.Shared/TestGroups.cs`），
 #   而运行器 `_run-step3-gates.ps1` 另有一份**独立**的默认探针清单（`$Probes`，现 **27** 个；
 #   2026-10-12 由 26 接进 `bench` = L-7 性能看守）。
 #   两者一旦漂移，就会出现「运行器要跑某个 mode，但**没有任何组**认领它」
@@ -154,7 +154,7 @@ $script:HostRx = @(
 function Test-HostFragment([string]$txt) {
     if ([string]::IsNullOrEmpty($txt)) { return $false }
     foreach ($rx in $script:HostRx) { if ($txt -match $rx) { return $true } }
-    # 拆分工程（`Join-Path $root "tests/$proj/bin/Release/…/$($modes[$proj].exe).exe"`）里
+    # 拆分工程（`Join-Path $root "tests/projects/$proj/bin/Release/…/$($modes[$proj].exe).exe"`）里
     # 宿主名是插值的，认不出 `Tests.X.exe` 字面 ⇒ 补一条**线性**形状判据。
     # ⚠ 刻意用 Contains 而不是 `tests/.*bin/.*\.exe` 这种正则：后者在长文本上是嵌套量词，
     #   实测会把本守卫拖进回溯灾难（一次实跑 35 s+ 起不来）。
@@ -195,7 +195,7 @@ function Test-AnyModeToken([string]$text, [string[]]$modeList) {
     return $false
 }
 
-$groupsCs   = 'tests/Tests.Shared/TestGroups.cs'
+$groupsCs   = 'tests/projects/Tests.Shared/TestGroups.cs'
 $runnerPs1  = 'tests/scripts/_run-step3-gates.ps1'
 $scriptsDir = 'tests/scripts'
 $selfName   = Split-Path -Leaf $PSCommandPath
@@ -211,7 +211,7 @@ foreach ($p in @($groupsCs, $runnerPs1)) {
 $gText = Get-Content $groupsCs -Raw
 $groupMap = @{}
 # ⚠ 组名字符集从 `[a-z0-9\-]+` 放宽到 `[A-Za-z0-9\-]+`（2026-10-14，镜像 5 工程删除那一批）：
-#   那 31 个 mode 改由**目录本名就叫 `tests/ServiceProbe`** 的组认领，而本门禁的契约是
+#   那 31 个 mode 改由**目录本名就叫 `tests/projects/ServiceProbe`** 的组认领，而本门禁的契约是
 #   "组名 = 工程目录名"（见 ② 的 `tests/<组名>`）。旧字符集静默漏掉带大写的键 ⇒
 #   整组不可见，表现为 ① "20 个 mode 无组认领" + ④-c 并集塌到 35 —— 是**解析失配**不是覆盖丢失。
 #   失配方向在这里是"转红"（不是假绿），但红得没有信息量，故修正则而不是改组名。
@@ -442,7 +442,7 @@ $teethCases = @(
         ExpectHit  = @('color')
         ExpectMiss = @('pq')
         Src = @'
-$prb = "$root/tests/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.exe"
+$prb = "$root/tests/projects/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.exe"
 $fx = "$root/tests/fixtures"
 Write-Host "顺带提一句 pq，这段只是文案"
 $null = Start-Process -FilePath "dotnet" -ArgumentList @("`"$prb`"", 'color', "$fx/a.png", 'png', $prb) `
@@ -454,7 +454,7 @@ $null = Start-Process -FilePath "dotnet" -ArgumentList @("`"$prb`"", 'color', "$
         ExpectHit  = @('gamutfit')
         ExpectMiss = @('icc-dump')
         Src = @'
-$prb = "$root/tests/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.exe"
+$prb = "$root/tests/projects/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.exe"
 $names = @('icc-dump')
 Write-Output "孤立表里的 icc-dump 不作证"
 Start-Process -FilePath $prb -ArgumentList @('gamutfit', 'out') -Wait -NoNewWindow | Out-Null
@@ -472,7 +472,7 @@ function Exec([string]$file, [string]$argStr) {
 Write-Host "本轮跑 bitdepth 与 bench，别担心"
 Write-Output "gainmap-struct 由专项门禁调用，正常"
 $note = 'bench 已覆盖'
-$probe = "$root/tests/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.exe"
+$probe = "$root/tests/projects/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.exe"
 Exec $probe "bitdepth in out"
 '@
     }
@@ -485,7 +485,7 @@ function Invoke-Exe([string]$exePath, [string[]]$exeArgs) {
     Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList @('-NoProfile', '-Command', $exePath) -Wait | Out-Null
 }
 $modes = @{ exe = 'Tests.UiCore'; list = @('ui-format-command', 'ui-panel-visibility') }
-$exe = Join-Path $root "tests/ui-core/bin/Release/net11.0/win-x64/$($modes.exe).exe"
+$exe = Join-Path $root "tests/projects/ui-core/bin/Release/net11.0/win-x64/$($modes.exe).exe"
 foreach ($mm in $modes.list) { Invoke-Exe $exe @($mm) }
 $orphan = @{ dead = @('ui-sweep') }
 '@
@@ -539,18 +539,18 @@ function Get-Evidence([string]$mode) {
 }
 
 $spProgram = ''
-if (Test-Path 'tests/ServiceProbe/Program.cs') { $spProgram = Get-Content 'tests/ServiceProbe/Program.cs' -Raw }
+if (Test-Path 'tests/projects/ServiceProbe/Program.cs') { $spProgram = Get-Content 'tests/projects/ServiceProbe/Program.cs' -Raw }
 function Get-GroupOf([string]$mode) {
     foreach ($g in $groupMap.Keys) { if ($groupMap[$g] -ccontains $mode) { return $g } }
     return '?'
 }
 function Get-GroupHost([string]$gname) {
-    $cj = @(Get-ChildItem "tests/$gname" -Filter '*.csproj' -File -EA SilentlyContinue)
+    $cj = @(Get-ChildItem "tests/projects/$gname" -Filter '*.csproj' -File -EA SilentlyContinue)
     foreach ($c in $cj) {
         $mm = [regex]::Match((Get-Content $c.FullName -Raw), '<AssemblyName>([^<]+)</AssemblyName>')
         if ($mm.Success) { return ($mm.Groups[1].Value + '.exe') }
     }
-    return "tests/$gname 的宿主 exe（未取到 AssemblyName）"
+    return "tests/projects/$gname 的宿主 exe（未取到 AssemblyName）"
 }
 function Get-OwnerHint([string]$mode) {
     $g = Get-GroupOf $mode
@@ -560,13 +560,13 @@ function Get-OwnerHint([string]$mode) {
     $touched = @()
     foreach ($s in $evidenceScripts) {
         if (-not $rawText.ContainsKey($s)) { continue }
-        if ($rawText[$s] -match ('tests/' + [regex]::Escape($g) + '[/\\"'' .]')) { $touched += $s }
+        if ($rawText[$s] -match ('tests/projects/' + [regex]::Escape($g) + '[/\\"'' .]')) { $touched += $s }
     }
     $parts = @()
     if ($inSp) { $parts += 'ServiceProbe.exe 分派了该 mode ⇒ 本该进运行器 `$Probes`，或由 `$scriptList` 内某条起 ServiceProbe 的清单脚本带上（形态参照 verify-color-peak.ps1 的 RunTool 参数表）' }
     $parts += ('该组宿主 = ' + $exeName)
     if (@($touched).Count) { $parts += ('`$scriptList` 内引用过该组目录的脚本 = ' + (($touched | Select-Object -First 4) -join ', ')) }
-    else { $parts += ('`$scriptList` 内没有任何脚本引用过 tests/' + $g) }
+    else { $parts += ('`$scriptList` 内没有任何脚本引用过 tests/projects/' + $g) }
     return ($parts -join ' ；')
 }
 
@@ -580,7 +580,7 @@ CK (@($unowned).Count -eq 0) "① 运行器 `$Probes` 的每个 mode 都有组�
 $missingProj = @()
 foreach ($g in $groupMap.Keys) {
     # 工程目录名 = tests/<组名>（与 TestGroups 的键同名，见 docs/TEST_SPLIT_TEMPLATE.md）
-    if (-not (Test-Path "tests/$g")) { $missingProj += $g }
+    if (-not (Test-Path "tests/projects/$g")) { $missingProj += $g }
 }
 $missingLine = '无'
 if (@($missingProj).Count) { $missingLine = ($missingProj -join ', ') }
@@ -589,7 +589,7 @@ CK (@($missingProj).Count -eq 0) "② 组表里每个组都有工程目录（缺
 # ── ③ 组表里每个 mode 名都必须**真实存在**（防拼错；"有没有人跑"归 ⑥）────────
 $groupProgram = @{}
 foreach ($g in $groupMap.Keys) {
-    $pf = "tests/$g/Program.cs"
+    $pf = "tests/projects/$g/Program.cs"
     if (Test-Path $pf) { $groupProgram[$g] = Get-Content $pf -Raw }
 }
 $unregistered = @()
@@ -715,7 +715,7 @@ function Split-OffBook([string[]]$universe, [string[]]$claimed, [hashtable]$call
 
 # ── ⑨ mode 派生域：全集 = ServiceProbe 的 case 派发表（不是手抄组表）─────────
 $repoRoot = (Get-Location).Path
-$spPath = Join-Path $repoRoot 'tests/ServiceProbe/Program.cs'
+$spPath = Join-Path $repoRoot 'tests/projects/ServiceProbe/Program.cs'
 $spText = ''
 if (Test-Path $spPath) { $spText = [System.IO.File]::ReadAllText($spPath) }
 $dispatchAll = @()
@@ -951,6 +951,7 @@ $offExplicit = [ordered]@{
     'archive-diagnostics.ps1'      = '脚手架（诊断留档）'
     'cleanup-structure.ps1'        = '脚手架（结构清理）'
     'insert_cicp.ps1'              = '脚手架（历史一次性 PNG cICP 注入）'
+    '_check-ps-parse.ps1'          = '单文件 PS 解析取数器（账本 §36/§40 手跑用；判据本体在 verify-ps-compat.ps1，本支只喂它自己的手跑复现）'
 }
 $managedBlob = ''
 foreach ($f5 in $scriptListAll) {

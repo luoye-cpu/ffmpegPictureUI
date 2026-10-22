@@ -319,6 +319,11 @@
             <TextBlock x:Name="DngLinearHint" Text="{ext:Loc dng.linear.hint}"
                        IsVisible="False" FontSize="10" TextWrapping="Wrap" Margin="0,2,0,0"
                        Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+            <!-- ── 镜头校正: 源 RAW 自带三表 → 规范 OpcodeList3（默认关, 它改渲染像素）── -->
+            <CheckBox x:Name="DngLensCheck" Content="{ext:Loc dng.lens}" Margin="0,6,0,0"/>
+            <TextBlock Text="{ext:Loc dng.lens.hint}" FontSize="10" TextWrapping="Wrap"
+                       Margin="0,2,0,0"
+                       Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
             <!-- ── 位深 ── -->
             <TextBlock Text="{ext:Loc dng.bitdepth}" FontSize="11" Margin="0,4,0,0"/>
             <ComboBox x:Name="DngBitDepthCombo" SelectedIndex="1"/>

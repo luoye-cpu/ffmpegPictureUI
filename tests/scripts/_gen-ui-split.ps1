@@ -13,7 +13,7 @@
 # ═══════════════════════════════════════════════════════════════════════════════
 
 param(
-    [string]$Src = 'tests/UiTestHost/Program.cs',
+    [string]$Src = 'tests/projects/UiTestHost/Program.cs',
     [string]$RepoRoot = (Split-Path -Parent (Split-Path -Parent $PSScriptRoot))
 )
 
@@ -367,7 +367,7 @@ function Get-Entry([string]$g) {
 
 foreach ($proj in $projects.Keys) {
     $info = $projects[$proj]
-    $dir  = Join-Path 'tests' $proj
+    $dir  = Join-Path 'tests/projects' $proj
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
 
     # ── 本工程**实际引用**了哪些包装（组体 + 入口；先剥掉行注释再扫：

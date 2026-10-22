@@ -115,6 +115,10 @@ target_compile_definitions(libraw_static PUBLIC
     LIBRAW_BUILDLIB NDEBUG
     USE_DNGSDK
     qDNGSupportJXL
+    # 2026-10-21 (账本 §35): 没有这个宏时 src/x3f/*.cpp 整份被 #ifdef 挡掉 ⇒ 空翻译单位
+    # (x3f_parse_process.obj = 535 B)，Sigma/Foveon X3F 在 open() 就返回 LIBRAW_FILE_UNSUPPORTED。
+    # PUBLIC 会传给 dngtool 主工程。
+    USE_X3FTOOLS
 )
 target_link_libraries(libraw_static PUBLIC dng_sdk zlib_static)
 

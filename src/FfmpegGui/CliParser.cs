@@ -55,10 +55,11 @@ namespace FfmpegGui
             // 包2-2b：GPS 删除改三态——null=用户未显式指定（不覆盖模型默认值）。
             // 此前 CLI 侧独立默认 true 与 FfmpegOptions.StripExifGps 形成两个真值，
             // 只改模型默认值不生效（变异实测 verify-metadata-privacy 仍全绿）。
+            // ⚠ 2026-10-20：那个"独立默认 true"已按产品口径改成 false（默认全保留）——三态的意义才真正成立：不给标志=沿用模型默认，给了=覆盖。
             public bool? StripGps { get; set; }
             /// <summary>
             /// 用户是否**显式**给出过任一"剥离描述性元数据"的请求（2026-10-05 新增）。
-            /// <para>⚠ 与上面各开关的**值**不同：`StripExifGps` 默认为 true（隐私默认），
+            /// <para>⚠ 与上面各开关的**值**不同：`StripExifGps` 有默认值（2026-10-20 起 = false，全保留），
             /// 而本标志只在用户真的写了 `--strip-gps` / `--strip-metadata` / … 时才为 true。
             /// 用途：`jxl` 的 jbrd 无损重封装与"剥除元数据"不可兼得，而用户裁定
             /// 「无损重封装是绝对默认」⇒ 只有**显式**请求才允许让剥除去压过重封装。</para>
@@ -239,7 +240,7 @@ namespace FfmpegGui
 
                     // ── 元数据选项 ──
                     // ⚠⚠ 2026-10-05：每个**显式**剥除请求都要同时置 `StripExplicit=true`。
-                    //   它与"开关的值"**不是一回事**：`StripExifGps` 默认就是 true（隐私默认），
+                    //   它与"开关的值"**不是一回事**：`StripExifGps` 只是开关的当前值（默认 false=全保留），
                     //   而 `jxl` 的 jbrd 无损重封装与"剥除元数据"结构上不可兼得。
                     //   用户裁定「无损重封装是绝对默认」⇒ 只有**用户真的要求了**才让剥除去压过重封装。
                     case "--strip-gps":
@@ -271,8 +272,8 @@ namespace FfmpegGui
                         break;
                     case "--preserve-metadata":
                         result.MetadataMode = MetadataMode.PreserveAll;
-                        // “保留所有元数据”应真正保留全部：显式传入时清除各隐私删除标志（含默认开启的 GPS 删除）。
-                        // 未显式传入时仍保留隐私默认（StripGps=true）。若其后又传 --strip-gps 等，则“最后一个标志生效”。
+                        // “保留所有元数据”应真正保留全部：显式传入时清除各隐私删除标志（含 GPS 删除）。
+                        // 2026-10-20 起默认已是 false（全保留），本行成为"显式重申"；若其后又传 --strip-gps 等，则“最后一个标志生效”。
                         result.StripGps = false;
                         result.StripTime = false;
                         result.StripCamera = false;
@@ -436,16 +437,16 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
   --icc-mode <mode>       旧参数，映射为 --color-strategy（兼容用）
 
 元数据处理:
-  --strip-gps             删除 GPS 信息 (默认: 开启)
-  --no-strip-gps          保留 GPS 信息
+  --strip-gps             删除 GPS 信息 (默认: **关闭**，2026-10-20 四处默认统一为「不勾选就全保留」)
+  --no-strip-gps          保留 GPS 信息（与默认一致，用于回放旧预设里的显式请求）
   --strip-time            删除时间戳
   --strip-camera          删除相机信息
   --strip-all-exif        删除所有 EXIF
   --strip-xmp             删除 XMP 数据
   --strip-metadata        删除所有元数据
-  --preserve-metadata     保留所有元数据（含 GPS；显式传入时覆盖默认 GPS 删除）
+  --preserve-metadata     保留所有元数据（GPS 本就是默认；这条同时保住时间/相机信息不被单项开关削掉）
 
-  注: 默认 MetadataMode=PreserveAll 但为隐私默认删除 GPS；如需保留 GPS 请用 --preserve-metadata 或 --no-strip-gps。
+  注: 默认 MetadataMode=PreserveAll 且**不删 GPS**；要删 GPS 必须显式 --strip-gps，要整组剥除用 --strip-metadata。
 
 预设与配置:
   --preset <name>         使用内置/用户预设
@@ -676,7 +677,7 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
                 Threads = 0, // 0=auto
                 AutoThreads = opts.AutoThreads,
                 MetadataMode = opts.MetadataMode,
-                StripExifGps = opts.StripGps ?? true,
+                StripExifGps = opts.StripGps ?? false,
                 StripExifTime = opts.StripTime,
                 StripExifCamera = opts.StripCamera,
                 StripExifAll = opts.StripAllExif,
@@ -941,6 +942,7 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
                     case "dng-linear": options.DngLinear = ParseBoolStrict(key, value); break;
                     case "dng-bit-depth": options.DngBitDepth = ParseIntStrict(key, value); break;
                     case "dng-highlight-mode": options.DngHighlightMode = ParseIntStrict(key, value); break;
+                    case "dng-lens-correction": options.DngLensCorrection = ParseBoolStrict(key, value); break;
                     case "animation-fps": options.AnimationFps = ParseIntStrict(key, value); break;
                     // ⚠ -1 是**合法哨兵**（不循环），0=无限，>0=指定次数（FfmpegOptions.cs:403）。
                     //   空格形式 `--animation-loop -1` 现在也能正确消费（D4 修复，见 Parse 里的 LooksLikeOption）。

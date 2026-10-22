@@ -324,6 +324,8 @@
   "dng.layout": "DNG 布局",
   "dng.layout.cfa": "保留 CFA（Bayer 原始）",
   "dng.layout.linear": "线性（已去马赛克 RGB）",
+  "dng.lens": "镜头校正",
+  "dng.lens.hint": "把源 RAW 里相机自己记录的暗角/畸变/横向色差三张表换算成 DNG 规范的 OpcodeList3 opcode。默认关：它会改变渲染像素，且与 Adobe 转换器的结果不一致。源文件没有这三张表时不生效（日志点名 lens-tables=absent），不算失败。",
   "dng.linear.hint": "⚠ 线性 DNG 仅适用于「已去马赛克 / 线性」的输入；多数相机 RAW 是 Bayer 传感器，选「线性」会被引擎拒绝 —— 请保持「保留 CFA」。",
   "dng.note.formats": "输出为无损 JPEG 或 JPEG XL：JXL 体积更小但压缩更慢，JPEG 兼容性更好。",
   "dng.note.input": "输入支持 DNG 及主流相机 RAW（CR2 / CR3 / NEF / ARW / RAF / ORF 等，由 LibRaw 解码）。",

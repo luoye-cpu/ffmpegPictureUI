@@ -519,7 +519,44 @@ namespace FfmpegGui.Services
             logCallback?.Invoke($"[exiftool] 复制元数据: {Path.GetFileName(sourcePath)} → {Path.GetFileName(targetPath)}\n"
                 + (absorbNow ? "[exiftool] （已并入可吸收的隐私清理，省一次 exiftool 启动）\n" : ""));
 
-            return await RunWriteAsync(targetPath, args, logCallback);
+            var rc = await RunWriteAsync(targetPath, args, logCallback);
+            if (rc != 0) return rc;
+
+            // ⚠⚠ 2026-10-20：这次补删**原来只有 CopyMetadataSafeAsync 有**，而 DNG 出口
+            //   `protectColorMetadata` 为假时走的正是本方法 ⇒ 实测默认档 `-f dng` 的产物里
+            //   GPS 与 93 条 MakerNotes 全在（排除式 `--GPS:all` 单独用**不生效**，见下面
+            //   的共用实现）⇒ `StripExifGps` 的隐私默认在这条路上被打穿。
+            //   两个变体从此共用一份实现，不再有"只补给一边"的形状。
+            var delRc = await ApplyAbsorbStripAfterCopyAsync(targetPath, absorbNow ? absorb : null, logCallback);
+            return delRc != 0 ? delRc : rc;
+        }
+
+        /// <summary>
+        /// 复制之后要补的那次**显式删除**（GPS/XMP）—— 两个复制变体共用这一份实现。
+        /// <para>为什么排除式不够：2026-10-05 实测同一份产物、同一份源，
+        /// `… -GPS:all --GPS:all …`（复制时排除）报「1 image files updated」而 GPS **仍在**；
+        /// `-GPS:all=`（就地删除）才真的删掉 ⇒ JXL/`brob` 这类复合容器上两者语义不同。</para>
+        /// <para>为什么必须共用：本轮实测到"只补给 Safe 变体"本身就是缺陷 —— DNG 走非 Safe
+        /// 那条分支，隐私默认被静默绕过。同一份政策各写一遍必然漂移，收成一处。</para>
+        /// </summary>
+        private static async Task<int> ApplyAbsorbStripAfterCopyAsync(
+            string targetPath, Models.FfmpegOptions? absorb, Action<string>? logCallback)
+        {
+            if (absorb == null) return 0;
+            var del = new StringBuilder("-overwrite_original -m ");
+            if (absorb.StripExifGps) del.Append("\"-GPS:all=\" ");
+            if (absorb.StripXmp) del.Append("\"-XMP:all=\" ");
+            if (del.Length <= "-overwrite_original -m ".Length) return 0;
+            del.Append('"').Append(targetPath).Append('"');
+            var delRc = await RunWriteAsync(targetPath, del.ToString(), logCallback);
+            if (delRc != 0)
+            {
+                // ⚠ 剥除失败**不得静默**：这是隐私承诺，失败必须点名（本仓"可用性诚实"原则）。
+                // ⚠⚠ 写法约束（CJK 门禁余量 0，实测踩过）：**中文必须整条落在走 sink 的那一行里**。
+                logCallback?.Invoke($"[exiftool] ⚠️ 隐私剥除（GPS/XMP 显式删除）退出码 {delRc} —— 产物可能仍带这些标签，请当缺陷报告\n");
+                return delRc;
+            }
+            return 0;
         }
 
         /// <summary>
@@ -679,30 +716,19 @@ namespace FfmpegGui.Services
             //       ⇒ 报「1 image files updated」且 GPS **消失** ✅
             //   ⇒ 二者语义不同：`--TAG` 是"复制时排除"，而 `-TAG=` 是"就地删除"。
             //     JXL 上（元数据存在 `brob`/EXIF 盒的复合结构里）前者不足以清掉已存在的 GPS。
-            //   证据链：默认 `-f jxl` 转一张带 GPS 的 JPEG ⇒ 产物**公布坐标**、退出码 0、无告警；
-            //     而 `StripExifGps` 的**默认值就是 true**（`CliParser.cs:579` 的 `?? true`）
-            //     ⇒ 这是**默认路径上的静默隐私泄露**，不是边角情形。
-            //   ⚠ 只在**用户/默认确实要求剥除**时补删（`absorbNow` 已含该判据），
+            //   证据链（2026-10-05 当时）：默认 `-f jxl` 转一张带 GPS 的 JPEG ⇒ 产物**公布坐标**、退出码 0、无告警；
+            //     而那时 `StripExifGps` 的**默认值就是 true**（CLI 的 `?? true`）
+            //     ⇒ 那是**默认路径上的静默隐私泄露**，不是边角情形。
+            //     ⚠ 2026-10-20 政策统一：默认改成 false（不勾选=全保留），剥除只在显式请求时发生 ⇒
+            //       本段是当时的证据，别再拿它当现在的默认值。
+            //   ⚠ 只在**用户要求剥除**时补删（`absorbNow` 已含该判据；默认值现已是 false=不剥），
             //     `--preserve-metadata`/`--no-strip-gps` 时 `CanAbsorbStrip` 为假 ⇒ 不补删，GPS 正常保留。
             if (absorbNow && absorb != null)
             {
-                var del = new StringBuilder("-overwrite_original -m ");
-                if (absorb.StripExifGps) del.Append("\"-GPS:all=\" ");
-                if (absorb.StripXmp) del.Append("\"-XMP:all=\" ");
-                if (del.Length > "-overwrite_original -m ".Length)
-                {
-                    del.Append('"').Append(targetPath).Append('"');
-                    var delRc = await RunWriteAsync(targetPath, del.ToString(), logCallback);
-                    if (delRc != 0)
-                    {
-                        // ⚠ 剥除失败**不得静默**：这是隐私承诺，失败必须点名（本仓"可用性诚实"原则）。
-                        // ⚠⚠ 写法约束（CJK 门禁余量 0，实测踩过）：**中文必须整条落在走 sink 的那一行里**。
-                        //   拆成 `logCallback?.Invoke($…` + 续行 `+ "中文"` 时，续行不命中 sink 判定
-                        //   ⇒ 被计进 `CsUi`（UI 文案）判据桶 ⇒ 门禁 +1 转红（实测 828→829）。
-                        logCallback?.Invoke($"[exiftool] ⚠️ 隐私剥除（GPS/XMP 显式删除）退出码 {delRc} —— 产物可能仍带这些标签，请当缺陷报告\n");
-                        return delRc;
-                    }
-                }
+                // 补删与 CopyMetadataAsync 共用一份实现（ApplyAbsorbStripAfterCopyAsync）：
+                // 2026-10-20 实测到"只有这条分支有补删"本身就是缺陷（DNG 走另一条 ⇒ 隐私默认被打穿）。
+                var stripRc = await ApplyAbsorbStripAfterCopyAsync(targetPath, absorb, logCallback);
+                if (stripRc != 0) return stripRc;
             }
             return rc;
         }
@@ -970,6 +996,123 @@ namespace FfmpegGui.Services
                     return SkippedNoExiftool;
             }
             var args = BuildIdcXmpDatesArgs(create, modify, targetPath);
+            logCallback?.Invoke($"[exiftool] {args}\n");
+            return await RunWriteAsync(targetPath, args, logCallback, ct);
+        }
+
+        /// <summary>
+        /// DNG 出口：把**源件里 exiftool 认得的标准 EXIF/GPS 位**从源件抄进产物。
+        /// <para>为什么必须存在：Adobe SDK 的 <c>WriteDNG</c> 只发它自己解析得到的那批
+        /// （<c>dng_exif::ParseTag</c> 的分支），剩下的一批要么根本没有发射点
+        /// （分辨率三件只在 <c>WriteTIFFWithProfile</c> 里写、Interop 整个 IFD 不写、
+        /// <c>exif_tag_set</c> 里没有 ComponentsConfiguration/CompressedBitsPerPixel/
+        /// FlashPixVersion/ExifImageWidth/ExifImageHeight 的 <c>Add</c>），
+        /// 要么源容器不是 TIFF 头（CR3/RAF/MRW ⇒ dngtool 的遍历直接 <c>notTiff</c> 回退）
+        /// ⇒ 产物里整片标准位缺席。这些都有 EXIF/GPS 标准位、PS/Camera Raw/exiftool 能正常解码
+        /// ⇒ 按 2026-10-19 定的规矩一条不许丢。</para>
+        /// <para>取"由公开注册表命名的标签"这一刀由 exiftool 自己完成（名单里只写名字，
+        /// 未知/厂商私有 ID 它自己就没有名字 ⇒ 不会被搬）⇒ 私有件仍然一条不进产物。</para>
+        /// <para>⚠ **每个名字都带组限定**（<c>-Group:Name&lt;Group:Name</c>），两侧都要：
+        /// 目的侧不限定会写错容器（裸 <c>-Flash</c> 顺带创建 XMP 块，见
+        /// <see cref="BuildRawCaptureFieldsArgs"/> 的第 2 条约束）；源侧不限定会**取错那一份**——
+        /// 实测 CR3 的 <c>-ModifyDate</c> 未限时取 QuickTime 头的 UTC 值（18:21:21+08:00）
+        /// 写进 IFD0 的本地时间位，与源 IFD0 自己那条（12:21:21）差 8 小时；
+        /// <c>ColorSpace</c>/<c>Contrast</c> 在源件里同时有 [ExifIFD] 与厂商组两份。</para>
+        /// <para>⚠ 隐私开关必须在这里同样生效：本方法跑在元数据阶段（含显式删除）**之后**，
+        /// 这里不排除 GPS/时间 ⇒ 等于把刚剥掉的隐私又装回去。</para>
+        /// <para>不抄的：0x0201/0x0202（预览/缩略图的字节偏移与长度，属"这份文件自己的布局"）、
+        /// 0x927C MakerNote（厂商私有件，按政策丢弃）、0x010F/0x0110/0x0131/0x9000
+        /// （Make/Model/Software/ExifVersion 由生产者按 DNG 规范自己声明——Adobe 的转换器
+        /// 也把 Model 写成去厂商前缀的机型名，PS 的机型库按那个键查找）。</para>
+        /// <para>值一律由 exiftool 自己从源件读 ⇒ 本方法不接触任何来自源文件内容的字符串，
+        /// 没有拼接注入面。</para>
+        /// </summary>
+        private static readonly string[] DngCarryIfd0 =
+        {
+            "ImageDescription", "Artist", "Copyright",
+            "XResolution", "YResolution", "ResolutionUnit",
+            "XPKeywords", "XPComment", "XPTitle", "XPSubject", "XPAuthor",
+        };
+
+        /// <summary>`--strip-time` 时整组跳过。</summary>
+        private static readonly string[] DngCarryTime =
+        {
+            "DateTimeOriginal", "CreateDate",
+            "SubSecTime", "SubSecTimeOriginal", "SubSecTimeDigitized",
+            "OffsetTime", "OffsetTimeOriginal", "OffsetTimeDigitized",
+        };
+
+        /// <summary>`--strip-camera` 时整组跳过。</summary>
+        private static readonly string[] DngCarryCamera =
+        {
+            "LensModel", "LensMake", "LensSerialNumber", "LensInfo", "LensSpecification",
+        };
+
+        /// <summary>ExifIFD 里描述拍摄事实的公开位——不属于"相机信息"开关，任何搬运档都抄。</summary>
+        private static readonly string[] DngCarryExif =
+        {
+            // ⚠ APEX 那一族（0x9201/0x9202/0x9203/0x9205）**不在名单里**，是刻意的：
+            //   它们由 SDK 从解析像素的同一个 LibRaw 句柄算出 ⇒ 每个容器都有发射点（跨厂商 14 件
+            //   实测从未报"缺"），而后置复制要经 exiftool 的 PrintConv 往返，反而把源件那个
+            //   精确分数变成连分数近似（实测 Sony IDC：434/256 逐位相同 → 13166/7763，偏 4e-4）。
+            //   ⇒ "SDK 已按源解析发出的，后置不许覆盖" 才是 ⑳ 组那条"只补没发射点的"本意。
+            "ExposureProgram", "MeteringMode", "Flash", "ExposureMode",
+            "SceneCaptureType", "CustomRendered",
+            "ExposureCompensation", "SubjectDistance", "LightSource",
+            "WhiteBalance", "DigitalZoomRatio", "FocalLengthIn35mmFormat",
+            "SubjectDistanceRange", "SensingMethod", "FileSource", "SceneType",
+            "FocalPlaneXResolution", "FocalPlaneYResolution", "FocalPlaneResolutionUnit",
+            "UserComment", "Rating",
+            // 以下由跨厂商跑量点名（2026-10-20，14 件私有 RAW）：SDK 不发、且源件里真的在
+            "GainControl", "Contrast", "Saturation", "Sharpness",
+            "SensitivityType", "RecommendedExposureIndex", "SerialNumber", "OwnerName",
+            "ColorSpace", "ComponentsConfiguration", "CompressedBitsPerPixel",
+            "FlashPixVersion", "ExifImageWidth", "ExifImageHeight",
+        };
+
+        private static readonly string[] DngCarryInterop = { "InteropIndex", "InteropVersion" };
+
+        private static void AppendCarryNames(StringBuilder sb, string group, string[] names)
+        {
+            foreach (var n in names)
+                sb.Append('-').Append(group).Append(':').Append(n)
+                  .Append("<").Append(group).Append(':').Append(n).Append(' ');
+        }
+
+        public static string BuildDngStdTagsCarryArgs(
+            string sourcePath, string targetPath, Models.FfmpegOptions options)
+        {
+            var sb = new StringBuilder();
+            sb.Append("-overwrite_original -m -TagsFromFile \"").Append(sourcePath).Append("\" ");
+            AppendCarryNames(sb, "IFD0", DngCarryIfd0);
+            if (!options.StripExifTime)
+            {
+                AppendCarryNames(sb, "ExifIFD", DngCarryTime);
+                AppendCarryNames(sb, "IFD0", new[] { "ModifyDate" });
+            }
+            if (!options.StripExifCamera) AppendCarryNames(sb, "ExifIFD", DngCarryCamera);
+            AppendCarryNames(sb, "ExifIFD", DngCarryExif);
+            AppendCarryNames(sb, "InteropIFD", DngCarryInterop);
+            // XMP(tag 700)：标准 TIFF 位，PS/ACR 会读（评级、关键词、crs 设置）。
+            // dngtool 自己写不了（构建 qDNGUseXMP=0）⇒ 只能在这一步按源件抄。默认全保留，
+            // 只有显式 --strip-xmp 才不抄（2026-10-21 补：这条原来整条缺失，DNG→DNG 的 XMP 静默丢）。
+            if (!options.StripXmp) sb.Append("-XMP:all ");
+            if (!options.StripExifGps) sb.Append("-GPS:all ");
+            return sb.Append('\"').Append(targetPath).Append('\"').ToString();
+        }
+
+        /// <summary><see cref="BuildDngStdTagsCarryArgs"/> 的写操作封装（exiftool 缺席 ⇒ <see cref="SkippedNoExiftool"/>，与"成功"区分开）。</summary>
+        public static async Task<int> CarryStdTagsToDngAsync(
+            string sourcePath, string targetPath, Models.FfmpegOptions options,
+            Action<string>? logCallback = null, CancellationToken ct = default)
+        {
+            if (_detectedPath == null)
+            {
+                Detect();
+                if (_detectedPath == null)
+                    return SkippedNoExiftool;
+            }
+            var args = BuildDngStdTagsCarryArgs(sourcePath, targetPath, options);
             logCallback?.Invoke($"[exiftool] {args}\n");
             return await RunWriteAsync(targetPath, args, logCallback, ct);
         }

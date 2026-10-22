@@ -68,10 +68,10 @@ if (-not (Test-Path $planDir)) {
 CK $true "PLAN dir exists"
 
 # 2. 目标可执行文件(只认 Release 产物, 不做 Debug 回退)
-$exe = Join-Path $repoRoot 'tests/UiTestHost/bin/Release/net11.0/win-x64/UiTestHost.exe'
+$exe = Join-Path $repoRoot 'tests/projects/UiTestHost/bin/Release/net11.0/win-x64/UiTestHost.exe'
 if (-not (Test-Path $exe)) {
     Write-Output "  FAIL host exe exists: $exe"
-    Write-Output "       build first: dotnet build tests/UiTestHost/UiTestHost.csproj -c Release"
+    Write-Output "       build first: dotnet build tests/projects/UiTestHost/UiTestHost.csproj -c Release"
     Write-Output "UISTRAT RESULT: pass=0 fail=1"
     exit 1
 }
