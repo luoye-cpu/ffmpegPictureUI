@@ -119,11 +119,18 @@ $hm = ((ExecOut $ff "-hide_banner -h muxer=heif") | Out-String).Trim()
 $noMuxer = $hm -match "Unknown format"
 $rcH = RC "-y -hide_banner -loglevel error -f lavfi -i color=red:s=16x16 -c:v libx265 -frames:v 1 `"$(Join-Path $d 'h.heic')`""
 $heicOk = ($rcH -eq 0) -and ((Get-Item "$d/h.heic" -EA SilentlyContinue).Length -gt 0)
-$heifEnc = [bool](Get-ChildItem "$root/publish" -Recurse -Filter "heifenc.exe" -EA SilentlyContinue)
-CK ($noMuxer -and -not $heicOk -and -not $heifEnc) `
-   ("HEIF 无写入通路（heif muxer 缺失={0} 直接写出成功={1} heifenc 存在={2}）→ 能力表 heic/heif 全保守" -f $noMuxer, $heicOk, $heifEnc)
-if (-not ($noMuxer -and -not $heicOk -and -not $heifEnc)) {
-  Write-Output "    ⚠ 工具链已具备 heif 写入能力：必须重测 E1同型实验并更新 FormatColorCaps[heic/heif]！"
+$heifEnc = [bool](Get-ChildItem "$root/publish","$root/tools" -Recurse -Filter "heifenc.exe" -EA SilentlyContinue)
+# P1-2（2026-10-20）：tripwire 扩到 libheif.dll，并把「libultrahdr 的 HEIF API 已进树」打成可见读数。
+#   `heifultrahdr.h` 本身**不是**写通路（没有 heifenc/libheif.dll 就编不出来也用不了），但它意味着
+#   "随时可能被构建出来" ⇒ 必须打印；而 heifenc.exe / libheif.dll 任一出现 ⇒ 本判据**当场判红**，
+#   提醒重测 E1 同型实验并更新 FormatColorCaps[heic/heif]（不得靠人记得）。
+$libheif = [bool](Get-ChildItem "$root/publish","$root/tools" -Recurse -Filter "libheif.dll" -EA SilentlyContinue)
+$heifApi = "$root/tools/src/libultrahdr/lib/include/ultrahdr/heifultrahdr.h"
+Write-Output ("  libultrahdr HEIF API（heifultrahdr.h）在位={0} → {1}" -f (Test-Path $heifApi), $heifApi)
+CK ($noMuxer -and -not $heicOk -and -not $heifEnc -and -not $libheif) `
+   ("HEIF 无写入通路（heif muxer 缺失={0} 直接写出成功={1} heifenc 存在={2} libheif.dll 存在={3}）→ 能力表 heic/heif 全保守" -f $noMuxer, $heicOk, $heifEnc, $libheif)
+if (-not ($noMuxer -and -not $heicOk -and -not $heifEnc -and -not $libheif)) {
+  Write-Output "    ❌ 工具链已具备 heif 写入通路（heifenc.exe / libheif.dll 任一在位）：必须重测 E1同型实验并更新 FormatColorCaps[heic/heif]！"
 }
 
 Write-Host "`n=== (g) 未实测项（必须显式标注，不得当作已知事实）===" -ForegroundColor Cyan

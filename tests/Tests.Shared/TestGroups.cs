@@ -71,6 +71,9 @@ namespace Tests.Shared
                 // （进程内调 `GainMapEncoder.EncodeAsync` 的帧长守卫）⇒ 按「有调用点就必须进账」并进本组，
                 // 不进任何豁免表。它不读外部工具、不落盘（守卫在第一步返回），所以没有夹具依赖。
                 "framelen",
+                // 2026-10-20 P0-2：Apple 两代 JPEG 的**像素级**施加证据（读回 gbrpf32le 线性像素）。
+                // 调用者 = 在册门禁 `verify-gainmap-engine.ps1` §12（经 ProbeStats 辅助函数起 ServiceProbe）。
+                "gainmap-stats",
             },
 
             // ── 编码参数与产物 / 元数据与 ICC / 增益图与 Ultra HDR / 进程与 IPC ──

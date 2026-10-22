@@ -200,24 +200,67 @@ if (-not (Test-Path $syn3)) {
   #   而自家 `MergeXmpIntoMetadata` 也当场报「ISO 与 XMP 增益范围不一致」。修后两处一致。
   #   ⚠ 单位换算由**两个不同实现各报一次**再对撞：ISO 只给线性 boost（libultrahdr 读回），
   #     XMP 直接给 log2 ⇒ 必须把 ISO 的值取 log2 再比，不然两把尺根本不在同一域。
-  $x5 = X $et ('-a -s -G1 -XMP-hdrgm:GainMapMin -XMP-hdrgm:GainMapMax "' + $dA.file.FullName + '"') 'xmp_a'
-  #   取值正则的正确形状是 `名字\s*:\s*值` —— exiftool 的输出里标签与冒号之间有一串**对齐空白**，
-  #   写 `GainMapMin:` 会命中 0 次（实测），写 `GainMapMin\D*(...)` 又会把负号当"非数字"跳过（也实测）。
-  $rxMin = [regex]::Match($x5.text, 'GainMapMin\s*:\s*(-?[0-9.]+)')
-  $rxMax = [regex]::Match($x5.text, 'GainMapMax\s*:\s*(-?[0-9.]+)')
-  $isoLog2Min = [Math]::Log([double]$mnA.Groups[1].Value) / [Math]::Log(2.0)
-  $isoLog2Max = [Math]::Log([double]$mxA.Groups[1].Value) / [Math]::Log(2.0)
-  $d5ok = ($x5.code -eq 0) -and $rxMin.Success -and $rxMax.Success `
-          -and ([Math]::Abs([double]$rxMin.Groups[1].Value - $isoLog2Min) -lt 0.02) `
-          -and ([Math]::Abs([double]$rxMax.Groups[1].Value - $isoLog2Max) -lt 0.02)
-  CK 'D5 两处声明同源：XMP hdrgm 的 log2 与 ISO 读回取 log2 后一致（±0.02）' $d5ok `
-     ("XMP[min,max]=[" + $(if($rxMin.Success){$rxMin.Groups[1].Value}else{'-'}) + "," +
-      $(if($rxMax.Success){$rxMax.Groups[1].Value}else{'-'}) + "] ISO 换算=[" +
-      $isoLog2Min.ToString('0.000') + "," + $isoLog2Max.ToString('0.000') + "] exiftool exit=" + $x5.code)
-  # 反真空：XMP 若被写回 0（旧缺陷形态），上面必须红 ⇒ 用一条"必须不等"的正向自证锁住这把尺没坏
-  CK 'D5b 反控：A 臂的 XMP 下沿必须**不是** 0.0（0.0 就是修前形态：声明了却没传参）' `
-     ($rxMin.Success -and ([double]$rxMin.Groups[1].Value -lt -0.05)) `
-     "GainMapMin=$(if($rxMin.Success){$rxMin.Groups[1].Value}else{'-'})"
+  # ⚠ 2026-10-20：默认档改成"只写 ISO"⇒ 默认产物里**没有 XMP**，"两处声明同源"这格失去了对撞对象
+  #   （读不到 XMP 时 `rxMin.Success` 为假 ⇒ 旧写法会红，而不是被放宽成恒真）。
+  #   判据不放宽：为它单开一条 `both` 档臂，并且 **XMP 与 ISO 都从同一条臂读**
+  #   （原写法拿 $dA 的 XMP 对 $dA 的 ISO，依赖"A/B 只差下沿"这个前提；单开一条更直接）。
+  $dX = AppRun 'gm3_X' $syn3 '--jpeg-gain-map true --jpeg-gain-map-metadata both'
+  if ($dX.count -eq 1) {
+    $pX = X $uhdr ('-m 1 -P -j "' + $dX.file.FullName + '"') 'd5_iso'
+    $mnX = [regex]::Match($pX.text, '--minContentBoost\s+([0-9.]+)')
+    $mxX = [regex]::Match($pX.text, '--maxContentBoost\s+([0-9.]+)')
+    # 规范把增益元数据放在**次图** XMP（主图只有 Version）⇒ 这里必须带 -ee 提取内嵌图。
+    $x5 = X $et ('-ee -a -s -G1 -XMP-hdrgm:GainMapMin -XMP-hdrgm:GainMapMax "' + $dX.file.FullName + '"') 'xmp_a'
+    #   取值正则的正确形状是 `名字\s*:\s*值` —— exiftool 的输出里标签与冒号之间有一串**对齐空白**，
+    #   写 `GainMapMin:` 会命中 0 次（实测），写 `GainMapMin\D*(...)` 又会把负号当"非数字"跳过（也实测）。
+    $rxMin = [regex]::Match($x5.text, 'GainMapMin\s*:\s*(-?[0-9.]+)')
+    $rxMax = [regex]::Match($x5.text, 'GainMapMax\s*:\s*(-?[0-9.]+)')
+    $isoLog2Min = [Math]::Log([double]$mnX.Groups[1].Value) / [Math]::Log(2.0)
+    $isoLog2Max = [Math]::Log([double]$mxX.Groups[1].Value) / [Math]::Log(2.0)
+    $d5ok = ($x5.code -eq 0) -and $mnX.Success -and $mxX.Success `
+            -and $rxMin.Success -and $rxMax.Success `
+            -and ([Math]::Abs([double]$rxMin.Groups[1].Value - $isoLog2Min) -lt 0.02) `
+            -and ([Math]::Abs([double]$rxMax.Groups[1].Value - $isoLog2Max) -lt 0.02)
+    CK 'D5 两处声明同源（both 档件内自证）：XMP hdrgm 的 log2 与 ISO 读回取 log2 后一致（±0.02）' $d5ok `
+       ("XMP[min,max]=[" + $(if($rxMin.Success){$rxMin.Groups[1].Value}else{'-'}) + "," +
+        $(if($rxMax.Success){$rxMax.Groups[1].Value}else{'-'}) + "] ISO 换算=[" +
+        $isoLog2Min.ToString('0.000') + "," + $isoLog2Max.ToString('0.000') + "] exiftool exit=" + $x5.code)
+    # 反真空：XMP 若被写回 0（旧缺陷形态），上面必须红 ⇒ 用一条"必须不等"的正向自证锁住这把尺没坏
+    CK 'D5b 反控：both 档件的 XMP 下沿必须**不是** 0.0（0.0 就是修前形态：声明了却没传参）' `
+       ($rxMin.Success -and ([double]$rxMin.Groups[1].Value -lt -0.05)) `
+       "GainMapMin=$(if($rxMin.Success){$rxMin.Groups[1].Value}else{'-'})"
+    $xDef = X $et ('-a -s -G1 -XMP-hdrgm:GainMapMax "' + $dA.file.FullName + '"') 'xmp_default'
+    CK 'D5c 默认档不得带 XMP（否则"默认只写 ISO"这件事没有牙）' `
+       ($xDef.text -notmatch 'GainMapMax\s*:') `
+       ("默认臂 exiftool exit=" + $xDef.code + "，输出里出现 GainMapMax = " + [bool]($xDef.text -match 'GainMapMax\s*:'))
+  } else {
+    CK 'D5 前置：both 档臂产出唯一 jpg（默认档不写 XMP ⇒ 这一格只能在 both 档对撞）' $false "count=$($dX.count) rc=$($dX.code)"
+  }
+  # D5d：字段集合法性（Ultra HDR v1.1 的 hdrgm 表只有九项）。正控 = 同一份 XMP 里读得到 GainMapMax；
+  #   负断言 = 我方曾自造的五个字段绝迹（Channels/UseBaseRenderingColorSpace/MapPrimary/MapSecondary/MapImageRatio）。
+  $xAll = X $et ('-ee -a -s -G1 -XMP-hdrgm:all "' + $dX.file.FullName + '"') 'xmp_all'
+  $madeUp = @('Channels', 'UseBaseRenderingColorSpace', 'MapPrimary', 'MapSecondary', 'MapImageRatio')
+  $hit = @($madeUp | Where-Object { $xAll.text -match ('(?m)\b' + $_ + '\s*:') })
+  CK 'D5d XMP 只含 Ultra HDR v1.1 的九项（五个自造字段绝迹）' `
+     (($xAll.text -match 'GainMapMax\s*:') -and $hit.Count -eq 0) `
+     ("GainMapMax 可读=" + [bool]($xAll.text -match 'GainMapMax\s*:') + " 自造命中=" + $hit.Count + $(if ($hit.Count -gt 0) { '［' + ($hit -join ',') + '］' } else { '' }))
+  # D5f：元数据位置与规范一致——主图 XMP 只有 Version（格式信号），数值在次图 XMP。
+  $xP = X $et ('-a -s -G1 -XMP-hdrgm:Version -XMP-hdrgm:GainMapMax "' + $dX.file.FullName + '"') 'xmp_primary'
+  $xE = X $et ('-ee -a -s -G1 -XMP-hdrgm:GainMapMax "' + $dX.file.FullName + '"') 'xmp_embedded'
+  CK 'D5f 主图 XMP＝Version、无数值；次图 XMP 有数值（规范位置）' `
+     (($xP.text -match 'Version\s*:\s*1') -and ($xP.text -notmatch 'GainMapMax\s*:') -and ($xE.text -match 'GainMapMax\s*:')) `
+     ("主图 Version=" + [bool]($xP.text -match 'Version\s*:\s*1') + " 主图 Max=" + [bool]($xP.text -match 'GainMapMax\s*:') + " 次图 Max=" + [bool]($xE.text -match 'GainMapMax\s*:'))
+  # D5e：xmp 档 + 三通道（无 ISO）也必须被第三方读者认成 Ultra HDR 并读出增益上限。
+  $dXR = AppRun 'gm3_XR' $syn3 '--jpeg-gain-map true --jpeg-gain-map-metadata xmp --jpeg-gain-map-multi-channel true'
+  if ($dXR.count -eq 1) {
+    $pXR = X $uhdr ('-m 1 -P -j "' + $dXR.file.FullName + '"') 'd5e_probe'
+    $mxXR = [regex]::Match($pXR.text, '--maxContentBoost\s+([0-9.]+)')
+    CK 'D5e xmp+RGB（无 ISO）被 libultrahdr 认成 Ultra HDR 且读出 maxContentBoost' `
+       (($pXR.text -match 'Ultra HDR Image:\s*Yes') -and $mxXR.Success) `
+       (($pXR.text -split "`r?`n" | Select-Object -First 1) + ' max=' + $(if ($mxXR.Success) { $mxXR.Groups[1].Value } else { '-' }))
+  } else {
+    CK 'D5e 前置：xmp+RGB 臂产出唯一 jpg' $false "count=$($dXR.count) rc=$($dXR.code)"
+  }
 }
 ''
 $bad = @($R | Where-Object { -not $_.ok }).Count

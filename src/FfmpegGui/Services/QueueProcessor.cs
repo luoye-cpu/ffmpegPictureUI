@@ -2993,7 +2993,8 @@ namespace FfmpegGui.Services
                     jpegProgressiveLevel: gmProgLv,
                     container: GainMapEncoder.ContainerOf(outputPath),
                     sourceBaseRaw: item.Options.GainMapSourceBaseRawForEncode,
-                    inputIsSdrWhiteUnit: item.Options.GainMapInputIsSdrWhiteUnit);
+                    inputIsSdrWhiteUnit: item.Options.GainMapInputIsSdrWhiteUnit,
+                    gainMapMetadata: item.Options.JpegGainMapMetadata);
 
                 item.ExitCode = ok ? 0 : -1;
                 item.Status = ok ? "已完成 (Gain Map 纯托管编码)" : "失败 (GainMapEncoder 编码失败)";
@@ -5922,6 +5923,7 @@ namespace FfmpegGui.Services
                 JpegGainMapTargetNits = original.JpegGainMapTargetNits,
                 JpegGainMapDownsample = original.JpegGainMapDownsample,
                 JpegGainMapMultiChannel = original.JpegGainMapMultiChannel,
+                JpegGainMapMetadata = original.JpegGainMapMetadata,
                 TiffCompressionAlgo = original.TiffCompressionAlgo,
                 // ExifTool
                 StripExifGps = original.StripExifGps,

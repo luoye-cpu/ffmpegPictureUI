@@ -508,6 +508,55 @@ namespace Tests.UiMode
                 Check("O5b 命令里的 -c:v 仍是所选后端", cv != null && cv.StartsWith(want, StringComparison.Ordinal),
                       $"picked={pick} -c:v={cv ?? "<none>"}");
             });
+
+            // O6（2026-10-20）：JPEG 增益图的**元数据方式**下拉。
+            //   Ultra HDR v1.1 的 hdrgm 表只有九项、没有通道数字段；参数类型是「单个 Real 或有序数组」，
+            //   单值即适用于全部通道 ⇒ xmp 档**不限制**增益图类型（本实现的三通道参数恒相同）。
+            //   组合合法性仍只由 `GainMapEncoder.ValidateGainMapMetadata` 单点裁决，UI 不写第二份条件。
+            Safe("O6 元数据方式下拉（三档）与预设采集", () =>
+            {
+                var meta = Find<ComboBox>("JpegGainMapMetadataCombo");
+                var type = Find<ComboBox>("JpegGainMapTypeCombo");
+                if (meta == null || type == null)
+                { Check("O6 两个下拉存在（前提）", false, $"meta={meta != null} type={type != null}"); return; }
+
+                var gm = Find<ComboBox>("HdrModeCombo");
+                SetFormat("JPEG"); Pump(10);
+                if (gm != null) { gm.SelectedIndex = 1; Pump(12); }   // 开 GainMap ⇒ 面板进入真实出货构型
+
+                Check("O6a 下拉恰好三档", meta.ItemCount == 3, $"items={meta.ItemCount}");
+                Check("O6b 默认档 = iso（索引 0）", meta.SelectedIndex == 0, $"idx={meta.SelectedIndex}");
+
+                // 反控：先证明 iso 档下 RGB 真的能选
+                meta.SelectedIndex = 0; Pump(10);
+                type.SelectedIndex = 1; Pump(10);
+                Check("O6c iso 档下 RGB 可选且已选中（反控）",
+                      type.IsEnabled && type.SelectedIndex == 1, $"enabled={type.IsEnabled} idx={type.SelectedIndex}");
+
+                // xmp 档不得锁类型：hdrgm 用单值表达「适用于全部通道」，三通道参数本实现恒相同
+                meta.SelectedIndex = 1; Pump(12);
+                Check("O6d xmp 档不锁增益图类型（RGB 仍可选）",
+                      type.IsEnabled && type.SelectedIndex == 1, $"enabled={type.IsEnabled} idx={type.SelectedIndex}");
+
+                var build = typeof(FfmpegGui.MainWindow).GetMethod("BuildPresetData", BF);
+                var snap = build?.Invoke(W, null);
+                var got = snap?.GetType().GetProperty("JpegGainMapMetadata")?.GetValue(snap) as string;
+                var gotCh = snap?.GetType().GetProperty("JpegGainMapMultiChannel")?.GetValue(snap);
+                Check("O6e 采集：xmp 与 RGB 同时落进预设快照",
+                      got == "xmp" && (bool)(gotCh ?? false), $"meta={got ?? "<null>"} multiChannel={gotCh}");
+
+                // 切 both ⇒ 类型仍可用（对照臂）
+                meta.SelectedIndex = 2; Pump(12);
+                Check("O6f both 档 RGB 可选", type.IsEnabled, $"enabled={type.IsEnabled}");
+                type.SelectedIndex = 1; Pump(10);
+                var snap2 = build?.Invoke(W, null);
+                var got2 = snap2?.GetType().GetProperty("JpegGainMapMetadata")?.GetValue(snap2) as string;
+                var gotCh2 = snap2?.GetType().GetProperty("JpegGainMapMultiChannel")?.GetValue(snap2);
+                Check("O6g both 档下 RGB 与 both 一起采集到",
+                      got2 == "both" && (bool)(gotCh2 ?? false), $"meta={got2 ?? "<null>"} multiChannel={gotCh2}");
+
+                meta.SelectedIndex = 0; Pump(10);   // 复原，不给后面的组串状态
+            });
         }
 
         // ══════════════ 入口（供 Program.Main 逐 mode 分派）══════════════

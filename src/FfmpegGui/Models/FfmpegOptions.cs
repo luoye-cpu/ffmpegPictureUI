@@ -112,6 +112,7 @@ namespace FfmpegGui.Models
             if (p.JpegGainMapTargetNits > 0) JpegGainMapTargetNits = p.JpegGainMapTargetNits;
             JpegGainMapDownsample = p.JpegGainMapDownsample;
             JpegGainMapMultiChannel = p.JpegGainMapMultiChannel;
+            if (!string.IsNullOrEmpty(p.JpegGainMapMetadata)) JpegGainMapMetadata = p.JpegGainMapMetadata;
             if (!string.IsNullOrEmpty(p.JpegGainMapBaseGamut)) JpegGainMapBaseGamut = p.JpegGainMapBaseGamut;
             // 注：`VendorGm*` 三个覆盖位**不进预设合并** —— 它们是 CLI/诊断用的校准参数，
             // 存进预设会让一台机器的临时校准悄悄影响另一台机器的预设。
@@ -380,6 +381,9 @@ namespace FfmpegGui.Models
         public int JpegGainMapDownsample { get; set; } = 2;
         /// <summary>多通道增益图: true=RGB, false=灰度(默认,更小体积)</summary>
         public bool JpegGainMapMultiChannel { get; set; } = false;
+        /// <summary>元数据标记方式: "iso"(默认,只写 ISO 21496-1) / "xmp"(只写 hdrgm XMP,兼容旧栈) /
+        /// "both"(两份都写)。取值域与组合合法性由 <c>GainMapEncoder.ValidateGainMapMetadata</c> 单点裁决。</summary>
+        public string JpegGainMapMetadata { get; set; } = "iso";
         // ── 厂商增益图（OnePlus/OPPO `local.hdr.*`）参数覆盖：null = 不覆盖，沿用尾注实测值 ──
         // 存在的理由：144 B 参数块无公开规范，min/max 有两条独立读数互证、γ 只有单读数推断；
         // 留出覆盖位，将来拿到规范或对照样机时不必改代码就能校准（非法值只警告并回落实测）。
