@@ -12,6 +12,54 @@
 
 ## 📝 更新日志
 
+### v1.6.0-beta8 (2026-10-23) — 私有内容审计收口：厂商裁剪进 DefaultCrop + 逐实例账本 + 测试工程迁入 tests/projects
+
+> **谱系**：`src/` **17 个产品文件**（+306/−68 行）、`tools/src/dngtool`（+1,970/−79 行，含此前各轮的
+> 镜头三表/IDC/opcode 与本轮裁剪路由），以及 **172 个文件**的仓库重排（`tests/<工程>` →
+> `tests/projects/<工程>`、`docs/` 按承重/审查/归档三分并新增 `docs/INDEX.md`）。受管门禁 **78 条**，
+> `#77` 默认档 **99 → 105/0**。整轮（`TMP/TEMP/TMPDIR` 重定向臂）**77 绿 / 1 红**，唯一红是 `bench`
+> 的两条计时阈值（多核 `4.0×` vs ≥4×、8b 单核 `24.3` vs ≥25 MPix/s）；同二进制空载独跑 **37/0**
+> （43.5/46.1 MPix/s，表增益 6.2×/6.9×）⇒ 轮内争用，不是回退。⚠ 不重定向 `%TEMP%` 的臂会**成片假红**：
+> 沙箱禁止工具进程写临时目录 ⇒ `exit -13`（full22 实测 38 红，证据
+> `tests/output/validate/fmtmatrix_4ef00c74/run_webp.out`）。
+
+**🟢 DNG 出口：厂商裁剪框第一次真正落到标准位**
+
+- `dngtool` 把 LibRaw 的 `raw_inset_crops[0]`（0.20 起标为 "vendor specified crop"）写进
+  `DefaultCropOrigin/Size`（**相对 ActiveArea**）。四道门槛：make 白名单、55% 尺寸下限、必须落在
+  ActiveArea 内、"只有宽高没有原点"的机型直接拒绝；每次决策都点名
+  `default-crop=vendor WxH@x,y` 或 `default-crop=active(... rejected: 原因)`。
+- 44 件样本实测：**13 件映射成功**（Canon/Fuji/Panasonic/Leica/Pentax/Nikon/Olympus/Kodak/Epson）、
+  Sony 3 件只给宽高 ⇒ 拒绝、Canon EOS R6 的 3408 超过 ActiveArea 3407 ⇒ 拒绝、22 件无厂商裁剪、
+  5 件转换失败（RPi×2 + COOLSCAN×3）。
+- 原点正确性用**机身内嵌 JPEG 对拍**独立证实（Canon EOS 40D：最优 (4,3)、相关系数 0.9422，
+  次优 (5,3) 0.8696）——不是只信 LibRaw 的数字。
+- ⚠ 行为变化：开启该路由后，产物在 PS/Camera Raw 里显示的是**厂商有效区**，不再等于整幅 ActiveArea。
+
+**🟢 色彩：产物矩阵不冒名，ForwardMatrix 被证实是生效矩阵**
+
+- 14 条厂商 `ColorMatrix*` 与产物 `ColorMatrix1/2` **无一相等**（最佳残差 0.38~0.83）⇒ 产物矩阵来自
+  LibRaw `adobe_coeff`，不冒充厂商值。
+- `dng_validate` 渲染实测：删掉 `ForwardMatrix1/2` 的逐像素 MAD **1.605**、只改 `ColorMatrix1` 为
+  **0.117**、`AsShotNeutral` R×2 为 **38.531** ⇒ ASN 与 FM 是活的，CM1 在 FM 在场时几乎不参与。
+
+**🟡 逐实例账本（44 件 / 9,517 条厂商组标签）**
+
+- 处置：carry_verified 174 / carry_indirect 451 / carry_gap 5 / info_duplicate_standard 341 /
+  drop_no_carrier 929 / drop_semantics_unknown 386 / policy_discarded 75 / unaudited 7,156；
+  已审 **2,361（24.8%）**，三类和与总数自洽（门禁 ㉛ 钉住）。
+- `carry_gap` 本轮只有 `ImageUniqueID`（5 条）：值只在厂商组、ExifIFD 缺位，且 Sigma 两份值不同
+  ⇒ 不做无条件覆盖，留作下一轮条件搬运。
+- CR3：198 是 Canon 组去重后的键名，母体按实例是 **220**；"93 条可修"是已撤回的硬编码字符串。
+- COOLSCAN 3 件维持显式拒绝：源已声明 3 平面 / 16 bit / RGB，阻塞点是 `cam_xyz` 全零（无 ColorMatrix1）。
+
+**🧪 测试层**
+
+- `#77` 新增 ㉚a–d（裁剪映射 + 两负控 + 机身 JPEG 原点对拍）/ ㉛（逐实例账本自洽）/ ㉜（色彩变异渲染）。
+- 新增 5 支探针（裁剪三侧对账、机身 JPEG 原点对齐、厂商矩阵逐值、色彩效果变异、逐实例账本审计），
+  全部平铺在 `tests/scripts/` 且在册。
+- 13 个测试工程迁入 `tests/projects/<工程名>/`；`docs/` 按承重/审查/归档三分，新增 `docs/INDEX.md`。
+
 ### v1.6.0-beta7 (2026-10-09) — JPEG LI「选了渐进式却拿到 baseline」四因分层 + 冲突出声 + 每图探测链合并
 
 > **谱系**：`src/` 下 **13 个产品文件**改动（+189/−17 行）；测试侧 **4 个文件**（+124/−15 行，

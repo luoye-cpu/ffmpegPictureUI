@@ -13,6 +13,62 @@ All notable changes to this project are documented in this file.
 
 ## 📝 Changelog
 
+### v1.6.0-beta8 (2026-10-23) — private-content audit closed out: vendor crop lands in DefaultCrop + per-instance ledger + test projects moved into tests/projects
+
+> **Lineage**: **17 product files** under `src/` (+306/−68 lines), `tools/src/dngtool`
+> (+1,970/−79 lines, covering the lens tables / IDC / opcodes from earlier rounds plus this round's crop
+> route), and a **172-file** repository re-layout (`tests/<project>` → `tests/projects/<project>`, `docs/`
+> split into load-bearing / review / archive with a new `docs/INDEX.md`). Gate manifest: **78 scripts**;
+> `#77` default tier goes **99 → 105/0**. The full round (with `TMP/TEMP/TMPDIR` redirected) is
+> **77 green / 1 red**; the only red is `bench`'s two timing thresholds (multi-core `4.0×` vs ≥4×,
+> 8-bit single-core `24.3` vs ≥25 MPix/s). The same binary run standalone on an idle machine gives
+> **37/0** (43.5/46.1 MPix/s, table gain 6.2×/6.9×) ⇒ contention, not a regression. ⚠ Without the temp
+> redirect the round goes **mass false red**: the sandbox denies temp writes to tool processes ⇒ `exit -13`
+> (38 reds measured in full22; evidence `tests/output/validate/fmtmatrix_4ef00c74/run_webp.out`).
+
+**🟢 DNG output: the vendor crop finally reaches a standard tag**
+
+- `dngtool` now writes LibRaw's `raw_inset_crops[0]` (labelled "vendor specified crop" since 0.20) into
+  `DefaultCropOrigin/Size` — offsets are **relative to ActiveArea**. Four gates: make allow-list, a 55%
+  size floor, containment inside ActiveArea, and an outright refusal for bodies that publish only
+  width/height. Every decision is named in the log:
+  `default-crop=vendor WxH@x,y` or `default-crop=active(... rejected: reason)`.
+- Across the 44-file corpus: **13 mapped**, Sony ×3 refused (width/height only), Canon EOS R6 refused
+  (3408 > ActiveArea 3407), 22 with no vendor crop, 5 conversion failures (RPi ×2 + COOLSCAN ×3).
+- Origin correctness is corroborated **against the camera's embedded JPEG**, not just LibRaw numbers
+  (Canon EOS 40D: best (4,3) with correlation 0.9422 vs runner-up (5,3) at 0.8696).
+- ⚠ Behaviour change: with this route on, PS/Camera Raw now shows the **vendor active area** instead of
+  the full ActiveArea.
+
+**🟢 Colour: the product's matrices do not impersonate vendor values, and ForwardMatrix is the live one**
+
+- None of the 14 vendor `ColorMatrix*` sets equals the product's `ColorMatrix1/2` (best residual
+  0.38–0.83) ⇒ the product's matrices come from LibRaw `adobe_coeff`.
+- `dng_validate` renders: deleting `ForwardMatrix1/2` gives a per-pixel MAD of **1.605**, mutating only
+  `ColorMatrix1` gives **0.117**, and `AsShotNeutral` R×2 gives **38.531** ⇒ ASN and FM are live, CM1 is
+  nearly inert while FM exists.
+
+**🟡 Per-instance ledger (44 files / 9,517 vendor-group tag instances)**
+
+- Dispositions: carry_verified 174 / carry_indirect 451 / carry_gap 5 / info_duplicate_standard 341 /
+  drop_no_carrier 929 / drop_semantics_unknown 386 / policy_discarded 75 / unaudited 7,156; audited
+  **2,361 (24.8%)**, with disposition/evidence/class sums all equal to the total (locked by gate ㉛).
+- The only `carry_gap` is `ImageUniqueID` (5): the value exists only in vendor groups, and Sigma ships
+  two differing copies ⇒ no unconditional copy; left for a conditional-carry round.
+- CR3: 198 is the deduplicated Canon key count; by instance the population is **220**. The "93 fixable"
+  figure was a retracted hard-coded string.
+- The 3 COOLSCAN files stay explicitly refused: the source declares 3 planes / 16-bit / RGB; the blocker
+  is an all-zero `cam_xyz` (no ColorMatrix1).
+
+**🧪 Test layer**
+
+- `#77` gains ㉚a–d (crop mapping + two negative controls + embedded-JPEG origin alignment), ㉛ (ledger
+  self-consistency) and ㉜ (colour mutation rendering).
+- Five new probes (three-way crop reconciliation, origin alignment, vendor matrix values, colour-effect
+  mutation, ledger audit), all flat under `tests/scripts/` and registered.
+- The 13 test projects moved to `tests/projects/<name>/`; `docs/` is now split into load-bearing /
+  review / archive with a new `docs/INDEX.md`.
+
 ### v1.6.0-beta7 (2026-10-09) — JPEG LI "I picked progressive but got baseline": four causes split apart + the conflict now speaks + one probe call merged per image
 
 > **Lineage**: **13 product files** under `src/` changed (+189/−17 lines); **4 test files** (+124/−15 lines —
