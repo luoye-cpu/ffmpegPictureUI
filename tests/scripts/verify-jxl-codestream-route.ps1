@@ -45,6 +45,7 @@ $exe = "$root/src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.exe"
 $ff = "$root/publish/PLAN/ffmpeg-full/ffmpeg.exe"
 $fp = "$root/publish/PLAN/ffmpeg-full/ffprobe.exe"
 $cjxl = "$root/publish/PLAN/jxl/bin/cjxl.exe"
+$djxl = "$root/publish/PLAN/jxl/bin/djxl.exe"
 $jxlinfo = "$root/publish/PLAN/jxl/bin/jxlinfo.exe"
 
 # ⚠ 运行级隔离（GUID）：固定 `$work` 会被并发的同名实例互删 ⇒ 假红（§6 第 66 条）。
@@ -127,7 +128,7 @@ function Sha256Of([string]$path) {
 function Sha8([string]$h) { if ($h.Length -ge 16) { return $h.Substring(0, 16) } return "<无>" }
 
 $missing = @()
-foreach ($need in @($exe, $ff, $fp, $cjxl, $jxlinfo)) { if (-not (Test-Path $need)) { $missing += $need } }
+foreach ($need in @($exe, $ff, $fp, $cjxl, $djxl, $jxlinfo)) { if (-not (Test-Path $need)) { $missing += $need } }
 if ($missing.Count -gt 0) {
   Write-Host "缺工具/产物（本门禁不做 Debug 回退，也不静默给绿）：" -ForegroundColor Red
   $missing | ForEach-Object { Write-Host "  $_" -ForegroundColor Red }
@@ -417,5 +418,202 @@ try { if (Test-Path $work) { [System.IO.Directory]::Delete($work, $true) } } cat
 CK (-not (Test-Path $work)) "⑨ 运行级目录已清零：$work"
 
 Write-Host ""
-Write-Host "===== jxl-codestream-route: PASS=$pass FAIL=$fail =====" -ForegroundColor $(if ($fail -eq 0) { "Green" } else { "Red" })
+# ── ⑪ JXL 输入的绕过必须**按内容三分**点名依据（2026-10-22）────────────────────────────
+# 第三轮整轮实测：我第一版拿选项布尔 `JxlLosslessJpeg` 当"容器里有没有 jbrd"的代理（它在 :444 已被
+#   「输入是不是 JPEG」归一化）⇒ `.jxl → .jpg` 的可逆重构路被引擎截走，「往返 JPEG 与源逐字节相同」转红
+#   = 真数据丢失。修好后（信号 = `JxlInspector.DetectType`）理由必须能**分档**：
+#     jbrd（交引擎解码即不可逆）／原生码流（两腿实测差 ±1 码，为色彩裁决引入无谓像素改动不划算）／
+#     未知或截断（引擎的 ffmpeg 解码腿实测 25 s 忙等未结束）。
+# 判据取「三档各自命中自己的措辞」+「三条互不相同」⇒ 证明三分是判别性的，不是同一句万能文案。
+Write-Host "`n### ⑪ JXL 绕过理由的三分（jbrd / 原生码流 / 未知·截断）###" -ForegroundColor Cyan
+$twork = "$root/tests/output/jxlcs_tier_$([guid]::NewGuid().ToString('N').Substring(0, 8))"
+# ⚠ 本段自带素材：脚本结尾的跑绿自清会 Delete($work)，复用别的小节的素材会被删掉
+#   （第一版就是这么假红过一次：三条"素材缺失"）。目录自建自删。
+New-Item -ItemType Directory -Force -Path $twork | Out-Null
+# ⚠ 本段的子进程输出**不落 $work**（脚本末尾的跑绿自清会把 $work 删掉，Exec 的重定向目标随之失效 ⇒ 子进程根本起不来）
+function ExecT([string]$file, [string]$argStr, [string]$tag) {
+  $o = "$twork/$tag.out"; $e = "$twork/$tag.err"
+  $p = Start-Process -FilePath $file -ArgumentList $argStr -Wait -NoNewWindow -PassThru -RedirectStandardOutput $o -RedirectStandardError $e
+  $t = ''
+  if (Test-Path $o) { $t += [IO.File]::ReadAllText($o) }
+  if (Test-Path $e) { $t += "`n" + [IO.File]::ReadAllText($e) }
+  return @{ code = $p.ExitCode; text = $t }
+}
+$tpng = "$twork/t.png"; $tjpg = "$twork/t.jpg"
+$tnat = "$twork/native.jxl"; $tjb = "$twork/jbrd.jxl"; $tn = "$twork/unknown.jxl"
+$null = ExecT $ff ("-y -v error -f lavfi -i `"testsrc=s=64x64`" -frames:v 1 `"$tpng`"") 't_png'
+$null = ExecT $ff ("-y -v error -i `"$tpng`" -q:v 2 `"$tjpg`"") 't_jpg'
+$null = ExecT $cjxl ("`"$tpng`" `"$tnat`" -q 90") 't_native'
+$null = ExecT $cjxl ("`"$tjpg`" `"$tjb`" --lossless_jpeg=1") 't_jbrd'
+$null = ExecT $ff '-y -v error -f lavfi -i "nullsrc=s=64x64" -frames:v 1 -f rawvideo -pix_fmt gray "$twork/zero.bin"' 't_zero'
+# ⚠ 截断的**裸码流**仍以 `FF 0A` 开头 ⇒ DetectType 仍判原生（本门禁 ① 修的正是这个头判定），
+#   所以"类型未知"档要用一份不是 JXL 的 .jxl；截断原生件的忙等风险归 #11（放开原生档之前必须先解决）。
+$zb = Join-Path $twork "zero.bin"
+$bytesU = [byte[]](0..63)
+if (Test-Path $zb) { $bytesU = [IO.File]::ReadAllBytes($zb) }
+[IO.File]::WriteAllBytes($tn, $bytesU[0..([Math]::Min(63, $bytesU.Length - 1))])
+$tiers = @(
+  @{ f = $tjb;  n = 'jbrd';     want = 'jbrd|JPEG 比特流重构' },
+  @{ f = $tnat; n = '原生码流'; want = '原生码流|±1 码' },
+  @{ f = $tn;   n = '未知件';   want = '忙等|未知' }
+)
+$reasons = @{}
+foreach ($t in $tiers) {
+  if (-not (Test-Path $t.f)) { CK $false "⑬ $($t.n) 素材缺失 ⇒ 该档本轮判不了（不给假绿）"; continue }
+  $od = "$work\route_" + $t.n; New-Item -ItemType Directory -Force -Path $od | Out-Null
+  $r = ExecT $exe ("--headless --log-level debug -i `"$($t.f)`" -o `"$od`" --format png --overwrite") ("tier_" + $t.n)
+  $why = ([regex]::Match($r.text, '内容依据：([^\r\n]*)')).Groups[1].Value
+  Write-Host ("  {0,-8} rc={1} 依据=<{2}>" -f $t.n, $r.code, $why)
+  CK ($r.text -match '尚未接入该路径') "⑬ $($t.n)：JXL 输入仍由专用管线处理"
+  CK ($r.text -notmatch '\[色彩引擎\] 决策') "⑬ $($t.n)：不得出现引擎决策行（它确实没进引擎）"
+  CK ($why -match $t.want) "⑬ $($t.n)：点名的是**本档专属**依据（须匹配 $($t.want)）"
+  if ($why -ne '') { $reasons[$t.n] = $why }
+}
+$uniq = @($reasons.Values | Sort-Object -Unique).Count
+try { if (Test-Path $twork) { [System.IO.Directory]::Delete($twork, $true) } } catch { }
+CK ($reasons.Count -eq 3 -and $uniq -eq 3) "⑬ 三条理由互不相同（实取 $($reasons.Count) 条 / 去重 $uniq）⇒ 三分不是万能文案"
+
+Write-Host ""
+# ── ⑭ 解码腿逐档实测（2026-10-23）：把「JXL 原生码流仍绕过」的理由变成**每轮重新量**的读数 ──
+#   §⑪ 只断言"点名的理由对不对"，**不**断言"理由本身是否还成立" ⇒ 理由可以退化成一句陈旧注释，
+#   下一轮谁改了解码器也没人知道。本节现造素材、逐档跑两条腿并逐样本对撞：
+#     A 腿 = djxl → PNG → ffmpeg 读 raw（JXL 专用输入管线今天用的解码器）
+#     B 腿 = ffmpeg 直接解 jxl（**色彩引擎**用的解码腿）
+#   2026-10-23 静机实测（本机同批工具链，512×384 夹具）：
+#     lossless 8-bit / 16-bit / 灰度 ⇒ 两腿 max|Δ| = 0（逐样本相同）
+#     有损 8-bit                    ⇒ max|Δ| = 267/65535（≈1 个 8-bit 码），23 万样本不同
+#     60% 截断件                    ⇒ djxl 21 ms 显式失败；**ffmpeg > 60 s 未结束**（忙等）
+#   ⇒ 「原生码流交给引擎」的真实代价是**有损档 ±1 码** + **残缺档忙等**，两条都按档量化在这里；
+#     放开的前提因此不是"改个判据"，而是「引擎解码腿换 djxl + 路由侧先验证完整性」（见 §⑪ 末句）。
+Write-Host "`n### ⑭ 解码腿逐档实测（djxl vs ffmpeg）###" -ForegroundColor Cyan
+$dwork = "$root/tests/output/jxl_legs_$([guid]::NewGuid().ToString('N').Substring(0, 8))"
+New-Item -ItemType Directory -Force -Path $dwork | Out-Null
+
+# 有界等待版 Exec（截断件会让 ffmpeg 忙等 ⇒ 无界版会把门禁自己挂死，正是本节要量的现象）
+function ExecBounded([string]$file, [string]$argStr, [string]$tag, [int]$ms) {
+  $o = "$dwork/$tag.out"; $e = "$dwork/$tag.err"
+  $p = Start-Process -FilePath $file -ArgumentList $argStr -NoNewWindow -PassThru -RedirectStandardOutput $o -RedirectStandardError $e
+  $done = $p.WaitForExit($ms)
+  if (-not $done) {
+    try { $p.Kill($true) } catch { try { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } catch { } }
+    try { [void]$p.WaitForExit(5000) } catch { }
+  }
+  return @{ done = $done; code = $(if ($done) { $p.ExitCode } else { -999 }) }
+}
+function LoadU16([string]$path) {
+  $b = [System.IO.File]::ReadAllBytes($path)
+  $n = [int]($b.Length / 2)
+  $a = New-Object 'UInt16[]' $n
+  if ($n -gt 0) { [System.Buffer]::BlockCopy($b, 0, $a, 0, ($n * 2)) }
+  return $a
+}
+function DiffU16($a, $b) {
+  $n = [Math]::Min($a.Length, $b.Length)
+  $mx = 0; $cnt = 0
+  for ($i = 0; $i -lt $n; $i++) {
+    $d = [int]$a[$i] - [int]$b[$i]
+    if ($d -ne 0) {
+      $cnt++
+      if ([Math]::Abs($d) -gt $mx) { $mx = [Math]::Abs($d) }
+    }
+  }
+  return @{ max = $mx; diff = $cnt; n = $n }
+}
+# 两条腿各跑一次并回读，返回 @{ a; b; cmp }（cmp = $null 表示至少一条腿没产出）
+function MeasureLegs([string]$jxl, [string]$tag) {
+  $aPng = "$dwork/$tag.A.png"; $aRaw = "$dwork/$tag.A.rgb48"; $bRaw = "$dwork/$tag.B.rgb48"
+  $ra = Exec $djxl "--quiet `"$jxl`" `"$aPng`"" "${tag}_A"
+  if (($ra.code -eq 0) -and (Test-Path $aPng)) {
+    [void](Exec $ff "-y -hide_banner -loglevel error -i `"$aPng`" -frames:v 1 -vf format=rgb48le -f rawvideo `"$aRaw`"" "${tag}_Araw")
+  }
+  $rb = Exec $ff "-y -hide_banner -loglevel error -i `"$jxl`" -frames:v 1 -vf format=rgb48le -f rawvideo `"$bRaw`"" "${tag}_B"
+  $cmp = $null
+  if ((Test-Path $aRaw) -and (Test-Path $bRaw)) { $cmp = DiffU16 (LoadU16 $aRaw) (LoadU16 $bRaw) }
+  return @{ a = $ra.code; b = $rb.code; cmp = $cmp }
+}
+
+$src8 = "$dwork/src8.png"
+[void](Exec $ff "-y -hide_banner -loglevel error -f lavfi -i `"testsrc2=s=512x384:d=1`" -frames:v 1 -pix_fmt rgb24 `"$src8`"" "gen8")
+$src16 = "$dwork/src16.png"
+[void](Exec $ff "-y -hide_banner -loglevel error -f lavfi -i `"testsrc2=s=512x384:d=1`" -frames:v 1 -pix_fmt rgb48be `"$src16`"" "gen16")
+$srcG = "$dwork/srcG.png"
+[void](Exec $ff "-y -hide_banner -loglevel error -f lavfi -i `"testsrc2=s=512x384:d=1`" -frames:v 1 -pix_fmt gray `"$srcG`"" "genG")
+$f8 = "$dwork/l8.jxl"; $f16 = "$dwork/l16.jxl"; $fg = "$dwork/g8.jxl"; $fl = "$dwork/lossy8.jxl"
+$ge8 = Exec $cjxl "`"$src8`" `"$f8`" -d 0" "cj_l8"
+$ge16 = Exec $cjxl "`"$src16`" `"$f16`" -d 0" "cj_l16"
+$geG = Exec $cjxl "`"$srcG`" `"$fg`" -d 0" "cj_g8"
+$geL = Exec $cjxl "`"$src8`" `"$fl`" -d 1.0" "cj_lossy"
+CK ((Test-Path $f8) -and (Test-Path $f16) -and (Test-Path $fg) -and (Test-Path $fl)) "⑭ 素材自备：lossless8/lossless16/gray8/lossy8 四件已生成（cjxl 退出码 $($ge8.code)/$($ge16.code)/$($geG.code)/$($geL.code)）"
+# ⚠ 修正一条我写错的断言（2026-10-23 首跑当场红）：`cjxl -d 0` 对 **16-bit** 输入**默认写容器**
+#   （head = `00 00 00 0C 'JXL '`），不是裸码流。⇒ 本节量的两种形态各有一件，断言按实测逐件写。
+CK (((HeadHexN $f8 2) -eq "FF 0A") -and ((HeadHexN $fg 2) -eq "FF 0A") -and ((HeadHexN $fl 2) -eq "FF 0A")) "⑭ 8-bit lossless / 灰度 / 有损三件是**裸码流**（head = FF 0A；实 $(HeadHexN $f8 2) / $(HeadHexN $fg 2) / $(HeadHexN $fl 2)）"
+CK ((HeadHexN $f16 12) -eq "00 00 00 0C 4A 58 4C 20 0D 0A 87 0A") "⑭ 16-bit lossless 是**容器**（cjxl 对该档默认写 ISOBMFF；head = $(HeadHexN $f16 12)）⇒ 两种形态本轮都被量到"
+
+$m8 = MeasureLegs $f8 'l8'
+CK (($m8.a -eq 0) -and ($m8.b -eq 0) -and ($null -ne $m8.cmp)) "⑭ lossless 8-bit：两腿都成功（djxl rc=$($m8.a)、ffmpeg rc=$($m8.b)）"
+if ($null -ne $m8.cmp) {
+  CK (($m8.cmp.max -eq 0) -and ($m8.cmp.diff -eq 0)) "⑭ lossless 8-bit：两腿**逐样本相同**（max|Δ|=$($m8.cmp.max)，不同样本 $($m8.cmp.diff)/$($m8.cmp.n)）"
+}
+$m16 = MeasureLegs $f16 'l16'
+CK (($m16.a -eq 0) -and ($m16.b -eq 0) -and ($null -ne $m16.cmp)) "⑭ lossless 16-bit：两腿都成功（djxl rc=$($m16.a)、ffmpeg rc=$($m16.b)）"
+if ($null -ne $m16.cmp) {
+  CK (($m16.cmp.max -eq 0) -and ($m16.cmp.diff -eq 0)) "⑭ lossless 16-bit：两腿**逐样本相同**（max|Δ|=$($m16.cmp.max)，不同样本 $($m16.cmp.diff)/$($m16.cmp.n)）"
+}
+$mg = MeasureLegs $fg 'g8'
+CK (($mg.a -eq 0) -and ($mg.b -eq 0) -and ($null -ne $mg.cmp)) "⑭ 灰度 lossless：两腿都成功（djxl rc=$($mg.a)、ffmpeg rc=$($mg.b)）"
+if ($null -ne $mg.cmp) {
+  CK (($mg.cmp.max -eq 0) -and ($mg.cmp.diff -eq 0)) "⑭ 灰度 lossless：两腿**逐样本相同**（max|Δ|=$($mg.cmp.max)，不同样本 $($mg.cmp.diff)/$($mg.cmp.n)）"
+}
+$ml = MeasureLegs $fl 'ly'
+CK (($ml.a -eq 0) -and ($ml.b -eq 0) -and ($null -ne $ml.cmp)) "⑭ 有损 8-bit：两腿都成功（djxl rc=$($ml.a)、ffmpeg rc=$($ml.b)）"
+if ($null -ne $ml.cmp) {
+  # 这两条互为对照：`>0` 证明**比较器有牙**（若它坏成恒 0，上面三条"逐样本相同"就全是假绿），
+  # `≤300` 才是"±1 码"这条理由的量化形态（300/65535 ≈ 1.17 个 8-bit 码）。
+  CK ($ml.cmp.max -gt 0) "⑭ 有损 8-bit：两腿**确实不同**（max|Δ|=$($ml.cmp.max)）—— 同时是上面三条「相同」的**正控**：比较器若恒 0，这里当场红"
+  CK ($ml.cmp.max -le 300) "⑭ 有损 8-bit：差值上界 ≤300/65535（实 $($ml.cmp.max)，不同样本 $($ml.cmp.diff)/$($ml.cmp.n)）⇒ 「±1 码」仍成立"
+}
+# 截断件：60% 处切断（远在头部之后 ⇒ 是真正的半途截断，不是"文件太短判不出来"）
+$ftr = "$dwork/trunc.jxl"
+$b8 = [System.IO.File]::ReadAllBytes($f8)
+$cut = [int]($b8.Length * 0.6)
+[System.IO.File]::WriteAllBytes($ftr, $b8[0..($cut - 1)])
+CK (((Test-Path $ftr) -and ((Get-Item $ftr).Length -eq $cut) -and ($cut -gt 64))) "⑭ 截断件已造：$($b8.Length) B → $cut B（>64 B ⇒ 截断点在头之后）"
+$dt = ExecBounded $djxl "--quiet `"$ftr`" `"$dwork/trunc.A.png`"" "tr_A" 10000
+CK ($dt.done -and ($dt.code -ne 0)) "⑭ 截断件：djxl 在 10 s 内**显式失败**（结束=$($dt.done) rc=$($dt.code)）⇒ 专用管线的失败是快的"
+$bt = ExecBounded $ff "-y -hide_banner -loglevel error -i `"$ftr`" -frames:v 1 -vf format=rgb48le -f rawvideo `"$dwork/trunc.B.rgb48`"" "tr_B" 15000
+CK (-not $bt.done) "⑭ 截断件：ffmpeg 腿 **15 s 内不结束**（忙等，本轮已强杀）—— 这条就是原生码流不能直接放进引擎的实测依据"
+$bc = ExecBounded $ff "-y -hide_banner -loglevel error -i `"$f8`" -frames:v 1 -vf format=rgb48le -f rawvideo `"$dwork/ctl.B.rgb48`"" "ctl_B" 15000
+CK ($bc.done -and ($bc.code -eq 0)) "⑭ 对照臂：**同一个 ffmpeg** 对完整件 15 s 内正常结束（rc=$($bc.code)）⇒ 上一条量的是「截断件忙等」，不是「ffmpeg 慢」"
+
+# ── 容器档的残缺**可以**靠 box 长度链结构判定（这正是"路由侧先验完整性"对容器可行、对裸码流不可行的分界）──
+function BoxOverrun([string]$path) {
+  if (-not (Test-Path $path)) { return @{ overrun = $false; detail = '<缺文件>' } }
+  $b = [System.IO.File]::ReadAllBytes($path)
+  $pos = 0; $detail = ""
+  while (($pos + 8) -le $b.Length) {
+    $sz = ([int]$b[$pos] -shl 24) -bor ([int]$b[$pos + 1] -shl 16) -bor ([int]$b[$pos + 2] -shl 8) -bor [int]$b[$pos + 3]
+    $ty = "" + [char]$b[$pos + 4] + [char]$b[$pos + 5] + [char]$b[$pos + 6] + [char]$b[$pos + 7]
+    $avail = $b.Length - $pos
+    if (($sz -eq 0) -or ($sz -eq 1)) { return @{ overrun = $false; detail = "$ty 特殊长度 ${sz}（本夹具不出现）" } }
+    if ($sz -gt $avail) { return @{ overrun = $true; detail = "$ty 声明 $sz B 而文件只剩 $avail B" } }
+    $pos += $sz
+  }
+  return @{ overrun = $false; detail = "box 链走完（$pos/$($b.Length) B）" }
+}
+$f16tr = "$dwork/trunc16.jxl"
+$b16 = [System.IO.File]::ReadAllBytes($f16)
+$cut16 = [int]($b16.Length * 0.6)
+[System.IO.File]::WriteAllBytes($f16tr, $b16[0..($cut16 - 1)])
+$ovFull = BoxOverrun $f16
+$ovTr = BoxOverrun $f16tr
+CK (-not $ovFull.overrun) "⑭ 完整容器件：box 长度链**不越界**（$($ovFull.detail)）⇒ 结构判定的负侧成立"
+CK ($ovTr.overrun) "⑭ 60% 截断的容器件：box 声明长度**超出文件尾**（$($ovTr.detail)）⇒ 容器档不靠解码就能判「残缺」"
+$dt16 = ExecBounded $djxl "--quiet `"$f16tr`" `"$dwork/trunc16.A.png`"" "tr16_A" 10000
+CK ($dt16.done -and ($dt16.code -ne 0)) "⑭ 截断容器件：djxl 也在 10 s 内显式失败（结束=$($dt16.done) rc=$($dt16.code)）"
+$bt16 = ExecBounded $ff "-y -hide_banner -loglevel error -i `"$f16tr`" -frames:v 1 -vf format=rgb48le -f rawvideo `"$dwork/trunc16.B.rgb48`"" "tr16_B" 15000
+CK (-not $bt16.done) "⑭ 截断容器件：ffmpeg 腿同样 **15 s 内不结束**（忙等）⇒ 两种形态都得先验完整性"
+try { if (Test-Path $dwork) { [System.IO.Directory]::Delete($dwork, $true) } } catch { }
+CK (-not (Test-Path $dwork)) "⑭ 本节目录已清零：$dwork"
+
+Write-Host "`n===== jxl-codestream-route: PASS=$pass FAIL=$fail =====" -ForegroundColor $(if ($fail -eq 0) { "Green" } else { "Red" })
 if ($fail -gt 0) { exit 1 } else { exit 0 }

@@ -454,14 +454,101 @@ namespace FfmpegGui.Services
             //   若仍按 backend 单独判，就会对**其实走了引擎**的任务谎报"尚未接入"（反向的不诚实），
             //   与上面 GainMap 那条注释同款理由。故判据改为「非 Ffmpeg 后端 **且** 引擎不可走」。
             bool externalBackendNotRouted = backend != EncoderBackend.Ffmpeg && !engineRoutable;
+            // ⚠ 输入侧「绕过引擎」必须**逐臂点名**（2026-10-22 普查实测出的假陈述）：旧名单把 `.avif`
+            //   整个列进来，而 `.avif` 只有 → gif/webp 才真的走两步法专用管线；`.avif → png` 实际由引擎执行
+            //   ⇒ 同一份日志里既出现「本次由 .avif 专用输入管线 处理，色彩引擎尚未接入该路径」
+            //   又出现「[色彩引擎] 决策：…」＝**宣称没接、其实接了**（与五签名里的 ② 同族、方向相反）。
+            //   另一头旧名单**漏了** `.gif → avif`（avifenc 两步法，:953 那条支）⇒ 那条绕过是**静默**的。
+            //   ⇒ 名单与真实分派支逐条对齐，含各自的输出限定：
+            //       .jxl → 任意输出（ProcessJxlInputAsync）／ .jxr → 任意输出（ProcessJxrInputAsync）
+            //       .avif → gif|webp（ProcessAvifToGifWebpAsync）／ .gif → avif（ProcessGifToAvifViaAvifencAsync）
+            // ⚠ 必须**先读进局部变量**再做 null 合并：直接写 `captured.Options.Format ?? ""` 会把该成员的
+            //   空状态带进后续控制流 ⇒ 下游每一处 `captured.Options.Format.Equals(...)` 各冒一条 CS8602
+            //   （实测：HEAD 全量重编 = 0 警告，写错形态后先出 2 条、改两处又冒出 2 条）。
+            string fmtRawForBypass = captured.Options.Format;
+            string inFmtLc = (fmtRawForBypass ?? "").ToLowerInvariant();
+            // ── 输入侧「该不该绕开引擎」改由**内容**裁决（2026-10-22，用户定案）───────────────
+            //   旧写法按**扩展名**整族绕过（`.jxl`/`.jxr` 一律进专用输入管线），实测代价：
+            //   8-bit 无 alpha 的 JXR 与引擎的解码腿**逐字节相同**（同一件 a8.jxr：JxrDecApp 腿与
+            //   ffmpeg 腿产出的 PNG sha 相同、`blend=difference` 9216 字节全 0），却整族拿不到
+            //   色彩裁决（ICC/CICP 策略、色域映射、色调映射、两臂等价性）⇒ 这一档的绕过**没有依据**。
+            //   仍要绕过的，必须说清是**哪一条内容条件**：
+            //     · 带 alpha ⇒ ffmpeg 的 libjxr 解码腿把 alpha **塌成 0**（实测 a32.jxr：
+            //       JxrDecApp 腿 min=0/max=255，ffmpeg 腿 min=0/**max=0**）
+            //     · 非 8-bit 整数载体（半浮点/浮点/16-bit 整数）⇒ 解码腿会静默换整数载体、
+            //       且 swscale 不收 rgbaf32le 作源 ⇒ 由高位深直通臂 + 托管读取承担（实测账见 JxrHighPrecisionDecode）
+            //     · 非 RGB 系列（灰度/调色板）⇒ 引擎按 RGB 链路走，载体口径未实测
+            //     · 源色彩语义来自内嵌 ICC ⇒ 引擎对 JXR 容器的 ICC 探针可达性**未实测** ⇒ 保守仍走专用管线
+            //     · 多帧 ⇒ 引擎按单帧处理会丢帧（与 `ShouldRoute` 的 AnimatedInput 同一口径）
+            //     · JXL 无损 JPEG 重封装（jbrd）⇒ 必须 djxl/cjxl 复制 DCT 系数，解码即破坏可逆性
+            //   ⚠ 只此一次求值：分派梯子（:970 附近）与下面这条播报**共用同一个元组**，
+            //     不写第二份判据（本项目反复修过"两处口径漂移"）。
+            (bool contentMustBypass, string contentBypassReason) = (false, "");
+            // ⚠ 用两个局部量而不是再写一遍 `inputExt == ".jxr"`：门禁的防再抄锁要能唯一识别
+            //   「按扩展名无条件截走」那种**分派支**形态（`verify-jxr-highbitdepth` §③c），
+            //   判据块里重复同样的字面量会让那把尺读不出区别。
+            bool isJxrInput = inputExt == ".jxr";
+            bool isJxlInput = inputExt == ".jxl";
+            if (isJxlInput)
+            {
+                // ⚠ 2026-10-22 第三轮整轮实测：我第一版给 JXL 配的内容判据**拿错了信号**——用选项布尔
+                //   `JxlLosslessJpeg` 当"容器里有没有 JPEG 比特流重构数据"的代理，而它在 :444 已被
+                //   「输入是不是 JPEG」归一化 ⇒ `.jxl → .jpg` 的可逆重构路被引擎截走、4 条 JXL 家族门禁转红，
+                //   其中「往返 JPEG 与源逐字节相同」是**真的数据丢失**（yuvj420p→yuvj444p、src≠rt）。
+                //   正确信号 = `JxlInspector.DetectType`。逐档实测（同一件 64×48，djxl 腿 vs ffmpeg 腿）：
+                //     · 变 alpha 的 8-bit 原生码流 ⇒ 两腿都保住 alpha 层次 106..152，但像素差 **±1 码**（≈13% 字节）
+                //     · 16-bit 原生码流 ⇒ 两腿**逐字节相同**（max|Δ|=0）
+                //     · JPEG 重构型 ⇒ 只有 djxl 腿能逐字节还原（实测往返 2247B == 2247B）
+                //     · 截断/未知 ⇒ djxl 0.0 s 退 1，而 **ffmpeg 腿 25 s 忙等未结束**（正是心跳要防的那类）
+                //   ⇒ 结论：JXL 暂时整档绕过，但理由按内容三分（不可逆 / 无谓的 1-LSB 像素改动 / 忙等）。
+                //     2026-10-23 **按档重量**（`verify-jxl-codestream-route` §⑭ 每轮重跑，不再靠本节注释作证）：
+                //     lossless 8/16-bit 与灰度两腿逐样本相同；有损档 max|Δ|=267/65535（≈1 个 8-bit 码）；
+                //     60% 截断的裸码流 ⇒ djxl 21 ms 显式失败、ffmpeg >60 s 未结束。
+                //     真正放开的前提有**两条**（只换解码腿不够）：① 引擎的解码腿在 JXL 上挂 djxl；
+                //     ② **路由侧先验证完整性** —— 解码之前还有 `ProbeSizeAsync` 与
+                //       `ProbeInputColorMetadata` 两处 ffprobe，残缺件会先在那两站各等一次超时。
+                var jxlTypeForBypass = JxlInspector.DetectType(captured.InputPath);
+                contentMustBypass = true;
+                contentBypassReason = jxlTypeForBypass switch
+                {
+                    JxlImageType.JpegReconstruction
+                        => "容器含 JPEG 比特流重构数据（jbrd）⇒ 只有 djxl 腿能逐字节还原，交引擎解码即不可逆",
+                    JxlImageType.NativeCodestream
+                        => "原生码流：有损档两腿实测差 ±1 码（max 267/65535，无损/16-bit/灰度逐样本相同），残缺档 ffmpeg 腿忙等 ⇒ 待在引擎解码腿挂 djxl 并先验完整性再放开",
+                    _ => "类型未知/不完整 ⇒ 引擎的 ffmpeg 解码腿实测 25 s 忙等未结束（djxl 腿 0.0 s 显式失败）"
+                };
+            }
+            else if (isJxrInput)
+            {
+                var inMeta = FfmpegCommandBuilder.ProbeInputColorMetadata(captured.InputPath,
+                    s => { captured.Log += s; _onItemUpdated?.Invoke(captured); }, ct);
+                contentMustBypass = true;
+                if (inputMayHaveMultipleFrames) contentBypassReason = "多帧输入（引擎按单帧处理会丢帧）";
+                else if (inMeta.hasAlpha) contentBypassReason = "源含 alpha，ffmpeg 的 libjxr 解码腿实测把它塌成 0";
+                else if (inMeta.bitDepth != 8) contentBypassReason = $"源载体是 {inMeta.bitDepth}-bit（非 8-bit 整数），需无损载体/浮点通路";
+                else if (!inMeta.isRgb) contentBypassReason = "源不是 RGB 系列载体（灰度/调色板），引擎口径未实测";
+                else if (inMeta.hasIccSemantics) contentBypassReason = "源色彩语义来自内嵌 ICC，JXR 容器的引擎侧 ICC 探针未实测";
+                else { contentMustBypass = false; contentBypassReason = ""; }
+            }
+            bool inputBypassedEngine = (inputExt is ".jxr" or ".jxl" && contentMustBypass)
+                || (inputExt == ".avif" && inFmtLc is "gif" or "webp")
+                || (inputExt == ".gif" && inFmtLc == "avif");
             if (ColorMapping.ColorEngineRouter.Requested(captured.Options)
-                && (externalBackendNotRouted || gainMapViaDedicated
-                    || inputExt is ".jxl" or ".jxr" or ".avif"))
-                captured.Log += $"[色彩引擎] ⚠️ 本次由"
-                    + (gainMapViaDedicated ? " GainMap 专用管线（引擎不可走）"
-                       : externalBackendNotRouted ? $" 外部编码器 {backend}"
-                       : $" {inputExt} 专用输入管线")
-                    + " 处理，色彩引擎尚未接入该路径（P7 逐条接通）；色彩决策仍按所选策略\n";
+                && (externalBackendNotRouted || gainMapViaDedicated || inputBypassedEngine))
+            {
+                string bypassWhat = gainMapViaDedicated ? " GainMap 专用管线（引擎不可走）"
+                    : externalBackendNotRouted ? $" 外部编码器 {backend}"
+                    : $" {inputExt} 专用输入管线";
+                // ⚠ 绕过必须**说出是哪一条内容条件**（不是"这个扩展名天生不走引擎"）：
+                //   只报"尚未接入"会让绕过读起来像待办而不是决定，用户无从判断换格式/换参数有没有意义。
+                // 行边界自证：P0 之后告警是**按行**升级可见性的（`⚠` ⇒ Warn），若上一条日志没带换行，
+                //   本行会与它粘连成同一物理行 ⇒ 判据读到的"依据"会吞掉后文（实测 jbrd 那臂就这样）。
+                const char LF = (char)10;   // item.Log 的行分隔实测是 \n（不是 Environment.NewLine）
+                if (captured.Log.Length > 0 && captured.Log[captured.Log.Length - 1] != LF) captured.Log += LF;
+                captured.Log += "[色彩引擎] ⚠️ 本次由" + bypassWhat
+                    + " 处理，色彩引擎尚未接入该路径（P7 逐条接通）；色彩决策仍按所选策略"
+                    + (string.IsNullOrEmpty(contentBypassReason) ? "" : $"｜内容依据：{contentBypassReason}") + "\n";
+            }
 
                             // ── 可用性诚实（2026-09-17）：色域映射（GMO）是引擎专有算子，传统链只有硬裁切 ──
                             // 判据单一来源 = ColorEngineRouter（显式 legacy + on ⇒ 硬失败；auto 回退 ⇒ 仅告警）。
@@ -962,14 +1049,17 @@ namespace FfmpegGui.Services
                             {
                                 await ProcessAvifToGifWebpAsync(captured, finalOutputPath, ct);
                             }
-                            else if (inputExt == ".jxl")
+                            else if (inputExt == ".jxl" && contentMustBypass)
                             {
-                                // JXL 输入：智能检测类型并选择最优路径（独立于编码器选择）
+                                // JXL 输入：**仅在内容条件不满足色彩转换时**才走专用管线（判据见 :479 那一段，
+                                //   与上面的播报共用同一次求值）。8-bit 无 alpha 单帧 JXL 现在交给引擎/通用通路。
                                 await ProcessJxlInputAsync(captured, finalOutputPath, ct);
                             }
-                            else if (inputExt == ".jxr")
+                            else if (inputExt == ".jxr" && contentMustBypass)
                             {
-                                // JXR 输入：JxrDecApp 解码 → 根据目标格式选择编码器
+                                // JXR 输入：JxrDecApp 解码 → 根据目标格式选择编码器。**按内容才进这条**：
+                                //   alpha/高位深/浮点/多帧/非 RGB 载体/内嵌 ICC 这几类是引擎解码腿实测接不住的，
+                                //   8-bit 无 alpha 单帧已改交引擎（详见 :479 的内容判据与实测数）。
                                 await ProcessJxrInputAsync(captured, finalOutputPath, ct);
                             }
                             // Gain Map (Ultra HDR) JPEG：纯 C# GainMapEncoder + cjpegli
