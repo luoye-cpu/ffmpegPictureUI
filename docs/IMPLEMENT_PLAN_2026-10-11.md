@@ -3271,6 +3271,9 @@ dngtool 改动；把 `TMP/TEMP/TMPDIR` 指进 `tests/output/_tmp` 后 full23 = *
 被测产物：`FfmpegGui.dll` sha16 `8e2b801cad9f3a90`、dngtool `8cd334a61b847973`、
 runner self-sha16 `F1CE9994C976B381`。五把重臂在新默认档下**未复跑**（预期 111，不写成读数）。
 
+**出包（beta8，2026-10-23）**：`pack.ps1 -Mode all` → app 17 文件 / full 581 文件（归档 54 MiB）；`verify-release-package`（`PKG_VER=1.6.0-beta8`）**16/0** —— 两包目录与归档同数、六件工具与 `publish/PLAN` 逐字节同指纹、包内 `ProductVersion=1.6.0-beta8+bed8e15…`；L3 五套件指向新包 **17/0 · 100/0 · 28/0 · 19/0 · 19/0**，`SUBJ = v1.6.0-beta8 (L3 出货包) … sha=627CAD46581A985E`。beta8 整轮 **78/78** 全部通过（`artifact-sha16 FfmpegGui.dll=B5A7FA1F732990EA`），`bench` 复绿。
+⚠ 串联跑五套件时最后一套（`verify-encoder-knob-liveness`）打印完汇总后进程未退出（无子进程、CPU 近静止），人工终止后才收尾；汇总行已在终止前打印，读数不受影响，但"跑完即退"这条**不是**本轮验证过的行为。
+
 ### 44.9 后续清单（按收益/成本排序）
 
 1. ~~**整轮复跑**（新 dngtool `8cd334a6`）~~ → 已做（full23，见 44.8）：38 红全是环境，剩

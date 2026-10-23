@@ -20,9 +20,11 @@ All notable changes to this project are documented in this file.
 > route), and a **172-file** repository re-layout (`tests/<project>` → `tests/projects/<project>`, `docs/`
 > split into load-bearing / review / archive with a new `docs/INDEX.md`). Gate manifest: **78 scripts**;
 > `#77` default tier goes **99 → 105/0**. The full round (with `TMP/TEMP/TMPDIR` redirected) is
-> **77 green / 1 red**; the only red is `bench`'s two timing thresholds (multi-core `4.0×` vs ≥4×,
-> 8-bit single-core `24.3` vs ≥25 MPix/s). The same binary run standalone on an idle machine gives
-> **37/0** (43.5/46.1 MPix/s, table gain 6.2×/6.9×) ⇒ contention, not a regression. ⚠ Without the temp
+> **78/78, all green** (`artifact-sha16: FfmpegGui.dll=B5A7FA1F732990EA`, built from the same tree as
+> this package). ⚠ The round run just before the version bump (identical source, only the version string
+> differs) showed two `bench` timing reds (multi-core `4.0×` vs ≥4×, 8-bit single-core `24.3` vs
+> ≥25 MPix/s); the same binary standalone on an idle machine gives **37/0** (43.5/46.1 MPix/s) ⇒
+> contention, not a regression, and the beta8 round is green again. ⚠ Without the temp
 > redirect the round goes **mass false red**: the sandbox denies temp writes to tool processes ⇒ `exit -13`
 > (38 reds measured in full22; evidence `tests/output/validate/fmtmatrix_4ef00c74/run_webp.out`).
 
