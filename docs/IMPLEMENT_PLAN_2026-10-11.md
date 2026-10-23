@@ -3302,3 +3302,73 @@ runner self-sha16 `F1CE9994C976B381`。五把重臂在新默认档下**未复跑
   其余按"未审计"处理，不据此断言丢失。
 - Coolscan 的扫描数据到底是线性还是已编码 sRGB，**未验证**；当前拒绝不依赖这个判断。
 
+### 45. DNG 输入改走 Adobe DNG SDK（ACR 路线，2026-10-24）
+
+#### 45.1 判据与选择
+
+- **旧路线** `dngtool -d`（LibRaw）：能解析 DNG，但 **OpcodeList1/2/3 一张都不执行**（只读出来）。
+  RAW-G.dng 实测：同一白平衡下四角/中心 = 1.7014（不施加）vs 1.8419（SDK 施加）。
+- **新路线** `dngtool -rdp`（Adobe DNG SDK 1.7.1）：`BuildStage2Image` 施加 list1/list2、
+  `BuildStage3Image` 施加 list3，再由 `dng_render` 施加白平衡 + 相机 profile（tone curve 恒等）
+  ⇒ 线性 16-bit TIFF。
+- **覆盖边界是格式事实**：SDK 只读 DNG。`.dng` 走 SDK；ARW/CR2/NEF/… 仍走 LibRaw，并在日志里点名
+  （`非 DNG 输入 ⇒ LibRaw 臂`）。所以本轮是"DNG 读路径全量替换"，不是"所有 RAW 替换"。
+- **渲染空间按下游选**（`-rdspace srgb|p3|rec2020`）：
+  - 目标原色 = bt709（SDR 容器默认 / `--raw-color-target rec709` / 显式 bt709 或具名 sRGB）⇒ `srgb`；
+    Rec.709 与 sRGB **原色相同**（只在传递函数上不同），而中间件是线性 ⇒ 就是 `dng_space_sRGB_Linear`。
+  - 其余（bt2020 / Display P3 / 未知）⇒ `rec2020`（宽色域不丢信息，下游按目标转）。
+  - `--raw-color-target auto` 要拿中间件像素实测才决定是否降到 bt709 ⇒ **解码前无法知道**，
+    只能渲 rec2020，降级仍按原逻辑在下游做（不猜）。
+- **声明同源**：`ColorSourceDeclPrimaries` 直接取渲染空间（srgb ↔ bt709 / rec2020 ↔ bt2020），
+  不再沿用旧口径的"恒 bt2020"。两个值都在解码**前**算好，默认档那块只复用、不重算。
+- **朝向**：`dng_render` 不旋转 ⇒ 工具按 `negative->Orientation()` 旋正（与 `dng_validate.cpp:597`
+  同口径），与旧 LibRaw `-T`（dcraw 按 Orientation 落盘）行为一致；不写 TIFF Orientation 标签
+  （下游 ffmpeg 不解 TIFF 的朝向标签，只能靠像素本身）。
+- **写盘**：先写 `<out>.part` 再改名。依据：实测过一次"直接覆盖既有大文件"在目标路径留下
+  152 个零字节（数据区正确、TIFF 头全零），未复现 ⇒ 用新名写 + 改名把这条路径变成不可能。
+
+#### 45.2 读数（2026-10-24 实测，同一份被测件）
+
+| 项 | 读数 | 说明 |
+|---|---|---|
+| 空间对拍（M2，24MP） | `clip(rec2020 腿 × M)` vs `srgb 腿` **PSNR 92.88 dB**；两腿全文件哈希不同 | 只差一次已知矩阵 + 域裁剪；哈希不同 ⇒ 开关不是空转 |
+| 空间对拍（RAW-G，12MP） | 同上 **82.01 dB**；域外像素 22.47%（该件本身超出 sRGB 22.4%） | 82 dB 的差额来自矩阵舍入与裁剪边界 |
+| opcode 被执行 | 带镜头表 DNG vs 同源不带：角/中 **1.8471 vs 1.7048**（×1.0835） | `opcode1/2/3=0/0/3` |
+| 朝向 | Orientation=6 ⇒ **4024×6024**（正立 6024×4024，宽高互换） | 像素级旋正，不是只写标签 |
+| 负控 | `-rdspace bogus` ⇒ rc=2、无产物、点名 | 未知空间不静默回退 |
+| 半成品 | 产物目录 `.part` 计数 **0** | 写临时名再改名 |
+| 耗时（24MP DNG） | SDK **5.05–5.46 s** vs LibRaw **2.26–2.41 s**（≈2.2×） | 两臂各跑两遍 |
+| `-threads` 在 SDK 臂 | 1 线程 **5.05/5.08 s** vs 自动 **5.40/5.46 s** ⇒ **无差** | 瓶颈不在 `DngToolHost` 的并行白名单里 ⇒ 产品**不传**，日志点名不生效 |
+| 新门禁 #79 | `verify-acr-route.ps1` **26/0 @103.2 s**（经运行器子集跑） | 含工具级 6 组 + 产品级 5 组 |
+| 旧门禁 #77 | **105/0**（换 exe 后复跑） | 只测 `-e/-d`，不受读路径影响 |
+| 受管清单 | **78 → 79** | 运行器四处在同批改齐 |
+| **整轮** | **79/79 全部通过 @38.6 min**（06:39:31→07:18:04；`tests/output/round-acr-20261024/round.log`；artifact-sha16 `FfmpegGui.dll=7CDF44AED27FA9C1` / `dngtool.exe=1388c03ffc836f0b`） | 79 条脚本全部 exit=0；`bench` 37/0 @68.9 s（本轮无并发负载） |
+
+#### 45.3 已知边界 / 未判（不许写成结论）
+
+- **非 DNG RAW 仍是 LibRaw**（含"相机原生 + 声明 bt2020 近似"的旧口径）。要"全量"就得两步
+  （LibRaw 解包成 CFA DNG → SDK 渲染），I/O 与耗时翻倍、判据另立一批，本轮未做。
+- **enhanced-image IFD**（`info.fEnhancedIndex != -1`）⇒ 工具点名 rc=2，产品按预处理失败报错。
+- **DNG 输入上 `-H` 高光 / `-q` 去马赛克质量 / `-W` 白平衡 / `-threads` 不生效**（日志点名）。
+  这是行为差异，已写进 CHANGELOG；LibRaw 的 `-H 2`（blend）在 DNG 上没有等价物。
+- **SDK 中间件 TIFF 不带任何 EXIF 标签**（LibRaw 臂带 Make/Model/DateTime/ExifIFD）⇒ 元数据靠
+  产品侧"从源 RAW 白名单补回"。本轮把 `-Make -Model` 加进该白名单（否则 DNG→JPEG 丢厂/型号，
+  实测补回后 Make=SONY/Model=ILCE-7M2）。
+- **真实 ACR/Photoshop 对照仍未取到**（PS COM `0x80080005`）⇒ 本轮**不声称**"ACR 行为已复现"，
+  只有 DNG SDK 1.7.1 的读数。
+- **JXL 管线 auto 分支的 `zscale=transferin=bt709` 与线性中间件的匹配性未判**：本轮只把那处写死的
+  `primariesin=bt2020` 改成读声明（否则 srgb 渲染会被当 Rec.2020 解释）；`transferin` 保持原样，
+  是否失配属**独立可证伪项**。
+- `dng_render` 会施加 **BaselineExposure**（相机 profile 的一部分）⇒ 与旧 LibRaw 臂的整体亮度
+  不是同一基准；本轮的判据（角/中比、两腿对拍、opcode 分叉）都不依赖绝对亮度。
+
+#### 45.4 改动点
+
+- `tools/src/dngtool/dngtool.cpp`：`-rd` / `-rdp` / `-rdspace`；`<out>.part` + 改名；按 Orientation 旋正；
+  `DngToolHost`（`-threads` 走 PerformAreaTaskThreads，但本链路无并行任务）。
+- `src/FfmpegGui/Services/RawService.cs`：`.dng` → `-rdp -rdspace …`；其余 → LibRaw。
+- `src/FfmpegGui/Services/QueueProcessor.cs`：解码**前**判定渲染空间/计划原色（用户显式 primaries >
+  用户显式具名空间 > `--raw-color-target rec709` > 容器三档），默认档复用同一组值；声明同源；
+  JXL auto 分支读声明。
+- `src/FfmpegGui/Services/ExifToolService.cs`：RAW 补回白名单 +`-Make -Model`。
+- 新判据：`tests/scripts/verify-acr-route.ps1`（第 79 条）+ `tests/scripts/_readback-acr-render.py`。

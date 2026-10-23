@@ -129,3 +129,9 @@ pwsh -NoProfile -File tests/scripts/_run-step3-gates.ps1   # 整轮 43~52 分钟
   `ServiceProbe` 的 `tooldetect_<guid>` / `cmsbench` / `cmsx` 三个固定名 scratch 仍在（不乘份数，尺寸小），
   要判红"宿主向 `%TEMP%` 写产物"得新增一条文本级探针——属独立一批。
 - 视图扩展名 `.xaml`/`.axaml` 并存（迁移化石），`_probe-i18n-scan` 按"根目录下的 .axaml 窗口"点名，改名要同步它。
+- **ACR 路线只覆盖 DNG（2026-10-24）**：`.dng` 走 `dngtool -rdp`（Adobe DNG SDK 的 `dng_render`，
+  OpcodeList1/2/3 全施加），其余 RAW 仍走 LibRaw（**SDK 只读 DNG**，读不了 ARW/CR2/NEF…）。
+  渲染空间按下游目标选（bt709 出口 ⇒ `srgb`，其余 ⇒ `rec2020`），`ColorSourceDeclPrimaries` 与它同源。
+  已知边界：enhanced-image IFD 的 DNG 直接点名拒绝；DNG 输入上 `-H/-q/-W/-threads` 不生效（日志点名）；
+  耗时约为 LibRaw 的 2.2×（24MP 5.1 s vs 2.3 s）。要"全量"须先 LibRaw 解包成 CFA DNG 再 SDK 渲染（另立一批）。
+  门禁 = 第 79 条 `verify-acr-route.ps1`。

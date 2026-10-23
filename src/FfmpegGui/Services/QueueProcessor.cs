@@ -692,6 +692,50 @@ namespace FfmpegGui.Services
                                     "输入为 RAW 格式，需 dngtool 去马赛克，但未检测到 dngtool。" +
                                     "请将 dngtool 放入 PLAN/artifacts/ 或在设置中配置路径（不回退 ffmpeg 直解，避免错色输出）。");
                             }
+                            // ── ACR 路线（2026-10-24）：中间件的**渲染空间**必须在解码前定下来 ──────
+                            //   `-rdp` 只跑一次 dng_render，不能"先渲宽色域再看目标"⇒ 判据全部取
+                            //   **不依赖像素**的轴（用户显式目标 / --raw-color-target / 容器能力三档）。
+                            //   `auto` 档的降级要靠中间件像素实测（下方 RawGamutFit）⇒ 解码前无法知道，
+                            //   只能按宽色域渲染、再由下游按实测结果转换（不猜）。
+                            //   ⚠ 本块算出的 `rawSourcePrimaries` 必须与 `-rdspace` **同源**：
+                            //     srgb 渲染配 bt709 声明，rec2020 渲染配 bt2020 声明；否则"声明≠像素"。
+                            //   ⚠ 下面默认档那块（rawCaps/rawCanHdrTransfer/rawUserChoseTarget/rawTargetMode…）
+                            //     一律**复用**这里的值，不重算 —— 判定只有一份。
+                            bool rawIsDngInput = Path.GetExtension(captured.InputPath)
+                                .Equals(".dng", StringComparison.OrdinalIgnoreCase);
+                            var rawCaps = ColorMapping.ColorMappingEngine.CapsFor(captured.Options.Format);
+                            var rawFmtTok = captured.Options.Format.Trim().TrimStart('.').ToLowerInvariant();
+                            bool rawIsTiff = rawFmtTok is "tiff" or "tif";
+                            // ⚠ TIFF 例外档的位深默认是 16（到预处理之后才落到 Options.BitDepth）
+                            //   ⇒ 这里按同一口径算，判据档不能因"还没赋值"而变。
+                            int rawTargetBitDepth = captured.Options.BitDepth
+                                ?? (rawIsTiff ? 16 : Math.Min(16, rawCaps.MaxBitDepth));
+                            bool rawCanHdrTransfer = rawCaps.CanHdr
+                                && (!rawCaps.HdrRequiresHighBitDepth || rawTargetBitDepth > 8);
+                            // 三轴 **或** 关系（`ColorPrimaries`/`ColorTrc`/`ColorSpace`），与高级模式无关。
+                            bool rawUserChoseTarget =
+                                !string.IsNullOrWhiteSpace(captured.Options.ColorPrimaries)
+                                || !string.IsNullOrWhiteSpace(captured.Options.ColorTrc)
+                                || (!string.IsNullOrWhiteSpace(captured.Options.ColorSpace)
+                                    && !captured.Options.ColorSpace.Equals("auto", StringComparison.OrdinalIgnoreCase));
+                            string rawTargetMode = captured.Options.RawColorTarget ?? "rec2020";
+                            // 计划原色：用户显式 primaries > 用户显式具名空间 > rec709 档 > 容器三档。
+                            // 只回答"是不是 bt709"——P3/2020/未知一律按宽色域渲染，下游再转（宽色域不丢信息）。
+                            string rawPlannedPrimaries =
+                                !string.IsNullOrWhiteSpace(captured.Options.ColorPrimaries)
+                                    ? captured.Options.ColorPrimaries.Trim().ToLowerInvariant()
+                                : (!string.IsNullOrWhiteSpace(captured.Options.ColorSpace)
+                                    && !captured.Options.ColorSpace.Equals("auto", StringComparison.OrdinalIgnoreCase))
+                                    ? RawPrimariesOfFriendlySpace(captured.Options.ColorSpace) ?? "bt2020"
+                                : rawTargetMode == "rec709" ? "bt709"
+                                : (rawCanHdrTransfer || rawIsTiff) ? "bt2020" : "bt709";
+                            bool rawAutoNeedsPixels = rawTargetMode == "auto" && !rawUserChoseTarget;
+                            // 只有「DNG 输入 + 目标原色确定是 bt709 + 不是 auto」才渲 sRGB（省一次下游转换、
+                            //   也让只有 Rec.709 覆盖面的相机不必先进宽色域）；其余一律 Rec2020。
+                            string rawRenderSpace =
+                                (rawIsDngInput && rawPlannedPrimaries == "bt709" && !rawAutoNeedsPixels)
+                                    ? "srgb" : "rec2020";
+                            string rawSourcePrimaries = rawRenderSpace == "srgb" ? "bt709" : "bt2020";
                             if (RawService.IsRawFile(captured.InputPath) && RawService.IsAvailable
                                 && !isDngOutput)
                             {
@@ -707,7 +751,8 @@ namespace FfmpegGui.Services
                                     _onItemUpdated?.Invoke(captured);
                                 }, ct,
                                 highlightMode: captured.Options.DngHighlightMode,
-                                threads: captured.Options.Threads);   // 2026-08-15: UI 线程选项生效
+                                threads: captured.Options.Threads,    // 2026-08-15: UI 线程选项生效
+                                renderSpace: rawRenderSpace);          // 2026-10-24: ACR 路线渲染空间
                                 if (success)
                                 {
                                     // ⚠⚠ 2026-09-20（审查修正）：**这里不要写死色域** —— primaries 紧接着会按
@@ -718,13 +763,17 @@ namespace FfmpegGui.Services
                                     captured.Log += "[RAW] ✅ 预处理完成，使用线性 TIFF 继续编码（色彩标记见下一条）。\n";
                                     captured.InputPath = rawTiff;
                                     // ── 输入声明：**与用户是否选目标无关，必须总是写**（2026-10-04 修）──────────
-                                    // 中间件是 dngtool 的去马赛克**线性**输出，原色是**相机原生**（宽，无标准名）
-                                    // ⇒ 输入侧取最接近的宽色域 bt2020 作工作空间近似（比 bt709 少削色）。
+                                    // 中间件是 dngtool 的**线性**输出。原色随路线而定（2026-10-24 ACR 路线）：
+                                    //   · DNG 输入 ⇒ dng_render 已映射到标准原色 ⇒ 按**实际渲染空间**声明
+                                    //     （srgb → bt709 / rec2020 → bt2020）；
+                                    //   · 非 DNG ⇒ LibRaw 相机原生（宽、无标准名）⇒ 取最接近的 bt2020 作近似。
+                                    // ⚠ 值来自解码前算好的 `rawSourcePrimaries`（与 `-rdspace` 同源），此处不另判。
                                     // ⚠ 这一对只喂输入侧（`BuildColorArgsSplit`）与引擎的源描述符，**不**兼作输出目标。
                                     // ⚠⚠ 必须在用户判定**之外**：用户选了目标时中间件**仍是线性**，不写它就会退回
                                     //   「探测文件 ⇒ 无色彩标签 ⇒ 惯例假定 sRGB」那条老路（置信度不够 ⇒ 计划直通）。
-                                    captured.Options.ColorSourceDeclPrimaries = "bt2020";
+                                    captured.Options.ColorSourceDeclPrimaries = rawSourcePrimaries;
                                     captured.Options.ColorSourceDeclTrc = "linear";
+                                    captured.Log += $"[RAW] ACR 路线渲染空间={rawRenderSpace}" + (rawIsDngInput ? "（DNG 输入 ⇒ DNG SDK dng_render）" : "（非 DNG ⇒ LibRaw 相机原生，渲染空间不适用）") + $"；目标原色计划={rawPlannedPrimaries}（色域模式={rawTargetMode}，auto 需像素={rawAutoNeedsPixels}）⇒ 输入声明 {rawSourcePrimaries}/linear\n";
 
                                     // ── 用户是否**已经**选了目标色域（2026-10-04 修，第二版）────────────────
                                     // ⚠⚠ **三轴并列、与是否高级模式无关**：`ColorPrimaries` / `ColorTrc` /
@@ -737,11 +786,7 @@ namespace FfmpegGui.Services
                                     //        ⇒ 把 `ColorPrimaries`/`ColorTrc` 那一维在非高级模式下**删掉了**
                                     //        ⇒ CLI `--color-primaries bt709`（`CliParser` 只赋值、**不置**高级标志）照样被覆盖。
                                     //   ⇒ 最终形态：三轴 **或** 关系，不分模式。
-                                    bool rawUserChoseTarget =
-                                        !string.IsNullOrWhiteSpace(captured.Options.ColorPrimaries)
-                                        || !string.IsNullOrWhiteSpace(captured.Options.ColorTrc)
-                                        || (!string.IsNullOrWhiteSpace(captured.Options.ColorSpace)
-                                            && !captured.Options.ColorSpace.Equals("auto", StringComparison.OrdinalIgnoreCase));
+                                    //   ⚠ `rawUserChoseTarget` 在**解码前**已算过一次（ACR 路线渲染空间要用）⇒ 复用，不重算。
 
                                     // ── ⚠⚠ 2026-10-04 修（P1：`rec709` 被**静默忽略**）──────────────────────
                                     //   上面 `rawUserChoseTarget` 门挡住的**整块**默认档逻辑，其中包含
@@ -784,7 +829,7 @@ namespace FfmpegGui.Services
                                         //   判据与规划层**同一个函数**（`CanHdrWith` 叠位深前提，即 `CanCarryHdrAt`
                                         //   的内联形式）⇒ 不引入第二份判据。JPEG 族**开启 GainMap** 时算「能承载 HDR」
                                         //   （Ultra HDR = SDR 底片 + 增益层）；**关掉时仍按 SDR 容器**处理。
-                                        // ⚠ `ColorTrc` 恒为 `linear` 不变：dngtool 的 `-d` 输出的就是线性 RGB，
+                                        // ⚠ `ColorTrc` 恒为 `linear` 不变：`-d`（LibRaw）与 `-rdp`（SDK）输出的都是线性 RGB，
                                         //   本次改动**只动 primaries**。
                                         // ── 输出目标三档（用户未选时的默认）──────────────────────────
                                         //   ① 容器能承载 HDR **传递**（avif / jxl / png-16bit…）⇒ **Rec.2020 + PQ**
@@ -793,7 +838,7 @@ namespace FfmpegGui.Services
                                         // ⚠ 判据用 `CanHdr`（**不**叠加 GainMap）：Ultra HDR 的**底图**必须是 SDR，
                                         //   把 jpg+GainMap 算进 HDR 档会让底图变成 PQ（语义错）。
                                         // ⚠ 仍保留 `GetFormatColorCapabilities` 那道能力钳制作安全网（单一真值）。
-                                        var rawCaps = ColorMapping.ColorMappingEngine.CapsFor(captured.Options.Format);
+                                        // `rawCaps` 已在解码前算好（ACR 路线渲染空间要用）⇒ 复用，不重算。
                                         // ⚠⚠ 判「能否承载 HDR 传递」必须用**实际交付档**，不是"请求档 ?? 8"
                                         //   （2026-10-04 审查 线D P1-2 修）：实际交付位深**跟随源**
                                         //   （`ColorIntentFactory` 的 `TargetBitDepth = Min(BitDepth ?? 源位深, 容器上限)`），
@@ -803,16 +848,14 @@ namespace FfmpegGui.Services
                                         //   `rgb48be`(16-bit) ⇒ **16-bit PNG 被标 SDR**（与注释「png-16bit ⇒ Rec.2020+PQ」、
                                         //   文档 `RAW2TIF §7.1`、以及本函数日志自己写的"位深=跟随源"三处矛盾）。
                                         //   实测：ARW→PNG 默认档旧 = `rgb48be, bt709`；修后 = `rgb48be, smpte2084, bt2020`。
-                                        int rawTargetBitDepth = captured.Options.BitDepth ?? Math.Min(16, rawCaps.MaxBitDepth);
+                                        // `rawTargetBitDepth` 同上（解码前已按 TIFF 的 16 位默认算好）。
                                         // ⚠ `CapsFor` 返回**非空** `FormatColorCaps`（见 `ColorTransformPlan.cs:615` 签名）
                                         //   ⇒ 原先的 `rawCaps != null` 是**死判据**（恒真），2026-10-04 删除。
-                                        bool rawCanHdrTransfer = rawCaps.CanHdr
-                                            && (!rawCaps.HdrRequiresHighBitDepth || rawTargetBitDepth > 8);
+                                        // `rawCanHdrTransfer` 同上（复用解码前的值）。
                                         // ⚠ **不写 `?? ""`**：`FfmpegOptions.Format` 声明为非空（`= "jpg"`），
                                         //   而 `x ?? ""` 会让 Roslyn **反推 `x` 可能为空**并向后传播 ⇒ 凭空产生
                                         //   5 条 CS8602（2026-10-04 查明的根因，见 `RAW2TIF_QA_DEFECT §7.5`）。
-                                        var rawFmtTok = captured.Options.Format.Trim().TrimStart('.').ToLowerInvariant();
-                                        bool rawIsTiff = rawFmtTok is "tiff" or "tif";
+                                        // `rawFmtTok` / `rawIsTiff` 同上（复用解码前的值）。
 
                                         // ── 输出色域模式（`--raw-color-target`，2026-10-04 新增，三档）────────────
                                         //   ① rec2020（**默认**）= 上面那三档，一字不改（"Rec.2020 表达优先"）
@@ -829,7 +872,7 @@ namespace FfmpegGui.Services
                                         //   （余量 0，fail-closed）。单行且以 `[RAW]` 开头 ⇒ 恒落 TAG 桶（不参与判据）。
                                         // ⚠ 实测失败时**保守保持 bt2020**（三态：不把"测不出"当成"装得下"）。
                                         bool rawGamutDowngrade = false;
-                                        string rawTargetMode = captured.Options.RawColorTarget ?? "rec2020";
+                                        // `rawTargetMode` 同上（复用解码前的值）。
                                         if (rawTargetMode == "rec709")
                                         {
                                             rawGamutDowngrade = true;
@@ -2314,6 +2357,20 @@ namespace FfmpegGui.Services
             }
             await RestoreMetadataViaFfmpegAsync(item, outputPath);
         }
+
+        /// <summary>
+        /// GUI/CLI 的具名色彩空间 → CICP primaries token。
+        /// **只用于 ACR 路线解码前判"是不是 bt709"**（决定 <c>-rdspace</c>）；真正的目标色域仍由色彩引擎
+        /// 按同一具名空间解析 —— 这里不做第二套目标判定。未知/auto ⇒ null（调用方按宽色域处理，不猜）。
+        /// </summary>
+        private static string? RawPrimariesOfFriendlySpace(string? space) =>
+            space?.Trim().ToLowerInvariant() switch
+            {
+                "srgb" or "bt.709" => "bt709",
+                "display p3" or "p3 pq" => "smpte432",
+                "bt.2020 pq" or "bt.2020 hlg" => "bt2020",
+                _ => null,
+            };
 
         /// <summary>
         /// RAW 输入专用补漏：从**用户实际提供的源 RAW** 取回中间件（`dngtool -d -T`，实为 dcraw 兼容 TIFF 写出）
@@ -5683,7 +5740,14 @@ namespace FfmpegGui.Services
                             // 其余无标签 16-bit 输入保守按 sRGB（不猜测/不转换），避免误判。
                             TryDeleteIcc(extractedIcc);
                             if (RawService.IsRawFile(inputPath))
-                                outputArgs += FfmpegCommandBuilder.ChainArgs(inputPath, "format=rgb48le,zscale=primariesin=bt2020:primaries=bt709:transferin=bt709:transfer=iec61966-2-1") + " ";
+                            {
+                                // 源原色跟着**实际中间件**走（ACR 路线可能渲成 sRGB 原色）⇒ 读声明，不写死 bt2020。
+                                // 写死会把 bt709 像素当 Rec.2020 解释 ⇒ 欠饱和。
+                                // ⚠ `transferin` 仍按既有口径（本轮不改；"线性中间件配 bt709 传递"是否失配另立可证伪项）。
+                                var declPrim = options.ColorSourceDeclPrimaries;
+                                var primIn = string.IsNullOrWhiteSpace(declPrim) ? "bt2020" : declPrim;
+                                outputArgs += FfmpegCommandBuilder.ChainArgs(inputPath, $"format=rgb48le,zscale=primariesin={primIn}:primaries=bt709:transferin=bt709:transfer=iec61966-2-1") + " ";
+                            }
                             else
                                 outputArgs += "-colorspace bt709 ";
                         }

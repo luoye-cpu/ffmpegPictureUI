@@ -156,11 +156,15 @@ public static class RawService
     /// <param name="ct">取消令牌</param>
     /// <param name="highlightMode">高光模式 (LibRaw -H: 0=裁剪, 1=恢复, 2=blend)。2026-08-14 起从 UI 传递。</param>
     /// <param name="threads">多线程数 (0=自动用硬件并发, 1=单线程)。2026-08-15 新增。</param>
+    /// <param name="renderSpace">ACR 路线（DNG 输入）的 dng_render 输出空间：
+    /// <c>srgb</c>（Rec.709/sRGB 原色）/ <c>p3</c> / <c>rec2020</c>（默认，最宽）。
+    /// ⚠ 必须与调用方写入的 <c>ColorSourceDeclPrimaries</c> **同源**（srgb↔bt709 / rec2020↔bt2020），
+    /// 否则就是"声明 ≠ 像素"。非 DNG 输入（LibRaw 臂）忽略本参数。</param>
     /// <returns>成功返回 true</returns>
     public static async Task<bool> PreProcessAsync(
         string rawPath, string outputTiffPath,
         Action<string>? log = null, CancellationToken ct = default,
-        int highlightMode = 1, int threads = 0)
+        int highlightMode = 1, int threads = 0, string renderSpace = "rec2020")
     {
         if (!IsAvailable)
         {
@@ -169,14 +173,34 @@ public static class RawService
             return false;
         }
 
-        // ── dngtool: 唯一引擎 (LibRaw + DNG SDK, 支持 DNG 1.7 JXL) ──
-        log?.Invoke($"[RAW] dngtool 去马赛克: {Path.GetFileName(rawPath)}\n");
-        // 去马赛克参数: -d 线性 RGB, -T TIFF, -o 0 相机空间, -q 3 AHD, -W 相机白平衡, -H <mode> 高光, -6 16-bit
-        // dngtool 扩展: -i 输入, -O 输出
-        var dngArgs = $"-d -T -o 0 -q 3 -W -H {highlightMode} -6 -i \"{rawPath}\" -O \"{outputTiffPath}\"";
-        // 多线程 (2026-08-15): 0=自动(硬件并发), 1=单线程, N=指定
-        if (threads > 0)
-            dngArgs += $" -threads {threads}";
+        // ── 路线（2026-10-24，ACR 路线）：DNG 输入走 Adobe DNG SDK 的 dng_render；
+        //   其余 RAW 仍走 LibRaw —— **SDK 只读 DNG**（读不了 ARW/CR2/NEF…），这是格式边界不是取舍。
+        var rawExt = Path.GetExtension(rawPath);
+        bool sdkRoute = rawExt.Equals(".dng", StringComparison.OrdinalIgnoreCase);
+        string dngArgs;
+        if (sdkRoute)
+        {
+            // -rdp = dng_render：WB + 相机 profile 由 Adobe 施加，tone curve 恒等 ⇒ 线性 16-bit；
+            //   OpcodeList1/2/3 全部按规范施加（LibRaw 一张都不执行 —— 实测 RAW-G 四角差 2.2×）。
+            // -rdspace：srgb（Rec.709/sRGB 原色）| p3 | rec2020；由调用方按**下游目标**选。
+            // ⚠ -H/-q/-W 只对 LibRaw 臂有意义，本臂不吃：不传、也不假装生效（下方日志点名）。
+            dngArgs = $"-rdp -rdspace {renderSpace} -i \"{rawPath}\" -O \"{outputTiffPath}\"";
+            log?.Invoke($"[RAW] ACR 路线 = Adobe DNG SDK dng_render（线性 {renderSpace}，OpcodeList1/2/3 全施加）: {Path.GetFileName(rawPath)}\n");
+            // ⚠ 不传 -threads：SDK 臂实测**无差**（同一 24MP DNG：1 线程 5.05/5.08 s vs 自动 5.40/5.46 s），
+            //   瓶颈（去马赛克/opcode/dng_render）不在 DngToolHost 的并行白名单里 ⇒ 传了就是"看起来生效"。
+            log?.Invoke("[RAW] ACR 路线不适用 LibRaw 参数：-H 高光 / -q 去马赛克质量 / -W 白平衡 / -threads 多线程 均不生效（SDK 有自己的渲染链；-threads 实测无差）\n");
+        }
+        else
+        {
+            log?.Invoke($"[RAW] dngtool 去马赛克: {Path.GetFileName(rawPath)}\n");
+            // 去马赛克参数: -d 线性 RGB, -T TIFF, -o 0 相机空间, -q 3 AHD, -W 相机白平衡, -H <mode> 高光, -6 16-bit
+            // dngtool 扩展: -i 输入, -O 输出
+            dngArgs = $"-d -T -o 0 -q 3 -W -H {highlightMode} -6 -i \"{rawPath}\" -O \"{outputTiffPath}\"";
+            // 多线程 (2026-08-15): 0=自动(硬件并发), 1=单线程, N=指定
+            if (threads > 0)
+                dngArgs += $" -threads {threads}";
+            log?.Invoke($"[RAW] 非 DNG 输入 ⇒ LibRaw 臂（ACR 路线只覆盖 DNG：DNG SDK 不读 {rawExt}）\n");
+        }
         log?.Invoke($"[RAW] dngtool {dngArgs}\n");
 
         var ok = await RunProcessAsync(_detectedPath!, dngArgs, outputTiffPath, "dngtool", log, ct);

@@ -13,6 +13,23 @@ All notable changes to this project are documented in this file.
 
 ## 📝 Changelog
 
+### Unreleased (working tree, 2026-10-24) — DNG inputs now read through the Adobe DNG SDK (ACR route)
+
+- **`dngtool` gains `-rd` / `-rdp [-rdspace srgb|p3|rec2020]`**: `-rdp` renders through the SDK's
+  `dng_render` (white balance + camera profile, identity tone curve) and **executes all of
+  OpcodeList1/2/3** — the old LibRaw arm executes none of them (measured on one DNG: corner/center
+  1.70 → 1.84).
+- **Product**: `.dng` inputs take the ACR route automatically; a bt709 delivery target renders `srgb`
+  (Rec.709/sRGB primaries), everything else renders `rec2020`; `ColorSourceDeclPrimaries` is kept in
+  sync with the actual render space. ARW/CR2/NEF… still use LibRaw (the DNG SDK only reads DNG), and
+  the log says so.
+- **Behavior differences (DNG inputs only)**: `-H` highlight, `-q` demosaic quality, `-W` white balance
+  and `-threads` do **not** apply (each is named in the log); decode time is about **2.2×** LibRaw
+  (24 MP: 5.1 s vs 2.3 s).
+- **Fix**: the SDK intermediate TIFF carries no EXIF ⇒ `Make`/`Model` were added to the "restore from
+  source RAW" whitelist so DNG→JPEG keeps camera make/model.
+- **Gates**: new script #79 `verify-acr-route.ps1` (26/0); managed manifest 78 → 79.
+
 ### v1.6.0-beta8 (2026-10-23) — private-content audit closed out: vendor crop lands in DefaultCrop + per-instance ledger + test projects moved into tests/projects
 
 > **Lineage**: **17 product files** under `src/` (+306/−68 lines), `tools/src/dngtool`

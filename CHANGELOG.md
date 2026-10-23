@@ -12,6 +12,19 @@
 
 ## 📝 更新日志
 
+### 未发布（工作树，2026-10-24）— DNG 输入改走 Adobe DNG SDK（ACR 路线）
+
+- **`dngtool` 新增 `-rd` / `-rdp [-rdspace srgb|p3|rec2020]`**：`-rdp` 用 SDK 的 `dng_render` 施加
+  白平衡与相机 profile（identity tone curve），**OpcodeList1/2/3 全部执行**（旧 LibRaw 臂一张都不执行；
+  实测同一件 DNG 四角/中心 1.70 → 1.84）。
+- **产品**：`.dng` 输入自动走 ACR 路线；目标原色为 bt709 时渲 `srgb`（Rec.709/sRGB 原色），
+  其余渲 `rec2020`；`ColorSourceDeclPrimaries` 与渲染空间**同源**。ARW/CR2/NEF… 仍走 LibRaw
+  （DNG SDK 只读 DNG），日志点名。
+- **行为差异（仅 DNG 输入）**：`-H` 高光 / `-q` 去马赛克质量 / `-W` 白平衡 / `-threads` **不生效**
+  （日志逐项点名）；解码耗时约为 LibRaw 的 **2.2×**（24MP：5.1 s vs 2.3 s）。
+- **修**：SDK 中间件 TIFF 不带 EXIF ⇒ `Make`/`Model` 纳入「从源 RAW 补回」白名单，避免 DNG→JPEG 丢厂/型号。
+- **门禁**：新增第 79 条 `verify-acr-route.ps1`（26/0）；受管清单 78 → 79。
+
 ### v1.6.0-beta8 (2026-10-23) — 私有内容审计收口：厂商裁剪进 DefaultCrop + 逐实例账本 + 测试工程迁入 tests/projects
 
 > **谱系**：`src/` **17 个产品文件**（+306/−68 行）、`tools/src/dngtool`（+1,970/−79 行，含此前各轮的

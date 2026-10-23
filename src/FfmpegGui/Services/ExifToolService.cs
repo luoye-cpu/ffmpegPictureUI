@@ -817,6 +817,10 @@ namespace FfmpegGui.Services
             // ── 相机 / 镜头（`--strip-camera` 时跳过）──
             if (!options.StripExifCamera)
             {
+                // ⚠ `-Make -Model` 是 2026-10-24 补的：ACR 路线（DNG SDK）写出的中间件 TIFF
+                //   **一张标签都不带**（LibRaw 臂至少带 Make/Model/DateTime/ExifIFD），若只靠主恢复
+                //   （源=中间件）就会把相机厂/型号丢掉。这两个字段正属「相机信息」⇒ 放在本开关下。
+                sb.Append("-Make -Model ");
                 sb.Append("-LensModel -LensMake -LensSerialNumber -LensInfo -LensSpecification -MaxApertureValue ");
             }
             // ── 曝光 / 测光 / 场景（描述性拍摄参数，不属于「相机信息」开关）──

@@ -47,6 +47,10 @@
 // DNG SDK 集成 (USE_DNGSDK 编译时启用)
 #ifdef USE_DNGSDK
 #include "dng_host.h"
+#include "dng_exceptions.h"      // -rd: dng_exception::ErrorCode()
+#include "dng_render.h"          // -rdp: dng_render
+#include "dng_color_space.h"     // -rdp: dng_space_ProPhoto_Linear
+#include "dng_1d_function.h"     // -rdp: dng_1d_identity
 #include "dng_negative.h"
 #include "dng_exif.h"
 #include "dng_info.h"
@@ -284,6 +288,19 @@ static void PrintUsage(const char* prog)
     printf("dngtool — DNG/RAW decoder + encoder (LibRaw + DNG SDK 1.7.1)\n");
     printf("Usage: %s [options]\n", prog);
     printf("  -d                decode mode\n");
+    printf("  -rd               read DNG via Adobe DNG SDK (spec reference impl) ->\n");
+    printf("                    stage3 linear 16-bit TIFF; OpcodeList1/2/3 are ALL applied\n");
+    printf("  -rdp              same, but through dng_render -> linear 16-bit TIFF");
+    printf("\n");
+    printf("                    (WB + camera profile applied by Adobe; tone curve = identity)");
+    printf("\n");
+    printf("  -rdspace <name>   -rdp final space: srgb | p3 | rec2020 (default rec2020).");
+    printf("\n");
+    printf("                    srgb = Rec.709/sRGB primaries (use when the delivery target");
+    printf("\n");
+    printf("                    is bt709); rec2020 = widest, downstream converts.");
+    printf("\n");
+    printf("                    (LibRaw path -d keeps them but never executes them)\n");
     printf("  -info <file>      print media info as JSON\n");
     printf("  -idc <file>       dump the ACTIVE SonyIDC version of a Sony ARW, or of a\n");
     printf("                    DNG whose OriginalRawFileData holds one\n");
@@ -5326,6 +5343,169 @@ static int EncodeDng(
 #endif
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// -rd：用 Adobe DNG SDK（规范参考实现）读 DNG → stage3 线性 16-bit TIFF。
+// 与 LibRaw 路径(-d)的根本区别：三张 opcode 列表都会被**执行**
+//   ① OpcodeList1/2 在 BuildStage2Image 内施加（mosaic 域：坏点/裁剪/GainMap/MapTable…）
+//   ② OpcodeList3 在 BuildStage3Image 内施加（线性 RGB 域：Warp/FixVignette/CA…）
+// ⚠ -rd 输出是 SDK 的 stage3（**相机原生线性**，无 WB、无 profile）；
+//   -rdp 输出是 dng_render 的结果（WB + 相机 profile 已施加），原色由 -rdspace 决定：
+//     srgb（Rec.709/sRGB 原色）| p3（D65 Display P3 原色）| rec2020（默认，最宽）。
+//   ⇒ 产品侧必须按**实际渲染空间**写 ColorSourceDeclPrimaries，不能沿用旧口径。
+// ⚠ 输出先写 "<out>.part" 再改名：实测过一次"直接覆盖既有大文件"在目标路径留下 152 个
+//   零字节（数据区正确、TIFF 头全零），未复现 ⇒ 用新名写 + 改名把这条路径变成不可能。
+// ⚠ 本构建排除 dng_xmp.cpp（qDNGUseXMP=0）⇒ 本路径不解析/不搬运 XMP；
+//   XMP 仍由产品侧 exiftool 后置步骤处理。
+// ═══════════════════════════════════════════════════════════════════════
+#ifdef USE_DNGSDK
+// -rdspace 名称 → SDK 的线性输出空间。返回 NULL = 不认识（调用方报错，不静默回退）。
+static const dng_color_space* ResolveRenderSpace(const char* name, const char** label)
+{
+    if (name == NULL || name[0] == 0)
+    { *label = "rec2020"; return &dng_space_Rec2020_Linear::Get(); }
+    if (strcmp(name, "srgb") == 0 || strcmp(name, "rec709") == 0 || strcmp(name, "bt709") == 0)
+    { *label = "srgb"; return &dng_space_sRGB_Linear::Get(); }
+    if (strcmp(name, "p3") == 0 || strcmp(name, "displayp3") == 0 || strcmp(name, "smpte432") == 0)
+    { *label = "p3"; return &dng_space_LinearP3::Get(); }
+    if (strcmp(name, "rec2020") == 0 || strcmp(name, "bt2020") == 0)
+    { *label = "rec2020"; return &dng_space_Rec2020_Linear::Get(); }
+    return NULL;
+}
+
+// Windows 的 rename() 不覆盖既有文件 ⇒ 先删目标再改名。失败时清掉半成品。
+static bool ReplaceFileByRename(const std::string& from, const std::string& to)
+{
+    std::remove(to.c_str());
+    if (std::rename(from.c_str(), to.c_str()) != 0)
+    {
+        fprintf(stderr, "[dngtool-rd] rename failed: %s -> %s\n", from.c_str(), to.c_str());
+        std::remove(from.c_str());
+        return false;
+    }
+    return true;
+}
+#endif
+
+static int DecodeDngViaSdk(const char* inPath, const char* outPath, bool verbose,
+                           bool rendered, const char* spaceName, uint32 threadCount)
+{
+    std::string partPath;
+#ifdef USE_DNGSDK
+    try
+    {
+        // DngToolHost：-threads 在 SDK 臂同样生效（PerformAreaTaskThreads / WorkerPool）；
+        //   ⚠ opcode 施加仍按 SDK 白名单串行（见 DngToolHost::PerformAreaTask 的实测注记）。
+        DngToolHost host(threadCount);
+        dng_file_stream stream(inPath);
+        dng_info info;
+        info.Parse(host, stream);
+        info.PostParse(host);
+        if (!info.IsValidDNG())
+        {
+            fprintf(stderr, "[dngtool-rd] not a valid DNG (info.IsValidDNG()=false)\n");
+            return 2;
+        }
+        if (info.fEnhancedIndex != -1)
+        {
+            fprintf(stderr, "[dngtool-rd] source has enhanced-image IFD (index=%d), not covered\n",
+                    (int)info.fEnhancedIndex);
+            return 2;
+        }
+        AutoPtr<dng_negative> negative;
+        negative.Reset(host.Make_dng_negative());
+        negative->Parse(host, stream, info);
+        negative->PostParse(host, stream, info);
+        negative->ReadStage1Image(host, stream, info);
+        negative->SynchronizeMetadata();
+        const uint32 nOp1 = negative->OpcodeList1().Count();
+        const uint32 nOp2 = negative->OpcodeList2().Count();
+        const uint32 nOp3 = negative->OpcodeList3().Count();
+        negative->BuildStage2Image(host);
+        negative->BuildStage3Image(host, -1);
+        if (!negative->Stage3Image())
+        {
+            fprintf(stderr, "[dngtool-rd] no stage3 image (source has no usable raw plane?)\n");
+            return 3;
+        }
+        const dng_image& img = *negative->Stage3Image();
+        dng_image_writer writer;
+        partPath = std::string(outPath) + ".part";
+        if (rendered)
+        {
+            // -rdp：走 dng_render（WB + 相机 profile 由 Adobe 施加），tonemap 置恒等 ⇒ 线性输出。
+            // 与 stage3 的区别：stage3 是**相机原生线性**（无 WB、无 profile），本档已映射到
+            //   -rdspace 指定的标准原色（产品按下游目标选：bt709 出口用 srgb，其余用 rec2020）。
+            const char* spaceLabel = NULL;
+            const dng_color_space* finalSpace = ResolveRenderSpace(spaceName, &spaceLabel);
+            if (finalSpace == NULL)
+            {
+                fprintf(stderr, "[dngtool-rd] unknown -rdspace \"%s\" (srgb|p3|rec2020)\n",
+                        spaceName == NULL ? "" : spaceName);
+                return 2;
+            }
+            dng_render render(host, *negative);
+            render.SetFinalSpace(*finalSpace);
+            render.SetFinalPixelType(ttShort);
+            render.SetToneCurve(dng_1d_identity::Get());
+            AutoPtr<dng_image> renderedImg;
+            {
+                dng_file_stream out(partPath.c_str(), true);
+                renderedImg.Reset(render.Render());
+                // 朝向：dng_render 不旋转（与 dng_validate.cpp:597 同一口径，渲染后按
+                //   negative->Orientation() 施加）⇒ 产品拿到的是**已经竖正**的像素，与旧
+                //   LibRaw `-T`（dcraw 按 Orientation 落盘）行为一致。不写 TIFF Orientation
+                //   标签：下游 ffmpeg 不解 TIFF 的朝向标签，只能靠像素本身。
+                renderedImg->Rotate(negative->Orientation());
+                writer.WriteTIFF(host, out, *renderedImg, piRGB);
+            }
+            if (!ReplaceFileByRename(partPath, outPath)) return 4;
+            fprintf(stderr,
+                    "[dngtool-rdp] ok %ux%u planes=%u opcode1/2/3=%u/%u/%u (SDK applied per spec)"
+                    " render=linear %s 16-bit (WB+profile applied)\n",
+                    (unsigned)renderedImg->Width(), (unsigned)renderedImg->Height(),
+                    (unsigned)renderedImg->Planes(), (unsigned)nOp1, (unsigned)nOp2, (unsigned)nOp3,
+                    spaceLabel);
+            return 0;
+        }
+        {
+            dng_file_stream out(partPath.c_str(), true);
+            writer.WriteTIFF(host, out, img, img.Planes() >= 3 ? piRGB : piBlackIsZero);
+        }
+        if (!ReplaceFileByRename(partPath, outPath)) return 4;
+        fprintf(stderr,
+                "[dngtool-rd] ok %ux%u planes=%u opcode1/2/3=%u/%u/%u (SDK applied per spec)"
+                " stage3=linear TIFF\n",
+                (unsigned)img.Width(), (unsigned)img.Height(), (unsigned)img.Planes(),
+                (unsigned)nOp1, (unsigned)nOp2, (unsigned)nOp3);
+        if (verbose)
+        {
+            for (uint32 i = 0; i < nOp1; i++)
+                fprintf(stderr, "  list1[%u] opcode=%u\n", i, negative->OpcodeList1().Entry(i).OpcodeID());
+            for (uint32 i = 0; i < nOp2; i++)
+                fprintf(stderr, "  list2[%u] opcode=%u\n", i, negative->OpcodeList2().Entry(i).OpcodeID());
+            for (uint32 i = 0; i < nOp3; i++)
+                fprintf(stderr, "  list3[%u] opcode=%u\n", i, negative->OpcodeList3().Entry(i).OpcodeID());
+        }
+        return 0;
+    }
+    catch (dng_exception& e)
+    {
+        if (!partPath.empty()) std::remove(partPath.c_str());
+        fprintf(stderr, "[dngtool-rd] DNG SDK exception: %d\n", (int)e.ErrorCode());
+        return 3;
+    }
+    catch (...)
+    {
+        if (!partPath.empty()) std::remove(partPath.c_str());
+        fprintf(stderr, "[dngtool-rd] unknown exception\n");
+        return 3;
+    }
+#else
+    fprintf(stderr, "[dngtool-rd] built without USE_DNGSDK\n");
+    return 2;
+#endif
+}
+
 int main(int argc, char* argv[])
 {
     if (argc < 2)
@@ -5353,6 +5533,9 @@ int main(int argc, char* argv[])
     int outputColor = 0, quality = 3, useCameraWb = 1, highlight = 1;
     bool decodeMode = false, encodeMode = false, verbose = false;
     bool verifyMode = false;
+    bool sdkReadMode = false;   // -rd: Adobe DNG SDK read path (spec reference impl)
+    bool sdkRenderMode = false; // -rdp: same read path, but via dng_render (linear, -rdspace)
+    std::string renderSpaceName = "rec2020"; // -rdspace: srgb | p3 | rec2020
     int encodeCompression = 0;  // 0=lossless JPEG, 1=JXL
     bool carryRawMetadata = true;   // 源 RAW 元数据搬运开关 (默认开)
     bool embedOriginal = false;     // 50828 嵌入整个原文件：2026-10-19 政策改为**默认关** (-embed-raw 显式开)
@@ -5373,6 +5556,9 @@ int main(int argc, char* argv[])
         if (strcmp(a, "-d") == 0) decodeMode = true;
         else if (strcmp(a, "-e") == 0) encodeMode = true;
         else if (strcmp(a, "-verify") == 0) verifyMode = true;
+        else if (strcmp(a, "-rd") == 0) sdkReadMode = true;
+        else if (strcmp(a, "-rdp") == 0) { sdkReadMode = true; sdkRenderMode = true; }
+        else if (strcmp(a, "-rdspace") == 0 && i + 1 < argc) renderSpaceName = argv[++i];
         else if (strcmp(a, "-info") == 0 && i + 1 < argc) { inputPath = argv[++i]; }
         else if (strcmp(a, "-idc") == 0 && i + 1 < argc) { idcPath = argv[++i]; }
         else if (strcmp(a, "-i") == 0 && i + 1 < argc) inputPath = argv[++i];
@@ -5420,6 +5606,18 @@ int main(int argc, char* argv[])
             return 1;
         }
         return VerifyDng(inputPath.c_str(), threadCount);
+    }
+
+    // -- -rd: Adobe DNG SDK read path (all three opcode lists are executed) --
+    if (sdkReadMode)
+    {
+        if (inputPath.empty() || outputPath.empty())
+        {
+            fprintf(stderr, "[dngtool-rd] requires -i <input.dng> and -O <output.tif>\n");
+            return 1;
+        }
+        return DecodeDngViaSdk(inputPath.c_str(), outputPath.c_str(), verbose, sdkRenderMode,
+                               renderSpaceName.c_str(), threadCount);
     }
 
     if (encodeMode)
