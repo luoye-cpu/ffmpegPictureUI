@@ -664,8 +664,10 @@ namespace FfmpegGui.Services
             //（`Unable to parse "colorspace" option value …`）。规范化与可用性判定都收在 Registry 里。
             // 唯一的界面差异：zscale 认 `gbr`、ffmpeg 认 `rgb`，由 ToFfmpegColorSpaceName 转换。
             // ── 输出标注优先服从**容器能力**（capM）—— 2026-09-16 ──
-            // jpg/webp 的能力表写明矩阵只能 bt709（写别的值：mjpeg/libwebp 会**静默忽略**并写自己的默认
-            // bt470bg，而 bt2020c/ycgco 更会让 swscale 直接失败）。此前 capM 只用于像素链的目标矩阵，
+            // jpg/webp 的 capM 现在是 **bt470bg**（2026-10-25 更正）：这两个容器写不进矩阵字段，
+            // 标准解码器（libjpeg/libwebp）按 BT.601 解，故转换也必须用 BT.601；旧口径写 bt709
+            // 会造成「像素 BT.709、解码器按 BT.601」的饱和色偏（纯红 255→232）。
+            // 而 bt2020c/ycgco 仍会让 swscale 直接失败。此前 capM 只用于像素链的目标矩阵，
             // **从不施加于用户的矩阵** ⇒ 用户的 `--color-matrix bt2020nc` 会被原样写进 jpg 的输出标签，
             // 造成「宣称 bt2020nc、实际文件里没有该标注」。现统一由 capM 优先。
             var outMatrixToken = dec.CapMatrix ?? outputColorSpace;
@@ -1007,22 +1009,28 @@ namespace FfmpegGui.Services
             var fmt = format.ToLowerInvariant();
 
             // JPEG (mjpeg/cjpegli)：有 APP2 ICC 通路 ⇒ **SDR 广色域（Display P3 / Adobe RGB / SDR-BT.2020）可经 ICC 表达**，
-            // 故不再钳 primaries（旧写法把“未实现的路径”误写成了能力约束）；矩阵仍按 Y'CbCr 惯例钳 bt709。
+            // 故不再钳 primaries（旧写法把“未实现的路径”误写成了能力约束）。
+            // ⚠ 矩阵（2026-10-25 更正）：旧注释写“按 Y'CbCr 惯例钳 bt709”，但 `-colorspace bt709` 对 mjpeg
+            //   不只是标签 —— swscale 真按 BT.709 转 Y′CbCr，而 JPEG/JFIF **写不进矩阵字段**，标准解码器
+            //   （libjpeg/Windows/Chrome）按 BT.601 解 ⇒ 饱和色偏：纯红 255,0,0 解回 232,0,1。
+            //   ⇒ 转换矩阵必须取解码器假设的 BT.601（`bt470bg`）；色域/曲线仍由 APP2 ICC 描述。
             // 真正的硬边界只有两条：① 位深 8；② **HDR 传递无法由 JPEG 自身标定** ——
             // 除非开启 GainMap (Ultra HDR)：此时 HDR 由“SDR 底 + 增益图”承载，允许 PQ/HLG 目标。
             if (fmt is "jpg" or "jpeg")
             {
-                return (null, options.JpegGainMap ? null : "iec61966-2-1", "bt709", 8, true);
+                return (null, options.JpegGainMap ? null : "iec61966-2-1", ColorSpaceRegistry.ContainerYuvMatrix(fmt), 8, true);
             }
 
             // WebP (libwebp): **容器无 CICP 通路，但 RIFF 有 ICCP 块** ⇒ 非 sRGB 原色域可经 ICC 交付，
             // 不钳 primaries（旧写法把“写 -colorspace 会 EINVAL”误写成了“不能交付 P3”；EINVAL 的只是矩阵标签）。
             //   实测（本仓库 2026-09-14）：iccgen 生成的 P3 ICC **会被 libwebp 编码器丢弃**（产物内无 ICCP 块），
             //   而用 exiftool 后置嵌入同一 ICC 可正常读回 ⇒ 由裁决点 NeedsPostEmbedIcc 让队列补上那一步。
-            // 仍钳的两项是真硬边界：trc 只能 SDR（无 HDR 标定通路）、matrix 只能 bt709（写其他值 EINVAL）。
+            // ⚠ 矩阵（2026-10-25 更正）：同 JPEG —— libwebp 的解码器系数固定按 BT.601，编码侧若用 BT.709
+            //   就必然色偏；`-colorspace bt470bg` 实测 rc=0（并非“写别的值 EINVAL”），转换与解码假设一致。
+            // 仍钳的一项是真硬边界：trc 只能 SDR（无 HDR 标定通路）。
             if (fmt == "webp")
             {
-                return (null, "iec61966-2-1", "bt709", 8, true);
+                return (null, "iec61966-2-1", ColorSpaceRegistry.ContainerYuvMatrix(fmt), 8, true);
             }
 
             // TIFF: 仅 ICC 风格色彩管理；不支持 CICP color_primaries。

@@ -956,18 +956,14 @@ public static class RawColorPipeline
         if (!string.IsNullOrWhiteSpace(plan.OutPrimaries)) labels += $" -color_primaries {plan.OutPrimaries}";
         if (!string.IsNullOrWhiteSpace(plan.OutTransfer)) labels += $" -color_trc {plan.OutTransfer}";
         string matrixLabels = "";
-        if (!string.IsNullOrWhiteSpace(plan.OutMatrix)) matrixLabels += $" -colorspace {plan.OutMatrix}";
-        // ── YUV 原生输出必须显式给出 RGB→YUV 的**转换矩阵**（2026-09-16 修复）──
+        // ── YUV 原生输出必须显式给出 RGB→YUV 的**转换矩阵**，且必须与解码器的假设一致 ──
         // 矩阵在这里有两个角色：① **转换参数**（swscale 用哪个系数把 RGB 拆成 Y′CbCr）；
-        // ② 容器标注。Plan 对**非 CICP 容器**（jpg/webp）会把 `OutMatrix` 清空（标注改由 ICC 承担），
-        // 但**转换仍然需要一个矩阵** —— 少了它，swscale 按图像尺寸取默认（SD ⇒ bt601），
-        // 而传统管线按容器能力表取 bt709 ⇒ 两者像素不同。
-        // 实测证据：同源 P3→sRGB，legacy 出 `-colorspace bt709`、引擎无该参数，
-        // jpg 的 PSNR 只有 **22.4dB**（luma 21.1dB，均值几乎相同 ⇒ 是系数差异不是亮度偏移）；
-        // 补上后见 TESTING §6 第 49 条的 A/B 复测。
-        // 取值与 legacy 的 `capM`（jpg/webp = bt709）同源，保证切换管线时逐字节可对拍。
-        if (string.IsNullOrWhiteSpace(plan.OutMatrix) && (ext is "jpg" or "jpeg" or "webp"))
-            matrixLabels += " -colorspace bt709";
+        // ② 容器标注。jpg/webp 写不进矩阵字段、libjpeg/libwebp 固定按 BT.601 解 ⇒ 转换只能用 BT.601。
+        // 2026-10-25 实测：旧写法对 jpg/webp 恒写 bt709（为与 legacy 对拍），产物纯红 255,0,0 被标准
+        //   解码器解回 232,0,1（webp 234,0,1）；改 bt470bg 后回到 254/255。色域/曲线仍由 ICC 描述，
+        //   `plan.OutMatrix` 继续用于 ICC 语义，但**不再当作这两个容器的转换矩阵**。
+        var convMatrix = ColorSpaceRegistry.ContainerYuvMatrix(ext) ?? plan.OutMatrix;
+        if (!string.IsNullOrWhiteSpace(convMatrix)) matrixLabels += $" -colorspace {convMatrix}";
         string pixIn = plan.OutBitDepth == 8 ? "rgb24" : "rgb48le";
         // ── AVIF / JXL：P/T 标签必须写在 `-i` **之前**（两者分别于 2026-09-17 实测驱动）──
         // AVIF 的 nclx `colr` 盒由**编码器读输入帧的色彩属性**写入，输出侧

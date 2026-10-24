@@ -656,6 +656,24 @@ namespace FfmpegGui.Services
             return $"-colorspace {n} ";
         }
 
+        /// <summary>
+        /// 该容器**实际兑现**的 YUV 矩阵（RGB→Y′CbCr 转换系数与解码器假设必须一致）。
+        /// <para>
+        /// 2026-10-25 实测：`-colorspace bt709` 对 mjpeg/libwebp **不只是标签** —— swscale 真按 BT.709
+        /// 转换，而这两个容器写不进矩阵（JPEG/JFIF 无该字段，WebP 无 CICP），标准解码器按 BT.601 解
+        /// （libjpeg/libwebp 固定系数）⇒ 饱和色偏：纯红 `255,0,0` 解回 **232,0,1 / 234,0,1**，
+        /// 去掉该旗标后为 254/255。⇒ 对 jpg/webp，转换矩阵必须取 BT.601（`bt470bg`），
+        /// 色域/曲线仍由 ICC（APP2/ICCP）描述。
+        /// </para>
+        /// 其余容器返回 null：RGB 原生（png/tiff/apng/jxl/bmp）不需要矩阵，能写 CICP 的（avif）
+        /// 由裁决点按源/目标矩阵走。
+        /// </summary>
+        public static string? ContainerYuvMatrix(string? format)
+        {
+            var f = (format ?? "").Trim().TrimStart('.').ToLowerInvariant();
+            return f is "jpg" or "jpeg" or "webp" ? "bt470bg" : null;
+        }
+
         /// <summary>CICP primaries token → 本注册表内的色度坐标（线性域矩阵用）；未知返回 null。</summary>
         public static Spec? ResolvePrimariesToken(string? token)
         {

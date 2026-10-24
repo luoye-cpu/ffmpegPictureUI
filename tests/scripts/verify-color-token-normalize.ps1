@@ -203,8 +203,10 @@ foreach ($m in @('bt709', 'bt2020nc', 'bt470bg', 'smpte170m')) {
     $head = ($cmd -split ' -i ')[0]
     $tail = ($cmd -split ' -i ')[1]
     CK ($head -match "-colorspace $m") "E1 输入声明出现在 -i 之前（matrix=$m）"
-    # 输出标注必须服从容器能力：jpg 的能力表写明矩阵只能 bt709（写别的值 mjpeg 会静默忽略）
-    CK ($tail -match '-colorspace bt709') "E2 输出标注服从 capM=bt709（用户选 $m，jpg 实际标注 bt709）"
+    # 输出转换矩阵必须服从容器能力：jpg 写不进矩阵字段，标准解码器（libjpeg/libwebp）按 BT.601 解，
+    # 故 RGB→YUV 也必须用 BT.601。2026-10-25 实测：旧 capM=bt709 会让纯红 255,0,0 解回 232,0,1；
+    # 改 bt470bg 后 rc=0 且解回 254,0,0（转换与解码假设一致）。
+    CK ($tail -match '-colorspace bt470bg') "E2 输出转换矩阵服从 capM=bt470bg（用户选 $m，jpg 实际用 bt470bg）"
 }
 
 # E3：不可用矩阵 —— 必须**出声**且**不得失败**（此前是静默忽略或 -40 零产物）

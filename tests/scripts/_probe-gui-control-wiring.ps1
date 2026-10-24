@@ -74,8 +74,15 @@ $xamlCombos = @($xamlCombos | Sort-Object -Unique)
 
 # ── ② 已知例外白名单（必须显式登记 + 写明理由）──
 #   每一项 = 「该 combo 不需要 (a)/(b)」的**具名理由**，不允许静默跳过。
-#   ⚠ 当前为空：本仓每一个 XAML 下拉都应被接线。若确有例外，请连同理由一起加在这里。
-$exempt = @{}
+#   ⚠ 2026-10-24 两图 GainMap 面板的**唯一**例外：`GainMapBaseGamutCombo` 的值在「加入队列」那一刻
+#     才被读进 FfmpegOptions（面板没有命令预览，也没有任何随参数即时变化的 UI），
+#     所以"变更响应"这一格**在设计上不存在**；写一个空处理器只会把锁喂绿。
+#     它的"值真的生效"由无头 UI 冒烟 U9b（逐项读回入队项的 FfmpegOptions）看着。
+#     编码器 大类/小类、格式下拉、质量滑块都走真实处理器（前者联动候选集，后两者联动启用态/数值框），
+#     所以**不在**白名单里。
+$exempt = @{
+  'GainMapBaseGamutCombo' = 'add-time input (FfmpegOptions.JpegGainMapBaseGamut); effect covered by headless UI smoke U9b'
+}
 
 Write-Output ("  enumerated ComboBox x:Name in XAML: {0}" -f $xamlCombos.Count)
 

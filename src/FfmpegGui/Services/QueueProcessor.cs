@@ -34,6 +34,12 @@ namespace FfmpegGui.Services
         private readonly Action<QueueItem> _onItemUpdated;
         private readonly Action? _onQueueStopped;
 
+        /// <summary>非 RAW 输入请求 DNG 出口时的统一拒绝文案（预检与 ProcessDngAsync 共用，防两处漂移）。</summary>
+        private const string DngNonRawMessage =
+            "[dng] ⚠️ 仅 RAW/DNG 文件可编码为 DNG（普通图片无传感器数据）\n";
+        private const string DngNonRawStatus = "失败 (非 RAW 输入)";
+        private const string AvifencTwoStepStatus = "已完成 (avifenc 两步法)";
+
         public QueueProcessor(Action<QueueItem> onItemUpdated, Action? onStopped = null)
         {
             _onItemUpdated = onItemUpdated;
@@ -336,6 +342,21 @@ namespace FfmpegGui.Services
                         captured.StartedAt = DateTimeOffset.UtcNow;
                         _onItemUpdated?.Invoke(captured);
 
+                        // ── DNG 出口前置校验（2026-10-25）──────────────────────────────────────
+                        // DNG 需要传感器 RAW 数据；JXR/PNG 等已解码载体结构上无法反推 CFA。
+                        // 旧行为按路由分叉成三种错误：引擎/Dng 后端给出清楚拒绝，而 JXR 专用管线与
+                        // `-e Ffmpeg` 直接落到 ffmpeg ⇒ 只报 `Error initializing the muxer: Invalid argument (-22)`。
+                        // 这里在**任何路由之前**统一判一次，保证所有输入类/后端得到同一句话、零产物。
+                        if (captured.Options.Format.Equals("dng", StringComparison.OrdinalIgnoreCase)
+                            && !RawService.IsRawFile(captured.InputPath))
+                        {
+                            captured.Log += DngNonRawMessage;
+                            captured.ExitCode = -1;
+                            captured.Status = DngNonRawStatus;
+                            _onItemUpdated?.Invoke(captured);
+                            return;
+                        }
+
                             // 确保输出目录存在 —— 先将输出路径标准化为绝对路径，避免相对路径在不同进程中导致位置不一致
                             string finalOutputPath;
                             try
@@ -372,6 +393,46 @@ namespace FfmpegGui.Services
                                 //   ⇒ 脚本无法察觉"什么都没转换"（实测踩过）。
                                 //   ⇒ 用「失败（跳过：目标已存在且未允许覆盖）」：既计入失败、又保留原因。
                                 captured.Status = "失败（跳过：目标已存在且未允许覆盖）";
+                                return;
+                            }
+
+                            // ── 两图 GainMap 合成（独立模式：SDR 底图 + HDR 参考）──────────────────
+                            // 走独立服务，**不进入**后面的单输入管线（那条会自己解码 HDR、造 Reinhard 底图）。
+                            // 输出格式只接受 .jpg/.jpeg/.avif：ContainerOf 对其它扩展名会按 jpeg 处理 ⇒
+                            // 若不拦，用户要 png 却拿到 jpeg，属"宣称≠交付"。
+                            if (captured.Options.GainMapCompose)
+                            {
+                                string composeExt = Path.GetExtension(finalOutputPath).ToLowerInvariant();
+                                if (composeExt is not (".jpg" or ".jpeg" or ".avif"))
+                                {
+                                    captured.Log += $"[GainMap合成] 失败：输出扩展名 {composeExt} 不受支持（只支持 .jpg/.jpeg/.avif）\n";
+                                    captured.ExitCode = 1;
+                                    captured.Status = "失败 (GainMap 合成：输出格式)";
+                                    _onItemUpdated?.Invoke(captured);
+                                    return;
+                                }
+                                if (string.IsNullOrWhiteSpace(captured.GainMapReferencePath))
+                                {
+                                    captured.Log += "[GainMap合成] 失败：缺少 HDR 参考图（第二输入）\n";
+                                    captured.ExitCode = 1;
+                                    captured.Status = "失败 (GainMap 合成：缺第二输入)";
+                                    _onItemUpdated?.Invoke(captured);
+                                    return;
+                                }
+                                captured.Command = "[GainMap合成] GainMapComposeService（SDR 底图 + HDR 参考）";
+                                captured.Log += $"[GainMap合成] SDR 底图 = {Path.GetFileName(captured.SourceInputPath ?? captured.InputPath)}"
+                                    + $"，HDR 参考 = {Path.GetFileName(captured.GainMapReferencePath)}\n";
+                                _onItemUpdated?.Invoke(captured);
+                                bool composed = await GainMapComposeService.ComposeAsync(
+                                    captured.SourceInputPath ?? captured.InputPath,
+                                    captured.GainMapReferencePath!,
+                                    finalOutputPath, captured.Options,
+                                    s => { captured.Log += s; _onItemUpdated?.Invoke(captured); }, ct);
+                                captured.ExitCode = composed ? 0 : 1;
+                                // ⚠ 成功词必须是「已完成」开头：`QueueItem.IsSuccessStatus`/`IsTerminal`
+                                //   都按该前缀判定 ⇒ 写成「完成」会让成功项永远不算完成（汇总卡在进行中）。
+                                captured.Status = composed ? "已完成 (GainMap 合成)" : "失败 (GainMap 合成)";
+                                _onItemUpdated?.Invoke(captured);
                                 return;
                             }
 
@@ -579,6 +640,15 @@ namespace FfmpegGui.Services
                                 throw new InvalidOperationException(
                                     $"所选编码器后端 {backend} 不适用于目标格式 {captured.Options.Format}。" +
                                     "请改用兼容的编码器/格式组合（不回退到其他编码器，避免产出与所选不符的文件）。");
+                            }
+
+                            // JXR 出口按设计固定用 JxrEncApp（ffmpeg libjxr 无质量 AVOption）。兼容性守卫
+                            // 允许 `-e Ffmpeg -f jxr`，但实际执行体不会变 ⇒ 必须点名，不能让用户以为选中的后端生效了。
+                            if (backend == EncoderBackend.Ffmpeg
+                                && captured.Options.Format.Equals("jxr", StringComparison.OrdinalIgnoreCase))
+                            {
+                                captured.Log += "[jxr] ⚠ Ffmpeg 后端不生效：JXR 出口按设计固定用 JxrEncApp"
+                                              + "（ffmpeg libjxr 无质量旋钮，实测会把质量/无损请求静默吞掉）\n";
                             }
 
                             // ── jbrd 无损重封装 × ffmpeg-libjxl 后端：点名，不静默（2026-09-30）──────
@@ -3475,9 +3545,9 @@ namespace FfmpegGui.Services
             // 输入必须为 RAW/DNG；非 RAW 输入无法生成 DNG（无传感器数据）
             if (!RawService.IsRawFile(item.InputPath))
             {
-                item.Log += "[dng] ⚠️ 仅 RAW/DNG 文件可编码为 DNG（普通图片无传感器数据）\n";
+                item.Log += DngNonRawMessage;
                 item.ExitCode = -1;
-                item.Status = "失败 (非 RAW 输入)";
+                item.Status = DngNonRawStatus;
                 return;
             }
 
@@ -4363,7 +4433,7 @@ namespace FfmpegGui.Services
                 }
 
                 item.ExitCode = process.ExitCode;
-                item.Status = process.ExitCode == 0 ? "已完成 (avifenc 两步法)" : $"失败 (avifenc 退出码 {process.ExitCode})";
+                item.Status = process.ExitCode == 0 ? AvifencTwoStepStatus : $"failed: avifenc exit {process.ExitCode}";
 
                 if (process.ExitCode == 0)
                     await RestoreMetadataAsync(item, outputPath);
@@ -4490,6 +4560,8 @@ namespace FfmpegGui.Services
                 if (IsAnimated(item))
                 {
                     item.Log += "[jxl] 动图 JXL 不进行 djxl→PNG 中间解码，回退到 ffmpeg\n";
+                    if (item.Options.EncoderBackend != EncoderBackend.Ffmpeg)
+                        item.Log += "[jxl] NOTE: --encoder " + item.Options.EncoderBackend + " is IGNORED on the animated path; ffmpeg is used instead\n";
                     _onItemUpdated?.Invoke(item);
                     var ffmpegOpts = CloneOptionsForFfmpeg(item.Options);
                     var args2 = BuildArgsAndNote(item, ffmpegOpts, item.InputPath, outputPath);   // 同源登记 + 建命令（P7a-3）
@@ -4510,18 +4582,29 @@ namespace FfmpegGui.Services
                     //   ① 输出 JPEG/JPEGLI 且 cjpegli 可用 → 管道优先，失败回退 PNG 中转
                     //   ② 输出 JXL 且 cjxl 可用 → cjxl 不支持 stdin，需 PNG 中转
                     // 其他所有输出格式 → djxl 直接管道传给 ffmpeg
+                    // ⚠ 2026-10-25：是否走外部编码器必须看**用户选择的后端**，不能只看工具可用性。
+                    //   旧写法在 JXL 旁路上同样会把 `-e Ffmpeg` 静默改成 cjpegli/cjxl（产物逐字节相同）。
+                    var backend = item.Options.EncoderBackend;
+                    var useCjpegliExplicit = backend == EncoderBackend.Cjpegli
+                        && (targetFmt == "jpg" || targetFmt == "jpeg" || targetFmt == "jpegli");
+                    var useCjxlExplicit = backend == EncoderBackend.Cjxl && targetFmt == "jxl";
+                    if (useCjpegliExplicit && !CjpegliService.IsAvailable)
+                        throw new InvalidOperationException("cjpegli backend requested but cjpegli is not available (no silent ffmpeg fallback)");
+                    if (useCjxlExplicit && !CjxlService.IsAvailable)
+                        throw new InvalidOperationException("cjxl backend requested but cjxl is not available (no silent ffmpeg fallback)");
+
                     var usePngIntermediary =
                         // cjpegli 不支持 stdin 管道，需要临时文件
-                        (CjpegliService.IsAvailable && (targetFmt == "jpg" || targetFmt == "jpeg" || targetFmt == "jpegli"))
+                        useCjpegliExplicit
                         // cjxl 不支持 stdin 管道，需要临时文件（仅用于 JXL 目标）
-                        || (CjxlService.IsAvailable && targetFmt == "jxl");
+                        || useCjxlExplicit;
                         // 注意：WebP 输出仍优先走 PPM 管道 (djxl → ffmpeg libwebp_anim/libwebp)，
                         // 只有当需要外部编码器且该编码器不支持 stdin 时才回退 PNG 中转。
 
                     if (usePngIntermediary)
                     {
                         // ── JXL 目标：优先使用 djxl→cjxl 管道（cjxl 支持 stdin）──
-                        if (CjxlService.IsAvailable && targetFmt == "jxl")
+                        if (useCjxlExplicit)
                         {
                             item.Log += "[pipeline] 尝试 djxl -> cjxl 管道（无中间文件）\n";
                             var pipeResult = await PipeDjxlToCjxlAsync(item, outputPath, ct);
@@ -4536,7 +4619,7 @@ namespace FfmpegGui.Services
                         }
 
                         // ── JPEG/JPEGLI 目标：优先使用 djxl→cjpegli 管道 ──
-                        if (CjpegliService.IsAvailable && (targetFmt == "jpg" || targetFmt == "jpeg" || targetFmt == "jpegli"))
+                        if (useCjpegliExplicit)
                         {
                             item.Log += "[pipeline] 尝试 djxl -> cjpegli 管道\n";
                             var pipeExit = await JxlPipelineService.TryPipeDjxlToCjpegliAsync(
@@ -4573,6 +4656,25 @@ namespace FfmpegGui.Services
                         // ── 其他格式：djxl 管道 → ffmpeg ──
                         // item.Command 由 PipeDjxlToFfmpegAsync 内部按实际 PPM/PAM 流设置
                         await PipeDjxlToFfmpegAsync(item, outputPath, ct);
+                        // ⚠ 2026-10-25：管道失败必须保留旧的 PNM/direct 回退。
+                        //   典型形状：float JXL（带增益图的 JPEG → cjxl 的产物）—— djxl 的 PPM/PAM
+                        //   写出器报 `JxlDecoderSetImageOutBitDepth failed`，但 djxl→PNG 与 ffmpeg 直读
+                        //   都能出图。改成按 -e 分叉后，默认 Ffmpeg 臂会直接落到这里 ⇒ 缺回退就会把
+                        //   “本来能出图”的档判成失败（verify-jbrd-e2e 的 A ultrahdr 当场红）。
+                        if (item.ExitCode != 0 && !ct.IsCancellationRequested)
+                        {
+                            item.Log += "[pipeline] djxl→ffmpeg 管道失败，回退到 PNM/direct 解码\n";
+                            var tmp = Path.Combine(PlatformServices.GetTempDir(), Guid.NewGuid().ToString() + ".pnm");
+                            var tmpCreated = false;
+                            try
+                            {
+                                tmpCreated = await FallbackDjxlDecodeToFile(item, tmp, outputPath, ct);
+                            }
+                            finally
+                            {
+                                try { if (tmpCreated && File.Exists(tmp)) File.Delete(tmp); } catch { }
+                            }
+                        }
                     }
                 }
                 else
@@ -4596,6 +4698,8 @@ namespace FfmpegGui.Services
             }
             else
             {
+                if (item.Options.EncoderBackend != EncoderBackend.Ffmpeg)
+                    item.Log += "[jxl] NOTE: --encoder " + item.Options.EncoderBackend + " is IGNORED on the unknown-type path; ffmpeg is used instead\n";
                 var args = BuildArgsAndNote(item, item.Options, item.InputPath, outputPath);
                 item.Log += $"[cmd] ffmpeg {args}\n";
                 // #15 心跳站点 D（jxl-unknown）：**畸形 .jxl 实测就落在这个分支**（不以 FF 0A 开头 ⇒ JxlInspector 判
@@ -4631,7 +4735,7 @@ namespace FfmpegGui.Services
             }
 
             var targetFmt = (item.Options.Format ?? "").ToLowerInvariant();
-            item.Log += $"[jxr] 输入: JXR  |  目标格式: {targetFmt}  |  JxrDecApp: 可用  |  cjpegli: {(CjpegliService.IsAvailable ? "可用" : "不可用")}  |  cjxl: {(CjxlService.IsAvailable ? "可用" : "不可用")}\n";
+            item.Log += $"[jxr] 输入: JXR  |  目标格式: {targetFmt}  |  后端: {item.Options.EncoderBackend}  |  JxrDecApp: 可用  |  cjpegli: {(CjpegliService.IsAvailable ? "可用" : "不可用")}  |  cjxl: {(CjxlService.IsAvailable ? "可用" : "不可用")}\n";
 
             var tempDir = Path.Combine(PlatformServices.GetTempDir(), $"jxr_input_{Guid.NewGuid():N}");
             Directory.CreateDirectory(tempDir);
@@ -4696,10 +4800,32 @@ namespace FfmpegGui.Services
                 item.Log += $"[jxr]   解码完成: {intermediateSize / 1024}KB {Path.GetExtension(intermediatePath).TrimStart('.').ToUpperInvariant()}\n";
                 PlatformServices.MarkAsTemporaryFile(intermediatePath); // 提示 OS 优先内存缓存
 
-                // Step 2: 根据目标格式选择编码路径
-                var useCjxl = CjxlService.IsAvailable && targetFmt == "jxl";
-                var useCjpegli = CjpegliService.IsAvailable && (targetFmt == "jpg" || targetFmt == "jpeg" || targetFmt == "jpegli");
+                // Step 2: 根据目标格式与**用户选择的后端**选择编码路径（2026-10-25）
+                // ⚠ 旧写法只看工具是否可用 ⇒ `-e Ffmpeg` 在这条旁路上被静默忽略（JPG 仍走 cjpegli、
+                //   JXL 仍走 cjxl，产物逐字节与默认臂相同）。兼容性守卫已在分派前拒绝后端/格式错配，
+                //   所以这里只需按 Options.EncoderBackend 二选一；缺失时**显式失败**，不静默改道。
+                var backend = item.Options.EncoderBackend;
+                var useCjxl = targetFmt == "jxl" && backend == EncoderBackend.Cjxl;
+                var useCjpegli = (targetFmt == "jpg" || targetFmt == "jpeg" || targetFmt == "jpegli")
+                                 && backend == EncoderBackend.Cjpegli;
                 var useJxrEnc = targetFmt == "jxr";
+
+                if (useCjxl && !CjxlService.IsAvailable)
+                    throw new InvalidOperationException("cjxl backend requested but cjxl is not available (no silent ffmpeg fallback)");
+                if (useCjpegli && !CjpegliService.IsAvailable)
+                    throw new InvalidOperationException("cjpegli backend requested but cjpegli is not available (no silent ffmpeg fallback)");
+                // JXR 出口按设计固定用 JxrEncApp（ffmpeg libjxr 无质量 AVOption，会静默吞掉质量请求）。
+                // 覆盖警告由分派前的统一守卫打印一次（这里不再重复），避免同一行出现两遍。
+
+                // 源含 alpha + 目标 AVIF：ffmpeg 的 AVIF muxer 实测丢 alpha（yuva420p 入参也写成 yuv420p），
+                // 必须改走 avifenc（它写标准 alpha 辅助流）。只在 JXR 旁路里做——这条路本来就不经色彩引擎。
+                bool intermediateHasAlpha = false;
+                if (targetFmt == "avif")
+                {
+                    intermediateHasAlpha = highPrecisionPath != null
+                        ? hpChannels == 4
+                        : FfmpegCommandBuilder.ProbeInputColorMetadata(intermediatePath).hasAlpha;
+                }
 
                 if (useCjxl || useCjpegli)
                 {
@@ -4770,6 +4896,11 @@ namespace FfmpegGui.Services
                     {
                         item.InputPath = savedInputPath;
                     }
+                }
+                else if (targetFmt == "avif" && intermediateHasAlpha)
+                {
+                    await ProcessJxrToAvifWithAlphaAsync(item, intermediatePath,
+                        highPrecisionPath != null, outputPath, ct);
                 }
                 else if (useJxrEnc)
                 {
@@ -4844,6 +4975,101 @@ namespace FfmpegGui.Services
                 item.Log += $"[jxr] 异常: {ex.Message}\n";
                 item.ExitCode = -1;
                 item.Status = $"失败: {ex.Message}";
+            }
+            finally
+            {
+                try { Directory.Delete(tempDir, true); } catch { }
+            }
+        }
+
+        /// <summary>
+        /// JXR（含 alpha）→ AVIF：ffmpeg 出 RGBA PNG → avifenc 编码。
+        /// 为什么不能继续用 ffmpeg 单命令：本机实测 `-pix_fmt yuva420p` 入参仍产出单流 yuv420p，
+        /// alpha 平面被 AVIF muxer 丢掉；avifenc 会写标准 alpha 辅助流（第二条 av1/gray 轨道）。
+        /// 只有 JXR 旁路调用：这条路本来就不经色彩引擎，不存在绕过引擎的额外语义损失。
+        /// </summary>
+        private async Task ProcessJxrToAvifWithAlphaAsync(
+            QueueItem item, string intermediatePath, bool sixteenBit, string outputPath, CancellationToken ct)
+        {
+            var avifencPath = PlatformServices.ResolveAvifencPath();
+            if (avifencPath == null)
+            {
+                item.Command = "(not executed: avifenc unavailable)";
+                item.Log += "[jxr→avif] avifenc.exe NOT FOUND -> refusing to silently drop alpha\n"
+                          + "  put avifenc.exe under PLAN/artifacts/, or pick a format that keeps alpha\n";
+                throw new InvalidOperationException("avifenc not found (no silent alpha loss)");
+            }
+
+            var tempDir = Path.Combine(PlatformServices.GetTempDir(), $"jxr_avif_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                // Step 1: 解码后的中间件 → 带 alpha 的 PNG（16-bit 中间件保 16-bit，避免无谓降位）。
+                var pngPath = Path.Combine(tempDir, "src.png");
+                var pixFmt = sixteenBit ? "rgba64be" : "rgba";
+                var pngArgs = $"-y -i \"{intermediatePath}\" -frames:v 1 -pix_fmt {pixFmt} \"{pngPath}\"";
+                item.Command = "ffmpeg " + pngArgs;
+                item.Log += $"[jxr→avif] Step 1: ffmpeg 中间件 → {pixFmt} PNG（保 alpha）\n";
+                _onItemUpdated?.Invoke(item);
+                var pngExit = await FfmpegRunner.RunAsync(pngArgs,
+                    s => { item.Log += s; _onItemUpdated?.Invoke(item); },
+                    AppSettingsService.Current.FfmpegPath, ct);
+                if (pngExit != 0 || !File.Exists(pngPath))
+                {
+                    throw new InvalidOperationException(
+                        $"alpha PNG intermediary failed (exit {pngExit}); refusing to fall back to a lossy path");
+                }
+
+                // Step 2: avifenc 单图编码。`-d 10` 对应既有 AVIF 高位深出口（10-bit）；8-bit 档 `-d 8`。
+                // `-y 420` 与既有 AVIF 出口的 4:2:0 一致；alpha 由 avifenc 另写辅助流，不受此影响。
+                var quality = Math.Clamp(item.Options.Quality, 1, 100);
+                var speed = Math.Clamp(item.Options.AvifCpuUsed ?? 5, 0, 10);
+                var depth = sixteenBit ? 10 : 8;
+                var threads = item.Options.Threads;
+                var avifArgs = $"-q {quality} -s {speed} -d {depth} -y 420";
+                if (threads >= 2) avifArgs += $" -j {threads}";
+                avifArgs += $" \"{pngPath}\" -o \"{Path.GetFullPath(outputPath)}\"";
+                item.Command = "avifenc " + avifArgs;
+                item.Log += $"[jxr→avif] Step 2: avifenc 编码（q={quality}, depth={depth}, 4:2:0 + alpha 辅助流）\n";
+                _onItemUpdated?.Invoke(item);
+
+                var psi = new ProcessStartInfo
+                {
+                    FileName = avifencPath,
+                    Arguments = avifArgs,
+                    RedirectStandardOutput = true,
+                    StandardOutputEncoding = Encoding.UTF8,
+                    RedirectStandardError = true,
+                    StandardErrorEncoding = Encoding.UTF8,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+                using var process = new Process { StartInfo = psi, EnableRaisingEvents = true };
+                process.OutputDataReceived += (_, e) =>
+                {
+                    if (e.Data != null) { item.Log += e.Data + "\n"; _onItemUpdated?.Invoke(item); }
+                };
+                process.ErrorDataReceived += (_, e) =>
+                {
+                    if (e.Data != null) { item.Log += e.Data + "\n"; _onItemUpdated?.Invoke(item); }
+                };
+                try
+                {
+                    process.Start();
+                    PlatformServices.SetSafePriority(process, AppSettingsService.Current.FfmpegPriority);
+                    process.BeginOutputReadLine();
+                    process.BeginErrorReadLine();
+                    await process.WaitForExitAsync(ct);
+                }
+                catch (OperationCanceledException)
+                {
+                    try { if (!process.HasExited) process.Kill(true); } catch { }
+                    throw;
+                }
+                item.ExitCode = process.ExitCode;
+                item.Status = process.ExitCode == 0
+                    ? AvifencTwoStepStatus
+                    : $"failed: avifenc exit {process.ExitCode}";
             }
             finally
             {
@@ -5251,8 +5477,9 @@ namespace FfmpegGui.Services
                 PlatformServices.MarkAsTemporaryFile(tmp);
                 var targetFmt = (item.Options.Format ?? "").ToLowerInvariant();
 
-                // 根据输出格式选择外部编码器
-                if (targetFmt == "jxl" && CjxlService.IsAvailable)
+                // 根据输出格式选择外部编码器（⚠ 必须看用户选择的后端：旧写法只看 IsAvailable，
+                //   会把 `-e Ffmpeg` 在回退路上再次静默改成 cjxl/cjpegli）。
+                if (targetFmt == "jxl" && item.Options.EncoderBackend == EncoderBackend.Cjxl && CjxlService.IsAvailable)
                 {
                     item.Log += "[cjxl] 对中间 PNG 进行编码\n";
                     var cjxlExit = await CjxlService.RunWithOptionsAsync(tmp, outputPath, item.Options,
@@ -5262,7 +5489,8 @@ namespace FfmpegGui.Services
                     if (cjxlExit == 0) await RestoreMetadataAsync(item, outputPath);
                     return true;
                 }
-                else if ((targetFmt == "jpg" || targetFmt == "jpeg" || targetFmt == "jpegli") && CjpegliService.IsAvailable)
+                else if ((targetFmt == "jpg" || targetFmt == "jpeg" || targetFmt == "jpegli")
+                         && item.Options.EncoderBackend == EncoderBackend.Cjpegli && CjpegliService.IsAvailable)
                 {
                     item.Log += "[cjpegli] 对中间文件进行编码\n";
                     var cjexit = await CjpegliService.RunWithOptionsAsync(tmp, outputPath, item.Options,
@@ -5296,7 +5524,24 @@ namespace FfmpegGui.Services
                 //   这类文件的典型入口正是"带增益图的 JPEG → JXL"（cjxl 把 HDR 底编成 float）。
                 //   同一文件用 `djxl → .png` 与 `ffmpeg 直读 .jxl` 都能出图（实测 345242 B / 342726 B），
                 //   ⇒ 解码失败不该是终点，终点是换一条走得通的解码路，并且**把换路说出来**（不许静默）。
-                item.Log += $"[djxl] PNM 中转失败 (exit {exit}) ⇒ 改走 ffmpeg 直读 .jxl（djxl 的 PPM 输出不支持 float 图像）\n";
+                // ⚠ 2026-10-25（回归修复）：**先验证输入可解，再决定是否直读**。
+                //   上一版无条件直读 ⇒ 截断/畸形 JXL 上 ffmpeg 的 JXL 解复用器**忙等**（无进度块），
+                //   只能等 120 s 心跳才死 —— `verify-jxl-probe-timeout` 三条负控因此 60 s 不结束
+                //   （实测日志里同一失败重复 2.4 万次）。探针用 `djxl → PNG`：对 float 图可解（见上一条），
+                //   对截断/畸形件**快速失败** ⇒ 探针不过就立即失败，绝不启动那个会忙等的直读。
+                var probePng = Path.ChangeExtension(tmp, ".png");
+                item.Log += $"[djxl] PNM intermediate failed (exit {exit}) => probing input decodability via djxl -> PNG (float-capable)...\n";
+                var probeExit = await DjxlService.RunAsync(item.InputPath, probePng, item.Options.Threads,
+                    s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ct);
+                bool probeOk = probeExit == 0 && File.Exists(probePng);
+                try { if (File.Exists(probePng)) File.Delete(probePng); } catch { }
+                if (!probeOk)
+                {
+                    item.ExitCode = probeExit != 0 ? probeExit : -1;
+                    item.Status = $"failed: JXL input undecodable (djxl probe exit {probeExit})";
+                    return false;
+                }
+                item.Log += "[djxl] probe passed (file decodable) => falling back to ffmpeg direct JXL read (keeps float precision)\n";
                 var argsDirect = BuildArgsAndNote(item, item.Options, item.InputPath, outputPath);
                 item.Command = "ffmpeg " + argsDirect;
                 item.Log += $"[cmd] ffmpeg {argsDirect}\n";

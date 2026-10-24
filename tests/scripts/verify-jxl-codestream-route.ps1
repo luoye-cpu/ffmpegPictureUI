@@ -53,6 +53,9 @@ $val = "$root/tests/output/validate"
 $gid = [guid]::NewGuid().ToString('N').Substring(0, 8)
 $work = "$val/jxlcs_${gid}"
 New-Item -ItemType Directory -Force -Path $work | Out-Null
+# ⚠ 本机沙箱按进程拦 ffmpeg/宿主写 %TEMP%（`Permission denied` ⇒ exit -13）⇒ 夹具与产品临时件
+#   一律指进本轮工作区；否则 ④ 的 app 自产 .jxl 会以“假红”失败（2026-10-25 实测复现）。
+$env:TMP = $work; $env:TEMP = $work; $env:TMPDIR = $work
 
 $pass = 0; $fail = 0
 function CK($ok, $msg) {

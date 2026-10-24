@@ -389,6 +389,29 @@ namespace FfmpegGui.Models
         public int JpegGainMapDownsample { get; set; } = 2;
         /// <summary>多通道增益图: true=RGB, false=灰度(默认,更小体积)</summary>
         public bool JpegGainMapMultiChannel { get; set; } = false;
+        // ── 两图 GainMap 合成（SDR 底图 + HDR 参考）选项 ──
+        /// <summary>
+        /// 本次任务是否走「两图合成」而不是单输入增益图。第二张图的路径存在
+        /// <see cref="FfmpegGui.Models.QueueItem.GainMapReferencePath"/>（每项一份，不进预设）。
+        /// </summary>
+        public bool GainMapCompose { get; set; } = false;
+        /// <summary>
+        /// 两图合成的 HDR 峰值（nits）：0 = auto（静态元数据优先，缺失时按内容实测）。
+        /// 与 <see cref="JpegGainMapTargetNits"/> 分开的理由：后者默认 1000 是「显式指定」语义，
+        /// 复用它会让「没填」与「就要 1000」不可区分 —— 合成模式的 auto 必须能表达。
+        /// </summary>
+        public int GainMapComposePeakNits { get; set; } = 0;
+        /// <summary>
+        /// 两图合成的增益图通道数：默认**三通道**。两张独立渲染的图通常不止差一个标量亮度
+        ///（实测色度差异对：单色 10.98 dB vs 三通道 27.18 dB），单色只作为体积优先的显式选择。
+        /// </summary>
+        public bool GainMapComposeMultiChannel { get; set; } = true;
+        /// <summary>
+        /// 合成的**具体编码器**（面板「大类/小类」最终落到这里；null = 沿用旧优先级）。
+        /// 合法值按容器分：JPEG ⇒ <c>cjpegli</c> | <c>mjpeg</c>；AVIF ⇒ <c>libaom-av1</c> | <c>libsvtav1</c>。
+        /// 显式值在引擎侧**不可用即失败**，不静默换别的编码器。
+        /// </summary>
+        public string? GainMapComposeEncoder { get; set; }
         // ── 厂商增益图（OnePlus/OPPO `local.hdr.*`）参数覆盖：null = 不覆盖，沿用尾注实测值 ──
         // 存在的理由：144 B 参数块无公开规范，min/max 有两条独立读数互证、γ 只有单读数推断；
         // 留出覆盖位，将来拿到规范或对照样机时不必改代码就能校准（非法值只警告并回落实测）。

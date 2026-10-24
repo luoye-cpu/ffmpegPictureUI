@@ -369,7 +369,10 @@ function Get-EquivalenceClasses {
         ClassId = 'format-jpg'
         Representative = 'jpg'
         Members = @('jpg', 'jpegli')
-        Evidence = @('src/FfmpegGui/CliParser.cs:197|if (fmt == "jpegli") fmt = "jpg";')
+        # ⚠ pin 演进（2026-10-25）：197 → **211**（+14）。成因 = 工作树里**未提交**的 GainMap 面板改造
+        #   在 `CliParser.cs` 的 `-f` 分支之前插入代码 ⇒ 其下方行号整体下移；字面量与语义一字未动。
+        #   由 `_probe-matrix-structure.ps1` 的 A21 当场报出（`literal not on ...:197 (found at line 211)`）。
+        Evidence = @('src/FfmpegGui/CliParser.cs:211|if (fmt == "jpegli") fmt = "jpg";')
         Rationale = 'CliParser normalizes format jpegli to jpg, so -f jpegli and -f jpg select the same container'
     }
 
@@ -399,7 +402,10 @@ function Get-EquivalenceClasses {
 #   实况行 = 1015/1025/1057/**2322**），A21/A30 本次转红正是该锁"行号失效即当场报"的设计生效。
 #   ⚠ 上面那句里的 2397 是 **2026-10-14 当日**的实况；T12 轮（10-15）该条已再重钉 2397 → 2322（−75，
 #   成因见 :651）。四条现值由 `sed -n '1015p;1025p;1057p;2322p'` 对本文件逐字对撞复验。
-            'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:1015|options.JpegGainMap ? null : "iec61966-2-1", "bt709", 8, true'   # 2026-10-04 重钉 977→981（早前会话 +4 行，grep -n 复核实况 + 字面量唯一）
+            # ⚠ 2026-10-25：字面量随矩阵口径修复而变（bt709 → ContainerYuvMatrix(fmt)，实值 bt470bg），
+            #   行号 1015 → **1021**（本轮在 GetFormatColorCapabilities 前加了注释与 helper 引用）。
+            #   证据仍钉「JPEG 位深 8 + 该出口的矩阵取值来自唯一真源」这两件事。
+            'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:1021|options.JpegGainMap ? null : "iec61966-2-1", ColorSpaceRegistry.ContainerYuvMatrix(fmt), 8, true'
         )
         Rationale = 'JPEG container caps bit depth at 8 and DecideOutputColor rewrites options.BitDepth in place, so 8/10/12/16 are observationally equal'
     }
@@ -414,7 +420,8 @@ function Get-EquivalenceClasses {
         Evidence = @(
             'src/FfmpegGui/Services/FfmpegCommandBuilder.Decision.cs:154|if (options.BitDepth.HasValue && options.BitDepth.Value > capBd)',
             'src/FfmpegGui/Services/FfmpegCommandBuilder.Decision.cs:162|options.BitDepth = capBd;',
-            'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:1025|return (null, "iec61966-2-1", "bt709", 8, true);'   # 2026-10-04 重钉 987→991（同批 +4）
+            # ⚠ 2026-10-25：同 jpeg8 那条 —— 字面量改为 ContainerYuvMatrix(fmt)，行号 1025 → **1033**。
+            'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:1033|return (null, "iec61966-2-1", ColorSpaceRegistry.ContainerYuvMatrix(fmt), 8, true);'
         )
         Rationale = 'WebP container caps bit depth at 8 and DecideOutputColor rewrites options.BitDepth in place, so 8/10/12/16 are observationally equal'
     }
@@ -639,7 +646,9 @@ function Get-SemanticMatrices {
                 #   （追加式合并 + 注释）⇒ 其**下方**所有行号整体下移 ⇒ 本条 pin 必须同步。
                 #   ⚠ 这不是"改判据"：字面量与**语义**未变，只是源文件里的位置变了；
                 #     本仓 A21/A30 的设计意图正是"行号 pin 一旦失效就当场转红"，本次转红即为**设计生效**。
-                'src/FfmpegGui/CliParser.cs:273|case "--preserve-metadata":',
+                # ⚠ pin 演进（2026-10-25）：273 → **287**（+14）。同上条，成因 = 工作树里未提交的
+                #   GainMap 面板改造在 `CliParser.cs` 前部插入代码；字面量与语义一字未动。
+                'src/FfmpegGui/CliParser.cs:287|case "--preserve-metadata":',
                 # ⚠ pin 演进：2011 →（#39/#43 插注释）2041 →（2026-09-30 显示尺寸轮往 :1641 之后插了 14 行）**2055**。
                 #   →（2026-10-01 并发会话从同一文件删 5 行 ⇒ 该文件**四条 pin 同步 −5**：971→966、981→976、1013→1008、2055→2050）**2050**。
                 #   漂移由 A30 当场报出（`literal not on ...:2041 (found at line 2055)`）⇒ 抬号前先 `grep -n` 复核实况行，
@@ -658,7 +667,9 @@ function Get-SemanticMatrices {
                 #   `FfmpegCommandBuilder.cs` 的 :1154 区插了「位深唯一口径 + alpha 前缀白名单」约 56 行
                 #   ⇒ 其**下方**行号整体下移；字面量与语义一字未动。抬号前 `grep -n -F` 复核：全文件只命中 1 次，
                 #   实况行 = 2378。本条由 `_probe-matrix-structure.ps1`（在册第 55 条）当场报出，是它的设计生效。
-                'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:2378|bool exiftoolFormats = fmt is "jpg" or "jpeg" or "png" or "tiff" or "webp";'
+                # ⚠ pin 演进（2026-10-25）：2378 → **2386**（+8）。成因 = 本轮在
+                #   `GetFormatColorCapabilities` 与输出 `-colorspace` 注释处净增 8 行；字面量与语义一字未动。
+                'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:2386|bool exiftoolFormats = fmt is "jpg" or "jpeg" or "png" or "tiff" or "webp";'
             )
         },
         @{
@@ -679,7 +690,8 @@ function Get-SemanticMatrices {
                 #   `NormalizeTuneToken` 的两义性、第三半加"这条后端没有 tune 通路"的中心播报）；
                 #   唯一性同样已 `grep -n` 核过。
                 'src/FfmpegGui/Services/ColorMapping/ImageEncoderArgs.cs:804|AvifMaxBitDepthForEncoder(string? encoder)',
-                'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:1057|return (null, null, null, ColorMapping.ImageEncoderArgs.AvifMaxBitDepth(options), false);',   # 2026-10-04 重钉 1019→1023（同批 +4）
+                # ⚠ pin 演进（2026-10-25）：1057 → **1065**（+8），同 metadata-core 的成因；字面量未动。
+                'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:1065|return (null, null, null, ColorMapping.ImageEncoderArgs.AvifMaxBitDepth(options), false);',
                 'src/FfmpegGui/Services/FfmpegCommandBuilder.Decision.cs:162|options.BitDepth = capBd;'
             )
         }

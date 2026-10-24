@@ -8,6 +8,12 @@ namespace FfmpegGui.Models
     {
         public string InputPath { get; set; } = string.Empty;
         public string OutputPath { get; set; } = string.Empty;
+        /// <summary>
+        /// 两图 GainMap 合成的**第二输入**（HDR 参考图）。null = 普通单输入任务。
+        /// 之所以放在 QueueItem 而不是 FfmpegOptions：这是**每项一份**的输入，不属于可回放的编码设置
+        /// （进预设会把上一对的参考图钉到下一对）。
+        /// </summary>
+        public string? GainMapReferencePath { get; set; }
         public FfmpegOptions Options { get; set; } = new FfmpegOptions();
         // 当在批量添加时保留每个输入文件对应的输入基目录（用于保留目录结构）
         public string? InputBaseDir { get; set; }
@@ -188,6 +194,12 @@ namespace FfmpegGui.Models
         /// ⇒ RAW 预处理后状态必然变化（`处理中` / `已完成`）⇒ 绑定**确实会**刷成临时名。
         /// </summary>
         public string DisplayName => Path.GetFileName(SourceInputPath ?? InputPath);
+
+        /// <summary>两图 GainMap 模式的行内显示名（SDR 底图 / HDR 参考各一列）。</summary>
+        public string GainMapSdrName => DisplayName;
+        /// <summary>HDR 参考图文件名；普通单输入任务为占位符。</summary>
+        public string GainMapHdrName =>
+            string.IsNullOrWhiteSpace(GainMapReferencePath) ? "—" : Path.GetFileName(GainMapReferencePath);
 
         /// <summary>队列列表显示文本</summary>
         public string DisplayText => $"{DisplayName} — {Status}";

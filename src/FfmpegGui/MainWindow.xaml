@@ -208,7 +208,9 @@
     <!-- 左栏 276 → 300（2026-09-16）：内容可用宽从 ~236 提到 ~260，缓解多处"恰好用满"的临界
          （如质量滑块曾 170+8+58=236 正好卡满，一出现纵向滚动条即溢出）。窗口默认宽 1100
          ⇒ 右侧预览仍有约 800px，观感不失衡；最小宽 900 时预览 600px 也够用。 -->
-    <Grid ColumnDefinitions="300,*" RowDefinitions="*" Margin="0,4,0,0">
+    <!-- 内容区容器：顶部工具栏始终在场，下面只在「主内容 / GainMap 合成」之间切换 -->
+    <Grid>
+    <Grid x:Name="FullMainContent" ColumnDefinitions="300,*" RowDefinitions="*" Margin="0,4,0,0">
       <!-- ============ 左侧：参数控制面板（卡片容器） ============ -->
       <Border Grid.Column="0" Margin="12,0,0,8" Padding="0"
               CornerRadius="10" BoxShadow="0 2 12 0 #10000000"
@@ -1011,6 +1013,225 @@
         </Border>
       </Grid>
     </Grid>
+    <Grid x:Name="GainMapModePanel" IsVisible="False"
+          Background="{DynamicResource SystemControlBackgroundChromeMediumLowBrush}">
+      <Grid.RowDefinitions>
+        <RowDefinition Height="Auto"/>
+        <RowDefinition Height="*"/>
+      </Grid.RowDefinitions>
+
+      <!-- 顶栏 -->
+      <Border Grid.Row="0" Margin="12,8,12,0" Padding="14,10"
+              CornerRadius="10" BoxShadow="0 2 12 0 #18000000"
+              Background="{DynamicResource SystemControlBackgroundCardHighBrush}">
+        <Grid ColumnDefinitions="Auto,*,Auto">
+          <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
+            <Button x:Name="GainMapReturnBtn" Content="{ext:Loc gm.return}" FontSize="12"
+                    Padding="10,5" Click="GainMapReturn_Click"/>
+            <StackPanel Spacing="1">
+              <TextBlock Text="{ext:Loc gm.title}" FontSize="18" FontWeight="Bold"/>
+              <TextBlock Text="{ext:Loc gm.subtitle}" FontSize="11"
+                         Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+            </StackPanel>
+          </StackPanel>
+          <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+            <Button x:Name="GainMapStartBtn" Content="{ext:Loc gm.start}" FontSize="12"
+                    Padding="14,6" Click="GainMapStart_Click"/>
+            <Button x:Name="GainMapStopBtn" Content="{ext:Loc gm.stop}" FontSize="12"
+                    Padding="10,6" Click="GainMapStop_Click"/>
+          </StackPanel>
+        </Grid>
+      </Border>
+
+      <Grid Grid.Row="1" ColumnDefinitions="318,*" Margin="12,8,12,10">
+        <!-- 左：参数 -->
+        <ScrollViewer Grid.Column="0">
+          <Border Padding="14" CornerRadius="10" BoxShadow="0 1 8 0 #12000000"
+                  Background="{DynamicResource SystemControlBackgroundCardHighBrush}">
+            <StackPanel Spacing="9">
+              <TextBlock Text="{ext:Loc gm.params}" FontSize="12" FontWeight="Bold"
+                         Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+
+              <TextBlock Text="{ext:Loc gm.format}" FontSize="12"/>
+              <ComboBox x:Name="GainMapFormatCombo" SelectedIndex="0" FontSize="12">
+                <sys:String>JPEG · Ultra HDR</sys:String>
+                <sys:String>AVIF · tmap</sys:String>
+              </ComboBox>
+
+              <TextBlock Text="{ext:Loc gm.encoder}" FontSize="12" Margin="0,4,0,0"/>
+              <TextBlock Text="{ext:Loc gm.encoder.major}" FontSize="10.5"
+                         Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+              <ComboBox x:Name="GainMapEncoderCombo" FontSize="12"/>
+              <TextBlock Text="{ext:Loc gm.encoder.sub}" FontSize="10.5"
+                         Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+              <ComboBox x:Name="GainMapSubEncoderCombo" FontSize="12"/>
+              <TextBlock x:Name="GainMapEncoderHint" Text="" FontSize="10.5" TextWrapping="Wrap"
+                         Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+
+              <TextBlock Text="{ext:Loc gm.basequality}" FontSize="12" Margin="0,4,0,0"/>
+              <Grid ColumnDefinitions="*,Auto" ColumnSpacing="6">
+                <Slider x:Name="GainMapBaseQualitySlider" Grid.Column="0" Minimum="0" Maximum="100"
+                        Value="85" TickFrequency="1" IsSnapToTickEnabled="True"/>
+                <TextBox x:Name="GainMapBaseQualityBox" Grid.Column="1" Text="85" Width="52"
+                         FontSize="12" VerticalAlignment="Center"/>
+              </Grid>
+              <TextBlock Text="{ext:Loc gm.gainquality}" FontSize="12" Margin="0,4,0,0"/>
+              <Grid ColumnDefinitions="*,Auto" ColumnSpacing="6">
+                <Slider x:Name="GainMapGainQualitySlider" Grid.Column="0" Minimum="0" Maximum="100"
+                        Value="85" TickFrequency="1" IsSnapToTickEnabled="True"/>
+                <TextBox x:Name="GainMapGainQualityBox" Grid.Column="1" Text="85" Width="52"
+                         FontSize="12" VerticalAlignment="Center"/>
+              </Grid>
+              <TextBlock x:Name="GainMapQualityHint" Text="" FontSize="10.5" TextWrapping="Wrap"
+                         IsVisible="False"
+                         Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+
+              <TextBlock Text="{ext:Loc gm.peak}" FontSize="12" Margin="0,4,0,0"/>
+              <Grid ColumnDefinitions="*,Auto" ColumnSpacing="6">
+                <TextBox x:Name="GainMapPeakBox" Grid.Column="0" FontSize="12"
+                         Watermark="{ext:Loc gm.peak.auto}"/>
+                <TextBlock Grid.Column="1" Text="nits" FontSize="11" VerticalAlignment="Center"
+                           Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+              </Grid>
+              <TextBlock Text="{ext:Loc gm.peak.hint}" FontSize="10.5" TextWrapping="Wrap"
+                         Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+
+              <TextBlock Text="{ext:Loc gm.basegamut}" FontSize="12" Margin="0,4,0,0"/>
+              <ComboBox x:Name="GainMapBaseGamutCombo" SelectedIndex="0" FontSize="12">
+                <sys:String>sRGB (SDR)</sys:String>
+                <sys:String>Rec.2020 (SDR)</sys:String>
+              </ComboBox>
+              <TextBlock Text="{ext:Loc gm.gamut.hint}" FontSize="10.5" TextWrapping="Wrap"
+                         Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+
+              <CheckBox x:Name="GainMapMultiChannelCheck" IsChecked="True" FontSize="12"
+                        Content="{ext:Loc gm.mc}" Margin="0,4,0,0"/>
+              <TextBlock Text="{ext:Loc gm.mc.hint}" FontSize="10.5" TextWrapping="Wrap"
+                         Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+
+              <TextBlock Text="{ext:Loc gm.downsample}" FontSize="12" Margin="0,4,0,0"/>
+              <ComboBox x:Name="GainMapDownsampleCombo" SelectedIndex="1" FontSize="12">
+                <sys:String>1x</sys:String>
+                <sys:String>2x</sys:String>
+                <sys:String>4x</sys:String>
+                <sys:String>8x</sys:String>
+              </ComboBox>
+            </StackPanel>
+          </Border>
+        </ScrollViewer>
+
+        <!-- 右：配对 + 队列 + 日志 -->
+        <Grid Grid.Column="1" Margin="8,0,0,0" RowDefinitions="Auto,2*,6,*">
+          <!-- 当前配对 -->
+          <Border Grid.Row="0" Padding="14" CornerRadius="10" BoxShadow="0 1 8 0 #12000000"
+                  Background="{DynamicResource SystemControlBackgroundCardHighBrush}">
+            <StackPanel Spacing="10">
+              <Grid ColumnDefinitions="*,Auto">
+                <StackPanel Grid.Column="0" Spacing="1">
+                  <TextBlock Text="{ext:Loc gm.pair.title}" FontSize="13" FontWeight="Bold"/>
+                  <TextBlock Text="{ext:Loc gm.pair.note}" FontSize="10.5"
+                             Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+                </StackPanel>
+              </Grid>
+
+              <Grid ColumnDefinitions="*,36,*">
+                <!-- SDR 槽 -->
+                <Border x:Name="GainMapSdrSlot" Grid.Column="0" MinHeight="96" Padding="12"
+                        CornerRadius="9" BorderThickness="1.5"
+                        BorderBrush="{DynamicResource SystemControlForegroundBaseLowBrush}"
+                        Background="{DynamicResource SystemControlBackgroundChromeMediumBrush}">
+                  <Grid RowDefinitions="Auto,*,Auto" RowSpacing="6">
+                    <Grid Grid.Row="0" ColumnDefinitions="*,Auto">
+                      <TextBlock Grid.Column="0" Text="{ext:Loc gm.slot.sdr}" FontSize="11" FontWeight="Bold"/>
+                      <Button Grid.Column="1" Content="{ext:Loc gm.slot.pick}" FontSize="10.5"
+                              Padding="7,2" Click="GainMapPickSdr_Click"/>
+                    </Grid>
+                    <TextBlock Grid.Row="1" x:Name="GainMapSdrName" Text="{ext:Loc gm.slot.empty}"
+                               FontSize="12" TextWrapping="Wrap" VerticalAlignment="Center"/>
+                    <TextBlock Grid.Row="2" x:Name="GainMapSdrInfo" Text="" FontSize="10.5"
+                               Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+                  </Grid>
+                </Border>
+                <TextBlock Grid.Column="1" Text="→" FontSize="16" HorizontalAlignment="Center"
+                           VerticalAlignment="Center"
+                           Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+                <!-- HDR 槽 -->
+                <Border x:Name="GainMapHdrSlot" Grid.Column="2" MinHeight="96" Padding="12"
+                        CornerRadius="9" BorderThickness="1.5"
+                        BorderBrush="{DynamicResource SystemControlForegroundBaseLowBrush}"
+                        Background="{DynamicResource SystemControlBackgroundChromeMediumBrush}">
+                  <Grid RowDefinitions="Auto,*,Auto" RowSpacing="6">
+                    <Grid Grid.Row="0" ColumnDefinitions="*,Auto">
+                      <TextBlock Grid.Column="0" Text="{ext:Loc gm.slot.hdr}" FontSize="11" FontWeight="Bold"/>
+                      <Button Grid.Column="1" Content="{ext:Loc gm.slot.pick}" FontSize="10.5"
+                              Padding="7,2" Click="GainMapPickHdr_Click"/>
+                    </Grid>
+                    <TextBlock Grid.Row="1" x:Name="GainMapHdrName" Text="{ext:Loc gm.slot.empty}"
+                               FontSize="12" TextWrapping="Wrap" VerticalAlignment="Center"/>
+                    <TextBlock Grid.Row="2" x:Name="GainMapHdrInfo" Text="" FontSize="10.5"
+                               Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+                  </Grid>
+                </Border>
+              </Grid>
+
+              <TextBlock x:Name="GainMapValidateText" Text="" FontSize="11" TextWrapping="Wrap"/>
+
+              <Grid ColumnDefinitions="*,Auto,Auto">
+                <Button x:Name="GainMapClearPairBtn" Grid.Column="1" Content="{ext:Loc gm.pair.clear}"
+                        FontSize="11" Padding="10,5" Margin="0,0,8,0" Click="GainMapClearPair_Click"/>
+                <Button x:Name="GainMapAddPairBtn" Grid.Column="2" Content="{ext:Loc gm.pair.add}"
+                        FontSize="12" Padding="14,6" Click="GainMapAddPair_Click"/>
+              </Grid>
+            </StackPanel>
+          </Border>
+
+          <!-- 配对队列 -->
+          <Border Grid.Row="1" Margin="0,8,0,0" CornerRadius="10" BoxShadow="0 1 8 0 #12000000"
+                  Background="{DynamicResource SystemControlBackgroundCardHighBrush}">
+            <Grid RowDefinitions="Auto,*,Auto">
+              <Grid Grid.Row="0" ColumnDefinitions="*,Auto" Margin="14,10,14,4">
+                <TextBlock Grid.Column="0" Text="{ext:Loc gm.queue.title}" FontSize="13" FontWeight="Bold"/>
+                <TextBlock Grid.Column="1" x:Name="GainMapQueueSummary" Text="" FontSize="11"
+                           Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+              </Grid>
+              <ListBox Grid.Row="1" x:Name="GainMapQueueList" Margin="6,0,6,0"
+                       SelectionChanged="GainMapQueueList_SelectionChanged">
+                <ListBox.ItemTemplate>
+                  <DataTemplate x:DataType="local:QueueItem">
+                    <Grid ColumnDefinitions="*,*,110" ColumnSpacing="10">
+                      <TextBlock Grid.Column="0" Text="{Binding GainMapSdrName}" FontSize="12"
+                                 TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+                      <TextBlock Grid.Column="1" Text="{Binding GainMapHdrName}" FontSize="12"
+                                 TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+                      <TextBlock Grid.Column="2" Text="{Binding Status}" FontSize="11"
+                                 VerticalAlignment="Center"
+                                 Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+                    </Grid>
+                  </DataTemplate>
+                </ListBox.ItemTemplate>
+              </ListBox>
+              <ProgressBar Grid.Row="2" x:Name="GainMapOverallProgress" Height="5" Margin="14,8,14,12"
+                           Minimum="0" Maximum="100" Value="0"/>
+            </Grid>
+          </Border>
+
+          <!-- 日志 -->
+          <Border Grid.Row="2" Margin="0,8,0,0" CornerRadius="10" BoxShadow="0 1 8 0 #12000000"
+                  Background="{DynamicResource SystemControlBackgroundCardHighBrush}">
+            <Grid RowDefinitions="Auto,*">
+              <TextBlock Grid.Row="0" Text="{ext:Loc gm.log.title}" FontSize="12" FontWeight="Bold"
+                         Margin="14,10,14,4"/>
+              <TextBox Grid.Row="1" x:Name="GainMapLogText" Margin="8,0,8,8" FontSize="10.5"
+                       FontFamily="Consolas,Microsoft YaHei UI" IsReadOnly="True"
+                       AcceptsReturn="True" TextWrapping="Wrap"
+                       ScrollViewer.VerticalScrollBarVisibility="Auto"
+                       ScrollViewer.HorizontalScrollBarVisibility="Auto"/>
+            </Grid>
+          </Border>
+        </Grid>
+      </Grid>
+    </Grid>
+    </Grid>
   </DockPanel>
 
     <!-- ═══════════════════════════════════════════════════════════ -->
@@ -1157,6 +1378,11 @@
         </Grid>
       </Border>
     </Grid>
+
+    <!-- ═══════════════════════════════════════════════════════════ -->
+    <!-- GainMap 合成模式（独立整窗布局：SDR 底图 + HDR 参考）        -->
+    <!-- 与简洁模式同一机制：切到模式 3 时整体替换，返回按钮回原模式。 -->
+    <!-- ═══════════════════════════════════════════════════════════ -->
 
   </Grid>
 </Window>

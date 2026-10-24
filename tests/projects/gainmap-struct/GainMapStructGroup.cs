@@ -185,8 +185,11 @@ namespace Tests.GainMapStruct
             Console.WriteLine($"      [D8 cmd] {cmdAuto}");
             // 现行设计：JPEG 不能存 PQ ⇒ HDR 源降 SDR，并按 sRGB 标定（iccgen 附 ICC）。
             // 旧断言写的是 t=bt709；实际目标曲线已统一为 iec61966-2-1（JPEG 查看器惯例），属断言过时。
+            // ⚠ 2026-10-25：链里的 `m=` 取自 capM，随「JPG/WebP 转换矩阵必须 BT.601」的修复变成 bt470bg。
+            //   这条链的输出是 rgb48le（矩阵只是标签，RGB 域像素等价）；最终的 RGB→YUV 由出口
+            //   `-colorspace bt470bg` 完成 —— 本断言钉的仍是「tonemap 到 sRGB + iccgen」，不是矩阵进制。
             Check("D8 tonemap 链 (auto→sRGB 标定 + iccgen)", cmdAuto.Contains(
-                "format=yuv444p,tonemap=hable:param=0.5,format=rgb48le,zscale=pin=bt2020:tin=linear:min=gbr:p=bt709:t=iec61966-2-1:m=bt709")
+                "format=yuv444p,tonemap=hable:param=0.5,format=rgb48le,zscale=pin=bt2020:tin=linear:min=gbr:p=bt709:t=iec61966-2-1:m=bt470bg")
                 && cmdAuto.Contains("iccgen"));
 
             // JPEG 目标无论用户选什么 HDR 空间都必须降 SDR（HDR 由 GainMap 承载）
@@ -215,7 +218,8 @@ namespace Tests.GainMapStruct
             Console.WriteLine($"      [D10 cmd] {cmdH2P3}");
             // 能力修正（本轮）：JPEG 有 APP2 ICC 通路 ⇒ Display P3(SDR) **可以真交付**，不应被钳回 sRGB。
             // 旧断言“必须 p=bt709”把未实现的路径当成了能力限制；现在要求按用户目标出 P3 + iccgen 嵌 ICC。
-            bool d10P3 = cmdH2P3.Contains("zscale=pin=bt2020:tin=linear:min=gbr:p=smpte432:t=iec61966-2-1:m=bt709")
+            // 同 D8：`m=` 随 capM 变成 bt470bg；P3 像素与 ICC 的判定不受影响（链输出 rgb48le）。
+            bool d10P3 = cmdH2P3.Contains("zscale=pin=bt2020:tin=linear:min=gbr:p=smpte432:t=iec61966-2-1:m=bt470bg")
                          && cmdH2P3.Contains("iccgen");
             Check("D10 JPEG+Display P3 按目标出 P3 像素并附 ICC（不被降级为 sRGB）", d10P3);
 

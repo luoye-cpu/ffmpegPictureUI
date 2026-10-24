@@ -34,6 +34,20 @@ namespace FfmpegGui
             public int Quality { get; set; } = 75;
             public int Concurrency { get; set; } = Environment.ProcessorCount;
             public bool AutoThreads { get; set; } = false;
+            /// <summary>
+            /// 两图 GainMap 合成：`-i` 的文件按**固定顺序两两配对**（第 1 个 = SDR 底图，第 2 个 = HDR 参考）。
+            /// 与 UI 的显式槽位等价；命令行没有「槽」，位置就是角色。
+            /// </summary>
+            public bool ComposeGainMap { get; set; } = false;
+            /// <summary>合成峰值 nits；0 = auto（静态元数据优先，缺失时按内容实测）。</summary>
+            public int ComposePeakNits { get; set; } = 0;
+            /// <summary>合成增益图通道数：默认三通道（单色只作为体积优先的显式选择）。</summary>
+            public bool ComposeMultiChannel { get; set; } = true;
+            /// <summary>
+            /// 合成用的**具体编码器**；null = 沿用引擎默认（JPEG: cjpegli 可用则 cjpegli，否则 mjpeg；AVIF: libaom-av1）。
+            /// 与 -f 强绑定：JPEG ⇒ cjpegli|mjpeg，AVIF ⇒ libaom-av1|libsvtav1。
+            /// </summary>
+            public string? ComposeEncoder { get; set; }
 
             // 高级选项
             public string? SettingsFile { get; set; }
@@ -312,6 +326,38 @@ namespace FfmpegGui
                         break;
                     }
 
+                    // ── 两图 GainMap 合成 ──
+                    case "--compose-gainmap":
+                        result.ComposeGainMap = true;
+                        break;
+                    case "--gainmap-peak":
+                    {
+                        var v = TakeValue();
+                        // 解析失败必须报错，不许静默按 auto 跑（与 --quality 同口径）
+                        if (!int.TryParse(v, out var nits) || nits < 0)
+                            throw new ArgumentException($"--gainmap-peak 取值无效: {v}（0 = auto，或正整数 nits）");
+                        result.ComposePeakNits = nits;
+                        break;
+                    }
+                    case "--gainmap-multichannel":
+                    {
+                        var v = TakeValue();
+                        if (v != null)
+                            result.ComposeMultiChannel = ParseBoolStrict("gainmap-multichannel", v);
+                        break;
+                    }
+                    case "--gainmap-encoder":
+                    {
+                        var v = TakeValue();
+                        // 显式选择只接受引擎真能跑的词表；拼错必须当场报错，不许静默回落到默认编码器。
+                        var enc = (v ?? "").Trim().ToLowerInvariant();
+                        if (enc is not ("cjpegli" or "mjpeg" or "libaom-av1" or "libsvtav1"))
+                            throw new ArgumentException(
+                                $"--gainmap-encoder 取值无效: {v}（cjpegli | mjpeg | libaom-av1 | libsvtav1）");
+                        result.ComposeEncoder = enc;
+                        break;
+                    }
+
                     // ── 干跑模式 ──
                     case "--dry-run":
                         result.DryRun = true;
@@ -391,6 +437,11 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
                           引擎路径下若与格式默认值不同会被视为「用户显式指定」并如实承接）
   -j, --jobs, --concurrency <n>  并发任务数 (默认: CPU核心数)
   --auto-threads          自动分配每任务线程数 (避免超线程)
+  --compose-gainmap       Two-image GainMap compose: pair -i inputs in order
+                          (SDR base first, HDR reference second); output must be -f jpg|avif
+  --gainmap-peak <nits>   Compose peak (0 = auto: static metadata, else measured from pixels)
+  --gainmap-multichannel <true|false>  Compose gain-map channels (default true = per-channel)
+  --gainmap-encoder <name>  Compose encoder: cjpegli|mjpeg (jpg), libaom-av1|libsvtav1 (avif)
 
 高级编码选项 (通过 --key=value 透传):
   --chroma <4:2:0|4:2:2|4:4:4|auto>
@@ -496,6 +547,39 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
                 throw new InvalidOperationException("未找到匹配的输入文件。请使用 -i/--input 指定。");
             }
 
+            // ── 两图 GainMap 合成：结构错误在**建队时**就拒绝（不等到逐项失败）──
+            bool compose = opts.ComposeGainMap;
+            if (!compose && opts.ComposeEncoder != null)
+                throw new InvalidOperationException(
+                    "--gainmap-encoder 只在 --compose-gainmap 下有意义：普通转换没有增益图子图可编码。");
+            if (compose)
+            {
+                if (inputFiles.Count % 2 != 0)
+                    throw new InvalidOperationException(
+                        $"--compose-gainmap 要求输入数量为偶数（按顺序两两配对：先 SDR 底图、后 HDR 参考），当前 {inputFiles.Count} 个。");
+                string cfmt = opts.Format.ToLowerInvariant();
+                if (cfmt is not ("jpg" or "jpeg" or "avif"))
+                    throw new InvalidOperationException(
+                        $"GainMap 合成只支持 -f jpg / jpeg / avif（当前 {opts.Format}）；其它容器没有标准的增益图承载。");
+                // 编码器与容器强绑定：跨族取值（如 JPEG + libaom-av1）必须建队时就拒绝，
+                // 不能等到逐项在引擎里失败；显式 cjpegli 不可用同样当场点名。
+                if (!string.IsNullOrWhiteSpace(opts.ComposeEncoder))
+                {
+                    bool jpegFmt = cfmt is "jpg" or "jpeg";
+                    bool pairOk = jpegFmt
+                        ? opts.ComposeEncoder is "cjpegli" or "mjpeg"
+                        : opts.ComposeEncoder is "libaom-av1" or "libsvtav1";
+                    if (!pairOk)
+                        throw new InvalidOperationException(
+                            $"--gainmap-encoder {opts.ComposeEncoder} 与 -f {opts.Format} 不匹配"
+                            + "（JPEG ⇒ cjpegli | mjpeg；AVIF ⇒ libaom-av1 | libsvtav1）。");
+                    if (jpegFmt && opts.ComposeEncoder == "cjpegli" && !CjpegliService.IsAvailable)
+                        throw new InvalidOperationException(
+                            "--gainmap-encoder cjpegli 不可用：未检测到 cjpegli。"
+                            + "请改用 --gainmap-encoder mjpeg，或先配置 cjpegli。");
+                }
+            }
+
             // 可用性诚实原则：目标格式依赖的外部编码器缺失时直接报错，
             // 不静默用 ffmpeg 兜底（ffmpeg 无 JXR 编码器、无法编码 DNG）。
             ValidateFormatToolAvailability(opts.Format);
@@ -507,10 +591,23 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
             //   同批内的重名一律自动加序号并在 item.Log 点名 —— 绝不允许 rc=0 掩盖丢失。
             var seenOutputs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-            foreach (var file in inputFiles)
+            // 合成模式：一个任务 = 一对（SDR, HDR）；普通模式：一个文件 = 一个任务
+            IEnumerable<(string input, string? gainMapRef)> jobs = compose
+                ? Enumerable.Range(0, inputFiles.Count / 2)
+                    .Select(i => (inputFiles[i * 2], (string?)inputFiles[i * 2 + 1]))
+                : inputFiles.Select(f => (f, (string?)null));
+
+            foreach (var (file, gainMapRef) in jobs)
             {
                 baseDirs.TryGetValue(file, out var baseDir);
                 var outputPath = BuildOutputPath(file, opts, baseDir);
+                if (gainMapRef != null)
+                {
+                    // 命名：<底图名>_gainmap.<ext> —— 一目录里成对文件不会互相覆盖
+                    outputPath = Path.Combine(
+                        Path.GetDirectoryName(outputPath) ?? opts.OutputDirectory,
+                        Path.GetFileNameWithoutExtension(outputPath) + "_gainmap" + Path.GetExtension(outputPath));
+                }
                 string? conflictNote = null;
 
                 if (!seenOutputs.Add(outputPath))
@@ -553,6 +650,7 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
                     InputPath = file,
                     OutputPath = outputPath,
                     Options = options,
+                    GainMapReferencePath = gainMapRef,
                     // 语义修正：这是**输入根目录**（重建相对结构的基准），不是文件所在目录。
                     // QueueProcessor 目前不消费它（CLI 结构保留已在 BuildOutputPath 落实），
                     // 但字段必须语义正确，避免未来接入时踩坑。
@@ -686,7 +784,12 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
                 AllowOverwriteExisting = opts.AllowOverwrite,
                 // ⚠ 2026-10-05：**显式**标志与上面几个开关的**值**分开传。
                 //   用途见 `FfmpegOptions.StripDescriptiveExplicitly` 的说明（jbrd 与剥除不可兼得）。
-                StripDescriptiveExplicitly = opts.StripExplicit
+                StripDescriptiveExplicitly = opts.StripExplicit,
+                // 两图 GainMap 合成（第二输入路径在每项 QueueItem 上）
+                GainMapCompose = opts.ComposeGainMap,
+                GainMapComposePeakNits = opts.ComposePeakNits,
+                GainMapComposeMultiChannel = opts.ComposeMultiChannel,
+                GainMapComposeEncoder = opts.ComposeEncoder
             };
 
             // 应用预设（如果指定）

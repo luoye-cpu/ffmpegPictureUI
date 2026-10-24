@@ -73,8 +73,11 @@ $srcDir = Join-Path $repoRoot 'tests/output/sources'
 CK (Test-Path $srcDir) "source dir exists ($srcDir)"
 
 # 3. 运行级 GUID 临时目录(固定目录会被并发同名实例互删 => 假红)
-$work = Join-Path ([System.IO.Path]::GetTempPath()) ('clistrict_' + [guid]::NewGuid().ToString('N'))
+# ⚠ 本机沙箱按进程拦 ffmpeg/宿主写 %TEMP%（`Permission denied` ⇒ exit -13）⇒ 工作目录与 TMP
+#   一起放进仓库产物区；否则 H11 等依赖 TempDir 的臂会批量假红（2026-10-25 实测）。
+$work = Join-Path $repoRoot ('tests/output/clistrict_' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $work -Force | Out-Null
+$env:TMP = $work; $env:TEMP = $work; $env:TMPDIR = $work
 
 # 4. 带硬超时的子进程运行器
 # 为什么走「子宿主 + rc 文件」而不是直接读 $p.ExitCode:

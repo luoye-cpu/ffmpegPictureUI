@@ -110,7 +110,19 @@ public static class GainMapEncoder
         int downsample = 4, string baseGamut = "srgb", string? sourcePrimaries = null,
         Action<string>? log = null, CancellationToken ct = default,
         int jpegProgressiveLevel = -1, string container = "jpeg", string? sourceBaseRaw = null,
-        bool inputIsSdrWhiteUnit = false)
+        bool inputIsSdrWhiteUnit = false,
+        // 外部 SDR 底图（两图合成）用：底图**自己的**原色。null ⇒ 沿用旧契约（底图已处于
+        // sourcePrimaries，与 HDR 同步转一次）。给了值时，底图与 HDR 各按自己的原色转到 base 色域。
+        string? sourceBasePrimaries = null,
+        // 两图合成用：增益量程**按这一对实测**，而不是取 log2(peak/203)。
+        // 底图若没在自己的高光处达到 SDR 白点（独立调色的 SDR 成片很常见），
+        // 需要的增益会超过 peak/203 —— 按名义值写会静默钳顶（实测 59% 通道被截）。
+        bool measureGainRange = false,
+        // 编码器显式选择（两图合成面板/CLI 暴露；null = 沿用旧优先级：cjpegli 可用则用，否则 mjpeg）。
+        // ⚠ 显式请求却不可用 ⇒ **失败**，不静默回落（回落会让用户以为选的是 cjpegli）。
+        // (a) JPEG 出口：`cjpegli` | `mjpeg`；(b) AVIF 出口：`libaom-av1` | `libsvtav1`。
+        string? jpegEncoder = null,
+        string? avifEncoder = null)
     {
         try
         {
@@ -144,6 +156,10 @@ public static class GainMapEncoder
                 // ── 亮度参数 ──
                 float headroom = hdrPeakNits / sdrWhiteNits;
                 float maxLog2Gain = MathF.Log2(Math.Max(headroom, 1.0f));
+                // 显示用的容量（HDRCapacityMax / alternateHdrHeadroom）**始终**是 peak/203；
+                // 增益量程（GainMapMax / 量化区间）在 measureGainRange=true 时会被实测值替换。
+                // 两者在 ISO 21496-1 里本就是不同字段（gainMapMax 可大于或小于 headroom）。
+                float hdrCapacityLog2 = maxLog2Gain;
                 // 增益区间的**下沿**：默认 0（= 自造底图时的「只上映射」历史口径，逐字节不变）；
                 // 底图来自源时才由实测填入负值（同一份 offset、同一份 stored 分母 ⇒ 与像素严格自洽）。
                 float minLog2Gain = 0f;
@@ -193,17 +209,41 @@ public static class GainMapEncoder
                 // 增益图元数据声明 useBaseColorSpace=True ⇒ 增益必须在**底图色域**内计算，
                 // 所以 HDR 侧与 SDR 侧都要先映射到底图原色（参考实现同理：先 convertYuv 到目标 gamut）。
                 // 映射后像素仍是线性、仍以 1.0 = SDR 白点为约定，仅原色基改变。
+                // ⚠ 两图合成时底图的原色**未必等于** HDR 的源原色（典型：HDR=bt2020、SDR 底图=sRGB）。
+                //   旧契约把底图当成 sourcePrimaries 再转一次 —— 两图输入下那会把 sRGB 底图当
+                //   bt2020 解释并二次转换（实测 sRGB(76,178,102) 交付成 (0,184,88)）。
+                //   ⇒ 底图有自己原色时，两侧各用各的矩阵；未给时逐字节保持旧行为（A 路契约）。
                 string baseTok = wideBase ? "bt2020" : "bt709";
+                bool sdrHasOwnPrim = !string.IsNullOrWhiteSpace(sourceBasePrimaries);
+                string sdrPrimTok = sdrHasOwnPrim ? sourceBasePrimaries! : (sourcePrimaries ?? "");
                 var gamutMtx = ColorSpaceRegistry.LinearMatrixBetweenPrimaries(sourcePrimaries, baseTok);
+                var sdrGamutMtx = sdrHasOwnPrim
+                    ? ColorSpaceRegistry.LinearMatrixBetweenPrimaries(sdrPrimTok, baseTok)
+                    : gamutMtx;
                 if (gamutMtx != null)
-                {
                     SimdPixelOps.ApplyPrimariesMatrix(normHdr, gamutMtx);
-                    SimdPixelOps.ApplyPrimariesMatrix(sdrLinear, gamutMtx);
-                    log?.Invoke($"[GainMap] 底图色域映射: {sourcePrimaries} → {baseTok}（线性域 3x3 矩阵，HDR/SDR 两侧同步）\n");
+                if (sdrGamutMtx != null)
+                    SimdPixelOps.ApplyPrimariesMatrix(sdrLinear, sdrGamutMtx);
+                if (gamutMtx != null && sdrGamutMtx != null)
+                {
+                    log?.Invoke(sdrHasOwnPrim
+                        ? $"[GainMap] 底图色域映射: HDR {sourcePrimaries} → {baseTok}、SDR {sdrPrimTok} → {baseTok}（各自独立矩阵）\n"
+                        : $"[GainMap] 底图色域映射: {sourcePrimaries} → {baseTok}（线性域 3x3 矩阵，HDR/SDR 两侧同步）\n");
                 }
                 else if (wideBase)
                 {
-                    log?.Invoke($"[GainMap] ⚠️ 未能求出 {sourcePrimaries ?? "(未知)"} → {baseTok} 矩阵，底图将不映射（仅改标签，存在色偏风险）\n");
+                    if (!sdrHasOwnPrim)
+                    {
+                        // 旧契约：只有一条告警，文本与改动前逐字一致（门禁/日志口径不变）
+                        log?.Invoke($"[GainMap] ⚠️ 未能求出 {sourcePrimaries ?? "(未知)"} → {baseTok} 矩阵，底图将不映射（仅改标签，存在色偏风险）\n");
+                    }
+                    else
+                    {
+                        if (gamutMtx == null)
+                            log?.Invoke($"[GainMap] ⚠️ 未能求出 {sourcePrimaries ?? "(未知)"} → {baseTok} 矩阵，HDR 侧将不映射（存在色偏风险）\n");
+                        if (sdrGamutMtx == null)
+                            log?.Invoke($"[GainMap] ⚠️ 未能求出 SDR {sdrPrimTok} → {baseTok} 矩阵，底图将不映射（存在色偏风险）\n");
+                    }
                 }
 
                 // ── 2. 底图（始终 SDR：sdrLinear → sRGB gamma → 8bit 字节 → PNG）──
@@ -226,16 +266,39 @@ public static class GainMapEncoder
                 // 与量化器/声明三处同源（F-3、F-5 的「声明==使用」不变）。
                 if (baseFromSource)
                 {
-                    var (p01, absMin, measured) = MeasureMinLog2Gain(normHdr, sdrStored, pixelCount);
-                    minLog2Gain = p01;
+                    // ⚠ 量尺：只有两图合成（measureGainRange）才把单色下沿改成亮度统计。
+                    //   既有 A 路（单输入配对重封装）保持逐通道旧口径 ⇒ 输出逐字节不变；
+                    //   那条路径的单色下沿口径偏差属独立一批（改它会动既有门禁读数）。
+                    var (p01, absMin, measured) = MeasureMinLog2Gain(normHdr, sdrStored, pixelCount,
+                        luminance: measureGainRange && !multiChannel);
+                    minLog2Gain = measured ? p01 : 0f;
                     if (!measured)
                         // 纯 ASCII：与 [vendor-hdr] 那批诊断同一口径（多行拼接的**续行**不含 sink，
                         // 会被 cjk 棘轮算进「UI 面」桶 ⇒ 白抬一次基线；一条写完就归到诊断桶）。
                         log?.Invoke("[GainMap] WARN: fewer than 100 valid samples => the 1% percentile is not trustworthy;"
                             + " gainMapMin stays 1.0 (cannot measure != there is no shadow band)\n");
-                    log?.Invoke($"[GainMap] 暗部端点：1% 分位 log2 gain = {p01:F5}"
-                        + $"（线性 {MathF.Pow(2f, p01):F4}×）⇒ 写进 gainMapMin；绝对最小值 = {absMin:F5}"
-                        + $"（{MathF.Pow(2f, absMin):F6}×，按规范排除最低 1% 不进声明）\n");
+                    log?.Invoke($"[GainMap] 暗部端点：1% 分位 log2 gain = {minLog2Gain:F5}"
+                        + $"（线性 {MathF.Pow(2f, minLog2Gain):F4}×，量尺={(multiChannel ? "逐通道" : "亮度")}）⇒ 写进 gainMapMin；"
+                        + $"绝对最小值 = {absMin:F5}（{MathF.Pow(2f, absMin):F6}×，按规范排除最低 1% 不进声明）\n");
+
+                    // 量程实测（两图合成）：底图若没达到自己的 SDR 白点，实际需要的增益会超过
+                    // log2(peak/203)。仍按名义值写 ⇒ 超出部分被量化端静默钳顶。
+                    if (measureGainRange)
+                    {
+                        var (p9999, absMax, measuredMax) = MeasureMaxLog2Gain(normHdr, sdrStored, pixelCount, multiChannel);
+                        if (measuredMax)
+                        {
+                            maxLog2Gain = p9999;
+                            log?.Invoke($"[GainMap] 增益量程：99.99% 分位 log2 gain = {p9999:F5}"
+                                + $"（绝对最大 {absMax:F5}；显示容量仍为 {hdrCapacityLog2:F5} = peak/203）"
+                                + $" ⇒ 量化区间 [{minLog2Gain:F5}, {maxLog2Gain:F5}]\n");
+                        }
+                        else
+                        {
+                            log?.Invoke("[GainMap] WARN: too few valid samples => gain range stays at the nominal"
+                                + " log2(peak/203); a darker SDR base may clip highlights\n");
+                        }
+                    }
                 }
                 byte[] gainMapPixels = ComputeGainMap(normHdr, sdrStored, w, h, multiChannel, maxLog2Gain, minLog2Gain);
                 BufferPool.ReturnFloat(sdrStored);
@@ -252,12 +315,13 @@ public static class GainMapEncoder
                 if (string.Equals(container, "avif", StringComparison.OrdinalIgnoreCase))
                 {
                     return await EncodeAvifGainMapAsync(basePng, gmPng, w, h, gmW, gmH, multiChannel,
-                        maxLog2Gain, minLog2Gain, wideBase, outputPath, ffmpeg, log, ct);
+                        maxLog2Gain, minLog2Gain, hdrCapacityLog2, wideBase, outputPath, ffmpeg, log, ct,
+                        avifEncoder);
                 }
 
                 // ── 4b. JPEG 出口（Ultra HDR：XMP + MPF + ISO 21496-1 APP2）──────────
                 var baseOk = await EncodeJpegFileAsync(basePng, basePath, baseQuality, jpegProgressiveLevel,
-                    ColorMapping.GainMapJpegCodec.BaseJpegChromaSubsampling, log, ct);
+                    ColorMapping.GainMapJpegCodec.BaseJpegChromaSubsampling, log, ct, jpegEncoder);
                 if (!baseOk)
                 {
                     log?.Invoke("[GainMap] ❌ Base JPEG 编码失败\n");
@@ -291,7 +355,7 @@ public static class GainMapEncoder
                 //   参照的读侧「信流不信 flag」（jpegr.cpp:2843-2844 按 SOF numComponents 定布局）
                 //   **救不了写侧**：声明与交付一致是生产者的义务。
                 var gmOk = await EncodeJpegFileAsync(gmPng, gmPath, gainMapQuality, jpegProgressiveLevel,
-                    ColorMapping.GainMapJpegCodec.GainMapChromaSubsampling(multiChannel), log, ct);
+                    ColorMapping.GainMapJpegCodec.GainMapChromaSubsampling(multiChannel), log, ct, jpegEncoder);
                 if (!gmOk)
                 {
                     log?.Invoke("[GainMap] ❌ 增益图 JPEG 编码失败\n");
@@ -319,7 +383,7 @@ public static class GainMapEncoder
                 }
                 byte[] gainMapJpeg = File.ReadAllBytes(gmPath);
                 if (!WriteJpegGainMapFile(baseJpeg, gainMapJpeg, w, h, gmW, gmH, multiChannel,
-                        headroom, maxLog2Gain, minLog2Gain, outputPath))
+                        maxLog2Gain, hdrCapacityLog2, minLog2Gain, outputPath))
                 {
                     // 与「SDR 输入 ⇒ 普通 JPEG」的短路不同：那条是**主动决定**并点名说明；
                     // 这条是**没能**写出增益图 ⇒ 必须宣告失败，不允许留下"自称 Ultra HDR"的产物。
@@ -464,9 +528,12 @@ public static class GainMapEncoder
         {
             long need = (long)pixelCount * 12L;                  // 3 平面 × float32
             var fi = new FileInfo(rawPath);
-            if (fi.Length < need)
+            // ⚠ 必须**精确**相等：旧实现只查下界 ⇒ 超长裸流（更大尺寸的底图）会被静默按前 N 个
+            //   float 切开，拼出一张错位的底图且一行日志都没有（2026-10-24 实测）。
+            if (fi.Length != need)
             {
-                log?.Invoke($"[GainMap] ⚠️ 源底图裸流长度不足（{fi.Length} B &lt; {need} B）⇒ 回落 Reinhard\n");
+                log?.Invoke($"[GainMap] ⚠️ 源底图裸流长度不符（{fi.Length} B ≠ {need} B，"
+                    + $"应为 {pixelCount} 像素 × 3 通道 × 4B）⇒ 回落 Reinhard\n");
                 return false;
             }
             float[] rgba = GainMapDecoder.PlanarToInterleaved(File.ReadAllBytes(rawPath), pixelCount);
@@ -489,24 +556,40 @@ public static class GainMapEncoder
     /// 比源自己声明的 −0.164（0.891×）夸张 60 倍 ⇒ 极少数黑位/边界像素就能把整张图的暗部映射拖没，
     /// 而且是「声明 ≠ 绝大多数像素」的谎。返回 (分位值, 绝对最小值) 两个数，便于把尾巴问题看出来。</para>
     /// </summary>
-    private static (float p01, float absMin, bool measured) MeasureMinLog2Gain(float[] hdr, float[] sdrStored, int pixelCount)
+    private static (float p01, float absMin, bool measured) MeasureMinLog2Gain(
+        float[] hdr, float[] sdrStored, int pixelCount, bool luminance)
     {
         const int Bins = 4096;
         const float Lo = -16f, Hi = 16f;
         var hist = new int[Bins];
         long total = 0;
         float absMin = 0f;
+
+        void Accumulate(float g)
+        {
+            if (g <= -10f || g >= 10f) return;              // 不可表达哨兵/异常值不进统计
+            if (g < absMin) absMin = g;
+            int b = (int)((g - Lo) / (Hi - Lo) * Bins);
+            if (b < 0) b = 0; else if (b >= Bins) b = Bins - 1;
+            hist[b]++; total++;
+        }
+
         for (int i = 0; i < pixelCount; i++)
         {
             int o = i * 4;
-            for (int c = 0; c < 3; c++)
+            if (!luminance)
             {
-                float g = SimdPixelOps.Log2Gain(hdr[o + c], sdrStored[o + c], KOffsetHdr, KOffsetSdr, floorAtOne: false);
-                if (g <= -10f || g >= 10f) continue;              // 不可表达哨兵/异常值不进统计
-                if (g < absMin) absMin = g;
-                int b = (int)((g - Lo) / (Hi - Lo) * Bins);
-                if (b < 0) b = 0; else if (b >= Bins) b = Bins - 1;
-                hist[b]++; total++;
+                for (int c = 0; c < 3; c++)
+                    Accumulate(SimdPixelOps.Log2Gain(hdr[o + c], sdrStored[o + c], KOffsetHdr, KOffsetSdr, floorAtOne: false));
+            }
+            else
+            {
+                // 单色增益图存的是**亮度**增益（ComputeGainMapGray），下沿必须用同一把尺子。
+                // 逐通道取分位会得到远低于亮度分位的值（实测 -6.02 vs -0.000），
+                // 把 8-bit 量程无谓放大 4 倍多。
+                float hLum = 0.2126f * hdr[o] + 0.7152f * hdr[o + 1] + 0.0722f * hdr[o + 2];
+                float sLum = 0.2126f * sdrStored[o] + 0.7152f * sdrStored[o + 1] + 0.0722f * sdrStored[o + 2];
+                Accumulate(SimdPixelOps.Log2Gain(hLum, sLum, KOffsetHdr, KOffsetSdr, floorAtOne: false));
             }
         }
         float p01 = 0f;
@@ -527,6 +610,59 @@ public static class GainMapEncoder
         // 第三个返回值 = 样本量够不够谈「1% 分位」（<100 时 total/100==0，第一个非空 bin 就会命中
         //   ⇒ 分位会落到网格下界 -16，等于把「测不出来」写成一条荒谬的下沿声明）。不够就不声明下沿。
         return (Math.Min(p01, 0f), Math.Min(absMin, 0f), total >= 100);
+    }
+
+    /// <summary>
+    /// 实测 log2 增益的**上沿**（两图合成的量化量程）。同一把尺子：单色 = 亮度增益，多通道 = 逐通道。
+    /// <para>取 **99.99% 分位**而不是全图最大值：一个接近 0 的底图分母就能把比率推到 2^20 量级，
+    /// 把 8-bit 的步长从 1.7% 拉到 10% 以上（牺牲整张图的精度去迁就万分之一像素）。
+    /// 返回绝对最大值便于把尾巴问题看出来；超出声明量程的像素由量化端钳到 max（日志点名）。</para>
+    /// </summary>
+    private static (float p9999, float absMax, bool measured) MeasureMaxLog2Gain(
+        float[] hdr, float[] sdrStored, int pixelCount, bool multiChannel)
+    {
+        const int Bins = 8192;
+        const float Lo = -16f, Hi = 16f;
+        var hist = new int[Bins];
+        long total = 0;
+        float absMax = 0f;
+
+        void Accumulate(float g)
+        {
+            if (g <= -10f || g >= 10f) return;
+            if (g > absMax) absMax = g;
+            int b = (int)((g - Lo) / (Hi - Lo) * Bins);
+            if (b < 0) b = 0; else if (b >= Bins) b = Bins - 1;
+            hist[b]++; total++;
+        }
+
+        for (int i = 0; i < pixelCount; i++)
+        {
+            int o = i * 4;
+            if (multiChannel)
+            {
+                for (int c = 0; c < 3; c++)
+                    Accumulate(SimdPixelOps.Log2Gain(hdr[o + c], sdrStored[o + c], KOffsetHdr, KOffsetSdr, floorAtOne: false));
+            }
+            else
+            {
+                float hLum = 0.2126f * hdr[o] + 0.7152f * hdr[o + 1] + 0.0722f * hdr[o + 2];
+                float sLum = 0.2126f * sdrStored[o] + 0.7152f * sdrStored[o + 1] + 0.0722f * sdrStored[o + 2];
+                Accumulate(SimdPixelOps.Log2Gain(hLum, sLum, KOffsetHdr, KOffsetSdr, floorAtOne: false));
+            }
+        }
+        float p9999 = 0f;
+        if (total >= 100)
+        {
+            long want = Math.Max(total / 10000, 1);         // 最高 0.01% 分位（样本少时即最大值）
+            long run = 0;
+            for (int b = Bins - 1; b >= 0; b--)
+            {
+                run += hist[b];
+                if (run >= want) { p9999 = Lo + (b + 0.5f) * (Hi - Lo) / Bins; break; }
+            }
+        }
+        return (Math.Max(p9999, 0f), Math.Max(absMax, 0f), total >= 100);
     }
 
     // ═══════════════════════════════════════════
@@ -730,10 +866,37 @@ public static class GainMapEncoder
     /// </summary>
     private static async Task<bool> EncodeJpegFileAsync(string pngPath, string jpgPath,
         float distance, int progressiveLevel, string chromaSubsampling,
-        Action<string>? log, CancellationToken ct)
+        Action<string>? log, CancellationToken ct, string? encoder = null)
     {
-        if (CjpegliService.IsAvailable)
+        bool useCjpegli;
+        if (string.IsNullOrWhiteSpace(encoder))
         {
+            // 旧语义（未显式选择）：有 cjpegli 就用，否则回退 mjpeg（并在下面点名渐进不可达）。
+            useCjpegli = CjpegliService.IsAvailable;
+        }
+        else if (encoder.Equals("cjpegli", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!CjpegliService.IsAvailable)
+            {
+                log?.Invoke("[GainMap] ERROR: JPEG encoder 'cjpegli' was requested but the tool is not available"
+                          + " => refusing (no silent fallback to ffmpeg mjpeg).\n");
+                return false;
+            }
+            useCjpegli = true;
+        }
+        else if (encoder.Equals("mjpeg", StringComparison.OrdinalIgnoreCase))
+        {
+            useCjpegli = false;
+        }
+        else
+        {
+            log?.Invoke($"[GainMap] ERROR: unknown JPEG encoder '{encoder}' (expected cjpegli | mjpeg).\n");
+            return false;
+        }
+
+        if (useCjpegli)
+        {
+            log?.Invoke("[GainMap] JPEG encoder: cjpegli\n");
             var psi = new ProcessStartInfo
             {
                 FileName = CjpegliService.DetectedPath!,
@@ -758,6 +921,7 @@ public static class GainMapEncoder
             return p.ExitCode == 0 && File.Exists(jpgPath) && new FileInfo(jpgPath).Length > 0;
         }
         // 回退 ffmpeg mjpeg：butteraugli distance(0.5-6) → 质量滑块 → -q:v（2-31，越小越好）。
+        log?.Invoke("[GainMap] JPEG encoder: ffmpeg mjpeg\n");
         // ⚠ mjpeg 无渐进能力 ⇒ 已请求渐进级别时必须点名（否则用户以为设了渐进、拿到的却是基线）。
         // ⚠ 文案必须纯 ASCII：`_probe-cjk-hardcode-scan.ps1` 的 C# UI 面余量为 0（新增中文代码串必红）。
         if (progressiveLevel >= 0)
@@ -799,8 +963,8 @@ public static class GainMapEncoder
     /// </para>
     /// </summary>
     private static async Task<bool> EncodeAvifGainMapAsync(string basePng, string gmPng, int w, int h, int gmW, int gmH,
-        bool multiChannel, float maxLog2Gain, float minLog2Gain, bool wideBase, string outputPath,
-        string ffmpeg, Action<string>? log, CancellationToken ct)
+        bool multiChannel, float maxLog2Gain, float minLog2Gain, float hdrCapacityLog2, bool wideBase, string outputPath,
+        string ffmpeg, Action<string>? log, CancellationToken ct, string? avifEncoder = null)
     {
         var tempDir = Path.GetDirectoryName(basePng)!;
         var baseAvif = Path.Combine(tempDir, "base.avif");
@@ -812,7 +976,7 @@ public static class GainMapEncoder
         string trc = wideBase ? "bt709" : "iec61966-2-1";
         string matrix = wideBase ? "bt2020nc" : "bt709";
 
-        if (!await EncodeAvifFileAsync(basePng, baseAvif, ffmpeg, "yuv420p", primaries, trc, matrix, log, ct))
+        if (!await EncodeAvifFileAsync(basePng, baseAvif, ffmpeg, "yuv420p", primaries, trc, matrix, log, ct, avifEncoder))
         {
             log?.Invoke("[GainMap] ❌ 底图 AVIF 编码失败\n");
             return false;
@@ -831,7 +995,7 @@ public static class GainMapEncoder
         //   （「不许把降级当修复」）。
         string gmPixFmt = multiChannel ? "yuv444p" : "gray";
         int declaredChannels = multiChannel ? 3 : 1;
-        if (!await EncodeAvifFileAsync(gmPng, gmAvif, ffmpeg, gmPixFmt, null, null, null, log, ct))
+        if (!await EncodeAvifFileAsync(gmPng, gmAvif, ffmpeg, gmPixFmt, null, null, null, log, ct, avifEncoder))
         {
             if (multiChannel)
             {
@@ -877,7 +1041,7 @@ public static class GainMapEncoder
         // ⚠ 这里的通道数取 **declaredChannels**（上面按**实际交付的平面数**定），不是参数 multiChannel
         //   —— 否则又会写出「声明与交付脱节」（F-4）。写出器还会拿 pixi 平面数复核一次。
         var tmapPayload = IsoBmffGainMapWriter.BuildTmapPayload(
-            BuildIso21496Metadata(declaredChannels, maxLog2Gain, minLog2Gain));
+            BuildIso21496Metadata(declaredChannels, maxLog2Gain, minLog2Gain, hdrCapacityLog2));
         // 底图 CICP：ffmpeg 不采纳 -color_primaries（实测写出 unspecified）⇒ 由写出器重写 colr。
         // sRGB 底 = (1 bt709, 13 iec61966-2-1, 1 bt709)；Rec.2020 SDR 底 = (9, 1 bt709, 9 bt2020nc)。
         int cPrim = wideBase ? 9 : 1;
@@ -901,8 +1065,20 @@ public static class GainMapEncoder
     /// </summary>
     private static async Task<bool> EncodeAvifFileAsync(string pngPath, string avifPath, string ffmpeg,
         string pixFmt, string? primaries, string? trc, string? matrix,
-        Action<string>? log, CancellationToken ct)
+        Action<string>? log, CancellationToken ct, string? encoder = null)
     {
+        // 显式选择只接受**软件、CRF 语义**的 AV1 编码器：硬件 AV1 与增益图子图的精度/参数不匹配，
+        // 不给"选了却悄悄换掉"的机会（不可用即失败，见调用方）。
+        string enc = string.IsNullOrWhiteSpace(encoder) ? "libaom-av1" : encoder!;
+        if (!enc.Equals("libaom-av1", StringComparison.OrdinalIgnoreCase)
+            && !enc.Equals("libsvtav1", StringComparison.OrdinalIgnoreCase))
+        {
+            log?.Invoke($"[GainMap] ERROR: AVIF encoder '{enc}' is not supported for gain-map sub-images"
+                      + " (allowed: libaom-av1 | libsvtav1).\n");
+            return false;
+        }
+        enc = enc.Equals("libsvtav1", StringComparison.OrdinalIgnoreCase) ? "libsvtav1" : "libaom-av1";
+        log?.Invoke($"[GainMap] AVIF encoder: {enc}\n");
         // ⚠⚠ 2026-10-07 修复（D-② 同类点）：三个 token **必须**先过 `ColorSpaceRegistry` 的规范化器。
         //   本仓契约见 `ColorSpaceRegistry.cs:368-387`：ffmpeg 只认**自己的**常量名，而面向用户的词表是
         //   友好名（`srgb`/`pq`/`hlg`）与 zimg 风格名（`bt2020ncl`/`ycgcocn`）；不规范化直接拼 ⇒
@@ -919,7 +1095,7 @@ public static class GainMapEncoder
               + (nt != null ? $" -color_trc {nt}" : "")
               + (nm != null ? $" -colorspace {nm}" : "")
             : "";
-        var args = $"-y -i \"{pngPath}\" -frames:v 1 -c:v libaom-av1 -crf 18 -b:v 0 -pix_fmt {pixFmt}"
+        var args = $"-y -i \"{pngPath}\" -frames:v 1 -c:v {enc} -crf 18 -b:v 0 -pix_fmt {pixFmt}"
                  + $"{colorArgs} -f avif \"{avifPath}\"";
         var psi = new ProcessStartInfo
         {
@@ -965,7 +1141,7 @@ public static class GainMapEncoder
     /// <returns>true=已写出完整 Ultra HDR；false=**未能**写出增益图（调用方必须宣告失败，不得报成功）。</returns>
     private static bool WriteJpegGainMapFile(byte[] baseJpeg, byte[] gainMapJpeg,
         int baseW, int baseH, int gmW, int gmH, bool multiChannel,
-        float headroom, float maxLog2Gain, float minLog2Gain, string outputPath)
+        float maxLog2Gain, float hdrCapacityLog2, float minLog2Gain, string outputPath)
     {
         // 1. 定位 Base JPEG 的 SOS (FFDA) 标记
         int sosIndex = FindSosIndex(baseJpeg);
@@ -986,7 +1162,7 @@ public static class GainMapEncoder
         int baseScanLen = baseJpeg.Length - baseScanStart; // 含 EOI
 
         // 3. ISO 元数据插入增益图: [SOI][APP2: ISO][增益图数据(去 SOI)]
-        byte[] iso = BuildIso21496Metadata(multiChannel, maxLog2Gain, minLog2Gain);
+        byte[] iso = BuildIso21496Metadata(multiChannel, maxLog2Gain, minLog2Gain, hdrCapacityLog2);
         byte[] gainMapWithIso = InsertIsoIntoSegment(gainMapJpeg, iso);
 
         // 4. XMP (含 Item:Length = 增益图完整大小)
@@ -994,7 +1170,7 @@ public static class GainMapEncoder
         //     ⇒ XMP 写 `hdrgm:GainMapMin=0.0`，而上面 APP2 的 ISO 写的是真实的负下沿
         //     ⇒ 同一份文件的两处声明互相矛盾：按 XMP 读的消费者（Adobe/Android 一部分栈）会把
         //        暗部下沿当不存在，而自家 `MergeXmpIntoMetadata` 也立刻报「ISO 与 XMP 增益范围不一致」。
-        byte[] xmp = BuildXmpMetadata(baseW, baseH, gmW, gmH, multiChannel, headroom,
+        byte[] xmp = BuildXmpMetadata(baseW, baseH, gmW, gmH, multiChannel, maxLog2Gain, hdrCapacityLog2,
             gainMapWithIso.Length, minLog2Gain);
 
         // 5. MPF
@@ -1099,8 +1275,9 @@ public static class GainMapEncoder
     /// ISO 21496-1 载荷（JPEG APP2 与 ISO-BMFF tmap **逐字节同构**）用于 AVIF 出口 —— 单一真值，
     /// 不允许在写出器里再写一份（两份必然漂移）。
     /// </remarks>
-    internal static byte[] BuildIso21496Metadata(bool multiChannel, float maxLog2Gain, float minLog2Gain = 0f)
-        => BuildIso21496Metadata(multiChannel ? 3 : 1, maxLog2Gain, minLog2Gain);
+    internal static byte[] BuildIso21496Metadata(bool multiChannel, float maxLog2Gain, float minLog2Gain = 0f,
+        float? hdrCapacityLog2 = null)
+        => BuildIso21496Metadata(multiChannel ? 3 : 1, maxLog2Gain, minLog2Gain, hdrCapacityLog2);
 
     /// <summary>
     /// 按**声明的参数集数**（1 或 3）构建 ISO 21496-1 载荷。
@@ -1116,7 +1293,8 @@ public static class GainMapEncoder
     /// </para>
     /// </summary>
     /// <exception cref="ArgumentOutOfRangeException">declaredChannels 不是 1 或 3。</exception>
-    internal static byte[] BuildIso21496Metadata(int declaredChannels, float maxLog2Gain, float minLog2Gain = 0f)
+    internal static byte[] BuildIso21496Metadata(int declaredChannels, float maxLog2Gain, float minLog2Gain = 0f,
+        float? hdrCapacityLog2 = null)
     {
         if (declaredChannels != 1 && declaredChannels != 3)
             throw new ArgumentOutOfRangeException(nameof(declaredChannels), declaredChannels,
@@ -1131,9 +1309,11 @@ public static class GainMapEncoder
         // 当调用方**原样保留源底图**时，源声明的 <1 暗部端点会给出 minLog2Gain<0 ⇒ 双侧区间。
         int gainMinN = (int)MathF.Round(minLog2Gain * 100f);
         int gainMaxN = gainLog2N;
-        // base/alternate headroom（均为 log2）：SDR 底 → base = log2(1.0) = 0，alternate = headroom
+        // base/alternate headroom（均为 log2）：SDR 底 → base = log2(1.0) = 0，alternate = 显示容量。
+        // ⚠ 显示容量与**增益量程**是两件事（ISO 21496-1 同名字段本就分开）：
+        //   两图合成时量程按实测写（可能 > 或 < peak/203），容量仍按峰值声明。
         const int baseHeadroomN = 0, baseHeadroomD = 1;
-        int alternateHeadroomN = gainLog2N;
+        int alternateHeadroomN = (int)MathF.Round((hdrCapacityLog2 ?? maxLog2Gain) * 100f);
         const int alternateHeadroomD = Log2D;
 
         int channels = declaredChannels;
@@ -1171,13 +1351,15 @@ public static class GainMapEncoder
     /// 底图色域（sRGB / Rec.2020 SDR）由底图自己的 ICC 描述，XMP 不携带 primaries 字段。
     /// </summary>
     private static byte[] BuildXmpMetadata(int baseW, int baseH, int gmW, int gmH, bool multiChannel,
-        float headroom, long gainMapLength, float minLog2Gain = 0f)
+        float maxLog2Gain, float hdrCapacityLog2, long gainMapLength, float minLog2Gain = 0f)
     {
-        float maxLog2 = MathF.Log2(Math.Max(headroom, 1.0f));
+        // ⚠ GainMapMax = **量程**（量化区间上沿，可与 peak/203 不同）；HDRCapacityMax = 显示容量。
+        //    两者分开后，两图合成的暗底图（需要 > peak/203 的增益）不再被写成错误容量。
+        float gainMaxLog2 = maxLog2Gain;
+        float capacityLog2 = hdrCapacityLog2;
         // 下沿随 APP2 一起声明：XMP 与 ISO 二进制**必须同源**，否则第三方按 XMP 读会以为无下映射
         //（`hdrgm:GainMapMin` / `HDRCapacityMin` 与 `gainMapMin` / `baseHdrHeadroom` 同一套数）。
         float gainMinLog2 = minLog2Gain;
-        float gainMaxLog2 = maxLog2;
         // F-5：声明的 offset 就是前向施加的那两个 readonly（单一声明处 ⇒ 「声明==使用」不可能漂移）
         float offsetSdr = KOffsetSdr, offsetHdr = KOffsetHdr;
         const float gamma = 1.0f;
@@ -1219,7 +1401,7 @@ public static class GainMapEncoder
             $"<hdrgm:OffsetSDR>{offsetSdr.ToString("0.000000", inv)}</hdrgm:OffsetSDR>" +
             $"<hdrgm:OffsetHDR>{offsetHdr.ToString("0.000000", inv)}</hdrgm:OffsetHDR>" +
             "<hdrgm:HDRCapacityMin>0</hdrgm:HDRCapacityMin>" +
-            $"<hdrgm:HDRCapacityMax>{gainMaxLog2.ToString("0.00", inv)}</hdrgm:HDRCapacityMax>" +
+            $"<hdrgm:HDRCapacityMax>{capacityLog2.ToString("0.00", inv)}</hdrgm:HDRCapacityMax>" +
             $"<hdrgm:Channels>{channels}</hdrgm:Channels>" +
             "</rdf:Description></rdf:RDF></x:xmpmeta>" +
             "<?xpacket end=\"w\"?>";

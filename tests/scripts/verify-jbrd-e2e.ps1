@@ -53,6 +53,10 @@ foreach ($p in @($ff, $fp, $et, $cjxl, $djxl, $jinfo, $exe)) {
 $d = "$root\tests\output\validate\l3_jbrd"
 if (Test-Path $d) { Remove-Item -Recurse -Force $d }
 New-Item -ItemType Directory -Force -Path $d | Out-Null
+# ⚠ 本机沙箱按进程拦 ffmpeg/宿主写 %TEMP%（`Permission denied` ⇒ exit -13 / 0 产物）⇒ 产品临时件
+#   指进本轮工作区；否则 ultrahdr 夹具与 B 组会批量假红（2026-10-25 实测）。
+$env:TMP = "$d\_tmp"; $env:TEMP = "$d\_tmp"; $env:TMPDIR = "$d\_tmp"
+New-Item -ItemType Directory -Force -Path $env:TMP | Out-Null
 $env:FFMPEGGUI_PLAN_DIR = "$plan"
 $R = @()
 function CK($name, $ok, $detail) {

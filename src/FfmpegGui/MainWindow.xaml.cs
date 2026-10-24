@@ -129,6 +129,7 @@ namespace FfmpegGui
         // 简洁模式控件
         private CheckBox? SimpleErrorsOnlyCheck;
         private DockPanel? FullModePanel;
+        private Grid? FullMainContent;
         private Grid? SimpleModePanel;
         private ListBox? SimpleQueueList;
         private ListBox? SimpleMediaList;
@@ -148,6 +149,39 @@ namespace FfmpegGui
         private bool _simpleDropHandlersAttached; // 防止重复进入简洁模式时拖放 handler 重复注册
         private PresetEntry? _simpleActivePreset;
         private System.Timers.Timer? _autoEncodeTimer;
+        // ── GainMap 合成模式（第 4 个模式：整窗替换，队列与主界面共用）──
+        private Grid? GainMapModePanel;
+        private ComboBox? GainMapFormatCombo;
+        private TextBox? GainMapPeakBox;
+        private ComboBox? GainMapBaseGamutCombo;
+        private CheckBox? GainMapMultiChannelCheck;
+        private ComboBox? GainMapEncoderCombo;
+        private ComboBox? GainMapSubEncoderCombo;
+        private TextBlock? GainMapEncoderHint;
+        private Slider? GainMapBaseQualitySlider;
+        private TextBox? GainMapBaseQualityBox;
+        private Slider? GainMapGainQualitySlider;
+        private TextBox? GainMapGainQualityBox;
+        private TextBlock? GainMapQualityHint;
+        private bool _gmQualitySync;
+        private ComboBox? GainMapDownsampleCombo;
+        private Border? GainMapSdrSlot;
+        private Border? GainMapHdrSlot;
+        private TextBlock? GainMapSdrName;
+        private TextBlock? GainMapHdrName;
+        private TextBlock? GainMapSdrInfo;
+        private TextBlock? GainMapHdrInfo;
+        private TextBlock? GainMapValidateText;
+        private Button? GainMapAddPairBtn;
+        private ListBox? GainMapQueueList;
+        private TextBlock? GainMapQueueSummary;
+        private ProgressBar? GainMapOverallProgress;
+        private TextBox? GainMapLogText;
+        private bool _gainMapModeActive;
+        private string? _gmSdrPath;
+        private string? _gmHdrPath;
+        /// <summary>当前这一对是否已通过 <see cref="GainMapComposeService.ProbePairAsync"/>（任一槽变动即失效）。</summary>
+        private bool _gmPairValidated;
         // GPU 编码器警告面板
         private Border? GpuEncoderWarning;
         private TextBlock? GpuEncoderWarningText;
@@ -992,6 +1026,7 @@ namespace FfmpegGui
             SimpleModeEntryBtn = this.FindControl<Button>("SimpleModeEntryBtn");
             SimpleErrorsOnlyCheck = this.FindControl<CheckBox>("SimpleErrorsOnlyCheck");
             FullModePanel = this.FindControl<DockPanel>("FullModePanel");
+            FullMainContent = this.FindControl<Grid>("FullMainContent");
             SimpleModePanel = this.FindControl<Grid>("SimpleModePanel");
             SimpleQueueList = this.FindControl<ListBox>("SimpleQueueList");
             SimpleMediaList = this.FindControl<ListBox>("SimpleMediaList");
@@ -1005,6 +1040,51 @@ namespace FfmpegGui
             SimpleEtaLabel = this.FindControl<TextBlock>("SimpleEtaLabel");
             SimpleElapsedLabel = this.FindControl<TextBlock>("SimpleElapsedLabel");
             SimpleCurrentStateLabel = this.FindControl<TextBlock>("SimpleCurrentStateLabel");
+
+            // ── GainMap 合成模式控件（第 4 模式）──
+            GainMapModePanel = this.FindControl<Grid>("GainMapModePanel");
+            GainMapFormatCombo = this.FindControl<ComboBox>("GainMapFormatCombo");
+            GainMapPeakBox = this.FindControl<TextBox>("GainMapPeakBox");
+            GainMapBaseGamutCombo = this.FindControl<ComboBox>("GainMapBaseGamutCombo");
+            GainMapMultiChannelCheck = this.FindControl<CheckBox>("GainMapMultiChannelCheck");
+            GainMapBaseQualitySlider = this.FindControl<Slider>("GainMapBaseQualitySlider");
+            GainMapBaseQualityBox = this.FindControl<TextBox>("GainMapBaseQualityBox");
+            GainMapGainQualitySlider = this.FindControl<Slider>("GainMapGainQualitySlider");
+            GainMapGainQualityBox = this.FindControl<TextBox>("GainMapGainQualityBox");
+            GainMapEncoderCombo = this.FindControl<ComboBox>("GainMapEncoderCombo");
+            GainMapSubEncoderCombo = this.FindControl<ComboBox>("GainMapSubEncoderCombo");
+            GainMapEncoderHint = this.FindControl<TextBlock>("GainMapEncoderHint");
+            GainMapQualityHint = this.FindControl<TextBlock>("GainMapQualityHint");
+            GainMapDownsampleCombo = this.FindControl<ComboBox>("GainMapDownsampleCombo");
+            GainMapSdrSlot = this.FindControl<Border>("GainMapSdrSlot");
+            GainMapHdrSlot = this.FindControl<Border>("GainMapHdrSlot");
+            GainMapSdrName = this.FindControl<TextBlock>("GainMapSdrName");
+            GainMapHdrName = this.FindControl<TextBlock>("GainMapHdrName");
+            GainMapSdrInfo = this.FindControl<TextBlock>("GainMapSdrInfo");
+            GainMapHdrInfo = this.FindControl<TextBlock>("GainMapHdrInfo");
+            GainMapValidateText = this.FindControl<TextBlock>("GainMapValidateText");
+            GainMapAddPairBtn = this.FindControl<Button>("GainMapAddPairBtn");
+            GainMapQueueList = this.FindControl<ListBox>("GainMapQueueList");
+            GainMapQueueSummary = this.FindControl<TextBlock>("GainMapQueueSummary");
+            GainMapOverallProgress = this.FindControl<ProgressBar>("GainMapOverallProgress");
+            GainMapLogText = this.FindControl<TextBox>("GainMapLogText");
+            // 模式项由代码补（ComboBox 的 <sys:String> 项无法用 Loc 标记扩展）⇒ 不新增 XAML 硬编码中文。
+            if (ConversionModeCombo != null && ConversionModeCombo.Items.Count == 3)
+                ConversionModeCombo.Items.Add(Services.LocalizationService.Instance["gm.mode"]);
+            if (GainMapAddPairBtn != null) GainMapAddPairBtn.IsEnabled = false;
+            if (GainMapQueueList != null) GainMapQueueList.ItemsSource = _queueView;
+            SetGainMapValidateText(Services.LocalizationService.Instance["gm.validate.needboth"], null);
+
+            // 编码器「大类/小类」：大类候选由出口容器决定，小类随大类联动；质量滑块与数字框双向同步。
+            if (GainMapFormatCombo != null)
+                GainMapFormatCombo.SelectionChanged += (_, _) => RefreshGainMapEncoders();
+            if (GainMapEncoderCombo != null)
+                GainMapEncoderCombo.SelectionChanged += (_, _) => RefreshGainMapSubEncoders();
+            if (GainMapSubEncoderCombo != null)
+                GainMapSubEncoderCombo.SelectionChanged += (_, _) => RefreshGainMapEncoderHint();
+            RefreshGainMapEncoders();
+            WireGainMapQuality(GainMapBaseQualitySlider, GainMapBaseQualityBox);
+            WireGainMapQuality(GainMapGainQualitySlider, GainMapGainQualityBox);
 
             // 简洁模式预设列表初始化
             if (SimplePresetCombo != null)
@@ -1157,6 +1237,7 @@ namespace FfmpegGui
                 {
                     UpdateProgressDisplay();
                     RefreshSimpleProgressIfActive();
+                    RefreshGainMapProgressIfActive();
                 });
             };
             progressTimer.Start();
@@ -1980,6 +2061,17 @@ namespace FfmpegGui
 
             var previousFormat = FormatCombo.SelectedItem as string ?? "";
             var mode = ConversionModeCombo.SelectedIndex;
+
+            // 第 4 模式 = GainMap 合成：保留顶部工具栏，只替换下方内容区。
+            // ⚠ 它**不参与**下面的格式列表重建/命令预览 —— 那套是「单输入 + 输出格式」的模型，
+            //   而本模式的输出格式由面板自己的 GainMapFormatCombo 决定。
+            if (mode == 3)
+            {
+                EnterGainMapMode();
+                return;
+            }
+            if (_gainMapModeActive) LeaveGainMapModeCore();
+
             var isAnimated = mode == 1;
             var isRaw = mode == 2;
             var targetFormats = mode switch
@@ -3146,7 +3238,9 @@ namespace FfmpegGui
                 {
                     try
                     {
-                        qi.OutputPath = GetOutputPath(qi.InputPath, qi.Options.Format, qi.InputBaseDir);
+                        qi.OutputPath = qi.Options.GainMapCompose
+                            ? GetComposeOutputPath(qi.InputPath, qi.Options.Format, null, qi.InputBaseDir)
+                            : GetOutputPath(qi.InputPath, qi.Options.Format, qi.InputBaseDir);
                         var dir = Path.GetDirectoryName(qi.OutputPath);
                         if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
                             Directory.CreateDirectory(dir);
@@ -3225,6 +3319,7 @@ namespace FfmpegGui
                     ApplyErrorOnlyFilter();
                 if (SimpleErrorsOnlyCheck?.IsChecked == true)
                     RefreshSimpleErrorFilter();
+                if (_gainMapModeActive) RefreshGainMapProgressIfActive();
             });
         }
 
@@ -3235,6 +3330,7 @@ namespace FfmpegGui
                 _isQueueRunning = false;
                 if (LogText != null) LogText.Text += "队列已完成\n";
                 if (ClearQueueButton != null) ClearQueueButton.IsEnabled = true;
+                if (_gainMapModeActive) RefreshGainMapProgressIfActive();
             });
         }
 
@@ -3360,6 +3456,22 @@ namespace FfmpegGui
         {
             var fmt = (item.Options.Format ?? "").ToLowerInvariant();
             var inputExt = Path.GetExtension(item.InputPath).ToLowerInvariant();
+
+            // ── 两图 GainMap 合成（由产品服务执行，没有一条对应的 ffmpeg 命令行）──
+            // 必须排在所有单输入分支之前：否则预览会显示成"拿底图单跑一次编码"，与实际执行相反。
+            if (item.Options.GainMapCompose)
+            {
+                // 文案走 Loc（预览是用户可见的）；`[GainMap合成]` 前缀本身是 [tag] 口径
+                var loc = Services.LocalizationService.Instance;
+                string peakText = item.Options.GainMapComposePeakNits > 0
+                    ? item.Options.GainMapComposePeakNits + " nits"
+                    : loc["gm.peak.auto.short"];
+                string chText = item.Options.GainMapComposeMultiChannel ? loc["gm.ch.3"] : loc["gm.ch.1"];
+                return "[GainMap合成] " + string.Format(loc["gm.preview"],
+                    Path.GetFileName(item.OutputPath), peakText, chText,
+                    Math.Max(item.Options.JpegGainMapDownsample, 1),
+                    item.Options.GainMapComposeEncoder ?? "auto");
+            }
 
             // ── DNG 输出 (dngtool 编码) ──
             // D-1 2026-10-07: preview must call the SAME argument builder as the real
@@ -5442,6 +5554,9 @@ namespace FfmpegGui
         private void RefreshLocCombos()
         {
             foreach (var kv in _locCombos) ApplyLocCombo(kv.Key, kv.Value);
+            // 第 4 个模式项由代码填充（ComboBox 的 <sys:String> 项无法用 Loc 标记扩展）
+            if (ConversionModeCombo != null && ConversionModeCombo.Items.Count > 3)
+                ConversionModeCombo.Items[3] = Services.LocalizationService.Instance["gm.mode"];
         }
 
         /// <summary>
@@ -5686,6 +5801,29 @@ namespace FfmpegGui
             {
                 if (LogText != null) LogText.Text += $"文件夹扫描失败: {ex.Message}\n";
             }
+        }
+
+        /// <summary>
+        /// 两图 GainMap 合成的产物路径（与 CLI 同一命名约定：`&lt;底图名&gt;_gainmap.&lt;ext&gt;`）。
+        /// 单独一个入口是必要的：主界面的「保留目录结构」重算会把每个条目的 OutputPath 按
+        /// <see cref="GetOutputPath"/> 重新推一遍 —— 若那里不认合成项，`_gainmap` 后缀会被悄悄丢掉
+        /// （产物改成与底图同名，换目录跑一次就可能覆盖源文件）。
+        /// </summary>
+        private string GetComposeOutputPath(string sdrPath, string format, string? outDirOverride, string? inputBaseDir)
+        {
+            string basePath;
+            if (!string.IsNullOrWhiteSpace(outDirOverride))
+            {
+                var ext = format switch { "jpegli" => "jpg", "apng" => "png", _ => format };
+                basePath = Path.Combine(outDirOverride!, Path.GetFileNameWithoutExtension(sdrPath) + "." + ext);
+            }
+            else
+            {
+                basePath = GetOutputPath(sdrPath, format, inputBaseDir);
+            }
+            return Path.Combine(
+                Path.GetDirectoryName(basePath) ?? "",
+                Path.GetFileNameWithoutExtension(basePath) + "_gainmap" + Path.GetExtension(basePath));
         }
 
         private string GetOutputPath(string inputPath, string format, string? overrideInputBaseDir = null)
@@ -6646,6 +6784,394 @@ namespace FfmpegGui
 
             await dialog.ShowDialog(this);
             return await tcs.Task;
+        }
+
+        // ═══════════════════════════════════════════════
+        // GainMap 合成模式（第 4 模式）— 整窗替换面板
+        // 队列与主界面**共用**（_queueView / _queueItems / _queueProcessor）：
+        // 配对只是另一种入队方式，不是第二套队列。
+        // ═══════════════════════════════════════════════
+
+        /// <summary>
+        /// 编码器「大类」候选**只由出口容器决定**：JPEG ⇒ cjpegli（可用时）/ FFmpeg；AVIF ⇒ FFmpeg（AV1 软件）。
+        /// 硬件 AV1 在增益图子图这一层**不给入口**：引擎明确拒绝，给了只会变成运行时失败。
+        /// </summary>
+        private void RefreshGainMapEncoders()
+        {
+            if (GainMapEncoderCombo == null) return;
+            bool avif = GainMapFormatCombo?.SelectedIndex == 1;
+            string? prevMajor = GainMapEncoderCombo.SelectedItem as string;
+            var majors = new List<string>();
+            if (avif)
+            {
+                majors.Add("FFmpeg");
+            }
+            else
+            {
+                if (Services.CjpegliService.IsAvailable) majors.Add("cjpegli");
+                majors.Add("FFmpeg");
+            }
+            GainMapEncoderCombo.ItemsSource = majors;
+            int idx = prevMajor != null ? majors.IndexOf(prevMajor) : -1;
+            if (idx < 0) idx = majors.IndexOf("cjpegli") >= 0 ? majors.IndexOf("cjpegli") : 0;
+            GainMapEncoderCombo.SelectedIndex = idx;
+            RefreshGainMapSubEncoders();
+            UpdateGainMapQualityAvailability();
+        }
+
+        /// <summary>小类 = 该大类下**实际传给引擎的编码器名**（mjpeg / cjpegli / libaom-av1 / libsvtav1）。</summary>
+        private void RefreshGainMapSubEncoders()
+        {
+            if (GainMapSubEncoderCombo == null) return;
+            bool avif = GainMapFormatCombo?.SelectedIndex == 1;
+            string major = GainMapEncoderCombo?.SelectedItem as string ?? "FFmpeg";
+            var subs = new List<string>();
+            if (avif) { subs.Add("libaom-av1"); subs.Add("libsvtav1"); }
+            else if (major.Equals("cjpegli", StringComparison.OrdinalIgnoreCase)) subs.Add("cjpegli");
+            else subs.Add("mjpeg");
+            string? prev = GainMapSubEncoderCombo.SelectedItem as string;
+            GainMapSubEncoderCombo.ItemsSource = subs;
+            int idx = prev != null ? subs.IndexOf(prev) : -1;
+            GainMapSubEncoderCombo.SelectedIndex = idx < 0 ? 0 : idx;
+            RefreshGainMapEncoderHint();
+        }
+
+        private void RefreshGainMapEncoderHint()
+        {
+            if (GainMapEncoderHint == null) return;
+            var loc = Services.LocalizationService.Instance;
+            bool avif = GainMapFormatCombo?.SelectedIndex == 1;
+            GainMapEncoderHint.Text = avif
+                ? loc["gm.encoder.hint.avif"]
+                : loc["gm.encoder.hint.jpeg"];
+        }
+
+        /// <summary>AVIF 子图走固定 CRF：滑块禁用并点名，而不是留一个不影响产物的旋钮。</summary>
+        private void UpdateGainMapQualityAvailability()
+        {
+            bool on = GainMapFormatCombo?.SelectedIndex != 1;
+            if (GainMapBaseQualitySlider != null) GainMapBaseQualitySlider.IsEnabled = on;
+            if (GainMapBaseQualityBox != null) GainMapBaseQualityBox.IsEnabled = on;
+            if (GainMapGainQualitySlider != null) GainMapGainQualitySlider.IsEnabled = on;
+            if (GainMapGainQualityBox != null) GainMapGainQualityBox.IsEnabled = on;
+            if (GainMapQualityHint != null)
+            {
+                GainMapQualityHint.Text = on ? "" : Services.LocalizationService.Instance["gm.avif.quality.fixed"];
+                GainMapQualityHint.IsVisible = !on;
+            }
+        }
+
+        private void WireGainMapQuality(Slider? slider, TextBox? box)
+        {
+            if (slider == null || box == null) return;
+            slider.PropertyChanged += (_, e) =>
+            {
+                if (e.Property.Name != nameof(Slider.Value) || _gmQualitySync) return;
+                _gmQualitySync = true;
+                try { box.Text = ((int)slider.Value).ToString(); }
+                finally { _gmQualitySync = false; }
+            };
+            box.TextChanged += (_, _) =>
+            {
+                if (_gmQualitySync || !int.TryParse(box.Text, out var q)) return;
+                _gmQualitySync = true;
+                try { slider.Value = Math.Clamp(q, 0, 100); }
+                finally { _gmQualitySync = false; }
+            };
+            box.LostFocus += (_, _) => box.Text = ((int)slider.Value).ToString();
+        }
+
+        /// <summary>进入第 4 模式：保留顶部工具栏，只替换它下面的内容区。</summary>
+        private void EnterGainMapMode()
+        {
+            _gainMapModeActive = true;
+            if (SimpleModePanel != null) SimpleModePanel.IsVisible = false;
+            if (FullModePanel != null) FullModePanel.IsVisible = true;
+            if (FullMainContent != null) FullMainContent.IsVisible = false;
+            if (GainMapModePanel != null) GainMapModePanel.IsVisible = true;
+            if (GainMapQueueList != null) GainMapQueueList.ItemsSource = _queueView;
+            RefreshGainMapEncoders();
+            RefreshGainMapProgressIfActive();
+        }
+
+        /// <summary>离开第 4 模式、恢复顶部栏下方的主内容区。只动可见性：已登记的配对/参数/队列全部保留。</summary>
+        private void LeaveGainMapModeCore()
+        {
+            _gainMapModeActive = false;
+            if (GainMapModePanel != null) GainMapModePanel.IsVisible = false;
+            if (FullMainContent != null) FullMainContent.IsVisible = true;
+            if (FullModePanel != null) FullModePanel.IsVisible = true;
+        }
+
+        private void GainMapReturn_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        {
+            if (ConversionModeCombo != null && ConversionModeCombo.SelectedIndex == 3)
+            {
+                // 交给模式处理器统一恢复（单一出口），避免这里再实现一遍显隐逻辑
+                ConversionModeCombo.SelectedIndex = 0;
+                return;
+            }
+            LeaveGainMapModeCore();
+        }
+
+        private async void GainMapPickSdr_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        {
+            var path = await PickGainMapImageAsync("gm.pick.sdr.title");
+            if (path == null) return;
+            _gmSdrPath = path;
+            if (GainMapSdrName != null) GainMapSdrName.Text = Path.GetFileName(path);
+            if (GainMapSdrSlot != null)
+                GainMapSdrSlot.BorderBrush = Avalonia.Media.Brush.Parse("#2E7D32");
+            await ValidateGainMapPairAsync();
+        }
+
+        private async void GainMapPickHdr_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        {
+            var path = await PickGainMapImageAsync("gm.pick.hdr.title");
+            if (path == null) return;
+            _gmHdrPath = path;
+            if (GainMapHdrName != null) GainMapHdrName.Text = Path.GetFileName(path);
+            if (GainMapHdrSlot != null)
+                GainMapHdrSlot.BorderBrush = Avalonia.Media.Brush.Parse("#2E7D32");
+            await ValidateGainMapPairAsync();
+        }
+
+        private void GainMapClearPair_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        {
+            _gmSdrPath = null;
+            _gmHdrPath = null;
+            _gmPairValidated = false;
+            var loc = Services.LocalizationService.Instance;
+            if (GainMapSdrName != null) GainMapSdrName.Text = loc["gm.slot.empty"];
+            if (GainMapHdrName != null) GainMapHdrName.Text = loc["gm.slot.empty"];
+            if (GainMapSdrInfo != null) GainMapSdrInfo.Text = "";
+            if (GainMapHdrInfo != null) GainMapHdrInfo.Text = "";
+            if (GainMapSdrSlot != null)
+                GainMapSdrSlot.BorderBrush = Avalonia.Media.Brush.Parse("#66767676");
+            if (GainMapHdrSlot != null)
+                GainMapHdrSlot.BorderBrush = Avalonia.Media.Brush.Parse("#66767676");
+            if (GainMapAddPairBtn != null) GainMapAddPairBtn.IsEnabled = false;
+            SetGainMapValidateText(loc["gm.validate.needboth"], null);
+        }
+
+        private async Task<string?> PickGainMapImageAsync(string titleKey)
+        {
+            var topLevel = TopLevel.GetTopLevel(this);
+            if (topLevel?.StorageProvider == null) return null;
+            var files = await topLevel.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+            {
+                Title = Services.LocalizationService.Instance[titleKey],
+                AllowMultiple = false,
+                FileTypeFilter = AppSettingsService.Current.GetImageFilePickerFilter()
+            });
+            return files != null && files.Count > 0 ? files[0].Path.LocalPath : null;
+        }
+
+        /// <summary>
+        /// 校验当前一对。判据**完全**来自 <see cref="GainMapComposeService.ProbePairAsync"/>（与执行侧同一份），
+        /// 界面这里只负责显示与按钮使能，不另写一套「尺寸/传递函数」判断。
+        /// </summary>
+        private async Task ValidateGainMapPairAsync()
+        {
+            _gmPairValidated = false;
+            if (GainMapAddPairBtn != null) GainMapAddPairBtn.IsEnabled = false;
+            if (GainMapSdrInfo != null) GainMapSdrInfo.Text = "";
+            if (GainMapHdrInfo != null) GainMapHdrInfo.Text = "";
+            var loc = Services.LocalizationService.Instance;
+
+            if (string.IsNullOrWhiteSpace(_gmSdrPath) || string.IsNullOrWhiteSpace(_gmHdrPath))
+            {
+                SetGainMapValidateText(loc["gm.validate.needboth"], null);
+                return;
+            }
+
+            SetGainMapValidateText(loc["gm.validate.running"], null);
+            try
+            {
+                var p = await GainMapComposeService.ProbePairAsync(_gmSdrPath!, _gmHdrPath!, null, default);
+                if (!p.Ok)
+                {
+                    SetGainMapValidateText(string.Format(loc["gm.validate.fail"], p.RejectReason.Trim()), false);
+                    return;
+                }
+                if (GainMapSdrInfo != null)
+                    GainMapSdrInfo.Text = string.Format(loc["gm.slot.info"], p.Width, p.Height, p.SdrPrimaries, p.SdrTrc);
+                if (GainMapHdrInfo != null)
+                    GainMapHdrInfo.Text = string.Format(loc["gm.slot.info"], p.Width, p.Height, p.HdrPrimaries, p.HdrTrc);
+                string peak = p.MetaPeakNits > 0
+                    ? string.Format(loc["gm.peak.readout"], p.MetaPeakNits, p.MetaPeakSource ?? "")
+                    : loc["gm.peak.none"];
+                SetGainMapValidateText(string.Format(loc["gm.validate.ok"], p.Width, p.Height, p.HdrTrc, peak), true);
+                _gmPairValidated = true;
+                if (GainMapAddPairBtn != null) GainMapAddPairBtn.IsEnabled = true;
+            }
+            catch (Exception ex)
+            {
+                SetGainMapValidateText(string.Format(loc["gm.validate.error"], ex.Message), false);
+            }
+        }
+
+        /// <summary>ok=true 绿 / false 红 / null 中性（探测中、尚未选齐）。</summary>
+        private void SetGainMapValidateText(string text, bool? ok)
+        {
+            if (GainMapValidateText == null) return;
+            GainMapValidateText.Text = text;
+            GainMapValidateText.Foreground = Avalonia.Media.Brush.Parse(
+                ok == true ? "#2E7D32" : ok == false ? "#C62828" : "#8A8A8A");
+        }
+
+        private void GainMapAddPair_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        {
+            var loc = Services.LocalizationService.Instance;
+            if (!_gmPairValidated || string.IsNullOrWhiteSpace(_gmSdrPath) || string.IsNullOrWhiteSpace(_gmHdrPath))
+            {
+                SetGainMapValidateText(loc["gm.err.notvalid"], false);
+                return;
+            }
+
+            int peak = 0;
+            var peakText = GainMapPeakBox?.Text?.Trim() ?? "";
+            if (peakText.Length > 0
+                && (!int.TryParse(peakText, out peak) || peak < 100 || peak > 10000))
+            {
+                SetGainMapValidateText(loc["gm.err.peak"], false);
+                return;
+            }
+
+            var sdr = _gmSdrPath!;
+            var hdr = _gmHdrPath!;
+            if (_queueItems.Any(i => i.Options.GainMapCompose
+                    && string.Equals(i.InputPath, sdr, StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(i.GainMapReferencePath, hdr, StringComparison.OrdinalIgnoreCase)))
+            {
+                SetGainMapValidateText(loc["gm.err.dup"], false);
+                return;
+            }
+
+            string ext = GainMapFormatCombo?.SelectedIndex == 1 ? "avif" : "jpg";
+            // 输出目录单一口径 = 顶部栏（与其它模式一致）；空则跟随全局设置，再空才落源目录。
+            var outDir = OutputDirBox?.Text?.Trim();
+            if (string.IsNullOrWhiteSpace(outDir)) outDir = AppSettingsService.Current.OutputDirectory;
+            if (string.IsNullOrWhiteSpace(outDir)) outDir = Path.GetDirectoryName(sdr);
+            string outp;
+            try
+            {
+                Directory.CreateDirectory(outDir!);
+                outp = Path.GetFullPath(GetComposeOutputPath(sdr, ext, outDir, null));
+            }
+            catch (Exception ex)
+            {
+                SetGainMapValidateText(string.Format(loc["gm.validate.error"], ex.Message), false);
+                return;
+            }
+
+            var options = new Models.FfmpegOptions
+            {
+                Format = ext,
+                GainMapCompose = true,
+                GainMapComposePeakNits = peak,
+                GainMapComposeMultiChannel = GainMapMultiChannelCheck?.IsChecked ?? true,
+                Quality = (int)Math.Round(GainMapBaseQualitySlider?.Value ?? 85),
+                JpegGainMapQuality = (int)Math.Round(GainMapGainQualitySlider?.Value ?? 85),
+                JpegGainMapDownsample = 1 << Math.Clamp(GainMapDownsampleCombo?.SelectedIndex ?? 1, 0, 3),
+                JpegGainMapBaseGamut = GainMapBaseGamutCombo?.SelectedIndex == 1 ? "bt2020" : "srgb",
+                GainMapComposeEncoder = GainMapSubEncoderCombo?.SelectedItem as string,
+            };
+            var item = new Models.QueueItem
+            {
+                InputPath = sdr,
+                SourceInputPath = sdr,
+                GainMapReferencePath = hdr,
+                OutputPath = outp,
+                Options = options,
+                Command = "[GainMap合成] GainMapComposeService（SDR 底图 + HDR 参考）",
+            };
+            _queueProcessor.Add(item);
+            _queueView.Add(item);
+            _queueItems.Add(item);
+
+            if (GainMapLogText != null)
+                GainMapLogText.Text = string.Format(loc["gm.added"], item.GainMapSdrName + " + " + item.GainMapHdrName);
+            RefreshGainMapProgressIfActive();
+
+            // 入队后清空两槽（参数与输出目录保留），便于连续配下一对
+            _gmSdrPath = null;
+            _gmHdrPath = null;
+            _gmPairValidated = false;
+            if (GainMapSdrName != null) GainMapSdrName.Text = loc["gm.slot.empty"];
+            if (GainMapHdrName != null) GainMapHdrName.Text = loc["gm.slot.empty"];
+            if (GainMapSdrInfo != null) GainMapSdrInfo.Text = "";
+            if (GainMapHdrInfo != null) GainMapHdrInfo.Text = "";
+            if (GainMapAddPairBtn != null) GainMapAddPairBtn.IsEnabled = false;
+            SetGainMapValidateText(loc["gm.validate.needboth"], null);
+        }
+
+        private void GainMapStart_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        {
+            var loc = Services.LocalizationService.Instance;
+            if (_queueProcessor.IsRunning)
+            {
+                if (GainMapLogText != null) GainMapLogText.Text += loc["gm.running"] + "\n";
+                return;
+            }
+            if (!_queueItems.Any(i => i.Options.GainMapCompose))
+            {
+                if (GainMapLogText != null) GainMapLogText.Text += loc["gm.err.empty"] + "\n";
+                return;
+            }
+            _queueProcessor.RequeueStoppedAndFailed(_queueItems);
+            _queueProcessor.Start(GetConcurrencyValue());
+            _isQueueRunning = true;
+            if (GainMapLogText != null) GainMapLogText.Text += loc["gm.started"] + "\n";
+            RefreshGainMapProgressIfActive();
+        }
+
+        private void GainMapStop_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        {
+            _queueProcessor.Stop();
+            _isQueueRunning = false;
+            if (GainMapLogText != null)
+                GainMapLogText.Text += Services.LocalizationService.Instance["gm.stopped"] + "\n";
+            RefreshGainMapProgressIfActive();
+        }
+
+        private void GainMapQueueList_SelectionChanged(object? sender, SelectionChangedEventArgs e)
+        {
+            if (GainMapLogText == null) return;
+            if (GainMapQueueList?.SelectedItem is Models.QueueItem item)
+                GainMapLogText.Text = item.Log;
+        }
+
+        /// <summary>每秒 / 每次状态变化调用：只在本模式可见时工作。</summary>
+        private void RefreshGainMapProgressIfActive()
+        {
+            if (!_gainMapModeActive) return;
+            UpdateGainMapQueueDisplay();
+            // 选中项的日志实时跟随（只读回显；不改变选中项）
+            if (GainMapLogText != null && GainMapQueueList?.SelectedItem is Models.QueueItem sel
+                && !string.Equals(GainMapLogText.Text, sel.Log, StringComparison.Ordinal))
+            {
+                GainMapLogText.Text = sel.Log;
+            }
+        }
+
+        private void UpdateGainMapQueueDisplay()
+        {
+            var loc = Services.LocalizationService.Instance;
+            var items = _queueItems.Where(i => i.Options.GainMapCompose).ToList();
+            if (items.Count == 0)
+            {
+                if (GainMapQueueSummary != null) GainMapQueueSummary.Text = loc["gm.summary.empty"];
+                if (GainMapOverallProgress != null) GainMapOverallProgress.Value = 0;
+                return;
+            }
+            int done = items.Count(i => i.IsSuccessStatus);
+            int failed = items.Count(i => i.IsFailure);
+            int running = items.Count(i => i.IsProcessing);
+            if (GainMapQueueSummary != null)
+                GainMapQueueSummary.Text = string.Format(loc["gm.summary"], items.Count, done, failed, running);
+            if (GainMapOverallProgress != null)
+                GainMapOverallProgress.Value = 100.0 * (done + failed) / items.Count;
         }
 
         private void InitializeComponent()

@@ -3372,3 +3372,292 @@ runner self-sha16 `F1CE9994C976B381`。五把重臂在新默认档下**未复跑
   JXL auto 分支读声明。
 - `src/FfmpegGui/Services/ExifToolService.cs`：RAW 补回白名单 +`-Make -Model`。
 - 新判据：`tests/scripts/verify-acr-route.ps1`（第 79 条）+ `tests/scripts/_readback-acr-render.py`。
+
+---
+
+### §46 两图 GainMap 合成（第 4 模式，2026-10-24）
+
+#### 46.1 动机与定位
+
+传统的三条模式（静态 / 动图 / RAW）都是**单输入**：GainMap 出口只能自己从 HDR 图造一张
+Reinhard 底图。用户手里常见的资产是**两张图**：一张 SDR 成片（要保留的底图），一张 HDR 参考
+（同一次拍摄/同一次调色的高动态版本）。本模式把这两张图直接合成标准 Ultra HDR JPEG /
+AVIF `tmap`，**不缩放、不裁切、不替换底图**。
+
+它不是一个"新编码器"：像素阶段全部复用 `GainMapEncoder`（单一真值），新增的只有**输入轴**
+（两张图各自探测、各自定角色）与**出口前自检**。
+
+#### 46.2 契约（不满足就拒绝，绝不回落）
+
+| 项 | 判据 | 违反时 |
+|---|---|---|
+| 尺寸 | 两张图**显示尺寸**（解码器 autorotate 之后）必须相等 | 拒绝（不缩放/不裁切） |
+| 角色 | SDR 槽不得带 PQ/HLG；HDR 槽必须是 PQ 或 HLG | 拒绝并点名探测到的传递函数 |
+| 底图裸流 | 必须精确 = `w×h×3×4` 字节 | 拒绝（不做"截断也能跑"的兜底） |
+| 底图来源 | 只能是用户给的 SDR 图；本模式**不用** Reinhard 自造底图 | 由入参保证（没有该分支） |
+| 出口 | 只支持 `.jpg/.jpeg/.avif`（其它容器无标准增益图承载） | CLI/队列两侧各自拒绝 |
+
+界面与执行侧共用同一份探测/校验（`GainMapComposeService.ProbePairAsync`）：若各写一套，
+必然漂移成"界面说可以、执行时说不行"。
+
+#### 46.3 引擎侧三处改动（全部 opt-in，旧 A 路参数不变）
+
+1. `sourceBasePrimaries`：底图按**自己的原色**转进底图色域，HDR 侧再按 HDR 原色转进同一色域。
+   没有它时（旧路径）底图被当作"HDR 原色"再转一次 ⇒ sRGB(76,178,102) 被转成 (0,184,88)。
+2. `measureGainRange`：用**真正交付的底图字节**实测 `gainMapMin`（1% 分位）与 `gainMapMax`
+   （99.99% 分位）；`HDRCapacityMax` 仍是显示容量 `log2(peak/203)`。两者在 ISO 21496-1 里本就是
+   不同字段，绑在一起会让"底图没达到自己的白点"时高光被量化端静默钳顶。
+3. 底图裸流精确长度校验：长度不符 ⇒ 点名并回落 Reinhard（**只在调用方没给 baseRaw 时**才有底线；
+   两图模式下长度不符是硬失败）。
+
+默认值（`null`/`false`）⇒ 既有单输入出口的参数组合逐字不变；本轮未重跑既有 `gainmap-*` 门禁，
+整轮读数待下一次全量。
+
+#### 46.4 读数（2026-10-24 实测）
+
+| 项 | 读数 | 说明 |
+|---|---|---|
+| 新门禁 #80 | `verify-gainmap-compose.ps1` **37/0 @13.3 s**（运行器子集跑；`tests/output/results/runner-gainmap-compose.log`） | 四层判据 + 三条负控 |
+| 容量 vs 量程解耦 | 固定 `--gainmap-peak 1000` ⇒ `HDRCapacityMax=2.30`、`GainMapMax=1.76` | 两个字段不可再绑回同一个数 |
+| 底图保真 | 主 JPEG 解回 vs SDR 夹具 **28.97 dB**；无关同尺寸图对照 **4.16 dB** | 阈值 26 / <15，尺子会分叉 |
+| MPF 结构 | 次级图偏移 = 主图大小（6308 B），SOI/EOI/文件尾三项全中，ffprobe 可解 | 独立读手 `_readback-gainmap-compose.py` |
+| AVIF 结构 | `CompatibleBrands` 含 `tmap`；两个 `ImageSpatialExtent` = 256×192 / 128×96 | exiftool 13.59 |
+| 峰值 auto | 夹具按 SDR 白点转 PQ ⇒ 实测 100 nits，容量 0.00（与实测值同源） | 容量>0 由固定 peak 两臂覆盖 |
+| 负控 | 尺寸不一致 rc=1 / 角色放反 rc=1 / 输出 png rc=2；三者零产物且点名 | 不静默回退 |
+| UI 冒烟（无头） | **14/0**（模式项 4 项、整窗替换、返回、语言键 54 个双语言齐全、校验负控、入队、**命令预览走合成分支**、**保留目录结构重算仍带 `_gainmap` 后缀**、**面板旋钮逐项落地**、真跑、汇总） | 默认档产物 15,738 B；改档（Rec.2020 / q75 / 增益 q60 / 4× 降采样 / 单通道）后 8,397 B；队列状态 `已完成 (GainMap 合成)` |
+| CLI | 真实 exe `--compose-gainmap -i "sdr,hdr" -f jpg/avif` rc=0 | 输出 `<sdrstem>_gainmap.<ext>` |
+
+**两处顺带修的缺陷**：① 合成分支最初把成功状态写成 `"完成"`，而 `QueueItem.IsSuccessStatus` /
+`IsTerminal` 都按 `"已完成"` 前缀判定 ⇒ 成功项永远不算完成（队列汇总卡在进行中、退出码也无法据此判绿）。
+已改为 `"已完成 (GainMap 合成)"`。
+② 主界面「保留输入目录结构」会在起跑前按 `GetOutputPath` 重算**每个**条目的 OutputPath，
+   原实现不认合成项 ⇒ `_gainmap` 后缀被丢掉（产物变成与底图同名，换目录跑一次就可能覆盖源文件）。
+   现统一走 `GetComposeOutputPath`（CLI 与 UI 同一条命名约定），并由冒烟 U9d 盯着重算结果。
+
+**更正一条旧读数**：P0 阶段曾记录"59% 通道 >2.0、最大 6.14 log2"。那是在**色域映射之前**量的；
+按底图色域映射之后，同一对图需要的实际量程约 **2.53 log2**（名义 2.00 会被钳顶）。两者不矛盾，
+但引用时必须带"映射前/后"的口径。
+
+#### 46.5 已知边界（不许写成结论）
+
+- **未取得 Photoshop/ACR 的实机读数**：主图是标准基线 JPEG、次级图是可独立解码的 JPEG、MPF 偏移自洽；
+  但 exiftool 13.59 对"追加在 EOI 之后"的次级图会报
+  `[minor] Error reading GainMap image/jpeg from trailer`（同一段字节 SOI/EOI/尾部自洽、ffprobe 可解）。
+  本轮**不声称**"PS 一定能读出增益图"，只声称结构合规 + 自家解码往返成立。
+- **AVIF 只做了结构判**（`tmap` 品牌 + 两个 extent）；没有第三方 AVIF 增益图渲染器的对照臂。
+- **单色下沿的量尺**只在两图模式（`measureGainRange && !multiChannel`）改成亮度统计；旧 A 路的单色
+  逐通道口径**未改**（改它会动既有门禁读数，属独立一批）。
+- **UI 尚未进 `ui-*` 套件**：本轮用的是无头冒烟（`tests/output/acr-gm-spike`，一次性脚本）。
+  `_probe-gui-control-wiring`（结构锁）已把本面板的四个**参数**下拉登记为例外并写明理由：
+  它们的值在「加入队列」那一刻才读进 `FfmpegOptions`，面板没有命令预览、也没有随参数即时变化的 UI，
+  因此"变更响应"在设计上不存在；写空处理器只会把锁喂绿。它们的"值真的生效"分别由第 80 条的
+  JPEG/AVIF 两臂（格式）与无头冒烟 U9b（其余三项逐项读回入队项）看着。
+  把新模式的 3 条断言并进 UiTestHost 需同批重生成 5 个拆分件与并集锁，属独立一批。
+- **峰值 auto 的夹具亮度低于 203 nits**（SDR 白点直接转 PQ 的必然结果）；真实素材的 auto 臂
+  需要一张 >203 nits 的参考图，本轮用固定 peak 两臂覆盖容量>0 的路径。
+
+#### 46.6 改动点
+
+- `src/FfmpegGui/Services/GainMapComposeService.cs`（新）：探测/校验、HDR 解线性（峰值 auto 重解一次）、
+  SDR 底图裸流、编码、回读自检（解不出/尺寸不符/底图缺失 ⇒ 删产物并失败）。
+- `src/FfmpegGui/Services/GainMapEncoder.cs`：`sourceBasePrimaries`、`measureGainRange`、
+  `MeasureMaxLog2Gain`、`BuildIso21496Metadata/BuildXmpMetadata/WriteJpegGainMapFile/EncodeAvifGainMapAsync`
+  的容量与量程分离、底图裸流精确长度。
+- `src/FfmpegGui/Services/QueueProcessor.cs`：合成分支（独立于单输入管线）+ 成功状态词修正。
+- `src/FfmpegGui/CliParser.cs`：`--compose-gainmap` / `--gainmap-peak` / `--gainmap-multichannel`、
+  偶数输入配对、`_gainmap` 输出名、格式白名单。
+- `src/FfmpegGui/MainWindow.xaml(.cs)`：第 4 模式 `GainMapModePanel`（整窗替换）、配对槽校验、
+  入队/开始/停止/汇总/日志；第 4 个模式项由代码用 Loc 填充（ComboBox 的 `<sys:String>` 无法走 Loc）。
+- `src/FfmpegGui/Models/{FfmpegOptions,QueueItem}.cs`：三个合成参数 + `GainMapReferencePath` + 行内显示名。
+- 新判据：`tests/scripts/verify-gainmap-compose.ps1`（第 80 条）+ `tests/scripts/_readback-gainmap-compose.py`。
+- 文案：`Resources/Locales/{zh-CN,en-US}.json` 新增 54 个 `gm.*` 键（两语言逐键对撞）。
+
+#### 46.7 编码器「大类/小类」与质量滑块（2026-10-25）
+
+**动机**：46.4 的 UI 冒烟里，底图/增益图质量是四个固定档的下拉（95/85/75/60），且面板**不能选编码器**
+—— 用户要求"底图和增益图质量参考以前界面的滑块，同时允许选编码器大类和下面小类"。
+旧界面的质量是 Slider(0–100, snap 1) + TextBox 双向同步；本面板照同一手感改。
+
+**面板结构（可执行判据）**：
+
+| 控件 | 候选 | 落点 |
+|---|---|---|
+| `GainMapEncoderCombo`（大类） | JPEG: `cjpegli`（检测到才列）/ `FFmpeg`；AVIF: `FFmpeg` | 只决定小类候选集，不直接落盘 |
+| `GainMapSubEncoderCombo`（小类） | `cjpegli` / `mjpeg` / `libaom-av1` / `libsvtav1` | **实际传给引擎的那个名字** ⇒ `FfmpegOptions.GainMapComposeEncoder` |
+| `GainMapBaseQualitySlider/Box` | 0–100，默认 85 | `FfmpegOptions.Quality` |
+| `GainMapGainQualitySlider/Box` | 0–100，默认 85 | `FfmpegOptions.JpegGainMapQuality` |
+
+- AVIF 臂：滑块**禁用**并显示点名文案（`gm.avif.quality.fixed`）—— 子图走固定 CRF 18，
+  不提供"拖了也不影响产物"的无效旋钮。
+- **格式选择在左侧参数区**（与旧模式一致）：左侧顺序 = 输出格式（`gm.format`）→ 编码器大类/小类 →
+  底图/增益图质量 → 峰值 → 底图色域 → 三通道 → 降采样。格式下拉仍是
+  `GainMapFormatCombo`，切换时重建编码器候选并刷新滑块启用态。
+- **输出目录只有一个来源 = 顶部栏**：已删掉面板自己的 `GainMapOutputDirBox` 与浏览按钮；
+  入队时读顶部 `OutputDirBox`，空则落全局设置，再空才落源目录。`gm.output`/`gm.browse`/
+  `gm.pick.output.title` 三个键随之删除（两语言同步）。
+- **顶部栏保留**：`GainMapModePanel` 已移入 `FullModePanel`（DockPanel 的 Top 工具栏之下），
+  进入第 4 模式只隐藏 `FullMainContent`，不再隐藏整个 `FullModePanel` ⇒ FFmpeg/输出目录、设置菜单、
+  保留目录结构等始终可达；面板自己的标题/返回/开始/停止仍在内容区第一行。`SimpleModePanel` 未改
+  （它仍是整窗覆盖）。
+- 切换格式会重建大类候选并复原可保留的选择；大类变化重建小类；小类变化刷新提示文案。
+- **硬件 AV1 不给入口**：增益图子图只接受软件 AV1（引擎对 `libaom-av1`/`libsvtav1` 之外的名字
+  直接点名失败，见 `GainMapEncoder.EncodeAvifFileAsync`）。
+
+**引擎/CLI**：
+
+- `GainMapEncoder.EncodeAsync(..., string? jpegEncoder, string? avifEncoder)`：显式值**不可用即失败**，
+  绝不静默换编码器；日志点名 `[GainMap] JPEG encoder: ffmpeg mjpeg|cjpegli`、`[GainMap] AVIF encoder: …`。
+- `--gainmap-encoder <cjpegli|mjpeg|libaom-av1|libsvtav1>`：词表外 rc=2；与 `-f` 配对不符（如
+  `-f jpg --gainmap-encoder libaom-av1`）在建队时 rc=2、零产物；显式 `cjpegli` 但未检测到同样当场点名。
+- 命令预览模板 `gm.preview` 增加 `{4}` = 实际编码器（`auto` 表示沿用默认）。
+
+**读数（2026-10-25 实测，均为本机本轮）**：
+
+| 项 | 读数 | 说明 |
+|---|---|---|
+| 新门禁 #80 | **52/0**（`verify-gainmap-compose.ps1`，新增 ⑦ 组 15 条） | mjpeg / libsvtav1 两臂各三条（rc、日志点名、结构）+ 跨族/词表外/缺合成模式三负控 |
+| 无头 UI 冒烟 | **23/0**（`tests/output/acr-gm-spike` 的 `ui` 子命令，一次性脚本） | U4/U5 判「`FullModePanel` 可见 + `FullMainContent` 隐藏/恢复」；U15 判面板已无独立输出目录框（改顶部 `OutputDirBox` 后入队）；另有 U12/U12b（滑块↔框）、U13/U13b/U13c（AVIF 禁用与提示）、U14（大类→小类）、U9e（预览点名编码器） |
+| cli-strict | **421/0**（TMP/TEMP/TMPDIR 重定向进 `tests/output/_tmp`） | 新选项未破坏严格模式锚点 |
+| `_probe-gui-control-wiring` | **90/0** | 两个新下拉都有 `.SelectedIndex=` 与 `.SelectionChanged +=`；旧的两个质量下拉已删 |
+| `_probe-cjk-hardcode-scan` | **14/0**，`CsUi 881 = 基线 881` | 第十三次抬基线（+5：编码器校验块 3 + 词表外 1 + 缺合成模式 1，逐条归因写在探针注释里） |
+| `_probe-i18n-scan` | **11/0** | 新增 7 个 `gm.*` 键两语言齐全（含 `gm.format`） |
+| `verify-gainmap-host` | **24/0** | 既有 gainmap-encode/decode/struct 三套件不受影响 |
+
+**更正 §46.5 的例外清单**：`_probe-gui-control-wiring` 的 `$exempt` 现在**只剩** `GainMapBaseGamutCombo`
+（值只在入队时读取，没有随参数即时变化的 UI）。格式下拉、编码器大小类、质量滑块都接了真实处理器
+（重建候选集 / 联动小类 / 启用态 / 数值框），不再登记为例外。
+
+**已知边界（不许写成结论）**：
+
+- cjpegli 的成功臂**没有进第 80 条**：它取决于本机是否检测到 cjpegli（本轮 CLI 进程判为不可用，
+  而 UI 进程经设置路径判为可用）—— 环境相关，不能当稳定判据。门禁只钉 `mjpeg` 与 `libsvtav1`；
+  `cjpegli` 的"不可用即点名"分支由 CLI 校验覆盖（本机未提供阳性臂）。
+- AVIF 两个编码器只做了**结构判**（tmap 品牌），没有逐编码器的像素/体积对照读数。
+- 本面板仍不在 `ui-*` 拆分套件里（同 §46.5），冒烟是产物区的一次性脚本。
+
+---
+
+### §47 2026-10-25：桌面 JXR 实机全格式验收 ⇒ 四条真缺陷（#81–#84）+ 一条自己造的回归
+
+#### 47.1 起因与参考臂
+
+用户要求「JXR 转换一定正确」，并指定实机件：`C:\Users\20210\Desktop\TEST\异环   2026_10_18 22_05_59.jxr`
+（11,346,777 B，2560×1600，半浮点 scRGB —— 正是 `JxrDecApp -c 25`（64bpp RGBA）才解得到的那一档）。
+判据不以 rc=0 为终点：先把产品 PNG 输出与**独立计算**的 sRGB 参考对撞（999.00 dB / max|d|=0），
+再以它为参考（`rgba64le` 裸流）量其余出口。全部产物与逐格式日志在
+`tests/output/jxr_real_53a94193e3ad4c8892fe7a2edb21573d/`（逐格式 `out/<fmt>/` + `log_<fmt>.txt`）。
+
+#### 47.2 全格式读数（修复前口径）
+
+| 出口 | PSNR | max\|d\| | 说明 |
+|---|---|---|---|
+| png / tiff / apng | **999.00 dB** | 0 | 与独立 sRGB 参考逐位相同（无损链正确） |
+| jxr（默认档） | 77.61 dB | 62 | 半浮点面往返 |
+| avif | 37.77 dB | 27106 | 8-bit 出口 |
+| jxl | 36.25 dB | 32842 | |
+| gif | 33.42 dB | 27644 | alpha 65532（GIF 无 alpha 面） |
+| bmp | 52.20 dB | 285 | |
+| **jpg** | **30.34 dB** | 38364 | ← 缺陷 ① |
+| **webp** | **30.78 dB** | 35147 | ← 缺陷 ① |
+
+JXR 质量轴（同一件）：q35 = 2,504,752 B / 50.63 dB；q100 与 lossless **同大小同 SHA**
+（16,549,498 B / `8469386184efbc0e`）⇒ 该实现的 q100 档就是无损。
+
+色调映射：reinhard vs 不映射（clamp）19.45 dB 属设计差异；饱和像素占比 **34.37% → 0.01%**
+（max 仍 65535）⇒ tonemap 真在改像素，不是只换标签。
+
+alpha：8-bit / 16-bit 含 alpha 夹具 → png / webp / avif 六格全出片；AVIF 的透明语义由第 83 条锁（47.4）。
+
+#### 47.3 缺陷 ①：JPG/WebP 按 BT.709 编码、容器与解码器按 BT.601 解释（第 84 条）
+
+- **症状**：lavfi 饱和红经产品直出后，标准解码器读回 **232/234**（正确应为 255）；真实件 JPG 30.34 dB、WebP 30.78 dB。
+- **根因**：`-colorspace bt709` 在 ffmpeg 里**不只是写标签**，它同时改 RGB→YUV 系数；而 JPG/JFIF 容器**没有矩阵字段**、
+  libwebp 解码默认 BT.601 ⇒ 编码端按 709 转、解码端按 601 转，色度整体位移。
+- **修法**：新增 `ColorSpaceRegistry.ContainerYuvMatrix()` 作唯一真值（`jpg/jpeg/webp → bt470bg`，其余 null）；
+  legacy 侧 `FfmpegCommandBuilder.GetFormatColorCapabilities` 与引擎侧 `RawColorPipeline` 同源消费；
+  `FfmpegCommandBuilder.Decision.cs` 的偶数尺寸守卫从"仅 bt709"扩到 `bt470bg`/`smpte170m`/`bt2020*`
+  （4:2:0 要求偶数宽高，扩族后同一守卫继续兜住）。
+- **读数**：真实件 JPG **30.34 → 33.35 dB**（max|d| 38364→39403 属有损编码的另一种分布）、
+  WebP **30.78 → 34.33 dB**；产品 JPG q100 与 10-24 的手写对照臂（`-q:v 1` + 4:2:0）**读数完全一致**
+  （37.06 dB / max|d|=25812）⇒ 产品参数已等价于"手工正确命令"；WebP q100 36.91 dB / max|d|=28818。
+- **新门禁 #84** `verify-jpg-webp-matrix.ps1` **30/0**：8-bit/16-bit 三原色块 × legacy 4 格 + 引擎 2 格
+  （`--color-space "Display P3"`）⇒ 命令行**末个** `-colorspace` 必须是 `bt470bg` 且像素回读为原色；
+  AVIF 回归臂；JPG 必须带 ICC；负控「同一裸流直编 bt709 ⇒ 红 ≤240」证明尺子会分叉。
+
+#### 47.4 同日接线的另三条缺陷（#81–#83）
+
+| 条 | 脚本 | 缺陷 | 读数 |
+|---|---|---|---|
+| #81 | `verify-dng-nonraw-input.ps1` | 非 RAW/DNG 输入 + `-f dng` 按路由分叉成"点名拒绝"与 ffmpeg muxer `-22` 两种结果 | **30/0**（6 格负控同一句文案 + 零产物；DNG→DNG 正控证明没误伤真 DNG） |
+| #82 | `verify-jxr-backend-choice.ps1` | JXR 旁路不认显式 `-e`（JPG/JXL 目标一律用固定后端），覆盖警告还会重复 | **15/0**（日志点名 + 产物哈希双判；JXR 目标固定 `JxrEncApp` 但警告恰好一次；跨族后端仍被兼容性守卫拒绝） |
+| #83 | `verify-avif-alpha.ps1` | ffmpeg 的 AVIF muxer 丢 alpha（显式 `-pix_fmt yuva420p` 也只剩单条 `av1/yuv420p`）⇒ JXR(alpha)→AVIF 静默变不透明 | **16/0**（改走 `ffmpeg → RGBA PNG → avifenc`；8-bit→`yuv420p`+`gray`、16-bit→`yuv420p10le`+`gray10le`，alpha≈0.5；无 alpha 源仍单流 + 「ffmpeg 直编该 RGBA 只有 1 条流」对照臂） |
+
+#### 47.5 回归（本会话自己造的）：JXL 回退无条件直读 ⇒ 截断件无限忙等
+
+- 为修 float JXL（djxl 的 PPM/PAM 写出器不吃 float），`FallbackDjxlDecodeToFile` 在 PNM 也失败后**无条件**改走 ffmpeg 直读；
+  而 ffmpeg 的 JXL 解复用器在截断/畸形码流上会**忙等**：无 `-progress` 块、同一错误 50 s 内刷 **24,668** 次，进程不自退，
+  只有 120 s 心跳能杀 ⇒ `verify-jxl-probe-timeout` 的三条负控从"快速失败"变成"不结束"。
+- **修法**：PNM 失败后先做 **`djxl → PNG` 可解性探针**（该输出器吃 float）；探针失败 ⇒ 点名失败、**绝不启动直读**；
+  探针通过才走直读（保留 float 精度）。截断件从 >60 s 挂死变成 **1 s 失败**。探针临时 PNG 显式删；
+  新日志/状态文案用 ASCII（`item.Log` 的中文行会进 CJK 棘轮）。
+- **读数**：`verify-jxl-probe-timeout` **48/0**、`verify-jbrd-e2e` **100/0**、`verify-jxl-codestream-route` **95/0**。
+- 该门禁负控限时 **30 → 60 s**：其登记本写着单例 ≈30 s（实测 29.6–29.8），负载下 30.2–30.4 必然越界；
+  放宽只是余量，真正让负控转绿的是上面的探针。
+
+#### 47.6 锁更新（判据钉不准，等于没锁）
+
+- `_lib-matrix.ps1`：**6 处**证据字面量/行号重钉 —— `CliParser.cs` 197→211（`if (fmt == "jpegli") fmt = "jpg";`）、
+  273→287（`case "--preserve-metadata":`）；`FfmpegCommandBuilder.cs` 1015→1021 / 1025→1033
+  （`ColorSpaceRegistry.ContainerYuvMatrix(fmt)` 进入返回值字面量）与 1057→1065 / 2378→2386 的行移。探针 A21/A30 **38/0**。
+- `verify-ffmpeg-heartbeat.ps1`：`FfmpegRunner.RunAsync` 调用点 **26 → 27**（上一批 AVIF alpha 辅助的 PNG 中间件）⇒ **68/0**。
+- `verify-color-token-normalize.ps1` E2：期望 `-colorspace bt470bg` ⇒ **33/0**。
+- `gainmap-struct` D8/D10（单体 `GainMapTestHost/Program.cs` 与拆分件两份）：zscale 链 `m=` 期望 `bt709 → bt470bg`
+  （链输出 `rgb48le`，矩阵在这里只是标签）⇒ `verify-gainmap-host` **24/0**。
+- `_probe-cjk-hardcode-scan`：**14/0**，`CsUi 881 = 基线 881`（新文案全 ASCII，未抬基线）。
+
+#### 47.7 子集读数
+
+| 门禁/探针 | 读数 | 备注 |
+|---|---|---|
+| #84 `verify-jpg-webp-matrix` | 30/0 | 新条 |
+| `verify-color-wiring` | 153/0 | 早先红是 `%TEMP%` 沙箱（`cms_gm_*.rgba: Permission denied` / exit -13），重定向 `TMP/TEMP/TMPDIR` 进 `tests/output/_tmp` 后全绿 |
+| `verify-color-strategy` | 78/0 | 同上（TMP 重定向） |
+| `verify-decision-delivery` | 92/0 | 同上 |
+| `verify-color-token-normalize` | 33/0 | |
+| `verify-ffmpeg-heartbeat` | 68/0 | |
+| `verify-jxl-probe-timeout` | 48/0 | |
+| `verify-jbrd-e2e` | 100/0 | float JXL 回退链 |
+| `verify-jxl-codestream-route` | 95/0 | |
+| `verify-gainmap-host` | 24/0 | |
+| `_lib-matrix`（A21/A30） | 38/0 | |
+| `_probe-cjk-hardcode-scan` | 14/0 | 881 = 基线 |
+| `bench`（默认调度） | **36/1** | 8b sRGB→P3 单核 23.0–25.0 MPix/s vs ≥25 ⇒ 线程落到 E 核（见 47.9 的归因读数） |
+| `bench`（P 核亲和复跑） | **37/0** | 同一二进制：8b sRGB→P3 **47.8**、8b PQ→sRGB 70.5 MPix/s（标定值 45.8/64.0） |
+| **整轮（84 条脚本 + 27 个探针模式）** | **84/84 脚本全绿；探针里 bench 一条计时假红 @37.3 min** | `tests/output/full_round_20261025_c.log`；artifact `FfmpegGui.dll=128A5A3271D4343E` / `FfmpegGui.exe=0B2168D40833EB99`；唯一失败项 `probe:bench`，归因见 47.9。**不宣布 84/84 全绿** |
+
+#### 47.8 改动点
+
+- `src/FfmpegGui/Services/ColorSpaceRegistry.cs`：`ContainerYuvMatrix`（新，唯一真值）。
+- `src/FfmpegGui/Services/FfmpegCommandBuilder.cs`：`GetFormatColorCapabilities` 的 jpg/webp 矩阵改走真值表。
+- `src/FfmpegGui/Services/ColorMapping/RawColorPipeline.cs`：引擎路径同源（容器矩阵优先于 `plan.OutMatrix`）。
+- `src/FfmpegGui/Services/FfmpegCommandBuilder.Decision.cs`：偶数尺寸守卫扩到 `bt470bg`/`smpte170m`/`bt2020*`。
+- `src/FfmpegGui/Services/QueueProcessor.cs`：JXL 回退加 `djxl → PNG` 可解性探针（失败即点名、不进直读）。
+- 新判据：`tests/scripts/verify-jpg-webp-matrix.ps1`（第 84 条）；#81–#83 见 47.4。
+- 锁：`_lib-matrix.ps1`、`verify-ffmpeg-heartbeat.ps1`、`verify-color-token-normalize.ps1`、
+  `verify-jxl-probe-timeout.ps1`、`gainmap-struct` 两份。
+- 运行器：`$scriptList` 80 → **84**、`$expectedScriptCount = 84`、散文条数四处同批改齐。
+
+#### 47.9 已知边界（不许写成结论）
+
+- **headless 默认质量仍是 75**：不传 `-q` 时 CLI 取 75（上文 JPG 33.35 / WebP 34.33 即该档），与 UI 默认档不同。
+  这是既有行为，本轮**未改**；改它会让所有既有读数漂移，属独立决策。
+- **ICC 与 YUV 矩阵是两个维度**：ICC 描述色域原色，矩阵描述 RGB→YUV 变换；改为 `bt470bg` **不代表**输出成了 BT.601 色域。
+- **没有第三方解码器对照**：PS / 浏览器 / 系统预览的读数未取；本轮尺子是 ffmpeg 与 PIL（libjpeg/libwebp）。
+- **JXR 高位深面只有本机一件**：半浮点 scRGB（`JxrDecApp -c 25`）解码路径的泛化性未验证。
+- **bench 的 8b 单核档在本机会按调度假红**：同一二进制、同一份 kernel，默认调度读 **23.0 / 24.6 / 25.0**
+  （阈值 ≥25）而**钉 P 核后 47.8**（同轮 PQ→sRGB 70.5，标定值 45.8/64.0）⇒ 未钉核时线程落到 E 核，
+  吞吐正好腰斩。门禁自己的注释写着"修后复测 45.8"⇒ **阈值 25 落在 E 核分布之内**，这是门禁设计面的
+  欠账（把 probe 自己钉核，或按核类分档），**本轮不改**（改判据阈值属于另一批，且容易变成"调数喂绿"）。
+  看到这档红，先用 `ProcessorAffinity=0xFFF` 复跑再定性。
+- 新门禁 #81–#84 的脚本仍在工作区**未跟踪**（`?? tests/scripts/verify-*.ps1`），本轮**未提交**；
+  承重探针入库需 `git add`（未获授权，未做）。

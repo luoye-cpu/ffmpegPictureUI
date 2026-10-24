@@ -396,7 +396,11 @@ namespace FfmpegGui.Services
                         // 修复：输出为 YUV 4:2:0 时，先确保宽高为偶数（libzimg 要求 yuv420p 宽高可被 2 整除）。
                         // 通过 scale=ceil(iw/2)*2:ceil(ih/2)*2 在 zscale 前插入偶数化。
                         // 偶数化判据按**当前**的 YUV 矩阵（含 tonemap 链已改写后的值；为空则不动尺寸）
-                        var needsEven = outMatrix == "bt709" || outMatrix?.StartsWith("bt2020") == true;
+                        // ⚠ 2026-10-25：jpg/webp 的 capM 改为 bt470bg（匹配解码器假设的 BT.601）后，
+                        //   这里必须把 BT.601 矩阵也算作「YUV 出口」——否则偶数化守卫对这两个容器静默失效
+                        //   （libzimg 的 yuv420 尺寸整除要求仍成立）。
+                        var needsEven = outMatrix == "bt709" || outMatrix == "bt470bg" || outMatrix == "smpte170m"
+                                        || outMatrix?.StartsWith("bt2020") == true;
                         var preScale = needsEven ? "scale=ceil(iw/2)*2:ceil(ih/2)*2:flags=lanczos," : "";
                         // ── F-9（2026-10-11）：同一把锁的第二个 emit 点（SDR 源 + 显式 trc=bt709 目标）──
                         // 裸 `t=bt709` = zimg 纯 γ(1/2.4)，而 :383 把同一个 token 交出去当宣称值 ⇒ 拆式；

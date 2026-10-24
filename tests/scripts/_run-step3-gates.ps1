@@ -1,6 +1,6 @@
 # _run-step3-gates.ps1 —— 步骤 3 改动后的门禁批量执行（只回显每个门禁的汇总行 + 失败明细）
 # 用法：pwsh -NoProfile -File tests/scripts/_run-step3-gates.ps1 [-Probes a,b,c] [-SkipScripts] [-Scripts a,b]
-#   ⚠ `-Scripts` = **脚本级子集**（2026-09-24 新增）。动机：此前只有"全跑 79 条"与
+#   ⚠ `-Scripts` = **脚本级子集**（2026-09-24 新增）。动机：此前只有"全跑 84 条"与
 #     "裸跑单个 verify-*.ps1"两种选择，而裸跑会绕开本文件的**仓库锁 / 单步超时 / STALE 新鲜度闸 /
 #     双漂移复核 / `_gate_script_*.txt` 留痕**五项保护 ⇒ 增量验证要么太贵要么不可信。
 #     ⚠ 全跑墙钟不再写死分钟数：2026-10-01 起清单含 5 条 **L3/产物级**套件（第 61~65 条），
@@ -86,10 +86,10 @@ param([string]$Probes = 'contract,wire,verdict,selftest,iccname,plan,curve,matri
 #    2026-09-17 新增 verify-gamut-map.ps1；**同日按「运行级隔离（GUID）」改写，见 §6 第 66 条**；
 #    同日再新增生产者 `_probe-jpg-p3-icc.ps1`，理由见下方 ②(b) 与调序注释；
 #    同日再新增 `verify-geometry-engine.ps1`（**几何缩放死代码**的专项门禁，理由见 `$Probes` 的 `geometry` 注释））──
-#    ⚠ **清单条数以实测为准 = 79 条**（⚠ 2026-09-19 P4-A 前为 42 条；2026-09-23 由 48 经 49/50/51 到 52，2026-09-23/24 再接 `verify-ipc-extra-options.ps1` ⇒ 53，2026-09-24 再接 `_probe-settings-clone-coverage.ps1` ⇒ 54，2026-09-27 再接 `_probe-matrix-structure.ps1`（任务 #42，秒级结构自检）⇒ 55，同日再接 `_probe-stderr-merge-scan.ps1`（任务 #51，合并取数结构锁）⇒ 56，同日再接 `verify-simd-switch-fallback.ps1`（面板「SIMD 优化」声明/实现冲突 ⇒ 判据单点 `SimdKernelRouting`）⇒ 57，2026-09-30 再接 `verify-geometry-orientation.ps1` + `_probe-geometry-single-source-scan.ps1`（取向标签 ⇒ **显示尺寸**口径的专项门禁 + 唯一实现结构锁）⇒ 59，同日再接 `verify-gainmap-host.ps1`（把 `GainMapTestHost` 套件接进清单 + STALE 第 ⑤ 对）⇒ 60，2026-10-01 再接**首批 L3/产物级套件**5 条（`verify-package-smoke` + `verify-jbrd-e2e` + `verify-orientation-rewrap` + `verify-gainmap-thirdparty` + `verify-encoder-knob-liveness`；原居 gitignored 的 `tests/output/t{69,76,77,79}`，`git clean -xdf` 一次就没、也不在任何轮里被跑）⇒ 65，2026-10-04 再接 `_probe-jxl-input-target.ps1` + `_probe-raw-default-tier.ps1`（色彩审查两个 P1 的判据）⇒ 67，同日再接 `_probe-gui-control-wiring.ps1`（72h 审查 P0：GUI 控件「声明了却没接线」结构锁）⇒ 68，2026-10-05 再接 `_probe-test-group-coverage.ps1`（测试物理拆分的**组表↔探针清单覆盖一致性锁**，防「某 mode 无组认领 ⇒ 永远不被跑」的假覆盖）⇒ 69，2026-10-21 再接 `verify-jxr-highbitdepth.ps1`（JXR **高位深直通臂**：Xbox Game DVR 那类
+#    ⚠ **清单条数以实测为准 = 84 条**（⚠ 2026-09-19 P4-A 前为 42 条；2026-09-23 由 48 经 49/50/51 到 52，2026-09-23/24 再接 `verify-ipc-extra-options.ps1` ⇒ 53，2026-09-24 再接 `_probe-settings-clone-coverage.ps1` ⇒ 54，2026-09-27 再接 `_probe-matrix-structure.ps1`（任务 #42，秒级结构自检）⇒ 55，同日再接 `_probe-stderr-merge-scan.ps1`（任务 #51，合并取数结构锁）⇒ 56，同日再接 `verify-simd-switch-fallback.ps1`（面板「SIMD 优化」声明/实现冲突 ⇒ 判据单点 `SimdKernelRouting`）⇒ 57，2026-09-30 再接 `verify-geometry-orientation.ps1` + `_probe-geometry-single-source-scan.ps1`（取向标签 ⇒ **显示尺寸**口径的专项门禁 + 唯一实现结构锁）⇒ 59，同日再接 `verify-gainmap-host.ps1`（把 `GainMapTestHost` 套件接进清单 + STALE 第 ⑤ 对）⇒ 60，2026-10-01 再接**首批 L3/产物级套件**5 条（`verify-package-smoke` + `verify-jbrd-e2e` + `verify-orientation-rewrap` + `verify-gainmap-thirdparty` + `verify-encoder-knob-liveness`；原居 gitignored 的 `tests/output/t{69,76,77,79}`，`git clean -xdf` 一次就没、也不在任何轮里被跑）⇒ 65，2026-10-04 再接 `_probe-jxl-input-target.ps1` + `_probe-raw-default-tier.ps1`（色彩审查两个 P1 的判据）⇒ 67，同日再接 `_probe-gui-control-wiring.ps1`（72h 审查 P0：GUI 控件「声明了却没接线」结构锁）⇒ 68，2026-10-05 再接 `_probe-test-group-coverage.ps1`（测试物理拆分的**组表↔探针清单覆盖一致性锁**，防「某 mode 无组认领 ⇒ 永远不被跑」的假覆盖）⇒ 69，2026-10-21 再接 `verify-jxr-highbitdepth.ps1`（JXR **高位深直通臂**：Xbox Game DVR 那类
 #     4×16bit 半浮点 scRGB + planar alpha 的 JXR 在旧两臂上同报 -106、零产物；新臂走「与源同格式的
 #     直通」由托管读取器消费 ⇒ 16-bit PAM，half/float 两档各有活格子，配 WIC 独立回读、越白样本独立计数、
-#     `--color-tone-map reinhard` 对照臂，以及一条**前提锁**「ffmpeg/swscale 吃不了 rgbaf32le 中间件」），2026-10-24 再接 `verify-acr-route.ps1`（DNG 输入的 **ACR 路线**：走 SDK `dng_render`、按下游目标选渲染空间、opcode 全施加、朝向旋正、产品侧声明同源）⇒ 79）（`foreach` 数组里的 `.ps1` 条目数）。
+#     `--color-tone-map reinhard` 对照臂，以及一条**前提锁**「ffmpeg/swscale 吃不了 rgbaf32le 中间件」），2026-10-24 再接 `verify-acr-route.ps1`（DNG 输入的 **ACR 路线**：走 SDK `dng_render`、按下游目标选渲染空间、opcode 全施加、朝向旋正、产品侧声明同源）⇒ 79，2026-10-24 再接 `verify-gainmap-compose.ps1`（两图 GainMap 合成：角色/尺寸硬拒绝、容量与量程解耦、底图保真与三条负控零产物）⇒ 80，2026-10-25 再接 `verify-dng-nonraw-input.ps1` + `verify-jxr-backend-choice.ps1` + `verify-avif-alpha.ps1`（JXR 转格式矩阵暴露的三处：DNG 非 RAW 统一拒绝、旁路 `-e` 兑现性、AVIF alpha 交付）⇒ 83，同日再接 `verify-jpg-webp-matrix.ps1`（真件测试暴露的 JPG/WebP YUV 矩阵口径：转换按 BT.601 以匹配解码器假设，legacy/engine 两侧同锁）⇒ 84）（`foreach` 数组里的 `.ps1` 条目数）。
 #      原注释写「29 个」「31 条」均与实测不符（**历史偏差**，非本轮引入），已按实测更正。
 #      2026-09-18 新增 `verify-engine-firstframe.ps1`（引擎多帧解码只取首帧，理由见该脚本头注释）
 #      ⇒ 32 → 33，已重新数过。
@@ -961,7 +961,7 @@ $noSelfSummary = @('_probe-cancel-propagation-scan.ps1', '_probe-ct-chain-closur
 #   观察项**，改成必红等于**主动放弃一条覆盖**；补生产者只是**修复清单的遗漏**。
 #   ⚠ **本组正确性依赖 runner 串行**（`validate/jpgp3` 是固定共享目录）——
 #   若将来 runner 改成并行，本组必须先改成「指针/按会话隔离」（§6 第 68 条）。
-# ⚠ 受管基线：脚本清单 = **79** 条（`.workbuddy-ai/memory/MEMORY.md` / `docs/HANDOVER.md` /
+# ⚠ 受管基线：脚本清单 = **84** 条（`.workbuddy-ai/memory/MEMORY.md` / `docs/HANDOVER.md` /
 #   `docs/TESTING.md` §3.5 同记此数）。增删条目必须**同时**改此常量 + 四处文档；
 #   否则下面的条数锁会响亮报红（防「删掉一条 ⇒ 静默变 47 ⇒ 日志照常、无人发现」）。
 #   ⚠ 本锁在 `-SkipScripts` 下**不执行**（该模式走上面的早退，清单根本没被使用）——
@@ -1074,7 +1074,7 @@ $noSelfSummary = @('_probe-cancel-propagation-scan.ps1', '_probe-ct-chain-closur
 #   ⚠ 自带汇总（`PASS=n FAIL=m` + 断言驱动 exit）⇒ 分类账「其余」57 → 58，两个数组仍不动。
 #   ⚠ 实测（2026-10-05，三次变异）：① 从组表删一个 mode ⇒ `contract` 未认领判红；
 #     ② 加一个无工程目录的组 ⇒ 判红；③ 把 mode 拼错 ⇒ 判红；恢复 ⇒ **6/0**。
-$expectedScriptCount = 79
+$expectedScriptCount = 84
 $scriptList = @('verify-ps-compat.ps1','verify-color-caps.ps1','verify-color-wiring.ps1','verify-color-strategy.ps1','verify-format-regression.ps1',
                  'verify-widegamut-regression.ps1','verify-tiff-icc.ps1','verify-webp-hdr-fix.ps1','verify-decision-delivery.ps1',
                  '_probe-stderr-drain-scan.ps1','_probe-proc-encoding-scan.ps1','_probe-cancel-propagation-scan.ps1','_probe-i18n-scan.ps1','_probe-cjk-hardcode-scan.ps1','verify-png-signature.ps1','verify-gainmap-memory.ps1','verify-metadata-privacy.ps1','verify-gif-avif-framelist.ps1','verify-color-peak.ps1',
@@ -1507,7 +1507,33 @@ $scriptList = @('verify-ps-compat.ps1','verify-color-caps.ps1','verify-color-wir
                  #   原色，其余 ⇒ Rec2020），两腿必须真的不同、且只差一次已知矩阵（PSNR ≥70 dB）；`dng_render` 不旋转
                  #   ⇒ 工具按 Orientation 旋正；产品侧声明必须与渲染空间同源（srgb↔bt709 / rec2020↔bt2020）。
                  #   ⚠ 素材链外（两份 Sony ARW）：缺失即点名红，不降级 SKIP。
-                 'verify-acr-route.ps1')
+                 'verify-acr-route.ps1',
+                 # ── 第 80 条：2026-10-24 接线（`verify-gainmap-compose.ps1`）────────────────────────
+                 #   两图 GainMap 合成（SDR 底图 + HDR 参考 → Ultra HDR JPEG / AVIF tmap）。判据四层：
+                 #   夹具自检（HDR 真带 PQ/BT.2020）→ 容器结构（XMP hdrgm + **独立** MPF 走偏移，
+                 #   次级图 SOI/EOI/文件尾）→ 语义解耦（HDRCapacityMax=peak/203 与 GainMapMax 实测分开）
+                 #   → 底图保真（PSNR≥26 dB 且无关图 <15 dB 证明尺子会分叉）+ 三条负控（尺寸/角色/格式，零产物）。
+                 #   ⚠ 峰值 auto 臂的夹具按 SDR 白点转 PQ ⇒ 实测 100 nits、容量 0.00；容量>0 由固定
+                 #     peak=1000 的两臂覆盖（2.30），auto 臂只锁"容量与实测峰值同源"。
+                 'verify-gainmap-compose.ps1',
+                 # ── 第 81 条：2026-10-25 接线（`verify-dng-nonraw-input.ps1`）────────────────────
+                 #   非 RAW/DNG 输入 + `-f dng` 的统一前置拒绝：旧代码按路由分叉成「清楚拒绝」与
+                 #   ffmpeg muxer -22 两种结果；本闸锁 6 格负控同一句文案 + 零产物 + DNG→DNG 正控。
+                 'verify-dng-nonraw-input.ps1',
+                 # ── 第 82 条：2026-10-25 接线（`verify-jxr-backend-choice.ps1`）──────────────────
+                 #   JXR 旁路对 `-e` 的兑现性：JPG/JXL 按 Options.EncoderBackend 真分叉（日志 + 产物哈希
+                 #   双判），JXR 目标固定 JxrEncApp 但覆盖警告恰好一次；跨族后端仍由兼容性守卫拒绝。
+                 'verify-jxr-backend-choice.ps1',
+                 # ── 第 83 条：2026-10-25 接线（`verify-avif-alpha.ps1`）──────────────────────────
+                 #   JXR(alpha)→AVIF 的透明交付：ffmpeg 的 AVIF muxer 丢 alpha ⇒ 改走 avifenc 写标准
+                 #   alpha 辅助流；8-bit→yuv420p+gray、16-bit→yuv420p10le+gray10le，alpha 值≈0.5，
+                 #   无 alpha 源仍单流，并配「ffmpeg 直编只有 1 条流」的尺子分叉对照。
+                 'verify-avif-alpha.ps1',
+                 # ── 第 84 条：2026-10-25 接线（`verify-jpg-webp-matrix.ps1`）────────────────────
+                 #   JPG/WebP 的 YUV 转换矩阵必须与解码器假设一致（BT.601）：旧口径写 bt709 会让
+                 #   饱和色偏（纯红 255→232/234）。本闸锁 legacy/engine 两侧的 bt470bg + 标准解码
+                 #   回原色，并用「同素材 bt709 编码必偏离」的负控证明判据有牙。
+                 'verify-jpg-webp-matrix.ps1')
 $actualScriptCount = @($scriptList).Count
 if ($actualScriptCount -ne $expectedScriptCount) {
   Write-Output ("[FAIL] 脚本清单条数 = $actualScriptCount，受管基线 = $expectedScriptCount ⇒ 基线漂移（增删条目必须同步四处文档）")

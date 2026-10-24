@@ -66,9 +66,12 @@ $qpFile = "$root/src/FfmpegGui/Services/QueueProcessor.cs"
 $rcFile = "$root/src/FfmpegGui/Services/ColorMapping/RawColorPipeline.cs"
 
 # ⚠ 运行级隔离（GUID）：固定目录会被**并发的同名实例**互删 ⇒ 假红（§6 第 66 条）。
-#   素材放 %TEMP% 私有 GUID 目录（与 verify-ffmpeg-heartbeat.ps1 同款）。
-$work = Join-Path $env:TEMP ("jxranim_" + [guid]::NewGuid().ToString('N'))
+#   素材放仓库产物区的私有 GUID 目录（TMP 同指此处，见下）。
+$work = Join-Path $root ("tests\output\jxranim_" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force -Path $work | Out-Null
+# ⚠ 本机沙箱按进程拦 ffmpeg/宿主写 %TEMP%（`Permission denied` ⇒ 夹具 0 帧/产品 exit -13）
+#   ⇒ 工作目录与 TMP 一起放进仓库产物区（2026-10-25 实测：不改则 ① 的两个动图素材都是 0 帧）。
+$env:TMP = $work; $env:TEMP = $work; $env:TMPDIR = $work
 
 $pass = 0; $fail = 0
 function CK($ok, $msg) {
