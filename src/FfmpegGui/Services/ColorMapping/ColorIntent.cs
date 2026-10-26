@@ -189,6 +189,11 @@ public sealed class ColorIntent
     /// ⚠ 与 <c>ColorTransformPlan.Backend</c>（色彩算子在哪算）不是一回事，见该字段的注释。
     /// </summary>
     public bool ExternalEncoderExit;
+    /// <summary>
+    /// 本出口能否把 ICC 写进产物（见 <see cref="PlanPolicy.ExitWritesIcc"/>）。
+    /// 由 `ColorIntentFactory` 按目标格式的实际执行体置位：AVIF 静态出口是 ffmpeg ⇒ false。
+    /// </summary>
+    public bool ExitWritesIcc = true;
     /// <summary>用户显式请求 HDR→SDR 色调映射。</summary>
     public bool ToneMapRequested;
     /// <summary>
@@ -251,6 +256,7 @@ public sealed class ColorIntent
         FaithfulIccPath = FaithfulIccPath,
         Transfer709 = Transfer709,
         ExternalEncoderExit = ExternalEncoderExit,
+        ExitWritesIcc = ExitWritesIcc,
     };
 
     /// <summary>按容器与是否请求无损推断**编解码**损失（与色彩链无关）。</summary>

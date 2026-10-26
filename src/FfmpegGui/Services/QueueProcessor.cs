@@ -1343,7 +1343,11 @@ namespace FfmpegGui.Services
                                 // 确保 ICC 色彩描述、XMP、Exif 等完整保留。AVIF muxer 尤为严重，
                                 // 其他格式（TIFF/PNG/WebP/JXL）也存在不同程度的丢失。
                                 if (exitCode == 0)
+                                {
                                     await RestoreMetadataAsync(captured, finalOutputPath, engPlan);
+                                    // 元数据阶段也可能判失败（ICC 是唯一描述却写不进产物 ⇒ 产物已删）
+                                    if (captured.ExitCode is int metaExit && metaExit != 0) exitCode = metaExit;
+                                }
 
                                 // ── 色彩后置全套（sBIT / cICP / 引擎 ICC / 裁决点 ICC / TIFF ICC / 保真 ICC）──
                                 // 与链尾已登记的专用通路**共用同一入口** ⇒ 判据不再有两份（P7a-3 第三轮）。
@@ -1632,8 +1636,13 @@ namespace FfmpegGui.Services
                 //   ffmpeg 分支 ⇒ 产物由 **ffmpeg 的 libjxl** 出（用户选的 cjxl 及其 `-e/--progressive/
                 //   --photon_noise_iso` 全丢），即**静默换编码器**。实测变异证据见本轮报告。
                 if (plan.Action == ColorMapping.ColorAction.CarryIcc)
-                    Log("[色彩引擎] 保真路径：像素零改动；源 ICC 由后置步骤嵌入"
-                      + (string.IsNullOrWhiteSpace(plan.IccPath) ? "" : $"（{Path.GetFileName(plan.IccPath)}）") + "\n");
+                    // ⚠ 计划里没有 IccPath ⇒ 这次携带**不靠 ICC**（出口写不进去，如 AVIF/ffmpeg），
+                    //   描述由可命名的 CICP 标签承担。旧写法无论有没有 ICC 都宣称「源 ICC 由后置步骤嵌入」，
+                    //   在 AVIF 上就是一句做不到的承诺（2026-10-26 实测）。
+                    Log(plan.IccPath == null
+                        ? "[色彩引擎] 携带路径：像素零改动；本出口不写 ICC ⇒ 以可命名的 CICP 标签描述像素\n"
+                        : "[色彩引擎] 保真路径：像素零改动；源 ICC 由后置步骤嵌入"
+                          + $"（{Path.GetFileName(plan.IccPath)}）\n");
                 Log("[色彩引擎] 计划为直通（不改像素）⇒ 本次由 ffmpeg 完成重编码\n");
                 return (false, 0, plan);
             }
@@ -1882,7 +1891,9 @@ namespace FfmpegGui.Services
                             s => { captured.Log += s; _onItemUpdated?.Invoke(captured); });
                         captured.Log += iccExit == 0
                             ? $"[色彩引擎] 已嵌入目标 ICC（{engPlan.IccPrimaries}/{engPlan.IccTrc}），与引擎转换后的像素一致\n"
-                            : $"[色彩引擎] ⚠️ ICC 嵌入失败（退出码 {iccExit}）；输出可能缺少色彩描述\n";
+                            : iccExit == ExifToolService.NoWriteApplied
+                                ? "[色彩引擎] ⚠️ 目标 ICC 未写入：该容器不接受后置 ICC（像素已由 nclx 标签描述）\n"
+                                : $"[色彩引擎] ⚠️ ICC 嵌入失败（退出码 {iccExit}）；输出可能缺少色彩描述\n";
                     }
                     else
                         captured.Log += "[色彩引擎] ⚠️ 计划要求附 ICC，但无法定位/生成目标 ICC ⇒ 输出缺少色彩描述（显式记录，不静默）\n";
@@ -2045,7 +2056,9 @@ namespace FfmpegGui.Services
                     s => { item.Log += s; _onItemUpdated?.Invoke(item); });
                 item.Log += wExit == 0
                     ? $"[色彩] 已嵌入出口语义 ICC（{dec.OutPrimaries}/{dec.OutTrc}）——该容器编码器会丢弃 iccgen 的 ICC，故后置补齐\n"
-                    : $"[色彩] ⚠️ ICC 嵌入失败（退出码 {wExit}）；输出色彩描述缺失，广色域像素将被按 sRGB 误读\n";
+                    : wExit == ExifToolService.NoWriteApplied
+                        ? "[色彩] ⚠️ 出口语义 ICC 未写入：该容器不接受后置 ICC（像素若已由 nclx/NCLX 标签描述则无损）\n"
+                        : $"[色彩] ⚠️ ICC 嵌入失败（退出码 {wExit}）；输出色彩描述缺失，广色域像素将被按 sRGB 误读\n";
             }
             else
                 item.Log += $"[色彩] ⚠️ 无法生成出口语义 ICC（{dec.OutPrimaries}/{dec.OutTrc}）⇒ 输出缺少色彩描述（显式记录，不静默）\n";
@@ -2338,7 +2351,12 @@ namespace FfmpegGui.Services
                                         //   色域映射**重画过**的，其底图 ICC 由 GainMapEncoder 自己写；而计划层的
                                         //   L1 升格不看 GainMap ⇒ 少这条排除就会把源 ICC 盖回底图 = ⑪a/⑪b 拦的那件事
                                         //   （实测：未排除时引擎底图 ICC 与源 ICC 同为 A75F2C68…）。
-                                        || engPlan is { Action: ColorMapping.ColorAction.CarryIcc, GainMap: false };
+                                        // ⚠ `AttachIcc: true` 不是冗余：cjxl 出口**自己**把 ICC 写进产物后会清掉它
+                                        //   （RawColorPipeline 的"⑥ 兑现声明"，执行体声明自己实际写了什么）。
+                                        //   少了这一条，这里会对**已经带着 ICC** 的 jxl 再跑一次 exiftool 后置：
+                                        //   实测 exiftool 报「0 image files updated / 1 image files unchanged」（ICC 读回非空），
+                                        //   被 NoWriteApplied 判成"没写进去"⇒ 误删本该交付的产物（2026-10-26 ⑬ 实测）。
+                                        || engPlan is { Action: ColorMapping.ColorAction.CarryIcc, GainMap: false, AttachIcc: true };
                         // ⚠ 「用户指定了色彩空间」这一条**不能**一概跳过源 ICC 恢复（2026-09-26 实测缺陷）：
                         //   对**编码器会丢弃 ICC 的容器**（能力表 `EncoderWritesGeneratedIcc=false`，本构建实测只有 webp），
                         //   这里的跳过 + P7a 后置的 `Action != CarryIcc` 排除**叠加**后，没有任何一方负责嵌入 ⇒
@@ -2351,13 +2369,49 @@ namespace FfmpegGui.Services
                             .CapsFor(item.Options.Format).EncoderWritesGeneratedIcc;
                         if (protectColorMetadata && effCarry && (!userSpecifiedColor || containerDropsIcc))
                         {
+                            // 计划是否把 ICC 当成**唯一**色彩描述（没有可命名的 nclx 兜底）。
+                            // 是 ⇒ 这一格写不进去就没有任何诚实描述，必须失败而不是"照常报成功"。
+                            // ⚠ 引擎路径上**只认引擎的计划**：`engPlan != null` 说明像素是本进程引擎转的，
+                            //   传统裁决（`ResolveLegacyVerdictPlan`）根本不知道这条执行体写不写得了 ICC
+                            //   （AVIF 的 avifenc-vs-ffmpeg 就是一个反例）⇒ 拿它的 `AttachIcc` 来判定"删产物"
+                            //   等于让**另一条通路**的乐观意见决定本通路的生死（本函数 2026-10-26 ⑬ 曾因此误删 jxl）。
+                            bool iccIsOnlyDescription;
+                            if (engPlan != null)
+                            {
+                                iccIsOnlyDescription = engPlan.AttachIcc
+                                                       && string.IsNullOrWhiteSpace(engPlan.OutPrimaries);
+                            }
+                            else
+                            {
+                                var carryPlan = FfmpegCommandBuilder.ResolveLegacyVerdictPlan(item.Options, item.InputPath);
+                                iccIsOnlyDescription = carryPlan is { AttachIcc: true }
+                                                       && string.IsNullOrWhiteSpace(carryPlan.OutPrimaries);
+                            }
                             var iccExit = await ExifToolService.CopyIccProfileAsync(
                                 item.InputPath, outputPath,
                                 s => { item.Log += s; _onItemUpdated?.Invoke(item); });
-                            if (iccExit != 0)
+                            if (iccExit == ExifToolService.NoWriteApplied && iccIsOnlyDescription)
+                            {
+                                // 交付的是「像素 A、标签 B」⇒ 不出货（fail-closed，退出码 90；引擎侧契约拒绝是 91，两型不合并）。
+                                // 正常路径下规划层已挡住（见 PlanPolicy.ExitWritesIcc），此处是兜底。
+                                item.Log += $"[exiftool] ❌ ICC 是本次唯一的色彩描述，但 {item.Options.Format} 容器不接受后置 ICC "
+                                          + $"⇒ 不产出色域描述错误的文件（已删除产物）\n"
+                                          + "[exiftool]    建议：改用 PNG/TIFF/WebP/JXL 出口，或显式指定可命名的目标空间\n";
+                                try { if (File.Exists(outputPath)) File.Delete(outputPath); } catch { }
+                                item.ExitCode = 90;
+                                item.Status = "失败 (出口无法携带 ICC)";
+                                _onItemUpdated?.Invoke(item);
+                                return;
+                            }
+                            if (iccExit != 0 && iccExit != ExifToolService.NoWriteApplied)
                             {
                                 item.Log += $"[exiftool] ⚠️ ICC Profile 恢复失败（退出码 {iccExit}），目标格式可能不支持 exiftool ICC 写入（如 JXL）。\n" +
                                     $"[exiftool] 建议：勾选「保留 Ultra HDR 增益图」或使用外部 cjxl 编码，以正确保留色彩配置。\n";
+                            }
+                            else if (iccExit == ExifToolService.NoWriteApplied)
+                            {
+                                // 不是"恢复"：容器收不了。nclx 已能描述（否则上面已经失败）⇒ 只降为一句警告。
+                                item.Log += "[exiftool] ⚠️ 源 ICC 未写入：该容器不接受后置 ICC；本次以可命名的 CICP 标签描述像素\n";
                             }
                             // ⚠ 每条诊断都要落在**带 `item.Log +=` 的那一行**上：cjk 棘轮（②-c）是**词法**判据，
                             //   折行会让消息掉进「UI 面」桶（本仓已把它登记为三类误计之一，范式见 HANDOVER §5 第 5 行）。

@@ -4,10 +4,17 @@
 #   3) PNG→PNG (推荐策略): 断言 RGB 样本逐位一致 + 输出带 ProPhoto ICC + 无 CICP 假标签
 #   4) PNG→JPG / →TIFF / →WebP: 同上（有损容器的 ICC/CICP 标记一致性）
 #   5) 显式目标 = ProPhoto (手动策略): 仍保真
-#   6) ProPhoto → AVIF: 容器无法后置附着 ICC → 应保持既有 BT.2020 归一（不打「保真」日志）
+#   6) ProPhoto → AVIF: 容器无法后置附着 ICC → 应保持既有 BT.2020 归一（不打「保真」日志）；
+#      2026-10-26 补：日志不得谎报「ICC 已恢复/已嵌入」、S2 carry→AVIF 必须契约拒绝且零产物、
+#      对照臂 carry→PNG 的 ICC 与源逐字节相同（见 §6 的 ⑥a–⑥f 读数）。
 #   7) 回归: 纯托管生成 ICC 的色度数值与已发布 ProPhoto(D50) 矩阵一致
 $ErrorActionPreference = "Continue"
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path; Set-Location $root
+# ⚠ 子进程临时根钉进产物区（本机沙箱按进程拦 ffmpeg 写系统 %TEMP% ⇒ `exit -13` 假红，
+#   与测试宿主 `Harness.PinScratchRoot()` 同一口径；见 AGENTS §3）。
+$scratch = "$root/tests/output/_tmp"; New-Item -ItemType Directory -Force -Path $scratch | Out-Null
+$env:TMP = $scratch; $env:TEMP = $scratch; $env:TMPDIR = $scratch
+$env:TMP = $scratch; $env:TEMP = $scratch; $env:TMPDIR = $scratch
 $exe   = "$root/src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.exe"
 if (-not (Test-Path $exe)) { $exe = "$root/src/FfmpegGui/bin/Debug/net11.0/win-x64/FfmpegGui.exe" }
 # ⚠ 2026-09-21（TESTING.md 第 84 条处置建议 ①）：**回退是静默的** —— 门禁可能测的
@@ -203,6 +210,59 @@ $av = Get-ChildItem -Recurse "$out/o_avif" -Include *.avif -EA SilentlyContinue 
 $al = (Get-Content "$out/avif.o" -EA SilentlyContinue) -join "`n"
 if($av -and $av.Length -gt 0){ Ok "AVIF 正常产出 ($($av.Length) B)" } else { No "AVIF 失败" }
 if($al -notmatch "\[保真\]"){ Ok "AVIF 未误用保真路径（ICC 无法附着）" } else { No "AVIF 错误地走了保真路径" }
+# ── 2026-10-26 补（实测缺陷）：AVIF 走 ffmpeg，muxer **不写 ICC**、exiftool 后置报
+#    「0 image files updated」而退出码仍是 0 ⇒ 旧代码照打「ICC Profile 已恢复 / 已嵌入目标 ICC」。
+#    这里把「归一化」落成三条同址判据：标签可命名（像素转到了哪里就写哪里）、日志不许谎报 ICC、
+#    产物里本来就不该有 ICC（容器不收，描述由 nclx 承担）。
+if($av -and $av.Length -gt 0){
+  $avCicp = (Cicp $av.FullName) -split ','
+  $avP = if ($avCicp.Count -ge 2) { $avCicp[0] } else { "" }
+  $avT = if ($avCicp.Count -ge 2) { $avCicp[1] } else { "" }
+  if($avP -and $avP -notmatch 'unknown' -and $avT -and $avT -notmatch 'unknown'){
+    Ok "AVIF（推荐）用可命名的 nclx 描述转换后的像素（primaries=$avP transfer=$avT）"
+  } else { No "AVIF（推荐）产物的 nclx 不可读/未命名（primaries='$avP' transfer='$avT'）⇒ 像素没有诚实描述" }
+  if($al -notmatch "ICC Profile 已恢复|已嵌入目标 ICC"){
+    Ok "AVIF 日志未谎报 ICC 写入（该容器写不进 ICC，报'已恢复/已嵌入'即假成功）"
+  } else { No "AVIF 日志宣称 ICC 已恢复/已嵌入，实测产物无 ICC ⇒ 假成功" }
+  if(-not (IccDesc $av.FullName)){
+    Ok "AVIF 产物不带 ICC（与容器能力一致；描述由 nclx 承担）"
+  } else { No "AVIF 产物意外带 ICC（$(IccDesc $av.FullName)）——口径变了要回改能力表与本节" }
+}
+
+# ── ⑥e S2 携带 + AVIF + ProPhoto：ICC 是**唯一**描述而出口写不了 ⇒ 必须契约拒绝、零产物、点名原因。
+#    这是本轮修复的正面判据：拒绝不是"少给一个格式"，而是"不交付像素 A / 标签 B 的图"。
+$carryOut = "$out/o_avif_carry"
+$carryLog = Exec $exe "--headless --log-level debug -i `"$out/src_prophoto.png`" --format avif --color-strategy carry --output `"$carryOut`""
+$carryRc = $LASTEXITCODE
+$carryFiles = @(Get-ChildItem -Recurse $carryOut -Include *.avif -EA SilentlyContinue)
+if($carryRc -ne 0){ Ok "carry→AVIF 契约拒绝（退出码 $carryRc）" } else { No "carry→AVIF 竟然成功（exit 0）——ICC 是唯一描述，成功即意味着交付了错标图" }
+if($carryFiles.Count -eq 0){ Ok "carry→AVIF 零产物（拒绝不落盘）" } else { No "carry→AVIF 仍产出 $($carryFiles.Count) 个文件" }
+if($carryLog -match "不写 ICC" -and $carryLog -match "无 CICP 名"){
+  Ok "拒绝理由点名「出口不写 ICC」与「源无 CICP 名」"
+} else { No "拒绝理由没有点名（须同时含'不写 ICC'与'无 CICP 名'）" }
+if($carryLog -notmatch "ICC Profile 已恢复"){ Ok "拒绝路径未谎报 ICC 已恢复" } else { No "拒绝路径仍打「ICC Profile 已恢复」" }
+
+# ── ⑥f 反真空：同一源 carry→PNG 必须真的带**同一张** ICC（证明 ⑥e 的拒绝不是"什么都拒"）。
+#    字节级比较（SHA256 of `exiftool -b -icc_profile`），不比描述文字。
+function IccBytesHash([string]$f){
+  $t = "$out/icc_$([guid]::NewGuid().ToString('N')).bin"
+  $e2 = "$t.err"
+  Start-Process -FilePath $et -ArgumentList @('-b','-icc_profile',"`"$f`"") -Wait -NoNewWindow `
+    -RedirectStandardOutput $t -RedirectStandardError $e2 | Out-Null
+  if(-not (Test-Path $t)){ return $null }
+  $h = (Get-FileHash $t -Algorithm SHA256).Hash
+  Remove-Item $t -Force -ErrorAction SilentlyContinue
+  Remove-Item $e2 -Force -ErrorAction SilentlyContinue
+  return $h
+}
+Run "--headless --log-level debug -i `"$out/src_prophoto.png`" --format png --color-strategy carry --output `"$out/o_png_carry`"" "pngcarry"
+$pc = Get-ChildItem -Recurse "$out/o_png_carry" -Filter *.png -EA SilentlyContinue | Select-Object -First 1
+if($pc -and $pc.Length -gt 0){
+  Ok "反真空：carry→PNG 有产物（$($pc.Length) B）"
+  $hSrc = IccBytesHash "$out/src_prophoto.png"; $hOut = IccBytesHash $pc.FullName
+  if($hSrc -and $hOut -and $hSrc -eq $hOut){ Ok "反真空：carry→PNG 的 ICC 与源逐字节相同（$($hSrc.Substring(0,16))…）" }
+  else { No "反真空：carry→PNG 的 ICC 与源不一致（src=$hSrc out=$hOut）" }
+} else { No "反真空：carry→PNG 无产物（拒绝臂因此失去对照）" }
 
 Write-Host "`n### 7) 非超广色域不受影响 (sRGB→png 不应打保真日志) ###" -ForegroundColor Cyan
 Run "--headless --log-level debug -i `"$root/tests/output/sources/src_8bit.png`" --format png --output `"$out/o_srgb`"" "srgb"

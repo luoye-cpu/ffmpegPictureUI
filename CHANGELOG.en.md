@@ -13,22 +13,142 @@ All notable changes to this project are documented in this file.
 
 ## 📝 Changelog
 
-### Unreleased (working tree, 2026-10-24) — DNG inputs now read through the Adobe DNG SDK (ACR route)
+### v1.6.0-beta9 (2026-10-26) — DNG inputs read through the Adobe DNG SDK + two-image GainMap compose + JPG/WebP on the BT.601 matrix + AVIF exit ICC honesty
 
-- **`dngtool` gains `-rd` / `-rdp [-rdspace srgb|p3|rec2020]`**: `-rdp` renders through the SDK's
-  `dng_render` (white balance + camera profile, identity tone curve) and **executes all of
-  OpcodeList1/2/3** — the old LibRaw arm executes none of them (measured on one DNG: corner/center
-  1.70 → 1.84).
-- **Product**: `.dng` inputs take the ACR route automatically; a bt709 delivery target renders `srgb`
-  (Rec.709/sRGB primaries), everything else renders `rec2020`; `ColorSourceDeclPrimaries` is kept in
-  sync with the actual render space. ARW/CR2/NEF… still use LibRaw (the DNG SDK only reads DNG), and
-  the log says so.
-- **Behavior differences (DNG inputs only)**: `-H` highlight, `-q` demosaic quality, `-W` white balance
-  and `-threads` do **not** apply (each is named in the log); decode time is about **2.2×** LibRaw
-  (24 MP: 5.1 s vs 2.3 s).
-- **Fix**: the SDK intermediate TIFF carries no EXIF ⇒ `Make`/`Model` were added to the "restore from
-  source RAW" whitelist so DNG→JPEG keeps camera make/model.
-- **Gates**: new script #79 `verify-acr-route.ps1` (26/0); managed manifest 78 → 79.
+> **Lineage**: `6fc9719` (DNG/ACR route + gate #79, 12 files +721/−34), `0b07b1c` (two-image GainMap compose
+> closed out + JPG/WebP BT.601 (#84) + three on-machine defects (#81–#83), 35 files +3,310/−109), plus this
+> batch's **working tree of 33 files** (+1,986/−265). Managed gate manifest **78 → 84** scripts; with the 27
+> probe modes the full round is **111** entries.
+> Full round `tests/output/gates-round-20261026f.log`: **111/111 "runner summary: all passed"**
+> (16:31:30 → 17:26:49, 55 min 19 s; `artifact-sha16: FfmpegGui.dll=DC9587599E8D3DC9`,
+> `FfmpegGui.exe=D4FAD60A006DCA6F`, `ServiceProbe.exe=0B2B8F6E542C9A2E`,
+> `runner-self-sha256=68B63CA442962086`).
+> ⚠ `full-round-20261026e.log` from the same day (wiring 60/56 and a swath of similar reds) is **void**: that
+> ad-hoc launcher skipped the `TMP/TEMP/TMPDIR` redirect, so the product's writes to
+> `%TEMP%\cms_*.rgb48` were denied by the sandbox (`exit -13`) — **the very same build under test** scored
+> 153/0 on wiring in round 20261026d. Forensics in `docs/IMPLEMENT_PLAN_2026-10-11.md` §51.
+
+**🟢 DNG inputs now read through the Adobe DNG SDK (ACR route)**
+
+- `dngtool` gains `-rd` / `-rdp [-rdspace srgb|p3|rec2020]`: `-rdp` renders through the SDK's `dng_render`
+  (white balance + camera profile, identity tone curve) and **executes all of OpcodeList1/2/3** — the old
+  LibRaw arm executes none of them (measured on one DNG: corner/center 1.70 → 1.84).
+- Product: `.dng` inputs take the ACR route automatically; a bt709 delivery target renders `srgb`, everything
+  else renders `rec2020`, and `ColorSourceDeclPrimaries` is kept **in sync** with the actual render space.
+  ARW/CR2/NEF… still use LibRaw (**the DNG SDK only reads DNG**), and the log says so.
+- ⚠ Behavior differences (DNG inputs only): `-H` highlight, `-q` demosaic quality, `-W` white balance and
+  `-threads` do **not** apply (each named in the log); decode time is about **2.2×** LibRaw
+  (24 MP: 5.1 s vs 2.3 s). DNGs carrying an enhanced-image IFD are refused by name.
+- Fix: the SDK intermediate TIFF carries no EXIF ⇒ `Make`/`Model` were added to the "restore from source RAW"
+  whitelist so DNG→JPEG keeps camera make/model.
+- Gate: #79 `verify-acr-route.ps1` is **31/0 @163.2 s** in this batch (26/0 → 28/0 with ⑫ "the LibRaw arm must
+  be truly linear" → 31/0 by adding a **hand-off point** log assertion to each of ⑦/⑧/⑨ — checking only the
+  decision log would miss a "decision ≠ parameters actually handed down" fork).
+
+**🟢 The LibRaw decode arm now emits truly linear samples**
+
+- The product declares the non-DNG RAW intermediate as `linear` and feeds `zscale=tin=linear`, while LibRaw's
+  default `gamm={0.45,4.5}` makes `write_ppm_tiff()` apply the dcraw curve first ⇒ **double gamma**
+  (measured ARW→PNG median 0.41 vs reference 0.32, PSNR 21.5 dB). The decode arm now pins an identity gamm
+  (real 16-bit linear); the `-o 0` approximation is unchanged.
+- Criterion = ⑫ of gate #79: the median ratio between the `-d` and `-rd` arms of the same DNG must land in
+  **0.35~1.5** (2.42 before the fix).
+
+**🟢 Two-image GainMap compose (SDR base + HDR reference) and the three-state metadata carrier**
+
+- `--compose-gainmap` takes **paired** inputs (SDR base + HDR reference) and emits Ultra HDR JPEG
+  (MPF + APP2) or AVIF (`tmap` derivation item); the panel gains a "gain-map metadata" three-way choice plus
+  per-family encoder major/minor selectors.
+- New `--gainmap-metadata iso|xmp|both`: **default ISO 21496-1 (APP2 / tmap)**; AVIF can only carry the gain map
+  through `tmap` ⇒ pinned to ISO, and an explicit `xmp` is **rejected at queue build time** instead of being
+  silently rewritten.
+- `HDRCapacityMax = log2(peak/203)` is measured **apart from** `GainMapMax` (2.30 vs 1.76 at fixed peak=1000);
+  the single-channel arm proves the switch is not a dead knob (`Channels=1`); the AVIF quality slider really
+  moves CRF (`-q 99 ⇒ CRF 1` / `-q 30 ⇒ CRF 44`; 7541 B vs 3313 B). Base fidelity: the primary JPEG decoded
+  back to rgb24 scores **28.97 dB ≥26** against the SDR fixture, while the same method against an unrelated
+  same-size image gives only 4.16 dB.
+- Gate: #80 `verify-gainmap-compose.ps1` is **85/0 @50.9 s** (four assertion layers + five negative controls,
+  all zero-artifact and named).
+
+**🟢 JPG and WebP now use the BT.601 YUV matrix**
+
+- `-colorspace bt709` does more than write a label — it **changes the RGB→YUV coefficients**, while the JPG
+  container has no matrix field and libwebp decodes as BT.601 by default ⇒ saturated red came back as
+  232/234. The product now reads a single source of truth, `ColorSpaceRegistry.ContainerYuvMatrix()`
+  (`bt470bg`), shared by the legacy and engine routes.
+- Gate: #84 `verify-jpg-webp-matrix.ps1` is **30/0 @14.8 s** (8/16-bit primary blocks, the **last**
+  `-colorspace` on the command line must be `bt470bg`, pixel read-back, AVIF regression, JPG still carries ICC,
+  plus a "encode straight with bt709 ⇒ red ≤240" negative control).
+
+**🟢 Three on-machine defects #81–#83 (DNG precondition / explicit `-e` honoured / JXR(alpha)→AVIF transparency)**
+
+- Non-RAW/DNG input with `-f dng`: **one uniform precondition rejection** (previously the route forked into a
+  "named rejection" and an ffmpeg muxer `-22`). Gate #81 `verify-dng-nonraw-input.ps1` **30/0** (six negative
+  cells share one exact message + zero artifacts, with a DNG→DNG positive control proving real DNGs are
+  untouched).
+- The bypass route now honours an explicit `-e`: JPG/JXL fork on `Options.EncoderBackend` for real (named in the
+  log **and** compared by artifact hash), the JXR target is pinned to `JxrEncApp` with the override warning
+  appearing **exactly once**, and a cross-family backend (`-f jpg -e Cjxl`) is still rejected with zero
+  artifacts. Gate #82 `verify-jxr-backend-choice.ps1` **15/0**.
+- JXR(alpha)→AVIF: ffmpeg's AVIF muxer drops alpha (even with an explicit `-pix_fmt yuva420p` only a single
+  `av1/yuv420p` stream remains) ⇒ when the source has alpha and the target is avif the route becomes
+  `ffmpeg → RGBA PNG → avifenc`, written as a standard alpha auxiliary image (8-bit→`yuv420p`+`gray`,
+  16-bit→`yuv420p10le`+`gray10le`). Gate #83 `verify-avif-alpha.ps1` **16/0**, including the fork ruler
+  "ffmpeg encoding that RGBA directly yields exactly 1 stream".
+
+**🟢 The static AVIF exit cannot carry an ICC: "false success" replaced by honest delivery**
+
+- Measured: ffmpeg's AVIF muxer writes no ICC profile, and the exiftool post-pass reports
+  "0 image files updated" while **still exiting 0** ⇒ the old log cheerfully printed "ICC Profile restored"
+  while `avifdec --info` on the artifact reported `ICC Profile: Absent`.
+- `PlanPolicy.ExitWritesIcc` is now a **first-class input** to the plan, with a single source of truth,
+  `ColorIntentFactory.ExitWritesIccFor(fmt)`; the assembly site and the probe call the same function while the
+  probe's **expectation** is derived independently on the other side (two same-sourced sides = permanently green).
+- The four strategies were re-ordered: a source that **is CICP-nameable** ⇒ pixels carried unchanged, described by
+  nclx only; a source that is **not** nameable (ProPhoto/Adobe/custom) ⇒ S2 carry is a **contract rejection**
+  (item-level exit code 91, zero artifacts, both reasons named: "the exit does not write ICC" and "the source has
+  no CICP name"), while S1 recommended falls back to "the widest nameable target BT.2020/SDR" and announces
+  `GamutClipped` + `NoIccCarrier` ⇒ the AVIF exit went from refusing ProPhoto sources to delivering them with
+  words that match the pixels.
+- `TransferCurve.TryClaimNamed`: a standard Display P3 ICC stores its TRC as a parametric curve, and after
+  quantization `CicpToken=null` ⇒ it was being caught by the S2 rejection above. The curve is now claimed as a
+  named one when the 7 parameters agree (2e-4) and sampled ToLinear agrees (5e-4) — `carry-p3-avif` went back
+  from 0 artifacts to 4755 B.
+- Criteria: the six arms ⑥a–⑥f of `verify-prophoto-faithful.ps1` §6 (nameable nclx / log must not lie about
+  writing ICC / the artifact must not contain ICC at all / rejection + zero artifacts + both reasons named /
+  anti-vacuum: the same-source carry→PNG ICC is **byte-identical** to the source).
+  **37/0 @45.9 s** in this batch.
+- ⚠ Layer of the reading: `91` is the **item-level** exit code (log: `failed (exit code 91)`); the headless
+  **process** rc is still 1 ⇒ comparing a process rc against 91 would wrongly conclude "the assertion has no
+  teeth".
+
+**🟢 The bench timing tier pins itself to the fast core cluster (measurement environment only — no threshold moved)**
+
+- Symptom: the same build under test scored both 37/0 and 30/7 in one day, with bench wall clocks of 64.8 s vs
+  121.3 s — this machine is 14 cores / 20 threads (6 P + 8 E), and threads can be scheduled onto E-cores ⇒
+  single-core throughput halves and the absolute thresholds go red on scheduling alone. Rounds b and c shared a
+  byte-identical `FfmpegGui.dll`, which is the natural control arm.
+- `BenchCorePin`: per-core measured clustering (largest adjacent ratio ≥1.25×) ⇒ hybrid machines pin the fast
+  cluster, **single-cluster machines are not pinned and say so in the log**; the parallelism ladder now follows
+  the **effective** core count (`Environment.ProcessorCount` does not change when affinity is set inside the
+  process — pinned to 12 threads it still reported 20 ⇒ oversubscription poisoned the later single-core cells:
+  38.9 vs 29.0 MPix/s under the same mask); the calibration itself is now **allocation-free** (the first version
+  left ~2 MB of gen0/LOH pressure and the 6 MB rgb48 cell's spread went 1.9 ms → 25.5 ms). A load reading that
+  **does not participate in any verdict** is printed alongside, so a red can be attributed.
+- Readings here: `bench-affinity=0xFFF pinned to the fast cluster 12/20 threads (split ratio 2.11~2.18×)`;
+  full round `[bench] 37/0 @92.3 s`.
+- ⚠ Still open: the `8b sRGB→P3 ≥25` cell reads 17.8~29.4 when background load is present — it still straddles
+  the threshold after pinning. That is a gate-design debt (ledger §50.5), not something to fix by moving the
+  number.
+
+**⚠ UI text and the shipped notices**
+
+- 4 emoji prefixes removed from headings, 3 dead keys deleted, 12 keys added (zh/en in pairs); all new copy goes
+  through locales with no hardcoded CJK. The UI-face ratchet was raised to **901** after attribution by the
+  swap-back method (876→881(+5)→885(+4)→901(+16); mutation arms: 901 ⇒ 14/0, 885 ⇒ 13/1).
+- `THIRD-PARTY-NOTICES` aligned with what is actually shipped: Avalonia 12.1.4, MicroCom.Runtime 0.11.6,
+  Tmds.DBus.Protocol 0.94.1, libjxl 0.11.2, libavif 1.4.2 (libaom 3.15.0), jxrlib (Microsoft 2013 reference
+  implementation).
 
 ### v1.6.0-beta8 (2026-10-23) — private-content audit closed out: vendor crop lands in DefaultCrop + per-instance ledger + test projects moved into tests/projects
 

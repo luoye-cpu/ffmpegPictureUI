@@ -372,7 +372,9 @@ function Get-EquivalenceClasses {
         # ⚠ pin 演进（2026-10-25）：197 → **211**（+14）。成因 = 工作树里**未提交**的 GainMap 面板改造
         #   在 `CliParser.cs` 的 `-f` 分支之前插入代码 ⇒ 其下方行号整体下移；字面量与语义一字未动。
         #   由 `_probe-matrix-structure.ps1` 的 A21 当场报出（`literal not on ...:197 (found at line 211)`）。
-        Evidence = @('src/FfmpegGui/CliParser.cs:211|if (fmt == "jpegli") fmt = "jpg";')
+        # ⚠ pin 演进（2026-10-26）：211 → **216**（+5）。成因 = 同批 `--gainmap-metadata` 解析块继续
+        #   在 `-f` 分支之前插入 5 行；`grep -nF` 复核实况行 216、全文件命中 1 次。字面量/语义未动。
+        Evidence = @('src/FfmpegGui/CliParser.cs:216|if (fmt == "jpegli") fmt = "jpg";')
         Rationale = 'CliParser normalizes format jpegli to jpg, so -f jpegli and -f jpg select the same container'
     }
 
@@ -648,7 +650,9 @@ function Get-SemanticMatrices {
                 #     本仓 A21/A30 的设计意图正是"行号 pin 一旦失效就当场转红"，本次转红即为**设计生效**。
                 # ⚠ pin 演进（2026-10-25）：273 → **287**（+14）。同上条，成因 = 工作树里未提交的
                 #   GainMap 面板改造在 `CliParser.cs` 前部插入代码；字面量与语义一字未动。
-                'src/FfmpegGui/CliParser.cs:287|case "--preserve-metadata":',
+                # ⚠ pin 演进（2026-10-26）：287 → **292**（+5），同 format-jpg 条；`grep -nF` 复核
+                #   实况行 292、全文件命中 1 次。字面量/语义未动。
+                'src/FfmpegGui/CliParser.cs:292|case "--preserve-metadata":',
                 # ⚠ pin 演进：2011 →（#39/#43 插注释）2041 →（2026-09-30 显示尺寸轮往 :1641 之后插了 14 行）**2055**。
                 #   →（2026-10-01 并发会话从同一文件删 5 行 ⇒ 该文件**四条 pin 同步 −5**：971→966、981→976、1013→1008、2055→2050）**2050**。
                 #   漂移由 A30 当场报出（`literal not on ...:2041 (found at line 2055)`）⇒ 抬号前先 `grep -n` 复核实况行，
@@ -669,7 +673,13 @@ function Get-SemanticMatrices {
                 #   实况行 = 2378。本条由 `_probe-matrix-structure.ps1`（在册第 55 条）当场报出，是它的设计生效。
                 # ⚠ pin 演进（2026-10-25）：2378 → **2386**（+8）。成因 = 本轮在
                 #   `GetFormatColorCapabilities` 与输出 `-colorspace` 注释处净增 8 行；字面量与语义一字未动。
-                'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:2386|bool exiftoolFormats = fmt is "jpg" or "jpeg" or "png" or "tiff" or "webp";'
+                # ⚠ pin 演进（2026-10-26，AVIF ICC 收口批）：2386 → **2400**（+14）。成因 = 本轮在
+                #   同一文件的 :1713 区把 ffprobe 色彩探测从「单趟 5000 ms」改成「首趟 5000 ms ⇒ 超时再给
+                #   一趟 20000 ms」（净 +14 行，`git diff --numstat` 实读 16 增 2 删）⇒ 其**下方**行号整体
+                #   下移 14；字面量与语义一字未动。抬号前已复核：该字面量全文件**只命中 1 次**，实况行 = 2400
+                #   （`:2386` 现落在一行 `/// 注意：当前 FFmpeg 构建不支持 -icc_profile 选项，` 注释上）。
+                #   本条由 `_probe-matrix-structure.ps1` A21/A30 当场报出（fail=1）⇒ 是**锁生效**，不是产品回归。
+                'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:2400|bool exiftoolFormats = fmt is "jpg" or "jpeg" or "png" or "tiff" or "webp";'
             )
         },
         @{

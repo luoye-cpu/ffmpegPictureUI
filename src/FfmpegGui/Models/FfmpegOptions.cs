@@ -412,6 +412,12 @@ namespace FfmpegGui.Models
         /// 显式值在引擎侧**不可用即失败**，不静默换别的编码器。
         /// </summary>
         public string? GainMapComposeEncoder { get; set; }
+        /// <summary>
+        /// 合成的增益图元数据承载：<c>iso</c>（默认；JPEG APP2 ISO 21496-1 / AVIF tmap）|
+        /// <c>xmp</c>（Ultra HDR v1 的 XMP hdrgm，仅 JPEG）| <c>both</c>（JPEG 两者并存）。
+        /// AVIF 的增益图只能由 tmap 承载 ISO ⇒ AVIF 出口忽略 <c>xmp</c>（引擎点名拒绝）。
+        /// </summary>
+        public string GainMapComposeMetadata { get; set; } = "iso";
         // ── 厂商增益图（OnePlus/OPPO `local.hdr.*`）参数覆盖：null = 不覆盖，沿用尾注实测值 ──
         // 存在的理由：144 B 参数块无公开规范，min/max 有两条独立读数互证、γ 只有单读数推断；
         // 留出覆盖位，将来拿到规范或对照样机时不必改代码就能校准（非法值只警告并回落实测）。

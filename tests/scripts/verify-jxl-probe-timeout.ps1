@@ -165,7 +165,14 @@ $probe1MinSec = 4       # 站点 1 消失下限（必须真的等了 ~5 s，不�
 #   判据的**实质**是「(i) 真的等了（≥ 下限）且 (ii) 最终消失了（`p1Gone > 0`）」；
 #   上限只是防「消失得过早」的软护栏。
 $probe1MaxSec = 20      # 站点 1 消失上限（预期 ≈ 7 s；上限留足余量）
-$probe2MaxSec = 15      # 站点 2 超时上限
+# ⚠⚠ **2026-10-26 站点 2 上界抬号（15 → 30）**：站点 2 = `FfmpegCommandBuilder.ProbeWithFfprobe`
+#   （色彩/像素格式探测），本轮把它从「单趟 5000 ms」改成「首趟 5000 ms ⇒ 超时再给一趟 20000 ms」
+#   （与 `ExifToolService.ReadColorTagsAsync` 同口径），故站点 2 的**最坏合法墙钟**由 ≈5 s 变 ≈25 s，
+#   实测 $p2Gone 由 ≈14.6 s 变 **≈33.8 s**（三次一致），越过写死的 15 s 上界 ⇒ ② 三条转红。
+#   ⚠ 这是**判据把旧的单趟预算硬编码成了墙钟上界**，不是产品回归：Kill 仍生效、不缓存仍成立（⑥a）、
+#   real.jxl 不受影响（⑦）。⇒ 抬上界（并补 ①-⑦ 把两趟预算**钉在源码形态**上，见下），不改产品。
+#   ⚠ 抬的是**上界**，②-2 的**实质**（出现过 ∧ 消失了 ∧ 不早于站点 1）一字未动。
+$probe2MaxSec = 30      # ⚠ 站点 2 超时上限（2026-10-26：15 → **30**，成因见下方文件头段落）
 # ⚠ 注入心跳超时（**只**为让 ② 正例的串行队列能推进 —— 理由见文件头载体 (ii) 的第三条 ⚠）：
 #   畸形 `.jxl` 的编码阶段会忙等，不注入则第 1 项卡死、第 2 项永不开始。3 s 是实测可推进且
 #   不误杀合法短任务的值（合法 ffmpeg 有 `-progress pipe:1` 进度块续命）。③ 负控前会被清掉。
@@ -454,6 +461,48 @@ $cacheGuardOk = ($srcCode -notmatch 'AnimatedJxlCache\.GetOrAdd\(') -and
                 ($srcCode -match 'determinate\s*=\s*true')
 CK ($cacheGuardOk) `
    "① 源码形态（#26 缓存策略）：缓存写入被 `determinate` 守卫、读取走 `TryGetValue`、且已无 `AnimatedJxlCache.GetOrAdd(`（后者会把「不确定」的结局也永久固化）"
+
+# ⭐ ①-⑦ 源码形态自检（2026-10-26 新增）：**站点 2 的探测预算必须真的是「两趟」**。
+#   动机：本轮把 `FfmpegCommandBuilder.ProbeWithFfprobe` 从单趟 5000 ms 改成「首趟 5000 ⇒ 重试 20000」，
+#   ②-2 的墙钟上界（$probe2MaxSec）随之抬号。若不把**预算本身**钉在源码上，将来有人把任一趟改回/改小，
+#   ② 的上界会**悄悄失准**（要么假红、要么留出无人看守的余量）⇒ 这条补的就是那只哨兵。
+#   同时钉三件**结构性**要求：`WaitForExit(timeoutMs)` 真的用了**参数**（写死 5000 会让重试那趟名存实亡）、
+#   `Kill(entireProcessTree: true)` 在位、且 `ReadToEndAsync()` 必须**早于** `WaitForExit(`
+#   （同步 `ReadToEnd()` 挡在超时前 ⇒ 超时是死代码，本门禁的原始立项理由）。
+$fcbPath = Join-Path $root 'src/FfmpegGui/Services/FfmpegCommandBuilder.cs'
+$fcb = ''
+if (Test-Path $fcbPath) { $fcb = [IO.File]::ReadAllText($fcbPath) }
+$fcbBi = $fcb.IndexOf('private static ColorMetadata ProbeWithFfprobe(')
+$fcbBody = ''
+if ($fcbBi -ge 0) { $fcbBody = $fcb.Substring($fcbBi) }
+$onceBi = $fcb.IndexOf('private static ColorMetadata ProbeWithFfprobeOnce(')
+$onceBody = ''
+if ($onceBi -ge 0) { $onceBody = $fcb.Substring($onceBi) }
+$rxBudgets = [regex]::Matches($fcbBody, 'ProbeWithFfprobeOnce\([^\n]*?,\s*(\d+)\s*\)')
+$budgetNums = @($rxBudgets | ForEach-Object { [int]$_.Groups[1].Value })
+# ⚠ 期望逐字 = 5000 / 20000（与 `ExifToolService.ReadColorTagsAsync` 的 5 s ⇒ 20 s 同口径）
+$budgetOk = ($budgetNums.Count -ge 2) -and ($budgetNums[0] -eq 5000) -and ($budgetNums[1] -eq 20000)
+CK ($budgetOk) `
+   "①-⑦ 源码形态：站点 2 的色彩探测是**两趟**且预算逐字 = 5000 / 20000 ms（实 $($budgetNums -join ' / ')）—— 单趟写死或预算被改都会当场响"
+$onceShapeOk = ($onceBody -match 'WaitForExit\(timeoutMs\)') -and
+               ($onceBody -match 'Kill\(entireProcessTree: true\)') -and
+               ($onceBody -match 'ReadToEndAsync\(\)')
+# ⚠⚠ **锚定实际调用，不要锚裸 `WaitForExit(`**（2026-10-26 当场踩到）：本方法上方的注释里
+#   逐字写着「`StandardOutput.ReadToEnd()`（同步阻塞）写在 `WaitForExit(5000)` **之前**」⇒
+#   `IndexOf('WaitForExit(')` 命中的是**注释行**（第 1745 行），比真正的 `ReadToEndAsync()`（1748）更早
+#   ⇒ 判据误判成「同步读挡在超时前」。文本级形态自检必须锚**带实参的调用** `WaitForExit(timeoutMs)`。
+$onceAsyncFirst = $true
+$iAsync = $onceBody.IndexOf('ReadToEndAsync()')
+$iWait  = $onceBody.IndexOf('WaitForExit(timeoutMs)')
+if ($iAsync -ge 0 -and $iWait -ge 0) { $onceAsyncFirst = ($iAsync -lt $iWait) }
+CK ($onceShapeOk -and $onceAsyncFirst) `
+   "①-⑦ 源码形态：重试体 `ProbeWithFfprobeOnce` 用**参数** `WaitForExit(timeoutMs)`（不是写死的 5000，否则重试那趟名存实亡）、`Kill(entireProcessTree: true)` 在位、且 `ReadToEndAsync()` 早于 `WaitForExit(`（实 shapeOk=$onceShapeOk / asyncFirst=$onceAsyncFirst）—— 同步读挡在超时前 ⇒ 超时是死代码"
+# ⚠ 反真空（有牙）：站点 2 的**上界**必须由这两趟预算推导，不许与源码脱钩。
+#   若有人把 $probe2MaxSec 抬到 60 而不动源码 ⇒ 本条转红，阻止「上界自己长大」。
+$derivedMax = 0
+if ($budgetNums.Count -ge 2) { $derivedMax = [int][Math]::Ceiling((($budgetNums[0] + $budgetNums[1]) / 1000.0) * 1.2) }
+CK ($derivedMax -gt 0 -and $probe2MaxSec -le $derivedMax) `
+   "①-⑦ 反真空：②-2 的墙钟上界 $probe2MaxSec s 由源码两趟预算推导（($($budgetNums[0])+$($budgetNums[1]))/1000×1.2 ⇒ $derivedMax s）⇒ 上界不许比预算允许的更大（防「上界自己长大」）"
 
 # ── ② 正例：两个探测站点都必须「出现 → 限时内消失」，且超时**必须响亮** ──────────────
 Write-Host "`n### ② 正例：畸形 .jxl ⇒ 两个探测站点的 ffprobe 都必须在限时内被 Kill + 逐字超时日志行 ###" -ForegroundColor Cyan

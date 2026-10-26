@@ -12,18 +12,105 @@
 
 ## 📝 更新日志
 
-### 未发布（工作树，2026-10-24）— DNG 输入改走 Adobe DNG SDK（ACR 路线）
+### v1.6.0-beta9 (2026-10-26) — DNG 读路径改走 Adobe DNG SDK + 两图 GainMap 合成 + JPG/WebP 改按 BT.601 + AVIF 出口 ICC 诚实性收口
 
-- **`dngtool` 新增 `-rd` / `-rdp [-rdspace srgb|p3|rec2020]`**：`-rdp` 用 SDK 的 `dng_render` 施加
-  白平衡与相机 profile（identity tone curve），**OpcodeList1/2/3 全部执行**（旧 LibRaw 臂一张都不执行；
-  实测同一件 DNG 四角/中心 1.70 → 1.84）。
-- **产品**：`.dng` 输入自动走 ACR 路线；目标原色为 bt709 时渲 `srgb`（Rec.709/sRGB 原色），
-  其余渲 `rec2020`；`ColorSourceDeclPrimaries` 与渲染空间**同源**。ARW/CR2/NEF… 仍走 LibRaw
-  （DNG SDK 只读 DNG），日志点名。
-- **行为差异（仅 DNG 输入）**：`-H` 高光 / `-q` 去马赛克质量 / `-W` 白平衡 / `-threads` **不生效**
-  （日志逐项点名）；解码耗时约为 LibRaw 的 **2.2×**（24MP：5.1 s vs 2.3 s）。
-- **修**：SDK 中间件 TIFF 不带 EXIF ⇒ `Make`/`Model` 纳入「从源 RAW 补回」白名单，避免 DNG→JPEG 丢厂/型号。
-- **门禁**：新增第 79 条 `verify-acr-route.ps1`（26/0）；受管清单 78 → 79。
+> **谱系**：`6fc9719`（DNG/ACR 路线 + 第 79 条门禁，12 文件 +721/−34）、`0b07b1c`（两图 GainMap 合成收口 +
+> JPG/WebP 按 BT.601（#84）+ 实机三缺陷（#81–#83），35 文件 +3,310/−109），加本批**工作树 33 文件**
+> （+1,986/−265）。受管门禁 **78 → 84** 条，加 27 个探针 mode ⇒ 整轮 **111** 条。
+> 整轮 `tests/output/gates-round-20261026f.log`：**111/111「运行器汇总：全部通过」**
+> （16:31:30 → 17:26:49，55 min 19 s；`artifact-sha16: FfmpegGui.dll=DC9587599E8D3DC9`、
+> `FfmpegGui.exe=D4FAD60A006DCA6F`、`ServiceProbe.exe=0B2B8F6E542C9A2E`、
+> `runner-self-sha256=68B63CA442962086`）。
+> ⚠ 同日的 `full-round-20261026e.log`（wiring 60/56 等成片红）**作废**：那次临时启动器漏了
+> `TMP/TEMP/TMPDIR` 重定向 ⇒ 产品写 `%TEMP%\cms_*.rgb48` 被沙箱拒（`exit -13`）的环境假红——
+> **同一份被测件**在 20261026d 轮 wiring 是 153/0。取证见账本 `docs/IMPLEMENT_PLAN_2026-10-11.md` §51。
+
+**🟢 DNG 输入改走 Adobe DNG SDK（ACR 路线）**
+
+- `dngtool` 新增 `-rd` / `-rdp [-rdspace srgb|p3|rec2020]`：`-rdp` 用 SDK 的 `dng_render` 施加白平衡与相机
+  profile（identity tone curve），**OpcodeList1/2/3 全部执行**（旧 LibRaw 臂一张都不执行；实测同一件 DNG
+  四角/中心 1.70 → 1.84）。
+- 产品：`.dng` 输入自动走 ACR 路线；目标原色为 bt709 时渲 `srgb`，其余渲 `rec2020`，
+  `ColorSourceDeclPrimaries` 与渲染空间**同源**。ARW/CR2/NEF… 仍走 LibRaw（**DNG SDK 只读 DNG**），日志点名。
+- ⚠ 行为差异（仅 DNG 输入）：`-H` 高光 / `-q` 去马赛克质量 / `-W` 白平衡 / `-threads` **不生效**（逐项点名）；
+  解码耗时约为 LibRaw 的 **2.2×**（24MP：5.1 s vs 2.3 s）。enhanced-image IFD 的 DNG 直接点名拒绝。
+- 修：SDK 中间件 TIFF 不带 EXIF ⇒ `Make`/`Model` 纳入「从源 RAW 补回」白名单，避免 DNG→JPEG 丢厂/型号。
+- 门禁：第 79 条 `verify-acr-route.ps1` 本批 **31/0 @163.2 s**（26/0 → 加 ⑫「LibRaw 臂必须真线性」28/0 →
+  本批给 ⑦/⑧/⑨ 各加一条**下发点**日志断言 31/0：只验决策日志会漏「决策 ≠ 实际下发参数」的传参分叉）。
+
+**🟢 LibRaw 解码臂的中间件改成真线性**
+
+- 产品把非 DNG RAW 的中间件声明为 `linear` 并喂 `zscale=tin=linear`，而 LibRaw 默认 `gamm={0.45,4.5}` 会让
+  `write_ppm_tiff()` 先套一遍 dcraw 曲线 ⇒ **二次 gamma**（实测 ARW→PNG 中位 0.41 vs 参考 0.32，PSNR 21.5 dB）。
+  现固定恒等 gamm（真线性 16-bit），`-o 0` 那条近似不变。
+- 判据 = 第 79 条 ⑫：同一 DNG 的 `-d` 与 `-rd` 两臂中位比必须落在 **0.35~1.5**（修复前实测 2.42）。
+
+**🟢 两图 GainMap 合成（SDR 底图 + HDR 参考）与元数据承载三态**
+
+- `--compose-gainmap` 吃**成对**输入（SDR 底图 + HDR 参考），出 Ultra HDR JPEG（MPF + APP2）或 AVIF
+  （`tmap` 派生项）；面板加「增益图元数据」三选与 JPEG/AVIF 各自的编码器大/小类。
+- 新增 `--gainmap-metadata iso|xmp|both`：**默认 ISO 21496-1（APP2 / tmap）**；AVIF 的增益图只能由 tmap 承载
+  ⇒ 固定 ISO，显式 `xmp` 在建队时**拒绝**（不静默改写）。
+- `HDRCapacityMax = log2(peak/203)` 与 `GainMapMax` **实测解耦**（固定 peak=1000 时 2.30 vs 1.76）；
+  单通道臂 `Channels=1` 证明开关不是死旋钮；AVIF 质量滑块真的改 CRF（`-q 99 ⇒ CRF 1` / `-q 30 ⇒ CRF 44`，
+  产物 7541 B vs 3313 B）。底图保真：主 JPEG 解回 rgb24 对 SDR 夹具 **28.97 dB ≥26**，同法对无关同尺寸图仅 4.16 dB。
+- 门禁：第 80 条 `verify-gainmap-compose.ps1` 本批 **85/0 @50.9 s**（四层判据 + 五条负控，全部零产物且点名）。
+
+**🟢 JPG 与 WebP 的 YUV 矩阵改按 BT.601**
+
+- `-colorspace bt709` 不只写标签——它**改 RGB→YUV 系数**，而 JPG 容器没有矩阵字段、libwebp 解码默认按
+  BT.601 ⇒ 饱和红被解成 232/234。产品改为单一真值 `ColorSpaceRegistry.ContainerYuvMatrix()`（`bt470bg`），
+  legacy 与引擎两条路同源。
+- 门禁：第 84 条 `verify-jpg-webp-matrix.ps1` 本批 **30/0 @14.8 s**（8/16-bit 三原色块、命令行**末个**
+  `-colorspace` 必须是 `bt470bg`、像素回读、AVIF 回归、JPG 仍带 ICC，另配「直编 bt709 ⇒ 红 ≤240」负控）。
+
+**🟢 实机三缺陷 #81–#83（DNG 前置校验 / 显式 `-e` 兑现 / JXR(alpha)→AVIF 透明交付）**
+
+- 非 RAW/DNG 输入 + `-f dng`：**统一前置拒绝**（旧行为按路由分叉成「点名拒绝」与 ffmpeg muxer `-22` 两种结果）。
+  第 81 条 `verify-dng-nonraw-input.ps1` **30/0**（6 格负控同一句文案 + 零产物，并用 DNG→DNG 正控证明没误伤真 DNG）。
+- 旁路对显式 `-e` 的兑现：JPG/JXL 按 `Options.EncoderBackend` **真分叉**（日志点名 + 产物哈希双判），JXR 目标
+  固定 `JxrEncApp` 且覆盖警告**恰好出现一次**；跨族后端（`-f jpg -e Cjxl`）仍被兼容性守卫拒绝且零产物。
+  第 82 条 `verify-jxr-backend-choice.ps1` **15/0**。
+- JXR(alpha)→AVIF：ffmpeg 的 AVIF muxer 实测丢 alpha（即使显式 `-pix_fmt yuva420p` 也只剩单条 `av1/yuv420p` 流）
+  ⇒ 源含 alpha 且目标 avif 时改走 `ffmpeg → RGBA PNG → avifenc`，写成标准 alpha 辅助流（8-bit→`yuv420p`+`gray`、
+  16-bit→`yuv420p10le`+`gray10le`）。第 83 条 `verify-avif-alpha.ps1` **16/0**（含「ffmpeg 直编该 RGBA 只有 1 条流」分叉尺）。
+
+**🟢 AVIF 静态出口写不进 ICC：把「假成功」改成诚实交付**
+
+- 实测：ffmpeg 的 AVIF muxer 不写 ICC，exiftool 后置报「0 image files updated」而**退出码仍是 0** ⇒ 旧日志照打
+  「ICC Profile 已恢复」，而产物 `avifdec --info` 报 `ICC Profile: Absent`。
+- `PlanPolicy.ExitWritesIcc` 升级为计划层的**一等输入**，唯一真值 `ColorIntentFactory.ExitWritesIccFor(fmt)`；
+  装配处与探针共用同一函数，而探针的**预期**另一侧独立推导（两侧同源就等于恒绿）。
+- 四策略重排：源**可 CICP 命名** ⇒ 零改动携带、只以 nclx 描述；**不可命名**（ProPhoto/Adobe/自定义）⇒
+  S2 携带**契约拒绝**（项级退出码 91、零产物、点名「出口不写 ICC」与「源无 CICP 名」两因），
+  S1 推荐落「最宽可命名目标 BT.2020/SDR」并播报 `GamutClipped` + `NoIccCarrier` ⇒ AVIF 出口对 ProPhoto
+  源从"拒绝"变"交付且言行一致"。
+- `TransferCurve.TryClaimNamed`：标准 Display P3 ICC 的 TRC 是 parametric 曲线、量化后 `CicpToken=null`
+  ⇒ 会被上面的 S2 拒绝误伤；现按 7 参数一致性（2e-4）+ 采样点 ToLinear（5e-4）认领成具名曲线
+  （`carry-p3-avif` 从 0 产物变回 4755 B）。
+- 判据：`verify-prophoto-faithful.ps1` §6 的 ⑥a–⑥f 六臂（nclx 可命名 / 日志不许谎报 / 产物本不该带 ICC /
+  拒绝 + 零产物 + 点名两因 / 反真空：同法 carry→PNG 的 ICC 与源**逐字节**相同）。本批 **37/0 @45.9 s**。
+- ⚠ 口径层级：`91` 是**项级**退出码（日志「失败 (退出码 91)」），headless 的**进程** rc 仍是 1 ⇒
+  拿进程码去对 91 会误判"判据没牙"。
+
+**🟢 bench 计时档自钉快核簇（只收口测量环境，阈值一条没动）**
+
+- 症状：同一份被测件一天里既 37/0 又 30/7，bench 墙钟 64.8 s vs 121.3 s —— 本机 14 核 20 线程（6 P + 8 E），
+  线程可被调度到 E 核 ⇒ 单核吞吐腰斩、绝对门槛按调度假红。b/c 两轮 `FfmpegGui.dll` 逐字相同就是天然对照臂。
+- `BenchCorePin`：逐核实测分簇（最大相邻比 ≥1.25×）⇒ 混合架构钉快簇，**单簇机器不钉并在日志点名**；
+  阶梯改按**有效核数**排（`Environment.ProcessorCount` 不随进程内改亲和性而变，实测钉 12 线程仍报 20 ⇒
+  超订阅会毒后面的单核档：同掩码下 38.9 vs 29.0 MPix/s）；标定本身改**零分配**（第一版积下 ~2 MB gen0/LOH，
+  6 MB rgb48 那档极差实测 25.5 ms → 1.9 ms）。另附一条**不参与判据**的负载读数行供红时归因。
+- 本机读数：`bench-affinity=0xFFF 钉快核簇 12/20 线程（分档比 2.11~2.18×）`；整轮 `[bench] 37/0 @92.3 s`。
+- ⚠ 仍开放：`8b sRGB→P3 ≥25` 这一档在有背景负载时读数分布 **17.8~29.4**，钉核后仍跨阈值 ⇒ 属判据设计面欠账
+  （见账本 §50.5），本轮不靠调阈值解决。
+
+**⚠ 界面文案与随包清单**
+
+- 移除 4 处标题 emoji 前缀、删 3 个死 key、新增 12 条 key（中英成对）；新文案全部走 locales，无硬编码 CJK。
+  UI 面棘轮按**换回法**归因后抬到 **901**（876→881(+5)→885(+4)→901(+16)，变异两臂：901⇒14/0、885⇒13/1）。
+- `THIRD-PARTY-NOTICES` 与实包版本对齐写实：Avalonia 12.1.4、MicroCom.Runtime 0.11.6、
+  Tmds.DBus.Protocol 0.94.1、libjxl 0.11.2、libavif 1.4.2（libaom 3.15.0）、jxrlib 微软 2013 参考实现。
 
 ### v1.6.0-beta8 (2026-10-23) — 私有内容审计收口：厂商裁剪进 DefaultCrop + 逐实例账本 + 测试工程迁入 tests/projects
 

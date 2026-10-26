@@ -223,6 +223,10 @@ namespace FfmpegGui.Services
             var icc = File.ReadAllBytes(iccPath);
             if (icc.Length < 132) return null;
 
+            // 解析出来的参数曲线若与某条 CICP 命名曲线**数值吻合**，认领为标准参数（见 TransferCurve.TryClaimNamed）：
+            // 否则 Display P3 的 ICC（TRC = sRGB 那条）会被判「不可命名」，AVIF 这类不能后置写 ICC 的出口只能拒绝。
+            static FfmpegGui.Services.ColorMapping.TransferCurve? Claim(FfmpegGui.Services.ColorMapping.TransferCurve c)
+                => FfmpegGui.Services.ColorMapping.TransferCurve.TryClaimNamed(c) ?? c;
             byte[]? r = ReadTagBytes(icc, "rTRC");
             byte[]? g = ReadTagBytes(icc, "gTRC");
             byte[]? b = ReadTagBytes(icc, "bTRC");
@@ -239,14 +243,14 @@ namespace FfmpegGui.Services
                 double P(int i) => ReadS15Fixed16(r, 12 + i * 4);
                 switch (fn)
                 {
-                    case 0: return FfmpegGui.Services.ColorMapping.TransferCurve.FromParametric(P(0), 1, 0, 0, 0, 0, 0, "ICC para0");
-                    case 1: { double g2 = P(0), a = P(1), bb = P(2); return FfmpegGui.Services.ColorMapping.TransferCurve.FromParametric(g2, a, bb, 0, -bb / a, 0, 0, "ICC para1"); }
+                    case 0: return Claim(FfmpegGui.Services.ColorMapping.TransferCurve.FromParametric(P(0), 1, 0, 0, 0, 0, 0, "ICC para0"));
+                    case 1: { double g2 = P(0), a = P(1), bb = P(2); return Claim(FfmpegGui.Services.ColorMapping.TransferCurve.FromParametric(g2, a, bb, 0, -bb / a, 0, 0, "ICC para1")); }
                     // ICC para type2: Y = (aX+b)^g for X ≥ −b/a; cX for X < −b/a。
                     // 规范形 (g,a,b,c,d,e,f)：c=线性 toe 系数, e=幂段偏移 —— c/e 曾错位
                     // （c=0, e=cc）导致 toe 段丢失、幂段被错误加偏移（P1-N8）。
-                    case 2: { double g2 = P(0), a = P(1), bb = P(2), cc = P(3); return FfmpegGui.Services.ColorMapping.TransferCurve.FromParametric(g2, a, bb, cc, -bb / a, 0, 0, "ICC para2"); }
-                    case 3: return FfmpegGui.Services.ColorMapping.TransferCurve.FromParametric(P(0), P(1), P(2), P(3), P(4), 0, 0, "ICC para3");
-                    case 4: return FfmpegGui.Services.ColorMapping.TransferCurve.FromParametric(P(0), P(1), P(2), P(3), P(4), P(5), P(6), "ICC para4");
+                    case 2: { double g2 = P(0), a = P(1), bb = P(2), cc = P(3); return Claim(FfmpegGui.Services.ColorMapping.TransferCurve.FromParametric(g2, a, bb, cc, -bb / a, 0, 0, "ICC para2")); }
+                    case 3: return Claim(FfmpegGui.Services.ColorMapping.TransferCurve.FromParametric(P(0), P(1), P(2), P(3), P(4), 0, 0, "ICC para3"));
+                    case 4: return Claim(FfmpegGui.Services.ColorMapping.TransferCurve.FromParametric(P(0), P(1), P(2), P(3), P(4), P(5), P(6), "ICC para4"));
                     default: return null;
                 }
             }
@@ -259,8 +263,8 @@ namespace FfmpegGui.Services
                     // 计 1 项时该值是 **u8Fixed8** 表示的 gamma 指数（如 2.2 = 563/256），不是归一化采样
                     double gamma = Be16(r, 12) / 256.0;
                     if (gamma <= 0) return null;
-                    return FfmpegGui.Services.ColorMapping.TransferCurve.FromParametric(
-                        gamma, 1, 0, 0, 0, 0, 0, $"ICC curv-γ{gamma:0.###}");
+                    return Claim(FfmpegGui.Services.ColorMapping.TransferCurve.FromParametric(
+                        gamma, 1, 0, 0, 0, 0, 0, $"ICC curv-γ{gamma:0.###}"));
                 }
                 int n = (int)count;
                 if (n < 2 || r.Length < 12 + n) return null;

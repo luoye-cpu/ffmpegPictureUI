@@ -197,6 +197,47 @@ public readonly struct TransferCurve
     public static readonly TransferCurve Linear = new(CurveKind.Linear,
         1, 1, 0, 0, 0, 0, 0, "linear", "Linear");
 
+    /// <summary>
+    /// 把 ICC 解析出来的**参数曲线**按数值认领为已注册的 CICP 命名曲线（2026-10-26）。
+    /// <para>
+    /// 为什么需要：ICC 里的 TRC 只是 7 个 16.16 定点参数，`ReadIccCurve` 解析后 `CicpToken=null`
+    /// ⇒ `IsCicpNameable=false`。于是 Display P3 的 ICC（para3，参数就是 sRGB 那条）也被当成
+    /// 「不可命名」，凡容器不能后置写 ICC 的出口（AVIF）就只能拒绝 —— 而它的曲线**数值上就是**
+    /// `iec61966-2-1`（实测吻合到 2.0E-004）。
+    /// </para>
+    /// <para>
+    /// 判据是**数值**而不是描述文本：7 个参数逐项 |Δ| ≤ 2e-4（ICC S15Fixed16 量化 = 1.5e-5，
+    /// 其余是各家写 profile 的取整），再在 5 个码值上做函数对撞 ≤ 5e-4。命中即返回**标准参数**那条
+    /// （同 `RefineKnownSpace` 用理论矩阵替换定点矩阵的理由：消除量化噪声，不是近似替代）；
+    /// 不命中返回 null，调用方保留原始曲线（宁可不命名，也不造一条传递特性）。
+    /// </para>
+    /// <para>
+    /// ⚠ 只认领**有 CICP 名**的曲线（sRGB/BT.709/BT.601/240M/γ2.2/γ2.8）。ProPhoto(1.8+toe)、
+    /// γ2.6、γ1.8 与 zimg 形态都没有 CICP 名 ⇒ 原样返回 null（ProPhoto 源继续走"只能携带 ICC"）。
+    /// </para>
+    /// </summary>
+    public static TransferCurve? TryClaimNamed(TransferCurve c)
+    {
+        if (c.Kind != CurveKind.Parametric || c.CicpToken != null) return null;
+        foreach (var k in NamedParametricCurves)
+        {
+            if (Math.Abs(c.G - k.G) > 2e-4 || Math.Abs(c.A - k.A) > 2e-4 || Math.Abs(c.B - k.B) > 2e-4
+                || Math.Abs(c.C - k.C) > 2e-4 || Math.Abs(c.D - k.D) > 2e-4
+                || Math.Abs(c.E - k.E) > 2e-4 || Math.Abs(c.F - k.F) > 2e-4) continue;
+            var ok = true;
+            foreach (var x in new[] { 0.02, 0.05, 0.18, 0.5, 0.9 })
+            {
+                if (Math.Abs(c.ToLinear(x) - k.ToLinear(x)) > 5e-4) { ok = false; break; }
+            }
+            if (!ok) continue;
+            return new TransferCurve(CurveKind.Parametric, k.G, k.A, k.B, k.C, k.D, k.E, k.F,
+                k.CicpToken, $"{k.Name}（ICC 参数吻合）");
+        }
+        return null;
+    }
+
+    private static readonly TransferCurve[] NamedParametricCurves = { Srgb, Bt709, Bt601, Smpte240M, Gamma22, Gamma28 };
+
     /// <summary>PQ（ST 2084）。1.0 = 10000 nits。</summary>
     public static readonly TransferCurve Pq = new(CurveKind.Pq,
         0, 0, 0, 0, 0, 0, 0, "smpte2084", "PQ(ST2084)");

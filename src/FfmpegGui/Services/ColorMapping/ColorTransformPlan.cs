@@ -174,6 +174,21 @@ public sealed class PlanPolicy
     /// 由 <c>ColorIntentFactory</c> 按 <c>o.EncoderBackend</c> 置位。
     /// </summary>
     public bool ExternalEncoderExit;
+    /// <summary>
+    /// 本**出口**是否真能把 ICC 写进产物（按执行体判，不是按格式能力表）。
+    /// <para>
+    /// AVIF 静态出口是 ffmpeg：实测 muxer **不写** ICC，exiftool 后置也报
+    /// 「0 image files updated」而退出码仍是 0（2026-10-26 实测 672 B ProPhoto ICC：
+    /// 产物 `<c>avifdec --info</c>` 报 `ICC Profile: Absent`，同时日志打「ICC Profile 已恢复」）。
+    /// `avifenc --icc` 确实能写，但本产品的 avifenc 只用于 GIF→AVIF 动画两步法。
+    /// </para>
+    /// <para>
+    /// 为 false 时的后果（刻意如此）：像素零改动的「携带」只在源空间可 CICP 命名时成立
+    /// （标签即描述）；源 ICC 不可命名时必须 **Reject** —— 宁可不产出，也不交付一张
+    /// 「像素是 ProPhoto、标签写 BT.709」的图。
+    /// </para>
+    /// </summary>
+    public bool ExitWritesIcc = true;
 }
 
 /// <summary>一次色彩处理的完整计划（引擎 L3 输出；调用方只照做，不再自行判断）。</summary>
@@ -756,7 +771,10 @@ public static partial class ColorMappingEngine
         {
             if (!policy.AllowApproximateCurve)
             {
-                p.Action = policy.Format.CanCarryArbitraryIcc && src.SourceIccPath != null ? ColorAction.CarryIcc : ColorAction.Reject;
+                // ⚠ 携带也要求**出口能写 ICC**：容器能带而本出口写不了（AVIF/ffmpeg）时，
+                //   "携带"只剩一句日志，产物照样没有色彩描述 ⇒ 只能拒绝。
+                p.Action = policy.Format.CanCarryArbitraryIcc && policy.ExitWritesIcc && src.SourceIccPath != null
+                    ? ColorAction.CarryIcc : ColorAction.Reject;
                 p.IccPath = p.Action == ColorAction.CarryIcc ? src.SourceIccPath : null;
                 p.Reason = "存在引擎无法精确表达的曲线（如 A2B/非中性 profile）→ " +
                            (p.Action == ColorAction.CarryIcc ? "携带源 ICC，不动像素" : "拒绝（格式也不能带 ICC）");
@@ -976,7 +994,7 @@ public static partial class ColorMappingEngine
         var caps = policy.Format;
         bool hdr = dst.Curve.Kind is TransferCurve.CurveKind.Pq or TransferCurve.CurveKind.Hlg;
 
-        if (preferCarry && dst.SourceIccPath != null && caps.CanCarryArbitraryIcc && !hdr)
+        if (preferCarry && dst.SourceIccPath != null && caps.CanCarryArbitraryIcc && policy.ExitWritesIcc && !hdr)
         {
             p.AttachIcc = true; p.IccPath = dst.SourceIccPath;
             return;
@@ -987,7 +1005,9 @@ public static partial class ColorMappingEngine
             p.OutTransfer = dst.Curve.CicpToken;
             p.OutMatrix = MatrixTokenFor(dst.PrimariesToken);
             // SDR 且格式能生成/携带 ICC → 附标准 ICC（D2 双描述策略：ICC + CICP 并存）
-            if (!hdr && (caps.CanCarryArbitraryIcc || caps.CanGenerateIccFromCicp))
+            // ⚠ 第二道闸是**出口**能否写 ICC（`ExitWritesIcc`）：AVIF 走 ffmpeg，nclx 已足以描述，
+            //   再"附"一张落不了盘的 ICC 只会让日志谎报「已嵌入」（2026-10-26 实测）。
+            if (!hdr && policy.ExitWritesIcc && (caps.CanCarryArbitraryIcc || caps.CanGenerateIccFromCicp))
             {
                 // ICC 的 TRC 必须跟着**像素实际用的那条 trc**走（= OutTransfer，已含容器钳制）。
                 // 旧写法无条件写死 "iec61966-2-1"：对 TIFF（capTrc 钳 SDR，像素也是 sRGB）是对的，
@@ -1023,7 +1043,7 @@ public static partial class ColorMappingEngine
             return;
         }
         // 不可 CICP 命名（ProPhoto/Adobe/自定义 ICC）
-        if (caps.CanCarryArbitraryIcc)
+        if (caps.CanCarryArbitraryIcc && policy.ExitWritesIcc)
         {
             p.AttachIcc = true; p.IccPath = dst.SourceIccPath;         // 由调用方确保路径可得（命名生成或源携带）
             p.Reason += " 标注=仅 ICC（该空间无 CICP 名）";
@@ -1031,6 +1051,8 @@ public static partial class ColorMappingEngine
         else
         {
             p.Reason += " ⚠️ 该格式既不能携带任意 ICC 又不能命名此空间";
+            if (caps.CanCarryArbitraryIcc && !policy.ExitWritesIcc)
+                p.Reason += "（容器能力表称可携带，但本次出口写不了 ICC；见 PlanPolicy.ExitWritesIcc）";
         }
     }
 

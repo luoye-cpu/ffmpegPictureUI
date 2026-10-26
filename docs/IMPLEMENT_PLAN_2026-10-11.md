@@ -3535,6 +3535,107 @@ AVIF `tmap`，**不缩放、不裁切、不替换底图**。
 - AVIF 两个编码器只做了**结构判**（tmap 品牌），没有逐编码器的像素/体积对照读数。
 - 本面板仍不在 `ui-*` 拆分套件里（同 §46.5），冒烟是产物区的一次性脚本。
 
+#### 46.8 用户复核后的更正：编码器/元数据/质量按原面板重做（2026-10-25，取代 46.7 的三处设计）
+
+用户复核 46.7 的面板后否决三点：① 自造的「大类/小类」两级下拉；② AVIF 下质量滑块被禁用；
+③ 缺 Ultra HDR 的 ISO/XMP/ISO+XMP 元数据选择；另指出日志面板被压成一行。
+
+- **日志面板**：右列是 `RowDefinitions="Auto,2*,6,*"`，日志 Border 原先写在 `Grid.Row="2"`
+  （6px 间隔行）⇒ 内容被压成一行。改为 `Grid.Row="3"`。
+- **编码器下拉与主面板同源**：`RefreshGainMapEncodersAsync` 直接调
+  `EncoderDetectionService.GetEncodersForFormatAsync("jpg"|"avif")` → `IsAvailable` →
+  `GetDefaultEncoder`，条目文本就是 `EncoderInfo.ToString()`，并保留用户已选项；选中项经
+  `EncoderInfo.ParseEncoderName` 还原成引擎词（`mjpeg — MJPEG…` → `mjpeg`）。在这份同源列表上
+  再按**增益图子图的像素契约**收窄：JPEG ⇒ `mjpeg`/`cjpegli`；AVIF ⇒ `libaom-av1`/`libsvtav1`。
+  被收窄掉的项在提示里逐个点名（`gm.encoder.excluded`），不静默丢弃。
+- **硬件编码器为什么不进列表（实测，不是策略偏好）**：增益图必须按声明交付 3 平面 4:4:4 或
+  单平面灰度。本机 RTX 4060 Laptop 上 `av1_nvenc` 只接 `nv12/yuv420p/p010le`，`yuv444p` 直接
+  `YUV444P not supported`；`av1_qsv` 报 `Current codec type is unsupported`；AMF 无设备（rc=171）；
+  `mjpeg_qsv` 能跑但把 `yuv444p` **静默**转 `nv12`、`gray` 转 4 平面 ⇒ 交付像素与 tmap/ISO 声明脱节。
+- **质量滑块按原面板重做**：`Slider(0–100, snap 1)＋TextBox(58)`＋下方一行**映射结果回显**
+  （与主面板同一个 `FfmpegOptions.GetQualityLabel`：AVIF `→ CRF N`、mjpeg `→ q:v N`、
+  cjpegli `→ distance X.X`）。默认值回到主面板口径：底图 90、增益图 75。AVIF 不再禁用滑块：
+  滑块经 `MapAvifCrfForward` 转 CRF，底图与增益图各传一个（`EncodeAsync(..., baseCrf, gainMapCrf)`，
+  -1 才沿用历史固定 18）。
+- **元数据承载三态**：新增 `GainMapComposeMetadata`（`iso`|`xmp`|`both`，**默认 `iso`**）＋面板
+  `GainMapMetadataCombo`＋CLI `--gainmap-metadata`。JPEG 出口按选择只写 ISO APP2 / XMP hdrgm /
+  两者（MPF 三种都要写 —— 它是「第二张图在哪」的唯一索引）。AVIF 的增益图只能由 `tmap` 派生项
+  承载 ISO 21496-1 ⇒ **面板在 AVIF 下只放 ISO 一项且置灰**（不给注定被拒的选项），CLI 的
+  `--gainmap-metadata xmp` 仍在建队时 rc=2 点名拒绝；切回 JPEG 恢复上次选择（默认 ISO）。
+- **AVIF `tmap` 是什么**：ISO-BMFF 的派生图项（derived image item），载荷 = `u8 version(0)` +
+  ISO 21496-1 `GainMapMetadata`，与 JPEG 的 APP2 载荷逐字节同构；品牌列表含 `tmap`，主图/增益图/
+  tmap 三个 item 由 `IsoBmffGainMapWriter` 组装（ffmpeg 的 avif muxer 不提供增益图授权）。
+
+**读数（2026-10-25 本机本轮，TMP/TEMP/TMPDIR 重定向进 `tests/output/_tmp`）**：
+
+| 项 | 读数 | 说明 |
+|---|---|---|
+| 第 80 条 | **85/0** | 新增 ⑧ 组 33 条：元数据三态（3×5＋1 条 XMP 可消费）＋**默认 ISO 5 条**（日志点名 iso、ISO 命名空间在、`hdrgm:` 不在、MPF 可走）＋AVIF CRF 两臂 3 条＋三负控 9 条 |
+| 无头 UI 冒烟 | **28/0** | 新增 U13b/c（AVIF 滑块可用 + 90⇒CRF 6）、U13d（硬件排除提示）、U13e/f（tmap 提示 + AVIF 下拉只有 ISO 一项且置灰）、U13f2（JPEG 三态可选、默认 ISO）、U13g（回 JPEG 名单收敛）、U14b（质量回显）；先预热编码器缓存再断言，不靠 Pump 时机 |
+| `verify-ui-host` | **421/0** | ⚠ 不重定向 TEMP 时同一轮是 413/6，红的是 G1/H11/B1/I3/I9/I10 且 `exit=-13`、产物落在 `%TEMP%` ⇒ 已知沙箱拦截假红，与本次改动无关 |
+| `verify-cli-strict` | **421/0** | 严格模式锚点未被新选项破坏 |
+| `verify-gainmap-host` | **24/0** | encode 59/0、decode 59/0、struct 15/0 |
+| `_probe-gui-control-wiring` | **90/0** | 新 `GainMapMetadataCombo` 走 `FillComboByLoc`（初始选中 + 处理器） |
+| `_probe-cjk-hardcode-scan` | **14/0**，`CsUi 885 = 基线 885` | 第十四次抬基线（+4：`--gainmap-metadata` 两组拒绝原因与续行） |
+| `_probe-i18n-scan` | **11/0** | 新增/改写的 `gm.*` 键两语言齐全 |
+
+**实机端到端（产品 exe + 随包 ffmpeg/exiftool，2026-10-25，产物与日志在
+`tests/output/real-gainmap-20261025/`）**：同一对 256×192 夹具（SDR testsrc2 + PQ/BT.2020 参考），
+`--gainmap-peak 1000`，逐设置各跑一次，读数是**产物字节 + 引擎日志**，不是 UI 回显：
+
+| 运行 | 输出 | ISO APP2 命中 | XMP `hdrgm:` 命中 | 日志承载 | 回读自检 |
+|---|---|---|---|---|---|
+| `-f jpg`（默认） | 7084 B | 1 | 0 | `carrier: iso` | 256×192，峰值 1000 |
+| `-f jpg --gainmap-metadata both` | 8457 B | 1 | 1 | `carrier: both` | 256×192 |
+| `-f jpg --gainmap-metadata xmp` | 8284 B | 0 | 1 | `carrier: xmp` | 256×192 |
+
+- XMP 臂由 exiftool 独立读出 `GainMapMax=1.76 / HDRCapacityMax=2.30 / Channels=3`；
+  默认 ISO 臂由 `_readback-gainmap-compose.py mpf` 走出 `SecondarySOI/EOI/AtTail=1`（次级图是完整 JPEG）。
+- AVIF 质量（同一对输入，只动 `-q`）：默认 75 ⇒ 底图 `CRF 16`、4569 B；`-q 98` ⇒ `CRF 1`、7541 B；
+  `-q 40` ⇒ `CRF 38`、3533 B；增益图按自己的滑块（默认 75）恒 `CRF 16`。
+- AVIF 容器品牌实测 `avif, mif1, miaf, MA1A, tmap`；`-f avif --gainmap-metadata xmp` ⇒ **rc=2、零产物**，
+  点名「AVIF 增益图由 tmap 承载 ISO 21496-1，没有 XMP 形态的标准读法」。
+- ⚠ 本机能驱动 GUI 的 Computer Use 被用户按 Esc 中止 ⇒ 面板层的「AVIF 只有 ISO 一项」由无头
+  MainWindow 冒烟（U13f/U13f2）证明，实机部分只覆盖产品 exe 的行为。
+
+#### 46.9 GUI 美化整批落地与实机目检（2026-10-25，用户「开始完整实现」）
+
+实现层（只动 `MainWindow.xaml`/`.xaml.cs` 与两份 locale JSON，不碰引擎）：
+
+- **视觉层级**：`Button.accent`/`Button.danger`（开始=实心蓝、停止=危险红，pointerover 各配深一档，
+  只用固定色值不依赖主题资源名）；区块标题统一 `<Border Classes="sectionbar"/>`（3px accent 竖条，
+  取代原先不一致的 emoji 前缀）；等宽日志（Cascadia Mono 回退链）+ 缩小字号。
+- **空状态**：队列/已选文件/配对队列三处列表为空时显示居中提示（`emptyhint` 类，IsHitTestVisible=false，
+  由 `UpdateQueueCountLabel`/`UpdateMediaFileCount`/`UpdateGainMapQueueDisplay` 按 `_queueView`/`_mediaFiles`
+  计数开合），词表键 `empty.queue.hint`/`empty.media.hint`/`gm.queue.empty.hint`。
+- **命令框缺席即收起**：命令卡改 `RowDefinitions="Auto,Auto,Auto,*"`，标题与 `CommandText` 都绑
+  `StringConverters.IsNotNullOrEmpty`（对 `CommandText.Text` 自绑定）⇒ 没生成命令时整块让给日志。
+- **对齐细节**：质量滑块行 `Grid ColumnDefinitions="*,58"`＋0/100 端点标签（主面板与 GainMap 底图/增益图
+  三处同构）；编码器下拉加 `ItemTemplate`（MaxWidth+省略号+自指 ToolTip）；顶栏按钮统一 28px 高；
+  `TextBox.Watermark`→`PlaceholderText`（消 AVLN5001，构建 0 警告）。
+- **GainMap 槽位拖放**：SDR/HDR 两个槽 `DragDrop.AllowDrop` + `DragOver`（只认文件）/`Drop`（取
+  `TryGetLocalPath`，目录忽略），落槽后与点选走同一个 `AssignGainMapSlotAsync`；配对队列状态列
+  MaxWidth 150 + 省略号 + ToolTip。
+
+**实机目检方法**：PowerShell `PrintWindow(PW_RENDERFULLCONTENT)` + `SetProcessDPIAware`（进程 DPI 虚拟化
+会让 `GetWindowRect` 少报 1.5×，首两张截图因此作废）；模式切换/选文件/生成指令走 **UIA**
+（`InvokePattern`/`ExpandCollapse+SelectionItem`/原生对话框 `WM_SETTEXT`+`BM_CLICK`），不用 Computer Use，
+不依赖焦点，不动用户其他窗口。截图存 `tests/output/gui-shots/`（gui-main / gui-gainmap /
+gui-gainmap-avif / gui-main-cmd.png，产物区 gitignore）。目检结论：
+
+- 主界面空提示、accent/danger 主次、竖条标题、0/100 端点、等宽日志均如设计；
+  选入夹具后点「生成指令」⇒「生成的命令」标题+命令框展开、日志收窄（UIA 实测 CommandText bounds 高 60、
+  LogText 高 344→254）；AVIF 模式下元数据下拉**只剩 ISO 一项且置灰**（UIA `IsEnabled=False` + 截图），
+  JPEG 下三态可选、默认 ISO。
+- 已知残留（不在本批修）：窗口位置/尺寸来自设置持久化，屏幕缩放变化后可能落出工作区（复现于本机
+  150% 缩放：默认 1100×850 窗口底部探出屏幕 ~120 逻辑 px，需手动拖回）；首次最小化→还原后
+  Avalonia 合成器不重绘（PrintWindow 全黑），激活窗口（AttachThreadInput）也不恢复，重启进程才恢复。
+
+**美化后复跑（同一构建，TMP/TEMP/TMPDIR 重定向进 `tests/output/_tmp`）**：
+`_probe-gui-control-wiring` **90/0**、`_probe-cjk-hardcode-scan` **14/0**（CsUi 885=基线 885，XAML 改动未抬棘轮）、
+`_probe-i18n-scan` **11/0**、`verify-ui-host` **421/0**、`verify-cli-strict` **421/0**、
+`verify-gainmap-host` **24/0**、第 80 条 **85/0** —— 与 §46.8 读数逐条同值，本批为纯 UI 层改动。未提交。
+
 ---
 
 ### §47 2026-10-25：桌面 JXR 实机全格式验收 ⇒ 四条真缺陷（#81–#84）+ 一条自己造的回归
@@ -3661,3 +3762,437 @@ alpha：8-bit / 16-bit 含 alpha 夹具 → png / webp / avif 六格全出片；
   看到这档红，先用 `ProcessorAffinity=0xFFF` 复跑再定性。
 - 新门禁 #81–#84 的脚本仍在工作区**未跟踪**（`?? tests/scripts/verify-*.ps1`），本轮**未提交**；
   承重探针入库需 `git add`（未获授权，未做）。
+
+---
+
+### §48 2026-10-26：LibRaw 解码臂的 gamma 曲线修复（声明 linear ≠ 像素 gamma）
+
+#### 48.1 症状与证据链
+
+产品把非 DNG RAW 的中间件声明为 `linear`（`QueueProcessor.cs:844-845` 的
+`ColorSourceDeclTrc = "linear"`）并交给 `zscale=tin=linear`（`FfmpegCommandBuilder.Decision.cs:411`
+的 `tin={srcT}`）。但 LibRaw 默认 `gamm = {0.45, 4.5}`（`libraw/src/utils/init_close_utils.cpp:32`），
+`write_ppm_tiff()` 会先 `gamma_curve(gamm[0], gamm[1], …)` 再写 `curve[image[…]]`
+（`libraw/src/write/file_write.cpp:181-184, 234-236`）；`dngtool` 的 LibRaw 参数从不覆盖 `gamm`
+（`dngtool.cpp:555-560` 只设 output_bps/output_color/user_qual/WB/highlight/no_auto_bright/output_tiff）
+⇒ 中间件实际是 **dcraw 曲线编码**，下游再按线性解读 = 二次 gamma。
+
+四层证据（同一件 `C:\Users\20210\Desktop\TEST\1-2.ARW`，唯读，产物在
+`tests/output/raw-probe-20261026/`）：
+
+| 层 | 读数 |
+|---|---|
+| rawpy（LibRaw API，同一文件） | 默认曲线的中位亮度 **0.2567**；`gamma=(1,1)` 线性 **0.0817** ⇒ 默认确实套曲线 |
+| dngtool 中间件（同文件，产品参数 `-d -T -o 0 -q 3 -W -H 1 -6`） | 修复前 p50 **0.1434** / 修复后 **0.0348**；SDK 线性参考 p50 **0.0527** |
+| 同一 DNG 的 `-d` vs `-rd` 中位比（gate ⑫ 的尺） | 修复前 **2.4181**（gamma） / 修复后 **0.5978**（线性；余差来自相机 WB/无相机 profile） |
+| 产品端到端 ARW→PNG（显式 `--color-space sRGB`） | 修复前 mean **0.3893** / p50 **0.4118**；参考（ARW→DNG→`-rdp -rdspace srgb`→zscale 线性→sRGB）mean **0.3100** / p50 **0.3176**；PSNR **21.55 dB** |
+
+修复后产品 mean **0.2008** / p50 **0.2039**（= sRGB(0.0348) 的正确线性→sRGB 编码）。
+⚠ 与 ACR 参考仍有约 1.5× 的亮度差（PSNR 18.53 dB）——这是 LibRaw `-o 0` 不套相机 profile、
+且默认 `-H 1`（unclip）与 ACR 的渲染口径不同造成的**既有差异**，不是本次修复引入，也不在本批改；
+本次只保证「声明 = 像素语义」。
+
+#### 48.2 修法
+
+`tools/src/dngtool/dngtool.cpp` 的解码臂（`DecodeToTiff`）固定恒等曲线：
+
+```cpp
+processor.imgdata.params.gamm[0] = 1.0;
+processor.imgdata.params.gamm[1] = 1.0;
+```
+
+`-o 0`（相机原生原色、不套相机矩阵）与其它参数不变。重建（VS2026 / CMake Release）后覆盖
+`publish/PLAN/artifacts/dngtool.exe`（应用 `bin/.../PLAN` 是 junction，无需再拷）。
+sha16：修复前 `1388C03FFC836F0B` → 修复后 `5BA612405523D46C`（旧件留档
+`tests/output/raw-probe-20261026/dngtool_pre_fix.exe` 作对照臂）。
+`-e`（RAW→DNG 编码）不受影响：它不走 `dcraw_process`，位深/参数另在 `EncodeDng`。
+
+#### 48.3 判据（第 79 条新增 ⑫ 组）
+
+`verify-acr-route.ps1` 用同一份 `m2-noop.dng`：`-d`（产品口径）与 `-rd -rdspace rec2020`
+（SDK 线性参考）各出一张 16-bit TIFF，`_readback-acr-render.py median` 出中位比，
+判据区间 **0.35 ~ 1.5**。修复前 2.42 落在区外（已用留档旧件实测）、修复后 0.60 在区内 ⇒ 两头都有牙。
+第 79 条读数 **26/0 → 28/0**。
+
+#### 48.4 复跑（TMP/TEMP/TMPDIR 重定向进 `tests/output/_tmp`）
+
+| 门禁 | 读数 |
+|---|---|
+| `verify-acr-route.ps1`（#79，含新 ⑫） | **28/0** |
+| `verify-dng-metadata-transport.ps1` | **105/0** |
+| `verify-dng-nonraw-input.ps1` | **30/0** |
+| `verify-metadata-privacy.ps1` | **7/0** |
+| `_probe-raw-default-tier.ps1` | **12/0** |
+
+未提交；`publish/PLAN/artifacts/dngtool.exe`、`tools/src/dngtool/build/**` 均在 gitignore 内，
+源码改动只有 `dngtool.cpp` 一处 + 门禁/读手/文档。
+
+### §49 2026-10-26：AVIF 出口的 ICC「假成功」收口（#73）+ 两条整轮假红的归因（#72）
+
+#### 49.1 症状：交付的是「像素 A、标签 B」，日志还报"已恢复"
+
+`--format avif` 的静态出口由 ffmpeg（libaom-av1）编码，而 **AVIF 封装器不写 ICC**；
+原来的后置步骤仍会调 exiftool 补 ICC，exiftool 报 `0 image files updated` 但**退出码 0**，
+于是队列把它当成功并打「ICC Profile 已恢复」。一行源码把这个缺口说穿了：
+`ColorMappingEngine.CapsFor("avif").CanCarryArbitraryIcc = true` 描述的是 **avifenc**（GIF→AVIF 两步法），
+不是这条静态出口的实际执行体。
+
+实测（`tests/output/_tmp/iccprobe/`，672 B ProPhoto ICC，2026-10-26 03:40）：
+
+| 容器 | exiftool 写 ICC 的口径 | 回读 `-b -icc_profile` |
+|---|---|---|
+| avif | `0 image files updated / 1 image files unchanged`，rc=0 | **0 B**（根本没写） |
+| webp | `1 image files updated`，rc=0 | 672 B |
+| jpg  | `1 image files updated`，rc=0 | 672 B |
+
+⇒ **`unchanged` 不能当"已存在"**：AVIF 连 tag 都不支持，也照样记一次 `unchanged`。
+「0 updated」只是一条**阴性信号**，真值必须由计划层按**出口**判。
+
+#### 49.2 修法：把「出口写不写得了 ICC」变成计划层的一等输入
+
+- `PlanPolicy.ExitWritesIcc`（`ColorTransformPlan.cs`）/ `ColorIntent.ExitWritesIcc`，由
+  `ColorIntentFactory` 按格式装配：`ExitWritesIcc = fmt != "avif"`。它只回答"**这条执行体**能不能把 ICC 落盘"，
+  与格式能力表（`CanCarryArbitraryIcc`）是两个维度，两者同时为真才允许承诺"携带 ICC"。
+- 四策略按它重排结局：
+  - **S2 携带**：`ExitWritesIcc=false` 且源**无 CICP 名** ⇒ `Reject`（不产出"像素 A、标签 B"的图），
+    建议改用 PNG/TIFF/WebP/JXL 或显式指定可命名目标；源**可** CICP 命名时仍携带像素，但只写 nclx、不承诺 ICC。
+  - **S1 推荐**：原 `NameableSupersetFor` 只按**色域包含**找超集，ProPhoto 这类超广空间找不到 ⇒ 会硬拒。
+    现在补一级「归入最宽可命名目标（BT.2020/bt709）」并以 `GamutClipped` + `NoIccCarrier` 播报越界裁切
+    ⇒ AVIF 出口对 ProPhoto 源仍**交付**（此前是拒绝），但说的话与做的事一致。
+  - **S4 手动**：同一条 gate（`!caps.CanCarryArbitraryIcc || !pol.ExitWritesIcc`）。
+  - `SetLabelsFrom` / `PlanCore` 的曲线不可精确表达分支同改，`preferCarry` 与"生成 ICC"两条都要求 `ExitWritesIcc`。
+- `TransferCurve.TryClaimNamed`：ICC 解析出的 parametric 曲线若与标准曲线 7 参数一致（2e-4）且
+  采样点 ToLinear 一致（5e-4），就**认领**成具名曲线并补 `CicpToken`。根因是标准 Display P3 ICC 的 TRC
+  是 para 曲线、量化后 `CicpToken=null` ⇒ `IsCicpNameable=false` ⇒ 被上面的 S2 拒绝误伤
+  （实测 `carry-p3-avif` 从 0 产物变回 4755 B）。与 `RefineKnownSpace` 用理论值消除定点噪声同款处理。
+- 后置侧：`ExifToolService.WriteAndVerifyAsync` 把「0 updated」翻成 `NoWriteApplied(-3)`；
+  `QueueProcessor` 收到它时按计划分叉——ICC 是**唯一**描述 ⇒ 删产物 + 退出码 90（fail-closed），
+  否则降为一句诚实的警告（"本次以可命名的 CICP 标签描述像素"）。
+  播报同步改口：`plan.IccPath == null` 时不再打「源 ICC 由后置步骤嵌入」。
+
+#### 49.3 修复自己引入并当场抓住的反向缺陷：jxl 产物被误删
+
+第一版 fail-closed 在 `verify-decision-delivery` ⑬ / `verify-color-wiring` (9)(10) 上把
+**cjxl 出口的产物删了**（`0B`）。证据在 `tests/output/validate/decision-delivery/jxl_eng_auto.o`：
+
+```
+[色彩] cjxl 出口：源 ICC 已由 cjxl 写入产物 ⇒ 跳过 exiftool 后置
+[exiftool] 恢复 ICC Profile: a2_srgb_p3.png → a2_srgb_p3.jxl
+0 image files updated /    1 image files unchanged
+[exiftool] ⚠️ 未写入 … ⇒ 失败 (出口无法携带 ICC)（已删除产物）
+```
+
+ICC 明明在产物里（`-x icc_pathname=` 由 cjxl 写的），exiftool 只是因为"无需改动"才报 0 updated。
+两处修正，都是把"谁说了算"钉到**执行体自己**：
+
+1. 引擎携带分支要求 `AttachIcc: true`。`RawColorPipeline` 在 cjxl 写完后会把 `plan.AttachIcc` 清掉
+   （"执行体声明自己实际写了什么"），清掉就说明**不用**再后置；少了这一条，后置步骤会对已带 ICC 的 jxl 重写一遍。
+2. `iccIsOnlyDescription` 在 `engPlan != null` 时**只认引擎计划**，不再回落到 `ResolveLegacyVerdictPlan`——
+   后者根本不知道引擎走的是哪条执行体（avifenc-vs-ffmpeg 就是反例，jxl 这次也是），
+   拿它的乐观意见决定"删产物"等于让另一条通路定本通路的生死。
+
+#### 49.4 #72 的归因：整轮里那两条 AVIF 标签红是**探测超时抽风**，不是判据错
+
+10-26 整轮里 `verify-color-strategy`（map-avif-parity）与 `verify-decision-delivery`（⑱-2）转红，
+同一对二进制单独跑是 78/0 与 92/0。链条是：`ReadColorTagsAsync` / `ProbeWithFfprobe` 都只有
+**5 s 单趟超时**，负载下超时 ⇒ 空标签 ⇒ `AssumeByConvention` 当 sRGB ⇒ 源=目标 ⇒ 直通。
+修法：两处都改成"首趟 5 s（快路径）⇒ 超时再给 20 s"，两趟都失败才按未探测处理并**点名一行**
+（该行同时说出"ICC 一并失去"与"按无 ICC 处理"，语义由 `verify-color-wiring` (13) 锁住；
+单趟超时不再各打一行——那会把唯一的判据行稀释成两条）。
+**残余风险未消**（任务 #74）：超时后仍是 fail-open（按 sRGB 惯例），只是现在必然留痕。
+
+#### 49.5 判据：`verify-prophoto-faithful` §6 加了 ⑥a–⑥f
+
+| 断言 | 判据 |
+|---|---|
+| ⑥a | ProPhoto→AVIF（推荐策略）的 nclx 必须**可命名**（不许 `unknown,unknown` 冒充描述） |
+| ⑥b | 该格日志**不得**出现「ICC Profile 已恢复 / 已嵌入目标 ICC」 |
+| ⑥c | 该格产物**不得**带 ICC（与容器能力一致，描述由 nclx 承担） |
+| ⑥e | `--color-strategy carry --format avif` 必须 **exit≠0、零产物**，且日志点名「不写 ICC」与「无 CICP 名」 |
+| ⑥f | **反真空**：同一 `carry` 换 PNG 必须产出，且产物 ICC 与源 ICC **逐字节相同**（C3CC51BE5C0C866F…） |
+
+⑥f 是这批的"尺子还活着"证明：只有 ⑥e 的拒绝，没有 ⑥f 的正控，判据可能是"整条路都坏了"。
+
+#### 49.6 读数（被测产物 `FfmpegGui.dll` sha16 **`e3cbb86437e514fc`**，03:51:58 构建；TMP/TEMP/TMPDIR 重定向进 `tests/output/_tmp`）
+
+| 门禁 | 修前（03:28 构建） | 修后（03:52 构建） |
+|---|---|---|
+| `verify-prophoto-faithful` | 37/0 | **37/0**（⑥a–⑥f 已在册） |
+| `verify-decision-delivery` | **89/1**（⑬ jxl 0B） | **92/0** |
+| `verify-color-wiring` | **146/6**（9/10 的 cjxl 0B + (13) 点名缺语义） | **153/0** |
+| `verify-color-strategy` | 78/0 | **78/0** |
+| `verify-usability-e2e` | 84/0 | **84/0** |
+| `verify-color-caps` | 16/0 | **16/0** |
+| `verify-format-regression` | 20/0 | **20/0** |
+| `verify-widegamut-regression` | 20/0 | **20/0** |
+| `verify-jpg-webp-matrix` | 30/0 | **30/0** |
+| `verify-avif-alpha` | 16/0 | **16/0** |
+| `verify-dng-nonraw-input` | 30/0 | **30/0** |
+
+日志：`tests/output/avif-icc-20261026/`（修前）与 `tests/output/avif-icc-20261026b/`（修后）。
+`verify-tiff-icc` 是**读数件**（`$tableOnly`，只打印 ICC 描述与 CICP，不判红）⇒ 不给结论。
+
+#### 49.7 欠账
+
+- **#74 探测超时的 fail-closed**：仍在。当前是"两趟都超时 ⇒ 按未标注处理 + 点名"，
+  要真正 fail-closed 得让探测失败可被计划层看见（`ColorMetadata` 加 `ProbeFailed` 位并按 Reject 走），
+  那是独立一批（会波及每张图的判定路径）。
+- **AVIF 的 ICC 仍不可达**：本批是"说真话"，不是"把 ICC 写进 AVIF"。要真交付 ICC 只能走 avifenc 出口
+  （GIF→AVIF 两步法已有此能力），把静态 AVIF 也切过去会改动编码参数面（CRF/编码器选择/位深），另立一批。
+- `Sources` 侧 `verify-tiff-icc` 这类"无判据脚本"仍在受管清单里，名义绿但不会红——属 §4 建议 #3 的同一族。
+### §49.8 收尾批（2026-10-26 05:39–06:28）：本树整轮基线建立 + 四处判据跟随
+
+> 口径：**本树第一次完整整轮**（此前只有 H-4 那 12 条子集）。日志 `tests/output/full-round-20261026c.log`，
+> `START 05:39:06` / `END 06:27:51 exit=0`，末行 `===== 运行器汇总：全部通过 =====`。
+> 被测产物（日志第 8 行，跑后未改）：`FfmpegGui.dll=E3CBB86437E514FC`、`FfmpegGui.exe=3F7344ECED484E27`、
+> `ServiceProbe.exe=0B2B8F6E542C9A2E`（本批重建后）、`UiTestHost.exe=AECDB8B487B6E2AD`、
+> `GainMapTestHost.exe=DB0CA48528576263`；`runner-self-sha256=68B63CA442962086 lines=1626`。
+> 条数 = 84 条受管脚本 + 27 个探针 mode = **111**（+1 行 `[gate] exe=`）。
+
+#### 49.8.1 中途一次整轮被杀（环境坑，记下来免得再赔一轮）
+
+第一次整轮（04:23:38 起，`tests/output/full-round-20261026b.log`）跑到 101/111 条时**被基础设施终止**，
+退出码 `1073807364 = 0x40010004`（DBG_TERMINATE_PROCESS），日志无 `END` 行 ⇒ 读数作废。
+⇒ **后台长任务约 55 min 有硬上限**；第二轮改走 `schtasks` 一次性任务脱离进程树（bat 在仓库外
+`C://PLAN//_run_gates_20261026c.bat`）⇒ 完整跑完 48 min 45 s。
+副作用：异常终止会**残留 `tests/output/.gates.lock`** ⇒ 下一轮起不来（exit 9）；
+已确认持有进程（pid 68728）不在后**手工**删除（运行器刻意不自动删）。
+
+#### 49.8.2 第一次整轮 5 条红的归因与处置（4 修 1 留）
+
+| 红 | 判定 | 处置 | 复跑读数 |
+|---|---|---|---|
+| `contract` **158/2**（C5 `ProPhoto→avif` carry 预期 True、实 False） | **判据漏维度**：C 批新增 `ExitWritesIcc` 后，C5 的 `expect` 仍只算 `CanCarryArbitraryIcc` | `ServiceProbe/Program.cs` 的 `expect` 补 `it.ExitWritesIcc` 一维（**读产品装配值**，不在探针里再抄 `fmt != "avif"` ⇒ 免得这条公式长出第五处副本） | **160/0** |
+| `verify-jxl-probe-timeout` **44/3**（站点 2 ≤15 s 消失，实 ≈33.8 s） | **判据把旧的单趟预算硬编码成墙钟上界**，产品行为正常（Kill 生效、`timeoutCount ≥ 2` 仍成立、`real.jxl` 不受影响） | 上界 `15 → 30`，并新增 **①-⑦ 源码形态自检**把两趟预算（逐字 5000 / 20000 ms）钉在源码上 | **51/0** |
+| `_probe-matrix-structure` **37/1** | **锁生效**（行锚漂）：`_lib-matrix.ps1` 的 `FfmpegCommandBuilder.cs:2386 → 2400`（+14，C 批在 :1713 净 +14 行） | 抬号并登记 pin 演进 | **38/0** |
+| `verify-probe-mirror-parity` **84/1**（`git ls-files` 没跑成 ⇒ fail-closed） | **瞬时环境失败**：事后单跑 `git ls-files` exit=0、输出空 | 不改判据（fail-closed 是对的） | **85/0** |
+| `probe:bench` **31/6** | **既有红**（上一轮旧二进制 `3225974D7373FA38` 也是逐条相同的 6 条）⇒ 与本批无关 | 未修 | 本轮 **37/0 全绿** |
+
+⚠ `bench` 两轮一红一绿、条目逐条相同 ⇒ 那 6 条是**机器负载抖动**（并发/CPU 争用），不是阈值定错。
+这正是 `docs/TESTING.md` §4「计时类红要用旧二进制做对照臂，别拿单次 LoadPercentage 当机器空闲」的意思；
+本次的两个读数互为对照臂 ⇒ 不调阈值。
+
+#### 49.8.3 CJK 棘轮（H-5 第 3 点的开放项）—— 已闭环
+
+- 实况（工作树）：UI 面 **901** > 基线 885 ⇒ 红；XAML 13/13 余量 0。
+- 归因按**换回法**实测（不是手数）：`git archive HEAD src/FfmpegGui` 导出到仓库外 + 复制探针过去跑
+  ⇒ HEAD 树实测 **881**，与脚本登记的第十三次读数**逐字吻合**（⇒ 锁仍准）。再逐文件换回工作树版本累加：
+  `CliParser +4`（A 批，第十四次已登记）/ `ColorStrategyPlanning +10` / `ExifToolService +3` /
+  `ColorTransformPlan +1` / `TransferCurve +1` / `QueueProcessor +1` = **901**，无未归因残量。
+  ⚠ `git diff` 数出来的候选是 36 行 ≠ 实测 16 —— 差在注释被剥、以及替换行要扣旧行
+  ⇒ **这类抬基线只能用换回法，不能用手数 diff**。
+- 处置：抬基线 **885 → 901**（第十五次）；属性判定 = 全是用户可见的拒绝原因 / `Reason` / `Status`，
+  依 `:418-421` 既有裁定**不**为撑棘轮改代码。
+- 变异验证（同语料两版常量）：`901` ⇒ PASS=14 FAIL=0；`885` ⇒ PASS=13 FAIL=1。
+
+#### 49.8.4 本批新踩的坑（形态自检会命中注释）
+
+①-⑦ 第一版写 `IndexOf('WaitForExit(')`，命中的是**注释行**里逐字写的 `` `WaitForExit(5000)` ``
+（第 1745 行），比真正的 `ReadToEndAsync()`（1748）更早 ⇒ 误判「同步读挡在超时前」。
+**修法：锚带实参的调用**（`WaitForExit(timeoutMs)`）。⇒ 文本级形态自检必须先想「注释会不会命中」。
+
+#### 49.8.5 本批**未做**（不许读成已验）
+
+- 未提交、未出包、未打标签（维护者逐次授权制）。出包仍要先定版本号（`beta8` 会就地覆盖且 `publish/` 在 gitignore 内）。
+- A 批的 UI 面**仍未做进程外实机验收**（本批没起 GUI；`verify-ui-host` 等 6 条跑的是 `UiTestHost` 宿主，不是真 GUI 进程）。
+- H-7 建议 #2/#3/#4、`任务 #74`（探测超时 fail-closed）、#33/#47/#48（DNG backlog）全部**未动**。
+- 子代理查出的一处**既有**缺口（未修，新记欠账）：`.jxl` 路径上 `ProbeWithFfprobe` 的 `log` 为 null
+  ⇒ 站点 2 两趟都超时却一行都不说（本批新增的重试行也只有 `log?.Invoke`、没有 `Trace` 回退）。
+  属独立一批，本批不扩范围。
+
+---
+
+### §49.9 复核收口：三处读数更正 + B3-1 事实登记（2026-10-26 出 beta9 前）
+
+#### 49.9.1 §47.9 的「#81–#84 脚本未跟踪」已被提交证伪（时点快照，原文不回改）
+
+- §47.9 末条写「新门禁 #81–#84 的脚本仍在工作区**未跟踪**（`?? tests/scripts/verify-*.ps1`），本轮**未提交**」。
+  那是 2026-10-26 早间的时点状态；按「带日期账本不回改原文」的规矩，原文保留，以本条目为准。
+- 实测 `git show --numstat 0b07b1c -- tests/scripts`：该提交动 **17** 支脚本文件 —— **新增 7 支**
+  （`verify-avif-alpha.ps1` +175、`verify-dng-nonraw-input.ps1` +136、`verify-gainmap-compose.ps1` +244、
+  `verify-jpg-webp-matrix.ps1` +194、`verify-jxr-backend-choice.ps1` +157、`verify-jbrd-e2e.ps1` +4、
+  `_readback-gainmap-compose.py` +132），**改动 10 支**既有脚本；更早的 `6fc9719` 新增
+  `verify-acr-route.ps1`（+187）与 `_readback-acr-render.py`（+97）。
+  `git ls-files tests/scripts` 里上述脚本全部 tracked（`verify-jbrd-e2e.ps1` 不在 `$scriptList` 内，属清单外脚本）。
+- 结论：「承重探针必须入库」这一条在 `0b07b1c` 已兑现；§47.9 末条只代表当时的快照。
+
+#### 49.9.2 CJK 棘轮第十三次登记的抬头算术：876 → 881（+5），不是 880（+4）
+
+- `_probe-cjk-hardcode-scan.ps1` 同段逐条归因是：不含该块 ⇒ **877**（基线 876，+1）→ 该块贡献 **+3** →
+  解析分支拒绝原因 **+1**，合计 **881**；抬头却写「876 → 880（+4）」，与紧随其后的第十四次登记
+  「第十三次登记的 **881** 是本轮改动前的树」互相矛盾。
+- 实测链：**876 → 881（+5）→ 885（+4）→ 901（+16）**，`$BASE_CS_UI = 901` 与工作树实测逐字相等
+  （`_probe-cjk-hardcode-scan.ps1` 实测 **PASS=14 FAIL=0**）。
+- 处置：只改抬头为 `+5` / `881`。计数常量不动 —— 本轮只动注释里的 ASCII 数字，且该探针自带反控
+  「注释里的中文不得计入」（实测 PASS）⇒ 棘轮读数不受影响。
+
+#### 49.9.3 兜底退出码的注释更正：90 ≠ 91
+
+- `QueueProcessor.cs` 的 ICC 兜底（ICC 是本次唯一色彩描述、容器又收不了 ⇒ 删产物不出货）设
+  `item.ExitCode = 90`，原注释称「与引擎侧契约拒绝**同码 90**」。
+- 实测口径：引擎侧契约拒绝是 **91**（`QueueProcessor.cs:1618` 的 `return (true, 91, null)`；同文件 1308 行
+  注释亦写「91 = 契约拒绝」）；**90** 是「选项→色彩意图装配失败」（`:1591` `return (true, 90, null)`）与
+  「显式 engine 被路由拦截」（`ColorEngineRouter.BlockReason`）那一型。
+- 处置：注释改为「fail-closed，退出码 90；引擎侧契约拒绝是 91，两型不合并」。**码值不改** ——
+  §49.2 已把「删产物 + 退出码 90」登记为本条兜底的设计读数，改码会同时改用户可见契约与账本。
+
+#### 49.9.4 `IccProfileService.cs` 去掉工作树新增的 UTF-8 BOM
+
+- 工作树版本曾比 HEAD 多一个 `EF BB BF`（纯字节差异、无功能差）。已去除：42245 → 42242 B，LF 769 行不变。
+
+#### 49.9.5 `AGENTS.md` 门禁条数同步 78 → 84
+
+- `AGENTS.md` §2 第 1 点仍写「`$scriptList` 数组（78 条）」，与运行器不符：`$expectedScriptCount = 84`
+  （`_run-step3-gates.ps1:1077`），`docs/TESTING.md` 亦已是 84。已同步为 84 —— 这一处是「清单本体就是运行器」
+  的登记面，基数写错会让下一个改清单的人按错的数去数。
+
+#### 49.9.6 B3-1 后端默认值事实登记（待维护者确认口径；本批不改代码）
+
+- 本批 diff 未改任何编码器选择逻辑（`CliParser` 只加 `--gainmap-metadata`；`EncoderDetectionService`
+  的 `GetDefaultEncoder` 与 `EncoderBackendCompat.InferDefaultBackend` 无改动）。
+- 现行默认（**实测读数**，非推断）：
+  - 产品模型：`FfmpegOptions.EncoderBackend` 默认 `Ffmpeg`（`Models/FfmpegOptions.cs:288`）；
+  - **CLI**（`--encoder` 缺省）：`InferDefaultBackend(fmt)`（`Services/EncoderDetectionService.cs:50-60`，
+    唯一调用点 `CliParser.cs:654-656`）⇒ `jxl → Cjxl`（可用时，否则 `Ffmpeg`）、`jxr → Jxr`、`dng → Dng`、
+    **其余（含 jpg）→ `Ffmpeg`（mjpeg）**；
+  - **GUI**（`GetDefaultEncoder`，同文件 `:415-431`）⇒ `jpg → cjpegli`（检测到，否则 `mjpeg`）、
+    `jxl → cjxl`（可用，否则 `libjxl`）。
+- 因此「默认臂由 cjpegli/cjxl 变 ffmpeg」这个说法**只在 JPG 的 CLI 面成立**，且不是本批引入的改动：
+  JXL 两侧默认都是 cjxl，GUI 的 JPG 仍默认 cjpegli。门禁 `verify-jxr-backend-choice.ps1` ②/③ 钉的正是这组现状
+  （② JPG 默认臂 = Ffmpeg、③ JXL 默认臂 = Cjxl vs 显式 Ffmpeg）。
+- 已知设计取舍：mjpeg 默认保留 ICC/JFIF 标注而 cjpegli 不带（`FfmpegCommandBuilder.cs:187-189` 有实测归因）⇒
+  把 JPG 默认改成 cjpegli 会让未显式指定后端的任务丢色彩标注，属产品决策，本批不动。
+
+
+---
+
+### §50 2026-10-26：bench 计时档的**测量环境**收口（自钉快核簇 + 阶梯按有效核数 + 负载读数）
+
+> 维护者决定：本批就把 §47.9 记的那笔"门禁设计面欠账（把 probe 自己钉核，或按核类分档）"改掉。
+> **阈值与判据一个都没动** —— 改的是"测的是哪一簇核"，不是"及格线画在哪"。
+
+#### 50.1 症状：同一份二进制，bench 一会儿 37/0 一会儿 30/7
+
+2026-10-26 同一天四轮的读数（`tests/output/full-round-20261026{,b,c,d}.log`）：
+
+| 轮 | `FfmpegGui.dll` | `ServiceProbe.exe` | bench | bench 墙钟 |
+|---|---|---|---|---|
+| 20261026 | 3225974D7373FA38 | 0B2B8F6E542C9A2E | 31/6 | 113.3 s |
+| 20261026b | E3CBB86437E514FC | 0B2B8F6E542C9A2E | 31/6 | 120.3 s |
+| 20261026c | **E3CBB86437E514FC**（与 b **同一份**） | 0B2B8F6E542C9A2E | **37/0** | **64.8 s** |
+| 20261026d | DC9587599E8D3DC9 | 0B2B8F6E542C9A2E | 30/7 | 121.3 s |
+
+- **b 与 c 是被测件完全相同的一次天然对照**：同一 `FfmpegGui.dll`、同一 `ServiceProbe.exe`，
+  b 红 6 条 / c 全绿，唯一分叉是墙钟 120.3 s vs 64.8 s（≈1.9×）⇒ 红不来自被测代码。
+- 现场取证：`kryptex_SRBMiner-MULTI`（挖矿）在跑，累计 CPU 40,914 s、整机 68~82% 占用；
+  本机 14 核 20 线程 = 6 P（含超线程 12 线程）+ 8 E。
+
+#### 50.2 双对照臂（同一份 16:0x 新构建二进制，独跑 `ServiceProbe bench`）
+
+| 臂 | 结果 | 红项 |
+|---|---|---|
+| 默认调度（整机 68%） | **35/2** | `sRGB→P3 ≥40` 实 35.8；`8b sRGB→P3 ≥25` 实 21.3 |
+| 起跑前用 PowerShell 钉 `0xFFF`（P 核 12 线程） | **37/0** | — |
+
+⇒ §47.9 写的"未钉核时线程落到 E 核、吞吐正好腰斩"被当场复现，`bench` 7 红**判为调度而非回归**。
+
+#### 50.3 修法：`BenchCorePin`（`tests/projects/ServiceProbe/Program.cs`，`ProbeBench` 计时前调用）
+
+- **不硬编码掩码**：逐核跑一段代表性小块（`Math.Sqrt` + 乘法 + 周期性写内存，每核 best-of-3），
+  把逐核耗时排序后按**最大相邻比 ≥1.25×** 找快慢簇 ⇒ 混合架构钉快簇；
+  **单簇机器不钉**，并在日志点名"无快慢簇可分"（AMD 全同速机器上不许假装钉过）。
+  分不出簇 / 越界掩码 / 抛异常三种退路各自点名，绝不静默。
+- 本机读数稳定：`bench-affinity=0xFFF 钉快核簇 12/20 线程（… 分档比 2.11~2.18×，未用逻辑核 [12..19]）`；
+  另有 `FFMPEGGUI_PROBE_AFFINITY` 环境变量可给定掩码复现特定机器读数。
+- **第二个坑：阶梯必须跟有效核数走**。`Environment.ProcessorCount` 在**进程内**改亲和性后仍返回开机时的
+  全机数（实测钉 12 线程仍报 20）⇒ `dop ∈ {1,2,4,8,20}` 的阶梯在 12 线程上超订阅，
+  前一档 `dop=20` 的线程池自旋线程没散尽，会吃掉后面的单核计时档。
+  实测同一掩码：起跑前钉（`cores=12`）`8b PQ→sRGB` 单核 **38.9**；起跑后钉但阶梯仍按 20 ⇒ 同格 **29.0**。
+  改 `cores = min(ProcessorCount, PinnedCount)` 后与"起跑前钉"对齐。
+- **第三个坑：标定本身不许分配内存**。第一版每核 `new double[32K]`，测量前积下 ~2 MB gen0/LOH 压力，
+  而紧接着的分配正是内核的 6 MB rgb48 大件 ⇒ GC 挂起落进被测段（实测首档极差 25.5 ms，收口后 1.9 ms）
+  ——**标定自己成了假红源**。改为静态缓冲复用。
+- 另附一条**不参与判据**的负载读数（400 ms 窗口内全进程 CPU 增量 ÷ 逻辑核容量），
+  与吞吐数值同一趟进 stdout，供下一手拿两轮日志对撞归因。
+
+#### 50.4 收口后的读数
+
+- 整轮 `tests/output/full-round-20261026e.log`（`FfmpegGui.dll=DC9587599E8D3DC9`，16:18 起）：
+  **`[bench ] exit=0 PROBE RESULT: pass=37 fail=0 92.6 s`**。
+- 独跑七臂（收口过程中逐档改一处跑一次）：加钉核但阶梯仍按 20 ⇒ 36/1（红 `sRGB→P3 ≥40`）；
+  阶梯与零分配两处都改完 ⇒ 36/1，红项固定在 `8b sRGB→P3 ≥25`，读数分布 **17.8 / 19.8 / 21.6 / 22.3 / 25.0**。
+
+#### 50.5 已知欠账（本批不做，写清楚）
+
+- **绿轮的探针 stdout 不落盘**：运行器只在探针**红**时把判据明细回显进整轮日志，
+  ⇒ `bench-affinity=` 与 `负载≈` 两行在绿轮里查不到，红轮里也只有判据行。
+  修法是把钉核/负载并进判据消息文本本身（`Check` 标签追加 `钉核={…}`），属判据面改动，另批。
+- **探针侧指纹证不了探针代码**：整轮打印的是 `ServiceProbe.exe`（apphost 桩，IL 在 `ServiceProbe.dll`）
+  ⇒ 本批给 Program.cs 加了 ~190 行，`ServiceProbe.exe=0B2B8F6E542C9A2E` 却与四轮之前逐字相同。
+  要能追溯"这一轮跑的到底是哪份探针代码"，得把 `ServiceProbe.dll`/`GainMapTestHost.dll` 也印进
+  `artifact-sha16`，属运行器改动，另批。
+- `8b sRGB→P3` 阈值 25 **钉核后仍落在本机分布内**（17.8~29.4）⇒ §47.9 那句"阈值 25 落在 E 核分布之内"
+  需按本节改口：E 核那一半已被收口，剩下的这一半是**带宽/热/外部进程**争用。
+  根治要么按核类分档设阈，要么把这档改成"与参考实现的比值"判据，属判据设计面，另批。
+
+
+---
+
+### §51 2026-10-26：自造启动器漏 `TMP` ⇒ 整轮成片假红，读数作废（`full-round-20261026e`）
+
+- 现象：`verify-color-wiring` **60/56**、`verify-format-regression` **10/10**、`verify-color-strategy` **47/26**，
+  红项形态清一色"产物 0B / 无输出"。同一份被测件（`FfmpegGui.dll=DC9587599E8D3DC9`）在 20261026d 轮里
+  wiring 是 **153/0** ⇒ 红不可能来自被测代码。
+- 现场（`tests/output/validate/wire_9eed9ae7/eng_p3srgb.o|.e`）逐字：
+  ```
+  [色彩] ffmpeg … -f rawvideo "C:\Users\20210\AppData\Local\Temp\cms_02bfded6….rgb48"
+  [out#0/rawvideo] Error opening output …: Permission denied
+  ❌ [色彩引擎] ❌ 执行失败：InvalidOperationException: 解码失败 (exit -13)
+  ❌ [1/1] a2_srgb_p3.png → 失败 (退出码 92)
+  ```
+  ⇒ 沙箱按进程拦 `C:\Users\…\AppData\Local\Temp` 的写 ⇒ 引擎侧解码全灭（AGENTS §4 记的 `exit -13` 批量假红）。
+- 成因**是我**：本轮没有复用在册启动器 `tests/output/gates-launch-full9.ps1`，临时写了个只重定向 locale 的
+  启动器，漏掉它文件头逐字写着的三件套 —— **`TMP/TEMP/TMPDIR` 指进工作区**、`PATH` 只留 Machine;User、
+  开局磁盘余量闸门（<6 GB 直接拒绝起跑）。那个启动器的注释里就记着同一坑的前一次
+  （"full9 之前那次 7/4 就是这么来的"），我没读它就另起了一炉。
+- 处置：终止任务、确认 runner pid 43952 与全部宿主进程死亡、删 `.gates.lock`，改用规范启动器重跑
+  （Tag `20261026f`，日志 `tests/output/gates-round-20261026f.log`）。**`full-round-20261026e.log` 不作为任何结论的读数。**
+- ⚠ 方法论：判"是不是产品回归"的第一步是**拿同一份被测件在两个环境下对撞**（本轮 = d 轮 153/0 vs e 轮 60/56，
+  指纹逐字相同），而不是先读代码 diff —— d/e 之间 src 只有注释与 BOM 两处 IL 等价的改动，先看 diff 会白绕一圈。
+
+
+---
+
+### §52 2026-10-26：出 beta9 前的 tests/tools 复核读数与两条新记欠账
+
+> 派子代理两次都撞配额上限（"exceed quota limit" / 当日用量上限），复核由主循环内联做完。
+> 9 项逐条，判据一律**只核不改**（未放宽任何阈值）。
+
+| 项 | 结论 | 一手证据 |
+|---|---|---|
+| `ServiceProbe/Program.cs` | ✅ 单一真值 | `ExitWritesIccFor` 全仓只在 `ColorIntentFactory.cs:26` 定义、`:329` 消费；探针 `:1883` **调产品真值**、C5 的 `expect` 在 `:2199` 独立推导（注释逐字写"两侧必须独立…否则恒绿抓不到"）；无第二份 `fmt != "avif"` 副本 |
+| `verify-acr-route.ps1` | ✅ 有牙 | 在册 `CK` **33** 条；⑦/⑧/⑨ 各加一条**下发点**日志断言（`dng_render（线性 srgb` / `…rec2020`），解析日志判红、非纯打印；⑫ 两臂中位比区间 0.35~1.5 在场 |
+| `_probe-cjk-hardcode-scan.ps1` | ✅ 已修抬头 | 876→**881**(+5)→885(+4)→901(+16)、`$BASE_CS_UI=901`；改后独跑 **PASS=14 FAIL=0**（反控"注释里的中文不得计入"在场 ⇒ 本批改的注释不进棘轮） |
+| `verify-jxl-probe-timeout.ps1` | ✅ 归因成立 | `$probe2MaxSec=30` 由**源码两趟预算推导**（`(5000+20000)/1000×1.2`，`:504` 的 ①-⑦ 反真空断言 forbid 上界自己长大）；15→30 的成因逐字写"站点 2 改两趟 ⇒ 最坏合法墙钟 ≈5 s→≈25 s"，非放宽换绿 |
+| `_lib-matrix.ps1` | ✅ 锚点仍对 | `:682` 钉 `src/FfmpegGui/Services/FfmpegCommandBuilder.cs:2400|bool exiftoolFormats = …`，该行现值逐字相等 |
+| `_run-step3-gates.ps1` | ✅ 四处同步 | AST 解析 `$scriptList` = **84** 项、无重复；`$expectedScriptCount=84`（`:1077`）；⑰ 三形态散文条数与 `docs/TESTING.md` 的 84 一致 |
+| `verify-gainmap-compose.ps1` | ✅ | ①–⑧ 八组、51 条断言行；负控一律"零产物 + 点名"（`$art.Count -eq 0` 显式判） |
+| `verify-prophoto-faithful.ps1` | ✅ §6 六臂在场 | nclx 可命名 / 日志不许谎报 / 产物本不该带 ICC / ⑥e 拒绝+零产物+点名两因 / ⑥f 反真空逐字节同 ICC；独跑 **PASS=37 FAIL=0** |
+| `tools/src/dngtool/dngtool.cpp` | ✅ 落点对 | `gamm[0]=gamm[1]=1.0` 在 `static int Decode(...)`（`:517` 起）内、SDK 渲染臂不受影响；原生件 00:23:35 晚于源 00:23:18 ⇒ 门禁验的是新件 |
+
+#### 52.1 新记欠账 A：退出码有两层，文档说的 91 是**项级**
+
+- 实测同一格 `S2 携带 + ProPhoto + avif`：日志 `[1/1] … 失败 (退出码 91)`，而**进程** `rc=1`
+  （`Program.cs:380` headless 一律回 1），产物 **0 个**。
+- `verify-prophoto-faithful` ⑥e 判的是 `$carryRc -ne 0` ⇒ 判据跑在进程层、写法正确；
+  但 `AGENTS.md` §7 与本账本 §49.2 写的"exit 91"是**项级**读数 ⇒ 口径必须点明层级，
+  否则下一手会拿进程 rc 去对 91 并误判"判据没牙"。本批已在 §49.9.3 把注释改口（90 ≠ 91）。
+
+#### 52.2 新记欠账 B：增益图元数据承载有**两个默认值**
+
+- `Models/FfmpegOptions.cs:420` `GainMapComposeMetadata { get; set; } = "iso"`（2026-10-25 维护者指定、
+  门禁 #80 逐字钉"默认必须是 ISO-only"，实测过绿）；
+- 而 `Services/GainMapComposeService.cs:131-132` 在"空/空白"时回退 **`both`**。
+- 现状不可达（CLI 词表校验把空串拦在建队前、GUI 只发三值之一、预设拷贝是 `!= null` 才覆盖），
+  但这是"同一语义两处默认"的老形状：**一旦哪条路真送进 null，静默变 both 而不是 ISO**。
+  收口办法（择一，另批）：把服务侧回退改成取模型默认，或删掉回退并把 null 当契约拒绝点名。

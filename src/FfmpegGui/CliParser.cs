@@ -48,6 +48,11 @@ namespace FfmpegGui
             /// 与 -f 强绑定：JPEG ⇒ cjpegli|mjpeg，AVIF ⇒ libaom-av1|libsvtav1。
             /// </summary>
             public string? ComposeEncoder { get; set; }
+            /// <summary>
+            /// 增益图元数据承载：iso | xmp | both（null = 引擎默认 both）。
+            /// AVIF 只能 iso（tmap 承载 ISO 21496-1）；显式 xmp 在建队时拒绝，不静默改写。
+            /// </summary>
+            public string? ComposeMetadata { get; set; }
 
             // 高级选项
             public string? SettingsFile { get; set; }
@@ -357,6 +362,16 @@ namespace FfmpegGui
                         result.ComposeEncoder = enc;
                         break;
                     }
+                    case "--gainmap-metadata":
+                    {
+                        var v = TakeValue();
+                        var carrier = (v ?? "").Trim().ToLowerInvariant();
+                        if (carrier is not ("iso" or "xmp" or "both"))
+                            throw new ArgumentException(
+                                $"--gainmap-metadata 取值无效: {v}（iso | xmp | both）");
+                        result.ComposeMetadata = carrier;
+                        break;
+                    }
 
                     // ── 干跑模式 ──
                     case "--dry-run":
@@ -442,6 +457,7 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
   --gainmap-peak <nits>   Compose peak (0 = auto: static metadata, else measured from pixels)
   --gainmap-multichannel <true|false>  Compose gain-map channels (default true = per-channel)
   --gainmap-encoder <name>  Compose encoder: cjpegli|mjpeg (jpg), libaom-av1|libsvtav1 (avif)
+  --gainmap-metadata <c>    Gain-map carrier: iso|xmp|both (default iso; avif = iso only, xmp rejected)
 
 高级编码选项 (通过 --key=value 透传):
   --chroma <4:2:0|4:2:2|4:4:4|auto>
@@ -552,6 +568,9 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
             if (!compose && opts.ComposeEncoder != null)
                 throw new InvalidOperationException(
                     "--gainmap-encoder 只在 --compose-gainmap 下有意义：普通转换没有增益图子图可编码。");
+            if (!compose && opts.ComposeMetadata != null)
+                throw new InvalidOperationException(
+                    "--gainmap-metadata 只在 --compose-gainmap 下有意义：普通转换没有增益图可写。");
             if (compose)
             {
                 if (inputFiles.Count % 2 != 0)
@@ -578,6 +597,11 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
                             "--gainmap-encoder cjpegli 不可用：未检测到 cjpegli。"
                             + "请改用 --gainmap-encoder mjpeg，或先配置 cjpegli。");
                 }
+                // AVIF 的增益图只有 tmap/ISO 21496-1 这一种承载；XMP 形态没有标准读法 ⇒ 建队即拒绝。
+                if (cfmt == "avif" && opts.ComposeMetadata == "xmp")
+                    throw new InvalidOperationException(
+                        "--gainmap-metadata xmp 与 -f avif 不匹配：AVIF 增益图由 tmap 承载 ISO 21496-1，"
+                        + "没有 XMP 形态的标准读法。请用 iso 或 both（both 在 AVIF 上等同 iso）。");
             }
 
             // 可用性诚实原则：目标格式依赖的外部编码器缺失时直接报错，
@@ -789,7 +813,9 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
                 GainMapCompose = opts.ComposeGainMap,
                 GainMapComposePeakNits = opts.ComposePeakNits,
                 GainMapComposeMultiChannel = opts.ComposeMultiChannel,
-                GainMapComposeEncoder = opts.ComposeEncoder
+                GainMapComposeEncoder = opts.ComposeEncoder,
+                GainMapComposeMetadata = string.IsNullOrWhiteSpace(opts.ComposeMetadata)
+                    ? "iso" : opts.ComposeMetadata
             };
 
             // 应用预设（如果指定）

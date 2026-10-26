@@ -118,7 +118,7 @@ CK (-not ($pSdr -match 'smpte2084')) "夹具成立：SDR 那份**不带** HDR �
 
 # ── ② JPEG 三通道主臂（peak=1000 ⇒ 容量固定 2.30，量程随内容）────────────────
 $jDir = "$d/jpg-mc"
-$r = RunCli "--headless --compose-gainmap -i `"$sdr,$hdr`" -o `"$jDir`" -f jpg --gainmap-peak 1000"
+$r = RunCli "--headless --compose-gainmap -i `"$sdr,$hdr`" -o `"$jDir`" -f jpg --gainmap-peak 1000 --gainmap-metadata both"
 CK ($r[0] -eq 0) "JPEG 三通道：CLI 成功（rc=$($r[0])）"
 $jOut = "$jDir/sdr_gainmap.jpg"
 $jLen = if (Test-Path $jOut) { (Get-Item $jOut).Length } else { 0 }
@@ -156,7 +156,7 @@ CK ($pcDb -lt 15.0) "底图保真尺子会分叉：无关图仅 $pcDb dB（<15�
 
 # ── ③ JPEG 单通道臂（开关必须真的改通道数，不是死旋钮）──────────────────────
 $mDir = "$d/jpg-mono"
-$r = RunCli "--headless --compose-gainmap -i `"$sdr,$hdr`" -o `"$mDir`" -f jpg --gainmap-peak 1000 --gainmap-multichannel false"
+$r = RunCli "--headless --compose-gainmap -i `"$sdr,$hdr`" -o `"$mDir`" -f jpg --gainmap-peak 1000 --gainmap-multichannel false --gainmap-metadata both"
 $mOut = "$mDir/sdr_gainmap.jpg"
 CK ($r[0] -eq 0 -and (Test-Path $mOut)) "JPEG 单通道：CLI 成功且产物在位（rc=$($r[0])）"
 $mx = Exif $mOut
@@ -178,7 +178,7 @@ CK ($ext -contains '256x192' -and $ext -contains '128x96') `
 
 # ── ⑤ 峰值 auto 臂（默认路径不崩、容量仍写成 peak/203）──────────────────────
 $oDir = "$d/jpg-auto"
-$r = RunCli "--headless --log-level debug --compose-gainmap -i `"$sdr,$hdr`" -o `"$oDir`" -f jpg"
+$r = RunCli "--headless --log-level debug --compose-gainmap -i `"$sdr,$hdr`" -o `"$oDir`" -f jpg --gainmap-metadata both"
 $oOut = "$oDir/sdr_gainmap.jpg"
 $oLen = if (Test-Path $oOut) { (Get-Item $oOut).Length } else { 0 }
 CK ($r[0] -eq 0 -and $oLen -gt 0) "峰值 auto：CLI 成功且产物在位（rc=$($r[0]), $oLen B）"
@@ -221,8 +221,11 @@ $r = RunCli "--headless --log-level debug --compose-gainmap -i `"$sdr,$hdr`" -o 
 $eOut = "$eDir/sdr_gainmap.jpg"
 CK ($r[0] -eq 0 -and (Test-Path $eOut)) "编码器 mjpeg：CLI 成功且产物在位（rc=$($r[0])）"
 CK ($r[1] -match 'JPEG encoder: ffmpeg mjpeg') "编码器 mjpeg：日志点名实际编码器（不是静默回落）"
-CK ((TagVal (Exif $eOut) 'MapPrimary') -eq '256x192') `
-    "编码器 mjpeg：MPF 主图尺寸仍成立（实测 $(TagVal (Exif $eOut) 'MapPrimary')）"
+# 本臂不传 --gainmap-metadata ⇒ 走默认 ISO-only。MapPrimary 是 XMP 字段，这一刻读不到是**正确**的；
+# 「MPF 仍成立」改由独立读手走偏移证明（不依赖承载形态）。
+$empf = (Exec $py "`"$rd`" mpf `"$eOut`"")
+CK ($empf[0] -eq 0 -and $empf[1] -match 'MPFImages=2' -and $empf[1] -match 'SecondaryAtTail=1') `
+    "编码器 mjpeg（默认 ISO-only）：MPF 仍能独立定位次级图（rc=$($empf[0])）"
 
 $vDir = "$d/enc-svtav1"
 $r = RunCli "--headless --log-level debug --compose-gainmap -i `"$sdr,$hdr`" -o `"$vDir`" -f avif --gainmap-peak 1000 --gainmap-encoder libsvtav1"
@@ -238,6 +241,70 @@ $n5 = "$d/neg-encoder-unknown"
 AssertRejected '编码器词表外' "--headless --compose-gainmap -i `"$sdr,$hdr`" -o `"$n5`" -f jpg --gainmap-encoder bogus" '--gainmap-encoder 取值无效' 2 $n5
 $n6 = "$d/neg-encoder-nocompose"
 AssertRejected '编码器缺合成模式' "--headless -i `"$sdr`" -o `"$n6`" -f jpg --gainmap-encoder mjpeg" '只在 --compose-gainmap 下有意义' 2 $n6
+
+# ── ⑧ 元数据承载三态（JPEG）+ AVIF CRF 生效 ─────────────────────────────
+#   判据读**字节**，不读编码器自报：
+#     · ISO 21496-1 APP2 的唯一命名空间串 `urn:iso:std:iso:ts:21496:-1`；
+#     · XMP hdrgm 的 `hdrgm:` 前缀。
+#   三态各少一样 / 多一样都判红 —— 这正是「选了却没兑现」与「没选却硬塞」的两种形态。
+#   MPF 在三种承载下都必须仍能独立走出次级图（它是「第二张图在哪」的唯一索引）。
+function HasAscii([string]$path, [string]$needle) {
+    if (-not (Test-Path $path)) { return $false }
+    $s = [System.Text.Encoding]::Latin1.GetString([System.IO.File]::ReadAllBytes($path))
+    return $s.Contains($needle)
+}
+
+foreach ($carrier in @('iso', 'xmp', 'both')) {
+    $cDir = "$d/meta-$carrier"
+    $r = RunCli "--headless --log-level debug --compose-gainmap -i `"$sdr,$hdr`" -o `"$cDir`" -f jpg --gainmap-peak 1000 --gainmap-encoder mjpeg --gainmap-metadata $carrier"
+    $cOut = "$cDir/sdr_gainmap.jpg"
+    CK ($r[0] -eq 0 -and (Test-Path $cOut)) "元数据 $carrier：CLI 成功且产物在位（rc=$($r[0])）"
+    CK ($r[1] -match "gain-map metadata carrier: $carrier") "元数据 $carrier：日志点名承载方式（不是静默默认）"
+    $hasIso = HasAscii $cOut 'urn:iso:std:iso:ts:21496:-1'
+    $hasXmp = HasAscii $cOut 'hdrgm:'
+    $wantIso = $carrier -ne 'xmp'
+    $wantXmp = $carrier -ne 'iso'
+    CK ($hasIso -eq $wantIso) "元数据 $carrier：ISO APP2 命中=$hasIso（期望 $wantIso）"
+    CK ($hasXmp -eq $wantXmp) "元数据 $carrier：XMP hdrgm 命中=$hasXmp（期望 $wantXmp）"
+    $cmpf = (Exec $py "`"$rd`" mpf `"$cOut`"")
+    CK ($cmpf[0] -eq 0 -and $cmpf[1] -match 'MPFImages=2' -and $cmpf[1] -match 'SecondaryAtTail=1') `
+        "元数据 $carrier：MPF 仍能独立定位次级图（rc=$($cmpf[0])）"
+}
+# XMP-only 仍须让 XMP 读手读出容量：否则「写了 hdrgm 串」不等于「可被消费」
+$cXmp = "$d/meta-xmp/sdr_gainmap.jpg"
+CK ((TagVal (Exif $cXmp) 'HDRCapacityMax') -eq '2.30') `
+    "元数据 xmp：exiftool 能读出 HDRCapacityMax=2.30（实测 $(TagVal (Exif $cXmp) 'HDRCapacityMax')）"
+
+# 默认（不传 --gainmap-metadata）必须是 ISO-only —— 2026-10-25 用户指定的默认
+$dDef = "$d/meta-default"
+$r = RunCli "--headless --log-level debug --compose-gainmap -i `"$sdr,$hdr`" -o `"$dDef`" -f jpg --gainmap-peak 1000 --gainmap-encoder mjpeg"
+$dOut = "$dDef/sdr_gainmap.jpg"
+CK ($r[0] -eq 0 -and (Test-Path $dOut)) "元数据默认：CLI 成功且产物在位（rc=$($r[0])）"
+CK ($r[1] -match 'gain-map metadata carrier: iso') "元数据默认：日志点名 iso（不是 both）"
+CK ((HasAscii $dOut 'urn:iso:std:iso:ts:21496:-1')) "元数据默认：ISO APP2 在"
+CK (-not (HasAscii $dOut 'hdrgm:')) "元数据默认：XMP hdrgm 不在（默认是 ISO-only）"
+$dmpf = (Exec $py "`"$rd`" mpf `"$dOut`"")
+CK ($dmpf[0] -eq 0 -and $dmpf[1] -match 'MPFImages=2') "元数据默认：MPF 仍能走出次级图（rc=$($dmpf[0])）"
+
+# AVIF：质量滑块必须真的改 CRF（同一对输入，只动 -q）
+$qHi = "$d/crf-high"; $qLo = "$d/crf-low"
+$rHi = RunCli "--headless --log-level debug --compose-gainmap -i `"$sdr,$hdr`" -o `"$qHi`" -f avif --gainmap-peak 1000 --gainmap-encoder libaom-av1 -q 99"
+$rLo = RunCli "--headless --log-level debug --compose-gainmap -i `"$sdr,$hdr`" -o `"$qLo`" -f avif --gainmap-peak 1000 --gainmap-encoder libaom-av1 -q 30"
+$oHi = "$qHi/sdr_gainmap.avif"; $oLo = "$qLo/sdr_gainmap.avif"
+CK ($rHi[0] -eq 0 -and $rLo[0] -eq 0 -and (Test-Path $oHi) -and (Test-Path $oLo)) `
+    "AVIF 质量：两臂都成功（rc=$($rHi[0])/$($rLo[0])）"
+CK ($rHi[1] -match 'CRF 1,' -and $rLo[1] -match 'CRF 44,') `
+    "AVIF 质量：-q 99 ⇒ CRF 1、-q 30 ⇒ CRF 44（实测 $(($rHi[1] | Select-String 'CRF \d+' -AllMatches).Matches.Value -join '|') / $(($rLo[1] | Select-String 'CRF \d+' -AllMatches).Matches.Value -join '|')）"
+$lenHi = if (Test-Path $oHi) { (Get-Item $oHi).Length } else { 0 }
+$lenLo = if (Test-Path $oLo) { (Get-Item $oLo).Length } else { 0 }
+CK ($lenLo -lt $lenHi) "AVIF 质量：低质量臂更小（$lenLo B < $lenHi B）"
+
+$n7 = "$d/neg-meta-avif-xmp"
+AssertRejected 'AVIF + XMP 元数据' "--headless --compose-gainmap -i `"$sdr,$hdr`" -o `"$n7`" -f avif --gainmap-metadata xmp" '没有 XMP 形态' 2 $n7
+$n8 = "$d/neg-meta-unknown"
+AssertRejected '元数据词表外' "--headless --compose-gainmap -i `"$sdr,$hdr`" -o `"$n8`" -f jpg --gainmap-metadata bogus" '--gainmap-metadata 取值无效' 2 $n8
+$n9 = "$d/neg-meta-nocompose"
+AssertRejected '元数据缺合成模式' "--headless -i `"$sdr`" -o `"$n9`" -f jpg --gainmap-metadata iso" '只在 --compose-gainmap 下有意义' 2 $n9
 
 Write-Output "PASS=$script:pass FAIL=$script:fail"
 if ($script:fail -gt 0) { exit 1 }

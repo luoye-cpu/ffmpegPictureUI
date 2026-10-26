@@ -1506,6 +1506,9 @@ $scriptList = @('verify-ps-compat.ps1','verify-color-caps.ps1','verify-color-wir
                  #   而 SDK 三张全施加（实测同一源四角/中心 1.70 → 1.84）；渲染空间按下游目标选（bt709 出口 ⇒ sRGB
                  #   原色，其余 ⇒ Rec2020），两腿必须真的不同、且只差一次已知矩阵（PSNR ≥70 dB）；`dng_render` 不旋转
                  #   ⇒ 工具按 Orientation 旋正；产品侧声明必须与渲染空间同源（srgb↔bt709 / rec2020↔bt2020）。
+                 #   2026-10-26 加 ⑫：LibRaw 臂必须输出**真线性**（默认 gamm={0.45,4.5} 会套 dcraw 曲线，
+                 #   而产品声明 linear 并交 zscale(tin=linear) ⇒ 二次 gamma；同一 DNG 的 -d/-rd 中位比
+                 #   修复前 2.42、修复后 0.60，判据带 0.35~1.5）。
                  #   ⚠ 素材链外（两份 Sony ARW）：缺失即点名红，不降级 SKIP。
                  'verify-acr-route.ps1',
                  # ── 第 80 条：2026-10-24 接线（`verify-gainmap-compose.ps1`）────────────────────────

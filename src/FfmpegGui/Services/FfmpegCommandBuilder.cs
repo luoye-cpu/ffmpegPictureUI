@@ -1710,6 +1710,19 @@ namespace FfmpegGui.Services
         private static ColorMetadata ProbeWithFfprobe(string inputPath,
             Action<string>? log = null, CancellationToken ct = default)
         {
+            var m = ProbeWithFfprobeOnce(inputPath, out bool timedOut, log, ct, 5000);
+            if (!timedOut || ct.IsCancellationRequested) return m;
+            // ⚠ 2026-10-26：5 s 在负载下会抽风，而超时=「按未探测处理」⇒ 有标签的源被当未标注
+            //   （sRGB 惯例）⇒ 源=目标直通、产出错标。与 `ExifToolService.ReadColorTagsAsync`
+            //   同一口径：快路径 5 s ⇒ 重试 20 s；两趟都超时才算真的读不到。
+            log?.Invoke($"[probe] ffprobe 色彩探测超时（5s）⇒ 重试一次（20s）：{Path.GetFileName(inputPath)}\n");
+            return ProbeWithFfprobeOnce(inputPath, out _, log, ct, 20000);
+        }
+
+        private static ColorMetadata ProbeWithFfprobeOnce(string inputPath, out bool timedOut,
+            Action<string>? log, CancellationToken ct, int timeoutMs)
+        {
+            timedOut = false;
             var meta = new ColorMetadata();
             if (inputPath == "-") return meta;
             try
@@ -1736,12 +1749,13 @@ namespace FfmpegGui.Services
                 var errTask = p.StandardError.ReadToEndAsync();
                 // `#26`：同步 `WaitForExit(5000)` 不接受 ct ⇒ 用 `ct.Register` 杀树接线；原有 5s 超时**不变**。
                 using var reg = ct.Register(() => { try { p.Kill(entireProcessTree: true); } catch { } });
-                if (!p.WaitForExit(5000))
+                if (!p.WaitForExit(timeoutMs))
                 {
                     try { p.Kill(entireProcessTree: true); } catch { }
                     // 原写法在此**静默**返回退化 meta ⇒ 补一句点名，不再无声。
-                    var tmsg = $"[probe] ffprobe 色彩探测超时（5s）⇒ 已终止：{Path.GetFileName(inputPath)}（按未探测处理）";
+                    var tmsg = $"[probe] ffprobe 色彩探测超时（{timeoutMs / 1000}s）⇒ 已终止：{Path.GetFileName(inputPath)}（按未探测处理）";
                     if (log != null) log(tmsg + "\n"); else System.Diagnostics.Trace.WriteLine(tmsg);
+                    timedOut = true;
                     return meta;
                 }
                 if (ct.IsCancellationRequested)

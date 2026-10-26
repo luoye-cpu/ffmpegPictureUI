@@ -1877,6 +1877,10 @@ namespace ServiceProbe
                 {
                     Strategy = st, Source = src, Format = CE.CapsFor(fmt), CarryScope = scope,
                     TargetBitDepth = 8, AllowApproximateCurve = false,
+                    // 2026-10-26 收口：**走产品真值** `ColorIntentFactory.ExitWritesIccFor`，
+                    // 不在探针里再抄一遍 `fmt != "avif"` —— 抄了第二份就等于「探针测自己的假设」，
+                    // 产品侧怎么改都跟着一起变 ⇒ 判据恒绿。产品真值只有那一处。
+                    ExitWritesIcc = FfmpegGui.Services.ColorMapping.ColorIntentFactory.ExitWritesIccFor(fmt),
                     Manual = st == ST.Manual ? MI.Create(true, "Display P3", "smpte432", "iec61966-2-1", null)
                                              : MI.Create(false, null, null, null, null),
                 };
@@ -2178,7 +2182,23 @@ namespace ServiceProbe
                     var it = MakeIntent(ST.Recommended, src, fmt, scope);
                     var p = CE.Plan(it);
                     bool carries = p.Action == CA.CarryIcc;
-                    bool expect = CE.CapsFor(fmt).CanCarryArbitraryIcc && src.SourceIccPath != null && ScopeAllows(scope, src);
+                    // 2026-10-26（AVIF ICC 收口批，账本 §49）：`expect` 补 **`it.ExitWritesIcc`** 一维。
+                    //   契约变更：AVIF **静态出口**是 ffmpeg（muxer 不写 ICC、exiftool 后置报 `0 updated` 而 rc=0），
+                    //   而 `CanCarryArbitraryIcc` 描述的是 **avifenc**（GIF→AVIF 两步法）⇒ 两者**分轴**，
+                    //   同时为真才允许承诺「携带 ICC」。故 `prophoto→avif` 的 carry 由 True 变 **False** 是**修好的本意**。
+                    // ⚠⚠ **两侧必须独立，否则这条判据没有牙**（2026-10-26 二次修正）：
+                    //   · `carries` 侧走**产品真值** —— `MakeIntent` 调 `ColorIntentFactory.ExitWritesIccFor`，
+                    //     故 `CE.Plan(it)` 用的是产品自己装配的值；
+                    //   · `expect` 侧是**判据的独立推导**（下面自己判一次 avif），**不读** `it.ExitWritesIcc` ——
+                    //     若两侧同源，产品把 `ExitWritesIccFor` 改回恒 true 时预期与实际同步变化 ⇒ 恒绿抓不到。
+                    // ⚠ 下面这处 `avif` 是**判据**，不是产品逻辑的第二份副本：产品真值只有
+                    //   `ColorIntentFactory.ExitWritesIccFor` 一处，改产品须改那里；改这里只改本条判据的预期。
+                    // ⚠ 这一改不是「放宽判据」：同一 foreach 里的 `adobe→png` / `p3Icc→tiff` 两格 ExitWritesIcc=true
+                    //   ⇒ 预期仍为 True，是本改的**反真空**；而「AVIF 不许谎报携带」由端到端判据
+                    //   `verify-prophoto-faithful` §6 ⑥a–⑥c 钉死（⑥c 断言该格产物**不得**带 ICC）。
+                    bool expectWritesIcc = !string.Equals(fmt, "avif", StringComparison.OrdinalIgnoreCase);
+                    bool expect = CE.CapsFor(fmt).CanCarryArbitraryIcc && expectWritesIcc
+                                  && src.SourceIccPath != null && ScopeAllows(scope, src);
                     Check(carries == expect, $"C5 scope={scope} {src.Name}→{fmt}: carry={carries} 预期 {expect}（{p.Reason}）");
                     Check(p.Matrix == null || p.Action == CA.Map, $"C5 scope={scope} {src.Name}→{fmt}: 非映射格不得带矩阵");
                 }
@@ -8048,6 +8068,177 @@ namespace ServiceProbe
         /// bench —— 性能基线：内核吐量（含 DOP 扩展性）+ 端到端 H1 vs H2(zscale) 对比。
         /// 数据写入控制台，由 run-color-engine-verification.ps1 归档到 docs。
         /// </summary>
+        /// <summary>
+        /// bench 计时档的**测量环境**收口（2026-10-26，账本 §50）：把本进程钉到"快核簇"再计时。
+        /// 动因 = 混合架构（P/E 核）下线程可被调度到 E 核，同一二进制的单核吞吐腰斩 ⇒
+        /// `sRGB→P3 ≥40`、`8b PQ→sRGB ≥25` 这类**绝对**门槛按调度假红（实测同一份新构建二进制：
+        /// 默认调度 35/2、钉快核簇 37/0，同期机器负载 77~82% ⇒ 差的是调度，不是代码）。
+        /// ⚠ 阈值一个都不动 —— 这里只让读数可复现，不放宽判据。
+        /// ⚠ 不硬编码掩码：核编号顺序随厂商/BIOS 变（Intel 通常 P 在前，AMD 桌面可能全簇同速），
+        ///   所以按"逐核实测耗时"找最大相邻比来分簇；分不出簇（单簇机器）就**不钉**并在日志点名。
+        /// ⚠ 子进程（ffmpeg/zimg）继承本进程亲和性 ⇒ 端到端 H1/H2 两臂同侧，比值判据不受影响
+        ///   （实测钉核后 H1/H2 = 1.81×，门槛 ≤2.0）。
+        /// </summary>
+        private static class BenchCorePin
+        {
+            /// <summary>给定即优先采用（<c>0x</c> 前缀按十六进制，否则十进制），用于在特定机器上复现读数。</summary>
+            public const string EnvMask = "FFMPEGGUI_PROBE_AFFINITY";
+            /// <summary>钉上之后**实际可用**的逻辑线程数；0 = 未钉（沿用全机核数）。
+            /// 计时阶梯按它排序，否则 `Environment.ProcessorCount` 仍是开机时读到的全机数
+            /// （进程内改亲和性不会让它变小，实测钉 12 线程仍报 20）⇒ 阶梯超订阅。
+            /// </summary>
+            public static int PinnedCount { get; private set; }
+
+            const double MinGapRatio = 1.25;     // 相邻两档实测耗时之比 ≥ 此值才认"存在快慢簇"
+            const int SamplesPerCore = 3;        // 每核取最优：满载机器上单次样本会被抢占污染
+
+            public static string Apply()
+            {
+                try
+                {
+                    if (!System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(
+                            System.Runtime.InteropServices.OSPlatform.Windows))
+                        return "bench-affinity=未钉（非 Windows）";
+                    int n = Environment.ProcessorCount;
+                    if (n < 4) return $"bench-affinity=未钉（逻辑核 {n}，分簇无意义）";
+                    if (n > 63) return $"bench-affinity=未钉（逻辑核 {n} > 63，位掩码法不适用）";
+                    using var proc = System.Diagnostics.Process.GetCurrentProcess();
+
+                    var ov = Environment.GetEnvironmentVariable(EnvMask);
+                    if (!string.IsNullOrWhiteSpace(ov))
+                    {
+                        string t = ov.Trim();
+                        long mv;
+                        bool parsed = t.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
+                            ? long.TryParse(t.Substring(2), System.Globalization.NumberStyles.HexNumber,
+                                           System.Globalization.CultureInfo.InvariantCulture, out mv)
+                            : long.TryParse(t, out mv);
+                        if (!parsed || mv <= 0 || (mv >> n) != 0)
+                            return $"bench-affinity=未钉（{EnvMask}=\"{ov}\" 不是逻辑核 {n} 范围内的掩码）";
+                        proc.ProcessorAffinity = (IntPtr)mv;
+                        PinnedCount = BitCount(mv);
+                        return $"bench-affinity=0x{mv:X}（由 {EnvMask} 指定，{BitCount(mv)}/{n} 线程）";
+                    }
+
+                    long fullMask = (long)proc.ProcessorAffinity;
+                    WarmUp();
+                    var ms = new double[n];
+                    for (int i = 0; i < n; i++)
+                    {
+                        proc.ProcessorAffinity = (IntPtr)(1L << i);
+                        double best = double.MaxValue;
+                        for (int s = 0; s < SamplesPerCore; s++)
+                        {
+                            double one = Chunk();
+                            if (one < best) best = one;
+                        }
+                        ms[i] = best;
+                    }
+                    proc.ProcessorAffinity = (IntPtr)fullMask;
+
+                    var keys = (double[])ms.Clone();
+                    var order = new int[n];
+                    for (int i = 0; i < n; i++) order[i] = i;
+                    Array.Sort(keys, order);
+                    double maxRatio = 0; int cut = -1;
+                    for (int k = 1; k < n; k++)
+                    {
+                        if (keys[k - 1] <= 0) continue;
+                        double r = keys[k] / keys[k - 1];
+                        if (r > maxRatio) maxRatio = r;
+                        // 至少留 2 个快核（超线程成对），且不许切在最后一个核上（那是"只留最快一个"的噪声解）
+                        if (r >= MinGapRatio && r > 0 && k >= 2 && k < n && (cut < 0 || r > keys[cut] / keys[cut - 1]))
+                            cut = k;
+                    }
+                    if (cut < 0)
+                        return "bench-affinity=未钉（单簇机器：逐核 " +
+                               $"{keys[0]:F1}~{keys[n - 1]:F1} ms，最大相邻比 {maxRatio:F2}<{MinGapRatio:F2} ⇒ 无快慢簇可分，按默认调度）";
+
+                    long mask = 0;
+                    for (int k = 0; k < cut; k++) mask |= 1L << order[k];
+                    proc.ProcessorAffinity = (IntPtr)mask;
+                    PinnedCount = cut;
+                    var slow = new System.Text.StringBuilder();
+                    for (int i = 0; i < n; i++)
+                        if (((mask >> i) & 1) == 0) slow.Append(slow.Length == 0 ? "" : ",").Append(i);
+                    return $"bench-affinity=0x{mask:X} 钉快核簇 {cut}/{n} 线程" +
+                           $"（快核 {keys[0]:F1}~{keys[cut - 1]:F1} ms，慢核 {keys[cut]:F1}~{keys[n - 1]:F1} ms，" +
+                           $"分档比 {keys[cut] / keys[cut - 1]:F2}×，未用逻辑核 [{slow}]）";
+                }
+                catch (Exception ex)
+                {
+                    return "bench-affinity=未钉（收口失败 ⇒ 退回默认调度，读数含 E 核风险：" +
+                           $"{ex.GetType().Name}: {ex.Message}）";
+                }
+            }
+
+            static int BitCount(long v) { int c = 0; while (v != 0) { c += (int)(v & 1); v >>= 1; } return c; }
+            /// <summary>
+            /// 机器负载读数（**不参与判据**）：一段窗口内全进程 CPU 增量 ÷（逻辑核数 × 窗口时长）。
+            /// 为什么要打在日志里 = 计时档一红，第一个问题永远是"这格真慢"还是"这台机器在忙"；
+            /// 本仓旧规矩是"别拿单次 LoadPercentage 当机器空闲"⇒ 那就把负载读数与吞吐数值
+            /// **同一趟**留在日志里，让下一手能拿两轮日志对撞归因，而不是事后猜。
+            /// </summary>
+            public static string LoadLine()
+            {
+                try
+                {
+                    int n = Environment.ProcessorCount;
+                    long t0 = BusyTicks();
+                    var sw = System.Diagnostics.Stopwatch.StartNew();
+                    System.Threading.Thread.Sleep(400);
+                    double busyMs = (BusyTicks() - t0) / 10_000.0;      // ticks = 100 ns
+                    double sec = Math.Max(0.05, sw.Elapsed.TotalSeconds);
+                    double pct = busyMs / 1000.0 / (sec * n) * 100.0;
+                    return $"负载≈{pct:F0}%（{sec * 1000:F0} ms 窗口内全进程 CPU 增量 {busyMs:F0} ms ÷ {n} 逻辑核容量；不判据，仅供归因）";
+                }
+                catch (Exception ex)
+                {
+                    return $"负载=不可读（{ex.GetType().Name}）";
+                }
+            }
+
+            static long BusyTicks()
+            {
+                long t = 0;
+                foreach (var pr in System.Diagnostics.Process.GetProcesses())
+                {
+                    try { t += pr.TotalProcessorTime.Ticks; }
+                    catch { }
+                    finally { pr.Dispose(); }
+                }
+                return t;
+            }
+
+
+            /// <summary>预热：先跑两遍让 JIT 完成，避免"第一个被测核背上编译耗时"的系统性偏差。</summary>
+            static void WarmUp() { Chunk(); Chunk(); }
+
+            static readonly double[] CalibSink = new double[(1 << 18) >> 3];
+
+            /// <summary>代表性小块：超越函数 + 乘法 + 周期性写内存（与色彩内核同型的"算子 + 带宽"混合负载）。</summary>
+            static double Chunk()
+            {
+                // ⚠ **零分配**：标定用的缓冲区只在静态字段里分配一次。
+                //   写成每次 `new double[...]` 会在测量前积下 ~2 MB gen0/LOH 压力，
+                //   而下一个分配正是内核的 6 MB rgb48 大件 → GC 挂起落进被测段
+                //   （实测首档极差 25.5 ms）⇒ 标定本身成了假红源。
+                const int N = 1 << 18;
+                var sink = CalibSink;
+                double acc = 0;
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                for (int i = 0; i < N; i++)
+                {
+                    acc += Math.Sqrt((i & 1023) + 1.0) * 1.0009765625;
+                    if ((i & 7) == 0) sink[i >> 3] = acc;
+                }
+                acc += sink[0];                       // 读回一次，防止整块被当成死码消除
+                double ms = sw.Elapsed.TotalMilliseconds;
+                if (double.IsNaN(acc)) Console.Error.Write('1');
+                return ms;
+            }
+        }
+
         private static void ProbeBench(string[] args)
         {
             // 绝对门槛只在 Release 下成立（Debug 关掉优化，吞吐会差 5-10 倍，拿它当基线会误判）
@@ -8057,6 +8248,9 @@ namespace ServiceProbe
                 && string.Equals(cfg[0].Configuration, "Release", StringComparison.OrdinalIgnoreCase);
             if (!isRelease)
                 Console.WriteLine("⚠ 当前为 Debug 构建：只输出数值，不做绝对吞吐门槛（请用 -c Release 复跑）");
+
+            // ⚠ 计时前先收口测量环境（混合架构下线程落 E 核 ⇒ 同一二进制吞吐腰斩、绝对门槛按调度假红）
+            Console.WriteLine("  " + BenchCorePin.Apply() + " ｜ " + BenchCorePin.LoadLine());
 
             bool big = args.Length >= 2 && args[1] == "big";
             var sizes = big ? new[] { (1024, 1024), (4096, 2160), (8192, 4096) } : new[] { (1024, 1024), (4096, 2160) };
@@ -8072,6 +8266,10 @@ namespace ServiceProbe
                 ("sRGB→PQ(目标域换算 ⇒ 关表)", "bt709", "iec61966-2-1", "bt2020", "smpte2084"),
             };
             int cores = Environment.ProcessorCount;
+            // ⚠ 钉过核 ⇒ 阶梯按**实际可用**线程排（不是全机核数）。超订阅会毒后面的单核计时：
+            //   同一掩码 0xFFF 实测「起跑前钉」cores=12 ⇒ 8b PQ→sRGB 单核 38.9，
+            //   「起跑后钉、阶梯仍按 20」⇒ 同格只剩 29.0（前一档 dop=20 的线程池自旋线程没散尽）。
+            if (BenchCorePin.PinnedCount > 0) cores = Math.Min(cores, BenchCorePin.PinnedCount);
             foreach (var (w, h) in sizes)
             {
                 var src = SyntheticFrame16(w, h);

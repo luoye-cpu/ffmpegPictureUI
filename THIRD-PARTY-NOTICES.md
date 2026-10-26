@@ -18,14 +18,14 @@ Full license texts are provided in the [`licenses/`](licenses/) directory of thi
 | 组件 Component | 版本/位置 Version / Location | 许可 License | 版权 Copyright |
 |---|---|---|---|
 | **FfmpegPictureUI**（本项目） | `FfmpegGui.exe` | **GPL-3.0-only** | (C) 2025-2026 luoye-cpu |
-| Avalonia, Avalonia.Desktop, Avalonia.Themes.Fluent | 12.0.4 | MIT | (c) AvaloniaUI OÜ |
-| Avalonia.Angle.Windows.Natives | 2.1.27548 | MIT | (c) AvaloniaUI OÜ |
+| Avalonia, Avalonia.Desktop, Avalonia.Themes.Fluent | 12.1.4 | MIT | (c) AvaloniaUI OÜ |
+| Avalonia.Angle.Windows.Natives | 2.1.27548.20260419 | MIT | (c) AvaloniaUI OÜ |
 | SkiaSharp (+ NativeAssets) | 3.119.4 | MIT | (c) 2015-2016 Xamarin, Inc. / 2017-2018 Microsoft |
 | HarfBuzzSharp (+ NativeAssets) | 8.3.1.3 | MIT | (c) 2015-2016 Xamarin, Inc. / 2017-2018 Microsoft |
-| MicroCom.Runtime | 0.11.4 | MIT | (c) .NET Foundation / AvaloniaUI OÜ |
-| Tmds.DBus.Protocol | 0.92.0 | MIT | (c) Tom Deseyn |
+| MicroCom.Runtime | 0.11.6 | MIT | (c) .NET Foundation / AvaloniaUI OÜ |
+| Tmds.DBus.Protocol | 0.94.1 | MIT | (c) Tom Deseyn |
 | Google Skia（SkiaSharp 底层引擎） | — | BSD-3-Clause | (c) Google Inc. |
-| **libjxl** — `cjxl` / `djxl` / `cjpegli` / `djpegli` / `jxlinfo` | `PLAN/jxl/bin/` | BSD-3-Clause | (c) the JPEG XL Project Authors |
+| **libjxl** — `cjxl` / `djxl` / `cjpegli` / `djpegli` / `jxlinfo` | 0.11.2，`PLAN/jxl/bin/` | BSD-3-Clause | (c) the JPEG XL Project Authors |
 | ↳ brotli | `PLAN/jxl/bin/` | MIT | (c) 2009-2016 the Brotli Authors |
 | ↳ giflib | `PLAN/jxl/bin/` | MIT | (c) 1997 Eric S. Raymond |
 | ↳ highway | `PLAN/jxl/bin/` | Apache-2.0 | (c) the Highway Authors |
@@ -41,16 +41,16 @@ Full license texts are provided in the [`licenses/`](licenses/) directory of thi
 | ↳ LibRaw（dngtool 静态链接） | `PLAN/artifacts/` | **LGPL-2.1 或 CDDL-1.0**（按 LGPL-2.1 §3 升级为 GPL-3.0，见 §6） | (c) 2008-2025 LibRaw LLC |
 | ↳ Adobe DNG SDK 1.7.1（dngtool 静态链接） | `PLAN/artifacts/` | **Adobe DNG SDK License Agreement**（见 §4） | (c) 2006-2019 Adobe |
 | ↳ zlib（dngtool 静态链接） | `PLAN/artifacts/` | zlib | (c) 1995-2026 Jean-loup Gailly and Mark Adler |
-| **libavif** — `avifenc.exe` | `PLAN/artifacts/` | BSD-2-Clause | (c) 2019 Joe Drago |
+| **libavif** — `avifenc.exe` | 1.4.2（libaom 3.15.0），`PLAN/artifacts/` | BSD-2-Clause | (c) 2019 Joe Drago |
 | ↳ AOM (libaom) | `PLAN/artifacts/` | BSD-2-Clause + AOM 专利授权 | (c) 2016 Alliance for Open Media |
-| **jxrlib** — `JxrEncApp.exe`, `JxrDecApp.exe` | `PLAN/artifacts/` | BSD-2-Clause | (c) Microsoft Corp. |
+| **jxrlib** — `JxrEncApp.exe`, `JxrDecApp.exe` | 微软 2013 参考实现，`PLAN/artifacts/` | BSD-2-Clause | (c) Microsoft Corp. |
 
 ### 1.2 仅构建期使用（不随发行包分发）· Build-time only (not distributed)
 
 | 组件 Component | 许可 License |
 |---|---|
 | Avalonia.BuildServices 11.3.2 | MIT |
-| Microsoft.NET.ILLink.Tasks 11.0.0-rc.1 | MIT |
+| Microsoft.NET.ILLink.Tasks 11.0.0-rc.2 | MIT |
 | .NET Runtime / SDK（Microsoft） | MIT |
 
 ### 1.3 外部工具（不随本仓库分发）· External tools (not distributed here)

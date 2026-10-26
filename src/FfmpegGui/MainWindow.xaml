@@ -5,6 +5,7 @@
     xmlns:sys="using:System"
     xmlns:local="using:FfmpegGui.Models"
     xmlns:ext="using:FfmpegGui"
+    xmlns:conv="using:Avalonia.Data.Converters"
     Icon="avares://FfmpegGui/Resources/icon_raw.png"
     Title="{ext:Loc app.title}"
     Height="850"
@@ -40,6 +41,44 @@
       <Setter Property="MinWidth" Value="18"/>
       <Setter Property="Padding" Value="0"/>
     </Style>
+    <!-- 主/次操作层级：开始 = accent 实心，停止 = 危险色（只用固定色值，不依赖主题资源名，
+         避免资源缺失时静默变透明）。 -->
+    <Style Selector="Button.accent">
+      <Setter Property="Background" Value="#2D7DF6"/>
+      <Setter Property="Foreground" Value="White"/>
+      <Setter Property="FontWeight" Value="SemiBold"/>
+    </Style>
+    <Style Selector="Button.accent:pointerover">
+      <Setter Property="Background" Value="#1B66D6"/>
+      <Setter Property="Foreground" Value="White"/>
+    </Style>
+    <Style Selector="Button.danger">
+      <Setter Property="Background" Value="#C42B1C"/>
+      <Setter Property="Foreground" Value="White"/>
+    </Style>
+    <Style Selector="Button.danger:pointerover">
+      <Setter Property="Background" Value="#A42216"/>
+      <Setter Property="Foreground" Value="White"/>
+    </Style>
+    <!-- 区块标题前的 accent 竖条：替代不一致的 emoji 图标 -->
+    <Style Selector="Border.sectionbar">
+      <Setter Property="Width" Value="3"/>
+      <Setter Property="Height" Value="14"/>
+      <Setter Property="CornerRadius" Value="1.5"/>
+      <Setter Property="Background" Value="#2D7DF6"/>
+      <Setter Property="Margin" Value="0,0,7,0"/>
+      <Setter Property="VerticalAlignment" Value="Center"/>
+    </Style>
+    <!-- 空状态提示：只在列表为空时由代码打开，不拦截鼠标 -->
+    <Style Selector="TextBlock.emptyhint">
+      <Setter Property="FontSize" Value="11"/>
+      <Setter Property="Foreground" Value="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+      <Setter Property="HorizontalAlignment" Value="Center"/>
+      <Setter Property="VerticalAlignment" Value="Center"/>
+      <Setter Property="TextWrapping" Value="Wrap"/>
+      <Setter Property="TextAlignment" Value="Center"/>
+      <Setter Property="IsHitTestVisible" Value="False"/>
+    </Style>
   </Window.Styles>
 
   <Grid>
@@ -60,17 +99,20 @@
           <TextBox x:Name="FfmpegPathBox" Grid.Column="1" MinWidth="120" Margin="10,0,0,0"
                    VerticalAlignment="Center" IsReadOnly="True"
                    ToolTip.Tip="{Binding Text, ElementName=FfmpegPathBox}"/>
-          <Button Grid.Column="2" Content="{ext:Loc browse}" Click="BrowseFfmpeg_Click" Padding="8,4" Margin="6,0,0,0"/>
+          <Button Grid.Column="2" Content="{ext:Loc browse}" Click="BrowseFfmpeg_Click"
+                  Padding="10,4" Height="28" VerticalAlignment="Center" Margin="6,0,0,0"/>
           <TextBlock Grid.Column="3" Text="{ext:Loc output.dir}" VerticalAlignment="Center" FontSize="13" Margin="16,0,10,0"/>
           <TextBox x:Name="OutputDirBox" Grid.Column="4" MinWidth="160" Margin="0,0,0,0"
                    VerticalAlignment="Center" IsReadOnly="True"
                    ToolTip.Tip="{Binding Text, ElementName=OutputDirBox}"/>
-          <Button Grid.Column="5" Content="{ext:Loc browse}" Click="BrowseOutputDir_Click" Padding="8,4" Margin="6,0,0,0"/>
+          <Button Grid.Column="5" Content="{ext:Loc browse}" Click="BrowseOutputDir_Click"
+                  Padding="10,4" Height="28" VerticalAlignment="Center" Margin="6,0,0,0"/>
         </Grid>
         <StackPanel Grid.Row="0" Grid.Column="1" Orientation="Horizontal" Spacing="6" Margin="4,0,0,0">
           <!-- ⚙ 设置菜单（二级菜单）：把原先散落在右上角的 4 个按钮收拢，
                并新增「渲染后端」——用于手动选择 GPU / Vulkan / 软件渲染。 -->
-          <Button x:Name="SettingsMenuBtn" Content="⚙" FontSize="15" Padding="9,2"
+          <Button x:Name="SettingsMenuBtn" Content="⚙" FontSize="15" Padding="0"
+                  Width="32" Height="28" VerticalAlignment="Center"
                   ToolTip.Tip="{ext:Loc settings.tip}">
             <Button.Flyout>
               <MenuFlyout Placement="BottomEdgeAlignedRight">
@@ -352,7 +394,16 @@
           <!-- ============ 静态图片/动图通用选项（RAW 模式下整体隐藏） ============ -->
           <StackPanel x:Name="StillOptionsPanel" Spacing="8">
           <TextBlock Text="{ext:Loc encoder}" Margin="0,4,0,0"/>
-          <ComboBox x:Name="EncoderCombo"/>
+          <!-- 条目只给「名字 — 描述」的窄列：完整文本放 ToolTip，避免弹层按内容撑到 600+ px
+               盖住右侧面板（实测 mjpeg_qsv 那条会把弹层拉到 696 px）。 -->
+          <ComboBox x:Name="EncoderCombo">
+            <ComboBox.ItemTemplate>
+              <DataTemplate>
+                <TextBlock Text="{Binding}" MaxWidth="250" TextTrimming="CharacterEllipsis"
+                           ToolTip.Tip="{Binding}"/>
+              </DataTemplate>
+            </ComboBox.ItemTemplate>
+          </ComboBox>
           <!-- GPU 硬件编码器状态警告 -->
           <Border x:Name="GpuEncoderWarning" IsVisible="False"
                   CornerRadius="6" Padding="10,7" Margin="0,6,0,0">
@@ -376,15 +427,23 @@
             </StackPanel>
           </Border>
           <TextBlock Text="{ext:Loc quality}" Margin="0,8,0,0"/>
-          <StackPanel Orientation="Horizontal" Spacing="8">
+          <Grid ColumnDefinitions="*,58" ColumnSpacing="8">
             <!-- 2026-09-16：左栏加宽到 300（内容区 ~260）后，不再需要为"236 临界"留余量，
                  恢复原来的 170（滑块手感更好）。170+8+58=236 < 260，即使出现纵向滚动条也不溢出。 -->
-            <Slider x:Name="QualitySlider" Minimum="0" Maximum="100" Value="92"
-                    TickFrequency="1" IsSnapToTickEnabled="True" Width="170" />
-            <TextBox x:Name="QualityBox" Text="92" Width="58" FontSize="13"
-                     VerticalAlignment="Center" />
-          </StackPanel>
-          <TextBlock x:Name="QualityValue" Text="质量: 75"/>
+            <StackPanel Grid.Column="0" Spacing="0">
+              <Slider x:Name="QualitySlider" Minimum="0" Maximum="100" Value="92"
+                      TickFrequency="1" IsSnapToTickEnabled="True"/>
+              <Grid ColumnDefinitions="Auto,*,Auto" Margin="2,-3,2,0">
+                <TextBlock Text="0" FontSize="9"
+                           Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+                <TextBlock Grid.Column="2" Text="100" FontSize="9"
+                           Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+              </Grid>
+            </StackPanel>
+            <TextBox Grid.Column="1" x:Name="QualityBox" Text="92" FontSize="13"
+                     VerticalAlignment="Center"/>
+          </Grid>
+          <TextBlock x:Name="QualityValue" Text="质量: 75" FontSize="11" FontWeight="SemiBold"/>
           <!-- 基本色彩参数：色度采样 / 位深（色彩空间已移至高级面板） -->
           <Border CornerRadius="4" Padding="8,6" Margin="0,4,0,0"
                   Background="{DynamicResource SystemControlBackgroundChromeMediumBrush}">
@@ -901,32 +960,39 @@
                 Background="{DynamicResource SystemControlBackgroundCardHighBrush}">
           <Grid RowDefinitions="Auto,*,Auto">
             <StackPanel Grid.Row="0" Orientation="Horizontal" Spacing="10">
+              <Border Classes="sectionbar"/>
               <TextBlock Text="{ext:Loc conversion.queue}" FontSize="15" FontWeight="Bold"/>
               <TextBlock x:Name="FileCountLabel" Text="总文件: 0" FontSize="12"
                          Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" VerticalAlignment="Center"/>
             </StackPanel>
-            <ListBox Grid.Row="1" x:Name="QueueList" SelectionMode="Single" Margin="0,4">
-              <ListBox.ItemTemplate>
-                <DataTemplate x:DataType="local:QueueItem">
-                  <Grid ColumnDefinitions="*,Auto">
-                    <TextBlock Text="{Binding DisplayText}"
-                               Foreground="{Binding HasError, Converter={x:Static local:ErrorToColorConverter.Instance}}"
-                               TextTrimming="CharacterEllipsis"/>
-                    <TextBlock Grid.Column="1" Text="{Binding DurationText}" FontSize="10" Margin="8,0,0,0"
-                               VerticalAlignment="Center"
-                               Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
-                  </Grid>
-                </DataTemplate>
-              </ListBox.ItemTemplate>
-            </ListBox>
+            <Grid Grid.Row="1" Margin="0,4">
+              <ListBox x:Name="QueueList" SelectionMode="Single">
+                <ListBox.ItemTemplate>
+                  <DataTemplate x:DataType="local:QueueItem">
+                    <Grid ColumnDefinitions="*,Auto">
+                      <TextBlock Text="{Binding DisplayText}"
+                                 Foreground="{Binding HasError, Converter={x:Static local:ErrorToColorConverter.Instance}}"
+                                 TextTrimming="CharacterEllipsis"/>
+                      <TextBlock Grid.Column="1" Text="{Binding DurationText}" FontSize="10" Margin="8,0,0,0"
+                                 VerticalAlignment="Center"
+                                 Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+                    </Grid>
+                  </DataTemplate>
+                </ListBox.ItemTemplate>
+              </ListBox>
+              <TextBlock x:Name="QueueEmptyHint" Classes="emptyhint"
+                         Text="{ext:Loc empty.queue.hint}"/>
+            </Grid>
             <WrapPanel Grid.Row="2" Margin="0,4,0,0">
               <Button x:Name="ClearQueueButton" Content="{ext:Loc clear.queue}" Click="ClearQueue_Click" Padding="8,3" Margin="0,0,6,3"/>
               <Button Content="{ext:Loc select.file}" Click="SelectFile_Click" Padding="8,3" Margin="0,0,6,3"/>
               <Button Content="{ext:Loc select.folder}" Click="SelectFolder_Click" Padding="8,3" Margin="0,0,6,3"/>
               <Button Content="{ext:Loc add.to.queue}" Click="AddToQueue_Click" Padding="8,3" Margin="0,0,6,3"/>
               <Button Content="{ext:Loc delete.selected}" Click="DeleteSelected_Click" Padding="8,3" Margin="0,0,6,3"/>
-              <Button Content="{ext:Loc start.queue}" Click="StartQueue_Click" Padding="8,3" Margin="0,0,6,3"/>
-              <Button Content="{ext:Loc stop.queue}" Click="StopQueue_Click" Padding="8,3" Margin="0,0,6,3"/>
+              <Button Content="{ext:Loc start.queue}" Click="StartQueue_Click"
+                      Classes="accent" Padding="12,3" Margin="0,0,6,3"/>
+              <Button Content="{ext:Loc stop.queue}" Click="StopQueue_Click"
+                      Classes="danger" Padding="10,3" Margin="0,0,6,3"/>
               <CheckBox x:Name="StopAfterCurrentCheck" Content="{ext:Loc stop.after.current}"
                         VerticalAlignment="Center" Margin="4,0,0,3" IsChecked="True"/>
               <CheckBox x:Name="ShowErrorsOnlyCheck" Content="{ext:Loc show.errors.only}"
@@ -952,6 +1018,7 @@
                 Background="{DynamicResource SystemControlBackgroundCardHighBrush}">
           <Grid RowDefinitions="Auto,*">
             <StackPanel Grid.Row="0" Orientation="Horizontal" Spacing="10">
+              <Border Classes="sectionbar"/>
               <TextBlock Text="{ext:Loc selected.files}" FontSize="14" FontWeight="Bold"/>
               <Button x:Name="FormatFilterBtn" Content="{ext:Loc format.filter}" FontSize="11"
                       Padding="6,2" Click="FormatFilter_Click"
@@ -962,8 +1029,12 @@
             <Border Grid.Row="1" x:Name="MediaDropZone" Margin="0,4,0,0"
                     BorderBrush="Gray" BorderThickness="1" CornerRadius="4" MinHeight="80">
               <Grid RowDefinitions="*,Auto">
-                <ListBox x:Name="MediaFileList" Grid.Row="0" SelectionMode="Single"
-                         Background="Transparent"/>
+                <Grid Grid.Row="0">
+                  <ListBox x:Name="MediaFileList" SelectionMode="Single"
+                           Background="Transparent"/>
+                  <TextBlock x:Name="MediaEmptyHint" Classes="emptyhint"
+                             Text="{ext:Loc empty.media.hint}"/>
+                </Grid>
                 <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="6" Margin="4">
                   <Button Content="{ext:Loc delete.selected}" Click="RemoveMediaFile_Click" Padding="6,2" FontSize="11"/>
                   <Button Content="{ext:Loc clear.queue}" Click="ClearMediaFiles_Click" Padding="6,2" FontSize="11"/>
@@ -981,11 +1052,28 @@
         <Border Grid.Row="4" CornerRadius="8" Padding="10,8"
                 BoxShadow="0 1 6 0 #12000000"
                 Background="{DynamicResource SystemControlBackgroundCardHighBrush}">
-          <Grid RowDefinitions="Auto,*,Auto,*">
-            <TextBlock Grid.Row="0" Text="{ext:Loc generated.command}" FontSize="13" FontWeight="Bold"/>
-            <TextBox Grid.Row="1" x:Name="CommandText" AcceptsReturn="True" IsReadOnly="True" Margin="0,2,0,0"/>
-            <TextBlock Grid.Row="2" Text="{ext:Loc execution.log}" FontSize="13" FontWeight="Bold" Margin="0,4,0,0"/>
-            <TextBox Grid.Row="3" x:Name="LogText" IsReadOnly="True" Margin="0,2,0,0"/>
+          <!-- 命令框缺席时整块收起，把纵向空间全部让给日志（此前两行各占 `*`，日志恒被压到一半）。 -->
+          <Grid RowDefinitions="Auto,Auto,Auto,*">
+            <StackPanel Grid.Row="0" Orientation="Horizontal" Spacing="10"
+                        IsVisible="{Binding Text, ElementName=CommandText,
+                                    Converter={x:Static conv:StringConverters.IsNotNullOrEmpty}}">
+              <Border Classes="sectionbar"/>
+              <TextBlock Text="{ext:Loc generated.command}" FontSize="13" FontWeight="Bold"/>
+            </StackPanel>
+            <TextBox Grid.Row="1" x:Name="CommandText" AcceptsReturn="True" IsReadOnly="True"
+                     Margin="0,2,0,0" MinHeight="40" MaxHeight="140" FontSize="11" Padding="8,4"
+                     FontFamily="Cascadia Mono,Consolas,Microsoft YaHei UI"
+                     ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                     IsVisible="{Binding Text, ElementName=CommandText,
+                                 Converter={x:Static conv:StringConverters.IsNotNullOrEmpty}}"/>
+            <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="10" Margin="0,6,0,0">
+              <Border Classes="sectionbar"/>
+              <TextBlock Text="{ext:Loc execution.log}" FontSize="13" FontWeight="Bold"/>
+            </StackPanel>
+            <TextBox Grid.Row="3" x:Name="LogText" IsReadOnly="True" Margin="0,2,0,0"
+                     MinHeight="120" FontSize="11" Padding="8,4"
+                     FontFamily="Cascadia Mono,Consolas,Microsoft YaHei UI"
+                     ScrollViewer.HorizontalScrollBarVisibility="Auto"/>
           </Grid>
         </Border>
 
@@ -1036,9 +1124,9 @@
           </StackPanel>
           <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
             <Button x:Name="GainMapStartBtn" Content="{ext:Loc gm.start}" FontSize="12"
-                    Padding="14,6" Click="GainMapStart_Click"/>
+                    Classes="accent" Padding="16,6" Click="GainMapStart_Click"/>
             <Button x:Name="GainMapStopBtn" Content="{ext:Loc gm.stop}" FontSize="12"
-                    Padding="10,6" Click="GainMapStop_Click"/>
+                    Classes="danger" Padding="12,6" Click="GainMapStop_Click"/>
           </StackPanel>
         </Grid>
       </Border>
@@ -1059,41 +1147,74 @@
               </ComboBox>
 
               <TextBlock Text="{ext:Loc gm.encoder}" FontSize="12" Margin="0,4,0,0"/>
-              <TextBlock Text="{ext:Loc gm.encoder.major}" FontSize="10.5"
-                         Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
-              <ComboBox x:Name="GainMapEncoderCombo" FontSize="12"/>
-              <TextBlock Text="{ext:Loc gm.encoder.sub}" FontSize="10.5"
-                         Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
-              <ComboBox x:Name="GainMapSubEncoderCombo" FontSize="12"/>
-              <TextBlock x:Name="GainMapEncoderHint" Text="" FontSize="10.5" TextWrapping="Wrap"
+              <ComboBox x:Name="GainMapEncoderCombo" FontSize="12">
+                <ComboBox.ItemTemplate>
+                  <DataTemplate>
+                    <TextBlock Text="{Binding}" MaxWidth="240" TextTrimming="CharacterEllipsis"
+                               ToolTip.Tip="{Binding}"/>
+                  </DataTemplate>
+                </ComboBox.ItemTemplate>
+              </ComboBox>
+              <TextBlock x:Name="GainMapEncoderHint" Text="" FontSize="10" TextWrapping="Wrap"
+                         MaxLines="2" TextTrimming="WordEllipsis"
+                         ToolTip.Tip="{Binding $self.Text}"
                          Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
 
+              <!-- 增益图元数据承载：JPEG 三态（ISO/XMP/两者）；AVIF 由 tmap 承载 ISO，XMP 无标准读法 -->
+              <TextBlock Text="{ext:Loc gm.metadata}" FontSize="12" Margin="0,4,0,0"/>
+              <ComboBox x:Name="GainMapMetadataCombo" FontSize="12"/>
+              <TextBlock x:Name="GainMapMetadataHint" Text="" FontSize="10" TextWrapping="Wrap"
+                         MaxLines="2" TextTrimming="WordEllipsis"
+                         ToolTip.Tip="{Binding $self.Text}"
+                         Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+
+              <!-- 质量：与主面板同构（滑块 + 数值框 + 映射结果回显） -->
               <TextBlock Text="{ext:Loc gm.basequality}" FontSize="12" Margin="0,4,0,0"/>
-              <Grid ColumnDefinitions="*,Auto" ColumnSpacing="6">
-                <Slider x:Name="GainMapBaseQualitySlider" Grid.Column="0" Minimum="0" Maximum="100"
-                        Value="85" TickFrequency="1" IsSnapToTickEnabled="True"/>
-                <TextBox x:Name="GainMapBaseQualityBox" Grid.Column="1" Text="85" Width="52"
-                         FontSize="12" VerticalAlignment="Center"/>
+              <Grid ColumnDefinitions="*,58" ColumnSpacing="8">
+                <StackPanel Grid.Column="0" Spacing="0">
+                  <Slider x:Name="GainMapBaseQualitySlider" Minimum="0" Maximum="100"
+                          Value="90" TickFrequency="1" IsSnapToTickEnabled="True"/>
+                  <Grid ColumnDefinitions="Auto,*,Auto" Margin="2,-3,2,0">
+                    <TextBlock Text="0" FontSize="9"
+                               Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+                    <TextBlock Grid.Column="2" Text="100" FontSize="9"
+                               Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+                  </Grid>
+                </StackPanel>
+                <TextBox Grid.Column="1" x:Name="GainMapBaseQualityBox" Text="90"
+                         FontSize="13" VerticalAlignment="Center"/>
               </Grid>
+              <TextBlock x:Name="GainMapBaseQualityValue" Text="" FontSize="11"
+                         FontWeight="SemiBold" TextWrapping="Wrap"
+                         Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
               <TextBlock Text="{ext:Loc gm.gainquality}" FontSize="12" Margin="0,4,0,0"/>
-              <Grid ColumnDefinitions="*,Auto" ColumnSpacing="6">
-                <Slider x:Name="GainMapGainQualitySlider" Grid.Column="0" Minimum="0" Maximum="100"
-                        Value="85" TickFrequency="1" IsSnapToTickEnabled="True"/>
-                <TextBox x:Name="GainMapGainQualityBox" Grid.Column="1" Text="85" Width="52"
-                         FontSize="12" VerticalAlignment="Center"/>
+              <Grid ColumnDefinitions="*,58" ColumnSpacing="8">
+                <StackPanel Grid.Column="0" Spacing="0">
+                  <Slider x:Name="GainMapGainQualitySlider" Minimum="0" Maximum="100"
+                          Value="75" TickFrequency="1" IsSnapToTickEnabled="True"/>
+                  <Grid ColumnDefinitions="Auto,*,Auto" Margin="2,-3,2,0">
+                    <TextBlock Text="0" FontSize="9"
+                               Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+                    <TextBlock Grid.Column="2" Text="100" FontSize="9"
+                               Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+                  </Grid>
+                </StackPanel>
+                <TextBox Grid.Column="1" x:Name="GainMapGainQualityBox" Text="75"
+                         FontSize="13" VerticalAlignment="Center"/>
               </Grid>
-              <TextBlock x:Name="GainMapQualityHint" Text="" FontSize="10.5" TextWrapping="Wrap"
-                         IsVisible="False"
+              <TextBlock x:Name="GainMapGainQualityValue" Text="" FontSize="11"
+                         FontWeight="SemiBold" TextWrapping="Wrap"
                          Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
 
               <TextBlock Text="{ext:Loc gm.peak}" FontSize="12" Margin="0,4,0,0"/>
               <Grid ColumnDefinitions="*,Auto" ColumnSpacing="6">
                 <TextBox x:Name="GainMapPeakBox" Grid.Column="0" FontSize="12"
-                         Watermark="{ext:Loc gm.peak.auto}"/>
+                         PlaceholderText="{ext:Loc gm.peak.auto}"/>
                 <TextBlock Grid.Column="1" Text="nits" FontSize="11" VerticalAlignment="Center"
                            Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
               </Grid>
-              <TextBlock Text="{ext:Loc gm.peak.hint}" FontSize="10.5" TextWrapping="Wrap"
+              <TextBlock Text="{ext:Loc gm.peak.hint}" FontSize="10" TextWrapping="Wrap"
+                         MaxLines="2" TextTrimming="WordEllipsis" ToolTip.Tip="{Binding $self.Text}"
                          Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
 
               <TextBlock Text="{ext:Loc gm.basegamut}" FontSize="12" Margin="0,4,0,0"/>
@@ -1101,12 +1222,14 @@
                 <sys:String>sRGB (SDR)</sys:String>
                 <sys:String>Rec.2020 (SDR)</sys:String>
               </ComboBox>
-              <TextBlock Text="{ext:Loc gm.gamut.hint}" FontSize="10.5" TextWrapping="Wrap"
+              <TextBlock Text="{ext:Loc gm.gamut.hint}" FontSize="10" TextWrapping="Wrap"
+                         MaxLines="2" TextTrimming="WordEllipsis" ToolTip.Tip="{Binding $self.Text}"
                          Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
 
               <CheckBox x:Name="GainMapMultiChannelCheck" IsChecked="True" FontSize="12"
                         Content="{ext:Loc gm.mc}" Margin="0,4,0,0"/>
-              <TextBlock Text="{ext:Loc gm.mc.hint}" FontSize="10.5" TextWrapping="Wrap"
+              <TextBlock Text="{ext:Loc gm.mc.hint}" FontSize="10" TextWrapping="Wrap"
+                         MaxLines="2" TextTrimming="WordEllipsis" ToolTip.Tip="{Binding $self.Text}"
                          Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
 
               <TextBlock Text="{ext:Loc gm.downsample}" FontSize="12" Margin="0,4,0,0"/>
@@ -1128,7 +1251,10 @@
             <StackPanel Spacing="10">
               <Grid ColumnDefinitions="*,Auto">
                 <StackPanel Grid.Column="0" Spacing="1">
-                  <TextBlock Text="{ext:Loc gm.pair.title}" FontSize="13" FontWeight="Bold"/>
+                  <StackPanel Orientation="Horizontal" Spacing="8">
+                    <Border Classes="sectionbar" Margin="0"/>
+                    <TextBlock Text="{ext:Loc gm.pair.title}" FontSize="13" FontWeight="Bold"/>
+                  </StackPanel>
                   <TextBlock Text="{ext:Loc gm.pair.note}" FontSize="10.5"
                              Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
                 </StackPanel>
@@ -1138,6 +1264,7 @@
                 <!-- SDR 槽 -->
                 <Border x:Name="GainMapSdrSlot" Grid.Column="0" MinHeight="96" Padding="12"
                         CornerRadius="9" BorderThickness="1.5"
+                        DragDrop.AllowDrop="True"
                         BorderBrush="{DynamicResource SystemControlForegroundBaseLowBrush}"
                         Background="{DynamicResource SystemControlBackgroundChromeMediumBrush}">
                   <Grid RowDefinitions="Auto,*,Auto" RowSpacing="6">
@@ -1158,6 +1285,7 @@
                 <!-- HDR 槽 -->
                 <Border x:Name="GainMapHdrSlot" Grid.Column="2" MinHeight="96" Padding="12"
                         CornerRadius="9" BorderThickness="1.5"
+                        DragDrop.AllowDrop="True"
                         BorderBrush="{DynamicResource SystemControlForegroundBaseLowBrush}"
                         Background="{DynamicResource SystemControlBackgroundChromeMediumBrush}">
                   <Grid RowDefinitions="Auto,*,Auto" RowSpacing="6">
@@ -1190,39 +1318,51 @@
                   Background="{DynamicResource SystemControlBackgroundCardHighBrush}">
             <Grid RowDefinitions="Auto,*,Auto">
               <Grid Grid.Row="0" ColumnDefinitions="*,Auto" Margin="14,10,14,4">
-                <TextBlock Grid.Column="0" Text="{ext:Loc gm.queue.title}" FontSize="13" FontWeight="Bold"/>
+                <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="8">
+                  <Border Classes="sectionbar" Margin="0"/>
+                  <TextBlock Text="{ext:Loc gm.queue.title}" FontSize="13" FontWeight="Bold"/>
+                </StackPanel>
                 <TextBlock Grid.Column="1" x:Name="GainMapQueueSummary" Text="" FontSize="11"
                            Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
               </Grid>
-              <ListBox Grid.Row="1" x:Name="GainMapQueueList" Margin="6,0,6,0"
-                       SelectionChanged="GainMapQueueList_SelectionChanged">
-                <ListBox.ItemTemplate>
-                  <DataTemplate x:DataType="local:QueueItem">
-                    <Grid ColumnDefinitions="*,*,110" ColumnSpacing="10">
-                      <TextBlock Grid.Column="0" Text="{Binding GainMapSdrName}" FontSize="12"
-                                 TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
-                      <TextBlock Grid.Column="1" Text="{Binding GainMapHdrName}" FontSize="12"
-                                 TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
-                      <TextBlock Grid.Column="2" Text="{Binding Status}" FontSize="11"
-                                 VerticalAlignment="Center"
-                                 Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
-                    </Grid>
-                  </DataTemplate>
-                </ListBox.ItemTemplate>
-              </ListBox>
+              <Grid Grid.Row="1">
+                <ListBox x:Name="GainMapQueueList" Margin="6,0,6,0"
+                         SelectionChanged="GainMapQueueList_SelectionChanged">
+                  <ListBox.ItemTemplate>
+                    <DataTemplate x:DataType="local:QueueItem">
+                      <Grid ColumnDefinitions="*,*,Auto" ColumnSpacing="10">
+                        <TextBlock Grid.Column="0" Text="{Binding GainMapSdrName}" FontSize="12"
+                                   TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+                        <TextBlock Grid.Column="1" Text="{Binding GainMapHdrName}" FontSize="12"
+                                   TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+                        <TextBlock Grid.Column="2" Text="{Binding Status}" FontSize="11"
+                                   MaxWidth="150" TextTrimming="CharacterEllipsis"
+                                   ToolTip.Tip="{Binding Status}"
+                                   VerticalAlignment="Center"
+                                   Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+                      </Grid>
+                    </DataTemplate>
+                  </ListBox.ItemTemplate>
+                </ListBox>
+                <TextBlock x:Name="GainMapQueueEmptyHint" Classes="emptyhint"
+                           Text="{ext:Loc gm.queue.empty.hint}"/>
+              </Grid>
               <ProgressBar Grid.Row="2" x:Name="GainMapOverallProgress" Height="5" Margin="14,8,14,12"
                            Minimum="0" Maximum="100" Value="0"/>
             </Grid>
           </Border>
 
-          <!-- 日志 -->
-          <Border Grid.Row="2" Margin="0,8,0,0" CornerRadius="10" BoxShadow="0 1 8 0 #12000000"
+          <!-- 日志（Row 3 = `*`；Row 2 是 6px 间隔，放这里会被压成一行） -->
+          <Border Grid.Row="3" Margin="0,8,0,0" CornerRadius="10" BoxShadow="0 1 8 0 #12000000"
                   Background="{DynamicResource SystemControlBackgroundCardHighBrush}">
             <Grid RowDefinitions="Auto,*">
-              <TextBlock Grid.Row="0" Text="{ext:Loc gm.log.title}" FontSize="12" FontWeight="Bold"
-                         Margin="14,10,14,4"/>
-              <TextBox Grid.Row="1" x:Name="GainMapLogText" Margin="8,0,8,8" FontSize="10.5"
-                       FontFamily="Consolas,Microsoft YaHei UI" IsReadOnly="True"
+              <StackPanel Grid.Row="0" Orientation="Horizontal" Spacing="8" Margin="14,10,14,4">
+                <Border Classes="sectionbar" Margin="0"/>
+                <TextBlock Text="{ext:Loc gm.log.title}" FontSize="12" FontWeight="Bold"/>
+              </StackPanel>
+              <TextBox Grid.Row="1" x:Name="GainMapLogText" Margin="8,0,8,8" FontSize="11"
+                       Padding="8,4"
+                       FontFamily="Cascadia Mono,Consolas,Microsoft YaHei UI" IsReadOnly="True"
                        AcceptsReturn="True" TextWrapping="Wrap"
                        ScrollViewer.VerticalScrollBarVisibility="Auto"
                        ScrollViewer.HorizontalScrollBarVisibility="Auto"/>
@@ -1293,9 +1433,9 @@
             <Button Content="{ext:Loc add.files}" FontSize="14" Padding="18,10"
                     Click="SimpleAddFiles_Click"/>
             <Button Content="{ext:Loc start.queue}" FontSize="14" Padding="18,10"
-                    Click="SimpleStartQueue_Click"/>
+                    Classes="accent" Click="SimpleStartQueue_Click"/>
             <Button Content="{ext:Loc stop.queue}" FontSize="14" Padding="18,10"
-                    Click="SimpleStopQueue_Click"/>
+                    Classes="danger" Click="SimpleStopQueue_Click"/>
             <Button Content="{ext:Loc clear}" FontSize="13" Padding="14,10"
                     Click="SimpleClearAll_Click"/>
             <CheckBox x:Name="SimpleErrorsOnlyCheck" Content="{ext:Loc show.errors.only}" FontSize="12" VerticalAlignment="Center"

@@ -560,6 +560,15 @@ static int Decode(
     processor.imgdata.params.no_auto_bright = 1; // 不做自动亮度
     processor.imgdata.params.output_tiff = 1;    // -T
 
+    // ⚠⚠ 2026-10-26：解码臂必须输出**真线性**。
+    //   LibRaw 默认 gamm={0.45, 4.5}，write_ppm_tiff() 会先 gamma_curve() 再写 curve[]，
+    //   即默认产物是 dcraw 曲线编码的；而产品把本臂 TIFF 声明为 `linear` 并让
+    //   zscale(tin=linear) 解读 ⇒ 二次 gamma（实测 ARW→PNG 中位 0.41 vs 参考 0.32，PSNR 21.5 dB）。
+    //   这里固定恒等曲线；`-o 0`（相机原生原色、不套相机矩阵）不变 —— 那是另一条近似，
+    //   见 ColorMapping/RawGamutFit。
+    processor.imgdata.params.gamm[0] = 1.0;
+    processor.imgdata.params.gamm[1] = 1.0;
+
     if (verbose) fprintf(stderr, "[dngtool] opening %s ...\n", inputPath);
     int ret = OpenInputPath(processor, inputPath);
     if (ret != LIBRAW_SUCCESS)

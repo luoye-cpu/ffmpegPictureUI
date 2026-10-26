@@ -451,7 +451,7 @@ $BASE_CS_OTHER = 861
 #     · **+0（本桶）** `MainWindow.xaml.cs` 的 `Command = "[GainMap合成] …"` —— 字面量以 `[` 开头
 #       ⇒ 先落 `[tag]` 桶，对 UI 面净零。
 #   ⚠ 依 :418-421 的既有裁定，**不**为撑棘轮把拒绝原因静音/改英文/改 sink 形状 ⇒ 抬登记值。
-# ⚠⚠ **2026-10-25 第十三次抬基线：876 → 880（+4，判据项）** —— 成因 = 两图 GainMap 的**编码器选择**轮
+# ⚠⚠ **2026-10-25 第十三次抬基线：876 → 881（+5，判据项）** —— 成因 = 两图 GainMap 的**编码器选择**轮
 #   （`--gainmap-encoder` 与面板「大类/小类」）。
 #   归因按**换回法**实测（把 `CliParser` 的编码器校验块换成"不含该块"的版本再跑本探针，不是手数）：
 #     · 不含该块 ⇒ **877**（基线 876，+1）⇒ 该块贡献 **+3**：跨族不匹配与 cjpegli 不可用
@@ -461,7 +461,37 @@ $BASE_CS_OTHER = 861
 #       显式旋钮不许被静默忽略）。
 #   这些新增行都是**用户可见的 CLI 拒绝原因**（与既有 `--gainmap-peak` / 合成配对同一口径）：
 #   依 :418-421 的裁定，不为撑棘轮把拒绝原因静音/改英文/改 sink 形状 ⇒ 抬登记值。
-$BASE_CS_UI    = 881
+# ⚠⚠ **2026-10-25 第十四次抬基线：881 → 885（+4，判据项）** —— 成因 = 同一轮的 `--gainmap-metadata` 三态
+#   （AVIF tmap 无 XMP 形态 / 词表外 / 缺合成模式）。归因是**前后两次实测之差**：
+#   第十三次登记的 881 是本轮改动前的树，本轮改动后实测 **885** ⇒ 净 +4，逐行是：
+#     · `--gainmap-metadata 取值无效: …（iso | xmp | both）`；
+#     · AVIF + XMP 的拒绝原因（源码里两个字面量行：断句处 + 续行）；
+#     · `--gainmap-metadata` 缺 `--compose-gainmap` 时的拒绝原因（单行）。
+#   与第十三次同类：都是**用户可见的 CLI 拒绝原因**，不为撑棘轮改英文/静音 ⇒ 抬登记值。
+# ⚠⚠ **2026-10-26 第十五次抬基线：885 → 901（+16，判据项）** —— 成因 = AVIF 出口 ICC「假成功」收口
+#   （#73，账本 `docs/IMPLEMENT_PLAN_2026-10-11.md` §49）+ 探测超时改两趟（#72），即交接 C 批。
+#   归因按**换回法**实测（不是手数）：`git archive HEAD src/FfmpegGui | tar -x -C <仓库外目录>` 后
+#   把本脚本复制过去跑一遍 ⇒ HEAD 树实测 **UI 面 = 881**（与第十三次登记的 881 逐字吻合 ⇒ 锁仍准）；
+#   再逐个文件换回工作树版本重跑，累加增量（取证脚本 `C://PLAN//_cjkprobe-20261026//run_attr.ps1`，
+#   读数日志 `tests/output/cjk-20261026b/probe-cjk-hardcode-scan.log`）：
+#     · `CliParser.cs` **+4** = `--gainmap-metadata` 三态的四条拒绝原因（**已在第十四次登记**，本批不计）；
+#     · `Services/ColorMapping/ColorStrategyPlanning.cs` **+10** = S2 携带 × AVIF × 源无 CICP 名的
+#       **契约拒绝**原因三行（含「像素 A、标签 B」点名）+ `FormatAlts` 提示 + L1/L2 的 `p.Reason`
+#       播报四行（「本出口不写 ICC」「仅以可命名的 CICP 标签描述」「L2 归入最宽可命名目标…GamutClipped」）；
+#     · `Services/ExifToolService.cs` **+3** = 「未写入：exiftool 报『0 image files updated』」的续行
+#       （点明"退出码仍是 0，不能当成功"）+ 色彩标签+ICC 两趟超时的点名串续行（"源可能被当成未标注"）；
+#     · `Services/ColorMapping/ColorTransformPlan.cs` **+1** = `p.Reason` 续行「容器能力表称可携带，
+#       但本次出口写不了 ICC」；
+#     · `Services/ColorMapping/TransferCurve.cs` **+1** = `{k.Name}（ICC 参数吻合）` 的认领播报；
+#     · `Services/QueueProcessor.cs` **+1** = `item.Status = "失败 (出口无法携带 ICC)"`（`Status` 不是
+#       本探针认的诊断 sink ⇒ 按口径落 UI 桶，与第十/十一次同款）。
+#   合计 881 + 4 + 10 + 1 + 1 + 3 + 1 = **901**（与工作树实测逐字相等 ⇒ 无未归因残量）。
+#   ⚠ 属性判定：这 16 行全是**用户可见的拒绝原因 / 播报 / Status**（正是 #73 要"说真话"的产出），
+#     与第七/九/十/十一次同族 ⇒ 依 :418-421 的既有裁定，**不为撑住棘轮**把拒绝原因静音、改英文
+#     或改 sink 形状 ⇒ 抬登记值。
+#   ⚠ 仍只动被判据看的那一个桶：`$BASE_CS`/`$BASE_CS_TAG`/`$BASE_CS_OTHER`/`$BASE_XAML` 保持原值
+#     （XAML 实测 13、基线 13，余量 0，未动）。
+$BASE_CS_UI    = 901
 
 # ── 正则 ───────────────────────────────────────────────────────────────────────
 $RxCjk         = '[\u4e00-\u9fff]'

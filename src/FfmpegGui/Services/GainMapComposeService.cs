@@ -118,15 +118,25 @@ public static class GainMapComposeService
             string baseGamut = string.Equals(options.JpegGainMapBaseGamut, "bt2020", StringComparison.OrdinalIgnoreCase)
                 ? "bt2020" : "srgb";
 
-            log?.Invoke($"[GainMap合成] 编码：{w}×{h}，底图色域={baseGamut}，"
-                + $"{(options.GainMapComposeMultiChannel ? "三通道" : "单通道")}增益，"
-                + $"降采样 1/{Math.Max(options.JpegGainMapDownsample, 1)}，底图 d={baseDist:F2}/增益图 d={gmDist:F2}\n");
-
-            // 面板「大类/小类」选出的**具体编码器**按出口容器分派：AVIF 侧只认 AV1 编码器，
+            // 面板选出的**具体编码器**按出口容器分派：AVIF 侧只认 AV1 编码器，
             // JPEG 侧只认 cjpegli/mjpeg（互不接受对方的词表；显式值不可用由引擎点名失败，不静默换）。
             bool isAvif = string.Equals(GainMapEncoder.ContainerOf(outputPath), "avif", StringComparison.OrdinalIgnoreCase);
             string? jpegEnc = isAvif ? null : options.GainMapComposeEncoder;
             string? avifEnc = isAvif ? options.GainMapComposeEncoder : null;
+
+            // 质量口径：JPEG ⇒ butteraugli distance（滑块 → distance）；AVIF ⇒ CRF（滑块 → CRF，
+            // 与主面板同一映射 `MapAvifCrfForward`）。两条出口各用各的量纲，绝不把一个当另一个传。
+            int baseCrf = FfmpegOptions.MapAvifCrfForward(options.Quality);
+            int gainCrf = FfmpegOptions.MapAvifCrfForward(gmq);
+            string metadata = string.IsNullOrWhiteSpace(options.GainMapComposeMetadata)
+                ? "both" : options.GainMapComposeMetadata.Trim().ToLowerInvariant();
+
+            log?.Invoke($"[GainMap合成] 编码：{w}×{h}，底图色域={baseGamut}，"
+                + $"{(options.GainMapComposeMultiChannel ? "三通道" : "单通道")}增益，"
+                + $"降采样 1/{Math.Max(options.JpegGainMapDownsample, 1)}，"
+                + (isAvif
+                    ? $"底图 CRF {baseCrf}/增益图 CRF {gainCrf}，元数据 {metadata}\n"
+                    : $"底图 d={baseDist:F2}/增益图 d={gmDist:F2}，元数据 {metadata}\n"));
 
             bool ok = await GainMapEncoder.EncodeAsync(
                 hdrRgba, w, h, outputPath,
@@ -140,7 +150,8 @@ public static class GainMapComposeService
                 container: GainMapEncoder.ContainerOf(outputPath),
                 sourceBaseRaw: baseRaw, inputIsSdrWhiteUnit: false,
                 sourceBasePrimaries: sdrPrim, measureGainRange: true,
-                jpegEncoder: jpegEnc, avifEncoder: avifEnc);
+                jpegEncoder: jpegEnc, avifEncoder: avifEnc,
+                gainMapMetadata: metadata, baseCrf: baseCrf, gainMapCrf: gainCrf);
             if (!ok)
             {
                 TryDelete(outputPath);

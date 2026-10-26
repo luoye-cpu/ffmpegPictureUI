@@ -9,6 +9,9 @@
 #      两腿只差一次已知矩阵 + 域裁剪（实测 PSNR 82~87 dB），**但必须真的不同**（否则开关是空转）。
 #    · `dng_render` 不旋转 ⇒ 工具按 `negative->Orientation()` 旋正（与旧 LibRaw `-T` 同行为）。
 #  本闸把这三件事各配一条**有牙**判据，并把产品侧的分流/声明端到端钉住。
+#  2026-10-26 补 ⑫：非 DNG 仍走 LibRaw，而 LibRaw 默认 gamm={0.45,4.5} 会套 dcraw 曲线；
+#    产品把该中间件声明为 `linear` 并喂 zscale(tin=linear) ⇒ 二次 gamma。⑫ 用同一 DNG 的
+#    `-d`（产品口径）与 `-rd`（SDK 线性参考）中位比钉住：修复前 2.42，修复后 0.60。
 #
 #  ⚠ 素材链外（`tests/output/raw_samples/*.ARW`）：缺失即点名红，不降级成 SKIP。
 #  ⚠ 夹具现场生成（`dngtool -e`）：带镜头表的那份会写 3 条 OpcodeList3 —— 用它做"opcode 真的被执行"的正臂，
@@ -142,6 +145,7 @@ CK ($null -ne $jpg -and $r7[0] -eq 0) "⑦ DNG→JPEG 有产物（exe rc=$($r7[0
 CK ($l7 -match 'ACR 路线渲染空间=srgb') "⑦ 默认 SDR 出口 ⇒ 渲 sRGB 原色（日志 'ACR 路线渲染空间=srgb'）"
 CK ($l7 -match '输入声明 bt709/linear') "⑦ 输入声明与渲染空间同源（日志 '输入声明 bt709/linear'）"
 CK ($l7 -match 'opcode1/2/3=0/0/3') "⑦ 产品跑的确实是 SDK 臂且施加了 opcode（日志含 opcode1/2/3=0/0/3）"
+CK ($l7 -match 'dng_render（线性 srgb') "⑦ 下发点与决策同源：`RawService` 实际拿到的 -rdspace=srgb（下发点日志 'dng_render（线性 srgb'）⇒ 只验决策日志会漏「决策≠下发」的传参分叉"
 
 # ⑧ DNG→PNG 默认档：判据是 bt2020（能承载 HDR 传递）⇒ 必须渲 Rec2020
 $pd = "$d/out-png"
@@ -151,6 +155,7 @@ $l8 = LogText "$logDir/png.log"
 CK ($null -ne $png -and $r8[0] -eq 0) "⑧ DNG→PNG 有产物（exe rc=$($r8[0])）"
 CK ($l8 -match 'ACR 路线渲染空间=rec2020') "⑧ 宽色域出口 ⇒ 渲 Rec2020（日志 'ACR 路线渲染空间=rec2020'）"
 CK ($l8 -match '输入声明 bt2020/linear') "⑧ 输入声明与渲染空间同源（日志 '输入声明 bt2020/linear'）"
+CK ($l8 -match 'dng_render（线性 rec2020') "⑧ 下发点与决策同源：`RawService` 实际拿到的 -rdspace=rec2020（下发点日志 'dng_render（线性 rec2020'）⇒ 同上，防「决策≠下发」"
 if ($null -ne $png) {
     $pcp = ((ExecRC $ffp "-v error -select_streams v:0 -show_entries stream=color_primaries -of csv=p=0 `"$($png.FullName)`"")[1] -replace '\r?\n', ' ').Trim()
     CK ($pcp -eq 'bt2020') "⑧ 产物 color_primaries=bt2020（实得 '$pcp'）"
@@ -163,6 +168,7 @@ $p3d = "$d/out-p3"
 $r9 = ExecRC $app "--headless -i `"$d/m2-op.dng`" -o `"$p3d`" -f png --color-space `"Display P3`" --log-level debug --log-file `"$logDir/p3.log`""
 $l9 = LogText "$logDir/p3.log"
 CK ($l9 -match 'ACR 路线渲染空间=rec2020') "⑨ 显式 Display P3 目标 ⇒ 渲 Rec2020（日志 'ACR 路线渲染空间=rec2020'）"
+CK ($l9 -match 'dng_render（线性 rec2020') "⑨ 下发点与决策同源：`RawService` 实际拿到的 -rdspace=rec2020（下发点日志 'dng_render（线性 rec2020'）⇒ 同上，防「决策≠下发」"
 
 # ⑩ 非 DNG 输入仍然走 LibRaw（ACR 路线不冒充覆盖它）
 $ad = "$d/out-arw"
@@ -181,6 +187,22 @@ if ($null -ne $jpg) {
 } else {
     CK $false "⑪ 相机厂/型号从源补回（⑦ 无产物 ⇒ 判红不判绿）"
 }
+
+# ⑫ LibRaw 臂的中间件必须是**真线性**
+#   产品把本臂产物声明为 `linear` 并交给 zscale(tin=linear)（QueueProcessor.cs 的
+#   ColorSourceDeclTrc 与 FfmpegCommandBuilder.Decision 的 tin=），而 LibRaw 默认
+#   gamm={0.45,4.5}、write_ppm_tiff() 会先套 dcraw 曲线再写 curve[] ⇒ 默认产物是 gamma 编码。
+#   ⚠ 读数校准（2026-10-26，同一 m2-noop.dng）：修复前 -d/-rd 中位比 = 2.42（gamma），
+#     修复后 = 0.60（线性；余差来自相机 WB/无相机 profile，不是曲线）。区间 0.35~1.5 两头都不挨。
+$q1 = ExecRC $dng "-d -T -o 0 -q 3 -W -H 1 -6 -i `"$d/m2-noop.dng`" -O `"$d/libraw-lin.tif`""
+$q2 = ExecRC $dng "-rd -rdspace rec2020 -i `"$d/m2-noop.dng`" -O `"$d/sdk-lin.tif`""
+CK ($q1[0] -eq 0 -and $q2[0] -eq 0 -and (Test-Path "$d/libraw-lin.tif") -and (Test-Path "$d/sdk-lin.tif")) `
+   "⑫ 两条解码臂都有产物（rc=$($q1[0])/$($q2[0])）"
+$mdn = (ExecRC 'py' "`"$rd`" median `"$d/libraw-lin.tif`" `"$d/sdk-lin.tif`"")[1]
+$lr = 0.0
+if ($mdn -match 'ratio=([0-9.]+)') { $lr = [double]$Matches[1] }
+CK ($lr -gt 0.35 -and $lr -lt 1.5) `
+   "⑫ LibRaw 中间件是线性而非 gamma 编码：中位比 $lr（区间 0.35~1.5；修复前 2.42；读数 $($mdn.Trim())）"
 
 Write-Output ''
 Write-Output "PASS=$pass FAIL=$fail"

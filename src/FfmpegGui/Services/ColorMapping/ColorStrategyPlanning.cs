@@ -488,12 +488,22 @@ public static partial class ColorMappingEngine
                                  + (caps.HasColorPath ? "" : "（该容器无任何色彩管理通路）"),
                     "改用 PNG/TIFF/WebP/AVIF/JXL 携带，或改 S1 用可命名空间 + 标准 ICC",
                     FormatAlts("能力表 CanCarryArbitraryIcc ⇒ 可原样携带源 ICC", "png", "tiff", "webp", "avif", "jxl"));
+            // 容器的 ICC 通路只对 avifenc 成立，而**本出口**是 ffmpeg（写不了 ICC）：
+            // 源空间不可命名时 ICC 就是唯一描述 ⇒ 这一格无法诚实交付，必须拒绝（2026-10-26 实测缺陷）。
+            if (!pol.ExitWritesIcc && !src.IsCicpNameable)
+                return Reject(p, $"S2 携带：{caps.Format} 出口（ffmpeg）不写 ICC，而 {src.Name} 无 CICP 名"
+                                 + " ⇒ 交付出去只会是一张「像素 A、标签 B」的图",
+                    "改用 PNG/TIFF/WebP/JXL 出口携带 ICC；或显式指定可命名的目标空间"
+                    + "（sRGB / Display P3 / BT.2020 / Rec.2100）让引擎映射；也可改 S1 推荐自动取可命名超集",
+                    FormatAlts("能携带任意 ICC 的出口", "png", "tiff", "webp", "jxl"));
             p.Action = ColorAction.CarryIcc;
             p.Backend = ColorBackend.None;
-            p.AttachIcc = true;
-            p.IccPath = src.SourceIccPath;
+            p.AttachIcc = pol.ExitWritesIcc;
+            p.IccPath = pol.ExitWritesIcc ? src.SourceIccPath : null;
             p.ColorLoss = ColorLoss.None;
             p.Reason = "L1 无损：像素零改动，携带源 ICC（" + (System.IO.Path.GetFileName(src.SourceIccPath)) + "）";
+            if (!pol.ExitWritesIcc)
+                p.Reason = "L1 无损：像素零改动；该出口不写 ICC，源空间可 CICP 命名 ⇒ 以 nclx 标签描述";
             CarryCicpLabels(p, src, caps);
             return p;
         }
@@ -615,8 +625,10 @@ public static partial class ColorMappingEngine
                 "使用受支持的空间名或 CICP token");
 
         bool canName = CapsAcceptsCicp(caps, target, pol.ExternalEncoderExit);
-        if (!canName && !caps.CanCarryArbitraryIcc)
+        // 「能携带」还要「本出口真写得进去」（AVIF/ffmpeg 写不了 ICC，见 PlanPolicy.ExitWritesIcc）
+        if (!canName && (!caps.CanCarryArbitraryIcc || !pol.ExitWritesIcc))
             return Reject(p, $"S4 手动：{caps.Format} 既不能写该空间的 CICP 又不能携带任意 ICC"
+                             + (!pol.ExitWritesIcc ? "（本出口不写 ICC）" : "")
                              + (caps.HasColorPath ? "" : "（该容器完全无色彩管理通路）"),
                 $"改用 PNG/TIFF/WebP/JXL 以携带 ICC；若坚持 {caps.Format} 则目标只能取 sRGB（无标注）；或改用 S1 自动处理",
                 FormatAlts("能力表 CanCarryArbitraryIcc ⇒ 可携带任意 ICC", "png", "tiff", "webp", "jxl"));
@@ -697,19 +709,27 @@ public static partial class ColorMappingEngine
             it.Target = SrgbRef;
 
         // L1 携带优先（无损；范围由 CarryScope 单一开关决定，规划 §9）
+        // ⚠ 出口写不了 ICC 时（`ExitWritesIcc=false`，AVIF 静态出口）：
+        //   源空间**可 CICP 命名** ⇒ 照常零改动携带，描述靠标签（`AttachIcc=false`）；
+        //   不可命名（ProPhoto/Adobe…）⇒ 不得走这里：ICC 是唯一描述，写了也落不了盘
+        //   ⇒ 落到下面的 L2（取可命名超集映射），由容器把像素与标签对齐。
         bool carryInScope = pol.CarryScope switch
         {
             CarryScope.None => false,
             CarryScope.Unnameable => src != null && !src.IsCicpNameable,
             _ => true,
         };
-        if (!pol.TargetExplicit && carryInScope && src?.SourceIccPath != null && caps.CanCarryArbitraryIcc && srcHdr == false)
+        if (!pol.TargetExplicit && carryInScope && src?.SourceIccPath != null && caps.CanCarryArbitraryIcc && srcHdr == false
+            && (pol.ExitWritesIcc || src.IsCicpNameable))
         {
             p.Action = ColorAction.CarryIcc;
             p.Backend = ColorBackend.None;
-            p.AttachIcc = true;
-            p.IccPath = src.SourceIccPath;
+            // 出口写不了 ICC ⇒ 只保留可命名标签（`CarryCicpLabels` 已按源空间写入）
+            p.AttachIcc = pol.ExitWritesIcc;
+            p.IccPath = pol.ExitWritesIcc ? src.SourceIccPath : null;
             p.Reason = $"L1 无损优先（carry-scope={pol.CarryScope}）：像素零改动，携带源 ICC";
+            if (!pol.ExitWritesIcc)
+                p.Reason += "；⚠ 该出口不写 ICC ⇒ 仅以可命名的 CICP 标签描述（源空间可命名才允许走到这里）";
             CarryCicpLabels(p, src!, caps);
             return p;
         }
@@ -729,7 +749,7 @@ public static partial class ColorMappingEngine
         // L2 超集归一（无损阶梯）：auto 目标、无法携带源 ICC、且该容器**无论何种方式**都无法表达源空间
         //   → 取“容器可表达的最窄超集”（包含源⇒零削色）；找不到则 Reject。
         // ⚠️ “能表达”不等于“能写 CICP”：PNG/JPEG/WebP/TIFF 无 CICP 通路但可携带/生成 ICC（实测踩过：混为一谈会误拒 sRGB→png）。
-        bool canCarrySourceIcc = caps.CanCarryArbitraryIcc && src?.SourceIccPath != null;
+        bool canCarrySourceIcc = caps.CanCarryArbitraryIcc && pol.ExitWritesIcc && src?.SourceIccPath != null;
         bool expressible = src != null && (CapsAcceptsCicp(caps, src, pol.ExternalEncoderExit)
             || ((caps.CanCarryArbitraryIcc || caps.CanGenerateIccFromCicp) && src.IsCicpNameable));
         if (it.Target == null && src != null && srcHdr == false && !canCarrySourceIcc && !expressible)
@@ -747,6 +767,21 @@ public static partial class ColorMappingEngine
                 return cg;
             }
             var sup = NameableSupersetFor(src, caps, pol.ExternalEncoderExit);
+            // 源色域比**所有**可命名目标都宽（ProPhoto/ROMM，BT.2020 也装不下）时的唯一出路：
+            // 取**最宽的可命名目标** BT.2020/SDR，越界色裁切 —— 这正是传统管线对 avif 一直做的
+            // （`-color_primaries bt2020 -color_trc bt709` + `GamutClipped` 播报），现在引擎侧
+            // 与它同口径，而不是把 AVIF 整格拒掉（那会让 ProPhoto 源失去 avif 出口）。
+            // ⚠ 只在容器真的能写该空间的 CICP 时才走；否则仍是 Reject，绝不产出无标注行。
+            bool clippedToWidest = false;
+            if (sup == null)
+            {
+                var widest = ColorSpaceDescriptor.FromCicp("bt2020", "bt709", "CICP:bt2020/bt709");
+                if (widest != null && CapsAcceptsCicp(caps, widest, pol.ExternalEncoderExit))
+                {
+                    sup = widest;
+                    clippedToWidest = true;
+                }
+            }
             if (sup == null)
                 return Reject(p, $"S1 推荐：{caps.Format} 既不能携带 {src.Name} 的 ICC，又不能表达该空间",
                     "改用 PNG/TIFF/WebP/JXL 携带 ICC；或接受归入可命名超集（需容器支持）",
@@ -755,7 +790,11 @@ public static partial class ColorMappingEngine
             c2.DeclaredStrategy = declared;
             c2.EffectiveStrategy = ColorStrategy.Recommended;
             if (ov != OverrideReason.None) c2.Override = ov;
-            c2.Reason = $"L2 超集归一（{src.Name} → {sup.Name}，包含源色域⇒零削色）：" + c2.Reason;
+            c2.Reason = (clippedToWidest
+                    ? $"L2 归入最宽可命名目标（{src.Name} → {sup.Name}；源比任何可命名空间都宽 ⇒ 越界色裁切，"
+                      + "已按 GamutClipped 播报）"
+                    : $"L2 超集归一（{src.Name} → {sup.Name}，包含源色域⇒零削色）")
+                + "：" + c2.Reason;
             return c2;
         }
 

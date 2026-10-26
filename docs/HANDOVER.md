@@ -3532,3 +3532,199 @@ var encoderProtectsColor =
   补法（`ServiceProbe` 加 `aviftune` mode、进程内直调 `BuildAvifOptions`）已写成六条断言列在账上。
 - ⚠ `tests/output/` 整棵被 `.gitignore` 挡住 ⇒ 上面那些日志会被一次 `git clean -xdf` 抹掉；
   关键读数已经抄进两份文档的表里，但**复现**要在清理前把日志搬出去。
+
+## 2026-10-26 全面交接（本会话停手时的完整状态 · 接手先读这一节）
+
+> 写法约定：下面每一条要么给得出**命令 + 日志路径**，要么明写「未测/未做」。没有读数的地方不写成结论。
+
+### H-0 一句话
+
+AVIF 出口的 ICC「假成功」已按**执行体**口径收口并有端到端判据；本会话只在当前树跑了 12 条受管脚本
+（11 条有判定，全绿；1 条是读数件），**整轮 84 条未重跑**、**未提交、未出包、未打标签**。
+工作树里同时压着**三批**未提交改动（见 H-1），接手时先分清是哪一批。
+
+### H-1 仓库状态（2026-10-26 04:10 读数）
+
+| 项 | 值 | 怎么核 |
+|---|---|---|
+| 分支 / HEAD | `main` / `0b07b1c`（feat(gainmap)+fix(color,jxr,jxl)+…） | `git log -1` |
+| csproj 版本位 | `1.6.0-beta8`（未动） | `grep '<Version>' src/FfmpegGui/FfmpegGui.csproj` |
+| 出货归档 | `publish/FFmpegPictureUI-v1.6.0-beta7/beta8-x64[-full].7z` **原样未覆盖** | `ls -la publish/*.7z` |
+| 标签 | `1.6.0BETA8` → `bed8e15`（本批改动不在其内） | `git rev-parse 1.6.0BETA8^{commit}` |
+| 工作树 | 30 个文件已改未提交（三批混在一起，见下） | `git diff --stat` |
+| 被测产物 | `FfmpegGui.dll` sha16 **`e3cbb86437e514fc`**，03:51:58 构建，`0 警告 0 错误` | `sha256sum … \| cut -c1-16` |
+
+**三批未提交改动**（按归属分，接手别把它们当同一件事验收）：
+
+1. **A 批｜GainMap 合成的元数据三态 + 编码器选择 + UI 美化 + 依赖账实**（前一～二个工作会话）
+   `MainWindow.xaml(.cs)`、`CliParser.cs`、`Models/FfmpegOptions.cs`、`Resources/Locales/*.json`、
+   `Services/GainMapEncoder.cs`、`Services/GainMapComposeService.cs`、`THIRD-PARTY-NOTICES.md`、
+   `tests/scripts/verify-gainmap-compose.ps1`、`_lib-matrix.ps1`（A21/A30 行锚 211→216）、
+   `_probe-cjk-hardcode-scan.ps1`（棘轮 881→885）。
+2. **B 批｜LibRaw 解码臂改真线性**（账本 §48）：`tools/src/dngtool/dngtool.cpp`、
+   `tests/scripts/verify-acr-route.ps1`（新 ⑫）、`_readback-acr-render.py`、`_run-step3-gates.ps1`（注释）。
+3. **C 批｜AVIF ICC 交付诚实性 + 探测超时重试**（账本 §49，本会话）：见 H-2。
+
+### H-2 C 批改了什么（逐点给落点）
+
+| 落点 | 内容 |
+|---|---|
+| `ColorTransformPlan.cs:191` | `PlanPolicy.ExitWritesIcc`——「**这条执行体**能不能把 ICC 落盘」，与格式能力表 `CanCarryArbitraryIcc`（描述的是 avifenc）分轴 |
+| `ColorIntent.cs:196` + `ColorIntentFactory.cs:320` | 同位透传；装配侧 `ExitWritesIcc = fmt != "avif"` |
+| `ColorStrategyPlanning.cs:494` | S2 携带 × AVIF × 源无 CICP 名 ⇒ **契约拒绝**（不产出「像素 A、标签 B」） |
+| `ColorStrategyPlanning.cs:778` | S1 推荐补一级「归入**最宽可命名目标** BT.2020/bt709 + `GamutClipped` 播报」⇒ ProPhoto→AVIF 从"拒"变"交付且说真话" |
+| `TransferCurve.cs:219` | `TryClaimNamed`：ICC 参数曲线与标准曲线 7 参数（2e-4）+ 采样点（5e-4）双向吻合 ⇒ 认领具名曲线并补 `CicpToken`（否则标准 P3 ICC 被当成"不可命名"） |
+| `IccProfileService.cs:228` | `ReadIccCurve` 的 para0–4 / curv-γ 出口统一过 `Claim(...)` |
+| `ExifToolService.cs:1287` | `NoWriteApplied = -3` + `ParseUpdatedCount` + `WriteAndVerifyAsync`：「0 image files updated」不再当成功 |
+| `ExifToolService.cs:158` | 色彩标签+ICC 探测改**两趟**（5 s ⇒ 20 s），两趟都失败才点名一次 |
+| `FfmpegCommandBuilder.cs:1713` | ffprobe 侧同款两趟（5000 ⇒ 20000 ms） |
+| `QueueProcessor.cs:2359` | 引擎携带分支要求 `AttachIcc: true`——执行体自己声明"ICC 我已经写了"就别再后置一遍 |
+| `QueueProcessor.cs:2378` | `iccIsOnlyDescription` 在引擎路线上**只认引擎计划**，不回落传统裁决 |
+| `ServiceProbe/Program.cs:1883` | 测试宿主的 `MakeIntent` 与 `ColorIntentFactory` 同源（`avif ⇒ ExitWritesIcc=false`） |
+
+### H-3 一手实测事实（下次别再重测，直接用）
+
+1. **exiftool 写 ICC 的口径**（672 B ProPhoto ICC，`tests/output/_tmp/iccprobe/`，03:40）：
+
+   | 容器 | stdout | rc | `exiftool -b -icc_profile` 回读 |
+   |---|---|---|---|
+   | avif | `0 image files updated` + `1 image files unchanged` | **0** | **0 B** |
+   | webp | `1 image files updated` | 0 | 672 B |
+   | jpg | `1 image files updated` | 0 | 672 B |
+
+   ⇒ 两条推论：**「unchanged」不能读成"标签已存在"**（AVIF 连 tag 都不支持也记 unchanged）；
+   **「rc=0」不能读成"写进去了"**。阴性信号只能配合计划层用。
+2. **JXL 的 ICC 由 cjxl 落盘**（`-x icc_pathname=`），exiftool 后置对 JXL 恒为 no-op（且 exiftool 读 JXL 的 ICC
+   也读不出，回读要用 `jxlinfo`）。所以「exiftool 0 updated + 产物其实有 ICC」在 JXL 上是**正常态**——
+   这就是 H-2 里 `AttachIcc` 那两处判据存在的原因。
+3. **AVIF 静态出口 = ffmpeg 封装器不写 ICC**；`avifenc --icc` 能写，但它当前只服务 GIF→AVIF 两步法。
+   ⇒「把静态 AVIF 也切到 avifenc」= 动编码器/CRF/位深面，属独立一批（H-7 欠账）。
+4. **单趟 5 s 探测超时在负载下会抽风**，后果不是"少读一个标签"而是**整图按未标注 = sRGB 惯例**处理。
+   这就是 10-26 整轮里 `verify-color-strategy` / `verify-decision-delivery` 随机红的机制。
+
+### H-4 判据与读数（绑定被测产物 `FfmpegGui.dll=e3cbb86437e514fc`）
+
+| 门禁 | 本会话读数 | 日志 |
+|---|---|---|
+| `verify-prophoto-faithful`（含新 §6 ⑥a–⑥f） | **37/0**（修前同树也是 37/0，因新判据随批加入） | `tests/output/avif-icc-20261026b/verify-prophoto-faithful.log` |
+| `verify-decision-delivery` | **92/0**（修前 89/1：⑬ jxl 被误删） | 同目录 |
+| `verify-color-wiring` | **153/0**（修前 146/6） | 同目录 |
+| `verify-color-strategy` | **78/0** | 同目录 |
+| `verify-usability-e2e` | **84/0**（格数 81） | 同目录 |
+| `verify-color-caps` / `verify-format-regression` / `verify-widegamut-regression` | **16/0 · 20/0 · 20/0** | 同目录 |
+| `verify-jpg-webp-matrix` / `verify-avif-alpha` / `verify-dng-nonraw-input` | **30/0 · 16/0 · 30/0** | 同目录 |
+| `verify-tiff-icc` | **不给结论**（`$tableOnly` 读数件，末行 `===== DONE =====`） | 同目录 |
+
+有判定的 11 条合计 **576 条断言全绿**。修前对照读数在 `tests/output/avif-icc-20261026/`（03:27:51 构建的树）。
+
+上一次**整轮**（本批改动之前）：`tests/output/full-round-20261026.log`，84 条受管，
+`artifact-sha16 FfmpegGui.dll=3225974D7373FA38`、`runner-self-sha256=68B63CA442962086 lines=1626`，
+**失败 3 项** = `probe:bench` + `verify-color-strategy` + `verify-decision-delivery`。
+后两条的归因见 H-3 第 4 点（同一二进制把 TMP 钉死后单跑 78/0 与 92/0）；`probe:bench` 是 §42/§43 同族的
+计时阈值边界，本批未动其阈值。
+
+### H-5 明确**未做/未测**（别当已验）
+
+1. **整轮 84 条未在本树重跑**——只跑了 H-4 那 12 条。其余 **72 条受管脚本 + 全部 `probe:`/ServiceProbe mode**
+   没碰过。`verify-probe-mirror-parity`、contract 镜像、`_probe-test-group-coverage` 这些"锁"都不在本轮读数里。
+2. **A 批的 UI 面未做进程外实机验收**（本会话没起 GUI）。
+3. **`_probe-cjk-hardcode-scan` 棘轮（基线 885）未复跑**：C 批往 `src/` 加了不少中文日志字面量，
+   **可能**要抬基线或被判 UI 面——**未测**，接手第一件事就是跑它拿实况，别提前抬号。
+4. **打包/L3 未做**（维护者指示只做交接）：`pack.ps1` 未跑，`publish/` 里 beta8 归档未被覆盖，
+   `verify-release-package.ps1` 与 L3 五套件本轮**没有**读数。
+5. **A21/A30 行锚**：只手工复核了 `CliParser.cs:216`（`if (fmt == "jpegli") fmt = "jpg";` 仍在 216、全文件唯一命中）。
+   其余行锚未逐条复核；QueueProcessor/IccProfileService 等被 C 批改过行号，整轮跑到矩阵取证时**可能报漂移**——
+   那是"锁生效"不是产品回归，抬号前先 `grep -n` 复核实况行。
+6. **#74 探测超时 fail-closed**：仍是 fail-open（两趟超时 ⇒ 按未标注处理），只是现在必留一行点名。
+
+### H-6 下一手怎么接（按顺序）
+
+```powershell
+$env:LC_ALL=$null
+$env:TMP=$env:TEMP=$env:TMPDIR="C:\PLAN\ffmpegPictureUI\tests\output\_tmp"   # 不钉这三条 ⇒ 像素路成片 exit -13 假红
+dotnet build ffmpegPictureUI.sln -c Release                                   # 13 个测试工程都在 sln 里
+pwsh -NoProfile -File tests/scripts/_run-step3-gates.ps1                      # 整轮 43~52 分钟，起轮后不许再动 src/ 与运行器
+```
+
+1. 先 `_probe-cjk-hardcode-scan`（单条快）拿 C 批后的棘轮实况，再决定要不要登记基线。
+2. 跑整轮；红先按 H-3/H-4 的机制归因（负载 / 行锚 / 阈值），**不许靠放宽判据换绿**。
+3. 整轮绿了才谈出包：出包要定版本号（按 `beta8` 出会就地覆盖且 `publish/` 在 gitignore 内、**不可恢复**），
+   所以升 `beta9` 或先手工挪归档——这一步要维护者点头。
+4. 提交/打标签：维护者逐次授权制（本会话未提交任何东西）。
+
+### H-7 开放项与建议（含一处**推翻上一轮结论**的更正）
+
+| # | 事项 | 现状 |
+|---|---|---|
+| 建议 #1 | AVIF ICC 交付与播报 | **本批完成**（判据 = `verify-prophoto-faithful` §6 ⑥a–⑥f；AGENTS §7 已登记） |
+| 建议 #2 | 把 `verify-color-matrix-full.ps1`（360 格四把尺）接进受管清单，或按"有判据不接整轮"登记 | **未动**。接入要同批改 `$scriptList` / `$expectedScriptCount` / 三种散文形态 / `Test-RunnerShape` ⑰ + `docs/TESTING.md` + 本文件；且要先量 quick/full 两档墙钟再定单步超时（现值 900 s，别悄悄放宽默认） |
+| 建议 #3 | 色彩**数值**正确性与 jxr/dng **像素** oracle（现在多是"读得出"级） | **未动**。已知无判定件：`$tableOnly` = `verify-colorfmt-matrix` / `verify-tiff-icc` / `verify-webp-hdr-fix` / `_probe-jpg-p3-icc`——名义在场、永不判红 |
+| 建议 #4 | 「8 条降级码没有正向断言」 | **上一轮结论被本会话部分推翻**：`_lib-reject.ps1` 对 NoCicpCarrier / NoIccCarrier / HdrNoIccCarryPath / ContainerCannotCarryIcc / UnlabeledAssumedSrgb / GamutClipped / GamutCompressed / BitDepthReduced / GainMapNonJpeg / GeometryWithGainMap / NoColorPath / AnimatedNotSupported / EncoderUnsupportedSetting **都有正负臂**，且在册的 `verify-jxl-codestream-route.ps1` ⑪ 真跑驱动过 `EncoderUnsupportedSetting`。剩下的真实缺口是：①`BitDepthRaised` 只有注释、没有 `$add` 臂；②登记表里的臂是否**每条都被在册脚本执行**没逐条数过。⇒ 按实况重开，别照旧清单施工 |
+| 任务 #72 | 两条整轮假红归因 | **可关**（H-3 第 4 点 + 单跑 78/0、92/0） |
+| 任务 #73 | AVIF ICC 假成功 | **可关**（本批，H-2/H-4） |
+| 任务 #74 | 探测超时 fail-closed | **开放**（H-5 第 6 点） |
+| #33 / #47 / #48 | Samsung/Olympus 镜头表、ImageUniqueID carry_gap、厂商色彩矩阵采纳 | 未动（DNG 侧 backlog） |
+| — | FFmpeg `--enable-nonfree` 再分发、无 `global.json` | 未动（既有） |
+
+### H-8 环境与红线（本仓反复咬人的几处）
+
+- 三档临时目录必须钉进工作区；产物只落 `tests/output/**`，宿主 scratch 走 `tests/output/_tmp`。
+- `tests/projects/GainMapTestHost/PLAN` 是 **junction** → `publish/PLAN`；拆它只能 `os.rmdir`，`rm -rf` 会连目标一起删。
+- 产物区**不许**挂 git worktree；要对着历史提交构建就建在仓库外（`..\ffmpegPictureUI-wt\`）。
+- MSYS bash 会静默改坏 Windows 脚本（`/p:`→`p:`、`nul`→`/dev/null`）⇒ 批量改写用 `py`；
+  编辑工具可能整文件换 CRLF ⇒ 判据是与 HEAD blob 做字节层对撞（本仓 `.ps1` 多 CRLF、部分 `.cs` 工作树 LF）。
+- 裸跑单个 `verify-*.ps1` 绕开仓库锁/单步超时/STALE 新鲜度/产物指纹核对 ⇒ **只适合调试，不算验收**。
+- 文档里的每个数字都必须能指到某条命令的日志；没跑过的批次不写进结论（本文件同样受这条约束）。
+- 本节写于 2026-10-26 04:10 前后；`_lib-reject.ps1` 的臂清单、`$tableOnly` 四条、`CliParser.cs:216` 三处
+  都是**当场 grep/读文件**得到的实况，不是引用旧账。
+
+## 2026-10-26 交接后续：接手方执行结果（整轮基线已建立 · 接手从这一节读起）
+
+> 上一节（H-0～H-8）是 04:10 停手时的**状态快照**，按 `docs/AGENTS.md` §6「带日期的记录不回改」保留原样；
+> 本节是接续执行后的**新读数**，与上一节冲突处以本节为准。
+
+### H-9 一句话
+
+**本树第一次完整整轮已跑完且全绿**（111 条：84 受管脚本 + 27 探针 mode）。
+上一节 H-5 列的 6 项"未做/未测"里，第 1 项（整轮）与第 3 项（CJK 棘轮）**已闭环**；
+过程中另外修掉 4 条判据级红。仍然**未提交、未出包、未打标签**。
+
+### H-10 整轮读数（可宣布的基线）
+
+| 项 | 值 |
+|---|---|
+| 日志 | `tests/output/full-round-20261026c.log`（`START 05:39:06` → `END 06:27:51 exit=0`，48 min 45 s） |
+| 末行 | `===== 运行器汇总：全部通过 =====` |
+| 条数 | **111**（84 脚本 + 27 探针），日志里 `[` 行 112（多 1 行 `[gate] exe=`） |
+| 被测产物 | `FfmpegGui.dll=**E3CBB86437E514FC**`（与 H-1 同，未重建）· `FfmpegGui.exe=3F7344ECED484E27` · `ServiceProbe.exe=**0B2B8F6E542C9A2E**`（本批重建）· `UiTestHost.exe=AECDB8B487B6E2AD` · `GainMapTestHost.exe=DB0CA48528576263` |
+| 运行器自证 | `runner-self-sha256=68B63CA442962086 lines=1626 bytes=165742` |
+
+⚠ 宣布口径：这是**全量**（不是 `-Scripts` 子集），且日志尾行自陈"全部通过"。
+
+### H-11 本批修掉的 5 条红（逐条判定，都不靠放宽判据换绿）
+
+| 红 | 判定 | 处置 | 复跑 |
+|---|---|---|---|
+| `contract` 158/2 | **判据漏维度**（C5 的 `expect` 没算 C 批新增的 `ExitWritesIcc`） | `ServiceProbe/Program.cs` 补该一维，读**产品装配值**而非重抄 `fmt != "avif"` | 160/0 |
+| `verify-jxl-probe-timeout` 44/3 | **判据把旧单趟预算硬编码成墙钟上界**（产品行为正常） | 上界 15→30 + 新增 ①-⑦ 源码形态自检钉住两趟预算 | 51/0 |
+| `_probe-matrix-structure` 37/1 | **锁生效**（`FfmpegCommandBuilder.cs:2386 → 2400`，C 批净 +14 行） | `_lib-matrix.ps1` 抬号并登记 pin 演进 | 38/0 |
+| `verify-probe-mirror-parity` 84/1 | **瞬时环境失败**（`git ls-files` 未跑成，fail-closed 正常） | 不改判据 | 85/0 |
+| `probe:bench` 31/6 | **既有红**（上一轮旧二进制逐条相同的 6 条）⇒ 负载抖动 | 不调阈值 | 本轮 37/0 |
+
+CJK 棘轮另计：UI 面 901 > 885 ⇒ 按换回法归因后**抬基线至 901**（第十五次），变异验证两臂齐备。
+明细见账本 `docs/IMPLEMENT_PLAN_2026-10-11.md` §49.8。
+
+### H-12 两个环境坑（下次直接绕）
+
+1. **后台长任务约 55 min 会被基础设施杀**（第一次整轮跑到 101/111 条被终止，退出码 `0x40010004`）。
+   ⇒ 整轮一律走 `schtasks` 一次性任务脱离进程树（bat 放仓库外），不要挂后台任务。
+2. 异常终止会**残留 `tests/output/.gates.lock`** ⇒ 下一轮 exit 9 起不来。确认持有进程已死后**手工删**。
+
+### H-13 下一手（按 H-6 的剩余项）
+
+1. **出包/提交/打标签**要维护者点头：出包前先定版本号（按 `beta8` 出会就地覆盖 `publish/` 归档，
+   而 `publish/` 在 gitignore 内、**不可恢复**）⇒ 升 `beta9` 或先手工挪归档。
+2. A 批的 UI 面**仍未做进程外实机验收**（`verify-ui-host` 等跑的是 `UiTestHost` 宿主，不是真 GUI 进程）。
+3. 欠账未动：任务 #74（探测超时 fail-closed）、H-7 建议 #2/#3/#4、#33/#47/#48。
+4. 新记一条欠账：`.jxl` 路径上 `ProbeWithFfprobe` 的 `log` 为 null ⇒ 两趟都超时却一行都不说
+   （本批新增的重试行也只有 `log?.Invoke`、无 `Trace` 回退）⇒ 属独立一批。

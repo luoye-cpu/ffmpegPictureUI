@@ -33,7 +33,7 @@
 
 `tests/scripts/_run-step3-gates.ps1` 是清单，不是索引外部文件。加/删/改名一条门禁必须**同批**改齐四处：
 
-1. `$scriptList` 数组（78 条）；
+1. `$scriptList` 数组（84 条）；
 2. `$expectedScriptCount` 常量（同文件）；
 3. runner 里复述条数的**散文陈述**——`Test-RunnerShape` 第 ⑰ 针按三种形态各扫一遍并要求与常量相等；
 4. 新的 ServiceProbe mode 还要进 `tests/projects/Tests.Shared/TestGroups.cs` 的组表，
@@ -132,6 +132,17 @@ pwsh -NoProfile -File tests/scripts/_run-step3-gates.ps1   # 整轮 43~52 分钟
 - **ACR 路线只覆盖 DNG（2026-10-24）**：`.dng` 走 `dngtool -rdp`（Adobe DNG SDK 的 `dng_render`，
   OpcodeList1/2/3 全施加），其余 RAW 仍走 LibRaw（**SDK 只读 DNG**，读不了 ARW/CR2/NEF…）。
   渲染空间按下游目标选（bt709 出口 ⇒ `srgb`，其余 ⇒ `rec2020`），`ColorSourceDeclPrimaries` 与它同源。
+  **LibRaw 臂的中间件自 2026-10-26 起固定恒等 gamm（真线性 16-bit）**：LibRaw 默认 `gamm={0.45,4.5}`，
+  `write_ppm_tiff` 会套 dcraw 曲线，与产品声明的 `linear` 冲突（二次 gamma，实测 ARW→PNG 中位 0.41 vs
+  参考 0.32）；修法在 `dngtool.cpp` 解码臂，判据 = 第 79 条 ⑫（同一 DNG 的 `-d`/`-rd` 中位比 0.35~1.5）。
   已知边界：enhanced-image IFD 的 DNG 直接点名拒绝；DNG 输入上 `-H/-q/-W/-threads` 不生效（日志点名）；
   耗时约为 LibRaw 的 2.2×（24MP 5.1 s vs 2.3 s）。要"全量"须先 LibRaw 解包成 CFA DNG 再 SDK 渲染（另立一批）。
   门禁 = 第 79 条 `verify-acr-route.ps1`。
+- **AVIF 的静态出口写不进 ICC（2026-10-26 实测）**：ffmpeg 的 AVIF muxer 不写 ICC，exiftool 后置
+  也报「0 image files updated」而**退出码仍是 0**（672 B ProPhoto ICC：产物 `avifdec --info` 报
+  `ICC Profile: Absent`，旧日志照打「ICC Profile 已恢复」）。`avifenc --icc` 能写，但它只用于
+  GIF→AVIF 动画两步法 ⇒ `PlanPolicy.ExitWritesIcc=false`（由 `ColorIntentFactory` 按格式置位）：
+  - 源空间**可 CICP 命名** ⇒ 零改动携带、以 nclx 描述（`AttachIcc=false`）；
+  - 不可命名（ProPhoto/Adobe/自定义）⇒ S2 携带**契约拒绝**（exit 91，零产物）；S1 推荐落
+    「最宽可命名目标 BT.2020/SDR + `GamutClipped` + `NoIccCarrier` 播报」。
+  判据 = `verify-prophoto-faithful.ps1` §6 的 ⑥a–⑥f。

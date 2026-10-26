@@ -15,6 +15,15 @@ namespace FfmpegGui.Services.ColorMapping;
 /// </summary>
 public static class ColorIntentFactory
 {
+    /// <summary>
+    /// 【唯一真值】出口格式能否把 ICC **真正写进**产物。
+    /// AVIF 的静态出口是 ffmpeg：muxer 不写 ICC、exiftool 后置报「0 image files updated」而 rc=0，
+    /// 计划层若照能力表（<c>CanCarryArbitraryIcc</c>，那是对 avifenc 成立的）承诺附 ICC，
+    /// 产物实际**无任何色彩描述**（像素是 ProPhoto，nclx 却写 bt709）⇒ AVIF 恒 false。
+    /// ⚠ 2026-10-26 收口：此前这条事实在探针 `ServiceProbe.MakeIntent` 里被**抄了第二份**
+    ///   ⇒ 契约探针测的是「探针自己的假设」，产品侧回退不会被抓。现收口为单一真值，产品与探针共用。
+    /// </summary>
+    public static bool ExitWritesIccFor(string fmt) => fmt != "avif";
     /// <summary>把选项装配为意图；不可装配时返回 null 并在 <paramref name="reason"/> 给出原因。</summary>
     public static ColorIntent? FromOptions(FfmpegOptions o, string inputPath, out string? reason)
     {
@@ -311,6 +320,13 @@ public static class ColorIntentFactory
             //     （唯一口径见 `RawColorPipeline` 的 JXR 出口文档）⇒ 不存在「普通编码出口」
             //     这条替代路径 ⇒ jxr **恒**走本出口（不必像 jxl 那样再判后端）。
             ExternalEncoderExit = (fmt == "jxl" && o.EncoderBackend == EncoderBackend.Cjxl) || fmt == "jxr",
+            // ── 出口能否真写 ICC（2026-10-26 实测缺陷后补）──────────────────────────────
+            // AVIF 的**静态**出口是 ffmpeg：muxer 不写 ICC、exiftool 后置报「0 image files updated」
+            // 但 rc=0 ⇒ 计划若照能力表（`CanCarryArbitraryIcc=true`，那是对 avifenc 成立）附 ICC，
+            // 产物实际**无任何色彩描述**（像素是 ProPhoto，nclx 却写 bt709）。
+            // jxl 不在此列：cjxl 后端由 `-x icc_pathname` 落盘，ffmpeg 出口由
+            // `RawColorPipeline.TransformFileAsync` 的 JXL 诚实门拒绝（既有）。
+            ExitWritesIcc = ExitWritesIccFor(fmt),
         };
         // ── 超广色域保真（2026-09-16 接入引擎）──────────────────────────────────────
         // 语义 = **像素零改动 + 仅靠 ICC 描述**（ProPhoto/ROMM 等超出 BT.2020 的色域：

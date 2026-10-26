@@ -156,15 +156,24 @@ namespace FfmpegGui
         private ComboBox? GainMapBaseGamutCombo;
         private CheckBox? GainMapMultiChannelCheck;
         private ComboBox? GainMapEncoderCombo;
-        private ComboBox? GainMapSubEncoderCombo;
         private TextBlock? GainMapEncoderHint;
+        private ComboBox? GainMapMetadataCombo;
+        private TextBlock? GainMapMetadataHint;
         private Slider? GainMapBaseQualitySlider;
         private TextBox? GainMapBaseQualityBox;
+        private TextBlock? GainMapBaseQualityValue;
         private Slider? GainMapGainQualitySlider;
         private TextBox? GainMapGainQualityBox;
-        private TextBlock? GainMapQualityHint;
+        private TextBlock? GainMapGainQualityValue;
         private bool _gmQualitySync;
+        /// <summary>可用但**不能按增益图精度交付**的编码器（刷新时算好，提示里点名）。</summary>
+        private List<string> _gmExcludedEncoders = new();
+        /// <summary>JPEG 下上次选的元数据承载（AVIF 只给 ISO，切回 JPEG 时恢复这一项）。0=iso 1=xmp 2=both</summary>
+        private int _gmMetadataJpegIndex;
         private ComboBox? GainMapDownsampleCombo;
+        private TextBlock? GainMapQueueEmptyHint;
+        private TextBlock? QueueEmptyHint;
+        private TextBlock? MediaEmptyHint;
         private Border? GainMapSdrSlot;
         private Border? GainMapHdrSlot;
         private TextBlock? GainMapSdrName;
@@ -400,6 +409,7 @@ namespace FfmpegGui
             MaxDimensionBox = this.FindControl<NumericUpDown>("MaxDimensionBox");
             MaxDimensionHint = this.FindControl<TextBlock>("MaxDimensionHint");
             QueueList = this.FindControl<ListBox>("QueueList");
+            QueueEmptyHint = this.FindControl<TextBlock>("QueueEmptyHint");
             ConcurrencyBox = this.FindControl<TextBox>("ConcurrencyBox");
             ConcurrencyLabel = this.FindControl<TextBlock>("ConcurrencyLabel");
             CommandText = this.FindControl<TextBox>("CommandText");
@@ -549,6 +559,7 @@ namespace FfmpegGui
             MediaDropZone = this.FindControl<Border>("MediaDropZone");
             FileCountLabel = this.FindControl<TextBlock>("FileCountLabel");
             MediaFileList = this.FindControl<ListBox>("MediaFileList");
+            MediaEmptyHint = this.FindControl<TextBlock>("MediaEmptyHint");
             MediaFileCount = this.FindControl<TextBlock>("MediaFileCount");
             QueueCountLabel = this.FindControl<TextBlock>("QueueCountLabel");
             FormatFilterBtn = this.FindControl<Button>("FormatFilterBtn");
@@ -1049,12 +1060,14 @@ namespace FfmpegGui
             GainMapMultiChannelCheck = this.FindControl<CheckBox>("GainMapMultiChannelCheck");
             GainMapBaseQualitySlider = this.FindControl<Slider>("GainMapBaseQualitySlider");
             GainMapBaseQualityBox = this.FindControl<TextBox>("GainMapBaseQualityBox");
+            GainMapBaseQualityValue = this.FindControl<TextBlock>("GainMapBaseQualityValue");
             GainMapGainQualitySlider = this.FindControl<Slider>("GainMapGainQualitySlider");
             GainMapGainQualityBox = this.FindControl<TextBox>("GainMapGainQualityBox");
+            GainMapGainQualityValue = this.FindControl<TextBlock>("GainMapGainQualityValue");
             GainMapEncoderCombo = this.FindControl<ComboBox>("GainMapEncoderCombo");
-            GainMapSubEncoderCombo = this.FindControl<ComboBox>("GainMapSubEncoderCombo");
             GainMapEncoderHint = this.FindControl<TextBlock>("GainMapEncoderHint");
-            GainMapQualityHint = this.FindControl<TextBlock>("GainMapQualityHint");
+            GainMapMetadataCombo = this.FindControl<ComboBox>("GainMapMetadataCombo");
+            GainMapMetadataHint = this.FindControl<TextBlock>("GainMapMetadataHint");
             GainMapDownsampleCombo = this.FindControl<ComboBox>("GainMapDownsampleCombo");
             GainMapSdrSlot = this.FindControl<Border>("GainMapSdrSlot");
             GainMapHdrSlot = this.FindControl<Border>("GainMapHdrSlot");
@@ -1065,9 +1078,18 @@ namespace FfmpegGui
             GainMapValidateText = this.FindControl<TextBlock>("GainMapValidateText");
             GainMapAddPairBtn = this.FindControl<Button>("GainMapAddPairBtn");
             GainMapQueueList = this.FindControl<ListBox>("GainMapQueueList");
+            GainMapQueueEmptyHint = this.FindControl<TextBlock>("GainMapQueueEmptyHint");
             GainMapQueueSummary = this.FindControl<TextBlock>("GainMapQueueSummary");
             GainMapOverallProgress = this.FindControl<ProgressBar>("GainMapOverallProgress");
             GainMapLogText = this.FindControl<TextBox>("GainMapLogText");
+            // 两个配对槽都接受拖放（与文件选择共用 AssignGainMapSlotAsync）
+            foreach (var slot in new[] { GainMapSdrSlot, GainMapHdrSlot })
+            {
+                if (slot == null) continue;
+                DragDrop.SetAllowDrop(slot, true);
+                slot.AddHandler(DragDrop.DragOverEvent, GainMapSlotDragOver);
+                slot.AddHandler(DragDrop.DropEvent, GainMapSlotDrop);
+            }
             // 模式项由代码补（ComboBox 的 <sys:String> 项无法用 Loc 标记扩展）⇒ 不新增 XAML 硬编码中文。
             if (ConversionModeCombo != null && ConversionModeCombo.Items.Count == 3)
                 ConversionModeCombo.Items.Add(Services.LocalizationService.Instance["gm.mode"]);
@@ -1075,14 +1097,27 @@ namespace FfmpegGui
             if (GainMapQueueList != null) GainMapQueueList.ItemsSource = _queueView;
             SetGainMapValidateText(Services.LocalizationService.Instance["gm.validate.needboth"], null);
 
-            // 编码器「大类/小类」：大类候选由出口容器决定，小类随大类联动；质量滑块与数字框双向同步。
+            // 编码器：候选与主面板同源（探测 + IsAvailable + 默认项），再按增益图子图的
+            // 像素契约收窄；质量滑块与数字框双向同步并回显实际编码参数（与主面板同构）。
             if (GainMapFormatCombo != null)
-                GainMapFormatCombo.SelectionChanged += (_, _) => RefreshGainMapEncoders();
+                GainMapFormatCombo.SelectionChanged += (_, _) => _ = RefreshGainMapEncodersAsync();
             if (GainMapEncoderCombo != null)
-                GainMapEncoderCombo.SelectionChanged += (_, _) => RefreshGainMapSubEncoders();
-            if (GainMapSubEncoderCombo != null)
-                GainMapSubEncoderCombo.SelectionChanged += (_, _) => RefreshGainMapEncoderHint();
-            RefreshGainMapEncoders();
+                GainMapEncoderCombo.SelectionChanged += (_, _) =>
+                {
+                    RefreshGainMapEncoderHint();
+                    UpdateGainMapQualityLabels();
+                };
+            if (GainMapMetadataCombo != null)
+            {
+                GainMapMetadataCombo.SelectionChanged += (_, _) =>
+                {
+                    if (GainMapFormatCombo?.SelectedIndex != 1)
+                        _gmMetadataJpegIndex = Math.Max(0, GainMapMetadataCombo.SelectedIndex);
+                    RefreshGainMapMetadataHint();
+                };
+            }
+            RefreshGainMapMetadataCombo();
+            _ = RefreshGainMapEncodersAsync();
             WireGainMapQuality(GainMapBaseQualitySlider, GainMapBaseQualityBox);
             WireGainMapQuality(GainMapGainQualitySlider, GainMapGainQualityBox);
 
@@ -1935,6 +1970,8 @@ namespace FfmpegGui
                 QueueCountLabel.Text = $"队列: {_queueView.Count} 项";
             if (FileCountLabel != null)
                 FileCountLabel.Text = $"总文件: {_queueView.Count}";
+            if (QueueEmptyHint != null)
+                QueueEmptyHint.IsVisible = _queueView.Count == 0;
         }
 
         /// <summary>更新进度显示：队列 N/M + 已用时间 + 剩余预估</summary>
@@ -3767,6 +3804,8 @@ namespace FfmpegGui
         {
             if (MediaFileCount != null)
                 MediaFileCount.Text = $"共 {_mediaFiles.Count} 个文件";
+            if (MediaEmptyHint != null)
+                MediaEmptyHint.IsVisible = _mediaFiles.Count == 0;
         }
 
         private void AddToMediaFiles(IEnumerable<string> files)
@@ -5557,6 +5596,8 @@ namespace FfmpegGui
             // 第 4 个模式项由代码填充（ComboBox 的 <sys:String> 项无法用 Loc 标记扩展）
             if (ConversionModeCombo != null && ConversionModeCombo.Items.Count > 3)
                 ConversionModeCombo.Items[3] = Services.LocalizationService.Instance["gm.mode"];
+            // 元数据承载候选随语言与出口容器两维变化（AVIF 只给 ISO），不走 _locCombos 的固定列表
+            RefreshGainMapMetadataCombo();
         }
 
         /// <summary>
@@ -6793,72 +6834,134 @@ namespace FfmpegGui
         // ═══════════════════════════════════════════════
 
         /// <summary>
-        /// 编码器「大类」候选**只由出口容器决定**：JPEG ⇒ cjpegli（可用时）/ FFmpeg；AVIF ⇒ FFmpeg（AV1 软件）。
-        /// 硬件 AV1 在增益图子图这一层**不给入口**：引擎明确拒绝，给了只会变成运行时失败。
+        /// 编码器候选与主面板**同一份逻辑**（`GetEncodersForFormatAsync` → `IsAvailable` →
+        /// `GetDefaultEncoder`，并保留用户已选项），再按增益图子图的像素契约收窄：
+        /// JPEG ⇒ <c>mjpeg</c> / <c>cjpegli</c>；AVIF ⇒ <c>libaom-av1</c> / <c>libsvtav1</c>。
+        /// <para>
+        /// 硬件编码器不进列表：增益图要求按声明成套的 4:4:4（三通道）或单平面灰度，
+        /// 而实测 NVENC AV1 只接 nv12/yuv420p/p010le（yuv444p 报 "not supported"）、
+        /// QSV AV1 直接 unsupported、AMF 无设备，mjpeg_qsv 会把 4:4:4/灰度**静默**转成
+        /// 4:2:0/4 平面 ⇒ 交付像素与 tmap/ISO 声明脱节。列表里没有它们，提示里逐个点名。
+        /// </para>
         /// </summary>
-        private void RefreshGainMapEncoders()
+        private async Task RefreshGainMapEncodersAsync()
         {
             if (GainMapEncoderCombo == null) return;
             bool avif = GainMapFormatCombo?.SelectedIndex == 1;
-            string? prevMajor = GainMapEncoderCombo.SelectedItem as string;
-            var majors = new List<string>();
-            if (avif)
+            string fmt = avif ? "avif" : "jpg";
+            string? prev = GainMapEncoderCombo.SelectedItem as string;
+            List<EncoderInfo> encoders;
+            try { encoders = await EncoderDetectionService.GetEncodersForFormatAsync(fmt); }
+            catch { encoders = new List<EncoderInfo>(); }
+
+            var available = encoders.Where(e => e.IsAvailable).ToList();
+            var supported = available.Where(e => IsGainMapEncoderSupported(e, avif)).ToList();
+            _gmExcludedEncoders = available
+                .Where(e => !IsGainMapEncoderSupported(e, avif))
+                .Select(e => e.Name).ToList();
+
+            if (supported.Count > 0)
             {
-                majors.Add("FFmpeg");
+                GainMapEncoderCombo.ItemsSource = supported.Select(e => e.ToString()).ToList();
+                string def = EncoderDetectionService.GetDefaultEncoder(fmt);
+                int keepIdx = prev == null ? -1 : supported.FindIndex(e => e.ToString() == prev);
+                int defIdx = supported.FindIndex(e => e.Name.Equals(def, StringComparison.OrdinalIgnoreCase));
+                GainMapEncoderCombo.SelectedIndex = keepIdx >= 0 ? keepIdx : (defIdx >= 0 ? defIdx : 0);
+                GainMapEncoderCombo.IsEnabled = true;
             }
             else
             {
-                if (Services.CjpegliService.IsAvailable) majors.Add("cjpegli");
-                majors.Add("FFmpeg");
+                GainMapEncoderCombo.ItemsSource =
+                    new List<string> { Services.LocalizationService.Instance["gm.encoder.none"] };
+                GainMapEncoderCombo.SelectedIndex = 0;
+                GainMapEncoderCombo.IsEnabled = false;
             }
-            GainMapEncoderCombo.ItemsSource = majors;
-            int idx = prevMajor != null ? majors.IndexOf(prevMajor) : -1;
-            if (idx < 0) idx = majors.IndexOf("cjpegli") >= 0 ? majors.IndexOf("cjpegli") : 0;
-            GainMapEncoderCombo.SelectedIndex = idx;
-            RefreshGainMapSubEncoders();
-            UpdateGainMapQualityAvailability();
+            RefreshGainMapEncoderHint();
+            RefreshGainMapMetadataCombo();
+            UpdateGainMapQualityLabels();
         }
 
-        /// <summary>小类 = 该大类下**实际传给引擎的编码器名**（mjpeg / cjpegli / libaom-av1 / libsvtav1）。</summary>
-        private void RefreshGainMapSubEncoders()
-        {
-            if (GainMapSubEncoderCombo == null) return;
-            bool avif = GainMapFormatCombo?.SelectedIndex == 1;
-            string major = GainMapEncoderCombo?.SelectedItem as string ?? "FFmpeg";
-            var subs = new List<string>();
-            if (avif) { subs.Add("libaom-av1"); subs.Add("libsvtav1"); }
-            else if (major.Equals("cjpegli", StringComparison.OrdinalIgnoreCase)) subs.Add("cjpegli");
-            else subs.Add("mjpeg");
-            string? prev = GainMapSubEncoderCombo.SelectedItem as string;
-            GainMapSubEncoderCombo.ItemsSource = subs;
-            int idx = prev != null ? subs.IndexOf(prev) : -1;
-            GainMapSubEncoderCombo.SelectedIndex = idx < 0 ? 0 : idx;
-            RefreshGainMapEncoderHint();
-        }
+        /// <summary>增益图子图能按声明精度交付的编码器（与引擎的显式白名单逐字一致）。</summary>
+        private static bool IsGainMapEncoderSupported(EncoderInfo e, bool avif) =>
+            avif
+                ? e.Backend == EncoderBackend.Ffmpeg
+                  && (e.Name.Equals("libaom-av1", StringComparison.OrdinalIgnoreCase)
+                      || e.Name.Equals("libsvtav1", StringComparison.OrdinalIgnoreCase))
+                : e.Backend == EncoderBackend.Cjpegli
+                  || (e.Backend == EncoderBackend.Ffmpeg
+                      && e.Name.Equals("mjpeg", StringComparison.OrdinalIgnoreCase));
 
         private void RefreshGainMapEncoderHint()
         {
             if (GainMapEncoderHint == null) return;
             var loc = Services.LocalizationService.Instance;
             bool avif = GainMapFormatCombo?.SelectedIndex == 1;
-            GainMapEncoderHint.Text = avif
-                ? loc["gm.encoder.hint.avif"]
-                : loc["gm.encoder.hint.jpeg"];
+            var text = loc[avif ? "gm.encoder.hint.avif" : "gm.encoder.hint.jpeg"];
+            if (_gmExcludedEncoders.Count > 0)
+                text += "\n" + string.Format(loc["gm.encoder.excluded"],
+                    string.Join(", ", _gmExcludedEncoders));
+            GainMapEncoderHint.Text = text;
         }
 
-        /// <summary>AVIF 子图走固定 CRF：滑块禁用并点名，而不是留一个不影响产物的旋钮。</summary>
-        private void UpdateGainMapQualityAvailability()
+        /// <summary>
+        /// 元数据承载候选**按可交付性给**：JPEG 三态（默认 ISO）；AVIF 只有 tmap 的 ISO 承载，
+        /// 下拉里就只放 ISO 一项 —— 不让用户选一个注定被拒绝的项。切回 JPEG 时恢复上次的选择。
+        /// </summary>
+        private void RefreshGainMapMetadataCombo()
         {
-            bool on = GainMapFormatCombo?.SelectedIndex != 1;
-            if (GainMapBaseQualitySlider != null) GainMapBaseQualitySlider.IsEnabled = on;
-            if (GainMapBaseQualityBox != null) GainMapBaseQualityBox.IsEnabled = on;
-            if (GainMapGainQualitySlider != null) GainMapGainQualitySlider.IsEnabled = on;
-            if (GainMapGainQualityBox != null) GainMapGainQualityBox.IsEnabled = on;
-            if (GainMapQualityHint != null)
+            if (GainMapMetadataCombo == null) return;
+            var loc = Services.LocalizationService.Instance;
+            bool avif = GainMapFormatCombo?.SelectedIndex == 1;
+            if (avif)
             {
-                GainMapQualityHint.Text = on ? "" : Services.LocalizationService.Instance["gm.avif.quality.fixed"];
-                GainMapQualityHint.IsVisible = !on;
+                GainMapMetadataCombo.ItemsSource = new List<string> { loc["gm.metadata.iso"] };
+                GainMapMetadataCombo.SelectedIndex = 0;
+                GainMapMetadataCombo.IsEnabled = false;
             }
+            else
+            {
+                GainMapMetadataCombo.ItemsSource = new List<string>
+                {
+                    loc["gm.metadata.iso"], loc["gm.metadata.xmp"], loc["gm.metadata.both"]
+                };
+                GainMapMetadataCombo.SelectedIndex = Math.Clamp(_gmMetadataJpegIndex, 0, 2);
+                GainMapMetadataCombo.IsEnabled = true;
+            }
+            RefreshGainMapMetadataHint();
+        }
+
+        private void RefreshGainMapMetadataHint()
+        {
+            if (GainMapMetadataHint == null) return;
+            bool avif = GainMapFormatCombo?.SelectedIndex == 1;
+            GainMapMetadataHint.Text = Services.LocalizationService.Instance[
+                avif ? "gm.metadata.hint.avif" : "gm.metadata.hint.jpeg"];
+        }
+
+        /// <summary>当前选择落到引擎的承载词（AVIF 恒 iso）。</summary>
+        private string SelectedGainMapMetadata()
+        {
+            if (GainMapFormatCombo?.SelectedIndex == 1) return "iso";
+            return GainMapMetadataCombo?.SelectedIndex switch
+            {
+                1 => "xmp",
+                2 => "both",
+                _ => "iso"
+            };
+        }
+
+        /// <summary>滑块值 → 实际编码参数回显（与主面板同一套映射：AVIF=CRF、mjpeg=q:v、cjpegli=distance）。</summary>
+        private void UpdateGainMapQualityLabels()
+        {
+            bool avif = GainMapFormatCombo?.SelectedIndex == 1;
+            string fmt = avif ? "avif" : "jpg";
+            var backend = EncoderInfo.ParseBackend(GainMapEncoderCombo?.SelectedItem as string);
+            int bq = (int)Math.Round(GainMapBaseQualitySlider?.Value ?? 90);
+            int gq = (int)Math.Round(GainMapGainQualitySlider?.Value ?? 75);
+            if (GainMapBaseQualityValue != null)
+                GainMapBaseQualityValue.Text = Models.FfmpegOptions.GetQualityLabel(fmt, bq, backend);
+            if (GainMapGainQualityValue != null)
+                GainMapGainQualityValue.Text = Models.FfmpegOptions.GetQualityLabel(fmt, gq, backend);
         }
 
         private void WireGainMapQuality(Slider? slider, TextBox? box)
@@ -6870,6 +6973,7 @@ namespace FfmpegGui
                 _gmQualitySync = true;
                 try { box.Text = ((int)slider.Value).ToString(); }
                 finally { _gmQualitySync = false; }
+                UpdateGainMapQualityLabels();
             };
             box.TextChanged += (_, _) =>
             {
@@ -6877,6 +6981,7 @@ namespace FfmpegGui
                 _gmQualitySync = true;
                 try { slider.Value = Math.Clamp(q, 0, 100); }
                 finally { _gmQualitySync = false; }
+                UpdateGainMapQualityLabels();
             };
             box.LostFocus += (_, _) => box.Text = ((int)slider.Value).ToString();
         }
@@ -6890,7 +6995,7 @@ namespace FfmpegGui
             if (FullMainContent != null) FullMainContent.IsVisible = false;
             if (GainMapModePanel != null) GainMapModePanel.IsVisible = true;
             if (GainMapQueueList != null) GainMapQueueList.ItemsSource = _queueView;
-            RefreshGainMapEncoders();
+            _ = RefreshGainMapEncodersAsync();
             RefreshGainMapProgressIfActive();
         }
 
@@ -6918,22 +7023,49 @@ namespace FfmpegGui
         {
             var path = await PickGainMapImageAsync("gm.pick.sdr.title");
             if (path == null) return;
-            _gmSdrPath = path;
-            if (GainMapSdrName != null) GainMapSdrName.Text = Path.GetFileName(path);
-            if (GainMapSdrSlot != null)
-                GainMapSdrSlot.BorderBrush = Avalonia.Media.Brush.Parse("#2E7D32");
-            await ValidateGainMapPairAsync();
+            await AssignGainMapSlotAsync(sdr: true, path);
         }
 
         private async void GainMapPickHdr_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
         {
             var path = await PickGainMapImageAsync("gm.pick.hdr.title");
             if (path == null) return;
-            _gmHdrPath = path;
-            if (GainMapHdrName != null) GainMapHdrName.Text = Path.GetFileName(path);
-            if (GainMapHdrSlot != null)
-                GainMapHdrSlot.BorderBrush = Avalonia.Media.Brush.Parse("#2E7D32");
+            await AssignGainMapSlotAsync(sdr: false, path);
+        }
+
+        /// <summary>把一张图放进指定槽并重新校验（文件选择与拖放**共用**这一处，避免两套行为）。</summary>
+        private async Task AssignGainMapSlotAsync(bool sdr, string path)
+        {
+            if (sdr)
+            {
+                _gmSdrPath = path;
+                if (GainMapSdrName != null) GainMapSdrName.Text = Path.GetFileName(path);
+                if (GainMapSdrSlot != null)
+                    GainMapSdrSlot.BorderBrush = Avalonia.Media.Brush.Parse("#2E7D32");
+            }
+            else
+            {
+                _gmHdrPath = path;
+                if (GainMapHdrName != null) GainMapHdrName.Text = Path.GetFileName(path);
+                if (GainMapHdrSlot != null)
+                    GainMapHdrSlot.BorderBrush = Avalonia.Media.Brush.Parse("#2E7D32");
+            }
             await ValidateGainMapPairAsync();
+        }
+
+        private void GainMapSlotDragOver(object? sender, DragEventArgs e)
+        {
+            e.DragEffects = e.DataTransfer.Contains(DataFormat.File)
+                ? DragDropEffects.Copy : DragDropEffects.None;
+        }
+
+        private async void GainMapSlotDrop(object? sender, DragEventArgs e)
+        {
+            if (!e.DataTransfer.Contains(DataFormat.File)) return;
+            var item = e.DataTransfer.TryGetFiles()?.FirstOrDefault();
+            var path = item?.TryGetLocalPath() ?? item?.Path.LocalPath;
+            if (string.IsNullOrWhiteSpace(path) || Directory.Exists(path)) return;
+            await AssignGainMapSlotAsync(ReferenceEquals(sender, GainMapSdrSlot), path);
         }
 
         private void GainMapClearPair_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
@@ -7049,6 +7181,16 @@ namespace FfmpegGui
             }
 
             string ext = GainMapFormatCombo?.SelectedIndex == 1 ? "avif" : "jpg";
+            // 元数据承载：候选已按可交付性给过（AVIF 只有 ISO），这里只取值、不再二次猜测。
+            string metadata = SelectedGainMapMetadata();
+            // 编码器下拉项是 EncoderInfo.ToString() 的展示名（可能带 ⚡ / 🔧 前缀或 " — " 描述），
+            // 传给引擎前按主面板同一解析器取名字（"mjpeg — MJPEG…" → "mjpeg"）。
+            var encoderName = EncoderInfo.ParseEncoderName(GainMapEncoderCombo?.SelectedItem as string);
+            if (string.IsNullOrWhiteSpace(encoderName))
+            {
+                SetGainMapValidateText(loc["gm.err.encoder"], false);
+                return;
+            }
             // 输出目录单一口径 = 顶部栏（与其它模式一致）；空则跟随全局设置，再空才落源目录。
             var outDir = OutputDirBox?.Text?.Trim();
             if (string.IsNullOrWhiteSpace(outDir)) outDir = AppSettingsService.Current.OutputDirectory;
@@ -7071,11 +7213,12 @@ namespace FfmpegGui
                 GainMapCompose = true,
                 GainMapComposePeakNits = peak,
                 GainMapComposeMultiChannel = GainMapMultiChannelCheck?.IsChecked ?? true,
-                Quality = (int)Math.Round(GainMapBaseQualitySlider?.Value ?? 85),
-                JpegGainMapQuality = (int)Math.Round(GainMapGainQualitySlider?.Value ?? 85),
+                Quality = (int)Math.Round(GainMapBaseQualitySlider?.Value ?? 90),
+                JpegGainMapQuality = (int)Math.Round(GainMapGainQualitySlider?.Value ?? 75),
                 JpegGainMapDownsample = 1 << Math.Clamp(GainMapDownsampleCombo?.SelectedIndex ?? 1, 0, 3),
                 JpegGainMapBaseGamut = GainMapBaseGamutCombo?.SelectedIndex == 1 ? "bt2020" : "srgb",
-                GainMapComposeEncoder = GainMapSubEncoderCombo?.SelectedItem as string,
+                GainMapComposeEncoder = encoderName,
+                GainMapComposeMetadata = metadata,
             };
             var item = new Models.QueueItem
             {
@@ -7159,6 +7302,7 @@ namespace FfmpegGui
         {
             var loc = Services.LocalizationService.Instance;
             var items = _queueItems.Where(i => i.Options.GainMapCompose).ToList();
+            if (GainMapQueueEmptyHint != null) GainMapQueueEmptyHint.IsVisible = _queueView.Count == 0;
             if (items.Count == 0)
             {
                 if (GainMapQueueSummary != null) GainMapQueueSummary.Text = loc["gm.summary.empty"];

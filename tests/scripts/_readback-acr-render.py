@@ -8,6 +8,9 @@
       → ACR-SPACE mad=… psnr=… oog=… （srgb 腿 == clip(rec2020 腿 × M) 的残差）
   py _readback-acr-render.py dims   <a.tif> [<b.tif>]
       → ACR-DIMS w=… h=… [w2=… h2=…]
+  py _readback-acr-render.py median <a.tif> <b.tif>
+      → ACR-MEDIAN a=… b=… ratio=…
+        两条解码臂的中位亮度比（线性 ≈ 同量级；gamma 编码会把小值抬到 ~2.7×）。
 
 为什么用 memmap：产物是 16-bit 未压缩 RGB（一张 6024×4024 ≈ 145 MB），
 `tifffile.imread` 会在每次调用里整幅落内存；memmap + 步长视图只碰抽样格。
@@ -61,6 +64,13 @@ def space(rec2020, srgb):
     print("ACR-SPACE mad=%.6e psnr=%.2f oog=%.6f" % (float(diff.mean()), psnr, oog))
 
 
+def median(a, b):
+    la = float(np.median(a.mean(axis=2)))
+    lb = float(np.median(b.mean(axis=2)))
+    print("ACR-MEDIAN a=%.6f b=%.6f ratio=%.4f"
+          % (la, lb, (la / lb) if lb > 0 else 0.0))
+
+
 def sha(path):
     h = hashlib.sha256()
     with open(path, "rb") as f:
@@ -89,6 +99,8 @@ def main():
             b = tifffile.memmap(sys.argv[3])
             line += " h2=%d w2=%d" % (b.shape[0], b.shape[1])
         print(line)
+    elif mode == "median":
+        median(load(sys.argv[2]), load(sys.argv[3]))
     else:
         sys.exit(2)
 

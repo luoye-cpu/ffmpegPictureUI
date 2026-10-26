@@ -122,10 +122,25 @@ public static class GainMapEncoder
         // ⚠ 显式请求却不可用 ⇒ **失败**，不静默回落（回落会让用户以为选的是 cjpegli）。
         // (a) JPEG 出口：`cjpegli` | `mjpeg`；(b) AVIF 出口：`libaom-av1` | `libsvtav1`。
         string? jpegEncoder = null,
-        string? avifEncoder = null)
+        string? avifEncoder = null,
+        // 元数据承载（JPEG 出口）：`iso` = 只写 APP2 ISO 21496-1；`xmp` = 只写 XMP hdrgm（Ultra HDR v1）；
+        // `both` = 两者并存（默认）。AVIF 的 tmap **只**承载 ISO 21496-1 ⇒ `xmp` 在这里没有可交付形态，
+        // 显式请求即失败（不静默改写成 ISO）。
+        string gainMapMetadata = "both",
+        // AVIF 子图的 CRF（0-63，越小越好）；-1 = 沿用历史固定值 18。
+        // 底图与增益图各一个：增益图是低对比度数据图，和底图共用同一 CRF 并不合理，但历史口径就是 18，
+        // 所以只有调用方显式给了才改。
+        int baseCrf = -1, int gainMapCrf = -1)
     {
         try
         {
+            string metadata = (gainMapMetadata ?? "").Trim().ToLowerInvariant();
+            if (metadata is not ("iso" or "xmp" or "both"))
+            {
+                log?.Invoke($"[GainMap] ERROR: unknown gain-map metadata carrier '{gainMapMetadata}'"
+                          + " (expected iso | xmp | both).\n");
+                return false;
+            }
             // ── 帧长守卫（2026-10-21 审查第 6 项）──
             // 本方法内四处 `int pixelCount = w * h`（:146/:349/:407/:653）与它们的 `*3`/`*4` 乘积全是 int。
             // 回绕成**负数**时会被 `ArrayPool.Rent` / `new T[]` 响亮拒收（实测 ArgumentOutOfRangeException /
@@ -314,9 +329,19 @@ public static class GainMapEncoder
                 //   只换容器与元数据承载方式 ⇒ 两条出口的增益语义必然一致（不允许各算一遍）。
                 if (string.Equals(container, "avif", StringComparison.OrdinalIgnoreCase))
                 {
+                    // AVIF 的增益图只能由 tmap 派生项承载 ISO 21496-1；没有「XMP-only 增益图」这一标准形态。
+                    if (metadata == "xmp")
+                    {
+                        log?.Invoke("[GainMap] ERROR: AVIF has no XMP-only gain-map form (the tmap derived item"
+                                  + " carries ISO 21496-1 only) => refusing instead of silently rewriting the carrier.\n");
+                        return false;
+                    }
+                    if (metadata == "both")
+                        log?.Invoke("[GainMap] NOTE: AVIF gain map is carried by tmap/ISO 21496-1 only;"
+                                  + " the XMP part of 'both' is not written (no standard reader path in AVIF).\n");
                     return await EncodeAvifGainMapAsync(basePng, gmPng, w, h, gmW, gmH, multiChannel,
                         maxLog2Gain, minLog2Gain, hdrCapacityLog2, wideBase, outputPath, ffmpeg, log, ct,
-                        avifEncoder);
+                        avifEncoder, baseCrf, gainMapCrf);
                 }
 
                 // ── 4b. JPEG 出口（Ultra HDR：XMP + MPF + ISO 21496-1 APP2）──────────
@@ -382,8 +407,10 @@ public static class GainMapEncoder
                     return true;
                 }
                 byte[] gainMapJpeg = File.ReadAllBytes(gmPath);
+                log?.Invoke($"[GainMap] gain-map metadata carrier: {metadata}"
+                          + (metadata == "both" ? " (XMP hdrgm + ISO 21496-1 APP2)" : "") + "\n");
                 if (!WriteJpegGainMapFile(baseJpeg, gainMapJpeg, w, h, gmW, gmH, multiChannel,
-                        maxLog2Gain, hdrCapacityLog2, minLog2Gain, outputPath))
+                        maxLog2Gain, hdrCapacityLog2, minLog2Gain, outputPath, metadata))
                 {
                     // 与「SDR 输入 ⇒ 普通 JPEG」的短路不同：那条是**主动决定**并点名说明；
                     // 这条是**没能**写出增益图 ⇒ 必须宣告失败，不允许留下"自称 Ultra HDR"的产物。
@@ -964,11 +991,15 @@ public static class GainMapEncoder
     /// </summary>
     private static async Task<bool> EncodeAvifGainMapAsync(string basePng, string gmPng, int w, int h, int gmW, int gmH,
         bool multiChannel, float maxLog2Gain, float minLog2Gain, float hdrCapacityLog2, bool wideBase, string outputPath,
-        string ffmpeg, Action<string>? log, CancellationToken ct, string? avifEncoder = null)
+        string ffmpeg, Action<string>? log, CancellationToken ct, string? avifEncoder = null,
+        int baseCrf = -1, int gainMapCrf = -1)
     {
         var tempDir = Path.GetDirectoryName(basePng)!;
         var baseAvif = Path.Combine(tempDir, "base.avif");
         var gmAvif = Path.Combine(tempDir, "gainmap.avif");
+        // -1 = 历史固定值（底图与增益图都 18）；显式值夹到 AV1 的 CRF 量程 0-63。
+        int baseCrfN = baseCrf >= 0 ? Math.Clamp(baseCrf, 0, 63) : 18;
+        int gainCrfN = gainMapCrf >= 0 ? Math.Clamp(gainMapCrf, 0, 63) : 18;
 
         // 底图色域与 JPEG 出口同口径（wideBase ⇒ Rec.2020 SDR，否则 sRGB）；
         // AVIF 有 CICP 机制（`colr` 盒），由 ffmpeg 按下列参数写入，不需要 ICC 兜底。
@@ -976,7 +1007,7 @@ public static class GainMapEncoder
         string trc = wideBase ? "bt709" : "iec61966-2-1";
         string matrix = wideBase ? "bt2020nc" : "bt709";
 
-        if (!await EncodeAvifFileAsync(basePng, baseAvif, ffmpeg, "yuv420p", primaries, trc, matrix, log, ct, avifEncoder))
+        if (!await EncodeAvifFileAsync(basePng, baseAvif, ffmpeg, "yuv420p", primaries, trc, matrix, log, ct, avifEncoder, baseCrfN))
         {
             log?.Invoke("[GainMap] ❌ 底图 AVIF 编码失败\n");
             return false;
@@ -995,7 +1026,7 @@ public static class GainMapEncoder
         //   （「不许把降级当修复」）。
         string gmPixFmt = multiChannel ? "yuv444p" : "gray";
         int declaredChannels = multiChannel ? 3 : 1;
-        if (!await EncodeAvifFileAsync(gmPng, gmAvif, ffmpeg, gmPixFmt, null, null, null, log, ct, avifEncoder))
+        if (!await EncodeAvifFileAsync(gmPng, gmAvif, ffmpeg, gmPixFmt, null, null, null, log, ct, avifEncoder, gainCrfN))
         {
             if (multiChannel)
             {
@@ -1005,7 +1036,7 @@ public static class GainMapEncoder
             }
             log?.Invoke("[GainMap] ⚠️ 单色 gray 的 AVIF 编码失败 ⇒ 退回 yuv444p 三平面，"
                       + "并把 tmap 参数复制成套（声明随之为 3 参数集；不退 4:2:0）\n");
-            if (!await EncodeAvifFileAsync(gmPng, gmAvif, ffmpeg, "yuv444p", null, null, null, log, ct))
+            if (!await EncodeAvifFileAsync(gmPng, gmAvif, ffmpeg, "yuv444p", null, null, null, log, ct, avifEncoder, gainCrfN))
             {
                 log?.Invoke("[GainMap] ❌ 增益图 AVIF 编码失败\n");
                 return false;
@@ -1065,7 +1096,7 @@ public static class GainMapEncoder
     /// </summary>
     private static async Task<bool> EncodeAvifFileAsync(string pngPath, string avifPath, string ffmpeg,
         string pixFmt, string? primaries, string? trc, string? matrix,
-        Action<string>? log, CancellationToken ct, string? encoder = null)
+        Action<string>? log, CancellationToken ct, string? encoder = null, int crf = 18)
     {
         // 显式选择只接受**软件、CRF 语义**的 AV1 编码器：硬件 AV1 与增益图子图的精度/参数不匹配，
         // 不给"选了却悄悄换掉"的机会（不可用即失败，见调用方）。
@@ -1078,7 +1109,7 @@ public static class GainMapEncoder
             return false;
         }
         enc = enc.Equals("libsvtav1", StringComparison.OrdinalIgnoreCase) ? "libsvtav1" : "libaom-av1";
-        log?.Invoke($"[GainMap] AVIF encoder: {enc}\n");
+        log?.Invoke($"[GainMap] AVIF encoder: {enc} (CRF {crf}, pix_fmt {pixFmt})\n");
         // ⚠⚠ 2026-10-07 修复（D-② 同类点）：三个 token **必须**先过 `ColorSpaceRegistry` 的规范化器。
         //   本仓契约见 `ColorSpaceRegistry.cs:368-387`：ffmpeg 只认**自己的**常量名，而面向用户的词表是
         //   友好名（`srgb`/`pq`/`hlg`）与 zimg 风格名（`bt2020ncl`/`ycgcocn`）；不规范化直接拼 ⇒
@@ -1095,7 +1126,7 @@ public static class GainMapEncoder
               + (nt != null ? $" -color_trc {nt}" : "")
               + (nm != null ? $" -colorspace {nm}" : "")
             : "";
-        var args = $"-y -i \"{pngPath}\" -frames:v 1 -c:v {enc} -crf 18 -b:v 0 -pix_fmt {pixFmt}"
+        var args = $"-y -i \"{pngPath}\" -frames:v 1 -c:v {enc} -crf {crf} -b:v 0 -pix_fmt {pixFmt}"
                  + $"{colorArgs} -f avif \"{avifPath}\"";
         var psi = new ProcessStartInfo
         {
@@ -1138,11 +1169,19 @@ public static class GainMapEncoder
     ///   [Base JPEG: SOI][APP1: XMP][APP2: MPF][Base 其余 (DQT/SOF/DHT/SOS/扫描/EOI)]
     ///   [增益图 JPEG: SOI][APP2: ISO 21496-1][增益图其余]
     /// </summary>
+    /// <param name="metadata">
+    /// <c>iso</c> = 只写增益图的 APP2 ISO 21496-1；<c>xmp</c> = 只写底图的 XMP hdrgm（Ultra HDR v1）；
+    /// <c>both</c> = 两者并存。MPF 在三种形态下都必须写：它是「第二张图在哪」的唯一索引，
+    /// 少了它两种承载都找不到增益图。
+    /// </param>
     /// <returns>true=已写出完整 Ultra HDR；false=**未能**写出增益图（调用方必须宣告失败，不得报成功）。</returns>
     private static bool WriteJpegGainMapFile(byte[] baseJpeg, byte[] gainMapJpeg,
         int baseW, int baseH, int gmW, int gmH, bool multiChannel,
-        float maxLog2Gain, float hdrCapacityLog2, float minLog2Gain, string outputPath)
+        float maxLog2Gain, float hdrCapacityLog2, float minLog2Gain, string outputPath,
+        string metadata = "both")
     {
+        bool writeIso = !string.Equals(metadata, "xmp", StringComparison.OrdinalIgnoreCase);
+        bool writeXmp = !string.Equals(metadata, "iso", StringComparison.OrdinalIgnoreCase);
         // 1. 定位 Base JPEG 的 SOS (FFDA) 标记
         int sosIndex = FindSosIndex(baseJpeg);
         if (sosIndex < 0)
@@ -1162,20 +1201,24 @@ public static class GainMapEncoder
         int baseScanLen = baseJpeg.Length - baseScanStart; // 含 EOI
 
         // 3. ISO 元数据插入增益图: [SOI][APP2: ISO][增益图数据(去 SOI)]
-        byte[] iso = BuildIso21496Metadata(multiChannel, maxLog2Gain, minLog2Gain, hdrCapacityLog2);
-        byte[] gainMapWithIso = InsertIsoIntoSegment(gainMapJpeg, iso);
+        byte[] iso = writeIso
+            ? BuildIso21496Metadata(multiChannel, maxLog2Gain, minLog2Gain, hdrCapacityLog2)
+            : Array.Empty<byte>();
+        byte[] gainMapWithIso = writeIso ? InsertIsoIntoSegment(gainMapJpeg, iso) : gainMapJpeg;
 
         // 4. XMP (含 Item:Length = 增益图完整大小)
         //   ⚠ 审查（2026-10-15）抓到的阻断缺陷：这里曾经**没传** `minLog2Gain` ⇒ 形参默认 0
         //     ⇒ XMP 写 `hdrgm:GainMapMin=0.0`，而上面 APP2 的 ISO 写的是真实的负下沿
         //     ⇒ 同一份文件的两处声明互相矛盾：按 XMP 读的消费者（Adobe/Android 一部分栈）会把
         //        暗部下沿当不存在，而自家 `MergeXmpIntoMetadata` 也立刻报「ISO 与 XMP 增益范围不一致」。
-        byte[] xmp = BuildXmpMetadata(baseW, baseH, gmW, gmH, multiChannel, maxLog2Gain, hdrCapacityLog2,
-            gainMapWithIso.Length, minLog2Gain);
+        byte[] xmp = writeXmp
+            ? BuildXmpMetadata(baseW, baseH, gmW, gmH, multiChannel, maxLog2Gain, hdrCapacityLog2,
+                gainMapWithIso.Length, minLog2Gain)
+            : Array.Empty<byte>();
 
         // 5. MPF
-        // 布局: [SOI][XMP APP1][MPF APP2][Base其余]
-        int app1Total = 2 + 2 + xmp.Length;                    // marker + length + data
+        // 布局: [SOI][XMP APP1?][MPF APP2][Base其余]
+        int app1Total = writeXmp ? 2 + 2 + xmp.Length : 0;      // marker + length + data
         int mpfDataLen = 86;                                   // BuildMpf 固定长度
         int app2Total = 2 + 2 + mpfDataLen;                    // marker + length + data
         int primarySize = baseHeaderLen + app1Total + app2Total + sosLen + baseScanLen;
@@ -1189,9 +1232,9 @@ public static class GainMapEncoder
 
         // 6. 组装
         using var ms = new MemoryStream();
-        // Base: SOI + XMP + MPF + 其余 (DQT/SOF/DHT/SOS/扫描/EOI)
+        // Base: SOI + [XMP] + MPF + 其余 (DQT/SOF/DHT/SOS/扫描/EOI)
         ms.Write(baseJpeg, 0, baseHeaderLen);                  // 含 SOI
-        WriteAppSegment(ms, 0xE1, xmp);                        // APP1 XMP
+        if (writeXmp) WriteAppSegment(ms, 0xE1, xmp);          // APP1 XMP
         WriteAppSegment(ms, 0xE2, mpf);                        // APP2 MPF
         ms.Write(baseJpeg, sosIndex, baseJpeg.Length - sosIndex); // SOS 起含 EOI
         // 增益图: 完整 (已含 SOI + ISO + 数据 + EOI)

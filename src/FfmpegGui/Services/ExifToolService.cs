@@ -147,14 +147,41 @@ namespace FfmpegGui.Services
         /// <summary>
         /// 通过 exiftool 批量读取图片的色彩语义标签（单次进程）。
         /// 返回字典：标签名（含组前缀，如 "EXIF:ColorSpace"）→ 显示值（如 "sRGB"）。
-        /// exiftool 不可用 / 读取失败返回空字典。带 5 秒超时保护。
+        /// exiftool 不可用 / 读取失败返回空字典。
+        /// <para>
+        /// ⚠⚠ 2026-10-26（整轮门禁随机红后定位）：单趟 5 s 超时在负载下会抽风，而**超时的后果不是
+        /// "少读一个标签"** —— 这张图会按「无 ICC、无标签」处理 ⇒ 上层 `AssumeByConvention` 当 sRGB
+        /// ⇒ 源=目标 ⇒ 直通并把 BT.2020/PQ 的图原样标成 sRGB（实测：同一二进制单跑 78/0、整轮
+        /// 里两格转红）。⇒ 首趟 5 s（快路径），超时再给一趟 20 s；两趟都超时才按未探测处理并**点名**。
+        /// </para>
         /// </summary>
         public static async Task<Dictionary<string, string>> ReadColorTagsAsync(string imagePath, Action<string>? log = null, CancellationToken ct = default)
+        {
+            for (int attempt = 0; ; attempt++)
+            {
+                var (tags, timedOut) = await ReadColorTagsOnceAsync(imagePath, ct, attempt == 0 ? 5 : 20)
+                    .ConfigureAwait(false);
+                if (!timedOut) return tags;
+                if (ct.IsCancellationRequested) return tags;
+                if (attempt >= 1)
+                {
+                    // 只在**两趟都失败**时点名一次：单趟超时是重试信号，不是结论（每趟都打一行会让
+                    // 「这次连 ICC 一起读、失败后按什么算」这句唯一的判据行被稀释成两条）。
+                    var msg = $"[exiftool] 色彩标签+ICC 读取被取消/超时（5s ⇒ 20s 两趟）⇒ ICC 一并失去，按无 ICC 处理：{Path.GetFileName(imagePath)}"
+                            + "（源可能被当成未标注 = sRGB 惯例，产出可能错标）";
+                    if (log != null) log(msg + "\n"); else System.Diagnostics.Trace.WriteLine(msg);
+                    return tags;
+                }
+            }
+        }
+
+        private static async Task<(Dictionary<string, string> Tags, bool TimedOut)> ReadColorTagsOnceAsync(
+            string imagePath, CancellationToken ct, int timeoutSeconds)
         {
             var result = new Dictionary<string, string>();
             var exe = DetectedPath;
             if (exe == null || string.IsNullOrEmpty(imagePath) || !File.Exists(imagePath))
-                return result;
+                return (result, false);
             try
             {
                 var psi = new ProcessStartInfo
@@ -175,11 +202,11 @@ namespace FfmpegGui.Services
                     StandardErrorEncoding = Encoding.UTF8
                 };
                 using var p = Process.Start(psi);
-                if (p == null) return result;
+                if (p == null) return (result, false);
                     p.BeginErrorReadLine();   // P2-3：stderr 不排空会在管道缓冲(~4KB)写满时把子进程堵死，我们等 stdout/WaitForExit 就永等（实测可复现）
-                // 5 秒超时保护，并与调用方的 ct 链接（#26）
+                // 超时保护（两趟：5 s 快路径 ⇒ 20 s 重试，见 ReadColorTagsAsync），并与调用方的 ct 链接（#26）
                 using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                cts.CancelAfter(TimeSpan.FromSeconds(5));
+                cts.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
                 string output;
                 try
                 {
@@ -191,16 +218,14 @@ namespace FfmpegGui.Services
                 catch (OperationCanceledException)
                 {
                     try { p.Kill(entireProcessTree: true); } catch { }
-                    var msg = $"[exiftool] 色彩标签+ICC 读取被取消/超时（5s）⇒ 已终止：{Path.GetFileName(imagePath)}（同一条命令里的 ICC 一并失去 ⇒ 按无 ICC、无语义标签处理）";
-                    if (log != null) log(msg + "\n"); else System.Diagnostics.Trace.WriteLine(msg);
-                    return result;
+                    return (result, true);
                 }
-                if (string.IsNullOrWhiteSpace(output)) return result;
+                if (string.IsNullOrWhiteSpace(output)) return (result, false);
 
                 using var doc = JsonDocument.Parse(output);
                 var root = doc.RootElement;
                 if (root.ValueKind != JsonValueKind.Array || root.GetArrayLength() == 0)
-                    return result;
+                    return (result, false);
                 foreach (var prop in root[0].EnumerateObject())
                 {
                     if (prop.Name == "SourceFile") continue;
@@ -210,7 +235,7 @@ namespace FfmpegGui.Services
                 }
             }
             catch { }
-            return result;
+            return (result, false);
         }
 
         /// <summary>
@@ -867,6 +892,9 @@ namespace FfmpegGui.Services
         }
 
         /// <summary>仅复制 ICC Profile（安全模式下补偿色彩配置文件）</summary>
+        /// <returns>0=写成；<see cref="NoWriteApplied"/>=exiftool 正常退出但**没写进任何文件**
+        /// （容器不收该标签，如 AVIF；实测同一命令写 PNG 成功、写 AVIF 报 `0 image files updated` 且 rc=0）；
+        /// 其他=exiftool 自己的退出码。</returns>
         public static async Task<int> CopyIccProfileAsync(
             string sourcePath, string targetPath,
             Action<string>? logCallback = null)
@@ -881,14 +909,34 @@ namespace FfmpegGui.Services
                        $"-ICC_Profile \"{targetPath}\"";
             logCallback?.Invoke($"[exiftool] 恢复 ICC Profile: {Path.GetFileName(sourcePath)} → {Path.GetFileName(targetPath)}\n");
 
-            return await RunWriteAsync(targetPath, args, logCallback);
+            return await WriteAndVerifyAsync(targetPath, args, logCallback).ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// 写一次并通过 exiftool 的总结行确认**真的改了文件**。
+        /// ⚠ 只看退出码会把「容器不收该标签」读成成功：exiftool 对 AVIF 的 ICC 写入返回 0，
+        ///   实际输出 `0 image files updated / 1 image files unchanged`（2026-10-26 实测）。
+        /// </summary>
+        private static async Task<int> WriteAndVerifyAsync(string targetPath, string args,
+            Action<string>? logCallback, CancellationToken ct = default)
+        {
+            CleanStaleExifToolTemp(targetPath);
+            var (rc, stdout) = await RunCaptureAsync(args, logCallback, ct, WriteTimeoutSecondsFor(targetPath))
+                .ConfigureAwait(false);
+            if (rc != 0) return rc;
+            // 读不到总结行（-w 未输出等）⇒ 按成功处理：此时没有证据说它没写，不能凭猜测判失败。
+            if (ParseUpdatedCount(stdout) != 0) return 0;
+            logCallback?.Invoke($"[exiftool] ⚠️ 未写入：exiftool 报「0 image files updated」⇒ 标签没有落到 "
+                + $"{Path.GetExtension(targetPath).TrimStart('.')} 产物里（该容器不接受后置 ICC，或内容本就相同；"
+                + "退出码仍是 0，不能当成功）\n");
+            return NoWriteApplied;
         }
 
         /// <summary>将外部 ICC 文件嵌入到输出图片中（用户指定的 ICC 配置文件）</summary>
         /// <param name="iccFilePath">ICC 配置文件路径 (.icc / .icm)</param>
         /// <param name="targetPath">要嵌入 ICC 的目标图片路径</param>
         /// <param name="logCallback">日志回调</param>
-        /// <returns>exiftool 退出码，0=成功</returns>
+        /// <returns>0=写成；<see cref="NoWriteApplied"/>=正常退出但没写进任何文件（容器不收后置 ICC）；其他=exiftool 退出码</returns>
         public static async Task<int> EmbedIccProfileFromFileAsync(
             string iccFilePath, string targetPath,
             Action<string>? logCallback = null)
@@ -905,7 +953,7 @@ namespace FfmpegGui.Services
                        $"\"{targetPath}\"";
             logCallback?.Invoke($"[exiftool] 嵌入 ICC Profile: {Path.GetFileName(iccFilePath)} → {Path.GetFileName(targetPath)}\n");
 
-            return await RunWriteAsync(targetPath, args, logCallback);
+            return await WriteAndVerifyAsync(targetPath, args, logCallback).ConfigureAwait(false);
         }
 
         /// <summary>
@@ -1178,6 +1226,16 @@ namespace FfmpegGui.Services
         /// </param>
         internal static async Task<int> RunRawAsync(string args, Action<string>? logCallback = null,
             CancellationToken ct = default, int timeoutSeconds = 15)
+            => (await RunCaptureAsync(args, logCallback, ct, timeoutSeconds).ConfigureAwait(false)).Rc;
+
+        /// <summary>
+        /// 与 <see cref="RunRawAsync"/> 同一份进程体，但把 stdout 也带回来。
+        /// 用途：exiftool 的**写结果**只能从它的总结行读出来 —— 容器不收该标签时它照样
+        /// 退出码 0，只打印「0 image files updated / 1 image files unchanged」
+        /// （2026-10-26 实测：AVIF 的 ICC 后置嵌入）。
+        /// </summary>
+        private static async Task<(int Rc, string Stdout)> RunCaptureAsync(string args,
+            Action<string>? logCallback, CancellationToken ct, int timeoutSeconds)
         {
             var psi = new ProcessStartInfo
             {
@@ -1192,7 +1250,7 @@ namespace FfmpegGui.Services
             };
 
             using var p = Process.Start(psi);
-            if (p == null) return -1;
+            if (p == null) return (-1, "");
 
             var stdout = new StringBuilder();
             var stderr = new StringBuilder();
@@ -1212,7 +1270,7 @@ namespace FfmpegGui.Services
             {
                 try { if (!p.HasExited) p.Kill(entireProcessTree: true); } catch { }
                 logCallback?.Invoke($"[exiftool] ⚠️ 超时({timeoutSeconds}s)或被取消，已终止 exiftool 进程\n");
-                return -2;
+                return (-2, stdout.ToString());
             }
 
             var stdoutStr = stdout.ToString().Trim();
@@ -1222,7 +1280,18 @@ namespace FfmpegGui.Services
             if (!string.IsNullOrWhiteSpace(stderrStr))
                 logCallback?.Invoke(stderrStr + "\n");
 
-            return p.ExitCode;
+            return (p.ExitCode, stdoutStr);
+        }
+
+        /// <summary>exiftool 正常退出但**没有改动目标文件**（总结行 `0 image files updated`）。</summary>
+        public const int NoWriteApplied = -3;
+
+        /// <summary>从 exiftool 总结行取「写入了几个文件」；读不到（非写操作/输出被截断）返回 -1。</summary>
+        internal static int ParseUpdatedCount(string stdout)
+        {
+            var m = System.Text.RegularExpressions.Regex.Match(stdout ?? "",
+                @"(\d+)\s+image files? (?:updated|created)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            return m.Success && int.TryParse(m.Groups[1].Value, out var n) ? n : -1;
         }
 
         // ──────── 元数据编辑功能 ────────
