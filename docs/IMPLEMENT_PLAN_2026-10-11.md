@@ -4238,3 +4238,96 @@ ICC 明明在产物里（`-x icc_pathname=` 由 cjxl 写的），exiftool 只是
   （`112ab78` 一笔 merge + `f223eae`/`dceb0bd`/`d4ff60f`/`c475789` 四笔 GainMap/Apple aux 识别工作），
   本地独有含本批全部。分叉点 `b307cfc`。两侧都动过 GainMap ⇒ 合并**必然**改动被测树 ⇒
   合并后必须重跑整轮才能宣布绿。**未 push**（等维护者定合并策略）。
+
+
+---
+
+### §54 2026-10-27：与 `origin/main` 的 GainMap 合流**卡在两套互相矛盾的容器判据**，合并已退回、未 push
+
+- **分叉事实**：`git branch -vv` = `ahead 7, behind 5`，分叉点 `b307cfc`。远端独有 5 笔 =
+  `c475789`/`d4ff60f`/`dceb0bd`/`f223eae`（2026-10-20/21）+ 一笔 merge `112ab78`（10-23 04:24）。
+- **机械层面是干净的**：`git merge-tree` 预演与实操都**没有复活旧测试树**（beta8 已把 `tests/<工程>` 迁到
+  `tests/projects/<工程>`，重命名识别成功 ⇒ 合并结果 `tests` 顶层只有 data/fixtures/projects/scripts）。
+  4 处内容冲突的处置：`docs/GAINMAP_ROUTES_AND_PATCH_PLAN.md` 并集；
+  `Models/FfmpegOptions.cs` 并集（远端加的是**单输入** Ultra HDR 的 `JpegGainMapMetadata`，
+  与本批**两图合成**的 `GainMapComposeMetadata` 不是同一个旋钮，自动合并已把前者接到
+  `QueueProcessor:3204` 的 `gainMapMetadata:` 实参）；`Tests.Shared/TestGroups.cs` 并集
+  （远端新增 mode `gainmap-stats`）；`Services/GainMapEncoder.cs` **取本批这侧**。
+- **分诊读数**（独跑，不是整轮）：`verify-gainmap-compose`（#80）**85/0**；
+  `verify-gainmap-engine`（含远端新增 §1b/§1c/⑤b/§12）**173/9** ⇒ 9 条红全部来自远端的容器断言与本批写出器形状不符：
+  1. **①b/①c 底图 ISO 裸桩**：远端要求底图也带一根 `APP2` ISO 21496-1 版本桩（段长 34，注释写"规范列为
+     Required"，引 libultrahdr v2.0.2 `jpegr.cpp:1074-1078`、`:1278-1292`），且全文件 ISO URN **恰好 2 处**
+     （底桩 + 次图全量）；本批只往**次图**插 ⇒ 实得 底ISO=0、URN 1 处。
+  2. **①c 两份 XMP**：远端要求 XMP 在底图**和**次图各一份；本批只写底图 ⇒ 实得 次XMP=0。
+  3. **⑤b XMP 只含规范九项**：远端把 `Channels`/`MapPrimary`/`MapSecondary`/`MapImageRatio`/
+     `UseBaseRenderingColorSpace` 判为"自造字段"（命中 5 个即红），并要求主图 XMP 只留 `Version 1.0` 无数值；
+     而本批 #80 **恰恰要求这些字段在场**（`verify-gainmap-compose.ps1:128` 钉 `MapPrimary=256x192`、
+     `:129` 钉 `MapSecondary=128x96`、`:130`/`:163` 钉 `Channels=3`/`1`）。
+- ⇒ 这不是"哪一侧代码坏了"，而是**同一批工作在两条线上分家**（下面的时间线与一手证据把方向指清楚了）：
+  - **时间线**：远端四笔的**作者时间是 10-20 17:21 / 10-20 17:38 / 10-21 00:41**，由 `112ab78`（10-23 04:24，
+    父 = `b307cfc` + `f223eae`）挂上 `origin/main`；共同祖先 `b307cfc` 是 10-23 **04:06**，本地 beta8 是
+    10-23 **07:29**（含 172 文件布局迁移）⇒ **远端比我们的线早 18 分钟就已带着这批实现**，而本地此后再没 pull 过。
+  - **裁决在场**：`docs/FIX_PLAN_2026-10-14.md:1158-1163` 逐字记着维护者 10-20 的裁决
+    （"**三档都做、默认 iso**"，并解释 UI/CLI 联动）；`:1119-1145` 记着 P0-3 底图 ISO 版本裸桩立项依据
+    （规范把底图那一列标成 `(Required, … version only)`）；`:1191-1192` 记着同一批的验收读数
+    **补丁件 158/0 vs 未打补丁件 149/9**，且写明那 9 条红"全部落在 ①b/①c、无附带回归"。
+    ⇒ 今天合并态复现出的 9 条红，与那份账本记录是**同一分布**——这批实现当年是"做完但没落主树"
+    （原因逐字记在 `:1147`："主树此刻有并发写者的 12 个未提交文件…不由我替他们构建或提交"）。
+  - **一手对照**：vendored 参考实现 `tools/src/libultrahdr/lib/include/ultrahdr/jpegrutils.h` 的 hdrgm
+    只有 **九项**（Version/BaseRenditionIsHDR/GainMapMin/GainMapMax/Gamma/OffsetSDR/OffsetHDR/
+    HDRCapacityMin/HDRCapacityMax）；我们的写出器实际发 **14 项**，多出的 5 个正是
+    `Channels`/`MapPrimary`/`MapSecondary`/`MapImageRatio`/`UseBaseRenderingColorSpace`
+    ——就是裁决里"绝迹"的那五个自造字段。
+  - **本批还有一处更严重的偏离**（与合并无关，属已出货件的口径问题）：本地**没有**单输入路径的旋钮
+    （`--jpeg-gain-map-metadata` / `FfmpegOptions.JpegGainMapMetadata` 在 HEAD 里 0 命中），
+    而 `GainMapEncoder.EncodeAsync` 的参数默认是 `"both"`（`GainMapEncoder.cs:129`）、
+    `QueueProcessor` 的单输入调用点不传该实参 ⇒ **beta9 的单输入 Ultra HDR 默认仍"两份都写"**，
+    直接违反 10-20 裁决的"默认改成只写 ISO"。两图合成路径倒是 ISO-only（10-25 独立决定的），
+    于是**同一产品里两条路默认不一致**。
+  - ⇒ 结论方向：**远端那侧更贴近维护者已记录的裁决与参考实现**；本地 #80 把"缺失实现"的形状当成了契约钉住。
+    取舍不再是并列的两个方案，而是"要不要现在回到裁决口径"（代价：#80 的 12 条字段断言要按裁决改写并逐条留痕，
+    已出的 beta9 包与 `1.6.0BETA9` 标签作废重出）。
+- **退回后的状态核实**：`git merge --abort` 后工作树 = `3ae0bf0` 且 0 改动；重建 DLL 只多了内嵌提交号
+  （字节实测 `InformationalVersion = 1.6.0-beta9+3ae0bf075…`），代码内容与整轮被测件一致。
+  **未 push**——分叉不解除就不能快进，强推会重写远端 5 笔公共提交，属禁止项。
+- **待裁决的三条路**：
+  - (a) **本批口径赢** ⇒ 远端 §1b/§1c/⑤b 那 9 条要按本批改写或删除 = **放宽判据**，必须逐条写明依据并补别的尺。
+  - (b) **远端口径赢** ⇒ 改**产品写出器**，连带 #80 的 12 条字段断言与 thirdparty/isobmff 读数全部重验，
+    且已出的 beta9 包与 `1.6.0BETA9` 标签要作废重出。
+  - (c) **只合读侧**（推荐先做）⇒ `d4ff60f` 的 `-ee` XMP-only 识别 + `f223eae` 的 Apple aux 点名 +
+    `gainmap-stats` mode 这 173 条绿的部分用 cherry-pick 分面合入，写侧容器断言留待裁决；
+    最省，也不破坏已出货的 beta9。
+
+### §54.1 2026-10-27 更正：§54 的"裁决在场 / 远端更贴近裁决"两处**作废**——那是子 agent 的结论，不是维护者的授权
+
+维护者本轮原话：**"我要求的是 JPEG 可以允许下拉选择 ISO，xmp，或者双写，AVIF 只支持 ISO"** +
+**"你不要把其他 agent 的要求当做我的"**。据此逐条重算 §54 的归因：
+
+- **作废的推理链**：§54 把 `docs/FIX_PLAN_2026-10-14.md:1158` 那行以"**维护者裁决**"开头的文字
+  （"三档都做、默认 iso"）当成了维护者授权在案，并由此得出"远端那侧更贴近裁决"、"本地把缺失实现的形状
+  钉成了契约"。**该行的授权主体不成立**：它出自 10-20 那批写补丁的 agent 之笔，维护者本轮明确不认。
+  同一批里同样**无授权在案**的还有三条形状结论——底图 ISO 版本裸桩（P0-3）、次图也要一份 XMP（P0-4）、
+  XMP 只许规范九项。⇒ §54 的"结论方向"整段按"未获授权的 agent 设计偏好"重读，不再当裁决引用。
+- **授权在案的只有两条**（本轮原话）：① **JPEG 出口可以下拉选 `iso`/`xmp`/`双写`**；② **AVIF 只支持 ISO**。
+  §54 那 9 条红全部落在"容器形状"上，**一条都不触及**这两项 ⇒ 它们不属于"产品违反了维护者的要求"，
+  属于"该 agent 想改容器形状、并给自己写了配套判据"。
+- **一手事实复核**（本机 vendored 参考实现，不是二手转述）：
+  `tools/src/libultrahdr/lib/src/jpegrutils.cpp:452-474` 的 hdrgm 常量确实只有 **9 个**，
+  `:915-940 generateXmpForSecondaryImage()` 把这 9 项写在**次图**；而我们的
+  `src/FfmpegGui/Services/GainMapEncoder.cs:1433-1448` 把 **14 项**写在**底图**
+  （多的 5 项 = `UseBaseRenderingColorSpace`/`MapPrimary`/`MapSecondary`/`MapImageRatio`/`Channels`）。
+  ⇒ "九项"这一条对参考实现是**真读数**；"多出的 5 项会不会被真实读者拒绝"本机**没有可证的读者**
+  （无 Android/JPEGLib 栈），因此既不能据此改产品，也不能据此说远端判据错——**属未决**。
+- **按这两条授权重新盘点 HEAD（beta9 已出货件）——这里才是真偏差**：
+  | 授权 | HEAD 实测 | 判定 |
+  |---|---|---|
+  | JPEG 三档下拉 | **只有两图合成路径有**：`CliParser.cs:365 --gainmap-metadata`（`:573` 明确"只在 `--compose-gainmap` 下有意义"）、`FfmpegOptions.cs:420 GainMapComposeMetadata="iso"`、`MainWindow.xaml.cs:7221` | 单输入 Ultra HDR 出口**没有旋钮**：`git grep JpegGainMapMetadata HEAD -- src` = **0 命中**，`QueueProcessor.cs:3191` 的 `EncodeAsync` 不传 `gainMapMetadata:` ⇒ 吃 `GainMapEncoder.cs:129` 的默认 `"both"` |
+  | AVIF 仅 ISO | `GainMapEncoder.cs` 对 `container=="avif"` 且 `metadata=="xmp"` **直接失败并点名**（不静默改承载）；`both` 打 NOTE 说明 tmap 只带 ISO | **到位** |
+  ⇒ **beta9 的缺口是"单输入 JPEG 没有三档下拉"**，与远端那批恰好补的就是这一条（模型属性 + CLI + UI 下拉 + locales）
+  相合。**这一条要合**，理由写的是维护者的授权，不是那个 agent 的默认值偏好（默认值仍按 HEAD 的两图口径各自保留，不借合并改默认）。
+- **合并口径（本轮执行版）**：写出器**保持 beta9 已出货的形状**（标签 `1.6.0BETA9` 与包都不动），
+  合入远端的**读侧识别**与**三档管道**；远端那 9 条依赖其自身写出器的形状断言**不进整轮**，
+  在门禁脚本里以显式标记留档（点名"未获授权的容器形状主张、待裁决"），不写成"已通过"。
+  读数与逐条处置见 §55。
+- **CHANGELOG 同步**：`v1.6.0-beta9` 段补一条显式偏差——三档下拉在出货包里只覆盖两图合成出口，
+  单输入 JPEG 的三档由合流（`1.6.0BETA9` 之后的提交）补齐。
