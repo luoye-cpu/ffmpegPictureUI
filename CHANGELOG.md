@@ -20,7 +20,9 @@
 > 整轮 `tests/output/gates-round-20261026f.log`：**111/111「运行器汇总：全部通过」**
 > （16:31:30 → 17:26:49，55 min 19 s；`artifact-sha16: FfmpegGui.dll=DC9587599E8D3DC9`、
 > `FfmpegGui.exe=D4FAD60A006DCA6F`、`ServiceProbe.exe=0B2B8F6E542C9A2E`、
-> `runner-self-sha256=68B63CA442962086`）。
+> `runner-self-sha256=68B63CA442962086`）。出包 app + full（581 文件 / 51.7 MB 归档，包内 exe
+> `E53F7D391382D33B`）；独立验包 `verify-release-package` **16/0**；L3 五套件
+> **17/0 · 100/0 · 28/0 · 19/0 · 19/0**；附注标签 `1.6.0BETA9` → `6d7a418`（= 包内 `ProductVersion` 里那颗）。
 > ⚠ 同日的 `full-round-20261026e.log`（wiring 60/56 等成片红）**作废**：那次临时启动器漏了
 > `TMP/TEMP/TMPDIR` 重定向 ⇒ 产品写 `%TEMP%\cms_*.rgb48` 被沙箱拒（`exit -13`）的环境假红——
 > **同一份被测件**在 20261026d 轮 wiring 是 153/0。取证见账本 `docs/IMPLEMENT_PLAN_2026-10-11.md` §51。

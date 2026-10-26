@@ -8,7 +8,7 @@
 | 文件 | 引用 | 用途 |
 |---|---|---|
 | `TESTING.md` | 68 | 测试规范正文；顶部有 2026-10-22 布局迁移读法 |
-| `HANDOVER.md` | 24 | 累积账本，末段停在 beta4 ⇒ 读数已过期，只作历史 |
+| `HANDOVER.md` | 24 | 累积账本；末段 H-14 = beta9 出包读数与未了结（push 待裁决），此前各段按时间点留档 |
 | `RAW_PIPELINE_AUDIT.md` | 4 | RAW 链路审计 |
 | `IMPLEMENT_PLAN_2026-10-11.md` | 4 | **现行任务账本** |
 | `JPEGLI_GAINMAP_PANEL_PLAN_2026-10-09.md` | 5 | GainMap 面板设计（`CliParser` / `FfmpegCommandBuilder` 指它） |

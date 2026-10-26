@@ -22,7 +22,10 @@ All notable changes to this project are documented in this file.
 > Full round `tests/output/gates-round-20261026f.log`: **111/111 "runner summary: all passed"**
 > (16:31:30 → 17:26:49, 55 min 19 s; `artifact-sha16: FfmpegGui.dll=DC9587599E8D3DC9`,
 > `FfmpegGui.exe=D4FAD60A006DCA6F`, `ServiceProbe.exe=0B2B8F6E542C9A2E`,
-> `runner-self-sha256=68B63CA442962086`).
+> `runner-self-sha256=68B63CA442962086`). Packaging: app + full (581 files / 51.7 MB archive, shipped exe
+> `E53F7D391382D33B`); independent `verify-release-package` **16/0**; the five L3 suites
+> **17/0 · 100/0 · 28/0 · 19/0 · 19/0**; annotated tag `1.6.0BETA9` → `6d7a418` (the commit embedded in the
+> package's `ProductVersion`).
 > ⚠ `full-round-20261026e.log` from the same day (wiring 60/56 and a swath of similar reds) is **void**: that
 > ad-hoc launcher skipped the `TMP/TEMP/TMPDIR` redirect, so the product's writes to
 > `%TEMP%\cms_*.rgb48` were denied by the sandbox (`exit -13`) — **the very same build under test** scored

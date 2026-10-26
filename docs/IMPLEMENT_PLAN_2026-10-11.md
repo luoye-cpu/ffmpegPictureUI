@@ -4196,3 +4196,45 @@ ICC 明明在产物里（`-x icc_pathname=` 由 cjxl 写的），exiftool 只是
 - 现状不可达（CLI 词表校验把空串拦在建队前、GUI 只发三值之一、预设拷贝是 `!= null` 才覆盖），
   但这是"同一语义两处默认"的老形状：**一旦哪条路真送进 null，静默变 both 而不是 ISO**。
   收口办法（择一，另批）：把服务侧回退改成取模型默认，或删掉回退并把 null 当契约拒绝点名。
+
+---
+
+### §53 2026-10-27：beta9 出包读数写实（提交 → 重打包 → 验包 → L3 → 标签）
+
+| 项 | 读数 | 出处 |
+|---|---|---|
+| 被测树整轮 | **111/111「运行器汇总：全部通过」**，16:31:30 → 17:26:49（55 min 19 s），红项 0 | `tests/output/gates-round-20261026f.log` |
+| 被测产物 | `FfmpegGui.dll=DC9587599E8D3DC9`、`FfmpegGui.exe=D4FAD60A006DCA6F`、`ServiceProbe.exe=0B2B8F6E542C9A2E`、`UiTestHost.exe=AECDB8B487B6E2AD`、`GainMapTestHost.exe=DB0CA48528576263`、`runner-self-sha256=68B63CA442962086` | 同上第 7 行 |
+| 关键档 | `bench 37/0 @92.3 s`、`verify-acr-route 31/0 @163.2 s`、`verify-gainmap-compose 85/0`、`verify-prophoto-faithful 37/0`、`verify-jxl-probe-timeout 51/0 @137.9 s`、`verify-color-wiring 153/0`、`verify-color-strategy 78/0`、`verify-jpg-webp-matrix 30/0`、`#81 30/0`、`#82 15/0`、`#83 16/0` | 同一轮日志逐行 |
+| 作废轮 | `full-round-20261026e.log`（wiring 60/56 等）= 启动器漏 `TMP` 的环境假红，不作任何结论读数（§51） | 同上 |
+| release 提交 | `6d7a418`（37 文件 +2,862/−293） | `git log` |
+| 出包 | `pack.ps1 -Mode all` ⇒ app + full；full = 128 目录 / 581 文件 / 301 MiB ⇒ 归档 51.7 MB；`PACK-EXIT=0`（00:26:56） | `tests/output/pack-beta9.log` |
+| 包内版本串 | `1.6.0-beta9+6d7a418f77b1c196659b3f6a7dad3a0d0c901866` ⇒ **指向上面那颗提交** | `FfmpegGui.exe` VersionInfo |
+| 包内 exe | `E53F7D391382D33B`（15,688,192 B，NativeAOT 原生件） | `verify-release-package` 末行 |
+| 独立验包 | **PASS=16 FAIL=0**（归档在位 / 必需成员 14 项 / 目录与归档同数 581 vs 581 / 六件工具与 `publish/PLAN` 逐字节同指纹 / 版本串相符） | `verify-release-package.ps1`，`PKG_VER=1.6.0-beta9` |
+| L3 五套件 | **17/0 · 100/0 · 28/0 · 19/0 · 19/0**（`package-smoke`、`jbrd-e2e`、`orientation-rewrap`、`gainmap-thirdparty`、`encoder-knob-liveness`），每条首行 `SUBJ(被测) = v1.6.0-beta9 (L3 出货包)` + 同一 ProductVersion | 各脚本独跑（`PKG_VER` 已设） |
+| 标签 | 附注标签 **`1.6.0BETA9`** → `6d7a418`（`git rev-parse 1.6.0BETA9^{commit}` 对账，不用 `%(objectname)`） | `git tag` |
+
+#### 53.1 出货件内的界面文案替代判据（第 4b 步在 AOT 档无法用 DLL 指纹回答）
+
+- 归档与包内目录都**没有** `FfmpegGui.dll`（NativeAOT 出原生 exe）⇒ 整轮的 DLL 指纹与出货件之间没有可比同类，
+  覆盖只能来自 L3（它跑的就是包内 exe）。
+- 改用散装资源对账：包内 `Resources/Locales/{zh-CN,en-US}.json` 里本批新 key 齐在
+  （`gm.metadata` / `gm.encoder.excluded` / `gm.queue.empty.hint` 各中英 1 处），
+  而被删的 4 处 emoji 前缀与 3 个死 key（`📋 转换队列`、`gm.encoder.major`、`gm.avif.quality.fixed`）**0 命中**。
+
+#### 53.2 出包时踩到的两处（记下来免得再赔一轮）
+
+- **启动器不能另写一个**：`tests/output/gates-launch-full9.ps1` 文件头逐字写着三件套
+  （`TMP/TEMP/TMPDIR` 进工作区、`PATH` 只留 Machine;User、开局磁盘余量闸门），本轮临时写一个只清 locale 的
+  启动器就造出了 §51 那批假红；出包同样依赖这三件套（NativeAOT 链接/压缩要落盘）。
+- **用脚本生成 `.ps1` 会被转义链吃掉反斜杠**：Python 非 raw 三引号串里的 `\ffmpegPictureUI` 被解成 `\f`+…、
+  `\tests` 被解成制表符 ⇒ 启动器路径坏掉、任务"运行成功但没产物"。改法：写文件用 Write 工具或 raw 串，
+  落盘后**回读一次**再挂任务（本轮就是回读 `cat` 才发现的）。
+
+#### 53.3 仍未结的一项
+
+- **本地与 `origin/main` 分叉**：`git branch -vv` 实测 `ahead 6, behind 5`。远端独有 5 笔
+  （`112ab78` 一笔 merge + `f223eae`/`dceb0bd`/`d4ff60f`/`c475789` 四笔 GainMap/Apple aux 识别工作），
+  本地独有含本批全部。分叉点 `b307cfc`。两侧都动过 GainMap ⇒ 合并**必然**改动被测树 ⇒
+  合并后必须重跑整轮才能宣布绿。**未 push**（等维护者定合并策略）。
