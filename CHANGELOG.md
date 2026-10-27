@@ -114,6 +114,37 @@
 - `THIRD-PARTY-NOTICES` 与实包版本对齐写实：Avalonia 12.1.4、MicroCom.Runtime 0.11.6、
   Tmds.DBus.Protocol 0.94.1、libjxl 0.11.2、libavif 1.4.2（libaom 3.15.0）、jxrlib 微软 2013 参考实现。
 
+**⚠ 合流偏差（2026-10-27）：标签不作废、包不重出；容器形状按"第三方读手实测"逐条处置**
+
+- 出货包与附注标签 `1.6.0BETA9` 指向同一份代码（`6d7a418`）——这一条不变。与 `origin/main` 的合流
+  落在标签**之后**，包不重打，所以下面三点是**已出货件的既成偏差**，在此点名而不是回改上面的读数：
+  1. **JPEG 元数据三档下拉在包里只覆盖"两图合成"出口。** 授权在案的要求是"JPEG 可以下拉选
+     ISO / XMP / 双写；AVIF 只支持 ISO"。AVIF 那一半在包里就是对的（`xmp` 直接失败并点名，不静默改承载）；
+     但**单输入 Ultra HDR 出口没有旋钮**——`FfmpegOptions.JpegGainMapMetadata` 在 `6d7a418` 里 0 命中，
+     `QueueProcessor` 的调用点不传该实参 ⇒ 那条路固定吃 API 兜底 `"both"`（两份都写）。
+     合流把远端的**管道**补齐（模型属性 + CLI `--jpeg-gain-map-metadata` + UI 下拉 + 中英 locales），
+     并把取值域收成单点真值 `GainMapEncoder.GainMapMetadataModes` / `GainMapMetadataDefault`（两条产品路默认一致）。
+  2. **`xmp` 单承载的产物原本对参考读手不可读——已在合流后修掉（方案一），但不随本包出货。**
+     参考实现 libultrahdr 只把**增益图（次图）**的 ISO/XMP 交给元数据解析器（`jpegr.cpp:1495-1500`），
+     且它的 XMP 读手按**属性**取数（`jpegrutils.cpp:770-800`，写侧属性形式见 `:915-940`）；
+     而 `6d7a418` 的形状把 hdrgm 写在**底图** ⇒ 第三方判据实测 `xmp+RGB`（无 ISO）产物被读手判
+     `received no valid buffer to parse gainmap metadata`（`tests/output/gates-round-20261027e.log` 的 D5e FAIL）。
+     ⇒ 这一条不是形状偏好之争，是"写出去的东西别人看不懂"。修法：写出器给**次图**补一份属性形式 hdrgm XMP，
+     九项数值与底图那份同源于同一个 `FormatHdrgmNine()`（不留第二副本 ⇒ 两处声明不可能互相矛盾），
+     MPF `Item:Length` 与底图 XMP 声明的次图长度同步改成**含这段 XMP 之后**的次图总长；
+     底图那份**照旧保留**（自家解码器与 exiftool 读它，`#80` 的几何/通道成套判据正钉在底图那 5 个扩展字段上）。
+     修后 D5e 直读通过（`Ultra HDR Image: Yes` 并读出 `maxContentBoost`）。⚠ 出货件里
+     `--compose-gainmap --gainmap-metadata xmp` 那一档仍是读不到的版本（单输入路固定 `both`、ISO 在次图 ⇒ 本来就读得到）。
+  3. **另两条形状主张没有随合流改变出货件，也未证伪。** `origin/main` 同批还要求"底图也插一根 ISO 21496-1
+     版本裸桩"（P0-3）与"XMP 只许规范九项、五个扩展字段绝迹"（P0-5）。这两条出自 2026-10-20 批次
+     （`docs/FIX_PLAN_2026-10-14.md:1119-1145`），当时写作"维护者裁决"，**该归因已于 2026-10-27 由维护者本人否认**
+     （"你不要把其他 agent 的要求当做我的"）⇒ 不属授权在案的要求。"九项"对参考实现是**真读数**
+     （`jpegrutils.cpp:452-474` 的常量确实只有九个），但那五个扩展字段会不会被真实读者拒绝，本机**没有可证的读者**
+     ⇒ 属未决，不据此改产品。两者对应的判据已改为对本树形状同样有牙的等价判据（三档容器指纹 + 读尺活性反控 +
+     规范九项逐项可读 + 扩展字段与第三方实测几何/通道成套），原主张以 `KNOWN` 行留在
+     `tests/scripts/verify-gainmap-engine.ps1` / `verify-gainmap-thirdparty.ps1` 内点名待裁决，不写成"已通过"。
+     读数：`verify-gainmap-engine` 合流前 `173/9` ⇒ **185/0**（整轮 `20261027f`，绑 `artifact-sha16: FfmpegGui.dll=6EC9ED243BCB7563`）；`verify-gainmap-thirdparty` 由合流态的 `20/3`（D5d/D5f/D5e 三条红）转为 **24/0**，其中 D5e 是实测真绿。
+
 ### v1.6.0-beta8 (2026-10-23) — 私有内容审计收口：厂商裁剪进 DefaultCrop + 逐实例账本 + 测试工程迁入 tests/projects
 
 > **谱系**：`src/` **17 个产品文件**（+306/−68 行）、`tools/src/dngtool`（+1,970/−79 行，含此前各轮的

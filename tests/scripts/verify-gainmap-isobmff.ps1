@@ -70,10 +70,12 @@
 #     ⇒ 下一步若要真素材，优先走 **注册 imaging.org 免费下载**（CC BY-NC 4.0）或**用手机拍一张
 #       Adaptive HDR 照片**（iPhone 15+ / 部分 Android）。
 #
-# 断言（共 70 条）：§0 前置 6 · §1 容器层 8 · §1b HEVC 解码路径 11（含 2 条负控 + 1 条反控）·
+# 断言（共 80 条）：§0 前置 6 · §1 容器层 8 · §1b HEVC 解码路径 11（含 2 条负控 + 1 条反控）·
+#                   **§1c Apple auxC 识别 4（含 URN 反控 + 21496 回归）** ·
 #                   §2 源码形态 6（含反控）· §2b 缺陷 C 源码形态 3（含反控）· §3 行为 8 ·
 #                   §3b 缺陷 C 行为 4（含负控与素材形态自检）· **§3c HEIC 端到端行为 5（含负控）** ·
-#                   **§3d 厂商尾注执行面 4（含拒因与互斥点名）** · **§3e 底图取法 A/B 4（含对照臂分叉）** · **§3f HEIC→BT.2020/PQ 出口 10（三读者 + 码域分叉 + 2 条对照）** · §4 收尾 1
+#                   **§3d 厂商尾注执行面 4（含拒因与互斥点名）** · **§3e 底图取法 A/B 4（含对照臂分叉）** · **§3f HEIC→BT.2020/PQ 出口 11（三读者 + 码域分叉 + 2 条对照 + tmap pixi）** ·
+#                   **§3g AVIF 增益图 + alpha 5（含 PNG 对照；点名"透明被拍平"）** · §4 收尾 1
 #   ⚠ **两条弱断言**（都实测过「变异后仍然通过」，别只信它们）：
 #     · §1b「转换成功」：只看 `determinate` / `ffmpegFmt=hevc` / `gmData>0` —— **原样透传不转换**也能过；
 #     · §3c「识别并产出」：只看「日志出现『检测到 ISO-BMFF 增益图』」+ 有产物 —— **退回 fail-closed** 也能过。
@@ -368,6 +370,53 @@ CK (($cNeg.text -match 'determinate=False') -and ($cNeg.text -match 'ffmpegFmt=-
    "§1b 负控②：hvcC 存在但 item 是 AV1 字节 ⇒ **仍** fail-closed（不切字节、不给解复用器）"
 CK ($cNeg.text -match 'length-prefix chain broken') `
    "§1b 负控②：失败原因精确到「长度前缀断链」（实 $(($cNeg.text -split "`r?`n" | Where-Object { $_ -match '^determinate=' } | Select-Object -First 1))）—— **证明转换不是无脑照搬**"
+
+# ── §1c Apple 早期辅助图（`auxC` URN = hdrgainmap）：认出并点名，**不得**当成「无增益图」 ─────────
+#   背景：iPhone 12 起的 HEIC 把 HDR 增益图挂成 `auxC` 辅助图，URN 形如
+#   `urn:com:apple:photo:2020:aux:hdrgainmap`，**不含 21496** ⇒ 旧判据（只搜 21496）对它完全无感，
+#   报成 `hasGainMap=False` ⇒ 调用方静默按 SDR 处理（可用性不诚实）。
+#   本条只钉**识别面**：认出来 + `form=aux-apple-hdrgainmap` + `determinate=false`（解码施加仍未支持）
+#   + 不伪造可解字节。素材是**结构层合成件**（`ftyp` + `meta/pitm/iprp/ipco/auxC`），
+#   **不冒充**真实 Apple 设备件；真实 Apple HEIC 仍缺（见文件头覆盖缺口登记）。
+function New-Box([string]$type, [byte[]]$payload) {
+  $be = [System.BitConverter]::GetBytes([int](8 + $payload.Length))
+  [Array]::Reverse($be)
+  $res = New-Object byte[] (8 + $payload.Length)
+  [Array]::Copy($be, 0, $res, 0, 4)
+  [Array]::Copy([System.Text.Encoding]::ASCII.GetBytes($type), 0, $res, 4, 4)
+  [Array]::Copy($payload, 0, $res, 8, $payload.Length)
+  return ,$res
+}
+function Join-Bytes($parts) {
+  $n = 0; foreach ($p in $parts) { $n += $p.Length }
+  $res = New-Object byte[] $n; $o = 0
+  foreach ($p in $parts) { [Array]::Copy($p, 0, $res, $o, $p.Length); $o += $p.Length }
+  return ,$res
+}
+function New-AuxFixture([string]$urn, [string]$path) {
+  $ftyp = New-Box "ftyp" (Join-Bytes @([System.Text.Encoding]::ASCII.GetBytes("heic"), [byte[]](0,0,0,0), [System.Text.Encoding]::ASCII.GetBytes("mif1heic")))
+  $pitm = New-Box "pitm" (Join-Bytes @([byte[]](0,0,0,0), [byte[]](0,1)))
+  $auxC = New-Box "auxC" (Join-Bytes @([byte[]](0,0,0,0), [System.Text.Encoding]::ASCII.GetBytes($urn), [byte[]](0)))
+  $meta = New-Box "meta" (Join-Bytes @([byte[]](0,0,0,0), $pitm, (New-Box "iprp" (New-Box "ipco" $auxC))))
+  [System.IO.File]::WriteAllBytes($path, (Join-Bytes @($ftyp, $meta)))
+}
+$auxApple = "$work/synth_aux_apple.heic"
+$auxOther = "$work/synth_aux_other.heic"
+$auxIso   = "$work/synth_aux_21496.heic"
+New-AuxFixture "urn:com:apple:photo:2020:aux:hdrgainmap" $auxApple
+New-AuxFixture "urn:com:example:other" $auxOther
+New-AuxFixture "urn:iso:std:iso:ts:21496:-1" $auxIso
+$cAuxA = Exec $sp "gainmap-isobmff `"$auxApple`" auxapple" "p_auxapple"
+$cAuxN = Exec $sp "gainmap-isobmff `"$auxOther`" none" "p_auxother"
+$cAuxI = Exec $sp "gainmap-isobmff `"$auxIso`" auxiso" "p_aux21496"
+CK (($cAuxA.text -match 'PROBE RESULT: pass=6 fail=0') -and ($cAuxA.text -match 'hasGainMap=True') -and ($cAuxA.text -match 'form=aux-apple-hdrgainmap') -and ($cAuxA.text -match 'determinate=False')) `
+   "§1c Apple auxC：认出并点名（hasGainMap=True / form=aux-apple-hdrgainmap / determinate=False）—— 旧的「只搜 21496」判据会把它报成无增益图"
+CK (($cAuxA.text -match 'failReason=.*hdrgainmap') -and ($cAuxA.text -match 'primary=1') -and ($cAuxA.text -match 'tmap=-1') -and ($cAuxA.text -match 'gmData=-1')) `
+   "§1c Apple auxC：失败原因点名 hdrgainmap、容器确实被解析（primary=1）、且**不伪造可解字节**（tmap=-1 / gmData=-1）"
+CK (($cAuxN.text -match 'PROBE RESULT: pass=3 fail=0') -and ($cAuxN.text -match 'hasGainMap=False') -and ($cAuxN.text -match 'determinate=True') -and ($cAuxN.text -match 'primary=1')) `
+   "§1c **反控（断言有牙）**：同结构、URN 仅换成 urn:com:example:other ⇒ 仍判无增益图（证明判据是 URN 语义，不是「有 auxC 就算」）"
+CK (($cAuxI.text -match 'PROBE RESULT: pass=5 fail=0') -and ($cAuxI.text -match 'form=aux-21496') -and ($cAuxI.text -match 'determinate=False')) `
+   "§1c 回归：URN 含 21496 仍走原有 aux-21496 分支（新增的 apple 分支不得吞掉它）"
 
 # ── §2 源码形态：动画判据锁（含反控） ────────────────────────────────────────────
 Write-Host "`n### §2 源码形态：动画判据（多帧 + tmap 两级）###" -ForegroundColor Cyan
@@ -706,9 +755,71 @@ if ($f3Gm -ne '') {
         CK (($aGm[2] -ne '') -and ($aGm[3] -match '16')) `
            "§3f-9 第三方读者解析成功：avifdec 读出 Alternate Headroom=$($aGm[2])，且文件里存在 trc=16 的 HDR 表示（读者报出的 Transfer Char 序列=$($aGm[3])）⇒ 这份增益图能被 libavif 理解；读不出就是写错了"
     }
+    # §3f-11 tmap 必须带 `pixi`：第三方读者才能报出「替代图」的位深/平面数。
+    #   参照 libavif 自家增益图样本（ipma item 2 → ispe/pixi/colr）与 libheif 的
+    #   `heif_context_encode_gain_map_image`（third_party/libheif/.../heif.cc:3595-3604）。
+    #   缺 pixi 时 avifdec --info 的「Alternate image」整段**不报** Bit Depth / Planes（2026-10-21 实测本仓旧产物）。
+    if (-not (Test-Path $avd)) {
+        Write-Host "WARN §3f-11 avifdec 不在位 ⇒ tmap pixi 的第三方读数未判" -ForegroundColor Yellow
+    } else {
+        $infoGm = (ExecOut $avd "--info `"$f3Gm`"" "ad_gmfull").text
+        $baseDepth = ''; $altDepth = ''; $altPlanes = ''
+        $dm = [regex]::Match($infoGm, 'Bit Depth\s*:\s*(\d+)')
+        if ($dm.Success) { $baseDepth = $dm.Groups[1].Value }
+        $altSeg = ''
+        $ai = $infoGm.IndexOf('Alternate image:')
+        if ($ai -ge 0) { $altSeg = $infoGm.Substring($ai) }
+        $am = [regex]::Match($altSeg, 'Bit Depth\s*:\s*(\d+)')
+        if ($am.Success) { $altDepth = $am.Groups[1].Value }
+        $pm = [regex]::Match($altSeg, 'Planes\s*:\s*(\d+)')
+        if ($pm.Success) { $altPlanes = $pm.Groups[1].Value }
+        CK (($baseDepth -ne '') -and ($altDepth -eq $baseDepth) -and ($altPlanes -eq '3')) `
+           "§3f-11 tmap 带 pixi：avifdec 的「Alternate image」必须报 Bit Depth=$baseDepth / Planes=3（实 $altDepth/$altPlanes）—— 缺 pixi 时这两行整段不出现"
+    }
 } else {
     CK $false "§3f-8 增益图出口未产出（$($g3fGm.dir)）⇒ 本条无凭据"
 }
+
+# ── §3g AVIF 增益图 + alpha：容器能带 alpha，但本出口不携带 ⇒ 必须**点名**（不许静默拍平）─────
+#   事实（2026-10-21 实测）：RGBA HDR PNG → AVIF 增益图，产物 `avifdec --info` 报 `Alpha: Absent`，
+#   而同一源走普通 AVIF/PNG 出口保留 alpha（PNG 控制臂 rgba64be）。AVIF 容器本身支持 alpha，
+#   所以这不是"容器限制"，是本出口的实现缺口 ⇒ 至少必须播报；要保留 alpha 得走普通出口。
+Write-Host "`n### §3g AVIF 增益图 + alpha：透明被拍平必须点名 ###" -ForegroundColor Cyan
+$alphaBase = "$root/tests/output/validate/src_hdr.png"
+CK (Test-Path $alphaBase) `
+   "§3g-0 前提：HDR 夹具在位（$alphaBase）—— 缺则本段无凭据（fail-closed，不静默跳过）"
+$alphaSrc = "$work/hdr_alpha.png"
+$null = Exec $ff "-y -v error -i `"$alphaBase`" -f lavfi -i `"gradients=s=512x384:c0=black:c1=white`" -filter_complex `"[0:v]format=rgb48le[a];[1:v]format=gray16le[g];[a][g]alphamerge`" -pix_fmt rgba64le `"$alphaSrc`"" "gen_alpha"
+$as = Exec $ff "-v info -i `"$alphaSrc`" -vf `"alphaextract,signalstats,metadata=print`" -frames:v 1 -f null -" "alpha_stats"
+$amin = -1; $amax = -1
+$m1 = [regex]::Match($as.text, 'signalstats\.YMIN=(\d+)')
+$m2 = [regex]::Match($as.text, 'signalstats\.YMAX=(\d+)')
+if ($m1.Success) { $amin = [int]$m1.Groups[1].Value }
+if ($m2.Success) { $amax = [int]$m2.Groups[1].Value }
+$hdrTrc = (ExecOut $fp "-v error -select_streams v:0 -show_entries stream=color_transfer -of csv=p=0 `"$alphaSrc`"" "alpha_trc").text.Trim()
+CK (($hdrTrc -eq 'smpte2084') -and ($amin -ge 0) -and ($amin -lt 5000) -and ($amax -gt 60000)) `
+   "§3g-1 前提：夹具是 PQ 且 alpha 非平凡（trc=$hdrTrc，alpha YMIN=$amin YMAX=$amax）"
+$g3g = RunApp $alphaSrc "avif" "f3_alpha" @('--hdr-mode', 'gainmap', '--jpeg-gain-map', 'true', '--jpeg-gain-map-base-gamut', 'bt2020')
+$f3gA = FirstFile $g3g.dir 'avif'
+CK (($f3gA -ne '') -and ($g3g.text -match 'AVIF 增益图 \(tmap\)') -and ($g3g.text -match '源带 alpha，但 AVIF 增益图出口当前不携带 alpha')) `
+   "§3g-2 源带 alpha ⇒ 走完增益图路径（tmap）且日志**点名**透明会被拍平（实 产物=$($f3gA -ne '') 点名=$($g3g.text -match '源带 alpha，但 AVIF')）"
+if ($f3gA -ne '') {
+    if (-not (Test-Path $avd)) {
+        Write-Host "WARN §3g-3 avifdec 不在位 ⇒ 交付的 alpha 状态未判" -ForegroundColor Yellow
+    } else {
+        $infA = (ExecOut $avd "--info `"$f3gA`"" "ad_alpha").text
+        $av = '-'
+        if ($infA -match 'Alpha\s*:\s*(\w+)') { $av = $Matches[1] }
+        CK ($av -eq 'Absent') `
+           "§3g-3 点名必须与交付一致：产物 avifdec 报 Alpha: Absent（实 $av）"
+    }
+}
+$g3gPng = RunApp $alphaSrc "png" "f3_alpha_png" @()
+$f3gPng = FirstFile $g3gPng.dir 'png'
+$pngPix = ''
+if ($f3gPng -ne '') { $pngPix = ((ExecOut $fp "-v error -select_streams v:0 -show_entries stream=pix_fmt -of csv=p=0 `"$f3gPng`"" "alpha_png_pix").text).Trim() }
+CK (($f3gPng -ne '') -and ($pngPix -match 'a')) `
+   "§3g-4 对照：同一源走普通 PNG 出口**保留** alpha（pix_fmt=$pngPix）⇒ 上面不是源本身没 alpha"
 
 # ── 已知缺陷的可见性行（**不判红**，但必须把现象打在输出里）────────────────────
 #   现象（HEAD c694f27 实测）：`--color-space` 无取值校验（CliParser.cs:760）+ Resolve 用子串关键词

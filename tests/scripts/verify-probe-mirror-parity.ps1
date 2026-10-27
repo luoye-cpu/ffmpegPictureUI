@@ -71,7 +71,13 @@ $counts = [ordered]@{
     'avifgm' = 14; 'bench' = 9; 'bitdepth' = 7; 'bt2446' = 18; 'color' = 0
     'colormath' = 12; 'contract' = 99; 'curve' = 14; 'decision' = 5; 'dng-xmp-args' = 2
     'encoding' = 6
-    'engine' = 20; 'faithful' = 10; 'firstframe' = 15; 'gainmap' = 6; 'gainmap-isobmff' = 12
+    # 2026-10-27 与 origin/main 合流：`ProbeGainMapIsoBmff` 的源文本调用位 12 → **21**（+9），
+    #   来历 = origin/main 那批读侧新增的 Apple aux 识别与 tmap `pixi` 关联断言（P0-1/P1-4），
+    #   它们与容器形状之争无关、合流时**整侧采纳** ⇒ 按"只许升 + 写来历"抬格。
+    #   同批新增派发 mode `gainmap-stats`（§12 像素级施加证据，调用者 = verify-gainmap-engine §12）
+    #   ⇒ 登记源文本调用位 **6**（`-Census` 实测 got=6，不是运行读数）。
+    'engine' = 20; 'faithful' = 10; 'firstframe' = 15; 'gainmap' = 6; 'gainmap-isobmff' = 21
+    'gainmap-stats' = 6
     'gamut' = 2; 'gamutfit' = 19; 'geometry' = 43; 'hlgwire' = 3; 'i18n' = 5
     'icc' = 5; 'icc-dump' = 0; 'iccname' = 9; 'ipc' = 13; 'ipc-client' = 2
     'ipc-raw-client' = 4; 'ipc-server' = 0; 'ipc-submit' = 3; 'matrix' = 13; 'memadmit' = 7; 'framelen' = 5
@@ -92,7 +98,9 @@ $counts = [ordered]@{
     'xcheck' = 6
 }
 # 登记表各值之和 = 2026-10-14 实测 813；2026-10-15 加 `vendor-hdr` ⇒ 829，同日审查再加 V16/V17/V18 ⇒ 832，
-# 2026-10-21 夜加 `dng-xmp-args`（产品侧 XMP 两臂串，账本 §40.9）⇒ **834**。
+# 2026-10-21 夜加 `dng-xmp-args`（产品侧 XMP 两臂串，账本 §40.9）⇒ 834；
+# 2026-10-22 修尺（settings 56→11）后按新尺重取 ⇒ 803；
+# 2026-10-27 合流：`gainmap-isobmff` +9 与新增 `gainmap-stats` +6 ⇒ **818**（= ③-e 实取总量）。
 #   `vendor-hdr` = **19 个源文本调用位**，而 `gainmap-isobmff` §3d 的**运行时**通过数 = **18**；差 1 的两处成因不同：
 #     ① V8/V9 与「夹具缺席」那条 fail-closed 支互斥（源文本 2 条、执行 1 条）；
 #     ② V16/V17 是**一个 foreach 调用位跑两格**（源文本 1 条、执行 2 条）。

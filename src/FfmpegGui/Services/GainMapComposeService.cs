@@ -129,7 +129,8 @@ public static class GainMapComposeService
             int baseCrf = FfmpegOptions.MapAvifCrfForward(options.Quality);
             int gainCrf = FfmpegOptions.MapAvifCrfForward(gmq);
             string metadata = string.IsNullOrWhiteSpace(options.GainMapComposeMetadata)
-                ? "both" : options.GainMapComposeMetadata.Trim().ToLowerInvariant();
+                ? GainMapEncoder.GainMapMetadataDefault
+                : options.GainMapComposeMetadata.Trim().ToLowerInvariant();
 
             log?.Invoke($"[GainMap合成] 编码：{w}×{h}，底图色域={baseGamut}，"
                 + $"{(options.GainMapComposeMultiChannel ? "三通道" : "单通道")}增益，"

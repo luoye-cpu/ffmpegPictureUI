@@ -180,6 +180,18 @@ internal static class IsoBmffGainMapWriter
             var assocTmap = new List<int>();
             int ispeIdx = baseImg.Props.FindIndex(p => IsBox(p, "ispe"));
             if (ispeIdx >= 0) assocTmap.Add(ispeIdx + 1);
+            // tmap 还要带 `pixi`：它描述**派生图（HDR 侧）**的位深与平面数。
+            // 两条一手参照：libavif 自家增益图样本把底图的 pixi 关联给 tmap（`seine_sdr_gainmap_srgb.avif`
+            // 的 ipma item 2 → ispe/pixi/colr）；libheif 的 `heif_context_encode_gain_map_image` 也给
+            // tmap 显式写 pixi（third_party/libheif/.../api/libheif/heif.cc:3595-3604）。
+            // 缺它时 `avifdec --info` 的「Alternate image」**整段不报 Bit Depth / Planes**（2026-10-21 实测），
+            // 替代图的精度只能让读者猜 ⇒ 这里沿用底图的 pixi（与 libavif 样本同形；派生图精度不低于底图）。
+            var basePixi = baseImg.Props.Find(p => IsBox(p, "pixi"));
+            if (basePixi != null)
+            {
+                ipcoChildren.Add(basePixi);
+                assocTmap.Add(ipcoChildren.Count);
+            }
             // tmap 项还要带一个 `colr` 描述**替代图（HDR 侧）**的色度 —— 与 libultrahdr v2 的
             // `avifultrahdr.cpp:506-520`（为 tmap 单独建 nclx）同口径；libavif 据此报告 "Alternate image"。
             // 缺它时容器仍可解，但替代图的色度只能从底图 colr 猜 ⇒ 标注与语义不符。

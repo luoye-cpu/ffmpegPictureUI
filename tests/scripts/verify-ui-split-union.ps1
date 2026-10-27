@@ -50,7 +50,13 @@ $srcDir = Join-Path $root 'tests/output/sources'
 #   的注释独家承载（该包装自 J8 换成 `SelectColorSpaceSettled` 后全仓零调用点）；
 #   事实进了断言 ⇒ 同一批把死包装删掉（`R-9 零死包装` 与 `R-1..R-5 逐字节` 仍 19/0、22/0）。
 #   ⚠ 抬数同前例：3c 仍 PASS（实测旧宿主 421 PASS / 0 FAIL，拆分并集同数）。
-$expectedOldCount = 421
+#   2026-10-27 与 `origin/main` 合流 = **430**（+9，全部来自远端那批为"JPEG 元数据三档下拉"写的 UI/CLI 判据：
+#   `tests/projects/UiTestHost/Program.cs` 的 **O6a–O6g 七条**（下拉恰好三档 / 默认档 iso / xmp 档不锁通道 /
+#   三档采集落进预设快照）+ **M2 两条**（CLI 取值轴与默认值锁）。抬数前提与历次相同：
+#   **3c 必须仍 PASS** —— 整轮 20261027e 实测旧宿主 `430 PASS / 0 FAIL`，拆分并集同为 430（一对一改名守恒），
+#   `verify-ui-split-reproducible` 与 `verify-ui-split-verbatim` 同轮 0 红 ⇒ 生成件与权威源逐字一致，
+#   这 9 条不是"手改拆分侧"造出来的差额。
+$expectedOldCount = 430
 # 一对一改名 ⇒ 新旧总数相同（不是 408/412）
 $expectedNewCount = $expectedOldCount
 

@@ -295,6 +295,7 @@ namespace FfmpegGui
         private ComboBox? JpegGainMapDownsampleCombo;
         private ComboBox? JpegGainMapTypeCombo;
         private ComboBox? JpegGainMapBaseCombo;
+        private ComboBox? JpegGainMapMetadataCombo;
         private CheckBox? JpegGainMapMultiChannelCheck;  // 兼容旧代码引用
         private ComboBox? TiffCompressionCombo;
         private NumericUpDown? TiffDpiBox;
@@ -534,6 +535,7 @@ namespace FfmpegGui
             JpegGainMapDownsampleCombo = this.FindControl<ComboBox>("JpegGainMapDownsampleCombo");
             JpegGainMapTypeCombo = this.FindControl<ComboBox>("JpegGainMapTypeCombo");
             JpegGainMapBaseCombo = this.FindControl<ComboBox>("JpegGainMapBaseCombo");
+            JpegGainMapMetadataCombo = this.FindControl<ComboBox>("JpegGainMapMetadataCombo");
             JpegGainMapMultiChannelCheck = this.FindControl<CheckBox>("JpegGainMapMultiChannelCheck");  // XAML 已改 ComboBox，此引用为 null 兼容
             // ── 色域映射（GMO）开关 ──
             ColorGamutMapCheck = this.FindControl<CheckBox>("ColorGamutMapCheck");
@@ -776,6 +778,9 @@ namespace FfmpegGui
                 JpegGainMapTypeCombo.SelectionChanged += (_, _) => RegenerateCommand();
             if (JpegGainMapBaseCombo != null)
                 JpegGainMapBaseCombo.SelectionChanged += (_, _) => RegenerateCommand();
+            // 元数据方式不改变通道数能力：Ultra HDR 的 hdrgm 用单值表示「适用于全部通道」，三通道参数本实现恒相同
+            if (JpegGainMapMetadataCombo != null)
+                JpegGainMapMetadataCombo.SelectionChanged += (_, _) => RegenerateCommand();
             if (JpegGainMapMultiChannelCheck != null)  // XAML 已改 ComboBox，此引用为 null 兼容
                 JpegGainMapMultiChannelCheck.IsCheckedChanged += (_, _) => RegenerateCommand();
             if (TiffCompressionCombo != null) TiffCompressionCombo.SelectionChanged += (_, _) => RegenerateCommand();
@@ -1015,6 +1020,8 @@ namespace FfmpegGui
                 "gainmap.type.gray", "gainmap.type.rgb");
             FillComboByLoc(this.FindControl<ComboBox>("JpegGainMapBaseCombo"), 0,
                 "gainmap.base.srgb", "gainmap.base.rec2020");
+            FillComboByLoc(this.FindControl<ComboBox>("JpegGainMapMetadataCombo"), 0,
+                "gainmap.metadata.iso", "gainmap.metadata.xmp", "gainmap.metadata.both");
             // HDR 实现模式（用户-facing 单真值 = `FfmpegOptions.HdrMode`，它是 `JpegGainMap` 的强类型视图）
             FillComboByLoc(this.FindControl<ComboBox>("HdrModeCombo"), 0,
                 "hdr.mode.traditional", "hdr.mode.gainmap");
@@ -3132,6 +3139,7 @@ namespace FfmpegGui
                 JpegGainMapDownsample = ParseGainMapDownsample(),
                 JpegGainMapMultiChannel = ParseGainMapMultiChannel(),
                 JpegGainMapBaseGamut = ParseGainMapBaseGamut(),
+                JpegGainMapMetadata = ParseGainMapMetadata(),
                 TiffCompressionAlgo = useAdvCodec ? (TiffCompressionCombo?.SelectedItem as string) : "lzw",
                 TiffDpi = useAdvCodec && TiffDpiBox?.Value > 0 ? (int?)TiffDpiBox.Value : null,
                 // -- thumbnail (EXIF IFD1 embed), 160 / 75 are the FfmpegOptions defaults --
@@ -3737,6 +3745,7 @@ namespace FfmpegGui
                 JpegGainMapDownsample = original.JpegGainMapDownsample,
                 JpegGainMapMultiChannel = original.JpegGainMapMultiChannel,
                 JpegGainMapBaseGamut = original.JpegGainMapBaseGamut,
+                JpegGainMapMetadata = original.JpegGainMapMetadata,
                 TiffCompressionAlgo = original.TiffCompressionAlgo,
                 EnableThumbnail = original.EnableThumbnail,
                 ThumbnailLongEdge = original.ThumbnailLongEdge,
@@ -6042,6 +6051,16 @@ namespace FfmpegGui
         private string ParseGainMapBaseGamut()
             => JpegGainMapBaseCombo?.SelectedIndex == 1 ? "bt2020" : "srgb";
 
+        /// <summary>解析元数据方式。取值域只有一处定义 = <see cref="GainMapEncoder.GainMapMetadataModes"/>
+        /// （下拉项顺序与它一致），越界一律回落默认档，不在 UI 里另抄一份字符串表。</summary>
+        private string ParseGainMapMetadata()
+        {
+            var modes = GainMapEncoder.GainMapMetadataModes;
+            int idx = JpegGainMapMetadataCombo?.SelectedIndex ?? -1;
+            if (idx < 0 || idx >= modes.Length) return GainMapEncoder.GainMapMetadataDefault;
+            return modes[idx];
+        }
+
         private int ParseGainMapQuality()
         {
             if (JpegGainMapFollowMainCheck?.IsChecked == true)
@@ -6175,6 +6194,7 @@ namespace FfmpegGui
                 JpegGainMapTargetNits = ParseGainMapNits(),
                 JpegGainMapMultiChannel = ParseGainMapMultiChannel(),
                 JpegGainMapBaseGamut = ParseGainMapBaseGamut(),
+                JpegGainMapMetadata = ParseGainMapMetadata(),
                 JpegGainMapDownsample = ParseGainMapDownsample(),
                 // ── WebP 无损压缩级别 ──
                 WebpCompressionLevel = (int?)WebpCompressionBox?.Value,
@@ -6331,6 +6351,13 @@ namespace FfmpegGui
             if (JpegGainMapBaseCombo != null)
                 JpegGainMapBaseCombo.SelectedIndex =
                     string.Equals(p.JpegGainMapBaseGamut, "bt2020", StringComparison.OrdinalIgnoreCase) ? 1 : 0;
+            if (JpegGainMapMetadataCombo != null)
+            {
+                // 未知/缺字段（旧预设）一律落默认档 iso，而不是留空选择
+                int metaIdx = System.Array.IndexOf(GainMapEncoder.GainMapMetadataModes,
+                    (p.JpegGainMapMetadata ?? GainMapEncoder.GainMapMetadataDefault).Trim().ToLowerInvariant());
+                JpegGainMapMetadataCombo.SelectedIndex = metaIdx >= 0 ? metaIdx : 0;
+            }
             if (JpegGainMapFollowMainCheck != null)
             {
                 JpegGainMapFollowMainCheck.IsChecked = p.JpegGainMapQuality < 0;

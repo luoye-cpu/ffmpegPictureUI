@@ -767,6 +767,11 @@
                 <!-- 增益图类型：灰度 / RGB -->
                 <TextBlock Text="{ext:Loc gainmap.type}" FontSize="11" Margin="0,2,0,0"/>
                 <ComboBox x:Name="JpegGainMapTypeCombo" SelectedIndex="0" FontSize="11"/>
+                <!-- 元数据标记方式：ISO(默认) / XMP / 两者 —— 只有 JPEG 出口有意义，AVIF 的 tmap 就是 ISO -->
+                <TextBlock Text="{ext:Loc gainmap.metadata}" FontSize="11" Margin="0,2,0,0"/>
+                <ComboBox x:Name="JpegGainMapMetadataCombo" SelectedIndex="0" FontSize="11"/>
+                <TextBlock Text="{ext:Loc gainmap.metadata.note}" FontSize="9"
+                           Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" TextWrapping="Wrap"/>
                 <!-- 底图色域：sRGB SDR 底（默认）/ Rec.2020 SDR 底（广色域）-->
                 <TextBlock Text="{ext:Loc gainmap.base.gamut}" FontSize="11" Margin="0,2,0,0"/>
                 <ComboBox x:Name="JpegGainMapBaseCombo" SelectedIndex="0" FontSize="11"/>

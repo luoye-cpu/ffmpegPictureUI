@@ -83,6 +83,9 @@ namespace Tests.Shared
                 //   有调用点就必须进账，不进 #69 的豁免表。它守的是产品侧 BuildDngStdTagsCarryArgs 的
                 //   XMP 两臂分叉（账本 §40.9）。
                 "dng-xmp-args",
+                // 2026-10-20 P0-2：Apple 两代 JPEG 的**像素级**施加证据（读回 gbrpf32le 线性像素）。
+                // 调用者 = 在册门禁 `verify-gainmap-engine.ps1` §12（经 ProbeStats 辅助函数起 ServiceProbe）。
+                "gainmap-stats",
             },
 
             // ── 编码参数与产物 / 元数据与 ICC / 增益图与 Ultra HDR / 进程与 IPC ──

@@ -153,6 +153,52 @@ All notable changes to this project are documented in this file.
   Tmds.DBus.Protocol 0.94.1, libjxl 0.11.2, libavif 1.4.2 (libaom 3.15.0), jxrlib (Microsoft 2013 reference
   implementation).
 
+**⚠ Merge deviation (2026-10-27): the tag is not revoked and the package is not rebuilt — each container-shape claim is disposed of on third-party-reader evidence**
+
+- The shipped archive and the annotated tag `1.6.0BETA9` still point at the same commit (`6d7a418`) — that
+  does not change. The merge of `origin/main` lands **after** the tag and the package is not repacked, so the
+  three points below are **deviations of what already shipped**, named here rather than rewritten into the
+  readings above:
+  1. **In the shipped package the three-way JPEG metadata dropdown only covers the "two-image compose"
+     exit.** The mandate on record is "JPEG may select ISO / XMP / both from a dropdown; AVIF supports ISO
+     only". The AVIF half is already correct in the package (`xmp` fails outright and is named — the carrier
+     is never silently rewritten). But the **single-input Ultra HDR exit has no knob**:
+     `FfmpegOptions.JpegGainMapMetadata` gets 0 hits at `6d7a418` and the `QueueProcessor` call site does not
+     pass the argument ⇒ that route always takes the API fallback `"both"` (writes both carriers). The merge
+     brings in the remote **plumbing** (model property + CLI `--jpeg-gain-map-metadata` + UI dropdown +
+     zh/en locales) and collapses the value domain into a single truth
+     (`GainMapEncoder.GainMapMetadataModes` / `GainMapMetadataDefault`), so both product routes default alike.
+  2. **The `xmp`-only carrier was unreadable by the reference reader — fixed after the merge (option 1), but
+     not in this package.** libultrahdr hands `parseGainMapMetadata` the ISO/XMP of the **gain map (secondary)
+     image only** (`jpegr.cpp:1495-1500`) and its XMP reader pulls values **as attributes**
+     (`jpegrutils.cpp:770-800`; the writer side emits the attribute form at `:915-940`), whereas the
+     `6d7a418` shape put `hdrgm` in the **base** image ⇒ the third-party judge measured the `xmp+RGB`
+     (no ISO) artifact as `received no valid buffer to parse gainmap metadata` (the `D5e` FAIL in
+     `tests/output/gates-round-20261027e.log`). That is not a shape preference — it is "what we write cannot
+     be read". Fix: the writer now also embeds an attribute-form `hdrgm` XMP block in the **secondary**, with
+     all nine values taken from the same `FormatHdrgmNine()` as the base copy (no second copy ⇒ the two
+     declarations cannot disagree), and MPF `Item:Length` plus the secondary length declared in the base XMP
+     now both count the secondary **including** that XMP block. The base copy is **kept** (our own decoder
+     and exiftool read it, and `#80` pins geometry/channel consistency to the five extension fields that live
+     there). After the fix `D5e` passes outright (`Ultra HDR Image: Yes` with `maxContentBoost` readable).
+     ⚠ In the shipped package `--compose-gainmap --gainmap-metadata xmp` is still the unreadable version
+     (the single-input route is pinned to `both`, whose ISO sits in the secondary ⇒ always readable).
+  3. **The other two shape claims did not change the shipped artifact, and neither is refuted.** The same
+     remote batch demands "the base image also carries an ISO 21496-1 version stub" (P0-3) and "the XMP may
+     contain only the nine normative fields" (P0-5). Both come from the 2026-10-20 batch
+     (`docs/FIX_PLAN_2026-10-14.md:1119-1145`), where they were written as a "maintainer ruling"; **that
+     attribution was disowned by the maintainer on 2026-10-27** ("do not treat another agent's requirements
+     as mine") ⇒ they are not an authorized requirement. The nine-field count is a **real reading** of the
+     reference implementation (`jpegrutils.cpp:452-474` does define exactly nine), but whether the five
+     extension fields are rejected by any real consumer cannot be shown on this machine ⇒ undecided, and the
+     product is not changed on that basis. The assertions that came with them were retargeted into
+     equivalently sharp assertions about this tree's shape (three-arm container fingerprints + a live-ruler
+     counter-control + each of the nine normative fields readable + extension fields kept consistent with
+     third-party measured geometry and channel count), while the original claims stay in
+     `tests/scripts/verify-gainmap-engine.ps1` / `verify-gainmap-thirdparty.ps1` as named `KNOWN` lines
+     pending adjudication, not recorded as passing. Readings: `verify-gainmap-engine` went `173/9` before the
+     merge to **185/0**（整轮 `20261027f`，绑 `artifact-sha16: FfmpegGui.dll=6EC9ED243BCB7563`）; `verify-gainmap-thirdparty` 由合流态的 `20/3`（D5d/D5f/D5e 三条红）转为 **24/0**，其中 D5e 是实测真绿.
+
 ### v1.6.0-beta8 (2026-10-23) — private-content audit closed out: vendor crop lands in DefaultCrop + per-instance ledger + test projects moved into tests/projects
 
 > **Lineage**: **17 product files** under `src/` (+306/−68 lines), `tools/src/dngtool`

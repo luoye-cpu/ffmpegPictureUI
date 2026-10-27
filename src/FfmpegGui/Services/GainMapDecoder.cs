@@ -121,16 +121,16 @@ public static class GainMapDecoder
         public float HdrCapacityMin = 0;  // log2 容量下限 (ISO baseHdrHeadroom; SDR 基图恒 0 = 1×)
         public bool BaseRenditionIsHdr;   // true=基础图是 HDR (通常 false)
         /// <summary>
-        /// useBaseColorSpace（ISO flags bit6 / XMP hdrgm:UseBaseRenderingColorSpace）：
-        /// true = 增益图定义在**底图色域**内（标准写法，本项目产出恒 true）；
+        /// useBaseColorSpace（ISO flags bit6）：true = 增益图定义在**底图色域**内（标准写法，本项目产出恒 true）；
         /// false = 定义在 alternate(HDR) 色域，严格应用前需先进色域转换（此时本解码器按底图色域近似）。
+        /// XMP 侧没有这个字段；旧版本自造的 `hdrgm:UseBaseRenderingColorSpace` 仍读，只为兼容旧产物。
         /// </summary>
         public bool UseBaseColorSpace = true;
         public int GainMapWidth;
         public int GainMapHeight;
-        // ── hdrgm XMP 声明的「逻辑尺寸」(AndroidX JpegImageCodec 读法; 0=元数据未声明) ──
+        // ── 旧版本自造的 XMP 声明尺寸（规范没有这三个字段；仍读，只为兼容旧产物）──────
         // JPEG 解码尺寸受 8/16 像素对齐影响（可能大于逻辑尺寸），若按解码尺寸归一化增益图坐标
-        // 会引入半个宏块的偏移（边缘增益错位），故声明尺寸存在时优先用它。
+        // 会引入半个宏块的偏移（边缘增益错位），故旧产物声明尺寸存在时优先用它。
         public int MapPrimaryWidth;
         public int MapPrimaryHeight;
         public int MapSecondaryWidth;
@@ -192,7 +192,10 @@ public static class GainMapDecoder
                             // 标准承载（`tmap` 派生项 / `auxC`+21496）没有 ⇒ 再问一次**厂商私有尾注**。
                             // 两条判据互斥且都是纯字节判据：标准件的 `local.hdr.*` 清单计数恒 0、
                             // 厂商件的 `tmap`/`auxc`/`21496` 计数恒 0 ⇒ 不会互相抢（探针 C1/C3 锁这点）。
-                            if (bmff?.HasGainMap != true) vendor = VendorHdrTrailer.Probe(headBytes);
+                            // 只有「标准承载且真能用」才独占判据；识别成**尚不能解**的辅助图形式时仍要问厂商尾注，
+                            // 否则「检测到了但用不了」会把唯一可用的通路一起挡掉。
+                            if (bmff is null || bmff.HasGainMap != true || bmff.Form != "tmap")
+                                vendor = VendorHdrTrailer.Probe(headBytes);
                         }
                     }
                     else
@@ -272,6 +275,11 @@ public static class GainMapDecoder
                         log?.Invoke("[vendor-hdr] WARN: vendor HDR trailer found but its parameters are unusable "
                             + "(direction not forward, or block implausible) => converting the SDR base only and discarding the HDR layer\n");
                 }
+                // XMP/厂商尾注路径没有通道数字段（Ultra HDR v1.1 的 hdrgm 表只有九项）：通道数只能由
+                // 增益图 image 本身决定（ISO 路径有自己的 flags，不在此覆盖）。本实现的「灰度」也编成
+                // 3 分量 YCbCr、三通道相等 ⇒ 推断为 3 时逐通道施加与灰度施加逐值等价。
+                if (isoMeta == null && meta != null && container?.GetSecondaryImage() is { Components: > 0 } secImg)
+                    meta.Channels = secImg.Components >= 3 ? 3 : 1;
                 if (meta == null)
                 {
                     log?.Invoke("[GainMap解码] ❌ 无法读取增益图元数据 (无 ISO 21496-1, 且 exiftool/hdrgm XMP 不可用)\n");
@@ -298,7 +306,7 @@ public static class GainMapDecoder
                 var gmPath = Path.Combine(tempDir, "gainmap.jpg");
                 string gmFmtArgs = "";
                 bool gmOk;
-                if (bmff?.HasGainMap == true)
+                if (bmff?.HasGainMap == true && bmff.Form == "tmap")
                 {
                     if (bmff.GainMapItemData == null || bmff.GainMapItemData.Length <= 100
                         || bmff.GainMapFfmpegFormat == null)
@@ -713,15 +721,17 @@ public static class GainMapDecoder
     /// </summary>
     public sealed class JpegContainer
     {
-        /// <summary>顶层 JPEG 图像边界（含 SOI..EOI）与 SOF 尺寸。</summary>
+        /// <summary>顶层 JPEG 图像边界（含 SOI..EOI）、SOF 尺寸与分量数。</summary>
         public readonly struct Img
         {
             public readonly int Start;
             public readonly int Length;
             public readonly int W;
             public readonly int H;
-            public Img(int start, int length, int w, int h)
-            { Start = start; Length = length; W = w; H = h; }
+            /// <summary>SOF 的 Nf（1=灰度，3=YCbCr/RGB）。XMP-only 文件的通道数只能从这里读。</summary>
+            public readonly int Components;
+            public Img(int start, int length, int w, int h, int components = 1)
+            { Start = start; Length = length; W = w; H = h; Components = components; }
         }
 
         public readonly List<Img> Images = new();
@@ -796,7 +806,7 @@ public static class GainMapDecoder
                 int p = i + 2;
                 int isoDataStart = -1, isoDataLen = 0;
                 int mpfStart = -1, mpfLen = 0;
-                int imgW = 0, imgH = 0;
+                int imgW = 0, imgH = 0, imgNf = 1;
                 bool terminated = false;
 
                 // 仅需 p+1 即可读标记字节（EOI 常落在文件末尾前 2 字节，不能要求 p+3）
@@ -816,12 +826,13 @@ public static class GainMapDecoder
                     int payload = p + 4, payloadLen = segLen - 2;
                     if (payload + payloadLen > data.Length) break;         // 截断
 
-                    // SOF0..SOF15 (排除 C4=DHT / C8=reserved / CC=DAC) → 图像尺寸
+                    // SOF0..SOF15 (排除 C4=DHT / C8=reserved / CC=DAC) → 图像尺寸与分量数
                     if (m >= 0xC0 && m <= 0xCF && m != 0xC4 && m != 0xC8 && m != 0xCC
-                        && payloadLen >= 5 && imgW == 0)
+                        && payloadLen >= 6 && imgW == 0)
                     {
                         imgH = (data[payload + 1] << 8) | data[payload + 2];
                         imgW = (data[payload + 3] << 8) | data[payload + 4];
+                        imgNf = data[payload + 5];
                     }
                     if (m == 0xE2 && payloadLen > IsoNamespace.Length + 1)
                     {
@@ -843,7 +854,7 @@ public static class GainMapDecoder
                 }
 
                 if (!terminated) break;   // 末张图像未遇 EOI（流截断）
-                c.Images.Add(new Img(imgStart, p + 2 - imgStart, imgW, imgH));   // 含 EOI
+                c.Images.Add(new Img(imgStart, p + 2 - imgStart, imgW, imgH, imgNf));   // 含 EOI
                 int idx = c.Images.Count - 1;
 
                 if (isoDataStart >= 0 && isoDataLen >= 5)
@@ -1132,6 +1143,18 @@ public static class GainMapDecoder
             if (root.ValueKind != System.Text.Json.JsonValueKind.Array || root.GetArrayLength() == 0)
                 return null;
             var first = root[0];
+            // `-ee` 会连**内嵌图**一起读：规范把增益元数据放在次图 XMP、主图只留 Version
+            // （参考实现产物即此形）。若 exiftool 返回多个对象，取带 GainMapMax 的那个，
+            // 而不是盲取第一个（第一个可能只是主图的 Version）。
+            if (root.GetArrayLength() > 1)
+            {
+                foreach (var el in root.EnumerateArray())
+                {
+                    if (el.TryGetProperty("XMP-hdrgm:GainMapMax", out _)
+                        || el.TryGetProperty("XMP-gainmap:GainMapMax", out _))
+                    { first = el; break; }
+                }
+            }
 
             // 从 JSON 属性中查找标签（属性名形如 "XMP-gainmap:GainMapMin"）。
             //
@@ -1202,7 +1225,8 @@ public static class GainMapDecoder
             if (ubc != null)
                 meta.UseBaseColorSpace = !ubc.StartsWith("False", StringComparison.OrdinalIgnoreCase);
 
-            // MapPrimary / MapSecondary: "WxH" 形式（AndroidX 写入的声明尺寸）
+            // MapPrimary / MapSecondary / MapImageRatio / UseBaseRenderingColorSpace / Channels：
+            // 规范里没有这五个字段，写入侧已于 2026-10-20 删除；读取侧保留，仅为兼容旧版本产物。
             var mp = GetTag("MapPrimary");
             if (mp != null && TryParseSize(mp, out var pw, out var ph)) { meta.MapPrimaryWidth = pw; meta.MapPrimaryHeight = ph; }
             var ms = GetTag("MapSecondary");
@@ -1245,7 +1269,9 @@ public static class GainMapDecoder
             var psi = new ProcessStartInfo
             {
                 FileName = ExifToolService.DetectedPath!,
-                Arguments = $"-json -G \"{path}\"",
+                // `-ee`：Ultra HDR 的增益元数据在**次图** XMP 里（主图只有 hdrgm:Version）。
+                // 不带 -ee 时 exiftool 只读主图 ⇒ 会把合规的 XMP-only 文件误判成普通 JPEG。
+                Arguments = $"-ee -json -G \"{path}\"",
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,

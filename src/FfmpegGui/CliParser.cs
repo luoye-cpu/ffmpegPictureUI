@@ -366,7 +366,10 @@ namespace FfmpegGui
                     {
                         var v = TakeValue();
                         var carrier = (v ?? "").Trim().ToLowerInvariant();
-                        if (carrier is not ("iso" or "xmp" or "both"))
+                        // 词表只有一处定义 = GainMapEncoder.GainMapMetadataModes（合流前 CLI 与编码器各一份，
+                        // 改档时必然漂移）；这里只判"是不是那一档"，不改写、不回落。
+                        string? carrierReject = GainMapEncoder.ValidateGainMapMetadata(carrier);
+                        if (carrierReject != null)
                             throw new ArgumentException(
                                 $"--gainmap-metadata 取值无效: {v}（iso | xmp | both）");
                         result.ComposeMetadata = carrier;
@@ -1045,6 +1048,22 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
                     case "jpeg-gain-map-target-nits": options.JpegGainMapTargetNits = ParseIntStrict(key, value); break;
                     case "jpeg-gain-map-downsample": options.JpegGainMapDownsample = ParseIntStrict(key, value); break;
                     case "jpeg-gain-map-multi-channel": options.JpegGainMapMultiChannel = ParseBoolStrict(key, value); break;
+                    case "jpeg-gain-map-metadata":
+                        // 元数据标记方式：iso(默认，只写 ISO 21496-1) | xmp(只写 hdrgm XMP，兼容旧栈) | both
+                        // 这里只保留**别名表**（21496/hdrgm/dual → 规范值）；规范值域本身由
+                        // `GainMapEncoder.ValidateGainMapMetadata` 单点裁决，避免 CLI 与编码器各写一份词表。
+                        string gmMetaAlias = value.Trim().ToLowerInvariant();
+                        string gmMetaCanonical = gmMetaAlias switch
+                        {
+                            "21496" => "iso",
+                            "hdrgm" => "xmp",
+                            "dual" => "both",
+                            _ => gmMetaAlias,
+                        };
+                        if (GainMapEncoder.ValidateGainMapMetadata(gmMetaCanonical) != null)
+                            throw BadValue(key, value, "支持 iso | xmp | both（别名 21496 | hdrgm | dual）");
+                        options.JpegGainMapMetadata = gmMetaCanonical;
+                        break;
                     // 厂商增益图（`local.hdr.*`）参数覆盖：这三个数来自无公开规范的 144 B 块，
                     // 留覆盖位是为了「拿到规范/样机后不改代码就能校准」。非法值不拒（只警告并回落实测值）。
                     case "vendor-gm-min": options.VendorGmMin = ParseFloatStrict(key, value); break;

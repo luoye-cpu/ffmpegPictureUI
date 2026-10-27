@@ -302,6 +302,14 @@ public static class RawColorPipeline
         // 像"Hable@峰值 应用了"，而实际生效的是 Reinhard@峰值 —— 属于"决策与执行不一致"的假象。
         log?.Invoke("[GainMap] 色调映射由本出口自持（分段 Reinhard，峰值即上行），"
                   + "计划层的 tonemap 参数不适用于 GainMap\n");
+        // ⚠ AVIF 容器**能**带 alpha，但本出口的底图按 yuv420p 编码、容器只装底图/增益图/tmap 三个 item
+        //   ⇒ 源带 alpha 时会被拍平（2026-10-21 实测：RGBA HDR PNG → AVIF 增益图，avifdec 报 Alpha: Absent，
+        //   而同一源走普通 AVIF 出口保留 rgba64be）。JPEG 增益图无 alpha 属容器限制；AVIF 这处是**实现缺口**
+        //   ⇒ 至少必须点名（不许静默丢），需保留透明请走普通 AVIF 出口。
+        if (ep.HasAlpha && string.Equals(options.Format, "avif", StringComparison.OrdinalIgnoreCase))
+            log?.Invoke("[GainMap] ⚠️ 源带 alpha，但 AVIF 增益图出口当前不携带 alpha"
+                      + "（底图按 yuv420p 编码、容器只装底图/增益图/tmap 三个 item）⇒ 透明会被拍平；"
+                      + "需要保留 alpha 请走普通 AVIF 出口\n");
 
         var st = new Stats { Width = w, Height = h };
         var sw = Stopwatch.StartNew();
@@ -386,6 +394,7 @@ public static class RawColorPipeline
                 baseQuality: baseDist, gainMapQuality: gmDist,
                 downsample: Math.Max(options.JpegGainMapDownsample, 1),
                 baseGamut: options.JpegGainMapBaseGamut,
+                gainMapMetadata: options.JpegGainMapMetadata,
                 sourcePrimaries: ep.SrcPrim,
                 log: log, ct: ct,
                 jpegProgressiveLevel: gmProgLv,

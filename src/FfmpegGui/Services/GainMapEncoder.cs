@@ -102,6 +102,33 @@ public static class GainMapEncoder
     public static string ContainerOf(string outputPath)
         => string.Equals(Path.GetExtension(outputPath), ".avif", StringComparison.OrdinalIgnoreCase) ? "avif" : "jpeg";
 
+    // ── 增益图元数据承载的**取值域唯一真值**（2026-10-27 与 origin/main 合流时收口）──
+    // UI 下拉的词表、CLI 两个开关的校验、模型两条路（单输入 / 两图合成）的默认值、以及本编码器
+    // 入口处的裁决，都必须读下面四个成员；任何一处再各写一份 "iso"/"xmp"/"both" 字面量就是第二副本
+    //（本仓为 JXL distance 的五份副本付过代价）。合流前 CLI 与模型各有一份，已并到此处。
+    public const string GainMapMetadataDefault = "iso";
+    public static readonly string[] GainMapMetadataModes = { "iso", "xmp", "both" };
+
+    /// <summary>这一档要不要写 ISO 21496-1（JPEG 的 APP2 / AVIF 的 tmap）？只有 `xmp` 不写。</summary>
+    public static bool MetadataWritesIso(string? mode)
+        => !string.Equals((mode ?? "").Trim().ToLowerInvariant(), "xmp", StringComparison.Ordinal);
+
+    /// <summary>这一档要不要写 hdrgm XMP？只有 `iso` 不写。</summary>
+    public static bool MetadataWritesXmp(string? mode)
+        => !string.Equals((mode ?? "").Trim().ToLowerInvariant(), "iso", StringComparison.Ordinal);
+
+    /// <summary>取值域单点裁决：合法返回 null，非法返回点名原因（CLI 与 UI 都问这里，不各自写 switch 表）。
+    /// 注意这里**不判**组合合法性：`xmp` 与三通道不互斥——Ultra HDR v1.1 的 hdrgm 表没有通道数字段，
+    /// 但逐通道参数恒相等时单值即适用全部通道（参考实现只拒"各通道参数不同"的 XMP 编码，
+    /// `jpegr.cpp:1120-1127` 的 `!are_all_channels_identical()`），本编码器逐通道参数恒相同。</summary>
+    public static string? ValidateGainMapMetadata(string? mode)
+    {
+        string m = (mode ?? "").Trim().ToLowerInvariant();
+        if (Array.IndexOf(GainMapMetadataModes, m) < 0)
+            return $"unknown gain-map metadata carrier '{mode}' (expected {string.Join(" | ", GainMapMetadataModes)})";
+        return null;
+    }
+
     /// <returns>成功返回 true</returns>
     public static async Task<bool> EncodeAsync(
         float[] hdrRgbaLinear, int w, int h, string outputPath,
@@ -124,8 +151,13 @@ public static class GainMapEncoder
         string? jpegEncoder = null,
         string? avifEncoder = null,
         // 元数据承载（JPEG 出口）：`iso` = 只写 APP2 ISO 21496-1；`xmp` = 只写 XMP hdrgm（Ultra HDR v1）；
-        // `both` = 两者并存（默认）。AVIF 的 tmap **只**承载 ISO 21496-1 ⇒ `xmp` 在这里没有可交付形态，
+        // `both` = 两者并存。AVIF 的 tmap **只**承载 ISO 21496-1 ⇒ `xmp` 在这里没有可交付形态，
         // 显式请求即失败（不静默改写成 ISO）。
+        // ⚠ 这里的 `"both"` 是**API 兜底**，不是产品默认：产品两条路（`FfmpegOptions.JpegGainMapMetadata`
+        //   与 `GainMapComposeMetadata`）的默认都取 `GainMapMetadataDefault`（iso），且三个产品调用点
+        //   （QueueProcessor / RawColorPipeline / GainMapComposeService）一律显式传参。兜底保留历史口径
+        //   是因为测试宿主里仍有省略该参数直接调本方法的用例，它们的产物形状是既读数的基线——
+        //   动它属"改判据的输入"，不在本次合流范围内（账本 §52.2 记的正是这一处双默认）。
         string gainMapMetadata = "both",
         // AVIF 子图的 CRF（0-63，越小越好）；-1 = 沿用历史固定值 18。
         // 底图与增益图各一个：增益图是低对比度数据图，和底图共用同一 CRF 并不合理，但历史口径就是 18，
@@ -135,10 +167,10 @@ public static class GainMapEncoder
         try
         {
             string metadata = (gainMapMetadata ?? "").Trim().ToLowerInvariant();
-            if (metadata is not ("iso" or "xmp" or "both"))
+            string? metadataReject = ValidateGainMapMetadata(metadata);
+            if (metadataReject != null)
             {
-                log?.Invoke($"[GainMap] ERROR: unknown gain-map metadata carrier '{gainMapMetadata}'"
-                          + " (expected iso | xmp | both).\n");
+                log?.Invoke($"[GainMap] ERROR: {metadataReject}.\n");
                 return false;
             }
             // ── 帧长守卫（2026-10-21 审查第 6 项）──
@@ -1167,12 +1199,12 @@ public static class GainMapEncoder
     /// 构建最终 Ultra HDR JPEG 文件。
     /// 结构:
     ///   [Base JPEG: SOI][APP1: XMP][APP2: MPF][Base 其余 (DQT/SOF/DHT/SOS/扫描/EOI)]
-    ///   [增益图 JPEG: SOI][APP2: ISO 21496-1][增益图其余]
+    ///   [增益图 JPEG: SOI][APP1: XMP(hdrgm 属性形式)][APP2: ISO 21496-1][增益图其余]
     /// </summary>
     /// <param name="metadata">
-    /// <c>iso</c> = 只写增益图的 APP2 ISO 21496-1；<c>xmp</c> = 只写底图的 XMP hdrgm（Ultra HDR v1）；
-    /// <c>both</c> = 两者并存。MPF 在三种形态下都必须写：它是「第二张图在哪」的唯一索引，
-    /// 少了它两种承载都找不到增益图。
+    /// <c>iso</c> = 只写次图的 APP2 ISO 21496-1；<c>xmp</c> = 只写 hdrgm XMP，底图（元素形式）
+    /// 与次图（属性形式）各一份；<c>both</c> = 两种承载都写。MPF 在三种形态下都必须写：
+    /// 它是「第二张图在哪」的唯一索引，少了它两种承载都找不到增益图。
     /// </param>
     /// <returns>true=已写出完整 Ultra HDR；false=**未能**写出增益图（调用方必须宣告失败，不得报成功）。</returns>
     private static bool WriteJpegGainMapFile(byte[] baseJpeg, byte[] gainMapJpeg,
@@ -1180,8 +1212,8 @@ public static class GainMapEncoder
         float maxLog2Gain, float hdrCapacityLog2, float minLog2Gain, string outputPath,
         string metadata = "both")
     {
-        bool writeIso = !string.Equals(metadata, "xmp", StringComparison.OrdinalIgnoreCase);
-        bool writeXmp = !string.Equals(metadata, "iso", StringComparison.OrdinalIgnoreCase);
+        bool writeIso = MetadataWritesIso(metadata);
+        bool writeXmp = MetadataWritesXmp(metadata);
         // 1. 定位 Base JPEG 的 SOS (FFDA) 标记
         int sosIndex = FindSosIndex(baseJpeg);
         if (sosIndex < 0)
@@ -1200,11 +1232,25 @@ public static class GainMapEncoder
         int baseScanStart = sosIndex + sosLen;
         int baseScanLen = baseJpeg.Length - baseScanStart; // 含 EOI
 
-        // 3. ISO 元数据插入增益图: [SOI][APP2: ISO][增益图数据(去 SOI)]
+        // 3. 次图先装配**自己**那几段，顺序不能反到后面：底图 XMP 的 Item:Length 与 MPF 的次图长度
+        //    说的都是「次图在盘上的总字节数」，而总数取决于它自己带几段。
+        //    [SOI][APP1: hdrgm XMP(属性形式)][APP2: ISO 21496-1][增益图数据(去 SOI)]
+        //    ⚠ 次图那份 XMP 不是装饰，是**参考读手唯一的入口**：libultrahdr 的 `decodeJPEGR` 只把
+        //      **增益图**的 ISO/XMP 交给 `parseGainMapMetadata`（jpegr.cpp:1495-1500 —— 底图那份它只用
+        //      来取 Item 目录），而它的 XMP 读手按**属性**取数（jpegrutils.cpp:770-800 报
+        //      "could not find attribute hdrgm:…"）。⇒ 只写底图（beta9 出货形状、元素形式）时，
+        //      `xmp` 档产物对参考读手等于「没有元数据」——实测第三方读数
+        //      「received no valid buffer to parse gainmap metadata」（门禁 D5e）。
+        //      底图那份**照旧保留**：自家解码器与 exiftool 读它（#80 钉的 MapPrimary/MapSecondary/
+        //      Channels 就在底图），两处数值同源于 FormatHdrgmNine ⇒ 不会写出互相矛盾的声明。
         byte[] iso = writeIso
             ? BuildIso21496Metadata(multiChannel, maxLog2Gain, minLog2Gain, hdrCapacityLog2)
             : Array.Empty<byte>();
         byte[] gainMapWithIso = writeIso ? InsertIsoIntoSegment(gainMapJpeg, iso) : gainMapJpeg;
+        byte[] secXmp = writeXmp
+            ? BuildSecondaryXmpMetadata(maxLog2Gain, minLog2Gain, hdrCapacityLog2)
+            : Array.Empty<byte>();
+        byte[] gainMapFinal = writeXmp ? InsertXmpIntoImage(gainMapWithIso, secXmp) : gainMapWithIso;
 
         // 4. XMP (含 Item:Length = 增益图完整大小)
         //   ⚠ 审查（2026-10-15）抓到的阻断缺陷：这里曾经**没传** `minLog2Gain` ⇒ 形参默认 0
@@ -1213,7 +1259,7 @@ public static class GainMapEncoder
         //        暗部下沿当不存在，而自家 `MergeXmpIntoMetadata` 也立刻报「ISO 与 XMP 增益范围不一致」。
         byte[] xmp = writeXmp
             ? BuildXmpMetadata(baseW, baseH, gmW, gmH, multiChannel, maxLog2Gain, hdrCapacityLog2,
-                gainMapWithIso.Length, minLog2Gain)
+                gainMapFinal.Length, minLog2Gain)
             : Array.Empty<byte>();
 
         // 5. MPF
@@ -1223,12 +1269,13 @@ public static class GainMapEncoder
         int app2Total = 2 + 2 + mpfDataLen;                    // marker + length + data
         int primarySize = baseHeaderLen + app1Total + app2Total + sosLen + baseScanLen;
         int gmAbsOffset = primarySize;
+        int secondaryLen = gainMapFinal.Length;                // 含次图自带的 XMP 与 ISO 两段
         // 增益图偏移: 相对 MPF TIFF 头 'MM' 位置 (libultrahdr/AndroidX 标准语义)
         // libultrahdr: secondary_image_offset = primary_image_size - pos - 8
         //   pos = APP2 marker 位置; pos+8 = marker(2)+len(2)+'MPF\0'(4) = 'MM' 位置
         int mpfDataStart = baseHeaderLen + app1Total + 8;
         int gmOffset = gmAbsOffset - mpfDataStart;
-        byte[] mpf = BuildMpf(gmOffset, gainMapWithIso.Length, primarySize);
+        byte[] mpf = BuildMpf(gmOffset, secondaryLen, primarySize);
 
         // 6. 组装
         using var ms = new MemoryStream();
@@ -1237,8 +1284,8 @@ public static class GainMapEncoder
         if (writeXmp) WriteAppSegment(ms, 0xE1, xmp);          // APP1 XMP
         WriteAppSegment(ms, 0xE2, mpf);                        // APP2 MPF
         ms.Write(baseJpeg, sosIndex, baseJpeg.Length - sosIndex); // SOS 起含 EOI
-        // 增益图: 完整 (已含 SOI + ISO + 数据 + EOI)
-        ms.Write(gainMapWithIso, 0, gainMapWithIso.Length);
+        // 增益图: 完整 (已含 SOI + [XMP] + ISO + 数据 + EOI)
+        ms.Write(gainMapFinal, 0, gainMapFinal.Length);
 
         File.WriteAllBytes(outputPath, ms.ToArray());
         return true;
@@ -1393,21 +1440,39 @@ public static class GainMapEncoder
     /// 与 ISO 二进制声明保持一致（两者不一致时本软件解码以 ISO 为准并告警）。
     /// 底图色域（sRGB / Rec.2020 SDR）由底图自己的 ICC 描述，XMP 不携带 primaries 字段。
     /// </summary>
+    /// <summary>hdrgm 规范九项的**取值与格式唯一真值**。底图的元素形式与次图的属性形式都从这里取数：
+    /// 分两处就地格式化就是第二副本，一旦漂移，按底图读的消费者与按次图读的消费者会拿到不同的增益量程
+    ///（比"缺字段"难查得多，本仓为 JXL distance 的五份副本付过代价）。</summary>
+    private readonly record struct HdrgmNine(string Version, string GainMapMin, string GainMapMax,
+        string Gamma, string OffsetSdr, string OffsetHdr, string HdrCapacityMin, string HdrCapacityMax,
+        string BaseRenditionIsHdr);
+
+    private static HdrgmNine FormatHdrgmNine(float maxLog2Gain, float minLog2Gain, float hdrCapacityLog2)
+    {
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
+        return new HdrgmNine(
+            "1.0",
+            minLog2Gain.ToString("0.00", inv),
+            maxLog2Gain.ToString("0.00", inv),
+            // gamma 恒 1.0：施加侧从未按 gamma 变形（ readonly 常量与 ISO 载荷同值）
+            "1.0",
+            // F-5：声明的 offset 就是前向施加的那两个 readonly（单一声明处 ⇒「声明==使用」不可能漂移）
+            KOffsetSdr.ToString("0.000000", inv),
+            KOffsetHdr.ToString("0.000000", inv),
+            // HDRCapacityMin 恒 0：底图就是 SDR 白点，与参考实现一致
+            "0",
+            hdrCapacityLog2.ToString("0.00", inv),
+            "False");
+    }
+
     private static byte[] BuildXmpMetadata(int baseW, int baseH, int gmW, int gmH, bool multiChannel,
         float maxLog2Gain, float hdrCapacityLog2, long gainMapLength, float minLog2Gain = 0f)
     {
         // ⚠ GainMapMax = **量程**（量化区间上沿，可与 peak/203 不同）；HDRCapacityMax = 显示容量。
         //    两者分开后，两图合成的暗底图（需要 > peak/203 的增益）不再被写成错误容量。
-        float gainMaxLog2 = maxLog2Gain;
-        float capacityLog2 = hdrCapacityLog2;
         // 下沿随 APP2 一起声明：XMP 与 ISO 二进制**必须同源**，否则第三方按 XMP 读会以为无下映射
         //（`hdrgm:GainMapMin` / `HDRCapacityMin` 与 `gainMapMin` / `baseHdrHeadroom` 同一套数）。
-        float gainMinLog2 = minLog2Gain;
-        // F-5：声明的 offset 就是前向施加的那两个 readonly（单一声明处 ⇒ 「声明==使用」不可能漂移）
-        float offsetSdr = KOffsetSdr, offsetHdr = KOffsetHdr;
-        const float gamma = 1.0f;
-
-        var inv = System.Globalization.CultureInfo.InvariantCulture;
+        var nine = FormatHdrgmNine(maxLog2Gain, minLog2Gain, hdrCapacityLog2);
         string channels = multiChannel ? "3" : "1";
         string gainMapItem = gainMapLength > 0
             ? $"<Container:Item Item:Semantic=\"GainMap\" Item:Mime=\"image/jpeg\" Item:Length=\"{gainMapLength}\"/>"
@@ -1430,21 +1495,21 @@ public static class GainMapEncoder
             "</rdf:li>" +
             "</rdf:Seq>" +
             "</Container:Directory>" +
-            "<hdrgm:Version>1.0</hdrgm:Version>" +
+            "<hdrgm:Version>" + nine.Version + "</hdrgm:Version>" +
             "<hdrgm:UseBaseRenderingColorSpace>True</hdrgm:UseBaseRenderingColorSpace>" +
             // AndroidX JpegImageCodec 读法：声明两幅图的「逻辑尺寸」与比例（解码尺寸可能因宏块对齐更大，
             // 增益图坐标必须按逻辑尺寸归一，否则边缘增益错位）。
             $"<hdrgm:MapPrimary>{baseW}x{baseH}</hdrgm:MapPrimary>" +
             $"<hdrgm:MapSecondary>{gmW}x{gmH}</hdrgm:MapSecondary>" +
             "<hdrgm:MapImageRatio>1.0</hdrgm:MapImageRatio>" +
-            "<hdrgm:BaseRenditionIsHDR>False</hdrgm:BaseRenditionIsHDR>" +
-            $"<hdrgm:GainMapMin>{gainMinLog2.ToString("0.00", inv)}</hdrgm:GainMapMin>" +
-            $"<hdrgm:GainMapMax>{gainMaxLog2.ToString("0.00", inv)}</hdrgm:GainMapMax>" +
-            $"<hdrgm:Gamma>{gamma.ToString("0.0", inv)}</hdrgm:Gamma>" +
-            $"<hdrgm:OffsetSDR>{offsetSdr.ToString("0.000000", inv)}</hdrgm:OffsetSDR>" +
-            $"<hdrgm:OffsetHDR>{offsetHdr.ToString("0.000000", inv)}</hdrgm:OffsetHDR>" +
-            "<hdrgm:HDRCapacityMin>0</hdrgm:HDRCapacityMin>" +
-            $"<hdrgm:HDRCapacityMax>{capacityLog2.ToString("0.00", inv)}</hdrgm:HDRCapacityMax>" +
+            "<hdrgm:BaseRenditionIsHDR>" + nine.BaseRenditionIsHdr + "</hdrgm:BaseRenditionIsHDR>" +
+            $"<hdrgm:GainMapMin>{nine.GainMapMin}</hdrgm:GainMapMin>" +
+            $"<hdrgm:GainMapMax>{nine.GainMapMax}</hdrgm:GainMapMax>" +
+            $"<hdrgm:Gamma>{nine.Gamma}</hdrgm:Gamma>" +
+            $"<hdrgm:OffsetSDR>{nine.OffsetSdr}</hdrgm:OffsetSDR>" +
+            $"<hdrgm:OffsetHDR>{nine.OffsetHdr}</hdrgm:OffsetHDR>" +
+            "<hdrgm:HDRCapacityMin>" + nine.HdrCapacityMin + "</hdrgm:HDRCapacityMin>" +
+            $"<hdrgm:HDRCapacityMax>{nine.HdrCapacityMax}</hdrgm:HDRCapacityMax>" +
             $"<hdrgm:Channels>{channels}</hdrgm:Channels>" +
             "</rdf:Description></rdf:RDF></x:xmpmeta>" +
             "<?xpacket end=\"w\"?>";
@@ -1456,6 +1521,48 @@ public static class GainMapEncoder
         Array.Copy(ns, 0, payload, 0, ns.Length);
         Array.Copy(xmpBytes, 0, payload, ns.Length, xmpBytes.Length);
         return payload;
+    }
+
+    /// <summary>次图（增益图）自己的 hdrgm XMP —— **属性形式**，字段与顺序照参考实现
+    ///（`generateXmpForSecondaryImage()`，jpegrutils.cpp:915-940）。参考读手只认属性形式，
+    /// 数值与底图那份同源于 <see cref="FormatHdrgmNine"/>。</summary>
+    private static byte[] BuildSecondaryXmpMetadata(float maxLog2Gain, float minLog2Gain,
+        float hdrCapacityLog2)
+    {
+        var nine = FormatHdrgmNine(maxLog2Gain, minLog2Gain, hdrCapacityLog2);
+        string xmp =
+            "<?xpacket begin=\"\uFEFF\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>" +
+            "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\">" +
+            "<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999-02-22-rdf-syntax-ns#\">" +
+            "<rdf:Description rdf:about=\"\" xmlns:hdrgm=\"http://ns.adobe.com/hdr-gain-map/1.0/\"" +
+            $" hdrgm:Version=\"{nine.Version}\"" +
+            $" hdrgm:GainMapMin=\"{nine.GainMapMin}\"" +
+            $" hdrgm:GainMapMax=\"{nine.GainMapMax}\"" +
+            $" hdrgm:Gamma=\"{nine.Gamma}\"" +
+            $" hdrgm:OffsetSDR=\"{nine.OffsetSdr}\"" +
+            $" hdrgm:OffsetHDR=\"{nine.OffsetHdr}\"" +
+            $" hdrgm:HDRCapacityMin=\"{nine.HdrCapacityMin}\"" +
+            $" hdrgm:HDRCapacityMax=\"{nine.HdrCapacityMax}\"" +
+            $" hdrgm:BaseRenditionIsHDR=\"{nine.BaseRenditionIsHdr}\"/>" +
+            "</rdf:RDF></x:xmpmeta>" +
+            "<?xpacket end=\"w\"?>";
+        var ns = Encoding.ASCII.GetBytes("http://ns.adobe.com/xap/1.0/\0");
+        var xmpBytes = Encoding.UTF8.GetBytes(xmp);
+        var payload = new byte[ns.Length + xmpBytes.Length];
+        Array.Copy(ns, 0, payload, 0, ns.Length);
+        Array.Copy(xmpBytes, 0, payload, ns.Length, xmpBytes.Length);
+        return payload;
+    }
+
+    /// <summary>把 APP1 XMP 插到**次图** SOI 之后（与底图同一命名空间前缀、同一写段器）。
+    /// 位置只在 SOI 与 SOS 之间才有意义，读者按 marker 命名空间取段，不靠位置。</summary>
+    private static byte[] InsertXmpIntoImage(byte[] jpeg, byte[] xmpPayload)
+    {
+        var ms = new MemoryStream();
+        ms.Write(jpeg, 0, 2);                       // SOI
+        WriteAppSegment(ms, 0xE1, xmpPayload);      // APP1 XMP（hdrgm 属性形式）
+        ms.Write(jpeg, 2, jpeg.Length - 2);         // 其余（可能已含 APP2 ISO）
+        return ms.ToArray();
     }
 
     /// <summary>构建 MPF (Multi-Picture Format) 二进制数据 (APP2 'MPF\0' 段数据)。对齐 TrueToneCap/libultrahdr 已验证格式。</summary>

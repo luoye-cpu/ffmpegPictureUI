@@ -112,6 +112,7 @@ namespace FfmpegGui.Models
             if (p.JpegGainMapTargetNits > 0) JpegGainMapTargetNits = p.JpegGainMapTargetNits;
             JpegGainMapDownsample = p.JpegGainMapDownsample;
             JpegGainMapMultiChannel = p.JpegGainMapMultiChannel;
+            if (!string.IsNullOrEmpty(p.JpegGainMapMetadata)) JpegGainMapMetadata = p.JpegGainMapMetadata;
             if (!string.IsNullOrEmpty(p.JpegGainMapBaseGamut)) JpegGainMapBaseGamut = p.JpegGainMapBaseGamut;
             // 注：`VendorGm*` 三个覆盖位**不进预设合并** —— 它们是 CLI/诊断用的校准参数，
             // 存进预设会让一台机器的临时校准悄悄影响另一台机器的预设。
@@ -417,7 +418,10 @@ namespace FfmpegGui.Models
         /// <c>xmp</c>（Ultra HDR v1 的 XMP hdrgm，仅 JPEG）| <c>both</c>（JPEG 两者并存）。
         /// AVIF 的增益图只能由 tmap 承载 ISO ⇒ AVIF 出口忽略 <c>xmp</c>（引擎点名拒绝）。
         /// </summary>
-        public string GainMapComposeMetadata { get; set; } = "iso";
+        public string GainMapComposeMetadata { get; set; } = Services.GainMapEncoder.GainMapMetadataDefault;
+        /// <summary>元数据标记方式: "iso"(默认,只写 ISO 21496-1) / "xmp"(只写 hdrgm XMP,兼容旧栈) /
+        /// "both"(两份都写)。取值域与组合合法性由 <c>GainMapEncoder.ValidateGainMapMetadata</c> 单点裁决。</summary>
+        public string JpegGainMapMetadata { get; set; } = Services.GainMapEncoder.GainMapMetadataDefault;
         // ── 厂商增益图（OnePlus/OPPO `local.hdr.*`）参数覆盖：null = 不覆盖，沿用尾注实测值 ──
         // 存在的理由：144 B 参数块无公开规范，min/max 有两条独立读数互证、γ 只有单读数推断；
         // 留出覆盖位，将来拿到规范或对照样机时不必改代码就能校准（非法值只警告并回落实测）。

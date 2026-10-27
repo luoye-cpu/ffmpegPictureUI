@@ -4331,3 +4331,95 @@ ICC 明明在产物里（`-x icc_pathname=` 由 cjxl 写的），exiftool 只是
   读数与逐条处置见 §55。
 - **CHANGELOG 同步**：`v1.6.0-beta9` 段补一条显式偏差——三档下拉在出货包里只覆盖两图合成出口，
   单输入 JPEG 的三档由合流（`1.6.0BETA9` 之后的提交）补齐。
+
+### §55 2026-10-27：方案二执行完毕——合流 `origin/main`，采其**管道**、不采其**容器形状**，9 条红逐条处置与读数
+
+> ⚠ 本节的"不采形状"在同日 **§56** 被部分推翻：三条形状主张里的 **P0-4（次图也带一份 XMP）已采**，
+> 理由不是形状偏好换了，而是第三方读手实测否证了 `xmp` 档的互操作性。本节保留当时处置原样，更正见 §56。
+
+- **合并机械层**：`git merge --no-commit origin/main` ⇒ 4 处内容冲突。处置：
+  | 冲突文件 | 处置 | 依据 |
+  |---|---|---|
+  | `Services/GainMapEncoder.cs` | **取 HEAD**（写出器保持 beta9 出货形状） | 容器形状主张未获授权（§54.1），且不借合并改已出货件的产物字节 |
+  | `Models/FfmpegOptions.cs` | **并集**：HEAD 的两图合成四属性 + 远端单输入 `JpegGainMapMetadata`；两个默认都改读 `Services.GainMapEncoder.GainMapMetadataDefault` | 用户要"JPEG 可下拉三档"，单输入这条路原本**没有旋钮** |
+  | `Tests.Shared/TestGroups.cs` | **并集**（`cgkparity`/`dng-xmp-args` + 远端 `gainmap-stats`） | #69 档① 认领：有调用点必须进账 |
+  | `docs/GAINMAP_ROUTES_AND_PATCH_PLAN.md` | 取远端明细行 + 加一条**读数归属**行（点名 P0-3/P0-4/P0-5 三行是远端侧读数，合并后的主树不成立）+ 把"维护者裁决"那行的归因改成"agent 之笔、维护者已否认" | 文档口径：读数必须能指到被测树 |
+  自动合并侧一并落地的远端件：`CliParser.cs`（`--jpeg-gain-map-metadata`）、`MainWindow.xaml(.cs)`（三档下拉 + 联动）、
+  `Locales/{zh-CN,en-US}.json`、`QueueProcessor.cs`（`:3204` 传 `gainMapMetadata:`）、`RawColorPipeline.cs`（引擎路同传）、
+  读侧 `GainMapDecoder.cs`/`IsoBmffGainMapProbe.cs`/`IsoBmffGainMapWriter.cs`（`-ee` 读次图 XMP、Apple aux 点名、tmap `pixi`）、
+  `ServiceProbe` 的 `gainmap-stats` mode 与 `verify-gainmap-engine` §12。
+- **取值域收口（顺手拆掉第二副本）**：`GainMapEncoder` 新增 `GainMapMetadataDefault` / `GainMapMetadataModes` /
+  `MetadataWritesIso` / `MetadataWritesXmp` / `ValidateGainMapMetadata`（单点裁决，返回**英文**点名原因以免动 CJK 棘轮）；
+  `CliParser` 两处（`--gainmap-metadata` 与 `--jpeg-gain-map-metadata`）改问它，别名表（`21496`/`hdrgm`/`dual`）留在 CLI；
+  模型两属性默认与 `GainMapComposeService` 的兜底默认都读同一常量 ⇒ §52.2 记的"双默认（`iso` vs `both`）"里
+  **产品侧那一份被消掉**。`EncodeAsync` 的参数兜底仍为 `"both"` 并写明理由（测试宿主有省略该参数的既有用例，
+  动它属改判据输入，不在本批）——这条不再是"两个默认值打架"，而是"API 兜底 ≠ 产品默认"，注释里点名。
+- **9 条红的逐条处置**（全部落在容器形状，一条都不触用户的两条授权；改后**判据不减、净 +3**）：
+  | 远端原判据 | 本批处置 | 现在钉的是什么 |
+  |---|---|---|
+  | ①b 底图必须有 APP2 ISO 裸桩 | 反向钉本树形状 + **读尺活性反控** | 底图**不得**出现裸桩；往字节里合成一根合规桩后同一把尺必须判**有**（防"判无"是尺子坏了）；`urn:iso` 全文件恰好 **1** 处 |
+  | ①c 次图也必须带一份 XMP | 三档指纹期望值改到本树形状 | iso⇒只次图 ISO；xmp⇒只底图 XMP；both⇒底图 XMP+次图 ISO；另加两条反控（底图 XMP 一有一无、次图 ISO 一有一无）与一条**与形状无关**的硬判据：三档产物 SHA256 两两不同。**⇒ 同日 §56 改采**（`xmp`/`both`/`xmpRgb` 三档的 `XmpSec` 期望抬到 1） |
+  | ⑤b XMP 只许规范九项 / 底图只留 Version | 改钉"九项逐项可读 + 扩展字段不说谎" | 九个规范字段缺一即红；`MapPrimary`/`MapSecondary` 必须等于第三方实测的底图/次图几何；`Channels` 必须与实际交付通道成套（灰度 1 / 三通道 3） |
+  三条未采纳的主张以 `KNOWN` 前缀留在脚本里**点名待裁决**（不写 PASS、不删除、不判红；**其中"次图也带一份 XMP"
+  已于同日 §56 按实测改采，此处保留当时记录**），各带一手出处：
+  `FIX_PLAN_2026-10-14.md:1119-1145`、`GAINMAP_ROUTES_AND_PATCH_PLAN.md` P0-4/P0-5、
+  `tools/src/libultrahdr/lib/src/jpegrutils.cpp:452-474`（九项常量）与 `:915-940 generateXmpForSecondaryImage()`
+  （参考实现把九项写在**次图**）。⇒ "九项"对参考实现是真读数；但它是否**要求**我们改成那个形状，
+  本机无 Android/JPEGLib 读者可证 ⇒ **未决**，不做"为撑判据而改产品"的动作。
+- **本批读数（独跑，非整轮）**：`verify-gainmap-engine` **185/0**（合流前合并态 173/9）；
+  `verify-gainmap-compose` **85/0**（未动）；`verify-gainmap-managed` **44/0**；`verify-probe-mirror-parity` **86/0**
+  （登记表两处抬格并写来历：`gainmap-isobmff` 12→**21**、新增 `gainmap-stats` = **6**，总量 803→**818** 与 ③-e 实取相等）；
+  `_probe-cjk-hardcode-scan` **14/0**（UI 面按**换回法**抬基线 901→**904**：`git archive HEAD` 导出树实测 901 复现锁准，
+  逐文件换回累加 = `CliParser.cs` **+1**（`--jpeg-gain-map-metadata` 取值错误文案）
+  + `RawColorPipeline.cs` **+2**（AVIF 增益图出口不携带 alpha 的点名播报两条**续行**按 :536-551 口径落 UI 桶）；
+  XAML 实测仍 13、余量 0 未动）；`verify-cli-strict` **430/0**；`verify-ffmpeg-heartbeat` **68/0**；
+  `_probe-matrix-structure` **38/0 + MATRIXSTRUCT 8/0**（A21 11 条 / A30 10 条 Evidence 行锚全部命中）。
+- **合流暴露的一处真缺陷（已修，属判据与标签不符）**：单输入默认承载从兜底 `"both"` 变成 `iso` 之后，
+  `ServiceProbe ultrahdr` 的 **②** 红了（`pass=3 fail=1`）。逐臂复现（同一支门禁、只换 `--jpeg-gain-map-metadata`）：
+  `iso`/默认 ⇒ URN=1、hdrgm=0 ⇒ ② **FAIL**；`xmp` ⇒ URN=0、hdrgm=28 ⇒ ② PASS；`both` ⇒ ② PASS；
+  而**四臂的 ③④ 全绿**（`DecodeToLinearRawAsync` 出片、峰值 999.7 nits）⇒ 不是解码坏了，是
+  `ReadMetadataAsync` **只走 exiftool 的 hdrgm XMP**，而 ② 的标签写着"ISO 21496-1 **或** XMP"。
+  产品内部（`GainMapDecoder.cs:205-237`）本来就是 ISO 优先、XMP 补全，且 `ReadMetadataAsync` 在产品里只有
+  那**一个**调用点 ⇒ 无静默误判风险。修法把 ② 改成与产品同序问两条承载并点名来源
+  （`metadata source=ISO-APP2` / `XMP-hdrgm`），Check 条数不变（`ultrahdr` 仍 4，不抬登记表）。
+  ⇒ 这条现在正好把"默认档产物必须被自家读手读回"钉成端到端判据。
+- **一轮作废**：`gates-round-20261027a.log` 停在 50/111 条（04:47 之后无写入，`.gates.lock` 的 pid 37840 确认 DEAD 后手工删）
+  ⇒ 不构成基线。作废归因未查到系统侧证据（Application 日志无崩溃、无休眠事件、C: 余量 95 GB），
+  现象是 launcher 与 runner 一起消失、schtasks 实例转 `Ready` ——按"交互会话被切断"处理，
+  重跑用同一支规范启动器换 Tag（`20261027b`）。
+- **收口**：CHANGELOG 中英偏差段已按方案一改写（见 §56）；整轮读数见 §56 末条（`gates-round-20261027f`，111 项全通过）；合并提交 + `main` 与 `1.6.0BETA8`/`1.6.0BETA9` 两枚标签的 push 按维护者 10-27 的授权执行。
+
+
+### §56 2026-10-27：方案一落地——写出器给**次图**补一份属性形式 hdrgm XMP，`xmp` 档从此可被参考读手读取（对 §55 的更正）
+
+- **触发**：§55 把「次图也带一份 XMP」（origin 侧 P0-4）当作未获授权的形状主张退回。同日第三方读手独立**否证**了本树 `xmp` 档的互操作性——
+  `ultrahdr_app -m 1 -P -j` 对 `xmp+RGB`（无 ISO）产物报 `received no valid buffer to parse gainmap metadata`、`Ultra HDR Image: No`
+  （`tests/output/gates-round-20261027e.log` 的 D5e FAIL，被测 `FfmpegGui.dll=9E5C0AF1D547000F`；该轮的写出器与出货件 `6d7a418` 的
+  `GainMapEncoder.cs` **同 blob `dbfc25bd3276`**——`git diff 6d7a418 HEAD`、`git diff --cached` 对该文件均为空：合流取的是 `ours`）。
+  ⇒ 这条不是"形状口味"，是"写出去的东西别人看不懂"，于是它从**待裁决**升成**必须修**。
+- **授权**：维护者 2026-10-27 原话「按方案一处理：改写出器让 xmp 臂可被参考读手读取」。
+- **一手出处**（本机 vendored `tools/src/libultrahdr`，`git status` 干净）：`lib/src/jpegr.cpp:1495-1500` 只把**增益图**的 ISO/XMP 交给
+  `parseGainMapMetadata`（底图那份只用于取 Item 目录）；`lib/src/jpegrutils.cpp:770-800` 的 XMP 读手按**属性**取数，取不到即报
+  `could not find attribute hdrgm:…`；`lib/src/jpegrutils.cpp:915-940 generateXmpForSecondaryImage()` 写的正是属性形式九项。
+- **机械层**（`src/FfmpegGui/Services/GainMapEncoder.cs`）：
+  | 改动 | 位置 | 要点 |
+  |---|---|---|
+  | 九项数值收成**唯一真值** | `:1446 record struct HdrgmNine` + `:1450 FormatHdrgmNine()` | 底图那份（元素形式、14 项）与次图这份（属性形式、九项）都从同一函数取数 ⇒ 不新增第二副本，两处不可能互相矛盾 |
+  | 次图自带 XMP | `:1529 BuildSecondaryXmpMetadata()` + `:1559 InsertXmpIntoImage()` | 次图布局 `SOI → APP1(hdrgm XMP) → [APP2(ISO)?] → 增益数据 → EOI`；只在 `writeXmp` 时插，`iso` 档不插 |
+  | 长度账跟着改 | `:1272 secondaryLen = gainMapFinal.Length` → `:1278 BuildMpf(gmOffset, secondaryLen, primarySize)`、`:1261 BuildXmpMetadata(…, gainMapFinal.Length, …)` | MPF `Item:Length` 与底图 XMP 声明的次图长度**都必须等于含 XMP 之后**的次图总长——漏任何一处就是"声明与盘上不符"的旧缺陷形态 |
+  | 底图那份**保留** | `:1246-1263` 未动 | 自家 `GainMapDecoder` 与 exiftool 读底图；#80 的几何/通道成套判据（`MapPrimary`/`MapSecondary`/`Channels`）钉的正是底图那 5 个扩展字段 ⇒ 删它会拆掉一条正在生效的判据（这也是 P0-5「只九项」仍未采的实测理由之一） |
+- **判据同步（条数不减）**：`verify-gainmap-engine` §1c 的三档容器指纹把 `XmpSec` 期望从 0 抬到 **1**（`xmp`/`both`/`xmpRgb` 三档），`iso` 档仍须 0；
+  `verify-gainmap-thirdparty` 的 **D5e 从"点名未决"变成真绿**（xmp+RGB 无 ISO ⇒ `Ultra HDR Image: Yes` 且读出 `maxContentBoost`）。
+  两条 `KNOWN` 同步改写：①c 那条改为"次图 XMP **已随方案一落地**，理由不是形状偏好而是实测"；D5f 的"份数"尺已删（实测 exiftool `-ee`
+  对我们这份 MPF 对只返回**一个**对象 ⇒ 拿它数 XMP 份数是假尺），改钉 exiftool 真能读到的字段。
+- **仍未采（原样开放，继续以 `KNOWN` 点名，不写 PASS）**：① 底图 ISO 21496-1 版本裸桩（P0-3）——本树 `§1b` 反向钉"底图不得出现裸桩" +
+  合成桩活尺反控；② "XMP 只许规范九项、五个扩展字段绝迹"（P0-5）——本树改钉"九项逐项可读 + 扩展字段与第三方实测几何/通道成套"。
+- **出货件偏差（诚实点名，不回改上面读数）**：按方案二，`1.6.0BETA9`（附注标签 → `6d7a418`）与两个包**都不重打** ⇒ 出货件里 `xmp` 单承载的产物
+  对参考读手仍是"读不到增益上限"那一版，本修自合流提交起生效、随下一版出包。⚠ 范围要划清：出货件的**单输入** Ultra HDR 路固定吃 API 兜底
+  `both`（ISO 写在次图 ⇒ 参考读手本来就读得到），受影响的是**两图合成** `--compose-gainmap --gainmap-metadata xmp` 那一档
+  ——两条路走的是同一个 `GainMapEncoder.EncodeAsync`（`GainMapComposeService.cs:142`）。
+
+- **整轮绑定（交付基线）**：`tests/output/gates-round-20261027f.log` —— `script-list=84 条（受管基线 84）` + 27 枚探针 = **111 项全部通过**（运行器汇总行 `===== 运行器汇总：全部通过 =====`，`LAUNCHER-RUNNER-EXIT=0`）；墙钟 21:12:07 → 21:58:52（**46 分 45 秒**），`disk-freeGB` 87.03 → 86.74；`artifact-sha16: FfmpegGui.dll=6EC9ED243BCB7563 FfmpegGui.exe=8F5051E4AA6C5CEF ServiceProbe.exe=1CCEA4ABA319D853 UiTestHost.exe=B9499B0D3DA543E3 GainMapTestHost.exe=7D64A51B80940949`，`runner-self-sha256=68B63CA442962086`（lines=1626）。
+  关键读数：增益图族 `engine 185/0`、`thirdparty 24/0`（D5e `Ultra HDR Image: Yes  max=2.46229`）、`isobmff 80/0`、`compose 85/0`、`host 24/0`（子宿主 29/59/15）、`managed 44/0` + GAINMATH 34/0、`memory 22/0 SKIP=1`；`[bench] 37/0 @76.6 s`（P 核自钉，§50.5 的 `8b sRGB→P3 ≥25` 档仍开放）；`ui-host`/`ui-param-matrix`/`ui-strategy-map`/`ui-param-defects`/`cli-strict` 各 **430/0**、`ui-split-union` new=430 old=430；`cjk-hardcode 14/0`（棘轮 904）；`color-wiring 153/0`、`color-strategy 78/0`、`ps-compat 13/0`、`probe-mirror-parity` ⑤ 取样 `Probe* = 60` 个。
+  ⚠ 本轮之后只做了两处**注释级**更正（`GainMapEncoder.cs:1205-1207` 的 `<param name="metadata">` 还写着"`xmp`＝只写底图"；`verify-gainmap-engine.ps1:336` 那段形状注释是方案一之前的描述）。22:00:55 重建后**五枚产物的 SHA256 前 16 与本轮日志头逐枚相同**（确定性构建，注释不进编译输出）⇒ 本轮对所提交字节的绑定**仍然成立**，不必重跑整轮。
+  ⚠ 上一轮 `gates-round-20261027e.log`（`FfmpegGui.dll=9E5C0AF1D547000F`）是**方案一之前**的形态，它的 D5e FAIL 正是 §56 的触发读数；该轮已被本轮取代，不再当任何当前基线引用。
