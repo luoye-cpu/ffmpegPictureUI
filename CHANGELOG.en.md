@@ -13,13 +13,9 @@ All notable changes to this project are documented in this file.
 
 ## 📝 Changelog
 
-### v1.6.0-beta11 (2026-10-28) — The shipped package finally opens a window: NativeAOT no longer loses Avalonia's compiled-XAML payload + new gate #85 "the packaged exe must start a window"
+### v1.6.0-beta10 (2026-10-28 **re-issued**) — Shipped-package GUI fix (NativeAOT keeps Avalonia's compiled-XAML payload) + the two silent GainMap degradations + new gate #85 "the packaged exe must start a window"
 
-> **Packaging readings**: `PACK-EXIT=0 @16:18:51`; app 17 files / 10.9 MB + full 581 files / 53.5 MB; packaged exe
-> 23,923,712 B (`!AvaloniaResources` hit 4 times, `/Resources/icon_raw.png` present); independent verification
-> **16/0**; the five L3 suites **17/0 · 28/0 · 24/0 · 100/0 · 19/0** (each first line
-> `SUBJ = v1.6.0-beta11 (L3 shipped package)`); gate #85 run against this package **PASS=4 FAIL=0** (the same ruler
-> on the beta10 package gave `FAIL gui 存活 exit=0xC0000409`); annotated tag `1.6.0BETA11` → `bb04bba`.
+> ⚠ Merge note: the GUI fix belongs to the **re-issued v1.6.0-beta10**, not to a new version. The "Verification" paragraph below and the GainMap entries are the readings of the **first** beta10 build (`0640fb5`, whose packaged exe would not open). This re-issue regenerates both archives; the new packaging readings are appended at the end of this section.
 
 > **This fixes an "all green, yet won't open" defect.** When v1.6.0-beta10 was packaged, `verify-release-package`
 > scored 16/0 and the five L3 suites 17/0·100/0·28/0·24/0·19/0 — all green — while double-clicking the packaged
@@ -51,19 +47,14 @@ All notable changes to this project are documented in this file.
 - Ships its own **negative control**: the same exe launched as `--headless -i <nonexistent input>` must exit quickly —
   if the liveness ruler still reported "alive" then, this gate goes red (proving the ruler is not permanently green).
   The window-handle check only **WARNs** when there is no interactive desktop, so it cannot manufacture a false red.
-- Teeth demonstrated: run against the v1.6.0-beta10 package it printed
+- Teeth demonstrated: run against the **first** beta10 package (`0640fb5`) it printed
   `FAIL gui 存活… exit=0xC0000409` naming the exception text, negative control PASS, `PASS=1 FAIL=1`, exit 1.
 - ⚠ It reads only `MainWindowHandle` and **never `MainWindowTitle`**: the latter sends a message to the target process
   and blocks the caller when the process is not responding (measured twice this session, 60–180 s each).
 - Registration followed in the same batch: `$scriptList` 84 → **85**, `$expectedScriptCount`, all three prose forms
   (`script-list=85 条（受管基线 85）`, `shape-selfcheck=OK（17 针）`, `verify-ps-compat 13/0`).
 
-Ledger `docs/IMPLEMENT_PLAN_2026-10-11.md` §59 carries the step-by-step forensics, including a claim I retracted
-(I first said ILC ate the payload; the evidence turned out to be a stale 09-06 `linked/` intermediate).
-
----
-
-### v1.6.0-beta10 (2026-10-28) — Two silent degradations at the GainMap exit fixed: the source transfer characteristic must be named, and the base gamut no longer passes an approximated token off as the truth
+**🟢 The two silent degradations at the GainMap exit (the substance of the first beta10 build)**
 
 > **Verification (run per module; no full-table round)**: the binding round for this batch's `src` changes is
 > `tests/output/gates-round-20261028b.log` (**111/111**, 49 min 50 s,

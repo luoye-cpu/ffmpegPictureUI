@@ -12,12 +12,10 @@
 
 ## 📝 更新日志
 
-### v1.6.0-beta11 (2026-10-28) — 出货包的窗口终于起得来：NativeAOT 产物不再丢 Avalonia 编译 XAML 载荷 + 新增第 85 条「包内 exe 必须开窗口」
+### v1.6.0-beta10 (2026-10-28 **重出**) — 出货包的 GUI 起不来修复（AOT 产物保住 Avalonia 编译 XAML 载荷）+ GainMap 出口两条静默降级修复 + 新增第 85 条「包内 exe 必须开窗口」
 
-> **出包读数**：`PACK-EXIT=0 @16:18:51`；app 17 文件 / 10.9 MB + full 581 文件 / 53.5 MB；包内 exe 23,923,712 B
-> （`!AvaloniaResources` 命中 4、`/Resources/icon_raw.png` 在位）；独立验包 **16/0**；L3 五套件
-> **17/0 · 28/0 · 24/0 · 100/0 · 19/0**（各首行 `SUBJ = v1.6.0-beta11 (L3 出货包)`）；新闸第 85 条打在自己身上
-> **PASS=4 FAIL=0**（同一把尺打在 beta10 的包上是 `FAIL gui 存活 exit=0xC0000409`）；附注标签 `1.6.0BETA11` → `bb04bba`。
+> ⚠ 合并说明：GUI 打不开的修复**属于 v1.6.0-beta10 的重出**，不是新版本。本节「验证」段与下面 GainMap 段的读数是
+> **第一次**出的 beta10（`0640fb5`，包内 exe 打不开）；本次重出重新生成两档归档，新的出包读数追加在本节末尾。
 
 > **这是修一个"全绿却打不开"的缺陷**。v1.6.0-beta10 出包时 `verify-release-package` 16/0、L3 五套件
 > 17/0·100/0·28/0·24/0·19/0 全绿，而双击包内 `FfmpegGui.exe` 一键都起不来——事件日志里
@@ -42,18 +40,13 @@
 - 两档被测照其余 L3 同一约定（默认 Release 产物 ⇒ 每轮跑；`$env:PKG_VER` ⇒ 打出货包；两档都缺即 `exit 2`，不回退 Debug）。
 - 自带**负控**：同一份 exe 以 `--headless -i <不存在的输入>` 起 ⇒ 必然很快退出 ⇒ 若"存活"那把尺此时还报存活，本条判红
   （证尺子是活的，不是恒绿）。窗口句柄判据在无交互桌面时只 **WARN 不判红**，避免造出一台假红机器。
-- 牙已实测：打在 v1.6.0-beta10 的包上 ⇒ `FAIL gui 存活… exit=0xC0000409` 并点名异常文本、负控 PASS、`PASS=1 FAIL=1`、exit 1。
+- 牙已实测：打在**第一次**出的 beta10 包（`0640fb5`）上 ⇒ `FAIL gui 存活… exit=0xC0000409` 并点名异常文本、负控 PASS、`PASS=1 FAIL=1`、exit 1。
 - ⚠ 判据只读 `MainWindowHandle`，**绝不读 `MainWindowTitle`**：后者会向目标进程取文本，进程不响应时调用方直接挂死
   （本轮实测连挂两次，每次 60~180 秒）。
 - 接线随批：`$scriptList` + 84 → **85**、`$expectedScriptCount`、三种散文形态各改（`script-list=85 条（受管基线 85）`、
   `shape-selfcheck=OK（17 针）`、`verify-ps-compat 13/0`）。
 
-账本 `docs/IMPLEMENT_PLAN_2026-10-11.md` §59 有逐条取证与作废归因（含一处我先说成"ILC 吃的"、
-后来发现证据是 09-06 的陈旧 `linked/` 中间件而**撤回更正**的记录）。
-
----
-
-### v1.6.0-beta10 (2026-10-28) — GainMap 出口的两条静默降级修复：源传递特性必须命名、底图原色不再拿近似 token 冒充真实
+**🟢 GainMap 出口的两条静默降级修复（第一次出包的本体内容）**
 
 > **验证（按模块跑，不起全量轮）**：本批 `src` 改动的绑定轮 = `tests/output/gates-round-20261028b.log`
 > （**111/111**、49 min 50 s、`artifact-sha16: FfmpegGui.dll=A061CF3ADD2052BF`）——它验的是**版本位之前**的同一批源码字节。
