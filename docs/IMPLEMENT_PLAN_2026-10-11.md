@@ -4574,7 +4574,9 @@ ICC 明明在产物里（`-x icc_pathname=` 由 cjxl 写的），exiftool 只是
   avifenc `625B8FCEB4726C05`、dngtool `5BA612405523D46C`）。
 - **L3 五套件**（同一 `PKG_VER`，各首行 `SUBJ(被测) = v1.6.0-beta10 (L3 出货包)`；日志 `l3-beta10.log` / `l3-beta10-b2.log`）：
   `verify-package-smoke` **17/0**、`verify-jbrd-e2e` **100/0**、`verify-orientation-rewrap` **28/0**、
-  `verify-gainmap-thirdparty` **24/0**（较 beta9 记的 19 条多出的部分是 §57 期间随批的 D5/D5c 判据，本轮独跑即 24/0）、
+  `verify-gainmap-thirdparty` **24/0**（beta9 记的是 19 ⇒ 多的 5 条**不属本批**：`D5`/`D5c` 等来自 `c475789`
+  「hdrgm 收紧到规范九项并改属性形式」那笔 origin/main 工作，经合并提交 `2ad1889` 落到本地；
+  `git log -S"D5c 默认档不得带 XMP"` 实测只命中 `c475789`）、
   `verify-encoder-knob-liveness` **19/0**（越界被拒 1 / 未判 1 / 缺口 1 均不计入）—— 本轮该条 `EXIT=0` **未挂死**（beta8 那次挂死已不复现）。
 - **第 4b 步在 AOT 档依旧无法用 DLL 指纹对账**（归档内没有 `FfmpegGui.dll`，NativeAOT 出的是原生 exe）
   ⇒ 本轮用**两条一手替代判据**，其中第二条是新的、值得留的写法：
