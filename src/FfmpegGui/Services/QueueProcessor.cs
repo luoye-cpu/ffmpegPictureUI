@@ -3090,36 +3090,26 @@ namespace FfmpegGui.Services
                 var srcPrim = gp.SrcPrim;
                 if (isHdrInput)
                     item.Log += $"[GainMap]   源峰值 {peakNits:F0} nits（来源：{gp.PeakSourceText}）\n";
-                item.Log += $"[GainMap]   源原色: {srcPrim}（底图将由此映射到目标底图色域）\n";
+                item.Log += $"[GainMap]   源原色: {srcPrim}（底图将由此映射到目标底图色域）"
+                    + (gp.PrimariesApproximated && gp.SourceSpaceName != null
+                        ? $"，但源色域无 CICP 命名 ⇒ 该 token 仅近似，底图矩阵按具名空间 {gp.SourceSpaceName} 求\n"
+                        : (gp.SourceSpaceName != null ? $"，源空间名: {gp.SourceSpaceName}\n" : "\n"));
+                item.Log += $"[GainMap]   源传递: {gp.SrcTrc}（来源：{gp.SrcTrcSource}）\n";
 
                 var rawPath = Path.Combine(tempDir, "hdr.rgba");
-                // 尝试 1: zscale 转线性 (HDR PQ/HLG 输入)；pin= 锁定原色语义
-                //   但**输入已是线性**（解码出来的 Ultra HDR / tmap / 厂商尾注 PFM）时不能套 zscale：
-                //   那会对线性值再做一次 PQ EOTF ⇒ 整图压暗、headroom 归零 ⇒ 增益图又被丢掉。
+                // Step 2 解码串由 GainMapJpegCodec.DecodeArgsFor 分派（三条臂的唯一分派点）：
+                //   AlreadyLinear ⇒ 直解；ManagedEotf ⇒ 直解 + 托管 EOTF；其余 ⇒ zscale 线性化。
+                //   ⚠ 旧写法在这里还有"尝试 2：zscale 失败 ⇒ 直解"的兜底，它把 gamma 编码值当线性用
+                //   ⇒ 底图二次编码提亮（2026-10-28 实测纯色块 13→64、128→189）。取数既已显式给全
+                //   tin/pin/p，zscale 失败只剩"真的解码不了"这一种 ⇒ 必须响亮失败，不再兜底。
                 item.Log += $"[GainMap] Step 2: ffmpeg 解码为线性 RGB 浮点 " +
-                    $"({(gp.AlreadyLinear ? "已是线性（解码产物）" : isHdrInput ? $"HDR PQ/HLG npl={nits}" : "SDR")})...\n";
+                    $"({(gp.AlreadyLinear ? "已是线性（解码产物）" : gp.ManagedEotf ? "直解 + 托管 EOTF" : isHdrInput ? $"HDR PQ/HLG npl={nits}" : "SDR")})...\n";
                 _onItemUpdated?.Invoke(item);
-                var linArgs = gp.AlreadyLinear
-                    ? ColorMapping.GainMapJpegCodec.DirectDecodeArgs(item.InputPath, rawPath)
-                    : ColorMapping.GainMapJpegCodec.LinearDecodeArgs(item.InputPath, rawPath, nits, srcPrim);
+                var linArgs = ColorMapping.GainMapJpegCodec.DecodeArgsFor(gp, item.InputPath, rawPath);
                 item.Log += $"[cmd] ffmpeg {linArgs}\n";
                 var decodeExit = await FfmpegRunner.RunAsync(
                     linArgs,
                     s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ffmpegPath, ct);
-                // 尝试 2: zscale 失败 (无色彩元数据的线性输入如 dngtool TIFF) → 直接解码
-                //   ⚠ 已是线性的输入（解码出的 HDR PFM）没有第二条路：兜底支就是刚跑过的那条，
-                //     再跑一遍还会打出「zscale 线性转换失败」这句与事实不符的话 ⇒ 直接落下面的点名。
-                if ((decodeExit != 0 || !File.Exists(rawPath)) && !gp.AlreadyLinear)
-                {
-
-                    item.Log += "[GainMap] ⚠️ zscale 线性转换失败，尝试直接解码 (输入可能已是线性)...\n";
-                    _onItemUpdated?.Invoke(item);
-                    var dirArgs = ColorMapping.GainMapJpegCodec.DirectDecodeArgs(item.InputPath, rawPath);
-                    item.Log += $"[cmd] ffmpeg {dirArgs}\n";
-                    decodeExit = await FfmpegRunner.RunAsync(
-                        dirArgs,
-                        s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ffmpegPath, ct);
-                }
                 if (decodeExit != 0 || !File.Exists(rawPath))
                 {
                     item.Log += $"[GainMap] ⚠️ ffmpeg 线性解码失败 (exit {decodeExit})\n";
@@ -3162,9 +3152,10 @@ namespace FfmpegGui.Services
                     return;
                 }
                 // gbrpf32le: 平面顺序 G, B, R (ffmpeg gbr 命名), 各 pixelCount 个 float
-                // ⚠ 交错实现与引擎 GainMap 出口共用同一份（GainMapJpegCodec.GbrPlanarToRgba）：
-                //   平面序理解不一致只会表现为 R/B 互换（大图上才显形），必须单一真值。
-                var pixels = ColorMapping.GainMapJpegCodec.GbrPlanarToRgba(rawBytes, pixelCount);
+                // ⚠ 交错实现与引擎 GainMap 出口共用同一份（GainMapJpegCodec.DecodeToRgba）：
+                //   平面序理解不一致只会表现为 R/B 互换（大图上才显形），必须单一真值；
+                //   ManagedEotf 臂的线性化也绑在同一次调用里（分两步就有人漏第二步）。
+                var pixels = ColorMapping.GainMapJpegCodec.DecodeToRgba(gp, rawBytes, pixelCount);
 
                 // Step 4: GainMapEncoder 纯 C# 编码
                 var gmq = item.Options.JpegGainMapQuality >= 0
@@ -3201,7 +3192,9 @@ namespace FfmpegGui.Services
                     container: GainMapEncoder.ContainerOf(outputPath),
                     sourceBaseRaw: item.Options.GainMapSourceBaseRawForEncode,
                     inputIsSdrWhiteUnit: item.Options.GainMapInputIsSdrWhiteUnit,
-                    gainMapMetadata: item.Options.JpegGainMapMetadata);
+                    gainMapMetadata: item.Options.JpegGainMapMetadata,
+                    sourceSpaceName: gp.SourceSpaceName,
+                    primariesApproximated: gp.PrimariesApproximated);
 
                 item.ExitCode = ok ? 0 : -1;
                 item.Status = ok ? "已完成 (Gain Map 纯托管编码)" : "失败 (GainMapEncoder 编码失败)";

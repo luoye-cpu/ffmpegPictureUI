@@ -387,6 +387,28 @@ else {
   else { No "§7 ultrahdr 读数不符（须 PROBE RESULT: pass=4 fail=0，实 $((($u7 -split "`r?`n" | Where-Object { $_ -match 'PROBE RESULT|^FAIL' }) | Select-Object -First 3) -join ' | ')）" }
 }
 
+Write-Host "`n### 8) gmgamut —— GainMap 出口的「源传递特性 / 底图原色」接线锁（2026-10-28 两条缺陷）###" -ForegroundColor Cyan
+#   缺陷①：未标注素材（容器读不到 trc）在旧实现里让 zscale 报 code 3074 后落「直解」兜底 ⇒
+#     把 gamma 编码值当线性 ⇒ 底图二次编码提亮（纯色块实测 13→64、128→189；普通出口逐位不变）。
+#   缺陷②：ProPhoto / Adobe RGB / ColorMatch 没有 CICP 命名，探测把 primaries 归成 bt709 并登记
+#     primariesApproximated；GainMap 底图**不携带源 ICC** ⇒ 把近似 token 当真实就是「只改标签
+#     不改像素」的错色交付。现改走具名空间矩阵。
+#   判据钉**条数**（33/0）而不是只钉 fail=0 ⇒ 断言整段没跑也会红；两把尺（源文本调用位 31 /
+#   运行时 33）由 #75 各管一头，不许互相对齐。
+if (-not (Test-Path $probe)) { No "§8 ServiceProbe 未构建（$probe）⇒ 判红，不按未评估放行" }
+else {
+  $g8 = Exec $probe "gmgamut `"$val`""
+  $g8Tail = (($g8 -split "`r?`n" | Where-Object { $_ -match 'PROBE RESULT|^FAIL|读手失败' } | Select-Object -First 4) -join ' | ')
+  if ($g8 -match 'PROBE RESULT: pass=33 fail=0') {
+    Ok "§8 gmgamut 33/0（zscale 五级取数 + 具名空间矩阵 + 两条对照臂分叉 + 缺席点名）"
+  } else { No "§8 gmgamut 读数不符（须 PROBE RESULT: pass=33 fail=0，实 $g8Tail）" }
+  # 逐臂点名：整段只钉一个总数看不出**哪条臂**掉了 ⇒ 四段各自要有 PASS 行
+  foreach ($frag in @('②：128 档解成线性', '②对照：直解不补 EOTF', '③：ProPhoto 的 128 档', '⑤**核心**：同一份像素')) {
+    if ($g8 -match [regex]::Escape($frag)) { Ok "§8 落点非空：$frag" }
+    else { No "§8 落点缺席：$frag ⇒ 该臂整段没跑（总数照涨也看不见）" }
+  }
+}
+
 Write-Host "`n===== PASS=$pass FAIL=$fail =====" -ForegroundColor $(if($fail -eq 0){"Green"}else{"Red"})
 # ⚠ 唯一目录自清（宿主批量删除守卫会拦整目录删 ⇒ 用 -EA SilentlyContinue，§6 第 57 条 ③）；失败则保留供排查
 if ($fail -eq 0) { Remove-Item -Recurse -Force $out -ErrorAction SilentlyContinue }

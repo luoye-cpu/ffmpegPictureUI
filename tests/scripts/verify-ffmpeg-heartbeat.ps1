@@ -273,7 +273,12 @@ $runAsyncCount = ([regex]::Matches($qp, 'FfmpegRunner\.RunAsync')).Count
 #   之后的 `wrapArgs`）新增了一个 `FfmpegRunner.RunAsync`，同样**不带**显式心跳实参 ⇒ 站点集合不变、仅计数 +1。
 # ⚠ 2026-10-25：26 → **27** —— JXR(alpha)→AVIF 的 avifenc 两步法新增了「中间件 → RGBA PNG」一跳
 #   （`ProcessJxrToAvifWithAlphaAsync` 的 pngArgs），同样**不带**显式心跳实参 ⇒ 站点集合不变、仅计数 +1。
-CK ($runAsyncCount -eq 27) "① QueueProcessor 里 `FfmpegRunner.RunAsync` 调用点仍为 27 处（实 $runAsyncCount）—— 未误伤"
+# ⚠ 2026-10-28：27 → **26**（−1，账本 §57 缺陷①）—— 删掉的是 GainMap 段那条「zscale 失败 ⇒ 尝试直接解码」
+#   的**兜底调用点**（`ProcessGainMapJpegAsync`）。这不是"误伤"：解码串的臂选择已收进
+#   `GainMapJpegCodec.DecodeArgsFor` 单点分派，兜底直解把 gamma 值当线性 ⇒ 产出的是提亮的错图而非报错，
+#   所以这一跳必须消失。**站点集合不变**（下面三条集合断言仍过 ⇒ 少的是 GainMap 那条不带显式心跳实参的
+#   调用点，四个预期站点一个没动），仅计数 −1。
+CK ($runAsyncCount -eq 26) "① QueueProcessor 里 `FfmpegRunner.RunAsync` 调用点仍为 26 处（实 $runAsyncCount）—— 未误伤"
 
 # ⚠ 断言**站点集合**而不是计数（lead 要求）：计数只能说「有 N 个」，说不清「是不是这 N 个」——
 #   把第 5 处误开、或把预期站点里的一个漏开，计数都可能凑巧还是 4。做法：

@@ -1365,6 +1365,10 @@ namespace FfmpegGui.Services
             public bool hasIccSemantics;
             /// <summary>探测到的源色彩空间规范名（如 "Adobe RGB"/"ProPhoto RGB"），供超广色域归一化到 BT.2020 判定</summary>
             public string? sourceGamutName;
+            /// <summary><see cref="colorPrimaries"/> 是否只是**近似值**——源色域没有 CICP 命名（ProPhoto /
+            /// ColorMatch / Adobe RGB 等），探测按注释取了近似 token。true 时下游**不得**把这个 token 当成
+            /// 源的真实原色施加（GainMap 出口据此改走"具名空间"矩阵；普通出口靠携带 ICC 不受影响）。</summary>
+            public bool primariesApproximated;
             /// <summary>
             /// 由**源内嵌 ICC** 度量出的描述符（F-12，2026-10-13：随合并探测一次算出，供意图装配复用）。
             /// ⚠ 本字段是**缓存里的那一份**（键=路径、TTL 10 s、跨任务共享）⇒ 消费者必须走
@@ -1675,8 +1679,11 @@ namespace FfmpegGui.Services
                 case "Adobe RGB":
                 case "ColorMatch RGB":
                     // 无 zscale 命名 → 近似 bt709，上层携带 ICC 保留完整语义
+                    // ⚠ 只在"携带 ICC"的出口里这个近似是无害的；不携带 ICC 的出口（GainMap 底图）必须
+                    //   看到 primariesApproximated 才能改走具名空间矩阵 ⇒ 这里把近似登记出来。
                     meta.colorPrimaries = "bt709";
                     meta.colorTrc = "bt709";
+                    meta.primariesApproximated = true;
                     break;
                 case "Display P3":
                     meta.colorPrimaries = "smpte432";
@@ -1699,6 +1706,7 @@ namespace FfmpegGui.Services
                     // ResolveFaithfulUltraWideIcc：像素不动 + 仅附着 ProPhoto ICC）
                     meta.colorPrimaries = "bt709";
                     meta.colorTrc = "bt709";
+                    meta.primariesApproximated = true;
                     break;
             }
             return meta;

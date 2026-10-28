@@ -90,6 +90,21 @@ function ProbeOut([string]$mode, [string]$arg, [string]$arg2) {
     Start-Process -FilePath $pr -ArgumentList $al -NoNewWindow -Wait -PassThru -RedirectStandardOutput $o | Out-Null
     return ([System.IO.File]::ReadAllText($o))
 }
+
+# 逐条算 + 逐条报（2026-10-28 账本 §57）：旧写法把四项模式 AND 成一条判据 ⇒ 红了说不出死在哪项
+#   （那一轮就是靠手工翻 `apple_new.o` 才定位到「PFM 那行压根没打」）。这里只改**可诊断性**，
+#   通过条件一项没减也没加：同样的「出件 ∧ 四项模式全命中」。
+#   入参形如 @('检测=检测到 Ultra HDR JPEG', 'headroom=headroom=4\.532783')（名称 | 正则）。
+function PatHit([string[]]$named, [string]$log) {
+    $parts = @(); $all = $true
+    foreach ($it in $named) {
+        $kv = $it -split '\|', 2
+        $hit = ($log -match $kv[1])
+        if (-not $hit) { $all = $false }
+        $parts += ($kv[0] + '=' + $hit)
+    }
+    return @{ ok = $all; detail = ($parts -join ' ') }
+}
 # 像素级读数：ServiceProbe gainmap-stats 读回**解码器真正写出**的线性像素（gbrpf32le，1.0 = SDR 白点）。
 # ⚠ 不能用产品日志里的「峰值 N nits」充当施加证据 —— 那是 `203 × 2^HDRCapacityMax` 由元数据算的。
 function ProbeStats([string]$path, [string]$expect) {
@@ -971,10 +986,16 @@ CK ((Test-Path $appleNew) -and (Test-Path $appleOld)) `
    "⑫ 前提：Apple 两代样本在位（libultrahdr tests/data）—— 缺则本段无凭据（fail-closed，不静默跳过）"
 $newRun = RunCli "apple_new" $appleNew "png" @()
 $oldRun = RunCli "apple_old" $appleOld "png" @()
-CK (($null -ne $newRun.file) -and (Test-Path $newRun.file) -and ($newRun.log -match '检测到 Ultra HDR JPEG') -and ($newRun.log -match '元数据来源: Apple HDRGainMap XMP') -and ($newRun.log -match 'headroom=4\.532783') -and ($newRun.log -match '已解码为线性 HDR PFM（峰值 4699 nits）')) `
-   "⑫ new：识别 + 元数据非空（显式 headroom=4.532783）+ 走完解码并产出"
-CK (($null -ne $oldRun.file) -and (Test-Path $oldRun.file) -and ($oldRun.log -match '检测到 Ultra HDR JPEG') -and ($oldRun.log -match '元数据来源: Apple HDRGainMap XMP') -and ($oldRun.log -match '隐式 8× 上限') -and ($oldRun.log -match '已解码为线性 HDR PFM（峰值 1624 nits）')) `
-   "⑫ old：v1.0 无 headroom 字段 ⇒ 按隐式 8× 处理，仍走完解码并产出"
+$newOut = (($null -ne $newRun.file) -and (Test-Path $newRun.file))
+$newHit = PatHit @('检测=检测到 Ultra HDR JPEG', 'XMP源=元数据来源: Apple HDRGainMap XMP',
+                   'headroom=headroom=4\.532783', 'PFM=已解码为线性 HDR PFM（峰值 4699 nits）') $newRun.log
+CK ($newOut -and $newHit.ok) ("⑫ new：识别 + 元数据非空（显式 headroom=4.532783）+ 走完解码并产出" +
+      "  逐条命中: 出件=" + $newOut + ' ' + $newHit.detail)
+$oldOut = (($null -ne $oldRun.file) -and (Test-Path $oldRun.file))
+$oldHit = PatHit @('检测=检测到 Ultra HDR JPEG', 'XMP源=元数据来源: Apple HDRGainMap XMP',
+                   '隐式8x=隐式 8× 上限', 'PFM=已解码为线性 HDR PFM（峰值 1624 nits）') $oldRun.log
+CK ($oldOut -and $oldHit.ok) ("⑫ old：v1.0 无 headroom 字段 ⇒ 按隐式 8× 处理，仍走完解码并产出" +
+      "  逐条命中: 出件=" + $oldOut + ' ' + $oldHit.detail)
 $stNew = ProbeStats $appleNew ""
 $stOld = ProbeStats $appleOld ""
 Write-Output ($stNew -split "`r?`n" | Where-Object { $_ -match '^stats ' })

@@ -79,6 +79,11 @@ $counts = [ordered]@{
     'engine' = 20; 'faithful' = 10; 'firstframe' = 15; 'gainmap' = 6; 'gainmap-isobmff' = 21
     'gainmap-stats' = 6
     'gamut' = 2; 'gamutfit' = 19; 'geometry' = 43; 'hlgwire' = 3; 'i18n' = 5
+    # 2026-10-28 新增派发 mode `gmgamut`（GainMap 出口的「源传递特性 / 底图原色」接线锁，
+    #   调用者 = 在册门禁 `verify-gainmap-managed.ps1` §8）。登记的是**源文本调用位 31**
+    #   （`-Census` 实测 got=31），运行时通过数 = **33**：那一处 `foreach` 里的 2 个调用位按两个文件各跑一遍
+    #   ⇒ 源文本 2 条、执行 4 条。两把尺互补，**不许互相对齐**（与 `vendor-hdr` 同形）。
+    'gmgamut' = 31
     'icc' = 5; 'icc-dump' = 0; 'iccname' = 9; 'ipc' = 13; 'ipc-client' = 2
     'ipc-raw-client' = 4; 'ipc-server' = 0; 'ipc-submit' = 3; 'matrix' = 13; 'memadmit' = 7; 'framelen' = 5
     # 2026-10-22 P3 跨仓对撞（宿主 vs ColorGainKit，同进程反射）。口径同样是**源文本调用位**：
@@ -101,6 +106,7 @@ $counts = [ordered]@{
 # 2026-10-21 夜加 `dng-xmp-args`（产品侧 XMP 两臂串，账本 §40.9）⇒ 834；
 # 2026-10-22 修尺（settings 56→11）后按新尺重取 ⇒ 803；
 # 2026-10-27 合流：`gainmap-isobmff` +9 与新增 `gainmap-stats` +6 ⇒ **818**（= ③-e 实取总量）。
+# 2026-10-28 新增 `gmgamut`（GainMap 出口的源传递特性 / 底图原色接线锁）+31 ⇒ **849**。
 #   `vendor-hdr` = **19 个源文本调用位**，而 `gainmap-isobmff` §3d 的**运行时**通过数 = **18**；差 1 的两处成因不同：
 #     ① V8/V9 与「夹具缺席」那条 fail-closed 支互斥（源文本 2 条、执行 1 条）；
 #     ② V16/V17 是**一个 foreach 调用位跑两格**（源文本 1 条、执行 2 条）。

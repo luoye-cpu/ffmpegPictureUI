@@ -162,7 +162,15 @@ public static class GainMapEncoder
         // AVIF 子图的 CRF（0-63，越小越好）；-1 = 沿用历史固定值 18。
         // 底图与增益图各一个：增益图是低对比度数据图，和底图共用同一 CRF 并不合理，但历史口径就是 18，
         // 所以只有调用方显式给了才改。
-        int baseCrf = -1, int gainMapCrf = -1)
+        int baseCrf = -1, int gainMapCrf = -1,
+        // 源色域**没有 CICP 命名**时（ProPhoto / Adobe RGB / ColorMatch…），探测给的是近似 token 并登记
+        // primariesApproximated（见 FfmpegCommandBuilder.ColorMetadata）。两者同时为真 ⇒ 底图矩阵改由
+        // 该**具名空间**求（registry 同一套色度 + Bradford），不再把近似 token 当源的真实原色。
+        // 都不给 ⇒ 走 CICP token 路径，逐字节行为与历史一致。
+        string? sourceSpaceName = null, bool primariesApproximated = false,
+        // 两图合成的 SDR 底图那一侧的同名一对：它的原色**未必等于** HDR 侧，近似登记也必须各自独立
+        // （一张 ProPhoto 的 SDR 成片配 bt2020/PQ 的 HDR 参考时，把底图当 bt709 解释就是错色交付）。
+        string? sourceBaseSpaceName = null, bool sourceBasePrimariesApproximated = false)
     {
         try
         {
@@ -261,37 +269,35 @@ public static class GainMapEncoder
                 //   bt2020 解释并二次转换（实测 sRGB(76,178,102) 交付成 (0,184,88)）。
                 //   ⇒ 底图有自己原色时，两侧各用各的矩阵；未给时逐字节保持旧行为（A 路契约）。
                 string baseTok = wideBase ? "bt2020" : "bt709";
+                string baseName = wideBase ? "BT.2020" : "sRGB";
                 bool sdrHasOwnPrim = !string.IsNullOrWhiteSpace(sourceBasePrimaries);
                 string sdrPrimTok = sdrHasOwnPrim ? sourceBasePrimaries! : (sourcePrimaries ?? "");
-                var gamutMtx = ColorSpaceRegistry.LinearMatrixBetweenPrimaries(sourcePrimaries, baseTok);
-                var sdrGamutMtx = sdrHasOwnPrim
-                    ? ColorSpaceRegistry.LinearMatrixBetweenPrimaries(sdrPrimTok, baseTok)
-                    : gamutMtx;
+                // 源→底图矩阵按"具名空间 → CICP token → 同空间恒等"三级求（ResolveGamutMatrix）。
+                // 具名空间只在校准登记为近似时才优先（ProPhoto 被近似成 bt709 的那一类），否则维持
+                // token 路径 ⇒ 有 CICP 命名的素材（bt709/smpte432/bt2020…）逐字节行为不变。
+                var (gamutMtx, gamutFrom, gamutIdentity) = ResolveGamutMatrix(
+                    sourcePrimaries, primariesApproximated ? sourceSpaceName : null, baseTok, baseName);
+                var (sdrGamutMtx, sdrFrom, sdrIdentity) = sdrHasOwnPrim
+                    ? ResolveGamutMatrix(sdrPrimTok,
+                        sourceBasePrimariesApproximated ? sourceBaseSpaceName : null, baseTok, baseName)
+                    : (gamutMtx, gamutFrom, gamutIdentity);
                 if (gamutMtx != null)
                     SimdPixelOps.ApplyPrimariesMatrix(normHdr, gamutMtx);
                 if (sdrGamutMtx != null)
                     SimdPixelOps.ApplyPrimariesMatrix(sdrLinear, sdrGamutMtx);
-                if (gamutMtx != null && sdrGamutMtx != null)
-                {
+                if (gamutMtx != null && (sdrGamutMtx != null || sdrIdentity))
                     log?.Invoke(sdrHasOwnPrim
-                        ? $"[GainMap] 底图色域映射: HDR {sourcePrimaries} → {baseTok}、SDR {sdrPrimTok} → {baseTok}（各自独立矩阵）\n"
-                        : $"[GainMap] 底图色域映射: {sourcePrimaries} → {baseTok}（线性域 3x3 矩阵，HDR/SDR 两侧同步）\n");
-                }
-                else if (wideBase)
-                {
-                    if (!sdrHasOwnPrim)
-                    {
-                        // 旧契约：只有一条告警，文本与改动前逐字一致（门禁/日志口径不变）
-                        log?.Invoke($"[GainMap] ⚠️ 未能求出 {sourcePrimaries ?? "(未知)"} → {baseTok} 矩阵，底图将不映射（仅改标签，存在色偏风险）\n");
-                    }
-                    else
-                    {
-                        if (gamutMtx == null)
-                            log?.Invoke($"[GainMap] ⚠️ 未能求出 {sourcePrimaries ?? "(未知)"} → {baseTok} 矩阵，HDR 侧将不映射（存在色偏风险）\n");
-                        if (sdrGamutMtx == null)
-                            log?.Invoke($"[GainMap] ⚠️ 未能求出 SDR {sdrPrimTok} → {baseTok} 矩阵，底图将不映射（存在色偏风险）\n");
-                    }
-                }
+                        ? $"[GainMap] 底图色域映射: HDR {gamutFrom} → {baseTok}、SDR {sdrFrom} → {baseTok}（各自独立矩阵）\n"
+                        : $"[GainMap] 底图色域映射: {gamutFrom} → {baseTok}（线性域 3x3 矩阵，HDR/SDR 两侧同步）\n");
+                // 危险缺席（求不出矩阵 ⇒ 只会改标签不会改像素）**两侧同口径点名**。
+                // 旧写法只在 wideBase 分支打、且把"同空间恒等"这种良性情况也报成色偏风险，
+                // 而默认 srgb 底图上的真危险完全静默 —— 两个方向都错位（2026-10-28 实测）。
+                if (!gamutIdentity && gamutMtx == null)
+                    log?.Invoke($"[GainMap] ⚠️ 未能求出 {gamutFrom} → {baseTok} 矩阵，HDR 侧将不映射（仅改标签，存在色偏风险）\n");
+                if (!sdrIdentity && sdrGamutMtx == null)
+                    log?.Invoke($"[GainMap] ⚠️ 未能求出 {sdrFrom} → {baseTok} 矩阵，底图将不映射（仅改标签，存在色偏风险）\n");
+                if (gamutIdentity && sdrIdentity)
+                    log?.Invoke($"[GainMap] 底图色域：源已在 {baseTok} 内 ⇒ 恒等，无需原色映射\n");
 
                 // ── 2. 底图（始终 SDR：sdrLinear → sRGB gamma → 8bit 字节 → PNG）──
                 //   ⚠ 先**落成字节**：这份字节就是交付给解码器的底图，F-3 的增益分母必须由它反推
@@ -1196,7 +1202,29 @@ public static class GainMapEncoder
     // ═══════════════════════════════════════════
 
     /// <summary>
-    /// 构建最终 Ultra HDR JPEG 文件。
+    /// 源→底图的线性域原色矩阵，三级求解：<br/>
+    /// ① **具名空间**（源色域没有 CICP 命名、探测登记了近似时唯一可信的一条，走 registry 的
+    ///    <see cref="ColorSpaceRegistry.LinearMatrix"/>，不在此另写矩阵公式）；<br/>
+    /// ② CICP token（<see cref="ColorSpaceRegistry.LinearMatrixBetweenPrimaries"/>）；<br/>
+    /// ③ 同空间 ⇒ 恒等（不做映射，也**不该**告警）。<br/>
+    /// 返回 (矩阵, 依据的源名, 是否恒等)；矩阵为 null 且非恒等 = 谁都命名不了 ⇒ 调用方必须点名。
+    /// </summary>
+    private static (double[]? Mtx, string From, bool Identity) ResolveGamutMatrix(
+        string? token, string? spaceName, string baseTok, string baseName)
+    {
+        if (!string.IsNullOrWhiteSpace(spaceName))
+        {
+            var nm = ColorSpaceRegistry.LinearMatrix(spaceName, baseName);
+            if (nm != null) return (nm, spaceName!, false);
+        }
+        bool same = string.Equals((token ?? "").Trim(), baseTok, StringComparison.OrdinalIgnoreCase);
+        if (same) return (null, token ?? "", true);
+        var m = ColorSpaceRegistry.LinearMatrixBetweenPrimaries(token, baseTok);
+        if (m != null) return (m, token ?? "", false);
+        return (null, string.IsNullOrWhiteSpace(token) ? "(未探到原色)" : token!, false);
+    }
+
+    /// <summary>构建最终 Ultra HDR JPEG 文件。
     /// 结构:
     ///   [Base JPEG: SOI][APP1: XMP][APP2: MPF][Base 其余 (DQT/SOF/DHT/SOS/扫描/EOI)]
     ///   [增益图 JPEG: SOI][APP1: XMP(hdrgm 属性形式)][APP2: ISO 21496-1][增益图其余]

@@ -4423,3 +4423,115 @@ ICC 明明在产物里（`-x icc_pathname=` 由 cjxl 写的），exiftool 只是
   关键读数：增益图族 `engine 185/0`、`thirdparty 24/0`（D5e `Ultra HDR Image: Yes  max=2.46229`）、`isobmff 80/0`、`compose 85/0`、`host 24/0`（子宿主 29/59/15）、`managed 44/0` + GAINMATH 34/0、`memory 22/0 SKIP=1`；`[bench] 37/0 @76.6 s`（P 核自钉，§50.5 的 `8b sRGB→P3 ≥25` 档仍开放）；`ui-host`/`ui-param-matrix`/`ui-strategy-map`/`ui-param-defects`/`cli-strict` 各 **430/0**、`ui-split-union` new=430 old=430；`cjk-hardcode 14/0`（棘轮 904）；`color-wiring 153/0`、`color-strategy 78/0`、`ps-compat 13/0`、`probe-mirror-parity` ⑤ 取样 `Probe* = 60` 个。
   ⚠ 本轮之后只做了两处**注释级**更正（`GainMapEncoder.cs:1205-1207` 的 `<param name="metadata">` 还写着"`xmp`＝只写底图"；`verify-gainmap-engine.ps1:336` 那段形状注释是方案一之前的描述）。22:00:55 重建后**五枚产物的 SHA256 前 16 与本轮日志头逐枚相同**（确定性构建，注释不进编译输出）⇒ 本轮对所提交字节的绑定**仍然成立**，不必重跑整轮。
   ⚠ 上一轮 `gates-round-20261027e.log`（`FfmpegGui.dll=9E5C0AF1D547000F`）是**方案一之前**的形态，它的 D5e FAIL 正是 §56 的触发读数；该轮已被本轮取代，不再当任何当前基线引用。
+
+### §57 2026-10-28：GainMap 出口的两条静默降级——源传递特性没被命名、底图原色拿近似 token 冒充真实
+
+- **触发（维护者两句问）**：「思考一下底图色域如果和输入的不符的情况下，是否有正常进色彩管线」→「做一个完整修复」。
+  取证落点：GainMap 出口（`--hdr-mode gainmap` 的 JPEG/AVIF 路）**不携带源 ICC**，所以普通出口里"靠携带 ICC 兜住"的
+  两处近似，在这一条路上直接落到像素上。
+
+- **缺陷①（源传递特性没被命名 ⇒ 落错兜底）**：`GainMapJpegCodec.LinearDecodeFilter` 旧串只给
+  `zscale=t=linear:npl=…:r=pc:pin=…`，`tin`/`p` 让 zscale 自己去读**帧标签**。未标注素材（PNG 实测
+  `rgb24(pc, gbr/unknown/unknown)`，无 cICP/无 ICC）读不到 trc ⇒ `code 3074: no path between colorspaces`
+  ⇒ 调用方（传统管线与引擎出口**两处都是**）落"直解"兜底，把**已 gamma 化的值当线性**用 ⇒ 底图二次编码提亮。
+  一手读数（同一条命令、同一夹具 `tests/output/gmfix_1028/unlabel.png`，随包 ffmpeg `git-2026-10-11-edadf711a9`）：
+  旧串 `rc=127` 且写出 **0 字节**；新串 `rc=0` 出满帧；直解臂把 0.67982 原样交回（编码值），新串给
+  0.423258（= sRGB EOTF 一次）。产品级端到端旧读数 13→64、128→189、200→232。
+- **缺陷②（近似 token 被当成源的真实原色）**：探测侧 `ApplyIccSemantics` 对 Adobe RGB / ColorMatch / ProPhoto
+  统一写 `colorPrimaries=bt709`（注释自陈"无 zscale 命名 → 近似 bt709，上层携带 ICC 保留完整语义"），
+  但 GainMap 底图**不携带 ICC** ⇒ `LinearMatrixBetweenPrimaries(bt709 → bt709)` 恒等 ⇒ 只改标签不改像素。
+  同时旧告警的**两个方向都错位**：只在 `wideBase` 分支打（默认 `srgb` 档上的真危险完全静默），
+  又把"同空间恒等"这种良性情况报成色偏风险。
+
+- **机械层**（`src/FfmpegGui/Services/`，均为**唯一真值**位置，不新增第二份公式）：
+  | 改动 | 位置 | 要点 |
+  |---|---|---|
+  | 解码串钉死 `p=` 与 `tin=` | `ColorMapping/GainMapJpegCodec.cs:39`（`LinearDecodeFilter`/`LinearDecodeArgs`） | `withLabelReset` 保留但语义改：洗掉的是**残留**，不再是 zscale 的取数来源 |
+  | 五级取数 | 同文件 `ResolveEncodeParams` | 上游输入声明 `ColorSourceDeclTrc` ＞ 容器 CICP/EXIF ＞ 源 ICC 吻合 CICP ＞ ICC 托管 EOTF ＞ sRGB 惯例假定；每档把**来源文本**交给日志 |
+  | 线性输入不再靠失败 | 同文件 | 声明或 CICP 为 `linear` ⇒ 登记 `AlreadyLinear`（RAW 中间件、解码出的 PFM 逐字节沿用旧行为） |
+  | 单点分派 | 同文件 `DecodeArgsFor` / `DecodeToRgba` | 交错与托管 EOTF **绑成一次调用**（分两步就有人漏第二步）；两条调用点不再各自分支 |
+  | 兜底支删除 | `QueueProcessor.cs:3096`、`ColorMapping/RawColorPipeline.cs:324` | zscale 真失败 ⇒ 响亮失败。旧兜底产出的不是报错而是**提亮的错图** |
+  | 近似登记 | `FfmpegCommandBuilder.cs:1369` + `:1679` | `ColorMetadata.primariesApproximated`：只在"ICC 度量出的、无 CICP 命名"那三支置位 |
+  | 三级求矩阵 | `GainMapEncoder.cs:1200`（`ResolveGamutMatrix`） | 具名空间（`ColorSpaceRegistry.LinearMatrix`）＞ CICP token（`LinearMatrixBetweenPrimaries`）＞ 同空间恒等；具名空间**只在近似登记时**才优先 ⇒ 有 CICP 命名的素材逐字节行为不变 |
+  | 危险/良性分档 | `GainMapEncoder.cs:284-296` | 两侧同口径点名"未能求出…矩阵"；恒等另打一条"源已在 … 内 ⇒ 恒等"；默认 `srgb` 档不再是告警盲区 |
+  | 两图合成同批 | `GainMapComposeService.cs:287`（`ResolveGamut`） | SDR 槽与 HDR 槽**各自**交出 token + 具名空间 + 近似位（`sourceBaseSpaceName` 一并进 `EncodeAsync`）；HDR 解码串补 `tin=`（取探测到的 PQ/HLG，`ProbePairAsync` 已保证命名得了才放行） |
+
+- **判据（三步齐：执行面 mode → #75 登记 → 在册门禁钉条数）**：新增派发 mode `gmgamut`
+  （`tests/projects/ServiceProbe/Program.cs`，夹具自造：四档纯色未标注 PNG + exiftool 附着 ProPhoto ICC）。
+  运行时 **33/0**，#75 登记**源文本调用位 31**（一处 `foreach` 的 2 个调用位按两文件各跑 ⇒ 源 2 / 执行 4，
+  两把尺互补不对齐）；登记表各值之和 818 → **849**，`verify-probe-mirror-parity` **87/0**。
+  执行者 = 在册门禁 `verify-gainmap-managed.ps1` §8（钉 `pass=33 fail=0` **并**逐臂点名四个落点，
+  防"总数照涨而某一臂整段没跑"）；组表 `TestGroups.cs` 已并入 `ServiceProbe` 组，
+  `_probe-test-group-coverage` 认成档②（48 个 mode 之一）⇒ **37/0**，清单外脚本 WARN 仍是既有的 8 支。
+  断言形状：夹具判别力正控 ×2（PNG 必须命名不了 trc；ProPhoto 件必须**既**识别出空间**又**登记近似）、
+  取值表正反控 ×2、串形态 ×1、两处文本锁（不得直调任一臂 / 不得再有"尝试直接解码"）、
+  ②zscale 像素与托管 sRGB 曲线**两套实现互测**、②对照臂（直解不补 EOTF 差 0.2841）、
+  ③托管 EOTF 与源 ICC 曲线吻合（0.28717 vs 参照 0.28920）且与 sRGB 参照差 0.0713、
+  ④具名矩阵偏离恒等 1.0344、⑤端到端**开关分叉**（同一份像素：近似位在案 B 档 191→204，关掉即停在 191）、
+  ⑤良性恒等只许报恒等、⑤谁都命名不了时必须点名"未能求出"。
+
+- **本轮分头读数（被测 `FfmpegGui.dll=A061CF3ADD2052BF`、`ServiceProbe.exe=9A91353DBE87A077`、
+  `FfmpegGui.exe=B98E8A92F6C40FC7`、`UiTestHost.exe=92B21A2ACF4B9D02`、`GainMapTestHost.exe=C05B9EA7DAB001F2`）**：
+  `verify-gainmap-managed 49/0`（§8 五条在内）、`verify-gainmap-engine 185/0`、`verify-gainmap-compose 85/0`、
+  `verify-gainmap-thirdparty 24/0`（两条 `KNOWN` 原样，不转 PASS）、`verify-gainmap-isobmff 80/0`、
+  `verify-gainmap-host 24/0`（子宿主 29/59/15）、`verify-gainmap-memory 22/0 SKIP=1`、
+  `verify-color-wiring 153/0`、`verify-prophoto-faithful 37/0`、`verify-widegamut-regression 20/0`、
+  `verify-probe-mirror-parity 87/0`、`_probe-test-group-coverage 37/0`。单条裸跑≠基线，整轮绑定见本条末尾。
+
+- **第三方像素尺：不采，登记理由（不是欠账，是判据选择）**：原本计划让 `ultrahdr_app -m 1`（libultrahdr v2.0.2）
+  做独立像素往返。实测这两条臂**都以 SDR 底图收口**——`ResolveEncodeParams` 的 `IsHdrInput` 只看容器 trc，
+  ProPhoto/未标注素材 ⇒ headroom 1 ⇒ `GainMapEncoder` 的零增益短路把**底图本体**当产物（日志"已按普通 JPEG 输出"），
+  盘上没有增益图 ⇒ 第三方读手只会报 `does not contain gainmap image`，**没有往返可判**（`verify-gainmap-thirdparty`
+  的 B1 正是钉这句话的）。⇒ 像素尺改由两条独立证据承担：⑤ 的**开关分叉**（同一份像素，映射/不映射必须差 ≥8）
+  与第三方**元数据**判据保持 24/0。真要第三方像素往返，得先有一条"CICP 命名不了的 HDR 源"，
+  那种素材在本仓暂无一手夹具——留作开放项，不写成判据。
+
+- **已知边界（如实登记，不在本批扩）**：① 两图合成的 SDR 槽解码仍按"sRGB 编码值"契约
+  （`GainMapComposeService.cs:107` 直解 + `LoadSourceBaseLinear` 里固定 `SrgbToLinearRgba`），
+  槽位允许 `bt709` 时二者中段差 ≤1% —— 该白名单的既有注释自陈是惯例近似，本批不动；
+  ② `primariesApproximated` 只覆盖 ICC 度量出的三支，非 ICC 的未知原色仍走"求不出矩阵 ⇒ 点名"；
+  ③ RAW→GainMap 的 `AlreadyLinear` 由输入声明驱动，`PeakNits` 仍取 SDR 白点（与改动前逐字一致）。
+
+- **两处行号/计数 pin 随批（A30 与设计意图一致：行号失效即当场响）**：
+  ① `_lib-matrix.ps1` 的 `metadata-core` 取证锚 `FfmpegCommandBuilder.cs:2400 → **2408**`（+8 = 本批在该文件
+  净增的 `primariesApproximated` 字段与三处赋值，`git diff --numstat` 实读 8 增 0 删）；抬号前 `grep -n -F`
+  复核「全文件只命中 1 次」，字面量与语义一字未动 ⇒ 重 pin 后 `_probe-matrix-structure` **8/0**、
+  内层自检 37/1 → **38/0**。
+  ② `verify-ffmpeg-heartbeat.ps1` 的 `① QueueProcessor 里 FfmpegRunner.RunAsync 调用点 27 → **26**`
+  （−1 = 本批删掉的 GainMap 兜底调用点）。**站点集合断言仍过** ⇒ 少的是那条不带显式心跳实参的调用点，
+  四个预期心跳站点一个没动 ⇒ 计数 −1 是"兜底必须消失"的直接读数，不是误伤。
+
+- **`_probe-cjk-hardcode-scan` 第十七次抬基线：904 → 913（+9）** —— 归因按**换回法**实测：把
+  `ColorMapping/GainMapJpegCodec.cs` 单文件换成 HEAD 字节重跑 ⇒ **UI 面 = 904**（与第十六次收口逐字吻合），
+  换回本批版本 ⇒ 913；其余六个改动文件**合计净零**（各文件内部的增减未逐份换回量过，不做逐份归因的宣称）。
+  这九行是 `EncodeParams.SrcTrcSource` 的**取数来源自证文本**（字段赋值不是 sink 调用，按现行口径落 UI 桶），
+  内容是"降级与假定必须点名"要求的产出 ⇒ 依既有裁定不为撑棘轮改英文/静音/改 sink 形状。
+
+- **整轮绑定（交付基线）**：`tests/output/gates-round-20261028b.log` —— `script-list=84 条（受管基线 84）`
+  + 27 枚探针 = **111 项全部通过**（`===== 运行器汇总：全部通过 =====`，`LAUNCHER-RUNNER-EXIT=0`）；
+  墙钟 09:42:04 → 10:31:54（**49 分 50 秒**），`disk-freeGB` 76.05 → 73.09；
+  `artifact-sha16: FfmpegGui.dll=A061CF3ADD2052BF FfmpegGui.exe=B98E8A92F6C40FC7 ServiceProbe.exe=9A91353DBE87A077 UiTestHost.exe=92B21A2ACF4B9D02 GainMapTestHost.exe=C05B9EA7DAB001F2`，
+  `runner-self-sha256=68B63CA442962086`（lines=1626）。
+  关键读数：增益图族 `engine 185/0`（101.5 s）、`managed 49/0`（§8 gmgamut 在内，59.1 s）、
+  `compose 85/0`、`isobmff 80/0`、`host 24/0`（子宿主 29/59/15）、`memory 22/0 SKIP=1`、
+  `thirdparty 24/0`（两条 `KNOWN` 原样）；`prophoto-faithful 37/0`、`widegamut-regression 20/0`、
+  `color-wiring 153/0`、`matrix-structure 8/0`（内层 38/0）、`cjk-hardcode 14/0`（棘轮 913）、
+  `probe-mirror-parity 87/0`（登记表之和 849）、`test-group-coverage 37/0`、`ffmpeg-heartbeat` 全绿；
+  `[bench] 37/0 @82.0 s`；UI 宿主 `UISTRAT/CLISTRICT` 各 **430/0**、`ui-split-union new=430 old=430`。
+  ⚠ 轮后只改了**门禁脚本**（`verify-gainmap-engine.ps1` 的 ⑫ 可诊断性，见下条），`src/` 一字未动 ⇒
+  重建前后五枚产物 SHA256 前 16 逐枚相同（本轮后实测 `FfmpegGui.dll=A061CF3ADD2052BF`、
+  `ServiceProbe.exe=9A91353DBE87A077` 与轮日志头一致）⇒ 本轮对所提交字节的绑定**仍然成立**，
+  不必为此重跑整轮；被改的那条脚本按其规矩补跑一次子集（engine 185/0 + ps-compat 13/0）。
+- **作废轮留档（不作任何结论读数）**：`tests/output/gates-round-20261028a.log`（同一份被测字节）失败 3 项 ——
+  ① 上面两处 pin 随批前转红（`matrix-structure` A30、`ffmpeg-heartbeat` 计数）；
+  ② `verify-gainmap-engine §12` 是**负载红不是产品红**：该轮 CLI 打出
+  `exiftool 元数据读取超时（5s）` 与 `显示尺寸探测超时（5s）` ⇒ `❌ 无法获取基础图尺寸` ⇒ UltraHDR 解码中止 ⇒
+  日志里没有「已解码为线性 HDR PFM（峰值 4699 nits）」，那条**四条模式 AND 的合成判据**因此红。
+  证据留在 `tests/output/validate/gmeng_b2ccb1d3/apple_new.o`（前三模式命中、第四模式 0 次），
+  而它紧随的像素级判据仍读到 `peakNits=4699`；负载撤掉后独跑 185/0（99.3 s）、下一轮整轮 185/0（101.5 s）。
+  ⚠ 同时暴露这条判据自身的弱点：**六项 AND 成一条 CK，红了说不出死在哪项**（上面就是靠手工翻日志定位的）。
+  **已随批修**（`verify-gainmap-engine.ps1:974-996` 新增 `PatHit` 助手，两条 ⑫ 各逐条报命中位；
+  通过条件一项没减没加 ⇒ 判据条数不变）。修后复跑（同份被测件）：`gainmap-engine **185/0**`、
+  `ps-compat **13/0**`、`contract 160/0`，运行器汇总「全部通过」并明标「-Scripts 子集 2/84 ⇒ 不构成基线」。
+  ⚠ 改的过程中被 `verify-ps-compat` 抓了一次解析错（`产出"` 后换行接 `+` 在 PS 里是新语句 ⇒
+  「表达式中缺少右括号」），子集轮当场红 ⇒ 这条门禁存在的意义兑现了一次；处方是把 `+` 留在行尾。

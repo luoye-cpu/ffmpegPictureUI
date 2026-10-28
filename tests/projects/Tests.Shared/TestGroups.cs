@@ -86,6 +86,11 @@ namespace Tests.Shared
                 // 2026-10-20 P0-2：Apple 两代 JPEG 的**像素级**施加证据（读回 gbrpf32le 线性像素）。
                 // 调用者 = 在册门禁 `verify-gainmap-engine.ps1` §12（经 ProbeStats 辅助函数起 ServiceProbe）。
                 "gainmap-stats",
+                // 2026-10-28：`gmgamut` = GainMap 出口的「源传递特性 / 底图原色」接线锁
+                // （未标注素材的 zscale 取数五级 + ProPhoto 类近似登记改走具名空间矩阵）。
+                // 调用者 = **在册**门禁 `verify-gainmap-managed.ps1` §8 ⇒ 与上面 memadmit / color /
+                // framelen / gainmap-stats 同一形态：有调用点就必须进账，不进 #69 的豁免表。
+                "gmgamut",
             },
 
             // ── 编码参数与产物 / 元数据与 ICC / 增益图与 Ultra HDR / 进程与 IPC ──

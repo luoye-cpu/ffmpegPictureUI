@@ -13,6 +13,92 @@ All notable changes to this project are documented in this file.
 
 ## 📝 Changelog
 
+### v1.6.0-beta10 (2026-10-28) — Two silent degradations at the GainMap exit fixed: the source transfer characteristic must be named, and the base gamut no longer passes an approximated token off as the truth
+
+> **Verification (run per module; no full-table round)**: the binding round for this batch's `src` changes is
+> `tests/output/gates-round-20261028b.log` (**111/111**, 49 min 50 s,
+> `artifact-sha16: FfmpegGui.dll=A061CF3ADD2052BF`) — it verified the same source bytes **before** the version bump.
+> After `1.6.0-beta9 → beta10` only the affected module re-ran (under test
+> `FfmpegGui.dll=2141C77632A51828`, `FfmpegGui.exe=1E1B4E597190E81E`):
+> `contract 160/0`, `gainmap-engine 185/0`, `probe-mirror-parity 87/0`, `gainmap-compose 85/0`,
+> `gainmap-managed 49/0` (§8 `gmgamut` 33/0 included). The shipped package itself is covered by
+> `verify-release-package` plus the five L3 suites — readings in ledger §58.
+
+**🟢 Fix ①: unlabeled inputs no longer fall through to "direct decode" at the GainMap exit (the base image was being brightened)**
+
+- The old decode filter string only carried `zscale=t=linear:npl=…:r=pc:pin=…` and let zscale read the **frame
+  labels** for `tin`/`p`. Unlabeled material (measured PNG: `rgb24(pc, gbr/unknown/unknown)`, neither cICP nor ICC)
+  yields no transfer characteristic ⇒ `code 3074: no path between colorspaces` ⇒ the callers (**both** the legacy
+  pipeline and the color-engine exit) dropped into the "direct decode" fallback and used **already gamma-encoded
+  values as if they were linear** ⇒ the base image got brightened on re-encode. Product-level readings before the
+  fix: solid color blocks **13→64, 128→189, 200→232**; on one and the same command the old string gave `rc=127`
+  with **0 bytes** written, the new one gives `rc=0` with full frames.
+- `p=` and `tin=` are now **explicitly pinned into the string** by the product, and a real zscale failure fails
+  loudly — the "direct decode" fallback branch was deleted (it produced not an error but a brightened wrong image).
+- The source transfer characteristic is resolved in **five tiers**: upstream input declaration > container
+  CICP/EXIF > source ICC curve matching a CICP token > source ICC handled by the managed EOTF (pure managed curve
+  decode) > the sRGB convention assumption for unlabeled 8-bit RGB. Each tier hands its **provenance text** to
+  the log, so the user can see where an assumption came from.
+- Inputs declared or CICP-labeled as `linear` (RAW intermediates, the PFM decoded out of Ultra HDR) register
+  `AlreadyLinear` and keep the old behavior **byte for byte**.
+
+**🟢 Fix ②: the base gamut no longer passes an "approximated to bt709" token off as the source's real primaries**
+
+- Adobe RGB / ColorMatch / ProPhoto have no CICP name ⇒ the detection side used to write
+  `colorPrimaries=bt709` for all of them and relied on "the exit carries the source ICC" to hold the meaning.
+  The **GainMap base does not carry the source ICC** ⇒ the matrix resolved to a `bt709 → bt709` identity ⇒
+  **only the label changed, the pixels did not**. A `primariesApproximated` flag was added and matrix resolution now
+  runs in three tiers: the **named space** measured from the ICC > the CICP token > same-space identity, so a
+  ProPhoto source really gets a ProPhoto→sRGB matrix (measured deviation from identity: 1.0344) while material that
+  does have a CICP name is unchanged **byte for byte**.
+- Both directions of the warning were wrong and are fixed: the old condition fired only on the "base is wider"
+  branch (a genuine danger on the default `srgb` setting stayed completely silent) and reported a benign
+  same-space identity as a color-cast risk. Now both sides are held to the same standard: an unresolvable matrix is
+  named ("未能求出…矩阵" / "could not resolve a matrix"), and an identity prints its own line
+  ("source already inside … ⇒ identity").
+- **All three routes closed out in the same batch** (legacy queue / color-engine exit / two-image compose): the
+  decode dispatch and the managed EOTF are bound into a single call (`DecodeArgsFor` / `DecodeToRgba` — split into
+  two steps is how step two gets forgotten); the compose route's SDR and HDR slots each hand over token + named
+  space + approximation flag, and the HDR decode string gained `tin=`.
+
+**🟢 Judgments (one new mode + three locks followed in step)**
+
+- New ServiceProbe dispatch mode `gmgamut`: **33/0** at runtime, executed by the in-manifest gate
+  `verify-gainmap-managed.ps1` §8 — it pins `pass=33 fail=0` **and** names the four landing points arm by arm
+  (guarding against "the total goes up while one whole arm never ran"). `verify-probe-mirror-parity` registers
+  **31** source-text call sites (a complementary ruler to the 33 runtime passes — deliberately not aligned), the
+  registry sum went 818 → **849**, that gate is **87/0**; `TestGroups.cs` folds the mode into the `ServiceProbe`
+  group ⇒ `_probe-test-group-coverage` **37/0**.
+- Every fixture is built in-test (four solid-band unlabeled PNGs + a ProPhoto ICC attached with exiftool).
+  Assertions include fixture-discrimination positive controls (the PNG must *fail* to name a trc), positive/negative
+  controls on the value table, two text locks (callers may not invoke either decode arm directly; the phrase
+  "尝试直接解码" may not survive in the repo), a **two-implementation cross-check** between zscale pixels and the
+  managed curve, the direct-decode control arm (0.2841 apart when no EOTF is applied), an end-to-end **switch fork**
+  (identical pixels: 191→204 with the approximation flag in play, stuck at 191 without it, Δ≥8), benign identity
+  allowed to report only identity, and a mandatory "could not resolve" naming when nothing can be named.
+- Three structural locks updated to match reality: the `_lib-matrix.ps1` evidence anchor
+  `FfmpegCommandBuilder.cs:2400 → 2408`; `verify-ffmpeg-heartbeat.ps1`'s `RunAsync` call-site count **27 → 26**
+  (the one that disappeared is exactly the deleted fallback branch; all four expected heartbeat sites are intact);
+  `_probe-cjk-hardcode-scan`'s UI ratchet raised for the 17th time **904 → 913** (attributed by swapping a single
+  file back to HEAD bytes; the other six files net zero).
+- ⑫ of `verify-gainmap-engine.ps1` was changed from "six conditions ANDed into one check" to **reporting each
+  pattern hit separately** (the pass condition itself neither gained nor lost a clause) — a voided round this batch
+  had to be root-caused by hand-digging logs, and this makes that attribution instant next time.
+- A third-party (libultrahdr) pixel round trip was **deliberately not adopted**, with the reason on record: both
+  arms end in the SDR base (headroom 1 ⇒ zero-gain short circuit), so there is no gain map on disk and the
+  reference reader can only answer `does not contain gainmap image` — there is no round trip to judge. The pixel
+  ruler is the switch fork above; the third-party **metadata** judgment stays at 24/0.
+
+**⚠ Known boundaries (registered honestly, not widened in this batch)**: ① the compose route's SDR slot is still
+decoded under the "sRGB encoded values" contract (that whitelist's own comment already calls it a convention
+approximation); ② `primariesApproximated` covers only the three ICC-measured spaces — unknown primaries without an
+ICC still go through "no matrix resolvable ⇒ name it"; ③ RAW→GainMap's `AlreadyLinear` is driven by the input
+declaration and `PeakNits` still takes the SDR white point (character-for-character as before the change).
+
+Full forensics, the mechanical-change table and the round binding: `docs/IMPLEMENT_PLAN_2026-10-11.md` §57.
+
+---
+
 ### v1.6.0-beta9 (2026-10-26) — DNG inputs read through the Adobe DNG SDK + two-image GainMap compose + JPG/WebP on the BT.601 matrix + AVIF exit ICC honesty
 
 > **Lineage**: `6fc9719` (DNG/ACR route + gate #79, 12 files +721/−34), `0b07b1c` (two-image GainMap compose

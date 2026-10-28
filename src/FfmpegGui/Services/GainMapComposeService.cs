@@ -69,7 +69,10 @@ public static class GainMapComposeService
             string sdrPrim = probe.SdrPrimaries;
             string hdrPrim = probe.HdrPrimaries;
             log?.Invoke($"[GainMap合成] 输入：SDR {w}×{h} {sdrPrim}/{probe.SdrTrc}"
-                + $" → HDR {hdrPrim}/{probe.HdrTrc}（{probe.MetaPeakSource ?? "无静态峰值"}）\n");
+                + (probe.SdrPrimariesApproximated ? $"（无 CICP 命名，按 {probe.SdrSpaceName} 求矩阵）" : "")
+                + $" → HDR {hdrPrim}/{probe.HdrTrc}"
+                + (probe.HdrPrimariesApproximated ? $"（无 CICP 命名，按 {probe.HdrSpaceName} 求矩阵）" : "")
+                + $"（{probe.MetaPeakSource ?? "无静态峰值"}）\n");
 
             // ── 3. HDR 解线性（1.0 = npl），峰值 auto 时按内容实测后重解一次 ──
             int userPeak = options.GainMapComposePeakNits;
@@ -77,7 +80,9 @@ public static class GainMapComposeService
                 ? userPeak
                 : (probe.MetaPeakNits > 0 ? probe.MetaPeakNits : 1000.0);
             string hdrRaw = Path.Combine(tempDir, "hdr.rgba");
-            if (!await RunFfmpegAsync(GainMapJpegCodec.LinearDecodeArgs(hdrPath, hdrRaw, npl, hdrPrim), log, ffmpeg, ct))
+            // tin 用探测到的 HDR 槽传递（ProbePairAsync 已保证它是 PQ/HLG，否则整对被拒绝）：
+            // 交给 zscale 一个它自己从帧标签读不到的值 ⇒ 不再靠"失败再直解"的兜底。
+            if (!await RunFfmpegAsync(GainMapJpegCodec.LinearDecodeArgs(hdrPath, hdrRaw, npl, hdrPrim, probe.HdrTrc), log, ffmpeg, ct))
                 return false;
             if (!ExactLength(hdrRaw, needBytes, log, "HDR 解线性裸流")) return false;
 
@@ -91,7 +96,7 @@ public static class GainMapComposeService
                 if (Math.Abs(measuredInt - npl) / npl > 0.01)
                 {
                     log?.Invoke($"[GainMap合成] 峰值 auto：按内容实测 {measuredInt} nits（首解 npl={npl:F0}），重解一次\n");
-                    if (!await RunFfmpegAsync(GainMapJpegCodec.LinearDecodeArgs(hdrPath, hdrRaw, measuredInt, hdrPrim), log, ffmpeg, ct))
+                    if (!await RunFfmpegAsync(GainMapJpegCodec.LinearDecodeArgs(hdrPath, hdrRaw, measuredInt, hdrPrim, probe.HdrTrc), log, ffmpeg, ct))
                         return false;
                     if (!ExactLength(hdrRaw, needBytes, log, "HDR 解线性裸流")) return false;
                 }
@@ -146,6 +151,8 @@ public static class GainMapComposeService
                 baseQuality: baseDist, gainMapQuality: gmDist,
                 downsample: Math.Max(options.JpegGainMapDownsample, 1),
                 baseGamut: baseGamut, sourcePrimaries: hdrPrim,
+                sourceSpaceName: probe.HdrSpaceName, primariesApproximated: probe.HdrPrimariesApproximated,
+                sourceBaseSpaceName: probe.SdrSpaceName, sourceBasePrimariesApproximated: probe.SdrPrimariesApproximated,
                 log: log, ct: ct,
                 jpegProgressiveLevel: progressive,
                 container: GainMapEncoder.ContainerOf(outputPath),
@@ -216,6 +223,12 @@ public static class GainMapComposeService
         public int Height;
         public string SdrPrimaries = "bt709";
         public string HdrPrimaries = "bt709";
+        /// <summary>ICC 度量识别出的源空间名（ProPhoto RGB / Adobe RGB …）；null = 只有 CICP 标签。</summary>
+        public string? SdrSpaceName;
+        public string? HdrSpaceName;
+        /// <summary>上面那个 token 只是**近似**（源色域无 CICP 命名）⇒ 编码侧改按具名空间求矩阵。</summary>
+        public bool SdrPrimariesApproximated;
+        public bool HdrPrimariesApproximated;
         public string SdrTrc = "";
         public string HdrTrc = "";
         public double MetaPeakNits;
@@ -277,19 +290,33 @@ public static class GainMapComposeService
         r.Height = sh;
         r.SdrTrc = sdrTrc;
         r.HdrTrc = hdrTrc;
-        r.SdrPrimaries = ResolvePrimaries(sdrMeta);
-        r.HdrPrimaries = ResolvePrimaries(hdrMeta);
+        var (sdrTok, sdrSpace, sdrApprox) = ResolveGamut(sdrMeta);
+        var (hdrTok, hdrSpace, hdrApprox) = ResolveGamut(hdrMeta);
+        r.SdrPrimaries = sdrTok;
+        r.HdrPrimaries = hdrTok;
+        r.SdrSpaceName = sdrSpace;
+        r.HdrSpaceName = hdrSpace;
+        r.SdrPrimariesApproximated = sdrApprox;
+        r.HdrPrimariesApproximated = hdrApprox;
         r.MetaPeakNits = hdrMeta.peakNits;
         r.MetaPeakSource = hdrMeta.peakSource;
         return r;
     }
 
-    private static string ResolvePrimaries(FfmpegCommandBuilder.ColorMetadata m)
+    /// <summary>
+    /// 一个槽的原色：CICP token + 具名空间 + "token 只是近似"这一位。
+    /// ⚠ 具名空间必须**与 token 一并交出**：ProPhoto/Adobe RGB 这类没有 CICP 命名的源，探测侧把
+    /// token 归成 bt709 并登记近似；只交 token 就等于让下游把近似当成真原色（底图错色）。
+    /// </summary>
+    private static (string Token, string? SpaceName, bool Approximated) ResolveGamut(
+        FfmpegCommandBuilder.ColorMetadata m)
     {
+        string? space = string.IsNullOrWhiteSpace(m.sourceGamutName) ? null : m.sourceGamutName;
         var p = m.colorPrimaries;
-        if (!string.IsNullOrWhiteSpace(p) && p != "unspecified" && p != "unknown") return p!;
+        if (!string.IsNullOrWhiteSpace(p) && p != "unspecified" && p != "unknown")
+            return (p!, space, m.primariesApproximated);
         var fromGamut = ColorSpaceRegistry.FfmpegTokens(m.sourceGamutName).primaries;
-        return string.IsNullOrWhiteSpace(fromGamut) ? "bt709" : fromGamut;
+        return (string.IsNullOrWhiteSpace(fromGamut) ? "bt709" : fromGamut, space, m.primariesApproximated);
     }
 
     /// <summary>解出的线性值以 1.0 = npl ⇒ 内容绝对峰值 = max(R,G,B) × npl。</summary>

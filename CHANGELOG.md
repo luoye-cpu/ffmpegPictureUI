@@ -12,6 +12,64 @@
 
 ## 📝 更新日志
 
+### v1.6.0-beta10 (2026-10-28) — GainMap 出口的两条静默降级修复：源传递特性必须命名、底图原色不再拿近似 token 冒充真实
+
+> **验证（按模块跑，不起全量轮）**：本批 `src` 改动的绑定轮 = `tests/output/gates-round-20261028b.log`
+> （**111/111**、49 min 50 s、`artifact-sha16: FfmpegGui.dll=A061CF3ADD2052BF`）——它验的是**版本位之前**的同一批源码字节。
+> 版本位 `1.6.0-beta9 → beta10` 之后只重跑受影响模块（被测 `FfmpegGui.dll=2141C77632A51828`、`FfmpegGui.exe=1E1B4E597190E81E`）：
+> `contract 160/0`、`gainmap-engine 185/0`、`probe-mirror-parity 87/0`、`gainmap-compose 85/0`、`gainmap-managed 49/0`
+> （§8 `gmgamut` 33/0 在内）。出货包本体由 `verify-release-package` + L3 五套件负责，读数见账本 §58。
+
+**🟢 修复①：未标注素材进 GainMap 出口不再落「直解」兜底（底图被提亮）**
+
+- 旧解码串只给 `zscale=t=linear:npl=…:r=pc:pin=…`，`tin`/`p` 让 zscale 自己去读**帧标签**。未标注素材（PNG 实测
+  `rgb24(pc, gbr/unknown/unknown)`，无 cICP 也无 ICC）读不到传递特性 ⇒ `code 3074: no path between colorspaces`
+  ⇒ 调用方（传统管线路与色彩引擎出口**两处都是**）落「直解」兜底，把**已经 gamma 化的值当线性**用 ⇒ 底图二次编码被提亮。
+  产品级旧读数：纯色块 **13→64、128→189、200→232**；同一条命令旧串 `rc=127` 且写出 **0 字节**，新串 `rc=0` 出满帧。
+- 现在 `p=` 与 `tin=` 由产品**显式钉进串**，zscale 真失败就响亮失败——「直解」兜底支删除（它产出的不是报错，是一张提亮的错图）。
+- 源传递特性按**五级取数**：上游输入声明 ＞ 容器 CICP/EXIF ＞ 源 ICC 曲线吻合 CICP ＞ 源 ICC 托管 EOTF（纯托管曲线解码）
+  ＞ 未标注 8-bit RGB 的 sRGB 惯例假定。每一档把**来源文本**写进日志，用户看得见「这条假定从哪儿来」。
+- 声明或 CICP 为 `linear` 的输入（RAW 中间件、Ultra HDR 解码出的 PFM）登记 `AlreadyLinear`，**逐字节沿用旧行为**。
+
+**🟢 修复②：底图原色不再拿「近似到 bt709」的 token 冒充源的真实原色**
+
+- Adobe RGB / ColorMatch / ProPhoto 没有 CICP 命名 ⇒ 探测侧旧写法统一写 `colorPrimaries=bt709`，靠「出口携带源 ICC」兜住；
+  而 **GainMap 底图不携带源 ICC** ⇒ 矩阵求成 `bt709 → bt709` 恒等 ⇒ **只改标签、不改像素**。
+  现新增 `primariesApproximated` 登记位，求矩阵走三级：ICC 度量出的**具名空间** ＞ CICP token ＞ 同空间恒等
+  ⇒ ProPhoto 源真的做 ProPhoto→sRGB 矩阵（实测偏离恒等 1.0344）；有 CICP 命名的素材**逐字节行为不变**。
+- 告警的两个方向一起纠正：旧条件只在「底图更宽」分支打（默认 `srgb` 档上的真危险完全静默），又把「同空间恒等」这种
+  良性报成色偏风险。现在两侧同口径，求不出矩阵时点名「未能求出…矩阵」，恒等另打一条「源已在 … 内 ⇒ 恒等」。
+- **三条路同一批收口**（传统队列 / 色彩引擎出口 / 两图合成）：解码分派与托管 EOTF 绑成一次调用
+  （`DecodeArgsFor` / `DecodeToRgba`，分两步就有人漏第二步）；两图合成的 SDR 槽与 HDR 槽各自交出 token + 具名空间 + 近似位，
+  HDR 解码串补上 `tin=`。
+
+**🟢 判据（新 mode + 三处锁随批）**
+
+- 新增 ServiceProbe 派发 mode `gmgamut`：运行时 **33/0**，由在册门禁 `verify-gainmap-managed.ps1` §8 执行——
+  钉 `pass=33 fail=0` **并**逐臂点名四个落点（防「总数照涨而某一臂整段没跑」）。`verify-probe-mirror-parity`
+  按**源文本调用位**登记 31（与运行时 33 是两把互补的尺，故意不对齐），登记表各值之和 818 → **849**、该门禁 **87/0**；
+  `TestGroups.cs` 已并入 `ServiceProbe` 组 ⇒ `_probe-test-group-coverage` **37/0**。
+- 夹具全部自造（四档纯色未标注 PNG + exiftool 附着 ProPhoto ICC），断言含：夹具判别力正控（PNG 必须命名不了 trc）、
+  取值表正反控、两处文本锁（调用点不得直解码臂、仓里不得再有「尝试直接解码」）、zscale 像素与托管曲线**两套实现互测**、
+  直解对照臂（不补 EOTF 差 0.2841）、端到端**开关分叉**（同一份像素：近似位在案 191→204，关掉即停在 191，Δ≥8）、
+  良性恒等只许报恒等、谁都命名不了时必须点名「未能求出」。
+- 三处结构锁随实况改：`_lib-matrix.ps1` 取证锚 `FfmpegCommandBuilder.cs:2400 → 2408`；
+  `verify-ffmpeg-heartbeat.ps1` 的 `RunAsync` 调用点 **27 → 26**（少的正是被删掉的兜底支，四个预期心跳站点一个没动）；
+  `_probe-cjk-hardcode-scan` UI 面棘轮第十七次 **904 → 913**（换回法单文件归因，其余六文件合计净零）。
+- `verify-gainmap-engine.ps1` 的 ⑫ 由「六项 AND 成一条」改成**逐条报命中位**（通过条件一条没减没加）——
+  一批作废轮里它就是靠手工翻日志才定位到负载红，这条改动让下次当场可归因。
+- 第三方（libultrahdr）像素往返尺**不采**并登记理由：这两条臂都以 SDR 底图收口（headroom 1 ⇒ 零增益短路），
+  盘上没有增益图 ⇒ 第三方读手只会报 `does not contain gainmap image`，没有往返可判；像素尺由上面的开关分叉承担，
+  第三方**元数据**判据保持 24/0。
+
+**⚠ 已知边界（如实登记，本批不扩）**：① 两图合成的 SDR 槽解码仍按「sRGB 编码值」契约（该白名单的既有注释自陈是惯例近似）；
+② `primariesApproximated` 只覆盖 ICC 度量出的三支，非 ICC 的未知原色仍走「求不出矩阵 ⇒ 点名」；
+③ RAW→GainMap 的 `AlreadyLinear` 由输入声明驱动，`PeakNits` 仍取 SDR 白点（与改动前逐字一致）。
+
+完整取证、机械层表格与整轮绑定见 `docs/IMPLEMENT_PLAN_2026-10-11.md` §57。
+
+---
+
 ### v1.6.0-beta9 (2026-10-26) — DNG 读路径改走 Adobe DNG SDK + 两图 GainMap 合成 + JPG/WebP 改按 BT.601 + AVIF 出口 ICC 诚实性收口
 
 > **谱系**：`6fc9719`（DNG/ACR 路线 + 第 79 条门禁，12 文件 +721/−34）、`0b07b1c`（两图 GainMap 合成收口 +

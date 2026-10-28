@@ -679,7 +679,11 @@ function Get-SemanticMatrices {
                 #   下移 14；字面量与语义一字未动。抬号前已复核：该字面量全文件**只命中 1 次**，实况行 = 2400
                 #   （`:2386` 现落在一行 `/// 注意：当前 FFmpeg 构建不支持 -icc_profile 选项，` 注释上）。
                 #   本条由 `_probe-matrix-structure.ps1` A21/A30 当场报出（fail=1）⇒ 是**锁生效**，不是产品回归。
-                'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:2400|bool exiftoolFormats = fmt is "jpg" or "jpeg" or "png" or "tiff" or "webp";'
+                # ⚠ pin 演进（2026-10-28，§57 GainMap 色域/传递批）：2400 → **2408**（+8）。成因 = 本轮往
+                #   同一文件的 `ApplyIccSemantics` 区新增 `primariesApproximated` 字段与三处赋值（净 +8 行，
+                #   `git diff --numstat` 实读 8 增 0 删）⇒ 其**下方**行号整体下移；字面量与语义一字未动。
+                #   抬号前 `grep -n -F` 复核：该字面量全文件**只命中 1 次**，实况行 = 2408。
+                'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:2408|bool exiftoolFormats = fmt is "jpg" or "jpeg" or "png" or "tiff" or "webp";'
             )
         },
         @{

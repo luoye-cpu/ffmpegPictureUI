@@ -21,19 +21,26 @@ namespace FfmpegGui.Services.ColorMapping;
 public static class GainMapJpegCodec
 {
     /// <summary>
-    /// 线性化解码滤镜（zscale）。三个参数都不是可选的：
+    /// 线性化解码滤镜（zscale）。这些参数**没有一个是可选的**：
     /// <list type="bullet">
     /// <item><c>t=linear</c>：把源像素搬到线性域（PQ/HLG/SDR 统一）。</item>
     /// <item><c>npl={nits}</c>：声明"线性 1.0 = 多少 nits"。HDR 源必须给实际峰值，
     /// 否则 1.0 的物理含义错位 ⇒ headroom 算错 ⇒ 增益图范围错。</item>
-    /// <item><c>pin={srcPrim}</c>：**锁定源原色语义**。zscale 不改原色，所以"线性像素处于哪个原色"
-    /// 必须显式声明，否则 <see cref="GainMapEncoder"/> 会拿探测到的 ICC 描述去乘一套不属于它的原色矩阵。</item>
+    /// <item><c>pin={srcPrim}</c> / <c>p={srcPrim}</c>：**锁定源原色语义**并显式给出输出原色。
+    /// zscale 不改原色，所以"线性像素处于哪个原色"必须显式声明，否则 <see cref="GainMapEncoder"/>
+    /// 会拿探测到的 ICC 描述去乘一套不属于它的原色矩阵。</item>
+    /// <item><c>tin={srcTrc}</c>：**显式给出源传递特性**。2026-10-28 实测：容器不带 CICP trc 时
+    /// （未标注 PNG、只带 ICC 的素材）zscale 从帧标签读不到 trc ⇒ 直接报
+    /// <c>code 3074: no path between colorspaces</c>，调用方落到"直解"兜底，把**已 gamma 化的值当线性**用
+    /// ⇒ 底图被二次编码提亮（同一素材纯色块实测 13→64、128→189，而走普通出口逐位不变）。
+    /// ⚠ 只补 tin 不够：不显式给输出 <c>p=</c> 时实测仍报 3074。</item>
     /// <item><c>r=pc</c>：全范围。线性浮点本无 YUV 范围语义，但 zscale 要求显式给出。</item>
     /// </list>
     /// ⚠ 本串是**唯一真值**：传统 GainMap 管线与引擎 GainMap 出口都调它，禁止第二份。
     /// </summary>
-    public static string LinearDecodeFilter(double nits, string srcPrim)
-        => "zscale=t=linear:npl=" + nits.ToString("0.######", CultureInfo.InvariantCulture)
+    public static string LinearDecodeFilter(double nits, string srcPrim, string srcTrc)
+        => "zscale=t=linear:p=" + srcPrim + ":tin=" + srcTrc
+         + ":npl=" + nits.ToString("0.######", CultureInfo.InvariantCulture)
          + ":r=pc:pin=" + srcPrim;
 
     /// <summary>首选解码命令行：zscale 线性化 → gbrpf32le 平面浮点 rawvideo。
@@ -41,15 +48,19 @@ public static class GainMapJpegCodec
     /// 下游（<see cref="RawColorPipeline.TransformGainMapAsync"/> / 传统 GainMap 管线）把这条 raw
     /// **按 `w×h` 单帧**解释（`raw.Length < pixelCount*12` 只做**下界**检查 ⇒ 多帧会被静默放行，
     /// 再按单帧切平面 ⇒ 底图错位）。`-frames:v` 是**输出侧**选项，必须放在 `-i` **之后**。</summary>
-    public static string LinearDecodeArgs(string inputPath, string rawPath, double nits, string srcPrim)
+    public static string LinearDecodeArgs(string inputPath, string rawPath, double nits,
+        string srcPrim, string srcTrc)
         // 形态由输入的图形态决定（分块流组 ⇒ -filter_complex，见 FfmpegCommandBuilder.ChainArgs）；
-        // withLabelReset=true 是必需的：zscale 要读**帧 trc**，而自动拼图的输出帧 trc 被洗成 unknown
-        //（实测组路径报 pc, smpte170m/unknown/unknown ⇒ zscale 报 code 3074: no path between colorspaces）。
-        => $"-y -i \"{inputPath}\" -frames:v 1 {FfmpegCommandBuilder.ChainArgs(inputPath, LinearDecodeFilter(nits, srcPrim), withLabelReset: true)} -pix_fmt gbrpf32le -f rawvideo \"{rawPath}\"";
+        // withLabelReset=true 保留：拼图会把输出帧标签洗成 unknown（实测报 pc, smpte170m/unknown/unknown），
+        // 而本串的 pin/tin/p 已不依赖帧标签 ⇒ 洗掉的是**残留**，不是 zscale 的取数来源。
+        => $"-y -i \"{inputPath}\" -frames:v 1 {FfmpegCommandBuilder.ChainArgs(inputPath, LinearDecodeFilter(nits, srcPrim, srcTrc), withLabelReset: true)} -pix_fmt gbrpf32le -f rawvideo \"{rawPath}\"";
 
     /// <summary>
-    /// 回退解码命令行：输入**已是线性**（如 dngtool 产出的线性 TIFF）时 zscale 无法命名其传递特性
-    /// 而失败 ⇒ 直接取平面浮点（与首选同样的像素格式，下游无需分支）。
+    /// 直解命令行：输入**已是线性**（dngtool 产出的线性 TIFF、解码出的 HDR PFM）⇒ 直接取平面浮点
+    /// （与首选同样的像素格式，下游无需分支）。
+    /// ⚠ 2026-10-28 口径收紧：本支只允许两种输入——"探测确认已是线性"，或"源曲线无法交给 zscale
+    ///   命名 ⇒ 直解后由托管 EOTF 线性化"。把它当 zscale 失败的**通用兜底**会产出错图：gamma 值被当
+    ///   线性 ⇒ 底图二次编码提亮（实测 13→64、128→189）。其余情形 zscale 失败必须响亮失败。
     /// ⚠ 同样必须有 `-frames:v 1`（理由见 <see cref="LinearDecodeArgs"/>；两条是同一契约的两种输入）。
     /// </summary>
     public static string DirectDecodeArgs(string inputPath, string rawPath)
@@ -80,6 +91,56 @@ public static class GainMapJpegCodec
         return rgba;
     }
 
+    /// <summary>
+    /// 按 <see cref="EncodeParams"/> 分派解码串 —— 三条臂的**唯一**分派点（传统 GainMap 管线与引擎
+    /// GainMap 出口都调它，两处不得再各自写分支）：
+    /// <list type="bullet">
+    /// <item><see cref="EncodeParams.AlreadyLinear"/>：直解。对线性值再套任何 EOTF 都会压暗整图。</item>
+    /// <item><see cref="EncodeParams.ManagedEotf"/>：直解拿到的是**编码值**，随后必须由
+    ///   <see cref="DecodeToRgba"/> 施加托管 EOTF —— zscale 命名不了这条源曲线，**绕开 zscale 不等于绕开 gamma**。</item>
+    /// <item>其余：zscale 线性化（tin/pin/p 显式给全，不依赖帧标签）。</item>
+    /// </list>
+    /// ⚠ 这里**没有**"zscale 失败再直解"这一支：兜底直解把 gamma 值当线性用（2026-10-28 实测底图
+    /// 13→64、128→189 的成因），zscale 真失败时调用方必须响亮失败。
+    /// </summary>
+    public static string DecodeArgsFor(EncodeParams p, string inputPath, string rawPath)
+        => p.AlreadyLinear || p.ManagedEotf
+            ? DirectDecodeArgs(inputPath, rawPath)
+            : LinearDecodeArgs(inputPath, rawPath, p.Nits, p.SrcPrim, p.SrcTrc);
+
+    /// <summary>
+    /// 平面浮点 → RGBA 交错，并在 <see cref="EncodeParams.ManagedEotf"/> 臂上**就地补完线性化**。
+    /// 交错与 EOTF 绑成一个调用：分成两步就会有人漏掉第二步（漏掉的产物是提亮的错图，不是报错）。
+    /// 调用方仍须自行校验 <c>raw.Length ≥ pixelCount*12</c>（本函数按给定像素数盲读）。
+    /// </summary>
+    public static float[] DecodeToRgba(EncodeParams p, byte[] raw, int pixelCount)
+    {
+        var rgba = GbrPlanarToRgba(raw, pixelCount);
+        if (p.ManagedEotf && p.SrcCurve is { } srcCurve)
+            // 线性化只借用引擎的同一份内核与同一份曲线（取自源 ICC 描述符）；此处不做任何色彩决策。
+            ColorKernels.DecodeToLinearInPlace(rgba, new TransformSpec
+            {
+                SrcCurve = srcCurve,
+                DstCurve = TransferCurve.Linear,
+            });
+        return rgba;
+    }
+
+    /// <summary>
+    /// zscale 能否按这个传递特性名做像素转换。**取值表来自本机工具**（<c>ffmpeg -h filter=zscale</c>
+    /// 的 transferin 允许值）。它与 <c>ColorSpaceRegistry.ValidateCicpTriple</c> 那张"非阻拦常用值"
+    /// 表问的不是同一件事（那张判"该不该提醒用户"，这张判"能不能做像素转换"）⇒ 不合并、不互为副本。
+    /// 不在表内 ⇒ 调用方改走托管 EOTF，不得直解。
+    /// </summary>
+    public static bool IsZscaleNameableTransfer(string? trc)
+        => (trc ?? "").Trim().ToLowerInvariant() switch
+        {
+            "bt709" or "iec61966-2-1" or "iec61966-2-4" or "linear" or "bt470m" or "bt470bg"
+            or "smpte170m" or "smpte240m" or "log100" or "log316" or "bt2020-10" or "bt2020-12"
+            or "smpte2084" or "arib-std-b67" => true,
+            _ => false,
+        };
+
     /// <summary>一次 GainMap 编码的全部标量参数（由 <see cref="ResolveEncodeParams"/> 产出）。</summary>
     public sealed class EncodeParams
     {
@@ -97,6 +158,22 @@ public static class GainMapJpegCodec
         public float PeakNits;
         /// <summary>线性像素所处的源原色（CICP token）。</summary>
         public string SrcPrim = "bt709";
+        /// <summary>源传递特性（喂给 zscale 的 <c>tin</c>）。它从哪来见 <see cref="SrcTrcSource"/>。</summary>
+        public string SrcTrc = "iec61966-2-1";
+        /// <summary>SrcTrc 的来源文本（日志自证，与 <see cref="PeakSourceText"/> 同形态）。</summary>
+        public string SrcTrcSource = "";
+        /// <summary>ICC 度量识别出的源空间名（ProPhoto RGB / Display P3 …）；null = 只有 CICP 标签。
+        /// CICP 表达不了的原色（超广/具名 ICC 空间）由它去 <c>ColorSpaceRegistry.LinearMatrix</c> 求矩阵。</summary>
+        public string? SourceSpaceName;
+        /// <summary>源曲线已知但 zscale 无法命名（LUT 型/自定义曲线）⇒ 直解 + **托管 EOTF**，
+        /// 绝不把编码值当线性用。</summary>
+        public bool ManagedEotf;
+        /// <summary><see cref="ManagedEotf"/> 时施加的源曲线（取自 ICC 描述符，不另写公式）。</summary>
+        public TransferCurve? SrcCurve;
+        /// <summary>探测出的 <see cref="SrcPrim"/> 只是**近似值**（源色域无 CICP 命名：ProPhoto /
+        /// Adobe RGB / ColorMatch ⇒ 探测侧按注释归成 bt709 并登记此位）。true 时编码器改按
+        /// <see cref="SourceSpaceName"/> 这个具名空间求底图矩阵，不把近似 token 当源的真实原色。</summary>
+        public bool PrimariesApproximated;
         /// <summary>容器 HDR 静态元数据里的峰值（0 = 无）。</summary>
         public float MetaPeak;
         /// <summary>峰值来源文本（日志自证用：用户指定 / 静态元数据 xxx / 名义 1000）。</summary>
@@ -109,7 +186,11 @@ public static class GainMapJpegCodec
     /// 解析 GainMap 编码参数。**与旧专用管线逐条同源**（2026-09-16 抽出，逻辑未改）：
     /// 峰值优先级 = 用户 <c>JpegGainMapTargetNits</c>（默认 1000，故实际上总是走这支）
     /// &gt; 容器 HDR 静态元数据（MaxCLL 优先、其次 BS.2086 mastering）&gt; 名义 1000。
-    /// 原色 = 探测到的 CICP primaries，缺失时取源色域名对应的 ffmpeg primaries，兜底 bt709。
+    /// 原色 = 探测到的 CICP primaries，缺失时取源色域名对应的 ffmpeg primaries，兜底 bt709；
+    /// 源色域**没有 CICP 命名**时（ProPhoto/Adobe/ColorMatch）另交 <c>SourceSpaceName</c> +
+    /// <c>PrimariesApproximated</c>，让编码器改按具名空间求矩阵。
+    /// 传递特性 = 上游输入声明 &gt; 容器 CICP &gt; 源 ICC 吻合 CICP &gt; ICC 托管 EOTF &gt; sRGB 惯例假定
+    /// （见下面的五级注释；线性输入单独登记 <c>AlreadyLinear</c>）。
     /// </summary>
     public static EncodeParams ResolveEncodeParams(FfmpegOptions o, string inputPath)
     {
@@ -136,6 +217,10 @@ public static class GainMapJpegCodec
                     _ => "bt709",
                 };
                 p.PeakSourceText = "解码后的线性 HDR（DecodedUltraHdrPeakNits）";
+                // 本支**不进 zscale**（AlreadyLinear ⇒ 直解）：SrcTrc 只是把"为什么不需要 tin"写清楚，
+                // 否则日志会打出一条默认值冒充取数来源。
+                p.SrcTrc = "linear";
+                p.SrcTrcSource = "解码产物已是线性（不套任何 EOTF）";
                 return p;
             }
             var meta = FfmpegCommandBuilder.ProbeInputColorMetadata(inputPath);
@@ -147,6 +232,74 @@ public static class GainMapJpegCodec
                         && meta.colorPrimaries != "unspecified" && meta.colorPrimaries != "unknown"
                 ? meta.colorPrimaries!
                 : (ColorSpaceRegistry.FfmpegTokens(meta.sourceGamutName).primaries ?? "bt709");
+
+            // 源空间名 / 近似登记：与上面的 SrcPrim 同源，**与 trc 走哪一支无关**。
+            // （ProPhoto 类素材的 SrcPrim 被归成 bt709 且 colorTrc 也被归成 bt709 ⇒ 下面落在"CICP 可命名"
+            //   一支；若把这两行放进 else 分支，编码器就拿不到具名空间，仍然把近似 token 当真原色用。）
+            if (!string.IsNullOrWhiteSpace(meta.sourceGamutName)) p.SourceSpaceName = meta.sourceGamutName!;
+            p.PrimariesApproximated = meta.primariesApproximated;
+
+            // ── 源传递特性（tin / 是否直解）：五级优先，**不许靠"zscale 失败再直解"的兜底** ──────────
+            //   ① 上游**输入声明** <c>ColorSourceDeclTrc</c>：RAW 中间件是 dngtool/LibRaw 的**线性** TIFF，
+            //      容器里没有任何色彩标签 ⇒ 探测只会得出"无标签"，按 sRGB 惯例假定就是给线性值再套一次
+            //      EOTF（压暗）；声明是上游唯一一手事实，必须优先于探测。
+            //   ② 容器 CICP/EXIF 传递。
+            //   ③ 源 ICC 度量曲线恰好吻合一个 CICP token ⇒ 交给 zscale 命名。
+            //   ④ 源 ICC 有曲线但 zscale 命名不了 ⇒ 直解 + **托管 EOTF**（曲线取自同一份描述符，不另写公式）。
+            //   ⑤ 什么标签都没有 ⇒ 按未标注 8-bit RGB 的 sRGB 惯例假定（日志必须点名这是"假定"）。
+            // 缺 ③④⑤ 的历史代价（2026-10-28 实测）：zscale 报 code 3074 ⇒ 调用方落到"直解"兜底 ⇒
+            // gamma 值被当线性 ⇒ 底图二次编码提亮（同一素材纯色块实测 13→64、128→189）。
+            // ⚠ ICC 优先的两种情形：容器命名不了（②落空），或这一对 primaries/trc 本身就是
+            //   `ApplyIccSemantics` 从 ICC **合成**的近似（Adobe/ColorMatch/ProPhoto 统一写了 bt709）——
+            //   后者若不走 ICC，就等于拿一条与源无关的 BT.709 曲线去解 ProPhoto 的 1.8+趾。
+            string declTrc = (o.ColorSourceDeclTrc ?? "").Trim().ToLowerInvariant();
+            bool trcFromDecl = declTrc.Length > 0;
+            string trc = trcFromDecl ? declTrc : (meta.colorTrc ?? "").Trim().ToLowerInvariant();
+            bool iccNeeded = trc != "linear" && (!IsZscaleNameableTransfer(trc) || p.PrimariesApproximated);
+            var iccDesc = iccNeeded ? FfmpegCommandBuilder.ProbeInputIccDescriptor(inputPath) : null;
+
+            if (trc == "linear")
+            {
+                // 输入已是线性 ⇒ 不进 zscale（套任何 EOTF 都是二次解码），直接取平面浮点。
+                p.AlreadyLinear = true;
+                p.SrcTrc = "linear";
+                p.SrcTrcSource = trcFromDecl ? "上游输入声明 ColorSourceDeclTrc=linear" : "容器 CICP 传递=linear";
+            }
+            else if (IsZscaleNameableTransfer(trc) && !p.PrimariesApproximated)
+            {
+                p.SrcTrc = trc;
+                p.SrcTrcSource = trcFromDecl ? "上游输入声明 ColorSourceDeclTrc" : "容器 CICP/EXIF 传递";
+            }
+            else
+            {
+                string iccTok = iccDesc?.Curve.CicpToken ?? "";
+                if (IsZscaleNameableTransfer(iccTok))
+                {
+                    p.SrcTrc = iccTok;
+                    p.SrcTrcSource = "源 ICC 曲线吻合 CICP";
+                }
+                else if (iccDesc != null)
+                {
+                    p.SrcTrc = "iec61966-2-1";
+                    p.SrcTrcSource = "源 ICC 曲线无法被 zscale 命名 ⇒ 直解后由托管 EOTF 线性化";
+                    p.ManagedEotf = true;
+                    p.SrcCurve = iccDesc.Curve;
+                }
+                else if (IsZscaleNameableTransfer(trc))
+                {
+                    // 近似登记在案却读不到 ICC 描述符（缓存里没有可度量的曲线）⇒ 仍用容器/声明的 token，
+                    // 并把"这一侧只有 token 可依"写进来源文本 —— 不许伪装成 ICC 实测。
+                    p.SrcTrc = trc;
+                    p.SrcTrcSource = trcFromDecl
+                        ? "上游输入声明 ColorSourceDeclTrc（ICC 描述符不可用，未复核曲线）"
+                        : "容器 CICP/EXIF 传递（ICC 描述符不可用，未复核曲线）";
+                }
+                else
+                {
+                    p.SrcTrc = "iec61966-2-1";
+                    p.SrcTrcSource = "无 CICP 也无可用 ICC ⇒ 按未标注 8-bit RGB 的 sRGB 惯例假定";
+                }
+            }
 
             // 峰值来源：>0 = 用户显式指定；0 = auto → 读 HDR 静态元数据，无则名义 1000。
             // 绝不无条件取 1000：4000nit 素材被按 1000nit 处理会得到大 headroom 往返偏暗。
@@ -161,6 +314,8 @@ public static class GainMapJpegCodec
         {
             // 探测异常（ffprobe/exiftool 不可用等）：按业界惯例假定 sRGB + 名义峰值，不抛。
             p.SrcPrim = "bt709";
+            p.SrcTrc = "iec61966-2-1";
+            p.SrcTrcSource = "探测失败 ⇒ 按 sRGB 惯例假定（未采信任何标签）";
             p.IsHdrInput = false;
             p.Nits = o.JpegGainMapTargetNits > 0 ? o.JpegGainMapTargetNits : 1000f;
             p.PeakNits = GainMapEncoder.KSdrWhiteNits;

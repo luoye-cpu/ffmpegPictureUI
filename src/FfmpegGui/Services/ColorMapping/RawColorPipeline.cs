@@ -321,41 +321,29 @@ public static class RawColorPipeline
         var tmp = Path.Combine(PlatformServices.GetTempDir(), $"cms_gm_{Guid.NewGuid():N}.rgba");
         try
         {
-            // ── 解码：zscale 线性化（首选）→ 已是线性的输入（dngtool TIFF / 解码出的 HDR PFM）直解 ──
-            //   ep.AlreadyLinear ⇒ **先**直解：对线性值再套一次 PQ EOTF 会压暗整图并把 headroom 归零
-            //   （判据与 QueueProcessor 旧专用管线同源，两处都必须走同一支）。
+            // ── 解码：三条臂由 GainMapJpegCodec.DecodeArgsFor 统一分派（与传统 GainMap 管线同一份）──
+            //   AlreadyLinear ⇒ 直解；ManagedEotf ⇒ 直解 + 托管 EOTF；其余 ⇒ zscale 线性化。
+            //   ⚠ 旧的"zscale 失败 ⇒ 直解"兜底已删除：它把 gamma 编码值当线性用 ⇒ 底图二次编码提亮
+            //   （2026-10-28 实测纯色块 13→64、128→189）。tin/pin/p 已显式给全，zscale 真失败只能响亮失败。
             log?.Invoke($"[GainMap] Step 2: ffmpeg 解码为线性 RGB 浮点 "
-                      + $"({(ep.AlreadyLinear ? "已是线性（解码产物）" : ep.IsHdrInput ? $"HDR PQ/HLG npl={ep.Nits}" : "SDR")})...\n");
-            var dec = ep.AlreadyLinear
-                ? await RunToEndAsync(ffmpeg, GainMapJpegCodec.DirectDecodeArgs(inputPath, tmp), log, ct).ConfigureAwait(false)
-                : await RunToEndAsync(ffmpeg,
-                    GainMapJpegCodec.LinearDecodeArgs(inputPath, tmp, ep.Nits, ep.SrcPrim), log, ct).ConfigureAwait(false);
-            if (dec != 0 || !File.Exists(tmp))
-            {
-                // 已是线性的输入没有第二条路可试（兜底支就是刚试过的那条）⇒ 不许再跑一遍并报
-                // 「zscale 线性转换失败」这种与事实不符的话，直接落到下面的失败点名。
-                if (ep.AlreadyLinear)
-                {
-                    st.DecodeMs = sw.ElapsedMilliseconds;
-                    throw new InvalidOperationException(
-                        $"GainMap 线性解码失败 (already-linear input, exit {dec})");
-                }
-                log?.Invoke("[GainMap] ⚠️ zscale 线性转换失败，尝试直接解码 (输入可能已是线性)...\n");
-                dec = await RunToEndAsync(ffmpeg,
-                    GainMapJpegCodec.DirectDecodeArgs(inputPath, tmp), log, ct).ConfigureAwait(false);
-            }
+                      + $"({(ep.AlreadyLinear ? "已是线性（解码产物）" : ep.ManagedEotf ? "直解 + 托管 EOTF" : ep.IsHdrInput ? $"HDR PQ/HLG npl={ep.Nits}" : "SDR")})...\n");
+            log?.Invoke($"[GainMap] 源传递 {ep.SrcTrc}（来源：{ep.SrcTrcSource}）；源原色 {ep.SrcPrim}"
+                      + (ep.PrimariesApproximated && ep.SourceSpaceName != null
+                          ? $" 系近似 ⇒ 底图矩阵按具名空间 {ep.SourceSpaceName} 求" : "") + "\n");
+            var dec = await RunToEndAsync(ffmpeg,
+                GainMapJpegCodec.DecodeArgsFor(ep, inputPath, tmp), log, ct).ConfigureAwait(false);
             st.DecodeMs = sw.ElapsedMilliseconds;
             if (dec != 0 || !File.Exists(tmp))
                 throw new InvalidOperationException($"GainMap 线性解码失败 (exit {dec})");
             PlatformServices.MarkAsTemporaryFile(tmp);
 
-            // ── 平面 → RGBA 交错（gbrpf32le 的平面序是 G, B, R）──
+            // ── 平面 → RGBA 交错（gbrpf32le 的平面序是 G, B, R；ManagedEotf 臂同批线性化）──
             long pixelCount = (long)w * h;
             var raw = await File.ReadAllBytesAsync(tmp, ct).ConfigureAwait(false);
             if (raw.Length < pixelCount * 12L)
                 throw new InvalidOperationException($"GainMap 像素数据不完整（{raw.Length}B < {pixelCount * 12L}B）");
             var sw2 = Stopwatch.StartNew();
-            var pixels = GainMapJpegCodec.GbrPlanarToRgba(raw, checked((int)pixelCount));
+            var pixels = GainMapJpegCodec.DecodeToRgba(ep, raw, checked((int)pixelCount));
             st.ProcessMs = sw2.ElapsedMilliseconds;
 
             // ── 计划层的标注**不适用于本出口**，必须清空 ──
@@ -400,7 +388,9 @@ public static class RawColorPipeline
                 jpegProgressiveLevel: gmProgLv,
                 container: GainMapEncoder.ContainerOf(outputPath),
                 sourceBaseRaw: options.GainMapSourceBaseRawForEncode,
-                inputIsSdrWhiteUnit: options.GainMapInputIsSdrWhiteUnit).ConfigureAwait(false);
+                inputIsSdrWhiteUnit: options.GainMapInputIsSdrWhiteUnit,
+                sourceSpaceName: ep.SourceSpaceName,
+                primariesApproximated: ep.PrimariesApproximated).ConfigureAwait(false);
             st.EncodeMs = sw3.ElapsedMilliseconds;
             if (!ok || !File.Exists(outputPath) || new FileInfo(outputPath).Length == 0)
                 throw new InvalidOperationException("GainMapEncoder 编码失败");
