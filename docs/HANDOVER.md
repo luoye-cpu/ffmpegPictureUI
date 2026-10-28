@@ -3785,7 +3785,8 @@ CJK 棘轮另计：UI 面 901 > 885 ⇒ 按换回法归因后**抬基线至 901*
 **给下一手的两条**
 
 1. **push 未做**（本轮未获授权）。H-14 项 1 的分叉已由 `2ad1889` 合流收口（实测
-   `git rev-list --count --left-right origin/main...HEAD` = `0 0` ⇒ 那次"behind 5"已不存在），本批提交后本地 ahead 2。
+   `git rev-list --count --left-right origin/main...HEAD` = `0 0` ⇒ 那次"behind 5"已不存在）；
+   本批之后只 `ahead`（`behind=0`），笔数随读数/归因文档提交增长 ⇒ 以该命令当场读数为准，不在文档里写死。
 2. **AOT 档的第 4b 步换了写法**：归档里没有 `FfmpegGui.dll`，指纹对账结构上无法回答 ⇒ 本轮用
    「包内 `ProductVersion` == 标签所指提交」+「**把修复本身打在出货 exe 上重量像素**」两条替代
    （脚本 `tests/output/gmfix_1028/run_l3_beta10.ps1`，一次性取证、非在册判据）。后者比 locale JSON 的

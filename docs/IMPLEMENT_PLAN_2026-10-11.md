@@ -4590,4 +4590,6 @@ ICC 明明在产物里（`-x icc_pathname=` 由 cjxl 写的），exiftool 只是
 - **附注标签**：**`1.6.0BETA10`** → `0640fb518e7766e354aa8bb95582cf890ea057c3`
   （对账用 `git rev-parse 1.6.0BETA10^{commit}`，`git cat-file -t` = `tag`；正文含绑定轮/模块读数/出包/L3/像素复测）。
   本条读数写实与 HANDOVER H-15 提交在标签**之后**，不进标签。
-- **未做**：`push`（本轮未获授权）。本地 `main` 相对 `origin/main` = ahead 2（`0640fb5` + 本条文档提交），behind 0。
+- **未做**：`push`（本轮未获授权）。`git rev-list --count --left-right origin/main...HEAD` 实测 `behind=0`、
+  `ahead` 随本条之后的文档提交逐笔增加（本条落笔前量得 `ahead=3`）⇒ 不写死数字，以该命令当场读数为准；
+  标签 `1.6.0BETA10` 固定指 `0640fb5`，不随后来的读数/归因更正提交移动。
