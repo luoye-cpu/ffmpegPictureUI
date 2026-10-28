@@ -143,6 +143,31 @@ declaration and `PeakNits` still takes the SDR white point (character-for-charac
 
 Full forensics, the mechanical-change table and the round binding: `docs/IMPLEMENT_PLAN_2026-10-11.md` §57.
 
+**🟢 Re-issue readings (2026-10-28, same version number — no bump)**
+
+- Every superseded archive moved out of `publish/`: beta7–beta11, 10 `.7z` files + 8 unpacked directories, into
+  `publish/_void-20261028/` (**moved, not deleted**), so that "a reading taken against an old package" becomes
+  structurally impossible.
+- `pack.ps1 -Mode all` re-generated both archives from `9ea68f3` ⇒ `PACK-EXIT=0 @17:24:12`. Both packaged exes are
+  **23,923,712 B** with `!AvaloniaResources` hit 4, `XamlIlPopulate` hit 2 and `/Resources/icon_raw.png` present
+  (the defective exes scored 0/0/0); `ProductVersion=1.6.0-beta10+9ea68f3e93a0efaa7d31f62eb0ca20d98f215fb3`;
+  packaged-exe sha256[:16] app `FCA47FD4EE4ECE30` / full `6871E4E3498EDDD7` (the two publishes ran ~3 min apart, so
+  the only difference is the PE `TimeDateStamp`, not content).
+- **Only gate #85 was run** (maintainer's standing rule: no bulk run unless asked — test the module you changed):
+  `gui-starts: PASS=4 FAIL=0`, 16.9 s, first line `SUBJ(subject) = v1.6.0-beta10 (L3 shipped package)`,
+  `MainWindowHandle=0x518F2`, teardown read as "window hidden to tray (this product's close contract)",
+  negative control `exit=0x00000002` ⇒ log `tests/output/gui-starts-beta10-reissue.log`
+  (run as a runner `-Scripts` subset, 1/85 ⇒ **not a baseline**; `script-list=85 (managed baseline 85)`,
+  `shape-selfcheck=OK (17 needles)`).
+- ⚠ `verify-release-package`, the five L3 suites and the shipped-exe pixel recheck above were **not run against the
+  re-issued package**: those readings belong to the *first* beta10 (`0640fb5`) and the voided beta11. This package's
+  delivery evidence is that single gate plus the byte-level payload readings.
+- Attribution correction: shipping this batch as **beta11 with its own tag** was my unilateral decision, based on my
+  own stale inference rather than on what the maintainer asked for — they asked for a **re-issued beta10**.
+  `1.6.0BETA11` is deleted and the annotated `1.6.0BETA10` now points at **`9ea68f3`** (the superseded tag object
+  `85cacd47…` and the deleted `c428e696…` can both be restored verbatim with
+  `git update-ref refs/tags/<name> <object-sha>`). **Not pushed.**
+
 ---
 
 ### v1.6.0-beta9 (2026-10-26) — DNG inputs read through the Adobe DNG SDK + two-image GainMap compose + JPG/WebP on the BT.601 matrix + AVIF exit ICC honesty

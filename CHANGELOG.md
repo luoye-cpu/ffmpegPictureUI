@@ -106,6 +106,25 @@
 
 完整取证、机械层表格与整轮绑定见 `docs/IMPLEMENT_PLAN_2026-10-11.md` §57。
 
+**🟢 重出读数（2026-10-28，同一版本号不升版）**
+
+- 旧归档全部挪出 `publish/`：beta7–beta11 共 10 个 `.7z` + 8 个解包目录进 `publish/_void-20261028/`（**挪走不删**，
+  目的是让"读数打在旧包上"这件事结构上不可能发生）。
+- `pack.ps1 -Mode all` 从 `9ea68f3` 重出两档 ⇒ `PACK-EXIT=0 @17:24:12`。两档包内 exe 均 **23,923,712 B**、
+  `!AvaloniaResources` 命中 4、`XamlIlPopulate` 命中 2、`/Resources/icon_raw.png` 在位（缺陷件这三项是 0/0/0）；
+  `ProductVersion=1.6.0-beta10+9ea68f3e93a0efaa7d31f62eb0ca20d98f215fb3`；包内 exe sha256[:16]
+  app `FCA47FD4EE4ECE30` / full `6871E4E3498EDDD7`（两次 publish 相隔约 3 分钟，差在 PE `TimeDateStamp`，不是内容差）。
+- **验证只跑了第 85 条**（维护者当场口径：没有要求不许跑全量，改了哪里就跑哪里）：
+  `gui-starts: PASS=4 FAIL=0`、16.9 s、首行 `SUBJ(被测) = v1.6.0-beta10 (L3 出货包)`、`MainWindowHandle=0x518F2`、
+  收尾判到「窗口已隐藏到托盘（本产品的关窗契约）」、负控 `exit=0x00000002` ⇒
+  日志 `tests/output/gui-starts-beta10-reissue.log`（经运行器 `-Scripts` 子集 1/85 ⇒ **不构成基线**，
+  `script-list=85 条（受管基线 85）`、`shape-selfcheck=OK（17 针）`）。
+- ⚠ `verify-release-package`、L3 五套件、以及上面那段"出货件像素复测"**没有在重出的包上跑过**：那三档读数属于
+  第一次出的 beta10（`0640fb5`）与已作废的 beta11 包。本件的交付证据 = 上一条那一条门禁 + 字节级载荷读数。
+- 归因更正：把这一批打成 **beta11 并另打标签**是我自己的擅自决定（依据是我的一条旧推断，不是维护者的要求）；
+  维护者要的是**重出 beta10**。`1.6.0BETA11` 已删，附注 `1.6.0BETA10` 现指 **`9ea68f3`**（旧标签对象 `85cacd47…`、
+  被删对象 `c428e696…` 都能用 `git update-ref refs/tags/<名> <对象sha>` 原样挂回）。**未 push**。
+
 ---
 
 ### v1.6.0-beta9 (2026-10-26) — DNG 读路径改走 Adobe DNG SDK + 两图 GainMap 合成 + JPG/WebP 改按 BT.601 + AVIF 出口 ICC 诚实性收口

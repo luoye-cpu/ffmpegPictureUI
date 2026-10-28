@@ -4596,6 +4596,10 @@ ICC 明明在产物里（`-x icc_pathname=` 由 cjxl 写的），exiftool 只是
 
 ### §59 2026-10-28：「软件我为什么打不开」——出货包的 GUI 自 beta9 起就起不来；根因 = AOT 发布自重编时丢 Avalonia 资源表；补第 85 条实机闸
 
+> ⚠ **本节末尾两条处置已被 §60 作废**：① 「beta11 出包读数」那一段（版本号升成 beta11 是我的擅自决定，不是维护者的要求）；
+> ② 「beta10 的处置：标签与归档**不撤销、不重打**」——维护者要的是**重出 beta10**。取证过程、实验表 E1–E7、撤回的那条
+> 错误归因、第 85 条的双向验牙**全部仍然有效**，只有处置结论换了。
+
 - **触发**：维护者「软件我为什么打不开？」。beta10 的出包读数（§58）当时**全部为真**且**全部无助于这件事**——
   验包 16/0、L3 五套件 17/0·100/0·28/0·24/0·19/0，而他双击包内件一键都起不来。
 - **判词**：NativeAOT 产物里没有 Avalonia 的编译 XAML 载荷，包内 exe 在 `App.Initialize()` 抛
@@ -4656,3 +4660,35 @@ ICC 明明在产物里（`-x icc_pathname=` 由 cjxl 写的），exiftool 只是
   ② 第 85 条只在**有交互桌面**时才有牙（无桌面时窗口起不来也只会 WARN，存活判据仍有效）；
   ③ 本轮三处"我打错程序集名"（`FfmpegGui`）已全树清扫（`python` 按真实目录名归一，残留 0）——
   凡脚本里要写这个名字，一律 `Get-ChildItem` 发现，不手打。
+
+### §60 2026-10-28：**重出 v1.6.0-beta10**（同一版本号不升版）——旧归档挪出 `publish/`、两档包重打、第 85 条打在新包上转绿
+
+- **触发**：维护者两句。「我要求的是你重出 beta10，你为什么改 TAG 了？」与「另外你为什么没有按照规范出新版包清理掉旧版包？为什么你在违反命令」。
+- **判词（我错在哪，两条都是）**：
+  ① 把出货版本号从 beta10 升成 **beta11** 并另打 `1.6.0BETA11`——那是我把**自己的一条旧推断**（"动了 `pack.ps1` 就得升版本位"）
+  当成授权用了；维护者要的是**重出同一个 beta10**。
+  ② 出新版却没清旧版：`publish/` 里同时留着 beta7–beta11 的 **10 个归档 + 8 个解包目录**，
+  "这条 L3/验包读数打在哪个包上"随时可能被旧件冒充（§59 那条"两档只差 3 字节 PE 时间戳"的对照，正是这种混淆的产物）。
+- **口径（当场再收一次，已进用户级全局提示词 `~/.qoder-cn/AGENTS.md`「## 测试」）**：没有明确要求**不跑全量**——
+  含整张清单、整个套件、`--all`，以及**任何把未改动模块一起跑的批量动作**；要扩大范围先说清"这条改动为什么需要它"并等点头。
+  ⚠ §58 里我写的"交付档由验包 + L3 覆盖"被读成了免检授权 ⇒ 更正为**交付档同样要先点头**，本轮据此只跑了第 85 条。
+- **六步处置与实际执行**：
+  1. 版本位 `1.6.0-beta11 → 1.6.0-beta10`（`python` 按 `glob('src/*/*.csproj')` 定位，不手打名字）；CHANGELOG 中英的 beta11 段**并进** beta10 段，标题改 `(2026-10-28 **重出**)` ⇒ 重出 release 提交 **`9ea68f3`**（full `9ea68f3e93a0efaa7d31f62eb0ca20d98f215fb3`）。
+  2. 旧归档挪出 `publish/`：beta7/8/9/10/11 共 **10 个 `.7z`** + `publish/build/` 下 **8 个解包目录** → `publish/_void-20261028/{archives,build}/`（**挪走不删**）；`publish/PLAN` 未动，`tests/projects/GainMapTestHost/PLAN` 那个 junction 用 `dir /AL` 复核仍在位。
+  3. 重打包：`pack.ps1 -Mode all`，走在册三件套姿势的一次性启动器 `tests/output/_launch-pack-beta10-reissue.ps1` ⇒ `PACK-EXIT=0 @2026-10-28 17:24:12`。
+  4. 验证：**只跑第 85 条**（维护者在"只跑第 85 条 / 一条都不跑 / 跑完整交付档"里选了第一个）。先 `dotnet build ffmpegPictureUI.sln -c Release`（`BUILD-EXIT=0 @17:29:26`）过 STALE 新鲜度闸——上一批测试宿主建在 17:0x 改版本位之前——再 `_run-step3-gates.ps1 -Scripts verify-package-gui-starts.ps1 -Probes contract`，`PKG_VER=1.6.0-beta10`。
+  5. 标签：附注 `1.6.0BETA10` 从 `0640fb5` 重指 **`9ea68f3`**（新标签对象 `2203e27292387b7e388c47103da2bee8b5031c24`，`git cat-file -t` = `tag`）；删 `1.6.0BETA11`。`git ls-remote --tags origin` 实测远端只到 `1.6.0BETA9` ⇒ 这两次改写碰不到任何共享的引用。
+  6. 文档（本节 + §59 前向指针 + `HANDOVER` H-17）随本笔提交。**push 未做、未获授权。**
+- **重出读数（每项都指得到一条当场跑过的命令）**：
+  | 项 | 读数 |
+  |---|---|
+  | 两档包内 exe | 均 **23,923,712 B**；`!AvaloniaResources` 命中 **4**、`XamlIlPopulate` **2**、`/Resources/icon_raw.png` **1**（缺陷件这三项 0/0/0）；件内运行时串 `11.0.0-rc.2.26504.105` |
+  | 版本自证 | 第 85 条首行打印 `ProductVersion=1.6.0-beta10+9ea68f3e93a0efaa7d31f62eb0ca20d98f215fb3` ⇒ 出货件里嵌的就是重出那颗提交，不是我抄的 |
+  | 包内 exe sha256[:16] | app `FCA47FD4EE4ECE30`、full `6871E4E3498EDDD7`。本轮两档**不同哈希**（两次 publish 相隔约 3 分钟 ⇒ `TimeDateStamp` 差）；与 §59 那次"同哈希"是同一现象的另一侧，别再拿它当内容差异 |
+  | 第 85 条 | `gui-starts: PASS=4 FAIL=0`、16.9 s：存活 12 s / `MainWindowHandle=0x518F2` / 收尾「窗口已隐藏到托盘（本产品的关窗契约）」pid=43320 / 负控 `exit=0x00000002`。日志 `tests/output/gui-starts-beta10-reissue.log`，逐条留痕 `tests/output/_gate_script_verify-package-gui-starts.ps1.txt` |
+  | 运行器形状 | `script-list=85 条（受管基线 85）`、`shape-selfcheck=OK（17 针）`、汇总行点名 `（-Scripts 子集 1/85 ⇒ 不构成基线）`；`artifact-sha16: FfmpegGui.dll=5F2A5FD3295DD2F0、FfmpegGui.exe=547E408850DA0B0F、ServiceProbe.exe=87A944ABB2EF29C2、UiTestHost.exe=DCE8C61447E00E96、GainMapTestHost.exe=ADB61E1B1ED8C7E1`——这五枚是 17:29 那次 sln 重建的**开发件**，与出货件是两套字节，别混报 |
+- **⚠ 本件没有的读数（不许被读成跑过）**：`verify-release-package`、L3 五套件、§57 两条修复的出货件像素复测**都没打在重出的包上**。
+  §59 表里那些（验包 16/0、L3 17/0·28/0·24/0·100/0·19/0、未标注底图 12/128/200 与 (19,59,180)、ProPhoto 14/146/210 与 (0,82,204)）
+  绑定的是 `0640fb5` 首件（包内 exe `F5706887B8FB56FF`）与 `bb04bba` 的 beta11 件（`7627862B33B6BB2C`），与本件 `6871E4E3498EDDD7` 不是同一份字节。
+- **退路**：被取代的旧标签对象 `85cacd47b6594687468fcaddb7e510585836c315`（→ `0640fb5`）、被删的 `c428e6964b09dc630fbb2692e624c175367927ad`（→ `bb04bba`），各用 `git update-ref refs/tags/<名> <对象sha>` 原样挂回（未 gc）；旧归档整批在 `publish/_void-20261028/`。
+- **未了结**：① 本件交付证据薄——要补就是"验包 + L3 五套件 + 像素复测"这一档，**等点名才跑**；② §59 未了结①②（rc.2 下 AOT 自重编丢资源表的上游成因、第 85 条在无交互桌面时只对"窗口"这层降成 WARN）照旧；③ `publish/_void-20261028/` 约 320 MB 是挪走不是删除，什么时候清由维护者定。

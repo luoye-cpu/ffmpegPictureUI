@@ -3794,6 +3794,9 @@ CJK 棘轮另计：UI 面 901 > 885 ⇒ 按换回法归因后**抬基线至 901*
 
 ### H-16 2026-10-28 —— beta11：出货包的 GUI 打不开（beta9 起）已修；新增第 85 条实机闸；**未 push**
 
+> ⚠ **本节的 "beta11" 那一行与它承载的版本位作废**（见 H-17）：把它升成 beta11 是我擅自决定的，维护者要的是重出 beta10。
+> 现象/归属/机制/修法/新判据五行**照旧有效**，只有版本号与那颗标签换了。
+
 | 项 | 读数 |
 |---|---|
 | 现象 | 双击包内 `FfmpegGui.exe` 无窗口；事件日志四条 `0xc0000409`（维护者 13:58 三次 + 复现 14:04）；异常文本 `XamlLoadException: No precompiled XAML found for FfmpegGui.App`（`App.Initialize()`） |
@@ -3811,3 +3814,23 @@ CJK 棘轮另计：UI 面 901 > 885 ⇒ 按换回法归因后**抬基线至 901*
    撤掉 `pack.ps1` 里这两步的时机 = 第 85 条**转红**的那一刻（它比"exe 变小了"这种直觉可靠）。
 3. 第 85 条只在有交互桌面时能对"窗口"这一层有牙（无桌面 ⇒ 句柄判据只 WARN；存活判据仍有效）。
 4. §57 那批的开放项照旧（见 H-15 与账本 §57「第三方像素往返需要先有一条 CICP 命名不了的 HDR 源」）。
+
+### H-17 2026-10-28 —— **重出 v1.6.0-beta10**（不升版）：旧归档挪出 `publish/`、两档包重打、第 85 条打在新包上 `PASS=4 FAIL=0`；**未 push**
+
+| 项 | 读数 |
+|---|---|
+| 为什么重出 | 维护者要的是重出 beta10，我却升成 beta11 并另打标签——依据是我自己的旧推断，不是授权；同时出新版没清旧版，`publish/` 里堆着 beta7–beta11 的 10 个归档 + 8 个解包目录，"读数打在哪个包上"可被旧件冒充 |
+| 旧包处置 | 全部**挪走不删** → `publish/_void-20261028/{archives,build}/`；`publish/PLAN` 与 `GainMapTestHost/PLAN` junction 未动（`dir /AL` 复核在位） |
+| 重出提交 | `9ea68f3`（full `9ea68f3e93a0efaa7d31f62eb0ca20d98f215fb3`），版本位回到 `1.6.0-beta10`，CHANGELOG 中英的 beta11 段并进 beta10 段（标题 `(2026-10-28 **重出**)`） |
+| 出包 | `pack.ps1 -Mode all` ⇒ `PACK-EXIT=0 @17:24:12`；两档包内 exe 均 **23,923,712 B**、`!AvaloniaResources` 4 / `XamlIlPopulate` 2 / `icon_raw.png` 在位（缺陷件 0/0/0）；exe sha16：app `FCA47FD4EE4ECE30`、full `6871E4E3498EDDD7`（差在 PE 时间戳，两次 publish 相隔约 3 分钟） |
+| 验证（**只跑了这一条**） | 第 85 条 `verify-package-gui-starts`，`PKG_VER=1.6.0-beta10` ⇒ `SUBJ = v1.6.0-beta10 (L3 出货包)`、`ProductVersion=1.6.0-beta10+9ea68f3…`、`PASS=4 FAIL=0`、16.9 s、`MainWindowHandle=0x518F2`、收尾"已隐藏到托盘"、负控 `exit=0x00000002`。经运行器 `-Scripts` 子集 1/85 ⇒ **不构成基线**；先重建 sln 过 STALE（宿主建在改版本位之前）。日志 `tests/output/gui-starts-beta10-reissue.log` |
+| ⚠ 本件**没有**的读数 | `verify-release-package`、L3 五套件、§57 修复的出货件像素复测——都没打在重出的包上；那些绑定 `0640fb5` 首件（exe `F5706887B8FB56FF`）与已作废的 beta11（`7627862B33B6BB2C`），与本件不是同一份字节 |
+| 标签 | 附注 `1.6.0BETA10` → **`9ea68f3`**（对象 `2203e27…`）；`1.6.0BETA11` 已删。退路：旧对象 `85cacd4…`（→`0640fb5`）、`c428e69…`（→`bb04bba`）用 `git update-ref refs/tags/<名> <对象sha>` 原样挂回。远端实测只到 `1.6.0BETA9` ⇒ 改写不触及共享引用 |
+| 明细 | 账本 §60（含六步处置、逐格读数、"本件没有的读数"清单），§59 顶部加了前向指针 |
+
+**下一手（按序）**
+
+1. **push 仍未获授权**：`ahead` 以 `git rev-list --count --left-right origin/main...HEAD` 当场读数为准，不写进文档。
+2. 要给这个重出包补交付证据，就点名跑"验包 + L3 五套件 + §57 像素复测"这一档（7 条，全指出货包）——**不点名不跑**。
+3. **口径已固化**：`~/.qoder-cn/AGENTS.md`「## 测试」——没有要求不跑全量（含整表、套件、`--all`、任何把未改动模块一起跑的批量动作）；连交付档也要先点头。§58 那句"交付档由验包 + L3 覆盖"不再是免检授权。
+4. `NoBuild` 是绕开不是根治（H-16 第 2 条）；第 85 条在无交互桌面只对"窗口"这层降成 WARN（H-16 第 3 条）；§57 那批开放项照旧。
