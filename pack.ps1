@@ -85,9 +85,20 @@ function Invoke-Pack([string]$mode) {
 
     # Step 1: NativeAOT 发布（所有版本统一 AOT 编译）
     Write-Host "`n[1/4] dotnet publish (NativeAOT)..." -ForegroundColor Yellow
+    # ⚠ 必须先 build、再 publish -p:NoBuild=true（2026-10-28 实测）。
+    #   让 publish 自己重编时，编译产物里没有 Avalonia 的资源表（exe 字节里
+    #   `!AvaloniaResources` / `!XamlIlPopulate` 0 命中，件小约 8 MB），出货包在
+    #   App.Initialize() 抛 XamlLoadException: No precompiled XAML found for FfmpegGui.App，
+    #   进程以 0xC0000409 自杀 —— 表现为：包能解压、headless 能跑、L3 五套件全绿，
+    #   但 GUI 一键都打不开（v1.6.0-beta9 与 beta10 两版都如此；beta8 的包内件有载荷，能起）。
+    #   单变量实测：去掉 PublishSingleFile、TrimMode=partial、把 ILC 钉到 rc.1 均无效；
+    #   build + publish -p:NoBuild=true ⇒ 23,923,712 B、载荷在位、窗口句柄非 0。
+    dotnet build "$ProjectDir\FfmpegGui.csproj" -c Release --nologo
+    if ($LASTEXITCODE -ne 0) { throw "[$mode] 预构建失败（发布前必须有一份带资源表的编译件）" }
     dotnet publish $ProjectDir\FfmpegGui.csproj `
         -c Release -r $Rid `
         -p:PublishAot=true `
+        -p:NoBuild=true `
         -p:SelfContained=true `
         -p:PublishSingleFile=true `
         -p:IlcOptimizationPreference=Speed `

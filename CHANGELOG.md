@@ -12,6 +12,42 @@
 
 ## 📝 更新日志
 
+### v1.6.0-beta11 (2026-10-28) — 出货包的窗口终于起得来：NativeAOT 产物不再丢 Avalonia 编译 XAML 载荷 + 新增第 85 条「包内 exe 必须开窗口」
+
+> **这是修一个"全绿却打不开"的缺陷**。v1.6.0-beta10 出包时 `verify-release-package` 16/0、L3 五套件
+> 17/0·100/0·28/0·24/0·19/0 全绿，而双击包内 `FfmpegGui.exe` 一键都起不来——事件日志里
+> 0xc0000409 三次（维护者两次 + 复现一次），异常文本
+> `Avalonia.Markup.Xaml.XamlLoadException: No precompiled XAML found for FfmpegGui.App`，位置在 `App.Initialize()`。
+> ⚠ 归属：**beta9 的包就是这样**（beta8 的包内件有载荷、能起）；根因是 .NET 11 SDK 在 10-24 从
+> `11.0.0-rc.1.26425.128` 升到 `11.0.0-rc.2.26504.105`（三份包内 exe 各自内嵌的运行时版本串实测，不是靠安装时间猜），
+> 新链路下 `dotnet publish -p:PublishAot=true` 会**自己重编一次**，而那次重编的产物里没有 Avalonia 资源表。
+
+**🟢 修：pack 侧改成"先 build、再 publish `-p:NoBuild=true`"**
+
+- 让 ILC 直接吃普通构建产物（带 `!AvaloniaResources` 的那份），不在发布里重编。
+- 单变量实测（同一份源码）：去掉 `PublishSingleFile`/自解压 ⇒ 仍无载荷；`TrimMode=partial` ⇒ 仍无载荷；
+  把 ILC/运行时钉到 rc.1 ⇒ 仍无载荷（且那次"发布"只花 58 秒，属性多半没生效，如实记为未证）；
+  **build + NoBuild ⇒ 23,923,712 B、载荷在位、`XamlIlPopulate` 命中 2 次、GUI 存活 15 s 且 `MainWindowHandle` 非 0**。
+- 代价如实登记：包内 exe 由 15.7 MB 涨回 23.9 MB（rc.1 时代 beta8 是 23.7 MB），归档随之变大。
+
+**🟢 判据补漏：第 85 条 `verify-package-gui-starts.ps1`**
+
+- 全仓此前**没有一条**门禁把包内 exe 当"要开窗口的程序"起过：L3 一律 `--headless`，而 headless 不碰 Skia/XAML
+  ⇒ 84 条全绿与"GUI 一键都打不开"同时成立。这条把"不带 `--headless` 起进程 ⇒ 必须活过观察窗"变成判据。
+- 两档被测照其余 L3 同一约定（默认 Release 产物 ⇒ 每轮跑；`$env:PKG_VER` ⇒ 打出货包；两档都缺即 `exit 2`，不回退 Debug）。
+- 自带**负控**：同一份 exe 以 `--headless -i <不存在的输入>` 起 ⇒ 必然很快退出 ⇒ 若"存活"那把尺此时还报存活，本条判红
+  （证尺子是活的，不是恒绿）。窗口句柄判据在无交互桌面时只 **WARN 不判红**，避免造出一台假红机器。
+- 牙已实测：打在 v1.6.0-beta10 的包上 ⇒ `FAIL gui 存活… exit=0xC0000409` 并点名异常文本、负控 PASS、`PASS=1 FAIL=1`、exit 1。
+- ⚠ 判据只读 `MainWindowHandle`，**绝不读 `MainWindowTitle`**：后者会向目标进程取文本，进程不响应时调用方直接挂死
+  （本轮实测连挂两次，每次 60~180 秒）。
+- 接线随批：`$scriptList` + 84 → **85**、`$expectedScriptCount`、三种散文形态各改（`script-list=85 条（受管基线 85）`、
+  `shape-selfcheck=OK（17 针）`、`verify-ps-compat 13/0`）。
+
+账本 `docs/IMPLEMENT_PLAN_2026-10-11.md` §59 有逐条取证与作废归因（含一处我先说成"ILC 吃的"、
+后来发现证据是 09-06 的陈旧 `linked/` 中间件而**撤回更正**的记录）。
+
+---
+
 ### v1.6.0-beta10 (2026-10-28) — GainMap 出口的两条静默降级修复：源传递特性必须命名、底图原色不再拿近似 token 冒充真实
 
 > **验证（按模块跑，不起全量轮）**：本批 `src` 改动的绑定轮 = `tests/output/gates-round-20261028b.log`

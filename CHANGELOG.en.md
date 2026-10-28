@@ -13,6 +13,50 @@ All notable changes to this project are documented in this file.
 
 ## 📝 Changelog
 
+### v1.6.0-beta11 (2026-10-28) — The shipped package finally opens a window: NativeAOT no longer loses Avalonia's compiled-XAML payload + new gate #85 "the packaged exe must start a window"
+
+> **This fixes an "all green, yet won't open" defect.** When v1.6.0-beta10 was packaged, `verify-release-package`
+> scored 16/0 and the five L3 suites 17/0·100/0·28/0·24/0·19/0 — all green — while double-clicking the packaged
+> `FfmpegGui.exe` opened nothing: three 0xc0000409 records in the event log (two from the maintainer, one from my
+> reproduction) with `Avalonia.Markup.Xaml.XamlLoadException: No precompiled XAML found for FfmpegGui.App` thrown
+> in `App.Initialize()`. ⚠ Attribution: **beta9's package behaved the same** (beta8's packaged binary carries the
+> payload and does start). The trigger is the .NET 11 SDK moving from `11.0.0-rc.1.26425.128` to
+> `11.0.0-rc.2.26504.105` on 10-24 — read out of the runtime version string each of the three packaged binaries
+> embeds, not inferred from install timestamps — under which `dotnet publish -p:PublishAot=true` **recompiles** the
+> app, and that recompilation produces an assembly without Avalonia's resource table.
+
+**🟢 Fix: pack now builds first, then publishes with `-p:NoBuild=true`**
+
+- ILC consumes the ordinary build output (the one carrying `!AvaloniaResources`) instead of recompiling during publish.
+- Single-variable measurements (same source): dropping `PublishSingleFile`/self-extract ⇒ still no payload;
+  `TrimMode=partial` ⇒ still no payload; pinning ILC/runtime to rc.1 ⇒ still no payload (and that "publish" took only
+  58 s, so the property most likely never took effect — recorded as unproven, not as a result);
+  **build + NoBuild ⇒ 23,923,712 B, payload present, `XamlIlPopulate` hit twice, GUI alive past 15 s with a non-zero
+  `MainWindowHandle`**.
+- Cost registered honestly: the packaged exe grows back from 15.7 MB to 23.9 MB (rc.1-era beta8 was 23.7 MB).
+
+**🟢 Coverage gap closed: gate #85 `verify-package-gui-starts.ps1`**
+
+- Nothing in the repo had ever treated the packaged exe as "a program that must show a window": L3 always runs it with
+  `--headless`, and headless never touches Skia/XAML ⇒ "84 gates green" and "the GUI opens on zero attempts" were
+  simultaneously true. This gate turns "start without `--headless` ⇒ must survive the observation window" into a judgment.
+- Two-tier subject like the other L3 suites (default = the fresh Release build, so it runs every round;
+  `$env:PKG_VER` = the shipped package; missing subject ⇒ `exit 2`, never falling back to Debug).
+- Ships its own **negative control**: the same exe launched as `--headless -i <nonexistent input>` must exit quickly —
+  if the liveness ruler still reported "alive" then, this gate goes red (proving the ruler is not permanently green).
+  The window-handle check only **WARNs** when there is no interactive desktop, so it cannot manufacture a false red.
+- Teeth demonstrated: run against the v1.6.0-beta10 package it printed
+  `FAIL gui 存活… exit=0xC0000409` naming the exception text, negative control PASS, `PASS=1 FAIL=1`, exit 1.
+- ⚠ It reads only `MainWindowHandle` and **never `MainWindowTitle`**: the latter sends a message to the target process
+  and blocks the caller when the process is not responding (measured twice this session, 60–180 s each).
+- Registration followed in the same batch: `$scriptList` 84 → **85**, `$expectedScriptCount`, all three prose forms
+  (`script-list=85 条（受管基线 85）`, `shape-selfcheck=OK（17 针）`, `verify-ps-compat 13/0`).
+
+Ledger `docs/IMPLEMENT_PLAN_2026-10-11.md` §59 carries the step-by-step forensics, including a claim I retracted
+(I first said ILC ate the payload; the evidence turned out to be a stale 09-06 `linked/` intermediate).
+
+---
+
 ### v1.6.0-beta10 (2026-10-28) — Two silent degradations at the GainMap exit fixed: the source transfer characteristic must be named, and the base gamut no longer passes an approximated token off as the truth
 
 > **Verification (run per module; no full-table round)**: the binding round for this batch's `src` changes is
