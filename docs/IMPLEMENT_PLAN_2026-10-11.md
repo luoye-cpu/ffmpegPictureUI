@@ -4593,3 +4593,66 @@ ICC 明明在产物里（`-x icc_pathname=` 由 cjxl 写的），exiftool 只是
 - **未做**：`push`（本轮未获授权）。`git rev-list --count --left-right origin/main...HEAD` 实测 `behind=0`、
   `ahead` 随本条之后的文档提交逐笔增加（本条落笔前量得 `ahead=3`）⇒ 不写死数字，以该命令当场读数为准；
   标签 `1.6.0BETA10` 固定指 `0640fb5`，不随后来的读数/归因更正提交移动。
+
+### §59 2026-10-28：「软件我为什么打不开」——出货包的 GUI 自 beta9 起就起不来；根因 = AOT 发布自重编时丢 Avalonia 资源表；补第 85 条实机闸
+
+- **触发**：维护者「软件我为什么打不开？」。beta10 的出包读数（§58）当时**全部为真**且**全部无助于这件事**——
+  验包 16/0、L3 五套件 17/0·100/0·28/0·24/0·19/0，而他双击包内件一键都起不来。
+- **判词**：NativeAOT 产物里没有 Avalonia 的编译 XAML 载荷，包内 exe 在 `App.Initialize()` 抛
+  `XamlLoadException: No precompiled XAML found for FfmpegGui.App` 后以 **0xc0000409** 自杀。
+  归属 **beta9 起**，beta10 继承；beta8 的包内件有载荷、能起。
+- **一手证据**（都可当场复现）：
+  | 证据 | 读数 |
+  |---|---|
+  | 事件日志 | `Application Error` 三条 + 复现一条：13:58:10 / 13:58:58 / 13:59:03（维护者三次）/ 14:04:55（我），路径全是 `publish\build\FFmpegPictureUI-v1.6.0-beta10-x64-full\FfmpegGui.exe`，异常代码全 `0xc0000409` |
+  | 异常文本 | 把包内 exe 的 stderr 重定向到文件后拿到：`Avalonia.Markup.Xaml.XamlLoadException: No precompiled XAML found for FfmpegGui.App` ⇒ `App.Initialize()` ⇒ `Program.Main`；30 天内 `FfmpegGui` 无其它崩溃记录（10-27 20:02 那条是 `RADAR_PRE_LEAK_64`，不是崩溃） |
+  | 三份包内件结构 | beta8 `!AvaloniaResources` 命中 4 次 + `/Resources/icon_raw.png` 在；beta9/beta10 **0 次、路径也不在**（`icon_raw.png` 这条是**只属于 app 自己**的资源路径，用来排除"命中的其实是 Avalonia 包自带资源表"的误读） |
+  | 归因（件内自证，不靠安装时间） | 三份 exe 各自内嵌的运行时版本串：beta8 = `11.0.0-rc.1.26425.128`，beta9/beta10 = `11.0.0-rc.2.26504.105`；SDK 目录实测 `11.0.100-rc.2.26504.105` 装于 **10-24 05:06**（beta8 打包 10-23、beta9 打包 10-26） |
+  | 开发件对照 | `src/.../bin/Release/net11.0/win-x64/FfmpegGui.dll` 1,795,584 B **有**载荷、GUI 起得来 ⇒ XAML 编译本身没问题 |
+- **⚠ 一处归因作废并更正**：我先说"载荷是在 ILC 那一步丢的，因为 `linked/FfmpegGui.dll` 里还在"——**撤回**。
+  那个文件 mtime = **09-06 05:13**，是九月某次成功 AOT 发布的残留中间件，不是本次发布产出的；新鲜证据是
+  本次 publish 于 16:01 重编出的 `obj/.../FfmpegGui.dll`（1,634,816 B）**已经没有**载荷
+  ⇒ 丢的位置在 **AOT 发布自带的那次重编**，早于 ILC。教训同「读数要问它是哪一轮的」：中间件的时间戳与它是谁产的，必须先核。
+- **单变量实验（同一份源码，各一次读数，日志 `tests/output/aottest_*.log`）**：
+  | 档 | 变量 | 产物 | 载荷 |
+  |---|---|---|---|
+  | E1 | 去掉 `PublishSingleFile` + 自解压 | 15,706,112 B（与 beta10 **逐字节同尺寸**） | 无 ⇒ 排除单文件封装 |
+  | E2 | `TrimMode=partial` | 18,186,752 B | 无 ⇒ 排除裁剪档位 |
+  | E5 | 把 ILC/运行时钉到 rc.1 | 15,735,296 B，且"发布"只花 58 s | 无 ⇒ 属性多半没生效，如实记为**未证**，不写成"钉版本无效" |
+  | E6 | `publish -p:NoBuild=true` | 23,923,712 B | **有** |
+  | E7 | 干净复现：先 `dotnet build`（7.87 s）再 `publish -p:NoBuild=true` | 23,923,712 B、`XamlIlPopulate` 命中 2 次 | **有，且 GUI 存活 15 s、`MainWindowHandle=0xE818C2`** |
+- **修法（`pack.ps1`，+11/−0）**：每个 mode 的 publish 前先 `dotnet build -c Release`，publish 补 `-p:NoBuild=true`
+  ⇒ ILC 吃带资源表的编译件。代价如实登记：**包内 exe 15.7 MB → 23.9 MB**（回到 beta8 的 23.7 MB 量级），
+  归档 app 9.1→10.9 MB、full 51.7→53.5 MB。
+- **判据补漏：第 85 条 `verify-package-gui-starts.ps1`（140 行）**——本仓此前**没有任何一条**门禁把包内 exe
+  当"要开窗口的程序"起过（L3 一律 `--headless`，headless 不碰 Skia/XAML），所以"84 条全绿"与"GUI 一键都打不开"能同时成立。
+  - 两档被测照其余 L3 同一约定（默认 Release 产物 ⇒ 每轮跑；`$env:PKG_VER` ⇒ 打出货包；两档都缺即 `exit 2`，不回退 Debug）。
+  - **牙已双向实测**：坏包 ⇒ `FAIL gui 存活… exit=0xC0000409` + 点名异常文本、`PASS=1 FAIL=1`、exit 1；
+    修好的包 ⇒ `PASS=4 FAIL=0`（存活 12 s、`MainWindowHandle=0x30112A`、收尾三态、负控）。
+  - **负控**：同一份 exe 以 `--headless -i <不存在的输入>` 起 ⇒ 必然很快退出 ⇒ 若"存活"这把尺此时还报存活就判红
+    （证尺子不是恒绿）。实测 `exit=0x00000002` 如期。
+  - 收尾判据第一版写错了：我按"关窗应即退出"期待，实测 `-ExitGraceSec 25` 仍不退 ⇒ 读源码才对上
+    （`src/FfmpegGui/App.xaml.cs:199-205`：`Closing` 里 `!AllowFullExit ⇒ args.Cancel = true` + 隐藏到托盘，**这是设计**）
+    ⇒ 改成三态：**退出 / 句柄归 0（已隐到托盘，PASS）/ 句柄仍非 0（WARN）**，并把"绝不读 `MainWindowTitle`"写进头部
+    （它会向目标进程取文本，进程不响应时调用方挂死——本轮实测连挂两次，每次 60~180 s）。
+  - 接线四处同步：`$scriptList` 84 → **85**、`$expectedScriptCount = 85`、三种散文形态各改；
+    复跑 `shape-selfcheck=OK（17 针）`、`script-list=85 条（受管基线 85）`、`verify-ps-compat 13/0`、`selftest 40/0 SKIP=1`。
+- **beta11 出包读数**（日志 `tests/output/pack-beta11.log`）：`PACK-EXIT=0 @16:18:51`；app 17 文件 / 10.9 MB、
+  full 581 文件 / 53.5 MB；包内 exe 23,923,712 B、`!AvaloniaResources` 命中 4、`/Resources/icon_raw.png` 在。
+  独立验包 **16/0**（app `EEEEA85E9C9BD81B` / full `7627862B33B6BB2C`，`ProductVersion=1.6.0-beta11+bb04bba…`）；
+  L3 五套件 **17/0 · 28/0 · 24/0 · 100/0 · 19/0**（各首行 `SUBJ = v1.6.0-beta11 (L3 出货包)`）。
+  两档 exe **只差 3 个字节**，位置在 PE 头 `TimeDateStamp`（0x110）与 0x12CD520 的一处副本 ⇒ 时间戳差异，不是内容差异
+  （beta10 那轮两档同哈希，是落在同一秒）。
+  出货包上的 §57 像素复测照跑（`tests/output/gmfix_1028/run_l3_beta11.ps1`，产物 mtime 16:28）：
+  未标注件底图 **12/128/200 与 (19,59,180)**、ProPhoto 件 **14/146/210 与 (0,82,204)** 且日志点名
+  「源原色 bt709 系近似 ⇒ 底图矩阵按具名空间 ProPhoto RGB 求」「底图色域映射: ProPhoto RGB → bt709」。
+  ⚠ 归属口径：CLI 日志自身不打版本串，这条靠**脚本里写死的被测路径 = beta11 包** + 产物 mtime 归属，不靠日志自称。
+- **标签**：附注 **`1.6.0BETA11`** → `bb04bba`（= 包内 `ProductVersion` 里那颗；`git cat-file -t` = `tag`，
+  对账用 `git rev-parse 1.6.0BETA11^{commit}`）。
+- **beta10 的处置**：标签 `1.6.0BETA10`（→ `0640fb5`）与它的两个归档**不撤销、不重打**——它的 GUI 打不开这件事
+  在 CHANGELOG beta11 段与本节点名；要用图形界面请装 beta11 的包，或跑开发件。
+- **未了结**：① `.NET 11 rc.2` 下 `publish -p:PublishAot=true` 自重编丢 Avalonia 资源表的**上游成因未查**
+  （本仓用"先 build 再 NoBuild"绕开，代价是包大 8 MB）；若将来 SDK 修好，撤 `NoBuild` 的判据就是第 85 条转红的那一刻；
+  ② 第 85 条只在**有交互桌面**时才有牙（无桌面时窗口起不来也只会 WARN，存活判据仍有效）；
+  ③ 本轮三处"我打错程序集名"（`FfmpegGui`）已全树清扫（`python` 按真实目录名归一，残留 0）——
+  凡脚本里要写这个名字，一律 `Get-ChildItem` 发现，不手打。

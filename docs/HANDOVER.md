@@ -3791,3 +3791,23 @@ CJK 棘轮另计：UI 面 901 > 885 ⇒ 按换回法归因后**抬基线至 901*
    「包内 `ProductVersion` == 标签所指提交」+「**把修复本身打在出货 exe 上重量像素**」两条替代
    （脚本 `tests/output/gmfix_1028/run_l3_beta10.ps1`，一次性取证、非在册判据）。后者比 locale JSON 的
    ASCII key 命中更强：它验的是出货件的行为，不是出货件里有没有某段文本——下次出包建议照做。
+
+### H-16 2026-10-28 —— beta11：出货包的 GUI 打不开（beta9 起）已修；新增第 85 条实机闸；**未 push**
+
+| 项 | 读数 |
+|---|---|
+| 现象 | 双击包内 `FfmpegGui.exe` 无窗口；事件日志四条 `0xc0000409`（维护者 13:58 三次 + 复现 14:04）；异常文本 `XamlLoadException: No precompiled XAML found for FfmpegGui.App`（`App.Initialize()`） |
+| 归属 | **beta9 起**（beta8 的包内件有 Avalonia 资源表、能起）；触发是 .NET 11 SDK 10-24 从 `rc.1.26425.128` 升到 `rc.2.26504.105`——版本串直接从三份包内 exe 里读出来的，不是靠安装时间推断 |
+| 机制 | `dotnet publish -p:PublishAot=true` 在 rc.2 下**自己重编**一次，那次重编的编译件里没有 `!AvaloniaResources`（16:01 的 obj 件 1,634,816 B 无 / 12:19 的 bin 件 1,795,584 B 有）⇒ 丢在重编，早于 ILC |
+| 修法 | `pack.ps1` 每档先 `dotnet build` 再 `publish -p:NoBuild=true`；代价：包内 exe 15.7 MB → **23.9 MB**（app 归档 9.1→10.9、full 51.7→53.5） |
+| 新判据 | 第 85 条 `verify-package-gui-starts.ps1`：不带 `--headless` 起包内/开发件 exe，**必须活过观察窗**；自带负控；收尾按"退出 / 隐到托盘 / 关不动"三态判读（`App.xaml.cs:199-205` 的关窗契约是隐藏到托盘，不是退出）。牙双向实测：坏包 `PASS=1 FAIL=1`、好包 **`PASS=4 FAIL=0`** |
+| beta11 | 提交 `bb04bba` · 附注标签 `1.6.0BETA11` → 同一颗 · 验包 **16/0** · L3 五套件 **17/0·28/0·24/0·100/0·19/0** · 清单 **84 → 85** |
+| 明细 | 账本 §59（含实验表 E1/E2/E5/E6/E7、一处**撤回**的错误归因、两档 exe 仅差 3 字节的 PE 时间戳） |
+
+**下一手（按序）**
+
+1. **push 未做**（未获授权）：`behind=0`，`ahead` 以 `git rev-list --count --left-right origin/main...HEAD` 当场读数为准。
+2. **`NoBuild` 是绕开不是根治**：rc.2 下 AOT 发布自重编丢 Avalonia 资源表的**上游成因未查**。若哪天 SDK 修好，
+   撤掉 `pack.ps1` 里这两步的时机 = 第 85 条**转红**的那一刻（它比"exe 变小了"这种直觉可靠）。
+3. 第 85 条只在有交互桌面时能对"窗口"这一层有牙（无桌面 ⇒ 句柄判据只 WARN；存活判据仍有效）。
+4. §57 那批的开放项照旧（见 H-15 与账本 §57「第三方像素往返需要先有一条 CICP 命名不了的 HDR 源」）。

@@ -15,6 +15,12 @@ All notable changes to this project are documented in this file.
 
 ### v1.6.0-beta11 (2026-10-28) — The shipped package finally opens a window: NativeAOT no longer loses Avalonia's compiled-XAML payload + new gate #85 "the packaged exe must start a window"
 
+> **Packaging readings**: `PACK-EXIT=0 @16:18:51`; app 17 files / 10.9 MB + full 581 files / 53.5 MB; packaged exe
+> 23,923,712 B (`!AvaloniaResources` hit 4 times, `/Resources/icon_raw.png` present); independent verification
+> **16/0**; the five L3 suites **17/0 · 28/0 · 24/0 · 100/0 · 19/0** (each first line
+> `SUBJ = v1.6.0-beta11 (L3 shipped package)`); gate #85 run against this package **PASS=4 FAIL=0** (the same ruler
+> on the beta10 package gave `FAIL gui 存活 exit=0xC0000409`); annotated tag `1.6.0BETA11` → `bb04bba`.
+
 > **This fixes an "all green, yet won't open" defect.** When v1.6.0-beta10 was packaged, `verify-release-package`
 > scored 16/0 and the five L3 suites 17/0·100/0·28/0·24/0·19/0 — all green — while double-clicking the packaged
 > `FfmpegGui.exe` opened nothing: three 0xc0000409 records in the event log (two from the maintainer, one from my

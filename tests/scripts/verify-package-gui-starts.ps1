@@ -80,18 +80,10 @@ function Start-GuiArm([string]$tag) {
     }
     [pscustomobject]@{ proc = $p; alive = $alive; handle = $handle; stderr = $e; stdout = $o }
 }
-# 收尾：先正常关，关不掉再强杀（返回是否"关窗即退"）
-function Close-GuiArm($arm) {
-    $p = $arm.proc
-    if ($p.HasExited) { return $true }
-    [void]$p.CloseMainWindow()
-    if (-not $p.WaitForExit($ExitGraceSec * 1000)) {
-        Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
-        [void]$p.WaitForExit(3000)
-        return $false
-    }
-    return $true
-}
+# 收尾三态判读：退出 / 隐藏到托盘 / 关不动。
+#   ⚠ 本产品的契约是"关窗即隐藏到托盘"（App.xaml.cs:199-205：Closing 里 !AllowFullExit ⇒ args.Cancel=true
+#     + HideMainWindowToTray）⇒ "CloseMainWindow 后进程还在"**不是缺陷**，早期版本把它报成 WARN 是
+#     判据期待写错（16:2x 实测 -ExitGraceSec 25 仍不退，读源码才对上）。三态各给各的读数。
 function First-Exception([string]$path) {
     if (-not (Test-Path $path)) { return '' }
     $t = @(Get-Content $path -ErrorAction SilentlyContinue)
@@ -113,8 +105,16 @@ try {
     if ($arm.alive) {
         if ($arm.handle -ne 0) { CK 'gui 主窗口句柄非 0' $true "MainWindowHandle=0x$('{0:X}' -f $arm.handle.ToInt64())" }
         else { WK 'gui 主窗口句柄' '观察窗内句柄仍为 0 ⇒ 无交互桌面时属预期，不判红（存活判据才是本条的牙）' }
-        $clean = Close-GuiArm $arm
-        if (-not $clean) { WK 'gui 关窗即退' "CloseMainWindow 后 ${ExitGraceSec}s 未退 ⇒ 已强杀（留痕见 $d）" }
+        [void]$arm.proc.CloseMainWindow()
+        Start-Sleep -Seconds 4
+        $arm.proc.Refresh()
+        if ($arm.proc.HasExited) {
+            CK 'gui 收尾：关窗即退（AllowFullExit 档）' $true ("自然退出 exit=0x{0:X8}" -f $arm.proc.ExitCode)
+        } elseif ($arm.proc.MainWindowHandle -eq 0) {
+            CK 'gui 收尾：窗口已隐藏到托盘（本产品的关窗契约，不是关不掉）' $true ("pid=" + $arm.proc.Id + " 仍在但主窗口句柄归 0")
+        } else {
+            WK 'gui 收尾' ("CloseMainWindow 后窗口句柄仍非 0 ⇒ 关窗请求没生效（pid=" + $arm.proc.Id + "），已强杀")
+        }
     }
 } finally {
     if ($arm -and -not $arm.proc.HasExited) { Stop-Process -Id $arm.proc.Id -Force -ErrorAction SilentlyContinue }
