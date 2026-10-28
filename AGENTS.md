@@ -24,6 +24,17 @@
 
 新文件的归置问题一律先回答"它是**判据**还是**产物**"：判据进 `tests/scripts`（平铺）并登记，产物进 `tests/output`。
 
+⚠ **出包只留最新一档：旧版本的包直接删掉。** 维护者 2026-10-28 的原话：「应该删掉旧版本的包，只留新包」
+（此前我给的重出处置是"旧归档挪进 `publish/_void-<日期>/` 不删"，被当场否掉）。做法：出新包即删
+`publish/FFmpegPictureUI-v<旧版>-x64*.7z` **连同** `publish/build/FFmpegPictureUI-v<旧版>-x64*` 解包目录；
+`publish/PLAN`（随包工具链）与 `publish/rescued-*`（存证 bundle/diff）不在删除范围。
+理由不是省盘：旧包在场，"这条 L3/验包/像素读数打在哪个包上"就可能答错——2026-10-28 实况是 `publish/` 里同时堆着
+beta7–beta11 的 10 个归档 + 8 个解包目录（1.7 GB）。**要留证据就记日志与哈希（`ProductVersion`、包内 exe
+`sha256[:16]`），不留包。**
+删前先扫 reparse point：`os.walk(followlinks=False)` + `st_file_attributes & FILE_ATTRIBUTE_REPARSE_POINT`
+（§5 那族教训——`publish/build/*-full/` 里若出现指向 `publish/PLAN` 的 junction，递归删会连随包工具链一起没；
+2026-10-28 实测那批 2936 项里 0 个 reparse point，`pack.ps1` 是实拷贝，但仍要每次先扫）。
+
 ⚠ **零引用 ≠ 无用**：`_sweep-output.py --unreferenced` 删的是"名字在在册文本里一次都没出现过"的条目，
 而**手工跑出来的活线产物正属此类**——2026-10-22 就这样误删了 `jxr-probe`(627 MB) 与
 `jxr_engine_probe`(556 MB)，两者没有任何在册脚本能重生成，也不在 git/回收站/卷影里，不可复原。

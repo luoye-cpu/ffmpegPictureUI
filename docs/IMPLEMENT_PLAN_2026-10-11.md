@@ -4674,10 +4674,17 @@ ICC 明明在产物里（`-x icc_pathname=` 由 cjxl 写的），exiftool 只是
   ⚠ §58 里我写的"交付档由验包 + L3 覆盖"被读成了免检授权 ⇒ 更正为**交付档同样要先点头**，本轮据此只跑了第 85 条。
 - **六步处置与实际执行**：
   1. 版本位 `1.6.0-beta11 → 1.6.0-beta10`（`python` 按 `glob('src/*/*.csproj')` 定位，不手打名字）；CHANGELOG 中英的 beta11 段**并进** beta10 段，标题改 `(2026-10-28 **重出**)` ⇒ 重出 release 提交 **`9ea68f3`**（full `9ea68f3e93a0efaa7d31f62eb0ca20d98f215fb3`）。
-  2. 旧归档挪出 `publish/`：beta7/8/9/10/11 共 **10 个 `.7z`** + `publish/build/` 下 **8 个解包目录** → `publish/_void-20261028/{archives,build}/`（**挪走不删**）；`publish/PLAN` 未动，`tests/projects/GainMapTestHost/PLAN` 那个 junction 用 `dir /AL` 复核仍在位。
+  2. 旧归档清场：beta7/8/9/10/11 共 **10 个 `.7z`** + `publish/build/` 下 **8 个解包目录**（实测 **1.7 GB**）先挪进 `publish/_void-20261028/{archives,build}/`，
+     **当日即被维护者否掉"不删"这一半**（原话「应该删掉旧版本的包，只留新包」）⇒ 整棵 `_void-20261028/` 已删除。
+     删前用 `os.walk(followlinks=False)` + `FILE_ATTRIBUTE_REPARSE_POINT` 扫过：**2936 项 / 0 个 reparse point**
+     （`pack.ps1` 往 full 包里放 PLAN 是**实拷贝**，不是 junction）⇒ 递归删碰不到 `publish/PLAN`；
+     `tests/projects/GainMapTestHost/PLAN` 那个 junction 用 `dir /AL` 复核仍在位。
+     **规范已固化进 `AGENTS.md` §1**：出包只留最新一档，旧包连解包目录一起删；证据留在日志与哈希里，不留在包上。
   3. 重打包：`pack.ps1 -Mode all`，走在册三件套姿势的一次性启动器 `tests/output/_launch-pack-beta10-reissue.ps1` ⇒ `PACK-EXIT=0 @2026-10-28 17:24:12`。
   4. 验证：**只跑第 85 条**（维护者在"只跑第 85 条 / 一条都不跑 / 跑完整交付档"里选了第一个）。先 `dotnet build ffmpegPictureUI.sln -c Release`（`BUILD-EXIT=0 @17:29:26`）过 STALE 新鲜度闸——上一批测试宿主建在 17:0x 改版本位之前——再 `_run-step3-gates.ps1 -Scripts verify-package-gui-starts.ps1 -Probes contract`，`PKG_VER=1.6.0-beta10`。
-  5. 标签：附注 `1.6.0BETA10` 从 `0640fb5` 重指 **`9ea68f3`**（新标签对象 `2203e27292387b7e388c47103da2bee8b5031c24`，`git cat-file -t` = `tag`）；删 `1.6.0BETA11`。`git ls-remote --tags origin` 实测远端只到 `1.6.0BETA9` ⇒ 这两次改写碰不到任何共享的引用。
+  5. 标签：附注 `1.6.0BETA10` 从 `0640fb5` 重指 **`9ea68f3`**；删 `1.6.0BETA11`。`git ls-remote --tags origin` 实测远端只到 `1.6.0BETA9` ⇒ 这两次改写碰不到任何共享的引用。
+     ⚠ 标签对象在**同一晚被重打过一次**：第一版正文 `2203e27292387b7e388c47103da2bee8b5031c24` 写的旧归档处置是"挪走不删"，
+     规范改成"删"之后重打成现行版 **`f5ac724a3fed2992315b0562be3ad16a5bad3c3b`**（都指同一颗 `9ea68f3`，`git update-ref` 可挂回旧的那版）。
   6. 文档（本节 + §59 前向指针 + `HANDOVER` H-17）随本笔提交。**push 未做、未获授权。**
 - **重出读数（每项都指得到一条当场跑过的命令）**：
   | 项 | 读数 |
@@ -4690,5 +4697,9 @@ ICC 明明在产物里（`-x icc_pathname=` 由 cjxl 写的），exiftool 只是
 - **⚠ 本件没有的读数（不许被读成跑过）**：`verify-release-package`、L3 五套件、§57 两条修复的出货件像素复测**都没打在重出的包上**。
   §59 表里那些（验包 16/0、L3 17/0·28/0·24/0·100/0·19/0、未标注底图 12/128/200 与 (19,59,180)、ProPhoto 14/146/210 与 (0,82,204)）
   绑定的是 `0640fb5` 首件（包内 exe `F5706887B8FB56FF`）与 `bb04bba` 的 beta11 件（`7627862B33B6BB2C`），与本件 `6871E4E3498EDDD7` 不是同一份字节。
-- **退路**：被取代的旧标签对象 `85cacd47b6594687468fcaddb7e510585836c315`（→ `0640fb5`）、被删的 `c428e6964b09dc630fbb2692e624c175367927ad`（→ `bb04bba`），各用 `git update-ref refs/tags/<名> <对象sha>` 原样挂回（未 gc）；旧归档整批在 `publish/_void-20261028/`。
-- **未了结**：① 本件交付证据薄——要补就是"验包 + L3 五套件 + 像素复测"这一档，**等点名才跑**；② §59 未了结①②（rc.2 下 AOT 自重编丢资源表的上游成因、第 85 条在无交互桌面时只对"窗口"这层降成 WARN）照旧；③ `publish/_void-20261028/` 约 320 MB 是挪走不是删除，什么时候清由维护者定。
+- **退路**：被取代的旧标签对象 `85cacd47b6594687468fcaddb7e510585836c315`（→ `0640fb5`）、被删的 `c428e6964b09dc630fbb2692e624c175367927ad`（→ `bb04bba`），各用 `git update-ref refs/tags/<名> <对象sha>` 原样挂回（未 gc）。
+  ⚠ 旧归档**没有退路**：按新规范整棵 `_void-20261028/`（1.7 GB）已删，`publish/` 只剩本版两档——这是设计，不是事故；
+  要重现旧档只能回到那颗提交重跑 `pack.ps1`（而 beta9/beta10 首件的包**本来就是坏的**，重现它没有价值）。
+- **未了结**：① 本件交付证据薄——要补就是"验包 + L3 五套件 + 像素复测"这一档，**等点名才跑**；② §59 未了结①②（rc.2 下 AOT 自重编丢资源表的上游成因、第 85 条在无交互桌面时只对"窗口"这层降成 WARN）照旧；③ ~~`publish/_void-20261028/` 约 320 MB 是挪走不是删除，什么时候清由维护者定~~ —— 本条**已了结且我的数字是错的**：
+  那次我只 `du` 了 `archives/`（315 MB）就当整棵报数，整棵实测 **1.7 GB**（解包目录 1.4 GB 才是大头）。
+  维护者随后定死规范「只留新包」⇒ 整棵删除，待办消失。教训：报"多大"要报**被测对象本身**的量，别报手边那条命令的量。

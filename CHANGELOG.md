@@ -108,8 +108,11 @@
 
 **🟢 重出读数（2026-10-28，同一版本号不升版）**
 
-- 旧归档全部挪出 `publish/`：beta7–beta11 共 10 个 `.7z` + 8 个解包目录进 `publish/_void-20261028/`（**挪走不删**，
-  目的是让"读数打在旧包上"这件事结构上不可能发生）。
+- 旧归档清场：beta7–beta11 共 10 个 `.7z` + 8 个解包目录（实测 **1.7 GB**）先挪进 `publish/_void-20261028/`，
+  **维护者当场把处置否成"删"**（原话「应该删掉旧版本的包，只留新包」）⇒ 已连解包目录一起删除，
+  `publish/` 现在只剩本版的两档。删前扫 reparse point：2936 项里 **0 个**（`pack.ps1` 往 full 包里放 PLAN 是实拷贝，
+  不是 junction）⇒ 递归删不会伤到 `publish/PLAN`。这条已写进本仓 `AGENTS.md` §1：**出包只留最新一档，旧包直接删**——
+  证据留在日志与哈希里，不留在包上。
 - `pack.ps1 -Mode all` 从 `9ea68f3` 重出两档 ⇒ `PACK-EXIT=0 @17:24:12`。两档包内 exe 均 **23,923,712 B**、
   `!AvaloniaResources` 命中 4、`XamlIlPopulate` 命中 2、`/Resources/icon_raw.png` 在位（缺陷件这三项是 0/0/0）；
   `ProductVersion=1.6.0-beta10+9ea68f3e93a0efaa7d31f62eb0ca20d98f215fb3`；包内 exe sha256[:16]

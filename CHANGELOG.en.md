@@ -145,9 +145,13 @@ Full forensics, the mechanical-change table and the round binding: `docs/IMPLEME
 
 **🟢 Re-issue readings (2026-10-28, same version number — no bump)**
 
-- Every superseded archive moved out of `publish/`: beta7–beta11, 10 `.7z` files + 8 unpacked directories, into
-  `publish/_void-20261028/` (**moved, not deleted**), so that "a reading taken against an old package" becomes
-  structurally impossible.
+- Superseded archives cleared out: beta7–beta11, 10 `.7z` files + 8 unpacked directories (**1.7 GB** measured), were first
+  moved to `publish/_void-20261028/`; the **maintainer vetoed "keep them" on the spot** — 「应该删掉旧版本的包，只留新包」
+  ("delete the old packages, keep only the new one") — so they were deleted together with their unpacked trees, leaving
+  `publish/` holding only this version's two archives. Before deleting, reparse points were scanned: **0** in 2936 entries
+  (`pack.ps1` copies PLAN into the full package rather than linking it), so the recursive delete cannot reach
+  `publish/PLAN`. This is now a repo rule in `AGENTS.md` §1: **a release keeps only the newest package — delete the old
+  ones**; evidence lives in logs and hashes, not in leftover packages.
 - `pack.ps1 -Mode all` re-generated both archives from `9ea68f3` ⇒ `PACK-EXIT=0 @17:24:12`. Both packaged exes are
   **23,923,712 B** with `!AvaloniaResources` hit 4, `XamlIlPopulate` hit 2 and `/Resources/icon_raw.png` present
   (the defective exes scored 0/0/0); `ProductVersion=1.6.0-beta10+9ea68f3e93a0efaa7d31f62eb0ca20d98f215fb3`;
