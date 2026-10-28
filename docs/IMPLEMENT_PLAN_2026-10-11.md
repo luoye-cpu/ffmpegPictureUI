@@ -4535,3 +4535,57 @@ ICC 明明在产物里（`-x icc_pathname=` 由 cjxl 写的），exiftool 只是
   `ps-compat **13/0**`、`contract 160/0`，运行器汇总「全部通过」并明标「-Scripts 子集 2/84 ⇒ 不构成基线」。
   ⚠ 改的过程中被 `verify-ps-compat` 抓了一次解析错（`产出"` 后换行接 `+` 在 PS 里是新语句 ⇒
   「表达式中缺少右括号」），子集轮当场红 ⇒ 这条门禁存在的意义兑现了一次；处方是把 `+` 留在行尾。
+
+### §58 2026-10-28：v1.6.0-beta10 出包读数 + **口径更正——测试按模块跑，不存在"全量"这个动作**
+
+- **触发**：维护者「完整修复，修复完成后重新出包」。我按 beta9 的既有顺序起手，**在版本位改动之后又起了一次全量整轮**
+  ⇒ 被当场叫停：「你能不能不要跑全量测试了？谁告诉你跑全量测试的？……改了哪里就跑哪里」
+  「测试项目不应该存在全量这个，测试项目应该全是一个个模块构成，所有测试应该只跑对应模块」。
+  ⚠ 这条不是"这次别跑"，是**取消我自己记的那条授权**：旧记忆里"整轮的两种时刻之②＝交付/交接前"是我落笔的推断，
+  不成立 ⇒ 已就地改写在 `gate-round-discipline` 记忆里（发布档的覆盖改由 `verify-release-package` + L3 五套件承担）。
+- **作废轮留档（不作任何结论读数）**：`tests/output/gates-round-20261028c.log` —— 12:21:00 起跑（在册启动器
+  `gates-launch-full9.ps1` 三件套姿势、磁盘 71.66 GB），**91 行处 12:57:28 手工杀树中止**（`LAUNCHER-RUNNER-EXIT=1`）。
+  中止留下的 `tests/output/.gates.lock` 按口径先确认 holder pid=2392 已不在再删；`tasklist` 逐个点名
+  `ServiceProbe/UiTestHost/GainMapTestHost/FfmpegGui/ffmpeg/exiftool/dngtool` 全 0 命中 ⇒ 无孤儿占 CPU。
+- **版本位与重建**：`src/FfmpegGui/FfmpegGui.csproj:19` `1.6.0-beta9 → 1.6.0-beta10`（SemVer 连字符）；
+  `dotnet build ffmpegPictureUI.sln -c Release` **0 警告 0 错误 @46.83 s**（起跑前确认无存活 `FfmpegGui.exe`，
+  否则 MSB3027 会吞掉 apphost）。五枚产物 `sha256[:16]`：
+  `FfmpegGui.dll=2141C77632A51828`、`FfmpegGui.exe=1E1B4E597190E81E`（**只这两枚随版本串变**）、
+  `ServiceProbe.exe=9A91353DBE87A077`、`UiTestHost.exe=92B21A2ACF4B9D02`、`GainMapTestHost.exe=C05B9EA7DAB001F2`（与 §57 逐枚相同）；
+  新鲜度自证 = 最新源码 mtime 12:18:24 < 产物 12:19:23。
+- **模块复跑（版本位之后，`-Scripts` 子集，明标「不构成基线」）**：`contract 160/0`、`gainmap-engine 185/0 @108.2 s`、
+  `probe-mirror-parity 87/0 @11.0 s`、`gainmap-compose 85/0 @56.1 s`、`gainmap-managed 49/0 @56.7 s`（§8 `gmgamut` 33/0 在内）。
+  - ⚠ 第一次四条子集轮里 compose/managed **各红一次**（compose 三条 FAIL 起于「元数据 iso：CLI 成功且产物在位（rc=1）」、
+    managed 一条「废弃开关用例未产出」）。归因按次序走：①**手工复跑同一条 iso 命令 ⇒ `RC=0` 且产物在位**
+    （`[GainMap合成] ✅ 完成：sdr_gainmap.jpg（回读 256×192…）`）；②两条各自**独跑** ⇒ 85/0、49/0（与 §57 绑定轮同值）。
+    ⇒ 记为**环境/负载红**，判据一字未动。诚实边界：该子集明细里**没有留下超时文本**，所以归因只到"独跑绿、子集内红"这一层，
+    不宣称具体机制（与 §57 作废轮 a 的 §12 那次不同，那次日志里有 `exiftool 元数据读取超时（5s）` 的实况）。
+  - 运行器是**串行**执行子脚本（并发约束段 line 143 起讲的是"两个实例/两个轮"的自并发，不是一条轮内并行）
+    ⇒ 子集内的这两条红不能拿"并行竞争"当解释，只能拿负载/时序解释。
+- **release 提交**：`0640fb5`（18 文件 +903/−105）= src 六件 + `ServiceProbe` 的 `gmgamut` + `TestGroups` +
+  六门禁脚本随批 + 版本位 + CHANGELOG 中英 + 本账本 §57。提交先于打包（`ProductVersion` 要内嵌这颗提交，
+  先出包会得到指向上一颗的假溯源——beta9 踩过）。
+- **出包**：`pack.ps1 -Mode all`，启动器 `tests/output/_launch-pack-beta10.ps1`（照抄在册三件套，只换日志名）。
+  `PACK-EXIT=0 @13:14:39`（≈12 分钟）；app **17 文件 / 9.1 MB**、full **581 文件 / 51.7 MB**，两档完整性闸各「必需项齐备」。
+- **独立验包**（`PKG_VER=1.6.0-beta10`，日志 `tests/output/verify-package-beta10.log`）：**PASS=16 FAIL=0**。
+  包内 `FfmpegGui.exe` sha16=**`F5706887B8FB56FF`**（15,706,112 B）、`ProductVersion=1.6.0-beta10+0640fb518e7766e354aa8bb95582cf890ea057c3`；
+  目录↔归档同数 17/17 与 581/581；六件工具与 `publish/PLAN` 逐字节同指纹
+  （ffmpeg `7E1448924D27A63A`、cjxl `B6AE9F8A2C47FB37`、exiftool `68C079C32FDAE0D6`、JxrEncApp `B2656F78C31764E4`、
+  avifenc `625B8FCEB4726C05`、dngtool `5BA612405523D46C`）。
+- **L3 五套件**（同一 `PKG_VER`，各首行 `SUBJ(被测) = v1.6.0-beta10 (L3 出货包)`；日志 `l3-beta10.log` / `l3-beta10-b2.log`）：
+  `verify-package-smoke` **17/0**、`verify-jbrd-e2e` **100/0**、`verify-orientation-rewrap` **28/0**、
+  `verify-gainmap-thirdparty` **24/0**（较 beta9 记的 19 条多出的部分是 §57 期间随批的 D5/D5c 判据，本轮独跑即 24/0）、
+  `verify-encoder-knob-liveness` **19/0**（越界被拒 1 / 未判 1 / 缺口 1 均不计入）—— 本轮该条 `EXIT=0` **未挂死**（beta8 那次挂死已不复现）。
+- **第 4b 步在 AOT 档依旧无法用 DLL 指纹对账**（归档内没有 `FfmpegGui.dll`，NativeAOT 出的是原生 exe）
+  ⇒ 本轮用**两条一手替代判据**，其中第二条是新的、值得留的写法：
+  ① 包内 `ProductVersion` == 标签所指提交；
+  ② **把 §57 的两条修复直接打在出货 exe 上重量像素**（`tests/output/gmfix_1028/run_l3_beta10.ps1`，一次性取证、非在册判据）：
+  A 未标注块图 ⇒ 底图主色 **12/128/200 与 (19,59,180)**（修前 64/189/232，即"把 gamma 值当线性"的提亮量级），
+  日志「源传递 iec61966-2-1（来源：无 CICP 也无可用 ICC ⇒ 按未标注 8-bit RGB 的 sRGB 惯例假定）」+「底图色域：源已在 bt709 内 ⇒ 恒等」；
+  B ProPhoto 件 ⇒ 底图主色 **14/146/210 与 (0,82,204)**（源 180 → 204 的映射落在像素上，与 §57 ⑤ 的 204 同值），
+  日志「源原色 bt709 系近似 ⇒ 底图矩阵按具名空间 ProPhoto RGB 求」+「底图色域映射: ProPhoto RGB → bt709」。
+  ⇒ 这条比 locale JSON 的 ASCII key 命中更强：它验的是**出货件的行为**，不是出货件里有没有某段文本。
+- **附注标签**：**`1.6.0BETA10`** → `0640fb518e7766e354aa8bb95582cf890ea057c3`
+  （对账用 `git rev-parse 1.6.0BETA10^{commit}`，`git cat-file -t` = `tag`；正文含绑定轮/模块读数/出包/L3/像素复测）。
+  本条读数写实与 HANDOVER H-15 提交在标签**之后**，不进标签。
+- **未做**：`push`（本轮未获授权）。本地 `main` 相对 `origin/main` = ahead 2（`0640fb5` + 本条文档提交），behind 0。

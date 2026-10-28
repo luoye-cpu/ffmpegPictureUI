@@ -18,7 +18,11 @@
 > （**111/111**、49 min 50 s、`artifact-sha16: FfmpegGui.dll=A061CF3ADD2052BF`）——它验的是**版本位之前**的同一批源码字节。
 > 版本位 `1.6.0-beta9 → beta10` 之后只重跑受影响模块（被测 `FfmpegGui.dll=2141C77632A51828`、`FfmpegGui.exe=1E1B4E597190E81E`）：
 > `contract 160/0`、`gainmap-engine 185/0`、`probe-mirror-parity 87/0`、`gainmap-compose 85/0`、`gainmap-managed 49/0`
-> （§8 `gmgamut` 33/0 在内）。出货包本体由 `verify-release-package` + L3 五套件负责，读数见账本 §58。
+> （§8 `gmgamut` 33/0 在内）。出货包本体由 `verify-release-package` + L3 五套件负责：
+> app 17 文件 / 9.1 MB + full 581 文件 / 51.7 MB；独立验包 **16/0**；L3 五套件 **17/0 · 100/0 · 28/0 · 24/0 · 19/0**
+> （各首行 `SUBJ = v1.6.0-beta10 (L3 出货包)`，包内 exe `F5706887B8FB56FF`、`ProductVersion=1.6.0-beta10+0640fb5`）。
+> 出货件上重打本批两条修复的像素复测：未标注件底图 **12/128/200 与 (19,59,180)**（修前 64/189/232）、
+> ProPhoto 件 **14/146/210 与 (0,82,204)** 且日志点名「ProPhoto RGB → bt709」。附注标签 `1.6.0BETA10` → `0640fb5`。
 
 **🟢 修复①：未标注素材进 GainMap 出口不再落「直解」兜底（底图被提亮）**
 

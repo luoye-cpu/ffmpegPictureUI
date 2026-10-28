@@ -22,7 +22,12 @@ All notable changes to this project are documented in this file.
 > `FfmpegGui.dll=2141C77632A51828`, `FfmpegGui.exe=1E1B4E597190E81E`):
 > `contract 160/0`, `gainmap-engine 185/0`, `probe-mirror-parity 87/0`, `gainmap-compose 85/0`,
 > `gainmap-managed 49/0` (§8 `gmgamut` 33/0 included). The shipped package itself is covered by
-> `verify-release-package` plus the five L3 suites — readings in ledger §58.
+> `verify-release-package` plus the five L3 suites: app 17 files / 9.1 MB + full 581 files / 51.7 MB;
+> independent verification **16/0**; the five L3 suites **17/0 · 100/0 · 28/0 · 24/0 · 19/0** (each first line
+> `SUBJ = v1.6.0-beta10 (L3 shipped package)`, shipped exe `F5706887B8FB56FF`,
+> `ProductVersion=1.6.0-beta10+0640fb5`). Re-running this batch's two fixes against the shipped exe and measuring
+> pixels: unlabeled base **12/128/200 and (19,59,180)** (64/189/232 before the fix), ProPhoto base
+> **14/146/210 and (0,82,204)** with the log naming "ProPhoto RGB → bt709". Annotated tag `1.6.0BETA10` → `0640fb5`.
 
 **🟢 Fix ①: unlabeled inputs no longer fall through to "direct decode" at the GainMap exit (the base image was being brightened)**
 
