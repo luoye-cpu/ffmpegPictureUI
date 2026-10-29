@@ -304,7 +304,7 @@ namespace FfmpegGui.Services
 
                 RequestType.SubmitJob => await HandleSubmitJob(req, orchestrator, mainWindow),
 
-                RequestType.GetStatus => HandleGetStatus(req, orchestrator),
+                RequestType.GetStatus => HandleGetStatus(req, orchestrator, mainWindow),
 
                 RequestType.Pause => await HandlePauseAsync(req, orchestrator, mainWindow),
 
@@ -412,8 +412,32 @@ namespace FfmpegGui.Services
             return new IpcResponse { Id = req.Id, Success = true, Message = $"Submitted {added} jobs" };
         }
 
-        private static IpcResponse? HandleGetStatus(IpcRequest req, IQueueOrchestrator? orchestrator)
+        private static IpcResponse? HandleGetStatus(IpcRequest req, IQueueOrchestrator? orchestrator, MainWindow? mainWindow)
         {
+            // ── 窗口在场 ⇒ 计数**拿得到**，就报真数（2026-10-29 B4）──
+            // 旧写法在这里仍然把三个计数写死成 0，理由写的是"IQueueOrchestrator 只暴露 IsRunning"——
+            // 那是**没有窗口**那条腿的理由，窗口自己手上就有整条队列。
+            // 实测代价（同一轮）：验收脚本按 GetStatus 的 IsRunning=false + 计数 0 判"跑完了"，
+            // 于是把 cjpegli 刚写完、exiftool 还没追加元数据的**中间态**当成终态来量产物。
+            if (mainWindow != null)
+            {
+                var (total, completed, failed, isRunning, currentFile) = mainWindow.GetQueueStatusSnapshot();
+                return new IpcResponse
+                {
+                    Id = req.Id,
+                    Success = true,
+                    Message = "ok",
+                    Data = JsonSerializer.Serialize(new StatusPayload(
+                        IsRunning: isRunning,
+                        TotalItems: total,
+                        CompletedItems: completed,
+                        FailedItems: failed,
+                        CurrentFile: currentFile
+                    ), IpcJsonContext.Default.StatusPayload)
+                };
+            }
+
+            // ── 无 MainWindow（headless 服务）：计数确实拿不到 ──
             // ⚠ 队列计数目前**拿不到**：IQueueOrchestrator 只暴露 IsRunning，没有队列长度/完成数/失败数。
             // 旧写法把三个计数写死成 0 却报 Success=true、Message="ok" ⇒ 客户端会把「0」当成真实状态。
             // 这里保留 0（协议字段不凭空改语义），但把「不可用」这件事写进 Message，避免把假数据当真。

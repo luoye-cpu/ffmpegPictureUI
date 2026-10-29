@@ -3386,6 +3386,37 @@ namespace FfmpegGui
         /// <summary>队列是否正在运行</summary>
         public bool IsQueueRunning => _isQueueRunning;
 
+        /// <summary>
+        /// 队列计数快照，供 IPC <c>GetStatus</c> 用（2026-10-29 B4）。
+        ///
+        /// <para>为什么必须有它：窗口明明看得见队列，旧写法却仍把三个计数写死成 0 报给客户端
+        /// （<c>IpcService.HandleGetStatus</c> 的理由是"<c>IQueueOrchestrator</c> 只暴露 IsRunning"——
+        /// 那是**没窗口**那条腿的理由，不是窗口在场时的理由）。本轮它把验收脚本自己骗了一次：
+        /// 第一次轮询就报"空闲"，于是把 cjpegli 写完、exiftool 还没追加元数据的中间态当成终态。</para>
+        ///
+        /// <para>口径与 <see cref="Models.QueueItem"/> 的单一真值谓词同源，不另发明判定：
+        /// <c>total</c> 排除状态"已删除"的墓碑项；<c>completed</c> = <c>IsCompleted</c>
+        /// （状态以"已完成"开头**且** <c>ExitCode==0</c>）；<c>failed</c> = <c>IsFailure</c>。
+        /// ⚠ 与进度条的「队列: N/M」**不同口径**（那条看 <c>CompletedAt</c> 不看 <c>ExitCode</c>，
+        /// 且把"已删除"计入分子）——语义本就不是一回事，按 P2-6 的告诫不"顺手统一"。</para>
+        ///
+        /// <para>必须在 UI 线程调用：IPC 的 <c>DispatchAsync</c> 已整体编组到 UI 线程（<c>IpcService.cs:276</c>）。</para>
+        /// </summary>
+        public (int total, int completed, int failed, bool isRunning, string? currentFile) GetQueueStatusSnapshot()
+        {
+            int total = 0, completed = 0, failed = 0;
+            string? current = null;
+            foreach (var i in _queueItems)
+            {
+                if (i.IsDeleted) continue;
+                total++;
+                if (i.IsCompleted) completed++;
+                else if (i.IsFailure) failed++;
+                if (i.IsProcessing) current = i.DisplayName;
+            }
+            return (total, completed, failed, IsQueueRunning, current);
+        }
+
         /// <summary>允许完全退出（托盘菜单 Exit 时置 true）</summary>
         public bool AllowFullExit
         {

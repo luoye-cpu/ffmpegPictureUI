@@ -15,6 +15,7 @@
 #   E*  向后兼容：**不带** ExtraOptions 键（jpg）⇒ 受理 + pix_fmt = yuvj444p（= 产品默认）
 #   F*  向后兼容：ExtraOptions = **空字典**（jpg）⇒ 同上（空 != 缺失，两条都要锁）
 #   G*  取值口径：color-gamut-map = bogus ⇒ 必须**显式失败**且消息点名该 key，且不产出文件
+#   I*  队列计数（2026-10-29 B4）：窗口在场时 GetStatus 必须报真数，写死的 0 只许留在"无 MainWindow"那条腿
 #   H1  settings.json 的 EnableIpcServer 恢复原值
 #
 # ⚠ 期望值全部是**本机实测**的，不是照抄文档 —— 记下来免得后人"改回去"：
@@ -207,6 +208,42 @@ try {
     CK ($bad.Resp -and ($bad.Resp.Message -match 'color-gamut-map')) "G2 拒绝消息点名了出错的 key（「$($bad.Resp.Message)」）"
     Start-Sleep -Seconds 3
     CK (-not (Test-Path $bad.File)) "G3 被拒绝的任务没有偷偷入队产出文件"
+
+    # ── I 队列计数（2026-10-29 B4）：窗口在场时 GetStatus 必须报**真数**，不许恒 0 ──
+    # 旧写法把三个计数写死成 0，理由是「IQueueOrchestrator 只暴露 IsRunning」——那是**没有窗口**那条腿的
+    # 理由；MainWindow 手上就有整条队列。实测代价（同一轮）：按 GetStatus 判「跑完」的客户端在
+    # cjpegli 刚写完、exiftool 还没追加元数据时就收工，把中间态当成终态来量产物。
+    # I2/I3 是行为判据（真实窗口 + 真实管道 + 真实任务）；I4-I7 锁形态，防止"能拿到"只写在注释里。
+    $stDir = "$val/out/status_track"; New-Item -ItemType Directory -Path $stDir -Force | Out-Null
+    $innerI = [ordered]@{ InputPaths = @($src); OutputDirectory = $stDir; Format = 'jpg'; EncoderBackend = 0
+                          Quality = 90; Concurrency = 1; PreserveStructure = $false }
+    $subI = Invoke-Ipc 0 ($innerI | ConvertTo-Json -Compress -Depth 8) 30
+    CK ($subI -and $subI.Success) "I1 计数判据的前置：任务被受理（「$($subI.Message)」）"
+    $sawTotal = 0; $final = $null
+    for ($k = 0; $k -lt 60; $k++) {
+        $s = Invoke-Ipc 1 $null 5
+        if ($s -and $s.Data) {
+            $d = $s.Data | ConvertFrom-Json
+            if ($d.TotalItems -gt $sawTotal) { $sawTotal = [int]$d.TotalItems }
+            $final = $d
+            if ((-not $d.IsRunning) -and $d.TotalItems -gt 0 -and (($d.CompletedItems + $d.FailedItems) -eq $d.TotalItems)) { break }
+        }
+        Start-Sleep -Milliseconds 500
+    }
+    L "status track sawTotal=$sawTotal final=$($final | ConvertTo-Json -Compress)"
+    CK ($sawTotal -ge 1) "I2 窗口在场时 TotalItems 报的是真数（实 $sawTotal；恒 0 就是旧写法，客户端会把『0』当真实状态）"
+    CK ($final -and $final.TotalItems -ge 1 -and $final.CompletedItems -eq $final.TotalItems -and $final.FailedItems -eq 0) `
+       "I3 跑完后三个计数自洽（total=$($final.TotalItems) completed=$($final.CompletedItems) failed=$($final.FailedItems)）"
+    $ipcSrc = [System.IO.File]::ReadAllText("$root/src/FfmpegGui/Services/IpcService.cs")
+    $zeroCount = ([regex]::Matches($ipcSrc, 'TotalItems:\s*0')).Count
+    CK ($zeroCount -eq 1) "I4 写死的 0 只剩**一处**（无 MainWindow 那条腿，且它的 Message 明说不可用）；实 $zeroCount 处"
+    CK ($ipcSrc -match 'mainWindow\.GetQueueStatusSnapshot\(\)') "I5 窗口分支真的取了快照（只在注释里写「能拿到」≠ 会报真数）"
+    CK ($ipcSrc -match 'RequestType\.GetStatus\s*=>\s*HandleGetStatus\(\s*req,\s*orchestrator,\s*mainWindow\s*\)') `
+       "I6 分派把 mainWindow 传进 GetStatus（不传就永远走恒 0 那条腿）"
+    $mwSrc = [System.IO.File]::ReadAllText("$root/src/FfmpegGui/MainWindow.xaml.cs")
+    $snapAt = $mwSrc.IndexOf('GetQueueStatusSnapshot')
+    CK (($snapAt -gt 0) -and ($mwSrc -match 'i\.IsCompleted') -and ($mwSrc -match 'i\.IsFailure') -and ($mwSrc -match 'i\.IsDeleted')) `
+       "I7 快照口径与 QueueItem 的单一真值谓词同源（不再发明一套状态字符串判定）"
 } catch {
     Say "  FAIL 异常中断: $($_.Exception.Message)"
     $fail++

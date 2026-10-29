@@ -442,7 +442,13 @@ CK ((-not ($okBody -match 'v\s*:\s*0')) -and (-not ($okBody -match '\-count_fram
 CK (($badBody -match 'v\s*:\s*0')) `
    "② 反控（新锁**有牙**）：含 v:0 的假体照样被判红 —— 放宽后锁没被放空"
 
-$rg = $srcCode.IndexOf('private static async Task<(string stdout, string? failReason)> RunFfprobeWithWatchdogAsync(')
+# ⚠ 定位**只认「private static async Task<…> + 方法名」**，不认签名的全文：2026-10-29 本仓把该 helper 的
+#   返回从二元组改成三元组（加 stderr 原文），旧写法拿整串签名做 IndexOf ⇒ 定位失败 ⇒ $wdBody="" ⇒
+#   这条锁从「有牙」退化成「无条件红」，而它真正要看的形状（CancelAfter / 杀树 / 先异步读后等退出）
+#   一条都没读到 —— 文本锁钉签名是假红的常见来源，故这里按名字定位，返回类型再变也不瞎。
+$wdSig = [regex]::Match($srcCode, 'private static async Task<[^>]*>\s*RunFfprobeWithWatchdogAsync\(')
+$rg = -1
+if ($wdSig.Success) { $rg = $wdSig.Index }
 $wdBody = ""
 if ($rg -ge 0) {
   $ob2 = $srcCode.IndexOf('{', $rg)

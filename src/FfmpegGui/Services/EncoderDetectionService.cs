@@ -182,8 +182,11 @@ namespace FfmpegGui.Services
     public static class EncoderDetectionService
     {
         private static List<EncoderInfo>? _allEncoders;
-        private static HashSet<string>? _allDecoders;
         private static HashSet<string>? _allMuxers;
+        // ⚠ 解码器清单按**被问的那件 ffmpeg**分档缓存（2026-10-29）。旧写法是一份全局字段：第一次调用填满后，
+        //   换一件 ffmpeg 再问也拿同一份 ⇒ "问 A 却拿到 B 的清单"。B2 要在一次转换里问两件
+        //   （选中的 ffmpeg 与随包 ffmpeg-full），必须各问各的。
+        private static readonly Dictionary<string, HashSet<string>> _decodersByFfmpeg = new(StringComparer.OrdinalIgnoreCase);
 
         private static readonly Dictionary<string, string[]> FormatEncoderMap = new(StringComparer.OrdinalIgnoreCase)
         {
@@ -524,9 +527,11 @@ namespace FfmpegGui.Services
         /// </summary>
         public static async Task<HashSet<string>> GetAllDecodersAsync(string? ffmpegPath = null)
         {
-            if (_allDecoders != null) return _allDecoders;
-            _allDecoders = await ParseSimpleListAsync("decoders", ffmpegPath);
-            return _allDecoders;
+            var key = ffmpegPath ?? AppSettingsService.Current.FfmpegPath ?? "";
+            if (_decodersByFfmpeg.TryGetValue(key, out var cached)) return cached;
+            var set = await ParseSimpleListAsync("decoders", ffmpegPath);
+            _decodersByFfmpeg[key] = set;
+            return set;
         }
 
         /// <summary>判断 ffmpeg 是否能写入指定图片格式（检查 muxer 可用性，任一候选匹配即可）</summary>
@@ -553,6 +558,40 @@ namespace FfmpegGui.Services
                 return true; // 未在映射表中 → 假定内置支持
             var decoders = await GetAllDecodersAsync(ffmpegPath);
             return decoderNames.Any(d => decoders.Contains(d));
+        }
+
+        /// <summary>ffmpeg **自己**的 JXR 解码腿三态（见 <see cref="QueryFfmpegJpegXrDecoderAsync"/>）。</summary>
+        public enum FfmpegJpegXrLeg
+        {
+            /// <summary>问到了清单，清单里有 <c>libjxr</c>。</summary>
+            Present,
+            /// <summary>问到了清单（非空），清单里**没有** <c>libjxr</c> ⇒ 这条腿确实不可用。</summary>
+            Absent,
+            /// <summary>没问到（<c>-decoders</c> 没跑成 ⇒ 空清单）。⚠ 不许折算成 <see cref="Absent"/>：
+            /// 「不知道」不是「没有」。2026-10-29 实机那条"修了 N 次还在炸"的根因，正是有人把
+            /// 探针的**无答案**当成了**内容判据**（详见 QueueProcessor 的 JXR 直通臂一节）。</summary>
+            Unknown
+        }
+
+        /// <summary>
+        /// 问 **ffmpeg 自己**能不能解 JXR（只看 <c>-decoders</c> 清单里的解码器名）。
+        ///
+        /// <para>为什么不走 <see cref="IsDecoderAvailableAsync"/>：那条在外部 JxrDecApp 在位时**直接短路 true**
+        /// ——它答的是"这个格式能不能解"，而本函数答的是"ffmpeg 这条腿能不能"，不能让外部工具替 ffmpeg 答"有"。</para>
+        /// <para>名字口径：实测 <c>-decoders</c> 每行的第二个 token 是**解码器名** <c>libjxr</c>
+        /// （行尾的 <c>(codec jpegxr)</c> 是码流名，不进清单），与 <c>FormatDecoderMap["jxr"]</c> 同源。
+        /// 本机两件套的实测：随包 <c>ffmpeg-full</c> 565 条含 <c>libjxr</c>；另一件 549 条不含。</para>
+        /// </summary>
+        public static async Task<FfmpegJpegXrLeg> QueryFfmpegJpegXrDecoderAsync(string? ffmpegPath = null)
+            => ClassifyJpegXrLeg(await GetAllDecodersAsync(ffmpegPath));
+
+        /// <summary>纯函数分类：判据可以直接喂一份清单，不必真起进程。</summary>
+        public static FfmpegJpegXrLeg ClassifyJpegXrLeg(HashSet<string>? decoders)
+        {
+            if (decoders == null || decoders.Count == 0) return FfmpegJpegXrLeg.Unknown;
+            return FormatDecoderMap["jxr"].Any(d => decoders.Contains(d))
+                ? FfmpegJpegXrLeg.Present
+                : FfmpegJpegXrLeg.Absent;
         }
 
         /// <summary>获取指定格式的人类可读能力状态描述</summary>
@@ -670,7 +709,7 @@ namespace FfmpegGui.Services
         public static void ClearCache()
         {
             _allEncoders = null;
-            _allDecoders = null;
+            _decodersByFfmpeg.Clear();
             _allMuxers = null;
             _jxlLosslessJpeg = null;
             _jxlLosslessJpegProbedFor = null;

@@ -83,6 +83,34 @@ namespace FfmpegGui.Services
             return null;
         }
 
+        /// <summary>
+        /// 探针**未给出可用答案**时的盲试顺序（2026-10-29 实机改判的核心）。
+        /// <para>为什么需要它：这条通路真正解码用的是 JxrDecApp（jxrlib），跟 ffmpeg 能不能解 JXR 无关；
+        /// 而历史上"探针 exit=1 ⇒ 当场判'不是高位深直通档'"会把一次**仪器失败**折算成一条**内容结论**，
+        /// 落进对 64bppRGBAHalf 结构上必死的 BMP / <c>-c 0</c> 旧路。本机实测有三种完全不同的病因都能打出
+        /// 同一句 <c>exit=1</c>：0 字节的件（<c>Invalid data found</c>）、头 1KB 被别的进程握着的件
+        /// （<c>Permission denied</c>）、以及任何不带 libjxr 的 ffprobe 构建。</para>
+        /// <para>顺序 = Game DVR / HDR 抓件的实际常见度（半浮点 RGBA → 单精度 RGBA → 16-bit RGBA → 16-bit RGB）。
+        /// 每档都由调用方逐档自校验（JxrDecApp 退出码 + TIFF 产出 + <see cref="TryReadTiff"/> 的 fail-closed
+        /// 拒读），所以"试错"不会产出坏件；且**只在旧两臂已经失败之后**才启用 ⇒ 8-bit 源（旧臂能成）行为不变，
+        /// 也不会被无谓地升采样成浮点。</para>
+        /// </summary>
+        public static IReadOnlyList<int> BlindArmOrder() => new[]
+        {
+            Arm64RgbAHalf, Arm128RgbaFloat, Arm64RgbaInt, Arm48RgbInt
+        };
+
+        /// <summary>
+        /// 这次探测算不算"给出了答案"。空串与 <c>unknown</c> 都算**没有**：前者是读不到，
+        /// 后者是 demuxer 自己承认分不出类（实测 4B~1KB 的残件报 <c>unknown</c>）——
+        /// 两者都不许被下游当成"这不是高位深文件"。
+        /// </summary>
+        public static bool ProbeGaveAnswer(string? pixFmt)
+        {
+            var s = (pixFmt ?? "").Trim();
+            return s.Length > 0 && !s.Equals("unknown", StringComparison.OrdinalIgnoreCase);
+        }
+
         // ────────────────────────────────────────────────────────────────────────
         // 取帧：读 JxrDecApp 写出的高位 TIFF
         // ────────────────────────────────────────────────────────────────────────

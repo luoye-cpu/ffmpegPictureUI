@@ -19,6 +19,10 @@
 #   ⑦ **负控**：RAW→PNG + `--strip-metadata` ⇒ 无拍摄字段 ⇒ 证明 ⑥ 非空跑。
 #      ⚠ ⑥⑦ 需要真 RAW 素材（该缺陷只在「源是 dngtool 中间 TIFF」时触发）；
 #        素材缺失（未受版本控制）时**点名 SKIP、不给绿灯**。
+#   ⑧ 复制元数据的**宣称与现实**（2026-10-29 B5）：非 Safe 变体（`--encoder Cjpegli` 走的那条）
+#      对 HD Photo 源报「0 image files updated」而退出码 0，日志却已写「复制元数据」⇒ 产物什么都不带。
+#      ⑧a 无元数据源必须点名「0 项落地」；⑧b 有元数据源必须落地且不点名（正控）；
+#      ⑧c/⑧d 锁命令行形态与"总结行只有一份实现"。功能半边的实机读数见本节注释与 ledger。
 # ⚠ 调外部 exe 一律 Start-Process + 单个参数字符串（见 HANDOVER §C.5 的坑）。
 # 用法：pwsh -NoProfile -File tests/scripts/verify-metadata-privacy.ps1
 $ErrorActionPreference = 'Continue'
@@ -56,6 +60,8 @@ function Et([string]$argStr) {
         -RedirectStandardOutput $o -RedirectStandardError "$val/et.err.txt" | Out-Null
     return ([System.IO.File]::ReadAllText($o)).Trim()
 }
+# ⑧ 起用的紧凑判据（其余各档维持原有 if/else 写法，不回头改历史读数）
+function CK($ok, $msg) { if ($ok) { $script:pass++; Say "PASS $msg" } else { $script:fail++; Say "FAIL $msg" } }
 
 if (-not (Test-Path $exe)) { SkipAll "FfmpegGui.exe 未构建（先 dotnet build）" }
 if (-not (Test-Path $et)) { SkipAll "缺 exiftool（publish/PLAN/exiftool）" }
@@ -213,11 +219,69 @@ else {
     }
 }
 
-# ── 附注：完整复制路径（protectColorMetadata=false ⇒ CopyMetadataAsync）的隐私吸收**未纳入本门禁** ──#    原因：该分支只在 backend ∈ {Cjpegli, Dng} 时走到，而实测可达的两条路都不好用：
-#      · `--format jpegli` **已于 2026-09-21 复核为可用**（`EncoderDetectionService.cs:38` 把它当
-#        `jpg` 格式的编码器别名 ⇒ 产物扩展名 `.jpg`，实测 `rc=0`）⇒ **本条不再构成排除理由**；
-#      · `--format dng` 走 raw 专用链路，元数据由 dngtool/exiftool 另行处理。
-#    ⇒ 该分支的「并入隐私清理」目前只有**代码对称性**保证，没有运行期断言。已在 HANDOVER §D 记为开放项。
+# ── ⑧ 复制的宣称 vs 现实：0 项落地必须点名（2026-10-29 B5）────────────────────────
+# 缺陷（本机实机读数，非推断）：`CopyMetadataAsync`（protectColorMetadata=false 那条，
+#   backend=Cjpegli/Dng 才走到）用 `-all:all` 按**标签名**逐项映射。对 HD Photo 源（其 XMP 挂在
+#   exiftool 解析不出的命名空间前缀上，读回是 `XMP-prefix0` 而非 `XMP-dc`）⇒ JPEG 侧找不到可写目标
+#   ⇒ exiftool 报「0 image files updated」而**退出码 0**；日志却早已写下「复制元数据」
+#   ⇒ 产物 0 个 XMP/EXIF，用户以为带上了。同一对源/目标走 Safe 变体（显式组选择器 `-XMP:all` 等
+#   = 整组搬运）实测**能落地** ⇒ 两臂的差别从来不是"要不要保护色彩标签"，而是"复制得动复制不动"。
+# 修复两半：① 非 Safe 变体补上同一组选择器（功能）；② 两个变体都读 exiftool 的总结行，落地 0 件时点名（诚实）。
+# ⚠ 功能半边**给不出可移植的行为判据**（本轮实测过三种替身：PNG 挂 XMP 写不进去；JPEG 挂未注册
+#   命名空间 ⇒ 两臂都「1 updated」但都不落地，不判别；lavfi 造源本身无元数据）。只有真 HD Photo
+#   件能复现「-all:all 0 项 / 组选择器 1 项且落地」这个分叉，而那是维护者的 11 MB 私件，不入仓。
+#   ⇒ 功能半边由「形态锁（⑧c/⑧d）+ 实机读数」承担。实机读数（异环 .jxr → jpg，同一件 exe 前后）：
+#     448981 B、无 XMP  ⇒  452016 B、含 XMP，且与 Safe 变体的产物**逐字节相同**（sha16 0cc3675e8a2f7564）。
+#   本档 ⑧a/⑧b 锁的是诚实半边（可移植、有牙）。
+$dm = "$val/copy-noop"; New-Item -ItemType Directory -Path $dm -Force | Out-Null
+$srcBare = "$val/bare.png"
+Run-Exe $ff "-y -v error -f lavfi -i testsrc=size=64x64:rate=1 -frames:v 1 `"$srcBare`"" 'mk-bare'
+if (-not (Test-Path $srcBare)) { $fail++; Say "FAIL ⑧ 前置：造不出无元数据源（lavfi testsrc）" }
+else {
+    # ⑧a 无元数据的源 ⇒ 必须点名"0 项落地"（旧行为：只说"复制元数据"，然后什么都不带）
+    Run-Exe $exe "--headless -i `"$srcBare`" --format jpg --encoder Cjpegli --output `"$dm`" --log-level debug --log-file `"$dm/log.txt`"" 'app-bare'
+    $logA = ''
+    if (Test-Path "$dm/log.txt") { $logA = [System.IO.File]::ReadAllText("$dm/log.txt") }
+    CK (($logA -match '复制元数据') -and ($logA -match '0 项落地')) `
+       "⑧a 源无可复制标签时，日志在「复制元数据」之后**点名 0 项落地**（实机：无元数据 png → jpg）"
+    # ⑧b 正控：有元数据的源 ⇒ 不许出现"0 项落地"（证明 ⑧a 不是恒真的空判据）
+    $dk = "$val/copy-land"; New-Item -ItemType Directory -Path $dk -Force | Out-Null
+    Run-Exe $exe "--headless -i `"$src`" --format jpg --encoder Cjpegli --output `"$dk`" --log-level debug --log-file `"$dk/log.txt`"" 'app-land'
+    $logB = ''
+    if (Test-Path "$dk/log.txt") { $logB = [System.IO.File]::ReadAllText("$dk/log.txt") }
+    $oB = Get-ChildItem "$dk/*" -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Extension -eq '.jpg' } | Select-Object -First 1
+    $gB = ''
+    if ($oB) { $gB = Et "-s3 -GPSLatitude `"$($oB.FullName)`"" }
+    Write-Output ("  [⑧b 读数] 产物=" + $(if ($oB) { "$($oB.Name) $($oB.Length)B" } else { "(无)" }) + " GPS=「$gB」")
+    CK (($logB -match '复制元数据') -and ($logB -notmatch '0 项落地') -and (-not [string]::IsNullOrWhiteSpace($gB))) `
+       "⑧b **正控**：有元数据的源确实落地（GPS 读回 $gB）且**不**报 0 项 ⇒ ⑧a 能区分两种情形"
+
+    # ⑧c/⑧d 形态锁：功能半边（组选择器）+ 总结行只有一份实现
+    $ets = [System.IO.File]::ReadAllText("$root/src/FfmpegGui/Services/ExifToolService.cs")
+    $cmAt = $ets.IndexOf('Task<int> CopyMetadataAsync(', [System.StringComparison]::Ordinal)
+    $safeAt = $ets.IndexOf('Task<int> CopyMetadataSafeAsync(', [System.StringComparison]::Ordinal)
+    if ($cmAt -lt 0 -or $safeAt -lt 0 -or $safeAt -le $cmAt) {
+        CK $false "⑧c 形态锁找不到两个复制变体的方法体（改名了？判据要跟着改，不许静默放行）"
+    } else {
+        $cmBody = $ets.Substring($cmAt, $safeAt - $cmAt)
+        CK (($cmBody -match '-XMP:all') -and ($cmBody -match '-EXIF:all') -and ($cmBody -match '-ICC_Profile')) `
+           "⑧c 非 Safe 变体的命令行里组选择器与 -ICC_Profile 都在（整组搬运才落得动，`-all:all` 单项映射对 HD Photo 源 0 项）"
+    }
+    $defCount = ([regex]::Matches($ets, 'static int ParseUpdatedCount')).Count
+    $callCount = ([regex]::Matches($ets, 'ParseUpdatedCount\(')).Count
+    CK (($defCount -eq 1) -and ($callCount -ge 3)) `
+       "⑧d 总结行计数只有一份实现（定义 $defCount 处、引用 $callCount 处），两个复制变体都读它（镜像再生 = 本仓反复的坏法）"
+}
+
+# ── 附注：完整复制路径（protectColorMetadata=false ⇒ CopyMetadataAsync）的隐私吸收 ──
+#    2026-10-29 更新：该分支现在**被 ⑧ 覆盖到两格**——命令行形态（⑧c）与"落地几件"的宣称一致性
+#    （⑧a/b，走的正是这条分支：`--encoder Cjpegli`）。
+#    仍未纳入的是它的**并入隐私清理**那一格：`--strip-gps` 与本分支的组合此前只有代码对称性保证
+#    （两个变体共用 ApplyAbsorbStripAfterCopyAsync，2026-10-20 收成一处），运行期断言仍缺。
+#    · `--format jpegli` 已于 2026-09-21 复核为可用（`EncoderDetectionService.cs:38` 把它当 `jpg`
+#      的编码器别名 ⇒ 产物 `.jpg`、`rc=0`）⇒ 不构成排除理由；
+#    · `--format dng` 走 raw 专用链路，元数据由 dngtool/exiftool 另行处理。
 
 Say "`n===== PASS=$pass FAIL=$fail SKIP=$skip ====="
 if ($fail -eq 0) { Remove-Item -Recurse -Force $val -ErrorAction SilentlyContinue }

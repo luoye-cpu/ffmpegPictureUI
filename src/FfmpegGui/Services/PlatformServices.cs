@@ -427,14 +427,20 @@ public static class PlatformServices
     /// <para>原先是 <c>QueueProcessor</c> 的 private 方法；收口到这里是因为 <c>RawService</c>
     /// 也需要起子进程读 stdout —— 两处各写一遍就是这条判据要防的漂移源
     /// （<c>_probe-stderr-drain-scan</c> 按方法计数，漏排空的那一份正是它要抓的形状）。</para>
+    /// <para>⚠ 2026-10-29：stderr 过去是**读完即弃**。实测后果——ffprobe 探测失败时
+    /// <c>Invalid data found</c>（件为空或坏）、<c>Permission denied</c>（别的进程正握着件）、
+    /// <c>No such file or directory</c>（路径没命中）三种**病因完全不同**的失败，在任务日志里被压成
+    /// 同一句 <c>异常退出（exit=1）</c> ⇒ 实机排查只能靠猜（2026-10-29 本机实测：这三种都能打出 exit=1）。
+    /// 现在把原文一并返回，由调用方决定要不要落进日志。</para>
     /// </summary>
-    public static async Task<string> ReadStdoutDrainingStderrAsync(Process p)
+    public static async Task<(string stdout, string stderr)> ReadStdoutDrainingStderrAsync(Process p)
     {
         var outTask = p.StandardOutput.ReadToEndAsync();
-        var errTask = p.StandardError.ReadToEndAsync();   // 读完即弃：这些探测只要 stdout
+        var errTask = p.StandardError.ReadToEndAsync();   // 排空是义务，留存是诊断
         var stdout = await outTask;
-        try { await errTask; } catch { /* 排空失败不影响探测结果 */ }
-        return stdout;
+        string stderrText;
+        try { stderrText = await errTask; } catch { /* 排空失败不影响探测结果 */ stderrText = ""; }
+        return (stdout, stderrText);
     }
 
     public static void SetSafePriority(Process process, int priorityLevel)

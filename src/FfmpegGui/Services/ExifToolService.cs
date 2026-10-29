@@ -538,13 +538,23 @@ namespace FfmpegGui.Services
 
             // -all:all 复制所有可复制标签，但 ICC_Profile 等二进制块可能被跳过，
             // 因此显式追加 -ICC_Profile 确保色彩配置文件也被复制
+            // ⚠ 2026-10-29 B5：光靠 `-all:all` 会**一项都不落地而退出码仍是 0**（实测：HD Photo 源 →
+            //   cjpegli 出的 JPEG，exiftool 报「0 image files updated / 1 image files unchanged」，
+            //   产物里 0 个 XMP/EXIF，而日志已打过「复制元数据」）。根因：`-all:all` 按**标签名**逐个映射，
+            //   而该源的 XMP 挂在 exiftool 解析不出的命名空间前缀上（读回是 `XMP-prefix0` 而不是 `XMP-dc`）
+            //   ⇒ 在 JPEG 侧找不到可写目标 ⇒ 整批跳过。Safe 变体用**显式组选择器**（`-XMP:all` 等）
+            //   走整组搬运，同一对源/目标实测能落地 ⇒ 这里补同一组选择器。
+            //   两变体的分工不变：本方法**不排除**色彩标签（-ICC_Profile 照旧），因为调用方
+            //   （protectColorMetadata=false）要的正是"完整带回，含 ICC"。
             var args = $"-overwrite_original -m -TagsFromFile \"{sourcePath}\" " +
-                       $"-all:all -ICC_Profile {BuildAbsorbExclusions(absorbNow ? absorb : null)}" +
+                       $"-all:all -EXIF:all -IPTC:all -XMP:all -MakerNotes:all -GPS:all -ICC_Profile " +
+                       $"{BuildAbsorbExclusions(absorbNow ? absorb : null)}" +
                        $"{(dropOrientation ? OrientationExclusion : string.Empty)}\"{targetPath}\"";
             logCallback?.Invoke($"[exiftool] 复制元数据: {Path.GetFileName(sourcePath)} → {Path.GetFileName(targetPath)}\n"
                 + (absorbNow ? "[exiftool] （已并入可吸收的隐私清理，省一次 exiftool 启动）\n" : ""));
 
-            var rc = await RunWriteAsync(targetPath, args, logCallback);
+            var (rc, copyOut) = await RunWriteCaptureAsync(targetPath, args, logCallback);
+            ReportCopyOutcome(logCallback, targetPath, ParseUpdatedCount(copyOut));
             if (rc != 0) return rc;
 
             // ⚠⚠ 2026-10-20：这次补删**原来只有 CopyMetadataSafeAsync 有**，而 DNG 出口
@@ -688,6 +698,27 @@ namespace FfmpegGui.Services
         }
 
         /// <summary>
+        /// <see cref="RunWriteAsync"/> 的**带 stdout** 版本：exiftool 的写结果只写在它的总结行里
+        /// （容器不收该标签时退出码照样 0，只打「0 image files updated / 1 image files unchanged」）。
+        /// 两个复制变体要用它才能把"到底落地没有"说出口（2026-10-29 B5）。
+        /// </summary>
+        private static Task<(int Rc, string Stdout)> RunWriteCaptureAsync(string targetPath, string args,
+            Action<string>? logCallback = null, CancellationToken ct = default)
+        {
+            CleanStaleExifToolTemp(targetPath);
+            return RunCaptureAsync(args, logCallback, ct, WriteTimeoutSecondsFor(targetPath));
+        }
+
+        /// <summary>落地 0 件时的点名行（宣称"复制元数据"而产物没带上，是本仓反复出现的 F-13 同族形状）。
+        /// 计数口径复用既有的 <see cref="ParseUpdatedCount"/>（一份实现，不另写正则）。</summary>
+        private static void ReportCopyOutcome(Action<string>? logCallback, string targetPath, int updated)
+        {
+            if (updated == 0)
+                logCallback?.Invoke($"[exiftool] ⚠️ 本次复制 **0 项落地**（exiftool 报「0 image files updated」而退出码 0）"
+                    + $" ⇒ 产物 {Path.GetFileName(targetPath)} 未携带源元数据（不是「复制成功」）\n");
+        }
+
+        /// <summary>
         /// 安全复制元数据：仅复制 EXIF/IPTC/XMP 等描述性元数据，
         /// 跳过 ICC_Profile、ColorSpace、色彩相关标签，保护编码器写入的色彩元数据。
         /// 命令：exiftool -overwrite_original -TagsFromFile source
@@ -730,8 +761,10 @@ namespace FfmpegGui.Services
             logCallback?.Invoke($"[exiftool] 安全复制元数据（已排除色彩标签，保护编码器输出）: {Path.GetFileName(sourcePath)} → {Path.GetFileName(targetPath)}\n"
                 + (absorbNow ? "[exiftool] （已并入可吸收的隐私清理，省一次 exiftool 启动）\n" : ""));
 
-            var rc = await RunWriteAsync(targetPath, args, logCallback);
-            if (rc != 0) return rc;
+            var (rcSafe, copyOutSafe) = await RunWriteCaptureAsync(targetPath, args, logCallback);
+            // 宣称与现实必须对上：本变体此前同样只打"要复制"，不看**落了几项**（B5 同一族）
+            ReportCopyOutcome(logCallback, targetPath, ParseUpdatedCount(copyOutSafe));
+            if (rcSafe != 0) return rcSafe;
 
             // ⚠⚠ 2026-10-05（P0 隐私泄露修复）：**排除式在 JXL 上不生效，必须再补一次显式删除**。
             //   根因（实测，同一份产物、同一份源）：
@@ -755,7 +788,7 @@ namespace FfmpegGui.Services
                 var stripRc = await ApplyAbsorbStripAfterCopyAsync(targetPath, absorb, logCallback);
                 if (stripRc != 0) return stripRc;
             }
-            return rc;
+            return rcSafe;
         }
 
         /// <summary>

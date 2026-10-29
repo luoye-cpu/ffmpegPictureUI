@@ -430,6 +430,226 @@ if ($null -ne $hpTif) {
   } else { CK $false "④ 造不出 -c 25 半浮点 TIFF ⇒ P1b 无法判定" }
 } else { CK $false "④ 造不出 -c 28 浮点 TIFF ⇒ 前提无法判定" }
 
+# ── ⑨ 探针死亡档（2026-10-29 实机改判）──────────────────────────────────────────
+# 缺陷（本机实机复现，非推断）：直通臂的**选臂依据**来自 ffmpeg 报的 pix_fmt，而这条通路的**解码腿**
+#   是 JxrDecApp（jxrlib）——两者本无关系。旧写法把"探测失败"直接折算成"源不是高位深直通档"，
+#   于是落进对 64bppRGBAHalf **结构上**必死的 BMP / `-c 0` 两臂 ⇒ 双臂同报 -106、零产物。
+#   实测三种病因都打同一句非 0 退出：0 字节的件（Invalid data found）、头 1KB 被别的进程握着
+#   （Permission denied）、以及被选中的构建根本解不了 JXR（Invalid data found）。
+#   最刺眼的一条自证在旧日志里就有：`源格式探测未成` 之后**紧跟着** JxrDecApp 的 `4.1 MP` Perf
+#   Report —— 文件毫秒后就能正常解码，程序却已经按"不是高位深"办完了。
+#   另外 ffprobe 的 stderr 过去被"读完即弃" ⇒ 三种病因压成同一行，实机排查只剩猜。
+# 桩件：把随包 `ffmpeg.exe` 以**硬链接**改名成 `ffprobe.exe`（失败则退化成复制）⇒ 探测对任何输入
+#   都给不出 pix_fmt（实测 rc=8 `Unrecognized option 'select_streams'`）。它锁的是
+#   「**探针无答案**」这条**契约输入**，不冒充"缺 libjxr"这一具体病因（那样要写死本机路径）。
+Write-Host "`n### ⑨ 探针不答 ≠ 不是高位深：盲试直通臂必须救回产物，并把病因说清 ###" -ForegroundColor Cyan
+$stubDir = Join-Path $work 'stubprobe'
+New-Item -ItemType Directory -Force -Path $stubDir | Out-Null
+$ffDir = Split-Path $ff -Parent
+$stubOk = $true
+foreach ($f in @(Get-ChildItem -LiteralPath $ffDir -File)) {
+  $t = Join-Path $stubDir $f.Name
+  try { $null = New-Item -ItemType HardLink -Path $t -Target $f.FullName -ErrorAction Stop }
+  catch { try { Copy-Item -LiteralPath $f.FullName -Destination $t -Force -ErrorAction Stop } catch { $stubOk = $false } }
+}
+$stubProbe = Join-Path $stubDir 'ffprobe.exe'
+if (Test-Path $stubProbe) { Remove-Item -LiteralPath $stubProbe -Force }
+try { $null = New-Item -ItemType HardLink -Path $stubProbe -Target $ff -ErrorAction Stop }
+catch { try { Copy-Item -LiteralPath $ff -Destination $stubProbe -Force -ErrorAction Stop } catch { $stubOk = $false } }
+CK ($stubOk -and (Test-Path $stubProbe)) "⑨ 前置：桩件目录造好（随包 ffmpeg.exe 的硬链接改名 ffprobe.exe）"
+$stubSelf = Exec $stubProbe ('-v error -select_streams v:0 -show_entries stream=pix_fmt -of csv=p=0 "' + "$work/hp_f16.jxr" + '"') "stubself"
+CK (($stubSelf.code -ne 0) -and ($stubSelf.text -notmatch 'af16|rgb')) `
+   "⑨ **正控**：桩件对 half 夹具确实给不出答案（rc=$($stubSelf.code)）⇒ 守卫是活的，后面的绿才有意义"
+
+# 像素口径：两条路各自的产物都抽成 rgb48le 原始流再比哈希（不比文件大小——内嵌 ICC 带着出图时刻，
+#   两次运行的字节**本就不同**，拿文件大小当判据会假红；实测踩过同一形状）
+function RawHash([string]$img, [string]$tag) {
+  $rf = "$work/rawhash_$tag.bin"
+  $null = Exec $ff ('-y -v error -i "' + $img + '" -frames:v 1 -f rawvideo -pix_fmt rgb48le "' + $rf + '"') ("rawhash_$tag")
+  if (-not (Test-Path $rf)) { return "" }
+  $b = [System.IO.File]::ReadAllBytes($rf)
+  $h = [System.Security.Cryptography.SHA256]::Create().ComputeHash($b)
+  return (((($h | ForEach-Object { $_.ToString('x2') }) -join '').Substring(0, 16)) + ':' + $b.Length)
+}
+
+# ⑨a half 档：探针不答 ⇒ 旧臂 -106 ⇒ 必须靠盲试臂救回，且像素与"探针有答案"那条逐样本相同
+$dir7Hint = "$work/run_hint_f16"; New-Item -ItemType Directory -Force -Path $dir7Hint | Out-Null
+$env:FFMPEGGUI_FFMPEG_DIR = "$root/publish/PLAN/ffmpeg-full"
+$r7Hint = Exec $exe ('--headless --log-level debug -i "' + "$work/hp_f16.jxr" + '" -o "' + $dir7Hint + '" --format png') "run_hint_f16"
+$p7Hint = Product $dir7Hint @(".png")
+$dir7Blind = "$work/run_blind_f16"; New-Item -ItemType Directory -Force -Path $dir7Blind | Out-Null
+$env:FFMPEGGUI_FFMPEG_DIR = $stubDir
+$r7Blind = Exec $exe ('--headless --log-level debug -i "' + "$work/hp_f16.jxr" + '" -o "' + $dir7Blind + '" --format png') "run_blind_f16"
+$p7Blind = Product $dir7Blind @(".png")
+Write-Host ("  [⑨a] 提示在位: exit=" + $r7Hint.code + " " + $(if ($p7Hint) { $p7Hint.Name } else { "(无产物)" }) `
+          + " | 探针不答: exit=" + $r7Blind.code + " " + $(if ($p7Blind) { $p7Blind.Name } else { "(无产物)" }))
+CK (($r7Hint.code -eq 0) -and ($null -ne $p7Hint)) "⑨a 对照臂成立：探针有答案时 half 档出件（这一条红了说明环境变了，不是本档要测的东西）"
+CK (($r7Blind.code -eq 0) -and ($null -ne $p7Blind)) `
+   "⑨a **本档主判据**：探针不答时 half 档仍然出件（旧写法这里 exit=1、零产物）"
+CK ($r7Blind.text -match '源格式探测未判定') "⑨a 日志把失败记成「未判定」，不再记成「不适用」"
+CK ($r7Blind.text -notmatch '高位深直通臂不适用') "⑨a 旧措辞『⇒ 高位深直通臂不适用』0 命中（把仪器失败折算成内容结论的那句话已撤）"
+CK (($r7Blind.text -match 'ffprobe=') -and ($r7Blind.text -match 'Unrecognized option|Invalid data|Permission denied|No such file')) `
+   "⑨a 日志带出**哪份 ffprobe** 与它的 **stderr 原文**（过去读完即弃 ⇒ 三种病因无法分辨）"
+CK (($r7Blind.text -match 'Step 1\(高位深直通\)') -eq $false) "⑨a 探针不答时**不许**假装走了提示臂"
+CK (($r7Blind.text -match '盲试直通臂 -c 25 成立') -and ($r7Blind.text -match 'HP-METRICS')) `
+   "⑨a 盲试按顺序命中 -c 25 并接回高位深通路（指标行在场）"
+$m7 = HpMetrics $r7Blind.text
+CK (($null -ne $m7) -and ($m7['arm'] -eq '25') -and ($m7['kind'] -eq 'HalfFloat16')) `
+   "⑨a 指标行读数正确 arm=$($m7['arm']) kind=$($m7['kind'])"
+$h7a = RawHash $p7Hint.FullName 'hint'; $h7b = RawHash $p7Blind.FullName 'blind'
+Write-Host ("  [⑨a 像素] 提示臂=" + $h7a + " 盲试臂=" + $h7b)
+CK (($h7a.Length -gt 0) -and ($h7a -eq $h7b)) "⑨a **两臂像素逐样本相同**（rgb48le 原始流同哈希）⇒ 兜底不是降级"
+
+# ⑨b 8-bit 档：探针不答时**旧臂仍能成** ⇒ 盲试不得抢在前面（否则 8-bit 源被无谓升采样成浮点档）
+$dir7s = "$work/run_blind_s8"; New-Item -ItemType Directory -Force -Path $dir7s | Out-Null
+$r7s = Exec $exe ('--headless --log-level debug -i "' + "$work/sdr8.jxr" + '" -o "' + $dir7s + '" --format png') "run_blind_s8"
+$p7s = Product $dir7s @(".png")
+CK (($r7s.code -eq 0) -and ($null -ne $p7s)) "⑨b 8-bit 档在探针不答时仍出件"
+CK (($r7s.text -notmatch 'Step 1\(盲试直通臂\)') -and ($r7s.text -notmatch '盲试直通臂 -c') -and ($r7s.text -notmatch 'HP-METRICS')) `
+   "⑨b 盲试**只在旧臂失败之后**接手：8-bit 档旧臂能成 ⇒ 一条盲试行都不许出现（不得顺手改道）"
+
+# ⑨c 真·解不开的件：失败是对的，但病因必须落在日志上，且不许再伪造位深
+$zero7 = "$work/zero7.jxr"
+$null = [System.IO.File]::Create($zero7).Close()
+$dir7z = "$work/run_zero"; New-Item -ItemType Directory -Force -Path $dir7z | Out-Null
+$env:FFMPEGGUI_FFMPEG_DIR = "$root/publish/PLAN/ffmpeg-full"
+$r7z = Exec $exe ('--headless --log-level debug -i "' + $zero7 + '" -o "' + $dir7z + '" --format png') "run_zero"
+$env:FFMPEGGUI_FFMPEG_DIR = $stubDir
+CK (($r7z.code -ne 0) -and ($null -eq (Product $dir7z @(".png")))) "⑨c 0 字节的件仍判失败且零产物（不许把坏件洗成绿）"
+CK (($r7z.text -match '源格式探测未判定') -and ($r7z.text -match 'Invalid data')) `
+   "⑨c 失败原因写的是『未判定 + ffprobe 原文 Invalid data』，不是一句裸 exit"
+CK ($r7z.text -match '四档直通臂') "⑨c 四档盲试逐档试过并且承认全部不成立（而不是压根没试）"
+CK ($r7z.text -notmatch '源载体是 0-bit') `
+   "⑨c 不再把『探针没给位深』伪造成『源载体是 0-bit』这条内容属性"
+# ⚠ 还原探测环境：本节把 FFMPEGGUI_FFMPEG_DIR 指过桩件目录，不还原就会让后面的 ⑤/⑥/⑧
+#   全部在「探针永不答」下跑（本轮实测：⑧ 的三件产物因此齐红 —— 守卫自己造的假红）。
+$env:FFMPEGGUI_FFMPEG_DIR = "$root/publish/PLAN/ffmpeg-full"
+$r7back = Exec $fp ('-v error -select_streams v:0 -show_entries stream=pix_fmt -of csv=p=0 "' + "$work/hp_f16.jxr" + '"') 'stub_restore'
+CK (($r7back.code -eq 0) -and ($r7back.text -match 'af16')) `
+   "⑨ 收尾自证：探测环境已还原（真 ffprobe 重新答出 af16 ⇒ ⑤/⑥/⑧ 没被本节污染）"
+
+
+# ── ⑩ ffmpeg 解码腿三态点名（2026-10-29 B2，实机根因批）─────────────────────────
+# 根因（本机实机读数，非推断）：出货 -full 包那台机器上**被选中的 ffmpeg 不带 libjxr** ⇒ ffprobe 探测腿
+#   对任何 .jxr 都回 exit=1 且不给答案。历次修复都建立在"探针会答"之上，而日志只说"探测未成"，
+#   用户无从知道不成的是哪件、换哪件能成 ⇒ 每一轮都在修"答对之后怎么办"，没修"答不出是谁的锅"。
+# 三态：Present（清单里有 libjxr）/ Absent（清单**非空**但没有）/ Unknown（压根没问到清单）。
+#   ⚠ Unknown 被压成 Absent 就是本批要防的那族错（把『不知道』说成『没有』）——与 ⑨ 同形同根。
+# 桩件口径（全部用随包工具链现成件，不写死本机路径）：
+#   Present = 真 ffmpeg.exe（实测 557 条含 libjxr）
+#   Absent  = avifenc.exe 当 ffmpeg.exe（同一命令行打出 63 个可解析 token、不含 libjxr）
+#   Unknown = cjpegli.exe 当 ffmpeg.exe（同一命令行一个可解析 token 都没有）
+#   ⚠ 后两档只是**清单形态**的替身，不代表任何真实 ffmpeg 构建的能力；本档钉的是分类与措辞。
+#   ⚠ 替身必须连同**它自己的 DLL 家目录**一起镜像（只镜像 ffmpeg-full 会让 avifenc/cjpegli 以
+#     0xC0000135 STATUS_DLL_NOT_FOUND 起不来 ⇒ 清单恒空 ⇒ Absent 档假绿成 Unknown，本轮实测踩过）。
+#   ⚠ 夹具必须**真的进** ProcessJxrInputAsync：`.jxr` 只在 `contentMustBypass` 时才走 JxrDecApp 通路
+#     （QueueProcessor.cs:1172），8-bit 无 alpha 的 sdr8.jxr 会落通用 ffmpeg 分支 ⇒ 状态行压根不出现。
+#     这里用 ③b 造的 8-bit **带 alpha** 件（alpha 正是内容判据之一），并额外断言「输入: JXR」在场。
+Write-Host "`n### ⑩ 被选中的 ffmpeg 能不能解 JXR 要点名，且『没问到』不许说成『没有』 ###" -ForegroundColor Cyan
+function StandinDir([string]$tag, [string]$replaceWith) {
+  $d = Join-Path $work $tag
+  New-Item -ItemType Directory -Force -Path $d | Out-Null
+  $home2 = Split-Path $replaceWith -Parent          # 替身件自己的 DLL 家目录
+  foreach ($f in @(Get-ChildItem -LiteralPath $home2 -File)) {
+    if ($f.Name -eq 'ffmpeg.exe') { continue }
+    try { $null = New-Item -ItemType HardLink -Path (Join-Path $d $f.Name) -Target $f.FullName -ErrorAction Stop }
+    catch { try { Copy-Item -LiteralPath $f.FullName -Destination (Join-Path $d $f.Name) -Force -ErrorAction Stop } catch { } }
+  }
+  # 探针保持**真件**：本节只改"被选中的 ffmpeg 是哪件"，不把 ⑨ 的探针变量一起搅进来
+  $probe = Join-Path $d 'ffprobe.exe'
+  try { $null = New-Item -ItemType HardLink -Path $probe -Target $fp -ErrorAction Stop }
+  catch { try { Copy-Item -LiteralPath $fp -Destination $probe -Force -ErrorAction Stop } catch { } }
+  $dst = Join-Path $d 'ffmpeg.exe'
+  try { $null = New-Item -ItemType HardLink -Path $dst -Target $replaceWith -ErrorAction Stop }
+  catch { try { Copy-Item -LiteralPath $replaceWith -Destination $dst -Force -ErrorAction Stop } catch { } }
+  return $d
+}
+$avifencExe = "$root/publish/PLAN/artifacts/avifenc.exe"
+$cjpegliExe = "$root/publish/PLAN/jxl/bin/cjpegli.exe"
+$stubPresent = StandinDir 'stub_ff_present' $ff
+$stubAbsent  = StandinDir 'stub_ff_absent'  $avifencExe
+$stubUnknown = StandinDir 'stub_ff_unknown' $cjpegliExe
+$planDirBak = $env:FFMPEGGUI_PLAN_DIR
+$env:FFMPEGGUI_PLAN_DIR = "$root/publish/PLAN"
+CK ((Test-Path (Join-Path $stubPresent 'ffmpeg.exe')) -and (Test-Path (Join-Path $stubAbsent 'ffmpeg.exe')) `
+    -and (Test-Path (Join-Path $stubUnknown 'ffmpeg.exe'))) `
+   "⑩ 前置：三档 ffmpeg.exe 替身目录造好（真件 / avifenc / cjpegli，各带自己的 DLL 家目录）"
+# 正控：三档替身各自确实落在预期的清单形态上（先证仪器是活的，再拿它下判据）
+function DecListCount([string]$exePath, [string]$which) {
+  $o = "$work/declist_$which.out"
+  $e = "$o.err"
+  $p = Start-Process -FilePath $exePath -ArgumentList '-hide_banner -decoders' -NoNewWindow -PassThru `
+        -RedirectStandardOutput $o -RedirectStandardError $e
+  $p.WaitForExit()
+  $n = 0
+  if (Test-Path $o) {
+    foreach ($ln in @(Get-Content -LiteralPath $o -Encoding UTF8 -EA 0)) {
+      $m = [regex]::Match($ln, '^\s*\S+\s+(\S+)')
+      if ($m.Success) { $tk = $m.Groups[1].Value; if ($tk.Length -gt 0 -and [char]::IsLetterOrDigit($tk[0])) { $n++ } }
+    }
+  }
+  return $n
+}
+$nP = DecListCount (Join-Path $stubPresent 'ffmpeg.exe') 'present'
+$nA = DecListCount (Join-Path $stubAbsent 'ffmpeg.exe') 'absent'
+$nU = DecListCount (Join-Path $stubUnknown 'ffmpeg.exe') 'unknown'
+Write-Host ("  [⑩ 正控] 可解析清单条数 present=" + $nP + " absent=" + $nA + " unknown=" + $nU)
+CK (($nP -gt 400) -and ($nA -gt 0) -and ($nU -eq 0)) `
+   "⑩ **正控**：三档清单形态如预期分叉（真件非空且含 libjxr / avifenc 非空不含 / cjpegli 空）⇒ 后面的判据不是空转"
+$fx10 = "$work/alpha32.jxr"
+CK (Test-Path $fx10) "⑩ 前置：带 alpha 的 8-bit 夹具在场（`.jxr` 只有满足内容判据才进 JxrDecApp 通路）"
+
+$dir10a = "$work/run_leg_absent"; New-Item -ItemType Directory -Force -Path $dir10a | Out-Null
+$env:FFMPEGGUI_FFMPEG_DIR = $stubAbsent
+$r10a = Exec $exe ('--headless --log-level debug -i "' + $fx10 + '" -o "' + $dir10a + '" --format png') "run_leg_absent"
+CK ($r10a.text -match '\[jxr\] 输入: JXR') "⑩a 前置自证：本次确实进了 JXR 专用通路（不进则下面几条全是空转）"
+CK ($r10a.text -match 'ffmpeg 解码腿') "⑩a Absent 档：解码腿状态行在场（不点名就没有这一格）"
+CK ($r10a.text -match '没有 libjxr') `
+   "⑩a Absent 档：非空清单且不含 libjxr ⇒ 明说「没有」，并点出**是哪件 ffmpeg**"
+CK ($r10a.text -notmatch '没能问到') "⑩a Absent 档不许退化成「没能问到」（清单问到了，只是没有）"
+CK (($r10a.text -match '随包件') -and ($r10a.text -match '不自动改设置')) `
+   "⑩a Absent 档给出**可执行的去向**（随包件带 libjxr + 只播报不改设置）"
+
+$dir10b = "$work/run_leg_unknown"; New-Item -ItemType Directory -Force -Path $dir10b | Out-Null
+$env:FFMPEGGUI_FFMPEG_DIR = $stubUnknown
+$r10b = Exec $exe ('--headless --log-level debug -i "' + $fx10 + '" -o "' + $dir10b + '" --format png') "run_leg_unknown"
+CK ($r10b.text -match '\[jxr\] 输入: JXR') "⑩b 前置自证：本次确实进了 JXR 专用通路"
+CK ($r10b.text -match '没能问到') `
+   "⑩b **本档主判据**：清单问不到手时只说「没能问到」——『不知道』不许折算成『它没有』"
+CK ($r10b.text -notmatch '没有 libjxr') "⑩b 空清单不许打「没有 libjxr」（与 ⑨ 的『未判定≠不适用』同族）"
+CK ($r10b.text -notmatch '随包件') "⑩b 没问到就不许顺带推荐切随包件（推荐的前提是已经断定选中的没有）"
+
+$dir10c = "$work/run_leg_present"; New-Item -ItemType Directory -Force -Path $dir10c | Out-Null
+$env:FFMPEGGUI_FFMPEG_DIR = $stubPresent
+$r10c = Exec $exe ('--headless --log-level debug -i "' + $fx10 + '" -o "' + $dir10c + '" --format png') "run_leg_present"
+$p10c = Product $dir10c @(".png")
+CK (($r10c.code -eq 0) -and ($null -ne $p10c)) "⑩c Present 档：真件下转换仍要出件（本节不许把通路改坏）"
+CK (($r10c.text -match '带 libjxr') -and ($r10c.text -notmatch '没有 libjxr') -and ($r10c.text -notmatch '没能问到')) `
+   "⑩c Present 档措辞是「带 libjxr ⇒ 探测腿与解码腿都在」，且两条否定行 0 命中"
+CK ($r10c.text -notmatch '随包件') "⑩c 选中的件自己就带 ⇒ 不许再推荐切换"
+
+# 形态锁：三态分类必须**先**判空清单，再判有无（顺序反了就等于把 Unknown 折进 Absent）
+$edsFile = "$root/src/FfmpegGui/Services/EncoderDetectionService.cs"
+$eds = [System.IO.File]::ReadAllText($edsFile)
+$guardAt = $eds.IndexOf('decoders.Count == 0', [System.StringComparison]::Ordinal)
+$anyAt   = $eds.IndexOf('FormatDecoderMap["jxr"].Any', [System.StringComparison]::Ordinal)
+CK (($guardAt -gt 0) -and ($anyAt -gt $guardAt)) `
+   "⑩ 形态锁：ClassifyJpegXrLeg 里空清单守卫排在有无判定**之前**（$guardAt < $anyAt）"
+CK (($eds -match 'enum FfmpegJpegXrLeg') -and ($eds -match 'Unknown')) `
+   "⑩ 形态锁：三态枚举在场（两态布尔=把『不知道』压成『没有』的老形状）"
+CK ($eds -match '_decodersByFfmpeg') `
+   "⑩ 形态锁：解码器清单按**被问的那件 ffmpeg**分档缓存（一份全局字段会让『问 A 拿到 B 的清单』）"
+$qpT = [System.IO.File]::ReadAllText($qpFile)
+CK (($qpT -match 'await LogFfmpegJpegXrLegAsync\(item\)') -and ($qpT -match 'QueryFfmpegJpegXrDecoderAsync')) `
+   "⑩ 形态锁：JXR 通路入口真的调了点名（只在 EncoderDetectionService 里备着 ≠ 会打进日志）"
+# ⚠ 还原本节动过的两个环境量（⑨ 的教训：不还原会让后面的节在桩件下跑，守卫自己造假红）
+$env:FFMPEGGUI_FFMPEG_DIR = "$root/publish/PLAN/ffmpeg-full"
+if ($null -eq $planDirBak) { Remove-Item 'Env:\FFMPEGGUI_PLAN_DIR' -EA 0 } else { $env:FFMPEGGUI_PLAN_DIR = $planDirBak }
+$r10back = Exec $fp ('-v error -select_streams v:0 -show_entries stream=pix_fmt -of csv=p=0 "' + "$work/hp_f16.jxr" + '"') 'leg_restore'
+CK (($r10back.code -eq 0) -and ($r10back.text -match 'af16')) `
+   "⑩ 收尾自证：探测环境已还原（真 ffprobe 重新答出 af16 ⇒ 后面的节没被本节污染）"
+
+
 # ── ⑤ 源码形态锁 ─────────────────────────────────────────────────────────────────
 Write-Host "`n### ⑤ 源码形态锁 ###" -ForegroundColor Cyan
 $hp = [System.IO.File]::ReadAllText($hpFile)
@@ -449,6 +669,13 @@ CK ((($qp -match 'Arm64RgbAHalf') -or ($hp -match 'Arm64RgbAHalf')) -and ($hp -m
     -and ($hp -match 'Arm64RgbaInt') -and ($hp -match 'Arm48RgbInt')) `
    "⑤ 四条直通臂常量都在（防被删空导致 ChoosePassthroughArm 恒 null ⇒ 空转假绿）"
 CK ($qp -match 'HP-METRICS') "⑤ 指标行由 QueueProcessor 拼接（门禁吃的那条缝有生成点）"
+# ⑨ 那档的判据要有**生成点**，不许只在测试里自说自话；同时把被撤下的旧措辞钉成 0 命中
+CK ((($hp -split 'public static IReadOnlyList<int> BlindArmOrder').Count -eq 2) -and ($qp -match 'BlindArmOrder\(\)')) `
+   "⑤ 盲试顺序有**唯一定义点**（JxrHighPrecisionDecode.BlindArmOrder）且被 QueueProcessor 调用"
+CK ((($hp -split 'public static bool ProbeGaveAnswer').Count -eq 2) -and ($qp -match 'ProbeGaveAnswer\(')) `
+   "⑤ 『探针算不算给了答案』有唯一定义点且被调用（空串与 unknown 都算没答）"
+CK ($qp -match '源格式探测未判定') "⑤ 『未判定』那句在 QueueProcessor 里确有发射点"
+CK ($qp -notmatch '高位深直通臂不适用') "⑤ 旧措辞『⇒ 高位深直通臂不适用』在源码里 0 命中（撤下后不许被改回来）"
 
 # ── ⑦ 告警分级可见性（P0）──────────────────────────────────────────────────────
 # ⚠ 这一节为什么归本门禁：`ConsoleQueueObserver.FlushItemLog` 旧写法把 `item.Log` **整段**按

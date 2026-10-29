@@ -586,6 +586,7 @@ namespace FfmpegGui.Services
                 contentMustBypass = true;
                 if (inputMayHaveMultipleFrames) contentBypassReason = "多帧输入（引擎按单帧处理会丢帧）";
                 else if (inMeta.hasAlpha) contentBypassReason = "源含 alpha，ffmpeg 的 libjxr 解码腿实测把它塌成 0";
+                else if (inMeta.bitDepth <= 0) contentBypassReason = "源载体位深未判定（探针没给出答案），按无损/浮点通路处理";
                 else if (inMeta.bitDepth != 8) contentBypassReason = $"源载体是 {inMeta.bitDepth}-bit（非 8-bit 整数），需无损载体/浮点通路";
                 else if (!inMeta.isRgb) contentBypassReason = "源不是 RGB 系列载体（灰度/调色板），引擎口径未实测";
                 else if (inMeta.hasIccSemantics) contentBypassReason = "源色彩语义来自内嵌 ICC，JXR 容器的引擎侧 ICC 探针未实测";
@@ -3781,7 +3782,7 @@ namespace FfmpegGui.Services
                 // `#26`：本方法原本**没有任何超时**；本次只接上调用方的取消令牌 ⇒ 取消即杀树，
                 // 按既有兜底返回 8（**不新增超时**，不扩大本次范围）。
                 using var reg = ct.Register(() => { try { p.Kill(entireProcessTree: true); } catch { } });
-                var output = (await PlatformServices.ReadStdoutDrainingStderrAsync(p)).Trim();
+                var output = (await PlatformServices.ReadStdoutDrainingStderrAsync(p)).stdout.Trim();
                 await p.WaitForExitAsync();
                 if (ct.IsCancellationRequested)
                 {
@@ -4784,6 +4785,7 @@ namespace FfmpegGui.Services
 
             var targetFmt = (item.Options.Format ?? "").ToLowerInvariant();
             item.Log += $"[jxr] 输入: JXR  |  目标格式: {targetFmt}  |  后端: {item.Options.EncoderBackend}  |  JxrDecApp: 可用  |  cjpegli: {(CjpegliService.IsAvailable ? "可用" : "不可用")}  |  cjxl: {(CjxlService.IsAvailable ? "可用" : "不可用")}\n";
+            await LogFfmpegJpegXrLegAsync(item);
 
             var tempDir = Path.Combine(PlatformServices.GetTempDir(), $"jxr_input_{Guid.NewGuid():N}");
             Directory.CreateDirectory(tempDir);
@@ -4801,7 +4803,7 @@ namespace FfmpegGui.Services
                 //   `JXRTestBmp.c` 的 WriteBMPHeader 尾支、`-c 0` 臂撞 `JXRGluePFC.c:2291`，**两臂同报
                 //   WMP_errUnsupportedFormat(-106)**；旧日志那句「scRGB→sRGB 转换完成」在该通路上
                 //   压根没调转换函数（属误导，本批一并撤）。⇒ 先走高位深直通臂，失败才回旧两臂。
-                var (highPrecisionPath, hpChannels) = await TryJxrHighPrecisionAsync(item, jxrDecPath, tempDir, ct);
+                var (highPrecisionPath, hpChannels, tryBlindArms) = await TryJxrHighPrecisionAsync(item, jxrDecPath, tempDir, ct);
                 string intermediatePath;
 
                 if (highPrecisionPath != null)
@@ -4835,13 +4837,39 @@ namespace FfmpegGui.Services
 
                     if (decExit != 0 || !File.Exists(intermediatePath))
                     {
-                        item.ExitCode = decExit;
-                        item.Status = $"失败 (JxrDecApp 退出码 {decExit})";
-                        return;
+                        // ⚠ 2026-10-29 实机改判：旧两臂全死时，如果**选臂提示缺席**（探针未判定），这里必须
+                        //   再给直通臂一次机会，而不是就此判死。理由：64bppRGBAHalf 的件在旧两臂上是**结构性**
+                        //   -106（jxrlib 没有出边），与文件好坏无关；而"探针未判定"实测最常见三种病因
+                        //   （0 字节的件 / 头 1KB 被别的进程握着 / 手选的 ffprobe 不带 libjxr）里，件往往
+                        //   在毫秒之后就能被 JxrDecApp 正常解出——旧日志自己就印着这个矛盾：
+                        //   `源格式探测未成` 之后紧跟 JxrDecApp 的 `4.1 MP` Perf Report。
+                        //   盲试每档都自校验（退出码 + TIFF 产出 + fail-closed 拒读）⇒ 不会因此产出坏件；
+                        //   且**只有旧臂已失败才启用** ⇒ 8-bit 源（旧臂能成）产物逐字节不变。
+                        if (tryBlindArms)
+                        {
+                            item.Log += $"[jxr]   既有两臂均失败（退出码 {decExit}）⇒ 选臂提示缺席，逐档盲试直通臂\n";
+                            _onItemUpdated?.Invoke(item);
+                            var (blindPam, blindCh) = await TryJxrBlindPassthroughAsync(item, jxrDecPath, tempDir, ct);
+                            if (blindPam != null)
+                            {
+                                highPrecisionPath = blindPam;
+                                hpChannels = blindCh;
+                                intermediatePath = blindPam;
+                            }
+                        }
+                        if (highPrecisionPath == null)
+                        {
+                            item.ExitCode = decExit;
+                            item.Status = $"失败 (JxrDecApp 退出码 {decExit})";
+                            return;
+                        }
                     }
-                    // 措辞按实测收紧：`-c 0` 只有在源是 128bppRGBAFloat 时才会真的过 Convert_Float_To_U8；
-                    // 其余档（如 24bppRGB）本就没有传递函数可做 ⇒ 不再声称"转换完成"。
-                    item.Log += "[jxr]   TIF 解码成功 (-c 0 出口档；是否内含 scRGB→sRGB 由源格式决定)\n";
+                    else
+                    {
+                        // 措辞按实测收紧：`-c 0` 只有在源是 128bppRGBAFloat 时才会真的过 Convert_Float_To_U8；
+                        // 其余档（如 24bppRGB）本就没有传递函数可做 ⇒ 不再声称"转换完成"。
+                        item.Log += "[jxr]   TIF 解码成功 (-c 0 出口档；是否内含 scRGB→sRGB 由源格式决定)\n";
+                    }
                 }
                 }
                 var intermediateSize = new FileInfo(intermediatePath).Length;
@@ -5127,53 +5155,166 @@ namespace FfmpegGui.Services
 
         /// <summary>
         /// JXR 高位深直通臂：JxrDecApp 出「与源同格式」的 TIFF → 托管读取 → sRGB 编码（可选 Reinhard）
-        /// → 16-bit PAM。返回 <c>(null, 0)</c> 表示本臂不适用，调用方原样回退到 BMP / `-c 0` 两臂。
-        /// 为什么必须有这一层、以及各前提的实测依据，见 <see cref="JxrHighPrecisionDecode"/>。
+        /// → 16-bit PAM。返回 <c>(null, 0, tryBlindArms)</c> 表示本臂不适用；
+        /// <c>tryBlindArms</c> **只在探针没给出可用答案时为真** ⇒ 调用方须在旧两臂失败后逐档盲试直通臂
+        /// （为什么必须有这一档，见 <see cref="JxrHighPrecisionDecode.BlindArmOrder"/> 的实测账）。
+        /// 为什么必须有直通臂、以及各前提的实测依据，见 <see cref="JxrHighPrecisionDecode"/>。
         /// </summary>
-        private async Task<(string? pamPath, int channels)> TryJxrHighPrecisionAsync(
+        private async Task<(string? pamPath, int channels, bool tryBlindArms)> TryJxrHighPrecisionAsync(
             QueueItem item, string jxrDecPath, string tempDir, CancellationToken ct)
         {
-            // ① 选臂依据 = ffmpeg/libjxr 报出的 pix_fmt（实测三档互不相同：bgr24 / rgba64le / rgbaf16le）。
-            //    它是**提示**而非前提：探不到、或不是高位档 ⇒ 本臂不适用，既有行为逐字不变。
+            // ① 选臂**提示** = ffmpeg/libjxr 报出的 pix_fmt（实测三档互不相同：bgr24 / rgba64le / rgbaf16le）。
+            // ⚠ 2026-10-29 实机改判：提示**缺席**不等于"源不是高位深"。这条通路的解码腿是 JxrDecApp（jxrlib），
+            //   与 ffmpeg 有无 libjxr 无关；旧写法把一次仪器失败折算成一条内容结论（"不是高位深直通档"），
+            //   于是落进对 64bppRGBAHalf 结构上必死的 BMP / `-c 0` 旧路。本机实测三种病因都打同一句 exit=1：
+            //   0 字节的件（Invalid data found）、头 1KB 被别的进程握着的件（Permission denied）、
+            //   以及任何不带 libjxr 的 ffprobe 构建 ⇒ 缺席时只记「未判定」，并把盲试兜底交给调用方。
             var ffprobe = PlatformServices.ResolveFfprobePath(AppSettingsService.Current.FfmpegPath);
             string? pixFmt = null;
+            bool answered;
             if (!string.IsNullOrEmpty(ffprobe) && File.Exists(ffprobe))
             {
-                var (stdout, fail) = await RunFfprobeWithWatchdogAsync(ffprobe,
+                var (stdout, fail, probeStderr) = await RunFfprobeWithWatchdogAsync(ffprobe,
                     $"-v error -select_streams v:0 -show_entries stream=pix_fmt -of csv=p=0 \"{item.InputPath}\"",
                     10, ct);
-                if (fail == null) pixFmt = stdout.Trim();
-                else item.Log += $"[jxr]   源格式探测未成（{fail}）⇒ 高位深直通臂不适用\n";
+                if (fail == null)
+                {
+                    pixFmt = stdout.Trim();
+                    answered = JxrHighPrecisionDecode.ProbeGaveAnswer(pixFmt);
+                    if (!answered)
+                        item.Log += $"[jxr]   源格式探测未判定（ffprobe={ffprobe} 只答出『{pixFmt}』=分不出类）"
+                                  + "⇒ 不把『不知道』当成『不是高位深』\n";
+                }
+                else
+                {
+                    answered = false;
+                    // stderr 原文必须落盘：exit=1 本身分不出"件坏 / 件被握着 / 路径没命中 / 构建没 libjxr"四种病因
+                    item.Log += $"[jxr]   源格式探测未判定（ffprobe={ffprobe}；{fail}；"
+                              + $"ffprobe 原文：{CollapseProbeError(probeStderr)}）⇒ 不把『不知道』当成『不是高位深』\n";
+                }
             }
             else
             {
-                item.Log += "[jxr]   无 ffprobe ⇒ 高位深直通臂不适用\n";
+                answered = false;
+                item.Log += $"[jxr]   源格式探测未判定（无 ffprobe：FfmpegPath={AppSettingsService.Current.FfmpegPath}）"
+                          + "⇒ 不把『不知道』当成『不是高位深』\n";
             }
 
             var arm = JxrHighPrecisionDecode.ChoosePassthroughArm(pixFmt);
             if (arm == null)
             {
-                item.Log += $"[jxr]   源 pix_fmt={(string.IsNullOrWhiteSpace(pixFmt) ? "未知" : pixFmt)} 不是高位深直通档 ⇒ 走既有 BMP/-c 0 通路\n";
-                return (null, 0);
+                if (answered)
+                    item.Log += $"[jxr]   源 pix_fmt={pixFmt} 不是高位深直通档 ⇒ 走既有 BMP/-c 0 通路\n";
+                else
+                    item.Log += "[jxr]   选臂提示缺席 ⇒ 先走既有 BMP/-c 0 通路，其失败后逐档盲试直通臂\n";
+                return (null, 0, tryBlindArms: !answered);
             }
 
+            var (hpPam, hpCh) = await TryJxrPassthroughArmAsync(item, jxrDecPath, tempDir, arm.Value, pixFmt, ct);
+            return (hpPam, hpCh, tryBlindArms: false);
+        }
+
+        /// <summary>
+        /// 探针未判定时的兜底：按 <see cref="JxrHighPrecisionDecode.BlindArmOrder"/> 逐档自校验盲试直通臂，
+        /// 第一个成立的档接管。**只在旧两臂（BMP / `-c 0`）已经失败之后**才被调用 ⇒ 8-bit 源（旧臂能成）
+        /// 行为与产物逐字节不变，也不会被无谓升采样成浮点。
+        /// </summary>
+        /// <summary>
+        /// 把"被选中的那件 ffmpeg 自己能不能解 JXR"当场点名（2026-10-29，B2）。
+        ///
+        /// <para><b>为什么这一行是修复的一部分</b>：实机（出货 -full 包）上「修了 N 次还在炸」的根因不是
+        /// 选臂逻辑，而是**被选中的 ffmpeg 不带 libjxr** ⇒ ffprobe 探测腿回 <c>exit=1</c> 且不给任何答案。
+        /// 历次修复都建立在"探针会答"之上，而日志只说"探测未成"，用户无从知道不成的是哪件、换哪件能成
+        /// ⇒ 每一轮都在修"答对之后怎么办"。这里把缺失**归因到具体文件**。</para>
+        ///
+        /// <para><b>三态不许压扁</b>：<c>-decoders</c> 没跑成 ⇒ 只说"没能问到清单"，**不**折算成"它没有"
+        /// （同一族错误：把『不知道』当『不是』）。<b>只播报，不改设置、不改路由</b>——按"不干涉输入"的立场，
+        /// 换哪件 ffmpeg 是用户决定；本函数不擅自把选中的件换成随包件。</para>
+        /// </summary>
+        private async Task LogFfmpegJpegXrLegAsync(QueueItem item)
+        {
+            var ffmpegPath = AppSettingsService.Current.FfmpegPath;
+            var leg = await EncoderDetectionService.QueryFfmpegJpegXrDecoderAsync(ffmpegPath);
+            switch (leg)
+            {
+                case EncoderDetectionService.FfmpegJpegXrLeg.Present:
+                    item.Log += $"[jxr] ffmpeg 解码腿: {ffmpegPath} 带 libjxr ⇒ 源格式探测(ffprobe)与 ffmpeg 解码腿都在\n";
+                    break;
+                case EncoderDetectionService.FfmpegJpegXrLeg.Unknown:
+                    // 措辞用「有无」不用「有没有」：后者含「没有 libjxr」这个子串，会把判据的否定锁撞掉
+                    // （⑩b 实测红过一次）。
+                    item.Log += $"[jxr] ffmpeg 解码腿: 没能问到 {ffmpegPath} 的 -decoders 清单 ⇒ 不据此判定有无 libjxr\n";
+                    break;
+                default:
+                    item.Log += $"[jxr] ffmpeg 解码腿: {ffmpegPath} 的 -decoders 清单里**没有 libjxr** ⇒ 源格式探测(ffprobe)与 ffmpeg 解码腿都不可用，本格式全程走 JxrDecApp\n";
+                    var planFfmpeg = PlatformServices.TryFindInPlanFolder(PlatformServices.Ffmpeg);
+                    if (planFfmpeg != null && !SameFile(planFfmpeg, ffmpegPath)
+                        && await EncoderDetectionService.QueryFfmpegJpegXrDecoderAsync(planFfmpeg)
+                            == EncoderDetectionService.FfmpegJpegXrLeg.Present)
+                        item.Log += $"[jxr]   随包件 {planFfmpeg} 带 libjxr ⇒ 要用 ffmpeg 探测/解码腿就把设置里的 FFmpeg 目录切到它（本软件不自动改设置）\n";
+                    break;
+            }
+            _onItemUpdated?.Invoke(item);
+        }
+
+        private static bool SameFile(string a, string? b)
+        {
+            if (string.IsNullOrWhiteSpace(b)) return false;
+            try { return string.Equals(Path.GetFullPath(a), Path.GetFullPath(b), StringComparison.OrdinalIgnoreCase); }
+            catch { return false; }
+        }
+
+        private async Task<(string? pamPath, int channels)> TryJxrBlindPassthroughAsync(
+            QueueItem item, string jxrDecPath, string tempDir, CancellationToken ct)
+        {
+            foreach (var arm in JxrHighPrecisionDecode.BlindArmOrder())
+            {
+                if (ct.IsCancellationRequested) break;
+                var (pam, ch) = await TryJxrPassthroughArmAsync(item, jxrDecPath, tempDir, arm, null, ct,
+                    rejectSuffix: "试下一档");
+                if (pam != null)
+                {
+                    item.Log += $"[jxr]   盲试直通臂 -c {arm} 成立 ⇒ 高位深通路接管（探针未判定未被折算成『不是高位深』）\n";
+                    return (pam, ch);
+                }
+            }
+            item.Log += "[jxr]   ❌ 四档直通臂（-c 25/28/23/10）逐档都不成立 ⇒ 本件确实取不出高位帧（与『探针未判定』一并记为失败）\n";
+            return (null, 0);
+        }
+
+        /// <summary>探测 stderr 收成一行并限长，供任务日志引用原文（多行会把日志的按行判据搅乱）。</summary>
+        private static string CollapseProbeError(string? text)
+        {
+            var s = (text ?? "").Replace('\r', ' ').Replace('\n', ' ').Trim();
+            if (s.Length == 0) return "（无输出）";
+            return s.Length > 220 ? s.Substring(0, 220) + "…" : s;
+        }
+
+        /// <summary>
+        /// 单个直通档的全流程：JxrDecApp 取帧 → 托管读高位 TIFF → 映射 → 16-bit PAM。
+        /// 任何一环不成立都点名并返回 null（调用方据此换档或回旧臂）。
+        /// </summary>
+        private async Task<(string? pamPath, int channels)> TryJxrPassthroughArmAsync(
+            QueueItem item, string jxrDecPath, string tempDir, int arm, string? pixFmtForLog, CancellationToken ct,
+            string rejectSuffix = "回既有 BMP/-c 0 通路")
+        {
             // ② 直通取帧：from==to ⇒ 不查 jxrlib 转换表 ⇒ 不会撞 -106，也不会在 jxrlib 里偷偷钳位。
             var tifPath = Path.Combine(tempDir, $"decoded_hp{arm}.tif");
             var hpArgs = $"-i \"{item.InputPath}\" -o \"{tifPath}\" -c {arm}";
-            item.Log += $"[jxr] Step 1(高位深直通): pix_fmt={pixFmt} → JxrDecApp -c {arm}（与源同格式，零转换）\n";
+            item.Log += $"[jxr] Step 1({(string.IsNullOrEmpty(pixFmtForLog) ? "盲试直通臂): 探针未判定" : $"高位深直通): pix_fmt={pixFmtForLog}")} → JxrDecApp -c {arm}（与源同格式，零转换）\n";
             item.Command = $"JxrDecApp {hpArgs}";
             _onItemUpdated?.Invoke(item);
             var hpExit = await RunJxrDecAppAsync(jxrDecPath, hpArgs,
                 s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ct);
             if (hpExit != 0 || !File.Exists(tifPath))
             {
-                item.Log += $"[jxr]   直通臂退出码 {hpExit} ⇒ 回既有 BMP/-c 0 通路\n";
+                item.Log += $"[jxr]   直通臂退出码 {hpExit} ⇒ {rejectSuffix}\n";
                 return (null, 0);
             }
 
             if (!JxrHighPrecisionDecode.TryReadTiff(tifPath, out var frame, out var readErr) || frame == null)
             {
-                item.Log += $"[jxr]   ❌ 高位 TIFF 拒读：{readErr} ⇒ 回既有 BMP/-c 0 通路\n";
+                item.Log += $"[jxr]   ❌ 高位 TIFF 拒读：{readErr} ⇒ {rejectSuffix}\n";
                 return (null, 0);
             }
 
@@ -5204,12 +5345,12 @@ namespace FfmpegGui.Services
             }
             catch (Exception ex)
             {
-                item.Log += $"[jxr]   ❌ 高位帧映射异常（{ex.GetType().Name}: {ex.Message}）⇒ 回既有 BMP/-c 0 通路\n";
+                item.Log += $"[jxr]   ❌ 高位帧映射异常（{ex.GetType().Name}: {ex.Message}）⇒ {rejectSuffix}\n";
                 return (null, 0);
             }
             if (!File.Exists(pamPath) || new FileInfo(pamPath).Length == 0)
             {
-                item.Log += "[jxr]   ❌ 16-bit PAM 未产出 ⇒ 回既有 BMP/-c 0 通路\n";
+                item.Log += $"[jxr]   ❌ 16-bit PAM 未产出 ⇒ {rejectSuffix}\n";
                 return (null, 0);
             }
             PlatformServices.MarkAsTemporaryFile(pamPath);
@@ -5222,7 +5363,7 @@ namespace FfmpegGui.Services
                       + $" size={frame.Width}x{frame.Height}"
                       + $" channels={frame.Channels}"
                       + $" kind={frame.Kind}"
-                      + $" arm={arm.Value}"
+                      + $" arm={arm}"
                       + $" peak={st.Peak.ToString("F4", System.Globalization.CultureInfo.InvariantCulture)}"
                       + $" overWhite={st.OverWhite}/{st.RgbSampleCount}"
                       + $" alphaMin={st.AlphaMin.ToString("F3", System.Globalization.CultureInfo.InvariantCulture)}"
@@ -5252,7 +5393,7 @@ namespace FfmpegGui.Services
             // 候选流：按 nb_frames 降序（N/A 记 -1 ⇒ 排最后）
             var candidates = new List<int>();
             long maxClaimedFrames = -1;
-            var (listOut, listFail) = await RunFfprobeWithWatchdogAsync(ffprobe,
+            var (listOut, listFail, _) = await RunFfprobeWithWatchdogAsync(ffprobe,
                 "-v error -select_streams v -show_entries stream=index,nb_frames -of csv=p=0 " + $"\"{path}\"", 10, ct);
             if (listFail == null)
             {
@@ -5273,7 +5414,7 @@ namespace FfmpegGui.Services
             bool anyProbeRan = false;
             foreach (var streamIdx in candidates.Take(4))
             {
-                var (stdout, fail) = await RunFfprobeWithWatchdogAsync(ffprobe,
+                var (stdout, fail, _) = await RunFfprobeWithWatchdogAsync(ffprobe,
                     $"-v error -select_streams {streamIdx} -show_entries frame=pts_time -of csv=p=0 \"{path}\"", 10, ct);
                 if (fail != null) continue;
                 anyProbeRan = true;
@@ -6520,7 +6661,7 @@ namespace FfmpegGui.Services
                     try { proc.Kill(entireProcessTree: true); } catch { }
                 });
 
-                var output = await PlatformServices.ReadStdoutDrainingStderrAsync(proc);
+                var (output, _) = await PlatformServices.ReadStdoutDrainingStderrAsync(proc);
                 await proc.WaitForExitAsync();
 
                 if (ct.IsCancellationRequested) { Indeterminate("被取消"); return (false, false); }
@@ -6622,10 +6763,12 @@ namespace FfmpegGui.Services
         /// </para>
         /// </summary>
         /// <returns>
-        /// <c>(stdout, failReason)</c>：<c>failReason != null</c> ⇒ 本次探测**失败**（起不来 / 被取消 /
+        /// <c>(stdout, failReason, stderr)</c>：<c>failReason != null</c> ⇒ 本次探测**失败**（起不来 / 被取消 /
         /// 超时 / 非 0 退出），调用方必须按「**不确定**」处理，**不得**当成"答案是否定的"。
+        /// <c>stderr</c> = 子进程 stderr 原文：失败时它是**唯一**能分辨病因的证据（本机实测 0 字节的件、
+        /// 头 1KB 被别的进程握着的件、不带 libjxr 的 ffprobe 构建三种病因都打同一句 <c>exit=1</c>）。
         /// </returns>
-        private static async Task<(string stdout, string? failReason)> RunFfprobeWithWatchdogAsync(
+        private static async Task<(string stdout, string? failReason, string stderr)> RunFfprobeWithWatchdogAsync(
             string ffprobe, string args, int timeoutSec, CancellationToken ct)
         {
             var psi = new ProcessStartInfo
@@ -6640,7 +6783,7 @@ namespace FfmpegGui.Services
                 CreateNoWindow = true
             };
             using var proc = Process.Start(psi);
-            if (proc == null) return ("", "起不来（ffprobe 未启动）");
+            if (proc == null) return ("", "起不来（ffprobe 未启动）", "");
 
             // 超时 / 取消 ⇒ `Kill(entireProcessTree: true)` ⇒ 管道关闭 ⇒ 阻塞中的读**必然**返回。
             // ⚠ 杀**进程树**：只杀父进程会留下 ffprobe 孙进程。
@@ -6651,13 +6794,15 @@ namespace FfmpegGui.Services
                 try { proc.Kill(entireProcessTree: true); } catch { }
             });
 
-            var output = await PlatformServices.ReadStdoutDrainingStderrAsync(proc);
+            // stderr 一并返回：它才是"为什么没答案"的原文（Invalid data / Permission denied /
+            //   No such file 三种病因的 exit 码**完全相同**，只留 exit 就等于把病因丢掉）。
+            var (output, stderrText) = await PlatformServices.ReadStdoutDrainingStderrAsync(proc);
             await proc.WaitForExitAsync();
 
-            if (ct.IsCancellationRequested) return ("", "被取消");
-            if (timeoutCts.IsCancellationRequested) return ("", $"超时（{timeoutSec}s）");
-            if (proc.ExitCode != 0) return ("", $"异常退出（exit={proc.ExitCode}）");
-            return (output, null);
+            if (ct.IsCancellationRequested) return ("", "被取消", stderrText);
+            if (timeoutCts.IsCancellationRequested) return ("", $"超时（{timeoutSec}s）", stderrText);
+            if (proc.ExitCode != 0) return ("", $"异常退出（exit={proc.ExitCode}）", stderrText);
+            return (output, null, stderrText);
         }
 
         /// <summary>

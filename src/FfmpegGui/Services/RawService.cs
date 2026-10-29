@@ -372,7 +372,7 @@ public static class RawService
             PlatformServices.SetSafePriority(p, AppSettingsService.Current.FfmpegPriority);
             // ⚠ 两条管道都要排空：只读 stdout 时 dngtool 把 stderr 缓冲写满就阻塞在写上，
             //   我们永远等不到 stdout ⇒ 队列槽位被永久占住（P2-3 治过的同一形状）。
-            var stdout = await PlatformServices.ReadStdoutDrainingStderrAsync(p);
+            var (stdout, _) = await PlatformServices.ReadStdoutDrainingStderrAsync(p);
             await p.WaitForExitAsync(ct);
             if (p.ExitCode != 0) return (null, null);
             return ParseIdcVersionDates(stdout);
