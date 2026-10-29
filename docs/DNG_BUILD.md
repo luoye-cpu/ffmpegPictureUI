@@ -24,10 +24,19 @@
 1. `dng_sdk/source/dng_jxl.cpp` — 两处 XMP 代码需用 `#if qDNGUseXMP` 包裹:
    - 约 805 行 (JXL 元数据写入处)
    - 约 3012 行 (JXL 元数据解析处)
-2. 编译时排除以下文件 (由 `tools/src/dngtool/CMakeLists.txt` 处理):
+2. `dng_sdk/source/dng_jxl.cpp` — **JXL 多线程 runner 补丁（2026-08-15）**，官方原包里**没有**：
+   - `JxlResizableParallelRunnerPtr nativeRunner;` 必须提到函数级作用域（官方是 if 块内 `auto`）；
+   - 该块前导 `#if 0` 改成 `#if 1`（官方默认关着原生 runner）。
+   - 原因：`JxlEncoderSetParallelRunner` 只存指针，runner 若在 if 块结束即析构（`SetNumThreads(0)`）⇒
+     编码期悬垂 ⇒ **静默退回单线程**（实测 234 s、无加速）。⇒ **整树替换官方包 = 静默回退单线程**，别做。
+3. 编译时排除以下文件 (由 `tools/src/dngtool/CMakeLists.txt` 处理):
    - `dng_validate.cpp` (主程序)
    - `dng_update_meta.cpp` (XMP 依赖)
    - `dng_xmp.cpp` / `dng_xmp_sdk.cpp` (XMP 依赖)
+
+> **版本现状（2026-10-30 实测）**：Adobe 现档仍是 **1.7.1 Build 2768（2026-10-13）**，
+> `tools/src/dng_sdk_1_7_1.zip` 与其**逐字节相同**（`sha256 5366d9abd0e623858573…`，80,367,206 B）
+> ⇒ **无更可更**。本仓解包树 = 官方树 + 上面两处本地补丁（+ 归档里两个惰性文件，2026-10-30 已补齐）。
 
 ### 2. LibRaw
 

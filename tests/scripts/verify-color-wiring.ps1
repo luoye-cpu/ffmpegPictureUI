@@ -302,12 +302,24 @@ Write-Host "`n=== (9) JXL：ffmpeg-libjxl 子情形接入引擎（Cjxl 子情形
 # 本段前半证明 ffmpeg 子情形真的在跑；后半证明默认后端**也已改道**（契约变更，旧断言已作废）。
 $jxlinfo = "$root/publish/PLAN/jxl/bin/jxlinfo.exe"
 # ⚠ JXL 的标注回读**必须用 jxlinfo**：exiftool 对 JXL **连读都读不出** ICC（verify-color-caps.ps1 已锁）。
+# ⚠ 2026-10-30：jxlinfo **0.12.0 改了输出格式** —— 旧版是一行
+#   `Color space: RGB, D65, sRGB primaries, sRGB transfer function, rendering intent: Relative`，
+#   新版拆成 `Color space: RGB` / `Primaries: sRGB` / `Transfer function: sRGB` / `Rendering intent: …`。
+#   这里把两代格式统一成旧句式再返回 ⇒ 本段**断言文案一字不改**（改的是适配，不是判据）。
+#   实测样例（0.12.0）：`Primaries: P3`、`Primaries: Rec.2100` 配 `Transfer function: 709`。
 function JxlColorSpace([string]$path) {
     $o = "$out/_jxl.txt"
     Start-Process -FilePath $jxlinfo -ArgumentList @($path) -NoNewWindow -Wait -PassThru `
         -RedirectStandardOutput $o | Out-Null
-    return ((([System.IO.File]::ReadAllText($o)) -split "`r?`n") |
-            Where-Object { $_ -match 'Color space' } | Select-Object -First 1)
+    $lines = ([System.IO.File]::ReadAllText($o)) -split "`r?`n"
+    $cs = $lines | Where-Object { $_ -match '^\s*Color space:' } | Select-Object -First 1
+    $primLine = $lines | Where-Object { $_ -match '^\s*Primaries:' } | Select-Object -First 1
+    if (-not $primLine) { return $cs }   # 0.11.x 旧格式：原样返回
+    $prim = ($primLine -replace '^\s*Primaries:\s*', '').Trim()
+    $trcLine = $lines | Where-Object { $_ -match '^\s*Transfer function:' } | Select-Object -First 1
+    $trc = ($trcLine -replace '^\s*Transfer function:\s*', '').Trim()
+    $base = ($cs -replace '^\s*Color space:\s*', '').Trim()
+    return "Color space: $base, D65, $prim primaries, $trc transfer function"
 }
 # jxlinfo 的**第一行**（形如 `JPEG XL image, 32x32, lossy, 8-bit RGB+Alpha`）。
 # ⚠ 通道信息（Alpha）只在这一行，**不在** `Color space` 行 ⇒ 用 `JxlColorSpace` 断言 alpha 必然假红

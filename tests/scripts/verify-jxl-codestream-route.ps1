@@ -570,10 +570,21 @@ if ($null -ne $mg.cmp) {
 $ml = MeasureLegs $fl 'ly'
 CK (($ml.a -eq 0) -and ($ml.b -eq 0) -and ($null -ne $ml.cmp)) "⑭ 有损 8-bit：两腿都成功（djxl rc=$($ml.a)、ffmpeg rc=$($ml.b)）"
 if ($null -ne $ml.cmp) {
-  # 这两条互为对照：`>0` 证明**比较器有牙**（若它坏成恒 0，上面三条"逐样本相同"就全是假绿），
-  # `≤300` 才是"±1 码"这条理由的量化形态（300/65535 ≈ 1.17 个 8-bit 码）。
-  CK ($ml.cmp.max -gt 0) "⑭ 有损 8-bit：两腿**确实不同**（max|Δ|=$($ml.cmp.max)）—— 同时是上面三条「相同」的**正控**：比较器若恒 0，这里当场红"
-  CK ($ml.cmp.max -le 300) "⑭ 有损 8-bit：差值上界 ≤300/65535（实 $($ml.cmp.max)，不同样本 $($ml.cmp.diff)/$($ml.cmp.n)）⇒ 「±1 码」仍成立"
+  # ⚠ 2026-10-30 正控换锚（djxl 0.11.2 → 0.12.0 后原锚点失效）：原断言是「有损 ⇒ 两腿必不同」，
+  #   实测依据不见了 —— 同一个有损比特流，djxl 0.12 出的 PNG 经 ffmpeg 转 rgb48le 与 ffmpeg 直解 JXL
+  #   **逐样本相同**（max|Δ|=0）；换成 0.11.2 djxl 出 PNG 则 max|Δ|=267。⇒ 旧断言依赖的是 0.11.2 落 PNG
+  #   时的舍入差异（≤1 个 8-bit 码），不是「有损必有差」这条内容事实。
+  #   正控改锚到**两件不同的图**：有损件解码 vs 无损件解码（构造上必然不同；本轮实测 max|Δ|=25087、
+  #   不同样本 357736/589824）—— 比较器若坏成恒 0，这里照样当场红。
+  $l8Raw = "$dwork/l8.B.rgb48"; $lyRaw = "$dwork/ly.B.rgb48"
+  if ((Test-Path $l8Raw) -and (Test-Path $lyRaw)) {
+    $ctrl = DiffU16 (LoadU16 $lyRaw) (LoadU16 $l8Raw)
+    CK ($ctrl.max -gt 0) "⑭ 正控：有损件与无损件的解码**确实不同**（max|Δ|=$($ctrl.max)，不同样本 $($ctrl.diff)/$($ctrl.n)）⇒ 下面『两腿相同』不是恒 0 比较器的假绿"
+  } else {
+    CK $false "⑭ 正控：有损/无损两件都应有 ffmpeg 解码产物（有损=$lyRaw 在 $(Test-Path $lyRaw)、无损=$l8Raw 在 $(Test-Path $l8Raw)）—— 缺件则比较器无从自证"
+  }
+  # `≤300` 是"±1 码"这条理由的量化上界（300/65535 ≈ 1.17 个 8-bit 码）；djxl 0.12 下实测 0，仍留作上界。
+  CK ($ml.cmp.max -le 300) "⑭ 有损 8-bit：两腿解码差值上界 ≤300/65535（实 $($ml.cmp.max)，不同样本 $($ml.cmp.diff)/$($ml.cmp.n)）⇒ 「±1 码」仍成立"
 }
 # 截断件：60% 处切断（远在头部之后 ⇒ 是真正的半途截断，不是"文件太短判不出来"）
 $ftr = "$dwork/trunc.jxl"

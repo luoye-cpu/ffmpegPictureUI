@@ -25,7 +25,8 @@ Full license texts are provided in the [`licenses/`](licenses/) directory of thi
 | MicroCom.Runtime | 0.11.6 | MIT | (c) .NET Foundation / AvaloniaUI OÜ |
 | Tmds.DBus.Protocol | 0.94.1 | MIT | (c) Tom Deseyn |
 | Google Skia（SkiaSharp 底层引擎） | — | BSD-3-Clause | (c) Google Inc. |
-| **libjxl** — `cjxl` / `djxl` / `cjpegli` / `djpegli` / `jxlinfo` | 0.11.2，`PLAN/jxl/bin/` | BSD-3-Clause | (c) the JPEG XL Project Authors |
+| **libjxl** — `cjxl` / `djxl` / `jxlinfo` / `jxltran` | **0.12.0**，`PLAN/jxl/bin/` | BSD-3-Clause | (c) the JPEG XL Project Authors |
+| **jpegli** — `cjpegli` / `djpegli`（0.12.0 起从 libjxl 拆出，独立项目 google/jpegli） | 源码快照 **`031a007`**（2026-06-01，main；上游无 tag/release）本地 MSVC 构建（self-contained），`PLAN/jxl/bin/` | BSD-3-Clause | (c) the JPEG XL Project Authors |
 | ↳ brotli | `PLAN/jxl/bin/` | MIT | (c) 2009-2016 the Brotli Authors |
 | ↳ giflib | `PLAN/jxl/bin/` | MIT | (c) 1997 Eric S. Raymond |
 | ↳ highway | `PLAN/jxl/bin/` | Apache-2.0 | (c) the Highway Authors |
@@ -35,10 +36,10 @@ Full license texts are provided in the [`licenses/`](licenses/) directory of thi
 | ↳ sjpeg | `PLAN/jxl/bin/` | Apache-2.0 | (c) Google Inc. |
 | ↳ skcms | `PLAN/jxl/bin/` | BSD-3-Clause | (c) 2018 Google Inc. |
 | ↳ zlib | `PLAN/jxl/bin/` | zlib | (c) 1995-2022 Jean-loup Gailly and Mark Adler |
-| **ExifTool** — `exiftool.exe` + Perl 模块 | 13.59，`PLAN/exiftool/` | **GPL-1.0-or-later 或 Artistic-1.0-Perl**（本项目按 **GPL-1.0+** 分支使用） | (c) 2003-2026 Phil Harvey |
+| **ExifTool** — `exiftool.exe` + Perl 模块 | 13.60，`PLAN/exiftool/` | **GPL-1.0-or-later 或 Artistic-1.0-Perl**（本项目按 **GPL-1.0+** 分支使用） | (c) 2003-2026 Phil Harvey |
 | ↳ Strawberry Perl — `perl.exe`, `perl532.dll` | `PLAN/exiftool/` | Artistic-1.0-Perl 或 GPL-1.0-or-later | (c) the Perl 5 / Strawberry Perl authors |
 | **dngtool**（本项目自研 CLI） | `PLAN/artifacts/` | **GPL-3.0-only** | (C) 2025-2026 luoye-cpu |
-| ↳ LibRaw（dngtool 静态链接） | `PLAN/artifacts/` | **LGPL-2.1 或 CDDL-1.0**（按 LGPL-2.1 §3 升级为 GPL-3.0，见 §6） | (c) 2008-2025 LibRaw LLC |
+| ↳ LibRaw（dngtool 静态链接） | 0.22 master `2caab57e`（含上游已收的 `sony_arw6` CRAW HQ 解码），`PLAN/artifacts/` | **LGPL-2.1 或 CDDL-1.0**（按 LGPL-2.1 §3 升级为 GPL-3.0，见 §6） | (c) 2008-2025 LibRaw LLC |
 | ↳ Adobe DNG SDK 1.7.1（dngtool 静态链接） | `PLAN/artifacts/` | **Adobe DNG SDK License Agreement**（见 §4） | (c) 2006-2019 Adobe |
 | ↳ zlib（dngtool 静态链接） | `PLAN/artifacts/` | zlib | (c) 1995-2026 Jean-loup Gailly and Mark Adler |
 | **libavif** — `avifenc.exe` | 1.4.2（libaom 3.15.0），`PLAN/artifacts/` | BSD-2-Clause | (c) 2019 Joe Drago |
