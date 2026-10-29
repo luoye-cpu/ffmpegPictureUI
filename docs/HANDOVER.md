@@ -3836,3 +3836,28 @@ CJK 棘轮另计：UI 面 901 > 885 ⇒ 按换回法归因后**抬基线至 901*
 4. `NoBuild` 是绕开不是根治（H-16 第 2 条）；第 85 条在无交互桌面只对"窗口"这层降成 WARN（H-16 第 3 条）；§57 那批开放项照旧。
 5. **发包目录的新规矩**（10-28 定，已写进本仓 `AGENTS.md` §1）：出包**只留最新一档**，旧归档连 `publish/build/` 里的解包目录
    一起删，不再挪进 `_void-*` 留档——旧包在场就是"读数打在旧包上"的风险源。要留证据就留日志名与哈希。
+
+### H-18 2026-10-29 —— 实机 JXR「修了 N 次还在炸」定位为**探针死亡被折算成内容判据**；同族连带修三处；已提交 `af8ae9b` 并**第二次重出 beta10**（出货件实机同哈希）
+
+| 项 | 读数 |
+|---|---|
+| 维护者的要求 | 只认一种判据：**真实运行软件 EXE** 得出的结论（脚本代跑、纸面推导都不算）；并且「改哪里跑哪里」，不许默认跑整轮 |
+| 根因（实机一手） | 被选中的 ffmpeg **不带 libjxr**：`C:\PLAN\FFmpeg\ffprobe.exe` 对同一份 .jxr 回 `rc=1 / Invalid data found`，其 `-decoders` 549 条无 `libjxr`；随包 `ffmpeg-full` 的 ffprobe 答 `rgbaf16le`、565 条含 `libjxr`。历次修复都建立在「探针会答」上，而那台机器上探针**永不答** ⇒ 每轮修的都是"答对之后怎么办" |
+| 代码层形状 | 选臂依据（ffprobe 的 pix_fmt）与实际解码腿（JxrDecApp）本无关系，旧写法把「探测失败」折算成「源不是高位深直通档」⇒ 落进对 64bppRGBAHalf 结构上必死的 BMP / `-c 0` 两臂，双臂同报 `-106`、零产物 |
+| 四批改动 | **B1** 探针降级为提示 + 自校验盲试阶梯（`-c 25/28/23/10`）+ stderr 带回 + 不伪造 0-bit；**B2** `FfmpegJpegXrLeg` 三态点名解码腿（空清单 ⇒ Unknown，不折算成 Absent）+ 解码器清单按被问件分档缓存；**B4** `MainWindow.GetQueueStatusSnapshot()` 让 IPC `GetStatus` 报真数；**B5** 非 Safe 复制变体补组选择器（`-all:all` 对 HD Photo 源 0 项落地而 rc=0）+ 两个变体都读 exiftool 总结行、0 项落地点名 |
+| 实机读数（真窗口 GUI + 真素材） | 出货同代码副本（`EnableIpcServer` 只改副本），素材 = 用户那份 11,346,777 B Game Bar 捕获。**四种组合（GUI/CLI × 探针死/探针答）产物逐字节相同**：452016 B `0cc3675e8a2f7564`；对 Windows WIC 参考解码 PSNR **37.19 dB**（q92 cjpegli 4:4:4，同件 q75 为 33.41）。B4 后 `GetStatus` 轨迹 `run=True total=1 done=0 cur=…` → `run=False total=1 done=1 fail=0` |
+| 门禁（按模块） | `verify-jxr-highbitdepth` **118/0+1SKIP**（§⑨ 探针死亡 + §⑩ 解码腿三态）；`verify-ipc-extra-options` **27/0**（+I1-I7）；`verify-metadata-privacy` **9/1**（唯一红 ⑥ = HEAD 对照臂同形）；`verify-dng-metadata-transport` **105/0**；`verify-color-wiring` 67/50 与 HEAD **FAIL 集合逐条相同**。全部走运行器 `-Scripts` 子集 ⇒ **不构成基线** |
+| 变异测试 | §⑨ 5 红全在 §⑨；§⑩ 拆掉空清单守卫 ⇒ 4 红全在 §⑩；短路窗口分支 ⇒ I2/I3 红（读数「实 0」）；删 `ReportCopyOutcome` ⇒ ⑧a 红。**每条新判据都证过有牙** |
+| 自己造的坑（已写进 §61） | ① 按 `GetStatus` 判完成 ⇒ 把 cjpegli 写完、exiftool 未追加元数据的中间态当终态；② 替身 `ffmpeg.exe` 只镜像 ffmpeg-full ⇒ 缺自身 DLL 以 `0xC0000135` 起不来，Absent 档假绿成 Unknown；③ 8-bit 无 alpha 夹具压根不进 JxrDecApp 通路 ⇒ 三条断言空转，改带 alpha 件 + 断言「`[jxr] 输入: JXR`」在场；④ 产品措辞「有没有 libjxr」含「没有 libjxr」子串，撞红过否定锁 |
+| 明确不做 | 手写 `.jxr` 容器头解析来确定性选臂：本地 `tools/src/jxrlib` 是裁剪件（`alphaValid`/`mcntBits`/`tagImageInfo_S` 全树 0 命中），两份实测 .jxr 的 `SectionOffset` 还一个 8 一个 32 ⇒ 没有一手结构定义就猜位域，正是本仓禁止的那类事 |
+| 明细 | 账本 **§61**（含逐格读数表、四批改动清单、八个未了结项） |
+| 重出打包（同日） | release 提交 **`af8ae9b`** → 旧包按 AGENTS §1 清场（删前扫 `publish/`：260 目录 / 1169 文件 / **0 reparse point**；旧档留哈希不留包）→ `pack.ps1 -Mode all` ⇒ 新档 full 56,158,731 B / app 11,433,178 B，两档包内 exe 均 23,963,136 B、三标记 4/2/1、`ProductVersion` 同为 `1.6.0-beta10+af8ae9b…`；`verify-release-package` **16/0**、第 85 条 **4/0** |
+| 出货件实机 | full 档复制到独立测试道后：C1 随包 ffmpeg（探针答）headless 与 C2 复现故障机处境（选中无 libjxr 的 ffmpeg ⇒ 探针永不答）**真窗口 GUI + IPC** 两条都出 **452016 B `0cc3675e8a2f7564`**，与开发件四组读数逐字节相同；包内 GUI 双击详情窗口的截图里 `-106 → 逐档盲试 → Step 1(盲试直通臂) -c 25` 逐行在场 |
+
+**下一手（按序）**
+
+1. ~~提交未做~~ —— 代码/判据已提交在 `af8ae9b`（12 文件 +699/−59），beta10 已第二次重出并通过验包 + 第 85 条 + 出货件实机；本条文档提交在其后，按惯例**不进标签**。CHANGELOG 仍留在发版那一批写。
+2. ⚠ **标签发布待裁决**：`git ls-remote --tags origin` 实测远端**已有 `1.6.0BETA10 → 9ea68f3`**（H-17 那句"远端只到 BETA9 ⇒ 移动不改写共享引用"的前提已不成立）。本地标签已移到 `af8ae9b`，旧标签对象 `f5ac724` 未 gc 可挂回。**要发布就是强推共享标签，我没推**。
+3. **新报缺陷（已排队）**：队列双击打开的「编码详情」窗口里**日志区上下拉不动**（顶部只有 `…(已截断)`）。本轮出货件截图 `tests/output/pkg_beta10_lane/gui_window.pkg_badff.png` 正好拍到该块 ⇒ 待定位是截断逻辑还是 ScrollViewer/高度约束，属 UI 层独立一批。
+4. B3（明知不可能还撞两臂的墙钟代价）**已量并决定不改**：BMP 臂 274/374 ms、`-c 0` 臂 14/15 ms（都 -106），救场的 `-c 25` 臂自身 300/321 ms ⇒ 少撞两臂只省 ~0.3 s/项，而把阶梯提前会让 8-bit 源吃一遍高位档（`-c 25` 对 8-bit 是**转换**不是直通 ⇒ 静默升位）⇒ 控制流不动，细节见 §61 未了结①。
+5. ⑥ RAW→PNG 未产出 png 是本机既有红（HEAD 对照臂同形），未查；要查属独立一批。

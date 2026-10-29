@@ -4703,3 +4703,117 @@ ICC 明明在产物里（`-x icc_pathname=` 由 cjxl 写的），exiftool 只是
 - **未了结**：① 本件交付证据薄——要补就是"验包 + L3 五套件 + 像素复测"这一档，**等点名才跑**；② §59 未了结①②（rc.2 下 AOT 自重编丢资源表的上游成因、第 85 条在无交互桌面时只对"窗口"这层降成 WARN）照旧；③ ~~`publish/_void-20261028/` 约 320 MB 是挪走不是删除，什么时候清由维护者定~~ —— 本条**已了结且我的数字是错的**：
   那次我只 `du` 了 `archives/`（315 MB）就当整棵报数，整棵实测 **1.7 GB**（解包目录 1.4 GB 才是大头）。
   维护者随后定死规范「只留新包」⇒ 整棵删除，待办消失。教训：报"多大"要报**被测对象本身**的量，别报手边那条命令的量。
+
+---
+
+### §61 2026-10-29：实机 JXR「修了 N 次还在炸」的根因 = **探针死亡被折算成内容判据**；连带修掉同族的三处宣称与现实
+
+- **触发**：维护者报实机（出货 `-full` 包，用户 Kate 的机器）JXR 转换仍失败，日志尾部两行是
+  `源格式探测未成（异常退出（exit=1））⇒ 高位深直通臂不适用` → `走既有 BMP/-c 0 通路` → JxrDecApp 双臂同报 `-106`。
+  要求只有一条判据：**真实运行软件 EXE 得出来的结论**，不接受脚本代跑与纸面推导。
+- **根因（本机一手实机读数，不是推导）**：被选中的 ffmpeg **不带 libjxr 解码器**。
+  | 件 | `ffprobe` 对同一份 .jxr | `-decoders` 清单 |
+  |---|---|---|
+  | `C:\PLAN\FFmpeg\ffprobe.exe` | `rc=1`，stderr `Invalid data found when processing input` | 549 条，**无** `libjxr` |
+  | 随包 `publish\PLAN\ffmpeg-full\ffprobe.exe` | `rc=0`，答 `rgbaf16le` | 565 条，含 `libjxr` |
+  历次修复全部建立在「探针会给出答案」之上，而**在那台机器上探针永远不给答案** ⇒ 每一轮修的都是
+  「答对之后怎么办」，没人修「答不出怎么办」。这就是 N 次不生效的机制。
+  代码层的形状：选臂依据（ffprobe 的 pix_fmt）与实际解码腿（JxrDecApp/jxrlib）**本无关系**，
+  旧写法却把「探测失败」直接折算成「源不是高位深直通档」⇒ 落进对 64bppRGBAHalf **结构上必死**的
+  BMP / `-c 0` 两臂（`JXRTestBmp.c` 的 `WriteBMPHeader` 尾支、`JXRGluePFC.c:2291` 缺表条目）。
+  最刺眼的自证在旧日志里就有：`源格式探测未成` 之后**紧跟着** JxrDecApp 的 Perf Report——
+  文件毫秒后就能正常解码，程序却已按「不是高位深」办完。
+- **本节的四批改动**（一批一条判据、一批一条读数，全在未提交状态）：
+  1. **B1 探针降级为提示 + 自校验盲试阶梯**（`QueueProcessor` / `JxrHighPrecisionDecode` /
+     `PlatformServices` / `RawService`）：`TryJxrHighPrecisionAsync` 多回一个 `tryBlindArms`；
+     探针不答时**两臂失败之后**再逐档盲试 `-c 25/28/23/10`（`BlindArmOrder()`），每档由
+     `TryReadTiff` 的内容自校验（`BitsPerSample`/`SampleFormat`/`StripByteCounts`/`ExtraSamples`）定性，
+     全不成立才判失败并点名；`ReadStdoutDrainingStderrAsync` 改为把 stderr 一并带回（旧写法读完即弃 ⇒
+     三种病因压成同一行）；`inMeta.bitDepth <= 0` 不再伪造成「源载体是 0-bit」这条内容属性。
+  2. **B2 把「被选中的 ffmpeg 不带 libjxr」变成点名事件**：新增三态
+     `EncoderDetectionService.FfmpegJpegXrLeg{Present,Absent,Unknown}` + `ClassifyJpegXrLeg`
+     （**空清单 ⇒ Unknown，不许折算成 Absent**，与 B1 同族）；`GetAllDecodersAsync` 的缓存改为
+     **按被问的那件 ffmpeg 分档**（旧的一份全局字段 ⇒ 换件再问会拿到上一件的清单）；
+     JXR 通路入口打一行解码腿状态，Absent 时点名是哪件、并给出「随包件带 libjxr」的去向，**只播报不改设置**。
+  3. **B4 IPC `GetStatus` 报真实队列计数**：`MainWindow.GetQueueStatusSnapshot()`（口径与
+     `QueueItem` 的单一真值谓词同源：排除 `IsDeleted`、`IsCompleted`、`IsFailure`）；
+     `HandleGetStatus` 窗口在场时报真数。旧写法把三个计数写死成 0 的理由是「`IQueueOrchestrator`
+     只暴露 IsRunning」——那是**没有窗口**那条腿的理由，窗口手上就有整条队列。
+  4. **B5 元数据复制的宣称与现实**：非 Safe 变体 `CopyMetadataAsync` 的 `-all:all` 对 HD Photo 源
+     **一项都不落地而退出码仍是 0**（`-all:all` 按标签名逐项映射，该源的 XMP 挂在 exiftool 解析不出的
+     命名空间前缀上，读回是 `XMP-prefix0`）；Safe 变体用显式组选择器（整组搬运）实测能落地
+     ⇒ 非 Safe 补同一组选择器（`-ICC_Profile` 照旧，两变体的分工不变），且两个变体都读 exiftool 的
+     总结行、落地 0 件时点名「本次复制 **0 项落地**」（计数口径复用既有 `ParseUpdatedCount`，一份实现）。
+- **实机读数（真窗口 GUI，非 headless）**：出货同代码的独立副本（`EnableIpcServer=true` 只改副本），
+  真素材 = Kate 那份 11,346,777 B 的 Game Bar 捕获。
+  | 运行 | ffmpeg 条件 | 探针 | 队列行 | 产物 |
+  |---|---|---|---|---|
+  | GUI 窗口 | `C:\PLAN\FFmpeg`（无 libjxr） | 不答 | 已完成 (cjpegli 管道) | 452016 B `0cc3675e8a2f7564` |
+  | GUI 窗口 | 随包 `ffmpeg-full` | 答 `rgbaf16le` | 已完成 (cjpegli 管道) | 452016 B `0cc3675e8a2f7564` |
+  | CLI 同件同选项 × 2 档 | 同上 | — | 已完成 | 同一枚哈希 |
+  四件产物**逐字节相同**；对 Windows WIC 参考解码 PSNR **37.19 dB**（q92 cjpegli 4:4:4；同件 q75 是 33.41）。
+  B4 之后 `GetStatus` 的轨迹：`run=True total=1 done=0 cur=异环….jxr` → `run=True total=1 done=1` →
+  `run=False total=1 done=1 fail=0`。
+  探针死亡档的完整通路日志（`--log-level Debug`，同一件 exe）：
+  `源格式探测未判定（ffprobe=…；异常退出（exit=1）；ffprobe 原文：Invalid data found…）⇒ 不把『不知道』当成『不是高位深』`
+  → `既有两臂均失败（退出码 -106）⇒ 选臂提示缺席，逐档盲试直通臂` → `Step 1(盲试直通臂): 探针未判定 → JxrDecApp -c 25`
+  → `HP-METRICS arm=25 peak=2.5488 overWhite=4223108/12288000 alphaMin=1.000 alphaMax=1.000 map=srgb-clamp`
+  → `盲试直通臂 -c 25 成立 ⇒ 高位深通路接管`。
+- **门禁读数（按模块跑，未跑整轮）**：
+  | 门禁 | 读数 | 本批新增 |
+  |---|---|---|
+  | `verify-jxr-highbitdepth.ps1` | **118/0 + 1 SKIP**（§⑨ 探针死亡档 + §⑩ 解码腿三态档） | ⑨/⑨a/⑨b/⑨c + ⑩ 共 42 条 |
+  | `verify-ipc-extra-options.ps1` | **27/0** | I1-I7 共 7 条 |
+  | `verify-metadata-privacy.ps1` | **9/1**（唯一红 = ⑥ RAW→PNG，**HEAD 对照臂同样红**） | ⑧a-⑧d 共 4 条 |
+  | `verify-dng-metadata-transport.ps1` | **105/0**（B5 改了复制命令行，跑它做回归） | 0 |
+  | `verify-color-wiring.ps1` | 67/50，与 HEAD 对照臂 **FAIL 集合逐条相同**（先前一次 66/51 是一条 0B 抖动） | 0 |
+  另有 `verify-jxr-anim-input` 67/0、`verify-jxr-backend-choice` 15/0、`_probe-stderr-drain-scan` 63 处排空、
+  `verify-avif-anim-probe` 19/0、`verify-jxl-probe-timeout` 51/0、`verify-anim-static-target` 48/0（B1 批次读数，未回改）。
+- **变异测试（每条新判据都先证它有牙）**：
+  · §⑨：5 红全在 §⑨（B1 批次）。
+  · §⑩：把 `ClassifyJpegXrLeg` 的空清单守卫拆掉（Unknown 折算成 Absent）⇒ **4 红全在 §⑩**
+    （⑩b 三条 + 形态锁那条报 `-1 < 26374`）。
+  · I 档：短路掉 `HandleGetStatus` 的窗口分支 ⇒ **I2/I3 两红**，读数正是旧形状「实 0」。
+  · ⑧ 档：删掉 `ReportCopyOutcome` 调用 ⇒ **⑧a 红**（⑧b 仍绿，证明它锁的是"点名"而不是"复制"）。
+- **本批踩到的三个自己造的坑（写下来免得下一轮再踩）**：
+  1. 验收脚本按 `GetStatus` 判完成 ⇒ 第一次轮询就"空闲"，把 cjpegli 写完、exiftool 还没追加元数据的
+     **中间态**（448981 B）当成终态量产物。改成「GetStatus 报跑完 **且** 产物大小连续 4 次相同」双信号。
+  2. §⑩ 第一版把替身 `ffmpeg.exe` 硬链进**只镜像 ffmpeg-full** 的目录 ⇒ avifenc/cjpegli 缺自己的 DLL，
+     以 `0xC0000135` 起不来 ⇒ Absent 档假绿成 Unknown。替身必须连同**它自己的 DLL 家目录**一起镜像。
+  3. §⑩ 夹具用了 8-bit 无 alpha 的 `sdr8.jxr` ⇒ `.jxr` 只在 `contentMustBypass` 时才进 JxrDecApp 通路
+     （`QueueProcessor.cs:1172`），被测代码压根没执行，三条断言全在空转。改用 ③b 的带 alpha 件，
+     并额外断言「`[jxr] 输入: JXR`」在场作前置自证。
+  4. 产品措辞「不据此判定它**有没有** libjxr」含「没有 libjxr」子串，把判据的否定锁撞红过一次
+     ⇒ 措辞改「有无」，判据不动。
+- **明确不做**：手写 `.jxr` 容器头解析来确定性选臂。本地 `tools/src/jxrlib` 是裁剪件
+  （全树 grep `alphaValid`/`mcntBits`/`tagImageInfo_S` **0 命中**），且实测两份 .jxr 的 `SectionOffset`
+  一个是 8 一个是 32 ⇒ 没有一手结构定义就去猜位域，正是本仓「只读标注诚实的件，不猜解释」要避免的事。
+  盲试阶梯的内容自校验已经提供同等答案，且不依赖任何外部工具。
+- **重出打包与出货件实机读数（同日补；顺序 = release 提交 → 打包 → 打包结束后才写本节）**：
+  | 项 | 读数 |
+  |---|---|
+  | release 提交 | **`af8ae9b`**（12 文件 +699/−59 = 代码 8 + 判据 4）。附注标签 `1.6.0BETA10` 本地移到此颗，正文点名「第二次重出，取代 `9ea68f3`」；旧标签对象 `f5ac724a3fed2992315b0562be3ad16a5bad3c3b` 未 gc，`git update-ref` 可挂回 |
+  | ⚠ **与 H-17 记录冲突的实况** | `git ls-remote --tags origin` 实测远端**已有 `1.6.0BETA10 → 9ea68f3`**（H-17 写的是"远端只到 `1.6.0BETA9` ⇒ 移动不改写共享引用"，该前提**已不成立**）⇒ 本地这次移动若要发布就是**强推一个共享标签**。**未推、未获授权，等维护者裁决** |
+  | 旧包清场（AGENTS §1） | 删前扫整棵 `publish/`：**260 目录 / 1169 文件 / 0 个 reparse point** ⇒ 递归删碰不到 `publish/PLAN`。旧档留证不留包：full `3173aa06ab6195ea` 56,136,386 B、app `f0b610f593174397` 11,417,253 B（`tests/output/old-beta10-archives-sha16.txt`） |
+  | 重打 | `pack.ps1 -Mode all`（`TMP/TEMP/TMPDIR` 钉进 `tests/output/_tmp`）⇒ 新档 full **56,158,731 B** / app **11,433,178 B**；两档包内 exe 均 **23,963,136 B**，三标记 `!AvaloniaResources`=4 / `XamlIlPopulate`=2 / `/Resources/icon_raw.png`=1（缺陷形态是 0/0/0），运行时串 `11.0.0-rc.2` 在场；两档 `ProductVersion` **同为** `1.6.0-beta10+af8ae9b4b74737d7884399490f71adbe872af900` ⇒ HEAD 在两档之间没漂；exe sha16 app `9C326EF18E00522C` / full `28BFF7B6380036A1`（两次 publish 的 PE 时间戳差，不是内容差） |
+  | 闸 | `verify-release-package`（`PKG_VER=1.6.0-beta10`）**16/0**；第 85 条 `gui-starts` **4/0**（`MainWindowHandle=0x2B11D0`、收尾「窗口已隐藏到托盘」、负控 `exit=0x00000002`） |
+  | **出货件实机**（维护者要求的唯一判据 = 真实运行 EXE） | full 档整目录复制成独立测试道 `tests/output/pkg_beta10_lane`（不污染被测件），真素材 = 那份 11,346,777 B 的 Game Bar 捕获。**C1** 随包 `PLAN/ffmpeg-full`（探针答 `rgbaf16le`）headless ⇒ 452016 B `0cc3675e8a2f7564`；**C2** 复现那台机器的处境（选中 `C:\PLAN\FFmpeg`，无 libjxr ⇒ 探针永不答）**真窗口 GUI + IPC 投任务** ⇒ **同一枚哈希**，`GetStatus` 轨迹 `run=True total=1 done=0 cur=异环….jxr` → `run=False total=1 done=1 fail=0`。两枚与开发件的四组读数**逐字节相同** ⇒ 出货件与验过的构建件是同一行为 |
+  | 截图 | `tests/output/pkg_beta10_lane/gui_window.pkg_badff.png` = 包内 GUI 的**双击详情窗口**，日志区里 `BMP 输出不支持该像素格式（退出码 -106）` → `既有两臂均失败 ⇒ 选臂提示缺席，逐档盲试直通臂` → `Step 1(盲试直通臂): 探针未判定 → JxrDecApp -c 25` 逐行在场 |
+  | 一条观察（不是判据） | C2 收尾时 `Type=5 Shutdown` 在 AOT 档 3 s 内没退，被脚本强杀；开发件同一路径是「自行退出」。本档不测关窗契约（第 85 条测的是"能起 + 能收"，那档绿），故只记为观察 |
+
+- **未了结**：① ~~B3（明知不可能还撞两臂的墙钟代价）**未量**~~ —— **已量，结论是不改**：
+  真 JxrDecApp × 真素材各跑两遍，BMP 默认臂 `274/374 ms`（rc=-106）、`-c 0` 回退臂 `14/15 ms`（同 -106）、
+  而救场的 `-c 25` 直通臂本身 `300/321 ms` ⇒ 撞两臂的代价 ≈ **0.29~0.39 s/项**，低于预设的 1 s 门槛。
+  把阶梯提前能让高位深档少撞这 0.3 s，但会让 **8-bit 源也去吃一遍高位臂**（`-c 25` 对 8-bit 源是**转换**
+  而非直通 ⇒ 静默升位），那是净退化 ⇒ 控制流保持"旧臂先、阶梯后"，本条了结；
+  ② 无 MainWindow 那条腿的 `GetStatus` 仍报 0（协议字段不凭空改语义，Message 已明说不可用）——
+  要报真数得给 `IQueueOrchestrator` 加计数成员，而该腿在出货形态下不可达（IPC 只在 GUI 起），属独立一批；
+  ③ ⑥ RAW→PNG 未产出 png 是**本机既有红**（HEAD 对照臂同形），与本节无关，未查；
+  ④ 非 Safe 变体的「并入隐私清理」那一格仍只有代码对称性保证，运行期断言仍缺（门禁附注已更新）；
+  ⑤ ~~本节的四批改动**未提交、未出包**~~ —— **已了结**：代码/判据 12 文件提交在 `af8ae9b`，
+  beta10 已第二次重出（读数见上一张表），本节与 H-18 随文档提交在其后（按惯例不进标签）；
+  ⑥ **标签发布待裁决**：远端已存在 `1.6.0BETA10 → 9ea68f3`，本地把它移到了 `af8ae9b`。
+  要同步就是强推共享标签；不推则远端那颗仍指旧件。两条都由维护者定，我不擅自动手；
+  ⑦ **新报缺陷（同日排队）**：队列双击打开的「编码详情」窗口里**日志区上下拉不动**（顶部只有
+  `…(已截断)`）——本轮出货件截图正好拍到那一块。属 UI 层独立一批，待定位是截断逻辑还是 ScrollViewer/高度约束；
+  ⑧ AOT 出货档的 IPC `Type=5 Shutdown` 在 3 s 内没退（开发件档退了）——只记为观察，未立案。
