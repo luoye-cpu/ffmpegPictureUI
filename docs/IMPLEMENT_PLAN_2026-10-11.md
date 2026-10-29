@@ -4814,6 +4814,26 @@ ICC 明明在产物里（`-x icc_pathname=` 由 cjxl 写的），exiftool 只是
   beta10 已第二次重出（读数见上一张表），本节与 H-18 随文档提交在其后（按惯例不进标签）；
   ⑥ **标签发布待裁决**：远端已存在 `1.6.0BETA10 → 9ea68f3`，本地把它移到了 `af8ae9b`。
   要同步就是强推共享标签；不推则远端那颗仍指旧件。两条都由维护者定，我不擅自动手；
-  ⑦ **新报缺陷（同日排队）**：队列双击打开的「编码详情」窗口里**日志区上下拉不动**（顶部只有
-  `…(已截断)`）——本轮出货件截图正好拍到那一块。属 UI 层独立一批，待定位是截断逻辑还是 ScrollViewer/高度约束；
+  ⑦ ~~**新报缺陷**：队列双击打开的「编码详情」窗口里**日志区上下拉不动**（顶部只有 `…(已截断)`）~~
+  —— **已修（同日），待维护者目视确认**。三处成因各自有实测读数（headless 真跑 `ProgressWindow`，
+  探针工程在仓外 `C:\PLAN\scroll-probe`；每处都做过一次"改回去 ⇒ 该条转红"的变异）：
+  (a) **布局**：`RowDefinitions="Auto,Auto,*,Auto"` 把 `*` 给了「📜 执行日志」那行标题，日志本体落在
+      `Auto` 行 ⇒ 按内容撑高再被窗口底边裁掉，`Viewport == Extent`（实测 14398/14398 px，**可滚动行程 0**）
+      ⇒ 滚动条根本没有行程可拖。改 `Auto,Auto,Auto,*` 后 Extent 14398 / Viewport 216 / **行程 14182 px**；
+  (b) **每 500 ms 无条件抢滚动**：旧写法每个 tick 都重写 `Text` 且 `CaretIndex = 末尾` ⇒ 用户拖到顶后
+      下一个 tick 被拽回底部（实测 Offset 0 → 14181.9 px）。现在只在视图本就停在末尾时跟末尾：
+      置顶后日志增长 Offset 仍 0（且确认文本确实换了），置底时 14182 → 14193.9 跟上新末尾；
+  (c) **截断上限 10,000 字符偏小**：实测一条 JXR 路由日志就有 11,233~15,227 字符
+      （`tests/output/jxr_gui/{b2_full,cli_good,b5_after}/route.log`）⇒ 开头那段"输入/编码器合法性"
+      点名被吃掉。上限抬到 24K（最大实测量 1.6× 余量），并给整段重写加 1 s 节流：整段重写代价实测
+      ≈12 ms/千字符（Avalonia 的 TextPresenter 不做行虚拟化，开不开 Wrap 差 <10%）；先按 200K 试过
+      ⇒ 单次 2,455 ms，比 500 ms 刷新周期还长 5 倍 ⇒ 否决。终点状态不受节流影响（终态那版立即落地）。
+  **两条静默陷阱记在这里**：`TextBox` 没有 `VerticalScrollBarVisibility`（裸写当场 `AVLN2000`，必须写
+  `ScrollViewer.` 前缀的附加属性，反射实测 `IsAttached=True`/`OwnerType=ScrollViewer` 且主题模板靠
+  `TemplateBinding` 读它）；Avalonia 12.1.4 的 `ScrollChangedEventArgs` **只带三个 delta**
+  （`ExtentDelta/OffsetDelta/ViewportDelta`），绝对读数只能问模板内部那个 `ScrollViewer`
+  （`Extent/Offset/Viewport`，`FindDescendantOfType<ScrollViewer>()` 实测找得到）。
+  判据落点：`_probe-cjk-hardcode-scan` 的 UI 面棘轮 **913→918** 按换回法逐文件登记（`e739a14`=913 与第十七次
+  逐字吻合；`af8ae9b`=918，ExifToolService +1 / QueueProcessor +4 / 其余六件净 0，逐份累加正好落回 913）；
+  本批**净 0**（只是把同一行上的截断文案从 10K 版换成 24K 版）。同轮 `bench` 红是争用（空载复测 37/0）；
   ⑧ AOT 出货档的 IPC `Type=5 Shutdown` 在 3 s 内没退（开发件档退了）——只记为观察，未立案。

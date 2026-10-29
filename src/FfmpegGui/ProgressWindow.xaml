@@ -19,7 +19,10 @@
     <TabControl Grid.Row="1" x:Name="MainTabs" SelectedIndex="0">
       <!-- ═══ Tab 1: 转换详情 ═══ -->
       <TabItem Header="{ext:Loc progress.tab.convert}">
-        <Grid RowDefinitions="Auto,Auto,*,Auto" Margin="0,6">
+        <!-- ⚠ 行定义里 `*` 必须给**日志本体**：旧写法是 "Auto,Auto,*,Auto" ⇒ `*` 落在"📜 执行日志"
+             那一行标题上，LogBox 待在 Auto 行 = 按内容撑高再被窗口底边裁掉 ⇒ 内部滚动器拿不到
+             受限视口，用户"拉不动"。（维护者 2026-10-29 报） -->
+        <Grid RowDefinitions="Auto,Auto,Auto,*" Margin="0,6">
           <!-- 编码状态卡片 -->
           <Border Grid.Row="0" CornerRadius="8" Padding="14,10"
                   BoxShadow="0 1 6 0 #10000000"
@@ -52,8 +55,15 @@
           <!-- 日志标签 -->
           <TextBlock Grid.Row="2" Text="📜 执行日志" FontWeight="Bold" FontSize="13" Margin="0,6,0,4"/>
 
-          <!-- 日志内容 -->
+          <!-- 日志内容：滚动条显式声明（不靠主题默认）；长行按视觉换行 ⇒ 不横向滚动也能读完整行
+               （`-106` 那几条 JxrDecApp 命令行实测单行 200+ 字符，旧形态右边直接被裁掉）。
+               ⚠ 必须写成 `ScrollViewer.` 前缀的**附加属性**形式：`TextBox` 自己没有这两个属性
+               （反射实测 VerticalScrollBarVisibilityProperty.IsAttached=True、OwnerType=ScrollViewer，
+               主题的 TextBox 模板靠 TemplateBinding 读它们）；裸写属性名会当场
+               AVLN2000 "Unable to resolve suitable regular or attached property ... on TextBox"。 -->
           <TextBox Grid.Row="3" x:Name="LogBox" AcceptsReturn="True" IsReadOnly="True"
+                   TextWrapping="Wrap" ScrollViewer.VerticalScrollBarVisibility="Auto"
+                   ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                    FontFamily="Consolas,monospace" FontSize="11"/>
         </Grid>
       </TabItem>

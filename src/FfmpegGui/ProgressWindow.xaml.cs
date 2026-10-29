@@ -3,6 +3,7 @@ using Avalonia.Layout;
 using Avalonia.Markup.Xaml;
 using Avalonia.Media;
 using Avalonia.Threading;
+using Avalonia.VisualTree;
 using FfmpegGui.Controls;
 using FfmpegGui.Models;
 using System.Collections.Generic;
@@ -25,6 +26,42 @@ namespace FfmpegGui
         private StackPanel? MediaInfoPanel;
 
         private readonly QueueItem? _item;
+
+        /// <summary>上一次真正写进 <c>LogBox</c> 的文本——用来判断"这一 tick 到底变没变"。</summary>
+        private string _shownLog = string.Empty;
+        /// <summary>视图是否停在末尾。用户往上拖出去就置假 ⇒ 刷新时不再抢滚动。</summary>
+        private bool _followTail = true;
+
+        /// <summary>
+        /// <c>LogBox</c> 模板内部的 ScrollViewer——"视图有没有停在末尾"只能问它要绝对读数。
+        /// 反射实测 Avalonia 12.1.4 的 <c>ScrollChangedEventArgs</c> 只有
+        /// <c>ExtentDelta/OffsetDelta/ViewportDelta</c> 三个增量（没有 ExtentHeight/OffsetY/ViewportHeight），
+        /// 而增量算不出"离底还有多少" ⇒ 绝对读数只认 <see cref="ScrollViewer"/> 的
+        /// <c>Extent/Offset/Viewport</c>。
+        /// </summary>
+        private ScrollViewer? _logScroll;
+
+        /// <summary>
+        /// 显示切片上限。旧值 10,000：实测一条 JXR 任务的路由日志就有 11,233~15,227 字符
+        /// （2026-10-29 的 `tests/output/jxr_gui/{b2_full,cli_good,b5_after,route.log}` 三档读数）
+        /// ⇒ 10K 会把开头那段"输入/编码器合法性"点名的话吃掉，而那正是本轮 B2 新加的诊断行。
+        /// ⚠ 24K 不是拍脑袋，是让最大实测量留 1.6× 余量：**不能再抬**。整段重写 Text 的代价
+        /// 实测约 12 ms/千字符（Avalonia 的 TextPresenter 不做行虚拟化；开不开 Wrap 只差 &lt;10%），
+        /// 我先按 200K 试过 ⇒ 单次刷新 2,455 ms，比 500 ms 的刷新周期还长 5 倍 ⇒ UI 线程被吃死。
+        /// 所以这里定 24K（≈300 ms/次）并配 <see cref="LogWriteIntervalMs"/> 节流。
+        /// </summary>
+        private const int LogDisplayLimit = 24 * 1024;
+
+        /// <summary>日志文本两次整段重写之间的最小间隔（状态/进度行不受它影响，仍每 tick 更新）。</summary>
+        private const long LogWriteIntervalMs = 1000;
+
+        /// <summary>上一次整段重写日志文本的时刻（<see cref="Environment.TickCount64"/>）。</summary>
+        private long _lastLogWriteMs;
+
+        private static string TrimLogForDisplay(string log)
+            => log.Length <= LogDisplayLimit
+                ? log
+                : $"...(前段已截断，仅显示最后 {LogDisplayLimit / 1024}K 字符)\n" + log.Substring(log.Length - LogDisplayLimit);
 
         public ProgressWindow()
         {
@@ -69,6 +106,10 @@ namespace FfmpegGui
             };
             timer.Start();
             Closed += (_, _) => timer.Stop();
+
+            // 视图离末尾 <24px 视为"在跟末尾"；用户往上拖出去 ⇒ 置假，刷新时不再把光标打到末尾。
+            // 内部 ScrollViewer 要等模板落地才存在，构造期取不到 ⇒ 交给 Refresh() 惰性认领
+            // （每 500 ms 试一次，取到就订事件并停止尝试）。
 
             // 异步加载媒体技术信息
             _ = LoadMediaInfoAsync();
@@ -166,16 +207,43 @@ namespace FfmpegGui
 
             if (LogBox != null)
             {
-                // 截断过长日志
-                var log = _item.Log;
-                if (log.Length > 10000)
-                    log = "...(已截断)\n" + log.Substring(log.Length - 10000);
-                LogBox.Text = log;
-                LogBox.CaretIndex = log.Length;
+                AttachLogScrollTracking();
+
+                // ⚠ 旧写法每 500 ms **无条件**重写 Text 并把 CaretIndex 打到末尾 ⇒ 用户每拖一下，
+                //   下一个 tick 就被拽回底部——这才是"拉不动"的主因（布局那半边见 ProgressWindow.xaml
+                //   行定义处的注释）。现在：没变就一个字都不写；变了也只在视图本就停在末尾时跟到末尾；
+                //   整段重写本身按 LogWriteIntervalMs 节流（代价实测 ≈12 ms/千字符，见上限处的读数）。
+                var log = TrimLogForDisplay(_item.Log);
+                if (log != _shownLog)
+                {
+                    // 终态之后日志不再变化 ⇒ 最后一版必须无条件落地，否则窗口会永远停在半截。
+                    long nowMs = Environment.TickCount64;
+                    if (_item.IsTerminal || nowMs - _lastLogWriteMs >= LogWriteIntervalMs)
+                    {
+                        LogBox.Text = log;
+                        _shownLog = log;
+                        _lastLogWriteMs = nowMs;
+                        if (_followTail) LogBox.CaretIndex = log.Length;
+                    }
+                }
             }
 
             // 解析 ffmpeg stderr 中的进度和质量信息
             ParseProgress(_item.Log);
+        }
+
+        /// <summary>
+        /// 惰性认领 <c>LogBox</c> 模板里的 ScrollViewer，并订它的 <c>ScrollChanged</c>。
+        /// 走视觉树而不是路由事件：本仓对模板部件没有公开入口（<c>TemplatedControl.GetTemplateChild</c>
+        /// 非公开），而 <c>TextBox</c> 也没有将 ScrollChanged 冒泡上来的公开承诺。
+        /// </summary>
+        private void AttachLogScrollTracking()
+        {
+            if (_logScroll != null || LogBox == null) return;
+            _logScroll = LogBox.FindDescendantOfType<ScrollViewer>();
+            if (_logScroll == null) return;
+            _logScroll.ScrollChanged += (_, _) =>
+                _followTail = _logScroll!.Extent.Height - _logScroll.Offset.Y - _logScroll.Viewport.Height < 24;
         }
 
         private void ParseProgress(string log)
