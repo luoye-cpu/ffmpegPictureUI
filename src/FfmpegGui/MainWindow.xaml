@@ -286,6 +286,7 @@
             <sys:String>AVIF</sys:String>
             <sys:String>JPEG XL</sys:String>
             <sys:String>TIFF</sys:String>
+            <sys:String>JPEG XR</sys:String>
           </ComboBox>
           <!-- 动图参数面板 -->
           <StackPanel x:Name="AnimationPanel" IsVisible="False" Spacing="4" Margin="0,4,0,0">

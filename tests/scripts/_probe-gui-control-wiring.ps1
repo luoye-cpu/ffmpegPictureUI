@@ -147,5 +147,22 @@ CK ($detPost -ge 1) "D-1 extension: the detect-tail Dispatcher.UIThread.Post car
 $fmtRaw = ([regex]::Matches($csCode, '(?s)private void FormatCombo_SelectionChanged\(.{0,900}?UpdateOptionAvailability\(\);')).Count
 CK ($fmtRaw -ge 1) "scope guard: FormatCombo_SelectionChanged still calls the raw refresh (format change => reset is intended), matched $fmtRaw"
 
+# -- 7) output-format combo: a format with a real exit path must not vanish from the GUI (2026-10-30)
+#    What happened: commit efc0622 (2026-08-12) deleted the single line
+#    `<sys:String>JPEG XR</sys:String>` from FormatCombo while JxrCodecPanel, `case "jxr"`,
+#    the QueueProcessor JXR exit and CLI `--format jxr` all stayed.  Result: the shipped GUI can
+#    read .jxr but cannot write it, and NO gate reddened (measured on the beta10 package: the
+#    dropdown had 6 entries, JXR absent).
+#    Reverse controls are inside the same block so a broken regex cannot make this pass vacuously.
+$fmtBlock = [regex]::Match($xamlCode, '(?s)<ComboBox\s+[^>]*x:Name="FormatCombo".*?</ComboBox>').Value
+CK ($fmtBlock.Length -gt 0) "FormatCombo block located in MainWindow.xaml (else the format lock below is vacuous)"
+foreach ($item in @('JPEG', 'PNG', 'WebP', 'AVIF', 'JPEG XL', 'TIFF', 'JPEG XR')) {
+    $hit = [regex]::IsMatch($fmtBlock, '<sys:String>\s*' + [regex]::Escape($item) + '\s*</sys:String>')
+    CK $hit ("FormatCombo still offers '{0}' -- a format whose exit path is wired must not vanish from the GUI" -f $item)
+}
+CK ([regex]::IsMatch($csCode, 'case\s+"jxr":')) "JXR exit branch still present in UpdateCodecPanelVisibility"
+CK ([regex]::IsMatch($xamlCode, 'x:Name="JxrCodecPanel"')) "JxrCodecPanel still declared in XAML"
+CK ([regex]::IsMatch($csCode, '"JPEG XR"\s*=>\s*"jxr"')) "NormalizeFormat still maps JPEG XR -> jxr"
+
 Write-Output ("PASS={0} FAIL={1}" -f $script:pass, $script:fail)
 if ($script:fail -gt 0) { exit 1 } else { exit 0 }
