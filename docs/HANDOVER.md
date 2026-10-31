@@ -3861,3 +3861,44 @@ CJK 棘轮另计：UI 面 901 > 885 ⇒ 按换回法归因后**抬基线至 901*
 3. ~~**新报缺陷（已排队）**：队列双击打开的「编码详情」窗口里**日志区上下拉不动**（顶部只有 `…(已截断)`）~~ —— **已修（同日），只差维护者目视**。三处成因都有读数（headless 真跑 `ProgressWindow`，仓外探针工程 `C:\PLAN\scroll-probe`，每处都做过"改回去 ⇒ 转红"的变异）：①行定义 `Auto,Auto,*,Auto` 把 `*` 给了标题行 ⇒ `Viewport==Extent`（14398/14398 px、行程 0）⇒ 滚动条没有行程可拖，改 `Auto,Auto,Auto,*` 后行程 14182 px；②每 500 ms 无条件重写 `Text` + `CaretIndex=末尾` ⇒ 拖到顶下一 tick 被拽回底（Offset 0→14181.9），现在只在视图停在末尾时跟；③截断上限 10K < 实测日志量（11,233~15,227 字符）⇒ 抬 24K + 整段重写 1 s 节流（实测 ≈12 ms/千字符，200K 会 2,455 ms/次 ⇒ 否决）。细节见账本 §61 未了结 ⑦。
 4. B3（明知不可能还撞两臂的墙钟代价）**已量并决定不改**：BMP 臂 274/374 ms、`-c 0` 臂 14/15 ms（都 -106），救场的 `-c 25` 臂自身 300/321 ms ⇒ 少撞两臂只省 ~0.3 s/项，而把阶梯提前会让 8-bit 源吃一遍高位档（`-c 25` 对 8-bit 是**转换**不是直通 ⇒ 静默升位）⇒ 控制流不动，细节见 §61 未了结①。
 5. ⑥ RAW→PNG 未产出 png 是本机既有红（HEAD 对照臂同形），未查；要查属独立一批。
+
+### H-19 2026-10-31 —— S8（H1 出口白点系统性压低 1 LSB）修复 + 白点判据第 5 臂入列（86→87）
+
+| 项 | 读数 |
+|---|---|
+| 缺陷 | S8（`docs/review-2026-10-31/AUDIT-独立性审查-2026-10-31.md` §2，P2 / 对撞 ◎ 三路）：内核把 ffmpeg `format=rgb48le` 的样本一律 `/65535.0` 归一，而随包 ffmpeg 对 8-bit RGB 源的扩位上限只有 **65283**（0.99615 FS）⇒ 8-bit 交付白 255→254、同源 16-bit 交付同被压；无 DegradationCode、日志不承认 |
+| 修法（落定形状） | `TransformSpec.SrcCodeMax`（double，默认 `65535.0`）+ 常量 `SrcCodeMax8 = 65283.0`；**按源位深选除数**：源 ≤8-bit ⇒ 65283，其余（含位深探测失败 / 管道输入）⇒ 65535 = 改前行为、绝不猜 65283。只作用于**解码侧**（`BuildTables` 的 Eotf、三条解析式主循环、`MeasurePeakLinearRgb48`）；索引域（`Oetf`、`BuildEncodeLut16`）与编码侧（`EncodeTo8` 的 `code16/65535*255`）**一律不动**（另一把尺子）⇒ 真 16-bit 源的顶段 252 码不被压平（审查档 G16/G19） |
+| 传递（推翻原设计） | 原设想在 `ColorIntent → PlanPolicy → ColorTransformPlan.ToSpec()` 四手传递里加字段；落定改为**执行体单点置位**：`RawColorPipeline.cs:173` 的 `spec.SrcCodeMax = ResolveSrcCodeMax(inputPath);`，`ColorIntent`/`PlanPolicy`/`ColorTransformPlan` **零改动**。三条理由：① 要对齐的是这一步 ffmpeg **真解出来的字节**，`inputPath` 在 RAW/中转场景下不是用户原件；② 位深真值只有一处探针（`ProbeInputBitDepthForEngine`，10 s 缓存、不额外起进程）；③ 三处各加一个字段转四手，就是本仓反复修过的"同一判据两处口径" |
+| 顶码实测（本机，256 级灰阶逐点） | `png8_rgb` / `bmp8` / `webp8` / `png16` ⇒ **65283**；`png8_gray` / `jpg8`(yuvj444p) ⇒ **65280**。即 ≈×256 的定点扩位 + ≤3 码抖动，**不是** 257 整数倍（256 个码里只有 1 个是 257 的倍数）。数据在 `tests/output/_tmp/s8probe/`（`probe_depth.py` 生成，脚本在 `tests/output/_tmp/` 根） |
+| 修复件读数 | 第 87 条 `_probe-white-point-kernel.ps1` **PASS=27 FAIL=0 SKIP=0 ENV=0 19.9 s**：A 组两臂白 = 255、B 组 16-bit 顶段 `band_uniq=252`、B3 源满幅归一顶到 65535、C 组直通/legacy 不受影响 |
+| 对照臂（证有牙） | 把 `ResolveSrcCodeMax` 临时恒返 `65535.0`（带 `// CONTROL-ARM-TEMP`）重编复跑 ⇒ **PASS=23 FAIL=4**：A 组两臂 `max=254`、**B3 两行红在 `max=65283` / `blk_min=blk_max=65283`**，B 组与 C 组仍绿 ⇒ 新判据只抓 S8，不误伤 16-bit 与直通臂。还原后 `rg CONTROL-ARM src/` **0 命中**（日志 `tests/output/_tmp/control_unfixed.log`） |
+| 与审查档 65269 的口径差 | 审查档 §S8 ③ 记「<16-bit 源交付 16-bit 白 = **65269**」，出自 `lanes/pixel-truth/out/R16/sw12.png`（**斜坡件**，4096 px）；本仓对照臂的 B3 臂是 **P3 纯白块 → sRGB**，白点过矩阵后仍 1.0 ⇒ 停在 **65283**。两臂不是同一读数口径、**都成立**；判据分界看"是否顶到 65535"，不看顶到哪一个小数。相关注释已按此口径措辞，没拿一个去否另一个 |
+| 已知边界（本轮不修） | ① `png8_gray` 与 8-bit jpeg 顶码 **65280** ≠ 65283 ⇒ 这两族白点归一后 0.99995：8-bit 交付仍量化 255（不受影响），**16-bit 交付会得 65532 而非 65535**；本轮不细分载体，记入敞口。② 10/12-bit 源经 rgb48le 的扩位顶码**未实测** ⇒ 一律按 65535，注释与文档如实标注未证。③ JXL/JXR 容器内 ICC/位深不可判（审查档 §4.1）同前 |
+| 判据入列（86→87，四处同批） | ① `_run-step3-gates.ps1` 的 `$scriptList` 加 `_probe-white-point-kernel.ps1`（含 14 行登记注释）；② `$expectedScriptCount = 87`；③ runner 内三处散文条数（`清单条数以实测为准 = 87 条` / 受管基线 `= **87** 条` / 全跑 87 条，`Test-RunnerShape` 第 ⑰ 针三种形态各扫一遍并要求与常量相等）；④ 本探针是纯 `_probe` 形态、**不新增 ServiceProbe mode** ⇒ `Tests.Shared/TestGroups.cs` 不动。首次 `-Scripts` 被 `[SHAPE]` 拒跑，正是漏改第 ③ 处的一条长行散文 —— 这道闸抓到了自己的登记漏改 |
+| 条数漂移订正 | 审查档 §7.3 记「`AGENTS.md §2` 仍写 84 条而受管基线 86」⇒ 本批同改：`AGENTS.md` 改 `$scriptList` 数组（**87 条**）、`docs/TESTING.md` 该表改 **87 条**并新增「2026-10-31 第二十二次接线 1 条」。历史条目里的 84/85/86 读数按"时间点记录"**不回改** |
+| 当轮产物指纹 | `FfmpegGui.dll=33DF225A6709452F  FfmpegGui.exe=D32D5A1D3BB8A686  ServiceProbe.exe=97179BAF0B6BD8CF  UiTestHost.exe=F0BC7FC29B12F292  GainMapTestHost.exe=D2F3AE6B58EC70B5`；`runner-self-sha256=8711987BFBC52A01 lines=1665 bytes=171169`（启动与收尾两次一致）；`_probe-white-point-kernel.ps1` sha256[:16] = `140CF2E6E3FC668D`（684 行、LF、带 BOM） |
+| 定向读数（`-Scripts` 子集 4/87，**不构成基线**） | 第 84 条 `verify-jpg-webp-matrix` **30/0** 14.9 s（S8 改动未波及 BT.601 矩阵）；第 86 条 `_probe-env-trust-baseline` **10/0/1 SKIP** 2.0 s；第 87 条 **27/0/0/0** 19.9 s；`_probe-i18n-scan` 通过；`shape-selfcheck=OK`（17 针）；`dotnet build ffmpegPictureUI.sln -c Release` 13 工程 **0 警告 0 错误** 9.9 s。日志 `tests/output/_tmp/run87_final4.log` |
+| 踩坑 | ① 本机 `dotnet` 必须显式 `C:\Program Files\dotnet\dotnet.exe` 并补 `DOTNET_ROOT/APPDATA/LOCALAPPDATA`，否则 NuGet 报 `Value cannot be null. (Parameter 'path1')`；② 只编 `FfmpegGui.csproj` 不更新 `tests/projects/ServiceProbe/bin/**/FfmpegGui.dll` ⇒ 下一轮 **STALE 拒跑**，**改注释也会触发**（mtime），必须整建 sln；③ `_probe-white-point-kernel.ps1` 的 EOL 基线是 **LF + 带 BOM**（patch 工具插入 CRLF 行后成了混合，已归一为 0 CRLF / 684 LF / BOM）；④ pwsh 无 heredoc ⇒ 批量改写一律落 `tests/output/_tmp/*.py` 用 `python` 执行（`patchlib.py` 逐处校验"恰好命中 1 次"，保 BOM/EOL） |
+| 未做 | **未 push**（工作树 9 改 + 5 未跟踪/新目录，提交前读数）。~~未跑整轮基线~~ ⇒ **已跑，见本节末「H-19 追补」**：87 条 85 绿 / 2 红，两红均定性为既存/工具口径 |
+| 登记自洽复核（入列后补跑） | `-Scripts '_probe-test-group-coverage,_probe-white-point-kernel,verify-probe-mirror-parity,_probe-cjk-hardcode-scan'`：第 87 条 **27/0** 20.6 s；`test-group-coverage` **37/0** 且 ⑪-c"已进清单的脚本必须从归属表删掉（漏删 0）"与 ⑪-e"清单外 **35** 支 == 被点名 7 + 族内 **14** + 显式表 14 + 未归属 0"自洽 ⇒ 第 87 条是从"族内"自动划进受管清单的，**没有**需要手改的归属表；`verify-probe-mirror-parity` **87/0**（执行面 61 个 `Probe*` 无第二份定义）；`_probe-cjk-hardcode-scan` **14/0**。日志 `tests/output/_tmp/run87_final5.log` |
+
+**下一手（按序）**
+
+1. ~~**整轮基线待跑**~~ **已跑（2026-10-31，见「H-19 追补」）**：`run_full_87b.log`，87 条 85 绿 / 2 红，`EXITCODE=1`，脚本时段合计 2664 s；指纹 `FfmpegGui.dll=97E2C47D2B42B8E9` 与当轮日志同段。
+2. **S8 余下两处敞口**（独立一批）：① gray8 / 8-bit jpeg 顶码 65280 的细粒度载体判别（现值 16-bit 交付 65532）；② 10/12-bit 源的扩位顶码实测（需先造夹具并确认 ffmpeg 扩位口径）。
+3. ~~`tests/output/_tmp` 清场~~ **已做（2026-10-31）**：删 20 个一次性脚本/中间件（`patch1.py`~`patch13.py`、`patch1b/1c`、`patchlib.py`、`probe_cs.py`、`ramp8.png/.raw`、`wp8-252285303/`、`fixed_rerun.log`、`run87.log`/`run87b.log`/`run87c.log`/`run87_final{,2,3}.log`、`run84_86.log`、两个本批 `.py` 写手）+ 20 个 `tests/output/whitepoint_*` 陈旧轮次目录（删前 `os.walk(followlinks=False)` 扫 reparse point，0 命中）。**保留的证据件**：`_tmp/s8probe/`（顶码表一手件 + `probe_depth.py`）、`_tmp/control_unfixed.log`、`_tmp/run87_final4.log`、`_tmp/run87_final5.log`、`whitepoint_d0b2e3c3/`（final5 那一轮）。**没动**别人的 scratch（`dng_sdk_*.zip`、`LibRaw-*`、`jpegli-*` 等与本批无关）。下一轮若再堆，按 `--runs --max-age-days` 清，**不要**用 `--unreferenced`（活线手工产物会被误删，见 `AGENTS.md` §1）。
+4. **推送待裁决**：整轮基线已跑（85/87，两红定性）⇒ 具备申请条件，但**仍未 push**，等维护者点头。
+5. 审查档 §7.2/§7.3 的回应写在 `docs/review-2026-10-31/CORRECTION-2026-10-31-S8.md`（原档**不回改**）。
+
+**H-19 追补（同日续做，2026-10-31 晚）**
+
+| 项 | 读数 |
+|---|---|
+| S8 修法改为第二版 | 第一版把 `IsIdentity` 纳入 `SrcCodeMax` ⇒ `verify-package-smoke` 的 A2「往返逐比特相同」**转红**（产物 3896 kB；`a_src/a_out` 差 403,523/5,760,000 字节全 +1）⇒ 恒等臂本就不该重采样，判据撤回。第二版：`IsIdentity` 不纳入，置位点收窄为 `if (!spec.IsIdentity) spec.SrcCodeMax = ResolveSrcCodeMax(inputPath);`（`ColorKernels.cs` 64,544 B/1032 LF/无 BOM；`RawColorPipeline.cs` 111,563 B/1410 CRLF/无 BOM） |
+| 第二版读数 | 第 87 条 **27/0/0/0**；`verify-package-smoke` 的 A2 **PASS 往返逐比特相同 exit=0 产物=4297.9 kB**（对照臂 4322.2 kB）（`run87_v2.log`） |
+| 整轮基线（可宣布的那一轮） | `run_full_87b.log`：87 条 **85 绿 / 2 红**，`EXITCODE=1`，脚本时段合计 **2664 s ≈ 44.4 min**；`script-list=87 条（受管基线 87）`、`shape-selfcheck=OK（17 针）`、`runner-self-sha256=8711987BFBC52A01 lines=1665 bytes=171169` 启动收尾一致；指纹 `FfmpegGui.dll=97E2C47D2B42B8E9  FfmpegGui.exe=D32D5A1D3BB8A686  ServiceProbe.exe=97179BAF0B6BD8CF  UiTestHost.exe=F0BC7FC29B12F292  GainMapTestHost.exe=D2F3AE6B58EC70B5` |
+| 第一轮 43 项的去向 | 34 支脚本 → 30 支为**环境假红**（ffmpeg/dngtool 在系统 `%TEMP%` 被沙箱拦，`[dngtool] unknown option: --version` 等；`TMP/TEMP/TMPDIR` 重定向后全绿）；4 项 ⑬ = `verify-decision-delivery.ps1` 的 `JxlCs()` 读手陈旧（随包 `jxlinfo` 把 `Color space: sRGB primaries` 拆成两行）⇒ 已修读手、断言字面未动 ⇒ **92/0**；4 项 DNG = 本机缺 `rawpy` ⇒ `pip install rawpy`(0.27.1) 后 **104/1**；1 项 A2 = 第一版修法真实回归 ⇒ 第二版消除 |
+| 剩余两条红（均既存/工具口径，与本批无关） | ① `_probe-stderr-merge-scan.ps1` `pass=5 fail=1`：站点 `verify-jxr-highbitdepth.ps1:527/:648`，两文件与 HEAD **逐字节相同**（`git status --porcelain` 无输出）。② `verify-dng-metadata-transport.ps1` 104/1：唯一红 ㉛ `total=9526（期望 9517）`，`all_equal_total=True` |
+| ㉛ 收口（三版 A/B） | `_audit-dng-meta-carry.py` 只调 exiftool（:368/:372），零接触产品。同一语料 44 件、同一脚本，只换 exiftool：**13.50 ⇒ 9513、13.55 ⇒ 9517（= 门禁钉的期望值）、13.60 ⇒ 9526（随包现行）**；差 +9 全部是厂商 MakerNote 枚举（`Canon:FirmwareInfo`/`TimeStamp`/`ExitPupilCode`/`Extender`/`Lens*` 新解出、`RAF:RAFVersion`→`FirmwareVersion` 改名）。期望值由 `ed094a4`（2026-10-23）钉入；随包工具链整树 mtime 2026-10-29 21:27:40；[exiftool 13.60 官方发布日 2026-10-28](https://exiftool.org/history.html) ⇒ 重装把 13.55 换成 13.60 把期望值悬空了。**本轮不改**（改判据口径属独立一批）：建议 ① `9517→9526` 并注记版本，或 ② 门禁先断言 `exiftool -ver` 再点名重钉 |
+| 建议下一批 | ㉛ 重钉方式二选一；`_probe-stderr-merge-scan` 两站点补「合并取数已论证」；S8 两处敞口（gray8/jpg8 顶码 65280、10/12-bit 未实测）；审查档 §7.2/§7.3 表内 8 项待裁决 |
+| 推送 | **未 push**；四步（编译 0 警告 0 错误 / 定向子集全绿 / 语义审查 / 整轮读数与既存红归属）齐备，**等维护者点头** |

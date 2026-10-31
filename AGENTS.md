@@ -44,7 +44,7 @@ beta7–beta11 的 10 个归档 + 8 个解包目录（1.7 GB）。**要留证据
 
 `tests/scripts/_run-step3-gates.ps1` 是清单，不是索引外部文件。加/删/改名一条门禁必须**同批**改齐四处：
 
-1. `$scriptList` 数组（84 条）；
+1. `$scriptList` 数组（87 条）；
 2. `$expectedScriptCount` 常量（同文件）；
 3. runner 里复述条数的**散文陈述**——`Test-RunnerShape` 第 ⑰ 针按三种形态各扫一遍并要求与常量相等；
 4. 新的 ServiceProbe mode 还要进 `tests/projects/Tests.Shared/TestGroups.cs` 的组表，

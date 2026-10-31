@@ -369,6 +369,10 @@ public static partial class ColorMappingEngine
         //   但**无损被改成 ±1 有损**：`OutBitDepth=8` 会让引擎走 `ColorKernels.EncodeTo8`，
         //   其 `code16/65535*255` 在 float 下对「×257 的码值」不是恒等映射
         //   （实测 0..91 恒等、92 起约半数偏低 1、252..255 恒偏低 1；`tests/output/t65/`）。
+        //   ⚠ **2026-10-31 更正（结论不变）**：上面那句"×257 的码值"**与实物不符** —— 随包 ffmpeg 把
+        //   8-bit 扩成 `rgb48le` 的顶码实测为 **65283**（≈×256 定点 + ≤3 码抖动），不是 257 的整数倍。
+        //   "`EncodeTo8` 不是恒等映射"这条**实测结论**照旧成立（它量的是真实码值），
+        //   错的只是把它归因给"257 倍数"；该错误归因正是 S8（白点被压低 1 LSB）的源头。
         //   而 ffmpeg 的 `format=rgb24` 与 cjxl 本身都是精确的（`tests/output/t66/` E1/E2/E3）。
         //   ⇒ 本字段的语义仍是「**中间件精度**」；直通时的**交付档**由各出口自己按
         //   `TargetBitDepth` + `ImageEncoderArgs.MapPixFmt` 决定（cjxl 出口已照此修，见该处注释）。

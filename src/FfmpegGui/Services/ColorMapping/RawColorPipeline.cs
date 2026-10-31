@@ -158,6 +158,25 @@ public static class RawColorPipeline
             st.Scheduler = sched.ToLogFragment();
             PlatformServices.MarkAsTemporaryFile(tmp);
 
+            // ── 解码侧满量程（S8，2026-10-31）：单点置位，判据 = **实际被解码的那个文件**的源位深 ──
+            // 本管道永远让 ffmpeg 把输入解成 `format=rgb48le`，但 8-bit 源扩位后的顶码**不是 65535**：
+            // 实测（`tests/output/_tmp/s8probe/`，256 级灰阶逐点）png/bmp/webp 的 8-bit RGB ⇒ 顶码 65283、
+            // 灰阶 png 与 8-bit jpeg（yuvj 全范围）⇒ 65280，即 ≈×256 的定点扩位。内核若按 65535 归一，
+            // 白就被当成 0.99615 ⇒ 8-bit 交付 254、16-bit 交付 65283（本仓对照臂实测；审查档 §S8 ③
+            // 的 65269 出自另一臂另一夹具，口径不同）—— 这就是 S8「白点被系统性压低」的根因。
+            // ⚠ 为什么放在**执行体**而不是 `ColorTransformPlan.ToSpec()`：
+            //   ① 除法要对的不是"规划时以为是源"的东西，而是这一步 ffmpeg 真解出来的字节 ——
+            //      `inputPath` 在 RAW/中转场景下**不是**用户原始文件，只有这里知道是哪一份；
+            //   ② 位深真值只有一处探针（`ProbeInputBitDepthForEngine`，走 10s 缓存、不额外起进程）；
+            //   ③ 不在 intent/policy/plan 三个类上各加一个字段转四手，避免"同一个判据两处口径"
+            //      （本仓反复修过的那类缺陷）。
+            // ⚠ 位深探测失败 / 管道输入 ⇒ 0 ⇒ 按 65535（= 改前行为）保守处理，**绝不猜 65283**。
+            // ⚠ **恒等不置位**（2026-10-31 第二版，实测订正）：恒等臂设成 65283 只会把「解码按源尺子、
+            //   编码又按 65535 出码、ffmpeg 再 /256」配成净 ×1.00386 ⇒ 实测 7.0% 字节 +1，把 8-bit
+            //   无损往返打成有损（`verify-package-smoke` A2）。恒等的白本就是 255（65283/256 = 254.99 → 255），
+            //   需要这把尺子的只有**内核真介入**的臂（矩阵/曲线/色域映射真变了的那些）。
+            if (!spec.IsIdentity) spec.SrcCodeMax = ResolveSrcCodeMax(inputPath);
+
             // ── 变换（引擎）──
             var sw2 = Stopwatch.StartNew();
             var (stSrc, stDst) = TablesFor(spec, w * h);
@@ -535,6 +554,13 @@ public static class RawColorPipeline
         //   其 `code16/65535*255` 在 float 下对 ×257 码值**不是恒等**（实测 0..91 恒等、92 起约半数
         //   偏低 1、252..255 恒偏低 1）⇒ 把无损改成 ±1 有损。而 ffmpeg 的 `format=rgb24` 与 cjxl
         //   往返都是逐比特精确的（E1/E2/E3）⇒ **降位交给 ffmpeg 做**，中间件保持 16bit 不动。
+        //   ⚠ **2026-10-31 口径更正（结论不变，只更正"×257"这个前提）**：上一段把送进内核的码值
+        //   说成"×257 码值"**与实物不符** —— 本机实测随包 ffmpeg 把 8-bit 扩成 `rgb48le` 后顶码是
+        //   **65283**（255×256 = 65280，实测 +3；256 级灰阶逐点 first6 = 0,256,512,769,1025,1281），
+        //   即"≈×256 定点扩位 + ≤3 码抖动"，既不是 257 的整数倍、也不是 65535。
+        //   该段的历史**实测读数**（0..91 恒等 / 92 起约半数偏低 1 / 252..255 恒偏低 1）是在真实码值上
+        //   量的，**照旧成立**；错的是给它配的因果解释，而那个错误解释正是 S8 的根因
+        //   （按 65535 归一 ⇒ 白 1.0 被算成 0.99615）。现由 `TransformSpec.SrcCodeMax` 按源位深选除数修掉。
         //   交付档取自 `plan.TargetBitDepth` + 容器自己的 `MapPixFmt`（与 png/tiff 出口同一判据，
         //   也与 `CollectDegradations` ①b 播报的那一份一致）。
         string pixIn = plan.OutBitDepth == 8 ? "rgb24" : "rgb48le";
@@ -725,6 +751,9 @@ public static class RawColorPipeline
         //   `tiffExtra`）全用 `out8` ⇒ 8-bit 源被绕成 16-bit JXR。实测（800x600 8-bit PNG，
         //   `--lossless`）：交付 `pix_fmt=rgb48le`、877.2 kB，而同素材的 png/tiff 出口都正确给
         //   `rgb24` ⇒ 只有这一条出口漏了。降位仍交给 ffmpeg 的 `-pix_fmt`（对 ×257 码值精确）。
+        //   ↳ **2026-10-31 更正**："×257 码值"这个前提同上方 cjxl 段一样**与实物不符**（实测顶码 65283）；
+        //     "ffmpeg 的 `-pix_fmt` 降位精确"这条**结论**来自当时的对照实测（`tests/output/t66/` E1/E2/E3），
+        //     不依赖那个错误前提，故不改判。内核侧现在也不再假设 257：见 `TransformSpec.SrcCodeMax`。
         bool deliver8 = plan.TargetBitDepth <= 8;
         var meta = FfmpegCommandBuilder.ProbeInputColorMetadata(inputPath, log, ct);
         bool hasAlpha = meta.hasAlpha;
@@ -1102,7 +1131,25 @@ public static class RawColorPipeline
         if (!spec.ClampLinearBeforeEncode || pixels < 256_000) return (null, null);
         if (spec.SrcCurve.Kind == TransferCurve.CurveKind.Table || spec.DstCurve.Kind == TransferCurve.CurveKind.Table)
             return (null, null);
-        return (ColorKernels.BuildTables(spec.SrcCurve), ColorKernels.BuildTables(spec.DstCurve));
+        // ⚠ **Src / Dst 两张表的尺子不同**（S8）：Src 表的键是**源编码值**（u16 原样下标）⇒ 必须按
+        //   `spec.SrcCodeMax` 建，否则 fast 分支等于偷偷用 65535；Dst 表的键是**线性 [0,1] 的量化**，
+        //   与源码域无关 ⇒ 保持 65535（跟着改成 65283 会把真 16-bit 源的顶段压平，见 G16/G19）。
+        return (ColorKernels.BuildTables(spec.SrcCurve, spec.SrcCodeMax),
+                ColorKernels.BuildTables(spec.DstCurve));
+    }
+
+    /// <summary>
+    /// 解码侧满量程：8-bit（含以下）源经 ffmpeg <c>format=rgb48le</c> 扩位后顶码 = 65283
+    /// （<c>ColorKernels.TransformSpec.SrcCodeMax8</c>，实测值），其余按 65535。
+    /// <para>判据只用**源位深**：本管道不改变"输入采样位数"，扩位是 ffmpeg 的定点映射。</para>
+    /// <para>⚠ 10/12-bit 源经 rgb48le 的扩位顶码**未实测** ⇒ 一律按 65535（已知敞口，见 HANDOVER）。</para>
+    /// </summary>
+    private static double ResolveSrcCodeMax(string inputPath)
+    {
+        int bd;
+        try { bd = FfmpegCommandBuilder.ProbeInputBitDepthForEngine(inputPath); }
+        catch { bd = 0; }
+        return bd > 0 && bd <= 8 ? TransformSpec.SrcCodeMax8 : 65535.0;
     }
 
     /// <summary>整帧模式：读入 → 行带并行变换 → 写出。</summary>

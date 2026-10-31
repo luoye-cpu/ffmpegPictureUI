@@ -32,7 +32,12 @@
 ## 2. 分批审查（`review-YYYY-MM-DD/`，被门禁按名点名，位置固定）
 
 `review-2026-10-03`（8）· `review-2026-10-04`（18）· `review-2026-10-10`（19，含 `lanes/` `verify/`）·
-`review-2026-10-11`（4）· `review-2026-10-16`（1，`test-value-audit.md` 被 `verify-probe-mirror-parity` 引用）
+`review-2026-10-11`（4）· `review-2026-10-16`（1，`test-value-audit.md` 被 `verify-probe-mirror-parity` 引用）·
+`review-2026-10-31`（2，`AUDIT-独立性审查-2026-10-31.md`；独立性安全/正确性审查判词总账，被测件 `f89b247b60dcf1ef` == HEAD。
+**尚无任何门禁按名点名它** ⇒ 位置未被钉，但 §8.2 记了与总账/各 lane 的 7 处不一致，改名前先读那一段；
+一手证据全在**仓外** `..\ffmpegPictureUI-audit\`（`evidence/` + `lanes/*/FINDINGS.md`），本仓不随附产物。
+第二份是**追加更正条目** `CORRECTION-2026-10-31-S8.md`（S8 修复落地 / 第 87 条入列 / §7.3 表外三条的兑现与仍未兑现项，含 65283 vs 65269 的口径差）；
+原档**一字未改**——带日期的账本不回改，要更正就新写一条，这条规矩对它自己同样适用）
 
 ## 3. 归档（`archive/`，28 份 + `_gapscout_raw/`）
 

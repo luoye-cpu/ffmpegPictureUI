@@ -598,8 +598,22 @@ function JxlCs([string]$path) {
     $o = "$out/_jxlcs.txt"
     Start-Process -FilePath $jxlinfo -ArgumentList @($path) -NoNewWindow -Wait -PassThru `
         -RedirectStandardOutput $o | Out-Null
-    return ((([System.IO.File]::ReadAllText($o)) -split "`r?`n") |
-            Where-Object { $_ -match 'Color space' } | Select-Object -First 1)
+    $ls = @(([System.IO.File]::ReadAllText($o)) -split "`r?`n")
+    $cs = ($ls | Where-Object { $_ -match '^Color space' } | Select-Object -First 1)
+    # ⚠ 2026-10-31（定性第 87 条同批）：随包 `jxlinfo.exe`（2026-10-29 重出）把旧版的**单行**
+    #   `Color space: sRGB primaries` 拆成了 `Color space: RGB` + `Primaries: sRGB` 两行 ⇒
+    #   只取首条 `Color space` 行的旧读手**永远读不到 primaries**，本节 4 条全假红
+    #   （实测产物与 beta10 逐字节同一 sha256、`Primaries: sRGB` 确实写在里面）。
+    #   修法：两行合成一行并保留旧断言要匹配的字面形式（`<primaries> primaries`）⇒
+    #   下面 `-match 'sRGB primaries'` / `-match 'P3'` 一字未改、意图不变，只是读手重新能看见 primaries。
+    $pr = ($ls | Where-Object { $_ -match '^Primaries\s*:' } | Select-Object -First 1)
+    if ($pr) {
+        $name = ($pr -replace '^Primaries\s*:\s*', '').Trim()
+        if ($name -and ($cs -notmatch [regex]::Escape($name))) {
+            return (($cs + " | " + $pr).Trim() + "  ⇒ " + $name + " primaries")
+        }
+    }
+    return $cs
 }
 if (-not (Test-Path $jxlinfo)) {
     CK $false "缺 jxlinfo（$jxlinfo）—— JXL 标注回读的唯一可靠工具（exiftool 对 JXL 连读都读不出 ICC）"

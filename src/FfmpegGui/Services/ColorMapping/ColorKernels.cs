@@ -33,6 +33,32 @@ public sealed class TransformSpec
     /// </para>
     /// </summary>
     public double EncodeScale = 1.0;
+    /// <summary>
+    /// **源编码值的满量程**（u16 码域里的"白"）：解码侧一律按 <c>code / SrcCodeMax</c> 归一成线性。
+    /// <para>
+    /// 为什么不能恒用 65535：内核的输入永远是 ffmpeg 的 <c>format=rgb48le</c>，而**8-bit 源扩到
+    /// 16-bit 时天花板只有 <see cref="SrcCodeMax8"/>（65283）**、不是 65535（2026-10-31 实测：
+    /// 256 级灰阶 8-bit PNG 经 <c>-vf format=rgb48le -f rawvideo</c> 导出读 u16 ⇒ 1→256、9→2306、
+    /// 255→<b>65283</b>，与 ×256 的偏差 ≤3 码）。按 65535 归一 ⇒ 白被当成 0.99615 ⇒ 8-bit 交付出
+    /// 254、16-bit 交付出 65283（本仓对照臂实测；审查档 §S8 ③ 的 65269 出自另一臂另一夹具，
+    /// 口径不同，见 `_probe-white-point-kernel.ps1` 头注），即 S8（"白点被系统性压低 1 LSB"）。
+    /// </para>
+    /// <para>
+    /// ⚠ 只影响**解码侧**：<see cref="BuildTables"/> 的 <c>Eotf</c> 与三条解析式主循环的除法。
+    /// **索引域**（<c>CurveTables.Oetf</c>、<see cref="BuildEncodeLut16"/>）与**编码侧**的
+    /// <c>code16/65535*255</c>（<c>EncodeTo8</c>）都在线性 [0,1] 里自洽、**不许**跟着改 ——
+    /// 那是另一把尺子，改成 65283 会把真 16-bit 源的顶段 252 个码压平（审查文档 G16/G19）。
+    /// </para>
+    /// <para>
+    /// 取值由 <c>RawColorPipeline.ResolveSrcCodeMax</c> 在**执行体单点置位**（按**源位深**判）：已知 ≤8 ⇒
+    /// <see cref="SrcCodeMax8"/>；
+    /// 其余（含探测失败 / 管道输入）⇒ 65535.0 即**不改既有行为**。10/12-bit 源经 rgb48le 的扩位
+    /// 顶码**未实测**，本轮按 65535 处理（已知敞口）。
+    /// </para>
+    /// </summary>
+    public double SrcCodeMax = 65535.0;
+    /// <summary>8-bit 源经 ffmpeg <c>format=rgb48le</c> 扩位后的**实测顶码**（8-bit 255 对应的码值）。</summary>
+    public const double SrcCodeMax8 = 65283.0;
     public DitherMode Dither = DitherMode.None;
     /// <summary>编码前是否把线性值钳到 [0,1]（SDR 输出 true；HDR 中间过程 false）。</summary>
     public bool ClampLinearBeforeEncode = true;
@@ -83,6 +109,16 @@ public sealed class TransformSpec
     public double DstHlgSystemGamma;
 
     /// <summary>曲线与矩阵都无变化 → 无需处理（调用方应直接跳过内核）。</summary>
+    /// <para>⚠ <see cref="SrcCodeMax"/> **不进**本判据（2026-10-31 第二版，实测订正）：一度把它算进来了，
+    /// 理由是「65283 → 1.0 是一次真实像素改动」；但**恒等臂上那次改动是纯损失** —— 解码按 65283 归一、
+    /// 编码又按 65535 出码（中间件产 <c>rgb48le</c>，8-bit 交付再交给 ffmpeg 的 <c>format=rgb24</c>，那是 <c>/256</c>）
+    /// ⇒ 整条链路净 ×(65535/65283) = ×1.00386：实测 1200×1600 夹具 <b>403,523 B（7.0%）逐字节 +1、无一下降</b>，
+    /// 把「8-bit 无损往返逐比特」打成有损（<c>verify-package-smoke</c> 的 A2 由 PASS 转 FAIL；
+    /// 对照臂 = <c>ResolveSrcCodeMax</c> 恒返 65535.0 时 17/0，见 `tests/output/_tmp/control_a2_pkg.log`）。</para>
+    /// <para>恒等臂根本不需要这把尺子：停不动的码值直接透传，白本就是 255（65283/256 = 254.99 → 255）；
+    /// 「白 = 254」只发生在 <b>内核真介入</b> 的臂上（<c>_probe-white-point-kernel.ps1</c> 的 A 组全是带矩阵的臂）。
+    /// ⇒ 判据：<b>恒等 ⇒ 不设 <see cref="SrcCodeMax"/></b>（置位点在 <c>RawColorPipeline</c>，只在 <c>!IsIdentity</c> 时置），
+    /// 恒等时两边同用 65535，往返逐位不变。</para>
     public bool IsIdentity => Matrix == null && SrcCurve.Equivalent(DstCurve)
         && Math.Abs(LinearScale - 1.0) < 1e-12 && Math.Abs(EncodeScale - 1.0) < 1e-12
         && (Tone == null || !Tone.Active)
@@ -144,6 +180,11 @@ public static class ColorKernels
     /// 16 个相位里有 6 个（p ≥ 10 ⇒ t ≥ 0.5）会把**本可 1:1 精确表示**的码值抬 +1：8-bit 源经
     /// <c>format=rgb48le</c> 升位后码值恒为 257 的整数倍，<see cref="EncodeTo8"/> 里 code16/65535×255
     /// 恰为整数 ⇒ 抖动纯粹是"花钱买损失"（纯色与平滑渐变上长出 Bayer 斑）。</para>
+    /// <para>⚠⚠ 2026-10-31 更正（S8，本机实测）：上一句"码值恒为 <b>257 的整数倍</b>"**与实物相反** ——
+    /// 8-bit 灰阶经 <c>format=rgb48le</c> 扩位实测是 **×256（左移 8 位）+ ≤3 码定点抖动**，
+    /// 顶码 <b>65283</b>（255×256 = 65280，实测 +3），并非 257 的整数倍、也不是 65535。
+    /// ⇒ "恰为整数"只在解码按 65283 归一（<see cref="TransformSpec.SrcCodeMax"/>）时成立；
+    /// 按 65535 归一时白本就被压成 0.99615，抖动只是把这件事再摊开一点（S8 的直接成因）。</para>
     /// <para>居中后对任意精确可表示（整数）码值 v：Round(v + t) == v 对**全部 16 个相位**成立 ——
     /// 离最近的 .5 进位边界还有 0.5 − 0.46875 = 0.03125 LSB 余量，远大于 double 中间量的 ~1e-13 误差。</para>
     /// <para>两条 8-bit 出口（<see cref="TransformRgba8"/> 与 <see cref="TransformRgb48leToRgb8"/>）共用此常量。</para>
@@ -453,10 +494,16 @@ public static class ColorKernels
         public ushort[] Oetf = Array.Empty<ushort>();
     }
 
-    public static CurveTables BuildTables(TransferCurve curve)
+    /// <param name="curve">要建表的曲线。</param>
+    /// <param name="srcCodeMax">
+    /// **Eotf 的**解码满量程（<see cref="TransformSpec.SrcCodeMax"/>）。⚠ 只作用于 Eotf ——
+    /// Eotf 的表键是<b>源编码值</b>（u16 原样下标），Oetf 的表键是<b>线性 [0,1] 的量化</b>，
+    /// 两者不是同一把尺子；共用一个参数就会把 16-bit 源顶段压平（G16）。
+    /// </param>
+    public static CurveTables BuildTables(TransferCurve curve, double srcCodeMax = 65535.0)
     {
         var t = new CurveTables { Eotf = new float[65536], Oetf = new ushort[65536] };
-        for (int i = 0; i < 65536; i++) t.Eotf[i] = (float)curve.ToLinear(i / 65535.0);
+        for (int i = 0; i < 65536; i++) t.Eotf[i] = (float)curve.ToLinear(i / srcCodeMax);
         for (int i = 0; i < 65536; i++)
             t.Oetf[i] = (ushort)Math.Clamp((long)Math.Round(curve.FromLinear(i / 65535.0) * 65535.0), 0, 65535);
         return t;
@@ -628,12 +675,15 @@ public static class ColorKernels
         // **两者都缺** ⇒ 目标为 PQ/HLG 时产出错曝光（过曝 49× / 差 10×）。
         // （`encScale`/`encScaleOn`/`dstHlg`/`dstHlgPeak` 已在上面 `fast` 判据处声明，此处直接复用。）
 
+        // 解码侧除法用**源满量程**：8-bit 源经 rgb48le 扩位后顶码 65283，不是 65535
+        // （TransformSpec.SrcCodeMax）。16-bit / 未知源 = 65535.0 ⇒ 与改前逐位相同（同一个 double 除法）。
+        double srcCodeMax = spec.SrcCodeMax;
         for (int i = 0; i < pixelCount; i++)
         {
             int o = i * 3;
-            float r = (float)srcC.ToLinear(s[o + 0] / 65535.0);
-            float g = (float)srcC.ToLinear(s[o + 1] / 65535.0);
-            float b = (float)srcC.ToLinear(s[o + 2] / 65535.0);
+            float r = (float)srcC.ToLinear(s[o + 0] / srcCodeMax);
+            float g = (float)srcC.ToLinear(s[o + 1] / srcCodeMax);
+            float b = (float)srcC.ToLinear(s[o + 2] / srcCodeMax);
             if (srcHlg)
             {
                 double nr = r, ng = g, nb = b;
@@ -696,6 +746,8 @@ public static class ColorKernels
         bool srcHlg = spec.SrcIsHlgScene;
         double srcHlgPeak = srcHlg ? NitsOfGamma(spec.SrcHlgSystemGamma) : 0;
         var eotf = srcHlg ? null : srcTab?.Eotf;
+        // 与 TransformRgb48leCore 同一把尺子；表路径不需要它（表已按 srcCodeMax 建好）
+        double srcCodeMax = spec.SrcCodeMax;
         if (eotf != null)
         {
             for (int i = 0, o = 0; i < pixelCount; i++, o += 3)
@@ -709,9 +761,9 @@ public static class ColorKernels
             var c = spec.SrcCurve;
             for (int i = 0, o = 0; i < pixelCount; i++, o += 3)
             {
-                float r = (float)c.ToLinear(s[o] / 65535.0);
-                float g = (float)c.ToLinear(s[o + 1] / 65535.0);
-                float b = (float)c.ToLinear(s[o + 2] / 65535.0);
+                float r = (float)c.ToLinear(s[o] / srcCodeMax);
+                float g = (float)c.ToLinear(s[o + 1] / srcCodeMax);
+                float b = (float)c.ToLinear(s[o + 2] / srcCodeMax);
                 if (srcHlg)
                 {
                     double nr = r, ng = g, nb = b;
@@ -801,6 +853,8 @@ public static class ColorKernels
             gamut = gm.IsValid;
         }
 
+        // 解码侧除法与 16-bit 兄弟出口同尺子（表路径的表已按 srcCodeMax 建好，故不受影响）
+        double srcCodeMax = spec.SrcCodeMax;
         for (int i = 0, o = 0, p = 0; i < pixelCount; i++, o += 3, p += 3)
         {
             float r, g, b;
@@ -810,9 +864,9 @@ public static class ColorKernels
             }
             else
             {
-                r = (float)spec.SrcCurve.ToLinear(s[o + 0] / 65535.0);
-                g = (float)spec.SrcCurve.ToLinear(s[o + 1] / 65535.0);
-                b = (float)spec.SrcCurve.ToLinear(s[o + 2] / 65535.0);
+                r = (float)spec.SrcCurve.ToLinear(s[o + 0] / srcCodeMax);
+                g = (float)spec.SrcCurve.ToLinear(s[o + 1] / srcCodeMax);
+                b = (float)spec.SrcCurve.ToLinear(s[o + 2] / srcCodeMax);
             }
             // ── 与 16-bit 主循环**同顺序**的四步（2026-10-05 补齐；此前整段缺失）──
             //  ① HLG 源：场景光 → 显示光（BT.2100 OOTF），再归一化回「1.0 = 源峰值」域。
