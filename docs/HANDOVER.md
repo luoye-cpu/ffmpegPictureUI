@@ -3902,3 +3902,23 @@ CJK 棘轮另计：UI 面 901 > 885 ⇒ 按换回法归因后**抬基线至 901*
 | ㉛ 收口（三版 A/B） | `_audit-dng-meta-carry.py` 只调 exiftool（:368/:372），零接触产品。同一语料 44 件、同一脚本，只换 exiftool：**13.50 ⇒ 9513、13.55 ⇒ 9517（= 门禁钉的期望值）、13.60 ⇒ 9526（随包现行）**；差 +9 全部是厂商 MakerNote 枚举（`Canon:FirmwareInfo`/`TimeStamp`/`ExitPupilCode`/`Extender`/`Lens*` 新解出、`RAF:RAFVersion`→`FirmwareVersion` 改名）。期望值由 `ed094a4`（2026-10-23）钉入；随包工具链整树 mtime 2026-10-29 21:27:40；[exiftool 13.60 官方发布日 2026-10-28](https://exiftool.org/history.html) ⇒ 重装把 13.55 换成 13.60 把期望值悬空了。**本轮不改**（改判据口径属独立一批）：建议 ① `9517→9526` 并注记版本，或 ② 门禁先断言 `exiftool -ver` 再点名重钉 |
 | 建议下一批 | ㉛ 重钉方式二选一；`_probe-stderr-merge-scan` 两站点补「合并取数已论证」；S8 两处敞口（gray8/jpg8 顶码 65280、10/12-bit 未实测）；审查档 §7.2/§7.3 表内 8 项待裁决 |
 | 推送 | **未 push**；四步（编译 0 警告 0 错误 / 定向子集全绿 / 语义审查 / 整轮读数与既存红归属）齐备，**等维护者点头** |
+
+**H-19 附：推送前的独立复核（2026-10-31 深夜）**
+
+两路只读「审阅者」子 agent 并行复核（源码语义 / 文档与登记），结论与处置：
+
+| 项 | 结论 | 处置 |
+|---|---|---|
+| 源码语义 a)–e) | 全 **PASS**：置位在建表（`:182 TablesFor`）之前且只改 `ToSpec()` 返回的副本；`TablesFor` 是唯一取表入口；本仓 `SrcCodeMax` 12 处引用无比较用途；无第四条源侧热路径；顶码误判被编码端钳住、无 NaN/负值；无对照臂残留 | 无需改 |
+| 登记一致性 | **PASS**：`$scriptList` AST 实测 87 且无重名、`:1077` 常量 87、散文 `:3/:89/:964` 均 87；`AGENTS.md:47` / `docs/TESTING.md:590` / 本档 `:3865` 同记此数 | — |
+| 文档读数抽查（9 对） | **2 对不符** + 1 处路径失真：本档与 CORRECTION 记 `RawColorPipeline.cs` 110,153 B / 1406 CRLF ⇒ 实测 **111,563 B / 1410 CRLF**；本档记工作树「7 改 + 6 未跟踪」⇒ 实测 **9 改 + 5 未跟踪**；`probe_depth.py` 实在 `tests/output/_tmp/` 根、**不在** `s8probe/` 内 | **已订正**（CORRECTION `:20/:48/:128`、本档 `:3872/:3882/:3897`） |
+| 陈旧计数 | `.workbuddy-ai/memory/MEMORY.md` 记「已接线 **72** 条」（2026-10-05 读数），而 runner `:964` 点名该处须同记此数 | **已订正为 87**，并注明括号内历史仍按写就时的 72 条保留 |
+
+文档改动后的子集复跑（`tests/output/_tmp/run87_final9.log`，`-Scripts` 5 条，汇总行标「不构成基线」）：`_probe-i18n-scan` **11/0**、`_probe-cjk-hardcode-scan` **14/0**、`_probe-test-group-coverage` **37/0**、`verify-probe-mirror-parity` **87/0**、`_probe-white-point-kernel` **27/0/0/0**（`band_uniq=252 max=65535`）；`runner-self-sha256=8711987BFBC52A01` 启动与收尾一致。
+
+**两处未闭环（复核提出，可达面窄，本批不修，WARN 级）**
+
+1. **置位点与 Tone 实测的顺序**：`RawColorPipeline.cs:178` 的 `!spec.IsIdentity` 置位发生在 `:185-187` `ApplyMeasuredPeak` **之前**。若 Tone 实测后 `Active` 翻 false（`ToneMapping.cs:66` `Headroom > 1.0 + 1e-6`；`RawColorPipeline.cs:1285-1290` 的钳制把 `PeakNits` 拉到正好 SDR 白 ⇒ `Headroom == 1.0`）而其余维度本就恒等（PQ→PQ、无矩阵、`scale=1`），会得「恒等数学 + ÷65283 ⇒ 整幅 ×1.00386」。可达面窄（需 8-bit PQ/HLG 源 + 显式 tonemap，`ColorStrategyPlanning.cs:322-326`）。方向：置位挪进 `TablesFor`，或测峰后补判。
+2. **位深口径以 exiftool 为先**：`FfmpegCommandBuilder.cs:1539` 先赋（`meta.bitDepth = exifBd`）、`:1643` 仅在 `<= 0` 时回填 ffprobe（`:1788 ParseBitDepthFromPixFmt`）。若某容器 exiftool 报 `BitsPerSample ≤ 8` 而 ffmpeg 按 16-bit 解（多 IFD 的 DNG/TIFF 的缩略图 IFD 是候选）⇒ 取 65283、整幅 +0.39%。实测 PNG（8/16-bit 含 alpha）与 TIFF 上该标签不输出 ⇒ 落回 16；**DNG/RAW 未覆盖**。
+
+**提交与推送**：`31498ea`（13 文件 / +1876 / −23）已推 `origin/main`（`e739a14..31498ea`），本地与远端同步（ahead/behind 0/0）。上方表内两处「未 push」**以此条为准**。
