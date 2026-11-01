@@ -1732,21 +1732,35 @@ if ($cropMissing.Count -gt 0 -or -not (Test-Path $dvCrop)) {
 
 # ── ㉛ 逐实例账本自洽（2026-10-23，账本 §44）──────────────────────────────────────
 # 账本的可复算性本身就是判据：总数 = 处置和 = 等级和 = 类和；处置/等级不许出现表外值。
-# 本轮母体固定（44 件厂商样本、9,517 条厂商组实例）⇒ 总数钉死；未审计数是进度读数，
-# 只要求 < 总数（防"把 unaudited 改名成已审计"的假绿）。
+# 母体固定（44 件厂商样本）⇒ 期望总数是 **exiftool 版本的函数**，不是常数：
+#   实测同语料三版复算 13.50⇒9,513 / 13.55⇒9,517 / 13.60⇒9,526（每版 ledger 各留一份）。
+#   上一版把 9,517 写死 ⇒ 随包 exiftool 升到 13.60 后本条恒红，而红因在**工具的枚举面**
+#   （新版本多认出 9 条厂商组标签实例，全落在 unaudited），与产品行为无关。
+# 所以先取 `-ver`、按表取期望；**表外版本判红并点名**——换工具时当场暴露，不许让"计数漂移"
+# 冒充产品回归，也不许为了变绿去改一个自己都不知道出处的数。
+# 未审计数是进度读数，只要求 < 总数（防"把 unaudited 改名成已审计"的假绿）。
 $auditPrb = "$root/tests/scripts/_audit-dng-meta-carry.py"
 if (-not (Test-Path $auditPrb)) {
     Write-Output 'SKIP ㉛ 逐实例账本（审计脚本不在位）⇒ 记未判，不记绿'
 } else {
+    $exVer  = (ExecStdoutOnly $ex '-ver').Trim()
+    $expTab = @{ '13.50' = 9513; '13.55' = 9517; '13.60' = 9526 }
+    $wantFiles = 44
+    $expTot = if ($expTab.ContainsKey($exVer)) { [int]$expTab[$exVer] } else { -1 }
     $au = ExecRC 'py' "`"$auditPrb`" --out `"$d/dng-audit`""
     $auTx = ([string]($au[1]) + "`n" + [string]($au[2]))
     $auLn = ((($auTx -split "`r?`n" | Where-Object { $_ -match 'total=|自洽' }) -join ' ⏎ '))
-    $mTot = [regex]::Match($auTx, 'total=(\d+) audited=(\d+)')
-    $tot = if ($mTot.Success) { [int]$mTot.Groups[1].Value } else { -1 }
-    $aud = if ($mTot.Success) { [int]$mTot.Groups[2].Value } else { -1 }
-    CK ($au[0] -eq 0 -and $tot -eq 9517 -and $aud -gt 0 -and $aud -lt $tot -and
-        $auTx -match "all_equal_total': True") `
-       ("㉛ 逐实例账本自洽：total=$tot（期望 9517）· audited=$aud · 三类和相等：$auLn")
+    $mTot = [regex]::Match($auTx, 'files=(\d+) total=(\d+) audited=(\d+)')
+    $nFil = if ($mTot.Success) { [int]$mTot.Groups[1].Value } else { -1 }
+    $tot = if ($mTot.Success) { [int]$mTot.Groups[2].Value } else { -1 }
+    $aud = if ($mTot.Success) { [int]$mTot.Groups[3].Value } else { -1 }
+    CK ($au[0] -eq 0 -and $nFil -eq $wantFiles -and $expTot -ge 0 -and $tot -eq $expTot -and
+        $aud -gt 0 -and $aud -lt $tot -and $auTx -match "all_equal_total': True") `
+       ("㉛ 逐实例账本自洽：exiftool $exVer · files=$nFil（期望 $wantFiles）· total=$tot（期望 $expTot）· audited=$aud · 三类和相等：$auLn")
+    if ($expTot -lt 0) {
+        Write-Output ("     ㉛ 期望表无 exiftool $exVer ⇒ 先复算一版读数并入表（已有 13.50/13.55/13.60）" +
+                      "；母体件数变了也会红，那时改的是 $wantFiles 而不是这张表")
+    }
 }
 
 # ── ㉜ 色彩标准位是"活的"：ASN/ForwardMatrix 开/关对撞（2026-10-23，账本 §44）────────

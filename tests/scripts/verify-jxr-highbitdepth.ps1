@@ -524,7 +524,9 @@ CK ($r7z.text -notmatch '源载体是 0-bit') `
 # ⚠ 还原探测环境：本节把 FFMPEGGUI_FFMPEG_DIR 指过桩件目录，不还原就会让后面的 ⑤/⑥/⑧
 #   全部在「探针永不答」下跑（本轮实测：⑧ 的三件产物因此齐红 —— 守卫自己造的假红）。
 $env:FFMPEGGUI_FFMPEG_DIR = "$root/publish/PLAN/ffmpeg-full"
-$r7back = Exec $fp ('-v error -select_streams v:0 -show_entries stream=pix_fmt -of csv=p=0 "' + "$work/hp_f16.jxr" + '"') 'stub_restore'
+# 值（pix_fmt=af16）在 **stdout**：ffprobe 的 -of csv 只走 stdout，stderr 只装 -v 级诊断 ⇒ 用只读版取数，
+#   不靠合并流（合并流会把"探测失败"的 stderr 噪声也算进断言面）。
+$r7back = ExecOut $fp ('-v error -select_streams v:0 -show_entries stream=pix_fmt -of csv=p=0 "' + "$work/hp_f16.jxr" + '"') 'stub_restore'
 CK (($r7back.code -eq 0) -and ($r7back.text -match 'af16')) `
    "⑨ 收尾自证：探测环境已还原（真 ffprobe 重新答出 af16 ⇒ ⑤/⑥/⑧ 没被本节污染）"
 
@@ -645,7 +647,8 @@ CK (($qpT -match 'await LogFfmpegJpegXrLegAsync\(item\)') -and ($qpT -match 'Que
 # ⚠ 还原本节动过的两个环境量（⑨ 的教训：不还原会让后面的节在桩件下跑，守卫自己造假红）
 $env:FFMPEGGUI_FFMPEG_DIR = "$root/publish/PLAN/ffmpeg-full"
 if ($null -eq $planDirBak) { Remove-Item 'Env:\FFMPEGGUI_PLAN_DIR' -EA 0 } else { $env:FFMPEGGUI_PLAN_DIR = $planDirBak }
-$r10back = Exec $fp ('-v error -select_streams v:0 -show_entries stream=pix_fmt -of csv=p=0 "' + "$work/hp_f16.jxr" + '"') 'leg_restore'
+# 同上：⑩ 的还原本证也只认 stdout。
+$r10back = ExecOut $fp ('-v error -select_streams v:0 -show_entries stream=pix_fmt -of csv=p=0 "' + "$work/hp_f16.jxr" + '"') 'leg_restore'
 CK (($r10back.code -eq 0) -and ($r10back.text -match 'af16')) `
    "⑩ 收尾自证：探测环境已还原（真 ffprobe 重新答出 af16 ⇒ 后面的节没被本节污染）"
 

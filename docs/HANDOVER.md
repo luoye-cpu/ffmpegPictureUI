@@ -3922,3 +3922,30 @@ CJK 棘轮另计：UI 面 901 > 885 ⇒ 按换回法归因后**抬基线至 901*
 2. **位深口径以 exiftool 为先**：`FfmpegCommandBuilder.cs:1539` 先赋（`meta.bitDepth = exifBd`）、`:1643` 仅在 `<= 0` 时回填 ffprobe（`:1788 ParseBitDepthFromPixFmt`）。若某容器 exiftool 报 `BitsPerSample ≤ 8` 而 ffmpeg 按 16-bit 解（多 IFD 的 DNG/TIFF 的缩略图 IFD 是候选）⇒ 取 65283、整幅 +0.39%。实测 PNG（8/16-bit 含 alpha）与 TIFF 上该标签不输出 ⇒ 落回 16；**DNG/RAW 未覆盖**。
 
 **提交与推送**：`31498ea`（13 文件 / +1876 / −23）已推 `origin/main`（`e739a14..31498ea`），本地与远端同步（ahead/behind 0/0）。上方表内两处「未 push」**以此条为准**。
+
+### H-20 2026-10-31 —— 两条既存红**真修**（第 56 条两站点收窄 · ㉛ 换成版本函数）
+
+H-19 把这两条判为「既存 / 工具口径，与本批无关」并给了三选一处置（㉛：`9517→9526` 或先断言 `-ver`；第 56 条：补「合并取数已论证」注释）。
+本批**不开独立批**，直接做完；两条**都不是靠放宽判据换绿**：一条把取数面收窄到唯一正确的流，一条把「无出处常数」换成「带牙的版本函数 + 母体件数断言」。
+
+| 项 | 读数 |
+|---|---|
+| 第 56 条 修前 → 修后 | `pass=5 fail=1`（站点 2：`verify-jxr-highbitdepth.ps1:527`、`:648`）⇒ **`pass=6 fail=0`**（站点 0，债账基线 0）。共现基数仍 **40** 个文件（下限 30）⇒ 正则没失效、`0` 是真 0，不是正则坏了导致的假降 |
+| 两站点的值在哪条流 | 都是 ffprobe 收尾自证（⑥ stub 还原 / ⑩ legacy 还原），断言 `code -eq 0 -and text -match 'af16'`。`-of csv` 的 `pix_fmt` **只走 stdout**，stderr 只装 `-v` 级诊断 ⇒ 合并流会把「探测失败写进 stderr 的噪声」也算进断言面（含 `af16` 的提示能假绿、探测失败原因又能被抹平），两头都不对 |
+| 修法 | `Exec $fp (...)` → **`ExecOut $fp (...)`**，保留 `'stub_restore'` / `'leg_restore'` tag 与两行下游断言**一字不动**。同文件 `:75-81` 早已定义 `ExecOut`（只读 `stdout`，文件不存在返 `""`，保留 `code`），`:82-86` 的 `PixFmt()` 就用它跑同一套参数 ⇒ 是把漏网站点并入既有正确取数方式，未造新轮子 |
+| 为什么不用注释豁免 | 第 56 条的三个豁免口里，`:91` 行内留「合并取数已论证」、`:92` 已有纯版只是**声明没问题**，只有 `:93`（改用 `ExecOut/ExecStdoutOnly/ExifVal`）是**改代码**。值在 stdout 这点可验证（`PixFmt()` 同参数在用），没有「值只在 stderr」的正当理由 ⇒ 取后者 |
+| 站点所在门禁回归 | `verify-jxr-highbitdepth.ps1` 整支复跑 **`PASS=118 FAIL=0 SKIP=1`**，`EXIT=0`；⑥/⑩ 均 PASS ⇒ `ExecOut` 取到的 `text` 仍命中 `af16`、`code` 仍 0。日志 `tests/output/_tmp/jxr_fix_stderr.log` |
+| ㉛ 修法 | `$exVer = (ExecStdoutOnly $ex '-ver').Trim()`；`$expTab = @{ '13.50' = 9513; '13.55' = 9517; '13.60' = 9526 }`；`$expTot = if ($expTab.ContainsKey($exVer)) { $expTab[$exVer] } else { -1 }`。CK 同时断言 `nFil -eq 44`、`expTot -ge 0`、`tot -eq expTot`、`aud -gt 0`、`aud -lt tot`、`all_equal_total': True`；消息头打印 `exiftool $exVer` 与两个期望值。表外版本一律红，并点名「先复算一版读数并入表（已有 13.50/13.55/13.60）」 |
+| 四条设计决定对应四个失败模式 | ① 期望值随版本走（工具升级不再顶红成"产品回归"）；② 表外判红（不许为变绿改一个自己不知道出处的数 —— 9,517 的病根就是这个）；③ **`files=44` 也进断言**（只钉总数时"语料少一件 + 工具少解若干条"会互相抵消成假绿；母体变了该改 `$wantFiles` 而非那张表，两者混谈就把"语料变量"和"工具变量"重新搅在一起）；④ 保留 `all_equal_total` 与 `aud < tot`（账本可复算 + 防"把 unaudited 改名成已审计"） |
+| 为什么不选「直接改 9526」 | 只把下次漂移推迟到下一版 exiftool，且同样留一个无出处常数 |
+| 三版 ledger 原件**本轮逐一核在位**（此前一度疑随清扫丢失） | `tests/output/_tmp/etcmp/audit1350/ledger.csv` **2,992,822 B / rows=9513**；`audit1355/ledger.csv` **2,993,745 B / rows=9517**；13.60 一版 = `tests/output/results/dng-meta/dng-audit/ledger.csv` **2,996,492 B / rows=9526**。三份列名逐字相等（`header_equal=True`，18 列）⇒ 行数差是**实例集合差**，不是列错位 ⇒ 期望表有实测出处 |
+| ㉛ 读数 | `PASS ㉛ 逐实例账本自洽：exiftool 13.60 · files=44（期望 44）· total=9526（期望 9526）· audited=2367 · 三类和相等：…dispositions_sum/levels_sum/classes_sum = 9526, all_equal_total=True`；整支 **`PASS=105 FAIL=0`**，`EXIT=0`。日志 `tests/output/_tmp/dng_fix_㉛.log` |
+| CK 条数前后不变 | 修前 `104/1`、修后 `105/0`，两侧 `pass+fail = 105` 相同 ⇒ 只是㉛从 fail 转 pass；新增的 `files=44` 断言合并在**同一个 CK** 里，不单独计数 |
+| 横切回归（`-Scripts` 5 条，**不构成基线**） | i18n **11/0**、cjk-hardcode **14/0**、test-group-coverage **37/0**、probe-mirror-parity **87/0**、第 56 条 **6/0**，`EXIT=0`；`script-list=87 条（受管基线 87）`、`runner-self-sha256=8711987BFBC52A01 lines=1665 bytes=171169` 启动收尾一致 ⇒ 只改了 `tests/scripts` 两支被判据扫描的脚本，运行器与登记未动。日志 `tests/output/_tmp/quick_probes.log` |
+| EOL/BOM（先量后写） | `verify-jxr-highbitdepth.ps1` 62,566 B / 785 LF=785 CRLF / 无 BOM ⇒ **62,847 B / 788 CRLF**（保持 CRLF 族）；`verify-dng-metadata-transport.ps1` 138,773 B / 1,777 LF / 0 CRLF ⇒ **140,017 B / 1,791 LF**（保持 LF 族）；两文件无 BOM 翻转 |
+| 文档 | 新建 `docs/review-2026-10-31/CORRECTION-2026-10-31-B-2REDS.md`（11,244 B / 163 LF / 无 BOM）；`docs/INDEX.md` 的 `review-2026-10-31` 计数 2→3 并加一句指向新条目（4,358→4,618 B / 57 LF）。**`IMPLEMENT_PLAN_2026-10-11.md` / `CHANGELOG.md` / 本档 H-19 里的 9,517 不回改**——13.55 时期的时点读数，按仓规更正只新写条目 |
+| 整轮（本轮，可宣布的基线） | `run_full_87c.log`：**87 条全绿**，末行 `===== 运行器汇总：全部通过 =====`；非零 exit **0 条**；日志里 exit 行共 **114 = 27 探针 + 87 脚本**；墙钟 **41.5 min**（08:17:55 → 08:59:25）；`script-list=87 条（受管基线 87）`、`shape-selfcheck=OK（17 针）`、`runner-self-sha256=8711987BFBC52A01 lines=1665 bytes=171169` 启动与收尾一致 |
+| 产物指纹未变（本轮只改测试侧） | `FfmpegGui.dll=97E2C47D2B42B8E9  FfmpegGui.exe=D32D5A1D3BB8A686  ServiceProbe.exe=97179BAF0B6BD8CF  UiTestHost.exe=F0BC7FC29B12F292  GainMapTestHost.exe=D2F3AE6B58EC70B5`，与 H-19 那一轮（`run_full_87b.log`）**逐字相同** ⇒ 85/87 → 87/87 的这两条不是产品改动换来的，是判据侧真修。（注：收尾后为刷新 STALE 新鲜度又跑了一次 `dotnet build -c Release`（0 警告 0 错误），盘上现为 `dll=1B9C4716A4D94F97` / `exe=0DDF814292FCBD02`；构建非比特可复现，故 `artifact-sha16` 只绑定它那一轮，别拿它核下一轮） |
+| 对照 H-19 | H-19 的 2 红两处都是「记未判/工具口径」并建议下一批；本批真修后两条均在整轮内自己转绿（第 56 条 `pass=6 fail=0`、㉛ `105/0` 都出现在这一轮日志里，不是靠子集豁免） |
+| 未动的东西 | `src/` **零改动**（指纹为证）；`_run-step3-gates.ps1` 未动（`runner-self-sha256` 同值）；门禁条数仍 87（无增删 ⇒ 四处登记无需改动）；第 87 条 `27/0/0/0`、第 86 条 `10/0/1`（SKIP 仍为 ①c `settings.json`）、`test-group-coverage` `37/0`、`mirror-parity` `87/0` 均与上一轮同值 |
+| 推送 | **未 push**，等维护者点头 |
