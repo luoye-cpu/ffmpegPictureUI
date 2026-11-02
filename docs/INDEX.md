@@ -31,6 +31,7 @@
 | `HANDOVER_2026-10-10.md` | 0 | 旧交接口（其后已有 `HANDOVER-BETA9-STOP2-2026-10-26.md` 与 `review-2026-10-31/HANDOVER-2026-10-31.md`），现行账本的前身 ⇒ 留顶层不进归档 |
 | `FIX_PLAN_2026-10-11.md` | 1 | 修复计划（`tests/projects/GainMapTestHost/Program.cs:1763` 注释按名指它；2026-11-02 补登记——此前漏册） |
 | `HANDOVER-BETA9-STOP-2026-10-26.md` / `HANDOVER-BETA9-STOP2-2026-10-26.md` | 0 / 0 | beta9 中止快照（时间点账本，STOP 的续接指针指向 STOP2，互为指针）；2026-11-02 补登记 |
+| `HANDOVER-2026-11-02.md` | 0 | 单会话时间点交接快照：全仓审查/MD 校订批次（`2a7d354`/`bbfde16` 已推送）、HEIC grid 增益图修复批次（`41375a2`，含 §1d 判据与变异 I 登记）、多厂家语料扩展停机点与下一步（语料库在仓外 `C:\PLAN\gainmap-corpora\`）；累积账本仍看 `HANDOVER.md` |
 
 ## 2. 分批审查（`review-YYYY-MM-DD/`，被门禁按名点名，位置固定）
 
