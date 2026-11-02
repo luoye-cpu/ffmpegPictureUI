@@ -683,7 +683,12 @@ function Get-SemanticMatrices {
                 #   同一文件的 `ApplyIccSemantics` 区新增 `primariesApproximated` 字段与三处赋值（净 +8 行，
                 #   `git diff --numstat` 实读 8 增 0 删）⇒ 其**下方**行号整体下移；字面量与语义一字未动。
                 #   抬号前 `grep -n -F` 复核：该字面量全文件**只命中 1 次**，实况行 = 2408。
-                'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:2408|bool exiftoolFormats = fmt is "jpg" or "jpeg" or "png" or "tiff" or "webp";'
+#   （⇒ 下一条）
+# ⚠ pin 演进（2026-11-01，W3a 白点内核批）：2408 → **2422**（+14）。成因 = 本轮在
+#   `RawColorPipeline.ResolveSrcCodeMax` 区间插入「载体细分 + 顶码回拷」的实测分支（净 +14 行，
+#   `git diff --numstat` 实读见同批 src 改动面）⇒ 其**下方**行号整体下移；字面量与语义一字未动。
+#   抬号前 `grep -n -F` 复核：该字面量全文件**只命中 1 次**，实况行 = 2422。
+                'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:2422|bool exiftoolFormats = fmt is "jpg" or "jpeg" or "png" or "tiff" or "webp";'
             )
         },
         @{

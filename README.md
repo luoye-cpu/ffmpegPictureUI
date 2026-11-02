@@ -175,8 +175,8 @@ ffmpegPictureUI/
 │   ├── LocExtension.cs   XAML 本地化标记扩展
 │   ├── MainWindow.xaml   主界面
 │   ├── MainWindow.xaml.cs UI 逻辑
-│   ├── FormatFilterWindow.axaml  格式筛选对话框
-│   ├── PresetManagerWindow.axaml 预设管理窗口
+│   ├── FormatFilterWindow.xaml  格式筛选对话框
+│   ├── PresetManagerWindow.xaml 预设管理窗口
 │   ├── ProgressWindow.xaml 进度窗口
 ├── tools/                验证工具
 ├── tests/                测试（output/ 被 git 忽略，见 docs/TESTING.md）

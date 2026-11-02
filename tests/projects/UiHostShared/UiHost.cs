@@ -66,6 +66,17 @@ namespace UiHostShared
             System.IO.Path.Combine(RepoRoot, "tests", "output", "sources");
 
         /// <summary>
+        /// 自检负控开关（<c>UIHOST_NEGCTL=1</c> 或 <c>--negctl</c>；与拆分前的 <c>UiTestHost</c> 同形）。
+        /// <para><b>为什么拆分件也必须有它</b>：4 条 UI 门禁的 <c>-SelfCheck</c> 判据是
+        /// 「注入一条必然为假的断言 ⇒ 汇总行 FAIL&gt;=1 且退出码非 0」。单体宿主退役后，
+        /// 那些门禁的执行体换成本工程的 exe —— 若这里不认这个开关，<c>-SelfCheck</c> 会
+        /// <b>必然转红</b>（负控跑不出 FAIL ⇒ 判据不成立），而唯一「省事」的解是删掉自检，
+        /// 那等于丢掉「判读链有牙」的证据。故本开关是执行面迁移的<b>前置依赖</b>。</para>
+        /// <para>正常运行时（未设该变量）永不触发，不影响任何组。</para>
+        /// </summary>
+        public static bool NegCtl { get; private set; }
+
+        /// <summary>
         /// 失败明细（供宿主尾部逐条 <c>FAILED -&gt; …</c> 打印）。
         /// ⚠ 这是**可观测性**而不是计数：计数只有 <see cref="Tests.Shared.Harness"/> 一份。
         /// </summary>
@@ -158,6 +169,9 @@ namespace UiHostShared
             var r = new UiArgs { Kind = UiArgsKind.All, Mode = "", SrcDirOverride = "", Unknown = "" };
             foreach (var a in args)
             {
+                // 自检负控开关（见 NegCtl）：必须**先于**「未知参数」分支吃掉，否则 exit 2。
+                if (string.Equals(a, "--negctl", StringComparison.OrdinalIgnoreCase)) { NegCtl = true; continue; }
+
                 if (string.Equals(a, "--list", StringComparison.OrdinalIgnoreCase) ||
                     string.Equals(a, "-l", StringComparison.OrdinalIgnoreCase))
                 { r.Kind = UiArgsKind.List; return r; }
@@ -533,6 +547,27 @@ namespace UiHostShared
                 FailMsgs.Add($"{name} :: {detail}");
                 Console.WriteLine($"[FAIL] {name} :: {detail}");
             }
+        }
+
+        /// <summary>
+        /// 自检负控：<b>仅</b>当 <c>UIHOST_NEGCTL=1</c> 或命令行带 <c>--negctl</c> 时执行。
+        /// <para>目的与拆分前逐字同构：证明判定链「有牙」—— 一条必然为假的断言必须被计入
+        /// FAIL、必须出现在汇总行里、并让退出码非 0（<see cref="Finish"/> 返回 FAIL 条数）。</para>
+        /// <para>调用点：各 <c>ui-*/Program.cs</c> 在**所有组跑完之后**调一次（与单体
+        /// <c>Program.cs:146</c> 的位置一致）；这样它既不会污染组内状态，也不会被组内的
+        /// 计数复位抹掉。</para>
+        /// </summary>
+        public static void RunNegativeControlIfRequested()
+        {
+            if (!NegCtl && Environment.GetEnvironmentVariable("UIHOST_NEGCTL") == "1") NegCtl = true;
+            if (!NegCtl) return;
+
+            Console.WriteLine("\n########## NC: 宿主自检负控 (UIHOST_NEGCTL=1) ##########");
+            int before = Tests.Shared.Harness.Fail;
+            Check("NC1 负控注入(必然为假)", "__UIHOST_NEGCTL_MUST_NOT_MATCH__".Contains("PASS"),
+                  "injected failure: 汇总行与退出码必须因它转红");
+            Check("NC2 负控已计入FAIL计数", Tests.Shared.Harness.Fail == before + 1,
+                  $"before={before} after={Tests.Shared.Harness.Fail}");
         }
 
         /// <summary>

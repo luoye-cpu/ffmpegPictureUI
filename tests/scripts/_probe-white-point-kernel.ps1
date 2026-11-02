@@ -645,6 +645,44 @@ if ($a5) {
   }
 }
 
+
+# B4. 载体细分（敞口①收口，2026-11-01）：gray8 png 与 8-bit jpeg（yuvj444p,pc）的扩位顶码
+#     是 **65280**，不是 RGB 族的 65283 —— 16-bit 交付的白因此必须同样顶到 65535（修前会停在
+#     65532）。夹具由随包 ffmpeg 从 w8_srgb.png 转（-pix_fmt gray / -q:v 1），顶码前提在此实测钉住；
+#     载体判据在 ResolveSrcCodeMax（gray*/yuvj* ⇒ SrcCodeMaxGray8，其余 ≤8-bit 维持 RGB 尺不外推）。
+Write-Output '=== B4. 载体细分 x 8-bit 源走 16-bit 交付：gray/yuvj 载体顶码 65280 也必须按源满幅归一 ⇒ 65535 ==='
+$null = Exec $ff ('-y -hide_banner -loglevel error -i "' + "$work\w8_srgb.png" + '" -pix_fmt gray "' + "$work\w8_gray.png" + '"') 'mkg' $false
+$null = Exec $ff ('-y -hide_banner -loglevel error -i "' + "$work\w8_srgb.png" + '" -q:v 1 "' + "$work\w8_yuvj.jpg" + '"') 'mkj' $false
+$mg = Mech 'w8_gray.png'; Write-Output $mg.line
+CK ($mg.max -eq '65280') ("载体前提 @gray8：white 255 经 ffmpeg 解到 rgb48le 的顶码必须实测 65280（≠RGB 族 65283）；实测 max=" + $mg.max)
+$mj = Mech 'w8_yuvj.jpg'; Write-Output $mj.line
+CK ($mj.max -eq '65280') ("载体前提 @yuvj jpeg：同上（yuvj444p 全范围）；实测 max=" + $mj.max)
+$b4g = Run-Arm 'K8gray_to_png16' 'w8_gray.png' '--color-engine engine --color-space "Display P3" --bit-depth 16' 'H1'
+if ($b4g) {
+  Write-Output $b4g.line
+  $t = Measure-Art $b4g.art 'b4g'; Write-Output $t.text
+  if ($b4g.engaged) { CK $true "内核确已介入（gray8 源 -> PNG16 交付）" }
+  else { CK $false ("内核介入自证：臂 K8gray_to_png16 未走 H1（决策行=" + $b4g.dec + "）⇒ 无效控制，契约行不记 PASS") }
+  if ($b4g.valid) {
+    CK ((Tok $t.text 'depth') -eq '16') ("出口容器位深 = 16（gray8 源 + --bit-depth 16 真落地）；实测 depth=" + (Tok $t.text 'depth'))
+    CK ((Tok $t.text 'max') -eq '65535') ("载体细分 @gray8->16-bit 交付：gray 载体顶码 65280 必须按源满幅归一交付 65535；实测 max=" +
+        (Tok $t.text 'max') + " blk_min=" + (Tok $t.text 'blk_min') +
+        " —— 停在 65532 = 载体没细分（RGB 尺 65283 量到 65280 的数据 ⇒ 0.99995）")
+  }
+}
+$b4j = Run-Arm 'K8jpg_to_png16' 'w8_yuvj.jpg' '--color-engine engine --color-space "Display P3" --bit-depth 16' 'H1'
+if ($b4j) {
+  Write-Output $b4j.line
+  $t = Measure-Art $b4j.art 'b4j'; Write-Output $t.text
+  if ($b4j.engaged) { CK $true "内核确已介入（yuvj jpeg 源 -> PNG16 交付）" }
+  else { CK $false ("内核介入自证：臂 K8jpg_to_png16 未走 H1（决策行=" + $b4j.dec + "）⇒ 无效控制，契约行不记 PASS") }
+  if ($b4j.valid) {
+    CK ((Tok $t.text 'depth') -eq '16') ("出口容器位深 = 16（jpeg 源 + --bit-depth 16 真落地）；实测 depth=" + (Tok $t.text 'depth'))
+    CK ((Tok $t.text 'max') -eq '65535') ("载体细分 @yuvj->16-bit 交付：yuvj 载体顶码 65280 必须按源满幅归一交付 65535；实测 max=" +
+        (Tok $t.text 'max') + " blk_min=" + (Tok $t.text 'blk_min') + "（jpeg 有损 ⇒ 以 max/blk 为准，不做逐样本等）")
+  }
+}
+
 Write-Output '=== C. 正控：无目标色彩空间 => 决策：None（未进内核）。这三条必须绿，红了是仪表不是产品 ==='
 $c1 = Run-Arm 'CTRL8_passthrough' 'w8_p3.png' '' 'none'
 if ($c1) {

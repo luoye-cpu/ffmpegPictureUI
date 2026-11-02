@@ -1139,17 +1139,32 @@ public static class RawColorPipeline
     }
 
     /// <summary>
-    /// 解码侧满量程：8-bit（含以下）源经 ffmpeg <c>format=rgb48le</c> 扩位后顶码 = 65283
-    /// （<c>ColorKernels.TransformSpec.SrcCodeMax8</c>，实测值），其余按 65535。
-    /// <para>判据只用**源位深**：本管道不改变"输入采样位数"，扩位是 ffmpeg 的定点映射。</para>
-    /// <para>⚠ 10/12-bit 源经 rgb48le 的扩位顶码**未实测** ⇒ 一律按 65535（已知敞口，见 HANDOVER）。</para>
+    /// 解码侧满量程：≤8-bit 源经 ffmpeg <c>format=rgb48le</c> 扩位后的顶码按**位深 + 载体**两维取：
+    /// gray*/yuvj* 载体 = <c>ColorKernels.TransformSpec.SrcCodeMaxGray8</c>（65280，敞口① 2026-11-01 实测收口），余 ≤8-bit = 65283，其余按 65535。
+    /// <para>判据用**源位深 + pix_fmt 载体**：本管道不改变"输入采样位数"，扩位是 ffmpeg 的定点映射。</para>
+    /// <para>⚠ 10/12-bit 源经 rgb48le 的扩位顶码**未实测** ⇒ 一律按 65535（已知敞口，见 HANDOVER）；
+    /// yuv420p（受限范围）/ pal8 等其余 8-bit 载体同样未实测 ⇒ 不外推，维持 RGB 族尺。</para>
     /// </summary>
     private static double ResolveSrcCodeMax(string inputPath)
     {
         int bd;
-        try { bd = FfmpegCommandBuilder.ProbeInputBitDepthForEngine(inputPath); }
+        string pf = "";
+        try
+        {
+            bd = FfmpegCommandBuilder.ProbeInputBitDepthForEngine(inputPath);
+            pf = FfmpegCommandBuilder.ProbeInputPixFmtForEngine(inputPath) ?? "";
+        }
         catch { bd = 0; }
-        return bd > 0 && bd <= 8 ? TransformSpec.SrcCodeMax8 : 65535.0;
+        if (bd > 0 && bd <= 8)
+        {
+            // 载体细分（2026-11-01，敞口①收口）：gray*/yuvj* 载体的扩位顶码是 65280（0xFF00），
+            // 不是 RGB 族的 65283（0xFF03）——白夹具逐字节实测（第 87 条 B4 臂钉住）；两族 16-bit
+            // 交付差 3 码。探测失败 ⇒ pf="" ⇒ 落 RGB 尺（= 修前行为，不猜）。
+            bool grayLike = pf.StartsWith("gray", StringComparison.OrdinalIgnoreCase)
+                         || pf.StartsWith("yuvj", StringComparison.OrdinalIgnoreCase);
+            return grayLike ? TransformSpec.SrcCodeMaxGray8 : TransformSpec.SrcCodeMax8;
+        }
+        return 65535.0;
     }
 
     /// <summary>整帧模式：读入 → 行带并行变换 → 写出。</summary>

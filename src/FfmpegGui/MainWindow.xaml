@@ -135,7 +135,14 @@
                 <Separator/>
                 <MenuItem x:Name="CacheDirItem"  Header="{ext:Loc settings.cache.set}" Tag="cachedir" Click="CacheDirMenu_Click"/>
                 <MenuItem x:Name="CacheShowItem" Header="{ext:Loc settings.cache.open}" Click="OpenCacheDirMenu_Click"/>
+                <Separator/>
+                <!-- 关窗行为 + 显式退出（2026-10-31）：托盘建不起来或被用户关掉时，
+                     常驻图标不在 ⇒ 必须留一个看得见的出口，否则只能用任务管理器。 -->
+                <MenuItem x:Name="CloseToTrayItem" Tag="closetotray" Header="{ext:Loc settings.tray.close}"
+                          ToggleType="CheckBox" Click="CloseToTrayMenu_Click"/>
+                <MenuItem x:Name="AppExitItem" Header="{ext:Loc settings.exit}" Click="AppExitMenu_Click"/>
               </MenuFlyout>
+
             </Button.Flyout>
           </Button>
 

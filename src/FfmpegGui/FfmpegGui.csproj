@@ -99,7 +99,18 @@
   </ItemGroup>
 
   <ItemGroup>
-    <AvaloniaResource Include="**/*.xaml" />
+    <!-- 视图 XAML 一律 .xaml（2026-10-31 统一：原 4 份 .axaml 已 git mv 改名）。
+         ⚠ Avalonia 12 的隐式 glob **只**收 `**/*.axaml` 与 `**/*.paml`
+         （`avalonia/12.1.4/build/AvaloniaBuildTasks.props:8-9`）⇒ `.xaml` 默认**只当资源、不做 XAML 编译**，
+         于是 x:Name 不生成字段、code-behind 报 CS0103（改名前实测 18 个 CS0103）。故 .xaml 视图必须显式
+         登记为 AvaloniaXaml。
+         两个例外（都是手写 loader：.cs 里已声明同名字段，参与编译会与生成字段撞名 CS0102）：
+         MainWindow.xaml（262 个 x:Name）、ProgressWindow.xaml（11 个）。它的 InitializeComponent 是**手写**的 `AvaloniaXamlLoader.Load(this)`
+         （MainWindow.xaml.cs:7379），262 个控件由 `FindControl<T>("名")` 按名取（:362 起），且 .cs 里已声明
+         同名字段 ⇒ 参与 XAML 编译会与手写成员撞名。故 Exclude 掉，仍走纯资源。 -->
+    <AvaloniaXaml Include="**/*.xaml" Exclude="MainWindow.xaml;ProgressWindow.xaml" />
+    <!-- 编进 AvaloniaXaml 的由 targets 自动并入 AvaloniaResource；此处只收剩下的（MainWindow）。 -->
+    <AvaloniaResource Include="**/*.xaml" Exclude="@(AvaloniaXaml)" />
     <!-- ⚠ 托盘图标此前**没有**被记进 AvaloniaResource ⇒ `avares://FfmpegGui/Resources/icon.ico` 不存在
          ⇒ `App.LoadTrayIcon()` 里 `AssetLoader.Exists` 恒 false ⇒ 托盘只有菜单没有图标（静默回退）。
          ⚠ 现在收录的是 **PNG** 而不是 ico：Pillow 写出的 ICO 每条目都是 PNG 载荷（biSize=0x89PNG），

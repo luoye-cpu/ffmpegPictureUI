@@ -92,6 +92,13 @@ $env:FFMPEGGUI_PLAN_DIR = $planDir
 $env:FFMPEGGUI_ORACLE_PLAN_DIR = $planDir
 $env:FFMPEGGUI_ORACLE_REPO_ROOT = $repoRoot
 
+# ── 接线前奏（2026-11-01，第 88 条批）：TMP 钉扎 ────────────────────────────
+# 被测 FfmpegGui.exe 的解码中间件按 Path.GetTempPath() 落点；本机沙箱拦真 %TEMP% 写 ⇒
+# L1-format-06 等臂 exit -13 无产物（2026-11-01 实测）。钉进产物区 = AGENTS §4 标准处置。
+$scratch = Join-Path $repoRoot 'tests/output/_tmp/scratchroot'
+New-Item -ItemType Directory -Force -Path $scratch | Out-Null
+$env:TMP = $scratch; $env:TEMP = $scratch; $env:TMPDIR = $scratch
+
 $pass = 0; $fail = 0
 $casePass = 0; $caseFail = 0
 function CK {

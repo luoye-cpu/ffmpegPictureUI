@@ -22,10 +22,22 @@ $ErrorActionPreference = 'Continue'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 # ⚠ 版本**必须显式给**，不给默认值：任何写死的默认版本都会在下一个发布日变成"拿 beta(n) 的读数
 #   宣布 beta(n+1) 已验"。缺 ⇒ exit 2。
+# 2026-11-01 接线批改：PKG_VER 未设时**从盘上归档名推**——这不是给默认版本：推的是归档自报的
+#   版本，ProductVersion 对撞仍是硬判据；多版本并存 = 歧义 ⇒ 仍拒绝（仓规「出包只留最新一档」）。
 if (-not $env:PKG_VER) {
-  'FAIL  未设 $env:PKG_VER ⇒ 拒绝跑。本脚本**不给默认版本**（给了就是一部假绿机器）'
-  '      用法示例：$env:PKG_VER="1.6.0-beta4"; pwsh -NoProfile -File tests/scripts/verify-release-package.ps1'
-  exit 2
+  $archs = @(Get-ChildItem (Join-Path $root 'publish') -Filter 'FFmpegPictureUI-v*-x64*.7z' -ErrorAction SilentlyContinue)
+  if ($archs.Count -eq 0) {
+    'FAIL  未设 $env:PKG_VER 且 publish/ 无 FFmpegPictureUI-v*-x64*.7z ⇒ 无从验收（fail-closed，不静默跳过）'
+    '      用法示例：$env:PKG_VER="1.6.0-beta4"; pwsh -NoProfile -File tests/scripts/verify-release-package.ps1'
+    exit 2
+  }
+  $vers = @($archs | ForEach-Object { if ($_.Name -match 'FFmpegPictureUI-v(.+)-x64') { $Matches[1] } } | Sort-Object -Unique)
+  if ($vers.Count -ne 1) {
+    "FAIL  publish/ 下有 $($vers.Count) 个版本（$($vers -join ', ')）⇒ 歧义，拒绝跑。先按仓规清到只留最新一档"
+    exit 2
+  }
+  $env:PKG_VER = $vers[0]
+  "PKG_VER 未设 ⇒ 从盘上归档名推得 v$($vers[0])（$($archs.Count) 个归档同版本）"
 }
 $ver = $env:PKG_VER
 # 与 `pack.ps1` 同一把尺：先问 PATH，再退到本机默认安装位置。
@@ -66,6 +78,12 @@ foreach ($m in @(@{ tag='app'; dir="FFmpegPictureUI-v$ver-x64"; need=$false },
   foreach ($pat in $need) { if (-not (@($list | Where-Object { $_ -match $pat }).Count)) { $abs += $pat } }
   CK "$($m.tag) 归档必需成员齐备" ($abs.Count -eq 0) $(if ($abs.Count) { '缺: ' + ($abs -join ' ') } else { "$($need.Count) 项全在" })
   # 目录 vs 归档：数量对账（归档完整但目录残缺 = 上次事故的实况）
+  # 2026-11-01 接线批：包内 exe 被跑过（gui-starts 等）会在解包目录落 settings.json / debug.log
+  #   （可再生的产品自写件，非包成员）—— 对账前清掉，否则目录数永远对不上（实测 584 vs 582）。
+  foreach ($_stray in @('debug.log','settings.json')) {
+    $_sp = Join-Path $bdir $_stray
+    if (Test-Path -LiteralPath $_sp) { Remove-Item -LiteralPath $_sp -Force; "  清掉解包目录再生残留 $($m.tag)/$_stray" }
+  }
   if (Test-Path $bdir) {
     $dirFiles = @(Get-ChildItem $bdir -Recurse -File).Count
     CK "$($m.tag) 磁盘目录与归档同数" ($dirFiles -eq $arcFiles) "目录 $dirFiles vs 归档 $arcFiles"

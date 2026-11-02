@@ -32,6 +32,13 @@ if ($Layer -notin @('quick', 'full')) { Write-Output "LAYER-ARG-ERROR 只接受 
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 Set-Location $root
 . (Join-Path $PSScriptRoot '_lib-oracle.ps1')
+
+# ── 接线前奏（2026-11-01，第 88 条批）：TMP 钉扎 ────────────────────────────
+# 引擎臂的解码中间件按 Path.GetTempPath() 落点；本机沙箱拦真 %TEMP% 写 ⇒ 引擎臂批量
+# rc=1 无产物（2026-11-01 实测：LEGACY 48 格里 44 违规全是这个根因）。AGENTS §4 标准处置。
+$scratch = Join-Path $root 'tests/output/_tmp/scratchroot'
+New-Item -ItemType Directory -Force -Path $scratch | Out-Null
+$env:TMP = $scratch; $env:TEMP = $scratch; $env:TMPDIR = $scratch
 Set-OracleConfig -RepoRoot $root -TimeoutSec 180 | Out-Null
 
 $avail = Test-OracleAvailable
@@ -221,6 +228,14 @@ function Get-TargetPrimariesRx([string]$Tgt) {
   if ($Tgt -eq 'sRGB')       { return '(?i)bt709|BT\.?709|sRGB' }
   if ($Tgt -eq 'Display P3') { return '(?i)smpte432|EG 432|P3' }
   if ($Tgt -eq 'BT.2020')    { return '(?i)bt2020|BT\.?2020|BT\.?2100|Rec\.?\s?2100' }
+  return ''
+}
+# transfer 词形（2026-11-01 新增）：jxlinfo 新输出打「Transfer function: sRGB / 709」。
+#   旧字面量表（$legacyExpect.trc = 'sRGB transfer' 等）与它对不上 ⇒ jxl 标签对照分家漂移的另一半。
+function Get-TargetTransferRx([string]$Tgt) {
+  if ($Tgt -eq 'sRGB')       { return '(?i)iec61966-2-1|sRGB' }
+  if ($Tgt -eq 'Display P3') { return '(?i)iec61966-2-1|sRGB' }
+  if ($Tgt -eq 'BT.2020')    { return '(?i)bt709|709' }
   return ''
 }
 $fmts = if ($Layer -eq 'quick') { @('png', 'jxl') } else { @('png', 'webp', 'tiff', 'jxl', 'avif') }
@@ -793,7 +808,10 @@ RunGate 'LEGACY' {
           if ($f -eq 'jxl') {
             $cm = Get-ColorMetadata -Path $m.Prod
             if (-not $cm.Ok) { $lgBad.Add("$tag（$eng）：jxl 标签回读失败 ⇒ 不判绿（$($cm.Error)）"); continue }
-            $okL = ("$($cm.Primaries)" -match [regex]::Escape($exp.prim)) -and ("$($cm.Transfer)" -match [regex]::Escape($exp.trc))
+            # 2026-11-01：改用与 §3 LBL 共享的词形表（本文件 :223 的口径——「词形表一分家就各自漂移」）。
+            #   旧写法拿 $legacyExpect 的旧字面量（'sRGB primaries' 等）做 Escape 精确匹配，jxlinfo 新
+            #   输出的词形（'sRGB'/'P3'/'Rec.2100'/'709'）一个都撞不上 ⇒ 6 格假红（re2 轮实测）。
+            $okL = ("$($cm.Primaries)" -match (Get-TargetPrimariesRx $tn)) -and ("$($cm.Transfer)" -match (Get-TargetTransferRx $tn))
             if (-not $okL) { $lgBad.Add("$tag（$eng）：标签 prim='$($cm.Primaries)' trc='$($cm.Transfer)' ≠ 目标 $tn（'$($exp.prim)'/'$($exp.trc)'）") }
           }
           elseif ($f -eq 'jxr') {
@@ -862,7 +880,17 @@ RunGate 'LEGACY' {
         $dtTrc  = if ($tn -eq 'BT.2020') { 'bt709' } else { 'iec61966-2-1' }
         $refT = Join-Path $d ("lgref_{0}_{1}.png" -f $sk, ($tn -replace '[^A-Za-z0-9]', ''))
         if (-not (Test-Path -LiteralPath $refT -PathType Leaf)) {
-          ExecCli $ff ("-hide_banner -loglevel error -y -i `"$($srcs[$sk])`" -vf `"zscale=pin=${srcTok}:tin=${srcTrc}:min=gbr:p=$($targets[$tn]):t=${dtTrc}:m=gbr,format=rgb48le`" -frames:v 1 `"$refT`"") | Out-Null
+          # 2026-11-01：目标 TRC=bt709 的参照**不得**用 zimg 的 `t=bt709`——那是纯 γ(1/2.4)，而产品
+          #   （legacy 链路）按 BT.709-6 分段定义式编码（:874-880 的口径黑名单同族）。实测对撞
+          #   （colormx_d536047e，p38→BT.2020 png legacy 产物）：vs t=bt709 参照 23.36 dB（<26 ⇒ 假红），
+          #   vs t=linear+定义式 OETF 参照 **50.92 dB**（完美吻合）⇒ bt709 档换定义式尺，其余档不动。
+          #   常数逐字取自 _lib-oracle.ps1 ProbeXcheck 的 DefOetf（F-9 后续的那份）。
+          if ($dtTrc -eq 'bt709') {
+            $defOetf = "floor(maxval*if(lt(val/maxval\,0.0180539685108078)\,4.5*val/maxval\,1.0992968268094429*pow(val/maxval\,0.45)-0.0992968268094429)+0.5)"
+            ExecCli $ff ("-hide_banner -loglevel error -y -i `"$($srcs[$sk])`" -vf `"zscale=pin=${srcTok}:tin=${srcTrc}:min=gbr:p=$($targets[$tn]):t=linear:m=gbr,format=rgb48le,lutrgb=r='$defOetf':g='$defOetf':b='$defOetf'`" -frames:v 1 `"$refT`"") | Out-Null
+          } else {
+            ExecCli $ff ("-hide_banner -loglevel error -y -i `"$($srcs[$sk])`" -vf `"zscale=pin=${srcTok}:tin=${srcTrc}:min=gbr:p=$($targets[$tn]):t=${dtTrc}:m=gbr,format=rgb48le`" -frames:v 1 `"$refT`"") | Out-Null
+          }
         }
         # ⚠ 这条参照**只在"两侧曲线都不是 bt709"时对两路同时适用**：`zscale t=bt709` 实为纯 γ(1/2.4)，
         #   而引擎按 BT.709-6 定义式（分段、α=1.099/β=0.055）编码 —— 这是本仓自己的**口径黑名单**
@@ -879,6 +907,20 @@ RunGate 'LEGACY' {
           if ($curveBlocked -and $eng -eq 'engine') { $script:lgCurveSkip++; continue }
           $dp = LgProdPng $m.Prod ("{0}_{1}_{2}_{3}" -f $sk, $f, ($tn -replace '[^A-Za-z0-9]', ''), $eng)
           if (-not $dp) { $lgBad.Add("$($sk)_$($tn)_$f（$eng）：产物解码件取不到 ⇒ 像素账未跑（不许当过）"); continue }
+          if ($sameGamut) {
+            # 2026-11-01：恒等格（源域==目标域）的像素真值 = 源本身。对这类格拿「转到目标」的参照
+            #   （无论纯 γ 还是定义式）量的都是**夹具编码口径 vs 参照口径**的差（纯 γ 夹具 vs 定义式
+            #   参照 = 23.3 dB，双向对撞同值）—— 不是产品的转换质量 ⇒ (B) 对它们没有判别力。
+            #   改成按容器钉「恒等请求不得乱动像素」，阈值 = 各容器恒等观测最低值 - ≥5 dB 余量：
+            #     png  legacy=inf（逐字节）/ engine ≥40 ⇒ 40；tiff legacy=31.2（出口 8bit 有序抖动，
+            #     播报在案）/ jxl legacy=35.0~37.6（cjxl -d 3.8 有损，:858-860 自记恒等 39.87）/
+            #     jxr ≥40 ⇒ 其余容器 26（都远高于「恒等被真转换」的 ~20 dB 特征）。
+            $identBar = if ($f -eq 'png') { 40.0 } else { 26.0 }
+            $pS = LgPsnr $srcs[$sk] $dp
+            if (-not $pS.Ok) { $lgBad.Add("$($sk)_$($tn)_$f（$eng）：恒等格 PSNR 取数失败 ⇒ 不判绿"); continue }
+            if ([double]$pS.Psnr -lt $identBar) { $lgBad.Add("$($sk)_$($tn)_$f（$eng）：恒等格离源只有 $([math]::Round($pS.Psnr,2)) dB（<$identBar ⇒ 恒等请求被乱动了像素）") }
+            continue
+          }
           if (-not (Test-Path -LiteralPath $refT -PathType Leaf)) { $lgBad.Add("$($sk)_$($tn)_$f（$eng）：目标参照未生成 ⇒ 该格无法判"); continue }
           $pT = LgPsnr $refT $dp           # 与"转到目标空间"的参照比
           $pA = LgPsnr $srcs[$sk] $dp      # 与"源原样存值"比（对照件：目标被吃掉时这一头会更高）

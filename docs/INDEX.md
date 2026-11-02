@@ -19,6 +19,7 @@
 | `FIX_PLAN_2026-10-14.md` | 2 | 修复计划（现行） |
 | `GAINMAP_ROUTES_AND_PATCH_PLAN.md` | 1 | 增益图路由与修补方案（现行） |
 | `MANUAL_VERIFICATION.md` | 1 | 手工验证清单 |
+| `ACR_FULL_ROUTE_PLAN.md` | 0（新，2026-11-01） | DNG→ACR 全量路线的**可行性设计**（链 A/链 B、R1~R3 风险、M1~M5 待测格）；维护者裁定「只做设计+探针」⇒ 不含任何产品侧路由改动。位置可动，但被 `CORRECTION-2026-10-31-C-FULLDRIVE.md` 与 AGENTS §7 指它 |
 | `RAW2TIF_QA_DEFECT_2026-10-03.md` | 1（**前缀名**） | `QueueProcessor.cs:808` 以 `RAW2TIF_QA_DEFECT §7.5` 指它；按全名数引用会漏，故留顶层 |
 | `ENCODING_OPTIONS_AUDIT_2026-09-26.md` | 1 | 高级编码选项审查 |
 | `DNG_SONY_IDC.md` / `DNG_BUILD.md` | 1 / 1 | DNG 厂商制式与构建 |
@@ -33,13 +34,15 @@
 
 `review-2026-10-03`（8）· `review-2026-10-04`（18）· `review-2026-10-10`（19，含 `lanes/` `verify/`）·
 `review-2026-10-11`（4）· `review-2026-10-16`（1，`test-value-audit.md` 被 `verify-probe-mirror-parity` 引用）·
-`review-2026-10-31`（3，`AUDIT-独立性审查-2026-10-31.md`；独立性安全/正确性审查判词总账，被测件 `f89b247b60dcf1ef` == HEAD。
+`review-2026-10-31`（5，`AUDIT-独立性审查-2026-10-31.md`；独立性安全/正确性审查判词总账，被测件 `f89b247b60dcf1ef` == HEAD。
 **尚无任何门禁按名点名它** ⇒ 位置未被钉，但 §8.2 记了与总账/各 lane 的 7 处不一致，改名前先读那一段；
 一手证据全在**仓外** `..\ffmpegPictureUI-audit\`（`evidence/` + `lanes/*/FINDINGS.md`），本仓不随附产物。
 第二份是**追加更正条目** `CORRECTION-2026-10-31-S8.md`（S8 修复落地 / 第 87 条入列 / §7.3 表外三条的兑现与仍未兑现项，含 65283 vs 65269 的口径差）；
 第三份 `CORRECTION-2026-10-31-B-2REDS.md`（两条既存红真修：第 56 条两处合并取数站点收窄为只读 stdout、㉛ 期望总数改为
 `exiftool -ver` 的版本函数；原档与前一份里「建议独立一批」的处置由它收口）；
-原档**一字未改**——带日期的账本不回改，要更正就新写一条，这条规矩对它自己同样适用）
+原档**一字未改**——带日期的账本不回改，要更正就新写一条，这条规矩对它自己同样适用）；
+第四份 `CORRECTION-2026-10-31-C-FULLDRIVE.md`（**全量推进未了结项**：清单 87→94、⑪-d WARN 清零、宿主 TEMP 站点第 94 条、白点内核 `pixFmt` 回拷与 10/12-bit 读数、`65283` 判尺对撞、`.xaml` 不生成 `x:Name` 的机制、UI 执行面 5 条切拆分件与条数锁精确化、文件锁假红根因。并与 `ACR_FULL_ROUTE_PLAN.md` 成对）
+第五份 `HANDOVER-2026-10-31.md`（beta10 独立性审查的**交接文档** v1.0：S1–S10 结论速览、被测件绑定 `f89b247b60dcf1ef`、9 批次产出索引。原放仓库根，2026-11-02 按 §1 目录契约（根目录只放法律/说明/规范白名单）移入本目录，内容未改）
 
 ## 3. 归档（`archive/`，28 份 + `_gapscout_raw/`）
 

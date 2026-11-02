@@ -5,6 +5,13 @@
 $ErrorActionPreference = "Continue"
 $out = "tests/output/results/threads"
 New-Item -ItemType Directory -Force -Path $out | Out-Null
+# ── 接线前奏（2026-11-01，第 88 条批）：TMP 钉扎 ─────────────────────────────
+# 本机沙箱拦真 %TEMP% 写 ⇒ ffmpeg/工具批量 exit -13 假红（AGENTS §4）；钉进产物区后
+# 子进程继承，谁都不许再落系统临时目录。scratchroot 已存在 ⇒ 直接复用。
+$repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+$scratch = Join-Path $repo 'tests/output/_tmp/scratchroot'
+New-Item -ItemType Directory -Force -Path $scratch | Out-Null
+$env:TMP = $scratch; $env:TEMP = $scratch; $env:TMPDIR = $scratch
 $ffmpeg = (Get-ChildItem "publish/PLAN/ffmpeg-full*/ffmpeg.exe" | Select-Object -First 1).FullName
 $cjxl   = "publish/PLAN/jxl/bin/cjxl.exe"
 $dngtool = "publish/PLAN/artifacts/dngtool.exe"
@@ -92,5 +99,7 @@ Check "C1 20线程 ≥ 1.5x 快于 1线程 ($([math]::Round($t1time,1))s vs $([m
 # ── 汇总 ──
 Write-Host "`n════════ 线程测试汇总 ════════" -ForegroundColor Yellow
 Write-Host "通过: $pass  失败: $fail" -ForegroundColor $(if ($fail -eq 0) { "Green" } else { "Red" })
+Write-Host "PASS=$pass FAIL=$fail"
 if ($failList.Count -gt 0) { $failList | ForEach-Object { Write-Host "  ❌ $_" -ForegroundColor Red } }
 Write-Host "产物: $out"
+if ($fail -gt 0) { exit 1 }

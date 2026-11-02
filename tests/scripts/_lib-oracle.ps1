@@ -522,6 +522,18 @@ function Get-ColorMetadata {
                 if (($t.IndexOf('primaries') -ge 0) -and ($null -eq $out.Primaries)) { $out.Primaries = $t }
                 if (($t.IndexOf('transfer') -ge 0) -and ($null -eq $out.Transfer)) { $out.Transfer = $t }
             }
+            # 2026-11-01：jxlinfo 新输出把 primaries / transfer 拆成独立行（实测：
+            #   「Primaries: Rec.2100」/「Transfer function: 709」/「Primaries: P3」），
+            #   旧格式才全在 Color space 行里 ⇒ 逗号循环拿不到、两值恒 null。补一层行级回退
+            #   （循环仍是第一优先，旧格式行为不变）；新词形已被 cmf 的词形表覆盖（P3/Rec.2100/sRGB/709）。
+            if ($null -eq $out.Primaries) {
+                $mp = [regex]::Match($j.Raw, '(?m)^Primaries:\s*(.+)$')
+                if ($mp.Success) { $out.Primaries = $mp.Groups[1].Value.Trim() }
+            }
+            if ($null -eq $out.Transfer) {
+                $mt = [regex]::Match($j.Raw, '(?m)^Transfer function:\s*(.+)$')
+                if ($mt.Success) { $out.Transfer = $mt.Groups[1].Value.Trim() }
+            }
         }
         $out.Ok = $true
         return $out

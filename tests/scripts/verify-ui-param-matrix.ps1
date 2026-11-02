@@ -65,10 +65,15 @@ if (-not (Test-Path $planDir)) {
 CK $true "PLAN dir exists"
 
 # 2. 目标可执行文件(只认 Release 产物, 不做 Debug 回退)
-$exe = Join-Path $repoRoot 'tests/projects/UiTestHost/bin/Release/net11.0/win-x64/UiTestHost.exe'
+# ⚠ 2026-10-31 执行面迁移：本门禁判的是 **J 族**，而 J 组只住在拆分件 `ui-sweep`
+#   （组表见 tests/projects/Tests.Shared/TestGroups.cs；`Tests.UiSweep.exe <素材目录> ui-sweep`
+#   只跑 J，输出契约与拆分前的 UiTestHost 逐字一致 ⇒ 下面的解析函数无需改动）。
+#   迁移前它是「起一次单体跑全量 430 条、再用 [PASS] J 前缀挑自己那族」。
+$exe     = Join-Path $repoRoot 'tests/projects/ui-sweep/bin/Release/net11.0/win-x64/Tests.UiSweep.exe'
+$exeMode = 'ui-sweep'
 if (-not (Test-Path $exe)) {
     Write-Output "  FAIL host exe exists: $exe"
-    Write-Output "       build first: dotnet build tests/projects/UiTestHost/UiTestHost.csproj -c Release"
+    Write-Output "       build first: dotnet build tests/projects/ui-sweep/ui-sweep.csproj -c Release"
     Write-Output "UIPARAM RESULT: pass=0 fail=1"
     exit 1
 }
@@ -79,7 +84,9 @@ $srcDir = Join-Path $repoRoot 'tests/output/sources'
 CK (Test-Path $srcDir) "source dir exists ($srcDir)"
 
 # 3. 运行级 GUID 临时目录(固定目录会被并发同名实例互删 => 假红)
-$work = Join-Path ([System.IO.Path]::GetTempPath()) ('uiparam_' + [guid]::NewGuid().ToString('N'))
+# ⚠ 落在 tests/output 下（不是 %TEMP%）：AGENTS §3 规定产物只有一份、临时件根钉在产物区，
+#   受 `py tests/scripts/_sweep-output.py --runs --max-age-days` 年龄清扫管辖；跑完本脚本仍自删。
+$work = Join-Path $repoRoot ('tests/output/ui-param-matrix/' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $work -Force | Out-Null
 
 # 4. 带硬超时的子进程运行器
@@ -130,6 +137,10 @@ function Invoke-HostWithTimeout([string]$exePath, [string[]]$hostArgs, [int]$tim
         try { $p.WaitForExit() } catch { }   # 排空异步输出流(否则可能读到半截产物)
     }
 
+    # ⚠ 必须 Dispose：Start-Process 的 -RedirectStandardOutput/-Error 句柄由**本进程**持有，
+    #   WaitForExit 不会释放它们 ⇒ 紧接着 ReadAllText 会偶发 IOException「being used by another process」
+    #   （2026-10-31 迁到 tests/output 后连中两次：exit=0 但 summary 读空 ⇒ 假红）。
+    if ($null -ne $p) { try { $p.Dispose() } catch { } }
     foreach ($k in $saved.Keys) { [Environment]::SetEnvironmentVariable($k, $saved[$k], 'Process') }
 
     $rc = -1
@@ -139,9 +150,28 @@ function Invoke-HostWithTimeout([string]$exePath, [string[]]$hostArgs, [int]$tim
 
 # 解析宿主输出: 汇总行 + 计数。只匹配 **ASCII** 片段(`N PASS / N FAIL`),
 # 不匹配中文, 以免宿主输出编码差异导致静默零命中。
+# ⚠ 共享模式读（不是 ReadAllText）：宿主的**孙进程**（ffmpeg / cjpegli / dngtool 的探测进程）会
+#   继承重定向句柄，宿主已退出但孙进程还活着 1~2 秒时，ReadAllText 抛 IOException「being used by
+#   another process」⇒ 输出被读成空 ⇒ 汇总行判「missing」⇒ **整条门禁假红**。
+#   2026-10-31 实测：Tests.UiColor 退出后 ffmpeg(PID 82716) 仍存活 ~1 s 并持有该句柄。
+#   用 FileShare.ReadWrite 打开可绕开独占，另带 25×200 ms 重试兜住「文件尚未出现」。
+function Read-TextShared([string]$path) {
+    if (-not (Test-Path $path)) { return '' }
+    for ($i = 0; $i -lt 25; $i++) {
+        try {
+            $fs = [System.IO.File]::Open($path, [System.IO.FileMode]::Open,
+                  [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+            $sr = New-Object System.IO.StreamReader($fs)
+            $txt = $sr.ReadToEnd()
+            $sr.Dispose()
+            return $txt
+        } catch { Start-Sleep -Milliseconds 200 }
+    }
+    return ''
+}
+
 function Read-HostSummary([string]$outFile) {
-    $text = ''
-    if (Test-Path $outFile) { $text = [System.IO.File]::ReadAllText($outFile) }
+    $text = Read-TextShared $outFile
     $m = [regex]::Match($text, '(\d+) PASS / (\d+) FAIL')
     $has = $m.Success
     $pN = -1; $fN = -1
@@ -164,9 +194,9 @@ function Count-PassPrefix([string]$text, [string]$prefix) {
 
 # 5. 主跑
 Write-Output ""
-Write-Output "===== run: UiTestHost (timeout=${TimeoutSec}s) ====="
+Write-Output "===== run: Tests.UiSweep $exeMode (timeout=${TimeoutSec}s) ====="
 $sw = [System.Diagnostics.Stopwatch]::StartNew()
-$r = Invoke-HostWithTimeout $exe @($srcDir) ($TimeoutSec * 1000) @{}
+$r = Invoke-HostWithTimeout $exe @($srcDir, $exeMode) ($TimeoutSec * 1000) @{}
 $sw.Stop()
 $elapsed = [int]$sw.Elapsed.TotalSeconds
 
@@ -197,10 +227,13 @@ CK ($s.HasSummary -and $s.Fail -eq 0) "summary FAIL=0"
 CK ($r.ExitCode -eq 0) "exit code == 0 (actual $($r.ExitCode))"
 
 # 6. 锚点在册: 挡住「GroupJ 被删掉/改名/整段注释掉」的静默退化。
-#    基线(2026-09-19): GroupJ_UiSweep = 88 条; 这里只要求 >= 88 => 只增不减。
+#    2026-10-31 执行面迁移时实测 = **98** 条（在 ui-sweep mode 下逐条 [PASS] J 计数）。
+#    旧值是 88（2026-09-19 单体读数，已陈旧）。这里由「>= 88」收紧为 **精确等值 98**：
+#    下界式只增不减对「等于当前实测」的断言没有任何牙 —— 少跑 10 条也仍是绿。
+$jExpected = 98
 $jCount = Count-PassPrefix $s.Text 'J'
-Write-Output "  [info] GroupJ PASS lines = $jCount (baseline 88)"
-CK ($jCount -ge 88) "GroupJ assertion count >= 88 (actual $jCount)"
+Write-Output "  [info] GroupJ PASS lines = $jCount (expected $jExpected)"
+CK ($jCount -eq $jExpected) "GroupJ assertion count == $jExpected (actual $jCount)"
 
 # 代表性锚点 = 每个控件族至少一条(格式/像素格式/质量/色域/zscale 目标/元数据/动图/几何/编码器特化)。
 # 均为 ASCII 前缀; 中文后缀不参与匹配, 避免编码差异导致的零命中。
@@ -233,7 +266,7 @@ if ($SelfCheck) {
     Write-Output ""
     Write-Output "===== selfcheck: UIHOST_NEGCTL=1 must turn RED ====="
     $sw2 = [System.Diagnostics.Stopwatch]::StartNew()
-    $r2 = Invoke-HostWithTimeout $exe @($srcDir) ($TimeoutSec * 1000) @{ UIHOST_NEGCTL = '1' }
+    $r2 = Invoke-HostWithTimeout $exe @($srcDir, $exeMode) ($TimeoutSec * 1000) @{ UIHOST_NEGCTL = '1' }
     $sw2.Stop()
     $s2 = Read-HostSummary $r2.OutFile
     Write-Output ("  [selfcheck] exit={0} timedOut={1} summary={2} pass={3} fail={4} elapsed={5}s" -f `

@@ -68,10 +68,13 @@ if (-not (Test-Path $planDir)) {
 CK $true "PLAN dir exists"
 
 # 2. 目标可执行文件(只认 Release 产物, 不做 Debug 回退)
-$exe = Join-Path $repoRoot 'tests/projects/UiTestHost/bin/Release/net11.0/win-x64/UiTestHost.exe'
+# ⚠ 2026-10-31 执行面迁移：K 组住在拆分件 `ui-color`（mode `ui-strategy-map`，实测 27 条 = 旧基线）。
+#   迁移前它是「起一次单体跑全量 430 条、再用 [PASS] K 前缀挑自己那族」。
+$exe     = Join-Path $repoRoot 'tests/projects/ui-color/bin/Release/net11.0/win-x64/Tests.UiColor.exe'
+$exeMode = 'ui-strategy-map'
 if (-not (Test-Path $exe)) {
     Write-Output "  FAIL host exe exists: $exe"
-    Write-Output "       build first: dotnet build tests/projects/UiTestHost/UiTestHost.csproj -c Release"
+    Write-Output "       build first: dotnet build tests/projects/ui-color/ui-color.csproj -c Release"
     Write-Output "UISTRAT RESULT: pass=0 fail=1"
     exit 1
 }
@@ -81,7 +84,8 @@ $srcDir = Join-Path $repoRoot 'tests/output/sources'
 CK (Test-Path $srcDir) "source dir exists ($srcDir)"
 
 # 3. 运行级 GUID 临时目录(固定目录会被并发同名实例互删 => 假红)
-$work = Join-Path ([System.IO.Path]::GetTempPath()) ('uistrat_' + [guid]::NewGuid().ToString('N'))
+# ⚠ 落在 tests/output 下（不是 %TEMP%）：AGENTS §3 规定产物只有一份、临时件根钉在产物区。
+$work = Join-Path $repoRoot ('tests/output/ui-strategy-map/' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $work -Force | Out-Null
 
 # 4. 带硬超时的子进程运行器
@@ -132,6 +136,10 @@ function Invoke-HostWithTimeout([string]$exePath, [string[]]$hostArgs, [int]$tim
         try { $p.WaitForExit() } catch { }   # 排空异步输出流(否则可能读到半截产物)
     }
 
+    # ⚠ 必须 Dispose：Start-Process 的 -RedirectStandardOutput/-Error 句柄由**本进程**持有，
+    #   WaitForExit 不会释放它们 ⇒ 紧接着 ReadAllText 会偶发 IOException「being used by another process」
+    #   （2026-10-31 迁到 tests/output 后连中两次：exit=0 但 summary 读空 ⇒ 假红）。
+    if ($null -ne $p) { try { $p.Dispose() } catch { } }
     foreach ($k in $saved.Keys) { [Environment]::SetEnvironmentVariable($k, $saved[$k], 'Process') }
 
     $rc = -1
@@ -140,9 +148,28 @@ function Invoke-HostWithTimeout([string]$exePath, [string[]]$hostArgs, [int]$tim
 }
 
 # 解析宿主输出: 汇总行 + 计数。只匹配 **ASCII** 片段(`N PASS / N FAIL`)。
+# ⚠ 共享模式读（不是 ReadAllText）：宿主的**孙进程**（ffmpeg / cjpegli / dngtool 的探测进程）会
+#   继承重定向句柄，宿主已退出但孙进程还活着 1~2 秒时，ReadAllText 抛 IOException「being used by
+#   another process」⇒ 输出被读成空 ⇒ 汇总行判「missing」⇒ **整条门禁假红**。
+#   2026-10-31 实测：Tests.UiColor 退出后 ffmpeg(PID 82716) 仍存活 ~1 s 并持有该句柄。
+#   用 FileShare.ReadWrite 打开可绕开独占，另带 25×200 ms 重试兜住「文件尚未出现」。
+function Read-TextShared([string]$path) {
+    if (-not (Test-Path $path)) { return '' }
+    for ($i = 0; $i -lt 25; $i++) {
+        try {
+            $fs = [System.IO.File]::Open($path, [System.IO.FileMode]::Open,
+                  [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+            $sr = New-Object System.IO.StreamReader($fs)
+            $txt = $sr.ReadToEnd()
+            $sr.Dispose()
+            return $txt
+        } catch { Start-Sleep -Milliseconds 200 }
+    }
+    return ''
+}
+
 function Read-HostSummary([string]$outFile) {
-    $text = ''
-    if (Test-Path $outFile) { $text = [System.IO.File]::ReadAllText($outFile) }
+    $text = Read-TextShared $outFile
     $m = [regex]::Match($text, '(\d+) PASS / (\d+) FAIL')
     $has = $m.Success
     $pN = -1; $fN = -1
@@ -163,9 +190,9 @@ function Count-PassPrefix([string]$text, [string]$prefix) {
 
 # 5. 主跑
 Write-Output ""
-Write-Output "===== run: UiTestHost (timeout=${TimeoutSec}s) ====="
+Write-Output "===== run: Tests.UiColor $exeMode (timeout=${TimeoutSec}s) ====="
 $sw = [System.Diagnostics.Stopwatch]::StartNew()
-$r = Invoke-HostWithTimeout $exe @($srcDir) ($TimeoutSec * 1000) @{}
+$r = Invoke-HostWithTimeout $exe @($srcDir, $exeMode) ($TimeoutSec * 1000) @{}
 $sw.Stop()
 $elapsed = [int]$sw.Elapsed.TotalSeconds
 
@@ -194,10 +221,12 @@ CK ($s.HasSummary) "summary line present (exit 0 alone is not enough)"
 CK ($s.HasSummary -and $s.Fail -eq 0) "summary FAIL=0"
 CK ($r.ExitCode -eq 0) "exit code == 0 (actual $($r.ExitCode))"
 
-# 6. 锚点在册。基线(2026-09-19): GroupK_StrategyMap = 27 条 => 只要求 >= 27(只增不减)。
+# 6. 锚点在册。基线(2026-09-19): GroupK_StrategyMap = 27 条；2026-10-31 迁移实测仍 = 27（零余量）。
+#    由「>= 27」收紧为**精确等值 27**：任何一条被 Skip/删掉都当场转红（下界式对零余量的集合没有牙）。
+$kExpected = 27
 $kCount = Count-PassPrefix $s.Text 'K'
-Write-Output "  [info] GroupK PASS lines = $kCount (baseline 27)"
-CK ($kCount -ge 27) "GroupK assertion count >= 27 (actual $kCount)"
+Write-Output "  [info] GroupK PASS lines = $kCount (expected $kExpected)"
+CK ($kCount -eq $kExpected) "GroupK assertion count == $kExpected (actual $kCount)"
 
 # 6a. UI 四单选 -> 四策略 的逐值锚点(证明 UI 真实结构 = 4 个 ColorStrategy 单选)
 $uiAnchors = @(
@@ -231,7 +260,7 @@ if ($SelfCheck) {
     Write-Output ""
     Write-Output "===== selfcheck: UIHOST_NEGCTL=1 must turn RED ====="
     $sw2 = [System.Diagnostics.Stopwatch]::StartNew()
-    $r2 = Invoke-HostWithTimeout $exe @($srcDir) ($TimeoutSec * 1000) @{ UIHOST_NEGCTL = '1' }
+    $r2 = Invoke-HostWithTimeout $exe @($srcDir, $exeMode) ($TimeoutSec * 1000) @{ UIHOST_NEGCTL = '1' }
     $sw2.Stop()
     $s2 = Read-HostSummary $r2.OutFile
     Write-Output ("  [selfcheck] exit={0} timedOut={1} summary={2} pass={3} fail={4} elapsed={5}s" -f `

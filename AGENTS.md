@@ -44,7 +44,7 @@ beta7–beta11 的 10 个归档 + 8 个解包目录（1.7 GB）。**要留证据
 
 `tests/scripts/_run-step3-gates.ps1` 是清单，不是索引外部文件。加/删/改名一条门禁必须**同批**改齐四处：
 
-1. `$scriptList` 数组（87 条）；
+1. `$scriptList` 数组（94 条）；
 2. `$expectedScriptCount` 常量（同文件）；
 3. runner 里复述条数的**散文陈述**——`Test-RunnerShape` 第 ⑰ 针按三种形态各扫一遍并要求与常量相等；
 4. 新的 ServiceProbe mode 还要进 `tests/projects/Tests.Shared/TestGroups.cs` 的组表，
@@ -81,12 +81,19 @@ beta7–beta11 的 10 个归档 + 8 个解包目录（1.7 GB）。**要留证据
 # 必须 pwsh7；LC_ALL 会改变排序/解析行为 ⇒ 清掉
 $env:LC_ALL=$null
 dotnet build ffmpegPictureUI.sln -c Release          # 13 个测试工程都在 sln 里，编不过当场暴露
-pwsh -NoProfile -File tests/scripts/_run-step3-gates.ps1   # 整轮 43~52 分钟
+pwsh -NoProfile -File tests/scripts/_run-step3-gates.ps1   # 94 条，整轮 ~60 分钟
 ```
 
 - 宣布"全绿"必须绑定被测产物：exe/DLL 指纹前 16 与当轮日志同段；`dotnet test` 打在 Exe 工程上只还原不跑还返回 0。
 - 起轮之后不许再动 `src/` 与运行器——整轮读数作废。计时类红要用旧二进制做对照臂，别拿单次 LoadPercentage 当"机器空闲"。
-- 本机 ffmpeg 被沙箱拦 `%TEMP%` 写会批量 `exit -13` 假红：先重定向 `TMP/TEMP/TMPDIR` 进工作区再定性。
+  - 对照臂的 worktree 必须建在**仓库外**；比对时看 `ServiceProbe.dll` / `FfmpegGui.dll` 的哈希——
+    `*.exe` 是 apphost（IL 在 dll 里），两棵树编出来的 `.exe` 哈希**相同**，拿它判定会误以为"跑的还是同一份"。
+    臂日志**必须记 dll 哈希**（`bench_oldarm_20261101.log:1` 那种段头行），否则事后不可复核——
+    本仓 2026-11-01 就吃过一次：旧臂那次读数只留了 apphost 值，结论差点钉死在错的理由上。
+- 本机沙箱**按进程**拦子进程向仓库外写：ffmpeg 写 `%TEMP%` / `C:\Temp` 一律 `exit -13`（`.NET`/python 写 `%TEMP%` 成功）。
+  已固化为运行器自钉：起轮时把 `TMP/TEMP/TMPDIR` 钉到 `tests/output/_tmp/round-tmp`，并打印
+  `env-temp-pinned=` / `env-temp-writable=` 两行读数（子进程继承）。**裸跑单条门禁调试时要自己钉同一个根**，
+  否则 `verify-color-wiring` 这类会批量假红（2026-11-01 实例：不钉 60/56，钉后 153/0）。
 - 改动只跑所在链路；一块一个测试，分开跑分开报。
 
 ## 5. 高危区（动之前先读）
@@ -118,28 +125,80 @@ pwsh -NoProfile -File tests/scripts/_run-step3-gates.ps1   # 整轮 43~52 分钟
 
 ## 7. 未了结
 
-- **执行面迁移**：7 条在册门禁仍执行单体 `UiTestHost.exe`（`verify-ui-host`、`verify-ui-param-matrix`、
-  `verify-ui-param-defects`、`verify-ui-strategy-map`、`verify-cli-strict`、`verify-png-structure`、
-  `verify-ui-split-union`——最后这条同时跑单体与 5 个拆分件做并集）；`gainmap-*` 拆分件只被
-  `verify-gainmap-host` 按表调用。并集/逐字节全等已证明拆分件等价（双向差集 0），
-  但把执行体切过去要同时动这 7 条的调用点，属独立一批。
+- **执行面迁移已完成（2026-11-01）**：5 条 UI 门禁的执行体已从单体 `UiTestHost.exe` 切到拆分件
+  ——`verify-ui-host`（5 件逐件跑全组，**合计锁 430** = 75+53+89+141+72）、`verify-ui-param-matrix`
+  （`Tests.UiSweep`/`ui-sweep`，J **精确 98**）、`verify-ui-strategy-map`（`Tests.UiColor`/`ui-strategy-map`，
+  K **精确 27**）、`verify-ui-param-defects`（两 mode：`ui-param-defects` L=43 + `ui-sweep` J14d=9）、
+  `verify-cli-strict`（三 mode / 两 exe：`ui-cli-strict` 60 + `ui-color` 15 + `ui-icc` 12 = 87）。
+  条数锁一律由「下界 `-ge 基线`」收紧为**精确等值**（下界对「等于当前实测」的集合没有牙）。
+  - **旧账里「7 条」是误记**：`verify-png-structure` 源码里对单体只有一句历史注释、**零处调用**，
+    从来不在执行面上；`verify-ui-split-union` 也**有意不切**——单体是它的参照臂。
+    ⇒ 真实是「5 条已切 + 1 条参照臂 + 1 条误记」。
+  - 跨件/多 mode 门禁的判据形态：把各臂 stdout 拼成 `$allText` 再统一数前缀，`-SelfCheck` **逐臂**验
+    （只验一臂则其余臂的解析器坏了不报警）。
+  - **文件锁假红（跨件门禁的通病，已修）**：`Start-Process -RedirectStandardOutput` 的句柄会被**遗留孙进程**
+    （实测 `ffmpeg`）继承，宿主 exit 后 ~1 s 才释放 ⇒ `ReadAllText` 抛 `IOException`，表现为
+    `summary=False pass=-1 fail=-1`，且 `$p.Dispose()` **无效**。修法 = `FileShare.ReadWrite` 容错读 +
+    重试（`Read-TextShared`），不删子进程、不回退 `%TEMP%`。
+  - 门禁临时目录同期从 `GetTempPath()` 迁进 `tests/output/<组名>/<guid>`（AGENTS §3：产物只有一份、不落 `%TEMP%`）。
+- `gainmap-*` 拆分件只被 `verify-gainmap-host` 按表调用（执行面**未**迁移，与上条同族但独立一批）。
 - 本机专用脚本 `_guishot.ps1` 留在仓库根（已 gitignore），**不要**挪进 `tests/scripts`：
   归属探针扫的是该目录下所有 `.ps1`（非递归、不看 git），进去会被算成"清单外未登记脚本"。
 - `docs/TESTING.md` 正文里 38 处旧路径（`tests/ServiceProbe` 等）**按原样保留**，顶部加了读法说明；
   逐条改写会连带改动同段的历史读数，属独立一批。
-- **清单外脚本**：`_probe-test-group-coverage` ⑪-d 长期 WARN 8 支"有判据却不进整轮"（`run-color-tests`、
-  `run-quality-tests`、`run-thread-tests`、`verify-color-matrix-full`、`verify-oracle-matrix`、`verify-release-package` 等），
-  判据是"接进清单，或按先证明再逐支删"，现状只警告不判红。
+- **清单外脚本**：⑪-d 的 8 支欠账已于 2026-11-01 清零——6 支真门禁接进清单（第二十三次接线：
+  `run-color-tests`/`run-quality-tests`/`run-thread-tests`/`verify-color-matrix-full`/`verify-oracle-matrix`/`verify-release-package`）；
+  `_accept-ui-split`/`_gen-ui-split` 两支（验收脚手架/生成器，接清单是语义错误）落 ⑪-d **有据豁免表**
+  （豁免带牙：CoveredBy 必须全部是受管门禁，否则当场红）。WARN 现值 0。
+  ⚠ 但「受管门禁」只校名字，**不校那条门禁真会跑它**——任何豁免都能指向任意受管门禁而过关；
+  要收紧须复用 AST 调用点索引建「CoveredBy ⇒ 调用点」双向检查（独立一批）。
+- **整轮 ≠ 全判据面（N/N 要按这三点读）**：①5 条 UI 门禁的负控块包在 `if ($SelfCheck)` 里、
+  `$ncOk` 无条件默认 true，runner 不给它们传 `-SelfCheck` ⇒ **整轮读数只有正向臂**，负控证据
+  全来自手跑（`tests/output/ui-host/*/out_*.txt` 的 `NC:` 行）；②第 92 条 `verify-oracle-matrix`
+  整轮只跑 `-Smoke` **3 条代表用例**（自述 L1=194/L2=172）；③第 91 条 `verify-color-matrix-full`
+  整轮默认 `quick` = **72 格**（2 格式 × 2 位深），名带 `-full` 不等于全网格。
+  ⇒ 宣布「94/94 全绿」时不许顺带说「色彩/oracle 覆盖面一次到位」。
 - **分层**：`Services` 对 UI 零依赖，唯一的代码级倒灌是 `IpcService.cs` 认 `MainWindow` 类型（13 处）；
   抽 `FfmpegGui.Core` 会改出货件程序集构成与指纹，属独立决策。
 - **产物区残留（2026-10-22 清）**：`tests/output` 19.73 GB/1357 项 → **16 GB/215 项**。
   拆掉 3 个 worktree（存证见 §5）、零引用条目 1135 项 2.0 GB、>7 天轮次目录 4156 项 8.17 GB、
   宿主泄漏件 47 项 2.03 GB。留下的都在册文本里点名过。
   已知小怪：`tests/output/review/`（456 KB 日志与 diff）因为名字是常用词而被引用判定永久保护，没删。
-- **宿主 TEMP 站点无源级锁**：本轮只修了"写了又从不删"的 4 处（`cap.dng`×2 在单体与镜像件、`gm_manual_*.rgba`×2）。
-  `ServiceProbe` 的 `tooldetect_<guid>` / `cmsbench` / `cmsx` 三个固定名 scratch 仍在（不乘份数，尺寸小），
-  要判红"宿主向 `%TEMP%` 写产物"得新增一条文本级探针——属独立一批。
-- 视图扩展名 `.xaml`/`.axaml` 并存（迁移化石），`_probe-i18n-scan` 按"根目录下的 .axaml 窗口"点名，改名要同步它。
+- **宿主 TEMP 站点已上文本级锁（2026-11-01）**：第 94 条 `_probe-host-temp-sites.ps1` 冻结站点清单
+  （**39 站点 / 7 文件**）＋坏根名黑名单（`gate_tmp|gtmp|roundtmp|_ramdisk|faketemp`）＋扫描面自证与
+  对账自检带牙。此前修的「写了又从不删」4 处（`cap.dng`×2、`gm_manual_*.rgba`×2）已覆盖。
+  `ServiceProbe` 的 `tooldetect_<guid>` / `cmsbench` / `cmsx` 三个固定名 scratch **经查无需改码**，
+  以「生命周期注记」进该探针的登记表——**注意**：这条锁冻结的是「站点数与根名」，不回答
+  「写完删没删」；要判后者得另立一条判据（仍是独立一批）。
+- **`bench` 的计时断言没有停顿/成对采样保护（未了结）**：共**四条**——`多核扩展比 ≥4×`（`Program.cs:8544`）、
+  8-bit 档绝对地板 `≥25MPix/s`（`:8603`）、快路径地板 `≥40MPix/s`（`:8488` 的
+  `floorMpix = fastCell ? 40.0 : 3.0`，判在 `:8490`）、端到端 `H1 ≤ H2×2.0`（`:8665`）——
+  都只做 best-of-3，**不**适用「关表档增益比」那套交错成对采样 + 极差/最优停顿赦红 ⇒ 负载高时假红。
+  2026-11-01 实测分布：run d 整轮 `3.5×` / `22.0`；run c 整轮 `sRGB→P3(矩阵同曲线) 单核 ≥40MPix/s（实 38.5）`
+  （`run_full_94c.log:41`）；同窗对照第 2 次 `端到端 H1 ≤ H2×2.0（实 2.69×）`（`bench_oldarm_20261101.log:418`）。
+  而同机静置复跑 **4 次全 37/0**（`bench_control.log` + `bench_static3.log`，各次 8b 读数
+  27.1 / 26.7 / 35.6 / 27.8，多核比 7.5 / 7.4 / 5.9 / 6.3，分档内负载 9%~22%），
+  **旧二进制（HEAD `f778280`，仓库外 worktree 重建，dll `FF05421132B2542B`）2 次也全 37/0**
+  （8b 42.8 / 43.9，多核比 5.0~8.2）⇒ **没有一条判据是「两臂必红」**。
+  ⚠ 两侧读数不许混写：旧臂的“多核扩展比”与 8b 地板**都 PASS**；原「旧臂 8b 25.0 FAIL」事后被证为
+  该次运行时 `publish/PLAN` 缺失叠加 ≈58% 负载的采样环境，**不是臂身份差异**（`bench_oldarm_20261101.log`）。
+  **run d 的单红在整轮内也复现不了**：run e（同产物、同门禁，当天紧接复跑）整轮 94/94，其中
+  `[bench] exit=0 pass=37 fail=0 80.5 s`（`run_full_94e.log:43`）⇒ 连静置 4 次（含 ARM-A）+ run a 轮内 1 次 +
+  旧臂重建 2 次 + 同窗对照 1 次共 **9 次 37/0**，定性为负载/计时噪声成立（阈值仍不动）。
+  ⚠ 控制臂日志 `bench_control.log:17` 的 `3.9×` 是**本轮二进制**的小帧扩展比「仅记录」行，不是任何一方 FAIL。
+  判据与阈值**一律不动**（维护者口径：绝对地板与快路径对账档不因停顿赦红）；要治须先给口径，属独立一批。
+- 视图扩展名**已统一为 `.xaml`**（2026-11-01：`MetadataEditor` / `FormatFilterWindow` / `ImageDetailWindow` /
+  `PresetManagerWindow` 四对改名，`git ls-files 'src/**/*.axaml'` = 0，`.xaml` = 7）。`_probe-i18n-scan`
+  用 `-Include *.xaml, *.axaml` 递归收，**没有按名点名的清单** ⇒ 后续改名无需同步它
+  （其 `:55-58` 只是历史教训注释：早先 glob 太窄曾漏掉根目录窗口）。
+  机制：Avalonia 的隐式 glob **只**收 `**/*.axaml` 与 `**/*.paml`
+  （`avalonia/12.1.4/build/AvaloniaBuildTasks.props:8-9`）⇒ `.xaml` 只当资源、不做 XAML 编译、不生成
+  `x:Name` 字段。现已在 `FfmpegGui.csproj` 显式 `<AvaloniaXaml Include="**/*.xaml"
+  Exclude="MainWindow.xaml;ProgressWindow.xaml" />`（这两个窗口靠 `MainWindow.xaml.cs` 里**手写**的
+  `InitializeComponent()` + `FindControl<T>` 取控件，纳入编译会 `CS0102` 撞名）。新增 `.xaml` 视图
+  走 `<AvaloniaResource Include="**/*.xaml" Exclude="@(AvaloniaXaml)" />` 兜底。
+- **`colorRange` 回拷漏项（潜伏，未修）**：`FfmpegCommandBuilder.cs` 的缓存回拷段（2026-11-01 只补了
+  `pixFmt`）仍**不拷** `colorRange` ⇒ 命中缓存的路径上 8-bit 尺可能取错。要有自带判据臂的独立一批。
 - **ACR 路线只覆盖 DNG（2026-10-24）**：`.dng` 走 `dngtool -rdp`（Adobe DNG SDK 的 `dng_render`，
   OpcodeList1/2/3 全施加），其余 RAW 仍走 LibRaw（**SDK 只读 DNG**，读不了 ARW/CR2/NEF…）。
   渲染空间按下游目标选（bt709 出口 ⇒ `srgb`，其余 ⇒ `rec2020`），`ColorSourceDeclPrimaries` 与它同源。
@@ -149,6 +208,14 @@ pwsh -NoProfile -File tests/scripts/_run-step3-gates.ps1   # 整轮 43~52 分钟
   已知边界：enhanced-image IFD 的 DNG 直接点名拒绝；DNG 输入上 `-H/-q/-W/-threads` 不生效（日志点名）；
   耗时约为 LibRaw 的 2.2×（24MP 5.1 s vs 2.3 s）。要"全量"须先 LibRaw 解包成 CFA DNG 再 SDK 渲染（另立一批）。
   门禁 = 第 79 条 `verify-acr-route.ps1`。
+- **托盘 / 关窗契约（2026-11-01 定，由第 85 条 `verify-package-gui-starts.ps1` ⑥⑦ 保证）**：
+  托盘图标随启动即常驻（跟 `AppSettings.CloseToTray` 走，默认 `true`），不是「关窗时才点亮」；
+  **只有「设置要托盘 且 托盘真可用」才拦关窗**，否则关窗即真退出（不许藏成不可见进程）；
+  退出唯一实现是 `App.ExitApp()`（托盘菜单 / ⚙「退出程序」/ `Closed` 兜底三处共用，`_exiting` 闸防重入）。
+  托盘失败一律落 `tray.log`（`FFMPEGGUI_DIAG_DIR` > 缓存目录 > exe 同目录），不再 `Debug.WriteLine` 无痕。
+  ⚠ **不要改 `ShutdownMode` 为 `OnExplicitShutdown`** —— `IpcService.cs` 的 `AllowFullExit=true; Close()`
+  会变成僵尸进程。⚠ 「备份→还原→跑门禁」必须 touch 源文件：`copy2`/`cp -p` 带回旧 mtime 会让 MSBuild
+  跳过编译、拿变异体跑出**假红**（实测踩过）。⚠ `MenuFlyout` 里的 `x:Name` **不生成字段**，取控件用 `FindMenuByTag`。
 - **AVIF 的静态出口写不进 ICC（2026-10-26 实测）**：ffmpeg 的 AVIF muxer 不写 ICC，exiftool 后置
   也报「0 image files updated」而**退出码仍是 0**（672 B ProPhoto ICC：产物 `avifdec --info` 报
   `ICC Profile: Absent`，旧日志照打「ICC Profile 已恢复」）。`avifenc --icc` 能写，但它只用于

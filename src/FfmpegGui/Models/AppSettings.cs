@@ -79,6 +79,14 @@ namespace FfmpegGui.Models
         /// </summary>
         public bool EnableIpcServer { get; set; } = false;
 
+
+        /// <summary>
+        /// 关窗行为：<c>true</c>=关窗即隐藏到托盘（默认，队列照跑）；<c>false</c>=关窗即退出进程。
+        /// **托盘建不起来时本项被忽略**——不允许把用户锁进「窗口已关、托盘没图标、进程还在」的黑洞
+        /// （2026-10-31 实机缺陷：托盘图标 IsVisible 写死 false + Closing 无条件拦关闭）。
+        /// </summary>
+        public bool CloseToTray { get; set; } = true;
+
         /// <summary>ffmpeg 进程优先级: 0=实时, 1=高, 2=高于正常, 3=正常, 4=低于正常, 5=低</summary>
         public int FfmpegPriority { get; set; } = 3;
 

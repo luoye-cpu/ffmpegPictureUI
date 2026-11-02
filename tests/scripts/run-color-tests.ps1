@@ -9,6 +9,21 @@ $src = "$out/sources"
 $res = "$out/results/color"
 New-Item -ItemType Directory -Force -Path $res | Out-Null
 
+# ── 接线前奏（2026-11-01，第 88 条批）：TMP 钉扎 ─────────────────────────────
+# 本机沙箱拦真 %TEMP% 写 ⇒ ffmpeg/工具批量 exit -13 假红（AGENTS §4）；钉进产物区后
+# 子进程继承，谁都不许再落系统临时目录。scratchroot 已存在 ⇒ 直接复用。
+$repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+$scratch = Join-Path $repo 'tests/output/_tmp/scratchroot'
+New-Item -ItemType Directory -Force -Path $scratch | Out-Null
+$env:TMP = $scratch; $env:TEMP = $scratch; $env:TMPDIR = $scratch
+# pngcicp 是框架依赖 exe（net11.0）：宿主把 DOTNET_ROOT 指到别家运行器（实测只有 8.0.31）
+# ⇒ pngcicp 起不来、Exec 把启动失败吞掉 ⇒ F1/F2/F4 假红（2026-11-01 实测）。缺 net11 ⇒ 就地指回本机 SDK。
+$_net11 = $false
+if ($env:DOTNET_ROOT -and (Test-Path (Join-Path $env:DOTNET_ROOT 'shared/Microsoft.NETCore.App'))) {
+  $_net11 = [bool](Get-ChildItem (Join-Path $env:DOTNET_ROOT 'shared/Microsoft.NETCore.App') -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^11' })
+}
+if (-not $_net11 -and (Test-Path 'C:\Program Files\dotnet\shared\Microsoft.NETCore.App')) { $env:DOTNET_ROOT = 'C:\Program Files\dotnet' }
+
 # 取子进程 stdout 一律走 Start-Process（`& exe` 在部分宿主静默失败：输出为空 ⇒ 假红/空值）
 function Exec([string]$file, [string]$argStr){
   $o = "$out/_exec.out"; $e = "$out/_exec.err"
@@ -293,8 +308,10 @@ Check "F4 重复写入 sBIT 幂等 $f4" ($f4 -match "sBIT: R=10" -and -not ($f4 
 # ═══════════════════════════════════════════════════════════
 Write-Host "`n════════ 色彩测试汇总 ════════" -ForegroundColor Yellow
 Write-Host "通过: $pass  失败: $fail" -ForegroundColor $(if ($fail -eq 0) { "Green" } else { "Red" })
+Write-Host "PASS=$pass FAIL=$fail"
 if ($failList.Count -gt 0) {
     Write-Host "失败列表:" -ForegroundColor Red
     $failList | ForEach-Object { Write-Host "  ❌ $_" -ForegroundColor Red }
 }
 Write-Host "产物: $res"
+if ($fail -gt 0) { exit 1 }

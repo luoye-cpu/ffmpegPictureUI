@@ -57,10 +57,12 @@ if (-not (Test-Path $planDir)) {
 CK $true "PLAN dir exists"
 
 # 2. 目标可执行文件(只认 Release 产物, 不做 Debug 回退)
-$exe = Join-Path $repoRoot 'tests/projects/UiTestHost/bin/Release/net11.0/win-x64/UiTestHost.exe'
+# ⚠ 2026-10-31 执行面迁移：本门禁的两族断言都住在拆分件 `ui-sweep` 里，但分属**两个 mode**
+#   （见下面的 $arms）—— 迁移前它是「起一次单体跑全量 430 条、再用 [PASS] 前缀挑自己那两族」。
+$exe = Join-Path $repoRoot 'tests/projects/ui-sweep/bin/Release/net11.0/win-x64/Tests.UiSweep.exe'
 if (-not (Test-Path $exe)) {
     Write-Output "  FAIL host exe exists: $exe"
-    Write-Output "       build first: dotnet build tests/projects/UiTestHost/UiTestHost.csproj -c Release"
+    Write-Output "       build first: dotnet build tests/projects/ui-sweep/ui-sweep.csproj -c Release"
     Write-Output "UIPARAMDEF RESULT: pass=0 fail=1"
     exit 1
 }
@@ -71,7 +73,8 @@ $srcDir = Join-Path $repoRoot 'tests/output/sources'
 CK (Test-Path $srcDir) "source dir exists ($srcDir)"
 
 # 3. 运行级 GUID 临时目录(固定目录会被并发同名实例互删 => 假红)
-$work = Join-Path ([System.IO.Path]::GetTempPath()) ('uiparamdef_' + [guid]::NewGuid().ToString('N'))
+# ⚠ 落在 tests/output 下（不是 %TEMP%）：AGENTS §3 规定产物只有一份、临时件根钉在产物区。
+$work = Join-Path $repoRoot ('tests/output/ui-param-defects/' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $work -Force | Out-Null
 
 # 4. 带硬超时的子进程运行器
@@ -122,6 +125,10 @@ function Invoke-HostWithTimeout([string]$exePath, [string[]]$hostArgs, [int]$tim
         try { $p.WaitForExit() } catch { }   # 排空异步输出流(否则可能读到半截产物)
     }
 
+    # ⚠ 必须 Dispose：Start-Process 的 -RedirectStandardOutput/-Error 句柄由**本进程**持有，
+    #   WaitForExit 不会释放它们 ⇒ 紧接着 ReadAllText 会偶发 IOException「being used by another process」
+    #   （2026-10-31 迁到 tests/output 后连中两次：exit=0 但 summary 读空 ⇒ 假红）。
+    if ($null -ne $p) { try { $p.Dispose() } catch { } }
     foreach ($k in $saved.Keys) { [Environment]::SetEnvironmentVariable($k, $saved[$k], 'Process') }
 
     $rc = -1
@@ -131,9 +138,28 @@ function Invoke-HostWithTimeout([string]$exePath, [string[]]$hostArgs, [int]$tim
 
 # 解析宿主输出: 汇总行 + 计数。只匹配 **ASCII** 片段(N PASS / N FAIL),
 # 不匹配中文, 以免宿主输出编码差异导致静默零命中。
+# ⚠ 共享模式读（不是 ReadAllText）：宿主的**孙进程**（ffmpeg / cjpegli / dngtool 的探测进程）会
+#   继承重定向句柄，宿主已退出但孙进程还活着 1~2 秒时，ReadAllText 抛 IOException「being used by
+#   another process」⇒ 输出被读成空 ⇒ 汇总行判「missing」⇒ **整条门禁假红**。
+#   2026-10-31 实测：Tests.UiColor 退出后 ffmpeg(PID 82716) 仍存活 ~1 s 并持有该句柄。
+#   用 FileShare.ReadWrite 打开可绕开独占，另带 25×200 ms 重试兜住「文件尚未出现」。
+function Read-TextShared([string]$path) {
+    if (-not (Test-Path $path)) { return '' }
+    for ($i = 0; $i -lt 25; $i++) {
+        try {
+            $fs = [System.IO.File]::Open($path, [System.IO.FileMode]::Open,
+                  [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+            $sr = New-Object System.IO.StreamReader($fs)
+            $txt = $sr.ReadToEnd()
+            $sr.Dispose()
+            return $txt
+        } catch { Start-Sleep -Milliseconds 200 }
+    }
+    return ''
+}
+
 function Read-HostSummary([string]$outFile) {
-    $text = ''
-    if (Test-Path $outFile) { $text = [System.IO.File]::ReadAllText($outFile) }
+    $text = Read-TextShared $outFile
     $m = [regex]::Match($text, '(\d+) PASS / (\d+) FAIL')
     $has = $m.Success
     $pN = -1; $fN = -1
@@ -153,45 +179,68 @@ function Count-PassPrefix([string]$text, [string]$prefix) {
     return $n
 }
 
-# 5. 主跑
-Write-Output ""
-Write-Output "===== run: UiTestHost (timeout=${TimeoutSec}s) ====="
-$sw = [System.Diagnostics.Stopwatch]::StartNew()
-$r = Invoke-HostWithTimeout $exe @($srcDir) ($TimeoutSec * 1000) @{}
-$sw.Stop()
-$elapsed = [int]$sw.Elapsed.TotalSeconds
+# 5. 主跑（**两臂**：本组判据跨两个 mode）
+#    2026-10-31 执行面迁移：拆分后这两族在同一个 exe 的两个 mode 里 ——
+#      · `ui-param-defects` ⇒ L 族（P1-F 缺陷族，实测 43 条）
+#      · `ui-sweep`         ⇒ J14d 族（TIFF 压缩算法 / DPI 的 P1-F 反转锚点，实测 9 条）
+#    必须跑两次、把 stdout **拼起来**再做锚点判定：任一臂汇总缺失 / FAIL!=0 / exit!=0 / 超时都算红。
+$arms = @(
+    @{ Mode = 'ui-param-defects'; Label = 'L 族 (P1-F 缺陷)' },
+    @{ Mode = 'ui-sweep';         Label = 'J14d 族 (TIFF / DPI 反转锚点)' }
+)
+$merged   = New-Object System.Text.StringBuilder
+$allClean = $true
+$elapsed  = 0
+foreach ($arm in $arms) {
+    Write-Output ""
+    Write-Output ("===== run: Tests.UiSweep {0} — {1} (timeout=${TimeoutSec}s) =====" -f $arm.Mode, $arm.Label)
+    $swA = [System.Diagnostics.Stopwatch]::StartNew()
+    $ra  = Invoke-HostWithTimeout $exe @($srcDir, $arm.Mode) ($TimeoutSec * 1000) @{}
+    $swA.Stop()
+    $armSec = [int]$swA.Elapsed.TotalSeconds
+    $elapsed += $armSec
 
-if ($r.StartError -ne '') {
-    Write-Output "  FAIL start child host: $($r.StartError)"
-    CK $false "child host started"
-} else {
-    CK (-not $r.TimedOut) "no timeout (elapsed ${elapsed}s, limit ${TimeoutSec}s)"
+    if ($ra.StartError -ne '') {
+        Write-Output "  FAIL start child host: $($ra.StartError)"
+        CK $false "arm '$($arm.Mode)' child host started ($($ra.StartError))"
+        $allClean = $false
+        continue
+    }
+    CK (-not $ra.TimedOut) "arm '$($arm.Mode)' no timeout (elapsed ${armSec}s, limit ${TimeoutSec}s)"
+
+    $sa = Read-HostSummary $ra.OutFile
+    # 超时击杀后**抑制汇总解析**: 被杀的进程留下半截输出, 若其中恰有汇总行
+    # => 「挂死」会被当成「跑完了且干净」。改为打现场(末 5 行)做诊断。
+    if ($ra.TimedOut) {
+        $tail = ''
+        if (Test-Path $ra.OutFile) { $tail = ((Get-Content $ra.OutFile -Tail 5 -ErrorAction SilentlyContinue) -join "`n") }
+        $sa = @{ Text = "[TIMEOUT] summary parsing suppressed; tail:`n$tail"; HasSummary = $false; Pass = -1; Fail = -1 }
+    }
+    Write-Output "----- $($arm.Mode) stdout -----"
+    if ($sa.Text -ne '') { Write-Output $sa.Text } else { Write-Output "(empty)" }
+    $errText = Read-TextShared $ra.ErrFile
+    if ($errText.Trim() -ne '') { Write-Output "----- stderr -----"; Write-Output $errText }
+    Write-Output "----- end $($arm.Mode) -----"
+
+    CK ($sa.HasSummary) "arm '$($arm.Mode)' summary line present (exit 0 alone is not enough)"
+    CK ($sa.HasSummary -and $sa.Fail -eq 0) "arm '$($arm.Mode)' summary FAIL=0"
+    CK ($ra.ExitCode -eq 0) "arm '$($arm.Mode)' exit code == 0 (actual $($ra.ExitCode))"
+    if (-not ($sa.HasSummary -and ($sa.Fail -eq 0) -and ($ra.ExitCode -eq 0) -and (-not $ra.TimedOut))) { $allClean = $false }
+    [void]$merged.AppendLine($sa.Text)
 }
+$allText = $merged.ToString()
 
-$s = Read-HostSummary $r.OutFile
-# 超时击杀后**抑制汇总解析**: 被杀的进程留下半截输出, 若其中恰有汇总行
-# => 「挂死」会被当成「跑完了且干净」。改为打现场(末 5 行)做诊断。
-if ($r.TimedOut) {
-    $tail = ''
-    if (Test-Path $r.OutFile) { $tail = ((Get-Content $r.OutFile -Tail 5 -ErrorAction SilentlyContinue) -join "`n") }
-    $s = @{ Text = "[TIMEOUT] summary parsing suppressed; tail:`n$tail"; HasSummary = $false; Pass = -1; Fail = -1 }
-}
-Write-Output "----- UiTestHost stdout -----"
-if ($s.Text -ne '') { Write-Output $s.Text } else { Write-Output "(empty)" }
-$errText = ''
-if (Test-Path $r.ErrFile) { $errText = [System.IO.File]::ReadAllText($r.ErrFile) }
-if ($errText.Trim() -ne '') { Write-Output "----- stderr -----"; Write-Output $errText }
-Write-Output "----- end UiTestHost -----"
-
-CK ($s.HasSummary) "summary line present (exit 0 alone is not enough)"
-CK ($s.HasSummary -and $s.Fail -eq 0) "summary FAIL=0"
-CK ($r.ExitCode -eq 0) "exit code == 0 (actual $($r.ExitCode))"
-
-# 6. 锚点在册: 挡住「GroupL 被删掉/改名/整段注释掉」的静默退化。
-#    基线(2026-09-19): GroupL_ParamDefects = 43 条 => 只要求 >= 43(只增不减)。
-$lCount = Count-PassPrefix $s.Text 'L'
-Write-Output "  [info] GroupL PASS lines = $lCount (baseline 43)"
-CK ($lCount -ge 43) "GroupL assertion count >= 43 (actual $lCount)"
+# 6. 条数锁：挡住「L 族 / J14d 族被删掉、改名、整段注释掉」的静默退化。
+#    L 族基线 43（2026-09-19 单体读数，2026-10-31 在 ui-param-defects mode 下实测仍 43）；
+#    J14d 族实测 9 条（旧门禁靠「单体一次跑全量」顺带覆盖，没有独立计数 ⇒ 本批补上，
+#    否则第二臂整段消失也仍是绿）。两者都由下界式收紧为**精确等值**。
+$lExpected    = 43
+$j14dExpected = 9
+$lCount    = Count-PassPrefix $allText 'L'
+$j14dCount = Count-PassPrefix $allText 'J14d'
+Write-Output "  [info] GroupL PASS lines = $lCount (expected $lExpected)；J14d PASS lines = $j14dCount (expected $j14dExpected)"
+CK ($lCount -eq $lExpected) "GroupL assertion count == $lExpected (actual $lCount)"
+CK ($j14dCount -eq $j14dExpected) "J14d assertion count == $j14dExpected (actual $j14dCount)"
 
 # 代表性锚点 = 4 个缺陷族每族至少一条 + J14d 的 P1-F 反转锚点。
 # 均为 ASCII 前缀; 中文后缀不参与匹配, 避免编码差异导致的零命中。
@@ -206,7 +255,7 @@ $anchors = @(
 )
 $miss = @()
 foreach ($a in $anchors) {
-    if ((Count-PassPrefix $s.Text $a) -lt 1) { $miss += $a }
+    if ((Count-PassPrefix $allText $a) -lt 1) { $miss += $a }
 }
 CK ($miss.Count -eq 0) "all $($anchors.Count) defect anchors present (missing: $($miss -join ', '))"
 
@@ -216,37 +265,39 @@ if ($SelfCheck) {
     Write-Output ""
     Write-Output "===== selfcheck: UIHOST_NEGCTL=1 must turn RED ====="
     $sw2 = [System.Diagnostics.Stopwatch]::StartNew()
-    $r2 = Invoke-HostWithTimeout $exe @($srcDir) ($TimeoutSec * 1000) @{ UIHOST_NEGCTL = '1' }
-    $sw2.Stop()
-    $s2 = Read-HostSummary $r2.OutFile
-    Write-Output ("  [selfcheck] exit={0} timedOut={1} summary={2} pass={3} fail={4} elapsed={5}s" -f `
-        $r2.ExitCode, $r2.TimedOut, $s2.HasSummary, $s2.Pass, $s2.Fail, [int]$sw2.Elapsed.TotalSeconds)
-    CK ((-not $r2.TimedOut) -and $s2.HasSummary -and ($s2.Fail -ge 1) -and ($r2.ExitCode -ne 0)) `
-       "negative-control switch => summary shows FAIL and exit code != 0"
-    $ncOk = ((-not $r2.TimedOut) -and $s2.HasSummary -and ($s2.Fail -ge 1) -and ($r2.ExitCode -ne 0))
+    # 逐臂验证：两臂各自的判读链都得有牙（只验一臂的话，另一臂的汇总解析器坏了也不报警）。
+    $ncOk = $true
+    foreach ($arm in $arms) {
+        $sw2 = [System.Diagnostics.Stopwatch]::StartNew()
+        $r2 = Invoke-HostWithTimeout $exe @($srcDir, $arm.Mode) ($TimeoutSec * 1000) @{ UIHOST_NEGCTL = '1' }
+        $sw2.Stop()
+        $s2 = Read-HostSummary $r2.OutFile
+        Write-Output ("  [selfcheck] {0}: exit={1} timedOut={2} summary={3} pass={4} fail={5} elapsed={6}s" -f `
+            $arm.Mode, $r2.ExitCode, $r2.TimedOut, $s2.HasSummary, $s2.Pass, $s2.Fail, [int]$sw2.Elapsed.TotalSeconds)
+        $armOk = ((-not $r2.TimedOut) -and $s2.HasSummary -and ($s2.Fail -ge 1) -and ($r2.ExitCode -ne 0))
+        CK $armOk "negative-control switch on '$($arm.Mode)' => summary shows FAIL and exit code != 0"
+        if (-not $armOk) { $ncOk = $false }
+    }
 }
 
 # 8. 清理 + 判据
 Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
 
-$ok = ($fail -eq 0) -and (-not $r.TimedOut) -and $s.HasSummary -and ($s.Fail -eq 0) -and ($r.ExitCode -eq 0) -and $ncOk
+$ok = ($fail -eq 0) -and $allClean -and $ncOk
 
 Write-Output ""
-Write-Output ("  [info] exit={0} timedOut={1} summary={2} pass={3} fail={4} groupL={5} elapsed={6}s" -f `
-    $r.ExitCode, $r.TimedOut, $s.HasSummary, $s.Pass, $s.Fail, $lCount, $elapsed)
+Write-Output ("  [info] arms={0} allClean={1} groupL={2} j14d={3} elapsed={4}s" -f `
+    $arms.Count, $allClean, $lCount, $j14dCount, $elapsed)
 
 if ($ok) {
-    Write-Output "UIPARAMDEF RESULT: pass=$($s.Pass) fail=0"
+    Write-Output "UIPARAMDEF RESULT: pass=$(($lCount + $j14dCount)) fail=0"
     exit 0
 } else {
     $reason = 'unknown'
-    if ($r.TimedOut) { $reason = "timeout ${TimeoutSec}s" }
-    elseif (-not $s.HasSummary) { $reason = 'summary line missing' }
-    elseif ($r.ExitCode -ne 0) { $reason = "exit code $($r.ExitCode)" }
-    elseif ($s.Fail -ne 0) { $reason = "host FAIL=$($s.Fail)" }
+    if (-not $allClean) { $reason = 'one or more arms not clean (timeout / summary missing / exit!=0 / FAIL!=0)' }
     elseif (-not $ncOk) { $reason = 'selfcheck negative control did not turn red' }
     elseif ($fail -ne 0) { $reason = "local checks failed ($fail)" }
     Write-Output "UIPARAMDEF FAIL: $reason"
-    Write-Output "UIPARAMDEF RESULT: pass=$($s.Pass) fail=$($s.Fail)"
+    Write-Output "UIPARAMDEF RESULT: pass=$(($lCount + $j14dCount)) fail=$($fail)"
     exit 1
 }

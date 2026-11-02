@@ -938,15 +938,9 @@ $offFamilies = @(
     @{ Pat = '^_accept';     Why = '脚手架：人工验收脚本，判据与 union 重叠' }
 )
 $offExplicit = [ordered]@{
-    'verify-oracle-matrix.ps1'     = '手工长跑（5015 臂 ≈2.5 h，远超 ScriptTimeoutSec ⇒ 运行器注释里登记了不入清单的理由）'
-    'verify-color-matrix-full.ps1' = '手工长跑（全层网格 360 臂；同上一条理由）'
-    'verify-release-package.ps1'   = '发布套件（L3/打包期手工跑，产物级判据在 pack 之后才有意义）'
     'run-full-matrix-test.ps1'     = '旧一次性驱动（包装 matrix-full；待逐支证明判据已被覆盖后再删）'
     'run-full-matrix-test-safe.ps1' = '旧一次性驱动（同上，带安全阀）'
-    'run-color-tests.ps1'          = '旧一次性驱动（判据已被 verify-color-* 覆盖 ⇒ 待证后删）'
     'run-color-regress.ps1'        = '旧一次性驱动（同上）'
-    'run-quality-tests.ps1'        = '旧一次性驱动（同上）'
-    'run-thread-tests.ps1'         = '旧一次性驱动（同上）'
     'run-ps-verify.ps1'            = '旧一次性驱动（PS 兼容性由 verify-ps-compat 覆盖 ⇒ 待证后删）'
     'archive-diagnostics.ps1'      = '脚手架（诊断留档）'
     'cleanup-structure.ps1'        = '脚手架（结构清理）'
@@ -996,8 +990,29 @@ foreach ($k6 in @($expl11 + $fam11 + $named11)) {
     if ($managedSet.ContainsKey($k6)) { continue }
     $debt11 += ('{0}（判据 {1} 处）' -f $k6, $j6)
 }
-if (@($debt11).Count) {
-    Write-Host ('WARN ⑪-d 有判据却不进整轮的清单外脚本 = ' + @($debt11).Count + ' 支：' + (($debt11 | Select-Object -First 6) -join ', ') + ' ⇒ 要么接进清单，要么按 A-1 的先证明再逐支删（本条只警告不判红：历史上有意的长跑例外）') -ForegroundColor Yellow
+# ── ⑪-d 有据豁免（2026-11-01，第 88~93 条批）：「有判据却不进整轮」的第三种收口 ──
+#   接进清单（真门禁，本批 6 支）或按 A-1 证明后删之外，还有一类：判据**已经由别的受管门禁在整轮内
+#   代跑**的工具/生成器——接进清单反而是语义错误（生成器写 tests/projects 源树；脚手架与在册门禁
+#   进程互斥）。豁免必须**带牙**：CoveredBy 里的每个名都必须真在受管清单里（豁免锚在真实门禁上，
+#   不是自己给自己写条子）；表内名不在盘同样红。
+$debtWaived = [ordered]@{
+    '_accept-ui-split.ps1' = @{ Why = '人工验收脚手架（自报「工具，不是门禁」）：PASS 集合对撞判据已由第 70/71 条在整轮内以更强形状代跑；且它对 UiTestHost/Tests.Ui* 进程显式互斥（fail-closed）⇒ 进整轮会与那两条门禁争用'
+                            CoveredBy = @('verify-ui-split-verbatim.ps1','verify-ui-split-union.ps1') }
+    '_gen-ui-split.ps1'    = @{ Why = '生成器（写 tests/projects 源树，不是验收）：第 74 条把它当执行对象在整轮内跑两遍并逐字节对撞 ⇒ 「接进清单」对生成器是语义错误'
+                            CoveredBy = @('verify-ui-split-reproducible.ps1') }
+}
+function Test-DebtWaived([string]$name) { return $script:debtWaived.Contains($name) }
+$waivedBad = @()
+foreach ($wK in @($debtWaived.Keys)) {
+    if (-not (Test-Path (Join-Path $scriptsDir $wK))) { $waivedBad += ($wK + ' 不在盘'); continue }
+    foreach ($cb in $debtWaived[$wK].CoveredBy) {
+        if (-not $managedSet.ContainsKey($cb)) { $waivedBad += ($wK + ' 的代跑者 ' + $cb + ' 不在受管清单') }
+    }
+}
+CK ($waivedBad.Count -eq 0) ('⑪-d 豁免表有牙：豁免名必须在盘且 CoveredBy 全部是受管门禁（违规 ' + @($waivedBad).Count + ' 条：' + $(if ($waivedBad) { $waivedBad -join '；' } else { '无' }) + '）')
+$debtReal = @($debt11 | Where-Object { -not (Test-DebtWaived (($_ -split '（')[0])) })
+if (@($debtReal).Count) {
+    Write-Host ('WARN ⑪-d 有判据却不进整轮的清单外脚本 = ' + @($debtReal).Count + ' 支：' + (($debtReal | Select-Object -First 6) -join ', ') + ' ⇒ 要么接进清单，要么按 A-1 的先证明再逐支删（本条只警告不判红：历史上有意的长跑例外）') -ForegroundColor Yellow
 }
 $acc11 = @($named11).Count + @($fam11).Count + @($expl11).Count + @($orph11).Count
 $offTotal11 = @($allPs).Count - @($scriptListAll).Count - 1
@@ -1010,9 +1025,11 @@ $syn11b = Split-OffBook @('s_new') @() @{} @{}
 $teeth11 = @()
 if (@($syn11a.OkExempt).Count -ne 1) { $teeth11 += '已登记的清单外脚本应放行' }
 if (@($syn11b.Unregistered).Count -ne 1) { $teeth11 += '新增一支未登记的脚本没被判红' }
-$t11Line = '全部符合（已登记⇒放行 / 新增未登记⇒红）'
+if (-not (Test-DebtWaived '_gen-ui-split.ps1')) { $teeth11 += '豁免表内的名应被判豁免（合成检查）' }
+if (Test-DebtWaived 's_new.ps1') { $teeth11 += '豁免表外的名不得被判豁免（合成检查）' }
+$t11Line = '全部符合（已登记⇒放行 / 新增未登记⇒红 / 豁免表内⇒豁免 / 表外⇒不豁免）'
 if ($teeth11.Count) { $t11Line = ($teeth11 -join ' | ') }
-CK ($teeth11.Count -eq 0) ('⑪-pre 有牙自证：合成件 2 项方向判据（' + $t11Line + '）')
+CK ($teeth11.Count -eq 0) ('⑪-pre 有牙自证：合成件 4 项方向判据（' + $t11Line + '）')
 # ── 信息行：两边的计数与差集（逐名，不压成总数）────────────────────────────
 Write-Host ""
 Write-Host ("ℹ      组表并集 = {0} 个 mode；运行器 `$Probes` = {1} 个；受管基线 = {2} 条（证据源 {3} 条，去掉守卫自己）" -f $union.Count, $probes.Count, $scriptListAll.Count, $evidenceScripts.Count)

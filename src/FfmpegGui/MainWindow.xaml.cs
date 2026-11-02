@@ -5540,6 +5540,30 @@ namespace FfmpegGui
             RefreshLocCombos();   // ComboBox 选项是 C# 填充的，需手动刷新
         }
 
+        /// <summary>
+        /// 关窗行为开关（⚙ 设置菜单，2026-10-31）：勾选=关窗隐藏到托盘继续跑；取消=关窗即退出进程。
+        /// 托盘建不起来时 App 侧强制走真退出，本项无效（菜单项由 SyncSettingsMenuChecks 灰掉并点名原因）。
+        /// </summary>
+        private void CloseToTrayMenu_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        {
+            // ToggleType=CheckBox ⇒ 勾选态此刻已由 Avalonia 翻转，直接取它当新态；
+            // 随后 SyncSettingsMenuChecks 再从设置回灌，保证菜单与 settings.json 永远同源。
+            var on = sender is MenuItem mi && mi.IsChecked;
+            AppSettingsService.Current.CloseToTray = on;
+            AppSettingsService.Save();
+            App.SetCloseToTray(on);
+            SyncSettingsMenuChecks();
+            if (LogText != null) LogText.Text += $"[托盘] 关窗行为已设为：{(on ? "隐藏到托盘" : "退出程序")}\n";
+        }
+
+        /// <summary>
+        /// ⚙ 菜单里的显式退出。托盘不可用 / 被用户关掉时常驻图标不在，这就是唯一看得见的出口。
+        /// </summary>
+        private void AppExitMenu_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        {
+            if (Avalonia.Application.Current is App app) app.ExitApp();
+        }
+
         /// <summary>设置缓存目录（复用既有目录选择器逻辑，不另起一份真值）。</summary>
         private async void CacheDirMenu_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
         {
@@ -5592,9 +5616,15 @@ namespace FfmpegGui
         {
             var btn = this.FindControl<Button>("SettingsMenuBtn");
             if (btn?.Flyout is not MenuFlyout fly) return null;
+            // ⚠ 必须**先比顶层项自己的 Tag**：`cachedir` / `closetotray` 这一类是
+            //   `MenuFlyout` 的**直接子项**（叶子），它们的 `Items` 为空 ⇒ 只比子项会
+            //   恒返回 null（实测后果：勾选态与「托盘不可用 ⇒ 灰掉 + 回显原因」全部不生效）。
             foreach (var top in fly.Items.OfType<MenuItem>())
+            {
+                if (top.Tag as string == tag) return top;
                 foreach (var sub in top.Items.OfType<MenuItem>())
                     if (sub.Tag as string == tag) return sub;
+            }
             return null;
         }
 
@@ -5672,6 +5702,19 @@ namespace FfmpegGui
                     cacheItem.Header = string.IsNullOrWhiteSpace(cache)
                         ? loc["settings.cache.set"]
                         : string.Format(loc["settings.cache.current"], cache);
+                }
+
+                // 关窗行为（2026-10-31）：勾选态跟设置走；托盘不可用时灰掉并回显原因——
+                // 否则用户勾着「最小化到托盘」，App 侧却强制真退出，UI 与真实不符。
+                var trayItem = FindMenuByTag("closetotray");
+                // loc 在 cacheItem 分支里才声明（它是那个分支的局部量）⇒ 这里另取一份实例
+                if (trayItem != null)
+                {
+                    trayItem.SetCurrentValue(MenuItem.IsCheckedProperty, AppSettingsService.Current.CloseToTray);
+                    trayItem.SetCurrentValue(MenuItem.IsEnabledProperty, App.IsTrayAvailable);
+                    Avalonia.Controls.ToolTip.SetTip(trayItem, App.IsTrayAvailable
+                        ? Services.LocalizationService.Instance["settings.tray.close.tip"]
+                        : string.Format(Services.LocalizationService.Instance["settings.tray.unavailable.tip"], App.TrayFailureReason));
                 }
             }
             catch { /* 回显失败不影响功能 */ }

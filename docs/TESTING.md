@@ -587,7 +587,7 @@ $p = "tests/ServiceProbe/bin/Debug/net11.0/win-x64/ServiceProbe.exe"
 —— 计数会漂（`wire` 与 `verdict` 尤其）。⚠ **改任一 mode 的断言后必须重算总和**：
 历史上出现过「`contract` 100 → 107 改了、总数漏改、仍写 372」的错值，由复核方用「各 mode 求和 ≠ 372」抓出。
 ⚠ **某个 mode 若不在 `_run-step3-gates.ps1` 的 `$Probes` 默认值里，说明运行器清单与文档不同步**
-（可据此核对「mode 齐不齐」）。`_run-step3-gates.ps1` 的**脚本门禁清单**当前 **87 条**（2026-10-25 第十九次接线 4 条：`verify-dng-nonraw-input.ps1`（非 RAW/DNG 输入 + `-f dng` 的**统一前置拒绝**：旧代码按路由分叉成「点名拒绝」与 ffmpeg muxer `-22` 两种结果；本闸锁 6 格负控同一句文案 + 零产物，并以 DNG→DNG 正控证明拒绝没误伤真 DNG。实测 **30/0**）、`verify-jxr-backend-choice.ps1`（JXR 旁路对显式 `-e` 的兑现：JPG/JXL 按 `Options.EncoderBackend` 真分叉（日志点名 + 产物哈希双判），JXR 目标固定 `JxrEncApp` 且覆盖警告恰好一次，跨族后端仍被兼容性守卫拒绝。实测 **15/0**）、`verify-avif-alpha.ps1`（**JXR(alpha)→AVIF 的透明交付**：ffmpeg 的 AVIF muxer 实测丢 alpha（即使显式 `-pix_fmt yuva420p` 也只剩单条 `av1/yuv420p` 流）⇒ 源含 alpha 且目标 avif 时改走 `ffmpeg → RGBA PNG → avifenc`，写成标准 alpha 辅助流（8-bit→`yuv420p`+`gray`、16-bit→`yuv420p10le`+`gray10le`）；无 alpha 源仍是单流，并配「ffmpeg 直编该 RGBA 只有 1 条流」的分叉尺。实测 **16/0**）、`verify-jpg-webp-matrix.ps1`（**JPG/WebP 的 YUV 矩阵必须按 BT.601**：`-colorspace bt709` 不只写标签、它改 RGB→YUV 系数，而 JPG 容器没有矩阵字段、libwebp 解码默认 BT.601 ⇒ 饱和红被解成 232/234。产品改为 `ColorSpaceRegistry.ContainerYuvMatrix()` 单一真值（`bt470bg`），legacy 与引擎两路同源；闸锁 8-bit/16-bit 三原色块、legacy 4 格与引擎 2 格的命令行**末个** `-colorspace` 必须是 `bt470bg`、像素回读三原色、AVIF 回归、JPG ICC 在场，并配「直编 bt709 ⇒ 红 ≤240」负控。实测 **30/0**）⇒ 84；2026-10-28 第二十次接线 1 条：`verify-package-gui-starts.ps1`（**出货包能打开**：解包目录里的 `FfmpegGui.exe` 起窗、进程存活、日志无启动异常即绿；防"包做出来了但双击闪退"）⇒ 85；2026-10-31 第二十一次接线 1 条：`_probe-env-trust-baseline.ps1`（**仪器基线闸**：独立性审查暴露的一族假红/假绿都出在"尺子本身"上（`%TEMP%` 被拦、`Start-Process -ArgumentList <数组>` 不预引号、`%APPDATA%` 把工具目录钉死在主仓树），本闸把这三个前提在起轮时逐一量一遍并点名 ⇒ 后续红可以归因到码而不是环境）⇒ **86**；2026-10-31 第二十二次接线 1 条：`_probe-white-point-kernel.ps1`（**白点内核闸**：独立性审查 G15/G19/G20 的 S8 修复判据。根因是「源侧满幅」被系统性当成 65535 —— 随包 ffmpeg 把 8-bit 扩成 `rgb48le` 后顶码实测 **65283**（≈×256 定点 + ≤3 码抖动，不是 257 整数倍），内核仍按 65535.0 归一 ⇒ 白 1.0 被算成 0.99615 ⇒ 8-bit 出口 **254**、16-bit 出口 **65283**。四条产品臂：A 组 8-bit 出口两方向须 255；B 组真 16-bit 源的顶段 252 码不许塌缩（拦「一刀切 /65283 或钳位」那族假修复）；B3 8-bit 源走 16-bit 交付须 65535（把 1 LSB 放大成 **252 码头**，肉眼可判）；C 组为不进内核的直通正控 + 自研 conformant 读手与随包 ffmpeg 逐样本互校。实测修复件 **27/0/0/0**；把 `ResolveSrcCodeMax` 恒返 65535.0 重编（= 未修行为）⇒ **23/4**，A 组红在 254、B3 红在 65283 ⇒ 判据有牙。⚠ 已知边界：gray8 PNG 与 jpeg 臂的扩位顶码是 **65280**（≠ 65283）⇒ 这两臂白点落在 0.99995，8-bit 交付仍量化到 255，16-bit 交付会得 65532；本轮不按载体细分，如实记入）⇒ **87**；2026-10-24 第十八次接线 1 条：`verify-gainmap-compose.ps1`（**两图 GainMap 合成**：SDR 底图 + HDR 参考 → Ultra HDR JPEG / AVIF tmap。判据四层：① 夹具自检（HDR 那份真带 PQ/BT.2020，SDR 那份不带 HDR 传递）；② 容器结构（XMP hdrgm 的 MapPrimary/MapSecondary/Channels + **独立** MPF 走偏移，次级图 SOI/EOI/文件尾三项全中）；③ 语义解耦（`HDRCapacityMax`=log2(peak/203) 与 `GainMapMax` 实测分开：固定 peak=1000 时 **2.30 vs 1.76**，单通道臂 Channels=1 证明开关不是死旋钮）；④ 底图保真（主 JPEG 解回 rgb24 vs SDR 夹具 **28.97 dB ≥26**，同法与无关同尺寸图仅 **4.16 dB** ⇒ 尺子会分叉）+ 三条负控（尺寸不一致 rc=1 / 角色放反 rc=1 / 输出 png rc=2，全部零产物且点名）；⑦ 编码器显式选择（`--gainmap-encoder mjpeg|libsvtav1` 两臂必须**日志点名**实际编码器，跨族（JPEG+AV1）/词表外/缺 `--compose-gainmap` 三负控 rc=2 且零产物）；实测 **37/0 @13.3 s**（首轮）→ **52/0**（2026-10-25 加 ⑦ 组，独跑）→ **85/0**（同日加 ⑧ 组：元数据承载三态 iso/xmp/both 按**字节**判 ISO 命名空间串与 XMP `hdrgm:` 命中、且三态下 MPF 仍能独立走出次级图，XMP-only 另由 exiftool 读出 HDRCapacityMax=2.30 证明「写了串 ≠ 可被消费」；**默认（不传 flag）必须是 ISO-only** 五条（日志点名 iso / ISO 命名空间在 / `hdrgm:` 不在 / MPF 可走）；AVIF 质量两臂 `-q 99 ⇒ CRF 1` / `-q 30 ⇒ CRF 44`、产物 7541 B vs 3313 B ⇒ 滑块真的改 CRF；AVIF+XMP / 词表外 / 缺 `--compose-gainmap` 三负控 rc=2 且零产物；`tests/output/results/gainmap-compose`）；⚠ 峰值 auto 臂的夹具按 SDR 白点转 PQ ⇒ 实测 100 nits、容量 0.00（容量>0 由固定 peak 两臂覆盖），该臂只锁「容量与实测峰值同源」；⚠ exiftool 13.59 对追加在 EOI 之后的次级图报 `[minor] Error reading GainMap image/jpeg from trailer`，同字节 SOI/EOI/尾部自洽且 ffprobe 可解 ⇒ 本闸按结构判、不按该警告判）⇒ 80；2026-10-21 第十六次接线 1 条：`verify-jxr-highbitdepth.ps1`（JXR **高位深直通臂**）⇒ 78；2026-10-24 第十七次接线 1 条：`verify-acr-route.ps1`（**DNG 的 ACR 路线**：`dngtool -rdp` 走 Adobe DNG SDK 的 `dng_render`，OpcodeList1/2/3 全部施加（LibRaw 臂一张都不执行），渲染空间按下游目标选 `srgb`/`rec2020`（bt709 出口渲 sRGB 原色，其余渲 Rec2020），朝向按 Orientation 旋正，产品侧 `ColorSourceDeclPrimaries` 与渲染空间同源；负控覆盖未知空间/两腿哈希相同/半成品残留。实测 **26/0 @103 s**（运行器子集跑；2026-10-26 加 ⑫「LibRaw 臂必须真线性」两臂 ⇒ **28/0**，读数与动机见 `docs/IMPLEMENT_PLAN_2026-10-11.md` §48）、整轮 **79/79 @38.6 min**（`tests/output/round-acr-20261024/round.log`，artifact `FfmpegGui.dll=7CDF44AED27FA9C1`）；⚠ 依赖两份链外 Sony ARW，缺失即点名红）⇒ 79；2026-10-17 第十五次接线 1 条：`verify-dng-metadata-transport.ps1`（**非 DNG 源 RAW → DNG 的元数据搬运三段锁 + 语义恢复锁 + 非 ASCII 输入名锁 + GPS 不降级锁** —— 立锁动因是 2026-10-16 的索尼 ARW 审计：`dngtool -e` 把 ARW 里 Imaging Edge 写的 IDC 版本栈、94 条厂商注记、三张镜头校正表、预览/缩略图全部丢掉（420 条 → 66 条），而**在册 76 条里没有一条把非 DNG 的 RAW 喂给 `-e`** ⇒ 这格没有任何判据看着它。判据一律**按区间算 SHA256 对撞**、读数由 exiftool 独立给出（不信 dngtool 自己的日志串）：②**规范载体**：由 exiftool 自己的 `DNG.pm::ProcessOriginalRaw` 解 50828 回来得到的字节与源同 SHA256（长度相等且非零，防空跑）+ 50829/50973 必须在场而 `DNGPrivateData` 必须**缺席**；②e/②f 另锁**嵌入件的完整性**——MD5(存储的那串 50828 字节) 必须等于 50973（规范 p.55 原文："This tag is an MD5 digest of the data stored in the OriginalRawFileData tag"），并有一支"把载荷一个字节翻掉、总长不变"的变异牙；现场登记：Adobe `dng_validate -v` 与自家 `dngtool -verify` 对同一坏件都仍 rc=0 且照打 digest ⇒ 这条没人替我们查（自造的 'DMSL' 块已于 2026-10-17 删除：规范把它定义为厂商给自己 raw 转换器的私有数据、且块内偏移须相对该块起点）+ DNG→DNG 再编码后仍可解回同哈希｜③预览 734118 B 与缩略图 8908 B 原字节入档（证未重编码）｜④ExifIFD 逐条与源一致（源无有效值则 SKIP 点名，不假要求）｜⑤**负控**：同输入再跑一臂 `-no-raw-meta` ⇒ 嵌入件/ExifIFD/预览必须全为零（防②③④恒真）而 `NewRawImageDigest` 两臂相同（搬运不动像素）｜⑥ DNG→DNG 臂仍在册（WhiteLevel 65535、源里没有 50828 时不得无中生有 ⇒ 非 DNG 分支没污染既有基线前提）｜⑦ **语义恢复**：`dngtool -idc` 在源 RAW 与产物里嵌入的原件上必须读出**逐字节相同**的 JSON（只去掉 `{"origin":"…"}` 一段，连 sr2Dir/idcDir 两个绝对偏移都要求相同 ⇒ 嵌的是**整个原件**，寻址天然复现"以原 TIFF 基址起算"，不需要任何我方约定）+ 条目数 ≥40（两边同时读空也会相等 ⇒ 防空跑）+ 负控：`-no-raw-meta` 产物上 `-idc` 必须非零退出｜⑧ **非 ASCII 输入名**：LibRaw 的窄路径重载把 char 逐个零扩展成 wchar_t 再 CreateFileW ⇒ 中文名必 `rc=2`，中文名臂要求 rc=0 且产物像素摘要与 ASCII 名臂相同、嵌入件读得出同一份 IDC。⚠ ⑦ **不能**用 7S 那份素材（它的 0x7240 指向**空目录**，exiftool `-v3`："SonyIDC directory with 0 entries"、`-SonyIDC:all` 命中 0 条）⇒ 另需链外件 `Sony_ILCE7M2_IDC.ARW`（= 2026-10-16 审计原图，58 条生效版本）；两份素材任一缺失一律点名红、不降级 SKIP。归 **C 类** ⇒ `4 + 7` 两个标签数组不动、`65 → 66`。｜⑨⑩⑪ **"源到底被改了什么"**：索尼把编辑记在 IDC 的**两个版本目录**里（hop 0 = 机身初值、生效版 = 导出后的值；本机四件 ARW 各 14/15/14/14 项差异）⇒ 这件事**不需要任何标定**就能读出来。⑨ 由 `_crosscheck-idc-changed.py` 用 exiftool 把两版各读一遍、按 tag 求差，与我方 `changed` 逐条比**集合与数值**（⚠ 两条一手口径：名字表 hex 位数要按 **3~4 位**匹配，`0x201` 这种三位数按四位正则会整条漏掉；exiftool 把 `0x0201/0x0202` 存的 0 按 `IsOffset` 解析成**各自目录基址** ⇒ 造出一条伪差异 49578034 vs 49578824，而文件里两处字节都是 `00 00 00 00` ⇒ 读手显式排除并在行里点名）｜⑩ 编码器 stderr 的 **ASCII 键** `idc-changed=N` 必须等于 exiftool 侧的数（拿中文串当解析锚点会在非 UTF-8 码页机器上假红）｜⑪ 精度臂：`_make-synth-idc-revert.py` 把生效版某一项抹平成初始版值后，`changed` / 日志计数 / 产物嵌入件读回**三处必须同步降 1** ⇒ 证明判据读的是数据不是常数｜⑫⑬⑭ 锁**标准位真落地**：`dngtool -idc-look 规格.txt` 把外部给的曲线写进**主 profile 的 `ProfileToneCurve`**(50940，规范原文 Usage = "IFD0 or Camera Profile IFD"、FLOAT、Count=Samples\*2、(x,y) 均在 [0,1] 线性域、x 严格递增、"readers should interpolate the curve using a cubic spline")。⚠ **不走 `ExtraCameraProfiles`(50933) 是被实测否证的**：SDK 1.7.1 两段式尺寸预算在这条路上不闭合——extras 指向的块只剩 8 字节块头（`II`+magic `0x4352`+IFD 偏移 8），而 **`StripOffsets` 恰好 = 块址+8** ⇒ 条带数据把 profile 目录整个盖掉（`dng_image_writer.cpp:9669` 起）。读手 `tests/scripts/_readback-dng-profile.py` **自解 TIFF**（exiftool 对本机产物的 profile 报 "Bad format … parsing aborted" ⇒ 它读不出这块，不能当读者），判据取 **IFD0 标签集合的差恰好"只多 0xC6FC"**——一个方向排除"挤掉别的标签"，另一个方向排除"多写别的标签"；⑬ = 同输入不加该参数时 `ProfileToneCurve` 必须缺席（⑫ 的反控）；⑭ = 缺 `curve` 行 / x 不递增 / 不认识的键 ⇒ **非零退出且不产出**。⚠ "缺 curve 行"必须显式判：`dng_tone_curve` 的默认值是 `SetNull()` 生成的 `(0,0)(1,1)` 恒等线（`dng_tone_curve.cpp:38-49`），它 `IsValid()` 为真 ⇒ 只查 IsValid 等于放行"规格里根本没写曲线"（**本条就是这么被自己抓到的：bad2 臂当时 rc=0 且产出了文件**，补 `hasCurve` 后才转红）。当日实测 **32/0 @33.8 s**（独跑墙钟；2026-10-17 载体换成规范标签后 ② 组换形、并加 ⑮ GPS 臂；**同日再加 ⑯ 组后的现值见本条末尾：36/0 与 37/0**）。⑮ 组的变异两读：把"源含 GPS ⇒ 关掉整条搬运"那一版复刻回去 ⇒ **只红 ⑮a/⑮c（30/2）**，证明这组抓的是"GPS 引起降级"而不是别的；变异第一版把 `carryRawMetadata = false` 落在那句**裸 fprintf 之外**（无花括号）⇒ 对所有源都关搬运 ⇒ **15/17**，②③④⑦⑧⑩⑪ 一起转红（意外证明那 17 条确实看着三段搬运本身）。跑完逐字节还原、`cmp` 证相等。⚠ 牙的归因：在未修复件（sha16 33FBABEAA2780762）上 ⑦a/⑦b/⑧a 三条同时判红，而**同件同源的 ASCII 名编码臂仍 rc=0 且有产物** ⇒ 红只能归到"源元数据未进产物"（当时口径还是闭包，2026-10-17 同日已换成规范 50828）与"名字非 ASCII"这两维本身；⑨⑩⑪ 的红路由 ⑪ 自己给出（三处不同步即红）；⑫⑭ 的红由 ⑬（反控）与 bad2 的 fail-open 实录给出。⚠ 边界如实记：本机四件的 `ToneCurve*{X,Y}` 全是恒等 ⇒ 工具**不自动映射** IDC 值（0..511 域与空间未定，归一化是我方约定），交付的是通道而不是猜出来的数。｜⑯ **分通道曲线的规范位**：`-idc-look` 新增 `curveR/G/B=x:y ...` 三键 ⇒ `OpcodeList3`(51022) 里三支 `dng_opcode_MapTable`（每支 `fPlane`=0/1/2、`fPlanes`=1、表 `count=0x10000` 项 uint16；list 3 是 **post demosaic** —— 放 list 2 那时只有一个平面，谈不上分通道，这是我第一版的第二处错）。⚠ **area 必须写具体整幅矩形、不许留空**：SDK 的 `dng_area_spec::GetData` 先按 `fArea.H()/W()`（空矩形=0）把 pitch 从 1 钳成 0，再被 `IsEmpty` 分支 `ThrowBadFormat`（`dng_misc_opcodes.cpp:141-155`）⇒ 我按头文件注释"空 area = 整幅"写的第一版被 Adobe `dng_validate` 与自家 `dngtool -verify` 双双判 error 100006，而**编码侧 rc=0、日志照打**（静默坏件）。判据形状 = 第二个实现 `_readback-dng-opcodes.py` 自己解 TIFF：解完正好落在标签 byteCount 上 + area 非空 + pitch=1 + 表内容与规格逐点回算（≤1 码）。`curve` 与 `curveR/G/B` **互斥**（读者会同时施加 profile 曲线与 opcode ⇒ 同一条曲线施加两次）；恒等表**不写**并按 ASCII 键 `opcode-skipped=N` 点名（写了的打 `opcode-channels=N`；两把键都刻意 ASCII，中文串在非 UTF-8 码页会变形）。重组 `DNGOPC_HEAVY=1`（默认不跑 ⇒ 记未判不记绿）用 Adobe `dng_validate -3` 三臂渲染对账"读者真施加"：恒等臂与基准**逐字节相同**、非恒等臂 72,721,702 个平面值不同、且等于按规格算出的 LUT（精确 0.9908、最大 1 码 = SDK 对表做黑电平调整的舍入地板 ⇒ 判据取 2 码而不是"实测刚好过"的 1 码）。⑯ 两支变异各**只红自己那条**：空 area 版 ⇒ 35/1 只红 ⑯a（编码照绿、独立读手 rc=1）；摘掉恒等跳过 ⇒ 35/1 只红 ⑯c ⇒ 没有第二实现时这两支缺陷都是静默的。判据数 32 → **36**（重臂 37），实测 **36/0 @44.0 s**、**37/0 @47.2 s**。｜⑰ **IDC 版本时间戳 → 标准 XMP 位**（第 77 条同日再加 5 臂 ⇒ 36 → **41**，实测 **41/0 @47.3 s**）：落点是**产品侧既有的 exiftool 后处理**，不是 dngtool —— 本仓 SDK 以 `qDNGUseXMP=0` 配（`tools/src/dngtool/CMakeLists.txt:59,172`），`dng_xmp.cpp` 无 SDK 分支 ⇒ 工具侧写不了 700；实测 exiftool 写 `xmp:CreateDate/ModifyDate` 后 Adobe `dng_validate` 仍 *Validation complete*、`dngtool -verify` 仍过 ⇒ 这条是规范指定的位置、零换算的内容（IDC 的 0xD100/0xD101 文本本身就是 XMP 日期形状）。三处新代码：`RawService.ReadIdcVersionDatesAsync`（源文本按 `IsXmpDateForm` 过滤，读不到 ≠ 失败）、`ExifToolService.WriteIdcXmpDatesAsync`（**再检一遍形状才拼命令行** —— 操作数来自源文件，不校验就是注入面）、`QueueProcessor.WriteIdcVersionDatesAsync`（只在 `carryRawMetadata ∧ ¬StripExifTime` 下调用 ⇒ 隐私优先；exiftool 缺席 / 源无 IDC 链 / 写入失败 三种"不写"各自点名，跳过 ≠ 成功）。判据：⑰a 源形状、⑰b 按产品同法写入后独立读手逐字相等、⑰c 写完 `-verify` 仍过、⑰d 无 IDC 链那份 `-idc` 非零（⇒ ⑰a 不是在任意文件上成立）、⑰e **产品接线的源形锁**。⑰e 变异：守卫退化成 `if (success)` ⇒ **40/1 只红 ⑰e**（还原后与备份 `diff` 逐字相同）。另记一处自写解析器的静默错：`struct` 用 `HHIH` 解 TIFF entry 只取到值场低 16 位 ⇒ 大偏移被截成小数字（本机 51022 的 39,527,098 被读成 8,890），必须 `HHII`；小偏移看不出这个错 ⇒ 判"偏移对不对"要拿第二个读者（Adobe 打印的 offset）对撞。｜⑱ **源 RAW 的镜头三表 → 规范 opcode**（2026-10-19 接线，`dngtool -lens-corr`，**默认关** ⇒ 它改渲染像素，且产物与 Adobe 的转换结果分叉）：写进 `OpcodeList3`(51022) 的是 `FixVignetteRadial`(ID=3, required) + `[WarpRectilinear2 (ID=14, optional) + WarpRectilinear (ID=1, required, 只含偶次项)]` 成对三支 —— **成对且相邻**是硬条件，规范 p.105 的跳过规则只在 optional 的 14 紧跟一条 1 时生效（本机用 Adobe `dng_validate -3` 实测到"与只发 14 逐点相同"，而两支都 required 时两条都施加 ⇒ 施加两遍）。换算口径**全部回一手材料**：结点 `r=(i+0.5)/(nc−1)`（dt `lens.cc:2225`）、畸变/横向色差 = 半径比例 Rin/Rout（dt `:2231-2240` + `:2409-2421` 注释与 SDK `r_real = r_ideal*f(r_ideal)` 同向 ⇒ 不取倒数）、暗角 = 乘增益（SDK `dng_lens_correction.h:669-680`；dt 存的是它的倒数）、CA **前 nc=R 后 nc=B**（dt `exif.cc:1398-1406` 逐字取数 + 硬校验 `2*nc==CA 计数` ⇒ 撤回本仓 10-18 记的"索引语义未定"）。判据 = 第二实现 `tests/scripts/_readback-dng-lens.py`（自己解源 ARW 的小端 TIFF 与产物的**大端** opcode 列表，**逐结点回算**与源表对撞，死线 0.0025/0.0006 写在该文件内、不读被检方常数；再判 flags、[14][1] 相邻、镜头支不重复；`--stderr` 让它把**点名过的跳过**与**静默缺席**分开判（前者放行、后者判红 ⇒ 不必假设"三支恒在场"，那只是本夹具恰好成立）。
+（可据此核对「mode 齐不齐」）。`_run-step3-gates.ps1` 的**脚本门禁清单**当前 **94 条**（2026-10-25 第十九次接线 4 条：`verify-dng-nonraw-input.ps1`（非 RAW/DNG 输入 + `-f dng` 的**统一前置拒绝**：旧代码按路由分叉成「点名拒绝」与 ffmpeg muxer `-22` 两种结果；本闸锁 6 格负控同一句文案 + 零产物，并以 DNG→DNG 正控证明拒绝没误伤真 DNG。实测 **30/0**）、`verify-jxr-backend-choice.ps1`（JXR 旁路对显式 `-e` 的兑现：JPG/JXL 按 `Options.EncoderBackend` 真分叉（日志点名 + 产物哈希双判），JXR 目标固定 `JxrEncApp` 且覆盖警告恰好一次，跨族后端仍被兼容性守卫拒绝。实测 **15/0**）、`verify-avif-alpha.ps1`（**JXR(alpha)→AVIF 的透明交付**：ffmpeg 的 AVIF muxer 实测丢 alpha（即使显式 `-pix_fmt yuva420p` 也只剩单条 `av1/yuv420p` 流）⇒ 源含 alpha 且目标 avif 时改走 `ffmpeg → RGBA PNG → avifenc`，写成标准 alpha 辅助流（8-bit→`yuv420p`+`gray`、16-bit→`yuv420p10le`+`gray10le`）；无 alpha 源仍是单流，并配「ffmpeg 直编该 RGBA 只有 1 条流」的分叉尺。实测 **16/0**）、`verify-jpg-webp-matrix.ps1`（**JPG/WebP 的 YUV 矩阵必须按 BT.601**：`-colorspace bt709` 不只写标签、它改 RGB→YUV 系数，而 JPG 容器没有矩阵字段、libwebp 解码默认 BT.601 ⇒ 饱和红被解成 232/234。产品改为 `ColorSpaceRegistry.ContainerYuvMatrix()` 单一真值（`bt470bg`），legacy 与引擎两路同源；闸锁 8-bit/16-bit 三原色块、legacy 4 格与引擎 2 格的命令行**末个** `-colorspace` 必须是 `bt470bg`、像素回读三原色、AVIF 回归、JPG ICC 在场，并配「直编 bt709 ⇒ 红 ≤240」负控。实测 **30/0**）⇒ 84；2026-10-28 第二十次接线 1 条：`verify-package-gui-starts.ps1`（**出货包能打开**：解包目录里的 `FfmpegGui.exe` 起窗、进程存活、日志无启动异常即绿；防"包做出来了但双击闪退"）⇒ 85；2026-10-31 第二十一次接线 1 条：`_probe-env-trust-baseline.ps1`（**仪器基线闸**：独立性审查暴露的一族假红/假绿都出在"尺子本身"上（`%TEMP%` 被拦、`Start-Process -ArgumentList <数组>` 不预引号、`%APPDATA%` 把工具目录钉死在主仓树），本闸把这三个前提在起轮时逐一量一遍并点名 ⇒ 后续红可以归因到码而不是环境）⇒ **86**；2026-10-31 第二十二次接线 1 条：`_probe-white-point-kernel.ps1`（**白点内核闸**：独立性审查 G15/G19/G20 的 S8 修复判据。根因是「源侧满幅」被系统性当成 65535 —— 随包 ffmpeg 把 8-bit 扩成 `rgb48le` 后顶码实测 **65283**（≈×256 定点 + ≤3 码抖动，不是 257 整数倍），内核仍按 65535.0 归一 ⇒ 白 1.0 被算成 0.99615 ⇒ 8-bit 出口 **254**、16-bit 出口 **65283**。四条产品臂：A 组 8-bit 出口两方向须 255；B 组真 16-bit 源的顶段 252 码不许塌缩（拦「一刀切 /65283 或钳位」那族假修复）；B3 8-bit 源走 16-bit 交付须 65535（把 1 LSB 放大成 **252 码头**，肉眼可判）；C 组为不进内核的直通正控 + 自研 conformant 读手与随包 ffmpeg 逐样本互校。实测修复件 **27/0/0/0**；把 `ResolveSrcCodeMax` 恒返 65535.0 重编（= 未修行为）⇒ **23/4**，A 组红在 254、B3 红在 65283 ⇒ 判据有牙。⚠ 已知边界：gray8 PNG 与 jpeg 臂的扩位顶码是 **65280**（≠ 65283）⇒ 这两臂白点落在 0.99995，8-bit 交付仍量化到 255，16-bit 交付会得 65532；本轮不按载体细分，如实记入）⇒ **87**；2026-11-01 第二十三次接线 6 条：`run-color-tests.ps1` + `run-quality-tests.ps1` + `run-thread-tests.ps1`（三支旧驱动——直驱 PLAN 工具、不起产品——补齐 house 契约（末行 `PASS=n FAIL=m` + fail⇒exit 1）与 TMP/DOTNET_ROOT 钉扎前奏（AGENTS §4；本机沙箱拦真 %TEMP% 曾把 pngcicp/引擎臂批量打成假红）后入列。实测 **24/0 @21.5 s**、**18/0 @110 s**、**11/0 @45 s**）+ `verify-color-matrix-full.ps1`（**色彩矩阵网格**：源×目标×{8,16}bit×{png,jxl} 逐格四把裁判 CAP/LBL/NUM/RT + 四条负控 + LEGACY 通路层 48 格；受轮跑**默认 quick 档**，实测 **24/0 @257 s**；full 档 360 臂仍是手工档。入列前修了三处裁判侧漂移：jxlinfo 新输出把 primaries/transfer 拆成独立行 ⇒ `_lib-oracle.ps1` 的 Get-ColorMetadata 补行级回退（新词形 P3/Rec.2100/sRGB/709 本就在共享词形表里）；LEGACY 的 jxl 标签对照从分家字面量改回共享词形表（新增 Get-TargetTransferRx）；LEGACY 像素参照对 bt709 档从 zimg 纯 γ 换 BT.709-6 定义式 OETF（同产物对撞实测 23.36 vs **50.92 dB**）+ 恒等格（源域==目标域，legacy 逐字节等于源/jxl 有损 35~40 dB）改钉「不得乱动像素」按容器阈值 png 40 / 其余 26）+ `verify-oracle-matrix.ps1`（**oracle 执行层**：受轮经 runner 的 `$scriptArgs` 受管参数表只跑 `-Smoke`（3 用例），实测 **15/0 @7.5 s**；全量 5015 臂 ≈2.5h 仍是手工档）+ `verify-release-package.ps1`（**出包独立验收**：PKG_VER 缺省改从盘上归档名推（多版本歧义/无归档 ⇒ fail-closed），对账前清解包目录的产品再生残留（debug.log/settings.json，包内 exe 被跑过必落）；实测 **16/0 @1.0 s**）⇒ **93**；2026-11-01 第二十四次接线 1 条：`_probe-host-temp-sites.ps1`（**宿主 TEMP 站点文本级探针**：AGENTS §7「宿主 TEMP 站点无源级锁」的兑现。三把尺全部 fail-closed——①每文件 GetTempPath/GetTempFileName 站点数冻结（39 站点/7 文件；新增必须同批改表并写明生命周期：tooldetect_ 有 finally 删、cmsbench 有意缓存、cmsx 手工档默认出参、其余 GUID 名 try/finally 删）；②坏根名黑名单 gate_tmp/gtmp/roundtmp/_ramdisk/faketemp（Harness.cs:67 的在册记录是注释 ⇒ 剥注释行；pngTmp/FFMPEGGUI_RAMDISK 两族撞名假阳性实测后收紧为大小写敏感+路径段分隔）；③扫描面自证（总数=0 或对账差异即红）+ 对账函数合成输入自检。实测 **5/0**。不扫 src 的产品临时目录（走 CacheDirectory 用户设置，产品语义））⇒ **94**；2026-10-24 第十八次接线 1 条：`verify-gainmap-compose.ps1`（**两图 GainMap 合成**：SDR 底图 + HDR 参考 → Ultra HDR JPEG / AVIF tmap。判据四层：① 夹具自检（HDR 那份真带 PQ/BT.2020，SDR 那份不带 HDR 传递）；② 容器结构（XMP hdrgm 的 MapPrimary/MapSecondary/Channels + **独立** MPF 走偏移，次级图 SOI/EOI/文件尾三项全中）；③ 语义解耦（`HDRCapacityMax`=log2(peak/203) 与 `GainMapMax` 实测分开：固定 peak=1000 时 **2.30 vs 1.76**，单通道臂 Channels=1 证明开关不是死旋钮）；④ 底图保真（主 JPEG 解回 rgb24 vs SDR 夹具 **28.97 dB ≥26**，同法与无关同尺寸图仅 **4.16 dB** ⇒ 尺子会分叉）+ 三条负控（尺寸不一致 rc=1 / 角色放反 rc=1 / 输出 png rc=2，全部零产物且点名）；⑦ 编码器显式选择（`--gainmap-encoder mjpeg|libsvtav1` 两臂必须**日志点名**实际编码器，跨族（JPEG+AV1）/词表外/缺 `--compose-gainmap` 三负控 rc=2 且零产物）；实测 **37/0 @13.3 s**（首轮）→ **52/0**（2026-10-25 加 ⑦ 组，独跑）→ **85/0**（同日加 ⑧ 组：元数据承载三态 iso/xmp/both 按**字节**判 ISO 命名空间串与 XMP `hdrgm:` 命中、且三态下 MPF 仍能独立走出次级图，XMP-only 另由 exiftool 读出 HDRCapacityMax=2.30 证明「写了串 ≠ 可被消费」；**默认（不传 flag）必须是 ISO-only** 五条（日志点名 iso / ISO 命名空间在 / `hdrgm:` 不在 / MPF 可走）；AVIF 质量两臂 `-q 99 ⇒ CRF 1` / `-q 30 ⇒ CRF 44`、产物 7541 B vs 3313 B ⇒ 滑块真的改 CRF；AVIF+XMP / 词表外 / 缺 `--compose-gainmap` 三负控 rc=2 且零产物；`tests/output/results/gainmap-compose`）；⚠ 峰值 auto 臂的夹具按 SDR 白点转 PQ ⇒ 实测 100 nits、容量 0.00（容量>0 由固定 peak 两臂覆盖），该臂只锁「容量与实测峰值同源」；⚠ exiftool 13.59 对追加在 EOI 之后的次级图报 `[minor] Error reading GainMap image/jpeg from trailer`，同字节 SOI/EOI/尾部自洽且 ffprobe 可解 ⇒ 本闸按结构判、不按该警告判）⇒ 80；2026-10-21 第十六次接线 1 条：`verify-jxr-highbitdepth.ps1`（JXR **高位深直通臂**）⇒ 78；2026-10-24 第十七次接线 1 条：`verify-acr-route.ps1`（**DNG 的 ACR 路线**：`dngtool -rdp` 走 Adobe DNG SDK 的 `dng_render`，OpcodeList1/2/3 全部施加（LibRaw 臂一张都不执行），渲染空间按下游目标选 `srgb`/`rec2020`（bt709 出口渲 sRGB 原色，其余渲 Rec2020），朝向按 Orientation 旋正，产品侧 `ColorSourceDeclPrimaries` 与渲染空间同源；负控覆盖未知空间/两腿哈希相同/半成品残留。实测 **26/0 @103 s**（运行器子集跑；2026-10-26 加 ⑫「LibRaw 臂必须真线性」两臂 ⇒ **28/0**，读数与动机见 `docs/IMPLEMENT_PLAN_2026-10-11.md` §48）、整轮 **79/79 @38.6 min**（`tests/output/round-acr-20261024/round.log`，artifact `FfmpegGui.dll=7CDF44AED27FA9C1`）；⚠ 依赖两份链外 Sony ARW，缺失即点名红）⇒ 79；2026-10-17 第十五次接线 1 条：`verify-dng-metadata-transport.ps1`（**非 DNG 源 RAW → DNG 的元数据搬运三段锁 + 语义恢复锁 + 非 ASCII 输入名锁 + GPS 不降级锁** —— 立锁动因是 2026-10-16 的索尼 ARW 审计：`dngtool -e` 把 ARW 里 Imaging Edge 写的 IDC 版本栈、94 条厂商注记、三张镜头校正表、预览/缩略图全部丢掉（420 条 → 66 条），而**在册 76 条里没有一条把非 DNG 的 RAW 喂给 `-e`** ⇒ 这格没有任何判据看着它。判据一律**按区间算 SHA256 对撞**、读数由 exiftool 独立给出（不信 dngtool 自己的日志串）：②**规范载体**：由 exiftool 自己的 `DNG.pm::ProcessOriginalRaw` 解 50828 回来得到的字节与源同 SHA256（长度相等且非零，防空跑）+ 50829/50973 必须在场而 `DNGPrivateData` 必须**缺席**；②e/②f 另锁**嵌入件的完整性**——MD5(存储的那串 50828 字节) 必须等于 50973（规范 p.55 原文："This tag is an MD5 digest of the data stored in the OriginalRawFileData tag"），并有一支"把载荷一个字节翻掉、总长不变"的变异牙；现场登记：Adobe `dng_validate -v` 与自家 `dngtool -verify` 对同一坏件都仍 rc=0 且照打 digest ⇒ 这条没人替我们查（自造的 'DMSL' 块已于 2026-10-17 删除：规范把它定义为厂商给自己 raw 转换器的私有数据、且块内偏移须相对该块起点）+ DNG→DNG 再编码后仍可解回同哈希｜③预览 734118 B 与缩略图 8908 B 原字节入档（证未重编码）｜④ExifIFD 逐条与源一致（源无有效值则 SKIP 点名，不假要求）｜⑤**负控**：同输入再跑一臂 `-no-raw-meta` ⇒ 嵌入件/ExifIFD/预览必须全为零（防②③④恒真）而 `NewRawImageDigest` 两臂相同（搬运不动像素）｜⑥ DNG→DNG 臂仍在册（WhiteLevel 65535、源里没有 50828 时不得无中生有 ⇒ 非 DNG 分支没污染既有基线前提）｜⑦ **语义恢复**：`dngtool -idc` 在源 RAW 与产物里嵌入的原件上必须读出**逐字节相同**的 JSON（只去掉 `{"origin":"…"}` 一段，连 sr2Dir/idcDir 两个绝对偏移都要求相同 ⇒ 嵌的是**整个原件**，寻址天然复现"以原 TIFF 基址起算"，不需要任何我方约定）+ 条目数 ≥40（两边同时读空也会相等 ⇒ 防空跑）+ 负控：`-no-raw-meta` 产物上 `-idc` 必须非零退出｜⑧ **非 ASCII 输入名**：LibRaw 的窄路径重载把 char 逐个零扩展成 wchar_t 再 CreateFileW ⇒ 中文名必 `rc=2`，中文名臂要求 rc=0 且产物像素摘要与 ASCII 名臂相同、嵌入件读得出同一份 IDC。⚠ ⑦ **不能**用 7S 那份素材（它的 0x7240 指向**空目录**，exiftool `-v3`："SonyIDC directory with 0 entries"、`-SonyIDC:all` 命中 0 条）⇒ 另需链外件 `Sony_ILCE7M2_IDC.ARW`（= 2026-10-16 审计原图，58 条生效版本）；两份素材任一缺失一律点名红、不降级 SKIP。归 **C 类** ⇒ `4 + 7` 两个标签数组不动、`65 → 66`。｜⑨⑩⑪ **"源到底被改了什么"**：索尼把编辑记在 IDC 的**两个版本目录**里（hop 0 = 机身初值、生效版 = 导出后的值；本机四件 ARW 各 14/15/14/14 项差异）⇒ 这件事**不需要任何标定**就能读出来。⑨ 由 `_crosscheck-idc-changed.py` 用 exiftool 把两版各读一遍、按 tag 求差，与我方 `changed` 逐条比**集合与数值**（⚠ 两条一手口径：名字表 hex 位数要按 **3~4 位**匹配，`0x201` 这种三位数按四位正则会整条漏掉；exiftool 把 `0x0201/0x0202` 存的 0 按 `IsOffset` 解析成**各自目录基址** ⇒ 造出一条伪差异 49578034 vs 49578824，而文件里两处字节都是 `00 00 00 00` ⇒ 读手显式排除并在行里点名）｜⑩ 编码器 stderr 的 **ASCII 键** `idc-changed=N` 必须等于 exiftool 侧的数（拿中文串当解析锚点会在非 UTF-8 码页机器上假红）｜⑪ 精度臂：`_make-synth-idc-revert.py` 把生效版某一项抹平成初始版值后，`changed` / 日志计数 / 产物嵌入件读回**三处必须同步降 1** ⇒ 证明判据读的是数据不是常数｜⑫⑬⑭ 锁**标准位真落地**：`dngtool -idc-look 规格.txt` 把外部给的曲线写进**主 profile 的 `ProfileToneCurve`**(50940，规范原文 Usage = "IFD0 or Camera Profile IFD"、FLOAT、Count=Samples\*2、(x,y) 均在 [0,1] 线性域、x 严格递增、"readers should interpolate the curve using a cubic spline")。⚠ **不走 `ExtraCameraProfiles`(50933) 是被实测否证的**：SDK 1.7.1 两段式尺寸预算在这条路上不闭合——extras 指向的块只剩 8 字节块头（`II`+magic `0x4352`+IFD 偏移 8），而 **`StripOffsets` 恰好 = 块址+8** ⇒ 条带数据把 profile 目录整个盖掉（`dng_image_writer.cpp:9669` 起）。读手 `tests/scripts/_readback-dng-profile.py` **自解 TIFF**（exiftool 对本机产物的 profile 报 "Bad format … parsing aborted" ⇒ 它读不出这块，不能当读者），判据取 **IFD0 标签集合的差恰好"只多 0xC6FC"**——一个方向排除"挤掉别的标签"，另一个方向排除"多写别的标签"；⑬ = 同输入不加该参数时 `ProfileToneCurve` 必须缺席（⑫ 的反控）；⑭ = 缺 `curve` 行 / x 不递增 / 不认识的键 ⇒ **非零退出且不产出**。⚠ "缺 curve 行"必须显式判：`dng_tone_curve` 的默认值是 `SetNull()` 生成的 `(0,0)(1,1)` 恒等线（`dng_tone_curve.cpp:38-49`），它 `IsValid()` 为真 ⇒ 只查 IsValid 等于放行"规格里根本没写曲线"（**本条就是这么被自己抓到的：bad2 臂当时 rc=0 且产出了文件**，补 `hasCurve` 后才转红）。当日实测 **32/0 @33.8 s**（独跑墙钟；2026-10-17 载体换成规范标签后 ② 组换形、并加 ⑮ GPS 臂；**同日再加 ⑯ 组后的现值见本条末尾：36/0 与 37/0**）。⑮ 组的变异两读：把"源含 GPS ⇒ 关掉整条搬运"那一版复刻回去 ⇒ **只红 ⑮a/⑮c（30/2）**，证明这组抓的是"GPS 引起降级"而不是别的；变异第一版把 `carryRawMetadata = false` 落在那句**裸 fprintf 之外**（无花括号）⇒ 对所有源都关搬运 ⇒ **15/17**，②③④⑦⑧⑩⑪ 一起转红（意外证明那 17 条确实看着三段搬运本身）。跑完逐字节还原、`cmp` 证相等。⚠ 牙的归因：在未修复件（sha16 33FBABEAA2780762）上 ⑦a/⑦b/⑧a 三条同时判红，而**同件同源的 ASCII 名编码臂仍 rc=0 且有产物** ⇒ 红只能归到"源元数据未进产物"（当时口径还是闭包，2026-10-17 同日已换成规范 50828）与"名字非 ASCII"这两维本身；⑨⑩⑪ 的红路由 ⑪ 自己给出（三处不同步即红）；⑫⑭ 的红由 ⑬（反控）与 bad2 的 fail-open 实录给出。⚠ 边界如实记：本机四件的 `ToneCurve*{X,Y}` 全是恒等 ⇒ 工具**不自动映射** IDC 值（0..511 域与空间未定，归一化是我方约定），交付的是通道而不是猜出来的数。｜⑯ **分通道曲线的规范位**：`-idc-look` 新增 `curveR/G/B=x:y ...` 三键 ⇒ `OpcodeList3`(51022) 里三支 `dng_opcode_MapTable`（每支 `fPlane`=0/1/2、`fPlanes`=1、表 `count=0x10000` 项 uint16；list 3 是 **post demosaic** —— 放 list 2 那时只有一个平面，谈不上分通道，这是我第一版的第二处错）。⚠ **area 必须写具体整幅矩形、不许留空**：SDK 的 `dng_area_spec::GetData` 先按 `fArea.H()/W()`（空矩形=0）把 pitch 从 1 钳成 0，再被 `IsEmpty` 分支 `ThrowBadFormat`（`dng_misc_opcodes.cpp:141-155`）⇒ 我按头文件注释"空 area = 整幅"写的第一版被 Adobe `dng_validate` 与自家 `dngtool -verify` 双双判 error 100006，而**编码侧 rc=0、日志照打**（静默坏件）。判据形状 = 第二个实现 `_readback-dng-opcodes.py` 自己解 TIFF：解完正好落在标签 byteCount 上 + area 非空 + pitch=1 + 表内容与规格逐点回算（≤1 码）。`curve` 与 `curveR/G/B` **互斥**（读者会同时施加 profile 曲线与 opcode ⇒ 同一条曲线施加两次）；恒等表**不写**并按 ASCII 键 `opcode-skipped=N` 点名（写了的打 `opcode-channels=N`；两把键都刻意 ASCII，中文串在非 UTF-8 码页会变形）。重组 `DNGOPC_HEAVY=1`（默认不跑 ⇒ 记未判不记绿）用 Adobe `dng_validate -3` 三臂渲染对账"读者真施加"：恒等臂与基准**逐字节相同**、非恒等臂 72,721,702 个平面值不同、且等于按规格算出的 LUT（精确 0.9908、最大 1 码 = SDK 对表做黑电平调整的舍入地板 ⇒ 判据取 2 码而不是"实测刚好过"的 1 码）。⑯ 两支变异各**只红自己那条**：空 area 版 ⇒ 35/1 只红 ⑯a（编码照绿、独立读手 rc=1）；摘掉恒等跳过 ⇒ 35/1 只红 ⑯c ⇒ 没有第二实现时这两支缺陷都是静默的。判据数 32 → **36**（重臂 37），实测 **36/0 @44.0 s**、**37/0 @47.2 s**。｜⑰ **IDC 版本时间戳 → 标准 XMP 位**（第 77 条同日再加 5 臂 ⇒ 36 → **41**，实测 **41/0 @47.3 s**）：落点是**产品侧既有的 exiftool 后处理**，不是 dngtool —— 本仓 SDK 以 `qDNGUseXMP=0` 配（`tools/src/dngtool/CMakeLists.txt:59,172`），`dng_xmp.cpp` 无 SDK 分支 ⇒ 工具侧写不了 700；实测 exiftool 写 `xmp:CreateDate/ModifyDate` 后 Adobe `dng_validate` 仍 *Validation complete*、`dngtool -verify` 仍过 ⇒ 这条是规范指定的位置、零换算的内容（IDC 的 0xD100/0xD101 文本本身就是 XMP 日期形状）。三处新代码：`RawService.ReadIdcVersionDatesAsync`（源文本按 `IsXmpDateForm` 过滤，读不到 ≠ 失败）、`ExifToolService.WriteIdcXmpDatesAsync`（**再检一遍形状才拼命令行** —— 操作数来自源文件，不校验就是注入面）、`QueueProcessor.WriteIdcVersionDatesAsync`（只在 `carryRawMetadata ∧ ¬StripExifTime` 下调用 ⇒ 隐私优先；exiftool 缺席 / 源无 IDC 链 / 写入失败 三种"不写"各自点名，跳过 ≠ 成功）。判据：⑰a 源形状、⑰b 按产品同法写入后独立读手逐字相等、⑰c 写完 `-verify` 仍过、⑰d 无 IDC 链那份 `-idc` 非零（⇒ ⑰a 不是在任意文件上成立）、⑰e **产品接线的源形锁**。⑰e 变异：守卫退化成 `if (success)` ⇒ **40/1 只红 ⑰e**（还原后与备份 `diff` 逐字相同）。另记一处自写解析器的静默错：`struct` 用 `HHIH` 解 TIFF entry 只取到值场低 16 位 ⇒ 大偏移被截成小数字（本机 51022 的 39,527,098 被读成 8,890），必须 `HHII`；小偏移看不出这个错 ⇒ 判"偏移对不对"要拿第二个读者（Adobe 打印的 offset）对撞。｜⑱ **源 RAW 的镜头三表 → 规范 opcode**（2026-10-19 接线，`dngtool -lens-corr`，**默认关** ⇒ 它改渲染像素，且产物与 Adobe 的转换结果分叉）：写进 `OpcodeList3`(51022) 的是 `FixVignetteRadial`(ID=3, required) + `[WarpRectilinear2 (ID=14, optional) + WarpRectilinear (ID=1, required, 只含偶次项)]` 成对三支 —— **成对且相邻**是硬条件，规范 p.105 的跳过规则只在 optional 的 14 紧跟一条 1 时生效（本机用 Adobe `dng_validate -3` 实测到"与只发 14 逐点相同"，而两支都 required 时两条都施加 ⇒ 施加两遍）。换算口径**全部回一手材料**：结点 `r=(i+0.5)/(nc−1)`（dt `lens.cc:2225`）、畸变/横向色差 = 半径比例 Rin/Rout（dt `:2231-2240` + `:2409-2421` 注释与 SDK `r_real = r_ideal*f(r_ideal)` 同向 ⇒ 不取倒数）、暗角 = 乘增益（SDK `dng_lens_correction.h:669-680`；dt 存的是它的倒数）、CA **前 nc=R 后 nc=B**（dt `exif.cc:1398-1406` 逐字取数 + 硬校验 `2*nc==CA 计数` ⇒ 撤回本仓 10-18 记的"索引语义未定"）。判据 = 第二实现 `tests/scripts/_readback-dng-lens.py`（自己解源 ARW 的小端 TIFF 与产物的**大端** opcode 列表，**逐结点回算**与源表对撞，死线 0.0025/0.0006 写在该文件内、不读被检方常数；再判 flags、[14][1] 相邻、镜头支不重复；`--stderr` 让它把**点名过的跳过**与**静默缺席**分开判（前者放行、后者判红 ⇒ 不必假设"三支恒在场"，那只是本夹具恰好成立）。
   v1 支的判法是**偶次残差**而不是"奇次位为 0"——v1 载荷只有四个偶次项，奇次位是读手自己填的 0，
   那条断言永不可能触发（2026-10-19 审查删掉的死牙）。造变异件也从读手分家出去
   （`_mutate-dng-lens.py`，理由与 ⑯ 组同一条：判件与造件同入口时判据走偏造件跟着走偏）。
@@ -5803,3 +5803,243 @@ $el.Current.BoundingRectangle  # L/R/T/B 物理像素（注意 150% DPI = 逻辑
 - [ ] 简洁模式往返：预设加载、队列显示、自动编码开关
 - [ ] 双击文件打开详情窗口：媒体信息/命令/日志显示
 - [ ] 完整转换流程：添加文件→队列→开始→完成（含 16-bit 输入、HDR 输入、动图输入）
+
+## 八、2026-11-01 批次更正（"全量推进未了结"）——当前口径
+
+> 本节是**更正条目**，不改写前面任何历史段落（§一~§七 里的 `pass=302` / `tests/ServiceProbe` 旧路径等
+> 一律按原样读作"那一轮的读数"）。要判当期状态，只信本节与整轮日志的 `RESULT:` 行。
+> 每条都绑定一条实跑日志；没跑过的批次不写进本节。
+
+### 8.1 UI 执行面：单体 → 5 个拆分件（本批已切）
+
+`verify-ui-host` / `verify-ui-param-matrix` / `verify-ui-strategy-map` / `verify-ui-param-defects` /
+`verify-cli-strict` 这 5 条已**不再执行** `tests/projects/UiTestHost/bin/Release/net11.0/win-x64/UiTestHost.exe`，
+改为执行 5 个拆分件（`Tests.Ui{CORE,MODE,COLOR,SWEEP,CLI}.exe`），调用形态是 `<素材目录> [mode]`，
+只给素材目录 = 跑该组全部 mode（组表见 `tests/projects/Tests.Shared/TestGroups.cs`）。
+
+| 门禁 | 执行体 | mode 臂 | 条数锁 | 本批实测 |
+|---|---|---|---|---|
+| `verify-ui-host.ps1` | 5 件逐件跑全组 | 5 臂 | 逐件精确 + **合计 430** | 75+53+89+141+72 = **430/0** @52.3 s |
+| `verify-ui-param-matrix.ps1` | `Tests.UiSweep.exe` | `ui-sweep` | J **精确 98** | **98/0** |
+| `verify-ui-strategy-map.ps1` | `Tests.UiColor.exe` | `ui-strategy-map` | K **精确 27** | **27/0** |
+| `verify-ui-param-defects.ps1` | `Tests.UiSweep.exe` | `ui-param-defects` + `ui-sweep` | L **43** + J14d **9** | **52/0** |
+| `verify-cli-strict.ps1` | `Tests.UiCli.exe` + `Tests.UiColor.exe` | `ui-cli-strict` + `ui-color` + `ui-icc` | M **60** | 60+15+12 = **87/0** |
+
+- **条数锁一律由下界收紧为精确等值**（旧写法 `-ge 88` 之类对"等于当前实测"的集合没有牙：少跑 N 条仍绿）。
+  合计锁是第二道：若有人同时改小某件期望值又删了断言，逐件会自洽而合计露馅。
+- **跨件/多 mode 门禁的形态**：各臂 stdout 拼成 `$allText` 后再统一数前缀；`-SelfCheck` **逐臂**验
+  （只验一臂 ⇒ 其余臂解析器坏了不报警）。
+- **AGENTS §7 说的"7 条跑单体"是误记**：`verify-png-structure.ps1` 源码里对单体只有一句历史注释、零处调用；
+  `verify-ui-split-union.ps1` **有意不切**（单体是它的参照臂）。真实构成 = 5 条已切 + 1 条参照臂 + 1 条误记。
+- 新鲜度闸同批补 **第 ⑨–⑬ 对**（5 个拆分件 exe ↔ 各自源码 **+ `Tests.Shared` / `UiHostShared` 两个共享库**），
+  并把 5 件的 `sha16` 一起钉进日志头的 `artifact-sha16:` 行。补这对的动因是同一闸自己登记过的坑：
+  进了执行面却没进闸 ⇒ 拿陈旧拆分件报绿，而其读数被算成本轮实测。
+
+### 8.2 文件锁假红（跨件门禁的通病，已修）
+
+`Start-Process -RedirectStandardOutput` 的句柄会被**遗留孙进程**（实测 `ffmpeg`）继承，宿主 exit 后
+约 1 s 才释放 ⇒ 父进程 `ReadAllText` 抛 `IOException`，现象是 `summary=False pass=-1 fail=-1`。
+`$p.Dispose()` **无效**（句柄在孙进程手里）。修法 = `FileShare.ReadWrite` 容错读 + 25×200 ms 重试
+（`Read-TextShared`），失败返回空串让"汇总行缺失"照常判红；不删子进程、不回退 `%TEMP%`。
+
+### 8.3 门禁临时目录进产物区
+
+5 条 UI 门禁的 run-dir 由 `GetTempPath()` 改为 `tests/output/<组名>/<guid>`（`ui-host` / `ui-param-matrix` /
+`ui-strategy-map` / `ui-param-defects` / `ui-cli-strict`）。理由见 AGENTS §3：本机沙箱按进程拦 `%TEMP%` 写
+⇒ 宿主/`ffmpeg` 会批量 `exit -13` 假红；且产物只有一份，应受 `_sweep-output.py --runs` 管辖。
+
+### 8.4 清单：8 支清单外脚本处置完毕（⑪-d WARN 清零）
+
+6 支真门禁接进清单（第 88~93 条，第二十三次接线）。**计数取整轮 run d 实测**（`tests/output/round-full-20261101d/run_full_94d.log:134-139`），
+耗时**一律抄日志打出来的秒**（六行都带，见下）：`run-quality-tests`（**18/0 @92.2 s**，`:135`）、
+`run-thread-tests`（**11/0 @56.1 s**，`:136`）、`verify-oracle-matrix`（经 `$scriptArgs` 只跑 `-Smoke`，
+**15/0 @9.5 s**，`:138`）、`verify-release-package`（**16/0 @1.6 s**，`:139`）、
+`run-color-tests`（**24/0 @21.9 s**，`:134`）、`verify-color-matrix-full`（受轮跑默认 quick 档，**24/0 cells=72 @307.1 s**，`:137`）。
+⚠ 接线期手跑曾记 `21.5 / 110 / 45 / 257 / 7.5 / 1.0 s` 六个数，**那批没有落盘日志**，且整轮内耗时有快有慢
+（如 quality 110 s 落在 run c 127.3 s 与 run d 92.2 s 之间）⇒ 按 §6「读数必须能指到日志」，此处一律取
+run d 日志真打出来的秒数：**21.9 / 92.2 / 56.1 / 307.1 / 9.5 / 1.6 s**（`:134-139`，六行**都**带秒——
+2026-11-01 复审曾据旧文档断言「日志不打秒」，实读证伪；六项和 ≈488.4 s，与 run d 整轮 ~59 min 相容）。
+`_accept-ui-split` / `_gen-ui-split` 两支是验收脚手架/生成器，接清单是语义错误 ⇒ 落 ⑪-d
+**有据豁免表**（豁免带牙：`CoveredBy` 必须全部是受管门禁，否则当场红）。
+
+新增第 94 条 `_probe-host-temp-sites.ps1`（**5/0**）：站点清单冻结 **39 站点 / 7 文件**、坏根名黑名单
+（`gate_tmp|gtmp|roundtmp|_ramdisk|faketemp`）、扫描面自证 + 对账函数合成输入自检。它冻结的是
+"站点数与根名"，**不**回答"写完删没删"。
+
+⇒ 脚本清单 = **94 条**，`shape-selfcheck=OK（17 针）`。
+
+### 8.5 白点内核（S8）修法与读数
+
+- 根因（两层，缺一不可）：①**载体细分从未生效**——`pixFmt` 只在 `ProbeWithFfprobeOnce` 的局部结构里被赋值、
+  没有拷回外层 `meta` ⇒ `ProbeInputPixFmtForEngine` 恒得 `""`；②细分表本身也不全——`gray*` / `yuvj*` 载体的
+  扩位顶码是 **65280**（0xFF00）而不是 RGB 族的 65283（0xFF03）。两者叠加 ⇒ gray8 / 8-bit JPEG 源走 16-bit 交付
+  得 **65532**（H-19 记的「敞口①」）。修法 = 补 `pixFmt` 回拷 4 行 + 新增常量
+  `TransformSpec.SrcCodeMaxGray8 = 65280.0`，`ResolveSrcCodeMax` 由「只看位深」改为「位深 + 载体」两维。
+  探测失败 / 管道输入 ⇒ 落 RGB 尺，**不猜**（= 修改前行为）。
+- 第 87 条 `_probe-white-point-kernel.ps1` 复跑 **35/0**（旧 27 条读数未变，B4 组 8 条为本批新增臂）：
+  `K8gray_to_png16 max=65535`、`K8jpg_to_png16 max=65535`、`K8_to_png16 max=65535`、A 组两臂 `max=255`。
+  ⚠ B4 里的 `w8_gray.png max=65280` / `w8_yuvj.jpg max=65280` 是**机制臂**（源穿过 `format=rgb48le` 的顶码），
+  不是交付读数；两族差 3 码，混读会以为"修了还是 65280"。
+  `grayLike` 只认 `gray*` / `yuvj*`，**不外推**到 `yuv420p` / `pal8`（扩位顶码未实测 ⇒ 维持 RGB 尺）。
+- **仍欠一笔：`colorRange` 也不在回拷段里**（同一处、同一个坑）。本批**未修**——它需要自带判据臂
+  （pc / tv 两种 range 的顶码与脚码读数各一组），属独立一批；
+  已登记在 `docs/review-2026-10-31/CORRECTION-2026-10-31-C-FULLDRIVE.md` 与 AGENTS §7。
+- 10/12-bit 载体读数（回答"bd>8 是否也有同类敞口"）：`w10.avif`（yuv444p10le tv crf0）实测 max
+  **65506**，其 yuv10 取样 max=**943** ⇒ 差额归因编码有损，非内核；`w10_pc.avif` **1023/65535**、
+  `w12_pc.avif` **65535**；产品臂 `avif10tv` 65506、`avif10pc` 65530、`jxl10` 65535 但日志自证
+  「`.jxl` 专用输入管线…色彩引擎尚未接入该路径」⇒ **JXL 输入不走内核**。结论：bd>8 按 65535 的假设
+  在 10/12-bit pc 载体上成立，**无 S8 类敞口**。
+- `65283` 判尺的适用面（子 agent 全库对撞 1246 份 DNG/TIFF/RAW）：exiftool 首处 `BitsPerSample ≤8`
+  且 ffprobe 载体 >8-bit 的样本 **0 份**；多 IFD 构造件（IFD0 8-bit 缩略图 / IFD1 16-bit 主图）里
+  ffprobe 与解码器同样只看到缩略图 ⇒ 载体确为 8-bit，判 65283 正确。**最小复现夹具不存在**
+  （触发需 exiftool 单值 ≤8 + ffprobe 载体 >8-bit + 解码侧真 16-bit 且不经 `dngtool` 中转，三者互斥）。
+
+### 8.6 `.xaml` 为什么不生成 `x:Name` 字段（机制已查清）
+
+Avalonia 的隐式 glob **只**收 `**/*.axaml` 与 `**/*.paml`
+（`avalonia/12.1.4/build/AvaloniaBuildTasks.props:8-9`）⇒ `.xaml` 只被当资源、不做 XAML 编译、
+不生成字段 ⇒ 引用 `x:Name` 即 `CS0103`。`MainWindow.xaml` 能工作靠 `MainWindow.xaml.cs` 里**手写**的
+`InitializeComponent()` + 262 处 `FindControl<T>`。
+现 `FfmpegGui.csproj`：`<AvaloniaXaml Include="**/*.xaml" Exclude="MainWindow.xaml;ProgressWindow.xaml" />`
+（这两个手写 loader 的窗口必须 Exclude，否则 `CS0102` 撞名）+ `<AvaloniaResource Include="**/*.xaml"
+Exclude="@(AvaloniaXaml)" />` 兜底。改后整建 0 警 0 错，dll 里 7 个 `.xaml` 各 1 份资源、`.axaml` 0 份；
+`_probe-i18n-scan` 11/0、`_probe-cjk-hardcode-scan` 14/0 均未受影响。
+
+### 8.7 整轮读数与「单条红」的定性纪律（2026-11-01 增补）
+
+**运行器自己钉 TMP（已固化，不是前置喊话）**。`_run-step3-gates.ps1` 在 `env-cleaned=` 之后把
+`TMP/TEMP/TMPDIR` 钉到 `<repo>/tests/output/_tmp/round-tmp`，并打印 `env-temp-before=` /
+`env-temp-pinned=` / `env-temp-writable=` 三行。原因：本机沙箱**按进程**拦子进程向仓库外写，
+ffmpeg 写 `%TEMP%` 与 `C:\Temp` 一律 `exit -13`（`.NET`/python 写 `%TEMP%` 却成功）。
+不钉时 `verify-color-wiring` 由基线 153/0 掉到 60/56（产物 0 B），钉后回 153/0 —— 整轮 run a 因此作废。
+裸跑单条门禁调试时**必须自己钉同一个根**，否则读到的是环境不是代码。
+
+自证实现有一条硬约束：`Test-RunnerShape` 第 ⑦ 针要求 `WriteAllText` 在全文件**恰 1 处**
+（rc 文件的唯一写点）。首版自证用 `[System.IO.File]::WriteAllText` ⇒ 起轮即 `runner-exit=2` 拒跑
+（`round-full-20261101d/run_full_94d_abort-shape.log`）。改法 = 自证走 `Set-Content` / `Remove-Item`，
+并在脚本里自校 `WriteAllText` 计数 = 1。**不放宽探针**。
+
+**第 30 条 A30 pin 会随代码行漂移**。W3a 在 `FfmpegCommandBuilder.cs:1654` 插 4 行 ⇒ 内层 pin
+`:2408` 变 `:2422`，报 `FAIL A30 … found at line 2422`。处置是**更新登记值**（改前先核对目标行确含
+目标字面），不是放宽匹配。
+
+**`verify-release-package` 的「磁盘目录数 ≠ 归档文件数」先查外部实例**。2026-11-01 实测差 2 项 =
+`debug.log` + `settings.json.bak`，mtime 与外部打包版实例启动后 1~30 s 吻合（该实例同时会占用
+`verify-ipc-extra-options` 的管道名判红）⇒ **包本身完整**，移出残留并留 sha256 存证，不重出包。
+
+**「计时类红」必须三件齐备才能定性**，缺一不可：
+1. **旧二进制对照臂**（`..\ffmpegPictureUI-wt-bench2`，仓库外 worktree，detach 到 HEAD `f778280`；
+   臂身份看 dll——`*.exe` 是 apphost，两棵树编出来哈希相同，拿它判臂身份等于没判）：
+   2026-11-01 重建实测 **2 次 `37/0`**，`ServiceProbe.dll=FF05421132B2542B` / `FfmpegGui.dll=B045D6949CF30F04` /
+   `ServiceProbe.exe=93BF03789E69EC6F`（apphost 同值，再次印证不可用）——见下「旧臂重建」段；
+2. **静置复跑**给出分布（同一个二进制多次，逐次记负载读数与 dll 指纹）；
+3. **代码面排除**：被判红的测量函数在本批 diff 里没有热路径改动（`bench` 只调 `ColorKernels`，
+   而它的 diff 只有注释 + 一个 `const`；`ResolveSrcCodeMax` 每任务一次，不进像素循环）。
+
+⚠ **两侧读数不许混写**（2026-11-01 实测教训：首版就把对照臂的「仅记录」行当成了旧臂 FAIL）。
+`bench` 有**四条**计时判据（8b 地板 25 / 快路径地板 40 / 多核 4× / 端到端 H1≤2×），敏感面与证据强度都不一样：
+
+| 判据（`Program.cs` 行） | run d（整轮内） | run e（整轮内，紧接复跑） | 静置 4 次（本轮二进制） | 旧臂重建 2 次（`FF05421132B2542B`） | 同窗对照 2 次（`C0EA213F057F6AA2`） |
+|---|---|---|---|---|---|
+| `8b sRGB→P3 ≥25MPix/s`（`:8603`） | **22.0 FAIL** | 整轮 `pass=37 fail=0`（@80.5 s） | 27.1 / 26.7 / 35.6 / 27.8 全 PASS | **42.8 / 43.9 全 PASS** | 40.5 / 40.6 全 PASS |
+| 快路径 `单核 ≥40MPix/s`（`:8488` `floorMpix = fastCell ? 40.0 : 3.0` / `:8490`） | 未见红 | 整轮 37/0 | 未单列 | 未单列 | 未单列；**run c `:41` 实 38.5 FAIL** |
+| `PQ→sRGB 多核扩展比 ≥4×`（`:8544`） | **3.5 FAIL** | 同上（37/0，同一轮） | 7.5 / 7.4 / 5.9 / 6.3 全 PASS | 6.4 / 5.0 / 5.0 / 8.2 与 5.9 / 5.0 / 5.4 / 7.7 全 PASS | 5.6~7.5 全 PASS |
+| 端到端 `H1 ≤ H2×2.0`（`:8665`） | 未见红 | 整轮 37/0 | 1.85 / 1.72 / 1.79（+ARM-A 1.77）全 PASS | 未单列 | **2.69 FAIL（`:418`）** |
+
+- 留证：静置第 1 次 = `tests/output/_tmp/bench_control.log`（`:100`/`:80`），其后三次 =
+  `tests/output/_tmp/bench_static3.log`（`:98`/`:78`、`:202`/`:182`、`:306`/`:286`）⇒ **静置共 4 次**。
+  旧臂重建与同窗对照 = `tests/output/_tmp/bench_oldarm_20261101.log`（`:1` 臂指纹；`:3`/`:107` 旧臂两次；
+  `:212`/`:316` 对照两次；红行 `:418`）。
+- **旧臂重建（2026-11-01 复审补做）**：原「旧臂 `25.0 FAIL`」的证据链不可复核（当时 worktree 已拆、
+  `bench_control.log` 只留 apphost 值、生成器未入库）。重建同一 HEAD 的臂、**工具根可用**条件下 2 次全 `37/0`
+  （8b 42.8 / 43.9）⇒ **那次 25.0 不是臂身份差异，而是该次运行时 `publish/PLAN` 缺失（`:109`）叠加 ≈58% 负载**。
+- `3.9×` 是控制臂里**本轮二进制**的小帧扩展比「仅记录」行（`bench_control.log:17`），**不是任何一方的 FAIL**。
+- 结论：`bench` 的计时断言**四条都负载敏感**，**没有一条是「新旧臂必红」**——`8b ≥25MPix/s` 从 run d 的 22.0
+  到旧臂重建的 42.8，相对 25.0 的余量在 −12%~+72% 之间摆动；`多核 ≥4×` 八次读数只红 run d 一次；快路径
+  `≥40MPix/s` 只红 run c 那一次（38.5）；端到端 `H1 ≤ H2×2.0` 只红同窗对照第 2 次（2.69×）。四条都不是 W3a 回归。
+- **run e（同产物、同门禁，当天紧接复跑）= 94/94 全绿**，其中 `[bench] exit=0 pass=37 fail=0 80.5 s`
+  （`round-full-20261101e/run_full_94e.log:43`）⇒ run d 的单红**在整轮内也复现不了**，
+  连静置 4 次（含 ARM-A）+ run a 轮内 1 次 + 旧臂重建 2 次 + 同窗对照 1 次共 **9 次 37/0**。**这一段写就时**该批读数改为 94/94；⚠ 此后又修了托盘（§8.10），托盘批之后的整轮是 run g，
+  「最终读数」以 §8.10 为准；
+  run d 的 93/94 作为噪声证据保留（`run_full_94d.log` 不要删）。
+
+三件齐了才能把单条红定性为「负载型假红」；定性后**仍不许**为此改阈值或加 Skip——
+`bench` 的四条计时断言都没有交错成对采样/停顿赦红保护，要治得先由维护者给口径。
+宣布「全绿」的唯一口径是**整轮重跑拿到 N/N**（本批 = run e 的 94/94；托盘批之后的那一轮是 run g，见 §8.10），且绑定 `runner-self-sha256`
+与 `artifact-sha16`；拿静置单跑或定性结论替代整轮，不算。
+
+### 8.8 整轮**覆盖面**的三处收窄（N/N ≠ 全判据面）
+
+94/94 是真的，但这三条要一起读，否则会把读数读大：
+
+1. **5 条 UI 门禁的负控不在整轮内**：`verify-ui-host` / `-param-matrix` / `-param-defects` /
+   `-strategy-map` / `-cli-strict` 的负控块全部包在 `if ($SelfCheck)` 里，且 `$ncOk = $true` 是
+   **无条件默认**（`verify-ui-host.ps1:247-248`）；runner 的 `$scriptArgs` 只给 `verify-oracle-matrix` 传参
+   ⇒ 整轮日志里唯一 `selfcheck` 命中是 `shape-selfcheck`（运行器自身的 17 针），**无一条 `[selfcheck] <arm>`**。
+   负控证据全部来自手跑：`tests/output/ui-host/a9155ccc…/out_3712fb17.txt:147`（`NC: 宿主自检负控`）、
+   `tests/output/ui-strategy-map/*/out_*.txt:73` 三份。
+2. **第 92 条只跑 `-Smoke`**：`verify-oracle-matrix` 自述 L1=194 / L2=172 条用例，整轮经 `$scriptArgs`
+   只跑 **3 条代表用例**（`cases 3/3 checks 15/0`）。
+3. **第 91 条默认 `quick`**：`verify-color-matrix-full.ps1:28` 的 `$Layer = 'quick'` ⇒ 整轮 **72 格**
+   （2 格式 × 2 位深，run e 实测 454.0 s）。
+
+三条都登记为独立一批（要入整轮须先量整轮时长，尤其 1 的 `-SelfCheck` 会成倍拉长 5 条 UI 门禁）。
+
+### 8.9 第四处裁判侧漂移：恒等格换了尺（已知弱点，留证不改）
+
+`verify-color-matrix-full.ps1:903` 的 `$sameGamut` 是**硬编码两格**（`p38→Display P3`、
+`bt20208→BT.2020`）；`:910-923` 新增 `$identBar`（png **40.0** / 其余 **26.0**）后 `continue`，
+跳过原 (A)/(B) 双向判据；`:930` / `:951` 给原判据加 `-not $sameGamut` 守卫。
+改这一处有据：恒等格拿「转到目标」的参照量，量到的是**夹具编码口径 vs 参照口径**的差（纯 γ 夹具 vs
+定义式参照 ≈23.3 dB，双向对撞同值），对恒等格没有判别力。
+
+⚠ 两个如实登记的弱点：①不是语义判定（源域 == 目标域），第三对恒等格若出现仍走旧尺；
+②png 的 **40 dB 贴实测下限**（legacy 逐字节 inf、engine 实测 ≥40）⇒ 零余量，引擎稍有改动必飘红。
+要留余量须先拿到 png engine 恒等的多次观测分布，故本批**不改判据、只留证**。
+同批另有三处裁判侧漂移（`_lib-oracle.ps1` 行级回退、LEGACY jxl 标签词形表、LEGACY bt709 参照从纯 γ
+换 BT.709-6 定义式 23.36 → 50.92 dB），见 §8.4。
+
+### 8.10 托盘图标 / 关窗契约（2026-11-01 插队修复，判据在第 85 条 ⑥⑦）
+
+现象两条：托盘里找不到图标、点叉号后窗口消失但进程仍在。**同一根因链**：`IsVisible` 在 `Initialize()`
+里写死 `false`（从来就不亮），而唯一真出口 `ExitApp()` 只能从托盘菜单点；`Closing` 又无条件 `Cancel=true`
+隐藏窗口 ⇒ 图标不亮 + 关窗不退 + 失败被 `Debug.WriteLine` 吞掉（Release 无痕）。
+
+修法要点（细节见 `docs/HANDOVER.md` H-22）：
+
+- 启动即按 `AppSettings.CloseToTray`（默认 `true`）决定 `IsVisible`，与关窗行为一致；
+- `Closing` 分三态：`AllowFullExit` ⇒ 放行；`_closeToTray && _trayAvailable` ⇒ 隐藏；其余 ⇒ **真退出**；
+- `ExitApp()` 唯一实现（托盘菜单 / ⚙「退出程序」/ `Closed` 兜底），`_exiting` 防重入，恒 `exit 0`；
+- 失败落 `tray.log`（`FFMPEGGUI_DIAG_DIR` > 缓存目录 > exe 同目录），`TrayFailureReason` 回显到菜单 tooltip。
+
+**判据**（第 85 条 `verify-package-gui-starts.ps1`）：
+
+| 针 | 断言 | 变异自证 |
+|---|---|---|
+| ⑥ | 默认档 `tray.log` 有 `create=ok` 且 `IsVisible=True` | M1（`IsVisible=false`）⇒ ⑥ FAIL |
+| ⑦ | `FFMPEGGUI_CLOSE_TO_TRAY=false` ⇒ 启动 `IsVisible=False` **且**关窗 6 s 内退出（`exit=0`） | M2（`Closing` 无条件 cancel）⇒ ⑦ FAIL |
+| ④ | 改为条件契约：默认档关窗应「隐藏」（退出 = FAIL）；句柄非 0 只 WARN | — |
+
+⚠ **两条断言的边界**：⑥ 证的是「日志说图标亮了」，不是 Shell 里真有图标（托管侧读不到 `NotifyIcon`；
+`NotifyIconSettings` 注册表对功能正常的探针程序**也无条目**，不能当判据）；⑦ 证的是「进程 6 s 内消失」。
+两条都依赖 `FFMPEGGUI_DIAG_DIR`（门禁钉进 `tests/output/validate/gui_start/<臂>`），出货环境不设则落缓存目录。
+
+⚠ **还原变异体必须 touch 源文件**：`shutil.copy2` / `cp -p` 会把旧 mtime 带回来，比已生成的 dll 更旧
+⇒ MSBuild 判「最新」**跳过编译** ⇒ 拿变异体跑出**假红**（本轮实测 `⑦ FAIL` 即此因；`(Get-Item …).LastWriteTime = Get-Date`
+后重编即恢复 7/0）。任何「备份→还原→跑门禁」的流程都适用这一条。
+
+⚠ `MenuFlyout` 里的 `x:Name` **不生成代码字段**（`CS0103`）⇒ 新增菜单项只能靠 `FindMenuByTag`；
+`WindowIcon` 没有 `Size` 属性（`CS1061`）。两处都是本轮编译期实际踩到的。
+
+连带转红并同批修掉：`_probe-settings-clone-coverage`（`Save()` 克隆漏新字段 ⇒ 该探针现在有牙）、
+`_probe-cjk-hardcode-scan`（新增 UI 文案必须迁 Loc；托盘诊断行由**调用方**带 `[tray]` 前缀 ⇒ 落 `[tag]` 桶不计 UI 面）。
+
+**整轮读数**（run g，`tests/output/round-full-20261101g/run_full_94g.log`；该轮无 `env.txt`，时间只有文件时间
+`01:05:36`→`02:27:22`）：清单 **94 条脚本全 `exit=0`**；整轮 **121 个 gate 行**（94 脚本 + 27 个 `ServiceProbe` mode）
+里唯一非绿 = `probe:bench`（`pass=35 fail=2`）⇒ `runner-exit=1`。第 85 条本案 `PASS=7 FAIL=0`
+（⑥ 证据在 `tests/output/validate/gui_start/gui/tray.log:1` 的 `create=ok IsVisible=True`；⑦ 关窗 `exit=0x00000000`）。
+bench 两条经**同一份 `ServiceProbe.dll`（`3C36FDFCE451CF8A`，mtime `01:04:36` 早于起轮、复跑后未变）**复跑两次 `37/0`
+（8b `sRGB→P3` 23.7 → 38.3/44.3，PQ 扩展比 3.4× → 5.8/4.9×），定性为计时抖动；旧二进制臂（`FF05421132B2542B`）
+两次**也 `37/0`**（8b `57.9/59.3`、`42.8/43.9`、端到端 `1.76/1.81×`），端到端那条红出自**同窗对照臂第 2 次**（`2.69×`）
+⇒ 是这几条判据余量浅（端到端历次 `1.72~2.69` 对阈值 2.0；8b `sRGB→P3` 历次 `22.0~44.3` 对阈值 25），未下调任何阈值。
+⚠ 臂身份只能按 **dll** 判：`ServiceProbe.exe` 是 apphost，旧臂日志头同值 `93BF03789E69EC6F`，零信息量。—— 细账见 `docs/review-2026-10-31/CORRECTION-2026-10-31-C-FULLDRIVE.md` §9.9。

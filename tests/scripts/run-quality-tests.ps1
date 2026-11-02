@@ -8,6 +8,14 @@ $res = "$out/results"
 $src = "$out/sources"
 New-Item -ItemType Directory -Force -Path $res | Out-Null
 
+# ── 接线前奏（2026-11-01，第 88 条批）：TMP 钉扎 ─────────────────────────────
+# 本机沙箱拦真 %TEMP% 写 ⇒ ffmpeg/工具批量 exit -13 假红（AGENTS §4）；钉进产物区后
+# 子进程继承，谁都不许再落系统临时目录。scratchroot 已存在 ⇒ 直接复用。
+$repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+$scratch = Join-Path $repo 'tests/output/_tmp/scratchroot'
+New-Item -ItemType Directory -Force -Path $scratch | Out-Null
+$env:TMP = $scratch; $env:TEMP = $scratch; $env:TMPDIR = $scratch
+
 # 取子进程 stdout 一律走 Start-Process（`& exe` 在部分宿主静默失败：输出为空 ⇒ 假红/空值）
 function Exec([string]$file, [string]$argStr){
   $o = "$out/_exec.out"; $e = "$out/_exec.err"
@@ -114,14 +122,19 @@ Check "HDR→JXL 色彩空间=$jxlInfo" ($jxlInfo -match "RGB")
 
 # JPEG 嵌入 ICC 后 → PNG 应带 ICC
 Exec $ffmpeg "-y -hide_banner -loglevel error -i `"$src/src_photo.jpg`" -update 1 `"$res/q_icc.png`"" | Out-Null
-$icc = (ExecOut $exif "-s -ICC_Profile_Name `"$res/q_icc.png`"").Trim()
+# 2026-11-01：exiftool 13.60 下 `-s -ICC_Profile_Name` 恒空（复合标签不再随 -s 输出，实测两件全空）
+#   ⇒ 改读 ProfileDescription，空则退 ColorSpaceData（两件实测都有值）。
+$icc = (ExecOut $exif "-s3 -ICC_Profile:ProfileDescription `"$res/q_icc.png`"").Trim()
+if (-not $icc) { $icc = (ExecOut $exif "-s3 -ICC_Profile:ColorSpaceData `"$res/q_icc.png`"").Trim() }
 Check "JPEG(含ICC)→PNG ICC 保留=$icc" ($icc -ne "")
 
 # 16-bit PNG → JXL (cjxl) 位深
 Exec $cjxl "`"$src/src_16bit.png`" `"$res/q_16.jxl`" -d 0 -e 7" | Out-Null
-$jxlInfo = ((ExecOut "publish/PLAN/jxl/bin/jxlinfo.exe" "`"$res/q_16.jxl`"") -split "`r?`n") | Select-String "bit depth|bits_per_sample" | Select-Object -First 1
-if (-not $jxlInfo) { $jxlInfo = ((ExecOut "publish/PLAN/jxl/bin/jxlinfo.exe" "`"$res/q_16.jxl`"") -split "`r?`n") | Select-Object -First 6 | Select-Object -Last 2 }
-Check "16-bit→JXL 位深=$jxlInfo" ($jxlInfo -match "16")
+# 2026-11-01：jxlinfo 新输出把位深并进摘要行（「…, 16-bit RGB」），旧 `bit depth` 行已不存在
+#   ⇒ 按 `<N>-bit` 记号取摘要行（实测 16-bit 件命中「16-bit RGB」）。
+$jxlInfo = ((ExecOut "publish/PLAN/jxl/bin/jxlinfo.exe" "`"$res/q_16.jxl`"") -split "`r?`n") | Select-String '\d+-bit' | Select-Object -First 1
+if (-not $jxlInfo) { $jxlInfo = "jxlinfo 输出无 <N>-bit 记号" }
+Check "16-bit→JXL 位深=$jxlInfo" ($jxlInfo -match "16-bit")
 
 # ═══════════════════════════════════════════════════════════
 Write-Host "`n════════ D. 元数据 (EXIF/GPS/时间) ════════" -ForegroundColor Yellow
@@ -160,4 +173,6 @@ Check "DNG→TIFF→PNG 可解码" $ok
 # ═══════════════════════════════════════════════════════════
 Write-Host "`n════════ 质量测试汇总 ════════" -ForegroundColor Yellow
 Write-Host "通过: $pass  失败: $fail" -ForegroundColor $(if ($fail -eq 0) { "Green" } else { "Red" })
+Write-Host "PASS=$pass FAIL=$fail"
 if ($failList.Count -gt 0) { $failList | ForEach-Object { Write-Host "  ❌ $_" -ForegroundColor Red } }
+if ($fail -gt 0) { exit 1 }

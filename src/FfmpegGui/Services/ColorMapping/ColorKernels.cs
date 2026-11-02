@@ -50,8 +50,9 @@ public sealed class TransformSpec
     /// 那是另一把尺子，改成 65283 会把真 16-bit 源的顶段 252 个码压平（审查文档 G16/G19）。
     /// </para>
     /// <para>
-    /// 取值由 <c>RawColorPipeline.ResolveSrcCodeMax</c> 在**执行体单点置位**（按**源位深**判）：已知 ≤8 ⇒
-    /// <see cref="SrcCodeMax8"/>；
+    /// 取值由 <c>RawColorPipeline.ResolveSrcCodeMax</c> 在**执行体单点置位**（按**源位深 + 载体**两维判）：
+    /// ≤8-bit 的 gray*/yuvj* 载体 ⇒ <see cref="SrcCodeMaxGray8"/>（65280，2026-11-01 实测收口敞口①）、
+    /// 其余 ≤8-bit（RGB 族与未实测载体）⇒ <see cref="SrcCodeMax8"/>（65283）；
     /// 其余（含探测失败 / 管道输入）⇒ 65535.0 即**不改既有行为**。10/12-bit 源经 rgb48le 的扩位
     /// 顶码**未实测**，本轮按 65535 处理（已知敞口）。
     /// </para>
@@ -59,6 +60,10 @@ public sealed class TransformSpec
     public double SrcCodeMax = 65535.0;
     /// <summary>8-bit 源经 ffmpeg <c>format=rgb48le</c> 扩位后的**实测顶码**（8-bit 255 对应的码值）。</summary>
     public const double SrcCodeMax8 = 65283.0;
+    /// <summary>灰度 / 全范围 YUV(JPEG) 族 8-bit 源经 <c>format=rgb48le</c> 扩位后的**实测顶码**
+    /// （白 255 → 0xFF00；≠ RGB 族的 65283 = 0xFF03。2026-11-01 白夹具逐字节复现：gray png 与
+    /// yuvj444p jpeg 双双 65280；两族 16-bit 交付差 3 码）。判据 = 第 87 条 B4 臂。</summary>
+    public const double SrcCodeMaxGray8 = 65280.0;
     public DitherMode Dither = DitherMode.None;
     /// <summary>编码前是否把线性值钳到 [0,1]（SDR 输出 true；HDR 中间过程 false）。</summary>
     public bool ClampLinearBeforeEncode = true;

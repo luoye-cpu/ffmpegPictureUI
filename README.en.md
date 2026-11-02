@@ -175,8 +175,8 @@ ffmpegPictureUI/
 │   ├── LocExtension.cs   XAML localization markup extension
 │   ├── MainWindow.xaml   Primary UI
 │   ├── MainWindow.xaml.cs UI logic
-│   ├── FormatFilterWindow.axaml  Format filter dialog
-│   ├── PresetManagerWindow.axaml Preset manager window
+│   ├── FormatFilterWindow.xaml  Format filter dialog
+│   ├── PresetManagerWindow.xaml Preset manager window
 │   ├── ProgressWindow.xaml Progress UI
 ├── tools/                Verification utilities
 ├── tests/                Testing (output/ git-ignored, see docs/TESTING.md)

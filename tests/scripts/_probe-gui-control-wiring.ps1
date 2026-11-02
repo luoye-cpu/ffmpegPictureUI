@@ -164,5 +164,23 @@ CK ([regex]::IsMatch($csCode, 'case\s+"jxr":')) "JXR exit branch still present i
 CK ([regex]::IsMatch($xamlCode, 'x:Name="JxrCodecPanel"')) "JxrCodecPanel still declared in XAML"
 CK ([regex]::IsMatch($csCode, '"JPEG XR"\s*=>\s*"jxr"')) "NormalizeFormat still maps JPEG XR -> jxr"
 
+# -- 8) flyout leaf items: FindMenuByTag must compare the TOP-LEVEL item's own Tag (2026-11-02)
+#    What happened: FindMenuByTag only walked `top.Items`, but MenuFlyout DIRECT children are leaves
+#    (`cachedir` = MainWindow.xaml:136, `closetotray` = :141) whose Items is empty => they always
+#    resolved to $null. Effects: the check-state echo never landed, "tray unavailable => greyed +
+#    reason in tooltip" never landed, and the first click behaved like no click. Fixed by comparing
+#    `top.Tag` before walking children (MainWindow.xaml.cs:5615).
+#    Why a source-shape lock: no behavioural gate opens the settings flyout, so a silent re-narrowing
+#    of that loop would keep every UI gate green. Teeth: see docs/HANDOVER.md H-23.
+$fmtFn = [regex]::Match($csCode, '(?s)private\s+MenuItem\?\s+FindMenuByTag\(string\s+tag\).*?\n        \}')
+CK ($fmtFn.Length -gt 0) "FindMenuByTag located in MainWindow.xaml.cs (else the flyout-leaf lock below is vacuous)"
+$fnBody = $fmtFn.Value
+CK ([regex]::IsMatch($fnBody, 'top\.Tag\s+as\s+string\s*==\s*tag')) "FindMenuByTag compares the top-level item's own Tag (flyout leaves would otherwise resolve to null)"
+foreach ($leaf in @('cachedir', 'closetotray')) {
+    $xCount = ([regex]::Matches($xamlCode, 'Tag="' + $leaf + '"')).Count
+    $cCount = ([regex]::Matches($csCode, 'FindMenuByTag\("' + $leaf + '"\)')).Count
+    CK ($xCount -eq 1 -and $cCount -ge 1) ("flyout leaf tag '{0}' declared exactly once in XAML (found {1}) and still looked up in C# (found {2}) -- else this lock is vacuous" -f $leaf, $xCount, $cCount)
+}
+
 Write-Output ("PASS={0} FAIL={1}" -f $script:pass, $script:fail)
 if ($script:fail -gt 0) { exit 1 } else { exit 0 }

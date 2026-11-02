@@ -110,6 +110,7 @@ namespace FfmpegGui.Services
             settings.CacheDirectory = Get("CACHE_DIR") ?? settings.CacheDirectory;
 
             if (bool.TryParse(Get("GPU"), out var gpu)) settings.GpuAcceleration = gpu;
+            if (bool.TryParse(Get("CLOSE_TO_TRAY"), out var closeToTray)) settings.CloseToTray = closeToTray;
             if (bool.TryParse(Get("AUTO_SIMD"), out var simd)) settings.AutoUseSimdBinaries = simd;
             if (bool.TryParse(Get("PRESERVE_STRUCTURE"), out var preserve)) settings.PreserveInputFolderStructure = preserve;
             if (int.TryParse(Get("MAX_QUEUE"), out var maxQueue)) settings.MaxQueueSize = maxQueue;
@@ -188,6 +189,7 @@ namespace FfmpegGui.Services
                 RenderingMode = _current.RenderingMode,
                 SimpleModeAutoEncode = _current.SimpleModeAutoEncode,
                 EnableIpcServer = _current.EnableIpcServer,
+                CloseToTray = _current.CloseToTray,
                 AutoUseSimdBinaries = _current.AutoUseSimdBinaries,
                 IgnoredToolPaths = _current.IgnoredToolPaths,
                 EnabledImageFormats = _current.EnabledImageFormats,

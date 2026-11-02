@@ -1140,6 +1140,11 @@ namespace FfmpegGui.Services
         /// </summary>
         public static int ProbeInputBitDepthForEngine(string inputPath) => ProbeInputBitDepth(inputPath);
 
+        /// <summary>供**自研引擎出口**取原始 pix_fmt（与位深同一份 10s 缓存，零额外进程）。
+        /// 管道输入 / 探测失败 ⇒ ""（调用方按未探测处理）。</summary>
+        public static string ProbeInputPixFmtForEngine(string inputPath)
+            => inputPath == "-" ? "" : (GetCachedProbe(inputPath).pixFmt ?? "");
+
         /// <summary>使用 ffprobe 同步探测输入文件的位深（复用缓存，不额外起进程）</summary>
         private static int ProbeInputBitDepth(string inputPath)
         {
@@ -1361,6 +1366,10 @@ namespace FfmpegGui.Services
             public bool hasAlpha;
             /// <summary>输入是否为 RGB 系列像素格式（rgb/bgr/gbr/rgba 等，用于 pc range 判断）</summary>
             public bool isRgb;
+            /// <summary>原始 pix_fmt 串（ffprobe parts[2]；管道输入/探测失败 = null）。
+            /// 供解码侧满量程的**载体细分**用（gray*/yuvj* ⇒ 65280、RGB ⇒ 65283，
+            /// 见 RawColorPipeline.ResolveSrcCodeMax 与第 87 条 B4 臂）。</summary>
+            public string? pixFmt;
             /// <summary>色彩语义是否来自 ICC/EXIF（true 时上层应携带 ICC 而非仅靠 primaries/trc 标签）</summary>
             public bool hasIccSemantics;
             /// <summary>探测到的源色彩空间规范名（如 "Adobe RGB"/"ProPhoto RGB"），供超广色域归一化到 BT.2020 判定</summary>
@@ -1643,6 +1652,10 @@ namespace FfmpegGui.Services
             if (meta.bitDepth <= 0) meta.bitDepth = ffMeta.bitDepth;
             meta.hasAlpha = ffMeta.hasAlpha;
             meta.isRgb = ffMeta.isRgb;
+            // 载体细分必需：`pixFmt` 只在 `ProbeWithFfprobeOnce` 的局部结构里被赋值，此前**没有**拷回外层
+            // `meta` ⇒ `ProbeInputPixFmtForEngine` 恒得 ""，`ResolveSrcCodeMax` 的 gray*/yuvj* ⇒ 65280
+            // 细分永不生效（8-bit 恒按 RGB 尺 65283 归一，实测顶码 65532）。与位深/alpha 同源同缓存。
+            meta.pixFmt = ffMeta.pixFmt;
             if (string.IsNullOrWhiteSpace(meta.colorSpace)) meta.colorSpace = ffMeta.colorSpace;
             // 语义缺失时才回退 ffprobe 的 primaries/trc
             if (!meta.hasIccSemantics)
@@ -1786,6 +1799,7 @@ namespace FfmpegGui.Services
                 {
                     var pixFmt = parts[2];
                     meta.bitDepth = ParseBitDepthFromPixFmt(pixFmt);
+                    meta.pixFmt = pixFmt;   // 载体细分（gray*/yuvj*）要原始串；与位深同缓存、零额外进程
                     // Alpha 检测走**前缀白名单**（<see cref="HasAlphaPlane"/>），不再用 Contains('a')：
                     // 后者把 gray/gray16le/bayer_*/pal8 全判成有 alpha（pal8 连"仅 >8bit 无影响"都不成立，
                     // 它在管道里就选过一次 pam 载体）。

@@ -68,6 +68,10 @@ namespace Tests.UiSweep
                 return 99;
             }
 
+            // 自检负控（仅在 UIHOST_NEGCTL=1 / --negctl 时执行；见 UiHost.NegCtl 的说明）。
+            // 位置与拆分前的 UiTestHost 一致：**所有组跑完之后**，避免污染组内状态。
+            UiHost.RunNegativeControlIfRequested();
+
             UiHost.Finish();
             Harness.EmitProbeResult();
             return Harness.ExitCode();
