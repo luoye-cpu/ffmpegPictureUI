@@ -19,7 +19,7 @@
 | `FIX_PLAN_2026-10-14.md` | 2 | 修复计划（现行） |
 | `GAINMAP_ROUTES_AND_PATCH_PLAN.md` | 1 | 增益图路由与修补方案（现行） |
 | `MANUAL_VERIFICATION.md` | 1 | 手工验证清单 |
-| `ACR_FULL_ROUTE_PLAN.md` | 0（新，2026-11-01） | DNG→ACR 全量路线的**可行性设计**（链 A/链 B、R1~R3 风险、M1~M5 待测格）；维护者裁定「只做设计+探针」⇒ 不含任何产品侧路由改动。位置可动，但被 `CORRECTION-2026-10-31-C-FULLDRIVE.md` 与 AGENTS §7 指它 |
+| `ACR_FULL_ROUTE_PLAN.md` | 0（新，2026-11-01） | DNG→ACR 全量路线的**可行性设计**（链 A/链 B、R1~R3 风险、M1~M5 待测格）；维护者裁定「只做设计+探针」⇒ 不含任何产品侧路由改动。位置可动，但被 `CORRECTION-2026-10-31-C-FULLDRIVE.md` 按名指它（AGENTS §7 只描述性提及 ACR 路线，未点名本文件——2026-11-02 核） |
 | `RAW2TIF_QA_DEFECT_2026-10-03.md` | 1（**前缀名**） | `QueueProcessor.cs:808` 以 `RAW2TIF_QA_DEFECT §7.5` 指它；按全名数引用会漏，故留顶层 |
 | `ENCODING_OPTIONS_AUDIT_2026-09-26.md` | 1 | 高级编码选项审查 |
 | `DNG_SONY_IDC.md` / `DNG_BUILD.md` | 1 / 1 | DNG 厂商制式与构建 |
@@ -28,14 +28,16 @@
 | `GAINMAP_VENDOR_ANNOTATION_AUDIT_2026-10-02.md` | 1 | 厂商增益图注记审查 |
 | `COLOR_ENGINE_INTERFACE_PLAN.md` | 1 | 色彩引擎接口 |
 | `HANDOVER_2026-09-22.md` / `HANDOVER_2026-10-02.md` | 2 / 2 | 旧交接口（有门禁指它，故留原位） |
-| `HANDOVER_2026-10-10.md` | 0 | 最新交接口，现行账本的前身 ⇒ 留顶层不进归档 |
+| `HANDOVER_2026-10-10.md` | 0 | 旧交接口（其后已有 `HANDOVER-BETA9-STOP2-2026-10-26.md` 与 `review-2026-10-31/HANDOVER-2026-10-31.md`），现行账本的前身 ⇒ 留顶层不进归档 |
+| `FIX_PLAN_2026-10-11.md` | 1 | 修复计划（`tests/projects/GainMapTestHost/Program.cs:1763` 注释按名指它；2026-11-02 补登记——此前漏册） |
+| `HANDOVER-BETA9-STOP-2026-10-26.md` / `HANDOVER-BETA9-STOP2-2026-10-26.md` | 0 / 0 | beta9 中止快照（时间点账本，STOP 的续接指针指向 STOP2，互为指针）；2026-11-02 补登记 |
 
 ## 2. 分批审查（`review-YYYY-MM-DD/`，被门禁按名点名，位置固定）
 
 `review-2026-10-03`（8）· `review-2026-10-04`（18）· `review-2026-10-10`（19，含 `lanes/` `verify/`）·
-`review-2026-10-11`（4）· `review-2026-10-16`（1，`test-value-audit.md` 被 `verify-probe-mirror-parity` 引用）·
+`review-2026-10-11`（3 份 .md + 1 份 `f9-partial-lane-E.patch`）· `review-2026-10-16`（1，`test-value-audit.md` 被 `verify-probe-mirror-parity` 引用）·
 `review-2026-10-31`（5，`AUDIT-独立性审查-2026-10-31.md`；独立性安全/正确性审查判词总账，被测件 `f89b247b60dcf1ef` == HEAD。
-**尚无任何门禁按名点名它** ⇒ 位置未被钉，但 §8.2 记了与总账/各 lane 的 7 处不一致，改名前先读那一段；
+**已有门禁文件按名点名本目录**（`_run-step3-gates.ps1:1640` 注释引 `docs/review-2026-10-31`——此前写的「尚无任何门禁按名点名它」已过时，2026-11-02 更正）⇒ 位置事实上已被钉；但 §8.2 记了与总账/各 lane 的 7 处不一致，改名前先读那一段；
 一手证据全在**仓外** `..\ffmpegPictureUI-audit\`（`evidence/` + `lanes/*/FINDINGS.md`），本仓不随附产物。
 第二份是**追加更正条目** `CORRECTION-2026-10-31-S8.md`（S8 修复落地 / 第 87 条入列 / §7.3 表外三条的兑现与仍未兑现项，含 65283 vs 65269 的口径差）；
 第三份 `CORRECTION-2026-10-31-B-2REDS.md`（两条既存红真修：第 56 条两处合并取数站点收窄为只读 stdout、㉛ 期望总数改为
@@ -49,7 +51,7 @@
 一次性审计报告与已执行计划，2026-10-22 从顶层移入。**判据 = 按前缀名（去掉尾部日期）在 `docs/` 外数命中，
 零命中才可移**；`RAW2TIF_QA_DEFECT_2026-10-03` 因 `QueueProcessor.cs` 用短名指它而退回顶层。
 
-`ADV_ENCODER_*`（3）· `TEST_*_2026-10-07`（6）· `PIPELINE_AUDIT_*`（2）· `PIPELINE_REVIEW` ·
+`ADV_ENCODER_*`（3）· `TEST_*_2026-10-07`（5：COVERAGE_AUDIT / EXECUTION_LEAD / EXPANSION_PLAN / FIX_AND_SPLIT_REPORT / REPORT_BASELINE）· `PIPELINE_AUDIT_*`（2）· `PIPELINE_REVIEW` ·
 `HANDOVER` 旧制式（`AGENT_TASK_SPLIT` `BUILD_HANDOVER` `JXL_ISSUES_HANDOVER` `PIPELINE_REVIEW_2026-09-14`
 `HANDOVER_2026-09-16`）· `DISTRIBUTION_COMPLIANCE_AUDIT` · `LICENSE_TERMS_VERIFICATION` ·
 `EXHAUSTIVE_TEST_PLAN` · `RAW_COLOR_TARGET_MODE_PLAN_2026-10-04` ·

@@ -12,6 +12,21 @@
 
 ## 📝 更新日志
 
+### 未发布（开发线 2026-11-02，`753cb33`）— 门禁 87→94、托盘常驻/关窗退出修复、UI 执行面切拆分件、白点出口顶码归一、视图扩展名统一 `.xaml`
+
+> 本节是 beta10 重出之后、下一档发布之前的开发批次合计（`31498ea` → `f778280` → `753cb33`）。
+> 各项读数的完整账目见 `docs/HANDOVER.md` 与 `docs/review-2026-10-31/`。
+
+- **门禁清单 87→94**：6 支清单外脚本接线为受管门禁（`run-color-tests` / `run-quality-tests` / `run-thread-tests` / `verify-color-matrix-full` / `verify-oracle-matrix` / `verify-release-package`），新增第 94 条 `_probe-host-temp-sites`（宿主 TEMP 站点 39 站点/7 文件冻结锁），`_accept-ui-split` / `_gen-ui-split` 落 ⑪-d 豁免表（CoveredBy 必须全为受管门禁）。
+- **UI 执行面迁移完成**：5 条 UI 门禁的执行体从单体 `UiTestHost.exe` 切到拆分件，条数锁全部收紧为精确等值（`verify-ui-host` 合计锁 430 = 75+53+89+141+72；`ui-sweep` J=98；`ui-strategy-map` K=27；`ui-param-defects` L=43+9；`verify-cli-strict` 87 = 60+15+12）。
+- **托盘 / 关窗契约修复**：托盘图标随启动即常驻（跟 `CloseToTray`，默认开）；仅「设置要托盘 且 托盘真可用」才拦关窗，否则关窗即真退出（不再藏不可见进程）；退出唯一实现 `App.ExitApp()`；托盘失败一律落 `tray.log`。
+- **白点出口顶码归一（S8）**：`31498ea` 按实测 65283 归一，修掉「色彩管理出口白点被系统性压低 1 LSB」，并登记第 86/87 条门禁。
+- **视图扩展名统一 `.xaml`**：8 对 `.axaml`→`.xaml` 改名（现 `git ls-files 'src/**/*.xaml'` = 7、`.axaml` = 0）；Avalonia 隐式 glob 只收 `.axaml` ⇒ `.xaml` 仅作资源，`MainWindow`/`ProgressWindow` 靠手写 `InitializeComponent()`。
+- **出包链补强**：`verify-release-package` 新增解包目录残留自动清理（2026-11-01 外部实例写入 `debug.log`+`settings.json.bak` 曾致 584 vs 582 对账假红）。
+
+**版本轨迹补记（更正条目——beta10 重出 #2/#3/#4 当时未记入本日志，按「不回改旧条目」规矩补记于此）**：
+v1.6.0-beta10 同一版本位共五次成包——首发 `0640fb5`（10-28）→ 重出 #1 `9ea68f3`（同日：版本位从 beta11 拉回 beta10，`1.6.0BETA11` tag 删除）→ 重出 #2 `af8ae9b`、#3 `775d210`（10-29）→ 第四次重指：`1.6.0BETA10` tag 于 10-30 移到 `5fd3996`（含 `bb9a809` 随包工具换源与 JXR 输出格式下拉修复），无 release 提交。publish/ 现仅存此档两包（app 11,430,807 B / full 55,853,619 B，2026-11-02 核对）。
+
 ### v1.6.0-beta10 (2026-10-28 **重出**) — 出货包的 GUI 起不来修复（AOT 产物保住 Avalonia 编译 XAML 载荷）+ GainMap 出口两条静默降级修复 + 新增第 85 条「包内 exe 必须开窗口」
 
 > ⚠ 合并说明：GUI 打不开的修复**属于 v1.6.0-beta10 的重出**，不是新版本。本节「验证」段与下面 GainMap 段的读数是

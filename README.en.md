@@ -4,7 +4,7 @@
 
 **v1.6.0** — 2026-09-28 Release · Cross-platform batch image / animation / video converter built on Avalonia UI, wrapping `ffmpeg` / `ffprobe` plus external encoders (`cjxl` / `djxl` / `cjpegli` / `JxrEncApp` / `JxrDecApp`).
 
-> ℹ️ This README documents the **released stable v1.6.0**; **this working tree is on the `v1.6.0-beta4` development line** (latest entries in [CHANGELOG.en.md](CHANGELOG.en.md)).
+> ℹ️ This README documents the **released stable v1.6.0**; **this working tree is on the `v1.6.0-beta10` development line** (latest entries in [CHANGELOG.en.md](CHANGELOG.en.md)).
 
 QQ Group: 754439779 | [Join Group](https://qm.qq.com/q/M2181PvCkW)
 
@@ -14,7 +14,7 @@ QQ Group: 754439779 | [Join Group](https://qm.qq.com/q/M2181PvCkW)
 
 | Feature | Description |
 |---|---|
-| **Multi-format** | JPEG, PNG, WebP, AVIF, JPEG XL, TIFF — plus animated: GIF, WebP (animated), APNG, AVIF (animated), JPEG XL (animated). JPEG-LI is integrated as the `cjpegli` encoder option for JPEG |
+| **Multi-format** | JPEG, PNG, WebP, AVIF, JPEG XL, JPEG XR, TIFF, DNG — plus animated: GIF, WebP (animated), APNG, AVIF (animated), JPEG XL (animated). JPEG-LI is integrated as the `cjpegli` encoder option for JPEG. RAW/DNG input (DNG rendered via the Adobe DNG SDK; other RAW via LibRaw) |
 | **Encoder backend** | Per-format switchable `ffmpeg` / `cjxl` / `cjpegli`; `cjxl` used for JXL lossless JPEG repack |
 | **Quality control** | Quality slider (snap-to-tick) + format-aware numeric input (JPEG q:v 2-31, JXL distance 0-15, etc.) |
 | **Advanced codec options** | Per-format advanced panels: DCT algo, progressive mode, Huffman optimize, adaptive quant, sjpeg backend, PSNR target, lossless compression level, row-mt, still-picture, modular mode |
@@ -34,6 +34,8 @@ QQ Group: 754439779 | [Join Group](https://qm.qq.com/q/M2181PvCkW)
 | **Lossless lock** | PNG/TIFF/APNG auto-lock quality at max and disable the slider |
 | **Search drag-drop** | Windows Search result files correctly resolved via Shell namespace paths |
 | **Gain Map (Ultra HDR)** | **Fully managed encode/decode with no libultrahdr dependency**: encode uses the chosen JPEG backend (`cjpegli`/`ffmpeg mjpeg`) and emits ISO 21496-1 + XMP(hdrgm) + MPF triple metadata; decode reads the ISO/MPF container directly (exiftool only cross-checks/falls back); base image is either **sRGB SDR** (default, Android/libultrahdr compatible) or **BT.2100 PQ HDR** (experimental, full HDR preserved in the container) |
+| **Two-image GainMap composition** | Base image + gain map as two inputs composed into a gain-map output (`GainMapComposeService`, since beta9; CLI entry `--compose-gainmap`) |
+| **GainMap panel** | The "Gain Map (Ultra HDR)" parameter panel: base gamut (sRGB SDR / wide-gamut Rec.2020), gain-map resolution (full…1/16, five steps), independent quality (or follow the main image), target brightness (nits), RGB multi-channel, metadata tagging (ISO 21496-1 / XMP hdrgm); matching CLI flags `--gainmap-peak` / `--gainmap-multichannel` / `--gainmap-encoder` / `--gainmap-metadata` |
 | **Real-time progress** | Detail window shows live command + progress for all backends: ffmpeg/cjxl/cjpegli/djxl/pipes |
 
 ---
@@ -68,6 +70,16 @@ dotnet run --project src/FfmpegGui/FfmpegGui.csproj
 ```
 
 Or download from the [Releases page](https://github.com/luoye-cpu/ffmpegPictureUI/releases).
+
+---
+
+## 🖥️ Desktop app
+
+### System tray
+
+The tray icon is resident from program start (follows the "Close to tray" setting, on by default); the queue keeps running in the background. Tray menu: "Show Main Window / Pause Queue / Exit".
+
+> Closing the main window is intercepted (minimized to tray) **only when the setting asks for a tray AND the tray is actually available**; otherwise closing the main window truly exits the process (it never hides as an invisible process). The only exit path is `App.ExitApp()` (shared by the tray menu / the settings "Exit" button / the window-close fallback); tray failures are logged to `tray.log`.
 
 ---
 
@@ -114,6 +126,7 @@ FfmpegGui.exe --headless -i *.jpg -o out -f jxl \
 | `--dry-run` | Print commands without executing |
 | `--preset <name>` | Use a built-in / user preset |
 | `--strip-*` | Privacy cleaning (--strip-gps/--strip-time/--strip-camera/--strip-all-exif/--strip-xmp) |
+| `--compose-gainmap` | Two-image GainMap compose (`-i` inputs paired in order); with `--gainmap-peak <nits>` / `--gainmap-multichannel <true\|false>` / `--gainmap-encoder <cjpegli\|mjpeg\|libaom-av1\|libsvtav1>` / `--gainmap-metadata <iso\|xmp\|both>` (`-f jpg/avif` only) |
 
 ### Config layering priority
 
@@ -126,10 +139,6 @@ Common environment variables: `FFMPEGGUI_FFMPEG_DIR`, `FFMPEGGUI_OUTPUT_DIR`, `F
 External-tool detection fallback: `FFMPEGGUI_EXT_SEARCH_DIRS` (`;`-separated directory list). When set, the "extended system search"
 step uses **only** these roots instead of recursively walking `%LOCALAPPDATA%\Programs`, `C:\Program Files` and every PATH entry.
 Unset means the default behaviour is unchanged.
-
-### System tray
-
-Closing the main window minimizes to the system tray by default (instead of quitting) so the queue keeps running in the background. Tray menu: "Show Main Window / Pause Queue / Exit".
 
 ---
 
@@ -158,29 +167,21 @@ The app inspects the JXL file type at the byte level and picks the optimal path:
 ```
 ffmpegPictureUI/
 ├── src/FfmpegGui/
-│   ├── Models/           AppSettings, FfmpegOptions, QueueItem, PresetData
-│   ├── Services/         FfmpegCommandBuilder, FfmpegRunner, QueueProcessor,
-│   │                     CjxlService, DjxlService, CjpegliService,
-│   │                     JxlInspector, JxlPipelineService, JxrService,
-│   │                     ExternalToolsDetector, CpuFeatureService,
-│   │                     ExifToolService, FormatCapabilitiesService,
-│   │                     EncoderDetectionService, QualityAnalysisService,
-│   │                     ColorEncodingHelper, IccProfileService,
-│   │                     PresetManagerService, RawService,
-│   │                     GpuCapabilityService, PlatformServices,
-│   │                     LocalizationService, PsRenderService, PsnrCalculator,
-│   │                     SimdPixelOps (Photoshop ACR verification, .NET native PSNR, SIMD)
-│   ├── Controls/         MetadataEditor
+│   ├── Models/            Data models: settings, options, queue, presets
+│   ├── Services/          Pipeline layer (51 .cs files): FfmpegCommandBuilder, QueueProcessor,
+│   │                      JxlPipelineService, IccProfileService, GainMap* services,
+│   │                      ExternalToolsDetector, QualityAnalysisService, IpcService …
+│   ├── Services/ColorMapping/  Color engine layer (19 .cs files, zero UI dependencies)
+│   ├── Controls/          Composite controls (MetadataEditor …)
 │   ├── Resources/Locales/ zh-CN.json, en-US.json
-│   ├── LocExtension.cs   XAML localization markup extension
-│   ├── MainWindow.xaml   Primary UI
-│   ├── MainWindow.xaml.cs UI logic
-│   ├── FormatFilterWindow.xaml  Format filter dialog
-│   ├── PresetManagerWindow.xaml Preset manager window
-│   ├── ProgressWindow.xaml Progress UI
-├── tools/                Verification utilities
-├── tests/                Testing (output/ git-ignored, see docs/TESTING.md)
-└── publish/              Publish output
+│   └── Views (7 .xaml)    App, MainWindow, ProgressWindow, ImageDetailWindow,
+│                          FormatFilterWindow, PresetManagerWindow, Controls/MetadataEditor
+│                          (MainWindow/ProgressWindow use hand-written
+│                          InitializeComponent/FindControl; the rest are XAML-compiled)
+├── tools/                 Vendored upstream sources and in-house utilities (pngcicp / dngjxlprobe / dngtool)
+├── tests/                 13 test projects (tests/projects/) + tests/scripts gate scripts
+│                          (output/ is fully git-ignored, see docs/TESTING.md)
+└── publish/               Packaging output and bundled toolchain (fully git-ignored)
 ```
 
 ---
@@ -223,8 +224,8 @@ made in both places. §7 of each in-repo document lists the deliberate differenc
 Current version **v1.6.0** (2026-09-28). Full release history: **[CHANGELOG.en.md](CHANGELOG.en.md)**.
 
 > ℹ️ "Current version" above refers to the **released stable build** (git tag `1.6.0` @ 2026-09-28).
-> **This working tree is on the `v1.6.0-beta4` development line** (`<Version>` in `src/FfmpegGui/FfmpegGui.csproj`
-> = `1.6.0-beta4`); its changes are recorded under the `v1.6.0-beta4` entry of **[CHANGELOG.en.md](CHANGELOG.en.md)**.
+> **This working tree is on the `v1.6.0-beta10` development line** (`<Version>` in `src/FfmpegGui/FfmpegGui.csproj`
+> = `1.6.0-beta10`); its changes are recorded under the `v1.6.0-beta10` and later entries of **[CHANGELOG.en.md](CHANGELOG.en.md)**.
 > The README body has not been kept in step with the beta line.
 
 

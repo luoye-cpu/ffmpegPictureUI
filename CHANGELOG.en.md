@@ -13,6 +13,21 @@ All notable changes to this project are documented in this file.
 
 ## 📝 Changelog
 
+### Unreleased (development line 2026-11-02, `753cb33`) — gates 87→94, resident tray / close-to-exit fix, UI gate execution moved to split hosts, white-point exit normalized, views unified to `.xaml`
+
+> This section aggregates the development batches after the beta10 re-release and before the next release (`31498ea` → `f778280` → `753cb33`).
+> Full ledgers for every reading live in `docs/HANDOVER.md` and `docs/review-2026-10-31/`.
+
+- **Gate roster 87→94**: 6 previously unlisted scripts wired in as managed gates (`run-color-tests` / `run-quality-tests` / `run-thread-tests` / `verify-color-matrix-full` / `verify-oracle-matrix` / `verify-release-package`); new gate #94 `_probe-host-temp-sites` (frozen host-TEMP site lock: 39 sites / 7 files); `_accept-ui-split` / `_gen-ui-split` placed on the ⑪-d exemption table (CoveredBy must name managed gates only).
+- **UI gate execution migration complete**: 5 UI gates switched from the monolithic `UiTestHost.exe` to the split hosts; count locks tightened to exact equality (`verify-ui-host` total 430 = 75+53+89+141+72; `ui-sweep` J=98; `ui-strategy-map` K=27; `ui-param-defects` L=43+9; `verify-cli-strict` 87 = 60+15+12).
+- **Tray / close-window contract fix**: the tray icon is resident from startup (follows `CloseToTray`, on by default); the main window close is intercepted only when "the setting wants a tray AND the tray is truly available", otherwise closing truly exits (no invisible processes); the only exit implementation is `App.ExitApp()`; tray failures are logged to `tray.log`.
+- **White-point exit normalization (S8)**: `31498ea` normalizes to the measured 65283, fixing "color-managed exit white point systematically lowered by 1 LSB"; gates #86/#87 registered.
+- **View file extension unified to `.xaml`**: 8 pairs renamed `.axaml`→`.xaml` (now `git ls-files 'src/**/*.xaml'` = 7, `.axaml` = 0); Avalonia's implicit glob only picks up `.axaml`, so `.xaml` files are resources only and `MainWindow`/`ProgressWindow` rely on hand-written `InitializeComponent()`.
+- **Packaging chain hardening**: `verify-release-package` now auto-cleans unpack-directory residue (an external instance writing `debug.log` + `settings.json.bak` caused a 584 vs 582 false-red on 2026-11-01).
+
+**Release-trajectory addendum (corrective entry — beta10 re-releases #2/#3/#4 were never recorded here; added below instead of rewriting old entries, per the "don't rewrite old entries" rule)**:
+Version `1.6.0-beta10` was packaged five times under the same version string — first release `0640fb5` (10-28) → re-release #1 `9ea68f3` (same day: version moved back from beta11 to beta10, `1.6.0BETA11` tag deleted) → re-releases #2 `af8ae9b` and #3 `775d210` (10-29) → fourth re-point: the `1.6.0BETA10` tag was moved to `5fd3996` on 10-30 (carrying `bb9a809` bundled-toolchain resourcing and the JXR output-format dropdown fix), with no release commit. publish/ now keeps only this pair (app 11,430,807 B / full 55,853,619 B, verified 2026-11-02).
+
 ### v1.6.0-beta10 (2026-10-28 **re-issued**) — Shipped-package GUI fix (NativeAOT keeps Avalonia's compiled-XAML payload) + the two silent GainMap degradations + new gate #85 "the packaged exe must start a window"
 
 > ⚠ Merge note: the GUI fix belongs to the **re-issued v1.6.0-beta10**, not to a new version. The "Verification" paragraph below and the GainMap entries are the readings of the **first** beta10 build (`0640fb5`, whose packaged exe would not open). This re-issue regenerates both archives; the new packaging readings are appended at the end of this section.

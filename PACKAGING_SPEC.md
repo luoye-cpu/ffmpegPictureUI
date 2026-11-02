@@ -1,6 +1,6 @@
 # 📦 FFmpegPictureUI 打包规范
 
-> 版本: 1.1 | 最后更新: 2026-09-06 | 适用于 v1.6.0+ / For v1.6.0+
+> 版本: 1.2 | 最后更新: 2026-11-02（按 pack.ps1 现行行为与 beta10 实档校订） | 适用于 v1.6.0+ / For v1.6.0+
 
 ---
 
@@ -15,10 +15,10 @@
 | 字段 | 说明 | 示例 |
 |------|------|------|
 | `AppName` | 固定 `FFmpegPictureUI` | FFmpegPictureUI |
-| `Version` | 三位语义化版本号 | 1.5.2 |
-| `Arch` | CPU 架构标识 | x64, arm64 |
+| `Version` | 语义化版本号，可带预发布后缀；`pack.ps1` 未显式传 `-Version` 时自动读 csproj `<Version>` | 1.6.0-beta10 |
+| `Arch` | CPU 架构标识（当前 pack.ps1 写死 x64 / win-x64） | x64 |
 | `Variant` | 可选。`full`=含 PLAN 外部工具包；省略=单文件（不含 PLAN） | full |
-| `Ext` | 压缩格式 | 7z, zip |
+| `Ext` | 压缩格式（当前固定 7z） | 7z |
 
 > **注意**: 所有版本统一使用 **NativeAOT 编译**（无 .NET Runtime 依赖），两版本区别仅是否包含 `PLAN/` 外部工具文件夹。
 
@@ -26,10 +26,10 @@
 
 | 产物 | 名称 |
 |------|------|
-| Windows x64 单文件版（NativeAOT，不含 PLAN） | `FFmpegPictureUI-v1.5.2-x64.7z` |
-| Windows x64 完整版（NativeAOT + PLAN 工具包） | `FFmpegPictureUI-v1.5.2-x64-full.7z` |
-| Linux ARM64 单文件版 | `FFmpegPictureUI-v1.5.2-arm64.tar.gz` |
-| Linux ARM64 完整版 | `FFmpegPictureUI-v1.5.2-arm64-full.tar.gz` |
+| Windows x64 单文件版（NativeAOT，不含 PLAN） | `FFmpegPictureUI-v1.6.0-beta10-x64.7z` |
+| Windows x64 完整版（NativeAOT + PLAN 工具包） | `FFmpegPictureUI-v1.6.0-beta10-x64-full.7z` |
+
+> 当前只产出 Windows x64 两档 7z。Linux ARM64 / tar.gz **没有脚本支撑**（`pack.ps1` 的 param 仅 app/full/all，`$Rid` 写死 `win-x64`），故不列幻影产物行。
 
 ---
 
@@ -40,33 +40,20 @@
 ### 2.1 目录结构
 
 ```
-FFmpegPictureUI-v1.5.2-x64-full/
-├── FfmpegGui.exe                    ← 主程序（由 dotnet publish 生成）
-├── FfmpegGui.dll                    ← 主程序集
-├── *.dll                            ← 运行时依赖
-├── Resources/                       ← 程序资源
-│   └── Locales/                     ← 多语言资源
-│       ├── zh-CN.json              ← 中文 (默认)
-│       └── en-US.json              ← 英文
-├── PLAN/                            ← 外部组件根目录（程序自动识别）
-│   ├── 使用说明.txt                  ← 用户使用指南（打包时自动生成）
-│   ├── ffmpeg-full/                 ← FFmpeg 预编译包
-│   │   ├── ffmpeg.exe
-│   │   ├── ffprobe.exe
-│   │   └── *.dll
-│   ├── jxl/                          ← libjxl 预编译包
-│   │   └── bin/
-│   │       ├── cjxl.exe
-│   │       ├── djxl.exe
-│   │       └── cjpegli.exe
-│   ├── exiftool/                     ← ExifTool
-│   │   └── exiftool.exe
-│   └── artifacts/                    ← 其他自编译工具
-│       ├── JxrEncApp.exe
-│       ├── JxrDecApp.exe
-│       ├── avifenc.exe
-│       └── dngtool.exe
-└── FFmpegPictureUI.runtimeconfig.json
+FFmpegPictureUI-v1.6.0-beta10-x64-full/
+├── FfmpegGui.exe                    ← 主程序（NativeAOT 单文件，自含 .NET 运行时）
+├── libSkiaSharp.dll / libHarfBuzzSharp.dll / av_libglesv2.dll
+│                                    ← AOT 无法嵌入的 3 个原生渲染库，随目录分发
+├── LICENSE / NOTICE / THIRD-PARTY-NOTICES.md ← 法律文件（缺失即拒绝打包）
+├── licenses/                        ← 各第三方许可原文
+├── Resources/
+│   └── Locales/                     ← 多语言资源（zh-CN.json 默认 / en-US.json）
+└── PLAN/                            ← 外部组件根目录（程序自动识别）
+    ├── 使用说明.txt                  ← 用户使用指南（仅 full 模式生成）
+    ├── ffmpeg-full/                 ← FFmpeg 预编译包（ffmpeg.exe / ffprobe.exe / *.dll）
+    ├── jxl/bin/                     ← cjxl.exe / djxl.exe / cjpegli.exe / jxlinfo.exe
+    ├── exiftool/                    ← exiftool.exe
+    └── artifacts/                   ← JxrEncApp.exe / JxrDecApp.exe / avifenc.exe / dngtool.exe
 ```
 
 ### 2.2 PLAN 子目录识别规则
@@ -100,52 +87,61 @@ dotnet build src/FfmpegGui/FfmpegGui.csproj -c Release
 ### 3.2 发布命令（推荐使用 pack.ps1，一键 2 版本，全部 NativeAOT）
 
 ```powershell
-# 单文件版（NativeAOT，不含 PLAN，需 .NET 11+ SDK 编译）
-.\pack.ps1 -Version "1.5.2" -Mode app
+# 推荐：省略 -Version（自动读 src/FfmpegGui/FfmpegGui.csproj 的 <Version>，避免与项目版本漂移）
+.\pack.ps1 -Mode app     # 单文件版（NativeAOT，不含 PLAN，需 .NET 11+ SDK）
+.\pack.ps1 -Mode full    # 完整版（NativeAOT + PLAN 组件包）
+.\pack.ps1 -Mode all     # 一键全部 2 个版本（默认）
 
-# 完整版（NativeAOT + PLAN 组件包）
-.\pack.ps1 -Version "1.5.2" -Mode full
-
-# 一键全部 2 个版本（默认）
-.\pack.ps1 -Version "1.5.2" -Mode all
+# 显式 -Version 仅用于覆盖 csproj；pack 不对账 csproj，错配要靠
+# verify-release-package / verify-package-gui-starts 的版本对撞兜底
 ```
 
 > **注**: NativeAOT 发布后 SkiaSharp/HarfBuzz/ANGLE 3 个原生渲染库（`libSkiaSharp.dll`/`libHarfBuzzSharp.dll`/`av_libglesv2.dll`）无法嵌入 exe，
 > 会以独立文件形式出现在程序目录（.NET 平台限制，`IncludeNativeLibrariesForSelfExtract` 仅对 CoreCLR 生效），
 > 打包时自动随目录一起压缩，属预期行为。
 
-手动发布命令（与 pack.ps1 等价）：
+> **出包只留最新一档**（2026-10-28 定，AGENTS.md §1）：出新包后，旧版本的
+> `publish/FFmpegPictureUI-v<旧版>-x64*.7z` 与 `publish/build/` 同名解包目录**直接删除**
+> （`publish/PLAN` 随包工具链与 `publish/rescued-*` 存证不在删除范围）。理由是防"读数打在哪个包上"答错；
+> 留证据靠日志与哈希（`ProductVersion`、包内 exe `sha256[:16]`），不留旧包。
+> `pack.ps1` 本体**不**自动删旧档，此规则靠人工执行 + `verify-release-package` 的多版本歧义拒绝兜底。
 
-```bash
-# Windows x64 单文件版（NativeAOT）
+手动发布命令（与 pack.ps1 等价，**必须两步**）：
+
+```powershell
+# ⚠ 2026-10-28 实测：让 publish 自己重编（单步 publish）时，编译产物里没有 Avalonia 资源表
+#   （exe 字节里 `!AvaloniaResources` / `!XamlIlPopulate` 0 命中），出货包 GUI 一键都打不开
+#   （XamlLoadException: No precompiled XAML for FfmpegGui.App，0xC0000409）——beta9/beta10 两版事故。
+#   正确顺序 = 先 build，再 publish -p:NoBuild=true：
+dotnet build src/FfmpegGui/FfmpegGui.csproj -c Release --nologo
+
+# 然后发布（单文件版与完整版同一步骤，仅 -o 目录不同）：
 dotnet publish src/FfmpegGui/FfmpegGui.csproj `
     -c Release -r win-x64 `
     -p:PublishAot=true `
+    -p:NoBuild=true `
     -p:SelfContained=true `
     -p:PublishSingleFile=true `
     -p:IlcOptimizationPreference=Speed `
     -p:InvariantGlobalization=true `
-    -o publish/build/FFmpegPictureUI-v1.5.2-x64/
-
-# Windows x64 完整版（NativeAOT，另需复制 PLAN/ 目录与使用说明）
-dotnet publish src/FfmpegGui/FfmpegGui.csproj `
-    -c Release -r win-x64 `
-    -p:PublishAot=true `
-    -p:SelfContained=true `
-    -p:PublishSingleFile=true `
-    -p:IlcOptimizationPreference=Speed `
-    -p:InvariantGlobalization=true `
-    -o publish/build/FFmpegPictureUI-v1.5.2-x64-full/
+    -p:Version=1.6.0-beta10 `
+    -o publish/build/FFmpegPictureUI-v1.6.0-beta10-x64/
+# 完整版把 -o 换成 publish\build\FFmpegPictureUI-v1.6.0-beta10-x64-full\
 ```
 
 ### 3.3 组装完整包
 
-```bash
-# 将 PLAN 文件夹复制到完整包目录
-xcopy /E /I publish\PLAN publish\build\FFmpegPictureUI-v1.5.2-x64-full\PLAN\
+（pack.ps1 的 full 模式自动完成以下两步；等价手工步骤如下——与旧版 xcopy 写法不同，注意先删目标再 robocopy 排除）
 
-# 生成使用说明文档（见第四章）
-# → 输出到 publish\build\FFmpegPictureUI-v1.5.2-x64-full\PLAN\使用说明.txt
+```powershell
+# 1) 复制 PLAN：先删目标目录（防旧文件残留混装，10-01 事故对策），再用 robocopy
+#    排除编译期元数据（.lib / .pc / .cmake 与 pkgconfig、cmake 目录运行时无用）
+Remove-Item -Recurse -Force publish\build\FFmpegPictureUI-v1.6.0-beta10-x64-full\PLAN -ErrorAction SilentlyContinue
+robocopy publish\PLAN publish\build\FFmpegPictureUI-v1.6.0-beta10-x64-full\PLAN `
+    /E /XF *.lib *.pc *.cmake /XD pkgconfig cmake
+
+# 2) 使用说明：以 publish\PLAN\使用说明.txt 为模板替换 {VERSION}/{ARCH}/{DATE} 占位符
+#    → 输出到 publish\build\FFmpegPictureUI-v1.6.0-beta10-x64-full\PLAN\使用说明.txt
 ```
 
 ### 3.4 压缩打包
@@ -193,7 +189,7 @@ Invoke-7zMax 'a -t7z -mx9 -md=3840m -mfb=273 -ms=on -mmt=1 "out.7z" *'
 
 ## 四、使用说明文档自动生成
 
-每次打包时，自动生成 `PLAN/使用说明.txt`，包含以下内容：
+完整版打包时自动生成 `PLAN/使用说明.txt`（单文件版不含 PLAN、不生成），包含以下内容：
 
 ### 4.1 模板
 
@@ -214,11 +210,14 @@ Invoke-7zMax 'a -t7z -mx9 -md=3840m -mfb=273 -ms=on -mmt=1 "out.7z" *'
 
 📁 文件结构
   FfmpegGui.exe        — 主程序
+  LICENSE / NOTICE /
+  THIRD-PARTY-NOTICES.md — 许可与声明
+  licenses/            — 第三方许可原文
   PLAN/                — 外部组件包（程序自动识别）
     ├── ffmpeg-full/   — FFmpeg 编解码引擎
-    ├── jxl-*/bin/     — JPEG XL 工具 (cjxl/djxl/cjpegli)
-    ├── exiftool-*/    — 元数据编辑工具
-    └── windows-artifacts/ — Ultra HDR / JPEG XR 编码器
+    ├── jxl/bin/       — JPEG XL 工具 (cjxl/djxl/cjpegli)
+    ├── exiftool/      — 元数据编辑工具
+    └── artifacts/     — Ultra HDR / JPEG XR 编码器
 
 🖼️ 支持的格式
   输入: JPEG, PNG, WebP, AVIF, JPEG XL, JPEG XR, TIFF, HEIC, DNG, BMP, GIF
@@ -256,8 +255,10 @@ Invoke-7zMax 'a -t7z -mx9 -md=3840m -mfb=273 -ms=on -mmt=1 "out.7z" *'
 
 ### 4.2 生成时机
 
-- 每次执行打包脚本时自动生成
-- 占位符 `{VERSION}`, `{ARCH}`, `{DATE}` 从 `.csproj` 和系统获取
+- 仅 `-Mode full` / `-Mode all`（完整版）打包时生成；单文件版不含 PLAN，不生成
+- 占位符 `{VERSION}`, `{ARCH}`, `{DATE}` 由 pack.ps1 用 `-Version`（或自动读取的 csproj `<Version>`）与系统日期替换
+- ⚠ 模板正本 = `publish\PLAN\使用说明.txt`（随包工具链维护、不入 git）。2026-11-02 之前模板的「文件结构」段
+  仍写着旧目录名 `jxl-*/`、`exiftool-*/`、`windows-artifacts/` ⇒ **beta10 包内说明书是旧文案**，下次出包起随本节更正
 
 ---
 
@@ -267,17 +268,19 @@ Invoke-7zMax 'a -t7z -mx9 -md=3840m -mfb=273 -ms=on -mmt=1 "out.7z" *'
 
 `src/FfmpegGui/FfmpegGui.csproj`:
 ```xml
-<Version>1.6.0</Version>
+<Version>1.6.0-beta10</Version>
 <AssemblyVersion>1.6.0.0</AssemblyVersion>
 <FileVersion>1.6.0.0</FileVersion>
 ```
 
 ### 5.2 更新流程
 
-1. 修改 `.csproj` 中的 `<Version>` 标签
-2. 更新 `README.md` 中的版本号
-3. 执行打包流程
-4. 在 GitHub Releases 中创建对应 tag: `v1.6.0`
+1. 修改 `.csproj` 中的 `<Version>` 标签（`pack.ps1` 未显式传 `-Version` 时自动读取它，推荐省略 `-Version`）
+2. 执行打包流程（§3.2）
+3. 发布稳定版时再更新 `README.md` / `README.en.md` 的版本行与 CHANGELOG 条目
+4. 打 annotated tag：现行命名**无 v 前缀、无连字符**——正式 `1.6.0`、预发布 `1.6.0BETA10`
+   ⚠ 2026-11-02 审查结论：beta10 时代同一 tag 曾四次重指（版本号不升版的重出），
+   「tag = 可重现出包点」已松动；重出时应升版本号新打 tag，不要移动旧 tag
 
 ---
 
@@ -288,7 +291,7 @@ Invoke-7zMax 'a -t7z -mx9 -md=3840m -mfb=273 -ms=on -mmt=1 "out.7z" *'
 | 主程序 | ✅ | ✅ |
 | PLAN 文件夹 | ❌ | ✅ |
 | ffmpeg/cjxl/exiftool | ❌（需用户自行安装） | ✅（开箱即用） |
-| 压缩后体积 | ~15 MB | ~120 MB |
+| 压缩后体积 | ~11.4 MB（beta10 实测 11,430,807 B） | ~55.9 MB（beta10 实测 55,853,619 B） |
 | 适用场景 | 已有 ffmpeg 环境的用户 | 新用户 / 便携使用 |
 
 ---

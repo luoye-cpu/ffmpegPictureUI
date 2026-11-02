@@ -158,7 +158,8 @@ pwsh -NoProfile -File tests/scripts/_run-step3-gates.ps1   # 94 条，整轮 ~60
   整轮只跑 `-Smoke` **3 条代表用例**（自述 L1=194/L2=172）；③第 91 条 `verify-color-matrix-full`
   整轮默认 `quick` = **72 格**（2 格式 × 2 位深），名带 `-full` 不等于全网格。
   ⇒ 宣布「94/94 全绿」时不许顺带说「色彩/oracle 覆盖面一次到位」。
-- **分层**：`Services` 对 UI 零依赖，唯一的代码级倒灌是 `IpcService.cs` 认 `MainWindow` 类型（13 处）；
+- **分层**：`Services` 对 UI 零依赖，唯一的代码级倒灌是 `IpcService.cs` 认 `MainWindow` 类型
+  （2026-11-02 重测：大小写不敏感命中 44 行 / 出现 54 次，其中非注释 39 行；旧记「13 处」有误）；
   抽 `FfmpegGui.Core` 会改出货件程序集构成与指纹，属独立决策。
 - **产物区残留（2026-10-22 清）**：`tests/output` 19.73 GB/1357 项 → **16 GB/215 项**。
   拆掉 3 个 worktree（存证见 §5）、零引用条目 1135 项 2.0 GB、>7 天轮次目录 4156 项 8.17 GB、

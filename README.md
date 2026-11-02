@@ -4,7 +4,7 @@
 
 **v1.6.0** — 2026-09-28 发布 · 基于 Avalonia UI 的跨平台批量图片 / 动图 / 视频转换工具，封装 `ffmpeg` / `ffprobe` + 外部编码器（`cjxl` / `djxl` / `cjpegli` / `JxrEncApp` / `JxrDecApp`）。
 
-> ℹ️ 本 README 记述的是**已发布的稳定版 v1.6.0**；**本工作区当前为 `v1.6.0-beta4` 开发线**（最新条目见 [CHANGELOG.md](CHANGELOG.md)）。
+> ℹ️ 本 README 记述的是**已发布的稳定版 v1.6.0**；**本工作区当前为 `v1.6.0-beta10` 开发线**（最新条目见 [CHANGELOG.md](CHANGELOG.md)）。
 
 QQ 交流群：754439779 | [点击加群](https://qm.qq.com/q/M2181PvCkW)
 
@@ -14,7 +14,7 @@ QQ 交流群：754439779 | [点击加群](https://qm.qq.com/q/M2181PvCkW)
 
 | 功能 | 说明 |
 |---|---|
-| **多格式** | JPEG, PNG, WebP, AVIF, JPEG XL, TIFF — 动图：GIF, WebP (动态), APNG, AVIF (动态), JPEG XL (动态)；JPEG-LI 已整合为 JPEG 的 `cjpegli` 编码器选项 |
+| **多格式** | JPEG, PNG, WebP, AVIF, JPEG XL, JPEG XR, TIFF, DNG — 动图：GIF, WebP (动态), APNG, AVIF (动态), JPEG XL (动态)；JPEG-LI 已整合为 JPEG 的 `cjpegli` 编码器选项；RAW/DNG 输入（DNG 走 Adobe DNG SDK 渲染，其余 RAW 走 LibRaw） |
 | **编码器后端** | 每种格式可选 `ffmpeg` / `cjxl` / `cjpegli` 编码器；`cjxl` 用于 JXL 无损 JPEG 重封装 |
 | **质量控制** | 质量滑块（吸附整数）+ 格式感知数字输入框（JPEG q:v 2-31，JXL distance 0-15 等） |
 | **高级编码选项** | 按格式独立高级面板：DCT 算法、渐进模式、Huffman 优化、自适应量化、sjpeg 后端、PSNR 目标、无损压缩级别、row-mt、still-picture、modular 模式 |
@@ -34,6 +34,8 @@ QQ 交流群：754439779 | [点击加群](https://qm.qq.com/q/M2181PvCkW)
 | **无损锁定** | PNG/TIFF/APNG 无损格式自动锁定最高质量、禁用滑块 |
 | **搜索拖放** | Windows 搜索结果经 Shell 命名空间路径正确解析 |
 | **Gain Map (Ultra HDR)** | **全纯托管编解码，无 libultrahdr 依赖**：编码用所选 JPEG 后端（`cjpegli`/`ffmpeg mjpeg`），底层符合 ISO 21496-1 + XMP(hdrgm) + MPF 三重元数据；解码为纯托管 ISO/MPF 容器直读（exiftool 仅做交叉校验/兜底）；底图可选 **sRGB SDR**（默认，兼容 Android/libultrahdr）或 **BT.2100 PQ HDR**（实验性，容器内保留完整 HDR） |
+| **两图 GainMap 合成** | 底图 + 增益图两路输入合成增益图输出（`GainMapComposeService`，beta9 起；CLI 入口 `--compose-gainmap`） |
+| **GainMap 面板** | 「Gain Map（Ultra HDR）」参数面板：底图色域（sRGB SDR / Rec.2020 广色域）、增益图分辨率（满~1/16 五档）、独立质量（或跟随主图）、目标亮度（nit）、RGB 多通道、元数据标记（ISO 21496-1 / XMP hdrgm）；CLI 同款 `--gainmap-peak` / `--gainmap-multichannel` / `--gainmap-encoder` / `--gainmap-metadata` |
 | **实时进度** | 详情窗口实时更新命令 + 进度，支持 ffmpeg/cjxl/cjpegli/djxl/管道全部后端 |
 
 ---
@@ -68,6 +70,16 @@ dotnet run --project src/FfmpegGui/FfmpegGui.csproj
 ```
 
 或从 [Releases 发布页](https://github.com/luoye-cpu/ffmpegPictureUI/releases) 下载。
+
+---
+
+## 🖥️ 桌面应用
+
+### 系统托盘
+
+托盘图标随程序启动即常驻（跟随设置项「关闭主窗口时最小化到托盘」，默认开启），队列后台继续运行。托盘菜单支持「显示主窗口 / 暂停队列 / 退出」。
+
+> 关闭主窗口**只有**在「设置要求托盘 且 托盘真实可用」时才被拦截（最小化到托盘）；否则关闭主窗口即真正退出程序（不会隐藏成不可见进程）。退出唯一实现为 `App.ExitApp()`（托盘菜单 / 设置页「退出程序」/ 关窗兜底三处共用）；托盘失败诊断写 `tray.log`。
 
 ---
 
@@ -114,6 +126,7 @@ FfmpegGui.exe --headless -i *.jpg -o out -f jxl \
 | `--dry-run` | 仅打印命令不执行 |
 | `--preset <name>` | 使用内置/用户预设 |
 | `--strip-*` | 隐私清理（--strip-gps/--strip-time/--strip-camera/--strip-all-exif/--strip-xmp） |
+| `--compose-gainmap` | 两图 GainMap 合成（`-i` 多输入按顺序配对）；配 `--gainmap-peak <nits>` / `--gainmap-multichannel <true\|false>` / `--gainmap-encoder <cjpegli\|mjpeg\|libaom-av1\|libsvtav1>` / `--gainmap-metadata <iso\|xmp\|both>`（仅 `-f jpg/avif`） |
 
 ### 配置分层优先级
 
@@ -126,10 +139,6 @@ FfmpegGui.exe --headless -i *.jpg -o out -f jxl \
 外部工具探测兜底：`FFMPEGGUI_EXT_SEARCH_DIRS`（`;` 分隔的目录列表）。设置后，探测的"系统扩展搜索"一级**只用这些根**，
 不再递归 `%LOCALAPPDATA%\Programs`、`C:\Program Files` 与 PATH 里的每个目录（该级实测在 PATH 含大树时会把启动拖成分钟级）。
 未设置时行为不变。
-
-### 系统托盘
-
-关闭主窗口默认最小化到系统托盘（而非退出），队列后台继续运行。托盘菜单支持「显示主窗口 / 暂停队列 / 退出」。
 
 ---
 
@@ -158,29 +167,21 @@ FfmpegGui.exe --headless -i *.jpg -o out -f jxl \
 ```
 ffmpegPictureUI/
 ├── src/FfmpegGui/
-│   ├── Models/           AppSettings, FfmpegOptions, QueueItem, PresetData
-│   ├── Services/         FfmpegCommandBuilder, FfmpegRunner, QueueProcessor,
-│   │                     CjxlService, DjxlService, CjpegliService,
-│   │                     JxlInspector, JxlPipelineService, JxrService,
-│   │                     ExternalToolsDetector, CpuFeatureService,
-│   │                     ExifToolService, FormatCapabilitiesService,
-│   │                     EncoderDetectionService, QualityAnalysisService,
-│   │                     ColorEncodingHelper, IccProfileService,
-│   │                     PresetManagerService, RawService,
-│   │                     GpuCapabilityService, PlatformServices,
-│   │                     LocalizationService, PsRenderService, PsnrCalculator,
-│   │                     SimdPixelOps（Photoshop ACR 验证, .NET 原生 PSNR, SIMD）
-│   ├── Controls/         MetadataEditor
+│   ├── Models/            设置/选项/队列/预设等数据模型
+│   ├── Services/          管线层（51 个 .cs）：FfmpegCommandBuilder、QueueProcessor、
+│   │                      JxlPipelineService、IccProfileService、GainMap*Service、
+│   │                      ExternalToolsDetector、QualityAnalysisService、IpcService …
+│   ├── Services/ColorMapping/  色彩引擎层（19 个 .cs，对 UI 零依赖）
+│   ├── Controls/          MetadataEditor 等复合控件
 │   ├── Resources/Locales/ zh-CN.json, en-US.json
-│   ├── LocExtension.cs   XAML 本地化标记扩展
-│   ├── MainWindow.xaml   主界面
-│   ├── MainWindow.xaml.cs UI 逻辑
-│   ├── FormatFilterWindow.xaml  格式筛选对话框
-│   ├── PresetManagerWindow.xaml 预设管理窗口
-│   ├── ProgressWindow.xaml 进度窗口
-├── tools/                验证工具
-├── tests/                测试（output/ 被 git 忽略，见 docs/TESTING.md）
-└── publish/              发布输出
+│   └── 视图（7 个 .xaml）  App、MainWindow、ProgressWindow、ImageDetailWindow、
+│                          FormatFilterWindow、PresetManagerWindow、Controls/MetadataEditor
+│                          （MainWindow/ProgressWindow 靠 MainWindow.xaml.cs 手写
+│                          InitializeComponent/FindControl，其余走 XAML 编译）
+├── tools/                 vendored 上游源码与自建小工具（pngcicp / dngjxlprobe / dngtool）
+├── tests/                 13 个测试工程（tests/projects/）+ tests/scripts 门禁
+│                          （output/ 整树 git 忽略，见 docs/TESTING.md）
+└── publish/               打包输出与随包工具链（整树 git 忽略）
 ```
 
 ---
@@ -216,8 +217,8 @@ ffmpegPictureUI/
 当前版本 **v1.6.0**（2026-09-28）。完整版本历史见 **[CHANGELOG.md](CHANGELOG.md)**。
 
 > ℹ️ 上句中的「当前版本」指**已发布的稳定版**（对应 git tag `1.6.0` @ 2026-09-28）。
-> **本工作区当前为 `v1.6.0-beta4` 开发线**（`src/FfmpegGui/FfmpegGui.csproj` 的 `<Version>` = `1.6.0-beta4`），
-> 该开发线的变更记录见 **[CHANGELOG.md](CHANGELOG.md)** 的 `v1.6.0-beta4` 条目；README 正文未随 beta 线同步更新。
+> **本工作区当前为 `v1.6.0-beta10` 开发线**（`src/FfmpegGui/FfmpegGui.csproj` 的 `<Version>` = `1.6.0-beta10`），
+> 该开发线的变更记录见 **[CHANGELOG.md](CHANGELOG.md)** 的 `v1.6.0-beta10` 及其后条目；README 正文未随 beta 线同步更新。
 
 
 ## 📄 许可
