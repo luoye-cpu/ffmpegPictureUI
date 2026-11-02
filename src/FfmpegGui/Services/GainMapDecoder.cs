@@ -306,20 +306,42 @@ public static class GainMapDecoder
                 var gmPath = Path.Combine(tempDir, "gainmap.jpg");
                 string gmFmtArgs = "";
                 bool gmOk;
+                bool gmGrid = false;      // 2026-11-02：增益图以 `grid` 分块承载 ⇒ 逐瓦片解码后拼接
                 if (bmff?.HasGainMap == true && bmff.Form == "tmap")
                 {
-                    if (bmff.GainMapItemData == null || bmff.GainMapItemData.Length <= 100
+                    if (bmff.GainMapIsGrid)
+                    {
+                        // ⚠ 分块承载（iPhone HDR HEIC 实测形态）：不能像单 item 那样「切一段裸流喂 ffmpeg」——
+                        //   增益图像素散在 N 个瓦片 item 里（每个瓦片是独立 HEVC 图像），必须逐瓦片解码后拼接。
+                        if (bmff.GainMapTiles == null || bmff.GainMapTiles.Count == 0
+                            || bmff.GainMapFfmpegFormat == null)
+                        {
+                            log?.Invoke("[GainMap解码] ❌ ISO-BMFF 增益图为 grid 分块，但瓦片字节不可用"
+                                + (string.IsNullOrEmpty(bmff.FailReason) ? "" : $"（{bmff.FailReason}）") + "\n");
+                            return null;
+                        }
+                        gmGrid = true;
+                        gmFmtArgs = $"-f {bmff.GainMapFfmpegFormat} ";
+                        gmOk = true;
+                        log?.Invoke($"[GainMap解码] 增益图来源: ISO-BMFF grid（{bmff.GridRows}x{bmff.GridCols} 瓦片 × "
+                            + $"{bmff.TileWidth}x{bmff.TileHeight}，{bmff.GainMapCodec}）\n");
+                    }
+                    else if (bmff.GainMapItemData == null || bmff.GainMapItemData.Length <= 100
                         || bmff.GainMapFfmpegFormat == null)
                     {
-                        log?.Invoke("[GainMap解码] ❌ ISO-BMFF 增益图 item 不可用（字节缺失或类型无已知解复用器）\n");
+                        log?.Invoke("[GainMap解码] ❌ ISO-BMFF 增益图 item 不可用（字节缺失或类型无已知解复用器）"
+                            + (string.IsNullOrEmpty(bmff.FailReason) ? "" : $"：{bmff.FailReason}") + "\n");
                         return null;
                     }
-                    gmPath = Path.Combine(tempDir,
-                        bmff.GainMapFfmpegFormat == "obu" ? "gainmap.obu" : "gainmap.hevc");
-                    await File.WriteAllBytesAsync(gmPath, bmff.GainMapItemData, ct);
-                    gmFmtArgs = $"-f {bmff.GainMapFfmpegFormat} ";
-                    gmOk = true;
-                    log?.Invoke($"[GainMap解码] 增益图来源: ISO-BMFF item {bmff.GainMapItemId}（{bmff.GainMapCodec}，{bmff.GainMapItemData.Length} B）\n");
+                    else
+                    {
+                        gmPath = Path.Combine(tempDir,
+                            bmff.GainMapFfmpegFormat == "obu" ? "gainmap.obu" : "gainmap.hevc");
+                        await File.WriteAllBytesAsync(gmPath, bmff.GainMapItemData, ct);
+                        gmFmtArgs = $"-f {bmff.GainMapFfmpegFormat} ";
+                        gmOk = true;
+                        log?.Invoke($"[GainMap解码] 增益图来源: ISO-BMFF item {bmff.GainMapItemId}（{bmff.GainMapCodec}，{bmff.GainMapItemData.Length} B）\n");
+                    }
                 }
                 else if (vendor is { Found: true } && vendor.MaskJpeg is { Length: > 100 })
                 {
@@ -371,23 +393,41 @@ public static class GainMapDecoder
                     return null;
                 }
 
-                // ── Step 4: 解码增益图 → float 0..1 ──
-                var (gmW, gmH) = await ProbeSizeAsync(gmPath, ffmpeg, log, ct, gmFmtArgs);
-                if (gmW <= 0 || gmH <= 0)
+                // ── Step 4: 解码增益图 → float 0..1（grid 分块 ⇒ 逐瓦片解码后拼接）──
+                int gmW, gmH;
+                var gmRawPath = Path.Combine(tempDir, "gm.rgba");
+                if (gmGrid)
                 {
-                    log?.Invoke("[GainMap解码] ❌ 无法获取增益图尺寸\n");
-                    return null;
+                    var stitched = await DecodeStitchGainMapTilesAsync(bmff!, tempDir, ffmpeg, log, ct);
+                    if (stitched == null)
+                    {
+                        log?.Invoke("[GainMap解码] ❌ 增益图分块解码/拼接失败\n");
+                        return null;
+                    }
+                    gmW = stitched.Value.W;
+                    gmH = stitched.Value.H;
+                    await File.WriteAllBytesAsync(gmRawPath, stitched.Value.Raw, ct);
+                }
+                else
+                {
+                    var (w, h) = await ProbeSizeAsync(gmPath, ffmpeg, log, ct, gmFmtArgs);
+                    if (w <= 0 || h <= 0)
+                    {
+                        log?.Invoke("[GainMap解码] ❌ 无法获取增益图尺寸\n");
+                        return null;
+                    }
+                    gmW = w;
+                    gmH = h;
+                    var gmArgs = $"-y {gmFmtArgs}-i \"{gmPath}\" -frames:v 1 -pix_fmt gbrpf32le -f rawvideo \"{gmRawPath}\"";
+                    var gmExit = await RunFfmpegAsync(gmArgs, ffmpeg, log, ct);
+                    if (gmExit != 0 || !File.Exists(gmRawPath))
+                    {
+                        log?.Invoke("[GainMap解码] ❌ 增益图解码失败\n");
+                        return null;
+                    }
                 }
                 meta.GainMapWidth = gmW;
                 meta.GainMapHeight = gmH;
-                var gmRawPath = Path.Combine(tempDir, "gm.rgba");
-                var gmArgs = $"-y {gmFmtArgs}-i \"{gmPath}\" -frames:v 1 -pix_fmt gbrpf32le -f rawvideo \"{gmRawPath}\"";
-                var gmExit = await RunFfmpegAsync(gmArgs, ffmpeg, log, ct);
-                if (gmExit != 0 || !File.Exists(gmRawPath))
-                {
-                    log?.Invoke("[GainMap解码] ❌ 增益图解码失败\n");
-                    return null;
-                }
 
                 // ── Step 5: 得到线性 HDR ──
                 //   SDR 基图(sRGB 编码): 线性化 → 应用增益(上映射)
@@ -571,6 +611,90 @@ public static class GainMapDecoder
         finally { if (tmpJpg != null) { try { File.Delete(tmpJpg); } catch { } } }
     }
 
+    /// <summary>
+    /// 解码 **`grid` 分块** 增益图：逐瓦片写临时文件 → `ffmpeg -f hevc/obu -i 瓦片 -frames:v 1 -pix_fmt gbrpf32le`
+    /// → 按 raster 顺序拼进 `GridWidth×GridHeight` 画布（超出右/下部分按 grid 声明裁切）。
+    /// <para>
+    /// 瓦片是**独立 HEVC 图像**（每个有自己的 `hvcC`，探针已转成 Annex-B）⇒ 不能把 N 个瓦片拼成一条流
+    /// 用 `-frames:v 1` 解（那只会拿到第一帧）。故逐瓦片解码、在托管侧拼接。
+    /// </para>
+    /// <para>任何一步失败（瓦片解不出 / 像素字节数与 `ispe` 不符 / 整幅尺寸异常）都返回 null 并点名，不回退半成品。</para>
+    /// </summary>
+    private static async Task<(byte[] Raw, int W, int H)?> DecodeStitchGainMapTilesAsync(
+        IsoBmffGainMapProbe.Result bmff, string tempDir, string ffmpeg, Action<string>? log, CancellationToken ct)
+    {
+        try
+        {
+            var tiles = bmff.GainMapTiles!;
+            int tw = bmff.TileWidth, th = bmff.TileHeight;
+            int cols = bmff.GridCols, rows = bmff.GridRows;
+            int outW = bmff.GridWidth, outH = bmff.GridHeight;
+            if (tw <= 0 || th <= 0 || cols <= 0 || rows <= 0 || outW <= 0 || outH <= 0)
+            {
+                log?.Invoke($"[GainMap解码] ❌ 分块增益图尺寸不完整（瓦片 {tw}x{th}，网格 {cols}x{rows}，整幅 {outW}x{outH}）\n");
+                return null;
+            }
+            if (tiles.Count != rows * cols)
+            {
+                log?.Invoke($"[GainMap解码] ❌ 分块增益图瓦片数 {tiles.Count} 与网格 {rows}x{cols} 不符\n");
+                return null;
+            }
+            string ext = bmff.GainMapFfmpegFormat == "obu" ? "obu" : "hevc";
+            var rawTiles = new List<byte[]>(tiles.Count);
+            for (int i = 0; i < tiles.Count; i++)
+            {
+                var tilePath = Path.Combine(tempDir, $"gm_tile_{i}.{ext}");
+                var tileRaw = Path.Combine(tempDir, $"gm_tile_{i}.rgba");
+                await File.WriteAllBytesAsync(tilePath, tiles[i], ct);
+                var args = $"-y -f {bmff.GainMapFfmpegFormat} -i \"{tilePath}\" -frames:v 1 -pix_fmt gbrpf32le -f rawvideo \"{tileRaw}\"";
+                var exit = await RunFfmpegAsync(args, ffmpeg, log, ct);
+                if (exit != 0 || !File.Exists(tileRaw))
+                {
+                    log?.Invoke($"[GainMap解码] ❌ 分块增益图瓦片 {i} 解码失败（ffmpeg exit={exit}）\n");
+                    return null;
+                }
+                var b = await File.ReadAllBytesAsync(tileRaw, ct);
+                if (b.Length != tw * th * 12)
+                {
+                    log?.Invoke($"[GainMap解码] ❌ 分块增益图瓦片 {i} 像素字节数 {b.Length} 与 ispe {tw}x{th} 不符（应为 {tw * th * 12}）\n");
+                    return null;
+                }
+                rawTiles.Add(b);
+            }
+
+            long total = (long)outW * outH * 12;
+            if (total <= 0 || total > int.MaxValue)
+            {
+                log?.Invoke($"[GainMap解码] ❌ 分块增益图整幅尺寸过大：{outW}x{outH}\n");
+                return null;
+            }
+            var buf = new byte[(int)total];
+            for (int i = 0; i < tiles.Count; i++)
+            {
+                int row = i / cols, col = i % cols;
+                int x0 = col * tw, y0 = row * th;
+                int copyW = Math.Min(tw, outW - x0);
+                int copyH = Math.Min(th, outH - y0);
+                if (copyW <= 0 || copyH <= 0) continue;          // 整块落在裁切区外
+                var src = rawTiles[i];
+                for (int y = 0; y < copyH; y++)
+                {
+                    int srcOff = y * tw * 12;
+                    int dstOff = (y0 + y) * outW * 12 + x0 * 12;
+                    Buffer.BlockCopy(src, srcOff, buf, dstOff, copyW * 12);
+                }
+            }
+            log?.Invoke($"[GainMap解码] 分块增益图拼接完成：{rows}x{cols} 瓦片 × {tw}x{th} ⇒ {outW}x{outH}\n");
+            return (buf, outW, outH);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            log?.Invoke($"[GainMap解码] ❌ 分块增益图解码/拼接异常：{ex.GetType().Name}: {ex.Message}\n");
+            return null;
+        }
+    }
+
     /// <summary>纯托管解析容器（ISO 元数据 + 副图边界）；失败/过大返回 null。</summary>
     public static async Task<JpegContainer?> ParseContainerAsync(string path, CancellationToken ct = default)
     {
@@ -607,7 +731,10 @@ public static class GainMapDecoder
             if (bmff == null || !bmff.HasGainMap) return false;
             if (bmff.Form != "tmap" || bmff.TmapPayload == null)
             {
-                log?.Invoke($"[GainMap解码] ⚠️ 检测到增益图，但承载形式为 {bmff.Form ?? "未知"}（尚未支持解码），按底图处理\n");
+                // 2026-11-02：把 FailReason 一起播报 —— 否则「能认出但结构没覆盖」（如 construction_method=1 /
+                // grid 瓦片缺件）会被读成「tmap 形式不支持」，真实原因被吞（iPhone HDR HEIC 实测踩到）。
+                log?.Invoke($"[GainMap解码] ⚠️ 检测到增益图，但承载形式为 {bmff.Form ?? "未知"}（尚未支持解码"
+                    + (string.IsNullOrEmpty(bmff.FailReason) ? "" : $"：{bmff.FailReason}") + "），按底图处理\n");
                 return false;
             }
             var meta = JpegContainer.ParseIso21496(bmff.TmapPayload, 1, bmff.TmapPayload.Length - 1);

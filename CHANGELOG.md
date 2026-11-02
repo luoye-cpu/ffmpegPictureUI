@@ -23,6 +23,7 @@
 - **白点出口顶码归一（S8）**：`31498ea` 按实测 65283 归一，修掉「色彩管理出口白点被系统性压低 1 LSB」，并登记第 86/87 条门禁。
 - **视图扩展名统一 `.xaml`**：8 对 `.axaml`→`.xaml` 改名（现 `git ls-files 'src/**/*.xaml'` = 7、`.axaml` = 0）；Avalonia 隐式 glob 只收 `.axaml` ⇒ `.xaml` 仅作资源，`MainWindow`/`ProgressWindow` 靠手写 `InitializeComponent()`。
 - **出包链补强**：`verify-release-package` 新增解包目录残留自动清理（2026-11-01 外部实例写入 `debug.log`+`settings.json.bak` 曾致 584 vs 582 对账假红）。
+- **HEIC 增益图 grid 分块 + idat 承载（2026-11-02，实机报障修复）**：真实 iPhone HDR HEIC 的增益图以 `grid` 派生项分块承载、`tmap`/`grid` 载荷在 `meta/idat`（`iloc construction_method=1`）——旧探针两处都不认 ⇒ 整条增益图解码 fail-closed、HDR 层静默丢失。修复：`IsoBmffGainMapProbe` 支持 method=0/1 切片、tmap 的 dimg 目标可为 `grid`（逐瓦片切出 + 各瓦片 `hvcC`→Annex-B）；`GainMapDecoder` 逐瓦片解码后按 raster 拼接（日志「分块增益图拼接完成」）；降级 WARN 带上 FailReason。判据 = `verify-gainmap-isobmff` §1d（12 条，含 grid version 负控与端到端拼接点名；变异实测 PASS=84 FAIL=8），总断言 80→92。实机验证：4320x5760 源件解出线性 HDR（maxLinear 1.97，cap 4.43，over1 18.96M/74.65M），jpg 出口完成 1 项 失败 0 项。
 
 **版本轨迹补记（更正条目——beta10 重出 #2/#3/#4 当时未记入本日志，按「不回改旧条目」规矩补记于此）**：
 v1.6.0-beta10 同一版本位共五次成包——首发 `0640fb5`（10-28）→ 重出 #1 `9ea68f3`（同日：版本位从 beta11 拉回 beta10，`1.6.0BETA11` tag 删除）→ 重出 #2 `af8ae9b`、#3 `775d210`（10-29）→ 第四次重指：`1.6.0BETA10` tag 于 10-30 移到 `5fd3996`（含 `bb9a809` 随包工具换源与 JXR 输出格式下拉修复），无 release 提交。publish/ 现仅存此档两包（app 11,430,807 B / full 55,853,619 B，2026-11-02 核对）。

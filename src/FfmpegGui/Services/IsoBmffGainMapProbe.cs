@@ -37,6 +37,18 @@ namespace FfmpegGui.Services;
 /// </para>
 ///
 /// <para>
+/// ⚠ **`tmap` 载荷与 `grid` 载荷常驻 `meta/idat`**（iloc `construction_method=1`，2026-11-02 实测 iPhone HDR HEIC）：
+/// 这类件里瓦片在 `mdat`（method 0），而 `tmap` / `grid` 的可达数据在 `idat`
+/// ⇒ **两种 construction_method 都要支持**（旧实现只支持 0，会把这类件判成「tmap payload 不可切」而 fail-closed）。
+/// </para>
+///
+/// <para>
+/// ⚠ **增益图也可以是 `grid` 分块**（`dimg tmap → [底图, grid]`、`dimg grid → [瓦片…]`）：
+/// 本类按「逐瓦片切出 + 各瓦片 `hvcC`→Annex-B」产出 <see cref="Result.GainMapTiles"/>，
+/// 由解码端（<see cref="GainMapDecoder"/>）逐瓦片解码后拼接成整幅增益图。
+/// </para>
+///
+/// <para>
 /// ⚠ **两条解码路径，编码格式决定走哪条**（2026-09-20 实测）：
 /// <list type="bullet">
 /// <item><c>av01</c>（AV1）：item 字节本身就是 OBU 流，ffmpeg 用 <c>-f obu</c> **直接可解**。</item>
@@ -82,6 +94,25 @@ public static class IsoBmffGainMapProbe
         /// <c>av01</c> ⇒ 原始 OBU 流；<c>hvc1</c>/<c>hev1</c> ⇒ **已转成 Annex-B**（前置 `hvcC` 参数集）。
         /// </summary>
         public byte[]? GainMapItemData;
+
+        /// <summary>
+        /// 增益图是否以 **`grid` 派生项**（分块）承载（2026-11-02 新增；iPhone HDR HEIC 实测形态）。
+        /// true ⇒ <see cref="GainMapTiles"/> 持有各瓦片裸流（Annex-B / OBU，raster 顺序），
+        /// 解码端逐瓦片解码后按 `GridRows/GridCols` 拼接成 `GridWidth×GridHeight` 的增益图。
+        /// 此形态下 <see cref="GainMapItemData"/> 恒为 null（单 item 字节不存在）。
+        /// </summary>
+        public bool GainMapIsGrid;
+        /// <summary>`grid` 瓦片裸流（raster 顺序 = 左上→右下，行优先）；非 grid 时为 null。</summary>
+        public List<byte[]>? GainMapTiles;
+        /// <summary>`grid` 的行数 / 列数（非 grid 时 0）。</summary>
+        public int GridRows;
+        public int GridCols;
+        /// <summary>`grid` 声明的**整幅显示**尺寸（可小于 rows×tileH / cols×tileW 的铺满尺寸 ⇒ 右/下裁切）；非 grid 时 0。</summary>
+        public int GridWidth;
+        public int GridHeight;
+        /// <summary>单个瓦片的宽高（取自瓦片 item 的 `ispe` 属性；非 grid 时 0）。</summary>
+        public int TileWidth;
+        public int TileHeight;
 
         /// <summary>`ftyp` 的兼容品牌（诊断用）。</summary>
         public string Brands = "";
@@ -154,6 +185,9 @@ public static class IsoBmffGainMapProbe
 
             // ── 顶层 box：找 ftyp（品牌）与 meta ──
             int metaOff = -1, metaSize = 0;
+            // meta 内 `idat` 载荷区间（construction_method=1 的 item 数据住这里；2026-11-02 新增）。
+            // ⚠ `idat` 是**纯 box**（非 FullBox）：载荷起点即 item 数据起点，extent 偏移相对它。
+            int idatStart = -1, idatEnd = -1;
             // ⚠ 截断/非法 box 头 ⇒ 「不知道」，调用方不得当成「没有」（见 Result.Determinate 的契约）。
             bool boxScanIncomplete = false;
             for (int p = 0; p + 8 <= d.Length;)
@@ -204,6 +238,11 @@ public static class IsoBmffGainMapProbe
                     case "iprp":
                         ParseIprp(d, cstart, cend, ipcoProps, ipmaMap, ref sawAux21496, ref sawAuxApple);
                         break;
+                    case "idat":
+                        // 2026-11-02：真实 iPhone HDR HEIC 把 tmap / grid 载荷放在 meta/idat
+                        // （iloc construction_method=1）⇒ 记下载荷区间供 SliceItem 使用。
+                        idatStart = cstart; idatEnd = cend;
+                        break;
                 }
                 p += size;
             }
@@ -224,72 +263,94 @@ public static class IsoBmffGainMapProbe
                 r.Form = "tmap";
                 r.TmapItemId = tmapId;
 
-                // 增益图 item = tmap 的 dimg 目标里「是编解码 item 且不是主图」的那一个。
+                // 增益图 item 候选 = tmap 的 dimg 目标（排除主图），分两类：
+                //   · 编解码 item（av01/hvc1/hev1）—— 单 item 直载；
+                //   · `grid` 派生项 —— 分块承载（2026-11-02：iPhone HDR HEIC 实测
+                //     `dimg tmap -> [底图 grid, 增益图 grid]` 与 `dimg 增益图 grid -> 瓦片…`）。
                 // ⚠ 不依赖 iref 是否带 reference_count（见 ParseIref 的两种读法都收敛到同一候选集）。
-                var cands = new List<int>();
+                var codecCands = new List<int>();
+                var gridCands = new List<int>();
                 foreach (var rf in refs)
                 {
                     if (rf.Type != "dimg" || rf.From != tmapId) continue;
                     foreach (var to in rf.To)
-                        if (to != primary && items.TryGetValue(to, out var ty) && IsCodecItem(ty) && !cands.Contains(to))
-                            cands.Add(to);
-                }
-                if (cands.Count == 1) r.GainMapItemId = cands[0];
-                else { r.Determinate = false; r.FailReason = $"[IsoBmff] tmap 的 dimg 增益图候选数 = {cands.Count}（应为 1）"; }
-
-                if (r.GainMapItemId >= 0 && items.TryGetValue(r.GainMapItemId, out var gty))
-                {
-                    r.GainMapCodec = gty;
-                    if (gty == "av01")
                     {
-                        // AV1：`av01` item 的 OBU 流自带结构，ffmpeg `-f obu` **可**直接解（实测 400x300 ✓）。
-                        r.GainMapFfmpegFormat = "obu";
-                        r.GainMapItemData = SliceItem(d, locs, r.GainMapItemId, ref r, "gainmap item");
+                        if (to == primary || !items.TryGetValue(to, out var ty)) continue;
+                        if (IsCodecItem(ty)) { if (!codecCands.Contains(to)) codecCands.Add(to); }
+                        else if (ty == "grid") { if (!gridCands.Contains(to)) gridCands.Add(to); }
                     }
-                    else if (gty is "hvc1" or "hev1")
+                }
+
+                if (codecCands.Count == 1 && gridCands.Count == 0)
+                {
+                    r.GainMapItemId = codecCands[0];
+                    if (items.TryGetValue(r.GainMapItemId, out var gty))
                     {
-                        // ⚠⚠ **HEVC 的增益图 item 必须先转 Annex-B** ────────────────────────────────
-                        //   ISO-BMFF 里的 HEVC item 是**长度前缀 NAL**（参数集另存于 `hvcC`），而 ffmpeg 的
-                        //   `-f hevc` 只吃 **Annex-B**（起始码）⇒ 直接喂 item 字节会 `No start code is found`
-                        //   （2026-09-20 实测：从真实 HEIC 抽出 `hvc1` item 喂 `-f hevc` 即此错）。
-                        //   ⇒ 这里做「`hvcC` 驱动的长度前缀 → Annex-B」转换；**任何一步失败都 fail-closed 点名**，
-                        //     绝不退回「给出 `-f hevc` 这个错命令」——那只会让下游收到一条看不懂的 ffmpeg 错误。
-                        var raw = SliceItem(d, locs, r.GainMapItemId, ref r, "gainmap item");
-                        if (raw != null)
+                        r.GainMapCodec = gty;
+                        if (gty == "av01")
                         {
-                            if (!TryFindHvcC(ipcoProps, ipmaMap, r.GainMapItemId, out int hOff, out int hLen, out var hErr))
+                            // AV1：`av01` item 的 OBU 流自带结构，ffmpeg `-f obu` **可**直接解（实测 400x300 ✓）。
+                            r.GainMapFfmpegFormat = "obu";
+                            r.GainMapItemData = SliceItem(d, locs, r.GainMapItemId, idatStart, idatEnd, ref r, "gainmap item");
+                        }
+                        else if (gty is "hvc1" or "hev1")
+                        {
+                            // ⚠⚠ **HEVC 的增益图 item 必须先转 Annex-B** ────────────────────────────────
+                            //   ISO-BMFF 里的 HEVC item 是**长度前缀 NAL**（参数集另存于 `hvcC`），而 ffmpeg 的
+                            //   `-f hevc` 只吃 **Annex-B**（起始码）⇒ 直接喂 item 字节会 `No start code is found`
+                            //   （2026-09-20 实测：从真实 HEIC 抽出 `hvc1` item 喂 `-f hevc` 即此错）。
+                            //   ⇒ 这里做「`hvcC` 驱动的长度前缀 → Annex-B」转换；**任何一步失败都 fail-closed 点名**，
+                            //     绝不退回「给出 `-f hevc` 这个错命令」——那只会让下游收到一条看不懂的 ffmpeg 错误。
+                            var raw = SliceItem(d, locs, r.GainMapItemId, idatStart, idatEnd, ref r, "gainmap item");
+                            if (raw != null)
                             {
-                                r.Determinate = false;
-                                r.FailReason = $"[IsoBmff] 增益图 item 类型 '{gty}' 需要 hvcC：{hErr}";
-                            }
-                            else if (!TryParseHvcC(d, hOff, hLen, out int lengthSize, out var paramSets, out var pErr))
-                            {
-                                r.Determinate = false;
-                                r.FailReason = $"[IsoBmff] hvcC 解析失败：{pErr}";
-                            }
-                            else
-                            {
-                                var annexB = ToAnnexB(raw, lengthSize, paramSets, out var cErr);
-                                if (annexB == null)
+                                if (!TryFindHvcC(ipcoProps, ipmaMap, r.GainMapItemId, out int hOff, out int hLen, out var hErr))
                                 {
                                     r.Determinate = false;
-                                    r.FailReason = $"[IsoBmff] 增益图 item '{gty}' 长度前缀转换失败：{cErr}";
+                                    r.FailReason = $"[IsoBmff] 增益图 item 类型 '{gty}' 需要 hvcC：{hErr}";
+                                }
+                                else if (!TryParseHvcC(d, hOff, hLen, out int lengthSize, out var paramSets, out var pErr))
+                                {
+                                    r.Determinate = false;
+                                    r.FailReason = $"[IsoBmff] hvcC 解析失败：{pErr}";
                                 }
                                 else
                                 {
-                                    r.GainMapFfmpegFormat = "hevc";
-                                    r.GainMapItemData = annexB;
+                                    var annexB = ToAnnexB(raw, lengthSize, paramSets, out var cErr);
+                                    if (annexB == null)
+                                    {
+                                        r.Determinate = false;
+                                        r.FailReason = $"[IsoBmff] 增益图 item '{gty}' 长度前缀转换失败：{cErr}";
+                                    }
+                                    else
+                                    {
+                                        r.GainMapFfmpegFormat = "hevc";
+                                        r.GainMapItemData = annexB;
+                                    }
                                 }
                             }
                         }
-                    }
-                    else
-                    {
-                        r.Determinate = false;
-                        r.FailReason = $"[IsoBmff] 增益图 item 类型 '{gty}' 无已知裸流解复用器";
+                        else
+                        {
+                            r.Determinate = false;
+                            r.FailReason = $"[IsoBmff] 增益图 item 类型 '{gty}' 无已知裸流解复用器";
+                        }
                     }
                 }
-                r.TmapPayload = SliceItem(d, locs, tmapId, ref r, "tmap payload");
+                else if (codecCands.Count == 0 && gridCands.Count == 1)
+                {
+                    // 分块承载（2026-11-02）：网格项 + 瓦片清单，见 ParseGridGainMap。
+                    r.GainMapItemId = gridCands[0];
+                    r.GainMapIsGrid = true;
+                    ParseGridGainMap(d, items, locs, refs, ipcoProps, ipmaMap, idatStart, idatEnd, r);
+                }
+                else
+                {
+                    r.Determinate = false;
+                    r.FailReason = $"[IsoBmff] tmap 的 dimg 增益图候选：codec={codecCands.Count} grid={gridCands.Count}（应恰为一类且各 1）";
+                }
+
+                r.TmapPayload = SliceItem(d, locs, tmapId, idatStart, idatEnd, ref r, "tmap payload");
                 return r;
             }
 
@@ -648,42 +709,219 @@ public static class IsoBmffGainMapProbe
         return buf;
     }
 
-    /// <summary>按 `iloc` 切出某个 item 的字节（多 extent 拼接）；失败/不支持 ⇒ 置不确定并返回 null。</summary>
+    /// <summary>
+    /// 按 `iloc` 切出某个 item 的字节（多 extent 拼接）。
+    /// <para>
+    /// **construction_method**（2026-11-02 增）：0 = 数据在文件里（extent 偏移相对文件起点，base_offset 亦相对文件）；
+    /// 1 = 数据在 `meta/idat` 里（extent 偏移相对 `idat` 载荷起点）——真实 iPhone HDR HEIC 的
+    /// `tmap` / `grid` 载荷全都走 method=1（实测 2026-11-02），旧实现只支持 0 会让这类件报
+    /// 「tmap payload 使用 construction_method=1（仅支持 0）」而整条增益图解码 fail-closed。
+    /// 2（item 内部）仍不支持 ⇒ fail-closed 点名。
+    /// </para>
+    /// </summary>
     private static byte[]? SliceItem(byte[] d, Dictionary<int, (int Method, int Base, List<(int Off, int Len)> Extents)> locs,
-        int itemId, ref Result r, string what)
+        int itemId, int idatStart, int idatEnd, ref Result r, string what)
     {
         if (!locs.TryGetValue(itemId, out var loc))
         {
             r.Determinate = false; r.FailReason = $"[IsoBmff] {what} item {itemId} 无 iloc 记录";
             return null;
         }
-        if (loc.Method != 0)
+        int dataStart, dataEnd;
+        switch (loc.Method)
         {
-            // construction_method=1 ⇒ 数据在 meta/idat 里，本实现只支持文件偏移（method 0）。
-            r.Determinate = false; r.FailReason = $"[IsoBmff] {what} 使用 construction_method={loc.Method}（仅支持 0）";
-            return null;
+            case 0:
+                dataStart = 0; dataEnd = d.Length;
+                break;
+            case 1:
+                if (idatStart < 0 || idatEnd <= idatStart)
+                {
+                    r.Determinate = false;
+                    r.FailReason = $"[IsoBmff] {what} 使用 construction_method=1 但 meta 内无 idat 盒";
+                    return null;
+                }
+                dataStart = idatStart; dataEnd = idatEnd;
+                break;
+            default:
+                r.Determinate = false;
+                r.FailReason = $"[IsoBmff] {what} 使用 construction_method={loc.Method}（仅支持 0/1）";
+                return null;
         }
         int total = 0;
         foreach (var (_, len) in loc.Extents) total += len;
-        if (total <= 0 || loc.Base < 0 || (long)loc.Base + total > d.Length)
+        if (total <= 0 || loc.Base < 0 || (long)dataStart + loc.Base + total > dataEnd)
         {
             r.Determinate = false;
-            r.FailReason = $"[IsoBmff] {what} extent 越界（base={loc.Base} 合计={total} 文件={d.Length}）";
+            r.FailReason = $"[IsoBmff] {what} extent 越界（base={loc.Base} 合计={total} 数据区=[{dataStart},{dataEnd})）";
             return null;
         }
         var buf = new byte[total];
         int w = 0;
         foreach (var (off, len) in loc.Extents)
         {
-            if (off < 0 || len < 0 || (long)loc.Base + off + len > d.Length)
+            if (off < 0 || len < 0 || (long)dataStart + loc.Base + off + len > dataEnd)
             {
                 r.Determinate = false; r.FailReason = $"[IsoBmff] {what} extent 越界（off={off} len={len}）";
                 return null;
             }
-            Array.Copy(d, loc.Base + off, buf, w, len);
+            Array.Copy(d, dataStart + loc.Base + off, buf, w, len);
             w += len;
         }
         return buf;
+    }
+
+    /// <summary>
+    /// 解析 `grid` 承载的增益图（2026-11-02，iPhone HDR HEIC 实测形态）：
+    /// `dimg: tmap → [底图, grid]`、`dimg: grid → [瓦片…]`，瓦片是独立编解码 item（hvc1/av01），
+    /// 每个瓦片有自己的 `hvcC` / `ispe`；`grid` 与 `tmap` 载荷常驻 `meta/idat`（construction_method=1）。
+    /// <para>
+    /// 失败一律 **fail-closed + 点名**（沿用本类既有契约）：grid 载荷不可解 / 瓦片数不匹配 /
+    /// 瓦片类型混装 / 某瓦片无 `hvcC` / 长度前缀断链 —— 每个分支都有具体 `FailReason`。
+    /// </para>
+    /// </summary>
+    private static void ParseGridGainMap(byte[] d, Dictionary<int, string> items,
+        Dictionary<int, (int Method, int Base, List<(int Off, int Len)> Extents)> locs,
+        List<(string Type, int From, List<int> To)> refs,
+        List<(string Type, int Off, int Size)> ipcoProps, Dictionary<int, List<int>> ipmaMap,
+        int idatStart, int idatEnd, Result r)
+    {
+        int gridId = r.GainMapItemId;
+        var payload = SliceItem(d, locs, gridId, idatStart, idatEnd, ref r, "gainmap grid");
+        if (payload == null) return;
+        if (!TryParseGridPayload(payload, out int rows, out int cols, out int gw, out int gh, out var gErr))
+        {
+            r.Determinate = false;
+            r.FailReason = $"[IsoBmff] grid 载荷解析失败：{gErr}";
+            return;
+        }
+
+        // 瓦片 = grid 的 dimg 目标（顺序 = raster 顺序：左→右、上→下）
+        var tileIds = new List<int>();
+        foreach (var rf in refs)
+        {
+            if (rf.Type != "dimg" || rf.From != gridId) continue;
+            foreach (var to in rf.To) if (!tileIds.Contains(to)) tileIds.Add(to);
+        }
+        int expectTiles = rows * cols;
+        if (tileIds.Count != expectTiles)
+        {
+            r.Determinate = false;
+            r.FailReason = $"[IsoBmff] grid 瓦片数 = {tileIds.Count}，与 {rows}x{cols} = {expectTiles} 不符";
+            return;
+        }
+
+        var tiles = new List<byte[]>();
+        string? codec = null;
+        foreach (var tid in tileIds)
+        {
+            if (!items.TryGetValue(tid, out var ty) || !IsCodecItem(ty))
+            {
+                r.Determinate = false;
+                r.FailReason = $"[IsoBmff] grid 瓦片 item {tid} 类型 '{ty ?? "?"}' 不是编解码 item";
+                return;
+            }
+            if (codec == null) codec = ty;
+            else if (codec != ty)
+            {
+                r.Determinate = false;
+                r.FailReason = $"[IsoBmff] grid 瓦片类型混装（{codec} vs {ty}）";
+                return;
+            }
+            var raw = SliceItem(d, locs, tid, idatStart, idatEnd, ref r, $"gainmap grid tile {tid}");
+            if (raw == null) return;
+            byte[]? stream;
+            if (ty is "hvc1" or "hev1")
+            {
+                if (!TryFindHvcC(ipcoProps, ipmaMap, tid, out int hOff, out int hLen, out var hErr))
+                {
+                    r.Determinate = false;
+                    r.FailReason = $"[IsoBmff] grid 瓦片 item {tid} 需要 hvcC：{hErr}";
+                    return;
+                }
+                if (!TryParseHvcC(d, hOff, hLen, out int lengthSize, out var paramSets, out var pErr))
+                {
+                    r.Determinate = false;
+                    r.FailReason = $"[IsoBmff] grid 瓦片 hvcC 解析失败：{pErr}";
+                    return;
+                }
+                stream = ToAnnexB(raw, lengthSize, paramSets, out var cErr);
+                if (stream == null)
+                {
+                    r.Determinate = false;
+                    r.FailReason = $"[IsoBmff] grid 瓦片 item {tid} 长度前缀转换失败：{cErr}";
+                    return;
+                }
+            }
+            else stream = raw;                          // av01 ⇒ 原始 OBU
+            tiles.Add(stream);
+        }
+
+        // 瓦片尺寸（ispe 挂在每个瓦片上）；缺失 ⇒ 无法得知单块尺寸（拼接与裁切都依赖它）⇒ fail-closed。
+        if (!TryFindIspe(d, ipcoProps, ipmaMap, tileIds[0], out int tw, out int th) || tw <= 0 || th <= 0)
+        {
+            r.Determinate = false;
+            r.FailReason = "[IsoBmff] grid 瓦片无有效 ispe（无法得知单块尺寸）";
+            return;
+        }
+        // 声明缺省（flags bit0=0）⇒ 全铺不裁：整幅 = 列×瓦片宽 / 行×瓦片高。
+        if (gw <= 0 || gh <= 0) { gw = cols * tw; gh = rows * th; }
+
+        r.GainMapCodec = codec;
+        r.GainMapFfmpegFormat = codec == "av01" ? "obu" : "hevc";
+        r.GainMapTiles = tiles;
+        r.GridRows = rows;
+        r.GridCols = cols;
+        r.GridWidth = gw;
+        r.GridHeight = gh;
+        r.TileWidth = tw;
+        r.TileHeight = th;
+    }
+
+    /// <summary>
+    /// `grid` 派生项载荷（ISO/IEC 23008-12，仅 version 0 定义）：
+    /// <c>u8 version</c> <c>u8 flags</c> <c>u8 rowsMinusOne</c> <c>u8 colsMinusOne</c>，
+    /// flags bit0=1 时再跟 <c>u32 outputWidth</c> <c>u32 outputHeight</c>
+    /// （整幅显示尺寸，可小于瓦片铺满的尺寸 ⇒ 右/下裁切；实测 iPhone 件即如此）。
+    /// </summary>
+    private static bool TryParseGridPayload(byte[] p, out int rows, out int cols,
+        out int width, out int height, out string err)
+    {
+        rows = 0; cols = 0; width = 0; height = 0; err = "";
+        if (p.Length < 4) { err = $"grid 载荷过短（{p.Length} B）"; return false; }
+        if (p[0] != 0) { err = $"grid version={p[0]}（仅 v0 定义）"; return false; }
+        byte flags = p[1];
+        rows = p[2] + 1;
+        cols = p[3] + 1;
+        int q = 4;
+        if ((flags & 1) != 0)
+        {
+            if (p.Length < q + 8) { err = $"grid 载荷声明了宽高但缺字节（{p.Length} B）"; return false; }
+            width = (int)Be32(p, q);
+            height = (int)Be32(p, q + 4);
+            q += 8;
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// 找该 item 的 `ispe` 属性并读出宽高。`ispe` 内容 = 4 字节 version/flags 后紧跟
+    /// <c>u32 image_width</c> / <c>u32 image_height</c>；只走 `ipma` 关联（与 `TryFindHvcC` 同纪律，不猜）。
+    /// </summary>
+    private static bool TryFindIspe(byte[] d, List<(string Type, int Off, int Size)> props,
+        Dictionary<int, List<int>> ipma, int itemId, out int w, out int h)
+    {
+        w = 0; h = 0;
+        if (!ipma.TryGetValue(itemId, out var idxs)) return false;
+        foreach (var ix in idxs)
+        {
+            if (ix < 1 || ix > props.Count || props[ix - 1].Type != "ispe") continue;
+            var (type, off, size) = props[ix - 1];
+            if (size < 12) continue;
+            w = (int)Be32(d, off + 4);
+            h = (int)Be32(d, off + 8);
+            return w > 0 && h > 0;
+        }
+        return false;
     }
 
     // ═══════════════════════════════════════════

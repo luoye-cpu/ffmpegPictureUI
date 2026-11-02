@@ -1228,7 +1228,7 @@ namespace ServiceProbe
         /// </summary>
         private static void ProbeGainMapIsoBmff(string[] args)
         {
-            if (args.Length < 2) { Console.WriteLine("usage: ServiceProbe gainmap-isobmff <file> [outRaw] [gainmap|none|auxapple|auxiso]"); _fail++; return; }
+            if (args.Length < 2) { Console.WriteLine("usage: ServiceProbe gainmap-isobmff <file> [outRaw] [gainmap|none|auxapple|auxiso|grid]"); _fail++; return; }
             var path = args[1];
             // ⚠ 位置参数**与开关混排**：`none` / `gainmap` / `auxapple` 是开关（可出现在任意位置），
             //   其余第一个非开关参数才是 outRaw —— 旧写法写死 args[3] ⇒ `gainmap-isobmff <f> none`
@@ -1241,6 +1241,7 @@ namespace ServiceProbe
                 else if (args[i].Equals("gainmap", StringComparison.OrdinalIgnoreCase)) expect = "gainmap";
                 else if (args[i].Equals("auxapple", StringComparison.OrdinalIgnoreCase)) expect = "auxapple";
                 else if (args[i].Equals("auxiso", StringComparison.OrdinalIgnoreCase)) expect = "auxiso";
+                else if (args[i].Equals("grid", StringComparison.OrdinalIgnoreCase)) expect = "grid";
                 else outRaw = args[i];
             }
             var bytes = File.ReadAllBytes(path);
@@ -1253,6 +1254,8 @@ namespace ServiceProbe
                 $"tmap={r.TmapItemId} gainmapItem={r.GainMapItemId}");
             Console.WriteLine($"codec={r.GainMapCodec ?? "-"} ffmpegFmt={r.GainMapFfmpegFormat ?? "-"} " +
                 $"tmapPayload={r.TmapPayload?.Length ?? -1} gmData={r.GainMapItemData?.Length ?? -1}");
+            Console.WriteLine($"grid={r.GainMapIsGrid} rows={r.GridRows} cols={r.GridCols} " +
+                $"gridW={r.GridWidth} gridH={r.GridHeight} tileW={r.TileWidth} tileH={r.TileHeight} tiles={r.GainMapTiles?.Count ?? 0}");
 
             Check(r.IsIsoBmff, "识别为 ISO-BMFF（ftyp 存在）");
             if (expect == "auxapple")
@@ -1271,6 +1274,26 @@ namespace ServiceProbe
                 Check(r.HasGainMap, "检测到 ISO 21496-1 辅助图增益图（hasGainMap=true）");
                 Check(r.Form == "aux-21496", $"承载形式为 aux-21496（实 {r.Form ?? "-"}）");
                 Check(r.GainMapItemData == null, "未支持解码 ⇒ 不得给出可解字节（gmData 必须为空）");
+                return;
+            }
+            if (expect == "grid")
+            {
+                // 2026-11-02：grid 分块承载（`dimg tmap -> [底图, grid]`、`dimg grid -> 瓦片…`），
+                // 且 tmap / grid 载荷在 idat（construction_method=1）——两个结构盲区的联合判据。
+                // ⚠ 这里只钉**结构形态**（通用）；具体数值（128x96 / 64x48 / 4 块）由门禁对
+                //   合成件 `tests/data/synth_heic_grid_gainmap.heic` 的打印行断言 —— 真实 iPhone 件
+                //   是 1536x2048 / 1024x1024 / 4 块，数值不同但形态相同。
+                //   （IsIsoBmff 已由本方法开头统一断言，此处不重复。）
+                Check(r.Determinate, $"解析确定（failReason={r.FailReason ?? "-"}）");
+                Check(r.HasGainMap, "检测到增益图");
+                Check(r.Form == "tmap", $"承载形式为 tmap（实 {r.Form ?? "-"}）");
+                Check(r.GainMapIsGrid, "增益图承载为 grid 分块");
+                Check((r.GainMapTiles?.Count ?? 0) > 0, $"grid 瓦片数 > 0（实 {r.GainMapTiles?.Count ?? 0}）");
+                Check(r.TmapPayload != null && r.TmapPayload.Length > 0,
+                    $"tmap 载荷已切出（construction_method=1 / idat；实 {r.TmapPayload?.Length ?? -1} B）");
+                Check(r.GridWidth > 0 && r.GridHeight > 0 && r.TileWidth > 0 && r.TileHeight > 0,
+                    $"grid 声明与瓦片尺寸 > 0（实 {r.GridWidth}x{r.GridHeight} / {r.TileWidth}x{r.TileHeight}）");
+                Check(r.GainMapFfmpegFormat != null, $"瓦片裸流解复用器已知（实 {r.GainMapFfmpegFormat ?? "-"}）");
                 return;
             }
             Check(r.Determinate, $"解析确定（failReason={r.FailReason ?? "-"}）");

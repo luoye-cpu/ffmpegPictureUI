@@ -42,6 +42,10 @@
 #   · 变异 H（HEVC 分支退回 fail-closed，**实测 `PASS=45 FAIL=7`**）：改法与变异 F 同，但在 **§3c 已存在**
 #     的前提下重跑 ⇒ 除 §1b 那 5 条外，**§3c 的「真被解码并应用」与「点名 `hvc1`」也转红**
 #     ⇒ 证明 §3c 这两条**有牙**。⚠ 同时 §3c 的「识别并产出」**仍然 PASS** ⇒ 它是**弱断言**（已登记）。
+#   · 变异 I（§1d，**实测 `PASS=84 FAIL=8`**，2026-11-02）：把 `SliceItem` 的 `case 1:`（construction_method=1
+#     ⇒ 从 idat 切片）临时改成不可达常量 ⇒ §1d 的「解析确定」「网格数值」「探针 9 条全绿」「version 负控」
+#     与四条行为断言（产出 / 点名 grid 路径 / 拼接完成 / 已解码为线性 HDR PFM）**全部转红**
+#     ⇒ 这 8 条不是恒真，「idat 切片」是实现必要件（此前该分支报「仅支持 0」⇒ 整条增益图解码 fail-closed）。
 #   §1 / §1b / §2 / §2b 各自还带**可执行的**反控（见下），证明断言**有牙**而不是恒真。
 #
 # ⚠⚠ **本脚本自身踩过的一个「静默吞代码」陷阱（2026-09-20 实测，值得全仓警惕）**：
@@ -69,9 +73,16 @@
 #       - `Awesome-Gain-Maps` 仓库只收录 **JPEG**（Ultra HDR）样本，无 HEIC/AVIF 增益图。
 #     ⇒ 下一步若要真素材，优先走 **注册 imaging.org 免费下载**（CC BY-NC 4.0）或**用手机拍一张
 #       Adaptive HDR 照片**（iPhone 15+ / 部分 Android）。
+#   · **grid 分块 + idat 承载（2026-11-02 新增 §1d）**：由真实 iPhone HDR HEIC 实机报障驱动
+#     （4320x5760 主图 = 30 块 grid、增益图 1536x2048 = 2x2 grid、tmap/grid 载荷在 meta/idat）。
+#     合成件 `tests/data/synth_heic_grid_gainmap.heic`（生成器 `tests/scripts/_make-synth-heic-gridgainmap.py`）
+#     以 64x48 / 2x2 复现两处结构事实（`iloc construction_method=1` 与 `grid` 派生项承载）；
+#     ⚠ 真实原件是**用户个人素材，不入仓**（口径同 §3e），本节覆盖的是**结构形态**，
+#     不代表图像语义正确性（增益公式/色域语义另有门禁）。
 #
-# 断言（共 80 条）：§0 前置 6 · §1 容器层 8 · §1b HEVC 解码路径 11（含 2 条负控 + 1 条反控）·
+# 断言（共 92 条）：§0 前置 6 · §1 容器层 8 · §1b HEVC 解码路径 11（含 2 条负控 + 1 条反控）·
 #                   **§1c Apple auxC 识别 4（含 URN 反控 + 21496 回归）** ·
+#                   **§1d grid 分块 + idat 承载 12（含 grid version 负控 + 端到端拼接点名）** ·
 #                   §2 源码形态 6（含反控）· §2b 缺陷 C 源码形态 3（含反控）· §3 行为 8 ·
 #                   §3b 缺陷 C 行为 4（含负控与素材形态自检）· **§3c HEIC 端到端行为 5（含负控）** ·
 #                   **§3d 厂商尾注执行面 4（含拒因与互斥点名）** · **§3e 底图取法 A/B 4（含对照臂分叉）** · **§3f HEIC→BT.2020/PQ 出口 11（三读者 + 码域分叉 + 2 条对照 + tmap pixi）** ·
@@ -417,6 +428,62 @@ CK (($cAuxN.text -match 'PROBE RESULT: pass=3 fail=0') -and ($cAuxN.text -match 
    "§1c **反控（断言有牙）**：同结构、URN 仅换成 urn:com:example:other ⇒ 仍判无增益图（证明判据是 URN 语义，不是「有 auxC 就算」）"
 CK (($cAuxI.text -match 'PROBE RESULT: pass=5 fail=0') -and ($cAuxI.text -match 'form=aux-21496') -and ($cAuxI.text -match 'determinate=False')) `
    "§1c 回归：URN 含 21496 仍走原有 aux-21496 分支（新增的 apple 分支不得吞掉它）"
+
+# ── §1d grid 分块 + idat 承载（2026-11-02：iPhone HDR HEIC 实测形态）─────────────────────────
+#   背景：真实 iPhone HDR HEIC 的增益图是 **grid 派生项**（底图 30 块、增益图 2x2 块），且
+#   `tmap` / `grid` 载荷常驻 `meta/idat`（iloc construction_method=1）。旧探针两处都不认：
+#     ① 只支持 method=0 ⇒ 报「tmap payload 使用 construction_method=1（仅支持 0）」；
+#     ② tmap 的 dimg 目标要求恰是一个 av01/hvc1/hev1 item ⇒ grid 目标被排除 ⇒ 候选 0。
+#   ⇒ 这类件整条增益图解码 fail-closed（HDR 层静默丢失，实测 2026-11-02 用户报障）。
+#   合成件 synth_heic_grid_gainmap.heic（生成器 _make-synth-heic-gridgainmap.py）：
+#   底图 1 个 hvc1(64x48)，增益图 2x2 瓦片（4x hvc1 64x48），tmap/grid 载荷在 idat。
+Write-Host "`n### §1d grid 分块 + idat 承载（含 version 负控与端到端拼接）###" -ForegroundColor Cyan
+$heicGrid = "$root/tests/data/synth_heic_grid_gainmap.heic"
+CK (Test-Path $heicGrid) `
+   "§1d 前置：grid 合成件在位（tests/data/synth_heic_grid_gainmap.heic，生成器 tests/scripts/_make-synth-heic-gridgainmap.py）—— 缺则本段整段无凭据（fail-closed）"
+
+$cGrid = Exec $sp "gainmap-isobmff `"$heicGrid`" grid" "p_grid"
+Write-Host ("  [grid] " + (($cGrid.text -split "`r?`n" | Where-Object { $_ -match '^(determinate|grid)=' }) -join ' | '))
+CK ($cGrid.text -match 'determinate=True') `
+   "§1d grid 承载：解析**确定**（construction_method=1 的 tmap 载荷已从 idat 切出；实 $(($cGrid.text -split "`r?`n" | Where-Object { $_ -match '^determinate=' } | Select-Object -First 1))）"
+CK ($cGrid.text -match 'grid=True') `
+   "§1d grid 承载：识别为 grid 分块（grid=True）"
+CK ($cGrid.text -match 'rows=2 cols=2 gridW=128 gridH=96 tileW=64 tileH=48 tiles=4') `
+   "§1d grid 承载：网格 2x2 / 整幅 128x96 / 瓦片 64x48 / 4 块（数值见上一行 [grid] 读数）"
+CK ($cGrid.text -match 'hasGainMap=True form=tmap') `
+   "§1d grid 承载：仍是 tmap 形态（Form=tmap，grid 只是增益图 item 的承载方式）"
+CK ($cGrid.text -match 'PROBE RESULT: pass=9 fail=0') `
+   "§1d 探针 9 条全绿（实 $(($cGrid.text -split "`r?`n" | Where-Object { $_ -match 'PROBE RESULT' } | Select-Object -First 1))）"
+# 负控：把 idat 里 grid 载荷的 version 字节改成 1（仅 v0 定义）⇒ 必须 fail-closed 且点名 grid 版本。
+#   定位 = 那 12 字节 grid 载荷（本件唯一：底图是单 item、没有第二个 grid）。
+$gridPat = [byte[]](0,1,1,1, 0,0,0,128, 0,0,0,96)
+$gridBytes = [System.IO.File]::ReadAllBytes($heicGrid)
+$gridPos = -1
+for ($gi = 0; $gi -le $gridBytes.Length - $gridPat.Length; $gi++) {
+  $gok = $true
+  for ($gj = 0; $gj -lt $gridPat.Length; $gj++) { if ($gridBytes[$gi + $gj] -ne $gridPat[$gj]) { $gok = $false; break } }
+  if ($gok) { $gridPos = $gi; break }
+}
+CK ($gridPos -ge 0) "§1d 负控素材：idat 里的 grid 载荷可定位（否则下面的负控是真空）"
+$badGrid = "$work/synth_grid_badversion.heic"
+if ($gridPos -ge 0) {
+  $gridMut = [byte[]]$gridBytes.Clone()
+  $gridMut[$gridPos] = 1
+  [System.IO.File]::WriteAllBytes($badGrid, $gridMut)
+  $cGridBad = Exec $sp "gainmap-isobmff `"$badGrid`" grid" "p_gridbad"
+  CK (($cGridBad.text -match 'determinate=False') -and ($cGridBad.text -match 'grid version')) `
+     "§1d **负控（断言有牙）**：grid 载荷 version 改 1 ⇒ fail-closed 且点名 grid 版本（实 $(($cGridBad.text -split "`r?`n" | Where-Object { $_ -match '^determinate=' } | Select-Object -First 1))）"
+}
+# 端到端：合成 grid 件走 GainMapDecoder（逐瓦片解码 + 拼接 + 施加），日志点名 grid 与拼接结果。
+$bGrid = RunApp $heicGrid "jpg" "grid_e2e" @("--jpeg-gain-map", "true")
+CK (($bGrid.terminated) -and ($bGrid.prods -ge 1)) `
+   "§1d 行为：grid 增益图 HEIC → jpg 产出 ≥1（实 $($bGrid.prods)）"
+CK ($bGrid.text -match '增益图来源: ISO-BMFF grid（2x2 瓦片 × 64x48') `
+   "§1d 行为：解码端按 grid 路径取增益图（日志点名 ISO-BMFF grid（2x2 瓦片 × 64x48）"
+CK ($bGrid.text -match '分块增益图拼接完成：2x2 瓦片 × 64x48 ⇒ 128x96') `
+   "§1d 行为：**逐瓦片解码 + 拼接**真发生（日志「分块增益图拼接完成：2x2 瓦片 × 64x48 ⇒ 128x96」）"
+CK ($bGrid.text -match '已解码为线性 HDR PFM') `
+   "§1d 行为：增益图**真被应用**（日志「已解码为线性 HDR PFM」—— 与 §3c 同口径）"
 
 # ── §2 源码形态：动画判据锁（含反控） ────────────────────────────────────────────
 Write-Host "`n### §2 源码形态：动画判据（多帧 + tmap 两级）###" -ForegroundColor Cyan
