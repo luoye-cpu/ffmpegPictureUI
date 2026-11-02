@@ -6029,10 +6029,11 @@ namespace ServiceProbe
                       .ConfigureAwait(false);
                 await Run(exif, $"-q -n -overwrite_original \"-Orientation=8\" -Make=TESTCAM -Model=TESTMODEL "
                               + $"\"{src}\"").ConfigureAwait(false);
+                // 一律走 BuildProbeArguments（单一真值）：手写这份 -show_entries 清单会与 src 侧漂开——
+                // 2026-11-02 就是这里少了 `-show_entries stream_side_data`，拿不到 Frame Cropping（clap）。
                 var (cw, ch) = FfmpegGui.Services.ImageGeometry
                     .ParseDisplaySize(await Cap(AppSettingsService.Current.FfprobePath,
-                        $"-v error -select_streams v:0 -read_intervals \"%+#1\" "
-                      + $"-show_entries stream=width,height -show_entries frame_side_data_list -of json \"{src}\"")
+                        FfmpegGui.Services.ImageGeometry.BuildProbeArguments(src))
                         .ConfigureAwait(false));
                 Check(cw == 32 && ch == 64 && await OrientationOf(src) == "8",
                     $"夹具：Orientation=8 且**显示**尺寸 = 32x64（实得 {cw}x{ch} / 标签 {await OrientationOf(src)}）"
@@ -6044,8 +6045,7 @@ namespace ServiceProbe
                       .ConfigureAwait(false);
                 var (pw, ph) = FfmpegGui.Services.ImageGeometry
                     .ParseDisplaySize(await Cap(AppSettingsService.Current.FfprobePath,
-                        $"-v error -select_streams v:0 -read_intervals \"%+#1\" "
-                      + $"-show_entries stream=width,height -show_entries frame_side_data_list -of json \"{prod}\"")
+                        FfmpegGui.Services.ImageGeometry.BuildProbeArguments(prod))
                         .ConfigureAwait(false));
                 Check(pw == 32 && ph == 64 && await OrientationOf(prod) == "",
                     $"产物起点：像素已旋正（{pw}x{ph}）且**本来就没有** Orientation 标签（实得「{await OrientationOf(prod)}」）"

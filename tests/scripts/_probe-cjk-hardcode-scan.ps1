@@ -539,7 +539,38 @@ $BASE_CS_OTHER = 861
 #   ⚠ 属性判定：五条全是**用户可见的诊断/失败原因**（"复制了却没落地""不知道≠不是""失败在哪个工具"），
 #     依 :418-421 既有裁定不为撑棘轮改英文或静音 ⇒ 抬登记值。余量 0。
 #   ⚠ 同批 `$BASE_XAML` 不动（实测仍 13；新加的 XAML 全是注释，`RxXmlComment` 已剥）。
-$BASE_CS_UI    = 918
+# ⚠⚠ **2026-11-02 第十九次抬基线：918 → 922（+4，判据项）** —— 成因 = 批次 C「多厂家 GainMap 语料扩展」
+#   的几何收口（`ImageGeometry` 的**帧级** clap 解析 + 组级按组尺寸记账）；**本批只 +1**，
+#   其余 +3 是第十八次抬到 918 之后到本批之间的**历史欠账**（下面两段分列，凭据只到「整树读数」这一级）。
+#   归因按**对撞法**实测（不是手数）：`git archive HEAD src/FfmpegGui | tar -x -C <产物区>` 导出 HEAD 整树，
+#   再用本探针的**同一套分桶器**（`cjk_attr_all.py` 复用 `cjk_attr.py` 的 `measure()`）对两棵树各跑一次，
+#   读数留 `tests/output/_tmp/corpus-1102/clap-e/cjk_attr_1102b.log`（log 里每条都带 `TOTAL … ui=` 行）：
+#     · HEAD 整树 `TOTAL cs=1619 tag=617 other=1002 diag=81 ui=921` ⇒ 相对基线 918 = **+3（历史欠账）**；
+#     · 工作树   `TOTAL cs=1629 tag=622 other=1007 diag=85 ui=922` ⇒ 相对 HEAD **净 +1（本批）**。
+#     · **本批 +1 逐行可点**：`Services/ImageGeometry.cs:249` 的**续行**字面量
+#       `+ "（组级 clap 语义未实测）⇒ 按组尺寸记账"` —— 首行 `:248` 是赋值语句（无 sink，故没接上
+#       `$stmtSink`），续行随之落 UI 桶：这是本桶 fail-closed 的**既定口径**（认不出的形态一律算 UI），
+#       与第十六/十七/十八次「续行未接 sink ⇒ 落 UI 桶」同一已知局限。
+#       ⚠ 该文件内部其余文案**净 0**：`ImageGeometry.cs` HEAD `ui=2` → WORK `ui=3`，只此一行；
+#         同批另两个改动文件 `GainMapDecoder.cs` / `ServiceProbe/Program.cs` 的 ui 读数**逐字不变**
+#         （1 / 330）⇒ 本批对 UI 面的贡献就是这一行，没有残量。
+#     · **历史欠账 +3 不逐条定位**：HEAD 与 WORK 的 top15 UI 文件两级读数**完全一致**
+#       （MainWindow.xaml.cs 146 / QueueProcessor 127 / ExifToolService 105 / ColorStrategyPlanning 105 /
+#       RawColorPipeline 48 / PresetManagerService 34 / ColorTransformPlan 34 / ProgressWindow 33 /
+#       CliParser 28 / QualityAnalysisService 19 / EncoderDetectionService 17 / JxrHighPrecisionDecode 17 /
+#       ColorEngineRouter 16 / ColorIntentFactory 15 / GainMapJpegCodec 14）
+#       ⇒ 那 +3 散在 ≤14 行的小户里；HEAD-vs-WORK 对撞只能给**净差**，要回溯是哪几次提交加的，
+#       得把历史各树的逐文件 UI 读数都存下来（本批不做，属独立一批）。凭据到「HEAD 整树 = 921」为止。
+#   ⚠ 属性判定：这一行是**用户可见的诊断文本**（「语义未实测」正是本批拒绝静默记账的产出），
+#     与第七/九/十/十一/十六/十七/十八次同族 ⇒ 依 :418-421 的既有裁定，**不为撑住棘轮**
+#     把诊断静音、改英文或改 sink 形状 ⇒ 抬登记值。
+#   ⚠ 同批 `$BASE_CS` / `$BASE_CS_TAG` / `$BASE_CS_OTHER` **不动**：它们只作 ℹ 打印、**不参与判据**
+#     （见判据段上方的「②-b 口径」注记：那条注记明写「只作上方 ℹ 打印、不参与判据」），故不随本桶同步；两棵树的总计差（cs 1619→1629、
+#     tag 617→622、other 1002→1007、diag 81→85）全部来自本批新增语句，不是本桶的口径变更。
+#   ⚠ 同批 `$BASE_XAML` **不动**（实测仍 13，余量 0）。
+#   ⚠ 余量 0（922 = 实测值）：**不预留**下一个批次的额度——预留下次会让「不得增加」退化成「可以再加几行」，
+#     而这正是本锁十八次抬基线以来一直守的边界（每次都抬到实测值）。
+$BASE_CS_UI    = 922
 
 # ── 正则 ───────────────────────────────────────────────────────────────────────
 $RxCjk         = '[\u4e00-\u9fff]'

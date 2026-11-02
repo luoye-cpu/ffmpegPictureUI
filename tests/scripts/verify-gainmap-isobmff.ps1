@@ -46,6 +46,27 @@
 #     ⇒ 从 idat 切片）临时改成不可达常量 ⇒ §1d 的「解析确定」「网格数值」「探针 9 条全绿」「version 负控」
 #     与四条行为断言（产出 / 点名 grid 路径 / 拼接完成 / 已解码为线性 HDR PFM）**全部转红**
 #     ⇒ 这 8 条不是恒真，「idat 切片」是实现必要件（此前该分支报「仅支持 0」⇒ 整条增益图解码 fail-closed）。
+#   · 变异 J（§1e，只让 **clap 裁切**失效、对账仍在，**实测 `PASS=104 FAIL=3`**，2026-11-02）：
+#     把 `ImageGeometry.ParseDisplaySize` 的 `if (cropX > 0 || cropY > 0)` 改成 `if (false && ...)`
+#     ⇒ 「对账兜底**未被**触发」转红（日志出现「底图尺寸按实际像素校正」⇒ 16x16 是靠 `len/12` 反推的，
+#     不是 clap 解析出来的）+ 负控 A 两条转红（`decoded=null`：64x64 探测 vs 384 像素非整数倍 ⇒ fail-closed）
+#     ⇒ 证明第 10 条断言 + 两条负控各自的判别力，也证明「裁切解析」不是可省的一步。
+#     同批实测：2026-11-02 收紧后（对账仅在容器声明了裁切时才启用）本变异仍是 `PASS=104 FAIL=3`，逐条同形。
+#   · 变异 K（§1e，**裁切 + 对账两道网同时失效**＝改动前行为，**实测 `PASS=98 FAIL=9`**，2026-11-02）：
+#     在 J 之上再把 `GainMapDecoder` 的对账整块改成 `if (false && baseBytes.Length % 12L == 0)`
+#     ⇒ §1e 9 条转红（`stats decoded=null`、端到端产物 0、负控 A 两条）⇒ 证明本节的修法
+#     **两件都必要**：只补裁切不补对账（或反之）都会退回「静默 SDR」或「记错尺寸」。
+#     收紧后同一变异读数不变（`PASS=98 FAIL=9`）。
+#   · 变异 M（**只作一次性证据，不进整轮**，2026-11-02）：把 `ReadFrameCropping` 里的四行累加删掉，
+#     模拟「ffprobe 没把 clap 暴露成 Frame Cropping」（容器里的 `clap` 仍在 ⇒ ffmpeg 照样裁到 16x16）。
+#     目的 = 验证收紧后新增的 fail-closed 分支配得上它占的位置：
+#     `stats decoded=null`、日志点名「❌ 底图像素数 256（3072 B / 12）与探测尺寸 64x64（4096 像素）不符，
+#     且容器未声明 clean aperture 裁切 ⇒ 无法确定行跳步，拒绝解码」⇒ 旧行为（对账无条件启用）下这里会被
+#     静默收成 16x16 的「半幅 HDR」，现在改成点名拒绝。
+#     ⚠ 本变异**无法换算成容器级负控**（要么 ffprobe 报裁切、要么不报，文件字节改不出这个差），
+#       故语料里没有能长期复现它的夹具 ⇒ 已登记为覆盖缺口（见 HANDOVER-2026-11-02 §7 未了结）。
+#   ⚠ **变异只作一次性有牙证据，不进整轮**；两处变异均已彻底还原（`*.mutbak` 全删、Release 重建 0 错误），
+#     还原后本节 `PASS=107 FAIL=0`（`tests/output/_tmp/corpus-1102/clap-e/gate2_hardened.log`）。
 #   §1 / §1b / §2 / §2b 各自还带**可执行的**反控（见下），证明断言**有牙**而不是恒真。
 #
 # ⚠⚠ **本脚本自身踩过的一个「静默吞代码」陷阱（2026-09-20 实测，值得全仓警惕）**：
@@ -80,9 +101,10 @@
 #     ⚠ 真实原件是**用户个人素材，不入仓**（口径同 §3e），本节覆盖的是**结构形态**，
 #     不代表图像语义正确性（增益公式/色域语义另有门禁）。
 #
-# 断言（共 92 条）：§0 前置 6 · §1 容器层 8 · §1b HEVC 解码路径 11（含 2 条负控 + 1 条反控）·
+# 断言（共 107 条）：§0 前置 6 · §1 容器层 8 · §1b HEVC 解码路径 11（含 2 条负控 + 1 条反控）·
 #                   **§1c Apple auxC 识别 4（含 URN 反控 + 21496 回归）** ·
 #                   **§1d grid 分块 + idat 承载 12（含 grid version 负控 + 端到端拼接点名）** ·
+#                   **§1e clap 裁切几何 15（含 SHA-256 钉死 + 2 条容器负控）** ·
 #                   §2 源码形态 6（含反控）· §2b 缺陷 C 源码形态 3（含反控）· §3 行为 8 ·
 #                   §3b 缺陷 C 行为 4（含负控与素材形态自检）· **§3c HEIC 端到端行为 5（含负控）** ·
 #                   **§3d 厂商尾注执行面 4（含拒因与互斥点名）** · **§3e 底图取法 A/B 4（含对照臂分叉）** · **§3f HEIC→BT.2020/PQ 出口 11（三读者 + 码域分叉 + 2 条对照 + tmap pixi）** ·
@@ -484,6 +506,80 @@ CK ($bGrid.text -match '分块增益图拼接完成：2x2 瓦片 × 64x48 ⇒ 12
    "§1d 行为：**逐瓦片解码 + 拼接**真发生（日志「分块增益图拼接完成：2x2 瓦片 × 64x48 ⇒ 128x96」）"
 CK ($bGrid.text -match '已解码为线性 HDR PFM') `
    "§1d 行为：增益图**真被应用**（日志「已解码为线性 HDR PFM」—— 与 §3c 同口径）"
+
+# ── §1e clean aperture（clap）裁切：几何口径回归（2026-11-02，第三方夹具）────────────────────
+#   背景：ISO-BMFF 的 `clap` 盒声明「干净孔径」（编码像素 ⇒ 显示像素）。本夹具 ispe / HEVC SPS 都是
+#   64x64，而 clap 声明 16x16 且水平/垂直偏移 -24（半整数 2 分母）⇒ **显示尺寸 16x16 且在左上角**。
+#   ffmpeg 已把 clap 施加在解码输出上（实测：裸流 gbrpf32le 只有 3072 B = 16x16x12，`ffprobe` 在
+#   `stream=width,height` 仍报 64x64、把裁切放进 `stream_side_data` 的 `Frame Cropping`）。
+#   ⇒ 旧代码只按 64x64 记账：解码器写出的 3072 B 撞上「像素数据不完整」自检 ⇒ 返回 null ⇒ **静默退回 SDR**
+#     （HDR 层凭空消失，无报错）。修法 = `ImageGeometry.ParseDisplaySize` 减 ffprobe 的 Frame Cropping
+#     （**不自解析 clap** —— 免得形成第二份几何真值），并在 `GainMapDecoder` 里加「探测尺寸 vs 实际字节数」
+#     双向对账兜底。
+#   ⚠ 本件是 **16x16 均匀 HLG + 增益图恒零** ⇒ 它能覆盖「几何口径 / 裁切 / 解码路径」，**不是** HDR 正控
+#     （`gainmap-stats` 的 pass=2 fail=2 就是这件事的读数：两条「必须高于 SDR 白点」的断言必然 FAIL，见下）。
+#     原计划把它当「尺寸负控」是归因错误，本段按「clap 几何回归件」重新定性。
+Write-Host "`n### §1e clean aperture（clap）裁切：几何口径回归 ###" -ForegroundColor Cyan
+$heicClap = "$root/tests/data/gainmap_hevc_16x16.heic"
+CK (Test-Path $heicClap) `
+   "§1e 前置：clap 夹具在位（tests/data/gainmap_hevc_16x16.heic，出处 Google libultrahdr 合成件、Apache-2.0 OR MIT）—— 缺则本段整段无凭据（fail-closed）"
+$clapSha = ""
+if (Test-Path $heicClap) { $clapSha = (Get-FileHash $heicClap -Algorithm SHA256).Hash }
+CK ($clapSha -eq '6DD810EE6D118D3CE876936D9B265338B94D44CDE187BCE2BA384CE93EDB1B8E') `
+   "§1e 前置：夹具逐字节钉死（SHA-256 实 $clapSha）—— 换件必须同批改期望值，否则本段读数失去意义"
+
+$cClap = Exec $sp "gainmap-stats `"$heicClap`"" "p_clap"
+Write-Host ("  [clap] " + (($cClap.text -split "`r?`n" | Where-Object { $_ -match '^(stats|PROBE RESULT)' }) -join ' | '))
+CK ($cClap.text -match 'stats w=16 h=16') `
+   "§1e 几何口径：解码器按 **16x16** 记账（不是容器的 64x64）—— 实 $(($cClap.text -split "`r?`n" | Where-Object { $_ -match '^stats ' } | Select-Object -First 1))"
+CK ($cClap.text -match 'total=768') `
+   "§1e 几何口径：像素总数 = 16x16x3 = 768（clap 裁切后，正是裸流 3072 B / 12）"
+CK ($cClap.text -match 'PASS 正向：解码成功且写出线性像素（16x16）') `
+   "§1e 行为：**解码不再 fail-closed**（旧行为是「像素数据不完整」⇒ 返回 null ⇒ 静默退回 SDR）"
+CK (($cClap.text -match 'PROBE RESULT: pass=2 fail=2') -and ($cClap.text -match '峰值超过 SDR 白点') -and ($cClap.text -match '确有像素高于 SDR 白点')) `
+   "§1e 定性：本件是**均匀 HLG + 增益图恒零** ⇒ 两条「必须高于 SDR 白点」的断言必然 FAIL（pass=2 fail=2）⇒ 它是 clap 几何回归件，**不是** HDR 正控，别把它的红当回归"
+
+$bClap = RunApp $heicClap "jpg" "clap_e2e" @("--jpeg-gain-map", "true")
+CK (($bClap.terminated) -and ($bClap.prods -ge 1)) `
+   "§1e 端到端：clap 裁切件 → jpg 产出 ≥1（实 $($bClap.prods)）"
+CK ($bClap.text -match 'HDR 线性像素: 16x16') `
+   "§1e 端到端：产品侧同样按 16x16 记账（日志「HDR 线性像素: 16x16」—— 旧行为此处是 64x64 且随后静默退回 SDR）"
+CK ($bClap.text -match '已解码为线性 HDR PFM') `
+   "§1e 端到端：增益图**真被应用**（日志「已解码为线性 HDR PFM」，与 §1d/§3c 同口径）"
+CK (-not ($bClap.text -match '按实际像素校正')) `
+   "§1e 端到端：**对账兜底未被触发**（日志不出「底图尺寸按实际像素校正」）⇒ 16x16 来自 clap 解析，而不是靠字节数反推出来的"
+
+# 负控 J-a：clap 的 widthN 16 → 8 ⇒ 显示尺寸必须跟着变 8x16。证明裁切数值**取自容器**而非写死。
+$clapBytes = [System.IO.File]::ReadAllBytes($heicClap)
+$clapPos = -1
+for ($ci = 0; $ci -le $clapBytes.Length - 4; $ci++) {
+  if ($clapBytes[$ci] -eq 99 -and $clapBytes[$ci + 1] -eq 108 -and $clapBytes[$ci + 2] -eq 97 -and $clapBytes[$ci + 3] -eq 112) { $clapPos = $ci; break }
+}
+CK ($clapPos -ge 0) `
+   "§1e 负控素材：clap 盒类型可定位（实 offset=$clapPos，否则下面两条负控是真空）"
+if ($clapPos -ge 0) {
+  $clapMutA = [byte[]]$clapBytes.Clone()
+  $clapMutA[$clapPos + 7] = 8
+  $clapW8 = "$work/clap_w8.heic"
+  [System.IO.File]::WriteAllBytes($clapW8, $clapMutA)
+  $cClapA = Exec $sp "gainmap-stats `"$clapW8`"" "p_clap_w8"
+  CK ($cClapA.text -match 'stats w=8 h=16') `
+     "§1e 负控 A（断言有牙）：clap widthN 16→8 ⇒ 记账变 **8x16**（实 $(($cClapA.text -split "`r?`n" | Where-Object { $_ -match '^stats ' } | Select-Object -First 1))）"
+  CK ($cClapA.text -match 'total=384') `
+     "§1e 负控 A：像素总数随之 8x16x3 = 384 ⇒ 尺寸不是常量"
+
+  # 负控 J-b：把 clap 的类型名改掉（clap → zzzz）⇒ 容器里没有干净孔径 ⇒ ffprobe 不再给 Frame Cropping
+  #   ⇒ 记账必须回到 64x64。这条证明「16x16 是容器声明的产物」，排除了「实现里把 64 除以 4」这类巧合。
+  $clapMutB = [byte[]]$clapBytes.Clone()
+  for ($cj = 0; $cj -lt 4; $cj++) { $clapMutB[$clapPos + $cj] = 122 }
+  $clapNone = "$work/clap_none.heic"
+  [System.IO.File]::WriteAllBytes($clapNone, $clapMutB)
+  $cClapB = Exec $sp "gainmap-stats `"$clapNone`"" "p_clap_none"
+  CK ($cClapB.text -match 'stats w=64 h=64') `
+     "§1e 负控 B（断言有牙）：删掉 clap 后记账回到容器的 **64x64**（实 $(($cClapB.text -split "`r?`n" | Where-Object { $_ -match '^stats ' } | Select-Object -First 1))）⇒ 16x16 由容器声明驱动"
+  CK ($cClapB.text -match 'total=12288') `
+     "§1e 负控 B：像素总数回到 64x64x3 = 12288 ⇒ 与正控的 768 成 16 倍，两臂可区分"
+}
 
 # ── §2 源码形态：动画判据锁（含反控） ────────────────────────────────────────────
 Write-Host "`n### §2 源码形态：动画判据（多帧 + tmap 两级）###" -ForegroundColor Cyan

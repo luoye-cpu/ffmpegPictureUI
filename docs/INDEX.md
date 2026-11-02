@@ -19,6 +19,7 @@
 | `FIX_PLAN_2026-10-14.md` | 2 | 修复计划（现行） |
 | `GAINMAP_ROUTES_AND_PATCH_PLAN.md` | 1 | 增益图路由与修补方案（现行） |
 | `MANUAL_VERIFICATION.md` | 1 | 手工验证清单 |
+| `AUXC_HEIC_GAINMAP_PLAN_2026-11-02.md` | 0（新，2026-11-02） | Apple `auxC` HEIC 增益图（DJI 实拍形态）的**可行性设计**：box 树/`iref`/`ipma` 一手读数、`grid` 载荷 8 B 中尾部 4 B 未读、`auxl` 反查未通两处缺口、Apple 增益口径三候选（§5 **低置信**）、§6 逐点改动、§7 判据草案。**本批未实施**（理由与三件 `sha256[:16]` 见 `HANDOVER-2026-11-02.md` §3.7）⇒ 位置可动，暂不进归档 |
 | `ACR_FULL_ROUTE_PLAN.md` | 0（新，2026-11-01） | DNG→ACR 全量路线的**可行性设计**（链 A/链 B、R1~R3 风险、M1~M5 待测格）；维护者裁定「只做设计+探针」⇒ 不含任何产品侧路由改动。位置可动，但被 `CORRECTION-2026-10-31-C-FULLDRIVE.md` 按名指它（AGENTS §7 只描述性提及 ACR 路线，未点名本文件——2026-11-02 核） |
 | `RAW2TIF_QA_DEFECT_2026-10-03.md` | 1（**前缀名**） | `QueueProcessor.cs:808` 以 `RAW2TIF_QA_DEFECT §7.5` 指它；按全名数引用会漏，故留顶层 |
 | `ENCODING_OPTIONS_AUDIT_2026-09-26.md` | 1 | 高级编码选项审查 |

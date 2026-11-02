@@ -49,7 +49,8 @@ public static class ImageGeometry
     /// <param name="inputArgsPrefix">解复用器提示（如增益图裸流的 <c>-f hevc </c>），须落在 <c>-i</c> 之前。</param>
     public static string BuildProbeArguments(string path, string inputArgsPrefix = "")
         => $"-v error {inputArgsPrefix}-select_streams v:0 -read_intervals \"%+#1\" "
-         + $"-show_entries stream=width,height -show_entries frame_side_data_list -of json \"{path}\"";
+         + $"-show_entries stream=width,height -show_entries stream_side_data "
+         + $"-show_entries frame_side_data_list -of json \"{path}\"";
 
     /// <summary>
     /// 纯函数：从上面那条命令的 JSON 里解析出显示尺寸。
@@ -60,22 +61,82 @@ public static class ImageGeometry
     /// </summary>
     public static (int w, int h) ParseDisplaySize(string ffprobeJson)
     {
-        if (string.IsNullOrWhiteSpace(ffprobeJson)) return (0, 0);
+        var (w, h, _, _) = ParseDisplaySizeWithCrop(ffprobeJson);
+        return (w, h);
+    }
+
+    /// <summary>
+    /// 同 <see cref="ParseDisplaySize"/>，额外回主图流声明（并被解码器施加）的裁切总量。
+    /// <para>裁切量是「探测口径 vs 裸流字节数」对账的**唯一合法依据**：只有容器真的声明了裁切，
+    /// 才允许把尺寸改写小/大；否则任何恰好 1/k² 像素的截断流都会被静默接受（2026-11-02 审阅指出）。</para>
+    /// </summary>
+    public static (int w, int h, int cropX, int cropY) ParseDisplaySizeWithCrop(string ffprobeJson)
+    {
+        if (string.IsNullOrWhiteSpace(ffprobeJson)) return (0, 0, 0, 0);
         try
         {
             using var doc = JsonDocument.Parse(ffprobeJson);
             int codedW = 0, codedH = 0;
+            int cropX = 0, cropY = 0;          // clean aperture（clap）⇒ ffmpeg 的 Frame Cropping
             if (doc.RootElement.TryGetProperty("streams", out var streams)
                 && streams.ValueKind == JsonValueKind.Array && streams.GetArrayLength() > 0)
             {
                 var s = streams[0];
-                codedW = ReadInt(s, "width");
-                codedH = ReadInt(s, "height");
+                // 元素不是对象（畸形 JSON）⇒ 当作没读到，别让 TryGetProperty 抛 InvalidOperationException。
+                if (s.ValueKind == JsonValueKind.Object)
+                {
+                    codedW = ReadInt(s, "width");
+                    codedH = ReadInt(s, "height");
+                    ReadFrameCropping(s, out cropX, out cropY);
+                }
             }
-            if (codedW <= 0 || codedH <= 0) return (0, 0);
-            return ApplyRotation(codedW, codedH, ReadRotation(doc.RootElement));
+            if (codedW <= 0 || codedH <= 0) return (0, 0, 0, 0);
+            // ⚠ **裁切量必须减掉**（2026-11-02 实测缺陷）：容器里的 `clap`（clean aperture，ISO-BMFF）
+            //   被 ffmpeg 的 mov 解复用器读成**流级 side data `Frame Cropping`**，解码器出帧时施加
+            //   ⇒ 帧的真实尺寸是 `coded − 裁切`，而 `stream=width,height` 报的仍是 coded。
+            //   实测 `libultrahdr/gainmap_hevc_16x16.heic`：ispe 64x64、clap 16x16（偏移 -24/-24）、
+            //   `Frame Cropping: 0/48/0/48` ⇒ ffmpeg 实出 16x16（gbrpf32le rawvideo 3072 B = 256 px），
+            //   而旧探测报 64x64。该差额令 `GainMapDecoder` 的长度自检按 64x64 换算 49152 B 去比 3072 B
+            //   ⇒ 判「像素数据不完整」⇒ 整条增益图解码返回 null ⇒ **静默退回 SDR**（HDR 丢失且无点名）。
+            //   与取向旋正是两件事：先裁后转 ⇒ 顺序不可交换（旋转只交换宽高）。
+            if (cropX > 0 || cropY > 0)
+            {
+                int dw = codedW - cropX, dh = codedH - cropY;
+                // 只接受**仍为正**的结果：裁切量超过 coded（畸形件 / 解复用器口径变化）⇒ 维持原值，不猜。
+                if (dw > 0 && dh > 0) { codedW = dw; codedH = dh; }
+            }
+            var (fw, fh) = ApplyRotation(codedW, codedH, ReadRotation(doc.RootElement));
+            return (fw, fh, cropX, cropY);
         }
-        catch (JsonException) { return (0, 0); }
+        catch (JsonException) { return (0, 0, 0, 0); }
+    }
+
+    /// <summary>
+    /// 取流级 side data 里 `Frame Cropping` 的横向/纵向裁切总量（left+right / top+bottom）。
+    /// <para>只认 <c>side_data_type</c> 含 "Frame Cropping" 的那条：同一流上还挂着 <c>ICC Profile</c>
+    /// 等其他 side data，逐条扫键名会把无关数字当成裁切量。</para>
+    /// <para>取不到（旧 ffmpeg 未把 <c>clap</c> 暴露成 side data / 非 ISOBMFF / 无裁切）⇒ 记 0，回到 coded 口径。</para>
+    /// </summary>
+    private static void ReadFrameCropping(JsonElement stream, out int cropX, out int cropY)
+    {
+        cropX = 0; cropY = 0;
+        if (!stream.TryGetProperty("side_data_list", out var list) || list.ValueKind != JsonValueKind.Array)
+            return;
+        foreach (var sd in list.EnumerateArray())
+        {
+            if (sd.ValueKind != JsonValueKind.Object) continue;   // 畸形 side_data_list（元素是数字/数组）⇒ 跳过
+            if (!sd.TryGetProperty("side_data_type", out var t)
+                || t.ValueKind != JsonValueKind.String
+                || !t.GetString()!.Contains("Frame Cropping", StringComparison.OrdinalIgnoreCase))
+                continue;
+            int l = ReadInt(sd, "crop_left"), r = ReadInt(sd, "crop_right");
+            int tp = ReadInt(sd, "crop_top"), bt = ReadInt(sd, "crop_bottom");
+            if (l > 0) cropX += l;
+            if (r > 0) cropX += r;
+            if (tp > 0) cropY += tp;
+            if (bt > 0) cropY += bt;
+            return;
+        }
     }
 
     /// <summary>
@@ -89,10 +150,12 @@ public static class ImageGeometry
             return 0;
         foreach (var f in frames.EnumerateArray())
         {
+            if (f.ValueKind != JsonValueKind.Object) continue;      // 畸形 frames（元素是数字/数组）⇒ 跳过
             if (!f.TryGetProperty("side_data_list", out var list) || list.ValueKind != JsonValueKind.Array)
                 continue;
             foreach (var sd in list.EnumerateArray())
             {
+                if (sd.ValueKind != JsonValueKind.Object) continue;  // 同上：非对象元素不许把异常漏出本函数
                 if (!sd.TryGetProperty("side_data_type", out var t)
                     || t.ValueKind != JsonValueKind.String
                     || !t.GetString()!.Contains("displaymatrix", StringComparison.OrdinalIgnoreCase))
@@ -115,8 +178,25 @@ public static class ImageGeometry
     public static async Task<(int w, int h)> DisplaySizeAsync(string path, string? ffprobePath,
         Action<string>? log = null, CancellationToken ct = default, string inputArgsPrefix = "")
     {
-        if (string.IsNullOrEmpty(path) || path == "-") return (0, 0);
-        if (string.IsNullOrWhiteSpace(ffprobePath) || !File.Exists(ffprobePath)) return (0, 0);
+        var (w, h, _, _) = await DisplaySizeWithCropAsync(path, ffprobePath, log, ct, inputArgsPrefix)
+            .ConfigureAwait(false);
+        return (w, h);
+    }
+
+    /// <summary>
+    /// 同 <see cref="DisplaySizeAsync"/>，额外回**容器声明的裁切总量**（像素；未声明 = 0）。
+    /// <para>存在的唯一理由：`GainMapDecoder` 的「探测尺寸 vs 裸流字节数」对账必须在
+    /// **裁切量非零**时才允许改写尺寸。裁切量为 0 而两侧不符 ⇒ 调用方按旧口径 fail-closed
+    /// （否则截断流 / 缩略图流 / grid 复合退化都会被静默收成半幅图）。</para>
+    /// <para>分块源（<c>tiles&gt;1</c>）返回组尺寸且裁切量置 <b>0</b>：组的 clap 语义未实测，不猜。
+    /// 组源带裁切时会点名叫人去造夹具，而不是悄悄减一个数。</para>
+    /// </summary>
+    public static async Task<(int w, int h, int cropX, int cropY)> DisplaySizeWithCropAsync(
+        string path, string? ffprobePath,
+        Action<string>? log = null, CancellationToken ct = default, string inputArgsPrefix = "")
+    {
+        if (string.IsNullOrEmpty(path) || path == "-") return (0, 0, 0, 0);
+        if (string.IsNullOrWhiteSpace(ffprobePath) || !File.Exists(ffprobePath)) return (0, 0, 0, 0);
         try
         {
             using var p = Process.Start(new ProcessStartInfo
@@ -130,7 +210,7 @@ public static class ImageGeometry
                 UseShellExecute = false,
                 CreateNoWindow = true
             });
-            if (p == null) return (0, 0);
+            if (p == null) return (0, 0, 0, 0);
             // 两个读取任务**先挂起不 await**（P2-3 的实测教训：不排空管道，子进程写满 ~4KB 就永不退出），
             // 但也不能在退出前 await —— 那会把下面的超时判据变成死代码（`#26` 修的就是这个）。
             var outTask = p.StandardOutput.ReadToEndAsync();
@@ -148,11 +228,11 @@ public static class ImageGeometry
                 var kind = ct.IsCancellationRequested ? "被取消" : $"超时（{TimeoutMs / 1000}s）";
                 var msg = $"[probe] 显示尺寸探测{kind} ⇒ 已终止：{Path.GetFileName(path)}（按未探测处理）";
                 if (log != null) log(msg + "\n"); else Trace.WriteLine(msg);
-                return (0, 0);
+                return (0, 0, 0, 0);
             }
             var json = await outTask.ConfigureAwait(false);
             var err = await errTask.ConfigureAwait(false);
-            var (w, h) = ParseDisplaySize(json);
+            var (w, h, cropX, cropY) = ParseDisplaySizeWithCrop(json);
             // ── 分块源必须以**组的整幅尺寸**为准：上面那条 stream 探测取的 v:0 是第一块 ──
             // 实测真图（5888×4416，108 块 512×512）：不覆盖时本函数返回 512×512，
             // 于是「最长边」判据以为已经够小 ⇒ 静默不缩放（这条是 #3 的用户可见后果）。
@@ -160,20 +240,30 @@ public static class ImageGeometry
             // 取不到组（旧 ffmpeg / 非 ISOBMFF 图像）⇒ 原样返回，不猜。
             if (TryGetTileGroupInfo(path, out int gt, out int gw, out int gh, log, ct)
                 && gt > 1 && gw > 0 && gh > 0)
-                return (gw, gh);
+            {
+                // 组尺寸优先；但组源**带 clap** 时两者口径未必同源（组的 clap 是否已施加于复合图未实测）
+                // ⇒ 只点名、不扣减、也不把裁切量透给对账（cropX/cropY 置 0 ⇒ 调用方 fail-closed）。
+                if (cropX > 0 || cropY > 0)
+                {
+                    var gmsg = $"[probe] 分块源带 clean aperture（裁切 {cropX}x{cropY}）：组尺寸 {gw}x{gh} 未做扣减"
+                             + "（组级 clap 语义未实测）⇒ 按组尺寸记账";
+                    if (log != null) log(gmsg + "\n"); else Trace.WriteLine(gmsg);
+                }
+                return (gw, gh, 0, 0);
+            }
             if (w <= 0 || h <= 0)
             {
                 var msg = $"[probe] 显示尺寸探测无结果：{Path.GetFileName(path)}"
                         + (string.IsNullOrWhiteSpace(err) ? "" : $"（ffprobe: {err.Trim()}）");
                 if (log != null) log(msg + "\n"); else Trace.WriteLine(msg);
             }
-            return (w, h);
+            return (w, h, cropX, cropY);
         }
         catch (Exception ex)
         {
             var msg = $"[probe] 显示尺寸探测异常：{Path.GetFileName(path)} ⇒ {ex.Message}";
             if (log != null) log(msg + "\n"); else Trace.WriteLine(msg);
-            return (0, 0);
+            return (0, 0, 0, 0);
         }
     }
 

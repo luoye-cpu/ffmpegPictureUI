@@ -11,7 +11,8 @@
 #   ① `stream=width,height -of`（只探宽高的旧形态）在 `src/` 代码中出现次数 **必须为 0**；
 #   ② `ImageGeometry.cs` 必须仍然同时含 `frame_side_data_list` / `displaymatrix` / `ApplyRotation`
 #      —— 否则 ① 会在"唯一实现也被删掉"时假绿；
-#   ③ 那四个消费者必须各自仍然引用 `ImageGeometry.DisplaySizeAsync`（防止改成自己写一份）。
+#   ③ 那四个消费者必须各自仍然引用 `ImageGeometry.DisplaySizeAsync`（或 2026-11-02 起为它加裁切量出口的
+#      同实现壳 `ImageGeometry.DisplaySizeWithCropAsync`）—— 防止改成自己写一份。
 #
 # ⚠ 汇总行**必须**是 `PASS=n FAIL=m` 形态：运行器有一道「零断言闸」，凡不自我汇总的脚本会被判
 #   "一条断言都没跑"而**拒跑**（本锁 2026-09-30 首次进清单就栽在这里 —— 只打 `[lock]` 散文行，
@@ -80,9 +81,13 @@ foreach ($c in $consumers) {
     $ok = $false
     if (Test-Path $full) {
         $cc = (CodeLines $full) -join "`n"
-        $ok = [bool]($cc -match [regex]::Escape('ImageGeometry.DisplaySizeAsync'))
+        # 2026-11-02：唯一实现拆成两个入口（`DisplaySizeAsync` = 只回尺寸；
+        #   `DisplaySizeWithCropAsync` = 尺寸 + 容器声明的 clean aperture 裁切量，只有 `GainMapDecoder` 用它
+        #   把「探测尺寸 vs 裸流字节数」的对账限定在真声明了裁切的文件上）。两者是**同一份实现**的两层壳，
+        #   故本锁认这一对名字；`①` 那条仍然保证没有任何第五份自写探测。
+        $ok = [bool]($cc -match 'ImageGeometry\.DisplaySize(WithCrop)?Async')
     }
-    CK $ok "③ $c ⇒ 引用唯一实现 ImageGeometry.DisplaySizeAsync"
+    CK $ok "③ $c ⇒ 引用唯一实现 ImageGeometry.DisplaySizeAsync / DisplaySizeWithCropAsync"
 }
 
 Write-Output ""

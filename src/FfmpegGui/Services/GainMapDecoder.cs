@@ -365,7 +365,7 @@ public static class GainMapDecoder
                 }
 
                 // ── Step 3: 解码基础图 (整个文件 ffmpeg 直接解码得 sRGB 基础图) → 线性 float ──
-                var (baseW, baseH) = await ProbeSizeAsync(inputPath, ffmpeg, log, ct);
+                var (baseW, baseH, baseCropX, baseCropY) = await ProbeSizeAsync(inputPath, ffmpeg, log, ct);
                 if (baseW <= 0 || baseH <= 0)
                 {
                     log?.Invoke("[GainMap解码] ❌ 无法获取基础图尺寸\n");
@@ -410,7 +410,7 @@ public static class GainMapDecoder
                 }
                 else
                 {
-                    var (w, h) = await ProbeSizeAsync(gmPath, ffmpeg, log, ct, gmFmtArgs);
+                    var (w, h, _, _) = await ProbeSizeAsync(gmPath, ffmpeg, log, ct, gmFmtArgs);
                     if (w <= 0 || h <= 0)
                     {
                         log?.Invoke("[GainMap解码] ❌ 无法获取增益图尺寸\n");
@@ -450,6 +450,53 @@ public static class GainMapDecoder
                 }
 
                 var baseBytes = await File.ReadAllBytesAsync(baseRawPath, ct);
+                // ── 尺寸对账（2026-11-02）────────────────────────────────────────────
+                // 几何探测已改为「coded − 容器裁切」（ImageGeometry.ParseDisplaySize 减 Frame Cropping side data），
+                // 但那是靠 ffprobe 暴露的 side data 推出来的二手信息；rawvideo **无头**，唯一的**一手**真值是
+                // 字节数。两者不一致时旧代码只报「❌ 像素数据不完整」（不点名差多少、也不说可能是裁切）
+                // ⇒ 用户看到的是「增益图无效」而非「几何口径不符」。
+                // 对账规则（不改判据强度，只把失败变成可定位）：
+                //   · 整数倍等比缩小（64x64 裁到 16x16 即 k=4）⇒ 采纳，并点名；
+                //   · 其他任何不符 ⇒ 仍 fail-closed，但日志带上两侧数字。
+                // ⚠ **只在容器真声明了裁切时**才允许改写尺寸（2026-11-02 审阅指出）：否则任何「字节数恰好
+                //   是 1/k² 像素」的流（截断的裸流、HEIC 里 1/2 分辨率的缩略图流、grid 复合退化成单瓦片）
+                //   都会从 fail-closed 变成静默出半幅 HDR —— 用户侧只表现为图变小变虚，日志才看得出来。
+                bool cropDeclared = baseCropX > 0 || baseCropY > 0;
+                if (baseBytes.Length % 12L == 0)
+                {
+                    long actualPixels = baseBytes.Length / 12L;
+                    if (actualPixels > 0 && actualPixels != basePixels && !cropDeclared)
+                    {
+                        log?.Invoke($"[GainMap解码] ❌ 底图像素数 {actualPixels}（{baseBytes.Length} B / 12）与探测尺寸 {baseW}x{baseH}"
+                            + $"（{basePixels} 像素）不符，且容器未声明 clean aperture 裁切 ⇒ 无法确定行跳步，拒绝解码"
+                            + "（若该文件确带裁切，说明 ffprobe 未把 clap 暴露成 Frame Cropping）\n");
+                        return null;
+                    }
+                    if (actualPixels > 0 && actualPixels != basePixels)
+                    {
+                        // 双向：探测偏大（容器 clap 被 ffmpeg 施加而未反映到 stream 宽高）或偏小（解复用器报了
+                        // Frame Cropping 但解码器未施加）都要收。比例必须严格等比，否则行跳步不可知。
+                        if (TryUniformScale(baseW, baseH, actualPixels, out int aw, out int ah) && aw > 0 && ah > 0)
+                        {
+                            log?.Invoke($"[GainMap解码] 底图尺寸按实际像素校正：探测 {baseW}x{baseH} ⇒ 解码 {aw}x{ah}"
+                                + $"（{baseBytes.Length} B / 12 = {actualPixels} 像素；几何探测口径与实际帧不符）\n");
+                            baseW = aw; baseH = ah; basePixels = actualPixels;
+                            // 校正后可能**放大**（探测偏小，放大臂最多 ×256）⇒ 上限必须在校正后再判一次，
+                            // 否则 `new float[pixelCount * 4]` 的 int 索引前提就没了（原上限按探测值算）。
+                            if (basePixels <= 0 || basePixels > MaxDecodedPixels)
+                            {
+                                log?.Invoke($"[GainMap解码] ❌ 校正后像素数 {basePixels} 超出上限 {MaxDecodedPixels} ⇒ 拒绝解码\n");
+                                return null;
+                            }
+                        }
+                        else
+                        {
+                            log?.Invoke($"[GainMap解码] ❌ 底图像素数 {actualPixels}（{baseBytes.Length} B / 12）与探测尺寸 {baseW}x{baseH}"
+                                + $"（{basePixels} 像素）不符，且不是整数倍等比缩放 ⇒ 无法确定行跳步，拒绝解码\n");
+                            return null;
+                        }
+                    }
+                }
                 if (baseBytes.Length < basePixels * 12L)
                 {
                     log?.Invoke("[GainMap解码] ❌ 像素数据不完整\n");
@@ -1620,6 +1667,36 @@ public static class GainMapDecoder
     //  工具函数
     // ═══════════════════════════════════════════
 
+    /// <summary>
+    /// 已知真实像素数，反推「与 (w,h) 严格等比」的尺寸；不成立时返回 false。
+    /// <para><b>为何需要</b>：几何探测（ffprobe）与解码帧的真实尺寸可能不一致——ISOBMFF 的 <c>clap</c>
+    /// （clean aperture）被 ffmpeg 读成流级 side data <c>Frame Cropping</c> 后由解码器施加，而
+    /// <c>stream=width,height</c> 报的仍是 coded 尺寸（双向都可能：既可能探测偏大，也可能 ffprobe 版本差异
+    /// 导致侧数据没暴露而偏小）。rawvideo **无头**，字节数是唯一一手真值 ⇒ 由它反推。</para>
+    /// <para>只接受整数倍或整数分之一（1/2…1/16）且横纵同比 ⇒ 非等比裁切（如奇偶对齐裁一列）不猜。</para>
+    /// </summary>
+    internal static bool TryUniformScale(int w, int h, long actualPixels, out int aw, out int ah)
+    {
+        aw = w; ah = h;
+        if (w <= 0 || h <= 0 || actualPixels <= 0) return false;
+        if ((long)w * h == actualPixels) return true;
+        // 探测偏大：等比缩小
+        for (int k = 2; k <= 16; k++)
+        {
+            if (w % k != 0 || h % k != 0) continue;
+            if ((long)(w / k) * (h / k) != actualPixels) continue;
+            aw = w / k; ah = h / k; return true;
+        }
+        // 探测偏小：等比放大
+        for (int k = 2; k <= 16; k++)
+        {
+            if ((long)w * k * h * k != actualPixels) continue;
+            aw = w * k; ah = h * k; return true;
+        }
+        aw = w; ah = h;
+        return false;
+    }
+
     /// <summary>gbrpf32le planar → RGBA 交错</summary>
     internal static float[] PlanarToInterleaved(byte[] planar, int pixelCount)
     {
@@ -1660,13 +1737,13 @@ public static class GainMapDecoder
     /// 而 <c>base.rgba</c> 是**裸 rawvideo**、下游只做长度自检 ⇒ 同一条"coded 标注旋正像素"的缺陷链。
     /// 现统一转发到 <see cref="ImageGeometry"/>，返回**显示**尺寸。
     /// </remarks>
-    private static Task<(int w, int h)> ProbeSizeAsync(string path, string ffmpeg,
+    private static Task<(int w, int h, int cropX, int cropY)> ProbeSizeAsync(string path, string ffmpeg,
         Action<string>? log = null, CancellationToken ct = default, string inputFmtArgs = "")
     {
         var ffprobe = PlatformServices.ResolveFfprobePath(ffmpeg)
             ?? Path.Combine(Path.GetDirectoryName(ffmpeg) ?? "", "ffprobe.exe");
         if (!File.Exists(ffprobe)) ffprobe = ffmpeg.Replace("ffmpeg.exe", "ffprobe.exe");
-        return ImageGeometry.DisplaySizeAsync(path, ffprobe, log, ct, inputFmtArgs);
+        return ImageGeometry.DisplaySizeWithCropAsync(path, ffprobe, log, ct, inputFmtArgs);
     }
 
     private static async Task<int> RunFfmpegAsync(string args, string ffmpeg,
