@@ -1335,7 +1335,8 @@ namespace ServiceProbe
 
         /// <summary>
         /// 解码 Ultra HDR JPEG → 线性 HDR 浮点（gbrpf32le，1.0 = SDR 白点），把**像素实测**读数打出来。
-        /// 用法：<c>ServiceProbe gainmap-stats &lt;file&gt; [none]</c>
+        /// 用法：<c>ServiceProbe gainmap-stats &lt;file&gt; [none]</c>，或 <c>gainmap-stats --size-recon</c>
+        /// （纯函数臂：<see cref="GainMapDecoder.ReconcileBaseSize"/> 的五种结局，无文件、不落盘）。
         /// <para>
         /// 存在理由：P0-2 要证明 Apple 两代样本「施加后峰值 &gt; 底图峰值」，而产品日志里的
         /// 「峰值 N nits」是**由元数据算的**（`203 × 2^HDRCapacityMax`，见 `GainMapDecoder` 的 peakNits），
@@ -1348,8 +1349,101 @@ namespace ServiceProbe
         /// </summary>
         private static void ProbeGainMapStats(string[] args)
         {
-            if (args.Length < 2) { Console.WriteLine("usage: ServiceProbe gainmap-stats <file> [none]"); _fail++; return; }
+            if (args.Length < 2) { Console.WriteLine("usage: ServiceProbe gainmap-stats <file> [none] | --size-recon"); _fail++; return; }
             var path = args[1];
+            // ── 纯函数臂（`gainmap-stats --size-recon`）：底图尺寸对账的裁决，无文件 / 无外部工具 / 不落盘 ──
+            //   为什么必须落在这里（2026-11-02 第二批）：`GainMapDecoder.ReconcileBaseSize` 覆盖的那个状态
+            //   ——「ffprobe 报的尺寸 ≠ 解码帧实际像素**且**容器未声明 clap」—— **造不出文件样本**：
+            //   实测改 ISOBMFF 的 ispe 不影响 ffprobe 报的 HEVC 流尺寸（SPS 说了算，三件变异件仍报 64x64），
+            //   把 clap 的类型名改掉（`clap_none.heic`）则 ffprobe 不再给 Frame Cropping、解码器也不裁
+            //   ⇒ 两侧同时退回 64x64。结论：fail-closed 分支与 TryUniformScale 的放大臂**只能直接钉裁决**，
+            //   否则这两个出口永远只有手跑（改前零判据臂）。臂 A1–A8 覆盖五种结局与两条臂边界。
+            if (path.Equals("--size-recon", StringComparison.OrdinalIgnoreCase))
+            {
+                // ⚠ 走**反射**而不是加 `InternalsVisibleTo("ServiceProbe")`：改 `FfmpegGui.csproj` 会触发
+                //   整树重还原，而本机 `dotnet restore` 目前对所有工程报
+                //   `NETSDK1060 ... Value cannot be null. (Parameter 'path1')`（与本次改动无关，
+                //   见 HANDOVER 的环境注记）⇒ 改 csproj 当场让 13 个工程全编不过。反射与既有 `avifgm`
+                //   mode 直呼 `private static PatchColr` 是同一形态，不改出货件可见性。
+                var mtRec = typeof(GainMapDecoder).GetMethod("ReconcileBaseSize",
+                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+                // ⚠ 枚举是**嵌套**在 GainMapDecoder 里的（元数据全名 `…GainMapDecoder+BaseSizeVerdict`），
+                //   用 GetNestedType 找；按 "FfmpegGui.Services.BaseSizeVerdict" 找永远为 null（2026-11-02 实测踩过）。
+                var etVerdict = typeof(GainMapDecoder).GetNestedType("BaseSizeVerdict",
+                    System.Reflection.BindingFlags.NonPublic);
+                Check(mtRec != null && etVerdict != null,
+                    "A0 反射找得到 internal ReconcileBaseSize / BaseSizeVerdict（找不到则本节余下 7 条全是真空绿）");
+                if (mtRec == null || etVerdict == null)
+                {
+                    Console.WriteLine($"A0 诊断：method={(mtRec == null ? "null" : "ok")} enum={(etVerdict == null ? "null" : "ok")}");
+                    return;
+                }
+
+                // 一次调用 ⇒ (裁决名, aw, ah)。`out` 形参经反射是**装箱数组元素**，Invoke 后被回写。
+                (string V, int W, int H) Recon(int w, int h, long px, bool crop)
+                {
+                    var a = new object[] { w, h, px, crop, 0, 0 };
+                    var r = mtRec.Invoke(null, a);
+                    return (r == null ? "null" : r.ToString()!, (int)a[4], (int)a[5]);
+                }
+
+                var r1 = Recon(64, 64, 4096, false);
+                Console.WriteLine($"A1 verdict={r1.V} out={r1.W}x{r1.H}（探测 64x64 / 实测 4096 = 一致）");
+                Check(r1.V == "Match" && r1.W == 64 && r1.H == 64,
+                    $"A1 一致：探测尺寸与实测像素相符 ⇒ Match 且不改写（64x64 / 4096）｜实 {r1.V} {r1.W}x{r1.H}");
+
+                // 这一条是 fail-closed 的**牙齿**：256 像素恰好是 64x64 的 1/4 等比（k=4），若先试等比
+                // 就会静默出半幅 HDR。容器没声明裁切 ⇒ 行跳步不可知 ⇒ 必须拒绝（连等比也不认）。
+                var r2 = Recon(64, 64, 256, false);
+                Console.WriteLine($"A2 verdict={r2.V}（探测 64x64 / 实测 256 / 未声明裁切）");
+                Check(r2.V == "RejectUndeclared",
+                    $"A2 fail-closed：未声明 clap 时即便恰为 1/4 等比也拒绝（64x64 探测 / 256 实测）｜实 {r2.V}");
+
+                // A2b 是 A2 的**另一个方向**：A2 只证明「恰为 1/4 缩小比例」时被拒，挡不住
+                // 「闸只挡了缩小臂」的坏实现（例如把 cropDeclared 判断塞进缩小循环里）。
+                // 取 4x4 探测 / 256 实测：只能是放大 k=4（(4*4)²=256；缩小臂需 4%k==0 且 (4/k)²==256，永不成立）
+                // ⇒ 这条完全落在放大臂上，与 A2 的缩小型互补。
+                var r2b = Recon(4, 4, 256, false);
+                Console.WriteLine($"A2b verdict={r2b.V}（探测 4x4 / 实测 256 / 未声明裁切 / 放大型）");
+                Check(r2b.V == "RejectUndeclared",
+                    $"A2b 未声明 clap 的**放大**型错配（4x4 探测 / 256 实测）同样必须拒绝 ⇒ 闸在两条臂之前｜实 {r2b.V}");
+
+                var r3 = Recon(64, 64, 256, true);
+                Console.WriteLine($"A3 verdict={r3.V} out={r3.W}x{r3.H}（探测 64x64 / 实测 256 / 已声明裁切）");
+                Check(r3.V == "Scaled" && r3.W == 16 && r3.H == 16,
+                    $"A3 缩小臂：声明 clap 且 k=4 ⇒ Scaled 16x16｜实 {r3.V} {r3.W}x{r3.H}");
+
+                // 放大臂（探测**偏小**）：解复用器报了 Frame Cropping 但解码器未施加时会出现。
+                var r4 = Recon(8, 8, 256, true);
+                Console.WriteLine($"A4 verdict={r4.V} out={r4.W}x{r4.H}（探测 8x8 / 实测 256 / 已声明裁切）");
+                Check(r4.V == "Scaled" && r4.W == 16 && r4.H == 16,
+                    $"A4 放大臂：探测偏小 k=2（8x8 探测 / 256 实测）⇒ Scaled 16x16｜实 {r4.V} {r4.W}x{r4.H}");
+
+                // TryUniformScale 的 k 上限 16（等比，面积最多 ×256）：两端各钉一次，免得将来为
+                // 「更大倍率」放宽时把放大臂静默扩到任意比例。
+                var r5 = Recon(64, 64, 16, true);
+                Console.WriteLine($"A5 verdict={r5.V} out={r5.W}x{r5.H}（探测 64x64 / 实测 16 / k=16 缩小端）");
+                Check(r5.V == "Scaled" && r5.W == 4 && r5.H == 4,
+                    $"A5 缩小臂边界：k=16 仍接受（64x64 探测 / 16 像素 ⇒ 4x4）｜实 {r5.V} {r5.W}x{r5.H}");
+
+                var r6 = Recon(4, 4, 4096, true);
+                Console.WriteLine($"A6 verdict={r6.V} out={r6.W}x{r6.H}（探测 4x4 / 实测 4096 / k=16 放大端）");
+                Check(r6.V == "Scaled" && r6.W == 64 && r6.H == 64,
+                    $"A6 放大臂边界：k=16 仍接受（4x4 探测 / 4096 像素 ⇒ 64x64）｜实 {r6.V} {r6.W}x{r6.H}");
+
+                var r7 = Recon(64, 64, 1000, true);
+                Console.WriteLine($"A7 verdict={r7.V}（探测 64x64 / 实测 1000 / 已声明裁切 / 非等比）");
+                Check(r7.V == "RejectNonUniform",
+                    $"A7 非等比拒绝：声明 clap 但 4096 → 1000 像素 ⇒ RejectNonUniform（不猜非整数倍）｜实 {r7.V}");
+
+                var r8a = Recon(0, 0, 4096, false);
+                var r8b = Recon(64, 64, 0, false);
+                Console.WriteLine($"A8 verdict={r8a.V}/{r8b.V} out={r8a.W}x{r8a.H}（退化输入：0 宽 / 0 像素）");
+                Check(r8a.V == "Match" && r8b.V == "Match" && r8a.W == 0 && r8a.H == 0,
+                    $"A8 退化输入不崩：0 宽 / 0 像素 ⇒ Match 且原样返回（0x0）｜实 {r8a.V} {r8a.W}x{r8a.H} / {r8b.V}");
+
+                return;   // 汇总行与退出码由 Main 统一处理（重复打印会破坏按行匹配）
+            }
             var expect = "gainmap";
             for (int i = 2; i < args.Length; i++)
                 if (args[i].Equals("none", StringComparison.OrdinalIgnoreCase)) expect = "none";
@@ -5791,20 +5885,24 @@ namespace ServiceProbe
                 return (await so.ConfigureAwait(false) + await se.ConfigureAwait(false)).Trim();
             }
             async Task Run(string exe, string a) { await Cap(exe, a).ConfigureAwait(false); }
+            // 探测参数一律取自 ImageGeometry.BuildProbeArguments（**单一真值**）。此前这两条命令是手写的
+            // （`-show_entries stream=width,height` 与 `frame_side_data_list` 各写一份），产品侧 2026-11-02
+            // 给它补上 `stream_side_data` 之后探针没跟上 ⇒ 这一臂看不到 Frame Cropping，只能读到 coded 尺寸
+            // （docs/HANDOVER-2026-11-02.md §7 第 6 项）。**参数同源、解析自写**：本探针是产品解析器的对照臂，
+            // 复用 ParseDisplaySize 会让两臂一起错（口径隔离正是本门禁存在的理由）。
+            string ProbeArgs(string path) => FfmpegGui.Services.ImageGeometry.BuildProbeArguments(path);
             // coded 尺寸：ffprobe 的 stream 段（**旧口径**，本门禁专门拿它当"错的那把尺"）
             (int w, int h) Coded(string path)
             {
-                var m = System.Text.RegularExpressions.Regex.Match(
-                    Cap(ffp, $"-v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 \"{path}\"")
-                        .GetAwaiter().GetResult(), @"(\d+),(\d+)");
+                string json = Cap(ffp, ProbeArgs(path)).GetAwaiter().GetResult();
+                var m = System.Text.RegularExpressions.Regex.Match(json,
+                    @" ""width""\s*:\s*(\d+)\s*,\s*""height""\s*:\s*(\d+)");
                 return m.Success ? (int.Parse(m.Groups[1].Value), int.Parse(m.Groups[2].Value)) : (0, 0);
             }
             int Rotation(string path)
             {
-                var m = System.Text.RegularExpressions.Regex.Match(
-                    Cap(ffp, $"-v error -select_streams v:0 -read_intervals \"%+#1\" "
-                          + $"-show_entries frame_side_data_list -of json \"{path}\"")
-                        .GetAwaiter().GetResult(), @"""rotation""\s*:\s*(-?\d+)");
+                string json = Cap(ffp, ProbeArgs(path)).GetAwaiter().GetResult();
+                var m = System.Text.RegularExpressions.Regex.Match(json, @" ""rotation""\s*:\s*(-?\d+)");
                 return m.Success ? int.Parse(m.Groups[1].Value) : 0;
             }
             // 像素对照：两臂同格式 → ffmpeg 自带 psnr（与本仓 PsnrCalculator 无关 ⇒ 独立参照）
@@ -5868,6 +5966,19 @@ namespace ServiceProbe
                     $"夹具 rotation = 90（实 {rot}）⇒ 取向标签真的会被 autorotate；"
                   + $"若为 0/-180 说明 exiftool 少了 -n（实测会静默写成 3 ⇒ 轴向不变 ⇒ 门禁失牙）");
                 Check(cw != dw && ch != dh, "夹具前提：coded 与显示尺寸**轴向不同**（相同则该夹具恒真、测不到本缺陷）");
+
+                // ── 取数口径（HANDOVER-2026-11-02 §7 第 6 项）：参数同源 + 同一份字节上两把尺都看得到 ──
+                string args16 = ProbeArgs(src16);
+                Check(args16.Contains("stream_side_data") && args16.Contains("frame_side_data_list")
+                      && args16.Contains("-read_intervals"),
+                    $"取向探针的 ffprobe 参数取自 ImageGeometry.BuildProbeArguments（stream_side_data / "
+                  + $"frame_side_data_list / -read_intervals 三要素齐；实得「{args16}」）—— 手写清单会与产品侧漂开："
+                  + $"2026-11-02 就是这里少了 stream_side_data ⇒ 看不到 Frame Cropping");
+                var (vuW, vuH, cuX, cuY) = FfmpegGui.Services.ImageGeometry.ParseDisplaySizeWithCrop(
+                    Cap(ffp, args16).GetAwaiter().GetResult());
+                Check(vuW == dw && vuH == dh && cuX == 0 && cuY == 0,
+                    $"同一份 JSON 上产品解析器给可见区 {dw}x{dh}（实 {vuW}x{vuH}，裁切 {cuX}x{cuY}）—— "
+                  + $"本夹具没有容器级 clap，报出非零裁切就是凭空扣减（会把真像素裁掉）");
                 var (nrW, nrH) = (Coded(srcNR).w, Coded(srcNR).h);
                 Check(Rotation(srcNR) == 0 && nrW == 64 && nrH == 32,
                     $"负控夹具无取向标签（rotation={Rotation(srcNR)}，coded={nrW}x{nrH}）");

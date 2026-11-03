@@ -394,10 +394,10 @@ function Read-TextShared([string]$path) {
   return $null
 }
 
-# ── ⚠ #22 / #23 / 第 15·16·17 针：运行器**自身形态**自检（17 针）──────────────────
+# ── ⚠ #22 / #23 / 第 15·16·17·18 针：运行器**自身形态**自检（18 针）────────────────
 # 为什么必须有：上面「退出码只从包装层写出的 rc 文件读」这条纪律，若将来有人回退成「读进程对象的
 #   退出码」，PS5.1 下它恒 null ⇒ **整轮每一条都假红**，而现象看起来像产品回归 ⇒ 必须钉成形态断言。
-# 17 针：① helper 定义点 ==1；② 调用点 ==2；③ 带超时调用点 ==2（两个调用点都必须把超时当变量传，
+# 18 针：① helper 定义点 ==1；② 调用点 ==2；③ 带超时调用点 ==2（两个调用点都必须把超时当变量传，
 #   不得写字面量）；④⑤ 裸取退出码（`$p.` / `$proc.`）计数 ==0；⑥ 进程对象的退出码取法计数 ==0；
 #   ⑦ 包装层写 rc 点 ==1；⑧ helper 读 rc 点 ==1；⑨ 进程树杀法 token ==1；⑩ 超时抑制点 ==2；
 #   ⑪ 探针超时**默认值**逐字钉住 ==1（**2026-10-11 重标 = 180**，见下面 param 段的标定注；变异方向 = 改小 ⇒ 必须红）；
@@ -405,7 +405,9 @@ function Read-TextShared([string]$path) {
 #   ⑬ `$tableOnly` **条数** ==4；⑭ `$noSelfSummary` **条数** ==7；
 #   ⑮ 读失败分支 ==2 且 共享读引用 ==3（异常路径**不得沿用上一轮 `$txt`**）；
 #   ⑯ 运行器**自身指纹**：打印点 ==2（启动 + 收尾）· 自漂移复核引用 ==3 · 归属不明告警 ==2；
-#   ⑰ 清单**散文条数** == `$expectedScriptCount` 常量（常量定义点 ==1；三种散文形态各命中 ≥1 且数字相同）。
+#   ⑰ 清单**散文条数** == `$expectedScriptCount` 常量（常量定义点 ==1；三种散文形态各命中 ≥1 且数字相同）；
+#   ⑱ 受管参数表 `$scriptArgs`：条目数 ==6 · 表内 `-SelfCheck` 字面量 ==5 · 5 条 UI 键逐一在位
+#      （2026-11-02 t3；没有这一针时，删掉一行 `-SelfCheck` 整轮照样全绿 ⇒「整轮 ≠ 全判据面」会静默复发）。
 # ⚠ ⑯ 的理由（2026-09-19 #28，gp-1 与 gp-3 各自独立查出）：`Check-SrcDrift` **只覆盖
 #   `src/FfmpegGui` 与 `tests/projects/ServiceProbe`** ⇒ **运行器自身既不在覆盖范围、也不哈希自身**。
 #   有人在整轮进行中改运行器 ⇒ 那一轮读数**归属不明**（跑的是旧版还是新版？）而**无任何告警**。
@@ -529,6 +531,30 @@ function Test-RunnerShape {
     }
   }
   if ($proseBad.Count -gt 0) { $bad.Add("散文条数与常量不符：" + ($proseBad -join ' · ')) }
+  # ⑱ 受管参数表 `$scriptArgs`（2026-11-02，t3）。为什么必须有：整轮里**唯一**能产出
+  #   negative-control 证据的地方就是这张表，而它此前**零针** —— 删掉一行 `-SelfCheck`、
+  #   或整条键被换掉，整轮照样全绿，而 AGENTS §7「整轮 ≠ 全判据面」那条账就从
+  #   「已收口」悄悄退回「只有正向臂」（人还得靠手跑才知道）。
+  #   判据三条：① 表内 `'x.ps1' = @(` 条目数 == 6（1 条 oracle 降档 + 5 条 UI 负控）；
+  #   ② 表内带引号的 `-SelfCheck` 字面量 == 5（每个 UI 键各一次，**不许**并成全局开关）；
+  #   ③ 5 条 UI 键逐一在位（按名点，防「键还在但值被换成别的脚本」）。
+  #   ⚠ token 一律拼接构造（同第 ⑰ 针的理由：本函数读的是自己的源码）。
+  $nScTok = '-Self' + 'Check'
+  $mArgs = [regex]::Match($t, '(?ms)^[ \t]*\$scriptArgs\s*=\s*@\{(.*?)^[ \t]*\}')
+  if (-not $mArgs.Success) {
+    $bad.Add('受管参数表 $scriptArgs 定位失败（表被删或形态改了 ⇒ 5 条 UI 门禁的负控臂静默消失）')
+  } else {
+    $argBody = $mArgs.Groups[1].Value
+    $cEntries = ([regex]::Matches($argBody, "\.ps1'\s*=\s*@\(")).Count
+    if ($cEntries -ne 6) { $bad.Add("受管参数表条目数 = $cEntries（须 6：1 条 oracle 降档 + 5 条 UI 负控）") }
+    $cSc = ([regex]::Matches($argBody, [regex]::Escape("'" + $nScTok + "'"))).Count
+    if ($cSc -ne 5) { $bad.Add("受管参数表内 -SelfCheck 字面量 = $cSc（须 5：每条 UI 门禁各一次；0 ⇒ 整轮退回只有正向臂）") }
+    foreach ($uiName in @('verify-ui-host.ps1', 'verify-ui-param-matrix.ps1', 'verify-ui-strategy-map.ps1',
+                          'verify-ui-param-defects.ps1', 'verify-cli-strict.ps1')) {
+      $mKey = [regex]::Match($argBody, [regex]::Escape("'" + $uiName + "'") + '\s*=\s*@\(\s*' + [regex]::Escape("'" + $nScTok + "'"))
+      if (-not $mKey.Success) { $bad.Add("受管参数表缺 $uiName = @('-SelfCheck')（该条整轮只有正向臂）") }
+    }
+  }
   return $bad
 }
 
@@ -842,10 +868,11 @@ if ($shapeBad.Count -gt 0) {
   $shapeBad | ForEach-Object { Write-Output ("        " + $_) }
   Write-Output  "        修法：退出码一律取 Invoke-StepWithTimeout 的返回值；进程对象在 helper 内命名 child"
   Write-Output '        修法（若红的是「散文条数」那一针）：把现量陈述里的条数改成与 $expectedScriptCount 一致；新增现量陈述时把它的形态加进 Test-RunnerShape 第 ⑰ 针'
+  Write-Output '        修法（若红的是「受管参数表」那一针）：$scriptArgs 里 5 条 UI 门禁的 @("-SelfCheck") 有缺 ⇒ 整轮退回只有正向臂；补回或同批改 Test-RunnerShape 第 ⑱ 针'
   Release-GatesLock
   exit 2
 }
-Write-Output "shape-selfcheck=OK（17 针：定义点 / 调用点 / 带超时调用点 / 裸取 A / 裸取 B / 进程对象取码 / 写 rc 点 / 读 rc 点 / 杀树 token / 抑制点 / 探针超时默认值 / 脚本超时默认值 / tableOnly 条数 / noSelfSummary 条数 / 读失败不沿用 / 自身指纹 / 散文条数）"
+Write-Output "shape-selfcheck=OK（18 针：定义点 / 调用点 / 带超时调用点 / 裸取 A / 裸取 B / 进程对象取码 / 写 rc 点 / 读 rc 点 / 杀树 token / 抑制点 / 探针超时默认值 / 脚本超时默认值 / tableOnly 条数 / noSelfSummary 条数 / 读失败不沿用 / 自身指纹 / 散文条数 / 受管参数表）"
 
 # ── ⚠ #28：启动时记录**运行器自身**指纹（收尾前重测 ⇒ 不一致则响亮告警）────────────────
 # ⚠ 这一行**有意打印**（收尾还有一行）：日志里出现 hash 是**预期**的，不是异常。
@@ -1026,6 +1053,23 @@ $noSelfSummary = @('_probe-cancel-propagation-scan.ps1', '_probe-ct-chain-closur
 #   是手工档，远超 900 s 单步预算——原 offExplicit 的登记理由即此，接线后由本表接管）。
 $scriptArgs = @{
   'verify-oracle-matrix.ps1' = @('-Smoke')
+  # ── 2026-11-02 第二批（t3）：5 条 UI 门禁的**负控臂**此前只在手跑档有证据 ──
+  #   它们的负控块包在 `if ($SelfCheck)` 里、`$ncOk` 无条件默认 true，而 runner 不给它们传
+  #   `-SelfCheck` ⇒ 整轮的读数**只有正向臂**（`AGENTS.md §7` 那条「整轮 ≠ 全判据面」）。
+  #   接线后整轮多跑负控，实测代价见下（门禁侧**零改码**）：
+  #     2026-11-02 五条同批子集实跑（`tests/output/_tmp/corpus-1102/t3-subset.log`）：
+  #       ui-host 66.8→136.3 s · param-matrix 9.6→19.5 s · strategy-map 7.6→11.7 s
+  #       · param-defects 35.1→74.3 s · cli-strict 20.3→43.6 s（正向臂取 `run_full_1102b.log:104-108`）
+  #       合计 **139.4 → 285.4 s = +146.0 s**（早前登记的 +129 s 是估数，已作废）。
+  #     五条负控臂全部按契约转红：ui-color pass=90 fail=1 / ui-sweep 142/1 / ui-cli 73/1 /
+  #       J 99/1 · K 28/1 · ui-param-defects 44/1 + ui-sweep 99/1 · ui-cli-strict 61/1 / ui-color 16/1 / ui-icc 13/1。
+  #   ⚠ 这 5 条的执行体都 Require 参数形态的自检臂（逐臂 -SelfCheck），所以只能按脚本名给参，
+  #     不能改成全局开关——全局开关会让「只验一臂」的老毛病复活。
+  'verify-ui-host.ps1'           = @('-SelfCheck')
+  'verify-ui-param-matrix.ps1'   = @('-SelfCheck')
+  'verify-ui-strategy-map.ps1'   = @('-SelfCheck')
+  'verify-ui-param-defects.ps1'  = @('-SelfCheck')
+  'verify-cli-strict.ps1'        = @('-SelfCheck')
 }
 # ⚠ 2026-09-17 调序：`verify-color-caps.ps1` 提到 `verify-color-wiring.ps1` **之前**。
 #   原顺序（wiring 先）让 wiring (8) 段依赖 **caps 的遗留产物** `validate/caps/p3.icc`

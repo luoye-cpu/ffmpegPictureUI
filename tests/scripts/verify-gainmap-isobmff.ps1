@@ -101,10 +101,11 @@
 #     ⚠ 真实原件是**用户个人素材，不入仓**（口径同 §3e），本节覆盖的是**结构形态**，
 #     不代表图像语义正确性（增益公式/色域语义另有门禁）。
 #
-# 断言（共 107 条）：§0 前置 6 · §1 容器层 8 · §1b HEVC 解码路径 11（含 2 条负控 + 1 条反控）·
+# 断言（共 115 条）：§0 前置 6 · §1 容器层 8 · §1b HEVC 解码路径 11（含 2 条负控 + 1 条反控）·
 #                   **§1c Apple auxC 识别 4（含 URN 反控 + 21496 回归）** ·
 #                   **§1d grid 分块 + idat 承载 12（含 grid version 负控 + 端到端拼接点名）** ·
 #                   **§1e clap 裁切几何 15（含 SHA-256 钉死 + 2 条容器负控）** ·
+#                   **§1f 底图尺寸对账 8（2026-11-02 第二批：4 条原臂 + A2b 放大型 + §1f-b 3 条调用点接线/使用态/取源自检）** ·
 #                   §2 源码形态 6（含反控）· §2b 缺陷 C 源码形态 3（含反控）· §3 行为 8 ·
 #                   §3b 缺陷 C 行为 4（含负控与素材形态自检）· **§3c HEIC 端到端行为 5（含负控）** ·
 #                   **§3d 厂商尾注执行面 4（含拒因与互斥点名）** · **§3e 底图取法 A/B 4（含对照臂分叉）** · **§3f HEIC→BT.2020/PQ 出口 11（三读者 + 码域分叉 + 2 条对照 + tmap pixi）** ·
@@ -580,6 +581,46 @@ if ($clapPos -ge 0) {
   CK ($cClapB.text -match 'total=12288') `
      "§1e 负控 B：像素总数回到 64x64x3 = 12288 ⇒ 与正控的 768 成 16 倍，两臂可区分"
 }
+
+# ── §1f 底图尺寸对账的**纯函数臂**（2026-11-02 第二批）─────────────────────────────
+#   为什么不是文件级夹具：`GainMapDecoder` 的 fail-closed 分支要求「ffprobe 报的尺寸 ≠ 解码帧实际像素
+#   **且**容器未声明 clap」，这个状态**造不出样本** —— 实测（`failclosed-tmp/`）改 ISOBMFF 的 ispe 三件
+#   （32x32 / 32x32+clap / 64x32）ffprobe 仍全报 64x64（HEVC SPS 说了算，ispe 对 `stream=width,height`
+#   无影响）；把 clap 类型名改掉（§1e 负控 B 的 `clap_none.heic`）则 ffprobe 不再给 Frame Cropping、
+#   解码器也不裁 ⇒ 两侧同时退回 64x64。⇒ 只能直接钉裁决本身：`ReconcileBaseSize` 已抽成 `internal static`
+#   纯函数（解码段与本节共用一份真值），臂 A1–A8 走 `gainmap-stats --size-recon`（无文件、不落盘）。
+Write-Host "`n### §1f 底图尺寸对账：纯函数臂（fail-closed 的牙 / 等比校正 / 放大臂边界）###" -ForegroundColor Cyan
+$cRecon = Exec $sp "gainmap-stats --size-recon" "p_size_recon"
+Write-Host (("  [size-recon] " + (($cRecon.text -split "`r?`n" | Where-Object { $_ -match '^(A[0-8] |PROBE RESULT)' }) -join ' | ')))
+CK ($cRecon.text -match 'PROBE RESULT: pass=10 fail=0') `
+   "§1f 执行面：10 条断言全绿（A0 反射自检 + A1/A2/A2b/A3–A8；这批此前无处可判 —— 该状态造不出文件样本）"
+CK ($cRecon.text -match 'A2 verdict=RejectUndeclared') `
+   "§1f fail-closed 有牙：**未声明 clap 时即便恰为 1/4 等比（64x64 探测 / 256 实测）也拒绝**（否则静默出半幅 HDR）"
+CK (($cRecon.text -match 'A4 verdict=Scaled out=16x16') -and ($cRecon.text -match 'A6 verdict=Scaled out=64x64')) `
+   "§1f 等比校正双向：放大臂 k=2（8x8 探测 / 256 实测 ⇒ 16x16）与 k=16（4x4 ⇒ 64x64）**都被接受**，缩小臂见 A3/A5"
+CK ($cRecon.text -match 'A2b verdict=RejectUndeclared') `
+   "§1f fail-closed 的**另一个方向**：未声明 clap 的放大**型**错配（4x4 探测 / 256 实测 = k=4，缩小臂永不成立）同样拒绝 ⇒ 闸在两条臂之前"
+CK ($cRecon.text -match 'A7 verdict=RejectNonUniform') `
+   "§1f 非等比拒绝：声明 clap 但 4096 → 1000 像素 ⇒ **不猜**（RejectNonUniform，不退回 Scaled）"
+# ── §1f-b 调用点接线（源码形态）───────────────────────────────────────────────
+#   上面 A0–A8 只钉**纯函数**。负控实测（t6 报告 NC4）：把 `:474` 的
+#     `var verdict = ReconcileBaseSize(baseW, baseH, actualPixels, cropDeclared, out int aw, out int ah);`
+#   整句改成 `verdict = Match; aw = baseW; ah = baseH;` ⇒ 全部 A 臂仍绿、§1e 的
+#   `-not '按实际像素校正'` 也仍绿（那条日志只在真错配时打，而错配件造不出来）⇒ **接线无人守**。
+#   本条补的就是那个缺口：要求同一份源码里「闸的入参计算」与「裁决的三类出口」都在使用态出现。
+$gmSrc = "$root/src/FfmpegGui/Services/GainMapDecoder.cs"
+$gmTxt = ""
+if (Test-Path $gmSrc) { $gmTxt = [System.IO.File]::ReadAllText($gmSrc) }
+# 去**整行**注释（`:468`/`:470` 一带的注释逐字引用了 RejectUndeclared / RejectNonUniform）
+$gmLines = @()
+foreach ($ln in ($gmTxt -split "`r?`n")) { if ($ln -notmatch '^\s*//') { $gmLines += $ln } }
+$gmCode = $gmLines -join "`n"
+CK ($gmCode.Length -gt 0) "§1f-b 取到 GainMapDecoder.cs 源码（否则下面两条形态断言真空绿）"
+CK (($gmCode -match 'cropDeclared\s*=\s*baseCropX\s*>\s*0\s*\|\|\s*baseCropY\s*>\s*0') -and `
+    ($gmCode -match 'ReconcileBaseSize\(\s*baseW\s*,\s*baseH\s*,\s*actualPixels\s*,\s*cropDeclared')) `
+   "§1f-b 调用点接线：`cropDeclared` 由裁切量算出并**真**作为 `ReconcileBaseSize` 的第 4 实参（NC4 变异正是抹掉这一句）"
+CK (($gmCode -match 'RejectUndeclared') -and ($gmCode -match 'BaseSizeVerdict\.Scaled') -and ($gmCode -match 'RejectNonUniform')) `
+   "§1f-b 三类裁决在**使用态**各有出口（RejectUndeclared / Scaled / RejectNonUniform 都在去注释源码里出现）"
 
 # ── §2 源码形态：动画判据锁（含反控） ────────────────────────────────────────────
 Write-Host "`n### §2 源码形态：动画判据（多帧 + tmap 两级）###" -ForegroundColor Cyan

@@ -35,6 +35,7 @@
 #      的 PNG ⇒ 实测 **ICC 赢**（引擎走 SDR）；去掉 ICC 的对照 ⇒ 走 HDR（唯一变量是 ICC）。
 #      ⚠ 该行为与 **PNG 第三版规范**（Table 1：cICP 优先级 1 > iCCP 优先级 2）**矛盾**，
 #      已登记为疑似缺陷；本断言锁**当前真实行为**，将来按规范修成 HDR 时会转红（属预期红）。
+#   ⑬ **第三方实拍件语料**（2026-11-02 补，16 条）：三件真实第三方 GainMap 件（DJI `DSC*` 两件走ISO 21496-1 APP2、`seine_sdr_gainmap_srgb.jpg` 走 hdrgm-XMP）落 `tests/output/corpus/gainmap-iso21496/`，整树 gitignore ⇒ **永不随仓分发**；缺件时 fail-closed 并在消息里给 `Invoke-WebRequest` 取回命令。覆盖合成夹具造不出的两个形态：**负 min**（`min=-0.005`）与**剂量分叉**（10.1899 > 1.5×4.1263 且 cap 更大）；`seine` 同时作 hdrgm-XMP **负控**（不得被认成 ISO 21496-1 APP2）。
 #
 # 退出码：0 = 全绿，1 = 有失败。⚠ 与 _run-step3-gates.ps1 的约定一致（脚本自身不带 gate 前缀）。
 #
@@ -1026,6 +1027,122 @@ CK (($null -ne $negProd.file) -and (Test-Path $negProd.file) -and ($negProd.log 
    "⑫ **负控**：同一底图剥掉全部元数据（exiftool -all=）⇒ 产品不走增益图路径，但产物照出（证明正控的日志来自增益层）"
 CK ($negNew -match 'PROBE RESULT: pass=1 fail=0') "⑫ **负控**：剥元数据后的 new 底图 ⇒ 解码器返回 null（pass=1 fail=0）"
 CK ($negOld -match 'PROBE RESULT: pass=1 fail=0') "⑫ **负控**：剥元数据后的 old 底图 ⇒ 解码器返回 null（pass=1 fail=0）"
+
+Write-Host "`n### 13) 输入侧：第三方 ISO 21496-1 APP2 JPEG（第三方产量实件；纯托管解析 + 像素级施加 + 负 min + 负控）###" -ForegroundColor Cyan
+# 为什么这一段必须存在：
+#   · §12 的 Apple 两代样本走**私有 XMP 命名空间**（HDRGainMap: / apdi:）⇒ 兜底解析器。ISO 21496-1 APP2
+#     那条通路（APP2 识别 → ParseIso21496 → MPF 副图定位）此前只有**自造夹具**能触发，而夹具与产品
+#     共用同一套假设 ⇒ 双向自证。本段换成第三方编码器/相机产出的真件，口径全部来自**外部字节**。
+#   · 两件真件的形态都在合成件里见不到：底图 CICP = smpte432(P3)、增益图分辨率 = 底图 1/2（1368x912 vs
+#     2736x1824 / 1500x1000 vs 3000x2000）、APP2 载荷带 flags=0x40、capMax 与底图 headroom 不同。
+#   · DSC01058 的 min = -0.0049 是**首次**出现的负 min（合成夹具全是 0）⇒ 覆盖「负 min 不得被截成 0」。
+#   · 负控是 xmp-only 变体（同一站点另一仓库，非 ISO 容器）：产品必须走 hdrgm XMP 分支，**不得**声称
+#     `元数据来源: ISO 21496-1 APP2` —— 否则上面那些 iso 读数就是「恒真日志」，整段无判别力。
+#
+# ⚠ 语料落点：`tests/output/corpus/gainmap-iso21496/`（**工作区内**，`output/` 整树 gitignore）。
+#   只读取；可用 `$env:GAINMAP_CORPUS_DIR` 指向别处的**只读**副本。**不得**写到工作区外（全局规范 §W）。
+#   来源 / 许可 / 不入仓理由：
+#     DSC00037.jpg, DSC01058.jpg  https://raw.githubusercontent.com/1096bimu/Dark-Melon/main/docs/samples/   GPL-3.0-only
+#     seine_sdr_gainmap_srgb.jpg  https://raw.githubusercontent.com/AOMediaCodec/libavif/main/tests/data/      BSD-2-Clause
+#   再分发许可未逐一确认 ⇒ 不入仓；靠 sha256 前 16 认同一份字节（同名不同字节 = 读数漂移，单列一条红）。
+$corpus = "$root/tests/output/corpus/gainmap-iso21496"
+if ($env:GAINMAP_CORPUS_DIR) { $corpus = $env:GAINMAP_CORPUS_DIR }
+$gm37  = "$corpus/DSC00037.jpg"
+$gm58  = "$corpus/DSC01058.jpg"
+$gmNeg = "$corpus/seine_sdr_gainmap_srgb.jpg"
+$cWant = @(
+    @{ p = $gm37;  s = '34504aa6d6db6e6f' },
+    @{ p = $gm58;  s = '95419a66144f1a65' },
+    @{ p = $gmNeg; s = '1aaf0a1afa91a485' })
+$cMissing = @(); $cBad = @(); $cRecon = @()
+foreach ($need in $cWant) {
+    $nm = Split-Path $need.p -Leaf
+    if (-not (Test-Path $need.p)) { $cMissing += $nm; $cRecon += ($nm + '=MISSING'); continue }
+    $h = (Get-FileHash -Algorithm SHA256 -Path $need.p).Hash.ToLower()
+    $okSha = ($h.Substring(0, 16) -eq $need.s)
+    if (-not $okSha) { $cBad += $nm }
+    $cRecon += ($nm + '=' + $h.Substring(0, 16) + $(if ($okSha) { '/OK' } else { '/MISMATCH(期望 ' + $need.s + ')' }))
+}
+Write-Output ("  语料根=" + $corpus)
+Write-Output ("  sha16 对账=" + ($cRecon -join '  '))
+CK ($cMissing.Count -eq 0) ("⑬ 前提：三件第三方语料在位（fail-closed，不许静默 SKIP；缺=" + ($cMissing -join ',') + "）")
+CK ($cBad.Count -eq 0) ("⑬ 前提：在位件字节与登记一致（同名不同字节 ⇒ 下面所有读数失效；不符=" + ($cBad -join ',') + "）")
+if ($cMissing.Count -gt 0) {
+    Write-Output "  ⚠ 取法（**落在工作区内**，禁止写到工作区外）："
+    Write-Output "    Invoke-WebRequest -Uri https://raw.githubusercontent.com/1096bimu/Dark-Melon/main/docs/samples/DSC00037.jpg -OutFile `"$gm37`"    # sha256[:16]=34504aa6d6db6e6f"
+    Write-Output "    Invoke-WebRequest -Uri https://raw.githubusercontent.com/1096bimu/Dark-Melon/main/docs/samples/DSC01058.jpg -OutFile `"$gm58`"    # sha256[:16]=95419a66144f1a65"
+    Write-Output "    Invoke-WebRequest -Uri https://raw.githubusercontent.com/AOMediaCodec/libavif/main/tests/data/seine_sdr_gainmap_srgb.jpg -OutFile `"$gmNeg`"    # sha256[:16]=1aaf0a1afa91a485"
+    Write-Output "    ⚠ 本机 curl.exe -C - 对 raw.githubusercontent.com 报 exit 56/23 且落 0 字节 ⇒ 用 Invoke-WebRequest（2026-11-03 实测）"
+}
+# 前提不成立就不跑臂：缺件时跑出来的是一堆「读不到文件」的红，会把真正的红盖住；前提红已经让本门禁转红。
+if (($cMissing.Count -eq 0) -and ($cBad.Count -eq 0)) {
+    # ── 正控 A：DSC00037（min=0 的常规件）────────────────────────────────────────
+    $r37 = RunCli 'iso37' $gm37 'png' @()
+    $o37 = (($null -ne $r37.file) -and (Test-Path $r37.file))
+    $h37 = PatHit @('检测=检测到 Ultra HDR JPEG', 'ISO源=元数据来源: ISO 21496-1 APP2 \(纯托管\)',
+                    'min=min=0\.000 max=4\.140 ', 'ch=Channels=1 ', '切割=纯托管容器切割 \(216059 B\)',
+                    '峰值=峰值 880nits', '底图=底图原色=smpte432') $r37.log
+    CK ($o37 -and $h37.ok) ("⑬a DSC00037：识别为 Ultra HDR + 走纯托管 ISO APP2 通路 + 元数据/切割字节/峰值/P3 底图逐项命中" +
+        "  逐条命中: 出件=" + $o37 + ' ' + $h37.detail)
+    $p37 = ProbeOut 'gainmap' $gm37 ''
+    $p37ok = (($p37 -match 'images=2') -and ($p37 -match 'iso min=0 max=4\.1402') -and
+              ($p37 -match 'image\[1\] start=705176 len=216059 1368x912') -and
+              ($p37 -match 'PROBE RESULT: pass=6 fail=0'))
+    CK $p37ok ("⑬b DSC00037 容器结构（探针直读字节）：2 幅图 + ISO 增益区间 0..4.1402 + 副图 1368x912（= 底图 1/2）+ " +
+        "副图定位命中 SOI；pass=6 fail=0 ⇐ 实得 [" + ([regex]::Match($p37, 'PROBE RESULT: [^\r\n]*').Value.Trim()) + "]")
+    $s37 = ProbeStats $gm37 ''
+    $m37 = 0.0; $cap37 = 0.0
+    $mm = [regex]::Match($s37, 'maxLinear=([0-9.]+)')
+    if ($mm.Success) { $m37 = [double]$mm.Groups[1].Value }
+    $mm = [regex]::Match($s37, 'capLinear=([0-9.]+)')
+    if ($mm.Success) { $cap37 = [double]$mm.Groups[1].Value }
+    CK (($s37 -match 'PROBE RESULT: pass=4 fail=0') -and ($m37 -gt 1.0) -and ($s37 -match 'over1=[1-9][0-9]*')) `
+       "⑬c DSC00037 像素级：maxLinear=$m37 > 1.0（SDR 白点）且确有像素越白点 ⇒ 增益真被施加（不是只读了元数据）"
+    CK (($cap37 -gt 0.0) -and ($m37 -le $cap37)) `
+       "⑬c' DSC00037 自洽：像素峰 $m37 不得超过元数据上限 $cap37（越上限 = 公式或通道乘法错）"
+    CK ($s37 -match 'peakNits=880') "⑬c'' DSC00037 交叉：像素统计的 peakNits=880 与产品日志「峰值 880nits」同源"
+
+    # ── 正控 B：DSC01058（负 min；首个非零 offset 的现实形态）──────────────────────
+    $r58 = RunCli 'iso58' $gm58 'png' @()
+    $o58 = (($null -ne $r58.file) -and (Test-Path $r58.file))
+    $h58 = PatHit @('检测=检测到 Ultra HDR JPEG', 'ISO源=元数据来源: ISO 21496-1 APP2 \(纯托管\)',
+                    '负min=min=-0\.005 max=3\.362 ', '切割=纯托管容器切割 \(333451 B\)',
+                    '峰值=峰值 2087nits', '底图=底图原色=smpte432') $r58.log
+    CK ($o58 -and $h58.ok) ("⑬d DSC01058：min 为负（-0.005）的件仍走通 ISO APP2 通路并产出" +
+        "  逐条命中: 出件=" + $o58 + ' ' + $h58.detail)
+    $p58 = ProbeOut 'gainmap' $gm58 ''
+    $p58ok = (($p58 -match 'iso min=-0\.0049') -and ($p58 -match 'image\[1\] start=508887 len=333451 1500x1000') -and
+              ($p58 -match 'PROBE RESULT: pass=6 fail=0'))
+    CK $p58ok ("⑬e DSC01058 容器结构：探针读到负 min=-0.0049（**首次**在第三方真件上覆盖负 min）+ 副图 1500x1000；" +
+        "pass=6 fail=0 ⇐ 实得 [" + ([regex]::Match($p58, 'PROBE RESULT: [^\r\n]*').Value.Trim()) + "]")
+    $s58 = ProbeStats $gm58 ''
+    $m58 = 0.0; $cap58 = 0.0
+    $mm = [regex]::Match($s58, 'maxLinear=([0-9.]+)')
+    if ($mm.Success) { $m58 = [double]$mm.Groups[1].Value }
+    $mm = [regex]::Match($s58, 'capLinear=([0-9.]+)')
+    if ($mm.Success) { $cap58 = [double]$mm.Groups[1].Value }
+    CK (($s58 -match 'PROBE RESULT: pass=4 fail=0') -and ($m58 -gt 1.0) -and ($s58 -match 'over1=[1-9][0-9]*') -and
+        ($cap58 -gt 0.0) -and ($m58 -le $cap58)) `
+       "⑬f DSC01058 像素级：maxLinear=$m58 > 1.0 且 ≤ capLinear=$cap58 ⇒ 负 min 未把增益打折成 0"
+    CK (($m58 -gt $m37) -and ($m58 -gt ($m37 * 1.5)) -and ($cap58 -gt $cap37)) `
+       "⑬g 剂量分叉：58 的 headroom 明显大于 37（maxLinear $m58 vs $m37；capLinear $cap58 vs $cap37）⇒ 两件的参数各自进了公式"
+    Write-Output ($s37 -split "`r?`n" | Where-Object { $_ -match '^stats ' })
+    Write-Output ($s58 -split "`r?`n" | Where-Object { $_ -match '^stats ' })
+
+    # ── 负控：xmp-only 变体（不是 ISO 容器）──────────────────────────────────────
+    # ⚠ 这条负控咬的是**读数来源**：如果产品对任何带副图的 JPEG 都打 `ISO 21496-1 APP2`，本段全绿但毫无判别力。
+    $rNeg = RunCli 'iso_neg' $gmNeg 'png' @()
+    $oNeg = (($null -ne $rNeg.file) -and (Test-Path $rNeg.file))
+    CK ($oNeg -and ($rNeg.log -match '元数据来源: hdrgm XMP') -and ($rNeg.log -notmatch '元数据来源: ISO 21496-1 APP2')) `
+       "⑬h **负控**：xmp-only 样本走 hdrgm XMP 分支，产品**不**声称 `元数据来源: ISO 21496-1 APP2` ⇒ ⑬a/⑬d 的来源行非恒真"
+    $pNeg = ProbeOut 'gainmap' $gmNeg ''
+    CK (($pNeg -match 'iso=null') -and ($pNeg -match 'FAIL IsGainMapContainer\(\)=true') -and
+        ($pNeg -match 'FAIL ISO 21496-1 元数据存在') -and ($pNeg -match 'PROBE RESULT: pass=3 fail=3')) `
+       "⑬i **负控**：探针判它不是 ISO 容器（iso=null + 3 条 FAIL）⇐ 实得 [" + ([regex]::Match($pNeg, 'PROBE RESULT: [^\r\n]*').Value.Trim()) + "]"
+    $sNeg = ProbeStats $gmNeg ''
+    CK (($sNeg -match 'maxLinear=1\.0000') -and ($sNeg -match 'over1=0 total=')) `
+       "⑬j **负控像素**：maxLinear 恰为 1.0000 且 over1=0（解码没坏、只是没有增益可施加）—— 与 ⑬c/⑬f 的大数 over1 形成对照"
+}
 
 Write-Host ""
 Write-Host "===== gainmap-engine: PASS=$pass FAIL=$fail =====" -ForegroundColor $(if ($fail -eq 0) { "Green" } else { "Red" })

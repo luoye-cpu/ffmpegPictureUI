@@ -80,7 +80,15 @@ $counts = [ordered]@{
     #   来历 = 新增 `grid` 期望模式的结构断言（grid 分块 / 瓦片数 / idat 切片 / 网格与瓦片尺寸 /
     #   FailReason 形态），调用者 = verify-gainmap-isobmff §1d（该门禁总断言 80→92）。
     'engine' = 20; 'faithful' = 10; 'firstframe' = 15; 'gainmap' = 6; 'gainmap-isobmff' = 29
-    'gainmap-stats' = 6
+    # 2026-11-02 第二批：`gainmap-stats` 6 → **15**（+9），来历 = 新增无文件纯函数臂
+    #   `gainmap-stats --size-recon`（底图尺寸对账裁决 A0–A8：A0 为反射自检，缺则余 8 条真空绿；一致 / 未声明 clap 拒绝 / 缩小臂 /
+    #   放大臂 / k=16 两端边界 / 非等比拒绝 / 退化输入）。动机见 `GainMapDecoder.ReconcileBaseSize`
+    #   注释：那个 fail-closed 状态**造不出文件样本**（ispe 变异对 ffprobe 无效、删 clap 则两侧同时
+    #   退回 64x64）⇒ 此前 fail-closed 分支与 TryUniformScale 放大臂**零判据臂**。
+    #   调用者 = 在册门禁 `verify-gainmap-isobmff.ps1` §1f（同一 mode、同一 exe，不新建 mode）。
+    #   2026-11-02 再 +1：A2b 钉「未声明 clap 的**放大**型错配也拒」——A2 只覆盖缩小方向，
+    #   挡不住「把 cropDeclared 闸塞进缩小循环」的坏实现（负控 NC1 只能证缩小方向）。
+    'gainmap-stats' = 16
     'gamut' = 2; 'gamutfit' = 19; 'geometry' = 43; 'hlgwire' = 3; 'i18n' = 5
     # 2026-10-28 新增派发 mode `gmgamut`（GainMap 出口的「源传递特性 / 底图原色」接线锁，
     #   调用者 = 在册门禁 `verify-gainmap-managed.ps1` §8）。登记的是**源文本调用位 31**
@@ -93,7 +101,14 @@ $counts = [ordered]@{
     #   运行时会跑 10 条（`Log2Gain` 那一格在 foreach 里、两个 floorAtOne 各跑一次），但**条数锁量的是形状**，
     #   与上面 `framelen` 同形。Census 实测 got=9 ⇒ 登记 9（抬数需同轮写来历，不许凭运行读数抬）。
     'cgkparity' = 9
-    'metaraw' = 20; 'oog' = 7; 'ootf' = 11; 'orientmeta' = 11; 'orientation' = 19
+    # 2026-11-02 +2（19→21）：取向探针的 `Coded()`/`Rotation()` 原来是**手写**的 ffprobe 参数串，
+    #   产品侧给 `ImageGeometry.BuildProbeArguments` 补上 `stream_side_data`（容器级 Frame Cropping 要它）
+    #   之后探针没跟上 ⇒ 那一臂看不到裁切、只能读 coded（HANDOVER-2026-11-02 §7 第 6 项）。
+    #   两条新断言：①**参数三要素文本锁**（stream_side_data / frame_side_data_list / -read_intervals
+    #   缺一段就红，堵住「下次产品再加一段、探针又漂开」）；②**同一份 JSON 上两把尺对账**
+    #   （coded 64x32 而产品解析器给可见区 32x64、裁切 0x0 ⇒ 既证明解析链通、又证明没凭空扣像素）。
+    #   来历 = `-Census` 实测 got=21（源文本调用位，不是运行读数；运行 17 —— 差额来自循环内调用位）。
+    'metaraw' = 20; 'oog' = 7; 'ootf' = 11; 'orientmeta' = 11; 'orientation' = 21
     'peak' = 8; 'peakmeasure' = 14; 'piperaw-client' = 5; 'piperaw-server' = 0; 'plan' = 18
     'png3' = 1; 'pq' = 5; 'procstreams' = 3; 'psnr' = 2; 'runner' = 8
     # ⚠ `settings` 56 → **11**（2026-10-22 修尺，不是"发现执行面丢了 45 条断言"）：旧 `Get-MethodText`
@@ -111,6 +126,14 @@ $counts = [ordered]@{
 # 2026-10-27 合流：`gainmap-isobmff` +9 与新增 `gainmap-stats` +6 ⇒ **818**（= ③-e 实取总量）。
 # 2026-10-28 新增 `gmgamut`（GainMap 出口的源传递特性 / 底图原色接线锁）+31 ⇒ **849**。
 # 2026-11-02 §1d grid/idat 断言 +8（`gainmap-isobmff` 21→29）⇒ **857**（= ③-e 实取总量）。
+# 2026-11-02 第二批 `gainmap-stats` 纯函数臂 A0–A8 +9（6→15）⇒ **866**（= ③-e 实取总量）。
+# 2026-11-02 A2b（放大型未声明错配）+1（15→16）⇒ **867**（= ③-e 实取总量）。
+# 2026-11-02 取向探针取数口径（`orientation` 19→21，参数改走 `ImageGeometry.BuildProbeArguments`
+#   + 两条新断言）⇒ **869**（= ③-e 实取总量）。
+#   来历 = 底图尺寸对账裁决（`GainMapDecoder.ReconcileBaseSize`）此前**零判据臂**，而该状态造不出
+#   文件样本（ispe 变异不影响 ffprobe 报的 HEVC 流尺寸；删 clap 则两侧同时退回 64x64）⇒ 只能直接钉
+#   裁决本身。落点选**已登记 mode**（同 exe、同 mode），不新建 mode（新建要四处登记 + 组表 +
+#   ⑨ MustClaim 调用点，成本与本批收益不成比例）。
 #   `vendor-hdr` = **19 个源文本调用位**，而 `gainmap-isobmff` §3d 的**运行时**通过数 = **18**；差 1 的两处成因不同：
 #     ① V8/V9 与「夹具缺席」那条 fail-closed 支互斥（源文本 2 条、执行 1 条）；
 #     ② V16/V17 是**一个 foreach 调用位跑两格**（源文本 1 条、执行 2 条）。

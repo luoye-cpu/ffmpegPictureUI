@@ -990,26 +990,162 @@ foreach ($k6 in @($expl11 + $fam11 + $named11)) {
     if ($managedSet.ContainsKey($k6)) { continue }
     $debt11 += ('{0}（判据 {1} 处）' -f $k6, $j6)
 }
-# ── ⑪-d 有据豁免（2026-11-01，第 88~93 条批）：「有判据却不进整轮」的第三种收口 ──
-#   接进清单（真门禁，本批 6 支）或按 A-1 证明后删之外，还有一类：判据**已经由别的受管门禁在整轮内
-#   代跑**的工具/生成器——接进清单反而是语义错误（生成器写 tests/projects 源树；脚手架与在册门禁
-#   进程互斥）。豁免必须**带牙**：CoveredBy 里的每个名都必须真在受管清单里（豁免锚在真实门禁上，
-#   不是自己给自己写条子）；表内名不在盘同样红。
+# ── ⑪-d 有据豁免（2026-11-01 立；2026-11-02 第二批收紧）：「有判据却不进整轮」的第三种收口 ──
+#   接进清单（真门禁）或按 A-1 证明后删之外，还有一类：判据**已经由别的受管门禁在整轮内代跑**的
+#   工具/生成器——接进清单反而是语义错误（生成器写 tests/projects 源树；脚手架与在册门禁进程互斥）。
+#   豁免必须**带牙**，且牙分两层：
+#     层1（2026-11-01）名字层：豁免名在盘、CoveredBy 每个名都在受管清单里。
+#     层2（2026-11-02）调用点层：**只校名字是不够的**——任何豁免都能指向任意受管门禁而过关，
+#       「CoveredBy ⇒ 那条门禁真调用它」此前零校验。实测：`_accept-ui-split.ps1` 在 tests/scripts
+#       里**一个调用点都没有**，而它登记的两条代跑者谁也没跑它 ⇒ 漏洞上线当天就已被利用（表里
+#       混着两种完全不同的语义）。现按语义分列：
+#       · Coverage='Executed'（缺省）：CoveredBy 每条都必须在 AST 调用点索引里真有站点；
+#       · Coverage='Superseded'：本条**不声称被执行**（判据已被更强的尺取代），故 CoveredBy 改名
+#         SupersededBy，并要求调用点索引**恰为零**（真有人在跑它就该回到 Executed）。
+#   判据 D1–D4（双向）：D1 在盘 ｜ D2 Executed⇒每条 CoveredBy 有站点 ｜ D3 有站点的门禁都必须登记
+#   （防「真跑它的门禁没登记」）｜ D4 Superseded⇒零站点（防「把行全改成 Superseded 就全绿」）。
 $debtWaived = [ordered]@{
-    '_accept-ui-split.ps1' = @{ Why = '人工验收脚手架（自报「工具，不是门禁」）：PASS 集合对撞判据已由第 70/71 条在整轮内以更强形状代跑；且它对 UiTestHost/Tests.Ui* 进程显式互斥（fail-closed）⇒ 进整轮会与那两条门禁争用'
-                            CoveredBy = @('verify-ui-split-verbatim.ps1','verify-ui-split-union.ps1') }
+    '_accept-ui-split.ps1' = @{ Why = '人工验收脚手架（自报「工具，不是门禁」）：PASS 集合对撞判据已由第 70/71 条在整轮内以更强形状代跑；且它对 UiTestHost/Tests.Ui* 进程显式互斥（fail-closed）⇒ 进整轮会与那两条门禁争用。**本条不是「被执行」**：2026-11-02 实测它在 tests/scripts 内零调用点（见 :993 层2 注）'
+                            Coverage = 'Superseded'
+                            SupersededBy = @('verify-ui-split-verbatim.ps1','verify-ui-split-union.ps1') }
     '_gen-ui-split.ps1'    = @{ Why = '生成器（写 tests/projects 源树，不是验收）：第 74 条把它当执行对象在整轮内跑两遍并逐字节对撞 ⇒ 「接进清单」对生成器是语义错误'
+                            Coverage = 'Executed'
                             CoveredBy = @('verify-ui-split-reproducible.ps1') }
 }
 function Test-DebtWaived([string]$name) { return $script:debtWaived.Contains($name) }
-$waivedBad = @()
-foreach ($wK in @($debtWaived.Keys)) {
-    if (-not (Test-Path (Join-Path $scriptsDir $wK))) { $waivedBad += ($wK + ' 不在盘'); continue }
-    foreach ($cb in $debtWaived[$wK].CoveredBy) {
-        if (-not $managedSet.ContainsKey($cb)) { $waivedBad += ($wK + ' 的代跑者 ' + $cb + ' 不在受管清单') }
+# ── 调用点索引（⑪-d 层2 的唯一真值）：豁免名 -> @( @{Script;Line;Kind;Text} ) ──────
+#   ⚠ 刻意**不复用** ⑥ 的 Get-CallSites：那一把尺判的是「mode 名落在**起宿主**的参数子树里」或
+#     「已成链的数据表字面量里」（口径 = mode 名 + 宿主二进制），对 `.ps1` 路径零覆盖；硬套会把
+#     `_lib-*.ps1` 的 dot-source 全判成零调用点。这里另立一把尺，只认「**执行** .ps1」的形态。
+#   结构性保证（不靠正则剥注释）：注释在 AST 里根本不是 StringConstantExpressionAst ⇒ Find-AnyLit
+#   永不返回它；`CK ... "见 X.ps1"` 的命令名是 CK 而不在调用白名单 ⇒ 散文骗不到判据。
+function Test-InvokeCommand([string]$cn) {
+    if (-not $cn) { return $true }                        # `& $x` / `. $x`：GetCommandName() 为 null
+    $leaf = [System.IO.Path]::GetFileNameWithoutExtension($cn).ToLowerInvariant()
+    return (@('start-process','start-job','invoke-expression','invoke-item','pwsh','powershell','cmd') -contains $leaf)
+}
+function Get-InvokeKind([string]$cn) {
+    if (-not $cn) { return 'call' }
+    $leaf = [System.IO.Path]::GetFileNameWithoutExtension($cn).ToLowerInvariant()
+    if ($leaf -eq 'start-process') { return 'start' }
+    if ($leaf -eq 'start-job') { return 'job' }
+    if ($leaf -eq 'invoke-expression' -or $leaf -eq 'invoke-item') { return 'iex' }
+    return 'host-file'
+}
+# 返回该文件里对任一 target 的调用点。`$targets` 是整 token 匹配（大小写不敏感）。
+function Get-ScriptInvokeSites($ast, [string]$tag, [string[]]$targets) {
+    $rows = @()
+    if (-not $ast -or -not $targets) { return $rows }
+    # (1) 变量 -> 字面量片段（一层静态展开；`:46` 的 `$gen = ...` 就是靠这层认出来的）
+    $vm = @{}
+    foreach ($a in (Find-Assign $ast)) {
+        if ($a.Left -isnot $T_VAR) { continue }
+        $k = $a.Left.VariablePath.UserPath
+        $f = Get-Fragments $a.Right
+        if (-not $f) { continue }
+        if ($vm.ContainsKey($k)) { $vm[$k] = $vm[$k] + ' ' + $f } else { $vm[$k] = $f }
+    }
+    # (1b) param 默认值也要进 $vm（⑥ 的 Get-CallSites 没做；豁免脚本的调用点常写成 `-X $p = ...`）
+    if ($ast.ParamBlock) {
+        foreach ($par in $ast.ParamBlock.Parameters) {
+            $f = Get-Fragments $par.DefaultValue
+            if ($f) { $vm[$par.Name.VariablePath.UserPath] = $f }
+        }
+    }
+    $rx = @()
+    foreach ($t in $targets) { $rx += ('(?i)(?<![\w\-])' + [regex]::Escape($t) + '(?![\w\-])') }
+    foreach ($c in (Find-Cmd $ast)) {
+        $cn = $c.GetCommandName()
+        if (-not (Test-InvokeCommand $cn)) { continue }
+        $txt = Resolve-NodeText $c $vm
+        $hit = $false
+        foreach ($r in $rx) { if ($txt -match $r) { $hit = $true; break } }
+        if (-not $hit) { continue }
+        $rows += @{ Script = $tag; Line = $c.Extent.StartLineNumber; Kind = (Get-InvokeKind $cn); Text = $c.Extent.Text.Trim() }
+    }
+    return $rows
+}
+# 驱动：只扫受管门禁；先按原文预筛（调用点的**文本**里含这个名字 ⇒ 原文必含这个名字 ⇒ 预筛不漏）。
+#   局限（明写在案，不假装没有）：①无动态求值——`& (Join-Path $d ($n + '.ps1'))` / `Invoke-Expression $built`
+#   解不出（对策 = 下方「提到但零站点」软警）；②不做可达性——写在死函数里的 `& X` 也算站点（假绿方向，
+#   但强于「连有没有这行都不看」）；③同名变量多次赋值取并集（同 `:296-302`，只会多算不会漏）。
+$waivedSites = @{}
+foreach ($wK in @($debtWaived.Keys)) { $waivedSites[$wK] = @() }
+foreach ($s in @($managedSet.Keys)) {
+    $p = Join-Path $scriptsDir $s
+    if (-not (Test-Path $p)) { continue }
+    $rt = [System.IO.File]::ReadAllText($p)
+    $hits = @()
+    foreach ($wK in @($debtWaived.Keys)) { if ($rt.IndexOf($wK, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) { $hits += $wK } }
+    if (-not $hits.Count) { continue }
+    $astRow = Get-PsAst $p
+    if (@($astRow.Errors).Count) { continue }            # 解析不了的脚本由别的闸接（⑧/STALE）
+    foreach ($h in $hits) {
+        $mine = @(Get-ScriptInvokeSites $astRow.Ast $s @($h))
+        $waivedSites[$h] = @(@($waivedSites[$h]) + $mine)
     }
 }
-CK ($waivedBad.Count -eq 0) ('⑪-d 豁免表有牙：豁免名必须在盘且 CoveredBy 全部是受管门禁（违规 ' + @($waivedBad).Count + ' 条：' + $(if ($waivedBad) { $waivedBad -join '；' } else { '无' }) + '）')
+# 「提到但零站点」软警（L1 的兜底出口）：不进判红，只进 stdout 供人读。
+$waivedMentionOnly = @()
+foreach ($wK in @($debtWaived.Keys)) {
+    if (@($waivedSites[$wK]).Count -eq 0) {
+        $mention = @()
+        foreach ($s in @($managedSet.Keys)) {
+            # 自己那本登记表必然提得到名字，那是**登记**不是调用 ⇒ 排除自身，否则这条软警每轮固定 +1 噪音
+            if ($s -eq '_probe-test-group-coverage.ps1') { continue }
+            $p = Join-Path $scriptsDir $s
+            if (-not (Test-Path $p)) { continue }
+            if ([System.IO.File]::ReadAllText($p).IndexOf($wK, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) { $mention += $s }
+        }
+        if ($mention.Count) { $waivedMentionOnly += ($wK + ' <- ' + ($mention -join ',')) }
+    }
+}
+
+# ── D1–D4 双向裁决 ────────────────────────────────────────────────────────
+$waivedBad = @()
+foreach ($wK in @($debtWaived.Keys)) {
+    $row = $debtWaived[$wK]
+    # D1 在盘
+    if (-not (Test-Path (Join-Path $scriptsDir $wK))) { $waivedBad += ($wK + ' 不在盘'); continue }
+    $cov = 'Executed'
+    if ($row.ContainsKey('Coverage') -and $row.Coverage) { $cov = [string]$row.Coverage }
+    if ($cov -ne 'Executed' -and $cov -ne 'Superseded') { $waivedBad += ($wK + ' 的 Coverage 值非法（' + $cov + '，只许 Executed/Superseded）'); continue }
+    $sites = @($waivedSites[$wK])
+    $siteBy = @($sites | ForEach-Object { $_.Script } | Sort-Object -Unique)
+    if ($cov -eq 'Superseded') {
+        # D4 反方向：声明「只是判据被更强的尺取代」就必须**真没人跑它**
+        if ($sites.Count -gt 0) {
+            $waivedBad += ($wK + ' 声明 Superseded 却在 ' + (($sites | ForEach-Object { $_.Script + ':L' + $_.Line }) -join ',') + ' 有调用点 ⇒ 它其实在执行，应改判 Executed')
+        }
+        foreach ($sb in @($row.SupersededBy)) {
+            if (-not $managedSet.ContainsKey($sb)) { $waivedBad += ($wK + ' 的取代者 ' + $sb + ' 不在受管清单') }
+        }
+        if (-not @($row.SupersededBy).Count) { $waivedBad += ($wK + ' 声明 Superseded 却没登记 SupersededBy') }
+        continue
+    }
+    # D2 正方向：Executed ⇒ CoveredBy 每条都要真有站点
+    if (-not @($row.CoveredBy).Count) { $waivedBad += ($wK + ' 声明 Executed 却没登记 CoveredBy'); continue }
+    foreach ($cb in @($row.CoveredBy)) {
+        if (-not $managedSet.ContainsKey($cb)) { $waivedBad += ($wK + ' 的代跑者 ' + $cb + ' 不在受管清单'); continue }
+        if (-not ($siteBy -ccontains $cb)) { $waivedBad += ($wK + ' 的代跑者 ' + $cb + ' 在 AST 里**零调用点**（登记的是名字，不是执行）') }
+    }
+    # D3 反方向：真跑了它的受管门禁都必须登记（防「登记指向 A、实际 B 在跑」）
+    foreach ($g in $siteBy) {
+        if (-not (@($row.CoveredBy) -ccontains $g)) { $waivedBad += ('反向：' + $g + ' 真调用了 ' + $wK + ' 却没登记进 CoveredBy') }
+    }
+}
+$waivedSiteSum = 0
+foreach ($wK in @($waivedSites.Keys)) { $waivedSiteSum += @($waivedSites[$wK]).Count }
+$waivedEv = @()
+foreach ($wK in @($debtWaived.Keys)) { foreach ($sr in @($waivedSites[$wK])) { $waivedEv += ($wK + ' <- ' + $sr.Script + ':L' + $sr.Line + ' [' + $sr.Kind + ']') } }
+CK ($waivedBad.Count -eq 0) ('⑪-d 豁免表有牙（双向）：豁免名在盘 ｜ D2 Executed⇒每条 CoveredBy 在 AST 调用点索引里真有站点 ｜ D3 有站点的门禁全部登记 ｜ D4 Superseded⇒零站点（违规 ' + @($waivedBad).Count + ' 条：' + $(if ($waivedBad) { $waivedBad -join '；' } else { '无' }) + '）')
+$waivedSup = @($debtWaived.Keys | Where-Object { $debtWaived[$_].ContainsKey('Coverage') -and $debtWaived[$_].Coverage -eq 'Superseded' })
+$waivedExec = @($debtWaived.Keys).Count - @($waivedSup).Count
+CK (@($waivedEv).Count -ge $waivedExec) ('⑪-d 调用点账目：Executed ' + $waivedExec + ' 条各至少 1 站点 ⇒ 站点数 ' + @($waivedEv).Count + ' 须 >= ' + $waivedExec + '，且 Superseded ' + @($waivedSup).Count + ' 条为 0（实 ' + $waivedSiteSum + '；不等即 D2/D4 某方向失效）')
+Write-Host ('ℹ      ⑪-d 豁免 ' + @($debtWaived.Keys).Count + ' 条：Executed ' + (@($debtWaived.Keys).Count - @($waivedSup).Count) + ' ｜ Superseded ' + @($waivedSup).Count + '（' + ($(if (@($waivedSup).Count) { $waivedSup -join ',' } else { '无' })) + '）站点 ' + @($waivedEv).Count + ' 条' + $(if (@($waivedEv).Count) { '：' + ($waivedEv -join ' ｜ ') } else { '' }))
+if (@($waivedMentionOnly).Count) {
+    Write-Host ('WARN ⑪-d 提到但解析不出调用点（动态拼接形态；只警不判红，见 :993 层2 局限①）= ' + @($waivedMentionOnly).Count + ' 条：' + ($waivedMentionOnly -join '；')) -ForegroundColor Yellow
+}
 $debtReal = @($debt11 | Where-Object { -not (Test-DebtWaived (($_ -split '（')[0])) })
 if (@($debtReal).Count) {
     Write-Host ('WARN ⑪-d 有判据却不进整轮的清单外脚本 = ' + @($debtReal).Count + ' 支：' + (($debtReal | Select-Object -First 6) -join ', ') + ' ⇒ 要么接进清单，要么按 A-1 的先证明再逐支删（本条只警告不判红：历史上有意的长跑例外）') -ForegroundColor Yellow
@@ -1030,6 +1166,60 @@ if (Test-DebtWaived 's_new.ps1') { $teeth11 += '豁免表外的名不得被判�
 $t11Line = '全部符合（已登记⇒放行 / 新增未登记⇒红 / 豁免表内⇒豁免 / 表外⇒不豁免）'
 if ($teeth11.Count) { $t11Line = ($teeth11 -join ' | ') }
 CK ($teeth11.Count -eq 0) ('⑪-pre 有牙自证：合成件 4 项方向判据（' + $t11Line + '）')
+
+# ── ⑪-d-pre 有牙自证（2026-11-02 第二批）：同一把「CoveredBy ⇒ 调用点」尺，喂合成输入验四方向 ──
+#   为什么必须自检：上面的 $waivedBad 是对**真表**的裁决。尺子哪天失配（白名单被改窄 ⇒ 站点全塌 ⇒
+#   D2 全红或 D4 全绿），翻到假绿方向时没人看得见。这里用合成表复算同一个判定分支，四方向各一次。
+$yp = @()
+function Test-WaivedVerdict($table, $sites) {
+    # 与上面牙段**同构**的纯判定（只吃数据，不碰磁盘）：返回违规串数组
+    $bad = @()
+    foreach ($wK in @($table.Keys)) {
+        $row = $table[$wK]
+        $cov = 'Executed'; if ($row.ContainsKey('Coverage') -and $row.Coverage) { $cov = [string]$row.Coverage }
+        $st = @(); if ($sites.ContainsKey($wK)) { $st = @($sites[$wK]) }
+        $by = @($st | ForEach-Object { $_.Script } | Sort-Object -Unique)
+        if ($cov -eq 'Superseded') {
+            if ($st.Count -gt 0) { $bad += ($wK + ' Super+站点') }
+            if (-not @($row.SupersededBy).Count) { $bad += ($wK + ' Super 无 SupersededBy') }
+            continue
+        }
+        if (-not @($row.CoveredBy).Count) { $bad += ($wK + ' Exec 无 CoveredBy'); continue }
+        foreach ($cb in @($row.CoveredBy)) { if (-not ($by -ccontains $cb)) { $bad += ($wK + ' Exec 代跑者零站点') } }
+        foreach ($g in $by) { if (-not (@($row.CoveredBy) -ccontains $g)) { $bad += ($wK + ' 反向漏登记') } }
+    }
+    return $bad
+}
+$synSites = @{ '_syn-x.ps1' = @(@{ Script = 'verify-syn-gate.ps1'; Line = 90; Kind = 'call' }) }
+$synExec  = [ordered]@{ '_syn-x.ps1' = @{ Coverage = 'Executed';   CoveredBy = @('verify-syn-gate.ps1') } }
+$synLie   = [ordered]@{ '_syn-x.ps1' = @{ Coverage = 'Executed';   CoveredBy = @('verify-syn-other.ps1') } }
+$synSuper = [ordered]@{ '_syn-x.ps1' = @{ Coverage = 'Superseded'; SupersededBy = @('verify-syn-gate.ps1') } }
+if (@(Test-WaivedVerdict $synExec $synSites).Count -ne 0) { $yp += 'Executed+真有站点应放行' }
+if (@(Test-WaivedVerdict $synLie $synSites).Count -lt 2) { $yp += '指向不调用它的门禁应同时触 D2 与 D3' }
+if (@(Test-WaivedVerdict $synSuper $synSites).Count -lt 1) { $yp += 'Superseded 却有站点没被判红（逃生门）' }
+if (@(Test-WaivedVerdict $synSuper @{}).Count -ne 0) { $yp += 'Superseded+零站点应放行' }
+# 合成源码：验「尺子认不认得调用形态」（用 ParseInput，不落盘）
+$synSrcPos = @'
+$gen = 'tests/scripts/_syn-x.ps1'
+$out = & (Join-Path $root $gen) -RepoRoot $dst
+'@
+$synSrcNeg = @'
+# & tests/scripts/_syn-x.ps1  ← 注释不是调用点
+Write-Host "见 tests/scripts/_syn-x.ps1"
+$t = Get-Content 'tests/scripts/_syn-x.ps1'
+'@
+$tk = $null; $er = $null
+$astPos = [System.Management.Automation.Language.Parser]::ParseInput($synSrcPos, [ref]$tk, [ref]$er)
+$posSites = @(Get-ScriptInvokeSites $astPos '_syn_src.ps1' @('_syn-x.ps1'))
+if ($posSites.Count -ne 1) { $yp += ('合成正例应恰 1 站点（实 ' + $posSites.Count + '）') }
+elseif ($posSites[0].Line -ne 2 -or $posSites[0].Kind -ne 'call') { $yp += ('合成正例行号/形态不符（实 L' + $posSites[0].Line + ' ' + $posSites[0].Kind + '）') }
+$tk2 = $null; $er2 = $null
+$astNeg = [System.Management.Automation.Language.Parser]::ParseInput($synSrcNeg, [ref]$tk2, [ref]$er2)
+$negSites = @(Get-ScriptInvokeSites $astNeg '_syn_neg.ps1' @('_syn-x.ps1'))
+if ($negSites.Count -ne 0) { $yp += ('合成负例（注释/散文/Get-Content）应 0 站点（实 ' + $negSites.Count + '）') }
+$ypLine = '全部符合（Executed+站点⇒放行 / 谎指⇒D2+D3 / Superseded+站点⇒红 / Superseded 零站点⇒放行 / 合成正例 L2 call / 合成负例 0）'
+if ($yp.Count) { $ypLine = ($yp -join ' | ') }
+CK ($yp.Count -eq 0) ('⑪-d-pre 有牙自证：同一把「CoveredBy ⇒ 调用点」尺喂 6 项合成判据（' + $ypLine + '）')
 # ── 信息行：两边的计数与差集（逐名，不压成总数）────────────────────────────
 Write-Host ""
 Write-Host ("ℹ      组表并集 = {0} 个 mode；运行器 `$Probes` = {1} 个；受管基线 = {2} 条（证据源 {3} 条，去掉守卫自己）" -f $union.Count, $probes.Count, $scriptListAll.Count, $evidenceScripts.Count)

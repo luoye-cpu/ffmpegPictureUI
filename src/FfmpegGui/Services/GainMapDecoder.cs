@@ -465,36 +465,40 @@ public static class GainMapDecoder
                 if (baseBytes.Length % 12L == 0)
                 {
                     long actualPixels = baseBytes.Length / 12L;
-                    if (actualPixels > 0 && actualPixels != basePixels && !cropDeclared)
+                    // 裁决抽成**纯函数** ReconcileBaseSize（2026-11-02 第二批）：本段的四类出口
+                    // （一致 / 声明裁切且严格等比 ⇒ 采纳实测 / 未声明裁切 ⇒ fail-closed / 非等比 ⇒ fail-closed）
+                    // 此前**零判据臂**。而文件级造不出「ffprobe 报的尺寸 ≠ ffmpeg 实际帧且不带 clap」的样本：
+                    // 实测改 ispe 不影响 ffprobe 报的 HEVC 流尺寸（SPS 说了算），把 clap 类型名改掉则两侧同时
+                    // 退回 64x64（`clap_none.heic` 读数）⇒ 只能直接钉裁决本身，判据臂 = ServiceProbe
+                    // `gainmap-stats <file> --size-recon`（无文件依赖的纯函数段）。
+                    var verdict = ReconcileBaseSize(baseW, baseH, actualPixels, cropDeclared, out int aw, out int ah);
+                    if (verdict == BaseSizeVerdict.RejectUndeclared)
                     {
                         log?.Invoke($"[GainMap解码] ❌ 底图像素数 {actualPixels}（{baseBytes.Length} B / 12）与探测尺寸 {baseW}x{baseH}"
                             + $"（{basePixels} 像素）不符，且容器未声明 clean aperture 裁切 ⇒ 无法确定行跳步，拒绝解码"
                             + "（若该文件确带裁切，说明 ffprobe 未把 clap 暴露成 Frame Cropping）\n");
                         return null;
                     }
-                    if (actualPixels > 0 && actualPixels != basePixels)
+                    if (verdict == BaseSizeVerdict.Scaled)
                     {
                         // 双向：探测偏大（容器 clap 被 ffmpeg 施加而未反映到 stream 宽高）或偏小（解复用器报了
                         // Frame Cropping 但解码器未施加）都要收。比例必须严格等比，否则行跳步不可知。
-                        if (TryUniformScale(baseW, baseH, actualPixels, out int aw, out int ah) && aw > 0 && ah > 0)
+                        log?.Invoke($"[GainMap解码] 底图尺寸按实际像素校正：探测 {baseW}x{baseH} ⇒ 解码 {aw}x{ah}"
+                            + $"（{baseBytes.Length} B / 12 = {actualPixels} 像素；几何探测口径与实际帧不符）\n");
+                        baseW = aw; baseH = ah; basePixels = actualPixels;
+                        // 校正后可能**放大**（探测偏小，放大臂最多 ×256）⇒ 上限必须在校正后再判一次，
+                        // 否则 `new float[pixelCount * 4]` 的 int 索引前提就没了（原上限按探测值算）。
+                        if (basePixels <= 0 || basePixels > MaxDecodedPixels)
                         {
-                            log?.Invoke($"[GainMap解码] 底图尺寸按实际像素校正：探测 {baseW}x{baseH} ⇒ 解码 {aw}x{ah}"
-                                + $"（{baseBytes.Length} B / 12 = {actualPixels} 像素；几何探测口径与实际帧不符）\n");
-                            baseW = aw; baseH = ah; basePixels = actualPixels;
-                            // 校正后可能**放大**（探测偏小，放大臂最多 ×256）⇒ 上限必须在校正后再判一次，
-                            // 否则 `new float[pixelCount * 4]` 的 int 索引前提就没了（原上限按探测值算）。
-                            if (basePixels <= 0 || basePixels > MaxDecodedPixels)
-                            {
-                                log?.Invoke($"[GainMap解码] ❌ 校正后像素数 {basePixels} 超出上限 {MaxDecodedPixels} ⇒ 拒绝解码\n");
-                                return null;
-                            }
-                        }
-                        else
-                        {
-                            log?.Invoke($"[GainMap解码] ❌ 底图像素数 {actualPixels}（{baseBytes.Length} B / 12）与探测尺寸 {baseW}x{baseH}"
-                                + $"（{basePixels} 像素）不符，且不是整数倍等比缩放 ⇒ 无法确定行跳步，拒绝解码\n");
+                            log?.Invoke($"[GainMap解码] ❌ 校正后像素数 {basePixels} 超出上限 {MaxDecodedPixels} ⇒ 拒绝解码\n");
                             return null;
                         }
+                    }
+                    else if (verdict == BaseSizeVerdict.RejectNonUniform)
+                    {
+                        log?.Invoke($"[GainMap解码] ❌ 底图像素数 {actualPixels}（{baseBytes.Length} B / 12）与探测尺寸 {baseW}x{baseH}"
+                            + $"（{basePixels} 像素）不符，且不是整数倍等比缩放 ⇒ 无法确定行跳步，拒绝解码\n");
+                        return null;
                     }
                 }
                 if (baseBytes.Length < basePixels * 12L)
@@ -1666,6 +1670,45 @@ public static class GainMapDecoder
     // ═══════════════════════════════════════════
     //  工具函数
     // ═══════════════════════════════════════════
+
+    /// <summary>底图尺寸对账的裁决结果（<see cref="ReconcileBaseSize"/>）。</summary>
+    internal enum BaseSizeVerdict
+    {
+        /// <summary>探测尺寸与实测像素一致（或像素数不可用）⇒ 不改写。</summary>
+        Match = 0,
+        /// <summary>不符、容器**已**声明裁切、且严格等比 ⇒ 采纳实测尺寸（<c>aw</c>/<c>ah</c>）。</summary>
+        Scaled = 1,
+        /// <summary>不符、容器**未**声明裁切 ⇒ fail-closed：行跳步不可知。</summary>
+        RejectUndeclared = 2,
+        /// <summary>不符、且非整数倍等比 ⇒ fail-closed：裁切量未知就推不出行跳步。</summary>
+        RejectNonUniform = 3,
+    }
+
+    /// <summary>
+    /// 底图「探测尺寸 vs 实测像素」的裁决（纯函数：解码段与判据臂共用一份真值）。
+    /// <para>
+    /// 判据臂 = <c>ServiceProbe gainmap-stats &lt;file&gt; --size-recon</c>（无文件依赖的纯函数段，
+    /// 由在册门禁 `verify-gainmap-isobmff.ps1` 调用）。抽出来的理由见调用点注释：
+    /// 「探测尺寸 ≠ 实际帧且不带 clap」这状态**造不出文件样本**，只能直接钉裁决。
+    /// </para>
+    /// <para>⚠ 语义与拆分前逐字等价：<c>w*h == actualPixels</c> 优先判一致（不改写）；未声明裁切**一律**
+    /// 拒绝（连等比缩放也不认——那是「静默出半幅 HDR」的唯一入口）；声明了裁切才允许
+    /// <see cref="TryUniformScale"/>（含 k=2..16 的放大臂）。</para>
+    /// </summary>
+    internal static BaseSizeVerdict ReconcileBaseSize(int w, int h, long actualPixels, bool cropDeclared,
+        out int aw, out int ah)
+    {
+        aw = w; ah = h;
+        if (w <= 0 || h <= 0 || actualPixels <= 0) return BaseSizeVerdict.Match;
+        if ((long)w * h == actualPixels) return BaseSizeVerdict.Match;
+        if (!cropDeclared) return BaseSizeVerdict.RejectUndeclared;
+        if (!TryUniformScale(w, h, actualPixels, out aw, out ah) || aw <= 0 || ah <= 0)
+        {
+            aw = w; ah = h;
+            return BaseSizeVerdict.RejectNonUniform;
+        }
+        return BaseSizeVerdict.Scaled;
+    }
 
     /// <summary>
     /// 已知真实像素数，反推「与 (w,h) 严格等比」的尺寸；不成立时返回 false。
