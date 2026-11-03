@@ -9,6 +9,14 @@
 
 ## 1. 目录契约（唯一归置规则）
 
+⚠ **工作区边界（绝对，任何理由不构成绕过；细则见全局 §W）**：一切写盘（建文件/建目录、下载、解压、生成临时件、缓存）
+目标必须在**本工作区** `C:\PLAN\ffmpegPictureUI\` 内。**禁止**在工作区外创建任何文件或目录——包括 `%TEMP%`、`C:\Temp`、
+`C:\PLAN\` 下的同级目录（如语料库、对照臂 worktree、临时取件区）、用户主目录新建目录。
+下文凡出现「仓库外 / 仓外」作**要求**的条款（§3 冻结副本、§4 对照臂 worktree、§5 历史提交构建）一律**降为待批**：
+先单独申请、写清路径与清理方式、得到明确点头才可动手；**不得推定授权，不得沿用上一批的点头**。
+外部素材（第三方样本、语料）默认落 `tests/output/_tmp/<批次>/corpus/`，与判据分离：判据进 `tests/scripts`（平铺登记），产物进 `tests/output`。
+已违规 ⇒ 立刻停、清理自造仓外产物、在回复里如实点名路径与文件（`Get-Item` 的 FullName / 清理后 `Test-Path` = False）。
+
 | 路径 | 放什么 | 不许放什么 |
 |---|---|---|
 | 仓库根 | 法律/说明/规范类 `.md`（`LICENSE` `NOTICE` `THIRD-PARTY-NOTICES.md` `README*.md` `CHANGELOG*.md` `PACKAGING_SPEC.md` `AGENTS.md`）、`ffmpegPictureUI.sln`、`pack.ps1`，以及 `src/ tests/ tools/ docs/ licenses/ publish/` | 任何脚本落盘产物、一次性调试残留 |
@@ -152,12 +160,20 @@ pwsh -NoProfile -File tests/scripts/_run-step3-gates.ps1   # 94 条，整轮 ~60
   （豁免带牙：CoveredBy 必须全部是受管门禁，否则当场红）。WARN 现值 0。
   ⚠ 但「受管门禁」只校名字，**不校那条门禁真会跑它**——任何豁免都能指向任意受管门禁而过关；
   要收紧须复用 AST 调用点索引建「CoveredBy ⇒ 调用点」双向检查（独立一批）。
-- **整轮 ≠ 全判据面（N/N 要按这三点读）**：①5 条 UI 门禁的负控块包在 `if ($SelfCheck)` 里、
-  `$ncOk` 无条件默认 true，runner 不给它们传 `-SelfCheck` ⇒ **整轮读数只有正向臂**，负控证据
-  全来自手跑（`tests/output/ui-host/*/out_*.txt` 的 `NC:` 行）；②第 92 条 `verify-oracle-matrix`
+- **整轮 ≠ 全判据面（N/N 要按这三点读）**：①~~5 条 UI 门禁的负控块包在 `if ($SelfCheck)` 里、
+  `$ncOk` 无条件默认 true，runner 不给它们传 `-SelfCheck`~~ ⇒ **2026-11-02 已接线**：`$scriptArgs`
+  给 `verify-ui-host` / `verify-ui-param-matrix` / `verify-ui-strategy-map` / `verify-ui-param-defects` /
+  `verify-cli-strict` 各传 `-SelfCheck`（**零门禁改码**），整轮因此多跑负控，代价实测
+  139.4 → **285.4 s = +146.0 s**（`t3-subset.log`）；五条负控臂全部按契约转红（ui-color 90/1、
+  ui-sweep 142/1、ui-cli 73/1、J 99/1、K 28/1、param-defects 44/1、cli-strict 61/1 + color 16/1 +
+  icc 13/1）。防复发靠**第 ⑱ 形态针**：`$scriptArgs` 条目数 ==6、表内 `-SelfCheck` 字面量 ==5、
+  5 条 UI 键逐一在位 —— 删掉任一行，整轮当场红（此前无针，删一行照样全绿 ⇒「只有正向臂」会静默复发）。
+  ⚠ `$ncOk` 在这些门禁里是**初值 true + `if ($SelfCheck)` 内重算**，所以「传 `-SelfCheck` 后门禁
+  自己不会因负控转红而误红」（`$ok` 不含 `-not $SelfCheck` 项，与 `verify-png-structure`
+  「`-SelfCheck` 期望本门禁转红」的语义**不同**，别照抄那一条的读法）；②第 92 条 `verify-oracle-matrix`
   整轮只跑 `-Smoke` **3 条代表用例**（自述 L1=194/L2=172）；③第 91 条 `verify-color-matrix-full`
   整轮默认 `quick` = **72 格**（2 格式 × 2 位深），名带 `-full` 不等于全网格。
-  ⇒ 宣布「94/94 全绿」时不许顺带说「色彩/oracle 覆盖面一次到位」。
+  ⇒ 宣布「94/94 全绿」时不许顺带说「色彩/oracle 覆盖面一次到位」（②③两点**仍成立**）。
 - **分层**：`Services` 对 UI 零依赖，唯一的代码级倒灌是 `IpcService.cs` 认 `MainWindow` 类型
   （2026-11-02 重测：大小写不敏感命中 44 行 / 出现 54 次，其中非注释 39 行；旧记「13 处」有误）；
   抽 `FfmpegGui.Core` 会改出货件程序集构成与指纹，属独立决策。
@@ -185,7 +201,8 @@ pwsh -NoProfile -File tests/scripts/_run-step3-gates.ps1   # 94 条，整轮 ~60
   该次运行时 `publish/PLAN` 缺失叠加 ≈58% 负载的采样环境，**不是臂身份差异**（`bench_oldarm_20261101.log`）。
   **run d 的单红在整轮内也复现不了**：run e（同产物、同门禁，当天紧接复跑）整轮 94/94，其中
   `[bench] exit=0 pass=37 fail=0 80.5 s`（`run_full_94e.log:43`）⇒ 连静置 4 次（含 ARM-A）+ run a 轮内 1 次 +
-  旧臂重建 2 次 + 同窗对照 1 次共 **9 次 37/0**，定性为负载/计时噪声成立（阈值仍不动）。
+  旧臂重建 2 次 + 同窗对照 1 次共 **9 次 37/0**，定性为负载/计时噪声成立（阈值仍不动）。2026-11-03 run j 轮内再 36/1（多核比 4.0×，撞 ≥4× 边界），
+  同二进制静置单跑 **37/0**（第 10 次）⇒ 同族，口径仍不动。
   ⚠ 控制臂日志 `bench_control.log:17` 的 `3.9×` 是**本轮二进制**的小帧扩展比「仅记录」行，不是任何一方 FAIL。
   判据与阈值**一律不动**（维护者口径：绝对地板与快路径对账档不因停顿赦红）；要治须先给口径，属独立一批。
 - 视图扩展名**已统一为 `.xaml`**（2026-11-01：`MetadataEditor` / `FormatFilterWindow` / `ImageDetailWindow` /
@@ -198,8 +215,54 @@ pwsh -NoProfile -File tests/scripts/_run-step3-gates.ps1   # 94 条，整轮 ~60
   Exclude="MainWindow.xaml;ProgressWindow.xaml" />`（这两个窗口靠 `MainWindow.xaml.cs` 里**手写**的
   `InitializeComponent()` + `FindControl<T>` 取控件，纳入编译会 `CS0102` 撞名）。新增 `.xaml` 视图
   走 `<AvaloniaResource Include="**/*.xaml" Exclude="@(AvaloniaXaml)" />` 兜底。
-- **`colorRange` 回拷漏项（潜伏，未修）**：`FfmpegCommandBuilder.cs` 的缓存回拷段（2026-11-01 只补了
-  `pixFmt`）仍**不拷** `colorRange` ⇒ 命中缓存的路径上 8-bit 尺可能取错。要有自带判据臂的独立一批。
+- **`colorRange` 回拷已补齐（2026-11-02），但「8-bit 尺取错」不成立**：`FfmpegCommandBuilder.cs:1714`
+  （写这条时是 `:1664`，此后 577 区三次重写各把它下移 7 / 16 / 27 行）现无条件回拷 `meta.colorRange`（与
+  `pixFmt :1708` 同段），判据 = `verify-color-token-normalize.ps1` F 段 R0–R6 共 10 条（`PASS=43 FAIL=0`；
+  变异 MU1 实测 `38/5`，复原后 `FfmpegGui.dll` 指纹 `950F46373774BCE3`）。**实测澄清**（本批重查）：
+  `MapPixFmt` 取的是**用户值**、从不读探测结果，且 8-bit 尺由 `ColorMetadata` 的位深推导而来 ⇒ 旧记
+  「命中缓存的路径上 8-bit 尺可能取错」是**推断，非实测**；漏拷的真实后果只有三处**意图死支**（缓存
+  命中路径上 `colorRange` 停在默认值，导致 `setparams` 的 `range=` 与色彩转换矩阵选择少一条区分支）。
+  像素与 tag 自洽，**没有**像素错。
+  ⚠ **但回拷的副作用必须配出口侧口径**（2026-11-03 补，`verify-decision-delivery` ⑨ 当场红出来的）：
+  回拷后 webp 出口的 auto 档从「不发 `-color_range`」变成 `-color_range pc`（跟随 rgb48 源的 pc），
+  而 WebP 容器**写不进范围标记**（ffprobe 读那份带 pc 的产物仍报 `color_range=tv`）⇒ 存储按 pc 摆、
+  解码端按 limited 拉 = **像素错位**。同一源三档实测（512×384 左上 1px，读数用**随包 ffmpeg**
+  `crop=1:1:0:0` 取，不是 PIL——PIL 读 rgb48 会给出 `116,19,243` 这种偏移值；源 `a2_srgb_p3.png`
+  左上 = `116,20,244`）：不发 ⇒ `116,16,237`（对源 PSNR **31.88 dB**）；发 `tv` ⇒ 逐像素等价
+  （31.88 dB）；发 `pc` ⇒ `104,9,240`（**28.22 dB**，丢 **3.66 dB**）。原始日志
+  `tests/output/_tmp/corpus-1102/measure_webp_range.log`。修法 = `FfmpegCommandBuilder.cs` 的 webp 出口
+  恒 `tv`（用户显式 `--color-range pc` 也不发：容器无法告知解码端，出口语义由后置 ICCP 块精确描述）；
+  旧代码那条「webp 且 outRange=tv ⇒ 防御性回退 pc」方向相反，**已删**。
+  ⚠ **同批 jpg/jpeg 两步定稿（2026-11-03）**：第一步收窄 webp 分支时丢了这层保护 ⇒ `mjpeg` 对 limited
+  YUV 直接报 `Non full-range YUV is non-standard` 且 **exit=1、零产物**；第二步的「`-strict unofficial`
+  放行」被审阅 M1 推翻一半——`ResolveOutputColorRange` 的 auto 档跟随输入推断（任何 `yuv*` 输入 ⇒ tv）
+  且放行不分显式/自动 ⇒ **默认参数下 webp/avif/视频帧 → jpg 全部落进 limited 存储**。JPEG 的载体事实：
+  JFIF/EXIF **没有任何范围标记**（marker 实测只有 COM/DQT/DHT/SOF0/SOS，无 APP0/APP2/APP14/EXIF），
+  ffprobe 的 `color_range=tv` 只是从 pix_fmt 反推 ⇒ limited 只对 ffmpeg 家族自洽，libjpeg/WIC/浏览器
+  按满量程直取 ⇒ 发灰（审阅实测 webp(tv)→jpg 默认参数：PIL 对源 **45.16 → 25.67 dB**）。**最终口径**：
+  **auto 档压回 pc**（HEAD 语义，yuvj 满量程 = JPEG 事实标准，产物 `yuvj420p`/`pc`、读回 `116,17,239`
+  一类）；**显式 `--color-range tv` 才放行**（`tv` + `-strict unofficial`，产物真写 limited
+  `yuv420p`/`color_range=tv`/读回 `120,16,245`）且**必须出声**（`EmitWarn` 点名 libjpeg/WIC 会发灰）；
+  webp 出口显式 `--color-range pc` 被压成 tv 同样出声。旧记「jpg 三档同值 `118,17,243`、不需豁免」
+  **作废**（不同参数下的读数）。
+  判据 = 同脚本 G 段 R7/R7b/R7b'/R8-PSNR（**PSNR 由门禁自己用 ffmpeg `psnr` 滤镜现算并打印**，
+  不再引用无当轮出处的 dB 数）+ H 段 R9a–R9f（零产物负控 + 「放行必须出声」播报锁）+ I 段
+  R10a–R10d（auto 压回 pc：命令行/载体/像素三层 + 重标尺负控；像素判据 = 同文件「普通解码 vs
+  `setparams=range=pc` 重标解码」恒等 inf⇒99，**与 4:2:0 抽样损失解耦**——首版「对源 ≥38 dB」判据
+  作废，正确产物也只有 33.52 dB），整脚本 **64/0**；`verify-decision-delivery` ⑨ 另加整图 PSNR 兜底
+  （**94/0**）。
+  ⚠ **通用口径**：只有**能写范围标记**的容器（AVIF 的 CICP `full_range_flag`、mkv/mp4 的 yuv*）
+  才该发 `pc`；**写不进的**（WebP；**JPEG 连标记位都没有** ⇒ auto 一律满量程 yuvj，显式 tv 才
+  limited + strict）必须与解码端的固定假设一致（limited 存储 + limited 解读），
+  否则「声明」只改存储不改解读，等于人为制造色偏。⚠ **本批读数只覆盖 WebP 与 jpg**；AVIF/mkv/mp4
+  是按容器机制**推断**，无本批实测支撑（AVIF 的静态出口另有 `ExitWritesIcc=false` 一条独立口径）。
+  ⚠ jpeg 别名（`.jpeg`）走同一代码路径（`fmt is "jpg" or "jpeg"`），但**本批只单测了 jpg**。
+  ⚠ 同族边界（2026-11-03 登记）：**引擎 route**（`ImageEncoderArgs.MapEnginePixFmt:975-988` 不发
+  `-strict`/输出侧 range，与 legacy 口径不一致；`RawColorPipeline.cs:1018/1040/1119` 对显式 tv/pc 只把
+  `o.ColorRange` 透传进 pix_fmt，无放行/播报契约——批前既有）、**动图回退**（`QueueProcessor.cs:6427`）
+  与**预设**入口可达同一分支，但本批无这三条的端到端像素读数——CLI 默认路径（legacy，普通任务经
+  `QueueProcessor.cs:1622-1648` 直通回 legacy）已被 R10 判据直接覆盖，引擎侧仅经
+  `ColorEngineRouter.cs:40` 的默认路由间接覆盖；要收紧须各立像素臂（独立一批）。
 - **ACR 路线只覆盖 DNG（2026-10-24）**：`.dng` 走 `dngtool -rdp`（Adobe DNG SDK 的 `dng_render`，
   OpcodeList1/2/3 全施加），其余 RAW 仍走 LibRaw（**SDK 只读 DNG**，读不了 ARW/CR2/NEF…）。
   渲染空间按下游目标选（bt709 出口 ⇒ `srgb`，其余 ⇒ `rec2020`），`ColorSourceDeclPrimaries` 与它同源。
@@ -209,6 +272,16 @@ pwsh -NoProfile -File tests/scripts/_run-step3-gates.ps1   # 94 条，整轮 ~60
   已知边界：enhanced-image IFD 的 DNG 直接点名拒绝；DNG 输入上 `-H/-q/-W/-threads` 不生效（日志点名）；
   耗时约为 LibRaw 的 2.2×（24MP 5.1 s vs 2.3 s）。要"全量"须先 LibRaw 解包成 CFA DNG 再 SDK 渲染（另立一批）。
   门禁 = 第 79 条 `verify-acr-route.ps1`。
+- **第三方 GainMap 语料已进判据（2026-11-02，第 13 条 `verify-gainmap-engine.ps1` §13 / 16 条断言，
+  整脚本 `PASS=199 FAIL=0`）**：三件实拍件落**工作区内** `tests/output/corpus/gainmap-iso21496/`
+  （`DSC00037.jpg` 921,235 B / `DSC01058.jpg` 842,338 B / `seine_sdr_gainmap_srgb.jpg` 142,972 B，
+  sha256[:16] 逐一钉死），整树 `.gitignore:78 output/` ⇒ **永不随仓分发**，故 §13 写成
+  fail-closed 前提断言 + 缺失时打印 `Invoke-WebRequest` 取回命令（许可：DSC 两件 GPL-3.0-only、
+  seine BSD-2-Clause，再分发许可未逐一确认 ⇒ 不入仓）。覆盖点：ISO 21496-1 APP2 正剂量
+  （`maxLinear=4.1263` / `peakNits=880`）、**负 min**（DSC01058 `min=-0.005`，切到 0 后 `切割 (333451 B)`）、
+  剂量分叉（10.1899 > 1.5×4.1263 且 cap 更大）；`seine` 是 **hdrgm-XMP 负控**——它不得被认成
+  「元数据来源: ISO 21496-1 APP2」。⚠ 本机 `curl.exe --http1.1 -C -` 取该站报 exit 56/23 且落
+  0 字节 ⇒ 取回命令一律用 `Invoke-WebRequest`。
 - **托盘 / 关窗契约（2026-11-01 定，由第 85 条 `verify-package-gui-starts.ps1` ⑥⑦ 保证）**：
   托盘图标随启动即常驻（跟 `AppSettings.CloseToTray` 走，默认 `true`），不是「关窗时才点亮」；
   **只有「设置要托盘 且 托盘真可用」才拦关窗**，否则关窗即真退出（不许藏成不可见进程）；

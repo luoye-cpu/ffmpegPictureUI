@@ -25,6 +25,32 @@
 - **出包链补强**：`verify-release-package` 新增解包目录残留自动清理（2026-11-01 外部实例写入 `debug.log`+`settings.json.bak` 曾致 584 vs 582 对账假红）。
 - **HEIC 增益图 grid 分块 + idat 承载（2026-11-02，实机报障修复）**：真实 iPhone HDR HEIC 的增益图以 `grid` 派生项分块承载、`tmap`/`grid` 载荷在 `meta/idat`（`iloc construction_method=1`）——旧探针两处都不认 ⇒ 整条增益图解码 fail-closed、HDR 层静默丢失。修复：`IsoBmffGainMapProbe` 支持 method=0/1 切片、tmap 的 dimg 目标可为 `grid`（逐瓦片切出 + 各瓦片 `hvcC`→Annex-B）；`GainMapDecoder` 逐瓦片解码后按 raster 拼接（日志「分块增益图拼接完成」）；降级 WARN 带上 FailReason。判据 = `verify-gainmap-isobmff` §1d（12 条，含 grid version 负控与端到端拼接点名；变异实测 PASS=84 FAIL=8），总断言 80→92。实机验证：4320x5760 源件解出线性 HDR（maxLinear 1.97，cap 4.43，over1 18.96M/74.65M），jpg 出口完成 1 项 失败 0 项。
 - **HEIC clean aperture（clap）裁切进入几何口径（2026-11-02，同族修复）**：`ImageGeometry.BuildProbeArguments` 补 `-show_entries stream_side_data`（缺这条则 ffprobe 恒只报 coded 尺寸，后续全做完仍算成 64x64）；新增 `ReadFrameCropping` 只认 `streams[0].side_data_list` 里 `side_data_type` 含 `Frame Cropping` 的那条（与 ICC Profile 同层，逐条扫键名会读到无关数字）；裁切在旋转**之前**扣减、量由 `DisplaySizeWithCropAsync` 单点透传；分块源（`tiles>1`）返回组尺寸且裁切量置 0（组级 clap 语义未实测，只点名不扣减）。`GainMapDecoder` 的尺寸对账随后只在「容器声明了裁切」时才允许改写，未声明而像素数不符 ⇒ 具名 fail-closed，不再靠 `len/12` 反推行跳步。判据 = `verify-gainmap-isobmff` §1e（15 条，含容器字节变异负控），本条与之同批把总断言 92→107；实测 16x16 裁切件从「判像素不完整 ⇒ 返回 null ⇒ 静默退回 SDR」变为按 16x16 解码。
+- **第三方 GainMap 语料进判据（2026-11-02，第 13 条门禁 §13，16 条断言）**：ISO 21496-1 APP2 支路此前只有自家产物覆盖。三件第三方实拍件落 `tests/output/corpus/gainmap-iso21496/`（`DSC00037.jpg` / `DSC01058.jpg` / `seine_sdr_gainmap_srgb.jpg`，`sha256[:16]` 逐一钉死；整树 gitignore ⇒ 永不随仓分发，故写成 fail-closed 前提断言 + 缺失时打印 `Invoke-WebRequest` 取回命令）。覆盖两个合成夹具造不出的形态：**负 min**（`min=-0.005`，切 0 后报 `切割 (333451 B)`）与**剂量分叉**（`maxLinear=10.1899` > 1.5×4.1263 且 cap 更大）；`seine` 作为 hdrgm-XMP **负控**（不得被认成「元数据来源: ISO 21496-1 APP2」）。整脚本 `PASS=199 FAIL=0`。
+- **尺寸对账裁决抽纯函数 + 调用点接线（2026-11-02）**：`GainMapDecoder` 的底图尺寸裁决抽成 `internal static BaseSizeVerdict ReconcileBaseSize(...)`，探针 `gainmap-stats` 加 `--size-recon` 臂（6→16）；关键是**同时**钉调用点（`verify-gainmap-isobmff` §1f-b）——变异实测「把纯函数从调用点摘掉」⇒ 单条红（`PASS=114 FAIL=1`），证明纯函数臂全绿不等于接线正确。
+- **取向探针 ffprobe 参数单一真值（2026-11-02）**：`Coded()` / `Rotation()` 原各写一份 ffprobe 串且缺 `stream_side_data` ⇒ 产品侧补上容器级 clap 后这一臂看不到裁切。改走 `ImageGeometry.BuildProbeArguments`（**参数同源、解析自写**，不把产品解析器当对照臂用），并加「参数三要素文本锁」+「同一份 JSON 上两把尺对账」两条断言；`orientation` 登记 19→21、`$regSum` 867→869。实测 `orientation` 17/0、`verify-geometry-orientation` 31/0、`verify-probe-mirror-parity` 87/0；变异 ⇒ 16/1。
+- **`colorRange` 缓存回拷补齐（2026-11-02）**：`FfmpegCommandBuilder.cs:1687`（当时 `:1664`） 无条件回拷 `meta.colorRange`（此前只补了 `pixFmt`）。判据 = `verify-color-token-normalize` F 段 R0–R6（10 条，实测 43/0；变异 38/5）。**同时更正旧结论**：`MapPixFmt` 取用户值、从不读探测 ⇒ 旧记「命中缓存的路径上 8-bit 尺取错」是推断，漏拷的真实后果只有三处意图死支，像素与 tag 自洽。
+- **整轮负控臂接线（2026-11-02）**：5 条 UI 门禁此前在整轮里只有正向臂（负控块包在 `if ($SelfCheck)` 里而 runner 不传该开关）。`$scriptArgs` 现逐条传 `-SelfCheck`（**零门禁改码**），代价实测 139.4 → 285.4 s（+146.0 s）；五条负控臂全部按契约转红。防复发靠新增的**第 ⑱ 形态针**（`$scriptArgs` 条目数 ==6 / 表内 `-SelfCheck` 字面量 ==5 / 5 键逐一在位）——删掉任一行整轮当场红。
+- **WebP 出口色彩范围口径纠正 + JPEG 显式 limited 放行（2026-11-03，批次 D 续）**：上一条的 `colorRange`
+  回拷让 webp 出口的 auto 档从「不发范围参数」变成 `-color_range pc`（跟随 rgb48 源的 pc），而 WebP 容器
+  **写不进范围标记**——ffprobe 读那份产物仍报 `color_range=tv`，解码端只能按 limited 解释 ⇒ 存储按 pc 摆、
+  解读按 limited 拉 = 像素错位。同一源三档实测（512×384 左上 1px，读数用**随包 ffmpeg** `crop=1:1:0:0` 取；源 `a2_srgb_p3.png` 左上 = `116,20,244`）：
+不发 ⇒ `116,16,237`（对源 PSNR **31.88 dB**）；发 `tv` ⇒ 逐像素等价（31.88 dB）；发 `pc` ⇒ `104,9,240`
+（**28.22 dB**，丢 **3.66 dB**）。批量量测脚本与原始日志见 `tests/output/_tmp/corpus-1102/measure_webp_range.log`。
+  修法 = webp 出口恒 `tv`（用户显式 `--color-range pc` 也不发：容器无法告知解码端，出口语义由后置 ICCP
+  块精确描述）；旧代码那条「webp 且 tv ⇒ 防御性回退 pc」方向相反，已删。
+  **同批修两条本批自主引入的回归**：①收窄该分支时丢了 jpg/jpeg 的保护——`mjpeg` 对 limited YUV 直接
+  `Non full-range YUV is non-standard` 而 **exit=1 零产物**；②初版处置「对 `(jpg|jpeg) + outRange=tv` 一律
+  追加 `-strict unofficial`」被审阅实测推翻——`ResolveOutputColorRange` 的 auto 档跟随输入推断，**默认
+  参数下** webp/avif/视频帧 → jpg 全部落进 limited 存储，而 **JPEG 没有任何范围载体**（marker 实测只有
+  COM/DQT/DHT/SOF0/SOS），libjpeg/WIC/浏览器按满量程直取 ⇒ 发灰（webp(tv)→jpg 默认参数：PIL 对源
+  **45.16 → 25.67 dB**）。**最终口径**：**auto 档压回 pc**（HEAD 语义，yuvj 满量程 = JPEG 事实标准；
+  旧记「jpg 三档同值 `118,17,243`」**作废**）；**显式 `--color-range tv` 才放行**（产物真写 limited
+  `pix_fmt=yuv420p` / `ffprobe color_range=tv` / 读回 `120,16,245`）并**出声播报**（libjpeg/WIC 会发灰）；
+  webp 出口显式 pc 被压成 tv 同样播报。
+  判据 = `verify-color-token-normalize` G 段 R7/R7b/R7b'/R8-PSNR（含像素侧负控：pc 确实改变读回像素
+  ⇒ 不是空跑；PSNR 由门禁自己用 ffmpeg `psnr` 滤镜现算并打印）+ H 段 R9a–R9f（零产物负控 + 放行
+  必须出声）+ I 段 R10a–R10d（auto 压回 pc：命令行/载体/像素三层 + 重标尺负控），整脚本
+  **58→64/0**；`verify-decision-delivery` ⑨ 另加整图 PSNR 兜底 **94/0**。
 
 **版本轨迹补记（更正条目——beta10 重出 #2/#3/#4 当时未记入本日志，按「不回改旧条目」规矩补记于此）**：
 v1.6.0-beta10 同一版本位共五次成包——首发 `0640fb5`（10-28）→ 重出 #1 `9ea68f3`（同日：版本位从 beta11 拉回 beta10，`1.6.0BETA11` tag 删除）→ 重出 #2 `af8ae9b`、#3 `775d210`（10-29）→ 第四次重指：`1.6.0BETA10` tag 于 10-30 移到 `5fd3996`（含 `bb9a809` 随包工具换源与 JXR 输出格式下拉修复），无 release 提交。publish/ 现仅存此档两包（app 11,430,807 B / full 55,853,619 B，2026-11-02 核对）。
