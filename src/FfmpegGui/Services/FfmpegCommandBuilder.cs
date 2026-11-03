@@ -575,18 +575,63 @@ namespace FfmpegGui.Services
             }
 
             // ── 输出色彩范围 ──
-            // 优先级: 用户显式选择 (tv/pc) > 自动 (RGB 输入 → pc)
-            // 修复：PC 范围图片（TIFF/PNG 等恒为全范围 RGB）转 AVIF 等 YUV 格式时，
-            // 输入侧已在 -i 前声明 pc，但输出侧未声明 → swscale 默认按 limited (tv)
-            // 矩阵转换（黑位压缩）且编码器将输出标记为 tv。
-            // 输出侧 -color_range：① 控制 swscale 转换矩阵（full/limited 完整映射）
-            // ② AV1/AVIF 写入对应范围标记（CICP full_range_flag）。
+            // 优先级: 用户显式选择 (tv/pc) > 自动 (跟随输入 pix_fmt 推断)
+            // 输出侧 -color_range 有两个作用：① 控制 swscale 转换（full/limited 完整映射）；
+            // ② 让**带范围标记**的容器（AV1/AVIF 的 CICP full_range_flag、yuv* 系 mkv/mp4）记下它。
+            // ⚠ 对**写不进范围标记**的容器（WebP/JPEG）它只剩作用 ①：存储值按声明范围摆，而解码端
+            //   不会读到任何标记、只能按自己的固定假设解释 ⇒ 声明与「解码端假设」不一致就是**像素错位**。
+            //   WebP：libwebp 只认 full range 的**语义**，但本仓实测（2026-11-02，`a2_srgb_p3.png` 512×384
+            //   源 116,20,244 → webp → 读回）解码那条腿 ffprobe 报 `color_range=tv`：
+            //     · 输出侧不发 `-color_range`（=编码器默认）  ⇒ 读回 116,16,237，对源 PSNR 31.88 dB
+            //     · 输出侧发 `-color_range tv`                ⇒ 读回 116,16,237，PSNR 31.88 dB（与不发逐像素等价）
+            //     · 输出侧发 `-color_range pc`                ⇒ 读回 104,9,240，PSNR 28.22 dB（丢 3.7 dB）
+            //   ⇒ WebP 的出口口径是 **limited 存储 + limited 解读**（自洽，无错位）；强行发 pc 反而把
+            //     满量程数据塞进一个会被按 limited 拉伸的栅格。旧注释「tv 数据会发灰 ⇒ 回退 pc」方向错了。
             var outRange = ResolveOutputColorRange(options.ColorRange, inputColorRange);
-            // JPEG/WebP 规范恒为 full range：mjpeg 编码器拒绝 limited 输入（编码失败），
-            // WebP 容器无范围标记（tv 数据会发灰）。防御性回退 pc（预设注入等旁路）。
-            if ((fmt is "jpg" or "jpeg" or "webp") && outRange == "tv")
+            // 「显式 tv/pc」= 用户真的给了 --color-range（ResolveOutputColorRange 对显式值原样返回；
+            //   auto 档返回的是**输入推断值**）。⇒ 下面的 auto 压制只准作用于 auto 档，不得吞显式请求。
+            var userRange = options.ColorRange;
+            bool rangeExplicit = userRange is not null
+                && (string.Equals(userRange, "tv", StringComparison.OrdinalIgnoreCase)
+                 || string.Equals(userRange, "pc", StringComparison.OrdinalIgnoreCase));
+            // WebP：容器无范围标记且解码端按 limited 解释 ⇒ 只发 tv，**绝不发 pc**。
+            //   （实测：webp 出口发 tv 与**不发参数**逐字节同哈希 2402 B；发 pc 则 2538 B 且对源丢
+            //   3.66 dB——满量程数据被摆进会被按 limited 拉伸的栅格。出口语义由后置 ICCP 块描述。
+            //   显式 pc 被压掉必须**出声**，不许静默吞请求（:167 起「吃不下就出声」的规矩）。）
+            if (fmt == "webp")
             {
-                outRange = "pc";
+                if (rangeExplicit && string.Equals(userRange, "pc", StringComparison.OrdinalIgnoreCase))
+                {
+                    ColorMapping.ImageEncoderArgs.EmitWarn("⚠ [webp] --color-range pc ignored: libwebp output is limited-range only in this build; "
+                        + "emitting pc misplaced full-range data (measured -3.66 dB vs source). "
+                        + "The post-embedded ICC (ICCP chunk) still describes the true intent.");
+                }
+                outRange = "tv";
+            }
+            // JPEG 的**载体事实**（2026-11-03 marker 实测）：JFIF/EXIF 里没有任何范围标记——产物只有
+            //   COM/DQT/DHT/SOF0/SOS，无 APP0/APP2(ICC)/APP14(Adobe)/EXIF；ffprobe 报 `color_range=tv`
+            //   只是从 pix_fmt=yuv420p 反推的，文件本身没写。⇒ limited 存储只对 ffmpeg 家族自洽，
+            //   libjpeg/WIC/浏览器一律按满量程直取 ⇒ 发灰（审阅实测 webp(tv)→jpg 默认参数：PIL 对源
+            //   45.16 dB → 25.67 dB，约 -19.5 dB）。而 mjpeg 编码器又把 limited 判作「非标准」拒编
+            //   （`-color_range tv` 零产物，exit=1，stderr `Non full-range YUV is non-standard, set
+            //   strict_std_compliance to at most unofficial`），要写 limited 必须加 `-strict unofficial`。
+            // ⇒ 两条路（2026-11-03 定稿，取代当日早先「auto 也放行」的写法）:
+            //   · **auto 档**：输入 yuv* 会被 ResolveOutputColorRange 跟出 tv——这里**压回 pc**（HEAD 语义，
+            //     yuvj 满量程 = JPEG 事实标准）。此前把 auto 也放行成 limited，默认路径上 webp/avif/视频帧
+            //     → jpg 全部落进 limited 存储（审阅实测第三方解码 -19.5 dB）⇒ 本轮修（run i 因此停跑重计）。
+            //   · **显式 --color-range tv**：尊重请求放行（tv + `-strict unofficial`），但**出声**：
+            //     载体没写范围，非 ffmpeg 解码端会按满量程解（见 EmitWarn 文案）。
+            bool jpgOrJpeg = fmt is "jpg" or "jpeg";
+            if (jpgOrJpeg && outRange == "tv" && !rangeExplicit)
+            {
+                outRange = "pc"; // auto ⇒ 压回 pc（HEAD 语义），理由见上「载体事实」
+            }
+            bool jpegLimited = jpgOrJpeg && outRange == "tv"; // 只剩显式 tv 能到这里
+            if (jpgOrJpeg && jpegLimited)
+            {
+                ColorMapping.ImageEncoderArgs.EmitWarn("⚠ [jpeg] --color-range tv honored via -strict unofficial: JPEG/JFIF carries no range "
+                    + "marker, so this file stores limited-range data that only the ffmpeg family reads back as limited; "
+                    + "libjpeg/WIC/browsers assume full range and will show it washed out. Omit --color-range for standard JPEG.");
             }
             if (!string.IsNullOrWhiteSpace(outRange)
                 && !isRgbNativeFmt
@@ -594,6 +639,11 @@ namespace FfmpegGui.Services
             {
                 args.Add("-color_range");
                 args.Add(outRange);
+                if (jpegLimited)
+                {
+                    args.Add("-strict");
+                    args.Add("unofficial");
+                }
             }
 
             // ── 元数据映射（根据 ICC 模式决定保留或丢弃元数据）──
@@ -1656,6 +1706,12 @@ namespace FfmpegGui.Services
             // `meta` ⇒ `ProbeInputPixFmtForEngine` 恒得 ""，`ResolveSrcCodeMax` 的 gray*/yuvj* ⇒ 65280
             // 细分永不生效（8-bit 恒按 RGB 尺 65283 归一，实测顶码 65532）。与位深/alpha 同源同缓存。
             meta.pixFmt = ffMeta.pixFmt;
+            // 与 pixFmt 同源同缓存：`colorRange` 也只写在 `ProbeWithFfprobeOnce` 的局部 `meta` 里，
+            // 此前**没有**拷回外层 ⇒ `ProbeInputColorRange`（:1399）恒得 null ⇒ 输入侧 `-color_range`（:70-76）、
+            // 输出侧 `ResolveOutputColorRange`（:1150-1160）与 setparams 的 `range=`（:2324-2325）三处
+            // 「按设计该发声」的路径**恒静默**。无条件赋值（与 hasAlpha/isRgb 同款），不保留 exiftool 的旧值：
+            // 范围是 ffprobe 的 pix_fmt 推断唯一来源，exiftool 不提供。
+            meta.colorRange = ffMeta.colorRange;
             if (string.IsNullOrWhiteSpace(meta.colorSpace)) meta.colorSpace = ffMeta.colorSpace;
             // 语义缺失时才回退 ffprobe 的 primaries/trc
             if (!meta.hasIccSemantics)

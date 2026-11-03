@@ -292,14 +292,38 @@ else {
 # ── ⑨ 两条路径的像素一致性（P7d 回归锁）──
 # 同一份 Display P3 内容，走主分支（p3.png→webp）与走 JXL 专用通路（p3.jxl→webp，djxl→ffmpeg 管道）
 # 必须交付**同一套像素值**。这一条当初确实是红的（94,22,238 vs 116,16,237）：
+#   ⚠ 这两个历史红值**无当轮 log 可指**（只在 docs/TESTING.md 与几处脚本注释里传抄，
+#   `tests/output` 递归 0 命中）⇒ 按「读数必须能指到某条命令的日志」的规矩，它们只能当**当时的
+#   叙述**读，不能当可复核读数；可复核的是下面 `⑨-b`/`⑨-c` 每轮现算并打印的 PSNR。
 # 管道输入是 stdin `-` ⇒ 位深/alpha 探测必然失败 ⇒ `-pix_fmt` 被静默跳过 ⇒ 编码器自选像素格式。
 # 修法是 BuildArguments(..., probeInputPath)：stdin 时用真实源文件做探测替代。
 # ⚠ 对照要拿 CLI 的真实命令做：不写 `-c:v`（webp muxer 默认选 **libwebp_anim**）。
 #   手敲时多加一个 `-c:v libwebp` 就会得到 97,23,247——那是对照伪影，不是产品缺陷（踩过）。
+#
+# ⚠ 本条锁的是「stdio 探测失败 ⇒ `-pix_fmt` 被静默跳过」，**不是** `-color_range`：webp 出口已统一
+#   压回 tv（`FfmpegCommandBuilder.cs` 的 577 区），两臂的范围参数本来就相同，唯一区分量只剩 pix_fmt
+#   的探测来源。⇒ 将来看到「webp 都压到 tv 了」**别**以为这条锁失效而删它（2026-11-03 审阅提醒）。
+#
+#  判据形态：`$pa -eq $pb` 只是快判（两路**一起**错就放行）+ 1×1 单点（只有左上角之外的区域偏差
+#   就放行）。下面接两层：①`⑨-b` 两臂互比的**整图** PSNR 必须 ≥ 40 dB（同一编码器同参数 ⇒ 理应逐
+#   像素相同，实测 99 = inf 被压成 99）；②`⑨-c` 两臂各自对**同一源**的 PSNR 必须互差 ≤ 1 dB 且较大
+#   者 ≥ 25 dB（真同构，且不许两臂一起烂）。两条都打印读数 ⇒ 每轮可复核，不依赖上面的历史红值。
 if ($r.file -and $r7.file) {
     $pa = Px $r.file.FullName; $pb = Px $r7.file.FullName
     if (-not $pa -or -not $pb) { CK $false "两条路径的像素读不出（主=$pa 专用=$pb）——**不得当通过**" }
     else { CK ($pa -eq $pb) "同一内容的 webp：两条路径像素一致（主分支=$pa ｜ JXL管道=$pb）——P7d 回归锁" }
+    # 整图兜底：两臂互比的整图 PSNR 必须极高（同一编码器、同参数 ⇒ 理应逐像素相同）
+    if ($r.file -and $r7.file) {
+        $qAB = PsnrTwo $r.file.FullName $r7.file.FullName $graphSame
+        CK ($qAB -ge 40) "⑨-b 整图兜底：两条路径 webp 互比 PSNR ≥ 40 dB（实 $qAB）——防「只左上 1px 相同、其余区域偏」"
+    }
+    # 绝对锚：两臂各自对**同一源**的 PSNR 必须互差 < 1 dB（真同构），且不得同时过低（两臂同错）
+    if ($r7.file -and $r.file) {
+        $qA = PsnrTwo $r.file.FullName $p3 $graphSame
+        $qB = PsnrTwo $r7.file.FullName $p3 $graphSame
+        Write-Output "  ⑨-c 读数：主分支对源 $qA dB ｜ JXL管道对源 $qB dB"
+        CK (([math]::Abs($qA - $qB) -le 1.0) -and ([math]::Max($qA, $qB) -ge 25)) "⑨-c 两臂对源同构且不失真（差 $([math]::Round([math]::Abs($qA - $qB), 2)) dB ≤ 1，较大者 $([math]::Max($qA, $qB)) ≥ 25 dB）"
+    }
 } else {
     CK $false "⑨ 无法执行（缺 ①/⑦ 产物）"
 }

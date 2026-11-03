@@ -407,7 +407,18 @@ function Get-EquivalenceClasses {
             # ⚠ 2026-10-25：字面量随矩阵口径修复而变（bt709 → ContainerYuvMatrix(fmt)，实值 bt470bg），
             #   行号 1015 → **1021**（本轮在 GetFormatColorCapabilities 前加了注释与 helper 引用）。
             #   证据仍钉「JPEG 位深 8 + 该出口的矩阵取值来自唯一真源」这两件事。
-            'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:1021|options.JpegGainMap ? null : "iec61966-2-1", ColorSpaceRegistry.ContainerYuvMatrix(fmt), 8, true'
+            # ⚠ 2026-11-03（webp 出口范围口径批）：1021 → **1028**（+7）。成因 = 同文件 `:577-621`
+            #   输出范围段重写（净 +7 行），其下方全部下移；字面量与语义一字未动。
+            # ⚠ pin 演进（2026-11-03，jpeg limited 放行批）：**再 +16**。成因 = 同文件 577 区新增的
+            #   「jpeg 显式 tv 须加 `-strict unofficial` 放行」注释与旗子（`git diff -U0` 实读 16 增 0 删）。
+            #   ⚠ 本次抬号同样是静态对比发现的（第二、第三次都是）⇒「改 577 区就重跑探针核 pin」
+            #   这条规矩还没形成肌肉记忆；下次改完就地跑，别等审查。
+            # ⚠ pin 演进（2026-11-03，jpeg auto 回归修复批）：**再 +27**（1044 → **1071**）。成因 = 同文件 577 区
+            #   重写为「auto 档压回 pc + 显式 tv 放行 + 两处 EmitWarn」——审阅 M1 实测：auto 原先把
+            #   limited 写进无范围载体的 JPEG，第三方解码器对源 -19.5 dB（45.16 → 25.67）；run i 为此
+            #   停跑重计。jpg 位深 8 锚点字面量与语义未动。
+
+            'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:1071|options.JpegGainMap ? null : "iec61966-2-1", ColorSpaceRegistry.ContainerYuvMatrix(fmt), 8, true'
         )
         Rationale = 'JPEG container caps bit depth at 8 and DecideOutputColor rewrites options.BitDepth in place, so 8/10/12/16 are observationally equal'
     }
@@ -423,7 +434,17 @@ function Get-EquivalenceClasses {
             'src/FfmpegGui/Services/FfmpegCommandBuilder.Decision.cs:154|if (options.BitDepth.HasValue && options.BitDepth.Value > capBd)',
             'src/FfmpegGui/Services/FfmpegCommandBuilder.Decision.cs:162|options.BitDepth = capBd;',
             # ⚠ 2026-10-25：同 jpeg8 那条 —— 字面量改为 ContainerYuvMatrix(fmt)，行号 1025 → **1033**。
-            'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:1033|return (null, "iec61966-2-1", ColorSpaceRegistry.ContainerYuvMatrix(fmt), 8, true);'
+            # ⚠ 2026-11-03（webp 出口范围口径批）：1033 → **1040**（+7），同 metadata-core 的成因；字面量未动。
+            # ⚠ pin 演进（2026-11-03，jpeg limited 放行批）：**再 +16**。成因 = 同文件 577 区新增的
+            #   「jpeg 显式 tv 须加 `-strict unofficial` 放行」注释与旗子（`git diff -U0` 实读 16 增 0 删）。
+            #   ⚠ 本次抬号同样是静态对比发现的（第二、第三次都是）⇒「改 577 区就重跑探针核 pin」
+            #   这条规矩还没形成肌肉记忆；下次改完就地跑，别等审查。
+            # ⚠ pin 演进（2026-11-03，jpeg auto 回归修复批）：**再 +27**（1056 → **1083**）。成因 = 同文件 577 区
+            #   重写为「auto 档压回 pc + 显式 tv 放行 + 两处 EmitWarn」——审阅 M1 实测：auto 原先把
+            #   limited 写进无范围载体的 JPEG，第三方解码器对源 -19.5 dB（45.16 → 25.67）；run i 为此
+            #   停跑重计。webp 位深 8 锚点字面量与语义未动。
+
+            'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:1083|return (null, "iec61966-2-1", ColorSpaceRegistry.ContainerYuvMatrix(fmt), 8, true);'
         )
         Rationale = 'WebP container caps bit depth at 8 and DecideOutputColor rewrites options.BitDepth in place, so 8/10/12/16 are observationally equal'
     }
@@ -688,7 +709,29 @@ function Get-SemanticMatrices {
 #   `RawColorPipeline.ResolveSrcCodeMax` 区间插入「载体细分 + 顶码回拷」的实测分支（净 +14 行，
 #   `git diff --numstat` 实读见同批 src 改动面）⇒ 其**下方**行号整体下移；字面量与语义一字未动。
 #   抬号前 `grep -n -F` 复核：该字面量全文件**只命中 1 次**，实况行 = 2422。
-                'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:2422|bool exiftoolFormats = fmt is "jpg" or "jpeg" or "png" or "tiff" or "webp";'
+# ⚠ pin 演进（2026-11-02，批次 D `colorRange` 回拷批）：2422 → **2428**（+6）。成因 = 本轮在
+#   `ProbeWithFfprobeOnce` 的回拷段（`:1681` 的 `meta.pixFmt = ffMeta.pixFmt;` 之后）加了
+#   `meta.colorRange = ffMeta.colorRange;` 与 5 行注释（`git diff --numstat` 实读 6 增 0 删）⇒
+#   其**下方**行号整体下移 6；字面量与语义一字未动。抬号前 `rg -n -F` 复核：该字面量全文件
+#   **只命中 1 次**，实况行 = 2428。本条由 A30 当场报出（`fail=1`，点名 2422 而 found at 2428）
+#   ⇒ 是**锁生效**，不是产品回归。
+# ⚠ pin 演进（2026-11-03，webp 出口范围口径批）：2428 → **2435**（+7）。成因 = 本轮在
+#   `FfmpegCommandBuilder.cs:577-621` 的输出范围段重写注释、删掉「jpg/jpeg/webp + tv ⇒ 回退 pc」的
+#   反向分支、改成 `if (fmt == "webp") outRange = "tv";`（同批 23 增 10 删；该区净 +7 行）⇒ 其**下方**
+#   行号整体下移 7；字面量与语义一字未动。抬号前 `rg -n -F` 复核：该字面量全文件**只命中 1 次**，
+#   实况行 = 2435。⚠ 注意本次抬号**不是**由 A30 当场报出，而是文档审查子 agent 静态比对发现的 ——
+#   A30 要等整轮跑到第 55 条才会红（当时整轮已因别的缘故停过），教训：改 `FfmpegCommandBuilder.cs`
+#   的 577 区之后，**必须立刻**重跑 `_probe-matrix-structure` 并核这 4 处 pin，别等整轮。
+                # ⚠ pin 演进（2026-11-03，jpeg limited 放行批）：**再 +16**。成因 = 同文件 577 区新增的
+                #   「jpeg 显式 tv 须加 `-strict unofficial` 放行」注释与旗子（`git diff -U0` 实读 16 增 0 删）。
+                #   ⚠ 本次抬号同样是静态对比发现的（第二、第三次都是）⇒「改 577 区就重跑探针核 pin」
+                #   这条规矩还没形成肌肉记忆；下次改完就地跑，别等审查。
+                # ⚠ pin 演进（2026-11-03，jpeg auto 回归修复批）：**再 +27**（2451 → **2478**）。成因 = 同文件 577 区
+                #   重写为「auto 档压回 pc + 显式 tv 放行 + 两处 EmitWarn」——审阅 M1 实测：auto 原先把
+                #   limited 写进无范围载体的 JPEG，第三方解码器对源 -19.5 dB（45.16 → 25.67）；run i 为此
+                #   停跑重计。exiftoolFormats 锚点字面量与语义未动。
+
+                'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:2478|bool exiftoolFormats = fmt is "jpg" or "jpeg" or "png" or "tiff" or "webp";'
             )
         },
         @{
@@ -710,7 +753,20 @@ function Get-SemanticMatrices {
                 #   唯一性同样已 `grep -n` 核过。
                 'src/FfmpegGui/Services/ColorMapping/ImageEncoderArgs.cs:804|AvifMaxBitDepthForEncoder(string? encoder)',
                 # ⚠ pin 演进（2026-10-25）：1057 → **1065**（+8），同 metadata-core 的成因；字面量未动。
-                'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:1065|return (null, null, null, ColorMapping.ImageEncoderArgs.AvifMaxBitDepth(options), false);',
+                # ⚠ pin 演进（2026-11-03，webp 出口范围口径批）：1065 → **1072**（+7）。成因 = 本轮在
+                #   `FfmpegCommandBuilder.cs` 的输出 `-color_range` 段（`:577-621`，含后加的 jpeg limited 放行段）重写注释并删掉反向回退
+                #   （`git diff --numstat` 实读 23 增 10 删 = 净 +13，其中 :577-604 区净 +7，其余在回拷段）
+                #   ⇒ 其**下方**行号整体下移；字面量与语义一字未动。
+                # ⚠ pin 演进（2026-11-03，jpeg limited 放行批）：**再 +16**。成因 = 同文件 577 区新增的
+                #   「jpeg 显式 tv 须加 `-strict unofficial` 放行」注释与旗子（`git diff -U0` 实读 16 增 0 删）。
+                #   ⚠ 本次抬号同样是静态对比发现的（第二、第三次都是）⇒「改 577 区就重跑探针核 pin」
+                #   这条规矩还没形成肌肉记忆；下次改完就地跑，别等审查。
+                # ⚠ pin 演进（2026-11-03，jpeg auto 回归修复批）：**再 +27**（1088 → **1115**）。成因 = 同文件 577 区
+                #   重写为「auto 档压回 pc + 显式 tv 放行 + 两处 EmitWarn」——审阅 M1 实测：auto 原先把
+                #   limited 写进无范围载体的 JPEG，第三方解码器对源 -19.5 dB（45.16 → 25.67）；run i 为此
+                #   停跑重计。avif 位深上限 锚点字面量与语义未动。
+
+                'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:1115|return (null, null, null, ColorMapping.ImageEncoderArgs.AvifMaxBitDepth(options), false);',
                 'src/FfmpegGui/Services/FfmpegCommandBuilder.Decision.cs:162|options.BitDepth = capBd;'
             )
         }
