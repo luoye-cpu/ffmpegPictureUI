@@ -12,7 +12,78 @@
 
 ## 📝 更新日志
 
-### 未发布（开发线 2026-11-02，`753cb33`）— 门禁 87→94、托盘常驻/关窗退出修复、UI 执行面切拆分件、白点出口顶码归一、视图扩展名统一 `.xaml`
+### v1.6.0-beta12 (2026-11-04) — 托盘黑洞修复（Windows 换原生 Shell_NotifyIcon，NIM_ADD 返回值=托盘真可用唯一真源）+ GainMap 批次 E 审阅修复
+
+**缺陷实况（维护者报障）**：软件运行后关窗，右下角没有任何托盘图标，进程却常驻后台——窗口消失、图标不存在、唯一出口是任务管理器。
+
+**根因（UIA + Win32 探针实证，本机 Win11 26300）**
+
+- Avalonia 12.1.4 的 `TrayIcon` 在本机**从不真正向 shell 注册**：standalone 创建、挂 `TrayIcon.Icons` 附加集合、真实 app 三种方式，UIA 枚举任务栏+溢出区（含展开弹窗的全名单）均 0 命中；而其 `IsVisible` 属性**自报 True**。
+- 旧实现把「Avalonia 自报可见」当「托盘真可用」（`create=ok IsVisible=True` 落 tray.log，第 85 条门禁 ⑥ 按同一自证转绿）⇒ `_trayAvailable=true` ⇒ 关窗被拦进 `HideMainWindowToTray` ⇒ 黑洞。
+- 同机对照：直接 `Shell_NotifyIcon(NIM_ADD)` 从**正常 medium-IL 无限制 token**（explorer 代启）**成功**（托盘按钮数 +1）；从**提权**（High IL）与**受限**（runas `/trustlevel:0x20000`）上下文一律 **FALSE + GetLastError=5 (ACCESS_DENIED)**。
+
+**修复（`src/FfmpegGui/Win32TrayIcon.cs` 新增 + `App.xaml.cs` 接线）**
+
+- Windows 侧弃用 Avalonia `TrayIcon`，改为自研原生托盘：自带 STA 消息泵线程 + 隐藏消息窗口 + `TrackPopupMenu` 菜单（显示主窗口 / 暂停队列 / 退出；左键单击 = 显示主窗口）；图标经 `SHDefExtractIconW` 从本进程 exe 提取（绕开 Avalonia 的 PNG→WindowIcon→HICON 链，UiTestHost C20c 曾实测该链可解出 1×1）；`TaskbarCreated` 广播后自动重挂（Explorer 重启韧性）。非 Windows 平台保留 Avalonia 路径原样。
+- **NIM_ADD 的真实返回值 = `_trayAvailable`**：失败（典型：提权/受限上下文被 shell 拒绝）⇒ `create=failed` 落 tray.log、`TrayFailureReason` 进 ⚙ 设置菜单回显、关窗走真退出——「不许藏成不可见进程」契约由返回值兜底而非组件自报。托盘线程事件一律 marshal 回 UI 线程；泵线程异常降级不崩进程。
+- 菜单文案三句提为 `TrayLabel*` 共用字段（Win32 与 NativeMenu 两路径引用同一份，CJK 硬编码锁净 0；失败原因文本改 ASCII）。`_probe-cjk-hardcode-scan` 复跑 **PASS=14 FAIL=0**。
+- `create=failed` 行内联 `IsVisible=False`：图标定义上不可见，同时让门禁 ⑦ 的「IsVisible=False」断言与运行上下文无关。
+- 门禁 85 ④ 增补**契约第三态**判读（判据形态收紧，不是放宽）：关窗退出时若 tray.log 带 `create=failed` ⇒ PASS（托盘不可用 ⇒ 真退出合法）；退出但 `create=ok` ⇒ 仍 FAIL（拦截链路断了，旧语义保留）。门禁头部本就写着「三态判读」，此前只有两态有判据。
+
+**实机验证（开发件 `src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.exe` + 出货包，提权上下文）**
+
+- 启动：tray.log `create=failed IsVisible=False reason=Shell_NotifyIcon(NIM_ADD) denied (err=5) ... => real exit`（诚实失败，不再自报成功）。
+- 关窗（WM_CLOSE）：`window closing ⇒ real exit (closeToTray=True trayAvailable=False)` → `exit requested` → **进程退干净**，黑洞消除。日志在 `tests/output/_tmp/tray-debug/run3..run5/`。
+- 正常上下文（用户双击，medium-IL）：机制上 NIM_ADD 将成功 ⇒ 图标应出现（explorer 代启探针已证 shell 接受正常 token 的 NIM_ADD；app 级最终确认待维护者双击复验）。**托盘退出菜单 / 左键恢复窗口**两条链路未做程序化点击实测（点击属交互面）。
+
+**GainMap 批次 E（审阅面修复，同档随附）**
+
+- 方向位（审阅面 1）：ISO flags bit2（backwardDirection）置位时**以标志为准**——旧写法无条件用 headroom 覆写 `BaseRenditionIsHdr`，与 `ParseIso21496` 的 bit2 语义自相矛盾（bit2=1 而 headroom 读数相反时，显式标志被静默翻掉）；未置位沿用 headroom 推断（libavif 兼容）。ISO `min_version>0` 此前**静默降级 SDR**，现经 `IsoMinVersionSkipped` 透传点名。
+- 承载格式单一真值（审阅面 2 M2）：`GainMapEncoder.FormatCarriesGainMap`——分派/契约拒绝/规划表三处各写一份字面量表已漂移（jpegli 在规划表声称支持而分派不认），收敛后分派与拒绝判据一律读它（jpegli 在 CLI 解析期已归一 jpg，列入是表意收敛）。
+- 增益图产物不拷源 XMP（审阅面 2 M1）：`ExifToolService` 新增 `excludeGainMapXmp`——编码器自写载体（ISO APP2 / hdrgm XMP / both）才是权威，拷入源 XMP 会与双语义打架。
+- 预览失真（审阅面 2 M3）：avif+gainmap 的 `--dry-run` 此前打印普通 avif ffmpeg 命令（与实际执行的 tmap 出口失真），现点名纯托管 tmap 管线。
+- 判据（本批复跑读数）：`verify-gainmap-isobmff` §3h（bit2 字节手术 + 原件负控，+12 条）总 **119/0**；`verify-gainmap-engine` §14（14a 预览诚实性 / 14b routable+`-e Cjpegli` 真增益图 / 14c 动画回归对照）总 **220/0**。
+
+**出包与验收读数（beta12）**
+
+- 版本位 `1.6.0-beta10 → 1.6.0-beta12`（beta11 已有归档与账本条目，按 §8 重出不复用版本号）；release 提交与 annotated tag `1.6.0BETA12` 随本档落地（§8.1：tag=可重现出包点，包内 `ProductVersion` 锚定 release 提交哈希）。⚠ 更正条目：`4044f76` 提交信息声称「标签 1.6.0BETA11 → bb04bba」，实测本地与远端（`git ls-remote`）**均无 1.6.0BETA11 tag**——该声明与现实不符，在此立此存照。
+- `pack.ps1 -Mode all`：双包落盘 `publish/FFmpegPictureUI-v1.6.0-beta12-x64.7z`（11,420,703 B）与 `-x64-full.7z`（55,856,762 B）。
+- 第 93 条 `verify-release-package`（PKG_VER=1.6.0-beta12）：**PASS=16 FAIL=0**（归档 582 文件与磁盘目录同数、14 必需项齐备、五工具同指纹、包内 exe `ProductVersion=1.6.0-beta12+ff2dbfd`、sha16 `2B4D42B03A50EEF6`）。
+- 第 85 条 `verify-package-gui-starts`（PKG_VER=1.6.0-beta12）：**PASS=6 FAIL=1**——唯一红是 ⑥（提权上下文 shell 拒绝 NIM_ADD，真读数）；④（第三态）/⑦ 两条全 PASS。
+- 旧包清理（§1「出包只留最新一档」）：删 `publish/FFmpegPictureUI-v1.6.0-beta11-x64{,-full}.7z` 与 `publish/build/FFmpegPictureUI-v1.6.0-beta11-x64{,-full}/`，删前扫描 732 项 **0 reparse point**，删后 `Test-Path` 全 False；`publish/PLAN` 与 beta12 双包保留。
+
+**门禁影响（如实）**
+
+- 第 85 条 ⑥（要求 `create=ok`）在**提权整轮**会转红——这是真读数：提权上下文 shell 确实拒绝托盘注册，⑥ 此前的绿是 Avalonia 谎报；**正常终端跑该门禁**（medium-IL）⑥ 预期转绿、④⑦ 两种上下文都绿。
+- 已知后续项（分析器级，不影响功能）：`Win32TrayIcon.cs` 两条告警——CA1416（`SetApartmentState` 平台守卫，调用点已被 `OperatingSystem.IsWindows()` 包住）与 IL3002（`Marshal.GetHINSTANCE` 单文件返回 -1；窗口类注册不解引用该值，功能已由包体门禁实测）。
+- 本批只跑相关链路（Release 构建 + CJK 扫描 + 门禁 85 ×2 + 验包 + 端到端读数），整轮 94 条未跑（§4「改动只跑所在链路」；全轮须正常终端会话）。
+
+### v1.6.0-beta11 (2026-11-03) — 动图输出新增「Telegram Sticker (WEBM)」：WebM/VP9 + alpha、长边 512、≤3s/≤30fps/无音轨、256KB 体积闭环
+
+> 本档包含下方「v1.6.0-beta11 开发线（2026-11-02）」批次的全部内容。本批另含 TG 视频贴纸与两项门禁维护；
+> 实机读数与产物见 `tests/output/tgsticker-a5a07cdd/`。
+
+**新增：Telegram 视频贴纸输出（动图格式下拉第 6 项 / CLI `--format webm`）**
+
+- UI：动图格式下拉新增 `Telegram Sticker (WEBM)`（ASCII 显示名 —— CJK 硬编码锁余量 0），`NormalizeFormat` → `webm`，输出扩展名直通 `.webm`。
+- 命令构建（`FfmpegCommandBuilder` `case "webm"`）：强制 `-c:v libvpx-vp9`（CLI 无 `--encoder` 时 options.Encoder 为空 ⇒ 不发 `-c:v`，而 webm muxer 默认选 **vp8**，必须补）；`-b:v 0 -crf`（CQ 恒定质量；质量轴 52 ⇒ crf 30 = 官方样例档）；`-an` 无音轨（Matroska 容器装得下音频，视频输入的默认选流会带上）；长边**恰 512**、另一边偶数且 ≤512（允许上采样，`scale='if(gt(iw,ih),512,-2)':…`）；`-t` 钳 ≤3s（未设时默认 3s）；fps 显式值钳 30、未设时用 `fps='min(30,source_fps)'` 表达式钳源帧率（随包 ffmpeg 实测支持）；多帧判据纳入 webm（防 `-frames:v 1` 把动图截成单帧）。
+- 透明通道：GIF pal8 → `rgba` → `yuva420p` 前置链；所有探测到 alpha 的输入显式 `-pix_fmt yuva420p`（8-bit auto 档不发通用 `-pix_fmt`，编码器自协商会静默丢 alpha）；**alphamerge 通路不含 webm**（底图恒含 512 缩放 ⇒ 与原尺寸 alpha 源尺寸错配 = EINVAL，实测三例 `-22` 零产物后才定此口径）。
+- 色彩范围：出口恒 `tv`（swscale 对 RGB 源默认按 limited 计算；发 pc 会把 limited 摆进 full 栅格）。显式 `--color-range pc` 出声拒绝。往返 PSNR 实测 y=**46.67** / avg=**33.62 dB**（未洗白，与 webp 同族错标区的 28–32 dB 可区分）。
+- **256KB 体积闭环**（`QueueProcessor.EnsureTelegramStickerBudgetAsync`）：编码后查产物大小，超预算升 CRF 重编码（≤3 次、逐档出声）；仍超则响亮警告并保留最小产物（不静默降级）。调度点在 `colorPostStepsDone` 窗口内、重编码走 `FfmpegRunner` 保心跳。
+- 策略登记：`FormatCapabilitiesService`（质量可用 / 色度·位深·无损·ICC 不可用）、`EncoderDetectionService` 编码器/muxer/默认编码器三表、`ColorTransformPlan.Caps["webm"]`（无色彩通路，同 gif 口径）+ `CodecLoss.Lossy`、`ExitWritesIccFor`（webm=false，muxer 不写 ICC）；**不进** `IsEngineEncodable`（动画本就走 legacy，显式 engine 仍硬失败 90）。
+
+**实机验证（随包 ffmpeg，`tests/output/tgsticker-a5a07cdd/`）**
+
+- 7 组真机转换全部 exit=0：256×192/10fps GIF → vp9 512×384、10 帧保留、1.000s、无音轨、94 KB；60fps/12s/1024×768 噪声源 → **30/1 fps**、**3.000s**、长边 512，体积闭环 8.86MB→crf24→6.93MB→crf32→4.21MB→crf40→1.68MB（仍超 ⇒ 响亮警告，极限噪声件）；真透明 APNG → `alpha_mode=1`，libvpx 解码 alpha **0..255**、不透明源 255..255；`--color-range pc` → 出声拒绝并恒 tv；`--animation-fps 60` → 钳 30 并出声。
+- ⚠ 原生 vp9 解码器读不出 BlockAdditional alpha（ffmpeg 已知限制，仅 libvpx 解码器读）⇒ app 内预览/缩略图看 webm 贴纸会不透明；文件本身正确（`alpha_mode=1` + alpha 流，Telegram/libvpx 系解码端透明正常）。属平台属性，若需 app 内预览透明须另接 libvpx 解码（独立一批）。
+
+**门禁维护（同批）**
+
+- `_lib-matrix.ps1`：4 处 `FfmpegCommandBuilder` 行号钉因 `case "webm"` 插入整体下移 +85（1071→1156 / 1083→1168 / 1115→1200 / 2478→2563），按仓规同批重钉并登记演进；`_probe-matrix-structure` 复跑 8/0（MATRIX RESULT 38/0，变异对照仍有牙）。
+- `_probe-cjk-hardcode-scan.ps1`：判据桶基线 922→923（+1 归因 = 工作树内**先于本批**的并发在制品一行；本批新增字面量全 ASCII、新增注释为整行 `//`，净贡献 0）。复跑 PASS=14/0。
+- 覆盖边界（如实）：整轮 94 条**未跑**（本档只跑相关链路：Release 构建 + 上述两个文本探针 + 7 组真机转换）；UI 下拉未做 GUI 级点击实测（无头 CLI 覆盖不到 Avalonia 界面；下拉项与映射已进二进制，UTF-16 检得 `Telegram Sticker (WEBM)`）。
+
+### v1.6.0-beta11 开发线（2026-11-02，`753cb33`）— 门禁 87→94、托盘常驻/关窗退出修复、UI 执行面切拆分件、白点出口顶码归一、视图扩展名统一 `.xaml`
 
 > 本节是 beta10 重出之后、下一档发布之前的开发批次合计（`31498ea` → `f778280` → `753cb33`）。
 > 各项读数的完整账目见 `docs/HANDOVER.md` 与 `docs/review-2026-10-31/`。

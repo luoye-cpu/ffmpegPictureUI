@@ -13,7 +13,79 @@ All notable changes to this project are documented in this file.
 
 ## 📝 Changelog
 
-### Unreleased (development line 2026-11-02, `753cb33`) — gates 87→94, resident tray / close-to-exit fix, UI gate execution moved to split hosts, white-point exit normalized, views unified to `.xaml`
+### v1.6.0-beta12 (2026-11-04) — tray black-hole fix (Windows switches to native Shell_NotifyIcon; NIM_ADD return value = single source of truth for "tray really available") + GainMap batch-E audit fixes
+
+**Defect report (maintainer)**: after closing the window, no tray icon appears in the notification area while the process keeps running in the background — window gone, icon nonexistent, task manager the only exit.
+
+**Root cause (proven by UIA + a raw-Win32 probe on this machine, Win11 26300)**
+
+- Avalonia 12.1.4's `TrayIcon` **never actually registers with the shell** here: standalone creation, attaching to the `TrayIcon.Icons` attached collection, and the real app were all verified — UIA enumeration of the taskbar plus the opened overflow flyout (full name list) hits 0, while its `IsVisible` property **self-reports True**.
+- The old code treated "Avalonia's self-reported visibility" as "tray really available" (`create=ok IsVisible=True` in tray.log, and gate 85 ⑥ went green on the same self-certification) ⇒ `_trayAvailable=true` ⇒ closing the window was intercepted into `HideMainWindowToTray` ⇒ black hole.
+- Same-machine control: a raw `Shell_NotifyIcon(NIM_ADD)` from a **normal medium-IL unrestricted token** (launched via explorer) **succeeds** (tray button count +1); from **elevated** (High IL) and **restricted** (runas `/trustlevel:0x20000`) contexts it uniformly fails with **FALSE + GetLastError=5 (ACCESS_DENIED)**.
+
+**Fix (new `src/FfmpegGui/Win32TrayIcon.cs` + rewiring in `App.xaml.cs`)**
+
+- On Windows the Avalonia `TrayIcon` is replaced by a native tray implementation: its own STA message-pump thread + hidden message window + `TrackPopupMenu` menu (show main window / pause queue / exit; left click = show main window); the icon is extracted from the process exe via `SHDefExtractIconW` (bypassing Avalonia's PNG→WindowIcon→HICON chain, which UiTestHost C20c measured to decode to 1×1); icons are re-registered automatically after the `TaskbarCreated` broadcast (Explorer-restart resilience). Non-Windows platforms keep the Avalonia path unchanged.
+- **The real NIM_ADD return value = `_trayAvailable`**: on failure (typically: shell rejects elevated/restricted contexts) ⇒ `create=failed` in tray.log, `TrayFailureReason` surfaced in the ⚙ settings menu, and closing the window performs a real exit — the "never hide as an invisible process" contract is now backed by a return value instead of a component's self-report. Tray-thread events are marshaled to the UI thread; pump-thread exceptions degrade without crashing the process.
+- The three menu labels were hoisted into shared `TrayLabel*` fields (both the Win32 and NativeMenu paths reference the same source; the CJK hardcode lock stays at net zero; the failure-reason text is ASCII). `_probe-cjk-hardcode-scan` re-run: **PASS=14 FAIL=0**.
+- The `create=failed` line now carries an inline `IsVisible=False`: the icon is definitionally invisible there, and this makes gate ⑦'s "IsVisible=False" assertion context-independent.
+- Gate 85 ④ gains the **contract's third state** (a tightening of the assertion shape, not a relaxation): when closing exits the process AND tray.log carries `create=failed` ⇒ PASS (tray unavailable ⇒ real exit is contract-legal); exiting while `create=ok` ⇒ still FAIL (interception chain broken — old semantics kept). The gate header has described three-state reading all along; only two states previously had verdicts.
+
+**On-machine verification (dev build `src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.exe` + shipping package, elevated context)**
+
+- Startup: tray.log `create=failed IsVisible=False reason=Shell_NotifyIcon(NIM_ADD) denied (err=5) ... => real exit` (honest failure; no more false success).
+- Window close (WM_CLOSE): `window closing ⇒ real exit (closeToTray=True trayAvailable=False)` → `exit requested` → **process exits cleanly**; the black hole is gone. Logs live in `tests/output/_tmp/tray-debug/run3..run5/`.
+- Normal context (user double-click, medium-IL): mechanically NIM_ADD will succeed ⇒ the icon should appear (the explorer-launched probe already proved the shell accepts NIM_ADD from normal tokens; app-level final confirmation awaits the maintainer's double-click). The **tray exit menu / left-click restore** paths were not exercised by programmatic clicks (interaction surface).
+
+**GainMap batch E (audit-surface fixes, ships in this release)**
+
+- Direction flag (audit surface 1): when ISO flags bit2 (`backwardDirection`) is set, **the flag wins** — the old code unconditionally overwrote `BaseRenditionIsHdr` from the headroom comparison, contradicting `ParseIso21496`'s bit2 semantics (bit2=1 with an opposite headroom reading silently flipped the explicit flag); when unset, the headroom inference stays (libavif compatible). An ISO `min_version>0` previously **degraded to SDR silently**; it is now surfaced via `IsoMinVersionSkipped`.
+- Carrier-format single source of truth (audit surface 2 M2): `GainMapEncoder.FormatCarriesGainMap` — dispatch / contract rejection / planning table each carried their own literal table and had drifted (jpegli claimed in the planning table but unrecognized by dispatch); both consumers now read this one member (listing jpegli is semantic convergence — the CLI normalizes it to jpg at parse time).
+- Gain-map products stop copying source XMP (audit surface 2 M1): `ExifToolService` gains `excludeGainMapXmp` — the encoder-written carrier (ISO APP2 / hdrgm XMP / both) is the authority; copying source XMP would clash with the dual semantics.
+- Preview distortion (audit surface 2 M3): `--dry-run` for avif+gainmap used to print a plain avif ffmpeg command (diverging from the actually executed tmap exit); it now names the pure-managed tmap pipeline.
+- Gates (re-run readings in this batch): `verify-gainmap-isobmff` §3h (bit2 byte-surgery + original-file negative control, +12 assertions) totals **119/0**; `verify-gainmap-engine` §14 (14a preview honesty / 14b routable+`-e Cjpegli` produces a real gain map / 14c animation regression control) totals **220/0**.
+
+**Packaging & acceptance readings (beta12)**
+
+- Version bit `1.6.0-beta10 → 1.6.0-beta12` (beta11 already has archives and a ledger entry; per §8 a re-release never reuses a version number); the release commit and annotated tag `1.6.0BETA12` land with this entry (§8.1: tag = reproducible packaging point; the in-package `ProductVersion` anchors the release-commit hash). ⚠ Correction entry: commit `4044f76`'s message claims "标签 1.6.0BETA11 → bb04bba", but neither local nor remote (`git ls-remote`) has a 1.6.0BETA11 tag — the claim does not match reality, recorded here for the record.
+- `pack.ps1 -Mode all`: both archives on disk — `publish/FFmpegPictureUI-v1.6.0-beta12-x64.7z` (11,420,703 B) and `-x64-full.7z` (55,856,762 B).
+- Gate 93 `verify-release-package` (PKG_VER=1.6.0-beta12): **PASS=16 FAIL=0** (archive's 582 files match the disk dir, 14 required members present, five tool fingerprints identical, in-package exe `ProductVersion=1.6.0-beta12+ff2dbfd`, sha16 `2B4D42B03A50EEF6`).
+- Gate 85 `verify-package-gui-starts` (PKG_VER=1.6.0-beta12): **PASS=6 FAIL=1** — the only red is ⑥ (elevated context, shell refuses NIM_ADD; a real reading); ④ (third state) and both ⑦ assertions PASS.
+- Old-package cleanup (§1 "keep only the newest release"): removed `publish/FFmpegPictureUI-v1.6.0-beta11-x64{,-full}.7z` and `publish/build/FFmpegPictureUI-v1.6.0-beta11-x64{,-full}/`; pre-delete scan covered 732 items with **0 reparse points**; post-delete `Test-Path` all False; `publish/PLAN` and the beta12 archives kept.
+
+**Gate impact (as-is)**
+
+- Gate 85 ⑥ (requires `create=ok`) will turn red in **elevated full rounds** — that is a real reading: the shell genuinely refuses tray registration from elevated contexts, and ⑥'s previous green was Avalonia lying; from a **normal terminal** (medium-IL) ⑥ is expected to turn green, while ④⑦ are green in both contexts.
+- Known follow-ups (analyzer-level, functionality unaffected): two warnings in `Win32TrayIcon.cs` — CA1416 (`SetApartmentState` platform guard; the call site is already wrapped in `OperatingSystem.IsWindows()`) and IL3002 (`Marshal.GetHINSTANCE` returns -1 in single-file; window-class registration never dereferences it, functionality proven by the package gate).
+- This batch ran only the relevant chain (Release build + CJK scan + gate 85 ×2 + package verification + the end-to-end readings above); the full 94-gate round was not run (§4 "run only the affected chain"; a full round belongs in a normal-terminal session).
+
+### v1.6.0-beta11 (2026-11-03) — new animated output "Telegram Sticker (WEBM)": WebM/VP9 + alpha, long edge 512, ≤3s/≤30fps/no audio, 256KB budget loop
+
+> This release includes everything from the "v1.6.0-beta11 development line (2026-11-02)" section below.
+> This batch also ships the Telegram video sticker format plus two gate-maintenance items; readings and
+> products live in `tests/output/tgsticker-a5a07cdd/`.
+
+**New: Telegram video sticker output (animated-format dropdown item #6 / CLI `--format webm`)**
+
+- UI: the animated-format dropdown gains `Telegram Sticker (WEBM)` (ASCII display name — the CJK hardcode lock has zero headroom); `NormalizeFormat` maps it to `webm`; the output extension flows through to `.webm`.
+- Command construction (`FfmpegCommandBuilder` `case "webm"`): forces `-c:v libvpx-vp9` (on the CLI without `--encoder`, `options.Encoder` is empty ⇒ no `-c:v` is emitted, and the webm muxer would default to **vp8** — it must be filled in); `-b:v 0 -crf` (CQ constant quality; quality axis 52 ⇒ crf 30, the official sample setting); `-an` strips audio (Matroska can carry an audio track and default stream selection picks one from video inputs); long edge **exactly 512** with an even, ≤512 short edge (upscaling allowed, `scale='if(gt(iw,ih),512,-2)':…`); `-t` clamps to ≤3s (defaults to 3s when unset); an explicit fps value is clamped to 30 and, when unset, the source frame rate is clamped via the `fps='min(30,source_fps)'` expression (measured supported on the bundled ffmpeg); webm is added to the multi-frame container set (so a `-frames:v 1` can never silently cut an animation to a single frame).
+- Alpha channel: a GIF pal8 → `rgba` → `yuva420p` pre-chain; every alpha-bearing input gets an explicit `-pix_fmt yuva420p` (at the 8-bit auto setting the generic path emits no `-pix_fmt`, and encoder negotiation would silently drop alpha); **the alphamerge path excludes webm** (the base chain always carries the 512 scale ⇒ size mismatch against an unscaled alpha source = EINVAL; this caliber was set only after three measured `-22` zero-output cases).
+- Color range: the exit is pinned to `tv` (swscale computes RGB→YUV as limited by default; emitting pc would place limited values into a full grid). An explicit `--color-range pc` is loudly rejected. Round-trip PSNR measured y=**46.67** / avg=**33.62 dB** (not washed out, distinguishable from the 28–32 dB mislabel range measured for the webp family).
+- **256KB budget loop** (`QueueProcessor.EnsureTelegramStickerBudgetAsync`): after encoding, check the product size and re-encode with an escalated CRF (≤3 escalations, each one announced); if still over, emit a loud warning and keep the smallest product (no silent degradation). The call site sits inside the `colorPostStepsDone` window and re-encodes through `FfmpegRunner` (heartbeat gate).
+- Policy registration: `FormatCapabilitiesService` (quality on; chroma/bit-depth/lossless/ICC off), `EncoderDetectionService` encoder/muxer/default-encoder tables, `ColorTransformPlan.Caps["webm"]` (no color path, same caliber as gif) + `CodecLoss.Lossy`, `ExitWritesIccFor` (webm=false, the muxer writes no ICC); **not** added to `IsEngineEncodable` (animations already run on the legacy route; explicit engine still hard-fails with 90).
+
+**Real-machine verification (bundled ffmpeg, `tests/output/tgsticker-a5a07cdd/`)**
+
+- 7 real conversions, all exit 0: 256×192/10fps GIF → vp9 512×384, 10 frames preserved, 1.000s, no audio, 94 KB; 60fps/12s/1024×768 noise source → **30/1 fps**, **3.000s**, long edge 512, budget loop 8.86MB→crf24→6.93MB→crf32→4.21MB→crf40→1.68MB (still over ⇒ loud warning; worst-case noise input); genuinely transparent APNG → `alpha_mode=1`, alpha **0..255** decoded via libvpx, opaque source stays 255..255; `--color-range pc` → loudly rejected, exit pinned to tv; `--animation-fps 60` → clamped to 30 with a warning.
+- ⚠ The native vp9 decoder does not read BlockAdditional alpha (a known ffmpeg limitation — only the libvpx decoder does) ⇒ in-app previews/thumbnails of webm stickers show no transparency; the file itself is correct (`alpha_mode=1` + alpha stream, Telegram/libvpx decoders show transparency). This is a platform property; transparent in-app preview would need a libvpx decode path (separate batch).
+
+**Gate maintenance (same batch)**
+
+- `_lib-matrix.ps1`: four `FfmpegCommandBuilder` line pins moved down by +85 due to the inserted `case "webm"` (1071→1156 / 1083→1168 / 1115→1200 / 2478→2563), re-pinned in the same batch with evolution notes; `_probe-matrix-structure` re-run 8/0 (MATRIX RESULT 38/0, the mutation control still has teeth).
+- `_probe-cjk-hardcode-scan.ps1`: judged-bucket baseline 922→923 (+1 attributed to a concurrent work-in-progress line that predates this batch; this batch added ASCII literals and full-line `//` comments only ⇒ net 0). Re-run PASS=14/0.
+- Coverage boundary (honest): the full 94-gate round was **not** run (this release only ran the relevant chain: Release build + the two text probes above + 7 real conversions); the dropdown item was not clicked through a GUI (the headless CLI cannot reach the Avalonia UI; the item and its mapping are in the binary — `Telegram Sticker (WEBM)` found as UTF-16).
+
+### v1.6.0-beta11 development line (2026-11-02, `753cb33`) — gates 87→94, resident tray / close-to-exit fix, UI gate execution moved to split hosts, white-point exit normalized, views unified to `.xaml`
 
 > This section aggregates the development batches after the beta10 re-release and before the next release (`31498ea` → `f778280` → `753cb33`).
 > Full ledgers for every reading live in `docs/HANDOVER.md` and `docs/review-2026-10-31/`.
