@@ -20,6 +20,16 @@ namespace FfmpegGui
         private TrayIcon? _trayIcon;
         private NativeMenu? _trayMenu;
         private MainWindow? _mainWindow;
+        // Windows 原生托盘（Shell_NotifyIcon 直写）。2026-11-04 起 Windows 侧不再用 Avalonia TrayIcon：
+        // 维护者实机（Win11 26300）实测 Avalonia 12.1.4 的 TrayIcon 不真正向 shell 注册（UIA 0 命中）
+        // 而自报 IsVisible=True ⇒ 旧实现把自报值当「托盘真可用」⇒ 关窗被拦进托盘黑洞。
+        private Win32TrayIcon? _win32Tray;
+
+        // 托盘菜单文案：Win32（Windows）与 NativeMenu（非 Windows）两条路径共用。
+        // ⚠ CJK 硬编码锁按「行」计数 ⇒ 这三句全仓只许出现这一处，两条路径都引用字段，不再各写一份。
+        private static readonly string TrayLabelShow = "显示主窗口";
+        private static readonly string TrayLabelPause = "暂停队列";
+        private static readonly string TrayLabelExit = "退出";
 
         /// <summary>关窗是否隐藏到托盘（运行时可改；来源 <see cref="Models.AppSettings.CloseToTray"/>）。</summary>
         private bool _closeToTray = true;
@@ -53,6 +63,42 @@ namespace FfmpegGui
             //   ⇒ 用户机器上「托盘为什么没有」永远查不出来。现在统一落 tray.log（见 LogTray）。
             try
             {
+                if (OperatingSystem.IsWindows())
+                {
+                    // ── Windows：原生 Shell_NotifyIcon（2026-11-04）─────────────────────
+                    // NIM_ADD 的真实返回值就是「托盘是否真可用」的唯一真源：提权/受限上下文会被
+                    // shell 以 ERROR_ACCESS_DENIED 拒绝（实测），此时必须走「关窗即真退出」，
+                    // 不许再藏不可见进程（契约见 OnFrameworkInitializationCompleted 的三态注释）。
+                    _win32Tray = new Win32TrayIcon(
+                        tipBase: "FFmpegPictureUI",
+                        labelShow: TrayLabelShow,
+                        labelPause: TrayLabelPause,
+                        labelExit: TrayLabelExit);
+                    // 事件从托盘泵线程触发 ⇒ 一律 marshal 回 UI 线程（Show/Shutdown/Close 摸 Avalonia 对象）
+                    _win32Tray.ShowRequested += () => Avalonia.Threading.Dispatcher.UIThread.Post(ShowMainWindow);
+                    _win32Tray.LeftClicked += () => Avalonia.Threading.Dispatcher.UIThread.Post(ShowMainWindow);
+                    _win32Tray.PauseResumeRequested += ToggleQueueFromTray;
+                    _win32Tray.ExitRequested += () => Avalonia.Threading.Dispatcher.UIThread.Post(ExitApp);
+
+                    if (_win32Tray.Start())
+                    {
+                        _win32Tray.SetVisible(_closeToTray);
+                        _trayAvailable = true;
+                        TrayFailureReason = null;
+                        LogTray($"[tray] create=ok IsVisible={_win32Tray.IsVisibleOnShell} closeToTray={_closeToTray} icon=loaded impl=win32");
+                    }
+                    else
+                    {
+                        _trayAvailable = false;
+                        // 诊断文本保持 ASCII：CJK 硬编码锁余量为 0，且托盘不可用的原因会进 ⚙ 设置菜单回显。
+                        // IsVisible=False 写进同一行：图标定义上不可见，且让门禁 ⑦ 的「IsVisible=False」断言与上下文无关。
+                        TrayFailureReason = $"Shell_NotifyIcon(NIM_ADD) denied (err={_win32Tray.LastAddError}) — elevated or restricted process context? tray unavailable";
+                        LogTray($"[tray] create=failed IsVisible=False reason={TrayFailureReason} => real exit");
+                    }
+                    return;
+                }
+
+                // ── 非 Windows：保留 Avalonia TrayIcon 路径（Linux AppIndicator / macOS）──
                 var icon = LoadTrayIcon();
                 if (icon == null)
                 {
@@ -62,20 +108,13 @@ namespace FfmpegGui
                 }
                 else
                 {
-                    var showItem = new NativeMenuItem("显示主窗口");
+                    var showItem = new NativeMenuItem(TrayLabelShow);
                     showItem.Click += (_, _) => ShowMainWindow();
 
-                    var pauseItem = new NativeMenuItem("暂停队列");
-                    pauseItem.Click += (_, _) =>
-                    {
-                        if (_mainWindow is MainWindow mw)
-                        {
-                            if (mw.IsQueueRunning) mw.PauseQueue();
-                            else mw.ResumeQueue();
-                        }
-                    };
+                    var pauseItem = new NativeMenuItem(TrayLabelPause);
+                    pauseItem.Click += (_, _) => ToggleQueueFromTray();
 
-                    var exitItem = new NativeMenuItem("退出");
+                    var exitItem = new NativeMenuItem(TrayLabelExit);
                     exitItem.Click += (_, _) => ExitApp();
 
                     _trayMenu = new NativeMenu { Items = { showItem, pauseItem, new NativeMenuItemSeparator(), exitItem } };
@@ -94,8 +133,10 @@ namespace FfmpegGui
             }
             catch (Exception ex)
             {
-                // Linux 无 AppIndicator / macOS 旧版本等不支持托盘的环境
+                // Windows 原生路径失败 / Linux 无 AppIndicator / macOS 旧版本等不支持托盘的环境
                 // 记录日志但不影响主功能
+                try { _win32Tray?.Dispose(); } catch { }
+                _win32Tray = null;
                 _trayIcon = null;
                 _trayMenu = null;
                 _trayAvailable = false;
@@ -158,15 +199,39 @@ namespace FfmpegGui
         }
 
         /// <summary>
+        /// 托盘事件回调共用的队列暂停/恢复切换（托盘菜单与 Win32 菜单共用）。
+        /// 事件可能来自托盘泵线程 ⇒ 一律 marshal 回 UI 线程。
+        /// </summary>
+        private void ToggleQueueFromTray()
+        {
+            Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+            {
+                if (_mainWindow is MainWindow mw)
+                {
+                    if (mw.IsQueueRunning) mw.PauseQueue();
+                    else mw.ResumeQueue();
+                }
+            });
+        }
+
+        /// <summary>
         /// 托盘图标是否可见
         /// </summary>
         public static bool IsTrayIconVisible
         {
-            get => (Current as App)?._trayIcon?.IsVisible ?? false;
+            get
+            {
+                if (Current is App app)
+                    return app._win32Tray != null ? app._win32Tray.IsVisibleOnShell : (app._trayIcon?.IsVisible ?? false);
+                return false;
+            }
             set
             {
-                if (Current is App app && app._trayIcon != null)
-                    app._trayIcon.IsVisible = value;
+                if (Current is App app)
+                {
+                    if (app._win32Tray != null) app._win32Tray.SetVisible(value);
+                    else if (app._trayIcon != null) app._trayIcon.IsVisible = value;
+                }
             }
         }
 
@@ -185,8 +250,9 @@ namespace FfmpegGui
             if (Current is App app)
             {
                 app._closeToTray = enabled;
+                if (app._win32Tray != null) app._win32Tray.SetVisible(enabled);
                 if (app._trayIcon != null) app._trayIcon.IsVisible = enabled;
-                LogTray($"[tray] runtime closeToTray={enabled} trayAvailable={app._trayAvailable} trayVisible={app._trayIcon?.IsVisible}");
+                LogTray($"[tray] runtime closeToTray={enabled} trayAvailable={app._trayAvailable} trayVisible={IsTrayIconVisible}");
             }
         }
 
@@ -195,8 +261,11 @@ namespace FfmpegGui
         /// </summary>
         public static void SetTrayToolTip(string text)
         {
-            if (Current is App app && app._trayIcon != null)
-                app._trayIcon.ToolTipText = text;
+            if (Current is App app)
+            {
+                if (app._win32Tray != null) app._win32Tray.SetTooltip(text);
+                else if (app._trayIcon != null) app._trayIcon.ToolTipText = text;
+            }
         }
 
         /// <summary>
@@ -249,6 +318,11 @@ namespace FfmpegGui
 
             try
             {
+                if (_win32Tray != null)
+                {
+                    _win32Tray.SetVisible(false);
+                    _win32Tray.Dispose();
+                }
                 if (_trayIcon != null)
                 {
                     _trayIcon.IsVisible = false;
@@ -256,7 +330,7 @@ namespace FfmpegGui
                 }
             }
             catch (Exception ex) { LogTray($"[tray] exit: dispose tray failed {ex.GetType().Name}: {ex.Message}"); }
-            finally { _trayIcon = null; _trayMenu = null; _trayAvailable = false; }
+            finally { _win32Tray = null; _trayIcon = null; _trayMenu = null; _trayAvailable = false; }
 
             try
             {

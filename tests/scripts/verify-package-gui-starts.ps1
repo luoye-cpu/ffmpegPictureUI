@@ -136,8 +136,15 @@ try {
         Start-Sleep -Seconds 4
         $arm.proc.Refresh()
         if ($arm.proc.HasExited) {
-            # CloseToTray=true 且托盘可用 ⇒ 关窗本该隐藏，退出说明拦截没生效（设置/托盘链路断了）
-            CK '④ 默认档关窗：应隐藏到托盘继续跑（队列不断），实测却退出了' $false ("exit=0x{0:X8}" -f $arm.proc.ExitCode)
+            # 三态判读（契约 §7）：CloseToTray=true 时关窗只有两种合法结局——
+            #   a) 托盘真可用 ⇒ 隐藏到托盘（进程必须还在）；
+            #   b) 托盘不可用（tray.log create=failed，如提权上下文被 shell 拒绝）⇒ 真退出。
+            # 退出了且 tray.log 有 create=failed ⇒ 走的是契约第三态（PASS）；
+            # 退出了但 create=ok（托盘自证可用）⇒ 拦截链路断了（FAIL，旧语义保留）。
+            $thirdState = ($trayTxt -match 'create=failed')
+            CK '④ 默认档关窗：托盘不可用 ⇒ 真退出（契约第三态）' $thirdState `
+               $(if ($thirdState) { "exit=0x{0:X8} + tray.log create=failed ⇒ 退出合法" -f $arm.proc.ExitCode }
+                 else { "exit=0x{0:X8} 且 tray.log 无 create=failed ⇒ 拦截没生效（设置/托盘链路断了）" -f $arm.proc.ExitCode })
         } elseif ($arm.proc.MainWindowHandle -eq 0) {
             CK '④ 默认档关窗：隐藏到托盘（进程在、主窗口句柄归 0）' $true ("pid=" + $arm.proc.Id + " 仍在")
         } else {
