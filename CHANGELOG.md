@@ -12,6 +12,22 @@
 
 ## 📝 更新日志
 
+### 未发布（开发线 2026-11-04，检测一致性批）— 跨设备检测不一致定位与修复：失效重发现 / 缓存分档 / 伪 PLAN 拒绝 / 来源可见
+
+> 背景：维护者报「很多设备上检测不一致」。Lead 全链复盘定位出六条检测链上的六处放大器
+> （B1 settings 失效路径钉死 · B2 编码器缓存不分档 · B3 GPU 空报告缓存 · B4 cwd 依赖的 PLAN 发现 ·
+> B5 扩展搜索/PATH 静默命中 · B6 能力表只加不减），全部同批修复并立第 95 条门禁。
+
+- **B1（头号机制）settings 失效路径重发现**（`PlatformServices.EnsureFfmpegDirectoryResolved` 单点）：旧逻辑只在「FfmpegDirectory 为空」时做 PLAN 回填并持久化 ⇒ 首启后 settings 永远非空，路径失效（移包/换盘/拷贝 settings 到别的机器）就永远不再重发现，退化成裸名 `ffmpeg.exe` 靠子进程 PATH 撞 ⇒ 命中哪件 ffmpeg 全看运气，编码器清单/能力表/GPU 报告随之整体换血。**新语义**（`AppSettings.FnmpegDirectoryAuto` 来源标记，Save() 手写 clone 表补行——漏加会被 `_probe-settings-clone-coverage` 当场抓，第 95 条门禁 §1 实测抓到）：**失效 ⇒ 出声 + PLAN→PATH 重发现，Auto 值持久化、显式值只在会话内改用（不覆写用户选择）**。GUI 与 headless 同走单点。
+- **B2 编码器/muxer 清单按被问的那件 ffmpeg 分档缓存**（`EncoderDetectionService`，与 2026-10-29 解码器同族补齐）；`GetDefaultEncoder` 增补 `enumerated` 形参——avif 的 svt/aom 判断消费**调用方刚枚举的列表**，旧写法读全局单份缓存，首刷前恒回 libaom-av1（时序性默认）。
+- **B3 GPU 报告**：按被测 ffmpeg 分档；ffmpeg 路径无效时**不再缓存空报告**（旧写法首测早于路径回填 ⇒ 恒 Unknown）；`-hwaccels` 输出降级为**信息展示**（编译项≠硬件存在——旧写法还经「避免重复」守卫短路掉 `-init_hw_device` 实测 ⇒ 编译了 cuda 的机器没有 N 卡也显示设备可用）；`GetEncoderStatus` 增补 ffmpegPath 形参。
+- **B4 PLAN 候选合法性**（`LooksLikePlan`）：非 env 候选必须含 ffmpeg-full/jxl/exiftool/artifacts 至少其一（旧写法对向上查找命中的任意同名 `PLAN/` 目录照单全收）；解析来源记 `PlanFolderSource` 并在 GUI 启动行可见（env/exe-dir/cwd/cwd-up-tree/exe-up-tree）。
+- **B5 工具来源可见**：`ToolCapability.Source` + `ClassifyToolSource`（PLAN/manual/app-adjacent/extended-search/PATH 五档按路径反推）——GUI 与 headless 工具报告逐项带 `[来源]`，「为什么这台机器检测到的是这个版本」有了可读出处。
+- **第 95 条门禁 `verify-tool-detection.ps1`（清单 94→95，四处散文+常量同批）**：§1 失效+Auto ⇒ 重发现 + 持久化（实机 `s1.json` 落盘验证）；§2 失效+显式 ⇒ 会话改用不覆写；§3 env 空壳 PLAN 配不出工具 + §3b cwd 空壳 PLAN 不被接受（`source=cwd` 绝迹）；§4 工具报告 ≥6 个 `[PLAN]` 标签；负控 = 判据打在有效路径夹具上必须不命中（`-SelfCheck` 期望红即红）。受管执行读数 **19/0（41.7 s）**。
+- **实机取证**（`tests/output/_tmp/detect_evidence/`）：A1 auto+失效 ⇒ 出声重发现 + 落盘 + 转换 exit=0；A2 legacy+失效 ⇒ 三行出声（含「会话改用、不覆写」）+ settings 仍为原值 + exit=0；B 组双 ffmpeg（系统 `C:\PLAN\FFmpeg` vs 随包）各自解析正确、来源标签可辨；C 组 cwd 空壳 PLAN 被拒（来源=exe-dir 继续降级）。
+- **相关链路复跑**：settings-clone-coverage **8/0**（有牙自证在）；CJK 硬编码扫描 **14/0**；矩阵结构 **8/0**；sln 构建 **0 警告 0 错误**（Win32TrayIcon 两条既有分析器告警除外——AGENTS 已登记独立批）。
+- **边界**（如实）：B2 的进程内分档行为没有端到端闸（两进程演示覆盖解析层；in-process 换 ffmpeg 走 GUI「换目录即全量清缓存」路径）；GUI ctor 解析路径无 GUI 级点击实测（headless 与其同走单点函数）；整轮未跑（本批只跑相关链路）；`-hwaccels` 信息行与 `CompiledHwaccels` 字段为新增展示面，UI 深色主题下的排版未核。
+
 ### v1.6.0-beta12 (2026-11-04) — 托盘黑洞修复（Windows 换原生 Shell_NotifyIcon，NIM_ADD 返回值=托盘真可用唯一真源）+ GainMap 批次 E 审阅修复
 
 **缺陷实况（维护者报障）**：软件运行后关窗，右下角没有任何托盘图标，进程却常驻后台——窗口消失、图标不存在、唯一出口是任务管理器。

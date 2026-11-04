@@ -318,6 +318,27 @@ pwsh -NoProfile -File tests/scripts/_run-step3-gates.ps1   # 94 条，整轮 ~60
   评审备忘（Lead 复核 2026-11-04）：`Win32TrayIcon` 两处边缘点——`GetMessageW` 以 bool 签名收 -1
   （错误态会成 busy-loop，正常 hwnd 不触发）与 `Start()` 的 5s 启动竞态（超时即判不可用而泵仍可能后到）
   ——不影响本批功能（端到端实测通过），修不修属独立一批。
+- **检测一致性修复（2026-11-04，维护者报「很多设备上检测不一致」）**：全链复盘六条检测链
+  （ffmpeg 本体 / PLAN 定位 / 编码器枚举 / GPU 报告 / 外部工具五级搜索 / 能力表），定位六处放大器并同批修：
+  - **B1（头号）settings 失效路径钉死**：旧逻辑只在 `FfmpegDirectory` 为空时回填并持久化 ⇒ 首启后
+    settings 永远非空，路径失效（移包/换盘/拷贝 settings 到别的机器）后**永不重发现**，退化成裸名
+    `ffmpeg.exe` 靠子进程 PATH 撞 ⇒ 编码器/能力/GPU 报告整体换血。修法 =
+    `PlatformServices.EnsureFfmpegDirectoryResolved()` 单点（GUI ctor 与 headless 同源）+ 新增
+    `AppSettings.FfmpegDirectoryAuto`（Auto/显式分离：失效时 Auto 值持久化、显式值只会话内改用不覆写）。
+    ⚠ **`Save()` 的手写 clone 表必须同批加行**（漏加 ⇒ 落盘被打回 false；第 95 条 §1 当场抓到，
+    `_probe-settings-clone-coverage` 是它的常设判据）。
+  - **B2** 编码器/muxer 清单按 ffmpeg 分档（与 2026-10-29 解码器同族）+ `GetDefaultEncoder(fmt, enumerated)`
+    去时序化；**B3** GPU 报告分档 + 不缓存空报告 + `-hwaccels` 降为信息展示（旧写法经「避免重复」
+    守卫短路掉 `-init_hw_device` 实测 ⇒ 编译 cuda 无 N 卡也报设备可用）；**B4** `LooksLikePlan`
+    候选合法性（非 env 候选须含 ffmpeg-full/jxl/exiftool/artifacts）+ `PlanFolderSource` 可见；
+    **B5** `ToolCapability.Source`/`ClassifyToolSource` 五档来源标签（PLAN/manual/app-adjacent/
+    extended-search/PATH）进 GUI 与 headless 报告。
+  - 门禁：**第 95 条 `verify-tool-detection.ps1`**（清单 94→95，四处散文+常量同批；受管执行
+    **19/0**/41.7 s；负控 = 判据打在有效路径夹具上必须不命中，`-SelfCheck` 期望红即红）。
+    相关链路复跑：clone-coverage 8/0、CJK 14/0、矩阵 8/0、sln 0 警告 0 错误（Win32TrayIcon 两条既有
+    告警除外）。实机取证 `tests/output/_tmp/detect_evidence/`（A1/A2/B 组/C 组）。
+  - 已知边界：B2 的 in-process 分档无端到端闸（两进程演示只覆盖解析层，GUI 换目录走全量 ClearCache）；
+    GUI ctor 解析无 GUI 级点击实测（与 headless 同走单点）；`-hwaccels` 信息行为新展示面、深色主题未核。
 - **AVIF 的静态出口写不进 ICC（2026-10-26 实测）**：ffmpeg 的 AVIF muxer 不写 ICC，exiftool 后置
   也报「0 image files updated」而**退出码仍是 0**（672 B ProPhoto ICC：产物 `avifdec --info` 报
   `ICC Profile: Absent`，旧日志照打「ICC Profile 已恢复」）。`avifenc --icc` 能写，但它只用于
