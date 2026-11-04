@@ -311,6 +311,13 @@ pwsh -NoProfile -File tests/scripts/_run-step3-gates.ps1   # 94 条，整轮 ~60
   已删（删前 732 项 0 reparse point）。⚠ 更正：`4044f76` 声称的「标签 1.6.0BETA11」本地/远端都不存在。
   已知后续项：`Win32TrayIcon.cs` 两条分析器告警（CA1416 平台守卫、IL3002 单文件 GetHINSTANCE）——功能已被
   包体门禁实测覆盖，收口属独立一批。
+  提交后重出（同日，§8 流程落地）：5 提交 `82976cf`（批次 E）→ `e592227`（TG 贴纸）→ `ef898e9`（托盘）→
+  `14c3482`（本账本）→ `54c31c0`（release），tag `1.6.0BETA12` 锚 `54c31c0`；重打包 ProductVersion=
+  `1.6.0-beta12+54c31c0…`，门禁 93 复跑 **16/0**、门禁 85 复跑 **6/1**（⑥ 提权拒绝真读数）；
+  sha16 app/full/exe = `D8E3276728E88C79` / `38E52D2F528ACB35` / `EA8569DD5D8D3FD5`。
+  评审备忘（Lead 复核 2026-11-04）：`Win32TrayIcon` 两处边缘点——`GetMessageW` 以 bool 签名收 -1
+  （错误态会成 busy-loop，正常 hwnd 不触发）与 `Start()` 的 5s 启动竞态（超时即判不可用而泵仍可能后到）
+  ——不影响本批功能（端到端实测通过），修不修属独立一批。
 - **AVIF 的静态出口写不进 ICC（2026-10-26 实测）**：ffmpeg 的 AVIF muxer 不写 ICC，exiftool 后置
   也报「0 image files updated」而**退出码仍是 0**（672 B ProPhoto ICC：产物 `avifdec --info` 报
   `ICC Profile: Absent`，旧日志照打「ICC Profile 已恢复」）。`avifenc --icc` 能写，但它只用于

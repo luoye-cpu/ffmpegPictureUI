@@ -51,6 +51,7 @@
 - 第 93 条 `verify-release-package`（PKG_VER=1.6.0-beta12）：**PASS=16 FAIL=0**（归档 582 文件与磁盘目录同数、14 必需项齐备、五工具同指纹、包内 exe `ProductVersion=1.6.0-beta12+ff2dbfd`、sha16 `2B4D42B03A50EEF6`）。
 - 第 85 条 `verify-package-gui-starts`（PKG_VER=1.6.0-beta12）：**PASS=6 FAIL=1**——唯一红是 ⑥（提权上下文 shell 拒绝 NIM_ADD，真读数）；④（第三态）/⑦ 两条全 PASS。
 - 旧包清理（§1「出包只留最新一档」）：删 `publish/FFmpegPictureUI-v1.6.0-beta11-x64{,-full}.7z` 与 `publish/build/FFmpegPictureUI-v1.6.0-beta11-x64{,-full}/`，删前扫描 732 项 **0 reparse point**，删后 `Test-Path` 全 False；`publish/PLAN` 与 beta12 双包保留。
+- **提交后重出读数（2026-11-04 同日，§8 release 提交/tag 落地后按「tag=可重现出包点」重打）**：5 提交落地——`82976cf`（批次 E）→ `e592227`（TG 贴纸）→ `ef898e9`（托盘）→ `14c3482`（本账本）→ `54c31c0`（release），tag `1.6.0BETA12` 锚 `54c31c0`；包内 exe `ProductVersion=1.6.0-beta12+54c31c0c9287cb678ea88a4fb06609559b22d9da`（锚 release 提交，取代 ff2dbfd）；双包 11,423,133 B / 55,859,128 B，sha16：app `D8E3276728E88C79` / full `38E52D2F528ACB35` / 包内 exe `EA8569DD5D8D3FD5`；门禁 93 复跑 **16/0**、门禁 85 复跑 **6/1**（唯一红 ⑥=提权拒绝，真读数）；包内 exe 冒烟：anim_gif → webm 512×384 / 10fps / 1.000s / 94,462 B（exit=0）。上一条晨间读数（ff2dbfd 锚、sha16 `2B4D42B03A50EEF6`）按时间点保留，已被本次重出取代。
 
 **门禁影响（如实）**
 
