@@ -1331,6 +1331,11 @@ namespace FfmpegGui.Services
                                             captured.Log += s;
                                             _onItemUpdated?.Invoke(captured);
                                         }, AppSettingsService.Current.FfmpegPath, ct);
+                                        // ── 2026-11-03 Telegram 贴纸(webm): 256KB 体积闭环(超预算升 CRF 重编码)──
+                                        // 调度点必须在 colorPostStepsDone 窗口内(verify-decision-delivery ⑧ 传递闭包);
+                                        // 重编码走 FfmpegRunner(verify-ffmpeg-heartbeat 盯长站点)。
+                                        if (exitCode == 0 && string.Equals(captured.Options.Format, "webm", StringComparison.OrdinalIgnoreCase))
+                                            exitCode = await EnsureTelegramStickerBudgetAsync(captured, finalOutputPath, args, ct);
                                     }
                                 }
                                 captured.ExitCode = exitCode;
@@ -6398,6 +6403,67 @@ namespace FfmpegGui.Services
             catch { return (2, 3); }   // 失败不猜：保持旧行为（旧素材上本来就能跑）
         }
 
+        /// <summary>
+        /// Telegram 贴纸(WEBM) 256KB 体积闭环: 产物超预算时升 CRF 重编码(最多 3 次升档)。
+        /// 调度点必须在 colorPostStepsDone 窗口内(verify-decision-delivery ⑧ 传递闭包);
+        /// 重编码一律走 FfmpegRunner(verify-ffmpeg-heartbeat 盯长站点)。日志文案 ASCII(CJK 扫描余量 0)。
+        /// </summary>
+        private async Task<int> EnsureTelegramStickerBudgetAsync(QueueItem item, string outputPath, string baseArgs, CancellationToken ct)
+        {
+            const long BudgetBytes = 256 * 1024;
+            const int MaxAttempts = 4;      // 首编 + 3 次升档
+            const int QualityStep = 13;     // 每档约 +8 CRF(63 刻度)
+            var args = baseArgs;
+            var curQuality = item.Options.Quality;
+            for (int attempt = 1; attempt <= MaxAttempts; attempt++)
+            {
+                var fi = new FileInfo(outputPath);
+                if (!fi.Exists) return 0;   // 无产物: 交给既有失败记账路径
+                if (fi.Length <= BudgetBytes)
+                {
+                    if (attempt > 1)
+                    {
+                        item.Log += $"[webm] sticker within Telegram budget after escalation: {fi.Length} B (<= {BudgetBytes} B)\n";
+                        _onItemUpdated?.Invoke(item);
+                    }
+                    return 0;
+                }
+                if (attempt == MaxAttempts)
+                {
+                    var crfNow = Models.FfmpegOptions.MapVp9CrfForward(curQuality);
+                    item.Log += $"[webm] WARNING: sticker still over the 256KB Telegram budget after {MaxAttempts - 1} crf escalations "
+                             + $"({fi.Length} B, crf {crfNow}). Telegram may reject this file; lower the quality slider.\n";
+                    _onItemUpdated?.Invoke(item);
+                    return 0;   // 保留最后一次(最小)的产物,超预算事实已写进日志(响亮不静默)
+                }
+                curQuality = Math.Max(10, curQuality - QualityStep);
+                var newCrf = Models.FfmpegOptions.MapVp9CrfForward(curQuality);
+                var newArgs = ReplaceCrfValue(args, newCrf);
+                item.Log += $"[webm] sticker over Telegram budget ({fi.Length} B > {BudgetBytes} B) -> re-encoding with -crf {newCrf} "
+                         + $"(attempt {attempt + 1}/{MaxAttempts})\n";
+                _onItemUpdated?.Invoke(item);
+                var rc = await FfmpegRunner.RunAsync(newArgs, s =>
+                {
+                    item.Log += s;
+                    _onItemUpdated?.Invoke(item);
+                }, AppSettingsService.Current.FfmpegPath, ct);
+                if (rc != 0) return rc;   // 重编码失败: 上报退出码,残缺产物由既有失败路径丢弃
+                args = newArgs;
+            }
+            return 0;
+        }
+
+        /// <summary>把 webm 参数串里唯一的 -crf N 换成新值(只动这一个 token,其余逐字保留)。</summary>
+        private static string ReplaceCrfValue(string args, int newCrf)
+        {
+            var idx = args.IndexOf("-crf ", StringComparison.Ordinal);
+            if (idx < 0) return args;
+            var numStart = idx + "-crf ".Length;
+            var numEnd = numStart;
+            while (numEnd < args.Length && char.IsDigit(args[numEnd])) numEnd++;
+            return args.Substring(0, numStart) + newCrf.ToString() + args.Substring(numEnd);
+        }
+
         /// <summary>动图回退：将外部工具参数克隆为 FFmpeg 内置编码器参数</summary>
         private static Models.FfmpegOptions CloneOptionsForFfmpeg(Models.FfmpegOptions original)
         {
@@ -6409,6 +6475,7 @@ namespace FfmpegGui.Services
                 "jpg" or "jpeg" or "jpegli" => "mjpeg",
                 "png" or "apng" => "apng",
                 "webp" => "libwebp_anim",
+                "webm" => "libvpx-vp9",  // 2026-11-03: Telegram 贴纸(回退场景防御性登记,webm 本无外部后端)
                 _ => original.Encoder ?? ""
             };
 

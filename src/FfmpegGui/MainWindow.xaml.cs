@@ -2055,7 +2055,7 @@ namespace FfmpegGui
         // 静态图片模式格式列表
         private static readonly string[] StillFormats = { "JPEG", "PNG", "WebP", "AVIF", "JPEG XL", "TIFF" };
         // 动图模式格式列表
-        private static readonly string[] AnimatedFormats = { "GIF", "WebP (动图)", "PNG (APNG)", "AVIF (动图)", "JPEG XL (动图)" };
+        private static readonly string[] AnimatedFormats = { "GIF", "WebP (动图)", "PNG (APNG)", "AVIF (动图)", "JPEG XL (动图)", "Telegram Sticker (WEBM)" };
 
         private static int ParseInt(string? text, int defaultValue, int min, int max)
         {
@@ -2311,6 +2311,7 @@ namespace FfmpegGui
                 "TIFF" => "tiff",
                 "JPEG XR" => "jxr",
                 "GIF" => "gif",
+                "Telegram Sticker (WEBM)" => "webm",  // Telegram video sticker: WEBM/VP9
                 _ => displayName.Trim().ToLower()
             };
         }
@@ -3747,6 +3748,7 @@ namespace FfmpegGui
                 "jpg" or "jpeg" or "jpegli" => "mjpeg",
                 "png" or "apng" => "apng",
                 "webp" => "libwebp_anim",
+                "webm" => "libvpx-vp9",  // 2026-11-03: Telegram sticker (must match QueueProcessor.CloneOptionsForFfmpeg)
                 _ => original.Encoder ?? ""
             };
             return new FfmpegOptions

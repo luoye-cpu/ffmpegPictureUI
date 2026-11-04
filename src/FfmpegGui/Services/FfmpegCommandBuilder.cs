@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using FfmpegGui.Models;
 
@@ -147,6 +147,7 @@ namespace FfmpegGui.Services
             //  `Cannot write more than one file with the same name` ⇒ `Invalid argument`
             //  ⇒ 整条任务失败、零产物；故在输出前强制 `-frames:v 1`（仅第一帧）。
             //  多帧容器（gif/webp/avif/apng；以及 `--format jxl --animation-fps` 走 libjxl_anim 时）不加，保留全部帧。
+            //  2026-11-03: 新增 webm(Telegram 视频贴纸)—— WEBM/VP9 是多帧容器，同样不得插 -frames:v 1。
             //  ⚠ 2026-09-18 修：旧判据是 `inputPath.EndsWith(".gif")` ⇒ 只保护 `.gif` 输入，
             //    `.webp`/`.apng` 动图写静态目标必失败（实测 exit=1、0 产物）。改成只看目标容器。
             //  ⚠ 对**单帧输入**加 `-frames:v 1` 是 no-op（本来就只有 1 帧）—— 实测产物逐像素不变
@@ -154,7 +155,7 @@ namespace FfmpegGui.Services
             //  ⚠ `jxl + AnimationFps` 必须排除：libjxl_anim 能装多帧，若也插 `-frames:v 1` 会把动图
             //    **静默截成 1 帧**（变异实测 M2 复现：exit=0 且 1 帧）—— 失败要响，不能静默降级。
             // ═══════════════════════════════════════════════════
-            bool targetHoldsMultipleFrames = fmt is "gif" or "webp" or "avif" or "apng"
+            bool targetHoldsMultipleFrames = fmt is "gif" or "webp" or "avif" or "apng" or "webm"
                 || (fmt == "jxl" && options.AnimationFps.HasValue);
             bool insertFramesV1 = !targetHoldsMultipleFrames; // 目标容器不支持多帧时强制首帧
 
@@ -500,6 +501,66 @@ namespace FfmpegGui.Services
                     // 质量档出活，做不到重封装由 QueueProcessor 那条 jbrd 告警点名，而不是改参数冒充。
                     args.AddRange(ColorMapping.ImageEncoderArgs.BuildJxlOptions(options));
                     break;
+                case "webm":
+                    {
+                        // ── Telegram 视频贴纸（WEBM/VP9，2026-11-03 新增）──
+                        // 规范契约: VP9 + yuva420p(alpha)、<=30fps、<=3s、长边恰 512(另一边偶数 <=512)、无音轨、<=256KB。
+                        // 参照官方样例: -c:v libvpx-vp9 -pix_fmt yuva420p -b:v 0 -crf 30 -an out.webm。
+                        // 256KB 体积闭环在 QueueProcessor.EnsureTelegramStickerBudgetAsync（编码后查大小、升 CRF 重编码）。
+                        // 编码器强制 libvpx-vp9: CLI 不带 --encoder 时 options.Encoder 为空 ⇒ 上面不会发 -c:v,
+                        //   而 webm muxer 的默认编码器是 vp8 ⇒ 必须在此补齐（replace-or-add，与 jxl 分支同形状）。
+                        var webmEncIdx = args.FindIndex(a => a == "-c:v");
+                        if (webmEncIdx >= 0 && webmEncIdx + 1 < args.Count)
+                            args[webmEncIdx + 1] = "libvpx-vp9";
+                        else
+                        { args.Add("-c:v"); args.Add("libvpx-vp9"); }
+                        // CQ 模式: -b:v 0 + -crf（恒定质量、不限码率）；质量轴唯一真值 MapVp9CrfForward(0-63, 越小质量越高)。
+                        args.Add("-b:v");
+                        args.Add("0");
+                        args.Add("-crf");
+                        args.Add(FfmpegOptions.MapVp9CrfForward(options.Quality).ToString());
+                        // 无音轨是规范硬约束: Matroska 容器装得下音频 ⇒ 视频输入的默认选流会带上音频 ⇒ 必须显式 -an。
+                        args.Add("-an");
+                        // 循环: WebM 没有循环位（贴纸客户端无条件循环），有限循环次数吃不下 ⇒ 出声（ASCII: CJK 扫描余量 0）。
+                        if (options.AnimationLoop > 0)
+                        {
+                            ColorMapping.ImageEncoderArgs.EmitWarn("⚠ [webm] animation loop count has no carrier in WebM; "
+                                + "sticker players loop unconditionally - the loop-count request is dropped.");
+                        }
+                        // fps: 显式值钳到 <=30（超限出声）；未设时钳源帧率（fps 滤镜 source_fps 表达式，随包 ffmpeg 实测见门禁报告）。
+                        string webmFps = options.AnimationFps.HasValue
+                            ? Math.Min(options.AnimationFps.Value, 30).ToString()
+                            : "min(30,source_fps)";
+                        if (options.AnimationFps is > 30)
+                        {
+                            ColorMapping.ImageEncoderArgs.EmitWarn("⚠ [webm] --animation-fps clamped to 30: Telegram video stickers allow at most 30 FPS.");
+                        }
+                        // 缩放: 贴纸契约要求一边恰 512、另一边偶数且 <=512（允许上采样）；
+                        //   与 ThumbnailService.BuildScaleFilter 同形状但去掉 min() —— 缩略图只缩不放，贴纸必须强制到 512。
+                        // AnimationScaleW 与该契约冲突 ⇒ 忽略并出声。
+                        if (options.AnimationScaleW > 0)
+                        {
+                            ColorMapping.ImageEncoderArgs.EmitWarn("⚠ [webm] animation scale width is ignored for Telegram stickers: "
+                                + "the long edge is fixed at 512px by the sticker contract.");
+                        }
+                        // GIF 输入: pal8 的透明索引必须先经 rgba 转 alpha 再落 yuva420p（先于 fps/scale 追加，顺序不可换）。
+                        if (inputPath.EndsWith(".gif", StringComparison.OrdinalIgnoreCase))
+                        {
+                            AppendVideoFilter(args, "format=rgba,format=yuva420p", EnsureGroupForm(), groupLabelReset);
+                        }
+                        // 显式 -pix_fmt（2026-11-03）: 有 alpha 的输入必须钉 yuva420p —— 8-bit auto 档不发通用
+                        //   -pix_fmt ⇒ 编码器自动协商可能静默丢 alpha；不透明输入不钉，交编码器自选 yuv420p。
+                        if (GetCachedProbe(probeInput).hasAlpha)
+                        {
+                            args.Add("-pix_fmt");
+                            args.Add("yuva420p");
+                        }
+                        // 动图滤镜（fps + 512 长边）: 与 webp(:325-333)/apng/jxl 分支同口径，合并进唯一一条 -vf。
+                        AppendVideoFilter(args,
+                            $"fps='{webmFps}',scale='if(gt(iw,ih),512,-2)':'if(gt(iw,ih),-2,512)':flags=lanczos",
+                            EnsureGroupForm(), groupLabelReset);
+                        break;
+                    }
             }
 
             // GIF → AVIF：强制保留透明通道（GIF 调色板透明度 → alpha 通道）
@@ -510,6 +571,8 @@ namespace FfmpegGui.Services
                 args.Add("-pix_fmt");
                 args.Add(MapAvifAlphaPixFmt(options));
             }
+            // 2026-11-03: webm 的 -pix_fmt 不在此链登记 —— 统一在 case "webm" 内按探测 alpha 决定
+            // (8-bit auto 档不发通用 -pix_fmt,编码器自协商会静默丢 alpha,必须显式钉)。
             // WebP 无损模式：强制使用 RGB 像素格式。
             // libwebp 无损编码需要精确的 RGB 输入；如果输入为 YUV 窄范围（tv range），
             // YUV→RGB 转换会产生截断误差，导致 libwebp 检测到"非精确还原"而静默退化为有损。
@@ -605,6 +668,19 @@ namespace FfmpegGui.Services
                     ColorMapping.ImageEncoderArgs.EmitWarn("⚠ [webp] --color-range pc ignored: libwebp output is limited-range only in this build; "
                         + "emitting pc misplaced full-range data (measured -3.66 dB vs source). "
                         + "The post-embedded ICC (ICCP chunk) still describes the true intent.");
+                }
+                outRange = "tv";
+            }
+            // WEBM(Telegram 贴纸, 2026-11-03): 与 webp 同口径 —— limited 存储 + limited 解读自洽。
+            //   理由: swscale 对 RGB 源默认按 limited 计算 YUV 值;VP9 生态(含 Telegram 客户端)按码流内
+            //   range 位/缺省 limited 解读。若发 pc,一旦 scale 不跟随就是「limited 摆进 full 栅格」= 洗白
+            //   (webp 同族实测 -3.66 dB)。发 tv 与 swscale 缺省行为一致 ⇒ 恒自洽。验证读数见本轮实机测试。
+            if (fmt == "webm")
+            {
+                if (rangeExplicit && string.Equals(userRange, "pc", StringComparison.OrdinalIgnoreCase))
+                {
+                    ColorMapping.ImageEncoderArgs.EmitWarn("⚠ [webm] --color-range pc ignored: sticker output is limited-range in v1; "
+                        + "emitting pc would mislabel limited-computed values as full range (washed out).");
                 }
                 outRange = "tv";
             }
@@ -778,12 +854,17 @@ namespace FfmpegGui.Services
             args.Add($"\"{outputPath}\"");
 
             // 视频/动图最大时长限制
-            if (options.AnimationDuration > 0)
+            // 2026-11-03: webm(Telegram 视频贴纸)的时长契约是 <=3s —— 用户显式值被钳到 3s,
+            // 未设置时默认 3s(时长上限是贴纸格式本身的定义,不是用户参数)。
+            double? webmDurationLimit = options.AnimationDuration > 0 ? options.AnimationDuration : null;
+            if (fmt == "webm")
+                webmDurationLimit = Math.Min(webmDurationLimit ?? 3.0, 3.0);
+            if (webmDurationLimit.HasValue)
             {
                 // 在输出文件前插入 -t（时长限制）
                 var outputIdx = args.Count - 1;
                 args.Insert(outputIdx, "-t");
-                args.Insert(outputIdx + 1, options.AnimationDuration.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                args.Insert(outputIdx + 1, webmDurationLimit.Value.ToString(System.Globalization.CultureInfo.InvariantCulture));
             }
 
             // ── ⚠⚠ 2026-09-22（管线审查 §3.4 · **legacy 侧**）：透明输入不得被**静默拍平** ──────────────
@@ -798,6 +879,10 @@ namespace FfmpegGui.Services
             //   ⚠ 必须**强制**给出带 alpha 的 `-pix_fmt`：否则编码器仍按链输出（无 alpha）推断 ⇒ 补了也白补。
             //   ⚠ 选项顺序：`-i` **先**、输出侧选项（`-pix_fmt` / `-frames:v`）**后** ——
             //     放 `-i` 之前会被 ffmpeg 当**输入**选项而失效。
+            // ⚠⚠ 2026-11-03 webm 不进本白名单: webm 的底图链**恒含** 512 长边缩放,fps/scale 后尺寸≠原尺寸,
+            //   而 [1:v](原文件)不缩放 ⇒ alphamerge 尺寸错配 = EINVAL 零产物(实测三例全 -22)。
+            //   且 webm 无色彩链(dec 无 PixelChains,Caps 与 gif 同类)⇒ 不存在「链拍平 alpha」的前提,
+            //   alpha 经 format=rgba,format=yuva420p / -pix_fmt yuva420p 原生保留,无需 alphamerge。
             if (inputHasAlpha && !skipGenericPixFmt && fmt is "png" or "apng" or "tiff" or "tif" or "webp")
             {
                 var vfIdx2 = args.FindIndex(a => a == "-vf");

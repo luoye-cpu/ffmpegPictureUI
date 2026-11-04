@@ -22,8 +22,9 @@ public static class ColorIntentFactory
     /// 产物实际**无任何色彩描述**（像素是 ProPhoto，nclx 却写 bt709）⇒ AVIF 恒 false。
     /// ⚠ 2026-10-26 收口：此前这条事实在探针 `ServiceProbe.MakeIntent` 里被**抄了第二份**
     ///   ⇒ 契约探针测的是「探针自己的假设」，产品侧回退不会被抓。现收口为单一真值，产品与探针共用。
+    /// 2026-11-03: webm(Telegram 视频贴纸)同样 false —— ffmpeg 的 webm/matroska muxer 不写 ICC。
     /// </summary>
-    public static bool ExitWritesIccFor(string fmt) => fmt != "avif";
+    public static bool ExitWritesIccFor(string fmt) => fmt is not ("avif" or "webm");
     /// <summary>把选项装配为意图；不可装配时返回 null 并在 <paramref name="reason"/> 给出原因。</summary>
     public static ColorIntent? FromOptions(FfmpegOptions o, string inputPath, out string? reason)
     {

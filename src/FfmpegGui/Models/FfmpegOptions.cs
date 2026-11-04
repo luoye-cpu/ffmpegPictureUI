@@ -770,6 +770,7 @@ namespace FfmpegGui.Models
             "tiff" => 0,
             "jpegli" => 92,
             "gif" => 90,
+            "webm" => 52, // Telegram 贴纸: 52 ⇒ crf 30 = 官方样例档(2026-11-03)
             _ => 92 // jpg 默认
         };
 
@@ -799,6 +800,11 @@ namespace FfmpegGui.Models
         public static int MapAvifCrfForward(int quality) => (int)Math.Round((100 - quality) * 63.0 / 100.0);
         public static int MapAvifCrfInverse(double crf) => (int)Math.Round(100 - Math.Clamp(crf, 0, 63) * 100.0 / 63.0);
 
+        // VP9 CRF 0-63（整数，越小质量越高）。2026-11-03 Telegram 贴纸(webm)与 AVIF 同曲线(libvpx CRF 0-63)。
+        // 预设锚点: quality 52 ⇒ crf 30 = Telegram 官方样例档。
+        public static int MapVp9CrfForward(int quality) => (int)Math.Round((100 - quality) * 63.0 / 100.0);
+        public static int MapVp9CrfInverse(double crf) => (int)Math.Round(100 - Math.Clamp(crf, 0, 63) * 100.0 / 63.0);
+
         // JXL distance（1 位小数）。2026-10-02：不再自写公式，转调唯一真值
         //   `ImageEncoderArgs.MapJxlDistance`（libjxl 官方曲线），消除"两处各写一遍"的双真值。
         public static double MapJxlDistanceForward(int quality) => Services.ColorMapping.ImageEncoderArgs.MapJxlDistance(quality);
@@ -813,6 +819,7 @@ namespace FfmpegGui.Models
             "png" => MapPngLevelForward(quality).ToString(),
             "webp" => MapWebpQualityForward(quality).ToString(),
             "avif" => MapAvifCrfForward(quality).ToString(),
+            "webm" => MapVp9CrfForward(quality).ToString(),
             "jxl" => MapJxlDistanceForward(quality).ToString("F1"),
             "tiff" => "N/A",
             _ => quality.ToString(),
@@ -827,6 +834,7 @@ namespace FfmpegGui.Models
             "png" => MapPngLevelInverse(value),
             "webp" => MapWebpQualityInverse(value),
             "avif" => MapAvifCrfInverse(value),
+            "webm" => MapVp9CrfInverse(value),
             "jxl" => MapJxlDistanceInverse(value),
             _ => (int)Math.Clamp(value, 0, 100),
         };
@@ -840,6 +848,8 @@ namespace FfmpegGui.Models
             "png" => $"压缩: {quality}% → level {MapPngLevelForward(quality)}",
             "webp" => $"质量: {quality}% → q:v {MapWebpQualityForward(quality)}",
             "avif" => $"质量: {quality}% → CRF {MapAvifCrfForward(quality)}",
+            // ASCII 文案(英文): _probe-cjk-hardcode-scan 的 CsUi 桶余量 0,新增中文字面量会判红
+            "webm" => $"Quality: {quality}% -> CRF {MapVp9CrfForward(quality)}",
             "jxl" => $"质量: {quality}% → distance {MapJxlDistanceForward(quality):F1}",
             "tiff" => "质量: 不适用 (无损格式)",
             _ => $"质量: {quality}%"

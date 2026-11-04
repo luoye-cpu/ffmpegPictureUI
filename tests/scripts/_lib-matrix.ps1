@@ -417,8 +417,11 @@ function Get-EquivalenceClasses {
             #   重写为「auto 档压回 pc + 显式 tv 放行 + 两处 EmitWarn」——审阅 M1 实测：auto 原先把
             #   limited 写进无范围载体的 JPEG，第三方解码器对源 -19.5 dB（45.16 → 25.67）；run i 为此
             #   停跑重计。jpg 位深 8 锚点字面量与语义未动。
+            # ⚠ pin 演进（2026-11-03，TG 视频贴纸批）：**再 +85**（1071 → **1156**）。成因 = FfmpegCommandBuilder.cs
+            #   的 `switch (fmt)` 新增 `case "webm"`（约 +49 行）及 webm range/`-t` 钳制/alpha 链增行，
+            #   其**下方**行号整体下移；锚点字面量与语义一字未动（`_probe-matrix-structure` 实测 found-at 复核）。
 
-            'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:1071|options.JpegGainMap ? null : "iec61966-2-1", ColorSpaceRegistry.ContainerYuvMatrix(fmt), 8, true'
+            'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:1156|options.JpegGainMap ? null : "iec61966-2-1", ColorSpaceRegistry.ContainerYuvMatrix(fmt), 8, true'
         )
         Rationale = 'JPEG container caps bit depth at 8 and DecideOutputColor rewrites options.BitDepth in place, so 8/10/12/16 are observationally equal'
     }
@@ -443,8 +446,10 @@ function Get-EquivalenceClasses {
             #   重写为「auto 档压回 pc + 显式 tv 放行 + 两处 EmitWarn」——审阅 M1 实测：auto 原先把
             #   limited 写进无范围载体的 JPEG，第三方解码器对源 -19.5 dB（45.16 → 25.67）；run i 为此
             #   停跑重计。webp 位深 8 锚点字面量与语义未动。
+            # ⚠ pin 演进（2026-11-03，TG 视频贴纸批）：**再 +85**（1083 → **1168**）。成因 = 同 jpeg8 那条
+            #   （case "webm" 插入使下方整体下移）；锚点字面量与语义一字未动。
 
-            'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:1083|return (null, "iec61966-2-1", ColorSpaceRegistry.ContainerYuvMatrix(fmt), 8, true);'
+            'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:1168|return (null, "iec61966-2-1", ColorSpaceRegistry.ContainerYuvMatrix(fmt), 8, true);'
         )
         Rationale = 'WebP container caps bit depth at 8 and DecideOutputColor rewrites options.BitDepth in place, so 8/10/12/16 are observationally equal'
     }
@@ -730,8 +735,10 @@ function Get-SemanticMatrices {
                 #   重写为「auto 档压回 pc + 显式 tv 放行 + 两处 EmitWarn」——审阅 M1 实测：auto 原先把
                 #   limited 写进无范围载体的 JPEG，第三方解码器对源 -19.5 dB（45.16 → 25.67）；run i 为此
                 #   停跑重计。exiftoolFormats 锚点字面量与语义未动。
+                # ⚠ pin 演进（2026-11-03，TG 视频贴纸批）：**再 +85**（2478 → **2563**）。成因 = case "webm"
+                #   及其配套增行使下方整体下移；锚点字面量与语义一字未动。
 
-                'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:2478|bool exiftoolFormats = fmt is "jpg" or "jpeg" or "png" or "tiff" or "webp";'
+                'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:2563|bool exiftoolFormats = fmt is "jpg" or "jpeg" or "png" or "tiff" or "webp";'
             )
         },
         @{
@@ -765,8 +772,10 @@ function Get-SemanticMatrices {
                 #   重写为「auto 档压回 pc + 显式 tv 放行 + 两处 EmitWarn」——审阅 M1 实测：auto 原先把
                 #   limited 写进无范围载体的 JPEG，第三方解码器对源 -19.5 dB（45.16 → 25.67）；run i 为此
                 #   停跑重计。avif 位深上限 锚点字面量与语义未动。
+                # ⚠ pin 演进（2026-11-03，TG 视频贴纸批）：**再 +85**（1115 → **1200**）。成因 = 同 jpeg8 那条
+                #   （case "webm" 插入使下方整体下移）；锚点字面量与语义一字未动。
 
-                'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:1115|return (null, null, null, ColorMapping.ImageEncoderArgs.AvifMaxBitDepth(options), false);',
+                'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:1200|return (null, null, null, ColorMapping.ImageEncoderArgs.AvifMaxBitDepth(options), false);',
                 'src/FfmpegGui/Services/FfmpegCommandBuilder.Decision.cs:162|options.BitDepth = capBd;'
             )
         }

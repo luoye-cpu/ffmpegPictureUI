@@ -229,6 +229,22 @@ namespace FfmpegGui.Services
                 SupportsGainMap = false
             };
 
+            // WebM(Telegram 视频贴纸, 2026-11-03): VP9 8-bit yuva420p 固定 4:2:0, 质量走 -crf;
+            // 无 ICC/CICP 载体(v1 保守口径, 见 ColorTransformPlan.Caps["webm"])。无位深/色度/无损旋钮。
+            _cache["webm"] = new FormatCapabilities
+            {
+                Format = "webm",
+                SupportsQuality = true,
+                SupportsChroma = false,
+                SupportsBitDepth = false,
+                SupportsMetadata = false,
+                SupportsLossless = false,
+                SupportsCicp = false,
+                CicpNote = "WEBM/VP9: limited-range YUV; no ICC/CICP carrier in v1",
+                SupportedBitDepths = new List<int> { 8 },
+                SupportedColorSpaces = new List<string> { "BT.709" }
+            };
+
             // ── 缩略图（EXIF IFD1）兑现性：按 2026-10-02 本机实测赋值 ──
             // 测法：ffmpeg 造目标件（先验尺寸/FileType 非空）→ `exiftool -ThumbnailImage<=donor.jpg` →
             //       `exiftool -b -ThumbnailImage` 回读，**字节数须等于 `ThumbnailLength` 声明值**。

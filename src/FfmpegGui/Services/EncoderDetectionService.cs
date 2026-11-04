@@ -202,7 +202,9 @@ namespace FfmpegGui.Services
             ["jxr"] = new[] { "libjxr" },
             ["bmp"] = new[] { "bmp" },
             ["gif"] = new[] { "gif" },
-            ["apng"] = new[] { "apng", "png" }
+            ["apng"] = new[] { "apng", "png" },
+            // 2026-11-03: Telegram 视频贴纸(WEBM)唯一编码器(本格式在 FfmpegCommandBuilder case "webm" 强制 libvpx-vp9)
+            ["webm"] = new[] { "libvpx-vp9" }
         };
 
         // 格式 → 必需的 muxer 名称列表（任一存在即可；ffmpeg 各版本 muxer 名不同）
@@ -214,7 +216,8 @@ namespace FfmpegGui.Services
             ["webp"] = new[] { "webp", "image2" }, ["avif"] = new[] { "avif", "image2" },
             ["tiff"] = new[] { "image2" },   ["tif"] = new[] { "image2" },
             ["jxl"] = new[] { "image2", "jpegxl" }, ["jxr"] = new[] { "image2" },
-            ["bmp"] = new[] { "image2" },    ["gif"] = new[] { "gif" }
+            ["bmp"] = new[] { "image2" },    ["gif"] = new[] { "gif" },
+            ["webm"] = new[] { "webm", "matroska" }
         };
 
         // 格式 → 必需的 decoder 名称（ffmpeg 读文件时使用，null=内置支持）
@@ -429,6 +432,7 @@ namespace FfmpegGui.Services
                 "dng" => RawService.IsDngTool ? "dngtool" : "dngtool",
                 "apng" => "apng",
                 "gif" => "gif",
+                "webm" => "libvpx-vp9",
                 _ => ""
             };
         }

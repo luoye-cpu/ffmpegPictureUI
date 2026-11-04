@@ -623,6 +623,11 @@ public static partial class ColorMappingEngine
                             VerifiedBy = "保守（未翻位）：JxrService 无 ICC 参数；⚠ 实测容器本身可经 exiftool 携带 ICC（见上注）" },
         ["gif"]   = new() { Format = "gif",   CanCarryArbitraryIcc = false, CanCicp = false, MaxBitDepth = 8, RgbNative = true,
                             UnlabeledMeansSrgb = false, CanHaveBothIccAndCicp = false, VerifiedBy = "调色板，无法标注" },
+        // 2026-11-03 Telegram 视频贴纸(WEBM/VP9): 与 gif 同类(无色彩通路 ⇒ FromOptions 返回 null ⇒ 传统管线保持既有行为,
+        // Decision.cs :650-652 文档明载该类出口的既定归属)。Matroska 有 Colour 元素但贴纸解码端行为未实测 ⇒ v1 不标 CICP。
+        ["webm"]  = new() { Format = "webm",  CanCarryArbitraryIcc = false, CanCicp = false, MaxBitDepth = 8, RgbNative = false,
+                            UnlabeledMeansSrgb = false, CanHaveBothIccAndCicp = false,
+                            VerifiedBy = "v1 conservative: Matroska Colour elements exist but Telegram sticker decoders unverified; no ICC carrier (2026-11-03)" },
         ["ppm"]   = new() { Format = "ppm",   CanCarryArbitraryIcc = false, CanCicp = false, MaxBitDepth = 16, RgbNative = true,
                             UnlabeledMeansSrgb = false, CanHaveBothIccAndCicp = false, VerifiedBy = "裸流中间格式" },
     };
@@ -652,6 +657,7 @@ public static partial class ColorMappingEngine
         //   通路是 DNG 容器压缩（`--format dng --dng-compression 0`），`--lossless true` 配
         //   `--format jpg` 会被静默忽略（见 FfmpegCommandBuilder / ImageEncoderArgs 的告警）。
         "jpg" or "jpeg" or "jpegli" => CodecLoss.Lossy,
+        "webm" => CodecLoss.Lossy,   // 2026-11-03: libvpx-vp9 CQ only, no lossless path wired in v1
         _ => CodecLoss.Unknown,
     };
 
