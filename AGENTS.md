@@ -290,6 +290,27 @@ pwsh -NoProfile -File tests/scripts/_run-step3-gates.ps1   # 94 条，整轮 ~60
   ⚠ **不要改 `ShutdownMode` 为 `OnExplicitShutdown`** —— `IpcService.cs` 的 `AllowFullExit=true; Close()`
   会变成僵尸进程。⚠ 「备份→还原→跑门禁」必须 touch 源文件：`copy2`/`cp -p` 带回旧 mtime 会让 MSBuild
   跳过编译、拿变异体跑出**假红**（实测踩过）。⚠ `MenuFlyout` 里的 `x:Name` **不生成字段**，取控件用 `FindMenuByTag`。
+- **托盘黑洞修复（2026-11-04）：Windows 侧换原生 `Shell_NotifyIcon`，Avalonia `TrayIcon` 弃用**：
+  维护者报障「关窗后无托盘图标、进程常驻」——UIA 枚举任务栏+溢出区（展开弹窗全名单）证实
+  **Avalonia 12.1.4 的 TrayIcon 在本机（Win11 26300）从不真正向 shell 注册**（standalone、
+  `TrayIcon.Icons` 附加集合两路皆 0 命中，最小探针应用复证），而其 `IsVisible` **自报 True**；
+  旧实现拿自报值当 `_trayAvailable`（tray.log `create=ok` 与门禁 ⑥ 都是被这份自证喂绿的，
+  `tests/output/_tmp/tray.log` 里 180+ 条历史 `create=ok` 全是假读数）。
+  对照实测：裸 `Shell_NotifyIcon(NIM_ADD)` 从**正常 medium-IL token**（explorer 代启）成功（按钮数 +1）、
+  从**提权**与**受限**（runas `/trustlevel:0x20000`）上下文一律 **err=5 ACCESS_DENIED**。
+  修法：新增 `src/FfmpegGui/Win32TrayIcon.cs`（STA 泵线程 + 隐藏窗口 + TrackPopupMenu 菜单 +
+  TaskbarCreated 重挂 + `SHDefExtractIconW` 取 exe 内嵌图标），**NIM_ADD 返回值 = `_trayAvailable`**，
+  失败 ⇒ `create=failed` + 关窗真退出；非 Windows 保留 Avalonia 路径。托盘线程事件必须
+  marshal 回 UI 线程（`Dispatcher.UIThread.Post`），泵线程异常降级不崩进程。
+  ⚠ **门禁 85 的 ⑥/④ 从此依赖运行上下文**：提权整轮（如 ZCode 会话内跑）⑥ 会红——真读数，
+  不是假红；正常终端（medium-IL）跑才绿。④ 已于同批增补**契约第三态**判据（退出 + tray.log `create=failed`
+  ⇒ PASS；退出 + `create=ok` ⇒ 仍 FAIL），⑦ 首断言靠 `create=failed` 行内联 `IsVisible=False` 变成上下文无关。
+  探针与读数存 `tests/output/_tmp/tray-debug/`（UIA 枚举/Win32 NIM_ADD 对照/run3..run5 端到端日志）。
+  beta12 出包读数（2026-11-04）：`pack.ps1 -Mode all` 双包；第 93 条验包 **16/0**（包内 exe sha16
+  `2B4D42B03A50EEF6`）；第 85 条打包体 **6/1**（唯一红 ⑥=提权拒绝，真读数）；beta11 双归档 + 两个解包目录
+  已删（删前 732 项 0 reparse point）。⚠ 更正：`4044f76` 声称的「标签 1.6.0BETA11」本地/远端都不存在。
+  已知后续项：`Win32TrayIcon.cs` 两条分析器告警（CA1416 平台守卫、IL3002 单文件 GetHINSTANCE）——功能已被
+  包体门禁实测覆盖，收口属独立一批。
 - **AVIF 的静态出口写不进 ICC（2026-10-26 实测）**：ffmpeg 的 AVIF muxer 不写 ICC，exiftool 后置
   也报「0 image files updated」而**退出码仍是 0**（672 B ProPhoto ICC：产物 `avifdec --info` 报
   `ICC Profile: Absent`，旧日志照打「ICC Profile 已恢复」）。`avifenc --icc` 能写，但它只用于
