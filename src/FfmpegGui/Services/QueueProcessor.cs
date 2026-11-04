@@ -1182,8 +1182,7 @@ namespace FfmpegGui.Services
                             //   **回退路径**：显式 --color-engine legacy，或引擎不可走（如 GainMap + 最长边缩放）。
                             //   判据与主分支用同一个 ShouldRoute，避免"路由说能走、分派说不能走"两套口径。
                             else if (captured.Options.JpegGainMap
-                                && (captured.Options.Format == "jpg" || captured.Options.Format == "jpeg"
-                                    || captured.Options.Format == "avif")
+                                && GainMapEncoder.FormatCarriesGainMap(captured.Options.Format) // 单点真值（批次 E 收敛三副本；jpegli 是表意，CLI 已归一 jpg）
                                 && !ColorMapping.ColorEngineRouter.ShouldRoute(
                                        captured.Options, finalOutputPath, inputMayHaveMultipleFrames))
                             {
@@ -1204,8 +1203,16 @@ namespace FfmpegGui.Services
                                 //   `engineRoutable` 来自**同一个** `ShouldRoute`（单点求值，不构成第二份判据）。
                                 await ProcessCjxlAsync(captured, finalOutputPath, ct);
                             }
-                            else if (backend == EncoderBackend.Cjpegli)
+                            else if (backend == EncoderBackend.Cjpegli
+                                && !(captured.Options.JpegGainMap
+                                     && GainMapEncoder.FormatCarriesGainMap(captured.Options.Format)))
                             {
+                                // ⚠ 批次 E（审阅面 2 M2）：本分支此前**没有引擎豁免**——Cjxl/Jxr 两支
+                                //   2026-09-17 就加过 `!engineRoutable`，这支漏了 ⇒ 引擎**可走**的
+                                //   jpg+gainmap+`-e Cjpegli` 任务在这里被截走、落 ProcessCjpegliAsync
+                                //   **静默出普通 JPEG**。增益图任务要么上面专用管线接走（引擎不可走），
+                                //   要么落到下面引擎插入点（可走，TransformGainMapAsync）——本分支只该接
+                                //   **无增益图**的 cjpegli 任务。
                                 await ProcessCjpegliAsync(captured, finalOutputPath, ct);
                             }
                             else if (backend == EncoderBackend.Jxr && !engineRoutable)
@@ -1239,7 +1246,7 @@ namespace FfmpegGui.Services
                                 //   （现状逐字不变），本条只补「引擎不可走 ⇒ 规划层轮不到」的那一半。
                                 //   文案/替代方案与规划层 `ColorStrategyPlanning.cs:181-193` 同源同义（单一真源在那边）。
                                 bool gainMapOnUnsupportedTarget = captured.Options.JpegGainMap
-                                    && !(captured.Options.Format == "jpg" || captured.Options.Format == "jpeg")
+                                    && !GainMapEncoder.FormatCarriesGainMap(captured.Options.Format) // 单点真值（批次 E）：承载格式不再被「不适用」错拒
                                     && !ColorMapping.ColorEngineRouter.ShouldRoute(
                                            captured.Options, finalOutputPath, inputMayHaveMultipleFrames);
                                 if (gainMapOnUnsupportedTarget)
@@ -2327,12 +2334,16 @@ namespace FfmpegGui.Services
                             item.InputPath, outputPath,
                             s => { item.Log += s; _onItemUpdated?.Invoke(item); },
                             absorb: item.Options,   // 可吸收时把 GPS/XMP 的隐私清理并入本次复制（省一次 exiftool 启动）
-                            dropOrientation: !keepOrientationTag)
+                            dropOrientation: !keepOrientationTag,
+                            excludeGainMapXmp: item.Options.JpegGainMap
+                                && GainMapEncoder.FormatCarriesGainMap(item.Options.Format))
                         : await ExifToolService.CopyMetadataAsync(
                             item.InputPath, outputPath,
                             s => { item.Log += s; _onItemUpdated?.Invoke(item); },
                             absorb: item.Options,
-                            dropOrientation: !keepOrientationTag);
+                            dropOrientation: !keepOrientationTag,
+                            excludeGainMapXmp: item.Options.JpegGainMap
+                                && GainMapEncoder.FormatCarriesGainMap(item.Options.Format));
 
                     if (copyExit == 0)
                     {

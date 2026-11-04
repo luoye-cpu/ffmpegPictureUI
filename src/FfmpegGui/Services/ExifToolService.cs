@@ -526,7 +526,8 @@ namespace FfmpegGui.Services
             string sourcePath, string targetPath,
             Action<string>? logCallback = null,
             Models.FfmpegOptions? absorb = null,
-            bool dropOrientation = true)
+            bool dropOrientation = true,
+            bool excludeGainMapXmp = false)
         {
             if (_detectedPath == null)
             {
@@ -547,7 +548,12 @@ namespace FfmpegGui.Services
             //   两变体的分工不变：本方法**不排除**色彩标签（-ICC_Profile 照旧），因为调用方
             //   （protectColorMetadata=false）要的正是"完整带回，含 ICC"。
             var args = $"-overwrite_original -m -TagsFromFile \"{sourcePath}\" " +
-                       $"-all:all -EXIF:all -IPTC:all -XMP:all -MakerNotes:all -GPS:all -ICC_Profile " +
+                       // 批次 E：excludeGainMapXmp 时同样不拷源 XMP（-all:all 会带结构化 XMP，
+                       //   故假分支收敛为显式组选择器、真分支只留否定式；该变体在 gainmap 任务上
+                       //   因 encoderProtectsColor 恒真而不可达，纯防御）。
+                       (excludeGainMapXmp
+                           ? "-all:all -EXIF:all -IPTC:all -MakerNotes:all -GPS:all -ICC_Profile "
+                           : "-all:all -EXIF:all -IPTC:all -XMP:all -MakerNotes:all -GPS:all -ICC_Profile ") +
                        $"{BuildAbsorbExclusions(absorbNow ? absorb : null)}" +
                        $"{(dropOrientation ? OrientationExclusion : string.Empty)}\"{targetPath}\"";
             logCallback?.Invoke($"[exiftool] 复制元数据: {Path.GetFileName(sourcePath)} → {Path.GetFileName(targetPath)}\n"
@@ -733,7 +739,8 @@ namespace FfmpegGui.Services
             string sourcePath, string targetPath,
             Action<string>? logCallback = null,
             Models.FfmpegOptions? absorb = null,
-            bool dropOrientation = true)
+            bool dropOrientation = true,
+            bool excludeGainMapXmp = false)
         {
             if (_detectedPath == null)
             {
@@ -748,7 +755,22 @@ namespace FfmpegGui.Services
             //   PhotometricInterpretation… 那一串）——它此前**被漏掉**，而它恰恰是唯一会
             //   让查看器把已旋正的像素**再转一次**的那一个。理由见 CopyMetadataAsync 的同名参数。
             var args = $"-overwrite_original -m {PngExifResetArg(targetPath)}-TagsFromFile \"{sourcePath}\" " +
-                       $"-EXIF:all -IPTC:all -XMP:all -MakerNotes:all -GPS:all " +
+                       // 批次 E（审阅面 2 M1）：增益图产物**不拷源 XMP**（整体省略 -XMP:all）。
+                       //   为什么：GainMapEncoder 自己写的载体（ISO APP2 / hdrgm XMP / both）才是权威，
+                       //   源 XMP 混进来后解码端在 ISO/XMP 差 >0.02 时改采 XMP（MergeFromXmp）=>
+                       //   「宣称旧量程、交付新量程」（实测重现：PNG 源 iTXt XMP 被整块搬进产物）。
+                       //   为什么不用更细的排除（三轮实测，2026-11-03）：
+                       //   a) `--XMP-hdrgm:all` 组排除拦不住——exiftool 13.60 不认 hdrgm 命名空间，
+                       //      PNG 源的 XMP 按**块**搬运（未知命名空间整包进产物）；
+                       //   b) 按名排除（--GainMapMax 等）单个不拦、十个一起让整个复制归零
+                       //      （「No writable tags set」）——行为不稳，不可依赖；
+                       //   c) 复制后显式删除（-XMP:<tag>= 九项）实测有效，但会连 xmp/both 档下
+                       //      **编码器自己写的** XMP 一起删掉。
+                       //   => 整体省略是唯一对三种 metadata 档全对、且与 exiftool 版本无关的机制。
+                       //   代价：gainmap 产物不带源描述性 XMP（dc:description 等）——记入 CHANGELOG。
+                       (excludeGainMapXmp
+                           ? "-EXIF:all -IPTC:all -MakerNotes:all -GPS:all "
+                           : "-EXIF:all -IPTC:all -XMP:all -MakerNotes:all -GPS:all ") +
                        BuildAbsorbExclusions(absorbNow ? absorb : null) +
                        $"--ColorSpace --ICC_Profile --ColorSpaceData " +
                        $"--ColorPrimaries --TransferFunction --ColorMatrix " +

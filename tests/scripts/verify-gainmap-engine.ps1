@@ -1144,6 +1144,110 @@ if (($cMissing.Count -eq 0) -and ($cBad.Count -eq 0)) {
        "⑬j **负控像素**：maxLinear 恰为 1.0000 且 over1=0（解码没坏、只是没有增益可施加）—— 与 ⑬c/⑬f 的大数 over1 形成对照"
 }
 
+
+Write-Host "`n### 14) 出口诚实性（批次 E 2026-11-03：审阅面 2/面 4 的四条必修/应修）###" -ForegroundColor Cyan
+# ── 14a P0-3：avif+gainmap 的 --dry-run 必须展示真实管线（纯托管 tmap），不再打印普通 avif ffmpeg 命令。
+#    旧代码预览分支只认 jpg/jpeg ⇒ avif 打印 `ffmpeg -y …` 与实际执行的 tmap 出口失真（JXR 预览漂移同类）。
+$drAv = RunCli 'eg_dr_av' $hdr 'avif' @('--jpeg-gain-map', 'true', '--dry-run')
+CK ($drAv.log -match 'GainMapEncoder -> AVIF tmap') "14a avif+gainmap dry-run：点名纯托管 tmap 管线（实得含 tmap 文案）"
+CK ($drAv.log -notmatch 'ffmpeg -y') "14a avif+gainmap dry-run：**不再**打印普通 avif ffmpeg 命令（旧失真形态绝迹）"
+#    负控：jpg 侧的 dry-run 仍走同一份纯托管文案（该分支没被 avif 改动波及）
+$drJpg = RunCli 'eg_dr_jpg' $hdr 'jpg' @('--jpeg-gain-map', 'true', '--dry-run')
+CK ($drJpg.log -match '\[纯托管\] GainMapEncoder 色调映射') "14a' jpg+gainmap dry-run 仍是纯托管文案（回归对照）"
+
+# ── 14b P0-2：引擎**可走**的 gainmap + `-e Cjpegli` 不得被 Cjpegli 分派分支截成普通 JPEG。
+#    旧代码该分支没有引擎豁免（Cjxl/Jxr 2026-09-17 就加了）⇒ 静默出普通 cjpegli JPEG（images=1 无 ISO）。
+$rCj = RunCli 'eg_cjpegli' $hdr 'jpg' @('--jpeg-gain-map', 'true', '-e', 'Cjpegli')
+CK ($rCj.code -eq 0 -and $rCj.file) "14b routable + `-e Cjpegli` + gainmap：正常产出（实得 code=$($rCj.code)）"
+if ($rCj.file) {
+    $pmCj = ProbeOut 'gainmap' $rCj.file.FullName "$out/sec14b.jpg"
+    CK ($pmCj -match 'images=2') "14b 产物是真增益图容器（images=2；被静默截成普通 JPEG 时为 images=1）"
+    CK ((IsoMax $pmCj) -ne "" -and ([double](IsoMax $pmCj) -gt 0)) "14b ISO max 在场且非零（实得 $(IsoMax $pmCj)）"
+}
+
+# ── 14c P0-2 回归对照：引擎**不可走**（动画输入）+ `-e Cjpegli` ⇒ 仍走专用管线（该路由本批未动，锁住不回归）。
+$anim = "$out/anim.gif"
+Start-Process -FilePath $ffm -ArgumentList @('-y', '-hide_banner', '-loglevel', 'error',
+    '-f', 'lavfi', '-i', 'testsrc2=s=64x48', '-frames:v', '4', $anim) -NoNewWindow -Wait | Out-Null
+CK (Test-Path $anim) "14c 动画输入已生成（4 帧 gif）"
+$rAn = RunCli 'eg_anim' $anim 'jpg' @('--jpeg-gain-map', 'true', '-e', 'Cjpegli')
+CK ($rAn.code -eq 0 -and $rAn.file) "14c 动画 + `-e Cjpegli` + gainmap：专用管线照常产出（实得 code=$($rAn.code)）"
+if ($rAn.file) {
+    $pmAn = ProbeOut 'gainmap' $rAn.file.FullName "$out/sec14c.jpg"
+    CK ($rAn.log -match '\[GainMap\] Step') "14c 真牙：日志点名专用管线（[GainMap] Step 在场；被 Cjpegli 分派截走时无此标记）"
+    CK ($pmAn -match 'images=1') "14c 动画 testsrc2 是 SDR 源 => 按 2026-09-20 裁定产普通 JPEG（images=1），不是零增益假 Ultra HDR"
+    CK ($rAn.log -match '输入为 SDR') "14c 诚实降级：日志点名「输入为 SDR…已按普通 JPEG 输出」"
+}
+
+# ── 14d P1-4：ISO 21496-1 min_version≠0 不得静默降级 SDR —— 字节手术把 DSC00037 的
+#    min_version u16 翻成 1，解码必须**点名**（「超出本解码器（仅 v0）…SDR 交付」）而不是无声当无增益图。
+$dscV1 = "$out/dsc_minver1.jpg"
+$srcB = [IO.File]::ReadAllBytes($gm37)
+$txt = [Text.Encoding]::ASCII.GetString($srcB)
+$urnIdx = $txt.IndexOf('urn:iso:std:iso:ts:21496:-1')
+CK ($urnIdx -ge 0) "14d 前置：DSC00037 内找到 ISO URN（偏移 $urnIdx）"
+if ($urnIdx -ge 0) {
+    # ⚠ URN 字串可能在 XMP 文本里也出现一次（实测 DSC00037 两处，首个在 APP1）=>
+    #   翻**所有**「NUL 后两字节为 00 00」的出现点；真 APP2 必在其中，XMP 文本被翻
+    #   两个字节对本判据无害（一次性变异件）。
+    $urnLen = 'urn:iso:std:iso:ts:21496:-1'.Length
+    $flips = 0
+    $scan = $urnIdx
+    while ($scan -ge 0) {
+        $cand = $scan + $urnLen + 1
+        if ($srcB[$cand] -eq 0 -and $srcB[$cand + 1] -eq 0) { $srcB[$cand] = 0; $srcB[$cand + 1] = 1; $flips++ }
+        $scan = $txt.IndexOf('urn:iso:std:iso:ts:21496:-1', $scan + 1)
+    }
+    CK ($flips -ge 1) "14d 前置：翻转了 $flips 处 min_version（真 APP2 必在其中）"
+    [IO.File]::WriteAllBytes($dscV1, $srcB)
+    # ⚠ 断言走**产品日志**：ServiceProbe gainmap 模式不转发 [GainMap解码] 日志（容器层自有输出），
+    #   而点名行是解码编排层打的 ⇒ 用产品 CLI 把变异件转 png，从 item.Log 里断言。
+    $rV1 = RunCli 'eg_minver' $dscV1 'png' @()
+    CK ($rV1.code -eq 0) "14d 前置：min_version=1 变异件正常转出（实得 code=$($rV1.code)；静默降级=SDR png）"
+    CK ($rV1.log -match 'min_version=1') "14d 点名在案：min_version=1 超出支持被日志点名（不再静默）"
+    CK ($rV1.log -match 'SDR 交付') "14d 降级语义诚实：日志写明按无增益图处理（SDR 交付）"
+    CK ($rV1.log -notmatch '元数据来源: ISO 21496-1 APP2') "14d 该 APP2 确实被忽略（不再解析出 ISO 元数据）"
+}
+
+# ── 14e P0-1：gainmap 产物不得带回**源的** hdrgm XMP（复制链排除）。
+#    诚实界定：随包 exiftool 13.60 复制未知命名空间时本来就整个丢弃 ⇒ 污染**当前不重现**；
+#    本臂是**版本脆弱性契约锁**——新版 exiftool 一旦开始搬运 hdrgm，没有复制链排除就会
+#    静默污染（解码端 ISO/XMP 差 >0.02 时改采 XMP ⇒ 宣称旧量程交付新量程），届时本臂当场红。
+#    构造：给 PQ 源 PNG 注入 iTXt XMP（hdrgm:GainMapMax=9.9，与请求量程差 >0.02）再走完整产品链。
+$hdrXmp = "$out/src_hdr_xmp.png"
+Copy-Item $hdr $hdrXmp -Force
+$inj = @'
+import struct, zlib, sys
+p = sys.argv[1]
+xmp = ("<?xpacket begin='' id='W5M0MpCehiHzreSzNTczkc9d'?>"
+       "<x:xmpmeta xmlns:x='adobe:ns:meta/'><rdf:RDF xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#'>"
+       "<rdf:Description xmlns:hdrgm='http://ns.adobe.com/hdrgm/1.0/'"
+       " hdrgm:GainMapMin='0.0' hdrgm:GainMapMax='9.9' hdrgm:Gamma='1.0'"
+       " hdrgm:OffsetSDR='0' hdrgm:OffsetHDR='0' hdrgm:HDRCapacityMin='0' hdrgm:HDRCapacityMax='9.9'/>"
+       "</rdf:RDF></x:xmpmeta><?xpacket end='w'?>").encode()
+data = b'XML:com.adobe.xmp' + b'\x00\x00\x00\x00\x00' + xmp
+chunk = b'iTXt' + data
+png = bytearray(open(p, 'rb').read())
+i = png.find(b'IHDR')
+ins = i + 4 + 13 + 4
+png[ins:ins] = struct.pack('>I', len(data)) + chunk + struct.pack('>I', zlib.crc32(chunk) & 0xffffffff)
+open(p, 'wb').write(bytes(png))
+print('injected', len(data))
+'@
+$injOut = $inj | python - $hdrXmp
+CK ($LASTEXITCODE -eq 0) "14e 前置：XMP iTXt 注入成功（$($injOut | Select-Object -First 1)）"
+$rPol = RunCli 'eg_poll' $hdrXmp 'jpg' @('--jpeg-gain-map', 'true')
+CK ($rPol.code -eq 0 -and $rPol.file) "14e 污染源 + gainmap：正常产出（实得 code=$($rPol.code)）"
+if ($rPol.file) {
+    $prodTxt = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($rPol.file.FullName))
+    CK (-not $prodTxt.Contains('hdrgm')) "14e 产物**字节级无** hdrgm XMP（源的旧增益量程没被搬进来；污染回归时此条当场红）"
+    # ⚠ 不 assert 产品日志的「元数据来源」行：它只在**解码增益图源**时出现，本臂源是 PQ PNG（无源增益图可解）。
+    #   「源旧量程不得被采用」已由上面字节级断言 + 下面 ISO max 值级断言共同钉住（无 XMP 载体 ⇒ ISO 必胜）。
+    $pmPol = ProbeOut 'gainmap' $rPol.file.FullName "$out/sec14e.jpg"
+    CK ((IsoMax $pmPol) -ne "" -and ([double](IsoMax $pmPol) -gt 0)) "14e ISO max 在场且非零（实得 $(IsoMax $pmPol)）"
+}
+
+
 Write-Host ""
 Write-Host "===== gainmap-engine: PASS=$pass FAIL=$fail =====" -ForegroundColor $(if ($fail -eq 0) { "Green" } else { "Red" })
 # ⚠ 唯一目录自清（宿主批量删除守卫会拦整目录删 ⇒ 用 -EA SilentlyContinue，§6 第 57 条 ③）；失败则保留供排查

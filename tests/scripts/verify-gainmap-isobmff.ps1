@@ -1066,6 +1066,69 @@ if (Test-Path $heicPlain) {
      "§3c **负控**：普通 HEIC → jpg 产出正常且**不出现**增益图路径（实 产物=$($bHeicCtl.prods)）"
 }
 
+Write-Host "`n### §3h 方向位冲突：flags bit2 置位时以标志为准（批次 E，审阅面 1）###" -ForegroundColor Cyan
+# 背景：GainMapDecoder.cs 的 tmap 路径旧写法**无条件**用 headroom 覆写 BaseRenditionIsHdr，
+#   与 ParseIso21496 的 bit2（backwardDirection）自相矛盾——bit2=1 而 headroom 读数相反时，
+#   显式标志被静默翻掉。修复后：bit2 置位 => 以标志为准并打点名行；未置位 => 沿用 headroom
+#   推断（libavif 兼容）。本节用字节手术把合成件的 bit2 翻成 1（底图 SDR => headroom 读数
+#   「正向」=> 恰好构成冲突），断言点名行在场；原件作负控（不得出现该行）。
+# 手术定位：iloc 里 item 2（tmap）的 extent 偏移是**绝对文件偏移**（生成器 _make-synth-heic-gainmap.py
+#   以 o1/o2/o3 显式写入），载荷布局 = u8 version + u16 min_version + u16 writer_version + u8 flags
+#   => flags 在 extent 偏移 +5。
+$heicB2 = "$out/synth_heic_bit2.heic"
+$walker = @'
+import struct, sys
+src, dst = sys.argv[1], sys.argv[2]
+b = open(src, 'rb').read()
+tmap_off = None
+o = 0
+while o + 8 <= len(b):
+    sz = struct.unpack('>I', b[o:o+4])[0]
+    typ = b[o+4:o+8].decode('latin1')
+    if sz < 8:
+        break
+    if typ == 'meta':
+        q = o + 8 + 4          # full box: ver/flags(4) 之后是子盒
+        end = o + sz
+        while q + 8 <= end:
+            s2 = struct.unpack('>I', b[q:q+4])[0]
+            t2 = b[q+4:q+8].decode('latin1')
+            if s2 < 8:
+                break
+            if t2 == 'iloc':
+                r = q + 8 + 4  # ver/flags(4) 之后
+                r += 2         # offset_size=4 / length_size=4+reserved
+                cnt = struct.unpack('>H', b[r:r+2])[0]
+                r += 2
+                for _ in range(cnt):
+                    iid, dri = struct.unpack('>HH', b[r:r+4]); r += 4
+                    ec = struct.unpack('>H', b[r:r+2])[0]; r += 2
+                    off, ln = struct.unpack('>II', b[r:r+8]); r += 8
+                    if iid == 2:
+                        tmap_off, tmap_len = off, ln
+            q += s2
+    o += sz
+if tmap_off is None:
+    print('tmap item not found')
+    sys.exit(2)
+fl = tmap_off + 5
+b2 = bytearray(b)
+b2[fl] = b2[fl] | 0x04
+open(dst, 'wb').write(bytes(b2))
+print('tmap off=%d len=%d flags=%#x -> %#x' % (tmap_off, tmap_len, b[fl], b2[fl]))
+'@
+$wOut = $walker | python - $heicPos $heicB2
+CK ($LASTEXITCODE -eq 0) "§3g 前置：tmap 载荷定位并翻 bit2 成功（$($wOut | Select-Object -First 1)）"
+if ($LASTEXITCODE -eq 0) {
+    $tB2 = RunApp $heicB2 'jpg' 'heic_b2'
+    CK ($tB2.prods -ge 1 -and $tB2.text -match '方向以 flags bit2（backwardDirection）为准') `
+       "§3h 冲突裁决：bit2=1 与 headroom 读数相反时，点名行在案且方向以标志为准"
+    CK ($tB2.text -match '检测到 ISO-BMFF 增益图') "§3h 对照：容器识别不受手术影响（路径照常走通）"
+    # 负控：原件（bit2 未置位）不得出现该点名行
+    $tOrig = RunApp $heicPos 'jpg' 'heic_b2_orig'
+    CK ($tOrig.text -notmatch '方向以 flags bit2') "§3h **负控**：原件（bit2=0）不出现点名行 => 该行只对真冲突打印，不是常驻日志"
+}
+
 Write-Host "`n### §4 收尾 ###" -ForegroundColor Cyan
 $exeMtimeAfter = (Get-Item $exe).LastWriteTimeUtc
 CK ($exeMtimeBefore -eq $exeMtimeAfter) "§4 被测 exe 未被中途重建（$exe）"

@@ -3610,14 +3610,24 @@ namespace FfmpegGui
                     forPreview: true);
             }
 
-            // ── Gain Map (Ultra HDR) JPEG：纯 C# GainMapEncoder + cjpegli ──
-            if (item.Options.JpegGainMap && (fmt == "jpg" || fmt == "jpeg"))
+            // ── Gain Map (Ultra HDR) JPEG：纯 C# GainMapEncoder + cjpegli（jpg/jpeg/jpegli 同一条专用管线；
+            //    批次 E 把 jpegli 列入是表意收敛——CLI 解析期已把它归一成 jpg，见 CliParser.cs:216）──
+            if (item.Options.JpegGainMap && (fmt == "jpg" || fmt == "jpeg" || fmt == "jpegli"))
             {
                 var q = item.Options.Quality;
                 var nits = item.Options.JpegGainMapTargetNits;
                 var gmq = item.Options.JpegGainMapQuality;
                 var cj = CjpegliService.IsAvailable ? " + cjpegli" : "";
                 return $"[纯托管] GainMapEncoder 色调映射{cj} + 增益图打包 (峰值 {nits}nits, q={q}, prog -p {Services.ColorMapping.GainMapJpegCodec.ProgressiveLevelOf(item.Options)} (-1=none))";
+            }
+
+            // ── Gain Map AVIF：ISO-BMFF tmap 容器（IsoBmffGainMapWriter + PatchColr），同样不经 ffmpeg 编码器。
+            //    ⚠ 批次 E（审阅面 2 M3）：此前预览分支只认 jpg/jpeg => avif+gainmap 的 --dry-run 打印的是
+            //    普通 avif ffmpeg 命令，与实际执行的 tmap 出口失真（与 D-1 修过的 JXR 预览漂移同类）。──
+            if (item.Options.JpegGainMap && fmt == "avif")
+            {
+                var nits = item.Options.JpegGainMapTargetNits;
+                return $"[纯托管] GainMapEncoder -> AVIF tmap 容器 (IsoBmffGainMapWriter, 峰值 {nits}nits) — 不经 ffmpeg 编码器";
             }
 
             // ── cjpegli 后端（仅当目标格式为 jpg/jpeg 时，与真实分派一致）──

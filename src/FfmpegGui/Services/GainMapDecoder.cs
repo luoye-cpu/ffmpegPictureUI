@@ -120,6 +120,8 @@ public static class GainMapDecoder
         public float HdrCapacityMax = 0;  // log2 容量上限 (ISO alternateHdrHeadroom)
         public float HdrCapacityMin = 0;  // log2 容量下限 (ISO baseHdrHeadroom; SDR 基图恒 0 = 1×)
         public bool BaseRenditionIsHdr;   // true=基础图是 HDR (通常 false)
+        /// <summary>ISO flags bit2（backwardDirection）原值；null = 来源不是 ISO 二进制（XMP/Apple 兜底）。批次 E（审阅面 1）。</summary>
+        public bool? BackwardDirectionFlag;
         /// <summary>
         /// useBaseColorSpace（ISO flags bit6）：true = 增益图定义在**底图色域**内（标准写法，本项目产出恒 true）；
         /// false = 定义在 alternate(HDR) 色域，严格应用前需先进色域转换（此时本解码器按底图色域近似）。
@@ -203,6 +205,9 @@ public static class GainMapDecoder
                 }
                 catch { container = null; }
                 var isoMeta = container?.IsoMetadata;
+                if (container?.IsoMinVersionSkipped is int skippedVer)
+                    log?.Invoke($"[GainMap解码] ⚠️ ISO 21496-1 min_version={skippedVer} 超出本解码器（仅 v0）"
+                        + "=> 忽略该 APP2 增益图元数据，按无增益图处理（SDR 交付）\n");
 
                 // ── Step 1: 读取元数据 (ISO 优先, exiftool XMP 补全/兜底) ──
                 var meta = isoMeta;
@@ -218,9 +223,16 @@ public static class GainMapDecoder
                         log?.Invoke("[GainMap解码] ❌ ISO-BMFF tmap 载荷解析失败（非预期版本/截断）\n");
                         return null;
                     }
-                    // 方向：ISO 21496-1 的 flags 里**没有**「底图是否 HDR」位（libavif 不写 backwardDirection），
-                    // 只能由 headroom 比较推出 —— base > alternate ⇒ 底图已是 HDR（增益图用于下映射到 SDR）。
-                    meta.BaseRenditionIsHdr = meta.HdrCapacityMin > meta.HdrCapacityMax;
+                    // 方向：flags bit2 = backwardDirection（HDR 意图作基图）——**置位时以它为准**；
+                    //   libavif 历史上不置位（bit2=0）=> 那类文件按 headroom 推（base > alt => 底图已是 HDR，
+                    //   增益图用于下映射到 SDR）。⚠ 旧写法无条件用 headroom 覆写 => bit2=1 而 headroom 读数
+                    //   相反时显式标志被静默翻掉（2026-11-03 批次 E，审阅面 1；本处旧注释「flags 里没有该位」
+                    //   与 ParseIso21496 的 :1121/:1142 自相矛盾，一并更正）。
+                    bool byFlag = meta.BackwardDirectionFlag == true;
+                    bool byHeadroom = meta.HdrCapacityMin > meta.HdrCapacityMax;
+                    meta.BaseRenditionIsHdr = byFlag || byHeadroom;
+                    if (byFlag && !byHeadroom)
+                        log?.Invoke("[GainMap解码] 方向以 flags bit2（backwardDirection）为准（headroom 读数相反）\n");
                     log?.Invoke($"[GainMap解码] 元数据来源: ISO-BMFF tmap item（{bmff.TmapPayload.Length} B，形式 {bmff.Form}）\n");
                 }
                 var xmpMeta = await ReadMetadataAsync(inputPath, log, ct);
@@ -915,6 +927,8 @@ public static class GainMapDecoder
         public readonly List<Img> Images = new();
         public GainMapMetadata? IsoMetadata;
         public int IsoImageIndex = -1;
+        /// <summary>ISO 21496-1 APP2 的 min_version 超出本解码器（仅 v0）时记下版本号供上层点名（批次 E，审阅面 4：此前静默降级 SDR）。</summary>
+        public int? IsoMinVersionSkipped;
         /// <summary>MPF IndividualImageArray 条目（attribute / size / offset）。</summary>
         public readonly List<(uint Attr, uint Size, uint Offset)> MpfEntries = new();
         /// <summary>MPF TIFF 头（'MM'/'II'）绝对位置 = MPF offset 计数基准（CIPA DC-X007）。</summary>
@@ -1037,8 +1051,18 @@ public static class GainMapDecoder
 
                 if (isoDataStart >= 0 && isoDataLen >= 5)
                 {
-                    var meta = ParseIso21496(data, isoDataStart, isoDataLen);
-                    if (meta != null) { c.IsoMetadata = meta; c.IsoImageIndex = idx; }
+                    // min_version 预读（大端 u16，ParseIso21496 同款字节序）：≠0 时本解码器（仅 v0）必然
+                    //   拒收 ⇒ 记下版本号供上层点名，不再静默当「无增益图」（批次 E，审阅面 4）。
+                    if (isoDataLen >= 2)
+                    {
+                        int mv = (data[isoDataStart] << 8) | data[isoDataStart + 1];
+                        if (mv != 0) { c.IsoMinVersionSkipped = mv; isoDataLen = 0; }
+                    }
+                    if (isoDataLen >= 5)
+                    {
+                        var meta = ParseIso21496(data, isoDataStart, isoDataLen);
+                        if (meta != null) { c.IsoMetadata = meta; c.IsoImageIndex = idx; }
+                    }
                 }
                 if (mpfStart >= 0 && mpfLen >= 16 && c.MpfEntries.Count == 0)
                     c.ParseMpf(data, mpfStart, mpfLen);
@@ -1138,8 +1162,10 @@ public static class GainMapDecoder
                 var meta = new GainMapMetadata
                 {
                     Channels = channels,
-                    // ISO 无 BaseRenditionIsHDR 标志：HDR 意图作基图 → 向后方向，或增益全 ≤ 0
+                    // flags bit2 = backwardDirection（HDR 意图作基图）；原值另存 BackwardDirectionFlag
+                    // 供 tmap 调用点做「标志 vs headroom」冲突裁决（批次 E，审阅面 1）。
                     BaseRenditionIsHdr = (flags & 0x04) != 0,
+                    BackwardDirectionFlag = (flags & 0x04) != 0,
                     UseBaseColorSpace = (flags & 0x40) != 0,   // bit6 = useBaseColorSpace
                 };
 

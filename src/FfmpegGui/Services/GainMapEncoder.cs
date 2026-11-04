@@ -102,6 +102,16 @@ public static class GainMapEncoder
     public static string ContainerOf(string outputPath)
         => string.Equals(Path.GetExtension(outputPath), ".avif", StringComparison.OrdinalIgnoreCase) ? "avif" : "jpeg";
 
+    /// <summary>
+    /// 增益图承载格式的<b>取值域唯一真值</b>（2026-11-03 批次 E，审阅面 2 M2）：此前三处各写一份字面量表
+    /// （QueueProcessor 专用分派 / 契约拒绝判据 / ColorTransformPlan 的 SupportsGainMap 位），jpegli 在
+    /// 规划表里声称支持而分派不认 => 三副本漂移。分派与拒绝判据一律改读这里。
+    /// jpegli 在 CLI 解析期被归一成 jpg（CliParser.cs:216），列进来是表意收敛，不是新行为；
+    /// avif 走 ISO-BMFF tmap 容器（IsoBmffGainMapWriter）。
+    /// </summary>
+    public static bool FormatCarriesGainMap(string? fmt)
+        => fmt is "jpg" or "jpeg" or "jpegli" or "avif";
+
     // ── 增益图元数据承载的**取值域唯一真值**（2026-10-27 与 origin/main 合流时收口）──
     // UI 下拉的词表、CLI 两个开关的校验、模型两条路（单输入 / 两图合成）的默认值、以及本编码器
     // 入口处的裁决，都必须读下面四个成员；任何一处再各写一份 "iso"/"xmp"/"both" 字面量就是第二副本
