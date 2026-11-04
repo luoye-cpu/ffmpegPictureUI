@@ -1308,25 +1308,19 @@ namespace FfmpegGui
             if (ConcurrencyBox != null)
                 ConcurrencyBox.Text = Math.Clamp(settings.MaxQueueSize, 1, 128).ToString();
 
-            // ── PLAN 文件夹自动识别（便携包自动加载 ffmpeg 目录）──
+            // ── ffmpeg 目录解析（2026-11-04 检测一致性批 P1：集中到 PlatformServices 单点，与 headless 同源）──
             // 各外部工具（cjxl/djxl/cjpegli/exiftool/ultrahdr/jxr）的 PLAN 检测
-            // 已内置于对应 Service.Detect() 中，此处仅处理 ffmpeg 目录。
+            // 已内置于对应 Service.Detect() 中，此处只处理 ffmpeg 目录与解析来源的可见化。
             try
             {
-                var planPath = PlatformServices.PlanFolderPath;
-                if (planPath != null)
-                {
-                    var ffmpegInPlan = PlatformServices.FindPlanSubDir(planPath, "ffmpeg-full");
-                    if (ffmpegInPlan != null
-                        && string.IsNullOrWhiteSpace(AppSettingsService.Current.FfmpegDirectory))
-                    {
-                        AppSettingsService.Current.FfmpegDirectory = ffmpegInPlan;
-                        AppSettingsService.Save();
-                        if (FfmpegPathBox != null) FfmpegPathBox.Text = ffmpegInPlan;
-                    }
-                    if (LogText != null)
-                        LogText.Text += $"[PLAN] 检测到便携组件包: {planPath}\n";
-                }
+                var resolution = PlatformServices.EnsureFfmpegDirectoryResolved();
+                if (LogText != null)
+                    foreach (var m in resolution.Messages)
+                        LogText.Text += m + "\n";
+                if (resolution.Changed && FfmpegPathBox != null && !string.IsNullOrWhiteSpace(resolution.Directory))
+                    FfmpegPathBox.Text = resolution.Directory;
+                if (LogText != null && PlatformServices.PlanFolderSource != null)
+                    LogText.Text += $"[PLAN] 检测到便携组件包: {PlatformServices.PlanFolderPath} (source={PlatformServices.PlanFolderSource})\n";
             }
             catch { }
 
@@ -1415,7 +1409,7 @@ namespace FfmpegGui
                     var tools = ExternalToolsDetector.ProbeAllTools(m => { if (LogText != null) LogText.Text += m; });
                     Log("── 外部工具检测 ──");
                     foreach (var t in tools)
-                        Log($"  {t.StatusIcon} {t.Name}: {(t.IsAvailable ? "v" + t.Version : "未检测到")}");
+                        Log($"  {t.StatusIcon} {t.Name}: {(t.IsAvailable ? "v" + t.Version : "未检测到")}{(string.IsNullOrEmpty(t.Source) ? "" : $" [{t.Source}]")}");
                 }
                 catch (Exception ex) { Log("[tools] 探测失败: " + ex.Message); }
 
@@ -1424,6 +1418,8 @@ namespace FfmpegGui
                 {
                     Log("── GPU 硬件编码能力检测 ──");
                     var gpuReport = await Services.GpuCapabilityService.DetectAsync();
+                    if (gpuReport.CompiledHwaccels.Count > 0)
+                        Log($"  [hwaccel 编译方法（仅信息，非设备判定）] {string.Join(", ", gpuReport.CompiledHwaccels)}");
                     if (gpuReport.Devices.Count > 0)
                     {
                         foreach (var dev in gpuReport.Devices)
@@ -2230,8 +2226,8 @@ namespace FfmpegGui
                     EncoderCombo.Items.Add(enc.ToString());
                 }
 
-                // 尝试选中默认编码器
-                var defaultEnc = EncoderDetectionService.GetDefaultEncoder(fmt1);
+                // 尝试选中默认编码器（P2：消费刚枚举的列表，avif 的 svt/aom 判断不再依赖全局缓存时序）
+                var defaultEnc = EncoderDetectionService.GetDefaultEncoder(fmt1, encoders);
                 var idx = encoders.FindIndex(e => e.Name.Equals(defaultEnc, StringComparison.OrdinalIgnoreCase));
                 // ── D-1 同族第三处（2026-10-12）：**新列表里还有用户当前所选项就保留它**，没有才回落默认 ──
                 //   原先这里**无条件**选默认编码器，而本方法跨一个 `await GetEncodersForFormatAsync(...)`：
@@ -5233,6 +5229,7 @@ namespace FfmpegGui
                 var fullPath = files[0].Path.LocalPath;
                 var dir = Path.GetDirectoryName(fullPath) ?? "";
                 AppSettingsService.Current.FfmpegDirectory = dir;
+                AppSettingsService.Current.FfmpegDirectoryAuto = false;   // 用户显式指定 ⇒ 失效时不自动改写（P1，2026-11-04）
                 AppSettingsService.Save();
                 EncoderDetectionService.ClearCache();
             // ⚠ 换 ffmpeg 目录 = 换了"环境"，凡是**以 ffmpeg 身份为隐含键**的静态缓存都必须一起失效。
@@ -6976,7 +6973,7 @@ namespace FfmpegGui
             if (supported.Count > 0)
             {
                 GainMapEncoderCombo.ItemsSource = supported.Select(e => e.ToString()).ToList();
-                string def = EncoderDetectionService.GetDefaultEncoder(fmt);
+                string def = EncoderDetectionService.GetDefaultEncoder(fmt, available);
                 int keepIdx = prev == null ? -1 : supported.FindIndex(e => e.ToString() == prev);
                 int defIdx = supported.FindIndex(e => e.Name.Equals(def, StringComparison.OrdinalIgnoreCase));
                 GainMapEncoderCombo.SelectedIndex = keepIdx >= 0 ? keepIdx : (defIdx >= 0 ? defIdx : 0);

@@ -267,22 +267,17 @@ namespace FfmpegGui
             if (AppSettingsService.LastLoadIssue != null)
                 Console.Error.WriteLine($"⚠ {AppSettingsService.LastLoadIssue}");
 
-            // ── PLAN 便携包 ffmpeg 目录回填（与 GUI 启动路径一致）──
-            // 此前 headless 缺少该步骤：当 settings 无 FfmpegDirectory 且 ffmpeg 不在系统 PATH 时，
-            // FfmpegPath 退化为裸名 "ffmpeg.exe"，导致所有 ffmpeg 相关操作（含 cjxl/cjpegli 管道回退）启动失败。
+            // ── ffmpeg 目录解析（2026-11-04 检测一致性批 P1：集中到 PlatformServices 单点）──
+            // 旧逻辑只在「FfmpegDirectory 为空」时做 PLAN 回填并**持久化** ⇒ 首启后 settings 永远
+            // 非空，此后路径失效（移包/换盘/把 settings 拷到别的机器）就**永远不再重发现**，退化成
+            // 裸名 "ffmpeg.exe" 靠子进程 PATH 撞 ⇒ 命中哪件 ffmpeg 全看运气，编码器清单/能力表/GPU
+            // 报告随之整体换血（跨设备检测不一致的头号来源）。新语义（Auto/显式分离）见
+            // PlatformServices.EnsureFfmpegDirectoryResolved 的 XML 注释。
             try
             {
-                var planPath = PlatformServices.PlanFolderPath;
-                if (planPath != null && string.IsNullOrWhiteSpace(AppSettingsService.Current.FfmpegDirectory))
-                {
-                    var ffmpegInPlan = PlatformServices.FindPlanSubDir(planPath, "ffmpeg-full");
-                    if (ffmpegInPlan != null)
-                    {
-                        AppSettingsService.Current.FfmpegDirectory = ffmpegInPlan;
-                        if (!AppSettingsService.Save())
-                            Console.Error.WriteLine($"⚠ 设置未能落盘，本次 ffmpeg 目录回填只在当前进程有效：{AppSettingsService.LastSaveIssue}");
-                    }
-                }
+                var resolution = PlatformServices.EnsureFfmpegDirectoryResolved();
+                foreach (var m in resolution.Messages)
+                    Console.WriteLine(m);
             }
             catch { }
 
@@ -294,14 +289,15 @@ namespace FfmpegGui
             //   旧写法只打 6 行且**不含 djxl** —— 而 djxl 恰恰决定 JXL 走"原生码流 / JPEG 重构 /
             //   GainMap 解码"哪条路（缺失只体现在任务日志的 `[jxl] … djxl: 可用/不可用` 一行里），
             //   启动报告里看不见它 ⇒ "检测了但不报告"。avifenc 同样两侧都不报。
-            Console.WriteLine($"  ffmpeg: {(IsFfmpegAvailable() ? "✅" : "❌")}");
-            Console.WriteLine($"  cjxl: {(CjxlService.IsAvailable ? "✅" : "❌")}");
-            Console.WriteLine($"  djxl: {(DjxlService.IsAvailable ? "✅" : "❌")}");
-            Console.WriteLine($"  cjpegli: {(CjpegliService.IsAvailable ? "✅" : "❌")}");
-            Console.WriteLine($"  exiftool: {(ExifToolService.IsAvailable ? "✅" : "❌")}");
-            Console.WriteLine($"  JxrEncApp: {(JxrService.IsAvailable ? "✅" : "❌")}");
-            Console.WriteLine($"  avifenc: {(FfmpegGui.Services.PlatformServices.ResolveAvifencPath() != null ? "✅" : "❌")}");
-            Console.WriteLine($"  dngtool: {(RawService.IsAvailable ? "✅" : "❌")}");
+            static string Src(string? p) => ExternalToolsDetector.ClassifyToolSource(p) is { } src ? $" [{src}]" : "";
+            Console.WriteLine($"  ffmpeg: {(IsFfmpegAvailable() ? "✅" : "❌")}{Src(AppSettingsService.Current.FfmpegPath)}");
+            Console.WriteLine($"  cjxl: {(CjxlService.IsAvailable ? "✅" : "❌")}{Src(CjxlService.DetectedPath)}");
+            Console.WriteLine($"  djxl: {(DjxlService.IsAvailable ? "✅" : "❌")}{Src(DjxlService.DetectedPath)}");
+            Console.WriteLine($"  cjpegli: {(CjpegliService.IsAvailable ? "✅" : "❌")}{Src(CjpegliService.DetectedPath)}");
+            Console.WriteLine($"  exiftool: {(ExifToolService.IsAvailable ? "✅" : "❌")}{Src(ExifToolService.DetectedPath)}");
+            Console.WriteLine($"  JxrEncApp: {(JxrService.IsAvailable ? "✅" : "❌")}{Src(JxrService.DetectedPath)}");
+            Console.WriteLine($"  avifenc: {(FfmpegGui.Services.PlatformServices.ResolveAvifencPath() != null ? "✅" : "❌")}{Src(FfmpegGui.Services.PlatformServices.ResolveAvifencPath())}");
+            Console.WriteLine($"  dngtool: {(RawService.IsAvailable ? "✅" : "❌")}{Src(RawService.DetectedPath)}");
 
             // 构建队列项
             Console.WriteLine("正在准备任务队列...");

@@ -6,6 +6,15 @@ namespace FfmpegGui.Models
     public class AppSettings
     {
         public string? FfmpegDirectory { get; set; }
+
+        /// <summary>
+        /// FfmpegDirectory 的来源标记（2026-11-04 检测一致性批）：
+        /// <c>true</c> = 自动发现（PLAN 回填 / PATH 解析）⇒ 路径失效时允许重新发现；
+        /// <c>false</c> = 用户显式指定（浏览选择）⇒ 失效时只点名告警、本次会话临时改用发现值，
+        /// 不覆写用户选择。旧 settings.json 无此字段 ⇒ 反序列化为 false（视为显式值，行为保守）。
+        /// </summary>
+        public bool FfmpegDirectoryAuto { get; set; } = false;
+
         public string? OutputDirectory { get; set; }
 
         // ═══════════════════════════════════════════

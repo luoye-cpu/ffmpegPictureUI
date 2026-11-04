@@ -161,6 +161,9 @@ public static class PlatformServices
     private static string? _planPath;
     private static bool _planScanned;
 
+    /// <summary>最近一次 PLAN 解析的来源（env:FFMPEGGUI_PLAN_DIR / exe-dir / cwd / cwd-up-tree / exe-up-tree）；null=未解析到。启动报告可见（2026-11-04 检测一致性批 P4）。</summary>
+    public static string? PlanFolderSource { get; private set; }
+
     /// <summary>
     /// 复位 PLAN 定位缓存 ⇒ 下一次读 <see cref="PlanFolderPath"/> 重新扫描。
     /// ⚠ <c>_planScanned</c> 原先是**一次性闩**（解析任何候选之前就置 true、全仓无复位入口）
@@ -171,6 +174,21 @@ public static class PlatformServices
     {
         _planScanned = false;
         _planPath = null;
+        PlanFolderSource = null;
+    }
+
+    /// <summary>
+    /// 候选目录是否"长得像 PLAN"：至少含一个已知组件子目录（2026-11-04 P4）。
+    /// 旧写法对向上查找命中的任意同名 <c>PLAN/</c> 目录照单全收 —— cwd 上层存在无关同名目录时
+    /// 会把整条检测链带偏（工具/能力/GPU 全部换血）。有组件子目录才算数。
+    /// </summary>
+    private static bool LooksLikePlan(string dir)
+    {
+        if (!Directory.Exists(dir)) return false;
+        return Directory.Exists(Path.Combine(dir, "ffmpeg-full"))
+            || Directory.Exists(Path.Combine(dir, "jxl"))
+            || Directory.Exists(Path.Combine(dir, "exiftool"))
+            || Directory.Exists(Path.Combine(dir, "artifacts"));
     }
 
     /// <summary>
@@ -187,29 +205,35 @@ public static class PlatformServices
             if (!_planScanned)
             {
                 _planScanned = true;
-                
-                // 优先使用环境变量显式指定（CI/部署场景）
+
+                // 优先使用环境变量显式指定（CI/部署场景；显式值不作形状校验）
                 var envPlan = Environment.GetEnvironmentVariable("FFMPEGGUI_PLAN_DIR");
                 if (!string.IsNullOrWhiteSpace(envPlan) && Directory.Exists(envPlan))
                 {
                     _planPath = envPlan;
+                    PlanFolderSource = "env:FFMPEGGUI_PLAN_DIR";
                     return _planPath;
                 }
 
+                // ── 2026-11-04 检测一致性批（P4）：非 env 候选必须通过 LooksLikePlan 才接受，
+                //    解析来源记入 PlanFolderSource（启动报告可见）。──
+
                 // ① 程序同目录（发布包 / 单文件发布）
                 var baseDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "PLAN");
-                if (Directory.Exists(baseDir))
+                if (LooksLikePlan(baseDir))
                 {
                     _planPath = baseDir;
+                    PlanFolderSource = "exe-dir";
                     return _planPath;
                 }
 
                 // ② 当前工作目录（dotnet run 开发模式，项目根目录）
                 var cwd = Directory.GetCurrentDirectory();
                 var cwdPlan = Path.Combine(cwd, "PLAN");
-                if (Directory.Exists(cwdPlan))
+                if (LooksLikePlan(cwdPlan))
                 {
                     _planPath = cwdPlan;
+                    PlanFolderSource = "cwd";
                     return _planPath;
                 }
 
@@ -218,9 +242,10 @@ public static class PlatformServices
                 while (dir != null)
                 {
                     var candidate = Path.Combine(dir.FullName, "PLAN");
-                    if (Directory.Exists(candidate))
+                    if (LooksLikePlan(candidate))
                     {
                         _planPath = candidate;
+                        PlanFolderSource = "cwd-up-tree";
                         return _planPath;
                     }
                     dir = dir.Parent;
@@ -239,9 +264,10 @@ public static class PlatformServices
                             while (pDir != null)
                             {
                                 var cand = Path.Combine(pDir.FullName, "PLAN");
-                                if (Directory.Exists(cand))
+                                if (LooksLikePlan(cand))
                                 {
                                     _planPath = cand;
+                                    PlanFolderSource = "exe-up-tree";
                                     return _planPath;
                                 }
                                 pDir = pDir.Parent;
@@ -254,6 +280,107 @@ public static class PlatformServices
             return _planPath;
         }
     }
+
+        // ═══════════════════════════════════════════════
+        // ffmpeg 目录解析（2026-11-04 检测一致性批 P1）
+        // ═══════════════════════════════════════════════
+
+        /// <summary>ffmpeg 目录解析结果（调用方负责把 <see cref="Messages"/> 写进各自的日志通道）。</summary>
+        public sealed class FfmpegDirResolution
+        {
+            public string? Directory;
+            public bool Changed;
+            public bool Saved;
+            public bool InvalidBefore;
+            public string Source = "kept";
+            public List<string> Messages = new();
+        }
+
+        /// <summary>
+        /// 确保 settings 里的 FfmpegDirectory 可用（P1：跨设备检测不一致的头号机制修复）。
+        /// 旧逻辑只在「FfmpegDirectory 为空」时做 PLAN 回填并把回填值**持久化** ⇒ 首启之后
+        /// settings 永远非空，此后路径失效（移包/换盘/拷贝 settings 到别的机器）就**永远不再
+        /// 重发现**，退化成裸名 `ffmpeg.exe` 靠子进程 PATH 解析 —— 命中哪件 ffmpeg 全看运气，
+        /// 编码器清单/能力表/GPU 报告随之整体换血（跨设备不一致的头号来源）。
+        /// 新语义（配 <c>AppSettings.FfmpegDirectoryAuto</c> 来源标记）：
+        /// ① 路径有效且 Auto=false（用户显式指定）⇒ 原样保留；
+        /// ② 路径有效且 Auto=true（此前的自动发现）⇒ 原样保留（不追搬家，防抖动）；
+        /// ③ 路径无效（不存在/缺 ffmpeg.exe）⇒ 出声 + 重新发现（PLAN → PATH 显式化），
+        ///    Auto=true 的发现值持久化；Auto=false 的显式值只在**内存**里改用（本次会话生效，
+        ///    不覆写用户选择）。
+        /// </summary>
+        public static FfmpegDirResolution EnsureFfmpegDirectoryResolved()
+        {
+            var res = new FfmpegDirResolution();
+            var s = AppSettingsService.Current;
+            res.Directory = s.FfmpegDirectory;
+            var dir = s.FfmpegDirectory;
+
+            bool IsValid(string? d) => !string.IsNullOrWhiteSpace(d)
+                && File.Exists(Path.Combine(d, Ffmpeg));
+
+            if (IsValid(dir))
+            {
+                res.Source = s.FfmpegDirectoryAuto ? "auto:valid" : "user:valid";
+                return res;
+            }
+
+            res.InvalidBefore = true;
+            if (!string.IsNullOrWhiteSpace(dir))
+                res.Messages.Add($"[ffmpeg-dir] configured directory is not usable (ffmpeg.exe not found): {dir}");
+
+            // 重新发现 ①：PLAN（经 LooksLikePlan 校验的定位）
+            var plan = PlanFolderPath;
+            string? planFf = plan == null ? null : FindPlanSubDir(plan, "ffmpeg-full");
+            if (!string.IsNullOrEmpty(planFf))
+            {
+                var wasAuto = s.FfmpegDirectoryAuto;
+                res.Directory = planFf;
+                res.Changed = !string.Equals(dir, planFf, StringComparison.OrdinalIgnoreCase);
+                res.Source = "plan";
+                s.FfmpegDirectory = planFf;
+                s.FfmpegDirectoryAuto = true;
+                res.Messages.Add($"[ffmpeg-dir] re-discovered from PLAN (source={PlanFolderSource ?? "?"}): {planFf}");
+                if (wasAuto)
+                {
+                    // 自动发现值：路径失效 ⇒ 持久化新发现值（下次启动直接可用）
+                    res.Saved = AppSettingsService.Save();
+                    if (!res.Saved)
+                        res.Messages.Add($"[ffmpeg-dir] settings save failed: {AppSettingsService.LastSaveIssue} (this session only)");
+                }
+                else
+                {
+                    // 用户显式值（旧 settings 无 Auto 字段也归此类）：只在**内存**里改用，
+                    // 不覆写用户选择 —— 下次若原路径恢复（如移动硬盘插回）仍尊重原值。
+                    res.Messages.Add("[ffmpeg-dir] user-specified path was invalid; session uses PLAN value (setting not overwritten)");
+                }
+                return res;
+            }
+
+            // 重新发现 ②：PATH（把此前"裸名靠子进程 PATH 撞运气"的隐式解析显式化、可见化）
+            if (TryFindInPath(Ffmpeg, out var pathHit) && !string.IsNullOrEmpty(pathHit))
+            {
+                var d = Path.GetDirectoryName(pathHit);
+                if (!string.IsNullOrEmpty(d))
+                {
+                    res.Directory = d;
+                    res.Changed = !string.Equals(dir, d, StringComparison.OrdinalIgnoreCase);
+                    res.Source = "path";
+                    s.FfmpegDirectory = d;
+                    s.FfmpegDirectoryAuto = true;
+                    res.Messages.Add($"[ffmpeg-dir] resolved from PATH: {pathHit}");
+                    res.Saved = AppSettingsService.Save();
+                    if (!res.Saved)
+                        res.Messages.Add($"[ffmpeg-dir] settings save failed: {AppSettingsService.LastSaveIssue} (this session only)");
+                    return res;
+                }
+            }
+
+            // 什么都不剩 ⇒ 保持原值（裸名兜底仍在），但必须出声
+            res.Source = "not-found";
+            res.Messages.Add("[ffmpeg-dir] no usable ffmpeg discovered (PLAN/PATH both missed) — commands rely on the bare name being on PATH");
+            return res;
+        }
 
     /// <summary>PLAN 文件夹中各工具 → 子目录映射 (v2.0 简化版)</summary>
     private static readonly Dictionary<string, string[]> PlanSubDirs = new()

@@ -181,8 +181,12 @@ namespace FfmpegGui.Services
 
     public static class EncoderDetectionService
     {
-        private static List<EncoderInfo>? _allEncoders;
-        private static HashSet<string>? _allMuxers;
+        // ⚠ 编码器/muxer 清单按**被问的那件 ffmpeg**分档缓存（2026-11-04 检测一致性批 P2）。旧写法是
+        //   全局单份字段 —— 与下方解码器 2026-10-29 修掉的缺陷同族：第一次调用填满后，换一件 ffmpeg
+        //   再问也拿同一份 ⇒ "问 A 却拿到 B 的清单"。GUI 换 ffmpeg 目录有 ClearCache 补救，CLI 与
+        //   首启时序没有；`GetDefaultEncoder("avif")` 的 svt/aom 判断读的正是这份清单。
+        private static readonly Dictionary<string, List<EncoderInfo>> _encodersByFfmpeg = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly Dictionary<string, HashSet<string>> _muxersByFfmpeg = new(StringComparer.OrdinalIgnoreCase);
         // ⚠ 解码器清单按**被问的那件 ffmpeg**分档缓存（2026-10-29）。旧写法是一份全局字段：第一次调用填满后，
         //   换一件 ffmpeg 再问也拿同一份 ⇒ "问 A 却拿到 B 的清单"。B2 要在一次转换里问两件
         //   （选中的 ffmpeg 与随包 ffmpeg-full），必须各问各的。
@@ -238,10 +242,11 @@ namespace FfmpegGui.Services
         /// </summary>
         public static async Task<List<EncoderInfo>> GetAllEncodersAsync(string? ffmpegPath = null)
         {
-            if (_allEncoders != null && _allEncoders.Count > 0) return _allEncoders;
-
             var fileName = ffmpegPath ?? AppSettingsService.Current.FfmpegPath;
-            _allEncoders = new List<EncoderInfo>();
+            var key = fileName ?? "";
+            if (_encodersByFfmpeg.TryGetValue(key, out var cached) && cached.Count > 0) return cached;
+
+            var list = new List<EncoderInfo>();
 
             try
             {
@@ -258,26 +263,25 @@ namespace FfmpegGui.Services
                 };
 
                 using var p = Process.Start(psi);
-                if (p == null) return _allEncoders;
+                if (p == null) return list;
                     p.BeginErrorReadLine();   // P2-3：stderr 不排空会在管道缓冲(~4KB)写满时把子进程堵死，我们等 stdout/WaitForExit 就永等（实测可复现）
                 var output = await p.StandardOutput.ReadToEndAsync();
                 await p.WaitForExitAsync();
 
-                ParseEncoders(output);
+                ParseEncoders(output, list);
             }
             catch
             {
-                // ffmpeg 不可用时清空缓存，允许后续重试
-                _allEncoders = null;
-                return new List<EncoderInfo>();
+                // ffmpeg 不可用 ⇒ 不缓存空清单，允许后续重试
+                return list;
             }
 
-            return _allEncoders;
+            if (list.Count > 0) _encodersByFfmpeg[key] = list;
+            return list;
         }
 
-        private static void ParseEncoders(string output)
+        private static void ParseEncoders(string output, List<EncoderInfo> into)
         {
-            if (_allEncoders == null) return;
             var lines = output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
 
             foreach (var line in lines)
@@ -306,7 +310,7 @@ namespace FfmpegGui.Services
                 var name = remaining.Substring(0, spaceIdx).Trim();
                 var desc = remaining.Substring(spaceIdx + 1).Trim();
 
-                _allEncoders.Add(new EncoderInfo
+                into.Add(new EncoderInfo
                 {
                     Name = name,
                     Description = desc,
@@ -339,7 +343,7 @@ namespace FfmpegGui.Services
                     if (IsGpuEncoderName(enc.Name))
                     {
                         enc.IsHardwareEncoder = true;
-                        var gpuStatus = GpuCapabilityService.GetEncoderStatus(enc.Name);
+                        var gpuStatus = GpuCapabilityService.GetEncoderStatus(enc.Name, ffmpegPath);
                         if (gpuStatus != null)
                         {
                             enc.GpuAvailability = gpuStatus.Availability;
@@ -416,16 +420,20 @@ namespace FfmpegGui.Services
         }
 
         /// <summary>
-        /// 获取默认编码器名称（优先外部工具，最后 FFmpeg 内置）
+        /// 获取默认编码器名称（优先外部工具，最后 FFmpeg 内置）。
+        /// ⚠ 2026-11-04 检测一致性批（P2）：avif 的 svt/aom 判断改为消费**调用方刚枚举的列表**
+        ///   （<paramref name="enumerated"/>），其次当前 ffmpeg 的分档缓存 —— 旧写法读全局单份缓存，
+        ///   首次下拉刷新前缓存为空 ⇒ 恒回 libaom-av1（即使随包 ffmpeg 有 libsvtav1），默认编码器
+        ///   取决于"枚举是否发生过"（时序性不一致）。未传列表且缓存为空时保持 libaom-av1 兜底。
         /// </summary>
-        public static string GetDefaultEncoder(string format)
+        public static string GetDefaultEncoder(string format, IReadOnlyList<EncoderInfo>? enumerated = null)
         {
             return format.ToLower() switch
             {
                 "jpg" or "jpeg" => CjpegliService.IsAvailable ? "cjpegli" : "mjpeg",
                 "png" => "png",
                 "webp" => "libwebp",
-                "avif" => HasCachedSvtAv1() ? "libsvtav1" : "libaom-av1",
+                "avif" => HasEncoderAvailable("libsvtav1", enumerated) ? "libsvtav1" : "libaom-av1",
                 "tiff" => "tiff",
                 "jxl" => CjxlService.IsAvailable ? "cjxl" : "libjxl",
                 "jxr" => JxrService.IsAvailable ? "jxr" : "jxr",
@@ -437,10 +445,15 @@ namespace FfmpegGui.Services
             };
         }
 
-        /// <summary>检测 libsvtav1 是否在缓存的编码器列表中</summary>
-        private static bool HasCachedSvtAv1()
+        /// <summary>编码器是否在"当前该用的清单"里：优先调用方刚枚举的列表，其次当前 ffmpeg 的分档缓存（P2）。</summary>
+        private static bool HasEncoderAvailable(string name, IReadOnlyList<EncoderInfo>? enumerated)
         {
-            return _allEncoders?.Any(e => e.Name == "libsvtav1") == true;
+            if (enumerated != null
+                && enumerated.Any(e => e.Name.Equals(name, StringComparison.OrdinalIgnoreCase)))
+                return true;
+            var key = AppSettingsService.Current.FfmpegPath ?? "";
+            return _encodersByFfmpeg.TryGetValue(key, out var list)
+                && list.Any(e => e.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
         }
 
         // ═══════════════════════════════════════════════
@@ -521,9 +534,11 @@ namespace FfmpegGui.Services
         /// </summary>
         public static async Task<HashSet<string>> GetAllMuxersAsync(string? ffmpegPath = null)
         {
-            if (_allMuxers != null) return _allMuxers;
-            _allMuxers = await ParseSimpleListAsync("muxers", ffmpegPath);
-            return _allMuxers;
+            var key = ffmpegPath ?? AppSettingsService.Current.FfmpegPath ?? "";
+            if (_muxersByFfmpeg.TryGetValue(key, out var cached)) return cached;
+            var set = await ParseSimpleListAsync("muxers", ffmpegPath);
+            _muxersByFfmpeg[key] = set;
+            return set;
         }
 
         /// <summary>
@@ -712,9 +727,9 @@ namespace FfmpegGui.Services
         /// </summary>
         public static void ClearCache()
         {
-            _allEncoders = null;
+            _encodersByFfmpeg.Clear();
+            _muxersByFfmpeg.Clear();
             _decodersByFfmpeg.Clear();
-            _allMuxers = null;
             _jxlLosslessJpeg = null;
             _jxlLosslessJpegProbedFor = null;
         }

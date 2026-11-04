@@ -49,6 +49,8 @@ namespace FfmpegGui.Services
     {
         public List<GpuDeviceInfo> Devices { get; set; } = new();
         public Dictionary<string, GpuEncoderStatus> Encoders { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+        /// <summary>编译进的 hwaccel 方法清单（<c>-hwaccels</c> 输出）。⚠ 仅信息展示：编译项与本机硬件存在与否无关，不参与设备判定（2026-11-04 P3）。</summary>
+        public List<string> CompiledHwaccels { get; set; } = new();
         public DateTime DetectedAt { get; set; }
         public bool HasAnyGpu => Devices.Any(d => d.IsAvailable);
         public int VerifiedCount => Encoders.Values.Count(e => e.Availability == GpuEncoderAvailability.Verified);
@@ -60,17 +62,30 @@ namespace FfmpegGui.Services
     // ═══════════════════════════════════════════════════════════
     public static class GpuCapabilityService
     {
-        private static GpuCapabilityReport? _cachedReport;
+        // ⚠ 2026-11-04 检测一致性批（P3）：报告按**被测的那件 ffmpeg**分档缓存。旧写法全局单份，
+        //   且 ffmpeg 路径无效时把**空报告**也缓存进去（首测若早于路径回填 ⇒ GPU 状态恒 Unknown，
+        //   直到手动重测）。换 ffmpeg 依赖 GUI 手动 ClearCache，CLI 与首启时序没有。
+        private static readonly Dictionary<string, GpuCapabilityReport> _reportsByFfmpeg =
+            new(StringComparer.OrdinalIgnoreCase);
         private static readonly object _lock = new();
 
-        /// <summary>已缓存的检测结果（null = 尚未检测）</summary>
+        private static string KeyFor(string? ffmpegPath)
+        {
+            var p = ffmpegPath ?? AppSettingsService.Current.FfmpegPath;
+            return p ?? "";
+        }
+
+        /// <summary>已缓存的检测结果（按当前 ffmpeg 取；null = 尚未检测）</summary>
         public static GpuCapabilityReport? CachedReport
         {
-            get { lock (_lock) return _cachedReport; }
+            get
+            {
+                lock (_lock) return _reportsByFfmpeg.TryGetValue(KeyFor(null), out var r) ? r : null;
+            }
         }
 
         /// <summary>是否有任何 GPU 硬件加速设备</summary>
-        public static bool HasAnyGpu => _cachedReport?.HasAnyGpu ?? false;
+        public static bool HasAnyGpu => CachedReport?.HasAnyGpu ?? false;
 
         /// <summary>Intel QuickSync 是否可用</summary>
         public static bool HasIntelQsv => GetEncoderStatus("mjpeg_qsv")?.IsUsable == true;
@@ -81,10 +96,11 @@ namespace FfmpegGui.Services
         /// <summary>AMD AMF 是否可用</summary>
         public static bool HasAmdAmf => GetEncoderStatus("mjpeg_amf")?.IsUsable == true;
 
-        /// <summary>获取指定编码器的检测状态</summary>
-        public static GpuEncoderStatus? GetEncoderStatus(string encoderName)
+        /// <summary>获取指定编码器的检测状态（按被测 ffmpeg 取报告；2026-11-04 P3 加 ffmpegPath 形参）</summary>
+        public static GpuEncoderStatus? GetEncoderStatus(string encoderName, string? ffmpegPath = null)
         {
-            var report = CachedReport;
+            GpuCapabilityReport? report;
+            lock (_lock) _reportsByFfmpeg.TryGetValue(KeyFor(ffmpegPath), out report);
             if (report?.Encoders == null) return null;
             return report.Encoders.TryGetValue(encoderName, out var status) ? status : null;
         }
@@ -104,10 +120,11 @@ namespace FfmpegGui.Services
         /// </summary>
         public static async Task<GpuCapabilityReport> DetectAsync(string? ffmpegPath = null)
         {
+            var key = KeyFor(ffmpegPath);
             lock (_lock)
             {
-                if (_cachedReport != null)
-                    return _cachedReport;
+                if (_reportsByFfmpeg.TryGetValue(key, out var cachedReport))
+                    return cachedReport;
             }
 
             var report = new GpuCapabilityReport { DetectedAt = DateTime.Now };
@@ -115,17 +132,22 @@ namespace FfmpegGui.Services
 
             if (string.IsNullOrWhiteSpace(ffmpeg) || !System.IO.File.Exists(ffmpeg))
             {
-                lock (_lock) { _cachedReport = report; }
+                // ⚠ P3：路径无效时**不缓存**空报告 —— 旧写法把首测（可能早于路径回填）的空报告
+                //   钉死在缓存里，GPU 状态从此恒 Unknown。返回未缓存结果，待路径就绪后的下一次
+                //   调用重新检测。
                 return report;
             }
 
-            // Step 1: 快速检测硬件加速设备（仅 -hwaccels，约 500ms）
+            // Step 1: 编译进的 hwaccel 方法清单 —— 仅信息展示，不参与"设备存在"判定
+            report.CompiledHwaccels = await ListCompiledHwaccelsAsync(ffmpeg);
+
+            // Step 2: 真实设备探测（-init_hw_device 逐类实测）
             report.Devices = await DetectHardwareDevicesAsync(ffmpeg);
 
-            // Step 2: 对照已知 GPU 编码器列表检测编译状态（仅 -encoders 解析，约 1s）
+            // Step 3: 对照已知 GPU 编码器列表检测编译状态（仅 -encoders 解析，约 1s）
             await DetectGpuEncoderCompileStatusAsync(ffmpeg, report);
 
-            lock (_lock) { _cachedReport = report; }
+            lock (_lock) { _reportsByFfmpeg[key] = report; }
             return report;
         }
 
@@ -135,7 +157,8 @@ namespace FfmpegGui.Services
         /// </summary>
         public static async Task ValidateEncodersAsync(string? ffmpegPath = null)
         {
-            var report = CachedReport;
+            GpuCapabilityReport? report;
+            lock (_lock) _reportsByFfmpeg.TryGetValue(KeyFor(ffmpegPath), out report);
             if (report == null) return;
 
             var ffmpeg = ffmpegPath ?? AppSettingsService.Current.FfmpegPath;
@@ -160,7 +183,7 @@ namespace FfmpegGui.Services
         /// <summary>清除缓存，强制下次重新检测</summary>
         public static void ClearCache()
         {
-            lock (_lock) { _cachedReport = null; }
+            lock (_lock) { _reportsByFfmpeg.Clear(); }
         }
 
         // ═══════════════════════════════════════════════════════
@@ -168,41 +191,16 @@ namespace FfmpegGui.Services
         // ═══════════════════════════════════════════════════════
 
         /// <summary>
-        /// 运行 ffmpeg -init_hw_device list 获取可用硬件加速设备
-        /// 备用: ffmpeg -hwaccels 列出支持的硬件加速方法
+        /// 真实设备探测：只认 <c>-init_hw_device</c> 逐类实测（2026-11-04 P3 重构）。
+        /// 旧写法先用 <c>-hwaccels</c> 输出预填设备表（编译项≠硬件存在，且该输出没有
+        /// "not available" 字样 ⇒ 几乎恒 IsAvailable=true），再经 TryDetectDeviceViaInitAsync
+        /// 的"避免重复"守卫**短路掉真正的实测** —— 编译了 cuda 的机器即使没有 N 卡也会显示
+        /// 设备可用。现在设备判定只认实测；编译方法清单走 <see cref="ListCompiledHwaccelsAsync"/>。
         /// </summary>
         private static async Task<List<GpuDeviceInfo>> DetectHardwareDevicesAsync(string ffmpegPath)
         {
             var devices = new List<GpuDeviceInfo>();
 
-            // 方法1: -hwaccels（最可靠）
-            try
-            {
-                var output = await RunFfmpegAsync(ffmpegPath, "-hide_banner -hwaccels", 8000);
-                if (!string.IsNullOrWhiteSpace(output))
-                {
-                    var lines = output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
-                    foreach (var line in lines)
-                    {
-                        var trimmed = line.Trim();
-                        if (trimmed.StartsWith("Hardware", StringComparison.OrdinalIgnoreCase))
-                            continue;
-                        if (trimmed.Length == 0 || trimmed.StartsWith("--"))
-                            continue;
-
-                        var isAvailable = !trimmed.Contains("not available", StringComparison.OrdinalIgnoreCase);
-                        devices.Add(new GpuDeviceInfo
-                        {
-                            DeviceType = trimmed.ToLowerInvariant(),
-                            Description = trimmed,
-                            IsAvailable = isAvailable
-                        });
-                    }
-                }
-            }
-            catch { /* 非致命，继续 */ }
-
-            // 方法2: 补充 -v verbose 初始化测试
             await TryDetectDeviceViaInitAsync(ffmpegPath, "d3d11va", devices);
             await TryDetectDeviceViaInitAsync(ffmpegPath, "cuda", devices);
             await TryDetectDeviceViaInitAsync(ffmpegPath, "qsv", devices);
@@ -210,6 +208,30 @@ namespace FfmpegGui.Services
             await TryDetectDeviceViaInitAsync(ffmpegPath, "vaapi", devices);
 
             return devices;
+        }
+
+        /// <summary>编译进的 hwaccel 方法清单（仅展示；<c>-hwaccels</c> 输出与硬件存在与否无关）。</summary>
+        private static async Task<List<string>> ListCompiledHwaccelsAsync(string ffmpegPath)
+        {
+            var methods = new List<string>();
+            try
+            {
+                var output = await RunFfmpegAsync(ffmpegPath, "-hide_banner -hwaccels", 8000);
+                if (!string.IsNullOrWhiteSpace(output))
+                {
+                    foreach (var line in output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+                    {
+                        var trimmed = line.Trim();
+                        if (trimmed.StartsWith("Hardware", StringComparison.OrdinalIgnoreCase))
+                            continue;
+                        if (trimmed.Length == 0 || trimmed.StartsWith("--"))
+                            continue;
+                        methods.Add(trimmed);
+                    }
+                }
+            }
+            catch { /* 非致命，继续 */ }
+            return methods;
         }
 
         /// <summary>通过 -init_hw_device 尝试初始化特定设备类型</summary>
@@ -235,7 +257,7 @@ namespace FfmpegGui.Services
                                  lower.Contains("no device") ||
                                  lower.Contains("error initializing") ||
                                  lower.Contains("impossible to convert") ||
-                                 lower.Contains("dll") && lower.Contains("failed to open");  // AMF DLL 缺失
+                                 (lower.Contains("dll") && lower.Contains("failed to open"));
 
                     if (!failed)
                     {
@@ -385,7 +407,7 @@ namespace FfmpegGui.Services
                                    lower.Contains("impossible to convert") ||
                                    lower.Contains("encoder not found") ||
                                    lower.Contains("invalid argument") ||
-                                   lower.Contains("dll") && lower.Contains("failed to open") ||
+                                   (lower.Contains("dll") && lower.Contains("failed to open")) ||
                                    lower.Contains("current codec type is unsupported");
 
                     if (hardFail)

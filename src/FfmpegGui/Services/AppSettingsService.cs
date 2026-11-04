@@ -169,6 +169,9 @@ namespace FfmpegGui.Services
             var clone = new AppSettings
             {
                 FfmpegDirectory = _current.FfmpegDirectory,
+                // 2026-11-04 检测一致性批：Auto/显式分离标记（漏加这条 = 每次落盘都被打回 false，
+                //   EnsureFfmpegDirectoryResolved 的「Auto 持久化」契约随之失效——第 95 条门禁 §1 抓的正是它）
+                FfmpegDirectoryAuto = _current.FfmpegDirectoryAuto,
                 OutputDirectory = _current.OutputDirectory,
                 ExifToolPath = _current.ExifToolPath,
                 JxlLibDir = _current.JxlLibDir,

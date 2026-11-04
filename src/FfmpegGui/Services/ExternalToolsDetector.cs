@@ -696,6 +696,8 @@ namespace FfmpegGui.Services
             public string? Version { get; set; }
             public string? SimdFeatures { get; set; }
             public bool IsAvailable { get; set; }
+            /// <summary>解析来源（PLAN / manual / app-adjacent / extended-search / PATH）——"为什么这台机器检测到的是这个版本"的可读出处（2026-11-04 P5）。</summary>
+            public string? Source { get; set; }
             public string StatusIcon => IsAvailable ? "✅" : "❌";
             public override string ToString() => $"{StatusIcon} {Name}: {(IsAvailable ? $"v{Version} [{SimdFeatures}]" : "未检测到")}";
         }
@@ -713,6 +715,53 @@ namespace FfmpegGui.Services
             try { JxrService.Detect(); } catch { }
             try { ExifToolService.Detect(log); } catch { }
             try { RawService.Detect(); } catch { }
+        }
+
+        /// <summary>
+        /// 把工具的解析结果路径归类为"来源"（2026-11-04 检测一致性批 P5）：
+        /// PLAN / manual / app-adjacent / extended-search / PATH —— 按路径包含关系反推五级搜索的
+        /// 命中层级（不要求各 Service 各自记账）。启动报告可见 ⇒ "为什么这台机器检测到的是这个
+        /// 版本"有了可读出处（④ 扩展搜索命中用户自装版本、⑤ PATH 命中环境版本此前都是静默的）。
+        /// </summary>
+        public static string? ClassifyToolSource(string? path)
+        {
+            if (string.IsNullOrWhiteSpace(path)) return null;
+            string full;
+            try { full = Path.GetFullPath(path); } catch { return null; }
+            static bool Under(string full, string? root)
+            {
+                if (string.IsNullOrWhiteSpace(root)) return false;
+                string r;
+                try { r = Path.GetFullPath(root); } catch { return false; }
+                var norm = r.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                             + Path.DirectorySeparatorChar;
+                return full.StartsWith(norm, StringComparison.OrdinalIgnoreCase)
+                    || full.Equals(r, StringComparison.OrdinalIgnoreCase);
+            }
+
+            // ② 级：PLAN 便携包
+            if (Under(full, PlatformServices.PlanFolderPath)) return "PLAN";
+
+            // ① 级：手动指定根（与各 Service.DetectCore 的 ① 级同源）
+            if (Under(full, AppSettingsService.Current.JxlLibDir)
+                || Under(full, AppSettingsService.Current.CjxlPath)
+                || Under(full, AppSettingsService.Current.CjpegliPath)
+                || Under(full, AppSettingsService.Current.ExifToolPath)
+                || Under(full, AppSettingsService.Current.DngToolPath)
+                || Under(full, AppSettingsService.Current.WindowsArtifactsDir))
+                return "manual";
+
+            // ③ 级：ffmpeg 目录 / 程序同目录
+            if (Under(full, AppSettingsService.Current.FfmpegDir)
+                || Under(full, AppDomain.CurrentDomain.BaseDirectory))
+                return "app-adjacent";
+
+            // ④ 级：扩展搜索根（LocalAppData\Programs、Program Files 等 35 根）
+            foreach (var root in GetExtendedSearchPaths())
+                if (Under(full, root)) return "extended-search";
+
+            // ⑤ 级：系统 PATH / 其余未归类
+            return "PATH";
         }
 
         /// <summary>
@@ -748,7 +797,8 @@ namespace FfmpegGui.Services
                 Path = ffmpegPath,
                 Version = ffmpegProbe.Version ?? TryExtractFfmpegVersion(ffmpegPath, log),
                 SimdFeatures = ffmpegProbe.DetectedFeatures,
-                IsAvailable = ffmpegProbe.IsRunnable
+                IsAvailable = ffmpegProbe.IsRunnable,
+                Source = ClassifyToolSource(ffmpegPath)
             });
 
             // cjxl
@@ -760,7 +810,8 @@ namespace FfmpegGui.Services
                 Path = cjxl,
                 Version = cjxlProbe?.Version ?? TryExtractCjxlVersion(cjxl, log),
                 SimdFeatures = cjxlProbe?.DetectedFeatures ?? TryExtractCjxlSimd(cjxl, log),
-                IsAvailable = CjxlService.IsAvailable
+                IsAvailable = CjxlService.IsAvailable,
+                Source = ClassifyToolSource(cjxl)
             });
 
             // djxl
@@ -770,7 +821,8 @@ namespace FfmpegGui.Services
                 Name = "djxl",
                 Path = djxl,
                 Version = ProbeAndVersion(djxl, log),
-                IsAvailable = DjxlService.IsAvailable
+                IsAvailable = DjxlService.IsAvailable,
+                Source = ClassifyToolSource(djxl)
             });
 
             // cjpegli
@@ -780,7 +832,8 @@ namespace FfmpegGui.Services
                 Name = "cjpegli",
                 Path = cjpegli,
                 Version = ProbeCjpegliVersion(cjpegli, log),
-                IsAvailable = CjpegliService.IsAvailable
+                IsAvailable = CjpegliService.IsAvailable,
+                Source = ClassifyToolSource(cjpegli)
             });
 
             // exiftool
@@ -790,7 +843,8 @@ namespace FfmpegGui.Services
                 Name = "exiftool",
                 Path = et,
                 Version = ProbeAndVersion(et, log),
-                IsAvailable = ExifToolService.IsAvailable
+                IsAvailable = ExifToolService.IsAvailable,
+                Source = ClassifyToolSource(et)
             });
 
             // JxrEncApp
@@ -800,7 +854,8 @@ namespace FfmpegGui.Services
                 Name = "JxrEncApp",
                 Path = jxr,
                 Version = ProbeAndVersion(jxr, log),
-                IsAvailable = JxrService.IsAvailable
+                IsAvailable = JxrService.IsAvailable,
+                Source = ClassifyToolSource(jxr)
             });
 
             // avifenc — ⚠ P7f：面板展示的可用性必须与实际执行同源，否则会出现“面板说可用、队列却默默改路径”。
@@ -814,7 +869,8 @@ namespace FfmpegGui.Services
                 Path = avifenc,
                 Version = ProbeAndVersion(avifenc ?? "", log),   // ⚠ 必须在 IsAvailable 之前：本行顺带记录启动性
                 // ⚠ `!= null` 不够 —— 见 `ProbeAndVersion` 的注释：起不来的 exe 也必须算不可用（面板与执行同源）。
-                IsAvailable = avifenc != null && !PlatformServices.IsToolUnlaunchable(avifenc)
+                IsAvailable = avifenc != null && !PlatformServices.IsToolUnlaunchable(avifenc),
+                Source = ClassifyToolSource(avifenc)
             });
 
             // dngtool — DNG 1.7 JXL 解码/编码 (LibRaw + Adobe DNG SDK)
@@ -826,7 +882,8 @@ namespace FfmpegGui.Services
                 Name = "dngtool",
                 Path = File.Exists(dngtool) ? dngtool : null,
                 Version = ProbeAndVersion(dngtool, log),          // ⚠ 同上：先探测并记录，再判可用性
-                IsAvailable = File.Exists(dngtool) && !PlatformServices.IsToolUnlaunchable(dngtool)
+                IsAvailable = File.Exists(dngtool) && !PlatformServices.IsToolUnlaunchable(dngtool),
+                Source = File.Exists(dngtool) ? ClassifyToolSource(dngtool) : null
             });
 
             return results;
