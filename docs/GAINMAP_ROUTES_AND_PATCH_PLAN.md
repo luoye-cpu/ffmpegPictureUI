@@ -54,7 +54,7 @@
 | HEIC / HEIF（Apple 早期） | `ipco/auxC`，URN = `urn:com:apple:photo:2020:aux:hdrgainmap` | Apple 私有（MakerApple 33 `HDRGainMapVersion` / 48 `DisplayHeadroom`，或 XMP `ns.apple.com/HDRGainMap/1.0/`） | ⚠ 识别为 `aux-apple-hdrgainmap`，**不解码**（`Determinate=false`）；JPEG 版 Apple XMP 可由纯托管路径解码（P0-1/P0-2） |
 | 纯 track 型 HEIC（mov 包装） | 无 `meta` ⇒ 无 item 结构 | — | ✅ 明确"无 item 结构"，不猜（`IsoBmffGainMapProbe.cs:173`） |
 | AVIF | `tmap` 派生项（libavif 侧为实验特性） | 同 ISO | ✅ 写 + 读；§4 P1-1 已钉第三方读者判据 |
-| PNG / JXL | 生态已有实现（MediaInfo 解析 PNG 的 ISO 元数据；ACR 可给 JXL/PNG 嵌增益图，base 可为 SDR 或 HDR） | ISO 元数据 | ❌ 未支持（登记，不擅自写，见 P2-1） |
+| PNG / JXL | 生态已有实现（MediaInfo 解析 PNG 的 ISO 元数据；ACR 可给 JXL/PNG 嵌增益图，base 可为 SDR 或 HDR） | ISO 元数据 | **PNG ❌ 未支持**（登记，不擅自写，见 P2-1）；**JXL ✅ 写 + 读**（`jhgm` box，2026-11-08 用户裁决按解析级读者标准开写侧，见 P2-1 裁决与落地段） |
 
 ## 3. 读侧生态矩阵（决定"我们写出去的东西谁能看懂"）
 
@@ -269,6 +269,38 @@ tmap item 没有 `pixi` ⇒ `avifdec --info` 的「Alternate image」**整段不
 - 做法：先做**读侧**兼容（我们已有 `ParseIso21496`，PNG 侧只是找 `sRGB`/自定义块的位置），
   写侧等能力表与第三方读者判据都齐了再开。不在没有第二读者认可前写出去。
 
+#### P2-1 裁决与落地（2026-11-08，JXL 部分）
+
+**维护者裁决**：JXL 增益图**写侧开闸**，判据标准取「**解析级读者**」而非「渲染级读者」。
+（本条是 2026-11-08 当次裁决，**不改**上方 2026-10 原口径——那是 PNG/JXL 合并挂起时的时间点记录。）
+
+**判据构成**（为何解析级也站得住，逐条带一手出处）：
+
+| 面 | 读数 | 出处 |
+| --- | --- | --- |
+| libjxl 能力在位 | Gain Map API 自 **0.11.0**（`JxlGainMapBundle` + Write/ReadBundle），容器 box 类型 `jhgm`；随包 `cjxl/djxl/jxlinfo v0.12.0` 实测可解析 | vendored `tools/src/libjxl/lib/include/jxl/gain_map.h`、`lib/extras/gain_map.cc:118-199`、`CHANGELOG.md:200-204`、PR [#3552](https://github.com/libjxl/libjxl/pull/3552) |
+| 载荷格式 | `version(1B) + BE16 元数据长 + ISO 21496-1 blob + 颜色编码长(1B) + BE32 alt ICC 长 + 增益图(剩余，尺寸不落盘)`；增益图本体=**裸 JXL 码流** | `gain_map.cc:118-145`；本批正控实测逐字节复刻 |
+| 第二实现读者（解析级） | libjxl 官方 Rust `jxl-rs` 2026-10-18 合入 jhgm/ISO 21496-1 解析（PR [#1040](https://github.com/libjxl/jxl-rs/pull/1040)）+ 七个夹具；`jxl-oxide`、`zenjxl` 同族；**第二写手** rawmakase PR [#912](https://github.com/pch/rawmakase/pull/912)（2026-11-06 合入）与本写出器**同形**（version 0 / 无 alt color / 无 alt ICC / 灰度 map 裸码流），并用 jxlinfo + jxl-oxide 双读者互验 | 上述 PR；本仓夹具 `tests/data/synth_jxl_gainmap.jxl` |
+| **渲染级读者：零** | 80 读者矩阵（115 张合成图 / 6 轮评审：Chromium、Chrome、Firefox、WebKit、WIC、ImageIO/AppKit/Quick Look/sips/Core Image、Ubuntu/Arch 栈）**无任何读者渲染 JXL jhgm**；其编码器推荐默认明写「JPEG XL：不要依赖 jhgm；HDR 用 UltraHDR JPEG 或 AVIF tmap 交付」 | [imazen/zencodec #132](https://github.com/imazen/zencodec/issues/132)（2026-10-09） |
+| 上游自身尚未闭环 | `jxl/gain_map.h` 是公开头，但 0.11.2 安装包**不导出** `JxlGainMap*` 符号（`libjxl.pc` 无对应 target），修复 PR [#5015](https://github.com/libjxl/libjxl/pull/5015) 仍开放 ⇒ C API 下游至今不可用 | [#4865](https://github.com/libjxl/libjxl/issues/4865) |
+
+**落地形状**（v1 边界，全部有判据）：
+
+- **写出器**：`src/FfmpegGui/Services/JxlGainMapWriter.cs`（纯托管字节组装，零外部依赖；**不升 libjxl 版本**——随包静态 exe 无 DLL 可 P/Invoke，见 AGENTS §7 随包工具链裁决）。容器 = `sig + ftyp + jhgm + jxlc`，**jhgm 必须在 jxlc 之前**（`lib/extras/enc/jxl.cc:331-350`；尾随 box 在码流 >4096B 时会被部分读者漏读，见 [zenjxl #22](https://github.com/imazen/zenjxl/issues/22)）。
+- **子图编码**：底图与增益图各一支 cjxl **裸码流**（`-d`/`-e` 之外零 `-x`、零 `--intensity_target` ⇒ 产物 FF 0A 开头；传任何 hint 都会变容器输出，qa 见 `CjxlService.BuildGainMapSubImageArguments`）。
+- **v1 只支持 sRGB 底**：裸码流无法声明 BT.2020 ⇒ `bt2020` 底显式拒绝并点名（不许静默按 sRGB 解释）；jhgm 的 `color_encoding` 字段语义（描述增益图还是施加空间）待上游取证后扩位。
+- **元数据口径**：`--jpeg-gain-map-metadata xmp` 对 jxl 拒绝、`both` 降级为 iso 并出声（与 AVIF 的 tmap 同款，见 `GainMapEncoder` jxl 分支）。
+- **判据**：第 96 条 `verify-gainmap-jxl.ps1`（正控：CLI 产出 + `jxlinfo` 逐字段 + `ServiceProbe jxlgm` 21 条托管互验（含 ISO blob 与 `BuildIso21496Metadata` 逐字节相等）+ **`djxl` 独立解码「抽出来的增益图裸码流」**（libjxl 认可它是完整码流，而非只长度闭合；负控 = 中段改坏但长度/字段不动的坏件，jxlinfo 照旧报对而 djxl 解不出）+ `cjxl` 透传；负控：坏载荷 `Invalid` / 无 jhgm 不报 / compose+xmp 拒绝 / 单输入 xmp 拒绝 / both 出声 / bt2020 拒绝；**tripwire**：`jxl-oxide`/`zenjxl`/`jxl-rs` CLI 任一出现在工具搜索面即判红，要求升级为双实现判据并重测能力表）+ 第 97 条 `verify-jxl-gainmap-readside.ps1`（读侧 R1-R3）。
+- **读侧兼容（母文件原口径的"先做读侧"部分，同批兑现）**：`JxlGainMapProbe.Scan` 纯托管顶层 box 遍历识别 `jhgm`（含 `brob` 压缩壳零解压识别：载荷前 4B 即原始 box 类型，`encode.cc:1144` 契约；裸码流构造性判无；链中断 fail-closed）；任务日志单点播报「输入含 JXL 增益图」+「不随转换保留」+ Status ASCII 后缀 ` (gain map NOT preserved)`。**现状 JXL→JXL 也不保留**：引擎与 legacy 两侧都是 djxl→cjxl 像素级重编码，容器 box 不随行。
+
+**明确未覆盖（不许当已验证）**：
+
+- 渲染级读者为零 ⇒ 产物**今天在别人的屏幕上不会显 HDR**；JXL 的 HDR 交付仍应走原生 CICP（PQ/HLG）+ intensity_target。
+- PNG 增益图仍 **❌ 未支持**（P2-1 原挂起口径对它继续有效，本批只开 JXL）。
+- `ACR 可给 JXL 嵌增益图` 这条 2026-10 在册主张：本批只核实到 Adobe Camera Raw 有官方 [Gain Map 专页](https://helpx.adobe.com/camera-raw/desktop/hdr-and-advanced-output/gain-map.html)（功能存在），**未核实其 JXL 出口承载与是否可读回**（helpx 正文抓取受限、GitHub 全网 jhgm 检索无 Adobe 痕迹）⇒ 仍属**未复核**，不得引用为第二读者。
+- 引擎异常回退 legacy 时 jxl+gainmap 静默丢增益图（与 avif 今天同形）；「增益图 ≤ 底图」无字段可核（jhgm 载荷无尺寸位，`gain_map.cc:222-226`）。
+- 动图 + jxl 增益图、CJK 路径、jpegli 源输入：均未逐臂实测。
+
 ## 5. 本轮验证状态
 
 | 项 | 状态 |
@@ -281,7 +313,7 @@ tmap item 没有 `pixi` ⇒ `avifdec --info` 的「Alternate image」**整段不
 | P1-1 第三方读者判据 | **已核并落地**（70/0，含两支变异验牙） |
 | P1-2 | **已做并变异验证**：`(h)` 打印 `heifultrahdr.h`，`heifenc.exe`/`libheif.dll` 任一出现即红；`caps 16/0`，两臂变异各 `15/1` |
 | P0-2 | **JPEG 侧已核**（§12 9 条；像素 `maxLinear 8.798/4.2149`，剥元数据负控；engine **182/0**）；**HEIC 侧未做**（仍缺真实样本） |
-| P2-1 | **未做**（先量生态再决定） |
+| P2-1 | **JXL 部分已落地（2026-11-08）**：写侧 jhgm 容器（`JxlGainMapWriter` + `GainMapEncoder` jxl 分支，只支持 sRGB 底）+ 读侧识别/播报（`JxlGainMapProbe.Scan`）；判据 = 第 96 条 `verify-gainmap-jxl.ps1` **29/0** + 第 97 条 `verify-jxl-gainmap-readside.ps1` **28/0** + `ServiceProbe jxlgm` **21/0**。**渲染级读者为零**（80 矩阵在案）⇒ JXL 的 HDR 交付仍应走原生 CICP（PQ/HLG）；**PNG 部分仍未做**。详见 P2-1 裁决与落地段 |
 | P0-3 底图 ISO 裸桩 | **已实现并验收**：工作树构建 0 警 0 错；门禁 §1b/§1c 红绿对撞（见下一行）；MPF 由 exiftool 独立复核 |
 | P0-4 次图 XMP | **主树已于 2026-10-27 按方案一落地**（次图插一份 `rdf:Description` 属性形式的 hdrgm XMP，数值与底图同源）——依据不是形状偏好而是实测：libultrahdr 只从**次图**取元数据 ⇒ 修前 `xmp` 档产物被参考读手判 `received no valid buffer to parse gainmap metadata`（`tests/output/gates-round-20261027e.log` 的 D5e FAIL），修后 D5e 直读通过。本树逐档「声明长度 == 实测次图长度」判据在 `verify-gainmap-engine` §1c，处置与读数见 `IMPLEMENT_PLAN_2026-10-11.md` §56。⚠ 同行里的 both 2358/2358、xmp 2265/2265 是 **origin 侧工作树的长度读数**，与本树不同件，不作本树结论。 |
 | 元数据方式三档（默认 iso） | **已实现并验收（2026-10-20 二次复验）**：`verify-gainmap-engine` **162/0**（新增：xmp+RGB 的逐通道数据判据、⑤b 九项字段锁）；`verify-gainmap-thirdparty` **22/0**（D5 两处声明 `XMP[-0.29,1.30] == ISO[-0.290,1.300]`、D5c 默认档无 XMP、D5d 自造字段 0 命中、D5e libultrahdr 直读 xmp+RGB `max=2.46229`）；`ui-cli` **72/0**；`ui-mode` **52/1**（O6a–g 全 PASS；唯一红 G1 是工作树嵌在第 10 层、宿主只向上找 8 层的既有环境限制，把同一份构建产物放浅路径后 G1 **1/0**） |

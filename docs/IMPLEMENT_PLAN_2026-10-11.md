@@ -1,4 +1,4 @@
-﻿# 完整实现规划（2026-10-11，续 `FIX_PLAN_2026-10-11.md`）
+# 完整实现规划（2026-10-11，续 `FIX_PLAN_2026-10-11.md`）
 
 口径（维护者定的两条硬规矩，全程适用）：**① 按标准/一手参照实现，不许凭记忆或凭"规范的名字"猜规范内容；② 每一片都要有能红的判据——先拿改前的红态证据，再改，再复绿，再绑构建指纹。**
 
@@ -4837,3 +4837,47 @@ ICC 明明在产物里（`-x icc_pathname=` 由 cjxl 写的），exiftool 只是
   逐字吻合；`af8ae9b`=918，ExifToolService +1 / QueueProcessor +4 / 其余六件净 0，逐份累加正好落回 913）；
   本批**净 0**（只是把同一行上的截断文案从 10K 版换成 24K 版）。同轮 `bench` 红是争用（空载复测 37/0）；
   ⑧ AOT 出货档的 IPC `Type=5 Shutdown` 在 3 s 内没退（开发件档退了）——只记为观察，未立案。
+
+### §62 2026-11-08：JXL 增益图（`jhgm`）——用户裁决按**解析级读者**标准开写侧；写+读两侧同批落地，渲染级零读者如实登记
+
+- **触发**：维护者要求「查询 JPEG XL 相关的情况，给 GainMap 相关加入 JPEG XL 内容」。前置事实：JXL 在本仓
+  只走**原生 HDR**（CICP + `intensity_target`），零 gain-map 通路；母文件 P2-1 把 JXL 增益图挂起，条件是
+  「先量生态、有第二读者能读懂才开写侧」。本批先补那路一手调研（前一接手者的 web 调研子代理失败），
+  再请裁决。
+- **调研结论（一手，逐条落 `GAINMAP_ROUTES_AND_PATCH_PLAN.md` P2-1 裁决段的证据表）**：
+  libjxl 0.11.0 起有 Gain Map API 与 `jhgm` box（随包 0.12.0 实测可解析）；载荷序 = `version + BE16 元数据长 +
+  ISO 21496-1 blob + 颜色编码长 + BE32 alt ICC 长 + 增益图(剩余，尺寸不落盘)`，增益图本体是**裸 JXL 码流**；
+  **解析级第二读者已在位**（libjxl 官方 Rust `jxl-rs` PR #1040 合入 jhgm 解析 + 七夹具；`jxl-oxide`/`zenjxl` 同族；
+  第二写手 rawmakase PR #912 与本写出器**同形**并以双读者互验）；**渲染级读者为零**——80 读者矩阵
+  （Chromium/Chrome/Firefox/WebKit/WIC/ImageIO/AppKit/Quick Look/sips/Core Image/Ubuntu/Arch，115 张合成图、
+  6 轮评审）无任何读者渲染 JXL jhgm，其编码器推荐默认明写「JXL 不要依赖 jhgm」。上游自身亦未闭环：
+  0.11.2 安装包不导出 `JxlGainMap*` 符号（#4865，修复 PR #5015 仍开放）。
+- **维护者裁决**：**写侧开闸**，判据标准取「解析级读者」而非「渲染级读者」。⇒ 本批不做「假装生态已成熟」，
+  而是在能力表 `VerifiedBy` 与本文同时登记「渲染级零读者」这一事实；JXL 的 HDR 交付口径仍是**原生 CICP**。
+- **落地（写侧，纯托管、零工具链变更）**：新 `JxlGainMapWriter.cs` 组装 `sig + ftyp + jhgm + jxlc`
+  （**jhgm 必须在 jxlc 之前**——尾随 box 在码流 >4096B 时会被部分读者漏读）；`GainMapEncoder` 增 jxl 分支
+  （底图/增益图各一支 cjxl **裸码流**，`CjxlService.BuildGainMapSubImageArguments` 只发 `-d/-e`，任何 `-x`/
+  `--intensity_target` 都会把产物变成容器件 ⇒ 有 FF 0A 守卫 + 负控）；元数据 `xmp` 拒绝、`both` 降级 iso 并出声；
+  **v1 只支持 sRGB 底**（裸码流无法声明 BT.2020 ⇒ bt2020 显式拒绝，不许静默按 sRGB 解释）。
+- **落地（读侧，母文件原口径的「先做读侧」同批兑现）**：`JxlGainMapProbe.Scan` 纯托管顶层 box 识别 `jhgm`
+  （`brob` 压缩壳零解压识别——载荷前 4B 即原始 box 类型；裸码流构造性判无；链中断 fail-closed **不**当「没有」）；
+  `QueueProcessor` 单点播报「输入含 JXL 增益图」+「不随转换保留」+ Status ASCII 后缀。**JXL→JXL 也不保留**
+  （两侧都是 djxl→cjxl 像素级重编码，容器 box 不随行）——这条比原设想的「确认透传」更严，由门禁 §7 行为臂钉住。
+- **读数**：第 96 条 `verify-gainmap-jxl.ps1` **29/0**、第 97 条 `verify-jxl-gainmap-readside.ps1` **28/0**、
+  `ServiceProbe jxlgm` **21/0**（含 ISO blob 与 `BuildIso21496Metadata` 逐字节相等——`jxlinfo` 看不见 blob 内容，
+  这是解析级判据的核心一针）、镜像锁 **88/0**、组表覆盖 **40/0**、`validator contract` **161/0**、
+  CJK UI 面棘轮 923 → **931**（逐文件差分归因：CliParser +1 / RawColorPipeline +1 / QueueProcessor +2 /
+  JxlGainMapWriter +3 / 合并后再 +1，restore 校验 15/15）；清单 **95 → 97 条**（四处同批：`$scriptList` /
+  `$expectedScriptCount` / 三处散文，⑰ 针在受管子集轮实测通过）。
+- **门禁抓到的两处真问题（不是纸面通过）**：
+  ① `verify-color-strategy` 的 C4b 负控仍把 `jxl` 列在「必须 Reject」里 ⇒ 能力表翻位后当场 FAIL
+  （`GainMap × jxl：必须 Reject+建议（实为 None）`）；按 avif 2026-10-02 先例把 jxl 移出负控（6 → 5 格式）
+  并补正向断言（不得 Reject + 能力表位为真）⇒ contract 161/0。
+  ② 坏载荷时 `HasGainMap=true` 让 `else if (!Determinate)` 永远轮不到，用户只见 `-1-byte` 哨兵读数而无
+  fail-closed 点名 ⇒ 在 `HasGainMap` 分支内补二级播报（`FailReason` 随行 + 「载荷解析失败」文案），
+  门禁 §5 断言从锚哨兵值改为锚**独立 fail-closed 行**（更严的判据）。
+- **明确未覆盖**：渲染级读者为零（产物今天在别人屏幕上不显 HDR）；PNG 增益图仍未支持；「ACR 可给 JXL 嵌增益图」
+  这条 2026-10 在册主张**只核实到 ACR 有官方 Gain Map 功能页，未核实其 JXL 出口与读回** ⇒ 仍属未复核；
+  引擎异常回退 legacy 时 jxl+gainmap 静默丢增益图（avif 同形）；jhgm 无尺寸字段 ⇒「增益图 ≤ 底图」无法在
+  写出器内复核；动图/CJK 路径/jpegli 源未逐臂实测。
+- **工具链**：**不动** libjxl 版本（随包静态 exe 无 DLL 可 P/Invoke ⇒ 纯托管组装是唯一不动工具链的写出路径）。
