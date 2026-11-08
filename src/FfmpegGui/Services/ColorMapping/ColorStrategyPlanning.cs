@@ -276,18 +276,18 @@ public static partial class ColorMappingEngine
     /// <summary>策略判定主体（<see cref="Plan(ColorIntent)"/> 的包体；返回值会被补上 GainMap 位）。</summary>
     private static ColorTransformPlan PlanWithPolicy(ColorIntent it, PlanPolicy pol)
     {
-        // GainMap 是“输出结构”能力（ISO 21496-1 / XMP+MPF），只能由 JPEG 族承载。
+        // GainMap 是“输出结构”能力（ISO 21496-1 / XMP+MPF），由 JPEG 族（APP2/XMP+MPF）、AVIF（tmap）与 JXL（jhgm）承载。
         // 必须在契约层拦住：UI 的 IsVisible 不是门禁，CLI/预设能绕过它；
         // 否则会变成“用户以为有 HDR 增益图，实际只得到被压暗的 SDR”——静默降级。
         if (it.GainMapRequested && !pol.Format.SupportsGainMap)
         {
             var pg = Fresh(it.Strategy);
-            return Reject(pg, $"增益图（GainMap）不适用于 {pol.Format.Format}：它依赖 JPEG 的 APP2/XMP+MPF 或 AVIF 的 ISO-BMFF tmap 派生项",
-                "要保留 HDR：输出改用 AVIF/JXL（原生存 PQ/HLG）；或把目标改为 JPEG 并开启增益图",
+            return Reject(pg, $"增益图（GainMap）不适用于 {pol.Format.Format}：它依赖 JPEG 的 APP2/XMP+MPF、AVIF 的 ISO-BMFF tmap 派生项或 JXL 的 jhgm box",
+                "要保留 HDR：输出改用 AVIF/JXL（原生存 PQ/HLG，或其增益图承载 tmap/jhgm）；或把目标改为 JPEG 并开启增益图",
                 new[]
                 {
                     new ColorAlternative(AlternativeKind.Format, "jpg",
-                        "JPEG 族与 AVIF 可承载 GainMap（APP2/XMP+MPF 或 tmap 派生项；能力表 SupportsGainMap）"),
+                        "JPEG 族、AVIF 与 JXL 可承载 GainMap（APP2/XMP+MPF、tmap 或 jhgm；能力表 SupportsGainMap）"),
                     new ColorAlternative(AlternativeKind.Format, "avif", "原生 PQ/HLG ⇒ 不经 GainMap 也能保 HDR"),
                     new ColorAlternative(AlternativeKind.Format, "jxl", "原生 PQ/HLG ⇒ 不经 GainMap 也能保 HDR"),
                 });

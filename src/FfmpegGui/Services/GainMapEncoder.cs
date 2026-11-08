@@ -92,15 +92,19 @@ public static class GainMapEncoder
     /// </para>
     /// </param>
     /// <summary>
-    /// 由输出路径判定增益图**容器**：`.avif` ⇒ <c>"avif"</c>（ISO-BMFF `tmap` 派生项），其余 ⇒ <c>"jpeg"</c>
-    /// （Ultra HDR APP2 + XMP + MPF）。
+    /// 由输出路径判定增益图**容器**：`.avif` ⇒ <c>"avif"</c>（ISO-BMFF `tmap` 派生项）、
+    /// `.jxl` ⇒ <c>"jxl"</c>（jhgm box + ISO 21496-1，<see cref="JxlGainMapWriter"/> 组装），
+    /// 其余 ⇒ <c>"jpeg"</c>（Ultra HDR APP2 + XMP + MPF）。
     /// <para>
-    /// ⚠ **单一真值**：两个调用点（`RawColorPipeline` 的引擎出口、`QueueProcessor` 的专用管线）**都**必须
-    /// 用它，不允许各自按 <c>Options.Format</c> 另写一份映射 —— 两套映射必然漂移（本仓反复修过这类缺陷）。
+    /// ⚠ **单一真值**：三个调用点（`RawColorPipeline` 的引擎出口、`QueueProcessor` 的专用管线、
+    /// `GainMapComposeService` 的合成模式）**都**必须用它，不允许各自按 <c>Options.Format</c> 另写一份
+    /// 映射 —— 两套映射必然漂移（本仓反复修过这类缺陷）。
     /// </para>
     /// </summary>
     public static string ContainerOf(string outputPath)
-        => string.Equals(Path.GetExtension(outputPath), ".avif", StringComparison.OrdinalIgnoreCase) ? "avif" : "jpeg";
+        => string.Equals(Path.GetExtension(outputPath), ".avif", StringComparison.OrdinalIgnoreCase) ? "avif"
+         : string.Equals(Path.GetExtension(outputPath), ".jxl", StringComparison.OrdinalIgnoreCase) ? "jxl"
+         : "jpeg";
 
     /// <summary>
     /// 增益图承载格式的<b>取值域唯一真值</b>（2026-11-03 批次 E，审阅面 2 M2）：此前三处各写一份字面量表
@@ -108,9 +112,10 @@ public static class GainMapEncoder
     /// 规划表里声称支持而分派不认 => 三副本漂移。分派与拒绝判据一律改读这里。
     /// jpegli 在 CLI 解析期被归一成 jpg（CliParser.cs:216），列进来是表意收敛，不是新行为；
     /// avif 走 ISO-BMFF tmap 容器（IsoBmffGainMapWriter）。
+    /// jxl 走 jhgm box（JxlGainMapWriter，2026-11-08 用户裁决按解析级读者标准开写侧）。
     /// </summary>
     public static bool FormatCarriesGainMap(string? fmt)
-        => fmt is "jpg" or "jpeg" or "jpegli" or "avif";
+        => fmt is "jpg" or "jpeg" or "jpegli" or "avif" or "jxl";
 
     // ── 增益图元数据承载的**取值域唯一真值**（2026-10-27 与 origin/main 合流时收口）──
     // UI 下拉的词表、CLI 两个开关的校验、模型两条路（单输入 / 两图合成）的默认值、以及本编码器
@@ -157,12 +162,14 @@ public static class GainMapEncoder
         bool measureGainRange = false,
         // 编码器显式选择（两图合成面板/CLI 暴露；null = 沿用旧优先级：cjpegli 可用则用，否则 mjpeg）。
         // ⚠ 显式请求却不可用 ⇒ **失败**，不静默回落（回落会让用户以为选的是 cjpegli）。
-        // (a) JPEG 出口：`cjpegli` | `mjpeg`；(b) AVIF 出口：`libaom-av1` | `libsvtav1`。
+        // (a) JPEG 出口：`cjpegli` | `mjpeg`；(b) AVIF 出口：`libaom-av1` | `libsvtav1`；
+        // (c) JXL 出口：**无选择面** —— 子图恒由 cjxl 编（三零禁令，BuildGainMapSubImageArguments），
+        //     两个形参被忽略（GainMapComposeService 对 jxl 置 null，见其分派注释）。
         string? jpegEncoder = null,
         string? avifEncoder = null,
         // 元数据承载（JPEG 出口）：`iso` = 只写 APP2 ISO 21496-1；`xmp` = 只写 XMP hdrgm（Ultra HDR v1）；
-        // `both` = 两者并存。AVIF 的 tmap **只**承载 ISO 21496-1 ⇒ `xmp` 在这里没有可交付形态，
-        // 显式请求即失败（不静默改写成 ISO）。
+        // `both` = 两者并存。AVIF 的 tmap 与 JXL 的 jhgm **都只**承载 ISO 21496-1 ⇒ `xmp` 在这两条出口
+        // 没有可交付形态，显式请求即失败（不静默改写成 ISO）；`both` 在这两条出口降级为 ISO 并 NOTE 点名。
         // ⚠ 这里的 `"both"` 是**API 兜底**，不是产品默认：产品两条路（`FfmpegOptions.JpegGainMapMetadata`
         //   与 `GainMapComposeMetadata`）的默认都取 `GainMapMetadataDefault`（iso），且三个产品调用点
         //   （QueueProcessor / RawColorPipeline / GainMapComposeService）一律显式传参。兜底保留历史口径
@@ -390,6 +397,38 @@ public static class GainMapEncoder
                     return await EncodeAvifGainMapAsync(basePng, gmPng, w, h, gmW, gmH, multiChannel,
                         maxLog2Gain, minLog2Gain, hdrCapacityLog2, wideBase, outputPath, ffmpeg, log, ct,
                         avifEncoder, baseCrf, gainMapCrf);
+                }
+
+                // ── 4a′. JXL 出口：jhgm box（ISO 21496-1 + 增益图裸码流，纯托管容器组装）────────
+                // ⚠ 与 AVIF/JPEG 出口**共用**上面全部像素阶段（同 :375-377 的理由），只换容器与元数据承载。
+                //   形状对齐 rawmakase #912 先例：version 0、无 alt color encoding、无 alt ICC
+                //   （施加空间 = 底图色彩空间 = 线性 RGB）；底图 sRGB SDR、增益图灰度（multiChannel 时 RGB）裸码流。
+                if (string.Equals(container, "jxl", StringComparison.OrdinalIgnoreCase))
+                {
+                    // D6（2026-11-08 写侧裁决）：v1 只支持 sRGB 底 —— 裸码流**无法声明** bt2020 色域
+                    //   （给 cjxl 传 hint 就会输出容器而非裸码流，三零禁令被破坏），而 jhgm 的 alt
+                    //   color encoding 语义（增益图还是施加空间）上游未定 ⇒ 显式拒绝，绝不静默按 sRGB 解释。
+                    if (wideBase)
+                    {
+                        log?.Invoke("[GainMap] ERROR: JXL gain-map exit v1 supports an sRGB base only (requested"
+                                  + " a wide-gamut base): a naked-codestream base cannot declare wide gamut, and the"
+                                  + " jhgm alt-color-encoding semantics are unsettled upstream"
+                                  + " => refusing instead of silently mislabeling the base. Use baseGamut srgb or the AVIF/JPEG exits.\n");
+                        return false;
+                    }
+                    // JXL 的 jhgm 只承载 ISO 21496-1 ⇒ xmp 拒绝、both 降级 iso（与 AVIF :381-389 同构）。
+                    if (metadata == "xmp")
+                    {
+                        log?.Invoke("[GainMap] ERROR: JXL has no XMP-only gain-map form (the jhgm box"
+                                  + " carries ISO 21496-1 only) => refusing instead of silently rewriting the carrier.\n");
+                        return false;
+                    }
+                    if (metadata == "both")
+                        log?.Invoke("[GainMap] NOTE: JXL gain map is carried by the jhgm box (ISO 21496-1) only;"
+                                  + " the XMP part of 'both' is not written (no standard reader path in JXL).\n");
+                    return await EncodeJxlGainMapAsync(basePng, gmPng, multiChannel,
+                        maxLog2Gain, minLog2Gain, hdrCapacityLog2, baseQuality, gainMapQuality,
+                        outputPath, log, ct);
                 }
 
                 // ── 4b. JPEG 出口（Ultra HDR：XMP + MPF + ISO 21496-1 APP2）──────────
@@ -1196,6 +1235,129 @@ public static class GainMapEncoder
         await p.WaitForExitAsync(ct);
         return p.ExitCode == 0 && File.Exists(avifPath) && new FileInfo(avifPath).Length > 0;
     }
+
+    /// <summary>
+    /// JXL 出口：底图与增益图各编一条**裸码流**（cjxl 零 hint，<see cref="CjxlService.BuildGainMapSubImageArguments"/>），
+    /// 再交给 <see cref="JxlGainMapWriter"/> 组装成 sig+ftyp+jhgm+jxlc 容器。
+    /// <para>
+    /// ⚠ 与 JPEG/AVIF 出口**共用**全部像素阶段（归一化 / Reinhard / 底图色域映射 / 增益图计算），
+    /// 本方法只负责「子图编码 + 容器组装」，三条出口的增益语义因此必然一致。
+    /// </para>
+    /// </summary>
+    private static async Task<bool> EncodeJxlGainMapAsync(string basePng, string gmPng,
+        bool multiChannel, float maxLog2Gain, float minLog2Gain, float hdrCapacityLog2,
+        float baseDistance, float gainMapDistance, string outputPath,
+        Action<string>? log, CancellationToken ct)
+    {
+        var tempDir = Path.GetDirectoryName(basePng)!;
+        var baseJxl = Path.Combine(tempDir, "base_sub.jxl");
+        var gmJxl = Path.Combine(tempDir, "gainmap_sub.jxl");
+
+        // 可用性诚实：子图只能由 cjxl 编（随包 publish/PLAN/jxl/bin 或设置指定）；不可用 ⇒ 失败点名，
+        // 绝不静默回落其它编码器（回落会让用户以为拿到的是增益图容器）。
+        if (!CjxlService.IsAvailable || CjxlService.DetectedPath is not string cjxlPath)
+        {
+            log?.Invoke("[GainMap] ❌ JXL 增益图出口需要 cjxl，当前不可用 ⇒ 失败；"
+                      + "不静默回落（jhgm 载荷要求两条 FF 0A 裸码流，其它编码器给不了）\n");
+            return false;
+        }
+        log?.Invoke("[GainMap] JXL 子图编码器: cjxl（-d = butteraugli distance，effort 7）\n");
+
+        if (!await RunCjxlSubImageAsync(cjxlPath, basePng, baseJxl, baseDistance, log, ct))
+        {
+            log?.Invoke("[GainMap] ❌ 底图 JXL 子图编码失败\n");
+            return false;
+        }
+        if (!await RunCjxlSubImageAsync(cjxlPath, gmPng, gmJxl, gainMapDistance, log, ct))
+        {
+            log?.Invoke("[GainMap] ❌ 增益图 JXL 子图编码失败\n");
+            return false;
+        }
+
+        byte[] baseCs, gmCs;
+        try
+        {
+            baseCs = await File.ReadAllBytesAsync(baseJxl, ct);
+            gmCs = await File.ReadAllBytesAsync(gmJxl, ct);
+        }
+        catch (Exception ex)
+        {
+            log?.Invoke($"[GainMap] ❌ 读取 JXL 子图中间产物失败: {ex.Message}\n");
+            return false;
+        }
+        // 裸码流守卫（fail-closed）：cjxl 对零 hint 输入应产出 FF 0A 裸码流；若混入了容器件
+        //（例如将来有人给子图调用加了 -x hint），这里点名失败，绝不把容器当裸码流塞进 jhgm。
+        if (!IsNakedCodestream(baseCs))
+        {
+            log?.Invoke("[GainMap] ❌ 底图子图不是 JXL 裸码流（应为 FF 0A 开头）——"
+                      + "cjxl 子图调用必须零 -x/零 --intensity_target（三零禁令，见 BuildGainMapSubImageArguments）\n");
+            return false;
+        }
+        if (!IsNakedCodestream(gmCs))
+        {
+            log?.Invoke("[GainMap] ❌ 增益图子图不是 JXL 裸码流（应为 FF 0A 开头）——同上，三零禁令被破坏\n");
+            return false;
+        }
+
+        // SDR 输入（增益区间宽度为 0）⇒ 与 JPEG/AVIF 出口同口径：不写增益图，直接以底图子图作产物并点名。
+        //   判据用**宽度**（与 JPEG :451 / AVIF :1111 同一口径）；底图子图本身是单图 JXL ⇒「普通 JXL」语义如实。
+        if (maxLog2Gain - minLog2Gain <= 0f)
+        {
+            await File.WriteAllBytesAsync(outputPath, baseCs, ct);
+            log?.Invoke("[GainMap] ⚠️ 输入为 SDR（headroom ≤ 1，增益区间为 0）⇒ 已按普通 JXL 输出（未写入 jhgm 增益图）。需要 HDR 请改用 HDR 输入。\n");
+            return true;
+        }
+
+        // ISO 21496-1 与 JPEG APP2 / AVIF tmap **逐字节同源**（单一真值）；jxl 不加 tmap 的 version 前缀
+        // —— jhgm 载荷首字节是自己的 version 位（gain_map.cc:118）。
+        // 通道数取**交付平面数**（灰度 PNG ⇒ 1、RGB PNG ⇒ 3），与 F-4「声明与交付成套」同口径。
+        int declaredChannels = multiChannel ? 3 : 1;
+        byte[] iso = BuildIso21496Metadata(declaredChannels, maxLog2Gain, minLog2Gain, hdrCapacityLog2);
+        var built = JxlGainMapWriter.Build(baseCs, gmCs, iso);
+        if (!built.Ok)
+        {
+            log?.Invoke($"[GainMap] ❌ JXL 增益图容器组装失败：{built.FailReason}\n");
+            return false;
+        }
+        await File.WriteAllBytesAsync(outputPath, built.Data!, ct);
+        log?.Invoke($"[GainMap] ✅ JXL 增益图 (jhgm)：底图码流 {built.BaseCodestreamBytes} B + 增益图码流 {built.GainMapCodestreamBytes} B + jhgm 载荷 {built.JhgmPayloadBytes} B（ISO {iso.Length} B），合计 {Math.Round(new FileInfo(outputPath).Length / 1024.0)} KB\n");
+        return true;
+    }
+
+    /// <summary>
+    /// 增益图**子图**专用的 cjxl 调用：参数由 <see cref="CjxlService.BuildGainMapSubImageArguments"/>
+    /// 单点给出（三零禁令），产物必须是 FF 0A 裸码流（守卫在调用方）。
+    /// 进程优先级与日志口径对齐 EncodeAvifFileAsync 的 ffmpeg 调用。
+    /// </summary>
+    private static async Task<bool> RunCjxlSubImageAsync(string cjxlPath, string pngPath, string jxlPath,
+        float distance, Action<string>? log, CancellationToken ct)
+    {
+        string args = CjxlService.BuildGainMapSubImageArguments(pngPath, jxlPath, distance);
+        log?.Invoke($"[GainMap] {Path.GetFileName(cjxlPath)} {args}\n");
+        var psi = new ProcessStartInfo
+        {
+            FileName = cjxlPath,
+            Arguments = args,
+            RedirectStandardOutput = true,
+            StandardOutputEncoding = Encoding.UTF8,
+            RedirectStandardError = true,
+            StandardErrorEncoding = Encoding.UTF8,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+        using var p = Process.Start(psi)!;
+        PlatformServices.SetSafePriority(p, AppSettingsService.Current.FfmpegPriority);
+        p.OutputDataReceived += (_, e) => { if (e.Data != null) log?.Invoke(e.Data + "\n"); };
+        p.ErrorDataReceived += (_, e) => { if (e.Data != null) log?.Invoke(e.Data + "\n"); };
+        p.BeginOutputReadLine();
+        p.BeginErrorReadLine();
+        await p.WaitForExitAsync(ct);
+        return p.ExitCode == 0 && File.Exists(jxlPath) && new FileInfo(jxlPath).Length > 0;
+    }
+
+    /// <summary>JXL 裸码流判定：FF 0A 开头（ISO/IEC 18181-1 码流标记）。</summary>
+    private static bool IsNakedCodestream(byte[] b)
+        => b.Length >= 2 && b[0] == 0xFF && b[1] == 0x0A;
 
     /// <summary>线性 float [0,1] → sRGB 8-bit</summary>
     private static byte FloatToSrgb8(float v)

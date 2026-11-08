@@ -195,7 +195,9 @@ namespace FfmpegGui.Services
                 SupportsCicp = true,
                 CicpNote = "JXL 原生 CICP + ICC，支持 8/16/32-bit",
                 SupportedBitDepths = new List<int> { 8, 10, 12, 16, 32 },
-                SupportedColorSpaces = new List<string> { "BT.709", "BT.2020" }
+                SupportedColorSpaces = new List<string> { "BT.709", "BT.2020" },
+                // 2026-11-08 起 jxl 亦可承载增益图（jhgm box；判据口径见 ColorTransformPlan.Caps 的 jxl 条目）
+                SupportsGainMap = true
             };
 
             // JPEG XR: JxrEncApp 外部工具，8/16/32-bit

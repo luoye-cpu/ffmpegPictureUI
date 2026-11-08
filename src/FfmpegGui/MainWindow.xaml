@@ -1157,6 +1157,7 @@
               <ComboBox x:Name="GainMapFormatCombo" SelectedIndex="0" FontSize="12">
                 <sys:String>JPEG · Ultra HDR</sys:String>
                 <sys:String>AVIF · tmap</sys:String>
+                <sys:String>JXL · jhgm</sys:String>
               </ComboBox>
 
               <TextBlock Text="{ext:Loc gm.encoder}" FontSize="12" Margin="0,4,0,0"/>

@@ -605,6 +605,9 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
                     throw new InvalidOperationException(
                         "--gainmap-metadata xmp 与 -f avif 不匹配：AVIF 增益图由 tmap 承载 ISO 21496-1，"
                         + "没有 XMP 形态的标准读法。请用 iso 或 both（both 在 AVIF 上等同 iso）。");
+                // JXL 的增益图只有 jhgm/ISO 21496-1 这一种承载（解析级判据 2026-11-08）；XMP 形态没有标准读法 ⇒ 建队即拒绝。
+                if (cfmt == "jxl" && opts.ComposeMetadata == "xmp")
+                    throw new InvalidOperationException("--gainmap-metadata xmp 与 -f jxl 不匹配：JXL 增益图由 jhgm box 承载 ISO 21496-1，没有 XMP 形态的标准读法。请用 iso（both 在 JXL 上等同 iso）。");
             }
 
             // 可用性诚实原则：目标格式依赖的外部编码器缺失时直接报错，

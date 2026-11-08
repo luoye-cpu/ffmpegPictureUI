@@ -362,6 +362,24 @@ namespace FfmpegGui.Services
         }
 
         /// <summary>
+        /// 增益图**子图**专用的最小 cjxl 参数（2026-11-08 写侧批次）：只发
+        /// <c>"&lt;in&gt;" "&lt;out&gt;" -d N -e N</c>。
+        /// <para>
+        /// ⚠ **三零禁令**：**零** <c>-x</c>（icc_pathname/color_space 等 hint 会让 cjxl 改输出**容器**
+        /// 而非裸码流，而 jhgm 载荷要求子图是 FF 0A 裸码流——守卫见 <c>GainMapEncoder.EncodeJxlGainMapAsync</c>）、
+        /// **零** <c>--intensity_target</c>、**零** <c>--progressive/--modular/--lossless_jpeg</c>
+        /// （子图是低对比度灰度/RGB 数据图，这些旋钮无一适用）。<c>-d</c> 的量纲本就是 butteraugli
+        /// distance，与 <c>GainMapEncoder</c> 的 baseQuality/gainMapQuality 同源。
+        /// </para>
+        /// <para>
+        /// ⚠ 与 U1（<see cref="BuildCjxlArguments"/> 的 JpegCarriesGainMap 点名）无交集：子图输入是
+        /// 本管线自产的 PNG，不是 JPEG ⇒ 那条判据不可能触发；effort 固定默认 7（子图不吃 JxlEffort 旋钮）。
+        /// </para>
+        /// </summary>
+        public static string BuildGainMapSubImageArguments(string input, string output, double distance, int effort = 7)
+            => $"\"{input}\" \"{output}\" -d {distance.ToString("0.0#", System.Globalization.CultureInfo.InvariantCulture)} -e {effort}";
+
+        /// <summary>
         /// 构建 cjxl 命令行参数字符串（不含 exe 路径）。
         /// 用于 UI 预览和实际执行。
         /// </summary>

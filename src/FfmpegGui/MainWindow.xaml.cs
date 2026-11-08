@@ -1118,7 +1118,9 @@ namespace FfmpegGui
             {
                 GainMapMetadataCombo.SelectionChanged += (_, _) =>
                 {
-                    if (GainMapFormatCombo?.SelectedIndex != 1)
+                    // 三态（2026-11-08 加 JXL）：AVIF/JXL 的元数据下拉被锁成 ISO（见 RefreshGainMapMetadataCombo），
+                    // 这两态不回写 JPEG 侧的记忆位，切回 JPEG 才恢复上次选择。
+                    if (GainMapFormatCombo?.SelectedIndex is not (1 or 2))
                         _gmMetadataJpegIndex = Math.Max(0, GainMapMetadataCombo.SelectedIndex);
                     RefreshGainMapMetadataHint();
                 };
@@ -6957,17 +6959,18 @@ namespace FfmpegGui
         private async Task RefreshGainMapEncodersAsync()
         {
             if (GainMapEncoderCombo == null) return;
-            bool avif = GainMapFormatCombo?.SelectedIndex == 1;
-            string fmt = avif ? "avif" : "jpg";
+            // 三态（2026-11-08 加 JXL）：0=JPEG 族、1=AVIF（tmap）、2=JXL（jhgm）
+            int fmtIdx = GainMapFormatCombo?.SelectedIndex ?? 0;
+            string fmt = fmtIdx switch { 1 => "avif", 2 => "jxl", _ => "jpg" };
             string? prev = GainMapEncoderCombo.SelectedItem as string;
             List<EncoderInfo> encoders;
             try { encoders = await EncoderDetectionService.GetEncodersForFormatAsync(fmt); }
             catch { encoders = new List<EncoderInfo>(); }
 
             var available = encoders.Where(e => e.IsAvailable).ToList();
-            var supported = available.Where(e => IsGainMapEncoderSupported(e, avif)).ToList();
+            var supported = available.Where(e => IsGainMapEncoderSupported(e, fmtIdx)).ToList();
             _gmExcludedEncoders = available
-                .Where(e => !IsGainMapEncoderSupported(e, avif))
+                .Where(e => !IsGainMapEncoderSupported(e, fmtIdx))
                 .Select(e => e.Name).ToList();
 
             if (supported.Count > 0)
@@ -6991,22 +6994,37 @@ namespace FfmpegGui
             UpdateGainMapQualityLabels();
         }
 
-        /// <summary>增益图子图能按声明精度交付的编码器（与引擎的显式白名单逐字一致）。</summary>
-        private static bool IsGainMapEncoderSupported(EncoderInfo e, bool avif) =>
-            avif
+        /// <summary>
+        /// 增益图子图能按声明精度交付的编码器（与引擎的显式白名单逐字一致）。
+        /// </summary>
+        /// <remarks>
+        /// 三态（2026-11-08 加 JXL）：AVIF=软件 AV1（libaom-av1/libsvtav1；硬件编码器给不出
+        /// 4:4:4/单平面灰度，见 <see cref="RefreshGainMapEncodersAsync"/> 头注释）；
+        /// JXL=外部 cjxl（jhgm 组装是纯托管，底图/子图裸码流都由 cjxl 产出）；
+        /// JPEG=cjpegli/mjpeg。
+        /// </remarks>
+        private static bool IsGainMapEncoderSupported(EncoderInfo e, int fmtIdx) =>
+            fmtIdx == 1
                 ? e.Backend == EncoderBackend.Ffmpeg
                   && (e.Name.Equals("libaom-av1", StringComparison.OrdinalIgnoreCase)
                       || e.Name.Equals("libsvtav1", StringComparison.OrdinalIgnoreCase))
-                : e.Backend == EncoderBackend.Cjpegli
-                  || (e.Backend == EncoderBackend.Ffmpeg
-                      && e.Name.Equals("mjpeg", StringComparison.OrdinalIgnoreCase));
+                : fmtIdx == 2
+                    ? e.Backend == EncoderBackend.Cjxl
+                    : e.Backend == EncoderBackend.Cjpegli
+                      || (e.Backend == EncoderBackend.Ffmpeg
+                          && e.Name.Equals("mjpeg", StringComparison.OrdinalIgnoreCase));
 
         private void RefreshGainMapEncoderHint()
         {
             if (GainMapEncoderHint == null) return;
             var loc = Services.LocalizationService.Instance;
-            bool avif = GainMapFormatCombo?.SelectedIndex == 1;
-            var text = loc[avif ? "gm.encoder.hint.avif" : "gm.encoder.hint.jpeg"];
+            int fmtIdx = GainMapFormatCombo?.SelectedIndex ?? 0;
+            var text = loc[fmtIdx switch
+            {
+                1 => "gm.encoder.hint.avif",
+                2 => "gm.encoder.hint.jxl",
+                _ => "gm.encoder.hint.jpeg"
+            }];
             if (_gmExcludedEncoders.Count > 0)
                 text += "\n" + string.Format(loc["gm.encoder.excluded"],
                     string.Join(", ", _gmExcludedEncoders));
@@ -7014,15 +7032,15 @@ namespace FfmpegGui
         }
 
         /// <summary>
-        /// 元数据承载候选**按可交付性给**：JPEG 三态（默认 ISO）；AVIF 只有 tmap 的 ISO 承载，
-        /// 下拉里就只放 ISO 一项 —— 不让用户选一个注定被拒绝的项。切回 JPEG 时恢复上次的选择。
+        /// 元数据承载候选**按可交付性给**：JPEG 三态（默认 ISO）；AVIF（tmap）与 JXL（jhgm，2026-11-08）
+        /// 都只承载 ISO，下拉里就只放 ISO 一项 —— 不让用户选一个注定被拒绝的项。切回 JPEG 时恢复上次的选择。
         /// </summary>
         private void RefreshGainMapMetadataCombo()
         {
             if (GainMapMetadataCombo == null) return;
             var loc = Services.LocalizationService.Instance;
-            bool avif = GainMapFormatCombo?.SelectedIndex == 1;
-            if (avif)
+            int fmtIdx = GainMapFormatCombo?.SelectedIndex ?? 0;
+            if (fmtIdx is 1 or 2)
             {
                 GainMapMetadataCombo.ItemsSource = new List<string> { loc["gm.metadata.iso"] };
                 GainMapMetadataCombo.SelectedIndex = 0;
@@ -7043,15 +7061,20 @@ namespace FfmpegGui
         private void RefreshGainMapMetadataHint()
         {
             if (GainMapMetadataHint == null) return;
-            bool avif = GainMapFormatCombo?.SelectedIndex == 1;
+            int fmtIdx = GainMapFormatCombo?.SelectedIndex ?? 0;
             GainMapMetadataHint.Text = Services.LocalizationService.Instance[
-                avif ? "gm.metadata.hint.avif" : "gm.metadata.hint.jpeg"];
+                fmtIdx switch
+                {
+                    1 => "gm.metadata.hint.avif",
+                    2 => "gm.metadata.hint.jxl",
+                    _ => "gm.metadata.hint.jpeg"
+                }];
         }
 
-        /// <summary>当前选择落到引擎的承载词（AVIF 恒 iso）。</summary>
+        /// <summary>当前选择落到引擎的承载词（AVIF/JXL 恒 iso）。</summary>
         private string SelectedGainMapMetadata()
         {
-            if (GainMapFormatCombo?.SelectedIndex == 1) return "iso";
+            if (GainMapFormatCombo?.SelectedIndex is 1 or 2) return "iso";
             return GainMapMetadataCombo?.SelectedIndex switch
             {
                 1 => "xmp",
@@ -7060,11 +7083,11 @@ namespace FfmpegGui
             };
         }
 
-        /// <summary>滑块值 → 实际编码参数回显（与主面板同一套映射：AVIF=CRF、mjpeg=q:v、cjpegli=distance）。</summary>
+        /// <summary>滑块值 → 实际编码参数回显（与主面板同一套映射：AVIF=CRF、jxl=distance、mjpeg=q:v、cjpegli=distance）。</summary>
         private void UpdateGainMapQualityLabels()
         {
-            bool avif = GainMapFormatCombo?.SelectedIndex == 1;
-            string fmt = avif ? "avif" : "jpg";
+            int fmtIdx = GainMapFormatCombo?.SelectedIndex ?? 0;
+            string fmt = fmtIdx switch { 1 => "avif", 2 => "jxl", _ => "jpg" };
             var backend = EncoderInfo.ParseBackend(GainMapEncoderCombo?.SelectedItem as string);
             int bq = (int)Math.Round(GainMapBaseQualitySlider?.Value ?? 90);
             int gq = (int)Math.Round(GainMapGainQualitySlider?.Value ?? 75);
@@ -7290,7 +7313,7 @@ namespace FfmpegGui
                 return;
             }
 
-            string ext = GainMapFormatCombo?.SelectedIndex == 1 ? "avif" : "jpg";
+            string ext = GainMapFormatCombo?.SelectedIndex switch { 1 => "avif", 2 => "jxl", _ => "jpg" };
             // 元数据承载：候选已按可交付性给过（AVIF 只有 ISO），这里只取值、不再二次猜测。
             string metadata = SelectedGainMapMetadata();
             // 编码器下拉项是 EncoderInfo.ToString() 的展示名（可能带 ⚡ / 🔧 前缀或 " — " 描述），

@@ -323,12 +323,17 @@ public static class RawColorPipeline
                   + "计划层的 tonemap 参数不适用于 GainMap\n");
         // ⚠ AVIF 容器**能**带 alpha，但本出口的底图按 yuv420p 编码、容器只装底图/增益图/tmap 三个 item
         //   ⇒ 源带 alpha 时会被拍平（2026-10-21 实测：RGBA HDR PNG → AVIF 增益图，avifdec 报 Alpha: Absent，
-        //   而同一源走普通 AVIF 出口保留 rgba64be）。JPEG 增益图无 alpha 属容器限制；AVIF 这处是**实现缺口**
-        //   ⇒ 至少必须点名（不许静默丢），需保留透明请走普通 AVIF 出口。
-        if (ep.HasAlpha && string.Equals(options.Format, "avif", StringComparison.OrdinalIgnoreCase))
-            log?.Invoke("[GainMap] ⚠️ 源带 alpha，但 AVIF 增益图出口当前不携带 alpha"
-                      + "（底图按 yuv420p 编码、容器只装底图/增益图/tmap 三个 item）⇒ 透明会被拍平；"
-                      + "需要保留 alpha 请走普通 AVIF 出口\n");
+        //   而同一源走普通 AVIF 出口保留 rgba64be）。JPEG/JXL 增益图无 alpha 属容器限制（jxl 的 jhgm 容器
+        //   只装底图/增益图两条码流）；AVIF 这处是**实现缺口** ⇒ 至少必须点名（不许静默丢），
+        //   需保留透明请走普通 AVIF/JXL 出口。
+        bool isAvifGainMapExit = string.Equals(options.Format, "avif", StringComparison.OrdinalIgnoreCase);
+        bool isJxlGainMapExit = string.Equals(options.Format, "jxl", StringComparison.OrdinalIgnoreCase);
+        if (ep.HasAlpha && (isAvifGainMapExit || isJxlGainMapExit))
+            log?.Invoke($"[GainMap] ⚠️ 源带 alpha，但 {(isJxlGainMapExit ? "JXL" : "AVIF")} 增益图出口当前不携带 alpha"
+                      + (isJxlGainMapExit
+                          ? "（jhgm 容器只装底图/增益图两条码流，无 alpha 位）⇒ 透明会被拍平；"
+                          : "（底图按 yuv420p 编码、容器只装底图/增益图/tmap 三个 item）⇒ 透明会被拍平；")
+                      + $"需要保留 alpha 请走普通 {(isJxlGainMapExit ? "JXL" : "AVIF")} 出口\n");
 
         var st = new Stats { Width = w, Height = h };
         var sw = Stopwatch.StartNew();

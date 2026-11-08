@@ -125,12 +125,16 @@ public static class GainMapComposeService
 
             // 面板选出的**具体编码器**按出口容器分派：AVIF 侧只认 AV1 编码器，
             // JPEG 侧只认 cjpegli/mjpeg（互不接受对方的词表；显式值不可用由引擎点名失败，不静默换）。
+            // JXL（jhgm）出口 v1 没有编码器选择面：子图恒由 cjxl 编（GainMapEncoder 内部点名），
+            // 两个 encoder 形参都置 null ⇒ 面板/CLI 的显式选择不会误传给无关出口。
             bool isAvif = string.Equals(GainMapEncoder.ContainerOf(outputPath), "avif", StringComparison.OrdinalIgnoreCase);
-            string? jpegEnc = isAvif ? null : options.GainMapComposeEncoder;
+            bool isJxl = string.Equals(GainMapEncoder.ContainerOf(outputPath), "jxl", StringComparison.OrdinalIgnoreCase);
+            string? jpegEnc = (isAvif || isJxl) ? null : options.GainMapComposeEncoder;
             string? avifEnc = isAvif ? options.GainMapComposeEncoder : null;
 
-            // 质量口径：JPEG ⇒ butteraugli distance（滑块 → distance）；AVIF ⇒ CRF（滑块 → CRF，
-            // 与主面板同一映射 `MapAvifCrfForward`）。两条出口各用各的量纲，绝不把一个当另一个传。
+            // 质量口径：JPEG 与 JXL ⇒ butteraugli distance（滑块 → distance；cjxl 的 -d 就是同一量纲，
+            // jxl 出口走非 AVIF 分支即得）；AVIF ⇒ CRF（滑块 → CRF，与主面板同一映射 `MapAvifCrfForward`）。
+            // 各出口各用各的量纲，绝不把一个当另一个传。
             int baseCrf = FfmpegOptions.MapAvifCrfForward(options.Quality);
             int gainCrf = FfmpegOptions.MapAvifCrfForward(gmq);
             string metadata = string.IsNullOrWhiteSpace(options.GainMapComposeMetadata)

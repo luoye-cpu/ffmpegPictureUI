@@ -83,7 +83,7 @@ public sealed class FormatColorCaps
     public bool LosslessForcesIdentityMatrix;
     /// <summary>
     /// 本容器能否承载**增益图（ISO 21496-1 / Adobe XMP + MPF）**。
-    /// GainMap 是“输出结构”能力，不是色调曲线：目前只有 JPEG 族成立。
+    /// GainMap 是“输出结构”能力，不是色调曲线：目前由 JPEG 族（APP2/XMP+MPF）、AVIF（tmap）与 JXL（jhgm，2026-11-08）成立。
     /// ⚠ 不能靠 UI 的 IsVisible 当门禁——CLI/预设能绕过 UI（实测踩过）。
     /// </summary>
     public bool SupportsGainMap;
@@ -588,9 +588,19 @@ public static partial class ColorMappingEngine
         //       ⇒ 无条件按枚举剥 CICP 会把那条本来能交付的路打成 **0 字节产物**。
         //       本表**没有"后端/出口"这一维**就是这个坑的根（登记任务 #38）；现在由调用方
         //       把出口标志（`PlanPolicy.ExternalEncoderExit`）递进择一判据。
+        // ⚠ 2026-11-08 起 jxl 亦可承载增益图 —— **不是** AVIF 的 tmap，而是 JXL 容器的 **jhgm box**
+        //   （libjxl 0.11.0 起 API 在位；随包 cjxl/jxlinfo 0.12.0）。载荷 = version(1B) + BE16 ISO 元数据长
+        //   + ISO 21496-1 blob + 颜色编码长(1B) + [颜色编码] + BE32 alt ICC 长(4B) + [alt ICC]
+        //   + 增益图裸码流（尺寸不落盘，由盒剩余字节推出）；**jhgm 必须在 jxlc 之前**；v1 底图仅 sRGB
+        //   （裸码流无法声明其它原色 ⇒ baseGamut=bt2020 显式拒绝）。写出器 = JxlGainMapWriter
+        //   （纯托管组装，ISO blob 单一真值复用 GainMapEncoder.BuildIso21496Metadata）。
+        //   判据口径（用户 2026-11-08 拍板 = 解析级）：随包 jxlinfo 0.12.0 正控五组 + 托管扫描互验；
+        //   渲染级**零读者**（imazen 80 读者矩阵 2026-10-09）；解析级第三方读者 = jxl-rs PR#1040 /
+        //   zenjxl / jxl-oxide（经 rawmakase #912 互验）；tripwire = verify-gainmap-jxl §3。
         ["jxl"]   = new() { Format = "jxl",   CanCarryArbitraryIcc = true,  CanCicp = true, CanGenerateIccFromCicp = true,  MaxBitDepth = 32, RgbNative = true, CanHdr = true,
                             UnlabeledMeansSrgb = false, CanHaveBothIccAndCicp = false, ExternalOutletCicpSpaceEnums = JxlColorSpaceEnums,
-                            VerifiedBy = "E2：ICC 与 CICP 不可共存（ICC 胜出）；09-26 PPM 实测：生成 ICC 可写入并读回 BT.2020 色度、像素逐字节不变" },
+                            SupportsGainMap = true,
+                            VerifiedBy = "E2：ICC 与 CICP 不可共存（ICC 胜出）；09-26 PPM 实测：生成 ICC 可写入并读回 BT.2020 色度、像素逐字节不变；GainMap = jhgm box（解析级判据，用户裁决 2026-11-08，tripwire verify-gainmap-jxl §3）" },
         // E1 实测：avifenc 能把任意 ICC 写入 AVIF（内嵌直通 与 显式 --icc 均成功，584B ICC 读回）；
         // 且 --icc + --nclx P/T/M 产出的同一文件里 colr 的 nclx 与 ICC **共存**（exiftool 两者均可见）。
         // ⚠ --lossless 下 avifenc 强制 matrix=identity(0)，传 6/9 会报“Matrix coefficients have to be identity…”。
