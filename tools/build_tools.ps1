@@ -143,7 +143,7 @@ if (-not $SkipClone) {
         "libavif"     = "v1.4.2"
         "libjxl"      = "v0.12.0"
         "zlib"        = "v1.3.2"
-        "libraw"      = "0.22"
+        "libraw"      = "0.22.3"
     }
 
     foreach ($kv in $repos.GetEnumerator()) {
