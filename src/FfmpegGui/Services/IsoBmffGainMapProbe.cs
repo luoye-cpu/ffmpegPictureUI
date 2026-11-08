@@ -116,6 +116,29 @@ public static class IsoBmffGainMapProbe
 
         /// <summary>`ftyp` 的兼容品牌（诊断用）。</summary>
         public string Brands = "";
+
+        // ── 2026-11-09 修复批（D1/D2/D5/D8）新增读数 ──────────────────────────────
+        /// <summary>pitm 指向的 item 类型（"grid" / "hvc1" / "av01" / "iden"…）；未知为 null。
+        /// D1 的判据真值：<see cref="PrimaryIsGridDerived"/> 才能回答「主图是不是那个组」，
+        /// `ffprobe 有没有 ≥2 块的组`回答不了（增益图自己也是组）。</summary>
+        public string? PrimaryItemType;
+        /// <summary>**主图**是否为 `grid` 派生项。只有它为 true 才允许走 `[0:g:0]` 组解码；
+        /// false 时组（若存在）属于增益图/缩略图，组解码会拿到错误的图（2026-11-08 实测：
+        /// 底图单 item + 增益图 grid 的仓库夹具产出增益图马赛克）。</summary>
+        public bool PrimaryIsGridDerived;
+        /// <summary>**主图**的 `irot` 角度码（0..3，×90°）；未声明为 -1。展示语义 = 先镜像后旋转
+        /// （ISO 23008-12 的属性施加顺序），ffmpeg 解码底图时已施加 ⇒ 底图缓冲是**展示**取向。</summary>
+        public int PrimaryIrot = -1;
+        /// <summary>**主图**的 `imir` 轴码（0=左右镜像 / 1=上下镜像）；未声明为 -1。</summary>
+        public int PrimaryImir = -1;
+        /// <summary>存在 `auxC` URN = alpha 辅助图（`*auxid:1`，HEVC/AV1 同判）。
+        /// alpha 是**独立 item/流**，主流 pix_fmt 不带 alpha 平面 ⇒ 只看 HasAlphaPlane 会把
+        /// 透明静默拍平（2026-11-08 实测 4/4 带 alpha 的 HEIC 全部丢 alpha）。</summary>
+        public bool HasAuxAlpha;
+        /// <summary>任一 item 的数据 extent 越过 EOF（截断件）。真因必须先于
+        /// 「承载形式不支持」报告——2026-11-08 实测截断件被误报成 auxC 形式不支持。</summary>
+        public bool IsTruncated;
+        public string? TruncationDetail;
     }
 
     /// <summary>是否为本探测器认识的 ISO-BMFF（只做 8 字节头部判断，不解析）。</summary>
@@ -132,6 +155,27 @@ public static class IsoBmffGainMapProbe
             if (!fi.Exists || fi.Length > MaxManagedParseBytes) return null;
             var bytes = await File.ReadAllBytesAsync(path, ct);
             return Probe(bytes);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch { return null; }
+    }
+
+    /// <summary>
+    /// D5（2026-11-09）：文件截断预检——任一 item 的 iloc extent 越过 EOF ⇒ 文件不完整。
+    /// <para>返回 <c>null</c> = **不知道**（不是 ISO-BMFF / 过大 / 读失败）⇒ 调用方必须照旧走原流程，
+    /// 不得当成「未截断」。截断件必须在进 ffmpeg **之前**拦截：随包 ffmpeg 对「截断分块 + 复合图滤镜」
+    /// 会以 0xC0000005 崩溃（2026-11-08 实测），且崩溃码会被当任务退出码展示。</para>
+    /// </summary>
+    public static async Task<(bool IsTruncated, string? Detail)?> CheckTruncationAsync(string path, CancellationToken ct = default)
+    {
+        try
+        {
+            var fi = new FileInfo(path);
+            if (!fi.Exists || fi.Length > MaxManagedParseBytes) return null;
+            var bytes = await File.ReadAllBytesAsync(path, ct);
+            if (!LooksLikeIsoBmff(bytes)) return null;
+            var r = Probe(bytes);
+            return (r.IsTruncated, r.TruncationDetail);
         }
         catch (OperationCanceledException) { throw; }
         catch { return null; }
@@ -181,6 +225,7 @@ public static class IsoBmffGainMapProbe
             int primary = -1;
             bool sawAux21496 = false;
             bool sawAuxApple = false;
+            bool sawAuxAlpha = false;
             bool itemTypeUnknown = false;
 
             // ── 顶层 box：找 ftyp（品牌）与 meta ──
@@ -236,7 +281,7 @@ public static class IsoBmffGainMapProbe
                         ParseIref(d, cstart, cend, refs);
                         break;
                     case "iprp":
-                        ParseIprp(d, cstart, cend, ipcoProps, ipmaMap, ref sawAux21496, ref sawAuxApple);
+                        ParseIprp(d, cstart, cend, ipcoProps, ipmaMap, ref sawAux21496, ref sawAuxApple, ref sawAuxAlpha);
                         break;
                     case "idat":
                         // 2026-11-02：真实 iPhone HDR HEIC 把 tmap / grid 载荷放在 meta/idat
@@ -248,6 +293,59 @@ public static class IsoBmffGainMapProbe
             }
 
             r.PrimaryItemId = primary;
+            // ── D1/D8 地基（2026-11-09）：主图身份 + 展示变换 ──────────────────────────
+            // 主图类型是「走组解码还是走 0:0」的唯一权威（ffprobe 只能回答"存在组"，回答不了
+            // "主图是不是那个组"——增益图自己也组成组）。irot/imir 是底图缓冲取向的声明源。
+            if (primary >= 0 && items.TryGetValue(primary, out var pty))
+            {
+                r.PrimaryItemType = pty;
+                r.PrimaryIsGridDerived = pty == "grid";
+                if (ipmaMap.TryGetValue(primary, out var pidx))
+                {
+                    foreach (var ix in pidx)
+                    {
+                        if (ix < 1 || ix > ipcoProps.Count) continue;
+                        var (pt, poff, psz) = ipcoProps[ix - 1];
+                        // irot/imir 有**两种真实形态**（2026-11-09 实测 iPhone 原生件定案）：
+                        //   · 规范 FullBox：content = 4B version/flags + 1B（角度/轴）—— content 5 B；
+                        //   · **Apple 非规范短形**：content = 1B（角度/轴），无 version/flags —— 实测
+                        //     `00 00 00 09 'irot' 03`（IMG_1159 原生件，ffmpeg 也接受）。
+                        // 旧判据 `psz >= 5` 对 Apple 形态恒漏检 ⇒ 主图旋转整条丢失（D8 的根因之一）。
+                        int angleOff = psz >= 5 ? 4 : 0;
+                        if (pt == "irot" && psz >= 1 && poff + angleOff < d.Length && r.PrimaryIrot < 0)
+                            r.PrimaryIrot = d[poff + angleOff] & 0x3;
+                        else if (pt == "imir" && psz >= 1 && poff + angleOff < d.Length && r.PrimaryImir < 0)
+                            r.PrimaryImir = d[poff + angleOff] & 0x1;
+                    }
+                }
+            }
+            // ── D5 地基（2026-11-09）：文件截断预检 ─────────────────────────────────
+            // 任一 item 的数据 extent 越过 EOF ⇒ 文件不完整。必须在「承载形式」判定**之前**得出，
+            // 否则截断件会被误报成「形式不支持」（2026-11-08 实测：DJI 截断件被报 auxC 不支持，
+            // 真因=mdat 声称 2.98 MB 实际 142 KB，随后 ffmpeg 崩 0xC0000005）。
+            // 数学与 SliceItem 同源：method 0 ⇒ 绝对区间 [Base+off, +len) 对 [0, d.Length)；
+            // method 1 ⇒ 对 [idatStart, idatEnd)。
+            foreach (var kv in locs)
+            {
+                int ds, de;
+                if (kv.Value.Method == 0) { ds = 0; de = d.Length; }
+                else if (kv.Value.Method == 1) { ds = idatStart; de = idatEnd; }
+                else continue;                                  // method 2（item 内偏移）不在本判定范围
+                if (ds < 0) continue;
+                foreach (var (off, len) in kv.Value.Extents)
+                {
+                    long end = (long)ds + kv.Value.Base + off + len;
+                    if (end > de)
+                    {
+                        r.IsTruncated = true;
+                        r.TruncationDetail = $"item {kv.Key} extent 端点 {end} 越过数据区终点 {de}"
+                            + $"（off={off} len={len} base={kv.Value.Base}）";
+                        break;
+                    }
+                }
+                if (r.IsTruncated) break;
+            }
+
             // ⚠ 失败原因一律以 `[IsoBmff] ` 开头：本仓的诊断串约定（`[tag]` 前缀）—— 见
             //   `tests/scripts/_probe-cjk-hardcode-scan.ps1` 的口径②：`[` 开头的字面量归**诊断桶**（ℹ 不判），
             //   否则会被算进「UI 面」判据（该判据余量为 0，任何新增中文 UI 串都会转红）。
@@ -371,6 +469,8 @@ public static class IsoBmffGainMapProbe
                 r.Determinate = false;
                 r.FailReason = "[IsoBmff] Apple 早期辅助图形式（auxC URN 含 hdrgainmap，非 ISO 21496-1）⇒ 尚未支持解码；不得按「无增益图」静默走 SDR";
             }
+            // D2（2026-11-09）：alpha 辅助图与增益图判定**正交**——带 alpha 的件也可能同时带增益图。
+            if (sawAuxAlpha) r.HasAuxAlpha = true;
             if (boxScanIncomplete && !r.HasGainMap)
             {
                 r.Determinate = false;
@@ -521,7 +621,7 @@ public static class IsoBmffGainMapProbe
     /// 同时保留旧判据「`ipco` 里存在 URN 含 `21496` 的 `auxC`」。
     /// </summary>
     private static void ParseIprp(byte[] d, int start, int end,
-        List<(string Type, int Off, int Size)> props, Dictionary<int, List<int>> ipma, ref bool sawAux21496, ref bool sawAuxApple)
+        List<(string Type, int Off, int Size)> props, Dictionary<int, List<int>> ipma, ref bool sawAux21496, ref bool sawAuxApple, ref bool sawAuxAlpha)
     {
         for (int p = start; p + 8 <= end;)
         {
@@ -547,6 +647,10 @@ public static class IsoBmffGainMapProbe
                             // 无感，会被报成「无增益图」而静默按 SDR 处理（= 可用性不诚实）。
                             // 这里只做到「认出并点名」，解码施加仍未支持 ⇒ Determinate=false，交给调用方播报。
                             else if (urn.Contains("hdrgainmap", StringComparison.OrdinalIgnoreCase)) sawAuxApple = true;
+                            // D2（2026-11-09）：alpha 辅助图（HEVC `urn:mpeg:hevc:2015:auxid:1` /
+                            // AV1 `urn:mpeg:av1:2021:auxid:1`）。alpha 是独立 item，主流 pix_fmt 不带
+                            // alpha 平面 ⇒ 只看 HasAlphaPlane 会把透明静默拍平。URN 权威，不猜流格式。
+                            else if (urn.Contains("auxid:1", StringComparison.OrdinalIgnoreCase)) sawAuxAlpha = true;
                         }
                     }
                     q += s2;

@@ -362,7 +362,10 @@ namespace FfmpegGui
                 await orchestrator.WaitForCompletionAsync();
 
                 // 检查是否有失败（失败数从 ItemCompleted 事件统计）
-                var failed = items.Count(i => i.HasError || i.Status == "失败");
+                // D6/D7（2026-11-09）：状态含「降级」的项（增益图检出但未施加，产物仅基础图）
+                // 计入失败 ⇒ 进程退出码非 0，批处理/CI 能机读地区分「完整成功」与「降级出图」。
+                var failed = items.Count(i => i.HasError || i.Status == "失败"
+                    || (i.Status != null && i.Status.Contains("降级", StringComparison.Ordinal)));
                 return failed == 0 ? 0 : 1;
             }
             catch (OperationCanceledException)

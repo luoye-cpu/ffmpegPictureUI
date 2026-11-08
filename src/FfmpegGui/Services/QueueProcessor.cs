@@ -674,13 +674,35 @@ namespace FfmpegGui.Services
                             // Ultra HDR JPEG 输入：GainMapDecoder (纯 C#) 应用增益图恢复 HDR 线性像素
                             // JXR 格式由 ProcessJxrAsync 自行处理（直接 RAW→TIFF 管道，保 HDR 元数据）
                             var isJxrOutput = captured.Options.Format.Equals("jxr", StringComparison.OrdinalIgnoreCase);
+                            // ── D5（2026-11-09）：截断件**先拦**，再谈承载形式 ─────────────────────
+                            //   实测截断分块件（DJI_1_0226_D，146,518 B vs mdat 声称 ~2.98 MB）送进
+                            //   ffmpeg 复合图滤镜会 0xC0000005 崩溃，且崩溃码被当任务退出码展示；
+                            //   旧流程还会先打「承载形式为 auxC 不支持」把真因（截断）盖住。
+                            //   iloc extent 越过 EOF = 数据不完整的**容器自证**，进解码器之前就能定案。
+                            string? gainmapDegrade = null;   // D6/D7：HDR 层未施加的降级原因（走到 :Status 汇总处）
+                            if (inputExt is ".avif" or ".heic" or ".heif" or ".hif"
+                                && await IsoBmffGainMapProbe.CheckTruncationAsync(captured.InputPath, ct) is { } trunc
+                                && trunc.IsTruncated)
+                            {
+                                captured.Log += $"[IsoBmff] ❌ 文件不完整（截断）：{trunc.Detail}\n"
+                                    + "[IsoBmff] ❌ 拒绝解码：数据 extent 越过 EOF，继续解码只会得到残缺图像（或解码器崩溃）\n";
+                                captured.ExitCode = 1;
+                                captured.Status = "失败 (文件不完整：数据区越过文件末尾)";
+                                _onItemUpdated?.Invoke(captured);
+                                throw new InvalidOperationException(
+                                    $"输入文件不完整（截断）：{trunc.Detail}");
+                            }
                             // Ultra HDR 输入有**两条**承载路：JPEG（MPF + APP2 ISO 21496-1）与
                             // AVIF/HEIC（ISO-BMFF `tmap` 派生项 + 独立增益图 item）。探测入口不同，
                             // 但都汇入同一个「解码为线性 HDR → 替换 InputPath」的流程。
                             // ⚠ ISO-BMFF 侧由 `IsIsoBmffGainMapAsync` **自己点名**「反向方向/未支持形式」，
                             //   故此处返回 false 不等于静默丢弃。
-                            var isIsoBmffGainMapInput = inputExt is ".avif" or ".heic" or ".heif"
-                                && await GainMapDecoder.IsIsoBmffGainMapAsync(captured.InputPath, s => captured.Log += s, ct);
+                            // D6/D7（2026-11-09）：改用**详版**判定 —— 「检出但未施加」的降级原因要一路
+                            // 带到状态汇总处，把纯「已完成」改成「已完成 (降级：…)」（可用性诚实原则）。
+                            var (isIsoBmffGainMapInput, isoDegrade) = inputExt is ".avif" or ".heic" or ".heif"
+                                ? await GainMapDecoder.IsIsoBmffGainMapDetailedAsync(captured.InputPath, s => captured.Log += s, ct)
+                                : (false, (string?)null);
+                            if (!isIsoBmffGainMapInput) gainmapDegrade = isoDegrade;
                             // 第三条承载：厂商私有尾注（OnePlus/OPPO `local.hdr.linear.mask`）。
                             // 只在标准 ISO 承载没命中时才付这次整文件读，且两判据互斥（见 VendorHdrTrailer）。
                             var isVendorGainMapInput = !isIsoBmffGainMapInput
@@ -748,6 +770,8 @@ namespace FfmpegGui.Services
                                     else
                                     {
                                         captured.Log += "[UltraHDR] ⚠️ 增益图应用失败，按 SDR 基础图处理\n";
+                                        // D6：施加失败也是「该施加而没施加成」⇒ 与 auxC 未支持同待遇。
+                                        gainmapDegrade = "增益图应用失败（HDR 层未施加，产物为基础图）";
                                     }
                                     _onItemUpdated?.Invoke(captured);
                                 }
@@ -1357,6 +1381,18 @@ namespace FfmpegGui.Services
                                 }
                                 captured.ExitCode = exitCode;
                                 captured.Status = exitCode == 0 ? "已完成" : $"失败 (退出码 {exitCode})";
+                                // ── D6/D7（2026-11-09）：增益图「检出但未施加」不许报纯「已完成」──────
+                                //   HDR 层静默消失而任务报成功 = 用户被误导（可用性诚实原则）。
+                                //   状态带「降级」字样 + ExitCode=3；进程退出码由 Program.cs 把
+                                //   状态含「降级」的项计入失败 ⇒ CI/批处理能机读地区分。
+                                //   ⚠ 「近似应用」（useBaseColorSpace=False）不算降级：HDR 已施加，
+                                //     只是语义受限——那条路已有 ⚠️ 点名，状态不动（不动既有口径）。
+                                if (exitCode == 0 && !string.IsNullOrEmpty(gainmapDegrade))
+                                {
+                                    captured.Status = $"已完成 (降级：{gainmapDegrade})";
+                                    captured.ExitCode = 3;
+                                    captured.Log += $"[降级] {gainmapDegrade}（ExitCode=3，产物仅为基础图）\n";
+                                }
 
                                 // DNG/RAW 输入失败时给出提示
                                 if (exitCode != 0 && RawService.IsRawFile(captured.InputPath))
@@ -1482,8 +1518,13 @@ namespace FfmpegGui.Services
                         {
                             // P1-4：未成功的任务不留“看着像成功”的半成品（各专用通路都是直写最终路径 + 无条件 -y）
                             // 判据用**确证失败**而不是“不算成功”：状态/退出码有任一没落到位时宁可留下文件，也不误删有效产物。
-                            if (captured.HasError || captured.IsStopped
-                                || (captured.ExitCode.HasValue && captured.ExitCode.Value != 0))
+                            // D6/D7（2026-11-09）：**降级出图 ≠ 失败**——产物是完整的 SDR 基础图，只是 HDR 层
+                            // 未施加（ExitCode=3 + 状态带「降级」）⇒ 必须保留产物（用户拿到可用的图 + 诚实的状态）；
+                            // 否则「清理」分支会把它当半成品删掉，用户连基础图都拿不到（实测 DJI 件 28.7 MB 被误删）。
+                            bool degradedOutput = captured.ExitCode == 3
+                                && captured.Status != null && captured.Status.StartsWith("已完成", StringComparison.Ordinal);
+                            if (!degradedOutput && (captured.HasError || captured.IsStopped
+                                || (captured.ExitCode.HasValue && captured.ExitCode.Value != 0)))
                                 TryDiscardPartialOutput(captured, runOutputPath, outputExistedBefore);
 
                             // 清理任务内创建的临时目录（RAW 预处理等）
@@ -3769,8 +3810,12 @@ namespace FfmpegGui.Services
                 // tempDir 交给调用方登记到**本项**的 tempDirsToCleanup：项一结束就删。
                 // 旧写法塞进 _pendingRawDirs，而那个列表只在 Stop() 时处理 ⇒ 正常跑完一批全留在盘上（P1-6）。
             }
-            catch
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
             {
+                // D6（2026-11-09）：这个 catch-all 旧写法**连异常类型/消息都不打** ⇒ 调用方只能
+                // 打一句「增益图应用失败」，具体崩在哪一步完全丢失（code-map Q1 静默降级点 ④）。
+                item.Log += $"[UltraHDR] ❌ 增益图解码管线异常: {ex.GetType().Name}: {ex.Message}\n";
                 try { Directory.Delete(tempDir, true); } catch { }
                 return null;
             }

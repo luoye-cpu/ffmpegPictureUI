@@ -1373,6 +1373,10 @@ namespace ServiceProbe
                 $"tmapPayload={r.TmapPayload?.Length ?? -1} gmData={r.GainMapItemData?.Length ?? -1}");
             Console.WriteLine($"grid={r.GainMapIsGrid} rows={r.GridRows} cols={r.GridCols} " +
                 $"gridW={r.GridWidth} gridH={r.GridHeight} tileW={r.TileWidth} tileH={r.TileHeight} tiles={r.GainMapTiles?.Count ?? 0}");
+            // D1/D2/D5/D8（2026-11-09）：主图身份 / 展示变换 / alpha 辅助图 / 截断 —— 修复判据的读数面。
+            Console.WriteLine($"primaryType={r.PrimaryItemType ?? "-"} primaryIsGrid={r.PrimaryIsGridDerived} " +
+                $"irot={r.PrimaryIrot} imir={r.PrimaryImir} auxAlpha={r.HasAuxAlpha} truncated={r.IsTruncated}" +
+                (r.TruncationDetail == null ? "" : $" detail={r.TruncationDetail}"));
 
             Check(r.IsIsoBmff, "识别为 ISO-BMFF（ftyp 存在）");
             if (expect == "auxapple")

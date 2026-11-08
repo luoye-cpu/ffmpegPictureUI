@@ -383,6 +383,28 @@ public static class GainMapDecoder
                     log?.Invoke("[GainMap解码] ❌ 无法获取基础图尺寸\n");
                     return null;
                 }
+                // D1（2026-11-09 续 2）：**容器口径与流口径要分开记账**。
+                // ProbeSizeAsync 对 .heic 走 ImageGeometry 的组缓存 ⇒ 报的是**文件级组**尺寸
+                // （本夹具=增益图 grid 128x96，不是底图 64x48）；而单 item 底图实际解码
+                // （-map 0:0）拿到的是**流**尺寸。两者都会进入下面的展示变换/像素对账 ⇒
+                // 必须以「即将真实解码的那条命令」的口径为准，否则展示变换与 PlanarToInterleaved
+                // 各拿一套尺寸，Buffer.BlockCopy 必炸（Argument_InvalidOffLen，本批实测）。
+                int containerW = baseW, containerH = baseH;   // 容器/组口径（增益图画布与展示变换的参照系）
+                // D8（2026-11-09）：容器 irot/imir 已由 ffmpeg 在解码底图时施加（实测 `-noautorotate`
+                // 关不掉——该旋转在解复用层对组流生效）⇒ 底图 rawvideo 缓冲是**展示**取向；
+                // 而容器口径（containerW/H）不反映展示变换。
+                // 增益图瓦片是裸流（无属性）⇒ 拼接画布在**容器**取向 ⇒ 必须施加同一展示变换后再
+                // 对齐，否则增益按错位坐标采样（真实 iPhone irot=270 件实测产物宽高对调 4032x3024）。
+                // 展示尺寸对调只发生在 90/270（180 与镜像不改宽高）。
+                int dispW = containerW, dispH = containerH;
+                bool hasDisplayTransform = false;
+                if (bmff != null && (bmff.PrimaryIrot > 0 || bmff.PrimaryImir >= 0))
+                {
+                    hasDisplayTransform = true;
+                    if (bmff.PrimaryIrot is 1 or 3) { dispW = containerH; dispH = containerW; }
+                    log?.Invoke($"[GainMap解码] 主图展示变换：irot={bmff.PrimaryIrot}（×90°）imir={bmff.PrimaryImir}"
+                        + $" ⇒ 容器 {containerW}x{containerH} 展示为 {dispW}x{dispH}（底图缓冲按展示取向解读）\n");
+                }
                 var baseRawPath = Path.Combine(tempDir, "base.rgba");
                 // sRGB 编码值 → gbrpf32le (ffmpeg 解码 JPEG 输出 0..1 sRGB 值)
                 // ⚠ ISO-BMFF（AVIF/HEIC）必须**显式 `-map 0:0` + `-frames:v 1`**：ffmpeg 的 mov 解复用器
@@ -392,7 +414,56 @@ public static class GainMapDecoder
                 //   ⇒ 但**分块 HEIF/HEIC 连 `-map 0:0` 都不行**：那种源的 v:0 只是第一块（512×512），
                 //     而 ProbeSizeAsync 报的是**组**的显示尺寸 ⇒ 下面的长度自检必然判「像素数据不完整」
                 //     ⇒ 整条解码返回 null ⇒ 又回到静默 SDR。组源只能走复合图，由 ffmpeg 自己拼 tile。
-                bool groupBase = FfmpegCommandBuilder.InputIsGroupDerived(inputPath, log, ct);
+                // D1（2026-11-09）：组解码的判据必须是「**主图**是不是 grid 派生项」。
+                // `InputIsGroupDerived` 只回答「文件里有没有 ≥2 块的组」——**增益图自己也组成组**，
+                // 底图单 item + 增益图 grid 的件（仓库夹具 synth_heic_grid_gainmap 即此形态，且
+                // libavif 的 color_nogrid_*_gainmap_grid 系列同构）会被它误判成组底图
+                // ⇒ `[0:g:0]` 拿到的是**增益图马赛克**（实测产物 128x96，正确 64x48；红底/绿瓦片
+                //   判别件下产物整幅变绿）。容器探针认识 pitm ⇒ 它才是权威；
+                // 探针不在场（非 ISO-BMFF / >256MB）才退回旧判据。
+                bool groupBase = bmff != null
+                    ? bmff.PrimaryIsGridDerived
+                    : FfmpegCommandBuilder.InputIsGroupDerived(inputPath, log, ct);
+                // D1（2026-11-09 续）：组判据与**尺寸真值**必须同源 —— 否则「判据说单 item、尺寸探
+                // 仍走 ImageGeometry 的组缓存」就会自相矛盾（本仓夹具实测：判据改对了、探测还报组
+                // 尺寸 128x96，长度自检拒绝解码）。底图单 item 时显式要求 ffprobe 只按流选 0:0 的
+                // 口径（ImageGeometry.TryGetTileGroupInfo 缓存的是"文件级"组读数，不区分主图身份）。
+                int probeW = baseW, probeH = baseH;
+                if (!groupBase)
+                {
+                    // 单 item 底图：ffprobe -map 0:0 口径的流尺寸（= 主图 coded/裁切后尺寸）。
+                    // ProbeSizeAsync(裸文件) 会被 TileCapableExtensions 命中的组缓存带偏 ⇒ 这里给
+                    // 一个与解码命令同源的探测：把输入经 `-map 0:0` 的真实流尺寸作为真值。
+                    var raw0 = Path.Combine(tempDir, "base_probe.rgba");
+                    var probeArgs = $"-y -i \"{inputPath}\" -map 0:0 -frames:v 1 -pix_fmt gbrpf32le -f rawvideo \"{raw0}\"";
+                    var probeExit = await RunFfmpegAsync(probeArgs, ffmpeg, log, ct);
+                    if (probeExit == 0 && File.Exists(raw0))
+                    {
+                        var pb = await File.ReadAllBytesAsync(raw0, ct);
+                        if (pb.Length > 0 && pb.Length % 12 == 0)
+                        {
+                            long px = pb.Length / 12;
+                            // 12B/px 的字节流无法自证宽高，但等比可解：在已知容器声明下解方程。
+                            // 这里只处理「探测尺寸与字节不符」的修正：像素总数是硬真值。
+                            long probePx = (long)baseW * baseH;
+                            if (probePx != px && px > 0 && probePx > 0 && probePx % px == 0)
+                            {
+                                log?.Invoke($"[GainMap解码] 底图按单 item 解码（-map 0:0 流真值 {px} px），"
+                                    + $"与容器声明 {baseW}x{baseH}（{probePx} px）不符 ⇒ 以流真值修正尺寸\n");
+                                // 等比修正：保持宽高比在合理范围内（流字节只给总数，按容器宽高比折算）
+                                double ratio = (double)baseW / baseH;
+                                int newH = (int)Math.Round(Math.Sqrt((double)px / ratio));
+                                int newW = (int)Math.Round((double)newH * ratio);
+                                if ((long)newW * newH == px && newW > 0 && newH > 0)
+                                {
+                                    probeW = newW; probeH = newH;
+                                }
+                            }
+                        }
+                        try { File.Delete(raw0); } catch { }
+                    }
+                }
+                baseW = probeW; baseH = probeH;
                 var baseArgs = groupBase
                     ? $"-y -i \"{inputPath}\" -filter_complex \"[0:g:0]format=gbrpf32le[o]\" -map \"[o]\" -frames:v 1 -pix_fmt gbrpf32le -f rawvideo \"{baseRawPath}\""
                     : bmff != null
@@ -418,7 +489,15 @@ public static class GainMapDecoder
                     }
                     gmW = stitched.Value.W;
                     gmH = stitched.Value.H;
-                    await File.WriteAllBytesAsync(gmRawPath, stitched.Value.Raw, ct);
+                    var gmRaw = stitched.Value.Raw;
+                    // D8（2026-11-09）：瓦片是裸流（不带容器展示属性）⇒ 拼接画布在**容器**取向；
+                    // 底图缓冲已被 ffmpeg 施加展示变换 ⇒ 增益场必须施加同一变换才能按坐标对齐。
+                    if (hasDisplayTransform)
+                    {
+                        (gmRaw, gmW, gmH) = TransformPlanarDisplay(gmRaw, gmW, gmH, bmff!.PrimaryIrot, bmff.PrimaryImir);
+                        log?.Invoke($"[GainMap解码] 增益图施加主图展示变换（irot={bmff.PrimaryIrot} imir={bmff.PrimaryImir}）⇒ {gmW}x{gmH}\n");
+                    }
+                    await File.WriteAllBytesAsync(gmRawPath, gmRaw, ct);
                 }
                 else
                 {
@@ -436,6 +515,14 @@ public static class GainMapDecoder
                     {
                         log?.Invoke("[GainMap解码] ❌ 增益图解码失败\n");
                         return null;
+                    }
+                    // D8：单 item 增益图同样是裸流 ⇒ 与拼接画布同观，需施加展示变换。
+                    if (hasDisplayTransform)
+                    {
+                        var b = await File.ReadAllBytesAsync(gmRawPath, ct);
+                        (b, gmW, gmH) = TransformPlanarDisplay(b, gmW, gmH, bmff!.PrimaryIrot, bmff.PrimaryImir);
+                        await File.WriteAllBytesAsync(gmRawPath, b, ct);
+                        log?.Invoke($"[GainMap解码] 增益图施加主图展示变换（irot={bmff.PrimaryIrot} imir={bmff.PrimaryImir}）⇒ {gmW}x{gmH}\n");
                     }
                 }
                 meta.GainMapWidth = gmW;
@@ -477,12 +564,39 @@ public static class GainMapDecoder
                 if (baseBytes.Length % 12L == 0)
                 {
                     long actualPixels = baseBytes.Length / 12L;
+                    // D1（2026-11-09 续）：**判据同源后这里的尺寸已经是「-map 0:0 流」的口径**（单 item
+                    // 底图按流真值修正过）⇒ 与 baseBytes（同一命令的产物）必然一致。旧对账按「文件级
+                    // 组尺寸」算，对「底图单 item + 增益图 grid」件恒误拒（12288 vs 3072）。组底图
+                    // （groupBase=true）保持原判据：复合图产物的像素数必须等于组声明。
+                    // 这里仅在**流真值修正生效过**（= 单 item 分支）且仍不一致时走旧裁决，
+                    // 否则一致就什么都不打——维持「零多余日志」的既有口径。
+                    long declaredPx = (long)baseW * baseH;
+                    if (actualPixels != declaredPx && !groupBase)
+                    {
+                        // 流真值修正在等比不可解时没改尺寸 ⇒ 走旧 fail-closed（口径不放宽）。
+                        var verdictLate = ReconcileBaseSize(baseW, baseH, actualPixels, cropDeclared, out int aw2, out int ah2);
+                        if (verdictLate == BaseSizeVerdict.RejectUndeclared)
+                        {
+                            log?.Invoke($"[GainMap解码] ❌ 底图像素数 {actualPixels}（{baseBytes.Length} B / 12）与流探测尺寸 {baseW}x{baseH}"
+                                + $"（{declaredPx} 像素）不符，且容器未声明 clean aperture 裁切 ⇒ 无法确定行跳步，拒绝解码\n");
+                            return null;
+                        }
+                        if (verdictLate == BaseSizeVerdict.Scaled) { baseW = aw2; baseH = ah2; basePixels = (long)baseW * baseH; }
+                        else if (verdictLate == BaseSizeVerdict.RejectNonUniform)
+                        {
+                            log?.Invoke($"[GainMap解码] ❌ 底图像素数 {actualPixels}（{baseBytes.Length} B / 12）与流探测尺寸 {baseW}x{baseH}"
+                                + $"（{declaredPx} 像素）不符，且不是整数倍等比缩放 ⇒ 无法确定行跳步，拒绝解码\n");
+                            return null;
+                        }
+                    }
                     // 裁决抽成**纯函数** ReconcileBaseSize（2026-11-02 第二批）：本段的四类出口
                     // （一致 / 声明裁切且严格等比 ⇒ 采纳实测 / 未声明裁切 ⇒ fail-closed / 非等比 ⇒ fail-closed）
                     // 此前**零判据臂**。而文件级造不出「ffprobe 报的尺寸 ≠ ffmpeg 实际帧且不带 clap」的样本：
                     // 实测改 ispe 不影响 ffprobe 报的 HEVC 流尺寸（SPS 说了算），把 clap 类型名改掉则两侧同时
                     // 退回 64x64（`clap_none.heic` 读数）⇒ 只能直接钉裁决本身，判据臂 = ServiceProbe
                     // `gainmap-stats <file> --size-recon`（无文件依赖的纯函数段）。
+                    // D1（2026-11-09 续）：单 item 分支已在上面用「流真值」口径收口（一致 ⇒ 不再进来）；
+                    // 这里只剩 groupBase=true（组底图）与 JPEG 路的裁决。
                     var verdict = ReconcileBaseSize(baseW, baseH, actualPixels, cropDeclared, out int aw, out int ah);
                     if (verdict == BaseSizeVerdict.RejectUndeclared)
                     {
@@ -517,6 +631,24 @@ public static class GainMapDecoder
                 {
                     log?.Invoke("[GainMap解码] ❌ 像素数据不完整\n");
                     return null;
+                }
+                // D8（2026-11-09）：底图缓冲是**展示**取向（ffmpeg 已施加 irot/imir，实测 -noautorotate
+                // 关不掉）；上方尺寸对账按像素数比对（旋转不变）依然成立。这里把记账维度换成**展示**
+                // 取向，否则输出 PFM 的 `-s` 声明与实际缓冲错位（真实 iPhone irot=270 件实测产物
+                // 4032x3024，正确 3024x4032）。
+                // D8（2026-11-09）：底图缓冲是**展示**取向（ffmpeg 已施加 irot/imir，实测 -noautorotate
+                // 关不掉）；上方尺寸对账按像素数比对（旋转不变）依然成立。这里把记账维度换成**展示**
+                // 取向，否则输出 PFM 的 `-s` 声明与实际缓冲错位（真实 iPhone irot=270 件实测产物
+                // 4032x3024，正确 3024x4032）。
+                // ⚠ D1（2026-11-09 续 2）：无展示变换时 dispW/H 即**容器口径**——但单 item 分支的
+                //   baseW/H 已被流真值修正过 ⇒ 不许再用容器口径覆盖（旧写法正是这里把 64x48 翻回
+                //   128x96，令 PlanarToInterleaved 拿 36864 B 算 12288 px 而炸）。对调只对
+                //   「真有展示变换」生效。
+                if (hasDisplayTransform && (dispW != baseW || dispH != baseH))
+                {
+                    baseW = dispW;
+                    baseH = dispH;
+                    basePixels = (long)baseW * baseH;
                 }
                 bool hdrBase = meta.BaseRenditionIsHdr;
                 var baseRgb = PlanarToInterleaved(baseBytes, (int)basePixels);
@@ -632,7 +764,11 @@ public static class GainMapDecoder
         catch (OperationCanceledException) { throw; }
         catch (Exception ex)
         {
-            log?.Invoke($"[GainMap解码] 异常: {ex.Message}\n");
+            // D6（2026-11-09）：Message 对 ArgumentException 这类只有类型名 ⇒ 一律带上堆栈首帧，
+            // 否则「Argument_InvalidOffLen」无从定位（本批实测踩过）。
+            var frames = (ex.StackTrace ?? "").Split('\n').Select(s => s.Trim()).Where(s => s.StartsWith("at ")).Take(3).ToList();
+            log?.Invoke($"[GainMap解码] 异常: {ex.GetType().Name}: {ex.Message}\n");
+            foreach (var f in frames) log?.Invoke($"[GainMap解码]   {f}\n");
             return null;
         }
     }
@@ -732,6 +868,13 @@ public static class GainMapDecoder
                 return null;
             }
             var buf = new byte[(int)total];
+            // D9（2026-11-09）：gbrpf32le rawvideo 是 **planar**（G,B,R 三平面顺序，每平面每行
+            // `tw*4` 字节）—— 实测 solid-red 瓦片三平面各自恒值定案。旧代码按 packed（12B/px 行跨距）
+            // 拷贝 ⇒ 拼出的"增益场"是三平面碎片按像素位交错的错排（红底/绿瓦片判别件下产物整幅变绿，
+            // 通道与位置全乱；真实 iPhone grid 件增益场同样错排，只是碎片仍平滑、肉眼难辨）。
+            // ⇒ 逐平面逐行拷贝。
+            int srcPlane = tw * th * 4;
+            int dstPlane = outW * outH * 4;
             for (int i = 0; i < tiles.Count; i++)
             {
                 int row = i / cols, col = i % cols;
@@ -740,11 +883,14 @@ public static class GainMapDecoder
                 int copyH = Math.Min(th, outH - y0);
                 if (copyW <= 0 || copyH <= 0) continue;          // 整块落在裁切区外
                 var src = rawTiles[i];
-                for (int y = 0; y < copyH; y++)
+                for (int p = 0; p < 3; p++)
                 {
-                    int srcOff = y * tw * 12;
-                    int dstOff = (y0 + y) * outW * 12 + x0 * 12;
-                    Buffer.BlockCopy(src, srcOff, buf, dstOff, copyW * 12);
+                    for (int y = 0; y < copyH; y++)
+                    {
+                        int srcOff = p * srcPlane + y * tw * 4;
+                        int dstOff = p * dstPlane + (y0 + y) * outW * 4 + x0 * 4;
+                        Buffer.BlockCopy(src, srcOff, buf, dstOff, copyW * 4);
+                    }
                 }
             }
             log?.Invoke($"[GainMap解码] 分块增益图拼接完成：{rows}x{cols} 瓦片 × {tw}x{th} ⇒ {outW}x{outH}\n");
@@ -787,35 +933,48 @@ public static class GainMapDecoder
     /// </summary>
     public static async Task<bool> IsIsoBmffGainMapAsync(string path,
         Action<string>? log = null, CancellationToken ct = default)
+        => (await IsIsoBmffGainMapDetailedAsync(path, log, ct)).Applicable;
+
+    /// <summary>
+    /// D6/D7（2026-11-09）：<see cref="IsIsoBmffGainMapAsync"/> 的**详版**——把「检出但未施加」的
+    /// 降级原因一并带回，供调用方把任务状态从纯「已完成」改成「已完成 (降级：…)」
+    /// （可用性诚实原则：HDR 层静默消失但任务报成功 = 用户被误导）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠ <see cref="DegradeReason"/> 只在「**该施加而没施加成**」时非空：backward 方向（底图本身
+    /// 已是 HDR）**不算降级**——那是产品声明的正确处理，不改变任务语义。
+    /// </remarks>
+    public static async Task<(bool Applicable, string? DegradeReason)> IsIsoBmffGainMapDetailedAsync(string path,
+        Action<string>? log = null, CancellationToken ct = default)
     {
         try
         {
             var bmff = await IsoBmffGainMapProbe.ProbeFileAsync(path, ct);
-            if (bmff == null || !bmff.HasGainMap) return false;
+            if (bmff == null || !bmff.HasGainMap) return (false, null);
             if (bmff.Form != "tmap" || bmff.TmapPayload == null)
             {
                 // 2026-11-02：把 FailReason 一起播报 —— 否则「能认出但结构没覆盖」（如 construction_method=1 /
                 // grid 瓦片缺件）会被读成「tmap 形式不支持」，真实原因被吞（iPhone HDR HEIC 实测踩到）。
                 log?.Invoke($"[GainMap解码] ⚠️ 检测到增益图，但承载形式为 {bmff.Form ?? "未知"}（尚未支持解码"
                     + (string.IsNullOrEmpty(bmff.FailReason) ? "" : $"：{bmff.FailReason}") + "），按底图处理\n");
-                return false;
+                return (false, $"增益图承载形式 {bmff.Form ?? "未知"} 尚未支持解码（HDR 层未施加）");
             }
             var meta = JpegContainer.ParseIso21496(bmff.TmapPayload, 1, bmff.TmapPayload.Length - 1);
             if (meta == null)
             {
                 log?.Invoke("[GainMap解码] ⚠️ ISO-BMFF 增益图元数据解析失败，按底图处理\n");
-                return false;
+                return (false, "ISO-BMFF 增益图元数据解析失败（HDR 层未施加）");
             }
             if (meta.HdrCapacityMin > meta.HdrCapacityMax)
             {
                 log?.Invoke("[GainMap解码] ⚠️ 增益图方向为「HDR 底图 → SDR」(backward)：底图本身已是 HDR，按普通 HDR 输入处理（不使用增益图）\n");
-                return false;
+                return (false, null);       // 反向 = 正确处理，不是降级
             }
             log?.Invoke($"[GainMap解码] 检测到 ISO-BMFF 增益图（tmap item，{bmff.TmapPayload.Length} B），方向为「SDR 底图 → HDR」\n");
-            return true;
+            return (true, null);
         }
         catch (OperationCanceledException) { throw; }
-        catch { return false; }
+        catch { return (false, null); }
     }
 
     /// <summary>
@@ -1769,6 +1928,9 @@ public static class GainMapDecoder
     /// <summary>gbrpf32le planar → RGBA 交错</summary>
     internal static float[] PlanarToInterleaved(byte[] planar, int pixelCount)
     {
+        if ((long)pixelCount * 12L != planar.Length)
+            throw new ArgumentException($"planar 长度 {planar.Length} 与 pixelCount {pixelCount}（×12）不符",
+                nameof(planar));
         var rgba = new float[pixelCount * 4];
         var gPlane = new float[pixelCount];
         var bPlane = new float[pixelCount];
@@ -1787,10 +1949,66 @@ public static class GainMapDecoder
         return rgba;
     }
 
+    /// <summary>
+    /// D8（2026-11-09）：按**主图展示变换**（imir → irot，ISO 23008-12 属性施加顺序）重排
+    /// planar gbrpf32le 缓冲。增益图瓦片是裸流（不带容器展示属性）⇒ 拼接/解码画布在**容器**取向，
+    /// 而底图缓冲已被 ffmpeg 施加展示变换（实测 `-noautorotate` 关不掉）⇒ 增益场必须先变换到
+    /// 同一取向，`ApplyGainMap` 的双线性采样才能按坐标对齐。
+    /// </summary>
+    /// <param name="irotCode">irot 角度码 0..3（×90°，**逆时针**；与 libheif 展示语义一致，
+    /// disc-d8-irot270 判别件闭环验证）。&lt;0 = 未声明（不旋转）。</param>
+    /// <param name="imirAxis">imir 轴码 0 = 绕竖轴镜像（左右翻转）/ 1 = 绕横轴镜像（上下翻转）；
+    /// &lt;0 = 未声明（不镜像）。</param>
+    /// <remarks>90/270 会把宽高对调。逐像素合成映射（先镜像后旋转一步算出目标坐标），
+    /// 避免两步拷贝；只对带展示变换的文件付出这份代价。</remarks>
+    internal static (byte[] Raw, int W, int H) TransformPlanarDisplay(byte[] raw, int w, int h, int irotCode, int imirAxis)
+    {
+        if (w <= 0 || h <= 0 || (long)w * h * 12L != raw.Length)
+            return (raw, w, h);                        // 尺寸与缓冲不符 ⇒ 不动（调用方另有对账）
+        if (irotCode <= 0 && imirAxis < 0)
+            return (raw, w, h);                        // 无展示变换
+        int px = w * h;
+        int planeBytes = px * 4;
+        int dw = w, dh = h;
+        if (irotCode is 1 or 3) { dw = h; dh = w; }
+        bool mirrorX = imirAxis == 0;                  // 绕竖轴：左右翻转
+        bool mirrorY = imirAxis == 1;                  // 绕横轴：上下翻转
+        var dst = new byte[raw.Length];
+        for (int p = 0; p < 3; p++)
+        {
+            int srcBase = p * planeBytes;
+            int dstBase = p * planeBytes;
+            for (int y = 0; y < h; y++)
+            {
+                for (int x = 0; x < w; x++)
+                {
+                    // 1) 镜像（容器取向内）
+                    int mx = mirrorX ? w - 1 - x : x;
+                    int my = mirrorY ? h - 1 - y : y;
+                    // 2) 旋转（逆时针 irotCode×90）
+                    int dx, dy;
+                    switch (irotCode)
+                    {
+                        case 1: dx = my; dy = w - 1 - mx; break;          // CCW 90：新宽 = 原 h
+                        case 2: dx = w - 1 - mx; dy = h - 1 - my; break;  // 180
+                        case 3: dx = h - 1 - my; dy = mx; break;          // CCW 270（= CW 90）
+                        default: dx = mx; dy = my; break;
+                    }
+                    long so = srcBase + ((long)y * w + x) * 4;
+                    long doff = dstBase + ((long)dy * dw + dx) * 4;
+                    dst[doff] = raw[so];
+                    dst[doff + 1] = raw[so + 1];
+                    dst[doff + 2] = raw[so + 2];
+                    dst[doff + 3] = raw[so + 3];
+                }
+            }
+        }
+        return (dst, dw, dh);
+    }
+
     /// <summary>RGBA 交错 → gbrpf32le planar (G,B,R)</summary>
     /// <summary>sRGB 编码值 → 线性</summary>
-    internal static float SrgbToLinear(float v)
-    {
+    internal static float SrgbToLinear(float v)    {
         v = Math.Clamp(v, 0f, 1f);
         return v <= 0.04045f ? v / 12.92f : MathF.Pow((v + 0.055f) / 1.055f, 2.4f);
     }

@@ -590,7 +590,8 @@ namespace FfmpegGui.Services
             //    恒输出 4:2:0（Bug 修复）。
             // ② 位深 auto → 探测输入实际位深：>8 按输入位深输出，≤8 按 8-bit 输出。
             // ③ 色度为 auto → 仅按位深指定（默认 4:2:0）。
-            var inputHasAlpha = GetCachedProbe(probeInput).hasAlpha;
+            var inputHasAuxAlpha = GetCachedProbe(probeInput).hasAuxAlpha;   // D2：容器 alpha 辅助图（URN 权威）
+            var inputHasAlpha = GetCachedProbe(probeInput).hasAlpha;         // aux-alpha 命中时探测端已并入 true
             int EffectiveBitDepth()
             {
                 if (options.BitDepth.HasValue) return options.BitDepth.Value;
@@ -627,6 +628,14 @@ namespace FfmpegGui.Services
                 {
                     args.Add("-pix_fmt");
                     args.Add(MapPixFmt(options.Format, options.Chroma, ClampAvifBd(Math.Min(detectedBd, capMaxBitDepth)), inputHasAlpha, options.ColorRange));
+                }
+                // D2（2026-11-09）：**alpha 命中时 -pix_fmt 不许缺位**。8-bit auto 源走到这里时上面
+                // 不发 -pix_fmt ⇒ 编码器按"无 alpha"自选（png→rgb24），透明被静默拍平（4/4 实测）。
+                // MapPixFmt 对 hasAlpha=true 会选 rgba/yuva 档 ⇒ 显式补上，与 16-bit 臂同口径。
+                else if (inputHasAlpha)
+                {
+                    args.Add("-pix_fmt");
+                    args.Add(MapPixFmt(options.Format, options.Chroma, ClampAvifBd(8), inputHasAlpha, options.ColorRange));
                 }
             }
             else if (!skipGenericPixFmt && options.BitDepth.HasValue)
@@ -891,7 +900,15 @@ namespace FfmpegGui.Services
                     var chain = args[vfIdx2 + 1];
                     var aBd = options.BitDepth.HasValue ? options.BitDepth.Value : ProbeInputBitDepth(probeInput);
                     var alphaFmt = ClampAvifBd(aBd) <= 8 ? "rgba" : "rgba64le";   // 与链输出同深，否则 alphamerge 无法协商
-                    var graph = $"[1:v]format={alphaFmt},alphaextract[a];[0:v]{chain}[b];[b][a]alphamerge";
+                    // D2（2026-11-09）：ISOBMFF 的 alpha 是**独立辅助流**（auxC URN=auxid:1，主流 yuvj/yuv
+                    // 不带 alpha 平面）⇒ 不能从 `[1:v]`（= 主图）alphaextract，要直接取**第二视频流**
+                    // 的灰度平面作 alpha。灰度位深随源（8/16）；尺寸与主图一致（同一容器同一图），
+                    // 若链里带缩放（最长边限制）则与 ：883 登记过的是同一类错配 ⇒ 这里同样只在
+                    // 不缩放的缺省形态启用（缩放形态维持旧行为，避免造出 EINVAL 零产物）。
+                    var grayFmt = ClampAvifBd(aBd) <= 8 ? "gray" : "gray16le";
+                    var graph = inputHasAuxAlpha
+                        ? $"[1:v:1]format={grayFmt}[a];[0:v]{chain}[b];[b][a]alphamerge"
+                        : $"[1:v]format={alphaFmt},alphaextract[a];[0:v]{chain}[b];[b][a]alphamerge";
                     args[vfIdx2] = "-filter_complex";
                     args[vfIdx2 + 1] = graph;
                     // ⚠⚠ 第二输入 `-i` **必须紧跟在第一个 `-i` 之后** —— 插到输出选项之后会被 ffmpeg
@@ -1499,6 +1516,14 @@ namespace FfmpegGui.Services
             public string? colorRange;
             /// <summary>输入是否含透明通道（由 pix_fmt 推断）</summary>
             public bool hasAlpha;
+            /// <summary>
+            /// D2（2026-11-09）：输入是 ISO-BMFF（HEIC/HEIF/AVIF）且容器里带 **alpha 辅助图**
+            /// （auxC URN = `*auxid:1`）。alpha 在这种载体里是**独立的第二流**（主流是 yuvj/yuv 不带
+            /// alpha 平面）⇒ <see cref="hasAlpha"/>（pix_fmt 前缀白名单）恒 false ⇒ 透明被静默拍平。
+            /// true 时输出侧必须走「第二输入 = 原文件、取 `[1:v:1]` 灰度平面 → alphamerge」的补救。
+            /// 判据是容器 URN 权威，**不是**「第二条流是 gray」（DJI 的灰色增益图 aux 也是 gray 流，
+            /// 按 URN 才能区分）。</summary>
+            public bool hasAuxAlpha;
             /// <summary>输入是否为 RGB 系列像素格式（rgb/bgr/gbr/rgba 等，用于 pc range 判断）</summary>
             public bool isRgb;
             /// <summary>原始 pix_fmt 串（ffprobe parts[2]；管道输入/探测失败 = null）。
@@ -1786,6 +1811,7 @@ namespace FfmpegGui.Services
             // 但 exiftool 位深优先（用户要求 exiftool 优先）；无 exiftool 位深时用 ffprobe
             if (meta.bitDepth <= 0) meta.bitDepth = ffMeta.bitDepth;
             meta.hasAlpha = ffMeta.hasAlpha;
+            meta.hasAuxAlpha = ffMeta.hasAuxAlpha;   // D2：内层探测算出的容器 alpha 判据，必须拷回外层缓存
             meta.isRgb = ffMeta.isRgb;
             // 载体细分必需：`pixFmt` 只在 `ProbeWithFfprobeOnce` 的局部结构里被赋值，此前**没有**拷回外层
             // `meta` ⇒ `ProbeInputPixFmtForEngine` 恒得 ""，`ResolveSrcCodeMax` 的 gray*/yuvj* ⇒ 65280
@@ -1945,6 +1971,28 @@ namespace FfmpegGui.Services
                     // 后者把 gray/gray16le/bayer_*/pal8 全判成有 alpha（pal8 连"仅 >8bit 无影响"都不成立，
                     // 它在管道里就选过一次 pam 载体）。
                     meta.hasAlpha = HasAlphaPlane(pixFmt);
+                    // D2（2026-11-09）：ISOBMFF 家族的 alpha 是**独立辅助图 item**（auxC URN=auxid:1），
+                    // 主流 pix_fmt 不带 alpha 平面 ⇒ 上面的前缀白名单恒 false。这里用容器探针按 URN
+                    // 认 alpha（权威判据；「第二条流是 gray」会把 DJI 的灰色增益图 aux 误判成 alpha）。
+                    // 只在 ISOBMFF 扩展名上付这次整文件读；>256MB 探针返回 null ⇒ 按无 alpha 走原行为。
+                    if (!meta.hasAlpha)
+                    {
+                        var extL = Path.GetExtension(inputPath).ToLowerInvariant();
+                        if (extL is ".heic" or ".heif" or ".avif" or ".hif"
+                            && new FileInfo(inputPath).Length <= IsoBmffGainMapProbe.MaxManagedParseBytes)
+                        {
+                            try
+                            {
+                                var bm = IsoBmffGainMapProbe.Probe(File.ReadAllBytes(inputPath));
+                                if (bm is { IsIsoBmff: true, HasAuxAlpha: true })
+                                {
+                                    meta.hasAuxAlpha = true;
+                                    meta.hasAlpha = true;    // 输出侧 pix_fmt/alphamerge 与内嵌 alpha 同待遇
+                                }
+                            }
+                            catch { /* 探测失败按无 alpha 走原行为（不静默改变像素语义） */ }
+                        }
+                    }
                     // RGB 系列像素格式（全范围 0-255/0-65535）→ pc range
                     meta.isRgb = pixFmt.StartsWith("rgb", StringComparison.OrdinalIgnoreCase)
                               || pixFmt.StartsWith("bgr", StringComparison.OrdinalIgnoreCase)
