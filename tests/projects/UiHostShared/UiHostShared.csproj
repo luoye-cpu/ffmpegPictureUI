@@ -35,7 +35,7 @@
 
   <ItemGroup>
     <!-- Avalonia 无头测试平台: 加载真实 XAML + 控件树, 无需显示器/鼠标 -->
-    <PackageReference Include="Avalonia.Headless" Version="12.1.4" />
+    <PackageReference Include="Avalonia.Headless" Version="12.1.5" />
   </ItemGroup>
 
   <ItemGroup>
