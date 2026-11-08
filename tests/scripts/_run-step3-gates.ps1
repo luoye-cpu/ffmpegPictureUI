@@ -1,6 +1,6 @@
 # _run-step3-gates.ps1 —— 步骤 3 改动后的门禁批量执行（只回显每个门禁的汇总行 + 失败明细）
 # 用法：pwsh -NoProfile -File tests/scripts/_run-step3-gates.ps1 [-Probes a,b,c] [-SkipScripts] [-Scripts a,b]
-#   ⚠ `-Scripts` = **脚本级子集**（2026-09-24 新增）。动机：此前只有"全跑 95 条"与
+#   ⚠ `-Scripts` = **脚本级子集**（2026-09-24 新增）。动机：此前只有"全跑 97 条"与
 #     "裸跑单个 verify-*.ps1"两种选择，而裸跑会绕开本文件的**仓库锁 / 单步超时 / STALE 新鲜度闸 /
 #     双漂移复核 / `_gate_script_*.txt` 留痕**五项保护 ⇒ 增量验证要么太贵要么不可信。
 #     ⚠ 全跑墙钟不再写死分钟数：2026-10-01 起清单含 5 条 **L3/产物级**套件（第 61~65 条），
@@ -86,10 +86,10 @@ param([string]$Probes = 'contract,wire,verdict,selftest,iccname,plan,curve,matri
 #    2026-09-17 新增 verify-gamut-map.ps1；**同日按「运行级隔离（GUID）」改写，见 §6 第 66 条**；
 #    同日再新增生产者 `_probe-jpg-p3-icc.ps1`，理由见下方 ②(b) 与调序注释；
 #    同日再新增 `verify-geometry-engine.ps1`（**几何缩放死代码**的专项门禁，理由见 `$Probes` 的 `geometry` 注释））──
-#    ⚠ **清单条数以实测为准 = 95 条**（⚠ 2026-09-19 P4-A 前为 42 条；2026-09-23 由 48 经 49/50/51 到 52，2026-09-23/24 再接 `verify-ipc-extra-options.ps1` ⇒ 53，2026-09-24 再接 `_probe-settings-clone-coverage.ps1` ⇒ 54，2026-09-27 再接 `_probe-matrix-structure.ps1`（任务 #42，秒级结构自检）⇒ 55，同日再接 `_probe-stderr-merge-scan.ps1`（任务 #51，合并取数结构锁）⇒ 56，同日再接 `verify-simd-switch-fallback.ps1`（面板「SIMD 优化」声明/实现冲突 ⇒ 判据单点 `SimdKernelRouting`）⇒ 57，2026-09-30 再接 `verify-geometry-orientation.ps1` + `_probe-geometry-single-source-scan.ps1`（取向标签 ⇒ **显示尺寸**口径的专项门禁 + 唯一实现结构锁）⇒ 59，同日再接 `verify-gainmap-host.ps1`（把 `GainMapTestHost` 套件接进清单 + STALE 第 ⑤ 对）⇒ 60，2026-10-01 再接**首批 L3/产物级套件**5 条（`verify-package-smoke` + `verify-jbrd-e2e` + `verify-orientation-rewrap` + `verify-gainmap-thirdparty` + `verify-encoder-knob-liveness`；原居 gitignored 的 `tests/output/t{69,76,77,79}`，`git clean -xdf` 一次就没、也不在任何轮里被跑）⇒ 65，2026-10-04 再接 `_probe-jxl-input-target.ps1` + `_probe-raw-default-tier.ps1`（色彩审查两个 P1 的判据）⇒ 67，同日再接 `_probe-gui-control-wiring.ps1`（72h 审查 P0：GUI 控件「声明了却没接线」结构锁）⇒ 68，2026-10-05 再接 `_probe-test-group-coverage.ps1`（测试物理拆分的**组表↔探针清单覆盖一致性锁**，防「某 mode 无组认领 ⇒ 永远不被跑」的假覆盖）⇒ 69，2026-10-21 再接 `verify-jxr-highbitdepth.ps1`（JXR **高位深直通臂**：Xbox Game DVR 那类
+#    ⚠ **清单条数以实测为准 = 97 条**（⚠ 2026-09-19 P4-A 前为 42 条；2026-09-23 由 48 经 49/50/51 到 52，2026-09-23/24 再接 `verify-ipc-extra-options.ps1` ⇒ 53，2026-09-24 再接 `_probe-settings-clone-coverage.ps1` ⇒ 54，2026-09-27 再接 `_probe-matrix-structure.ps1`（任务 #42，秒级结构自检）⇒ 55，同日再接 `_probe-stderr-merge-scan.ps1`（任务 #51，合并取数结构锁）⇒ 56，同日再接 `verify-simd-switch-fallback.ps1`（面板「SIMD 优化」声明/实现冲突 ⇒ 判据单点 `SimdKernelRouting`）⇒ 57，2026-09-30 再接 `verify-geometry-orientation.ps1` + `_probe-geometry-single-source-scan.ps1`（取向标签 ⇒ **显示尺寸**口径的专项门禁 + 唯一实现结构锁）⇒ 59，同日再接 `verify-gainmap-host.ps1`（把 `GainMapTestHost` 套件接进清单 + STALE 第 ⑤ 对）⇒ 60，2026-10-01 再接**首批 L3/产物级套件**5 条（`verify-package-smoke` + `verify-jbrd-e2e` + `verify-orientation-rewrap` + `verify-gainmap-thirdparty` + `verify-encoder-knob-liveness`；原居 gitignored 的 `tests/output/t{69,76,77,79}`，`git clean -xdf` 一次就没、也不在任何轮里被跑）⇒ 65，2026-10-04 再接 `_probe-jxl-input-target.ps1` + `_probe-raw-default-tier.ps1`（色彩审查两个 P1 的判据）⇒ 67，同日再接 `_probe-gui-control-wiring.ps1`（72h 审查 P0：GUI 控件「声明了却没接线」结构锁）⇒ 68，2026-10-05 再接 `_probe-test-group-coverage.ps1`（测试物理拆分的**组表↔探针清单覆盖一致性锁**，防「某 mode 无组认领 ⇒ 永远不被跑」的假覆盖）⇒ 69，2026-10-21 再接 `verify-jxr-highbitdepth.ps1`（JXR **高位深直通臂**：Xbox Game DVR 那类
 #     4×16bit 半浮点 scRGB + planar alpha 的 JXR 在旧两臂上同报 -106、零产物；新臂走「与源同格式的
 #     直通」由托管读取器消费 ⇒ 16-bit PAM，half/float 两档各有活格子，配 WIC 独立回读、越白样本独立计数、
-#     `--color-tone-map reinhard` 对照臂，以及一条**前提锁**「ffmpeg/swscale 吃不了 rgbaf32le 中间件」），2026-10-24 再接 `verify-acr-route.ps1`（DNG 输入的 **ACR 路线**：走 SDK `dng_render`、按下游目标选渲染空间、opcode 全施加、朝向旋正、产品侧声明同源）⇒ 79，2026-10-24 再接 `verify-gainmap-compose.ps1`（两图 GainMap 合成：角色/尺寸硬拒绝、容量与量程解耦、底图保真与三条负控零产物）⇒ 80，2026-10-25 再接 `verify-dng-nonraw-input.ps1` + `verify-jxr-backend-choice.ps1` + `verify-avif-alpha.ps1`（JXR 转格式矩阵暴露的三处：DNG 非 RAW 统一拒绝、旁路 `-e` 兑现性、AVIF alpha 交付）⇒ 83，同日再接 `verify-jpg-webp-matrix.ps1`（真件测试暴露的 JPG/WebP YUV 矩阵口径：转换按 BT.601 以匹配解码器假设，legacy/engine 两侧同锁）⇒ 84，2026-10-28 再接 `verify-package-gui-starts.ps1`（出货包 **GUI 一键都打不开**这一盲区：NativeAOT 产物缺 Avalonia 编译 XAML 载荷，而 L3 五套件一律 `--headless` ⇒ 全仓无一条门禁曾把包内 exe 当"要开窗口的程序"起过一次）⇒ 85，2026-10-31 再接独立性审查留下的仪器基线闸 `_probe-env-trust-baseline.ps1`（工具树取数来源 / 映像位置→完整性级别 / 子进程自建文件正控）⇒ 86，2026-10-31 再接 H1 白点判据 `_probe-white-point-kernel.ps1`（**A 组由红转绿**的那把尺：8-bit 源经 ffmpeg `format=rgb48le` 扩位后顶码实测 = **65283**，而内核此前一律按 65535.0 归一 ⇒ 白被交付成 254/65283；本闸把「8-bit 出口 255」「8-bit 源走 16-bit 交付 65535」「真 16-bit 顶段 252 码不许塌缩」与正控同锁）⇒ 87，2026-11-01 再接清单外 6 支入列（⑪-d 欠账清零：三支 `run-*` 旧驱动补 PASS=n/exit 契约与 TMP/DOTNET_ROOT 钉扎前奏 ⇒ 90，`verify-color-matrix-full` 色彩矩阵网格（受轮默认 quick 档 72 格）⇒ 91，`verify-oracle-matrix` oracle 执行层（经 `$scriptArgs` 受管参数表只跑 -Smoke）⇒ 92，`verify-release-package` 出包独立验收（PKG_VER 缺省从盘上归档名推，多版本歧义/无归档 fail-closed）⇒ 93，同日再接宿主 TEMP 站点文本级探针 `_probe-host-temp-sites.ps1`（AGENTS §7「宿主 TEMP 站点无源级锁」的兑现：每文件 GetTempPath 站点数冻结（39 站点/7 文件，新增必须同批改表并写明生命周期）+ 坏根名黑名单（剥注释行、大小写敏感——pngTmp/FFMPEGGUI_RAMDISK 两族撞名假阳性实测后收紧））⇒ 94，2026-11-04 再接 `verify-tool-detection.ps1`（跨设备检测不一致修复的行为锁：settings 失效路径重发现（Auto 持久化/显式值不覆写两态）、env/cwd 空壳 PLAN 拒绝（LooksLikePlan）、工具报告来源可见（[PLAN]/[app-adjacent]/[PATH]），负控 = 判据打在有效路径夹具上必须不命中）⇒ 95）（`foreach` 数组里的 `.ps1` 条目数）。
+#     `--color-tone-map reinhard` 对照臂，以及一条**前提锁**「ffmpeg/swscale 吃不了 rgbaf32le 中间件」），2026-10-24 再接 `verify-acr-route.ps1`（DNG 输入的 **ACR 路线**：走 SDK `dng_render`、按下游目标选渲染空间、opcode 全施加、朝向旋正、产品侧声明同源）⇒ 79，2026-10-24 再接 `verify-gainmap-compose.ps1`（两图 GainMap 合成：角色/尺寸硬拒绝、容量与量程解耦、底图保真与三条负控零产物）⇒ 80，2026-10-25 再接 `verify-dng-nonraw-input.ps1` + `verify-jxr-backend-choice.ps1` + `verify-avif-alpha.ps1`（JXR 转格式矩阵暴露的三处：DNG 非 RAW 统一拒绝、旁路 `-e` 兑现性、AVIF alpha 交付）⇒ 83，同日再接 `verify-jpg-webp-matrix.ps1`（真件测试暴露的 JPG/WebP YUV 矩阵口径：转换按 BT.601 以匹配解码器假设，legacy/engine 两侧同锁）⇒ 84，2026-10-28 再接 `verify-package-gui-starts.ps1`（出货包 **GUI 一键都打不开**这一盲区：NativeAOT 产物缺 Avalonia 编译 XAML 载荷，而 L3 五套件一律 `--headless` ⇒ 全仓无一条门禁曾把包内 exe 当"要开窗口的程序"起过一次）⇒ 85，2026-10-31 再接独立性审查留下的仪器基线闸 `_probe-env-trust-baseline.ps1`（工具树取数来源 / 映像位置→完整性级别 / 子进程自建文件正控）⇒ 86，2026-10-31 再接 H1 白点判据 `_probe-white-point-kernel.ps1`（**A 组由红转绿**的那把尺：8-bit 源经 ffmpeg `format=rgb48le` 扩位后顶码实测 = **65283**，而内核此前一律按 65535.0 归一 ⇒ 白被交付成 254/65283；本闸把「8-bit 出口 255」「8-bit 源走 16-bit 交付 65535」「真 16-bit 顶段 252 码不许塌缩」与正控同锁）⇒ 87，2026-11-01 再接清单外 6 支入列（⑪-d 欠账清零：三支 `run-*` 旧驱动补 PASS=n/exit 契约与 TMP/DOTNET_ROOT 钉扎前奏 ⇒ 90，`verify-color-matrix-full` 色彩矩阵网格（受轮默认 quick 档 72 格）⇒ 91，`verify-oracle-matrix` oracle 执行层（经 `$scriptArgs` 受管参数表只跑 -Smoke）⇒ 92，`verify-release-package` 出包独立验收（PKG_VER 缺省从盘上归档名推，多版本歧义/无归档 fail-closed）⇒ 93，同日再接宿主 TEMP 站点文本级探针 `_probe-host-temp-sites.ps1`（AGENTS §7「宿主 TEMP 站点无源级锁」的兑现：每文件 GetTempPath 站点数冻结（39 站点/7 文件，新增必须同批改表并写明生命周期）+ 坏根名黑名单（剥注释行、大小写敏感——pngTmp/FFMPEGGUI_RAMDISK 两族撞名假阳性实测后收紧））⇒ 94，2026-11-04 再接 `verify-tool-detection.ps1`（跨设备检测不一致修复的行为锁：settings 失效路径重发现（Auto 持久化/显式值不覆写两态）、env/cwd 空壳 PLAN 拒绝（LooksLikePlan）、工具报告来源可见（[PLAN]/[app-adjacent]/[PATH]），负控 = 判据打在有效路径夹具上必须不命中）⇒ 95，2026-11-08 再接 `verify-gainmap-jxl.ps1`（JXL 增益图**写侧**行为锁：CLI 产出 jhgm 容器、jxlinfo 逐字段、ServiceProbe `jxlgm` 21 条托管互验（ISO blob 与 BuildIso21496Metadata 逐字节）、djxl 解码、cjxl 透传；负控 = 坏载荷 Invalid / 无 jhgm 不报 / compose+xmp 拒绝 / 单输入 xmp 拒绝 / both NOTE / bt2020 D6；tripwire = jxl-oxide/zenjxl/jxl-rs CLI 任一出现即红并要求升级双实现判据——用户裁决 2026-11-08 解析级读者标准开写侧，80 读者矩阵渲染级零读者在案 imazen/zencodec #132）⇒ 96，同日再接 `verify-jxl-gainmap-readside.ps1`（**读侧**识别/不静默丢/结构锁：R1 识别播报正控 + 无 jhgm 双负控 + 坏载荷 fail-closed 可区分，R2 png/jpg/jxl 三臂点名 + `gain map NOT preserved` Status 后缀，R3 BuildCjxlArguments 剥注释零 `container` + 注入牙 + 上游透传/`--container=0` 剥除读数）⇒ 97）（`foreach` 数组里的 `.ps1` 条目数）。
 #      原注释写「29 个」「31 条」均与实测不符（**历史偏差**，非本轮引入），已按实测更正。
 #      2026-09-18 新增 `verify-engine-firstframe.ps1`（引擎多帧解码只取首帧，理由见该脚本头注释）
 #      ⇒ 32 → 33，已重新数过。
@@ -1084,7 +1084,7 @@ $scriptArgs = @{
 #   观察项**，改成必红等于**主动放弃一条覆盖**；补生产者只是**修复清单的遗漏**。
 #   ⚠ **本组正确性依赖 runner 串行**（`validate/jpgp3` 是固定共享目录）——
 #   若将来 runner 改成并行，本组必须先改成「指针/按会话隔离」（§6 第 68 条）。
-# ⚠ 受管基线：脚本清单 = **95** 条（`.workbuddy-ai/memory/MEMORY.md` / `docs/HANDOVER.md` /
+# ⚠ 受管基线：脚本清单 = **97** 条（`.workbuddy-ai/memory/MEMORY.md` / `docs/HANDOVER.md` /
 #   `docs/TESTING.md` §3.5 同记此数）。增删条目必须**同时**改此常量 + 四处文档；
 #   否则下面的条数锁会响亮报红（防「删掉一条 ⇒ 静默变 47 ⇒ 日志照常、无人发现」）。
 #   ⚠ 本锁在 `-SkipScripts` 下**不执行**（该模式走上面的早退，清单根本没被使用）——
@@ -1209,7 +1209,7 @@ $scriptArgs = @{
 #   ⚠ 自带汇总（`PASS=n FAIL=m` + 断言驱动 exit）⇒ 分类账「其余」57 → 58，两个数组仍不动。
 #   ⚠ 实测（2026-10-05，三次变异）：① 从组表删一个 mode ⇒ `contract` 未认领判红；
 #     ② 加一个无工程目录的组 ⇒ 判红；③ 把 mode 拼错 ⇒ 判红；恢复 ⇒ **6/0**。
-$expectedScriptCount = 95
+$expectedScriptCount = 97
 $scriptList = @('verify-ps-compat.ps1','verify-color-caps.ps1','verify-color-wiring.ps1','verify-color-strategy.ps1','verify-format-regression.ps1',
                  'verify-widegamut-regression.ps1','verify-tiff-icc.ps1','verify-webp-hdr-fix.ps1','verify-decision-delivery.ps1',
                  '_probe-stderr-drain-scan.ps1','_probe-proc-encoding-scan.ps1','_probe-cancel-propagation-scan.ps1','_probe-i18n-scan.ps1','_probe-cjk-hardcode-scan.ps1','verify-png-signature.ps1','verify-gainmap-memory.ps1','verify-metadata-privacy.ps1','verify-gif-avif-framelist.ps1','verify-color-peak.ps1',
@@ -1738,7 +1738,20 @@ $scriptList = @('verify-ps-compat.ps1','verify-color-caps.ps1','verify-color-wir
                  #   （[PLAN]/[app-adjacent]/[PATH]…）。前提：开发件 exe + publish\PLAN\ffmpeg-full
                  #   （publish 整树 gitignore ⇒ 缺失时 fail-closed 点名，同 verify-release-package 族）。
                  'verify-tool-detection.ps1',
-                 '_probe-white-point-kernel.ps1')
+                 '_probe-white-point-kernel.ps1',
+                 # ── 第 96 条：2026-11-08 接线（`verify-gainmap-jxl.ps1`，JXL 增益图写侧批）────────
+                 #   写出器行为锁：CLI 产出 jhgm 容器 + jxlinfo 逐字段 + ServiceProbe jxlgm 21 条
+                 #   托管互验（ISO blob 与 BuildIso21496Metadata 逐字节）+ djxl 解码 + cjxl 透传；
+                 #   负控（坏载荷 Invalid / 无 jhgm 不报 / compose+xmp 拒绝 / 单输入 xmp 拒绝 /
+                 #   both NOTE / bt2020 D6）；tripwire：jxl-oxide/zenjxl/jxl-rs CLI 任一出现 ⇒ 红
+                 #   并要求升级双实现判据（用户裁决 2026-11-08：解析级读者标准开写侧；
+                 #   80 读者矩阵渲染级零读者在案，imazen/zencodec #132）。
+                 'verify-gainmap-jxl.ps1',
+                 # ── 第 97 条：2026-11-08 接线（`verify-jxl-gainmap-readside.ps1`，读侧批）────────
+                 #   R1 识别播报（正控 + 无 jhgm 双负控 + 坏载荷 fail-closed 可区分）+ R2 不静默丢
+                 #   （png/jpg/jxl 三臂 + Status 后缀）+ R3 参数面结构锁（BuildCjxlArguments 剥注释
+                 #   零 container + 注入牙）与上游透传读数（brob 保留 / --container=0 剥除）。
+                 'verify-jxl-gainmap-readside.ps1')
 $actualScriptCount = @($scriptList).Count
 if ($actualScriptCount -ne $expectedScriptCount) {
   Write-Output ("[FAIL] 脚本清单条数 = $actualScriptCount，受管基线 = $expectedScriptCount ⇒ 基线漂移（增删条目必须同步四处文档）")

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Text;
 
@@ -48,7 +49,13 @@ namespace FfmpegGui.Services
                 if (!(head[4] == (byte)'J' && head[5] == (byte)'X' && head[6] == (byte)'L' && head[7] == (byte)' '))
                     return JxlImageType.Unknown;
 
-                var (hasJbrd, hasCodestream) = WalkTopLevelBoxes(fs);
+                var (_, boxes) = ScanTopLevelBoxes(fs);
+                bool hasJbrd = false, hasCodestream = false;
+                foreach (var b in boxes)
+                {
+                    if (b.Type == "jbrd") hasJbrd = true;
+                    else if (b.Type == "jxlc" || b.Type == "jxlp") hasCodestream = true;
+                }
                 if (hasJbrd) return JxlImageType.JpegReconstruction;
                 if (hasCodestream) return JxlImageType.NativeCodestream;
 
@@ -59,18 +66,32 @@ namespace FfmpegGui.Services
             return JxlImageType.Unknown;
         }
 
-        /// <summary>遍历顶层 box：jbrd → JPEG 重构数据；jxlc/jxlp → 码流。两者可共存，jbrd 优先。</summary>
-        private static (bool hasJbrd, bool hasCodestream) WalkTopLevelBoxes(FileStream fs)
+        /// <summary>
+        /// 遍历顶层 box（ISOBMFF），返回按序的 (类型, 偏移, 总长含头, 头长) 列表。
+        /// `complete` = box 链是否走满到文件尾（false = 中途截断 / largesize 被截 / 畸形长度中断）；
+        /// **已记录的 box 仍然有效**——DetectType 的历史行为就是「中断前的类型也算数」，
+        /// 消费方要下「不在场」结论必须自查 complete（JxlGainMapProbe 的 fail-closed 语义）。
+        /// 到尾 box（size32==0）按定义覆盖到 EOF ⇒ complete=true。
+        /// 2026-11-08：由 WalkTopLevelBoxes 泛化而来——jhgm 增益图探测（JxlGainMapProbe）复用
+        /// 同一份 box 走链，不写第二份判据；DetectType 行为逐字不变（类型判定点与中断点均未动）。
+        /// </summary>
+        internal static (bool complete, List<(string Type, long Offset, long Size, int HeaderSize)> boxes) ScanTopLevelBoxes(FileStream fs)
         {
-            bool hasJbrd = false, hasCodestream = false;
+            var boxes = new List<(string Type, long Offset, long Size, int HeaderSize)>();
+            bool complete = false;
             long pos = 0;
+            long fileLen = fs.Length;
             var header = new byte[8];
             var large = new byte[8];
 
             while (true)
             {
                 fs.Seek(pos, SeekOrigin.Begin);
-                if (!ReadExact(fs, header, 8)) break;
+                if (!ReadExact(fs, header, 8))
+                {
+                    complete = pos == fileLen;   // 恰好走满 = 完整链；否则是 box 伸过 EOF（截断）
+                    break;
+                }
 
                 uint size32 = (uint)((header[0] << 24) | (header[1] << 16) | (header[2] << 8) | header[3]);
                 string type = Encoding.ASCII.GetString(header, 4, 4);
@@ -80,29 +101,30 @@ namespace FfmpegGui.Services
                 if (size32 == 1)
                 {
                     // largesize：8 字节 64 位长度
-                    if (!ReadExact(fs, large, 8)) break;
+                    if (!ReadExact(fs, large, 8)) break;   // 被截断 ⇒ 不记录该 box（历史行为一致）
                     size = 0;
                     for (int i = 0; i < 8; i++) size = (size << 8) | large[i];
                     headerSize = 16;
                 }
                 else if (size32 == 0)
                 {
-                    size = -1;   // 到文件尾
+                    // 到尾 box：按定义覆盖到 EOF
+                    boxes.Add((type, pos, fileLen - pos, 8));
+                    complete = true;
+                    break;
                 }
                 else
                 {
                     size = size32;
                 }
 
-                if (type == "jbrd") hasJbrd = true;
-                else if (type == "jxlc" || type == "jxlp") hasCodestream = true;
-
-                if (size < 0 || size < headerSize) break;   // 到尾 box / 畸形长度
+                boxes.Add((type, pos, size, (int)headerSize));
+                if (size < headerSize) break;   // 畸形长度（含负值）⇒ 不前进
                 pos += size;
-                if (pos <= 0) break;                        // 溢出保护
+                if (pos <= 0) break;            // 溢出保护
             }
 
-            return (hasJbrd, hasCodestream);
+            return (complete, boxes);
         }
 
         /// <summary>兜底：窗口内字节扫描（box 遍历失败时使用，窗口扩到 1MB）。</summary>
@@ -125,7 +147,7 @@ namespace FfmpegGui.Services
             return JxlImageType.Unknown;
         }
 
-        private static bool ReadExact(Stream s, byte[] buf, int count)
+        internal static bool ReadExact(Stream s, byte[] buf, int count)
         {
             int off = 0;
             while (off < count)

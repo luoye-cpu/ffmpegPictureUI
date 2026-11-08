@@ -570,7 +570,26 @@ $BASE_CS_OTHER = 861
 #   ⚠ 同批 `$BASE_XAML` **不动**（实测仍 13，余量 0）。
 #   ⚠ 余量 0（922 = 实测值）：**不预留**下一个批次的额度——预留下次会让「不得增加」退化成「可以再加几行」，
 #     而这正是本锁十八次抬基线以来一直守的边界（每次都抬到实测值）。
-$BASE_CS_UI    = 923
+$BASE_CS_UI    = 931
+# ⚠⚠ **2026-11-08 抬基线：923 → 931（+8，判据项）** —— 成因 = JXL 增益图批次（读侧 R1/R2 + 写侧 jhgm
+#   写出器；用户裁决按解析级读者标准开写侧）。归因方法 = **本探针自测的逐文件差分**：对 15 个触碰文件
+#   逐一还原 HEAD 版重跑探针，每文件贡献 = 930 − without（restore 15/15 哈希校验通过；差分在门禁调平
+#   前做的，基准 930）：
+#   · CliParser.cs **+1**（:611 单行 throw，jxl+compose xmp 建队拒绝）；
+#   · RawColorPipeline.cs **+1**（alpha 点名 AVIF/JXL 双臂，续行未接 sink 的已知口径）；
+#   · QueueProcessor.cs **+2**（`Status == "已完成 (djxl 重构 JPEG)"` 比对常量 + 三元续行
+#     「载荷为 brob 压缩壳…」——与 :551-553 同一已知局限）；
+#   · JxlGainMapWriter.cs **+3**（`ValidateNakedCodestream(…, "底图"/"增益图")` 实参 ×2 + 容器件续行）。
+#   · 其余触碰文件贡献实测 **0**：GainMapEncoder/RawColorPipeline/QueueProcessor 的播报行全部带
+#     `[GainMap]`/`[jxl]` 前缀（[tag] 桶优先）、JxlGainMapProbe 全部 FailReason 带 `[JxlGm]` 前缀、
+#     JxlGainMapWriter 的 FailReason 全部带 `[GainMap-Jxl]` 前缀 ⇒ 全落 [tag]/诊断桶；注释行剥离；
+#     ServiceProbe/TestGroups 不在扫描面。
+#   ⚠ **同批 +1（合并后追加，总数 930 → 931）**：`QueueProcessor.cs` 的
+#     `jhgmDetail = "载荷解析失败 ⇒ 字段细节不可得（见下）"` —— Impl-5 门禁实跑抓出的产品偏差修复
+#     （坏载荷时 fail-closed 行被 HasGainMap 分支短路，-1 哨兵直出；修复补 fail-closed 独立播报），
+#     该赋值串不经 sink ⇒ 按口径落 UI 桶，与 :422-423 `error = "…"` 同款。依 :418-421 的既有裁定，
+#     不为撑住棘轮把诊断静音/改英文/改 sink 形状 ⇒ 抬登记值。
+#   ⚠ 依 :418-421 的既有裁定，不为撑住棘轮把诊断静音/改英文/改 sink 形状 ⇒ 抬登记值。
 # ⚠⚠ **2026-11-03 抬基线：922 → 923（+1，判据项）** —— 成因 = 工作树内**先于 TG 视频贴纸批存在**的未提交改动
 #   （本批开始前工作树已有并发在制品；归因：对本批 8 个触碰文件做 `git diff -U0` 增量行扫描，含中文字面量且
 #   非 sink 的新增行只有 1 条 —— `QueueProcessor.cs` 的 `return $"[纯托管] GainMapEncoder -> AVIF tmap 容器 …"`，

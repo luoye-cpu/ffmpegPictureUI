@@ -550,6 +550,9 @@ namespace FfmpegGui.Services
             //   判据块里重复同样的字面量会让那把尺读不出区别。
             bool isJxrInput = inputExt == ".jxr";
             bool isJxlInput = inputExt == ".jxl";
+            // 2026-11-08（R1/R2）：JXL 输入的 jhgm 增益图探测——单点求值；R1 播报（ProcessJxlInputAsync
+            // 顶部日志段）与 R2 收口（NoteJxlGainMapNotPreserved）共用同一份结果，不写第二份判据。
+            JxlGainMapScanResult? jxlGm = null;
             if (isJxlInput)
             {
                 // ⚠ 2026-10-22 第三轮整轮实测：我第一版给 JXL 配的内容判据**拿错了信号**——用选项布尔
@@ -569,6 +572,7 @@ namespace FfmpegGui.Services
                 //     ② **路由侧先验证完整性** —— 解码之前还有 `ProbeSizeAsync` 与
                 //       `ProbeInputColorMetadata` 两处 ffprobe，残缺件会先在那两站各等一次超时。
                 var jxlTypeForBypass = JxlInspector.DetectType(captured.InputPath);
+                jxlGm = JxlGainMapProbe.Scan(captured.InputPath);   // 2026-11-08 R1：jhgm 增益图探测（本方法内单点求值）
                 contentMustBypass = true;
                 contentBypassReason = jxlTypeForBypass switch
                 {
@@ -1167,7 +1171,8 @@ namespace FfmpegGui.Services
                             {
                                 // JXL 输入：**仅在内容条件不满足色彩转换时**才走专用管线（判据见 :479 那一段，
                                 //   与上面的播报共用同一次求值）。8-bit 无 alpha 单帧 JXL 现在交给引擎/通用通路。
-                                await ProcessJxlInputAsync(captured, finalOutputPath, ct);
+                                await ProcessJxlInputAsync(captured, finalOutputPath, ct, jxlGm);
+                                NoteJxlGainMapNotPreserved(captured, jxlGm);
                             }
                             else if (inputExt == ".jxr" && contentMustBypass)
                             {
@@ -1190,6 +1195,9 @@ namespace FfmpegGui.Services
                                 //   （容器由 `GainMapEncoder.EncodeAsync(container: "avif")` 分流）。
                                 //   不加这一支 ⇒ `--color-engine legacy` 下 avif+增益图会**静默丢掉增益图**
                                 //   （落到普通 avif 编码），违反"不得静默降级"。
+                                //   ⚠ 2026-11-08 起 `FormatCarriesGainMap` 还含 `jxl`：jxl+增益图+引擎
+                                //   不可走同样落这里（`EncodeAsync(container: "jxl")` → JxlGainMapWriter
+                                //   组装 jhgm 容器，jhgm 在 jxlc 之前）；引擎可走时仍由引擎出口执行。
                                 await ProcessGainMapJpegAsync(captured, finalOutputPath, ct);
                             }
                             else if (backend == EncoderBackend.Cjxl && !engineRoutable)
@@ -1201,6 +1209,9 @@ namespace FfmpegGui.Services
                                 //   `ExternalEncoderExit` 让 `RawColorPipeline` 走 cjxl 出口；
                                 //   引擎不可走 ⇒ 照旧走专用管线（与改动前逐字相同）。
                                 //   `engineRoutable` 来自**同一个** `ShouldRoute`（单点求值，不构成第二份判据）。
+                                //   ⚠ 2026-11-08：`FormatCarriesGainMap` 含 `jxl` 后，jxl+增益图+引擎不可走
+                                //   的任务在本分支之前已被上面 GainMap 专用管线截走 ⇒ 本分支收不到
+                                //   gainmap 任务；引擎可走时走下方引擎插入点（TransformGainMapAsync）。
                                 await ProcessCjxlAsync(captured, finalOutputPath, ct);
                             }
                             else if (backend == EncoderBackend.Cjpegli
@@ -1213,6 +1224,8 @@ namespace FfmpegGui.Services
                                 //   **静默出普通 JPEG**。增益图任务要么上面专用管线接走（引擎不可走），
                                 //   要么落到下面引擎插入点（可走，TransformGainMapAsync）——本分支只该接
                                 //   **无增益图**的 cjpegli 任务。
+                                //   ⚠ 2026-11-08：`FormatCarriesGainMap` 含 `jxl` 后，jxl 任务的后端恒非
+                                //   Cjpegli ⇒ 本排除守卫对 jxl 防御性正确（jxl+gainmap 不会在此被截）。
                                 await ProcessCjpegliAsync(captured, finalOutputPath, ct);
                             }
                             else if (backend == EncoderBackend.Jxr && !engineRoutable)
@@ -1245,6 +1258,10 @@ namespace FfmpegGui.Services
                                 //   ⚠ 判据带 `!ShouldRoute`：引擎**可走**的非 JPEG（如 `-f png`）仍由规划层拒绝
                                 //   （现状逐字不变），本条只补「引擎不可走 ⇒ 规划层轮不到」的那一半。
                                 //   文案/替代方案与规划层 `ColorStrategyPlanning.cs:181-193` 同源同义（单一真源在那边）。
+                                //   ⚠ 2026-11-08：`FormatCarriesGainMap` 含 `jxl` 后，jxl+gainmap+引擎不可走
+                                //   已被上面 GainMap 专用管线接走 ⇒ 本判据不再命中 jxl；jxl 的替代建议
+                                //   （原生存 PQ/HLG）对其余非承载格式仍然成立。文案逐字不动
+                                //   （verify-color-matrix-full 锁定 QueueProcessor 拒绝文案）。
                                 bool gainMapOnUnsupportedTarget = captured.Options.JpegGainMap
                                     && !GainMapEncoder.FormatCarriesGainMap(captured.Options.Format) // 单点真值（批次 E）：承载格式不再被「不适用」错拒
                                     && !ColorMapping.ColorEngineRouter.ShouldRoute(
@@ -4509,8 +4526,30 @@ namespace FfmpegGui.Services
             }
         }
 
+        /// <summary>
+        /// 2026-11-08（R2）：JXL 输入的增益图（jhgm box）在**所有**现有转换腿上都结构性地不随行——
+        /// cjxl 从不直收 .jxl（ProcessAsync 的 isJxlInput 块无条件整档绕过），JXL→JXL 也是
+        /// djxl→cjxl 像素级重编码 ⇒ 容器 box 一律不随。成功完成的任务必须点名，
+        /// 不许静默当「没有增益图」（P0-1：不按无增益图静默走 SDR；与 GainMapDecoder 的可用性诚实同族）。
+        /// ⚠ 唯一豁免 =「已完成 (djxl 重构 JPEG)」：该状态 = 逐字节还原原始 JPEG，
+        ///   原始 JPEG 自带的增益图元数据随字节回来，点名「不保留」会是假话。
+        ///   djxl **降级**为像素重编码的状态串不同 ⇒ 照常点名（正确）。
+        /// </summary>
+        private void NoteJxlGainMapNotPreserved(QueueItem item, JxlGainMapScanResult? jxlGm)
+        {
+            if (jxlGm == null || !jxlGm.HasGainMap) return;
+            if (!item.IsSuccessStatus) return;   // 「已完成」前缀判定（QueueItem.IsSuccessStatus 单点真值）
+            if (item.Status == "已完成 (djxl 重构 JPEG)") return;
+            item.Log += "[jxl] ⚠️ 源 JXL 增益图（jhgm）不随本次转换保留：各出口当前无对应承载，产物按基础像素交付（P0-1：不按无增益图静默走 SDR）\n";
+            // Status 后缀用 ASCII：Status 计 CJK 探针的 UI 桶（余量 0），ASCII 中文计数为 0 增量；
+            // 要中文后缀须走该探针的显式登记抬基线流程（同批做）。
+            item.Status = item.Status + " (gain map NOT preserved)";
+            _onItemUpdated?.Invoke(item);
+        }
+
         /// <summary>JXL 输入智能处理（DJXL 重构 / djxl→cjpegli 管道 / ffmpeg 回退）</summary>
-        private async Task ProcessJxlInputAsync(QueueItem item, string outputPath, CancellationToken ct)
+        private async Task ProcessJxlInputAsync(QueueItem item, string outputPath, CancellationToken ct,
+            JxlGainMapScanResult? jxlGm = null)
         {
             var targetFmt = (item.Options.Format ?? "").ToLowerInvariant();
             var jxlType = JxlInspector.DetectType(item.InputPath);
@@ -4522,6 +4561,33 @@ namespace FfmpegGui.Services
             };
             item.Log += $"[jxl] 输入类型: {jxlTypeName}\n";
             item.Log += $"[jxl] 目标格式: {targetFmt}  |  djxl: {(DjxlService.IsAvailable ? "可用" : "不可用")}  |  cjpegli: {(CjpegliService.IsAvailable ? "可用" : "不可用")}  |  cjxl: {(CjxlService.IsAvailable ? "可用" : "不可用")}\n";
+
+            // 2026-11-08（R1）：jhgm 增益图探测播报。单点求值在 ProcessAsync 的 isJxlInput 块，
+            // 结果经可选参数传入（一次求值、单点真值）。P0-1：识别到不许静默；fail-closed 也不许静默。
+            if (jxlGm != null && jxlGm.HasGainMap)
+            {
+                string jhgmDetail;
+                if (jxlGm.Form == "jhgm" && jxlGm.Determinate)
+                    jhgmDetail = $"{jxlGm.MetadataLength}-byte metadata / {jxlGm.GainMapBytes}-byte gain map";
+                else if (jxlGm.Form == "jhgm")
+                    jhgmDetail = "载荷解析失败 ⇒ 字段细节不可得（见下）";
+                else
+                    jhgmDetail = "载荷为 brob 压缩壳（原始 box 类型可识别，字段细节不可得）";
+                item.Log += $"[jxl] ⚠️ 输入含 JXL 增益图（jhgm box，form={jxlGm.Form}）：{jhgmDetail}"
+                    + "；该数据不随像素级转换保留（含目标 jxl：现状为 djxl→cjxl 像素级重编码，容器 box 不随行）（见下方点名）\n";
+                // ⚠ 2026-11-08（Impl-5 门禁实跑抓出的偏差）：坏载荷时探针返回 HasGainMap=true 且
+                //   Determinate=false，上面的 HasGainMap 分支先命中 ⇒ 原 else-if 结构永远轮不到
+                //   fail-closed 行，用户只看到 -1 哨兵读数。按方案 §1 改动点 3 补：认出但解不开
+                //   必须连 FailReason 一起播（P0-1：不把「不知道」当「没有」）。
+                if (!jxlGm.Determinate)
+                {
+                    item.Log += $"[jxl] ⚠️ 无法断定有无 JXL 增益图（jhgm box 在但解不开）：{jxlGm.FailReason} ⇒ 按 fail-closed 处理\n";
+                }
+            }
+            else if (jxlGm != null && !jxlGm.Determinate)
+            {
+                item.Log += $"[jxl] ⚠️ 无法断定有无 JXL 增益图：{jxlGm.FailReason} ⇒ 按 fail-closed 处理\n";
+            }
 
             // JXL→JXL 且输入为 JPEG 重构型：不能走 djxl 重构分支——
             // djxl 按输出扩展名决定格式，不支持写出 .jxl（会失败或产出 JPEG 内容的错标文件）。

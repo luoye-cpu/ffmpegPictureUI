@@ -97,7 +97,7 @@ namespace ServiceProbe
             InitExternalTools();          // 否则 iccgen/exiftool 类互测会静默 SKIP（假绿）
             if (args.Length == 0)
             {
-                Console.WriteLine("usage: ServiceProbe <gainmap|icc|icc-dump|cicp|color|faithful|pq|matrix|curve|plan|geometry|bench|selftest|i18n|psnr|simdswitch|thumbnail|oog|avifgm> ...");
+                Console.WriteLine("usage: ServiceProbe <gainmap|icc|icc-dump|cicp|color|faithful|pq|matrix|curve|plan|geometry|bench|selftest|i18n|psnr|simdswitch|thumbnail|oog|avifgm|jxlgm> ...");
                 return 2;
             }
             try
@@ -115,6 +115,9 @@ namespace ServiceProbe
                     case "thumbnail": ProbeThumbnail(args).GetAwaiter().GetResult(); break;
                     case "oog": ProbeOog().GetAwaiter().GetResult(); break;
                     case "avifgm": ProbeAvifGainMap().GetAwaiter().GetResult(); break;
+                    // jxlgm —— JxlGainMapWriter（JXL jhgm 容器组装，2026-11-08）的单元级锁；
+                    //   调用者 = 在册门禁 verify-gainmap-jxl.ps1 §1/§2
+                    case "jxlgm": ProbeJxlGainMap(); break;
                     case "color": ProbeColor(args); break;
                     case "pq": ProbePq(); break;
                     // DNG 出口的 exiftool 后置串（纯函数）：XMP(700) 必须默认随源走，--strip-xmp 时才不抄
@@ -740,6 +743,120 @@ namespace ServiceProbe
                       $"avifgm ③tmap 替代图 colr 与底图同 range（同一份像素不可能两说）｜实 0x{(tc.Count == 1 ? tc[0].Fr : 0xFF):X2}");
             }
             finally { try { Directory.Delete(work, true); } catch { } }
+        }
+
+        /// <summary>
+        /// jxlgm —— 同程序集 internal <c>JxlGainMapWriter</c>（JXL jhgm 容器组装，2026-11-08）的
+        /// 单元级锁：反射调 internal 类型（对齐 avifgm 先例），不依赖任何外部 exe。
+        /// 调用者 = 在册门禁 verify-gainmap-jxl.ps1 §1/§2。
+        /// </summary>
+        private static void ProbeJxlGainMap()
+        {
+            var asm = typeof(GainMapEncoder).Assembly;
+            var t = asm.GetType("FfmpegGui.Services.JxlGainMapWriter", throwOnError: false);
+            Check(t != null, "jxlgm：找得到 internal JxlGainMapWriter（否则本 mode 的锁全部真空绿）");
+            if (t == null) return;
+            var build = t.GetMethod("Build",
+                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static,
+                new[] { typeof(byte[]), typeof(byte[]), typeof(byte[]) });
+            Check(build != null, "jxlgm：找得到 public static Build(byte[], byte[], byte[])（底图/增益图裸码流 + ISO 单一真值）");
+            if (build == null) return;
+            var br = build.ReturnType;
+            string[] members = { "Data", "FailReason", "BaseCodestreamBytes", "GainMapCodestreamBytes", "JhgmPayloadBytes", "Ok" };
+            bool membersOk = members.All(m => br.GetProperty(m) != null || br.GetField(m) != null);
+            Check(membersOk, "jxlgm：BuildResult 六成员齐（Data/FailReason/BaseCodestreamBytes/GainMapCodestreamBytes/JhgmPayloadBytes/Ok）");
+            var isoM = typeof(GainMapEncoder).GetMethod("BuildIso21496Metadata",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static,
+                new[] { typeof(int), typeof(float), typeof(float), typeof(float?) });
+            Check(isoM != null, "jxlgm：找得到 internal BuildIso21496Metadata(int,float,float,float?)（ISO blob 单一真值，必须逐字节同源）");
+            if (isoM == null) return;
+            var iso = (byte[])isoM.Invoke(null, new object?[] { 1, 1.0f, 0f, null })!;
+            Check(iso.Length == 61, $"jxlgm：单通道 ISO 21496-1 blob = 61 B（实 {iso.Length}）");
+
+            // 正控：最小裸码流（写出器只认 FF 0A 前缀；像素可解性归门禁 §1 的 djxl 臂）
+            byte[] sig = { 0x00, 0x00, 0x00, 0x0C, 0x4A, 0x58, 0x4C, 0x20, 0x0D, 0x0A, 0x87, 0x0A };
+            byte[] baseCs = { 0xFF, 0x0A, 0x01, 0x02 };
+            byte[] gmCs = { 0xFF, 0x0A, 0x03, 0x04 };
+            var r = build.Invoke(null, new object?[] { baseCs, gmCs, iso });
+            bool ok = BRo(r, "Ok", false);
+            var data = BRo(r, "Data", Array.Empty<byte>());
+            Check(ok, "jxlgm：正控 Build 成功（Ok=true）");
+            int jhgmPayloadLen = 1 + 2 + iso.Length + 1 + 4 + gmCs.Length;
+            int wantLen = 12 + 20 + (8 + jhgmPayloadLen) + (8 + baseCs.Length);
+            Check(data.Length == wantLen,
+                  $"jxlgm：容器总长 = sig 12 + ftyp 20 + jhgm 8+{jhgmPayloadLen} + jxlc 8+{baseCs.Length} = {wantLen}（实 {data.Length}）");
+            Check(data.Length >= 12 && data.AsSpan(0, 12).SequenceEqual(sig),
+                  "jxlgm：容器以 JXL 签名开头（00 00 00 0C JXL_ 0D 0A 87 0A）");
+            bool ftypOk = data.Length >= 32 && BE32(data, 12) == 20
+                          && data[16] == (byte)'f' && data[17] == (byte)'t' && data[18] == (byte)'y' && data[19] == (byte)'p';
+            Check(ftypOk, "jxlgm：ftyp box 在位（20 B，size + 类型字面量）");
+            int off = 32;
+            uint jhgmSize = data.Length >= off + 8 ? BE32(data, off) : 0;
+            bool jhgmType = data.Length >= off + 8 && data[off + 4] == (byte)'j' && data[off + 5] == (byte)'h'
+                            && data[off + 6] == (byte)'g' && data[off + 7] == (byte)'m';
+            Check(jhgmType && jhgmSize == 8 + jhgmPayloadLen,
+                  $"jxlgm：jhgm box 紧随 ftyp 且 size = 8+{jhgmPayloadLen}（实 size={jhgmSize}）");
+            int off2 = off + (int)jhgmSize;
+            uint jxlcSize = data.Length >= off2 + 8 ? BE32(data, off2) : 0;
+            bool jxlcType = data.Length >= off2 + 8 && data[off2 + 4] == (byte)'j' && data[off2 + 5] == (byte)'x'
+                            && data[off2 + 6] == (byte)'l' && data[off2 + 7] == (byte)'c';
+            Check(jxlcType && off2 > off && jxlcSize == 8 + baseCs.Length,
+                  $"jxlgm：jhgm 在 jxlc 之前（偏移 {off} < {off2}）且 jxlc size = 8+{baseCs.Length}（实 size={jxlcSize}）");
+            int p = off + 8;
+            Check(p < data.Length && data[p] == 0, "jxlgm：载荷首字节 version = 0");
+            int metaLen = p + 2 < data.Length ? (data[p + 1] << 8) | data[p + 2] : -1;
+            Check(metaLen == iso.Length, $"jxlgm：BE16 元数据长 = {iso.Length}（实 {metaLen}）");
+            bool blobEq = metaLen == iso.Length && p + 3 + iso.Length <= data.Length
+                          && data.AsSpan(p + 3, iso.Length).SequenceEqual(iso);
+            Check(blobEq, "jxlgm：ISO blob 与 BuildIso21496Metadata 输出逐字节相等（jxlinfo 看不见 blob 内容 ⇒ 这是解析级判据的核心一针）");
+            int q = p + 3 + iso.Length;
+            Check(q < data.Length && data[q] == 0,
+                  "jxlgm：颜色编码长 = 0（rawmakase #912 同形：map 施加于底图色彩空间）");
+            int q2 = q + 1;
+            uint altIcc = q2 + 4 <= data.Length ? BE32(data, q2) : 0xFFFFFFFF;
+            Check(altIcc == 0, $"jxlgm：alt ICC 长 = 0（实 {altIcc}）");
+            int gOff = q2 + 4;
+            bool gmEq = gOff + gmCs.Length <= data.Length && data.AsSpan(gOff, gmCs.Length).SequenceEqual(gmCs);
+            Check(gmEq, "jxlgm：增益图载荷 = 输入裸码流（FF 0A 开头）逐字节相等");
+            int bOff = off2 + 8;
+            bool baseEq = bOff + baseCs.Length <= data.Length && data.AsSpan(bOff, baseCs.Length).SequenceEqual(baseCs);
+            Check(baseEq, "jxlgm：jxlc 载荷 = 底图裸码流逐字节相等");
+
+            // 负控三臂
+            var rBad1 = build.Invoke(null, new object?[] { sig.Concat(new byte[] { 1 }).ToArray(), gmCs, iso });
+            bool okBad1 = BRo(rBad1, "Ok", true);
+            string fr1 = BRo(rBad1, "FailReason", "");
+            Check(!okBad1 && (fr1.Contains("容器") || fr1.Contains("码流")),
+                  $"jxlgm：负控① 传入容器件 ⇒ 拒绝且 FailReason 点名（实 ok={okBad1} reason={fr1}）");
+            var rBad2 = build.Invoke(null, new object?[] { new byte[] { 0x12, 0x34, 0x56, 0x78 }, gmCs, iso });
+            bool okBad2 = BRo(rBad2, "Ok", true);
+            string fr2 = BRo(rBad2, "FailReason", "");
+            Check(!okBad2 && !string.IsNullOrWhiteSpace(fr2),
+                  $"jxlgm：负控② 随机字节（非 FF 0A）⇒ 拒绝且 FailReason 非空（实 ok={okBad2} reason={fr2}）");
+            var rBad3 = build.Invoke(null, new object?[] { baseCs, Array.Empty<byte>(), iso });
+            bool okBad3 = BRo(rBad3, "Ok", true);
+            Check(!okBad3, $"jxlgm：负控③ 空增益图 ⇒ 拒绝（实 ok={okBad3}）");
+        }
+
+        /// <summary>大端读 u32（jxlgm 用）。</summary>
+        private static uint BE32(byte[] b, int off)
+            => ((uint)b[off] << 24) | ((uint)b[off + 1] << 16) | ((uint)b[off + 2] << 8) | b[off + 3];
+
+        /// <summary>按成员名反射读 BuildResult 的属性或字段（jxlgm 用；属性优先）。</summary>
+        private static object? BR(object? res, string member)
+        {
+            if (res == null) return null;
+            var ty = res.GetType();
+            var pi = ty.GetProperty(member);
+            if (pi != null) return pi.GetValue(res);
+            return ty.GetField(member)?.GetValue(res);
+        }
+
+        /// <summary>BR 的带默认值版（jxlgm 用）。</summary>
+        private static T BRo<T>(object? res, string member, T def)
+        {
+            var v = BR(res, member);
+            return v is T t ? t : def;
         }
 
         /// <summary>造一个 nclx 型 `colr` 盒：size(4)+'colr'+'nclx'+prim(2)+trc(2)+mtx(2)+full_range(1) = 19 B。</summary>
@@ -2231,7 +2348,11 @@ namespace ServiceProbe
             // ⚠ 2026-10-02：**avif 已移出本负控清单**（tmap 派生项写出已落地，三路验证见
             //   `docs/AVIF_GAINMAP_ENCODER_2026-10-02.md`）⇒ 负控**只剩 6 个格式、不得为空**；
             //   同时新增 avif 的**正向**断言（不得 Reject + 能力表位为真），把新旧口径各钉一颗牙。
-            foreach (var f in new[] { "png", "tiff", "webp", "jxl", "gif", "heic" })
+            // ⚠ 2026-11-08：**jxl 也移出负控清单**（jhgm box 写出已落地——用户裁决按「解析级读者」
+            //   标准开写侧；判据 = verify-gainmap-jxl.ps1 + verify-jxl-gainmap-readside.ps1）
+            //   ⇒ 负控**只剩 5 个格式**（png/tiff/webp/gif/heic）、不得为空；
+            //   同批加 jxl 的正向断言（不得 Reject + 能力表 SupportsGainMap 为真），与 avif 同构。
+            foreach (var f in new[] { "png", "tiff", "webp", "gif", "heic" })
             {
                 var gm = CE.Plan(new CI { Strategy = ST.Recommended, Source = pq2020, Format = CE.CapsFor(f), GainMapRequested = true });
                 Check(gm.Action == CA.Reject && gm.Advice.Length > 0,
@@ -2243,6 +2364,13 @@ namespace ServiceProbe
                 var gmAvif = CE.Plan(new CI { Strategy = ST.Recommended, Source = pq2020, Format = capsA, GainMapRequested = true });
                 Check(gmAvif.Action != CA.Reject,
                     $"GainMap × avif：已支持 tmap 派生项 ⇒ 不得 Reject（实为 {gmAvif.Action}）");
+            }
+            {
+                var capsJ = CE.CapsFor("jxl");
+                Check(capsJ.SupportsGainMap, "jxl 能力表须标记 SupportsGainMap（jhgm box 承载 ISO 21496-1，2026-11-08 解析级判据）");
+                var gmJxl = CE.Plan(new CI { Strategy = ST.Recommended, Source = pq2020, Format = capsJ, GainMapRequested = true });
+                Check(gmJxl.Action != CA.Reject,
+                    $"GainMap × jxl：已支持 jhgm 派生项 ⇒ 不得 Reject（实为 {gmJxl.Action}）");
             }
             foreach (var f in new[] { "jpg", "jpeg", "jpegli" })
             {

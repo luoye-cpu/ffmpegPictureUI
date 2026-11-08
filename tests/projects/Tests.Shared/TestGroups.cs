@@ -91,6 +91,11 @@ namespace Tests.Shared
                 // 调用者 = **在册**门禁 `verify-gainmap-managed.ps1` §8 ⇒ 与上面 memadmit / color /
                 // framelen / gainmap-stats 同一形态：有调用点就必须进账，不进 #69 的豁免表。
                 "gmgamut",
+                // 2026-11-08：`jxlgm` = JxlGainMapWriter（JXL jhgm 容器组装）的单元级锁
+                // （反射 internal 类型，对齐 avifgm 先例；不依赖外部 exe）。
+                // 调用者 = **在册**门禁 `verify-gainmap-jxl.ps1` §1/§2 ⇒ 与上面 memadmit / color /
+                // gmgamut 同一形态：有调用点就必须进账，不进豁免表。
+                "jxlgm",
             },
 
             // ── 编码参数与产物 / 元数据与 ICC / 增益图与 Ultra HDR / 进程与 IPC ──

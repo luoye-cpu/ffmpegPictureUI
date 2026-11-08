@@ -95,6 +95,10 @@ $counts = [ordered]@{
     #   （`-Census` 实测 got=31），运行时通过数 = **33**：那一处 `foreach` 里的 2 个调用位按两个文件各跑一遍
     #   ⇒ 源文本 2 条、执行 4 条。两把尺互补，**不许互相对齐**（与 `vendor-hdr` 同形）。
     'gmgamut' = 31
+    # 2026-11-08 新增派发 mode `jxlgm`（JxlGainMapWriter 的 JXL jhgm 容器组装单元级锁，
+    #   调用者 = 在册门禁 verify-gainmap-jxl.ps1 §1/§2）。登记 = 源文本调用位 **21**
+    #   （同轮按本文件取数器口径实测 got=21：正控布局 14 + ISO 真值 2 + 负控 3 + 前置反射自检 2）。
+    'jxlgm' = 21
     'icc' = 5; 'icc-dump' = 0; 'iccname' = 9; 'ipc' = 13; 'ipc-client' = 2
     'ipc-raw-client' = 4; 'ipc-server' = 0; 'ipc-submit' = 3; 'matrix' = 13; 'memadmit' = 7; 'framelen' = 5
     # 2026-10-22 P3 跨仓对撞（宿主 vs ColorGainKit，同进程反射）。口径同样是**源文本调用位**：
