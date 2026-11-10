@@ -35,6 +35,7 @@ public static class PlatformServices
     public static string Exiftool  => OperatingSystem.IsWindows() ? "exiftool.exe" : "exiftool";
     public static string Avifenc   => ToolName("avifenc");
     public static string DngToolName => OperatingSystem.IsWindows() ? "dngtool.exe" : "dngtool";
+    public static string OxipngName => OperatingSystem.IsWindows() ? "oxipng.exe" : "oxipng";
 
     // ── 目录搜索模式（用于 Directory.EnumerateFiles）──
     public static string CjxlSearchWildcard    => OperatingSystem.IsWindows() ? "*cjxl*.exe"   : "*cjxl*";
@@ -396,6 +397,7 @@ public static class PlatformServices
         [JxrDec]   = new[] { "artifacts" },
         [Avifenc]  = new[] { "artifacts" },
         [DngToolName] = new[] { "artifacts" },
+        [OxipngName] = new[] { "artifacts" },
     };
 
     /// <summary>

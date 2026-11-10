@@ -1,4 +1,4 @@
-# _probe-cjk-hardcode-scan.ps1 —— UI 硬编码中文（未走 Loc）的「不得增加」结构锁（2026-09-17 新增）
+﻿# _probe-cjk-hardcode-scan.ps1 —— UI 硬编码中文（未走 Loc）的「不得增加」结构锁（2026-09-17 新增）
 #
 # 为什么需要它：
 #   `_probe-i18n-scan.ps1` 的 ③④ 只把硬编码中文打印成 `ℹ` 行（**不判红**）⇒ 实际上**没有任何锁**。
@@ -570,8 +570,62 @@ $BASE_CS_OTHER = 861
 #   ⚠ 同批 `$BASE_XAML` **不动**（实测仍 13，余量 0）。
 #   ⚠ 余量 0（922 = 实测值）：**不预留**下一个批次的额度——预留下次会让「不得增加」退化成「可以再加几行」，
 #     而这正是本锁十八次抬基线以来一直守的边界（每次都抬到实测值）。
-$BASE_CS_UI    = 931
-# ⚠⚠ **2026-11-08 抬基线：923 → 931（+8，判据项）** —— 成因 = JXL 增益图批次（读侧 R1/R2 + 写侧 jhgm
+$BASE_CS_UI    = 1047
+# ⚠⚠ **2026-11-11 第二十二次抬基线（CMX 一致性批 CMX-1）：1041 → 1047（+6，判据项）** —— 成因 =
+#   CMX-1（ColorStrategyPlanning.cs 净新增 ~63 行）里跨族拒绝路径的**中文同义句**（A1 严口径的
+#   用户可见通道产出，与第二十一次的 T2-T6 播报文案同族）：`cmxZh` 两行拼接
+#   （「显式值与目标 primaries 推导矩阵 {derivedMatrix} 不一致 ⇒ 契约拒绝（exit 91、不产出）…
+#   ——输出矩阵随 primaries 推导，显式值仅可在推导值同族（601 族互通）内选择」）+
+#   主体已 Reject 追加行（「｜用户 --color-out-matrix={token} 与推导矩阵 … 不一致（…）」）+
+#   Reject 助手 reason/confirm 两行（「输出矩阵 {token} 与目标 primaries 推导矩阵 … 不一致：…」/
+#   「显式 --color-out-matrix 仅可选推导矩阵同值或 601 族（bt470bg/smpte170m）成员；…」）+
+#   推导 null 档 Reason 点名行（「｜源 primaries 未标注，显式矩阵以用户值为准」）——合计 6 行。
+#   归因方法 = `_probe-cjk-hardcode-scan` 实测（工作树含 CMX-1 后跑出 CsUi=1047，抬表前轮
+#   `tests/output/_tmp/cmx3-gate/cjk-before-raising.log`：`UI 面 = 1047（基线 1041，余量 -6）`、
+#   判据 FAIL 1 条）+ `git diff -U0 -- src/FfmpegGui/Services/ColorMapping/ColorStrategyPlanning.cs`
+#   的 +CJK 字符串行与 CMX-1 交付证据（tests/output/_tmp/cmx1-consistency/delivery_evidence.md §3）
+#   的新增行清单逐条对上。
+#   ⚠ **EmitWarn 面 0 违规**：模板 4 常量 OutMatrixReportConflict 全 ASCII——由
+#   verify-color-out-matrix.ps1 的 G6 逐字锁定（CMX 批同批新增），门禁端到端在 I1/I2 消费其
+#   实例化文本 ⇒ 本桶 +6 不是 EmitWarn 违规，是 Reason 中文通道的合理产出。
+#   ⚠ 同批 `$BASE_CS`/`$BASE_CS_TAG`/`$BASE_CS_OTHER`/`$BASE_XAML` **不动**（ℹ 打印/实测不变）。
+#   ⚠ 余量 0（1047 = 实测值）：**不预留**下一个批次的额度（本锁二十二次抬基线以来一直守的边界）。
+# ⚠⚠ **2026-11-10 第二十一次抬基线（color-matrix-options 批 T7）：952 → 1041（+89，判据项）** —— 成因 =
+#   T2-T6 五批叠加的显式输出矩阵模式（--color-out-matrix）新增中文文案（全部未提交在制品，属抬表批次）。
+#   ⚠ **EmitWarn 面 0 违规**：C-REPORT@1 三模板常量全 ASCII（T7 门禁 verify-color-out-matrix.ps1 G4
+#   逐字锁定）+ T6 交付自查 ④ 的 scan_emit_ascii.py 五文件扫描——本桶 +89 **不是** EmitWarn 违规，
+#   是规划层/出口层**中文可用通道**的合理产出（见下）。
+#   归因方法 = `git diff -U0 -- src/FfmpegGui` 原始 +CJK 行按文件分布（取证脚本
+#   `tests/output/_tmp/color-matrix-t7-probe/cjk_attr_t7.py.ps1`，输出落同目录；HEAD↔工作树含
+#   R1-R5 全部未提交批次，952 快照不存在 ⇒ **不逐行精确分解**，按批次级归属登记，此边界如实记录）：
+#   主要增量文件族（原始 +CJK 行）：
+#   · `ColorMapping/ColorStrategyPlanning.cs` **+288**（原始 diff 口径，含 R1-R4 既有在制品）——
+#     本批新增 = T5 的 Reason 中文播报（Carried「已由 {fmt} 出口承载」/Redundant「已按同值处理」/
+#     Rejected「不被 {fmt} 出口承载 ⇒ 契约拒绝」）+ OutMatrixCarriedLandingNote/OutMatrixRejectionWhy
+#     的中文短语（规划层 Reason 通道**中文可用**，C-REPORT@1 契约明文：ASCII 约束面只限 EmitWarn）；
+#   · `ColorMapping/RawColorPipeline.cs` **+43**：T6 出口中文（引擎播报注释外的边界点名/日志续行，
+#     续行未接 sink 的已知口径）；
+#   · `CjxlService.cs` **+21** / `FfmpegCommandBuilder.cs` **+59**（含 577 区既有在制品）：T6 的
+#     cjxl 中文确认/冲突点名（log 通道，既有「仅真执行侧播报」约定）与 legacy 中文边界；
+#   · `MainWindow.xaml.cs` **+48**：T4 的采集/回放语义注释与门禁锚点说明（注释外为采集点上下文）；
+#   · `CliParser.cs` **+20**：T3 的 `--color-out-matrix` 非法值错误文案与 help 中文说明行（与
+#     第七次 :592 `--color-engine` 白名单文案同族——用户可见 CLI 文案）；
+#   · `ColorTransformPlan.cs` **+38** / `ColorIntentFactory.cs` **+45** / `ColorSpaceRegistry.cs` **+26** /
+#     `FfmpegOptions.cs` **+20**：T2 字段文档注释外的装配链/归一说明与描述符（同族既有形态）。
+#   ⚠ 属性判定：+89 全部是**用户可见的播报/拒绝原因/CLI 文案**（「显式选择必须被点名，不许静默」
+#   要求的产出），与第七/九/十/十六/十九次同族 ⇒ 依 :418-421 的既有裁定，**不为撑棘轮**把播报
+#   静音、改英文或改 sink 形状 ⇒ 抬登记值。余量 0（1041 = 实测值，不预留额度）。
+#   ⚠ 非判据桶 `$BASE_CS`/`$BASE_CS_TAG`/`$BASE_CS_OTHER` 按既有裁定**不动**（ℹ 打印，见 :402-404 注记）；
+#   `$BASE_XAML` 实测仍 13 不动。
+# ⚠⚠ **2026-11-10 第二十次抬基线：931 → 952（+21，判据项）** —— 成因分两层（R5 终验差分归因，脚本
+#   _r5_cjk-diff.ps1/_r5_cjk-headside.ps1 逐文件实测，与探针实测值精确吻合）：
+#   · HEAD 侧 +7（931→938，已提交）：全来自 544ca22 HEIC 解码八项——GainMapDecoder.cs +3 /
+#     QueueProcessor.cs +2 / Program.cs +1 / IsoBmffGainMapProbe.cs +1；
+#   · 工作树 +14（938→952，未提交 R1-R4 修复）：ColorStrategyPlanning.cs +12（R1 hdr-peak 无承载点名
+#     + R4 matrix 无承载点名/headroom 提示/边缘越界分档/直通措辞）、ColorTransformPlan.cs +2；
+#     IsoBmffGainMapProbe.cs / VendorHdrTrailer.cs 当前差分实测 0。全部为播报文案类合理增量。
+#   归因方法 = 探针 Measure-Cjk 逻辑复刻对 git show HEAD 与 544ca22^ 版本逐文件差分。
+# ⚠⚠ **2026-11-08 抬基线（第十九次）：923 → 931（+8，判据项）** —— 成因 = JXL 增益图批次（读侧 R1/R2 + 写侧 jhgm
 #   写出器；用户裁决按解析级读者标准开写侧）。归因方法 = **本探针自测的逐文件差分**：对 15 个触碰文件
 #   逐一还原 HEAD 版重跑探针，每文件贡献 = 930 − without（restore 15/15 哈希校验通过；差分在门禁调平
 #   前做的，基准 930）：

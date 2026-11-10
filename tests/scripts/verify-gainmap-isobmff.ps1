@@ -101,15 +101,44 @@
 #     ⚠ 真实原件是**用户个人素材，不入仓**（口径同 §3e），本节覆盖的是**结构形态**，
 #     不代表图像语义正确性（增益公式/色域语义另有门禁）。
 #
-# 断言（共 115 条）：§0 前置 6 · §1 容器层 8 · §1b HEVC 解码路径 11（含 2 条负控 + 1 条反控）·
+# 断言（共 155 条）：§0 前置 6 · §1 容器层 8 · §1b HEVC 解码路径 11（含 2 条负控 + 1 条反控）·
 #                   **§1c Apple auxC 识别 4（含 URN 反控 + 21496 回归）** ·
+#                   **§1h Apple aux 完整解码 15（AU-W2 2026-11-10：合成器在位/执行/三件在位 3 + exiftool 身份 2 +
+#                   探针臂 2 + 裸流端到端 1 + B/C 负控 2 + Exif 变异负控 1 + 端到端 png 分叉 3；合成件一轮现生成，
+#                   产物不落仓——生成器 tests/scripts/_make-synth-aux-gainmap.py）** ·
+#                   **§1i aux-21496 防御性解码 10（AU2-X1 2026-11-10：D 件/D-bad 在位 1 + corpus 语料 1 +
+#                   探针正控 2 + version 负控 1 + MN 对拍 2 + 端到端 2 + A 件回归 1；同批 mirror-parity
+#                   gainmap-isobmff 36→43 + 新 mode gainmap-mn-parity=8）** ·
 #                   **§1d grid 分块 + idat 承载 12（含 grid version 负控 + 端到端拼接点名）** ·
 #                   **§1e clap 裁切几何 15（含 SHA-256 钉死 + 2 条容器负控）** ·
 #                   **§1f 底图尺寸对账 8（2026-11-02 第二批：4 条原臂 + A2b 放大型 + §1f-b 3 条调用点接线/使用态/取源自检）** ·
 #                   §2 源码形态 6（含反控）· §2b 缺陷 C 源码形态 3（含反控）· §3 行为 8 ·
 #                   §3b 缺陷 C 行为 4（含负控与素材形态自检）· **§3c HEIC 端到端行为 5（含负控）** ·
 #                   **§3d 厂商尾注执行面 4（含拒因与互斥点名）** · **§3e 底图取法 A/B 4（含对照臂分叉）** · **§3f HEIC→BT.2020/PQ 出口 11（三读者 + 码域分叉 + 2 条对照 + tmap pixi）** ·
-#                   **§3g AVIF 增益图 + alpha 5（含 PNG 对照；点名"透明被拍平"）** · §4 收尾 1
+#                   **§3g AVIF 增益图 + alpha 5（含 PNG 对照；点名"透明被拍平"）** · §4 收尾 1 ·
+#                   **§3v 厂商尾注真机件 9（2026-11-09 新增：前提 sha 锁 1 + 臂①识别/几何/headroom/载荷 4 + 臂② 1/2 比例 1 + 臂③a 比率读数 1 + 臂③b 字节变异负控 2；语料缺失时整段 SKIP，收尾行 SKIP=9 活体可见，不假绿不误红）**
+#   ⚠ 2026-11-09 条数更正：旧散文「115」与实测定义面 121 不符（历史漂移，非本轮引入，按实测口径改写）；
+#     本轮 §3v +9 ⇒ 定义面 130；当轮执行面 PASS=127 FAIL=1 = 128（§3f-7/§3f-8 两条「产物未产出」
+#     兜底臂在产物在位时不触发，差 2 属预期内条件分支，python 差集逐条核对过）。
+#   ⚠ 2026-11-09 批次 C：探针内 V 组 18→19（新增 V19 参数块布局指纹负控，双真机样本互证）。
+#     本脚本 CK 条数不变（§3d 仍是 4 条，字面量 pass=18→19 同批）⇒ 定义面 130 / 执行面 128 不变；
+#     ServiceProbe 的 mirror-parity 登记位 19→20（源文本调用位口径，同批改齐）。
+#     三口径文档债（旧 115/117/119）：A 批已在脚本头部更正；账本（HANDOVER-JXL-GAINMAP-2026-11-08 等）
+#     与承重文档（TESTING.md 等）经 2026-11-09 宽搜**零命中**（TESTING.md 的 117/0 是 verify-gainmap-engine，
+#     另一门禁）⇒ 按数命中口径**不回改任何文档**。
+#   ⚠ 2026-11-10（AU-W2）：新增 §1h（Apple aux 完整解码形态）+15 ⇒ 定义面 145；§1h 全部无条件执行
+#     ⇒ 执行面同步 +15。同批：ServiceProbe `gainmap-isobmff` 新增 `auxdec` 期望（Check 调用位 29→36，
+#     mirror-parity 登记同批改齐）；探针 `IsoBmffGainMapProbe` 新增 aux 完整提取（Apple 形态从
+#     fail-closed 升级为可解）。
+#   ⚠ 2026-11-10（AU2-X1）：新增 §1i（aux-21496 防御性解码）+10 ⇒ 定义面 155；§1i 嵌在 §1h 的
+#     合成器块内但**前置自检自身计为断言**（D/D-bad 缺失 ⇒ §1i 第一条红，fail-closed 可见）。
+#     同批：合成器加 D 件与 D-bad 负控件（aux_iso21496.heic / aux_iso21496_bad.heic，五件语料）；
+#     ServiceProbe `gainmap-isobmff` 新增 `auxisofull` 期望（Check 调用位 36→43）与**新 mode**
+#     `gainmap-mn-parity`（AppleMakerNote 纯托管 vs exiftool 对拍，调用位 8）——组表与 mirror-parity
+#     登记同批改齐（总量 879→894）；探针 `IsoBmffGainMapProbe` 的 aux-21496 分支从恒 fail-closed
+#     升级为**结构尝试**（TryParseIsoAux：前置 version+GainMapMetadata 与 tmap 载荷同构，
+#     ParseIso21496 out consumed 切流）；D 件语料落 tests/output/corpus/aux-gainmap-heic/
+#     （首冻结样本 sha256[:16]=ef7d4fcabb19825f——x265 输出非确定，登记为身份记录非断言）。
 #   ⚠ **两条弱断言**（都实测过「变异后仍然通过」，别只信它们）：
 #     · §1b「转换成功」：只看 `determinate` / `ffmpegFmt=hevc` / `gmData>0` —— **原样透传不转换**也能过；
 #     · §3c「识别并产出」：只看「日志出现『检测到 ISO-BMFF 增益图』」+ 有产物 —— **退回 fail-closed** 也能过。
@@ -452,6 +481,163 @@ CK (($cAuxN.text -match 'PROBE RESULT: pass=3 fail=0') -and ($cAuxN.text -match 
 CK (($cAuxI.text -match 'PROBE RESULT: pass=5 fail=0') -and ($cAuxI.text -match 'form=aux-21496') -and ($cAuxI.text -match 'determinate=False')) `
    "§1c 回归：URN 含 21496 仍走原有 aux-21496 分支（新增的 apple 分支不得吞掉它）"
 
+# ── §1h Apple aux **完整解码形态**（AU-W2，2026-11-10）────────────────────────────
+#   背景：§1c 只锁「极简 auxC 件认出并 fail-closed 点名」（该夹具结构残缺：无 iinf/iloc/iref，
+#   探针定位不到 aux item）。AU-W2 把 Apple aux 形态升级为**完整解码**：
+#     探针：auxC 属性归属反查 aux item → iref auxl 验证（aux→primary）→ Exif item（iref cdsc）
+#           → 切出 aux 裸流（hvcC→Annex-B）与 Exif 字节 ⇒ Determinate=true；
+#     解码：GainMapDecoder 走 exiftool 整件通道读 AppleMakerNote（tag 33=HDRHeadroom /
+#           48=HDRGain）→ Apple headroom 公式 → 官方恢复公式 hdr = sdr_lin × (1+(hr−1)×Rec709Inv(gm))。
+#   合成件由 tests/scripts/_make-synth-aux-gainmap.py **现生成**（一轮一目录，产物不落仓）：
+#     A = 正控（primary hvc1 64x48 + aux hvc1 4:0:0 灰度 32x24 + Exif(AppleMakerNote 33=3/2 48=1/2)
+#         + iref auxl/cdsc；⇒ headroom ≈ 4.4536×）
+#     B = 负控（同 A 去掉 aux/Exif = 纯 SDR）
+#     C = 语义反控（URN=urn:com:example:other ⇒ 按无增益图处理）
+#   ⚠ exiftool 能读出 AppleMakerNote 是合成器最难的一关（Exif item 前缀布局 + TIFF offset 基准，
+#     2026-11-10 实测调通：u32(6)+"Exif\0\0"+TIFF；TIFF 内 offset 一律相对 'MM' 头）。
+Write-Host "`n### §1h Apple aux 完整解码形态（合成 + 探针 + exiftool 身份 + 端到端像素分叉）###" -ForegroundColor Cyan
+$auxGen = "$root/tests/scripts/_make-synth-aux-gainmap.py"
+CK (Test-Path $auxGen) `
+   "§1h 前置：合成器脚本在位（tests/scripts/_make-synth-aux-gainmap.py）—— 缺则本段整段无凭据（fail-closed）"
+if (Test-Path $auxGen) {
+  $py = (Get-Command python -ErrorAction SilentlyContinue)
+  if ($null -eq $py) { $py = (Get-Command py -ErrorAction SilentlyContinue) }
+  CK ($null -ne $py) "§1h 前置：python 可用（合成器执行体）"
+  if ($null -ne $py) {
+    $auxDir = "$work/aux_corpus"
+    $auxRun = Exec $py.Source "`"$auxGen`" --ffmpeg `"$ff`" --outdir `"$auxDir`"" "aux_gen"
+    CK ($auxRun.code -eq 0) "§1h 合成器执行成功（exit=$($auxRun.code)；stderr 摘要见 aux_gen.err）"
+    $auxA = "$auxDir/aux_apple_gainmap.heic"
+    $auxB = "$auxDir/aux_apple_noaux.heic"
+    $auxC = "$auxDir/aux_apple_otherurn.heic"
+    CK ((Test-Path $auxA) -and (Test-Path $auxB) -and (Test-Path $auxC)) `
+       "§1h 三件语料在位（A 正控 / B 纯 SDR 负控 / C URN 语义反控）"
+    if ((Test-Path $auxA) -and (Test-Path $auxB) -and (Test-Path $auxC)) {
+      # exiftool 身份双验证（随包 perl 版 exiftool：取值一律走 ExecOut 只读 stdout —— 见 ExecOut 注释）
+      $et = "$root/publish/PLAN/exiftool/exiftool.exe"
+      $etA = ExecOut $et "-j -a -G1 -MakerNotes:all `"$auxA`"" "aux_et"
+      CK ($etA.text -match '"Apple:HDRHeadroom":\s*1\.5') `
+         "§1h exiftool 读出 Apple:HDRHeadroom=1.5（tag 33=3/2；exiftool 可读 = 合成件身份成立）"
+      CK ($etA.text -match '"Apple:HDRGain":\s*0\.5') `
+         "§1h exiftool 读出 Apple:HDRGain=0.5（tag 48=1/2 ⇒ stops=-0.303×0.5+2.303=2.1515 ⇒ headroom≈4.4536×）"
+      # 探针臂：完整提取（auxdec 期望 = ServiceProbe 8 条断言）
+      $cAuxDec = Exec $sp "gainmap-isobmff `"$auxA`" `"$work/aux_gm.hevc`" auxdec" "p_auxdec"
+      $auxdecLines = @($cAuxDec.text -split "`r?`n") | Where-Object { $_ -match '^(determinate|hasGainMap|codec=)' } | Select-Object -First 3
+      Write-Host ("  [auxdec] " + ($auxdecLines -join ' | '))
+      CK (($cAuxDec.text -match 'determinate=True') -and ($cAuxDec.text -match 'PROBE RESULT: pass=8 fail=0') -and ($cAuxDec.text -match 'gainmap_raw_written=')) `
+         "§1h 探针 8 条全绿 + aux 裸流已落盘（determinate=True / form=aux-apple-hdrgainmap / Exif item 已切出）"
+      CK (($cAuxDec.text -match 'gainmapItem=2') -and ($cAuxDec.text -match 'codec=hvc1') -and ($cAuxDec.text -match 'ffmpegFmt=hevc')) `
+         "§1h 提取链读数：aux item=2（hvc1）⇒ Annex-B（ffmpegFmt=hevc）—— 与 tmap 形态同一套 hvcC→Annex-B 转换器"
+      # 裸流自证：切出的 Annex-B 真的能被 ffmpeg 按 HEVC 解复用（32x24 = aux 灰度图）
+      $dAux = ExecOut $fp "-v error -f hevc -show_entries stream=codec_name,width,height -of csv=p=0 `"$work/aux_gm.hevc`"" "d_aux"
+      CK ($dAux.text -match '(?m)^\s*hevc,\s*32\s*,\s*24') `
+         "§1h 裸流端到端：探针切出的字节被 ffprobe 按 hevc 解出 32x24（= aux 灰度图 1/4 尺寸；实 $($dAux.text.Trim())）"
+      # B/C 负控（结构同族但无增益图语义 ⇒ hasGainMap=False）
+      $cAuxB = Exec $sp "gainmap-isobmff `"$auxB`" none" "p_auxnoaux"
+      CK (($cAuxB.text -match 'hasGainMap=False') -and ($cAuxB.text -match 'determinate=True')) `
+         "§1h 负控 B：同 A 去掉 aux/Exif ⇒ 判无增益图（不凭空造增益）"
+      $cAuxC = Exec $sp "gainmap-isobmff `"$auxC`" none" "p_auxotherurn"
+      CK (($cAuxC.text -match 'hasGainMap=False') -and ($cAuxC.text -match 'determinate=True')) `
+         "§1h 反控 C：**完整结构** + URN 换 urn:com:example:other ⇒ 仍判无增益图（判据是 URN 语义，不是「有 aux item 就算」；与 §1c 极简件反控互补）"
+      # 变异负控（断言有牙）：infe 的 item 类型 "Exif" 改成 "xxxx" ⇒ Exif item 定位失败 ⇒ fail-closed 点名
+      #   （证明探针**真的消费** Exif item 的存在性，而不是看到 auxC 就放行）
+      $auxMut = "$work/aux_noexif.heic"
+      $auxSrcBytes = [System.IO.File]::ReadAllBytes($auxA)
+      $mutB = Replace-Bytes $auxSrcBytes ([System.Text.Encoding]::ASCII.GetBytes('Exif')) ([System.Text.Encoding]::ASCII.GetBytes('xxxx'))
+      [System.IO.File]::WriteAllBytes($auxMut, $mutB)
+      $cAuxMut = Exec $sp "gainmap-isobmff `"$auxMut`" auxdec" "p_auxmut"
+      CK (($cAuxMut.text -match 'determinate=False') -and ($cAuxMut.text -match 'Exif')) `
+         "§1h **负控（断言有牙）**：Exif item 类型被破坏 ⇒ fail-closed 且点名 Exif（实 $(($cAuxMut.text -split "`r?`n") | Where-Object { $_ -match '^determinate=' } | Select-Object -First 1)）"
+      # 端到端：A/B 各跑 headless → png16（png-def 直通语义：**不带** --jpeg-gain-map —— png 容器
+      #   的能力表 SupportsGainMap=false ⇒ 开了会契约拒绝 exit 91（设计内守卫）；而 HEIC 输入的
+      #   增益图**解码**入口（QueueProcessor 的 IsIsoBmffGainMapDetailedAsync）不看该开关 ⇒
+      #   png-def 下同样走「解码为线性 HDR PFM → png cICP 直通」全链）。
+      $eA = RunApp $auxA "png" "aux_e2e_A" @("--bit-depth", "16")
+      CK (($eA.prods -gt 0) -and ($eA.text -match 'AppleMakerNote') -and ($eA.text -match 'Apple 公式')) `
+         "§1h 端到端 A：png 产物在位（$($eA.prods) 个）且日志含 AppleMakerNote 元数据行 + Apple 公式恢复行"
+      $eB = RunApp $auxB "png" "aux_e2e_B" @("--bit-depth", "16")
+      CK (($eB.prods -gt 0) -and ($eB.text -notmatch 'AppleMakerNote')) `
+         "§1h 端到端 B：png 产物在位且日志**无** AppleMakerNote 行（纯 SDR 件不进增益图路径）"
+      # 像素分叉：A（有增益）与 B（纯 SDR 底图）的产物必须**不同** —— ffmpeg psnr 滤镜现算
+      #   （对齐 2026-11-03 口径：判据自己算并打印读数，不引无当轮出处的 dB 数）。
+      $pngA = Get-ChildItem -LiteralPath $eA.dir -Filter *.png -ErrorAction SilentlyContinue | Select-Object -First 1
+      $pngB = Get-ChildItem -LiteralPath $eB.dir -Filter *.png -ErrorAction SilentlyContinue | Select-Object -First 1
+      if (($null -ne $pngA) -and ($null -ne $pngB)) {
+        $psnrRun = Exec $ff "-v info -i `"$($pngA.FullName)`" -i `"$($pngB.FullName)`" -lavfi psnr -f null -" "aux_psnr"
+        $psnrVal = $null
+        if ($psnrRun.text -match 'average:([0-9.]+|inf)') { $psnrVal = $Matches[1] }
+        $psnrNum = 999.0
+        if ($psnrVal -is [string] -and $psnrVal -ne 'inf') { $okNum = [double]::TryParse($psnrVal, [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$psnrNum); if (-not $okNum) { $psnrNum = 999.0 } }
+        CK ($psnrNum -lt 60) `
+           "§1h 像素分叉（断言有牙）：A（增益已应用）vs B（纯 SDR）产物 PSNR=$psnrVal dB（&lt;60 ⇒ 两者真实不同 ⇒ 增益真被施加；相同则说明恢复链没跑）"
+      } else {
+        CK $false "§1h 像素分叉：产物 png 缺失（A=$($null -ne $pngA) B=$($null -ne $pngB)) ⇒ 无法对拍"
+      }
+
+      # ── §1i aux-21496 防御性解码（AU2-X1，2026-11-10）──────────────────────────────
+      #   背景：调研饱和度结论（SPEC §7.0，五来源交叉）——aux-21496（auxC URN=21496）在已知生态
+      #   **无写入器**（libheif #1121 正文明确弃用 aux 形态选 tmap / libultrahdr heifultrahdr.cpp 仅
+      #   tmap / libavif PR#2960 写侧统一 tmap / SharpAstro #70 自标 "to be confirmed"）⇒ 本分支是
+      #   **防御性前瞻设计**：aux item 数据前置 `version(1B,=0) + ISO 21496-1 GainMapMetadata`
+      #   （与 tmap 载荷同构，ParseIso21496 复用，out consumed 给出元数据字节数）
+      #   ⇒ 结构成立 ⇒ Determinate=true（ISO 2^logBoost 公式族恢复，与 tmap 同汇合点）；
+      #   version/元数据不匹配 ⇒ fail-closed 点名「aux-21496 元数据结构未证实」。
+      #   合成件 D（正控）与 D-bad（负控：version 段破坏 0→1）由合成器本轮现生成。
+      #   D 件另落语料 tests/output/corpus/aux-gainmap-heic/aux_iso21496.heic：
+      #   首冻结样本身份 sha256[:16]=ef7d4fcabb19825f（2026-11-10 gen1，5,558 B）。
+      #   ⚠ x265 输出**非确定**（两轮实测 aux 流 2441 vs 2434 B）⇒ corpus 由门禁**自动补齐、
+      #     每轮不覆盖**，sha 锁无跨轮牙——登记为**身份记录**（报告/头部注释），非断言；
+      #     结构验证的牙由本轮现生成件承担。
+      Write-Host "`n### §1i aux-21496 防御性解码（D 件结构尝试 + version 负控 + MN 对拍 + 端到端）###" -ForegroundColor Cyan
+      $auxD    = "$auxDir/aux_iso21496.heic"
+      $auxDbad = "$auxDir/aux_iso21496_bad.heic"
+      CK ((Test-Path $auxD) -and (Test-Path $auxDbad)) `
+         "§1i 前置：合成器产出 D 件（aux-21496 正控）与 D-bad（version 破坏负控）—— 缺则本段整段无凭据（fail-closed）"
+      if ((Test-Path $auxD) -and (Test-Path $auxDbad)) {
+        # 语料落盘（缺失才补齐——x265 非确定 ⇒ 覆盖会让冻结 sha 漂移）
+        $corpusD = "$root/tests/output/corpus/aux-gainmap-heic/aux_iso21496.heic"
+        if (-not (Test-Path $corpusD)) {
+          New-Item -ItemType Directory -Force -Path (Split-Path $corpusD) | Out-Null
+          Copy-Item $auxD $corpusD -Force
+          Write-Host "  [corpus] 缺失 ⇒ 首次落盘（冻结本份字节；此后每轮不再覆盖）"
+        }
+        $corpusSha = (Get-FileHash -Algorithm SHA256 -Path $corpusD).Hash.ToLower()
+        # ⚠ 跨行「+」续接在 pwsh7 会 ParserError（实测）⇒ 单行拼接。
+        $corpusNote = "  [corpus] aux_iso21496.heic sha256[:16]=" + $corpusSha.Substring(0, 16) + "（首冻结登记 ef7d4fcabb19825f @ 2026-11-10 gen1；两者可不同——x265 非确定，登记为身份记录非断言）"
+        Write-Host $corpusNote
+        CK (Test-Path $corpusD) `
+           "§1i corpus 语料在位（tests/output/corpus/aux-gainmap-heic/aux_iso21496.heic，缺失由本轮 D 件自动补齐）"
+        # 探针正控：结构尝试成立（auxisofull 期望 = ServiceProbe 8 条断言；探针侧 36→43 同批 mirror-parity）
+        $cIsoFull = Exec $sp "gainmap-isobmff `"$auxD`" `"$work/aux_iso_gm.hevc`" auxisofull" "p_auxisofull"
+        CK (($cIsoFull.text -match 'determinate=True') -and ($cIsoFull.text -match 'PROBE RESULT: pass=8 fail=0')) `
+           "§1i 探针 8 条全绿：结构尝试成立（determinate=True / form=aux-21496 / gainmapItem=2）"
+        CK (($cIsoFull.text -match 'tmapPayload=62') -and ($cIsoFull.text -match 'ffmpegFmt=hevc') -and ($cIsoFull.text -match 'gmData=\d+')) `
+           "§1i 提取链读数：前置 version+元数据段 62 B（与 tmap 载荷同构，ParseIso21496 out consumed 切出）+ 编码流已转 Annex-B（实 $(($cIsoFull.text -split "`r?`n") | Where-Object { $_ -match 'gmData=' } | Select-Object -First 1)）"
+        # 负控（有牙）：version 段破坏 ⇒ fail-closed + 精确点名（「结构未证实」是本防御分支的出口语义）
+        $cIsoBad = Exec $sp "gainmap-isobmff `"$auxDbad`" auxiso" "p_auxisobad"
+        CK (($cIsoBad.text -match 'determinate=False') -and ($cIsoBad.text -match '结构未证实') -and ($cIsoBad.text -match 'version 字节 = 1')) `
+           "§1i **负控（断言有牙）**：version 段破坏（0→1）⇒ fail-closed 且点名「aux-21496 元数据结构未证实：前置 version 字节 = 1」（实 $(($cIsoBad.text -split "`r?`n") | Where-Object { $_ -match '^determinate=' } | Select-Object -First 1)）"
+        # MN 对拍（AU2-X1 硬判据）：AppleMakerNote 纯托管解析器 == exiftool（A 件 1.5/0.5 ⇒ headroom≈4.4429×）
+        $cMnPar = Exec $sp "gainmap-mn-parity `"$auxA`"" "p_mnparity"
+        CK (($cMnPar.text -match 'PROBE RESULT: pass=8 fail=0') -and ($cMnPar.text -match 'parity=ok')) `
+           "§1i MN 对拍 8 条全绿：AppleMakerNote 纯托管解析 == exiftool（parity=ok；新 mode 由 TestGroups 组表 + mirror-parity 同批登记）"
+        CK (($cMnPar.text -match 'managed33=1\.5') -and ($cMnPar.text -match 'managed48=0\.5') -and ($cMnPar.text -match 'exif33=1\.5') -and ($cMnPar.text -match 'exif48=0\.5')) `
+           "§1i MN 对拍身份值：managed33=1.5 / managed48=0.5 / exif33=1.5 / exif48=0.5（⇒ headroom≈4.4429×，纯托管接管后读数无漂移）"
+        # 端到端：D 件 png 直通（ISO 语义恢复：cICP 认源 + 2^logBoost 公式族，**不是** Apple 公式）
+        $eD = RunApp $auxD "png" "aux_iso_e2e" @("--bit-depth", "16")
+        CK (($eD.prods -gt 0) -and ($eD.text -match '数据前置元数据') -and ($eD.text -match '恢复: ISO 21496 公式族') -and ($eD.text -notmatch 'Apple 公式')) `
+           "§1i 端到端 D：png 产物在位（$($eD.prods) 个）且日志点名「URN 21496 数据前置元数据」+「恢复: ISO 21496 公式族」且**无** Apple 公式行（形态点名，与 tmap 同汇合点）"
+        CK ($eD.text -match '已解码为线性 HDR PFM') `
+           "§1i 端到端 D：增益图真被解码并应用（「已解码为线性 HDR PFM」= 元数据 + HEVC item 解码 + 增益公式全链走通）"
+        # A 件回归：exiftool→纯托管切换后 A 件行为不变（§1h 端到端 A 已断言 AppleMakerNote 行在场；
+        # 这里补「无降级」——纯托管解析失败会点名降级 exiftool，A 件不该走到降级）
+        CK ($eA.text -notmatch '降级 exiftool') `
+           "§1i A 件回归：exiftool→纯托管切换后**无降级行**（AppleMakerNoteParser 一次解成；读数一致性由 MN 对拍臂逐值锁住）"
+      }
+    }
+  }
+}
+
 # ── §1d grid 分块 + idat 承载（2026-11-02：iPhone HDR HEIC 实测形态）─────────────────────────
 #   背景：真实 iPhone HDR HEIC 的增益图是 **grid 派生项**（底图 30 块、增益图 2x2 块），且
 #   `tmap` / `grid` 载荷常驻 `meta/idat`（iloc construction_method=1）。旧探针两处都不认：
@@ -752,26 +938,130 @@ CK (($bHdrJpg.terminated) -and ($bHdrJpg.prods -ge 1)) `
 #   ⚠ 这不是语法错误（解析器不报错）⇒ `verify-ps-compat` 与 `Parser.ParseFile` **都抓不到**。
 #   ⇒ **纪律**：双引号串里不要用反引号包裹代码片段（改裸写或用「」）；尤其**尾反引号不得紧贴引号**。
 
-# ── §3d 厂商 HDR 尾注：V1–V18 必须在**执行面**跑，且条数钉死 ──────────────────────────
+# ── §3d 厂商 HDR 尾注：V1–V19 必须在**执行面**跑，且条数钉死 ──────────────────────────
 #   为什么落 ServiceProbe 而不是 tests/gainmap：那四份镜像工程（tests/{encode,io,metadata,gainmap}）的 exe
 #     从来不被任何门禁执行，只是源文本拷贝 ⇒ 断言写在那里＝「只在死代码里有的断言」。
 #     2026-10-15 先把 V1–V18 那段从镜像删掉；2026-10-16 价值普查 A-1 把四份镜像工程整体删除
 #     （`docs/review-2026-10-16/test-value-audit.md`），#76 的 ⑤-c 同批改成「只此一份锁」⑤。
-#   为什么钉 pass=18 而不只钉 fail=0：本段的牙是**条数** —— 早退/改名会让断言整段不跑而 fail 照旧 0。
+#     为什么钉 pass=19 而不只钉 fail=0：本段的牙是**条数** —— 早退/改名会让断言整段不跑而 fail 照旧 0。
+#     （2026-11-09 批次 C：V19 布局指纹负控上线，探针内 V 组 18→19；门禁 CK 条数不变，字面量同批。）
 #     #76 ③ 量的是源文本里的调用位，这里量实际执行并通过的数 ⇒ 两把尺互补，不重复。
 #   两臂天然分叉（不是自身对照）：识别若退化成「见到字段名就放行」⇒ V6/V7/V8 红；
 #     识别若整体失效 ⇒ V1/V2/V3 红 ⇒ 任一侧坏都有活格子。
-Write-Host "`n### §3d 厂商 HDR 尾注（ServiceProbe vendor-hdr，V1–V18）###" -ForegroundColor Cyan
+Write-Host "`n### §3d 厂商 HDR 尾注（ServiceProbe vendor-hdr，V1–V19）###" -ForegroundColor Cyan
 $vh = ExecOut $sp "vendor-hdr" "vendor_hdr"
 $vhSum = ($vh.text -split "\r?\n" | Where-Object { $_ -match "PROBE RESULT" } | Select-Object -First 1)
-CK ($vh.text -match "PROBE RESULT: pass=18 fail=0") "§3d vendor-hdr 18 条全绿（实 $vhSum）"
+CK ($vh.text -match "PROBE RESULT: pass=19 fail=0") "§3d vendor-hdr 19 条全绿（实 $vhSum）"
 $vPass = @([regex]::Matches($vh.text, "(?m)^PASS V")).Count
-CK ($vPass -eq 18) "§3d 逐条点名：以 PASS V 开头的行 = 18（实 $vPass）⇒ 汇总数不是靠早退蒙对"
+CK ($vPass -eq 19) "§3d 逐条点名：以 PASS V 开头的行 = 19（实 $vPass）⇒ 汇总数不是靠早退蒙对"
 #   两条「必须拒」的臂只钉 Found=False 是不够的（任何解析失步都会 False）⇒ 必须钉**拒因**。
 CK (($vh.text -match "no JPEG matches the declared mask length") -and ($vh.text -match "expected 144")) `
    "§3d 拒因点名：V6 声明长度不符 / V7 参数块非 144（两条各死于自己那条判据，不是顺带没认出）"
 CK ($vh.text -match "V8/V9 vendorFound=False isoHasGainMap=True isoForm=tmap") `
    "§3d 与标准承载互斥：真 tmap 件厂商支不认、ISO 支仍认（同一行读数钉住两侧）"
+
+# ── §3v 厂商尾注**真机件**形态锁（2026-11-09，OnePlus 15T 直出 HEIC 进语料）────────────────
+#   背景：V1–V19（§3d）是结构层合成件自测；本节钉**首个真机形态**（tests/output/corpus/
+#   gainmap-vendor-heic/IMG20261101124423.heic，含 GPS 隐私 ⇒ 不入仓，sha256[:16] 锁定字节）。
+#   三处形态差异是合成件造不出的：
+#     ① mask 恰为主图 1/2 分辨率（1536x2048 vs 3072x4096）；
+#     ② max = 50/256 log2（合成件是 73/256）；
+#     ③ 记录头比率 = f32 @ SOI 前 80B、紧贴 00 "OnePlus 15T"（本件 1.2，与 2026-10-14 历史样本同值）。
+#       ⚠ 2026-11-09 勘误：早前任务口径记「记录头 16B 前导 0 + 设备名、无 f32 比率 ⇒ DeclaredRatio=0」
+#       是把 SOI 前 16B 的零填充误读成「无比率字段」——当轮探针实测 ratio=1.2，且是 SOI 前 128B
+#       窗口内**唯一** (1.0,64] 的 f32 命中（python 字节查证，2026-11-09）。「头部比率不参与 Found
+#       判定」由臂③b 的字节级变异负控钉住（抹掉 1.2f ⇒ ratio=0 且 Found 仍 True）。
+#   端到端权威读数（2026-11-09 headless 实测）：EXIT=0、HDR 线性像素峰值 232 nits、
+#   识别日志 vendor HDR layer: device=OnePlus 15T, mask 1536x2048x8,
+#   headroom log2 [-0.1067..0.1953] = 0.929x..1.145x、mask JPEG 820,165 B
+#   （manifest 声明 820,181，差 16 ≤ 64 容差）、P1 自洽 slack=209。
+#   语料无公开取回渠道（OnePlus 私有尾注 + 个人素材）⇒ **缺失时整段 SKIP**（收尾行 SKIP=8
+#   活体可见）：既不假绿（跳过计数可见）也不误红（没样本的机器不该红）；**在位但 sha 不符
+#   ⇒ fail-closed 判红**（同名不同字节 = 读数漂移，比缺件更危险；口径同 verify-gainmap-engine ⑬）。
+#   探针侧：ServiceProbe `vendor-hdr <path>` 有参时追加 W 组真文件臂（9 条断言，独立计数
+#   `real=9 fail=0`，不并入 V 组的 pass=19 条数锁）；无参调用 = 纯合成臂（§3d 形状逐字不变）。
+Write-Host "`n### §3v 厂商尾注真机件（OnePlus 15T：1/2 比例 / max=50/256 / 头部比率不参与判定）###" -ForegroundColor Cyan
+$vCorpus = "$root/tests/output/corpus/gainmap-vendor-heic"
+if ($env:VENDOR_HEIC_CORPUS_DIR) { $vCorpus = $env:VENDOR_HEIC_CORPUS_DIR }
+$vHeic = "$vCorpus/IMG20261101124423.heic"
+$vSkip = 0
+if (-not (Test-Path $vHeic)) {
+    $vSkip = 9
+    Write-Host "SKIP §3v 真机语料不在位（$vHeic）⇒ 9 条形态臂整段跳过（收尾行 SKIP=9 可见）。取法：需人工从用户本机复制 D:\TEST\IMG20261101124423\IMG20261101124423.heic 到该目录（OnePlus 私有尾注 + 含 GPS，无公开渠道、不入仓；sha256[:16]=33e2a27a1ed72b89）" -ForegroundColor Yellow
+} else {
+    $vSha = (Get-FileHash -Algorithm SHA256 -Path $vHeic).Hash.ToLower()
+    CK ($vSha.Substring(0, 16) -eq '33e2a27a1ed72b89') `
+       "§3v-0 前提：真机语料在位且 sha256[:16]=33e2a27a1ed72b89（实 $($vSha.Substring(0, 16))，2,837,433 B）—— 同名不同字节 ⇒ 下面读数全部失效"
+    $vh2 = ExecOut $sp "vendor-hdr `"$vHeic`"" "vendor_hdr_real"
+    $vh2Sum = ($vh2.text -split "\r?\n" | Where-Object { $_ -match "PROBE RESULT" } | Select-Object -First 1)
+    Write-Host "  [W] $(($vh2.text -split "`r?`n" | Where-Object { $_ -match '^W ' }) -join ' | ')"
+    Write-Host "  [W-meta] $(($vh2.text -split "`r?`n" | Where-Object { $_ -match '^W-meta' }) -join ' | ')"
+    # 臂①：真文件识别（ServiceProbe vendor-hdr <path>：V 组 18 条照跑 + W 组 9 条真文件断言）
+    CK (($vh2.text -match 'PROBE RESULT: pass=19 fail=0') -and ($vh2.text -match '(?m)^real=9 fail=0') `
+        -and ($vh2.text -match 'W Found=True Det=True')) `
+       "§3v-1 臂① 真文件识别：V 组条数锁 pass=19 不变 + W 组 real=9 fail=0 + Found/Det=True（实 $vh2Sum）"
+    CK (($vh2.text -match "dev='OnePlus 15T'") -and ($vh2.text -match 'mask=1536x2048x8')) `
+       "§3v-2 臂① 设备与几何：dev='OnePlus 15T' 且 mask=1536x2048x8（识别日志 device=OnePlus 15T, mask 1536x2048x8）"
+    # headroom 三值从 W-meta 行提取后按 ±容差判（比子串匹配精确；容差与探针 W4–W6 同源）
+    $vMeta = ($vh2.text -split "`r?`n" | Where-Object { $_ -match '^W-meta' } | Select-Object -First 1)
+    $vMin = 0.0; $vMax = 0.0; $vGam = 0.0
+    $vm1 = [regex]::Match($vMeta, 'min=(-?[\d.Ee+-]+)')
+    if ($vm1.Success) { $vMin = [double]$vm1.Groups[1].Value }
+    $vm2 = [regex]::Match($vMeta, 'max=(-?[\d.Ee+-]+)')
+    if ($vm2.Success) { $vMax = [double]$vm2.Groups[1].Value }
+    $vm3 = [regex]::Match($vMeta, 'g=([\d.Ee+-]+)')
+    if ($vm3.Success) { $vGam = [double]$vm3.Groups[1].Value }
+    CK (([Math]::Abs($vMin - (-0.1067)) -le 0.001) -and ([Math]::Abs($vMax - 0.1953) -le 0.001) -and ([Math]::Abs($vGam - 2.9126) -le 0.01)) `
+       "§3v-3 臂① headroom 三值：min≈-0.1067±0.001 / max≈0.1953±0.001 / gamma≈2.9126±0.01（实 min=$vMin max=$vMax g=$vGam）＝ 27.3185..50 / 256 log2"
+    CK (($vh2.text -match 'jpegLen=820165') -and ($vh2.text -match 'slack=209')) `
+       "§3v-4 臂① 载荷对账：mask JPEG 820165 B（manifest 声明 820181，差 16≤64）+ 声明自洽 slack=209"
+    # 臂②：mask / 主图恰 1/2 比例。⚠ 取证（2026-11-09 当轮）：ffprobe 对本件报 **48 条 hevc 512x512 流**
+    #   （主图 3072x4096 = 6x8 分块 tile ⇒ `-select_streams v:0` 只给第一个 tile 512x512）⇒ 主图尺寸
+    #   必须走 **exiftool IFD0 层**（ImageWidth/ImageHeight 实测 3072x4096）；mask 值从探针 **W 行**
+    #   提取（$vh2.text 含 V 组合成臂输出，V1 行也有 mask=64x48x8，不锚行会抓错）。
+    $vWline = ($vh2.text -split "`r?`n" | Where-Object { $_ -match '^W Found=' } | Select-Object -First 1)
+    $vMaskM = [regex]::Match($vWline, 'mask=(\d+)x(\d+)x(\d+)')
+    $vMw = 0; $vMh = 0
+    if ($vMaskM.Success) { $vMw = [int]$vMaskM.Groups[1].Value; $vMh = [int]$vMaskM.Groups[2].Value }
+    $vIS = (ExecOut $et "-s -ImageWidth -ImageHeight `"$vHeic`"" "v_base_wh").text
+    $vBw = 0; $vBh = 0
+    $vBwM = [regex]::Match($vIS, 'ImageWidth\s*:\s*(\d+)')
+    if ($vBwM.Success) { $vBw = [int]$vBwM.Groups[1].Value }
+    $vBhM = [regex]::Match($vIS, 'ImageHeight\s*:\s*(\d+)')
+    if ($vBhM.Success) { $vBh = [int]$vBhM.Groups[1].Value }
+    CK (($vMw -gt 0) -and ($vBw -eq ($vMw * 2)) -and ($vBh -eq ($vMh * 2))) `
+       "§3v-5 臂② 1/2 比例锁：主图 ${vBw}x${vBh}（exiftool IFD0）= mask ${vMw}x${vMh}（探针 W 行）× 2 —— 两个独立读者对撞；ffprobe 对本件只报 48 条 512x512 分块 tile（6x8），主图尺寸只能走 IFD0 层读者"
+    # 臂③a：真机件记录头比率读数钉死。取证（2026-11-09，python 字节查证）：f32=1.2（9a 99 99 3f）
+    #   位于 mask SOI 前 80B、紧贴 00 "OnePlus 15T"，且是 SOI 前 128B 窗口内**唯一** (1.0,64] 的
+    #   f32 命中——与 2026-10-14 历史样本同值（VendorHdrTrailer.cs:19 注释「实测 1.2」的出处）。
+    CK (($vh2.text -match 'ratio=1.2') -and ($vh2.text -match 'W Found=True Det=True')) `
+       "§3v-6 臂③a 记录头比率读数：DeclaredRatio=1.2（f32 @ SOI 前 80B、紧贴设备名）且 Found/Det=True —— 真机件比率字段在场"
+    # 臂③b：**负控（有牙）**——「头部比率不参与 Found 判定」的行为证据：
+    #   把真机件里那 4 字节 1.2f 抹成 0（其余字节不动；取证已证窗口内唯一命中就是它 ⇒ 抹掉后
+    #   窗口再无 (1.0,64] 的 f32）⇒ DeclaredRatio 必须变成 0，而 Probe **仍必须** Found=True。
+    #   将来有人把「头部比率必读」当硬判据引入（窗口无合法 f32 就拒认），这条当场红。
+    #   ⚠ 变异件上探针 W8（期望 1.2±0.001）按契约 FAIL、real=8 fail=1 —— 那是探针对真机件
+    #   期望值的忠实判读，属**预期形状**；本臂判据只取 W 行的 Found/Det/ratio 三点，不看 real 行。
+    $vPat = @(0x9A,0x99,0x99,0x3F,0x00,0x4F,0x6E,0x65,0x50,0x6C,0x75,0x73,0x20,0x31,0x35,0x54)  # 1.2f + 00 + "OnePlus 15T"
+    $vBytes = [System.IO.File]::ReadAllBytes($vHeic)
+    $vHits = @()
+    for ($vi = 0; $vi -le $vBytes.Length - $vPat.Count; $vi++) {
+        $vOk = $true
+        for ($vj = 0; $vj -lt $vPat.Count; $vj++) { if ($vBytes[$vi + $vj] -ne $vPat[$vj]) { $vOk = $false; break } }
+        if ($vOk) { $vHits += $vi }
+    }
+    CK ($vHits.Count -eq 1) `
+       "§3v-7 臂③b 负控素材：1.2f + 00 + OnePlus 15T 模式在语料中恰命中 1 处（实 $($vHits.Count) 处）—— 否则字节手术打错位置，负控无效"
+    if ($vHits.Count -eq 1) {
+        $vMut = [byte[]]$vBytes.Clone()
+        for ($vj = 0; $vj -lt 4; $vj++) { $vMut[$vHits[0] + $vj] = 0 }   # 只抹比率 4 字节，设备名保留
+        $vMutPath = "$work/vendor_ratio_zero.heic"
+        [System.IO.File]::WriteAllBytes($vMutPath, $vMut)
+        $vMut2 = ExecOut $sp "vendor-hdr `"$vMutPath`"" "vendor_hdr_mut"
+        CK (($vMut2.text -match 'W Found=True Det=True') -and ($vMut2.text -match 'ratio=0 ') -and ($vMut2.text -match "dev='OnePlus 15T'")) `
+           "§3v-7 臂③b **负控**：抹掉记录头比率（1.2f→0）后 DeclaredRatio=0 而 Found/Det **仍** True（实 $(($vMut2.text -split "`r?`n" | Where-Object { $_ -match '^W ' } | Select-Object -First 1))）—— 头部比率只是记录、从不参与判定；「比率必读」硬判据引入者在这里红"
+    }
+}
 
 # ── §3e 底图取法 A/B（--gain-map-base-from-source）：开关必须**可测**，A 必须**更忠实** ────────
 #   为什么判据用**相对**口径（|ΔA| < |ΔB|）而不是绝对阈值：合成件只有 64x48，JPEG 重编码本身就带来
@@ -1075,7 +1365,11 @@ Write-Host "`n### §3h 方向位冲突：flags bit2 置位时以标志为准（�
 # 手术定位：iloc 里 item 2（tmap）的 extent 偏移是**绝对文件偏移**（生成器 _make-synth-heic-gainmap.py
 #   以 o1/o2/o3 显式写入），载荷布局 = u8 version + u16 min_version + u16 writer_version + u8 flags
 #   => flags 在 extent 偏移 +5。
-$heicB2 = "$out/synth_heic_bit2.heic"
+# ⚠ 2026-11-09 修复：原写 `"$out/synth_heic_bit2.heic"`，而 $out 在脚本作用域**未定义**
+#   （:337 那个是 Replace-Bytes 函数内的局部 List[byte]，无关）⇒ 插值成 "/synth_heic_bit2.heic"
+#   = 当前盘根（实测 C:\synth_heic_bit2.heic 每轮留 6,373 B 残留，违反工作区边界）。
+#   改用本轮 GUID 工作目录 $work。
+$heicB2 = "$work/synth_heic_bit2.heic"
 $walker = @'
 import struct, sys
 src, dst = sys.argv[1], sys.argv[2]
@@ -1136,6 +1430,6 @@ Write-Host "  本门禁共起过 $($script:spawned.Count) 个应用进程"
 foreach ($spid in $script:spawned) { KillTree ([int]$spid) }
 
 Write-Host ""
-Write-Host "===== gainmap-isobmff: PASS=$pass FAIL=$fail =====" -ForegroundColor $(if ($fail -eq 0) { "Green" } else { "Red" })
+Write-Host "===== gainmap-isobmff: PASS=$pass FAIL=$fail SKIP=$vSkip =====" -ForegroundColor $(if ($fail -eq 0) { "Green" } else { "Red" })
 # ⚠ 退出码必须在清理之后，且必须写完整 if/else（§6 第 67 条）。
 if ($fail -gt 0) { exit 1 } else { exit 0 }

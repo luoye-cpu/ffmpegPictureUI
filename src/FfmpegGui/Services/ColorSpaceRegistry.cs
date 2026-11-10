@@ -674,6 +674,62 @@ namespace FfmpegGui.Services
             return f is "jpg" or "jpeg" or "webp" ? "bt470bg" : null;
         }
 
+        // ══════════════ 输出矩阵 token 域（C-TOKEN@1，color-matrix-options 计划）══════════════
+        //
+        //  这是**输出侧**的矩阵模式 token 域（RGB→YUV 转换系数与容器标注，随产物出口落地），
+        //  与上方 FfmpegColorSpaceNames / FfmpegInputMatrixNames（**输入声明**侧，-i 前 -colorspace）
+        //  不是同一个域：输出侧允许 rgb（identity/RGB 标注）与 xyb（libjxl 内部感知色彩表示）这类
+        //  输入声明侧不存在的成员。消费链：GUI OutputMatrixCombo / CLI --color-out-matrix /
+        //  FfmpegOptions.ColorOutMatrix / 规划层承载判定（C-CAPS）——本注册表只管 token 域与归一，
+        //  「该出口是否承载」的判定在规划层（ColorStrategyPlanning.ResolveOutMatrixCapability），
+        //  不在本文件。
+        // ══════════════════════════════════════════════════════════════════════════════
+
+        /// <summary>
+        /// 输出矩阵模式的合法 token 白名单（C-TOKEN@1：11 项，顺序固定 = GUI 下拉条目顺序，auto 首项）。
+        /// <para>
+        /// 语义：auto=不指定，沿用现有推导（产物逐字节不变）；rgb=identity/RGB（nclx matrix=0 或
+        /// rgb/gbr 标注）；bt601 为 smpte170m 的**显示别名**（存储/传输一律用归一后 token，见
+        /// <see cref="NormalizeOutMatrixToken"/>；GUI 下拉仍可展示 bt601 别名档）；其余为 H.273
+        /// 矩阵族（YUV 承载出口的 RGB→YUV 转换系数 + 容器标注）。
+        /// </para>
+        /// <para>
+        /// ⚠ <c>xyb</c> 特殊语义：libjxl 内部感知色彩表示，**非 H.273 matrix coefficient**——
+        /// 仅 jxl（cjxl VarDCT 默认即 XYB / ffmpeg libjxl <c>-xyb 1</c>）与 jpg(cjpegli <c>--xyb</c>
+        /// 编码器内部特性，输出仍是标准 JPEG、解码端无感) 出口承载；承载判定在规划层（C-CAPS），
+        /// 本注册表只管 token 域与归一。
+        /// </para>
+        /// <para>
+        /// ⚠ <c>ycgco</c>（YCoCg）：**输出侧语义**，与 swscale **输入声明侧**不可用
+        /// （<see cref="FfmpegInputMatrixNames"/> 不含它；`-i` 前放 ycgco 会令 swscale
+        /// "Impossible to convert between the formats"）**无冲突**——输入声明与输出落地是两条通路，
+        /// 各管各的（本域只管输出侧）。
+        /// </para>
+        /// </summary>
+        public static readonly string[] OutputMatrixTokens =
+        {
+            "auto", "rgb", "bt709", "bt601", "bt470bg", "smpte170m", "smpte240m",
+            "fcc", "bt2020nc", "ycgco", "xyb",
+        };
+
+        /// <summary>
+        /// 输出矩阵 token 归一（C-TOKEN@1）：大小写不敏感；<c>bt601</c> 归一为 <c>smpte170m</c>
+        /// （存储/传输一律用归一后 token）；空白/null/「auto」（不区分大小写）→ null（=不指定，
+        /// 沿用现有推导，不得触发任何播报）；**未知值原样返回**——合法性拦截在 CLI 入口（C-CLI@1），
+        /// 「能识别但该格式不承载」的判定在规划层（C-CAPS），本注册表不负责报错。
+        /// 空白/大小写处理形态与 <see cref="NormalizeMatrixToken"/> 一致。
+        /// </summary>
+        public static string? NormalizeOutMatrixToken(string? raw)
+        {
+            var t = (raw ?? "").Trim().ToLowerInvariant();
+            if (t.Length == 0 || t == "auto") return null;
+            return t switch
+            {
+                "bt601" => "smpte170m",
+                _ => t,
+            };
+        }
+
         /// <summary>CICP primaries token → 本注册表内的色度坐标（线性域矩阵用）；未知返回 null。</summary>
         public static Spec? ResolvePrimariesToken(string? token)
         {

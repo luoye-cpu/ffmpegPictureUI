@@ -13,6 +13,27 @@ public enum ColorAction { None, Map, CarryIcc, Reject }
 /// <summary>执行后端（两只手 + LUT 兜底）。</summary>
 public enum ColorBackend { None, FfmpegFilter, InProcess, Lut }
 
+/// <summary>
+/// 显式输出矩阵模式的承载判定（C-CAPS@1，color-matrix-options 计划）。
+/// <para>
+/// 判定唯一真值 = <see cref="ColorMappingEngine.ResolveOutMatrixCapability"/>（规划层单点，
+/// 按 T1 扫描报告校准版判定表编码）；判定时机在规划层一次性完成（C-CAPS@1「判定时机」），
+/// 出口层（执行侧）只消费 <see cref="ColorTransformPlan.OutMatrixVerdict"/>，**不得复判**
+/// （单一真值——动图回退路径与预设入口汇聚到规划层后自动同表，不出现第二份判定表）。
+/// </para>
+/// </summary>
+public enum OutMatrixCapability
+{
+    /// <summary>auto（null）：无判定意义，出口走既有推导——整条链路与改造前逐字节同路径（CM-REQ-08）。</summary>
+    NotApplicable,
+    /// <summary>承载：按出口落地点写入（转换矩阵 + 标注 / 编码器开关）；xyb 档由执行层按 OutMatrixMode 分派开关。</summary>
+    Carried,
+    /// <summary>冗余但一致：接受 + 点名「仅登记不生效」（如 RGB 容器选 rgb；601 族与 auto 恒同值——T1 校准 C1/C3）。</summary>
+    Redundant,
+    /// <summary>矛盾：契约拒绝 exit 91、零产物 + 点名（C-REPORT@1 模板 3）。</summary>
+    Rejected,
+}
+
 /// <summary>容器/编码器对色彩描述的能力（L5 标注与决策阶梯的依据；数值来自本项目实测）。</summary>
 public sealed class FormatColorCaps
 {
@@ -207,6 +228,30 @@ public sealed class ColorTransformPlan
 
     // ── L5 标注 ──
     public string? OutPrimaries, OutTransfer, OutMatrix;
+    /// <summary>
+    /// 显式输出矩阵模式（C-PLAN-EXT@1，color-matrix-options 计划）：用户经
+    /// <c>--color-out-matrix</c> / GUI「色彩矩阵模式」提交的归一 token（bt601 已在
+    /// <c>FfmpegOptions.ColorOutMatrix</c> 的 setter 归一为 smpte170m）；null = auto。
+    /// <para>
+    /// ⚠ auto（null）⇒ <see cref="OutMatrixVerdict"/> 恒 <see cref="OutMatrixCapability.NotApplicable"/>，
+    /// 既有 <c>MatrixTokenFor</c> 三处推导、<c>ContainerYuvMatrix</c> 恒等、legacy <c>capM</c>
+    /// 优先级全部原样——零播报、零覆盖、产物逐字节不变（CM-REQ-08 回归红线）。
+    /// 显式值在推导完成后由规划层覆盖 <see cref="OutMatrix"/> 并置本判定（唯一覆盖点 =
+    /// <c>ColorMappingEngine.ApplyExplicitOutMatrix</c>）。
+    /// </para>
+    /// <para>
+    /// ⚠ xyb 是 libjxl 内部感知色彩表示（非 H.273），Carried 时**不覆盖**
+    /// <see cref="OutMatrix"/>（那是 L5 CICP 标注域，ToFfmpegColorSpaceName 不认 xyb）——
+    /// 执行层按本字段分派编码器开关（cjxl VarDCT 隐式 / libjxl -xyb / cjpegli --xyb）。
+    /// </para>
+    /// </summary>
+    public string? OutMatrixMode;
+    /// <summary>
+    /// 显式输出矩阵模式的承载判定（C-CAPS@1 唯一真值函数
+    /// <see cref="ColorMappingEngine.ResolveOutMatrixCapability"/> 的产物；默认 NotApplicable）。
+    /// 判定发生在规划层一次性完成，出口层只消费本位，不得复判（单一真值）。
+    /// </summary>
+    public OutMatrixCapability OutMatrixVerdict = OutMatrixCapability.NotApplicable;
     public bool AttachIcc;
     public string? IccPath;
     public string? IccPrimaries, IccTrc, IccMatrix;
@@ -807,6 +852,26 @@ public static partial class ColorMappingEngine
         {
             // 项目既有策略：优先"归入超集容器 + 标注"，不做有损压缩
             p.Reason = "源色域超出目标且未开启 GMO → 由调用方选择超集/携带/裁切";
+            // ── R4（2026-11-10）Clipping 归因粒度：越界"与否"≠越界"量级" ──
+            // 两真机件实证（2026-11-09 24 格 + 2026-11-10 数值复核）：
+            //   · P3→BT.709（A1/F17：P3 ⊃ BT.709 显著越界）：转换矩阵多个大负元素（~-0.2 量级）
+            //     ⇒ 大面积越界色被裁切，Clipping 如实；
+            //   · P3→BT.2020（A3/C10a："P3⊂BT.2020" 工程常识）：**严格数学下 P3 红原色方向在
+            //     BT.2020 色域锥外约 0.1%**——P3 红原色 xy(0.680,0.320) 位于 BT.2020 R-G 弦外侧
+            //     （同侧法 d1=-9.24e-4），P3→BT.2020 转换矩阵最负元素 -0.0012（BT.2020 红是 630nm
+            //     单色，比 P3 红更靠近光谱轨迹）。判据**没有**误判，也不是 HDR 峰值混入
+            //     （GamutContainedIn 纯色度，与 NitsOfLinearOne/HdrPeakNits 无关）——
+            //     但播报把 0.1% 的边缘越界与整域裁切用同一句「源色域超出目标」，归因粒度失真。
+            //   ⇒ 判据一字不动（不许凭猜测改判据），只按量级区分播报：转换矩阵最负元素
+            //     ≥ -0.01（1% 量级以内）判"边缘越界"，写明感知不可见；更深的负值维持原文。
+            //   m 是 :749 求出的 src→dst 转换矩阵（恒等时 p.Matrix 被置 null，但局部 m 仍在作用域）；
+            //   m==null 说明矩阵不可得（前面的 Reject 分支早已返回，此处理论不可达，保守取 0）。
+            double worstNeg = 0;
+            if (m is { Length: 9 })
+                for (int i = 0; i < 9; i++) worstNeg = Math.Min(worstNeg, m[i]);
+            if (worstNeg >= -0.01)
+                p.Reason += $"（边缘越界：最负转换系数 {worstNeg:E2} ⇒ 源原色方向仅微弱超出目标色域锥，"
+                          + "实际裁切量在感知阈以下，非整域裁切）";
         }
         p.NeedsDither = policy.TargetBitDepth <= 8 && (p.Matrix != null || p.NeedsCurveChange);
         p.Requires16BitIntermediate = Needs16Bit(dst, policy);

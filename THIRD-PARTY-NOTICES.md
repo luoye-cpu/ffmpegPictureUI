@@ -45,6 +45,7 @@ Full license texts are provided in the [`licenses/`](licenses/) directory of thi
 | **libavif** — `avifenc.exe` | 1.4.2（libaom 3.15.0），`PLAN/artifacts/` | BSD-2-Clause | (c) 2019 Joe Drago |
 | ↳ AOM (libaom) | `PLAN/artifacts/` | BSD-2-Clause + AOM 专利授权 | (c) 2016 Alliance for Open Media |
 | **jxrlib** — `JxrEncApp.exe`, `JxrDecApp.exe` | 微软 2013 参考实现，`PLAN/artifacts/` | BSD-2-Clause | (c) Microsoft Corp. |
+| **oxipng** — `oxipng.exe`（PNG 出口优化器） | 10.2.1（上游 github.com/oxipng/oxipng releases），`PLAN/artifacts/` | MIT | (c) 2016 Joshua Holmer |
 
 ### 1.2 仅构建期使用（不随发行包分发）· Build-time only (not distributed)
 
@@ -65,7 +66,7 @@ Full license texts are provided in the [`licenses/`](licenses/) directory of thi
 
 ## 2. MIT License
 
-适用于 §1.1 中标注 MIT 的全部组件（Avalonia 系列、SkiaSharp、HarfBuzzSharp、MicroCom.Runtime、Tmds.DBus.Protocol、brotli、giflib）。
+适用于 §1.1 中标注 MIT 的全部组件（Avalonia 系列、SkiaSharp、HarfBuzzSharp、MicroCom.Runtime、Tmds.DBus.Protocol、brotli、giflib、oxipng）。
 
 ```
 MIT License

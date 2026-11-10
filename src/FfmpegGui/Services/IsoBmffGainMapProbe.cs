@@ -75,7 +75,10 @@ public static class IsoBmffGainMapProbe
 
         /// <summary>是否存在增益图。</summary>
         public bool HasGainMap;
-        /// <summary>承载形式：`tmap`（可解） / `aux-21496`（ISO 辅助图形式，尚未解） / `aux-apple-hdrgainmap`（Apple 早期辅助图，尚未解）。</summary>
+        /// <summary>承载形式：`tmap`（可解） / `aux-21496`（ISO 21496-1 辅助图，AU2-X1 起按**前置元数据
+        /// 结构尝试**——结构成立 ⇒ 可解，不成立 ⇒ fail-closed 点名「结构未证实」） /
+        /// `aux-apple-hdrgainmap`（Apple 早期辅助图，AU-W2 起可解——Determinate=true 时
+        /// <see cref="GainMapItemData"/> 与 <see cref="ExifItemData"/> 已就位）。</summary>
         public string? Form;
 
         public int PrimaryItemId = -1;
@@ -116,6 +119,18 @@ public static class IsoBmffGainMapProbe
 
         /// <summary>`ftyp` 的兼容品牌（诊断用）。</summary>
         public string Brands = "";
+
+        // ── aux-apple 解码形态（2026-11-10，AU-W2）────────────────────────────────
+        /// <summary>主图关联的 Exif item 的 id（aux-apple 形态：AppleMakerNote 的载体）；-1 = 未定位到。
+        /// 定位判据 = infe 类型 "Exif" **且** `iref cdsc: from Exif item → to primary`。</summary>
+        public int ExifItemId = -1;
+        /// <summary>
+        /// 主图 Exif item 的**原始字节**（`u32 tiff_header_offset` + 头部 + TIFF；aux-apple 形态专用）。
+        /// 探针只切数据不解析 —— AppleMakerNote 的字段读取（HDRHeadroom/HDRGain）在
+        /// <see cref="GainMapDecoder"/> 层走 exiftool 整件通道（SPEC §3 决策 2：零新解析器）；
+        /// 本字段的存在性 = 「容器里确有元数据载体」的结构级证据。
+        /// </summary>
+        public byte[]? ExifItemData;
 
         // ── 2026-11-09 修复批（D1/D2/D5/D8）新增读数 ──────────────────────────────
         /// <summary>pitm 指向的 item 类型（"grid" / "hvc1" / "av01" / "iden"…）；未知为 null。
@@ -222,6 +237,10 @@ public static class IsoBmffGainMapProbe
             // `ipco` 的属性列表（**1-based** 索引，按盒内出现顺序）与 `ipma` 的 item→属性索引映射。
             var ipcoProps = new List<(string Type, int Off, int Size)>();
             var ipmaMap = new Dictionary<int, List<int>>();
+            // auxC 属性 → URN 类别（1=ISO 21496 / 2=Apple hdrgainmap / 3=alpha）。
+            // AU-W2（2026-11-10）：Apple 形态要按「auxC 属性归属哪个 item」反查 aux item ⇒
+            // 光有 sawAuxApple 布尔不够，必须记下每个 auxC 的 **1-based ipco 索引**。
+            var auxCProps = new List<(int PropIndex, int Kind)>();
             int primary = -1;
             bool sawAux21496 = false;
             bool sawAuxApple = false;
@@ -281,7 +300,8 @@ public static class IsoBmffGainMapProbe
                         ParseIref(d, cstart, cend, refs);
                         break;
                     case "iprp":
-                        ParseIprp(d, cstart, cend, ipcoProps, ipmaMap, ref sawAux21496, ref sawAuxApple, ref sawAuxAlpha);
+                        ParseIprp(d, cstart, cend, ipcoProps, ipmaMap, auxCProps,
+                            ref sawAux21496, ref sawAuxApple, ref sawAuxAlpha);
                         break;
                     case "idat":
                         // 2026-11-02：真实 iPhone HDR HEIC 把 tmap / grid 载荷放在 meta/idat
@@ -452,22 +472,37 @@ public static class IsoBmffGainMapProbe
                 return r;
             }
 
-            // ── 判定 2（次级）：辅助图形式（auxC 的 URN 带 21496）── 本工具**尚未**支持解码。
+            // ── 判定 2（次级）：辅助图形式（auxC 的 URN 带 21496）—— AU2-X1（2026-11-10）**结构尝试**。
+            //   ⚠ 调研饱和度结论（SPEC §7.0，五来源交叉，2026-11-10 定稿）：**该形态在已知生态无写入器**——
+            //     libheif #1121 正文明确弃用 aux 形态选 tmap；libultrahdr heifultrahdr.cpp 仅 tmap；
+            //     libavif PR#2960 写侧统一 tmap item；SharpAstro #70 自标 "to be confirmed"。
+            //     ⇒ 本分支是**防御性前瞻设计**：按最合理结构（auxC URN=21496 的 aux item，其 item 数据
+            //       前置 `version(1B,=0) + ISO 21496-1 GainMapMetadata`——ISO 21496-1 的元数据语法唯一，
+            //       载体可插在 tmap item 数据或 aux item 数据，语法不变）做结构尝试，ParseIso21496 复用。
+            //     结构成立 ⇒ Determinate=true（与 tmap 同等放行）；version/元数据不匹配 ⇒ fail-closed
+            //     点名「aux-21496 元数据结构未证实」（不许当成「无增益图」静默丢弃）。
+            //     若未来真机样本出现且实际结构与此不符，**按样本修正本方法**（预期在此登记）。
             if (sawAux21496)
             {
                 r.HasGainMap = true;
                 r.Form = "aux-21496";
-                r.Determinate = false;
-                r.FailReason = "[IsoBmff] 辅助图（auxC URN 含 21496）形式，尚未支持解码";
+                TryParseIsoAux(d, items, locs, refs, ipcoProps, ipmaMap, auxCProps,
+                    idatStart, idatEnd, primary, r);
             }
-            // ── 判定 2b（次级）：Apple 早期辅助图形式（auxC URN 含 hdrgainmap，**不是** ISO 21496-1）──
-            //   本工具尚未支持施加，但必须「认出来并点名」，不得退化成「没有增益图」。
+            // ── 判定 2b：Apple 早期辅助图形式（auxC URN 含 hdrgainmap，**不是** ISO 21496-1）──
+            //   AU-W2（2026-11-10）：从「认出点名」升级为**完整解码形态**——按 auxC 属性归属反查
+            //   aux item → `iref auxl` 验证 aux→primary → 主图 Exif item（`iref cdsc`）→ 切出
+            //   aux item 裸流（hvcC→Annex-B）与 Exif item 字节 ⇒ Determinate=true。
+            //   元数据字段（HDRHeadroom/HDRGain）的**读取**在 GainMapDecoder 层走 exiftool
+            //   整件通道（SPEC §3 决策 2）；本探针只做容器级提取与结构自证。
+            //   ⚠ 提取链上任何一步缺失 ⇒ 仍 fail-closed 点名（FailReason 保留 hdrgainmap 字样，
+            //     供调用方区分「形式认得但结构不全」与「完全陌生的形态」），绝不退化成「无增益图」。
             if (sawAuxApple)
             {
                 r.HasGainMap = true;
                 r.Form = "aux-apple-hdrgainmap";
-                r.Determinate = false;
-                r.FailReason = "[IsoBmff] Apple 早期辅助图形式（auxC URN 含 hdrgainmap，非 ISO 21496-1）⇒ 尚未支持解码；不得按「无增益图」静默走 SDR";
+                TryParseAppleAux(d, items, locs, refs, ipcoProps, ipmaMap, auxCProps,
+                    idatStart, idatEnd, primary, r);
             }
             // D2（2026-11-09）：alpha 辅助图与增益图判定**正交**——带 alpha 的件也可能同时带增益图。
             if (sawAuxAlpha) r.HasAuxAlpha = true;
@@ -619,9 +654,16 @@ public static class IsoBmffGainMapProbe
     /// <summary>
     /// 解析 `iprp`：收集 `ipco` 的属性盒（**1-based** 索引，按出现顺序）与 `ipma` 的 item→属性索引映射；
     /// 同时保留旧判据「`ipco` 里存在 URN 含 `21496` 的 `auxC`」。
+    /// <para>
+    /// AU-W2（2026-11-10）：<paramref name="auxCProps"/> 记下每个 `auxC` 的 **1-based ipco 索引 →
+    /// URN 类别**（1=ISO 21496 / 2=Apple hdrgainmap / 3=alpha）——Apple 形态的 aux item 定位
+    /// 靠「ipma 反查哪个 item 关联了该属性索引」，布尔标志给不出这个关联。
+    /// </para>
     /// </summary>
     private static void ParseIprp(byte[] d, int start, int end,
-        List<(string Type, int Off, int Size)> props, Dictionary<int, List<int>> ipma, ref bool sawAux21496, ref bool sawAuxApple, ref bool sawAuxAlpha)
+        List<(string Type, int Off, int Size)> props, Dictionary<int, List<int>> ipma,
+        List<(int PropIndex, int Kind)> auxCProps,
+        ref bool sawAux21496, ref bool sawAuxApple, ref bool sawAuxAlpha)
     {
         for (int p = start; p + 8 <= end;)
         {
@@ -641,16 +683,18 @@ public static class IsoBmffGainMapProbe
                         if (z > s)
                         {
                             var urn = Encoding.ASCII.GetString(d, s, z - s);
-                            if (urn.Contains("21496")) sawAux21496 = true;
+                            int kind = 0;
+                            if (urn.Contains("21496")) { sawAux21496 = true; kind = 1; }
                             // Apple 早期 HEIF 辅助图（iPhone 12 起的 HDR Gain Map）：URN 形如
                             // `urn:com:apple:photo:2020:aux:hdrgainmap`，**不含 21496** ⇒ 旧判据对它完全
                             // 无感，会被报成「无增益图」而静默按 SDR 处理（= 可用性不诚实）。
-                            // 这里只做到「认出并点名」，解码施加仍未支持 ⇒ Determinate=false，交给调用方播报。
-                            else if (urn.Contains("hdrgainmap", StringComparison.OrdinalIgnoreCase)) sawAuxApple = true;
+                            // AU-W2：已升级为完整解码形态（TryParseAppleAux），布尔只作判定入口。
+                            else if (urn.Contains("hdrgainmap", StringComparison.OrdinalIgnoreCase)) { sawAuxApple = true; kind = 2; }
                             // D2（2026-11-09）：alpha 辅助图（HEVC `urn:mpeg:hevc:2015:auxid:1` /
                             // AV1 `urn:mpeg:av1:2021:auxid:1`）。alpha 是独立 item，主流 pix_fmt 不带
                             // alpha 平面 ⇒ 只看 HasAlphaPlane 会把透明静默拍平。URN 权威，不猜流格式。
-                            else if (urn.Contains("auxid:1", StringComparison.OrdinalIgnoreCase)) sawAuxAlpha = true;
+                            else if (urn.Contains("auxid:1", StringComparison.OrdinalIgnoreCase)) { sawAuxAlpha = true; kind = 3; }
+                            if (kind != 0) auxCProps.Add((props.Count, kind));   // 1-based：刚 Add 的这条
                         }
                     }
                     q += s2;
@@ -694,6 +738,219 @@ public static class IsoBmffGainMapProbe
             }
             map[itemId] = list;
         }
+    }
+
+    /// <summary>
+    /// Apple aux 形态的**完整提取**（AU-W2，2026-11-10）。链路（ISO 23008-12 + Apple 官方文档，SPEC §2）：
+    /// <list type="number">
+    /// <item>按 `ipma` 反查「哪个 item 关联了 URN 含 hdrgainmap 的 auxC 属性」⇒ aux item（增益图 item）；</item>
+    /// <item>`iref auxl: from aux item → to primary` 验证归属方向（aux 指向主图；反向/缺失 fail-closed）；</item>
+    /// <item>主图 Exif item：infe 类型 "Exif" **且** `iref cdsc: from Exif → to primary`（AppleMakerNote 载体）；</item>
+    /// <item>`SliceItem(aux)`（hvc1/hev1 走 hvcC→Annex-B，与 tmap 形态同一套转换器）+ `SliceItem(Exif)`。</item>
+    /// </list>
+    /// 全部成功 ⇒ <see cref="Result.Determinate"/>=true 并填充 GainMapItemData/ExifItemData；
+    /// 任何一步缺失 ⇒ Determinate=false + FailReason（**保留 hdrgainmap 字样**——调用方与门禁靠它
+    /// 区分「形式认得但结构不全」与「完全陌生」，也保住旧 §1c 判据的稳定性）。
+    /// <para>⚠ 元数据字段（HDRHeadroom/HDRGain）的读取在 GainMapDecoder 层走 exiftool 整件通道，
+    /// 本方法不做 EXIF/TIFF 解析（SPEC §3 决策 2：零新解析器）。</para>
+    /// </summary>
+    private static void TryParseAppleAux(byte[] d, Dictionary<int, string> items,
+        Dictionary<int, (int Method, int Base, List<(int Off, int Len)> Extents)> locs,
+        List<(string Type, int From, List<int> To)> refs,
+        List<(string Type, int Off, int Size)> ipcoProps, Dictionary<int, List<int>> ipmaMap,
+        List<(int PropIndex, int Kind)> auxCProps,
+        int idatStart, int idatEnd, int primary, Result r)
+    {
+        void Fail(string why)
+        {
+            r.Determinate = false;
+            r.FailReason = $"[IsoBmff] Apple 辅助图（auxC URN 含 hdrgainmap）不可解：{why}";
+        }
+
+        // ① aux item 定位：ipma 反查关联了 hdrgainmap auxC 的 item（恰 1 个；多个 = 歧义不猜）。
+        int auxId = -1, owners = 0;
+        foreach (var kv in ipmaMap)
+        {
+            bool hit = false;
+            foreach (var ix in kv.Value)
+                foreach (var ap in auxCProps)
+                    if (ap.Kind == 2 && ix == ap.PropIndex) { hit = true; break; }
+            if (!hit) continue;
+            owners++;
+            if (auxId < 0) auxId = kv.Key;
+        }
+        if (auxId < 0) { Fail("ipma 未把 hdrgainmap auxC 关联到任何 item（aux item 无法定位）"); return; }
+        if (owners > 1) { Fail($"ipma 有 {owners} 个 item 关联 hdrgainmap auxC（歧义，不猜）"); return; }
+        if (!items.TryGetValue(auxId, out var auxType) || !IsCodecItem(auxType))
+        {
+            Fail($"aux item {auxId} 类型 '{(items.TryGetValue(auxId, out var t) ? t : "?")}' 不是编解码 item");
+            return;
+        }
+
+        // ② 归属方向：iref auxl: from aux → to 必须含主图（ISO 23008-12 方向）。
+        bool auxlOk = false;
+        foreach (var rf in refs)
+        {
+            if (rf.Type != "auxl" || rf.From != auxId) continue;
+            foreach (var to in rf.To) if (to == primary) { auxlOk = true; break; }
+        }
+        if (!auxlOk) { Fail($"iref 无 auxl: aux item {auxId} → primary（归属方向不成立）"); return; }
+
+        // ③ Exif item：类型 "Exif" 且 cdsc 指向主图（AppleMakerNote 的载体）。
+        int exifId = -1;
+        foreach (var kv in items)
+        {
+            if (!string.Equals(kv.Value, "Exif", StringComparison.Ordinal)) continue;
+            foreach (var rf in refs)
+            {
+                if (rf.Type != "cdsc" || rf.From != kv.Key) continue;
+                foreach (var to in rf.To) if (to == primary) { exifId = kv.Key; break; }
+                if (exifId >= 0) break;
+            }
+            if (exifId >= 0) break;
+        }
+        if (exifId < 0) { Fail("未找到 cdsc 关联主图的 Exif item（AppleMakerNote 元数据不可得）"); return; }
+
+        // ④ Exif item 字节（纯切片，无编解码转换）。
+        var exifData = SliceItem(d, locs, exifId, idatStart, idatEnd, ref r, "Exif item");
+        if (exifData == null) { Fail($"Exif item {exifId} 切片失败（见上一条 FailReason）"); return; }
+
+        // ⑤ aux item 裸流：hvc1/hev1 走 hvcC→Annex-B（与 tmap 形态同一套转换器）；av01 原样。
+        r.GainMapItemId = auxId;
+        r.GainMapCodec = auxType;
+        var raw = SliceItem(d, locs, auxId, idatStart, idatEnd, ref r, "aux item");
+        if (raw == null) { Fail($"aux item {auxId} 切片失败（见上一条 FailReason）"); return; }
+        byte[]? stream;
+        if (auxType is "hvc1" or "hev1")
+        {
+            if (!TryFindHvcC(ipcoProps, ipmaMap, auxId, out int hOff, out int hLen, out var hErr))
+            { Fail($"aux item {auxId} 需要 hvcC：{hErr}"); return; }
+            if (!TryParseHvcC(d, hOff, hLen, out int lengthSize, out var paramSets, out var pErr))
+            { Fail($"aux item {auxId} hvcC 解析失败：{pErr}"); return; }
+            stream = ToAnnexB(raw, lengthSize, paramSets, out var cErr);
+            if (stream == null) { Fail($"aux item {auxId} 长度前缀转换失败：{cErr}"); return; }
+        }
+        else stream = raw;                              // av01 ⇒ 原始 OBU
+        r.GainMapFfmpegFormat = auxType == "av01" ? "obu" : "hevc";
+        r.GainMapItemData = stream;
+        r.ExifItemId = exifId;
+        r.ExifItemData = exifData;
+        r.Determinate = true;                            // 容器级提取全部成立；元数据语义由解码层验收
+    }
+
+    /// <summary>
+    /// aux-21496 形态的**结构尝试**（AU2-X1，2026-11-10）。防御性前瞻设计——该形态在已知生态
+    /// **无写入器**（libheif #1121 正文明确弃用 aux 形态选 tmap；libultrahdr / libavif 写侧均走
+    /// tmap item；SharpAstro #70 自标 "to be confirmed"），本方法按最合理结构尝试提取：
+    /// <list type="number">
+    /// <item>按 `ipma` 反查「哪个 item 关联了 URN 含 21496 的 auxC 属性」⇒ aux item（恰 1 个）；</item>
+    /// <item>`iref auxl: from aux item → to primary` 验证归属方向（ISO 23008-12 同纪律）；</item>
+    /// <item>`SliceItem(aux)` 切出 item 数据，前置结构 = `version(1B,=0)` +
+    ///       ISO 21496-1 `GainMapMetadata`（**与 tmap 载荷同构**——ISO 21496-1 的元数据语法唯一，
+    ///       载体可插在 tmap item 数据或 aux item 数据，语法不变；<see cref="GainMapDecoder.JpegContainer.ParseIso21496"/>
+    ///       原样复用，`out consumed` 给出元数据字节数）；</item>
+    /// <item>元数据之后的剩余字节 = 增益图编码流：`hvc1`/`hev1` 走 hvcC→Annex-B（与 tmap /
+    ///       Apple 形态同一套转换器），`av01` 原样 OBU。</item>
+    /// </list>
+    /// 全部成立 ⇒ <see cref="Result.Determinate"/>=true，<see cref="Result.TmapPayload"/> 填
+    /// `version+元数据`段（与 tmap 载荷同构 ⇒ 解码层 `ParseIso21496(payload, 1, len-1)` 既有分支
+    /// 直接消费，零特判）、<see cref="Result.GainMapItemData"/> 填裸流；
+    /// 任何一步不成立 ⇒ Determinate=false + 点名「**aux-21496 元数据结构未证实**」（fail-closed，
+    /// 绝不退化成「无增益图」——防御性识别的价值就在把「认识但解不了」与「完全陌生」分开）。
+    /// <para>⚠ `ipma` 反查与 <see cref="TryParseAppleAux"/> ① 同构（kind=1 vs kind=2），独立成段
+    /// 不共用 helper：两形态提取链的演进互不牵连（真机样本到位后大概率要各自修正）。</para>
+    /// </summary>
+    private static void TryParseIsoAux(byte[] d, Dictionary<int, string> items,
+        Dictionary<int, (int Method, int Base, List<(int Off, int Len)> Extents)> locs,
+        List<(string Type, int From, List<int> To)> refs,
+        List<(string Type, int Off, int Size)> ipcoProps, Dictionary<int, List<int>> ipmaMap,
+        List<(int PropIndex, int Kind)> auxCProps,
+        int idatStart, int idatEnd, int primary, Result r)
+    {
+        void Fail(string why)
+        {
+            r.Determinate = false;
+            r.FailReason = $"[IsoBmff] aux-21496 元数据结构未证实：{why}";
+        }
+
+        // ① aux item 定位：ipma 反查关联了 21496 auxC 的 item（恰 1 个；多个 = 歧义不猜）。
+        int auxId = -1, owners = 0;
+        foreach (var kv in ipmaMap)
+        {
+            bool hit = false;
+            foreach (var ix in kv.Value)
+                foreach (var ap in auxCProps)
+                    if (ap.Kind == 1 && ix == ap.PropIndex) { hit = true; break; }
+            if (!hit) continue;
+            owners++;
+            if (auxId < 0) auxId = kv.Key;
+        }
+        if (auxId < 0) { Fail("ipma 未把 21496 auxC 关联到任何 item（aux item 无法定位）"); return; }
+        if (owners > 1) { Fail($"ipma 有 {owners} 个 item 关联 21496 auxC（歧义，不猜）"); return; }
+        if (!items.TryGetValue(auxId, out var auxType) || !IsCodecItem(auxType))
+        {
+            Fail($"aux item {auxId} 类型 '{(items.TryGetValue(auxId, out var t) ? t : "?")}' 不是编解码 item");
+            return;
+        }
+
+        // ② 归属方向：iref auxl: from aux → to 必须含主图（ISO 23008-12 方向）。
+        bool auxlOk = false;
+        foreach (var rf in refs)
+        {
+            if (rf.Type != "auxl" || rf.From != auxId) continue;
+            foreach (var to in rf.To) if (to == primary) { auxlOk = true; break; }
+        }
+        if (!auxlOk) { Fail($"iref 无 auxl: aux item {auxId} → primary（归属方向不成立）"); return; }
+
+        // ③ 切 aux item 数据（多 extent 拼接，construction_method 0/1 同 tmap 形态口径）。
+        var raw = SliceItem(d, locs, auxId, idatStart, idatEnd, ref r, "aux item");
+        if (raw == null) { Fail($"aux item {auxId} 切片失败（见上一条 FailReason）"); return; }
+
+        // ④ 前置结构：version(1B,=0) + GainMapMetadata。version ≠ 0 或元数据不闭合 ⇒ 结构未证实。
+        if (raw.Length < 2 || raw[0] != 0)
+        {
+            Fail($"前置 version 字节 = {(raw.Length > 0 ? raw[0].ToString() : "无数据")}（要求 0）"
+                + "——该形态当前无已知写入器（libheif#1121 / libultrahdr / libavif 三生态均走 tmap），"
+                + "字节层证据不足 ⇒ fail-closed");
+            return;
+        }
+        var metaPayloadLen = GainMapDecoder.JpegContainer.ParseIso21496(raw, 1, raw.Length - 1, out int consumed);
+        if (metaPayloadLen == null)
+        {
+            Fail("前置 GainMapMetadata 解析失败（非预期 min_version / 数据截断）");
+            return;
+        }
+        if (raw.Length <= 1 + consumed)
+        {
+            Fail($"前置元数据外无编码流（元数据 {consumed} B 吃满 item 数据）");
+            return;
+        }
+
+        // ⑤ 元数据之后的剩余字节 = 增益图编码流。hvc1/hev1：hvcC→Annex-B（同一套转换器）；av01：原样。
+        var streamPart = new byte[raw.Length - 1 - consumed];
+        Array.Copy(raw, 1 + consumed, streamPart, 0, streamPart.Length);
+        byte[]? stream;
+        if (auxType is "hvc1" or "hev1")
+        {
+            if (!TryFindHvcC(ipcoProps, ipmaMap, auxId, out int hOff, out int hLen, out var hErr))
+            { Fail($"aux item {auxId} 需要 hvcC：{hErr}"); return; }
+            if (!TryParseHvcC(d, hOff, hLen, out int lengthSize, out var paramSets, out var pErr))
+            { Fail($"aux item {auxId} hvcC 解析失败：{pErr}"); return; }
+            stream = ToAnnexB(streamPart, lengthSize, paramSets, out var cErr);
+            if (stream == null) { Fail($"aux item {auxId} 长度前缀转换失败：{cErr}"); return; }
+        }
+        else stream = streamPart;                        // av01 ⇒ 原始 OBU
+
+        // ⑥ `version+元数据` 段与 tmap 载荷**同构** ⇒ 填进 TmapPayload，解码层
+        //    `ParseIso21496(TmapPayload, 1, len-1)` 既有分支零特判消费（AU2-X1 复用决策）。
+        var payload = new byte[1 + consumed];
+        Array.Copy(raw, 0, payload, 0, payload.Length);
+        r.GainMapItemId = auxId;
+        r.GainMapCodec = auxType;
+        r.GainMapFfmpegFormat = auxType == "av01" ? "obu" : "hevc";
+        r.GainMapItemData = stream;
+        r.TmapPayload = payload;
+        r.Determinate = true;
     }
 
     /// <summary>

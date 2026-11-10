@@ -246,6 +246,64 @@ namespace FfmpegGui.Services
                 && !opts.CjpegliChromaSubsampling.Equals("auto", StringComparison.OrdinalIgnoreCase))
                 sb.Append($" --chroma_subsampling {opts.CjpegliChromaSubsampling}");
 
+            // ── 显式输出矩阵模式（C-PLAN-EXT@1 出口消费面）：jpg × cjpegli × xyb = Carried（C9）──
+            // 判定经唯一真值函数（backend=Cjpegli；T5 注记批准的出口侧直调形态——不构成第二份表；
+            // ⚠ jpg×Cjpegli 不经规划层，QueueProcessor 的 cjpegli 分派带引擎豁免，判定责任在本出口）。
+            // --xyb 是编码器内部特性（opt-in 旗标，T1 cjpegli-help-vv.txt:27；本仓此前零引用=未接线，
+            // 本段即接线）⇒ 显式 xyb 档发 --xyb，输出仍是标准 JPEG、解码端无感；rgb = Redundant
+            //（像素全程 RGB，cjpegli 从 RGB 直编）⇒ 仅登记；YUV 族 = Rejected（无 YUV 转换发生点，
+            // 矩阵选择不暴露为 CLI 参数）⇒ 契约拒绝。
+            // ⚠ auto（null）整段不进 ⇒ 命令行逐字节不变（CM-REQ-08 回归红线）。
+            // ⚠ Rejected 的终止形态按 log 形参约定分侧：log != null = 真执行侧（本方法每次生成命令行
+            //   会被调多遍，见 log 形参文档）⇒ 播报 + 抛异常终止、零产物；log == null = 预览/命令行
+            //   串调用侧 ⇒ 仅 EmitWarn 点名不终止（预览显示的命令行不代表可执行；异常穿透会砸 UI）。
+            var outMatrixTok = opts.ColorOutMatrix;
+            if (!string.IsNullOrWhiteSpace(outMatrixTok))
+            {
+                var outFmt = string.IsNullOrWhiteSpace(opts.Format) ? "jpg" : opts.Format;
+                var capCj = ColorMapping.ColorMappingEngine.ResolveOutMatrixCapability(
+                    outFmt, outMatrixTok, EncoderBackend.Cjpegli);
+                switch (capCj)
+                {
+                    case ColorMapping.OutMatrixCapability.Carried:   // xyb（cjpegli 出口的唯一 Carried 格）
+                        sb.Append(" --xyb");
+                        log?.Invoke("[color-out-matrix] " + outFmt.ToLowerInvariant()
+                                  + ": xyb -> cjpegli --xyb (encoder-internal feature; the output is a"
+                                  + " standard JPEG, decoders are unaware of it)\n");
+                        break;
+                    case ColorMapping.OutMatrixCapability.Redundant:
+                        // 模板 2 精确形态（string.Format；{2}=RGB）——T7 播报锁按模板锚定，
+                        // 出口说明以**尾部追加**携带（不混入 {2} 占位值）。
+                        log?.Invoke(string.Format(ColorMapping.ColorMappingEngine.OutMatrixReportRedundant,
+                                                  outMatrixTok, outFmt.ToLowerInvariant(), "RGB")
+                                  + " (cjpegli encodes from RGB directly)\n");
+                        break;
+                    case ColorMapping.OutMatrixCapability.Rejected:
+                        var rejWhy = "[color-out-matrix] " + outMatrixTok + " is not carried by "
+                            + outFmt.ToLowerInvariant() + " (cjpegli encodes from RGB directly;"
+                            + " no YUV conversion point) => contract rejection, exit 91, no output";
+                        if (log == null)
+                        {
+                            ColorMapping.ImageEncoderArgs.EmitWarn(rejWhy);
+                        }
+                        else
+                        {
+                            log(rejWhy + "\n");
+                            log("[cjpegli] 用户 --color-out-matrix=" + outMatrixTok
+                              + " 不被 " + outFmt.ToLowerInvariant()
+                              + " 出口承载（cjpegli 从 RGB 直编，无 YUV 转换发生点）⇒ 契约拒绝，不产出\n");
+                            // 异常消息保持 ASCII（任务终局文本）；exit 91 契约码由规划层 Rejected 决议
+                            // 兑现，本出口（不经规划层）经异常路径失败、零产物契约相同——已登记偏差。
+                            throw new InvalidOperationException(
+                                "cjpegli exit: --color-out-matrix " + outMatrixTok
+                                + " is not carried by " + outFmt.ToLowerInvariant()
+                                + " (cjpegli encodes from RGB directly; no YUV conversion point)"
+                                + " => contract rejection, no output");
+                        }
+                        break;
+                }
+            }
+
             // 渐进模式 (0=sequential/baseline, 2=progressive, -1=不传参使用默认)
             var progId = opts.CjpegliProgressiveId;
             // Huffman 优化关闭 → --fixed_code 仅与 sequential (-p 0) 兼容，自动降级（2026-08-16 实测）

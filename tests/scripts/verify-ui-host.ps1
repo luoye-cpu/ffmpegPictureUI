@@ -69,14 +69,27 @@ CK $true "PLAN dir exists"
 #   ① 每件都有汇总行且 FAIL=0/exit=0/不超时；② 逐件条数精确；③ 合计锁 430。
 #   只做 ②③ 而不做 ① 的话，某件静默没跑（汇总行缺失）也会因合计被别的件补上而变绿？
 #   不会——②是精确等值，缺一条就红。但 ① 仍保留：它区分「跑了但少几条」与「根本没跑」。
+# ⚠ 2026-11-09（R3）：J 组增 J17(8)+J18(8)=16 条 ⇒ ui-sweep 141 → **157**（=J114+L43）、
+#   合计 430 → **446**（=75+53+89+157+72）。与 verify-ui-param-matrix.ps1 的 $jExpected=114、
+#   verify-ui-split-union.ps1 的 $expectedOldCount=446 同批抬表（三把尺同一来历）。
+# ⚠ 2026-11-10（color-matrix-options 批 T7）：J 组增 J19(8)（out-matrix 采集映射，
+#   OutputMatrixCombo = --color-out-matrix 的 GUI 承接）⇒ ui-sweep 157 → **165**（=J122+L43）、
+#   合计 446 → **454**（=75+53+89+165+72）。与 verify-ui-param-matrix.ps1 的 $jExpected=122、
+#   verify-ui-split-union.ps1 的 $expectedOldCount=454 同批抬表（三把尺同一来历）。
+# ⚠ 2026-11-11（CMX 一致性批 CMX-3）：J19 段按 CMX-2 能力过滤行为重写并新增 4 条（J19i~J19l）
+#   ⇒ ui-sweep 165 → **169**（=J126+L43）、合计 454 → **458**（=75+53+89+169+72）。改写动因 =
+#   CMX-2 的 RefillOutMatrixComboForFormat 落地后旧「11 档/固定 index」断言全数失效（基线轮
+#   实测 ui-sweep 116/6）；新读数 = ui-sweep mode 126 PASS / 0 FAIL（J126，实测日志
+#   tests/output/_tmp/cmx3-gate/j19-after.log）。与 verify-ui-param-matrix.ps1 的
+#   $jExpected=126、verify-ui-split-union.ps1 的 $expectedOldCount=458 同批抬表（三把尺同一来历）。
 $arms = @(
     @{ Name = 'ui-core';  Exe = Join-Path $repoRoot 'tests/projects/ui-core/bin/Release/net11.0/win-x64/Tests.UiCore.exe';  Expected = 75  },
     @{ Name = 'ui-mode';  Exe = Join-Path $repoRoot 'tests/projects/ui-mode/bin/Release/net11.0/win-x64/Tests.UiMode.exe';  Expected = 53  },
     @{ Name = 'ui-color'; Exe = Join-Path $repoRoot 'tests/projects/ui-color/bin/Release/net11.0/win-x64/Tests.UiColor.exe'; Expected = 89  },
-    @{ Name = 'ui-sweep'; Exe = Join-Path $repoRoot 'tests/projects/ui-sweep/bin/Release/net11.0/win-x64/Tests.UiSweep.exe'; Expected = 141 },
+    @{ Name = 'ui-sweep'; Exe = Join-Path $repoRoot 'tests/projects/ui-sweep/bin/Release/net11.0/win-x64/Tests.UiSweep.exe'; Expected = 169 },
     @{ Name = 'ui-cli';   Exe = Join-Path $repoRoot 'tests/projects/ui-cli/bin/Release/net11.0/win-x64/Tests.UiCli.exe';     Expected = 72  }
 )
-$aggExpected = 430
+$aggExpected = 458
 foreach ($arm in $arms) {
     if (-not (Test-Path $arm.Exe)) {
         Write-Output "  FAIL host exe exists ($($arm.Name)): $($arm.Exe)"

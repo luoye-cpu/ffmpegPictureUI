@@ -1,6 +1,6 @@
 # _run-step3-gates.ps1 —— 步骤 3 改动后的门禁批量执行（只回显每个门禁的汇总行 + 失败明细）
 # 用法：pwsh -NoProfile -File tests/scripts/_run-step3-gates.ps1 [-Probes a,b,c] [-SkipScripts] [-Scripts a,b]
-#   ⚠ `-Scripts` = **脚本级子集**（2026-09-24 新增）。动机：此前只有"全跑 97 条"与
+#   ⚠ `-Scripts` = **脚本级子集**（2026-09-24 新增）。动机：此前只有"全跑 100 条"与
 #     "裸跑单个 verify-*.ps1"两种选择，而裸跑会绕开本文件的**仓库锁 / 单步超时 / STALE 新鲜度闸 /
 #     双漂移复核 / `_gate_script_*.txt` 留痕**五项保护 ⇒ 增量验证要么太贵要么不可信。
 #     ⚠ 全跑墙钟不再写死分钟数：2026-10-01 起清单含 5 条 **L3/产物级**套件（第 61~65 条），
@@ -86,10 +86,10 @@ param([string]$Probes = 'contract,wire,verdict,selftest,iccname,plan,curve,matri
 #    2026-09-17 新增 verify-gamut-map.ps1；**同日按「运行级隔离（GUID）」改写，见 §6 第 66 条**；
 #    同日再新增生产者 `_probe-jpg-p3-icc.ps1`，理由见下方 ②(b) 与调序注释；
 #    同日再新增 `verify-geometry-engine.ps1`（**几何缩放死代码**的专项门禁，理由见 `$Probes` 的 `geometry` 注释））──
-#    ⚠ **清单条数以实测为准 = 97 条**（⚠ 2026-09-19 P4-A 前为 42 条；2026-09-23 由 48 经 49/50/51 到 52，2026-09-23/24 再接 `verify-ipc-extra-options.ps1` ⇒ 53，2026-09-24 再接 `_probe-settings-clone-coverage.ps1` ⇒ 54，2026-09-27 再接 `_probe-matrix-structure.ps1`（任务 #42，秒级结构自检）⇒ 55，同日再接 `_probe-stderr-merge-scan.ps1`（任务 #51，合并取数结构锁）⇒ 56，同日再接 `verify-simd-switch-fallback.ps1`（面板「SIMD 优化」声明/实现冲突 ⇒ 判据单点 `SimdKernelRouting`）⇒ 57，2026-09-30 再接 `verify-geometry-orientation.ps1` + `_probe-geometry-single-source-scan.ps1`（取向标签 ⇒ **显示尺寸**口径的专项门禁 + 唯一实现结构锁）⇒ 59，同日再接 `verify-gainmap-host.ps1`（把 `GainMapTestHost` 套件接进清单 + STALE 第 ⑤ 对）⇒ 60，2026-10-01 再接**首批 L3/产物级套件**5 条（`verify-package-smoke` + `verify-jbrd-e2e` + `verify-orientation-rewrap` + `verify-gainmap-thirdparty` + `verify-encoder-knob-liveness`；原居 gitignored 的 `tests/output/t{69,76,77,79}`，`git clean -xdf` 一次就没、也不在任何轮里被跑）⇒ 65，2026-10-04 再接 `_probe-jxl-input-target.ps1` + `_probe-raw-default-tier.ps1`（色彩审查两个 P1 的判据）⇒ 67，同日再接 `_probe-gui-control-wiring.ps1`（72h 审查 P0：GUI 控件「声明了却没接线」结构锁）⇒ 68，2026-10-05 再接 `_probe-test-group-coverage.ps1`（测试物理拆分的**组表↔探针清单覆盖一致性锁**，防「某 mode 无组认领 ⇒ 永远不被跑」的假覆盖）⇒ 69，2026-10-21 再接 `verify-jxr-highbitdepth.ps1`（JXR **高位深直通臂**：Xbox Game DVR 那类
+#    ⚠ **清单条数以实测为准 = 100 条**（⚠ 2026-09-19 P4-A 前为 42 条；2026-09-23 由 48 经 49/50/51 到 52，2026-09-23/24 再接 `verify-ipc-extra-options.ps1` ⇒ 53，2026-09-24 再接 `_probe-settings-clone-coverage.ps1` ⇒ 54，2026-09-27 再接 `_probe-matrix-structure.ps1`（任务 #42，秒级结构自检）⇒ 55，同日再接 `_probe-stderr-merge-scan.ps1`（任务 #51，合并取数结构锁）⇒ 56，同日再接 `verify-simd-switch-fallback.ps1`（面板「SIMD 优化」声明/实现冲突 ⇒ 判据单点 `SimdKernelRouting`）⇒ 57，2026-09-30 再接 `verify-geometry-orientation.ps1` + `_probe-geometry-single-source-scan.ps1`（取向标签 ⇒ **显示尺寸**口径的专项门禁 + 唯一实现结构锁）⇒ 59，同日再接 `verify-gainmap-host.ps1`（把 `GainMapTestHost` 套件接进清单 + STALE 第 ⑤ 对）⇒ 60，2026-10-01 再接**首批 L3/产物级套件**5 条（`verify-package-smoke` + `verify-jbrd-e2e` + `verify-orientation-rewrap` + `verify-gainmap-thirdparty` + `verify-encoder-knob-liveness`；原居 gitignored 的 `tests/output/t{69,76,77,79}`，`git clean -xdf` 一次就没、也不在任何轮里被跑）⇒ 65，2026-10-04 再接 `_probe-jxl-input-target.ps1` + `_probe-raw-default-tier.ps1`（色彩审查两个 P1 的判据）⇒ 67，同日再接 `_probe-gui-control-wiring.ps1`（72h 审查 P0：GUI 控件「声明了却没接线」结构锁）⇒ 68，2026-10-05 再接 `_probe-test-group-coverage.ps1`（测试物理拆分的**组表↔探针清单覆盖一致性锁**，防「某 mode 无组认领 ⇒ 永远不被跑」的假覆盖）⇒ 69，2026-10-21 再接 `verify-jxr-highbitdepth.ps1`（JXR **高位深直通臂**：Xbox Game DVR 那类
 #     4×16bit 半浮点 scRGB + planar alpha 的 JXR 在旧两臂上同报 -106、零产物；新臂走「与源同格式的
 #     直通」由托管读取器消费 ⇒ 16-bit PAM，half/float 两档各有活格子，配 WIC 独立回读、越白样本独立计数、
-#     `--color-tone-map reinhard` 对照臂，以及一条**前提锁**「ffmpeg/swscale 吃不了 rgbaf32le 中间件」），2026-10-24 再接 `verify-acr-route.ps1`（DNG 输入的 **ACR 路线**：走 SDK `dng_render`、按下游目标选渲染空间、opcode 全施加、朝向旋正、产品侧声明同源）⇒ 79，2026-10-24 再接 `verify-gainmap-compose.ps1`（两图 GainMap 合成：角色/尺寸硬拒绝、容量与量程解耦、底图保真与三条负控零产物）⇒ 80，2026-10-25 再接 `verify-dng-nonraw-input.ps1` + `verify-jxr-backend-choice.ps1` + `verify-avif-alpha.ps1`（JXR 转格式矩阵暴露的三处：DNG 非 RAW 统一拒绝、旁路 `-e` 兑现性、AVIF alpha 交付）⇒ 83，同日再接 `verify-jpg-webp-matrix.ps1`（真件测试暴露的 JPG/WebP YUV 矩阵口径：转换按 BT.601 以匹配解码器假设，legacy/engine 两侧同锁）⇒ 84，2026-10-28 再接 `verify-package-gui-starts.ps1`（出货包 **GUI 一键都打不开**这一盲区：NativeAOT 产物缺 Avalonia 编译 XAML 载荷，而 L3 五套件一律 `--headless` ⇒ 全仓无一条门禁曾把包内 exe 当"要开窗口的程序"起过一次）⇒ 85，2026-10-31 再接独立性审查留下的仪器基线闸 `_probe-env-trust-baseline.ps1`（工具树取数来源 / 映像位置→完整性级别 / 子进程自建文件正控）⇒ 86，2026-10-31 再接 H1 白点判据 `_probe-white-point-kernel.ps1`（**A 组由红转绿**的那把尺：8-bit 源经 ffmpeg `format=rgb48le` 扩位后顶码实测 = **65283**，而内核此前一律按 65535.0 归一 ⇒ 白被交付成 254/65283；本闸把「8-bit 出口 255」「8-bit 源走 16-bit 交付 65535」「真 16-bit 顶段 252 码不许塌缩」与正控同锁）⇒ 87，2026-11-01 再接清单外 6 支入列（⑪-d 欠账清零：三支 `run-*` 旧驱动补 PASS=n/exit 契约与 TMP/DOTNET_ROOT 钉扎前奏 ⇒ 90，`verify-color-matrix-full` 色彩矩阵网格（受轮默认 quick 档 72 格）⇒ 91，`verify-oracle-matrix` oracle 执行层（经 `$scriptArgs` 受管参数表只跑 -Smoke）⇒ 92，`verify-release-package` 出包独立验收（PKG_VER 缺省从盘上归档名推，多版本歧义/无归档 fail-closed）⇒ 93，同日再接宿主 TEMP 站点文本级探针 `_probe-host-temp-sites.ps1`（AGENTS §7「宿主 TEMP 站点无源级锁」的兑现：每文件 GetTempPath 站点数冻结（39 站点/7 文件，新增必须同批改表并写明生命周期）+ 坏根名黑名单（剥注释行、大小写敏感——pngTmp/FFMPEGGUI_RAMDISK 两族撞名假阳性实测后收紧））⇒ 94，2026-11-04 再接 `verify-tool-detection.ps1`（跨设备检测不一致修复的行为锁：settings 失效路径重发现（Auto 持久化/显式值不覆写两态）、env/cwd 空壳 PLAN 拒绝（LooksLikePlan）、工具报告来源可见（[PLAN]/[app-adjacent]/[PATH]），负控 = 判据打在有效路径夹具上必须不命中）⇒ 95，2026-11-08 再接 `verify-gainmap-jxl.ps1`（JXL 增益图**写侧**行为锁：CLI 产出 jhgm 容器、jxlinfo 逐字段、ServiceProbe `jxlgm` 21 条托管互验（ISO blob 与 BuildIso21496Metadata 逐字节）、djxl 解码、cjxl 透传；负控 = 坏载荷 Invalid / 无 jhgm 不报 / compose+xmp 拒绝 / 单输入 xmp 拒绝 / both NOTE / bt2020 D6；tripwire = jxl-oxide/zenjxl/jxl-rs CLI 任一出现即红并要求升级双实现判据——用户裁决 2026-11-08 解析级读者标准开写侧，80 读者矩阵渲染级零读者在案 imazen/zencodec #132）⇒ 96，同日再接 `verify-jxl-gainmap-readside.ps1`（**读侧**识别/不静默丢/结构锁：R1 识别播报正控 + 无 jhgm 双负控 + 坏载荷 fail-closed 可区分，R2 png/jpg/jxl 三臂点名 + `gain map NOT preserved` Status 后缀，R3 BuildCjxlArguments 剥注释零 `container` + 注入牙 + 上游透传/`--container=0` 剥除读数）⇒ 97）（`foreach` 数组里的 `.ps1` 条目数）。
+#     `--color-tone-map reinhard` 对照臂，以及一条**前提锁**「ffmpeg/swscale 吃不了 rgbaf32le 中间件」），2026-10-24 再接 `verify-acr-route.ps1`（DNG 输入的 **ACR 路线**：走 SDK `dng_render`、按下游目标选渲染空间、opcode 全施加、朝向旋正、产品侧声明同源）⇒ 79，2026-10-24 再接 `verify-gainmap-compose.ps1`（两图 GainMap 合成：角色/尺寸硬拒绝、容量与量程解耦、底图保真与三条负控零产物）⇒ 80，2026-10-25 再接 `verify-dng-nonraw-input.ps1` + `verify-jxr-backend-choice.ps1` + `verify-avif-alpha.ps1`（JXR 转格式矩阵暴露的三处：DNG 非 RAW 统一拒绝、旁路 `-e` 兑现性、AVIF alpha 交付）⇒ 83，同日再接 `verify-jpg-webp-matrix.ps1`（真件测试暴露的 JPG/WebP YUV 矩阵口径：转换按 BT.601 以匹配解码器假设，legacy/engine 两侧同锁）⇒ 84，2026-10-28 再接 `verify-package-gui-starts.ps1`（出货包 **GUI 一键都打不开**这一盲区：NativeAOT 产物缺 Avalonia 编译 XAML 载荷，而 L3 五套件一律 `--headless` ⇒ 全仓无一条门禁曾把包内 exe 当"要开窗口的程序"起过一次）⇒ 85，2026-10-31 再接独立性审查留下的仪器基线闸 `_probe-env-trust-baseline.ps1`（工具树取数来源 / 映像位置→完整性级别 / 子进程自建文件正控）⇒ 86，2026-10-31 再接 H1 白点判据 `_probe-white-point-kernel.ps1`（**A 组由红转绿**的那把尺：8-bit 源经 ffmpeg `format=rgb48le` 扩位后顶码实测 = **65283**，而内核此前一律按 65535.0 归一 ⇒ 白被交付成 254/65283；本闸把「8-bit 出口 255」「8-bit 源走 16-bit 交付 65535」「真 16-bit 顶段 252 码不许塌缩」与正控同锁）⇒ 87，2026-11-01 再接清单外 6 支入列（⑪-d 欠账清零：三支 `run-*` 旧驱动补 PASS=n/exit 契约与 TMP/DOTNET_ROOT 钉扎前奏 ⇒ 90，`verify-color-matrix-full` 色彩矩阵网格（受轮默认 quick 档 72 格）⇒ 91，`verify-oracle-matrix` oracle 执行层（经 `$scriptArgs` 受管参数表只跑 -Smoke）⇒ 92，`verify-release-package` 出包独立验收（PKG_VER 缺省从盘上归档名推，多版本歧义/无归档 fail-closed）⇒ 93，同日再接宿主 TEMP 站点文本级探针 `_probe-host-temp-sites.ps1`（AGENTS §7「宿主 TEMP 站点无源级锁」的兑现：每文件 GetTempPath 站点数冻结（39 站点/7 文件，新增必须同批改表并写明生命周期）+ 坏根名黑名单（剥注释行、大小写敏感——pngTmp/FFMPEGGUI_RAMDISK 两族撞名假阳性实测后收紧））⇒ 94，2026-11-04 再接 `verify-tool-detection.ps1`（跨设备检测不一致修复的行为锁：settings 失效路径重发现（Auto 持久化/显式值不覆写两态）、env/cwd 空壳 PLAN 拒绝（LooksLikePlan）、工具报告来源可见（[PLAN]/[app-adjacent]/[PATH]），负控 = 判据打在有效路径夹具上必须不命中）⇒ 95，2026-11-08 再接 `verify-gainmap-jxl.ps1`（JXL 增益图**写侧**行为锁：CLI 产出 jhgm 容器、jxlinfo 逐字段、ServiceProbe `jxlgm` 21 条托管互验（ISO blob 与 BuildIso21496Metadata 逐字节）、djxl 解码、cjxl 透传；负控 = 坏载荷 Invalid / 无 jhgm 不报 / compose+xmp 拒绝 / 单输入 xmp 拒绝 / both NOTE / bt2020 D6；tripwire = jxl-oxide/zenjxl/jxl-rs CLI 任一出现即红并要求升级双实现判据——用户裁决 2026-11-08 解析级读者标准开写侧，80 读者矩阵渲染级零读者在案 imazen/zencodec #132）⇒ 96，同日再接 `verify-jxl-gainmap-readside.ps1`（**读侧**识别/不静默丢/结构锁：R1 识别播报正控 + 无 jhgm 双负控 + 坏载荷 fail-closed 可区分，R2 png/jpg/jxl 三臂点名 + `gain map NOT preserved` Status 后缀，R3 BuildCjxlArguments 剥注释零 `container` + 注入牙 + 上游透传/`--container=0` 剥除读数）⇒ 97，2026-11-10 再接 `_probe-color-matrix-scan.ps1`（color-matrix-options 批 T1：C-SCAN@1 扫描交付物生成器——11 格式 × 18 出口行矩阵承载事实表 + XYB 三路径开关实测（cjxl v0.12.0 无显式 xyb / libjxl -xyb default 1 / cjpegli --xyb 未接线）+ ffmpeg/cjxl/cjpegli 自报表重打印；只读不改 src/、不跑长转码；自检 = 代码/工具锚点动态行号命中 + 事实表键完整 + JSON 回读 + 格式覆盖 11，任一 miss ⇒ 红；前提 publish/PLAN 工具链 fail-closed）⇒ 98，同日（color-matrix-options 批 T7）再接 `verify-color-out-matrix.ps1`（显式输出矩阵模式 `--color-out-matrix` 的**端到端判据面**：avif 引擎通路 nclx 读回（bt2020nc=H.273 枚举 9 + pixfmt-switch 兑现；auto/rgb 对照 gbrp 直喂=gbr）/ jxl xyb cjxl 确认播报（jxlinfo 容器层无 XYB 字段 ⇒ 复用 T6 播报级读法）/ png·webp·jpg·avif·jxl 五格 fail-closed 任务级 exit 91 零产物 + 模板 3 逐字 / webp·jpg 601 族冗余三态哈希·命令行·像素三尺同值（CM-REQ-08）/ cjpegli `--xyb` 命令行级接线证据（C9）/ C-REPORT@1 三模板常量逐字+全 ASCII 结构锁 / legacy 孤立点名（T6 移交边界）/ `-SelfCheck` 负控臂；⚠ 判据锚定教训：产物目录名 color-out-matrix 与播报前缀同串 ⇒ auto 零播报判据必须锚 `[color-out-matrix] ` 播报行形态，裸串会撞产物路径假红）⇒ 99，同日（pngopt 批次 2 T7）再接 `verify-png-optimizer.ps1`（PNG 出口优化器（oxipng）**端到端判据面**：ServiceProbe `pngopt` 六 case 六次独立进程（pixel 8 / ihdr 9 / chunk 12 / argv 4 / off 8 / timeout 6，运行时条数**精确锁**合计 47，SKIP>0 fail-closed 红）+ 压缩比正读数（headless off/max 同素材 P_max<P_off）+ 播报逐字对撞三类（成功正则 / timeout case 「」原文==硬编码模板 / 工具缺失臂 FFMPEGGUI_PLAN_DIR+FFMPEGGUI_ARTIFACTS_DIR 空目录注入四路解析全空 ⇒ 逐字「未检测到 oxipng」+ exit 0 产物正常，R5.5）+ off 负控（probe sha 读数行 04/06/08 消费 + headless off 两臂 stdout/stderr/logfile 零 ^[pngopt] 行首锚+ 重复跑 sha256 稳定）+ `-SelfCheck` 内存变异四臂（伪 FAIL 注入 / 条数少一条 / 篡改播报文案 / SKIP 注入，共用 §1 同款判读链；timeout case 真跑 600s ⇒ 单跑 ~620-680s 在 900s 单步预算内）⇒ 100）（`foreach` 数组里的 `.ps1` 条目数）。
 #      原注释写「29 个」「31 条」均与实测不符（**历史偏差**，非本轮引入），已按实测更正。
 #      2026-09-18 新增 `verify-engine-firstframe.ps1`（引擎多帧解码只取首帧，理由见该脚本头注释）
 #      ⇒ 32 → 33，已重新数过。
@@ -406,7 +406,7 @@ function Read-TextShared([string]$path) {
 #   ⑮ 读失败分支 ==2 且 共享读引用 ==3（异常路径**不得沿用上一轮 `$txt`**）；
 #   ⑯ 运行器**自身指纹**：打印点 ==2（启动 + 收尾）· 自漂移复核引用 ==3 · 归属不明告警 ==2；
 #   ⑰ 清单**散文条数** == `$expectedScriptCount` 常量（常量定义点 ==1；三种散文形态各命中 ≥1 且数字相同）；
-#   ⑱ 受管参数表 `$scriptArgs`：条目数 ==6 · 表内 `-SelfCheck` 字面量 ==5 · 5 条 UI 键逐一在位
+  # ⑱ 受管参数表 `$scriptArgs`：条目数 ==8 · 表内 `-SelfCheck` 字面量 ==7 · 7 条负控键逐一在位
 #      （2026-11-02 t3；没有这一针时，删掉一行 `-SelfCheck` 整轮照样全绿 ⇒「整轮 ≠ 全判据面」会静默复发）。
 # ⚠ ⑯ 的理由（2026-09-19 #28，gp-1 与 gp-3 各自独立查出）：`Check-SrcDrift` **只覆盖
 #   `src/FfmpegGui` 与 `tests/projects/ServiceProbe`** ⇒ **运行器自身既不在覆盖范围、也不哈希自身**。
@@ -535,9 +535,9 @@ function Test-RunnerShape {
   #   negative-control 证据的地方就是这张表，而它此前**零针** —— 删掉一行 `-SelfCheck`、
   #   或整条键被换掉，整轮照样全绿，而 AGENTS §7「整轮 ≠ 全判据面」那条账就从
   #   「已收口」悄悄退回「只有正向臂」（人还得靠手跑才知道）。
-  #   判据三条：① 表内 `'x.ps1' = @(` 条目数 == 6（1 条 oracle 降档 + 5 条 UI 负控）；
-  #   ② 表内带引号的 `-SelfCheck` 字面量 == 5（每个 UI 键各一次，**不许**并成全局开关）；
-  #   ③ 5 条 UI 键逐一在位（按名点，防「键还在但值被换成别的脚本」）。
+  #   判据三条：① 表内 `'x.ps1' = @(` 条目数 == 8（1 条 oracle 降档 + 5 条 UI 负控 + 1 条 color-out-matrix + 1 条 png-optimizer）；
+  #   ② 表内带引号的 `-SelfCheck` 字面量 == 7（每个负控键各一次，**不许**并成全局开关）；
+  #   ③ 7 条负控键逐一在位（按名点，防「键还在但值被换成别的脚本」）。
   #   ⚠ token 一律拼接构造（同第 ⑰ 针的理由：本函数读的是自己的源码）。
   $nScTok = '-Self' + 'Check'
   $mArgs = [regex]::Match($t, '(?ms)^[ \t]*\$scriptArgs\s*=\s*@\{(.*?)^[ \t]*\}')
@@ -546,11 +546,11 @@ function Test-RunnerShape {
   } else {
     $argBody = $mArgs.Groups[1].Value
     $cEntries = ([regex]::Matches($argBody, "\.ps1'\s*=\s*@\(")).Count
-    if ($cEntries -ne 6) { $bad.Add("受管参数表条目数 = $cEntries（须 6：1 条 oracle 降档 + 5 条 UI 负控）") }
+    if ($cEntries -ne 8) { $bad.Add("受管参数表条目数 = $cEntries（须 8：1 条 oracle 降档 + 5 条 UI 负控 + 1 条 color-out-matrix + 1 条 png-optimizer）") }
     $cSc = ([regex]::Matches($argBody, [regex]::Escape("'" + $nScTok + "'"))).Count
-    if ($cSc -ne 5) { $bad.Add("受管参数表内 -SelfCheck 字面量 = $cSc（须 5：每条 UI 门禁各一次；0 ⇒ 整轮退回只有正向臂）") }
+    if ($cSc -ne 7) { $bad.Add("受管参数表内 -SelfCheck 字面量 = $cSc（须 7：每条负控键各一次；0 ⇒ 整轮退回只有正向臂）") }
     foreach ($uiName in @('verify-ui-host.ps1', 'verify-ui-param-matrix.ps1', 'verify-ui-strategy-map.ps1',
-                          'verify-ui-param-defects.ps1', 'verify-cli-strict.ps1')) {
+                          'verify-ui-param-defects.ps1', 'verify-cli-strict.ps1', 'verify-color-out-matrix.ps1', 'verify-png-optimizer.ps1')) {
       $mKey = [regex]::Match($argBody, [regex]::Escape("'" + $uiName + "'") + '\s*=\s*@\(\s*' + [regex]::Escape("'" + $nScTok + "'"))
       if (-not $mKey.Success) { $bad.Add("受管参数表缺 $uiName = @('-SelfCheck')（该条整轮只有正向臂）") }
     }
@@ -868,7 +868,7 @@ if ($shapeBad.Count -gt 0) {
   $shapeBad | ForEach-Object { Write-Output ("        " + $_) }
   Write-Output  "        修法：退出码一律取 Invoke-StepWithTimeout 的返回值；进程对象在 helper 内命名 child"
   Write-Output '        修法（若红的是「散文条数」那一针）：把现量陈述里的条数改成与 $expectedScriptCount 一致；新增现量陈述时把它的形态加进 Test-RunnerShape 第 ⑰ 针'
-  Write-Output '        修法（若红的是「受管参数表」那一针）：$scriptArgs 里 5 条 UI 门禁的 @("-SelfCheck") 有缺 ⇒ 整轮退回只有正向臂；补回或同批改 Test-RunnerShape 第 ⑱ 针'
+  Write-Output '        修法（若红的是「受管参数表」那一针）：$scriptArgs 里 7 条负控键的 @("-SelfCheck") 有缺 ⇒ 整轮退回只有正向臂；补回或同批改 Test-RunnerShape 第 ⑱ 针'
   Release-GatesLock
   exit 2
 }
@@ -1070,6 +1070,15 @@ $scriptArgs = @{
   'verify-ui-strategy-map.ps1'   = @('-SelfCheck')
   'verify-ui-param-defects.ps1'  = @('-SelfCheck')
   'verify-cli-strict.ps1'        = @('-SelfCheck')
+  # ── 2026-11-10 第三批（color-matrix-options 批 T7）：verify-color-out-matrix 的负控臂 ──
+  #   形态与上面 5 条同款（门禁侧零改码）：-SelfCheck ⇒ 负控臂 = 对 png×bt709 跑**反向判读**
+  #   （断言 exit==0 且有产物——与 C1 已证真实行为相反），要求它**必红** ⇒ 判读链有牙。
+  #   整轮因此多跑 1 臂 headless 转码（实测 +2.5 s 量级），代价可忽略。
+  'verify-color-out-matrix.ps1'  = @('-SelfCheck')
+  # ── 2026-11-10 批次 2（pngopt 批 T7）：verify-png-optimizer 的负控臂 ──
+  #   形态同上（门禁侧零改码）：-SelfCheck ⇒ §3 内存变异四臂（伪 FAIL 注入 / 条数少一条 /
+  #   篡改播报文案 / SKIP 注入）全部被 §1 同款判读链检出 ⇒ 负控不跑真实进程、秒级（实测 +<1 s）。
+  'verify-png-optimizer.ps1'     = @('-SelfCheck')
 }
 # ⚠ 2026-09-17 调序：`verify-color-caps.ps1` 提到 `verify-color-wiring.ps1` **之前**。
 #   原顺序（wiring 先）让 wiring (8) 段依赖 **caps 的遗留产物** `validate/caps/p3.icc`
@@ -1084,7 +1093,7 @@ $scriptArgs = @{
 #   观察项**，改成必红等于**主动放弃一条覆盖**；补生产者只是**修复清单的遗漏**。
 #   ⚠ **本组正确性依赖 runner 串行**（`validate/jpgp3` 是固定共享目录）——
 #   若将来 runner 改成并行，本组必须先改成「指针/按会话隔离」（§6 第 68 条）。
-# ⚠ 受管基线：脚本清单 = **97** 条（`.workbuddy-ai/memory/MEMORY.md` / `docs/HANDOVER.md` /
+# ⚠ 受管基线：脚本清单 = **100** 条（`.workbuddy-ai/memory/MEMORY.md` / `docs/HANDOVER.md` /
 #   `docs/TESTING.md` §3.5 同记此数）。增删条目必须**同时**改此常量 + 四处文档；
 #   否则下面的条数锁会响亮报红（防「删掉一条 ⇒ 静默变 47 ⇒ 日志照常、无人发现」）。
 #   ⚠ 本锁在 `-SkipScripts` 下**不执行**（该模式走上面的早退，清单根本没被使用）——
@@ -1209,7 +1218,7 @@ $scriptArgs = @{
 #   ⚠ 自带汇总（`PASS=n FAIL=m` + 断言驱动 exit）⇒ 分类账「其余」57 → 58，两个数组仍不动。
 #   ⚠ 实测（2026-10-05，三次变异）：① 从组表删一个 mode ⇒ `contract` 未认领判红；
 #     ② 加一个无工程目录的组 ⇒ 判红；③ 把 mode 拼错 ⇒ 判红；恢复 ⇒ **6/0**。
-$expectedScriptCount = 97
+$expectedScriptCount = 100
 $scriptList = @('verify-ps-compat.ps1','verify-color-caps.ps1','verify-color-wiring.ps1','verify-color-strategy.ps1','verify-format-regression.ps1',
                  'verify-widegamut-regression.ps1','verify-tiff-icc.ps1','verify-webp-hdr-fix.ps1','verify-decision-delivery.ps1',
                  '_probe-stderr-drain-scan.ps1','_probe-proc-encoding-scan.ps1','_probe-cancel-propagation-scan.ps1','_probe-i18n-scan.ps1','_probe-cjk-hardcode-scan.ps1','verify-png-signature.ps1','verify-gainmap-memory.ps1','verify-metadata-privacy.ps1','verify-gif-avif-framelist.ps1','verify-color-peak.ps1',
@@ -1751,7 +1760,48 @@ $scriptList = @('verify-ps-compat.ps1','verify-color-caps.ps1','verify-color-wir
                  #   R1 识别播报（正控 + 无 jhgm 双负控 + 坏载荷 fail-closed 可区分）+ R2 不静默丢
                  #   （png/jpg/jxl 三臂 + Status 后缀）+ R3 参数面结构锁（BuildCjxlArguments 剥注释
                  #   零 container + 注入牙）与上游透传读数（brob 保留 / --container=0 剥除）。
-                 'verify-jxl-gainmap-readside.ps1')
+                  'verify-jxl-gainmap-readside.ps1',
+                  # ── 第 98 条：2026-11-10 接线（`_probe-color-matrix-scan.ps1`，color-matrix-options 批 T1）────
+                  #   C-SCAN@1 交付物生成器（只读扫描）：11 格式 × 18 出口行的矩阵承载事实表 +
+                  #   XYB 三路径开关实测（cjxl v0.12.0 无显式 xyb 开关 / ffmpeg libjxl -xyb default 1 /
+                  #   cjpegli --xyb 旗标存在但本仓未接线）+ ffmpeg/cjxl/cjpegli 自报表重打印，产物落
+                  #   tests/output/_tmp/color-matrix-scan-20261110/（report.md + scan-facts.json）。
+                  #   不改任何 src/ 生产代码、不跑长转码矩阵；自检 = 代码/工具锚点动态行号命中 +
+                  #   事实表键完整 + JSON 回读 + 格式覆盖 11，任一 miss ⇒ 红（fail-closed）；
+                  #   快照语义锁（CjpegliService 零 xyb / cjxl help 零 --xyb）在 T5/T6 改码后重跑
+                   #   变红是设计行为（事实表须重校准），不是误报。前提：publish/PLAN 工具链
+                   #   （publish 整树 gitignore ⇒ 缺失时 fail-closed 点名，同 verify-tool-detection 族）。
+                   '_probe-color-matrix-scan.ps1',
+                   # ── 第 99 条：2026-11-10 接线（`verify-color-out-matrix.ps1`，color-matrix-options 批 T7）──
+                   #   显式输出矩阵模式（--color-out-matrix / GUI「色彩矩阵模式」）的端到端判据面
+                   #   （C-GATE@1）：avif 引擎通路 nclx 读回（显式 bt2020nc ⇒ H1 真转 YUV
+                   #   yuv420p + ffprobe color_space=bt2020nc = H.273 枚举 9，pixfmt-switch 兑现；
+                   #   auto/rgb 对照 = gbrp 直喂 ⇒ gbr）+ jxl xyb cjxl 确认播报逐字（jxlinfo 容器层
+                   #   无 XYB 字段 ⇒ 复用 T6 播报级读法）+ png/webp/jpg/avif(ycgco)/jxl(bt709) 五格
+                   #   fail-closed（任务级 exit 91 零产物 + C-REPORT@1 模板 3 逐字）+ webp 601 族
+                   #   冗余三态（bt470bg/smpte170m/bt601 别名）哈希与 auto 逐字节一致（C1/C3 校准 =
+                   #   CM-REQ-08）+ jpg 冗余命令行对撞·像素 PSNR=99（裸哈希被 iccgen 的 ICC 时间戳
+                   #   破坏，不可用）+ cjpegli --xyb 命令行级接线证据（C9）+ 三模板常量逐字+全 ASCII
+                   #   结构锁 + legacy 孤立点名（T6 移交边界 2）+ -SelfCheck 负控臂（反向判读预期红）。
+                   #   受轮经 $scriptArgs 表传 -SelfCheck（第 ⑱ 针契约）；实测 58/0（-SelfCheck 档）
+                   #   / 57/0（正向档），产物落 tests/output/color-out-matrix/<guid>/。
+                   'verify-color-out-matrix.ps1',
+                   # ── 第 100 条：2026-11-10 接线（`verify-png-optimizer.ps1`，pngopt 批次 2 T7）──
+                   #   PNG 出口优化器（oxipng）端到端判据面（C-GATE@1）：ServiceProbe `pngopt` 六 case
+                   #   六次独立进程（pixel 8 / ihdr 9 / chunk 12 / argv 4 / off 8 / timeout 6，运行时条数
+                   #   精确锁合计 47；与 mirror-parity 的源码调用点锁 29 互补——那把锁管 Check 字面，
+                   #   这把管运行时展开）+ SKIP>0 fail-closed 红 + 压缩比正读数（headless off/max 同素材
+                   #   P_max<P_off，oxipng 对 -compression_level 2 直出有大压缩空间）+ 播报逐字对撞三类
+                   #   （成功：headless max 档 stdout 正则（T5 实证播报走 stdout 转储、--log-file 不收
+                   #   [pngopt] 行，必须 --log-level Debug）/ 超时：pngopt-timeout-04 行「」引号内原文 ==
+                   #   PngOptimizerService.cs:133 模板逐字（zopfli30/600s 展开）/ 工具缺失：
+                   #   FFMPEGGUI_PLAN_DIR+FFMPEGGUI_ARTIFACTS_DIR 空目录注入 ⇒ ResolveOxipngPath 四路
+                   #   全空 ⇒ 逐字「未检测到 oxipng」播报 + exit 0 产物正常，R5.5）+ off 负控（probe sha
+                   #   读数行 04/06/08 消费 + headless off 两臂 stdout/stderr/logfile 零 ^[pngopt] 行首锚
+                   #   （防 pngopt-gate 目录名撞串假红）+ 重复跑 sha256 稳定）+ -SelfCheck 内存变异四臂
+                   #   （共用 §1 同款判读链）。timeout case 真跑 600s ⇒ 单跑 ~620-680s 在 900s 预算内。
+                   #   受轮经 $scriptArgs 表传 -SelfCheck（第 ⑱ 针契约）。
+                   'verify-png-optimizer.ps1')
 $actualScriptCount = @($scriptList).Count
 if ($actualScriptCount -ne $expectedScriptCount) {
   Write-Output ("[FAIL] 脚本清单条数 = $actualScriptCount，受管基线 = $expectedScriptCount ⇒ 基线漂移（增删条目必须同步四处文档）")

@@ -805,7 +805,25 @@ namespace FfmpegGui.Services
             // 而 bt2020c/ycgco 仍会让 swscale 直接失败。此前 capM 只用于像素链的目标矩阵，
             // **从不施加于用户的矩阵** ⇒ 用户的 `--color-matrix bt2020nc` 会被原样写进 jpg 的输出标签，
             // 造成「宣称 bt2020nc、实际文件里没有该标注」。现统一由 capM 优先。
+            // ── 显式输出矩阵模式（C-PLAN-EXT@1 出口消费面，color-matrix-options 计划）──────────
+            // 判定真值在规划层（ColorMappingEngine.ResolveOutMatrixCapability，C-CAPS@1 唯一真值）；
+            // 本出口**只消费判定结果，不复判**。legacy 直通拿不到 plan 对象（OutputColorDecision 是
+            // 本文件的独立裁决形态）⇒ 以**同一判定函数**的 Carried 结果消费——与 T5 注记对 cjpegli
+            // 出口批准的直调形态同款（唯一真值函数，不构成第二份表）。
+            // ⚠ auto（null）⇒ NotApplicable ⇒ outMatrixToken 保持既有取值，零行为变化（CM-REQ-08）。
+            //   Rejected 档真执行时已由 ResolveLegacyVerdictPlan 的 Verdict=Reject 短路（exit 91，
+            //   QueueProcessor 传统管线消费点），此处只服务预览等旁路调用的安全回退（既有取值）；
+            //   xyb 档 Carried 但不进本段（那是编码器开关域，由 BuildJxlOptions 发 `-xyb 1`）。
             var outMatrixToken = dec.CapMatrix ?? outputColorSpace;
+            var explicitOutMatrix = options.ColorOutMatrix;
+            var outMatrixCap = ColorMapping.ColorMappingEngine.ResolveOutMatrixCapability(
+                fmt0, explicitOutMatrix, EncoderBackend.Ffmpeg);
+            if (outMatrixCap == ColorMapping.OutMatrixCapability.Carried
+                && !string.IsNullOrWhiteSpace(explicitOutMatrix)
+                && explicitOutMatrix != "xyb")
+            {
+                outMatrixToken = explicitOutMatrix;   // 规划层决议矩阵（H.273 族 Carried）
+            }
             var ffmpegColorSpace = ColorSpaceRegistry.ToFfmpegColorSpaceName(outMatrixToken);
             // RGB 矩阵族（gbr→rgb）**不写给 YUV 编码器**：libwebp_anim/mjpeg/libaom/libsvtav1 实测一律拒绝
             //（"Undefined constant ... in 'gbr'" ⇒ 0 字节）。RGB 原生格式(png/tiff/apng/jxl)已由
@@ -816,6 +834,26 @@ namespace FfmpegGui.Services
             {
                 args.Add("-colorspace"); args.Add(ffmpegColorSpace);
             }
+
+            // ── 显式 rgb（AV1 identity）的像素面兑现（T6 出口落地）：setparams=colorspace=gbr ──
+            // AV1 identity（matrix_coefficients=0）只能 4:4:4 无子采样承载——libaom 原话
+            // "Subsampling must be 0 with AOM_CICP_MC_IDENTITY"；gbrp 直喂时 nclx 自动落 matrix=0
+            //（实测 A3：gbrp 无任何 flag ⇒ nclx=gbr；tests/output/_tmp/color-matrix-t6-probe/，2026-11-10）。
+            // 显式 gbr 帧属性在 YUV pix_fmt（通用块判据命中时钉的 yuv*）上会被编码器硬拒绝
+            //（实测 A 案："Subsampling must be 0 with AOM_CICP_MC_IDENTITY"、A7：libsvtav1
+            // "Identity matrix may be used only with 4:4:4"）⇒ 零产物 fail-closed（CM-REQ-05：
+            // 矛盾选择不许静默 no-op）；libsvtav1×rgb 由 UnsupportedEncoderSettings 在引擎路由先拦。
+            // ⚠ 链尾追加（tonemap/zscale 之后）⇒ 帧属性以本 flag 为准；仅 avif 消费（identity 只对
+            //   AV1 编码器有语义）。EnsureGroupForm 的惰性求值契约见上方声明处。
+            if (fmt0 == "avif" && outMatrixCap == ColorMapping.OutMatrixCapability.Carried
+                && explicitOutMatrix == "rgb")
+            {
+                AppendVideoFilter(args, "setparams=colorspace=gbr", EnsureGroupForm(), groupLabelReset);
+            }
+
+            // ── 显式输出矩阵模式的出口侧播报（C-REPORT@1 模板 1 落地 / 模板 2 冗余；全 ASCII）──
+            // 模板 3（拒绝）由规划层直接发（Rejected ⇒ BuildArguments 不被 QueueProcessor 调用）。
+            EmitOutMatrixExitReport(fmt0, explicitOutMatrix, outMatrixCap, args);
 
             // ── 图片最长边限制（下采样/缩放）──
             // ⚠ **顺序统一（R1，2026-09-18）**：scale 必须插在**第一条色彩变换之前**（= 缩放 → 映射）。
@@ -936,6 +974,82 @@ namespace FfmpegGui.Services
         }
 
         /// <summary>
+        /// 传统管线出口的显式输出矩阵播报（C-REPORT@1 模板 1 落地 / 模板 2 冗余；全 ASCII——
+        /// <c>_probe-cjk-hardcode-scan</c> 对 EmitWarn 文案的硬约束）。模板 3（拒绝）由规划层直接发：
+        /// Rejected 档在真执行时已被 <c>ResolveLegacyVerdictPlan</c> 的 Verdict=Reject 短路
+        ///（exit 91、BuildArguments 不被调用），本方法收不到该档。
+        /// <para>
+        /// 播报唯一性（计划 §2.3 第 5 条）：本方法在 BuildArguments 内每任务恰好调用一次；
+        /// xyb 档的开关播报归 <see cref="ColorMapping.ImageEncoderArgs.BuildJxlOptions"/>（-xyb 1），
+        /// 此处不发。模板 2 的 {2}：jpg/webp 的 601 族给 <c>bt470bg</c>（auto 档的恒定落地值，
+        /// <see cref="ColorSpaceRegistry.ContainerYuvMatrix"/>——与引擎出口播报同口径）；RGB 原生/
+        /// 调色板容器给 <c>RGB</c>。
+        /// </para>
+        /// <para>
+        /// avif 的 YUV 族档**感知像素面**（读本调用已生成的 <c>-pix_fmt</c> 值，不重复判据）：
+        /// 通用块判据未命中（无 -pix_fmt）⇒ libaom gbrp 直喂会**忽略** -colorspace（实测 A6：
+        /// nclx 恒 identity；tests/output/_tmp/color-matrix-t6-probe/）⇒ 点名孤立风险后仍照写
+        /// flag（auto 档同形、产物不变；要兑现请显式 --chroma/--bit-depth）。rgb 档的兑现由
+        /// 上方 setparams=colorspace=gbr + 编码器 fail-closed 承载，此处按编码器名区分描述。
+        /// </para>
+        /// </summary>
+        private static void EmitOutMatrixExitReport(string fmt, string? token,
+            ColorMapping.OutMatrixCapability cap, List<string> args)
+        {
+            if (string.IsNullOrWhiteSpace(token)) return;   // auto（null）：零播报（CM-REQ-08）
+            switch (cap)
+            {
+                case ColorMapping.OutMatrixCapability.Carried:
+                    if (token == "xyb") return;   // 开关播报归 BuildJxlOptions（-xyb 1）
+                    if (fmt == "avif")
+                    {
+                        // YUV 族档：读已生成的 -pix_fmt（判据未命中 ⇒ 无 YUV pix_fmt ⇒ gbrp 直喂孤立）。
+                        string? pixVal = null;
+                        for (int i = 0; i + 1 < args.Count; i++)
+                            if (args[i] == "-pix_fmt") { pixVal = args[i + 1]; break; }
+                        bool yuvPix = pixVal != null
+                            && pixVal.StartsWith("yuv", StringComparison.Ordinal);
+                        if (token != "rgb" && !yuvPix)
+                        {
+                            ColorMapping.ImageEncoderArgs.EmitWarn(
+                                "[color-out-matrix] avif: no YUV -pix_fmt was forced by the chroma/bit-depth criteria, so libaom"
+                              + " will feed RGB (gbrp) and the -colorspace flag is ignored by the encoder (measured: nclx stays"
+                              + " identity); pass --chroma or --bit-depth to force a YUV pixel format and land the matrix");
+                            break;
+                        }
+                        if (token == "rgb")
+                        {
+                            bool svt = LooksLikeSvtEncoder(args);
+                            ColorMapping.ImageEncoderArgs.EmitWarn(string.Format(
+                                ColorMapping.ColorMappingEngine.OutMatrixReportLanded, fmt, token,
+                                svt ? "unlandable on libsvtav1 (no gbrp support; identity+4:2:0 is rejected by the encoder)"
+                                    : "nclx matrix_coefficients=0 (identity, enforced via setparams=gbr + RGB 4:4:4 feed)"));
+                            break;
+                        }
+                    }
+                    ColorMapping.ImageEncoderArgs.EmitWarn(string.Format(
+                        ColorMapping.ColorMappingEngine.OutMatrixReportLanded, fmt, token, $"-colorspace {token}"));
+                    break;
+                case ColorMapping.OutMatrixCapability.Redundant:
+                    var already = fmt is "jpg" or "jpeg" or "jpegli" or "webp" ? "bt470bg" : "RGB";
+                    ColorMapping.ImageEncoderArgs.EmitWarn(string.Format(
+                        ColorMapping.ColorMappingEngine.OutMatrixReportRedundant, token, fmt, already));
+                    break;
+            }
+        }
+
+        /// <summary>读已生成的 <c>-c:v</c> 值判 libsvtav1（用户显式选编码器时在位；判据与
+        /// <see cref="ColorMapping.ImageEncoderArgs.UnsupportedEncoderSettings"/> 的 libsvtav1 条同形）。</summary>
+        private static bool LooksLikeSvtEncoder(List<string> args)
+        {
+            for (int i = 0; i + 1 < args.Count; i++)
+                if (args[i] == "-c:v"
+                    && args[i + 1].StartsWith("libsvt", StringComparison.OrdinalIgnoreCase))
+                    return true;
+            return false;
+        }
+
+        /// <summary>
         /// 计算「图片最长边限制」的 scale 滤镜字符串（复用入口）。
         /// 供 FFmpeg 后端以及其他需要手工拼接 ffmpeg 滤镜链的路径（cjxl/cjpegli 管道等）调用。
         /// 返回 null 表示无需缩放（未启用 / 最长边未超限 / 探测失败）。
@@ -988,11 +1102,31 @@ namespace FfmpegGui.Services
         {
             string? primaries = null, trc = null, colorspace = null;
 
-            // Ultra HDR 解码输出：中间格式为线性 sRGB PFM（1.0=SDR 白点 203nits，峰值见 DecodedUltraHdrPeakNits）。
-            // 声明为 bt709 primaries + linear 传递（不再误标 bt2020/PQ —— 数据是线性 sRGB 而非 PQ 编码）。
+            // Ultra HDR 解码输出：中间格式为线性 HDR PFM（1.0=SDR 白点 203nits，峰值见 DecodedUltraHdrPeakNits）。
+            // 传递恒 linear（数据是线性编码而非 PQ/gamma，不随 primaries 变）。
+            // ⚠ 2026-11-09（R1 P1-a）：primaries **不再写死 bt709** —— 厂商件（OnePlus/华为）底图是
+            //   Display P3（解码端自报 RGB_D65_P3_Rel_Lin），写死 bt709 会把 P3 线性像素当 709 解释
+            //   ⇒ 帧标签 bt709/linear → ffmpeg PNG/AVIF 编码器照抄帧标签 ⇒ cICP(1,8,0,1) 错标 P3 像素
+            //   （三重证据：命令行实读 + 华为件 png-srgb 的 smpte432 标注满足逐像素 OETF 关系
+            //   MAE 0.86/255 + GainMapDecoder 自报 RGB_D65_P3_Rel_Lin；OnePlus 基线格产物
+            //   sha16=2f94d2d3cfff58b6 可复核）。取值优先级：
+            //   ① QueueProcessor 按底图实际原色注入的 ColorSourceDeclPrimaries（与引擎源描述符
+            //     /GainMapJpegCodec.SrcPrim 同源）；
+            //   ② 按 DecodedUltraHdrColorSpace 的 _P3_/_202_ 推导（与 GainMapJpegCodec.ResolveEncodeParams
+            //     /QueueProcessor 的 declPrimaries switch 同形，防 ColorSourceDecl 未注入的调用点）；
+            //   ③ bt709（Ultra HDR JPEG 的 sRGB 底图，字符串不含 P3/202 ⇒ 与改动前逐字一致）。
+            //   ⚠ **手动值不在此覆盖输入声明**：用户显式 --color-primaries 是**输出目标**
+            //     （DecideOutputColor 的 advanced 轴），与源一致时走直通（标注自然同源）、
+            //     冲突时走 Map 分支真转换——输入声明永远如实描述实际输入（与 RAW 段 :1001 起的
+            //     口径一致）。⚠ 只改标注：PFM→PNG/AVIF 直编无色彩变换，primaries 标签不参与
+            //     像素计算 ⇒ 像素逐字节不变（判据：png-def 修复前后 framemd5 对撞）。
             if (!string.IsNullOrWhiteSpace(options.DecodedUltraHdrColorSpace))
             {
-                primaries = "bt709";
+                primaries = !string.IsNullOrWhiteSpace(options.ColorSourceDeclPrimaries)
+                    ? options.ColorSourceDeclPrimaries
+                    : options.DecodedUltraHdrColorSpace.Contains("_P3_", StringComparison.Ordinal) ? "smpte432"
+                    : options.DecodedUltraHdrColorSpace.Contains("_202_", StringComparison.Ordinal) ? "bt2020"
+                    : "bt709";
                 trc = "linear";
                 colorspace = "bt709";
                 return (primaries, trc, colorspace);
@@ -2387,7 +2521,7 @@ namespace FfmpegGui.Services
         /// <summary>把 filter 追加到链**尾**（与 `-vf` 分支同语义）。链尾带字面引号时插到引号**内**
         ///——引号必须在最外层，否则 ffmpeg 解析失败（实测退出码 <c>-22</c>，同 InsertScaleFilter 的守卫）。</summary>
         private static string AppendIntoChainTail(string chain, string filter)
-            => chain.EndsWith('"', StringComparison.Ordinal)
+            => chain.EndsWith("\"", StringComparison.Ordinal)
                 ? chain.Substring(0, chain.Length - 1) + "," + filter + "\""
                 : chain + "," + filter;
 

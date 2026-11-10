@@ -490,6 +490,8 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
   --color-matrix <bt709|bt2020nc|bt470bg|smpte170m|gbr>
                           输入矩阵声明（影响 YUV→RGB 解读）
   --color-range <auto|tv|pc>   输出色彩范围（仅 YUV 输出格式有意义）
+  --color-out-matrix <auto|rgb|bt709|bt601|bt470bg|smpte170m|smpte240m|fcc|bt2020nc|ycgco|xyb>
+                          输出矩阵模式（RGB→YUV 转换系数与容器标注；xyb 仅 jxl/cjpegli 出口承载）
   --color-carry-scope <none|unnameable|all>
                           「推荐」策略的携带范围（默认 all：无损优先）
   --color-709-curve <std|zimg>  BT.709 编码口径（std=ITU-R 定义式；zimg=对齐历史产物）
@@ -906,6 +908,27 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
                         // （语义 = 「不下发 / 跟随输入」，等价物是**不设该轴**而非同轴另一取值）⇒ 白名单含 `auto`。
                         options.ColorRange = ParseTokenStrict(key, value, "auto | tv | pc", "auto", "tv", "pc");
                         break;
+                    case "color-out-matrix":
+                        // ── 2026-11-10 新增（color-matrix-options 批次，契约 C-CLI@1）──
+                        // 输出侧矩阵模式，与上方 `--color-matrix`（输入声明，管 YUV→RGB **解读**）语义
+                        // **正交**：本参数管产物侧「RGB→YUV 转换系数 + 容器标注」，同给不冲突、不合并
+                        // （既有 case 逐字保留）。取值域 = `ColorSpaceRegistry.OutputMatrixTokens`
+                        // （C-TOKEN@1，11 token）；归一走 `ColorSpaceRegistry.NormalizeOutMatrixToken`：
+                        // `bt601`→`smpte170m`（显示别名）、大小写不敏感、空白/null/`auto` ⇒ null
+                        // （null = 不指定，沿用既有推导）。
+                        // ⚠ 判定 = 「归一后 ∈ 白名单才放行」：归一函数对未知值**原样返回**（不抛异常），
+                        //   拒绝发生在 CLI 入口（同 `NormalizeRawColorTargetToken` 文档点名的分工模式）——
+                        //   对齐 `--color-range` 的 2026-09-19 严格化：BadValue 硬失败、点名全部合法
+                        //   token、exit 非 0，不静默放行到下游。
+                        // ⚠ 分层语义（ParseTokenStrict 文档「分层语义」段既有约定）：「能识别但该格式
+                        //   不承载」（如 png + bt709）**不在 CLI 层拦**，由规划层 C-CAPS 判定
+                        //   （契约拒绝 exit 91）。
+                        var outMatrix = ColorSpaceRegistry.NormalizeOutMatrixToken(value);
+                        if (outMatrix != null && !ColorSpaceRegistry.OutputMatrixTokens.Contains(outMatrix))
+                            throw BadValue(key, value,
+                                "auto | rgb | bt709 | bt601 | bt470bg | smpte170m | smpte240m | fcc | bt2020nc | ycgco | xyb");
+                        options.ColorOutMatrix = outMatrix;
+                        break;
                     // 自研色彩引擎开关。**D5 同族**（2026-09-19 修）：它与 --color-strategy 同属
                     // `--help` 的「色彩处理（策略与执行路径）」一节，取值域在 help 里就是
                     // auto | engine | legacy 三项。此前是**自由字符串**：任何拼错的值（`--color-engine engin`）
@@ -1011,6 +1034,15 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
                     case "avif-row-mt": options.AvifRowMt = ParseBoolStrict(key, value); break;
                     case "avif-tune": options.AvifTune = value; break;
                     case "png-pred": options.PngPred = value; break;
+                    // ── PNG 出口优化器档位（png-optimizer-integration C-CLI@1；五档 png-default-oxipng C-DEFOPT@1）：
+                    //   值域封闭且由本仓自持（off|default|max|zopfli15|zopfli30，与 GUI 值数组
+                    //   _pngOptimizerValues、C-PARAMS@1/C-DEFARGV@1 同源）
+                    //   ⇒ 走 ParseTokenStrict 收口（R5.2：非法值报错点名 key 与原值）。
+                    //   刻意**不学** png-pred 的透传豁免——那是「域在下游工具手里」的豁免类，
+                    //   本参数域由本仓定义（oxipng 档位表在 BuildArgs() 单一出处）。
+                    case "png-optimizer": options.PngOptimizer = ParseTokenStrict(key, value,
+                        "off | default | max | zopfli15 | zopfli30", "off", "default", "max", "zopfli15", "zopfli30");
+                        break;
                     case "png-dpi": options.PngDpi = ParseIntStrict(key, value); break;
                     case "tiff-compression": options.TiffCompressionAlgo = value; break;
                     case "tiff-dpi": options.TiffDpi = ParseIntStrict(key, value); break;
@@ -1187,6 +1219,7 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
         //        color-709-curve（std|zimg）· color-carry-scope（none|unnameable|all|0|1|2）·
         //        color-tone-map（""|none|reinhard|hable|mobius|bt2446a|bt2390）·
         //        jpeg-huffman（default|optimal|1|0）·
+        //        png-optimizer（off|default|max|zopfli15|zopfli30，png-optimizer-integration C-CLI@1）·
         //        bit-depth（8|10|12|16|auto，走同族的 `ParseBitDepthStrict` —— 它是整数域，
         //        且 `auto` 要落成 `null` 而非字符串，故不复用 `ParseTokenStrict`）
         //      ⛔ **刻意不收口**（收口就会把合法值挡在门外，分四类）：

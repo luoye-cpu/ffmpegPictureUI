@@ -49,6 +49,7 @@ namespace FfmpegGui.Models
             if (p.ColorTrc != null) ColorTrc = p.ColorTrc;
             if (p.ColorMatrix != null) ColorMatrix = p.ColorMatrix;
             if (p.ColorRange != null) ColorRange = p.ColorRange;
+            if (p.ColorOutMatrix != null) ColorOutMatrix = p.ColorOutMatrix;   // 输出矩阵模式（C-TOKEN@1）；null 不覆盖（旧预设不动）
             if (p.TonemapCurve != null) TonemapCurve = p.TonemapCurve;
             if (p.RawColorTarget != null) RawColorTarget = p.RawColorTarget;   // null 归一 ⇒ 保持模型默认（rec2020）
             AutoThreads = p.AutoThreads;
@@ -61,6 +62,7 @@ namespace FfmpegGui.Models
             // （旧代码误将其赋给 UseAdvancedColorParameters，会错误开启高级色彩参数，已移除）
 
             if (p.PngPred != null) PngPred = p.PngPred;
+            if (p.PngOptimizer != null) PngOptimizer = p.PngOptimizer;   // PNG 优化器档位（png-optimizer-integration T4，C-CLI@1 clone 行：漏行 = preset/队列克隆丢档位）
             if (p.PngDpi.HasValue) PngDpi = p.PngDpi;
             if (p.WebpPreset != null) WebpPreset = p.WebpPreset;
             if (p.AvifCpuUsed.HasValue) AvifCpuUsed = p.AvifCpuUsed;
@@ -274,6 +276,36 @@ namespace FfmpegGui.Models
         /// 输出色彩范围: null/"auto" = 自动（RGB 输入→pc），"tv" = limited（视频范围），"pc" = full（全范围）
         /// </summary>
         public string? ColorRange { get; set; }
+        // ── 输出矩阵模式（C-TOKEN@1，color-matrix-options 计划）：独立于精确色彩三元组的输出轴 ──
+        private string? _colorOutMatrix;
+        /// <summary>
+        /// **输出矩阵模式**：RGB→YUV 转换系数与容器标注（输出侧）；null = auto（不指定，
+        /// 沿用现有推导，产物逐字节不变）。取值域为
+        /// <see cref="Services.ColorSpaceRegistry.OutputMatrixTokens"/>（auto/rgb/bt709/bt601/
+        /// bt470bg/smpte170m/smpte240m/fcc/bt2020nc/ycgco/xyb）。
+        /// <para>
+        /// ⚠ 与 <see cref="ColorMatrix"/>（**输入**矩阵声明，`-i` 前 -colorspace）语义正交：
+        /// 一个管「源怎么读」、一个管「产物怎么转/怎么标」，同给不冲突、不合并。
+        /// </para>
+        /// <para>
+        /// ⚠ 在属性入口归一（复刻 <see cref="ColorPrimaries"/>/<see cref="ColorTrc"/>/
+        /// <see cref="ColorMatrix"/> 的「属性入口规范化，单一真值」模式）：bt601→smpte170m、
+        /// 大小写不敏感、auto/空白→null、未知值原样保留（合法性拦截在 CLI 入口，
+        /// 「能识别但格式不承载」在规划层 C-CAPS 判定）。⇒ CLI / GUI / 预设 JSON / 程序内注入
+        /// 四条路径一次覆盖，模型内恒为归一后规范 token；采集层（CliParser /
+        /// MainWindow.MapOutMatrixValue）自己的归一调用与 setter 幂等。
+        /// </para>
+        /// <para>
+        /// ⚠ xyb 特殊成员：libjxl 内部感知色彩表示（非 H.273），仅 jxl / jpg(cjpegli) 出口承载——
+        /// 承载判定在规划层（C-CAPS），本字段只存 token。auto（null）不触发任何播报；
+        /// 显式值必须经规划层播报（C-REPORT@1）。
+        /// </para>
+        /// </summary>
+        public string? ColorOutMatrix
+        {
+            get => _colorOutMatrix;
+            set => _colorOutMatrix = Services.ColorSpaceRegistry.NormalizeOutMatrixToken(value);
+        }
         /// <summary>HDR→SDR tonemap 曲线: null/"hable"(默认)/"mobius"/"reinhard"。仅对 HDR 降级生效。</summary>
         public string? TonemapCurve { get; set; }
         public int Threads { get; set; } = ComputeAutoThreads();
@@ -290,6 +322,13 @@ namespace FfmpegGui.Models
         public bool Lossless { get; set; } = false;
         // 高级编码器私有选项
         public string? PngPred { get; set; }
+        /// <summary>
+        /// PNG 出口优化器档位（png-optimizer-integration，C-CLI@1；默认值变更 png-default-oxipng C-DEFOPT@1）：
+        /// off|default|max|zopfli15|zopfli30，默认 <c>max</c>。
+        /// off 时 PNG 出口行为与未集成前逐字节一致（R1.1）；非 off 时编码产物经 oxipng 后置重压（C-EXEC@1）：
+        /// default = level 2 显式化（C-DEFARGV@1），max/zopfli15/zopfli30 沿 C-PARAMS@1。
+        /// </summary>
+        public string? PngOptimizer { get; set; } = "max";
         public int? PngDpi { get; set; }
         public string? WebpPreset { get; set; }
         /// <summary>WebP 无损模式压缩级别 (0-6, 0=最快)</summary>

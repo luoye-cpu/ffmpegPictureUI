@@ -233,9 +233,37 @@ public static class GainMapDecoder
                     meta.BaseRenditionIsHdr = byFlag || byHeadroom;
                     if (byFlag && !byHeadroom)
                         log?.Invoke("[GainMap解码] 方向以 flags bit2（backwardDirection）为准（headroom 读数相反）\n");
-                    log?.Invoke($"[GainMap解码] 元数据来源: ISO-BMFF tmap item（{bmff.TmapPayload.Length} B，形式 {bmff.Form}）\n");
+                    // AU2-X1（2026-11-10）：aux-21496 防御性形态的前置元数据也走本分支（探针把
+                    // `version+元数据` 段填进 TmapPayload，与 tmap 载荷同构）⇒ 载体按形式点名，不冒充 tmap。
+                    string metaCarrier = bmff.Form == "tmap"
+                        ? "ISO-BMFF tmap item"
+                        : "ISO-BMFF aux item（URN 21496）数据前置元数据";
+                    log?.Invoke($"[GainMap解码] 元数据来源: {metaCarrier}（{bmff.TmapPayload.Length} B，形式 {bmff.Form}）\n");
                 }
                 var xmpMeta = await ReadMetadataAsync(inputPath, log, ct);
+                // ── Apple aux 形态元数据（AU-W2，2026-11-10）────────────────────────────
+                //   元数据 = 主图 Exif item 的 AppleMakerNote（tag 33=HDRHeadroom / 48=HDRGain，
+                //   Apple 官方 E5 + exiftool Apple.pm E7）。读取走 exiftool 整件通道
+                //   （`-j -a -G1 -MakerNotes:all`，零新解析器；探针只负责把 Exif item 的存在性
+                //   作为结构证据）。⚠ exiftool 读不到两个 tag ⇒ fail-closed 点名 return null
+                //   （不得静默按 SDR 走）——与上面 tmap 载荷解析失败的既有口径同族。
+                if (meta == null && bmff is { HasGainMap: true, Form: "aux-apple-hdrgainmap", Determinate: true })
+                {
+                    // AU2-X1（2026-11-10）：纯托管优先 —— Exif item 字节已由探针切出，
+                    // AppleMakerNoteParser 直解（零子进程）；失败 ⇒ 降级 exiftool 整件通道（点名）。
+                    meta = await TryReadAppleMakerNoteMetadataAsync(inputPath, log, ct, bmff.ExifItemData);
+                    if (meta == null)
+                    {
+                        log?.Invoke("[GainMap解码] ❌ Apple aux 增益图（urn:com:apple:photo:2020:aux:hdrgainmap）："
+                            + "exiftool 读不到 MakerNotes HDRHeadroom/HDRGain（缺 tag 33/48）"
+                            + "⇒ 拒绝按增益图处理（fail-closed，不静默 SDR）\n");
+                        return null;
+                    }
+                    // 通道详情（纯托管 / exiftool）由 TryReadAppleMakerNoteMetadataAsync 的读数行播报；
+                    // 此行只记容器级来源（⚠ §1h 门禁断言依赖 AppleMakerNote 字样，文案保留关键字）。
+                    log?.Invoke($"[GainMap解码] 元数据来源: AppleMakerNote（Exif item {bmff.ExifItemId}，"
+                        + $"headroom={MathF.Pow(2f, meta.GainMapMax):0.####}×，Apple 语义）\n");
+                }
                 if (meta == null)
                 {
                     meta = xmpMeta;
@@ -319,7 +347,9 @@ public static class GainMapDecoder
                 string gmFmtArgs = "";
                 bool gmOk;
                 bool gmGrid = false;      // 2026-11-02：增益图以 `grid` 分块承载 ⇒ 逐瓦片解码后拼接
-                if (bmff?.HasGainMap == true && bmff.Form == "tmap")
+                // AU2-X1（2026-11-10）：aux-21496 防御性形态的单 item 提取与本支同构（探针保证它
+                // 恒非 grid：结构尝试只做单 item；元数据前置在 item 数据里、流部分已转 Annex-B）。
+                if (bmff?.HasGainMap == true && (bmff.Form == "tmap" || bmff.Form == "aux-21496"))
                 {
                     if (bmff.GainMapIsGrid)
                     {
@@ -352,8 +382,29 @@ public static class GainMapDecoder
                         await File.WriteAllBytesAsync(gmPath, bmff.GainMapItemData, ct);
                         gmFmtArgs = $"-f {bmff.GainMapFfmpegFormat} ";
                         gmOk = true;
-                        log?.Invoke($"[GainMap解码] 增益图来源: ISO-BMFF item {bmff.GainMapItemId}（{bmff.GainMapCodec}，{bmff.GainMapItemData.Length} B）\n");
+                        // AU2-X1：形式尾点名（tmap / aux-21496）——门禁 §3c 的 `codec，N B` 形状不受影响。
+                        log?.Invoke($"[GainMap解码] 增益图来源: ISO-BMFF item {bmff.GainMapItemId}"
+                            + $"（{bmff.GainMapCodec}，{bmff.GainMapItemData.Length} B，形式 {bmff.Form}）\n");
                     }
+                }
+                else if (bmff?.HasGainMap == true && bmff.Form == "aux-apple-hdrgainmap")
+                {
+                    // ── Apple aux 形态（AU-W2，2026-11-10）：探针已切出 Annex-B/OBU 裸流 ──
+                    //   与 tmap 单 item 支同构（无 grid / 无 tmap 载荷；hvcC→Annex-B 已在探针完成）。
+                    if (bmff.GainMapItemData == null || bmff.GainMapItemData.Length <= 100
+                        || bmff.GainMapFfmpegFormat == null)
+                    {
+                        log?.Invoke("[GainMap解码] ❌ Apple aux 增益图 item 不可用（探针未给出可解字节）"
+                            + (string.IsNullOrEmpty(bmff.FailReason) ? "" : $"：{bmff.FailReason}") + "\n");
+                        return null;
+                    }
+                    gmPath = Path.Combine(tempDir,
+                        bmff.GainMapFfmpegFormat == "obu" ? "gainmap.obu" : "gainmap.hevc");
+                    await File.WriteAllBytesAsync(gmPath, bmff.GainMapItemData, ct);
+                    gmFmtArgs = $"-f {bmff.GainMapFfmpegFormat} ";
+                    gmOk = true;
+                    log?.Invoke($"[GainMap解码] 增益图来源: Apple aux item {bmff.GainMapItemId}"
+                        + $"（{bmff.GainMapCodec}，{bmff.GainMapItemData.Length} B，urn:com:apple:photo:2020:aux:hdrgainmap）\n");
                 }
                 else if (vendor is { Found: true } && vendor.MaskJpeg is { Length: > 100 })
                 {
@@ -672,7 +723,19 @@ public static class GainMapDecoder
                 SimdPixelOps.SrgbToLinearRgba(baseRgb);
                 var gmRgb = PlanarToInterleaved(gmBytes, (int)gmPixels);
                 // 应用增益 (双线性插值增益图 → 基础图分辨率)
-                hdrRgb = ApplyGainMap(baseRgb, gmRgb, baseW, baseH, gmW, gmH, meta);
+                // ⚠ Apple aux 形态走**官方公式**（AU-W2，2026-11-10）：scale = 1+(headroom−1)×gm_linear，
+                //   与 ISO 的 2^logBoost 是两条曲线；headroom 从 meta.GainMapMax（log2 域）还原。
+                bool appleAux = bmff is { HasGainMap: true, Form: "aux-apple-hdrgainmap" };
+                bool auxIso21496 = bmff is { HasGainMap: true, Form: "aux-21496" };
+                hdrRgb = appleAux
+                    ? ApplyGainMapApple(baseRgb, gmRgb, baseW, baseH, gmW, gmH,
+                        MathF.Pow(2f, meta.GainMapMax))
+                    : ApplyGainMap(baseRgb, gmRgb, baseW, baseH, gmW, gmH, meta);
+                if (appleAux)
+                    log?.Invoke("[GainMap解码] 恢复: Apple 公式 hdr = sdr_linear × (1 + (headroom−1) × Rec709Inv(gainmap))（非 ISO 2^logBoost）\n");
+                else if (auxIso21496)
+                    log?.Invoke("[GainMap解码] 恢复: ISO 21496 公式族 hdr = (sdr + offsetSDR) × 2^logBoost − offsetHDR"
+                        + "（与 tmap 同汇合点；aux-21496 防御性形态，元数据前置在 aux item 数据）\n");
 
                 // 输出 gbrpf32le (平面 G,B,R)
                 // ⚠️ BlockCopy 是原始字节拷贝, 不能从交错 RGBA 抽取平面!
@@ -951,13 +1014,43 @@ public static class GainMapDecoder
         {
             var bmff = await IsoBmffGainMapProbe.ProbeFileAsync(path, ct);
             if (bmff == null || !bmff.HasGainMap) return (false, null);
+            // AU-W2（2026-11-10）：Apple aux 形态升级为可解 —— 容器级提取全部成立
+            // （Determinate + aux item 裸流 + Exif item 字节）⇒ 与 tmap 同等放行。
+            // 结构不全（如缺 auxl / 缺 Exif item）⇒ 仍走下方降级点名。
+            bool auxAppleOk = bmff.Form == "aux-apple-hdrgainmap"
+                && bmff.Determinate
+                && bmff.GainMapItemData != null
+                && bmff.ExifItemData != null;
+            if (auxAppleOk)
+            {
+                log?.Invoke($"[GainMap解码] 检测到 Apple aux 增益图（form=aux-apple-hdrgainmap，"
+                    + $"aux item {bmff.GainMapItemId} {bmff.GainMapItemData!.Length} B + Exif item {bmff.ExifItemId} "
+                    + $"{bmff.ExifItemData!.Length} B），方向为「SDR 底图 → HDR」（Apple 官方公式）\n");
+                return (true, null);
+            }
+            // AU2-X1（2026-11-10）：aux-21496 防御性形态（合成件 D 同构）—— 探针结构尝试成立
+            // （前置 `version+GainMapMetadata` 可解析 + 编码流可切）⇒ 与 tmap 同等放行；
+            // 结构未证实 ⇒ 走下方降级点名（fail-closed 有牙）。
+            bool auxIsoOk = bmff.Form == "aux-21496"
+                && bmff.Determinate
+                && bmff.TmapPayload != null
+                && bmff.GainMapItemData != null;
+            if (auxIsoOk)
+            {
+                log?.Invoke($"[GainMap解码] 检测到 ISO-BMFF 增益图（aux item {bmff.GainMapItemId}，"
+                    + $"URN 21496，数据前置元数据 {bmff.TmapPayload!.Length} B + 裸流 {bmff.GainMapItemData!.Length} B），"
+                    + "方向为「SDR 底图 → HDR」（ISO 21496 公式族）\n");
+                return (true, null);
+            }
             if (bmff.Form != "tmap" || bmff.TmapPayload == null)
             {
                 // 2026-11-02：把 FailReason 一起播报 —— 否则「能认出但结构没覆盖」（如 construction_method=1 /
                 // grid 瓦片缺件）会被读成「tmap 形式不支持」，真实原因被吞（iPhone HDR HEIC 实测踩到）。
-                log?.Invoke($"[GainMap解码] ⚠️ 检测到增益图，但承载形式为 {bmff.Form ?? "未知"}（尚未支持解码"
+                // 2026-11-10（AU-W2）：aux-apple 可解后，此分支对它只承接「结构不全」的降级
+                // （Determinate=false + FailReason 点名具体缺失），文案不再写死「尚未支持解码」。
+                log?.Invoke($"[GainMap解码] ⚠️ 检测到增益图，但承载形式为 {bmff.Form ?? "未知"}（不可解"
                     + (string.IsNullOrEmpty(bmff.FailReason) ? "" : $"：{bmff.FailReason}") + "），按底图处理\n");
-                return (false, $"增益图承载形式 {bmff.Form ?? "未知"} 尚未支持解码（HDR 层未施加）");
+                return (false, $"增益图承载形式 {bmff.Form ?? "未知"} 不可解（HDR 层未施加）");
             }
             var meta = JpegContainer.ParseIso21496(bmff.TmapPayload, 1, bmff.TmapPayload.Length - 1);
             if (meta == null)
@@ -1306,7 +1399,17 @@ public static class GainMapDecoder
         ///   独立分母模式: [baseN baseD altN altD] + 每通道 5 对 (N,D)
         /// </summary>
         public static GainMapMetadata? ParseIso21496(byte[] d, int off, int len)
+            => ParseIso21496(d, off, len, out _);
+
+        /// <summary>
+        /// 同上重载 + <paramref name="consumed"/> = 元数据**实际占用**的字节数（成功时 = 解析游标
+        /// 终点 − off；失败时 0）。AU2-X1（2026-11-10）：aux-21496 防御性形态的 item 数据 =
+        /// `version(1B) + GainMapMetadata + 增益图编码流` —— 解析端必须知道元数据在哪结束，
+        /// 才能把后面的编码流切出来（<see cref="IsoBmffGainMapProbe"/> 的结构尝试消费此读数）。
+        /// </summary>
+        public static GainMapMetadata? ParseIso21496(byte[] d, int off, int len, out int consumed)
         {
+            consumed = 0;
             try
             {
                 int end = off + len, p = off;
@@ -1388,6 +1491,7 @@ public static class GainMapDecoder
                 if (meta.GainMapMax <= 0f && meta.GainMapMin < 0f) meta.BaseRenditionIsHdr = true;
                 for (int c = 0; c < 3; c++)
                     if (meta.GammaC[c] <= 0f) meta.GammaC[c] = 1f;   // γ≤0 ⇒ 视作 1（参照 lu/LA 的兜底）
+                consumed = p - off;    // 元数据实际占用字节数（AU2-X1：aux-21496 流切割的必要读数）
                 return meta;
             }
             catch { return null; }
@@ -1802,6 +1906,263 @@ public static class GainMapDecoder
             }
         }
         return result;
+    }
+
+    /// <summary>
+    /// **Apple aux 形态**的增益施加（AU-W2，2026-11-10）——与 <see cref="ApplyGainMap"/>（ISO 语义）
+    /// 是两条公式，**不共用**：Apple 官方（SPEC E5；johncf lib.py apply_hdrgainmap 同形）：
+    /// <code>
+    ///   gainmap_linear = Rec.709 OETF 逆函数(gainmap 编码值)     // SPEC §2：增益图是 Rec.709 OETF 编码的 8-bit 亮度图
+    ///   scale = 1 + (headroom − 1) × gainmap_linear              // 线性内插，非 2^logBoost
+    ///   hdr_linear = sdr_linear × scale
+    /// </code>
+    /// <para>
+    /// ⚠ 与 ISO 链路的另一点不同：ISO 的增益图值是**线性权重**（直接进 logBoost 插值），
+    /// Apple 的增益图字节是 **Rec.709 OETF 编码** ⇒ 先逆线性化再用。⚠ 实现分歧登记（SPEC §4）：
+    /// johncf 一手实现用 sRGB EOTF 线性化（两条曲线中间调差异 ≪8-bit 量化），本实现按
+    /// Apple 官方文档口径取 Rec.709 逆（任务书定稿），真机件到手前不再改。
+    /// </para>
+    /// <para>结构对齐 <see cref="ApplyGainMap"/>：双线性上采样（复用 <see cref="BilinearGray"/>）+
+    /// 坐标按逻辑尺寸归一 + 真实缓冲尺寸钳位（越界防线同源）。Channels 恒 1（单通道亮度图）。</para>
+    /// </summary>
+    internal static float[] ApplyGainMapApple(float[] baseRgba, float[] gmRgba, int baseW, int baseH,
+        int gmW, int gmH, float headroom)
+    {
+        long px = (long)baseW * baseH;
+        if (px <= 0 || px > int.MaxValue / 4) return Array.Empty<float>();
+        int pixelCount = (int)px;
+        var result = new float[pixelCount * 4];
+        float hm1 = headroom - 1f;
+
+        for (int y = 0; y < baseH; y++)
+        {
+            for (int x = 0; x < baseW; x++)
+            {
+                int o = (y * baseW + x) * 4;
+                float gx = (x + 0.5f) * gmW / baseW - 0.5f;
+                float gy = (y + 0.5f) * gmH / baseH - 0.5f;
+                gx = Math.Clamp(gx, 0, gmW - 1);
+                gy = Math.Clamp(gy, 0, gmH - 1);
+                int x0 = Math.Clamp((int)MathF.Floor(gx), 0, gmW - 1);
+                int y0 = Math.Clamp((int)MathF.Floor(gy), 0, gmH - 1);
+                int x1 = Math.Min(x0 + 1, gmW - 1), y1 = Math.Min(y0 + 1, gmH - 1);
+                float fx = gx - x0, fy = gy - y0;
+
+                int g00 = (y0 * gmW + x0) * 4;
+                int g01 = (y0 * gmW + x1) * 4;
+                int g10 = (y1 * gmW + x0) * 4;
+                int g11 = (y1 * gmW + x1) * 4;
+                // 增益图是灰度（三通道相等）⇒ 取 BT.709 亮度（与 ApplyGainMap 灰度支同源）
+                float gv = BilinearGray(gmRgba, g00, g01, g10, g11, fx, fy);
+                float gl = Rec709Inverse(gv);
+                float scale = 1f + hm1 * gl;
+                result[o] = baseRgba[o] * scale;
+                result[o + 1] = baseRgba[o + 1] * scale;
+                result[o + 2] = baseRgba[o + 2] * scale;
+                result[o + 3] = baseRgba[o + 3];
+            }
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Rec.709 OETF 的逆函数（编码值 → 场景线性）。ITUT-R BT.709：
+    /// <c>E' = 4.5·E (E &lt; 0.018)；1.099·E^0.45 − 0.099 (E ≥ 0.018)</c>
+    /// ⇒ 逆：<c>E = E'/4.5 (E' &lt; 0.081)；((E'+0.099)/1.099)^(1/0.45)</c>。
+    /// 输入钳到 0..1（HEVC 解码的浮点值域）。
+    /// </summary>
+    internal static float Rec709Inverse(float v)
+    {
+        v = Math.Clamp(v, 0f, 1f);
+        return v < 0.081f ? v / 4.5f : MathF.Pow((v + 0.099f) / 1.099f, 1f / 0.45f);
+    }
+
+    /// <summary>
+    /// AppleMakerNote → <see cref="GainMapMetadata"/>。
+    /// <para>
+    /// **AU2-X1（2026-11-10）改为两臂**：①**纯托管优先** —— <paramref name="exifItemData"/>（探针
+    /// 切出的 Exif item 字节）在场时由 <see cref="AppleMakerNoteParser"/> 直解（零子进程）；
+    /// ②exiftool **fallback** —— 纯托管失败时降级整件通道并**点名降级**（exiftool 对合成器之外的
+    /// MakerNote 变体有更宽的兼容面）。⚠ 行为契约不变：两路读数必须一致 —— headroom 公式与
+    /// meta 构造由 <see cref="BuildAppleMetadataFromTags"/> **单一代码路径**共用，对拍由
+    /// ServiceProbe `gainmap-mn-parity`（verify-gainmap-isobmff §1i）逐值锁住。
+    /// </para>
+    /// <para>
+    /// exiftool 臂命令：<c>exiftool -j -a -G1 -MakerNotes:all &lt;file&gt;</c>。键名容忍三种组前缀
+    /// （随包 13.61 实测 <c>Apple:HDRHeadroom</c>；johncf 用 -G0 语义 <c>MakerNotes:HDRHeadroom</c>；
+    /// 无组名裸 <c>HDRHeadroom</c>），**只认这三个前缀**——绝不误吃其它组的同名标签。
+    /// 值容忍 JSON number（1.5）与 rational 字符串（"3/2"，Writable=rational64s 的 exiftool 原生形态）。
+    /// </para>
+    /// <para>headroom 公式（Apple 官方 E5 / johncf metadata.py 逐字，见 <see cref="BuildAppleMetadataFromTags"/>）。
+    /// ⚠ HDRGainMapVersion（XMP 侧）取不到不阻塞（SPEC §4：HEIC 的 Apple 件不写 XMP item，
+    /// maker33/48 是硬条件）。</para>
+    /// </summary>
+    /// <param name="exifItemData">探针切出的 Exif item 字节；null = 无字节可解 ⇒ 直接走 exiftool。</param>
+    private static async Task<GainMapMetadata?> TryReadAppleMakerNoteMetadataAsync(string path,
+        Action<string>? log, CancellationToken ct, byte[]? exifItemData = null)
+    {
+        // ── 纯托管臂（AU2-X1）────────────────────────────────────────────────────────
+        if (exifItemData != null)
+        {
+            var managed = AppleMakerNoteParser.TryParse(exifItemData, out var mnWhy);
+            if (managed != null)
+            {
+                var m = BuildAppleMetadataFromTags(managed.Tag33HdrHeadroom, managed.Tag48HdrGain,
+                    log, "纯托管解析（AppleMakerNoteParser）");
+                if (m != null) return m;
+                // headroom ≤ 1（tag 在场但无 HDR 余量）——值本身的问题，exiftool 也会读出同样的值
+                // ⇒ 不降级（BuildAppleMetadataFromTags 已点名）。这不是「解析失败」，是元数据不可用。
+                return null;
+            }
+            log?.Invoke($"[GainMap解码] AppleMakerNote 纯托管解析失败（{mnWhy}）⇒ 降级 exiftool 整件通道\n");
+        }
+        try
+        {
+
+            if (!ExifToolService.IsAvailable) return null;
+            var psi = new ProcessStartInfo
+            {
+                FileName = ExifToolService.DetectedPath!,
+                Arguments = $"-j -a -G1 -MakerNotes:all \"{path}\"",
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                StandardOutputEncoding = Encoding.UTF8,
+                StandardErrorEncoding = Encoding.UTF8
+            };
+            using var p = Process.Start(psi);
+            if (p == null) return null;
+            p.BeginErrorReadLine();   // P2-3：stderr 不排空会堵管道（同 ReadMetadataJsonAsync 的实测）
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            cts.CancelAfter(TimeSpan.FromSeconds(5));
+            string json;
+            try
+            {
+                json = await p.StandardOutput.ReadToEndAsync(cts.Token);
+                await p.WaitForExitAsync(cts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                try { p.Kill(entireProcessTree: true); } catch { }
+                var why = ct.IsCancellationRequested ? "被取消" : "超时（5s）";
+                var msg = $"[GainMap解码] exiftool AppleMakerNote 读取{why} ⇒ 已终止：{Path.GetFileName(path)}（按元数据不可用处理）";
+                if (log != null) log(msg + "\n"); else Trace.WriteLine(msg);
+                return null;
+            }
+            if (string.IsNullOrWhiteSpace(json)) return null;
+
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            if (root.ValueKind != System.Text.Json.JsonValueKind.Array || root.GetArrayLength() == 0)
+                return null;
+            var first = root[0];
+
+            // 只认 Apple/MakerNotes 组前缀（或无组名兜底），杜绝误吃其它组的同名标签。
+            float? GetMakerTag(string tagName)
+            {
+                float? fallback = null;
+                foreach (var prop in first.EnumerateObject())
+                {
+                    int colon = prop.Name.IndexOf(':');
+                    bool hit;
+                    if (colon > 0)
+                    {
+                        var ns = prop.Name.Substring(0, colon);
+                        hit = (ns.Equals("Apple", StringComparison.OrdinalIgnoreCase)
+                               || ns.Equals("MakerNotes", StringComparison.OrdinalIgnoreCase))
+                              && prop.Name.Substring(colon + 1).Equals(tagName, StringComparison.OrdinalIgnoreCase);
+                    }
+                    else hit = prop.Name.Equals(tagName, StringComparison.OrdinalIgnoreCase);
+                    if (!hit) continue;
+                    var v = ParseRationalOrFloat(ReadTagValue(prop.Value));
+                    if (v.HasValue)
+                    {
+                        if (colon > 0) return v;      // 带组名命中 ⇒ 权威
+                        fallback ??= v;               // 裸名 ⇒ 仅兜底
+                    }
+                }
+                return fallback;
+            }
+
+            float? m33 = GetMakerTag("HDRHeadroom");
+            float? m48 = GetMakerTag("HDRGain");
+            if (m33 == null || m48 == null)
+            {
+                log?.Invoke($"[GainMap解码] AppleMakerNote tag 读数：HDRHeadroom(33)={m33?.ToString() ?? "缺失"} "
+                    + $"HDRGain(48)={m48?.ToString() ?? "缺失"}\n");
+                return null;
+            }
+            // AU2-X1：公式段与 meta 构造已提取到 BuildAppleMetadataFromTags（纯托管臂共用同一实现
+            // ⇒ 两路读数结构性一致）；本臂只负责把 exiftool 的 JSON 读数交给它。
+            return BuildAppleMetadataFromTags(m33.Value, m48.Value, log, "exiftool 整件通道");
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            log?.Invoke($"[GainMap解码] AppleMakerNote 元数据读取异常: {ex.GetType().Name}: {ex.Message}\n");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Apple headroom 公式段 + <see cref="GainMapMetadata"/> 构造（AU2-X1，2026-11-10）——
+    /// **单一代码路径**：纯托管（<see cref="AppleMakerNoteParser"/>）与 exiftool 两臂共同消费本方法，
+    /// 结构性保证「两者读数一致」（§7.2 行为契约；对拍由 ServiceProbe `gainmap-mn-parity` 锁）。
+    /// <para>
+    /// headroom 公式（Apple 官方 E5 / johncf metadata.py 逐字）：
+    /// <code>
+    ///   maker33 &lt; 1.0: 48≤0.01 ⇒ stops=−20·48+1.8；否则 stops=−0.101·48+1.601
+    ///   maker33 ≥ 1.0: 48≤0.01 ⇒ stops=−70·48+3.0；否则 stops=−0.303·48+2.303
+    ///   headroom = 2^max(stops, 0)
+    /// </code>
+    /// 映射（SDR 底 + 单通道增益的 Apple 语义）：<c>min=0, gamma=1, max=log2(headroom),
+    /// offsets=0, Channels=1, HdrCapacityMax=log2(headroom)</c>。headroom ≤ 1 ⇒ null + 点名
+    /// （两臂同样处理）。
+    /// </para>
+    /// </summary>
+    /// <param name="source">来源点名（进读数行日志：纯托管解析 / exiftool 整件通道）。</param>
+    private static GainMapMetadata? BuildAppleMetadataFromTags(float m33, float m48,
+        Action<string>? log, string source)
+    {
+        float stops = m33 < 1.0f
+            ? (m48 <= 0.01f ? -20f * m48 + 1.8f : -0.101f * m48 + 1.601f)
+            : (m48 <= 0.01f ? -70f * m48 + 3.0f : -0.303f * m48 + 2.303f);
+        float headroom = MathF.Pow(2f, MathF.Max(stops, 0f));
+        if (headroom <= 1f)
+        {
+            log?.Invoke($"[GainMap解码] ⚠️ AppleMakerNote headroom={headroom:0.####}×（≤1，无 HDR 余量）⇒ 按元数据不可用处理\n");
+            return null;
+        }
+        float maxLog2 = MathF.Log2(headroom);
+        log?.Invoke($"[GainMap解码] AppleMakerNote: tag33(HDRHeadroom)={m33:0.####} tag48(HDRGain)={m48:0.####} "
+            + $"⇒ stops={stops:0.####} headroom={headroom:0.####}×（log2={maxLog2:0.####}，来源 {source}）\n");
+        return new GainMapMetadata
+        {
+            GainMapMin = 0f,
+            GainMapMax = maxLog2,
+            Gamma = 1f,
+            OffsetSdr = 0f,
+            OffsetHdr = 0f,
+            Channels = 1,
+            HdrCapacityMin = 0f,
+            HdrCapacityMax = maxLog2,
+            UseBaseColorSpace = true,
+        };
+    }
+
+    /// <summary>解析 "1.5"（JSON number/十进制）或 "3/2"（exiftool rational64s 原生输出）为 float。</summary>
+    private static float? ParseRationalOrFloat(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        var s = value.Trim().Trim('"');
+        int slash = s.IndexOf('/');
+        if (slash > 0
+            && float.TryParse(s.Substring(0, slash), NumberStyles.Float, CultureInfo.InvariantCulture, out var num)
+            && float.TryParse(s.Substring(slash + 1), NumberStyles.Float, CultureInfo.InvariantCulture, out var den)
+            && den != 0)
+            return num / den;
+        return float.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : null;
     }
 
     /// <summary>

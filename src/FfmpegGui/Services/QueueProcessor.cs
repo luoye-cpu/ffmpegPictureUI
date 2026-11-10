@@ -776,6 +776,27 @@ namespace FfmpegGui.Services
                                     _onItemUpdated?.Invoke(captured);
                                 }
                             }
+                            else if (isJxrOutput
+                                && (isIsoBmffGainMapInput
+                                    || isVendorGainMapInput
+                                    || (inputExt is ".jpg" or ".jpeg"
+                                        && await IsUltraHdrJpegAsync(captured.InputPath, null, ct))))
+                            {
+                                // R2（2026-11-10）jxr 出口 × gain map 输入：能力边界收口。上面的恢复链
+                                // 自 e045196 起以 !isJxrOutput 把 jxr 出口排除在外 ⇒ 意图装配只拿到
+                                // SDR 底图描述 ⇒ jxr-hable exit 90（"tone-map=hable 需要 HDR 源（当前
+                                // sRGB（ICC 参数吻合））"——该文案里 src.Curve.Name 是**TRC 曲线名**；
+                                // 空间原色自始至终是底图 ICC 的 Display P3，源识别层（RefineKnownSpace/
+                                // TryClaimNamed）并无错判）。决策=收口不接入：JxrEncApp 只吃 BMP/TIFF
+                                // 像素 ⇒ JXR 容器无 gain map 元数据承载；恢复出的线性 HDR（PFM，>1.0
+                                // 余量）落整数载体必然钳位 ⇒「接入」只能产出被压平的伪 SDR。
+                                // 这里只补如实播报，不改任何行为（jxr-def 照旧产出 SDR 底图；
+                                // jxr-hable 照旧被拒；jxr-srgb 照旧 exit 91 契约拒绝）。
+                                captured.Log += "[jxr] ⚠ 输入携带 gain map HDR（见上方探测播报），但 jxr 出口不恢复增益图"
+                                    + "（JXR 容器/JxrEncApp 无 gain map 承载，线性 HDR 在整数载体上会钳位）"
+                                    + "⇒ 本任务按 SDR 基础图处理；若请求了 --color-tone-map，将因无 HDR 源被拒绝\n";
+                                _onItemUpdated?.Invoke(captured);
+                            }
 
                             // ── RAW 预处理：Bayer 传感器数据去马赛克 ──
                             // dngtool 将相机 RAW → 线性 16-bit TIFF，解决 ffmpeg 无法处理
@@ -1413,6 +1434,16 @@ namespace FfmpegGui.Services
                                     await RestoreMetadataAsync(captured, finalOutputPath, engPlan);
                                     // 元数据阶段也可能判失败（ICC 是唯一描述却写不进产物 ⇒ 产物已删）
                                     if (captured.ExitCode is int metaExit && metaExit != 0) exitCode = metaExit;
+
+                                    // ── PNG 出口优化器（png-optimizer-integration T3，C-EXEC@1）──
+                                    // 插入点契约：RestoreMetadataAsync 之后、ApplyColorPostStepsAsync 之前
+                                    //（顺序 A：先压缩后嵌 chunk —— oxipng 只重压 IDAT，iCCP/cICP/sBIT/eXIf 全在其后写入，
+                                    //  既有色彩后置五步零改动）。exitCode==0 守卫：元数据失败（产物已删）不优化。
+                                    // 任何分支不改 exitCode、不判任务失败（回落语义与播报见 PngOptimizerService）。
+                                    var pngoptFmt = (captured.Options.Format ?? "").ToLowerInvariant();
+                                    if (exitCode == 0 && pngoptFmt is "png" or "apng")
+                                        await PngOptimizerService.ApplyPngOptimizerAsync(finalOutputPath, captured.Options.PngOptimizer,
+                                            msg => { captured.Log += msg + "\n"; _onItemUpdated?.Invoke(captured); }, ct);
                                 }
 
                                 // ── 色彩后置全套（sBIT / cICP / 引擎 ICC / 裁决点 ICC / TIFF ICC / 保真 ICC）──
@@ -1431,9 +1462,16 @@ namespace FfmpegGui.Services
                             if (!colorPostStepsDone && File.Exists(finalOutputPath))
                             {
                                 if (captured.ColorPostOptions != null && captured.ColorPostProbeInput != null)
+                                {
+                                    // ── PNG 出口优化器（C-EXEC@1：专用通路同样产静态 PNG，先压缩后嵌 chunk 同序 A）──
+                                    var pngoptFmt = (captured.ColorPostOptions.Format ?? "").ToLowerInvariant();
+                                    if (pngoptFmt is "png" or "apng")
+                                        await PngOptimizerService.ApplyPngOptimizerAsync(finalOutputPath, captured.ColorPostOptions.PngOptimizer,
+                                            msg => { captured.Log += msg + "\n"; _onItemUpdated?.Invoke(captured); }, ct);
                                     await ApplyColorPostStepsAsync(captured, finalOutputPath, captured.ColorPostOptions,
                                         captured.ColorPostProbeInput, captured.ExitCode ?? 0,
                                         engineUsed: false, mainBranch: false, engPlan: null, ct: ct);
+                                }
                                 else if ((captured.ExitCode ?? 0) == 0)
                                 {
                                     captured.Log += "[色彩后置] ⚠️ 本通路的命令行不由 FfmpegCommandBuilder 产出 ⇒ 裁决点未参与（不猜标签、不补 ICC）；"
@@ -1870,8 +1908,21 @@ namespace FfmpegGui.Services
                     // 另一类同样危险的情形：cICP 判定时 ICC 还未附上（hasIccp 为假），
                     // 之后才由元数据恢复/后置步骤附 ICC，形似“cICP+ICC 矛盾”——因此还需检查源色域名。
                     PngCicpService.HasColorChunk(finalOutputPath, out bool hasIccp, out bool hasCicp);
-                    var (op, ot, srcCicp) = FfmpegCommandBuilder.EffectiveOutputColorTokens(
-                        opts, probeInput);
+                    // ⚠ 2026-11-09（R1 P2-2 + P1-c 落盘）：引擎路径的出口语义改取**引擎计划**——
+                    //   EffectiveOutputColorTokens 走 legacy 裁决点，对引擎路径的像素是"按源文件推断的
+                    //   出口语义"（P7d 明令禁止拿它贴标签的同一形状）：
+                    //   · png-pq/hlg 实测（OnePlus HEIC 基线）：legacy 裁决点算出 outP=null（单轴手动
+                    //     + PFM 无标签）→ "/smpte2084" 半空 → SkipUnnameable 拒写，而引擎命令与像素的
+                    //     真实语义是 smpte432/smpte2084 → cICP(12,16) 本可落盘；
+                    //   · png-cicponly 实测：像素已被引擎转到 CICP:smpte432/iec61966-2-1，而 legacy
+                    //     裁决点按 PFM 源推 linear → 若在 legacy 裁决点里补全会写出与像素失配的
+                    //     cICP(12,8)——只有 engPlan.Out*（SetLabelsFrom 按目标描述符写入）才是像素真值。
+                    //   srcCicp 保守取 false：引擎路径的源容器 CICP 携带语义无 engPlan 级字段可读，
+                    //   与旧行为（legacy 裁决点对 PFM 中间件也判 false）一致，不假造携带语义。
+                    //   legacy 路径（engPlan 空）行为逐字不变。
+                    var (op, ot, srcCicp) = engineUsed && engPlan != null
+                        ? (engPlan.OutPrimaries, engPlan.OutTransfer, false)
+                        : FfmpegCommandBuilder.EffectiveOutputColorTokens(opts, probeInput);
                     // 策略判定取**计划层生效值**（与命令行/裁决点同源）：S2 的覆盖会让声明值与生效值不同，
                     // 用声明值会把"覆盖后已改像素"的输出仍按"携带源 ICC"处理（PngCicpService 亦按此判据取舍）。
                     var effStrat = FfmpegCommandBuilder.EffectiveColorStrategy(opts, probeInput);
@@ -1938,6 +1989,66 @@ namespace FfmpegGui.Services
                     }
                     else
                         captured.Log += "[png3] ⚠️ 与 cICP 并存的低优先级色彩块剥离失败（产物仍可能自相矛盾，已保留原文件）\n";
+                    // ── AU2-X2（2026-11-10）：linear HDR 直通携带 ⇒ 并写出口语义 ICC（stdicc）与 cICP ──
+                    // 本段开头旧注释指明的前置条件现已满足（2026-11-10）："只在无 iCCP 时写…与自生成
+                    // 标准 ICC 并写的收益要等能区分'ICC 是谁生成的'时再做"——R1 认源修复后 cICP
+                    // primaries 与源一致；"能区分 ICC 是谁生成的"由 IccProfileService.GetOrGenerateStandardIcc
+                    // 满足：自生成 = 与 cICP 同源同语义（stdicc_{primaries}_linear_{matrix}）⇒ 必然一致
+                    // ⇒ 并写合法（能力表 CanHaveBothIccAndCicp=true；PngCicpService「两者一致时并存
+                    // 是有意的双描述」）。收益：只认 iCCP 的读图器（老 WIC / 部分 gnuplot 类库）也能
+                    // 拿到正确色彩描述。
+                    // 判据（全部满足才并写，缺一即维持现状）：
+                    //   · 直通携带计划：engPlan 非 null 且 Action=None 且 !engineUsed
+                    //     （png 引擎路径下 Action=None 只可能来自 TryRunColorEngineAsync 的
+                    //     engUsed=false 短路分支 :1739；Map 路径（engineUsed=true）的 ICC 由上方
+                    //     P7a 段负责，与本段互斥）；
+                    //   · linearHdrCarried：计划 Reason 前缀（规划层 PlanRecommended 对该标志的
+                    //     唯一外泄标识；SDR linear 直通不带此前缀 ⇒ 不并写，维持现状）；
+                    //   · OutTransfer=linear（对应 cICP transfer=8）；
+                    //   · 策略非 BakeCicpOnly：S3「仅 CICP」的本意就是产物零 ICC（上方 :1960 已有
+                    //     残留告警），并写会直接违反 S3 契约；
+                    //   · 产物已有 cICP（本任务场景由 ffmpeg 编码器按命令行标签自写，基线实测
+                    //     无「[png3] 已写入 cICP」行）且**无既有 iCCP**（有 ⇒ 维持现状）；
+                    //   · 已写 cICP 的 payload 与计划语义逐值一致（不一致 = legacy 裁决点与计划分歧
+                    //     ⇒ 宁可不并写，绝不并写一张与标签失配的 ICC）。
+                    // 失败口径：ICC 生成失败 / exiftool 嵌入失败一律点名（不静默）；产物保留
+                    //   （cICP 仍在，语义不缺位）。边界：引擎 Map 路径的 iccgen/后置链不动（R1 定稿）；
+                    //   源 ICC 非标准（S2 CarryIcc）维持现状——该情形产物已带源 iCCP，被"无既有 iCCP"
+                    //   这一条排除，与本段互斥。
+                    if (!engineUsed
+                        && engPlan is { Action: ColorMapping.ColorAction.None, OutTransfer: not null, OutPrimaries: not null }
+                        && string.Equals(engPlan.OutTransfer, "linear", StringComparison.OrdinalIgnoreCase)
+                        && engPlan.Reason.StartsWith("线性 HDR 直通携带", StringComparison.Ordinal)
+                        && effStrat != Models.ColorStrategy.BakeCicpOnly)
+                    {
+                        PngCicpService.HasColorChunk(finalOutputPath, out bool iccpNow, out bool cicpNow);
+                        if (cicpNow && !iccpNow)
+                        {
+                            if (PngCicpService.TryReadCicp(finalOutputPath, out byte cpNow, out byte trNow)
+                                && FfmpegCommandBuilder.TryGetCicpNumbers(engPlan.OutPrimaries, engPlan.OutTransfer,
+                                    out byte cpPlan, out byte trPlan)
+                                && cpNow == cpPlan && trNow == trPlan)
+                            {
+                                var stdIcc = IccProfileService.GetOrGenerateStandardIcc(probeInput,
+                                    engPlan.OutPrimaries, engPlan.OutTransfer, engPlan.OutMatrix,
+                                    s => { captured.Log += s; _onItemUpdated?.Invoke(captured); }, ct);
+                                if (!string.IsNullOrWhiteSpace(stdIcc) && File.Exists(stdIcc))
+                                {
+                                    var iccExit = await ExifToolService.EmbedIccProfileFromFileAsync(stdIcc, finalOutputPath,
+                                        s => { captured.Log += s; _onItemUpdated?.Invoke(captured); });
+                                    captured.Log += iccExit == 0
+                                        ? $"[色彩] 直通携带已并写出口语义 ICC（stdicc {engPlan.OutPrimaries}/linear）与 cICP——双描述一致，兼容只认 iCCP 的读图器\n"
+                                        : iccExit == ExifToolService.NoWriteApplied
+                                            ? "[色彩] ⚠️ 直通携带的出口语义 ICC 未写入：exiftool 报未应用（产物保留，cICP 仍在，语义不缺位）\n"
+                                            : $"[色彩] ⚠️ 直通携带的出口语义 ICC 嵌入失败（退出码 {iccExit}）；产物保留，cICP 仍在，语义不缺位\n";
+                                }
+                                else
+                                    captured.Log += "[色彩] ⚠️ 直通携带并写 ICC：标准 ICC 生成失败（产物保留，cICP 仍在，语义不缺位）\n";
+                            }
+                            else
+                                captured.Log += "[png3] 直通携带未并写 ICC：已写 cICP 与计划语义不一致（宁缺勿错，不并写与标签失配的 ICC）\n";
+                        }
+                    }
                     _onItemUpdated?.Invoke(captured);
                 }
 
@@ -2020,6 +2131,28 @@ namespace FfmpegGui.Services
                     // 故矩阵缺省时回落 bt709（与 zscale 的 SDR 默认一致）；用户显式给了则尊重。
                     tiffMatrix = !string.IsNullOrWhiteSpace(opts.ColorMatrix) ? opts.ColorMatrix : "bt709";
                     tiffLabel = opts.ColorPrimaries + (string.IsNullOrWhiteSpace(opts.ColorTrc) ? "" : "/" + opts.ColorTrc);
+                }
+                // ⚠ 2026-11-09（R1 P2-b）：引擎路径的**计划目标支**。前两支只覆盖 legacy 的两个目标
+                //   来源（ColorSpace 显式 / 手动 CP）；引擎路径（engPlan 非空）的目标在计划里——
+                //   auto 的 SDR twin、tonemap 后的 SDR 落点都由 SetLabelsFrom 写进
+                //   IccPrimaries/IccTrc/IccMatrix。此前整段没有第三支 ⇒ tiff-def/tiff-hable
+                //   （OnePlus HEIC 基线实测）产物零标注零播报：tiff 能力表 UnlabeledMeansSrgb=false
+                //   ⇒ "未标注即 sRGB"不成立，无标注不是合法结局；P7a 引擎 ICC 段又显式排除 tiff
+                //   （"TIFF 由下面那段负责"）⇒ RestoreMetadataAsync :2371 打出的承诺
+                //   "[tiff] 出口 ICC 由色彩后置步骤嵌入"没有任何一段兑现（能力表 VerifiedBy
+                //   "exiftool 后置写（须在元数据恢复之后）"承诺的通道实际断线）。
+                //   判据复用计划层标注决策（AttachIcc + IccPrimaries 非空），与像素同源；
+                //   trc 沿用下方 :2036 的 iec61966-2-1 恒钳（SetLabelsFrom 对 tiff 的 IccTrc
+                //   也是钳位后的 OutTransfer，两边一致）。策略闸仍是 Recommended/Manual
+                //   （默认值即 Recommended ⇒ auto 格命中；CarryIcc/BakeCicpOnly 语义不变）。
+                else if (engineUsed
+                    && engPlan is { AttachIcc: true }
+                    && !string.IsNullOrWhiteSpace(engPlan.IccPrimaries))
+                {
+                    tiffPrimaries = engPlan.IccPrimaries;
+                    tiffMatrix = !string.IsNullOrWhiteSpace(engPlan.IccMatrix) ? engPlan.IccMatrix : "bt709";
+                    tiffLabel = engPlan.IccPrimaries
+                              + (string.IsNullOrWhiteSpace(engPlan.IccTrc) ? "" : "/" + engPlan.IccTrc);
                 }
 
                 if (exitCode == 0

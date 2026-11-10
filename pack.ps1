@@ -137,6 +137,7 @@ if ($mode -eq "full" -and (Test-Path $PlanSource)) {
     Write-Host "`n[1.7] PLAN 工具链版本清单..." -ForegroundColor Yellow
     $planTools = @(
         "$PlanSource\artifacts\dngtool.exe",
+        "$PlanSource\artifacts\oxipng.exe",
         "$PlanSource\ffmpeg-full\ffmpeg.exe",
         "$PlanSource\jxl\bin\cjxl.exe",
         "$PlanSource\exiftool\exiftool.exe"
@@ -236,7 +237,8 @@ if ($mode -eq "full") {
         $need += @("PLAN\ffmpeg-full\ffmpeg.exe", "PLAN\jxl\bin\cjxl.exe", "PLAN\jxl\bin\djxl.exe",
                    "PLAN\jxl\bin\jxlinfo.exe", "PLAN\exiftool\exiftool.exe",
                    "PLAN\artifacts\JxrEncApp.exe", "PLAN\artifacts\JxrDecApp.exe",
-                   "PLAN\artifacts\avifenc.exe", "PLAN\artifacts\dngtool.exe")
+                   "PLAN\artifacts\avifenc.exe", "PLAN\artifacts\dngtool.exe",
+                   "PLAN\artifacts\oxipng.exe")
         $needDirs += @("PLAN\exiftool", "PLAN\artifacts", "PLAN\ffmpeg-full", "PLAN\jxl")
     }
     $miss = @()

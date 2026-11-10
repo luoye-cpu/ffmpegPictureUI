@@ -69,7 +69,7 @@ $genScript = 'tests/scripts/_gen-mode-split.ps1'    # 把「一组一文件」�
 #   也钉住 ⇒ 取样器若整体失配（方法体取不到、塌 0 变多），当场红而不是静默放行。
 $counts = [ordered]@{
     'avifgm' = 14; 'bench' = 9; 'bitdepth' = 7; 'bt2446' = 18; 'color' = 0
-    'colormath' = 12; 'contract' = 99; 'curve' = 14; 'decision' = 5; 'dng-xmp-args' = 2
+    'colormath' = 12; 'contract' = 101; 'curve' = 14; 'decision' = 5; 'dng-xmp-args' = 2
     'encoding' = 6
     # 2026-10-27 与 origin/main 合流：`ProbeGainMapIsoBmff` 的源文本调用位 12 → **21**（+9），
     #   来历 = origin/main 那批读侧新增的 Apple aux 识别与 tmap `pixi` 关联断言（P0-1/P1-4），
@@ -79,7 +79,20 @@ $counts = [ordered]@{
     # 2026-11-02 §1d（grid 分块 + idat 承载）：`ProbeGainMapIsoBmff` 的 Check 调用位 21 → **29**（+8），
     #   来历 = 新增 `grid` 期望模式的结构断言（grid 分块 / 瓦片数 / idat 切片 / 网格与瓦片尺寸 /
     #   FailReason 形态），调用者 = verify-gainmap-isobmff §1d（该门禁总断言 80→92）。
-    'engine' = 20; 'faithful' = 10; 'firstframe' = 15; 'gainmap' = 6; 'gainmap-isobmff' = 29
+    # 2026-11-10（AU-W2）：`ProbeGainMapIsoBmff` 的 Check 调用位 29 → **36**（+7），
+    #   来历 = 新增 `auxdec` 期望模式（Apple aux **完整件**的容器级提取断言：determinate /
+    #   hasGainMap / form / aux item 定位 / 解复用器 / 裸流 >100 B / Exif item 字节），
+    #   调用者 = verify-gainmap-isobmff §1h（合成器 tests/scripts/_make-synth-aux-gainmap.py）。
+    # 2026-11-10（AU2-X1）：`ProbeGainMapIsoBmff` 的 Check 调用位 36 → **43**（+7），
+    #   来历 = 新增 `auxisofull` 期望模式（aux-21496 防御性形态**结构尝试成立**的完整件断言：
+    #   determinate / hasGainMap / form / aux item 定位 / 前置 version+元数据段 62 B / 解复用器 /
+    #   元数据后编码流 >100 B），调用者 = verify-gainmap-isobmff §1i（合成器 D 件）。
+    'engine' = 20; 'faithful' = 10; 'firstframe' = 15; 'gainmap' = 6; 'gainmap-isobmff' = 43
+    # 2026-11-10（AU2-X1）新增派发 mode `gainmap-mn-parity`（AppleMakerNote **纯托管解析器 vs
+    #   exiftool 对拍**）。登记 = **源文本调用位 9**（同轮实测 got=9：载体身份 1 + Exif item 1 +
+    #   纯托管 3 + exiftool 读数 1 + 逐值对拍 2 + exiftool 不可用 fail-closed 1——首登漏数最后
+    #   一条被 ③ 当场抓出）。调用者 = verify-gainmap-isobmff §1i（合成器 A 件）。
+    'gainmap-mn-parity' = 9
     # 2026-11-02 第二批：`gainmap-stats` 6 → **15**（+9），来历 = 新增无文件纯函数臂
     #   `gainmap-stats --size-recon`（底图尺寸对账裁决 A0–A8：A0 为反射自检，缺则余 8 条真空绿；一致 / 未声明 clap 拒绝 / 缩小臂 /
     #   放大臂 / k=16 两端边界 / 非等比拒绝 / 退化输入）。动机见 `GainMapDecoder.ReconcileBaseSize`
@@ -114,14 +127,21 @@ $counts = [ordered]@{
     #   来历 = `-Census` 实测 got=21（源文本调用位，不是运行读数；运行 17 —— 差额来自循环内调用位）。
     'metaraw' = 20; 'oog' = 7; 'ootf' = 11; 'orientmeta' = 11; 'orientation' = 21
     'peak' = 8; 'peakmeasure' = 14; 'piperaw-client' = 5; 'piperaw-server' = 0; 'plan' = 18
-    'png3' = 1; 'pq' = 5; 'procstreams' = 3; 'psnr' = 2; 'runner' = 8
+    'png3' = 1;
+    # 2026-11-10 新增派发 mode `pngopt`（PNG 出口优化器判据宿主，png-optimizer-integration T6，
+    #   契约 C-PROBE@1 六 case：pixel/ihdr/chunk/argv/off/timeout，全部内联在 ProbePngOpt 单方法体）。
+    #   登记 = **源文本调用位 29**（同轮 `-Census` 实测 got=29：pixel 4 + ihdr 5 + chunk 6 +
+    #   argv 4 + off 4 + timeout 6；pixel/ihdr/chunk/off 的断言在 foreach 循环内——循环体只有一份
+    #   源文本 ⇒ 调用位各按 1 计，与 gmgamut「两把尺互补不许对齐」同口径；运行时通过数 = 47）。
+    #   调用者 = 批次 2 门禁 verify-png-optimizer.ps1（T7 接线）。
+    'pngopt' = 29; 'pq' = 5; 'procstreams' = 3; 'psnr' = 2; 'runner' = 8
     # ⚠ `settings` 56 → **11**（2026-10-22 修尺，不是"发现执行面丢了 45 条断言"）：旧 `Get-MethodText`
     #   朴素数花括号 ⇒ 字符串里的 `{0}` 也计入深度 ⇒ `ProbeSettingsSave` 那一格从第 6790 行一路吃到
     #   第 7870 行，把 ProbeRunnerGuard / cgkparity / ProbeIccName 等**邻居方法的 45 个 Check 吞进来**。
     #   配对器改成跳注释/跳字符串后重跑 `-Census`：60 格里**只有这一格**变（其余逐格相同），
     #   总量 848 → 803（差的正是被吞的 45）。⇒ 登记值以修好的尺为准；两把尺（源文本调用位 vs 运行次数）不许对齐这条不变。
     'selftest' = 18; 'settings' = 11; 'simdswitch' = 18; 'thumbnail' = 21; 'tonemap' = 22
-    'tonemapcurve' = 0; 'tooldetect' = 27; 'ultrahdr' = 4; 'vendor-hdr' = 19; 'verdict' = 35; 'wire' = 99
+    'tonemapcurve' = 0; 'tooldetect' = 27; 'ultrahdr' = 4; 'vendor-hdr' = 20; 'verdict' = 35; 'wire' = 99
     'xcheck' = 6
 }
 # 登记表各值之和 = 2026-10-14 实测 813；2026-10-15 加 `vendor-hdr` ⇒ 829，同日审查再加 V16/V17/V18 ⇒ 832，
@@ -134,14 +154,30 @@ $counts = [ordered]@{
 # 2026-11-02 A2b（放大型未声明错配）+1（15→16）⇒ **867**（= ③-e 实取总量）。
 # 2026-11-02 取向探针取数口径（`orientation` 19→21，参数改走 `ImageGeometry.BuildProbeArguments`
 #   + 两条新断言）⇒ **869**（= ③-e 实取总量）。
+# 2026-11-09 批次 C 修两格欠账：① `contract` 99→**101**（来历 = `917dd2e` 的 JXL 批次在 ProbeContract
+#   里新增 jxl 正向断言 2 条「能力表 SupportsGainMap + GainMap × jxl 不得 Reject」而未同批抬表，
+#   ③-e 实测 891→893 当场红出来）；② `vendor-hdr` 19→**20**（本批 V19 参数块布局指纹负控，
+#   双真机样本互证，来历见 ServiceProbe Program.cs V19 注释）。总量 869 → **872**（= ③-e 实取总量）。
+# 2026-11-10（AU-W2）：`gainmap-isobmff` 29→**36**（+7，auxdec 期望模式，来历见登记表内注释）
+#   ⇒ 总量 872 → **879**（= ③-e 实取总量）。
+# 2026-11-10（AU2-X1）：`gainmap-isobmff` 36→**43**（+7，auxisofull 期望模式）与新增
+#   `gainmap-mn-parity` **9**（AppleMakerNote 纯托管 vs exiftool 对拍；首登漏数 exiftool 不可用
+#   fail-closed 一条被 ③ 当场抓出，8→9 有牙实证），来历见登记表内注释
+#   ⇒ 总量 **916**（= ③-e 实取总量；AU-W2 之后至本批前其他 mode 的抬格不在本批来历内）。
+
 #   来历 = 底图尺寸对账裁决（`GainMapDecoder.ReconcileBaseSize`）此前**零判据臂**，而该状态造不出
 #   文件样本（ispe 变异不影响 ffprobe 报的 HEVC 流尺寸；删 clap 则两侧同时退回 64x64）⇒ 只能直接钉
 #   裁决本身。落点选**已登记 mode**（同 exe、同 mode），不新建 mode（新建要四处登记 + 组表 +
 #   ⑨ MustClaim 调用点，成本与本批收益不成比例）。
-#   `vendor-hdr` = **19 个源文本调用位**，而 `gainmap-isobmff` §3d 的**运行时**通过数 = **18**；差 1 的两处成因不同：
+#   `vendor-hdr` = **20 个源文本调用位**，而 `gainmap-isobmff` §3d 的**运行时**通过数 = **19**；差 1 的两处成因不同：
 #     ① V8/V9 与「夹具缺席」那条 fail-closed 支互斥（源文本 2 条、执行 1 条）；
 #     ② V16/V17 是**一个 foreach 调用位跑两格**（源文本 1 条、执行 2 条）。
+#   （2026-11-09 批次 C：V19 布局指纹负控上线，19→20 / 18→19，差额成因不变。）
 #   ⇒ 本锁量调用位、那条门禁量执行数，两把尺互补，**不许互相「对齐」**。
+# 2026-11-10 新增派发 mode `pngopt` **29**（PNG 出口优化器判据宿主，C-PROBE@1 六 case：
+#   pixel/ihdr/chunk/argv/off/timeout，全部内联在 ProbePngOpt 单方法体；调用者 = 批次 2 门禁
+#   verify-png-optimizer.ps1（T7 接线）。来历见登记表内 pngopt 条目注释）
+#   ⇒ 总量 916 → **945**（= ③-e 实取总量）。
 # 本登记表**不单独钉一个总数** ——
 # 总数是各格之和，抬某个 mode 只改它自己那一格（单点真值；M6 反控验的就是这条通路）。
 $regSum = 0

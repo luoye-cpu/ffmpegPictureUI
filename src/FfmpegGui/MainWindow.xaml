@@ -463,6 +463,11 @@
                 <sys:String>4:2:2</sys:String>
                 <sys:String>4:2:0</sys:String>
               </ComboBox>
+              <!-- C-GUI@1（2026-11-10）：输出矩阵模式（CLI 参数 color-out-matrix 的 GUI 承接），色度抽样与
+                   位深之间。恒可见、不受高级面板门控（与 ChromaCombo 同采集模式）；条目由
+                   FillComboByLoc 本地化填充（顺序 = C-TOKEN@1 表序，auto 首项 = 默认，零行为变化）。 -->
+              <TextBlock Text="{ext:Loc color.out.matrix}" FontSize="11" Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+              <ComboBox x:Name="OutputMatrixCombo"/>
               <TextBlock Text="{ext:Loc bit.depth}"/>
               <ComboBox x:Name="BitDepthCombo">
                 <sys:String>auto</sys:String>
@@ -548,6 +553,25 @@
               <sys:String>gbr</sys:String>
             </ComboBox>
 
+            <!-- ── R3（2026-11-09）：CLI 色彩开关的 GUI 承接（tone-map / engine 两轴）──
+                 取值域与 CLI 的 color-tone-map / color-engine 两开关一一对应；
+                 文案走 {ext:Loc}（_probe-cjk-hardcode-scan 的 BASE_XAML=13 余量 0，不得加硬编码中文）。 -->
+            <TextBlock Text="{ext:Loc color.tonemap}" ToolTip.Tip="{ext:Loc tip.color.tonemap}" FontSize="11" Margin="0,4,0,0"/>
+            <ComboBox x:Name="ColorToneMapCombo" FontSize="11">
+              <sys:String>auto</sys:String>
+              <sys:String>none</sys:String>
+              <sys:String>reinhard</sys:String>
+              <sys:String>hable</sys:String>
+              <sys:String>mobius</sys:String>
+              <sys:String>bt2446a</sys:String>
+            </ComboBox>
+            <TextBlock Text="{ext:Loc color.engine}" ToolTip.Tip="{ext:Loc tip.color.engine}" FontSize="11" Margin="0,4,0,0"/>
+            <ComboBox x:Name="ColorEngineCombo" FontSize="11">
+              <sys:String>auto</sys:String>
+              <sys:String>engine</sys:String>
+              <sys:String>legacy</sys:String>
+            </ComboBox>
+
             <!-- tonemap 曲线不再暴露给用户：内部固定 hable（HDR→SDR） -->
             
             <!-- 色彩范围（TV/PC）: 仅 YUV 输出格式支持（AVIF），不支持的格式整组隐藏（2026-08-16）
@@ -619,6 +643,14 @@
             <StackPanel x:Name="PngCodecPanel" IsVisible="False" Spacing="4">
               <TextBlock Text="{ext:Loc prediction.mode}" FontSize="11"/>
               <ComboBox x:Name="PngPredCombo" SelectedIndex="4"/>
+              <!-- PNG 出口优化器档位（png-optimizer-integration C-GUI@1）：Items 由 FillComboByLoc
+                   按 png.optimizer.* 键填充；顺序与 MainWindow._pngOptimizerValues 逐位对应
+                   （off|default|max|zopfli15|zopfli30，默认选中 max = 索引 2）。
+                   常显（png-default-oxipng C-DEFOPT@1：oxipng 升默认编码器，撤销与高级编码开关的显隐联动）。 -->
+              <StackPanel x:Name="PngOptimizerPanel" Spacing="4">
+                <TextBlock Text="{ext:Loc png.optimizer}" FontSize="11"/>
+                <ComboBox x:Name="PngOptimizerCombo" SelectedIndex="2"/>
+              </StackPanel>
               <TextBlock Text="{ext:Loc png.dpi}" Margin="0,6,0,0" FontSize="11"/>
               <!-- ⚠ 同 496 行：72px 数值框 + 约 200px 提示文本 ≈ 276px > 面板可用 236px，
                    横向 StackPanel 不换行也不滚动 ⇒ 提示被裁。拆成「数值框 + 独立提示行」。 -->

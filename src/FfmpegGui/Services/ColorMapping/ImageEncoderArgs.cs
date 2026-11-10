@@ -238,6 +238,32 @@ public static class ImageEncoderArgs
             if (o.JxlEffort.HasValue) { a.Add("-effort"); a.Add(o.JxlEffort.Value.ToString()); }
             if (o.JxlModular == true) { a.Add("-modular"); a.Add("1"); }
         }
+
+        // ── 显式输出矩阵模式（C-PLAN-EXT@1 出口消费面，color-matrix-options 计划）──────────
+        // 判定真值在规划层（ResolveOutMatrixCapability，C-CAPS@1）；本出口只消费判定结果：
+        // jxl × xyb = Carried（C10）⇒ 发 `-xyb 1` 显式化——libjxl 的 -xyb AVOption 实测 default 1
+        // （T1 ffmpeg-h-encoder-libjxl.txt:9）⇒ 产物与 auto 档逐字节一致，播报即确认。
+        // ⚠ YUV 族显式 = Rejected（RgbNative，无 YUV 承载位）、rgb = Redundant ⇒ 均不走本段：
+        //   前者由规划层（引擎）/ ResolveLegacyVerdictPlan（legacy 直通）以 exit 91 短路，出口不收
+        //   矛盾输入；后者的冗余播报由 FfmpegCommandBuilder 的 capM 段承担。
+        // ⚠ --modular 与 xyb 并存：modular 语义排除 XYB（XYB 是 VarDCT 特性）⇒ modular 优先、
+        //   **不发** -xyb（发=宣称一个不生效的开关），点名对齐 CjxlService 既有 --modular 冲突
+        //   播报句式（C-REPORT@1 模板 4）。auto 档（null）整段不进 ⇒ 零行为变化（CM-REQ-08）。
+        // 文案全 ASCII：`_probe-cjk-hardcode-scan` 的 EmitWarn 硬约束（CsUi 余量 0）。
+        if (o.ColorOutMatrix == "xyb")
+        {
+            if (o.JxlModular == true)
+            {
+                EmitWarn("[color-out-matrix] xyb on jxl (libjxl backend): modular mode is also requested and"
+                       + " does not carry XYB (XYB is a VarDCT feature), so modular wins and -xyb is NOT emitted;"
+                       + " the xyb request has no pixel effect this run");
+            }
+            else
+            {
+                a.Add("-xyb"); a.Add("1");
+                EmitWarn(string.Format(ColorMappingEngine.OutMatrixReportLanded, "jxl", "xyb", "libjxl -xyb 1"));
+            }
+        }
         return a;
     }
 
@@ -1018,6 +1044,19 @@ public static class ImageEncoderArgs
             && o.Encoder?.StartsWith("libsvt", StringComparison.OrdinalIgnoreCase) == true)
             bad.Add($"色度子采样 {o.Chroma}（libsvtav1 仅接受 yuv420p / yuv420p10le，"
                   + "ffmpeg 会把 4:4:4/4:2:2 静默降为 4:2:0）");
+        // ── AVIF + 显式 rgb 输出矩阵 + libsvtav1（C7 收窄；T5 注记「libsvtav1 无 gbrp，该收窄
+        //    归出口侧既有 :1019 边界族」——本条即其落地）─────────────────────────────────────
+        // libsvtav1 无 gbrp 支持位（T1 §4 表：仅 yuv420p / yuv420p10le）⇒ AV1 identity
+        //（matrix_coefficients=0）结构上无法承载：identity 仅 4:4:4 无子采样有效，实测
+        //（tests/output/_tmp/color-matrix-t6-probe/ A7，2026-11-10）libsvtav1 对 identity+4:2:0
+        // 硬失败 "Identity matrix (matrix_coefficient = 0) may be used only with 4:4:4 color
+        // format"。判 libaom 口径 Carried 的规划层拿不到编码器名维度（三参签名上限）⇒ 收窄在本
+        // 边界族执行：引擎路由 block 点名（显式 engine ⇒ 硬失败 90 / auto ⇒ 回退 legacy 并写明理由），
+        // 与上方 4:4:4 静默降级条同一机制，不构成第二份判定表。
+        if (fmt == "avif" && o.ColorOutMatrix == "rgb"
+            && o.Encoder?.StartsWith("libsvt", StringComparison.OrdinalIgnoreCase) == true)
+            bad.Add("输出矩阵 rgb（AV1 identity）：libsvtav1 无 gbrp 支持位，identity 标注无法兑现"
+                  + "（identity 仅 4:4:4 无子采样承载，实测 libsvtav1 硬拒绝）⇒ 请改用 libaom-av1");
         // ── JXL + JPEG 无损重封装：引擎结构上做不到（2026-09-17 接入 jxl 时新增）──
         // 传统管线把它实现为「不解码，直接复制 DCT 系数」（`FfmpegCommandBuilder` 的
         // `if (options.JxlLosslessJpeg)` 分支：只发 `-distance 0`，靠 FFmpeg 8.x+ 的 libjxl

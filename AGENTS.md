@@ -347,6 +347,36 @@ pwsh -NoProfile -File tests/scripts/_run-step3-gates.ps1   # 94 条，整轮 ~60
   - 不可命名（ProPhoto/Adobe/自定义）⇒ S2 携带**契约拒绝**（exit 91，零产物）；S1 推荐落
     「最宽可命名目标 BT.2020/SDR + `GamutClipped` + `NoIccCarrier` 播报」。
   判据 = `verify-prophoto-faithful.ps1` §6 的 ⑥a–⑥f。
+- **脚本清单现值 = 99 条（2026-11-10，color-matrix-options 批 T1+T7）**：第二十六次接线（批 T1）97 → 98
+  `_probe-color-matrix-scan.ps1`（C-SCAN@1 扫描交付物生成器）；第二十七次（批 T7）98 → 99
+  `verify-color-out-matrix.ps1`（显式输出矩阵模式 `--color-out-matrix` 的端到端判据面——avif 引擎通路
+  nclx 读回（bt2020nc = H.273 枚举 9 + pixfmt-switch 兑现）、五格 fail-closed 任务级 exit 91、webp/jpg
+  601 族冗余三态同值（CM-REQ-08）、cjpegli `--xyb` 接线证据、C-REPORT@1 三模板锁、`-SelfCheck` 负控臂；
+  实测 **57/0** 正向 / **58/0** 含负控）。同批：`$scriptArgs` 负控键 5→6（第 ⑱ 针同批 7 条目/6 字面量/
+  6 键按名点）；ui-sweep J 段 114→122（J19 八条）、ui-host 合计 446→454、union 446→454、CJK CsUi
+  952→1041（EmitWarn 面 0 违规）。抬表链与取证见 `docs/TESTING.md` §3.5 同日追加段 +
+  `tests/output/_tmp/color-matrix-t7-probe/`。⚠ git-bash 会话钉 TMP 必须写 Windows 风格绝对路径
+  （`$PWD` 展开的 `/c/...` 会被 Windows 子进程解析挂到盘根，实测误建 `C:\c\` 已清理）。
+- **CMX 一致性批（2026-11-11，用户裁决「色彩矩阵应该根据各个编码器的能力，禁止乱塞入」全量实现）**：
+  A1 严口径落地（`ApplyExplicitOutMatrix` 跨族拒绝：显式 H.273 ≠ 推导值 ⇒ Rejected exit 91 + 模板 4；
+  601 族 {bt470bg↔smpte170m} 互通；推导 null 放行）+ B1 GUI 过滤（`RefillOutMatrixComboForFormat`
+  消费 `ResolveOutMatrixCapability` 唯一真值，非 Rejected 才进下拉）。**CMX-3 门禁抬表（无接线，
+  清单条数不动；受管基线 = pngopt 批接线后的 100 条）**：
+  - `verify-color-out-matrix.ps1` 同批改造：A1 群 5 条 + A7 群 2 条旧判据与 CMX-1 口径冲突
+    （Display P3 目标推导 bt709 + 显式 bt2020nc = 跨族，基线轮实测 50/7）⇒ 改锚同族正控
+    （显式 bt709 同值 Carried，nclx readback bt709 + 模板 1 逐字；A7 换同值后孤立点名逐字保留），
+    跨族拒绝由新 **I 组七格**接管（I0 avifenc --cicp 广色域源运行时构造 / I1·I2 跨族双向拒绝
+    模板 4+Reason 逐字 / I3·I4 601 互通双向 / I5 像素对拍 PSNR=inf / I6 无标注源同值 Carried /
+    I7 webp auto sha16=9B6B2B1587840E05 绝对锚 + bt2020 源 auto 零播报）+ G5/G6 模板 4 常量锁
+    + `-SelfCheck` 跨族第二负控臂。实测 **79/0** 正向。
+  - ⚠ **实测修正**：判定表第 5 行「Reason 点名『源 primaries 未标注…』」端到端**不可达**
+    （NormalizePrimaries 把无标注归一 bt709；ProPhoto 走 S1 推荐落点 dst=BT.2020）⇒
+    推导 null 真执行证明保留在 CMX-1 selfcheck ⑤（Add-Type 反射 16/0），端到端改锁同值 Carried。
+  - ui-sweep J19 段按 CMX-2 过滤行为重写（基线轮 116/6：J19a count=2、旧固定 index 全失效）
+    + 新增 J19i-l 四条过滤断言 ⇒ **J 122→126**；三把尺同批：ui-host 165→**169**、合计 454→**458**、
+    union 454→**458**；CJK **CsUi 1041→1047（第二十二次抬基线，+6 = CMX-1 中文同义句）**、
+    探针复跑 14/0。生成器重跑幂等（reproducible 19/0）。
+  - 受管子集与抬表取证：`tests/output/_tmp/cmx3-gate/`（delivery_evidence.md 为 CMX-3 交付证据）。
 
 ---
 

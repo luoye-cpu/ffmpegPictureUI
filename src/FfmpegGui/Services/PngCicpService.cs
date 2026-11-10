@@ -123,6 +123,42 @@ namespace FfmpegGui.Services
         }
 
         /// <summary>
+        /// 读回 PNG 已带 <c>cICP</c> chunk 的 (primaries, transfer) 载荷值（matrix/full-range 不参与判定）。
+        /// <para>
+        /// 用途：直通携带并写 iCCP 前的**对账**（AU2-X2，2026-11-10）——自生成 ICC 必须与
+        /// **已写进产物的那个 cICP** 同源同语义。cICP 的写入方有两种（编码器按命令行标签自写 /
+        /// 本服务 <see cref="TryInsertCicp"/> 补写），调用方不得假设来源 ⇒ 只能读回产物实况。
+        /// 无 cICP / 解析失败 ⇒ false（调用方不并写、不猜）。
+        /// </para>
+        /// </summary>
+        public static bool TryReadCicp(string pngPath, out byte primaries, out byte transfer)
+        {
+            primaries = 0; transfer = 0;
+            try
+            {
+                var data = File.ReadAllBytes(pngPath);
+                if (!TryParseHeader(data, out _, out _, out var pos)) return false;
+                while (pos + 12 <= data.Length)
+                {
+                    int len = BinaryPrimitives.ReadInt32BigEndian(data.AsSpan(pos));
+                    if (len < 0 || pos + 12 + len > data.Length) break;
+                    var type = Encoding.ASCII.GetString(data, pos + 4, 4);
+                    if (type == "cICP")
+                    {
+                        if (len < 4) return false;
+                        primaries = data[pos + 8];
+                        transfer = data[pos + 9];
+                        return true;
+                    }
+                    if (type == "IDAT" || type == "IEND") break;   // cICP 必在 IDAT 之前，后面的不用再看
+                    pos += 12 + len;
+                }
+                return false;
+            }
+            catch { return false; }
+        }
+
+        /// <summary>
         /// 产物若已带 <c>cICP</c>，剥掉被它**取代且数值可能互相矛盾**的 <c>gAMA</c> / <c>cHRM</c> / <c>sRGB</c> 三块。
         /// <para>
         /// 为什么必须做（2026-09-26 实测，取证脚本与产物块清单见 `tests/output/_diag_31cur/`）：

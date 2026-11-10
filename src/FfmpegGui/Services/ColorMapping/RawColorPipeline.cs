@@ -607,8 +607,25 @@ public static class RawColorPipeline
             {
                 // PNG 中转：第二输入 = 源文件，`-map_metadata 1` 把 EXIF/XMP 带进 eXIf chunk
                 //（RAW 场景下 inputPath 已是 dngtool 的中间 TIFF —— 实测它保留 ISO=400）。
+                // ⚠ 2026-11-09（R1 P2-a）：rawvideo 输入必须**前置**色彩标签（输出侧对 rawvideo
+                //   被静默丢弃——与 :1003-1014 的 A/B 实测同一口径）⇒ 帧带标签 → PNG 编码器写
+                //   cICP → cjxl 拿到输入的色彩描述。动机（OnePlus HEIC 基线实测）：无 cICP 的
+                //   16bit PNG + linear 完整描述串 hint（-x color_space=RGB_D65_P3_Rel_Lin）⇒
+                //   cjxl v0.12.0 报 "Getting pixel data failed."（exit 1 → 任务退出码 92、零产物，
+                //   11 组对照闭环）。取值层次：plan.Out*（与 cjxlSpace hint 同一翻译源）→
+                //   options.ColorSourceDecl*（直通时像素=源语义，PlanCore 对择一容器（jxl）的
+                //   Out* 会被 EnforceContainerAnnotationRules 剥空——那是既有口径，不动它；
+                //   此时中间件像素就是源原值 ⇒ Decl 是同一语义的读取点）。两者都过规范化器
+                //   （ffmpeg 只认自己的常量名，:1367 起的既有口径）。都取不到 ⇒ 不拼、维持旧形态。
+                var pngLabelP = FfmpegGui.Services.ColorSpaceRegistry.NormalizePrimariesToken(
+                    !string.IsNullOrWhiteSpace(plan.OutPrimaries) ? plan.OutPrimaries : options?.ColorSourceDeclPrimaries);
+                var pngLabelT = FfmpegGui.Services.ColorSpaceRegistry.NormalizeTrcToken(
+                    !string.IsNullOrWhiteSpace(plan.OutTransfer) ? plan.OutTransfer : options?.ColorSourceDeclTrc);
+                var pngLabelIn = pngLabelP != null && pngLabelT != null
+                    ? $"-color_primaries {pngLabelP} -color_trc {pngLabelT} " : "";
                 pngTmp = Path.Combine(PlatformServices.GetTempDir(), $"jxl_meta_{Guid.NewGuid():N}.png");
                 var ffPngArgs = $"-y -hide_banner -loglevel error -f rawvideo -pix_fmt {pixIn} -video_size {w}x{h} "
+                    + pngLabelIn
                     + $"-i \"{rawPath}\" -i \"{inputPath}\" -map 0:v -map_metadata 1 "
                     + $"-vf \"format={ppmPix}\" -f image2 \"{pngTmp}\""; // tile-lock: flattened-input
                 log?.Invoke($"[色彩] ffmpeg {ffPngArgs}\n");
@@ -995,7 +1012,19 @@ public static class RawColorPipeline
         // 2026-10-25 实测：旧写法对 jpg/webp 恒写 bt709（为与 legacy 对拍），产物纯红 255,0,0 被标准
         //   解码器解回 232,0,1（webp 234,0,1）；改 bt470bg 后回到 254/255。色域/曲线仍由 ICC 描述，
         //   `plan.OutMatrix` 继续用于 ICC 语义，但**不再当作这两个容器的转换矩阵**。
-        var convMatrix = ColorSpaceRegistry.ContainerYuvMatrix(ext) ?? plan.OutMatrix;
+        // ── 显式输出矩阵模式（C-PLAN-EXT@1 出口消费面，color-matrix-options 计划）──────────
+        // 判定真值在规划层（ApplyExplicitOutMatrix）：H.273 族 Carried ⇒ 已把显式 token 覆盖进
+        // `plan.OutMatrix` 并置 `OutMatrixVerdict=Carried`；本出口**只消费决议矩阵，不复判**
+        // （单一真值）。Verdict != Carried（auto=NotApplicable / Redundant / Rejected）⇒ 既有取值
+        // —— auto 档逐字节不变（CM-REQ-08 回归红线）；Rejected 决议已被 QueueProcessor 短路
+        // （引擎 `!plan.IsOk` / legacy `ResolveLegacyVerdictPlan` ⇒ exit 91），出口收不到矛盾输入；
+        // xyb 档 Carried 但 `plan.OutMatrix` 未被覆盖（那是 L5 CICP 标注域）⇒ 走既有取值，
+        // 开关由 cjxl / libjxl 出口按 `plan.OutMatrixMode` / `o.ColorOutMatrix` 落地。
+        var convMatrix = plan.OutMatrixVerdict == OutMatrixCapability.Carried
+                         && plan.OutMatrixMode != "xyb"
+                         && !string.IsNullOrWhiteSpace(plan.OutMatrix)
+            ? plan.OutMatrix
+            : (ColorSpaceRegistry.ContainerYuvMatrix(ext) ?? plan.OutMatrix);
         if (!string.IsNullOrWhiteSpace(convMatrix)) matrixLabels += $" -colorspace {convMatrix}";
         string pixIn = plan.OutBitDepth == 8 ? "rgb24" : "rgb48le";
         // ── AVIF / JXL：P/T 标签必须写在 `-i` **之前**（两者分别于 2026-09-17 实测驱动）──
@@ -1039,7 +1068,23 @@ public static class RawColorPipeline
                 bool chromaSet = !string.IsNullOrWhiteSpace(o.Chroma)
                                  && !o.Chroma.Equals("auto", StringComparison.OrdinalIgnoreCase);
                 var srcBd = FfmpegCommandBuilder.ProbeInputBitDepthForEngine(inputPath);
-                if (chromaSet || o.BitDepth.HasValue || srcBd > 8)
+                // ── 显式输出矩阵模式的 pix_fmt 联动（C-SCAN@1 耦合点⑥ / C7 Requires-PixFmt-Switch，
+                //    T6 出口兑现；实测取证 tests/output/_tmp/color-matrix-t6-probe/，2026-11-10）──
+                //   · YUV 族显式矩阵在 gbrp 直喂上被 libaom **完全忽略**（A6：-colorspace bt2020nc +
+                //     gbrp12le ⇒ nclx 恒 identity/gbr=0）⇒ 通用判据未命中时也必须钉 YUV pix_fmt 才能兑现
+                //     （A5：yuv420p10le + -colorspace bt2020nc ⇒ nclx=bt2020nc ✓）；
+                //   · rgb（AV1 identity）恰好相反：libaom 原话 "Subsampling must be 0 with
+                //     AOM_CICP_MC_IDENTITY" ⇒ identity 只能 4:4:4 无子采样承载，gbrp 直喂时 nclx
+                //     自动落 matrix=0（A3：gbrp 无任何 flag ⇒ nclx=gbr ✓）⇒ rgb 档**否决** YUV 改写
+                //     （判据命中时的 YUV pix_fmt 改写让位给 gbrp 直喂）。
+                // ⚠ auto（NotApplicable）/Redundant/Rejected 档两个布尔恒 false ⇒ 判据与既有逐字同形
+                //   （CM-REQ-08）；libsvtav1 × rgb 由 UnsupportedEncoderSettings 在路由层拦截，到不了这里。
+                bool outMatrixRgbCarried = plan.OutMatrixVerdict == OutMatrixCapability.Carried
+                    && plan.OutMatrixMode == "rgb";
+                bool outMatrixYuvCarried = plan.OutMatrixVerdict == OutMatrixCapability.Carried
+                    && plan.OutMatrixMode is not (null or "" or "xyb" or "rgb");
+                if ((chromaSet || o.BitDepth.HasValue || srcBd > 8 || outMatrixYuvCarried)
+                    && !outMatrixRgbCarried)
                 {
                     var bd = ImageEncoderArgs.AvifEffectiveBitDepth(o, srcBd);
                     pixFmt = " -pix_fmt " + ImageEncoderArgs.MapPixFmt("avif", o.Chroma, bd, false, o.ColorRange);
@@ -1124,7 +1169,49 @@ public static class RawColorPipeline
             var alphaPix = ImageEncoderArgs.MapPixFmt(ext, o.Chroma, plan.OutBitDepth, true, o.ColorRange);
             if (!string.IsNullOrWhiteSpace(alphaPix)) pixFmt = $" -pix_fmt {alphaPix}";
         }
+        // ── 显式输出矩阵模式的出口侧播报（C-REPORT@1 模板 1 落地 / 模板 2 冗余；全 ASCII）──
+        EmitOutMatrixReport(ext, plan);
         return $"-y -hide_banner -loglevel error {inArgs}{gifExtraIn}{gifFilter}{outLabels}{codec}{pixFmt}{opts} \"{outputPath}\"";
+    }
+
+    /// <summary>
+    /// 显式输出矩阵模式的引擎出口播报（C-REPORT@1；全 ASCII——<c>_probe-cjk-hardcode-scan</c>
+    /// 对 EmitWarn 文案的硬约束）。模板 3（拒绝）由规划层直接发（Rejected 决议 ⇒ 出口不被调用，
+    /// 本方法收不到该档）。
+    /// <para>
+    /// 播报唯一性（计划 §2.3 第 5 条）：本方法在 BuildEncodeArgs 内每任务恰好调用一次；
+    /// xyb 档的开关播报归 cjxl（EncodeJxlViaCjxlAsync 的 log 通道，经
+    /// <see cref="CjxlService.BuildCjxlArguments"/>）与 libjxl（<see cref="ImageEncoderArgs.BuildJxlOptions"/>
+    /// 的 EmitWarn 通道）出口，此处不发。
+    /// </para>
+    /// <para>
+    /// 落地描述（模板 1 的 {2}）：引擎通路 Carried（非 xyb）的可达格只有 avif——
+    /// · YUV 族：输出侧 <c>-colorspace &lt;token&gt;</c>（真转 YUV，pixfmt-switch 已在 avif 分支钉住；
+    ///   实测 A5：nclx 兑现）；· rgb：nclx matrix_coefficients=0（gbrp 直喂，实测 A3）。
+    /// 冗余档（模板 2 的 {2}）：jpg/webp 的 601 族给 <c>bt470bg</c>（auto 档的恒定落地值，
+    /// <see cref="ColorSpaceRegistry.ContainerYuvMatrix"/>）；RGB 原生/调色板容器给 <c>RGB</c>。
+    /// </para>
+    /// </summary>
+    private static void EmitOutMatrixReport(string ext, ColorTransformPlan plan)
+    {
+        var token = plan.OutMatrixMode;
+        if (string.IsNullOrWhiteSpace(token)) return;   // auto（null）：零播报（CM-REQ-08）
+        switch (plan.OutMatrixVerdict)
+        {
+            case OutMatrixCapability.Carried:
+                if (token == "xyb") return;   // 开关播报归 cjxl / libjxl 出口（见方法注释）
+                var landing = ext == "avif" && token == "rgb"
+                    ? "nclx matrix_coefficients=0 (identity, RGB 4:4:4 gbrp feed)"
+                    : $"-colorspace {token}";
+                ImageEncoderArgs.EmitWarn(string.Format(
+                    ColorMappingEngine.OutMatrixReportLanded, ext, token, landing));
+                break;
+            case OutMatrixCapability.Redundant:
+                var already = ext is "jpg" or "jpeg" or "webp" ? "bt470bg" : "RGB";
+                ImageEncoderArgs.EmitWarn(string.Format(
+                    ColorMappingEngine.OutMatrixReportRedundant, token, ext, already));
+                break;
+        }
     }
 
     /// <summary>

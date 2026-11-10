@@ -228,8 +228,19 @@ namespace FfmpegGui.Services
                 // ⚠ 缺哪一半就回退哪一半：只给 CP 时 outT 取 `capT`（格式钳制）→ 源 trc；
                 //   只给 CT 时 outP 取 `capP` → 源 primaries。与下面 `:204-205` 原式同源，
                 //   只是**不再**因为另一半缺失而整条落空。
-                outP = capP ?? options.ColorPrimaries ?? meta.colorPrimaries;
-                outT = capT ?? options.ColorTrc ?? meta.colorTrc;
+                // ⚠ 2026-11-09（R1 P1-c）：末级再补一层**源描述**（ColorSourceDecl*）。真实缺陷
+                //   （OnePlus HEIC 基线实测）：`--color-trc pq` 单轴手动 × png 出口 → 零标注产物——
+                //   输入是无标签 PFM 中间件 ⇒ meta.colorPrimaries 为空 ⇒ outP=null ⇒ 二元组
+                //   "/smpte2084" 半空 ⇒ TryGetCicpNumbers 失败 ⇒ PngCicpService 以 SkipUnnameable
+                //   拒写（旧文案"不可用 H.273 命名"误导：smpte2084=transfer 16 合法，真正原因是
+                //   **primaries 缺轴**）；同时 frameIsHdr=true ⇒ iccgen 不跑 ⇒ ICC 也不附，
+                //   而旧播报却承诺"ICC 仍为唯一描述"（日志无任何嵌入行）= 承诺未兑现。
+                //   源描述总是完整的（QueueProcessor 对解码/RAW 中间件的如实声明）⇒ 补全后
+                //   三元组完整、cICP 写入器可落盘——对齐 `--color-trc pq × avif` 已正确的语义
+                //   （nclx transfer=16 落地）。执行面的落盘由 QueueProcessor png3 段的
+                //   engPlan 优先分支（R1 P2-2 同批）兑现。
+                outP = capP ?? options.ColorPrimaries ?? meta.colorPrimaries ?? options.ColorSourceDeclPrimaries;
+                outT = capT ?? options.ColorTrc ?? meta.colorTrc ?? options.ColorSourceDeclTrc;
             }
             else if (hasExplicitTarget)
             {
@@ -241,7 +252,11 @@ namespace FfmpegGui.Services
             {
                 fromSource = Tagged(meta.colorPrimaries) && Tagged(meta.colorTrc);
                 if (!baselineNameable) { outP = null; outT = null; }
-                else { outP = capP ?? meta.colorPrimaries; outT = capT ?? meta.colorTrc; }
+                // ⚠ 2026-11-09（R1 P1-c 同批）：末级同样补源描述（ColorSourceDecl*）——
+                //   无标签中间件（PFM/RAW 线性 TIFF）+ auto 直通时，出口语义此前恒 null，
+                //   png3 段与 UI 宣称拿不到任何三元组；Decl 是同一信息的唯一读取点，
+                //   且如实描述实际输入（不是推断）。对有标签普通输入（meta 命中）零变化。
+                else { outP = capP ?? meta.colorPrimaries ?? options.ColorSourceDeclPrimaries; outT = capT ?? meta.colorTrc ?? options.ColorSourceDeclTrc; }
             }
             d.SourceHasCicp = fromSource;
 
@@ -499,7 +514,18 @@ namespace FfmpegGui.Services
                 ?? (advanced ? options.ColorTrc : outTargetSpec?.OutTrc)
                 ?? inputTrc;
             bool frameIsHdr = effDstTrc is "smpte2084" or "arib-std-b67";
-            if (!d.AttachIcc && !stripIcc && outIsWideGamut && !frameIsHdr) d.AttachIcc = true;
+            // ⚠ 2026-11-09（R1 P1-a 配套）：`effDstTrc == "linear"` 时**不**走 D2 附 ICC。
+            //   背景：P1-a 修复让直通分支的输入声明如实（bt709 → smpte432/bt2020），此前
+            //   `inputPrimaries is "smpte432" or …` 恒 false ⇒ outIsWideGamut 恒 false ⇒ 本行
+            //   对「linear 直通」从不触发；修复后该判据变 true ⇒ 不豁免就会给 PFM 直通命令
+            //   意外挂上 iccgen 滤镜——而 iccgen 对 linear 出口的 ICC 生成**未经任何实测**
+            //   （本仓只实测过 SDR 帧与"HDR 帧 Not yet implemented 失败"两种结局），
+            //   一旦失败就是 exit≠0 零产物，一旦成功也是未经矩阵验证的标注。
+            //   直通 linear 的色彩描述由 cICP(12,8,0,1)（或 avif nclx transfer=linear）承担，
+            //   已完整、已与帧标签同源 —— 不再叠加第二份未经实测的描述（宁缺勿错）。
+            //   实测出口 trc=linear 的格：HEIC/Ultra HDR 解码中间件直通（png/avif/jxl）。
+            if (!d.AttachIcc && !stripIcc && outIsWideGamut && !frameIsHdr
+                && !string.Equals(effDstTrc, "linear", StringComparison.OrdinalIgnoreCase)) d.AttachIcc = true;
 
             if (d.Faithful) d.AttachIcc = false;   // 保真路径：iccgen 只能产出 BT.709/2020 等可命名空间的 ICC，
                                                    // 与未转换的源像素失配；改由队列后置附着命名 ICC。

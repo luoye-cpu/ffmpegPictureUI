@@ -14,6 +14,13 @@ namespace FfmpegGui.Models
         public string? ColorMatrix { get; set; }
         /// <summary>输出色彩范围: auto/tv/pc</summary>
         public string? ColorRange { get; set; }
+        /// <summary>
+        /// 输出矩阵模式（C-TOKEN@1，color-matrix-options 计划）：null = auto（不指定，
+        /// 旧预设回放不动）。取值域与 <see cref="FfmpegOptions.ColorOutMatrix"/> 一致
+        /// （auto/rgb/bt709/bt601/bt470bg/smpte170m/smpte240m/fcc/bt2020nc/ycgco/xyb）；
+        /// bt601 别名与大小写由落模型时的 setter 归一兜底折为规范 token。
+        /// </summary>
+        public string? ColorOutMatrix { get; set; }
         /// <summary>HDR→SDR tonemap 曲线: hable/mobius/reinhard</summary>
         public string? TonemapCurve { get; set; }
         public string? BitDepth { get; set; }
@@ -24,6 +31,9 @@ namespace FfmpegGui.Models
         public bool Lossless { get; set; }
         public bool UseAdvancedCodec { get; set; }
         public string? PngPred { get; set; }
+        /// <summary>PNG 出口优化器档位（png-optimizer-integration T4）：off|max|zopfli15|zopfli30，
+        /// null = 未设置（旧预设无此键，语义等同 off）。取值域与 <see cref="FfmpegOptions.PngOptimizer"/> 一致。</summary>
+        public string? PngOptimizer { get; set; }
         public int? PngDpi { get; set; }
         public string? WebpPreset { get; set; }
         public int? AvifCpuUsed { get; set; }
@@ -184,6 +194,20 @@ namespace FfmpegGui.Models
         /// <see cref="FfmpegOptions.RawColorTarget"/>。
         /// </summary>
         public string? RawColorTarget { get; set; }
+        // ── R3（2026-11-09）：CLI 8 个色彩开关的 GUI 承接（tone-map / engine 两轴优先）──
+        /// <summary>
+        /// HDR→SDR 色调映射算子：null（旧预设，= auto）/ "auto"（不指定，引擎按 HDR→SDR
+        /// 契约自动采用 Hable）/ "none"（显式不映射）/ "reinhard" / "hable" / "mobius" /
+        /// "bt2446a"。取值域与 CLI <c>--color-tone-map</c> 一致；语义见
+        /// <see cref="FfmpegOptions.ColorToneMap"/> 与 <see cref="FfmpegOptions.ColorToneMapExplicit"/>。
+        /// </summary>
+        public string? ColorToneMap { get; set; }
+        /// <summary>
+        /// 色彩引擎执行路径：null（旧预设，= auto）/ "auto"（默认路由：引擎可走则走，不可走
+        /// 按格式归属回传统管线）/ "engine"（显式引擎，不可走时硬失败）/ "legacy"（传统管线）。
+        /// 取值域与 CLI <c>--color-engine</c> 一致；语义见 <see cref="FfmpegOptions.ColorEngine"/>。
+        /// </summary>
+        public string? ColorEngine { get; set; }
         /// <summary>cjxl panel effort; branches with JxlEffort by backend</summary>
         public int? CjxlEffort { get; set; }
 

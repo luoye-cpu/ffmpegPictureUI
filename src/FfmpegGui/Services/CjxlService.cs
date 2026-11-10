@@ -462,6 +462,71 @@ namespace FfmpegGui.Services
                               + " (modular mode cannot carry JPEG bitstream reconstruction data)"
                               + " => modular mode wins, this run re-encodes pixels\n");
             }
+            // ── 显式输出矩阵模式（C-PLAN-EXT@1 出口消费面，color-matrix-options 计划）──────────
+            // 判定经唯一真值函数（backend=Cjxl；T5 注记批准的出口侧直调形态——不构成第二份表）。
+            // cjxl v0.12.0 无显式 xyb 开关（T1 cjxl-help-vv.txt:49 实测 0 处）⇒ XYB 由 VarDCT
+            // 隐式承载，显式 xyb 的落地 = **确认播报**（不发开关）；--jxl-modular 已开时 modular
+            // 语义排除 XYB（XYB 是 VarDCT 特性）⇒ modular 优先并点名（对齐上方 --jxl-modular
+            // 冲突播报句式）。rgb = Redundant（JXL 本就是 RGB 容器）⇒ 仅登记；YUV 族 = Rejected
+            //（RgbNative，无 YUV 承载位）⇒ 契约拒绝：真执行侧（log 已传 / 非 forPreview）抛异常
+            // 终止、零产物；预览侧（forPreview）只点名不终止——预览显示的命令行不代表可执行。
+            // ⚠ auto（null）整段不进 ⇒ 零行为变化（CM-REQ-08 回归红线）。
+            // ⚠ 播报走 log 形参（仅真执行侧传——本方法每次生成命令行会被调多遍，无条件写 Console
+            //   会刷屏，约定见本方法 log 形参文档）；例外：Rejected 的预览侧点名为 EmitWarn
+            //   （无 log 可用，GUI 预览经 WithEncoderOptionWarnings 收集显示、去重）。
+            var outMatrixTok = opts.ColorOutMatrix;
+            if (!string.IsNullOrWhiteSpace(outMatrixTok))
+            {
+                var capJxl = ColorMapping.ColorMappingEngine.ResolveOutMatrixCapability(
+                    "jxl", outMatrixTok, EncoderBackend.Cjxl);
+                switch (capJxl)
+                {
+                    case ColorMapping.OutMatrixCapability.Carried:
+                        if (outMatrixTok == "xyb")
+                        {
+                            if (opts.JxlModular == true && !UsesLosslessJpegRewrap(input, opts))
+                                log?.Invoke("[cjxl] [color-out-matrix] xyb conflicts with --jxl-modular: modular mode"
+                                          + " does not carry XYB (XYB is a VarDCT feature), so modular wins and the xyb"
+                                          + " request is dropped for this run (cjxl v0.12.0 has no explicit xyb flag)\n");
+                            else
+                                log?.Invoke("[cjxl] [color-out-matrix] xyb confirmed: cjxl's VarDCT mode carries XYB"
+                                          + " implicitly (v0.12.0 has no explicit xyb flag), so no flag is emitted and"
+                                          + " the output equals the auto path\n");
+                        }
+                        break;
+                    case ColorMapping.OutMatrixCapability.Redundant:
+                        // 模板 2 精确形态（string.Format；{2}=RGB）——T7 播报锁按模板锚定，
+                        // 出口说明以**尾部追加**携带（不混入 {2} 占位值）。
+                        log?.Invoke(string.Format(ColorMapping.ColorMappingEngine.OutMatrixReportRedundant,
+                                                  outMatrixTok, "jxl", "RGB")
+                                  + " (cjxl RgbNative)\n");
+                        break;
+                    case ColorMapping.OutMatrixCapability.Rejected:
+                        var rejWhy = "[color-out-matrix] " + outMatrixTok
+                            + " is not carried by jxl (cjxl backend is RGB-native; no YUV carrier)"
+                            + " => contract rejection, exit 91, no output";
+                        if (forPreview)
+                        {
+                            ColorMapping.ImageEncoderArgs.EmitWarn(rejWhy);
+                        }
+                        else
+                        {
+                            log?.Invoke(rejWhy + "\n");
+                            // 中文同义句进 item.Log（规划层 C-REPORT@1 的执行层通道）；异常消息保持
+                            // ASCII（真实执行侧的任务终局文本）。模板 3 的 exit 91 契约码由规划层
+                            // Rejected 决议兑现；本出口（cjxl 直连不经规划层）经异常路径失败（退出码
+                            // 由 QueueProcessor 的异常映射决定），零产物契约相同——已登记偏差。
+                            log?.Invoke("[cjxl] 用户 --color-out-matrix=" + outMatrixTok
+                                      + " 不被 jxl 出口承载（cjxl 后端为 RGB 原生，无 YUV 承载位）"
+                                      + "⇒ 契约拒绝，不产出\n");
+                            throw new InvalidOperationException(
+                                "cjxl exit: --color-out-matrix " + outMatrixTok
+                                + " is not carried by jxl (cjxl backend is RGB-native; no YUV carrier)"
+                                + " => contract rejection, no output");
+                        }
+                        break;
+                }
+            }
             var effort = opts.JxlEffort ?? 7;
 
             sb.Append($" -e {effort}");

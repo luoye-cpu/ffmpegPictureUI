@@ -934,6 +934,7 @@ $offFamilies = @(
     @{ Pat = '^_lib-';       Why = '库/共享底座：由在册门禁 dot-source，本身不是门禁' }
     @{ Pat = '^_gen-';       Why = '生成器：被可复现锁（第 74 条）当执行对象' }
     @{ Pat = '^_probe-|^probe-'; Why = '一次性取证工具：起被测二进制但不进轮（取证用）' }
+    @{ Pat = '^_make-';      Why = '探针与取证工具（AGENTS §1 族规则）：造语料/夹具与基准产物，产物落 tests/output，不进整轮' }
     @{ Pat = '^ensure-|^generate-'; Why = '生产者：造 tests/output 下的夹具' }
     @{ Pat = '^_accept';     Why = '脚手架：人工验收脚本，判据与 union 重叠' }
 )

@@ -38,6 +38,12 @@ public static partial class ColorMappingEngine
         // 计划层只负责**传递**这个位；「本次能否走 cjxl 出口」由路由层（`ColorEngineRouter.BlockReason`）
         // 与执行层（`RawColorPipeline` 的出口）各自显式判定，任一不满足都**显式失败**，不静默回退。
         p.ExternalEncoderExit = pol.ExternalEncoderExit;
+        // ── 显式输出矩阵模式（C-PLAN-EXT@1 / C-CAPS@1 / C-REPORT@1，color-matrix-options 计划）：
+        //    **唯一判定与覆盖点**。auto（null）直接早退 ⇒ 全链路与改造前逐字节同路径（CM-REQ-08）；
+        //    显式值在 MatrixTokenFor 三处推导（ColorTransformPlan 的 SetLabelsFrom / 本文件的
+        //    PlanCicpOnly / CarryCicpLabels）完成之后覆盖 p.OutMatrix 并置 OutMatrixVerdict。
+        //    放在 Verdict 投影之前：Rejected 决议（exit 91、零产物、出口不被调用）能如实反映进最终裁决。
+        ApplyExplicitOutMatrix(p, it, pol);
         // ── 统一裁决（S3 统一形状 + S5′ 补结构化损失）：**唯一投影点** ──
         // 放在本方法的 return 之前，是因为这里能覆盖 PlanWithPolicy 的**所有**返回分支
         // （PlanFaithful / PlanCarry / PlanCicpOnly / PlanManual / PlanRecommended，
@@ -230,12 +236,20 @@ public static partial class ColorMappingEngine
         //    · 两者都不登记则更糟：一次真实的去饱和会被裁决报成 Proceed（无任何损失）。
         if (p.GamutOutsideDestination)
         {
+            // ⚠ 2026-11-10（R4 占位双写修复）：手动目标描述符的 Name 是 ColorIntentFactory 的
+            //   DstLabel 占位「目标」（ColorIntentFactory.cs:211 `FromCicp(tp, tt, DstLabel)`），
+            //   直拼模板得到「源色域超出目标 目标」双写（24 格 A1/A3/C10a/C10b/F17 实测）；
+            //   对照 D13/E15 的自动推导目标带实名（"SDR(bt709/iec61966-2-1)"）。同模板两种填充
+            //   状态就是占位泄漏。修复：占位/空名回退 CICP token 对（如 "bt2020/smpte2084"），
+            //   连 token 都没有时**降级为不带名**（单次出现），绝不再输出占位字面量或 "-"。
+            var dstLabel = DstGamutLabelOf(p);
+            var dstSeg = string.IsNullOrEmpty(dstLabel) ? "" : $" {dstLabel}";
             degs.Add(p.GamutMap
                 ? new ColorDegradation(DegradationCodes.GamutCompressed,
-                    $"源色域超出目标 {p.Dst?.Name ?? "-"} ⇒ 已按 GMO 压缩（向同亮度灰混合去饱和，非硬裁切；"
+                    $"源色域超出目标{dstSeg} ⇒ 已按 GMO 压缩（向同亮度灰混合去饱和，非硬裁切；"
                     + $"ColorLoss={p.ColorLoss}）")
                 : new ColorDegradation(DegradationCodes.GamutClipped,
-                    $"源色域超出目标 {p.Dst?.Name ?? "-"} ⇒ 越界颜色被裁切或压缩（ColorLoss={p.ColorLoss}）"));
+                    $"源色域超出目标{dstSeg} ⇒ 越界颜色被裁切或压缩（ColorLoss={p.ColorLoss}）"));
         }
 
         // ③ 产物无任何标注，但按容器惯例把像素当隐含 sRGB 处理（语义正确，但描述是隐含的）。
@@ -271,6 +285,22 @@ public static partial class ColorMappingEngine
                 $"请求的 tonemap={it.ToneMap} 在 GainMap 出口**不被消费**：底图压暗由 GainMapEncoder 内部的"
                 + "分段 Reinhard 自持 ⇒ 该选项未生效（产物已产出）"));
         return degs;
+    }
+
+    /// <summary>
+    /// 色域降级播报里的目标描述名（R4 占位双写修复的落点函数）。
+    /// 正常实名（自动推导目标，如 "SDR(bt709/iec61966-2-1)"）原样返回；
+    /// 手动目标的占位名（ColorIntentFactory DstLabel「目标」）或空名回退 CICP token 对
+    /// （如 "bt2020/smpte2084"）；连 token 都没有时返回空串（调用方降级为不带名）。
+    /// </summary>
+    private static string DstGamutLabelOf(ColorTransformPlan p)
+    {
+        var name = p.Dst?.Name;
+        if (!string.IsNullOrWhiteSpace(name) && !string.Equals(name, "目标", StringComparison.Ordinal))
+            return name;
+        var pt = p.Dst?.PrimariesToken;
+        var tt = p.Dst?.TransferToken;
+        return !string.IsNullOrWhiteSpace(pt) && !string.IsNullOrWhiteSpace(tt) ? $"{pt}/{tt}" : "";
     }
 
     /// <summary>策略判定主体（<see cref="Plan(ColorIntent)"/> 的包体；返回值会被补上 GainMap 位）。</summary>
@@ -321,8 +351,17 @@ public static partial class ColorMappingEngine
         // 色调映射挂载（P4）：仅当用户显式请求 + 选了算子 + 确实发生映射 + 源是 HDR 传递。
         // 峰值优先级：用户给定 / 容器静态元数据（装配点已读，见 ColorIntentFactory）> 源曲线峰值（PQ=10000/HLG=1000）；
         // 绝不默认 1000nits。
+        // ⚠ 2026-11-09（D4 配套第四处）：线性 HDR 也是 HDR 传递 —— 判据不认 linear 会让装配层
+        //   已经接受的 ToneMapRequested（自动 hable 兜底 / 显式 --color-tone-map）**静默无效**：
+        //   exit 90 消了、Map 照跑，但内核收不到 ToneMapParams ⇒ 交付=纯 OETF 编码，日志无任何
+        //   "[tonemap" 行。2026-11-09 实测（OnePlus 样本）：修复前 jpg 三臂（默认/强制 sRGB/显式
+        //   hable）读数逐值一致 + 全程 0 条 tonemap 行 = 挂载点拦截的指纹；放行后三臂仍同值
+        //   （headroom 1.14 下 hable ≈ OETF+clip），但日志出现 [tonemap: … 峰值来源=Ultra HDR
+        //   增益图解码实测] ⇒ 选项兑现且播报在。峰值证据与三处 srcHdr 同形（it.HdrPeakNits）。
         if (it.ToneMapRequested && it.ToneMap != ToneMapMode.None && p.Action == ColorAction.Map
-            && p.Src != null && p.Src.Curve.Kind is TransferCurve.CurveKind.Pq or TransferCurve.CurveKind.Hlg)
+            && p.Src != null && (p.Src.Curve.Kind is TransferCurve.CurveKind.Pq or TransferCurve.CurveKind.Hlg
+                || (p.Src.Curve.Kind is TransferCurve.CurveKind.Linear
+                    && it.HdrPeakNits > TransferCurve.SdrWhiteNits)))
         {
             // 未实现的算子必须**显式拒绝**，绝不能“接受请求但什么也不做”（那等于静默钳位）。
             if (it.ToneMap == ToneMapMode.Bt2390)
@@ -348,11 +387,54 @@ public static partial class ColorMappingEngine
                       + "]";
             // HLG 是 scene-referred：编码值→显示亮度需经 BT.2100-2 Table 5 的 OOTF（已按建议书原文实现，
             // 见 Bt2100Ootf：α=L_W、γ=1.2+0.42·Log10(L_W/1000)）。尚未接入像素养分路径，故仍写明来源与默认 L_W。
+            // ⚠ 2026-11-09（R1 HLG 文案修正，一行级）：旧尾句"如需按实际显示峰值，用 --color-hdr-peak
+            //   指定 L_W"指向一根**没接线**的旋钮——OOTF 的 α 读的是描述符名义峰值
+            //   （p.Src.NitsOfLinearOne，BT.2100 名义 1000nit），--color-hdr-peak 装配进
+            //   it.HdrPeakNits 后只被 ToneMapParams（:342）消费、**改不了 OOTF 的 α**。
+            //   按"承诺必须兑现"口径改为如实说明现状（不给虚假指引）。
             if (p.Src.Curve.Kind == TransferCurve.CurveKind.Hlg)
                 p.Advice = $"HLG 按 BT.2100-2 Table 5 OOTF 处理（α=L_W={p.Src.NitsOfLinearOne:F0}nit, "
                          + $"γ={FfmpegGui.Services.ColorMapping.Bt2100Ootf.SystemGamma(p.Src.NitsOfLinearOne):F4}）；"
-                         + "如需按实际显示峰值，用 --color-hdr-peak 指定 L_W。";
+                         + "L_W 取源名义峰值（BT.2100），--color-hdr-peak 当前不改 OOTF 的 α（该值仅被色调映射消费；"
+                         + "要改亮度结局请用 --color-tone-map 选算子）。";
         }
+
+        // ── 2026-11-09（R1 P2-1）：用户显式 --color-hdr-peak 的「无承载」点名 ──
+        // 缺陷（OnePlus HEIC 基线实测）：`--color-hdr-peak 1000` × png 直通 → 与 def 产物逐字节相同、
+        // 无任何承接/未承接播报——峰值装配进了 it.HdrPeakNits（ColorIntentFactory 用户值优先），
+        // 但本计划没有挂 Tone（直通不做色调映射）⇒ 该值无任何消费点 ⇒ 静默忽略。
+        // UnconsumedOutputSettingItems（ColorEngineRouter）管的是"引擎编码出口吃不下编码参数"，
+        // 峰值不在其清单、且 legacy 直通根本不经过那道闸 ⇒ 断线点在规划层，点名也落在规划层。
+        // 口径：只在**直通/携带**（像素零改动、无 ToneMapParams）时点名——Map 且挂了 Tone 的格
+        // 该值已被消费（ToneMapParams.PeakNits）；Map 而未挂 Tone 的场景（如 PQ 目标 OETF 直编）
+        // 属另一族问题，不在本批扩面。措辞对齐"可用性诚实原则"：说清它没生效、生效条件是什么。
+        if (p.Tone == null
+            && p.Action is ColorAction.None or ColorAction.CarryIcc
+            && it.HdrPeakSource == "用户 --color-hdr-peak"
+            && it.HdrPeakNits > 0)
+        {
+            p.Reason += $"｜用户 --color-hdr-peak={it.HdrPeakNits:F0} 在本次交付中无承载"
+                      + "（直通/携带不做色调映射，PNG 的 cICP 也不携带峰值元数据；"
+                      + "该开关仅在与 --color-tone-map 同用时被消费）";
+        }
+
+        // ── 2026-11-10（R4）：用户显式 --color-matrix 的「无承载」点名 ──
+        // matrix 的文档语义是**输入矩阵声明**（FfmpegOptions.cs:204，help 原话「YUV→RGB 解读」用）。
+        // 引擎路径的输入恒为**已解码 RGB 像素**（Ultra HDR/RAW 中间件的 gbrpf32le PFM、或容器解码的
+        // rgb48）——整个链路无 YUV 中转 ⇒ 矩阵声明没有任何作用对象；输出侧矩阵（OutMatrix）由
+        // 目标 primaries 推导（MatrixTokenFor），从不读用户值。Ultra HDR 中间件路径的输入声明还在
+        // FfmpegCommandBuilder.cs:1017 写死 bt709，用户值被整体绕过。
+        // 24 格 D 组实测（D12/D13/D14，2026-11-09）：`--color-matrix bt2020nc/bt709` 在引擎格零消费、
+        // 决策文案零提及（D12 产物逐字节 = avif-def）——静默无效正是本仓反复禁止的「看起来配置过」。
+        // 判据通道：用户值经 it.Manual.Matrix（ManualIntent.Create 的 enabled=UseAdvancedColorParameters）
+        // 进入规划层。引擎路径上 matrix 恒无承载（含 Map 格——输出矩阵同样由 primaries 推导），
+        // 故只要值在位即点名，句式对齐上方 hdr-peak 点名。
+        // ⚠ 已知缺口：CLI 裸 `--color-matrix`（未开高级色彩 ⇒ UseAdvancedColorParameters=false ⇒
+        //   Manual=null）拿不到该值，本处点不到名——根因在装配层防呆契约与 CLI 无高级开关，
+        //   ColorIntentFactory/CliParser 均不在 R4 授权面，如实上报不改。
+        if (it.Manual?.FieldsFromUi == true && !string.IsNullOrWhiteSpace(it.Manual.Matrix))
+            p.Reason += $"｜用户 --color-matrix={it.Manual.Matrix} 在本次交付中无承载"
+                      + "（引擎路径输入为已解码 RGB 像素，无 YUV 矩阵语义；输出矩阵由目标 primaries 推导）";
 
         p.CodecLoss = CodecLossOf(pol.Format.Format, it.TargetLossless);
         EnforceContainerAnnotationRules(p, pol.Format, pol.ExternalEncoderExit);
@@ -393,7 +475,12 @@ public static partial class ColorMappingEngine
     private static (ColorStrategy declared, ColorStrategy eff, OverrideReason ov) ResolveStrategy(ColorIntent it, PlanPolicy pol)
     {
         var declared = it.Strategy;
-        bool srcHdr = it.Source?.Curve.Kind is TransferCurve.CurveKind.Pq or TransferCurve.CurveKind.Hlg;
+        // ⚠ 2026-11-09（D4 配套）：线性 HDR 也算 HDR 源 —— 与 ColorIntentFactory 的装配层判据同形
+        //   （峰值证据走 it.HdrPeakNits，装配层已把 o.DecodedUltraHdrPeakNits 接进该位）。
+        //   S2「携带」对线性 HDR 同样无 HDR ICC 携带通路（中间件无 SourceIccPath）⇒ 同样降级标注继承。
+        bool srcHdr = it.Source?.Curve.Kind is TransferCurve.CurveKind.Pq or TransferCurve.CurveKind.Hlg
+            || (it.Source?.Curve.Kind is TransferCurve.CurveKind.Linear
+                && it.HdrPeakNits > TransferCurve.SdrWhiteNits);
 
         // ① 生成 GainMap：功能定义要求底图 tone-map + 色域映射 ⇒ **声明策略不适用**（规划 §2 覆盖①）。
         //    对三条非 S1 策略都要覆盖，各自都是"在该出口结构上不可兑现"，不是为了让断言变绿：
@@ -665,7 +752,13 @@ public static partial class ColorMappingEngine
         var p = Fresh(declared);
         var src = it.Source;
         var caps = pol.Format;
-        bool srcHdr = src?.Curve.Kind is TransferCurve.CurveKind.Pq or TransferCurve.CurveKind.Hlg;
+        // ⚠ 2026-11-09（D4 配套）：线性 HDR 也算 HDR 源（判据与 ColorIntentFactory/ResolveStrategy 同形，
+        //   峰值证据 = it.HdrPeakNits）。srcLinearHdr/linearHdrCarried 供下方 HDR 守卫分流 linear 用。
+        bool srcHdr = src?.Curve.Kind is TransferCurve.CurveKind.Pq or TransferCurve.CurveKind.Hlg
+            || (src?.Curve.Kind is TransferCurve.CurveKind.Linear
+                && it.HdrPeakNits > TransferCurve.SdrWhiteNits);
+        bool srcLinearHdr = src?.Curve.Kind is TransferCurve.CurveKind.Linear;
+        bool linearHdrCarried = false;
 
         // 用户请求了 tonemap 但未给目标 ⇒ 目标取“源原色的 SDR 对应空间”。
         // 否则请求会被静默忽略（无目标 → Action=None → 不改像素），违反“不得静默降级”。
@@ -690,11 +783,47 @@ public static partial class ColorMappingEngine
         //   iec61966-2-1，另配"用生产写块器把标签改成 cICP=1 ⇒ 判据必须失配"的负控）。
         // 旧实现的另一处错也要记住：它曾宣称"不改像素、沿用源描述"（OutPrimaries=bt2020/
         //   OutTransfer=smpte2084），而交付其实是 tonemap 后的 SDR ⇒ 那才是「宣称≠交付」。
-        if (srcHdr == true && it.Target == null && !pol.HdrOutput && !pol.ToneMapRequested && caps.CanHdr)
-            return PlanDelegatedHdrSdr(p, it, pol, declared, ov);
+        // ⚠ 2026-11-09（D3）：linear HDR 的分流**先于** PQ/HLG 委派，且**不设** caps.CanHdr 前提 ——
+        //   jpg/webp/tiff 这类 CanHdr=false 的 SDR-only 容器正是 D3 的主场景（暗图指纹所在）。
+        //   linear HDR **不**交回传统管线：传统管线的 `NeedsHdrToSdrTonemap` 只认 PQ/HLG
+        //   （FfmpegCommandBuilder.cs:1414），linear PFM 会被它当 SDR 直通：计划若声称
+        //   "tonemap 与标注由传统管线执行"，交付却是 linear 原样码值 ⇒ 宣称≠交付
+        //   （正是 PlanDelegatedHdrSdr 注释里批判过的旧错形态）。两种诚实结局：
+        //  ① 容器在本位深能承载 HDR 语义（CanCarryHdrAt）⇒ 目标保持 null，落到函数尾
+        //    PlanCore(src, null) 直通携带：像素=linear 原值、标注=源 linear 语义
+        //    （AVIF/JXL 的 nclx transfer=linear、PNG 16bit 的 cICP[1,8,0,1]）⇒ 声明与像素自洽。
+        //  ② 装不下（jpg/png 8bit/webp/tiff）⇒ 目标补成源原色的 SDR twin，走引擎**纯 OETF
+        //    编码**（不挂 tonemap —— linear 已在线性域，OETF 是无损曲线映射；与 PQ/HLG
+        //    「必须先 EOTF、不做 tonemap 就是高光裁剪灾难」不同）。linear 码值直接写 8-bit
+        //    gamma 容器 = 暗图（2026-11-08 D3 实测指纹：默认档到 linear×255 仅 0.65/255 ⇒
+        //    完全没做传递曲线；默认 vs 强制 sRGB 差 34.96/255）。twin 为 null ⇒ 落到下方
+        //    :697 Reject（fail-closed，好过暗图）。
+        if (srcHdr == true && it.Target == null && !pol.HdrOutput && !pol.ToneMapRequested && srcLinearHdr)
+        {
+            if (CanCarryHdrAt(caps, pol.TargetBitDepth))
+            {
+                linearHdrCarried = true;
+            }
+            else
+            {
+                // ⚠ `src!`：srcHdr 为真 ⇒ src 必非空（曲线 Kind 命中要求 src 存在），但编译器的
+                //   可空流分析不追 bool 判定的传递 ⇒ 与 :151 的 `srcNn` 同款用 null-forgiving 收口。
+                var twin = SdrTwinOf(src!, caps, pol.ExternalEncoderExit);
+                if (twin != null) it.Target = twin;
+            }
+        }
+        else if (srcHdr == true && it.Target == null && !pol.HdrOutput && !pol.ToneMapRequested && caps.CanHdr)
+            return PlanDelegatedHdrSdr(p, it, pol, declared, ov);   // PQ/HLG 既有委派（linear 已被上一支截走）
 
         // HDR 不被悄悄 SDR 化（规划 §2）
-        if (srcHdr == true && !pol.HdrOutput && !pol.ToneMapRequested)
+        // ⚠ 2026-11-09（D3）：linear HDR 在这里**一律放行**（srcLinearHdr）——它的 SDR 结局
+        //   （直通携带 / SDR twin 编码 / 用户显式 SDR 目标）走的都是**纯 OETF 曲线编码**
+        //   （>1.0 段按容器钳制 = 编码语义），不是色调映射压暗；:697 防的「HDR→SDR 需显式
+        //   请求 tonemap，否则高光整体压暗」针对的是 PQ/HLG 码值域必须先 EOTF 展开的情形。
+        //   ⚠ 显式 `--color-tone-map none` 的 linear HDR 也到此放行：none = 不挂 tonemap 算子
+        //     ≠ 不编码（8-bit 容器总得从线性 float 转到 gamma 码域），交付=OETF 编码，诚实。
+        //   ⚠ PQ/HLG 侧行为一个字未动（其不触发 :697 的既有前提 = 装配层 :389 的自动兜底）。
+        if (srcHdr == true && !pol.HdrOutput && !pol.ToneMapRequested && !linearHdrCarried && !srcLinearHdr)
             return Reject(p, "HDR 源 → SDR 目标需显式请求色调映射（否则高光整体压暗）",
                 "开启 tonemap（--color-tone-map / HDR→SDR 选项），或输出到支持 HDR 的容器（AVIF/JXL）",
                 // ⚠ 同前：heif 无写入通路，不列为替代；Advice 文案同步去掉 HEIF（2026-09-16）。
@@ -806,6 +935,42 @@ public static partial class ColorMappingEngine
         core.DeclaredStrategy = declared;
         core.EffectiveStrategy = ColorStrategy.Recommended;
         if (ov != OverrideReason.None) core.Override = ov;
+        // ⚠ 2026-11-09（D3）：linear HDR 直通携带必须点名 —— PlanCore(src, null) 的默认理由是
+        //   "无目标色彩空间 → 不改像素"，不解释"为什么这次不改像素是诚实的"（峰值 >SDR 白点的
+        //   线性像素原样进容器）。放行 ≠ 静默：理由里写清容器可承载、位深足够、标注自洽三件事。
+        if (linearHdrCarried)
+            // ⚠ 2026-11-10（R4 措辞修正）：旧句「像素=linear 原值」只对 RGB 容器（PNG 16bit）成立；
+            //   AVIF 这类 YUV 出口实际产物是 yuv420p12le（24 格 D12 实测：RGB→BT.709 矩阵转换 +
+            //   4:2:0 色度下采样）。改措辞区分两件事：**色彩语义不变**（标注=源 linear 语义、不做
+            //   SDR 化——这是本播报担保的）与**像素可能被容器色度降采样**（编码事实，见 --chroma）。
+            core.Reason = "线性 HDR 直通携带（容器可承载 HDR 且位深足够 ⇒ 色彩语义不变：标注=源 linear 语义、"
+                        + "不做 SDR 化。像素按出口编码交付：RGB 容器=linear 原值；YUV 容器（如 AVIF）经矩阵转换"
+                        + "与色度下采样（默认 4:2:0，见 --chroma），不是逐值原样）：" + core.Reason;
+
+        // ── 2026-11-10（R4）：SDR-only 出口的 linear HDR 高光裁剪感知提示 ──
+        // 机理：linear HDR 源码值 1.0 = SDR 白点 203nits（TransferCurve.SdrWhiteNits），峰值像素
+        //   线性值 = HdrPeakNits/203 > 1.0。SDR-only 出口经 OETF 编码时 OETF(>1.0) 仍 >1.0 ⇒
+        //   码域钳到 1.0（255）⇒ 高光被**裁剪**（tonemap 是压缩保留层次，裁剪直接削平）。
+        //   D3 的「纯 OETF 编码」修的是暗图（没做曲线映射），不改变 >1.0 段的钳制事实。
+        // 判据（缺一不可，均防误伤）：
+        //   · srcLinearHdr：源是 linear 曲线（PQ/HLG 源的 SDR 化走 :767 委派/自动兜底，另有播报）；
+        //   · it.HdrPeakNits > SdrWhiteNits：确有 HDR 峰值证据（来源已入日志 :349）；
+        //   · !pol.ToneMapRequested：tonemap 已承接高光（压缩而非裁剪），不重复提示；
+        //   · !linearHdrCarried：直通携带像素保全（HDR 语义在容器里活着），无裁剪；
+        //   · 目标曲线非 PQ/HLG 且 !pol.HdrOutput：出口本身是 HDR 时无裁剪。
+        // 真机件数学校准：华为 IMG_20261102_190339 峰值 900nits ⇒ headroom=900/203=4.43× ⇒ 命中；
+        //   OnePlus IMG20261101124423 峰值 232nits ⇒ headroom=232/203=1.14× < 2.0 ⇒ 不命中。
+        //   阈值 2.0× = 高光溢出超 1 档（+1 stop）才会被明显削平；1.14× 的溢出段在 8bit 量化噪声量级。
+        double sdrHeadroom = it.HdrPeakNits / TransferCurve.SdrWhiteNits;
+        bool sdrExitForLinear = srcLinearHdr
+            && it.HdrPeakNits > TransferCurve.SdrWhiteNits
+            && !pol.ToneMapRequested
+            && !linearHdrCarried
+            && !pol.HdrOutput
+            && it.Target?.Curve.Kind is not (TransferCurve.CurveKind.Pq or TransferCurve.CurveKind.Hlg);
+        if (sdrExitForLinear && sdrHeadroom >= 2.0)
+            core.Reason += $"｜HDR headroom {sdrHeadroom:F2}×，纯线性编码将裁剪高光，建议 --color-tone-map hable";
+
         if (pol.Strategy == ColorStrategy.BakeCicpOnly && !it.GainMapRequested) StripIcc(core);
         return core;
     }
@@ -1141,5 +1306,415 @@ public static partial class ColorMappingEngine
             //   （同一份裁决里既说"已压缩"又说"被裁切"）。
             return p.GamutMap ? ColorLoss.GamutCompression : ColorLoss.Clipping;
         return ColorLoss.RoundTripQuantization;
+    }
+
+    // ════════ 输出矩阵模式（C-CAPS@1 / C-REPORT@1 / C-PLAN-EXT@1，color-matrix-options 计划）════════
+    //
+    //  显式输出矩阵模式（--color-out-matrix / GUI「色彩矩阵模式」）的三件事都只在这一段做：
+    //  ① C-CAPS@1 唯一真值判定（ResolveOutMatrixCapability——按 T1 扫描报告校准版判定表编码）；
+    //  ② C-PLAN-EXT@1 覆盖（ApplyExplicitOutMatrix——在 MatrixTokenFor 三处推导完成之后
+    //    覆盖 p.OutMatrix 并置 OutMatrixVerdict；Plan() 在 Verdict 投影之前调用）；
+    //  ③ C-REPORT@1 规划层播报（Reason 中文同义句；ASCII 模板常量供 T6 出口层 EmitWarn 消费）。
+    //  动图回退路径与预设入口汇聚到 Plan(ColorIntent) 后自动走同一判定（不得出现第二份表）。
+    //  auto（null）整段早退 ⇒ 全链路与改造前逐字节同路径（CM-REQ-08 回归红线）。
+
+    /// <summary>
+    /// C-REPORT@1 播报模板（本任务 = Provider；T6 出口层 EmitWarn 消费、T7 播报锁断言）。
+    /// <para>
+    /// ⚠ 全 ASCII：<c>ImageEncoderArgs.EmitWarn</c> 的硬约束（<c>_probe-cjk-hardcode-scan</c>
+    /// 的 CsUi 余量 0）；契约文档模板 1 里的「→」在 ASCII 约束面下落地为 <c>-></c>。
+    /// 中文同义句由规划层写进 <see cref="ColorTransformPlan.Reason"/>（规划层通道中文可用）。
+    /// 占位符按 <c>string.Format</c> 顺序：
+    /// <list type="bullet">
+    /// <item>模板 1（落地）<see cref="OutMatrixReportLanded"/>：{0}=format {1}=token
+    ///       {2}=落地描述（**由 T6 出口填**：nclx matrix_coefficients=n / -colorspace name
+    ///       （输出侧）/ cjxl VarDCT (XYB) / libjxl -xyb 1 / cjpegli --xyb）；</item>
+    /// <item>模板 2（冗余）<see cref="OutMatrixReportRedundant"/>：{0}=token {1}=format
+    ///       {2}=RGB|XYB-default（当前 T1 校准版判定表**无** XYB-default 命中格——jxl 两后端的
+    ///       xyb 均 Carried，占位按契约保留）；</item>
+/// <item>模板 3（拒绝）<see cref="OutMatrixReportRejected"/>：{0}=token {1}=format
+///       {2}=原因短语（规划层在 Rejected 时**直接发**——出口不被调用 ⇒ T6 无机会发）。</item>
+/// <item>模板 4（跨维冲突拒绝）<see cref="OutMatrixReportConflict"/>：{0}=显式 token
+///       {1}=推导矩阵 {2}=format（CMX 批新增：交叉一致性校验闸——显式 H.273 YUV 族值与
+///       primaries 推导链留下的矩阵标注跨族 ⇒ 由规划层直接发，同模板 3）。</item>
+    /// </list>
+    /// </para>
+    /// <para>
+    /// 播报唯一性（计划 §2.3 第 5 条）：Carried/Redundant 的 ASCII 模板由 T6 出口层发
+    /// （出口被调用的格子才有出口侧播报）；Rejected 由规划层发——三档各自只有一个发点，不双播。
+    /// </para>
+    /// </summary>
+    public const string OutMatrixReportLanded = "[color-out-matrix] {0}: {1} -> {2}";
+    public const string OutMatrixReportRedundant = "[color-out-matrix] {0} on {1}: container is already {2}; recorded, no pixel effect";
+    public const string OutMatrixReportRejected = "[color-out-matrix] {0} is not carried by {1} ({2}) => contract rejection, exit 91, no output";
+    // 模板 4（CMX 批）：跨维冲突拒绝——显式 H.273 YUV 族值与 primaries 推导链留下的矩阵标注
+    // 跨族（如 BT.2020 源 + 显式 bt709 ⇒ primaries=9 + matrix=1，消费端从 matrix 反推 primaries
+    // ⇒ 广色域错读）。占位 {0}=显式 token、{1}=推导矩阵（覆盖前 p.OutMatrix）、{2}=format；
+    // 全 ASCII（CsUi 纪律），由规划层在交叉一致性校验闸拦截时直接发。
+    public const string OutMatrixReportConflict = "[color-out-matrix] {0} conflicts with derived matrix {1} for {2} output => contract rejection, exit 91, no output";
+
+    /// <summary>
+    /// C-CAPS@1 唯一真值判定函数：格式 × 编码后端 × 归一 token ⇒ 承载判定。
+    /// <para>
+    /// 判定表按 <b>T1 扫描报告校准版</b>编码
+    /// （tests/output/_tmp/color-matrix-scan-20261110/report.md §7 校准清单 C1-C13，2026-11-10
+    /// 读数；与计划书 C-CAPS@1 初版的出入以下列修订注记为准——「校准属兼容性追加/收窄」）：
+    /// </para>
+    /// <list type="bullet">
+    /// <item><b>C1/C2</b>：webp/jpg × bt470bg 由计划初版 Carried 校准为 <b>Redundant</b>
+    ///       （auto 恒 bt470bg，显式值与推导值相同、产物逐字节一致 ⇒ 「冗余但一致」档）；</item>
+    /// <item><b>C3</b>：webp/jpg × smpte170m（bt601 归一后）校准为 <b>Redundant</b>
+    ///       （swscale 实测 bt470bg=smpte170m 同组转换结果——ColorSpaceRegistry.cs:621；
+    ///       601 族整体收窄为 Redundant，其余 YUV 族维持 Rejected）；</item>
+    /// <item><b>C4</b>：avif × ycgco 校准为 <b>Rejected</b>（swscale 输入侧实测不可转换
+    ///       ——ColorSpaceRegistry.cs:622；输出侧同引擎未证，保守收窄）；</item>
+    /// <item><b>C5</b>：avif × fcc 校准为 <b>Rejected</b>（AV1 bitstream matrix_coefficients
+    ///       枚举 3/4=Reserved，nclx 写不进——容器机制推断，同 AGENTS §7 AVIF 口径标注方式）；</item>
+    /// <item><b>C6</b>：avif × avifenc 两步法（gif→avif / jxr→avif）= <b>Not-wired</b>：
+    ///       两步法参数拼装无矩阵项（QueueProcessor.cs:4612/:5352），且不经过本规划层——
+    ///       显式矩阵经 CLI/GUI 提交的 avif 任务恒走 ffmpeg 编码器出口（libaom/libsvtav1），
+    ///       故本函数对 avif 的非 Ffmpeg 后端保守判 Rejected；两步法与显式矩阵并存的行为属 T6 出口面；</item>
+    /// <item><b>C7/C13</b>：avif × YUV 族 = <b>Carried + Requires-PixFmt-Switch</b>：
+    ///       nclx 可写（枚举 1/5/6/7/9）且输出侧 -colorspace 驱动 RGB→YUV 转换，但引擎通路
+    ///       pix_fmt 判据（RawColorPipeline.cs:1053）未命中时 libaom 自选 gbrp ⇒ 标签孤立。
+    ///       「切 pix_fmt」由 T6 出口按本 Carried 决议并入落地（计划 §2.3 第 3 条同向）——
+    ///       本函数不为此新增枚举成员（OutMatrixCapability 四值契约不变），pixfmt-switch
+    ///       经规划层 Reason 播报与 T6 落地点兑现；</item>
+    /// <item><b>C8</b>：jxl × cjxl × xyb = <b>Carried</b>（cjxl v0.12.0 无显式 xyb 开关——
+    ///       VarDCT 隐式承载；「显式确认」= 规划层播报确认，与 --jxl-modular 的冲突点名归
+    ///       CjxlService 既有 modular 优先播报（T6 面））；</item>
+    /// <item><b>C9</b>：jpg × cjpegli × xyb = <b>Carried</b>（--xyb 旗标存在；
+    ///       BuildCjpegliArguments 当前零引用 = 未接线，T6 新增传递——Carried 的落地前提是
+    ///       T6 接线，判定照常产出；cjpegli 出口不经本规划层，由 T6 以 backend=Cjpegli 直调本函数）；</item>
+    /// <item><b>C10</b>：jxl × ffmpeg libjxl × xyb = <b>Carried</b>（-xyb AVOption 实测 default 1
+    ///       已开，显式即确认）；</item>
+    /// <item><b>C11</b>：png/apng/tiff/tif/bmp/ppm/gif：rgb=<b>Redundant</b>（RGB 原生/调色板
+    ///       容器本就是 RGB 语义）、YUV 族与 xyb=<b>Rejected</b>（无矩阵概念）——计划初版确认项；</item>
+    /// <item><b>C12</b>：dng/jxr：「矩阵」是契约外概念（DNG ColorMatrix1/2=相机校准矩阵、
+    ///       JXR 内部 YCoCg 不暴露）⇒ YUV 族与 xyb=<b>Rejected</b>；rgb 按计划初版
+    ///       <b>Redundant</b>（渲染空间/载体均为 RGB 线性域；T1 无冲突项 ⇒ 保留计划值）。
+    ///       dng 不经本规划层（ColorIntentFactory 对它返回 null——传感器 Bayer 数据不接入引擎），
+    ///       判定格为死格、编码只为表完整性；jxr 经引擎 JxrEncApp 出口可达；</item>
+    /// </list>
+    /// <para>
+    /// 已知边界（三参签名的维度上限）：avif × rgb 按 <b>libaom-av1</b>（默认编码器）口径判
+    /// Carried（nclx matrix=0 + gbrp 直喂语义自洽，T1 §4 表「可写」）；用户显式选 libsvtav1 时
+    /// 它无 gbrp 支持位（T1 §1 表：rgb 拒绝）——该收窄需要编码器名维度（backend 枚举装不下），
+    /// 由出口层既有像素格式边界族（ImageEncoderArgs.cs:1019 libsvtav1 边界）与 T6 落地点承接；
+    /// 本函数不做二次判定（单一真值）。同理，Requires-PixFmt-Switch 的「引擎通路 vs legacy 通路」
+    /// 区分（legacy 的 MapPixFmt 恒显式 YUV pix_fmt、无孤立标签问题）也由 T6 落地点按出口维度处理。
+    /// </para>
+    /// <para>
+    /// token 契约：调用方传入的值已在 <c>FfmpegOptions.ColorOutMatrix</c> 的 setter 归一
+    /// （bt601→smpte170m、auto/空白→null、小写——T2 落地；leader 2026-11-10 批复确认
+    /// 「判定函数无需再归一」）⇒ 本函数按归一后 token 字面匹配，不重复归一；
+    /// 空白/null 返回 NotApplicable（auto 无判定意义）。
+    /// </para>
+    /// </summary>
+    /// <param name="fmt">目标格式（如 "jpg" / "webp" / "avif" / "jxl"；大小写不敏感）。</param>
+    /// <param name="token">输出矩阵 token（C-TOKEN@1 域的**归一后**成员；null/空白 = auto）。</param>
+    /// <param name="backend">编码后端（决定 jpg 的 mjpeg/cjpegli 与 avif 的 ffmpeg 编码器口径）。</param>
+    public static OutMatrixCapability ResolveOutMatrixCapability(string fmt, string? token, EncoderBackend backend)
+    {
+        if (string.IsNullOrWhiteSpace(token)) return OutMatrixCapability.NotApplicable;   // auto：无判定意义
+        var t = token.Trim();
+        var f = (fmt ?? "").Trim().TrimStart('.').ToLowerInvariant();
+        // 601 族（bt470bg/smpte170m）：swscale 实测同组转换结果（C3 校准）。
+        bool yuv601 = t is "bt470bg" or "smpte170m";
+
+        switch (f)
+        {
+            case "jpg" or "jpeg" or "jpegli":
+                if (backend == EncoderBackend.Cjpegli)
+                {
+                    // T1 §1 表第 3 行（cjpegli 出口）：像素全程 RGB ⇒ rgb 冗余；
+                    // 无 YUV 转换发生点 ⇒ 全 YUV 族（含 601）Rejected；--xyb 内部特性 ⇒ xyb Carried（C9）。
+                    if (t == "rgb") return OutMatrixCapability.Redundant;
+                    if (t == "xyb") return OutMatrixCapability.Carried;
+                    return OutMatrixCapability.Rejected;
+                }
+                // T1 §1 表第 1/2 行（ffmpeg mjpeg legacy + 引擎 raw 通路；两行判定一致）：
+                // C1/C2/C3 校准——601 族 = Redundant（auto 恒 bt470bg，显式值与推导值相同、产物
+                // 逐字节一致）；rgb = Rejected（mjpeg 仅收 YUV pix_fmt）；bt709/smpte240m/fcc/
+                // bt2020nc/ycgco = Rejected（转换偏离解码端固定 BT.601 假设 = 饱和色偏，
+                // 2026-10-25 实测纯红 255,0,0→232,0,1；JFIF 无矩阵标注位——对齐 2026-11-03
+                // colorRange 出口侧口径）；xyb = Rejected（mjpeg 无 XYB 概念）。
+                if (yuv601) return OutMatrixCapability.Redundant;
+                return OutMatrixCapability.Rejected;
+            case "png" or "apng" or "tiff" or "tif" or "bmp" or "ppm" or "gif":
+                // T1 §1 表第 4-6/15-16/18 行 + C11 确认：RGB 原生/调色板/无头容器——
+                // rgb = Redundant（本就是 RGB 语义；gif 的依据 = 引擎链像素 rgb24/rgb48le →
+                // pal8，矩阵无作用点）；YUV 族与 xyb = Rejected（无矩阵概念）。
+                if (t == "rgb") return OutMatrixCapability.Redundant;
+                return OutMatrixCapability.Rejected;
+            case "webp":
+                // T1 §1 表第 7/8 行（ffmpeg libwebp legacy + 引擎；两行判定一致）：C1/C3 校准——
+                // 601 族 = Redundant（swscale 与 bt470bg 同系数，解码端假设同为 BT.601 族）；
+                // rgb = Rejected（有损路径仅 yuv420p；无损路径 bgra 是编码器内部表示非矩阵语义）；
+                // bt709/smpte240m/fcc/bt2020nc/ycgco = Rejected（WebP 容器无矩阵标注位 + 转换偏离
+                // 解码端固定假设 = 人为色偏，对齐 2026-11-03 colorRange 出口侧口径）；xyb = Rejected。
+                if (yuv601) return OutMatrixCapability.Redundant;
+                return OutMatrixCapability.Rejected;
+            case "avif":
+                if (backend != EncoderBackend.Ffmpeg)
+                    return OutMatrixCapability.Rejected;   // C6：avifenc 两步法不经本规划层；防御 fail-closed
+                // T1 §1 表第 11 行（libaom-av1，legacy 默认编码器 + 引擎出口）：
+                // rgb = Carried（nclx matrix=0 + gbrp 直喂语义自洽——按 libaom 口径，libsvtav1
+                // 边界见方法注释）；ycgco = Rejected（C4）；fcc = Rejected（C5）；xyb = Rejected
+                //（AV1/AVIF 无 XYB 概念）；bt709/bt470bg/smpte170m/smpte240m/bt2020nc = Carried
+                //（C7：nclx 枚举 1/5/6/7/9 可写 + 输出侧 -colorspace 驱动转换；
+                // Requires-PixFmt-Switch 由 T6 出口并入落地）。
+                if (t == "rgb") return OutMatrixCapability.Carried;
+                if (t is "ycgco" or "fcc" or "xyb") return OutMatrixCapability.Rejected;
+                return OutMatrixCapability.Carried;        // 601/709 族
+            case "jxl":
+                // T1 §1 表第 13/14 行（cjxl 与 ffmpeg libjxl；rgb/YUV 判定两行一致）：
+                // JXL RgbNative ⇒ rgb = Redundant（JXL 本就是 RGB 容器）、YUV 族 = Rejected
+                //（RgbNative，无 YUV 承载位）；xyb = Carried（C8 cjxl 隐式确认 / C10 libjxl
+                // -xyb default 1——两后端判定相同，落地描述由 T6 按出口区分）。
+                if (t == "rgb") return OutMatrixCapability.Redundant;
+                if (t == "xyb") return OutMatrixCapability.Carried;
+                return OutMatrixCapability.Rejected;
+            case "dng" or "jxr":
+                // C12 确认：「矩阵」是契约外概念 ⇒ YUV 族与 xyb = Rejected；rgb 按计划初版
+                // Redundant（渲染空间/载体均为 RGB 线性域；dng 为死格，编码只为表完整性）。
+                if (t == "rgb") return OutMatrixCapability.Redundant;
+                return OutMatrixCapability.Rejected;
+            default:
+                // 未知格式 fail-closed：矛盾选择按 Rejected 收场（CM-REQ-05），不静默放行。
+                return OutMatrixCapability.Rejected;
+        }
+    }
+
+    /// <summary>
+    /// 显式输出矩阵模式的**唯一覆盖点**（C-PLAN-EXT@1）：在既有 <c>MatrixTokenFor</c> 三处推导
+    /// （ColorTransformPlan.SetLabelsFrom / 本文件 PlanCicpOnly / CarryCicpLabels）**全部完成之后**
+    /// 由 <see cref="Plan"/>（Verdict 投影之前）调用——
+    /// auto（null）直接早退 ⇒ 整条链路与改造前逐字节同路径（CM-REQ-08）；
+    /// 显式值按 C-CAPS@1 判定并覆盖 <c>p.OutMatrix</c> / 置 <c>p.OutMatrixVerdict</c> / 播报。
+    /// <para>
+    /// 播报通道（C-REPORT@1）：Carried/Redundant 只写 <see cref="ColorTransformPlan.Reason"/>
+    /// （规划层 ⇒ 任务详情，中文），ASCII 模板（OutMatrixReportLanded/Redundant）由 T6 出口层
+    /// EmitWarn 消费（「落地描述」由 T6 出口填——本层不写死落地点）；**Rejected 由本层直接发
+    /// EmitWarn ASCII**（出口不被调用 ⇒ T6 无机会发）+ Reason 中文同义句；exit 91 由既有
+    /// 「Action=Reject ⇒ QueueProcessor 不出产物 return 91」机制兑现
+    /// （ProPhoto S2 携带契约拒绝同款形态，queue :1702-1710）。
+    /// </para>
+    /// <para>
+    /// 裁定注记：xyb 是 libjxl 内部感知色彩表示（非 H.273），Carried 时**不覆盖**
+    /// <c>p.OutMatrix</c>（那是 L5 CICP 标注域——ToFfmpegColorSpaceName 不认 xyb，写入会被
+    /// iccgen 的 IccMatrix / 输出侧 -colorspace 消费点踩到）；T6 按
+    /// <see cref="ColorTransformPlan.OutMatrixMode"/> 分派编码器开关（cjxl VarDCT 隐式 /
+    /// libjxl -xyb / cjpegli --xyb）。H.273 族 Carried ⇒ 覆盖 p.OutMatrix = token。
+    /// </para>
+    /// <para>
+    /// 主体已 Reject 时（PlanWithPolicy 各提前返回分支）显式矩阵判定**照跑**（fail-closed：
+    /// 显式选择必须被点名，不许静默），Rejected 分支只**追加** Reason（不覆盖主体拒绝原因）；
+    /// Carried/Redundant 分支不翻转 Action（主体拒绝的格子出口本就不被调用，exit 91 已然）。
+    /// </para>
+    /// <para>
+    /// backend 推导：与 ColorIntentFactory 的 ExternalEncoderExit 判据同源（(jxl &amp;&amp; Cjxl) || jxr）。
+    /// ⚠ jpg×Cjpegli 不经本规划层（QueueProcessor 的 cjpegli 分派带引擎豁免）⇒ 本层 jpg 恒按
+    /// Ffmpeg（mjpeg）口径判；cjpegli 出口的判定由 T6 出口层以 backend=Cjpegli 直接调
+    /// <see cref="ResolveOutMatrixCapability"/>（唯一真值函数，不构成第二份表）。
+    /// </para>
+    /// </summary>
+    private static void ApplyExplicitOutMatrix(ColorTransformPlan p, ColorIntent it, PlanPolicy pol)
+    {
+        var token = it.OutMatrixMode;
+        if (string.IsNullOrWhiteSpace(token)) return;   // auto（null）：零播报、零覆盖（CM-REQ-08 回归红线）
+
+        var fmt = pol.Format.Format;
+        var backend = fmt == "jxr" ? EncoderBackend.Jxr
+            : pol.ExternalEncoderExit && fmt == "jxl" ? EncoderBackend.Cjxl
+            : EncoderBackend.Ffmpeg;
+        var cap = ResolveOutMatrixCapability(fmt, token, backend);
+        p.OutMatrixMode = token;
+        p.OutMatrixVerdict = cap;
+
+        // ── 交叉一致性校验的输入（CMX 批第二道闸，A1 严口径）──
+        // 覆盖前读：此刻 p.OutMatrix 仍是 MatrixTokenFor 三处推导（SetLabelsFrom / PlanCicpOnly /
+        // CarryCicpLabels）完成后留下的**推导值**（bt2020nc / bt709 / smpte170m / null——值域闭集、
+        // 全小写字面量；显式值对 p.OutMatrix 的覆盖只发生在下方 Carried 分支内），不是显式值。
+        var derivedMatrix = p.OutMatrix;
+        var tNorm = token.Trim();   // 与 ResolveOutMatrixCapability 内部 Trim 同构（T2 归一后本无空白，防御）
+        // 参与面：仅 H.273 YUV 族显式值（非 rgb 非 xyb）——xyb 是 libjxl 内部感知表示、Carried 时
+        // 不覆盖 p.OutMatrix（既有裁定）；rgb 是 identity 矩阵、无 primaries 约束。两者不参与本闸，
+        // 承载判定照旧（判定表第 2/3 行）。本闸只做「显式 vs 推导」的交叉比较，不构成第二份承载表
+        // （唯一真值仍是 ResolveOutMatrixCapability）。
+        bool cmxParticipates = tNorm != "xyb" && tNorm != "rgb";
+        // 601 族互通（判定表第 6 行）：显式 smpte170m ↔ 推导 bt470bg（或反向）——T1 实测 swscale
+        // 同系数（ColorSpaceRegistry.cs:621）；bt601 已在入口归一为 smpte170m ⇒ 天然进族。
+        bool cmxSame601 = cmxParticipates
+            && tNorm is "bt470bg" or "smpte170m"
+            && derivedMatrix is "bt470bg" or "smpte170m";
+        bool cmxSameValue = cmxParticipates && string.Equals(tNorm, derivedMatrix, StringComparison.OrdinalIgnoreCase);
+        // 跨族（判定表第 7 行）：推导已标注（非 null/空——MatrixTokenFor 只产出 null 不产空串，
+        // IsNullOrEmpty 是对「某路径写空串」的防御，空串语义上同为未标注）且既非同值又非 601
+        // 互通 ⇒ 契约拒绝。推导 null/空（primaries 未标注/CodecDefault）⇒ 无交叉基准，放行
+        // Carried（判定表第 5 行），Reason 在 Carried 既有文本之后追加点名。
+        bool cmxCrossFamily = cmxParticipates && !string.IsNullOrEmpty(derivedMatrix) && !cmxSameValue && !cmxSame601;
+
+        switch (cap)
+        {
+            case OutMatrixCapability.Carried:
+                // ── 交叉一致性校验闸（CMX 批第二道闸，A1 严口径）──
+                // 承载判定（ResolveOutMatrixCapability）只回答「该出口能否承载此矩阵」；本闸回答
+                // 「显式值与 primaries 推导链留下的标注是否自洽」：Carried 档只覆盖 p.OutMatrix、
+                // 不动 primaries 推导，跨族显式值会产出 primaries=X + matrix=Y 的跨维不一致标注
+                // （如 BT.2020 源 + 显式 bt709 ⇒ primaries=9 + matrix=1），消费端从 matrix 反推
+                // primaries ⇒ 广色域被错读为窄色域（2026-11-11 用户裁决「禁止乱塞入」）。
+                if (cmxCrossFamily)
+                {
+                    // 裁决字段改 Rejected 与 Action 自洽（本格 cap 原是 Carried，由本闸翻成 Rejected）；
+                    // 不覆盖 p.OutMatrix（显式值未获采纳，推导值保留——Reject 计划本就不出产物）。
+                    p.OutMatrixVerdict = OutMatrixCapability.Rejected;
+                    // 模板 4 ASCII 由规划层发（同既有 Rejected 分支——出口不被调用 ⇒ T6 无机会发）；
+                    // 中文同义句进 Reason；exit 91 由 Action=Reject 的既有执行机制兑现。
+                    ImageEncoderArgs.EmitWarn(string.Format(OutMatrixReportConflict, token, derivedMatrix, fmt));
+                    var cmxZh = $"显式值与目标 primaries 推导矩阵 {derivedMatrix} 不一致 ⇒ 契约拒绝（exit 91、不产出）"
+                              + "——输出矩阵随 primaries 推导，显式值仅可在推导值同族（601 族互通）内选择";
+                    if (p.Action == ColorAction.Reject)
+                    {
+                        // 主体已 Reject（PlanWithPolicy 提前返回）：只追加，不覆盖主体拒绝原因。
+                        p.Reason += $"｜用户 --color-out-matrix={token} 与推导矩阵 {derivedMatrix} 不一致（{cmxZh}）";
+                    }
+                    else
+                    {
+                        Reject(p,
+                            $"输出矩阵 {token} 与目标 primaries 推导矩阵 {derivedMatrix} 不一致：{cmxZh}",
+                            "显式 --color-out-matrix 仅可选推导矩阵同值或 601 族（bt470bg/smpte170m）成员；不指定（auto）则沿用推导值");
+                        // Reject 助手不清这两位（其既有调用点都在 Classify* 重算之前）；
+                        // 本调用点在重算之后 ⇒ 手动补齐（与既有 Rejected 分支同款）。
+                        p.Annot = AnnotChoice.None;
+                        p.ColorLoss = ColorLoss.None;
+                    }
+                    break;
+                }
+                // H.273 族 ⇒ 覆盖推导值（C-PLAN-EXT@1：显式值在推导完成后覆盖 p.OutMatrix）；
+                // xyb ⇒ 不覆盖（裁定见方法注释），T6 按 OutMatrixMode 落地开关。
+                if (token != "xyb") p.OutMatrix = token;
+                p.Reason += $"｜用户 --color-out-matrix={token} 已由 {fmt} 出口承载"
+                          + $"（{OutMatrixCarriedLandingNote(fmt, token, backend)}；出口侧落地与播报见执行层）";
+                // 推导 null/空（primaries 未标注/CodecDefault）⇒ 放行，追加点名（判定表第 5 行）：
+                // 显式矩阵以用户值为准（中文进 Reason 既有通道；IsNullOrEmpty 与 cmxCrossFamily 同口径）。
+                if (cmxParticipates && string.IsNullOrEmpty(derivedMatrix))
+                    p.Reason += "｜源 primaries 未标注，显式矩阵以用户值为准";
+                break;
+            case OutMatrixCapability.Redundant:
+                p.Reason += $"｜用户 --color-out-matrix={token} on {fmt}：容器/出口已按同值处理"
+                          + "（冗余，仅登记不生效，产物与 auto 档逐字节一致）";
+                break;
+            case OutMatrixCapability.Rejected:
+            {
+                var (whyZh, whyAscii) = OutMatrixRejectionWhy(fmt, token, backend);
+                // 模板 3 ASCII 由规划层发（出口不被调用 ⇒ T6 无机会发）；中文同义句进 Reason；
+                // exit 91 由 Action=Reject 的既有执行机制兑现，本层不直接设退出码。
+                ImageEncoderArgs.EmitWarn(string.Format(OutMatrixReportRejected, token, fmt, whyAscii));
+                if (p.Action == ColorAction.Reject)
+                {
+                    // 主体已 Reject（PlanWithPolicy 提前返回）：只追加，不覆盖主体拒绝原因。
+                    p.Reason += $"｜用户 --color-out-matrix={token} 不被 {fmt} 出口承载（{whyZh}）"
+                              + "⇒ 契约拒绝，exit 91，不产出";
+                }
+                else
+                {
+                    Reject(p,
+                        $"输出矩阵 {token} 不被 {fmt} 出口承载（{whyZh}）⇒ 契约拒绝（exit 91、不产出）",
+                        "该格式的承载矩阵见 --help 的 --color-out-matrix 说明；不指定（auto）则沿用现有推导");
+                    // Reject 助手不清这两位（其既有调用点都在 Classify* 重算之前）；
+                    // 本调用点在重算之后 ⇒ 手动补齐，保证裁决字段与 Action 自洽。
+                    p.Annot = AnnotChoice.None;
+                    p.ColorLoss = ColorLoss.None;
+                }
+                break;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Carried 档规划层 Reason 的落地方向注记（T1 §1 表逐格背书；「落地描述」的**精确文本**
+    /// 由 T6 出口填——本层只给方向，不抢出口的播报职责）。
+    /// </summary>
+    private static string OutMatrixCarriedLandingNote(string fmt, string token, EncoderBackend backend) => (fmt, token) switch
+    {
+        ("avif", "rgb") =>
+            "nclx matrix=0（libaom gbrp 直喂语义自洽；libsvtav1 无 gbrp，该收窄归出口侧编码器维度）",
+        ("avif", _) =>
+            "nclx matrix_coefficients 可写 + 输出侧 -colorspace 驱动 RGB→YUV 转换；引擎通路需配合 YUV pix_fmt（pixfmt-switch 由出口落地）",
+        ("jxl", "xyb") => backend == EncoderBackend.Cjxl
+            ? "cjxl VarDCT 隐式承载（v0.12.0 无显式开关；--jxl-modular 开启时 modular 优先，冲突点名见 cjxl 出口播报）"
+            : "libjxl -xyb（默认已开，显式即确认）",
+        _ => "转换矩阵/标注/编码器开关由执行层按出口落地点写入",
+    };
+
+    /// <summary>
+    /// Rejected 档的原因短语（中文进 Reason、ASCII 进 C-REPORT@1 模板 3 的 EmitWarn——
+    /// 逐格对应 <see cref="ResolveOutMatrixCapability"/> 的判定注释与 T1 扫描报告 evidence）。
+    /// </summary>
+    private static (string Zh, string Ascii) OutMatrixRejectionWhy(string fmt, string token, EncoderBackend backend)
+    {
+        var t = token.Trim();
+        var f = (fmt ?? "").Trim().ToLowerInvariant();
+        bool yuv = t is "bt470bg" or "smpte170m" or "bt709" or "smpte240m" or "bt2020nc" or "fcc" or "ycgco";
+
+        if (f is "jpg" or "jpeg" or "jpegli")
+        {
+            if (backend == EncoderBackend.Cjpegli)
+                return ("cjpegli 从 RGB 直编，无 YUV 转换发生点（矩阵选择不暴露为 CLI 参数）",
+                        "cjpegli encodes from RGB directly; no YUV conversion point");
+            return t switch
+            {
+                "rgb" => ("mjpeg 编码器仅收 YUV pix_fmt（yuvj420p/422p/444p 族）",
+                          "mjpeg encoder accepts YUV pixel formats only (yuvj420p/422p/444p)"),
+                "xyb" => ("mjpeg 出口无 XYB 概念", "mjpeg exit has no XYB concept"),
+                _ => ("转换系数偏离解码端固定 BT.601 假设 ⇒ 饱和色偏（2026-10-25 实测纯红 255,0,0→232,0,1）；JFIF 无矩阵标注位",
+                      "conversion coefficients would deviate from the decoder's fixed BT.601 assumption (2026-10-25 measured 255,0,0 -> 232,0,1); JFIF has no matrix annotation"),
+            };
+        }
+        if (f == "webp")
+        {
+            return t switch
+            {
+                "rgb" => ("libwebp 有损路径仅 yuv420p（无损路径 bgra 是编码器内部表示而非矩阵语义）",
+                          "libwebp lossy path is yuv420p only; bgra (lossless) is an internal representation, not a matrix semantic"),
+                "xyb" => ("libwebp 出口无 XYB 概念", "libwebp exit has no XYB concept"),
+                _ => ("WebP 容器无矩阵标注位，转换偏离解码端固定 BT.601 假设 = 人为色偏（对齐 2026-11-03 colorRange 出口侧口径）",
+                      "WebP container has no matrix annotation; conversion would mismatch the decoder's fixed BT.601 assumption (per 2026-11-03 colorRange policy)"),
+            };
+        }
+        if (f == "avif")
+        {
+            if (backend != EncoderBackend.Ffmpeg)
+                return ("avif 出口由 ffmpeg 编码器承载；avifenc 两步法现状无矩阵通路",
+                        "avif exit is carried by ffmpeg encoders; avifenc two-step has no matrix path wired");
+            return t switch
+            {
+                "ycgco" => ("swscale 对 ycgco 的转换能力被输入侧实测否定（Impossible to convert），输出侧未证 ⇒ 保守拒绝",
+                            "swscale conversion for ycgco proven impossible on the input side; output side unverified => rejected conservatively"),
+                "fcc" => ("AV1 bitstream matrix_coefficients 枚举 3/4 为 Reserved，nclx 写不进",
+                          "AV1 matrix_coefficients enum 3/4 are Reserved; nclx cannot carry it"),
+                "xyb" => ("AV1/AVIF 无 XYB 概念", "AV1/AVIF has no XYB concept"),
+                _ => ("avif 出口不承载该矩阵", "avif exit does not carry this matrix"),
+            };
+        }
+        if (f == "jxl")
+        {
+            return ("JXL 是 RGB 原生容器（RgbNative），无 YUV 承载位",
+                    "JXL is an RGB-native container (RgbNative); no YUV carrier");
+        }
+        if (f is "dng" or "jxr")
+        {
+            return yuv
+                ? ("该出口的矩阵是契约外概念（DNG ColorMatrix1/2=相机校准矩阵 / JXR 内部 YCoCg 不暴露），无 H.273 承载",
+                   "matrix here is outside this contract (DNG ColorMatrix1/2 = camera calibration; JXR internal YCoCg not exposed)")
+                : ("该出口无 XYB 概念", "this exit has no XYB concept");
+        }
+        if (yuv)
+        {
+            return ("RGB 原生/调色板容器无 YUV 矩阵概念",
+                    "RGB-native/palette container has no YUV matrix concept");
+        }
+        return ("未知格式/出口组合，fail-closed", "unknown format/exit combination; fail-closed");
     }
 }

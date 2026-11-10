@@ -272,12 +272,17 @@ public static class ColorIntentFactory
             //   杜绝"取消勾选高级色彩后残留值仍流入管道"的历史缺陷）。
             //   ⚠ 与上面 `userTargetExplicit` 的**值派生**口径**不冲突**：那个判"是否已有目标"（只看值），
             //     这个判"三元组是否可信"（看 UI 启用位）；两者回答的是不同问题，**不要合并**。
-            Manual = ManualIntent.Create(
-                o.UseAdvancedColorParameters,
-                o.ColorSpace,
-                o.ColorPrimaries,
-                o.ColorTrc,
-                o.ColorMatrix),
+            // ── matrix CLI 缺口补位（2026-11-10，AU-W2 附带；R4 登记遗留②）──────────────────
+            //   `ManualIntent.Create(enabled=false)` 把**全部**字段强制 null ⇒ CLI 裸 `--color-matrix`
+            //   （未开高级色彩）的值到不了规划层 ⇒ `ColorStrategyPlanning` 的 no-op 点名
+            //   （`it.Manual?.FieldsFromUi == true && Manual.Matrix 非空`，R4 批次定稿）永远不可达。
+            //   补位 = **值派生**：未开高级色彩但用户**显式**给了 matrix（非 auto）时，构造一个
+            //   **只带 Matrix** 的 ManualIntent——Space/Primaries/Transfer 保持 null ⇒
+            //   `ManualIntent.HasAny`（只看那三个字段）恒 false ⇒ `PlanManual` 的手动通路
+            //   **不会**被误触发，像素行为零变化；唯一效果 = matrix 的 no-op 点名可达。
+            //   ⚠ 不动 `ManualIntent.Create` 本身（防呆契约「FieldsFromUi=false 时全字段强制 null」
+            //     是 UI 残留值防线，语义不动）；也不动 :369-419 守卫族（R1 既有约束）。
+            Manual = BuildManualIntent(o),
             // ── 位深（2026-09-16 与 legacy 口径对齐）──
             // 用户显式指定优先；**未指定时跟随源位深**（>8 才提升，否则按 8），再按容器上限钳制。
             // 旧写法 `o.BitDepth ?? 8` 会让 16-bit 源在 PNG/TIFF 上被**静默降位**到 8-bit
@@ -328,6 +333,13 @@ public static class ColorIntentFactory
             // jxl 不在此列：cjxl 后端由 `-x icc_pathname` 落盘，ffmpeg 出口由
             // `RawColorPipeline.TransformFileAsync` 的 JXL 诚实门拒绝（既有）。
             ExitWritesIcc = ExitWritesIccFor(fmt),
+            // ── 显式输出矩阵模式（C-PLAN-EXT@1 装配链，color-matrix-options 计划）──────────
+            // options.ColorOutMatrix 已在模型 setter 归一（bt601→smpte170m、auto/空白→null，
+            // FfmpegOptions 的 ColorOutMatrix 属性）⇒ 此处直传归一后 token，不重复归一。
+            // ⚠ 走**独立通路字段**（it.OutMatrixMode），不与输入声明（Manual.Matrix = --color-matrix）
+            //   混流（防呆契约不碰：BuildManualIntent 与 :369-419 守卫族逐字未动）。
+            // null = auto ⇒ 规划层 ApplyExplicitOutMatrix 早退、全链路零行为变化（CM-REQ-08）。
+            OutMatrixMode = o.ColorOutMatrix,
         };
         // ── 超广色域保真（2026-09-16 接入引擎）──────────────────────────────────────
         // 语义 = **像素零改动 + 仅靠 ICC 描述**（ProPhoto/ROMM 等超出 BT.2020 的色域：
@@ -343,7 +355,24 @@ public static class ColorIntentFactory
 
         // ── 色调映射：字符串 → 算子；未知/无出处者不装配（交回 legacy） ──
         var tm = (o.ColorToneMap ?? "none").Trim().ToLowerInvariant();
-        bool srcHdr = src.Curve.Kind is TransferCurve.CurveKind.Pq or TransferCurve.CurveKind.Hlg;
+        // ⚠ 2026-11-09（D4 修复）：线性 HDR 也是 HDR 源。增益图解码（Ultra HDR JPEG / ISO-BMFF tmap /
+        //   厂商尾注）产出的 PFM 中间件由**本仓自己**声明为 bt709/smpte432 + linear（QueueProcessor 的
+        //   ColorSourceDecl*），峰值在 o.DecodedUltraHdrPeakNits —— 判据旧值只认 PQ/HLG 曲线，
+        //   ⇒ 拒绝承认自己刚解码出的线性 HDR，所有 --color-tone-map 在这一族输入上 exit 90
+        //   （2026-11-08 实测 5 份日志：HEIC/AVIF/Ultra HDR JPEG 全中）。
+        //   放行判据 = Linear 曲线 **且** 峰值 > SDR 白点（203，BT.2100/libultrahdr kSdrWhiteNits）：
+        //   峰值 ≤ 203 的增益图没有 HDR headroom，仍按 SDR 直通（不误伤 SDR 级 gain map）。
+        //   峰值证据取 o.DecodedUltraHdrPeakNits（本装配文件 :441 起的既有峰值位），描述符自身的
+        //   NitsOfLinearOne 对 linear 恒为 SDR 白点（PFM 契约 1.0=203），不能用它判 HDR。
+        //   ⚠ 对 :369-419 守卫族的影响仅两处、都有实测背书：① :384 的拒绝门随 srcHdr 放行
+        //     （= D4 本体：显式 tone-map 在线性 HDR 上不再 exit 90）；② :402 自动兜底**排除**
+        //     linear（见该处注释：纯 OETF 就是正确编码，自动挂 hable 会改显式 SDR 臂的既有
+        //     交付形态，§3f-5 码域分叉判据实测当场转红）。其余结论（GainMap 跳过门 /
+        //     显式 none 不被兜底覆盖 / 兜底判据仍用 caps.CanHdr）逐字未动。
+        bool srcLinearHdr = src.Curve.Kind is TransferCurve.CurveKind.Linear
+            && o.DecodedUltraHdrPeakNits > TransferCurve.SdrWhiteNits;
+        bool srcHdr = src.Curve.Kind is TransferCurve.CurveKind.Pq or TransferCurve.CurveKind.Hlg
+            || srcLinearHdr;
         bool dstSdr = dst == null || (dst.Curve.Kind != TransferCurve.CurveKind.Pq
                                       && dst.Curve.Kind != TransferCurve.CurveKind.Hlg);
         // ── **HdrOutput 此前从未被装配**（只有字段声明与 ToPolicy 传递）——2026-09-16 修复 ──
@@ -397,7 +426,15 @@ public static class ColorIntentFactory
                  //   ⇒ 显式写了 `--color-tone-map`（含 `none`）时**不再自动兜底**：显式选择优先。
                  //     `none` 的语义就是"不映射" ⇒ 保持 None，由规划层按既有守卫处理
                  //     （HDR 源 + SDR 目标的显式 none 属用户明确意图，不应被改写）。
-                 && !o.ColorToneMapExplicit)
+                 // ⚠ 2026-11-09（D3 修正）：线性 HDR **不进**这条自动兜底 —— linear 已在线性域，
+                 //   「linear→SDR 出口」的正确编码就是**纯 OETF 曲线映射**（>1.0 段按容器钳制），
+                 //   与 PQ/HLG「必须先 EOTF 线性化、不做 tonemap 就是高光裁剪灾难」的情况不同；
+                 //   自动挂 hable 会改变「显式 SDR 目标」臂的既有交付形态
+                 //   （2026-11-09 实测：verify-gainmap-isobmff §3f-5 码域分叉判据当场转红，
+                 //   SDR 臂 Ymax 被压 ⇒ 与 PQ 臂的差跌出阈值）。linear HDR 的默认档分流在
+                 //   规划层 `PlanRecommended` 的 linearHdrCarried/SDR-twin 两支（纯 OETF，无 tonemap）。
+                 && !o.ColorToneMapExplicit
+                 && !srcLinearHdr)
         {
             // ── HDR 源 + SDR 结局 ⇒ 自动使用内部默认曲线 hable（2026-09-16）──
             // 为什么必须自动：GUI 已按设计**不再暴露** tonemap 曲线（"内部固定 hable"，见 MainWindow 各处的
@@ -460,5 +497,35 @@ public static class ColorIntentFactory
         if (d == null || d.NitsOfLinearOne > TransferCurve.SdrWhiteNits) return;
         if (d.Curve.Kind == TransferCurve.CurveKind.Pq) d.NitsOfLinearOne = TransferCurve.PqPeakNits;
         else if (d.Curve.Kind == TransferCurve.CurveKind.Hlg) d.NitsOfLinearOne = Bt2100Ootf.NominalPeakNits;
+    }
+
+    /// <summary>
+    /// 装配 ManualIntent（R4 登记遗留②的补位点，2026-11-10）：
+    /// <list type="bullet">
+    /// <item>常规路：<see cref="ManualIntent.Create"/>（enabled=<c>UseAdvancedColorParameters</c>，
+    ///   防呆契约「未启用时全字段强制 null」不变）；</item>
+    /// <item>补位：**未**启用高级色彩但用户**显式**给了 <c>ColorMatrix</c>（非 auto、非空白）⇒
+    ///   构造**只带 Matrix** 的 ManualIntent（FieldsFromUi=true）——Space/Primaries/Transfer 恒 null
+    ///   ⇒ <see cref="ManualIntent.HasAny"/> 恒 false ⇒ 手动规划通路不被触发，像素零变化；
+    ///   唯一效果 = 规划层「--color-matrix 在本次交付中无承载」的 no-op 点名可达
+    ///   （值在位即点名，与 <see cref="FfmpegOptions.HasExplicitColorParams"/> 的值派生口径一致）。</item>
+    /// </list>
+    /// </summary>
+    private static ManualIntent BuildManualIntent(FfmpegOptions o)
+    {
+        var mi = ManualIntent.Create(
+            o.UseAdvancedColorParameters,
+            o.ColorSpace,
+            o.ColorPrimaries,
+            o.ColorTrc,
+            o.ColorMatrix);
+        if (!o.UseAdvancedColorParameters
+            && !string.IsNullOrWhiteSpace(o.ColorMatrix)
+            && !o.ColorMatrix.Equals("auto", StringComparison.OrdinalIgnoreCase))
+        {
+            mi.FieldsFromUi = true;
+            mi.Matrix = o.ColorMatrix.Trim();
+        }
+        return mi;
     }
 }

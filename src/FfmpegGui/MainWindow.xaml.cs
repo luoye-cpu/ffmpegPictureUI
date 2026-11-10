@@ -56,7 +56,10 @@ namespace FfmpegGui
         private TextBox? QualityBox;
         private TextBlock? QualityValue;
         private ComboBox? ChromaCombo;
+        private ComboBox? OutputMatrixCombo;   // C-GUI@1（2026-11-10）：--color-out-matrix 的 GUI 承接（基本区，不受 useAdv 门控）
         private ComboBox? ColorSpaceCombo;
+        private ComboBox? ColorToneMapCombo;   // R3（2026-11-09）：--color-tone-map 的 GUI 承接
+        private ComboBox? ColorEngineCombo;    // R3（2026-11-09）：--color-engine 的 GUI 承接
         private ComboBox? ColorPrimariesCombo;
         private ComboBox? ColorTrcCombo;
         private ComboBox? ColorMatrixCombo;
@@ -227,6 +230,8 @@ namespace FfmpegGui
         private Border? ToolsCompactPanel;
         private StackPanel? ToolsStatusBar;
         private ComboBox? PngPredCombo;
+        private ComboBox? PngOptimizerCombo;
+        private StackPanel? PngOptimizerPanel;
         private NumericUpDown? PngDpiBox;
         private ComboBox? WebpPresetCombo;
         private NumericUpDown? WebpCompressionBox;
@@ -346,6 +351,10 @@ namespace FfmpegGui
         // 索引: 0=none, 1=sub, 2=up, 3=avg, 4=paeth, 5=mixed
         private static readonly string[] _pngPredValues = { "none", "sub", "up", "avg", "paeth", "mixed" };
 
+        // PNG 出口优化器档位值数组（png-optimizer-integration C-GUI@1；与 PngOptimizerCombo 的 SelectedIndex 对应）
+        // 索引: 0=off, 1=default, 2=max, 3=zopfli15, 4=zopfli30（默认选中 max = 索引 2，C-DEFOPT@1）
+        private static readonly string[] _pngOptimizerValues = { "off", "default", "max", "zopfli15", "zopfli30" };
+
         public MainWindow()
         {
             InitializeComponent();
@@ -382,7 +391,10 @@ namespace FfmpegGui
             QualityBox = this.FindControl<TextBox>("QualityBox");
             QualityValue = this.FindControl<TextBlock>("QualityValue");
             ChromaCombo = this.FindControl<ComboBox>("ChromaCombo");
+            OutputMatrixCombo = this.FindControl<ComboBox>("OutputMatrixCombo");
             ColorSpaceCombo = this.FindControl<ComboBox>("ColorSpaceCombo");
+            ColorToneMapCombo = this.FindControl<ComboBox>("ColorToneMapCombo");
+            ColorEngineCombo = this.FindControl<ComboBox>("ColorEngineCombo");
             ColorPrimariesCombo = this.FindControl<ComboBox>("ColorPrimariesCombo");
             ColorTrcCombo = this.FindControl<ComboBox>("ColorTrcCombo");
             ColorMatrixCombo = this.FindControl<ComboBox>("ColorMatrixCombo");
@@ -472,6 +484,8 @@ namespace FfmpegGui
             TiffCodecPanel = this.FindControl<StackPanel>("TiffCodecPanel");
             JxrCodecPanel = this.FindControl<StackPanel>("JxrCodecPanel");
             PngPredCombo = this.FindControl<ComboBox>("PngPredCombo");
+            PngOptimizerCombo = this.FindControl<ComboBox>("PngOptimizerCombo");
+            PngOptimizerPanel = this.FindControl<StackPanel>("PngOptimizerPanel");
             PngDpiBox = this.FindControl<NumericUpDown>("PngDpiBox");
             WebpPresetCombo = this.FindControl<ComboBox>("WebpPresetCombo");
             WebpCompressionBox = this.FindControl<NumericUpDown>("WebpCompressionBox");
@@ -596,12 +610,17 @@ namespace FfmpegGui
             if (ColorPrimariesCombo != null) ColorPrimariesCombo.SelectedIndex = 0;
             if (ColorTrcCombo != null) ColorTrcCombo.SelectedIndex = 0;
             if (ColorMatrixCombo != null) ColorMatrixCombo.SelectedIndex = 0;
+            if (OutputMatrixCombo != null) OutputMatrixCombo.SelectedIndex = 0; // auto（C-GUI@1 首项默认档；条目随后由 FillComboByLoc 填充）
             if (ColorRangeCombo != null) ColorRangeCombo.SelectedIndex = 0; // auto
             // ⚠⚠ 2026-10-04 修（P0）：`RawColorTargetCombo` 此前**漏了这一个初始化**（其 8 个兄弟下拉都在上面 :536-543）。
             //   不加 ⇒ `SelectedItem == null` ⇒ `RawColorTarget` 恒 null ⇒ GUI 选 `auto`/`rec709` **无效**
             //   （`QueueProcessor.cs:666` 的 `?? "rec2020"` 兜底）。三项顺序见 `MainWindow.xaml`：rec2020 | auto | rec709，
             //   首项 `rec2020` 正是产品默认档（与 CLI 默认一致）⇒ 选中 0 不改变既有行为，只让**控件变得可用**。
             if (RawColorTargetCombo != null) RawColorTargetCombo.SelectedIndex = 0; // rec2020（默认档）
+            // R3（2026-11-09）：tone-map / engine 首项 auto = 「不指定」——选中 0 与模型默认
+            // （ColorToneMap="none" 且不显式 / ColorEngine="auto"）语义相同，不改变既有行为。
+            if (ColorToneMapCombo != null) ColorToneMapCombo.SelectedIndex = 0; // auto
+            if (ColorEngineCombo != null) ColorEngineCombo.SelectedIndex = 0;  // auto
 
             // ── Photoshop 验证设置加载 (2026-08-15) ──
             RefreshPsPanelState();
@@ -612,6 +631,9 @@ namespace FfmpegGui
             if (ColorSpaceCombo != null) ColorSpaceCombo.SelectionChanged += ColorSpaceCombo_SelectionChanged;
             // 其他参数变更时刷新命令预览
             if (ChromaCombo != null) ChromaCombo.SelectionChanged += (_, _) => RegenerateCommand();
+            // C-GUI@1：基本区控件，事件形态跟随 ChromaCombo/BitDepthCombo（不带 UpdateAdvancedColorValidation，
+            // 不随高级面板锁定联动；ICC 烘焙锁定分支不受影响）。
+            if (OutputMatrixCombo != null) OutputMatrixCombo.SelectionChanged += (_, _) => RegenerateCommand();
             if (BitDepthCombo != null) BitDepthCombo.SelectionChanged += (_, _) => RegenerateCommand();
             if (EncoderCombo != null) EncoderCombo.SelectionChanged += (_, _) =>
             {
@@ -620,6 +642,8 @@ namespace FfmpegGui
                 UpdateAvifEncoderPanel();
                 UpdateChromaBitDepthOptions();
                 UpdateGpuEncoderWarning();
+                // B1（CMX-2）：后端可能换出口（mjpeg↔cjpegli / libjxl↔cjxl）⇒ 重过滤矩阵条目。
+                RefillOutMatrixComboForFormat();
                 RegenerateCommand();
             };
             if (ThreadsBox != null) ThreadsBox.ValueChanged += (_, _) => RegenerateCommand();
@@ -651,8 +675,13 @@ namespace FfmpegGui
             //   实测（审查 2026-10-04）：CLI `--raw-color-target rec709` 正常（产物 BT.709 ICC），
             //   缺陷**仅在 GUI** ⇒ 属"交付了却不能用的控件"。
             if (RawColorTargetCombo != null) RawColorTargetCombo.SelectionChanged += (_, _) => RegenerateCommand();
+            // R3（2026-11-09）：tone-map / engine 变更 ⇒ 刷新采集与命令预览（与 RawColorTargetCombo 同款最小接线；
+            // 预览串本身不含这两个 token —— 它们由引擎路径/裁决链消费，见 CollectOptionsFromUiAsync 的采集注释）。
+            if (ColorToneMapCombo != null) ColorToneMapCombo.SelectionChanged += (_, _) => RegenerateCommand();
+            if (ColorEngineCombo != null) ColorEngineCombo.SelectionChanged += (_, _) => RegenerateCommand();
             // 高级编码器选项
             if (PngPredCombo != null) PngPredCombo.SelectionChanged += (_, _) => RegenerateCommand();
+            if (PngOptimizerCombo != null) PngOptimizerCombo.SelectionChanged += (_, _) => RegenerateCommand();
             if (PngDpiBox != null) PngDpiBox.ValueChanged += (_, _) => RegenerateCommand();
             if (WebpPresetCombo != null) WebpPresetCombo.SelectionChanged += (_, _) => RegenerateCommand();
             if (WebpCompressionBox != null) WebpCompressionBox.ValueChanged += (_, _) => RegenerateCommand();
@@ -997,9 +1026,23 @@ namespace FfmpegGui
                 "dng.hl.clip", "dng.hl.recover", "dng.hl.blend");
             FillComboByLoc(this.FindControl<ComboBox>("ColorRangeCombo"), 0,
                 "color.range.auto", "color.range.tv", "color.range.pc");
+            // C-GUI@1：输出矩阵模式（11 档；顺序 = C-TOKEN@1 表序，auto 首项 = 默认档，不可乱序——
+            // 本地化条目按 SelectedIndex 取值，乱序会静默改变语义）。
+            FillComboByLoc(this.FindControl<ComboBox>("OutputMatrixCombo"), 0,
+                "outmatrix.auto", "outmatrix.rgb", "outmatrix.bt709", "outmatrix.bt601",
+                "outmatrix.bt470bg", "outmatrix.smpte170m", "outmatrix.smpte240m", "outmatrix.fcc",
+                "outmatrix.bt2020nc", "outmatrix.ycgco", "outmatrix.xyb");
+            // B1（CMX-2）：初始填充（全量 11 档）后立即按初始格式过滤。必须在本 FillComboByLoc
+            // **之后**调——在其前调用会被这里的全量填充覆盖（初始化早段 :606 那次事件触发的
+            // Refill 也是同样的中间态，最终以本调用收口）。见 RefillOutMatrixComboForFormat。
+            RefillOutMatrixComboForFormat();
             FillComboByLoc(this.FindControl<ComboBox>("PngPredCombo"), 4,
                 "png.pred.none", "png.pred.sub", "png.pred.up",
                 "png.pred.avg", "png.pred.paeth", "png.pred.mixed");
+            // C-GUI@1：PNG 优化器五档（顺序 = _pngOptimizerValues 逐位对应，不可乱序）；
+            // 默认选中 max = 索引 2（png-default-oxipng C-DEFOPT@1：oxipng 升默认编码器）。
+            FillComboByLoc(this.FindControl<ComboBox>("PngOptimizerCombo"), 2,
+                "png.optimizer.off", "png.optimizer.default", "png.optimizer.max", "png.optimizer.zopfli15", "png.optimizer.zopfli30");
             FillComboByLoc(this.FindControl<ComboBox>("AvifTuneCombo"), 4,
                 "avif.tune.default", "avif.tune.psnr", "avif.tune.ssim",
                 "avif.tune.vmaf", "avif.tune.iq");
@@ -2041,6 +2084,9 @@ namespace FfmpegGui
         private void FormatCombo_SelectionChanged(object? sender, SelectionChangedEventArgs e)
         {
             UpdateOptionAvailability();
+            // B1（CMX-2）：矩阵条目按新格式过滤（与 UpdateOptionAvailability 同理，格式变了
+            // 都要按新格式重算；编码器列表的异步刷新收尾会再校准一次，见 Refill 方法注释）。
+            RefillOutMatrixComboForFormat();
             // ⚠ 2026-09-20：**格式变化也要刷新「DNG 专属选项」的可见性** ——
             //   该面板要求「RAW 模式 **且** 输出格式 = dng」；模式没变但格式变了同样要重算
             //   （本 handler 原先只调 UpdateOptionAvailability()，**不**触发 UpdatePanels ⇒ 会漏刷）。
@@ -2682,6 +2728,7 @@ namespace FfmpegGui
             // 面板显隐刚定稿，此时才刷 JPEG LI 那条冲突提示（判据里带 JpegliCodecPanel.IsVisible，
             // 放在上面那批 IsVisible 赋值之前会读到上一轮的旧值）。
             UpdateJpegliProgressiveConflictHint();
+
         }
 
         /// <summary>
@@ -3070,7 +3117,22 @@ namespace FfmpegGui
                 ColorTrc = useAdv ? AutoToNull(ColorTrcCombo?.SelectedItem as string) : null,
                 ColorMatrix = useAdv ? AutoToNull(ColorMatrixCombo?.SelectedItem as string) : null,
                 ColorRange = useAdv ? GetColorRangeValue() : null,
+                // ── C-GUI@1：输出矩阵模式（基本区控件，不受 useAdv 门控——与 Chroma 同采集模式）──
+                // auto/未知 ⇒ null（默认零行为变化，CM-REQ-08）；bt601 别名归一 smpte170m（C-TOKEN@1）。
+                ColorOutMatrix = MapOutMatrixValue(OutputMatrixCombo?.SelectedItem as string),
                 TonemapCurve = null, // tonemap 曲线内部固定 hable
+                // ── R3（2026-11-09）：tone-map / engine 两轴的采集（与 ColorTrc 等同挂 useAdv）──
+                // tone-map：首项 "auto" = 不指定 ⇒ 提交 "none" 且 **不**置 Explicit（引擎按 HDR→SDR
+                //   契约自动采用 Hable，ToneMapAuto）；"none" = **显式**不映射 ⇒ 置 ColorToneMapExplicit
+                //   （缺了它，「显式 none」会被 ColorIntentFactory 的兜底静默升级成 Hable——该字段存在的
+                //   唯一理由，见 FfmpegOptions.ColorToneMapExplicit 的注释）；其余算子直填。
+                // engine：首项 "auto" ⇒ 提交模型默认 "auto"（默认路由，与不勾时逐字节相同）；
+                //   "engine"/"legacy" 直填（路由语义由 ColorEngineRouter.Requested/ExplicitlyRequested 消费）。
+                ColorToneMap = (useAdv ? (ColorToneMapCombo?.SelectedItem as string) : null) is { } toneSel && toneSel != "auto"
+                    ? toneSel : "none",
+                ColorToneMapExplicit = useAdv && ColorToneMapCombo?.SelectedItem as string == "none",
+                ColorEngine = (useAdv ? (ColorEngineCombo?.SelectedItem as string) : null) is { } engSel && engSel != "auto"
+                    ? engSel : "auto",
                 Encoder = encoderName, EncoderBackend = encoderBackend,
                 Threads = threads,
                 AutoThreads = adaptiveAuto,
@@ -3079,6 +3141,11 @@ namespace FfmpegGui
                 PngPred = useAdvCodec && PngPredCombo?.SelectedIndex >= 0
                     ? _pngPredValues[Math.Min(PngPredCombo.SelectedIndex, _pngPredValues.Length - 1)]
                     : null,
+                // C-DEFOPT@1：撤销 useAdvCodec=false→null 门控——oxipng 升默认编码器（R2：GUI 与 headless
+                // 同源默认 max），档位控件常显后始终透传所选档位；控件未注册的极端路径落 max 同语义。
+                PngOptimizer = PngOptimizerCombo?.SelectedIndex >= 0
+                    ? _pngOptimizerValues[Math.Min(PngOptimizerCombo.SelectedIndex, _pngOptimizerValues.Length - 1)]
+                    : "max",
                 PngDpi = useAdvCodec && PngDpiBox?.Value > 0 ? (int?)PngDpiBox.Value : null,
                 WebpPreset = useAdvCodec ? (WebpPresetCombo?.SelectedItem as string) : "picture",
                 WebpCompressionLevel = useAdvCodec ? (int?)WebpCompressionBox?.Value : 4,
@@ -3774,6 +3841,7 @@ namespace FfmpegGui
                 JxlEffort = original.JxlEffort,
                 JxlModular = original.JxlModular,
                 PngPred = original.PngPred,
+                PngOptimizer = original.PngOptimizer,
                 WebpPreset = original.WebpPreset,
                 WebpCompressionLevel = original.WebpCompressionLevel,
                 JpegHuffman = original.JpegHuffman,
@@ -4078,9 +4146,11 @@ namespace FfmpegGui
         {
             if (AdvancedCodecPanel != null) AdvancedCodecPanel.IsVisible = UseAdvancedCodec?.IsChecked == true;
             UpdateJpegliProgressiveConflictHint();
+
         }
 
         /// <summary>
+
         /// 显示/收起 JPEG LI 面板里「渐进档 vs 固定 Huffman 码表」的冲突提示。
         /// <para>
         /// 冲突是真的、且不可两全：cjpegli 的 <c>--fixed_code</c> 只接受 <c>-p 0</c>（实测
@@ -6246,7 +6316,14 @@ namespace FfmpegGui
                 ColorTrc = ColorTrcCombo?.SelectedItem as string,
                 ColorMatrix = ColorMatrixCombo?.SelectedItem as string,
                 ColorRange = MapColorRangeValue(ColorRangeCombo?.SelectedItem as string),
+                // C-GUI@1：输出矩阵模式进 preset（MapOutMatrixValue 归一为 token；auto ⇒ null ⇒
+                // 旧预设 JSON 无此键时 SetOutMatrixCombo 早退，控件保持现状）。
+                ColorOutMatrix = MapOutMatrixValue(OutputMatrixCombo?.SelectedItem as string),
                 TonemapCurve = null, // tonemap 曲线内部固定 hable
+                // R3（2026-11-09）：tone-map / engine 进 preset（旧预设 JSON 无这两个键 ⇒ null ⇒
+                // ApplyPresetData 的 SetComboByValue 对 null 直接 return，控件保持现状）。
+                ColorToneMap = ColorToneMapCombo?.SelectedItem as string,
+                ColorEngine = ColorEngineCombo?.SelectedItem as string,
                 BitDepth = BitDepthCombo?.SelectedItem as string,
                 AutoThreads = AutoThreadsCheck?.IsChecked ?? true,
                 SingleThread = SingleThreadCheck?.IsChecked ?? false,
@@ -6256,6 +6333,9 @@ namespace FfmpegGui
                 UseAdvancedCodec = UseAdvancedCodec?.IsChecked ?? false,
                 PngPred = PngPredCombo?.SelectedIndex >= 0
                     ? _pngPredValues[Math.Min(PngPredCombo.SelectedIndex, _pngPredValues.Length - 1)]
+                    : null,
+                PngOptimizer = PngOptimizerCombo?.SelectedIndex >= 0
+                    ? _pngOptimizerValues[Math.Min(PngOptimizerCombo.SelectedIndex, _pngOptimizerValues.Length - 1)]
                     : null,
                 PngDpi = PngDpiBox?.Value > 0 ? (int?)PngDpiBox.Value : null,
                 WebpPreset = WebpPresetCombo?.SelectedItem as string,
@@ -6396,6 +6476,13 @@ namespace FfmpegGui
             SetComboByValue(ColorPrimariesCombo, p.ColorPrimaries);
             SetComboByValue(ColorTrcCombo, p.ColorTrc);
             SetComboByValue(ColorMatrixCombo, p.ColorMatrix);
+            // C-GUI@1：输出矩阵模式回放（token → 索引；SetOutMatrixCombo 对 null 早退 ⇒ 旧预设不动控件）。
+            // ⚠ 不用 SetComboByValue：条目经 FillComboByLoc 本地化填充（zh「SMPTE 170M」…），
+            //   规范 token 按 Items 字符串相等比对匹配不到——同 ColorRangeCombo 的 SetColorRangeCombo 解法。
+            SetOutMatrixCombo(p.ColorOutMatrix);
+            // R3（2026-11-09）：tone-map / engine 恢复（SetComboByValue 对 null 早退 ⇒ 旧预设不动控件）
+            SetComboByValue(ColorToneMapCombo, p.ColorToneMap);
+            SetComboByValue(ColorEngineCombo, p.ColorEngine);
             SetColorRangeCombo(p.ColorRange);
             if (AutoThreadsCheck != null) AutoThreadsCheck.IsChecked = p.AutoThreads;
             if (SingleThreadCheck != null) SingleThreadCheck.IsChecked = p.SingleThread;
@@ -6417,6 +6504,7 @@ namespace FfmpegGui
             if (LosslessCheck != null) LosslessCheck.IsChecked = p.Lossless;
             if (UseAdvancedCodec != null) UseAdvancedCodec.IsChecked = p.UseAdvancedCodec;
             SetComboByValueOrIndex(PngPredCombo, p.PngPred, _pngPredValues);
+            SetComboByValueOrIndex(PngOptimizerCombo, p.PngOptimizer, _pngOptimizerValues);
             if (PngDpiBox != null && p.PngDpi.HasValue) PngDpiBox.Value = p.PngDpi.Value;
             SetComboByValue(WebpPresetCombo, p.WebpPreset);
             if (AvifCpuUsedBox != null && p.AvifCpuUsed.HasValue) AvifCpuUsedBox.Value = p.AvifCpuUsed.Value;
@@ -6711,6 +6799,160 @@ namespace FfmpegGui
                 }
             }
             if (ColorRangeCombo.Items.Count > 0) ColorRangeCombo.SelectedIndex = 0;
+        }
+
+        // ── 输出矩阵模式 显示文字 ↔ 规范 token 映射（C-GUI@1 / C-TOKEN@1）──
+        // ComboBox 条目由 FillComboByLoc 本地化填充（zh「自动」「BT.601」…/ en "Auto" "BT.601"…），
+        // 内部传递规范 token。归一规则与 C-TOKEN@1 对齐：大小写不敏感、空白 ⇒ null、
+        // bt601 为 smpte170m 的显示别名（落模型前归一）。语义与 T2 的
+        // ColorSpaceRegistry.NormalizeOutMatrixToken 相同（此处自含映射，不新增跨层依赖；
+        // 未知值 fail-safe 归 null = auto ⇒ 零行为变化，CM-REQ-08）。
+        private static string? MapOutMatrixValue(string? label)
+        {
+            if (string.IsNullOrWhiteSpace(label)) return null;   // 未选中 ⇒ auto（不指定）
+            var t = label.Trim();
+            if (t.Equals("auto", StringComparison.OrdinalIgnoreCase)) return null;
+            // zh 首项显示名（「自动」）不在这里显式判定——归一后不匹配任何 token，由 `_ => null` 兜底
+            // 归 auto（与 MapColorRangeValue 对 zh 显示名的既有处理同构；避免在代码里写中文字面量，
+            // _probe-cjk-hardcode-scan 的 CsUi 基线余量为 0）。
+            // 归一：去空格/点/斜杠 + 小写（覆盖 zh/en 两种显示形态与 token 本身：
+            // "BT.470 B/G"→"bt470bg"、"SMPTE 170M"→"smpte170m"、"BT.2020 NC"→"bt2020nc"…）
+            var norm = t.Replace(" ", "").Replace(".", "").Replace("/", "").ToLowerInvariant();
+            return norm switch
+            {
+                "rgb" => "rgb",
+                "bt709" => "bt709",
+                "bt601" => "smpte170m",      // 显示别名归一（C-TOKEN@1）
+                "bt470bg" => "bt470bg",
+                "smpte170m" => "smpte170m",
+                "smpte240m" => "smpte240m",
+                "fcc" => "fcc",
+                "bt2020nc" => "bt2020nc",
+                "ycocg" => "ycgco",          // 显示名 "YCoCg"
+                "ycgco" => "ycgco",
+                "xyb" => "xyb",
+                _ => null,                    // 未知 ⇒ auto（fail-safe：零行为变化）
+            };
+        }
+
+        private void SetOutMatrixCombo(string? value)
+        {
+            if (OutputMatrixCombo == null) return;
+            var v = MapOutMatrixValue(value);
+            if (v == null) return;   // null（auto/旧预设无此键）⇒ 早退不动控件（= SetComboByValue 的 null 语义）
+            for (int i = 0; i < OutputMatrixCombo.Items!.Count; i++)
+            {
+                if (MapOutMatrixValue(OutputMatrixCombo.Items[i] as string) == v)
+                {
+                    OutputMatrixCombo.SelectedIndex = i;
+                    return;
+                }
+            }
+            if (OutputMatrixCombo.Items.Count > 0) OutputMatrixCombo.SelectedIndex = 0;  // 未知 token ⇒ 归位 auto
+        }
+
+        // ── B1（CMX-2，color-matrix-options 计划）：GUI 条目按输出格式 + 编码器后端能力过滤 ──
+        // 用户裁决「色彩矩阵应该根据各个编码器的能力，禁止乱塞入」⇒ 下拉条目按当前输出格式
+        // 动态过滤。判定唯一真值 = 规划层 Services.ColorMapping.ColorMappingEngine
+        // .ResolveOutMatrixCapability（C-CAPS@1 单点）：本侧对 11 档逐个试判定，**非 Rejected
+        // 才进下拉**（Carried/Redundant 都显示——Redundant 是「合法但与 auto 恒同值」的显式
+        // 确认档，不是矛盾档；NotApplicable = auto 恒显示）。GUI 不建第二份承载表。
+        // 条目填充沿用 FillComboByLoc 键序模式（outmatrix.* Loc 键原样，过滤是子集选择、
+        // 不加新 Loc 键），语言切换刷新（RefreshLocCombos）因此自动按过滤后集合工作。
+        // C-TOKEN@1 表序（= 上方初始 FillComboByLoc 填充序，不可乱序）；bt601 是 smpte170m 的
+        // **显示别名档**，判定 token 用归一值（与 FfmpegOptions.ColorOutMatrix setter /
+        // MapOutMatrixValue 落模型值同规则）⇒ 两档恒同格同保留。
+        private static readonly (string Key, string? Tok)[] _outMatrixGuiTokens =
+        {
+            ("outmatrix.auto", null),
+            ("outmatrix.rgb", "rgb"),
+            ("outmatrix.bt709", "bt709"),
+            ("outmatrix.bt601", "smpte170m"),
+            ("outmatrix.bt470bg", "bt470bg"),
+            ("outmatrix.smpte170m", "smpte170m"),
+            ("outmatrix.smpte240m", "smpte240m"),
+            ("outmatrix.fcc", "fcc"),
+            ("outmatrix.bt2020nc", "bt2020nc"),
+            ("outmatrix.ycgco", "ycgco"),
+            ("outmatrix.xyb", "xyb"),
+        };
+
+        /// <summary>
+        /// 按当前输出格式 + 编码器后端重建输出矩阵下拉条目（B1，CMX-2）。
+        /// <para>
+        /// backend 推导与规划层**同源**（不另立判据）：规划层 ApplyExplicitOutMatrix 按
+        /// (jxr) / (jxl 且 cjxl 外部出口) / 其余=Ffmpeg 推导；jpg×cjpegli 不经规划层
+        /// （QueueProcessor 的 cjpegli 分派带引擎豁免），其判定由 cjpegli 出口层以
+        /// backend=Cjpegli 直调同一真值函数（CjpegliService）⇒ GUI 过滤对这两维各取用户
+        /// 下拉当前所选：jxr → Jxr；jxl 且用户选 cjxl → Cjxl；jpg 且用户选 cjpegli →
+        /// Cjpegli；其余 → Ffmpeg。「用户选」= EncoderCombo 显示串经 EncoderInfo.ParseBackend
+        /// 解析（与 GetCurrentEncoderBackend 同源；编码器下拉只含可用项 ⇒ 不可用的
+        /// cjpegli/cjxl 不会让 backend 虚高）。⚠ jxl 两后端判定格一致（cjxl VarDCT 隐式
+        /// 承载 = libjxl -xyb default 1，均为 Carried）；采集侧「手动色彩空间自动切 cjxl」
+        /// 不改变判定格 ⇒ 不复刻该判据。⚠ 格式切换瞬间 EncoderCombo 仍是旧格式编码器，
+        /// 但外部后端只匹配同族格式列表（Cjxl 只出现在 jxl、Cjpegli 只在 jpg、Jxr 只在
+        /// jxr）⇒ 推导不会串档；刷新收尾（RefreshEncoderListAsync 选定编码器）会再触发
+        /// 一次校准（下方幂等检查吸收）。
+        /// </para>
+        /// </summary>
+        private void RefillOutMatrixComboForFormat()
+        {
+            if (OutputMatrixCombo == null) return;
+            var fmt = NormalizeFormat(FormatCombo?.SelectedItem as string);
+            var userBackend = GetCurrentEncoderBackend();
+            var backend = (fmt, userBackend) switch
+            {
+                ("jxr", _) => EncoderBackend.Jxr,
+                ("jxl", EncoderBackend.Cjxl) => EncoderBackend.Cjxl,
+                ("jpg" or "jpeg", EncoderBackend.Cjpegli) => EncoderBackend.Cjpegli,
+                _ => EncoderBackend.Ffmpeg,
+            };
+
+            // 逐档试判定（唯一真值函数，规划层单点）。auto（null）= NotApplicable ⇒ 恒显示。
+            var kept = new List<string>();       // Loc keys（C-TOKEN@1 表序的子序）
+            var keptToks = new List<string?>();  // 归一 token（与 kept 一一对应；auto = null）
+            foreach (var (key, tok) in _outMatrixGuiTokens)
+            {
+                if (Services.ColorMapping.ColorMappingEngine.ResolveOutMatrixCapability(
+                        fmt, tok, backend) != Services.ColorMapping.OutMatrixCapability.Rejected)
+                {
+                    kept.Add(key);
+                    keptToks.Add(tok);
+                }
+            }
+            // auto 恒 NotApplicable ⇒ kept 至少 1 项；防御兜底（异常情形不重建，保持现状）。
+            if (kept.Count == 0) return;
+
+            // 幂等：同格式 + 同后端的重复触发（格式切换先跑一次、编码器刷新收尾再跑一次、
+            // 或编码器在两个非外部后端间切换）不重建，避免 ItemsSource 抖动与冗余事件链。
+            if (_locCombos.TryGetValue(OutputMatrixCombo, out var curKeys)
+                && curKeys.SequenceEqual(kept))
+                return;
+
+            // 选中值失效重置：重建后当前 token 不在过滤后集合 ⇒ 归 0（auto）；在 ⇒ 保持。
+            // 回放优先按显示名精确匹配（保留用户可见档），失败再按归一 token 匹配
+            // （语言切换后显示串变化的兜底；bt601/smpte170m 两档同 token ⇒ 命中其一即可）。
+            var prevLabel = OutputMatrixCombo.SelectedItem as string;
+            var prevTok = MapOutMatrixValue(prevLabel);
+            var loc = Services.LocalizationService.Instance;
+            int newIdx = -1;
+            if (prevLabel != null)
+            {
+                for (int i = 0; i < kept.Count; i++)
+                    if (loc[kept[i]] == prevLabel) { newIdx = i; break; }
+            }
+            if (newIdx < 0 && prevTok != null)
+            {
+                for (int i = 0; i < keptToks.Count; i++)
+                    if (keptToks[i] == prevTok) { newIdx = i; break; }
+            }
+            if (newIdx < 0) newIdx = 0;   // 失效（token 不在过滤后集合 / 未选中）⇒ 归 auto
+
+            // FillComboByLoc 的 SelectedIndex 保留逻辑面向「等长同序」集合；过滤后集合收缩 ⇒
+            // 先归 -1（让它走 defaultIndex=0），再按新索引回放，避免旧索引越界或错位。
+            OutputMatrixCombo.SelectedIndex = -1;
+            FillComboByLoc(OutputMatrixCombo, 0, kept.ToArray());
+            if (newIdx != 0) OutputMatrixCombo.SelectedIndex = newIdx;
         }
 
         /// <summary>通过值数组匹配设置 ComboBox 索引（用于显示文本≠原始值的情况，如 PNG 预测模式）</summary>

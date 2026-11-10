@@ -40,8 +40,11 @@ public sealed class VendorHdrTrailerResult
 ///
 /// <para>
 /// ⚠ **参数语义是推断的**：厂商未公开 144 B 块的字段定义。本文件只按「两条独立读数互证」
-/// 采用其中三个字段（见 <see cref="BuildMetadata"/>），其余字段**原样进日志、不参与计算**。
-/// 字节偏移由门禁 <c>verify-gainmap-isobmff.ps1</c> 的 §3d（跑 <c>ServiceProbe vendor-hdr</c>，V2 逐字段钉死）锁定，改动必须同步该闸。
+/// 采用其中三个字段（见 <see cref="BuildMetadata"/>），其余字段**原样进日志、不参与计算**；
+/// 其中双真机样本逐字节一致的位置另作**布局指纹校验**（<see cref="LayoutStable"/>，2026-11-09 批次 C）——
+/// 校验的是「与已见形态不符 ⇒ 拒认」，不是「这些值有某含义」，语义依旧一个都不发明。
+/// 字节偏移由门禁 <c>verify-gainmap-isobmff.ps1</c> 的 §3d（跑 <c>ServiceProbe vendor-hdr</c>，
+/// V2 逐字段钉死、V19 钉布局负控）锁定，改动必须同步该闸。
 /// </para>
 ///
 /// <para>
@@ -69,6 +72,22 @@ public static class VendorHdrTrailer
     const int P_W         = 80;   // i32 == 2944（实测等于 mask 宽）
     const int P_H         = 84;   // i32 == 2208
     const int P_DEPTH     = 88;   // i32 == 8
+
+    // ── 参数块布局指纹（2026-11-09 批次 C / P2.1）────────────────────────────────────
+    // 双真机样本互证（IMG20261013085356.heic 4,249,457 B / IMG20261101124423.heic 2,837,433 B，
+    // raw144 dump：tests/output/_tmp/vendor-c/raw144_two_samples.log）：下列 17 个位置两件**逐字节一致**
+    // ⇒ 才允许进校验。其余位置两件读数不一致 ⇒ **不许校验**（0: 5.0674 vs 5.0686，疑似随曝光变；
+    //   16: 1.0 vs 4.1322；52/56/60/64: 小 float 各异；68: 1e7 vs 2178533，疑似随像素数/文件变；
+    //   116/120/124/128/132: 各异）——校验的是「形态一致」，不是「字段语义」，语义一个都没有（见类注释）。
+    // 已锁字段（8/32/36/44/80/84/88）不入表：8 是定位锚，32/36/44 参与计算且随样本变，
+    // 80/84/88 有独立的 plausibility 检查。第三件样本若在下列任一位置漂移 ⇒ 本表必须复议。
+    static readonly (int Off, float Expect)[] LayoutStable =
+    {
+        (4, 0f), (12, 0f), (24, 0f), (40, 0f),              // 零位（字节全 00）
+        (20, -1f), (28, 1f), (48, 25f), (72, 10f), (76, 6f),
+        (92, 0f), (96, 0f), (100, 0f), (104, 0f), (108, 0f), (112, 0f),
+        (136, 0f), (140, 0f),
+    };
 
     const int MaxJpegSpanCandidates = 4096;   // 有界：扫描 SOI 的次数上限
     const int ManifestBackScan = 2048;
@@ -220,7 +239,17 @@ public static class VendorHdrTrailer
                     r.FailReason = $"[vendor-hdr] SOI candidates exceeded bound ({MaxJpegSpanCandidates})";
                     return r;
                 }
-                // 上界 = 声明长度 + 64 B 容差（再往后不可能匹配，无须走查）
+                // 上界 = 声明长度 + 64 B 容差（再往后不可能匹配，无须走查）。
+                // ⚠ 容差决策（2026-11-09 批次 C / P2.2，双真机样本互证后**保持 64**）：
+                //   两件真机样本的「声明 − 实际 JPEG span」**都是 16 B**（10-14 件 1,408,096−1,408,080；
+                //   11-01 件 820,181−820,165）—— 参数块恰在 mask EOI+16 处、两件同构 ⇒ 厂商把
+                //   EOI 后的 16 B 零垫计入了声明长度。任务口径「差 16B 与 0B」的 0B 是合成件
+                //   （声明=实际，V1 形态）混入的误记，以本批 python 清单抓取实测为准。
+                //   不收紧到 ≤32 的依据：①双样本恒 16 只证明「已知机型垫 16」，样本量 2 ⇒ 16 不是
+                //   已证全域上界；②收紧在现有语料上零增益（没有差落在 (16,64] 的负控件，
+                //   V6 的 4,000,000 已远超 64）；③误拒代价 = 整条 vendor-hdr 识别失效（正是本探测器
+                //   要治的「HDR 静默消失」），误放行已被三重锚兜底（JPEG 段闭合 + 唯一匹配 + 144.0 自尺寸锚）。
+                //   要收紧须先有第三件样本或厂商规范钉死垫量上界。
                 long sp = JpegSpan(data, i, i + (int)System.Math.Min((long)maskLen + 64, data.Length - i));
                 if (sp <= 0) continue;
                 if (Math.Abs(sp - maskLen) > 64) continue;
@@ -247,6 +276,21 @@ public static class VendorHdrTrailer
             var fl = new float[ParamBlockBytes / 4];
             for (int i = 0; i < fl.Length; i++) fl[i] = F32(r.ParamBlock, i * 4);
             r.RawFloats = fl;
+
+            // ── 布局指纹校验（2026-11-09 批次 C / P2.1）：取样依据见 LayoutStable 注释 ──
+            //   失败 ⇒ Determinate=false + 点名首个不匹配位置。块锚（清单名 + 144.0 自尺寸）都在
+            //   而形态不符 = 「疑似但在已知形态之外」，比「没认出来」更须诚实点名 ——
+            //   Result 契约（FailReason 非空 ⇒ 不许当作「没有增益图」）保证调用方会播报，不静默丢 HDR 层。
+            foreach (var (off, expect) in LayoutStable)
+            {
+                float got = F32(r.ParamBlock, off);
+                if (System.Math.Abs(got - expect) > 0.001f)
+                {
+                    r.Determinate = false;
+                    r.FailReason = $"[vendor-hdr] param block layout mismatch at offset {off}: expected {expect}, got {got}";
+                    return r;
+                }
+            }
 
             r.MaskWidth = I32(r.ParamBlock, P_W);
             r.MaskHeight = I32(r.ParamBlock, P_H);

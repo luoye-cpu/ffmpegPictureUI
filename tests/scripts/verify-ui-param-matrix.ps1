@@ -11,6 +11,11 @@
 #   verify-ui-param-matrix.ps1: 只认 P1-B 面(J 组), 额外**逐锚点**要求关键控件在册
 #   verify-ui-strategy-map.ps1: 只认 P1-D 面(K 组), 额外要求 4 别名 + 4->3 折叠锚点
 #
+# R3 来历（2026-11-09）：新增 J17 ColorConflictLabel 显示逻辑 8 条（J17a~J17h）。
+#   改前 J=98（2026-10-31 迁移读数）；J17 断言写进 UiTestHost/Program.cs 的
+#   GroupJ_UiSweep（改断言改单体），由 _gen-ui-split.ps1 重新切片进 ui-sweep，
+#   本脚本同批抬 $jExpected 98 -> 106 并在 $anchors 登记 J17 逐条锚点。
+#
 # 本门禁锁住的四件事:
 #   1. 前置环境: 显式设 `FFMPEGGUI_PLAN_DIR`(按仓库根推导, 不写死绝对路径)。
 #      裸跑会挂死 >13 min 不收敛(宿主侧已 fail-fast, 这里再从外部兜一层)。
@@ -228,9 +233,35 @@ CK ($r.ExitCode -eq 0) "exit code == 0 (actual $($r.ExitCode))"
 
 # 6. 锚点在册: 挡住「GroupJ 被删掉/改名/整段注释掉」的静默退化。
 #    2026-10-31 执行面迁移时实测 = **98** 条（在 ui-sweep mode 下逐条 [PASS] J 计数）。
-#    旧值是 88（2026-09-19 单体读数，已陈旧）。这里由「>= 88」收紧为 **精确等值 98**：
+#    旧值是 88（2026-09-19 单体读数，已陈旧）。这里由「>= 88」收紧为 **精确等值**：
 #    下界式只增不减对「等于当前实测」的断言没有任何牙 —— 少跑 10 条也仍是绿。
-$jExpected = 98
+#    2026-11-09（R3）98 → **106**：新增 J17 ColorConflictLabel 显示逻辑 8 条
+#    （J17a~J17h，UiTestHost/Program.cs GroupJ_UiSweep 末段；改断言改单体后由
+#    _gen-ui-split.ps1 重新切片进 ui-sweep，本门禁与拆分件同批抬表）。
+#    背景：该组件此前 verify-ui-* 零显示断言（勘察 2026-11-09），补组同批把
+#    $jExpected 抬到新实测值并在 $anchors 登记 J17 逐条锚点。
+#    2026-11-09（R3 同日第二批）106 → **114**：新增 J18 tone-map/engine 采集映射 8 条
+#    （J18a~J18h；ColorToneMapCombo/ColorEngineCombo 两控件是 CLI 色彩开关的 GUI 承接，
+#    断言载体 = CollectOptionsFromUiAsync 产出的 options 字段——这两个开关没有 ffmpeg
+#    token 形态，J 组常规的命令串模式不适用，另有 J18g 命令串不变负控）。
+#    2026-11-10（color-matrix-options 批 T7）114 → **122**：新增 J19 out-matrix 采集映射 8 条
+#    （J19a~J19h；OutputMatrixCombo = --color-out-matrix 的 GUI 承接，C-GUI@1 基本区控件。
+#    断言载体同 J18 = options.ColorOutMatrix 字段；条目经 FillComboByLoc 本地化渲染 ⇒ 按
+#    SelectedIndex 语义选档（C-TOKEN@1 表序）；语义锁 = bt601→smpte170m 别名归一（J19c）、
+#    不受 useAdv 门控（J19f，与 Chroma 同采集模式）、预设回放 null 早退 + bt601 归位（J19g）。
+#    改断言改单体（UiTestHost/Program.cs GroupJ_UiSweep 末段）后由 _gen-ui-split.ps1 重新
+#    切片进 ui-sweep，本门禁与 verify-ui-host.ps1（ui-sweep 165 / 合计 454）、
+#    verify-ui-split-union.ps1（$expectedOldCount 454）同批抬表——三把尺同一来历。）
+#    2026-11-11（CMX 一致性批 CMX-3）122 → **126**：J19 段按 CMX-2 能力过滤行为重写并新增
+#    4 条（J19i~J19l：avif 过滤集条数与在集判定 / ycgco·fcc·xyb 被过滤判定 / jpg(cjpegli)
+#    backend 感知过滤集 / 切格式失效重置 auto）。改写动因 = CMX-2 的
+#    RefillOutMatrixComboForFormat 落地后旧断言全数失效（基线轮实测 ui-sweep 116/6：J19a
+#    count=2 = png 过滤集、J19c-f 越界采集 null、J19g 归位 auto）。新读数 = ui-sweep mode
+#    126 PASS / 0 FAIL（tests/output/_tmp/cmx3-gate/j19-after.log）；改断言改单体后
+#    _gen-ui-split.ps1 重跑，verify-ui-split-reproducible 19/0（重跑两次逐字节对撞）；
+#    本门禁与 verify-ui-host.ps1（ui-sweep 169 / 合计 458）、verify-ui-split-union.ps1
+#    （$expectedOldCount 458）同批抬表——三把尺同一来历。）
+$jExpected = 126
 $jCount = Count-PassPrefix $s.Text 'J'
 Write-Output "  [info] GroupJ PASS lines = $jCount (expected $jExpected)"
 CK ($jCount -eq $jExpected) "GroupJ assertion count == $jExpected (actual $jCount)"
@@ -252,7 +283,11 @@ $anchors = @(
     'J12a ', 'J12b ', 'J12c ',
     'J13a JPEG', 'J13b PNG', 'J13c MetadataModeCombo',
     'J14b photo', 'J14c-1', 'J14c-2', 'J14c-3',
-    'J15a ', 'J15b fps', 'J15c fps', 'J15d scaleW', 'J15e duration', 'J15f ', 'J15g WebP'
+    'J15a ', 'J15b fps', 'J15c fps', 'J15d scaleW', 'J15e duration', 'J15f ', 'J15g WebP',
+    'J17a ', 'J17b ', 'J17c ', 'J17d ', 'J17e ', 'J17f ', 'J17g ', 'J17h ',
+    'J18a ', 'J18b ', 'J18c ', 'J18d ', 'J18e ', 'J18f ', 'J18g ', 'J18h ',
+    'J19a ', 'J19b ', 'J19c ', 'J19d ', 'J19e ', 'J19f ', 'J19g ', 'J19h ',
+    'J19i ', 'J19j ', 'J19k ', 'J19l '
 )
 $miss = @()
 foreach ($a in $anchors) {

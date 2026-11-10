@@ -107,8 +107,11 @@ namespace ServiceProbe
                     case "gainmap": ProbeGainMap(args); break;
                     case "ultrahdr": ProbeUltraHdr(args).GetAwaiter().GetResult(); break;
                     case "gainmap-isobmff": ProbeGainMapIsoBmff(args); break;
+                    // gainmap-mn-parity —— AppleMakerNote **纯托管解析器 vs exiftool 对拍**（AU2-X1，2026-11-10）；
+                    //   调用者 = 在册门禁 verify-gainmap-isobmff §1i（合成器 A 件）
+                    case "gainmap-mn-parity": ProbeGainMapMnParity(args); break;
                     case "gainmap-stats": ProbeGainMapStats(args); break;
-                    case "vendor-hdr": ProbeVendorHdr(); break;
+                    case "vendor-hdr": ProbeVendorHdr(args); break;
                     case "icc": ProbeIcc(args); break;
                     case "icc-dump": ProbeIccDump(args); break;
                     case "faithful": ProbeFaithful(args); break;
@@ -142,6 +145,10 @@ namespace ServiceProbe
                     // png3 <file.png> [sbitBits] [cicpPrimaries cicpTransfer] —— 用**生产代码**写 chunk，
                     // 供外部脚本用 ffmpeg/ffprobe/exiftool 做互操作验收（现有测试只验自写自读）。
                     case "png3": ProbePng3(args); break;
+                    // pngopt —— PNG 出口优化器判据宿主（png-optimizer-integration T6，契约 C-PROBE@1）；
+                    //   六 case 子命令：pixel/ihdr/chunk/argv/off/timeout（每断言一行 PASS|FAIL pngopt-<case>-NN <读数>）。
+                    //   调用者 = 批次 2 门禁 verify-png-optimizer.ps1（T7 接线）⇒ 与 bitdepth/png3 同形态。
+                    case "pngopt": ProbePngOpt(args).GetAwaiter().GetResult(); break;
                     case "wire": ProbeWire(); break;
                     // peak <文件> [期望元数据峰值] [用户覆盖峰值] —— 端到端验“源峰值读取”（P4c）
                     case "peak": ProbePeak(args); break;
@@ -1335,17 +1342,22 @@ namespace ServiceProbe
 
         /// <summary>
         /// ISO-BMFF（AVIF/HEIC）增益图探测。用法：
-        /// <c>ServiceProbe gainmap-isobmff &lt;file&gt; [outGainMapRaw] [gainmap|none|auxapple]</c>
+        /// <c>ServiceProbe gainmap-isobmff &lt;file&gt; [outGainMapRaw] [gainmap|none|auxapple|auxiso|auxisofull|grid|auxdec]</c>
         /// <para>
         /// 第 4 个位置参数声明**期望**：<c>gainmap</c>（默认）/ <c>none</c>
         /// （负控：普通 AVIF/HEIC 必须判「无增益图」，用来证明判据**有牙**而不是恒真）/
-        /// <c>auxapple</c>（Apple 早期 `auxC` 辅助图：必须认出并点名，但 `determinate=false` 且无字节）/
-        /// <c>auxiso</c>（ISO 21496-1 辅助图：同契约，回归用 —— 新分支不得吞掉旧分支）。
+        /// <c>auxapple</c>（Apple 早期 `auxC` 辅助图的**极简/残缺件**：认出但结构不全 ⇒ fail-closed 点名）/
+        /// <c>auxiso</c>（ISO 21496-1 辅助图**未证实态**：fail-closed——极简夹具（无 ipma/iloc 定位不到
+        /// aux item）与 AU2-X1 的 D-bad 负控件（version 段破坏）共用此契约）/
+        /// <c>auxisofull</c>（AU2-X1 2026-11-10：aux-21496 防御性形态**结构尝试成立**的完整件——
+        /// 前置 `version+GainMapMetadata` 就位 + 编码流可切 ⇒ Determinate=true）/
+        /// <c>grid</c>（grid 分块 + idat 承载）/ <c>auxdec</c>（AU-W2 2026-11-10：Apple aux
+        /// **完整件**——探针必须完成容器级提取：aux item 裸流 + Exif item 字节 ⇒ Determinate=true）。
         /// </para>
         /// </summary>
         private static void ProbeGainMapIsoBmff(string[] args)
         {
-            if (args.Length < 2) { Console.WriteLine("usage: ServiceProbe gainmap-isobmff <file> [outRaw] [gainmap|none|auxapple|auxiso|grid]"); _fail++; return; }
+            if (args.Length < 2) { Console.WriteLine("usage: ServiceProbe gainmap-isobmff <file> [outRaw] [gainmap|none|auxapple|auxiso|auxisofull|grid|auxdec]"); _fail++; return; }
             var path = args[1];
             // ⚠ 位置参数**与开关混排**：`none` / `gainmap` / `auxapple` 是开关（可出现在任意位置），
             //   其余第一个非开关参数才是 outRaw —— 旧写法写死 args[3] ⇒ `gainmap-isobmff <f> none`
@@ -1358,7 +1370,9 @@ namespace ServiceProbe
                 else if (args[i].Equals("gainmap", StringComparison.OrdinalIgnoreCase)) expect = "gainmap";
                 else if (args[i].Equals("auxapple", StringComparison.OrdinalIgnoreCase)) expect = "auxapple";
                 else if (args[i].Equals("auxiso", StringComparison.OrdinalIgnoreCase)) expect = "auxiso";
+                else if (args[i].Equals("auxisofull", StringComparison.OrdinalIgnoreCase)) expect = "auxisofull";
                 else if (args[i].Equals("grid", StringComparison.OrdinalIgnoreCase)) expect = "grid";
+                else if (args[i].Equals("auxdec", StringComparison.OrdinalIgnoreCase)) expect = "auxdec";
                 else outRaw = args[i];
             }
             var bytes = File.ReadAllBytes(path);
@@ -1395,6 +1409,50 @@ namespace ServiceProbe
                 Check(r.HasGainMap, "检测到 ISO 21496-1 辅助图增益图（hasGainMap=true）");
                 Check(r.Form == "aux-21496", $"承载形式为 aux-21496（实 {r.Form ?? "-"}）");
                 Check(r.GainMapItemData == null, "未支持解码 ⇒ 不得给出可解字节（gmData 必须为空）");
+                return;
+            }
+            if (expect == "auxisofull")
+            {
+                // AU2-X1（2026-11-10）：aux-21496 防御性形态**结构尝试成立**的完整件断言
+                // （合成件 D = tests/scripts/_make-synth-aux-gainmap.py：auxC URN=21496 +
+                // item 数据前置 version(0) + GainMapMetadata(62 B) + HEVC 流）。
+                // 负控（version 段破坏 ⇒ fail-closed）走 expect=auxiso（同款四条契约，
+                // 门禁 §1i 另以 FailReason 文本点名「结构未证实」锁牙）。
+                Check(r.Determinate, $"aux-21496 结构尝试成立 ⇒ determinate=true（failReason={r.FailReason ?? "-"}）");
+                Check(r.HasGainMap, "检测到增益图");
+                Check(r.Form == "aux-21496", $"承载形式为 aux-21496（实 {r.Form ?? "-"}）");
+                Check(r.GainMapItemId > 0, $"aux item（增益图 item）已定位（实 {r.GainMapItemId}）");
+                Check(r.TmapPayload is { Length: >= 62 } && r.TmapPayload[0] == 0,
+                    $"前置 `version+元数据` 段已就位且 version=0（实 {r.TmapPayload?.Length ?? -1} B，与 tmap 载荷同构）");
+                Check(r.GainMapFfmpegFormat != null, $"aux 裸流解复用器已知（实 {r.GainMapFfmpegFormat ?? "-"}）");
+                Check(r.GainMapItemData is { Length: > 100 }, $"元数据之后的增益图编码流已切出（实 {r.GainMapItemData?.Length ?? -1} B）");
+                if (r.GainMapItemData != null && outRaw != null)
+                {
+                    File.WriteAllBytes(outRaw, r.GainMapItemData);
+                    Console.WriteLine($"gainmap_raw_written={outRaw} bytes={r.GainMapItemData.Length}");
+                }
+                return;
+            }
+            if (expect == "auxdec")
+            {
+                // AU-W2（2026-11-10）：Apple aux **完整件**的容器级提取断言（合成件由
+                // tests/scripts/_make-synth-aux-gainmap.py 生成：primary(hvc1) + aux(hvc1 4:0:0 灰度)
+                // + Exif(AppleMakerNote 33/48) + iref auxl/cdsc）。
+                // 元数据字段值（HDRHeadroom/HDRGain）不在本 mode 断言 —— 它由 exiftool 通道在
+                // GainMapDecoder 层读取，门禁 §1h 另设 exiftool 读数臂。
+                Check(r.Determinate, $"Apple aux 完整提取 ⇒ determinate=true（failReason={r.FailReason ?? "-"}）");
+                Check(r.HasGainMap, "检测到增益图");
+                Check(r.Form == "aux-apple-hdrgainmap", $"承载形式为 aux-apple-hdrgainmap（实 {r.Form ?? "-"}）");
+                Check(r.GainMapItemId > 0, $"aux item（增益图 item）已定位（实 {r.GainMapItemId}）");
+                Check(r.GainMapFfmpegFormat != null, $"aux 裸流解复用器已知（实 {r.GainMapFfmpegFormat ?? "-"}）");
+                Check(r.GainMapItemData is { Length: > 100 }, $"aux item 裸流已切出（实 {r.GainMapItemData?.Length ?? -1} B）");
+                Check(r.ExifItemId > 0 && r.ExifItemData is { Length: > 0 },
+                    $"主图 Exif item 已切出（AppleMakerNote 载体；实 item {r.ExifItemId}，{r.ExifItemData?.Length ?? -1} B）");
+                if (r.GainMapItemData != null && outRaw != null)
+                {
+                    File.WriteAllBytes(outRaw, r.GainMapItemData);
+                    Console.WriteLine($"gainmap_raw_written={outRaw} bytes={r.GainMapItemData.Length}");
+                }
                 return;
             }
             if (expect == "grid")
@@ -1452,6 +1510,137 @@ namespace ServiceProbe
                 File.WriteAllBytes(outRaw, r.GainMapItemData);
                 Console.WriteLine($"gainmap_raw_written={outRaw} bytes={r.GainMapItemData.Length}");
             }
+        }
+
+        /// <summary>
+        /// AU2-X1（2026-11-10）：AppleMakerNote **纯托管解析器 vs exiftool 对拍**。
+        /// 用法：<c>ServiceProbe gainmap-mn-parity &lt;heic&gt;</c>
+        /// <para>
+        /// 链路：探针切出 Exif item ⇒ <see cref="FfmpegGui.Services.AppleMakerNoteParser"/> 纯托管
+        /// 读 tag 33/48（零子进程）⇒ exiftool `-j -a -G1 -MakerNotes:all` 读同两 tag（对照侧）⇒
+        /// 逐值对拍（差 &lt; 1e-4）+ 合成 A 件身份值 1.5/0.5。
+        /// 存在理由：GainMapDecoder 的 MN 元数据已改为「纯托管优先 + exiftool fallback」，行为契约
+        /// 要求**两路读数一致**（SPEC §7.2 对拍验收硬判据）——公式段虽然已提取成共用方法
+        /// （BuildAppleMetadataFromTags），但「纯托管读出的 tag 值 == exiftool 读出的 tag 值」必须
+        /// 有活体对拍，不能靠结构推断。调用者 = 在册门禁 verify-gainmap-isobmff §1i（合成器 A 件）。
+        /// </para>
+        /// </summary>
+        private static void ProbeGainMapMnParity(string[] args)
+        {
+            if (args.Length < 2) { Console.WriteLine("usage: ServiceProbe gainmap-mn-parity <heic>"); _fail++; return; }
+            var path = args[1];
+            var bytes = File.ReadAllBytes(path);
+            var r = IsoBmffGainMapProbe.Probe(bytes);
+            Console.WriteLine($"file={path} size={bytes.Length} form={r.Form ?? "-"} determinate={r.Determinate}");
+            Check(r.HasGainMap && r.Form == "aux-apple-hdrgainmap",
+                $"对拍载体为 Apple aux 形态（实 form={r.Form ?? "-"} hasGainMap={r.HasGainMap}）");
+            Check(r.Determinate && r.ExifItemData is { Length: > 0 },
+                $"Exif item 已切出（实 item {r.ExifItemId}，{r.ExifItemData?.Length ?? -1} B）");
+
+            // ── 纯托管臂（被测侧）──
+            var managed = FfmpegGui.Services.AppleMakerNoteParser.TryParse(r.ExifItemData, out var mnWhy);
+            Check(managed != null, $"纯托管解析成功（实 failReason={mnWhy}）");
+            if (managed == null) return;
+            Check(MathF.Abs(managed.Tag33HdrHeadroom - 1.5f) < 1e-4f,
+                $"纯托管 tag33(HDRHeadroom) = 1.5（实 {managed.Tag33HdrHeadroom}）—— A 件身份值");
+            Check(MathF.Abs(managed.Tag48HdrGain - 0.5f) < 1e-4f,
+                $"纯托管 tag48(HDRGain) = 0.5（实 {managed.Tag48HdrGain}）—— A 件身份值");
+
+            // ── exiftool 臂（对照侧；键名纪律与 GainMapDecoder.TryReadAppleMakerNoteMetadataAsync 同源）──
+            if (!ExifToolService.IsAvailable)
+            { Check(false, "exiftool 不可用 ⇒ 对拍无对照侧（需 publish/PLAN 工具链）"); return; }
+            var exif33 = ReadMakerTagViaExiftool(path, "HDRHeadroom");
+            var exif48 = ReadMakerTagViaExiftool(path, "HDRGain");
+            Check(exif33.HasValue && exif48.HasValue,
+                $"exiftool 读到两 tag（实 33={exif33?.ToString() ?? "缺失"} 48={exif48?.ToString() ?? "缺失"}）");
+            if (!exif33.HasValue || !exif48.HasValue) return;
+            Check(MathF.Abs(exif33.Value - managed.Tag33HdrHeadroom) < 1e-4f,
+                $"对拍 tag33 一致（managed={managed.Tag33HdrHeadroom} exif={exif33.Value}）—— 纯托管接管后读数不得漂移");
+            Check(MathF.Abs(exif48.Value - managed.Tag48HdrGain) < 1e-4f,
+                $"对拍 tag48 一致（managed={managed.Tag48HdrGain} exif={exif48.Value}）—— 纯托管接管后读数不得漂移");
+            Console.WriteLine($"mn-parity managed33={managed.Tag33HdrHeadroom} managed48={managed.Tag48HdrGain} " +
+                $"exif33={exif33.Value} exif48={exif48.Value} parity=ok");
+        }
+
+        /// <summary>
+        /// exiftool 读单 tag（`-j -a -G1 -MakerNotes:all` 的 JSON，Apple 组 / MakerNotes 组 / 裸名三形态；
+        /// 值容忍 JSON number 与 "n/d" rational 字符串——exiftool 对 rational64s 的两种输出形态都实测过）。
+        /// 只取值不断言（断言在对拍臂）；异常/超时 ⇒ null（不抛）。
+        /// </summary>
+        private static float? ReadMakerTagViaExiftool(string path, string tagName)
+        {
+            try
+            {
+                var psi = new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = ExifToolService.DetectedPath!,
+                    Arguments = $"-j -a -G1 -MakerNotes:all \"{path}\"",
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    StandardOutputEncoding = Encoding.UTF8,
+                    StandardErrorEncoding = Encoding.UTF8,
+                };
+                using var p = System.Diagnostics.Process.Start(psi);
+                if (p == null) return null;
+                p.BeginErrorReadLine();     // stderr 不排空会堵管道（同 GainMapDecoder 的 P2-3 实测）
+                var readTask = p.StandardOutput.ReadToEndAsync();
+                if (!readTask.Wait(10000))
+                {
+                    try { p.Kill(entireProcessTree: true); } catch { }
+                    return null;
+                }
+                p.WaitForExit();
+                var json = readTask.Result;
+                if (string.IsNullOrWhiteSpace(json)) return null;
+                using var doc = System.Text.Json.JsonDocument.Parse(json);
+                var root = doc.RootElement;
+                if (root.ValueKind != System.Text.Json.JsonValueKind.Array || root.GetArrayLength() == 0) return null;
+                float? fallback = null;
+                foreach (var prop in root[0].EnumerateObject())
+                {
+                    int colon = prop.Name.IndexOf(':');
+                    bool hit;
+                    if (colon > 0)
+                    {
+                        var ns = prop.Name.Substring(0, colon);
+                        hit = (ns.Equals("Apple", StringComparison.OrdinalIgnoreCase)
+                               || ns.Equals("MakerNotes", StringComparison.OrdinalIgnoreCase))
+                              && prop.Name.Substring(colon + 1).Equals(tagName, StringComparison.OrdinalIgnoreCase);
+                    }
+                    else hit = prop.Name.Equals(tagName, StringComparison.OrdinalIgnoreCase);
+                    if (!hit) continue;
+                    var v = ReadRationalJsonValue(prop.Value);
+                    if (v.HasValue)
+                    {
+                        if (colon > 0) return v;      // 带组名命中 ⇒ 权威
+                        fallback ??= v;               // 裸名 ⇒ 仅兜底
+                    }
+                }
+                return fallback;
+            }
+            catch { return null; }
+        }
+
+        /// <summary>exiftool JSON 值 → float：number 直取；字符串容忍 "3/2"（rational）与 "1.5"（十进制）。</summary>
+        private static float? ReadRationalJsonValue(System.Text.Json.JsonElement e)
+        {
+            if (e.ValueKind == System.Text.Json.JsonValueKind.Number)
+                return e.TryGetSingle(out var f) ? f : null;
+            if (e.ValueKind != System.Text.Json.JsonValueKind.String) return null;
+            var s = e.GetString();
+            if (string.IsNullOrWhiteSpace(s)) return null;
+            int slash = s!.IndexOf('/');
+            if (slash > 0
+                && float.TryParse(s.AsSpan(0, slash), System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out var num)
+                && float.TryParse(s.AsSpan(slash + 1), System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out var den)
+                && den != 0)
+                return num / den;
+            return float.TryParse(s, System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out var v) ? v : null;
         }
 
         /// <summary>
@@ -1627,7 +1816,7 @@ namespace ServiceProbe
         ///   ⇒ 那句"为什么落 ServiceProbe"从此是历史理由；#76 的 ⑤-c 也换成了「只此一份锁」（⑤）。
         /// </para>
         /// </summary>
-        private static void ProbeVendorHdr()
+        private static void ProbeVendorHdr(string[] args)
         {
             byte[] FakeJpeg()
             {
@@ -1639,7 +1828,8 @@ namespace ServiceProbe
             }
             static byte[] Be(uint v) => new[] { (byte)(v >> 24), (byte)(v >> 16), (byte)(v >> 8), (byte)v };
 
-            byte[] BuildTrailer(long declaredMaskLen, long declaredMetaLen = VendorHdrTrailer.ParamBlockBytes)
+            byte[] BuildTrailer(long declaredMaskLen, long declaredMetaLen = VendorHdrTrailer.ParamBlockBytes,
+                int layoutMutateOffset = -1, float layoutMutateValue = 0f)
             {
                 var jpeg = FakeJpeg();
                 var b = new List<byte>();
@@ -1652,6 +1842,13 @@ namespace ServiceProbe
                 b.AddRange(jpeg);
                 b.AddRange(new byte[16]);
                 var meta = new byte[144];
+                // 布局稳定位（2026-11-09 双真机样本互证，与 VendorHdrTrailer.LayoutStable 同批维护）：
+                // 旧夹具除已锁字段外全 0 ⇒ 布局校验上线后必须补齐真机形态，否则 V1–V19 全死于新校验。
+                BitConverter.GetBytes(-1f).CopyTo(meta, 20);
+                BitConverter.GetBytes(1f).CopyTo(meta, 28);
+                BitConverter.GetBytes(25f).CopyTo(meta, 48);
+                BitConverter.GetBytes(10f).CopyTo(meta, 72);
+                BitConverter.GetBytes(6f).CopyTo(meta, 76);
                 BitConverter.GetBytes(144f).CopyTo(meta, 8);     // 块自带长度 = 定位锚
                 BitConverter.GetBytes(-42f).CopyTo(meta, 32);    // min = -42/256 log2
                 BitConverter.GetBytes(2.45991f).CopyTo(meta, 36);
@@ -1659,6 +1856,7 @@ namespace ServiceProbe
                 BitConverter.GetBytes(64).CopyTo(meta, 80);
                 BitConverter.GetBytes(48).CopyTo(meta, 84);
                 BitConverter.GetBytes(8).CopyTo(meta, 88);
+                if (layoutMutateOffset >= 0) BitConverter.GetBytes(layoutMutateValue).CopyTo(meta, layoutMutateOffset);
                 b.AddRange(meta);
                 b.AddRange(System.Text.Encoding.ASCII.GetBytes(
                     "[{\"length\":" + declaredMaskLen + ",\"name\":\"local.hdr.linear.mask\",\"offset\":1,\"version\":1},"
@@ -1794,6 +1992,80 @@ namespace ServiceProbe
                 finally { try { if (File.Exists(v18Path)) File.Delete(v18Path); } catch { } }
             }
             else Check(false, "V18 需要仓库根（找不到 src/ + tests/ 的那一层 ⇒ 判红，不静默跳过）");
+
+            // ── V19：参数块布局指纹校验（2026-11-09 批次 C / P2.1）──
+            //   稳定位置被改（off 48: 25.0 → 24.0；该位置不在任何已锁字段/定位锚上 ⇒ 只可能死于新校验）
+            //   ⇒ 必须 Found=false + Determinate=false + FailReason 点名 offset 48。
+            //   没有这条负控，将来删掉 Probe 里的布局校验块，§3d 照样全绿（无牙判据）。
+            {
+                var lay = VendorHdrTrailer.Probe(BuildTrailer(FakeJpeg().Length, layoutMutateOffset: 48, layoutMutateValue: 24f));
+                Console.WriteLine($"V19 layout: Found={lay.Found} Det={lay.Determinate} reason={lay.FailReason ?? "-"}");
+                Check(!lay.Found && !lay.Determinate && (lay.FailReason ?? "").Contains("offset 48"),
+                    "V19 参数块布局指纹被改 ⇒ 拒认 + Determinate=false + 点名 offset（2026-11-09 双真机样本互证的布局校验有牙）");
+            }
+
+            // ── W 组：真机件臂（可选位置参数 `vendor-hdr <path>`；2026-11-09 接入）──
+            //   语料 = tests/output/corpus/gainmap-vendor-heic/IMG20261101124423.heic
+            //   （OnePlus 15T 直出 HEIC，含 GPS 隐私 ⇒ 不入仓，门禁侧 verify-gainmap-isobmff §3v
+            //   用 sha256[:16] 锁定字节）。V1–V19 是结构层合成件自测；三处真机形态差异合成件造不出：
+            //     ① mask 恰为主图 1/2 分辨率（1536x2048 vs 3072x4096）；
+            //     ② max = 50/256 log2（合成件是 73/256）；
+            //     ③ 记录头比率 = f32 @ SOI 前 80B、紧贴设备名（本件 1.2，与 2026-10-14 历史样本同值；
+            //       ⚠ 2026-11-09 勘误：此前任务口径记「16B 前导 0 + 设备名、无 f32 比率 ⇒ DeclaredRatio=0」
+            //       是把 SOI 前 16B 的零填充误读成「无比率字段」——当轮探针实测 ratio=1.2，且是
+            //       SOI 前 128B 窗口内唯一 (1.0,64] 的 f32 命中；「头部比率不参与 Found 判定」由
+            //       门禁 §3v 臂③b 的字节级变异负控钉住（抹掉 1.2f ⇒ ratio=0 且 Found 仍 True）。
+            //   计数契约：W 组走**独立计数器**（尾行 real=N fail=M），不并入 V 组的 _pass ⇒
+            //   verify-gainmap-isobmff §3d 的「PROBE RESULT: pass=19 fail=0」逐字匹配形状不变
+            //   （2026-11-09 批次 C：V19 布局负控上线，V 组 18→19，门禁字面量同批）。
+            //   real 臂失败 ⇒ _fail++（exit code 诚实反映），但 _pass 恒 19（条数锁不漂）。
+            //   权威读数（2026-11-09 headless 端到端实测）：EXIT=0、HDR 线性像素峰值 232 nits、
+            //   识别日志 vendor HDR layer: device=OnePlus 15T, mask 1536x2048x8,
+            //   headroom log2 [-0.1067..0.1953] = 0.929x..1.145x、mask JPEG 820,165 B
+            //   （manifest 声明 820,181，差 16 ≤ 64 容差）、P1 自洽 slack=209。
+            if (args.Length < 2 || string.IsNullOrWhiteSpace(args[1])) return;   // 无参：合成臂到此为止（现状形状不变）
+            string realPath = args[1];
+            int rp = 0, rf = 0;
+            void WCk(bool ok, string msg)
+            {
+                Console.WriteLine($"{(ok ? "PASS" : "FAIL")} {msg}");
+                if (ok) rp++; else rf++;
+            }
+            if (!File.Exists(realPath))
+            {
+                Console.WriteLine($"FAIL W0 文件不存在: {realPath}");
+                rf++;
+            }
+            else
+            {
+                var realBytes = File.ReadAllBytes(realPath);
+                var wp = VendorHdrTrailer.Probe(realBytes);
+                Console.WriteLine($"W Found={wp.Found} Det={wp.Determinate} reason={wp.FailReason ?? "-"} " +
+                    $"dev='{wp.Device}' mask={wp.MaskWidth}x{wp.MaskHeight}x{wp.MaskDepth} " +
+                    $"ratio={wp.DeclaredRatio} slack={wp.DeclaredSlack} jpegLen={(wp.MaskJpeg?.Length ?? -1)}");
+                WCk(wp.Found && wp.Determinate,
+                    $"W1 真机件被识别（Found=True 且 Determinate=True｜实 Found={wp.Found} Det={wp.Determinate} reason={wp.FailReason ?? "-"}）");
+                WCk(wp.Device == "OnePlus 15T", $"W2 设备名 OnePlus 15T（实 '{wp.Device}'）");
+                WCk(wp.MaskWidth == 1536 && wp.MaskHeight == 2048 && wp.MaskDepth == 8,
+                    $"W3 mask 几何 1536x2048x8（实 {wp.MaskWidth}x{wp.MaskHeight}x{wp.MaskDepth}，恰为主图 3072x4096 的 1/2）");
+                var wm = VendorHdrTrailer.BuildMetadata(wp);
+                Console.WriteLine(wm != null
+                    ? $"W-meta min={wm.GainMapMin.ToString("G9")} max={wm.GainMapMax.ToString("G9")} g={wm.Gamma.ToString("G9")} ch={wm.Channels}"
+                    : "W-meta null");
+                WCk(wm != null && Math.Abs(wm.GainMapMin - (-0.1067f)) <= 0.001f,
+                    $"W4 min log2 = -27.3185/256 ≈ -0.1067±0.001（实 {wm?.GainMapMin.ToString("G9")}）");
+                WCk(wm != null && Math.Abs(wm.GainMapMax - 0.1953f) <= 0.001f,
+                    $"W5 max log2 = 50/256 ≈ 0.1953±0.001（实 {wm?.GainMapMax.ToString("G9")}）");
+                WCk(wm != null && Math.Abs(wm.Gamma - 2.9126f) <= 0.01f,
+                    $"W6 gamma ≈ 2.9126±0.01（实 {wm?.Gamma.ToString("G9")}）");
+                WCk((wp.MaskJpeg?.Length ?? -1) == 820165,
+                    $"W7 mask JPEG 长度 820165（manifest 声明 820181，差 16 ≤ 64 容差｜实 {(wp.MaskJpeg?.Length ?? -1)}）");
+                WCk(Math.Abs(wp.DeclaredRatio - 1.2f) <= 0.001f,
+                    $"W8 DeclaredRatio=1.2（记录头 f32 @ SOI 前 80B、紧贴设备名；2026-10-14 历史样本同值｜实 {wp.DeclaredRatio}）");
+                WCk(wp.DeclaredSlack == 209, $"W9 声明自洽 slack=209（实 {wp.DeclaredSlack}）");
+            }
+            Console.WriteLine($"real={rp} fail={rf}");
+            if (rf > 0) _fail++;   // 真文件臂失败 ⇒ 进程级失败；pass（V 组条数锁 18）不受影响
         }
 
         /// <summary>faithful &lt;色彩空间名&gt; [期望 yes|no] —— 保真 ICC 可用性 + 确定性(重复生成同字节)。</summary>
@@ -7649,6 +7921,401 @@ namespace ServiceProbe
                 + (didCicp ? $"cICP={cicpOk} " : "cICP=跳过 ")
                 + $"大小={(new FileInfo(path).Exists ? new FileInfo(path).Length : -1)}");
             Check((!didSbit || sbitOk) && (!didCicp || cicpOk), "png3 chunk 写入成功");
+        }
+
+        // ══════════════════════════════════════════════════════════════
+        // pngopt <case> —— PNG 出口优化器判据宿主（png-optimizer-integration T6，契约 C-PROBE@1）
+        //   六 case：pixel / ihdr / chunk / argv / off / timeout。
+        //   每断言一行 `PASS|FAIL pngopt-<case>-NN <读数>`（T7 门禁按前缀逐条计数）。
+        //
+        //   【判据自足纪律】六个 case 的素材全部现场自造（ffmpeg lavfi / pngcicp / exiftool），
+        //   不消费 args 里的 input.png 占位（args[2]/args[3] 忽略）、不引用 benchmark 轮次产物
+        //   （AGENTS §3 一轮一目录隔离防假绿）；工作目录 = tests/output/pngopt-selftest/<case>-<guid8>/。
+        //
+        //   【进程内调用纪律】全部走 PngOptimizerService.ApplyPngOptimizerAsync 进程内直调 +
+        //   内存 log lambda 收集播报——T5 实证 headless CLI 的 Info 级日志不落收尾段
+        //   （OnItemCompleted 的 final FlushItemLog 早于 pngopt 收尾段）⇒ 判据不依赖 headless 日志文件。
+        //   oxipng 路径由产品解析链（C-RESOLVE@1）自己定位；probe 只对惯例位
+        //   publish/PLAN/artifacts/oxipng.exe（C-TOOL@1）做存在性前置——缺件打 SKIP，
+        //   fail-closed（T7 把 skip>0 判 FAIL，不静默绿）。
+        //
+        //   【timeout case 注入方式】C-PROBE@1 把注入方式授权给 T6 实现选择，判据 =「超时播报 +
+        //   产物原样」。产品侧 600s 是 public const（编译期内联，反射只读不可写），不可参数化
+        //   ⇒ 注入 = 真实工具链（自造 24MP 纯噪声素材 + zopfli30 + CancellationToken.None）真跑
+        //   600s 触达产品分支⑤——与 T5 冒烟实证（corpus/B04.png 6000×4000=24MP × zopfli30 =
+        //   600090ms timeout，`b04-z30-dbg.log:81`）同形态；72MB 纯噪声是 zopfli 30 轮迭代的
+        //   最坏输入，600s 内数学上跑不完 ⇒ 判据确定性成立。任务书备选的「反射/InternalsVisibleTo/
+        //   环境变量把超时参数化」需要改产品代码（write_set 禁触 src/）且契约无此授权 ⇒ 不采用。
+        //   T9② 的 ≥24MP 端到端复验另做（照片类素材），两臂互不替代。
+        // ══════════════════════════════════════════════════════════════
+        private static System.Threading.Tasks.Task ProbePngOpt(string[] args)
+        {
+            if (args.Length < 2)
+            {
+                Console.WriteLine("用法: pngopt <pixel|ihdr|chunk|argv|off|timeout> [input.png 占位, 忽略] [mode 占位, 忽略]");
+                return System.Threading.Tasks.Task.CompletedTask;
+            }
+            switch (args[1].ToLowerInvariant())
+            {
+                case "pixel": PngOptCasePixel(); break;
+                case "ihdr": PngOptCaseIhdr(); break;
+                case "chunk": PngOptCaseChunk(); break;
+                case "argv": PngOptCaseArgv(); break;
+                case "off": PngOptCaseOff(); break;
+                case "timeout": PngOptCaseTimeout(); break;
+                default:
+                    Console.WriteLine("pngopt: 未知 case（合法值 pixel/ihdr/chunk/argv/off/timeout）");
+                    return System.Threading.Tasks.Task.CompletedTask;
+            }
+            return System.Threading.Tasks.Task.CompletedTask;
+
+            // ── 共享 helper（局部函数：全部判据留在 ProbePngOpt 单方法体内，配合 mirror-parity 条数锁）──
+
+            /// <summary>从 BaseDirectory 向上定位仓库根（标志 = tests/scripts/_run-step3-gates.ps1 在位）。</summary>
+            string PngOptRepoRoot()
+            {
+                var d = new DirectoryInfo(AppContext.BaseDirectory);
+                for (int up = 0; d != null && up < 12; d = d.Parent, up++)
+                {
+                    if (File.Exists(Path.Combine(d.FullName, "tests", "scripts", "_run-step3-gates.ps1")))
+                        return d.FullName;
+                }
+                return Directory.GetCurrentDirectory();
+            }
+
+            /// <summary>一轮一 GUID 目录（AGENTS §3）。产物区约定：tests/output/pngopt-selftest/&lt;case&gt;-&lt;guid8&gt;/。</summary>
+            string PngOptWorkDir(string caseName)
+            {
+                string d = Path.Combine(PngOptRepoRoot(), "tests", "output", "pngopt-selftest",
+                    $"{caseName}-{Guid.NewGuid().ToString("N").Substring(0, 8)}");
+                Directory.CreateDirectory(d);
+                return d;
+            }
+
+            /// <summary>
+            /// 工具链前置：oxipng 取惯例位（C-TOOL@1，真实执行仍由产品解析链 C-RESOLVE@1 自定位）、
+            /// ffmpeg/exiftool 优先 AppSettingsService（InitExternalTools 已定位 PLAN），fallback 惯例位。
+            /// </summary>
+            bool PngOptToolsReady(out string oxipng, out string ffmpeg, out string exiftool)
+            {
+                string root = PngOptRepoRoot();
+                oxipng = Path.Combine(root, "publish", "PLAN", "artifacts", "oxipng.exe");
+                ffmpeg = AAS.Current.FfmpegPath ?? "";
+                exiftool = AAS.Current.ExifToolPath ?? "";
+                if (string.IsNullOrWhiteSpace(ffmpeg)) ffmpeg = Path.Combine(root, "publish", "PLAN", "ffmpeg-full", "ffmpeg.exe");
+                if (string.IsNullOrWhiteSpace(exiftool)) exiftool = Path.Combine(root, "publish", "PLAN", "exiftool", "exiftool.exe");
+                return File.Exists(oxipng) && File.Exists(ffmpeg) && File.Exists(exiftool);
+            }
+
+            /// <summary>ffmpeg lavfi 一帧 PNG 素材生成（-compression_level 0/9 按素材需要）。</summary>
+            bool PngOptMakePng(string ffmpeg, string lavfi, string pixFmt, string compLevel, string outPath)
+            {
+                try
+                {
+                    RunCapture(ffmpeg, $"-y -hide_banner -loglevel error -f lavfi -i \"{lavfi}\" -frames:v 1 "
+                                     + $"-pix_fmt {pixFmt} -c:v png -compression_level {compLevel} \"{outPath}\"");
+                    return File.Exists(outPath) && new FileInfo(outPath).Length > 0;
+                }
+                catch { return false; }
+            }
+
+            /// <summary>ffmpeg -f md5 解码帧指纹（C-PIXEL@1 口径：像素逐位等价的对撞尺）。</summary>
+            string PngOptFfmd5(string ffmpeg, string path)
+                => RunCapture(ffmpeg, $"-v error -i \"{path}\" -f md5 -").Trim();
+
+            /// <summary>进程内直调产品执行链（T6 纪律：不依赖 headless CLI 日志文件）。</summary>
+            void PngOptRunOne(string work, string? mode, List<string> logs)
+                => PngOptimizerService.ApplyPngOptimizerAsync(work, mode, s => logs.Add(s),
+                       System.Threading.CancellationToken.None).GetAwaiter().GetResult();
+
+            /// <summary>
+            /// PNG chunk 结构级遍历（len+type+payload+CRC 定界）。IHDR 解析与 chunk 序列判据共用。
+            /// </summary>
+            List<(string Type, byte[] Payload)> PngOptReadChunks(string path)
+            {
+                var data = File.ReadAllBytes(path);
+                var list = new List<(string, byte[])>();
+                int pos = 8;
+                while (pos + 12 <= data.Length)
+                {
+                    int len = System.Buffers.Binary.BinaryPrimitives.ReadInt32BigEndian(data.AsSpan(pos));
+                    string type = Encoding.ASCII.GetString(data, pos + 4, 4);
+                    if (len < 0 || pos + 12 + (long)len > data.Length) break;
+                    list.Add((type, data.AsSpan(pos + 8, len).ToArray()));
+                    if (type == "IEND") break;
+                    pos += 12 + len;
+                }
+                return list;
+            }
+
+            /// <summary>IHDR 四字段（规范强制第 0 个 chunk：签名 8 + len 4 + type 4，data 从 16 起）。</summary>
+            (int W, int H, int BitDepth, int ColorType) PngOptReadIhdr(string path)
+            {
+                var data = File.ReadAllBytes(path);
+                int w = System.Buffers.Binary.BinaryPrimitives.ReadInt32BigEndian(data.AsSpan(16));
+                int h = System.Buffers.Binary.BinaryPrimitives.ReadInt32BigEndian(data.AsSpan(20));
+                return (w, h, data[24], data[25]);
+            }
+
+            /// <summary>
+            /// iCCP payload 解出 ICC profile（R3.2「iCCP 解压数据等价」口径——oxipng 允许重压 iCCP 的
+            /// zlib 层，zlib 字节可变而解压数据必须不变）。布局：profile-name\0 compression-method(0)\0 zlib-data。
+            /// </summary>
+            byte[] PngOptIccpProfile(byte[] iccpPayload)
+            {
+                int p = Array.IndexOf(iccpPayload, (byte)0);
+                using var ms = new MemoryStream(iccpPayload, p + 2, iccpPayload.Length - p - 2);
+                using var zs = new System.IO.Compression.ZLibStream(ms, System.IO.Compression.CompressionMode.Decompress);
+                using var outMs = new MemoryStream();
+                zs.CopyTo(outMs);
+                return outMs.ToArray();
+            }
+
+            // ── case: pixel —— 小 PNG × 三档真跑，ffmpeg -f md5 解码帧对撞输入 + 产物字节 ≤ 输入 ──
+            void PngOptCasePixel()
+            {
+                var ready = PngOptToolsReady(out var oxipng, out var ff, out var _);
+                Check(ready, $"pngopt-pixel-01 工具链齐（oxipng 惯例位 {oxipng} + ffmpeg + exiftool）");
+                if (!ready) { Skip("pngopt pixel: oxipng/ffmpeg 缺件 ⇒ 判据 fail-closed（T7 判 FAIL，不静默绿）"); return; }
+
+                string dir = PngOptWorkDir("pixel");
+                string src = Path.Combine(dir, "pixel-src.png");
+                bool made = PngOptMakePng(ff, "testsrc2=s=256x256:rate=1", "rgba", "9", src);
+                Check(made, $"pngopt-pixel-02 素材 256×256 RGBA 8-bit 生成（{new FileInfo(src).Length} B）");
+                if (!made) { Skip("pngopt pixel: 素材生成失败 ⇒ 判据 fail-closed"); return; }
+
+                long srcLen = new FileInfo(src).Length;
+                string md5Src = PngOptFfmd5(ff, src);
+                Console.WriteLine($"[pngopt-pixel] 输入 md5={md5Src} bytes={srcLen}");
+
+                int idx = 3;
+                foreach (var mode in new[] { "max", "zopfli15", "zopfli30" })
+                {
+                    string work = Path.Combine(dir, $"pixel-{mode}.png");
+                    File.Copy(src, work, true);
+                    var logs = new List<string>();
+                    PngOptRunOne(work, mode, logs);
+                    string md5After = PngOptFfmd5(ff, work);
+                    long afterLen = new FileInfo(work).Length;
+                    Check(md5After == md5Src,
+                        $"pngopt-pixel-{idx:00} 档位 {mode} 解码帧 ffmpeg md5 逐位等价（{md5Src} → {md5After}）");
+                    idx++;
+                    Check(afterLen <= srcLen,
+                        $"pngopt-pixel-{idx:00} 档位 {mode} 产物字节 ≤ 输入（{srcLen} → {afterLen}）");
+                    idx++;
+                    Console.WriteLine($"[pngopt-pixel] {mode} 播报原文：{(logs.Count > 0 ? logs[0] : "(无)")}");
+                }
+            }
+
+            // ── case: ihdr —— 8-bit RGBA 与 16-bit rgb48be × 三档，IHDR 宽高/位深/色型不变（R2.3）──
+            void PngOptCaseIhdr()
+            {
+                var ready = PngOptToolsReady(out var _, out var ff, out var _);
+                Check(ready, "pngopt-ihdr-01 工具链齐（oxipng 惯例位 + ffmpeg + exiftool）");
+                if (!ready) { Skip("pngopt ihdr: oxipng/ffmpeg 缺件 ⇒ 判据 fail-closed（T7 判 FAIL，不静默绿）"); return; }
+
+                string dir = PngOptWorkDir("ihdr");
+                string src8 = Path.Combine(dir, "ihdr8-src.png");
+                string src16 = Path.Combine(dir, "ihdr16-src.png");
+                bool made8 = PngOptMakePng(ff, "testsrc2=s=256x256:rate=1", "rgba", "9", src8);
+                bool made16 = PngOptMakePng(ff, "testsrc2=s=256x256:rate=1", "rgb48be", "9", src16);
+                Check(made8, $"pngopt-ihdr-02 8-bit RGBA 素材生成（{new FileInfo(src8).Length} B）");
+                Check(made16, $"pngopt-ihdr-03 16-bit rgb48be 素材生成（{new FileInfo(src16).Length} B）");
+                if (!made8 || !made16) { Skip("pngopt ihdr: 素材生成失败 ⇒ 判据 fail-closed"); return; }
+
+                int idx = 4;
+                foreach (var mode in new[] { "max", "zopfli15", "zopfli30" })
+                {
+                    string work = Path.Combine(dir, $"ihdr8-{mode}.png");
+                    File.Copy(src8, work, true);
+                    PngOptRunOne(work, mode, new List<string>());
+                    var ih = PngOptReadIhdr(work);
+                    Check($"{ih.W}x{ih.H} bd={ih.BitDepth} ct={ih.ColorType}" == "256x256 bd=8 ct=6",
+                        $"pngopt-ihdr-{idx:00} 档位 {mode} 8-bit RGBA IHDR 不变（实 {ih.W}x{ih.H} bd={ih.BitDepth} ct={ih.ColorType}）");
+                    idx++;
+                }
+                foreach (var mode in new[] { "max", "zopfli15", "zopfli30" })
+                {
+                    string work = Path.Combine(dir, $"ihdr16-{mode}.png");
+                    File.Copy(src16, work, true);
+                    PngOptRunOne(work, mode, new List<string>());
+                    var ih = PngOptReadIhdr(work);
+                    Check($"{ih.W}x{ih.H} bd={ih.BitDepth} ct={ih.ColorType}" == "256x256 bd=16 ct=2",
+                        $"pngopt-ihdr-{idx:00} 档位 {mode} 16-bit rgb48be IHDR 不变、不降 8-bit（实 {ih.W}x{ih.H} bd={ih.BitDepth} ct={ih.ColorType}）");
+                    idx++;
+                }
+            }
+
+            // ── case: chunk —— 现场构造 iCCP/cICP/eXIf（pngcicp + exiftool 五步），三档后
+            //      pngcicp info 三 chunk 保留 + 非 IDAT 序列不重排 + payload 等价（R3.1/R3.2）──
+            void PngOptCaseChunk()
+            {
+                var ready = PngOptToolsReady(out var _, out var ff, out var exiftool);
+                string pngcicp = Path.Combine(PngOptRepoRoot(), "tools", "src", "pngcicp", "bin", "Release", "net11.0", "pngcicp.exe");
+                // ICC 源 = 在册语料 DSC00037.jpg（AGENTS §7 fail-closed 素材；与 benchmark/T2 构造同源，536 B）
+                string iccSrc = Path.Combine(PngOptRepoRoot(), "tests", "output", "corpus", "gainmap-iso21496", "DSC00037.jpg");
+                bool prep = ready && File.Exists(pngcicp) && File.Exists(iccSrc);
+                Check(prep, $"pngopt-chunk-01 构造链工具齐（oxipng/ffmpeg/exiftool/pngcicp/ICC 源 {iccSrc}）");
+                if (!prep) { Skip("pngopt chunk: 构造链缺件 ⇒ 判据 fail-closed（T7 判 FAIL，不静默绿）"); return; }
+
+                string dir = PngOptWorkDir("chunk");
+                string iccPath = Path.Combine(dir, "embedded.icc");
+                RunCapture(exiftool, $"-q -b -icc_profile \"{iccSrc}\"", iccPath);
+                Check(File.Exists(iccPath) && new FileInfo(iccPath).Length > 0,
+                    $"pngopt-chunk-02 ICC 抽取非空（{new FileInfo(iccPath).Length} B，exiftool -b -icc_profile）");
+
+                // 五步构造（照 _make-png-opt-corpus.ps1 §10 逐字）：复制 → pngcicp cICP → exiftool iCCP
+                // → exiftool eXIf → pngcicp info 校验（构造参数 1/13/0/1 = sRGB primaries/transfer、matrix 0、full 1）
+                string baseFile = Path.Combine(dir, "chunk-meta.png");
+                if (!PngOptMakePng(ff, "testsrc2=s=256x256:rate=1", "rgba", "9", baseFile))
+                { Skip("pngopt chunk: 素材生成失败 ⇒ 判据 fail-closed"); return; }
+                RunCapture(pngcicp, $"cicp \"{baseFile}\" \"{baseFile}\" 1 13 0 1");
+                RunCapture(exiftool, $"-q \"-icc_profile<={iccPath}\" -overwrite_original \"{baseFile}\"");
+                RunCapture(exiftool, $"-q \"-exififd:datetimeoriginal=2026:01:01 00:00:00\" -overwrite_original \"{baseFile}\"");
+                string info0 = RunCapture(pngcicp, $"info \"{baseFile}\"");
+                Check(info0.Contains("iCCP:") && info0.Contains("cICP:") && info0.Contains("eXIf:"),
+                    "pngopt-chunk-03 基线件三关键 chunk 齐（pngcicp info）");
+                foreach (var l in info0.Split('\n')) Console.WriteLine("[pngopt-chunk] 基线 info " + l.TrimEnd('\r'));
+
+                var chunksBefore = PngOptReadChunks(baseFile);
+                string seqBefore = string.Join(",", chunksBefore.Where(c => c.Type != "IDAT").Select(c => c.Type));
+                byte[] cicpBefore = chunksBefore.First(c => c.Type == "cICP").Payload;
+                byte[] exifBefore = chunksBefore.First(c => c.Type == "eXIf").Payload;
+                byte[] iccpProfBefore = PngOptIccpProfile(chunksBefore.First(c => c.Type == "iCCP").Payload);
+                Console.WriteLine($"[pngopt-chunk] 基线非 IDAT 序列={seqBefore} cICP={cicpBefore.Length}B eXIf={exifBefore.Length}B iCCP解压={iccpProfBefore.Length}B");
+
+                int idx = 4;
+                foreach (var mode in new[] { "max", "zopfli15", "zopfli30" })
+                {
+                    string work = Path.Combine(dir, $"chunk-{mode}.png");
+                    File.Copy(baseFile, work, true);
+                    var logs = new List<string>();
+                    PngOptRunOne(work, mode, logs);
+                    string info = RunCapture(pngcicp, $"info \"{work}\"");
+                    Check(info.Contains("iCCP:") && info.Contains("cICP:") && info.Contains("eXIf:"),
+                        $"pngopt-chunk-{idx:00} 档位 {mode} 三关键 chunk 保留（pngcicp info）");
+                    idx++;
+                    var chunksAfter = PngOptReadChunks(work);
+                    string seqAfter = string.Join(",", chunksAfter.Where(c => c.Type != "IDAT").Select(c => c.Type));
+                    Check(seqAfter == seqBefore,
+                        $"pngopt-chunk-{idx:00} 档位 {mode} 非 IDAT chunk 序列不重排（{seqBefore} → {seqAfter}）");
+                    idx++;
+                    bool payloadEq;
+                    try
+                    {
+                        payloadEq = chunksAfter.First(c => c.Type == "cICP").Payload.SequenceEqual(cicpBefore)
+                                 && chunksAfter.First(c => c.Type == "eXIf").Payload.SequenceEqual(exifBefore)
+                                 && PngOptIccpProfile(chunksAfter.First(c => c.Type == "iCCP").Payload).SequenceEqual(iccpProfBefore);
+                    }
+                    catch { payloadEq = false; }
+                    Check(payloadEq,
+                        $"pngopt-chunk-{idx:00} 档位 {mode} iCCP 解压/cICP/eXIf payload 等价（R3.2）");
+                    idx++;
+                    Console.WriteLine($"[pngopt-chunk] {mode} 播报原文：{(logs.Count > 0 ? logs[0] : "(无)")}");
+                }
+            }
+
+            // ── case: argv —— BuildArgs 三档与 C-PARAMS@1 终值快照逐 token 对撞（快照内嵌断言）──
+            void PngOptCaseArgv()
+            {
+                // 快照 = C-PARAMS@1 三档 argv 终值（T1 实证冻结）：公共追加保守集
+                // --interlace keep --nb --nc --np --ng --out；zopfli 档 -z --zi N 与 -o max 同传。
+                const string expMax = "IN.png|-o|max|--interlace|keep|--nb|--nc|--np|--ng|--out|OUT.png";
+                const string expZ15 = "IN.png|-o|max|-z|--zi|15|--interlace|keep|--nb|--nc|--np|--ng|--out|OUT.png";
+                const string expZ30 = "IN.png|-o|max|-z|--zi|30|--interlace|keep|--nb|--nc|--np|--ng|--out|OUT.png";
+                var aMax = PngOptimizerService.BuildArgs("max", "IN.png", "OUT.png");
+                Check(string.Join("|", aMax) == expMax,
+                    $"pngopt-argv-01 max 档 argv 与 C-PARAMS@1 终值逐 token 一致（实 {string.Join(" ", aMax)}）");
+                var aZ15 = PngOptimizerService.BuildArgs("zopfli15", "IN.png", "OUT.png");
+                Check(string.Join("|", aZ15) == expZ15,
+                    $"pngopt-argv-02 zopfli15 档 argv 与 C-PARAMS@1 终值逐 token 一致（实 {string.Join(" ", aZ15)}）");
+                var aZ30 = PngOptimizerService.BuildArgs("zopfli30", "IN.png", "OUT.png");
+                Check(string.Join("|", aZ30) == expZ30,
+                    $"pngopt-argv-03 zopfli30 档 argv 与 C-PARAMS@1 终值逐 token 一致（实 {string.Join(" ", aZ30)}）");
+                bool threw = false;
+                try { _ = PngOptimizerService.BuildArgs("foo", "IN.png", "OUT.png"); }
+                catch (ArgumentException) { threw = true; }
+                Check(threw, "pngopt-argv-04 非法档位 foo 抛 ArgumentException（值域封闭负控）");
+            }
+
+            // ── case: off —— mode=off/null/空串 零进程零播报零触碰（R1.1 负控，哨兵有牙）──
+            void PngOptCaseOff()
+            {
+                // 哨兵设计：where.exe 对任意 argv 立即 exit 1。若三形态的短路（R1.1 第一行）被改坏
+                // ——off 走未知档位播报、null/空串走解析后播报——「零播报」断言当场红；
+                // 若连未知档位闸也被改坏，哨兵会被当 oxipng 真启动（exit 1 ⇒ 失败播报）⇒ 同样红。双层牙。
+                string sentinel = Path.Combine(Environment.SystemDirectory, "where.exe");
+                Check(File.Exists(sentinel),
+                    $"pngopt-off-01 哨兵 where.exe 在位（{sentinel}；被当 oxipng 启动必留 exit 1 播报痕迹）");
+                if (!File.Exists(sentinel)) { Skip("pngopt off: 哨兵缺位 ⇒ fail-closed"); return; }
+
+                var ready = PngOptToolsReady(out var _, out var ff, out var _);
+                if (!ready) { Skip("pngopt off: ffmpeg 缺件（素材生成依赖）⇒ fail-closed"); return; }
+                string dir = PngOptWorkDir("off");
+                string src = Path.Combine(dir, "off-src.png");
+                bool made = PngOptMakePng(ff, "testsrc2=s=256x256:rate=1", "rgba", "9", src);
+                Check(made, $"pngopt-off-02 素材生成（{made}）");
+                if (!made) { Skip("pngopt off: 素材生成失败 ⇒ fail-closed"); return; }
+
+                var svc = AAS.Current;
+                string? saved = svc.PngOptimizerPath;
+                svc.PngOptimizerPath = sentinel;
+                try
+                {
+                    int idx = 3;
+                    foreach (var mode in new string?[] { "off", null, "" })
+                    {
+                        string label = mode == null ? "null" : mode.Length == 0 ? "空串" : mode;
+                        string work = Path.Combine(dir, $"off-{idx}.png");
+                        File.Copy(src, work, true);
+                        string shaBefore = Sha(work);
+                        var logs = new List<string>();
+                        PngOptRunOne(work, mode, logs);
+                        Check(logs.Count == 0,
+                            $"pngopt-off-{idx:00} 档位 {label} 零播报（实 {logs.Count} 条{(logs.Count > 0 ? "：" + logs[0] : "")}）");
+                        idx++;
+                        Check(Sha(work) == shaBefore,
+                            $"pngopt-off-{idx:00} 档位 {label} 产物逐字节不变（sha256 对撞）");
+                        idx++;
+                    }
+                }
+                finally { svc.PngOptimizerPath = string.IsNullOrEmpty(saved) ? null : saved; }
+            }
+
+            // ── case: timeout —— 24MP 纯噪声 × zopfli30 真跑 600s 触达产品分支⑤（注入方式见方法头注释）──
+            void PngOptCaseTimeout()
+            {
+                var fld = typeof(PngOptimizerService).GetField(nameof(PngOptimizerService.TimeoutSeconds));
+                int tv = fld != null && fld.GetValue(null) is int v ? v : -1;
+                Check(tv == 600, $"pngopt-timeout-01 产品超时常量 == 600（实 {tv}；C-EXEC@1，const 反射只读）");
+                if (tv != 600) { Skip("pngopt timeout: 超时常量漂移 ⇒ 判据前提失效，fail-closed"); return; }
+
+                var ready = PngOptToolsReady(out var _, out var ff, out var _);
+                Check(ready, "pngopt-timeout-02 工具链齐（oxipng 惯例位 + ffmpeg）");
+                if (!ready) { Skip("pngopt timeout: 工具缺件 ⇒ fail-closed（T7 判 FAIL，不静默绿）"); return; }
+
+                string dir = PngOptWorkDir("timeout");
+                string src = Path.Combine(dir, "noise24mp.png");
+                // 24MP（5000×4800）rgb24 纯噪声：-compression_level 0 实测 0.3s / 72,224,536 B
+                //（T6 自验 _probe 轮读数）；纯噪声是 zopfli 30 轮迭代的确定性最坏输入 ⇒ 600s 内跑不完。
+                bool made = PngOptMakePng(ff, "nullsrc=s=5000x4800:rate=1,noise=alls=80:allf=u", "rgb24", "0", src);
+                Check(made, $"pngopt-timeout-03 24MP 噪声素材生成（{made}；{new FileInfo(src).Length} B）");
+                if (!made) { Skip("pngopt timeout: 素材生成失败 ⇒ fail-closed"); return; }
+
+                string shaBefore = Sha(src);
+                var logs = new List<string>();
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                PngOptRunOne(src, "zopfli30", logs);
+                sw.Stop();
+                string expected = "[pngopt] ⚠️ 优化超时（600s 上限），保留原样（档位 zopfli30；大图建议改用 max 档）";
+                Check(logs.Count == 1 && logs[0] == expected,
+                    $"pngopt-timeout-04 超时播报逐字 == C-EXEC@1 模板（实 {logs.Count} 条：「{(logs.Count > 0 ? logs[0] : "(无)")}」；耗时 {sw.Elapsed.TotalSeconds:F0}s）");
+                Check(Sha(src) == shaBefore,
+                    "pngopt-timeout-05 超时回落产物逐字节原样（sha256 对撞，R4.2）");
+                var residue = Directory.GetFiles(dir, "*.pngopt-*.png");
+                Check(residue.Length == 0,
+                    $"pngopt-timeout-06 临时件无残留（实 {residue.Length} 个；finally 删除纪律）");
+            }
         }
 
         // ══════════════════════════════════════════════════════════════

@@ -96,6 +96,19 @@ namespace Tests.Shared
                 // 调用者 = **在册**门禁 `verify-gainmap-jxl.ps1` §1/§2 ⇒ 与上面 memadmit / color /
                 // gmgamut 同一形态：有调用点就必须进账，不进豁免表。
                 "jxlgm",
+                // 2026-11-10（AU2-X1）：`gainmap-mn-parity` = AppleMakerNote **纯托管解析器 vs exiftool
+                // 对拍**（SPEC §7.2 对拍验收硬判据：纯托管接管后读数必须 == exiftool）。
+                // 调用者 = **在册**门禁 `verify-gainmap-isobmff.ps1` §1i（合成器 A 件）⇒ 与上面
+                // memadmit / color / jxlgm 同一形态：有调用点就必须进账，不进豁免表。
+                "gainmap-mn-parity",
+                // 2026-11-10（pngopt）：PNG 出口优化器判据宿主（png-optimizer-integration T6，
+                // 契约 C-PROBE@1 六 case：pixel/ihdr/chunk/argv/off/timeout，断言前缀
+                // pngopt-<case>-NN）。调用者 = 批次 2 门禁 verify-png-optimizer.ps1（T7 接线，
+                // 参数位置取证）⇒ 与 bitdepth/png3 同形态。归属 ServiceProbe 组键（带方括号的键，
+                // 组名 = 工程目录是 test-group-coverage ② 的硬判据），不在数组块内另立新组键。
+                // ⚠ T6→T7 接线之间的窗口期该 mode 尚无调用点，组表覆盖探针的 ⑥-c 会逐名点名
+                //   ——接线后即绿（与计划 C-PROBE@1→C-GATE@1 的串行时序一致）。
+                "pngopt",
             },
 
             // ── 编码参数与产物 / 元数据与 ICC / 增益图与 Ultra HDR / 进程与 IPC ──

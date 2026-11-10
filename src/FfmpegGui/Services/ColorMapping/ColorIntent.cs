@@ -232,6 +232,20 @@ public sealed class ColorIntent
     public bool TargetLossless;
     /// <summary>BT.709 编码口径（默认 Std；Zimg 仅用于与历史产物对照）。</summary>
     public Transfer709Curve Transfer709 = Transfer709Curve.Std;
+    /// <summary>
+    /// 显式输出矩阵模式（C-PLAN-EXT@1 装配链载体；2026-11-10 leader 批准的 write_set 缺口补充
+    /// ——FromOptions 三调用点（QueueProcessor:1679 / FfmpegCommandBuilder.Decision:628/:685）
+    /// 唯一 token 通道）。来自 <c>FfmpegOptions.ColorOutMatrix</c>（模型 setter 已归一：
+    /// bt601→smpte170m、auto/空白→null、小写）。
+    /// <para>
+    /// ⚠ **独立通路字段**——与输入声明（<see cref="Manual"/>.Matrix = <c>--color-matrix</c>）
+    /// 语义正交、不混流（R4 no-op 点名段不受影响）。null = auto ⇒ 规划层
+    /// <c>ColorMappingEngine.ApplyExplicitOutMatrix</c> 早退，整条链路与改造前逐字节同路径
+    /// （CM-REQ-08 回归红线）；非空时由 C-CAPS@1 唯一真值
+    /// <c>ColorMappingEngine.ResolveOutMatrixCapability</c> 在规划层一次性判定（C-CAPS@1）。
+    /// </para>
+    /// </summary>
+    public string? OutMatrixMode;
     /// <summary>日志前缀（文件名等），便于并行队列里对应回任务。</summary>
     public string LogTag = "";
 

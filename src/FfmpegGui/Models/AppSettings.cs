@@ -36,6 +36,9 @@ namespace FfmpegGui.Models
         /// <summary>dngtool 可执行文件路径（LibRaw + DNG SDK，支持 DNG 1.7 JXL，留空则自动检测）</summary>
         public string? DngToolPath { get; set; }
 
+        /// <summary>oxipng 可执行文件路径（PNG 出口优化器 10.2.1，MIT；留空则按 PLAN/artifacts 惯例位自动检测）</summary>
+        public string? PngOptimizerPath { get; set; }
+
         /// <summary>Photoshop 可执行文件路径（留空则自动检测注册表/常见路径）</summary>
         public string? PhotoshopPath { get; set; }
 

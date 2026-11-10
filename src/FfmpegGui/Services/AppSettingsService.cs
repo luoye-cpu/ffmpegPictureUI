@@ -107,6 +107,7 @@ namespace FfmpegGui.Services
             settings.JxlLibDir = Get("JXL_LIB_DIR") ?? settings.JxlLibDir;
             settings.WindowsArtifactsDir = Get("ARTIFACTS_DIR") ?? settings.WindowsArtifactsDir;
             settings.DngToolPath = Get("DNGTOOL_PATH") ?? settings.DngToolPath;
+            settings.PngOptimizerPath = Get("PNGOPTIMIZER_PATH") ?? settings.PngOptimizerPath;
             settings.CacheDirectory = Get("CACHE_DIR") ?? settings.CacheDirectory;
 
             if (bool.TryParse(Get("GPU"), out var gpu)) settings.GpuAcceleration = gpu;
@@ -178,6 +179,7 @@ namespace FfmpegGui.Services
                 WindowsArtifactsDir = _current.WindowsArtifactsDir,
                 IccDirectory = _current.IccDirectory,
                 DngToolPath = _current.DngToolPath,
+                PngOptimizerPath = _current.PngOptimizerPath,
                 PhotoshopPath = _current.PhotoshopPath,
                 PreserveInputFolderStructure = _current.PreserveInputFolderStructure,
                 MaxQueueSize = _current.MaxQueueSize,

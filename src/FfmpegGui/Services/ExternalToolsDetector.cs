@@ -886,6 +886,21 @@ namespace FfmpegGui.Services
                 Source = File.Exists(dngtool) ? ClassifyToolSource(dngtool) : null
             });
 
+            // oxipng — PNG 出口优化器（10.2.1 MIT；png-optimizer-integration T2，照 dngtool 段同构注册）
+            // ⚠ 展示与执行同源（P7f）：解析顺序 = AppSettings.PngOptimizerPath → FindInArtifactsOrPlan
+            //   （C-RESOLVE@1），PngOptimizerService 实际执行用同一函数族；null ≠ 失败（调用方跳过 + 播报）。
+            var oxipng = AppSettingsService.Current.PngOptimizerPath;
+            if (string.IsNullOrWhiteSpace(oxipng) || !File.Exists(oxipng))
+                oxipng = FindInArtifactsOrPlan(PlatformServices.OxipngName);
+            results.Add(new ToolCapability
+            {
+                Name = "oxipng",
+                Path = File.Exists(oxipng) ? oxipng : null,
+                Version = ProbeAndVersion(oxipng, log),           // ⚠ 同上：先探测并记录，再判可用性
+                IsAvailable = File.Exists(oxipng) && !PlatformServices.IsToolUnlaunchable(oxipng),
+                Source = File.Exists(oxipng) ? ClassifyToolSource(oxipng) : null
+            });
+
             return results;
         }
 

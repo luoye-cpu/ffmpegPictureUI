@@ -56,7 +56,27 @@ $srcDir = Join-Path $root 'tests/output/sources'
 #   **3c 必须仍 PASS** —— 整轮 20261027e 实测旧宿主 `430 PASS / 0 FAIL`，拆分并集同为 430（一对一改名守恒），
 #   `verify-ui-split-reproducible` 与 `verify-ui-split-verbatim` 同轮 0 红 ⇒ 生成件与权威源逐字一致，
 #   这 9 条不是"手改拆分侧"造出来的差额。
-$expectedOldCount = 430
+#   2026-11-09（R3）= **446**（+16：GroupJ 增 **J17a–J17h 八条** ColorConflictLabel 显示逻辑
+#   （此前 verify-ui-* 零显示断言）+ **J18a–J18h 八条** ColorToneMapCombo/ColorEngineCombo 采集映射
+#   （CLI 色彩开关 tone-map/engine 的 GUI 承接，断言载体 = CollectOptionsFromUiAsync 的 options 字段）。
+#   改断言改单体、_gen-ui-split.ps1 重新切片；与 verify-ui-param-matrix.ps1 的 $jExpected=114、
+#   verify-ui-host.ps1 的 ui-sweep=157/合计=446 同批抬表。）
+#   2026-11-10（color-matrix-options 批 T7）= **454**（+8：GroupJ 增 **J19a–J19h 八条**
+#   OutputMatrixCombo out-matrix 采集映射（--color-out-matrix 的 GUI 承接，C-GUI@1 基本区控件；
+#   断言载体同 J18 = options.ColorOutMatrix 字段；条目本地化 ⇒ 按 SelectedIndex 语义选档；
+#   语义锁 = bt601→smpte170m 别名归一 / 不受 useAdv 门控 / 预设回放 null 早退 + bt601 归位）。
+#   改断言改单体、_gen-ui-split.ps1 重新切片；实测拆分 ui-sweep `122 PASS / 0 FAIL`
+#   （J=122；宿主跑分见 tests/output/_tmp/color-matrix-t7-probe/j19run.log）；
+#   与 verify-ui-param-matrix.ps1 的 $jExpected=122、verify-ui-host.ps1 的 ui-sweep=165/
+#   合计=454 同批抬表——三把尺同一来历。）
+#   2026-11-11（CMX 一致性批 CMX-3）= **458**（+4：J19 段按 CMX-2 能力过滤行为重写并新增
+#   **J19i–J19l 四条**——avif 过滤集条数与在集判定 / ycgco·fcc·xyb 被过滤判定 /
+#   jpg(cjpegli) backend 感知过滤集 / 切格式失效重置 auto。改写动因 = CMX-2 的
+#   RefillOutMatrixComboForFormat 落地后旧断言全数失效（基线轮实测 ui-sweep 116/6）；
+#   实测拆分 ui-sweep mode `126 PASS / 0 FAIL`（J=126，tests/output/_tmp/cmx3-gate/j19-after.log），
+#   verify-ui-split-reproducible 19/0；与 verify-ui-param-matrix.ps1 的 $jExpected=126、
+#   verify-ui-host.ps1 的 ui-sweep=169/合计=458 同批抬表——三把尺同一来历。）
+$expectedOldCount = 458
 # 一对一改名 ⇒ 新旧总数相同（不是 408/412）
 $expectedNewCount = $expectedOldCount
 

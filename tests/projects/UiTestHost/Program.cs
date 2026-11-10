@@ -2809,6 +2809,364 @@ namespace UiTestHost
                 if (ad != null) ad.IsChecked = false; Pump(6);
             });
 
+            // ── J17 ColorConflictLabel：冲突提示组件的**显示逻辑**（R3，2026-11-09）──
+            // 背景：该组件存在于 MainWindow.xaml(:564) 且由 DetectColorConflicts /
+            //   UpdateAdvancedColorValidation 两条路径驱动，但 verify-ui-* 此前**零显示断言**
+            //   ⇒ 「组件被删/文案路径被改/复位逻辑丢失」都不会让任何门禁变红。
+            // 本组只断言**零探测依赖**的分支（宿主无 PLAN 工具链 ⇒ _currentCapabilities
+            //   为 null 的分支一律不测，与 J9d 的选段理由同源）：
+            //   · 冲突1（HDR→SDR 格式映射）只读 ColorSpaceCombo/FormatCombo 显示值；
+            //   · 模式 2/3/4 缺参提示只读 IccMode 单选 + 三元组下拉；
+            //   · 复位路径（ClearColorConflict）。
+            // 冲突2（烘焙锁定）/冲突3（位深）依赖能力探测或锁定副作用，不在本组（后者由
+            //   verify-ui-strategy-map 的 K 组场景间接覆盖）。
+            // ⚠ 每个分支都自带负控（可见⇒不可见的回程），防止「恒可见/恒不可见」的恒真断言。
+            Safe("J17 ColorConflictLabel 显示逻辑", () =>
+            {
+                SetFormat("PNG"); Pump(10);
+                var cs17 = Find<ComboBox>("ColorSpaceCombo");
+                var lbl = Find<TextBlock>("ColorConflictLabel");
+                if (cs17 == null || lbl == null)
+                {
+                    Check("J17a ColorConflictLabel/ColorSpaceCombo 控件存在",
+                          lbl != null, $"cs={cs17 != null} label={lbl != null}");
+                    return;
+                }
+                Check("J17a ColorConflictLabel 控件存在", true, "found");
+                Check("J17b 初始态不可见（Text 空且 IsVisible=false）",
+                      !lbl.IsVisible, $"visible={lbl.IsVisible} text='{lbl.Text}'");
+
+                // ⚠ 前置订正（实测 2026-11-09）：三元组下拉**不会**随 ColorSpaceCombo 回 auto 而清除
+                //   （`ColorSpaceCombo_SelectionChanged` 对 auto 只 ClearColorConflict，:3873-3877）⇒
+                //   J8/J9 留下的手动三元组会一直残留到本组 ⇒ 模式 2 的「缺参」分支永远不触发。
+                //   这里显式归 auto，让 J17f 测到真实缺参路径。
+                var cp17 = Find<ComboBox>("ColorPrimariesCombo");
+                var ct17 = Find<ComboBox>("ColorTrcCombo");
+                var cm17 = Find<ComboBox>("ColorMatrixCombo");
+                if (cp17 != null) cp17.SelectedItem = "auto";
+                if (ct17 != null) ct17.SelectedItem = "auto";
+                if (cm17 != null) cm17.SelectedItem = "auto";
+                Pump(8);
+
+                // 冲突1：HDR 快速空间 + SDR 目标格式 ⇒ 必须出降级提示。
+                // ⚠ 顺序订正（实测 2026-11-09）：`SetFormat` 触发 `UpdateOptionAvailability` 会
+                //   **重建 ColorSpaceCombo.Items 并复位 SelectedIndex=0（auto）**（:2389-2410）⇒
+                //   「先选空间再换格式」必被清成 auto（首轮实测 J17c/J17d 由此假红）。
+                //   正确顺序 = 先落格式、再选空间。JPEG 的 `SupportedColorSpaces` 含 "BT.2020"
+                //   （FormatCapabilitiesService._cache["jpg"]）⇒ hasHdr=true ⇒ HDR 三项在 items 里，
+                //   「HDR 空间 → SDR 目标」是**真实用户可达**的组合（冲突1 的 fmt 列表里 JPEG 命中）。
+                SetFormat("JPEG"); Pump(10);
+                cs17.SelectedItem = "BT.2020 PQ"; Pump(8);
+                typeof(FfmpegGui.MainWindow).GetMethod("DetectColorConflicts", BF)!.Invoke(W, null);
+                Pump(4);
+                Check("J17c HDR(BT.2020 PQ)→JPEG ⇒ 标签可见",
+                      lbl.IsVisible, $"visible={lbl.IsVisible} text='{lbl.Text}'");
+                Check("J17d 提示文案点名 HDR→SDR 降级",
+                      (lbl.Text ?? "").Contains("HDR") && (lbl.Text ?? "").Contains("JPEG"),
+                      $"text='{lbl.Text}'");
+
+                // 复位：空间回 auto ⇒ 标签必须消失（可见⇒不可见的回程负控）
+                cs17.SelectedItem = "auto"; Pump(8);
+                SetFormat("PNG"); Pump(10);
+                typeof(FfmpegGui.MainWindow).GetMethod("DetectColorConflicts", BF)!.Invoke(W, null);
+                Pump(4);
+                Check("J17e 空间回 auto ⇒ 标签复位不可见",
+                      !lbl.IsVisible, $"visible={lbl.IsVisible} text='{lbl.Text}'");
+
+                // 模式 2（CarryIcc）+ 三元组全 auto ⇒ 必须点名「需手动指定」。
+                // ⚠ 二次清零（实测 2026-11-09）：J17e 把 ColorSpaceCombo 设回 auto 时，
+                //   `ColorSpaceCombo_SelectionChanged` 对 auto 走 `UpdateAdvancedColorControls()`
+                //   （:3873-3877），而后者把三元组**填成默认 bt709/iec61966-2-1/bt709**（:4384-4392，
+                //   FfmpegTokens("auto")=(null,null,null) ⇒ `p ?? "bt709"` 兜底）——
+                //   三元组不再是 auto ⇒ miss 恒空 ⇒ 标签恒不可见（首轮实测 J17f 由此假红）。
+                //   ⇒ 必须在策略切换**之后**再清一次三元组。此时 primaries="auto" 触发的
+                //   `AutoLinkColorParameters` 对 auto 无 case（:4407 无分支）⇒ 不会回填。
+                SetStrategyRadio("IccModeCarry");
+                if (cp17 != null) cp17.SelectedItem = "auto";
+                if (ct17 != null) ct17.SelectedItem = "auto";
+                if (cm17 != null) cm17.SelectedItem = "auto";
+                Pump(8);
+                typeof(FfmpegGui.MainWindow).GetMethod("UpdateAdvancedColorValidation", BF)!.Invoke(W, null);
+                Pump(4);
+                Check("J17f 模式2+三元组auto ⇒ 标签可见且点名缺参",
+                      lbl.IsVisible && (lbl.Text ?? "").Contains("auto"),
+                      $"visible={lbl.IsVisible} text='{lbl.Text}'");
+
+                // 模式 4（Manual）+ 合法三元组 ⇒ ValidateCicpTriple 无告警 ⇒ 标签复位
+                if (cp17 != null) cp17.SelectedItem = "bt709";
+                if (ct17 != null) ct17.SelectedItem = "bt709";
+                if (cm17 != null) cm17.SelectedItem = "bt709";
+                Pump(8);
+                SetStrategyRadio("IccModeBakeOnly");
+                typeof(FfmpegGui.MainWindow).GetMethod("UpdateAdvancedColorValidation", BF)!.Invoke(W, null);
+                Pump(4);
+                Check("J17g 模式4+合法三元组 ⇒ 标签复位不可见",
+                      !lbl.IsVisible, $"visible={lbl.IsVisible} text='{lbl.Text}'");
+
+                // 环境复位：策略回 Recommended、三元组回 auto（不污染后续组/快照）。
+                // ⚠ 再调一次 DetectColorConflicts：IccModeBakeOnly 若经事件链触发过冲突2 的
+                //   「烘焙锁定」（三元组 IsEnabled=false），只有 DetectColorConflicts 的 else
+                //   分支（:4134-4140）会恢复 —— UpdateAdvancedColorValidation 不管可用性。
+                SetStrategyRadio("IccModeNone");
+                if (cp17 != null) cp17.SelectedItem = "auto";
+                if (ct17 != null) ct17.SelectedItem = "auto";
+                if (cm17 != null) cm17.SelectedItem = "auto";
+                Pump(8);
+                typeof(FfmpegGui.MainWindow).GetMethod("UpdateAdvancedColorValidation", BF)!.Invoke(W, null);
+                typeof(FfmpegGui.MainWindow).GetMethod("DetectColorConflicts", BF)!.Invoke(W, null);
+                Pump(4);
+                Check("J17h 环境复位后标签保持不可见（负控收尾）",
+                      !lbl.IsVisible, $"visible={lbl.IsVisible} text='{lbl.Text}'");
+            });
+
+            // ── J18 ColorToneMapCombo / ColorEngineCombo：显示值 → 采集字段（R3，2026-11-09）──
+            // 背景：CLI 8 个色彩开关此前 GUI 零承接；本组锁的是 tone-map / engine 两轴的
+            //   「控件显示值 → CollectOptionsFromUiAsync 产出的 options 字段」映射。
+            // 载体订正：这两个开关**没有 ffmpeg token 形态**（--color-tone-map/--color-engine 是
+            //   CLI 进程内路由/算子选择，不进 ffmpeg 命令行；消费点 = 引擎路径 ColorIntentFactory
+            //   与裁决链）⇒ J 组常规的「显示值→命令串 token」模式在这里没有载体，
+            //   改用**唯一采集点**的 options 字段断言（N1b 的反射调用形态）；
+            //   「命令串不变」另设一条负控（J18g，J10 同款——证明选择不污染预览 token）。
+            // 关键语义锁（J18d）：显式 "none" 必须**置 ColorToneMapExplicit**——缺了它，
+            //   「显式 none」会被 ColorIntentFactory 的 HDR→SDR 兜底静默升级成 Hable。
+            Safe("J18 tone-map/engine 采集映射", () =>
+            {
+                var tm18 = Find<ComboBox>("ColorToneMapCombo");
+                var en18 = Find<ComboBox>("ColorEngineCombo");
+                if (tm18 == null || en18 == null)
+                {
+                    Check("J18a 两控件存在", false, $"tm={tm18 != null} eng={en18 != null}");
+                    return;
+                }
+                var tmItems = new List<string>();
+                for (int i = 0; i < tm18.ItemCount; i++) tmItems.Add(tm18.Items[i] as string ?? "<null>");
+                var enItems = new List<string>();
+                for (int i = 0; i < en18.ItemCount; i++) enItems.Add(en18.Items[i] as string ?? "<null>");
+                var tmOk = true; var enOk = true;
+                foreach (var w in new[] { "auto", "none", "reinhard", "hable", "mobius", "bt2446a" })
+                    if (!tmItems.Contains(w)) tmOk = false;
+                foreach (var w in new[] { "auto", "engine", "legacy" })
+                    if (!enItems.Contains(w)) enOk = false;
+                Check("J18a 两控件存在且语料齐备", tmOk && enOk,
+                      $"tm=[{string.Join(",", tmItems)}] eng=[{string.Join(",", enItems)}]");
+
+                var ac18 = Find<CheckBox>("UseAdvancedColor");
+                if (ac18 == null) { Check("J18 UseAdvancedColor 存在", false, "null"); return; }
+                SetFormat("PNG"); Pump(10);
+                var cs18 = Find<ComboBox>("ColorSpaceCombo");
+                if (cs18 != null) cs18.SelectedItem = "auto"; Pump(8);
+                ac18.IsChecked = true; Pump(8);           // 采集的 useAdv 闸
+
+                Func<(string? tm, bool tmEx, string eng)> Collect18 = () =>
+                {
+                    var collect = typeof(FfmpegGui.MainWindow).GetMethod("CollectOptionsFromUiAsync", BF)!;
+                    var task = (System.Threading.Tasks.Task<FfmpegGui.Models.FfmpegOptions>)collect
+                        .Invoke(W, new object?[] { System.IO.Path.Combine(SrcDir, "src_8bit.png"), false })!;
+                    for (int spin = 0; spin < 300 && !task.IsCompleted; spin++) Pump(1);
+                    if (!task.IsCompleted) return ("<timeout>", false, "<timeout>");
+                    var o = task.Result;
+                    return (o.ColorToneMap, o.ColorToneMapExplicit, o.ColorEngine);
+                };
+
+                var b = Collect18();
+                Check("J18b 默认(auto) ⇒ none/不显式/engine=auto",
+                      b.tm == "none" && !b.tmEx && b.eng == "auto",
+                      $"tm={b.tm} ex={b.tmEx} eng={b.eng}");
+
+                tm18.SelectedItem = "hable"; Pump(8);
+                var c = Collect18();
+                Check("J18c hable ⇒ tm=hable 且不显式",
+                      c.tm == "hable" && !c.tmEx, $"tm={c.tm} ex={c.tmEx}");
+
+                tm18.SelectedItem = "none"; Pump(8);
+                var d = Collect18();
+                Check("J18d 显式 none ⇒ tm=none 且 Explicit=true（防静默升级 Hable）",
+                      d.tm == "none" && d.tmEx, $"tm={d.tm} ex={d.tmEx}");
+
+                en18.SelectedItem = "engine"; Pump(8);
+                var e = Collect18();
+                Check("J18e engine ⇒ eng=engine（显式走引擎）",
+                      e.eng == "engine", $"eng={e.eng} tm={e.tm}");
+
+                en18.SelectedItem = "legacy"; Pump(8);
+                var f = Collect18();
+                Check("J18f legacy ⇒ eng=legacy（传统管线）",
+                      f.eng == "legacy", $"eng={f.eng}");
+
+                // 命令串不变负控（J10 同款）：两开关无 ffmpeg token 形态 ⇒ 选择前后预览串必须逐字相同
+                en18.SelectedItem = "auto"; Pump(8);
+                tm18.SelectedItem = "auto"; Pump(8); Regen();
+                var g1 = Cmd();
+                tm18.SelectedItem = "hable"; Pump(8); en18.SelectedItem = "engine"; Pump(8); Regen();
+                var g2 = Cmd();
+                Check("J18g 选择 tone-map/engine ⇒ 预览命令串逐字不变（无 token 污染）",
+                      g1 == g2, $"len1={g1.Length} len2={g2.Length}");
+
+                // 复位：不勾 useAdv ⇒ 采集恒默认（useAdv 闸），控件回 auto
+                tm18.SelectedItem = "auto"; Pump(8);
+                en18.SelectedItem = "auto"; Pump(8);
+                ac18.IsChecked = false; Pump(8);
+                var h = Collect18();
+                Check("J18h 不勾高级色彩 ⇒ 采集恒默认（useAdv 闸）",
+                      h.tm == "none" && !h.tmEx && h.eng == "auto",
+                      $"tm={h.tm} ex={h.tmEx} eng={h.eng}");
+            });
+
+            // ── J19 OutputMatrixCombo：显示档 → 采集字段 + 能力过滤（T4/T7 批 + CMX-2/CMX-3，2026-11-11）──
+            // 背景：--color-out-matrix 的 GUI 承接（C-GUI@1，基本区色度抽样旁）。
+            // ⚠ CMX-2 起 RefillOutMatrixComboForFormat 按「格式 + 编码器后端」能力过滤条目
+            //   （消费唯一真值 ResolveOutMatrixCapability，非 Rejected 才进下拉）：
+            //   png/apng/tiff/bmp/ppm/gif/jxr/dng={auto,rgb}、webp 与 jpg(mjpeg)={auto,bt601,bt470bg,smpte170m}、
+            //   jpg(cjpegli) 与 jxl(两后端)={auto,rgb,xyb}、avif={auto,rgb,bt709,bt601,bt470bg,smpte170m,smpte240m,bt2020nc}。
+            //   全 11 档（C-TOKEN@1 表序）仅在语义注释里保留：auto,rgb,bt709,bt601,bt470bg,smpte170m,
+            //   smpte240m,fcc,bt2020nc,ycgco,xyb。基线轮实测：初始化 Refill 已把 png 收缩成 2 档
+            //   （count=2）⇒ 旧「11 档」断言与固定 index 选档全数失效，本段按过滤行为重写。
+            // ⚠ 条目文本经 FillComboByLoc 本地化渲染 ⇒ **不能**按显示文本选档（zh/en 会漂），
+            //   全部用 SelectedIndex 语义（各格式过滤集内的局部表序）+ MapOutMatrixValue 反射归一
+            //   断言条目集合（zh 显示名经归一表落到 token：YCoCg→ycgco、BT.2020 NC→bt2020nc…）。
+            // 关键语义锁：
+            //   J19a CMX-2 过滤：png 下恰 2 档（auto+rgb）；
+            //   J19c bt601 别名归一 smpte170m（MapOutMatrixValue，C-TOKEN@1）——webp 过滤集内；
+            //   J19f **不受 useAdv 门控**（C-GUI@1：与 Chroma 同采集模式——基本区控件，
+            //     MainWindow.xaml.cs 采集点在 useAdv 分支之外）；
+            //   J19g 预设回放 SetOutMatrixCombo：null 早退（旧预设 JSON 无此键 ⇒ 控件保持现状）
+            //     + bt601 归位（MapOutMatrixValue 归一后按 token 匹配条目；webp 集内）；
+            //   J19i/J19j/J19k/J19l 过滤集精确锁 / ycgco 等被过滤 / cjpegli 后端集 / 失效重置 auto。
+            Safe("J19 out-matrix 采集映射", () =>
+            {
+                var om19 = Find<ComboBox>("OutputMatrixCombo");
+                if (om19 == null) { Check("J19a OutputMatrixCombo 存在", false, "null"); return; }
+
+                Func<string?> Collect19 = () =>
+                {
+                    var collect = typeof(FfmpegGui.MainWindow).GetMethod("CollectOptionsFromUiAsync", BF)!;
+                    var task = (System.Threading.Tasks.Task<FfmpegGui.Models.FfmpegOptions>)collect
+                        .Invoke(W, new object?[] { System.IO.Path.Combine(SrcDir, "src_8bit.png"), false })!;
+                    for (int spin = 0; spin < 300 && !task.IsCompleted; spin++) Pump(1);
+                    if (!task.IsCompleted) return "<timeout>";
+                    return task.Result.ColorOutMatrix;
+                };
+                // 条目集合归一（J19i/j/k 过滤集断言）：MapOutMatrixValue 是 private static。
+                var mapOm19 = typeof(FfmpegGui.MainWindow).GetMethod("MapOutMatrixValue", BFS);
+                Func<object?, string?> Norm19 = o =>
+                {
+                    if (mapOm19 == null) return "<no-mapper>";
+                    try { return mapOm19.Invoke(null, new object?[] { o as string }) as string; }
+                    catch { return "<throw>"; }
+                };
+                Func<List<string?>> Set19 = () =>
+                {
+                    var s = new List<string?>();
+                    for (int i = 0; i < om19.ItemCount; i++) s.Add(Norm19(om19.Items[i]!));
+                    return s;
+                };
+
+                SetFormat("PNG"); Pump(10);
+
+                Check("J19a 控件存在且 png 过滤集恰 2 档（CMX-2 能力过滤 auto+rgb）",
+                      om19.ItemCount == 2, $"count={om19.ItemCount}");
+
+                om19.SelectedIndex = 0; Pump(8);
+                var b19 = Collect19();
+                Check("J19b 默认 auto（index 0）⇒ ColorOutMatrix == null（CM-REQ-08 零行为）",
+                      b19 == null, $"val={b19 ?? "<null>"}");
+
+                SetFormat("WebP"); Pump(10);   // webp 过滤集 {auto,bt601,bt470bg,smpte170m}
+                om19.SelectedIndex = 1; Pump(8);   // bt601 档
+                var c19 = Collect19();
+                Check("J19c 选中 bt601 档 ⇒ 采集 smpte170m（别名归一，C-TOKEN@1；webp 过滤集内）",
+                      c19 == "smpte170m", $"val={c19 ?? "<null>"}");
+
+                SetFormat("JXL"); Pump(10);    // jxl 过滤集 {auto,rgb,xyb}（两后端判定格一致）
+                om19.SelectedIndex = 2; Pump(8);   // xyb 档
+                var d19 = Collect19();
+                Check("J19d 选中 xyb 档 ⇒ 采集 xyb（特殊成员直通；jxl 过滤集内）",
+                      d19 == "xyb", $"val={d19 ?? "<null>"}");
+
+                SetFormat("AVIF"); Pump(10);   // avif 过滤集 8 档
+                om19.SelectedIndex = 7; Pump(8);   // bt2020nc 档（集内末位）
+                var e19 = Collect19();
+                Check("J19e 选中 bt2020nc 档 ⇒ 采集 bt2020nc（H.273 族直通；avif 过滤集内）",
+                      e19 == "bt2020nc", $"val={e19 ?? "<null>"}");
+
+                // J19f：useAdv 闸否定——不勾高级色彩，采集仍带显式值（基本区控件语义）
+                var ac19 = Find<CheckBox>("UseAdvancedColor");
+                if (ac19 == null) { Check("J19f UseAdvancedColor 存在", false, "null"); return; }
+                ac19.IsChecked = false; Pump(8);
+                var f19 = Collect19();
+                Check("J19f 不勾高级色彩 ⇒ 采集仍 = bt2020nc（不受 useAdv 门控，C-GUI@1 基本区语义）",
+                      f19 == "bt2020nc", $"val={f19 ?? "<null>"}");
+
+                // J19i/J19j：avif 过滤集内容精确锁（判定 Rejected 的档不进下拉）。
+                //   在集判定（J19i）与被过滤判定（J19j）分开：一块一个测试，红的时候能直接点名是
+                //   「条数漂了」还是「该被过滤的档漏进了下拉」。
+                var set19 = Set19();
+                Check("J19i avif 过滤集恰 8 档且 bt2020nc/smpte240m 在集（CMX-2 唯一真值）",
+                      om19.ItemCount == 8 && set19.Contains("bt2020nc") && set19.Contains("smpte240m"),
+                      $"count={om19.ItemCount} set=[{string.Join(",", set19)}]");
+                Check("J19j avif 下 ycgco/fcc/xyb 均被过滤（C4/C5 校准 Rejected 档不进下拉）",
+                      !set19.Contains("ycgco") && !set19.Contains("fcc") && !set19.Contains("xyb"),
+                      $"set=[{string.Join(",", set19)}]");
+
+                // J19g：预设回放（反射私有 SetOutMatrixCombo）——webp 集内 bt601 归位 + null 早退
+                SetFormat("WebP"); Pump(10);
+                var setOm = typeof(FfmpegGui.MainWindow).GetMethod("SetOutMatrixCombo", BF);
+                om19.SelectedIndex = 0; Pump(8);   // 先回 auto
+                setOm!.Invoke(W, new object?[] { "bt601" }); Pump(8);
+                var g19a = om19.SelectedIndex;     // webp 集内 bt601=index 1
+                setOm!.Invoke(W, new object?[] { null }); Pump(8);   // null ⇒ 早退，控件保持 bt601 档
+                var g19b = om19.SelectedIndex;
+                Check("J19g 预设回放：bt601 ⇒ 归位 bt601 档（webp 集内 index 1）；null ⇒ 早退不动控件",
+                      g19a == 1 && g19b == 1, $"after601={g19a} afterNull={g19b}");
+
+                // J19l：失效重置——AVIF 下选 bt2020nc 后切 PNG（token 不在 png 集）⇒ 归 auto
+                SetFormat("AVIF"); Pump(10);
+                om19.SelectedIndex = 7; Pump(8);   // bt2020nc
+                SetFormat("PNG"); Pump(10);
+                var l19 = Collect19();
+                Check("J19l 切格式后选中失效 ⇒ 重置 auto（CMX-2 失效回放 newIdx=0；采集 null）",
+                      om19.SelectedIndex == 0 && l19 == null, $"idx={om19.SelectedIndex} val={l19 ?? "<null>"}");
+
+                // J19k：cjpegli 后端过滤集（jpg×cjpegli ⇒ {auto,rgb,xyb}；编码器切换触发 Refill）
+                SetFormat("JPEG"); Pump(10);
+                var enc19 = Find<ComboBox>("EncoderCombo");
+                if (enc19 != null)
+                {
+                    string? pick19 = null;
+                    for (int i = 0; i < enc19.ItemCount; i++)
+                    {
+                        var s = enc19.Items[i] as string;
+                        if (s != null && s.Contains("cjpegli", StringComparison.OrdinalIgnoreCase)) { pick19 = s; break; }
+                    }
+                    if (pick19 != null)
+                    {
+                        enc19.SelectedItem = pick19; Pump(10);   // EncoderCombo.SelectionChanged ⇒ Refill(backend=Cjpegli)
+                        var k19 = Set19();
+                        Check("J19k jpg(cjpegli) 过滤集 3 档且 xyb 在集、bt709 不在（backend 感知过滤，C9）",
+                              om19.ItemCount == 3 && k19.Contains("xyb") && !k19.Contains("bt709"),
+                              $"count={om19.ItemCount} set=[{string.Join(",", k19)}]");
+                        if (enc19.ItemCount > 0) { enc19.SelectedIndex = 0; Pump(8); }   // 复位默认编码器
+                    }
+                    else
+                    {
+                        Check("J19k jpg(cjpegli) 过滤集 3 档且 xyb 在集、bt709 不在（backend 感知过滤，C9）",
+                              false, "cjpegli not in encoder list (detection unsettled?)");
+                    }
+                }
+                else
+                {
+                    Check("J19k jpg(cjpegli) 过滤集 3 档且 xyb 在集、bt709 不在（backend 感知过滤，C9）",
+                          false, "EncoderCombo null");
+                }
+
+                // 复位：回 PNG + auto ⇒ 采集 null（负控收尾，不污染后续组/快照）
+                SetFormat("PNG"); Pump(10);
+                om19.SelectedIndex = 0; Pump(8);
+                var h19 = Collect19();
+                Check("J19h 复位 auto ⇒ 采集恒 null（回归红线收尾）",
+                      h19 == null, $"val={h19 ?? "<null>"}");
+            });
+
             SweepReset();
         }
 
