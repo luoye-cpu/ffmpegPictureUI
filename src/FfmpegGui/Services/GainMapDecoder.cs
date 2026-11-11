@@ -488,12 +488,15 @@ public static class GainMapDecoder
                     var raw0 = Path.Combine(tempDir, "base_probe.rgba");
                     var probeArgs = $"-y -i \"{inputPath}\" -map 0:0 -frames:v 1 -pix_fmt gbrpf32le -f rawvideo \"{raw0}\"";
                     var probeExit = await RunFfmpegAsync(probeArgs, ffmpeg, log, ct);
+                    // B3（2026-11-11 审查 P2）：这里只消费字节数（像素总数 = len/12），旧实现把整帧
+                    // gbrpf32le 读进 LOH（12MP≈146 MB / 48MP≈440 MB）只为取 .Length —— 12MP 级
+                    // 输入每次多一次全量分配+拷贝。文件长度是同一真值，改用 FileInfo.Length（零分配）。
                     if (probeExit == 0 && File.Exists(raw0))
                     {
-                        var pb = await File.ReadAllBytesAsync(raw0, ct);
-                        if (pb.Length > 0 && pb.Length % 12 == 0)
+                        var rawLen = new FileInfo(raw0).Length;
+                        if (rawLen > 0 && rawLen % 12 == 0)
                         {
-                            long px = pb.Length / 12;
+                            long px = rawLen / 12;
                             // 12B/px 的字节流无法自证宽高，但等比可解：在已知容器声明下解方程。
                             // 这里只处理「探测尺寸与字节不符」的修正：像素总数是硬真值。
                             long probePx = (long)baseW * baseH;

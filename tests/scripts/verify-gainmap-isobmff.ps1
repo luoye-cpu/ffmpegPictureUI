@@ -101,7 +101,7 @@
 #     ⚠ 真实原件是**用户个人素材，不入仓**（口径同 §3e），本节覆盖的是**结构形态**，
 #     不代表图像语义正确性（增益公式/色域语义另有门禁）。
 #
-# 断言（共 155 条）：§0 前置 6 · §1 容器层 8 · §1b HEVC 解码路径 11（含 2 条负控 + 1 条反控）·
+# 断言（共 169 条）：§0 前置 6 · §1 容器层 8 · §1b HEVC 解码路径 11（含 2 条负控 + 1 条反控）·
 #                   **§1c Apple auxC 识别 4（含 URN 反控 + 21496 回归）** ·
 #                   **§1h Apple aux 完整解码 15（AU-W2 2026-11-10：合成器在位/执行/三件在位 3 + exiftool 身份 2 +
 #                   探针臂 2 + 裸流端到端 1 + B/C 负控 2 + Exif 变异负控 1 + 端到端 png 分叉 3；合成件一轮现生成，
@@ -116,7 +116,15 @@
 #                   §3b 缺陷 C 行为 4（含负控与素材形态自检）· **§3c HEIC 端到端行为 5（含负控）** ·
 #                   **§3d 厂商尾注执行面 4（含拒因与互斥点名）** · **§3e 底图取法 A/B 4（含对照臂分叉）** · **§3f HEIC→BT.2020/PQ 出口 11（三读者 + 码域分叉 + 2 条对照 + tmap pixi）** ·
 #                   **§3g AVIF 增益图 + alpha 5（含 PNG 对照；点名"透明被拍平"）** · §4 收尾 1 ·
-#                   **§3v 厂商尾注真机件 9（2026-11-09 新增：前提 sha 锁 1 + 臂①识别/几何/headroom/载荷 4 + 臂② 1/2 比例 1 + 臂③a 比率读数 1 + 臂③b 字节变异负控 2；语料缺失时整段 SKIP，收尾行 SKIP=9 活体可见，不假绿不误红）**
+#                   **§3v 厂商尾注真机件 9（2026-11-09 新增：前提 sha 锁 1 + 臂①识别/几何/headroom/载荷 4 + 臂② 1/2 比例 1 + 臂③a 比率读数 1 + 臂③b 字节变异负控 2；语料缺失时整段 SKIP，收尾行 SKIP=9 活体可见，不假绿不误红）** ·
+#                   **§1j ISOBMFF alpha 识别 + 透明端到端 10（2026-11-11 修复批 B：AVIF 的 libavif
+#                   AVIF_URN_ALPHA0 = `urn:mpeg:mpegB:cicp:systems:auxiliary:alpha` 与 HEIC 的
+#                   `auxid:1` 两条 URN 都认；AVIF alpha → PNG rgba 且 alphaextract 有非平凡值 +
+#                   无 aux 负控 rgb24 + HEIC auxid:1 正控；HEIC 夹具 `tests/data/synth_heic_alpha.heic`
+#                   为 400x300 合成 RGBA（sha256[:16] 见 §1j 前提行，生成器属上一批的
+#                   tests/output 一次性合成，产物 77,237 B 入库）** ·
+#                   **§1k D5 截断预检 fail-closed 4（2026-11-11 修复批 B：meta 缺失+链断 / meta 子链断 /
+#                   iloc extent 越过 EOF 三形态都必须**被拦截并点名**，完好件正控不误拦）**
 #   ⚠ 2026-11-09 条数更正：旧散文「115」与实测定义面 121 不符（历史漂移，非本轮引入，按实测口径改写）；
 #     本轮 §3v +9 ⇒ 定义面 130；当轮执行面 PASS=127 FAIL=1 = 128（§3f-7/§3f-8 两条「产物未产出」
 #     兜底臂在产物在位时不触发，差 2 属预期内条件分支，python 差集逐条核对过）。
@@ -1314,6 +1322,106 @@ $pngPix = ''
 if ($f3gPng -ne '') { $pngPix = ((ExecOut $fp "-v error -select_streams v:0 -show_entries stream=pix_fmt -of csv=p=0 `"$f3gPng`"" "alpha_png_pix").text).Trim() }
 CK (($f3gPng -ne '') -and ($pngPix -match 'a')) `
    "§3g-4 对照：同一源走普通 PNG 出口**保留** alpha（pix_fmt=$pngPix）⇒ 上面不是源本身没 alpha"
+
+# ── §1j ISOBMFF alpha：两条真实 URN 都要认，且透明必须真的到 PNG 输出 ─────────────────────
+#   缺陷（2026-11-11 审查 P1-1）：`IsoBmffGainMapProbe` 只认 `auxid:1`（HEVC/旧 AV1 写法），
+#   而 libavif **写 AVIF alpha 用的是 MIAF 标准 URN** `urn:mpeg:mpegB:cicp:systems:auxiliary:alpha`
+#   （vendored `internal.h` 的 AVIF_URN_ALPHA0 / `write.c:37` alphaURN）⇒ AVIF 带 alpha 的输入被当
+#   无 alpha：转 PNG 输出 rgb24、透明静默丢失、exit 0 零告警。
+#   本段三条腿：
+#     ① 识别：AVIF（avifenc 现造，§0 的 $alphaAvif）与 HEIC（`auxid:1`，入库夹具）都 auxAlpha=True；
+#        普通静态 AVIF（$plain）必须 auxAlpha=False（不把「第二条流」当 alpha —— DJI 灰增益图反例）。
+#     ② AVIF alpha → PNG：pix_fmt 必须带 alpha，且 alphaextract 读数**非平凡**（不接受「rgba 但全 255」，
+#        那正是修前半成品形态：只补 pix_fmt 不做 alphamerge ⇒ 声称了通道却仍是全不透明）。
+#     ③ 无 aux 负控 → PNG 不得被补出 alpha 通道；HEIC `auxid:1` 正控仍 rgba 且透明保留。
+#   夹具：HEIC alpha 件 `tests/data/synth_heic_alpha.heic`（400x300 合成 RGBA，sha256[:16] 见 §1j-0；
+#   生成器属上一批 tests/output 一次性合成，产物 77,237 B 入库——结构/URN 形态是本段判据载体）。
+$heicAlpha = "$root/tests/data/synth_heic_alpha.heic"
+$heicAlphaSha = ''
+if (Test-Path $heicAlpha) { $heicAlphaSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $heicAlpha).Hash.ToLower().Substring(0, 16) }
+function AlphaStats([string]$path, [string]$tag) {
+  $t = (Exec $ff "-v info -i `"$path`" -vf `"alphaextract,signalstats,metadata=print`" -frames:v 1 -f null -" $tag).text
+  $mn = -1; $mx = -1
+  $m1 = [regex]::Match($t, 'signalstats\.YMIN=(\d+)')
+  $m2 = [regex]::Match($t, 'signalstats\.YMAX=(\d+)')
+  if ($m1.Success) { $mn = [int]$m1.Groups[1].Value }
+  if ($m2.Success) { $mx = [int]$m2.Groups[1].Value }
+  return @{ min = $mn; max = $mx }
+}
+function PixFmt([string]$path, [string]$tag) {
+  return ((ExecOut $fp "-v error -select_streams v:0 -show_entries stream=pix_fmt -of csv=p=0 `"$path`"" $tag).text).Trim()
+}
+Write-Host "`n### §1j ISOBMFF alpha：AVIF ALPHA0 URN / HEIC auxid:1 识别 + 透明端到端 ###" -ForegroundColor Cyan
+CK ((Test-Path $heicAlpha) -and ($heicAlphaSha -eq '3873a32390124eb0')) `
+   "§1j-0 前提：HEIC alpha 夹具在位且 sha256[:16]=3873a32390124eb0（实 $heicAlphaSha）"
+CK (Test-Path $alphaAvif) `
+   "§1j-1 前提：AVIF+alpha 素材由 avifenc 现造成功（$alphaAvif）"
+$pAvifA = Exec $sp "gainmap-isobmff `"$alphaAvif`" none" "p_avif_alpha2"
+CK ($pAvifA.text -match 'auxAlpha=True') `
+   "§1j-2 AVIF alpha 识别：libavif 的 ALPHA0 URN（auxiliary:alpha）⇒ auxAlpha=True（只认 auxid:1 的旧实现判 False）"
+CK ($cPlain.text -match 'auxAlpha=False') `
+   "§1j-3 无 aux 负控：普通静态 AVIF ⇒ auxAlpha=False（不是「见到第二条视频流就算 alpha」——DJI 灰增益图反例）"
+$pHeicA = Exec $sp "gainmap-isobmff `"$heicAlpha`" none" "p_heic_alpha"
+CK ($pHeicA.text -match 'auxAlpha=True') `
+   "§1j-4 HEIC 正控：auxid:1 URN ⇒ auxAlpha=True（HEVC 腿保持兼容，不被 AVIF 改动吞掉）"
+$eAvifA = RunApp $alphaAvif "png" "j_avif_alpha"
+$fAvifA = FirstFile $eAvifA.dir 'png'
+$pixAvifA = ''
+if ($fAvifA -ne '') { $pixAvifA = PixFmt $fAvifA 'j_avif_pix' }
+CK (($eAvifA.prods -ge 1) -and ($pixAvifA -match 'a')) `
+   "§1j-5 AVIF alpha → PNG：产物 pix_fmt=$pixAvifA（必须带 alpha 通道；修前 rgb24）"
+$asAvifA = @{ min = -1; max = -1 }
+if ($fAvifA -ne '') { $asAvifA = AlphaStats $fAvifA 'j_avif_alpha_stats' }
+CK (($asAvifA.min -ge 0) -and ($asAvifA.min -lt 32) -and ($asAvifA.max -gt 224)) `
+   "§1j-6 AVIF alpha 透明区保留：产物 alphaextract YMIN=$($asAvifA.min) YMAX=$($asAvifA.max)（源 0..255；只补 pix_fmt 不 merge 的半成品是全 255）"
+$ePlainPng = RunApp $plain "png" "j_plain_png"
+$fPlainPng = FirstFile $ePlainPng.dir 'png'
+$pixPlainPng = ''
+if ($fPlainPng -ne '') { $pixPlainPng = PixFmt $fPlainPng 'j_plain_pix' }
+CK (($ePlainPng.prods -ge 1) -and ($pixPlainPng -ne '') -and ($pixPlainPng -notmatch 'a')) `
+   "§1j-7 无 aux 负控 → PNG：pix_fmt=$pixPlainPng（不得被补出 alpha 通道；否则「保留透明」会变成给所有输入加 alpha）"
+$eHeicA = RunApp $heicAlpha "png" "j_heic_alpha"
+$fHeicA = FirstFile $eHeicA.dir 'png'
+$pixHeicA = ''
+if ($fHeicA -ne '') { $pixHeicA = PixFmt $fHeicA 'j_heic_pix' }
+CK (($eHeicA.prods -ge 1) -and ($pixHeicA -match 'a')) `
+   "§1j-8 HEIC alpha → PNG：pix_fmt=$pixHeicA（HEIC 正控仍 rgba）"
+$asHeicA = @{ min = -1; max = -1 }
+if ($fHeicA -ne '') { $asHeicA = AlphaStats $fHeicA 'j_heic_alpha_stats' }
+CK (($asHeicA.min -ge 0) -and ($asHeicA.min -lt 64) -and ($asHeicA.max -gt 192)) `
+   "§1j-9 HEIC alpha 透明区保留：产物 alphaextract YMIN=$($asHeicA.min) YMAX=$($asHeicA.max)（auxid:1 腿同样要真合并，不只改 pix_fmt）"
+
+# ── §1k D5 截断预检 **fail-closed**：不确定 ⇒ 不当作「未截断」──────────────────────────────
+#   缺陷（2026-11-11 审查 P2-3）：`CheckTruncationAsync` 对「meta 未定位 + box 链中断」「meta 子链中断」
+#   「construction_method≠0/1」「>256MB」都返回「未截断」/null（= 放行）⇒ D5 声称的「截断件不进 ffmpeg」有洞。
+#   修复后：确认截断 ⇒ IsTruncated=true；**无法判定 ⇒ 同样拦截**并由调用侧日志点名（fail-closed）。
+#   本节用三类构造件走**产品端到端**（不是直接调探针）：产物必须 0 个、日志必须带点名。
+Write-Host "`n### §1k D5 截断预检 fail-closed（meta 缺失 / 链断 / extent 截断都必须拦）###" -ForegroundColor Cyan
+$b2Ftyp = New-Box "ftyp" (Join-Bytes @([System.Text.Encoding]::ASCII.GetBytes("avif"), [byte[]](0,0,0,0), [System.Text.Encoding]::ASCII.GetBytes("avifmif1miaf")))
+# ① meta 缺失 + 顶层 box 链中断：ftyp + 一个声称 4096 B 却只有 8 B 头的 mdat
+$b2Bad1 = "$work/b2_meta_missing_trunc.avif"
+[System.IO.File]::WriteAllBytes($b2Bad1, (Join-Bytes @($b2Ftyp, [byte[]](0,0,0x10,0), [System.Text.Encoding]::ASCII.GetBytes("mdat"))))
+# ② meta 在，但 meta 子 box 链中断：meta 体里放一个声称 4096 B 的 iinf 头（body 只有 12 B）
+$b2Bad2 = "$work/b2_meta_body_broken.avif"
+[System.IO.File]::WriteAllBytes($b2Bad2, (Join-Bytes @($b2Ftyp, (New-Box "meta" (Join-Bytes @([byte[]](0,0,0,0), [byte[]](0,0,0x10,0), [System.Text.Encoding]::ASCII.GetBytes("iinf")))))))
+# ③ extent 越过 EOF：完好件截到 5000 B（iloc extent 端点落在文件末尾之后）
+$b2Trunc = "$work/b2_extent_truncated.heic"
+$b2Src = [System.IO.File]::ReadAllBytes($heicPos)
+$b2Cut = New-Object byte[] 5000
+[Array]::Copy($b2Src, 0, $b2Cut, 0, 5000)
+[System.IO.File]::WriteAllBytes($b2Trunc, $b2Cut)
+$k1 = RunApp $b2Bad1 "png" "k_meta_missing"
+CK (($k1.prods -eq 0) -and ($k1.text -match '文件不完整') -and ($k1.text -match 'meta 未定位')) `
+   "§1k-1 meta 缺失 + 顶层 box 链中断 ⇒ 拦截且点名「meta 未定位」（实 产物=$($k1.prods)；旧实现返回未截断 ⇒ 会送进 ffmpeg）"
+$k2 = RunApp $b2Bad2 "png" "k_meta_body"
+CK (($k2.prods -eq 0) -and ($k2.text -match '文件不完整') -and ($k2.text -match 'box 链解析中断')) `
+   "§1k-2 meta 子 box 链中断 ⇒ 拦截且点名「box 链解析中断」（实 产物=$($k2.prods)；旧实现通过 meta 已定位 + IsTruncated=false 放行）"
+$k3 = RunApp $b2Trunc "jpg" "k_extent_trunc"
+CK (($k3.prods -eq 0) -and ($k3.text -match '文件不完整') -and ($k3.text -match '越过数据区终点')) `
+   "§1k-3 iloc extent 越过 EOF 的截断件 ⇒ 拦截且点名「越过数据区终点」（实 产物=$($k3.prods)；回归锁）"
+$k4 = RunApp $heicPos "jpg" "k_valid_ctl"
+CK (($k4.prods -ge 1) -and ($k4.text -notmatch '文件不完整')) `
+   "§1k-4 正控：完好件不被新 fail-closed 误拦（实 产物=$($k4.prods)）"
 
 # ── 已知缺陷的可见性行（**不判红**，但必须把现象打在输出里）────────────────────
 #   现象（HEAD c694f27 实测）：`--color-space` 无取值校验（CliParser.cs:760）+ Resolve 用子串关键词

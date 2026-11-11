@@ -968,6 +968,28 @@ namespace FfmpegGui.Services
                     if (insertFramesV1) { extra.Add("-frames:v"); extra.Add("1"); }
                     args.InsertRange(args.Count - 1, extra);
                 }
+                else if (vfIdx2 < 0 && inputHasAuxAlpha && insertFramesV1)
+                {
+                    // B1（2026-11-11 审查 P1-1 收口）：**没有色彩链（无 -vf）时，ISOBMFF 辅助 alpha 仍必须合并**。
+                    // 旧实现把整段 alpha 合并逻辑嵌在「已有 -vf」里 ⇒ AVIF/HEIC 的 aux alpha（独立视频流、
+                    // 主流 pix_fmt 不带 alpha 平面）转 PNG 只改 `-pix_fmt rgba`，像素 alpha 仍是全 255：
+                    // 实测 ffmpeg 命令行 `-pix_fmt rgba` 但无 alphamerge，产物 `rgba` 且
+                    // alphaextract YMIN=YMAX=255 ⇒ 透明被**静默拍平**（比修前「rgb24」更隐蔽：
+                    // 这次连通道都声称了）。这里补「无链」形态：直接 `[0:v]` + 第二视频流灰度 alphamerge。
+                    // 限单帧目标（insertFramesV1）——多帧目标引入第二输入会改变帧数语义（与上面 -frames:v 1 同源）。
+                    var aBd0 = options.BitDepth.HasValue ? options.BitDepth.Value : ProbeInputBitDepth(probeInput);
+                    var grayFmt0 = ClampAvifBd(aBd0) <= 8 ? "gray" : "gray16le";
+                    var graph0 = $"[1:v:1]format={grayFmt0}[a];[0:v][a]alphamerge";
+                    var iIdx0 = args.FindIndex(a => a == "-i");
+                    if (iIdx0 >= 0 && iIdx0 + 1 < args.Count)
+                    {
+                        args.Insert(iIdx0 + 2, "\"" + inputPath + "\"");
+                        args.Insert(iIdx0 + 2, "-i");
+                    }
+                    // 输出侧 `-pix_fmt` 已由上面 switch 的 !skipGenericPixFmt 分支按 inputHasAlpha 写入
+                    // （实测本形态恒为 rgba/rgba64le）⇒ 这里只补滤镜图，不重复下发同值选项。
+                    args.InsertRange(args.Count - 1, new List<string> { "-filter_complex", graph0 });
+                }
             }
 
             return string.Join(" ", args);

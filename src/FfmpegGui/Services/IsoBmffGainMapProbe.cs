@@ -146,7 +146,15 @@ public static class IsoBmffGainMapProbe
         public int PrimaryIrot = -1;
         /// <summary>**主图**的 `imir` 轴码（0=左右镜像 / 1=上下镜像）；未声明为 -1。</summary>
         public int PrimaryImir = -1;
-        /// <summary>存在 `auxC` URN = alpha 辅助图（`*auxid:1`，HEVC/AV1 同判）。
+        /// <summary>存在 `auxC` URN = alpha 辅助图。两条**真实写入器**的 URN 都要认：
+        /// <list type="bullet">
+        /// <item>HEVC/HEIF 的 `urn:mpeg:hevc:2015:auxid:1`（也覆盖 `...av1:2021:auxid:1` 旧写法）；</item>
+        /// <item>**libavif 写 AVIF alpha 用的标准 MIAF URN**
+        /// <c>urn:mpeg:mpegB:cicp:systems:auxiliary:alpha</c>（vendored `internal.h` 的
+        /// <c>AVIF_URN_ALPHA0</c>、`write.c:37` 的 <c>alphaURN</c>；`read.c` 同时认 ALPHA0/ALPHA1）。
+        /// 2026-11-11 审查实测：只认 `auxid:1` ⇒ avifenc/libavif 产物 `auxAlpha=False`、
+        /// AVIF 转 PNG 静默丢透明（exit 0 无告警）—— 本字段必须两条都认。</item>
+        /// </list>
         /// alpha 是**独立 item/流**，主流 pix_fmt 不带 alpha 平面 ⇒ 只看 HasAlphaPlane 会把
         /// 透明静默拍平（2026-11-08 实测 4/4 带 alpha 的 HEIC 全部丢 alpha）。</summary>
         public bool HasAuxAlpha;
@@ -154,6 +162,12 @@ public static class IsoBmffGainMapProbe
         /// 「承载形式不支持」报告——2026-11-08 实测截断件被误报成 auxC 形式不支持。</summary>
         public bool IsTruncated;
         public string? TruncationDetail;
+        /// <summary>
+        /// **截断预检无法判定**的原因（D5 fail-closed，2026-11-11）。非 null ⇒ 调用方**不得**当作
+        /// 「未截断」：box 链解析中断 / `iloc` 解析不完整 / `construction_method` 不在 {0,1}
+        /// （其 extent 无法对 EOF 校验）等。与 <see cref="IsTruncated"/> 互斥：确认截断优先。
+        /// </summary>
+        public string? TruncationIndeterminate;
     }
 
     /// <summary>是否为本探测器认识的 ISO-BMFF（只做 8 字节头部判断，不解析）。</summary>
@@ -177,8 +191,15 @@ public static class IsoBmffGainMapProbe
 
     /// <summary>
     /// D5（2026-11-09）：文件截断预检——任一 item 的 iloc extent 越过 EOF ⇒ 文件不完整。
-    /// <para>返回 <c>null</c> = **不知道**（不是 ISO-BMFF / 过大 / 读失败）⇒ 调用方必须照旧走原流程，
-    /// 不得当成「未截断」。截断件必须在进 ffmpeg **之前**拦截：随包 ffmpeg 对「截断分块 + 复合图滤镜」
+    /// <para>
+    /// 返回值三态（2026-11-11 改为 **fail-closed**）：<c>null</c> 只表示「不是截断判定的对象」
+    /// （文件不存在 / 不是 ISO-BMFF）⇒ 调用方照旧走原流程；**ISO-BMFF 但完整性无法判定**
+    /// （box 链中断、iloc 解析不完整、construction_method≠{0,1}、超过纯托管解析上限、读失败）
+    /// 一律返回 <c>IsTruncated=true</c> 且 <c>Detail</c> 点名「无法判定（fail-closed）」——
+    /// 旧实现把这些形态返回 <c>(false, null)</c>（=「未截断」），是 fail-open：
+    /// 截断发生在 meta 之前/损坏 meta 头时会放行，且 >256MB 直接放行。
+    /// </para>
+    /// <para>截断件必须在进 ffmpeg **之前**拦截：随包 ffmpeg 对「截断分块 + 复合图滤镜」
     /// 会以 0xC0000005 崩溃（2026-11-08 实测），且崩溃码会被当任务退出码展示。</para>
     /// </summary>
     public static async Task<(bool IsTruncated, string? Detail)?> CheckTruncationAsync(string path, CancellationToken ct = default)
@@ -186,14 +207,40 @@ public static class IsoBmffGainMapProbe
         try
         {
             var fi = new FileInfo(path);
-            if (!fi.Exists || fi.Length > MaxManagedParseBytes) return null;
+            if (!fi.Exists) return null;                 // 不存在 ⇒ 不是截断判定的对象（下游会给更准的错）
+            if (fi.Length > MaxManagedParseBytes)
+            {
+                // 超上限时**不能**直接放行（旧行为 = fail-open）。先只读 12 字节确认是不是 ISO-BMFF：
+                // 不是 ⇒ 不是本探测器的对象（下游原流程）；是 ⇒ 无法完成预检 ⇒ fail-closed 点名。
+                var head = new byte[12];
+                int got = 0;
+                using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                {
+                    while (got < head.Length)
+                    {
+                        int n = await fs.ReadAsync(head.AsMemory(got, head.Length - got), ct);
+                        if (n <= 0) break;
+                        got += n;
+                    }
+                }
+                if (got < head.Length || !LooksLikeIsoBmff(head)) return null;
+                return (true, $"文件 {fi.Length} B 超过纯托管解析上限 {MaxManagedParseBytes} B"
+                    + " ⇒ 无法完成截断预检（fail-closed：不当作未截断）");
+            }
             var bytes = await File.ReadAllBytesAsync(path, ct);
             if (!LooksLikeIsoBmff(bytes)) return null;
             var r = Probe(bytes);
-            return (r.IsTruncated, r.TruncationDetail);
+            if (r.IsTruncated) return (true, r.TruncationDetail);
+            if (r.TruncationIndeterminate != null)
+                return (true, $"无法判定完整性（fail-closed）：{r.TruncationIndeterminate}");
+            return (false, null);
         }
         catch (OperationCanceledException) { throw; }
-        catch { return null; }
+        catch (Exception ex)
+        {
+            // 读/解析失败 = 不知道 ⇒ 不当作未截断（旧行为返回 null = 放行）。
+            return (true, $"截断预检读取/解析失败（fail-closed）：{ex.GetType().Name}");
+        }
     }
 
     /// <summary>
@@ -254,6 +301,7 @@ public static class IsoBmffGainMapProbe
             int idatStart = -1, idatEnd = -1;
             // ⚠ 截断/非法 box 头 ⇒ 「不知道」，调用方不得当成「没有」（见 Result.Determinate 的契约）。
             bool boxScanIncomplete = false;
+            bool ilocIncomplete = false;                     // iloc 解析没走完 ⇒ extent 清单不完整（D5 fail-closed）
             for (int p = 0; p + 8 <= d.Length;)
             {
                 if (!ReadBox(d, p, d.Length, out var type, out var size, out var hdr))
@@ -268,6 +316,9 @@ public static class IsoBmffGainMapProbe
                 {
                     r.Determinate = false;
                     r.FailReason = "[IsoBmff] 顶层 box 链解析中断（截断或 box 头非法）⇒ 无法断定有无增益图";
+                    // D5 fail-closed（2026-11-11）：中断在 meta 之前 ⇒ iloc extent 无从核对，
+                    // 不能当「未截断」（旧实现返回 (false,null) = 放行）。点名留给调用侧播报。
+                    r.TruncationIndeterminate = "顶层 box 链解析中断且 meta 未定位 ⇒ 无法核对 item extent";
                 }
                 // 没有 meta：可能是纯 track 型 ISO-BMFF（如 .heic 的 mov 包装）⇒ 无 item 结构 ⇒ 无增益图。
                 return r;
@@ -294,7 +345,7 @@ public static class IsoBmffGainMapProbe
                         ParseIinf(d, cstart, cend, items, ref itemTypeUnknown);
                         break;
                     case "iloc":
-                        ParseIloc(d, cstart, cend, locs);
+                        ParseIloc(d, cstart, cend, locs, ref ilocIncomplete);
                         break;
                     case "iref":
                         ParseIref(d, cstart, cend, refs);
@@ -311,6 +362,12 @@ public static class IsoBmffGainMapProbe
                 }
                 p += size;
             }
+            // D5 fail-closed（2026-11-11）：meta/顶层 box 链中断 ⇒ 无法排除「数据区被截断」；
+            // iloc 没解析完 ⇒ extent 清单缺项。两者都不许当成「未截断」。
+            if (boxScanIncomplete && r.TruncationIndeterminate == null)
+                r.TruncationIndeterminate = "box 链解析中断（截断或 box 头非法）⇒ 无法核对全部 item extent";
+            if (ilocIncomplete && r.TruncationIndeterminate == null)
+                r.TruncationIndeterminate = "iloc 解析不完整 ⇒ extent 清单缺项，无法排除截断";
 
             r.PrimaryItemId = primary;
             // ── D1/D8 地基（2026-11-09）：主图身份 + 展示变换 ──────────────────────────
@@ -350,8 +407,22 @@ public static class IsoBmffGainMapProbe
                 int ds, de;
                 if (kv.Value.Method == 0) { ds = 0; de = d.Length; }
                 else if (kv.Value.Method == 1) { ds = idatStart; de = idatEnd; }
-                else continue;                                  // method 2（item 内偏移）不在本判定范围
-                if (ds < 0) continue;
+                else
+                {
+                    // 2026-11-11（D5 fail-closed）：construction_method 不在 {0,1}（2=item 内偏移，
+                    // 或非法值）⇒ 该 extent 无法按 EOF 校验。旧实现 `continue` 静默跳过 = fail-open。
+                    if (r.TruncationIndeterminate == null)
+                        r.TruncationIndeterminate = $"item {kv.Key} construction_method={kv.Value.Method}"
+                            + "（不在 {0,1}）⇒ 其 extent 无法对 EOF 校验";
+                    continue;
+                }
+                if (ds < 0)
+                {
+                    if (r.TruncationIndeterminate == null)
+                        r.TruncationIndeterminate = $"item {kv.Key} 的 construction_method={kv.Value.Method}"
+                            + " 数据区（idat）未定位 ⇒ 其 extent 无法对 EOF 校验";
+                    continue;
+                }
                 foreach (var (off, len) in kv.Value.Extents)
                 {
                     long end = (long)ds + kv.Value.Base + off + len;
@@ -517,6 +588,8 @@ public static class IsoBmffGainMapProbe
         {
             r.Determinate = false;
             r.FailReason = $"[IsoBmff] 解析异常 {ex.GetType().Name}";
+            if (!r.IsTruncated && r.TruncationIndeterminate == null)
+                r.TruncationIndeterminate = $"解析异常 {ex.GetType().Name} ⇒ 无法确定截断状态";
             return r;
         }
     }
@@ -581,9 +654,12 @@ public static class IsoBmffGainMapProbe
     /// `base_offset_size`/`index_size` 同理 —— 不是两个独立字节（首版按两字节写 ⇒ 偏移全乱）。
     /// </summary>
     private static void ParseIloc(byte[] d, int start, int end,
-        Dictionary<int, (int Method, int Base, List<(int Off, int Len)> Extents)> locs)
+        Dictionary<int, (int Method, int Base, List<(int Off, int Len)> Extents)> locs,
+        ref bool incomplete)
     {
-        if (start + 8 > end) return;
+        // D5（2026-11-11）：任何一处提前返回/跳出都意味着 extent 清单不完整 ⇒ 截断预检无法判定。
+        // 旧实现静默 break ⇒ 漏检的 extent 会被当成「未截断」。
+        if (start + 8 > end) { incomplete = true; return; }
         int ver = d[start];
         int p = start + 4;
         int b0 = d[p], b1 = d[p + 1]; p += 2;
@@ -595,16 +671,18 @@ public static class IsoBmffGainMapProbe
 
         for (int i = 0; i < count; i++)
         {
-            if (p + idSize + 2 > end) break;
+            if (p + idSize + 2 > end) { incomplete = true; break; }
             int itemId = idSize == 4 ? (int)Be32(d, p) : Be16(d, p);
             p += idSize;
             int method = 0;
             if (ver == 1 || ver == 2) { method = Be16(d, p) & 0xF; p += 2; }
             p += 2;                                        // data_reference_index
+            if (p + baseSize > end) { incomplete = true; break; }
             int baseOff = baseSize > 0 ? ReadBig(d, p, baseSize) : 0;
             p += baseSize;
-            if (p + 2 > end) break;
+            if (p + 2 > end) { incomplete = true; break; }
             int ec = Be16(d, p); p += 2;
+            if (p + (long)ec * (idxSize + offSize + lenSize) > end) { incomplete = true; break; }
             var extents = new List<(int, int)>();
             for (int k = 0; k < ec; k++)
             {
@@ -690,10 +768,17 @@ public static class IsoBmffGainMapProbe
                             // 无感，会被报成「无增益图」而静默按 SDR 处理（= 可用性不诚实）。
                             // AU-W2：已升级为完整解码形态（TryParseAppleAux），布尔只作判定入口。
                             else if (urn.Contains("hdrgainmap", StringComparison.OrdinalIgnoreCase)) { sawAuxApple = true; kind = 2; }
-                            // D2（2026-11-09）：alpha 辅助图（HEVC `urn:mpeg:hevc:2015:auxid:1` /
-                            // AV1 `urn:mpeg:av1:2021:auxid:1`）。alpha 是独立 item，主流 pix_fmt 不带
+                            // D2（2026-11-09）：alpha 辅助图。alpha 是独立 item，主流 pix_fmt 不带
                             // alpha 平面 ⇒ 只看 HasAlphaPlane 会把透明静默拍平。URN 权威，不猜流格式。
-                            else if (urn.Contains("auxid:1", StringComparison.OrdinalIgnoreCase)) { sawAuxAlpha = true; kind = 3; }
+                            // ⚠ 两条真实 URN 都要认（2026-11-11 审查 P1-1）：
+                            //   · HEVC/HEIF：`urn:mpeg:hevc:2015:auxid:1`（含旧写法 `...av1:2021:auxid:1`）；
+                            //   · **AVIF（libavif 写侧）**：`urn:mpeg:mpegB:cicp:systems:auxiliary:alpha`
+                            //     （vendored `internal.h` 的 AVIF_URN_ALPHA0 / `write.c:37` alphaURN）。
+                            //   只认 auxid:1 时 AVIF 带 alpha 输入被当无 alpha ⇒ 转 PNG 输出 rgb24、
+                            //   静默丢透明、exit 0 零告警（审查证据 evidence_avif_alpha*）。
+                            else if (urn.Contains("auxid:1", StringComparison.OrdinalIgnoreCase)
+                                  || urn.Contains("auxiliary:alpha", StringComparison.OrdinalIgnoreCase))
+                            { sawAuxAlpha = true; kind = 3; }
                             if (kind != 0) auxCProps.Add((props.Count, kind));   // 1-based：刚 Add 的这条
                         }
                     }
