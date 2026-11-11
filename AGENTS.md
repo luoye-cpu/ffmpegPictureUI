@@ -52,7 +52,7 @@ beta7–beta11 的 10 个归档 + 8 个解包目录（1.7 GB）。**要留证据
 
 `tests/scripts/_run-step3-gates.ps1` 是清单，不是索引外部文件。加/删/改名一条门禁必须**同批**改齐四处：
 
-1. `$scriptList` 数组（94 条）；
+1. `$scriptList` 数组（100 条）；
 2. `$expectedScriptCount` 常量（同文件）；
 3. runner 里复述条数的**散文陈述**——`Test-RunnerShape` 第 ⑰ 针按三种形态各扫一遍并要求与常量相等；
 4. 新的 ServiceProbe mode 还要进 `tests/projects/Tests.Shared/TestGroups.cs` 的组表，
@@ -89,7 +89,7 @@ beta7–beta11 的 10 个归档 + 8 个解包目录（1.7 GB）。**要留证据
 # 必须 pwsh7；LC_ALL 会改变排序/解析行为 ⇒ 清掉
 $env:LC_ALL=$null
 dotnet build ffmpegPictureUI.sln -c Release          # 13 个测试工程都在 sln 里，编不过当场暴露
-pwsh -NoProfile -File tests/scripts/_run-step3-gates.ps1   # 94 条，整轮 ~60 分钟
+pwsh -NoProfile -File tests/scripts/_run-step3-gates.ps1   # 100 条；整轮墙钟未在 100/100 下重测（94 条时代 ~60 分钟）
 ```
 
 - 宣布"全绿"必须绑定被测产物：exe/DLL 指纹前 16 与当轮日志同段；`dotnet test` 打在 Exe 工程上只还原不跑还返回 0。
@@ -377,6 +377,34 @@ pwsh -NoProfile -File tests/scripts/_run-step3-gates.ps1   # 94 条，整轮 ~60
     union 454→**458**；CJK **CsUi 1041→1047（第二十二次抬基线，+6 = CMX-1 中文同义句）**、
     探针复跑 14/0。生成器重跑幂等（reproducible 19/0）。
   - 受管子集与抬表取证：`tests/output/_tmp/cmx3-gate/`（delivery_evidence.md 为 CMX-3 交付证据）。
+  - ⚠ **2026-11-11 更正**：本段标题「脚本清单现值 = 99 条」是 2026-11-10 时点读数；pngopt 第 100 条接线（`0f6c11a`）后
+    实时权威值 = `$expectedScriptCount=100`（实测数组/常量/三散文/⑱ 针全 100），本句不再读作「现值」。
+- **pngopt 集成 + 默认档变更（2026-11-10..11，另一工作线；清单 99→100）**：`PngOptimizerService` + CLI `--png-optimizer`
+  五档 `off|default|max|zopfli15|zopfli30` + GUI `AdvancedCodecPanel` 联动（复合判定 `UseAdvancedCodec`）+ oxipng 10.2.1
+  随包（MIT，`licenses/MIT.txt`）。**默认档 = `max`**（`FfmpegOptions.cs:331`、GUI `MainWindow.xaml` 组合框 `SelectedIndex=2`、
+  `QueueProcessor` 直传；CLI 不传参也落 max）——`0f6c11a` 提交消息第 6 条写「默认 off 零漂移」与代码**相反**，以本条为准；
+  off 档确实零开销（`PngOptimizerService.cs:45-47` 进程动作前短路）、oxipng 缺失的机器零字节漂移。
+  吞吐取舍（24MP，`tests/output/pngopt-def-t4/<guid>/t4-final-report.md`）：off 7.65s / default 10.1s（-23.8%）/
+  max 41.8s（-24.4%）/ zopfli30 600s 超时回落（T9：604.5s 墙钟、播报逐字、产物原样完整）。组合框藏在折叠的
+  `AdvancedCodecPanel` 里——不勾高级面板的用户不可见却生效。门禁 **#100 `verify-png-optimizer`**（受管 61/0 / 748.6s；
+  default 判据四条 + timeout case 真跑 600s）。旧预设回放无法把档位带回 off（`FfmpegOptions.cs:65` 仅 `!= null` 覆盖
+  ⇒ null 不覆盖、停在 max）——与「默认 max」自洽，但「旧用户零漂移」此路不通。
+  已知待批（2026-11-11 审查）：专用通路缺 `exitCode==0` 守卫（主分支 `QueueProcessor.cs:1444` 有、专用通路 `:1467-1470` 无）。
+- **beta12 后内容审查读数与更正（2026-11-11，性能/色彩/GainMap/打包 四维度）**：`54c31c0..0f6c11a` 实测 **12 提交**
+  （旧记「13 提交」把 release 提交自身也计入了）/ 80 文件 / +12469−322。四维度均**无 P0**；P1 共 11 条（性能 3：
+  pngopt 默认档、ps-compat 提交态、pngopt 专用通路守卫；打包 3：#93 包-工具漂移、#1 提交态、AGENTS 条数；
+  色彩 2：两步法/无色彩通路格式的显式矩阵静默失效；GainMap 3：AVIF alpha、八项零新增判据、engine §14d 红）。
+  **「全部门禁验证」不成立**：HEAD 无 100/100 整轮基线（可查最近两次受管运行均为 `-Scripts` 子集：t3 2/100、t8 14/100，
+  均注明「不构成基线」）；本轮裸跑确定性红 = `verify-color-wiring` **152/1**（pngopt 默认 max 使 PNG 质量档
+  q60/q100 产物同为 20729B；`--png-optimizer off` 后恢复 24305 vs 592110B）、`verify-gainmap-engine` **219/1**
+  （§14d：D6/D7 把「按政策忽略元数据⇒SDR 交付」判成降级⇒失败 → `Program.cs:367-368` exit 1，而队列汇总仍「失败 0 项」）、
+  `#93` **14/2**（beta12 包内 exiftool 13.60 / dngtool 旧、落后 `publish/PLAN` 13.61 / 新 dngtool）、`#1` 提交态
+  **12/1**（工作区 13/0；已由 `4d64ebd` 提交修复）。
+  ⚠ **指纹更正**：`HANDOVER.md:4082` / `TESTING.md:594` 记 `FfmpegGui.dll=ADFC50DBEFE9C169` 不可复现；同 HEAD 源码
+  确定性重建两次均为 `D9CF55784AA7BD02`（`dotnet build -t:Rebuild` 两次同哈希）⇒ 该段读数（94/0、81/0、90/0）已在
+  D9CF 上复现，但「读数绑定被测件」形式要件不成立。卫生：`probe_v1`（2981 B HEVC 裸码流残留，sha16
+  `8BE5D52692C12487`）已从仓库根移入 `tests/output/_tmp/beta12-review-hygiene/`。证据：
+  `tests/output/_tmp/beta12-review-{package,color,gainmap}/`（三份 report.md + 日志）。
 
 ---
 
