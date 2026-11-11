@@ -28,10 +28,10 @@
   "locks": {
     "ui-host-arms": {
       "file": "tests/scripts/verify-ui-host.ps1",
-      "desc": "verify-ui-host 五件逐件 Expected + $aggExpected 合计锁（2026-11-12 G2 取消路径 +6：53→59 / 458→464）",
-      "value": 464,
+      "desc": "verify-ui-host 五件逐件 Expected + $aggExpected 合计锁（2026-11-12 批 4·3+4 N8/N9 +9：75→84 / 464→473）",
+      "value": 473,
       "members": {
-        "ui-core": 75,
+        "ui-core": 84,
         "ui-mode": 59,
         "ui-color": 89,
         "ui-sweep": 169,
@@ -45,8 +45,8 @@
     },
     "ui-split-union": {
       "file": "tests/scripts/verify-ui-split-union.ps1",
-      "desc": "单体全量断言名并集锁（$expectedOldCount；2026-11-12 G2 +6 ⇒ 464）",
-      "value": 464
+      "desc": "单体全量断言名并集锁（$expectedOldCount；2026-11-12 批 4·3+4 +9 ⇒ 473）",
+      "value": 473
     }
   },
   "entries": [
@@ -1328,17 +1328,6 @@
       "desc": "JPG/WebP YUV 矩阵与范围契约（601 族/pc-tv 出口口径）"
     },
     {
-      "id": "blindspot.gui-subwindows",
-      "kind": "blindspot",
-      "domain": "ui",
-      "tier": "blind",
-      "names": [],
-      "carriers": [],
-      "src": "src/FfmpegGui/ImageDetailWindow.xaml.cs:1",
-      "blindReason": "GUI 子窗口（ImageDetail/FormatFilter/PresetManager/Progress/MetadataEditor）在 tests/projects 0 引用，headless 宿主只加载 MainWindow",
-      "plannedBatch": 4
-    },
-    {
       "id": "blindspot.ipc-single-instance",
       "kind": "blindspot",
       "domain": "ipc",
@@ -1348,17 +1337,6 @@
       "src": "src/FfmpegGui/App.xaml.cs:435",
       "blindReason": "⚠ 改记产品缺口（2026-11-12 批 4 调研裁定，非测试缺口）：「二次启动→转发→退出」链路产品不存在——TryConnectAsync/SendRequestAsync 生产侧 0 调用点（全仓仅 ServiceProbe 探针调用），无互斥锁无二次实例检测 ⇒ 现状=真双开。接线与否是 S-P1-2 行为决策（docs/TESTING.md §「仍未做（需拍板）」）；先接线后立判据，否则门禁必红",
       "plannedBatch": null
-    },
-    {
-      "id": "blindspot.settings-gui-restart",
-      "kind": "blindspot",
-      "domain": "ui",
-      "tier": "blind",
-      "names": [],
-      "carriers": [],
-      "src": "src/FfmpegGui/Services/AppSettingsService.cs:1",
-      "blindReason": "设置重启恢复：服务层 roundtrip 有（ServiceProbe settings）；「改选项→重启→UI 生效」无判据",
-      "plannedBatch": 4
     },
     {
       "id": "blindspot.raw-non-dng-brands",
@@ -1457,6 +1435,42 @@
         "tests/scripts/verify-log-jsonlines.ps1:1"
       ],
       "desc": "--log-format JsonLines 格式正确性 E2E：全行 schema 锁 + Info 过滤 + 双写等价 + fail-closed/不崩两边界（2026-11-12 由 blindspot.log-jsonlines 收口，批 4·1）"
+    },
+    {
+      "id": "cap.settings-gui-restart",
+      "kind": "capability",
+      "domain": "ui",
+      "tier": "E2E-UI",
+      "names": [],
+      "src": "tests/projects/UiTestHost/Program.cs:4386",
+      "carriers": [
+        {
+          "gate": "verify-ui-host.ps1",
+          "kind": "ui"
+        }
+      ],
+      "evidence": [
+        "tests/projects/UiTestHost/Program.cs:4386"
+      ],
+      "desc": "设置改→重启→GUI 生效（N8）：Save 落盘→清 _current 缓存重读→LoadSettings 推进控件（重启链三段进程内兑现；2026-11-12 由 blindspot.settings-gui-restart 收口，批 4·3）"
+    },
+    {
+      "id": "cap.gui-subwindows",
+      "kind": "capability",
+      "domain": "ui",
+      "tier": "E2E-UI",
+      "names": [],
+      "src": "tests/projects/UiTestHost/Program.cs:4445",
+      "carriers": [
+        {
+          "gate": "verify-ui-host.ps1",
+          "kind": "ui"
+        }
+      ],
+      "evidence": [
+        "tests/projects/UiTestHost/Program.cs:4445"
+      ],
+      "desc": "四子窗口 headless 打开/关闭冒烟（N9）：FormatFilter/PresetManager/ImageDetail/Progress 真实构造→Show→控件在位→Close（2026-11-12 由 blindspot.gui-subwindows 收口，批 4·4）"
     }
   ]
 }

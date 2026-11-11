@@ -653,6 +653,45 @@ ISO8601 串**自动转 [DateTime]**（转本地时区）⇒ t 的线格式锁必
 **先接线后立判据**，否则门禁必红）。
 受管子集读数（runner 自印 `script-list=104 条（受管基线 104）`）：module-registry **10/0**、log-jsonlines
 **30/0**（含 -SelfCheck）。证据：`tests/output/_gate_script_verify-log-jsonlines.ps1.txt`（当轮留痕）。）
+
+（**2026-11-12 批 4·3+4（无新门禁；三把尺 464 → 473）**：单体 `UiTestHost/Program.cs` GroupN 增 **N8(5)+N9(4)**
+⇒ ui-core 75 → **84**、合计 464 → **473**（=84+59+89+169+72）。
+**N8 设置改→重启→GUI 生效**（调研盲区#6 收口：服务层 roundtrip 有（ServiceProbe settings），GUI 端零判据）：
+重启链三段进程内兑现——① `Save()` 落盘（便携契约：exe 同目录 settings.json，`AppSettingsService.cs:11-14`；
+先快照原字节 finally 原样回写/删除，verify-ipc-extra-options 同款先例）② 清 `_current` 缓存 ⇒ `Current`
+惰性重读磁盘（= 新进程第一步，`:28`）③ `LoadSettings()`（`MainWindow.xaml.cs:1336`；ctor `:1333` 调的就是它）
+推进控件。⚠ **有意不 new 第二个 MainWindow**：其 ctor 起托盘线程/异步全量检测，第二实例线程与托盘生命周期
+不受 Bootstrap 管——LoadSettings 等价锁「应用」段（边界如实登记：新进程 spawn 新窗口由 Bootstrap 承担，
+不属设置逻辑）。翻转档 = `PreserveInputFolderStructure`（bool）+ `MaxQueueSize=37`（int，clamp 中段）。
+**N9 四子窗口 headless 打开/关闭冒烟**（调研盲区#4 收口：tests/projects 对四子窗口 0 引用）：
+FormatFilter（`FormatCheckPanel` 复选框 >0）/ PresetManager（`PresetListBox` 在）/ ImageDetail（1×1 PNG 夹具
+自造自清，标题带文件名）/ Progress（`MetadataEditorCtrl` 在；OutputPath 指向真实存在文件防 FilePath 联动
+扑空；500ms 定时器 Closed 自停 `:98`）——全走真实构造→Show→Pump→控件在位→Close；**不碰**
+`ShowFilterDialog`/`ShowDialog` 模态路径（headless 模态泵无人应答；构造路径与模态共享 InitializeComponent
+⇒ 构造级回归照样被抓）。实测：单体 **473/0**（N8a-e/N9a-d 全过）；verbatim **22/0** / reproducible **19/0** /
+union **11/0**（473/473 双向差集空，裸跑）/ ui-host **473/0** @63s（受管）；module-registry 受管 **10/0**。
+账本同批：`blindspot.settings-gui-restart` → `cap.settings-gui-restart`、
+`blindspot.gui-subwindows` → `cap.gui-subwindows`（均 tier=E2E-UI，carrier verify-ui-host），条目数 66 不变，
+locks 三把尺同批 473/84/473。盲区账本：12 条中 **6 条已收口**（no-overwrite/cancel/corrupt/log-jsonlines/
+settings-restart/subwindows + --preset 更正）。
+**⚠ 本批顺带钉出三个既有问题（都不属 N8/N9，各自独立处置）**：
+① **`FFMPEGGUI_FFMPEG_DIR` 分隔符敏感 ⇒ 硬件编码器检测静默归零（真产品缺陷，B1/B5 检测一致性家族）**：
+runner :674 旧写法 `"$root/publish/PLAN/ffmpeg-full"`（正斜杠混合）⇒ UI 宿主 EncoderCombo **零 ⚡ 项**
+（L1e-0 FAIL + L1f-L1k 六名缺席 ⇒ union 3c 467≠473；A/B/C 三轮二分排除 settings.json 内容——
+同一份文件后复跑全绿）；同一路径**全反斜杠 ⇒ 473/0**（两向各实测 2+ 次）。**不是间歇性，是确定性的**
+——此前 L1e 注释里「检测间歇性：时有无」的读数疑为此机制 + 负载噪声的混记。runner 已改 `Join-Path`
+（反斜杠）；**产品侧归一化（env 覆盖应用处 `Path.GetFullPath`）独立一批**。
+② **union 受管轮 G2 确定性红（按 mode 过滤序列 × 新 G2 的兼容性）**：union 对 piece 传 `@($srcDir, $mode)`
+（只跑 E,F,G）⇒ G2 `workers=[]`（40s 窗内队列 ffmpeg 从未起）/`status=失败 (退出码 -22)`（muxer init
+EINVAL，源码 :348 在案）2/2 复现；直跑同 mode ⇒ workers 在、停止后 `失败 (退出码 -1)`（kill 竞态）1 次；
+**全序列（ui-host 同款不传 mode）G2 六条全绿**。union 自批 2 起从未受管跑过带 G2 的清单（批 2 的 464/464
+是裸跑读数）⇒ 此缺口今天首曝。**不属产品缺陷**（产品无「只跑 E,F,G」形态）；候选修法 = union 改全组跑
+（与 ui-host 同形，5 进程替代 19 进程，还提速）或 G2 在按 mode 序列下自愈——独立一批。
+③ **退出路径重写 exe 侧 settings.json**：N8 finally 的快照/还原无法覆盖「宿主退出时 Save()」——每次跑完
+exe 侧 settings.json 都被重新写回（内容含死 GUID 的 OutputDirectory，无害：G1/G2 每轮内存重设）。
+C 轮实测：完整嫌疑 settings.json 在场 ⇒ 473/0 照样绿 ⇒ 文件在场无害，仅登记机制。
+④ J7 单次红（`gbr→rgb`，色彩断言）1 次，同 exe 直跑复跑即绿——与 O2/O3 已登记的 Dispatcher.Post
+间歇族同档，负载相关，单次不作结论。）
   v1 支的判法是**偶次残差**而不是"奇次位为 0"——v1 载荷只有四个偶次项，奇次位是读手自己填的 0，
   那条断言永不可能触发（2026-10-19 审查删掉的死牙）。造变异件也从读手分家出去
   （`_mutate-dng-lens.py`，理由与 ⑯ 组同一条：判件与造件同入口时判据走偏造件跟着走偏）。

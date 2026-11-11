@@ -79,7 +79,9 @@ $srcDir = Join-Path $root 'tests/output/sources'
 #   2026-11-12（测试模块化批 2 模块 2，取消路径 G2）= **464**（+6：G 组增 G2 六条——点停止→已停止+
 #   子进程死+无半截产物+无已完成项+前置输入；改断言改单体后 _gen-ui-split.ps1 重跑；与 verify-ui-host.ps1
 #   的 ui-mode=59/合计=464、_module-registry.json locks 同批抬表——三把尺同一来历。）
-$expectedOldCount = 464
+#   2026-11-12（测试模块化批 4·3+4）= **473**（+9：N 组增 N8 五条设置重启 + N9 四条子窗口冒烟
+#   ⇒ ui-core 84/合计=473，verify-ui-host.ps1 与 _module-registry.json locks 同批抬表。）
+$expectedOldCount = 473
 # 一对一改名 ⇒ 新旧总数相同（不是 408/412）
 $expectedNewCount = $expectedOldCount
 

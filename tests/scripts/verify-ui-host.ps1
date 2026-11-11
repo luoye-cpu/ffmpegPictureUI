@@ -86,14 +86,18 @@ CK $true "PLAN dir exists"
 #   +子进程死+无半截产物+无已完成项，UiTestHost/Program.cs GroupG）⇒ ui-mode 53 → **59**（=G 组旧值+6）、
 #   合计 458 → **464**（=75+59+89+169+72）。与 verify-ui-param-matrix.ps1 的 $jExpected=126（J 组不动）、
 #   verify-ui-split-union.ps1 的 $expectedOldCount=464、_module-registry.json locks 同批抬表（三把尺同一来历）。
+#   2026-11-12（测试模块化批 4·3+4）= **473**（+9：N 组增 N8 五条（设置改→重启→GUI 生效：Save 落盘/缓存
+#   重读/LoadSettings 推进控件）+ N9 四条（四子窗口 headless 打开/关闭冒烟：FormatFilter/PresetManager/
+#   ImageDetail/Progress）——UiTestHost/Program.cs GroupN）⇒ ui-core 75 → **84**、合计 464 → **473**
+#   （=84+59+89+169+72）。与 union $expectedOldCount=473、_module-registry.json locks 同批抬表。
 $arms = @(
-    @{ Name = 'ui-core';  Exe = Join-Path $repoRoot 'tests/projects/ui-core/bin/Release/net11.0/win-x64/Tests.UiCore.exe';  Expected = 75  },
+    @{ Name = 'ui-core';  Exe = Join-Path $repoRoot 'tests/projects/ui-core/bin/Release/net11.0/win-x64/Tests.UiCore.exe';  Expected = 84  },
     @{ Name = 'ui-mode';  Exe = Join-Path $repoRoot 'tests/projects/ui-mode/bin/Release/net11.0/win-x64/Tests.UiMode.exe';  Expected = 59  },
     @{ Name = 'ui-color'; Exe = Join-Path $repoRoot 'tests/projects/ui-color/bin/Release/net11.0/win-x64/Tests.UiColor.exe'; Expected = 89  },
     @{ Name = 'ui-sweep'; Exe = Join-Path $repoRoot 'tests/projects/ui-sweep/bin/Release/net11.0/win-x64/Tests.UiSweep.exe'; Expected = 169 },
     @{ Name = 'ui-cli';   Exe = Join-Path $repoRoot 'tests/projects/ui-cli/bin/Release/net11.0/win-x64/Tests.UiCli.exe';     Expected = 72  }
 )
-$aggExpected = 464
+$aggExpected = 473
 foreach ($arm in $arms) {
     if (-not (Test-Path $arm.Exe)) {
         Write-Output "  FAIL host exe exists ($($arm.Name)): $($arm.Exe)"

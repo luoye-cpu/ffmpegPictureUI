@@ -4371,6 +4371,145 @@ namespace UiTestHost
                 });
             }
 
+            // ── N8 设置改→重启→GUI 生效（2026-11-12 批 4·3，docs/TEST_MODULE_PLAN_2026-11-12.md）──
+            //   调研盲区#6：服务层 roundtrip 有（ServiceProbe settings mode），「GUI 端改→重启→生效」零判据。
+            //   重启链三段进程内兑现：① Save() 落盘（便携契约：exe 同目录 settings.json，AppSettingsService.cs:11-14）
+            //   ② 清 _current 缓存 ⇒ Current 惰性重读磁盘（= 新进程的第一步，AppSettingsService.cs:28）
+            //   ③ 设置 → 控件：LoadSettings()（MainWindow.xaml.cs:1336；ctor :1333 调的就是它 ⇒ 调它 = 新窗口
+            //     构造的「应用」半段）。⚠ 有意不 new 第二个 MainWindow：其 ctor 会起托盘线程/异步全量检测，
+            //     第二实例的线程与托盘生命周期不受 Bootstrap 管 ⇒ 用 LoadSettings 等价锁「应用」段。
+            //   ⚠ Save() 真写 UiTestHost.exe 侧 settings.json（bin 内，工作区合规）：先快照原字节，
+            //     finally 原样回写/删除 + 服务层缓存复位（verify-ipc-extra-options 对产品 exe 侧同款先例）。
+            //   ⚠ LoadSettings 副作用 = LogText 追加 [PLAN]/[detect] 行 + 再踢一次异步检测；
+            //     GroupP 在 Main 里最先跑（:125 注释实证其日志面在 P 时点固化）⇒ 此处追加无下游受害者；
+            //     仍做 LogText 快照/还原保持判据面干净。
+            Safe("N8 设置改→重启→GUI 生效", () =>
+            {
+                var st = FfmpegGui.Services.AppSettingsService.Current;
+                bool origPreserve = st.PreserveInputFolderStructure;
+                int origMaxQ = st.MaxQueueSize;
+                var asmDir = System.IO.Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location)!;
+                var settingsPath = System.IO.Path.Combine(asmDir, "settings.json");
+                byte[]? origBytes = System.IO.File.Exists(settingsPath) ? System.IO.File.ReadAllBytes(settingsPath) : null;
+                var logBox = Find<TextBox>("LogText");
+                var logSnap = logBox?.Text;
+                try
+                {
+                    bool flipped = !origPreserve;
+                    st.PreserveInputFolderStructure = flipped;
+                    st.MaxQueueSize = 37;
+                    Check("N8a Save() 落盘成功", FfmpegGui.Services.AppSettingsService.Save(),
+                          "LastSaveIssue=" + (FfmpegGui.Services.AppSettingsService.LastSaveIssue ?? "<null>")
+                          + " LastSavedTo=" + (FfmpegGui.Services.AppSettingsService.LastSavedTo ?? "<null>"));
+
+                    // 「重启」②：清服务层缓存 ⇒ Current 惰性重读磁盘（新进程读盘等价）
+                    var curFld = typeof(FfmpegGui.Services.AppSettingsService)
+                        .GetField("_current", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+                    curFld!.SetValue(null, null);
+                    var reloaded = FfmpegGui.Services.AppSettingsService.Current;
+                    Check("N8b 重读(bool) 翻转在", reloaded.PreserveInputFolderStructure == flipped,
+                          $"got={reloaded.PreserveInputFolderStructure} expect={flipped}");
+                    Check("N8c 重读(int) =37", reloaded.MaxQueueSize == 37, $"got={reloaded.MaxQueueSize}");
+
+                    // 「重启」③：设置→控件（ctor :1333 同款入口）
+                    typeof(FfmpegGui.MainWindow).GetMethod("LoadSettings", BF)!.Invoke(W, null);
+                    Pump(10);
+                    var cb = Find<TextBox>("ConcurrencyBox");
+                    var pb = Find<CheckBox>("PreserveInputStructure");
+                    Check("N8d 控件(并发)=37", cb?.Text == "37", $"got={cb?.Text ?? "<null>"}");
+                    Check("N8e 控件(bool) 翻转在", pb != null && pb.IsChecked == flipped,
+                          $"got={pb?.IsChecked.ToString() ?? "<null>"} expect={flipped}");
+                }
+                finally
+                {
+                    st.PreserveInputFolderStructure = origPreserve;
+                    st.MaxQueueSize = origMaxQ;
+                    FfmpegGui.Services.AppSettingsService.Save();
+                    if (origBytes != null) System.IO.File.WriteAllBytes(settingsPath, origBytes);
+                    else { try { System.IO.File.Delete(settingsPath); } catch { } }
+                    typeof(FfmpegGui.Services.AppSettingsService)
+                        .GetField("_current", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!
+                        .SetValue(null, null);
+                    _ = FfmpegGui.Services.AppSettingsService.Current;   // 惰性重载回原值
+                    typeof(FfmpegGui.MainWindow).GetMethod("LoadSettings", BF)?.Invoke(W, null);
+                    if (logBox != null && logSnap != null) logBox.Text = logSnap;   // 还原日志面
+                    Pump(4);
+                }
+            });
+
+            // ── N9 四子窗口 headless 打开/关闭冒烟（2026-11-12 批 4·4，调研盲区#4）──
+            //   调研证据：tests/projects 对四个子窗口 0 引用 ⇒ 打开即崩/控件丢失整段无判据。
+            //   全部走**真实构造**（无参/轻参 ctor）→ Show → Pump → 控件在位 → Close；
+            //   不碰 ShowFilterDialog/ShowDialog 模态路径（headless 下模态泵无人应答；构造路径与模态共享
+            //   InitializeComponent ⇒ 构造级回归照样被抓）。ProgressWindow 的 500ms 定时器在 Closed 自停（:98）。
+            Safe("N9a FormatFilterWindow 冒烟", () =>
+            {
+                var w = new FfmpegGui.FormatFilterWindow();
+                try
+                {
+                    w.Show(); Pump(6);
+                    var panel = w.FindControl<Avalonia.Controls.StackPanel>("FormatCheckPanel");
+                    int cbCount = panel?.Children.Count ?? 0;
+                    Check("N9a 打开+格式复选框建出", w.IsVisible && cbCount > 0,
+                          $"visible={w.IsVisible} checkboxCount={cbCount}");
+                }
+                finally { w.Close(); }
+            });
+            Safe("N9b PresetManagerWindow 冒烟", () =>
+            {
+                var w = new FfmpegGui.PresetManagerWindow();
+                try
+                {
+                    w.Show(); Pump(6);
+                    var lb = w.FindControl<Avalonia.Controls.ListBox>("PresetListBox");
+                    Check("N9b 打开+PresetListBox 在", w.IsVisible && lb != null,
+                          $"visible={w.IsVisible} listbox={(lb != null ? "ok" : "missing")}");
+                }
+                finally { w.Close(); }
+            });
+            Safe("N9c ImageDetailWindow 冒烟", () =>
+            {
+                // 1×1 PNG 夹具（自造自清）；ctor 挂 Loaded→LoadMediaInfoAsync（catch-all，headless 安全）
+                var img = System.IO.Path.Combine(TempDir, "n9_probe.png");
+                System.IO.File.WriteAllBytes(img, new byte[] {
+                    0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+                    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,
+                    0x89, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x63, 0x00, 0x01, 0x00, 0x00,
+                    0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE,
+                    0x42, 0x60, 0x82 });
+                var w = new FfmpegGui.ImageDetailWindow(img, null);
+                try
+                {
+                    w.Show(); Pump(10);
+                    var t = w.Title ?? "";
+                    Check("N9c 打开+标题带文件名", w.IsVisible && t.Contains("n9_probe"),
+                          $"visible={w.IsVisible} title={t}");
+                }
+                finally { w.Close(); try { System.IO.File.Delete(img); } catch { } }
+            });
+            Safe("N9d ProgressWindow 冒烟", () =>
+            {
+                // OutputPath 指向真实存在的 1×1 PNG（ctor 会把 FilePath 递给 MetadataEditorCtrl）
+                var img = System.IO.Path.Combine(TempDir, "n9_probe_pw.png");
+                System.IO.File.WriteAllBytes(img, new byte[] {
+                    0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+                    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,
+                    0x89, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x63, 0x00, 0x01, 0x00, 0x00,
+                    0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE,
+                    0x42, 0x60, 0x82 });
+                var item = new FfmpegGui.Models.QueueItem
+                { InputPath = img, OutputPath = img, Command = "-fake-args-for-smoke" };
+                var w = new FfmpegGui.ProgressWindow(item, item.Command);
+                try
+                {
+                    w.Show(); Pump(6);
+                    var me = w.FindControl<FfmpegGui.Controls.MetadataEditor>("MetadataEditorCtrl");
+                    Check("N9d 打开+MetadataEditorCtrl 在", w.IsVisible && me != null,
+                          $"visible={w.IsVisible} metaEditor={(me != null ? "ok" : "missing")}");
+                }
+                finally { w.Close(); try { System.IO.File.Delete(img); } catch { } }
+            });
+
             // 诊断表（非断言）：把「期望 vs 实际」打出来供人工核对
             Console.WriteLine("      [table] 按钮 | 实时策略 | 存盘IccMode | 存盘ColorStrategy | 载入A(FfmpegOptions) | 载入B(简洁模式)");
             for (int i = 0; i < radioNames.Length && i < tripA.Count; i++)

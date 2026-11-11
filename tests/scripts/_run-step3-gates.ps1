@@ -671,7 +671,11 @@ $script:gatesLockStream.Dispose()
 $script:gatesLockStream = $null
 Write-Output "gates-lock=$script:gatesLockPath (pid=$PID)"
 
-$env:FFMPEGGUI_FFMPEG_DIR = "$root/publish/PLAN/ffmpeg-full"
+# ⚠ 分隔符必须全反斜杠（2026-11-12 实测钉死）：FFMPEGGUI_FFMPEG_DIR 用正斜杠混合路径
+#   （旧写法 "$root/publish/PLAN/ffmpeg-full"）⇒ UI 宿主的硬件编码器检测静默归零
+#   （EncoderCombo 零 ⚡ 项 ⇒ L1e-0/L1j FAIL + L1f-L1k 六名缺席 ⇒ union 3c 467≠473；
+#   同一路径全反斜杠 ⇒ 473/0）。产品侧归一化修复独立一批（B1/B5 检测一致性家族）。
+$env:FFMPEGGUI_FFMPEG_DIR = Join-Path $root 'publish/PLAN/ffmpeg-full'
 
 # ── 起手清 perl locale 环境变量（2026-09-27，#51 第 0 项）─────────────────────────────
 # 随包 exiftool 是 perl 打的：只要子进程继承 `LC_ALL`/`LANG` = C.UTF-8，它每次往 **stderr** 喷

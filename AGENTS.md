@@ -521,8 +521,23 @@ pwsh -NoProfile -File tests/scripts/_run-step3-gates.ps1   # 104 条；整轮墙
   未同步拒跑。账本：`blindspot.log-jsonlines`→`cap.log-jsonlines`；**`blindspot.ipc-single-instance` 改记
   产品缺口**——「二次启动→转发→退出」链路产品不存在（`TryConnectAsync` 生产侧 0 调用点，无互斥锁），
   接线与否是 S-P1-2 行为决策（TESTING.md「仍未做（需拍板）」），先接线后立判据。
-- **测试模块化批 4 剩余（待做）**：settings-gui-restart / gui-subwindows / render-plan-mediainfo
-  （调研撞并发上限未完成）；维持 blind（有据）：raw-non-dng-brands（样本许可未清）、hwencoder-real（环境依赖）。
+- **测试模块化批 4·3+4（2026-11-12，无新门禁；三把尺 464→473）**：单体 GroupN 增 **N8(5)+N9(4)**
+  ⇒ ui-core 75→**84**、合计 **473**（=84+59+89+169+72）。N8 = 设置改→重启→GUI 生效（Save 落盘
+  （exe 侧 settings.json 快照/还原）→清 `_current` 缓存重读→`LoadSettings()` 推进控件；**有意不 new 第二个
+  MainWindow**——其 ctor 起托盘线程/检测，LoadSettings = ctor `:1333` 同款「应用」段）。N9 = 四子窗口
+  headless 冒烟（FormatFilter/PresetManager/ImageDetail/Progress：真实构造→Show→控件在位→Close；
+  不碰 ShowDialog 模态路径——headless 模态泵无人应答，构造路径与模态共享 InitializeComponent）。
+  实测：单体 473/0、verbatim 22/0、reproducible 19/0、union 11/0（473/473，裸跑）、ui-host **473/0** @63s
+  （受管）、module-registry 受管 10/0。
+  ⚠ **本批顺带钉出三个既有问题（各自独立处置）**：① `FFMPEGGUI_FFMPEG_DIR` **分隔符敏感** ⇒ UI 宿主硬件
+  编码器检测静默归零（正斜杠混合路径零 ⚡ 项、全反斜杠 473/0，两向实测钉死，非间歇性）——runner 已改
+  Join-Path；产品侧归一化（env 覆盖应用处 GetFullPath）独立一批（B1/B5 家族；L1e「间歇性」旧读数疑为
+  此机制+负载噪声混记）。② **union 受管轮 G2 确定性红**：union 按 mode 传参（只跑 E,F,G）⇒ G2
+  `workers=[]`+`失败 (退出码 -22)`（muxer EINVAL）2/2；全序列（不传 mode）六条全绿——union 自批 2 起
+  从未受管跑过带 G2 的清单（批 2 的 464/464 是裸跑），候选修法 = union 改全组跑（与 ui-host 同形），
+  独立一批。③ 宿主退出路径重写 exe 侧 settings.json（N8 快照/还原管不到；文件在场无害——C 轮实测绿）。
+- **测试模块化批 4 剩余（待做）**：render-plan-mediainfo（三服务调研未完成）；
+  维持 blind（有据）：raw-non-dng-brands（样本许可未清）、hwencoder-real（环境依赖）。
 
 ---
 
