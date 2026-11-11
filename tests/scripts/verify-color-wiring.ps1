@@ -142,8 +142,10 @@ Write-Host "`n=== (4) 不能走 ⇒ 显式失败并点名（绝不静默回退�
 # ⚠ 2026-09-16 契约更新：质量参数**已由引擎编码出口承接**（见 ImageEncoderArgs）⇒ 不再拒绝。
 #   此处改为「承接生效」的正向断言，并把"真的生效"钉住（q60 与 q100 的 PNG 压缩级别不同 ⇒ 体积必须不同）；
 #   真正不可承接的项由下面这条（旧 tonemap-curve）继续守着 —— 负控不放松。
-$r1 = RunCli 'eng_q' $sdr 'png' (@('--quality', '60') + $ENG)
-$r0 = RunCli 'eng_q100' $sdr 'png' ($Q100 + $ENG)
+# ⚠ 2026-11-11 审查修：pngopt 默认档 = max（`PngOptimizerService` 把两档无损重压到同一最优体积）
+#   ⇒ 本断言会误红（q60/q100 同为 20729B）。显式 `--png-optimizer off` 隔离被测量：质量旋钮 → PNG 编码压缩级别。
+$r1 = RunCli 'eng_q' $sdr 'png' (@('--quality', '60', '--png-optimizer', 'off') + $ENG)
+$r0 = RunCli 'eng_q100' $sdr 'png' (@('--png-optimizer', 'off') + $Q100 + $ENG)
 CK ($r1.file -and $r1.log -notmatch '尚未承接') "(4) 质量参数已承接 ⇒ 不再拒绝（$($r1.file.Length)B）"
 if ($r1.file -and $r0.file) {
     CK ($r1.file.Length -ne $r0.file.Length) `

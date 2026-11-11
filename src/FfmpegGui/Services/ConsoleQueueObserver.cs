@@ -46,6 +46,10 @@ namespace FfmpegGui.Services
         private int _completedCount;
         private int _totalCount;
         private int _failedCount;
+        // D6/D7（2026-11-09）：状态含「降级」的项在 Program.cs 计入 failed（进程码非 0），
+        // 但 IsFailure(=StartsWith("失败")) 不认它 ⇒ 汇总只印「失败 0 项」会与退出码自相矛盾。
+        // 2026-11-11 审查修：单独计「降级」并在汇总行显式打印（不改失败计数语义）。
+        private int _degradedCount;
         private readonly LogLevel _logLevel;
         private readonly LogFormat _logFormat;
         private readonly StreamWriter? _logWriter;
@@ -104,6 +108,8 @@ namespace FfmpegGui.Services
             //   就发布了终态，此时 QueueProcessor 尚未写 CompletedAt ⇒ 旧写法既不计失败、也不报错级
             //   （实测一条失败任务打印成「完成 1 项, 失败 0 项」）。
             if (hasError) Interlocked.Increment(ref _failedCount);
+            else if (item.Status != null && item.Status.Contains("降级", StringComparison.Ordinal))
+                Interlocked.Increment(ref _degradedCount);
             var level = hasError ? LogLevel.Error
                                  : (item.IsStopped || item.IsDeleted ? LogLevel.Warn : LogLevel.Info);
             var elapsedSec = (item.CompletedAt.HasValue && item.StartedAt.HasValue)
@@ -183,10 +189,10 @@ namespace FfmpegGui.Services
         public void OnQueueCompleted()
         {
             int done = Volatile.Read(ref _completedCount), failed = Volatile.Read(ref _failedCount);
-            Write(LogLevel.Info, "queue_completed",
-                $"队列处理完毕 — 完成 {done} 项, 失败 {failed} 项",
-                progress: done,
-                total: _totalCount);
+            int degraded = Volatile.Read(ref _degradedCount);
+            var summary = $"队列处理完毕 — 完成 {done} 项, 失败 {failed} 项";
+            if (degraded > 0) summary += $", 降级 {degraded} 项（降级按 D6/D7 契约计入进程退出码非 0）";
+            Write(LogLevel.Info, "queue_completed", summary, progress: done, total: _totalCount);
             lock (_writeLock) { _itemLogSeen.Clear(); }   // 项级日志增量记录随队列释放
         }
 

@@ -1203,7 +1203,10 @@ if ($urnIdx -ge 0) {
     # ⚠ 断言走**产品日志**：ServiceProbe gainmap 模式不转发 [GainMap解码] 日志（容器层自有输出），
     #   而点名行是解码编排层打的 ⇒ 用产品 CLI 把变异件转 png，从 item.Log 里断言。
     $rV1 = RunCli 'eg_minver' $dscV1 'png' @()
-    CK ($rV1.code -eq 0) "14d 前置：min_version=1 变异件正常转出（实得 code=$($rV1.code)；静默降级=SDR png）"
+    # ⚠ 2026-11-11 审查修：D6/D7 契约（`Program.cs:367-368`）把「状态含降级」计为失败 ⇒ 进程码非 0。
+    #   本条原按 exit 0 写（D6/D7 之前语义），现改锁「降级出图 + 进程码非 0」，与队列汇总新增的「降级 N 项」同批。
+    CK ($rV1.code -ne 0) "14d 前置：min_version=1 变异件按降级出图（实得 code=$($rV1.code)；D6/D7 契约：降级 ⇒ 进程码非 0）"
+    CK ($null -ne $rV1.file) "14d 前置：降级仍产出 SDR 交付件（不是零产物）"
     CK ($rV1.log -match 'min_version=1') "14d 点名在案：min_version=1 超出支持被日志点名（不再静默）"
     CK ($rV1.log -match 'SDR 交付') "14d 降级语义诚实：日志写明按无增益图处理（SDR 交付）"
     CK ($rV1.log -notmatch '元数据来源: ISO 21496-1 APP2') "14d 该 APP2 确实被忽略（不再解析出 ISO 元数据）"
