@@ -122,8 +122,13 @@ test-group-coverage / 受管子集全绿。
 
 ### 批 4：中/低盲区逐个补（每块独立小刀）
 
-GUI 子窗口 headless 宿主 → IPC 单实例 → 设置重启恢复 → CLI --preset 回放 → JsonLines →
-PsRender/PlanFolder/MediaInfo → RAW 真机品牌（需语料，遵守工作区边界）→ i18n GUI 渲染。
+**执行序（2026-11-12 按价值/自洽性排定）**：
+1. `blindspot.log-jsonlines`（最廉自洽：headless `--log-format JsonLines` 逐行 JSON 解析 + 必需字段锁，新 verify 门禁）；
+2. `blindspot.ipc-single-instance`（真进程 E2E：二次启动→转发→退出，参照 verify-package-gui-starts 的 CreateProcess 驱动范式）；
+3. `blindspot.settings-gui-restart`（headless UI：改选项→重建窗口→断言生效）；
+4. `blindspot.gui-subwindows`（UiHostShared 扩展：四子窗口 headless 打开/关闭冒烟）；
+5. `blindspot.render-plan-mediainfo`（三服务：ServiceProbe mode 或 headless 臂，需同批组表/parity）。
+**维持 blind（有据，账本可见即可）**：`raw-non-dng-brands`（样本许可未清 ⇒ 不入仓，语料须落 `tests/output/_tmp/<批次>/corpus/`）、`hwencoder-real`（环境依赖，无恒真 GPU 臂）。
 每块：先在账本把 tier 从 blind 改目标档，再实现，再跑双臂（正+负控）。
 
 ### 批 5：卫生与文档
@@ -151,3 +156,7 @@ PsRender/PlanFolder/MediaInfo → RAW 真机品牌（需语料，遵守工作区
 | 2026-11-12 | 批 1 | `_module-registry.json`（66 条目）+ 第 101 条 `verify-module-registry` 落地；受管 10/0 含负控；首轮负控抓出 ② 全局语料缺陷 → 改逐条目语料 3/3 |
 | 2026-11-12 | 批 2·模块 1 | 第 102 条 `verify-overwrite-contract`（防覆盖契约 E2E）落地；受管 18/0 含负控、裸跑正向 17/0；产品行为取证 `tests/output/_tmp/overwrite-probe/` |
 | 2026-11-12 | 登记 | 清单 100→102 四处同步 + ⑱针 8→10/7→9；TESTING.md 第二十九次接线；AGENTS §2/§4/§7 同批；受管子集 `t102-subset.log` rc=0 |
+| 2026-11-12 | 批 2·模块 3 | #103 `verify-corrupt-input`（103 条）+ **真缺陷修复**：三处英文失败状态词 → 失败前缀中文（HasError 契约，exit 矛盾消除）；CJK 第二十四次抬表 1060→1063；实测 29/0 含负控 |
+| 2026-11-12 | 批 2·模块 2 | G2 取消路径进单体（+6，按 InputPath 锁定断言）；三把尺 464/59 + 账本 locks；ui-host **464/0**、union 464/464、verbatim 22/0、reproducible 19/0 |
+| 2026-11-12 | 批 3 | ServiceProbe 拆分（48 行壳 + Parts/65 文件；重建逐字节相等；nodebug 成对构建 **7770FDE924BB1995** 等值）；⚠ 验收前提更正：plain dll 哈希等值原理不可达（PDB 派生字节）；同批迁锁三处：mirror-parity 90/0、coverage 40/0、temp-sites 5/0；STALE 自适应 |
+| 2026-11-12 | 账本 | 4/12 盲区收口（no-overwrite/cancel/corrupt/--preset 更正）；cap.cancel-path/cap.corrupt-input 入账；指纹 F15B1AED2557040D / E62837233822D552 |

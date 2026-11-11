@@ -538,8 +538,11 @@ function Get-Evidence([string]$mode) {
     return @{ Tier = 'none'; Managed = $mg; Unmanaged = $um }
 }
 
+# 2026-11-12（批 3 同批迁锁）：SP 解析面 = 壳 + Parts/*.cs 拼接（编译序=文件名序，见 mirror-parity 同日注）
 $spProgram = ''
-if (Test-Path 'tests/projects/ServiceProbe/Program.cs') { $spProgram = Get-Content 'tests/projects/ServiceProbe/Program.cs' -Raw }
+foreach ($sf in (@('tests/projects/ServiceProbe/Program.cs') + @((Get-ChildItem 'tests/projects/ServiceProbe/Parts' -Filter '*.cs' -ErrorAction SilentlyContinue | Sort-Object Name | ForEach-Object { 'tests/projects/ServiceProbe/Parts/' + $_.Name })))) {
+    if (Test-Path $sf) { $spProgram += [System.IO.File]::ReadAllText((Join-Path (Get-Location).Path $sf)) + "`n" }
+}
 function Get-GroupOf([string]$mode) {
     foreach ($g in $groupMap.Keys) { if ($groupMap[$g] -ccontains $mode) { return $g } }
     return '?'
@@ -591,6 +594,11 @@ $groupProgram = @{}
 foreach ($g in $groupMap.Keys) {
     $pf = "tests/projects/$g/Program.cs"
     if (Test-Path $pf) { $groupProgram[$g] = Get-Content $pf -Raw }
+}
+# 2026-11-12（批 3 拆分同批迁锁）：ServiceProbe 组的解析面追配 Parts/*.cs —— ⑤/⑤-a 的 case 分派
+#   全在 Parts/00_Head.cs（壳只剩 48 行无 case）；拼接使 ③ 存在性/⑤ 分派两判据恢复原有牙。
+foreach ($spf in @((Get-ChildItem 'tests/projects/ServiceProbe/Parts' -Filter '*.cs' -ErrorAction SilentlyContinue | Sort-Object Name | ForEach-Object { 'tests/projects/ServiceProbe/Parts/' + $_.Name }))) {
+    if (Test-Path $spf) { $groupProgram['ServiceProbe'] += "`n" + (Get-Content $spf -Raw) }
 }
 $unregistered = @()
 foreach ($kv in $groupMap.GetEnumerator()) {
@@ -715,9 +723,11 @@ function Split-OffBook([string[]]$universe, [string[]]$claimed, [hashtable]$call
 
 # ── ⑨ mode 派生域：全集 = ServiceProbe 的 case 派发表（不是手抄组表）─────────
 $repoRoot = (Get-Location).Path
-$spPath = Join-Path $repoRoot 'tests/projects/ServiceProbe/Program.cs'
 $spText = ''
-if (Test-Path $spPath) { $spText = [System.IO.File]::ReadAllText($spPath) }
+$spParts = @('tests/projects/ServiceProbe/Program.cs') + @((Get-ChildItem (Join-Path $repoRoot 'tests/projects/ServiceProbe/Parts') -Filter '*.cs' -ErrorAction SilentlyContinue | Sort-Object Name | ForEach-Object { 'tests/projects/ServiceProbe/Parts/' + $_.Name }))
+foreach ($sf in $spParts) {
+    if (Test-Path $sf) { $spText += [System.IO.File]::ReadAllText((Join-Path $repoRoot $sf)) + "`n" }
+}
 $dispatchAll = @()
 foreach ($mmd in [regex]::Matches($spText, '(?m)^[ \t]*case\s+"(?<m>[a-z0-9\-]+)"\s*:')) {
     $dfrom = $mmd.Index + $mmd.Length

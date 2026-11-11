@@ -52,6 +52,11 @@ function CK([bool]$ok, [string]$msg) {
 Write-Host "===== probe-mirror-parity（存在锁 + 执行面条数锁 + 只此一份锁）=====" -ForegroundColor Cyan
 
 $SP = 'tests/projects/ServiceProbe/Program.cs'
+# 2026-11-12（批 3 源级拆分同批迁锁）：SP 解析面 = 壳 + Parts/*.cs。F 实证 SDK 编译序 Parts 先于壳
+#   （dotnet msbuild -getItem:Compile）⇒ 头部成员移入 Parts/00_Head.cs 保成员序；nodebug 成对构建
+#   IL 哈希等值（7770FDE924BB1995）证明零漂移。$SP 保留为壳路径（历史登记表引用面）。
+$SPFiles = @($SP) + @((Get-ChildItem -Path (Join-Path $root 'tests/projects/ServiceProbe/Parts') -Filter '*.cs' -ErrorAction SilentlyContinue |
+    Sort-Object Name | ForEach-Object { 'tests/projects/ServiceProbe/Parts/' + $_.Name }))
 
 # ── 登记表 1：镜像工程删除登记（形态不许回来）──
 #   2026-10-14 删 5 份（core/color/diagnostics/engine/geometry，31 份 Modes/*.cs + 组体 + csproj）；
@@ -309,13 +314,13 @@ function Get-Dispatch($text) {
     return $d
 }
 
-$spText = [System.IO.File]::ReadAllText((Join-Path $root $SP))
+$spText = (@($SPFiles | ForEach-Object { [System.IO.File]::ReadAllText((Join-Path $root $_)) }) -join "`n")
 $files  = @(Get-MirrorFiles)
 $sites  = Get-SiteMap $files
 $disp   = Get-Dispatch $spText
 
 # ── ① 前置反控：枚举不许为空（空枚举 = 恒绿的假门禁，本仓第 55 条）──
-CK ($spText.Length -gt 100000) "① 前置：被执行那份读到 $($spText.Length) 字符（$SP）"
+CK ($spText.Length -gt 100000) "① 前置：SP 解析面（$($SPFiles.Count) 份文件）读到 $($spText.Length) 字符"
 CK ($files.Count -ge 20) "① 前置：tests 下参与扫描的 .cs = $($files.Count)（>=20；2026-10-14 实 31 = 18 份工程的 Program/Group + 3 份共享底座，2026-10-16 A-1 删掉四份无人执行的镜像 ⇒ 现 23 = 9 份工程/底座的 Program+Group + 3 份共享底座；这条只管「扫描域被清空」，不管份数）"
 CK ($sites.Count -ge 50) "① 前置：解析到 Probe* 方法名 $($sites.Count) 个（>=50 ⇒ 取样正则没失配）"
 CK ($disp.Count -ge 50) "① 前置：解析到派发 mode $($disp.Count) 个（>=50 ⇒ case 表形状没变）"
@@ -398,7 +403,7 @@ CK ($sum -eq $regSum -and $regSum -ge 700) "③-e 总量：实取 $sum 条 == �
 # ── ④ 剩余双拷贝登记表：数量与归属逐名钉死 ──
 foreach ($name in $dups.Keys) {
     $act = @()
-    if ($sites.ContainsKey($name)) { $act = @($sites[$name] | Where-Object { $_ -ne $SP } | Sort-Object) }
+    if ($sites.ContainsKey($name)) { $act = @($sites[$name] | Where-Object { $SPFiles -notcontains $_ } | Sort-Object) }
     $exp = @($dups[$name] | Sort-Object)
     $same = ($act.Count -eq $exp.Count)
     if ($same) { for ($i = 0; $i -lt $act.Count; $i++) { if ($act[$i] -ne $exp[$i]) { $same = $false } } }
@@ -412,11 +417,11 @@ foreach ($name in $dups.Keys) {
 #   2026-10-16 之前的形态是"方向锁"（比 SP 与镜像两边的标签多重集，要求镜像独有 = 0 且 SP ≥ 镜像）——
 #   那需要镜像存在。镜像全删完之后，方向锁的两条恒真前提（两边都取到 0 条）就会把锁变成装饰，
 #   所以这里改量**定义点基数**：`$sites[name]` 去掉 SP 自身之后必须为空。
-$spOwnNames = @($sites.Keys | Where-Object { @($sites[$_]) -contains $SP } | Sort-Object)
+$spOwnNames = @($sites.Keys | Where-Object { @($sites[$_]) | Where-Object { $SPFiles -contains $_ } } | Sort-Object)
 CK ($spOwnNames.Count -ge 30) "⑤ 前置：ServiceProbe 自己定义的 Probe* 方法 = $($spOwnNames.Count) 个（须 ≥30 ⇒ 取样域没被清空才有资格谈只此一份）"
 $second = @()
 foreach ($n in $spOwnNames) {
-    $others = @($sites[$n] | Where-Object { $_ -ne $SP })
+    $others = @($sites[$n] | Where-Object { $SPFiles -notcontains $_ })
     if ($others.Count -gt 0) { $second += "$n@$($others -join ',')" }
 }
 $s2List = '无'

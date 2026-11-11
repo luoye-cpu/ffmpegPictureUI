@@ -76,7 +76,10 @@ $srcDir = Join-Path $root 'tests/output/sources'
 #   实测拆分 ui-sweep mode `126 PASS / 0 FAIL`（J=126，tests/output/_tmp/cmx3-gate/j19-after.log），
 #   verify-ui-split-reproducible 19/0；与 verify-ui-param-matrix.ps1 的 $jExpected=126、
 #   verify-ui-host.ps1 的 ui-sweep=169/合计=458 同批抬表——三把尺同一来历。）
-$expectedOldCount = 458
+#   2026-11-12（测试模块化批 2 模块 2，取消路径 G2）= **464**（+6：G 组增 G2 六条——点停止→已停止+
+#   子进程死+无半截产物+无已完成项+前置输入；改断言改单体后 _gen-ui-split.ps1 重跑；与 verify-ui-host.ps1
+#   的 ui-mode=59/合计=464、_module-registry.json locks 同批抬表——三把尺同一来历。）
+$expectedOldCount = 464
 # 一对一改名 ⇒ 新旧总数相同（不是 408/412）
 $expectedNewCount = $expectedOldCount
 

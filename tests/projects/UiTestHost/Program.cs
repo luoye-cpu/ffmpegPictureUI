@@ -911,6 +911,110 @@ namespace UiTestHost
                 Check("G1 PNG端到端产物", produced,
                       $"exists={System.IO.File.Exists(outFile)} size={sz}B elapsed={sw.ElapsedMilliseconds}ms");
             });
+
+            // G2（2026-11-12，测试模块化批 2 模块 2）：用户取消/停止路径的端到端判据。
+            //   调研盲区#2：此前仅 _probe-cancel-propagation-scan(#14) 静态锁「每个 RunAsync 传 ct」，
+            //   「点停止 → 子进程真死 → 无半截产物 → 状态=已停止」整段无运行时判据。
+            //   慢任务配方：24MP（6000×4000）PNG→PNG，pngopt 默认 max（pngopt-def-t4 实测 24MP max≈41.8s）
+            //   —— 停止窗钉在 ffmpeg 编码相位（24MP PNG 编码本身即秒级-十秒级），裕量数百倍。
+            //   子进程死活用「先记 id、后验全灭」判定：并发轮里其他 ffmpeg/oxipng 不受影响（只查自己的 id）。
+            Safe("G2 慢任务停止(点停止→已停止+子进程死+无半截产物)", () =>
+            {
+                var plan = System.IO.Path.Combine(RepoRoot, "publish", "PLAN");
+                var st = FfmpegGui.Services.AppSettingsService.Current;
+                st.FfmpegDirectory = System.IO.Path.Combine(plan, "ffmpeg-full");
+                st.OutputDirectory = TempDir;
+                FfmpegGui.Services.ExternalToolsDetector.EnsureAllDetected();
+
+                // 前置输入：lavfi 现造 24MP（TempDir 内，退出自清；与输出异名防同名覆盖）
+                var bigIn = System.IO.Path.Combine(TempDir, "g2_in.png");
+                var outFile = System.IO.Path.Combine(TempDir, "g2_out.png");
+                try { if (System.IO.File.Exists(outFile)) System.IO.File.Delete(outFile); } catch { }
+                var ff = System.IO.Path.Combine(plan, "ffmpeg-full", "ffmpeg.exe");
+                var psi = new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = ff,
+                    Arguments = "-y -f lavfi -i testsrc2=size=6000x4000:rate=1 -frames:v 1 \"" + bigIn + "\"",
+                    UseShellExecute = false, CreateNoWindow = true
+                };
+                var pGen = System.Diagnostics.Process.Start(psi);
+                pGen?.WaitForExit();
+                Check("G2 前置 24MP 输入", (pGen?.ExitCode ?? -1) == 0 && System.IO.File.Exists(bigIn)
+                                           && new System.IO.FileInfo(bigIn).Length > 1_000_000,
+                      $"exit={pGen?.ExitCode} size={(System.IO.File.Exists(bigIn) ? new System.IO.FileInfo(bigIn).Length : 0)}B");
+
+                SetInput(bigIn);
+                SetFormat("PNG");
+                var mf = typeof(FfmpegGui.MainWindow).GetField("_mediaFiles", BF)?.GetValue(W) as System.Collections.IList;
+                if (mf != null && !mf.Contains(bigIn)) mf.Add(bigIn);
+                typeof(FfmpegGui.MainWindow).GetMethod("AddToQueue_Click", BF)?.Invoke(W, new object?[] { null, null });
+                Pump(30);
+                typeof(FfmpegGui.MainWindow).GetMethod("StartQueue_Click", BF)?.Invoke(W, new object?[] { null, null });
+
+                System.Collections.Generic.List<FfmpegGui.Models.QueueItem>? Items() =>
+                    typeof(FfmpegGui.MainWindow).GetField("_queueItems", BF)?.GetValue(W) as System.Collections.Generic.List<FfmpegGui.Models.QueueItem>;
+
+                // 前置：等到 **G2 自己的条目**（按 InputPath 锁定，≤30s）真的在处理，再等到工作子进程出现（≤10s）。
+                //   ⚠ 不能用全队列 Any(IsProcessing)：AddToQueue_Click 在 _mediaFiles 非空时批量添加
+                //   （MainWindow.xaml.cs:3013-3022）⇒ G1 的 src_8bit 会在 G2 再入队并瞬间完成——
+                //   全队列断言会被这个无关项打假红；子进程快照也可能捕到它的 ffmpeg（同被本次 Stop 取消，无害）。
+                var swG2 = System.Diagnostics.Stopwatch.StartNew();
+                while (swG2.ElapsedMilliseconds < 30000)
+                {
+                    Pump(4);
+                    var its = Items();
+                    if (its != null && its.Any(i => i.InputPath == bigIn && i.IsProcessing)) break;
+                    System.Threading.Thread.Sleep(120);
+                }
+                System.Collections.Generic.HashSet<int> childIds = new();
+                while (swG2.ElapsedMilliseconds < 40000)
+                {
+                    foreach (var nm in new[] { "ffmpeg", "oxipng" })
+                        foreach (var pp in System.Diagnostics.Process.GetProcessesByName(nm))
+                            childIds.Add(pp.Id);
+                    if (childIds.Count > 0) break;
+                    Pump(4);
+                    System.Threading.Thread.Sleep(150);
+                }
+                Check("G2 停止前工作子进程在跑", childIds.Count > 0,
+                      $"workers=[{string.Join(",", childIds)}] elapsed={swG2.ElapsedMilliseconds}ms");
+
+                // 点停止（StopQueue_Click 无 x:Name ⇒ 反射，同 G1 范式；Stop()= _cts.Cancel()）
+                typeof(FfmpegGui.MainWindow).GetMethod("StopQueue_Click", BF)?.Invoke(W, new object?[] { null, null });
+
+                // ① 状态变已停止（≤20s）
+                var stopped = false;
+                while (swG2.ElapsedMilliseconds < 65000)
+                {
+                    Pump(4);
+                    var its = Items();
+                    if (its != null && its.Any(i => i.InputPath == bigIn && i.IsStopped)) { stopped = true; break; }
+                    System.Threading.Thread.Sleep(120);
+                }
+                Check("G2 停止后状态=已停止", stopped,
+                      $"status={string.Join("|", (Items() ?? new()).Where(i => i.InputPath == bigIn).Select(i => i.Status))}");
+
+                // ② 子进程全灭（只验自己记的 id，≤10s 宽限）
+                var deadAll = false;
+                while (swG2.ElapsedMilliseconds < 80000)
+                {
+                    Pump(4);
+                    deadAll = childIds.All(id => { try { var pr = System.Diagnostics.Process.GetProcessById(id); return pr.HasExited; } catch { return true; } });
+                    if (deadAll) break;
+                    System.Threading.Thread.Sleep(150);
+                }
+                Check("G2 ffmpeg/oxipng 子进程已死", deadAll,
+                      $"survivors=[{string.Join(",", childIds.Where(id => { try { return !System.Diagnostics.Process.GetProcessById(id).HasExited; } catch { return false; } }))}]");
+
+                // ③ 半成品清理：TryDiscardPartialOutput 对「本次新建」的产物删除 ⇒ 输出路径不存在
+                Check("G2 无半截产物", !System.IO.File.Exists(outFile),
+                      $"exists={System.IO.File.Exists(outFile)}");
+
+                // ④ G2 条目不许记成功（停止的任务不得落入「已完成」；按 InputPath 锁定，
+                //   G1 遗留的已完成项与本断言无关）
+                Check("G2 队列无已完成项", (Items() ?? new()).Where(i => i.InputPath == bigIn).All(i => !i.IsSuccessStatus),
+                      $"statuses={string.Join("|", (Items() ?? new()).Where(i => i.InputPath == bigIn).Select(i => i.Status))}");
+            });
         }
 
         // ══════════════ H组: 色彩管线重构断言 (Registry 分类/tagging/超广色域矩阵/P4/P5/P6) ══════════════

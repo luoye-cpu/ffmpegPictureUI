@@ -59,7 +59,18 @@ foreach ($f in $csFiles) {
 
 # ── ② 每文件站点数冻结表（改任何一边都要同批改另一边，并写明生命周期）──────────
 $siteTable = @{
-    'tests/projects/ServiceProbe/Program.cs'            = 11
+    # 2026-11-12（批 3 拆分同批迁表）：Program.cs 的 11 站点逐字节搬入 Parts，实测 11 个 Part 各 1 站点（总量守恒）：
+    'tests/projects/ServiceProbe/Parts/07_ProbeUltraHdr.cs'        = 1
+    'tests/projects/ServiceProbe/Parts/11_ProbeGainMapStats.cs'    = 1
+    'tests/projects/ServiceProbe/Parts/16_ProbePlan.cs'            = 1
+    'tests/projects/ServiceProbe/Parts/28_ProbePeakMeasure.cs'     = 1
+    'tests/projects/ServiceProbe/Parts/43_ProbeIpc.cs'             = 1
+    'tests/projects/ServiceProbe/Parts/44_ProbeSettingsSave.cs'    = 1
+    'tests/projects/ServiceProbe/Parts/45_ProbeRunnerGuard.cs'     = 1
+    'tests/projects/ServiceProbe/Parts/49_ProbeToolDetect.cs'      = 1
+    'tests/projects/ServiceProbe/Parts/52_ProbeFrameLengthGuard.cs' = 1
+    'tests/projects/ServiceProbe/Parts/53_ProbeBench.cs'           = 1
+    'tests/projects/ServiceProbe/Parts/54_ProbeXcheck.cs'          = 1
     'tests/projects/GainMapTestHost/Program.cs'         = 13
     'tests/projects/gainmap-decode/GainMapDecodeGroupD.cs' = 7
     'tests/projects/gainmap-encode/GainMapEncodeGroup.cs'  = 5

@@ -4813,7 +4813,9 @@ namespace FfmpegGui.Services
                 }
 
                 item.ExitCode = process.ExitCode;
-                item.Status = process.ExitCode == 0 ? AvifencTwoStepStatus : $"failed: avifenc exit {process.ExitCode}";
+                // ⚠ 状态词必须以「失败」开头（QueueItem.HasError 按 StartsWith("失败") 判定，
+                //   进程退出码读它）——英文 "failed: ..." 会让条目失败但 exit=0，CI 无法机读察觉。
+                item.Status = process.ExitCode == 0 ? AvifencTwoStepStatus : $"失败 (avifenc 两步法 exit {process.ExitCode})";
 
                 if (process.ExitCode == 0)
                     await RestoreMetadataAsync(item, outputPath);
@@ -5525,7 +5527,7 @@ namespace FfmpegGui.Services
                 item.ExitCode = process.ExitCode;
                 item.Status = process.ExitCode == 0
                     ? AvifencTwoStepStatus
-                    : $"failed: avifenc exit {process.ExitCode}";
+                    : $"失败 (avifenc 两步法 exit {process.ExitCode})";   // 失败前缀契约（同 ：4816 注）
             }
             finally
             {
@@ -6107,7 +6109,10 @@ namespace FfmpegGui.Services
                 if (!probeOk)
                 {
                     item.ExitCode = probeExit != 0 ? probeExit : -1;
-                    item.Status = $"failed: JXL input undecodable (djxl probe exit {probeExit})";
+                    // ⚠ 失败前缀契约（QueueItem.HasError = StartsWith("失败") ⇒ 进程退出码）：
+                    //   英文 "failed: JXL input undecodable" 曾让「条目失败 + 汇总失败 1 项」与
+                    //   exit=0 并存（verify-corrupt-input C3/C4 当场红出来，2026-11-12）。
+                    item.Status = $"失败 (JXL 输入不可解码：djxl 探针 exit {probeExit})";
                     return false;
                 }
                 item.Log += "[djxl] probe passed (file decodable) => falling back to ffmpeg direct JXL read (keeps float precision)\n";

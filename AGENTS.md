@@ -52,7 +52,7 @@ beta7–beta11 的 10 个归档 + 8 个解包目录（1.7 GB）。**要留证据
 
 `tests/scripts/_run-step3-gates.ps1` 是清单，不是索引外部文件。加/删/改名一条门禁必须**同批**改齐四处：
 
-1. `$scriptList` 数组（102 条）；
+1. `$scriptList` 数组（103 条）；
 2. `$expectedScriptCount` 常量（同文件）；
 3. runner 里复述条数的**散文陈述**——`Test-RunnerShape` 第 ⑰ 针按三种形态各扫一遍并要求与常量相等；
 4. 新的 ServiceProbe mode 还要进 `tests/projects/Tests.Shared/TestGroups.cs` 的组表，
@@ -89,7 +89,7 @@ beta7–beta11 的 10 个归档 + 8 个解包目录（1.7 GB）。**要留证据
 # 必须 pwsh7；LC_ALL 会改变排序/解析行为 ⇒ 清掉
 $env:LC_ALL=$null
 dotnet build ffmpegPictureUI.sln -c Release          # 13 个测试工程都在 sln 里，编不过当场暴露
-pwsh -NoProfile -File tests/scripts/_run-step3-gates.ps1   # 102 条；整轮墙钟未在 102/102 下重测（94 条时代 ~60 分钟）
+pwsh -NoProfile -File tests/scripts/_run-step3-gates.ps1   # 103 条；整轮墙钟未在 103/103 下重测（94 条时代 ~60 分钟）
 ```
 
 - 宣布"全绿"必须绑定被测产物：exe/DLL 指纹前 16 与当轮日志同段；`dotnet test` 打在 Exe 工程上只还原不跑还返回 0。
@@ -491,6 +491,26 @@ pwsh -NoProfile -File tests/scripts/_run-step3-gates.ps1   # 102 条；整轮墙
   （`_probe-test-group-coverage.ps1:1008-1088` AST 调用点索引 + D1–D4 判据），⑪-d 剩余工作只有
   「_probe-/_make- 族新脚本从 WARN 收紧」。⚠ `-Scripts` 子集参数必须带 `.ps1` 全名（不带则
   响亮拒绝，且该校验发生在探针阶段之后——传错名会白跑 ~4 分钟探针）。
+- **测试模块化批 2 完成 + 批 3 落地（2026-11-12，`docs/TEST_MODULE_PLAN_2026-11-12.md`；清单 102→103）**：
+  - **批 2 模块 1+3（防覆盖/损坏输入）**：#102/#103 两门禁 + **附带真缺陷修复**——`QueueProcessor.cs`
+    三处英文失败状态词不满足 `HasError`（StartsWith("失败")）⇒「条目失败+汇总失败 1 项+exit=0」并存
+    （D6/D7 同族漏网）⇒ 改失败前缀中文；CJK 第二十四次抬基线 1060→1063。实测 corrupt-input **29/0**、
+    overwrite-contract **18/0**（各含 -SelfCheck）。
+  - **批 2 模块 2（取消路径 G2）**：单体 GroupG +6（按 InputPath 锁定断言——`AddToQueue_Click`
+    批量添加陷阱见 TESTING.md 第三十次接线段）；**ui-mode 53→59 / 合计 458→464**（三把尺+账本 locks 同批）；
+    ui-host **464/0**、union 464/464、verbatim 22/0、reproducible 19/0。
+  - **批 3（ServiceProbe 源级 partial 拆分）**：10,671 行 → 48 行壳 + `Parts/` 65 文件；重建审计逐字节
+    相等；**方案验收前提更正：plain dll 哈希等值原理不可达**（PDB 派生字节 ≈71B/5 簇随任何源触碰变化）⇒
+    硬证据 = `-p:DebugType=none` 成对构建 **7770FDE924BB1995** 等值（IL+成员序零漂移）；编译序实证
+    Parts 先于壳 ⇒ 头部入 00_Head.cs。**同批迁锁三处**：mirror-parity **90/0**（`$SPFiles` 拼接解析面）、
+    test-group-coverage **40/0**（`$spProgram`/`$spText`/`$groupProgram['ServiceProbe']` 三处）、
+    host-temp-sites **5/0**（11 站点逐行迁表，总量守恒）；STALE 自适应无需改。
+  - 指纹：`FfmpegGui.dll=F15B1AED2557040D`、`ServiceProbe.dll=E62837233822D552`（拆分终态）。
+  - ⚠ 教训族：门禁驱动函数参数**严禁 `$args`/`$input`**（PowerShell 自动变量撞名静默换值——
+    corrupt-input 一天踩两次：夹具 0 字节 / exe 秒退 exit=2 零输出）；`StringBuilder.Append` 不 `[void]`
+    溢出输出管道使语料 `.Contains` 全 false。已存项目记忆。
+  - 盲区账本现值：12 条中 **4 条已收口**（no-overwrite/cancel/corrupt + --preset 部分过期更正），
+    账本条目 66（两盲区转 `cap.cancel-path`/`cap.corrupt-input`）。
 
 ---
 
