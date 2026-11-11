@@ -190,6 +190,8 @@ namespace ServiceProbe
                     // framelen —— GainMapEncoder 入口**帧长守卫**的动态自证（由 verify-gainmap-memory.ps1 调用）
                     case "framelen": ProbeFrameLengthGuard().GetAwaiter().GetResult(); break;
                     case "cgkparity": ProbeColorGainKitParity(); break;
+                    // mediasvc —— 三服务进程内判据（批 4·5；调用者 = verify-tool-detection.ps1 §5）
+                    case "mediasvc": ProbeMediaSvc(); break;
                     case "xcheck": ProbeXcheck(args).GetAwaiter().GetResult(); break;
                     default:
                         Console.WriteLine($"unknown command: {args[0]}");

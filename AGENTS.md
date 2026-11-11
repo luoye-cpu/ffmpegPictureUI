@@ -536,8 +536,15 @@ pwsh -NoProfile -File tests/scripts/_run-step3-gates.ps1   # 104 条；整轮墙
   `workers=[]`+`失败 (退出码 -22)`（muxer EINVAL）2/2；全序列（不传 mode）六条全绿——union 自批 2 起
   从未受管跑过带 G2 的清单（批 2 的 464/464 是裸跑），候选修法 = union 改全组跑（与 ui-host 同形），
   独立一批。③ 宿主退出路径重写 exe 侧 settings.json（N8 快照/还原管不到；文件在场无害——C 轮实测绿）。
-- **测试模块化批 4 剩余（待做）**：render-plan-mediainfo（三服务调研未完成）；
-  维持 blind（有据）：raw-non-dng-brands（样本许可未清）、hwencoder-real（环境依赖）。
+- **测试模块化批 4·5（2026-11-12，无新门禁；ServiceProbe 新 mode `mediasvc` + VTD §5）**：
+  三服务（MediaInfo/PlanFolderDetector/PsRender）0 测试引用收口 = ServiceProbe
+  `Parts/65_ProbeMediaSvc.cs`（17 源文本调用位入 mirror-parity 表）+ verify-tool-detection §5 载体。
+  锁面：media（ffprobe JSON/缺文件不崩）+ plan（否定路径契约 + IsValid⇒四目录不变式）+ ps
+  （条件不变式 + ClearCache 幂等——本机装有 PS 2026 ⇒ DetectedPath 在盘被锁）。实测：mediasvc 9/0、
+  VTD **24/0**（-SelfCheck 负控按契约 exit=1）、mirror-parity **91/0**、coverage 40/0、registry 9/0
+  （⚠ registry domain 必须在白名单内，首登 'services' 被当场抓红）。盲区 7/12 收口。
+- **测试模块化批 4 完成**。剩余独立刀候选：① FFMPEGGUI_FFMPEG_DIR 分隔符产品归一化 ② union 改全组跑
+  ③ FFMPEGGUI_PLAN_DIR 正斜杠同族排查（三条见批 4·3+4 条目）。
 
 ---
 

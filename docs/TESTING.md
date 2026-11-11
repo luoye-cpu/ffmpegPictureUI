@@ -692,6 +692,24 @@ exe 侧 settings.json 都被重新写回（内容含死 GUID 的 OutputDirectory
 C 轮实测：完整嫌疑 settings.json 在场 ⇒ 473/0 照样绿 ⇒ 文件在场无害，仅登记机制。
 ④ J7 单次红（`gbr→rgb`，色彩断言）1 次，同 exe 直跑复跑即绿——与 O2/O3 已登记的 Dispatcher.Post
 间歇族同档，负载相关，单次不作结论。）
+
+（**2026-11-12 批 4·5（无新门禁；第 104 条 verify-tool-detection 增 §5 + ServiceProbe 新派发 mode
+`mediasvc`）**：三服务（MediaInfoService / PlanFolderDetector / PsRenderService）此前 tests 面 0 引用
+（调研盲区#10，tier=低）——收口形态 = ServiceProbe `Parts/65_ProbeMediaSvc.cs`（**17 个源文本调用位**
+登记进 mirror-parity 表）+ verify-tool-detection §5 载体（主题同族：检测/PLAN，5 条 CK：exit=0 且
+FAIL=0、pass≥7 下界（17 调用位按机器形态收敛 8~10——PS 在场 +1、IsValid 路径 +3）、media 正控在场、
+plan 契约臂在场、ps 幂等臂在场）。锁面：MediaInfoService（真件 ffprobe JSON 非空/点名 png/含宽 256 +
+缺文件回话不崩不抛）+ PlanFolderDetector（**否定路径契约**：ServiceProbe bin 旁无 PLAN ⇒ fail-closed
+空结果全 null；IsValid ⇒ 四目录非空且 ffmpeg.exe 在盘——正控由 §1–§4 产品链路承载，不重复）+
+PsRenderService（IsAvailable⇔DetectedPath 缓存自洽 + ClearCache 后 Detect 幂等——条件不变式形态，
+两类机器都判绿；本机装有 PS 2026 ⇒ DetectedPath 在盘额外被锁）。接线四处：00_Head switch case +
+TestGroups 组表 + mirror-parity `'mediasvc' = 17` + VTD §5；coverage 40/0（mediasvc 被 §5 认领）、
+mirror-parity **91/0**、VTD 正控 **24/0** / -SelfCheck 负控按契约 exit=1、module-registry 9/0
+（⚠ domain 必须**落在白名单内**——首登写 'services' 当场被 ④ 抓红，归 'tooldetect'）。
+账本同批：`blindspot.render-plan-mediainfo` → `cap.render-plan-mediainfo`（tier E2E，carrier
+verify-tool-detection），条目数 66 不变。盲区账本：12 条中 **7 条已收口**；余 5 条维持 blind（有据）：
+raw-non-dng-brands（样本许可未清）、hwencoder-real（环境依赖）、gui-i18n-render、
+ipc-single-instance（产品缺口，S-P1-2 待拍板）+ 静态门禁档位面。）
   v1 支的判法是**偶次残差**而不是"奇次位为 0"——v1 载荷只有四个偶次项，奇次位是读手自己填的 0，
   那条断言永不可能触发（2026-10-19 审查删掉的死牙）。造变异件也从读手分家出去
   （`_mutate-dng-lens.py`，理由与 ⑯ 组同一条：判件与造件同入口时判据走偏造件跟着走偏）。

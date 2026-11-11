@@ -129,6 +129,24 @@ try {
         $planLabels = ([regex]::Matches($r5.Log, '\[PLAN\]')).Count
         CK '§4 工具报告带 ≥6 个 [PLAN] 来源标签' ($planLabels -ge 6) "实得 $planLabels"
         CK '§4 ffmpeg 来源=PLAN' ($r5.Log.Contains('ffmpeg: ✅ [PLAN]'))
+        # ── §5 三服务进程内判据（批 4·5，ServiceProbe mediasvc）──
+        #   MediaInfoService / PlanFolderDetector / PsRenderService 此前 tests 面 0 引用（调研盲区#10）。
+        #   PlanFolderDetector 的 IsValid 正控由 §1–§4 产品链路承载；本节锁三服务的 no-throw /
+        #   条件不变式 / 缓存幂等契约（否定路径在 ServiceProbe bin 旁无 PLAN 上兑现）。
+        $env:FFMPEGGUI_PLAN_DIR = $planDir
+        $spExe = Join-Path $repo 'tests\projects\ServiceProbe\bin\Release\net11.0\win-x64\ServiceProbe.exe'
+        if (-not (Test-Path $spExe)) { CK '§5 ServiceProbe exe 在' $false '先 dotnet build -c Release' }
+        else {
+            $spOut = & $spExe mediasvc 2>&1
+            $spText = ($spOut | ForEach-Object { "$_" }) -join "`n"
+            $spPass = ([regex]::Matches($spText, '(?m)^PASS ')).Count
+            $spFail = ([regex]::Matches($spText, '(?m)^FAIL ')).Count
+            CK '§5 mediasvc exit=0 且 FAIL=0' (($LASTEXITCODE -eq 0) -and ($spFail -eq 0)) "pass=$spPass fail=$spFail exit=$LASTEXITCODE"
+            CK '§5 mediasvc pass≥7 下界' ($spPass -ge 7) "实得 $spPass（17 个源文本调用位按机器形态收敛 8~10：PS 在场 +1、IsValid 路径 +3）"
+            CK '§5 media 正控在场' ($spText.Contains('media: 真件 ffprobe 输出非空') -and $spText.Contains('media: 缺文件回话不崩'))
+            CK '§5 plan 契约臂在场' ($spText.Contains('plan: '))
+            CK '§5 ps 幂等臂在场' ($spText.Contains('ps: ClearCache 后 Detect 答案不变'))
+        }
     }
     else {
         # ── 负控：判据打到"路径本来就有效"的夹具上，必须转红（证明失效判据有牙）──

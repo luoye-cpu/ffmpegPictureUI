@@ -1350,17 +1350,6 @@
       "plannedBatch": 4
     },
     {
-      "id": "blindspot.render-plan-mediainfo",
-      "kind": "blindspot",
-      "domain": "ui",
-      "tier": "blind",
-      "names": [],
-      "carriers": [],
-      "src": "src/FfmpegGui/Services/PsRenderService.cs:1",
-      "blindReason": "PsRenderService/PlanFolderDetector/MediaInfoService 测试面 0 引用",
-      "plannedBatch": 4
-    },
-    {
       "id": "blindspot.gui-i18n-render",
       "kind": "blindspot",
       "domain": "ui",
@@ -1471,6 +1460,24 @@
         "tests/projects/UiTestHost/Program.cs:4445"
       ],
       "desc": "四子窗口 headless 打开/关闭冒烟（N9）：FormatFilter/PresetManager/ImageDetail/Progress 真实构造→Show→控件在位→Close（2026-11-12 由 blindspot.gui-subwindows 收口，批 4·4）"
+    },
+    {
+      "id": "cap.render-plan-mediainfo",
+      "kind": "capability",
+      "domain": "tooldetect",
+      "tier": "E2E",
+      "names": [],
+      "src": "tests/projects/ServiceProbe/Parts/65_ProbeMediaSvc.cs:1",
+      "carriers": [
+        {
+          "gate": "verify-tool-detection.ps1",
+          "kind": "cli"
+        }
+      ],
+      "evidence": [
+        "tests/scripts/verify-tool-detection.ps1:132"
+      ],
+      "desc": "三服务进程内判据（MediaInfoService ffprobe JSON/缺文件不崩 + PlanFolderDetector 否定路径契约与条件不变式 + PsRenderService 条件不变式/缓存幂等；ServiceProbe mediasvc 17 调用位，运行 8~10 按机器形态）（2026-11-12 由 blindspot.render-plan-mediainfo 收口，批 4·5）"
     }
   ]
 }

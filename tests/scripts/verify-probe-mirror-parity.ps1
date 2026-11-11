@@ -146,6 +146,11 @@ $counts = [ordered]@{
     #   配对器改成跳注释/跳字符串后重跑 `-Census`：60 格里**只有这一格**变（其余逐格相同），
     #   总量 848 → 803（差的正是被吞的 45）。⇒ 登记值以修好的尺为准；两把尺（源文本调用位 vs 运行次数）不许对齐这条不变。
     'selftest' = 18; 'settings' = 11; 'simdswitch' = 18; 'thumbnail' = 21; 'tonemap' = 22
+    # 2026-11-12 新增派发 mode `mediasvc`（批 4·5：MediaInfoService / PlanFolderDetector /
+    #   PsRenderService 三服务进程内判据，调用者 = verify-tool-detection.ps1 §5）。
+    #   登记 = **源文本调用位 17**（media 6 + plan 7 + ps 4；条件不变式形态——运行时通过数
+    #   按机器形态收敛 8~10，两把尺互补不许对齐）。
+    'mediasvc' = 17
     'tonemapcurve' = 0; 'tooldetect' = 27; 'ultrahdr' = 4; 'vendor-hdr' = 20; 'verdict' = 35; 'wire' = 99
     'xcheck' = 6
 }

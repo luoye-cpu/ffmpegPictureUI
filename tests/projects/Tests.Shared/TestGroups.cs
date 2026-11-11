@@ -36,7 +36,7 @@ namespace Tests.Shared
                 "matrix", "curve", "ootf", "hlgwire", "bt2446", "pq", "colormath", "iccname",
                 "engine", "gamut", "gamutfit", "simdswitch",
                 "geometry", "firstframe", "orientation", "orientmeta",
-                "bench", "peak", "peakmeasure", "psnr", "xcheck", "selftest", "tooldetect", "i18n",
+                "bench", "peak", "peakmeasure", "psnr", "xcheck", "selftest", "tooldetect", "mediasvc", "i18n",
                 // 2026-10-15 T12/R6：厂商 HDR 尾注断言只在 ServiceProbe 里有实现（**没有镜像**，
                 // 与上面那 31 个「镜像已整体删除」的 mode 同一形态）；调用者 = 在册第 49 条
                 // `verify-gainmap-isobmff.ps1` 的 §3d ⇒ 覆盖账的 ⑥-c 不会把它算成零调用点。
