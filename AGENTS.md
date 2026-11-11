@@ -455,6 +455,25 @@ pwsh -NoProfile -File tests/scripts/_run-step3-gates.ps1   # 100 条；整轮墙
     文案，要区分「无法判定」须同批改产品与判据）；dng/webm 显式矩阵只有 bmp/ppm 有门禁臂；
     C3 GUI 点击级、C2 版本探测去重无 E2E 读数；C4（runner per-script 超时表/确定性挂死件）、
     `ResolveAvifencPath` 自身缓存、非 Apple aux grid（B4）属后续批。
+- **.NET 11 GA 升级收尾（2026-11-11..12，交接批 `docs/HANDOVER-NET11-GA-PACKAGING-2026-11-11.md`）**：
+  仓库根新增 `global.json`（SDK `11.0.100`，`rollForward=latestFeature`、`allowPrerelease=false`；
+  用户 11-11 23:07 装 GA）。全量 restore+build rc=0（0 错 4 警：IL3002/CA1416 两条既有 +
+  CS8604 `RawColorPipeline.cs:640` / CS8602 `QueueProcessor.cs:1557`——两行最后触碰分别是
+  `0f6c11a`/`c1b87d3`，GA 会话源码零改动 ⇒ 4 条均与升级无关）。25/25 runtimeconfig 全
+  `Microsoft.NETCore.App 11.0.0`（只认 `bin/Release/net11.0/win-x64/`；`bin/Debug`、RID-less、
+  `bin/x64/Debug` 三处 rc.3/rc.1/framework-less 是陈旧残留）；assets ILLink=`11.0.0`，全树无
+  `11.0.0-rc` 残留。**AOT scratch 五项验收全过**（`tests/output/_tmp/net11-ga/`，未动 `publish/`）：
+  exe 24,219,136 B（beta12 RC.3 = 23,923,712 B，+1.2%）、`!AvaloniaResources`×4 / `!XamlIlPopulate`×2
+  在位、`--help`/headless jxl+png 三臂 rc=0（`FFMPEGGUI_PLAN_DIR` 指 PLAN）、GUI
+  `MainWindowHandle≠0` + 关闭 exit=0、exe sha16 `BBF3299E6C3435FF`。代表门禁 GA 下全绿
+  （裸跑自钉 TMP）：ps-compat 13/0、color-wiring 153/0、gainmap-engine 221/0、decision-delivery 94/0、
+  ui-host **458/0**（SKIP=1 J1z 既有口径）——绑定 `FfmpegGui.dll` sha16 **`525450CF9EE1F34A`**
+  （RC.3 时代 `782F970073393F9C`）、`ServiceProbe.dll` `87E4412B289FC29C`。
+  ⚠ **提权会话 GUI 冒烟坑**：`Start-Process`（ShellExecute）弹「打开文件 - 安全警告」模态框把
+  driver 永久阻塞（exe **无** Zone.Identifier，非 MOTW）⇒ 必须
+  `[System.Diagnostics.ProcessStartInfo]::UseShellExecute=$false`（裸 CreateProcess），
+  修法已固化在 `tests/output/_tmp/net11-ga/gui-smoke.ps1`。出包版本已裁定 **1.6.0-rc.1**；
+  用户指示不急着出包，先行「测试拆碎成模块 + 覆盖不落后」任务，出包顺延（`#93` 随重出包解）。
 
 ---
 
