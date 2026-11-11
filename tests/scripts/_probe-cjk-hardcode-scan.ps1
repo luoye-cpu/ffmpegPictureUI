@@ -1,4 +1,4 @@
-﻿# _probe-cjk-hardcode-scan.ps1 —— UI 硬编码中文（未走 Loc）的「不得增加」结构锁（2026-09-17 新增）
+# _probe-cjk-hardcode-scan.ps1 —— UI 硬编码中文（未走 Loc）的「不得增加」结构锁（2026-09-17 新增）
 #
 # 为什么需要它：
 #   `_probe-i18n-scan.ps1` 的 ③④ 只把硬编码中文打印成 `ℹ` 行（**不判红**）⇒ 实际上**没有任何锁**。
@@ -570,7 +570,17 @@ $BASE_CS_OTHER = 861
 #   ⚠ 同批 `$BASE_XAML` **不动**（实测仍 13，余量 0）。
 #   ⚠ 余量 0（922 = 实测值）：**不预留**下一个批次的额度——预留下次会让「不得增加」退化成「可以再加几行」，
 #     而这正是本锁十八次抬基线以来一直守的边界（每次都抬到实测值）。
-$BASE_CS_UI    = 1047
+$BASE_CS_UI    = 1060
+# ⚠⚠ **2026-11-11 第二十三次抬基线（beta12 后审查修复批）：1047 → 1060（+13，判据项）** —— 成因分两层：
+#   · **+2 为 Lead 的门禁口径修复提交 `6d9ead3`**（`ConsoleQueueObserver.cs`：状态比较字面量 `"降级"` +
+#     队列汇总 `"..., 降级 N 项（降级按 D6/D7 契约计入进程退出码非 0）"`）——两者都不经诊断 sink，
+#     按 :678-681 的 fail-closed 口径落 UI 桶；该提交在本探针复跑之前，故基线需同批抬。
+#   · **+11 为修复线 B 的 D5 fail-closed 文案**（`IsoBmffGainMapProbe.cs`：`TruncationIndeterminate`
+#     赋值串 + `CheckTruncation` 三态返回串）——属诊断文本，但形态是「字段赋值 / return 元组」，
+#     不被 sink 正则识别 ⇒ 按同一 fail-closed 设计落 UI 桶；**故意不把诊断改英文/改 sink 形状**。
+#   归因取证（与判据同源：直接复用本文件的 `Measure-Cjk`，对 `git archive HEAD` 与工作树逐文件对撞）：
+#   HEAD CsUi=1049 → 工作树 1060（delta 11，全部在 `IsoBmffGainMapProbe.cs` 27→38；其余 10 个改动
+#   文件 delta=0）。`tests/output/_tmp/beta12-fix-verify/attr-cjk2.ps1` 是该取证脚本。
 # ⚠⚠ **2026-11-11 第二十二次抬基线（CMX 一致性批 CMX-1）：1041 → 1047（+6，判据项）** —— 成因 =
 #   CMX-1（ColorStrategyPlanning.cs 净新增 ~63 行）里跨族拒绝路径的**中文同义句**（A1 严口径的
 #   用户可见通道产出，与第二十一次的 T2-T6 播报文案同族）：`cmxZh` 两行拼接

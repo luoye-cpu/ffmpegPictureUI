@@ -406,6 +406,56 @@ pwsh -NoProfile -File tests/scripts/_run-step3-gates.ps1   # 100 条；整轮墙
   `8BE5D52692C12487`）已从仓库根移入 `tests/output/_tmp/beta12-review-hygiene/`。证据：
   `tests/output/_tmp/beta12-review-{package,color,gainmap}/`（三份 report.md + 日志）。
 
+- **beta12 后审查修复批（2026-11-11，用户批准 ①–③ 后执行；本批共 7 提交：门禁/收口 2 + 修复 3 + 账本 2）**：
+  - **① 立即收口**：`4d64ebd`（`_probe-png-opt-bench.ps1` 7 处 PS7 三元 ⇒ 门禁 #1 提交态 12/1→13/0）、
+    `8456a69`（AGENTS 条数 99/94→100 + pngopt 账本 + beta12 审查更正条目 + INDEX 补登
+    `HANDOVER-JXL-GAINMAP-2026-11-08.md` + NOTICES ExifTool 13.60→13.61 实测 `-ver` 对齐）、
+    `probe_v1` 移入 `tests/output/_tmp/beta12-review-hygiene/`（sha16 `8BE5D52692C12487`，不删留证）。
+  - **② 两条确定性红收口**（`6d9ead3`）：`verify-color-wiring` (4) 的 q60/q100 对比显式加
+    `--png-optimizer off`（pngopt 默认 max 会把两档无损重压成同体积 20729B）⇒ **152/1→153/0**；
+    `verify-gainmap-engine` 14d 按 D6/D7 契约（`Program.cs:367-368`：状态含「降级」⇒ 进程码非 0）
+    改锁「降级出图 + code≠0 + 产物非空」⇒ **219/1→221/0**；`ConsoleQueueObserver` 汇总补
+    「降级 N 项（降级按 D6/D7 契约计入进程退出码非 0）」，消除「失败 0 项 + exit 1」矛盾。
+    E2E：DSC00037 的 min_version=1 变异件 ⇒ exit=1、`完成 1 项, 失败 0 项, 降级 1 项`。
+  - **③ 修复线 A（`c1b87d3`，色彩/合成）**：显式 `--color-out-matrix` 在非承载出口不再静默——
+    GIF→AVIF 两步法按 avifenc `--cicp` **只携带实测安全档**（smpte170m⇒`1/13/6`、bt470bg⇒`1/13/5`、
+    rgb⇒`1/13/0 -y 444`；601 族与 avifenc 默认逐像素 PSNR=inf），bt709/bt2020nc 因 avifenc 的
+    RGB→YUV 恒 libyuv BT.601（实测 43.76→42.26 / 38.60→38.45 dB）**不携带只播报**；bmp/ppm/dng/webm
+    等出口收尾兜底点名（auto 零播报负控）。JXL 两图合成接线放开（`-f jxl` 承载 = jhgm box；
+    `--gainmap-encoder` 对 jxl 建队拒绝；回读自检改 `JxlGainMapProbe`+ffprobe 尺寸，修掉「读不到
+    jhgm 就删合法产物」）。门禁：color-out-matrix **98/0**（+19）/ `-SelfCheck` **100/0**、
+    gainmap-jxl **33/0**、gainmap-compose 85/0。
+  - **修复线 B（`9c67701`，GainMap/HEIC）**：AVIF alpha URN 补认 `AVIF_URN_ALPHA0`
+    （`urn:mpeg:mpegB:cicp:systems:auxiliary:alpha`，保留 `auxid:1`）；`FfmpegCommandBuilder`
+    补「无 -vf 时 aux alpha 仍 alphamerge」（旧实现嵌在已有 -vf 里 ⇒ 只改探针会得 rgba 但 alpha
+    全 255）⇒ AVIF alpha→PNG `rgb24→rgba`、alphaextract `255/255→0/255`。D5 截断预检改
+    fail-closed（`Result.TruncationIndeterminate`；**>256MB ISO-BMFF 现一律拒绝**，旧放行）；
+    GainMapDecoder 真值探测改 `FileInfo.Length`（12MP 级少 139.6 MiB 分配）。新夹具
+    `tests/data/synth_heic_alpha.heic`（77,237 B，sha16 `3873a32390124eb0`）。门禁：
+    isobmff **167/0** SKIP=0、avif-alpha 16/0、engine-alpha-preserve 29/0、gif-avif-framelist 36/0。
+  - **修复线 C（`e7d1292`，性能小批）**：PngOptimizerService 去整文件副本（三臂产物逐字节一致）；
+    ExternalToolsDetector 根表/版本探测/artifacts-PLAN 解析缓存（空 PLAN 场景 stat 225→45，
+    正常 PLAN 0/0 不夸大）；旧预设 pngopt 缺席⇒`off`（零漂移，新默认 max 不变）；#100 timeout
+    余量只分析（受管 748.6s/900s = 151s）。门禁：tool-detection 19/0、pngopt **69/0**（含 600s
+    timeout case 真跑）。
+  - **CJK 第二十三次抬基线 1047→1060（`_probe-cjk-hardcode-scan.ps1`）**：归因 = 本批 +11
+    （`IsoBmffGainMapProbe` 的 D5 Detail/return 文案，fail-closed 落 UI 桶）+ 先前 `6d9ead3` +2
+    （队列汇总/状态文案）。取证 = 直接复用探针 `Measure-Cjk` 对 `git archive HEAD` 与工作树逐文件
+    对撞（HEAD 1049→1060，11 条全部在 IsoBmffGainMapProbe），脚本
+    `tests/output/_tmp/beta12-fix-verify/attr-cjk2.ps1`；探针复跑 **14/0**。
+  - **验收口径**：本批**未跑 100/100 整轮**（用户偏好「非出包只跑相关链路」；且 `#93` 依赖下次出包
+    才能绿）。受影响链路 13 条裸跑全绿，读数绑定 dll sha16 **`782F970073393F9C`**
+    （sln Release 0 错误 0 警告）：ps-compat 13/0、color-out-matrix 98/0(+SelfCheck 100/0)、
+    gainmap-jxl 33/0、isobmff 167/0、compose 85/0、avif-alpha 16/0、engine-alpha-preserve 29/0、
+    gif-avif-framelist 36/0、color-wiring 153/0、gainmap-engine 221/0、tool-detection 19/0、
+    decision-delivery 94/0、pngopt 69/0。证据 `tests/output/_tmp/beta12-fix-{color,gainmap,perf}/`
+    与 `_tmp/beta12-fix-verify/`（build.log / gates.txt / cjk2.log）。
+  - **未完成/风险**：`#93` 仍红（包内 exiftool 13.60/dngtool 旧，须升版本重打包解）；整轮基线仍未
+    重测（下次发布批）；>256MB/链断时 QueueProcessor 文案仍写「文件不完整（截断）」（§1k 判据锁该
+    文案，要区分「无法判定」须同批改产品与判据）；dng/webm 显式矩阵只有 bmp/ppm 有门禁臂；
+    C3 GUI 点击级、C2 版本探测去重无 E2E 读数；C4（runner per-script 超时表/确定性挂死件）、
+    `ResolveAvifencPath` 自身缓存、非 Apple aux grid（B4）属后续批。
+
 ---
 
 ## 8. Git 历史纪律（2026-11-02 立规；依据＝提交历史审查 159 提交/3 merge/33 tag）
