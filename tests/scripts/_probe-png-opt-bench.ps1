@@ -333,10 +333,10 @@ New-Item -ItemType Directory -Path $logsDir -Force | Out-Null
 $script:ProbeOf = Join-Path $logsDir '_probe.out'
 $script:ProbeEf = Join-Path $logsDir '_probe.err'
 
-$modeWord = $Smoke ? 'smoke' : 'full'
-$prefix   = $Smoke ? 'smoke-' : ''
+$modeWord = if ($Smoke) { 'smoke' } else { 'full' }
+$prefix   = if ($Smoke) { 'smoke-' } else { '' }
 Write-Host ("[bench] run={0} mode={1} timeout={2}s resume={3} tools={4}" -f `
-    $RunRootAbs, $modeWord, $TimeoutSec, ($Resume ? 'on' : 'off'), $toolsJsonPath)
+    $RunRootAbs, $modeWord, $TimeoutSec, $(if ($Resume) { 'on' } else { 'off' }), $toolsJsonPath)
 
 $ffmpegVer = (Invoke-Native -Exe $script:FfmpegExe -ArgList @('-version')).Stdout -split "`n" | Select-Object -First 1
 
@@ -771,7 +771,7 @@ foreach ($arm in $armPlans) {
         } else { $nf++ }
     }
     $armSw.Stop()
-    $armExit = (($nf -gt 0 -or $nt -gt 0) ? 1 : 0)
+    if ($nf -gt 0 -or $nt -gt 0) { $armExit = 1 } else { $armExit = 0 }
     Write-Host ("[arm] exit={0} pass={1} fail={2} skip={3} timeout={4} {5:F1} s" -f `
         $armExit, $np, $nf, $ns, $nt, $armSw.Elapsed.TotalSeconds)
 
@@ -835,7 +835,7 @@ if ($diskRows.Count -ne $rows.Count) { Fail-AndExit "bench.json 落盘行数与�
 function Get-TsvVal($v) {
     # TSV 单元格口径：null → "null"；bool → true/false；数组 → 紧凑 JSON
     if ($null -eq $v) { return 'null' }
-    if ($v -is [bool]) { return ($v ? 'true' : 'false') }
+    if ($v -is [bool]) { return $(if ($v) { 'true' } else { 'false' }) }
     if ($v -is [array]) { return (ConvertTo-Json @($v) -Compress) }
     return "$v"
 }
@@ -865,7 +865,7 @@ $md.Add("# PNG 极限压缩 Benchmark 报告（$modeWord）")
 $md.Add("")
 $md.Add("- 生成命令：$cmdSelf")
 $md.Add("- 轮次目录：$RunRootAbs")
-$md.Add("- 模式：$modeWord（timeout=$TimeoutSec s/cell，resume=$($Resume ? 'on' : 'off')）")
+$md.Add("- 模式：$modeWord（timeout=$TimeoutSec s/cell，resume=$(if ($Resume) { 'on' } else { 'off' })）")
 $md.Add("- 被测 ffmpeg：$ffmpegVer")
 $md.Add("- 工具台账：$toolsJsonPath（C-TOOLLIST@1；各臂版本/许可见透视表）")
 $md.Add("- 判据：C-PIXEL@1（ffprobe pix_fmt + IHDR 不变 + ffmpeg md5 对撞）、C-CHUNK@1（关键集 {iCCP,cICP,eXIf} 计数对撞）")
@@ -907,7 +907,7 @@ foreach ($a in $armSummaries) {
     foreach ($vr in $validRows) {
         if ($null -ne $vr.output_bytes -and $null -ne $vr.baseline_l9_bytes) { $sumOut += [long]$vr.output_bytes; $sumBase += [long]$vr.baseline_l9_bytes }
     }
-    $savePct = ($sumBase -gt 0) ? [math]::Round((1.0 - [double]$sumOut / [double]$sumBase) * 100.0, 2) : '–'
+    if ($sumBase -gt 0) { $savePct = [math]::Round((1.0 - [double]$sumOut / [double]$sumBase) * 100.0, 2) } else { $savePct = '–' }
 
     $remarks = @()
     if ($violRows.Count -gt 0)   { $remarks += "lossless 违例 $($violRows.Count) 格（R3.2，不计入有效压缩）" }
