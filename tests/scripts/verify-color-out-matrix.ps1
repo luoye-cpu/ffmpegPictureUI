@@ -1,10 +1,10 @@
-﻿# verify-color-out-matrix.ps1 —— 显式输出矩阵模式（color-matrix-options 批，C-GATE@1）的端到端判据面。
+# verify-color-out-matrix.ps1 —— 显式输出矩阵模式（color-matrix-options 批，C-GATE@1）的端到端判据面。
 #
 # 真值书: .codeartsdoer/plans/color-matrix-options/plan.md §2.2 C-GATE@1 + §3.1 T7(:394-407)。
 # 断言事实依据: T1 扫描报告 tests/output/_tmp/color-matrix-scan-20261110/report.md §7 校准清单 C1-C13
 #   + T6 实测取证 tests/output/_tmp/color-matrix-t6-probe/（8 案 + delivery_evidence.md 移交注意事项 9 条）。
 #
-# 判据面（7 组；正向臂 + 负控）:
+# 判据面（10 组：A–J；正向臂 + 负控）:
 #   A. avif nclx 读回（引擎通路 = RawColorPipeline.BuildEncodeArgs，pixfmt-switch 兑现）:
 #      显式 bt2020nc ⇒ 引擎真转 YUV（yuv420p）+ ffprobe 读回 color_space=bt2020nc（AV1/H.273 枚举 9）;
 #      auto/rgb 档对照 ⇒ gbrp 直喂 ⇒ color_space=gbr（nclx matrix=0，T6 A3 案语义）。
@@ -48,6 +48,17 @@
 #      I7 auto 早退回归（CM-REQ-08 绝对基线）：webp auto sha256[:16] == 9B6B2B1587840E05（D1 相对
 #        一致之外加绝对锚；CMX-1 校验闸在 Carried 分支入口、auto 早退在更前面 ⇒ 读数证明零影响）
 #        + BT.2020 源 auto 零播报（闸对 auto 不触发）。
+#   J. 显式矩阵在**非承载出口**的「正常跑通」（2026-11-11 修复批 A1；维护者裁决：不要 fail-closed）:
+#      J1–J4 GIF→AVIF 两步法（avifenc，分支先于引擎插入点）：601 族（smpte170m/bt470bg）与 rgb 走
+#        `--cicp` **真兑现**（nclx 读回逐一断言；601 族与默认 1/13/6 逐像素 PSNR=inf、rgb 走 gbrp
+#        identity——裸跑探针 tests/output/_tmp/beta12-fix-color/avifenc-cicp/）；bt709 等**不能安全
+#        携带**（avifenc RGB→YUV 恒 libyuv BT.601，声明别的矩阵=解码端错系数反变换，实测 43.76→42.26 dB）
+#        ⇒ exit 0 + 产物 + 显式播报「该出口无矩阵承载…未生效」。
+#      J5 auto 对照 = 零 `[color-out-matrix] ` 行（负控：播报只在显式值在位时出现）。
+#      J6–J8 bmp/ppm（无色彩通路 ⇒ ColorIntentFactory 返回 null ⇒ 不进规划层）：显式 bt709 ⇒
+#        exit 0 + 产物非空 + 「无矩阵承载/未生效」播报；auto 对照零播报。
+#      J9 ppm × rgb（Redundant 格）⇒ 契约模板 2 **恰好一行**（出口层与收尾兜底不重复播报）。
+#      ⚠ 未削弱既有五格 fail-closed 判据（C1 png / D5 webp / E3 jpg / A8 avif-ycgco / B4 jxl 逐字保留）。
 #   -SelfCheck: 负控臂（反向判读，预期红）——证明判读链有牙（对齐 verify-ui-param-matrix 的
 #     -SelfCheck 契约：负控转红是预期，正向臂照常全绿、整体 exit 0）。CMX 批加第二臂：
 #     跨族拒绝（BT.2020 源 + avif + bt709）反向判读「exit==0 且有产物」期望被真实行为推翻。
@@ -124,7 +135,7 @@ function Read-TextShared([string]$path) {
 #   探测轮实测：probe3 probe4 两次 -Include 假阴性、本形态命中）。
 function Find-Prod([string]$dir) {
     $f = Get-ChildItem -Recurse -LiteralPath $dir -File -ErrorAction SilentlyContinue |
-         Where-Object { $_.Extension -match '^\.(avif|png|webp|jpg|jpeg|jxl)$' } | Select-Object -First 1
+         Where-Object { $_.Extension -match '^\.(avif|png|webp|jpg|jpeg|jxl|bmp|ppm)$' } | Select-Object -First 1
     if ($f) { $f.FullName } else { $null }
 }
 # Run: headless 一臂。⚠ FfmpegGui.exe 是 GUI 子系统（WinExe）⇒ pwsh `&` 调用不等待且
@@ -478,6 +489,80 @@ CK ($shaAuto -ne '' -and $shaAuto.Substring(0,16) -eq '9B6B2B1587840E05') "I7 we
 $rI7 = Run 'i7_auto_bt2020' 'avif' @() $srcBt2020
 CK ($rI7.code -eq 0 -and ($null -ne $rI7.file) -and $rI7.log -notmatch '\[color-out-matrix\] ') "I7 bt2020-src auto: exit=$($rI7.code), produced=$($null -ne $rI7.file), ZERO [color-out-matrix] lines (early-return precedes the gate)"
 
+
+Write-Output ""
+Write-Output "===== J explicit matrix on non-carrier exits (2026-11-11 fix batch A1) ====="
+# ── J 组口径（2026-11-11 修复批 A1）：维护者裁决「不要 fail-closed，要能正常跑通」 ──────────────
+# 缺陷形状（审查 P1-1/P1-2）：显式 --color-out-matrix 在两类出口上**静默失效**（exit 0 + 产物 + 零播报）：
+#   ① GIF→AVIF 两步法（avifenc；该分支先于引擎插入点 ⇒ 规划层根本不跑）；
+#   ② bmp/ppm/dng/webm（无色彩通路 ⇒ ColorIntentFactory 返回 null ⇒ 不进规划层）。
+# 修复口径：能安全携带的**真兑现**；不能的**显式播报**（exit 0、产物照出；绝不改成 exit 91/零产物）。
+#  GIFI avifenc --cicp 评估（裸跑探针 tests/output/_tmp/beta12-fix-color/avifenc-cicp/，非整轮验收）：
+#    · 601 族（smpte170m=6 / bt470bg=5）与 avifenc 默认 nclx 1/13/6 **逐像素 PSNR=inf** ⇒ 安全携带；
+#    · rgb（identity=0）+ `-y 444` ⇒ 产物 gbrp（identity 直存），帧 PSNR 38.60→43.48 dB ⇒ 真兑现；
+#    · bt709/bt2020nc 等：RGB→YUV 恒 libyuv BT.601 系数，声明别的矩阵 = 解码端按错系数反变换
+#      （实测 bt709 43.76→42.26 dB）⇒ 不携带、显式播报（产物照出）。
+#  bmp/ppm：容器无矩阵标注位、规划层不参与 ⇒ 一律显式播报「该出口无矩阵承载…未生效」。
+#  ⚠ 负控（播报只在显式值在位时出现）：J5/J8 auto 臂必须**零** `[color-out-matrix] ` 行。
+
+# GIF 夹具（ensure-fixtures.ps1 生成；缺则本组臂全红并点名，不静默给绿）
+$gifSrc = "$repoRoot/tests/output/sources/anim_gif.gif"
+CK (Test-Path $gifSrc) "J0 GIF fixture present ($gifSrc)"
+
+# J1: GIF→AVIF + 显式 smpte170m（601 族同值）⇒ avifenc --cicp 1/13/6 兑现 + nclx 读回
+$rJ1 = Run 'j1_gif2avif_smpte170m' 'avif' @('--color-out-matrix','smpte170m') $gifSrc
+$csJ1 = if ($rJ1.file) { ProbeCs $rJ1.file } else { '' }
+CK ($rJ1.code -eq 0 -and ($null -ne $rJ1.file) -and ((Get-Item $rJ1.file).Length -gt 0)) "J1 GIF->AVIF two-step x smpte170m: exit=$($rJ1.code), produced non-empty"
+$hit = LogHit $rJ1.log '\[color-out-matrix\] avif\(two-step\): smpte170m -> avifenc --cicp 1/13/6' 1
+CK ($hit.Count -ge 1) "J1 carrier landing line verbatim (avifenc --cicp 1/13/6; 601 family = encoder's own BT.601 coefficients)"
+CK ($csJ1 -match 'smpte170m') "J1 nclx readback color_space=smpte170m (explicit value really landed; full='$csJ1')"
+
+# J2: bt470bg（601 族另一成员）⇒ 标签按显式值落地，像素与默认逐像素相同（探针 PSNR=inf）
+$rJ2 = Run 'j2_gif2avif_bt470bg' 'avif' @('--color-out-matrix','bt470bg') $gifSrc
+$csJ2 = if ($rJ2.file) { ProbeCs $rJ2.file } else { '' }
+CK ($rJ2.code -eq 0 -and ($null -ne $rJ2.file)) "J2 GIF->AVIF two-step x bt470bg: exit=$($rJ2.code), produced=$($null -ne $rJ2.file)"
+CK ($csJ2 -match 'bt470bg') "J2 nclx readback color_space=bt470bg (601 family label landed; full='$csJ2')"
+
+# J3: rgb（identity）⇒ --cicp 1/13/0 + `-y 444` ⇒ 产物 gbrp（identity 直存、无 YUV 反变换）
+$rJ3 = Run 'j3_gif2avif_rgb' 'avif' @('--color-out-matrix','rgb') $gifSrc
+$csJ3 = if ($rJ3.file) { ProbeCs $rJ3.file } else { '' }
+CK ($rJ3.code -eq 0 -and ($null -ne $rJ3.file)) "J3 GIF->AVIF two-step x rgb: exit=$($rJ3.code), produced=$($null -ne $rJ3.file)"
+CK ($csJ3 -match 'gbr') "J3 identity matrix landed as gbrp (nclx matrix_coefficients=0; full='$csJ3')"
+
+# J4: bt709（不能安全携带）⇒ exit 0 + 产物 + 显式播报「无矩阵承载/未生效」；产物标注**不变**（不乱标）
+$rJ4 = Run 'j4_gif2avif_bt709' 'avif' @('--color-out-matrix','bt709') $gifSrc
+$csJ4 = if ($rJ4.file) { ProbeCs $rJ4.file } else { '' }
+CK ($rJ4.code -eq 0 -and ($null -ne $rJ4.file)) "J4 GIF->AVIF two-step x bt709: exit=$($rJ4.code) (NOT fail-closed), produced=$($null -ne $rJ4.file)"
+$hit = LogHit $rJ4.log '该出口无矩阵承载（avif two-step / avifenc）：显式值 bt709 未生效' 1
+CK ($hit.Count -ge 1) "J4 no-carrier broadcast verbatim (explicit value not applied; no mislabeling)"
+CK ($csJ4 -notmatch 'bt709') "J4 product nclx NOT mislabeled bt709 (kept encoder's real BT.601 label; full='$csJ4')"
+
+# J5: auto 负控——不传显式矩阵 ⇒ 两步法零 `[color-out-matrix] ` 播报（CM-REQ-08 零噪声）
+$rJ5 = Run 'j5_gif2avif_auto' 'avif' @() $gifSrc
+CK ($rJ5.code -eq 0 -and ($rJ5.log -notmatch '\[color-out-matrix\] ')) "J5 GIF->AVIF auto: exit=$($rJ5.code), ZERO [color-out-matrix] lines (negative control)"
+
+# J6: bmp × bt709（无色彩通路）⇒ exit 0 + 产物非空 + 「该出口无矩阵承载（bmp）…未生效」播报
+$rJ6 = Run 'j6_bmp_bt709' 'bmp' @('--color-out-matrix','bt709')
+CK ($rJ6.code -eq 0 -and ($null -ne $rJ6.file) -and ((Get-Item $rJ6.file).Length -gt 0)) "J6 bmp x bt709: exit=$($rJ6.code), produced non-empty (runs normally, NOT fail-closed)"
+$hit = LogHit $rJ6.log '该出口无矩阵承载（bmp）：显式值 bt709 未生效' 1
+CK ($hit.Count -ge 1) "J6 bmp no-carrier broadcast verbatim"
+
+# J7: ppm × bt709 ⇒ 同上（ppm 与 bmp 同族、但历史上只有 rgb 档侥幸有播报）
+$rJ7 = Run 'j7_ppm_bt709' 'ppm' @('--color-out-matrix','bt709')
+CK ($rJ7.code -eq 0 -and ($null -ne $rJ7.file)) "J7 ppm x bt709: exit=$($rJ7.code), produced=$($null -ne $rJ7.file)"
+$hit = LogHit $rJ7.log '该出口无矩阵承载（ppm）：显式值 bt709 未生效' 1
+CK ($hit.Count -ge 1) "J7 ppm no-carrier broadcast verbatim"
+
+# J8: bmp auto 负控 ⇒ 零 `[color-out-matrix] ` 行
+$rJ8 = Run 'j8_bmp_auto' 'bmp' @()
+CK ($rJ8.code -eq 0 -and ($rJ8.log -notmatch '\[color-out-matrix\] ')) "J8 bmp auto: exit=$($rJ8.code), ZERO [color-out-matrix] lines (negative control)"
+
+# J9: ppm × rgb（Redundant 格）⇒ 契约模板 2 **恰好一行**（出口层与任务收尾兜底不重复播报，计划 §2.3 第 5 条）
+$rJ9 = Run 'j9_ppm_rgb' 'ppm' @('--color-out-matrix','rgb')
+$omLines = @(($rJ9.log -split "`r?`n") | Select-String '\[color-out-matrix\] ' | ForEach-Object { $_.Line })
+CK ($rJ9.code -eq 0 -and ($omLines.Count -eq 1)) "J9 ppm x rgb (Redundant): exit=$($rJ9.code), exactly ONE [color-out-matrix] line (got $($omLines.Count))"
+$hit = LogHit $rJ9.log '\[color-out-matrix\] rgb on ppm: container is already RGB; recorded, no pixel effect' 1
+CK ($hit.Count -ge 1) "J9 template-2 verbatim on the non-planning bmp/ppm family"
 
 Write-Output ""
 Write-Output "===== -SelfCheck negative-control arm (must turn RED) ====="

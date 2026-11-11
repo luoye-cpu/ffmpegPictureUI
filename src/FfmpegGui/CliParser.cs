@@ -456,11 +456,13 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
   -j, --jobs, --concurrency <n>  并发任务数 (默认: CPU核心数)
   --auto-threads          自动分配每任务线程数 (避免超线程)
   --compose-gainmap       Two-image GainMap compose: pair -i inputs in order
-                          (SDR base first, HDR reference second); output must be -f jpg|avif
+                          (SDR base first, HDR reference second); output must be -f jpg|avif|jxl
   --gainmap-peak <nits>   Compose peak (0 = auto: static metadata, else measured from pixels)
   --gainmap-multichannel <true|false>  Compose gain-map channels (default true = per-channel)
-  --gainmap-encoder <name>  Compose encoder: cjpegli|mjpeg (jpg), libaom-av1|libsvtav1 (avif)
-  --gainmap-metadata <c>    Gain-map carrier: iso|xmp|both (default iso; avif = iso only, xmp rejected)
+  --gainmap-encoder <name>  Compose encoder: cjpegli|mjpeg (jpg), libaom-av1|libsvtav1 (avif);
+                          not applicable to jxl (gain-map subimage is always encoded by cjxl)
+  --gainmap-metadata <c>    Gain-map carrier: iso|xmp|both (default iso; avif = iso only, xmp rejected;
+                          jxl = iso only via the jhgm box, xmp rejected)
 
 高级编码选项 (通过 --key=value 透传):
   --chroma <4:2:0|4:2:2|4:4:4|auto>
@@ -582,21 +584,26 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
                     throw new InvalidOperationException(
                         $"--compose-gainmap 要求输入数量为偶数（按顺序两两配对：先 SDR 底图、后 HDR 参考），当前 {inputFiles.Count} 个。");
                 string cfmt = opts.Format.ToLowerInvariant();
-                if (cfmt is not ("jpg" or "jpeg" or "avif"))
+                // 2026-11-11 修复批 A2（维护者裁决「接线放开 jxl」）：jxl 的增益图承载是容器的 **jhgm box**
+                // （ISO 21496-1；libjxl 0.11+ / 随包 cjxl·jxlinfo 0.12.0），服务层 GainMapComposeService 与
+                // GUI 早已支持 ⇒ 建队守卫此前只收 jpg/jpeg/avif 属**与自身能力矛盾**的接线缺口。
+                if (cfmt is not ("jpg" or "jpeg" or "avif" or "jxl"))
                     throw new InvalidOperationException(
-                        $"GainMap 合成只支持 -f jpg / jpeg / avif（当前 {opts.Format}）；其它容器没有标准的增益图承载。");
+                        $"GainMap 合成只支持 -f jpg / jpeg / avif / jxl（当前 {opts.Format}）；其它容器没有标准的增益图承载。");
                 // 编码器与容器强绑定：跨族取值（如 JPEG + libaom-av1）必须建队时就拒绝，
                 // 不能等到逐项在引擎里失败；显式 cjpegli 不可用同样当场点名。
                 if (!string.IsNullOrWhiteSpace(opts.ComposeEncoder))
                 {
                     bool jpegFmt = cfmt is "jpg" or "jpeg";
+                    // JXL 的增益图子图恒由 cjxl 编码（服务层 jpegEnc/avifEnc 双 null，见 GainMapComposeService
+                    // 的「JXL（jhgm）出口 v1 没有编码器选择面」）⇒ 任何显式编码器都属无效选择，建队即拒绝，
+                    // 不静默忽略用户的选择。
                     bool pairOk = jpegFmt
                         ? opts.ComposeEncoder is "cjpegli" or "mjpeg"
-                        : opts.ComposeEncoder is "libaom-av1" or "libsvtav1";
+                        : cfmt == "avif" && (opts.ComposeEncoder is "libaom-av1" or "libsvtav1");
                     if (!pairOk)
                         throw new InvalidOperationException(
-                            $"--gainmap-encoder {opts.ComposeEncoder} 与 -f {opts.Format} 不匹配"
-                            + "（JPEG ⇒ cjpegli | mjpeg；AVIF ⇒ libaom-av1 | libsvtav1）。");
+                            $"--gainmap-encoder {opts.ComposeEncoder} 与 -f {opts.Format} 不匹配（JPEG ⇒ cjpegli | mjpeg；AVIF ⇒ libaom-av1 | libsvtav1；JXL ⇒ 子图恒由 cjxl 编码、没有编码器选择面）。");
                     if (jpegFmt && opts.ComposeEncoder == "cjpegli" && !CjpegliService.IsAvailable)
                         throw new InvalidOperationException(
                             "--gainmap-encoder cjpegli 不可用：未检测到 cjpegli。"

@@ -171,6 +171,35 @@ public static class GainMapComposeService
             }
 
             // ── 6. 回读自检：容器能解、尺寸对、底图在。失败 ⇒ 不留半成品 ──
+            // ⚠ 2026-11-11 修复批 A2：JXL 出口的增益图在**容器 jhgm box** 里（不是 JPEG APP2 / AVIF tmap），
+            //   `GainMapDecoder.DecodeToLinearRawAsync` 的元数据探测面读不到 jhgm（实测：「无法读取增益图
+            //   元数据 (无 ISO 21496-1...)」⇒ 自检失败把**合法产物**删掉）。JXL 单走本仓 JXL 读侧：
+            //   ① `JxlGainMapProbe.Scan` 解析级判据（version=0、ISO 元数据 >0、增益图码流 >0——与
+            //      verify-gainmap-jxl §1 的正控口径同源，随包 jxlinfo 0.12.0 对同一产物报过同样的数）；
+            //   ② ffprobe 解底图 jxlc 帧、尺寸 == 输入对（=「容器能解、底图在」）。
+            if (isJxl)
+            {
+                var scan = JxlGainMapProbe.Scan(outputPath);
+                if (scan == null || !scan.Determinate || !scan.HasGainMap
+                    || scan.JhgmVersion != 0 || scan.MetadataLength <= 0 || scan.GainMapBytes <= 0)
+                {
+                    log?.Invoke("[GainMap合成] ❌ 回读自检失败：产物里没有可解析的 jhgm 增益图（JxlGainMapProbe），已删除\n");
+                    TryDelete(outputPath);
+                    return false;
+                }
+                var (jw, jh) = await ImageGeometry.DisplaySizeAsync(
+                    outputPath, AppSettingsService.Current.FfprobePath, log, ct);
+                if (jw != w || jh != h)
+                {
+                    log?.Invoke($"[GainMap合成] ❌ 回读自检失败：底图尺寸 {jw}×{jh} ≠ {w}×{h}，已删除\n");
+                    TryDelete(outputPath);
+                    return false;
+                }
+                log?.Invoke($"[GainMap合成] ✅ 完成：{Path.GetFileName(outputPath)}"
+                    + $"（jhgm 解析 v{scan.JhgmVersion}，ISO 元数据 {scan.MetadataLength} B / 增益图 {scan.GainMapBytes} B；"
+                    + $"底图 {jw}×{jh} 可解）\n");
+                return true;
+            }
             string reconRaw = Path.Combine(tempDir, "recon.rgba");
             string baseOut = Path.Combine(tempDir, "base-out.rgba");
             var dec = await GainMapDecoder.DecodeToLinearRawAsync(outputPath, reconRaw, log, ct, null, baseOut);

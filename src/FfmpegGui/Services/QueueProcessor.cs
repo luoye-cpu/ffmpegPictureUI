@@ -398,14 +398,16 @@ namespace FfmpegGui.Services
 
                             // ── 两图 GainMap 合成（独立模式：SDR 底图 + HDR 参考）──────────────────
                             // 走独立服务，**不进入**后面的单输入管线（那条会自己解码 HDR、造 Reinhard 底图）。
-                            // 输出格式只接受 .jpg/.jpeg/.avif：ContainerOf 对其它扩展名会按 jpeg 处理 ⇒
-                            // 若不拦，用户要 png 却拿到 jpeg，属"宣称≠交付"。
+                            // 输出格式只接受 .jpg/.jpeg/.avif/.jxl（2026-11-11 修复批 A2：放开 jxl）：
+                            // ContainerOf 对其它扩展名会按 jpeg 处理 ⇒ 若不拦，用户要 png 却拿到 jpeg，属"宣称≠交付"。
+                            // jxl 的增益图承载 = 容器 **jhgm box**（ISO 21496-1，libjxl 0.11+；写侧见 JxlGainMapWriter），
+                            // 与 jpg(APP2/XMP+MPF) / avif(tmap) 并列 ⇒ 服务层早已支持，此前只是这两处守卫漏放行。
                             if (captured.Options.GainMapCompose)
                             {
                                 string composeExt = Path.GetExtension(finalOutputPath).ToLowerInvariant();
-                                if (composeExt is not (".jpg" or ".jpeg" or ".avif"))
+                                if (composeExt is not (".jpg" or ".jpeg" or ".avif" or ".jxl"))
                                 {
-                                    captured.Log += $"[GainMap合成] 失败：输出扩展名 {composeExt} 不受支持（只支持 .jpg/.jpeg/.avif）\n";
+                                    captured.Log += $"[GainMap合成] 失败：输出扩展名 {composeExt} 不受支持（只支持 .jpg/.jpeg/.avif/.jxl）\n";
                                     captured.ExitCode = 1;
                                     captured.Status = "失败 (GainMap 合成：输出格式)";
                                     _onItemUpdated?.Invoke(captured);
@@ -1160,6 +1162,22 @@ namespace FfmpegGui.Services
                             // 不进入主分支的 `{ …色彩后置… }`，因此需要一个统一入口决定“补做还是显式报未参与”（P7a-3）。
                             bool colorPostStepsDone = false;
 
+                            // ── 显式输出矩阵是否已被**能表达的出口**消费（2026-11-11 修复批 A1）──────────
+                            // 缺陷形状（审查 P1）：显式 `--color-out-matrix` 在「不经过色彩规划层」的出口上
+                            // **静默失效**（exit 0 + 产物 + 零播报）——GIF→AVIF 两步法（avifenc）与
+                            // bmp/ppm/dng/webm（`ColorIntentFactory` 返回 null ⇒ 不进规划层）。
+                            // 维护者裁决：**不要 fail-closed**，要正常跑通 + 不许静默。
+                            // ⇒ 两条会真正消费该值的路线：① 规划层（`ApplyExplicitOutMatrix`，经引擎或
+                            //   `ResolveLegacyVerdictPlan` 的裁决计算）；② GIF→AVIF 两步法（avifenc `--cicp`）。
+                            //   其余路线在任务收尾处兜底点名（`AppendOutMatrixNoCarrierNote`）。
+                            bool outMatrixConsumed = false;
+                            // 出口层是否**已经**为显式矩阵播报过（避免收尾兜底重复播报，计划 §2.3 第 5 条）：
+                            //  · legacy 分支的 `FfmpegCommandBuilder.BuildArguments` 会对 Carried/Redundant 发模板 1/2
+                            //    （Rejected 档它不发 ⇒ 那种格仍需兜底点名）；
+                            //  · cjxl / cjpegli 专用出口自己发（CjxlService / CjpegliService 的模板 1/2）。
+                            bool legacyExitMatrixReportRan = false;
+                            bool dedicatedEncoderMatrixReportRan = false;
+
                             // ── cjxl 自动光子噪声：ISO 解析提到**分叉之前**（2026-09-30）────────────────
                             // 本链上共有三条 cjxl 出口：`:714` 的 `ProcessCjxlAsync`（直编/管道）、
                             // 引擎可走时的 `RawColorPipeline` cjxl 出口、以及 JXL·JXR 输入的两步法回退
@@ -1203,6 +1221,10 @@ namespace FfmpegGui.Services
                             if (inputExt == ".gif"
                                 && captured.Options.Format.Equals("avif", StringComparison.OrdinalIgnoreCase))
                             {
+                                // A1（2026-11-11 修复批）：两步法**自身**按 avifenc `--cicp` 携带显式矩阵
+                                // （能安全携带的才带，不能的显式播报——见方法内实测注记）⇒ 这里标记已消费，
+                                // 避免收尾兜底再重复播报（计划 §2.3 第 5 条播报唯一性）。
+                                outMatrixConsumed = true;
                                 await ProcessGifToAvifViaAvifencAsync(captured, finalOutputPath, ct);
                             }
                             // AVIF → GIF/WebP：动画轨道分离+alphamerge 需两步法
@@ -1257,6 +1279,7 @@ namespace FfmpegGui.Services
                                 //   ⚠ 2026-11-08：`FormatCarriesGainMap` 含 `jxl` 后，jxl+增益图+引擎不可走
                                 //   的任务在本分支之前已被上面 GainMap 专用管线截走 ⇒ 本分支收不到
                                 //   gainmap 任务；引擎可走时走下方引擎插入点（TransformGainMapAsync）。
+                                dedicatedEncoderMatrixReportRan = true;   // cjxl 出口自己播报（CjxlService 模板 1/2）
                                 await ProcessCjxlAsync(captured, finalOutputPath, ct);
                             }
                             else if (backend == EncoderBackend.Cjpegli
@@ -1271,6 +1294,7 @@ namespace FfmpegGui.Services
                                 //   **无增益图**的 cjpegli 任务。
                                 //   ⚠ 2026-11-08：`FormatCarriesGainMap` 含 `jxl` 后，jxl 任务的后端恒非
                                 //   Cjpegli ⇒ 本排除守卫对 jxl 防御性正确（jxl+gainmap 不会在此被截）。
+                                dedicatedEncoderMatrixReportRan = true;   // cjpegli 出口自己播报（CjpegliService 模板 1/2/拒绝）
                                 await ProcessCjpegliAsync(captured, finalOutputPath, ct);
                             }
                             else if (backend == EncoderBackend.Jxr && !engineRoutable)
@@ -1348,6 +1372,10 @@ namespace FfmpegGui.Services
                                     //   **保持既有行为** —— 传统管线是它们的正常归属，不猜一个裁决出来。
                                     var legacyPlan = engPlan
                                         ?? FfmpegCommandBuilder.ResolveLegacyVerdictPlan(captured.Options, captured.InputPath);
+                                    // A1（2026-11-11 修复批）：本分支只要拿到了**计划**（engPlan 或 legacyPlan），
+                                    // 规划层就已经跑过 `ApplyExplicitOutMatrix`（auto/null 时它早退、零播报，
+                                    // 但「已处理」为真）⇒ 记消费位，收尾不再兜底点名。
+                                    if (engUsed || engPlan != null || legacyPlan != null) outMatrixConsumed = true;
                                     var legacyVerdict = legacyPlan?.Verdict;
                                     bool legacyReject = legacyVerdict?.Kind == ColorMapping.VerdictKind.Reject;
                                     // ⚠ **只在"裁决由本消费点算出来"时打印**（`engPlan == null`）。
@@ -1381,6 +1409,9 @@ namespace FfmpegGui.Services
                                     }
                                     else
                                     {
+                                        // A1：BuildArguments 内会为 Carried/Redundant 发模板 1/2（Rejected 不发）
+                                        // ⇒ 记一笔，收尾兜底点名据此去重（bmp/ppm 的 YUV 族 = Rejected，仍需点名）。
+                                        legacyExitMatrixReportRan = true;
                                         var args = FfmpegCommandBuilder.BuildArguments(captured.Options, captured.InputPath, finalOutputPath);
                                         LogInjectedScale(captured, args);      // 扩展 ③：缩了要让用户看得见
                                         captured.Command = "ffmpeg " + args;
@@ -1540,6 +1571,33 @@ namespace FfmpegGui.Services
                                     }
                                 }
                             }
+
+                            // ── A1（2026-11-11 修复批）：显式输出矩阵「不许静默失效」的兜底点名 ──────
+                            // 覆盖面 = 本任务**成功**（exit 0）但执行路线既没经过规划层、也没走两步法
+                            // `--cicp` 的出口：bmp/ppm/dng/webm（无色彩通路 ⇒ `ColorIntentFactory` 返回
+                            // null ⇒ 规划层根本不运行）以及不吃 `BuildArguments` 的专用通路（AVIF→GIF/WebP、
+                            // JXL/JXR 输入旁路、cjxl/cjpegli/JXR/DNG 专用管线、GainMap 专用管线等）。
+                            // 语义（维护者裁决）：**不改退出码、不删产物**（正常跑通），只显式播报：
+                            //   ① 判定为 Redundant 的格（容器本就是 RGB 语义）⇒ 发契约模板 2（非拒绝）；
+                            //   ② 其余 ⇒ 点名「该出口无矩阵承载，显式值未生效」。
+                            // 播报唯一性（计划 §2.3 第 5 条）：出口层已为 Carried/Redundant 发过模板 1/2 的格子不再重复
+                            //   （legacy BuildArguments 或 cjxl/cjpegli 服务）；Rejected 格出口层从不发 ⇒ 一律由本处点名。
+                            var outMatrixTok = captured.Options.ColorOutMatrix;
+                            if ((captured.ExitCode ?? 0) == 0
+                                && !outMatrixConsumed
+                                && !string.IsNullOrWhiteSpace(outMatrixTok))
+                            {
+                                var omFmt = (captured.Options.Format ?? "").Trim().TrimStart('.').ToLowerInvariant();
+                                var omCap = ColorMapping.ColorMappingEngine.ResolveOutMatrixCapability(
+                                    omFmt, outMatrixTok, EncoderBackend.Ffmpeg);
+                                bool exitLayerSpoke = dedicatedEncoderMatrixReportRan
+                                    || (legacyExitMatrixReportRan && omCap != ColorMapping.OutMatrixCapability.Rejected);
+                                if (!exitLayerSpoke)
+                                {
+                                    AppendOutMatrixNoCarrierNote(captured, omFmt, outMatrixTok!, omCap);
+                                    _onItemUpdated?.Invoke(captured);
+                                }
+                            }
                             captured.CompletedAt = DateTimeOffset.UtcNow;
                         }
                         catch (OperationCanceledException)
@@ -1592,6 +1650,31 @@ namespace FfmpegGui.Services
             {
                 try { _onQueueStopped?.Invoke(); } catch { }
             }
+        }
+
+        /// <summary>
+        /// A1（2026-11-11 修复批）：显式输出矩阵在「出口表达不了」时的兜底点名。
+        /// <para>
+        /// 与规划层/出口层的分档口径**同源**：承载判定唯一真值仍是
+        /// <see cref="ColorMapping.ColorMappingEngine.ResolveOutMatrixCapability"/>（不另造第二张表）。
+        /// 本方法只处理「规划层没参与、出口也没播报」这一格——把它从**静默**变成**显式告知**：
+        /// Redundant 格发契约模板 2（容器本就是该语义，仅登记不生效）；其余格点名未生效。
+        /// ⚠ 语义边界（维护者 2026-11-11 裁决）：exit 0、产物照出，**绝不**改成 fail-closed/exit 91。
+        /// </para>
+        /// </summary>
+        private static void AppendOutMatrixNoCarrierNote(QueueItem item, string fmt, string token,
+            ColorMapping.OutMatrixCapability cap)
+        {
+            if (cap == ColorMapping.OutMatrixCapability.Redundant)
+            {
+                // 与 FfmpegCommandBuilder.EmitOutMatrixExitReport 的模板 2 同形（{2}：601 族给 bt470bg、其余 RGB）。
+                var already = fmt is "jpg" or "jpeg" or "jpegli" or "webp" ? "bt470bg" : "RGB";
+                item.Log += string.Format(ColorMapping.ColorMappingEngine.OutMatrixReportRedundant,
+                    token, fmt, already) + "\n";
+                return;
+            }
+            // 单行、以 [color-out-matrix] 起（`_probe-cjk-hardcode-scan` 的 [tag] 桶，判据面不变）。
+            item.Log += $"[color-out-matrix] ⚠ 该出口无矩阵承载（{fmt}）：显式值 {token} 未生效；exit 0，产物照常输出（本通路没有任何矩阵标注位，色彩规划层也不参与本任务）\n";
         }
 
         /// <summary>
@@ -4624,8 +4707,45 @@ namespace FfmpegGui.Services
                     threads = 2;
                 }
 
+                // ── 显式输出矩阵（2026-11-11 修复批 A1）：两步法只能用 avifenc 的 nclx `--cicp P/T/M` 表达 ──
+                // 缺陷形状（审查 P1-1）：本分支先于引擎插入点 ⇒ 规划层根本不跑 ⇒ 显式 `--color-out-matrix`
+                // 被静默丢弃（exit 0 + 产物 + 零播报）。维护者裁决：能安全携带的才带，不能的显式播报。
+                // 实测取证（`tests/output/_tmp/beta12-fix-color/avifenc-cicp/`，裸跑探针，非整轮验收）：
+                //  · avifenc 对未标注 PNG 帧的默认 nclx = 1/13/6（bt709 原色 / sRGB 传递 / smpte170m 矩阵）；
+                //  · M=6（smpte170m）与默认**逐像素 PSNR=inf**（字节只差 nclx 标签）⇒ 显式同值 = 无副作用携带；
+                //  · M=5（bt470bg）与默认**逐像素 PSNR=inf**（H.273 601 族系数相同 Kr=.299/Kb=.114）⇒ 只换标签、安全；
+                //  · M=0（rgb/identity）配 `-y 444` ⇒ 产物 gbrp（identity 直存，无 YUV 反变换），
+                //    帧 PSNR 38.60 → 43.48 dB（反而更保真）⇒ 真兑现；
+                //  · 其它 M（bt709=1 / smpte240m=7 / bt2020nc=9 …）：avifenc 的 RGB→YUV 恒 libyuv **BT.601**
+                //    系数，声明别的矩阵 = 解码端按错系数反变换（实测 bt709：43.76→42.26 dB；bt2020nc：
+                //    38.60→38.45 dB）⇒ 属「乱标」，**不携带**，只显式播报未生效（exit 0、产物照出）。
+                var omTok = item.Options.ColorOutMatrix;   // 已在 FfmpegOptions setter 归一（bt601→smpte170m；auto→null）
+                string cicp = "";
+                if (!string.IsNullOrWhiteSpace(omTok))
+                {
+                    switch (omTok)
+                    {
+                        case "smpte170m":
+                            cicp = "--cicp 1/13/6";
+                            break;
+                        case "bt470bg":
+                            cicp = "--cicp 1/13/5";
+                            break;
+                        case "rgb":
+                            cicp = "--cicp 1/13/0 -y 444";
+                            break;
+                    }
+                    // 播报（[color-out-matrix] 前缀 = 契约播报面，门禁按此前缀做负控）。
+                    if (cicp.Length > 0)
+                        item.Log += $"[color-out-matrix] avif(two-step): {omTok} -> avifenc {cicp} (nclx carrier; the encoder's RGB->YUV coefficients match the declared matrix)\n";
+                    else
+                        item.Log += $"[color-out-matrix] ⚠ 该出口无矩阵承载（avif two-step / avifenc）：显式值 {omTok} 未生效——avifenc 的 RGB→YUV 转换系数固定为 BT.601，声明其它矩阵会让解码端按错系数反变换（实测像素偏移）；exit 0，产物照常输出\n";
+                    _onItemUpdated?.Invoke(item);
+                }
+
                 var avifencArgs = new StringBuilder();
-                var headArgs = $"-q {quality} -s {speed}" + (threads >= 2 ? $" -j {threads}" : "");   // Threads<=0 ⇒ 不传 -j，由 avifenc 自适应
+                var headArgs = $"-q {quality} -s {speed}" + (threads >= 2 ? $" -j {threads}" : "")   // Threads<=0 ⇒ 不传 -j，由 avifenc 自适应
+                             + (cicp.Length > 0 ? " " + cicp : "");
                 avifencArgs.Append(headArgs).Append(' ');
                 // ⚠ P2-4（实测）：帧文件**只能传相对文件名**，配合下面的 WorkingDirectory。
                 //   绝对路径每帧 ~98 字符 ⇒ 约 330 帧就撞满 CreateProcess 的 32767 上限

@@ -12,8 +12,10 @@
 #      逐字节相等——jxlinfo 看不见 blob 内容，这是解析级判据的核心一针——载荷逐项、负控三臂）；
 #      djxl 解 jxlc 帧尺寸==源；cjxl 重编码透传。
 #   §2 负控：坏载荷（BE16→0xFFFF）⇒ jxlinfo stderr「Invalid gain map box found」（解析器活着）；
-#      无 jhgm 夹具 ⇒ jxlinfo 无 jhgm 行（不是见容器就报）；compose jxl+xmp ⇒ 建队拒绝零产物
-#      （现由合成模式格式守卫先拦：只支持 jpg/jpeg/avif）；单输入 xmp+jxl ⇒ 运行时拒绝零产物；
+#      无 jhgm 夹具 ⇒ jxlinfo 无 jhgm 行（不是见容器就报）；compose jxl **正控**（2026-11-11 修复批 A2
+#      接线放开 jxl：产物带可解析 jhgm，旧负控「格式守卫先拦」随守卫放开而作废）；compose jxl+xmp ⇒
+#      建队拒绝零产物（jhgm 无 XMP 形态）；compose jxl+--gainmap-encoder ⇒ 建队拒绝零产物（子图恒由
+#      cjxl 编、无编码器选择面）；单输入 xmp+jxl ⇒ 运行时拒绝零产物；
 #      both ⇒ 产物正常 + NOTE 降级 iso；bt2020 底 ⇒ D6 拒绝（v1 只支持 sRGB 底）。
 #   §3 tripwire：jxl-oxide / zenjxl / jxl-rs CLI 任一出现在工具搜索面（publish/tools/PATH）⇒ 当场红，
 #      要求按 2026-11-08 裁决升级双实现（渲染级）判据并重测能力表（形态对齐 verify-color-caps (h)）。
@@ -216,10 +218,28 @@ CK ($j3.text -match 'Invalid gain map box found') "§2① 坏载荷 ⇒ jxlinfo 
 # ② 无 jhgm 夹具 ⇒ jxlinfo 无 jhgm 行
 $j4 = Exec $jxlinfo @($fixBase) "jxlinfo_base"
 CK (($j4.code -eq 0) -and ($j4.text -notmatch 'jhgm')) "§2② 无 jhgm 夹具 ⇒ jxlinfo 不报 jhgm（不是见容器就报）"
-# ④ 元数据档三态
-$genSdr = Exec $ff @('-y','-hide_banner','-loglevel','error','-f','lavfi','-i','testsrc2=s=64x48','-frames:v','1',"$work/sdr.png") "gen_sdr"
-$c1 = RunCli 'c_xmp' "$work/sdr.png,$hdrSrc" 'jxl' @('--compose-gainmap', '--gainmap-metadata', 'xmp')
-CK (($c1.code -ne 0) -and ($c1.prodCount -eq 0) -and ($c1.text -match '只支持 -f jpg / jpeg / avif')) "§2④ compose jxl+xmp ⇒ 建队拒绝零产物（现由合成模式格式守卫先拦；实 rc=$($c1.code)，$($c1.prodCount) 产物）"
+# ④ 合成模式（2026-11-11 修复批 A2 接线放开 jxl；口径变更写在此处备查）：
+#   修复前：jxl 合成被**格式守卫**在建队期拦掉（只收 jpg/jpeg/avif），本组负控打的是「守卫先拦」。
+#   修复后：jxl 合成**合法**——承载 = 容器 **jhgm box**（ISO 21496-1；服务层 GainMapComposeService
+#     与 GUI 早已支持，此前只是 CLI/队列两处守卫漏放行）⇒ 判据改为：
+#     正控 = `--compose-gainmap -f jxl` 产出**可解析 jhgm 的合法 JXL**（随包 jxlinfo 0.12.0 复核，
+#            回读自检由 JxlGainMapProbe + ffprobe 承担——见 GainMapComposeService §6）；
+#     负控 = ① jxl + xmp（jhgm 无 XMP 形态，建队期拒绝零产物）；
+#            ② jxl + `--gainmap-encoder`（子图恒由 cjxl 编、无编码器选择面，建队期拒绝零产物）。
+$szHdr = SrcSize $hdrSrc
+$sdrPairJxl = "$work/sdr_pair_jxl.png"
+$genSdr = Exec $ff @('-y','-hide_banner','-loglevel','error','-f','lavfi',"-i","testsrc2=s=$($szHdr.w)x$($szHdr.h):d=1",'-frames:v','1','-vf','scale=out_color_matrix=bt709:out_range=full,format=rgb24','-color_primaries','bt709','-color_trc','iec61966-2-1','-colorspace','bt709',$sdrPairJxl) "gen_sdr_pair"
+CK (($genSdr.code -eq 0) -and (Test-Path $sdrPairJxl)) "§2④ SDR 底图夹具生成（$($szHdr.w)x$($szHdr.h) 与 HDR 参考同尺寸；实 rc=$($genSdr.code)）"
+$c0 = RunCli 'c_jxl_ok' "$sdrPairJxl,$hdrSrc" 'jxl' @('--compose-gainmap', '--gainmap-peak', '1000')
+CK (($c0.code -eq 0) -and ($c0.prodCount -ge 1) -and ($c0.prod.Length -gt 0)) "§2④ compose jxl 正控：exit=0 且产物非空（实 rc=$($c0.code)，$($c0.prodCount) 产物，$($c0.prod.Length) B）"
+if ($c0.prodCount -ge 1) {
+  $j0 = Exec $jxlinfo @($c0.prodPath) "jxlinfo_compose"
+  CK (($j0.code -eq 0) -and ($j0.text -match 'Gain map \(jhgm\) box: version = 0')) "§2④ compose jxl 产物带可解析 jhgm（jxlinfo 0.12.0：version=0 + N-byte gain map）"
+} else { CK $false "§2④ compose jxl jxlinfo 复核（产物缺失）" }
+$c1 = RunCli 'c_xmp' "$sdrPairJxl,$hdrSrc" 'jxl' @('--compose-gainmap', '--gainmap-metadata', 'xmp')
+CK (($c1.code -ne 0) -and ($c1.prodCount -eq 0) -and ($c1.text -match '--gainmap-metadata xmp 与 -f jxl 不匹配')) "§2④ compose jxl+xmp ⇒ 建队拒绝零产物（jhgm 无 XMP 形态；实 rc=$($c1.code)，$($c1.prodCount) 产物）"
+$c1b = RunCli 'c_jxl_enc' "$sdrPairJxl,$hdrSrc" 'jxl' @('--compose-gainmap', '--gainmap-encoder', 'cjpegli')
+CK (($c1b.code -ne 0) -and ($c1b.prodCount -eq 0) -and ($c1b.text -match '不匹配') -and ($c1b.text -match 'JXL')) "§2④ compose jxl+--gainmap-encoder ⇒ 建队拒绝零产物（子图恒由 cjxl 编，无编码器选择面；实 rc=$($c1b.code)）"
 $c2 = RunCli 'c_xmp_s' $hdrSrc 'jxl' @('--jpeg-gain-map', 'true', '--jpeg-gain-map-metadata', 'xmp')
 CK (($c2.code -ne 0) -and ($c2.prodCount -eq 0) -and ($c2.text -match 'no XMP-only gain-map form')) "§2④ 单输入 xmp+jxl ⇒ 运行时拒绝零产物并点名（实 rc=$($c2.code)，$($c2.prodCount) 产物）"
 $c3 = RunCli 'c_both' $hdrSrc 'jxl' @('--jpeg-gain-map', 'true', '--jpeg-gain-map-metadata', 'both')
