@@ -296,7 +296,10 @@ namespace FfmpegGui
             Console.WriteLine($"  cjpegli: {(CjpegliService.IsAvailable ? "✅" : "❌")}{Src(CjpegliService.DetectedPath)}");
             Console.WriteLine($"  exiftool: {(ExifToolService.IsAvailable ? "✅" : "❌")}{Src(ExifToolService.DetectedPath)}");
             Console.WriteLine($"  JxrEncApp: {(JxrService.IsAvailable ? "✅" : "❌")}{Src(JxrService.DetectedPath)}");
-            Console.WriteLine($"  avifenc: {(FfmpegGui.Services.PlatformServices.ResolveAvifencPath() != null ? "✅" : "❌")}{Src(FfmpegGui.Services.PlatformServices.ResolveAvifencPath())}");
+            // ⚠ 2026-11-11 性能 P2：ResolveAvifencPath() 此前在同一行调两次（父目录扫描×2）；
+            //   提到局部变量只保留一次调用（缓存/分档在 ExternalToolsDetector 侧做，这里治 call site）。
+            var avifencPath = FfmpegGui.Services.PlatformServices.ResolveAvifencPath();
+            Console.WriteLine($"  avifenc: {(avifencPath != null ? "✅" : "❌")}{Src(avifencPath)}");
             Console.WriteLine($"  dngtool: {(RawService.IsAvailable ? "✅" : "❌")}{Src(RawService.DetectedPath)}");
 
             // 构建队列项

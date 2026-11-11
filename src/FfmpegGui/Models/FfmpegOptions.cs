@@ -62,7 +62,12 @@ namespace FfmpegGui.Models
             // （旧代码误将其赋给 UseAdvancedColorParameters，会错误开启高级色彩参数，已移除）
 
             if (p.PngPred != null) PngPred = p.PngPred;
-            if (p.PngOptimizer != null) PngOptimizer = p.PngOptimizer;   // PNG 优化器档位（png-optimizer-integration T4，C-CLI@1 clone 行：漏行 = preset/队列克隆丢档位）
+            // PNG 优化器档位（png-optimizer-integration T4，C-CLI@1 clone 行：漏行 = preset/队列克隆丢档位）。
+            // ⚠ 2026-11-11（beta12 后审查修复批 C3）：**字段缺席 ⇒ off**，不是"保持当前值"。
+            //   旧预设（无此键）回放必须零漂移（= 未接入 oxipng 前的行为）；旧 JSON 经 PresetData 反序列化
+            //   本就得到 "off"（属性初值），这里的 `?? "off"` 是防御第二道（显式 null 的 JSON 也归 off）。
+            //   新默认 max 由 FfmpegOptions.PngOptimizer 初始化器承担，与预设回放无关。
+            PngOptimizer = p.PngOptimizer ?? "off";
             if (p.PngDpi.HasValue) PngDpi = p.PngDpi;
             if (p.WebpPreset != null) WebpPreset = p.WebpPreset;
             if (p.AvifCpuUsed.HasValue) AvifCpuUsed = p.AvifCpuUsed;

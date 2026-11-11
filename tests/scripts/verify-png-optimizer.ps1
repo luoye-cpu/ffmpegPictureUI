@@ -1,4 +1,4 @@
-﻿# verify-png-optimizer.ps1 —— PNG 出口优化器（oxipng）**端到端判据面**（png-optimizer-integration 批次 2 · T7，2026-11-10 新增）
+# verify-png-optimizer.ps1 —— PNG 出口优化器（oxipng）**端到端判据面**（png-optimizer-integration 批次 2 · T7，2026-11-10 新增）
 #
 # 背景：批次 1（T2 工具随包 / T3 PngOptimizerService 执行链 / T4 CLI 参数面 / T5 headless 冒烟）与
 #   批次 2 T6（ServiceProbe `pngopt` 六 case 判据宿主）已交付；本门禁是 T7 接线——把 T6 的六 case
@@ -22,6 +22,11 @@
 #      c. off 负控：①消费 probe off case 三条 sha 读数行（pngopt-off-04/06/08「产物逐字节不变
 #         （sha256 对撞）」——按代码实况，零播报行是 03/05/07）；②headless off 档 stdout/stderr/logfile
 #         零 `^\[pngopt\]` 行（Debug 级都没有才是真零播报）+ 同输入重复跑 sha256 稳定。
+#      d. 旧预设回放（2026-11-11 beta12 后审查修复批 C3）：旧 schema 预设 JSON（**无 PngOptimizer 键**）
+#         回放 ⇒ 档位 off（零漂移 = 接入 oxipng 前的行为），且必须与「显式 max 预设臂」可区分；
+#         不传参的默认仍是 max（新默认不变）。落盘位置 = exe 同级 presets/（产品便携约定），
+#         用完在 finally 删除并回收空目录。
+#      a-clean. C1（去整文件副本）清理保证：run-dir 内零 `pngopt-tmp/out` 临时件残留。
 #   §3 -SelfCheck 负控（内存变异，不跑真实进程，秒级）：四个变异各打各的判据——①伪 stdout 注入
 #      FAIL 行 ⇒ 解析器必须检出；②伪 stdout 条数少一条 ⇒ 精确计数锁必须红；③播报对撞器喂篡改
 #      文案 ⇒ 必须红；④SKIP 行注入 ⇒ fail-closed 必须红。$ncOk = 四变异全被检出。
@@ -29,8 +34,11 @@
 # 素材：全部现场自造（ffmpeg lavfi testsrc2 512x512 RGBA），不消费 benchmark 轮次产物（AGENTS §3）。
 # 时长：timeout case 真跑 600s（24MP 噪声 × zopfli30，T6 实证确定性触发）⇒ 单跑总时长 ~620-680s，
 #   在 runner 900s 单步预算内。
+# ⚠ `-SkipTimeoutCase` **只供调试/并行取证**：跳过 timeout case（真跑 600s）与依赖它的 §2b2 播报对撞。
+#   受管运行 `_run-step3-gates.ps1` 只给本脚本传 `-SelfCheck` ⇒ 恒跑 timeout case；**不得**把本开关
+#   写进运行器（否则 600s 超时分支失去唯一的端到端判据）。
 # ⚠ 双宿主兼容（PS 7 / PS 5.1）：禁三元 `? :` / `??` / `?.` / `&&` / `||`；双引号串内禁全角弯引号（用 「」）。
-param([switch]$SelfCheck)
+param([switch]$SelfCheck, [switch]$SkipTimeoutCase)
 $ErrorActionPreference = "Continue"
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path; Set-Location $root
 # env 钉扎（照 verify-gainmap-jxl；FFMPEGGUI_FFMPEG_DIR/FFMPEGGUI_PLAN_DIR 让 probe 与 headless 同源解析）
@@ -83,6 +91,13 @@ function Sha256Hex([string]$path) {
 $caseOrder = @('pixel', 'ihdr', 'chunk', 'argv', 'off', 'timeout')
 $caseExpect = @{ pixel = 8; ihdr = 9; chunk = 12; argv = 4; off = 8; timeout = 6 }
 $caseTotal = 47
+if ($SkipTimeoutCase) {
+  # 调试/并行取证臂（受管运行不传）：timeout case 真跑 600s ⇒ 既吃满单步预算，又会在并行线重建时
+  # 干扰 §4 的「exe/probe mtime 起轮前后一致」。跳过时精确计数锁同步收缩为 41（8+9+12+4+8）。
+  $caseOrder = @('pixel', 'ihdr', 'chunk', 'argv', 'off')
+  $caseTotal = 41
+  Write-Output "⚠ -SkipTimeoutCase 调试臂：timeout case（真跑 600s）与 §2b2 播报对撞未执行（受管运行恒全跑）"
+}
 # ServiceProbe pngopt 单 case 的解析器（正向臂与 §3 内存变异负控**共用同一判读链**——
 # 变异测的就是真实判读逻辑，不是复制粘贴的第二份）。
 function Read-PngoptRun([string]$text, [string]$case) {
@@ -132,6 +147,21 @@ function RunHeadless([string]$tag, [string]$mode, [hashtable]$envOverride) {
   } finally {
     foreach ($k in $envOverride.Keys) { [Environment]::SetEnvironmentVariable($k, $saved[$k]) }
   }
+  $prods = @(Get-ChildItem $outDir -Recurse -File -ErrorAction SilentlyContinue)
+  $prod = $null
+  if ($prods.Count -ge 1) { $prod = $prods[0] }
+  return @{ code = $p.ExitCode; stdout = (Read-TextShared "$work/$tag.stdout"); stderr = (Read-TextShared "$work/$tag.stderr"); logFile = $logF; prod = $prod; prodCount = $prods.Count }
+}
+# 显式附加参数版 headless 臂（§2d 旧预设回放用：--preset / --png-optimizer 组合不同，不能沿用 RunHeadless
+# 的固定 --png-optimizer 形态）。进程/日志约定与 RunHeadless 相同；额外回报临时件残留数。
+function RunHeadlessArgs([string]$tag, [string[]]$extraArgs) {
+  $outDir = "$work/out_$tag"
+  if (Test-Path $outDir) { [System.IO.Directory]::Delete($outDir, $true) }
+  New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+  $logF = "$work/$tag.logfile"
+  $p = Start-Process -FilePath $script:exe `
+    -ArgumentList (@('--headless', '--log-level', 'Debug', '--log-file', $logF, '-i', $script:src, '--format', 'png', '--output', $outDir) + $extraArgs) `
+    -Wait -NoNewWindow -PassThru -RedirectStandardOutput "$work/$tag.stdout" -RedirectStandardError "$work/$tag.stderr"
   $prods = @(Get-ChildItem $outDir -Recurse -File -ErrorAction SilentlyContinue)
   $prod = $null
   if ($prods.Count -ge 1) { $prod = $prods[0] }
@@ -224,14 +254,18 @@ if ($srcOk) {
 
   # b2. 超时播报逐字对撞：ServiceProbe timeout case stdout 的 pngopt-timeout-04 行
   #     「」引号内播报原文 == 门禁硬编码模板（PngOptimizerService.cs:133 逐字，m=zopfli30/600s 展开）
-  $timeoutMsg = '[pngopt] ⚠️ 优化超时（600s 上限），保留原样（档位 zopfli30；大图建议改用 max 档）'
-  $tLines = @($runResults['timeout'].text -split "`r?`n")
-  $t04 = ""
-  foreach ($ln in $tLines) { if ($ln -match '^PASS pngopt-timeout-04 ') { $t04 = $ln; break } }
-  CK ($t04 -ne "") "§2b2 pngopt-timeout-04 行在且 PASS（「$t04」）"
-  $quoted = ""
-  if ($t04 -match '「([^」]+)」') { $quoted = $Matches[1] }
-  CK ($quoted -eq $timeoutMsg) "§2b2 超时播报原文逐字 == 硬编码模板（实「$quoted」；len 实$($quoted.Length) / 模板$($timeoutMsg.Length)）"
+  if (-not $SkipTimeoutCase) {
+    $timeoutMsg = '[pngopt] ⚠️ 优化超时（600s 上限），保留原样（档位 zopfli30；大图建议改用 max 档）'
+    $tLines = @($runResults['timeout'].text -split "`r?`n")
+    $t04 = ""
+    foreach ($ln in $tLines) { if ($ln -match '^PASS pngopt-timeout-04 ') { $t04 = $ln; break } }
+    CK ($t04 -ne "") "§2b2 pngopt-timeout-04 行在且 PASS（「$t04」）"
+    $quoted = ""
+    if ($t04 -match '「([^」]+)」') { $quoted = $Matches[1] }
+    CK ($quoted -eq $timeoutMsg) "§2b2 超时播报原文逐字 == 硬编码模板（实「$quoted」；len 实$($quoted.Length) / 模板$($timeoutMsg.Length)）"
+  } else {
+    Write-Output "  §2b2 调试臂：跳过 timeout 播报对撞（-SkipTimeoutCase；受管运行不传此开关 ⇒ 恒真跑）"
+  }
 
   # b3. 工具缺失臂：FFMPEGGUI_PLAN_DIR/FFMPEGGUI_ARTIFACTS_DIR 指空目录 ⇒ ResolveOxipngPath 四路全空
   #     （①显式键：settings 无 PngOptimizerPath 实测空；②artifacts：env 空目录盖住用户 settings 的
@@ -279,6 +313,71 @@ if ($srcOk) {
   if ($null -ne $rOffA.prod) { $shaA = Sha256Hex $rOffA.prod.FullName }
   if ($null -ne $rOffB.prod) { $shaB = Sha256Hex $rOffB.prod.FullName }
   CK (($shaA -ne "") -and ($shaA -eq $shaB)) "§2c2 off 档同输入重复跑 sha256 稳定（$($shaA.Substring(0, [math]::Min(16, $shaA.Length)))… == $($shaB.Substring(0, [math]::Min(16, $shaB.Length)))…）"
+
+  # a-clean. C1（2026-11-11 beta12 后审查修复批：去整文件副本）的清理保证 —— run-dir 内不得残留
+  #   pngopt-tmp/out 临时件（旧实现每张 PNG 产 tmpIn + tmpOut 两件；新实现只有 tmpOut 且 finally 删）
+  $tmpLeftover = @(Get-ChildItem $work -Recurse -File -ErrorAction SilentlyContinue |
+                   Where-Object { $_.Name -match '\.pngopt-(tmp|out)-' })
+  CK ($tmpLeftover.Count -eq 0) "§2a-clean run-dir 零 pngopt 临时件残留（实 $($tmpLeftover.Count) 件：$(($tmpLeftover | ForEach-Object { $_.Name }) -join ', ')）"
+
+  # d. 旧预设回放（C3，2026-11-11 beta12 后审查修复批）：
+  #    旧 schema 预设 JSON（**无 PngOptimizer 键**）⇒ 回放后档位 = off（零漂移：等价于接入 oxipng 之前），
+  #    必须与「显式 max 预设臂」可区分；不传参的默认仍为 max（新默认不变）。
+  #    落盘位置 = exe 同级 presets/（产品便携约定的唯一预置目录，PresetManagerService.PresetsDir），
+  #    用完在 finally 删除；目录空则回收（不污染 bin）。
+  $presetDir = Join-Path (Split-Path $exe) 'presets'
+  $presetName = "pngopt-gate-old-$gid"
+  $presetFile = Join-Path $presetDir "$presetName.json"
+  $presetMade = $false
+  try {
+    New-Item -ItemType Directory -Force -Path $presetDir | Out-Null
+    # 旧预设：png 管线常见轴齐全、但**故意没有 PngOptimizer 键**（= beta12 之前导出的预设形态）
+    [IO.File]::WriteAllText($presetFile,
+      '{"Format":"PNG","Quality":92,"Chroma":"auto","BitDepth":"auto","ColorSpace":"auto","MetadataMode":"PreserveAll","AutoThreads":true,"Concurrency":2,"MaxQueueSize":16}')
+    $presetMade = Test-Path $presetFile
+  } catch {
+    $presetMade = $false
+    try { if (Test-Path $presetFile) { Remove-Item $presetFile -Force -ErrorAction SilentlyContinue } } catch { }
+  }
+  CK $presetMade "§2d 前提：旧预设 JSON 已落 exe 同级 presets/（$presetFile）"
+  if ($presetMade) {
+    try {
+      $presetText = Read-TextShared $presetFile
+      CK (-not ($presetText -match '"PngOptimizer"')) "§2d 前提：旧预设 JSON 无 PngOptimizer 键（字段缺席，不是显式 null）"
+      $rP  = RunHeadlessArgs 'c3_old'     @('--preset', $presetName)
+      $rPo = RunHeadlessArgs 'c3_old_off' @('--preset', $presetName, '--png-optimizer', 'off')
+      $rPm = RunHeadlessArgs 'c3_old_max' @('--preset', $presetName, '--png-optimizer', 'max')
+      $rNd = RunHeadlessArgs 'c3_noarg'   @()
+      $pOldB = 0; if ($null -ne $rP.prod)  { $pOldB = $rP.prod.Length }
+      $pOffB = 0; if ($null -ne $rPo.prod) { $pOffB = $rPo.prod.Length }
+      $pMaxB = 0; if ($null -ne $rPm.prod) { $pMaxB = $rPm.prod.Length }
+      $pNoB  = 0; if ($null -ne $rNd.prod) { $pNoB  = $rNd.prod.Length }
+      $oldBroadcast = @($rP.stdout -split "`r?`n" | Where-Object { $_ -match '^\[pngopt\]' }).Count
+      CK (($rP.code -eq 0) -and ($null -ne $rP.prod) -and ($pOldB -gt 0)) "§2d 旧预设臂 exit=0 且产物非空（exit=$($rP.code)，$($rP.prodCount) 件 $pOldB B）"
+      CK ($oldBroadcast -eq 0) "§2d 旧预设字段缺席 ⇒ off（零 ^[pngopt] 行；实 $oldBroadcast 行）"
+      $shaOld = ""; if ($null -ne $rP.prod)  { $shaOld = Sha256Hex $rP.prod.FullName }
+      $shaOldOff = ""; if ($null -ne $rPo.prod) { $shaOldOff = Sha256Hex $rPo.prod.FullName }
+      CK (($shaOld -ne "") -and ($shaOld -eq $shaOldOff)) "§2d 旧预设臂产物 == 显式 off 臂产物（零漂移，sha256 对撞 ${shaOld}）"
+      $pmLines = @($rPm.stdout -split "`r?`n")
+      $pmHit = Test-SuccessBroadcast $pmLines 'max'
+      $shaOldMax = ""; if ($null -ne $rPm.prod) { $shaOldMax = Sha256Hex $rPm.prod.FullName }
+      CK ($pmHit.ok -and ($pMaxB -gt 0) -and ($pOldB -gt 0) -and ($pMaxB -lt $pOldB) -and ($shaOld -ne $shaOldMax)) `
+        "§2d 显式 max 预设臂仍走 max（播报命中 + 产物 $pMaxB B < 旧预设臂 $pOldB B + sha 不同）⇒ 两臂可区分"
+      $ndLines = @($rNd.stdout -split "`r?`n")
+      $ndHit = Test-SuccessBroadcast $ndLines 'max'
+      CK ($ndHit.ok -and ($pNoB -gt 0) -and ($pOffB -gt 0) -and ($pNoB -lt $pOffB)) `
+        "§2d 不传参默认仍为 max（新默认不变：播报命中 + 产物 $pNoB B < off $pOffB B）"
+    } finally {
+      if (Test-Path $presetFile) { Remove-Item $presetFile -Force -ErrorAction SilentlyContinue }
+      try {
+        if ((Get-ChildItem $presetDir -ErrorAction SilentlyContinue | Measure-Object).Count -eq 0) {
+          Remove-Item $presetDir -Force -ErrorAction SilentlyContinue
+        }
+      } catch { }
+    }
+  } else {
+    CK ($false) "§2d 旧预设夹具落盘失败（presets/ 不可写）⇒ 本条无法判（fail-closed）"
+  }
 } else {
   CK ($false) "§2 素材生成失败 ⇒ 端到端补充断言整段无法执行（fail-closed 红；§1 六 case 已独立判读）"
 }
@@ -338,6 +437,10 @@ try { if (Test-Path $work) { [System.IO.Directory]::Delete($work, $true) } } cat
 CK (-not (Test-Path $work)) "§4 run-dir 已清零：$work"
 
 Write-Output ""
-Write-Output "===== pngopt-gate: PASS=$pass FAIL=$fail ====="
+if ($SkipTimeoutCase) {
+  Write-Output "===== pngopt-gate(-SkipTimeoutCase 调试臂，timeout case 未跑): PASS=$pass FAIL=$fail ====="
+} else {
+  Write-Output "===== pngopt-gate: PASS=$pass FAIL=$fail ====="
+}
 $allOk = ($fail -eq 0) -and $ncOk
 if ($allOk) { exit 0 } else { exit 1 }

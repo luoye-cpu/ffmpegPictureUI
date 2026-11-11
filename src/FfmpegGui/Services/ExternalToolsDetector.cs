@@ -87,13 +87,75 @@ namespace FfmpegGui.Services
             }
         }
 
+        // ── 版本探测结果缓存（2026-11-11 beta12 后审查修复批 C2）────────────────────────
+        // 键 = 全路径 + 文件长度 + mtime(UTC ticks) + timeoutMs ⇒ 同一份二进制被反复探测时直接复用，
+        //   **不再重复起进程**。动机：GUI 重检测链里 ChooseBestExecutable（候选挨个探）与
+        //   ProbeAllTools（8 工具 + ffmpeg 各探一次）会碰到同一路径；每次探测最坏是 5 组参数 ×
+        //   2 s 的进程启动。文件被替换/时间戳变动 ⇒ 键不同，自动重探（不会拿旧结论冒充新文件）。
+        // ⚠ 只缓存**已存在文件**的结果：文件不存在不缓存（稍后可能被安装/放进来，缓存负结果会让
+        //   "重新检测"永远看不见它）；"起不来"的判定照样随正结果一起缓存（文件身份未变）。
+        // ⚠ 返回**防御性副本**：调用方（含探针/门禁）改返回值不得污染缓存对象。
+        private readonly record struct ProbeCacheKey(string FullPath, long Length, long MtimeTicks, int TimeoutMs);
+        private static readonly object _probeCacheGate = new();
+        private static readonly Dictionary<ProbeCacheKey, ExecutableProbeResult> _probeCache = new();
+
+        private static ProbeCacheKey? TryMakeProbeCacheKey(string exePath, int timeoutMs)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(exePath)) return null;
+                var fi = new FileInfo(exePath);
+                if (!fi.Exists) return null;
+                return new ProbeCacheKey(fi.FullName, fi.Length, fi.LastWriteTimeUtc.Ticks, timeoutMs);
+            }
+            catch { return null; }
+        }
+
+        private static ExecutableProbeResult CloneProbeResult(ExecutableProbeResult r) => new()
+        {
+            IsRunnable = r.IsRunnable,
+            LaunchFailed = r.LaunchFailed,
+            ExitCode = r.ExitCode,
+            StdOut = r.StdOut,
+            StdErr = r.StdErr,
+            Version = r.Version,
+            DetectedFeatures = r.DetectedFeatures,
+            SimdFeatures = new List<string>(r.SimdFeatures),
+        };
+
+        /// <summary>复位版本探测缓存（"点了重新检测 / 工具被替换但时间戳没变"时的显式入口）。</summary>
+        public static void ResetProbeCache()
+        {
+            lock (_probeCacheGate) { _probeCache.Clear(); }
+        }
+
         /// <summary>
         /// 对指定可执行文件进行短时间的运行探测（尝试 --version / --help 等），用于检测是否在当前 CPU 上可运行以及解析版本/优化信息。
         /// 返回结果包含 stdout/stderr、退出码以及从输出中识别到的版本/指令集标识（如 avx2）。
+        /// <para>带进程内缓存（键 = 路径+长度+mtime+超时，见上方说明）；缓存命中不重复起进程。</para>
         /// </summary>
         /// <param name="log">日志回调（超时分支点名用；null ⇒ 退回 Trace.WriteLine）</param>
         public static ExecutableProbeResult ProbeExecutable(string exePath, int timeoutMs = 2000,
             Action<string>? log = null)
+        {
+            var key = TryMakeProbeCacheKey(exePath, timeoutMs);
+            if (key.HasValue)
+            {
+                lock (_probeCacheGate)
+                {
+                    if (_probeCache.TryGetValue(key.Value, out var hit)) return CloneProbeResult(hit);
+                }
+            }
+            var res = ProbeExecutableUncached(exePath, timeoutMs, log);
+            if (key.HasValue)
+            {
+                lock (_probeCacheGate) { _probeCache[key.Value] = CloneProbeResult(res); }
+            }
+            return res;
+        }
+
+        private static ExecutableProbeResult ProbeExecutableUncached(string exePath, int timeoutMs,
+            Action<string>? log)
         {
             var res = new ExecutableProbeResult();
             if (string.IsNullOrWhiteSpace(exePath) || !File.Exists(exePath))
@@ -561,11 +623,65 @@ namespace FfmpegGui.Services
             return null;
         }
 
+        // ── 扩展搜索根表缓存（2026-11-11 beta12 后审查修复批 C2）─────────────────────────
+        // 动机：根表每建一次都要对 LocalAppData / Program Files 三个具名子目录 + **PATH 的每个
+        //   段**逐个 Directory.Exists；而本函数被"每个工具的检测链"和 ClassifyToolSource 反复调用
+        //   （PLAN 缺席时一次启动 5~8 次，实测 225 次 stat）。根表在一次进程内的输入只有环境，
+        //   恒定不变 ⇒ 缓存掉重复构建（实测 5 次构建 → 1 次，225 stat → 45）。
+        // ⚠ 缓存键必须把**影响根表的全部输入**都钉进去（"检测不一致"批 B1/B2 的纪律）：
+        //   `FFMPEGGUI_EXT_SEARCH_DIRS` 注入面 / LocalAppData / ProgramFiles / Windows / PATH，
+        //   外加 PLAN 与 ffmpeg 目录 —— 后两者当前实现不读，但同样进键：换包/换 ffmpeg 目录
+        //   必须让缓存失效，否则未来根表实现一旦引用它们就会**静默复用旧目录的结论**（跨目录污染）。
+        private static readonly object _extPathsCacheGate = new();
+        private static string? _extPathsCacheKey;
+        private static List<string>? _extPathsCache;
+
+        /// <summary>扩展搜索根表的缓存键（只含环境/目录输入，不含时间/随机量 ⇒ 同输入必同键）。</summary>
+        private static string BuildExtendedSearchPathsCacheKey()
+        {
+            static string GetEnv(string name) => Environment.GetEnvironmentVariable(name) ?? "";
+            var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData) ?? "";
+            var progFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles) ?? "";
+            var winDir = Environment.GetFolderPath(Environment.SpecialFolder.Windows) ?? "";
+            string planDir = "", ffmpegDir = "";
+            try { planDir = PlatformServices.PlanFolderPath ?? ""; } catch { }
+            try { ffmpegDir = AppSettingsService.Current.FfmpegDir ?? ""; } catch { }
+            return string.Join('\u0001', new[]
+            {
+                GetEnv("FFMPEGGUI_EXT_SEARCH_DIRS"), localAppData, progFiles, winDir, GetEnv("PATH"),
+                planDir, ffmpegDir,
+            });
+        }
+
+        /// <summary>
+        /// 复位扩展搜索根表缓存 ⇒ 下一次读重新构建。与 <see cref="PlatformServices.ResetPlanFolderCache"/>
+        /// 同族：给"点了重新检测 / 换了目录 / 改了 PATH"留一个显式入口（正常路径靠缓存键自失效）。
+        /// </summary>
+        public static void ResetExtendedSearchPathsCache()
+        {
+            lock (_extPathsCacheGate) { _extPathsCache = null; _extPathsCacheKey = null; }
+        }
+
         /// <summary>
         /// 获取扩展的外部工具搜索路径（Windows: LocalAppData\Programs, Program Files 等）。
         /// 用于在 ffmpeg 同目录之外发现 cjxl/exiftool 等工具。
+        /// <para>带进程内缓存（键 = <see cref="BuildExtendedSearchPathsCacheKey"/>）；返回值是**副本**，
+        /// 调用方改动不会污染缓存。</para>
         /// </summary>
         public static List<string> GetExtendedSearchPaths()
+        {
+            var key = BuildExtendedSearchPathsCacheKey();
+            lock (_extPathsCacheGate)
+            {
+                if (_extPathsCache != null && string.Equals(_extPathsCacheKey, key, StringComparison.Ordinal))
+                    return new List<string>(_extPathsCache);
+            }
+            var built = BuildExtendedSearchPathsUncached();
+            lock (_extPathsCacheGate) { _extPathsCacheKey = key; _extPathsCache = built; }
+            return new List<string>(built);
+        }
+
+        private static List<string> BuildExtendedSearchPathsUncached()
         {
             var paths = new List<string>();
 
@@ -904,8 +1020,52 @@ namespace FfmpegGui.Services
             return results;
         }
 
-        /// <summary>在 artifacts 目录和 PLAN 文件夹中查找工具</summary>
-        private static string? FindInArtifactsOrPlan(string toolFileName)
+        // ── artifacts/PLAN/ffmpeg 同目录解析缓存（2026-11-11 C2）────────────────────────
+        // 只缓存**命中结果**（未找到不缓存）：工具可能在用户点"重新检测"前被放进 PLAN/artifacts，
+        //   缓存负结果会让它永远看不见（B1 的"只回填一次"教训同族）；命中缓存仍做一次 File.Exists
+        //   复核（成本 1 次 stat，工具被删也能立刻回退重解析）。
+        // 键把 artifacts 目录 / PLAN 目录 / ffmpeg 目录都钉进去 ⇒ 换目录必然重新解析，不跨目录污染。
+        private static readonly object _artifactsPlanCacheGate = new();
+        private static readonly Dictionary<string, string> _artifactsPlanCache = new(StringComparer.OrdinalIgnoreCase);
+
+        private static string BuildArtifactsPlanCacheKey(string toolFileName) => string.Join('\u0001', new[]
+        {
+            toolFileName,
+            AppSettingsService.Current.WindowsArtifactsDir ?? "",
+            PlatformServices.PlanFolderPath ?? "",
+            AppSettingsService.Current.FfmpegDir ?? "",
+        });
+
+        /// <summary>复位 artifacts/PLAN 解析缓存（"重新检测"显式入口；正常路径靠键自失效 + File.Exists 复核）。</summary>
+        public static void ResetArtifactsOrPlanCache()
+        {
+            lock (_artifactsPlanCacheGate) { _artifactsPlanCache.Clear(); }
+        }
+
+        /// <summary>
+        /// 在 artifacts 目录和 PLAN 文件夹中查找工具（展示面 ProbeAllTools 与执行面
+        /// <see cref="PngOptimizerService.ResolveOxipngPath"/> 共用的**唯一**解析实现，P7f 同源）。
+        /// </summary>
+        public static string? FindInArtifactsOrPlan(string toolFileName)
+        {
+            var key = BuildArtifactsPlanCacheKey(toolFileName);
+            lock (_artifactsPlanCacheGate)
+            {
+                if (_artifactsPlanCache.TryGetValue(key, out var hit))
+                {
+                    if (File.Exists(hit)) return hit;      // 命中复核：工具被删 ⇒ 回退重解析
+                    _artifactsPlanCache.Remove(key);
+                }
+            }
+            var found = FindInArtifactsOrPlanUncached(toolFileName);
+            if (found != null)
+            {
+                lock (_artifactsPlanCacheGate) { _artifactsPlanCache[key] = found; }
+            }
+            return found;
+        }
+
+        private static string? FindInArtifactsOrPlanUncached(string toolFileName)
         {
             // 1) 用户指定的 artifacts 目录
             var artifactsDir = AppSettingsService.Current.WindowsArtifactsDir;

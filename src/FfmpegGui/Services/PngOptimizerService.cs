@@ -19,9 +19,16 @@ namespace FfmpegGui.Services
     /// ③ exit 0 但 out ≥ 原（防御分支）→ 保留原样；④ exit ≠ 0 → 保留原样；
     /// ⑤ 600s 进程级超时（R4.1：oxipng 自带 <c>--timeout</c> 对大图高压缩档有效性有限，
     /// 进程级等待是唯一权威保护）→ kill → 保留原样；⑥ 任一异常 → 保留原样。
-    /// 临时件（<c>&lt;name&gt;.pngopt-tmp/out-&lt;guid&gt;.png</c>）与产物同目录（AGENTS §3：不落 %TEMP%）、
-    /// <c>finally</c> 删除。所有播报前缀 <c>[pngopt]</c>，文案逐字锁定于 C-EXEC@1。
+    /// 临时件只有一个：<c>&lt;name&gt;.pngopt-out-&lt;guid&gt;.png</c>（与产物同目录，AGENTS §3：不落 %TEMP%），
+    /// <c>finally</c> 删除。
+    /// <para>
+    /// 2026-11-11（beta12 后审查修复批 C1）：**不再先把整文件复制成临时输入**。oxipng 的
+    /// <c>--out</c> 模式只读输入、只写 <c>--out</c> 目标（取证：对输入文件的 sha256 前后对撞，
+    /// 成功/无可优化/失败三态都不变；副本输入与直接输入产出逐字节同值）⇒ 直接把原产物交给
+    /// oxipng，成功时才用 <see cref="File.Move(string,string,bool)"/> 覆盖原产物；失败/超时/取消
+    /// 路径上原产物全程未被打开写 ⇒ 「原文件不被破坏」的保证不变，同时省掉一次整文件 Copy+Delete。
     /// </para>
+    /// <para>所有播报前缀 <c>[pngopt]</c>，文案逐字锁定于 C-EXEC@1。</para>
     /// </summary>
     public static class PngOptimizerService
     {
@@ -81,18 +88,17 @@ namespace FfmpegGui.Services
 
             // 临时件：与产物同目录（同盘 ⇒ File.Move 覆盖是同卷操作；AGENTS §3「用完即删」纪律，
             // GUID 防并发/重跑撞名；oxipng 无已知 TEMP 写入，进程继承宿主已钉的 TMP 根）。
+            // ⚠ C1（2026-11-11）：输入**不再**是临时副本 —— oxipng `--out` 模式只读输入（见类注释取证）。
             var name = Path.GetFileNameWithoutExtension(outputPath);
             var dir = Path.GetDirectoryName(outputPath) ?? ".";
             var guid = Guid.NewGuid().ToString("N");
-            var tmpIn = Path.Combine(dir, $"{name}.pngopt-tmp-{guid}.png");
             var tmpOut = Path.Combine(dir, $"{name}.pngopt-out-{guid}.png");
 
             try
             {
                 var origSize = new FileInfo(outputPath).Length;
-                File.Copy(outputPath, tmpIn, overwrite: true);
 
-                var args = BuildArgs(m, tmpIn, tmpOut);
+                var args = BuildArgs(m, outputPath, tmpOut);
                 var psi = new ProcessStartInfo
                 {
                     FileName = oxipng,
@@ -179,7 +185,6 @@ namespace FfmpegGui.Services
             }
             finally
             {
-                TryDelete(tmpIn);
                 TryDelete(tmpOut);
             }
         }
@@ -193,7 +198,7 @@ namespace FfmpegGui.Services
         /// </summary>
         /// <param name="mode">default | max | zopfli15 | zopfli30（其他值抛 ArgumentException——值域封闭；
         /// off 不到达此处——ApplyPngOptimizerAsync 上游已短路）。</param>
-        /// <param name="inputPath">oxipng 输入（临时输入副本）。</param>
+        /// <param name="inputPath">oxipng 输入（**原产物本身**；C1：`--out` 模式实证只读输入，不再复制临时件）。</param>
         /// <param name="outputPath">oxipng 输出（--out 目标，临时件）。</param>
         public static IReadOnlyList<string> BuildArgs(string mode, string inputPath, string outputPath)
         {
@@ -220,12 +225,15 @@ namespace FfmpegGui.Services
         }
 
         /// <summary>
-        /// C-RESOLVE@1 解析链：① AppSettings 显式键（非空且文件存在）；② PLAN/artifacts 惯例位。
-        /// ②与 <c>ExternalToolsDetector.FindInArtifactsOrPlan</c>（:908，private）同语义三步：
-        /// 用户 artifacts 目录 → <see cref="PlatformServices.TryFindInPlanFolder"/>（完整名 + 去扩展名兼底）→
-        /// ffmpeg 同目录。该类是 private 方法且 ExternalToolsDetector.cs 不属 T3 write_set ⇒ 此处按同语义复刻；
-        /// 展示面（ProbeAllTools oxipng 段）与执行面解析顺序一致（P7f：面板说可用 ⇔ 队列真能用），
-        /// 漂移由 verify-tool-detection 门禁兜底。
+        /// C-RESOLVE@1 解析链：① AppSettings 显式键（非空且文件存在）；②
+        /// <see cref="ExternalToolsDetector.FindInArtifactsOrPlan"/>（用户 artifacts 目录 →
+        /// <see cref="PlatformServices.TryFindInPlanFolder"/>（完整名 + 去扩展名兼底）→ ffmpeg 同目录）。
+        /// <para>
+        /// ⚠ P7f（展示面 ⇔ 执行面同源）：② 在 2026-11-11（beta12 后审查修复批 C2）**收口成单点** ——
+        /// 展示面（<c>ProbeAllTools</c> oxipng 段）与本执行面现在调**同一个**公开函数。旧写法在本类里
+        /// 按同语义复刻了一份（当时 ExternalToolsDetector.cs 不在写集内），两份口径漂移只能靠门禁兜底；
+        /// 收口同时获得该实现内的「命中缓存 + File.Exists 复核」（批量 PNG 出口不再逐张重解析）。
+        /// </para>
         /// </summary>
         /// <returns>可执行的 oxipng 路径；皆无 ⇒ null（调用方播报跳过，不是失败）。</returns>
         private static string? ResolveOxipngPath()
@@ -234,28 +242,8 @@ namespace FfmpegGui.Services
             var explicitPath = AppSettingsService.Current.PngOptimizerPath;
             if (!string.IsNullOrWhiteSpace(explicitPath) && File.Exists(explicitPath)) return explicitPath;
 
-            // ② artifacts 目录 / PLAN 文件夹 / ffmpeg 同目录（FindInArtifactsOrPlan 同语义）
-            var artifactsDir = AppSettingsService.Current.WindowsArtifactsDir;
-            if (!string.IsNullOrWhiteSpace(artifactsDir))
-            {
-                var p = Path.Combine(artifactsDir, PlatformServices.OxipngName);
-                if (File.Exists(p)) return p;
-            }
-            var planFound = PlatformServices.TryFindInPlanFolder(PlatformServices.OxipngName);
-            if (planFound == null)
-            {
-                var nameNoExt = Path.GetFileNameWithoutExtension(PlatformServices.OxipngName);
-                if (nameNoExt != PlatformServices.OxipngName)
-                    planFound = PlatformServices.TryFindInPlanFolder(nameNoExt);
-            }
-            if (planFound != null) return planFound;
-            var ffDir = AppSettingsService.Current.FfmpegDir;
-            if (!string.IsNullOrWhiteSpace(ffDir))
-            {
-                var p = Path.Combine(ffDir, PlatformServices.OxipngName);
-                if (File.Exists(p)) return p;
-            }
-            return null;
+            // ② artifacts 目录 / PLAN 文件夹 / ffmpeg 同目录（展示面同一实现，含命中缓存）
+            return ExternalToolsDetector.FindInArtifactsOrPlan(PlatformServices.OxipngName);
         }
 
         /// <summary>

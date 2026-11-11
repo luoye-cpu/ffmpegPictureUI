@@ -31,9 +31,24 @@ namespace FfmpegGui.Models
         public bool Lossless { get; set; }
         public bool UseAdvancedCodec { get; set; }
         public string? PngPred { get; set; }
-        /// <summary>PNG 出口优化器档位（png-optimizer-integration T4）：off|max|zopfli15|zopfli30，
-        /// null = 未设置（旧预设无此键，语义等同 off）。取值域与 <see cref="FfmpegOptions.PngOptimizer"/> 一致。</summary>
-        public string? PngOptimizer { get; set; }
+        /// <summary>
+        /// PNG 出口优化器档位（png-optimizer-integration T4；png-default-oxipng C-DEFOPT@1 加 default 档）：
+        /// off|default|max|zopfli15|zopfli30。取值域与 <see cref="FfmpegOptions.PngOptimizer"/> 一致。
+        /// <para>
+        /// <b>初值 = "off"（2026-11-11 beta12 后审查修复批 C3）</b>：旧预设 JSON 里根本没有这个键 ⇒
+        /// 反序列化不会覆盖属性初值 ⇒ 旧预设读出来就是 "off"。这是「旧预设回放 ⇒ 零漂移（等价于接入
+        /// oxipng 之前的产物）」的最小实现——本类没有 schema/版本位，其它轴靠"null = 缺席 ⇒ 不覆盖"
+        /// 约定，而本轴的"缺席"语义恰恰是 off（不是"保持控件现状"，否则旧预设会停在当前默认 max）。
+        /// 新预设由 GUI 采集/CLI 显式写入 ⇒ 保存时该键恒非 null；新任务的出厂默认 max 在
+        /// <see cref="FfmpegOptions.PngOptimizer"/>，两处不冲突。
+        /// </para>
+        /// <para>
+        /// ⚠ 不要改回 null 默认：null 会让 <see cref="FfmpegOptions.ApplyPresetData"/> 走"不覆盖"
+        /// 分支 ⇒ 回放旧预设停在当前默认 max、回不到 off（本批审查复现的缺陷）；
+        /// GUI 回放路径（MainWindow.SetComboByValueOrIndex 对 null 早退）同理会留 max。
+        /// </para>
+        /// </summary>
+        public string? PngOptimizer { get; set; } = "off";
         public int? PngDpi { get; set; }
         public string? WebpPreset { get; set; }
         public int? AvifCpuUsed { get; set; }
