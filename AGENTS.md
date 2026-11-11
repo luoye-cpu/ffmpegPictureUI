@@ -52,7 +52,7 @@ beta7–beta11 的 10 个归档 + 8 个解包目录（1.7 GB）。**要留证据
 
 `tests/scripts/_run-step3-gates.ps1` 是清单，不是索引外部文件。加/删/改名一条门禁必须**同批**改齐四处：
 
-1. `$scriptList` 数组（103 条）；
+1. `$scriptList` 数组（104 条）；
 2. `$expectedScriptCount` 常量（同文件）；
 3. runner 里复述条数的**散文陈述**——`Test-RunnerShape` 第 ⑰ 针按三种形态各扫一遍并要求与常量相等；
 4. 新的 ServiceProbe mode 还要进 `tests/projects/Tests.Shared/TestGroups.cs` 的组表，
@@ -89,7 +89,7 @@ beta7–beta11 的 10 个归档 + 8 个解包目录（1.7 GB）。**要留证据
 # 必须 pwsh7；LC_ALL 会改变排序/解析行为 ⇒ 清掉
 $env:LC_ALL=$null
 dotnet build ffmpegPictureUI.sln -c Release          # 13 个测试工程都在 sln 里，编不过当场暴露
-pwsh -NoProfile -File tests/scripts/_run-step3-gates.ps1   # 103 条；整轮墙钟未在 103/103 下重测（94 条时代 ~60 分钟）
+pwsh -NoProfile -File tests/scripts/_run-step3-gates.ps1   # 104 条；整轮墙钟未在 104/104 下重测（94 条时代 ~60 分钟）
 ```
 
 - 宣布"全绿"必须绑定被测产物：exe/DLL 指纹前 16 与当轮日志同段；`dotnet test` 打在 Exe 工程上只还原不跑还返回 0。
@@ -511,6 +511,18 @@ pwsh -NoProfile -File tests/scripts/_run-step3-gates.ps1   # 103 条；整轮墙
     溢出输出管道使语料 `.Contains` 全 false。已存项目记忆。
   - 盲区账本现值：12 条中 **4 条已收口**（no-overwrite/cancel/corrupt + --preset 部分过期更正），
     账本条目 66（两盲区转 `cap.cancel-path`/`cap.corrupt-input`）。
+- **测试模块化批 4·1（2026-11-12，清单 103→104）**：第 104 条 `verify-log-jsonlines.ps1`——
+  `--log-format JsonLines` 格式正确性 E2E（调研盲区#9 收口）：全行 schema 锁（t=ISO round-trip **+00:00**
+  非 Z、在**原始行**上锁——`ConvertFrom-Json` 会把 ISO8601 串自动转本地时区 DateTime；l 小写枚举
+  （`-ccontains`，`-in` 大小写不敏感是漏网口）；m 非空；c∈实跑全集）+ Info 阈值过滤兑现 + 汇总行 p/tot
+  （pwsh JSON 整数落 [long]，`-is [int]` 会误杀）+ 双写等价（文件行 ⊆ stdout）+ debug 解锁 + 默认 Text
+  负控 + 非法档位 exit 2 + 文件打不开不崩；中文 `\uXXXX` 转义 ⇒ 一律 parse 后比对。实测受管 **30/0**
+  含 -SelfCheck（首轮 21/7，三处都是判据实现错、产品无罪）；⑰针当场抓到第四处散文（文件头「全跑 103 条」）
+  未同步拒跑。账本：`blindspot.log-jsonlines`→`cap.log-jsonlines`；**`blindspot.ipc-single-instance` 改记
+  产品缺口**——「二次启动→转发→退出」链路产品不存在（`TryConnectAsync` 生产侧 0 调用点，无互斥锁），
+  接线与否是 S-P1-2 行为决策（TESTING.md「仍未做（需拍板）」），先接线后立判据。
+- **测试模块化批 4 剩余（待做）**：settings-gui-restart / gui-subwindows / render-plan-mediainfo
+  （调研撞并发上限未完成）；维持 blind（有据）：raw-non-dng-brands（样本许可未清）、hwencoder-real（环境依赖）。
 
 ---
 

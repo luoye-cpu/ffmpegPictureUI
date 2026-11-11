@@ -159,4 +159,5 @@ test-group-coverage / 受管子集全绿。
 | 2026-11-12 | 批 2·模块 3 | #103 `verify-corrupt-input`（103 条）+ **真缺陷修复**：三处英文失败状态词 → 失败前缀中文（HasError 契约，exit 矛盾消除）；CJK 第二十四次抬表 1060→1063；实测 29/0 含负控 |
 | 2026-11-12 | 批 2·模块 2 | G2 取消路径进单体（+6，按 InputPath 锁定断言）；三把尺 464/59 + 账本 locks；ui-host **464/0**、union 464/464、verbatim 22/0、reproducible 19/0 |
 | 2026-11-12 | 批 3 | ServiceProbe 拆分（48 行壳 + Parts/65 文件；重建逐字节相等；nodebug 成对构建 **7770FDE924BB1995** 等值）；⚠ 验收前提更正：plain dll 哈希等值原理不可达（PDB 派生字节）；同批迁锁三处：mirror-parity 90/0、coverage 40/0、temp-sites 5/0；STALE 自适应 |
+| 2026-11-12 | 批 4·1 | 第 104 条 `verify-log-jsonlines`（盲区#9 收口）：JsonLines 全行 schema 锁 + Info 过滤 + 双写等价 + fail-closed/不崩两边界；受管 30/0 含负控；清单 103→104；⚠ 判读链三处 pwsh 教训（ConvertFrom-Json 自动转 DateTime / 整数落 long / -in 大小写不敏感）+ ⑰针当场抓第四处散文漏改；账本：blindspot.log-jsonlines→cap.log-jsonlines、**blindspot.ipc-single-instance 改记产品缺口**（TryConnectAsync 生产侧 0 调用点 = S-P1-2 待拍板，先接线后立判据） |
 | 2026-11-12 | 账本 | 4/12 盲区收口（no-overwrite/cancel/corrupt/--preset 更正）；cap.cancel-path/cap.corrupt-input 入账；指纹 F15B1AED2557040D / E62837233822D552 |

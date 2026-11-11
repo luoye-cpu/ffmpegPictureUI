@@ -582,7 +582,7 @@
       "evidence": [
         "tests/scripts/verify-metadata-privacy.ps1:102"
       ],
-      "notes": "作为输出通道被 8+ 门禁引用；JsonLines 格式正确性另见 blindspot.log-jsonlines"
+      "notes": "作为输出通道被 8+ 门禁引用；JsonLines 格式正确性见 cap.log-jsonlines（verify-log-jsonlines）"
     },
     {
       "id": "cli.log-level",
@@ -620,12 +620,17 @@
         {
           "gate": "_probe-white-point-kernel.ps1",
           "kind": "host"
+        },
+        {
+          "gate": "verify-log-jsonlines.ps1",
+          "kind": "cli"
         }
       ],
       "evidence": [
-        "tests/scripts/_probe-white-point-kernel.ps1:531"
+        "tests/scripts/_probe-white-point-kernel.ps1:531",
+        "tests/scripts/verify-log-jsonlines.ps1:118"
       ],
-      "notes": "text 档实跑；JsonLines 正确性=盲区"
+      "notes": "text 档实跑（white-point-kernel）；JsonLines 档格式正确性已由 verify-log-jsonlines 全行 schema 锁（2026-11-12 批 4·1）"
     },
     {
       "id": "cli.compose-gainmap",
@@ -1341,8 +1346,8 @@
       "names": [],
       "carriers": [],
       "src": "src/FfmpegGui/App.xaml.cs:435",
-      "blindReason": "IPC 单实例契约（二次启动→转发→退出）无运行时判据；#51 只验 ExtraOptions 应用与拒绝",
-      "plannedBatch": 4
+      "blindReason": "⚠ 改记产品缺口（2026-11-12 批 4 调研裁定，非测试缺口）：「二次启动→转发→退出」链路产品不存在——TryConnectAsync/SendRequestAsync 生产侧 0 调用点（全仓仅 ServiceProbe 探针调用），无互斥锁无二次实例检测 ⇒ 现状=真双开。接线与否是 S-P1-2 行为决策（docs/TESTING.md §「仍未做（需拍板）」）；先接线后立判据，否则门禁必红",
+      "plannedBatch": null
     },
     {
       "id": "blindspot.settings-gui-restart",
@@ -1364,17 +1369,6 @@
       "carriers": [],
       "src": "tests/scripts/verify-acr-route.ps1:1",
       "blindReason": "非 DNG RAW 真机品牌（CR3/NEF/ARW）无样本臂；RAW 门禁素材以 DNG/dng_render 为主（ACR 只覆盖 DNG 是已登记口径）",
-      "plannedBatch": 4
-    },
-    {
-      "id": "blindspot.log-jsonlines",
-      "kind": "blindspot",
-      "domain": "ops",
-      "tier": "blind",
-      "names": [],
-      "carriers": [],
-      "src": "src/FfmpegGui/CliParser.cs:326",
-      "blindReason": "--log-format JsonLines 格式正确性无判据（log-file 仅被当输出通道引用）",
       "plannedBatch": 4
     },
     {
@@ -1445,6 +1439,24 @@
         "tests/scripts/verify-corrupt-input.ps1:1"
       ],
       "desc": "损坏/截断输入 E2E：3 格式×2 坏法+3 正控（2026-11-12 由 blindspot.corrupt-input 收口，附带修复三处英文失败状态词）"
+    },
+    {
+      "id": "cap.log-jsonlines",
+      "kind": "capability",
+      "domain": "ops",
+      "tier": "E2E",
+      "names": [],
+      "src": "tests/scripts/verify-log-jsonlines.ps1:1",
+      "carriers": [
+        {
+          "gate": "verify-log-jsonlines.ps1",
+          "kind": "cli"
+        }
+      ],
+      "evidence": [
+        "tests/scripts/verify-log-jsonlines.ps1:1"
+      ],
+      "desc": "--log-format JsonLines 格式正确性 E2E：全行 schema 锁 + Info 过滤 + 双写等价 + fail-closed/不崩两边界（2026-11-12 由 blindspot.log-jsonlines 收口，批 4·1）"
     }
   ]
 }

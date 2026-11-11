@@ -628,7 +628,32 @@ STALE 无需改（`Get-NewestSrc` 递归取最新自适应）；CJK/stderr-merge
 账本同批：两个已收口盲区转能力承载（`cap.cancel-path`/`cap.corrupt-input`），条目数 66 不变。
 指纹：`FfmpegGui.dll=F15B1AED2557040D`（含状态词修复）、`ServiceProbe.dll=E62837233822D552`（拆分终态；
 对拆分前 plain 的 diff=71B/5 簇全落 PDB 派生簇）。证据 `tests/output/_tmp/svcprobe-split/`（split.py 一键重放 +
-verify_reconstruct.py + 5 个 dll 存证）+ `tests/output/_tmp/b23-*.log`。）  v1 支的判法是**偶次残差**而不是"奇次位为 0"——v1 载荷只有四个偶次项，奇次位是读手自己填的 0，
+verify_reconstruct.py + 5 个 dll 存证）+ `tests/output/_tmp/b23-*.log`。）
+
+（**2026-11-12 第三十一次接线 1 条**（测试模块化批 4·1；`docs/TEST_MODULE_PLAN_2026-11-12.md`；追加式）⇒ 脚本清单 **103 → 104 条**：
+第 104 条 `verify-log-jsonlines.ps1`——**`--log-format JsonLines` 格式正确性 E2E**（调研盲区#9：log-file 仅被
+8+ 门禁当 Text 抓取通道，逐行 JSON 字段从未被断言过）。A 主臂全行 schema 锁（t=ISO round-trip **+00:00** 非 Z /
+l 小写枚举 / m 非空 / c∈{progress,item_completed,item_log,queue_completed}——null 省略契约下 t/l/m 必在）+
+零 Text 字形行（═══/❌/⚠️ 只属 Text 分支，:236-241）+ Info 阈值过滤兑现（零 debug 行零 progress 类，:213）+
+汇总行恰一条且 p/tot 为整数 + 汇总消息 **parse 后比对**（中文 \uXXXX 转义 ⇒ 裸串匹配必假阴）+ A2 双写等价
+（文件行 ⊆ stdout，:248-272 同行两路写）+ B `--log-level debug` 解锁（progress 类 41 行 + f 字段在）+
+C 默认档 Text 负控 + D 无文件档（'{' 头全解析 + **旁路播报在 stdout 升格为被钉行为**——工具检测/队列准备的
+Console.WriteLine 族，encoder-knob-liveness「三通道」在案，无声消失 = 红）+ E 非法档位 fail-closed exit 2 +
+F 文件打不开不崩（stderr 点名「无法打开日志文件」+ 产物照常）；`-SelfCheck` 负控 = 判读链九臂内存自证。
+⚠ 判读链三处 pwsh 实测教训（首轮 21/7 → 修后 30/0，都是判据实现错、产品无罪）：① `ConvertFrom-Json` 把
+ISO8601 串**自动转 [DateTime]**（转本地时区）⇒ t 的线格式锁必须在**原始行**上做（`Test-RawTimestamp`），
+在解析对象上做必假红；② JSON 整数落成 **[long]** ⇒ `-is [int]` 过紧误杀合法汇总行（接受 int/long，字符串仍拒）；
+③ `-in`/`-notin` **大小写不敏感** ⇒ 级别枚举 'INFO' 撞过 'info'，改 `-ccontains`。
+⚠ 接线过程第 ⑰ 针当场抓到**第四处散文**（文件头 `-Scripts` 动机句「全跑 103 条」）未同步 ⇒ 运行器拒绝跑
+——先修齐才开跑，针兑现价值实证（四处形态：:3 头部 / :89 计数链 / :92 接线史 / :1110 受管基线）。
+账本同批：`blindspot.log-jsonlines` → **`cap.log-jsonlines`**（tier E2E，条目数 66 不变），
+`cli.log-format`/`cli.log-file` carrier/notes 同步；`blindspot.ipc-single-instance` **改记产品缺口**
+（批 4 调研裁定：「二次启动→转发→退出」链路**产品不存在**——`TryConnectAsync`/`SendRequestAsync` 生产侧
+0 调用点、无互斥锁无二次实例检测 ⇒ 现状=真双开；接线与否是 S-P1-2 行为决策（TESTING.md「仍未做（需拍板）」），
+**先接线后立判据**，否则门禁必红）。
+受管子集读数（runner 自印 `script-list=104 条（受管基线 104）`）：module-registry **10/0**、log-jsonlines
+**30/0**（含 -SelfCheck）。证据：`tests/output/_gate_script_verify-log-jsonlines.ps1.txt`（当轮留痕）。）
+  v1 支的判法是**偶次残差**而不是"奇次位为 0"——v1 载荷只有四个偶次项，奇次位是读手自己填的 0，
   那条断言永不可能触发（2026-10-19 审查删掉的死牙）。造变异件也从读手分家出去
   （`_mutate-dng-lens.py`，理由与 ⑯ 组同一条：判件与造件同入口时判据走偏造件跟着走偏）。
   十一臂（⑱a–⑱h + ⑱g2 + ⑱x/⑱y；⑱x/⑱y = Fuji RAF 三表 / Panasonic RW2 畸变，2026-10-20 落地，
