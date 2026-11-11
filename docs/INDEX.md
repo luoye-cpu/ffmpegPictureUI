@@ -17,6 +17,7 @@
 | `TEST_SPLIT_TEMPLATE.md` / `TEST_SPLIT_PLAN_2026-10-05.md` | 3 / 0+链接 | 拆分模板（新测试工程按它写） |
 | `PIPELINE_PERF_ANALYSIS_2026-10-09.md` | 2 | 性能分析 |
 | `FIX_PLAN_2026-10-14.md` | 2 | 修复计划（现行） |
+| `TEST_MODULE_PLAN_2026-11-12.md` | 0（新，2026-11-12） | **测试模块化现行账本**：机读模块账本+不落后针（批 1）、三个高危盲区 E2E（批 2）、ServiceProbe 源级 partial 拆分（批 3）、中低盲区（批 4）、卫生与文档（批 5）；三路调研底账与已裁定决策（partial/两线并行/rc.1 顺延） |
 | `GAINMAP_ROUTES_AND_PATCH_PLAN.md` | 1 | 增益图路由与修补方案（现行） |
 | `MANUAL_VERIFICATION.md` | 1 | 手工验证清单 |
 | `AUXC_HEIC_GAINMAP_PLAN_2026-11-02.md` | 0（新，2026-11-02） | Apple `auxC` HEIC 增益图（DJI 实拍形态）的**可行性设计**：box 树/`iref`/`ipma` 一手读数、`grid` 载荷 8 B 中尾部 4 B 未读、`auxl` 反查未通两处缺口、Apple 增益口径三候选（§5 **低置信**）、§6 逐点改动、§7 判据草案。**本批未实施**（理由与三件 `sha256[:16]` 见 `HANDOVER-2026-11-02.md` §3.7）⇒ 位置可动，暂不进归档 |
