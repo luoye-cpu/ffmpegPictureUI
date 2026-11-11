@@ -52,7 +52,7 @@ beta7–beta11 的 10 个归档 + 8 个解包目录（1.7 GB）。**要留证据
 
 `tests/scripts/_run-step3-gates.ps1` 是清单，不是索引外部文件。加/删/改名一条门禁必须**同批**改齐四处：
 
-1. `$scriptList` 数组（100 条）；
+1. `$scriptList` 数组（102 条）；
 2. `$expectedScriptCount` 常量（同文件）；
 3. runner 里复述条数的**散文陈述**——`Test-RunnerShape` 第 ⑰ 针按三种形态各扫一遍并要求与常量相等；
 4. 新的 ServiceProbe mode 还要进 `tests/projects/Tests.Shared/TestGroups.cs` 的组表，
@@ -89,7 +89,7 @@ beta7–beta11 的 10 个归档 + 8 个解包目录（1.7 GB）。**要留证据
 # 必须 pwsh7；LC_ALL 会改变排序/解析行为 ⇒ 清掉
 $env:LC_ALL=$null
 dotnet build ffmpegPictureUI.sln -c Release          # 13 个测试工程都在 sln 里，编不过当场暴露
-pwsh -NoProfile -File tests/scripts/_run-step3-gates.ps1   # 100 条；整轮墙钟未在 100/100 下重测（94 条时代 ~60 分钟）
+pwsh -NoProfile -File tests/scripts/_run-step3-gates.ps1   # 102 条；整轮墙钟未在 102/102 下重测（94 条时代 ~60 分钟）
 ```
 
 - 宣布"全绿"必须绑定被测产物：exe/DLL 指纹前 16 与当轮日志同段；`dotnet test` 打在 Exe 工程上只还原不跑还返回 0。
@@ -474,6 +474,23 @@ pwsh -NoProfile -File tests/scripts/_run-step3-gates.ps1   # 100 条；整轮墙
   `[System.Diagnostics.ProcessStartInfo]::UseShellExecute=$false`（裸 CreateProcess），
   修法已固化在 `tests/output/_tmp/net11-ga/gui-smoke.ps1`。出包版本已裁定 **1.6.0-rc.1**；
   用户指示不急着出包，先行「测试拆碎成模块 + 覆盖不落后」任务，出包顺延（`#93` 随重出包解）。
+- **测试模块化批 1+批 2 模块 1（2026-11-12，方案 = `docs/TEST_MODULE_PLAN_2026-11-12.md`）**：
+  **机读模块账本** `tests/scripts/_module-registry.json`（66 条目：33 具名选项 + 10 透传代表 +
+  13 能力域 + 10 盲区；tier 四档；locks = 三把尺现值 458/126/458）+ 第 101 条
+  `verify-module-registry.ps1`（判据①CLI 选项全覆盖双向差集=「不落后」针 / ②档位不撒谎（逐条目
+  carrier 语料）/ ③carrier 在册 / ④结构锁+src ±3 行活见证+三把尺对账；不跑 exe 不进 STALE；
+  负控三内存变异）+ 第 102 条 `verify-overwrite-contract.ps1`（**盲区#1 防覆盖契约 E2E**：no-overwrite
+  拒绝逐字+旧产物 sha 不动+零改名件 / overwrite 真覆盖 / 默认档=覆盖钉死 / 退出码对账 1/0/0）。
+  清单 100→**102**（四处同步同批：数组/常量/三散文/⑱针 8→10 条目 7→9 字面量）。
+  实测：受管子集 module-registry **10/0**、overwrite-contract **18/0**（各含 -SelfCheck）；
+  overwrite-contract 裸跑正向 17/0。⚠ 两笔实测教训：**①批 1 首轮负控抓出真缺陷**——② 首版全局
+  共享语料让字面量经别的条目 carrier 漏进判据（M2 变异 3 抓 2）⇒ 改逐条目语料后 3/3（负控价值的
+  实证）；**②调研更正两条**——B 报告盲区#7（--preset）部分过期（pngopt §2d 已是 E2E）、盲区#1
+  （--no-overwrite）本批收口；--help/--version/--gui 三个选项级 blind 是新发现的真缺口。
+  ⚠ **AGENTS §7 ⑪-d 条目更正**：「CoveredBy⇒调用点双向检查待做」已过时——2026-11-02 已落地
+  （`_probe-test-group-coverage.ps1:1008-1088` AST 调用点索引 + D1–D4 判据），⑪-d 剩余工作只有
+  「_probe-/_make- 族新脚本从 WARN 收紧」。⚠ `-Scripts` 子集参数必须带 `.ps1` 全名（不带则
+  响亮拒绝，且该校验发生在探针阶段之后——传错名会白跑 ~4 分钟探针）。
 
 ---
 

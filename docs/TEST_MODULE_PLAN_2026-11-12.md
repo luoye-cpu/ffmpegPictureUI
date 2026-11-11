@@ -148,3 +148,6 @@ PsRender/PlanFolder/MediaInfo → RAW 真机品牌（需语料，遵守工作区
 | 日期 | 批 | 进展 |
 |---|---|---|
 | 2026-11-12 | — | 立项；三路调研完成；决策裁定（partial/两线并行/rc.1 顺延）；⑪-d 更正核实 |
+| 2026-11-12 | 批 1 | `_module-registry.json`（66 条目）+ 第 101 条 `verify-module-registry` 落地；受管 10/0 含负控；首轮负控抓出 ② 全局语料缺陷 → 改逐条目语料 3/3 |
+| 2026-11-12 | 批 2·模块 1 | 第 102 条 `verify-overwrite-contract`（防覆盖契约 E2E）落地；受管 18/0 含负控、裸跑正向 17/0；产品行为取证 `tests/output/_tmp/overwrite-probe/` |
+| 2026-11-12 | 登记 | 清单 100→102 四处同步 + ⑱针 8→10/7→9；TESTING.md 第二十九次接线；AGENTS §2/§4/§7 同批；受管子集 `t102-subset.log` rc=0 |
