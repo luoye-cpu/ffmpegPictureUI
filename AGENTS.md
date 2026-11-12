@@ -684,6 +684,27 @@ pwsh -NoProfile -File tests/scripts/_run-step3-gates.ps1   # 104 条；整轮墙
   组合，按真缺陷判红]`。读数 `PASS=6 FAIL=0 SKIP=1`、rc=0（原 `PASS=6 FAIL=1`、rc=1）。
   ⚠ **未决**：本机直接跑与 `schtasks` 计划任务跑**都是 High**（实测 `Mandatory Label\High`），造不出普通权限
   对照 ⇒ ⑥ 的 PASS 形态**尚未本地验证**，须普通权限会话确认。
+- **beta13 出包（2026-11-13，§8 流程）**：版本位 `1.6.0-beta12 → 1.6.0-beta13`，release 提交 `01c427e`
+  （只装版本位 + zh/en CHANGELOG，把 11-04..11-13 的 38 提交按十条主线合档），annotated tag `1.6.0BETA13`
+  锚它（§8.1 tag=可重现出包点）。`pack.ps1 -Mode all` 双包 `-x64.7z` **11,522,055 B** /
+  `-x64-full.7z` **56,262,538 B**（归档 584 文件 / 128 目录 / 313,280,372 B；完整性闸通过）。
+  出包读数：第 93 条 `verify-release-package` **16/0**（full 五工具同指纹 avifenc `625B8FCEB4726C05`、
+  dngtool `B3399C1B28C2B2DF`；包内 exe `ProductVersion=1.6.0-beta13+01c427ea4872c30d9e5e953a2508915ddd2e4511`）、
+  第 85 条 `verify-package-gui-starts` 包体 **PASS=6 FAIL=0 SKIP=1** rc=0（SKIP=⑥ 提权托盘，按上文新口径点名）；
+  sha16 app 包 `8FC1E56FD517A961` / full 包 `BC74E591133B0FC9`，包内 exe app `48C8BB33CCC067FA` /
+  full `5929F19D188B02D7`（app 与 full 各自独立 AOT 发布，两件 exe 指纹不同属正常，不是打包不一致）。
+  包内 exe 冒烟：`--headless -i anim.gif -f webm` ⇒ vp9 / 512×512 / 10 fps / 0.300 s / 22,744 B，exit=0，
+  八件工具全 `[PLAN]` 命中（B5 来源标签在真实使用中可见）。旧包清理（§1）：删 beta12 双包 + 两个解包目录，
+  删前扫 **601 项 0 reparse point**，删后 `Test-Path` 全 False；**无 `PKG_VER` 复跑验包仍 16/0**
+  （自动从归档名推版本 ⇒ 「只留最新一档」机器可验）。
+  ⚠ 两处环境坑：① 首跑门禁被 **STALE 闸**当场拒（`FfmpegGui.csproj` 07:32 > 测试工程内 `FfmpegGui.dll` 06:51
+  —— 版本位一改，所有引用件的副本都过期）⇒ 先按闸的指示重建再跑，别绕过；② `dotnet build ffmpegpictureUI.sln`
+  默认多节点在沙箱下 **15 个 MSBuild 节点进程被杀**（MSB1025 `Cannot acquire required number of nodes`）
+  ⇒ 用 **`-m:1`** 单节点（41 s，0 错 4 警）。子集轮唯一红 = `probe:bench` **34/3**（39.7 vs ≥40 / 2.6× vs ≥4× /
+  21.3 vs ≥25 MPix/s），已知计时噪声族（当轮有并行重建负载）；本档产品代码零改动，只改版本位与文档。
+  ⚠ 版本口径冲突备案：`docs/HANDOVER-NET11-GA-PACKAGING-2026-11-11.md` 曾裁定「出包版本 = `1.6.0-rc.1`」，
+  而维护者 2026-11-13 明确要「下一个 **beta**」⇒ 本档按 **1.6.0-beta13** 出，rc 那条裁定未被兑现也未被撤销，
+  下一档出包前须重新拍板。
 
 ---
 

@@ -103,6 +103,18 @@
 - **跨仓对撞面补齐**：`verify-color-engine-xcheck` 的红根因在 `C:\PLAN\ColorGainKit`（库停在 2026-10-12，不认 grid 型增益图）⇒ 库侧补候选三分类 + 移植 `ParseGridGainMap` + **连带补 `construction_method=1`（idat）**（iPhone 件的 tmap/grid 载荷全在 `meta/idat`，只修候选仍读不出载荷——原估计漏项）+ `Result` 增 8 个 grid 字段；宿主对撞面 **13 → 21 字段**（`GainMapTiles` 逐块比字节）+ 3 条 grid 正控（两实现都失败时逐字段全等同样成立 ⇒ 光靠全等抓不到瓦片是否真产出）。读数：`cgkparity` **14/0**、`xcheck` **rc=0**、库自检 `ColorMatrix 59/0` + `GainMapKit 86/0`。⚠ 两处「判据把缺口写成正确」同批纠正：库自检原有 `CK("grid ⇒ Determinate=false")` 把「不支持」当预期；`probe-mirror-parity` 的 `cgkparity` 条数锁 9→13。
 - **CJK 硬编码棘轮**：本档四次抬基线（923→931 随 JXL 读侧、952→1047 随输出矩阵/HEIC 批、1047→1060、1060→1063 随 `HasError` 修复），每次均逐文件归因 + `restore` 哈希校验；余量保持 **0**（刀口 = +1 行）。
 
+**出包与验收读数（beta13）**
+
+- 版本位 `1.6.0-beta12 → 1.6.0-beta13`；release 提交 `01c427e`，annotated tag `1.6.0BETA13` 锚它（§8.1：tag = 可重现出包点，包内 `ProductVersion` 锚定该提交哈希）。
+- `pack.ps1 -Mode all`：双包 `publish/FFmpegPictureUI-v1.6.0-beta13-x64.7z`（**11,522,055 B**）与 `-x64-full.7z`（**56,262,538 B**）；完整包 584 文件 / 128 目录 / 313,280,372 B，完整性闸通过。
+- 第 93 条 `verify-release-package`（`PKG_VER=1.6.0-beta13`）：**PASS=16 FAIL=0**——归档与磁盘目录同数、14 必需项齐备、full 五工具同指纹（avifenc `625B8FCEB4726C05` / dngtool `B3399C1B28C2B2DF`）、包内 exe `ProductVersion=1.6.0-beta13+01c427ea4872c30d9e5e953a2508915ddd2e4511`。清掉旧档后**不设 `PKG_VER` 复跑同样 16/0**（版本从归档名自动推导 ⇒「只留最新一档」是机器可验的）。**beta12 遗留的那 2 红（包过期）随本次重切自然消失，判据一字未改。**
+- 第 85 条 `verify-package-gui-starts`（`PKG_VER=1.6.0-beta13`）：**PASS=6 FAIL=0 SKIP=1**、rc=0——SKIP 是 ⑥（提权托盘，按 ⑨ 的新口径点名，**不计绿**）。
+- sha16：app 包 `8FC1E56FD517A961` / full 包 `BC74E591133B0FC9`；包内 exe app `48C8BB33CCC067FA` / full `5929F19D188B02D7`（app 与 full 各自独立 AOT 发布 ⇒ 两件 exe 指纹不同属正常，不是打包不一致）。
+- 包内 exe 冒烟：`--headless -i anim.gif -f webm` ⇒ vp9 / 512×512 / 10 fps / 0.300 s / 22,744 B，exit=0；八件外部工具全部 `[PLAN]` 命中（① 的来源标签在真实使用中可见）。
+- 旧包清理（§1「出包只留最新一档」）：删 `publish/FFmpegPictureUI-v1.6.0-beta12-x64{,-full}.7z` 与 `publish/build/FFmpegPictureUI-v1.6.0-beta12-x64{,-full}/`，删前扫描 **601 项 0 reparse point**，删后 `Test-Path` 全 False；`publish/PLAN` 与 beta13 双包保留。
+- 本轮唯一红 = 子集轮内的 `probe:bench` **34/3**（39.7 vs ≥40 MPix/s · 2.6× vs ≥4× · 21.3 vs ≥25 MPix/s）——AGENTS §7 已登记的计时噪声族，当轮有并行重建负载；本档产品代码零改动（只改版本位与文档），不构成回归。
+- ⚠ 两点流程记录：① 首跑出包门禁被 **STALE 闸**当场拒（`FfmpegGui.csproj` 07:32 比测试工程内的 `FfmpegGui.dll` 06:51 新——版本位一改，所有引用件的副本都过期），按闸的指示 `-c Release` 重建十三个项目后复跑才绿；② `dotnet build ffmpegpictureUI.sln` 的默认多节点在本机沙箱下会让 **15 个 MSBuild 节点进程被杀**（MSB1025 `Cannot acquire required number of nodes`）⇒ 改用 **`-m:1`** 单节点（41 s，0 错 4 警）。
+
 ### v1.6.0-beta12 (2026-11-04) — 托盘黑洞修复（Windows 换原生 Shell_NotifyIcon，NIM_ADD 返回值=托盘真可用唯一真源）+ GainMap 批次 E 审阅修复
 
 **缺陷实况（维护者报障）**：软件运行后关窗，右下角没有任何托盘图标，进程却常驻后台——窗口消失、图标不存在、唯一出口是任务管理器。
