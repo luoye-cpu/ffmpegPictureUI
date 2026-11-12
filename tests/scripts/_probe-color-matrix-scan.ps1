@@ -22,9 +22,12 @@
 #      dng、jxr、ppm）。缺键/空数组/格式缺失 ⇒ 红。
 #
 # 附加条件断言（快照语义锁）：
-#   ④ CjpegliService.cs 里 'xyb' 命中数 == 0 —— 锁「cjpegli 出口 xyb 未接线」这一
-#      当轮事实。T6 接线后重跑会红，这是**预期行为**：代码变了 ⇒ 事实表过期 ⇒
-#      提醒维护者重新校准（同 STALE 新鲜度闸精神），不是误报。
+#   ④ cjpegli 出口 --xyb 的**接线形态**（2026-11-13 重校准）：`sb.Append(" --xyb")` 恰好 1 处
+#      + auto 守卫行 `var outMatrixTok = opts.ColorOutMatrix;` 在场。
+#      ⚠ 旧判据是「CjpegliService.cs 里 'xyb' 命中 == 0」（锁「未接线」），其自身约定即
+#        「T6 接线后重跑会红 = 预期行为」；T6 已于 0f6c11a（2026-11-11）落地 ⇒ 本轮按约定重校准。
+#        重校准后**不用计数锁**（注释改动会误伤、接线后也没语义），改锁形态：
+#        0 处 = 接线被删而事实表仍声明已接线；≥2 处 = 重复接线；守卫行缺失 = auto 档可能被污染。
 #   ⑤ cjxl --help（-v -v）里 '--xyb' 命中数 == 0 —— 锁「cjxl v0.12.0 无显式 xyb
 #      开关」。升级 cjxl 后重跑变红同理。
 #
@@ -116,7 +119,7 @@ $Anchors = [ordered]@{
     input_decl             = @{ file='src/FfmpegGui/Services/FfmpegCommandBuilder.cs'; pattern='ToFfmpegInputMatrixName\(dec\.DeclMatrix\)'; desc='输入矩阵声明（-i 前 -colorspace，语义=源怎么读，本特性不动）' }
     pngcicp_matrix0_note   = @{ file='src/FfmpegGui/Services/FfmpegCommandBuilder.cs'; pattern='PngCicpService 对 PNG 恒写 matrix=0'; desc='PNG cICP 矩阵恒 0 的在册注记' }
     # ── RawColorPipeline.cs（引擎）──
-    convmatrix_engine      = @{ file='src/FfmpegGui/Services/ColorMapping/RawColorPipeline.cs'; pattern='var convMatrix = ColorSpaceRegistry\.ContainerYuvMatrix\(ext\) \?\? plan\.OutMatrix'; desc='引擎出口矩阵唯一取值点（ContainerYuvMatrix 优先，回退 plan 推导）' }
+    convmatrix_engine      = @{ file='src/FfmpegGui/Services/ColorMapping/RawColorPipeline.cs'; pattern='var convMatrix = plan\.OutMatrixVerdict == OutMatrixCapability\.Carried'; desc='引擎出口矩阵唯一取值点（Carried 决议 → plan.OutMatrix；否则 ContainerYuvMatrix 优先、回退 plan 推导）' }
     pixin_rgb              = @{ file='src/FfmpegGui/Services/ColorMapping/RawColorPipeline.cs'; pattern='string pixIn = plan\.OutBitDepth == 8 \? "rgb24" : "rgb48le"'; desc='引擎 raw 通路中间件恒 rgb24/rgb48le' }
     avif_label_split       = @{ file='src/FfmpegGui/Services/ColorMapping/RawColorPipeline.cs'; pattern='bool labelOnInput = ext is "avif" or "jxl"'; desc='AVIF/JXL 的 CICP 标签拆侧（矩阵留输出侧=转换系数+nclx；前置会被忽略）' }
     avif_pixfmt_gate       = @{ file='src/FfmpegGui/Services/ColorMapping/RawColorPipeline.cs'; pattern='if \(ext == "avif"\)'; desc='引擎 AVIF 出口的 -pix_fmt 判据块（chromaSet/bitDepth/srcBd>8 才写 YUV pix_fmt）' }
@@ -137,7 +140,10 @@ $Anchors = [ordered]@{
     r4_noop_note           = @{ file='src/FfmpegGui/Services/ColorMapping/ColorStrategyPlanning.cs'; pattern='--color-matrix=\{it\.Manual\.Matrix\} 在本次交付中无承载'; desc='R4：用户显式 --color-matrix（输入声明）在引擎路径无承载的点名' }
     r4_engine_rgb_note     = @{ file='src/FfmpegGui/Services/ColorMapping/ColorStrategyPlanning.cs'; pattern='整个链路无 YUV 中转'; desc='引擎路径输入恒为已解码 RGB 像素（矩阵声明没有作用对象）' }
     # ── 外部编码器服务 ──
-    cjpegli_build_args     = @{ file='src/FfmpegGui/Services/CjpegliService.cs'; pattern='public static string BuildCjpegliArguments'; desc='cjpegli 参数拼装（当前无矩阵/xyb 传递）' }
+    cjpegli_build_args     = @{ file='src/FfmpegGui/Services/CjpegliService.cs'; pattern='public static string BuildCjpegliArguments'; desc='cjpegli 参数拼装（含显式输出矩阵分支，见 cjpegli_xyb_append）' }
+    # 2026-11-13 重校准：T6（0f6c11a，2026-11-11「输出矩阵模式 + 一致性校验」）已在 cjpegli 出口接线 --xyb，
+    #   旧事实表「零引用 = 未接线」过期 ⇒ 本锚点把接线点本身变成可引用的证据行。
+    cjpegli_xyb_append     = @{ file='src/FfmpegGui/Services/CjpegliService.cs'; pattern='sb\.Append\(" --xyb"\)'; desc='cjpegli 出口 --xyb 接线点（仅 outMatrix=Cxyb 且 ResolveOutMatrixCapability=Carried 时发射）' }
     cjxl_modular_wiring    = @{ file='src/FfmpegGui/Services/CjxlService.cs'; pattern='opts\.JxlModular == true'; desc='cjxl --modular 接线点（--jxl-modular → --modular=1）' }
     cjxl_colorspace_map    = @{ file='src/FfmpegGui/Services/CjxlService.cs'; pattern='ColorEncodingHelper\.MapToCjxlColorSpace\(hdrMeta\)'; desc='cjxl 出口色彩描述（-x color_space，非 YUV 矩阵）' }
     jxr_build_args         = @{ file='src/FfmpegGui/Services/JxrService.cs'; pattern='public static string BuildArguments\('; desc='JxrEncApp 参数全集构造（-i/-o/-q/-d/-p/-l，无矩阵项）' }
@@ -202,9 +208,18 @@ if ($toolsOk) {
 } else {
     foreach ($k in $ToolAnchors.Keys) { $toolAnchorLines[$k] = $null }
 }
-# 条件断言 ④：CjpegliService 现状零 xyb 引用（快照语义锁；T6 接线后重跑变红 = 预期）
-$cjpegliXybSrc = @(Select-String -LiteralPath (Join-Path $repoRoot 'src/FfmpegGui/Services/CjpegliService.cs') -Pattern 'xyb' -ErrorAction SilentlyContinue).Count
-CK ($cjpegliXybSrc -eq 0) "CjpegliService.cs 'xyb' 命中 = $cjpegliXybSrc（须 0：cjpegli 出口 xyb 未接线；>0 ⇒ T6 已接线，事实表须重校准）"
+# 条件断言 ④' cjpegli 出口 xyb 接线形态锁（2026-11-13 重校准）
+#   ⚠ 旧判据是「CjpegliService.cs 里 'xyb' 命中 == 0」，其自身文档写明「T6 接线后重跑会红，
+#     这是**预期行为**」。T6 已于 0f6c11a（2026-11-11）接线 ⇒ 旧判据按契约转红，本轮据此重校准。
+#   重校准后锁的是**接线形态**而不是计数（计数锁会被任意注释改动误伤，且在接线后失去语义）：
+#     ① `sb.Append(" --xyb")` 恰好 1 处 —— 0 ⇒ 接线被删而事实表仍声明「已接线」；≥2 ⇒ 重复接线；
+#     ② auto 守卫行 `var outMatrixTok = opts.ColorOutMatrix;` 在场 —— 空 token 整段不进，
+#        CM-REQ-08「auto 档命令行逐字节不变」的代码面锚点。
+$cjpegliSrcPath = Join-Path $repoRoot 'src/FfmpegGui/Services/CjpegliService.cs'
+$cjpegliXybAppend = @(Select-String -LiteralPath $cjpegliSrcPath -Pattern 'sb\.Append\(" --xyb"\)' -ErrorAction SilentlyContinue).Count
+CK ($cjpegliXybAppend -eq 1) "CjpegliService 的 --xyb 接线点 = $cjpegliXybAppend（须 1：T6 于 0f6c11a 接线 ⇒ 事实表已重校准为「已接线」；0 ⇒ 接线被删/2+ ⇒ 重复接线）"
+$cjpegliXybGuard = @(Select-String -LiteralPath $cjpegliSrcPath -Pattern 'var outMatrixTok = opts\.ColorOutMatrix' -ErrorAction SilentlyContinue).Count
+CK ($cjpegliXybGuard -eq 1) "CjpegliService 的 auto 守卫行 = $cjpegliXybGuard（须 1：outMatrixTok 为空则整段不进 ⇒ auto 档命令行逐字节不变，CM-REQ-08）"
 
 # ═════════════════════════════════════════════════════════════════════════════
 # ③ 事实表（C-SCAN@1 契约行结构）
@@ -261,9 +276,9 @@ $Facts = @(
          'rgb — 冗余（像素全程 RGB；产物为标准 JPEG，解码端无 YUV 解读步骤可影响）'
          'YUV 族（bt709/bt470bg/…）— 不承载（无转换发生点：cjpegli 内部从 RGB 直编，矩阵选择不暴露为 CLI 参数）'
        )
-       xyb_switch='--xyb（CLI 旗标，opt-in；本仓 CjpegliService.BuildCjpegliArguments 当轮零引用 = 未接线，T6 需新增传递）'
-       xyb_default='不传 --xyb 即不启用（默认 OFF；help 无默认值说明）'
-       ev_anchors=@('cjpegli_build_args')
+       xyb_switch='--xyb（CLI 旗标，opt-in；**已接线**：T6（0f6c11a，2026-11-11）在 BuildCjpegliArguments 里对 jpg×cjpegli×xyb=Carried 追加 --xyb；产物仍是标准 JPEG、解码端无感）'
+       xyb_default='不传 --xyb 即不启用（默认 OFF；help 无默认值说明）。auto 档（ColorOutMatrix 空）整段不进 ⇒ 命令行逐字节不变（CM-REQ-08）'
+       ev_anchors=@('cjpegli_build_args','cjpegli_xyb_append')
        ev_static=@('cjpegli_xyb', 'cjpegli-help-vv.txt（--xyb: Convert to XYB colorspace）') }
     @{ format='png'; exit_path='ffmpeg png（legacy 传统管线）'
        support=@(
@@ -495,7 +510,7 @@ $report = @"
 ## 0. 摘要（六项必含事实的结论一句话版）
 
 1. **矩阵可落地面极窄**：11 格式里只有 avif（libaom/libsvtav1）真正承载显式 H.273 输出矩阵（nclx + 转换系数双落地）；jpg/webp 恒 bt470bg（仅转换系数，容器无标注位）；png/apng/tiff/jxl/gif/ppm 是 RGB 原生（无矩阵概念）；dng/jxr 的"矩阵"是**契约外概念**（相机校准矩阵 / 编码器内部变换）。
-2. **XYB 三路径**：cjxl v0.12.0 **无显式开关**（VarDCT 隐式承载，--modular=1 排除）；ffmpeg libjxl 有 ``-xyb``（**default 1 已开**）；cjpegli 有 ``--xyb`` 旗标（opt-in，默认 OFF，且**本仓当前未接线**）。
+2. **XYB 三路径**：cjxl v0.12.0 **无显式开关**（VarDCT 隐式承载，--modular=1 排除）；ffmpeg libjxl 有 ``-xyb``（**default 1 已开**）；cjpegli 有 ``--xyb`` 旗标（opt-in，默认 OFF；**本仓 T6 / 0f6c11a 起已接线**——jpg×cjpegli×xyb=Carried 时追加，auto 档不进）。
 3. **webp/jpg 无矩阵标记**：AGENTS §7 2026-11-03 在册实测（webp 无 CICP 写不进范围标记；JPEG JFIF 无标记位）⇒ 矩阵标注同样不可写，显式矩阵只能作用于转换系数且必须与解码端固定 BT.601 假设一致。
 4. **avif nclx 全集**：bt709/bt470bg/smpte170m/smpte240m/bt2020nc 可写（枚举 1/5/6/7/9）+ rgb（枚举 0）；**fcc 不可写**（AV1 枚举 3/4=Reserved，推断）；**ycgco 待验证**（枚举 8 存在但 swscale 转换能力被输入侧实测否定）；avifenc 两步法**现状零矩阵通路**。
 5. **dng/jxr 概念确认**：dngtool ColorMatrix1/2 = 相机校准矩阵（XYZ D50→相机空间）；-rdspace = RGB 线性渲染空间；JxrEncApp 参数全集无矩阵项（内部 YCoCg 不暴露）——两者均**不属本契约**。
@@ -513,7 +528,7 @@ $($tblRows -join "`n")
 |---|---|---|---|
 | cjxl v0.12.0 | **无显式开关**（help -v -v 实测 0 处 ``--xyb``）；XYB 由 VarDCT 模式隐式承载；``--modular=1`` 语义排除 XYB | VarDCT（lossy 默认）= XYB；modular = 非 XYB | $(TL 'cjxl_modular')；$(TL 'cjxl_version')；$(L 'cjxl_modular_wiring') |
 | ffmpeg libjxl | ``-xyb <int>``（AVOption） | **1（已开）**；``-modular`` default 0 | $(TL 'libjxl_xyb')；$(TL 'libjxl_modular') |
-| cjpegli | ``--xyb``（CLI 旗标，opt-in） | 不传即不启用（默认 OFF）；**本仓 CjpegliService 当轮零引用 = 未接线** | $(TL 'cjpegli_xyb')；$(L 'cjpegli_build_args') |
+| cjpegli | ``--xyb``（CLI 旗标，opt-in） | 不传即不启用（默认 OFF）；**本仓已接线**（T6 / 0f6c11a：jpg×cjpegli×xyb=Carried ⇒ 追加 ``--xyb``；auto 档不进该分支） | $(TL 'cjpegli_xyb')；$(L 'cjpegli_xyb_append')；$(L 'cjpegli_build_args') |
 
 ## 3. webp/jpg 容器无矩阵标记的证据（必含事实 ③，引用在册读数不重跑）
 
@@ -567,7 +582,7 @@ $($tblRows -join "`n")
 | C6 | avif × avifenc 出口 | **[冲突]** Carried | **Not-wired（现状不承载）** | $(L 'avifenc_args_build') | 两步法参数面无矩阵项；avifenc 1.4.2 支持 --matrix-coefficients 但本仓未接线 ⇒ 显式矩阵要么拒绝要么先接线 |
 | C7 | avif × libaom/libsvtav1（引擎/legacy）YUV 族 | **[条件]** Carried | **Carried + Requires-PixFmt-Switch** | $(L 'avif_pixfmt_gate')；$(L 'pixin_rgb') | 显式矩阵必须同时写 YUV pix_fmt；引擎通路 pix_fmt 判据未命中时 gbrp 直喂 ⇒ 标签孤立 = 语义错位；判定函数须把「切 pix_fmt」并入落地决议（计划 §2.3 第 3 条同向） |
 | C8 | jxl × cjxl × xyb | **[条件]** Carried | **Carried（无开关可发）** | $(TL 'cjxl_modular') | cjxl v0.12.0 无显式 xyb 开关 ⇒ 「显式确认」只能播报确认 + 与 --modular 的冲突点名（计划 R4 验收示例语义与此一致） |
-| C9 | jpg × cjpegli × xyb | **[条件]** Carried | **Carried（需 T6 接线）** | $(L 'cjpegli_build_args') | ``--xyb`` 旗标存在但 BuildCjpegliArguments 零引用 ⇒ Carried 的落地前提是新增参数传递 |
+| C9 | jpg × cjpegli × xyb | **[条件]** Carried | **Carried（已落地：T6 / 0f6c11a）** | $(L 'cjpegli_xyb_append') | ``--xyb`` 已由 BuildCjpegliArguments 在 Carried 档追加（auto 档不进）⇒ 条件已满足，本条从「需接线」转「已接线」；重校准日期 2026-11-13 |
 | C10 | ffmpeg libjxl × xyb | **[确认]** Carried | **Carried（-xyb default 1）** | $(TL 'libjxl_xyb') | 实测确认：AVOption 存在且默认已开 |
 | C11 | png/apng/tiff/bmp/ppm/gif × 全部 | **[确认]** Rejected/Redundant | 同 | §1 表 | RGB 原生/调色板/无头容器，无矩阵概念 |
 | C12 | dng/jxr | **[确认]** Rejected | 同 | $(L 'dng_colormatrix_sem')；$(L 'jxr_build_args') | 「矩阵」是契约外概念（相机校准矩阵 / 编码器内部变换） |
@@ -583,7 +598,7 @@ $($evLines -join "`n")
 - 判据（本脚本）：``tests/scripts/_probe-color-matrix-scan.ps1``（平铺，已登记 _run-step3-gates.ps1 第 98 条）
 - 产物（本报告与日志）：``tests/output/_tmp/color-matrix-scan-20261110/``（gitignore；重跑即重建）
 - 重跑：``pwsh -NoProfile -File tests/scripts/_probe-color-matrix-scan.ps1``（无参数；TMP 自动钉 tests/output/_tmp/round-tmp）
-- 快照语义：脚本锁「当轮事实」（如 CjpegliService 零 xyb 引用、cjxl 无 --xyb）。T5/T6 改码后重跑若红 = 事实表过期提示，须人工重校准后再更新本报告——这是设计行为，不是误报。
+- 快照语义：脚本锁「当轮事实」（如 cjpegli 出口 --xyb 的**接线形态**、cjxl 无 --xyb）。代码改到这些事实后重跑若红 = 事实表过期提示，须人工重校准后再更新本报告——这是设计行为，不是误报。**2026-11-13 重校准一次**：④ 从「CjpegliService 零 xyb 引用」改为「接线点恰好 1 处 + auto 守卫行在场」（T6 于 0f6c11a 落地后旧判据按其自身约定转红）。
 "@
 
 $reportPath = Join-Path $scanDir 'report.md'

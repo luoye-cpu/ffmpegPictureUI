@@ -390,20 +390,31 @@ namespace Tests.UiMode
                 System.Collections.Generic.List<FfmpegGui.Models.QueueItem>? Items() =>
                     typeof(FfmpegGui.MainWindow).GetField("_queueItems", BF)?.GetValue(W) as System.Collections.Generic.List<FfmpegGui.Models.QueueItem>;
 
-                // 前置：等到 **G2 自己的条目**（按 InputPath 锁定，≤30s）真的在处理，再等到工作子进程出现（≤10s）。
+                // 前置：等到 **G2 自己的条目**（按 InputPath 锁定，≤30s）真的在处理，再等到工作子进程出现（≤15s）。
                 //   ⚠ 不能用全队列 Any(IsProcessing)：AddToQueue_Click 在 _mediaFiles 非空时批量添加
                 //   （MainWindow.xaml.cs:3013-3022）⇒ G1 的 src_8bit 会在 G2 再入队并瞬间完成——
                 //   全队列断言会被这个无关项打假红；子进程快照也可能捕到它的 ffmpeg（同被本次 Stop 取消，无害）。
+                // ⚠⚠ 2026-11-13（全量 104 条轮首曝 `workers=[] elapsed=40087ms`）：两个等待原先**共用**
+                //   swG2 的 40 s 预算 —— 前一个循环耗满 30 s 时，后一个只剩 ~10 s；而失败读数只有
+                //   `workers=[]`，分不清「条目从未进入处理态」（= 队列没起来，启动路径问题）与
+                //   「进了处理态但子进程没起」（= 外部工具/产品问题）。两者根因完全不同却读数相同。
+                //   ⇒ 改成各自独立计时，并把「处理态 / 状态文本 / LogText 尾部」写进失败读数。
+                //   （同轮复跑 3 次：单跑 473/0、受管子集 exit=0；轮内那一次仍未复现 ⇒ 间歇族，
+                //     这条改动的目的是让**下一次**红能直接定位，不是消红。）
+                //   swG2 仍从此刻起算：后面两条「点停止后 ≤65s / 子进程死 ≤80s」是**绝对**窗口。
                 var swG2 = System.Diagnostics.Stopwatch.StartNew();
-                while (swG2.ElapsedMilliseconds < 30000)
+                var swProc = System.Diagnostics.Stopwatch.StartNew();
+                bool everProcessing = false;
+                while (swProc.ElapsedMilliseconds < 30000)
                 {
                     Pump(4);
                     var its = Items();
-                    if (its != null && its.Any(i => i.InputPath == bigIn && i.IsProcessing)) break;
+                    if (its != null && its.Any(i => i.InputPath == bigIn && i.IsProcessing)) { everProcessing = true; break; }
                     System.Threading.Thread.Sleep(120);
                 }
                 System.Collections.Generic.HashSet<int> childIds = new();
-                while (swG2.ElapsedMilliseconds < 40000)
+                var swWk = System.Diagnostics.Stopwatch.StartNew();
+                while (swWk.ElapsedMilliseconds < 15000)
                 {
                     foreach (var nm in new[] { "ffmpeg", "oxipng" })
                         foreach (var pp in System.Diagnostics.Process.GetProcessesByName(nm))
@@ -412,8 +423,15 @@ namespace Tests.UiMode
                     Pump(4);
                     System.Threading.Thread.Sleep(150);
                 }
+                var g2State = string.Join("|", (Items() ?? new())
+                    .Where(i => i.InputPath == bigIn).Select(i => i.Status));
+                var g2Log = UiHost.Find<TextBox>("LogText")?.Text ?? "";
+                if (g2Log.Length > 240) g2Log = g2Log.Substring(g2Log.Length - 240);
+                g2Log = g2Log.Replace("\r", " ").Replace("\n", " ⏎ ");
                 Check("G2 停止前工作子进程在跑", childIds.Count > 0,
-                      $"workers=[{string.Join(",", childIds)}] elapsed={swG2.ElapsedMilliseconds}ms");
+                      $"workers=[{string.Join(",", childIds)}] processing={everProcessing} " +
+                      $"procWait={swProc.ElapsedMilliseconds}ms workerWait={swWk.ElapsedMilliseconds}ms " +
+                      $"status=[{g2State}] log=[{g2Log}]");
 
                 // 点停止（StopQueue_Click 无 x:Name ⇒ 反射，同 G1 范式；Stop()= _cts.Cancel()）
                 typeof(FfmpegGui.MainWindow).GetMethod("StopQueue_Click", BF)?.Invoke(W, new object?[] { null, null });

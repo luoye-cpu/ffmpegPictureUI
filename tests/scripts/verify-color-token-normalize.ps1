@@ -48,9 +48,24 @@ function Say($t) { Write-Output $t }
 function CK($ok, $msg) { if ($ok) { $script:pass++; Say "  PASS $msg" } else { $script:fail++; Say "  FAIL $msg" } }
 # 所有子进程输出都重定向到**同一对**文件（每次覆盖）：门禁自己的 stdout 只留 PASS/FAIL，
 # 且工作目录里不会堆出几十个文件（堆多了还会撞上本机的批量删除保护，收尾删不掉）。
+# ⚠⚠ 2026-11-13（全量轮 104 条实测）：**必须带硬超时**。原实现是裸 `Start-Process -Wait`
+#   （**没有 timeout 参数**，正是 verify-ui-host 头注记的那条教训）——子进程一旦挂死，本门禁
+#   静默挂死，只能等运行器 900 s 单步超时收尸；而日志尾部会因流水线缓冲丢失，现场只剩
+#   「停在 R5 之后」，无法归因（同脚本单跑 50 s / 64-0 全绿，见 tests/output/_tmp/ctnrepro/）。
+#   ⇒ 改 WaitForExit(ms) + 击杀进程树；超时**不静默**：记进 $runTimeouts，脚本末尾统一判红，
+#   返回值带 [[GATE-TIMEOUT]] 前缀（下游断言即便被空输出骗绿，末尾那条也会红并点名完整命令）。
+$runTimeoutSec = 180
+$runTimeouts = New-Object System.Collections.ArrayList
 function Run-Exe([string]$file, [string]$argStr) {
-    Start-Process -FilePath $file -ArgumentList $argStr -Wait -NoNewWindow -PassThru `
-        -RedirectStandardOutput "$val/_exec.out" -RedirectStandardError "$val/_exec.err" | Out-Null
+    $p = Start-Process -FilePath $file -ArgumentList $argStr -NoNewWindow -PassThru `
+        -RedirectStandardOutput "$val/_exec.out" -RedirectStandardError "$val/_exec.err"
+    if (-not $p.WaitForExit($runTimeoutSec * 1000)) {
+        # 先杀整棵树（ffmpeg 常是 FfmpegGui.exe 的子进程），再兜一层对象 Kill。
+        try { & "$env:SystemRoot\System32\taskkill.exe" /PID $p.Id /T /F 2>&1 | Out-Null } catch { }
+        try { $p.Kill() } catch { }
+        [void]$runTimeouts.Add(("{0} {1}" -f (Split-Path -Leaf $file), $argStr))
+        return ("[[GATE-TIMEOUT]] {0} 超过 {1}s 未退出（已击杀进程树）：{2}" -f (Split-Path -Leaf $file), $runTimeoutSec, $argStr)
+    }
     return ([System.IO.File]::ReadAllText("$val/_exec.out") + "`n" + [System.IO.File]::ReadAllText("$val/_exec.err"))
 }
 
@@ -433,6 +448,13 @@ if ((Test-Path $jRl) -and (Test-Path $jPl)) {
     if ($m.Success) { $qWash = [double]$m.Groups[1].Value }
 }
 CK ($qWash -ge 0 -and $qWash -le 38) "R10d 负控（有牙）：limited 产物重标 pc 后读回确实发灰（对正确解码 $qWash dB，须 <=38）⇒ R10c 的重标尺真咬得住"
+
+$tmoDetail = '无'
+if ($runTimeouts.Count -gt 0) {
+    $tmoDetail = ($runTimeouts -join ' ｜ ')
+    if ($tmoDetail.Length -gt 400) { $tmoDetail = $tmoDetail.Substring(0, 400) + ' …' }
+}
+CK ($runTimeouts.Count -eq 0) "子进程无挂死（每步硬上限 ${runTimeoutSec}s；超时 $($runTimeouts.Count) 次：$tmoDetail）⇒ 没有这一条时，某步挂死只能等运行器 900s 收尸且日志尾部丢失"
 
 Say "`n===== color-token-normalize: PASS=$pass FAIL=$fail ====="
 if ($fail -eq 0) { Remove-Item -Recurse -Force $val -ErrorAction SilentlyContinue }

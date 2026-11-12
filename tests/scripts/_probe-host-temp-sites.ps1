@@ -8,27 +8,34 @@
 #
 # 三把尺（全部 fail-closed）：
 #   ① 每文件站点数冻结：tests/projects/**/*.cs 里 GetTempPath/GetTempFileName 的
-#      命中行数按文件钉在 $siteTable 里——新增站点必须同批改表并写明生命周期，
+#      **命中代码行数**按文件钉在 $siteTable 里——新增站点必须同批改表并写明生命周期，
 #      否则红（这就是 stderr-merge-scan 的 debtBaseline 机制换个面）。
+#      ⚠ 2026-11-13（全量轮 104 条首曝）：① 原先**不剥注释行**，而同一个文件的 ② 早就剥了
+#        （"与 _probe-cjk-hardcode-scan 同口径"）⇒ `65_ProbeMediaSvc.cs` 里一句
+#        `// 临时目录走 Path.GetTempPath()` 说明行被当成第 2 个站点，全量轮红在「41 vs 39」。
+#        现 ① 与 ② 同口径（剥 `//`/`*`/`/*` 打头的纯注释行）⇒ 该文件 = **1** 个真站点。
+#        这不是"把红改绿"：活代码里真加站点仍然逐字计入（表不变就红）。
 #   ② 坏根名黑名单：历史反例的临时根名（gate_tmp/gtmp/roundtmp/_ramdisk/faketemp，
 #      AGENTS §3 记的 12 个里能从在册文本 recover 的 5 个）在 tests/projects 与 src
 #      的 .cs 里必须 0 命中。
 #   ③ 扫描面自证：命中总数必须等于表内合计（≠0 且两边相等）——扫描 mechanism 坏了
 #      （比如 glob 改坏）时当场红，不是静默绿。
 #
-# 站点生命周期注记（2026-11-01 逐站点核过）：
-#   ServiceProbe:11   —— tooldetect_<guid> 有 finally 递归删（Program.cs:7823-7831）；
+# 站点生命周期注记（2026-11-01 逐站点核过；2026-11-13 补 12 号站点并把失效行号改到拆分后的实际位置）：
+#   ServiceProbe:12   —— tooldetect_<8hex> 在 Parts/49_ProbeToolDetect.cs:63 建、:471 finally 递归删；
+#                        mediasvc_<8hex> 在 Parts/65_ProbeMediaSvc.cs:33 建、同函数 finally 删；
 #                        cmsbench= 有意缓存（BenchEndToEnd 复用 in.png；无在册调用者，手工档）；
 #                        cmsx   = 手工档默认出参（在册调用者 verify-color-engine-xcheck.ps1:84 传 outDir）；
 #                        其余 GUID 名均 try/finally 删。
+#                        ⚠ 旧注写的 `Program.cs:7823-7831` 自批 3（Program.cs 拆成 Parts/，现 48 行）起失效。
 #   GainMapTestHost:13 / gainmap-decode:7+1 / gainmap-encode:5（镜像切片）
 #                     —— GUID 名 + cap.dng/gm_manual_*（2026-10-31 已补 finally 删的 4 处）。
 #   UiTestHost:1 / UiHostShared:1 —— 引导点本体（Bootstrap/CreateTempDir，钉扎后的 GUID 目录）。
 #
 # 不扫 src/ 的理由（本条只管测试宿主的卫生，不管产品运行时的临时目录）：
-#   产品的 GetTempDir 有三档（PlatformServices.cs:501-552）：① AppSettingsService.CacheDirectory
-#   用户设置（:506-512）→ ② FFMPEGGUI_RAMDISK / /dev/shm / /var/tmp（:519/:535/:546）
-#   → ③ **%TEMP% 兜底**（:551 return Path.GetTempPath()）。
+#   产品的 GetTempDir 有三档（PlatformServices.cs:645-695）：① AppSettingsService.CacheDirectory
+#   用户设置 → ② FFMPEGGUI_RAMDISK / /dev/shm / /var/tmp → ③ **%TEMP% 兜底**
+#   （:695 return Path.GetTempPath()）。
 #   即便配置用户 CacheDirectory 的宿主仍会走到 :551。
 #   所以 ① 尺不纳入 src 的原由是「判据未定」（产品允许用 %TEMP%），
 #   不是「产品无 %TEMP% 站点」——读者不要把本条读成产品卫生已全覆。要纳入须先
@@ -52,6 +59,8 @@ $total = 0
 foreach ($f in $csFiles) {
     $n = 0
     foreach ($line in (Get-Content -LiteralPath $f.FullName -Encoding UTF8)) {
+        # 剥注释行（与下面 ② 同口径）：说明性文字里出现 GetTempPath 不是站点。
+        if ($line.TrimStart() -match '^(//|\*|/\*)') { continue }
         if ($line -match 'GetTempPath|GetTempFileName') { $n++ }
     }
     if ($n -gt 0) { $hits[$f.FullName.Replace((Get-Location).Path + '\', '').Replace('\', '/')] = $n; $total += $n }
@@ -71,6 +80,10 @@ $siteTable = @{
     'tests/projects/ServiceProbe/Parts/52_ProbeFrameLengthGuard.cs' = 1
     'tests/projects/ServiceProbe/Parts/53_ProbeBench.cs'           = 1
     'tests/projects/ServiceProbe/Parts/54_ProbeXcheck.cs'          = 1
+    # 2026-11-13（批 4·5 遗留补登记）：mediasvc_<8hex> 建在 GetTempPath 下、try/finally 递归删
+    #   （Parts/65_ProbeMediaSvc.cs:33/:34 建、同函数 finally 删）；产品侧 MediaInfoService 只读，
+    #   不写临时件。此前漏登记 ⇒ ④ 判据上线后首次全量轮报到「41 vs 39」。
+    'tests/projects/ServiceProbe/Parts/65_ProbeMediaSvc.cs'        = 1
     'tests/projects/GainMapTestHost/Program.cs'         = 13
     'tests/projects/gainmap-decode/GainMapDecodeGroupD.cs' = 7
     'tests/projects/gainmap-encode/GainMapEncodeGroup.cs'  = 5
