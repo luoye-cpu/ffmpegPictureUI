@@ -710,6 +710,23 @@ mirror-parity **91/0**、VTD 正控 **24/0** / -SelfCheck 负控按契约 exit=1
 verify-tool-detection），条目数 66 不变。盲区账本：12 条中 **7 条已收口**；余 5 条维持 blind（有据）：
 raw-non-dng-brands（样本许可未清）、hwencoder-real（环境依赖）、gui-i18n-render、
 ipc-single-instance（产品缺口，S-P1-2 待拍板）+ 静态门禁档位面。）
+
+（**2026-11-12 union 改全组跑（无新门禁；收口批 4·3+4 发现②）**：`verify-ui-split-union.ps1` 第 2 步从
+「逐 mode 起进程（5 工程 × 各 mode = **19 次**）」改「逐工程**全组**跑（**5 次**，不传 mode，与 ui-host 同形）」
+——按 mode 过滤序列下 ui-mode 'ui-end-to-end' 臂（只跑 E,F,G）G2 确定性红（`workers=[]` + muxer EINVAL
+exit -22），而产品无「只跑 E,F,G」执行形态、union 判据也不需要 per-mode 计数 ⇒ 改全组后缺口整体消失，
+且提速（裸跑全程 ~100 s）。判据八条（2a/3a/3b/3a2/3b2/3c/3d/4）**逐字未动**；`$modes` 表的 modes 清单
+保留作组归属参考；`$work` 同批从 `GetTempPath()/accuni_*` 迁 `tests/output/ui-split-union/<guid>`
+（§3 产物只有一份、不落系统临时目录）。runner :1436 处「各 mode」旧机制描述旁补日期在案的更正注（仅注释）。
+实测：**受管子集**（`-Scripts` 3 条：ui-host + union + module-registry）——ui-host **473/0** @155.3 s
+（-SelfCheck 负控臂 ui-color 90/1、ui-sweep 170/1、ui-cli 73/1 按契约红）、**union 11/0 @99.7 s**
+（旧宿主 473/473；5 工程全组 84+59+89+169+72=473，与 ui-host 五件锁逐一相等；3a/3b 双向差集空）——
+**受管轮下 G2 确定性红消失**（批 4·3+4 时同环境 2/2 复现）；module-registry 10/0。子集 rc=1 唯一因
+`probe:bench` 35/2（§7 已登记的计时噪声族：sRGB→PQ 单核地板 + H1≤H2×2.0 实 2.07×；当轮有并行重建负载；
+判据与阈值按 §7 口径不动）。⚠ **裸跑绕 STALE 闸的活例子**：本批首跑受管子集被 STALE 当场拒
+（五件 exe 03:57 < TestGroups.cs 05:11——批 4·5 给 mediasvc 动了 Tests.Shared 而五件没重建），
+重建五件后复跑才绿；此前一次裸跑 union 11/0 用的是重建前旧件（断言代码未变，读数只作调试参考，不作验收）。
+取证：`tests/output/_tmp/union-fix/`（union_bare_after.log / t_union_subset2.log）。）
   v1 支的判法是**偶次残差**而不是"奇次位为 0"——v1 载荷只有四个偶次项，奇次位是读手自己填的 0，
   那条断言永不可能触发（2026-10-19 审查删掉的死牙）。造变异件也从读手分家出去
   （`_mutate-dng-lens.py`，理由与 ⑯ 组同一条：判件与造件同入口时判据走偏造件跟着走偏）。

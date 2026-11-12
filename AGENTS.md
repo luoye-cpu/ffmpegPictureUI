@@ -532,7 +532,8 @@ pwsh -NoProfile -File tests/scripts/_run-step3-gates.ps1   # 104 条；整轮墙
   ⚠ **本批顺带钉出三个既有问题（各自独立处置）**：① `FFMPEGGUI_FFMPEG_DIR` **分隔符敏感** ⇒ UI 宿主硬件
   编码器检测静默归零（正斜杠混合路径零 ⚡ 项、全反斜杠 473/0，两向实测钉死，非间歇性）——runner 已改
   Join-Path；产品侧归一化（env 覆盖应用处 GetFullPath）独立一批（B1/B5 家族；L1e「间歇性」旧读数疑为
-  此机制+负载噪声混记）。② **union 受管轮 G2 确定性红**：union 按 mode 传参（只跑 E,F,G）⇒ G2
+  此机制+负载噪声混记）。② **union 受管轮 G2 确定性红**（**已于同日收口**，见下方「union 改全组跑」条目）：
+  union 按 mode 传参（只跑 E,F,G）⇒ G2
   `workers=[]`+`失败 (退出码 -22)`（muxer EINVAL）2/2；全序列（不传 mode）六条全绿——union 自批 2 起
   从未受管跑过带 G2 的清单（批 2 的 464/464 是裸跑），候选修法 = union 改全组跑（与 ui-host 同形），
   独立一批。③ 宿主退出路径重写 exe 侧 settings.json（N8 快照/还原管不到；文件在场无害——C 轮实测绿）。
@@ -544,7 +545,19 @@ pwsh -NoProfile -File tests/scripts/_run-step3-gates.ps1   # 104 条；整轮墙
   VTD **24/0**（-SelfCheck 负控按契约 exit=1）、mirror-parity **91/0**、coverage 40/0、registry 9/0
   （⚠ registry domain 必须在白名单内，首登 'services' 被当场抓红）。盲区 7/12 收口。
 - **测试模块化批 4 完成**。剩余独立刀候选：① FFMPEGGUI_FFMPEG_DIR 分隔符产品归一化 ② union 改全组跑
-  ③ FFMPEGGUI_PLAN_DIR 正斜杠同族排查（三条见批 4·3+4 条目）。
+  （**已收口**，见下条）③ FFMPEGGUI_PLAN_DIR 正斜杠同族排查（三条见批 4·3+4 条目）。
+- **union 改全组跑（2026-11-12，收口批 4·3+4 发现②；无新门禁，清单条数不动）**：
+  `verify-ui-split-union.ps1` 第 2 步「逐 mode 起进程（19 次）」→「逐工程**全组**跑（5 次，不传 mode，
+  与 ui-host 同形）」——G2 确定性红的根因（按 mode 过滤的 E,F,G-only 序列，产品无此执行形态）整体移除；
+  判据八条逐字未动；`$work` 同批迁 `tests/output/ui-split-union/<guid>`（§3）；runner :1436 旧「各 mode」
+  描述旁补更正注。实测：**受管子集**（ui-host+union+registry）——ui-host **473/0** @155.3 s（-SelfCheck
+  负控臂按契约红）、**union 11/0 @99.7 s**（473/473，5 工程全组 84+59+89+169+72 与 ui-host 五件锁逐一
+  相等）⇒ 受管轮 G2 红消失（批 4·3+4 同环境 2/2 复现）；registry 10/0。子集 rc=1 唯一因 probe:bench
+  35/2（§7 计时噪声族，当轮有并行重建负载，阈值不动）。⚠ **STALE 闸活例子**：本批首跑受管子集被
+  STALE 当场拒（五件 exe 03:57 < TestGroups.cs 05:11——批 4·5 动了 Tests.Shared 而五件没重建），
+  重建五件后复跑才绿；同期一次裸跑 union 11/0 用的是重建前旧件 ⇒ 裸跑读数不作验收。
+  取证：`tests/output/_tmp/union-fix/`。剩余独立刀：① FFMPEGGUI_FFMPEG_DIR 分隔符产品归一化
+  ③ FFMPEGGUI_PLAN_DIR 正斜杠同族排查。
 
 ---
 

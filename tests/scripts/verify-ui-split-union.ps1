@@ -6,13 +6,19 @@
 #   （例：`B1 H11 …`/`B2 I3 …`/`B3 I9 …` 是"任务 B"编号的 TempDir 断言，
 #   却写在 H/I 组的块尾）。⇒ 逐工程按组字母算期望值必然对不上，
 #   而**唯一正确的判据**是：
-#       ① 旧宿主全量的断言名集合  ==  5 个工程各 mode 输出断言名的**并集**
+#       ① 旧宿主全量的断言名集合  ==  5 个工程全组输出断言名的**并集**
 #       ② 差集两个方向都必须为空（missing = 0 且 extra = 0）
 #       ③ 并集计数 == 旧宿主汇总行里的 $expectedOldCount（登记在 §3 上方，改断言数必须同步它）
 #
 # 【步骤】
 #   1. 跑一次旧 UiTestHost（未修改，仍在仓里）→ 取它的断言名集合 + 汇总行
-#   2. 逐个 mode 跑 5 个工程 → 并集
+#   2. 逐个工程跑**全组**（不传 mode，与 verify-ui-host 同形）→ 并集
+#      ⚠ 2026-11-12 从「逐 mode 跑」改「全组跑」：受管轮（runner 设 FFMPEGGUI_* env）下
+#        按 mode 过滤的 ui-mode 'ui-end-to-end' 臂（只跑 E,F,G）里 G2 **确定性红**
+#        （workers=[] + muxer EINVAL exit -22，2/2；全序列六条全绿——批 4·3+4 钉出）。
+#        产品无「只跑 E,F,G」形态，union 也不需要 per-mode 计数 ⇒ 改全组跑后该缺口消失，
+#        且 19 次进程 → 5 次（提速 ~1 分钟）。5 工程全组断言名并集与逐 mode 并集恒等
+#        （bare 轮 473/473 双向验证）。
 #   3. 比对 + 报 diff
 #
 # ⚠ 并发互斥：UI 测试共用全局态，与别的 UI 宿主实例同时跑会抖动 ⇒ 开头显式拒绝。
@@ -112,7 +118,7 @@ if ($rivals.Count -gt 0) {
 }
 CK $true "0 前置：仓库安静（无其它 UI 宿主在跑）"
 
-$work = Join-Path ([System.IO.Path]::GetTempPath()) ('accuni_' + [guid]::NewGuid().ToString('N'))
+$work = Join-Path $root ('tests/output/ui-split-union/' + [guid]::NewGuid().ToString('N').Substring(0, 12))
 New-Item -ItemType Directory -Path $work -Force | Out-Null
 
 function Invoke-Exe([string]$exePath, [string[]]$exeArgs, [int]$timeoutMs) {
@@ -191,40 +197,39 @@ $modes = [ordered]@{
 }
 
 $newNames = New-Object 'System.Collections.Generic.HashSet[string]'
-$perMode = [ordered]@{}
+$perProj = [ordered]@{}
 Write-Host ""
-Write-Host ("{0,-26} {1,-9} {2,-9} {3}" -f 'mode','project','PASS','FAIL')
+Write-Host ("{0,-26} {1,-9} {2,-9} {3}" -f 'project','run','PASS','FAIL')
 Write-Host ("{0,-26} {1,-9} {2,-9} {3}" -f ('-'*26),('-'*9),('-'*9),('-'*4))
 
 foreach ($proj in $modes.Keys) {
     $exe = Join-Path $root "tests/projects/$proj/bin/Release/net11.0/win-x64/$($modes[$proj].exe).exe"
     if (-not (Test-Path $exe)) { CK $false "$proj exe 存在（$exe）"; continue }
-    foreach ($mode in $modes[$proj].modes) {
-        $r = Invoke-Exe $exe @($srcDir, $mode) ($TimeoutSec * 1000)
-        $ns = Get-Names $r.Text
-        foreach ($n in $ns) { [void]$newNames.Add($n) }
-        $np = @(($r.Text -split "`r?`n") | Where-Object { $_ -match '^\s*\[PASS\]' }).Count
-        $nf = @(($r.Text -split "`r?`n") | Where-Object { $_ -match '^\s*\[FAIL\]' }).Count
-        $perMode[$mode] = @{ Pass=$np; Fail=$nf; Timeout=$r.TimedOut }
-        Write-Host ("{0,-26} {1,-9} {2,-9} {3}" -f $mode, $proj, $np, $nf) `
-            -ForegroundColor $(if ($nf -eq 0 -and -not $r.TimedOut) { 'Green' } else { 'Red' })
-        if ($nf -gt 0) {
-            foreach ($fl in @(($r.Text -split "`r?`n") | Where-Object { $_ -match '^\s*\[FAIL\]' })) {
-                Write-Host "      $fl" -ForegroundColor Red
-            }
+    # 2026-11-12：全组跑（不传 mode，与 verify-ui-host 同形）——理由见文件头【步骤】2。
+    #   $modes 表里的 modes 清单保留作「组归属」参考，不再逐项起进程。
+    $r = Invoke-Exe $exe @($srcDir) ($TimeoutSec * 1000)
+    $ns = Get-Names $r.Text
+    foreach ($n in $ns) { [void]$newNames.Add($n) }
+    $np = @(($r.Text -split "`r?`n") | Where-Object { $_ -match '^\s*\[PASS\]' }).Count
+    $nf = @(($r.Text -split "`r?`n") | Where-Object { $_ -match '^\s*\[FAIL\]' }).Count
+    $perProj[$proj] = @{ Pass=$np; Fail=$nf; Timeout=$r.TimedOut }
+    Write-Host ("{0,-26} {1,-9} {2,-9} {3}" -f $proj, '(full)', $np, $nf) `
+        -ForegroundColor $(if ($nf -eq 0 -and -not $r.TimedOut) { 'Green' } else { 'Red' })
+    if ($nf -gt 0) {
+        foreach ($fl in @(($r.Text -split "`r?`n") | Where-Object { $_ -match '^\s*\[FAIL\]' })) {
+            Write-Host "      $fl" -ForegroundColor Red
         }
     }
 }
 
 Write-Host ""
 Write-Host "union of new projects = $($newNames.Count) names"
-$sumPerModePass = ($perMode.Values | Measure-Object -Property Pass -Sum).Sum
-Write-Host "sum of per-mode PASS lines = $sumPerModePass (⚠ 会 > 并集：个别断言行跨 mode 重复出现)"
-Write-Host ""
+$sumPerProjPass = ($perProj.Values | Measure-Object -Property Pass -Sum).Sum
+Write-Host "sum of per-project PASS lines = $sumPerProjPass (⚠ 会 > 并集：个别断言行跨工程重复出现)"
 
 # ══════════════ 3) 判据 ══════════════
-$newFailTotal = ($perMode.Values | Measure-Object -Property Fail -Sum).Sum
-CK ($newFailTotal -eq 0) "2a 5 个工程全部 mode 无 FAIL（实 $newFailTotal）"
+$newFailTotal = ($perProj.Values | Measure-Object -Property Fail -Sum).Sum
+CK ($newFailTotal -eq 0) "2a 5 个工程全组无 FAIL（实 $newFailTotal）"
 
 # ── 2026-10-07（**历史**，2026-10-12 已回灌参照件 ⇒ 白名单归零）：一处**有意**的断言
 #    **改名 + 语义修正**（必须在账上，不能靠放宽判据消化）───────────────────────────

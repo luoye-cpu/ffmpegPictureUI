@@ -1440,6 +1440,10 @@ $scriptList = @('verify-ps-compat.ps1','verify-color-caps.ps1','verify-color-wir
                  #     "某组整段不执行 ⇒ 静默少跑几条断言"的那把尺子（本轮凭它把 H10 从
                  #     "一条偶发红"定位到"整组 0 条 + union 缺 89 条")。
                  #     带反控：两侧集合都须非空（防空比全绿）。
+                 #   ⚠ 机制更正（2026-11-12）：union 已从「逐 mode 起进程」改「逐工程**全组**跑」
+                 #     （不传 mode，与 ui-host 同形）——受管轮按 mode 过滤序列下 ui-mode E,F,G-only
+                 #     臂 G2 确定性红（workers=[] + muxer EINVAL exit -22，产品无此执行形态）；
+                 #     判据不变（并集/双向差集/计数 == 473）。上句「各 mode」为当时点机制描述。
                  #   ⚠ 两条都自带汇总（PASS=n FAIL=m + 断言驱动 exit）⇒ **不进**
                  #     $tableOnly / $noSelfSummary；读不到源文件/exe 时 fail-closed（判红）。
                  #   实测（2026-10-05）：verbatim **19/0**、union **9/0**；
