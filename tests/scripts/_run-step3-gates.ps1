@@ -394,10 +394,10 @@ function Read-TextShared([string]$path) {
   return $null
 }
 
-# ── ⚠ #22 / #23 / 第 15·16·17·18 针：运行器**自身形态**自检（18 针）────────────────
+# ── ⚠ #22 / #23 / 第 15·16·17·18·19 针：运行器**自身形态**自检（19 针）───────────────
 # 为什么必须有：上面「退出码只从包装层写出的 rc 文件读」这条纪律，若将来有人回退成「读进程对象的
 #   退出码」，PS5.1 下它恒 null ⇒ **整轮每一条都假红**，而现象看起来像产品回归 ⇒ 必须钉成形态断言。
-# 18 针：① helper 定义点 ==1；② 调用点 ==2；③ 带超时调用点 ==2（两个调用点都必须把超时当变量传，
+# 19 针：① helper 定义点 ==1；② 调用点 ==2；③ 带超时调用点 ==2（两个调用点都必须把超时当变量传，
 #   不得写字面量）；④⑤ 裸取退出码（`$p.` / `$proc.`）计数 ==0；⑥ 进程对象的退出码取法计数 ==0；
 #   ⑦ 包装层写 rc 点 ==1；⑧ helper 读 rc 点 ==1；⑨ 进程树杀法 token ==1；⑩ 超时抑制点 ==2；
 #   ⑪ 探针超时**默认值**逐字钉住 ==1（**2026-10-11 重标 = 180**，见下面 param 段的标定注；变异方向 = 改小 ⇒ 必须红）；
@@ -406,8 +406,11 @@ function Read-TextShared([string]$path) {
 #   ⑮ 读失败分支 ==2 且 共享读引用 ==3（异常路径**不得沿用上一轮 `$txt`**）；
 #   ⑯ 运行器**自身指纹**：打印点 ==2（启动 + 收尾）· 自漂移复核引用 ==3 · 归属不明告警 ==2；
 #   ⑰ 清单**散文条数** == `$expectedScriptCount` 常量（常量定义点 ==1；三种散文形态各命中 ≥1 且数字相同）；
-  # ⑱ 受管参数表 `$scriptArgs`：条目数 ==8 · 表内 `-SelfCheck` 字面量 ==7 · 7 条负控键逐一在位
+  # ⑱ 受管参数表 `$scriptArgs`：条目数 ==12 · 表内 `-SelfCheck` 字面量 ==11 · 11 条负控键逐一在位
 #      （2026-11-02 t3；没有这一针时，删掉一行 `-SelfCheck` 整轮照样全绿 ⇒「整轮 ≠ 全判据面」会静默复发）。
+#   ⑲ C4 per-script 超时表五形：装载点读数各 ==1 · 查表点 ==1 · 表值传参与记账引用各 ==1 ·
+#      结果行 `to=` 读数实参 ==1 · 装载块在清单定义之后（位置）
+#      （2026-11-12 批 5；没有这一针时，装载点/查表点被删 ⇒ 表静默失效成全默认、无任何读数可见）。
 # ⚠ ⑯ 的理由（2026-09-19 #28，gp-1 与 gp-3 各自独立查出）：`Check-SrcDrift` **只覆盖
 #   `src/FfmpegGui` 与 `tests/projects/ServiceProbe`** ⇒ **运行器自身既不在覆盖范围、也不哈希自身**。
 #   有人在整轮进行中改运行器 ⇒ 那一轮读数**归属不明**（跑的是旧版还是新版？）而**无任何告警**。
@@ -536,8 +539,8 @@ function Test-RunnerShape {
   #   或整条键被换掉，整轮照样全绿，而 AGENTS §7「整轮 ≠ 全判据面」那条账就从
   #   「已收口」悄悄退回「只有正向臂」（人还得靠手跑才知道）。
   #   判据三条：① 表内 `'x.ps1' = @(` 条目数 == 12（1 条 oracle 降档 + 5 条 UI 负控 + 1 条 color-out-matrix + 1 条 png-optimizer + 1 条 module-registry + 1 条 overwrite-contract + 1 条 corrupt-input + 1 条 log-jsonlines）；
-  #   ② 表内带引号的 `-SelfCheck` 字面量 == 10（每个负控键各一次，**不许**并成全局开关）；
-  #   ③ 10 条负控键逐一在位（按名点，防「键还在但值被换成别的脚本」）。
+  #   ② 表内带引号的 `-SelfCheck` 字面量 == 11（每个负控键各一次，**不许**并成全局开关）；
+  #   ③ 11 条负控键逐一在位（按名点，防「键还在但值被换成别的脚本」）。
   #   ⚠ token 一律拼接构造（同第 ⑰ 针的理由：本函数读的是自己的源码）。
   $nScTok = '-Self' + 'Check'
   $mArgs = [regex]::Match($t, '(?ms)^[ \t]*\$scriptArgs\s*=\s*@\{(.*?)^[ \t]*\}')
@@ -557,6 +560,38 @@ function Test-RunnerShape {
       if (-not $mKey.Success) { $bad.Add("受管参数表缺 $uiName = @('-SelfCheck')（该条整轮只有正向臂）") }
     }
   }
+  # ⑲ C4 per-script 超时表五形（2026-11-12 批 5，2026-11-13 补两形）。没有这一针时：装载点被删 ⇒ 整轮静默退化成
+  #   全局默认 900（FAIL/OK 两条读数都没有了）、查表点被删 ⇒ 表值永不生效、
+  #   记账行/读数行被回写成全局默认 ⇒ 超时读数归属到错值。五处各钉一处：
+  #   ① 装载点 FAIL 读数 ==1（fail-closed 拒跑那一条；**必须真的 exit 2**，写成
+  #      `Exit-WithSummary` 会因 $failedItems 为空而打「全部通过」并 exit 0 = fail-open，2026-11-13 修）；
+  #   ② 装载点 OK 读数 ==1；③ 查表点 ==1（ContainsKey → $_sTimeout 覆写）；
+  #   ④ 超时记账引用表值变量 ==1（不得回写 $ScriptTimeoutSec 字面）；
+  #   ⑤ 结果行 `to=` 读数实参 ==1（2026-11-13 变异验证发现 ④ 抓不到只改显示面的情况）
+  #      + 装载块位置在清单之后。
+  $nRegOk = 'registry-' + 'timeouts=OK'
+  $nRegFail = 'registry-' + 'timeouts=FAIL'
+  $cRegOk = ([regex]::Matches($t, [regex]::Escape($nRegOk))).Count
+  $cRegFail = ([regex]::Matches($t, [regex]::Escape($nRegFail))).Count
+  if ($cRegOk -ne 1 -or $cRegFail -ne 1) { $bad.Add("C4 装载点读数 = OK:$cRegOk FAIL:$cRegFail（各须 1：装载点被删 ⇒ 表静默失效）") }
+  $cLk = ([regex]::Matches($t, 'scriptTimeoutTable\.ContainsKey')).Count
+  if ($cLk -ne 1) { $bad.Add("C4 查表点 = $cLk（须 1：查表点被删 ⇒ 表值永不生效）") }
+  $cToVar = ([regex]::Matches($t, '-TimeoutSec\s+\$_sTimeout')).Count
+  if ($cToVar -ne 1) { $bad.Add("C4 表值传参 = $cToVar（须 1：脚本段调用必须把表值当变量传）") }
+  $nToMsg = '超时 ' + '$_sTimeout'
+  $cToMsg = ([regex]::Matches($t, [regex]::Escape($nToMsg))).Count
+  if ($cToMsg -ne 1) { $bad.Add("C4 超时记账引用表值 = $cToMsg（须 1：记账行必须用表值变量，不得回写全局默认）") }
+  #   ⑤ 结果行 `to=<n>s` 读数也必须打印**表值**（2026-11-13 变异验证补：把 ④ 的记账行改红能抓，
+  #      但只改结果行 `-f` 的实参（`$_sTimeout` → `$ScriptTimeoutSec`）时 ⑲ 全绿 —— 也就是说
+  #      「读者看到的超时读数」可以静默变成全局默认而无人知。这条把显示面也钉住。
+  $cToShow = ([regex]::Matches($t, '\$r2\.ElapsedSec, \$_sTimeout, \$tag')).Count
+  if ($cToShow -ne 1) { $bad.Add("C4 结果行 to= 读数 = $cToShow（须 1：读数行实参必须是表值变量）") }
+  #   ④ 装载块必须在清单定义**之后**（2026-11-12 smoke1 实况：放前面 ⇒ 装载「成功」而当轮每个键
+  #      都成幽灵 ⇒ 恒拒跑；这形态运行时会响亮失败，但会误导人去怀疑清单而不是位置）。
+  #      token 同样拼接构造（本函数读自己的源码，字面量写全会把 IndexOf 钉在针自己那行上）。
+  $iList = $t.IndexOf(('$' + 'scriptList = @('))
+  $iLoad = $t.IndexOf(('script' + 'TimeoutTable = $null'))
+  if ($iList -lt 0 -or $iLoad -lt 0 -or $iLoad -lt $iList) { $bad.Add("C4 装载块位置 = 清单@$iList / 装载@$iLoad（须在清单之后）") }
   return $bad
 }
 
@@ -875,10 +910,11 @@ if ($shapeBad.Count -gt 0) {
   Write-Output  "        修法：退出码一律取 Invoke-StepWithTimeout 的返回值；进程对象在 helper 内命名 child"
   Write-Output '        修法（若红的是「散文条数」那一针）：把现量陈述里的条数改成与 $expectedScriptCount 一致；新增现量陈述时把它的形态加进 Test-RunnerShape 第 ⑰ 针'
   Write-Output '        修法（若红的是「受管参数表」那一针）：$scriptArgs 里 7 条负控键的 @("-SelfCheck") 有缺 ⇒ 整轮退回只有正向臂；补回或同批改 Test-RunnerShape 第 ⑱ 针'
+  Write-Output '        修法（若红的是「C4 超时表」那一针）：装载点/查表点被删、记账行或 to= 读数行回写全局默认、装载块被挪到清单之前 ⇒ 表静默失效；还原五处或同批改 Test-RunnerShape 第 ⑲ 针'
   Release-GatesLock
   exit 2
 }
-Write-Output "shape-selfcheck=OK（18 针：定义点 / 调用点 / 带超时调用点 / 裸取 A / 裸取 B / 进程对象取码 / 写 rc 点 / 读 rc 点 / 杀树 token / 抑制点 / 探针超时默认值 / 脚本超时默认值 / tableOnly 条数 / noSelfSummary 条数 / 读失败不沿用 / 自身指纹 / 散文条数 / 受管参数表）"
+Write-Output "shape-selfcheck=OK（19 针：定义点 / 调用点 / 带超时调用点 / 裸取 A / 裸取 B / 进程对象取码 / 写 rc 点 / 读 rc 点 / 杀树 token / 抑制点 / 探针超时默认值 / 脚本超时默认值 / tableOnly 条数 / noSelfSummary 条数 / 读失败不沿用 / 自身指纹 / 散文条数 / 受管参数表 / C4 超时表）"
 
 # ── ⚠ #28：启动时记录**运行器自身**指纹（收尾前重测 ⇒ 不一致则响亮告警）────────────────
 # ⚠ 这一行**有意打印**（收尾还有一行）：日志里出现 hash 是**预期**的，不是异常。
@@ -1894,13 +1930,49 @@ if (-not [string]::IsNullOrWhiteSpace($Scripts)) {
   Write-Output ("[SUBSET] 只跑 $($runList.Count) 条：$($runList -join ', ')")
   Write-Output "[SUBSET] 仓库锁 / 单步超时 / STALE / 双漂移 / 逐条留痕 **仍然全部生效**；宣布新基线需跑全量。"
 }
+# ── C4 per-script 超时表（2026-11-12 批 5，docs/TEST_MODULE_PLAN §2 批 5）──────────────
+#   单一真值 = tests/scripts/_module-registry.json 的 locks."script-timeouts".table；
+#   表内条目用表值（**只许抬**：低于全局默认 = 账本门禁 ⑤ 判红），表外条目用
+#   $ScriptTimeoutSec=900 全局默认（§2 注释自己的规矩：max×≈3 向上取整）。
+#   ⚠ **fail-closed**：账本读不到/锁缺失/表空/幽灵键 ⇒ exit 2 拒跑 —— 静默退化成全默认会让
+#   「超时表被悄悄清掉」无任何读数可见（与 #22 的立法理由同族：上限也是判据）。
+#   ⚠ 探针段不受本表管（$ProbeTimeoutSec=180 独立标定，见 param 段注释）。
+#   ⚠ 装载点必须在 $scriptList 定义**之后**（幽灵键校验要对清单；第 ⑲ 针管三形在场）。
+$script:scriptTimeoutTable = $null
+$registryPath = Join-Path $root 'tests/scripts/_module-registry.json'
+try {
+  $regLocks = (Get-Content $registryPath -Raw -Encoding UTF8 | ConvertFrom-Json).locks
+  $stLock = $regLocks.'script-timeouts'
+  if ($null -eq $stLock -or $null -eq $stLock.table) { throw "locks.script-timeouts.table 缺失" }
+  $tbl = @{}
+  foreach ($prop in @($stLock.table.PSObject.Properties)) { $tbl[$prop.Name] = [int]$prop.Value }
+  if ($tbl.Count -eq 0) { throw "script-timeouts.table 为空" }
+  # C4 键必须在册（防表里拼错名 ⇒ 表值永远不生效却无人知道）；探针段不受本表管。
+  foreach ($k in $tbl.Keys) {
+    if ($k -notin $scriptList) { throw "script-timeouts 键 '$k' 不在清单（幽灵键——表值永不生效）" }
+  }
+  $script:scriptTimeoutTable = $tbl
+} catch {
+  # ⚠ 2026-11-13 修：这里原写 `Exit-WithSummary` —— 而它的出口是「$failedItems 空 ⇒ 打『全部通过』
+  #   并 exit 0」⇒ **fail-closed 变成了 fail-open**（装载失败整轮照样绿）。必须像形态自检块那样
+  #   先 Release-GatesLock 再 exit 2（拒跑 = 拒绝出任何读数，不给「绿」的机会）。
+  Write-Output "registry-timeouts=FAIL ($($_.Exception.Message)) ⇒ 拒跑 exit 2（C4 fail-closed；恢复 = 还原 _module-registry.json 的 locks.script-timeouts）"
+  Release-GatesLock
+  exit 2
+}
+Write-Output ("registry-timeouts=OK（{0} 条：{1}）" -f $script:scriptTimeoutTable.Count,
+  (($script:scriptTimeoutTable.GetEnumerator() | Sort-Object Name | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join ', '))
 foreach ($s in $runList) {
   $p2 = Join-Path "tests/scripts" $s
   if (-not (Test-Path $p2)) { Write-Output "[SKIP] $s 不存在"; continue }
   $o = "$root/tests/output/_gate_script_$s.txt"
   # 2026-11-01：并入 $scriptArgs（按脚本受管参数表；不在表内的脚本零变化）
   $_sArgs = @(); if ($scriptArgs.ContainsKey($s)) { $_sArgs = $scriptArgs[$s] }
-  $r2 = Invoke-StepWithTimeout -FilePath $psExe -Arguments (@('-NoProfile','-File',$p2) + $_sArgs) -OutFile $o -ErrFile "$o.err" -TimeoutSec $ScriptTimeoutSec -Label $s -HostExe $psExe
+  # C4（2026-11-12 批 5）：per-script 超时查表——表内用表值，表外用全局默认。
+  #   ⚠ 仍经同一变量传给 helper（第 ③ 针：调用点不得写字面量）。
+  $_sTimeout = $ScriptTimeoutSec
+  if ($script:scriptTimeoutTable.ContainsKey($s)) { $_sTimeout = [int]$script:scriptTimeoutTable[$s] }
+  $r2 = Invoke-StepWithTimeout -FilePath $psExe -Arguments (@('-NoProfile','-File',$p2) + $_sArgs) -OutFile $o -ErrFile "$o.err" -TimeoutSec $_sTimeout -Label $s -HostExe $psExe
   $rc2 = $r2.ExitCode
   $sum = ''
   $bad = @()
@@ -1944,9 +2016,9 @@ foreach ($s in $runList) {
       $failedItems.Add("script:$s (零断言：PASS=0)")
     }
   }
-  Write-Output ("[{0,-32}] exit={1}  {2}  {3:N1}s{4}" -f $s, $rc2, $sum, $r2.ElapsedSec, $tag)
+  Write-Output ("[{0,-32}] exit={1}  {2}  {3:N1}s to={4}s{5}" -f $s, $rc2, $sum, $r2.ElapsedSec, $_sTimeout, $tag)
   if ($r2.TimedOut) {
-    $failedItems.Add("script:$s (超时 $($ScriptTimeoutSec)s，已击杀进程树)")
+    $failedItems.Add("script:$s (超时 $_sTimeout s，已击杀进程树)")
   } elseif ($rc2 -ne 0) {
     $failedItems.Add("script:$s (exit=$rc2)")
   }

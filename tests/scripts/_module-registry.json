@@ -47,6 +47,14 @@
       "file": "tests/scripts/verify-ui-split-union.ps1",
       "desc": "单体全量断言名并集锁（$expectedOldCount；2026-11-12 批 4·3+4 +9 ⇒ 473）",
       "value": 473
+    },
+    "script-timeouts": {
+      "file": "tests/scripts/_run-step3-gates.ps1",
+      "desc": "C4 per-script 超时表（2026-11-12 批 5）：表内条目用表值（只许**抬**、不许紧——低于全局默认 = 账本 ⑤ 判红），表外条目用全局默认 [int]$ScriptTimeoutSec=900；runner 起手从本表装载（fail-closed：读不到 ⇒ exit 2 拒跑，不静默退化成全默认）。取值口径 = 实测最慢门禁留 ≥2× 余量钉死（verify-color-strategy 实测 243.8s @2026-09-19；verify-png-optimizer 受管实测 748.6s @2026-11-11，含 600s 真超时用例）。探针段不受本表管（$ProbeTimeoutSec=180 独立标定）。",
+      "table": {
+        "verify-color-strategy.ps1": 1200,
+        "verify-png-optimizer.ps1": 1200
+      }
     }
   },
   "entries": [
