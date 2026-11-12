@@ -626,6 +626,26 @@ pwsh -NoProfile -File tests/scripts/_run-step3-gates.ps1   # 104 条；整轮墙
   `65_ProbeMediaSvc.cs` 新增 2 站点未入表）、`_probe-color-matrix-scan`（`convmatrix_engine` 锚点 miss +
   `CjpegliService` 的 `xyb` 命中 6 须 0）。**基线判读口径**：本轮 rc=1 由这 8 条构成，批 5 的
   `verify-module-registry` / `verify-color-strategy` / 19 针 / `registry-timeouts` 全绿。
+- **全量轮 8 红处置（2026-11-13 余波二；清单 104 条不动、无新门禁）**：3 条真漂移修绿 + 1 条加诊断 + 1 条属于包过期 + 1 条跨仓
+  ① `_probe-host-temp-sites` **41 vs 39**：探针 ① 扫「含 `GetTempPath` 的行」**不剥注释**，而同文件 ③（坏根名黑名单）
+  早剥了（自注「与 _probe-cjk-hardcode-scan 同口径」）⇒ `65_ProbeMediaSvc.cs:21` 的说明注释被当第 2 个站点。
+  修 = 口径统一 + 补表项（`mediasvc_<8hex>`，`:33` 建/finally 删）+ 更正两处失效行号（`Program.cs:7823` 自批 3 拆分起不存在；
+  `PlatformServices.cs:501-552` → `:645-695`）。现 **40 == 40**；变异：活代码加站点 ⇒ 红、**仅注释提及** ⇒ 绿。
+  ② `_probe-color-matrix-scan` 按**自身约定**重校准（T6 `0f6c11a` 已接线 `--xyb`，旧 ④「命中==0」必红）：锚点重钉
+  `RawColorPipeline.cs:1023` 新形态 + 新增 `cjpegli_xyb_append` 证据锚 + ④ 由计数锁改**形态锁**（append 恰 1 + auto 守卫行
+  在场；计数锁会被注释改动误伤、接线后无语义）。**331/0**。
+  ③ `verify-color-token-normalize` 轮内 900 s 挂死**未复现**（单跑 65/0 @46 s）：真缺陷是 `Run-Exe` 裸 `Start-Process -Wait`
+  **无 timeout** ⇒ 改 `WaitForExit(180s)` + `taskkill /T /F` + 末尾断言「子进程无挂死」点名完整命令。变异 `$runTimeoutSec=1`
+  ⇒ 3 次超时、41 s 内 rc=1 并打出命令行（原行为 = 挂到 900 s 且日志尾部丢失）。
+  ④ ui-mode **G2** 间歇（3 绿 1 红，单跑/子集均 473/0）：两个等待原**共用一个 40 s 预算**（前一个耗满 30 s ⇒ 后一个只剩 10 s）
+  ⇒ 各自独立计时 + 读数带 `processing/procWait/workerWait/status/log`（变异实测打出 `processing=True … status=[处理中]`）。
+  ⚠⚠ **变异后还原的 mtime 陷阱**：`Copy-Item` 还原源文件会把 mtime 恢复成旧值 ⇒ MSBuild 判 up-to-date、
+  `dotnet build` 报 0 错但**没重编** ⇒ 下一步验证跑的是变异二进制（本轮实测：两支门禁双双红在 `workers=[2]`，
+  即 `2 > 100` 的变异条件，一度误判成回归）。**还原后 `touch` 源文件再 build**，并核对「产物 mtime > 源 mtime」。
+  ⑤ `verify-release-package` 2 红 = **包过期**（包 11-04 / exiftool 11-05 / dngtool 11-09）⇒ 下次出包重切，**不在轮内改判据**；
+  同批更正脚本头「有意不进受管清单」的失效陈述。
+  ⑥ `verify-color-engine-xcheck` = **库侧滞后**（宿主 `41375a2` 2026-11-02 起把增益图候选分 codec / **grid** 两类；库
+  `79c3f4b` 2026-10-12 只认 codec ⇒ `solo_gainmapgrid` 夹具候选 0）。修在 `C:\PLAN\ColorGainKit`，**工作区外**。
 
 ---
 

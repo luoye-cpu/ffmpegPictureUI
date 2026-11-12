@@ -186,3 +186,27 @@
   本次已按 pid 存活核查后删除）+ 确认无 `pwsh` 门禁进程残留（注意 `Get-CimInstance` 里
   `-Command "…"` 包装进程的命令行会**含**该脚本名，属假阳性）。
 
+
+## 9. 接手轮追记二（2026-11-13 06:0x–07:0x，8 红处置）
+
+上一轮的 8 红逐条落地，**清单 104 条不动、没有新增门禁**：3 条真漂移修绿、1 条加诊断、2 条不改判据。
+
+### 9.1 已修（含变异验证）
+
+| 门禁 | 根因 | 修法 | 变异/读数 |
+|---|---|---|---|
+| `_probe-host-temp-sites` | 探针 ① 扫「含 `GetTempPath` 的行」**不剥注释**，同文件 ③（坏根名）早剥了——同一支探针两处口径不一致 ⇒ `65_ProbeMediaSvc.cs:21` 的说明注释被当第 2 个站点 | ① 与 ③ 同口径 + 补表项 `65_ProbeMediaSvc.cs = 1`（`mediasvc_<8hex>`，`:33` 建 / finally 删）+ 更正两处失效行号（`Program.cs:7823-7831` 自批 3 拆分起不存在；`PlatformServices.cs:501-552`→`:645-695`） | 现量 **40 == 40**、5/0；活代码加站点 ⇒ `41 vs 40`+逐文件差 1 红；**仅注释提及 ⇒ 绿** |
+| `_probe-color-matrix-scan` | T6（`0f6c11a`，2026-11-11）已在 `CjpegliService.cs:269` 接线 `sb.Append(" --xyb")`，而 ④ 锁「`xyb` 命中==0」——其自身文档写明「T6 接线后重跑会红=预期」 | 按约定**重校准**：锚点重钉 `RawColorPipeline.cs:1023` 新形态；新增证据锚 `cjpegli_xyb_append`；④ 由**计数锁**改**形态锁**（append 恰 1 + auto 守卫行在场）；`report.md` §2/C9 同批改 | **331/0**（原 4 红）；报告里 C9 的证据行现解析到 `CjpegliService.cs:269` |
+| `verify-color-token-normalize` | 轮内 900 s 挂死**未复现**（单跑绿）。真缺陷：`Run-Exe` 是裸 `Start-Process -Wait`——**没有 timeout**，一步挂死就只能等运行器收尸，且日志尾部因缓冲丢失 | `WaitForExit(180s)` + `taskkill /T /F` 杀树 + 超时记 `$runTimeouts` + **末尾新增断言**「子进程无挂死」点名完整命令行（`[[GATE-TIMEOUT]]` 前缀） | **65/0 @46 s**（原 64/0 @50 s）；`$runTimeoutSec=1` ⇒ **3 次超时 / 41 s / rc=1** 并打出被挂死的命令行 |
+| ui-mode **G2**（连带 `verify-ui-host` + `verify-ui-split-union`） | 轮内 `workers=[]` **不可复现**（单跑 473/0、受管子集 exit=0、改动后再跑 473/0 ⇒ 3 绿 1 红）。结构性缺陷：两个等待**共用** `swG2` 的 40 s 预算，前一个耗满 30 s ⇒ 后一个只剩 ~10 s；旧读数只有 `workers=[]` | 各自独立计时（30 s / 15 s）+ 读数带 `processing/procWait/workerWait/status=[…]/log=[…尾部]` | 变异（条件改 `>100`）实测：`processing=True procWait=69ms workerWait=9ms status=[处理中] log=[…队列开始，并行: 16 个任务…]` |
+
+### 9.2 不改判据的两条（要人拍板 / 跨仓）
+
+- **`verify-release-package`（14/2）= 包过期，不是缺陷**：归档出包 **2026-11-04 09:57**，而 `publish/PLAN`
+  的 exiftool 更新于 **11-05 09:54**、dngtool 重建于 **11-09 03:56**。处置 = 下次出包重切；
+  顺带更正脚本头那句失效陈述「有意不进受管清单」（`_run-step3-gates.ps1:1797` 实际已登记）。
+  ⚠ 这意味着**只要包不是刚出的，整轮就不可能全绿**——要宣布基线必须先决定这条怎么办。
+- **`verify-color-engine-xcheck` = 库侧滞后**（工作区外，未动）：宿主 `41375a2`（2026-11-02）把增益图候选
+  分 **codec item** 与 **`grid` 派生项**两类；`C:\PLAN\ColorGainKit` 的 `IsoBmffGainMapProbe` 停在
+  `79c3f4b`（2026-10-12）只认 codec ⇒ 夹具 `ref_libavif_solo_gainmapgrid.avif` 的增益图是 grid ⇒ 候选 0
+  ⇒ 11 处字段不等。修在库侧（需授权）。

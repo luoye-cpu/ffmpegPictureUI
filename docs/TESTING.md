@@ -6296,6 +6296,54 @@ bench 两条经**同一份 `ServiceProbe.dll`（`3C36FDFCE451CF8A`，mtime `01:0
      `probe:bench` 单核地板噪声（36/1，§7 已登记族）。⑥ 的两条**实文件**变异（手改生成段 / 改
      `cap.pngopt` 的 desc 而不重生成）各被抓到并给出首个差异行，还原后哈希与变异前相等。）
 
+（**2026-11-13 批 5·余波二（全量轮 8 红的处置；清单 104 条不动、无新门禁）**：
+  ① **`_probe-host-temp-sites` 41 vs 39（已修，真漂移）**：探针 ① 扫「含 `GetTempPath` 的行」时**不剥注释**，
+     而同文件 ③（坏根名黑名单）早就剥了（自注「与 _probe-cjk-hardcode-scan 同口径」）——同一支探针两处口径
+     不一致 ⇒ `65_ProbeMediaSvc.cs:21` 的一句说明注释被当成第 2 个站点。修法 = ① 与 ③ 同口径（剥 `//`/`*`/`/*`
+     打头的纯注释行）+ 补表项 `65_ProbeMediaSvc.cs = 1`（`mediasvc_<8hex>` 建于 `:33`、同函数 `finally` 删），
+     并更正两处**失效行号注记**（`Program.cs:7823-7831` 自批 3 拆分起不存在；`PlatformServices.cs:501-552`
+     → `:645-695`）。现量 **40 == 40**。变异：活代码加站点 ⇒ `41 vs 40` + 逐文件差 1（rc=1）；**只在注释里
+     提及** ⇒ 5/0 绿（新口径的直接证据，注释不是站点）。
+  ② **`_probe-color-matrix-scan`（已修，代码真变了 ⇒ 事实表按设计重校准）**：T6 于 `0f6c11a`（2026-11-11，
+     输出矩阵模式批）在 `CjpegliService` 里接线 `sb.Append(" --xyb")`，而探针 ④ 锁的是「`xyb` 命中 == 0」，
+     其自身文档写明「T6 接线后重跑会红 = 预期行为」⇒ 本轮按约定重校准，**不是消红**：(a) `convmatrix_engine`
+     锚点重钉到 `RawColorPipeline.cs:1023` 的新形态（`plan.OutMatrixVerdict == Carried` 三条件 + 回退
+     `ContainerYuvMatrix`）；(b) 新增锚点 `cjpegli_xyb_append`（`CjpegliService.cs:269`）作为 C9 的证据行；
+     (c) ④ 从**计数锁**改为**形态锁**：`sb.Append(" --xyb")` 恰 1 处 + auto 守卫行
+     `var outMatrixTok = opts.ColorOutMatrix` 在场（计数锁会被任意注释改动误伤，接线后也无语义；形态锁
+     同时抓「接线被删」「重复接线」「auto 档被污染」）。读数 **331/0**，`report.md` 的 §2 表与 C9 行同批改。
+  ③ **`verify-color-token-normalize` 轮内 900 s 挂死（根因未复现，但结构性缺陷已消除）**：单跑 **65/0 @46 s**
+     （改动前 64/0 @50 s），受管子集亦绿；轮内那一次**没有复现**（本次连续 3 次单跑 + 1 次受管均绿）⇒ 归入
+     间歇族。真问题是脚本**没有超时**：`Run-Exe` 是裸 `Start-Process -Wait`（正是 `verify-ui-host` 头注记过的
+     「没有 timeout 参数」），一旦某步挂死只能等运行器 900 s 收尸，且**日志尾部因流水线缓冲丢失**，现场只剩
+     「停在 R5 之后」。改为 `WaitForExit(ms)`（每步 **180 s** 硬上限）+ `taskkill /T /F` 击杀进程树，并把超时
+     记进 `$runTimeouts`，由脚本**末尾新增断言**统一判红、点名完整命令行（`[[GATE-TIMEOUT]]` 前缀让下游断言
+     即便被空输出骗绿也会红）。变异：`$runTimeoutSec = 1` ⇒ **3 次超时、41 s 内 exit=1**、读数直接打出
+     `FfmpegGui.exe --headless -i … --color-primaries bt70…`（原行为 = 挂到 900 s 且什么都不知道）。
+  ④ **`verify-ui-host` / `verify-ui-split-union` 的 G2（间歇族，已加诊断）**：轮内 `workers=[] elapsed=40087ms`，
+     但单跑 **473/0 @1m34s**、受管子集 **exit=0**、改动后再跑 **473/0 @1m10s** ⇒ **3 绿 1 红，不可复现**。
+     结构性缺陷是真的：两个等待**共用** `swG2` 的 40 s 预算——前一个「条目进入处理态」耗满 30 s 时，后一个
+     「子进程出现」只剩 ~10 s；而旧读数只有 `workers=[]`，分不清「队列没起来」与「起来了但没子进程」。
+     改为各自独立计时（30 s / 15 s）+ 失败读数带 `processing=… procWait=… workerWait=… status=[…] log=[…]`。
+     变异（把条件改成 `childIds.Count > 100`）实测打出 `processing=True procWait=69ms workerWait=9ms
+     status=[处理中] log=[…队列开始，并行: 16 个任务…]` ⇒ 下次红可直接归因。⚠ 未改语义：仍要求停止前
+     确实存在工作子进程。
+     ⚠⚠ **变异验证自身的坑（本轮实测踩到，值得全仓记）**：用 `Copy-Item` 从备份还原源文件时，
+     **mtime 会被恢复成备份的旧值** ⇒ MSBuild 判定 up-to-date、`dotnet build` 报 `0 个错误` 却**根本没重编**
+     ⇒ 紧接着跑的验证用的是**变异后的二进制**。本轮就是这样：还原后两支门禁双双红在 `workers=[2]`（`2 > 100`
+     才是那次变异），一度被误读成「改动引入回归」。**还原后必须 `touch` 源文件再 build**（或 `--no-incremental`），
+     并用「产物 mtime > 源 mtime」自证。
+  ⑤ **`verify-release-package` 2 红（判据没错，包过期）**：`full 工具同指纹 exiftool.exe` / `dngtool.exe` 不等
+     —— 归档出包于 **2026-11-04 09:57**，而 `publish/PLAN` 的 exiftool 更新于 **11-05 09:54**、dngtool
+     重建于 **11-09 03:56**（宿主/工具各自独立构建，这是常态）。处置 = **下次出包重切**，不在轮内改判据。
+     同批更正脚本头那句失效陈述「有意不进受管清单」（`_run-step3-gates.ps1:1797` 实际已登记，且
+     `verify-oracle-matrix.ps1` 同样）。
+  ⑥ **`verify-color-engine-xcheck`（库侧，跨仓未动）**：根因已定到函数级——增益图候选枚举。宿主在
+     `41375a2`（2026-11-02，iPhone HDR 实机件）把候选分两类（**codec item** 与 **`grid` 派生项**），
+     而 `C:/PLAN/ColorGainKit` 的 `IsoBmffGainMapProbe` 停在 `79c3f4b`（2026-10-12，跟随宿主批 A–G），
+     只认 codec item ⇒ 夹具 `ref_libavif_solo_gainmapgrid.avif` 的增益图是 grid ⇒ 候选 0。修在库侧。）
+
+
 ---
 
 ## 九、模块覆盖索引（2026-11-13，机器生成；手工改本段 ⇒ 门禁 ⑥ 判红）
