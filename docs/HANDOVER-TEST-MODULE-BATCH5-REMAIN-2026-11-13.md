@@ -210,3 +210,54 @@
   分 **codec item** 与 **`grid` 派生项**两类；`C:\PLAN\ColorGainKit` 的 `IsoBmffGainMapProbe` 停在
   `79c3f4b`（2026-10-12）只认 codec ⇒ 夹具 `ref_libavif_solo_gainmapgrid.avif` 的增益图是 grid ⇒ 候选 0
   ⇒ 11 处字段不等。修在库侧（需授权）。
+
+---
+
+## 10. 接手轮追记三（2026-11-13，xcheck 跨仓红已修）
+
+### 10.1 结论
+
+8 红里最后一条「库侧滞后」（§9.2 第二条）**已闭环**。库仓 `C:/PLAN/ColorGainKit` 两笔提交
+`97346dd..47bda98`（已推 GitHub），宿主侧对撞面同步扩 21 字段 + 3 条 grid 正控。
+
+| 项 | 读数 |
+|---|---|
+| `verify-color-engine-xcheck` | **rc=0**（此前红） |
+| `ServiceProbe cgkparity` | **14/0**（15 个「件 × 截断变体」× 21 字段全等） |
+| `verify-probe-mirror-parity` | **91/0**（`cgkparity` 条数锁 9 → 13） |
+| 库自检 ColorMatrix / GainMapKit | **59/0** / **86/0** |
+| 库解决方案 Release 编译 | 0 警告 0 错误 |
+
+### 10.2 修法（三处，缺一不可）
+
+1. **候选分类**（库 `IsoBmffGainMapProbe.Probe`）：`codecCands` / `gridCands` 两类三分支。
+   旧实现只收 codec ⇒ grid 件的候选数 0 ⇒ fail-closed。
+2. **`construction_method=1`（idat）**：iPhone / libavif 的 `tmap`、`grid` 载荷常驻 `meta/idat`，
+   旧 `SliceItem` 对 `method != 0` 直接拒绝 ⇒ **只修候选仍然读不出载荷**。这是原估计的漏项，
+   也是在第一遍只改候选后会立刻撞上的第二道墙。
+3. **`grid` 解析**：`ParseGridGainMap` + `TryParseGridPayload` + `TryFindIspe`，
+   瓦片 = `dimg grid → 瓦片…`（raster 顺序），HEVC 瓦片走 `hvcC→Annex-B`，av01 走原始 OBU。
+
+### 10.3 两处「判据把缺口写成正确」（本轮真正的产出）
+
+- 库自检原有 `CK("边界如实：grid 型增益图 ⇒ Determinate=false 且点名原因…")`——它断言的是
+  「本库不解 grid，只会 fail-closed 点名」，即**把能力缺口当成正确行为**。能力补上后必红
+  （实测 80 PASS / 1 FAIL）。已改为 6 条新契约断言（含「分块与直载是两条互斥通道，
+  `GainMapItemData` 必须为 null」）。**教训：这类断言的价值随能力提升而反转，能力上台阶时必须
+  回头搜一遍「把不支持写成预期」的用例**，否则要么红得莫名其妙，要么（更糟）被顺手改回旧行为。
+- `probe-mirror-parity` 的 `cgkparity` 条数锁 9 → **13**（该表只许升，抬数须同轮写来历）。
+
+### 10.4 一个报错形态缺陷（顺手修）
+
+宿主对撞探针旧写法 `GetField(fn)!`：库若是**旧版**（缺 `GainMapIsGrid` 等 8 个字段），
+`GetField` 返回 null ⇒ `NullReferenceException`，报出来是一句**无名的**空引用，且
+**后续判据整段不执行**（实测变异态 `pass=7 fail=1`，曲线与容器段读数全丢）。
+改为先核对两侧字段面并点名缺失项，再逐字段比较。变异态现在报：
+
+    库缺 GainMapIsGrid; GridRows; GridCols; GridWidth; GridHeight; TileWidth; TileHeight; GainMapTiles
+
+### 10.5 仍未了结
+
+- **`verify-release-package` 2 红 = 包过期**（§9.2 第一条），处置权在出包节奏，不在判据。
+  ⇒ **要宣布「全量全绿」必须先决定这条**：A) 每次出包前重切；B) 从受管清单摘出（104→103）。
+  当前仍是 8 红中唯一未消解项。

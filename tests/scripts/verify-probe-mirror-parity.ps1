@@ -122,7 +122,16 @@ $counts = [ordered]@{
     # 2026-10-22 P3 跨仓对撞（宿主 vs ColorGainKit，同进程反射）。口径同样是**源文本调用位**：
     #   运行时会跑 10 条（`Log2Gain` 那一格在 foreach 里、两个 floorAtOne 各跑一次），但**条数锁量的是形状**，
     #   与上面 `framelen` 同形。Census 实测 got=9 ⇒ 登记 9（抬数需同轮写来历，不许凭运行读数抬）。
-    'cgkparity' = 9
+    # 2026-11-13 +4（9→13）：库侧补了 grid 承载（`ref_libavif_solo_gainmapgrid.avif` 的增益图是
+    #   `grid` 派生项，库停在 79c3f4b 只认 codec item ⇒ 候选数 0，xcheck 那条跨仓对撞红）。四处增项：
+    #   ① **两侧字段面齐备**（21 项可反射）——库是外仓 DLL，旧版缺 grid 8 字段时旧实现用
+    #      `GetField(fn)!` 直接抛 NullReferenceException，报一句无名的空引用且**后续判据整段不执行**
+    #      （实测变异态 pass=7 fail=1），改成先核对再比；
+    #   ②③④ 三条 **grid 正控**（夹具里确有 grid 件 / 瓦片数 == rows×cols / 整幅尺寸 > 0）——
+    #      「两实现都失败」时逐字段全等同样成立，光靠全等**抓不到**移植是否真产出了瓦片。
+    #   同时把对撞字段 13 → 21（`GainMapTiles` 是 `List<byte[]>`，`Equals` 走引用比较恒不等 ⇒ 逐块比字节），
+    #   这属于既有那两条 `Check` 的面扩，不新增条目，故只抬 4。
+    'cgkparity' = 13
     # 2026-11-02 +2（19→21）：取向探针的 `Coded()`/`Rotation()` 原来是**手写**的 ffprobe 参数串，
     #   产品侧给 `ImageGeometry.BuildProbeArguments` 补上 `stream_side_data`（容器级 Frame Cropping 要它）
     #   之后探针没跟上 ⇒ 那一臂看不到裁切、只能读 coded（HANDOVER-2026-11-02 §7 第 6 项）。

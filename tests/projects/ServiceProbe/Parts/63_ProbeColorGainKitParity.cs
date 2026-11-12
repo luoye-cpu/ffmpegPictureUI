@@ -154,9 +154,33 @@ namespace ServiceProbe
             var lPrM = Mx(libProbe, "Probe", 1);
             var fxDir = System.IO.Path.Combine(rootCgk, "fixtures");
             var fieldNames = new[] { "IsIsoBmff", "Determinate", "FailReason", "HasGainMap", "Form", "PrimaryItemId",
-                "TmapItemId", "GainMapItemId", "GainMapCodec", "GainMapFfmpegFormat", "Brands", "TmapPayload", "GainMapItemData" };
+                "TmapItemId", "GainMapItemId", "GainMapCodec", "GainMapFfmpegFormat", "Brands", "TmapPayload", "GainMapItemData",
+                // ── grid 承载（2026-11-13 增）────────────────────────────────────────────────
+                // ⚠ 为什么必须比：库侧此前**只认 codec item**，`grid` 派生项一律落到「候选数=0」的 fail-closed
+                //   分支，而 `GainMapItemId` / `GainMapCodec` 在那条分支里是 -1 / null ⇒ 光比上面 13 个字段
+                //   也能「全等」（两侧同为失败态），**抓不到移植是否真的产出了瓦片**。
+                //   ⇒ 这 8 项是 grid 移植的**唯一**证据面，缺一项就等于该维度未判定。
+                "GainMapIsGrid", "GridRows", "GridCols", "GridWidth", "GridHeight", "TileWidth", "TileHeight",
+                "GainMapTiles" };
+            // ⚠ 两侧字段面必须**先核对再比**（2026-11-13）：库侧是**外仓 DLL**，可能是旧版（无 grid 字段）。
+            //   旧实现直接 `GetField(fn)!` + `GetValue` ⇒ 旧 DLL 触发 NullReferenceException，
+            //   报出来是一句无名字的 "exception: NullReferenceException"，且**后续全部判据不再执行**
+            //   （实测：变异态 pass=7 fail=1，曲线/容器段的读数整段丢失）。⇒ fail-closed 但**点名**。
+            // ⚠ 字段在**嵌套的 `Result` 类**上，不在探测器类上 ⇒ 取 `Probe` 的返回类型（不能拿 *Probe 类型去 GetField）。
+            var hostResultType = hPrM.ReturnType;
+            var libResultType = lPrM.ReturnType;
+            var missingFields = new System.Collections.Generic.List<string>();
+            foreach (var fn in fieldNames)
+            {
+                if (hostResultType.GetField(fn) is null) missingFields.Add($"宿主缺 {fn}");
+                if (libResultType.GetField(fn) is null) missingFields.Add($"库缺 {fn}");
+            }
+            Check(missingFields.Count == 0,
+                $"cgkparity 字段面齐备（{fieldNames.Length} 项）：宿主与库同名同型可反射" +
+                $"（缺失 {(missingFields.Count == 0 ? "无" : string.Join("; ", missingFields))}）" +
+                "；库侧缺项 ⇒ 该库版本落后于宿主（先重编 ColorGainKit 再判，勿按「等价」读）");
             int cmp = 0, fBad = 0; string fFirst = "";
-            if (System.IO.Directory.Exists(fxDir))
+            if (System.IO.Directory.Exists(fxDir) && missingFields.Count == 0)
             {
                 foreach (var fp in System.IO.Directory.GetFiles(fxDir).Where(f => f.EndsWith(".avif") || f.EndsWith(".jpg")).OrderBy(f => f, StringComparer.Ordinal))
                 {
@@ -169,9 +193,20 @@ namespace ServiceProbe
                         cmp++;
                         foreach (var fn in fieldNames)
                         {
-                            var va = ra.GetType().GetField(fn)!.GetValue(ra);
-                            var vb = rb.GetType().GetField(fn)!.GetValue(rb);
-                            bool eq = (va is byte[] pa && vb is byte[] pb) ? pa.AsSpan().SequenceEqual(pb) : Equals(va, vb);
+                            var fa = ra.GetType().GetField(fn);
+                            var fb = rb.GetType().GetField(fn);
+                            if (fa is null || fb is null) continue;      // 已在上面点名，不在此处炸空引用
+                            var va = fa.GetValue(ra);
+                            var vb = fb.GetValue(rb);
+                            // `GainMapTiles` 是 `List<byte[]>`：`Equals` 走引用比较 ⇒ 恒不等，必须逐块比字节。
+                            bool eq = (va, vb) switch
+                            {
+                                (byte[] pa, byte[] pb) => pa.AsSpan().SequenceEqual(pb),
+                                (null, null) => true,
+                                (System.Collections.Generic.List<byte[]> la, System.Collections.Generic.List<byte[]> lb) =>
+                                    la.Count == lb.Count && la.Zip(lb).All(t => t.First.AsSpan().SequenceEqual(t.Second)),
+                                _ => Equals(va, vb)
+                            };
                             if (!eq)
                             {
                                 fBad++;
@@ -186,8 +221,46 @@ namespace ServiceProbe
                     }
                 }
             }
-            Check(cmp >= 12, $"cgkparity 容器对撞的**扫描面非空**（正控：实比对 {cmp} 个「件 × 截断变体」，须 ≥12）");
-            Check(fBad == 0, $"cgkparity IsoBmffGainMapProbe 逐字段（含 tmap 载荷与增益图 item 字节）：{cmp} 变体全等（{fBad} 处不一致 {fFirst}）");
+            // 字段面缺 ⇒ 只由上面那条负责报红（否则 cmp 因为跳过比较而恒 0，会在「扫描面非空」上再报一次假红）。
+            if (missingFields.Count == 0)
+            {
+                Check(cmp >= 12, $"cgkparity 容器对撞的**扫描面非空**（正控：实比对 {cmp} 个「件 × 截断变体」，须 ≥12）");
+                Check(fBad == 0, $"cgkparity IsoBmffGainMapProbe 逐字段（{fieldNames.Length} 项：含 tmap 载荷 / 增益图 item 字节 / grid 瓦片与网格尺寸）：{cmp} 变体全等（{fBad} 处不一致 {fFirst}）");
+            }
+
+            // ── 7b grid 移植的**正控**（2026-11-13）────────────────────────────────────────
+            // 上面那条「全等」在两个实现**都失败**时同样成立（同为 GainMapItemId=-1 / Tiles=null）⇒
+            // 必须有独立一条证明「grid 承载体确实被解开了」，否则库侧退回只认 codec item 也照样全绿。
+            // 判据落在**宿主**读数上（宿主是权威副本，其 grid 能力由 ISO-BMFF 结构决定，不随库变化）。
+            int gridSeen = 0, gridTiles = 0, gridDims = 0;
+            if (System.IO.Directory.Exists(fxDir) && missingFields.Count == 0)
+            {
+                foreach (var fp in System.IO.Directory.GetFiles(fxDir).Where(f => f.EndsWith(".avif") || f.EndsWith(".jpg")).OrderBy(f => f, StringComparer.Ordinal))
+                {
+                    var bytes = System.IO.File.ReadAllBytes(fp);
+                    var ra = hPrM.Invoke(null, new object[] { bytes })!;
+                    if ((bool)ra.GetType().GetField("GainMapIsGrid")!.GetValue(ra)!)
+                    {
+                        gridSeen++;
+                        var tl = (System.Collections.Generic.List<byte[]>?)ra.GetType().GetField("GainMapTiles")!.GetValue(ra);
+                        int rows = (int)ra.GetType().GetField("GridRows")!.GetValue(ra)!;
+                        int cols = (int)ra.GetType().GetField("GridCols")!.GetValue(ra)!;
+                        int gw = (int)ra.GetType().GetField("GridWidth")!.GetValue(ra)!;
+                        int gh = (int)ra.GetType().GetField("GridHeight")!.GetValue(ra)!;
+                        if (tl != null && tl.Count == rows * cols) gridTiles++;
+                        if (gw > 0 && gh > 0) gridDims++;
+                    }
+                }
+            }
+            // 字段面已缺（库版本落后）⇒ 本段无从判定，由上面那条「字段面齐备」负责报红，此处不叠加噪声。
+            if (missingFields.Count == 0)
+            {
+                Check(gridSeen >= 1, $"cgkparity grid 正控：夹具里至少 1 个件的增益图走 grid 承载（实测 {gridSeen} 个）—— 0 个 ⇒ 上面那条「全等」对 grid 移植**无判定力**");
+                Check(gridSeen == 0 || gridTiles == gridSeen,
+                    $"cgkparity grid 正控：每个 grid 件的瓦片数 == rows×cols（{gridTiles}/{gridSeen} 件满足）");
+                Check(gridSeen == 0 || gridDims == gridSeen,
+                    $"cgkparity grid 正控：每个 grid 件的整幅尺寸 > 0（{gridDims}/{gridSeen} 件满足）");
+            }
 
             // ── 8 反控：比较器必须有牙——把 F-5 之前的 eps 式另算一遍，必须与宿主**不等** ──
             double epsOld = Math.Log2(Math.Max(0.01f / Math.Max(0f, 0.001f), 1.0));
@@ -195,7 +268,12 @@ namespace ServiceProbe
             Check(Math.Abs(epsOld - hostNew) > 1.0,
                 $"cgkparity 反控：旧 eps 式在 (h=0.01,s=0) 给 {epsOld:F3}、宿主给 {hostNew:F3} ⇒ 二者必须**不等**（相等就说明本对撞是空转）");
 
-            static string pa2(object v) => v is byte[] bb2 ? $"[{bb2.Length}B]" : v?.ToString() ?? "null";
+            static string pa2(object v) => v switch
+            {
+                byte[] bb2 => $"[{bb2.Length}B]",
+                System.Collections.Generic.List<byte[]> ls => $"[{ls.Count}块:{string.Join(",", ls.Select(x => x.Length + "B"))}]",
+                _ => v?.ToString() ?? "null"
+            };
         }
 
     }

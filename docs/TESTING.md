@@ -6338,10 +6338,28 @@ bench 两条经**同一份 `ServiceProbe.dll`（`3C36FDFCE451CF8A`，mtime `01:0
      重建于 **11-09 03:56**（宿主/工具各自独立构建，这是常态）。处置 = **下次出包重切**，不在轮内改判据。
      同批更正脚本头那句失效陈述「有意不进受管清单」（`_run-step3-gates.ps1:1797` 实际已登记，且
      `verify-oracle-matrix.ps1` 同样）。
-  ⑥ **`verify-color-engine-xcheck`（库侧，跨仓未动）**：根因已定到函数级——增益图候选枚举。宿主在
+  ⑥ **`verify-color-engine-xcheck`（库侧，已修 — 2026-11-13）**：根因定到函数级——增益图候选枚举。宿主在
      `41375a2`（2026-11-02，iPhone HDR 实机件）把候选分两类（**codec item** 与 **`grid` 派生项**），
      而 `C:/PLAN/ColorGainKit` 的 `IsoBmffGainMapProbe` 停在 `79c3f4b`（2026-10-12，跟随宿主批 A–G），
-     只认 codec item ⇒ 夹具 `ref_libavif_solo_gainmapgrid.avif` 的增益图是 grid ⇒ 候选 0。修在库侧。）
+     只认 codec item ⇒ 夹具 `ref_libavif_solo_gainmapgrid.avif` 的增益图是 grid ⇒ 候选 0。
+     **处置（库侧两笔提交，`97346dd..47bda98`）**：
+     (a) 候选分 `codecCands`/`gridCands` 两类三分支（纯 codec=1 / 纯 grid=1 / 其它 fail-closed 点名
+         `codec=n grid=m`）；移植 `ParseGridGainMap` / `TryParseGridPayload` / `TryFindIspe`；
+     (b) **连带补 `construction_method=1`（idat）**：iPhone 件的 tmap / grid 载荷全在 `meta/idat`，
+         旧 `SliceItem` 直接 fail-closed 拒绝 method≠0 ⇒ 只修候选仍然读不出载荷（这一步是原估计里漏掉的）；
+     (c) `Result` 增 8 个 grid 字段。
+     **对撞面同步扩**（宿主 `63_ProbeColorGainKitParity.cs`，字段 13 → 21）：`GainMapTiles` 是
+     `List<byte[]>`，`Equals` 走引用比较恒不等 ⇒ 逐块比字节。另加 **3 条 grid 正控**——「两实现都失败」
+     时逐字段全等同样成立，光靠全等抓不到移植是否真产出瓦片。
+     **顺带修的报错形态**：旧实现 `GetField(fn)!` 在库为旧版（缺 grid 字段）时抛 `NullReferenceException`
+     ⇒ 报一句无名的空引用且**后续判据整段不执行**；改为先核对两侧字段面、缺项点名。
+     读数：`cgkparity` **14/0**（15 个「件 × 截断变体」× 21 字段）、`xcheck` **rc=0**、库自检
+     `ColorMatrix 59/0` + `GainMapKit 86/0`。
+     变异（把库侧改动 stash 掉重编）：`cgkparity` 报「库缺 GainMapIsGrid; GridRows; GridCols; GridWidth;
+     GridHeight; TileWidth; TileHeight; GainMapTiles」共 8 项点名，其余判据正常执行；恢复后复绿。
+     ⚠ **同批发现的两处「判据把缺口写成正确」**：① 库自检原有一条 `CK("grid 型增益图 ⇒
+     Determinate=false 且点名原因")`，即把「不支持」当预期 ⇒ 能力补上后必红（实测 80/1），已改为 6 条
+     新契约断言；② `probe-mirror-parity` 的 `cgkparity` 条数锁 9 → **13**（加断言必须同轮抬数并写来历）。
 
 
 ---

@@ -646,6 +646,17 @@ pwsh -NoProfile -File tests/scripts/_run-step3-gates.ps1   # 104 条；整轮墙
   同批更正脚本头「有意不进受管清单」的失效陈述。
   ⑥ `verify-color-engine-xcheck` = **库侧滞后**（宿主 `41375a2` 2026-11-02 起把增益图候选分 codec / **grid** 两类；库
   `79c3f4b` 2026-10-12 只认 codec ⇒ `solo_gainmapgrid` 夹具候选 0）。修在 `C:\PLAN\ColorGainKit`，**工作区外**。
+  **✅ 已修（2026-11-13 余波三）**：库侧 `97346dd..47bda98` 两笔——候选分 `codecCands`/`gridCands` 三分支 +
+  移植 `ParseGridGainMap`/`TryParseGridPayload`/`TryFindIspe` + **连带补 `construction_method=1`（idat）**
+  （iPhone 件 tmap/grid 载荷全在 `meta/idat`，只修候选仍读不出载荷；这一步是原估计漏项）+ `Result` 增 8 个 grid 字段。
+  宿主对撞面 13 → 21 字段（`GainMapTiles` 是 `List<byte[]>`，逐块比字节）+ **3 条 grid 正控**（两实现都失败时逐字段
+  全等同样成立 ⇒ 光靠全等抓不到瓦片是否真产出）。读数：`cgkparity` **14/0**、`xcheck` **rc=0**、库自检
+  `ColorMatrix 59/0` + `GainMapKit 86/0`。变异（stash 库改动）：报「库缺 GainMapIsGrid; GridRows; GridCols;
+  GridWidth; GridHeight; TileWidth; TileHeight; GainMapTiles」共 8 项点名。
+  ⚠ 同批两处「判据把缺口写成正确」：① 库自检原有 `CK("grid ⇒ Determinate=false")` 把「不支持」当预期，能力补上后
+  必红（80/1）⇒ 改 6 条新契约断言；② `probe-mirror-parity` 的 `cgkparity` 条数锁 9 → **13**（加断言必须同轮抬数写来历）。
+  ⚠ 探针侧另修一形态缺陷：旧 `GetField(fn)!` 遇旧版库（缺字段）抛 `NullReferenceException` ⇒ 无名空引用且**后续判据
+  整段不执行**；改为先核对两侧字段面、缺项点名。
 
 ---
 
