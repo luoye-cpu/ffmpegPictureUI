@@ -5937,6 +5937,30 @@ test-output/
       同时**去掉了写死的默认版本** —— 没给 `PKG_VER` 直接 `exit 2`（实测输出那两行拒绝文本 + 退出码 2），
       任何默认版本都会在下一个发布日变成"拿 n 包的读数宣布 n+1 已验"。
 
+123. **门禁把 env 覆盖值写进了产品设置 ⇒ 同一轮里后续门禁拿 ffmpeg 当 dngtool（2026-11-13，全量轮抓到）**
+    - **现象**：全量 104 条跑到 `verify-metadata-privacy` 时 ⑥ 报「RAW→PNG 未产出 png」。它的
+      `app-rawpng.out.txt` 里"dngtool"那一行打的是 **ffmpeg 的 version banner**，并以
+      `Unrecognized option 'o'` 结束 ⇒ 被调起来的根本不是 dngtool。
+    - **根因链**（三段，每段都有实文件证据）：① `verify-startup-warmup` 的 S8f/S8g 为了测「候选起不起得来」，
+      用 `FFMPEGGUI_DNGTOOL_PATH` 指向垃圾 exe / ffmpeg.exe，并把 `FFMPEGGUI_FFMPEG_DIR` 指到**空目录**；
+      ② 子进程里 ffmpeg 目录因此判失效 ⇒ `EnsureFfmpegDirectory` 走「重新发现 PLAN」分支，而该分支的
+      自动发现值**要持久化** ⇒ 调 `AppSettingsService.Save()`；③ `Save()` 序列化的是**整份 `_current`**，
+      而 env 覆盖在 `Load()` 里已写进 `_current` ⇒ 覆盖值被当成用户设置落盘。实测便携 `settings.json` 变成
+      `DngToolPath = …\publish\PLAN\ffmpeg-full\ffmpeg.exe`、`WindowsArtifactsDir = …\validate\suwu_*\empty_art`
+      （后者是门禁的临时空目录，早就不存在了）。时间戳对撞：settings.json mtime `02:54:54` == 该门禁日志 mtime。
+    - **为什么之前看不见**：这是**跨门禁的状态泄漏**——单跑任何一条都不复现；只有整轮里 S8 在前、RAW 类门禁
+      在后才发作。而且 RAW 类门禁的失败信息（"未产出 png"）指向产品，指向不了设置。
+    - **修法（门禁侧，两件一起）**：① 两跑一律带 `--settings <临时副本>`——`Save()` 写的是 `_loadedFrom`，且
+      `_loadedFromExplicit` 分支**不回退**到便携文件 ⇒ 子进程的任何自发改写都落在临时件上；② 新判据 **S8h**：
+      跑前跑后对撞便携 `settings.json` 的 sha256（本地实测 `B32A61A8DAEA` 恒定）。
+    - **变异验证（必做）**：把这个门禁的 `--settings` 摘掉再跑 ⇒ S8h 转红，且设置**逐字复现**污染
+      （`DngToolPath=…ffmpeg.exe` + `WindowsArtifactsDir=…empty_art`）⇒ 判据有牙，不是摆设。
+    - **通用教训**：**门禁用 env 覆盖跑产品时，必须同时隔离"产品会写回的文件"**。env 覆盖是内存态覆盖，
+      任何一次无关的 `Save()` 都会把它固化成"用户设置"，此后所有门禁（乃至用户本人）都读到错值。
+      检查法：凡门禁里出现 `FFMPEGGUI_*` 注入 + 让产品真跑一遍，就顺手问一句"这条路径会 Save 吗"。
+    - **未修（待决策）**：产品侧 `Save()` 仍会把 env 覆盖值落盘。本轮只在门禁侧隔离，没改产品语义——
+      要彻底解决需给覆盖项打标记并在 `Save()` 的 clone 里剔除（属产品行为变更，另开一笔）。
+
 ---
 
 ## 七、UI 验证方法论（2026-08-16 沉淀）
@@ -6235,3 +6259,145 @@ bench 两条经**同一份 `ServiceProbe.dll`（`3C36FDFCE451CF8A`，mtime `01:0
 两次**也 `37/0`**（8b `57.9/59.3`、`42.8/43.9`、端到端 `1.76/1.81×`），端到端那条红出自**同窗对照臂第 2 次**（`2.69×`）
 ⇒ 是这几条判据余量浅（端到端历次 `1.72~2.69` 对阈值 2.0；8b `sRGB→P3` 历次 `22.0~44.3` 对阈值 25），未下调任何阈值。
 ⚠ 臂身份只能按 **dll** 判：`ServiceProbe.exe` 是 apphost，旧臂日志头同值 `93BF03789E69EC6F`，零信息量。—— 细账见 `docs/review-2026-10-31/CORRECTION-2026-10-31-C-FULLDRIVE.md` §9.9。
+
+（**2026-11-13 批 5·C4 per-script 超时表 + 剩余项② 索引生成（清单 104 条不动）**：
+  ⚠ 本段**追加在文末**而非 §三 接线台账：中间插入会挪动按行号引用本文的两条门禁锚点
+  （coverage 探针的 `:1115`、cjk 扫描的 `:1828`；见 `docs/HANDOVER.md:3984`）。
+  ① **C4 超时表**：单一真值 = `tests/scripts/_module-registry.json` 的 `locks."script-timeouts".table`
+     （`verify-color-strategy.ps1=1200`、`verify-png-optimizer.ps1=1200`；口径 = 实测最慢 243.8 s /
+     748.6 s 的 ≥2× 余量向上取整，表外条目仍用全局默认 900）。runner 在 `$scriptList` 定义**之后**装载
+     该表（幽灵键校验要对清单），逐条查表覆写 `$_sTimeout`，结果行加 `to=<n>s` 读数。表只许**抬**
+     不许紧：值低于 900 = 账本 ⑤ 判红（表若能把某条**收紧**，负载下就是假红面）。
+     ⚠ **fail-closed 的原实现其实是 fail-open（本轮修）**：装载失败分支原写 `Exit-WithSummary`，而该
+     函数的出口是「`$failedItems` 为空 ⇒ 打『全部通过』并 `exit 0`」⇒ 删掉账本键后整轮照样绿。
+     现改为 `Release-GatesLock; exit 2`；实测删键 ⇒ `registry-timeouts=FAIL (locks.script-timeouts.table
+     缺失) ⇒ 拒跑 exit 2`、rc=2、零脚本被执行。
+     形态自检升到 **19 针**，第 ⑲ 针管**五形 + 位置**：装载点 OK/FAIL 读数各 1 · 查表点 1 ·
+     `-TimeoutSec $_sTimeout` 1 · 记账行 `超时 $_sTimeout` 1 · 结果行 `to=` 实参 1 · 装载块在清单之后。
+     ⚠ 后两条是**变异验证逼出来的**：先只钉到「记账行」，把 `to=` 的 `-f` 实参换成 `$ScriptTimeoutSec`
+     时 ⑲ 仍全绿 ⇒ 读者看到的超时读数可以静默变回全局默认。现四支变异（记账行回写 / `to=` 实参回写 /
+     装载块前置 / 删查表点）各只红各的那一条。
+  ② **索引生成（剩余项②）**：`verify-module-registry.ps1 -EmitIndex` 从账本渲染 `docs/TESTING.md` 的
+     `<!-- module-index:begin/end -->` 段（**§九，文件末尾**）；默认跑做 ⑥ 漂移闸 = 现存段与渲染结果
+     **大小写敏感逐字节对撞**（不一致时报「段内第 N 行：现存[…] vs 生成[…]」，不给"自己去 diff 七千行"）。
+     现量 **67 条 / 101 行 / 8777 B**（option 43 · capability 19 · blindspot 5；E2E 55 · E2E-UI 4 ·
+     blind 8）；分组按 `domains` 声明序、组内按 id **序数**排序、carrier 按 gate 名排序 ⇒ 连跑两次
+     `-EmitIndex` 文件哈希不变（幂等）。⚠ 两个实测坑：`[Array]::Sort(keys, object[] items, cmp)`
+     **keys 排了、items 没动**（静默不同步）⇒ 改索引表排序；`Sort-Object` 走当前文化（`-` 的权重随
+     区域设置变）⇒ 一律序数比较。
+  ④ **换行符不硬编码（同日补，实文件验证过）**：渲染用**本文档现存的** EOL（含 CRLF ⇒ CRLF，否则 LF）。
+     原先硬编码 CRLF ⇒ `core.autocrlf` 配置不同的树上（checkout 成 LF）⑥ 恒红且「重生成」也治不好
+     （生成物仍是 CRLF，下次 checkout 又被转回去 ⇒ 死循环）。实测把本文整体转成 LF 后裸跑 ⑥ 仍 PASS
+     （段 8677 B = 8777 − 100 个 CR），`-EmitIndex` 后全文件 CRLF 计数 = 0（不掺回 CR）；还原后哈希相等。
+  ③ **验收读数**（受管子集，runner 起；取证 `tests/output/_tmp/batch5-c4/`）：`registry-timeouts=OK
+     （2 条）`、19 针 OK、`script-list=104`、`[verify-color-strategy.ps1] 78/0 to=1200s @267.1 s`、
+     `[verify-module-registry.ps1] 12/0`（含 5/5 负控：删条目 / 换 carrier / 幽灵 carrier / 删 C4 键 /
+     改账本不重生成）；`-Scripts` 打错名仍响亮拒绝（rc=1、点名、零执行）；子集 rc=1 唯一因
+     `probe:bench` 单核地板噪声（36/1，§7 已登记族）。⑥ 的两条**实文件**变异（手改生成段 / 改
+     `cap.pngopt` 的 desc 而不重生成）各被抓到并给出首个差异行，还原后哈希与变异前相等。）
+
+---
+
+## 九、模块覆盖索引（2026-11-13，机器生成；手工改本段 ⇒ 门禁 ⑥ 判红）
+
+<!-- module-index:begin -->
+> **机器拥有段（勿手改）**：本段由 `tests/scripts/verify-module-registry.ps1 -EmitIndex` 从
+> `tests/scripts/_module-registry.json`（能力域 → 承载门禁 → 判据档位 的单一真值）生成；
+> 手工改动本段 ⇒ 门禁 ⑥ 与账本渲染结果逐字节对撞判红（改账本就重跑 `-EmitIndex`）。
+> 现量 **67 条**（blindspot 5 · capability 19 · option 43；E2E 55 · E2E-UI 4 · blind 8）。
+> 读法：`承载` = carrier 门禁（括号内为 carrier 形态 cli/ui/host）；`说明` = capability 的 desc 首句（≤60 字，全文见账本）；blind 条目给理由全文；`—` = 无。
+
+### matrix（10 条）
+- `blindspot.hwencoder-real` — blindspot · blind · 承载 — · 理由：硬件编码器真跑环境依赖（GPU 缺席即 SKIP，J1z 同族）；旋钮活性差分已有但无恒真 GPU 臂
+- `cap.corrupt-input` — capability · E2E · 承载 `verify-corrupt-input.ps1`（cli） · 说明：损坏/截断输入 E2E：3 格式×2 坏法+3 正控
+- `cap.format-matrix` — capability · E2E · 承载 `verify-format-regression.ps1`（host） / `verify-usability-e2e.ps1`（cli） · 说明：格式互转矩阵×尺寸/alpha/PSNR
+- `cli.encoder` — option · E2E · 承载 `verify-decision-delivery.ps1`（cli） / `verify-jxr-backend-choice.ps1`（cli） · 名 `-e` / `--encoder`
+- `cli.format` — option · E2E · 承载 `verify-format-regression.ps1`（cli） / `verify-oracle-matrix.ps1`（cli） · 名 `-f` / `--format`
+- `cli.input` — option · E2E · 承载 `verify-png-optimizer.ps1`（cli） / `verify-usability-e2e.ps1`（cli） · 名 `-i` / `--input`
+- `cli.output` — option · E2E · 承载 `verify-metadata-privacy.ps1`（cli） · 名 `-o` / `--output`
+- `cli.preserve-structure` — option · E2E · 承载 `verify-usability-e2e.ps1`（cli） · 名 `--preserve-structure`
+- `cli.quality` — option · E2E · 承载 `verify-ffmpeg-heartbeat.ps1`（cli） · 名 `-q` / `--quality`
+- `pt.bit-depth` — option · E2E · 承载 `verify-oracle-matrix.ps1`（cli） · 名 `--bit-depth`
+
+### color（8 条）
+- `cap.color-engine` — capability · E2E · 承载 `verify-color-matrix-full.ps1`（host） / `verify-color-out-matrix.ps1`（cli） / `verify-color-strategy.ps1`（host） / `verify-color-wiring.ps1`（host） / `verify-decision-delivery.ps1`（cli） · 说明：色彩策略/引擎/tonemap/矩阵全网格/out-matrix/oracle
+- `cap.jpeg-family` — capability · E2E · 承载 `verify-decision-delivery.ps1`（cli） / `verify-jpg-webp-matrix.ps1`（cli） · 说明：JPG/WebP YUV 矩阵与范围契约
+- `pt.chroma` — option · E2E · 承载 `verify-cli-strict.ps1`（ui） · 名 `--chroma`
+- `pt.color-out-matrix` — option · E2E · 承载 `verify-color-out-matrix.ps1`（cli） · 名 `--color-out-matrix`
+- `pt.color-range` — option · E2E · 承载 `verify-cli-strict.ps1`（ui） · 名 `--color-range`
+- `pt.color-strategy` — option · E2E · 承载 `verify-cli-strict.ps1`（ui） · 名 `--color-strategy`
+- `pt.color-tone-map` — option · E2E · 承载 `verify-color-tonemap.ps1`（host） · 名 `--color-tone-map`
+- `pt.icc-mode` — option · E2E · 承载 `verify-cli-strict.ps1`（ui） · 名 `--icc-mode`
+
+### gainmap（7 条）
+- `cap.gainmap-suite` — capability · E2E · 承载 `verify-gainmap-compose.ps1`（cli） / `verify-gainmap-engine.ps1`（host） / `verify-gainmap-host.ps1`（host） / `verify-gainmap-isobmff.ps1`（host） / `verify-gainmap-jxl.ps1`（cli） · 说明：GainMap 托管编解码/引擎/compose/JXL/ISO-BMFF/第三方语料
+- `cli.compose-gainmap` — option · E2E · 承载 `verify-gainmap-compose.ps1`（cli） / `verify-gainmap-jxl.ps1`（cli） · 名 `--compose-gainmap`
+- `cli.gainmap-encoder` — option · E2E · 承载 `verify-gainmap-compose.ps1`（cli） / `verify-gainmap-jxl.ps1`（cli） · 名 `--gainmap-encoder`
+- `cli.gainmap-metadata` — option · E2E · 承载 `verify-gainmap-compose.ps1`（cli） / `verify-gainmap-jxl.ps1`（cli） · 名 `--gainmap-metadata`
+- `cli.gainmap-multichannel` — option · E2E · 承载 `verify-gainmap-compose.ps1`（cli） · 名 `--gainmap-multichannel`
+- `cli.gainmap-peak` — option · E2E · 承载 `verify-gainmap-compose.ps1`（cli） · 名 `--gainmap-peak`
+- `pt.hdr-mode` — option · E2E · 承载 `verify-gainmap-managed.ps1`（host） · 名 `--hdr-mode` / `--jpeg-gain-map`
+
+### raw（3 条）
+- `blindspot.raw-non-dng-brands` — blindspot · blind · 承载 — · 理由：非 DNG RAW 真机品牌（CR3/NEF/ARW）无样本臂；RAW 门禁素材以 DNG/dng_render 为主（ACR 只覆盖 DNG 是已登记口径）
+- `cap.raw-suite` — capability · E2E · 承载 `verify-acr-route.ps1`（host） / `verify-dng-metadata-transport.ps1`（cli） / `verify-dng-nonraw-input.ps1`（cli） · 说明：DNG/RAW
+- `pt.raw-color-target` — option · E2E · 承载 `verify-widegamut-regression.ps1`（host） · 名 `--raw-color-target`
+
+### anim（1 条）
+- `cap.anim-suite` — capability · E2E · 承载 `verify-anim-static-target.ps1`（cli） / `verify-avif-anim-probe.ps1`（cli） / `verify-gif-avif-framelist.ps1`（host） / `verify-webp-anim-probe.ps1`（cli） · 说明：GIF/APNG/WebP/AVIF 动图与帧
+
+### metadata-privacy（9 条）
+- `cap.metadata-privacy` — capability · E2E · 承载 `verify-metadata-privacy.ps1`（cli） / `verify-orientation-rewrap.ps1`（host） · 说明：元数据隐私/GPS/朝向重封装/缩略图
+- `cli.no-strip-gps` — option · E2E · 承载 `verify-oracle-matrix.ps1`（cli） · 名 `--no-strip-gps`
+- `cli.preserve-metadata` — option · E2E · 承载 `verify-metadata-privacy.ps1`（cli） / `verify-tiff-icc.ps1`（cli） · 名 `--preserve-metadata`
+- `cli.strip-all-exif` — option · E2E · 承载 `verify-oracle-matrix.ps1`（cli） · 名 `--strip-all-exif`
+- `cli.strip-camera` — option · E2E · 承载 `verify-oracle-matrix.ps1`（cli） · 名 `--strip-camera`
+- `cli.strip-gps` — option · E2E · 承载 `verify-metadata-privacy.ps1`（cli） · 名 `--strip-gps`
+- `cli.strip-metadata` — option · E2E · 承载 `verify-metadata-privacy.ps1`（cli） · 名 `--strip-metadata`
+- `cli.strip-time` — option · E2E · 承载 `verify-oracle-matrix.ps1`（cli） · 名 `--strip-time`
+- `cli.strip-xmp` — option · E2E · 承载 `verify-dng-metadata-transport.ps1`（cli） · 名 `--strip-xmp`
+
+### pngopt（2 条）
+- `cap.pngopt` — capability · E2E · 承载 `verify-png-optimizer.ps1`（cli） · 说明：PNG 优化器 oxipng 五档
+- `pt.png-optimizer` — option · E2E · 承载 `verify-png-optimizer.ps1`（cli） · 名 `--png-optimizer`
+
+### threads（3 条）
+- `cap.threads` — capability · E2E · 承载 `run-thread-tests.ps1`（cli） · 说明：线程分配/并发
+- `cli.auto-threads` — option · E2E · 承载 `run-thread-tests.ps1`（cli） · 名 `--auto-threads`
+- `cli.jobs` — option · E2E · 承载 `run-thread-tests.ps1`（cli） / `verify-jxl-probe-timeout.ps1`（cli） · 名 `-j` / `--jobs` / `--concurrency`
+
+### ops（12 条）
+- `cap.cancel-path` — capability · E2E-UI · 承载 `verify-ui-host.ps1`（ui） · 说明：取消/停止路径 E2E
+- `cap.log-jsonlines` — capability · E2E · 承载 `verify-log-jsonlines.ps1`（cli） · 说明：--log-format JsonLines 格式正确性 E2E：全行 schema 锁 + Info 过滤 + 双写等…
+- `cli.dry-run` — option · E2E · 承载 `verify-dryrun-parity.ps1`（cli） · 名 `--dry-run`
+- `cli.headless` — option · E2E · 承载 `verify-png-optimizer.ps1`（cli） · 名 `--headless`
+- `cli.help` — option · blind · 承载 — · 名 `--help` / `-h` / `/?`
+- `cli.log-file` — option · E2E · 承载 `verify-metadata-privacy.ps1`（cli） · 名 `--log-file`
+- `cli.log-format` — option · E2E · 承载 `_probe-white-point-kernel.ps1`（host） / `verify-log-jsonlines.ps1`（cli） · 名 `--log-format`
+- `cli.log-level` — option · E2E · 承载 `verify-tool-detection.ps1`（cli） · 名 `--log-level`
+- `cli.no-overwrite` — option · E2E · 承载 `verify-overwrite-contract.ps1`（cli） · 名 `--no-overwrite`
+- `cli.overwrite` — option · E2E · 承载 `verify-jxl-codestream-route.ps1`（cli） / `verify-jxr-highbitdepth.ps1`（cli） · 名 `--overwrite`
+- `cli.preset` — option · E2E · 承载 `verify-png-optimizer.ps1`（cli） · 名 `--preset`
+- `cli.version` — option · blind · 承载 — · 名 `--version` / `-v`
+
+### tooldetect（3 条）
+- `cap.render-plan-mediainfo` — capability · E2E · 承载 `verify-tool-detection.ps1`（cli） · 说明：三服务进程内判据
+- `cap.tooldetect` — capability · E2E · 承载 `verify-tool-detection.ps1`（cli） · 说明：工具检测/settings 失效重发现/PLAN 溯源
+- `cli.settings` — option · E2E · 承载 `verify-tool-detection.ps1`（cli） · 名 `--settings`
+
+### packaging（1 条）
+- `cap.packaging` — capability · E2E · 承载 `verify-package-gui-starts.ps1`（cli） / `verify-package-smoke.ps1`（cli） / `verify-release-package.ps1`（cli） · 说明：包体冒烟/GUI 可启动/托盘关窗契约/验包
+
+### ipc（3 条）
+- `blindspot.ipc-single-instance` — blindspot · blind · 承载 — · 理由：⚠ 改记产品缺口（2026-11-12 批 4 调研裁定，非测试缺口）：「二次启动→转发→退出」链路产品不存在——TryConnectAsync/SendRequestAsync 生产侧 0 调用点（全仓仅 ServiceProbe 探针调用），无互斥锁无二次实例检测 ⇒ 现状=真双开。接线与否是 S-P1-2 行为决策（docs/TESTING.md §「仍未做（需拍板）」）；先接线后立判据，否则门禁必红
+- `cap.ipc` — capability · E2E · 承载 `verify-ipc-extra-options.ps1`（cli） · 说明：IPC 附加选项真验证
+- `manual.serviceprobe-diag-modes` — blindspot · blind · 承载 — · 理由：7 个手动诊断 mode（ipc-server/ipc-client/ipc-raw-client/ipc-submit/piperaw-server/piperaw-client/tonemap）：驻留端往返用例进门禁会挂死整条门禁 ⇒ 官方登记手动工具（coverage probe $modeExempt 7 行 = 账目守恒豁免，⑨-b 绿；docs/TESTING.md:1115 明文保留）——非覆盖缺口，是可见的手动域
+
+### ui（5 条）
+- `blindspot.gui-i18n-render` — blindspot · blind · 承载 — · 理由：真实 GUI 下 i18n 文本渲染/切换仅服务层探针+两条静态扫描
+- `cap.gui-subwindows` — capability · E2E-UI · 承载 `verify-ui-host.ps1`（ui） · 说明：四子窗口 headless 打开/关闭冒烟
+- `cap.settings-gui-restart` — capability · E2E-UI · 承载 `verify-ui-host.ps1`（ui） · 说明：设置改→重启→GUI 生效
+- `cap.ui-suite` — capability · E2E-UI · 承载 `verify-cli-strict.ps1`（ui） / `verify-ui-host.ps1`（ui） / `verify-ui-param-defects.ps1`（ui） / `verify-ui-param-matrix.ps1`（ui） / `verify-ui-strategy-map.ps1`（ui） · 说明：UI 拆分件五件 458 断言
+- `cli.gui` — option · blind · 承载 — · 名 `--gui`
+
+<!-- module-index:end -->
