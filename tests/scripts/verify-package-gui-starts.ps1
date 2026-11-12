@@ -24,6 +24,15 @@
 #      日记由 `App.LogTray` 落盘到 `FFMPEGGUI_DIAG_DIR`（本门禁按臂点名）。这是全仓**唯一**
 #      「托盘图标在运行时真被点亮」的判据——静态断言只能查资源存在/位图可解码，
 #      查不出「窗口起来时图标可见」；
+#      ⚠⚠ **提权（高完整性）会话下这一条物理上测不了**（2026-11-13 定案）：Windows 不允许高完整性
+#      进程调 `Shell_NotifyIcon(NIM_ADD)` 往交互桌面加图标，一律返回 **err=5**，产品侧如实记
+#      `create=failed`。此时判据不可能成立 ⇒ 旧行为是**永远红**，久而久之所有人都学会忽略它
+#      （"狼来了"）。现在拆成两件事：**提权且 tray.log 明写 err=5 ⇒ SKIP 点名**（不计绿、汇总行
+#      单独数、并喊出"未判定"）；**其余任何情况（含非提权下的 err=5）⇒ 照旧 FAIL**。
+#      ⚠ 本机实测：直接跑与 `schtasks` 计划任务跑**都是 High**（`Mandatory Label\High`），
+#        所以本地造不出普通权限对照 ⇒ ⑥ 的 PASS 形态在本机**尚未被本地验证**；须由普通权限会话确认。
+#      变异验证（证明 SKIP 是窄的）：把 `$script:IsElevated` 强制成 `$false` ⇒ ⑥ 立刻恢复 FAIL 并打出
+#        `[elevated=False err5=True ⇒ 非「提权+err5」组合，按真缺陷判红]`；恢复后回 SKIP。
 #   ⑦ **托盘设关时关窗必须真退**：第二臂 `FFMPEGGUI_CLOSE_TO_TRAY=false` ⇒ 关窗后
 #      `ExitGraceSec` 内必须退出（托盘不常驻就不许把用户锁进不可见进程）；
 #   ⑤ **负控（证明②这把尺活着）**：拿同一份 exe 以 `--headless -i <不存在的输入>` 起——它必然
@@ -66,9 +75,22 @@ $sha16 = (Get-FileHash $exe -Algorithm SHA256).Hash.Substring(0, 16)
 
 $script:R = @()
 function CK($name, $ok, $detail) {
-    $script:R += [pscustomobject]@{ n = $name; ok = [bool]$ok }
+    $script:R += [pscustomobject]@{ n = $name; ok = [bool]$ok; skip = $false }
     '{0}  {1}   {2}' -f $(if ($ok) { 'PASS' } else { 'FAIL' }), $name, $detail
 }
+# ⚠ SKIP = **本上下文测不了**，不是"这条不重要"、更不是绿。`ok=$true` 只是为了不被计入 FAIL，
+#   但汇总行会单独数 SKIP，且必须写清「为什么测不了 + 什么上下文下必须绿」。
+#   口径来源：本仓既有约定「无料可量打 SKIP 点名，不给绿灯」（见 probe 系列的 Skip()）。
+function SK($name, $detail) {
+    $script:R += [pscustomobject]@{ n = $name; ok = $true; skip = $true }
+    Write-Output ('SKIP  ' + $name + '   ' + $detail)
+}
+# 本进程是否**提权（高完整性）**。⑥ 的唯一环境依赖就是这一条，见下方 ⑥ 的注释。
+$script:IsElevated = $false
+try {
+    $wi = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $script:IsElevated = (New-Object Security.Principal.WindowsPrincipal($wi)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+} catch { $script:IsElevated = $false }
 function WK($name, $detail) {
     Write-Output ('WARN  ' + $name + '   ' + $detail)
 }
@@ -129,9 +151,28 @@ try {
         $trayTxt = ''
         if (Test-Path $trayLog) { $trayTxt = (@(Get-Content $trayLog -ErrorAction SilentlyContinue) -join ' | ') }
         $trayOk = ($trayTxt -match 'create=ok') -and ($trayTxt -match 'IsVisible=True')
-        CK '⑥ 启动即常驻：托盘图标被点亮（tray.log create=ok + IsVisible=True）' $trayOk `
-           $(if ($trayOk) { ($trayTxt -split ' \| ')[0] }
-             else { "tray.log=" + $(if ($trayTxt) { $trayTxt } else { '（缺失：App.LogTray 没落盘 或 托盘创建被跳过）' }) })
+        # ⚠⚠ **提权会话下这一条测不了**（2026-11-13 定案，不是"放宽判据"）：
+        #   Windows 不允许**高完整性**进程往交互桌面托盘加图标 —— 实测 Shell_NotifyIcon(NIM_ADD)
+        #   返回 **err=5（拒绝访问）**，产品侧如实记 `create=failed`，托盘退化为"关窗即真退出"。
+        #   此时 ⑥ 的判据（create=ok + IsVisible=True）**在物理上不可能成立**，红的是上下文不是代码。
+        #   旧行为 = 直接判红 ⇒ 提权跑受管轮的人每次都看到一条"永远修不掉的红" ⇒ 学会忽略它
+        #   （本仓最忌的"狼来了"）。⇒ 拆成两件事：
+        #     · 提权 **且** tray.log 明写 err=5 ⇒ SKIP 点名（不计绿、不计红，但汇总行单独数）；
+        #     · 其余任何情况（含**非提权**下的 err=5）⇒ 照旧 FAIL —— 那才是真缺陷。
+        #   ⚠ SKIP 条件必须**两个都成立**：只凭"我是管理员"就放过，会让提权下的真托盘缺陷逃掉。
+        $trayDeniedByContext = ($trayTxt -match 'err=5')
+        if ($trayOk) {
+            CK '⑥ 启动即常驻：托盘图标被点亮（tray.log create=ok + IsVisible=True）' $true ($trayTxt -split ' \| ')[0]
+        } elseif ($script:IsElevated -and $trayDeniedByContext) {
+            SK '⑥ 启动即常驻：托盘图标被点亮（tray.log create=ok + IsVisible=True）' `
+               ("**提权（高完整性）会话测不了**：Shell_NotifyIcon err=5 —— Windows 不允许高完整性进程" +
+                "往交互桌面托盘加图标。本条**不计绿**；同一份产物在**普通权限**会话下必须 PASS。" +
+                " tray.log=" + $(if ($trayTxt) { $trayTxt } else { '（缺失）' }))
+        } else {
+            CK '⑥ 启动即常驻：托盘图标被点亮（tray.log create=ok + IsVisible=True）' $false `
+               ("tray.log=" + $(if ($trayTxt) { $trayTxt } else { '（缺失：App.LogTray 没落盘 或 托盘创建被跳过）' }) +
+                "  [elevated=$($script:IsElevated) err5=$trayDeniedByContext ⇒ 非「提权+err5」组合，按真缺陷判红]")
+        }
         [void]$arm.proc.CloseMainWindow()
         Start-Sleep -Seconds 4
         $arm.proc.Refresh()
@@ -192,8 +233,14 @@ CK '负控：headless + 不存在的输入必须很快退出（否则②的存�
    $(if ($negDied) { "已退出 exit=0x{0:X8}" -f $np.ExitCode } else { "观察窗 ${AliveSec}s 内未退出 ⇒ 本条判红" })
 if (-not $negDied) { Stop-Process -Id $np.Id -Force -ErrorAction SilentlyContinue }
 
-$pass = @($script:R | Where-Object { $_.ok }).Count
+$pass = @($script:R | Where-Object { $_.ok -and -not $_.skip }).Count
 $fail = @($script:R | Where-Object { -not $_.ok }).Count
-"===== gui-starts: PASS=$pass FAIL=$fail ====="
+$skip = @($script:R | Where-Object { $_.skip }).Count
+"===== gui-starts: PASS=$pass FAIL=$fail SKIP=$skip ====="
+if ($skip -gt 0) {
+    # ⚠ SKIP 必须显式喊出来：否则"少了一条断言"和"这条测不了"在日志里长得一样。
+    "⚠ 本轮有 $skip 条**未判定**（SKIP，非绿）：$(($script:R | Where-Object { $_.skip } | ForEach-Object { $_.n }) -join ' / ')"
+    "   处置 = 换**普通权限**会话重跑本门禁；在该上下文下 SKIP 必须变成 PASS。"
+}
 if ($fail -gt 0) { exit 1 }
 exit 0

@@ -60,8 +60,26 @@ beta7–beta11 的 10 个归档 + 8 个解包目录（1.7 GB）。**要留证据
 
 裸跑单个 `verify-*.ps1` 会绕开仓库锁、单步超时、STALE 新鲜度闸与产物指纹核对——只适合调试，不算验收。
 
-## 3. 测试层三条硬规矩
+## 3. 测试层硬规矩
 
+- **⑥ 不许跑全量（2026-11-13 立规；运行器层面拒跑，不是"尽量少跑"）**：`_run-step3-gates.ps1`
+  **没有选择器就直接 `exit 2`**，连锁都不拿。理由不是"省时间"这种软约束：
+  - 全量 104 条本机 ≈ **2 h**；修一个 bug 的验证只需 1~3 条针对性门禁（秒级~数分钟）。
+  - 全量读数**不可归因**——一轮下来只剩"某条红/绿"，根因还要逐条回看；细分单元跑"我刚改的这块"，
+    红/绿直接就是那个判据。
+  - 全量**掩盖局部改动**：改 A 因为 B 早已红而 rc=1 ⇒ "这次改动有没有引入回归"无从判断
+    （本仓历史上多次把别人的中途状态当基线）。
+  - **实测教训（立法当天）**：用户要修 bug，助手"顺手跑个基线"把 2 h 花在了错的地方。
+  ⇒ 三种细粒度跑法：
+  ```powershell
+  pwsh -NoProfile -File tests/scripts/_run-step3-gates.ps1 -ListUnits            # 看全部可选单元
+  pwsh -NoProfile -File tests/scripts/_run-step3-gates.ps1 -Domain ui            # 按能力域（账本 13 个域）
+  pwsh -NoProfile -File tests/scripts/_run-step3-gates.ps1 -Scripts verify-ui-host.ps1,verify-package-gui-starts.ps1
+  ```
+  `-FullBaseline` 是唯一的全量入口，**只允许在用户明确要求时使用**；Agent 不得自行决定。
+  该闸由形态自检 **第 ⑳ 针**盯着（标记 / 开关 / 条件片段 / 选择器变量四形），删掉或放宽即红。
+  ⚠ `-Domain` 的域 → 门禁映射取自账本 `entries[].carriers[].gate`，**不是**手写表 ⇒ 新增门禁只要
+  在账本里挂 carrier 就自动进域（挂漏了 = 该域少一条，`-ListUnits` 当场看得见）。
 - **生成物不手改**：`tests/projects/ui-*/<name>Group.cs` 由 `_gen-ui-split.ps1` 从 `UiTestHost/Program.cs`
   按行区间切片生成（断言字符串必须逐字保留）。改断言改单体，然后重跑生成器；
   `verify-ui-split-reproducible`（重跑两次 + 逐字节对撞）与 `verify-ui-split-union`（并集双向差集）会红。
@@ -657,6 +675,15 @@ pwsh -NoProfile -File tests/scripts/_run-step3-gates.ps1   # 104 条；整轮墙
   必红（80/1）⇒ 改 6 条新契约断言；② `probe-mirror-parity` 的 `cgkparity` 条数锁 9 → **13**（加断言必须同轮抬数写来历）。
   ⚠ 探针侧另修一形态缺陷：旧 `GetField(fn)!` 遇旧版库（缺字段）抛 `NullReferenceException` ⇒ 无名空引用且**后续判据
   整段不执行**；改为先核对两侧字段面、缺项点名。
+- **`verify-package-gui-starts` ⑥（托盘图标真被点亮）= 提权会话测不了 ⇒ 改 SKIP 点名（2026-11-13）**：
+  Windows 不允许高完整性进程调 `Shell_NotifyIcon(NIM_ADD)` 往交互桌面加图标（一律 **err=5**），
+  产品侧如实记 `create=failed` ⇒ ⑥ 的判据在提权下**物理上不可能成立**，旧行为是**永远红**
+  （所有人都学会忽略它 = 比没判据更坏）。修法：`提权 且 tray.log 明写 err=5` ⇒ **SKIP**（不计绿、
+  汇总行单独数、喊出"未判定"）；**其余任何情况（含非提权 err=5）⇒ 照旧 FAIL**。
+  变异（`$script:IsElevated` 强制 false）⇒ 立刻恢复 FAIL 并打 `[elevated=False err5=True ⇒ 非「提权+err5」
+  组合，按真缺陷判红]`。读数 `PASS=6 FAIL=0 SKIP=1`、rc=0（原 `PASS=6 FAIL=1`、rc=1）。
+  ⚠ **未决**：本机直接跑与 `schtasks` 计划任务跑**都是 High**（实测 `Mandatory Label\High`），造不出普通权限
+  对照 ⇒ ⑥ 的 PASS 形态**尚未本地验证**，须普通权限会话确认。
 
 ---
 

@@ -45,6 +45,19 @@ param([string]$Probes = 'contract,wire,verdict,selftest,iccname,plan,curve,matri
       # ⚠ 逗号分隔的**文件名**（含 .ps1），顺序不敏感；名字不在清单内 ⇒ 响亮报红而不是静默忽略。
       #   `pwsh -File` 下 `-Scripts a,b` 只会作为一个参数传入（与 $Probes 同一坑，见 :455），故这里自己切。
       [string]$Scripts = '',
+      # ⚠⚠ **全量轮必须显式点名**（2026-11-13 立规；AGENTS.md §3 硬规矩 ⑥ + TESTING.md §十）。
+      #   为什么立法：全量 104 条 ≈**2 h**，日常修一个 bug 跑它是纯浪费；更糟的是它把
+      #   「哪条门禁在守什么」糊成一整片读数，红一条要翻两小时日志才知道归属。
+      #   ⇒ 本条**没有默认值可用**：不给 `-Scripts` / `-Domain` / 本开关时运行器**直接拒跑**
+      #     （exit 2，连锁都不拿），不再"什么都不给就默默跑全量"。
+      #   ⚠ 只有**用户明确要求**全量时才允许加；会话里的 Agent 不得自行决定（2026-11-13 实测教训：
+      #     一次"顺手跑个基线"把 2 h 花在了用户要修 bug 的时候）。
+      [switch]$FullBaseline,
+      # 按**能力域**跑（账本 `entries[].domain`，13 个域）。细粒度单元选择的**推荐入口**：
+      #   `-Domain ui` ⇒ 该域全部承载门禁。域名单以账本 `domains` 为准（不在册 ⇒ 拒绝跑）。
+      [string]$Domain = '',
+      # 只列出可选单元（域 → 承载门禁），随后退出；不跑任何探针/脚本、不拿锁。
+      [switch]$ListUnits,
       # ⚠ #22（2026-09-19）：单步硬超时。标定依据 = 2026-09-19 整轮**全量实测分布**
       #   （探针 20 条 max 10.4 s / 合计 43.4 s；子脚本 42 条 max 158.9 s / 合计 848.6 s；总墙钟 892 s）
       #   ⇒ 脚本段取 max × ≈3 向上取整（480）。**探针段刻意宽**（2026-09-19 team-lead 定稿 = 120）：
@@ -69,6 +82,102 @@ param([string]$Probes = 'contract,wire,verdict,selftest,iccname,plan,curve,matri
       #     ⚠ 这条把的是**上限**、不是判据：bench 自己的绝对吞吐门槛在 `ProbeBench` 的分档注释里。
       [int]$ProbeTimeoutSec = 180,
       [int]$ScriptTimeoutSec = 900)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ⚠⚠ 硬规矩①（2026-11-13 立规，AGENTS.md §3 硬规矩 ⑥ / TESTING.md §十）：
+#    **禁止无选择器地跑全量**。这里在任何探针、任何锁、任何构建之前就拒掉。
+#
+#   立法理由（实测账，不是口号）：
+#    · 全量 104 条在本机 ≈ **2 h 00 m**（2026-11-13 轮实测 2h00m53s）；修一个 bug 的验证只需
+#      1~3 条针对性门禁（秒级~数分钟）。
+#    · 全量读数**不可归因**：一轮下来只剩「某条红/绿」，根因还得逐条回看；而细分单元跑
+#      「我刚才改的这块」时，红/绿直接就是那个判据。
+#    · 全量轮会**掩盖**局部改动：改 A 却因为 B 早已红而 rc=1 ⇒ 「这次改动有没有引入回归」无从判断
+#      （本仓历史上多次把别人的中途状态当基线，见 §8.4）。
+#    ⇒ 所以不是「尽量少跑」，而是**运行器层面拒跑**：要靠自觉的规则在压力下必然失效。
+#
+#   ⚠ 三个选择器（`-Scripts` / `-Domain` / `-FullBaseline`）**至少给一个**；
+#     `-SkipScripts`（只跑探针段、不跑子脚本）不含全量语义，放行。
+# ═══════════════════════════════════════════════════════════════════════════════
+$regUnitsPath = Join-Path $PSScriptRoot '_module-registry.json'
+
+if ($ListUnits) {
+  if (-not (Test-Path $regUnitsPath)) {
+    Write-Output "[FAIL] 账本不在盘：$regUnitsPath ⇒ 无可列单元"
+    exit 2
+  }
+  $regU = Get-Content $regUnitsPath -Raw -Encoding UTF8 | ConvertFrom-Json
+  Write-Output "可选测试单元（按能力域；域内 = 账本该域条目的承载门禁，去重后按名排序）"
+  Write-Output "================================================================"
+  foreach ($dm in @($regU.domains)) {
+    $gs = New-Object System.Collections.Generic.List[string]
+    foreach ($e in @($regU.entries)) {
+      if ([string]$e.domain -ne [string]$dm) { continue }
+      foreach ($c in @($e.carriers)) {
+        if ($c -and $c.gate) {
+          $g = [string]$c.gate
+          if (-not $gs.Contains($g)) { $gs.Add($g) }
+        }
+      }
+    }
+    $arr = @($gs | Sort-Object)
+    Write-Output ("  {0,-18} {1,2} 条  {2}" -f $dm, $arr.Count, ($arr -join ' '))
+  }
+  Write-Output "================================================================"
+  Write-Output "用法：pwsh -NoProfile -File tests/scripts/_run-step3-gates.ps1 -Domain ui"
+  Write-Output "      pwsh -NoProfile -File tests/scripts/_run-step3-gates.ps1 -Scripts verify-ui-host.ps1,verify-package-gui-starts.ps1"
+  Write-Output "      ⚠ 全量需 -FullBaseline，且**仅当用户明确要求**（默认拒跑）。"
+  exit 0
+}
+
+$selNamed = -not [string]::IsNullOrWhiteSpace($Scripts)
+$selDomain = -not [string]::IsNullOrWhiteSpace($Domain)
+if (-not $selNamed -and -not $selDomain -and -not $FullBaseline -and -not $SkipScripts) {
+  Write-Output ""
+  Write-Output "[REFUSED] 未给选择器 ⇒ 本轮等于**全量 104 条**（本机 ≈2 h）。"
+  Write-Output "          本仓硬规矩：**不许跑全量**（AGENTS.md §3 硬规矩 ⑥；2026-11-13 立）。"
+  Write-Output "          请改成下面任一种细粒度跑法："
+  Write-Output "            -ListUnits                                  看全部可选单元（域 → 门禁）"
+  Write-Output "            -Domain <matrix|color|gainmap|raw|anim|metadata-privacy|pngopt|threads|ops|tooldetect|packaging|ipc|ui>"
+  Write-Output "            -Scripts verify-xxx.ps1[,verify-yyy.ps1]     点名到条"
+  Write-Output "            -SkipScripts                                 只跑探针段（不含子脚本）"
+  Write-Output "          确需全量 ⇒ 加 -FullBaseline，**且必须是你明确要求的**（Agent 不得自行决定）。"
+  Write-Output ""
+  exit 2
+}
+if ($FullBaseline -and ($selNamed -or $selDomain)) {
+  Write-Output "[FAIL] -FullBaseline 与 -Scripts/-Domain 互斥（一个说全跑、一个说只跑几条）⇒ 拒绝跑。"
+  exit 2
+}
+# ⚠ `-Domain` 的**名字合法性**必须在这里就判，不能等子集段（那在探针段之后）：
+#   拼错一个域要先把探针段跑满（本机 ≈3 min，含 bench 95 s）才知道名字错，纯浪费。
+#   展开成脚本清单仍在子集段（要拿 `$scriptList` 做「是否受管」校验）。
+if ($selDomain) {
+  if (-not (Test-Path $regUnitsPath)) {
+    Write-Output "[FAIL] -Domain 需要账本 $regUnitsPath（不在盘）⇒ 无法展开域"
+    exit 2
+  }
+  $regEarly = Get-Content $regUnitsPath -Raw -Encoding UTF8 | ConvertFrom-Json
+  $earlyDomains = @($regEarly.domains | ForEach-Object { [string]$_ })
+  if ($earlyDomains -notcontains $Domain) {
+    Write-Output ("[FAIL] -Domain '{0}' 不是账本声明的域（可选 {1} 个：{2}）" -f $Domain, $earlyDomains.Count, ($earlyDomains -join ', '))
+    exit 2
+  }
+  $earlyGates = @(@($regEarly.entries) | Where-Object { [string]$_.domain -eq $Domain } |
+      ForEach-Object { @($_.carriers) } | Where-Object { $_ -and $_.gate } |
+      ForEach-Object { [string]$_.gate } | Sort-Object -Unique)
+  if ($earlyGates.Count -eq 0) {
+    # 域在册但零承载门禁 ⇒ 该域**没有任何门禁在守**，这本身就是要看见的结论，不许静默跑 0 条。
+    Write-Output ("[FAIL] -Domain '{0}' 在账本里没有任何承载门禁（carriers 全空）⇒ 该域零覆盖，拒绝跑（不假装跑过）" -f $Domain)
+    exit 2
+  }
+}
+if ($FullBaseline) {
+  Write-Output ""
+  Write-Output "[FULL-BASELINE] ⚠ 显式 -FullBaseline：本轮跑**全部**受管脚本（≈2 h，读数不可归因）。"
+  Write-Output "[FULL-BASELINE] 本开关只应出现在「用户明确要求跑全量」的会话里；否则请退回 -Domain / -Scripts。"
+  Write-Output ""
+}
 # ⚠ geometry mode（2026-09-17 新增）**必须**在默认清单里，理由是一条实测缺陷：
 #   `RawColorPipeline.cs:94-129` 的「引擎几何缩放」在默认路径上**永不执行** ——
 #   `QueueProcessor.cs:429-496` 的**预缩放**在**路由之前**跑，并在 `:487` 改写 `captured.InputPath`
@@ -592,6 +701,28 @@ function Test-RunnerShape {
   $iList = $t.IndexOf(('$' + 'scriptList = @('))
   $iLoad = $t.IndexOf(('script' + 'TimeoutTable = $null'))
   if ($iList -lt 0 -or $iLoad -lt 0 -or $iLoad -lt $iList) { $bad.Add("C4 装载块位置 = 清单@$iList / 装载@$iLoad（须在清单之后）") }
+  # ⑳ **全量拒跑闸**（2026-11-13 立规，AGENTS.md §3 硬规矩 ⑥）。没有这一针时：有人「为了省事」删掉早闸
+  #  或把它的条件改宽（例如去掉 `-not $SkipScripts`、或干脆整段注释掉），整轮又回到「什么都不给就默默
+  #  跑 2 h」——**而任何一条判据都不会红**（全量本来就会把该红的都跑一遍，读数看起来"更全"）。
+  #  ⇒ 这条把**闸的存在形态**钉住，四形各须恰 1：
+  #    ① 拒绝标记（用户/日志能看见的唯一凭据）
+  #    ② `-FullBaseline` 参数声明（没有它就无法显式放行，闸会变成"永远拒跑"）
+  #    ③ 闸的条件片段（四条件**同时**在场才算 —— 只留一半等于半开）
+  #    ④ 选择器判定变量（`$selNamed` / `$selDomain` 各须 ≥2：定义 + 使用）
+  #  token 一律拼接构造（本函数读自己的源码，写全会把针钉在自己那行上 = 同义反复）。
+  $nRefused = '[REF' + 'USED]'
+  $nFullSw = '[switch]$Full' + 'Baseline'
+  $nGuard = '-and -not $Full' + 'Baseline -and -not $SkipScripts'
+  $nSelN = '$sel' + 'Named'
+  $nSelD = '$sel' + 'Domain'
+  $cRefused = ([regex]::Matches($t, [regex]::Escape($nRefused))).Count
+  $cFullSw = ([regex]::Matches($t, [regex]::Escape($nFullSw))).Count
+  $cGuard = ([regex]::Matches($t, [regex]::Escape($nGuard))).Count
+  $cSelN = ([regex]::Matches($t, [regex]::Escape($nSelN))).Count
+  $cSelD = ([regex]::Matches($t, [regex]::Escape($nSelD))).Count
+  if ($cRefused -ne 1 -or $cFullSw -ne 1 -or $cGuard -ne 1 -or $cSelN -lt 2 -or $cSelD -lt 2) {
+    $bad.Add("全量拒跑闸 = 标记:$cRefused 开关:$cFullSw 条件:$cGuard 选择器:$cSelN/$cSelD ⇒ 四者各须 1/1/1/≥2/≥2；缺一 = 闸被删或条件被放宽（本仓硬规矩⑥不许跑全量）")
+  }
   return $bad
 }
 
@@ -914,7 +1045,7 @@ if ($shapeBad.Count -gt 0) {
   Release-GatesLock
   exit 2
 }
-Write-Output "shape-selfcheck=OK（19 针：定义点 / 调用点 / 带超时调用点 / 裸取 A / 裸取 B / 进程对象取码 / 写 rc 点 / 读 rc 点 / 杀树 token / 抑制点 / 探针超时默认值 / 脚本超时默认值 / tableOnly 条数 / noSelfSummary 条数 / 读失败不沿用 / 自身指纹 / 散文条数 / 受管参数表 / C4 超时表）"
+Write-Output "shape-selfcheck=OK（20 针：定义点 / 调用点 / 带超时调用点 / 裸取 A / 裸取 B / 进程对象取码 / 写 rc 点 / 读 rc 点 / 杀树 token / 抑制点 / 探针超时默认值 / 脚本超时默认值 / tableOnly 条数 / noSelfSummary 条数 / 读失败不沿用 / 自身指纹 / 散文条数 / 受管参数表 / C4 超时表 / 全量拒跑闸）"
 
 # ── ⚠ #28：启动时记录**运行器自身**指纹（收尾前重测 ⇒ 不一致则响亮告警）────────────────
 # ⚠ 这一行**有意打印**（收尾还有一行）：日志里出现 hash 是**预期**的，不是异常。
@@ -1912,23 +2043,37 @@ if ($actualScriptCount -ne $expectedScriptCount) {
   $failedItems.Add("runner:脚本清单条数 $actualScriptCount ≠ 基线 $expectedScriptCount")
 }
 Write-Output "script-list=$actualScriptCount 条（受管基线 $expectedScriptCount）"
-# ── `-Scripts` 子集解析（2026-09-24）──────────────────────────────────────────────
-# 条数锁**始终对全数组生效**（它校验的是清单本身，与本次跑几条无关）；子集只影响下面跑哪些。
+# ── 细粒度单元选择（`-Scripts` 2026-09-24 / `-Domain` 2026-11-13）─────────────────────
+# 条数锁**始终对全数组生效**（它校验的是清单本身，与本次跑几条无关）；选择器只影响下面跑哪些。
+# ⚠ 本仓硬规矩⑥：**不许跑全量** ⇒ 上方的早闸已保证「走到这里必有选择器或 -FullBaseline」。
 $subsetTag = ''
 $runList = $scriptList
+$wantNamed = @()
 if (-not [string]::IsNullOrWhiteSpace($Scripts)) {
-  $want = @($Scripts -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+  $wantNamed = @($Scripts -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+}
+$wantDomain = @()
+if ($selDomain) {
+  # 名字合法性与「非空」已在上方早闸判过（避免拼错要等整段探针）；这里只负责落成脚本名。
+  $wantDomain = @($earlyGates)
+}
+$want = @(@($wantNamed) + @($wantDomain) | Where-Object { $_ } | Select-Object -Unique)
+if ($want.Count -gt 0) {
   $unknown = @($want | Where-Object { $scriptList -notcontains $_ })
   if ($unknown.Count -gt 0) {
     # 打错名字静默忽略 ⇒ "看着跑过了其实没跑"，正是本仓最忌的假绿 ⇒ 响亮拒绝。
-    Write-Output ("[FAIL] -Scripts 里有 $($unknown.Count) 个名字不在受管清单内：$($unknown -join ', ')")
-    $failedItems.Add("runner:-Scripts 名字不在清单（$($unknown -join ', ')）")
-    Exit-WithSummary "（-Scripts 参数非法，拒绝跑）"
+    Write-Output ("[FAIL] 选择器里有 $($unknown.Count) 个名字不在受管清单内：$($unknown -join ', ')")
+    Release-GatesLock
+    exit 2
   }
   $runList = @($scriptList | Where-Object { $want -contains $_ })
-  $subsetTag = "（-Scripts 子集 $($runList.Count)/$actualScriptCount 条 ⇒ **不构成基线**）"
-  Write-Output ("[SUBSET] 只跑 $($runList.Count) 条：$($runList -join ', ')")
-  Write-Output "[SUBSET] 仓库锁 / 单步超时 / STALE / 双漂移 / 逐条留痕 **仍然全部生效**；宣布新基线需跑全量。"
+  $tagSrc = ''
+  if (-not [string]::IsNullOrWhiteSpace($Domain)) { $tagSrc = "-Domain $Domain" }
+  if ($wantNamed.Count -gt 0) { $tagSrc = $tagSrc + $(if ($tagSrc) { ' + ' } else { '' }) + "-Scripts" }
+  $subsetTag = "（$tagSrc 子集 $($runList.Count)/$actualScriptCount 条 ⇒ **不构成基线**）"
+  Write-Output ("[SUBSET] $tagSrc ⇒ 只跑 $($runList.Count) 条：$($runList -join ', ')")
+  Write-Output "[SUBSET] 仓库锁 / 单步超时 / STALE / 双漂移 / 逐条留痕 **仍然全部生效**。"
+  Write-Output "[SUBSET] 本仓硬规矩⑥：**不许跑全量**；要跑必须 -FullBaseline 且用户明确要求（AGENTS.md §3）。"
 }
 # ── C4 per-script 超时表（2026-11-12 批 5，docs/TEST_MODULE_PLAN §2 批 5）──────────────
 #   单一真值 = tests/scripts/_module-registry.json 的 locks."script-timeouts".table；

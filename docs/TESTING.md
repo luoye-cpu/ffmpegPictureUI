@@ -6467,3 +6467,84 @@ bench 两条经**同一份 `ServiceProbe.dll`（`3C36FDFCE451CF8A`，mtime `01:0
 - `cli.gui` — option · blind · 承载 — · 名 `--gui`
 
 <!-- module-index:end -->
+
+---
+
+## 十、细粒度跑测试（2026-11-13 立规：**不许跑全量**）
+
+### 10.1 规则本身
+
+`tests/scripts/_run-step3-gates.ps1` **没有选择器就直接 `exit 2` 拒跑**（在任何探针、任何锁之前）。
+这不是"节省时间"的软建议，是运行器层面的硬闸，由形态自检**第 ⑳ 针**盯着（拒绝标记 / `-FullBaseline`
+开关 / 条件片段 / 选择器变量四形各须在场，删掉或放宽即红）。
+
+三条依据：
+
+1. **全量 104 条本机 ≈ 2 h**（2026-11-13 实测 2h00m53s）；修一个 bug 的验证只需 1~3 条门禁。
+2. **读数不可归因**：全量只剩"某条红/绿"，根因还要回看两小时日志；细分单元跑"刚改的那块"，
+   红/绿直接就是那个判据。
+3. **全量掩盖局部改动**：改 A 却因为 B 早就红而 rc=1 ⇒ "这次改动有没有引入回归"无从判断。
+
+### 10.2 三种跑法
+
+```powershell
+# ① 先看有什么可选（域 → 承载门禁；不跑任何东西、不拿锁）
+pwsh -NoProfile -File tests/scripts/_run-step3-gates.ps1 -ListUnits
+
+# ② 按能力域（账本里 13 个：matrix / color / gainmap / raw / anim / metadata-privacy /
+#              pngopt / threads / ops / tooldetect / packaging / ipc / ui）
+pwsh -NoProfile -File tests/scripts/_run-step3-gates.ps1 -Domain gainmap
+
+# ③ 点名到条（最细）
+pwsh -NoProfile -File tests/scripts/_run-step3-gates.ps1 -Scripts verify-gainmap-isobmff.ps1,verify-gainmap-jxl.ps1
+```
+
+- 子集跑**保留**仓库锁 / 单步超时 / STALE / 双漂移 / 逐条留痕五项保护，但汇总行会**自陈
+  「子集 N/104 ⇒ 不构成基线」**——引用读数前先读那一行。
+- `-Domain` 的映射取自账本 `entries[].carriers[].gate`（**不是手写表**）：新增门禁只要在账本里
+  挂 carrier 就自动进域；挂漏了 `-ListUnits` 当场看得见条数少。
+- 域名不在册 / 域在册但零承载门禁 ⇒ **都拒跑**（后者尤其重要：静默跑 0 条 = 假装验过）。
+- `-FullBaseline` 是唯一全量入口，**只在用户明确要求时使用**；Agent 不得自行决定。
+  它与 `-Scripts`/`-Domain` 互斥（一个说全跑、一个说只跑几条）。
+
+### 10.3 立法当天的实测账
+
+| 形态 | 读数 |
+|---|---|
+| 不给选择器 | 拒绝标记 + 「全量 104 条（≈2 h）」提示，**rc=2**，零探针零脚本 |
+| `-ListUnits` | 13 个域全部列出（`packaging 3 条`、`ui 5 条`、`matrix 9 条`…），rc=0 |
+| `-Domain bogus` | 早闸即拒（不等探针段），列 13 个合法域名，rc=2 |
+| `-FullBaseline -Scripts x` | 互斥拒跑，rc=2 |
+| `-Domain ipc` | `[SUBSET] … 只跑 1 条`，`verify-ipc-extra-options 27/0 @13.5s to=900s`，rc=0 |
+| 形态自检 | **20 针 OK**（新增第 ⑳「全量拒跑闸」） |
+| 变异（把闸条件废成 `$false`） | 第 ⑳ 针报 `条件:0`，rc=2；恢复后 20 针复绿 |
+
+### 10.4 与 §八 的关系
+
+§八 记的是**一次**全量轮（2h00m53s / 8 红）的处置账，**不是**以后的默认动作。
+本轮之后的全量只应出现在「用户明确要求」或「宣布新基线」这两种场合，且必须 `-FullBaseline` 显式点名。
+
+### 10.5 「本上下文测不了」必须 SKIP 点名，不许长期红（2026-11-13）
+
+细分单元的另一个前提是**每条读数可信**。一条在某种上下文下**物理上不可能成立**的判据如果照旧判红，
+结果不是"更严格"，而是所有人学会忽略它——这比没有判据更坏。
+
+本次落地的第一条：`verify-package-gui-starts` 的 **⑥（托盘图标真被点亮）**。
+
+- **根因**：Windows 不允许**高完整性**进程调 `Shell_NotifyIcon(NIM_ADD)` 往交互桌面加图标，
+  一律返回 **err=5**，产品侧如实记 `create=failed`。⇒ 提权会话里 ⑥ 的判据（`create=ok` +
+  `IsVisible=True`）**不可能成立**，红的是上下文不是代码。
+- **修法**（判据一个字没改，只把两件事分开）：
+  `提权 且 tray.log 明写 err=5` ⇒ **SKIP 点名**（不计绿、汇总行单独数 `SKIP=n`、并喊出"未判定"）；
+  **其余任何情况（含非提权下的 err=5）⇒ 照旧 FAIL**。
+- **为什么两个条件都要**：只凭"我是管理员"就放过，会让提权下的**真**托盘缺陷逃掉。
+- **变异验证**：把 `$script:IsElevated` 强制成 `$false` ⇒ ⑥ 立刻恢复 FAIL，读数
+  `[elevated=False err5=True ⇒ 非「提权+err5」组合，按真缺陷判红]`；恢复后回 SKIP。
+- ⚠ **未决**：本机直接跑与 `schtasks` 计划任务跑**都是 High**（实测 `Mandatory Label\High`），
+  造不出普通权限对照 ⇒ ⑥ 的 **PASS 形态尚未在本机被本地验证**，须由普通权限会话确认
+  （SKIP 文案里已写明这条要求，不许当绿读）。
+- 读数：`gui-starts: PASS=6 FAIL=0 SKIP=1`，rc=0（此前 `PASS=6 FAIL=1`、rc=1）。
+
+**这条规则的通用形态**：凡判据依赖"进程上下文 / 硬件 / 外部工具"而当前环境不满足时，
+**输出 SKIP + 写明缺什么 + 在什么上下文下必须 PASS**，并让 SKIP 在汇总行可见；
+禁止用"长期红"来充当"我们验过了"。
