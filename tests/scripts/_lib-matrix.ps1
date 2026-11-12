@@ -421,7 +421,12 @@ function Get-EquivalenceClasses {
             #   的 `switch (fmt)` 新增 `case "webm"`（约 +49 行）及 webm range/`-t` 钳制/alpha 链增行，
             #   其**下方**行号整体下移；锚点字面量与语义一字未动（`_probe-matrix-structure` 实测 found-at 复核）。
 
-            'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:1156|options.JpegGainMap ? null : "iec61966-2-1", ColorSpaceRegistry.ContainerYuvMatrix(fmt), 8, true'
+            # ⚠ pin 演进（2026-11-13，批 5 余波·全量轮抓到）：**再 +173**（1156 → **1329**）。成因 = 11-11 起三笔
+            #   src 批（9c67701 AVIF ALPHA0/aux alphamerge +22、0f6c11a 输出矩阵模式 +138/−4、544ca22 HEIC 解码八项
+            #   +50/−2，均在 `case "webm"` 之上/之内插入）把该锚点整体下移；`git log -S` 实测字面量自
+            #   2026-09-20 起未变 ⇒ **纯行漂移**。⚠ 账本规矩「改 src 就重跑探针核 pin」第五次未被执行 ⇒
+            #   这条正是全量轮里 A21/A30 六条红的来源（探针只判「字面量在不在这行」，不猜语义）。
+            'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:1329|options.JpegGainMap ? null : "iec61966-2-1", ColorSpaceRegistry.ContainerYuvMatrix(fmt), 8, true'
         )
         Rationale = 'JPEG container caps bit depth at 8 and DecideOutputColor rewrites options.BitDepth in place, so 8/10/12/16 are observationally equal'
     }
@@ -449,7 +454,9 @@ function Get-EquivalenceClasses {
             # ⚠ pin 演进（2026-11-03，TG 视频贴纸批）：**再 +85**（1083 → **1168**）。成因 = 同 jpeg8 那条
             #   （case "webm" 插入使下方整体下移）；锚点字面量与语义一字未动。
 
-            'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:1168|return (null, "iec61966-2-1", ColorSpaceRegistry.ContainerYuvMatrix(fmt), 8, true);'
+            # ⚠ pin 演进（2026-11-13）：**再 +173**（1168 → **1341**），与上一条同因（三笔 src 批的插入把下方下移），
+            #   字面量与语义一字未动（`_probe-matrix-structure` 的 found-at 复核已确认唯一命中）。
+            'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:1341|return (null, "iec61966-2-1", ColorSpaceRegistry.ContainerYuvMatrix(fmt), 8, true);'
         )
         Rationale = 'WebP container caps bit depth at 8 and DecideOutputColor rewrites options.BitDepth in place, so 8/10/12/16 are observationally equal'
     }
@@ -661,7 +668,10 @@ function Get-SemanticMatrices {
                 #   2026-10-02 U4b 第三半把 default 收窄 + 加"这条后端根本没有 tune 通路"的中心播报）。
                 #   抬号前已按本仓规矩 `grep -n` 复核实况行，并确认该字面量在全文件**只出现一次**
                 #   （行号锚不容歧义）。见 docs/TESTING.md §6 第 112 条。
-                'src/FfmpegGui/Services/ColorMapping/ImageEncoderArgs.cs:852|if (fmt is "png" or "tiff" or "apng" or "jxl")'
+                # ⚠ pin 演进（2026-11-13，批 5 余波·全量轮抓到）：**再 +26**（852 → **878**）。成因 = 0f6c11a
+                #   「输出矩阵模式」在 `ImageEncoderArgs.cs` 上方插入 39 行（`git log --numstat` 实读 39 增 0 删）；
+                #   `git log -S` 实测该字面量自 2026-09-28 起未变 ⇒ **纯行漂移**，唯一命中已 `grep -n` 复核。
+                'src/FfmpegGui/Services/ColorMapping/ImageEncoderArgs.cs:878|if (fmt is "png" or "tiff" or "apng" or "jxl")'
             )
         },
         @{
@@ -738,7 +748,9 @@ function Get-SemanticMatrices {
                 # ⚠ pin 演进（2026-11-03，TG 视频贴纸批）：**再 +85**（2478 → **2563**）。成因 = case "webm"
                 #   及其配套增行使下方整体下移；锚点字面量与语义一字未动。
 
-                'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:2563|bool exiftoolFormats = fmt is "jpg" or "jpeg" or "png" or "tiff" or "webp";'
+                # ⚠ pin 演进（2026-11-13）：**再 +204**（2563 → **2767**）。比 jpeg8/webp8 的 +173 多 31 =
+                #   1200~2563 之间又有一处插入（0f6c11a 的输出矩阵段）；字面量自 2026-07-14 起未变。
+                'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:2767|bool exiftoolFormats = fmt is "jpg" or "jpeg" or "png" or "tiff" or "webp";'
             )
         },
         @{
@@ -758,7 +770,8 @@ function Get-SemanticMatrices {
                 #   （2026-10-01 第一半补 libaom tune `default:` 播报、2026-10-02 第二半改
                 #   `NormalizeTuneToken` 的两义性、第三半加"这条后端没有 tune 通路"的中心播报）；
                 #   唯一性同样已 `grep -n` 核过。
-                'src/FfmpegGui/Services/ColorMapping/ImageEncoderArgs.cs:804|AvifMaxBitDepthForEncoder(string? encoder)',
+                # ⚠ pin 演进（2026-11-13）：**再 +26**（804 → **830**），与 encoder-core 同因（0f6c11a 的 39 行插入）。
+                'src/FfmpegGui/Services/ColorMapping/ImageEncoderArgs.cs:830|AvifMaxBitDepthForEncoder(string? encoder)',
                 # ⚠ pin 演进（2026-10-25）：1057 → **1065**（+8），同 metadata-core 的成因；字面量未动。
                 # ⚠ pin 演进（2026-11-03，webp 出口范围口径批）：1065 → **1072**（+7）。成因 = 本轮在
                 #   `FfmpegCommandBuilder.cs` 的输出 `-color_range` 段（`:577-621`，含后加的 jpeg limited 放行段）重写注释并删掉反向回退
@@ -775,7 +788,8 @@ function Get-SemanticMatrices {
                 # ⚠ pin 演进（2026-11-03，TG 视频贴纸批）：**再 +85**（1115 → **1200**）。成因 = 同 jpeg8 那条
                 #   （case "webm" 插入使下方整体下移）；锚点字面量与语义一字未动。
 
-                'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:1200|return (null, null, null, ColorMapping.ImageEncoderArgs.AvifMaxBitDepth(options), false);',
+                # ⚠ pin 演进（2026-11-13）：**再 +173**（1200 → **1373**），与 jpeg8/webp8 同因。
+                'src/FfmpegGui/Services/FfmpegCommandBuilder.cs:1373|return (null, null, null, ColorMapping.ImageEncoderArgs.AvifMaxBitDepth(options), false);',
                 'src/FfmpegGui/Services/FfmpegCommandBuilder.Decision.cs:162|options.BitDepth = capBd;'
             )
         }

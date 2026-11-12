@@ -585,7 +585,47 @@ pwsh -NoProfile -File tests/scripts/_run-step3-gates.ps1   # 104 条；整轮墙
   2 个 mode 的绿记在 cli-strict 头上**。⚠ 修复过程工具坑：OrderedDictionary 整数下标按**插入位置**
   不按键（`$cmdArgv[$line]=@(...)` 全部静默丢失 ⇒ 36/35 大面积假红，教训存 memory）；组名自撞
   （mode 名整 token 住在工程路径里）随实参元素方案天然消失。取证 `tests/output/_tmp/batch5-deadbranch/`。
-  剩余批 5：TESTING.md 逐条索引从账本生成（漂移闸）、per-script 超时表（C4）。
+- **测试模块化批 5 收口·C4 超时表 + 索引生成（2026-11-13，清单 104 条不动）**：
+  ① **C4 per-script 超时表**：单一真值 = `_module-registry.json` 的 `locks."script-timeouts".table`
+  （`verify-color-strategy` / `verify-png-optimizer` 各 1200 s；表外仍用全局默认 900；表只许**抬**，
+  低于 900 = 门禁 ⑤ 红）。runner 装载点必须在 `$scriptList` **之后**（幽灵键校验要对清单）、逐条查表
+  覆写 `$_sTimeout`、结果行打 `to=<n>s`。⚠ **交接件里的 fail-closed 实为 fail-open**：装载失败分支
+  原调 `Exit-WithSummary`，而它在 `$failedItems` 为空时打「全部通过」并 `exit 0` ⇒ 删掉账本键后整轮
+  照绿；改 `Release-GatesLock; exit 2`（实测删键 ⇒ FAIL 读数 + rc=2 + 零脚本执行）。形态自检 18→**19 针**：
+  ⑲ 管**五形 + 装载块位置**（后两形由变异逼出——只把 `to=` 的 `-f` 实参换回 `$ScriptTimeoutSec` 时 ⑲ 曾全绿）。
+  读数：color-strategy **78/0 @267.1 s to=1200s**、registry **12/0**（5/5 负控）、script-list=104、错名 rc=1 仍拒。
+  ② **TESTING.md 逐条索引从账本生成（批 5 剩余项②）**：`verify-module-registry.ps1 -EmitIndex` 渲染
+  `<!-- module-index:begin/end -->` 段（**§九、文末追加**——中间插入会挪 coverage 探针 `:1115` /
+  cjk 扫描 `:1828` 两条行号锚，见 `docs/HANDOVER.md:3984`）；默认跑 = ⑥ 逐字节对撞并报「段内第 N 行：
+  现存[…] vs 生成[…]」。现量 **67 条 / 101 行 / 8777 B**，两次生成文件哈希不变（幂等）。
+  ⚠ 两个工具坑：`[Array]::Sort(keys, object[] items, cmp)` **keys 排了、items 没动**（改索引表排序）；
+  `Sort-Object` 走当前文化（`-` 权重随区域设置变）⇒ 排序一律序数比较。取证 `tests/output/_tmp/batch5-c4/`。
+- **全量轮（2026-11-13，104 条 / 2h00m / rc=1）抓到三类陈账：门禁状态污染 · 判据锚点漂移 · 环境读数**：
+  ① **门禁污染产品设置（最严重，已修）**：`verify-startup-warmup` 的 S8f/S8g 用 `FFMPEGGUI_DNGTOOL_PATH` /
+  `FFMPEGGUI_ARTIFACTS_DIR` 覆盖跑 headless，并故意把 `FFMPEGGUI_FFMPEG_DIR` 指空目录 ⇒ 子进程
+  `EnsureFfmpegDirectory` 走「重新发现 PLAN」分支并 `AppSettingsService.Save()`，而 Save 序列化整份
+  `_current`（含 env 覆盖值）⇒ **便携 `settings.json` 被写成 `DngToolPath=<ffmpeg.exe>`、
+  `WindowsArtifactsDir=<门禁临时空目录>`**。后果：同一轮里 `verify-metadata-privacy` ⑥ 报「RAW→PNG 未产出
+  png」，其日志里 dngtool 打的是 ffmpeg 的 banner + `Unrecognized option 'o'`。修法两条：`--settings <临时副本>`
+  （Save 写 `_loadedFrom` 且 explicit 分支不回退）+ 新判据 **S8h**（前后对撞便携 settings.json sha256）。
+  变异验证：去掉 `--settings` ⇒ S8h 转红且设置**逐字复现**上述污染（取证 `tests/output/_tmp/fullrun-1113/`）。
+  ⚠ 通用教训：**门禁用 env 覆盖跑产品时，必须同时隔离"产品会写回的文件"**——env 覆盖是内存态，任何
+  一次 Save 都会把它固化成用户设置。产品侧 `Save()` 仍会落盘覆盖值（本轮只在门禁侧隔离，未改产品语义）。
+  ② **判据锚点漂移（已修三处）**：`verify-startup-warmup` 的 S1/S1b/S8f/S8g 正则要求行尾即 ✅/❌，而
+  `Program.cs` 自 `e7d1292`（2026-11-11，工具报告来源可见）起追加 ` [PLAN]/[manual]/[app-adjacent]/…`
+  ⇒ 10 条假红（报告读成 0 行）；`verify-ffmpeg-heartbeat` 的 `RunAsync` 调用点锁 26 → **27**（新增点
+  `QueueProcessor.cs:6814`，`e592227` 的 Telegram 贴纸降码率重编码）；`_lib-matrix` 六处行号锚（1156→1329 /
+  1168→1341 / 852→878 / 2563→2767 / 804→830 / 1200→1373）随 11-11 起三笔 src 批漂移（`git log -S` 证字面量未变）。
+  ③ **本轮剩余 8 红（与批 5 无关，另起一轮）**：`verify-color-engine-xcheck`（**库侧**：ColorGainKit 的
+  `IsoBmffGainMapProbe` 停在 2026-10-12，709 行 vs 宿主 1407 行，读 `ref_libavif_solo_gainmapgrid.avif`
+  得 dimg 候选 0 ⇒ 11 处字段不等，需在 `C:\PLAN\ColorGainKit` 处理）、`verify-color-token-normalize`
+  （**900 s 超时挂死**，R5 之后无输出）、`verify-ui-host` + `verify-ui-split-union`（同一根因：ui-mode G2
+  `workers=[]`，前提「24MP 条目开始处理」30 s 未达成）、`verify-package-gui-starts` ⑥（托盘
+  `Shell_NotifyIcon(NIM_ADD) denied err=5` = 提权/受限会话族）、`verify-release-package`（出包 `exiftool.exe` /
+  `dngtool.exe` 与 `publish/PLAN` 指纹不等）、`_probe-host-temp-sites`（实扫 41 vs 表 39，
+  `65_ProbeMediaSvc.cs` 新增 2 站点未入表）、`_probe-color-matrix-scan`（`convmatrix_engine` 锚点 miss +
+  `CjpegliService` 的 `xyb` 命中 6 须 0）。**基线判读口径**：本轮 rc=1 由这 8 条构成，批 5 的
+  `verify-module-registry` / `verify-color-strategy` / 19 针 / `registry-timeouts` 全绿。
 
 ---
 

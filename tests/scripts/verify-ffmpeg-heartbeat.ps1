@@ -278,7 +278,12 @@ $runAsyncCount = ([regex]::Matches($qp, 'FfmpegRunner\.RunAsync')).Count
 #   `GainMapJpegCodec.DecodeArgsFor` 单点分派，兜底直解把 gamma 值当线性 ⇒ 产出的是提亮的错图而非报错，
 #   所以这一跳必须消失。**站点集合不变**（下面三条集合断言仍过 ⇒ 少的是 GainMap 那条不带显式心跳实参的
 #   调用点，四个预期站点一个没动），仅计数 −1。
-CK ($runAsyncCount -eq 26) "① QueueProcessor 里 `FfmpegRunner.RunAsync` 调用点仍为 26 处（实 $runAsyncCount）—— 未误伤"
+# ⚠ 2026-11-13：26 → **27**（+1）。新增点 = `QueueProcessor.cs:6814`（`e592227` 2026-11-04「动图输出新增
+#   Telegram 视频贴纸（WebM/VP9）+ 256KB 体积闭环」的**降码率重编码循环**，`ReplaceCrfValue` 后重跑 ffmpeg）。
+#   该点不带显式心跳实参 ⇒ 走 `RunAsync` 默认 `heartbeat = true`，故**站点集合不变、仅计数 +1**（与
+#   2026-10-28 的 −1 同一记账口径）。判据：`git blame -L 6805,6820` 落在 e592227；`$runAsyncCount`
+#   由源码计数得出，抬到 27 后必须复跑本门禁确认 ① 与后面三条站点集合断言同时绿。
+CK ($runAsyncCount -eq 27) "① QueueProcessor 里 `FfmpegRunner.RunAsync` 调用点仍为 27 处（实 $runAsyncCount）—— 未误伤"
 
 # ⚠ 断言**站点集合**而不是计数（lead 要求）：计数只能说「有 N 个」，说不清「是不是这 N 个」——
 #   把第 5 处误开、或把预期站点里的一个漏开，计数都可能凑巧还是 4。做法：

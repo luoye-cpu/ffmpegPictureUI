@@ -86,14 +86,20 @@ $p = Start-Process -FilePath $exe -ArgumentList @('--headless','--dry-run','--lo
      -Wait -NoNewWindow -PassThru -RedirectStandardOutput $so -RedirectStandardError "$out/app.err"
 $txt = ""
 if (Test-Path $so) { $txt = [System.IO.File]::ReadAllText($so) + [System.IO.File]::ReadAllText("$out/app.err") }
-$status = @($txt -split "`r?`n" | Where-Object { $_ -match '^\s{2}\S+: (✅|❌)$' })
+# ⚠ 2026-11-13：报告行尾多了**来源标签**（`  ffmpeg: ✅ [PLAN]`）。产品侧 `Program.cs` 自 e7d1292
+#   （2026-11-11「工具报告来源可见」）起对 8 行统一追加 ` [src]`，取值来自 `ClassifyToolSource`：
+#   PLAN / manual / app-adjacent / extended-search / PATH。本门禁的旧正则要求**行尾即 ✅/❌**
+#   ⇒ 整组 S1/S1b/S8f/S8g 假红（实测 10 条，报告读成「0 行」）。修法 = 允许一段**白名单内**的标签：
+#   不写成 `.*`（那会把任何垃圾后缀都当合法），标签词表变了照样红。
+$srcTag = '(?: \[(?:PLAN|manual|app-adjacent|extended-search|PATH)\])?'
+$status = @($txt -split "`r?`n" | Where-Object { $_ -match ('^\s{2}\S+: (✅|❌)' + $srcTag + '$') })
 Write-Host ("  [读数] headless 退出码=" + $p.ExitCode + "  状态行数=" + $status.Count)
 
 CK ($p.ExitCode -eq 0) "S0 headless --dry-run 退出码 0（实 $($p.ExitCode)）"
 CK ($status.Count -eq 8) "S1 headless 启动报告必须 8 行（实 $($status.Count)）—— 与 ProbeAllTools 的 8 项同名同数"
 foreach ($name in @('ffmpeg','cjxl','djxl','cjpegli','exiftool','JxrEncApp','avifenc','dngtool')) {
-  # 逐行匹配「两个空格 + 名字 + : + ✅/❌」⇒ 名字必须出现在**报告行**里，不是日志任意位置
-  $hit = @($status | Where-Object { $_ -match ('^\s{2}' + [regex]::Escape($name) + ': (✅|❌)$') }).Count
+  # 逐行匹配「两个空格 + 名字 + : + ✅/❌(+来源标签)」⇒ 名字必须出现在**报告行**里，不是日志任意位置
+  $hit = @($status | Where-Object { $_ -match ('^\s{2}' + [regex]::Escape($name) + ': (✅|❌)' + $srcTag + '$') }).Count
   CK ($hit -eq 1) "S1b 报告含 $name（实 $hit 行）"
 }
 
@@ -209,14 +215,31 @@ foreach ($d in @($emptyPlan, $emptyArt, $emptyFf, $emptyExt)) { New-Item -ItemTy
 #   `C:\Program Files` 等，把本门禁从 1.2 s 拖到实测 **417.5 s**。⇒ 必须指到一棵真空目录上。
 $isoEnv = [ordered]@{ 'FFMPEGGUI_PLAN_DIR' = $emptyPlan; 'FFMPEGGUI_ARTIFACTS_DIR' = $emptyArt;
                       'FFMPEGGUI_FFMPEG_DIR' = $emptyFf; 'FFMPEGGUI_EXT_SEARCH_DIRS' = $emptyExt }
+# ⚠⚠ 2026-11-13 实测事故（本门禁**污染了产品设置**，是"全量轮里 RAW 判据假红"的根因）：
+#   两跑用 env 覆盖 dngtool 路径 + `FFMPEGGUI_FFMPEG_DIR` 指空目录 ⇒ 子进程里
+#   `EnsureFfmpegDirectory` 走「重新发现 PLAN」分支并 **`AppSettingsService.Save()`**（自动发现值要持久化），
+#   而 Save 序列化的是**整份 _current**（含被 env 覆盖的 `DngToolPath` / `WindowsArtifactsDir`）
+#   ⇒ 便携 `settings.json` 被写成 `DngToolPath = <ffmpeg.exe>`、`WindowsArtifactsDir = <本门禁的临时空目录>`。
+#   实测后果：同一轮里 `verify-metadata-privacy` 的 ⑥ 报「RAW→PNG 未产出 png」，其日志里 dngtool 打的是
+#   ffmpeg 的 banner + `Unrecognized option 'o'`（= 拿 ffmpeg 当 dngtool 用）。
+#   ⇒ 修法两条一起上：
+#     ① `--settings <临时副本>`：Save 写的是 `_loadedFrom`，且 `_loadedFromExplicit` 分支**不回退**到便携文件
+#        ⇒ 子进程的任何自发改写都落在临时件上；
+#     ② S8h：前后对撞便携 `settings.json` 的 sha256（门禁不得改动持久设置）—— 这条才是长期牙齿，
+#        将来产品再引入"某条路径会 Save"时，泄漏会被当场点名而不是等下一条门禁假红。
+$settingsPin = Join-Path (Split-Path -Parent $fexe) 'settings.json'
+$pinBefore = if (Test-Path $settingsPin) { (Get-FileHash $settingsPin -Algorithm SHA256).Hash } else { '<absent>' }
 function Report-Line([string]$envKey, [string]$envVal, [string]$tag) {
   $saved = @{}
   foreach ($k in $isoEnv.Keys) { $saved[$k] = [Environment]::GetEnvironmentVariable($k); Set-Item -Path ('Env:' + $k) -Value $isoEnv[$k] }
   $saved[$envKey] = [Environment]::GetEnvironmentVariable($envKey)
   Set-Item -Path ('Env:' + $envKey) -Value $envVal
   $o = "$out/rep_$tag.out"
+  # 每次跑都从便携件的**原样副本**起步（上一跑写过的临时件不得成为下一跑的输入）
+  $seed = "$out/rep_$tag.settings.json"
+  if (Test-Path $settingsPin) { Copy-Item $settingsPin $seed -Force } else { [System.IO.File]::WriteAllText($seed, '{}') }
   try {
-    $pp = Start-Process -FilePath $fexe -ArgumentList @('--headless','--dry-run','-i',$in,'-o',"$out/rep_$tag",'--format','jpg') `
+    $pp = Start-Process -FilePath $fexe -ArgumentList @('--headless','--dry-run','--settings',$seed,'-i',$in,'-o',"$out/rep_$tag",'--format','jpg') `
          -Wait -NoNewWindow -PassThru -RedirectStandardOutput $o -RedirectStandardError "$out/rep_$tag.err"
   } catch { Write-Host "  [读数] $tag 起进程失败：$($_.Exception.Message)"; return '' }
   foreach ($k in $saved.Keys) {
@@ -228,7 +251,7 @@ function Report-Line([string]$envKey, [string]$envVal, [string]$tag) {
   #   ⇒ 匹配失败会被读成「行缺失」（本函数第一版就是这么假红的）。先按 `r?`n 切行再逐行判，与 S1 同口径。
   $v = ''
   foreach ($l in ($tx -split "`r?`n")) {
-    if ($l -match '^  dngtool: (✅|❌)$') { $v = $Matches[1]; break }
+    if ($l -match ('^  dngtool: (✅|❌)' + $srcTag + '$')) { $v = $Matches[1]; break }
   }
   Write-Host ("  [读数] $tag ⇒ dngtool 行 = " + $(if ($v -ne '') { "dngtool: $v" } else { '<缺失>' }))
   return $v
@@ -241,6 +264,9 @@ if (Test-Path $realFf) {
 } else {
   Write-Host "  [SKIP] S8g 缺 $realFf ⇒ 对照组不成立（**不给绿**，只跳过）"
 }
+# S8h：门禁不得改动**持久设置**（2026-11-13 事故的长期牙齿，见 Report-Line 上方的实测记录）
+$pinAfter = if (Test-Path $settingsPin) { (Get-FileHash $settingsPin -Algorithm SHA256).Hash } else { '<absent>' }
+CK ($pinBefore -eq $pinAfter) "S8h 门禁不得改动便携 settings.json（sha 前 $($pinBefore.Substring(0,[Math]::Min(12,$pinBefore.Length))) → 后 $($pinAfter.Substring(0,[Math]::Min(12,$pinAfter.Length)))）—— 不等 ⇒ 又有条路径在 Save 被 env 覆盖的值"
 
 # ── 汇总 ──
 Write-Host ""
