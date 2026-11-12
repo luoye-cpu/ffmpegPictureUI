@@ -12,7 +12,13 @@
 
 ## 📝 更新日志
 
-### 未发布（开发线 2026-11-04，检测一致性批）— 跨设备检测不一致定位与修复：失效重发现 / 缓存分档 / 伪 PLAN 拒绝 / 来源可见
+### v1.6.0-beta13 (2026-11-13) — 检测一致性 + JXL 增益图读写两侧 + .NET 11 GA 钉版 + 测试模块化（清单 94→104）与「不许跑全量」硬规矩
+
+> 本档跨 **38 个提交**（2026-11-04 → 11-13），是 beta12 之后的一次大跨度合档，十条主线按落地顺序排列。
+> 从 ⑨ 起属「测试基础设施」面：产品行为零变化，但测试的**执行方式**从此被定死为**细分单元**——
+> 运行器无选择器即拒跑，那个 ≈2 h 的全量 104 条不再可能被顺手启动（见 ⑨ 末条）。
+
+**① 跨设备检测一致性（2026-11-04，清单 94→95）：失效重发现 / 缓存分档 / 伪 PLAN 拒绝 / 来源可见**
 
 > 背景：维护者报「很多设备上检测不一致」。Lead 全链复盘定位出六条检测链上的六处放大器
 > （B1 settings 失效路径钉死 · B2 编码器缓存不分档 · B3 GPU 空报告缓存 · B4 cwd 依赖的 PLAN 发现 ·
@@ -27,6 +33,75 @@
 - **实机取证**（`tests/output/_tmp/detect_evidence/`）：A1 auto+失效 ⇒ 出声重发现 + 落盘 + 转换 exit=0；A2 legacy+失效 ⇒ 三行出声（含「会话改用、不覆写」）+ settings 仍为原值 + exit=0；B 组双 ffmpeg（系统 `C:\PLAN\FFmpeg` vs 随包）各自解析正确、来源标签可辨；C 组 cwd 空壳 PLAN 被拒（来源=exe-dir 继续降级）。
 - **相关链路复跑**：settings-clone-coverage **8/0**（有牙自证在）；CJK 硬编码扫描 **14/0**；矩阵结构 **8/0**；sln 构建 **0 警告 0 错误**（Win32TrayIcon 两条既有分析器告警除外——AGENTS 已登记独立批）。
 - **边界**（如实）：B2 的进程内分档行为没有端到端闸（两进程演示覆盖解析层；in-process 换 ffmpeg 走 GUI「换目录即全量清缓存」路径）；GUI ctor 解析路径无 GUI 级点击实测（headless 与其同走单点函数）；整轮未跑（本批只跑相关链路）；`-hwaccels` 信息行与 `CompiledHwaccels` 字段为新增展示面，UI 深色主题下的排版未核。
+
+**② JXL 增益图两侧（2026-11-08，清单 95→97）：纯托管 jhgm 写出 + 读侧识别播报**
+
+- 写侧（新 `JxlGainMapWriter.cs`）：`sig + ftyp + jhgm + jxlc`，**`jhgm` 必须在 `jxlc` 之前**（尾随 box 在码流 >4096 B 时会被部分读者漏读，zenjxl #22）；载荷序 = `version(1) + BE16 元数据长 + ISO 21496-1 blob + 颜色编码长(1) + BE32 alt ICC 长 + 增益图`（尺寸不落盘，对齐 `gain_map.cc:118-145`）。选纯托管而不调 libjxl：随包是静态 exe、**无 DLL 可 P/Invoke** ⇒ 这是唯一零工具链变更的写路径。`GainMapEncoder` 加 `.jxl` 承载 + `jxl` 分支（v1 只支持 sRGB 底；bt2020 底 D6 拒绝、`both` 降级出声）；`CjxlService` 的子图只发 `-d/-e`——任何 `-x` 或 `--intensity_target` 都会让产物变成容器件（双重守卫 + 负控）。
+- 读侧（新 `JxlGainMapProbe.Scan`）：纯托管顶层 box 遍历识别 `jhgm`；`brob` 压缩壳**零解压**识别（载荷前 4 B 即原始 box 类型）；**裸码流构造性判无**；box 链中断 fail-closed（`Determinate=false`，调用方不得当成「没有」）；不做窗口扫描兜底（压缩码流里出现 ASCII `jhgm` 会误报）。
+- 诚实口径：**JXL→JXL 也不保留增益图**——两侧都是 `djxl→cjxl` 像素级重编码，容器 box 不随行（「确认透传」的原设想被实测推翻）。`QueueProcessor` 单点播报输入含 `jhgm`（`form=jhgm` / `jhgm-brob` + 字节读数），Status 带 ASCII 后缀 ` (gain map NOT preserved)`。
+- 门禁：第 96 条 `verify-gainmap-jxl` **29/0**——正控含 **djxl 独立解码「抽出来的增益图裸码流」**（libjxl 认它是完整合法码流，不只长度闭合）；负控「增益图中段改坏而长度字段不变 ⇒ `jxlinfo` 照对、djxl 解不出」证明 djxl 臂**不是 `jxlinfo` 读数的复读**。第 97 条 `verify-jxl-gainmap-readside` **28/0**（R1 识别播报 / R2 不静默丢三臂 / R3 参数面结构锁）。ServiceProbe 新 mode `jxlgm`（21 条）。
+- 后续批收紧（修复批 A2）：裁决把 `.jxl` 纳入**两图合成**（承载 = 容器 `jhgm` box）；`--gainmap-encoder` 对 jxl 建队即拒（子图恒由 cjxl 编、无选择面）；`GainMapComposeService` 的 JXL 回读自检改走 `JxlGainMapProbe.Scan` + ffprobe 尺寸——旧 `GainMapDecoder` 读不到 `jhgm`，会把**合法产物删掉**。`verify-gainmap-jxl` 33/0、`verify-gainmap-compose` 85/0。
+
+**③ HEIC 解码八项（2026-11-09）：底图错拼 / alpha / 旋转 / 截断 / 降级 / 退出码**
+
+56 件多形态语料 + 29 件真实设备样本三方对账（产品 headless / libheif 1.23.6 / 随包 ffmpeg）确认 8 项缺陷，本批修 7（D3/D4 根因在色彩引擎装配器，独立批次）：
+
+- **D1（P0）增益图网格被当底图**：组判据改为「主图是不是 grid 派生项」（`pitm` 权威，`Probe.PrimaryIsGridDerived`）——增益图自己组成组会让 `InputIsGroupDerived` 误判（`synth_heic_grid_gainmap` 的 64×48 被拼成 128×96 马赛克）。
+- **D2（P0）ISOBMFF alpha 静默丢弃**：探针识别 `auxC` URN=`auxid:1` 并入 `hasAlpha`；auto 位深补 `-pix_fmt rgba`；alphamerge 按 aux-alpha 分叉取灰度平面。
+- **D8（P1）iPhone `irot` 旋转丢失**：Apple 的 `irot`/`imir` 是**非规范 9 B 短形盒**（无 FullBox version/flags，按规范 `psz>=5` 恒漏检）⇒ 双形态兼容 + 施加 `imir→irot` 次序。
+- **D5（P2）截断件 ffmpeg 0xC0000005**：`iloc` extent 越过 EOF 预检（`CheckTruncationAsync`），截断件不进 ffmpeg，出人话日志。
+- **D6/D7（P3）增益图失败仍报「已完成」**：降级状态改「已完成 (降级：…)」+ `ExitCode=3` + 保留产物；`Program.cs` 把「降级」计入进程退出码 ⇒ CI/批处理机读可区分。
+- **D9** 拼接逐平面拷贝：`rawvideo gbrpf32le` 是 planar（G,B,R 三平面），按 packed 跨距写 = 通道与位置全乱。临时诊断字段（`DebugLastIpma/Props/Primary`）同批清除。
+- 读数：`verify-gainmap-isobmff` **119/0**、`verify-gainmap-host` 24/0、`verify-decision-delivery` 94/0。
+
+**④ 依赖三升（2026-11-09，随包工具同步换）**
+
+- Avalonia `12.1.4 → 12.1.5`（产品 3 包 + 测试 2 处 `Avalonia.Headless` 同批）：XAML 隐式 glob 与 12.1.4 逐行一致 ⇒ 显式 `<AvaloniaXaml>` 登记逻辑不受影响；编译产物二进制内实测嵌入全部 7 个 `.xaml` 且带 `x:class→XAML URI` 映射表，无 CS0102。
+- exiftool `13.60 → 13.61`：官方件取 SourceForge（exiftool.org 直链 404，`ver.txt` 定版本真值），sha256 与官方 `checksums-13.61.txt` 逐字一致；对语料枚举面零差异（复算 9526 == 9526）⇒ 零 `src/` 适配，仅版本表入册。
+- LibRaw vendored `0.22.0 → 0.22.3`（bugfix-only，不选 API 未冻结的 snapshot）⇒ 重编 dngtool，新 exe 8,262,656 B（−45 KB）；`verify-dng-metadata-transport` 105/0，且旧新两版**同窗对照零行为差异**。
+
+**⑤ 输出矩阵模式 + 一致性校验 + 多批次收口（2026-11-11，清单 97→100）**
+
+八主题聚合批：
+
+- **输出矩阵模式**（`--color-out-matrix` / GUI `OutputMatrixCombo` 紧挨色度抽样）：11 token 域（rgb / 601 族 / bt2020nc / ycgco / xyb）+ CLI 严格解析 + 规划层 `ResolveOutMatrixCapability`（C1–C13 判定表）+ 五出口落地（引擎 pixfmt-switch / legacy capM / cjxl / cjpegli `--xyb` / libjxl `-xyb`）。第 99 条 `verify-color-out-matrix` **58/0**。
+- **CMX 一致性校验**（A1 严口径 + B1 能力过滤）：显式 H.273 矩阵 ≠ 推导值 ⇒ 契约拒绝 `exit 91`；601 族互通；推导 `null` 放行；GUI 下拉只收非 `Rejected` 档。判据扩至 **81/0**。
+- **HEIC 矩阵修复 R1–R5**：png cICP / hdr-peak / 矩阵 CLI 缺口补位 / tonemap 措辞 / verdict 投影；验收矩阵 26/26 + 像素契约 framemd5 逐字节。
+- **aux 辅助图（Apple / ISO URN 变体）**：`AppleMakerNoteParser` + `TryParseAppleAux`（`Determinate=true`）+ `GainMapDecoder` 四分支 + Apple headroom 公式；`verify-gainmap-isobmff` 143/0。
+- **pngopt 集成**：`PngOptimizerService` + CLI `--png-optimizer` + GUI 联动（`UseAdvancedCodec` 复合判定）+ oxipng 10.2.1 随包（MIT）；第 100 条 `verify-png-optimizer`；**默认 off ⇒ 零漂移**。
+- 同批抬表：J 122→126 / ui-host 458 / union 458 / CJK CsUi 952→1047 / 清单 97→100（四处散文 + 常量 + 第 ⑱ 针同批）。auto 回归锚：webp auto sha16 `9B6B2B1587840E05` 逐字节复现。
+
+**⑥ 修复批 A/B/C（2026-11-11，维护者裁决「显式矩阵不许静默」）**
+
+- **A1 显式输出矩阵在非承载出口正常跑通**（原 fail-closed/`exit 91` 改为「能跑通 + 如实播报」）：GIF→AVIF 两步法里 `avifenc --cicp` **只携带实测安全的档**（smpte170m⇒1/13/6、bt470bg⇒1/13/5、rgb⇒1/13/0 `-y 444`；601 族与 avifenc 默认逐像素 PSNR=inf，rgb 走 gbrp 帧 38.60→43.48 dB）；**bt709/bt2020nc 不携带**——avifenc 的 RGB→YUV 恒 libyuv BT.601（实测 43.76→42.26 / 38.60→38.45 dB），声明即乱标 ⇒ 播报「未生效」而不是假装支持。不经规划层的出口（bmp/ppm/dng/webm 及不吃 `BuildArguments` 的专用通路）成功时兜底点名；auto 档零播报（负控）。
+- **B1 AVIF alpha（审查 P1-1）**：`IsoBmffGainMapProbe` 只认 `auxid:1`，漏 libavif 写 AVIF 用的 MIAF URN `…:auxiliary:alpha` ⇒ AVIF→PNG 被当无 alpha（rgb24、透明静默丢失、exit 0 零告警）。探针两条 URN 都认；并补「**无 `-vf` 时 aux alpha 仍必须 alphamerge**」——旧实现把合并逻辑嵌在「已有 `-vf`」分支里，只改探针会得到「声称了通道却仍是全不透明」（比 rgb24 更隐蔽）。新入库夹具 `tests/data/synth_heic_alpha.heic`（400×300 合成 RGBA，sha 锁）。
+- **B2 D5 改 fail-closed**：`CheckTruncationAsync` 对「meta 未定位 + box 链断」「iloc 解析不完整」「`construction_method ∉ {0,1}`」「>256 MB」「读失败」旧返回「未截断」= **fail-open** ⇒ 新增 `TruncationIndeterminate` 并一律拦截点名。**行为变化**：>256 MB 的 ISO-BMFF 现一律拒绝（旧放行）。
+- **C 性能**：oxipng `--out` 模式实证从不写输入 ⇒ 删掉前置整文件副本（产物三臂逐字节一致）；扩展搜索根表缓存 + `ProbeExecutable` 结果缓存（空 PLAN 回退场景 `Directory.Exists` 225→45，**正常 PLAN 场景 0/0 —— 不夸大**）；旧预设缺 pngopt 键 ⇒ 回退 `off`（零 `[pngopt]` 行，产物 sha 与显式 off 臂相等）。
+
+**⑦ .NET 11 GA 钉版（2026-11-11..12，`docs/HANDOVER-NET11-GA-PACKAGING-2026-11-11.md`）**
+
+- 仓库根新增 `global.json`（SDK `11.0.100`，`rollForward=latestFeature`、`allowPrerelease=false`）。全量 restore+build rc=0（0 错 4 警，4 条均与升级无关：两条既有分析器 + 两条最后触碰在升级之前的 `CS8604`/`CS8602`）；25/25 `runtimeconfig` 全 `Microsoft.NETCore.App 11.0.0`，assets ILLink=`11.0.0`，全树无 `11.0.0-rc` 残留。
+- **AOT 五项验收全过**：exe 24,219,136 B（beta12 的 RC.3 = 23,923,712 B，+1.2%）、`!AvaloniaResources`×4 / `!XamlIlPopulate`×2 在位、`--help`/headless 三臂 rc=0、GUI `MainWindowHandle≠0` + 关闭 exit=0。代表门禁全绿：ps-compat 13/0、color-wiring 153/0、gainmap-engine 221/0、decision-delivery 94/0、ui-host 458/0。
+- ⚠ 提权会话 GUI 冒烟坑（修法已固化）：`Start-Process`（ShellExecute）会弹「打开文件 - 安全警告」模态框把 driver **永久阻塞**（exe 无 `Zone.Identifier`，非 MOTW）⇒ 必须 `UseShellExecute=$false` 走裸 `CreateProcess`。
+
+**⑧ 测试模块化五批（2026-11-12..13，清单 100→104；方案 `docs/TEST_MODULE_PLAN_2026-11-12.md`）**
+
+- **机读模块账本** `tests/scripts/_module-registry.json`（67 条目：具名选项 / 透传代表 / 13 个能力域 / 盲区；tier 四档；`locks` 存三把尺现值 + C4 超时表）：第 101 条 `verify-module-registry`（判据含「CLI 选项全覆盖双向差集」= **不落后针**、「档位不撒谎」逐条目 carrier 语料、结构锁 + `src` ±3 行活见证 + 三把尺对账；负控三内存变异）。
+- 新门禁 #101–#104：`verify-module-registry` / `verify-overwrite-contract`（盲区 #1 防覆盖契约 E2E）/ `verify-corrupt-input`（损坏输入）/ `verify-log-jsonlines`（`--log-format JsonLines` 全行 schema 锁：`+00:00` 非 Z 且在**原始行**上锁——`ConvertFrom-Json` 会把 ISO8601 串自动转本地时区 DateTime；`l` 小写枚举须用 `-ccontains`，`-in` 大小写不敏感是漏网口）。
+- **ServiceProbe 源级 partial 拆分**：10,671 行 → 48 行壳 + `Parts/` 65 文件，重建审计逐字节相等。**方案前提更正**：plain dll 哈希等值原理**不可达**（PDB 派生字节随任何源触碰变化）⇒ 硬证据改 `-p:DebugType=none` 成对构建等值（IL + 成员序零漂移）。
+- 单体 GroupN 增 N8（设置改→重启→GUI 生效）/ N9（四子窗口 headless 冒烟）；**三把尺 458→473**（ui-core 75→84）。`verify-ui-split-union` 改「逐工程**全组**跑」——原「逐 mode 起进程（19 次）」是产品不存在的执行形态，G2 确定性红根因整体移除。
+- 顺带修出真缺陷：`QueueProcessor` 三处英文失败状态词不满足 `HasError`（`StartsWith("失败")`）⇒「条目失败 + 汇总失败 1 项 + exit=0」三者并存，改中文失败前缀。
+- 批 5 死支处置：`git rm` 三个永不命中的旧脚本（`run-color-regress` / `run-full-matrix-test{,-safe}`），`run-ps-verify` 留为手动目检工具并改写理由。
+
+**⑨ 门禁运维：全量轮陈账清偿 + 硬规矩「不许跑全量」（2026-11-13）**
+
+- **门禁污染产品设置（最严重，已修）**：`verify-startup-warmup` 的 S8f/S8g 用 `FFMPEGGUI_*` 覆盖跑 headless，并故意把 ffmpeg 目录指空 ⇒ 子进程走「重新发现 PLAN」分支并 `Save()`，而 `Save` 序列化整份 `_current`（**含 env 覆盖值**）⇒ **便携 `settings.json` 被写成 `DngToolPath=<ffmpeg.exe>`、`WindowsArtifactsDir=<门禁临时空目录>`**，同一轮里 `verify-metadata-privacy` ⑥ 报「RAW→PNG 未产出」（日志里 dngtool 打的是 ffmpeg 的 banner）。修法两条：`--settings <临时副本>` + 新判据 **S8h**（前后对撞便携 settings 的 sha256）。⚠ 通用教训：**门禁用 env 覆盖跑产品时，必须同时隔离「产品会写回的文件」**——env 是内存态，任何一次 Save 都会把它固化成用户设置。
+- 判据锚点漂移三处：`verify-startup-warmup` 的正则要求行尾即 ✅/❌，而工具报告自 11-11「来源可见」起追加 ` [PLAN]/[manual]/…` ⇒ **10 条假红**；`verify-ffmpeg-heartbeat` 调用点锁 26→**27**；`_lib-matrix` 六处行号锚（`git log -S` 证字面量未变）。
+- 运行器升级三件：**C4 per-script 超时表**（单一真值 = 账本 `locks."script-timeouts".table`，表只许**抬**；`verify-color-strategy`/`verify-png-optimizer` 各 1200 s）、**`TESTING.md` 逐条索引从账本生成**（`-EmitIndex`，默认跑 = 逐字节对撞）、**`Run-Exe` 加硬超时**（原裸 `Start-Process -Wait` **无 timeout** ⇒ 一次挂死吃掉 900 s 预算且日志尾部全丢）。
+- **硬规矩「不许跑全量」**（`AGENTS.md` §3 ⑥ + `docs/TESTING.md` §十）：`_run-step3-gates.ps1` 新增**早闸**——无 `-Scripts` / `-Domain` / `-FullBaseline` 三者之一 ⇒ 打印拒绝理由并 `exit 2`（**连锁都不拿**，不留残留锁）；新增 `-ListUnits`（只列可选单元）/ `-Domain`（13 个能力域，域→门禁映射取自账本；在册但零承载 = **拒跑**，不静默跑 0 条）/ `-Scripts`（具名单元）。形态自检 19 → **20 针**，第 ⑳ 针钉「全量拒跑闸」四形（拒绝标记 / `-FullBaseline` 声明 / 闸条件片段 / 选择器变量；token 一律拼接构造，否则会被针自己的源码满足 = 同义反复）。
+- **`verify-package-gui-starts` ⑥（托盘图标真被点亮）改 SKIP 点名**：Windows 不允许高完整性进程调 `Shell_NotifyIcon(NIM_ADD)` 往交互桌面加图标（一律 **err=5**）⇒ 该判据在提权会话下**物理上不可能成立**，旧行为是永远红（所有人都学会忽略它 = 比没判据更坏）。新口径：`提权 且 tray.log 明写 err=5` ⇒ **SKIP**（不计绿、汇总行单独数、喊出「未判定」）；**其余任何情况（含非提权 err=5）照旧 FAIL**。读数 `PASS=6 FAIL=0 SKIP=1`、rc=0（原 `PASS=6 FAIL=1`、rc=1）。⚠ 未决：本机直接跑与计划任务跑**都是 High**，⑥ 的 PASS 形态尚未本地验证。
+- **跨仓对撞面补齐**：`verify-color-engine-xcheck` 的红根因在 `C:\PLAN\ColorGainKit`（库停在 2026-10-12，不认 grid 型增益图）⇒ 库侧补候选三分类 + 移植 `ParseGridGainMap` + **连带补 `construction_method=1`（idat）**（iPhone 件的 tmap/grid 载荷全在 `meta/idat`，只修候选仍读不出载荷——原估计漏项）+ `Result` 增 8 个 grid 字段；宿主对撞面 **13 → 21 字段**（`GainMapTiles` 逐块比字节）+ 3 条 grid 正控（两实现都失败时逐字段全等同样成立 ⇒ 光靠全等抓不到瓦片是否真产出）。读数：`cgkparity` **14/0**、`xcheck` **rc=0**、库自检 `ColorMatrix 59/0` + `GainMapKit 86/0`。⚠ 两处「判据把缺口写成正确」同批纠正：库自检原有 `CK("grid ⇒ Determinate=false")` 把「不支持」当预期；`probe-mirror-parity` 的 `cgkparity` 条数锁 9→13。
+- **CJK 硬编码棘轮**：本档四次抬基线（923→931 随 JXL 读侧、952→1047 随输出矩阵/HEIC 批、1047→1060、1060→1063 随 `HasError` 修复），每次均逐文件归因 + `restore` 哈希校验；余量保持 **0**（刀口 = +1 行）。
 
 ### v1.6.0-beta12 (2026-11-04) — 托盘黑洞修复（Windows 换原生 Shell_NotifyIcon，NIM_ADD 返回值=托盘真可用唯一真源）+ GainMap 批次 E 审阅修复
 
