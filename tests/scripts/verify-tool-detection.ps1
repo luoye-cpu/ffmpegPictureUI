@@ -11,6 +11,10 @@
 #   §3 伪 PLAN 拒绝      ⇒ 空壳 PLAN/ 目录（无 ffmpeg-full）配不出工具；cwd 空壳 PLAN/ 不被
 #                          向上查找接受（LooksLikePlan）
 #   §4 来源可见          ⇒ 工具报告逐项带 [来源]（PLAN/manual/app-adjacent/extended-search/PATH）
+#   §5 三服务进程内判据   ⇒ mediasvc（批 4·5）
+#   §6 env 分隔符归一化   ⇒ FFMPEGGUI_FFMPEG_DIR/PLAN_DIR 正斜杠混合路径与全反斜杠**同义**
+#                          （2026-11-12 B1/B5 家族收尾：批 4·3+4 实测钉死过正斜杠 ⇒ UI 宿主
+#                          硬件编码器检测静默归零；产品收口 = 覆盖应用处 Path.GetFullPath）
 #   -SelfCheck 负控      ⇒ 把判据打到"路径本来就有效"的夹具上，必须转红（证明判据有牙；
 #                          runner 不给本闸传该开关，此臂供人工调闸与未来接线用）
 # 全部夹具在自家 run-dir（tests/output/tool-detect/<guid>）；--settings 指定的文件被 Save()
@@ -147,6 +151,36 @@ try {
             CK '§5 plan 契约臂在场' ($spText.Contains('plan: '))
             CK '§5 ps 幂等臂在场' ($spText.Contains('ps: ClearCache 后 Detect 答案不变'))
         }
+
+        # ── §6 env 分隔符归一化（2026-11-12，B1/B5 家族收尾）──
+        #   批 4·3+4 实测钉死：FFMPEGGUI_FFMPEG_DIR 正斜杠混合路径 ⇒ UI 宿主硬件编码器检测
+        #   静默归零。产品收口 = 覆盖应用处 Path.GetFullPath
+        #   （AppSettingsService.ApplyEnvironmentOverrides / PlatformServices.PlanFolderPath /
+        #   UiHostShared.ApplyToolPaths 三处同批）。判据 = headless 端到端：FF_DIR 两向各跑一臂，
+        #   settings 夹具值失效 ⇒ FF_DIR 覆盖值成为生效值（IsValid 命中 ⇒ auto:valid，无重发现）
+        #   ⇒ Save 原位写回的 FfmpegDirectory 就是覆盖值本身：
+        #   反斜杠臂与正斜杠臂的持久化值必须**逐字符相等**、且 == 规范全路径（GetFullPath 形态、
+        #   零正斜杠残留）——归一化不生效时正斜杠臂必红。⚠ 不做 pwsh 进程内反射：net11 程序集
+        #   在 pwsh 运行时里解析不了 System.Runtime 11.0（实测 0x80131040），进程内反射先例
+        #   （CMX-1 selfcheck ⑤）都是打在 ServiceProbe 进程内的。
+        # ② headless 端到端两向对撞（复用 Invoke-Case：--settings 夹具失效值 ⇒ FF_DIR 覆盖生效）
+        $r6a = Invoke-Case "{`"FfmpegDirectory`": `"$missingJson`", `"FfmpegDirectoryAuto`": true}" 's6a' $planDir
+        $savedFfDir = $env:FFMPEGGUI_FFMPEG_DIR
+        $env:FFMPEGGUI_FFMPEG_DIR = ($planDir + '\ffmpeg-full')
+        $r6b = Invoke-Case "{`"FfmpegDirectory`": `"$missingJson`", `"FfmpegDirectoryAuto`": true}" 's6b' $planDir
+        $env:FFMPEGGUI_FFMPEG_DIR = (($planDir -replace '\\', '/') + '/ffmpeg-full')
+        $r6c = Invoke-Case "{`"FfmpegDirectory`": `"$missingJson`", `"FfmpegDirectoryAuto`": true}" 's6c' $planDir
+        $env:FFMPEGGUI_FFMPEG_DIR = $savedFfDir
+        CK '§6 headless 反斜杠臂 exit=0' ($r6b.Exit -eq 0) "exit=$($r6b.Exit)"
+        CK '§6 headless 正斜杠臂 exit=0' ($r6c.Exit -eq 0) "exit=$($r6c.Exit)"
+        # 覆盖值两向归一后 settings 持久化值必须同字（快照文件都经 Save 原位写回）
+        $j6b = Get-Content $r6b.SettingsFile -Raw | ConvertFrom-Json
+        $j6c = Get-Content $r6c.SettingsFile -Raw | ConvertFrom-Json
+        CK '§6 两向 FFMPEGGUI_FFMPEG_DIR 持久化值逐字符同字' ($j6b.FfmpegDirectory -ceq $j6c.FfmpegDirectory) "b=$($j6b.FfmpegDirectory) c=$($j6c.FfmpegDirectory)"
+        $canonical = [System.IO.Path]::GetFullPath((Join-Path $planDir 'ffmpeg-full'))
+        CK '§6 正斜杠臂持久化值 == 规范全路径（归一化兑现）' ($j6c.FfmpegDirectory -ceq $canonical) "got=$($j6c.FfmpegDirectory) want=$canonical"
+        CK '§6 持久化值零正斜杠残留' ($j6c.FfmpegDirectory -notmatch '/')
+        CK '§6 两向产物都在' (((Get-ChildItem $r6b.OutputDir -Filter '*.png' -ErrorAction SilentlyContinue | Measure-Object).Count -ge 1) -and ((Get-ChildItem $r6c.OutputDir -Filter '*.png' -ErrorAction SilentlyContinue | Measure-Object).Count -ge 1))
     }
     else {
         # ── 负控：判据打到"路径本来就有效"的夹具上，必须转红（证明失效判据有牙）──

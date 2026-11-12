@@ -298,6 +298,13 @@ namespace UiHostShared
         {
             var plan = Environment.GetEnvironmentVariable("FFMPEGGUI_PLAN_DIR") ?? "";
             if (string.IsNullOrWhiteSpace(plan)) return;
+            // ⚠ 2026-11-12 分隔符归一化（产品侧同批收口的 B1/B5 家族）：宿主此前**裸读** env 值
+            //   直接 Path.Combine —— git-bash 风格的正斜杠 PLAN_DIR 会顺着 FfmpegDirectory/
+            //   JxlLibDir/WindowsArtifactsDir 进缓存键与来源分类的字符串比较面（批 4·3+4 实测
+            //   钉死过一次硬件编码器检测静默归零）。产品侧 AppSettingsService/PlatformServices
+            //   已在覆盖应用处归一；宿主这条自读路径同口径（GetFullPath 失败保留原值）。
+            try { plan = System.IO.Path.GetFullPath(plan); } catch { }
+            if (string.IsNullOrWhiteSpace(plan)) return;
             var outDir = TempDir;
             try { if (!System.IO.Directory.Exists(outDir)) System.IO.Directory.CreateDirectory(outDir); } catch { }
             var st = FfmpegGui.Services.AppSettingsService.Current;

@@ -101,14 +101,27 @@ namespace FfmpegGui.Services
             static string? Get(string key) =>
                 Environment.GetEnvironmentVariable(EnvPrefix + key);
 
-            settings.FfmpegDirectory = Get("FFMPEG_DIR") ?? settings.FfmpegDirectory;
-            settings.OutputDirectory = Get("OUTPUT_DIR") ?? settings.OutputDirectory;
-            settings.ExifToolPath = Get("EXIFTOOL_PATH") ?? settings.ExifToolPath;
-            settings.JxlLibDir = Get("JXL_LIB_DIR") ?? settings.JxlLibDir;
-            settings.WindowsArtifactsDir = Get("ARTIFACTS_DIR") ?? settings.WindowsArtifactsDir;
-            settings.DngToolPath = Get("DNGTOOL_PATH") ?? settings.DngToolPath;
-            settings.PngOptimizerPath = Get("PNGOPTIMIZER_PATH") ?? settings.PngOptimizerPath;
-            settings.CacheDirectory = Get("CACHE_DIR") ?? settings.CacheDirectory;
+            // 2026-11-12 分隔符归一化（B1/B5 检测一致性家族收尾）：正斜杠混合路径（git-bash
+            //   风格 / 手抄配置 / 旧 runner 写法）原样进 settings 后，所有按**字符串**比较、
+            //   缓存键、来源分类（ClassifyToolSource）的点都会分叉（批 4·3+4 实测钉死过一次：
+            //   UI 宿主硬件编码器检测静默归零，`docs/TESTING.md` 批 4·3+4 段 ①）⇒ 覆盖应用处
+            //   一处归一，整类敏感面消失。非根路径按 CWD 解析——与下游
+            //   `Path.Combine(dir, "ffmpeg.exe")` 的既有语义一致，只是显式化；
+            //   取不到全路径（非法字符等）时保留原值（别把用户的显式配置改没）。
+            static string? Norm(string? v)
+            {
+                if (string.IsNullOrWhiteSpace(v)) return v;
+                try { return Path.GetFullPath(v); } catch { return v; }
+            }
+
+            settings.FfmpegDirectory = Norm(Get("FFMPEG_DIR")) ?? settings.FfmpegDirectory;
+            settings.OutputDirectory = Norm(Get("OUTPUT_DIR")) ?? settings.OutputDirectory;
+            settings.ExifToolPath = Norm(Get("EXIFTOOL_PATH")) ?? settings.ExifToolPath;
+            settings.JxlLibDir = Norm(Get("JXL_LIB_DIR")) ?? settings.JxlLibDir;
+            settings.WindowsArtifactsDir = Norm(Get("ARTIFACTS_DIR")) ?? settings.WindowsArtifactsDir;
+            settings.DngToolPath = Norm(Get("DNGTOOL_PATH")) ?? settings.DngToolPath;
+            settings.PngOptimizerPath = Norm(Get("PNGOPTIMIZER_PATH")) ?? settings.PngOptimizerPath;
+            settings.CacheDirectory = Norm(Get("CACHE_DIR")) ?? settings.CacheDirectory;
 
             if (bool.TryParse(Get("GPU"), out var gpu)) settings.GpuAcceleration = gpu;
             if (bool.TryParse(Get("CLOSE_TO_TRAY"), out var closeToTray)) settings.CloseToTray = closeToTray;

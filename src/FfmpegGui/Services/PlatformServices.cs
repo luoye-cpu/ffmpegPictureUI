@@ -207,11 +207,15 @@ public static class PlatformServices
             {
                 _planScanned = true;
 
-                // 优先使用环境变量显式指定（CI/部署场景；显式值不作形状校验）
+                // 优先使用环境变量显式指定（CI/部署场景；显式值不作形状校验）。
+                // ⚠ 2026-11-12 分隔符归一化（B1/B5 家族）：git-bash 风格的正斜杠值原样进
+                //   `_planPath` 后，`PlanFolderPath` 的下游（FindPlanSubDir 的
+                //   Directory.Exists / ClassifyToolSource 的 Under 包含比较）按字符串语义分叉
+                //   ⇒ 归一成全路径（同时统一分隔符）。失败保留原值（显式意图不被吞）。
                 var envPlan = Environment.GetEnvironmentVariable("FFMPEGGUI_PLAN_DIR");
                 if (!string.IsNullOrWhiteSpace(envPlan) && Directory.Exists(envPlan))
                 {
-                    _planPath = envPlan;
+                    _planPath = TryNormalizePath(envPlan) ?? envPlan;
                     PlanFolderSource = "env:FFMPEGGUI_PLAN_DIR";
                     return _planPath;
                 }
@@ -383,7 +387,18 @@ public static class PlatformServices
             return res;
         }
 
-    /// <summary>PLAN 文件夹中各工具 → 子目录映射 (v2.0 简化版)</summary>
+    /// <summary>
+    /// 路径归一化（2026-11-12 分隔符收尾）：全路径 + 统一分隔符。
+    /// 相对路径按当前工作目录解析（与下游 <c>Path.Combine</c> 语义一致，只是显式化）；
+    /// 非法路径返回 null（调用方保留原值）。
+    /// </summary>
+    public static string? TryNormalizePath(string path)
+    {
+        try { return Path.GetFullPath(path); } catch { return null; }
+    }
+
+    /// <summary>
+    /// PLAN 文件夹中各工具 → 子目录映射 (v2.0 简化版)</summary>
     private static readonly Dictionary<string, string[]> PlanSubDirs = new()
     {
         [Ffmpeg]  = new[] { "ffmpeg-full" },
