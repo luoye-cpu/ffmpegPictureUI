@@ -28,7 +28,7 @@ if (Test-Path $out) { Remove-Item -LiteralPath $out -Recurse -Force -ErrorAction
 New-Item -ItemType Directory -Force -Path $out | Out-Null
 
 $p3 = "$root/tests/output/results/color/a2_srgb_p3.png"
-if (-not (Test-Path $p3)) { "缺素材 $p3（先跑 run-color-regress 或 ensure-fixtures）"; exit 1 }
+if (-not (Test-Path $p3)) { "缺素材 $p3（先跑 ensure-fixtures 或在册的 run-color-tests）"; exit 1 }
 
 function Red([string]$f) {
     # 取左上角 1px 的存储值（不经任何 ICC 转换：解码后直接 crop + 定标到 rgb24）

@@ -47,8 +47,9 @@ public static class Program
         {
             var od = Path.Combine(Environment.CurrentDirectory, "tests", "output", "gainmap");
             Directory.CreateDirectory(od);
-            //   `gainmath avifgm` ⇒ 只跑 AVIF 成套段（C5/C6），给 verify-gainmap-isobmff.ps1 用；
-            //   不带第二参 ⇒ 全跑（C0–C7），给 verify-gainmap-managed.ps1 用。
+            //   `gainmath avifgm` ⇒ 只跑 AVIF 成套段（C5/C6）。⚠ 2026-11-12 更正：verify-gainmap-isobmff.ps1
+            //   实际**不调它**（AVIF 增益图写出侧锁由 ServiceProbe mode `avifgm` 承载，运行器第 25 个 mode），
+            //   本支现役读者 = 手动诊断；不带第二参 ⇒ 全跑（C0–C7），给 verify-gainmap-managed.ps1 用。
             if (args.Length > 1 && string.Equals(args[1], "avifgm", StringComparison.OrdinalIgnoreCase))
             {
                 int n = await AvifChannelLocksAsync(od, MathF.Log2(1000f / GainMapEncoder.KSdrWhiteNits),
@@ -2071,7 +2072,8 @@ public static class Program
         }
 
         // ───────────────── C5/C6 [F-4/F-8] AVIF 出口：gray 与 bit7 成套 ─────────────────
-        //   （独立成方法 ⇒ verify-gainmap-isobmff.ps1 可以只跑这一段：`gainmath avifgm`）
+        //   （独立成方法 ⇒ `gainmath avifgm` 可单跑这一段；⚠ 2026-11-12 更正：isobmff 门禁并不调它，
+        //   现役读者 = 手动诊断，AVIF 写出侧锁由 ServiceProbe `avifgm` mode 承载）
         checks += await AvifChannelLocksAsync(outDir, maxLog2_1000, SdrWhite);
 
         // ───────────────── C7 [F-8] 逐通道参数：不许只取 c==0 ─────────────────
@@ -2146,8 +2148,9 @@ public static class Program
 
     /// <summary>
     /// C5/C6 —— AVIF 出口的「声明 == 交付」成套锁（F-4/F-8）。
-    /// 独立成方法是为了让 `GainMapTestHost gainmath avifgm` 单跑这一段
-    /// （verify-gainmap-isobmff.ps1 用它，避免把 C1–C3/C7 的编码再跑一遍）。
+    /// 独立成方法是为了让 `GainMapTestHost gainmath avifgm` 单跑这一段。
+    /// ⚠ 2026-11-12 更正：verify-gainmap-isobmff.ps1 实际不调它（现役读者 = 手动诊断；
+    /// AVIF 写出侧锁由 ServiceProbe `avifgm` mode 承载）。
     /// </summary>
     private static async Task<int> AvifChannelLocksAsync(string outDir, float maxLog2, float sdrWhite)
     {

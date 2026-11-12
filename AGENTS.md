@@ -558,6 +558,34 @@ pwsh -NoProfile -File tests/scripts/_run-step3-gates.ps1   # 104 条；整轮墙
   重建五件后复跑才绿；同期一次裸跑 union 11/0 用的是重建前旧件 ⇒ 裸跑读数不作验收。
   取证：`tests/output/_tmp/union-fix/`。剩余独立刀：① FFMPEGGUI_FFMPEG_DIR 分隔符产品归一化
   ③ FFMPEGGUI_PLAN_DIR 正斜杠同族排查。
+- **测试模块化批 5·死支处置 + 覆盖探针 fullrun 证据链（2026-11-12，无新门禁，清单 104 条不动）**：
+  ①死支三删一留：`git rm` `run-color-regress.ps1`（纯聚合器，8 个被调者全部在册、零自有判据）/
+  `run-full-matrix-test.ps1`·`-safe.ps1`（被测路径按 pack.ps1 模板任何版本都不会产生、语料 `D:\TEST2`
+  已不在盘）；`run-ps-verify.ps1` **留**为手动 ACR 目检工具（理由改写、不再写「待证后删」）；全仓 grep
+  零在册引用悬空。同批：`gainmath avifgm` 三处过期注释更正（isobmff 门禁实际不调它）、
+  `_probe-jxl-webp-pixels.ps1` 缺素材提示改指在册脚本、coverage 显式表 8→5（清单外 32→29）、
+  registry +1 条目 66→67（`manual.serviceprobe-diag-modes`：ipc 6 + piperaw 2 + tonemap 手动诊断域，
+  carrier=$modeExempt/⑨-b，非覆盖缺口）。
+  ②⑥ 调用点索引增 **fullrun 证据链**：union 改全组跑后 mode 名实参消失 ⇒ ⑥-d 曾当场红 **14 个
+  ui mode**（唯一调用点只剩清单外 `_accept-ui-split.ps1`）——证据链模型没跟上全组执行形态
+  （ui-host 2026-11-01 全组化时就欠着，当时被 union 的表证据掩盖）。修法 = (1b) foreach 循环变量→
+  集合根变量片段映射 + (5b) 「在册脚本起拆分件宿主 且 起宿主命令的**实参元素**无一解析出该组任一
+  mode 名 ⇒ 按组表给该组全部 mode 记 kind='fullrun'」（ServiceProbe 显式除外）+ union `$modes` 表改
+  纯 exe 字面相对路径（mode 清单删除——组归属唯一真值是 TestGroups.cs，勿抄第二份）。
+  ⚠ **根因（DBG5b 实测钉死）**：union 表**键名**（'ui-color'/'ui-sweep'）被 Get-Fragments 当字符串
+  字面量收进 varMap ⇒ 注入整条命令解析文本 ⇒ 组名==本组某 mode 名的两组被误判「带 mode 起件」
+  （ui-core/ui-mode/ui-cli 键名非本组 mode 名故幸免）⇒ modeInArgv **只扫实参元素**（cmdlet/launcher
+  形态 `GetCommandName()` 非 null ⇒ j≥2，j=1 是 exe 路径；call-operator 形态 `& $prb 'memadmit'` ⇒
+  j≥1；namedPiece 仍用全文）。四个形状验算全成立（union 全组不误滤｜SYNTH case4/5 与 param 系循环喂
+  mode 照滤｜ui-host 自检臂照滤｜gainmap-host 表喂照滤）。
+  ③实测：探针 39/1→**40/0**（⑥-d 14→0、档②=52，12/14 ui mode 由 ui-host+union fullrun 记账）、
+  union **11/0 @473**（表形状改过，复跑验门禁本体没破）、registry **9/0**（裸跑自钉 TMP）。
+  ⚠ `verify-cli-strict` 对 ui-color/ui-icc/ui-cli-strict 的 argv 证据**本来就没被索引识别**（传参形态
+  索引不认），此前一直被 union 全 mode 表证据掩盖；fullrun 链立起后缺口不再是活问题，但**别把这
+  2 个 mode 的绿记在 cli-strict 头上**。⚠ 修复过程工具坑：OrderedDictionary 整数下标按**插入位置**
+  不按键（`$cmdArgv[$line]=@(...)` 全部静默丢失 ⇒ 36/35 大面积假红，教训存 memory）；组名自撞
+  （mode 名整 token 住在工程路径里）随实参元素方案天然消失。取证 `tests/output/_tmp/batch5-deadbranch/`。
+  剩余批 5：TESTING.md 逐条索引从账本生成（漂移闸）、per-script 超时表（C4）。
 
 ---
 

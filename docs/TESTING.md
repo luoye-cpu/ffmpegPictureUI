@@ -404,7 +404,6 @@ ffprobe -v error -select_streams v:0 -show_entries stream=pix_fmt -of csv=p=0 ou
 
 | 脚本 | 覆盖内容 | 关键断言方式 |
 |---|---|---|
-| `run-color-regress.ps1` | 一次跑完下面所有 `verify-*.ps1` 并汇总 | 各脚本自身的 `PASS=n FAIL=n` |
 | `run-pipeline-tests.ps1` | 主编码/解码/后端矩阵 | 80 项，含 PSNR/SSIM 阈值 |
 | `verify-color-strategy.ps1` | 4 种色彩策略 × {SDR/广色域/HDR 源} × 4 格式；**2026-09-17（S6）起还含「两条管线的裁决对照」** | 输出非空 + 记录 CICP/ICC 供比对；**71/0**（2026-09-26 17:35 整轮实测；演进 58/0（S7）→ 63/0（S6）→ **70/1**（09-26 新增 ③f「位深播报锁」+8 条，其中 F3 故意留红，钉 #35 那笔"webp/avif 位深升降零播报"的账）→ **71/0**（同日 #35 修完：请求档穿过两处钳制带进规划层，**判据一字未放宽**，红的成因改为 F0a–F0e 五条合成自测 + F2 真日志负控来咬）→ **77/0**（同日深夜 #39/#41 加 F4/F5 共 6 条：F4 `avif + Display P3 + --bit-depth 12` 必须**真交付 12bit**、F5 请求 16 必须落到编码器上限 12 且恰好播一次；钉的是**删掉"AVIF+P3 高位深 ⇒ 8bit"无据特例之后**的新契约 ⇒ 是**收紧**不是放宽，特例加回来 F4 立刻红。⚠ F4 的出口 `-pix_fmt` 必须取日志里**最后一个**匹配：引擎路线前面那条 `rgb48le` 是喂编码器的中间件格式，取第一个会把正确产物判成红 —— 本轮实测踩过。读数 `tests/output/t39/strategy_after2.log`，DLL `1881E2F76539CAEF`））。S6 新增（+5）：③d(d) **legacy 在 Reject 格同样拒绝**（非零退出码 + `Reason` / `建议` / `可替代方案：Kind/Value`）；③e **裁决 parity** —— 同一输入**真实 CLI 跑两遍**（默认引擎 / `--color-engine legacy`），逐格比 `Verdict.Kind` **且比结局**（`Reject` ⇒ 零产物；非 `Reject` ⇒ 有产物），外加**覆盖格数下限 12**（防"两边都读不到 ⇒ 全 skip"的空断言）。⚠ 判据一律是**稳定枚举**（`VerdictKind` / `DegradationCodes.*` / `AlternativeKind`），禁止自由文本；⚠ ② 段 `expectReject` 由**读裁决**决定、不再硬编码（详见 §6 第 79 条） |
 | `verify-widegamut-regression.ps1` | ⚠ **只验「广色域源在各格式/各目标下能否产出非空产物」**（18 条 = 18 格产物存在性） | **仅看产物存在且非空**；`ffprobe` 读到的 CICP **只回显不判**。**不做任何像素级断言**（既不验"不偏色/不削色"，也没有 ICC 度量与亮度统计）⇒ 广色域保真/削色必须看 `verify-prophoto-faithful.ps1`（raw 样本逐位一致）与 `verify-color-wiring.ps1`（PSNR/ICC 一致性） |
@@ -727,6 +726,53 @@ exit -22），而产品无「只跑 E,F,G」执行形态、union 判据也不需
 （五件 exe 03:57 < TestGroups.cs 05:11——批 4·5 给 mediasvc 动了 Tests.Shared 而五件没重建），
 重建五件后复跑才绿；此前一次裸跑 union 11/0 用的是重建前旧件（断言代码未变，读数只作调试参考，不作验收）。
 取证：`tests/output/_tmp/union-fix/`（union_bare_after.log / t_union_subset2.log）。）
+
+（**2026-11-12 批 5·死支处置 + 覆盖探针 fullrun 证据链（无新门禁；清单 104 条不动）**：
+  ① **死支处置三删一留**（详目与理由见下方「未受管脚本台账」的 2026-11-12 处置段）：`git rm`
+     `run-color-regress.ps1` / `run-full-matrix-test.ps1` / `run-full-matrix-test-safe.ps1`，
+     `run-ps-verify.ps1` **留**为手动 ACR 目检工具；全仓 grep 确认无在册脚本引用悬空（只有 tests/output
+     产物区旧拷贝命中，不算）。同批：GainMapTestHost/Program.cs 三处 `gainmath avifgm` 过期注释更正
+     （isobmff 门禁实际不调它；AVIF 写出侧锁由 ServiceProbe `avifgm` mode 承载；已重建宿主——STALE 闸
+     要求）、`_probe-jxl-webp-pixels.ps1` 缺素材提示改指 ensure-fixtures/在册 run-color-tests（原指已删的
+     run-color-regress）、coverage 探针 `$offExplicit` 显式表 8→5（清单外 32→29，⑨-b/⑪-d/⑪-e 复算全绿）。
+     registry 账本 +1 条目 `manual.serviceprobe-diag-modes`（66→67：ipc 6 mode + piperaw 2 + tonemap 的
+     手动诊断域登记，carrier=$modeExempt/⑨-b，非覆盖缺口）。
+  ② **fullrun 证据链（⑥ (5b)）**：`c2ef35a` 把 union 改全组跑 ⇒ mode 名实参从 union 脚本消失 ⇒
+     ⑥ 的调用点索引（只认「mode 名落在起宿主参数子树/成链数据表」）对 ui mode 断供，⑥-d 当场红
+     **14 个 ui mode**（唯一调用点只剩清单外 `_accept-ui-split.ps1`）——不是产品/门禁行为问题，是
+     **证据链模型没跟上全组执行形态**（ui-host 2026-11-01 全组化时就欠着，当时被 union 的表证据掩盖）。
+     修法三件：索引 **(1b)** foreach 循环变量 → 集合根变量的片段映射（`foreach ($mm in $modes.list)` 的
+     `@($mm)` 能解析出 mode 名/路径）；**(5b)** fullrun 证据——在册脚本起**拆分件宿主**（解析文本命中
+     `tests/projects/<组>/` 或该件 exe 名）且**没有任何一条起宿主命令的实参元素解析出该组任一 mode 名**
+     ⇒ 无过滤全组执行 ⇒ 按组表（唯一真值，⑤ 已锁每个 mode 真被分派）给该组全部 mode 记
+     `kind='fullrun'`（ServiceProbe 显式除外：其执行契约就是按 mode/-Probes 传参，「无参全跑」不是它的
+     形态）；union `$modes` 表改**纯 exe 字面相对路径**（mode 清单删除——组归属唯一真值是
+     TestGroups.cs，勿再抄第二份）+ 内联 `Join-Path` 起件（调用点 AST 子树经 varMap 展开能解析出字面
+     工程路径）。
+  ③ **39/1→40/0 战况与 DBG 读数**：首版 (5b) 探针 **39/1**——唯一红 = ⑥-d 的 ui-encoder-args、ui-icc
+     （组 ui-color）。DBG5b 实测钉死根因：union `$modes` 表**键名**（'ui-color'、'ui-sweep'）被
+     Get-Fragments 当字符串字面量收进 varMap ⇒ 起宿主命令**整条解析文本**注入表键 blob ⇒ 组名恰好等于
+     本组某 mode 名的两组（只有 ui-color/ui-sweep）被误判「带 mode 起件」而拿不到 fullrun（ui-core/
+     ui-mode/ui-cli 的键名非本组 mode 名 ⇒ 幸免）——`DBG5b … g=ui-sweep named=True modeInArgv=True
+     hostCmds=2`｜`g=gainmap-encode named=False modeInArgv=False`｜`g=ui-color named=True
+     modeInArgv=True`。**形状级修法（当日定）**：modeInArgv 从「整条命令解析文本」改为**只扫实参元素**
+     ——起点按形态分：cmdlet/launcher 形态（`GetCommandName()` 非 null）j≥2（j=1 是 exe 路径，组名以
+     路径段形态住在里面）、call-operator 形态（`& $prb 'memadmit'`）j≥1（j=0 就是 exe 路径）；
+     namedPiece 仍用全文。四个形状验算全成立：union 全组不误滤｜SYNTH case4/case5 与 param 系门禁的
+     `@($mm)` 循环喂 mode 照样滤｜ui-host 自检臂（mode 字面量在实参里）照样滤｜gainmap-host 表喂照样滤；
+     `& $prb 'memadmit'`（j=1 实参）也照样滤。修复后探针 **40/0**（⑥-d 14→0；档② =52，12/14 ui mode
+     由 ui-host+union fullrun 记账；账目自证 ⑦ 自动重算绿）。⚠ `verify-cli-strict` 对
+     ui-color/ui-icc/ui-cli-strict 的 argv 证据**本来就没被索引识别**（其传参形态索引不认）——此前一直
+     被 union 的全 mode 表证据掩盖；fullrun 链立起来后 cli-strict 的证据缺口不再是活问题，但**别把这
+     2 个 mode 的绿记在 cli-strict 头上**。⚠ (5b) 里曾驻一行 DBG5b 调试输出，已随修复删除（恢复纯
+     `continue`）。⚠ 修复过程修掉的两个工具坑：OrderedDictionary **整数下标按插入位置不按键**
+     （`$cmdArgv[$line]=@(...)` 全部静默丢失 ⇒ 36/35 大面积假红，已回退原写法；教训存 memory）；组名
+     自撞（mode `ui-color` 以整 token 形态住在路径 `tests/projects/ui-color/` 里 ⇒ 曾先修为剥路径段
+     `$txtPathless`，后随实参元素方案整体移除——实参扫描天然看不见 exe 路径段）。
+  ④ **复跑验证**（全部裸跑、自钉 TMP；取证 `tests/output/_tmp/batch5-deadbranch/`）：coverage 探针
+     **40/0**（probe-after-fix.log）；union（表形状改过，必须复跑验门禁本体没破）**11/0 @473**
+     （旧宿主 473/0、并集 473 双向对齐；union-after-fix.log）；module-registry **9/0**（67 条目版；
+     registry-after-fix.log）。）
   v1 支的判法是**偶次残差**而不是"奇次位为 0"——v1 载荷只有四个偶次项，奇次位是读手自己填的 0，
   那条断言永不可能触发（2026-10-19 审查删掉的死牙）。造变异件也从读手分家出去
   （`_mutate-dng-lens.py`，理由与 ⑯ 组同一条：判件与造件同入口时判据走偏造件跟着走偏）。
@@ -875,6 +921,13 @@ exit -22），而产品无「只跑 E,F,G」执行形态、union 判据也不需
     与 `_gen-mode-split-reduce.ps1`（把原文件缩减为只含共享底座的 `partial` 另一半）。
     两者是**一次性重构工具**、**无 `PASS/FAIL` 契约** ⇒ 入列会撞运行器的「零断言 ⇒ 红」闸。
     ⚠ 它们**不动 `$expectedScriptCount`（仍 72）** —— 本次细分为纯文件搬迁，**未增删任何受管门禁**。
+    <br>⚠ **2026-11-12 处置（批 5，点头 = TEST_MODULE_PLAN 的「登记或删除」）**：上面点名的 6 个
+    `run-*` 旧编排器里的三支已删——`run-color-regress.ps1`（纯聚合器：8 个被调者全部在册、零自有判据，
+    整轮 `-Scripts` 严格超集）、`run-full-matrix-test.ps1` / `-safe.ps1`（被测路径
+    `publish\build\FFmpegPictureUI-dev-x64-full\` 按 pack.ps1 模板**任何版本都不会产生**（:15-18 同族
+    归档件的同一缺陷）、语料 `D:\TEST2` 已不在盘，实测 ls 不可达）；`run-ps-verify.ps1` **留**为手动
+    ACR 目检工具（检测层由 verify-ps-compat 锁，渲染保真只能人眼判 ⇒ 理由改写、不再写「待证后删」）。
+    coverage 探针 `$offExplicit` 同批改表（显式表 8→5、清单外 32→29，⑪-e 复算绿）。
     <br>⚠⚠ **2026-10-07 新建 1 条门禁（暂未入列，附理由）**：`verify-dryrun-parity.ps1` ——
     「`--dry-run` 预览 ↔ 真实执行」的**双向同源性锁**（判据 A 多报 / B 少报，只认**编码器类**工具）。
     立锁动机（实测）：`-f jxr -e Jxr` 的预览只写 `ffmpeg`，而真实核心编码器是 **JxrEncApp**

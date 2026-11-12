@@ -299,6 +299,19 @@ function Get-CallSites($ast, [string]$tag, [string[]]$modeList) {
         if (-not $f) { continue }
         if ($varMap.ContainsKey($k)) { $varMap[$k] = $varMap[$k] + ' ' + $f } else { $varMap[$k] = $f }
     }
+    # (1b) foreach 循环变量 → 集合根变量的片段（一层）：`foreach ($mm in $modes.list)` 里
+    #      起宿主的 `@($mm)` 因此能解析出 mode 名/路径字面 —— 2026-11-12 (5b) 的 filtered
+    #      判定（带 mode 的起件 ≠ 全组）与 fullrun 点名都靠这一层。
+    foreach ($fe in (Find-Foreach $ast)) {
+        $lv = $fe.Variable.VariablePath.UserPath
+        $ct = if ($fe.Condition) { $fe.Condition.Extent.Text } else { '' }
+        if ([string]::IsNullOrEmpty($ct)) { continue }
+        $rm = [regex]::Match($ct, '\$\{?([A-Za-z_][A-Za-z0-9_]*)')
+        if (-not $rm.Success) { continue }
+        $root = $rm.Groups[1].Value
+        if (-not $varMap.ContainsKey($root)) { continue }
+        if ($varMap.ContainsKey($lv)) { $varMap[$lv] = $varMap[$lv] + ' ' + $varMap[$root] } else { $varMap[$lv] = $varMap[$root] }
+    }
 
     # (2) 本地函数角色：launcher（体内起进程）/ 是否起的是**宿主**
     $fds = @(Find-Func $ast)
@@ -404,8 +417,67 @@ function Get-CallSites($ast, [string]$tag, [string[]]$modeList) {
         if (-not $tainted.ContainsKey($a.Left.VariablePath.UserPath)) { continue }
         $rows += @(Get-EvidenceRows (Find-AnyLit $a.Right) 'table' $tag $modeList $localSeen)
     }
+    # (5b) full-group 形态（2026-11-12，union 改全组跑当日立的证据链）：在册脚本起**拆分件宿主**、
+    #      起宿主命令的解析文本点名到该件（tests/projects/<组>/ 路径段或该件 exe 名），
+    #      且**没有任何一条起宿主命令的实参元素解析出该组任一 mode 名**（(1b) 让 @($loopVar)
+    #      也能解析出来；⚠ 只扫**实参元素**、不扫整条命令解析文本——union 的 `$modes` 表键
+    #      是字符串字面量，经 varMap 展开会注入整条命令文本，组名==本组某 mode 名的组
+    #      （ui-color/ui-sweep）会被表键误判成「带 mode 起件」（DBG5b 实测钉死，见下））
+    #      ⇒ 无过滤全组执行 ⇒ 按组表（唯一真值，⑤ 已锁每个 mode 真被分派）
+    #      给该组全部 mode 记 kind='fullrun'。
+    #      背景：verify-ui-host（2026-11-01 起）与 verify-ui-split-union（2026-11-12 起）都整件
+    #      全组跑、不再逐 mode 传参 ⇒ 旧 argv/table 证据链对 14 个 ui mode 断供（⑥-d 当场红）。
+    #      ServiceProbe 除外：它的执行契约就是按 mode/-Probes 传参，「无参全跑」不是它的形态。
+    foreach ($g in $script:groupMap.Keys) {
+        if ($g -eq 'ServiceProbe') { continue }
+        if (@($hostCmds).Count -eq 0) { continue }
+        $gModes = @($script:groupMap[$g])
+        $exeName = $null
+        if ($script:groupHostExe -and $script:groupHostExe.ContainsKey($g)) { $exeName = [string]$script:groupHostExe[$g] }
+        $pieceRxs = @('(?i)tests[/\\]projects[/\\]' + [regex]::Escape($g) + '[/\\]')
+        if ($exeName -and -not $exeName.StartsWith('tests/')) { $pieceRxs += ('(?i)' + [regex]::Escape($exeName)) }
+        $modeRxs = @()
+        foreach ($m in $gModes) { $modeRxs += ('(?i)(?<![\w\-])' + [regex]::Escape($m) + '(?![\w\-])') }
+        $namedPiece = $false; $modeInArgv = $false
+        foreach ($c in $hostCmds) {
+            $txt = Resolve-NodeText $c $varMap
+            if ([string]::IsNullOrEmpty($txt)) { continue }
+            if (-not $namedPiece) { foreach ($rx in $pieceRxs) { if ($txt -match $rx) { $namedPiece = $true; break } } }
+            if (-not $modeInArgv) {
+                # modeInArgv **只扫实参元素**（2026-11-12 §3.4 形状级修法）：组名以**路径段**形态住在
+                #   exe 路径里（tests/projects/ui-color/…），且 `$modes['ui-color']` 这类表键字面量
+                #   经 varMap 注入整条命令文本——两者都不是「带 mode 起件」的证据（DBG5b 实测钉死）。
+                #   起点按形态分：cmdlet/launcher 形态（GetCommandName 非 null）j=0 是命令名、j=1 是
+                #   首个位置实参（exe 路径）⇒ 从 j=2 起；call-operator 形态（`& $host 'mode'`）j=0 就是
+                #   exe 路径 ⇒ 从 j=1 起。实仓两种形态都验算过：union 全组（j≥2 只有 @($srcDir)/timeout
+                #   ⇒ 不误滤）；SYNTH case4/case5 与 param 系/ui-host 自检臂/gainmap-host 表喂
+                #   （mode 在 j≥2 实参里 ⇒ 照样滤）；verify-gainmap-memory 的 `& $prb 'memadmit'`
+                #   （j=1 ⇒ 照样滤）。
+                $cnG = $c.GetCommandName()
+                $jStart = if ($cnG) { 2 } else { 1 }
+                $els = @($c.CommandElements)
+                for ($j = $jStart; $j -lt $els.Count; $j++) {
+                    if ($els[$j] -is $T_PARAM) { continue }
+                    $elTxt = Resolve-NodeText $els[$j] $varMap
+                    if ([string]::IsNullOrEmpty($elTxt)) { continue }
+                    foreach ($rx in $modeRxs) { if ($elTxt -match $rx) { $modeInArgv = $true; break } }
+                    if ($modeInArgv) { break }
+                }
+            }
+            if ($namedPiece -and $modeInArgv) { break }
+        }
+        if (-not $namedPiece -or $modeInArgv) { continue }
+        $ln = $hostCmds[0].Extent.StartLineNumber
+        foreach ($m in $gModes) {
+            if ($modeList -ccontains $m) { $rows += @{ Mode = $m; Script = $tag; Line = $ln; Kind = 'fullrun' } }
+        }
+    }
     return @{ Rows = $rows; HostCmds = $nHost }
 }
+
+# fullrun 点名用的 exe 名缓存（Get-GroupHost 每次都读 csproj ⇒ 扫描前算一遍；2026-11-12 5b）
+$groupHostExe = @{}
+foreach ($g0 in $groupMap.Keys) { $groupHostExe[$g0] = (Get-GroupHost $g0) }
 
 $allPs = @(Get-ChildItem $scriptsDir -Filter '*.ps1' -File | Sort-Object Name)
 foreach ($fi in $allPs) {
@@ -488,6 +560,24 @@ $modes = @{ exe = 'Tests.UiCore'; list = @('ui-format-command', 'ui-panel-visibi
 $exe = Join-Path $root "tests/projects/ui-core/bin/Release/net11.0/win-x64/$($modes.exe).exe"
 foreach ($mm in $modes.list) { Invoke-Exe $exe @($mm) }
 $orphan = @{ dead = @('ui-sweep') }
+'@
+    }
+    @{
+        Name = 'full-group 形态（2026-11-12 (5b)）：字面 exe 路径 + 无 mode 实参 ⇒ 全组作证；同件被 loop 喂 mode ⇒ 该组不作证'
+        ExpectHit  = @('ui-format-command')          # ui-core 件被无过滤起 ⇒ 组表全组作证
+        ExpectMiss = @('ui-param-defects')           # ui-sweep 件的起法带 mode（(1b) 解析出）⇒ 该组不作证
+        Src = @'
+function Invoke-Exe([string]$exePath, [string[]]$exeArgs) {
+    Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList @('-NoProfile', '-Command', $exePath) -Wait | Out-Null
+}
+$pieces = @{
+  core  = @{ exe = 'tests/projects/ui-core/bin/Release/net11.0/win-x64/Tests.UiCore.exe' }
+  sweep = @{ exe = 'tests/projects/ui-sweep/bin/Release/net11.0/win-x64/Tests.UiSweep.exe'; only = @('ui-sweep') }
+}
+$exe = Join-Path $root $pieces.core.exe
+Invoke-Exe $exe @($srcDir)
+$exe2 = Join-Path $root $pieces.sweep.exe
+foreach ($mm in $pieces.sweep.only) { Invoke-Exe $exe2 @($mm) }
 '@
     }
 )
@@ -949,10 +1039,11 @@ $offFamilies = @(
     @{ Pat = '^_accept';     Why = '脚手架：人工验收脚本，判据与 union 重叠' }
 )
 $offExplicit = [ordered]@{
-    'run-full-matrix-test.ps1'     = '旧一次性驱动（包装 matrix-full；待逐支证明判据已被覆盖后再删）'
-    'run-full-matrix-test-safe.ps1' = '旧一次性驱动（同上，带安全阀）'
-    'run-color-regress.ps1'        = '旧一次性驱动（同上）'
-    'run-ps-verify.ps1'            = '旧一次性驱动（PS 兼容性由 verify-ps-compat 覆盖 ⇒ 待证后删）'
+    # ⚠ 2026-11-12 批 5 处置：run-color-regress（8 个被调者全部在册 ⇒ 纯聚合零自有判据）、
+    #   run-full-matrix-test{,-safe}（被测路径 publish\build\FFmpegPictureUI-dev-x64-full 从未产生
+    #   —— run-color-regress.ps1:15-18 对同族已归档件写明的同一缺陷；语料 D:\TEST2 已不在盘）
+    #   三支删除；run-ps-verify 留为手动 ACR 目检工具（理由见下行，不再是「待证后删」）。
+    'run-ps-verify.ps1'            = '手动诊断工具（dngtool 产物 → 本机 Photoshop ACR 目检；检测层兼容性由 verify-ps-compat 锁，渲染保真只能人眼判 ⇒ 手动价值在案；本机 PS 2026 在装）'
     'archive-diagnostics.ps1'      = '脚手架（诊断留档）'
     'cleanup-structure.ps1'        = '脚手架（结构清理）'
     'insert_cicp.ps1'              = '脚手架（历史一次性 PNG cICP 注入）'

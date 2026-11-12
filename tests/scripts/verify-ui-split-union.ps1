@@ -188,12 +188,16 @@ if (-not $SkipOldHost) {
 }
 
 # ══════════════ 2) 5 个工程的并集 ══════════════
+# ⚠ 只存 exe 的字面相对路径（**不**复制 mode 清单——组归属的唯一真值是
+#   tests/projects/Tests.Shared/TestGroups.cs，这里再来一份必然漂移）。
+#   字面路径（不插值）+ 内联 Join-Path 起件 ⇒ 调用点文本可被 _probe-test-group-coverage
+#   的调用点索引解析出具体工程 ⇒ (5b) fullrun 证据链成立（2026-11-12）。
 $modes = [ordered]@{
-    'ui-core'  = @{ exe='Tests.UiCore';  modes=@('ui-format-command','ui-parameter-passing','ui-panel-visibility','ui-encoder-linkage','ui-preset-roundtrip') }
-    'ui-mode'  = @{ exe='Tests.UiMode';  modes=@('ui-simple-mode','ui-background-visibility','ui-end-to-end','ui-gainmap-toggle') }
-    'ui-color' = @{ exe='Tests.UiColor'; modes=@('ui-color','ui-icc','ui-strategy-map','ui-encoder-args') }
-    'ui-sweep' = @{ exe='Tests.UiSweep'; modes=@('ui-sweep','ui-param-defects') }
-    'ui-cli'   = @{ exe='Tests.UiCli';   modes=@('ui-cli-strict','ui-startup-detect') }
+    'ui-core'  = 'tests/projects/ui-core/bin/Release/net11.0/win-x64/Tests.UiCore.exe'
+    'ui-mode'  = 'tests/projects/ui-mode/bin/Release/net11.0/win-x64/Tests.UiMode.exe'
+    'ui-color' = 'tests/projects/ui-color/bin/Release/net11.0/win-x64/Tests.UiColor.exe'
+    'ui-sweep' = 'tests/projects/ui-sweep/bin/Release/net11.0/win-x64/Tests.UiSweep.exe'
+    'ui-cli'   = 'tests/projects/ui-cli/bin/Release/net11.0/win-x64/Tests.UiCli.exe'
 }
 
 $newNames = New-Object 'System.Collections.Generic.HashSet[string]'
@@ -203,11 +207,12 @@ Write-Host ("{0,-26} {1,-9} {2,-9} {3}" -f 'project','run','PASS','FAIL')
 Write-Host ("{0,-26} {1,-9} {2,-9} {3}" -f ('-'*26),('-'*9),('-'*9),('-'*4))
 
 foreach ($proj in $modes.Keys) {
-    $exe = Join-Path $root "tests/projects/$proj/bin/Release/net11.0/win-x64/$($modes[$proj].exe).exe"
+    $exe = Join-Path $root $modes[$proj]
     if (-not (Test-Path $exe)) { CK $false "$proj exe 存在（$exe）"; continue }
     # 2026-11-12：全组跑（不传 mode，与 verify-ui-host 同形）——理由见文件头【步骤】2。
-    #   $modes 表里的 modes 清单保留作「组归属」参考，不再逐项起进程。
-    $r = Invoke-Exe $exe @($srcDir) ($TimeoutSec * 1000)
+    #   ⚠ 路径表达式内联在调用里（不先存 $exe）：调用点 AST 子树因此含 `$modes[$proj]`，
+    #     索引按 varMap 展开后能解析出字面工程路径（fullrun 证据链）。
+    $r = Invoke-Exe (Join-Path $root $modes[$proj]) @($srcDir) ($TimeoutSec * 1000)
     $ns = Get-Names $r.Text
     foreach ($n in $ns) { [void]$newNames.Add($n) }
     $np = @(($r.Text -split "`r?`n") | Where-Object { $_ -match '^\s*\[PASS\]' }).Count

@@ -1478,6 +1478,17 @@
         "tests/scripts/verify-tool-detection.ps1:132"
       ],
       "desc": "三服务进程内判据（MediaInfoService ffprobe JSON/缺文件不崩 + PlanFolderDetector 否定路径契约与条件不变式 + PsRenderService 条件不变式/缓存幂等；ServiceProbe mediasvc 17 调用位，运行 8~10 按机器形态）（2026-11-12 由 blindspot.render-plan-mediainfo 收口，批 4·5）"
+    },
+    {
+      "id": "manual.serviceprobe-diag-modes",
+      "kind": "blindspot",
+      "domain": "ipc",
+      "tier": "blind",
+      "names": [],
+      "carriers": [],
+      "src": "tests/projects/ServiceProbe/Parts/00_Head.cs:1",
+      "blindReason": "7 个手动诊断 mode（ipc-server/ipc-client/ipc-raw-client/ipc-submit/piperaw-server/piperaw-client/tonemap）：驻留端往返用例进门禁会挂死整条门禁 ⇒ 官方登记手动工具（coverage probe $modeExempt 7 行 = 账目守恒豁免，⑨-b 绿；docs/TESTING.md:1115 明文保留）——非覆盖缺口，是可见的手动域",
+      "plannedBatch": 5
     }
   ]
 }
