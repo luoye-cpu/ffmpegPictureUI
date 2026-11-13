@@ -845,7 +845,8 @@ public static class ImageEncoderArgs
     /// <item>否则用**探测到的源位深**：源 ≤ 8 ⇒ 8（传统管线此时**根本不写** <c>-pix_fmt</c>，
     ///       等价于编码器默认的 <c>yuv420p</c>；引擎显式写 <c>yuv420p</c> 结果相同）；</item>
     /// <item>源 &gt; 8 ⇒ <c>min(源位深, 编码器上限)</c>（未选编码器时上限 12 ⇒ 16-bit 源出 12bit，
-    ///       不是 16 —— 16-bit YUV 编码器不支持）。</item>
+    ///       不是 16 —— **单个 AV1 item** 的 BitDepth 只有 8/10/12；AVIF 的 16-bit 需
+    ///       Sample Transform Derived Image Item（12+4 / 8+8 双 item），本 ffmpeg 单 item 通路不实现）。</item>
     /// </list>
     /// <para>
     /// ⚠ **为什么引擎不能只看 <c>plan.OutBitDepth</c>**：AVIF 是 YUV 容器、<c>RgbNative=false</c>，

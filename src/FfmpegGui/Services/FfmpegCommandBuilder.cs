@@ -651,7 +651,9 @@ namespace FfmpegGui.Services
                     ? $"⚠ [rgb-lossless] avif: RGB source + lossless -> {rgbPix} "
                       + "(AV1 identity), YUV chroma subsampling skipped"
                       + (rgbSrcBd > 12
-                          ? $"; source {rgbSrcBd}-bit exceeds AVIF max 12-bit -> higher precision not preserved"
+                          ? $"; source {rgbSrcBd}-bit exceeds single-AV1-item max 12-bit; "
+                            + "16-bit AVIF needs sample-transform extension (not used by this path)"
+                            + "; higher precision not preserved"
                           : "")
                     : $"⚠ [rgb] avif: explicit rgb matrix -> {rgbPix} "
                       + "(AV1 identity), YUV chroma/bit-depth rewrite skipped");

@@ -649,6 +649,9 @@ public static partial class ColorMappingEngine
         // E1 实测：avifenc 能把任意 ICC 写入 AVIF（内嵌直通 与 显式 --icc 均成功，584B ICC 读回）；
         // 且 --icc + --nclx P/T/M 产出的同一文件里 colr 的 nclx 与 ICC **共存**（exiftool 两者均可见）。
         // ⚠ --lossless 下 avifenc 强制 matrix=identity(0)，传 6/9 会报“Matrix coefficients have to be identity…”。
+        // ⚠ MaxBitDepth=12 是**单个 AV1 item** 的上限（AV1 color_config 的 BitDepth ∈ {8,10,12}）；
+        //   AVIF 规范允许 16-bit，但必须走 Sample Transform Derived Image Item（12+4 / 8+8 双 item，
+        //   见 av1-avif 规范 Appendix A）。本表的静态出口是 ffmpeg/libaom 单 item ⇒ 不支持 16。
         ["avif"]  = new() { Format = "avif",  CanCarryArbitraryIcc = true,  CanCicp = true, CanGenerateIccFromCicp = true,  MaxBitDepth = 12, CanHdr = true,
                             UnlabeledMeansSrgb = false, CanHaveBothIccAndCicp = true, LosslessForcesIdentityMatrix = true,
                             // ⚠ 2026-10-02 起 avif 亦可承载增益图 —— **不是** JPEG 的 APP2/MPF，而是
