@@ -90,6 +90,21 @@ public static class IsoBmffGainMapProbe
         /// <summary>交给 ffmpeg 解复用增益图裸流所需的 `-f` 值（`obu` / `hevc`）。</summary>
         public string? GainMapFfmpegFormat;
 
+        /// <summary>
+        /// 是否存在 **`sato`（Sample Transform Derived Image Item）**——AVIF 16-bit 的唯一承载形式
+        /// （AV1 单 item 的 BitDepth 上限 12，16-bit 必须由 sato 把两条 av01 合成）。
+        /// 与增益图无关；本字段为 true 时 <see cref="HasGainMap"/> 仍可为 false。
+        /// </summary>
+        public bool HasSampleTransform;
+        /// <summary>`sato` item 的 id；-1 = 未找到。</summary>
+        public int SampleTransformItemId = -1;
+        /// <summary>`dimg` 从 sato 指向的输入 item id（通常 2 条：base + extension）。</summary>
+        public int[] SampleTransformInputItemIds = Array.Empty<int>();
+        /// <summary>`sato` item 的原始载荷（供 <see cref="ColorMapping.AvifSampleTransform"/> 解析）。</summary>
+        public byte[]? SampleTransformPayload;
+        /// <summary>`sato` 载荷声明的输入 item 位深（8/10/12/16）。</summary>
+        public int SampleTransformInputBitDepth;
+
         /// <summary>`tmap` item 的载荷（含首个 version 字节）；供 ISO 21496-1 解析。</summary>
         public byte[]? TmapPayload;
         /// <summary>
@@ -541,6 +556,55 @@ public static class IsoBmffGainMapProbe
 
                 r.TmapPayload = SliceItem(d, locs, tmapId, idatStart, idatEnd, ref r, "tmap payload");
                 return r;
+            }
+
+            // ── 判定 1b：`sato`（Sample Transform Derived Image Item）——AVIF 16-bit ──
+            //   依据 AVIF §4.2.3.3 / Appendix A：单条 AV1 item 的 BitDepth 只有 8/10/12，
+            //   16-bit 必须 `sato` + 两条 `av01`（base + extension）。这里只做**容器级提取**：
+            //   item id、dimg 输入、载荷；表达式解析/缩放合成在 AvifSampleTransform + QueueProcessor。
+            int satoId = -1;
+            foreach (var kv in items) if (kv.Value == "sato") { satoId = kv.Key; break; }
+            if (satoId >= 0)
+            {
+                r.HasSampleTransform = true;
+                r.SampleTransformItemId = satoId;
+
+                var satoInputs = new List<int>();
+                foreach (var rf in refs)
+                {
+                    if (rf.Type != "dimg" || rf.From != satoId) continue;
+                    foreach (var to in rf.To)
+                        if (!satoInputs.Contains(to)) satoInputs.Add(to);
+                }
+                r.SampleTransformInputItemIds = satoInputs.ToArray();
+
+                var satoPayload = SliceItem(d, locs, satoId, idatStart, idatEnd, ref r, "sample transform");
+                if (satoPayload == null) return r;   // SliceItem 已置 Determinate=false + FailReason
+                r.SampleTransformPayload = satoPayload;
+
+                if (satoPayload.Length < 2 || (satoPayload[0] >> 6) != 0)
+                {
+                    r.Determinate = false;
+                    r.FailReason = "[IsoBmff] sato 载荷版本/长度非法";
+                    return r;
+                }
+
+                int bdCode = satoPayload[0] & 0x03;
+                r.SampleTransformInputBitDepth = bdCode switch
+                {
+                    0 => 8,
+                    1 => 10,
+                    2 => 12,
+                    3 => 16,
+                    _ => 0,
+                };
+
+                if (satoInputs.Count != 2)
+                {
+                    r.Determinate = false;
+                    r.FailReason = $"[IsoBmff] sato 的 dimg 输入数={satoInputs.Count}（应为 2：base + extension）";
+                    return r;
+                }
             }
 
             // ── 判定 2（次级）：辅助图形式（auxC 的 URN 带 21496）—— AU2-X1（2026-11-10）**结构尝试**。

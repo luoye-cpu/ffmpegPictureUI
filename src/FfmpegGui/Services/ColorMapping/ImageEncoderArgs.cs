@@ -838,6 +838,18 @@ public static class ImageEncoderArgs
     public static int AvifMaxBitDepth(FfmpegOptions o) => AvifMaxBitDepthForEncoder(o.Encoder);
 
     /// <summary>
+    /// 该 AVIF 编码器是否有 **16-bit Sample Transform** 通路。
+    /// <para>
+    /// 当前唯一实现是 <c>avifenc</c>（其内部即 libaom）；<paramref name="encoder"/> 为空 =
+    /// 默认 libaom，可用；显式 <c>libaom-av1</c> 可用。libsvtav1 / nvenc / qsv / amf 没有
+    /// <c>--depth D,Dextension</c> 双 item 出口，必须由调用方显式拒绝（不得静默降 12-bit）。
+    /// </para>
+    /// </summary>
+    public static bool CanUseAvif16(string? encoder)
+        => string.IsNullOrWhiteSpace(encoder)
+           || encoder.StartsWith("libaom", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
     /// AVIF 出口的**有效位深**（引擎侧入口）。与传统管线
     /// <c>FfmpegCommandBuilder</c> 里的 <c>ClampAvifBd(EffectiveBitDepth())</c> **逐字等价**：
     /// <list type="number">

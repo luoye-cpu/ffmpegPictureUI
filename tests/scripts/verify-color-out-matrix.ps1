@@ -61,6 +61,8 @@
 #        exit 0 + 产物非空 + 「无矩阵承载/未生效」播报；auto 对照零播报。
 #      J9 ppm × rgb（Redundant 格）⇒ 契约模板 2 **恰好一行**（出口层与收尾兜底不重复播报）。
 #      ⚠ 未削弱既有五格 fail-closed 判据（C1 png / D5 webp / E3 jpg / A8 avif-ycgco / B4 jxl 逐字保留）。
+#   K. AVIF 16-bit Sample Transform（2026-11-13）: K0 真 16-bit 源；K1 avifenc --depth 12,4
+#      双 item（gbrp12le + yuv444p）；K2 产品回读 PNG 像素 md5 bit-exact（编码 + 识别/解码双向）。
 #   -SelfCheck: 负控臂（反向判读，预期红）——证明判读链有牙（对齐 verify-ui-param-matrix 的
 #     -SelfCheck 契约：负控转红是预期，正向臂照常全绿、整体 exit 0）。CMX 批加第二臂：
 #     跨族拒绝（BT.2020 源 + avif + bt709）反向判读「exit==0 且有产物」期望被真实行为推翻。
@@ -163,6 +165,22 @@ function ProbeCs([string]$f) {
     $o = Join-Path $work '_cs.txt'
     Start-Process -FilePath $fp -ArgumentList @('-v','error','-select_streams','v:0','-show_entries',
         'stream=color_space,color_range,pix_fmt','-of','csv=p=0', $f) -Wait -NoNewWindow -PassThru `
+        -RedirectStandardOutput $o | Out-Null
+    return ((Read-TextShared $o).Trim())
+}
+# K 组（AVIF 16-bit Sample Transform）：两条视频流的 pix_fmt 清单（base / extension 各一行）。
+function ProbeVStreams([string]$f) {
+    $o = Join-Path $work '_vstreams.txt'
+    Start-Process -FilePath $fp -ArgumentList @('-v','error','-select_streams','v','-show_entries',
+        'stream=index,pix_fmt','-of','csv=p=0', $f) -Wait -NoNewWindow -PassThru `
+        -RedirectStandardOutput $o | Out-Null
+    return @((Read-TextShared $o) -split "`r?`n" | Where-Object { $_.Trim() -ne '' })
+}
+# 16-bit 像素 md5（统一 rgb48le）；K 组解码回读的 bit-exact 判据。
+function Md5Rgb48([string]$f) {
+    $o = Join-Path $work '_md5.txt'
+    Start-Process -FilePath $ff -ArgumentList @('-hide_banner','-loglevel','error','-i',"`"$f`"",
+        '-pix_fmt','rgb48le','-f','md5','-') -Wait -NoNewWindow -PassThru `
         -RedirectStandardOutput $o | Out-Null
     return ((Read-TextShared $o).Trim())
 }
@@ -587,6 +605,46 @@ $omLines = @(($rJ9.log -split "`r?`n") | Select-String '\[color-out-matrix\] ' |
 CK ($rJ9.code -eq 0 -and ($omLines.Count -eq 1)) "J9 ppm x rgb (Redundant): exit=$($rJ9.code), exactly ONE [color-out-matrix] line (got $($omLines.Count))"
 $hit = LogHit $rJ9.log '\[color-out-matrix\] rgb on ppm: container is already RGB; recorded, no pixel effect' 1
 CK ($hit.Count -ge 1) "J9 template-2 verbatim on the non-planning bmp/ppm family"
+
+Write-Output ""
+Write-Output "===== K avif 16-bit sample transform (encode + decode, 2026-11-13) ====="
+# K1: 16-bit 源 → avif 无损 → 容器必须两条 av01（base + extension），
+#     base 为 gbrp12le、extension 为 yuv444p（avifenc --depth 12,4 实测布局）。
+# K2: 把同一产物喂回产品解码 → 16-bit rgb48be PNG；像素 md5 与源逐字节相等。
+#   ⚠ 只在 K2 同时通过时才证明"编码正确 + 软件识别/解码正确"；K1 单过只能证明编码器产出了双 item。
+$src16 = Join-Path $work 'src16.png'
+$genArgs = @('-y','-hide_banner','-loglevel','error','-f','lavfi','-i',
+    "nullsrc=s=512x384,format=rgb48le,geq=r='random(1)*65535':g='random(2)*65535':b='random(3)*65535'",
+    '-frames:v','1','-pix_fmt','rgb48be', $src16)
+$gen = Start-Process -FilePath $ff -ArgumentList $genArgs -Wait -NoNewWindow -PassThru `
+        -RedirectStandardOutput (Join-Path $work 'k0_gen.o') `
+        -RedirectStandardError (Join-Path $work 'k0_gen.e')
+CK ($gen.ExitCode -eq 0 -and (Test-Path $src16)) "K0 true 16-bit source generated (ffmpeg geq; low bits nonzero)"
+
+$rK1 = Run 'k1_avif16_lossless' 'avif' @('--lossless','true','--bit-depth','16','--color-engine','engine') $src16
+$vsK1 = if ($rK1.file) { ProbeVStreams $rK1.file } else { @() }
+CK ($rK1.code -eq 0 -and ($null -ne $rK1.file)) "K1 avif 16-bit lossless: exit=$($rK1.code), produced=$($null -ne $rK1.file)"
+CK ($vsK1.Count -eq 2) "K1 container has exactly 2 video streams (base + extension); got $($vsK1.Count): $($vsK1 -join ' | ')"
+CK ($vsK1 -match 'gbrp12le') "K1 base pix_fmt = gbrp12le (12-bit RGB base; full='$($vsK1 -join ' | ')'"
+CK ($vsK1 -match 'yuv444p') "K1 extension pix_fmt = yuv444p (4-bit extension item; full='$($vsK1 -join ' | ')'"
+$hitK1 = LogHit $rK1.log '\[avif16\] avifenc --depth 12,4' 1
+CK ($hitK1.Count -ge 1) "K1 avifenc --depth 12,4 path landed (not ffmpeg/libaom 12-bit single item)"
+CK ($rK1.log -notmatch '出口位深降为 12bit（本次目标 16bit）') "K1 no false 16->12 degradation broadcast (sato fulfills 16-bit)"
+
+$rK2 = @{ code = -1; log = ''; file = $null }
+if ($rK1.file) {
+    $rK2 = Run 'k2_avif16_roundtrip' 'png' @('--bit-depth','16','--color-engine','engine') $rK1.file
+}
+CK ($rK2.code -eq 0 -and ($null -ne $rK2.file)) "K2 16-bit AVIF decoded by product: exit=$($rK2.code), produced=$($null -ne $rK2.file)"
+if ($rK2.file) {
+    $md5K0 = Md5Rgb48 $src16
+    $md5K2 = Md5Rgb48 $rK2.file
+    CK ($md5K0 -eq $md5K2) "K2 pixel md5 bit-exact after AVIF roundtrip (src=$md5K0, dec=$md5K2)"
+} else {
+    CK $false "K2 pixel md5 bit-exact after AVIF roundtrip (no decoded product)"
+}
+$hitK2 = LogHit $rK2.log '\[avif16\].*(Sample Transform|sato|重建)' 1
+CK ($hitK2.Count -ge 1) "K2 sample-transform recognition landed (sato + dimg, not 12-bit base only)"
 
 Write-Output ""
 Write-Output "===== -SelfCheck negative-control arm (must turn RED) ====="

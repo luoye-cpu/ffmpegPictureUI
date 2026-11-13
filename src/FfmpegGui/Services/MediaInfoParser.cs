@@ -20,6 +20,8 @@ namespace FfmpegGui.Services
         public int Height { get; set; }
         public string PixelFormat { get; set; } = "";
         public int? BitDepth { get; set; }
+        /// <summary>AVIF 16-bit：容器内有 `sato` Sample Transform 派生项（ffprobe 只会报 base 的 12-bit）。</summary>
+        public bool HasSampleTransform { get; set; }
         public string ColorPrimaries { get; set; } = "";
         public string ColorTransfer { get; set; } = "";
         public string ColorSpace { get; set; } = "";
@@ -99,6 +101,22 @@ namespace FfmpegGui.Services
                 }
             }
             catch { }
+
+            // ── AVIF 16-bit（sato）：ffprobe 只看得到 12-bit base，必须读容器派生项 ──
+            if (string.Equals(Path.GetExtension(filePath), ".avif", StringComparison.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    var st = await IsoBmffGainMapProbe.ProbeFileAsync(filePath);
+                    if (st?.HasSampleTransform == true && st.Determinate)
+                    {
+                        model.HasSampleTransform = true;
+                        model.BitDepth = 16;
+                        model.PixelFormat = "gbrp16le (SampleTransform)";
+                    }
+                }
+                catch { }
+            }
 
             // ── ICC 信息 ──
             try

@@ -359,6 +359,18 @@ public sealed class ColorTransformPlan
     /// </summary>
     public bool ExternalEncoderExit;
 
+    /// <summary>
+    /// 16-bit AVIF 出口标志：走 `avifenc --depth 12,4` 的 **Sample Transform** 双 item 通路
+    /// （`sato` + `dimg`；AV1 单 item 上限 12-bit）。
+    /// <para>
+    /// 与 <see cref="ExternalEncoderExit"/> 刻意分开：AVIF 的色彩仍由本引擎中间件算，
+    /// 只是编码阶段换成 avifenc 进程。执行层（<c>RawColorPipeline</c>）见到本标志时，
+    /// 不再把 16-bit raw 交给 ffmpeg/libaom（那会静默降成 12-bit），而是先转 16-bit PNG
+    /// 再喂 `avifenc --depth 12,4`。
+    /// </para>
+    /// </summary>
+    public bool AvifSampleTransform16;
+
     // ── 策略与损失归类（规划 §2/§3；contract 自检的断言对象）──
     /// <summary>用户声明的策略。</summary>
     public ColorStrategy DeclaredStrategy = ColorStrategy.Recommended;

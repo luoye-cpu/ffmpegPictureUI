@@ -2536,10 +2536,18 @@ namespace FfmpegGui
                 // `(isLibaom || isNvenc) ? 12 : 10`，且**不含**"编码器留空"这一支 ⇒
                 // 留空时下拉只给到 10，而命令里不写 -c:v ⇒ 实跑 libaom-av1、能出 12bit。
                 var maxBd = Services.ColorMapping.ImageEncoderArgs.AvifMaxBitDepthForEncoder(enc);
+                // 16-bit AVIF：avifenc --depth 12,4 是唯一出口（avifenc 可用且编码器为默认/libaom）。
+                // 其余编码器（libsvt/nvenc/qsv/amf）没有 Sample Transform 出口 ⇒ 仍只到 12。
+                if (Services.ColorMapping.ImageEncoderArgs.CanUseAvif16(enc)
+                    && !string.IsNullOrWhiteSpace(Services.PlatformServices.ResolveAvifencPath()))
+                    maxBd = 16;
                 BitDepthCombo.Items.Clear();
                 BitDepthCombo.Items.Add("auto");
                 for (int bd = 8; bd <= maxBd; bd += 2)
+                {
+                    if (bd == 14) continue;   // AVIF/AV1 没有 14-bit 档（8/10/12 + sato 16）
                     BitDepthCombo.Items.Add(bd.ToString());
+                }
                 if (cur != null && BitDepthCombo.Items.Contains(cur))
                     BitDepthCombo.SelectedIndex = BitDepthCombo.Items.IndexOf(cur);
                 else

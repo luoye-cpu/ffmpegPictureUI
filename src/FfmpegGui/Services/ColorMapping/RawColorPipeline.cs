@@ -2,6 +2,7 @@ using System;
 using System.Buffers;
 using System.Diagnostics;
 using System.IO;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -239,7 +240,14 @@ public static class RawColorPipeline
             // ⚠ 出口分叉要**先分 jxr 再分 jxl**：两者都置 `ExternalEncoderExit`，但编码器完全不同
             //   （jxr 恒走 JxrEncApp；jxl 视后端而定）。按扩展名二次分叉，而不是给计划层新开一个位
             //   —— `ExternalEncoderExit` 的语义就是「编码由引擎内的外部编码器出口完成」，对两者都成立。
-            if (plan.ExternalEncoderExit && outExt == "jxr")
+            if (plan.AvifSampleTransform16)
+            {
+                // AVIF 16-bit：libaom/ffmpeg 单 item 会静默降 12-bit；必须先转 16-bit PNG
+                // 再喂 avifenc --depth 12,4（sato + dimg 双 item）。
+                ec = await EncodeAvif16ViaAvifencAsync(inputPath, tmpOut, outputPath, plan, options, w, h, log, ct)
+                        .ConfigureAwait(false);
+            }
+            else if (plan.ExternalEncoderExit && outExt == "jxr")
             {
                 ec = await EncodeJxrViaJxrEncAppAsync(inputPath, tmpOut, outputPath, plan, options, w, h, log, ct)
                         .ConfigureAwait(false);
@@ -256,9 +264,11 @@ public static class RawColorPipeline
             }
             st.EncodeMs = sw3.ElapsedMilliseconds;
             if (ec != 0 || !File.Exists(outputPath) || new FileInfo(outputPath).Length == 0)
-                throw new InvalidOperationException(plan.ExternalEncoderExit
-                    ? $"{(outExt == "jxr" ? "JxrEncApp" : "cjxl")} 编码失败 (exit {ec})"
-                    : $"编码失败 (exit {ec})");
+                throw new InvalidOperationException(plan.AvifSampleTransform16
+                    ? $"avifenc 16-bit encode failed (exit {ec})"
+                    : plan.ExternalEncoderExit
+                        ? $"{(outExt == "jxr" ? "JxrEncApp" : "cjxl")} 编码失败 (exit {ec})"
+                        : $"编码失败 (exit {ec})");
             st.ElapsedMs = sw.ElapsedMilliseconds;
             return st;
         }
@@ -422,6 +432,81 @@ public static class RawColorPipeline
             return st;
         }
         finally { TryDelete(tmp); }
+    }
+
+    /// <summary>
+    /// **AVIF 16-bit 出口**（2026-11-13）：把引擎已变换的 raw 先落成 16-bit PNG，
+    /// 再喂 <c>avifenc --depth 12,4</c>。
+    /// <para>
+    /// 为什么不能交给 ffmpeg/libaom：单个 AV1 item 的 BitDepth 只有 8/10/12；ffmpeg 对
+    /// <c>gbrp16le</c> 会自动改选 <c>gbrp12le</c>（实测），产物**静默丢 4 LSB**。16-bit
+    /// 必须由 AVIF Sample Transform（<c>sato</c> + 两条 <c>av01</c>）承载，当前唯一可用
+    /// 编码器是随包 <c>avifenc 1.4.2</c>（libaom 3.15.0），实测 <c>--depth 12,4 --lossless</c>
+    /// 可产出 <c>av01×2 + dimg + sato</c>，且 <c>pixi</c> 为 12/16/8。
+    /// </para>
+    /// <para>
+    /// 色彩参数：RGB 源 + <c>-y 444</c> ⇒ avifenc 产出 <c>gbrp</c> 基图，CICP 矩阵写 0
+    /// （identity）；非 RGB 源保留计划矩阵码。CICP 无法命名时**不猜**，交给 avifenc 默认
+    /// 并在日志点名。
+    /// </para>
+    /// 失败语义：任何一环失败都抛异常（调用方映射为任务失败），绝不回退 ffmpeg 12-bit。
+    /// </summary>
+    private static async Task<int> EncodeAvif16ViaAvifencAsync(string inputPath, string rawPath, string outputPath,
+        ColorTransformPlan plan, Models.FfmpegOptions? options, int w, int h, Action<string>? log, CancellationToken ct)
+    {
+        if (options == null)
+            throw new InvalidOperationException("[avif16] AVIF 16-bit 出口需要 FfmpegOptions（质量/无损/线程）");
+
+        var avifenc = PlatformServices.ResolveAvifencPath();
+        if (string.IsNullOrWhiteSpace(avifenc) || !File.Exists(avifenc))
+            throw new InvalidOperationException(
+                "[avif16] 未找到 avifenc.exe；16-bit AVIF 必须由 avifenc --depth 12,4 完成（不静默回退 ffmpeg 12-bit）");
+
+        var png = Path.Combine(PlatformServices.GetTempDir(), $"avif16_{Guid.NewGuid():N}.png");
+        try
+        {
+            // 引擎 raw = 变换后的最终像素；16-bit 计划 ⇒ rgb48le，8-bit 计划 ⇒ rgb24（PNG 再扩到 rgb48be）。
+            var pixIn = plan.OutBitDepth == 8 ? "rgb24" : "rgb48le";
+            var pngArgs = $"-y -hide_banner -loglevel error -f rawvideo -pix_fmt {pixIn} "
+                        + $"-video_size {w}x{h} -i \"{rawPath}\" -pix_fmt rgb48be -compression_level 0 \"{png}\"";
+            int pngExit = await RunToEndAsync(
+                AppSettingsService.Current.FfmpegPath, pngArgs, log, ct).ConfigureAwait(false);
+            if (pngExit != 0 || !File.Exists(png) || new FileInfo(png).Length == 0)
+                throw new InvalidOperationException($"[avif16] 16-bit PNG 中转失败 (ffmpeg exit {pngExit})");
+
+            bool srcRgb = ImageEncoderArgs.IsRgbFamilyPixFmt(
+                FfmpegCommandBuilder.ProbeInputPixFmtForEngine(inputPath));
+            var cicp = AvifCicp.FromPlan(plan, srcRgb);
+
+            var sb = new StringBuilder();
+            sb.Append("--depth 12,4 ");
+            if (options.Lossless) sb.Append("--lossless ");
+            else sb.Append("-q ").Append(Math.Clamp(options.Quality, 0, 100)).Append(' ');
+            if (cicp != null)
+            {
+                sb.Append("--cicp ")
+                  .Append(cicp.Value.P).Append('/')
+                  .Append(cicp.Value.T).Append('/')
+                  .Append(cicp.Value.M).Append(' ');
+            }
+            else
+            {
+                log?.Invoke("[avif16] ⚠ CICP token 未识别；avifenc 将使用默认色彩描述（不猜码）\n");
+            }
+            sb.Append("-y 444 ");
+            sb.Append("-s ").Append(Math.Clamp(options.AvifCpuUsed ?? 6, 0, 10)).Append(' ');
+            if (options.Threads > 1) sb.Append("-j ").Append(options.Threads).Append(' ');
+            sb.Append('"').Append(png).Append("\" -o \"").Append(outputPath).Append('"');
+
+            log?.Invoke($"[avif16] avifenc {sb}\n");
+            int ec = await RunProcessToEndAsync(avifenc, sb.ToString(), log, ct, "avifenc").ConfigureAwait(false);
+            if (ec != 0) log?.Invoke($"[avif16] ❌ avifenc exit {ec}\n");
+            return ec;
+        }
+        finally
+        {
+            TryDelete(png);
+        }
     }
 
     /// <summary>
@@ -1532,12 +1617,20 @@ public static class RawColorPipeline
     public static Task<(int w, int h)> ProbeSizeAsync(string path, string? ffmpegOverride = null, CancellationToken ct = default)
         => ImageGeometry.DisplaySizeAsync(path, AppSettingsService.Current.FfprobePath, log: null, ct);
 
-    private static async Task<int> RunToEndAsync(string exe, string args, Action<string>? log, CancellationToken ct)
+    private static Task<int> RunToEndAsync(string exe, string args, Action<string>? log, CancellationToken ct)
+        => RunProcessToEndAsync(exe, args, log, ct, "ffmpeg");
+
+    private static async Task<int> RunProcessToEndAsync(string exe, string args, Action<string>? log,
+        CancellationToken ct, string label)
     {
-        if (string.IsNullOrWhiteSpace(exe) || !File.Exists(exe)) { log?.Invoke("[色彩] ❌ ffmpeg 不可用\n"); return -1; }
+        if (string.IsNullOrWhiteSpace(exe) || !File.Exists(exe))
+        {
+            log?.Invoke($"[色彩] ❌ {label} 不可用\n");
+            return -1;
+        }
         // 命令行必须可追溯：A/B 对拍时"两条管线到底差在哪个参数"只能靠这一行回答
         //（实测踩过：jpg 22dB 差异查了半天，就是因为引擎没记命令）。
-        log?.Invoke($"[色彩] ffmpeg {args}\n");
+        log?.Invoke($"[色彩] {label} {args}\n");
         using var p = Process.Start(new ProcessStartInfo
         {
             FileName = exe, Arguments = args,

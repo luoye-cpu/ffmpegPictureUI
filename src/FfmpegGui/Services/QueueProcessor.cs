@@ -1,11 +1,13 @@
 using FfmpegGui.Models;
 using System;
+using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -441,6 +443,23 @@ namespace FfmpegGui.Services
                             // ── 根据编码器后端调度 ──
                             var backend = captured.Options.EncoderBackend;
                             var inputExt = Path.GetExtension(captured.InputPath).ToLowerInvariant();
+
+                            // ── AVIF 16-bit（Sample Transform）输入：先重建 16-bit ──
+                            //   ffmpeg 的 `mov` demuxer 只认 base av01（12-bit），`sato`/dimg 派生项被忽略
+                            //   ⇒ 直接把原 AVIF 交给后续管线会静默只处理 12-bit 基图。这里在**入队早期**
+                            //   把两条 av01 解成 raw、按 sato 表达式合成 16-bit，写成 16-bit PNG 后替换
+                            //   `InputPath`；后续所有路径（预缩放/引擎/icc/尺寸）都按普通 16-bit PNG 处理。
+                            if (inputExt == ".avif")
+                            {
+                                var avif16 = await TryDecodeAvif16InputAsync(
+                                    captured, tempDirsToCleanup,
+                                    s => { captured.Log += s; _onItemUpdated?.Invoke(captured); }, ct);
+                                if (avif16 != null)
+                                {
+                                    captured.InputPath = avif16;
+                                    inputExt = ".png";
+                                }
+                            }
 
                             // 诚实提示（P7a）：用户显式选了引擎，但本条任务会走外部编码器/专用管线。
                             // 引擎目前只接管默认 ffmpeg 分支的色彩执行；不说出来就等于“选了引擎但没人走”。
@@ -1720,8 +1739,20 @@ namespace FfmpegGui.Services
         private async Task<(bool used, int exitCode, ColorMapping.ColorTransformPlan? plan)> TryRunColorEngineAsync(
             QueueItem item, string inputPath, string outputPath, bool inputMayHaveMultipleFrames, CancellationToken ct)
         {
-            if (!ColorMapping.ColorEngineRouter.Requested(item.Options)) return (false, 0, null);
             void Log(string s) { item.Log += s; _onItemUpdated?.Invoke(item); }
+
+            if (!ColorMapping.ColorEngineRouter.Requested(item.Options))
+            {
+                // AVIF 16-bit 只能由引擎的 avifenc Sample Transform 出口完成；legacy/ffmpeg
+                // 单 item 会静默降 12-bit ⇒ 显式要求 16-bit 时硬失败，不静默改路。
+                if (IsAvif16Requested(item.Options, inputPath))
+                {
+                    Log("[avif16] ❌ 16-bit AVIF 需要自研色彩引擎的 avifenc --depth 12,4 出口；"
+                        + "当前 --color-engine legacy/off 无法承载 Sample Transform（不静默降 12-bit）\n");
+                    return (true, 91, null);
+                }
+                return (false, 0, null);
+            }
 
             // ⚠ 2026-09-17（S2）：`block` 已是**结构化**的 `EngineBlock{Code,Text,Alternatives}`
             //   （规划 §5-D）。日志**同时**打 `block.Code` 与 `block.Text`：前者是稳定 Code（供门禁/GUI 判定），
@@ -1732,6 +1763,12 @@ namespace FfmpegGui.Services
                 item.Options, outputPath, inputMayHaveMultipleFrames);
             if (block != null)
             {
+                if (IsAvif16Requested(item.Options, inputPath))
+                {
+                    Log($"[avif16] ❌ 16-bit AVIF 的 avifenc Sample Transform 出口被路由拦截（{block.Code}）：{block.Text}\n");
+                    LogAlternatives(Log, block.Alternatives);
+                    return (true, 91, null);
+                }
                 // **2026-09-16**：区分「用户显式要求引擎」与「引擎是默认」——
                 //  • 显式要求（--color-engine engine）⇒ 仍**硬失败并点名**（可用性诚实：绝不静默回退）；
                 //  • 默认（未指定）⇒ 该格式本就不在引擎的编码出口内（JXR/DNG/动画），
@@ -1791,7 +1828,45 @@ namespace FfmpegGui.Services
             //   这一行与**传统管线**消费点打的 `[色彩裁决] 裁决=…` **逐字同格式**，两条管线的裁决
             //   因此可以按同一口径直接对拍（`verify-color-strategy` 的 parity 断言即读它）。
             //   用 `[色彩裁决]` 而不是 `[色彩引擎]`：见 `LogAlternatives` 的标签说明。
+            // ⚠ 本行必须放在 AVIF 16-bit 调整**之后**：sato 兑现后裁决/降级列表会被修正，
+            //   先打会把 `ProceedWithDegradation` 留给用户，而实际已无该降级。
+
+            // ── AVIF 16-bit：把计划标记为 avifenc Sample Transform 出口 ──
+            //   触发条件（任一）：显式 --bit-depth 16 / 源位深 >12（16-bit AVIF 输入重建后是 16-bit PNG）。
+            //   ⚠ 必须在下方 S7 降级播报**之前**置位并修正裁决：规划层只知道"AVIF 单 item 上限 12"，
+            //     会给一条 BitDepthReduced(16→12)；本出口用 sato 兑现 16 后，那条降级不会发生。
+            if (IsAvif16Requested(item.Options, inputPath))
+            {
+                var reject = Avif16Eligibility(item.Options);
+                if (reject != null)
+                {
+                    Log($"[avif16] ❌ {reject}\n");
+                    return (true, 91, null);
+                }
+                plan.AvifSampleTransform16 = true;
+                var verdict = plan.Verdict;
+                if (verdict != null && verdict.Degradations.Count > 0)
+                {
+                    var kept = verdict.Degradations
+                        .Where(d => !(d.Code == ColorMapping.DegradationCodes.BitDepthReduced
+                                      && d.Text.Contains("12bit", StringComparison.Ordinal)
+                                      && d.Text.Contains("16bit", StringComparison.Ordinal)))
+                        .ToArray();
+                    if (kept.Length != verdict.Degradations.Count)
+                    {
+                        verdict.Degradations = kept;
+                        if (kept.Length == 0 && verdict.Kind == ColorMapping.VerdictKind.ProceedWithDegradation)
+                            verdict.Kind = ColorMapping.VerdictKind.Proceed;
+                        Log("[avif16] 已由 sato 兑现 16-bit；移除规划层“出口降为 12bit”的降级播报\n");
+                    }
+                }
+                if (item.Options.Chroma is not ("auto" or "4:4:4"))
+                    Log($"[avif16] ⚠ 16-bit AVIF 固定 4:4:4（avifenc -y 444）；已忽略色度子采样 {item.Options.Chroma}\n");
+                Log("[avif16] 16-bit AVIF 出口：avifenc --depth 12,4（sato + dimg 双 item）\n");
+            }
+
             Log($"[色彩裁决] 裁决={plan.Verdict?.Kind}\n");
+
             // ── S7：把「引擎产出正确但有可量化损失」**逐条**告诉用户 ──
             // ⚠ 这是**结构化**消费：打 `ColorDegradation.Code`（稳定契约，见 `DegradationCodes`），
             //   `Text` 只作人读补充。此前 `plan.Verdict` 存在但从不被读 ⇒ 用户看不到任何损失提示
@@ -1809,8 +1884,10 @@ namespace FfmpegGui.Services
                 LogAlternatives(Log, plan.Verdict?.Alternatives);
                 return (true, 91, null);
             }
+
             if (!plan.GainMap
                 && !plan.ExternalEncoderExit
+                && !plan.AvifSampleTransform16
                 && (plan.Action == ColorMapping.ColorAction.None
                     || plan.Action == ColorMapping.ColorAction.CarryIcc))
             {
@@ -1871,6 +1948,41 @@ namespace FfmpegGui.Services
                 Log($"[色彩引擎] ❌ 执行失败：{ex.GetType().Name}: {ex.Message}\n");
                 return (true, 92, plan);
             }
+        }
+
+        /// <summary>
+        /// 是否请求/需要 16-bit AVIF：输出格式 avif，且（显式 --bit-depth ≥16 或源位深 &gt;12）。
+        /// 源位深在**入队早期**已由 Sample Transform 解码替换成 16-bit PNG ⇒ 这里探到 16。
+        /// </summary>
+        private static bool IsAvif16Requested(FfmpegOptions o, string inputPath)
+        {
+            if (!string.Equals(o.Format, "avif", StringComparison.OrdinalIgnoreCase)) return false;
+            var requested = o.BitDepthRequested ?? o.BitDepth;
+            if (requested.HasValue && requested.Value >= 16) return true;
+            return FfmpegCommandBuilder.ProbeInputBitDepthForEngine(inputPath) > 12;
+        }
+
+        /// <summary>
+        /// 16-bit AVIF 出口的资格检查；返回 null = 通过，返回文本 = 显式拒绝原因。
+        /// 当前唯一实现是 avifenc 的 <c>--depth 12,4</c>（libaom），其余编码器没有 Sample Transform 出口。
+        /// </summary>
+        private static string? Avif16Eligibility(FfmpegOptions o)
+        {
+            if (!string.Equals(o.Format, "avif", StringComparison.OrdinalIgnoreCase))
+                return "16-bit AVIF requires output format avif";
+            if (!ColorMapping.ImageEncoderArgs.CanUseAvif16(o.Encoder))
+                return $"16-bit AVIF requires avifenc(libaom); encoder '{o.Encoder}' has no Sample Transform exit";
+            if (string.IsNullOrWhiteSpace(PlatformServices.ResolveAvifencPath()))
+                return "avifenc.exe not found; 16-bit AVIF would silently fall back to 12-bit";
+            if (o.JpegGainMap)
+                return "GainMap and 16-bit AVIF (sato two-item) cannot be emitted together";
+            var matrix = o.ColorOutMatrix;
+            if (!string.IsNullOrWhiteSpace(matrix)
+                && !string.Equals(matrix, "auto", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(matrix, "rgb", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(matrix, "gbr", StringComparison.OrdinalIgnoreCase))
+                return $"16-bit AVIF currently supports RGB identity only (--color-out-matrix auto/rgb); got '{matrix}'";
+            return null;
         }
 
         // ── 色彩后置（单一裁决点的交付端）──
@@ -4633,6 +4745,227 @@ namespace FfmpegGui.Services
                 try { Directory.Delete(tempDir, true); } catch { }
             }
         }
+
+        /// <summary>
+        /// AVIF 16-bit（Sample Transform）输入识别 + 重建。
+        /// <para>
+        /// 背景：本机 ffmpeg 只有 `mov` demuxer，没有 `avif` demuxer；对 `sato` + 两条 `av01`
+        /// 的 AVIF，ffprobe 只能看到 base（12-bit）与 extension 两条流，`sato` 派生项被忽略。
+        /// 因此产品若直接把原 AVIF 交给后续管线，只会处理 12-bit 基图（实测回读 md5
+        /// 与源 16-bit 不一致）。本方法按 AVIF §4.2.3.3 的 `sato` 表达式把两条流合成 16-bit。
+        /// </para>
+        /// <para>
+        /// 返回 null = 不是 Sample Transform 输入（正常 AVIF 继续走原路径）；
+        /// 抛出 = 是 sato 但结构/解码不成立（fail-closed，绝不静默退回基图）。
+        /// </para>
+        /// </summary>
+        private async Task<string?> TryDecodeAvif16InputAsync(
+            QueueItem item, List<string> tempDirsToCleanup, Action<string> log, CancellationToken ct)
+        {
+            var inputPath = item.InputPath;
+            IsoBmffGainMapProbe.Result? probe;
+            try
+            {
+                probe = await IsoBmffGainMapProbe.ProbeFileAsync(inputPath, ct);
+            }
+            catch (Exception ex)
+            {
+                log($"[avif16] ⚠ 容器探测失败（按普通 AVIF 继续）：{ex.Message}\n");
+                return null;
+            }
+
+            if (probe == null || !probe.HasSampleTransform) return null;
+            if (!probe.Determinate)
+                throw new InvalidOperationException($"[avif16] ❌ {probe.FailReason ?? "sato 结构不确定；拒绝退回 12-bit 基图"}");
+            if (probe.SampleTransformPayload == null)
+                throw new InvalidOperationException("[avif16] ❌ sato 载荷缺失；拒绝退回 12-bit 基图");
+
+            var transform = ColorMapping.AvifSampleTransform.Parse(probe.SampleTransformPayload, out var parseError);
+            if (transform == null)
+                throw new InvalidOperationException($"[avif16] ❌ sato 表达式解析失败：{parseError}");
+
+            log($"[avif16] 检测到 AVIF Sample Transform 派生项：sato item {probe.SampleTransformItemId}，"
+                + $"inputs [{string.Join(",", probe.SampleTransformInputItemIds)}]，"
+                + $"声明输入位深 {probe.SampleTransformInputBitDepth}；表达式 {transform.Expression}\n");
+
+            // ── 读两条视频流的实况（ffprobe；与 MediaInfoService 同源）──
+            var json = await MediaInfoService.GetMediaInfoAsync(inputPath, ffprobePath: null, ffmpegPath: null);
+            if (string.IsNullOrWhiteSpace(json))
+                throw new InvalidOperationException("[avif16] ❌ ffprobe 未返回 AVIF 流信息");
+
+            var vids = new List<(int Index, string PixFmt, int Width, int Height, int? NbFrames,
+                string? Primaries, string? Trc, string? Matrix)>();
+            using (var doc = JsonDocument.Parse(json))
+            {
+                if (doc.RootElement.TryGetProperty("streams", out var streams)
+                    && streams.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var s in streams.EnumerateArray())
+                    {
+                        if (!s.TryGetProperty("codec_type", out var ctj) || ctj.GetString() != "video")
+                            continue;
+
+                        var pix = JsonStr(s, "pix_fmt") ?? "";
+                        var w = JsonInt(s, "width") ?? 0;
+                        var h = JsonInt(s, "height") ?? 0;
+                        var nb = JsonInt(s, "nb_frames");
+                        vids.Add((vids.Count, pix, w, h, nb,
+                            JsonStr(s, "color_primaries"), JsonStr(s, "color_transfer"), JsonStr(s, "color_space")));
+                    }
+                }
+            }
+
+            if (vids.Count != 2)
+                throw new InvalidOperationException(
+                    $"[avif16] ❌ sato 输入应有 2 条视频流，ffprobe 读到 {vids.Count} 条（布局不支持）");
+            if (vids[0].Width <= 0 || vids[0].Height <= 0
+                || vids[0].Width != vids[1].Width || vids[0].Height != vids[1].Height)
+                throw new InvalidOperationException(
+                    $"[avif16] ❌ 两条流尺寸不一致：{vids[0].Width}x{vids[0].Height} vs {vids[1].Width}x{vids[1].Height}");
+            if ((vids[0].NbFrames ?? 1) > 1 || (vids[1].NbFrames ?? 1) > 1)
+                throw new InvalidOperationException(
+                    $"[avif16] ❌ 动图/多帧 AVIF 的 Sample Transform 暂不支持（帧数 {vids[0].NbFrames}/{vids[1].NbFrames}）");
+
+            // primary item = base；ffprobe 的流顺序通常与 item 顺序一致，但若 primary 明确是第二条则交换。
+            bool swap = probe.PrimaryItemId >= 0
+                        && probe.SampleTransformInputItemIds.Length == 2
+                        && probe.PrimaryItemId == probe.SampleTransformInputItemIds[1];
+            var baseV = swap ? vids[1] : vids[0];
+            var extV = swap ? vids[0] : vids[1];
+
+            if (!IsSupportedAvif16BasePixFmt(baseV.PixFmt))
+                throw new InvalidOperationException(
+                    $"[avif16] ❌ base 流 pix_fmt='{baseV.PixFmt}' 不支持（只支持 gbrp/yuv444p 的 8/10/12/16-bit）");
+            if (!IsSupportedAvif16ExtPixFmt(extV.PixFmt))
+                throw new InvalidOperationException(
+                    $"[avif16] ❌ extension 流 pix_fmt='{extV.PixFmt}' 不支持（只支持 gbrp/yuv444p 的 8/10/12/16-bit）");
+
+            var tempDir = Path.Combine(PlatformServices.GetTempDir(), $"avif16_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+            tempDirsToCleanup.Add(tempDir);
+
+            var baseRaw = Path.Combine(tempDir, "base.raw");
+            var extRaw = Path.Combine(tempDir, "ext.raw");
+            var reconRaw = Path.Combine(tempDir, "recon16.raw");
+            var reconPng = Path.Combine(tempDir, "recon16.png");
+
+            int baseExit = await FfmpegRunner.RunAsync(
+                $"-v error -y -i \"{inputPath}\" -map 0:v:{(swap ? 1 : 0)} -pix_fmt {baseV.PixFmt} -frames:v 1 -f rawvideo \"{baseRaw}\"",
+                log, AppSettingsService.Current.FfmpegPath, ct);
+            int extExit = await FfmpegRunner.RunAsync(
+                $"-v error -y -i \"{inputPath}\" -map 0:v:{(swap ? 0 : 1)} -pix_fmt {extV.PixFmt} -frames:v 1 -f rawvideo \"{extRaw}\"",
+                log, AppSettingsService.Current.FfmpegPath, ct);
+            if (baseExit != 0 || extExit != 0)
+                throw new InvalidOperationException(
+                    $"[avif16] ❌ ffmpeg 抽流失败（base exit={baseExit}, ext exit={extExit}）");
+            if (!File.Exists(baseRaw) || !File.Exists(extRaw))
+                throw new InvalidOperationException("[avif16] ❌ ffmpeg 未产出 raw 流");
+
+            int rw = baseV.Width;
+            int rh = baseV.Height;
+            int planeSize = rw * rh;
+            int baseBps = BytesPerSample(baseV.PixFmt);
+            int extBps = BytesPerSample(extV.PixFmt);
+            long expectedPlaneBytes = (long)planeSize * 3 * baseBps;
+            long expectedExtBytes = (long)planeSize * 3 * extBps;
+            if (new FileInfo(baseRaw).Length != expectedPlaneBytes
+                || new FileInfo(extRaw).Length != expectedExtBytes)
+                throw new InvalidOperationException(
+                    $"[avif16] ❌ raw 尺寸不符：base={new FileInfo(baseRaw).Length}/{expectedPlaneBytes}，"
+                    + $"ext={new FileInfo(extRaw).Length}/{expectedExtBytes}（{rw}x{rh}）");
+
+            var baseBuf = File.ReadAllBytes(baseRaw);
+            var extBuf = File.ReadAllBytes(extRaw);
+            int outLen = checked(planeSize * 3 * 2);
+            var outBuf = new byte[outLen];
+            for (int plane = 0; plane < 3; plane++)
+            {
+                int planeBase = plane * planeSize;
+                for (int i = 0; i < planeSize; i++)
+                {
+                    int idx = planeBase + i;
+                    long s1 = ReadRawSample(baseBuf, idx, baseBps);
+                    long s2 = ReadRawSample(extBuf, idx, extBps);
+                    long v = transform.Evaluate(s1, s2);
+                    BinaryPrimitives.WriteUInt16LittleEndian(
+                        outBuf.AsSpan(idx * 2, 2), ColorMapping.AvifSampleTransform.ClampTo16(v));
+                }
+            }
+            File.WriteAllBytes(reconRaw, outBuf);
+
+            string outPix = baseV.PixFmt.StartsWith("gbr", StringComparison.OrdinalIgnoreCase)
+                ? "gbrp16le"
+                : "yuv444p16le";
+            string vf = "";
+            if (outPix.StartsWith("yuv", StringComparison.OrdinalIgnoreCase))
+            {
+                // avifenc 的 RGB 入口（-y 444）产出 gbrp 基图；这里保留 yuv 分支给非 RGB 源。
+                // 矩阵只用于 YUV→RGB 转换，取流自报 matrix；缺失时按 BT.709 安全默认。
+                var m = NormalizeDecoderMatrix(baseV.Matrix);
+                vf = $" -vf \"scale=in_color_matrix={m}:in_range=full:out_color_matrix=bt709:out_range=full,format=rgb48be\"";
+            }
+
+            int pngExit = await FfmpegRunner.RunAsync(
+                $"-y -hide_banner -loglevel error -f rawvideo -pix_fmt {outPix} -video_size {rw}x{rh} -i \"{reconRaw}\"{vf} -pix_fmt rgb48be -compression_level 0 \"{reconPng}\"",
+                log, AppSettingsService.Current.FfmpegPath, ct);
+            if (pngExit != 0 || !File.Exists(reconPng))
+                throw new InvalidOperationException($"[avif16] ❌ 16-bit PNG 落盘失败（ffmpeg exit={pngExit}）");
+
+            // 把源 CICP 带进 PNG（cICP chunk），并显式声明输入色彩描述，避免后续引擎把
+            // BT.2020/PQ 误当 sRGB。未知 token 不猜，留给原有探测。
+            var cicp = ColorMapping.AvifCicp.FromSourceTokens(baseV.Primaries, baseV.Trc);
+            if (cicp != null) PngCicpService.TryInsertCicp(reconPng, cicp.Value.P, cicp.Value.T);
+            if (!string.IsNullOrWhiteSpace(baseV.Primaries)) item.Options.ColorSourceDeclPrimaries = baseV.Primaries;
+            if (!string.IsNullOrWhiteSpace(baseV.Trc)) item.Options.ColorSourceDeclTrc = baseV.Trc;
+
+            log($"[avif16] ✅ 16-bit AVIF 已重建：base {baseV.PixFmt} + ext {extV.PixFmt} → {outPix} "
+                + $"({rw}x{rh})，PNG {Path.GetFileName(reconPng)}"
+                + (cicp != null ? $"，CICP {cicp.Value.P}/{cicp.Value.T}" : "，CICP 未识别") + "\n");
+            return reconPng;
+        }
+
+        private static string? JsonStr(JsonElement obj, string name)
+        {
+            if (!obj.TryGetProperty(name, out var e)) return null;
+            if (e.ValueKind == JsonValueKind.String) return e.GetString();
+            if (e.ValueKind == JsonValueKind.Number) return e.GetRawText();
+            return null;
+        }
+
+        private static int? JsonInt(JsonElement obj, string name)
+        {
+            if (!obj.TryGetProperty(name, out var e)) return null;
+            if (e.ValueKind == JsonValueKind.Number && e.TryGetInt32(out var n)) return n;
+            if (e.ValueKind == JsonValueKind.String && int.TryParse(e.GetString(), out var s)) return s;
+            return null;
+        }
+
+        private static bool IsSupportedAvif16BasePixFmt(string pix)
+            => pix is "gbrp" or "gbrp10le" or "gbrp12le" or "gbrp16le"
+                or "yuv444p" or "yuv444p10le" or "yuv444p12le" or "yuv444p16le";
+
+        private static bool IsSupportedAvif16ExtPixFmt(string pix)
+            => pix is "gbrp" or "gbrp10le" or "gbrp12le" or "gbrp16le"
+                or "yuv444p" or "yuv444p10le" or "yuv444p12le" or "yuv444p16le";
+
+        private static int BytesPerSample(string pix)
+            => pix.Contains("16", StringComparison.Ordinal)
+               || pix.Contains("12", StringComparison.Ordinal)
+               || pix.Contains("10", StringComparison.Ordinal) ? 2 : 1;
+
+        private static long ReadRawSample(byte[] buf, int sampleIndex, int bytesPerSample)
+            => bytesPerSample == 2
+                ? BinaryPrimitives.ReadUInt16LittleEndian(buf.AsSpan(sampleIndex * 2, 2))
+                : buf[sampleIndex];
+
+        private static string NormalizeDecoderMatrix(string? matrix)
+        {
+            var m = ColorSpaceRegistry.NormalizeMatrixToken(matrix);
+            return m is "bt709" or "bt2020nc" or "bt2020c" or "smpte170m" or "bt470bg" or "smpte240m"
+                ? m
+                : "bt709";
+        }
+
 
         /// <summary>GIF → AVIF 两步法：先提取带透明通道的 PNG 帧，再用 avifenc 编码</summary>
         private async Task ProcessGifToAvifViaAvifencAsync(QueueItem item, string outputPath, CancellationToken ct)
