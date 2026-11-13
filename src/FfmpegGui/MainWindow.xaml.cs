@@ -4313,10 +4313,15 @@ namespace FfmpegGui
                 UpdateIccCarryLabel(); // 动态显示当前色彩空间对应的 ICC 类型
 
             // 携带/仅CICP：色彩空间锁定（源为准）；推荐/手动：按格式能力启用。
+            // ⚠ 但「快速选择」本身不能一起锁死：BT.2020 PQ 会自动把 ICC 模式切到仅CICP（BakeCicpOnly），
+            //   若这里同时禁用它，用户就永远回不到 sRGB/BT.709（自锁）。显式目标（非 auto）一律允许切换；
+            //   只有 auto（跟随源）时才按策略锁定。
             if (ColorSpaceCombo != null)
             {
                 bool locked = strategy is Models.ColorStrategy.CarryIcc or Models.ColorStrategy.BakeCicpOnly;
-                ColorSpaceCombo.IsEnabled = !locked
+                // 仅CICP 的快速选择就是烘焙目标，必须可改（含 auto 起步）；携带 ICC 仍以源为准，保持锁定。
+                bool editableTarget = strategy == Models.ColorStrategy.BakeCicpOnly;
+                ColorSpaceCombo.IsEnabled = (!locked || editableTarget)
                     && (_currentCapabilities is null || _currentCapabilities.SupportedColorSpaces.Count > 0);
             }
 
