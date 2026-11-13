@@ -862,6 +862,48 @@ public static class ImageEncoderArgs
     }
 
     /// <summary>
+    /// AVIF 的 **RGB 无损**像素面：AV1 的 identity matrix（<c>matrix_coefficients=0</c>）只能由
+    /// <c>gbrp</c> 族承载。
+    /// <para>
+    /// 依据（均在本仓实测）：<c>tests/output/_tmp/color-matrix-t6-probe/</c>（2026-11-10）——
+    /// A7：4:2:0 + identity ⇒ libaom 硬失败（"Subsampling must be 0 with AOM_CICP_MC_IDENTITY"）；
+    /// A3：<c>gbrp</c> 直喂、不写任何矩阵 flag ⇒ nclx 自动落 <c>matrix=0</c>（identity）。
+    /// 2026-11-13 复核：<c>gbrp10le</c>/<c>gbrp12le</c> 同样成立（PQ 标签不影响 identity）。
+    /// </para>
+    /// <para>
+    /// ⚠ **不能**用 <c>yuv444p</c> 冒充 identity：4:4:4 只是“无子采样”，三个平面仍是 Y′CbCr；
+    /// 实测（同目录 <c>app_legacy_444_rgb</c>）解码端按 GBR 解释时 PSNR 仅 11.96 dB（颜色错乱），
+    /// 而编码器**不会**报错 ⇒ 必须按本方法选 <c>gbrp</c> 族。
+    /// </para>
+    /// </summary>
+    public static string MapAvifRgbPixFmt(int bitDepth)
+    {
+        var bd = bitDepth <= 0 ? 8 : bitDepth;
+        return bd switch
+        {
+            <= 8 => "gbrp",
+            <= 10 => "gbrp10le",
+            _ => "gbrp12le",   // AVIF 上限 12（AvifMaxBitDepth 已钳）
+        };
+    }
+
+    /// <summary>
+    /// 输入像素格式是否属于 **RGB 族**（<c>rgb* / bgr* / gbr* / argb / abgr</c>）。
+    /// 用途：判定「RGB 源 ⇒ RGB 无损出口」是否适用。<c>gray* / pal8 / yuv* / yuva*</c> 均**不算**——
+    /// 灰度不是 RGB（三通道恒等），调色板与 YUV 源转 RGB 属于新增转换，不属“保持 RGB”。
+    /// </summary>
+    public static bool IsRgbFamilyPixFmt(string? pixFmt)
+    {
+        if (string.IsNullOrWhiteSpace(pixFmt)) return false;
+        var p = pixFmt.Trim().ToLowerInvariant();
+        return p.StartsWith("rgb", StringComparison.Ordinal)
+            || p.StartsWith("bgr", StringComparison.Ordinal)
+            || p.StartsWith("gbr", StringComparison.Ordinal)
+            || p.StartsWith("argb", StringComparison.Ordinal)
+            || p.StartsWith("abgr", StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// 格式 → <c>-pix_fmt</c>（**单一真值**，2026-09-17 从 <c>FfmpegCommandBuilder</c> 整体搬移，
     /// 原为 <c>private static MapPixFmt</c>，逻辑一字未改）。
     /// <para>

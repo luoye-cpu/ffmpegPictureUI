@@ -1083,11 +1083,53 @@ public static class RawColorPipeline
                     && plan.OutMatrixMode == "rgb";
                 bool outMatrixYuvCarried = plan.OutMatrixVerdict == OutMatrixCapability.Carried
                     && plan.OutMatrixMode is not (null or "" or "xyb" or "rgb");
-                if ((chromaSet || o.BitDepth.HasValue || srcBd > 8 || outMatrixYuvCarried)
-                    && !outMatrixRgbCarried)
+                // ── RGB 源 + 无损：像素面保持 RGB（2026-11-13 用户裁决）──────────────────
+                // 目的：输入是 RGB 时，无损产物的**像素面也必须是 RGB**——默认的 yuv* 档已在
+                // 编码前做过 RGB→YUV（含色度抽样），"编码器无损"救不回被抽掉的色度。
+                // 判据四维：① 源 pix_fmt 属 RGB 族（png/tiff/jxl/bmp/ppm、AVIF-identity…）；
+                //          ② 用户勾了无损；③ 未显式请求矩阵（显式 rgb / 显式 YUV 各自沿用既有通路，
+                //             不在本自动档里改行为）；④ 编码器有 gbrp 位（libaom / 留空默认）。
+                // 位深仍走 AvifEffectiveBitDepth：8→gbrp、10→gbrp10le、12→gbrp12le。
+                // ⚠ AVIF 静态出口写不进 ICC ⇒ RGB 身份只能由 nclx matrix=0 表达（gbrp 直喂自动落）。
+                bool srcRgb = ImageEncoderArgs.IsRgbFamilyPixFmt(
+                    FfmpegCommandBuilder.ProbeInputPixFmtForEngine(inputPath));
+                bool rgbCapableEncoder = string.IsNullOrWhiteSpace(o.Encoder)
+                    || o.Encoder.StartsWith("libaom", StringComparison.OrdinalIgnoreCase);
+                bool rgbLossless = o.Lossless && srcRgb && rgbCapableEncoder
+                    && !outMatrixRgbCarried && !outMatrixYuvCarried;
+                // 显式 rgb 矩阵 + 显式色度/位深：同一条钉法。否则下面的通用分支会写
+                // yuv444p / yuv420p10le，再被 `setparams=colorspace=gbr` 标成 identity ——
+                // 实测 4:4:4 档不报错但颜色错乱（PSNR 11.96 dB），4:2:0 档直接硬失败。
+                bool rgbExplicitPin = outMatrixRgbCarried && rgbCapableEncoder
+                    && (chromaSet || o.BitDepth.HasValue);
+                if (rgbLossless || rgbExplicitPin)
                 {
                     var bd = ImageEncoderArgs.AvifEffectiveBitDepth(o, srcBd);
-                    pixFmt = " -pix_fmt " + ImageEncoderArgs.MapPixFmt("avif", o.Chroma, bd, false, o.ColorRange);
+                    var rgbPix = ImageEncoderArgs.MapAvifRgbPixFmt(bd);
+                    pixFmt = " -pix_fmt " + rgbPix;
+                    ImageEncoderArgs.EmitWarn(rgbLossless
+                        ? $"⚠ [rgb-lossless] avif: RGB source + lossless -> {rgbPix} "
+                          + "(AV1 identity), YUV chroma subsampling skipped"
+                          + (srcBd > 12
+                              ? $"; source {srcBd}-bit exceeds AVIF max 12-bit -> higher precision not preserved"
+                              : "")
+                        : $"⚠ [rgb] avif: explicit rgb matrix -> {rgbPix} "
+                          + "(AV1 identity), YUV chroma/bit-depth rewrite skipped");
+                }
+                else
+                {
+                    // RGB 源 + 无损，但编码器没有 gbrp 位（如 libsvtav1）：必须出声，不许静默回 YUV。
+                    if (o.Lossless && srcRgb && !rgbCapableEncoder)
+                        ImageEncoderArgs.EmitWarn(
+                            "⚠ [rgb-lossless] avif: RGB source + lossless, but encoder "
+                            + $"'{o.Encoder}' has no gbrp support -> output falls back to YUV "
+                            + "(chose libaom-av1 to keep RGB)");
+                    if ((chromaSet || o.BitDepth.HasValue || srcBd > 8 || outMatrixYuvCarried)
+                        && !outMatrixRgbCarried)
+                    {
+                        var bd = ImageEncoderArgs.AvifEffectiveBitDepth(o, srcBd);
+                        pixFmt = " -pix_fmt " + ImageEncoderArgs.MapPixFmt("avif", o.Chroma, bd, false, o.ColorRange);
+                    }
                 }
             }
             // ── GIF（2026-09-17 接入）──

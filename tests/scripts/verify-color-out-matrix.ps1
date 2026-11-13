@@ -11,6 +11,8 @@
 #      ⚠ 任务书原文「matrix_coefficients=10」是笔误：H.273 bt2020nc=9、bt2020cl=10，T1 §4 表为 9 —— 判据按 9/语义词锚定。
 #      ⚠ 引擎通路需要「真转色彩」场景（Display P3 目标 ⇒ H1 Map）：直通（None）时走 legacy ffmpeg 命令，
 #        那是孤立标签路径（T6 移交注意事项 3），本门禁另锁其孤立点名（A7）。
+#      A9/A10（2026-11-13 用户裁决「RGB 进 ⇒ RGB 无损出」）：RGB 源 + 无损 ⇒ gbrp 族且 PSNR=inf；
+#        显式 rgb + 4:4:4 也不得写 yuv444p（负控：yuv444p 再标 identity 实测 11.96 dB 静默错色）。
 #   B. jxl XYB: 显式 xyb ⇒ cjxl 确认播报逐字 + 规划层 Reason 逐字 + jxlinfo 产物合法 + 命令行无 xyb 旗标
 #      （cjxl v0.12.0 无显式开关，T1 §2）。⚠ jxlinfo 标准输出无 XYB 字段（实测 g8/g9 两臂 jxlinfo -v 同形、
 #      均报 "Color space: RGB"——XYB 是 VarDCT 编码内部色空间，容器层不可区分，T1 §2 同口径）⇒ 复用 T6 的
@@ -227,6 +229,28 @@ CK ($rRgb.code -eq 0 -and ($null -ne $rRgb.file)) "A4 avif x rgb (engine): exit=
 CK ($csR -match 'gbr') "A4 rgb readback = gbr (nclx matrix_coefficients=0 via gbrp feed; full='$csR')"
 $hit = LogHit $rRgb.log '\[color-out-matrix\] avif: rgb -> nclx matrix_coefficients=0 \(identity, RGB 4:4:4 gbrp feed\)' 1
 CK ($hit.Count -ge 1) "A5 template-1 landed verbatim (rgb => nclx matrix_coefficients=0 description)"
+
+# A9: RGB 源 + 无损 ⇒ 像素面必须保持 gbrp 族（2026-11-13 用户裁决）。
+#   负控历史：默认 yuv* 档在编码前已做 RGB→YUV（含色度抽样），"编码器无损"救不回色度；
+#   yuv444p 再被标 identity 会静默错色（同目录 app_legacy_444_rgb 实测 PSNR 11.96 dB）。
+$rLls = Run 'a9_avif_lossless_rgb' 'avif' @('--lossless','true')
+$csLls = if ($rLls.file) { ProbeCs $rLls.file } else { '' }
+CK ($rLls.code -eq 0 -and ($null -ne $rLls.file)) "A9 avif RGB source + lossless: exit=$($rLls.code), produced=$($null -ne $rLls.file)"
+CK ($csLls -match 'gbr') "A9 readback = gbr (gbrp feed => AV1 identity; full='$csLls')"
+$ps9 = if ($rLls.file) { PsnrTwo $rLls.file $src } else { -1 }
+CK ($ps9 -ge 99) "A9 RGB lossless is bit-exact vs source (PSNR=$ps9; inf folds to 99)"
+$hit = LogHit $rLls.log '\[rgb-lossless\] avif: RGB source \+ lossless -> gbrp' 1
+CK ($hit.Count -ge 1) "A9 [rgb-lossless] advisory landed verbatim"
+
+# A10: 显式 rgb + 4:4:4 + 无损 ⇒ 也不得写 yuv444p（legacy 直通同样钉 gbrp；负控 11.96 dB）
+$r444 = Run 'a10_avif_rgb444' 'avif' @('--color-engine','legacy','--color-out-matrix','rgb','--chroma','4:4:4','--lossless','true')
+$cs444 = if ($r444.file) { ProbeCs $r444.file } else { '' }
+CK ($r444.code -eq 0 -and ($null -ne $r444.file)) "A10 avif explicit rgb + 4:4:4: exit=$($r444.code), produced=$($null -ne $r444.file)"
+CK ($cs444 -match 'gbr') "A10 readback = gbr (identity carried by gbrp, not yuv444p; full='$cs444')"
+$ps10 = if ($r444.file) { PsnrTwo $r444.file $src } else { -1 }
+CK ($ps10 -ge 99) "A10 explicit rgb + 4:4:4 is bit-exact vs source (PSNR=$ps10; inf folds to 99)"
+$hit = LogHit $r444.log '\[rgb\] avif: explicit rgb matrix -> gbrp' 1
+CK ($hit.Count -ge 1) "A10 [rgb] advisory landed verbatim"
 
 # A6: auto 档零播报（C-REPORT@1「auto 不播报」+ CM-REQ-08 零噪声）
 CK ($rAuto.log -notmatch '\[color-out-matrix\] ') "A6 auto arm has ZERO [color-out-matrix] lines (silence contract)"

@@ -611,7 +611,52 @@ namespace FfmpegGui.Services
             // GIF 为调色板格式：paletteuse 输出 pal8，显式 -pix_fmt（如 16-bit 源的 yuv420p16le）会与 pal8
             // 冲突/编码失败 → GIF 输出跳过通用 pix_fmt（与 8-bit GIF 无 -pix_fmt 的既有正确行为一致）。
             bool skipGenericPixFmt = fmt is "gif";
-            if (!skipGenericPixFmt
+            // ── AVIF 的 RGB 像素面（2026-11-13，与引擎出口同一判据）────────────────────
+            // 两种情形都必须把像素面钉在 gbrp 族（AV1 identity 的唯一合法承载）：
+            //  ① RGB 源 + 无损 ⇒ 保持 RGB，不做 RGB→YUV（含色度抽样）；
+            //  ② 显式 rgb 矩阵 + 显式色度/位深 ⇒ 既有通用分支会写 yuv444p / yuv420p10le，
+            //     再被 `setparams=colorspace=gbr` 标成 identity —— 实测 4:4:4 档**不报错但颜色错乱**
+            //     （PSNR 11.96 dB），4:2:0 档直接硬失败 ⇒ 该组合必须改钉 gbrp。
+            // 判据：源 pix_fmt 属 RGB 族 / Lossless / 未显式请求矩阵 / 编码器有 gbrp 位。
+            // ⚠ 与引擎侧 `RawColorPipeline` 的 rgbLossless / outMatrixRgbCarried 块同义；
+            //   两处都调用 ImageEncoderArgs 的同一份 MapAvifRgbPixFmt / IsRgbFamilyPixFmt。
+            var outMatrixTok = options.ColorOutMatrix;   // setter 已归一：auto ⇒ null
+            bool explicitRgbOutMatrix = string.Equals(outMatrixTok, "rgb", StringComparison.OrdinalIgnoreCase);
+            bool explicitYuvOutMatrix = !string.IsNullOrWhiteSpace(outMatrixTok)
+                && !explicitRgbOutMatrix
+                && !string.Equals(outMatrixTok, "xyb", StringComparison.OrdinalIgnoreCase);
+            bool chromaExplicit = !string.IsNullOrWhiteSpace(options.Chroma)
+                && !options.Chroma.Equals("auto", StringComparison.OrdinalIgnoreCase);
+            bool srcIsRgb = ColorMapping.ImageEncoderArgs.IsRgbFamilyPixFmt(ProbeInputPixFmtForEngine(probeInput));
+            bool rgbLosslessWanted = fmt == "avif" && options.Lossless && srcIsRgb
+                && !explicitRgbOutMatrix && !explicitYuvOutMatrix;
+            bool explicitRgbNeedsPin = fmt == "avif" && explicitRgbOutMatrix
+                && (chromaExplicit || options.BitDepth.HasValue);
+            bool rgbPinWanted = rgbLosslessWanted || explicitRgbNeedsPin;
+            bool rgbCapableEncoder = string.IsNullOrWhiteSpace(options.Encoder)
+                || options.Encoder.StartsWith("libaom", StringComparison.OrdinalIgnoreCase);
+            if (rgbPinWanted && !rgbCapableEncoder)
+                ColorMapping.ImageEncoderArgs.EmitWarn(
+                    "⚠ [rgb] avif: RGB output requested, but encoder "
+                    + $"'{options.Encoder}' has no gbrp support -> output falls back to YUV "
+                    + "(chose libaom-av1 to keep RGB)");
+            if (rgbPinWanted && rgbCapableEncoder)
+            {
+                var rgbBd = ColorMapping.ImageEncoderArgs.AvifEffectiveBitDepth(options, ProbeInputBitDepth(probeInput));
+                var rgbPix = ColorMapping.ImageEncoderArgs.MapAvifRgbPixFmt(rgbBd);
+                args.Add("-pix_fmt");
+                args.Add(rgbPix);
+                var rgbSrcBd = ProbeInputBitDepth(probeInput);
+                ColorMapping.ImageEncoderArgs.EmitWarn(rgbLosslessWanted
+                    ? $"⚠ [rgb-lossless] avif: RGB source + lossless -> {rgbPix} "
+                      + "(AV1 identity), YUV chroma subsampling skipped"
+                      + (rgbSrcBd > 12
+                          ? $"; source {rgbSrcBd}-bit exceeds AVIF max 12-bit -> higher precision not preserved"
+                          : "")
+                    : $"⚠ [rgb] avif: explicit rgb matrix -> {rgbPix} "
+                      + "(AV1 identity), YUV chroma/bit-depth rewrite skipped");
+            }
+            else if (!skipGenericPixFmt
                 && !string.IsNullOrWhiteSpace(options.Chroma)
                 && !options.Chroma.Equals("auto", StringComparison.OrdinalIgnoreCase))
             {
