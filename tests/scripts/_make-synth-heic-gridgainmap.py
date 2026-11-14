@@ -209,6 +209,70 @@ def build(out_path, hvcc, tile_item, payload):
     return len(blob)
 
 
+def build_aux_grid(out_path, hvcc, tile_item, xmp):
+    """组装 **auxC(hdrgainmap) + grid** 变体（手机私有件形态）。
+
+    与 `build()` 的差别：
+      · 没有 tmap item；`grid` 直接挂在 `auxC` 属性上，`iref auxl: 3 -> 1`；
+      · grid 载荷 `flags=0`，但尾部写 2×u16 宽高（128/96）—— 锁 C7；
+      · 带一个 `mime`(XMP) item（XMP 头room=2.0），让产品链在**无 Exif**时走 XMP；
+      · `dimg: 3 -> [4..7]`，`ipma 3 = [ispe_grid, auxC]`。
+    """
+    def infe(iid, itype):
+        return full_box('infe', struct.pack('>HH', iid, 0) + itype.encode() + b'\x00', ver=2)
+
+    iinf = full_box('iinf', struct.pack('>H', 7)
+                    + infe(1, 'hvc1') + infe(2, 'mime') + infe(3, 'grid')
+                    + infe(4, 'hvc1') + infe(5, 'hvc1') + infe(6, 'hvc1') + infe(7, 'hvc1'))
+    pitm = full_box('pitm', struct.pack('>H', 1))
+    hdlr = full_box('hdlr', struct.pack('>I', 0) + b'pict' + b'\x00' * 12 + b'\x00')
+    dimg_grid = plain_box('dimg', struct.pack('>HH', 3, 4) + struct.pack('>HHHH', 4, 5, 6, 7))
+    auxl = plain_box('auxl', struct.pack('>HHH', 3, 1, 1))
+    iref = full_box('iref', dimg_grid + auxl)
+
+    ispe_tile = full_box('ispe', struct.pack('>II', 64, 48))
+    ispe_grid = full_box('ispe', struct.pack('>II', 128, 96))
+    auxc = full_box('auxC', b'urn:com:apple:photo:2020:aux:hdrgainmap\x00')
+    ipco = plain_box('ipco', hvcc + ispe_tile + ispe_grid + auxc)
+    entries = []
+    for iid in (1, 4, 5, 6, 7):
+        entries.append(struct.pack('>HB', iid, 2) + bytes([0x81, 0x82]))   # hvcC + ispe(64x48)
+    entries.append(struct.pack('>HB', 2, 0))                                # mime：无属性
+    entries.append(struct.pack('>HB', 3, 2) + bytes([0x83, 0x84]))          # grid：ispe(128x96) + auxC
+    ipma = full_box('ipma', struct.pack('>I', 7) + b''.join(entries))
+    iprp = plain_box('iprp', ipco + ipma)
+
+    # C7：flags bit0=0，但尾部 2×u16 = 128/96（非标私货；标准 flags=1 才写 u32）
+    grid_payload = (struct.pack('>BB', 0, 0) + struct.pack('>BB', 1, 1)
+                    + struct.pack('>HH', 128, 96))
+
+    def iloc_bytes(o_base, o_tiles):
+        body = struct.pack('>H', 7)
+        for iid, ln in ((1, len(tile_item)),) + tuple((i, len(tile_item)) for i in (4, 5, 6, 7)):
+            body += struct.pack('>HHH', iid, 0, 0) + struct.pack('>I', 0)
+            body += struct.pack('>H', 1) + struct.pack('>II', o_base if iid == 1 else o_tiles[iid - 4], ln)
+        # method 1：2（mime/XMP，idat 偏移 0）、3（grid，idat 偏移 len(xmp)）
+        body += struct.pack('>HHH', 2, 1, 0) + struct.pack('>I', 0)
+        body += struct.pack('>H', 1) + struct.pack('>II', 0, len(xmp))
+        body += struct.pack('>HHH', 3, 1, 0) + struct.pack('>I', 0)
+        body += struct.pack('>H', 1) + struct.pack('>II', len(xmp), len(grid_payload))
+        return full_box('iloc', struct.pack('>BB', 0x44, 0x40) + body, ver=1)
+
+    idat = plain_box('idat', xmp + grid_payload)
+    ftyp = plain_box('ftyp', b'heic' + struct.pack('>I', 0) + b'mif1' + b'heic')
+    meta_probe = full_box('meta', hdlr + pitm + iinf + iref + iprp
+                          + iloc_bytes(0, {k: 0 for k in range(4)}) + idat)
+    o_base = len(ftyp) + len(meta_probe) + 8
+    o_tiles = {k: o_base + len(tile_item) + k * len(tile_item) for k in range(4)}
+    meta = full_box('meta', hdlr + pitm + iinf + iref + iprp
+                    + iloc_bytes(o_base, o_tiles) + idat)
+    if len(meta) != len(meta_probe):
+        raise SystemExit("✗ aux grid：meta 长度在占位/实值两次计算下不一致")
+    blob = ftyp + meta + plain_box('mdat', tile_item + tile_item * 4)
+    open(out_path, 'wb').write(blob)
+    return len(blob)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--ffmpeg', required=True)
@@ -258,6 +322,40 @@ def main():
     p1 = os.path.join(a.outdir, 'synth_heic_grid_gainmap.heic')
     n1 = build(p1, hvcc, item, payload)
     print(f"✓ {p1}  {n1} B（grid 2x2 瓦片 + idat 承载 / construction_method=1）")
+
+    # 2026-11-15：auxC(hdrgainmap) + grid + flags=0 尾宽高 + 无 Exif（手机私有件形态）
+    xmp = ('<?xpacket begin="\ufeff" id="W5M0MpCehiHzreSzNTczkc9d"?>'
+           '<x:xmpmeta xmlns:x="adobe:ns:meta/">'
+           '<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">'
+           '<rdf:Description rdf:about="" xmlns:HDRGainMap="http://ns.apple.com/HDRGainMap/1.0/" '
+           'xmlns:xmp="http://ns.adobe.com/xap/1.0/">'
+           '<HDRGainMap:HDRGainMapHeadroom>2.0</HDRGainMap:HDRGainMapHeadroom>'
+           '</rdf:Description></rdf:RDF></x:xmpmeta><?xpacket end="w"?>').encode('utf-8')
+    p2 = os.path.join(a.outdir, 'synth_heic_grid_aux_gainmap.heic')
+    n2 = build_aux_grid(p2, hvcc, item, xmp)
+    print(f"✓ {p2}  {n2} B（auxC hdrgainmap + grid 2x2 + flags=0 尾宽高 128x96 + XMP headroom=2.0）")
+
+    # 2026-11-15：灰瓦片变体 —— 增益中位 = 128 ⇒ 锁「对称/128 基」B 口径（testsrc2 件 p0.5≈5 只走 A）。
+    tmp_gray = os.path.join(a.outdir, '_hevc_grid_gray.h265')
+    rg = subprocess.run([a.ffmpeg, '-y', '-v', 'error', '-f', 'lavfi', '-i', 'color=c=0x808080:s=64x48',
+                         '-frames:v', '1', '-c:v', 'libx265', '-f', 'hevc', tmp_gray], capture_output=True)
+    if rg.returncode != 0:
+        print(f"✗ ffmpeg 生成灰瓦片失败: {rg.stderr.decode('utf-8', 'replace')[:300]}")
+        return 1
+    gray_annexb = open(tmp_gray, 'rb').read()
+    os.remove(tmp_gray)
+    gray_nals = split_annexb(gray_annexb)
+    gray_paramsets = [(t, p) for t, p in gray_nals if t in (32, 33, 34)]
+    gray_hvcc = build_hvcc(gray_paramsets)
+    gray_item = to_length_prefixed(gray_annexb)
+    p3 = os.path.join(a.outdir, 'synth_heic_grid_aux_gainmap_b.heic')
+    n3 = build_aux_grid(p3, gray_hvcc, gray_item, xmp)
+    print(f"✓ {p3}  {n3} B（同结构，灰瓦片 0x80 ⇒ p0.5=128 走 B 口径）")
+
+    # 无 XMP 变体：同结构但 idat 里没有 XMP ⇒ 未登记 URN 必须仍判「无增益图」（候选的语义门有牙）。
+    p4 = os.path.join(a.outdir, 'synth_heic_grid_aux_noxmp.heic')
+    n4 = build_aux_grid(p4, hvcc, item, b'')
+    print(f"✓ {p4}  {n4} B（无 XMP：未登记 URN 的负控载体）")
     return 0
 
 

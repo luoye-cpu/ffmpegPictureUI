@@ -62,6 +62,8 @@ namespace ServiceProbe
                 else if (args[i].Equals("auxisofull", StringComparison.OrdinalIgnoreCase)) expect = "auxisofull";
                 else if (args[i].Equals("grid", StringComparison.OrdinalIgnoreCase)) expect = "grid";
                 else if (args[i].Equals("auxdec", StringComparison.OrdinalIgnoreCase)) expect = "auxdec";
+                else if (args[i].Equals("auxapplegrid", StringComparison.OrdinalIgnoreCase)) expect = "auxapplegrid";
+                else if (args[i].Equals("auxvendorgrid", StringComparison.OrdinalIgnoreCase)) expect = "auxvendorgrid";
                 else outRaw = args[i];
             }
             var bytes = File.ReadAllBytes(path);
@@ -75,7 +77,8 @@ namespace ServiceProbe
             Console.WriteLine($"codec={r.GainMapCodec ?? "-"} ffmpegFmt={r.GainMapFfmpegFormat ?? "-"} " +
                 $"tmapPayload={r.TmapPayload?.Length ?? -1} gmData={r.GainMapItemData?.Length ?? -1}");
             Console.WriteLine($"grid={r.GainMapIsGrid} rows={r.GridRows} cols={r.GridCols} " +
-                $"gridW={r.GridWidth} gridH={r.GridHeight} tileW={r.TileWidth} tileH={r.TileHeight} tiles={r.GainMapTiles?.Count ?? 0}");
+                $"gridW={r.GridWidth} gridH={r.GridHeight} tileW={r.TileWidth} tileH={r.TileHeight} tiles={r.GainMapTiles?.Count ?? 0}" +
+                $" gridSizeFromTail={r.GridSizeFromPayloadTail} auxBase={r.AuxBaseItemId}");
             // D1/D2/D5/D8（2026-11-09）：主图身份 / 展示变换 / alpha 辅助图 / 截断 —— 修复判据的读数面。
             Console.WriteLine($"primaryType={r.PrimaryItemType ?? "-"} primaryIsGrid={r.PrimaryIsGridDerived} " +
                 $"irot={r.PrimaryIrot} imir={r.PrimaryImir} auxAlpha={r.HasAuxAlpha} truncated={r.IsTruncated}" +
@@ -142,6 +145,53 @@ namespace ServiceProbe
                     File.WriteAllBytes(outRaw, r.GainMapItemData);
                     Console.WriteLine($"gainmap_raw_written={outRaw} bytes={r.GainMapItemData.Length}");
                 }
+                return;
+            }
+            if (expect == "auxapplegrid")
+            {
+                // 2026-11-15：手机私有件形态 —— auxC(hdrgainmap) 挂在 **grid** 上（不是单编解码 item），
+                // 且没有 Exif；grid 载荷 flags=0 但尾部写 2×u16 宽高。合成件由
+                // tests/scripts/_make-synth-heic-gridgainmap.py 生成（XMP headroom=2.0）。
+                Check(r.Determinate, $"aux+grid 完整提取 ⇒ determinate=true（failReason={r.FailReason ?? "-"}）");
+                Check(r.HasGainMap, "检测到增益图");
+                Check(r.Form == "aux-apple-hdrgainmap", $"承载形式为 aux-apple-hdrgainmap（实 {r.Form ?? "-"}）");
+                Check(r.GainMapIsGrid, $"增益图承载为 grid（实 {r.GainMapIsGrid}）");
+                Check(r.GainMapItemId > 0 && r.AuxItemId == r.GainMapItemId,
+                    $"aux/grid item 已定位且为同一项（aux={r.AuxItemId} grid={r.GainMapItemId}）");
+                Check(r.AuxBaseItemId == r.PrimaryItemId,
+                    $"auxl 指向主图（auxBase={r.AuxBaseItemId} primary={r.PrimaryItemId}）");
+                Check(r.GainMapTiles is { Count: > 0 } && r.GainMapItemData == null,
+                    $"grid 走瓦片而不是单 item 裸流（tiles={r.GainMapTiles?.Count ?? 0} gmData={r.GainMapItemData?.Length ?? -1}）");
+                Check(r.GridRows == 2 && r.GridCols == 2 && r.GridWidth == 128 && r.GridHeight == 96
+                    && r.TileWidth == 64 && r.TileHeight == 48 && r.GainMapTiles?.Count == 4,
+                    $"grid 几何 = 2x2 × 64x48 ⇒ 128x96 / 4 瓦片（实 {r.GridCols}x{r.GridRows} × {r.TileWidth}x{r.TileHeight} ⇒ {r.GridWidth}x{r.GridHeight} / {r.GainMapTiles?.Count ?? 0}）");
+                Check(r.GridSizeFromPayloadTail,
+                    $"flags=0 尾宽高已读（gridSizeFromTail={r.GridSizeFromPayloadTail}）");
+                Check(r.ExifItemId == -1 && r.ExifItemData == null,
+                    $"无 Exif 件仍可解（ExifItemId={r.ExifItemId}）");
+                return;
+            }
+            if (expect == "auxvendorgrid")
+            {
+                // 2026-11-15：**未登记厂商 URN** + XMP `HDRGainMapHeadroom` 的候选映射。
+                // URN 不含 21496 / hdrgainmap / alpha ⇒ 不能靠 URN 认；语义门在探针的 XMP 扫描。
+                Check(r.Determinate, $"厂商候选完整提取 ⇒ determinate=true（failReason={r.FailReason ?? "-"}）");
+                Check(r.HasGainMap, "检测到厂商候选增益图（XMP 头room 已把语义门）");
+                Check(r.Form == "aux-vendor-gainmap", $"承载形式为 aux-vendor-gainmap（实 {r.Form ?? "-"}）");
+                Check(r.GainMapIsGrid, $"增益图承载为 grid（实 {r.GainMapIsGrid}）");
+                Check(r.GainMapItemId > 0 && r.AuxItemId == r.GainMapItemId,
+                    $"vendor aux/grid item 已定位且为同一项（aux={r.AuxItemId} grid={r.GainMapItemId}）");
+                Check(r.AuxBaseItemId == r.PrimaryItemId,
+                    $"auxl 指向主图（auxBase={r.AuxBaseItemId} primary={r.PrimaryItemId}）");
+                Check(r.GainMapTiles is { Count: > 0 } && r.GainMapItemData == null,
+                    $"grid 走瓦片而不是单 item 裸流（tiles={r.GainMapTiles?.Count ?? 0} gmData={r.GainMapItemData?.Length ?? -1}）");
+                Check(r.GridRows == 2 && r.GridCols == 2 && r.GridWidth == 128 && r.GridHeight == 96
+                    && r.TileWidth == 64 && r.TileHeight == 48 && r.GainMapTiles?.Count == 4,
+                    $"vendor grid 几何 = 2x2 × 64x48 ⇒ 128x96 / 4 瓦片（实 {r.GridCols}x{r.GridRows} × {r.TileWidth}x{r.TileHeight} ⇒ {r.GridWidth}x{r.GridHeight} / {r.GainMapTiles?.Count ?? 0}）");
+                Check(r.GridSizeFromPayloadTail,
+                    $"flags=0 尾宽高已读（gridSizeFromTail={r.GridSizeFromPayloadTail}）");
+                Check(r.ExifItemId == -1 && r.ExifItemData == null,
+                    $"无 Exif 件仍可解（ExifItemId={r.ExifItemId}）");
                 return;
             }
             if (expect == "grid")

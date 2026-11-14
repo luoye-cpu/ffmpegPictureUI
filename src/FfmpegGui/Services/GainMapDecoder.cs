@@ -247,22 +247,25 @@ public static class GainMapDecoder
                 //   （`-j -a -G1 -MakerNotes:all`，零新解析器；探针只负责把 Exif item 的存在性
                 //   作为结构证据）。⚠ exiftool 读不到两个 tag ⇒ fail-closed 点名 return null
                 //   （不得静默按 SDR 走）——与上面 tmap 载荷解析失败的既有口径同族。
-                if (meta == null && bmff is { HasGainMap: true, Form: "aux-apple-hdrgainmap", Determinate: true })
+                if (meta == null && bmff is { HasGainMap: true, Form: "aux-apple-hdrgainmap" or "aux-vendor-gainmap", Determinate: true })
                 {
+                    bool vendorCarrier = bmff.Form == "aux-vendor-gainmap";
                     // AU2-X1（2026-11-10）：纯托管优先 —— Exif item 字节已由探针切出，
                     // AppleMakerNoteParser 直解（零子进程）；失败 ⇒ 降级 exiftool 整件通道（点名）。
                     meta = await TryReadAppleMakerNoteMetadataAsync(inputPath, log, ct, bmff.ExifItemData);
-                    if (meta == null)
+                    if (meta != null)
                     {
-                        log?.Invoke("[GainMap解码] ❌ Apple aux 增益图（urn:com:apple:photo:2020:aux:hdrgainmap）："
-                            + "exiftool 读不到 MakerNotes HDRHeadroom/HDRGain（缺 tag 33/48）"
-                            + "⇒ 拒绝按增益图处理（fail-closed，不静默 SDR）\n");
-                        return null;
+                        // 通道详情（纯托管 / exiftool）由 TryReadAppleMakerNoteMetadataAsync 的读数行播报；
+                        // 此行只记容器级来源（⚠ §1h 门禁断言依赖 AppleMakerNote 字样，文案保留关键字）。
+                        log?.Invoke($"[GainMap解码] 元数据来源: {(vendorCarrier ? "厂商 aux MakerNote" : "AppleMakerNote")}（Exif item {bmff.ExifItemId}，"
+                            + $"headroom={MathF.Pow(2f, meta.GainMapMax):0.####}×，{(vendorCarrier ? "厂商私有" : "Apple")} 语义）\n");
                     }
-                    // 通道详情（纯托管 / exiftool）由 TryReadAppleMakerNoteMetadataAsync 的读数行播报；
-                    // 此行只记容器级来源（⚠ §1h 门禁断言依赖 AppleMakerNote 字样，文案保留关键字）。
-                    log?.Invoke($"[GainMap解码] 元数据来源: AppleMakerNote（Exif item {bmff.ExifItemId}，"
-                        + $"headroom={MathF.Pow(2f, meta.GainMapMax):0.####}×，Apple 语义）\n");
+                    else
+                    {
+                        // 2026-11-14：手机私有件常见 tag33/48=0（或根本没有 MakerNote）⇒
+                        // 不再一票否决，继续走 XMP（HDRGainMapHeadroom）；两者都没有才由下面统一 fail-closed。
+                        log?.Invoke("[GainMap解码] AppleMakerNote 无有效余量（tag33/48 缺失或为 0）⇒ 尝试 Apple HDRGainMap XMP\n");
+                    }
                 }
                 if (meta == null)
                 {
@@ -349,7 +352,8 @@ public static class GainMapDecoder
                 bool gmGrid = false;      // 2026-11-02：增益图以 `grid` 分块承载 ⇒ 逐瓦片解码后拼接
                 // AU2-X1（2026-11-10）：aux-21496 防御性形态的单 item 提取与本支同构（探针保证它
                 // 恒非 grid：结构尝试只做单 item；元数据前置在 item 数据里、流部分已转 Annex-B）。
-                if (bmff?.HasGainMap == true && (bmff.Form == "tmap" || bmff.Form == "aux-21496"))
+                if (bmff?.HasGainMap == true
+                    && (bmff.Form is "tmap" or "aux-21496" or "aux-apple-hdrgainmap" or "aux-vendor-gainmap"))
                 {
                     if (bmff.GainMapIsGrid)
                     {
@@ -366,7 +370,9 @@ public static class GainMapDecoder
                         gmFmtArgs = $"-f {bmff.GainMapFfmpegFormat} ";
                         gmOk = true;
                         log?.Invoke($"[GainMap解码] 增益图来源: ISO-BMFF grid（{bmff.GridRows}x{bmff.GridCols} 瓦片 × "
-                            + $"{bmff.TileWidth}x{bmff.TileHeight}，{bmff.GainMapCodec}）\n");
+                            + $"{bmff.TileWidth}x{bmff.TileHeight}，{bmff.GainMapCodec}，形式 {bmff.Form}"
+                            + (bmff.GridSizeFromPayloadTail ? "，整幅宽高取自 grid 载荷尾部 2×u16" : "")
+                            + $"）\n");
                     }
                     else if (bmff.GainMapItemData == null || bmff.GainMapItemData.Length <= 100
                         || bmff.GainMapFfmpegFormat == null)
@@ -387,7 +393,7 @@ public static class GainMapDecoder
                             + $"（{bmff.GainMapCodec}，{bmff.GainMapItemData.Length} B，形式 {bmff.Form}）\n");
                     }
                 }
-                else if (bmff?.HasGainMap == true && bmff.Form == "aux-apple-hdrgainmap")
+                else if (bmff?.HasGainMap == true && bmff.Form is "aux-apple-hdrgainmap" or "aux-vendor-gainmap")
                 {
                     // ── Apple aux 形态（AU-W2，2026-11-10）：探针已切出 Annex-B/OBU 裸流 ──
                     //   与 tmap 单 item 支同构（无 grid / 无 tmap 载荷；hvcC→Annex-B 已在探针完成）。
@@ -726,19 +732,44 @@ public static class GainMapDecoder
                 SimdPixelOps.SrgbToLinearRgba(baseRgb);
                 var gmRgb = PlanarToInterleaved(gmBytes, (int)gmPixels);
                 // 应用增益 (双线性插值增益图 → 基础图分辨率)
-                // ⚠ Apple aux 形态走**官方公式**（AU-W2，2026-11-10）：scale = 1+(headroom−1)×gm_linear，
-                //   与 ISO 的 2^logBoost 是两条曲线；headroom 从 meta.GainMapMax（log2 域）还原。
-                bool appleAux = bmff is { HasGainMap: true, Form: "aux-apple-hdrgainmap" };
+                // ⚠ Apple aux 形态有两种真实口径（2026-11-14 实拍件定案）：
+                //   A「0 基」= Apple 自家 iPhone（0=1.0×，Rec709 编码）⇒ 官方公式；
+                //   B「对称/128 基」= 手机厂私有件（128=1.0×，线性 mask）⇒ ISO 2^logBoost 负下沿。
+                //   p0.5（0..255 刻度）是两者的判别量：<=8 ⇒ A；>=16 ⇒ B；中间 A+WARN。
+                bool appleAux = bmff is { HasGainMap: true, Form: "aux-apple-hdrgainmap" or "aux-vendor-gainmap" };
                 bool auxIso21496 = bmff is { HasGainMap: true, Form: "aux-21496" };
-                hdrRgb = appleAux
-                    ? ApplyGainMapApple(baseRgb, gmRgb, baseW, baseH, gmW, gmH,
-                        MathF.Pow(2f, meta.GainMapMax))
-                    : ApplyGainMap(baseRgb, gmRgb, baseW, baseH, gmW, gmH, meta);
                 if (appleAux)
-                    log?.Invoke("[GainMap解码] 恢复: Apple 公式 hdr = sdr_linear × (1 + (headroom−1) × Rec709Inv(gainmap))（非 ISO 2^logBoost）\n");
-                else if (auxIso21496)
-                    log?.Invoke("[GainMap解码] 恢复: ISO 21496 公式族 hdr = (sdr + offsetSDR) × 2^logBoost − offsetHDR"
-                        + "（与 tmap 同汇合点；aux-21496 防御性形态，元数据前置在 aux item 数据）\n");
+                {
+                    float p05 = GainMapPercentile05(gmRgb, (int)gmPixels);
+                    bool symmetric = p05 * 255f >= 16f;
+                    if (symmetric)
+                    {
+                        float h = meta.GainMapMax;              // log2 头room（XMP 3.482202 ⇒ 11.17×）
+                        meta.GainMapMin = -h;                  // 三通道一起写（setter 语义）
+                        meta.Gamma = 1f;
+                        if (HasDistinctChannels(gmRgb, (int)gmPixels)) meta.Channels = 3;
+                        hdrRgb = ApplyGainMap(baseRgb, gmRgb, baseW, baseH, gmW, gmH, meta);
+                        log?.Invoke($"[GainMap解码] Apple 增益口径: 对称/128 基（p0.5={p05 * 255f:F0}）"
+                            + $"⇒ min={-h:F3}/max=+{h:F3}（线性 gain，ISO 2^logBoost 族）\n");
+                    }
+                    else
+                    {
+                        if (p05 * 255f > 8f)
+                            log?.Invoke($"[GainMap解码] ⚠️ Apple 增益口径不确定（p0.5={p05 * 255f:F0}，"
+                                + "既非 0 基也非 128 基的典型域）⇒ 按 0 基处理\n");
+                        hdrRgb = ApplyGainMapApple(baseRgb, gmRgb, baseW, baseH, gmW, gmH,
+                            MathF.Pow(2f, meta.GainMapMax));
+                        log?.Invoke($"[GainMap解码] 恢复: Apple 公式 hdr = sdr_linear × (1 + (headroom−1) × Rec709Inv(gainmap))"
+                            + $"（非 ISO 2^logBoost；口径 A，p0.5={p05 * 255f:F0}）\n");
+                    }
+                }
+                else
+                {
+                    hdrRgb = ApplyGainMap(baseRgb, gmRgb, baseW, baseH, gmW, gmH, meta);
+                    if (auxIso21496)
+                        log?.Invoke("[GainMap解码] 恢复: ISO 21496 公式族 hdr = (sdr + offsetSDR) × 2^logBoost − offsetHDR"
+                            + "（与 tmap 同汇合点；aux-21496 防御性形态，元数据前置在 aux item 数据）\n");
+                }
 
                 // 输出 gbrpf32le (平面 G,B,R)
                 // ⚠️ BlockCopy 是原始字节拷贝, 不能从交错 RGBA 抽取平面!
@@ -1020,15 +1051,17 @@ public static class GainMapDecoder
             // AU-W2（2026-11-10）：Apple aux 形态升级为可解 —— 容器级提取全部成立
             // （Determinate + aux item 裸流 + Exif item 字节）⇒ 与 tmap 同等放行。
             // 结构不全（如缺 auxl / 缺 Exif item）⇒ 仍走下方降级点名。
-            bool auxAppleOk = bmff.Form == "aux-apple-hdrgainmap"
+            bool auxAppleOk = (bmff.Form is "aux-apple-hdrgainmap" or "aux-vendor-gainmap")
                 && bmff.Determinate
-                && bmff.GainMapItemData != null
-                && bmff.ExifItemData != null;
+                && (bmff.GainMapItemData != null
+                    || (bmff.GainMapTiles != null && bmff.GainMapTiles.Count > 0));
             if (auxAppleOk)
             {
-                log?.Invoke($"[GainMap解码] 检测到 Apple aux 增益图（form=aux-apple-hdrgainmap，"
-                    + $"aux item {bmff.GainMapItemId} {bmff.GainMapItemData!.Length} B + Exif item {bmff.ExifItemId} "
-                    + $"{bmff.ExifItemData!.Length} B），方向为「SDR 底图 → HDR」（Apple 官方公式）\n");
+                string carrier = bmff.GainMapTiles is { Count: > 0 }
+                    ? $"grid {bmff.GridRows}x{bmff.GridCols}（{bmff.GainMapTiles.Count} 瓦片，整幅 {bmff.GridWidth}x{bmff.GridHeight}）"
+                    : $"item {bmff.GainMapItemId} {bmff.GainMapItemData!.Length} B";
+                log?.Invoke($"[GainMap解码] 检测到 {(bmff.Form == "aux-vendor-gainmap" ? "厂商私有 aux" : "Apple aux")} 增益图"
+                    + $"（form={bmff.Form}，{carrier}），方向为「SDR 底图 → HDR」（Apple/厂商公式族）\n");
                 return (true, null);
             }
             // AU2-X1（2026-11-10）：aux-21496 防御性形态（合成件 D 同构）—— 探针结构尝试成立
@@ -1912,7 +1945,53 @@ public static class GainMapDecoder
     }
 
     /// <summary>
-    /// **Apple aux 形态**的增益施加（AU-W2，2026-11-10）——与 <see cref="ApplyGainMap"/>（ISO 语义）
+    /// 增益图 **0.5% 分位**（0..1 刻度；用 256 桶直方图 + 至多 ~1M 采样，O(N) 不排序）。
+    /// 判据：<c>p0.5×255 &lt;= 8</c> ⇒ 0 基（Apple 自家）；<c>&gt;= 16</c> ⇒ 128 基（手机私有）。
+    /// 取 BT.709 亮度与 <see cref="BilinearGray"/> 同口径；单通道件三通道相等 ⇒ 值不变。
+    /// </summary>
+    private static float GainMapPercentile05(float[] rgba, int pixelCount)
+    {
+        if (pixelCount <= 0) return 0f;
+        int stride = Math.Max(1, pixelCount / 1_000_000);
+        var hist = new int[256];
+        long n = 0;
+        for (int i = 0; i < pixelCount; i += stride)
+        {
+            int o = i * 4;
+            float l = 0.2126f * rgba[o] + 0.7152f * rgba[o + 1] + 0.0722f * rgba[o + 2];
+            int b = (int)MathF.Round(Math.Clamp(l, 0f, 1f) * 255f);
+            b = Math.Min(255, Math.Max(0, b));
+            hist[b]++; n++;
+        }
+        long target = Math.Max(1, (long)Math.Ceiling(n * 0.005));
+        long acc = 0;
+        for (int b = 0; b < 256; b++)
+        {
+            acc += hist[b];
+            if (acc >= target) return b / 255f;
+        }
+        return 1f;
+    }
+
+    /// <summary>
+    /// 增益图是否真有 **3 个不同通道**（单通道 HEVC 解成 gbrpf32le 时三通道逐值相等）。
+    /// 用于把 <see cref="GainMapMetadata.Channels"/> 从「元数据说 1」纠正为真实 3，
+    /// 否则 3 通道私有件会被 <see cref="BilinearGray"/> 压成亮度、逐通道增益丢失。
+    /// </summary>
+    private static bool HasDistinctChannels(float[] rgba, int pixelCount)
+    {
+        int stride = Math.Max(1, pixelCount / 200_000);
+        for (int i = 0; i < pixelCount; i += stride)
+        {
+            int o = i * 4;
+            if (MathF.Abs(rgba[o] - rgba[o + 1]) > 1e-4f
+                || MathF.Abs(rgba[o + 1] - rgba[o + 2]) > 1e-4f) return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// **Apple aux 形态**的增益施加（A 口径，AU-W2，2026-11-10）——与 <see cref="ApplyGainMap"/>（ISO 语义）
     /// 是两条公式，**不共用**：Apple 官方（SPEC E5；johncf lib.py apply_hdrgainmap 同形）：
     /// <code>
     ///   gainmap_linear = Rec.709 OETF 逆函数(gainmap 编码值)     // SPEC §2：增益图是 Rec.709 OETF 编码的 8-bit 亮度图
@@ -2128,6 +2207,14 @@ public static class GainMapDecoder
     private static GainMapMetadata? BuildAppleMetadataFromTags(float m33, float m48,
         Action<string>? log, string source)
     {
+        // 2026-11-14：手机私有件（DJI/MiHE 等）常写 tag33=0/tag48=0。旧公式把它算成
+        // stops=1.8 ⇒ headroom=3.48×，并因「非 null」抢先覆盖 XMP 的 11.17×（错读）。
+        // 0/0 = 写入器没有给出 HDR 余量 ⇒ 视为无有效 MakerNote 元数据，交回 XMP 判定。
+        if (m33 <= 0f && m48 <= 0f)
+        {
+            log?.Invoke($"[GainMap解码] AppleMakerNote tag33/48=0（来源 {source}）⇒ 无 HDR 余量语义，不按 3.48× 兜底\n");
+            return null;
+        }
         float stops = m33 < 1.0f
             ? (m48 <= 0.01f ? -20f * m48 + 1.8f : -0.101f * m48 + 1.601f)
             : (m48 <= 0.01f ? -70f * m48 + 3.0f : -0.303f * m48 + 2.303f);

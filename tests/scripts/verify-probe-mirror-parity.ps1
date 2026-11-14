@@ -92,7 +92,10 @@ $counts = [ordered]@{
     #   来历 = 新增 `auxisofull` 期望模式（aux-21496 防御性形态**结构尝试成立**的完整件断言：
     #   determinate / hasGainMap / form / aux item 定位 / 前置 version+元数据段 62 B / 解复用器 /
     #   元数据后编码流 >100 B），调用者 = verify-gainmap-isobmff §1i（合成器 D 件）。
-    'engine' = 20; 'faithful' = 10; 'firstframe' = 15; 'gainmap' = 6; 'gainmap-isobmff' = 43
+    # 2026-11-14（ICC v4.4 迁移）：`ProbeFaithful` 的 Check 调用位 10 → **12**（+2），
+    #   来历 = 新增版本字节锁（04 40 00 00）与 cprt=mluc 类型锁（防"只改版本字节不改 cprt"的
+    #   混合 v2/v4 非法 profile）。
+    'engine' = 20; 'faithful' = 12; 'firstframe' = 15; 'gainmap' = 6; 'gainmap-isobmff' = 63
     # 2026-11-10（AU2-X1）新增派发 mode `gainmap-mn-parity`（AppleMakerNote **纯托管解析器 vs
     #   exiftool 对拍**）。登记 = **源文本调用位 9**（同轮实测 got=9：载体身份 1 + Exif item 1 +
     #   纯托管 3 + exiftool 读数 1 + 逐值对拍 2 + exiftool 不可用 fail-closed 1——首登漏数最后
@@ -117,7 +120,11 @@ $counts = [ordered]@{
     #   调用者 = 在册门禁 verify-gainmap-jxl.ps1 §1/§2）。登记 = 源文本调用位 **21**
     #   （同轮按本文件取数器口径实测 got=21：正控布局 14 + ISO 真值 2 + 负控 3 + 前置反射自检 2）。
     'jxlgm' = 21
-    'icc' = 5; 'icc-dump' = 0; 'iccname' = 9; 'ipc' = 13; 'ipc-client' = 2
+    # 2026-11-14（ICC v4.4 迁移）：`ProbeIcc` 的 Check 调用位 5 → **14**，分两批：
+    #   批① +8（v44 臂 3：版本字节/cprt=mluc/chad 在场；v2 臂 5：header 02 00 / desc='desc' /
+    #   cprt='text' / rTRC='curv' / chad 缺席）；批② +1（v2 curv 形态锁 count=1|256——单值幂 gamma
+    #   与 256 点采样表二选一，不许把两种形态写死成一种）。
+    'icc' = 14; 'icc-dump' = 0; 'iccname' = 9; 'ipc' = 13; 'ipc-client' = 2
     'ipc-raw-client' = 4; 'ipc-server' = 0; 'ipc-submit' = 3; 'matrix' = 13; 'memadmit' = 7; 'framelen' = 5
     # 2026-10-22 P3 跨仓对撞（宿主 vs ColorGainKit，同进程反射）。口径同样是**源文本调用位**：
     #   运行时会跑 10 条（`Log2Gain` 那一格在 foreach 里、两个 floorAtOne 各跑一次），但**条数锁量的是形状**，
@@ -160,7 +167,13 @@ $counts = [ordered]@{
     #   登记 = **源文本调用位 17**（media 6 + plan 7 + ps 4；条件不变式形态——运行时通过数
     #   按机器形态收敛 8~10，两把尺互补不许对齐）。
     'mediasvc' = 17
-    'tonemapcurve' = 0; 'tooldetect' = 27; 'ultrahdr' = 4; 'vendor-hdr' = 20; 'verdict' = 35; 'wire' = 99
+    'tonemapcurve' = 0; 'tooldetect' = 27; 'ultrahdr' = 4; 'vendor-hdr' = 20
+    # 2026-11-14（L1 收紧批）：verdict 35→36（+1，= 19_ProbeVerdict gif→png 负控改判新增的
+    #   「CICP 已精确承载 ⇒ NoIccCarrier 记信息项」断言）；wire 99→106（+7 = 本批 24_ProbeWire
+    #   负控④c P3源带ICC+png+auto 不携源ICC + 反负控④d ProPhoto 仍携ICC 兜底，计 +2；
+    #   加上一轮 CICP 优先批未同批登记的 ④a/②/③/③b 五条计 +5，合计 +7）。
+    #   faithful=12 / icc=14 已由 ICC 线自行登记（v4.4 迁移批；本批未动那两个 mode，不重复计入 wire）。
+    'verdict' = 36; 'wire' = 106
     'xcheck' = 6
 }
 # 登记表各值之和 = 2026-10-14 实测 813；2026-10-15 加 `vendor-hdr` ⇒ 829，同日审查再加 V16/V17/V18 ⇒ 832，
@@ -183,6 +196,10 @@ $counts = [ordered]@{
 #   `gainmap-mn-parity` **9**（AppleMakerNote 纯托管 vs exiftool 对拍；首登漏数 exiftool 不可用
 #   fail-closed 一条被 ③ 当场抓出，8→9 有牙实证），来历见登记表内注释
 #   ⇒ 总量 **916**（= ③-e 实取总量；AU-W2 之后至本批前其他 mode 的抬格不在本批来历内）。
+# 2026-11-15（私有 HEIC 完整覆盖）：`gainmap-isobmff` 43→**63**（+20：`auxapplegrid` 10 条 +
+#   `auxvendorgrid` 10 条；后者锁「未登记厂商 URN + XMP HDRGainMapHeadroom ⇒ aux-vendor-gainmap」）
+#   ⇒ 总量 **1005**（= ③-e 实取总量；两条新分支的来历见 ServiceProbe Parts/09 与
+#   verify-gainmap-isobmff §1l）。
 
 #   来历 = 底图尺寸对账裁决（`GainMapDecoder.ReconcileBaseSize`）此前**零判据臂**，而该状态造不出
 #   文件样本（ispe 变异不影响 ffprobe 报的 HEVC 流尺寸；删 clap 则两侧同时退回 64x64）⇒ 只能直接钉

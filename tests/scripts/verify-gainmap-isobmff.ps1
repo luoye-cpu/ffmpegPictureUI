@@ -518,6 +518,7 @@ if (Test-Path $auxGen) {
     $auxA = "$auxDir/aux_apple_gainmap.heic"
     $auxB = "$auxDir/aux_apple_noaux.heic"
     $auxC = "$auxDir/aux_apple_otherurn.heic"
+    $auxZero = "$auxDir/aux_apple_zero_xmp.heic"
     CK ((Test-Path $auxA) -and (Test-Path $auxB) -and (Test-Path $auxC)) `
        "§1h 三件语料在位（A 正控 / B 纯 SDR 负控 / C URN 语义反控）"
     if ((Test-Path $auxA) -and (Test-Path $auxB) -and (Test-Path $auxC)) {
@@ -547,6 +548,20 @@ if (Test-Path $auxGen) {
       $cAuxC = Exec $sp "gainmap-isobmff `"$auxC`" none" "p_auxotherurn"
       CK (($cAuxC.text -match 'hasGainMap=False') -and ($cAuxC.text -match 'determinate=True')) `
          "§1h 反控 C：**完整结构** + URN 换 urn:com:example:other ⇒ 仍判无增益图（判据是 URN 语义，不是「有 aux item 就算」；与 §1c 极简件反控互补）"
+
+      # A-zero（2026-11-15）：AppleMakerNote 33/48 = 0/1，但带 XMP headroom=2.0。
+      # 锁两件事：① 0/0 不得按 3.48× 兜底；② 必须回退 Apple HDRGainMap XMP 并走完解码。
+      CK (Test-Path $auxZero) "§1h 前置：A-zero（MN 0/0 + XMP）合成件在位"
+      if (Test-Path $auxZero) {
+        $cZero = Exec $sp "gainmap-isobmff `"$auxZero`" auxdec" "p_auxzero"
+        CK (($cZero.text -match 'determinate=True') -and ($cZero.text -match 'PROBE RESULT: pass=8 fail=0')) `
+           "§1h A-zero 探针 8 条全绿（0/0 MakerNote 不破坏容器提取）"
+        $eZero = RunApp $auxZero "png" "aux_e2e_zero" @("--bit-depth", "16")
+        CK (($eZero.prods -gt 0) -and ($eZero.text -match '不按 3\.48× 兜底') `
+            -and ($eZero.text -match 'Apple HDRGainMap XMP') -and ($eZero.text -match 'max=2\.000') `
+            -and ($eZero.text -notmatch '元数据来源: AppleMakerNote')) `
+           "§1h A-zero 端到端：0/0 被拒（不按 3.48× 兜底）⇒ 回退 XMP headroom=2.0 并产出（$($eZero.prods) 个）"
+      }
       # 变异负控（断言有牙）：infe 的 item 类型 "Exif" 改成 "xxxx" ⇒ Exif item 定位失败 ⇒ fail-closed 点名
       #   （证明探针**真的消费** Exif item 的存在性，而不是看到 auxC 就放行）
       $auxMut = "$work/aux_noexif.heic"
@@ -815,6 +830,85 @@ CK (($gmCode -match 'cropDeclared\s*=\s*baseCropX\s*>\s*0\s*\|\|\s*baseCropY\s*>
    "§1f-b 调用点接线：`cropDeclared` 由裁切量算出并**真**作为 `ReconcileBaseSize` 的第 4 实参（NC4 变异正是抹掉这一句）"
 CK (($gmCode -match 'RejectUndeclared') -and ($gmCode -match 'BaseSizeVerdict\.Scaled') -and ($gmCode -match 'RejectNonUniform')) `
    "§1f-b 三类裁决在**使用态**各有出口（RejectUndeclared / Scaled / RejectNonUniform 都在去注释源码里出现）"
+
+# ── §1l 手机私有件：auxC(hdrgainmap) + grid + flags=0 尾宽高 ─────────────────────
+#   2026-11-15：DJI/MiHE 这类件的真实形态 = auxC 挂在 **grid** 上（不是单编解码 item）、
+#   没有 Exif（只靠 XMP）、grid 载荷 flags bit0=0 却写 2×u16 宽高。旧探针只认单 item
+#   ⇒ `determinate=False`；旧解码层二次闸还要求 `GainMapItemData != null` ⇒ 整条降级 SDR。
+#   合成件 `tests/data/synth_heic_grid_aux_gainmap.heic`（生成器
+#   `_make-synth-heic-gridgainmap.py` 的 `build_aux_grid`）把上述四特征一次打齐。
+Write-Host "`n### §1l 私有件 auxC(hdrgainmap)+grid（flags=0 尾宽高 / 无 Exif / 产品端到端）###" -ForegroundColor Cyan
+$heicGridAux = "$root/tests/data/synth_heic_grid_aux_gainmap.heic"
+CK (Test-Path $heicGridAux) `
+   "§1l 前置：aux+grid 合成件在位（tests/data/synth_heic_grid_aux_gainmap.heic）—— 缺则本段无凭据（fail-closed）"
+if (Test-Path $heicGridAux) {
+  $cAuxGrid = Exec $sp "gainmap-isobmff `"$heicGridAux`" auxapplegrid" "p_auxapplegrid"
+  Write-Host ("  [auxapplegrid] " + (($cAuxGrid.text -split "`r?`n") | Where-Object { $_ -match '^(determinate|form=|grid=)' } | Select-Object -First 3) -join ' | ')
+  CK (($cAuxGrid.text -match 'determinate=True') -and ($cAuxGrid.text -match 'PROBE RESULT: pass=11 fail=0')) `
+     "§1l 探针 11 条全绿：auxC(hdrgainmap) 挂 grid 也能完整提取（不再要求单 item / Exif）"
+  CK (($cAuxGrid.text -match 'grid=True rows=2 cols=2 gridW=128 gridH=96 tileW=64 tileH=48 tiles=4 gridSizeFromTail=True auxBase=1')) `
+     "§1l 读数：2x2 × 64x48 ⇒ 128x96 / 4 瓦片，flags=0 尾宽高已读，auxl 指回主图（实 $((($cAuxGrid.text -split "`r?`n") | Where-Object { $_ -match '^grid=' } | Select-Object -First 1)) )"
+
+  # 尾宽高负控：把 2×u16 改成 0/0 ⇒ 必须退回「全铺 128x96」且 gridSizeFromTail=False（不得把 0 当裁切）
+  $tailMut = "$work/aux_grid_badtail.heic"
+  $srcBytes = [System.IO.File]::ReadAllBytes($heicGridAux)
+  $mutBytes = Replace-Bytes $srcBytes ([byte[]](0x00, 0x80, 0x00, 0x60)) ([byte[]](0x00, 0x00, 0x00, 0x00))
+  [System.IO.File]::WriteAllBytes($tailMut, $mutBytes)
+  $cTail = Exec $sp "gainmap-isobmff `"$tailMut`"" "p_auxgrid_badtail"
+  CK (($cTail.text -match 'gridSizeFromTail=False') -and ($cTail.text -match 'gridW=128 gridH=96') -and ($cTail.text -match 'determinate=True')) `
+     "§1l **负控（断言有牙）**：flags=0 尾宽高 0/0 ⇒ 退回全铺 128x96 且 gridSizeFromTail=False（不拿 0 当裁切）"
+
+  # 未登记 URN 的替换串：先定义，负控与厂商正控共用（二者只差源件有没有 XMP）。
+  $urnOld = [System.Text.Encoding]::ASCII.GetBytes('urn:com:apple:photo:2020:aux:hdrgainmap')
+  $urnNew = [System.Text.Encoding]::ASCII.GetBytes('urn:com:example:other:xxxxxxxxxxxxxxxxx')
+  CK ($urnOld.Length -eq $urnNew.Length) "§1l URN 替换串等长（否则 Replace-Bytes 会改坏盒子长度）"
+
+  # 未知 URN 负控：同一未登记串，但**无 XMP** ⇒ 不得因「有 auxC」就误判成增益图。
+  $heicGridAuxNoXmp = "$root/tests/data/synth_heic_grid_aux_noxmp.heic"
+  CK (Test-Path $heicGridAuxNoXmp) "§1l 负控前置：无 XMP 载体在位（tests/data/synth_heic_grid_aux_noxmp.heic）"
+  if (Test-Path $heicGridAuxNoXmp) {
+    $urnMut = "$work/aux_grid_otherurn.heic"
+    $src2 = [System.IO.File]::ReadAllBytes($heicGridAuxNoXmp)
+    [System.IO.File]::WriteAllBytes($urnMut, (Replace-Bytes $src2 $urnOld $urnNew))
+    $cUrn = Exec $sp "gainmap-isobmff `"$urnMut`"" "p_auxgrid_otherurn"
+    CK (($cUrn.text -match 'hasGainMap=False') -and ($cUrn.text -notmatch 'form=aux-apple') `
+        -and ($cUrn.text -notmatch 'form=aux-vendor')) `
+       "§1l 负控：未登记 URN 且**无 XMP** ⇒ 不被静默当增益图（hasGainMap=False，不误报 apple/vendor）"
+  }
+
+  # 厂商候选正控：URN 换成未登记串，但文件里有 XMP HDRGainMapHeadroom ⇒ 必须按 aux-vendor 解。
+  # 这是「相关映射」的实测：URN 只作候选，语义门在 XMP；不是「有 auxC 就当增益图」。
+  $vendorMut = "$work/aux_grid_vendor.heic"
+  $srcV = [System.IO.File]::ReadAllBytes($heicGridAux)
+  [System.IO.File]::WriteAllBytes($vendorMut, (Replace-Bytes $srcV $urnOld $urnNew))
+  $cVendor = Exec $sp "gainmap-isobmff `"$vendorMut`" auxvendorgrid" "p_auxgrid_vendor"
+  CK (($cVendor.text -match 'form=aux-vendor-gainmap') -and ($cVendor.text -match 'PROBE RESULT: pass=11 fail=0')) `
+     "§1l 厂商候选映射：未登记 URN + XMP 头room ⇒ form=aux-vendor-gainmap，探针 11 条全绿"
+  $eVendor = RunApp $vendorMut "png" "aux_grid_e2e_vendor" @("--bit-depth", "16")
+  CK (($eVendor.prods -gt 0) -and ($eVendor.text -match '增益图来源: ISO-BMFF grid') `
+      -and ($eVendor.text -match '厂商私有 aux') -and ($eVendor.text -notmatch '不可解')) `
+     "§1l 厂商候选端到端：产出自 $($eVendor.prods) 个，日志点名「厂商私有 aux」+ grid 来源（不降级）"
+
+  # 产品端到端：无 Exif ⇒ MakerNote 通道必然空，必须靠 XMP headroom 继续走完 grid 解码 + 增益施加。
+  $eGrid = RunApp $heicGridAux "png" "aux_grid_e2e" @("--bit-depth", "16")
+  CK (($eGrid.prods -gt 0) -and ($eGrid.text -match '增益图来源: ISO-BMFF grid') `
+      -and ($eGrid.text -match 'Apple 增益口径|Apple 公式') -and ($eGrid.text -notmatch '不可解')) `
+     "§1l 产品端到端：aux+grid 件产出在位（$($eGrid.prods) 个）且日志点名 grid 来源 + 增益施加（无 Exif 靠 XMP，不降级不可解）"
+
+  # 灰瓦片变体：p0.5=128 ⇒ 必须走「对称/128 基」B 口径（不是 Apple A 的 Rec709Inv）。
+  $heicGridAuxB = "$root/tests/data/synth_heic_grid_aux_gainmap_b.heic"
+  CK (Test-Path $heicGridAuxB) `
+     "§1l-B 前置：B 口径灰瓦片合成件在位（tests/data/synth_heic_grid_aux_gainmap_b.heic）"
+  if (Test-Path $heicGridAuxB) {
+    $cAuxGridB = Exec $sp "gainmap-isobmff `"$heicGridAuxB`" auxapplegrid" "p_auxapplegrid_b"
+    CK ($cAuxGridB.text -match 'PROBE RESULT: pass=11 fail=0') `
+       "§1l-B 探针 11 条全绿：灰瓦片同结构仍完整提取（结构与像素值解耦）"
+    $eGridB = RunApp $heicGridAuxB "png" "aux_grid_e2e_B" @("--bit-depth", "16")
+    CK (($eGridB.prods -gt 0) -and ($eGridB.text -match 'Apple 增益口径: 对称/128 基（p0.5=128）') `
+        -and ($eGridB.text -match 'min=-2.000/max=\+2.000')) `
+       "§1l-B 产品端到端：p0.5=128 ⇒ 走 B 口径 min=-2/max=+2（不会被 A 的 3.48× 抢占）"
+  }
+}
 
 # ── §2 源码形态：动画判据锁（含反控） ────────────────────────────────────────────
 Write-Host "`n### §2 源码形态：动画判据（多帧 + tmap 两级）###" -ForegroundColor Cyan

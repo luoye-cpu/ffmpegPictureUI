@@ -114,14 +114,16 @@ def to_length_prefixed(annexb, length_size=4):
 
 # ───────────────────────── Exif / AppleMakerNote 合成 ─────────────────────────
 
-def build_apple_exif():
+def build_apple_exif(hr_num=MAKER33_NUM, hr_den=MAKER33_DEN,
+                     gain_num=MAKER48_NUM, gain_den=MAKER48_DEN):
     """构造 Exif item 载荷：4B tiff_header_offset + TIFF(IFD0 → ExifIFD → MakerNote)。
 
     MakerNote 形态按随包 exiftool 13.61 的 MakerNotes.pm 判定：
       · 前 10 字节 = "Apple iOS\\0"；IFD 从 MakerNote 起点后 14 字节开始（Start = valuePtr + 14）；
       · IFD 内 offset **相对 MakerNote 起点**（exiftool `Base => $start - 14`——实测校准，见本函数
         尾注：若该基准读不出 tag，依次试「相对 TIFF 头」「相对 IFD」两种变体并以 exiftool 读数定案）。
-    tag 0x0021 = HDRHeadroom（rational64s 3/2 = 1.5）；0x0030 = HDRGain（rational64s 1/2 = 0.5）。
+    tag 0x0021 = HDRHeadroom（默认 rational64s 3/2 = 1.5）；0x0030 = HDRGain（默认 1/2 = 0.5）。
+    0/0 变体：传 `hr_num=0, hr_den=1, gain_num=0, gain_den=1` —— 产品必须拒绝按 3.48× 兜底并回退 XMP。
     """
     # ── MakerNote（自成一体，先算好再嵌进 Exif IFD）──
     # header 14B + count 2B + 3×entry 36B + next 4B = 56B 处放值区
@@ -140,8 +142,8 @@ def build_apple_exif():
     mn += struct.pack('>HHI', 0x0030, 5, 1) + struct.pack('>I', off_v48)
     mn += struct.pack('>I', 0)                 # next IFD = 0
     assert len(mn) == off_v33, f"MakerNote 布局失配：{len(mn)} != {off_v33}"
-    mn += struct.pack('>II', MAKER33_NUM, MAKER33_DEN)
-    mn += struct.pack('>II', MAKER48_NUM, MAKER48_DEN)
+    mn += struct.pack('>II', hr_num, hr_den)
+    mn += struct.pack('>II', gain_num, gain_den)
 
     # ── Exif IFD：0x9000 ExifVersion（inline 4B）+ 0x927C MakerNote（offset）──
     # 布局：count 2B + 2×entry 24B + next 4B = 30B；MakerNote 值紧跟其后。
@@ -379,6 +381,23 @@ def main():
     p3 = os.path.join(a.outdir, 'aux_apple_otherurn.heic')
     open(p3, 'wb').write(n3)
     print(f"✓ {p3}  {len(n3)} B（C 件：URN 语义反控）")
+
+    # ── A-zero（2026-11-15）：AppleMakerNote 33/48 = 0/1（0/0 语义），但带 XMP headroom=2.0。
+    #    产品必须拒绝把 0/0 按 3.48× 兜底，回退 Apple HDRGainMap XMP。XMP 以顶层 uuid 盒
+    #    附在 mdat 之后（纯托管 XMP 读取器按原始字节扫 xap 标记，不需要 exiftool）。
+    exif_zero = build_apple_exif(0, 1, 0, 1)
+    xmp = ('<?xpacket begin="\ufeff" id="W5M0MpCehiHzreSzNTczkc9d"?>'
+           '<x:xmpmeta xmlns:x="adobe:ns:meta/">'
+           '<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">'
+           '<rdf:Description rdf:about="" xmlns:HDRGainMap="http://ns.apple.com/HDRGainMap/1.0/" '
+           'xmlns:xmp="http://ns.adobe.com/xap/1.0/">'
+           '<HDRGainMap:HDRGainMapHeadroom>2.0</HDRGainMap:HDRGainMapHeadroom>'
+           '</rdf:Description></rdf:RDF></x:xmpmeta><?xpacket end="w"?>').encode('utf-8')
+    n0 = build_heic(primary, hvcc_p, (64, 48), aux_item, hvcc_a, (32, 24),
+                    URN_APPLE, exif_zero, colr_p, b'') + plain_box('uuid', b'\x00' * 16 + xmp)
+    p0 = os.path.join(a.outdir, 'aux_apple_zero_xmp.heic')
+    open(p0, 'wb').write(n0)
+    print(f"✓ {p0}  {len(n0)} B（A-zero：MN 33/48=0/1 + XMP headroom=2.0 ⇒ 必须回退 XMP，不得 3.48×）")
 
     # ── D 件（AU2-X1，2026-11-10）：auxC URN=urn:iso:std:iso:ts:21496:-1，
     #    aux item 数据前置 version(0) + ISO 21496-1 GainMapMetadata（62 B）+ HEVC 流；

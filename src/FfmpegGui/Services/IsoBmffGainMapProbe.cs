@@ -78,7 +78,8 @@ public static class IsoBmffGainMapProbe
         /// <summary>承载形式：`tmap`（可解） / `aux-21496`（ISO 21496-1 辅助图，AU2-X1 起按**前置元数据
         /// 结构尝试**——结构成立 ⇒ 可解，不成立 ⇒ fail-closed 点名「结构未证实」） /
         /// `aux-apple-hdrgainmap`（Apple 早期辅助图，AU-W2 起可解——Determinate=true 时
-        /// <see cref="GainMapItemData"/> 与 <see cref="ExifItemData"/> 已就位）。</summary>
+        /// <see cref="GainMapItemData"/> 与 <see cref="ExifItemData"/> 已就位） /
+        /// `aux-vendor-gainmap`（未登记厂商 URN + XMP `HDRGainMapHeadroom` 的候选映射，结构同 Apple aux）。</summary>
         public string? Form;
 
         public int PrimaryItemId = -1;
@@ -131,6 +132,11 @@ public static class IsoBmffGainMapProbe
         /// <summary>单个瓦片的宽高（取自瓦片 item 的 `ispe` 属性；非 grid 时 0）。</summary>
         public int TileWidth;
         public int TileHeight;
+        /// <summary>
+        /// `grid` 整幅宽高是否取自载荷尾部 2×u16（2026-11-14，DJI/手机私有件实测形态）：
+        /// 部分写入器在 `flags bit0=0` 时仍写 4 B 宽高（u16/u16），不读就会把画外 0 垫当增益图（右侧/下侧暗边 + 2.4% 错位）。
+        /// </summary>
+        public bool GridSizeFromPayloadTail;
 
         /// <summary>`ftyp` 的兼容品牌（诊断用）。</summary>
         public string Brands = "";
@@ -139,6 +145,10 @@ public static class IsoBmffGainMapProbe
         /// <summary>主图关联的 Exif item 的 id（aux-apple 形态：AppleMakerNote 的载体）；-1 = 未定位到。
         /// 定位判据 = infe 类型 "Exif" **且** `iref cdsc: from Exif item → to primary`。</summary>
         public int ExifItemId = -1;
+        /// <summary>`auxC` 关联的辅助 item id（aux-apple / aux-21496）；-1 = 未定位到。</summary>
+        public int AuxItemId = -1;
+        /// <summary>`auxl` 指向的被辅助项（通常 = 主图 item id）；-1 = 未定位到。</summary>
+        public int AuxBaseItemId = -1;
         /// <summary>
         /// 主图 Exif item 的**原始字节**（`u32 tiff_header_offset` + 头部 + TIFF；aux-apple 形态专用）。
         /// 探针只切数据不解析 —— AppleMakerNote 的字段读取（HDRHeadroom/HDRGain）在
@@ -307,6 +317,7 @@ public static class IsoBmffGainMapProbe
             bool sawAux21496 = false;
             bool sawAuxApple = false;
             bool sawAuxAlpha = false;
+            bool sawAuxVendor = false;
             bool itemTypeUnknown = false;
 
             // ── 顶层 box：找 ftyp（品牌）与 meta ──
@@ -367,7 +378,7 @@ public static class IsoBmffGainMapProbe
                         break;
                     case "iprp":
                         ParseIprp(d, cstart, cend, ipcoProps, ipmaMap, auxCProps,
-                            ref sawAux21496, ref sawAuxApple, ref sawAuxAlpha);
+                            ref sawAux21496, ref sawAuxApple, ref sawAuxAlpha, ref sawAuxVendor);
                         break;
                     case "idat":
                         // 2026-11-02：真实 iPhone HDR HEIC 把 tmap / grid 载荷放在 meta/idat
@@ -639,6 +650,17 @@ public static class IsoBmffGainMapProbe
                 TryParseAppleAux(d, items, locs, refs, ipcoProps, ipmaMap, auxCProps,
                     idatStart, idatEnd, primary, r);
             }
+            else if (sawAuxVendor && HasHdrGainMapXmp(d))
+            {
+                // ── 判定 2c：厂商私有 auxC（URN 未登记）+ XMP `HDRGainMapHeadroom` ──
+                //   URN 只作候选：必须同时有 XMP 头room 才承认语义（否则 depth/disparity 等
+                //   普通辅助图会被误判成 HDR）。结构解析与 Apple aux 完全共用（grid / 单 item /
+                //   auxl / Exif 可选），只是 FailReason 用「厂商」标签、Form 用 aux-vendor-gainmap。
+                r.HasGainMap = true;
+                r.Form = "aux-vendor-gainmap";
+                TryParseVendorAux(d, items, locs, refs, ipcoProps, ipmaMap, auxCProps,
+                    idatStart, idatEnd, primary, r);
+            }
             // D2（2026-11-09）：alpha 辅助图与增益图判定**正交**——带 alpha 的件也可能同时带增益图。
             if (sawAuxAlpha) r.HasAuxAlpha = true;
             if (boxScanIncomplete && !r.HasGainMap)
@@ -793,6 +815,50 @@ public static class IsoBmffGainMapProbe
         }
     }
 
+    /// <summary>文件内是否有 Apple HDRGainMap XMP 的**头room 字段**（厂商候选的语义门）。</summary>
+    private static bool HasHdrGainMapXmp(byte[] d)
+    {
+        var ns = Encoding.ASCII.GetBytes("ns.apple.com/HDRGainMap");
+        var hr = Encoding.ASCII.GetBytes("HDRGainMapHeadroom");
+        return IndexOfBytes(d, ns) >= 0 && IndexOfBytes(d, hr) >= 0;
+    }
+
+    private static int IndexOfBytes(byte[] haystack, byte[] needle)
+    {
+        for (int i = 0; i + needle.Length <= haystack.Length; i++)
+        {
+            bool ok = true;
+            for (int k = 0; k < needle.Length; k++)
+                if (haystack[i + k] != needle[k]) { ok = false; break; }
+            if (ok) return i;
+        }
+        return -1;
+    }
+
+    /// <summary>
+    /// auxC URN → 语义类别。**映射表**（2026-11-15）：
+    /// <list type="bullet">
+    /// <item>1 = ISO 21496-1：URN 含 `21496`（规范写法 `urn:iso:std:iso:ts:21496:-1`）；</item>
+    /// <item>2 = Apple HDR Gain Map：URN 含 `hdrgainmap` / `hdr-gain-map` / `hdr_gain_map`（Apple 2020）；</item>
+    /// <item>3 = alpha 辅助图：`auxid:1`（HEVC/AV1）或 `auxiliary:alpha`（AVIF）；</item>
+    /// <item>4 = **厂商候选**：其余所有 non-alpha auxC。候选不等于增益图——<see cref="TryParseVendorAux"/>
+    ///       还要求同一文件里存在 XMP `HDRGainMapHeadroom` 才承认，避免把 depth/disparity 误判成 HDR。</item>
+    /// </list>
+    /// 顺序固定：ISO → Apple → alpha → 厂商候选。alpha 必须在厂商候选之前，否则 `auxid:1` 会被候选吞掉。
+    /// </summary>
+    private static int ClassifyAuxUrn(string urn)
+    {
+        var u = urn.ToLowerInvariant();
+        if (u.Contains("21496")) return 1;
+        if (u.Contains("hdrgainmap") || u.Contains("hdr-gain-map") || u.Contains("hdr_gain_map")) return 2;
+        if (u.Contains("auxid:1") || u.Contains("auxiliary:alpha")) return 3;
+        // 明确的非增益语义：depth / disparity / mask / segmentation / matte / thumbnail。
+        // 这些即使伴随 XMP 也不该被候选吞掉；不认识就按 0（不参与增益图判定）。
+        if (u.Contains("depth") || u.Contains("disparity") || u.Contains("mask")
+            || u.Contains("segment") || u.Contains("matte") || u.Contains("thumbnail")) return 0;
+        return 4;
+    }
+
     /// <summary>
     /// 解析 `iprp`：收集 `ipco` 的属性盒（**1-based** 索引，按出现顺序）与 `ipma` 的 item→属性索引映射；
     /// 同时保留旧判据「`ipco` 里存在 URN 含 `21496` 的 `auxC`」。
@@ -805,7 +871,7 @@ public static class IsoBmffGainMapProbe
     private static void ParseIprp(byte[] d, int start, int end,
         List<(string Type, int Off, int Size)> props, Dictionary<int, List<int>> ipma,
         List<(int PropIndex, int Kind)> auxCProps,
-        ref bool sawAux21496, ref bool sawAuxApple, ref bool sawAuxAlpha)
+        ref bool sawAux21496, ref bool sawAuxApple, ref bool sawAuxAlpha, ref bool sawAuxVendor)
     {
         for (int p = start; p + 8 <= end;)
         {
@@ -825,24 +891,17 @@ public static class IsoBmffGainMapProbe
                         if (z > s)
                         {
                             var urn = Encoding.ASCII.GetString(d, s, z - s);
-                            int kind = 0;
-                            if (urn.Contains("21496")) { sawAux21496 = true; kind = 1; }
-                            // Apple 早期 HEIF 辅助图（iPhone 12 起的 HDR Gain Map）：URN 形如
-                            // `urn:com:apple:photo:2020:aux:hdrgainmap`，**不含 21496** ⇒ 旧判据对它完全
-                            // 无感，会被报成「无增益图」而静默按 SDR 处理（= 可用性不诚实）。
-                            // AU-W2：已升级为完整解码形态（TryParseAppleAux），布尔只作判定入口。
-                            else if (urn.Contains("hdrgainmap", StringComparison.OrdinalIgnoreCase)) { sawAuxApple = true; kind = 2; }
-                            // D2（2026-11-09）：alpha 辅助图。alpha 是独立 item，主流 pix_fmt 不带
-                            // alpha 平面 ⇒ 只看 HasAlphaPlane 会把透明静默拍平。URN 权威，不猜流格式。
-                            // ⚠ 两条真实 URN 都要认（2026-11-11 审查 P1-1）：
-                            //   · HEVC/HEIF：`urn:mpeg:hevc:2015:auxid:1`（含旧写法 `...av1:2021:auxid:1`）；
-                            //   · **AVIF（libavif 写侧）**：`urn:mpeg:mpegB:cicp:systems:auxiliary:alpha`
-                            //     （vendored `internal.h` 的 AVIF_URN_ALPHA0 / `write.c:37` alphaURN）。
-                            //   只认 auxid:1 时 AVIF 带 alpha 输入被当无 alpha ⇒ 转 PNG 输出 rgb24、
-                            //   静默丢透明、exit 0 零告警（审查证据 evidence_avif_alpha*）。
-                            else if (urn.Contains("auxid:1", StringComparison.OrdinalIgnoreCase)
-                                  || urn.Contains("auxiliary:alpha", StringComparison.OrdinalIgnoreCase))
-                            { sawAuxAlpha = true; kind = 3; }
+                            int kind = ClassifyAuxUrn(urn);
+                            if (kind == 1) sawAux21496 = true;
+                            else if (kind == 2) sawAuxApple = true;
+                            else if (kind == 3) sawAuxAlpha = true;
+                            else if (kind == 4)
+                            {
+                                // 2026-11-15：厂商私有 URN 的**候选**映射。不凭 URN 猜测语义——
+                                // 真正的语义门在 TryParseVendorAux：必须同时看到 XMP
+                                // `HDRGainMapHeadroom` 才承认；否则按未知 aux 处理（不误报增益图）。
+                                sawAuxVendor = true;
+                            }
                             if (kind != 0) auxCProps.Add((props.Count, kind));   // 1-based：刚 Add 的这条
                         }
                     }
@@ -903,36 +962,64 @@ public static class IsoBmffGainMapProbe
     /// <para>⚠ 元数据字段（HDRHeadroom/HDRGain）的读取在 GainMapDecoder 层走 exiftool 整件通道，
     /// 本方法不做 EXIF/TIFF 解析（SPEC §3 决策 2：零新解析器）。</para>
     /// </summary>
+    /// <summary>Apple 早期辅助图入口（kind=2；FailReason 保留 hdrgainmap 字样，供 §1c/§1h 判据）。</summary>
     private static void TryParseAppleAux(byte[] d, Dictionary<int, string> items,
         Dictionary<int, (int Method, int Base, List<(int Off, int Len)> Extents)> locs,
         List<(string Type, int From, List<int> To)> refs,
         List<(string Type, int Off, int Size)> ipcoProps, Dictionary<int, List<int>> ipmaMap,
         List<(int PropIndex, int Kind)> auxCProps,
         int idatStart, int idatEnd, int primary, Result r)
+        => TryParseAux(d, items, locs, refs, ipcoProps, ipmaMap, auxCProps,
+            idatStart, idatEnd, primary, r, 2, "Apple 辅助图（auxC URN 含 hdrgainmap）");
+
+    /// <summary>厂商私有 aux 入口（kind=4；语义门已在调用方由 XMP HDRGainMapHeadroom 把住）。</summary>
+    private static void TryParseVendorAux(byte[] d, Dictionary<int, string> items,
+        Dictionary<int, (int Method, int Base, List<(int Off, int Len)> Extents)> locs,
+        List<(string Type, int From, List<int> To)> refs,
+        List<(string Type, int Off, int Size)> ipcoProps, Dictionary<int, List<int>> ipmaMap,
+        List<(int PropIndex, int Kind)> auxCProps,
+        int idatStart, int idatEnd, int primary, Result r)
+        => TryParseAux(d, items, locs, refs, ipcoProps, ipmaMap, auxCProps,
+            idatStart, idatEnd, primary, r, 4, "厂商私有增益图（auxC URN 未登记 + XMP HDRGainMapHeadroom）");
+
+    private static void TryParseAux(byte[] d, Dictionary<int, string> items,
+        Dictionary<int, (int Method, int Base, List<(int Off, int Len)> Extents)> locs,
+        List<(string Type, int From, List<int> To)> refs,
+        List<(string Type, int Off, int Size)> ipcoProps, Dictionary<int, List<int>> ipmaMap,
+        List<(int PropIndex, int Kind)> auxCProps,
+        int idatStart, int idatEnd, int primary, Result r, int auxKind, string label)
     {
         void Fail(string why)
         {
             r.Determinate = false;
-            r.FailReason = $"[IsoBmff] Apple 辅助图（auxC URN 含 hdrgainmap）不可解：{why}";
+            r.FailReason = $"[IsoBmff] {label} 不可解：{why}";
         }
 
-        // ① aux item 定位：ipma 反查关联了 hdrgainmap auxC 的 item（恰 1 个；多个 = 歧义不猜）。
+        // ① aux item 定位：ipma 反查关联了该类 auxC 的 item（恰 1 个；多个 = 歧义不猜）。
         int auxId = -1, owners = 0;
         foreach (var kv in ipmaMap)
         {
             bool hit = false;
             foreach (var ix in kv.Value)
                 foreach (var ap in auxCProps)
-                    if (ap.Kind == 2 && ix == ap.PropIndex) { hit = true; break; }
+                    if (ap.Kind == auxKind && ix == ap.PropIndex) { hit = true; break; }
             if (!hit) continue;
             owners++;
             if (auxId < 0) auxId = kv.Key;
         }
-        if (auxId < 0) { Fail("ipma 未把 hdrgainmap auxC 关联到任何 item（aux item 无法定位）"); return; }
-        if (owners > 1) { Fail($"ipma 有 {owners} 个 item 关联 hdrgainmap auxC（歧义，不猜）"); return; }
-        if (!items.TryGetValue(auxId, out var auxType) || !IsCodecItem(auxType))
+        if (auxId < 0) { Fail($"ipma 未把该类 auxC 关联到任何 item（aux item 无法定位）"); return; }
+        if (owners > 1) { Fail($"ipma 有 {owners} 个 item 关联该类 auxC（歧义，不猜）"); return; }
+        if (!items.TryGetValue(auxId, out var auxType))
         {
-            Fail($"aux item {auxId} 类型 '{(items.TryGetValue(auxId, out var t) ? t : "?")}' 不是编解码 item");
+            Fail($"aux item {auxId} 无法定位（infe 缺项）");
+            return;
+        }
+        // 2026-11-14：手机厂私有件（DJI/MiHE 等）的 auxC 常挂在 **grid 派生项** 上，
+        // grid 自身不是编解码 item；旧类型闸只认 hvc1/hev1/av01 ⇒ 真实件被整条拒掉。
+        // grid 走与 tmap-grid 完全相同的 ParseGridGainMap（零改动复用）。
+        if (auxType != "grid" && !IsCodecItem(auxType))
+        {
+            Fail($"aux item {auxId} 类型 '{auxType}' 既不是 grid 也不是编解码 item");
             return;
         }
 
@@ -946,25 +1033,54 @@ public static class IsoBmffGainMapProbe
         if (!auxlOk) { Fail($"iref 无 auxl: aux item {auxId} → primary（归属方向不成立）"); return; }
 
         // ③ Exif item：类型 "Exif" 且 cdsc 指向主图（AppleMakerNote 的载体）。
+        // 2026-11-14：改为**可选** —— 手机私有件可能只写 XMP（或 MakerNote 全 0），
+        // 元数据由解码层按 MakerNote→XMP 顺序回退；结构层不因缺 Exif 而拒绝可解码增益图。
+        // 但「有 cdsc 指向主图、类型却不是 Exif」= Exif item 被破坏/错标 ⇒ 仍 fail-closed 点名，
+        // 否则「Exif 存在性」这条既有负控会被本轮的宽容吞掉（§1h 变异负控）。
         int exifId = -1;
+        int badExifId = -1;
         foreach (var kv in items)
         {
-            if (!string.Equals(kv.Value, "Exif", StringComparison.Ordinal)) continue;
             foreach (var rf in refs)
             {
                 if (rf.Type != "cdsc" || rf.From != kv.Key) continue;
-                foreach (var to in rf.To) if (to == primary) { exifId = kv.Key; break; }
-                if (exifId >= 0) break;
+                if (!rf.To.Contains(primary)) continue;
+                if (string.Equals(kv.Value, "Exif", StringComparison.Ordinal)) exifId = kv.Key;
+                else badExifId = kv.Key;
+                break;
             }
             if (exifId >= 0) break;
         }
-        if (exifId < 0) { Fail("未找到 cdsc 关联主图的 Exif item（AppleMakerNote 元数据不可得）"); return; }
+        if (exifId < 0 && badExifId >= 0)
+        {
+            Fail($"item {badExifId} 类型 '{items[badExifId]}' 经 cdsc 指向主图但不是 'Exif'（Exif item 类型被破坏）");
+            return;
+        }
 
-        // ④ Exif item 字节（纯切片，无编解码转换）。
-        var exifData = SliceItem(d, locs, exifId, idatStart, idatEnd, ref r, "Exif item");
-        if (exifData == null) { Fail($"Exif item {exifId} 切片失败（见上一条 FailReason）"); return; }
+        // ④ Exif item 字节（纯切片，无编解码转换）；没有 Exif 不是结构失败。
+        byte[]? exifData = null;
+        if (exifId >= 0)
+        {
+            exifData = SliceItem(d, locs, exifId, idatStart, idatEnd, ref r, "Exif item");
+            if (exifData == null) { Fail($"Exif item {exifId} 切片失败（见上一条 FailReason）"); return; }
+        }
 
-        // ⑤ aux item 裸流：hvc1/hev1 走 hvcC→Annex-B（与 tmap 形态同一套转换器）；av01 原样。
+        r.AuxItemId = auxId;
+        r.AuxBaseItemId = primary;
+
+        // ⑤ grid 承载：grid 载荷在 meta/idat，瓦片 = grid 的 dimg 目标。
+        if (auxType == "grid")
+        {
+            r.GainMapItemId = auxId;
+            r.GainMapIsGrid = true;
+            r.Determinate = true;                       // ParseGridGainMap 失败时会改回 false
+            ParseGridGainMap(d, items, locs, refs, ipcoProps, ipmaMap, idatStart, idatEnd, r);
+            r.ExifItemId = exifId;
+            r.ExifItemData = exifData;
+            return;
+        }
+
+        // ⑥ 单 item 裸流：hvc1/hev1 走 hvcC→Annex-B（与 tmap 形态同一套转换器）；av01 原样。
         r.GainMapItemId = auxId;
         r.GainMapCodec = auxType;
         var raw = SliceItem(d, locs, auxId, idatStart, idatEnd, ref r, "aux item");
@@ -1298,7 +1414,8 @@ public static class IsoBmffGainMapProbe
         int gridId = r.GainMapItemId;
         var payload = SliceItem(d, locs, gridId, idatStart, idatEnd, ref r, "gainmap grid");
         if (payload == null) return;
-        if (!TryParseGridPayload(payload, out int rows, out int cols, out int gw, out int gh, out var gErr))
+        if (!TryParseGridPayload(payload, out int rows, out int cols, out int gw, out int gh,
+                out bool sizeFromTail, out var gErr))
         {
             r.Determinate = false;
             r.FailReason = $"[IsoBmff] grid 载荷解析失败：{gErr}";
@@ -1374,7 +1491,12 @@ public static class IsoBmffGainMapProbe
             return;
         }
         // 声明缺省（flags bit0=0）⇒ 全铺不裁：整幅 = 列×瓦片宽 / 行×瓦片高。
-        if (gw <= 0 || gh <= 0) { gw = cols * tw; gh = rows * th; }
+        // 2026-11-14：部分写入器（DJI/MiHE 手机件）flags=0 却在载荷尾部写 2×u16 宽高；
+        // 只接受「落在铺满尺寸内」的尾值，越界/为 0 一律退回全铺（不拿垃圾尾巴当裁切）。
+        if (gw <= 0 || gh <= 0 || gw > cols * tw || gh > rows * th)
+        {
+            gw = cols * tw; gh = rows * th; sizeFromTail = false;
+        }
 
         r.GainMapCodec = codec;
         r.GainMapFfmpegFormat = codec == "av01" ? "obu" : "hevc";
@@ -1385,6 +1507,7 @@ public static class IsoBmffGainMapProbe
         r.GridHeight = gh;
         r.TileWidth = tw;
         r.TileHeight = th;
+        r.GridSizeFromPayloadTail = sizeFromTail;
     }
 
     /// <summary>
@@ -1392,11 +1515,16 @@ public static class IsoBmffGainMapProbe
     /// <c>u8 version</c> <c>u8 flags</c> <c>u8 rowsMinusOne</c> <c>u8 colsMinusOne</c>，
     /// flags bit0=1 时再跟 <c>u32 outputWidth</c> <c>u32 outputHeight</c>
     /// （整幅显示尺寸，可小于瓦片铺满的尺寸 ⇒ 右/下裁切；实测 iPhone 件即如此）。
+    /// <para>
+    /// 2026-11-14：DJI/MiHE 手机私有件在 <c>flags bit0=0</c> 时仍写 4 B 宽高（**2×u16**，
+    /// 实测 6000×4500）；这里宽容读取并置 <paramref name="sizeFromTail"/>，
+    /// 是否采纳由 <see cref="ParseGridGainMap"/> 在拿到瓦片尺寸后按「不越铺满范围」校验。
+    /// </para>
     /// </summary>
     private static bool TryParseGridPayload(byte[] p, out int rows, out int cols,
-        out int width, out int height, out string err)
+        out int width, out int height, out bool sizeFromTail, out string err)
     {
-        rows = 0; cols = 0; width = 0; height = 0; err = "";
+        rows = 0; cols = 0; width = 0; height = 0; sizeFromTail = false; err = "";
         if (p.Length < 4) { err = $"grid 载荷过短（{p.Length} B）"; return false; }
         if (p[0] != 0) { err = $"grid version={p[0]}（仅 v0 定义）"; return false; }
         byte flags = p[1];
@@ -1409,6 +1537,13 @@ public static class IsoBmffGainMapProbe
             width = (int)Be32(p, q);
             height = (int)Be32(p, q + 4);
             q += 8;
+        }
+        else if (p.Length >= q + 4)
+        {
+            // 非标尾部：2×u16（不是 u32）。数值合理性留给 ParseGridGainMap 校验。
+            width = Be16(p, q);
+            height = Be16(p, q + 2);
+            sizeFromTail = width > 0 && height > 0;
         }
         return true;
     }
