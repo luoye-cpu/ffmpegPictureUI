@@ -90,14 +90,24 @@ CK $true "PLAN dir exists"
 #   重读/LoadSettings 推进控件）+ N9 四条（四子窗口 headless 打开/关闭冒烟：FormatFilter/PresetManager/
 #   ImageDetail/Progress）——UiTestHost/Program.cs GroupN）⇒ ui-core 75 → **84**、合计 464 → **473**
 #   （=84+59+89+169+72）。与 union $expectedOldCount=473、_module-registry.json locks 同批抬表。
+#   2026-11-14（策略单选不再自动联动批）= **475**（+2：ui-color I 组 I5/I6/I7 改写为新口径
+#   （P3/P3PQ 不自动切 Bake、sRGB 不回切、手动不被覆盖）+ 新增 I5b(P3PQ)/I9(切格式) 两条 ⇒
+#   ui-color 89 → **91**、合计 473 → **475**（=84+59+91+169+72）。删 AutoLinkIccModeFromColorSpace
+#   隐式联动；与 union $expectedOldCount=475、_module-registry.json locks 同批抬表。）
+#   2026-11-14（色彩 UI 联动审计 + JPEG ICC 版本下拉批）= **487**（+12：ui-color I 组新增
+#   I11 策略面板锁定审计 8 条[Manual 三字段可编辑/无锁定文案为旧代码必红硬锁；仅CICP快速色域可改/
+#   CarryIcc色域锁定/Recommended三元组可用为护栏] + I12 JPEG ICC 版本下拉 4 条[控件存在/默认v4.4/
+#   JPEG可见/PNG隐藏，旧代码无此控件必红] ⇒ ui-color 91 → **103**、合计 475 → **487**
+#   （=84+59+103+169+72）。拆除 DetectColorConflicts 里 isBaking 把仅CICP/手动三元组一起灰化的
+#   纯副作用锁；与 union $expectedOldCount=487、_module-registry.json locks 同批抬表。）
 $arms = @(
     @{ Name = 'ui-core';  Exe = Join-Path $repoRoot 'tests/projects/ui-core/bin/Release/net11.0/win-x64/Tests.UiCore.exe';  Expected = 84  },
     @{ Name = 'ui-mode';  Exe = Join-Path $repoRoot 'tests/projects/ui-mode/bin/Release/net11.0/win-x64/Tests.UiMode.exe';  Expected = 59  },
-    @{ Name = 'ui-color'; Exe = Join-Path $repoRoot 'tests/projects/ui-color/bin/Release/net11.0/win-x64/Tests.UiColor.exe'; Expected = 89  },
+    @{ Name = 'ui-color'; Exe = Join-Path $repoRoot 'tests/projects/ui-color/bin/Release/net11.0/win-x64/Tests.UiColor.exe'; Expected = 103 },
     @{ Name = 'ui-sweep'; Exe = Join-Path $repoRoot 'tests/projects/ui-sweep/bin/Release/net11.0/win-x64/Tests.UiSweep.exe'; Expected = 169 },
     @{ Name = 'ui-cli';   Exe = Join-Path $repoRoot 'tests/projects/ui-cli/bin/Release/net11.0/win-x64/Tests.UiCli.exe';     Expected = 72  }
 )
-$aggExpected = 473
+$aggExpected = 487
 foreach ($arm in $arms) {
     if (-not (Test-Path $arm.Exe)) {
         Write-Output "  FAIL host exe exists ($($arm.Name)): $($arm.Exe)"

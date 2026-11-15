@@ -286,6 +286,8 @@ namespace FfmpegGui.Services
             _strings["icc.mode.carry"] = "② Carry ICC — Keep source or add standard ICC";
             _strings["icc.mode.bake"] = "③ Bake + Embed — Convert pixels & embed standard ICC";
             _strings["icc.mode.bakeonly"] = "④ Bake Only — Convert pixels, no ICC output";
+            _strings["icc.version"] = "Generated ICC Version";
+            _strings["tip.icc.version"] = "Version of the self-generated named ICC (JPEG output only). v4.4 recommended; v2.0 maximizes old-viewer compatibility. Source-embedded ICC is always carried as-is.";
             _strings["strip.gps"] = "Strip GPS Location";
             _strings["strip.time"] = "Strip Timestamps";
             _strings["strip.camera"] = "Strip Camera/Lens Info";

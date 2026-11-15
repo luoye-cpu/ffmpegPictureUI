@@ -58,6 +58,7 @@ QQ Group: 754439779 | [Join Group](https://qm.qq.com/q/M2181PvCkW)
 ### Prerequisites
 
 - **OS**: Windows 10/11 (other .NET 11 platforms should work)
+- **CPU (AOT package)**: x86-64-v3 / AVX2 baseline (Intel Haswell 2013+, AMD Excavator 2015+); pre-AVX2 CPUs cannot run the AOT package — use the JIT/source build instead
 - **.NET 11 Runtime**: [Download](https://dotnet.microsoft.com/en-us/download/dotnet/11.0)
 - **FFmpeg**: Install and make sure `ffmpeg -version` works in a terminal
 

@@ -28,12 +28,12 @@
   "locks": {
     "ui-host-arms": {
       "file": "tests/scripts/verify-ui-host.ps1",
-      "desc": "verify-ui-host 五件逐件 Expected + $aggExpected 合计锁（2026-11-12 批 4·3+4 N8/N9 +9：75→84 / 464→473）",
-      "value": 473,
+      "desc": "verify-ui-host 五件逐件 Expected + $aggExpected 合计锁（2026-11-14 色彩 UI 联动审计+JPEG ICC 版本下拉批：ui-color I 组新增 I11 锁定审计 8 条 + I12 版本下拉 4 条 ⇒ 91→103 / 475→487）",
+      "value": 487,
       "members": {
         "ui-core": 84,
         "ui-mode": 59,
-        "ui-color": 89,
+        "ui-color": 103,
         "ui-sweep": 169,
         "ui-cli": 72
       }
@@ -45,8 +45,8 @@
     },
     "ui-split-union": {
       "file": "tests/scripts/verify-ui-split-union.ps1",
-      "desc": "单体全量断言名并集锁（$expectedOldCount；2026-11-12 批 4·3+4 +9 ⇒ 473）",
-      "value": 473
+      "desc": "单体全量断言名并集锁（$expectedOldCount；2026-11-14 色彩 UI 联动审计+JPEG ICC 版本下拉批 +12 ⇒ 487）",
+      "value": 487
     },
     "script-timeouts": {
       "file": "tests/scripts/_run-step3-gates.ps1",

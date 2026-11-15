@@ -479,12 +479,16 @@ namespace ServiceProbe
                           $"C7b 结构：zimg 的出口曲线必须是纯 γ(1/2.4)（实={spZim.DstCurve.Name}），std 仍是定义式（实={spStd.DstCurve.Name}）");
                     // 口径只改**像素**，不改**标注**：这是"对齐历史产物"的字面语义（zscale 的产物也一直
                     // 是 t=bt709 标签 + γ2.4 像素）。⚠ 反过来也必须成立：这条曲线自己**不**声称可 CICP 命名。
+                    // 2026-11-14 标注口径变更（CICP 优先）：png 可写 CICP 且 bt709/bt709 可精确命名 ⇒
+                    // 默认只写 CICP、不再附自生成 ICC。std 与 zimg 两支的标注必须**逐值一致**
+                    // （都 OutTransfer=bt709、都不附 ICC）——"标注不随口径走"的本意不变，只是 ICC 档由
+                    // "都附 bt709 ICC"变成"都不附 ICC"。
                     Check(spZim.DstCurve.CicpToken == null && spZim.DstCurve.TableLength == 0
                           && c7bZim.OutTransfer == "bt709" && c7bStd.OutTransfer == "bt709"
-                          && c7bZim.IccTrc == "bt709" && c7bStd.IccTrc == "bt709"
-                          && c7bZim.AttachIcc == c7bStd.AttachIcc,
-                          $"C7b 标注不随口径走：zimg 曲线 CicpToken=null（不发明命名），CICP 与 ICC 仍 bt709"
-                        + $"（实 t={c7bZim.OutTransfer}/{c7bStd.OutTransfer} icc={c7bZim.IccTrc ?? "-"}/{c7bStd.IccTrc ?? "-"}）");
+                          && c7bZim.IccTrc == c7bStd.IccTrc && c7bZim.IccTrc == null
+                          && c7bZim.AttachIcc == c7bStd.AttachIcc && c7bZim.AttachIcc == false,
+                          $"C7b 标注不随口径走：zimg 曲线 CicpToken=null（不发明命名），两支都只写 CICP=bt709、不附 ICC"
+                        + $"（实 t={c7bZim.OutTransfer}/{c7bStd.OutTransfer} icc={c7bZim.IccTrc ?? "-"}/{c7bStd.IccTrc ?? "-"} attach={c7bZim.AttachIcc}）");
 
                     // 65536 级**线性**灰阶：源曲线=linear ⇒ 输入码值就是线性值，两条出口曲线的取差点
                     // （linear≈0.0169）必被采到；R=G=B ⇒ GMO 对中性色严格 no-op（见 GamutMapScalar 的性质），

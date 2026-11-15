@@ -98,6 +98,43 @@ namespace FfmpegGui.Services
             args.Add("-i");
             args.Add($"\"{inputPath}\"");
 
+            // ── C-02（2026-11-14 独立复核）：`-colorspace` 放在 `-i` 前只是**声明/元数据**，
+            // 实测 JPEG/AVIF 的 bt601 vs bt709 产物 PSNR=inf；真正改变 YUV→RGB 解码矩阵的是
+            // scale 的 `in_color_matrix=`。这里只在**用户显式给了 --color-matrix** 且输入是
+            // 非 RGB、非分块流组时追加该滤镜；RGB 输入没有可应用的 YUV 矩阵，另行点名。
+            // 注意：不能把派生矩阵也塞进来——那会改变既有 auto 路径的像素，违反 C-02 的边界。
+            // ⚠ 必须在 `-i` 之后：input option 不能出现在输入 URL 后面（实测 `vf ... cannot be applied to input url`）。
+            if (!string.IsNullOrWhiteSpace(options.ColorMatrix) && declMatrix != null)
+            {
+                bool inputIsRgb = GetCachedProbe(probeInput).isRgb;
+                bool grouped = EnsureGroupForm();
+                if (inputIsRgb)
+                {
+                    ColorMapping.ImageEncoderArgs.EmitWarn(
+                        $"⚠ [matrix] --color-matrix={options.ColorMatrix} ignored for pixel conversion: "
+                        + "source is RGB; the matrix only remains a container declaration where the format has one.");
+                }
+                else if (grouped)
+                {
+                    ColorMapping.ImageEncoderArgs.EmitWarn(
+                        $"⚠ [matrix] --color-matrix={options.ColorMatrix} not applied to a grouped/tiled input: "
+                        + "the scale in_color_matrix stage is only wired for a single video stream.");
+                }
+                else
+                {
+                    var rangePart = string.IsNullOrWhiteSpace(inputColorRange)
+                        ? ""
+                        : $":in_range={inputColorRange}:out_range={inputColorRange}";
+                    AppendVideoFilter(args,
+                        $"scale=in_color_matrix={declMatrix}{rangePart}",
+                        false, null);
+                    ColorMapping.ImageEncoderArgs.EmitWarn(
+                        $"⚠ [matrix] --color-matrix={options.ColorMatrix} now drives pixel conversion "
+                        + $"via scale=in_color_matrix={declMatrix} (not just a pre-input metadata declaration).");
+                }
+            }
+
+
             // GIF → AVIF：swscale 精确标志（输出选项，FFmpeg 8.x 不接受 -i 前 -pix_fmt）
             if (isGifToAvif)
             {
@@ -592,6 +629,17 @@ namespace FfmpegGui.Services
             // ③ 色度为 auto → 仅按位深指定（默认 4:2:0）。
             var inputHasAuxAlpha = GetCachedProbe(probeInput).hasAuxAlpha;   // D2：容器 alpha 辅助图（URN 权威）
             var inputHasAlpha = GetCachedProbe(probeInput).hasAlpha;         // aux-alpha 命中时探测端已并入 true
+            // C-05（2026-11-14 独立复核）：AVIF 静态出口的 `MapPixFmt` 对 hasAlpha 走普通 YUV（见
+            // ImageEncoderArgs 的 AVIF 分支），alpha 会被拍平。这里不能再静默：GIF→AVIF 的专用
+            // 两段式通路保留 alpha，不在此告警范围；其余 AVIF 出口一律点名。
+            if (fmt == "avif" && inputHasAlpha
+                && !inputPath.EndsWith(".gif", StringComparison.OrdinalIgnoreCase))
+            {
+                ColorMapping.ImageEncoderArgs.EmitWarn(
+                    "⚠ [avif] source contains alpha; static AVIF output currently drops the alpha plane "
+                    + "(yuv path is encoded without an alpha auxiliary item). "
+                    + "Keep transparency by using PNG/WebP, or wait for the AVIF alpha path.");
+            }
             int EffectiveBitDepth()
             {
                 if (options.BitDepth.HasValue) return options.BitDepth.Value;
@@ -664,6 +712,20 @@ namespace FfmpegGui.Services
             {
                 args.Add("-pix_fmt");
                 args.Add(MapPixFmt(options.Format, options.Chroma, ClampAvifBd(EffectiveBitDepth()), inputHasAlpha, options.ColorRange));
+            }
+            // C-03（2026-11-14 独立复核）：AVIF 显式 YUV 矩阵 + 无 `--chroma/--bit-depth` 时，
+            // 旧路径不发 `-pix_fmt` ⇒ libaom 对 RGB 源自选 gbrp，后续 `-colorspace` 被忽略，
+            // 计划写 `Carried` 但产物 nclx 仍是 identity。显式矩阵请求必须自己钉住 YUV 像素面；
+            // 位深跟随 EffectiveBitDepth（仍受 AVIF 编码器上限钳制），色度按 auto=4:2:0。
+            else if (!skipGenericPixFmt && explicitYuvOutMatrix
+                && !chromaExplicit && !options.BitDepth.HasValue)
+            {
+                args.Add("-pix_fmt");
+                args.Add(MapPixFmt(options.Format, null, ClampAvifBd(EffectiveBitDepth()), inputHasAlpha, options.ColorRange));
+                ColorMapping.ImageEncoderArgs.EmitWarn(
+                    $"⚠ [avif] explicit --color-out-matrix={outMatrixTok} requested without --chroma/--bit-depth; "
+                    + "pinned YUV 4:2:0 so the matrix can actually land in nclx "
+                    + "(RGB/gbrp identity would silently ignore it).");
             }
             else if (!skipGenericPixFmt && !options.BitDepth.HasValue)
             {
@@ -831,6 +893,10 @@ namespace FfmpegGui.Services
                 // 高位深 YUV 输入 → iccgen 前先转 RGB（iccgen 仅支持 RGB 输入）；
                 // 若还需 tonemap，tonemap 链已在前面处理过，这里只负责格式转换。
                 if (dec.IccgenNeedsRgb) AppendVideoFilter(args, "format=rgb48le", EnsureGroupForm(), groupLabelReset);
+                // 冲突源（源 ICC 说 SDR、容器 cICP 却是 PQ/HLG）先覆盖帧标签；
+                // 否则 iccgen 对 HDR 帧报 “Not yet implemented”，整格零产物。
+                if (!string.IsNullOrEmpty(dec.IccgenFrameLabelReset))
+                    AppendVideoFilter(args, dec.IccgenFrameLabelReset, EnsureGroupForm(), groupLabelReset);
                 AppendVideoFilter(args, "iccgen", EnsureGroupForm(), groupLabelReset);
             }
 
@@ -1735,6 +1801,11 @@ namespace FfmpegGui.Services
             public string? pixFmt;
             /// <summary>色彩语义是否来自 ICC/EXIF（true 时上层应携带 ICC 而非仅靠 primaries/trc 标签）</summary>
             public bool hasIccSemantics;
+            /// <summary>C-07（2026-11-14 独立复核）：exiftool 色彩读取失败（非 0/空输出/两趟超时）。
+            /// true 时“无 ICC”不是可信结论，调用方不得走 AssumeByConvention；有有效 CICP 才可继续。</summary>
+            public bool exifReadFailed;
+            /// <summary>exiftool 失败摘要（诊断用；成功时为 null）。</summary>
+            public string? exifReadFailure;
             /// <summary>探测到的源色彩空间规范名（如 "Adobe RGB"/"ProPhoto RGB"），供超广色域归一化到 BT.2020 判定</summary>
             public string? sourceGamutName;
             /// <summary><see cref="colorPrimaries"/> 是否只是**近似值**——源色域没有 CICP 命名（ProPhoto /
@@ -1788,11 +1859,16 @@ namespace FfmpegGui.Services
             //   调用方按「未知」回退），且它会被写进缓存。本缓存有 **10 秒 TTL**（`ProbeCacheTtlSeconds`）
             //   ⇒ 最长 10 秒后自愈，**不会永久毒化**。对比 `QueueProcessor.AnimatedJxlCache`（无 TTL）——
             //   那一处已在 `#26` 报告里单独登记为设计岔口。
-            lock (ProbeCacheLock)
+            // C-07（2026-11-14 独立复核）：exiftool 失败结果**不缓存**——缓存会把一次 `code 126`
+            // 固化成 10 秒的“源无 ICC”结论，正是颜色决策漂移的一部分。失败时下次探测重新尝试。
+            if (!meta.exifReadFailed)
             {
-                if (ProbeCache.Count >= ProbeCacheMax)
-                    ProbeCache.Clear();  // 简单清空（缓存仅作短期去重，无需 LRU）
-                ProbeCache[inputPath] = (DateTime.UtcNow, meta);
+                lock (ProbeCacheLock)
+                {
+                    if (ProbeCache.Count >= ProbeCacheMax)
+                        ProbeCache.Clear();  // 简单清空（缓存仅作短期去重，无需 LRU）
+                    ProbeCache[inputPath] = (DateTime.UtcNow, meta);
+                }
             }
             return meta;
         }
@@ -1832,7 +1908,19 @@ namespace FfmpegGui.Services
         /// </summary>
         public static string? ResolveFaithfulUltraWideIcc(Models.FfmpegOptions options,
             string? srcGamutName, string? srcTrc, string? format)
-            => ResolveFaithfulUltraWideIcc(options.ColorStrategy, options.ColorSpace, srcGamutName, srcTrc, format);
+            => ResolveFaithfulUltraWideIcc(options.ColorStrategy, options.ColorSpace, srcGamutName, srcTrc, format,
+                ResolveIccVersion(options.IccProfileVersion, format));
+
+        /// <summary>把用户的 ICC 版本 token 解析为 writer 档位；非 JPEG 出口归一回 v4.4
+        ///（v2 只对老 JPEG 消费端有意义）。options 重载与引擎装配层（ColorIntentFactory）共用本判定。</summary>
+        public static IccProfileBuilder.IccProfileVersion ResolveIccVersion(string? versionToken, string? format)
+            => IsJpegLikeFormat(format)
+                ? IccProfileBuilder.ParseVersionToken(versionToken)
+                : IccProfileBuilder.IccProfileVersion.V44;
+
+        /// <summary>输出是否 JPEG 族（jpg/jpeg/jpegli 后端）。与 UI 侧"ICC 版本下拉可见性"同一口径。</summary>
+        private static bool IsJpegLikeFormat(string? format)
+            => (format ?? "").ToLowerInvariant() is "jpg" or "jpeg" or "jpegli";
 
         /// <summary>
         /// 同上，但**不依赖 <see cref="Models.FfmpegOptions"/>** —— 供色彩引擎的意图装配层
@@ -1840,7 +1928,8 @@ namespace FfmpegGui.Services
         ///（2026-09-16 接入引擎时抽出；此前引擎侧完全没有保真概念 ⇒ 会把 ProPhoto 归一化并丢源 ICC）。
         /// </summary>
         public static string? ResolveFaithfulUltraWideIcc(Models.ColorStrategy strategy,
-            string? colorSpace, string? srcGamutName, string? srcTrc, string? format)
+            string? colorSpace, string? srcGamutName, string? srcTrc, string? format,
+            IccProfileBuilder.IccProfileVersion version = IccProfileBuilder.IccProfileVersion.V44)
         {
             if (strategy == Models.ColorStrategy.BakeCicpOnly) return null;
             if (srcTrc is "smpte2084" or "arib-std-b67") return null;
@@ -1856,7 +1945,7 @@ namespace FfmpegGui.Services
             var src = ColorSpaceRegistry.Resolve(srcGamutName);
             if (target != null && src != null && target.Key != src.Key) return null;
 
-            return IccProfileService.GetFaithfulIcc(srcGamutName);
+            return IccProfileService.GetFaithfulIcc(srcGamutName, version);
         }
 
         /// <summary>
@@ -1882,8 +1971,11 @@ namespace FfmpegGui.Services
             // 直接 .GetAwaiter().GetResult() 会捕获 Avalonia UI SynchronizationContext →
             // async 方法内部 await 续体无法回到被阻塞的 UI 线程 → 整个软件卡死 (发布版必现)。
             // 用 Task.Run 包裹使 async 方法在线程池执行, 续体无需 UI 线程。
-            var exifColorTags = Task.Run(() => ExifToolService.ReadColorTagsAsync(inputPath, log, ct))
+            var exifColorTagsResult = Task.Run(() => ExifToolService.ReadColorTagsResultAsync(inputPath, log, ct))
                 .GetAwaiter().GetResult();
+            var exifColorTags = exifColorTagsResult.Tags;
+            meta.exifReadFailed = exifColorTagsResult.Failed;
+            meta.exifReadFailure = exifColorTagsResult.Failure;
 
             // EXIF ColorSpace 值（带任意组前缀，如 "EXIF:ColorSpace"）
             string? exifColorSpace = null;

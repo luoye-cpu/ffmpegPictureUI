@@ -343,6 +343,77 @@ namespace ServiceProbe
                 Check(pJxlIcc.AttachIcc && pJxlIcc.Action == CA.Map,
                     $"规划层对「jxl + 不可命名目标」确实要求附 ICC（act={pJxlIcc.Action} attachIcc={pJxlIcc.AttachIcc}）"
                     + " ⇒ 出口那道拒绝门不是恒 false 的空断言");
+
+                // ── 2026-11-14 标注口径变更（CICP 优先 / ICC 兜底）的计划级负控 ──
+                // 旧默认是「ICC 优先 / ICC+CICP 双描述」；新默认是「能写 CICP 就只写 CICP，
+                // CICP 不可达才 ICC 兜底且置具体 CicpUnavailable」。下面四条把这条阶梯钉死在计划层。
+                // 负控④a（正控·反推）：png 可写 CICP + sRGB 可精确命名 ⇒ 只写 CICP、**不附**自生成 ICC。
+                //   谁若退回旧「双描述」⇒ AttachIcc=true 本条转红。
+                var srgbDst = CS.FromCicp("bt709", "iec61966-2-1", "sRGB 目标");
+                var pngCaps = CE.CapsFor("png");
+                var polPngSdr = new FfmpegGui.Services.ColorMapping.PlanPolicy
+                { Format = pngCaps, AllowApproximateCurve = false, ForceMapping = true, TargetExplicit = true };
+                var pPngSdr = CE.Plan(p3d, srgbDst, polPngSdr);
+                Check(pPngSdr.OutPrimaries == "bt709" && pPngSdr.OutTransfer == "iec61966-2-1" && !pPngSdr.AttachIcc,
+                    $"负控④a：png+sRGB 可写 CICP ⇒ 只写 CICP、不附 ICC（out={pPngSdr.OutPrimaries}/{pPngSdr.OutTransfer} attachIcc={pPngSdr.AttachIcc}）");
+                // 负控②：jpg 无 CICP 通路 ⇒ CICP 不可达，必须 ICC 兜底（生成 sRGB ICC），
+                //   且 CicpUnavailable 落到具体枚举（不允许静默无标注）。
+                var jpgCaps = CE.CapsFor("jpg");
+                var polJpgSdr = new FfmpegGui.Services.ColorMapping.PlanPolicy
+                { Format = jpgCaps, AllowApproximateCurve = false, ForceMapping = true, TargetExplicit = true };
+                var pJpgSdr = CE.Plan(p3d, srgbDst, polJpgSdr);
+                Check(pJpgSdr.AttachIcc && pJpgSdr.IccPrimaries == "bt709" && pJpgSdr.OutPrimaries == null
+                      && pJpgSdr.CicpUnavailable != FfmpegGui.Services.ColorMapping.CicpUnavailableReason.None,
+                    $"负控②：jpg 无 CICP 通路 ⇒ ICC 兜底（IccPrimaries={pJpgSdr.IccPrimaries} "
+                    + $"CicpUnavailable={pJpgSdr.CicpUnavailable} attachIcc={pJpgSdr.AttachIcc}）");
+                // 负控③：ProPhoto 不可 CICP 命名 ⇒ 走 ICC 兜底，CicpUnavailable 必须点名 SpaceNotNameable，
+                //   不得懒塞 ContainerNoCicp（png 明明有 CICP 通路）。
+                var polPngPro = new FfmpegGui.Services.ColorMapping.PlanPolicy
+                { Format = pngCaps, AllowApproximateCurve = false, ForceMapping = true, TargetExplicit = true };
+                var pPngPro = CE.Plan(p3d, proP, polPngPro);
+                Check(pPngPro.AttachIcc && pPngPro.OutPrimaries == null && pPngPro.CicpUnavailable == FfmpegGui.Services.ColorMapping.CicpUnavailableReason.SpaceNotNameable,
+                    $"负控③：ProPhoto 无 CICP 名 ⇒ ICC 兜底且原因=SpaceNotNameable（实={pPngPro.CicpUnavailable} "
+                    + $"out={pPngPro.OutPrimaries} attachIcc={pPngPro.AttachIcc}）");
+                // 负控③b：BT.2020 **本身可 CICP 命名**，但走 cjxl 外部出口（externalEncoderExit=true）时
+                //   cjxl `color_space=` 枚举只有 sRGB/DisplayP3/PQ/HLG，写不出 BT.2020 ⇒
+                //   原因必须是**新增档 OutletCannotExpress**（容器有 nclx 通路，≠ ContainerNoCicp；
+                //   也≠ SpaceNotNameable，因为 BT.2020 明明有 CICP 名）⇒ ICC 兜底。
+                var bt2020Dst = CS.FromCicp("bt2020", "iec61966-2-1", "BT.2020 SDR 目标");
+                var polJxlOutlet = new FfmpegGui.Services.ColorMapping.PlanPolicy
+                { Format = jxlCaps, AllowApproximateCurve = false, ForceMapping = true, TargetExplicit = true, ExternalEncoderExit = true };
+                var pJxlOutlet = CE.Plan(p3d, bt2020Dst, polJxlOutlet);
+                Check(!CE.CapsAcceptsCicp(jxlCaps, bt2020Dst, true),
+                    "负控③b 前提：cjxl 外部出口枚举写不出 BT.2020")
+                ;
+                Check(pJxlOutlet.CicpUnavailable == FfmpegGui.Services.ColorMapping.CicpUnavailableReason.OutletCannotExpress && pJxlOutlet.AttachIcc,
+                    $"负控③b：BT.2020 走 cjxl 外部出口 ⇒ CicpUnavailable=OutletCannotExpress 且 ICC 兜底"
+                    + $"（实={pJxlOutlet.CicpUnavailable} attachIcc={pJxlOutlet.AttachIcc}）");
+
+                // ── 负控④c（2026-11-14 L1 收紧）：无显式目标（auto）+ 源带 ICC + 空间可精确 CICP 命名 ──
+                //   ⇒ 默认**不携源 ICC**，只写 CICP 标签。旧 L1（SetLabelsFrom 阶梯① 与 PlanCore L1 携带块）
+                //   只要 SourceIccPath != null 就 AttachIcc=true ⇒ 旧代码本条 AttachIcc=true 必红。
+                var srcP3Icc = CS.FromCicp("smpte432", "iec61966-2-1", "Display P3 源(带ICC)")!;
+                srcP3Icc.SourceIccPath = "tests/output/_fake_source.icc";   // 仅触发判据，不真读文件
+                var polAutoPng = new FfmpegGui.Services.ColorMapping.PlanPolicy
+                { Format = pngCaps, AllowApproximateCurve = false, ForceMapping = false, TargetExplicit = false };
+                var pAuto = CE.Plan(srcP3Icc, null, polAutoPng);
+                Check(!pAuto.AttachIcc && pAuto.IccPath == null && pAuto.IccPrimaries == null
+                      && pAuto.OutPrimaries == "smpte432" && pAuto.OutTransfer == "iec61966-2-1"
+                      && pAuto.CicpUnavailable == FfmpegGui.Services.ColorMapping.CicpUnavailableReason.None,
+                    $"负控④c：P3源(带ICC)+png+auto ⇒ 不携源ICC、只写CICP（attachIcc={pAuto.AttachIcc} "
+                    + $"iccPath={pAuto.IccPath} iccPrim={pAuto.IccPrimaries} out={pAuto.OutPrimaries}/{pAuto.OutTransfer} "
+                    + $"cicpUnavail={pAuto.CicpUnavailable}）；旧 L1 会 AttachIcc=true ⇒ 必红");
+                // 反负控④d：源**不可精确 CICP 命名**（ProPhoto）+ png 可写 ICC ⇒ 仍必须携源 ICC 兜底
+                //   （否则等于把"CICP 不可达才用 ICC"砍成"永不用 ICC"）。
+                var srcProIcc = CS.FromNamedSpace("ProPhoto RGB");
+                if (srcProIcc != null)
+                {
+                    srcProIcc.SourceIccPath = "tests/output/_fake_pro.icc";
+                    var pPro = CE.Plan(srcProIcc, null, polAutoPng);
+                    Check(pPro.AttachIcc && pPro.IccPath != null,
+                        $"反负控④d：ProPhoto 不可精确 CICP 命名 ⇒ L1 仍携源 ICC 兜底（attachIcc={pPro.AttachIcc} "
+                        + $"iccPath={pPro.IccPath}）；CICP 无法承载时 ICC 不得被砍");
+                }
                 // 第 3 条（**界定**）：CLI **到不了**上面那个组合 —— 目标描述符由
                 // `EffectiveOutputColorTokens` 的 CICP 三元组构造（`ColorSpaceDescriptor.FromCicp`），
                 // 装配层还会按容器能力钳制，故 CLI 得到的目标**恒为可 CICP 命名**的

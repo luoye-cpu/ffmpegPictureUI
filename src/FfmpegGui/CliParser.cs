@@ -507,8 +507,13 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
                           auto    = 在默认档上叠加内容判定：该图实际用色未超出 bt709 范围时不用 Rec.2020。
                                     仅作用于「SDR 传递的 bt2020 档位」（当前 = TIFF 例外档）；HDR 传递档不参与；
                           rec709  = 强制 bt709 + sRGB（最大兼容性），覆盖容器能力
-  --icc-file <path>       用外部 ICC 文件判定**源**色彩空间
+  --icc-file <path>       用外部 ICC 文件判定**源**色彩空间；CarryIcc 时作为可携带源 ICC
   --icc-mode <mode>       旧参数，映射为 --color-strategy（兼容用）
+  --icc-profile-version <v4|v2>
+                          自生成 ICC 的版本档（默认 v4 = v4.4.0）；v2 = v2.0.0 兼容档
+                          （真 v2：desc=descriptionType、TRC=curv 采样）。仅作用于自生成
+                          命名 ICC（ProPhoto/PQ 保真路径）；源图自带 ICC 永远原样携带。
+                          v2 仅 JPEG 出口有意义，非 JPEG 出口自动归一回 v4。
 
 元数据处理:
   --strip-gps             删除 GPS 信息 (默认: **关闭**，2026-10-20 四处默认统一为「不勾选就全保留」)
@@ -1164,6 +1169,15 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
                         options.ColorStrategy = cs;
                         break;
                     case "icc-file": options.IccFilePath = value; break;
+                    case "icc-profile-version":
+                        // 取值封闭：拼错值必须报错（本仓 D5 口径），不许静默落默认。
+                        options.IccProfileVersion = value.Trim().ToLowerInvariant() switch
+                        {
+                            "v4" or "v4.4" or "4.4" => "v4",
+                            "v2" or "v2.0" or "2.0" => "v2",
+                            _ => throw BadValue(key, value, "支持 v4 | v2"),
+                        };
+                        break;
                     // 增益图出口的底图取法（T12/A 路的回退粒度）：false ⇒ 回落自造 Reinhard 底图
                     //（= 2026-10-15 之前行为，供对照臂与"<1 暗部端点丢失"排查用）。默认 true。
                     case "gain-map-base-from-source": options.GainMapBaseFromSource = ParseBoolStrict(key, value); break;
@@ -1227,6 +1241,7 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
         //        color-tone-map（""|none|reinhard|hable|mobius|bt2446a|bt2390）·
         //        jpeg-huffman（default|optimal|1|0）·
         //        png-optimizer（off|default|max|zopfli15|zopfli30，png-optimizer-integration C-CLI@1）·
+        //        icc-profile-version（v4|v2，别名 v4.4/4.4/v2.0/2.0；仅作用于自生成命名 ICC）·
         //        bit-depth（8|10|12|16|auto，走同族的 `ParseBitDepthStrict` —— 它是整数域，
         //        且 `auto` 要落成 `null` 而非字符串，故不复用 `ParseTokenStrict`）
         //      ⛔ **刻意不收口**（收口就会把合法值挡在门外，分四类）：

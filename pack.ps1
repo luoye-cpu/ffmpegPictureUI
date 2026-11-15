@@ -1,4 +1,4 @@
-# FFmpegPictureUI 打包脚本 — 2 版本发布（全部 NativeAOT 编译）
+# FFmpegPictureUI 打包脚本 — 2 版本发布（全部 NativeAOT 编译，目标 x86-64-v3 / AVX2）
 # 用法:
 #   单文件版 (不含 PLAN):      .\pack.ps1 -Mode app
 #   完整版 (含 PLAN 组件包):   .\pack.ps1 -Mode full
@@ -102,6 +102,7 @@ function Invoke-Pack([string]$mode) {
         -p:SelfContained=true `
         -p:PublishSingleFile=true `
         -p:IlcOptimizationPreference=Speed `
+        -p:IlcInstructionSet=x86-64-v3 `
         -p:InvariantGlobalization=true `
         -p:Version=$Version `
         -o $OutputDir

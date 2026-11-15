@@ -77,7 +77,13 @@ public static class ColorIntentFactory
                         IccProfileService.ParseInfo(o.IccFilePath)?.Description);
                     if (src != null)
                     {
-                        src.SourceIccPath = null;
+                        // 2026-11-15 收口：外部 ICC 不再只用于“判定源空间”。用户显式给出
+                        // `--icc-file` 时把它作为可携带的源 ICC，让 CarryIcc/标准空间改写
+                        // 与内嵌源 ICC 走同一条路径；文件是用户提供的稳定路径，不按临时件回收。
+                        // 同时先做 v4.4 + ProfileID 归一；未知/不可重建时保留原文件，交给规划层
+                        // 按其既有 fail-closed 口径处理，不把一个坏 profile 变成默认 sRGB。
+                        var portable = IccProfileService.NormalizeSourceIccToV44(o.IccFilePath);
+                        src.SourceIccPath = portable ?? o.IccFilePath;
                         src.Name = $"{src.Name} [--icc-file]";
                     }
                 }
@@ -138,6 +144,15 @@ public static class ColorIntentFactory
         }
         if (src == null)
         {
+            // C-07（2026-11-14 独立复核）：exiftool 读取失败时，“没有 ICC”不是可信结论。
+            // 旧路径会落到 AssumeByConvention(sRGB) ⇒ 源=目标直通 ⇒ 把未知/广色域源错标成 sRGB。
+            // fail-closed：没有外部 --icc-file、没有自产中间件声明、也没有可用 CICP 时，不猜 sRGB。
+            if (meta.exifReadFailed)
+            {
+                reason = $"源色彩语义读取失败（exiftool: {meta.exifReadFailure ?? "unknown"}）"
+                       + "；已拒绝按惯例假定 sRGB（请重试、显式指定 --icc-file 或提供带 CICP/ICC 的源）";
+                return null;
+            }
             src = ColorSpaceIdentify.AssumeByConvention(RawService.IsRawFile(inputPath));
             if (src == null) { reason = "源色彩语义无法确定（无 ICC、无标签、惯例假定失败）"; return null; }
         }
@@ -348,7 +363,10 @@ public static class ColorIntentFactory
         // ⚠ 此前规划层没有这个概念 ⇒ 引擎会把 ProPhoto 当普通任务**归一化**：
         //   实测像素被改、源 ICC 丢失、还写上误导性 CICP `bt709,bt709`（prophoto-faithful 26/0 → 13/13）。
         it.FaithfulIccPath = FfmpegCommandBuilder.ResolveFaithfulUltraWideIcc(
-            o.ColorStrategy, o.ColorSpace, meta.sourceGamutName, meta.colorTrc, fmt);
+            o.ColorStrategy, o.ColorSpace, meta.sourceGamutName, meta.colorTrc, fmt,
+            // v2 版本档必须穿进引擎管线（此前走默认 V44 ⇒ CLI --icc-profile-version v2 在 JPEG 出口静默失效）；
+            // JPEG 门外加闸（非 JPEG 归 v4.4）由 ResolveIccVersion 单点负责，与传统管线同口径。
+            FfmpegCommandBuilder.ResolveIccVersion(o.IccProfileVersion, fmt));
         if (Enum.TryParse<CarryScope>(o.ColorCarryScope, true, out var cs)) it.CarryScope = cs;
         if (string.Equals(o.Color709Curve, "zimg", StringComparison.OrdinalIgnoreCase))
             it.Transfer709 = Transfer709Curve.Zimg;

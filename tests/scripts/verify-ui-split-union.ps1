@@ -87,7 +87,15 @@ $srcDir = Join-Path $root 'tests/output/sources'
 #   的 ui-mode=59/合计=464、_module-registry.json locks 同批抬表——三把尺同一来历。）
 #   2026-11-12（测试模块化批 4·3+4）= **473**（+9：N 组增 N8 五条设置重启 + N9 四条子窗口冒烟
 #   ⇒ ui-core 84/合计=473，verify-ui-host.ps1 与 _module-registry.json locks 同批抬表。）
-$expectedOldCount = 473
+#   2026-11-14（策略单选不再自动联动批）= **475**（+2：ui-color I 组 I5/I6/I7 改写为新口径
+#   + 新增 I5b(P3PQ)/I9(切格式)；删 AutoLinkIccModeFromColorSpace 隐式联动。
+#   改断言改单体、_gen-ui-split.ps1 重切片；与 verify-ui-host.ps1 ui-color=91/合计=475、
+#   _module-registry.json locks 同批抬表——三把尺同一来历。）
+#   2026-11-14（色彩 UI 联动审计 + JPEG ICC 版本下拉批）= **487**（+12：ui-color I 组新增
+#   I11 策略面板锁定审计 8 条 + I12 JPEG ICC 版本下拉 4 条；拆除 DetectColorConflicts 的
+#   isBaking 三元组灰化纯副作用锁。改断言改单体、_gen-ui-split.ps1 重切片；
+#   与 verify-ui-host.ps1 ui-color=103/合计=487、_module-registry.json locks 同批抬表。）
+$expectedOldCount = 487
 # 一对一改名 ⇒ 新旧总数相同（不是 408/412）
 $expectedNewCount = $expectedOldCount
 

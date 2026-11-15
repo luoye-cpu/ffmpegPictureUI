@@ -78,6 +78,12 @@ public sealed class FormatColorCaps
     /// <summary>能否**同时**携带 ICC 与写 CICP（JXL 在 E2 实测前保守为 false ⇒ 择一）。</summary>
     public bool CanHaveBothIccAndCicp = true;
     /// <summary>
+    /// 两者都能写时的**策略优先级**：true ⇒ CICP 优先，只有 CICP 无法精确表达时才用 ICC 兜底。
+    /// PNG/APNG 的 iCCP 与 cICP 物理上可共存，但用户 2026-11-15 口径要求“PNG 也只在 CICP
+    /// 无法表示时才使用 ICC”；因此能力位仍保留 true（描述容器事实），策略位单独置 true。
+    /// </summary>
+    public bool CicpFirstWhenBoth;
+    /// <summary>
     /// ★ **出口**（不是容器！）可写入的 CICP (primaries,transfer) 组合限制：
     ///   null = 自由 nclx；非空 = 只能取表内枚举。
     /// <para>
@@ -606,10 +612,10 @@ public static partial class ColorMappingEngine
         //（实测 recommended-hdr-png：引擎 53926B/ICC=True vs legacy 43821B/ICC=False）。
         ["png"]   = new() { Format = "png",   CanCarryArbitraryIcc = true,  CanGenerateIccFromCicp = true,  CanCicp = true, CanHdr = true, MaxBitDepth = 16, RgbNative = true,
                             HdrRequiresHighBitDepth = true,
-                            UnlabeledMeansSrgb = true, CanHaveBothIccAndCicp = true, VerifiedBy = "exiftool iCCP + PngCicpService 实测 cICP（两 chunk 可共存、HDR 经 cICP 承载）" },
+                            UnlabeledMeansSrgb = true, CanHaveBothIccAndCicp = true, CicpFirstWhenBoth = true, VerifiedBy = "exiftool iCCP + PngCicpService 实测 cICP（两 chunk 可共存、HDR 经 cICP 承载；2026-11-15 起 CICP 优先，ICC 仅不可表达兜底）" },
         ["apng"]  = new() { Format = "apng",  CanCarryArbitraryIcc = true,  CanGenerateIccFromCicp = true,  CanCicp = true, CanHdr = true, MaxBitDepth = 16, RgbNative = true,
                             HdrRequiresHighBitDepth = true,
-                            UnlabeledMeansSrgb = true, CanHaveBothIccAndCicp = true, VerifiedBy = "exiftool iCCP + PngCicpService 实测 cICP（两 chunk 可共存、HDR 经 cICP 承载）" },
+                            UnlabeledMeansSrgb = true, CanHaveBothIccAndCicp = true, CicpFirstWhenBoth = true, VerifiedBy = "exiftool iCCP + PngCicpService 实测 cICP（两 chunk 可共存、HDR 经 cICP 承载；2026-11-15 起 CICP 优先，ICC 仅不可表达兜底）" },
         ["jpg"]   = new() { Format = "jpg",   CanCarryArbitraryIcc = true,  CanGenerateIccFromCicp = true,  MaxBitDepth = 8,
                             UnlabeledMeansSrgb = true, CanHaveBothIccAndCicp = false, SupportsGainMap = true, VerifiedBy = "exiftool APP2" },
         ["jpeg"]  = new() { Format = "jpeg",  CanCarryArbitraryIcc = true,  CanGenerateIccFromCicp = true,  MaxBitDepth = 8,
@@ -1082,74 +1088,151 @@ public static partial class ColorMappingEngine
         => Math.Abs(a[0] - b[0]) < 1e-4 && Math.Abs(a[1] - b[1]) < 1e-4;
 
     /// <summary>
-    /// 按容器规则表产出标注：能携带 ICC 且需要精确描述 → 附 ICC；HDR 只能 CICP（iccgen 不支持 HDR 曲线）；
-    /// 不能携带 ICC 又不能命名（如 ProPhoto→AVIF）→ 由调用方按 Reject/告警处理。
+    /// 按「CICP 优先、CICP 不可达才 ICC 兜底」产出标注（2026-11-14 口径变更）：
+    /// <list type="number">
+    /// <item>源 ICC 零改动携带：保留源 ICC 为权威；容器允许共存且空间可精确命名时，CICP 只作附加标签。</item>
+    /// <item>CICP 优先：目标可精确命名且本出口真能写进 CICP ⇒ 只写 CICP 三元组，<b>不再附自生成 ICC</b>。</item>
+    /// <item>CICP 不可达 ⇒ ICC 兜底（携带源 ICC 或由 CICP 三元组生成），并置具体 <see cref="ColorTransformPlan.CicpUnavailable"/>。</item>
+    /// <item>两者皆不可达 ⇒ 由 <c>EnsureAnnotationNotSilentlyMissing</c> 走 UnlabeledAssumedSrgb/fail-closed。</item>
+    /// </list>
+    /// HDR（PQ/HLG）iccgen 不支持 ⇒ 只写 CICP，从不附 ICC。
     /// </summary>
     private static void SetLabelsFrom(ColorTransformPlan p, ColorSpaceDescriptor dst, PlanPolicy policy, bool preferCarry)
     {
         var caps = policy.Format;
         bool hdr = dst.Curve.Kind is TransferCurve.CurveKind.Pq or TransferCurve.CurveKind.Hlg;
 
-        if (preferCarry && dst.SourceIccPath != null && caps.CanCarryArbitraryIcc && policy.ExitWritesIcc && !hdr)
+        // 目标空间能否被 CICP **正确承载**：可精确命名（三元组与真实空间等价）+ 本出口真能写 CICP。
+        // 新口径（2026-11-14）：CICP 能正确承载 ⇒ 默认模式**绝不**携带/附源 ICC，直接落阶梯②只写 CICP；
+        // ICC 只在「CICP 无法正确承载」时才启用（阶梯③四类：空间不可命名 / 三元组不等价 / 容器无通路 / 出口枚举写不出）。
+        bool cicpCanCarry = IsPreciselyCicpNameable(dst) && CapsAcceptsCicp(caps, dst, policy.ExternalEncoderExit);
+
+        // ── 阶梯①：L1 零改动携带 —— 仅当 CICP **无法**正确承载时，源 ICC 才作为权威描述携带 ──
+        //    旧口径是「只要源带 ICC 就携带」，哪怕该空间能被 CICP 精确表达；新口径把它收紧为
+        //    「ICC 是 CICP 不可达时的兜底」，与阶梯③的判据同源（cicpCanCarry 为 false 即落入那四类之一）。
+        if (preferCarry && dst.SourceIccPath != null && caps.CanCarryArbitraryIcc && policy.ExitWritesIcc && !hdr && !cicpCanCarry)
         {
             p.AttachIcc = true; p.IccPath = dst.SourceIccPath;
+            // 容器允许 ICC+CICP 共存，且源空间可**精确**命名且本出口写得进 ⇒ CICP 只作附加标签；
+            // 否则不另写 CICP（宁可靠源 ICC，也不写一条与权威 ICC 不等价的标签）。
+            if (caps.CanHaveBothIccAndCicp && IsPreciselyCicpNameable(dst)
+                && CapsAcceptsCicp(caps, dst, policy.ExternalEncoderExit))
+            {
+                p.OutPrimaries = dst.PrimariesToken;
+                p.OutTransfer = dst.Curve.CicpToken;
+                p.OutMatrix = MatrixTokenFor(dst.PrimariesToken);
+                p.Reason += " 源 ICC 保留为权威，不以其粗糙 CICP 命名替换；容器允许共存 ⇒ CICP 作附加标签";
+            }
+            else
+            {
+                p.Reason += " 源 ICC 保留为唯一权威描述（容器不允许 ICC+CICP 共存或空间不可精确命名 ⇒ 不另写 CICP）";
+            }
             return;
         }
-        if (dst.IsCicpNameable)
+
+        // ── 阶梯②：CICP 优先 —— 容器可承载 + 空间可精确命名 ⇒ 只写 CICP，不附自生成 ICC ──
+        // HDR 也走这里（iccgen 不支持 PQ/HLG，本就没有"生成 ICC"这一说）。
+        if (cicpCanCarry)
         {
             p.OutPrimaries = dst.PrimariesToken;
             p.OutTransfer = dst.Curve.CicpToken;
             p.OutMatrix = MatrixTokenFor(dst.PrimariesToken);
-            // SDR 且格式能生成/携带 ICC → 附标准 ICC（D2 双描述策略：ICC + CICP 并存）
-            // ⚠ 第二道闸是**出口**能否写 ICC（`ExitWritesIcc`）：AVIF 走 ffmpeg，nclx 已足以描述，
-            //   再"附"一张落不了盘的 ICC 只会让日志谎报「已嵌入」（2026-10-26 实测）。
-            if (!hdr && policy.ExitWritesIcc && (caps.CanCarryArbitraryIcc || caps.CanGenerateIccFromCicp))
+            if (hdr)
             {
-                // ICC 的 TRC 必须跟着**像素实际用的那条 trc**走（= OutTransfer，已含容器钳制）。
-                // 旧写法无条件写死 "iec61966-2-1"：对 TIFF（capTrc 钳 SDR，像素也是 sRGB）是对的，
-                // 但对 PNG+BT.709 目标就给 BT.709 编码的像素附了一张 sRGB-TRC 的 ICC（与 cICP 自相矛盾）。
-                // ⚙ 曲线无法命名（CicpToken=null）时**不附自生成 ICC**：iccgen 也是按 CICP 三元组出图的，
-                //   拿 sRGB 当占位属于“发明一条传递特性”，与当初写死是同一类错（契约矩阵拓出来的）。
-                if (p.OutTransfer != null)
-                {
-                    // ── sRGB 出口 + 容器"未标注即 sRGB" + 该容器编码器**不**自己落盘 ICC ⇒ 不附 ICC ──
-                    // 口径与传统管线的 `unlabeledIsFine`（`FfmpegCommandBuilder.Decision.cs:416-423`）
-                    // **逐字同源**：`UnlabeledMeansSrgb && (p==bt709) && (t==iec61966-2-1)`，再叠上
-                    // "这张 ICC 只能靠后置嵌入"这一条（webp）—— 因为 jpg/png 的 ICC 由编码器顺手落盘，
-                    // 不额外付代价，历史产物也一直带（verify-decision-delivery:139 锁定 jpg 必须带 sRGB ICC）。
-                    // 实测证据（2026-09-16 契约，本门禁 :159 锁定）：hdr/webp 的出口语义就是 sRGB
-                    // ⇒ 附一张 sRGB ICC 只是重复描述，还多一次 exiftool 后置。
-                    bool unlabeledIsFine = caps.UnlabeledMeansSrgb && !caps.EncoderWritesGeneratedIcc
-                        && string.Equals(dst.PrimariesToken, "bt709", StringComparison.OrdinalIgnoreCase)
-                        && string.Equals(dst.Curve.CicpToken, "iec61966-2-1", StringComparison.OrdinalIgnoreCase);
-                    if (unlabeledIsFine)
-                    {
-                        p.UnlabeledAssumedSrgb = true;
-                        p.Reason += " 出口语义=该容器未标注默认（sRGB）且其编码器不落盘 ICC ⇒ 不附 ICC（无标注直通，省一次后置嵌入）";
-                    }
-                    else
-                    {
-                        p.AttachIcc = true;
-                        p.IccPrimaries = dst.PrimariesToken;
-                        p.IccTrc = p.OutTransfer;      // 钳位发生时它就是 iec61966-2-1 ⇒ TIFF 旧行为不变
-                        p.IccMatrix = p.OutMatrix;
-                    }
-                }
+                p.CicpUnavailable = CicpUnavailableReason.HdrNoIccGenerator;
+                p.Reason += " HDR：CICP 可写 ⇒ 写 CICP；iccgen 不支持 PQ/HLG ⇒ 不附 ICC";
+            }
+            else
+            {
+                p.Reason += " CICP 优先（容器可承载 + 空间可精确命名）⇒ 只写 CICP，不附自生成 ICC";
+            }
+            // 不许静默丢源 ICC：本格正是因为 cicpCanCarry 才跳过了 L1 携带，而源确实带 ICC ⇒
+            // 显式播报"为何不携带"并给出回到携带语义的操作入口（选 CarryIcc 策略）。
+            if (dst.SourceIccPath != null)
+            {
+                p.Reason += "；源 ICC 未携带——目标空间可精确 CICP 命名且本出口可写 CICP，CICP 已足以正确承载";
+                p.Advice = "如需原样保留源 ICC，请选「携带 ICC」策略（CarryIcc）";
             }
             return;
         }
-        // 不可 CICP 命名（ProPhoto/Adobe/自定义 ICC）
+
+        // ── 阶梯③：CICP 不可达 —— 先判**具体**为什么不可达，再走 ICC 兜底 ──
+        string fallbackWhy;
+        CicpUnavailableReason why;
+        if (!dst.IsCicpNameable)
+        { why = CicpUnavailableReason.SpaceNotNameable; fallbackWhy = "该空间无 CICP 名"; }
+        else if (!caps.CanCicp)
+        {
+            why = caps.NoCicpReason;
+            fallbackWhy = caps.NoCicpReason == CicpUnavailableReason.ContainerNonNormative
+                ? "容器有相关 CICP 字段但非规范（TIFF）" : "容器无 CICP 通路";
+        }
+        else if (!IsPreciselyCicpNameable(dst))
+        { why = CicpUnavailableReason.SpaceNotNameable; fallbackWhy = "CICP 三元组与真实空间不等价（不可精确命名）"; }
+        else if (!CapsAcceptsCicp(caps, dst, policy.ExternalEncoderExit))
+        { why = CicpUnavailableReason.OutletCannotExpress; fallbackWhy = "容器有 CICP 通路，但本出口（外部编码器枚举宽度）写不出该空间"; }
+        else
+        { why = CicpUnavailableReason.SpaceNotNameable; fallbackWhy = "未知原因"; }
+
+        // sRGB 等价 + 容器"未标注即 sRGB" + 编码器不自己落盘 ICC（webp）⇒ 不附冗余 ICC（既有契约，逐字保留）。
+        bool unlabeledIsFine = caps.UnlabeledMeansSrgb && !caps.EncoderWritesGeneratedIcc
+            && !hdr
+            && string.Equals(dst.PrimariesToken, "bt709", StringComparison.OrdinalIgnoreCase)
+            && string.Equals(dst.Curve.CicpToken, "iec61966-2-1", StringComparison.OrdinalIgnoreCase);
+        if (unlabeledIsFine)
+        {
+            p.UnlabeledAssumedSrgb = true;
+            p.CicpUnavailable = why;
+            p.Reason += $" CICP 不可达（{fallbackWhy}）；像素等价 sRGB 且容器未标注默认即 sRGB ⇒ 不附 ICC";
+            return;
+        }
+
+        p.CicpUnavailable = why;
         if (caps.CanCarryArbitraryIcc && policy.ExitWritesIcc)
         {
-            p.AttachIcc = true; p.IccPath = dst.SourceIccPath;         // 由调用方确保路径可得（命名生成或源携带）
-            p.Reason += " 标注=仅 ICC（该空间无 CICP 名）";
+            // 旧语义保留：只要容器+出口能写 ICC，计划就**要求**附 ICC（AttachIcc=true）；
+            // ICC 的具体来源（源 ICC 路径 / CICP 三元组生成）在下面两个分支落实。
+            // 两个来源都拿不到时仍保持 AttachIcc=true（Demand）：由调用方（保真 ICC 路径）或执行体
+            // （jxl 无 ICC 拒绝门）解决或拒绝——绝不退成"计划自认无标注也能出"。
+            p.AttachIcc = true;
+            if (dst.SourceIccPath != null)
+            {
+                p.IccPath = dst.SourceIccPath;
+                p.Reason += $" CICP 不可达（{fallbackWhy}）⇒ 携带源 ICC 兜底";
+            }
+            else if (caps.CanGenerateIccFromCicp && dst.IsCicpNameable && dst.Curve.CicpToken != null)
+            {
+                // ICC 的 TRC 必须跟着像素实际用的那条 trc 走（= dst 命名 token），不许写死 sRGB。
+                p.IccPrimaries = dst.PrimariesToken;
+                p.IccTrc = dst.Curve.CicpToken;
+                p.IccMatrix = MatrixTokenFor(dst.PrimariesToken);
+                p.Reason += $" CICP 不可达（{fallbackWhy}）⇒ 由 CICP 三元组生成标准 ICC 兜底";
+            }
+            else
+            {
+                p.Reason += $" CICP 不可达（{fallbackWhy}）⇒ 要求附 ICC 兜底（ICC 来源由调用方/执行体落实，否则拒绝）";
+            }
         }
         else
         {
-            p.Reason += " ⚠️ 该格式既不能携带任意 ICC 又不能命名此空间";
+            p.Reason += $" ⚠️ CICP 不可达（{fallbackWhy}）且本出口写不了 ICC";
             if (caps.CanCarryArbitraryIcc && !policy.ExitWritesIcc)
                 p.Reason += "（容器能力表称可携带，但本次出口写不了 ICC；见 PlanPolicy.ExitWritesIcc）";
         }
+    }
+
+    /// <summary>
+    /// CICP 三元组是否与目标描述符<b>精确等价</b>（而非仅"有 token"）。
+    /// FromCicp 构造的目标天然等价（矩阵取注册表理论值）；ICC 派生描述符经
+    /// <c>ColorSpaceIdentify.RefineKnownSpace</c> 已把矩阵吸附到理论值（容差 2e-3），
+    /// 这里做一次往返等价复核。拿不到等价证据 ⇒ 判"不可精确命名"，走 ICC 兜底（不另造容差常数）。
+    /// </summary>
+    internal static bool IsPreciselyCicpNameable(ColorSpaceDescriptor d)
+    {
+        if (!d.IsCicpNameable) return false;
+        if (!d.IsIccDerived) return true;   // FromCicp/FromNamedSpace：构造即注册值，无需复核
+        var canonical = ColorSpaceDescriptor.FromCicp(d.PrimariesToken, d.Curve.CicpToken, "precision-check");
+        return canonical != null && d.Equivalent(canonical);
     }
 
     private static string? MatrixTokenFor(string? primariesToken) => primariesToken switch

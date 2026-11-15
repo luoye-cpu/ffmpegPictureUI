@@ -58,6 +58,7 @@ QQ 交流群：754439779 | [点击加群](https://qm.qq.com/q/M2181PvCkW)
 ### 前提条件
 
 - **系统**：Windows 10/11（其他 .NET 11 平台应可运行）
+- **CPU（AOT 发布包）**：x86-64-v3 / AVX2 基线（Intel Haswell 2013+、AMD Excavator 2015+）；无 AVX2 的旧 CPU 不能运行 AOT 包，请改用 JIT/源码构建
 - **.NET 11 运行时**：[下载](https://dotnet.microsoft.com/en-us/download/dotnet/11.0)
 - **FFmpeg**：安装并确认终端可运行 `ffmpeg -version`
 

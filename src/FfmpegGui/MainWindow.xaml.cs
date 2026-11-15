@@ -66,6 +66,8 @@ namespace FfmpegGui
         private ComboBox? ColorRangeCombo;
         private ComboBox? TonemapCurveCombo;
         private TextBlock? ColorRangeLabel;
+        private ComboBox? IccVersionCombo;
+        private TextBlock? IccVersionLabel;
         private TextBlock? ColorConflictLabel;
         private CheckBox? UseAdvancedColor;
         private StackPanel? AdvancedColorPanel;
@@ -321,8 +323,6 @@ namespace FfmpegGui
         private NumericUpDown? JpegliPsnrBox;
         // ── ICC 色彩管理控件 ──
         private RadioButton? IccModeNone, IccModeCarry, IccModeBake, IccModeBakeOnly;
-        // 用户是否手动切换过 ICC 模式（true 后色彩空间联动不再自动改变模式）；抑制联动写入误标记
-        private bool _iccModeTouched; private bool _suppressIccAutoLink;
         private StackPanel? IccFilePanel, IccBakePanel;
         private TextBox? IccPathBox;
         private TextBlock? IccInfoLabel, IccCompatText, IccPreviewText;
@@ -401,6 +401,8 @@ namespace FfmpegGui
             ColorRangeCombo = this.FindControl<ComboBox>("ColorRangeCombo");
             TonemapCurveCombo = this.FindControl<ComboBox>("TonemapCurveCombo");
             ColorRangeLabel = this.FindControl<TextBlock>("ColorRangeLabel");
+            IccVersionCombo = this.FindControl<ComboBox>("IccVersionCombo");
+            IccVersionLabel = this.FindControl<TextBlock>("IccVersionLabel");
             ColorConflictLabel = this.FindControl<TextBlock>("ColorConflictLabel");
             UseAdvancedColor = this.FindControl<CheckBox>("UseAdvancedColor");
             AdvancedColorPanel = this.FindControl<StackPanel>("AdvancedColorPanel");
@@ -666,6 +668,7 @@ namespace FfmpegGui
             if (ColorTrcCombo != null) ColorTrcCombo.SelectionChanged += (_, _) => { UpdateAdvancedColorValidation(); RegenerateCommand(); };
             if (ColorMatrixCombo != null) ColorMatrixCombo.SelectionChanged += (_, _) => { UpdateAdvancedColorValidation(); RegenerateCommand(); };
             if (ColorRangeCombo != null) ColorRangeCombo.SelectionChanged += (_, _) => RegenerateCommand();
+            if (IccVersionCombo != null) IccVersionCombo.SelectionChanged += (_, _) => RegenerateCommand();
             // ⚠⚠ 2026-10-04 修（P0：**控件是死的** —— 宣称≠交付）：
             //   本控件此前**既没有初始选中、也没有 SelectionChanged 处理器**（其 8 个兄弟下拉都有，见上面 :536-543）。
             //   后果：Avalonia 的 ComboBox 在无选中时 `SelectedItem == null` ⇒
@@ -826,10 +829,10 @@ namespace FfmpegGui
             if (JpegliEncoderBackendCombo != null) { JpegliEncoderBackendCombo.SelectionChanged += (_, _) => { UpdateJpegliPsnrVisibility(); RegenerateCommand(); }; }
             if (JpegliPsnrBox != null) JpegliPsnrBox.ValueChanged += (_, _) => RegenerateCommand();
             // ── ICC 色彩管理事件 ──
-            if (IccModeNone != null) IccModeNone.IsCheckedChanged += (_, _) => { MarkIccModeTouched(); UpdateIccPanelVisibility(); RegenerateCommand(); };
-            if (IccModeCarry != null) IccModeCarry.IsCheckedChanged += (_, _) => { MarkIccModeTouched(); UpdateIccPanelVisibility(); RegenerateCommand(); };
-            if (IccModeBake != null) IccModeBake.IsCheckedChanged += (_, _) => { MarkIccModeTouched(); UpdateIccPanelVisibility(); RegenerateCommand(); };
-            if (IccModeBakeOnly != null) IccModeBakeOnly.IsCheckedChanged += (_, _) => { MarkIccModeTouched(); UpdateIccPanelVisibility(); RegenerateCommand(); };
+            if (IccModeNone != null) IccModeNone.IsCheckedChanged += (_, _) => { UpdateIccPanelVisibility(); RegenerateCommand(); };
+            if (IccModeCarry != null) IccModeCarry.IsCheckedChanged += (_, _) => { UpdateIccPanelVisibility(); RegenerateCommand(); };
+            if (IccModeBake != null) IccModeBake.IsCheckedChanged += (_, _) => { UpdateIccPanelVisibility(); RegenerateCommand(); };
+            if (IccModeBakeOnly != null) IccModeBakeOnly.IsCheckedChanged += (_, _) => { UpdateIccPanelVisibility(); RegenerateCommand(); };
             if (IccSourceSpaceCombo != null) IccSourceSpaceCombo.SelectionChanged += (_, _) => { UpdateIccPreview(); RegenerateCommand(); };
 
             // 初始化 ICC 面板状态
@@ -2468,6 +2471,18 @@ namespace FfmpegGui
                     // 切换到不支持范围的格式时回到 auto，避免残留无效选择
                     ColorRangeCombo.SelectedIndex = 0;
                 }
+
+                // JPEG 专用：自生成 ICC 版本下拉（v4.4 推荐 / v2.0 最大兼容）。
+                // 判定用**输出**格式 NormalizeFormat=="jpg"（勿复用 IsJpegInput——那是输入扩展名判定）；
+                // 只影响自生成命名 ICC；源图自带 ICC 会先按实测色度/TRC 重写为等价 v4.4.0，
+                // 再按携带策略写入（无法无损重建的旧版 profile 不携带）；能命名 H.273 空间的
+                // 标准 profile 还在 ICC 内额外写 cicp tag。切走 JPEG 归 index 0（v4 默认），
+                // 避免残留无效选择；非 JPEG 出口后端本就归一回 v4.4（IsJpegLikeFormat 闸）。
+                var iccVerSupported = NormalizeFormat(FormatCombo.SelectedItem as string) == "jpg";
+                if (IccVersionLabel != null) IccVersionLabel.IsVisible = iccVerSupported;
+                if (IccVersionCombo != null) IccVersionCombo.IsVisible = iccVerSupported;
+                if (!iccVerSupported && IccVersionCombo != null && IccVersionCombo.SelectedIndex != 0)
+                    IccVersionCombo.SelectedIndex = 0;
             }
             else
             {
@@ -2861,8 +2876,8 @@ namespace FfmpegGui
 
         /// <summary>
         /// 把 4 个策略单选设成指定策略（Recommended 对应 <c>IccModeNone</c> 单选）。
-        /// 载入预设时用：单选由 GroupName 自动互斥，故只需勾选目标那一个（勾选会触发
-        /// IccMode_Changed → MarkIccModeTouched/UpdateIccPanelVisibility/RegenerateCommand）。
+        /// 仅**预设显式记录了 ColorStrategy/旧 IccMode** 时调用（那是用户当初的显式选择）；
+        /// 勾选会触发 IccMode_Changed → UpdateIccPanelVisibility/RegenerateCommand。
         /// </summary>
         private void SetColorStrategyRadio(Models.ColorStrategy strategy)
         {
@@ -3125,6 +3140,9 @@ namespace FfmpegGui
                 ColorTrc = useAdv ? AutoToNull(ColorTrcCombo?.SelectedItem as string) : null,
                 ColorMatrix = useAdv ? AutoToNull(ColorMatrixCombo?.SelectedItem as string) : null,
                 ColorRange = useAdv ? GetColorRangeValue() : null,
+                // ── JPEG 专用：自生成 ICC 版本（v4.4/v2.0 显示串 → v4/v2 token）。不受 useAdv 门控：
+                //   下拉恒有选中项（默认 index 0 = v4.4），MapIccVersionToken 对 null/空兜底 v4。
+                IccProfileVersion = MapIccVersionToken(IccVersionCombo?.SelectedItem as string),
                 // ── C-GUI@1：输出矩阵模式（基本区控件，不受 useAdv 门控——与 Chroma 同采集模式）──
                 // auto/未知 ⇒ null（默认零行为变化，CM-REQ-08）；bt601 别名归一 smpte170m（C-TOKEN@1）。
                 ColorOutMatrix = MapOutMatrixValue(OutputMatrixCombo?.SelectedItem as string),
@@ -4013,43 +4031,12 @@ namespace FfmpegGui
             DetectColorConflicts();
             UpdateAdvancedColorControls();
 
-            // ── ICC 联动: 非 BT.709/sRGB → 默认烘焙到标准色域+ICC+CICP（尊重用户手动选择的 ICC 模式）──
-            AutoLinkIccModeFromColorSpace(cs);
-
-            // ── ICC 联动: 同步烘焙目标空间 + 更新模式2提示 ──
+            // ── ICC 联动: 同步烘焙目标空间 + 更新模式2提示（只更标签，不动单选选中态）──
+            // 2026-11-14 起：色彩空间/格式/HDR 等任何操作都**不再自动切换**策略单选——
+            //   只要用户没手动点过四个单选，就一直停在「推荐」。显式策略（CarryIcc/BakeCicpOnly/Manual）
+            //   只由用户点击或预设显式记录的 ColorStrategy 改变（见 SetColorStrategyRadio）。
             UpdateIccCarryLabel();
         }
-
-        /// <summary>用户手动切换 ICC 模式时标记（联动写入时由 _suppressIccAutoLink 隔道，不误标记）。</summary>
-        private void MarkIccModeTouched()
-        {
-            if (!_suppressIccAutoLink) _iccModeTouched = true;
-        }
-
-        /// <summary>
-        /// 色彩空间→ICC 模式联动：选中非标准色域(Display P3/P3 PQ/BT.2020 PQ/HLG)时，
-        /// 默认切为 BakeToStandard（烘焙像素到该标准色域 + 携带 ICC + CICP）；回到 sRGB/BT.709/auto 时切回 None（纯 CICP）。
-        /// 若用户已手动选择过 ICC 模式(_iccModeTouched)，则不再自动覆盖。
-        /// </summary>
-        private void AutoLinkIccModeFromColorSpace(string? cs)
-        {
-            if (_iccModeTouched) return;
-            var spec = ColorSpaceRegistry.Resolve(cs);
-            bool wantBake = spec != null && spec.Kind != ColorSpaceRegistry.GamutKind.Standard;
-            _suppressIccAutoLink = true;
-            try
-            {
-                if (wantBake && IccModeBake != null && IccModeBake.IsChecked != true)
-                    IccModeBake.IsChecked = true;
-                else if (!wantBake && IccModeNone != null
-                         && (IccModeBake?.IsChecked == true || IccModeBakeOnly?.IsChecked == true))
-                    IccModeNone.IsChecked = true;
-            }
-            finally { _suppressIccAutoLink = false; }
-            UpdateIccPanelVisibility();
-        }
-
-
 
         /// <summary>更新模式2(CarryIcc)的提示</summary>
         private void UpdateIccCarryLabel()
@@ -4198,24 +4185,21 @@ namespace FfmpegGui
                     conflicts.Add($"⚠ HDR({cs})→{fmt}(SDR)：将自动应用色调映射降级");
             }
 
-            // 冲突2: ICC烘焙激活时锁定手动色彩参数（双重转换锁定）
-            var isBaking = IccModeBake?.IsChecked == true || IccModeBakeOnly?.IsChecked == true;
-            if (isBaking)
-            {
-                // 烘焙模式下禁用高级色彩手动参数，避免双重转换
-                if (ColorPrimariesCombo != null) ColorPrimariesCombo.IsEnabled = false;
-                if (ColorTrcCombo != null) ColorTrcCombo.IsEnabled = false;
-                if (ColorMatrixCombo != null) ColorMatrixCombo.IsEnabled = false;
-                if (UseAdvancedColor?.IsChecked == true)
-                    conflicts.Add("🔒 ICC 烘焙已激活 — 高级色彩参数已锁定，由烘焙目标空间控制");
-            }
-            else
-            {
-                // 恢复高级色彩参数
-                if (ColorPrimariesCombo != null) ColorPrimariesCombo.IsEnabled = true;
-                if (ColorTrcCombo != null) ColorTrcCombo.IsEnabled = true;
-                if (ColorMatrixCombo != null) ColorMatrixCombo.IsEnabled = true;
-            }
+            // ── 冲突2 已拆除（2026-11-14 色彩 UI 联动审计，COLOR_UI_LINKAGE_AUDIT）─────────
+            // 旧代码用同一个 `isBaking = IccModeBake || IccModeBakeOnly` 布尔，把
+            // 「仅CICP(BakeCicpOnly)」与「手动(BakeOnly/Manual)」的精确三元组
+            // （primaries/trc/matrix）一起 IsEnabled=false。这是**纯策略副作用锁**，不是真实冲突：
+            //   · Manual 策略的契约就是"完全按你指定的色彩空间 + 基准/传递/矩阵(联动可微调)处理"
+            //     （Models/ColorStrategy.cs 的 Manual 注释），三元组正是它的输入 ⇒ 旧版把 Manual
+            //     自己要用的三个字段锁死，用户反而调不动；
+            //   · 仅CICP 策略"不写 ICC、仅用 CICP 标记"，而 CICP 载荷本身就是这三元组
+            //     （color_primaries/color_trc/color_matrix）⇒ 锁掉它等于锁掉该策略的全部标定输入。
+            // 三元组与快速色彩空间若失配，已由 UpdateAdvancedColorValidation 里
+            // ColorSpaceRegistry.ValidateCicpTriple 给**非阻拦橙色告警**（仍按用户选择执行），
+            // 无需硬锁。故这里不再触碰三元组 IsEnabled——它恒为可用（XAML 默认 true），
+            // 可见性由 UseAdvancedColor 开关的 AdvancedColorPanel 控制。
+            // ⚠ 注意：UpdateIccPreview 里的 `isBake = Bake || BakeOnly` 是**合法**复用——
+            //   两个策略都会真做像素转换（zscale），那里只是判断"要不要显示转换预览"，不锁任何控件。
 
             // 冲突3: HDR + 目标格式位深限制
             if (cs is "BT.2020 PQ" or "BT.2020 HLG" or "P3 PQ")
@@ -4390,15 +4374,18 @@ namespace FfmpegGui
         private void IccHelp_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
         {
             var msg = "🎨 ICC 色彩管理帮助\n\n" +
-                "📎 嵌入 ICC：将 ICC 配置文件作为元数据写入输出文件，像素数据不变。\n" +
-                "   需要查看设备支持 ICC 才能正确显示。\n\n" +
-                "🔥 烘焙 ICC：将像素从源色彩空间转换到目标色彩空间（如 sRGB），\n" +
-                "   所有设备均可正确显示，无需 ICC 支持。\n\n" +
-                "🔥📎 烘焙+嵌入：转换像素并同时嵌入 ICC，双保险。\n\n" +
-                "⚠️ 注意：\n" +
-                "  - 显示器 ICC (mntr) 适合软校样，烘焙建议使用标准色彩空间 ICC\n" +
-                "  - 烘焙会永久改变像素值，不可逆\n" +
-                "  - AVIF/JXL 的 ICC 嵌入需要 FFmpeg ≥ 7.0 + lcms2";
+                "策略（从上到下）：\n" +
+                "  • 推荐（默认）：优先写 CICP（容器可写且目标空间可精确命名时只写 CICP）；\n" +
+                "    只有 CICP 无法正确承载时，才携带源 ICC 或生成标准 ICC 兜底。\n" +
+                "  • 携带 ICC：像素零改动；源有 ICC 则保留，源无 ICC 时按源 CICP 或隐含 sRGB 生成标准 ICC，并保留 CICP 标注；\n" +
+                "    若容器不能同时承载 ICC+CICP（JXL 等）或出口不写 ICC（静态 AVIF），则拒绝而不是静默降级。\n" +
+                "  • 仅 CICP：把像素烘焙到目标色彩空间，只写 CICP，不嵌入 ICC。\n" +
+                "  • 手动：按下方「精确色彩参数」的基准/传递/矩阵烘焙，并同时写 CICP 与 ICC（双标定）。\n\n" +
+                "注意：\n" +
+                "  - 需要查看器支持 ICC，或对应容器/编码支持 CICP，才能正确显示。\n" +
+                "  - 显示器 ICC（mntr）适合软校样；烘焙到标准色域请使用标准色彩空间配置。\n" +
+                "  - 烘焙会永久改变像素值，不可逆。\n" +
+                "  - AVIF/JXL 的 ICC 嵌入依赖 FFmpeg ≥ 7.0 + lcms2；AVIF 静态出口当前不写 ICC。";
             if (LogText != null) LogText.Text += msg + "\n";
         }
 
@@ -6497,6 +6484,8 @@ namespace FfmpegGui
             SetComboByValue(ColorToneMapCombo, p.ColorToneMap);
             SetComboByValue(ColorEngineCombo, p.ColorEngine);
             SetColorRangeCombo(p.ColorRange);
+            // JPEG ICC 版本回放：SetIccVersionCombo 对 null/旧预设早退（停默认 v4.4 index 0），不覆盖控件。
+            SetIccVersionCombo(p.IccProfileVersion);
             if (AutoThreadsCheck != null) AutoThreadsCheck.IsChecked = p.AutoThreads;
             if (SingleThreadCheck != null) SingleThreadCheck.IsChecked = p.SingleThread;
             if (ThreadsBox != null) ThreadsBox.Value = p.ManualThreads;
@@ -6709,8 +6698,8 @@ namespace FfmpegGui
             // ⚠ 日志串**保持 ASCII**：`_probe-cjk-hardcode-scan.ps1` 的判据是「UI 面硬编码中文行
             //   不得增加」，而 `LogText.Text +=` 落进它认不出的 sink ⇒ fail-closed 计为 UI 面；
             //   本处是**新增**行且该锁余量为 0，用中文会立刻把它顶红。
-            // ⚠ 位置：必须在所有 ComboBox 恢复（含 ColorSpaceCombo）**之后** —— 色域联动
-            //   AutoLinkIccModeFromColorSpace 会改单选，本块须是最后一次写入。
+            // ⚠ 位置：色域恢复不再改单选（色彩空间→ICC 模式联动已于 2026-11-14 移除），
+            //   本块仍是最后一次写入策略态。
             if (Models.ColorStrategyMapper.TryParse(p.ColorStrategy, out var presetStrategy))
             {
                 SetColorStrategyRadio(presetStrategy);
@@ -6743,8 +6732,8 @@ namespace FfmpegGui
             //   被 `UiTestHost` 的 J9a / J14d-1 / L2a-L2d 三条锁住；故质量只在**非**纯无损格式上回写。
             // ⚠ 顺序：色域先、位深后。色域变更会触发 HDR 位深自动联动（`ColorSpaceCombo_SelectionChanged`），
             //   后写位深 = 预设的显式位深为**最后一次写入**（与「预设即终态」的语义一致）。
-            // ⚠ 色域回写不会改坏 ICC 单选：`SetColorStrategyRadio` 已置 `_iccModeTouched = true`
-            //   ⇒ `AutoLinkIccModeFromColorSpace` 提前返回（见该方法的早退分支）。
+            // ⚠ 色域回写不会改坏 ICC 单选：色彩空间→ICC 模式联动已移除，
+            //   ColorSpaceCombo 变更不再触碰四个策略单选（单选只由用户点击/预设显式记录改变）。
             var presetFmt = NormalizeFormat(FormatCombo?.SelectedItem as string);
             SetComboByValue(ColorSpaceCombo, p.ColorSpace);
             SetComboByValue(BitDepthCombo, p.BitDepth);
@@ -6812,6 +6801,33 @@ namespace FfmpegGui
                 }
             }
             if (ColorRangeCombo.Items.Count > 0) ColorRangeCombo.SelectedIndex = 0;
+        }
+
+        // ── JPEG 自生成 ICC 版本：显示串 ↔ 后端 token 映射（照 MapColorRangeValue/SetColorRangeCombo 模式）──
+        // 显示项恒为 ASCII："v4.4"（推荐）/ "v2.0"（最大兼容）；后端 token 为 "v4" / "v2"。
+        // 不裸比显示串：按"是否以 v2 开头"归一，其余（含 null/空/未知）fail-safe 归 "v4"（后端默认档）。
+        private static string MapIccVersionToken(string? display)
+        {
+            if (string.IsNullOrWhiteSpace(display)) return "v4";
+            var t = display.Trim();
+            if (t.StartsWith("v2", StringComparison.OrdinalIgnoreCase)) return "v2";
+            return "v4";
+        }
+
+        // 回放预设：token → 下拉索引。null/旧预设（无该字段）不覆盖、停默认 index 0（v4.4）。
+        private void SetIccVersionCombo(string? value)
+        {
+            if (IccVersionCombo == null) return;
+            var v = MapIccVersionToken(value);
+            for (int i = 0; i < IccVersionCombo.Items!.Count; i++)
+            {
+                if (MapIccVersionToken(IccVersionCombo.Items[i] as string) == v)
+                {
+                    IccVersionCombo.SelectedIndex = i;
+                    return;
+                }
+            }
+            if (IccVersionCombo.Items.Count > 0) IccVersionCombo.SelectedIndex = 0;
         }
 
         // ── 输出矩阵模式 显示文字 ↔ 规范 token 映射（C-GUI@1 / C-TOKEN@1）──

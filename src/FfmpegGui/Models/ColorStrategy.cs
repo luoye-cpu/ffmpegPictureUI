@@ -14,18 +14,21 @@ namespace FfmpegGui.Models
     public enum ColorStrategy
     {
         /// <summary>策略1 推荐：按无损阶梯自动决策（能携带就携带、否则归入包含源的最窄可命名超集），
-        /// 并按容器能力选标注：支持 CICP → ICC+CICP 双描述；不支持 → 以 ICC 为主并记原因。
+        /// 标注按「CICP 优先、CICP 不可达才 ICC 兜底」：容器可承载且空间可精确命名 → 只写 CICP；
+        /// 容器写不了 CICP（无通路/非规范/出口枚举宽度/空间不可命名）→ 携带源 ICC 或由 CICP 三元组生成 ICC，
+        /// 并在 Reason/日志里写明具体回退原因。源 ICC 零改动携带时保留源 ICC 为权威，不被粗糙 CICP 顶掉。
         /// HDR 源在支持的格式保 HDR，JPEG 经 GainMap 保 HDR；降 SDR 必须显式请求 tonemap。</summary>
         Recommended = 0,
 
-        /// <summary>策略2 携带：**色彩变换零改动**（ColorLoss=None），携带源 ICC；
+        /// <summary>策略2 携带：**色彩变换零改动**（ColorLoss=None），携带 ICC，并在容器支持时保留 CICP；
         /// 编解码损失（JPEG/WebP 等有损）与本策略无关，另记 CodecLoss。
-        /// 三种合法结局（由引擎契约固定，`ServiceProbe contract` 机器校验）：
-        /// ① 源有 ICC 且容器可携带 → 附着源 ICC；
-        /// ② 源无 ICC 但可判定隐含 sRGB/等价、且容器未标注语义明确（PNG/JPEG/WebP）→ 无标注直通；
-        /// ③ 其余 → 拒绝并给出建议。
-        /// **本策略永不映射、永不生成 ICC**；生成 ICC 请用策略1/4。功能性需求可覆盖本策略（如 GainMap 底图必须映射、
-        /// HDR 无 ICC 携带通路），覆盖时会在日志与计划里写明原因。</summary>
+        /// 四种合法结局（2026-11-14 用户口径定稿；`ServiceProbe contract` 机器校验）：
+        /// ① 源有 ICC 且容器可携带 → 附着源 ICC，容器支持时同写 CICP；
+        /// ② 源无 ICC 但源可命名 CICP → 按源令牌生成标准 ICC，并同写 CICP；
+        /// ③ 源无 ICC 但判定隐含 sRGB/等价、且容器未标注语义明确（PNG/JPEG/WebP）→ 生成标准 sRGB ICC + CICP；
+        /// ④ 其余（源不可确定/容器不能同时承载/出口不写 ICC）→ 拒绝并给出建议，不静默降级。
+        /// **本策略永不映射、永不改变像素**；生成 ICC 仅用于补源缺失的 ICC（不改像素），不用于映射。
+        /// 功能性需求可覆盖本策略（如 GainMap 底图必须映射、HDR 无 ICC 携带通路），覆盖时会在日志与计划里写明原因。</summary>
         CarryIcc = 1,
 
         /// <summary>策略3 仅CICP：不写 ICC（**禁 iccgen**），仅用 CICP 标记。

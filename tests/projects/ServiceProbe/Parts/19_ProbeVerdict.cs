@@ -239,13 +239,17 @@ namespace ServiceProbe
                     $"ContainerCannotCarryIcc 正向：必须同时登记 {DG.ContainerCannotCarryIcc}（结构性归因）"
                     + $"与 {DG.NoIccCarrier}（已发生的损失）（实为 {Show(pos)}）");
 
-                // 负控：只把**容器 gif → png**（可携带任意 ICC）⇒ 改走 L1 携带，两个 Code 都必须消失。
+                // 负控：只把**容器 gif → png**（可携带任意 ICC）⇒ 结构性 ContainerCannotCarryIcc 必须消失。
+                // 2026-11-14 L1 收紧后新口径：sRGB 可精确 CICP 命名 + png 可写 CICP ⇒ png **不再携源 ICC**，
+                //   改以等价 CICP 描述（NoIccCarrier 作为信息项登记，文案=「已改用等价 CICP 描述」，非精度损失）。
                 var neg = CE.Plan(RecommendedGif(srgbIcc, "png"));
                 Note(neg);
-                Check(neg.AttachIcc && neg.IccPath != null,
-                    $"ContainerCannotCarryIcc 负控前置：png 应改走 L1 携带（实为 {Show(neg)}）");
-                Check(!Has(neg, DG.ContainerCannotCarryIcc) && !Has(neg, DG.NoIccCarrier),
-                    $"ContainerCannotCarryIcc 负控：容器 gif→png 后该 Code 与 {DG.NoIccCarrier} 都必须消失（实为 {Show(neg)}）");
+                Check(!neg.AttachIcc && neg.OutPrimaries != null,
+                    $"ContainerCannotCarryIcc 负控前置：png 下 sRGB 可精确 CICP 承载 ⇒ 不附 ICC、只写 CICP（实为 {Show(neg)}）");
+                Check(!Has(neg, DG.ContainerCannotCarryIcc),
+                    $"ContainerCannotCarryIcc 负控：容器 gif→png 后结构性 Code 必须消失（png 可携带任意 ICC；实为 {Show(neg)}）");
+                Check(Has(neg, DG.NoIccCarrier),
+                    $"新口径信息项：CICP 已精确承载 sRGB ⇒ 源 ICC 未携带记 NoIccCarrier（等价 CICP 描述，非精度损失；实为 {Show(neg)}）");
             }
 
             // ══════════ ⑥ Reject 格**不得**登记任何损失（Degradations 的语义是"已发生"）══════════

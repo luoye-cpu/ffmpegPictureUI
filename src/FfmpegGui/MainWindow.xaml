@@ -578,6 +578,16 @@
                  auto=跟随输入范围（RGB/yuvj→pc，yuv limited→tv） -->
             <TextBlock x:Name="ColorRangeLabel" Text="{ext:Loc color.range}" ToolTip.Tip="{ext:Loc tip.color.range}"/>
             <ComboBox x:Name="ColorRangeCombo"/>
+
+            <!-- JPEG 专用：自生成 ICC 版本（v4.4 推荐 / v2.0 最大兼容）。仅 JPEG 出口可见
+                 （UpdateOptionAvailability 按 NormalizeFormat=="jpg" 闸）。显示串经
+                 MapIccVersionToken 归一为后端 token v4/v2，不裸比显示串。 -->
+            <TextBlock x:Name="IccVersionLabel" Text="{ext:Loc icc.version}"
+                       ToolTip.Tip="{ext:Loc tip.icc.version}" IsVisible="False"/>
+            <ComboBox x:Name="IccVersionCombo" FontSize="11" IsVisible="False" SelectedIndex="0">
+              <sys:String>v4.4</sys:String>
+              <sys:String>v2.0</sys:String>
+            </ComboBox>
             
             <!-- CICP 标记（始终启用以保证准确色彩） -->
             <TextBlock Text="{ext:Loc cicp.always.on}" FontSize="10"

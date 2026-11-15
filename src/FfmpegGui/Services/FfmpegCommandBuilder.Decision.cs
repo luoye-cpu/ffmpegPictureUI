@@ -52,6 +52,13 @@ namespace FfmpegGui.Services
             public bool RunIccgen;
             /// <summary>iccgen 前是否要先 `format=rgb48le`（高位深 YUV 输入：iccgen 仅在 RGB 域工作）。</summary>
             public bool IccgenNeedsRgb;
+            /// <summary>
+            /// iccgen 前要写入的帧标签（`setparams=...`）。源 ICC 与其容器 cICP 冲突时，
+            /// 解码帧可能仍挂着 PQ/HLG 标签；iccgen 读帧标签会对 HDR 报 Not yet implemented。
+            /// 这里按**出口 SDR 语义**覆盖标签后再交给 iccgen，生成与像素一致的 ICC。
+            /// null = 不需要。
+            /// </summary>
+            public string? IccgenFrameLabelReset;
 
             // ── 出口语义（= 宣称值：PNG cICP、UI 文案、引擎目标都读这三个）──
             public string? OutPrimaries;
@@ -186,9 +193,15 @@ namespace FfmpegGui.Services
                 && !string.IsNullOrWhiteSpace(options.ColorSpace)
                 && !options.ColorSpace.Equals("auto", StringComparison.OrdinalIgnoreCase);
 
-            // 非 CICP 格式 + 非 sRGB 目标 → 需 iccgen 携带 ICC（JPEG/WebP 走 iccgen）
-            // TIFF 通过元数据复制保留 ICC（capUseIcc=false，因 iccgen 不支持高位深/HDR）
-            if (capIcc && !stripIcc) d.AttachIcc = true;
+            // capIcc 只说明“容器能承载 ICC”，不等于“本次必须写 ICC”。旧代码在这里
+            // 对所有 JPEG/WebP 无条件 AttachIcc，导致未标注 sRGB → JPEG 被悄悄挂上
+            // ffmpeg iccgen 的 "RGB built-in"（4.4 但没有 cicp），与计划层的
+            // “UnlabeledAssumedSrgb / 不附 ICC”相互矛盾。附不附由下面的策略/目标/源 ICC 决定。
+            // （TIFF 的 capUseIcc 由专用后置分支处理，不依赖这一行。）
+            bool sourceTagged = meta.hasIccSemantics
+                || !string.IsNullOrWhiteSpace(meta.colorPrimaries)
+                || !string.IsNullOrWhiteSpace(meta.colorTrc);
+            if (capIcc && !stripIcc && sourceTagged && !preserveSource) d.AttachIcc = true;
             // ── 携带策略(CarryIcc): 保留源 ICC（源无则由 iccgen 补匹配标准 ICC）──
             // 下面各转换块（tonemap / 目标色域 / D1 归一）均以 preserveSource 跳过，实现「不转换、保源」。
             if (preserveSource) d.AttachIcc = true;   // 源无 ICC 时补标准 ICC；有则由 QueueProcessor 回带源 ICC
@@ -529,13 +542,73 @@ namespace FfmpegGui.Services
 
             if (d.Faithful) d.AttachIcc = false;   // 保真路径：iccgen 只能产出 BT.709/2020 等可命名空间的 ICC，
                                                    // 与未转换的源像素失配；改由队列后置附着命名 ICC。
+
+            // ── 新口径收口（2026-11-14）：Recommended 模式下，出口能用 CICP 精确承载 ⇒ 不附/不生成 ICC ──
+            //    决策层独立于色彩计划另有一串 AttachIcc 置真（:191 capIcc / :480 ultraHDR 归一 / :527 D2 广色域），
+            //    若不收口，P3→png（默认 Recommended、SDR、trc=iec61966-2-1）会被 :527 重新挂上 iccgen 生成的
+            //    标准 P3 ICC = 用户两轮否掉的"双描述"。本块放在所有置真之后、RunIccgen(:538) 派生之前。
+            //    只收 Recommended（用 strategy 判，不用 !AttachIcc——会被前置行污染）：
+            //    CarryIcc(preserveSource)/BakeCicpOnly(stripIcc)/Manual 一律不受影响。
+            //    前置：容器真能写 CICP + 出口令牌对非空（=可精确命名；ProPhoto/Adobe 这类 outP 为空自然豁免 ⇒ 仍附 ICC 兜底）
+            //    + 非 HDR + trc 非 linear。RunIccgen/NeedsPostEmbedIcc 都从 d.AttachIcc 派生 ⇒ 自动翻假。
+            if (strategy == Models.ColorStrategy.Recommended
+                && d.CanWriteContainerCicp
+                && !string.IsNullOrEmpty(outP) && !string.IsNullOrEmpty(outT)
+                && !frameIsHdr
+                && !string.Equals(effDstTrc, "linear", StringComparison.OrdinalIgnoreCase))
+            {
+                d.AttachIcc = false;
+            }
+
+            // ★ 2026-11-15（PNG/APNG 最终口径）：CICP 能精确表达时不再由 iccgen 生成 ICC。
+            //   上面那块只收了 Recommended；CarryIcc（源 ICC 已重写为等价标准空间）与
+            //   Manual（目标标准空间）仍会把 AttachIcc 置真 ⇒ 命令行会挂 `-vf iccgen`，
+            //   产物又出现 iCCP，与“ICC 仅在 CICP 无法表示时使用”冲突。
+            //   这里按**出口令牌对**复核精确性（不是只看有没有 token），不可精确命名
+            //   （ProPhoto/Adobe 等）时保持 ICC 兜底。
+            bool pngCicpFirst = fmt is "png" or "apng";
+            if (pngCicpFirst && d.CanWriteContainerCicp
+                && !string.IsNullOrEmpty(outP) && !string.IsNullOrEmpty(outT)
+                && !frameIsHdr
+                && !string.Equals(effDstTrc, "linear", StringComparison.OrdinalIgnoreCase))
+            {
+                var pngCicpProbe = ColorMapping.ColorSpaceDescriptor.FromCicp(outP, outT, "PNG/APNG CICP 优先");
+                var pngCaps = ColorMapping.ColorMappingEngine.CapsFor(fmt);
+                if (pngCicpProbe != null
+                    && ColorMapping.ColorMappingEngine.IsPreciselyCicpNameable(pngCicpProbe)
+                    && ColorMapping.ColorMappingEngine.CapsAcceptsCicp(
+                        pngCaps, pngCicpProbe, externalEncoderOutlet: false))
+                {
+                    d.AttachIcc = false;
+                }
+            }
             // ═══════════════════════════════════════════════════
             //  ICC 嵌入 — iccgen 自动生成标准 ICC
             //  关键修复：iccgen 滤镜仅在 RGB 域工作（对 10-bit+ YUV 输入报
             //  "Not yet implemented"）。因此 iccgen 前必须确保像素为 RGB 8/16-bit。
             //  HDR 源（PQ/HLG YUV）需要先 tonemap → RGB，否则 iccgen 崩溃。
             // ═══════════════════════════════════════════════════
-            d.RunIccgen = d.AttachIcc && !frameIsHdr && !stripIcc;
+            // 显式 CarryIcc：源帧仍是 HDR 标签（如 ICC 说是 P3、cICP 却挂 bt2020/smpte2084 的冲突样本）
+            // 时不能让 iccgen 读源帧标签；它会对 PQ/HLG 报 "Not yet implemented" 并零产物。
+            // 计划层已选定 SDR 标准空间，ICC 由 QueueProcessor 后置改用纯托管标准 ICC 写入。
+            var srcMetaForIccgen = ProbeInputColorMetadata(inputPath);
+            bool sourceFrameHdr = inputTrc is "smpte2084" or "arib-std-b67"
+                || srcMetaForIccgen.colorTrc is "smpte2084" or "arib-std-b67";
+            // 源 ICC 与容器 cICP 冲突时（ICC 说 P3、cICP 却是 bt2020/smpte2084），上面的探测
+            // 通常被 ICC 语义覆盖；直接读 PNG/APNG 的 cICP trunk，按实际帧标签判定。
+            if (PngCicpService.TryReadCicp(inputPath, out _, out var pngCicpTransfer)
+                && pngCicpTransfer is 16 or 18) sourceFrameHdr = true;
+            d.RunIccgen = d.AttachIcc && !frameIsHdr && !stripIcc
+                && !(strategy == Models.ColorStrategy.CarryIcc && sourceFrameHdr);
+
+            // 源帧标签是 HDR（例如 ICC 说 P3、cICP 却写 bt2020/smpte2084 的冲突样本）时，
+            // iccgen 读到的仍是 PQ/HLG ⇒ “Not yet implemented”。在它之前按**出口语义**
+            // 覆盖帧标签；像素链已经把 HDR 转成 SDR，标签与像素因此同源。
+            d.IccgenFrameLabelReset = d.RunIccgen && sourceFrameHdr
+                && !string.IsNullOrEmpty(outP) && !string.IsNullOrEmpty(outT)
+                ? $"setparams=color_primaries={outP}:color_trc={outT}:colorspace=gbr"
+                : null;
+
             if (d.RunIccgen)
             {
                 var probeMeta = GetCachedProbe(inputPath);

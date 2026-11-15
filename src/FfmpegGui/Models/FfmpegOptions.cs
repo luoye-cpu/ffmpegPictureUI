@@ -152,6 +152,8 @@ namespace FfmpegGui.Models
             else if (!string.IsNullOrWhiteSpace(p.IccMode) && Enum.TryParse<IccMode>(p.IccMode, true, out var icc))
                 ColorStrategy = ColorStrategyMapper.FromIccMode(icc);   // 旧预设 IccMode 迁移
             if (p.IccFilePath != null) IccFilePath = p.IccFilePath;
+            // ICC 版本档：null（旧预设）= 不覆盖，停在模型默认 v4.4；显式 "v2" 才回放兼容档。
+            if (p.IccProfileVersion != null) IccProfileVersion = p.IccProfileVersion;
         }
 
         public string Format { get; set; } = "jpg";
@@ -649,6 +651,17 @@ namespace FfmpegGui.Models
         // ── 色彩策略（取代旧 IccMode；源色彩恒自动检测，不再手动）──
         /// <summary>色彩策略（推荐/携带/仅CICP/手动），色彩处理总控。</summary>
         public ColorStrategy ColorStrategy { get; set; } = ColorStrategy.Recommended;
+
+        /// <summary>
+        /// 自生成 ICC 的规范版本档：<c>"v4"</c>（默认，v4.4.0）| <c>"v2"</c>（v2.0.0 兼容档，
+        /// 真 v2：desc=descriptionType、cprt=textType、TRC=curv 采样，无 chad/bkpt）。
+        /// <para>作用范围**只有自生成的命名 ICC**（ProPhoto/PQ 保真路径，
+        /// <see cref="Services.IccProfileService.BuildNamedIcc"/>）；源图自带 ICC 一律原样字节携带、
+        /// 绝不重写版本；用户 PLAN/iccs 文件也原样返回。</para>
+        /// <para>v2 档的消费意义在**JPEG 出口**（Windows Photo Viewer/旧浏览器只认 v2）；
+        /// 非 JPEG 出口即使传 "v2" 也会被调用方归一回 v4（见 ResolveFaithfulUltraWideIcc）。</para>
+        /// </summary>
+        public string IccProfileVersion { get; set; } = "v4";
         
         // ── 自研色彩引擎开关（三值语义，2026-09-16）──
         /// <summary>

@@ -28,6 +28,38 @@ Write-Output ("[gate] exe=" + $probe + $(if ($probe -like '*[/\]Debug[/\]*') { "
 $et    = "$root/publish/PLAN/exiftool/exiftool.exe"
 $ff    = "$root/publish/PLAN/ffmpeg-full/ffmpeg.exe"
 $fp    = "$root/publish/PLAN/ffmpeg-full/ffprobe.exe"
+
+# ⚠ exiftool 预热（2026-11-14 补，本脚本反真空臂 flaky 根因）：
+#   随包 exiftool 是 perl PAR 打包壳，首次 Start-Process spawn 时偶发
+#   `Failed to load Perl DLL "perl532.dll" code 126` ⇒ stdout 全空。
+#   FfmpegGui 内部 carry 路径也调 exiftool 嵌 ICC，撞上同一窗口会被当致命错⇒无产物。
+#   预热把首个 spawn 的 DLL 加载窗口挪出所有读数/转换调用（与 verify-decision-delivery.ps1 同口径）。
+Write-Host "[warmup] exiftool burn-in (5x) ..." -ForegroundColor DarkGray
+for($w=0; $w -lt 5; $w++){
+  $wv = & $et -ver 2>$null
+  if($wv -match '^\d+\.\d+$'){ Write-Host "[warmup] exiftool $($wv.Trim()) burn $($w+1)/5 OK" -ForegroundColor DarkGray }
+  Start-Sleep -Milliseconds 200
+}
+# ffprobe/ffmpeg 也预热一次
+& $fp -version 2>$null | Out-Null
+& $ff -version 2>$null | Out-Null
+
+# ⚠ exiftool 读数重试 wrapper：perl DLL 窗口导致 stdout 空时递增退避重试（与 verify-decision-delivery 同口径）。
+#   只读 stdout；空读重试 6 次（250→500→800→1000→1200→1500ms）；仍空返回空串（调用方判据自行处理）。
+function EtOut([string]$argStr){
+  $o = "$out/_et.out"; $e = "$out/_et.err"
+  for($try=0; $try -lt 6; $try++){
+    $p = Start-Process -FilePath $et -ArgumentList $argStr -Wait -NoNewWindow -PassThru `
+      -WorkingDirectory (Split-Path -Parent $et) `
+      -RedirectStandardOutput $o -RedirectStandardError $e
+    $global:LASTEXITCODE = $p.ExitCode
+    if((Test-Path $o) -and ((Get-Item $o).Length -gt 0)){
+      return [System.IO.File]::ReadAllText($o)
+    }
+    Start-Sleep -Milliseconds (250 * ($try+1))
+  }
+  return ""
+}
 # ⚠ 运行级隔离（GUID）：固定 `$out` + 开头整目录删，会被**并发的同名实例**互删 ⇒ 假红（§6 第 66 条）。
 #   唯一目录没人替你清 ⇒ 结尾自清（照 `verify-gainmap-memory.ps1` 既有范式）。
 $val   = "$root/tests/output/validate"; $out = "$val/ppro_$([guid]::NewGuid().ToString('N').Substring(0, 8))"
@@ -36,7 +68,9 @@ New-Item -ItemType Directory -Force -Path $out | Out-Null
 # 取子进程输出一律走 Start-Process（`& exe` 在部分宿主静默失败：输出为空 ⇒ 假红/空值）；回写 $LASTEXITCODE 保持原语义
 function Exec([string]$file, [string]$argStr){
   $o = "$out/_exec.out"; $e = "$out/_exec.err"
+  $wd = if($file -eq $et){ Split-Path -Parent $et } else { $root }
   $p = Start-Process -FilePath $file -ArgumentList $argStr -Wait -NoNewWindow -PassThru `
+    -WorkingDirectory $wd `
     -RedirectStandardOutput $o -RedirectStandardError $e
   $global:LASTEXITCODE = $p.ExitCode
   return ([System.IO.File]::ReadAllText($o) + "`n" + [System.IO.File]::ReadAllText($e))
@@ -63,9 +97,14 @@ $pass=0;$fail=0
 function Ok($m){ Write-Host "  PASS $m" -ForegroundColor Green; $script:pass++ }
 function No($m){ Write-Host "  FAIL $m" -ForegroundColor Red;   $script:fail++ }
 function Run($a,$tag){
-  Start-Sleep -Seconds 2
-  Start-Process -FilePath $exe -ArgumentList $a -Wait -NoNewWindow -PassThru `
-    -RedirectStandardOutput "$out/$tag.o" -RedirectStandardError "$out/$tag.e" | Out-Null
+  # ⚠ 2026-11-14：每次 FfmpegGui 转换前 burn-in exiftool（FfmpegGui 内部 carry/保真路径会
+  #   spawn exiftool 嵌 ICC；perl DLL 加载窗口偶发导致 ICC 写入失败⇒日志无「保真」/像素被转）。
+  & $et -ver 2>$null | Out-Null
+  Start-Sleep -Milliseconds 500
+  $p = Start-Process -FilePath $exe -ArgumentList $a -Wait -NoNewWindow -PassThru `
+    -WorkingDirectory $root `
+    -RedirectStandardOutput "$out/$tag.o" -RedirectStandardError "$out/$tag.e"
+  $global:LASTEXITCODE = $p.ExitCode
 }
 # 取输出文件的 RGB 样本哈希（无损比较像素，忽略压缩/元数据差异）
 function PixHash($f,$pix){
@@ -84,7 +123,7 @@ function PixHash($f,$pix){
 #     尺**，不能算同址正向锁 ⇒ **本条负断言目前没有同址正向锁**（与 gainmap-isobmff §1b 的 `-f obu` 反控
 #     「正向 -match 与反向 -notmatch 同址、读同一份产物字节」明确不同形）。补同址正向锁不属本轮取数口径
 #     分诊（主循环已把这一类「空值 + 负断言」记为待处置项），此处只如实登记、不改判据、不放宽任何阈值。
-function IccDesc($f){ (ExecOut $et "-a -G1 -s -ProfileDescription -ProfileColorSpace -ICCProfileDescription `"$f`"").Trim() }
+function IccDesc($f){ (EtOut "-a -G1 -s -ProfileDescription -ProfileColorSpace -ICCProfileDescription `"$f`"").Trim() }
 function Cicp($f){ (ExecOut $fp "-v error -select_streams v:0 -show_entries `"stream=color_primaries,color_transfer`" -of csv=p=0 `"$f`"").Trim() }
 
 Write-Host "`n### 1) 造 ProPhoto 源 ###" -ForegroundColor Cyan
@@ -111,16 +150,47 @@ if (Test-Path $probe) {
   # ⚠ 读数尾巴**先在串外算好**再拼接：把 `"`r?`n"` 这类嵌套双引号塞进外层双引号串里，
   #   PS 会把外层串提前终止（实测解析错 5 条，报错点在**下一行注释**上——串把注释吞掉了）。
   $ic7Tail = (($ic7 -split "`r?`n" | Where-Object { $_ -match 'PROBE RESULT|^FAIL' } | Select-Object -First 3) -join ' | ')
-  if ($ic7 -match 'PROBE RESULT: pass=4 fail=0') { Ok "§icc mode 在 ProPhoto 上 4/0（ICC **结构**单元：解析/魔数/desc/wtpt 四项；**确定性不在这一格** —— 重复生成同字节由上面的 `faithful` 臂量）" }
-  else { No ("§icc mode 读数不符（须 PROBE RESULT: pass=4 fail=0，实 " + $ic7Tail + "）") }
+  if ($ic7 -match 'PROBE RESULT: pass=7 fail=0') { Ok "§icc mode 在 ProPhoto 上 7/0（ICC **结构**单元：解析/魔数/desc/wtpt 四项 + v4.4 版本位/cprt 类型/chad 三项；**确定性不在这一格** —— 重复生成同字节由上面的 `faithful` 臂量）" }
+  else { No ("§icc mode 读数不符（须 PROBE RESULT: pass=7 fail=0，实 " + $ic7Tail + "）") }
+  # 2026-11-14 ICC v4.4 迁移：v2 兼容档臂，真 v2 结构锁（header 02 00 / desc=descriptionType / cprt=textType / rTRC=curv / 无 chad）
+  $ic8 = Exec $probe "icc `"ProPhoto RGB`" v2"
+  $ic8Tail = (($ic8 -split "`r?`n" | Where-Object { $_ -match 'PROBE RESULT|^FAIL' } | Select-Object -First 3) -join ' | ')
+  if ($ic8 -match 'PROBE RESULT: pass=10 fail=0') { Ok "§icc mode v2 臂在 ProPhoto 上 10/0（4 项基础 + 6 项真 v2 类型锁：header/desc/cprt/rTRC=curv+count 形态/chad 缺席）" }
+  else { No ("§icc mode v2 臂读数不符（须 PROBE RESULT: pass=10 fail=0，实 " + $ic8Tail + "）") }
+  # 2026-11-15 ICC `cicp` tag：标准空间（Display P3）profile 必须在 ICC 内部额外标注
+  # CICP（H.273：primaries=12/transfer=13/matrix=0/full=1），且仍是 v4.4.0；
+  # 这是与容器 cICP 独立的第二份语义，不能只在 PNG chunk 里出现。
+  $p3o = Exec $probe "icc `"Display P3`""
+  $p3m = [regex]::Match($p3o, "icc=(\S+?\.icc)")
+  if ($p3m.Success -and (Test-Path $p3m.Groups[1].Value)) {
+    $p3icc = $p3m.Groups[1].Value
+    $p3cicp = (EtOut "-a -G1 -s -ProfileVersion -ICC-cicp:all `"$p3icc`"").Trim()
+    $p3host = (EtOut "-a -G1 -s -ProfileVersion `"$p3icc`"").Trim()
+    if (($p3host -match '4\.4\.0') -and ($p3cicp -match 'ColorPrimaries.*SMPTE EG 432') -and
+        ($p3cicp -match 'TransferCharacteristics.*sRGB') -and
+        ($p3cicp -match 'MatrixCoefficients.*Identity') -and
+        ($p3cicp -match 'VideoFullRangeFlag.*Full')) {
+      Ok "§ICC cicp tag：Display P3 标准 ICC 为 4.4.0，内嵌 CICP=12/13/0/1"
+    } else {
+      No "§ICC cicp tag 缺失/不符（ICC=$p3icc；version='$p3host'；cicp='$p3cicp'）"
+    }
+  } else { No "无法读取 Display P3 标准 ICC（ServiceProbe icc 输出：$(($p3o -split "`r?`n" | Select-Object -Last 3) -join ' | ')）" }
   # ⚠ 登记一条**未判**的观察（不当判据用）：`icc <随便一个不存在的空间>` 实测同样 4/0 ⇒
   #   本 mode 验的是"生成的 ICC 结构自洽"，**不是**"请求的空间被兑现"；后者由 faithful/iccname 两格覆盖。
   #   ⇒ 不许把"未知空间也 4/0"读成缺陷，也不许在这里给它加红（那是另一条判据，要立就得单独立）。
 }
 if (-not $ppIcc -or -not (Test-Path $ppIcc)) { No "无法定位纯托管生成的 ProPhoto ICC"; Write-Host "`n===== PASS=$pass FAIL=$fail =====" -ForegroundColor Red; exit 1 }
 Ok "保真 ICC: $(Split-Path -Leaf $ppIcc) ($((Get-Item $ppIcc).Length) B)"
-Exec $et "-overwrite_original -m `"-icc_profile<=$ppIcc`" `"$out/src_prophoto.png`"" | Out-Null  # 合并取数已论证：这是**附着 ICC 的写入动作**，返回值显式 Out-Null 丢弃 ⇒ 不喂任何断言
-$srcDesc = IccDesc "$out/src_prophoto.png"
+# ⚠ 2026-11-14 修 flaky：源 ICC 嵌入是**所有后续转换的前提**——它若失败（perl DLL 窗口），
+#   下游 jpg/tiff/webp/manual 全部看不到 ProPhoto ICC ⇒ 批量假红。嵌入后必须回读验证，失败则重试。
+$srcDesc = ""
+for($embedTry=0; $embedTry -lt 6; $embedTry++){
+  Exec $et "-overwrite_original -m `"-icc_profile<=$ppIcc`" `"$out/src_prophoto.png`"" | Out-Null
+  $srcDesc = IccDesc "$out/src_prophoto.png"
+  if("$srcDesc" -match "ProPhoto"){ break }
+  Write-Host "  [retry] 源 ICC 嵌入第 $($embedTry+1) 次未读出 ProPhoto desc（got='$srcDesc'），exiftool burn-in 后重试" -ForegroundColor DarkYellow
+  & $et -ver 2>$null | Out-Null; Start-Sleep -Milliseconds (300 * ($embedTry+1))
+}
 if ("$srcDesc" -match "ProPhoto") { Ok "源已附着 ProPhoto ICC ($srcDesc)" } else { No "源 ICC 异常: '$srcDesc'" }
 # ⚠ 取数口径（实测后定为**只读 stdout**）：本条读的是 exiftool 的**全量 dump**（`-a -G1 -s` 不带标签名），
 #   这种形态下 ICC 解析诊断**两边都打**（实测 `tests/output/laneB/equiv-laneB4.ps1` Q1：坏 ICC 的 PNG
@@ -142,12 +212,16 @@ $ctlPng = "$diag/broken_ctl.png"
 Copy-Item "$out/src_prophoto.png" $ctlPng -Force
 $goodIccBytes = [IO.File]::ReadAllBytes($ppIcc)
 $truncIcc = "$diag/truncated.icc"
-[IO.File]::WriteAllBytes($truncIcc, $goodIccBytes[0..([int]($goodIccBytes.Length / 2))])
+# ⚠ 2026-11-15：旧夹具截到「一半」时，exiftool 13.61 仍能只读已存在的 tag，
+#   不会报 `Bad length ICC_Profile`（实测 273/544 字节，hit=0）⇒ 正向锁失去牙。
+#   改为只保留 128 字节头（tag 目录整体缺失），实测 exiftool 必报
+#   `Bad length ICC_Profile (length 544)`；这才是「同一把尺能红」的阴性对照。
+[IO.File]::WriteAllBytes($truncIcc, $goodIccBytes[0..127])
 $null = Exec $et "-overwrite_original `"-icc_profile<=$truncIcc`" `"$ctlPng`""   # 合并取数已论证：**写入**夹具（把截短的 ICC 嵌进副本），返回值显式 `$null` 丢弃、不喂任何断言；下一步的**读数**走 ExecOut
-$ctlDump = (ExecOut $et "-a -G1 -s `"$ctlPng`"") -join ''
+$ctlDump = (EtOut "-a -G1 -s `"$ctlPng`"") -join ''
 if ($ctlDump -match $IccDiagRx) { Ok "正向锁：同一把尺在**故意截短**的 ICC 上确实报出问题（判据有牙）" }
 else { No "正向锁失效：截短的 ICC 没被读出问题 ⇒ 下面的‘无损解析’是恒真断言（实得 $(($ctlDump -split "`n" | Where-Object { $_ -match 'ExifTool|Warning|Error' } | Select-Object -First 2) -join ' | ')）" }
-$srcDump = ExecOut $et "-a -G1 -s `"$out/src_prophoto.png`""
+$srcDump = EtOut "-a -G1 -s `"$out/src_prophoto.png`""
 if ($srcDump -notmatch $IccDiagRx) { Ok "exiftool 可无损解析生成的 mluc desc" } else { No "exiftool 报 ICC 诊断问题（生成器 mluc 格式有误）" }
 $srcHash = PixHash "$out/src_prophoto.png" "rgb48le"
 Ok "源像素哈希 $srcHash"
@@ -175,7 +249,7 @@ if(-not $o){ No "无 PNG 输出" } else {
   # ⚠ 取数口径同 §1 的 `$srcDump`：exiftool 的 ICC 诊断在**全量 dump** 形态下两边都打 ⇒ 只读 stdout 不瞎
   #   （`Exec $et` → `ExecOut $et` 是本轮改动之一）。判据词形同 §1（"Corrupted" 是死词），
   #   且**共用 §1 那条正向锁**（同一把尺已在故意截短的 ICC 上报出问题 ⇒ 这里"读不到"才是真信号）。
-  if(((ExecOut $et "-a -G1 -s `"$o`"") -join "") -notmatch $IccDiagRx){ Ok "输出 ICC 可被 exiftool 无损解析" } else { No "输出 ICC 解析报出问题" }
+  if(((EtOut "-a -G1 -s `"$o`"") -join "") -notmatch $IccDiagRx){ Ok "输出 ICC 可被 exiftool 无损解析" } else { No "输出 ICC 解析报出问题" }
   if($log -match "\[保真\]"){ Ok "日志走了保真路径" } else { No "日志未见保真附着" }
   if((Cicp $o) -notmatch "bt709|smpte432|bt2020"){ Ok "未写误导性 CICP（$((Cicp $o) -replace '\s','')）" } else { No "输出仍带 CICP 标签: $(Cicp $o)" }
 }
@@ -204,30 +278,15 @@ if($mo){
   if((PixHash $mo "rgb48le") -eq $srcHash){ Ok "手动 ProPhoto 像素逐位一致" } else { No "手动 ProPhoto 像素被改动" }
 } else { No "手动 ProPhoto 无输出" }
 
-Write-Host "`n### 6) ProPhoto → AVIF (容器不能后置附着 ICC → 保持归一化, 不打保真日志) ###" -ForegroundColor Cyan
+Write-Host "`n### 6) ProPhoto → AVIF (静态出口不写 ICC；不可命名 ⇒ 必须契约拒绝) ###" -ForegroundColor Cyan
 Run "--headless --log-level debug -i `"$out/src_prophoto.png`" --format avif --output `"$out/o_avif`"" "avif"
+$avRc = $LASTEXITCODE
 $av = Get-ChildItem -Recurse "$out/o_avif" -Include *.avif -EA SilentlyContinue | Select-Object -First 1
 $al = (Get-Content "$out/avif.o" -EA SilentlyContinue) -join "`n"
-if($av -and $av.Length -gt 0){ Ok "AVIF 正常产出 ($($av.Length) B)" } else { No "AVIF 失败" }
-if($al -notmatch "\[保真\]"){ Ok "AVIF 未误用保真路径（ICC 无法附着）" } else { No "AVIF 错误地走了保真路径" }
-# ── 2026-10-26 补（实测缺陷）：AVIF 走 ffmpeg，muxer **不写 ICC**、exiftool 后置报
-#    「0 image files updated」而退出码仍是 0 ⇒ 旧代码照打「ICC Profile 已恢复 / 已嵌入目标 ICC」。
-#    这里把「归一化」落成三条同址判据：标签可命名（像素转到了哪里就写哪里）、日志不许谎报 ICC、
-#    产物里本来就不该有 ICC（容器不收，描述由 nclx 承担）。
-if($av -and $av.Length -gt 0){
-  $avCicp = (Cicp $av.FullName) -split ','
-  $avP = if ($avCicp.Count -ge 2) { $avCicp[0] } else { "" }
-  $avT = if ($avCicp.Count -ge 2) { $avCicp[1] } else { "" }
-  if($avP -and $avP -notmatch 'unknown' -and $avT -and $avT -notmatch 'unknown'){
-    Ok "AVIF（推荐）用可命名的 nclx 描述转换后的像素（primaries=$avP transfer=$avT）"
-  } else { No "AVIF（推荐）产物的 nclx 不可读/未命名（primaries='$avP' transfer='$avT'）⇒ 像素没有诚实描述" }
-  if($al -notmatch "ICC Profile 已恢复|已嵌入目标 ICC"){
-    Ok "AVIF 日志未谎报 ICC 写入（该容器写不进 ICC，报'已恢复/已嵌入'即假成功）"
-  } else { No "AVIF 日志宣称 ICC 已恢复/已嵌入，实测产物无 ICC ⇒ 假成功" }
-  if(-not (IccDesc $av.FullName)){
-    Ok "AVIF 产物不带 ICC（与容器能力一致；描述由 nclx 承担）"
-  } else { No "AVIF 产物意外带 ICC（$(IccDesc $av.FullName)）——口径变了要回改能力表与本节" }
-}
+if($avRc -ne 0){ Ok "推荐→AVIF 契约拒绝（退出码 $avRc；源无 CICP 名 + 出口不写 ICC）" } else { No "推荐→AVIF 竟然成功（exit 0）——不能命名且不写 ICC，成功即意味着交付了错标图" }
+if(-not $av){ Ok "推荐→AVIF 零产物（拒绝不落盘）" } else { No "推荐→AVIF 仍产出 $($av.FullName)" }
+if($al -match "不能携带|不写 ICC" -and $al -match "没有任何可命名|无 CICP 名"){ Ok "拒绝理由点名「不能携带 ICC」与「无可命名标准空间」" } else { No "拒绝理由没有点名（须含容器不能携带 ICC 与无可命名标准空间；日志=$al）" }
+if($al -notmatch "ICC Profile 已恢复|已嵌入目标 ICC"){ Ok "拒绝路径未谎报 ICC 已写入" } else { No "拒绝路径仍宣称 ICC 已恢复/已嵌入" }
 
 # ── ⑥e S2 携带 + AVIF + ProPhoto：ICC 是**唯一**描述而出口写不了 ⇒ 必须契约拒绝、零产物、点名原因。
 #    这是本轮修复的正面判据：拒绝不是"少给一个格式"，而是"不交付像素 A / 标签 B 的图"。
@@ -237,32 +296,54 @@ $carryRc = $LASTEXITCODE
 $carryFiles = @(Get-ChildItem -Recurse $carryOut -Include *.avif -EA SilentlyContinue)
 if($carryRc -ne 0){ Ok "carry→AVIF 契约拒绝（退出码 $carryRc）" } else { No "carry→AVIF 竟然成功（exit 0）——ICC 是唯一描述，成功即意味着交付了错标图" }
 if($carryFiles.Count -eq 0){ Ok "carry→AVIF 零产物（拒绝不落盘）" } else { No "carry→AVIF 仍产出 $($carryFiles.Count) 个文件" }
-if($carryLog -match "不写 ICC" -and $carryLog -match "无 CICP 名"){
-  Ok "拒绝理由点名「出口不写 ICC」与「源无 CICP 名」"
-} else { No "拒绝理由没有点名（须同时含'不写 ICC'与'无 CICP 名'）" }
+if($carryLog -match "不能携带|不写 ICC" -and $carryLog -match "没有任何可命名|无 CICP 名"){
+  Ok "拒绝理由点名「不能携带 ICC」与「无可命名标准空间」"
+} else { No "拒绝理由没有点名（须含容器不能携带 ICC 与无可命名标准空间）" }
 if($carryLog -notmatch "ICC Profile 已恢复"){ Ok "拒绝路径未谎报 ICC 已恢复" } else { No "拒绝路径仍打「ICC Profile 已恢复」" }
 
 # ── ⑥f 反真空：同一源 carry→PNG 必须真的带**同一张** ICC（证明 ⑥e 的拒绝不是"什么都拒"）。
 #    字节级比较（SHA256 of `exiftool -b -icc_profile`），不比描述文字。
 function IccBytesHash([string]$f){
+  # ⚠ 2026-11-14 修 flaky：旧版只 Check Test-Path（空文件也存在）⇒ perl DLL 窗口导致
+  #   stdout 空文件被 SHA256 哈希 = E3B0C442（空输入哈希），与源空读相碰假红。
+  #   现改为：空输出重试 6 次递增退避；仍空返回 $null（不哈希空文件）。
   $t = "$out/icc_$([guid]::NewGuid().ToString('N')).bin"
   $e2 = "$t.err"
-  Start-Process -FilePath $et -ArgumentList @('-b','-icc_profile',"`"$f`"") -Wait -NoNewWindow `
-    -RedirectStandardOutput $t -RedirectStandardError $e2 | Out-Null
-  if(-not (Test-Path $t)){ return $null }
+  for($try=0; $try -lt 6; $try++){
+    Start-Process -FilePath $et -ArgumentList @('-b','-icc_profile',"`"$f`"") -Wait -NoNewWindow `
+      -RedirectStandardOutput $t -RedirectStandardError $e2 | Out-Null
+    if((Test-Path $t) -and ((Get-Item $t).Length -gt 0)){ break }
+    Start-Sleep -Milliseconds (250 * ($try+1))
+  }
+  if(-not (Test-Path $t) -or (Get-Item $t).Length -eq 0){
+    Remove-Item $t -Force -ErrorAction SilentlyContinue
+    Remove-Item $e2 -Force -ErrorAction SilentlyContinue
+    return $null
+  }
   $h = (Get-FileHash $t -Algorithm SHA256).Hash
   Remove-Item $t -Force -ErrorAction SilentlyContinue
   Remove-Item $e2 -Force -ErrorAction SilentlyContinue
   return $h
 }
-Run "--headless --log-level debug -i `"$out/src_prophoto.png`" --format png --color-strategy carry --output `"$out/o_png_carry`"" "pngcarry"
-$pc = Get-ChildItem -Recurse "$out/o_png_carry" -Filter *.png -EA SilentlyContinue | Select-Object -First 1
+# ⚠ 2026-11-14 修 flaky：FfmpegGui 内部 carry 路径调 exiftool 嵌 ICC，撞上 perl DLL 窗口时
+#   会产出无产物（被当致命错）。重试整次转换最多 3 次（每次间 exiftool 再 burn-in 一次）。
+$pc = $null
+for($try=0; $try -lt 3; $try++){
+  if($try -gt 0){
+    Write-Host "  [retry] carry→PNG 第 $($try+1) 次（前次无产物，exiftool 再 burn-in）" -ForegroundColor DarkYellow
+    & $et -ver 2>$null | Out-Null; Start-Sleep -Milliseconds 500
+  }
+  Remove-Item -Recurse -Force "$out/o_png_carry" -ErrorAction SilentlyContinue
+  Run "--headless --log-level debug -i `"$out/src_prophoto.png`" --format png --color-strategy carry --output `"$out/o_png_carry`"" "pngcarry"
+  $pc = Get-ChildItem -Recurse "$out/o_png_carry" -Filter *.png -EA SilentlyContinue | Select-Object -First 1
+  if($pc -and $pc.Length -gt 0){ break }
+}
 if($pc -and $pc.Length -gt 0){
-  Ok "反真空：carry→PNG 有产物（$($pc.Length) B）"
+  Ok "反真空：carry→PNG 有产物（$($pc.Length) B，try=$($try+1)）"
   $hSrc = IccBytesHash "$out/src_prophoto.png"; $hOut = IccBytesHash $pc.FullName
   if($hSrc -and $hOut -and $hSrc -eq $hOut){ Ok "反真空：carry→PNG 的 ICC 与源逐字节相同（$($hSrc.Substring(0,16))…）" }
   else { No "反真空：carry→PNG 的 ICC 与源不一致（src=$hSrc out=$hOut）" }
-} else { No "反真空：carry→PNG 无产物（拒绝臂因此失去对照）" }
+} else { No "反真空：carry→PNG 无产物（拒绝臂因此失去对照；重试 3 次均失败）" }
 
 Write-Host "`n### 7) 非超广色域不受影响 (sRGB→png 不应打保真日志) ###" -ForegroundColor Cyan
 Run "--headless --log-level debug -i `"$root/tests/output/sources/src_8bit.png`" --format png --output `"$out/o_srgb`"" "srgb"

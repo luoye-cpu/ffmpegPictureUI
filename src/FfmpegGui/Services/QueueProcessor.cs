@@ -2084,7 +2084,7 @@ namespace FfmpegGui.Services
                     _onItemUpdated?.Invoke(captured);
                 }
 
-                // ── PNG 3.0: cICP chunk（CICP 色彩标签）──
+                // ── PNG 3.0: cICP chunk（CICP 色彩标签；PNG/APNG 同容器，APNG 也走此段）──
                 // 实测 ffmpeg 的 PNG 编码器不写 cICP；既无 iCCP 又无 cICP 的 PNG 会被查看器按
                 // sRGB 解读（HDR / 广色域 PNG 因此错色、偏暗）。
                 // 规范（PNG Third Edition，已核）：优先级 cICP=1 > iCCP=2 > sRGB=3 > cHRM/gAMA=4，
@@ -2095,7 +2095,8 @@ namespace FfmpegGui.Services
                 // 输出语义由 EffectiveOutputColorTokens 给出（与 BuildArguments 同源）；
                 // 映射不到 H.273 编号时宁可不写，也绝不写与像素失配的标签。
                 if (exitCode == 0
-                    && finalOutputPath.EndsWith(".png", StringComparison.OrdinalIgnoreCase)
+                    && (finalOutputPath.EndsWith(".png", StringComparison.OrdinalIgnoreCase)
+                        || finalOutputPath.EndsWith(".apng", StringComparison.OrdinalIgnoreCase))
                     && string.IsNullOrWhiteSpace(opts.FaithfulIccPath))
                 {
                     // 保真路径（FaithfulIccPath 非空）已在此跳过：像素未转、仅靠 ICC 描述，
@@ -2151,22 +2152,55 @@ namespace FfmpegGui.Services
                     }
                     var act = PngCicpService.DecideLabel(effStrat,
                         hasIccp, hasCicp, srcCicp, iccStd, nameable);
-                    switch (act)
+                    // C-01（2026-11-14 独立复核）：`-map_metadata 0` 会把源容器里的旧 cICP 原样复制进产物。
+                    // `DecideLabel` 见已有 cICP 就 SkipAlreadyLabeled 的旧口径 = 让旧标签赢过本次计划：
+                    // P3 像素被标成 BT.2020/PQ 就是这样发生的。计划值已经由 engPlan/legacy 裁决点给出，
+                    // 只要现有 cICP 与计划值不一致，就必须覆盖；一致才允许跳过（不无谓重写产物）。
+                    if (hasCicp && nameable && act == PngCicpService.PngLabelAction.SkipAlreadyLabeled)
                     {
-                        case PngCicpService.PngLabelAction.WriteCicp:
-                            captured.Log += PngCicpService.TryInsertCicp(finalOutputPath, cp, ctNum)
-                                ? $"[png3] 已写入 cICP（primaries={cp}, transfer={ctNum} ← {op}/{ot}"
-                                  + (iccStd ? "，由源 ICC 量出标准空间" : "") + $"；策略={effStrat}"
-                                  + (hasIccp ? "，与标准 ICC 并写" : "") + "）\n"
-                                : "[png3] ⚠️ cICP chunk 写入失败（已跳过）\n";
-                            break;
-                        case PngCicpService.PngLabelAction.SkipSourceIcc:
-                            captured.Log += "[png3] 未写 cICP：S2 且源只有 ICC，而该 ICC 非标准色彩空间（色度未命中已知空间）；所造 cICP 会降级源 ICC\n";
-                            break;
-                        case PngCicpService.PngLabelAction.SkipUnnameable:
-                            if (op != null || ot != null)
-                                captured.Log += $"[png3] 未写 cICP：输出语义 {op}/{ot} 不可用 H.273 命名（宁缺勿错），ICC 仍为唯一描述\n";
-                            break;
+                        if (PngCicpService.TryReadCicp(finalOutputPath, out byte existingCp, out byte existingCt)
+                            && (existingCp != cp || existingCt != ctNum))
+                        {
+                            act = PngCicpService.PngLabelAction.WriteCicp;
+                            captured.Log += $"[png3] 产物已有 cICP（{existingCp}/{existingCt}）与计划（{cp}/{ctNum}）不一致"
+                                          + " ⇒ 覆盖为计划值（源容器旧标签不再沿用）\n";
+                        }
+                    }
+                    // ★ 2026-11-15：PNG/APNG 的最终口径是“ICC 只在 CICP 无法表示时使用”。
+                    bool pngPlanCicpOnly = engPlan is
+                    {
+                        AttachIcc: false,
+                        OutPrimaries: not null,
+                        CicpUnavailable: ColorMapping.CicpUnavailableReason.None,
+                    };
+                    // 反向闸门：计划明确是 ICC-only（源 ICC 无可命名的等价空间，Out*=null）时，
+                    // 绝不能再用 legacy/默认出口令牌写一个与 ICC 不同空间的 cICP。
+                    // 旧实现这里会把 Adobe RGB 源写成“源 ICC + bt2020 cICP”的双描述。
+                    bool pngPlanIccOnly = engPlan is { AttachIcc: true, OutPrimaries: null };
+                    string iccCoexistNote = hasIccp && !pngPlanCicpOnly ? "，与标准 ICC 并写" : "";
+                    if (!pngPlanIccOnly)
+                    {
+                        switch (act)
+                        {
+                            case PngCicpService.PngLabelAction.WriteCicp:
+                                captured.Log += PngCicpService.TryInsertCicp(finalOutputPath, cp, ctNum)
+                                    ? $"[png3] 已写入 cICP（primaries={cp}, transfer={ctNum} ← {op}/{ot}"
+                                      + (iccStd ? "，由源 ICC 量出标准空间" : "") + $"；策略={effStrat}"
+                                      + iccCoexistNote + "）\n"
+                                    : "[png3] ⚠️ cICP chunk 写入失败（已跳过）\n";
+                                break;
+                            case PngCicpService.PngLabelAction.SkipSourceIcc:
+                                captured.Log += "[png3] 未写 cICP：S2 且源只有 ICC，而该 ICC 非标准色彩空间（色度未命中已知空间）；所造 cICP 会降级源 ICC\n";
+                                break;
+                            case PngCicpService.PngLabelAction.SkipUnnameable:
+                                if (op != null || ot != null)
+                                    captured.Log += $"[png3] 未写 cICP：输出语义 {op}/{ot} 不可用 H.273 命名（宁缺勿错），ICC 仍为唯一描述\n";
+                                break;
+                        }
+                    }
+                    else
+                    {
+                        captured.Log += "[png3] 未写 cICP：计划为 ICC-only（源 ICC 无可命名等价空间，CICP 无法精确表达）\n";
                     }
                     // S3「仅 CICP」意图：输出不应残留 ICC；若残留属异常，必须可见。
                     if (effStrat == Models.ColorStrategy.BakeCicpOnly && hasIccp)
@@ -2184,6 +2218,20 @@ namespace FfmpegGui.Services
                     }
                     else
                         captured.Log += "[png3] ⚠️ 与 cICP 并存的低优先级色彩块剥离失败（产物仍可能自相矛盾，已保留原文件）\n";
+                    // ★ 2026-11-15：PNG/APNG 的最终口径是“ICC 只在 CICP 无法表示时使用”。
+                    //   计划已裁剪为 CICP-only（AttachIcc=false 且 OutPrimaries 非空）时，
+                    //   ffmpeg 仍可能沿 -map_metadata:s:v 把源 iCCP 带进产物；这里按二进制
+                    //   chunk 精确删除 iCCP，保留 cICP。S3（仅CICP）同样必须零 iCCP。
+                    if (pngPlanCicpOnly || effStrat == Models.ColorStrategy.BakeCicpOnly)
+                    {
+                        if (PngCicpService.TryRemoveIccp(finalOutputPath, out int iccpRemoved))
+                        {
+                            if (iccpRemoved > 0)
+                                captured.Log += $"[png3] 已按 CICP 优先剥离 {iccpRemoved} 个 iCCP（CICP 已精确表达，ICC 仅不可表达时兜底）\n";
+                        }
+                        else
+                            captured.Log += "[png3] ⚠️ CICP-only 计划下 iCCP 剥离失败（产物可能仍带 ICC）\n";
+                    }
                     // ── AU2-X2（2026-11-10）：linear HDR 直通携带 ⇒ 并写出口语义 ICC（stdicc）与 cICP ──
                     // 本段开头旧注释指明的前置条件现已满足（2026-11-10）："只在无 iCCP 时写…与自生成
                     // 标准 ICC 并写的收益要等能区分'ICC 是谁生成的'时再做"——R1 认源修复后 cICP
@@ -2340,10 +2388,12 @@ namespace FfmpegGui.Services
                 //   trc 沿用下方 :2036 的 iec61966-2-1 恒钳（SetLabelsFrom 对 tiff 的 IccTrc
                 //   也是钳位后的 OutTransfer，两边一致）。策略闸仍是 Recommended/Manual
                 //   （默认值即 Recommended ⇒ auto 格命中；CarryIcc/BakeCicpOnly 语义不变）。
-                else if (engineUsed
-                    && engPlan is { AttachIcc: true }
+                else if (engPlan is { AttachIcc: true }
                     && !string.IsNullOrWhiteSpace(engPlan.IccPrimaries))
                 {
+                    // 2026-11-15：推荐档直通（engineUsed=false）也走这份计划。
+                    // 旧条件 `engineUsed && …` 让“未标注 sRGB → TIFF”这类
+                    // 像素零改动、由 ffmpeg 直出的格完全没有 ICC 落地通道。
                     tiffPrimaries = engPlan.IccPrimaries;
                     tiffMatrix = !string.IsNullOrWhiteSpace(engPlan.IccMatrix) ? engPlan.IccMatrix : "bt709";
                     tiffLabel = engPlan.IccPrimaries
@@ -2370,9 +2420,26 @@ namespace FfmpegGui.Services
                         var tiffIccExit = await ExifToolService.EmbedIccProfileFromFileAsync(
                             tiffIcc, finalOutputPath,
                             s => { captured.Log += s; _onItemUpdated?.Invoke(captured); });
-                        captured.Log += tiffIccExit == 0
-                            ? $"[tiff] 已嵌入目标色彩空间 ICC（{tiffLabel}），与转换后像素一致（遵循 JPEG XL ICC 策略）\n"
-                            : $"[tiff] ⚠️ 目标 ICC 嵌入失败（退出码 {tiffIccExit}）\n";
+                        if (tiffIccExit == 0)
+                        {
+                            // C-13（2026-11-14 独立复核）：写入命令返回 0 不等于产物真的有 ICC。
+                            // 首跑“无法生成”那次用户看到的也是 exit 0 + 无 ICC；这里读回一次，至少让
+                            // “已嵌入”这句话有产物证据，读不到就点名失败，不再只报成功。
+                            var proof = await ExifToolService.ReadColorTagsResultAsync(
+                                finalOutputPath,
+                                s => { captured.Log += s; _onItemUpdated?.Invoke(captured); }, ct);
+                            bool hasProfile = !proof.Failed
+                                && proof.Tags.Keys.Any(k => k.EndsWith(":ICC_Profile", StringComparison.OrdinalIgnoreCase)
+                                                         || k.Equals("ICC_Profile", StringComparison.OrdinalIgnoreCase));
+                            captured.Log += hasProfile
+                                ? $"[tiff] 已嵌入目标色彩空间 ICC（{tiffLabel}），并读回确认（遵循 JPEG XL ICC 策略）\n"
+                                : $"[tiff] ⚠️ ICC 读回失败（{tiffLabel}）：写入命令 exit 0，但产物未检出 ICC"
+                                  + (proof.Failure != null ? $"（{proof.Failure}）" : "") + "\n";
+                        }
+                        else
+                        {
+                            captured.Log += $"[tiff] ⚠️ 目标 ICC 嵌入失败（退出码 {tiffIccExit}）\n";
+                        }
                     }
                     else
                     {
@@ -2411,8 +2478,29 @@ namespace FfmpegGui.Services
             ColorMapping.ColorTransformPlan? plan = null, CancellationToken ct = default)
         {
             // 引擎路径不跑 iccgen（像素在本进程转换），它的目标 ICC 由 P7a 那段后置逻辑负责。
-            if (exitCode != 0 || engineUsed) return;
+            // 例外：计划要求生成标准 ICC（CarryIcc 的零像素重写，或 CICP-only 的“按源 CICP 生成”）
+            // 必须在引擎路径也执行；判据看 AttachIcc+IccPrimaries，而不是只看 Action=CarryIcc
+            // （后者在 CICP-only 分支被置为 None，但仍承诺附 ICC）。
+
             var copts = decisionOptions ?? item.Options;
+            bool wantsGeneratedPlanIcc = plan is { AttachIcc: true, IccPrimaries: { Length: > 0 } }
+                && string.IsNullOrWhiteSpace(plan.IccPath)
+                && plan.Action is ColorMapping.ColorAction.CarryIcc
+                    or ColorMapping.ColorAction.None
+                    or ColorMapping.ColorAction.Map;
+            bool planPromisesSourceIcc = plan is { Action: ColorMapping.ColorAction.CarryIcc, AttachIcc: true };
+            // TIFF 的计划生成 ICC 由下方专用段负责（同一目标空间、含回读确认）；这里再做一次
+            // 只会多写一遍并留下 .icc-embed 临时件。源 ICC 回带（CarryIcc）仍走下面的规范化分支。
+            var fmtEarly = (item.Options.Format ?? "").ToLowerInvariant();
+            if (fmtEarly is "tiff" or "tif" && wantsGeneratedPlanIcc
+                && FfmpegCommandBuilder.EffectiveColorStrategy(copts, actualInput)
+                    is Models.ColorStrategy.Recommended or Models.ColorStrategy.Manual) return;
+            if (exitCode != 0) return;
+            // 引擎路径也要执行两类后置：①计划承诺生成标准 ICC（CarryIcc/CICP-only）；
+            // ②出口语义要求后置 ICC（如 webp 丢弃 iccgen 的 ICC），或计划承诺回带源 ICC。
+            // 不先算 dec 就只看 Action，会把 Map 出口的 webp/JXL 产物漏成零标注。
+            var dec = FfmpegCommandBuilder.DecideOutputColor(copts, actualInput);
+            if (engineUsed && !wantsGeneratedPlanIcc && !dec.NeedsPostEmbedIcc && !planPromisesSourceIcc) return;
             var fmtL = (item.Options.Format ?? "").ToLowerInvariant();
             if (!mainBranch)
             {
@@ -2433,28 +2521,122 @@ namespace FfmpegGui.Services
             }
             // 保真路径：像素未转，附自生成标准 ICC 会失配 ⇒ 只依赖命名 ICC 那一步（主分支已做）。
             if (!string.IsNullOrWhiteSpace(copts.FaithfulIccPath)) return;
-            var dec = FfmpegCommandBuilder.DecideOutputColor(copts, actualInput);
-            if (!dec.NeedsPostEmbedIcc) return;
+            if (!dec.NeedsPostEmbedIcc && !wantsGeneratedPlanIcc && !planPromisesSourceIcc) return;
             // 计划承诺携带时**先读回产物**再决定叠不叠生成 ICC。本仓顺序是"元数据恢复在前、色彩后置在后"，
             // 不读回就会用生成 ICC 覆盖刚落位的源字节——而携带的承诺恰恰是"像素未动 ⇒ 源描述才真"。
             // 读不到 ICC（回带失败 / 容器不收）⇒ 照常嵌入并点名，绝不留静默空档。
             // 文案 ASCII：`_probe-cjk-hardcode-scan` 把 item.Log 的中文行算进 UI 面棘轮。
-            if (plan is { Action: ColorMapping.ColorAction.CarryIcc, GainMap: false })
+            if (plan is { Action: ColorMapping.ColorAction.CarryIcc, GainMap: false }
+                && !wantsGeneratedPlanIcc)
             {
+                var originalIccBytes = fmtL is "png" or "apng"
+                    ? PngCicpService.TryReadIccp(outputPath) : null;
+                var originalIccVersion = originalIccBytes is { Length: >= 132 } b
+                    ? $"{b[8]}.{b[9] >> 4}.{b[9] & 0xF}" : (string?)null;
+                bool originalHasCicp = originalIccBytes is { Length: >= 132 } ob
+                    && IccProfileService.FindIccTag(ob, "cicp").size > 0;
+                bool originalHasProfileId = originalIccBytes is { Length: >= 100 } oid
+                    && oid.Skip(84).Take(16).Any(v => v != 0);
+                // 计划的目标空间可被 H.273 命名时，ICC 内部也必须带 cicp tag；
+                // 版本已是 4.4 不等于满足这条额外语义（iccgen 产物就是 4.4 但无 cicp）。
+                bool expectCicp = plan.IccPrimaries is { Length: > 0 } ip
+                    && plan.IccTrc is { Length: > 0 } it
+                    && FfmpegGui.Services.ColorMapping.AvifCicp.FromSourceTokens(ip, it) != null;
                 var (carriedIcc, carriedDesc) = IccProfileService.ExtractIccToTempFile(outputPath, s2 => { item.Log += s2; _onItemUpdated?.Invoke(item); }, ct);
-                if (!string.IsNullOrWhiteSpace(carriedIcc)) { item.Log += $"[color] artifact already carries the source ICC (desc={carriedDesc ?? "n/a"}) => skipping the generated-profile overlay (pixels were never converted, plan Action=CarryIcc)\n"; _onItemUpdated?.Invoke(item); return; }
-                item.Log += "[color] WARN: plan promised CarryIcc but the artifact carries no ICC => falling back to the generated exit-semantics profile below (source re-copy failed or the container rejected it)\n";
+                bool generatedReplacement = false;
+                if (!string.IsNullOrWhiteSpace(carriedIcc) && expectCicp && !originalHasCicp)
+                {
+                    // 产物带的是 iccgen 生成的标准 profile（4.4 但无 cicp）；换成纯托管标准 ICC，
+                    // 同色度/同版本，同时写 ICC.1:2022 cicp tag。不能只跳过“版本已 4.4”。
+                    var standard = IccProfileService.GetOrGenerateStandardIcc(actualInput,
+                        plan.IccPrimaries!, plan.IccTrc, plan.IccMatrix ?? "bt709",
+                        s2 => { item.Log += s2; _onItemUpdated?.Invoke(item); }, ct);
+                    if (!string.IsNullOrWhiteSpace(standard))
+                    {
+                        carriedIcc = standard;
+                        carriedDesc = "standard ICC with cicp";
+                        generatedReplacement = true;
+                    }
+                }
+                if (!string.IsNullOrWhiteSpace(carriedIcc))
+                {
+                    if (originalIccVersion == "4.4.0" && (!expectCicp || originalHasCicp) && originalHasProfileId)
+                    {
+                        item.Log += $"[color] artifact already carries a v4.4 source ICC (desc={carriedDesc ?? "n/a"}) => no rewrite needed (pixels were never converted, plan Action=CarryIcc)\n";
+                        IccProfileService.TryDeleteIcc(carriedIcc);
+                        _onItemUpdated?.Invoke(item);
+                        return;
+                    }
+                    // ffmpeg 会把源 ICC 作为 stream side-data 原样复制到产物（即使我们后置附着失败）；
+                    // ExtractIccToTempFile 已把旧版源 profile 重写成 v4.4，这里必须**回写**，
+                    // 否则“读回已有 ICC 就跳过”会让 v2 源 profile 直接漏到产物。
+                    bool rewritten = false;
+                    if (fmtL is "png" or "apng")
+                    {
+                        rewritten = PngCicpService.TryWriteIccp(outputPath, carriedIcc, "ICC");
+                    }
+                    else
+                    {
+                        var rewriteExit = await ExifToolService.EmbedIccProfileFromFileAsync(carriedIcc, outputPath,
+                            s => { item.Log += s; _onItemUpdated?.Invoke(item); });
+                        rewritten = rewriteExit == 0;
+                    }
+                    if (rewritten)
+                    {
+                        item.Log += generatedReplacement
+                            ? "[color] standard ICC with cicp tag written (replaced iccgen profile lacking cicp)\n"
+                            : $"[color] source ICC rewritten to v4.4.0 (was {originalIccVersion ?? "unknown"}, desc={carriedDesc ?? "n/a"}) => artifact now carries the normalized profile\n";
+                        if (!generatedReplacement) IccProfileService.TryDeleteIcc(carriedIcc);
+                        _onItemUpdated?.Invoke(item);
+                        return;
+                    }
+                    item.Log += "[color] WARN: source profile already present but v4.4 rewrite could not be written => falling back to the generated exit-semantics profile below\n";
+                    if (!generatedReplacement) IccProfileService.TryDeleteIcc(carriedIcc);
+                }
+                else
+                {
+                    item.Log += "[color] WARN: plan promised CarryIcc but the artifact carries no ICC => falling back to the generated exit-semantics profile below (source re-copy failed or the container rejected it)\n";
+                }
                 _onItemUpdated?.Invoke(item);
             }
             string? wIcc = IccProfileService.GetOrGenerateStandardIcc(actualInput,
-                dec.OutPrimaries!, dec.OutTrc!, dec.MatrixForOutput ?? "bt709",
+                wantsGeneratedPlanIcc ? plan!.IccPrimaries! : dec.OutPrimaries!,
+                wantsGeneratedPlanIcc ? plan!.IccTrc : dec.OutTrc!,
+                wantsGeneratedPlanIcc ? plan!.IccMatrix ?? "bt709" : dec.MatrixForOutput ?? "bt709",
                 s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ct);
+            if (string.IsNullOrWhiteSpace(wIcc) && wantsGeneratedPlanIcc)
+            {
+                // 标准 ICC 生成失败时，宁可回退源 ICC，也不能让产物缺少描述（并显式播报）。
+                var (sourceIcc, sourceDesc) = IccProfileService.ExtractIccToTempFile(actualInput,
+                    s2 => { item.Log += s2; _onItemUpdated?.Invoke(item); }, ct);
+                if (!string.IsNullOrWhiteSpace(sourceIcc))
+                {
+                    wIcc = sourceIcc;
+                    item.Log += $"[color] WARN: standard ICC generation failed => fallback to source ICC (desc={sourceDesc ?? "n/a"}), pixels unchanged\n";
+                    _onItemUpdated?.Invoke(item);
+                }
+            }
             if (!string.IsNullOrWhiteSpace(wIcc) && File.Exists(wIcc))
             {
-                var wExit = await ExifToolService.EmbedIccProfileFromFileAsync(wIcc, outputPath,
-                    s => { item.Log += s; _onItemUpdated?.Invoke(item); });
+                int wExit;
+                if (fmtL is "png" or "apng"
+                    && PngCicpService.TryWriteIccp(outputPath, wIcc,
+                        wantsGeneratedPlanIcc ? $"{plan!.IccPrimaries}/{plan.IccTrc}" : "ICC"))
+                {
+                    // PNG/APNG 走纯托管 iCCP 写入：不依赖 exiftool 的 Perl 运行时，
+                    // 也避免同一目标上“恢复源 ICC / 嵌入标准 ICC”两个 exiftool 临时件互踩。
+                    wExit = 0;
+                    item.Log += $"[色彩] 已由 PNG iCCP 写入标准 ICC（{(wantsGeneratedPlanIcc ? plan.IccPrimaries + "/" + plan.IccTrc : dec.OutPrimaries + "/" + dec.OutTrc)}），CICP 保留\n";
+                }
+                else
+                {
+                    wExit = await ExifToolService.EmbedIccProfileFromFileAsync(wIcc, outputPath,
+                        s => { item.Log += s; _onItemUpdated?.Invoke(item); });
+                }
                 item.Log += wExit == 0
-                    ? $"[色彩] 已嵌入出口语义 ICC（{dec.OutPrimaries}/{dec.OutTrc}）——该容器编码器会丢弃 iccgen 的 ICC，故后置补齐\n"
+                    ? (fmtL is "png" or "apng"
+                        ? ""
+                        : $"[色彩] 已嵌入出口语义 ICC（{dec.OutPrimaries}/{dec.OutTrc}）——该容器编码器会丢弃 iccgen 的 ICC，故后置补齐\n")
                     : wExit == ExifToolService.NoWriteApplied
                         ? "[色彩] ⚠️ 出口语义 ICC 未写入：该容器不接受后置 ICC（像素若已由 nclx/NCLX 标签描述则无损）\n"
                         : $"[色彩] ⚠️ ICC 嵌入失败（退出码 {wExit}）；输出色彩描述缺失，广色域像素将被按 sRGB 误读\n";
@@ -2778,50 +2960,75 @@ namespace FfmpegGui.Services
                             //   传统裁决（`ResolveLegacyVerdictPlan`）根本不知道这条执行体写不写得了 ICC
                             //   （AVIF 的 avifenc-vs-ffmpeg 就是一个反例）⇒ 拿它的 `AttachIcc` 来判定"删产物"
                             //   等于让**另一条通路**的乐观意见决定本通路的生死（本函数 2026-10-26 ⑬ 曾因此误删 jxl）。
-                            bool iccIsOnlyDescription;
-                            if (engPlan != null)
+                            var carryPlan = engPlan
+                                ?? FfmpegCommandBuilder.ResolveLegacyVerdictPlan(item.Options, item.InputPath);
+                            // 源没有 ICC、只有 CICP 时，CarryIcc 计划会按源 CICP 生成标准 ICC
+                            // （AttachIcc=true、IccPrimaries 非空、IccPath 为空）。这一格不能走
+                            // “从源文件回带 ICC”的旧路径：源本来就没有 ICC，回带必然 NoWriteApplied，
+                            // 而旧兜底会把整项判死。交给后面的标准 ICC 后置步骤落地。
+                            bool planPromisesGeneratedIcc = carryPlan is
                             {
-                                iccIsOnlyDescription = engPlan.AttachIcc
-                                                       && string.IsNullOrWhiteSpace(engPlan.OutPrimaries);
-                            }
-                            else
+                                AttachIcc: true,
+                                IccPrimaries: { Length: > 0 },
+                                IccPath: null,
+                            };
+                            // ★ 2026-11-15 PNG/APNG 口径：计划已裁成 CICP-only（CICP 能精确表达）
+                            //   ⇒ 绝不能再把**源 ICC** 回带，否则 iCCP 会重新出现，违反“ICC 仅
+                            //   在 CICP 无法表示时使用”。这一格不能落进下面的 else（回带源 ICC）。
+                            bool planCicpOnly = carryPlan is
                             {
-                                var carryPlan = FfmpegCommandBuilder.ResolveLegacyVerdictPlan(item.Options, item.InputPath);
-                                iccIsOnlyDescription = carryPlan is { AttachIcc: true }
-                                                       && string.IsNullOrWhiteSpace(carryPlan.OutPrimaries);
-                            }
-                            var iccExit = await ExifToolService.CopyIccProfileAsync(
-                                item.InputPath, outputPath,
-                                s => { item.Log += s; _onItemUpdated?.Invoke(item); });
-                            if (iccExit == ExifToolService.NoWriteApplied && iccIsOnlyDescription)
+                                AttachIcc: false,
+                                OutPrimaries: not null,
+                                CicpUnavailable: ColorMapping.CicpUnavailableReason.None,
+                            };
+                            bool iccIsOnlyDescription = !planPromisesGeneratedIcc
+                                && carryPlan is { AttachIcc: true }
+                                && string.IsNullOrWhiteSpace(carryPlan.OutPrimaries);
+                            if (planCicpOnly)
                             {
-                                // 交付的是「像素 A、标签 B」⇒ 不出货（fail-closed，退出码 90；引擎侧契约拒绝是 91，两型不合并）。
-                                // 正常路径下规划层已挡住（见 PlanPolicy.ExitWritesIcc），此处是兜底。
-                                item.Log += $"[exiftool] ❌ ICC 是本次唯一的色彩描述，但 {item.Options.Format} 容器不接受后置 ICC "
-                                          + $"⇒ 不产出色域描述错误的文件（已删除产物）\n"
-                                          + "[exiftool]    建议：改用 PNG/TIFF/WebP/JXL 出口，或显式指定可命名的目标空间\n";
-                                try { if (File.Exists(outputPath)) File.Delete(outputPath); } catch { }
-                                item.ExitCode = 90;
-                                item.Status = "失败 (出口无法携带 ICC)";
+                                item.Log += "[exiftool] 计划为 CICP-only（CICP 已精确表达）⇒ 跳过源 ICC 回带，避免 PNG/APNG 重新写出 iCCP\n";
                                 _onItemUpdated?.Invoke(item);
-                                return;
                             }
-                            if (iccExit != 0 && iccExit != ExifToolService.NoWriteApplied)
+                            else if (planPromisesGeneratedIcc)
                             {
-                                item.Log += $"[exiftool] ⚠️ ICC Profile 恢复失败（退出码 {iccExit}），目标格式可能不支持 exiftool ICC 写入（如 JXL）。\n" +
-                                    $"[exiftool] 建议：勾选「保留 Ultra HDR 增益图」或使用外部 cjxl 编码，以正确保留色彩配置。\n";
+                                item.Log += "[exiftool] 计划承诺生成标准 ICC（源 ICC 已重写或源仅 CICP）⇒ 跳过源 ICC 回带，交由后置步骤落地\n";
+                                _onItemUpdated?.Invoke(item);
                             }
-                            else if (iccExit == ExifToolService.NoWriteApplied)
-                            {
-                                // 不是"恢复"：容器收不了。nclx 已能描述（否则上面已经失败）⇒ 只降为一句警告。
-                                item.Log += "[exiftool] ⚠️ 源 ICC 未写入：该容器不接受后置 ICC；本次以可命名的 CICP 标签描述像素\n";
-                            }
-                            // ⚠ 每条诊断都要落在**带 `item.Log +=` 的那一行**上：cjk 棘轮（②-c）是**词法**判据，
-                            //   折行会让消息掉进「UI 面」桶（本仓已把它登记为三类误计之一，范式见 HANDOVER §5 第 5 行）。
-                            else if (userSpecifiedColor)
-                                item.Log += "[exiftool] ICC Profile 已恢复（本容器编码器丢弃 ICC ⇒ 携带策略下标签只能取源 ICC；指定的目标空间未落到标签）\n";
                             else
-                                item.Log += "[exiftool] ICC Profile 已恢复\n";
+                            {
+                                var iccExit = await ExifToolService.CopyIccProfileAsync(
+                                    item.InputPath, outputPath,
+                                    s => { item.Log += s; _onItemUpdated?.Invoke(item); });
+                                if (iccExit == ExifToolService.NoWriteApplied && iccIsOnlyDescription)
+                                {
+                                    // 交付的是「像素 A、标签 B」⇒ 不出货（fail-closed，退出码 90；引擎侧契约拒绝是 91，两型不合并）。
+                                    // 正常路径下规划层已挡住（见 PlanPolicy.ExitWritesIcc），此处是兜底。
+                                    item.Log += $"[exiftool] ❌ ICC 是本次唯一的色彩描述，但 {item.Options.Format} 容器不接受后置 ICC "
+                                              + $"⇒ 不产出色域描述错误的文件（已删除产物）\n"
+                                              + "[exiftool]    建议：改用 PNG/TIFF/WebP/JXL 出口，或显式指定可命名的目标空间\n";
+                                    try { if (File.Exists(outputPath)) File.Delete(outputPath); } catch { }
+                                    item.ExitCode = 90;
+                                    item.Status = "失败 (出口无法携带 ICC)";
+                                    _onItemUpdated?.Invoke(item);
+                                    return;
+                                }
+                                if (iccExit != 0 && iccExit != ExifToolService.NoWriteApplied)
+                                {
+                                    item.Log += $"[exiftool] ⚠️ ICC Profile 恢复失败（退出码 {iccExit}），目标格式可能不支持 exiftool ICC 写入（如 JXL）。\n" +
+                                        $"[exiftool] 建议：勾选「保留 Ultra HDR 增益图」或使用外部 cjxl 编码，以正确保留色彩配置。\n";
+                                }
+                                else if (iccExit == ExifToolService.NoWriteApplied)
+                                {
+                                    // 不是"恢复"：容器收不了。nclx 已能描述（否则上面已经失败）⇒ 只降为一句警告。
+                                    item.Log += "[exiftool] ⚠️ 源 ICC 未写入：该容器不接受后置 ICC；本次以可命名的 CICP 标签描述像素\n";
+                                }
+                                // ⚠ 每条诊断都要落在**带 `item.Log +=` 的那一行**上：cjk 棘轮（②-c）是**词法**判据，
+                                //   折行会让消息掉进「UI 面」桶（本仓已把它登记为三类误计之一，范式见 HANDOVER §5 第 5 行）。
+                                else if (userSpecifiedColor)
+                                    item.Log += "[exiftool] ICC Profile 已恢复（本容器编码器丢弃 ICC ⇒ 携带策略下标签只能取源 ICC；指定的目标空间未落到标签）\n";
+                                else
+                                    item.Log += "[exiftool] ICC Profile 已恢复\n";
+                            }
                         }
                         else if (protectColorMetadata && userSpecifiedColor)
                         {

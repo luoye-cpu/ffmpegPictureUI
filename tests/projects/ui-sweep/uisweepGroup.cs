@@ -319,7 +319,10 @@ namespace Tests.UiSweep
                     // sRGB 是「隐含默认目标」：与源一致 ⇒ **不写 zscale**，只写 CICP 声明
                     { "sRGB",         "",         "",             null,     "bt709", "iec61966-2-1" },
                     { "BT.709",       "bt709",    "bt709",        null,     null,    null },
-                    { "Display P3",   "smpte432", "iec61966-2-1", "iccgen", null,    null },
+                    // 2026-11-14 新默认口径：Display P3 是**可精确 CICP 命名**空间 ⇒ Recommended 默认
+                    //   **只写 cICP（p=smpte432）、不附 ICC、不跑 iccgen**（ICC 仅兜底无法 CICP 命名的空间）。
+                    //   filt 前加 "!" = 反向要求「不得出现」；旧断言要求 +iccgen 是锁旧行为，此处改正向。
+                    { "Display P3",   "smpte432", "iec61966-2-1", "!iccgen", null,   null },
                     { "P3 PQ",        "bt2020",   "smpte2084",    null,     null,    null },
                     { "BT.2020 PQ",   "bt2020",   "smpte2084",    null,     null,    null },
                     { "BT.2020 HLG",  "bt2020",   "arib-std-b67", null,     null,    null },
@@ -388,7 +391,11 @@ namespace Tests.UiSweep
                         bool splitExit = gt == "linear" && rawCmd.Contains(",lutrgb=")
                                          && rawCmd.Contains("setparams=") && rawCmd.Contains("color_trc=" + et);
                         ok = gp == ep && (gt == et || splitExit);
-                        if (filt != null) ok = ok && VfHas(t, filt);
+                        // filt：普通串 = 必须出现；"!xxx" = 必须不出现（反向负控）。
+                        if (filt != null) {
+                            if (filt.StartsWith("!")) ok = ok && !VfHas(t, filt.Substring(1));
+                            else ok = ok && VfHas(t, filt);
+                        }
                         det = $"p={gp ?? "<none>"} t={gt ?? "<none>"} 拆式={(splitExit ? "有" : "无")} iccgen={VfHas(t, "iccgen")}";
                     }
                     Check("J8 " + v + (v == "sRGB" ? "⇒无zscale+CICP=bt709/sRGB" : "⇒p=" + ep + ":t=" + et + (filt != null ? "+" + filt : "")),

@@ -102,10 +102,35 @@ function RunCli([string]$tag, [string]$inFile, [string]$fmt, [string[]]$extra) {
     return @{ code = $p.ExitCode; log = $log; file = $f }
 }
 function ExifTool([string]$path, [string[]]$args2) {
-    $o = "$out/_ex2.txt"
-    Start-Process -FilePath $ex -ArgumentList ($args2 + @($path)) -NoNewWindow -Wait -RedirectStandardOutput $o | Out-Null
-    return [System.IO.File]::ReadAllText($o)
+    $o = "$out/_ex2.txt"; $e = "$out/_ex2.err"
+    # ⚠ 2026-11-14 定根：随包 exiftool 是 perl PAR 打包壳，快速 Start-Process 下偶发
+    #   `Failed to load Perl DLL "perl532.dll" code 126`（实测空 stdout 4/12≈33%），此时 stdout 全空。
+    #   空 stdout ≠ "产物无 ICC"，而是工具根本没起来 ⇒ 递增退避重试；真读到内容就原样返回（不改判据）。
+    #   红线：只有 stdout 为空才重试；最终仍空 ⇒ 返回空 ⇒ 断言按失败处理，绝不把"读不到"洗成通过。
+    $delays = @(250, 500, 800, 1000, 1200, 1500)
+    for ($try = 0; $try -lt $delays.Count; $try++) {
+        Start-Process -FilePath $ex -ArgumentList ($args2 + @($path)) -NoNewWindow -Wait `
+            -RedirectStandardOutput $o -RedirectStandardError $e | Out-Null
+        if (Test-Path $o) {
+            $raw = [System.IO.File]::ReadAllText($o)
+            if ($raw.Trim() -ne '') { return $raw }
+        }
+        Start-Sleep -Milliseconds $delays[$try]
+    }
+    return ''
 }
+# 预热门：把首个 spawn 的 perl DLL 加载失败窗口挪出真正的读数调用（⑭ 直连产物读 ICC 曾在此偶发红）。
+#   失败也只重试、不退出——后续每次读数仍各自带退避兜底；这只是降低首次命中率。
+function ExifToolWarmup {
+    $o = "$out/_exwarm.txt"; $e = "$out/_exwarm.err"
+    for ($try = 0; $try -lt 6; $try++) {
+        Start-Process -FilePath $ex -ArgumentList @('-ver') -NoNewWindow -Wait `
+            -RedirectStandardOutput $o -RedirectStandardError $e | Out-Null
+        if ((Test-Path $o) -and ([System.IO.File]::ReadAllText($o).Trim() -ne '')) { return }
+        Start-Sleep -Milliseconds @(250, 500, 800, 1000, 1200, 1500)[$try]
+    }
+}
+ExifToolWarmup
 function Cicp([string]$path) {
     $o = "$out/_cicp.txt"
     Start-Process -FilePath $fp -ArgumentList @('-v', 'error', '-select_streams', 'v:0', '-show_entries',

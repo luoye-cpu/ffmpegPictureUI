@@ -52,14 +52,19 @@ namespace ServiceProbe
             Console.WriteLine($"size={b1.Length} version={info?.Version} class={info?.DeviceClass} cs={info?.ColorSpace} desc={info?.Description}");
             Check(!string.IsNullOrWhiteSpace(info?.Description), "mluc desc 可回读");
             Check((info?.ColorSpace ?? "").StartsWith("RGB"), "色彩空间签名 RGB");
-            // 关键 tag 齐备且 wtpt = D50
-            foreach (var t in new[] { "wtpt", "bkpt", "rXYZ", "gXYZ", "bXYZ", "rTRC", "gTRC", "bTRC", "chad", "desc" })
+            // 关键 tag 齐备且 wtpt = D50（bkpt 自 v4.3 起废弃，两分支都省——省略即默认黑点）
+            foreach (var t in new[] { "wtpt", "rXYZ", "gXYZ", "bXYZ", "rTRC", "gTRC", "bTRC", "chad", "desc", "cprt" })
             {
                 var (off, len) = IccProfileService.FindIccTag(b1, t);
                 Check(off > 0 && len > 0, $"tag {t} 存在 (off={off} len={len})");
             }
             var (wo, _) = IccProfileService.FindIccTag(b1, "wtpt");
             Check(Math.Abs(ReadS15(b1, (int)wo + 12) - 1.0) < 0.001, "wtpt.Y = 1.0（D50 PCS 归一）");
+            // 版本位与 tag 类型（v4.4 合规锁：cprt 必须 mluc——只改版本字节不改它 = 混合 v2/v4 非法 profile）
+            Check(b1[8] == 4 && b1[9] == 0x40 && b1[10] == 0 && b1[11] == 0,
+                "版本字节 = v4.4.0（04 40 00 00）");
+            var (co, _) = IccProfileService.FindIccTag(b1, "cprt");
+            Check(co > 0 && ReadAscii(b1, (int)co, 4) == "mluc", "cprt 为 mluc（v4 类型，非 v2 textType）");
             // tag 目录必须升序（ICC.1 强制 + 本仓库二分查找依赖）
             uint n = (uint)((b1[128] << 24) | (b1[129] << 16) | (b1[130] << 8) | b1[131]);
             bool sorted = true;

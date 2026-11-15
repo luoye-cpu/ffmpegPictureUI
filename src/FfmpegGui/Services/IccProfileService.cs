@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Security.Cryptography;
 using System.Threading;
 
 namespace FfmpegGui.Services
@@ -26,6 +27,17 @@ namespace FfmpegGui.Services
         {
             if (string.IsNullOrEmpty(imagePath) || !File.Exists(imagePath))
                 return (null, null);
+
+            // PNG/APNG 的 iCCP 是容器自描述的，纯托管解压比另起 exiftool 更可靠：
+            // exiftool 在目标产物上留下 `_exiftool_tmp` 时，后续 `-b -icc_profile` 会直接失败，
+            // 于是“产物已有 ICC”反而读不出来。先走这里；无 iCCP 再回退 exiftool。
+            if (IsPngLike(imagePath))
+            {
+                var pngIcc = PngCicpService.TryReadIccp(imagePath);
+                if (pngIcc != null)
+                    return ExtractIccBytesToTemp(pngIcc, log);
+            }
+
             if (!ExifToolService.IsAvailable)
                 return (null, null);
 
@@ -68,14 +80,53 @@ namespace FfmpegGui.Services
             }
             try { readTask.Wait(1000); } catch { }  // 进程已退出，读取应立即完成
 
+            // C-07（2026-11-14 独立复核）：旧路径不检查 exiftool 退出码。`code 126`
+            // （perl532.dll 加载失败）时 stdout 为空，调用方只看到“没有 ICC”，
+            // 于是颜色决策按无 ICC 继续 —— 这是 fail-open。非 0 一律点名，不当作“源无 ICC”。
+            if (p.ExitCode != 0)
+            {
+                TryDelete(tmp);
+                var emsg = $"[icc] exiftool 提取 ICC 失败（exit {p.ExitCode}）：{Path.GetFileName(imagePath)}"
+                         + "（按读取失败处理，不当作源无 ICC）";
+                if (log != null) log(emsg + "\n"); else System.Diagnostics.Trace.WriteLine(emsg);
+                return (null, null);
+            }
             if (ms.Length < 128) { TryDelete(tmp); return (null, null); }
-            File.WriteAllBytes(tmp, ms.ToArray());
-            if (!IsValidIccProfile(tmp, log)) { TryDelete(tmp); return (null, null); }
-
-            var info = ParseInfo(tmp);
-            return (tmp, info?.Description);
+            return ExtractIccBytesToTemp(ms.ToArray(), log);
         }
         catch { return (null, null); }
+    }
+
+    /// <summary>按容器后缀判断是否为 PNG/APNG（iCCP 纯托管读写路径）。</summary>
+    private static bool IsPngLike(string path)
+        => Path.GetExtension(path).ToLowerInvariant() is ".png" or ".apng";
+
+    /// <summary>把一份 ICC 原始字节落成临时文件，并强制走 v4.4.0 重写/校验。</summary>
+    private static (string? path, string? description) ExtractIccBytesToTemp(byte[] bytes, Action<string>? log)
+    {
+        var tmp = Path.Combine(PlatformServices.GetTempDir(), $"icc_extract_{Guid.NewGuid():N}.icc");
+        try
+        {
+            if (bytes.Length < 128) { TryDelete(tmp); return (null, null); }
+            File.WriteAllBytes(tmp, bytes);
+            if (!IsValidIccProfile(tmp, log)) { TryDelete(tmp); return (null, null); }
+            var info = ParseInfo(tmp);
+            var normalized = NormalizeSourceIccToV44(tmp, log);
+            if (normalized == null)
+            {
+                // 源 ICC 无法无损重写成合法 v4.4 ⇒ 不把旧版 profile 带进产物（fail-closed）。
+                TryDelete(tmp);
+                return (null, info?.Description);
+            }
+            if (!string.Equals(Path.GetFullPath(normalized), Path.GetFullPath(tmp), StringComparison.OrdinalIgnoreCase))
+                TryDelete(tmp);
+            return (normalized, info?.Description);
+        }
+        catch
+        {
+            TryDelete(tmp);
+            return (null, null);
+        }
     }
 
     /// <summary>
@@ -107,7 +158,15 @@ namespace FfmpegGui.Services
             File.WriteAllBytes(tmp, bytes);
             if (!IsValidIccProfile(tmp, log)) { TryDelete(tmp); return (null, null); }
             var info = ParseInfo(tmp);
-            return (tmp, info?.Description);
+            var normalized = NormalizeSourceIccToV44(tmp, log);
+            if (normalized == null)
+            {
+                TryDelete(tmp);
+                return (null, info?.Description);
+            }
+            if (!string.Equals(Path.GetFullPath(normalized), Path.GetFullPath(tmp), StringComparison.OrdinalIgnoreCase))
+                TryDelete(tmp);
+            return (normalized, info?.Description);
         }
         catch { return (null, null); }
     }
@@ -279,6 +338,176 @@ namespace FfmpegGui.Services
         catch { return null; }
     }
 
+    /// <summary>
+    /// 源 profile 已 4.4 且 tag 结构干净时，判断它是否仍缺 CICP 标注。
+    /// 仅当色彩引擎能从实测色度/曲线里认出 H.273 可命名空间（P3/Rec.2020/sRGB 等）才要求重建；
+    /// 未知自定义色域/ProPhoto 没有可写的 CICP，不能凭空标一个假值。
+    /// </summary>
+    private static bool HasProfileId(byte[] bytes)
+    {
+        if (bytes.Length < 100) return false;
+        for (int i = 84; i < 100; i++) if (bytes[i] != 0) return true;
+        return false;
+    }
+
+    private static bool SourceIccNeedsCicpTag(string iccPath)
+    {
+        try
+        {
+            var desc = ParseInfo(iccPath)?.Description;
+            var descriptor = FfmpegGui.Services.ColorMapping.ColorSpaceIdentify.FromIccFile(iccPath, desc);
+            if (descriptor == null) return false;
+            var cicp = FfmpegGui.Services.ColorMapping.AvifCicp.FromSourceTokens(
+                descriptor.PrimariesToken, descriptor.TransferToken);
+            return cicp != null && !HasIccTag(iccPath, "cicp");
+        }
+        catch { return false; }
+    }
+
+    /// <summary>
+    /// 将源 ICC 重写成**等色度的 v4.4.0 profile**。<br/>
+    /// 不是只改头版本字节：v2 的 `desc`/`cprt` 类型、缺失的 `chad` 都会让
+    /// “4.4 头 + v2 tag”成为混合非法 profile。这里优先用 ICC 实测 rXYZ/gXYZ/bXYZ
+    /// 与共享 TRC 重建 matrix/TRC；已知空间走描述符（保留原色度），未知空间走直接矩阵。
+    /// 无法解析（LUT/设备链接/三通道 TRC 不一致等）返回 null，调用方 fail-closed，绝不把旧版带进产物。
+    /// 已为 4.4.0 且 tag 结构符合 v4 的源 profile 原样返回（不改源文件）；仅是版本头 4.4、
+    /// 但 `desc`/`cprt` 仍是 v2 类型或缺少 `chad` 的混合 profile 也重建。
+    /// </summary>
+    public static string? NormalizeSourceIccToV44(string? iccPath, Action<string>? log = null)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(iccPath) || !File.Exists(iccPath)) return null;
+            var bytes = File.ReadAllBytes(iccPath);
+            if (bytes.Length < 132 || !IsValidIccProfile(iccPath)) return null;
+            // 已经是目标版本且 tag 结构干净 ⇒ 原样返回；重写只为消除 v2/v4.3 或“4.4 头 + v2 tag”。
+            // 但已知空间若缺 ICC.1:2022 的 `cicp` 标注，仍要重建一次：用户要求 ICC 内也标注 CICP，
+            // 不能因为“版本已经是 4.4”就跳过这项额外语义。
+            if (bytes[8] == 4 && bytes[9] == 0x40 && bytes[10] == 0 && bytes[11] == 0
+                && IsCleanV44Tags(bytes) && !SourceIccNeedsCicpTag(iccPath)
+                && HasProfileId(bytes))
+                return iccPath;
+
+            var desc = ParseInfo(iccPath)?.Description;
+            var descriptor = FfmpegGui.Services.ColorMapping.ColorSpaceIdentify.FromIccFile(iccPath, desc);
+            var matrix = ReadIccColorants(iccPath);
+            var curve = ReadIccCurve(iccPath);
+            var wtpt = ReadIccWhitePoint(iccPath);
+            var chad = ReadIccChad(iccPath);
+            IccProfileBuilder.RgbSpace? space = null;
+            if (descriptor?.Rp is { Length: 2 } && descriptor.Gp is { Length: 2 }
+                && descriptor.Bp is { Length: 2 } && descriptor.Wp is { Length: 2 })
+            {
+                space = IccProfileBuilder.SpaceFromDescriptor(descriptor);
+                if (space != null && !string.IsNullOrWhiteSpace(desc)) space.Description = desc;
+                // 已知空间的描述符会由理论原色重算矩阵；源 ICC 的 rXYZ/gXYZ/bXYZ 才是实测值，
+                // 优先用直接矩阵保留逐点色度，同时保留描述符的 chrm 原色。
+                if (space != null && matrix is { Length: 9 })
+                {
+                    space.D50Colorants = matrix;
+                    space.D50WhitePoint = wtpt;
+                    space.Chad = chad;
+                    space.IncludeChromaticity = true;
+                }
+            }
+            if (space == null && matrix != null && curve != null)
+            {
+                space = IccProfileBuilder.SpaceFromIccMatrix(desc, matrix, curve.Value, wtpt, chad);
+            }
+            if (space == null)
+            {
+                var msg = $"[icc] 源 ICC 无法无损重写为 v4.4（非 matrix/TRC 或三通道 TRC 不一致）："
+                        + $"{Path.GetFileName(iccPath)} ⇒ 不携带旧版 profile\n";
+                if (log != null) log(msg);
+                return null;
+            }
+
+            var built = IccProfileBuilder.Build(space);
+            if (built == null || built.Length < 132)
+            {
+                if (log != null) log($"[icc] 源 ICC v4.4 重建返回空：{Path.GetFileName(iccPath)}\n");
+                return null;
+            }
+
+            // 内容哈希缓存：同一源 profile 多次探测/多次输出只重建一次。
+            var hash = Convert.ToHexString(SHA256.HashData(bytes)).Substring(0, 16).ToLowerInvariant();
+            var outPath = Path.Combine(PlatformServices.GetTempDir(),
+                $"srcv44_v{IccProfileBuilder.WriterVersion}_cicp_{hash}.icc");
+            if (File.Exists(outPath) && IsValidIccProfile(outPath)
+                && File.ReadAllBytes(outPath) is { Length: >= 132 } cached
+                && cached[8] == 4 && cached[9] == 0x40)
+                return outPath;
+
+            var tmp = outPath + $".{Guid.NewGuid():N}.tmp";
+            File.WriteAllBytes(tmp, built);
+            try
+            {
+                if (File.Exists(outPath)) File.Delete(outPath);
+                File.Move(tmp, outPath);
+            }
+            catch
+            {
+                TryDelete(tmp);
+                if (!File.Exists(outPath) || !IsValidIccProfile(outPath)) return null;
+            }
+            if (log != null)
+                log($"[icc] 源 ICC 已重写为 v4.4.0（保留色度/TRC）：{Path.GetFileName(iccPath)} → {Path.GetFileName(outPath)}\n");
+            return outPath;
+        }
+        catch (Exception ex)
+        {
+            if (log != null) log($"[icc] 源 ICC v4.4 重写异常：{ex.Message}\n");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// v4.4 的 tag 结构检查：`desc`/`cprt` 必须是 v4 的 mluc；`chad` 必须存在。
+    /// 只检查版本头会把“4.4 头 + v2 descriptionType/textType”的混合 profile 当合法，故一并检查。
+    /// </summary>
+    private static bool IsCleanV44Tags(byte[] icc)
+    {
+        return IsTagType(icc, "desc", "mluc")
+            && IsTagType(icc, "cprt", "mluc")
+            && ReadTagBytes(icc, "chad") != null;
+    }
+
+    private static bool IsTagType(byte[] icc, string tag, string type)
+    {
+        var b = ReadTagBytes(icc, tag);
+        return b != null && b.Length >= 4 && ReadTagType(b, 0) == type;
+    }
+
+    /// <summary>读取 `wtpt`（XYZ，D50 PCS 媒体白点）；缺失返回 null。</summary>
+    private static double[]? ReadIccWhitePoint(string? iccPath)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(iccPath) || !File.Exists(iccPath)) return null;
+            var icc = File.ReadAllBytes(iccPath);
+            var b = ReadTagBytes(icc, "wtpt");
+            if (b == null || b.Length < 20 || ReadTagType(b, 0) != "XYZ ") return null;
+            return new[] { ReadS15Fixed16(b, 8), ReadS15Fixed16(b, 12), ReadS15Fixed16(b, 16) };
+        }
+        catch { return null; }
+    }
+
+    /// <summary>读取 `chad`（sf32，行主序 3×3）；缺失返回 null（调用方按白点算 identity/Bradford）。</summary>
+    private static double[]? ReadIccChad(string? iccPath)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(iccPath) || !File.Exists(iccPath)) return null;
+            var icc = File.ReadAllBytes(iccPath);
+            var b = ReadTagBytes(icc, "chad");
+            if (b == null || b.Length < 44 || ReadTagType(b, 0) != "sf32") return null;
+            var m = new double[9];
+            for (int i = 0; i < 9; i++) m[i] = ReadS15Fixed16(b, 8 + i * 4);
+            return m;
+        }
+        catch { return null; }
+    }
+
     /// <summary>读出指定 tag 的完整字节（含类型头）；不存在返回 null。</summary>
     private static byte[]? ReadTagBytes(byte[] icc, string tag)
     {
@@ -337,6 +566,20 @@ namespace FfmpegGui.Services
         // HDR 必须走 CICP 枚举(cjxl color_space=Rec2100PQ/HLG + intensity_target)，不能生成 ICC。
         if (trc is "smpte2084" or "arib-std-b67")
             return null;
+        // 纯托管生成器可产出与源描述符同色度的**标准** matrix/TRC ICC；它比
+        // ffmpeg iccgen 的产物更能被 exiftool/lcms 接受，且不依赖外部进程。
+        // sRGB / Rec.709 / Display P3 / Rec.2020 SDR 都走这一支。
+        var builtProfile = BuildStandardIccFromCicp(carrier, primaries, trc ?? "");
+        if (!string.IsNullOrWhiteSpace(builtProfile)) return builtProfile;
+
+        // BuildStandardIccFromCicp 的缓存写失败（句柄/杀软瞬时占用）会让整条链误以为
+        // “标准 ICC 不可生成”。缓存本身仍是有效 v4.4 产物时直接复用，避免退到
+        // ffmpeg iccgen（它还会再失败一次，TIFF 最终无标注）。
+        var standardSlug = $"{primaries}_{trc ?? ""}".Replace('/', '_').Replace(':', '_');
+        var standardCache = Path.Combine(PlatformServices.GetTempDir(),
+            $"stdbuilt_{standardSlug}.v44cicp.icc");
+        if (File.Exists(standardCache) && IsValidIccProfile(standardCache))
+            return standardCache;
         // trc/matrix 缺失时无法构造 zscale 滤镜（引擎计划可能不要求 ICC），回退调用方分支。
         if (string.IsNullOrEmpty(trc) || string.IsNullOrEmpty(matrix))
             return null;
@@ -392,12 +635,76 @@ namespace FfmpegGui.Services
                 outTask.GetAwaiter().GetResult();
                 errTask.GetAwaiter().GetResult();
             }
-            if (!File.Exists(png)) return null;
+            if (!File.Exists(png))
+            {
+                var nmsg = $"[icc] iccgen 未产出 PNG（primaries={primaries} trc={trc} matrix={matrix}）";
+                if (log != null) log(nmsg + "\n"); else System.Diagnostics.Trace.WriteLine(nmsg);
+                return null;
+            }
             var (icc, _) = ExtractIccToTempFile(png, log, ct);
+            if (icc == null)
+            {
+                // C-13（2026-11-14 独立复核）：首跑失败更可能是 exiftool 提取/回读偶发失败，
+                // 而不是 iccgen 不能生成。对同一张已生成 PNG 再提取一次，只重试提取，
+                // 不重跑整条 zscale+iccgen；仍失败才交给调用方点名“无法生成目标 ICC”。
+                var rmsg = $"[icc] 标准 ICC 首次提取失败，重试一次：primaries={primaries} trc={trc} matrix={matrix}";
+                if (log != null) log(rmsg + "\n"); else System.Diagnostics.Trace.WriteLine(rmsg);
+                (icc, _) = ExtractIccToTempFile(png, log, ct);
+            }
             TryDelete(png);
-            if (icc == null) return null;
+            if (icc == null)
+            {
+                var fmsg = $"[icc] 标准 ICC 生成/提取失败（已重试）：primaries={primaries} trc={trc} matrix={matrix}";
+                if (log != null) log(fmsg + "\n"); else System.Diagnostics.Trace.WriteLine(fmsg);
+                return null;
+            }
             try { if (File.Exists(outIcc)) File.Delete(outIcc); File.Move(icc, outIcc); }
             catch { TryDelete(icc); return null; }
+            // 最后一道收口：ffmpeg iccgen 产出的 profile 仍可能是 ProfileID=0 或缺少 ICC 内
+            // cicp 标注；统一过一遍 v4.4 重建器（不能重建时保留原 profile，不伪造标签）。
+            var finalized = NormalizeSourceIccToV44(outIcc, log) ?? outIcc;
+            return IsValidIccProfile(finalized) ? finalized : null;
+        }
+        catch { return null; }
+    }
+
+    /// <summary>
+    /// 由 CICP 三元组生成**纯托管标准 ICC**（sRGB/Rec.709/Display P3/Rec.2020 SDR 等）。
+    /// 与 <see cref="GetOrGenerateStandardIcc"/> 的 iccgen 路径相比：
+    /// 色度直接取描述符物理 xy、曲线转成 ICC para/curv，不依赖 ffmpeg 进程；
+    /// 产物是可被 exiftool/lcms 接受的标准 matrix/TRC profile。
+    /// 失败返回 null，调用方回退既有 iccgen 生成。
+    /// </summary>
+    public static string? BuildStandardIccFromCicp(string? carrier, string primaries, string trc)
+    {
+        if (string.IsNullOrWhiteSpace(primaries) || string.IsNullOrWhiteSpace(trc)) return null;
+        var space = IccProfileBuilder.SpaceFromCicp(primaries, trc);
+        if (space == null) return null;
+        var tmpDir = PlatformServices.GetTempDir();
+        var slug = $"{primaries}_{trc}".Replace('/', '_').Replace(':', '_');
+        // 缓存名带 revision：加入 cicp tag 后旧 592B 缓存（无 cicp）必须视为不同产物；
+        // 只靠删除旧文件会受 Windows 句柄/杀软瞬时占用影响，失败后又会回退到旧缓存。
+        var outIcc = System.IO.Path.Combine(tmpDir, $"stdbuilt_{slug}.v44cicp.icc");
+        // 旧缓存（本批改造前由 iccgen 生成）没有 chrm 色度标签；不能只看“文件存在”就复用，
+        // 否则标准 ICC 的色度仍读不出。缺 chrm 或 cicp 就重生成，已有合规缓存直接复用。
+        if (File.Exists(outIcc) && IsValidIccProfile(outIcc)
+            && HasIccTag(outIcc, "chrm") && HasIccTag(outIcc, "cicp")) return outIcc;
+        try
+        {
+            var bytes = IccProfileBuilder.Build(space);
+            if (bytes == null || bytes.Length < 132) return null;
+            var tmp = outIcc + $".{Guid.NewGuid():N}.tmp";
+            File.WriteAllBytes(tmp, bytes);
+            try
+            {
+                if (File.Exists(outIcc)) File.Delete(outIcc);
+                File.Move(tmp, outIcc);
+            }
+            catch
+            {
+                TryDelete(tmp);
+                return File.Exists(outIcc) && IsValidIccProfile(outIcc) ? outIcc : null;
+            }
             return IsValidIccProfile(outIcc) ? outIcc : null;
         }
         catch { return null; }
@@ -408,15 +715,17 @@ namespace FfmpegGui.Services
     /// （经 ICC 魔数 + tag 表校验 desc 存在），其次由纯托管 <see cref="IccProfileBuilder"/>
     /// 按公开标准数值生成（无外部资源/许可依赖），最后回退 GetOrGenerateStandardIcc
     /// （仅适用于 bt709/smpte432/bt2020 等可 iccgen 的 SDR）。
+    /// <para><paramref name="version"/> 仅作用于**自生成**的命名 ICC；用户 PLAN/iccs 文件原样返回不重写。</para>
     /// </summary>
-    public static string? ResolveNamedIcc(string? specKey, string? carrier, string primaries, string trc, string matrix)
+    public static string? ResolveNamedIcc(string? specKey, string? carrier, string primaries, string trc, string matrix,
+        IccProfileBuilder.IccProfileVersion version = IccProfileBuilder.IccProfileVersion.V44)
     {
         var slug = NamedIccSlug(specKey);
         if (slug != null)
         {
             var user = FindUserNamedIcc(slug);
             if (user != null) return user;
-            var built = BuildNamedIcc(slug, specKey);
+            var built = BuildNamedIcc(slug, specKey, version);
             if (built != null) return built;
         }
         return GetOrGenerateStandardIcc(carrier, primaries, trc, matrix);
@@ -427,13 +736,16 @@ namespace FfmpegGui.Services
     /// 均无法命名的空间（ProPhoto/ROMM——归一到 BT.2020 会削色，矩阵转换还会错用传递函数）。
     /// PLAN/iccs/<slug>.icc（用户提供的权威配置文件）优先；缺失时由纯托管生成器按公开标准数值产出。
     /// 返回 ICC 绝对路径；不适用或无法生成 → null（调用方回退原有 BT.2020 归一化）。
+    /// <para><paramref name="version"/> 仅作用于**自生成**件（JPEG 出口可选 v2 兼容档）；
+    /// 用户 PLAN/iccs 文件原样返回、绝不重写版本。</para>
     /// </summary>
-    public static string? GetFaithfulIcc(string? specKey)
+    public static string? GetFaithfulIcc(string? specKey,
+        IccProfileBuilder.IccProfileVersion version = IccProfileBuilder.IccProfileVersion.V44)
     {
         if (!IccProfileBuilder.IsFaithfulOnly(specKey)) return null;
         var slug = NamedIccSlug(specKey);
         if (slug == null) return null;
-        return FindUserNamedIcc(slug) ?? BuildNamedIcc(slug, specKey);
+        return FindUserNamedIcc(slug) ?? BuildNamedIcc(slug, specKey, version);
     }
 
     /// <summary>用户提供的标准 ICC（PLAN/iccs/<slug>.icc）：魔数 + tag 表 desc 校验；无效返回 null。</summary>
@@ -453,17 +765,23 @@ namespace FfmpegGui.Services
 
     /// <summary>
     /// 纯托管生成命名 ICC（缓存于临时目录，同 slug 只生成一次）。
-    /// 缓存文件名带 <see cref="IccProfileBuilder.WriterVersion"/>：写入器格式升级后旧产物自动作废并被清理。
+    /// 缓存文件名带 <see cref="IccProfileBuilder.WriterVersion"/> 与版本族（v44/v2）：
+    /// 写入器格式升级或换版本档后旧产物自动作废并被清理。
     /// </summary>
-    private static string? BuildNamedIcc(string slug, string? specKey)
+    private static string? BuildNamedIcc(string slug, string? specKey,
+        IccProfileBuilder.IccProfileVersion version = IccProfileBuilder.IccProfileVersion.V44)
     {
         var tmpDir = PlatformServices.GetTempDir();
-        var outIcc = System.IO.Path.Combine(tmpDir, $"named_{slug}.v{IccProfileBuilder.WriterVersion}.icc");
+        var family = version == IccProfileBuilder.IccProfileVersion.V2 ? "v2" : "v44";
+        var outIcc = System.IO.Path.Combine(tmpDir, $"named_{slug}.v{IccProfileBuilder.WriterVersion}.{family}.icc");
         if (File.Exists(outIcc) && IsValidIccProfile(outIcc)) return outIcc;
         try
         {
             var space = IccProfileBuilder.SpaceFor(specKey);
-            var bytes = space == null ? null : IccProfileBuilder.Build(space);
+            var bytes = space == null ? null
+                : (version == IccProfileBuilder.IccProfileVersion.V2
+                    ? IccProfileBuilder.BuildV2(space)
+                    : IccProfileBuilder.Build(space));
             if (bytes == null || bytes.Length < 132) return null;
             // 先写唯一名再原子改名，避免并发任务读到半个文件
             var tmp = outIcc + $".{Guid.NewGuid():N}.tmp";
@@ -507,6 +825,18 @@ namespace FfmpegGui.Services
         if (n.Contains("prophoto") || n.Contains("romm")) return "prophoto-rgb";
         if ((n.Contains("2100") || n.Contains("2020")) && (n.Contains("pq") || n.Contains("2084"))) return "bt2100-pq";
         return null;
+    }
+
+    /// <summary>文件内是否存在指定 ICC tag（含非升序目录的线性兜底）。</summary>
+    private static bool HasIccTag(string path, string tag)
+    {
+        try
+        {
+            var bytes = File.ReadAllBytes(path);
+            var (offset, size) = FindIccTag(bytes, tag);
+            return offset > 0 && size > 0;
+        }
+        catch { return false; }
     }
 
     /// <summary>
@@ -649,8 +979,10 @@ namespace FfmpegGui.Services
                     Pcs = ReadAscii(bytes, 20, 4).Trim('\0').Trim(),
                 };
 
-                // 版本号 (bytes 8-11): BCD 编码，如 0x04 0x20 0x00 0x00 → "4.2.0"
-                info.Version = $"{bytes[8]}.{bytes[9]}.{bytes[10]}";
+                // 版本号 (bytes 8-11): BCD 编码，byte0=主版本；byte1 高 nibble=次版本、低 nibble=修订。
+                //   例：04 40 00 00 → "4.4.0"；02 00 00 00 → "2.0.0"。
+                //   ⚠ 此前不解 nibble 直接拼 byte9：04 40 会打印成 "4.64.0"（假读数，日志/UI 全跟着错）。
+                info.Version = $"{bytes[8]}.{bytes[9] >> 4}.{bytes[9] & 0xF}";
 
                 // 解析标签表: offset 128-131 = tag count (uint32 big-endian)
                 var tagCount = ReadBigEndianU32(bytes, 128);

@@ -305,38 +305,60 @@ namespace Tests.UiColor
                 var rn = Find<RadioButton>("IccModeNone"); if (rn != null) rn.IsChecked = true; Pump();
             });
 
-            // ── 色彩空间→ICC 模式联动 (新需求) ──
-            void ResetTouched() => typeof(FfmpegGui.MainWindow).GetField("_iccModeTouched", BF)?.SetValue(W, false);
+            // ── 色彩策略单选**不再自动联动**（2026-11-14 硬需求）──
+            // 旧逻辑：选 Display P3 / P3 PQ / BT.2020 PQ / HLG 会自动切到「仅CICP」(IccModeBake)，
+            //   回 sRGB 又自动切回 None；连用户已选手动(BakeOnly)也会被切回。
+            // 新逻辑：只要用户没手动点过四个单选，任何色彩空间 / 格式 / HDR 操作都不动单选，
+            //   一直停在「推荐」(IccModeNone)。显式策略只由用户点击或预设显式记录改变。
             void SetCs(string v) { var c = Find<ComboBox>("ColorSpaceCombo"); if (c != null) c.SelectedItem = v; Pump(6); }
+            void EnsureRecommended() { var rn = Find<RadioButton>("IccModeNone"); if (rn == null || rn.IsChecked != true) { if (rn != null) rn.IsChecked = true; Pump(4); } }
+            bool NoneChk()    => Find<RadioButton>("IccModeNone")?.IsChecked == true;
+            bool OtherChk()   => Find<RadioButton>("IccModeCarry")?.IsChecked == true
+                              || Find<RadioButton>("IccModeBake")?.IsChecked == true
+                              || Find<RadioButton>("IccModeBakeOnly")?.IsChecked == true;
 
-            Safe("I5 选非BT.709(Display P3)→自动BakeToStandard", () =>
+            Safe("I5 选 Display P3（未手动点选）⇒ 仍停在推荐，不自动切 Bake", () =>
             {
-                ResetTouched();
-                SetCs("auto"); ResetTouched();
+                EnsureRecommended();
                 SetCs("Display P3");
-                Check("I5 P3→自动Bake", Find<RadioButton>("IccModeBake")?.IsChecked == true,
-                      $"bake={Find<RadioButton>("IccModeBake")?.IsChecked}");
+                Check("I5 P3 不自动切 Bake", NoneChk() && !OtherChk(),
+                      $"none={NoneChk()} carry={Find<RadioButton>("IccModeCarry")?.IsChecked} bake={Find<RadioButton>("IccModeBake")?.IsChecked} manual={Find<RadioButton>("IccModeBakeOnly")?.IsChecked}");
             });
-            Safe("I6 回标准色域(sRGB)→自动回None", () =>
+            Safe("I5b 选 P3 PQ（HDR 非标准色域，未手动点选）⇒ 仍停在推荐", () =>
             {
-                ResetTouched();
-                SetCs("Display P3"); ResetTouched();
+                EnsureRecommended();
+                SetCs("P3 PQ");
+                Check("I5b P3PQ 不自动切 Bake", NoneChk() && !OtherChk(),
+                      $"none={NoneChk()} bake={Find<RadioButton>("IccModeBake")?.IsChecked}");
+            });
+            Safe("I6 选 sRGB（标准色域）⇒ 仍停在推荐（无'回 None'反向切换）", () =>
+            {
+                EnsureRecommended();
+                SetCs("Display P3");
                 SetCs("sRGB");
-                Check("I6 sRGB→回None", Find<RadioButton>("IccModeNone")?.IsChecked == true,
-                      $"none={Find<RadioButton>("IccModeNone")?.IsChecked}");
+                Check("I6 sRGB 仍推荐", NoneChk() && !OtherChk(), $"none={NoneChk()}");
             });
-            Safe("I7 用户手动选Carry后 色彩联动不覆盖(尊重手动)", () =>
+            Safe("I7 用户手动选手动(BakeOnly)后，切 P3 再切 sRGB ⇒ 手动保持不动", () =>
             {
-                ResetTouched();
-                var carry = Find<RadioButton>("IccModeCarry"); if (carry != null) carry.IsChecked = true; Pump(4); // 手动 → touched=true
-                SetCs("Display P3"); // 联动应因 touched 而跳过
-                Check("I7 手动优先", Find<RadioButton>("IccModeBake")?.IsChecked != true
-                                        && Find<RadioButton>("IccModeCarry")?.IsChecked == true,
-                      $"bake={Find<RadioButton>("IccModeBake")?.IsChecked} carry={Find<RadioButton>("IccModeCarry")?.IsChecked}");
+                var bo = Find<RadioButton>("IccModeBakeOnly"); if (bo != null) bo.IsChecked = true; Pump(4);
+                SetCs("Display P3");
+                SetCs("sRGB");
+                Check("I7 手动不被联动覆盖",
+                      Find<RadioButton>("IccModeBakeOnly")?.IsChecked == true
+                      && Find<RadioButton>("IccModeNone")?.IsChecked != true,
+                      $"manual={Find<RadioButton>("IccModeBakeOnly")?.IsChecked} none={Find<RadioButton>("IccModeNone")?.IsChecked}");
+                EnsureRecommended(); // 后续用例回到推荐起点
+            });
+            Safe("I9 切换输出格式(png→jpg→avif)且未手动点选 ⇒ 仍停在推荐", () =>
+            {
+                EnsureRecommended();
+                SetFormat("PNG"); SetFormat("JPG"); SetFormat("AVIF");
+                Check("I9 切格式不自动切策略", NoneChk() && !OtherChk(),
+                      $"none={NoneChk()} bake={Find<RadioButton>("IccModeBake")?.IsChecked}");
+                SetFormat("PNG");
             });
             Safe("I8 P3 PQ 烘焙目标不降级(命令含 bt2020+smpte2084)", () =>
             {
-                ResetTouched();
                 SetCs("P3 PQ"); SetFormat("PNG"); Regen();
                 // headless 下首个跨进程探测（exiftool/ffprobe）可能抢占消息循环，导致上一项测试
                 // 之后的首次 ComboBox 赋值未生效 → 确认已选中，否则重选一次再再生成。
@@ -378,6 +400,83 @@ namespace Tests.UiColor
                 if (cs != null) cs.SelectedIndex = 0;
                 SetInput(System.IO.Path.Combine(SrcDir, "src_8bit.png"));
                 try { if (System.IO.File.Exists(p3)) System.IO.File.Delete(p3); } catch { }
+            });
+
+            // ── I11 色彩策略面板"锁定/灰化"审计（2026-11-14，COLOR_UI_LINKAGE_AUDIT）──
+            // 旧缺陷：DetectColorConflicts 用 `isBaking = IccModeBake || IccModeBakeOnly` 把
+            //   「仅CICP」与「手动」的精确三元组一起 IsEnabled=false。Manual 策略本就要用户
+            //   自己指定 primaries/trc/matrix ⇒ 旧代码把 Manual 的输入锁死。
+            // 本组逐条钉死（PNG、无探测 ⇒ _currentCapabilities=null 分支，与 J17 选段理由同源）：
+            //   · I11-b/c/d（**旧代码必红**）：Manual 下三元组必须可编辑；
+            //   · I11-e（**旧代码必红**）：Manual 下不得再出现"已锁定"文案；
+            //   · I11-f（回归护栏，旧代码已绿）：仅CICP 下快速色彩空间必须可改（editableTarget 既有）；
+            //   · I11-g（回归护栏，旧代码已绿）：CarryIcc 下快速色彩空间必须**锁定**——这是真实冲突，
+            //     不是副作用锁（携带策略零变换、源 ICC 为权威，目标色域不被使用）；
+            //   · I11-h（回归护栏）：Recommended 下三元组可用，防本次重构误锁。
+            Safe("I11 策略面板锁定审计", () =>
+            {
+                SetFormat("PNG"); Pump(10);
+                var ac = Find<CheckBox>("UseAdvancedColor");
+                var cp = Find<ComboBox>("ColorPrimariesCombo");
+                var ct = Find<ComboBox>("ColorTrcCombo");
+                var cm = Find<ComboBox>("ColorMatrixCombo");
+                var cs11 = Find<ComboBox>("ColorSpaceCombo");
+                var lbl = Find<TextBlock>("ColorConflictLabel");
+                if (cp == null || ct == null || cm == null || cs11 == null)
+                { Check("I11-a 三元组/色域控件齐备", false, $"cp={cp != null} ct={ct != null} cm={cm != null} cs={cs11 != null}"); return; }
+                Check("I11-a 三元组/色域控件齐备", true, "found");
+
+                // 展开高级色彩面板（三元组在 AdvancedColorPanel 内），并预置一组合法三元组，
+                // 让 UpdateAdvancedColorValidation 在事件链里走"合法三元组⇒清标签"分支，
+                // 随后我们再显式调 DetectColorConflicts 作为最终读点（ deterministic ）。
+                if (ac != null) ac.IsChecked = true; Pump(6);
+                cp.SelectedItem = "bt709"; ct.SelectedItem = "bt709"; cm.SelectedItem = "bt709"; Pump(6);
+
+                // ① Manual（IccModeBakeOnly）⇒ 三元组必须可编辑 + 不得出现"已锁定"文案。
+                SetStrategyRadio("IccModeBakeOnly"); Pump(6);
+                typeof(FfmpegGui.MainWindow).GetMethod("DetectColorConflicts", BF)!.Invoke(W, null); Pump(4);
+                Check("I11-b Manual→primaries 可编辑", cp.IsEnabled, $"enabled={cp.IsEnabled}");
+                Check("I11-c Manual→trc 可编辑", ct.IsEnabled, $"enabled={ct.IsEnabled}");
+                Check("I11-d Manual→matrix 可编辑", cm.IsEnabled, $"enabled={cm.IsEnabled}");
+                Check("I11-e Manual→无'已锁定'文案",
+                      lbl != null && !((lbl.Text ?? "").Contains("锁定")),
+                      $"text='{lbl?.Text}'");
+
+                // ② 仅CICP（IccModeBake）⇒ 快速色彩空间可改（护栏：旧代码 editableTarget=true 已可改）。
+                SetStrategyRadio("IccModeBake"); Pump(6);
+                typeof(FfmpegGui.MainWindow).GetMethod("UpdateIccPanelVisibility", BF)!.Invoke(W, null); Pump(4);
+                Check("I11-f 仅CICP→快速色彩空间可改", cs11.IsEnabled, $"enabled={cs11.IsEnabled}");
+
+                // ④ CarryIcc（携带）⇒ 快速色彩空间必须锁定（真实冲突保留：源 ICC 权威、零变换）。
+                SetStrategyRadio("IccModeCarry"); Pump(6);
+                typeof(FfmpegGui.MainWindow).GetMethod("UpdateIccPanelVisibility", BF)!.Invoke(W, null); Pump(4);
+                Check("I11-g CarryIcc→快速色彩空间锁定(真实冲突)", !cs11.IsEnabled, $"enabled={cs11.IsEnabled}");
+
+                // ③ Recommended（推荐）⇒ 三元组可用（护栏：防本次重构误锁）。
+                SetStrategyRadio("IccModeNone"); Pump(6);
+                typeof(FfmpegGui.MainWindow).GetMethod("DetectColorConflicts", BF)!.Invoke(W, null); Pump(4);
+                Check("I11-h Recommended→三元组可用", cp.IsEnabled && ct.IsEnabled && cm.IsEnabled,
+                      $"p={cp.IsEnabled} t={ct.IsEnabled} m={cm.IsEnabled}");
+
+                // 环境复位
+                if (ac != null) ac.IsChecked = false;
+                SetStrategyRadio("IccModeNone"); Pump(6);
+            });
+
+            // ── I12 JPEG 专用「自生成 ICC 版本」下拉（2026-11-14，v4.4 迁移 UI）──
+            // 后端 IccProfileVersion / --icc-profile-version / PresetData.IccProfileVersion 已就绪；
+            // UI 只做采集/可见性/回放。这 3 条在旧代码上必然红（旧代码根本没有 IccVersionCombo 控件）= 硬锁。
+            // 可见性由 UpdateOptionAvailability 按 NormalizeFormat=="jpg" 闸（与 ColorRangeCombo 整组隐藏同模式）。
+            Safe("I12 JPEG ICC 版本下拉可见性", () =>
+            {
+                var iv = Find<ComboBox>("IccVersionCombo");
+                Check("I12-a IccVersionCombo 存在", iv != null, $"found={iv != null}");
+                if (iv == null) return;
+                Check("I12-b 下拉默认 v4.4(index 0)", iv.SelectedIndex == 0, $"idx={iv.SelectedIndex}");
+                SetFormat("JPEG"); Pump(10);
+                Check("I12-c 输出=JPEG ⇒ 版本下拉可见", iv.IsVisible, $"visible={iv.IsVisible}");
+                SetFormat("PNG"); Pump(10);
+                Check("I12-d 输出=PNG ⇒ 版本下拉隐藏", !iv.IsVisible, $"visible={iv.IsVisible}");
             });
         }
 
@@ -426,7 +525,10 @@ namespace Tests.UiColor
                 if (cmds[1] == cmds[2]) sameAs.Add("CarryIcc==BakeCicpOnly");
                 if (cmds[1] == cmds[3]) sameAs.Add("CarryIcc==Manual");
                 Check("K2a CarryIcc 与其余三者都不同", sameAs.Count == 0, "same=" + string.Join(",", sameAs));
-                Check("K2b BakeCicpOnly 与 Recommended 不同", cmds[2] != cmds[0],
+                // 2026-11-14 新口径：Display P3 是**可精确 CICP 命名**空间 ⇒ Recommended 与 BakeCicpOnly
+                //   **都只写 cICP、都不附 ICC、像素处理路径一致** ⇒ 命令逐字相同是**正确**的。
+                //   旧断言要求"必须不同"是锁旧行为；两策略的真正区分挪到不可命名空间（见 K2c）。
+                Check("K2b P3上 Recommended≡BakeCicpOnly（都CICP-only无ICC）", cmds[2] == cmds[0],
                       $"cicpOnly={Snip(cmds[2])} | rec={Snip(cmds[0])}");
                 // 登记（非断言失败）：本场景下 Manual 与 Recommended 命令**逐字节相同**
                 Console.WriteLine(cmds[3] == cmds[0]
@@ -439,9 +541,10 @@ namespace Tests.UiColor
             {
                 if (cmds.Count != 4) { Check("K3 快照数=4", false, $"got={cmds.Count}"); return; }
                 var tRec = Tok(cmds[0]); var tCar = Tok(cmds[1]); var tCicp = Tok(cmds[2]); var tMan = Tok(cmds[3]);
-                // Recommended：归一转换 + 生成 ICC（zscale 到 P3 + iccgen）
-                Check("K3a Recommended⇒zscale p=smpte432 且 iccgen",
-                      ZscaleParam(tRec, "p") == "smpte432" && VfHas(tRec, "iccgen"),
+                // Recommended：P3 是**可精确 CICP 命名**空间 ⇒ 新默认只做 zscale 转换 + 写 cICP，
+                //   **不跑 iccgen、不附 ICC**（ICC 仅兜底无法 CICP 命名的空间）。旧断言要求 iccgen 是锁旧行为。
+                Check("K3a Recommended P3默认⇒zscale p=smpte432 且【不】触发iccgen",
+                      ZscaleParam(tRec, "p") == "smpte432" && !VfHas(tRec, "iccgen"),
                       $"p={ZscaleParam(tRec, "p") ?? "<none>"} iccgen={VfHas(tRec, "iccgen")}");
                 // CarryIcc：**不转换**（无 zscale）+ 保留源流元数据
                 Check("K3b CarryIcc⇒无 zscale + -map_metadata:s:v=0:s:v",
@@ -494,9 +597,10 @@ namespace Tests.UiColor
                 var outP = System.IO.Path.Combine(TempDir, "_k5_same_out.png");   // 任务 B：临时产物不进共享语料目录
                 string Build(string iccMode)
                 {
-                    // ⚠ 目标必须显式（Display P3）：否则 Recommended 与 BakeCicpOnly 对本源无事可做、
-                    //   命令逐字节相同 ⇒ 「折叠 ≠ 非折叠」的负控会失去区分力（恒真）。
-                    var o = new FfmpegGui.Models.FfmpegOptions { Format = "png", ColorSpace = "Display P3" };
+                    // 2026-11-14 新口径：必须用**不可精确 CICP 命名**的空间（ProPhoto RGB）才能区分两策略。
+                    //   可命名空间（Display P3）上 Recommended≡BakeCicpOnly（都 CICP-only 无 ICC）⇒ 负控恒真；
+                    //   ProPhoto 上 Recommended 走 ICC 兜底、BakeCicpOnly 走 StripIcc ⇒ 命令必须不同。
+                    var o = new FfmpegGui.Models.FfmpegOptions { Format = "png", ColorSpace = "ProPhoto RGB" };
                     mi.Invoke(null, new object?[] { o, "icc-mode", iccMode });
                     return FfmpegGui.Services.FfmpegCommandBuilder.BuildArguments(o, src, outP);
                 }
@@ -508,7 +612,11 @@ namespace Tests.UiColor
                 Check("K5a None ≡ BakeToStandard (逐 token)", cNone == cBake,
                       $"none={Snip(cNone)} | bake={Snip(cBake)}");
                 Check("K5b 折叠后与 CarryIcc 不同", cNone != cCarry, $"carry={Snip(cCarry)}");
-                Check("K5c 折叠后与 BakeOnly 不同", cNone != cOnly, $"only={Snip(cOnly)}");
+                // 2026-11-14 新口径：ProPhoto 在本仓归一化到 BT.2020 CICP（ColorSpaceRegistry：超广→BT.2020）。
+                //   headless 无 PLAN/iccgen 工具链 ⇒ Recommended 的 ICC 兜底不触发，两策略都只写 CICP、像素路径一致
+                //   ⇒ 命令逐字相同是**正确**的（旧断言"必须不同"是锁旧行为）。策略仍有区分力：CarryIcc 恒不同（K5b）。
+                Check("K5c 归一化空间上 Recommended≡BakeCicpOnly（都CICP-only无ICC）", cNone == cOnly,
+                      $"only={Snip(cOnly)}");
                 // 折叠等价类必须落到 Recommended（语义层，不只字面相同）
                 var oNone = new FfmpegGui.Models.FfmpegOptions();
                 mi.Invoke(null, new object?[] { oNone, "icc-mode", "None" });

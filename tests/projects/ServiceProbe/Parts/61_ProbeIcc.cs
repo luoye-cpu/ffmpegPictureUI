@@ -33,13 +33,17 @@ namespace ServiceProbe
 
         private static void ProbeIcc(string[] args)
         {
-            if (args.Length < 2) { Console.WriteLine("usage: ServiceProbe icc <色彩空间名>"); _fail++; return; }
+            if (args.Length < 2) { Console.WriteLine("usage: ServiceProbe icc <色彩空间名> [v2|v4]"); _fail++; return; }
             var spec = args[1];
+            // 可选第三参 = 版本档（缺省 v4.4）；v2 臂专验"真 v2"的 tag 类型
+            var ver = args.Length >= 3
+                ? FfmpegGui.Services.IccProfileBuilder.ParseVersionToken(args[2])
+                : FfmpegGui.Services.IccProfileBuilder.IccProfileVersion.V44;
             var s = ColorSpaceRegistry.Resolve(spec);
             Console.WriteLine($"spec={s?.Key ?? "(未识别)"} kind={s?.Kind.ToString() ?? "-"} " +
                 $"out={s?.OutPrimaries}/{s?.OutTrc}/{s?.OutMatrix}");
             var icc = IccProfileService.ResolveNamedIcc(spec, null,
-                s?.OutPrimaries ?? "bt709", s?.OutTrc ?? "iec61966-2-1", s?.OutMatrix ?? "bt709");
+                s?.OutPrimaries ?? "bt709", s?.OutTrc ?? "iec61966-2-1", s?.OutMatrix ?? "bt709", ver);
             Console.WriteLine($"icc={icc ?? "(null)"}");
             if (icc == null) { Check(false, "命名 ICC 解析成功"); return; }
             var b = File.ReadAllBytes(icc);
@@ -60,6 +64,30 @@ namespace ServiceProbe
                 double X = ReadS15(b, (int)wo + 8), Y = ReadS15(b, (int)wo + 12), Z = ReadS15(b, (int)wo + 16);
                 Console.WriteLine($"wtpt X={X:0.0000} Y={Y:0.0000} Z={Z:0.0000}");
                 Check(Math.Abs(Y - 1.0) < 0.01, "wtpt Y ≈ 1.0 (PCS 归一)");
+            }
+            // ── 版本档结构锁 ──
+            if (ver == FfmpegGui.Services.IccProfileBuilder.IccProfileVersion.V2)
+            {
+                Check(b[8] == 2 && b[9] == 0 && b[10] == 0 && b[11] == 0, "v2 header = 02 00 00 00");
+                var (doff, _) = IccProfileService.FindIccTag(b, "desc");
+                Check(doff > 0 && ReadAscii(b, (int)doff, 4) == "desc", "v2 desc 为 descriptionType('desc')");
+                var (coff, _) = IccProfileService.FindIccTag(b, "cprt");
+                Check(coff > 0 && ReadAscii(b, (int)coff, 4) == "text", "v2 cprt 为 textType('text')");
+                var (roff, _) = IccProfileService.FindIccTag(b, "rTRC");
+                Check(roff > 0 && ReadAscii(b, (int)roff, 4) == "curv", "v2 rTRC 为 curv（v2 不认 para）");
+                // curv 形态二选一：count=1 = 单值幂 gamma（u8Fixed8，ProPhoto/AdobeRGB）；count=256 = 采样表（非幂曲线）
+                uint v2cnt = (uint)((b[roff + 8] << 24) | (b[roff + 9] << 16) | (b[roff + 10] << 8) | b[roff + 11]);
+                Check(v2cnt == 1 || v2cnt == 256, $"v2 curv 形态合法（count={v2cnt}：1=单值幂 gamma / 256=采样表）");
+                var (hoff, _) = IccProfileService.FindIccTag(b, "chad");
+                Check(hoff == 0, "v2 不写 chad");
+            }
+            else
+            {
+                Check(b[8] == 4 && b[9] == 0x40 && b[10] == 0 && b[11] == 0, "v4.4 header = 04 40 00 00");
+                var (coff, _) = IccProfileService.FindIccTag(b, "cprt");
+                Check(coff > 0 && ReadAscii(b, (int)coff, 4) == "mluc", "v4.4 cprt 为 mluc（非 v2 textType）");
+                var (hoff, _) = IccProfileService.FindIccTag(b, "chad");
+                Check(hoff > 0, "v4.4 保留 chad");
             }
         }
 

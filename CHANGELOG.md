@@ -12,6 +12,13 @@
 
 ## 📝 更新日志
 
+### v1.6.0-beta14 (2026-11-14) — AOT 切换到 AVX2 基线 + .NET 11 GA 口径收口
+
+- **AOT 目标 ISA**：NativeAOT 从 .NET 11 默认的 `x86-64-v2` 改为 `x86-64-v3`（AVX/AVX2/BMI1/BMI2/FMA 等）；`FfmpegGui.csproj` 与 `pack.ps1` 同步设置。AOT 进程自身现在能报告并使用 AVX2；旧 beta13 包仍是 v2 构建。
+- **兼容性边界**：Windows 11 官方支持的 CPU 均满足 AVX2；Windows 10 仍存在 Sandy/Ivy Bridge、Bulldozer、部分 Atom/Celeron/Pentium 等无 AVX2 机型，这些机器不能运行本 AOT 包。`README.md` / `README.en.md` / `PACKAGING_SPEC.md` 已写明；需要 v2 兼容包时用 `-p:IlcInstructionSet=x86-64-v2`。
+- **.NET 11 正式版**：SDK `11.0.100`（RTM，`allowPrerelease=false`）、运行时 `11.0.0`、ILLink `11.0.0`；不是预览依赖。`THIRD-PARTY-NOTICES.md` 中陈旧的 `Microsoft.NET.ILLink.Tasks 11.0.0-rc.2` 已更正为 `11.0.0`。
+- 本包同时包含此前未提交的 ICC v4.4 / CICP 优先 / JPEG 可选 v2 / 色彩面板联动批次改动。
+
 ### v1.6.0-beta13 (2026-11-13) — 检测一致性 + JXL 增益图读写两侧 + .NET 11 GA 钉版 + 测试模块化（清单 94→104）与「不许跑全量」硬规矩
 
 > 本档跨 **38 个提交**（2026-11-04 → 11-13），是 beta12 之后的一次大跨度合档，十条主线按落地顺序排列。

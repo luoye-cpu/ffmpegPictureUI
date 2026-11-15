@@ -182,6 +182,10 @@ namespace FfmpegGui.Models
         /// <summary>色彩策略字符串（recommended/carry/cicp-only/manual）。</summary>
         public string? ColorStrategy { get; set; }
         public string? IccFilePath { get; set; }
+        /// <summary>自生成 ICC 版本档：null（旧预设，= v4.4）/ "v4" / "v2"（JPEG 兼容档）。
+        /// 取值域与 <see cref="FfmpegOptions.IccProfileVersion"/> 一致；只影响自生成命名 ICC，
+        /// 源图自带 ICC 永远原样携带。</summary>
+        public string? IccProfileVersion { get; set; }
         public string? IccSourceColorSpace { get; set; }
         public string? IccTargetColorSpace { get; set; }
         

@@ -50,6 +50,9 @@ public enum CicpUnavailableReason
     ContainerNonNormative,
     /// <summary>目标空间无法用 CICP 命名（ProPhoto/Adobe/自定义 ICC）。</summary>
     SpaceNotNameable,
+    /// <summary>容器有 CICP 通路，但本次出口（外部编码器枚举宽度，如 cjxl <c>-x color_space=</c>）
+    /// 写不出该空间的 CICP 名。≠ 容器无通路（ContainerNoCicp）：容器明明有 nclx，只是本出口不接受这条。</summary>
+    OutletCannotExpress,
     /// <summary>HDR 曲线无法生成 ICC（iccgen 不支持 PQ/HLG）—— 标注侧限制。</summary>
     HdrNoIccGenerator,
 }

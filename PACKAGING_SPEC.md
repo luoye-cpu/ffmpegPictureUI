@@ -200,6 +200,7 @@ Invoke-7zMax 'a -t7z -mx9 -md=3840m -mfb=273 -ms=on -mmt=1 "out.7z" *'
 
 📌 运行要求
   • Windows 10/11 或更高版本
+  • CPU: x86-64-v3 / AVX2 或更高（Intel Haswell 2013+、AMD Excavator 2015+）
   • 无需安装任何运行环境（NativeAOT 独立编译）
 
 🚀 快速开始

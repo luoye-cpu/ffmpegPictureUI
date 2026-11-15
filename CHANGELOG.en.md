@@ -13,6 +13,13 @@ All notable changes to this project are documented in this file.
 
 ## 📝 Changelog
 
+### v1.6.0-beta14 (2026-11-14) — AOT moved to the AVX2 baseline + .NET 11 GA status cleanup
+
+- **AOT target ISA**: NativeAOT moved from the .NET 11 default `x86-64-v2` to `x86-64-v3` (AVX/AVX2/BMI1/BMI2/FMA and more); `FfmpegGui.csproj` and `pack.ps1` updated together. The AOT process can now report and use AVX2; the previous beta13 package was still built for v2.
+- **Compatibility boundary**: all CPUs officially supported by Windows 11 meet AVX2; Windows 10 still has Sandy/Ivy Bridge, Bulldozer, and some Atom/Celeron/Pentium machines without AVX2, which cannot run this AOT package. Noted in `README.md` / `README.en.md` / `PACKAGING_SPEC.md`; for a v2-compatible package use `-p:IlcInstructionSet=x86-64-v2`.
+- **.NET 11 GA**: SDK `11.0.100` (RTM, `allowPrerelease=false`), runtime `11.0.0`, ILLink `11.0.0`; these are not preview dependencies. The stale `Microsoft.NET.ILLink.Tasks 11.0.0-rc.2` entry in `THIRD-PARTY-NOTICES.md` is corrected to `11.0.0`.
+- This package also includes the previously uncommitted ICC v4.4 / CICP-first / optional JPEG v2 / color-panel linkage batch.
+
 ### v1.6.0-beta13 (2026-11-13) — detection consistency + JXL gain map (both directions) + .NET 11 GA pinning + test modularization (roster 94→104) and the hard rule "never run the full roster"
 
 > This entry spans **38 commits** (2026-11-04 → 11-13), a wide merge of everything landed after beta12; ten threads in landing order.

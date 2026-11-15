@@ -104,6 +104,7 @@ namespace FfmpegGui.Services
                 var psi = new ProcessStartInfo
                 {
                     FileName = exe,
+                    WorkingDirectory = Path.GetDirectoryName(exe) ?? Environment.CurrentDirectory,
                     // -f：缺标签也打印一行 "-"，保证下面的取数顺序与标签顺序一一对应
                     Arguments = $"-f -s -s -s -ISO -PhotographicSensitivity -ISOSpeedRatings -SonyISO -ISOSetting \"{imagePath}\"",
                     RedirectStandardOutput = true,
@@ -145,6 +146,12 @@ namespace FfmpegGui.Services
         }
 
         /// <summary>
+        /// 色彩标签读取结果。`Failed=true` 表示 exiftool 未能给出可信结果（非 0 退出、空 stdout、
+        /// JSON 解析失败或两趟超时）；调用方不得把空字典当成“源没有 ICC”。
+        /// </summary>
+        public readonly record struct ColorTagReadResult(Dictionary<string, string> Tags, bool Failed, string? Failure);
+
+        /// <summary>
         /// 通过 exiftool 批量读取图片的色彩语义标签（单次进程）。
         /// 返回字典：标签名（含组前缀，如 "EXIF:ColorSpace"）→ 显示值（如 "sRGB"）。
         /// exiftool 不可用 / 读取失败返回空字典。
@@ -156,37 +163,53 @@ namespace FfmpegGui.Services
         /// </para>
         /// </summary>
         public static async Task<Dictionary<string, string>> ReadColorTagsAsync(string imagePath, Action<string>? log = null, CancellationToken ct = default)
+            => (await ReadColorTagsResultAsync(imagePath, log, ct).ConfigureAwait(false)).Tags;
+
+        /// <summary>
+        /// 带失败状态的读取入口（C-07，2026-11-14 独立复核）。旧 `ReadColorTagsAsync` 保留为兼容包装；
+        /// 生产探测走本方法，避免把 exiftool `code 126` 当成“源无 ICC”。
+        /// </summary>
+        public static async Task<ColorTagReadResult> ReadColorTagsResultAsync(string imagePath,
+            Action<string>? log = null, CancellationToken ct = default)
         {
             for (int attempt = 0; ; attempt++)
             {
-                var (tags, timedOut) = await ReadColorTagsOnceAsync(imagePath, ct, attempt == 0 ? 5 : 20)
-                    .ConfigureAwait(false);
-                if (!timedOut) return tags;
-                if (ct.IsCancellationRequested) return tags;
+                var (tags, timedOut, failed, failure) = await ReadColorTagsOnceAsync(
+                    imagePath, ct, attempt == 0 ? 5 : 20).ConfigureAwait(false);
+                if (!timedOut && !failed) return new ColorTagReadResult(tags, false, null);
+                if (ct.IsCancellationRequested)
+                    return new ColorTagReadResult(tags, true, failure ?? "cancelled");
+                // 13.61 的 Windows 启动器在并发/杀软扫描下仍可能偶发加载 perl532.dll 失败（code 126）；
+                // 这类失败不是「源无 ICC」的结论，固定目录 + 重试一趟仍不够时再给第三次机会。
+                if (attempt == 1 && failure != null && failure.Contains("code 126", StringComparison.Ordinal))
+                    continue;
                 if (attempt >= 1)
                 {
-                    // 只在**两趟都失败**时点名一次：单趟超时是重试信号，不是结论（每趟都打一行会让
-                    // 「这次连 ICC 一起读、失败后按什么算」这句唯一的判据行被稀释成两条）。
-                    var msg = $"[exiftool] 色彩标签+ICC 读取被取消/超时（5s ⇒ 20s 两趟）⇒ ICC 一并失去，按无 ICC 处理：{Path.GetFileName(imagePath)}"
-                            + "（源可能被当成未标注 = sRGB 惯例，产出可能错标）";
+                    // 只在**两趟都失败**时点名一次：单趟超时/非 0 是重试信号，不是结论。
+                    var msg = $"[exiftool] 色彩标签+ICC 读取被取消/超时或失败（5s ⇒ 20s 两趟）⇒ 不按无 ICC 处理："
+                            + $"{Path.GetFileName(imagePath)}"
+                            + (failure != null ? $"（{failure}）" : "")
+                            + "（源可能被误当成未标注 = sRGB，产出可能错标）";
                     if (log != null) log(msg + "\n"); else System.Diagnostics.Trace.WriteLine(msg);
-                    return tags;
+                    return new ColorTagReadResult(tags, true, failure ?? "timeout");
                 }
             }
         }
 
-        private static async Task<(Dictionary<string, string> Tags, bool TimedOut)> ReadColorTagsOnceAsync(
+        private static async Task<(Dictionary<string, string> Tags, bool TimedOut, bool Failed, string? Failure)> ReadColorTagsOnceAsync(
             string imagePath, CancellationToken ct, int timeoutSeconds)
         {
             var result = new Dictionary<string, string>();
             var exe = DetectedPath;
             if (exe == null || string.IsNullOrEmpty(imagePath) || !File.Exists(imagePath))
-                return (result, false);
+                return (result, false, false, null);
+            var stderr = new StringBuilder();
             try
             {
                 var psi = new ProcessStartInfo
                 {
                     FileName = exe,
+                    WorkingDirectory = Path.GetDirectoryName(exe) ?? Environment.CurrentDirectory,
                     // ⚠ 2026-10-09 性能：合并探测。原先这里只取标签，ICC 另起一次 `-b -icc_profile`
                     //   （`IccProfileService.ExtractIccToTempFile`），而单次 exiftool 实测 **0.170 s**
                     //   （perl 打包版，进程本身就贵）⇒ 每张图白付一趟。`-b` 在 `-json` 下把二进制
@@ -202,9 +225,13 @@ namespace FfmpegGui.Services
                     StandardErrorEncoding = Encoding.UTF8
                 };
                 using var p = Process.Start(psi);
-                if (p == null) return (result, false);
-                    p.BeginErrorReadLine();   // P2-3：stderr 不排空会在管道缓冲(~4KB)写满时把子进程堵死，我们等 stdout/WaitForExit 就永等（实测可复现）
-                // 超时保护（两趟：5 s 快路径 ⇒ 20 s 重试，见 ReadColorTagsAsync），并与调用方的 ct 链接（#26）
+                if (p == null) return (result, false, true, "exiftool 进程启动失败");
+                p.ErrorDataReceived += (_, e) =>
+                {
+                    if (!string.IsNullOrEmpty(e.Data)) stderr.AppendLine(e.Data);
+                };
+                p.BeginErrorReadLine();   // P2-3：stderr 不排空会在管道缓冲(~4KB)写满时把子进程堵死，我们等 stdout/WaitForExit 就永等（实测可复现）
+                // 超时保护（两趟：5 s 快路径 ⇒ 20 s 重试，见 ReadColorTagsResultAsync），并与调用方的 ct 链接（#26）
                 using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 cts.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
                 string output;
@@ -218,14 +245,18 @@ namespace FfmpegGui.Services
                 catch (OperationCanceledException)
                 {
                     try { p.Kill(entireProcessTree: true); } catch { }
-                    return (result, true);
+                    return (result, true, false, "timeout");
                 }
-                if (string.IsNullOrWhiteSpace(output)) return (result, false);
+                if (p.ExitCode != 0)
+                    return (result, false, true,
+                        $"exiftool exit {p.ExitCode}" + (stderr.Length > 0 ? $": {stderr.ToString().Trim()}" : ""));
+                if (string.IsNullOrWhiteSpace(output))
+                    return (result, false, true, "exiftool 空 stdout");
 
                 using var doc = JsonDocument.Parse(output);
                 var root = doc.RootElement;
                 if (root.ValueKind != JsonValueKind.Array || root.GetArrayLength() == 0)
-                    return (result, false);
+                    return (result, false, true, "exiftool JSON 数组为空");
                 foreach (var prop in root[0].EnumerateObject())
                 {
                     if (prop.Name == "SourceFile") continue;
@@ -234,8 +265,11 @@ namespace FfmpegGui.Services
                         : prop.Value.GetRawText();
                 }
             }
-            catch { }
-            return (result, false);
+            catch (Exception ex)
+            {
+                return (result, false, true, ex.Message);
+            }
+            return (result, false, false, null);
         }
 
         /// <summary>
@@ -692,6 +726,25 @@ namespace FfmpegGui.Services
             catch { /* 清理失败不阻断：让 exiftool 自己报错更可诊断 */ }
         }
 
+        private static void TryDelete(string path)
+        {
+            // Windows 上 exiftool 退出后文件句柄/杀软扫描可能还持有几十毫秒；
+            // `.icc-embed-*` 临时件留在产物目录会污染矩阵计数，也给用户留下“第二份产物”。
+            for (var attempt = 0; attempt < 5; attempt++)
+            {
+                try
+                {
+                    if (!File.Exists(path)) return;
+                    File.Delete(path);
+                    return;
+                }
+                catch
+                {
+                    Thread.Sleep(50);
+                }
+            }
+        }
+
         /// <summary>
         /// **写**元数据的统一出口：先清掉残留的 `_exiftool_tmp`，再按目标文件大小放宽超时。
         /// 所有会改动目标文件的 exiftool 调用都应走这里（`CopyMetadata*` / `CopyIccProfile*` / `RunAsync`）。
@@ -1002,13 +1055,50 @@ namespace FfmpegGui.Services
                 if (_detectedPath == null) return -1;
             }
 
-            // exiftool 从文件读取 ICC 二进制并写入目标: -icc_profile<=file.icc
-            var args = $"-overwrite_original -m " +
-                       $"-icc_profile<=\"{iccFilePath}\" " +
-                       $"\"{targetPath}\"";
-            logCallback?.Invoke($"[exiftool] 嵌入 ICC Profile: {Path.GetFileName(iccFilePath)} → {Path.GetFileName(targetPath)}\n");
-
-            return await WriteAndVerifyAsync(targetPath, args, logCallback).ConfigureAwait(false);
+            // exiftool 的临时件名固定为 `<target>_exiftool_tmp`：同一目标上先后/并发的
+            // 写操作（例如先恢复源 ICC、再嵌入标准 ICC）会互相踩这个名字。
+            // ICC 嵌入是“读目标 → 写目标”的独立步骤，改为在一份唯一命名的同格式副本上写，
+            // 成功后再覆盖回目标：既避免临时件冲突，也保证失败时原产物不被半写。
+            var ext = Path.GetExtension(targetPath);
+            // 临时副本放仓库钉死的 scratch 根，而不是产物目录：即使 Windows 句柄/杀软
+            // 让 finally 的删除晚一拍，也不会在用户产物旁留下 `.icc-embed-*` 第二份文件。
+            var tempTarget = Path.Combine(PlatformServices.GetTempDir(),
+                $"{Path.GetFileNameWithoutExtension(targetPath)}.icc-embed-{Guid.NewGuid():N}{ext}");
+            try
+            {
+                var args = $"-overwrite_original -m " +
+                           $"-icc_profile<=\"{iccFilePath}\" " +
+                           $"\"{tempTarget}\"";
+                logCallback?.Invoke($"[exiftool] 嵌入 ICC Profile: {Path.GetFileName(iccFilePath)} → {Path.GetFileName(targetPath)}\n");
+                // exiftool 在本机随包 Perl 运行时偶发 `perl532.dll code 126`（进程退出码 1，
+                // 与“容器不接受 ICC”的退出码相同）。ICC 嵌入是幂等的读-写步骤，重试一次可以
+                // 区分环境抖动与真实拒绝；真实拒绝仍会把 rc 返回给调用方，不会被吞掉。
+                for (var attempt = 1; attempt <= 4; attempt++)
+                {
+                    File.Copy(targetPath, tempTarget, true);
+                    var rc = await WriteAndVerifyAsync(tempTarget, args, logCallback).ConfigureAwait(false);
+                    if (rc == 0)
+                    {
+                        File.Copy(tempTarget, targetPath, true);
+                        return 0;
+                    }
+                    if (rc == 1 && attempt < 4)
+                    {
+                        logCallback?.Invoke($"[exiftool] ICC 嵌入第 {attempt} 次 rc=1，重试（区分 Perl 运行时抖动与容器拒绝）\n");
+                        Thread.Sleep(100);
+                        continue;
+                    }
+                    logCallback?.Invoke($"[exiftool] ICC 嵌入失败 rc={rc}（目标保持原样）\n");
+                    return rc;
+                }
+                return -1;
+            }
+            finally
+            {
+                TryDelete(tempTarget);
+                TryDelete(tempTarget + "_exiftool_tmp");
+                CleanStaleExifToolTemp(targetPath);
+            }
         }
 
         /// <summary>
@@ -1241,6 +1331,7 @@ namespace FfmpegGui.Services
                 var psi = new ProcessStartInfo
                 {
                     FileName = _detectedPath,
+                    WorkingDirectory = Path.GetDirectoryName(_detectedPath!) ?? Environment.CurrentDirectory,
                     Arguments = $"-{tag} -s -s -s \"{path}\"",
                     RedirectStandardOutput = true,
                     StandardOutputEncoding = Encoding.UTF8,
@@ -1296,6 +1387,9 @@ namespace FfmpegGui.Services
             {
                 FileName = _detectedPath!,
                 Arguments = args,
+                // exiftool 13.61 的 Windows 启动器依赖同目录 `perl532.dll`；进程工作目录
+                // 若停在输出目录会偶发 “Failed to load Perl DLL … code 126”。固定在工具目录。
+                WorkingDirectory = Path.GetDirectoryName(_detectedPath!) ?? Environment.CurrentDirectory,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,
@@ -1507,6 +1601,7 @@ namespace FfmpegGui.Services
                 var psi = new ProcessStartInfo
                 {
                     FileName = _detectedPath,
+                    WorkingDirectory = Path.GetDirectoryName(_detectedPath!) ?? Environment.CurrentDirectory,
                     Arguments = $"-json -G \"{filePath}\"",
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,
@@ -1602,6 +1697,7 @@ namespace FfmpegGui.Services
                 var psi = new ProcessStartInfo
                 {
                     FileName = _detectedPath,
+                    WorkingDirectory = Path.GetDirectoryName(_detectedPath!) ?? Environment.CurrentDirectory,
                     Arguments = args,
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,
@@ -1695,6 +1791,7 @@ namespace FfmpegGui.Services
             var psi = new ProcessStartInfo
             {
                 FileName = _detectedPath!,
+                WorkingDirectory = Path.GetDirectoryName(_detectedPath!) ?? Environment.CurrentDirectory,
                 Arguments = $"-stay_open True -q -q -q " + string.Join(" ", tags.Select(t => $"-{t}")) + " -json",
                 RedirectStandardInput = true,
                 RedirectStandardOutput = true,

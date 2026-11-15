@@ -52,7 +52,7 @@ Full license texts are provided in the [`licenses/`](licenses/) directory of thi
 | 组件 Component | 许可 License |
 |---|---|
 | Avalonia.BuildServices 11.3.2 | MIT |
-| Microsoft.NET.ILLink.Tasks 11.0.0-rc.2 | MIT |
+| Microsoft.NET.ILLink.Tasks 11.0.0 | MIT |
 | .NET Runtime / SDK（Microsoft） | MIT |
 
 ### 1.3 外部工具（不随本仓库分发）· External tools (not distributed here)

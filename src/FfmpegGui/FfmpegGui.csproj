@@ -16,7 +16,7 @@
     <DefineConstants Condition="$([MSBuild]::IsOSPlatform('Windows'))">$(DefineConstants);WINDOWS</DefineConstants>
     <!-- 版本号 -->
     <!-- ⚠ 预发布版本必须用连字符（SemVer）：1.6.0BETA1 会使 NuGet restore 直接失败（实测 2026-09-28） -->
-    <Version>1.6.0-beta13</Version>
+    <Version>1.6.0-beta14</Version>
     <!-- exe/文件图标：真 ICO（16/24/32/48/64 五档，由 Resources/icon_raw.png 生成；旧那份"icon.ico"
          其实是 32×32 的 PNG 改了扩展名，进不了 ApplicationIcon）。⚠ Pillow 写出的 ICO 每条目都是 PNG 载荷，
          Windows shell 认，但 Avalonia/Skia 的 ICO 读取器会解成 1×1（UiTestHost C20c 实测抓到）
@@ -61,6 +61,11 @@
     <PublishTrimmed>true</PublishTrimmed>
     <_SuppressWinFormsTrimError>true</_SuppressWinFormsTrimError>
     <IlcOptimizationPreference>Speed</IlcOptimizationPreference>
+    <!-- 2026-11-14: AOT 目标 ISA 从 .NET 11 默认的 x86-64-v2 抬到 x86-64-v3。
+         v3 = AVX/AVX2/BMI1/BMI2/FMA/LZCNT/F16C/MOVBE；不支持 AVX2 的旧 CPU
+         （Sandy/Ivy Bridge、Bulldozer 等）将无法运行 AOT 包。
+         需要兼容 v2 时显式覆盖：-p:IlcInstructionSet=x86-64-v2。 -->
+    <IlcInstructionSet Condition="'$(PublishAot)' == 'true'">x86-64-v3</IlcInstructionSet>
     <IlcFoldIdenticalMethodBodies>true</IlcFoldIdenticalMethodBodies>
     <InvariantGlobalization>true</InvariantGlobalization>
     <UseSystemResourceKeys>true</UseSystemResourceKeys>

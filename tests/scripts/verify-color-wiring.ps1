@@ -127,7 +127,12 @@ if (Test-Path $p3) {
         $ps = PixelPsnr $l1.file.FullName $e1.file.FullName '40'
         CK ($ps -match 'PROBE RESULT: pass=\d+ fail=0') "(2) 引擎 vs legacy 像素同域（$(($ps -split "`n" | Where-Object { $_ -match 'psnr=' }) -join '')）"
         CK ((Cicp $e1.file.FullName) -match 'bt709|iec61966') "(2) 引擎产物 CICP 标签为 sRGB 目标（$(Cicp $e1.file.FullName)）"
-        CK ($e1.log -match '已嵌入目标 ICC|计划为直通') "(2) 目标 ICC 已后置补齐（④：不嵌就是与像素失配的色彩描述）"
+        # 2026-11-14 标注口径变更（CICP 优先）硬锁：png 可写 CICP 且 sRGB 可精确命名 ⇒ 默认**只写 CICP**，
+        #   不附自生成 ICC。本条是日志侧正控（字节级无 iCCP 的硬锁在 (6)）：
+        #   · 必须命中"CICP 优先"；旧双描述策略会打"已嵌入目标 ICC"⇒ -notmatch 把旧行为判红。
+        #   · 不接受"计划为直通"——本格是 P3→sRGB 的 Map（像素真转），直通格在 (1)。
+        CK ($e1.log -match 'CICP 优先' -and $e1.log -notmatch '已嵌入目标 ICC') `
+            "(2) 引擎 P3→sRGB png 走 CICP 优先硬路径（日志含'CICP 优先'且无'已嵌入目标 ICC'；旧双描述在此必红）"
     }
 } else { Write-Output "  SKIP (2)：缺 P3 广色域素材 $p3" }
 
@@ -210,20 +215,28 @@ if ($eng6.file -and $leg6.file) {
     CK ($eng6.log -match '\[色彩引擎\] 决策：Map') "(6) 超广目标确实走了引擎（Map）"
     $ci6 = Cicp $eng6.file.FullName
     CK ($ci6 -match 'bt2020') "(6) 产物 cICP 声明归一后的 BT.2020 原色（实得 $ci6）"
-    # A) 提取日志里的两条 trc：cICP 行与 ICC 行
-    # ⚠ 日志行形如“cICP（primaries=9, transfer=1 ← bt2020/bt709；策略=Recommended）”
+    # A) CICP 优先正控 + 负控（2026-11-14 标注口径变更）：
+    #   "Adobe RGB" 归一为 BT.2020 SDR（bt2020/bt709），png 可写 CICP 且三元组精确 ⇒
+    #   默认**只写 cICP**，不再附自生成 BT.2020 ICC（旧策略是 cICP+生成 ICC 双描述）。
+    # ⚠ 日志行形如“[png3] 已写入 cICP（primaries=9, transfer=1 ← bt2020/bt709；策略=Recommended）”
     #   —— token 对后面带“；…”，正则必须只取到分号前，否则比对永远不等（实测踩过）。
     $tCicp = [regex]::Match($eng6.log, 'cICP（primaries=\d+, transfer=(\d+) ← ([^)；]*)(?:；[^）]*)?）')
-    $tIcc  = [regex]::Match($eng6.log, '已嵌入目标 ICC（([^)/]*)/([^）]*)）')
-    CK ($tCicp.Success -and $tIcc.Success) "(6) 日志同时给出了 cICP 与嵌入 ICC 的 tokens"
-    if ($tCicp.Success -and $tIcc.Success) {
+    CK ($tCicp.Success) "(6) 日志给出 cICP tokens（CICP 优先正控）"
+    if ($tCicp.Success) {
         $trcPair = $tCicp.Groups[2].Value.Split('/')
-        CK ($trcPair[1].Trim() -eq $tIcc.Groups[2].Value.Trim()) `
-           "(6) cICP 的 trc ≡ 嵌入 ICC 的 trc（cICP='$($trcPair[1].Trim())' ICC='$($tIcc.Groups[2].Value.Trim())'）"
-        # 编号交叉校：bt709⇒transfer=1，iec61966-2-1⇒13
-        $want = switch ($trcPair[1].Trim()) { 'bt709' { '1' } 'iec61966-2-1' { '13' } default { '?' } }
-        CK ($want -eq $tCicp.Groups[1].Value) "(6) cICP transfer 编号与 trc 名一致（$($tCicp.Groups[1].Value) ⇔ $($trcPair[1].Trim())）"
+        CK ($trcPair[0].Trim() -eq 'bt2020' -and $trcPair[1].Trim() -eq 'bt709') `
+           "(6) cICP 声明 = 归一后的 bt2020/bt709（实 '$($trcPair -join '/')'）"
+        # 编号交叉校：bt709⇒transfer=1
+        CK ('1' -eq $tCicp.Groups[1].Value) "(6) cICP transfer 编号=1（bt709 ⇔ 1）"
     }
+    # 负控：CICP 优先 ⇒ 产物**不得**再带 iCCP，日志也不得出现"已嵌入目标 ICC"
+    $bytes6 = [System.IO.File]::ReadAllBytes($eng6.file.FullName)
+    $hasIccp6 = $false
+    for ($i = 0; $i -lt $bytes6.Length - 4; $i++) {
+        if ($bytes6[$i] -eq 0x69 -and $bytes6[$i+1] -eq 0x43 -and $bytes6[$i+2] -eq 0x43 -and $bytes6[$i+3] -eq 0x50) { $hasIccp6 = $true; break }
+    }
+    CK (-not $hasIccp6) "(6) 负控：CICP 优先产物不含 iCCP chunk（实 hasIccp=$hasIccp6）"
+    CK ($eng6.log -notmatch '已嵌入目标 ICC') "(6) 负控：日志不再出现'已嵌入目标 ICC'（旧双描述已退役）"
     # B) 亮度“没跑飞”的下界（相对差 <10%）。⚠ 这里**故意不要求逐点同值**：
     #   目标 trc=bt709 时两侧编码曲线本就不同（引擎=ITU-R BT.709-6 定义式，legacy=zimg 纯 γ2.4，
     #   已登记口径分歧），实测均值 144.7 vs 156.3（7.9%）。逐点同域的严格 A/B 属于
@@ -234,6 +247,28 @@ if ($eng6.file -and $leg6.file) {
        "(6) 引擎与 legacy 亮度同量级（YAVG $my1 vs $my2，相对差 $([Math]::Round($rel*100,1))%＜10%）"
        # 备注：两者不同是已登记的 zimg γ2.4 vs BT.709 定义式口径分歧，不打算洗成“相等”
 } else { CK $false "(6) 超广目标两路产物缺失（engine=$($null -ne $eng6.file) legacy=$($null -ne $leg6.file)）" }
+
+Write-Host "`n=== (13) L1 收紧：源带 ICC 但空间可精确 CICP 命名 ⇒ 默认不携源 ICC（2026-11-14）===" -ForegroundColor Cyan
+# 新口径：ICC 只在「CICP 无法正确承载」时启用。本格 = 源带 P3 ICC + png 出口 + 默认（无显式目标）。
+#   P3 可精确 CICP 命名、png 可写 CICP ⇒ 产物**只写 cICP，不得带 iCCP**；且日志必须显式解释"源 ICC 未携带"。
+#   旧 L1 逻辑（SetLabelsFrom 阶梯① / PlanCore L1 携带块）只要 SourceIccPath != null 就 AttachIcc=true ⇒
+#   旧产物会带源 iCCP、日志无"未携带"解释 ⇒ 本格在旧代码上必红。
+if (Test-Path $p3) {
+    $n1 = RunCli 'l1_nocarry' $p3 'png' $Q100
+    CK ($n1.file -and $n1.file.Length -gt 0) "(13) P3源(带ICC)→png 默认产出 $($n1.file.Length)B"
+    if ($n1.file) {
+        $b1 = [System.IO.File]::ReadAllBytes($n1.file.FullName)
+        $hasIccp1 = $false
+        for ($i = 0; $i -lt $b1.Length - 4; $i++) {
+            if ($b1[$i] -eq 0x69 -and $b1[$i+1] -eq 0x43 -and $b1[$i+2] -eq 0x43 -and $b1[$i+3] -eq 0x50) { $hasIccp1 = $true; break }
+        }
+        CK (-not $hasIccp1) "(13) 产物字节级不含 iCCP chunk（实 hasIccp=$hasIccp1；旧 L1 会带回源 718B ICC ⇒ 必红）"
+        CK ($n1.log -match '源 ICC 未携带') "(13) 日志显式解释'源 ICC 未携带'（不许静默丢源 ICC）"
+        CK ($n1.log -notmatch '保真路径：像素零改动；源 ICC 由后置步骤嵌入') "(13) 不得再宣称'后置嵌入源 ICC'（新口径下不嵌入）"
+        $ci1 = Cicp $n1.file.FullName
+        CK ($ci1 -match 'smpte432') "(13) 产物仍写 cICP=P3 原色（$ci1）——CICP 已正确承载同一空间"
+    }
+} else { Write-Output "  SKIP (13)：缺 P3 广色域素材 $p3" }
 
 Write-Host "`n=== (8) 外部 ICC（--icc-file）：判定源色彩空间并真驱动映射 ===" -ForegroundColor Cyan
 # ⚠ 2026-09-16 契约更新：`--icc-file` 原先被 ColorEngineRouter 当作「引擎未承接」整条拒绝，
@@ -406,23 +441,29 @@ function AlphaYMin16([string]$path) {
     if ($m) { return [double]($m -replace '.*YMIN=([0-9.]+).*', '$1') }
     return -1
 }
-# ── (10a) 携带源 ICC 的计划：cjxl 出口**能**写 ICC（ffmpeg-libjxl 出口做不到，见 (9) 段）──
+# ── (10a) 携带源 ICC 的计划：JXL 的 ICC/CICP **互斥**；2026-11-15 统一口径 =
+#   CICP 能精确表达源空间时以 CICP-only 交付（ICC 被抑制，不是 fail-closed），
+#   CICP 表达不了（ProPhoto 等）才走 `-x icc_pathname=` 携带 ICC。
 # ⚠ 取命令行必须认准 `[色彩] cjxl 命令行` 这个标签：同名前缀下还有 `[色彩] cjxl 出口：…` 的散文行
 #   （"变换后的 raw → PPM → cjxl"），用宽前缀 `-Last 1` 会取到散文 ⇒ 断言假红（实测踩过）。
 $c1 = RunCli 'eng_cjxl_icc' $p3 'jxl' @()
 CK ($c1.file -and $c1.file.Length -gt 0) "(10) cjxl 出口产出非空文件（$($c1.file.Length)B）"
 $c1Cmd = (($c1.log -split "`n") | Where-Object { $_ -match '\[色彩\] cjxl 命令行' } | Select-Object -Last 1)
-CK ($c1Cmd -and $c1Cmd -match 'icc_pathname=') `
-   "(10) 携带源 ICC 的计划走 `-x icc_pathname=`（**ffmpeg-libjxl 出口做不到**这件事）"
+CK ($c1Cmd -and $c1Cmd -match 'color_space=DisplayP3') `
+   "(10) 源 ICC 可精确 CICP 命名 ⇒ cjxl 走 `-x color_space=DisplayP3`（ICC 与 CICP 互斥时 CICP 优先）"
+CK ($c1Cmd -and $c1Cmd -notmatch 'icc_pathname=') `
+   "(10) 负控：此时**不**再塞 `-x icc_pathname=`（互斥容器不双写；ICC 不是被静默吞掉）"
 CK (($c1.log -split "`n") | Where-Object { $_ -match '\[色彩\] ffmpeg' -and $_ -match '-f image2 ' -and $_ -match '\.png' }) `
    "(10) SDR 场景 ffmpeg 侧走 **PNG 落盘中转**（-map_metadata 1 保住源 EXIF/XMP；图像体积与 PPM 一致，2026-10-02 实测）"
 CK ($c1.log -notmatch 'PNG 中转落盘失败') `
    "(10) 负控：PNG 中转未失败（失败会点名且显式不产出，不回退 PPM 以免静默丢元数据）"
-CK ($c1.log -match '跳过 exiftool 后置') `
-   "(10) 已跳过 exiftool 后置（对 JXL 必然失败并打出假告警：实测退出码 1）"
+CK ($c1.log -match '源 ICC 未携带|CICP 已足以正确承载') `
+   "(10) 计划显式说明：源 ICC 由等价 CICP 承载（不是偷偷丢掉；降级已登记）"
+CK ($c1.log -notmatch '已嵌入出口语义 ICC') `
+   "(10) 负控：没有谎报 ICC 已写入（JXL 互斥路径只写 CICP）"
 if ($c1.file -and (Test-Path $jxlinfo)) {
     $csIcc = JxlColorSpace $c1.file.FullName
-    CK ($csIcc -match 'P3') "(10) 携带的源 ICC 真的进了产物（jxlinfo 读回 P3：$csIcc）"
+    CK ($csIcc -match 'P3') "(10) 携带的源 ICC 语义真的进了产物（jxlinfo 读回 P3：$csIcc）"
 }
 # ── (10b) 显式目标：语义由**计划**翻译成 cjxl 的 color_space ──
 $c2 = RunCli 'eng_cjxl_srgb' $p3 'jxl' @('--color-space', 'sRGB')
@@ -668,6 +709,7 @@ function JxrDec([string]$jxrPath, [string]$outPath, [string]$fmt) {
 }
 function JxrPixelFormat([string]$jxrPath) {
     Start-Process -FilePath $et -ArgumentList @('-a', '-s', '-G1', '-PixelFormat', $jxrPath) `
+        -WorkingDirectory (Split-Path -Parent $et) `
         -NoNewWindow -Wait -RedirectStandardOutput "$out/_jxrpf.txt" | Out-Null
     return ([System.IO.File]::ReadAllText("$out/_jxrpf.txt")).Trim()
 }
