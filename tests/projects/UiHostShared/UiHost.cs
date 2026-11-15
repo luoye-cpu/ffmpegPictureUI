@@ -964,6 +964,18 @@ namespace UiHostShared
             foreach (var raw in text!.Split('\n'))
             {
                 var l = raw.TrimEnd('\r').TrimEnd();
+                // 2026-11-15：主日志统一加了 `[时间戳] [级别] ` 前缀；判据对象是前缀之后的正文。
+                // 去掉一个可选的两段前缀（时间戳段 + 级别段），其余行原样保留。
+                if (l.StartsWith("[", StringComparison.Ordinal))
+                {
+                    var firstClose = l.IndexOf("] [", StringComparison.Ordinal);
+                    if (firstClose > 0)
+                    {
+                        var afterFirst = l.Substring(firstClose + 2);
+                        var secondClose = afterFirst.IndexOf("] ", StringComparison.Ordinal);
+                        if (secondClose > 0) l = afterFirst.Substring(secondClose + 2);
+                    }
+                }
                 if (!l.StartsWith("[detect] ", StringComparison.Ordinal)) continue;
                 int colon = l.IndexOf(": ", "[detect] ".Length, StringComparison.Ordinal);
                 if (colon < 0) { others.Add(l); continue; }

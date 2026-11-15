@@ -226,6 +226,11 @@ FfmpegGui.exe --headless -i <src> --format <fmt> --output <dir> `
    AVIF 在 legacy 引擎下的既有基线，`⑱-4` 形状锁。`verify-color-strategy` 本轮未重跑，
    旧读数 70/8 不可当最终验收（其中 C1–C5 是旧 PNG 双写/旧 carry 契约期望）。
 
+> **2026-11-15 二次收口更正（提交 `e2b9d2e`）**：contract 探针在按 CICP-first/标准空间改写
+> C1/C2/C5 后为 **161/0**；`verify-color-wiring` 最新官方 runner 为 **98/37**，同轮 contract 161/0，
+> 失败集中在缺 P3 广色域素材的 SKIP 与 geometry/thumbnail/bench 环境探针，不能当色彩回归，
+> 上段 159/3 已过期。`tests\output` 已在收尾清理中清空，下文证据路径不再在盘上；本节读数保留为记录。
+
 
 ---
 

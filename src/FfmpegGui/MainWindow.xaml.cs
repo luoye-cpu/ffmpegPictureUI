@@ -433,8 +433,13 @@ namespace FfmpegGui
             MediaInfoText = this.FindControl<TextBox>("MediaInfoText");
             LogText = this.FindControl<TextBox>("LogText");
 
-            // 唯一的 UI 日志入口：后台/服务层都可以写；这里负责切回 UI 线程、滚到末尾和限长。
-            UiLogService.Attach(line => Dispatcher.UIThread.Post(() => AppendUiLogLine(line)));
+            // 唯一的 UI 日志入口：后台/服务层都可以写；UI 线程上直接落地，后台线程切回 UI，
+            // 这样 UI 启动期和单元测试读到的日志不会因为一次 Post 延迟而滞后。
+            UiLogService.Attach(line =>
+            {
+                if (Dispatcher.UIThread.CheckAccess()) AppendUiLogLine(line);
+                else Dispatcher.UIThread.Post(() => AppendUiLogLine(line));
+            });
             try
             {
                 var logDir = Path.Combine(

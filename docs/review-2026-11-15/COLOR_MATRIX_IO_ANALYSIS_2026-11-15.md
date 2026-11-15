@@ -242,9 +242,13 @@ BT.2020 SDR=`9/1/0/1`，sRGB=`1/13/0/1`。
 | 静态 AVIF ICC-only | **未接** | ffmpeg 静态 AVIF 仍不能写 ICC；要走 `avifenc` 两步法，属新执行通路，未在本轮硬接。 |
 | `src_srgb` / YUV tag 的显式 `carry` | **已拍板** | 源没有 ICC 就没有“可携带的 ICC”；显式 `carry` 继续 fail-closed，不把未标注 sRGB 猜成可携带 ICC。CICP 可命名时走 CICP-only/标准 ICC 生成，不伪造源 ICC。 |
 | exiftool `perl532.dll code 126` | **已闭合** | 根因是 exiftool 启动器按 cwd 加载 `perl532.dll`；产品所有 `ProcessStartInfo` 已钉 `WorkingDirectory`，源读取加第三次尝试。最终矩阵无读取失败残留。 |
-| 门禁旧 PNG 双写断言 | **部分闭合** | `verify-prophoto-faithful` 已修测试侧 `Run` 的 `LASTEXITCODE` 与 exiftool cwd，直跑 38/0；`verify-color-wiring` 官方 runner 159/3。`verify-color-strategy` 的 C1–C5 旧 PNG 双写期望尚未整套重写，不能当最终验收。 |
+| 门禁旧 PNG 双写断言 | **部分闭合** | `verify-prophoto-faithful` 已修测试侧 `Run` 的 `LASTEXITCODE` 与 exiftool cwd，直跑 38/0；contract 探针在按 CICP-first/标准空间改写 C1/C2/C5 后 **161/0**。`verify-color-wiring` 最新一次官方 runner 为 **98/37**：contract 同轮 161/0，失败集中在缺 P3 广色域素材的 SKIP 与 geometry/thumbnail/bench 环境探针，不能当色彩回归；旧 159/3 读数已过期。`verify-color-strategy` 的 C1–C5 旧 PNG 双写期望仍未整套重跑。 |
+
+**2026-11-15 二次收口（提交 `e2b9d2e`）**：执行日志统一入口 `UiLogService`、GPU 能力 `IsApplicable/StatusReason`、编码器检测与启动热身脚本这条并发线已并入 `main` 并推送；`dotnet build ffmpegPictureUI.sln -c Release -m:1` 为 **0 errors / 6 warnings**。contract 探针在同一提交上复跑 **161/0**。第 7 节剩余项不变：ProfileID 只在托管重建路径闭合、静态 AVIF ICC-only 未接、旧 `verify-color-strategy` 基线未重跑。
 
 ## 8. 证据
+
+> 收尾清理备注：`tests\output` 整树已按“产物不进库、旧轮次可重建”清空，原先报告点名的 `tests\output\_tmp\colormatrix-analysis` 目录（含 `matrix1115e` 原始逐格产物与 `round-tmp`）已不在盘上；第 5–7 节的矩阵/ICC 读数保留在本报告与提交记录，需要复现时得用新素材重新跑矩阵，不能把本报告路径当成当前仍可读的证据目录。
 
 - 矩阵根：`tests\output\_tmp\colormatrix-analysis\matrix1115e\`
   - `matrix1115e.csv`（168 格 exit/products/bytes）
@@ -260,10 +264,10 @@ BT.2020 SDR=`9/1/0/1`，sRGB=`1/13/0/1`。
 ## 9. 本批交付包（2026-11-15 重建）
 
 - `publish\FFmpegPictureUI-v1.6.0-beta14-x64-full.7z`
-  - 56,369,678 B；SHA256 前 16 `734FE12948DC4B64`
+  - 56,376,296 B；SHA256 前 16 `DF92E9011306E179`
 - `publish\FFmpegPictureUI-v1.6.0-beta14-x64.7z`
-  - 11,628,869 B；SHA256 前 16 `F42F4ADD2B58BD00`
+  - 11,634,625 B；SHA256 前 16 `83134CAB52620986`
 - 包内 `publish\build\FFmpegPictureUI-v1.6.0-beta14-x64\FfmpegGui.exe`
-  - 24,654,848 B；SHA256 前 16 `2859AFF101AC3076`
-  - `ProductVersion=1.6.0-beta14+c7ac5ab9e9141d03a2263042aa7bb3d381610a07`
-- 构建：NativeAOT，0 errors / 6 warnings（均为既有 nullable / Avalonia ILC 警告）。
+  - 24,663,552 B；SHA256 前 16 `B3F6A6FA1BEB932C`
+  - `ProductVersion=1.6.0-beta14+e2b9d2ebe76011456a2c6b9e2b5ade70dbe42ccd`
+- 构建：NativeAOT，0 errors / 6 warnings（均为既有 nullable / Avalonia ILC 警告）；`IlcSingleThreaded=true` 仅用于本次磁盘/内存紧张时的稳定构建，产物仍是 `x86-64-v3` 基线。

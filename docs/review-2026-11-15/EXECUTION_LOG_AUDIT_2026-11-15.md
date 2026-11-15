@@ -9,7 +9,7 @@
 
 因此这份日志**不能作为“当前 GPU 编码能力已完整验证”的依据**。它可以作为“检测过程已跑到某一步”的线索，但关键结论需要按下面逐项读。
 
-本轮只做审查，没有改动 `src/`。
+> **更正（2026-11-15 修复轮次）**：本文第 0～4 节记录的是审查时快照（当时“本轮只做审查，没有改动 `src/`”成立）。审查后已按同一批次完成修复并复验，修复清单、代码落点和门禁读数见文末 **§5 修复记录与复验**。读本文时请把前文当作“问题基线”，不要当作当前代码状态。
 
 ---
 
@@ -467,3 +467,76 @@ var success = lower.Contains("video:") ||
   - `src/FfmpegGui/MainWindow.xaml.cs:1383-1391, 1450-1457, 1464-1513, 1530-1555, 4690-4696`
   - `src/FfmpegGui/MainWindow.xaml:1128-1131`
   - `src/FfmpegGui/ImageDetailWindow.xaml:104-114`
+
+---
+
+## 8. 修复记录与复验（2026-11-15）
+
+### 8.1 已落代码
+
+1. **统一日志入口**：新增 `src/FfmpegGui/Services/UiLogService.cs`。
+   - `Attach(Action<string>)`：UI 线程直接 `AppendUiLogLine`，后台线程才 `Dispatcher.UIThread.Post`；
+   - 所有级别统一格式：`[yyyy-MM-dd HH:mm:ss.fff] [INFO|OK|WARN|ERROR] message`；
+   - 消息内换行拆成真正的一行一条；UI sink 与文件写入在同一把锁内串行；
+   - `ConfigureFile` 写 `%LocalAppData%\FFmpegPictureUI\logs\execution-YYYYMMDD.log`，使用
+     `FileMode.Append + FileShare.ReadWrite`，打开失败不影响 UI；
+   - 主窗口日志保留最近 `2,000,000` 字符，并滚到末尾。
+2. **GPU 设备语义**：`GpuCapabilityService` 增加 `IsApplicable/StatusReason`；设备探测读取进程退出码，
+   `vaapi` 在 Windows 标为“不适用”，AMF 改探测 `amf` 设备，不再借用 `d3d11va`。
+   `HasAnyGpu` 只统计 `IsApplicable && IsAvailable`。
+3. **运行时验证**：`QuickEncodeTestAsync` 返回 `EncodeValidationResult`，成功条件为 exit code 0 且实际
+   产生编码帧；`ValidateEncodersAsync` 返回实际验证过的编码器状态，主窗口逐条记录 Verified/Failed。
+4. **时序与措辞**：`[detect]` 改为“基础检测完成（GPU 运行时验证与格式报告后台进行中）”，且打印发生在
+   启动验证 Task 之前；格式报告改为 `[format] ... 封装: 已注册`，末尾追加“全部格式报告完成”（有失败时
+   改为成功/失败计数）。
+5. **测试分类器**：`UiHostShared/UiHost.cs` 的 `ClassifyDetectLines` 支持剥离统一日志的“时间戳段 + 级别段”；
+   `ui-cli` 已走该委托。`verify-startup-warmup.ps1` 的 S5d 已同步为
+   `ExifToolService.Detect(m => UiLogService.Info(m), force: true);`。
+
+### 8.2 本机取证（修复后临时 GPU 探针，输出已随 `tests/output/_tmp` 清理）
+
+```text
+HasAnyGpu=True verified=0 untested=3 available=0
+DEV d3d11va: applicable=True available=True
+DEV cuda: applicable=True available=True
+DEV qsv: applicable=True available=True
+DEV vulkan: applicable=True available=True
+DEV amf: applicable=True available=False reason=退出码 -1313558101
+DEV vaapi: applicable=False available=False reason=当前操作系统不适用
+ENC mjpeg_qsv: DeviceFoundUntested
+ENC mjpeg_nvenc: NotCompiled
+ENC mjpeg_amf: NotCompiled
+ENC mjpeg_vaapi: NotCompiled
+ENC av1_qsv: DeviceFoundUntested
+ENC av1_nvenc: DeviceFoundUntested
+ENC av1_amf: CompiledNoDevice
+ENC av1_vaapi: NotCompiled
+VAL mjpeg_qsv: Verified
+VAL av1_qsv: Failed（退出码 -40）
+VAL av1_nvenc: Verified
+```
+
+### 8.3 门禁读数
+
+- `Tests.UiCli.exe ui-startup-detect`：**12 PASS / 0 FAIL**。
+- `verify-ui-host.ps1` 完整：**487 PASS / 0 FAIL**（本轮最终复跑 elapsed 145.9 s，通过运行器 `-Scripts` 子集执行）。
+- `verify-startup-warmup.ps1`：**48 PASS / 0 FAIL**（elapsed 3.2 s）。
+- 最终恢复后的 `ffmpegPictureUI.sln` Release 构建：**16 个工程全部编译，0 错误 / 6 个既有警告**。
+- `UiLogService` 临时探针（直接引用实际源文件，非复制实现）：sink 收到 3 行；落盘文件 `execution-probe.log`
+  为 144 bytes，内容逐行匹配 `[timestamp] [INFO|OK] ...`；进程退出后回读与 sink 一致。
+- 本轮被测产物指纹：`FfmpegGui.dll=AA7C2015BFCBD9F2`、`FfmpegGui.exe=D7E0F1D3F20ADF38`、
+  `ServiceProbe.exe=63DA9C19F6E12914`、`Tests.UiCli.exe=24093587486CF83C`。
+
+### 8.4 边界与未验证项
+
+- `UiLogService` 的 `FileShare.ReadWrite` 改动之后，已重新构建并复跑
+  `verify-startup-warmup` 与 `verify-ui-host`：48/0 与 487/0 均为最终源码读数。
+- 文件日志的写入端使用 `FileShare.ReadWrite`；如果在写入期间用默认 `File.ReadAllText`（其共享模式为
+  `FileShare.Read`）读取，会因读端未允许写端已有写访问而冲突。排障读取需同样以共享读写打开
+  （PowerShell `Get-Content` / 常见 tail 工具通常可）；进程退出后回读已验证。
+- UI 宿主运行器的 `ui-color`、`ui-sweep`、`ui-cli` 自检臂各自出现 `fail=1`；这是自检的**变异/对照臂**
+  读数，整体 `UIHOST RESULT: pass=487 fail=0` 仍是门禁的正式结论。
+- 审查时的临时 GPU 探针目录与 `gpu-probe.txt` 已随 `tests/output/_tmp` 清理，不再保留；本报告保留的是
+  当时读数。
+- 磁盘曾多次被测试构建占满；本轮清理了 `tests/output/_tmp` 与生成构建输出，后续仍应优先用
+  `py tests/scripts/_sweep-output.py --runs --max-age-days 7 --apply` 做按龄清扫，避免再次把源码写入截断。

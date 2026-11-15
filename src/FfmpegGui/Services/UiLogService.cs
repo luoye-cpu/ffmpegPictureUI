@@ -45,7 +45,9 @@ namespace FfmpegGui.Services
                     var dir = Path.GetDirectoryName(path);
                     if (!string.IsNullOrWhiteSpace(dir) && !Directory.Exists(dir))
                         Directory.CreateDirectory(dir);
-                    _writer = new StreamWriter(path, append: true, new UTF8Encoding(false))
+                    // FileShare.ReadWrite：程序运行期间用户/排障工具仍可 tail/读取日志文件。
+                    var stream = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite);
+                    _writer = new StreamWriter(stream, new UTF8Encoding(false))
                     {
                         AutoFlush = true
                     };
