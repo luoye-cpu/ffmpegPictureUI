@@ -2,7 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 
 namespace FfmpegGui.Services
@@ -25,9 +27,13 @@ namespace FfmpegGui.Services
     // ═══════════════════════════════════════════════════════════
     public class GpuDeviceInfo
     {
-        public string DeviceType { get; set; } = "";     // d3d11va / cuda / qsv / vulkan / vaapi
+        public string DeviceType { get; set; } = "";     // d3d11va / cuda / qsv / vulkan / amf / vaapi
         public string Description { get; set; } = "";     // 设备描述
         public bool IsAvailable { get; set; }
+        /// <summary>当前操作系统是否适用；false = 不探测，也不参与 HasAnyGpu。</summary>
+        public bool IsApplicable { get; set; } = true;
+        /// <summary>不可用/不适用的原因（用于日志，不把失败伪装成“未检测到”）。</summary>
+        public string? StatusReason { get; set; }
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -52,9 +58,13 @@ namespace FfmpegGui.Services
         /// <summary>编译进的 hwaccel 方法清单（<c>-hwaccels</c> 输出）。⚠ 仅信息展示：编译项与本机硬件存在与否无关，不参与设备判定（2026-11-04 P3）。</summary>
         public List<string> CompiledHwaccels { get; set; } = new();
         public DateTime DetectedAt { get; set; }
-        public bool HasAnyGpu => Devices.Any(d => d.IsAvailable);
+        /// <summary>只统计“当前 OS 适用且设备初始化通过”的条目；VA-API(Linux) 在 Windows 上不得把它抬成 true。</summary>
+        public bool HasAnyGpu => Devices.Any(d => d.IsApplicable && d.IsAvailable);
         public int VerifiedCount => Encoders.Values.Count(e => e.Availability == GpuEncoderAvailability.Verified);
-        public int AvailableCount => Encoders.Values.Count(e => e.Availability == GpuEncoderAvailability.DeviceFoundUntested);
+        /// <summary>尚未做运行时验证的编码器数。旧名 AvailableCount 数的是 DeviceFoundUntested，语义会误导。</summary>
+        public int UntestedCount => Encoders.Values.Count(e => e.Availability == GpuEncoderAvailability.DeviceFoundUntested);
+        /// <summary>真正可用的编码器数（仅 Verified）。保留该属性给报告/UI 使用。</summary>
+        public int AvailableCount => Encoders.Values.Count(e => e.IsUsable);
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -152,32 +162,35 @@ namespace FfmpegGui.Services
         }
 
         /// <summary>
-        /// 延迟运行 GPU 编码器运行时验证（较慢，每个编码器最多 8s）。
-        /// 应在 DetectAsync 之后、UI 空闲时调用。
+        /// 延迟运行 GPU 编码器运行时验证（较慢，每个编码器最多 8s/分辨率）。
+        /// 返回本次实际验证过的状态（含 Verified/Failed 与失败原因），供 UI 逐条记录。
         /// </summary>
-        public static async Task ValidateEncodersAsync(string? ffmpegPath = null)
+        public static async Task<IReadOnlyList<GpuEncoderStatus>> ValidateEncodersAsync(string? ffmpegPath = null)
         {
             GpuCapabilityReport? report;
             lock (_lock) _reportsByFfmpeg.TryGetValue(KeyFor(ffmpegPath), out report);
-            if (report == null) return;
+            if (report == null) return Array.Empty<GpuEncoderStatus>();
 
             var ffmpeg = ffmpegPath ?? AppSettingsService.Current.FfmpegPath;
-            if (string.IsNullOrWhiteSpace(ffmpeg) || !System.IO.File.Exists(ffmpeg)) return;
+            if (string.IsNullOrWhiteSpace(ffmpeg) || !System.IO.File.Exists(ffmpeg))
+                return Array.Empty<GpuEncoderStatus>();
 
             // 只验证"编译+有设备"但尚未验证的编码器
             var toValidate = report.Encoders.Values
                 .Where(e => e.Availability == GpuEncoderAvailability.DeviceFoundUntested)
                 .ToList();
 
+            var results = new List<GpuEncoderStatus>(toValidate.Count);
             foreach (var status in toValidate)
             {
-                var verified = await QuickEncodeTestAsync(ffmpeg, status.EncoderName);
-                status.Availability = verified
+                var validation = await QuickEncodeTestAsync(ffmpeg, status.EncoderName);
+                status.Availability = validation.Success
                     ? GpuEncoderAvailability.Verified
                     : GpuEncoderAvailability.Failed;
-                if (!verified)
-                    status.WarningMessage = $"{status.FriendlyName} 运行时验证失败，可能 GPU 驱动不兼容或硬件不支持此编码格式";
+                status.WarningMessage = validation.Success ? null : validation.Detail;
+                results.Add(status);
             }
+            return results;
         }
 
         /// <summary>清除缓存，强制下次重新检测</summary>
@@ -201,13 +214,30 @@ namespace FfmpegGui.Services
         {
             var devices = new List<GpuDeviceInfo>();
 
+            // 顺序与驱动栈相关；amf 是独立设备类型，不能再拿通用的 d3d11va 冒充 AMD。
             await TryDetectDeviceViaInitAsync(ffmpegPath, "d3d11va", devices);
             await TryDetectDeviceViaInitAsync(ffmpegPath, "cuda", devices);
             await TryDetectDeviceViaInitAsync(ffmpegPath, "qsv", devices);
             await TryDetectDeviceViaInitAsync(ffmpegPath, "vulkan", devices);
+            await TryDetectDeviceViaInitAsync(ffmpegPath, "amf", devices);
             await TryDetectDeviceViaInitAsync(ffmpegPath, "vaapi", devices);
 
             return devices;
+        }
+
+        /// <summary>
+        /// 设备类型在当前 OS 是否适用。不适用不是“探测失败”，更不是“可用”。
+        /// VA-API 是 Linux 接口；D3D11VA/AMF 是 Windows 接口。
+        /// </summary>
+        private static bool IsApplicableOnCurrentOs(string deviceType)
+        {
+            var type = deviceType.ToLowerInvariant();
+            if (OperatingSystem.IsWindows())
+                return type is "d3d11va" or "cuda" or "qsv" or "vulkan" or "amf";
+            if (OperatingSystem.IsLinux())
+                return type is "cuda" or "qsv" or "vulkan" or "vaapi";
+            // macOS 走 VideoToolbox，不在当前探测集合内；其余一律不适用。
+            return false;
         }
 
         /// <summary>编译进的 hwaccel 方法清单（仅展示；<c>-hwaccels</c> 输出与硬件存在与否无关）。</summary>
@@ -242,47 +272,82 @@ namespace FfmpegGui.Services
             if (devices.Any(d => d.DeviceType.Equals(deviceType, StringComparison.OrdinalIgnoreCase)))
                 return;
 
+            var description = GetDeviceFriendlyName(deviceType);
+            if (!IsApplicableOnCurrentOs(deviceType))
+            {
+                devices.Add(new GpuDeviceInfo
+                {
+                    DeviceType = deviceType.ToLowerInvariant(),
+                    Description = description,
+                    IsApplicable = false,
+                    IsAvailable = false,
+                    StatusReason = "当前操作系统不适用"
+                });
+                return;
+            }
+
             try
             {
                 // 用 256x256 避免某些编码器的最小分辨率限制
-                var stderr = await RunFfmpegStderrAsync(ffmpegPath,
+                var probe = await RunFfmpegProbeAsync(ffmpegPath,
                     $"-hide_banner -init_hw_device {deviceType} -f lavfi -i color=c=black:s=256x256 -vframes 1 -f null -",
                     8000);
 
-                if (!string.IsNullOrWhiteSpace(stderr))
-                {
-                    var lower = stderr.ToLowerInvariant();
-                    var failed = lower.Contains("cannot open") ||
-                                 lower.Contains("failed to create") ||
-                                 lower.Contains("no device") ||
-                                 lower.Contains("error initializing") ||
-                                 lower.Contains("impossible to convert") ||
-                                 (lower.Contains("dll") && lower.Contains("failed to open"));
+                var failure = probe.TimedOut
+                    ? "探测超时"
+                    : probe.ExitCode != 0
+                        ? $"退出码 {probe.ExitCode}"
+                        : DeviceFailureReason(probe.StdErr);
 
-                    if (!failed)
-                    {
-                        devices.Add(new GpuDeviceInfo
-                        {
-                            DeviceType = deviceType.ToLowerInvariant(),
-                            Description = GetDeviceFriendlyName(deviceType),
-                            IsAvailable = true
-                        });
-                    }
-                    else
-                    {
-                        devices.Add(new GpuDeviceInfo
-                        {
-                            DeviceType = deviceType.ToLowerInvariant(),
-                            Description = GetDeviceFriendlyName(deviceType),
-                            IsAvailable = false
-                        });
-                    }
-                }
+                devices.Add(new GpuDeviceInfo
+                {
+                    DeviceType = deviceType.ToLowerInvariant(),
+                    Description = description,
+                    IsAvailable = failure == null,
+                    StatusReason = failure
+                });
             }
-            catch
+            catch (Exception ex)
             {
-                // 设备检测失败，忽略
+                devices.Add(new GpuDeviceInfo
+                {
+                    DeviceType = deviceType.ToLowerInvariant(),
+                    Description = description,
+                    IsAvailable = false,
+                    StatusReason = $"探测异常 {ex.GetType().Name}: {ex.Message}"
+                });
             }
+        }
+
+        /// <summary>
+        /// 即使进程退出码为 0，也把明确的设备创建失败文本当作失败。
+        /// 这里是“设备初始化”，不是编码器能力验证；文案不要让用户把它读成编码可用。
+        /// </summary>
+        private static string? DeviceFailureReason(string stderr)
+        {
+            if (string.IsNullOrWhiteSpace(stderr)) return null;
+            var lower = stderr.ToLowerInvariant();
+            var markers = new[]
+            {
+                "device creation failed",
+                "failed to create",
+                "failed to initializ",
+                "cannot open",
+                "can't open",
+                "no device",
+                "error initializing",
+                "impossible to convert",
+                "cannot allocate memory",
+                "failed to set value",
+                "error parsing global options",
+                "not available",
+                "unsupported device",
+                "cannot load",
+                "no va display",
+                "failed to open"
+            };
+            var hit = markers.FirstOrDefault(m => lower.Contains(m, StringComparison.Ordinal));
+            return hit == null ? null : $"设备初始化失败（匹配 {hit}）";
         }
 
         /// <summary>检测所有已知 GPU 编码器的编译状态和硬件设备匹配（不运行耗时验证）</summary>
@@ -294,12 +359,12 @@ namespace FfmpegGui.Services
                 // MJPEG 系列
                 ("mjpeg_qsv",   "Intel QuickSync MJPEG",   "qsv"),
                 ("mjpeg_nvenc", "NVIDIA NVENC MJPEG",       "cuda"),
-                ("mjpeg_amf",   "AMD AMF MJPEG",            "d3d11va"),
+                ("mjpeg_amf",   "AMD AMF MJPEG",            "amf"),
                 ("mjpeg_vaapi", "VAAPI MJPEG",              "vaapi"),
                 // AV1 系列
                 ("av1_qsv",     "Intel QuickSync AV1",      "qsv"),
                 ("av1_nvenc",   "NVIDIA NVENC AV1",         "cuda"),
-                ("av1_amf",     "AMD AMF AV1",              "d3d11va"),
+                ("av1_amf",     "AMD AMF AV1",              "amf"),
                 ("av1_vaapi",   "VAAPI AV1",                "vaapi"),
             };
 
@@ -373,10 +438,12 @@ namespace FfmpegGui.Services
         /// <summary>
         /// 快速编码测试：生成 1 帧纯黑图像，使用指定 GPU 编码器编码到 null 输出。
         /// 使用 256×256 分辨率（某些 GPU 编码器如 NVENC 有最小分辨率限制）。
-        /// 成功 = GPU 编码器实际可用。
+        /// 成功 = 进程退出码 0 + 实际编码出非零帧；不再用 stderr 里出现 "video:" 作为成功证据
+        /// （ffmpeg 失败摘要也可能打印 video:0KiB）。
         /// </summary>
-        private static async Task<bool> QuickEncodeTestAsync(string ffmpegPath, string encoderName)
+        private static async Task<EncodeValidationResult> QuickEncodeTestAsync(string ffmpegPath, string encoderName)
         {
+            string? lastDetail = null;
             // 尝试两种分辨率：256×256 和 512×512（对付最小分辨率限制）
             foreach (var resolution in new[] { "256x256", "512x512" })
             {
@@ -385,49 +452,72 @@ namespace FfmpegGui.Services
                     var args = $"-hide_banner -nostats -f lavfi -i color=c=black:s={resolution}:r=1 -vframes 1 " +
                                $"-c:v {encoderName} -f null -";
 
-                    var stderr = await RunFfmpegStderrAsync(ffmpegPath, args, 8000);
+                    var probe = await RunFfmpegProbeAsync(ffmpegPath, args, 8000);
+                    if (probe.TimedOut)
+                        return EncodeValidationResult.Fail("运行时验证超时");
 
-                    if (string.IsNullOrWhiteSpace(stderr))
-                        continue;
-
-                    var lower = stderr.ToLowerInvariant();
-
-                    // 检查"最小分辨率不足"：如果是这个原因，用更大的分辨率重试
-                    if (lower.Contains("frame dimensions are less than the minimum") ||
-                        lower.Contains("resolution is unsupported") ||
-                        lower.Contains("current resolution is unsupported"))
+                    // 最小分辨率不足：换 512 再试；这不是“编码器不支持”。
+                    if (probe.ExitCode != 0 && LooksLikeResolutionIssue(probe.StdErr))
                     {
-                        continue; // 尝试更大的分辨率
+                        lastDetail = "256x256 低于编码器最小分辨率，已重试 512x512";
+                        continue;
                     }
 
-                    // 硬失败标志 — 不重试
-                    var hardFail = lower.Contains("cannot open") ||
-                                   lower.Contains("failed to initializ") ||
-                                   lower.Contains("no device") ||
-                                   lower.Contains("impossible to convert") ||
-                                   lower.Contains("encoder not found") ||
-                                   lower.Contains("invalid argument") ||
-                                   (lower.Contains("dll") && lower.Contains("failed to open")) ||
-                                   lower.Contains("current codec type is unsupported");
+                    if (probe.ExitCode != 0)
+                        return EncodeValidationResult.Fail(
+                            $"退出码 {probe.ExitCode}；{Tail(probe.StdErr)}");
 
-                    if (hardFail)
-                        return false;
+                    // 退出码 0 也需要看到实际编码帧。失败摘要里的 video:0KiB 不算证据。
+                    if (!HasEncodedFrame(probe.StdErr))
+                        return EncodeValidationResult.Fail(
+                            $"退出码 0 但未看到编码帧；{Tail(probe.StdErr)}");
 
-                    // 成功标志
-                    var success = lower.Contains("video:") ||
-                                  lower.Contains("frame=") && lower.Contains("fps=") ||
-                                  lower.Contains("encoded");
-
-                    if (success)
-                        return true;
+                    return EncodeValidationResult.Ok();
                 }
-                catch
+                catch (Exception ex)
                 {
-                    return false;
+                    return EncodeValidationResult.Fail($"{ex.GetType().Name}: {ex.Message}");
                 }
             }
 
-            return false;
+            return EncodeValidationResult.Fail(lastDetail ?? "未得到可判定的编码输出");
+        }
+
+        private static bool LooksLikeResolutionIssue(string stderr)
+        {
+            if (string.IsNullOrWhiteSpace(stderr)) return false;
+            var lower = stderr.ToLowerInvariant();
+            return lower.Contains("frame dimensions are less than the minimum") ||
+                   lower.Contains("resolution is unsupported") ||
+                   lower.Contains("current resolution is unsupported");
+        }
+
+        private static bool HasEncodedFrame(string stderr)
+        {
+            if (string.IsNullOrWhiteSpace(stderr)) return false;
+            // ffmpeg 的成功收尾通常是 "frame=    1 ..."；小图也可能 "video:0KiB"（四舍五入），
+            // 因此以 frame 计数为主，video 仅作补充。
+            return Regex.IsMatch(stderr, @"frame=\s*[1-9][0-9]*", RegexOptions.IgnoreCase) ||
+                   Regex.IsMatch(stderr, @"video:\s*[1-9][0-9.]*\s*KiB", RegexOptions.IgnoreCase);
+        }
+
+        private static string Tail(string? text, int max = 240)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return "（无 stderr）";
+            var lines = text.Replace("\r\n", "\n").Replace('\r', '\n')
+                .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                .Select(l => l.Trim()).Where(l => l.Length > 0).ToList();
+            var tail = string.Join(" | ", lines.TakeLast(3));
+            return tail.Length <= max ? tail : tail[^max..];
+        }
+
+        private sealed class EncodeValidationResult
+        {
+            public bool Success { get; private init; }
+            public string? Detail { get; private init; }
+
+            public static EncodeValidationResult Ok() => new() { Success = true };
+            public static EncodeValidationResult Fail(string detail) => new() { Success = false, Detail = detail };
         }
 
         // ═══════════════════════════════════════════════════════
@@ -476,7 +566,18 @@ namespace FfmpegGui.Services
             }
         }
 
-        private static async Task<string> RunFfmpegStderrAsync(string ffmpegPath, string args, int timeoutMs)
+        private sealed class FfmpegProbeResult
+        {
+            public string StdErr { get; init; } = "";
+            public int ExitCode { get; init; } = -1;
+            public bool TimedOut { get; init; }
+        }
+
+        /// <summary>
+        /// 跑一次 ffmpeg 探测，同时保留退出码与 stderr。设备/编码器判定必须以退出码为必要条件；
+        /// 不能只看 stderr 是否出现某个词，否则 vaapi 的 "Device creation failed" 这类文本会漏判。
+        /// </summary>
+        private static async Task<FfmpegProbeResult> RunFfmpegProbeAsync(string ffmpegPath, string args, int timeoutMs)
         {
             try
             {
@@ -493,24 +594,43 @@ namespace FfmpegGui.Services
                 };
 
                 using var p = Process.Start(psi);
-                if (p == null) return "";
+                if (p == null)
+                    return new FfmpegProbeResult { TimedOut = false, ExitCode = -1 };
 
+                var outputTask = p.StandardOutput.ReadToEndAsync();
                 var errorTask = p.StandardError.ReadToEndAsync();
+                var exitTask = p.WaitForExitAsync();
+                var allTask = Task.WhenAll(outputTask, errorTask, exitTask);
 
-                var completed = await Task.WhenAny(
-                    Task.WhenAll(errorTask, p.WaitForExitAsync()),
-                    Task.Delay(timeoutMs));
-
-                if (completed is Task delayTask)
+                var completed = await Task.WhenAny(allTask, Task.Delay(timeoutMs));
+                if (completed != allTask)
                 {
-                    try { p.Kill(); } catch { }
+                    try { p.Kill(entireProcessTree: true); } catch { }
+                    // 给 stderr 读取一个很短的收尾窗口；超时本身已是失败，不在这里无限等。
+                    await Task.WhenAny(allTask, Task.Delay(1200));
+                    return new FfmpegProbeResult
+                    {
+                        StdErr = errorTask.IsCompleted ? errorTask.Result : "",
+                        ExitCode = p.HasExited ? p.ExitCode : -1,
+                        TimedOut = true
+                    };
                 }
 
-                return errorTask.IsCompleted ? errorTask.Result : "";
+                return new FfmpegProbeResult
+                {
+                    StdErr = errorTask.Result,
+                    ExitCode = p.ExitCode,
+                    TimedOut = false
+                };
             }
-            catch
+            catch (Exception ex)
             {
-                return "";
+                return new FfmpegProbeResult
+                {
+                    StdErr = $"{ex.GetType().Name}: {ex.Message}",
+                    ExitCode = -1,
+                    TimedOut = false
+                };
             }
         }
 
@@ -523,6 +643,7 @@ namespace FfmpegGui.Services
                 "cuda" => "NVIDIA CUDA / NVENC",
                 "qsv" => "Intel QuickSync Video",
                 "vulkan" => "Vulkan",
+                "amf" => "AMD AMF Video Acceleration",
                 "vaapi" => "VA-API (Linux)",
                 "opencl" => "OpenCL",
                 _ => deviceType

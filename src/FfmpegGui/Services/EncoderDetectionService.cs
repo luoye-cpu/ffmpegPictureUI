@@ -621,7 +621,10 @@ namespace FfmpegGui.Services
 
             // 编码器
             var encoders = await GetEncodersForFormatAsync(fmt, ffmpegPath);
-            var bestEncoder = encoders.FirstOrDefault(e => e.IsAvailable);
+            // 优先选已验证的软件/硬件编码器；若只有待运行时验证的硬件编码器，
+            // 仍然展示它，但必须明确标注“待验证”，不能把“设备存在”说成“编码可用”。
+            var bestEncoder = encoders.FirstOrDefault(e => e.IsAvailable && (!e.IsHardwareEncoder || e.GpuAvailability == GpuEncoderAvailability.Verified))
+                               ?? encoders.FirstOrDefault(e => e.IsAvailable);
             if (bestEncoder != null)
             {
                 var tag = bestEncoder.Backend == EncoderBackend.Ffmpeg ? "" :
@@ -629,7 +632,10 @@ namespace FfmpegGui.Services
                           bestEncoder.Backend == EncoderBackend.Cjpegli ? " (外部 cjpegli)" :
                           bestEncoder.Backend == EncoderBackend.Jxr ? " (外部 JxrEncApp)" :
                           bestEncoder.Backend == EncoderBackend.Dng ? " (外部 dngtool)" : "";
-                parts.Add($"编码: {bestEncoder.Name}{tag}");
+                var validationTag = bestEncoder.IsHardwareEncoder && bestEncoder.GpuAvailability != GpuEncoderAvailability.Verified
+                    ? "（待运行时验证）"
+                    : "";
+                parts.Add($"编码: {bestEncoder.Name}{tag}{validationTag}");
             }
             else
             {
@@ -645,7 +651,7 @@ namespace FfmpegGui.Services
             if (bestEncoder != null && bestEncoder.Backend == EncoderBackend.Ffmpeg)
             {
                 var muxerOk = await IsMuxerAvailableAsync(fmt, ffmpegPath);
-                parts.Add(muxerOk ? "封装: ✅" : "封装: ❌ 不支持");
+                parts.Add(muxerOk ? "封装: 已注册" : "封装: ❌ 不支持");
             }
             else if (bestEncoder != null)
             {

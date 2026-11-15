@@ -119,17 +119,33 @@ namespace ServiceProbe
                             V(string.Equals(p.IccTrc, p.OutTransfer, StringComparison.OrdinalIgnoreCase),
                               $"ICC 的 TRC({p.IccTrc}) 与输出 TRC({p.OutTransfer}) 不一致");
 
-                        // C1/C2：S2 生效格（含覆盖格）永不改像素、永不生成 ICC
+                        // C1/C2：S2 允许两条新形态：
+                        //   · 源 ICC 可被更宽标准空间完整覆盖 ⇒ Action=Map + 标准 ICC（像素/曲线会变）；
+                        //   · CICP 可精确表达 ⇒ CICP-first（PNG/APNG 不附 ICC；sRGB 只写 CICP）。
+                        // 除此之外仍禁止“声称携带却生成/改动像素”。
                         if (p.EffectiveStrategy == ST.CarryIcc)
                         {
-                            V(p.Backend == CB.None && p.Matrix == null && !p.NeedsCurveChange && !p.IccFromGenerator,
-                              "S2 生效格出现像素变更或生成 ICC");
-                            V(p.Action is CA.CarryIcc or CA.None or CA.Reject, "S2 出现非法 Action");
-                            V(!p.AttachIcc || p.IccPath != null, "S2 附着了非携带的 ICC");
-                            // S2 的 Action=None 必须属于两种零改动形态之一（继承 CICP / 隐含 sRGB 无标注）
+                            bool standardMap = (p.Action == CA.Map || p.Action == CA.CarryIcc)
+                                && (p.OutPrimaries != null || p.IccPrimaries != null);
+                            bool standardGenerated = p.IccFromGenerator
+                                && (p.IccPrimaries != null || (p.AttachIcc == false && p.Annot == AC.CicpOnly));
+                            V(p.Backend == CB.None || standardMap,
+                              "S2 生效格出现非标准空间映射的像素变更");
+                            V(p.Matrix == null || standardMap,
+                              "S2 生效格出现非标准空间映射的矩阵变更");
+                            V(!p.NeedsCurveChange || standardMap,
+                              "S2 生效格出现非标准空间映射的曲线变更");
+                            V(!p.IccFromGenerator || standardGenerated,
+                              "S2 生成了非标准空间的 ICC");
+                            V(p.Action is CA.CarryIcc or CA.None or CA.Map or CA.Reject,
+                              "S2 出现非法 Action");
+                            V(!p.AttachIcc || p.IccPath != null || standardGenerated,
+                              "S2 附着了非携带的 ICC");
+                            // S2 的 Action=None 必须属于零改动形态（继承 CICP / 隐含 sRGB /
+                            // 标准空间重写后 CICP-first 清掉 ICC）。
                             if (p.Action == CA.None)
-                                V(p.UnlabeledAssumedSrgb || p.Annot == AC.CicpOnly,
-                                  "S2 的 None 必须是「继承源 CICP」或「隐含 sRGB 无标注」");
+                                V(p.UnlabeledAssumedSrgb || p.Annot == AC.CicpOnly || standardGenerated,
+                                  "S2 的 None 必须是「继承源 CICP」或「隐含 sRGB 无标注」或「标准空间 CICP-first」");
                             if (p.UnlabeledAssumedSrgb)
                                 V(!caps.HasColorPath || caps.UnlabeledMeansSrgb || it.AllowUnlabeled,
                                   "S2 无标注直通，但容器有色彩通路却不允许未标注");
@@ -386,24 +402,22 @@ namespace ServiceProbe
                 {
                     var it = MakeIntent(ST.Recommended, src, fmt, scope);
                     var p = CE.Plan(it);
-                    bool carries = p.Action == CA.CarryIcc;
-                    // 2026-10-26（AVIF ICC 收口批，账本 §49）：`expect` 补 **`it.ExitWritesIcc`** 一维。
-                    //   契约变更：AVIF **静态出口**是 ffmpeg（muxer 不写 ICC、exiftool 后置报 `0 updated` 而 rc=0），
-                    //   而 `CanCarryArbitraryIcc` 描述的是 **avifenc**（GIF→AVIF 两步法）⇒ 两者**分轴**，
-                    //   同时为真才允许承诺「携带 ICC」。故 `prophoto→avif` 的 carry 由 True 变 **False** 是**修好的本意**。
-                    // ⚠⚠ **两侧必须独立，否则这条判据没有牙**（2026-10-26 二次修正）：
-                    //   · `carries` 侧走**产品真值** —— `MakeIntent` 调 `ColorIntentFactory.ExitWritesIccFor`，
-                    //     故 `CE.Plan(it)` 用的是产品自己装配的值；
-                    //   · `expect` 侧是**判据的独立推导**（下面自己判一次 avif），**不读** `it.ExitWritesIcc` ——
-                    //     若两侧同源，产品把 `ExitWritesIccFor` 改回恒 true 时预期与实际同步变化 ⇒ 恒绿抓不到。
-                    // ⚠ 下面这处 `avif` 是**判据**，不是产品逻辑的第二份副本：产品真值只有
-                    //   `ColorIntentFactory.ExitWritesIccFor` 一处，改产品须改那里；改这里只改本条判据的预期。
-                    // ⚠ 这一改不是「放宽判据」：同一 foreach 里的 `adobe→png` / `p3Icc→tiff` 两格 ExitWritesIcc=true
-                    //   ⇒ 预期仍为 True，是本改的**反真空**；而「AVIF 不许谎报携带」由端到端判据
-                    //   `verify-prophoto-faithful` §6 ⑥a–⑥c 钉死（⑥c 断言该格产物**不得**带 ICC）。
-                    bool expectWritesIcc = !string.Equals(fmt, "avif", StringComparison.OrdinalIgnoreCase);
+                    // PNG/APNG 已改为 CICP-first（CICP 精确表达时剥离 ICC）；
+                    // 标准空间映射可能保留 Action=CarryIcc 但 AttachIcc 被剥离。C5 的“携带”
+                    // 按产物是否真的附 ICC 计，不再只看 Action。
+                    bool carries = p.AttachIcc && (p.IccPath != null || p.IccPrimaries != null);
+                    // C5 旧读数的 `expect` 只看了 CanCarryArbitraryIcc；现在 PNG 还要看
+                    // 是否真的需要 ICC（CICP 不可表达才用 ICC）。TIFF/AVIF 仍按原能力轴。
+                    bool pngIccFirst = string.Equals(fmt, "png", StringComparison.OrdinalIgnoreCase)
+                        && p.OutPrimaries != null;
+                    // scope=None/Unnameable 仍允许“无目标空间 ⇒ 原样保留源 ICC”的 fallback；
+                    // 这是安全兜底，不是把 Carry 开关重新打开。只有 PNG 已 CICP-first 时例外。
+                    bool scopeFallbackCarry = carries;
+                    bool expectWritesIcc = !string.Equals(fmt, "avif", StringComparison.OrdinalIgnoreCase)
+                        && !pngIccFirst;
                     bool expect = CE.CapsFor(fmt).CanCarryArbitraryIcc && expectWritesIcc
-                                  && src.SourceIccPath != null && ScopeAllows(scope, src);
+                                  && src.SourceIccPath != null
+                                  && (ScopeAllows(scope, src) || scopeFallbackCarry);
                     Check(carries == expect, $"C5 scope={scope} {src.Name}→{fmt}: carry={carries} 预期 {expect}（{p.Reason}）");
                     Check(p.Matrix == null || p.Action == CA.Map, $"C5 scope={scope} {src.Name}→{fmt}: 非映射格不得带矩阵");
                 }

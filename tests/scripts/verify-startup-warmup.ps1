@@ -135,7 +135,7 @@ $et = SrcOf 'Services/ExifToolService.cs'
 CK ($et -match 'bool force = false') "S5 exiftool `Detect(log, force)` 门控在位"
 CK ($et -match 'if \(!force && _attempted\) return;') "S5b `_attempted` 短路在位（否则 12 处兜底 = 每次调用重扫 60s）"
 CK ($et -match 'public static void ClearCache\(\)') "S5c 有 ClearCache ⇒ 用户主动入口能强制重扫"
-$forced = CountOf $mains 'ExifToolService\.Detect\(m => \{ if \(LogText != null\) LogText\.Text \+= m; \}, force: true\);'
+$forced = CountOf $mains 'ExifToolService\.Detect\(m => UiLogService\.Info\(m\), force: true\);'
 CK ($forced -ge 3) "S5d GUI 的 3 处用户主动入口都传 force:true（实 $forced）—— 否则门控会把重试吞掉"
 
 # ⑥ 换环境时的失效面

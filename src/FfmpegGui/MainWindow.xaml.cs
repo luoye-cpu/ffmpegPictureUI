@@ -22,6 +22,8 @@ namespace FfmpegGui
         private readonly ObservableCollection<Models.QueueItem> _queueView = new();
         private readonly QueueProcessor _queueProcessor;
         private bool _initialized;
+        // 主执行日志只保留最近 2M 字符；超长队列/长时间运行不能把 TextBox 撑到卡死。
+        private const int UiLogTextMaxChars = 2_000_000;
 
         private ComboBox? FormatCombo;
         private ComboBox? ConversionModeCombo;
@@ -430,6 +432,17 @@ namespace FfmpegGui
             CommandText = this.FindControl<TextBox>("CommandText");
             MediaInfoText = this.FindControl<TextBox>("MediaInfoText");
             LogText = this.FindControl<TextBox>("LogText");
+
+            // 唯一的 UI 日志入口：后台/服务层都可以写；这里负责切回 UI 线程、滚到末尾和限长。
+            UiLogService.Attach(line => Dispatcher.UIThread.Post(() => AppendUiLogLine(line)));
+            try
+            {
+                var logDir = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "FFmpegPictureUI", "logs");
+                UiLogService.ConfigureFile(Path.Combine(logDir, $"execution-{DateTime.Now:yyyyMMdd}.log"));
+            }
+            catch { /* 日志落盘失败不影响启动 */ }
             FfmpegPathBox = this.FindControl<TextBox>("FfmpegPathBox");
             OutputDirBox = this.FindControl<TextBox>("OutputDirBox");
             JxlLibDirBox = this.FindControl<TextBox>("JxlLibDirBox");
@@ -956,14 +969,14 @@ namespace FfmpegGui
                     {
                         if (_isQueueRunning)
                         {
-                            if (LogText != null) LogText.Text += "已设置：完成当前队列后停止\n";
+                            UiLogService.Info("已设置：完成当前队列后停止\n");
                         }
                     }
                     else
                     {
                         if (_isQueueRunning)
                         {
-                            if (LogText != null) LogText.Text += "已取消：完成当前队列后停止\n";
+                            UiLogService.Info("已取消：完成当前队列后停止\n");
                         }
                     }
                 };
@@ -1336,6 +1349,29 @@ namespace FfmpegGui
             LoadSettings();
         }
 
+        /// <summary>
+        /// UI 日志唯一落点。调用方已由 UiLogService 切回 UI 线程；这里只负责容量、滚动和重绘。
+        /// 不直接接受后台回调，避免旧写法 `LogText.Text +=` 的跨线程竞争。
+        /// </summary>
+        private void AppendUiLogLine(string line)
+        {
+            if (LogText == null) return;
+
+            var next = LogText.Text ?? "";
+            next += line + Environment.NewLine;
+            if (next.Length > UiLogTextMaxChars)
+            {
+                // 从最近 2M 字符开始；保留尾部，保证最新错误仍然可见。
+                var cut = next.Length - UiLogTextMaxChars;
+                next = next[cut..];
+                var nl = next.IndexOf('\n');
+                if (nl >= 0 && nl < 200) next = next[(nl + 1)..];
+            }
+
+            LogText.Text = next;
+            LogText.CaretIndex = next.Length;
+        }
+
         private void LoadSettings()
         {
             var settings = AppSettingsService.Current;
@@ -1362,13 +1398,12 @@ namespace FfmpegGui
             try
             {
                 var resolution = PlatformServices.EnsureFfmpegDirectoryResolved();
-                if (LogText != null)
-                    foreach (var m in resolution.Messages)
-                        LogText.Text += m + "\n";
+                foreach (var m in resolution.Messages)
+                    UiLogService.Info(m);
                 if (resolution.Changed && FfmpegPathBox != null && !string.IsNullOrWhiteSpace(resolution.Directory))
                     FfmpegPathBox.Text = resolution.Directory;
-                if (LogText != null && PlatformServices.PlanFolderSource != null)
-                    LogText.Text += $"[PLAN] 检测到便携组件包: {PlatformServices.PlanFolderPath} (source={PlatformServices.PlanFolderSource})\n";
+                if (PlatformServices.PlanFolderSource != null)
+                    UiLogService.Info($"[PLAN] 检测到便携组件包: {PlatformServices.PlanFolderPath} (source={PlatformServices.PlanFolderSource})");
             }
             catch { }
 
@@ -1385,10 +1420,7 @@ namespace FfmpegGui
             // 所有工作放到后台线程，主方法立即返回
             await Task.Run(async () =>
             {
-                void Log(string msg) => Dispatcher.UIThread.Post(() =>
-                {
-                    if (LogText != null) LogText.Text += msg + "\n";
-                });
+                void Log(string msg) => UiLogService.Info(msg);
 
                 Log("正在检测 ffmpeg 能力与可用编码器...");
 
@@ -1447,14 +1479,14 @@ namespace FfmpegGui
                 try { CpuFeatureService.Detect(); Log(CpuFeatureService.FullReport()); } catch { }
                 try
                 {
-                    var fp = ExternalToolsDetector.ProbeFfmpeg(null, m => { if (LogText != null) LogText.Text += m; });
+                    var fp = ExternalToolsDetector.ProbeFfmpeg(null, m => UiLogService.Info(m));
                     if (fp?.IsRunnable == true)
                         Log($"[ffmpeg] v{fp.Version} | SIMD: {string.Join(", ", fp.SimdFeatures)}");
                 }
                 catch { }
                 try
                 {
-                    var tools = ExternalToolsDetector.ProbeAllTools(m => { if (LogText != null) LogText.Text += m; });
+                    var tools = ExternalToolsDetector.ProbeAllTools(m => UiLogService.Info(m));
                     Log("── 外部工具检测 ──");
                     foreach (var t in tools)
                         Log($"  {t.StatusIcon} {t.Name}: {(t.IsAvailable ? "v" + t.Version : "未检测到")}{(string.IsNullOrEmpty(t.Source) ? "" : $" [{t.Source}]")}");
@@ -1471,7 +1503,14 @@ namespace FfmpegGui
                     if (gpuReport.Devices.Count > 0)
                     {
                         foreach (var dev in gpuReport.Devices)
-                            Log($"  [GPU 设备] {dev.Description}: {(dev.IsAvailable ? "✅ 可用" : "❌ 不可用")}");
+                        {
+                            var text = !dev.IsApplicable
+                                ? "— 不适用（当前 OS）"
+                                : dev.IsAvailable
+                                    ? "✅ 设备初始化通过"
+                                    : $"❌ 不可用（{dev.StatusReason ?? "未知原因"}）";
+                            Log($"  [GPU 设备] {dev.Description}: {text}");
+                        }
                     }
                     else
                     {
@@ -1488,36 +1527,57 @@ namespace FfmpegGui
                             Services.GpuEncoderAvailability.NotCompiled => "⊘",
                             _ => "❓"
                         };
-                        Log($"  {icon} {kv.Key}: {kv.Value.FriendlyName} — {kv.Value.Availability}");
+                        var state = kv.Value.Availability switch
+                        {
+                            Services.GpuEncoderAvailability.Verified => "已验证",
+                            Services.GpuEncoderAvailability.DeviceFoundUntested => "待运行时验证",
+                            Services.GpuEncoderAvailability.CompiledNoDevice => "已编译但无设备",
+                            Services.GpuEncoderAvailability.Failed => "验证失败",
+                            Services.GpuEncoderAvailability.NotCompiled => "未编译",
+                            _ => "未知"
+                        };
+                        Log($"  {icon} {kv.Key}: {kv.Value.FriendlyName} — {state}");
                     }
 
-                    // 延迟运行时验证（后台，不阻塞启动）
+                    // 先宣布“基础检测完成”，再启动后台运行时验证，避免验证日志抢在完成提示之前。
+                    Log("[detect] 基础检测完成（GPU 运行时验证与格式报告后台进行中）");
+
+                    // 延迟运行时验证（后台，不阻塞启动）；完成时逐条记账并刷新 UI。
                     _ = Task.Run(async () =>
                     {
                         try
                         {
-                            await Services.GpuCapabilityService.ValidateEncodersAsync();
-                            var verifiedCount = gpuReport.Encoders.Values.Count(
-                                e => e.Availability == Services.GpuEncoderAvailability.Verified);
+                            var validated = await Services.GpuCapabilityService.ValidateEncodersAsync();
+                            var verified = validated.Count(e => e.Availability == Services.GpuEncoderAvailability.Verified);
+                            var failed = validated.Count(e => e.Availability == Services.GpuEncoderAvailability.Failed);
+                            foreach (var st in validated)
+                            {
+                                var result = st.Availability == Services.GpuEncoderAvailability.Verified
+                                    ? "✅ 通过"
+                                    : $"❌ 失败（{st.WarningMessage ?? "未知原因"}）";
+                                UiLogService.Info($"[GPU] 运行时验证: {st.EncoderName} — {result}");
+                            }
+                            UiLogService.Info($"[GPU] 运行时验证完成: {verified} 通过 / {failed} 失败");
                             Dispatcher.UIThread.Post(() =>
                             {
-                                if (LogText != null && verifiedCount > 0)
-                                    LogText.Text += $"[GPU] 运行时验证完成: {verifiedCount} 个 GPU 编码器可用\n";
+                                try { _ = RefreshEncoderListAsync(); } catch { }
+                                UpdateGpuEncoderWarning();
                             });
                         }
-                        catch { }
+                        catch (Exception ex)
+                        {
+                            UiLogService.Error($"[GPU] 运行时验证异常: {ex.GetType().Name}: {ex.Message}");
+                        }
                     });
                 }
                 catch (Exception ex) { Log($"[GPU] 检测失败: {ex.Message}"); }
-
-                Log("[detect] 全部检测完成");
 
                 // ── UI 刷新 ──
                 Dispatcher.UIThread.Post(() =>
                 {
                     try { _ = RefreshEncoderListAsync(); } catch { }
                     UpdateExifToolPanelState();
-                    // ⚠ 2026-10-12：这一拍排在 `[detect] 全部检测完成` **之后** ⇒ 用户完全可能已经选了值，
+                    // ⚠ 2026-10-12：这一拍排在 `[detect] 基础检测完成` **之后** ⇒ 用户完全可能已经选了值，
                     //   而裸调 `UpdateOptionAvailability()` 会无条件把色域/位深复位、把质量写成格式默认值
                     //   ⇒ 静默冲掉用户的三项（GroupO 的 O2/O3 间歇红就是它）。这里**没有换格式** ⇒ 走保护方法。
                     RefreshOptionsKeepingTargets();
@@ -1540,22 +1600,30 @@ namespace FfmpegGui
             {
                 var formats = new[] { "jpg", "png", "webp", "avif", "tiff", "jxl", "jxr", "dng", "gif", "apng", "bmp" };
                 var ffmpegPath = AppSettingsService.Current.FfmpegPath;
+                var failed = 0;
 
                 foreach (var fmt in formats)
                 {
                     try
                     {
                         var status = await EncoderDetectionService.GetFormatStatusAsync(fmt, ffmpegPath);
-                        await Dispatcher.UIThread.InvokeAsync(() =>
-                        {
-                            if (LogText != null)
-                                LogText.Text += $"[format] {status}\n";
-                        });
+                        UiLogService.Info($"[format] {status}");
                     }
-                    catch { /* 单个格式检测失败不影响其他 */ }
+                    catch (Exception ex)
+                    {
+                        failed++;
+                        UiLogService.Warn($"[format] {fmt} 检测失败: {ex.GetType().Name}: {ex.Message}");
+                    }
                 }
+                if (failed == 0)
+                    UiLogService.Info("[format] 全部格式报告完成");
+                else
+                    UiLogService.Warn($"[format] 格式报告完成：{formats.Length - failed} 成功 / {failed} 失败");
             }
-            catch { }
+            catch (Exception ex)
+            {
+                UiLogService.Error($"[format] 格式报告异常: {ex.GetType().Name}: {ex.Message}");
+            }
         }
 
         private void UpdateQualityLabel()
@@ -1640,7 +1708,7 @@ namespace FfmpegGui
             {
                 backend = EncoderBackend.Cjxl;
                 if (LogText != null)
-                    LogText.Text += "[jxl] 手动色彩空间 → 自动切换 cjxl 编码器\n";
+                    UiLogService.Info("[jxl] 手动色彩空间 → 自动切换 cjxl 编码器\n");
             }
             else if (fmt is "jxl" && backend != EncoderBackend.Cjxl
                 && !CjxlService.IsAvailable && IsColorManuallySpecified())
@@ -1648,7 +1716,7 @@ namespace FfmpegGui
                 // 可用性诚实：cjxl 不可用时，ffmpeg 内置 libjxl 会忽略 -color_primaries/-color_trc，
                 // 手动色彩空间无法兑现 → 明确告警，避免用户误以为色彩已应用（静默丢色）。
                 if (LogText != null)
-                    LogText.Text += "⚠️ [jxl] 手动色彩空间需 cjxl 兑现，但未检测到 cjxl；ffmpeg libjxl 会忽略色彩参数，手动色彩可能丢失。请安装 cjxl 或改用 auto 色彩。\n";
+                    UiLogService.Info("⚠️ [jxl] 手动色彩空间需 cjxl 兑现，但未检测到 cjxl；ffmpeg libjxl 会忽略色彩参数，手动色彩可能丢失。请安装 cjxl 或改用 auto 色彩。\n");
             }
 
             var outputPath = GetOutputPath(_inputPath, fmt);
@@ -1760,13 +1828,13 @@ namespace FfmpegGui
                 {
                     RestoreLosslessAndQuality();
                     if (LogText != null)
-                        LogText.Text += "[jxl] 已启用「保留增益图」→ 跳过无损重封装，使用常规编码\n";
+                        UiLogService.Info("[jxl] 已启用「保留增益图」→ 跳过无损重封装，使用常规编码\n");
                 }
                 else
                 {
                     RestoreLosslessAndQuality();
                     if (LogText != null)
-                        LogText.Text += "[jxl] FFmpeg libjxl 不支持 lossless_jpeg，可选择 cjxl 编码器启用极速模式\n";
+                        UiLogService.Info("[jxl] FFmpeg libjxl 不支持 lossless_jpeg，可选择 cjxl 编码器启用极速模式\n");
                 }
             }
             else
@@ -2969,9 +3037,9 @@ namespace FfmpegGui
 
         private async Task InitializeCapabilitiesAsync()
         {
-            if (LogText != null) LogText.Text += "正在检测本地 ffmpeg 能力...\n";
+            UiLogService.Info("正在检测本地 ffmpeg 能力...\n");
             await FormatCapabilitiesService.InitializeAsync();
-            if (LogText != null) LogText.Text += "能力检测完成。\n";
+            UiLogService.Info("能力检测完成。\n");
             // ⚠ 2026-10-12：同 ①——`await` 之后这一拍也没换格式，裸调会冲掉用户已选的三项 ⇒ 走保护方法。
             RefreshOptionsKeepingTargets();
         }
@@ -3011,7 +3079,7 @@ namespace FfmpegGui
                 // 单文件选择时清理任何残留的批量映射
                 _selectedFileBaseDirs.Clear();
                 UpdateMediaFileCount();
-                if (LogText != null) LogText.Text += $"已选择: {_inputPath}\n";
+                UiLogService.Info($"已选择: {_inputPath}\n");
                 if (MediaInfoText != null) MediaInfoText.Text = Services.LocalizationService.Instance["media.loading"];
                 var info = await MediaInfoService.GetMediaInfoAsync(_inputPath);
                 if (MediaInfoText != null) MediaInfoText.Text = info;
@@ -3028,7 +3096,7 @@ namespace FfmpegGui
                     _selectedFileBaseDirs.TryGetValue(file, out var baseDir);
                     await AddSingleToQueue(file, baseDir);
                 }
-                if (LogText != null) LogText.Text += $"已批量添加 {_selectedFiles.Count} 个文件到队列\n";
+                UiLogService.Info($"已批量添加 {_selectedFiles.Count} 个文件到队列\n");
                 _selectedFiles.Clear();
                 _selectedFileBaseDirs.Clear();
                 return;
@@ -3042,13 +3110,13 @@ namespace FfmpegGui
                     _selectedFileBaseDirs.TryGetValue(file, out var baseDir);
                     await AddSingleToQueue(file, baseDir);
                 }
-                if (LogText != null) LogText.Text += $"已从列表批量添加 {_mediaFiles.Count} 个文件到队列\n";
+                UiLogService.Info($"已从列表批量添加 {_mediaFiles.Count} 个文件到队列\n");
                 return;
             }
 
             if (string.IsNullOrWhiteSpace(_inputPath))
             {
-                if (LogText != null) LogText.Text += "请先选择文件，再添加到队列\n";
+                UiLogService.Info("请先选择文件，再添加到队列\n");
                 return;
             }
 
@@ -3072,7 +3140,7 @@ namespace FfmpegGui
                 && !RawService.IsRawFile(inputPath))
             {
                 if (logNotices && LogText != null)
-                    LogText.Text += $"⚠️ 跳过: {Path.GetFileName(inputPath)} 不是 RAW/DNG 文件（RAW 模式仅支持相机原始文件）\n";
+                    UiLogService.Info($"⚠️ 跳过: {Path.GetFileName(inputPath)} 不是 RAW/DNG 文件（RAW 模式仅支持相机原始文件）\n");
                 return null;
             }
 
@@ -3095,14 +3163,14 @@ namespace FfmpegGui
                 encoderBackend = EncoderBackend.Cjxl;
                 encoderName = "cjxl";
                 if (logNotices && LogText != null)
-                    LogText.Text += "[jxl] 手动色彩空间 → 自动切换 cjxl 编码器\n";
+                    UiLogService.Info("[jxl] 手动色彩空间 → 自动切换 cjxl 编码器\n");
             }
             else if (fmt is "jxl" && encoderBackend != EncoderBackend.Cjxl
                 && !CjxlService.IsAvailable && IsColorManuallySpecified())
             {
                 // 可用性诚实：cjxl 不可用时 libjxl 会忽略手动色彩参数 → 明确告警，避免静默丢色。
                 if (logNotices && LogText != null)
-                    LogText.Text += "⚠️ [jxl] 手动色彩空间需 cjxl 兑现，但未检测到 cjxl；ffmpeg libjxl 会忽略色彩参数，手动色彩可能丢失。请安装 cjxl 或改用 auto 色彩。\n";
+                    UiLogService.Info("⚠️ [jxl] 手动色彩空间需 cjxl 兑现，但未检测到 cjxl；ffmpeg libjxl 会忽略色彩参数，手动色彩可能丢失。请安装 cjxl 或改用 auto 色彩。\n");
             }
 
             var autoThreads = AutoThreadsCheck?.IsChecked ?? true;
@@ -3314,8 +3382,7 @@ namespace FfmpegGui
             _queueProcessor.Add(item);
             _queueView.Add(item);
             _queueItems.Add(item);
-            if (LogText != null) LogText.Text += $"已添加到队列: {item.InputPath}\n";
-
+            UiLogService.Info($"已添加到队列: {item.InputPath}\n");
             // 自动生成指令预览
             if (CommandText != null)
             {
@@ -3355,7 +3422,7 @@ namespace FfmpegGui
                         _queueView.Add(item);
                         _queueItems.Add(item);
                     }
-                    if (LogText != null) LogText.Text += $"[IPC] 已添加 {snapshot.Length} 项到队列\n";
+                    UiLogService.Info($"[IPC] 已添加 {snapshot.Length} 项到队列\n");
                 });
             }
 
@@ -3394,11 +3461,11 @@ namespace FfmpegGui
             if (StopAfterCurrentCheck?.IsChecked == true)
             {
                 _queueProcessor.StopAfterCurrentQueue();
-                if (LogText != null) LogText.Text += "已设置：完成当前队列后停止\n";
+                UiLogService.Info("已设置：完成当前队列后停止\n");
             }
             if (ClearQueueButton != null)
                 ClearQueueButton.IsEnabled = false;
-            if (LogText != null) LogText.Text += $"队列开始，并行: {concurrency} 个任务\n";
+            UiLogService.Info($"队列开始，并行: {concurrency} 个任务\n");
         }
 
         private void StartQueue_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
@@ -3410,7 +3477,7 @@ namespace FfmpegGui
         {
             _queueProcessor.Stop();
             _isQueueRunning = false;
-            if (LogText != null) LogText.Text += "队列已停止\n";
+            UiLogService.Info("队列已停止\n");
             if (ClearQueueButton != null)
                 ClearQueueButton.IsEnabled = true;
         }
@@ -3465,7 +3532,7 @@ namespace FfmpegGui
             Dispatcher.UIThread.Post(() =>
             {
                 _isQueueRunning = false;
-                if (LogText != null) LogText.Text += "队列已完成\n";
+                UiLogService.Info("队列已完成\n");
                 if (ClearQueueButton != null) ClearQueueButton.IsEnabled = true;
                 if (_gainMapModeActive) RefreshGainMapProgressIfActive();
             });
@@ -3528,7 +3595,7 @@ namespace FfmpegGui
             if (_isQueueRunning)
             {
                 _queueProcessor.StopAfterCurrentQueue();
-                if (LogText != null) LogText.Text += "已请求：完成当前队列后停止\n";
+                UiLogService.Info("已请求：完成当前队列后停止\n");
             }
         }
 
@@ -3540,7 +3607,7 @@ namespace FfmpegGui
                 int concurrency = GetConcurrencyValue();
                 _queueProcessor.Start(concurrency);
                 _isQueueRunning = true;
-                if (LogText != null) LogText.Text += $"队列继续，并行: {concurrency} 个任务\n";
+                UiLogService.Info($"队列继续，并行: {concurrency} 个任务\n");
             }
         }
 
@@ -3551,13 +3618,13 @@ namespace FfmpegGui
                 var item = _queueItems[idx];
                 if (item.IsProcessing)
                 {
-                    if (LogText != null) LogText.Text += "无法删除正在处理的任务\n";
+                    UiLogService.Info("无法删除正在处理的任务\n");
                     return;
                 }
                 item.IsCancelled = true;
                 _queueView.RemoveAt(idx);
                 _queueItems.RemoveAt(idx);
-                if (LogText != null) LogText.Text += $"已删除: {item.DisplayName}\n";
+                UiLogService.Info($"已删除: {item.DisplayName}\n");
                 UpdateQueueCountLabel();
             }
         }
@@ -3583,7 +3650,7 @@ namespace FfmpegGui
         {
             if (_isQueueRunning)
             {
-                if (LogText != null) LogText.Text += "请先停止队列再清空。\n";
+                UiLogService.Info("请先停止队列再清空。\n");
                 return;
             }
             try
@@ -3605,14 +3672,13 @@ namespace FfmpegGui
                 }
 
                 UpdateQueueCountLabel();
-                if (LogText != null)
-                    LogText.Text += removedCount > 0
-                        ? $"已清空队列中 {removedCount} 个任务\n"
-                        : "队列中没有可清空的任务。\n";
+                UiLogService.Info(removedCount > 0
+                    ? $"已清空队列中 {removedCount} 个任务"
+                    : "队列中没有可清空的任务。");
             }
             catch (Exception ex)
             {
-                if (LogText != null) LogText.Text += $"清空队列失败: {ex.Message}\n";
+                UiLogService.Info($"清空队列失败: {ex.Message}\n");
             }
         }
 
@@ -4020,7 +4086,7 @@ namespace FfmpegGui
                     {
                         JpegGainMapTypeCombo.SelectedIndex = 1;  // RGB 增益图
                         if (LogText != null)
-                            LogText.Text += "[GainMap] HDR 输出建议使用 RGB 增益图以获得更优色彩\n";
+                            UiLogService.Info("[GainMap] HDR 输出建议使用 RGB 增益图以获得更优色彩\n");
                     }
                 }
             }
@@ -4107,7 +4173,7 @@ namespace FfmpegGui
                     // 直接走 UI 的日志通道（`LogText`），`Trace` 保留作兜底（非 UI 线程时仍可抓到）。
                     var bdMsg = $"[bitdepth] ffprobe 位深探测超时（3s）⇒ 已终止：{System.IO.Path.GetFileName(_inputPath)}（按 8bit 处理）";
                     System.Diagnostics.Trace.WriteLine(bdMsg);
-                    Dispatcher.UIThread.Post(() => { if (LogText != null) LogText.Text += bdMsg + "\n"; });
+                    Dispatcher.UIThread.Post(() => UiLogService.Warn(bdMsg));
                     return 8;
                 }
                 var output = outTask.GetAwaiter().GetResult().Trim();
@@ -4386,7 +4452,7 @@ namespace FfmpegGui
                 "  - 显示器 ICC（mntr）适合软校样；烘焙到标准色域请使用标准色彩空间配置。\n" +
                 "  - 烘焙会永久改变像素值，不可逆。\n" +
                 "  - AVIF/JXL 的 ICC 嵌入依赖 FFmpeg ≥ 7.0 + lcms2；AVIF 静态出口当前不写 ICC。";
-            if (LogText != null) LogText.Text += msg + "\n";
+            UiLogService.Info(msg + "\n");
         }
 
         private void IccSourceSpace_Changed(object? sender, SelectionChangedEventArgs e)
@@ -4519,7 +4585,7 @@ namespace FfmpegGui
         {
             if (string.IsNullOrWhiteSpace(_inputPath))
             {
-                if (LogText != null) LogText.Text += "请先选择输入文件\n";
+                UiLogService.Info("请先选择输入文件\n");
                 return;
             }
 
@@ -4641,12 +4707,9 @@ namespace FfmpegGui
                     : "GPU 加速已禁用 — 点击切换为 GPU 硬件加速（需重启）");
             }
 
-            if (LogText != null)
-            {
-                LogText.Text += newGpu
-                    ? "[GPU] GPU 硬件加速已启用（DX11/Vulkan），重启后生效\n"
-                    : "[GPU] GPU 硬件加速已禁用，将使用 CPU 软件渲染，重启后生效\n";
-            }
+            UiLogService.Info(newGpu
+                ? "[GPU] GPU 硬件加速已启用（DX11/Vulkan），重启后生效"
+                : "[GPU] GPU 硬件加速已禁用，将使用 CPU 软件渲染，重启后生效");
         }
 
         /// <summary>
@@ -4822,7 +4885,7 @@ namespace FfmpegGui
             if (_autoEncodeTimer != null && _autoEncodeTimer.Enabled)
             {
                 if (LogText != null)
-                    LogText.Text += "[简洁模式] 已返回完整模式，自动编码保持运行\n";
+                    UiLogService.Info("[简洁模式] 已返回完整模式，自动编码保持运行\n");
             }
         }
 
@@ -4832,7 +4895,7 @@ namespace FfmpegGui
             if (_queueProcessor.IsRunning)
             {
                 if (LogText != null)
-                    LogText.Text += "[简洁模式] 队列已在运行中，如需重启请先停止\n";
+                    UiLogService.Info("[简洁模式] 队列已在运行中，如需重启请先停止\n");
                 return;
             }
 
@@ -4842,7 +4905,7 @@ namespace FfmpegGui
             _isQueueRunning = true;
 
             if (LogText != null)
-                LogText.Text += "[简洁模式] 队列已启动\n";
+                UiLogService.Info("[简洁模式] 队列已启动\n");
             if (SimpleStatusLabel != null)
                 SimpleStatusLabel.Text = Services.LocalizationService.Instance["queue.running"];
         }
@@ -4853,7 +4916,7 @@ namespace FfmpegGui
             _isQueueRunning = false;
 
             if (LogText != null)
-                LogText.Text += "[简洁模式] 队列已停止\n";
+                UiLogService.Info("[简洁模式] 队列已停止\n");
             if (SimpleStatusLabel != null)
                 SimpleStatusLabel.Text = Services.LocalizationService.Instance["queue.stopped"];
         }
@@ -4892,8 +4955,7 @@ namespace FfmpegGui
             UpdateSimpleCounts();
 
             if (LogText != null)
-                LogText.Text += $"[简洁模式] 已添加 {added} 个文件 → 已选列表 + 转换队列\n";
-
+                UiLogService.Info($"[简洁模式] 已添加 {added} 个文件 → 已选列表 + 转换队列\n");
             // 自动编码检查
             if (AutoEncodeToggle?.IsChecked == true)
                 CheckAutoEncode();
@@ -4973,8 +5035,7 @@ namespace FfmpegGui
             UpdateSimpleCounts();
 
             if (LogText != null && added > 0)
-                LogText.Text += $"[简洁模式] 拖放添加 {added} 个文件 → 已选列表 + 转换队列\n";
-
+                UiLogService.Info($"[简洁模式] 拖放添加 {added} 个文件 → 已选列表 + 转换队列\n");
             if (AutoEncodeToggle?.IsChecked == true)
                 CheckAutoEncode();
         }
@@ -4984,7 +5045,7 @@ namespace FfmpegGui
             if (_queueProcessor.IsRunning)
             {
                 if (LogText != null)
-                    LogText.Text += "[简洁模式] 请先停止队列再清空\n";
+                    UiLogService.Info("[简洁模式] 请先停止队列再清空\n");
                 return;
             }
 
@@ -5006,7 +5067,7 @@ namespace FfmpegGui
             UpdateSimpleCounts();
 
             if (LogText != null && removed > 0)
-                LogText.Text += $"[简洁模式] 已清空 {removed} 个队列项 + 已选文件列表\n";
+                UiLogService.Info($"[简洁模式] 已清空 {removed} 个队列项 + 已选文件列表\n");
         }
 
         private void AutoEncodeToggle_Changed(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
@@ -5026,8 +5087,7 @@ namespace FfmpegGui
                 _autoEncodeTimer.Start();
 
                 if (LogText != null)
-                    LogText.Text += "[简洁模式] 自动编码已开启，队列有任务时自动开始\n";
-
+                    UiLogService.Info("[简洁模式] 自动编码已开启，队列有任务时自动开始\n");
                 // 立即检查一次
                 CheckAutoEncode();
             }
@@ -5036,7 +5096,7 @@ namespace FfmpegGui
                 _autoEncodeTimer?.Stop();
 
                 if (LogText != null)
-                    LogText.Text += "[简洁模式] 自动编码已关闭\n";
+                    UiLogService.Info("[简洁模式] 自动编码已关闭\n");
             }
         }
 
@@ -5142,7 +5202,7 @@ namespace FfmpegGui
                 if (SimpleStatusLabel != null)
                     SimpleStatusLabel.Text = "自动编码运行中...";
                 if (LogText != null)
-                    LogText.Text += "[简洁模式] 自动编码已启动\n";
+                    UiLogService.Info("[简洁模式] 自动编码已启动\n");
             }
         }
 
@@ -5317,8 +5377,7 @@ namespace FfmpegGui
             PlatformServices.ResetToolLaunchabilityCache();   // 换包 ⇒ 旧 exe 的「起不来」判定不能再留着（否则修好了也不恢复）
 
                 if (FfmpegPathBox != null) FfmpegPathBox.Text = dir;
-                if (LogText != null) LogText.Text += $"FFmpeg 目录已更新: {dir}\n";
-
+                UiLogService.Info($"FFmpeg 目录已更新: {dir}\n");
                 // 触发完整能力检测与编码器刷新
                 _ = FullDetectionAsync();
             }
@@ -5342,7 +5401,7 @@ namespace FfmpegGui
                 AppSettingsService.Save();
 
                 if (OutputDirBox != null) OutputDirBox.Text = dir;
-                if (LogText != null) LogText.Text += $"输出目录已更新: {dir}\n";
+                UiLogService.Info($"输出目录已更新: {dir}\n");
             }
         }
 
@@ -5434,12 +5493,11 @@ namespace FfmpegGui
                 AppSettingsService.Save();
                 if (ExifToolPathBox != null) ExifToolPathBox.Text = path;
                 ExifToolService.ClearCache();   // 用户主动入口（浏览/清除/重新检测）⇒ 必须绕开「一次进程一遍」的门控
-            ExifToolService.Detect(m => { if (LogText != null) LogText.Text += m; }, force: true);
+            ExifToolService.Detect(m => UiLogService.Info(m), force: true);
                 UpdateExifToolPanelState();
-                if (LogText != null)
-                    LogText.Text += ExifToolService.IsAvailable
-                        ? $"✅ exiftool 路径已更新: {path}\n"
-                        : $"⚠️ exiftool 路径已设置但无法使用: {path}\n";
+                UiLogService.Info(ExifToolService.IsAvailable
+                    ? $"✅ exiftool 路径已更新: {path}"
+                    : $"⚠️ exiftool 路径已设置但无法使用: {path}");
                 RegenerateCommand();
             }
         }
@@ -5450,12 +5508,11 @@ namespace FfmpegGui
             AppSettingsService.Save();
             if (ExifToolPathBox != null) ExifToolPathBox.Text = "";
             ExifToolService.ClearCache();   // 用户主动入口（浏览/清除/重新检测）⇒ 必须绕开「一次进程一遍」的门控
-            ExifToolService.Detect(m => { if (LogText != null) LogText.Text += m; }, force: true);
+            ExifToolService.Detect(m => UiLogService.Info(m), force: true);
             UpdateExifToolPanelState();
-            if (LogText != null)
-                LogText.Text += ExifToolService.IsAvailable
-                    ? $"✅ exiftool 自动检测: {ExifToolService.DetectedPath}\n"
-                    : "ℹ️ exiftool: 未检测到\n";
+            UiLogService.Info(ExifToolService.IsAvailable
+                ? $"✅ exiftool 自动检测: {ExifToolService.DetectedPath}"
+                : "ℹ️ exiftool: 未检测到");
             RegenerateCommand();
         }
 
@@ -5485,10 +5542,9 @@ namespace FfmpegGui
                 if (PhotoshopPathBox != null) PhotoshopPathBox.Text = path;
                 PsRenderService.ClearCache();
                 RefreshPsPanelState();
-                if (LogText != null)
-                    LogText.Text += PsRenderService.IsAvailable
-                        ? $"✅ Photoshop 路径已更新: {path}\n"
-                        : $"⚠️ Photoshop 路径已设置但无法使用: {path}\n";
+                UiLogService.Info(PsRenderService.IsAvailable
+                    ? $"✅ Photoshop 路径已更新: {path}"
+                    : $"⚠️ Photoshop 路径已设置但无法使用: {path}");
             }
         }
 
@@ -5499,10 +5555,9 @@ namespace FfmpegGui
             if (PhotoshopPathBox != null) PhotoshopPathBox.Text = "";
             PsRenderService.ClearCache();
             RefreshPsPanelState();
-            if (LogText != null)
-                LogText.Text += PsRenderService.IsAvailable
-                    ? $"✅ Photoshop 自动检测: {PsRenderService.DetectedPath}\n"
-                    : "ℹ️ Photoshop: 未检测到\n";
+            UiLogService.Info(PsRenderService.IsAvailable
+                ? $"✅ Photoshop 自动检测: {PsRenderService.DetectedPath}"
+                : "ℹ️ Photoshop: 未检测到");
         }
 
         /// <summary>从 AppSettings 加载 Photoshop 设置并刷新状态</summary>
@@ -5548,7 +5603,7 @@ namespace FfmpegGui
             if (File.Exists(Path.Combine(dir, PlatformServices.Cjxl))) found.Add("cjxl");
             if (File.Exists(Path.Combine(dir, PlatformServices.Djxl))) found.Add("djxl");
             if (File.Exists(Path.Combine(dir, PlatformServices.Cjpegli))) found.Add("cjpegli");
-            LogText.Text += $"[jxl] 目录扫描: {(found.Count > 0 ? string.Join(", ", found) : "未检测到 JXL 工具")}\n";
+            UiLogService.Info($"[jxl] 目录扫描: {(found.Count > 0 ? string.Join(", ", found) : "未检测到 JXL 工具")}\n");
             RefreshToolsStatusBar();
         }
 
@@ -5559,7 +5614,7 @@ namespace FfmpegGui
             if (File.Exists(Path.Combine(dir, PlatformServices.JxrEnc))) found.Add("JxrEnc");
             if (File.Exists(Path.Combine(dir, PlatformServices.Avifenc))) found.Add("avifenc");
             if (File.Exists(Path.Combine(dir, PlatformServices.DngToolName))) found.Add("dngtool");
-            LogText.Text += $"[artifacts] 目录扫描: {(found.Count > 0 ? string.Join(", ", found) : "未检测到")}\n";
+            UiLogService.Info($"[artifacts] 目录扫描: {(found.Count > 0 ? string.Join(", ", found) : "未检测到")}\n");
             RefreshToolsStatusBar();
         }
 
@@ -5596,7 +5651,7 @@ namespace FfmpegGui
             AppSettingsService.Save();
             SyncSettingsMenuChecks();
             if (LogText != null)
-                LogText.Text += $"[渲染] 后端已设为 {DescribeRenderMode(mode)}，重启后生效\n";
+                UiLogService.Info($"[渲染] 后端已设为 {DescribeRenderMode(mode)}，重启后生效\n");
         }
 
         private void ThemeMenu_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
@@ -5634,7 +5689,7 @@ namespace FfmpegGui
             AppSettingsService.Save();
             App.SetCloseToTray(on);
             SyncSettingsMenuChecks();
-            if (LogText != null) LogText.Text += $"[托盘] 关窗行为已设为：{(on ? "隐藏到托盘" : "退出程序")}\n";
+            UiLogService.Info($"[托盘] 关窗行为已设为：{(on ? "隐藏到托盘" : "退出程序")}\n");
         }
 
         /// <summary>
@@ -5660,7 +5715,7 @@ namespace FfmpegGui
                 AppSettingsService.Current.CacheDirectory = dir;
                 AppSettingsService.Save();
                 SyncSettingsMenuChecks();
-                if (LogText != null) LogText.Text += $"[缓存] 目录已设为 {dir}\n";
+                UiLogService.Info($"[缓存] 目录已设为 {dir}\n");
             }
         }
 
@@ -5670,7 +5725,7 @@ namespace FfmpegGui
             var dir = Services.PlatformServices.GetTempDir();
             if (string.IsNullOrWhiteSpace(dir) || !Directory.Exists(dir))
             {
-                if (LogText != null) LogText.Text += "[缓存] 缓存目录不存在或不可用\n";
+                UiLogService.Info("[缓存] 缓存目录不存在或不可用\n");
                 return;
             }
             try
@@ -5683,7 +5738,7 @@ namespace FfmpegGui
             }
             catch (Exception ex)
             {
-                if (LogText != null) LogText.Text += $"[缓存] 打开失败：{ex.Message}\n";
+                UiLogService.Info($"[缓存] 打开失败：{ex.Message}\n");
             }
         }
 
@@ -5843,11 +5898,11 @@ namespace FfmpegGui
             if (ArtifactsDirBox != null) ArtifactsDirBox.Text = "";
             if (ExifToolPathBox != null) ExifToolPathBox.Text = "";
 
-            if (LogText != null) LogText.Text += "正在重新自动检测外部工具...\n";
+            UiLogService.Info("正在重新自动检测外部工具...\n");
             RefreshJxlServices();
             RefreshArtifactsServices();
             ExifToolService.ClearCache();   // 用户主动入口（浏览/清除/重新检测）⇒ 必须绕开「一次进程一遍」的门控
-            ExifToolService.Detect(m => { if (LogText != null) LogText.Text += m; }, force: true);
+            ExifToolService.Detect(m => UiLogService.Info(m), force: true);
             UpdateExifToolPanelState();
             RefreshPsPanelState();
             // ⚠ 旧写法到此就结束 ⇒ **顶部状态行不刷新**：用户按了"重新检测",折叠态的 ✅/❌ 与版本段
@@ -5981,7 +6036,7 @@ namespace FfmpegGui
 
                 if (files.Count == 0)
                 {
-                    if (LogText != null) LogText.Text += $"文件夹中未找到支持的图片文件: {dir}\n";
+                    UiLogService.Info($"文件夹中未找到支持的图片文件: {dir}\n");
                     return;
                 }
 
@@ -5994,8 +6049,7 @@ namespace FfmpegGui
                 }
                 AddToMediaFiles(files);
                 UpdateMediaFileCount();
-                if (LogText != null) LogText.Text += $"已扫描到 {files.Count} 个文件\n";
-
+                UiLogService.Info($"已扫描到 {files.Count} 个文件\n");
                 // 取第一个文件获取媒体信息
                 _inputPath = files[0];
                 if (MediaInfoText != null) MediaInfoText.Text = Services.LocalizationService.Instance["media.loading"];
@@ -6004,7 +6058,7 @@ namespace FfmpegGui
             }
             catch (Exception ex)
             {
-                if (LogText != null) LogText.Text += $"文件夹扫描失败: {ex.Message}\n";
+                UiLogService.Info($"文件夹扫描失败: {ex.Message}\n");
             }
         }
 
@@ -6299,7 +6353,7 @@ namespace FfmpegGui
             {
                 ApplyPresetData(win.AppliedPreset);
                 RegenerateCommand();
-                if (LogText != null) LogText.Text += "[预设] 已应用预设配置\n";
+                UiLogService.Info("[预设] 已应用预设配置\n");
             }
         }
 
@@ -6709,11 +6763,11 @@ namespace FfmpegGui
             {
                 SetColorStrategyRadio(Models.ColorStrategyMapper.FromIccMode(presetIccMode));
             }
-            else if (LogText != null)
+            else
             {
-                LogText.Text += "[preset] color strategy unresolved: ColorStrategy='"
+                UiLogService.Info("[preset] color strategy unresolved: ColorStrategy='"
                     + (p.ColorStrategy ?? "<null>") + "', IccMode='" + (p.IccMode ?? "<null>")
-                    + "' -- current strategy radio kept unchanged\n";
+                    + "' -- current strategy radio kept unchanged");
             }
             UpdateOptionAvailability();
 
@@ -7067,14 +7121,14 @@ namespace FfmpegGui
                         if (!string.IsNullOrEmpty(parentDir) && !_selectedFileBaseDirs.ContainsKey(path))
                             _selectedFileBaseDirs[path] = parentDir;
                         UpdateMediaFileCount();
-                        if (LogText != null) LogText.Text += $"已拖放: {path}\n";
+                        UiLogService.Info($"已拖放: {path}\n");
                         if (MediaInfoText != null) MediaInfoText.Text = Services.LocalizationService.Instance["media.loading"];
                         var info = await MediaInfoService.GetMediaInfoAsync(path);
                         if (MediaInfoText != null) MediaInfoText.Text = info;
                     }
                     else
                     {
-                        if (LogText != null) LogText.Text += $"不支持的文件类型: {path}\n";
+                        UiLogService.Info($"不支持的文件类型: {path}\n");
                     }
                 }
             }
@@ -7113,7 +7167,7 @@ namespace FfmpegGui
                 if (_selectedFiles.Count > 0)
                 {
                     AddToMediaFiles(_selectedFiles);
-                    if (LogText != null) LogText.Text += $"已拖放 {_selectedFiles.Count} 个文件\n";
+                    UiLogService.Info($"已拖放 {_selectedFiles.Count} 个文件\n");
                     // 注意：不清空 _selectedFiles，以便后续"添加到队列"可批量导入
                     UpdateMediaFileCount();
                 }
@@ -7133,7 +7187,7 @@ namespace FfmpegGui
 
                 if (files.Count == 0)
                 {
-                    if (LogText != null) LogText.Text += $"文件夹中未找到支持的图片文件: {dir}\n";
+                    UiLogService.Info($"文件夹中未找到支持的图片文件: {dir}\n");
                     return;
                 }
 
@@ -7146,7 +7200,7 @@ namespace FfmpegGui
                 }
                 AddToMediaFiles(files);
                 UpdateMediaFileCount();
-                if (LogText != null) LogText.Text += $"已扫描到 {files.Count} 个文件\n";
+                UiLogService.Info($"已扫描到 {files.Count} 个文件\n");
                 _inputPath = files[0];
                 if (MediaInfoText != null) MediaInfoText.Text = $"正在获取媒体信息...";
                 var info = await MediaInfoService.GetMediaInfoAsync(_inputPath);
@@ -7154,7 +7208,7 @@ namespace FfmpegGui
             }
             catch (Exception ex)
             {
-                if (LogText != null) LogText.Text += $"文件夹扫描失败: {ex.Message}\n";
+                UiLogService.Info($"文件夹扫描失败: {ex.Message}\n");
             }
         }
 
