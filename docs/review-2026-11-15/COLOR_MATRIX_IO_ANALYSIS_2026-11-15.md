@@ -264,10 +264,10 @@ BT.2020 SDR=`9/1/0/1`，sRGB=`1/13/0/1`。
 ## 9. 本批交付包（2026-11-15 重建）
 
 - `publish\FFmpegPictureUI-v1.6.0-beta14-x64-full.7z`
-  - 56,376,296 B；SHA256 前 16 `DF92E9011306E179`
+  - 56,378,984 B；SHA256 前 16 `9B8667A895A6C9B7`
 - `publish\FFmpegPictureUI-v1.6.0-beta14-x64.7z`
-  - 11,634,625 B；SHA256 前 16 `83134CAB52620986`
+  - 11,634,726 B；SHA256 前 16 `A9C703A17B8D111A`
 - 包内 `publish\build\FFmpegPictureUI-v1.6.0-beta14-x64\FfmpegGui.exe`
-  - 24,663,552 B；SHA256 前 16 `B3F6A6FA1BEB932C`
-  - `ProductVersion=1.6.0-beta14+e2b9d2ebe76011456a2c6b9e2b5ade70dbe42ccd`
+  - 24,663,552 B；SHA256 前 16 `24B26BEF76DF5027`
+  - `ProductVersion=1.6.0-beta14+1a2c0da1d3960506b9c122b056b1e642796c54e7`
 - 构建：NativeAOT，0 errors / 6 warnings（均为既有 nullable / Avalonia ILC 警告）；`IlcSingleThreaded=true` 仅用于本次磁盘/内存紧张时的稳定构建，产物仍是 `x86-64-v3` 基线。
