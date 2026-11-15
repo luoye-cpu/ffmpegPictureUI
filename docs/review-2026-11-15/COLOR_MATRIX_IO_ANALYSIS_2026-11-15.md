@@ -8,6 +8,10 @@
 >
 > 固定测试环境：`TMP/TEMP/TMPDIR=tests\output\_tmp\colormatrix-analysis\round-tmp`，
 > `FFMPEGGUI_PLAN_DIR=publish\PLAN`；不设 `FFMPEGGUI_EXIFTOOL_PATH`。
+>
+> **beta15 更正（2026-11-15）**：§1/§7 的“PNG 只写 CICP”“静态 AVIF ICC-only 未接”是 beta14
+> 及以前的时间点读数；beta15 起显式携带/ICC-only 按 ICC+CICP 双写、AVIF 走 `avifenc --icc`。
+> 当前口径与实测见文末 §10，不回写上文历史读数。
 
 ## 1. 结论先行
 
@@ -271,3 +275,53 @@ BT.2020 SDR=`9/1/0/1`，sRGB=`1/13/0/1`。
   - 24,663,552 B；SHA256 前 16 `24B26BEF76DF5027`
   - `ProductVersion=1.6.0-beta14+1a2c0da1d3960506b9c122b056b1e642796c54e7`
 - 构建：NativeAOT，0 errors / 6 warnings（均为既有 nullable / Avalonia ILC 警告）；`IlcSingleThreaded=true` 仅用于本次磁盘/内存紧张时的稳定构建，产物仍是 `x86-64-v3` 基线。
+
+## 10. beta15 更正条目（2026-11-15，ICC/AVIF 收口）
+
+> 本节是**时间点更正**，不回写 §1/§7 的 beta14 读数：§1 的“PNG 只写 CICP”、§7 的
+> “静态 AVIF ICC-only 未接”都是 beta14 及以前的事实；beta15 起按下列口径执行。
+
+1. **显式携带 / ICC-only 不再被 PNG/APNG 剥离**：`EnforceContainerAnnotationRules` 的
+   自动 CICP-first 只对 `Recommended` 生效；显式 `CarryIcc` / `Manual` 保留 ICC。双承载容器
+   （`CanHaveBothIccAndCicp`）上，计划为 ICC-only、但 ICC 有可命名 H.273 令牌时，补写同源
+   `OutPrimaries/OutTrc` 并把标注收口为 `IccAndCicp` ⇒ **ICC + CICP 双写**；CICP 无法表达时
+   才 ICC-only。
+2. **实测双写**：P3 源 `--color-engine engine --color-strategy carry --icc-file p3.icc`
+   → PNG `iCCP 405 B（ProfileVersion=4.4.0，ProfileID=338ece…，smpte432/sRGB）+ cICP 12/13/0`；
+   APNG 同一源为 `iCCP 405 B + cICP 12/13/0`（单帧被 ffmpeg 存成普通 PNG，仍按 APNG 路径写 chunk）。
+3. **修 PNG cICP 取错源**：显式 carry 时后置不再用 `ffmpeg iccgen` 刚落的默认 ICC 反推；
+   计划有 `IccPrimaries + OutPrimaries` 时直接采用计划值。修前 P3 会写成 `cICP 1/13`（BT.709），
+   修后稳定 `12/13/0`；该修复是把 `engPlan == null` 加到反推分支，legacy 路径仍保留反推。
+4. **AVIF 静态出口接 ICC**：`ColorIntentFactory.ExitWritesIccFor` 不再排除 avif；默认/libaom
+   编码器走 `avifenc --icc`，硬件 AV1（svt/nvenc/qsv/amf）不静默换 avifenc。`AvifIccExit` 计划位
+   同时写 `--icc` 与 `--cicp`；`QueueProcessor` 直通分支加 `!plan.AvifIccExit`，避免 CarryIcc
+   被 ffmpeg 提前接手。
+5. **AVIF ICC-only 的 nclx**：`AvifCicp.FromPlan` 在 `OutPrimaries == null` 时不再回退 `1/13/0`；
+   附 ICC 且无 CICP 名时写 `2/2/0`（primaries/transfer unspecified、matrix identity）。后置
+   `RestoreMetadataAsync` / `ApplyColorPostSteps` 在 `AvifIccExit` 时跳过源 ICC 的 exiftool 回带，
+   不再出现“0 image files updated ⇒ 删产物”。
+6. **实测 AVIF**：
+   - P3：`nclx=smpte432/iec61966-2-1/identity`、ICC 4.4.0、`ProfileID=338ece…`、`smpte432/sRGB`；
+   - ProPhoto：`ColorPrimaries=Unspecified`、`TransferCharacteristics=Unspecified`、
+     `MatrixCoefficients=Identity`、ICC 4.4.0、`ProPhoto RGB`、`ProfileID=1dd086…`；`ffprobe gbrp`。
+7. **门禁读数（beta15 最终二进制）**：`verify-prophoto-faithful.ps1` **42/0**；
+   `verify-color-strategy.ps1` **78/0**（legacy 的 16-bit AVIF `Sample Transform` 格按能力边界跳过，
+   另显式登记 3 条已知 divergence：无标签 SDR PNG 的假定 sRGB 标签、HDR jpg+GainMap 的基准图 ICC、
+   都只影响 `--color-engine legacy` 对照臂）；`contract` **164/0**；`plan` **39/0**。
+8. **出包**：beta15 版本位、zh/en CHANGELOG、`pack.ps1 -Mode all` 同步；包读数见 §11。
+
+## 11. beta15 交付包读数（2026-11-15）
+
+- `publish\FFmpegPictureUI-v1.6.0-beta15-x64.7z`
+  - 11,634,464 B；SHA256 前 16 `AC5E8B65FA8C953E`
+- `publish\FFmpegPictureUI-v1.6.0-beta15-x64-full.7z`
+  - 56,378,953 B；SHA256 前 16 `B24B9903CFDD272F`
+- 包内 `publish\build\FFmpegPictureUI-v1.6.0-beta15-x64\FfmpegGui.exe`
+  - 24,671,744 B；SHA256 前 16 `D31DAA2A630CBDF9`
+  - `ProductVersion=1.6.0-beta15+84f5faff938c166b4ec0235959d1a55398…`
+- 包内（AOT，full 包）实测：
+  - P3 → PNG：`iCCP 405 B` + `cICP 12/13/0`；
+  - P3 → AVIF：`nclx smpte432/sRGB/identity` + ICC 4.4.0 + ICC 内 `cicp` 同源；
+  - ProPhoto → AVIF：`nclx 2/2/0`（Unspecified/Unspecified/Identity）+ ICC 4.4.0 `ProPhoto RGB`。
+- 旧 beta14 包与 `publish\build\FFmpegPictureUI-v1.6.0-beta14-x64*` 已按“只留最新一档”删除；
+  删除前已扫 reparse point（无 junction）。
