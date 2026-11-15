@@ -1865,6 +1865,13 @@ namespace FfmpegGui.Services
                 Log("[avif16] 16-bit AVIF 出口：avifenc --depth 12,4（sato + dimg 双 item）\n");
             }
 
+            // ── AVIF 静态 ICC：ffmpeg 的 AVIF muxer 不写 ICC ⇒ 计划附 ICC 时改由 avifenc 编码 ──
+            //   必须放在直通分支之前：否则 CarryIcc/保真计划会被 `Action=CarryIcc` 提前交给 ffmpeg，
+            //   ICC 承诺再次落空（2026-10-26 的旧缺陷形状）。
+            if (plan.AvifIccExit)
+                Log("[avif] 计划要求附 ICC：静态 AVIF 改由 avifenc 编码（--icc 与 --cicp 同写，"
+                    + "ffmpeg/libaom 单程写不进 ICC）\n");
+
             Log($"[色彩裁决] 裁决={plan.Verdict?.Kind}\n");
 
             // ── S7：把「引擎产出正确但有可量化损失」**逐条**告诉用户 ──
@@ -1888,6 +1895,7 @@ namespace FfmpegGui.Services
             if (!plan.GainMap
                 && !plan.ExternalEncoderExit
                 && !plan.AvifSampleTransform16
+                && !plan.AvifIccExit
                 && (plan.Action == ColorMapping.ColorAction.None
                     || plan.Action == ColorMapping.ColorAction.CarryIcc))
             {
@@ -1905,9 +1913,9 @@ namespace FfmpegGui.Services
                 //   ffmpeg 分支 ⇒ 产物由 **ffmpeg 的 libjxl** 出（用户选的 cjxl 及其 `-e/--progressive/
                 //   --photon_noise_iso` 全丢），即**静默换编码器**。实测变异证据见本轮报告。
                 if (plan.Action == ColorMapping.ColorAction.CarryIcc)
-                    // ⚠ 计划里没有 IccPath ⇒ 这次携带**不靠 ICC**（出口写不进去，如 AVIF/ffmpeg），
-                    //   描述由可命名的 CICP 标签承担。旧写法无论有没有 ICC 都宣称「源 ICC 由后置步骤嵌入」，
-                    //   在 AVIF 上就是一句做不到的承诺（2026-10-26 实测）。
+                    // ⚠ 计划里没有 IccPath ⇒ 这次携带**不靠 ICC**（出口写不进去，如 WebM/ffmpeg），
+                    //   描述由可命名的 CICP 标签承担。AVIF 2026-11-15 起已由 avifenc 写 ICC，
+                    //   其计划带 `AvifIccExit`，不会进入本直通分支。
                     Log(plan.IccPath == null
                         ? "[色彩引擎] 携带路径：像素零改动；本出口不写 ICC ⇒ 以可命名的 CICP 标签描述像素\n"
                         : "[色彩引擎] 保真路径：像素零改动；源 ICC 由后置步骤嵌入"
@@ -2115,8 +2123,10 @@ namespace FfmpegGui.Services
                     //     cICP(12,8)——只有 engPlan.Out*（SetLabelsFrom 按目标描述符写入）才是像素真值。
                     //   srcCicp 保守取 false：引擎路径的源容器 CICP 携带语义无 engPlan 级字段可读，
                     //   与旧行为（legacy 裁决点对 PFM 中间件也判 false）一致，不假造携带语义。
-                    //   legacy 路径（engPlan 空）行为逐字不变。
-                    var (op, ot, srcCicp) = engineUsed && engPlan != null
+                    //   legacy 路径（engPlan 空）行为逐字不变；但**携带/保真计划即使最终由 legacy
+                    //   编码器执行，plan 仍然存在**（`TryRunColorEngineAsync` 的直通分支返回 plan）。
+                    //   此时标签必须取 plan 的目标空间，否则 ICC(P3) 会被写成 cICP(bt709) 的冲突标签。
+                    var (op, ot, srcCicp) = engPlan != null
                         ? (engPlan.OutPrimaries, engPlan.OutTransfer, false)
                         : FfmpegCommandBuilder.EffectiveOutputColorTokens(opts, probeInput);
                     // 策略判定取**计划层生效值**（与命令行/裁决点同源）：S2 的覆盖会让声明值与生效值不同，
@@ -2130,7 +2140,16 @@ namespace FfmpegGui.Services
                     // 与曲线（ReadIccCurve + 等价判定）**都命中标准值**才算标准 ICC ⇒ 可写 cICP；
                     // 任一不命中（定制/非中性/无法解析）⇒ 不写，不拿猜出的标签降级源 ICC。
                     bool iccStd = false;
+                    // 2026-11-15：计划已把源 ICC 归一到标准空间（IccPrimaries + OutPrimaries 同源）
+                    // 时，cICP 就是该标准空间的标签；不要再拿“编码器刚落的 iCCP”去反推——
+                    // ffmpeg iccgen 的 profile 可能缺 chrm/desc，反推失败会把合法的标准标签降成
+                    // “源 ICC 非标准 ⇒ 不写 cICP”，从而破坏 ICC+CICP 双写。
+                    if (engPlan is
+                        { AttachIcc: true, IccPrimaries: { Length: > 0 }, IccTrc: { Length: > 0 },
+                          OutPrimaries: { Length: > 0 } })
+                        iccStd = true;
                     if (effStrat == Models.ColorStrategy.CarryIcc
+                        && engPlan == null
                         && hasIccp && !srcCicp && !hasCicp)
                     {
                         string? iccTmp = null;
@@ -2166,7 +2185,10 @@ namespace FfmpegGui.Services
                                           + " ⇒ 覆盖为计划值（源容器旧标签不再沿用）\n";
                         }
                     }
-                    // ★ 2026-11-15：PNG/APNG 的最终口径是“ICC 只在 CICP 无法表示时使用”。
+                    // ★ 2026-11-15：PNG/APNG 的**自动推荐档**口径是“CICP 只在能精确表达时优先使用”；
+                    //   显式「携带 ICC / 手动」不再被这条自动规则剥成 CICP-only，而是 ICC + CICP 双写。
+                    //   `engPlan.AttachIcc=false` 只会在 Recommended 的 CICP-first 或显式「仅CICP」出现，
+                    //   因此本判据保持不变，但语义已收窄到自动档。
                     bool pngPlanCicpOnly = engPlan is
                     {
                         AttachIcc: false,
@@ -2218,7 +2240,7 @@ namespace FfmpegGui.Services
                     }
                     else
                         captured.Log += "[png3] ⚠️ 与 cICP 并存的低优先级色彩块剥离失败（产物仍可能自相矛盾，已保留原文件）\n";
-                    // ★ 2026-11-15：PNG/APNG 的最终口径是“ICC 只在 CICP 无法表示时使用”。
+                    // ★ 2026-11-15：PNG/APNG 的**自动推荐档**口径是“CICP 只在能精确表达时优先使用”；
                     //   计划已裁剪为 CICP-only（AttachIcc=false 且 OutPrimaries 非空）时，
                     //   ffmpeg 仍可能沿 -map_metadata:s:v 把源 iCCP 带进产物；这里按二进制
                     //   chunk 精确删除 iCCP，保留 cICP。S3（仅CICP）同样必须零 iCCP。
@@ -2227,7 +2249,7 @@ namespace FfmpegGui.Services
                         if (PngCicpService.TryRemoveIccp(finalOutputPath, out int iccpRemoved))
                         {
                             if (iccpRemoved > 0)
-                                captured.Log += $"[png3] 已按 CICP 优先剥离 {iccpRemoved} 个 iCCP（CICP 已精确表达，ICC 仅不可表达时兜底）\n";
+                                captured.Log += $"[png3] 已按 CICP 优先剥离 {iccpRemoved} 个 iCCP（自动推荐档 CICP 已精确表达，ICC 仅不可表达时兜底）\n";
                         }
                         else
                             captured.Log += "[png3] ⚠️ CICP-only 计划下 iCCP 剥离失败（产物可能仍带 ICC）\n";
@@ -2502,6 +2524,14 @@ namespace FfmpegGui.Services
             var dec = FfmpegCommandBuilder.DecideOutputColor(copts, actualInput);
             if (engineUsed && !wantsGeneratedPlanIcc && !dec.NeedsPostEmbedIcc && !planPromisesSourceIcc) return;
             var fmtL = (item.Options.Format ?? "").ToLowerInvariant();
+            // 2026-11-15：AVIF 的 ICC 由 avifenc --icc 在编码时写入；exiftool 不支持 AVIF
+            // ICC 后置（实测 0 files updated），再嵌一次只会覆盖/失败。直接跳过，保留 avifenc 产物。
+            if (engineUsed && plan is { AvifIccExit: true })
+            {
+                item.Log += "[色彩] AVIF ICC 已随 avifenc 编码写入 ⇒ 跳过 exiftool 后置 ICC\n";
+                _onItemUpdated?.Invoke(item);
+                return;
+            }
             if (!mainBranch)
             {
                 // 只在“这个组合确实会丢东西”时告警，不给所有专用通路制造噪音。
@@ -2604,6 +2634,23 @@ namespace FfmpegGui.Services
                 wantsGeneratedPlanIcc ? plan!.IccTrc : dec.OutTrc!,
                 wantsGeneratedPlanIcc ? plan!.IccMatrix ?? "bt709" : dec.MatrixForOutput ?? "bt709",
                 s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ct);
+            // 2026-11-15：PNG/APNG 的标准 ICC 不落临时文件，直接从内存字节写 iCCP。
+            // 本机实测产品进程写 %TEMP%\stdbuilt_*.icc 会被 ACL/Defender 拒绝
+            // （UnauthorizedAccess_IODenied_Path），而输出目录可写 ⇒ 不再让临时 ICC 成为双写的前置条件。
+            if (string.IsNullOrWhiteSpace(wIcc) && wantsGeneratedPlanIcc
+                && fmtL is "png" or "apng")
+            {
+                var direct = IccProfileService.BuildStandardIccBytesFromCicp(
+                    plan!.IccPrimaries!, plan.IccTrc!);
+                if (direct is { Length: >= 132 }
+                    && PngCicpService.TryWriteIccpBytes(outputPath, direct,
+                        $"{plan.IccPrimaries}/{plan.IccTrc}"))
+                {
+                    item.Log += $"[色彩] 已由 PNG iCCP 直写标准 ICC（{plan.IccPrimaries}/{plan.IccTrc}，内存字节，无临时文件），CICP 保留\n";
+                    _onItemUpdated?.Invoke(item);
+                    return;
+                }
+            }
             if (string.IsNullOrWhiteSpace(wIcc) && wantsGeneratedPlanIcc)
             {
                 // 标准 ICC 生成失败时，宁可回退源 ICC，也不能让产物缺少描述（并显式播报）。
@@ -2992,6 +3039,14 @@ namespace FfmpegGui.Services
                             else if (planPromisesGeneratedIcc)
                             {
                                 item.Log += "[exiftool] 计划承诺生成标准 ICC（源 ICC 已重写或源仅 CICP）⇒ 跳过源 ICC 回带，交由后置步骤落地\n";
+                                _onItemUpdated?.Invoke(item);
+                            }
+                            else if (carryPlan is { AvifIccExit: true })
+                            {
+                                // 2026-11-15：AVIF 的 ICC 已由 avifenc --icc 写进 ISO-BMFF；
+                                // exiftool 不能后置写 AVIF ICC，再走 CopyIccProfileAsync 只会
+                                // 得到「0 image files updated」并触发 iccIsOnlyDescription 的删产物。
+                                item.Log += "[exiftool] AVIF ICC 已由 avifenc --icc 写入 ⇒ 跳过源 ICC 后置回带（exiftool 不支持 AVIF ICC 写入）\n";
                                 _onItemUpdated?.Invoke(item);
                             }
                             else

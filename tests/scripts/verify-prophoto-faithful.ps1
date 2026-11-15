@@ -4,8 +4,8 @@
 #   3) PNG→PNG (推荐策略): 断言 RGB 样本逐位一致 + 输出带 ProPhoto ICC + 无 CICP 假标签
 #   4) PNG→JPG / →TIFF / →WebP: 同上（有损容器的 ICC/CICP 标记一致性）
 #   5) 显式目标 = ProPhoto (手动策略): 仍保真
-#   6) ProPhoto → AVIF: 容器无法后置附着 ICC → 应保持既有 BT.2020 归一（不打「保真」日志）；
-#      2026-10-26 补：日志不得谎报「ICC 已恢复/已嵌入」、S2 carry→AVIF 必须契约拒绝且零产物、
+#   6) ProPhoto → AVIF: 静态出口已接 avifenc --icc；CICP 无法命名 ⇒ ICC-only + nclx 2/2/0；
+#      推荐/carry 均须真携带 ProPhoto ICC（v4.4），不再用旧的“容器不接受 ICC”拒绝臂；
 #      对照臂 carry→PNG 的 ICC 与源逐字节相同（见 §6 的 ⑥a–⑥f 读数）。
 #   7) 回归: 纯托管生成 ICC 的色度数值与已发布 ProPhoto(D50) 矩阵一致
 $ErrorActionPreference = "Continue"
@@ -278,28 +278,40 @@ if($mo){
   if((PixHash $mo "rgb48le") -eq $srcHash){ Ok "手动 ProPhoto 像素逐位一致" } else { No "手动 ProPhoto 像素被改动" }
 } else { No "手动 ProPhoto 无输出" }
 
-Write-Host "`n### 6) ProPhoto → AVIF (静态出口不写 ICC；不可命名 ⇒ 必须契约拒绝) ###" -ForegroundColor Cyan
+Write-Host "`n### 6) ProPhoto → AVIF (avifenc --icc；不可命名 ⇒ ICC-only + nclx 2/2/0) ###" -ForegroundColor Cyan
 Run "--headless --log-level debug -i `"$out/src_prophoto.png`" --format avif --output `"$out/o_avif`"" "avif"
 $avRc = $LASTEXITCODE
 $av = Get-ChildItem -Recurse "$out/o_avif" -Include *.avif -EA SilentlyContinue | Select-Object -First 1
 $al = (Get-Content "$out/avif.o" -EA SilentlyContinue) -join "`n"
-if($avRc -ne 0){ Ok "推荐→AVIF 契约拒绝（退出码 $avRc；源无 CICP 名 + 出口不写 ICC）" } else { No "推荐→AVIF 竟然成功（exit 0）——不能命名且不写 ICC，成功即意味着交付了错标图" }
-if(-not $av){ Ok "推荐→AVIF 零产物（拒绝不落盘）" } else { No "推荐→AVIF 仍产出 $($av.FullName)" }
-if($al -match "不能携带|不写 ICC" -and $al -match "没有任何可命名|无 CICP 名"){ Ok "拒绝理由点名「不能携带 ICC」与「无可命名标准空间」" } else { No "拒绝理由没有点名（须含容器不能携带 ICC 与无可命名标准空间；日志=$al）" }
-if($al -notmatch "ICC Profile 已恢复|已嵌入目标 ICC"){ Ok "拒绝路径未谎报 ICC 已写入" } else { No "拒绝路径仍宣称 ICC 已恢复/已嵌入" }
+if($avRc -eq 0){ Ok "推荐→AVIF 成功（avifenc 已接入静态 ICC 出口）" } else { No "推荐→AVIF 失败（exit $avRc；应成功携带 ProPhoto ICC）" }
+if($av -and $av.Length -gt 0){ Ok "推荐→AVIF 有产物（$($av.Length) B）" } else { No "推荐→AVIF 无产物" }
+$avMeta = if($av){ EtOut "-a -G1 -s `"$($av.FullName)`"" } else { "" }
+if($avMeta -match 'ProfileVersion\s*:\s*4\.4\.0' -and $avMeta -match 'ProfileDescription\s*:\s*ProPhoto RGB'){
+  Ok "推荐→AVIF 携带 ProPhoto ICC（v4.4.0）"
+} else { No "推荐→AVIF 未携带 ProPhoto ICC/v4.4（meta=$avMeta）" }
+if($avMeta -match '(?s)QuickTime.*ColorPrimaries.*Unspecified' -and $avMeta -match '(?s)QuickTime.*MatrixCoefficients.*Identity matrix'){
+  Ok "推荐→AVIF CICP 不可命名 ⇒ nclx=unspecified/identity（不伪造 BT.709/BT.601）"
+} else { No "推荐→AVIF nclx 不是 unspecified/identity（meta=$avMeta）" }
+if($al -match 'ICC-only|nclx=2/2/0'){ Ok "推荐→AVIF 日志点名 ICC-only / nclx=2/2/0" } else { No "推荐→AVIF 日志未点名 ICC-only（日志=$al）" }
+if($al -notmatch 'ICC Profile 已恢复|已嵌入目标 ICC'){ Ok "推荐路径未谎报 ICC 已恢复/已嵌入" } else { No "推荐路径仍宣称 ICC 已恢复/已嵌入" }
 
-# ── ⑥e S2 携带 + AVIF + ProPhoto：ICC 是**唯一**描述而出口写不了 ⇒ 必须契约拒绝、零产物、点名原因。
-#    这是本轮修复的正面判据：拒绝不是"少给一个格式"，而是"不交付像素 A / 标签 B 的图"。
+# ── ⑥e S2 carry + AVIF + ProPhoto：ICC 是**唯一**色彩描述，但 avifenc --icc 已能写入 ⇒
+#    必须成功、必须真携带 ICC；不再把“容器不能后置写 ICC”当成拒绝理由。
 $carryOut = "$out/o_avif_carry"
 $carryLog = Exec $exe "--headless --log-level debug -i `"$out/src_prophoto.png`" --format avif --color-strategy carry --output `"$carryOut`""
 $carryRc = $LASTEXITCODE
 $carryFiles = @(Get-ChildItem -Recurse $carryOut -Include *.avif -EA SilentlyContinue)
-if($carryRc -ne 0){ Ok "carry→AVIF 契约拒绝（退出码 $carryRc）" } else { No "carry→AVIF 竟然成功（exit 0）——ICC 是唯一描述，成功即意味着交付了错标图" }
-if($carryFiles.Count -eq 0){ Ok "carry→AVIF 零产物（拒绝不落盘）" } else { No "carry→AVIF 仍产出 $($carryFiles.Count) 个文件" }
-if($carryLog -match "不能携带|不写 ICC" -and $carryLog -match "没有任何可命名|无 CICP 名"){
-  Ok "拒绝理由点名「不能携带 ICC」与「无可命名标准空间」"
-} else { No "拒绝理由没有点名（须含容器不能携带 ICC 与无可命名标准空间）" }
-if($carryLog -notmatch "ICC Profile 已恢复"){ Ok "拒绝路径未谎报 ICC 已恢复" } else { No "拒绝路径仍打「ICC Profile 已恢复」" }
+if($carryRc -eq 0){ Ok "carry→AVIF 成功（avifenc --icc 兑现 ICC 承诺）" } else { No "carry→AVIF 失败（exit $carryRc）" }
+if($carryFiles.Count -gt 0){ Ok "carry→AVIF 有产物（$($carryFiles.Count) 个）" } else { No "carry→AVIF 零产物" }
+$carryMeta = if($carryFiles.Count -gt 0){ EtOut "-a -G1 -s `"$($carryFiles[0].FullName)`"" } else { "" }
+if($carryMeta -match 'ProfileVersion\s*:\s*4\.4\.0' -and $carryMeta -match 'ProfileDescription\s*:\s*ProPhoto RGB'){
+  Ok "carry→AVIF 携带 ProPhoto ICC（v4.4.0）"
+} else { No "carry→AVIF 未携带 ProPhoto ICC/v4.4（meta=$carryMeta）" }
+if($carryMeta -match '(?s)QuickTime.*ColorPrimaries.*Unspecified' -and $carryMeta -match '(?s)QuickTime.*MatrixCoefficients.*Identity matrix'){
+  Ok "carry→AVIF nclx=unspecified/identity（ICC-only 不伪造 CICP）"
+} else { No "carry→AVIF nclx 不是 unspecified/identity（meta=$carryMeta）" }
+if($carryLog -match '--icc'){ Ok "carry→AVIF 命令行含 avifenc --icc" } else { No "carry→AVIF 命令行未含 --icc（日志=$carryLog）" }
+if($carryLog -notmatch 'ICC Profile 已恢复'){ Ok "carry 路径未把后置 exiftool 当 ICC 唯一通路" } else { No "carry 路径仍打「ICC Profile 已恢复」" }
 
 # ── ⑥f 反真空：同一源 carry→PNG 必须真的带**同一张** ICC（证明 ⑥e 的拒绝不是"什么都拒"）。
 #    字节级比较（SHA256 of `exiftool -b -icc_profile`），不比描述文字。

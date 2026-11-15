@@ -16,15 +16,22 @@ namespace FfmpegGui.Services.ColorMapping;
 public static class ColorIntentFactory
 {
     /// <summary>
-    /// 【唯一真值】出口格式能否把 ICC **真正写进**产物。
-    /// AVIF 的静态出口是 ffmpeg：muxer 不写 ICC、exiftool 后置报「0 image files updated」而 rc=0，
-    /// 计划层若照能力表（<c>CanCarryArbitraryIcc</c>，那是对 avifenc 成立的）承诺附 ICC，
-    /// 产物实际**无任何色彩描述**（像素是 ProPhoto，nclx 却写 bt709）⇒ AVIF 恒 false。
-    /// ⚠ 2026-10-26 收口：此前这条事实在探针 `ServiceProbe.MakeIntent` 里被**抄了第二份**
-    ///   ⇒ 契约探针测的是「探针自己的假设」，产品侧回退不会被抓。现收口为单一真值，产品与探针共用。
-    /// 2026-11-03: webm(Telegram 视频贴纸)同样 false —— ffmpeg 的 webm/matroska muxer 不写 ICC。
+    /// 【唯一真值】出口格式能否把 ICC **真正写进**产物（按格式出口，不是按用户选的编码器）。
+    /// AVIF 静态出口已接线到 <c>avifenc --icc</c>（2026-11-15）：avifenc 是 libaom 编码器，
+    /// <c>--icc</c> 与 <c>--cicp</c> 可共存 ⇒ 默认/libaom 出口能把 ICC 写进 AVIF。
+    /// 显式选择硬件 AV1 编码器（SVT/NVENC/QSV/AMF）时没有 ICC 写入通路，由
+    /// <see cref="AvifIccExitAvailable"/> 在装配层把 <see cref="PlanPolicy.ExitWritesIcc"/> 置 false。
+    /// WebM muxer 仍不写 ICC ⇒ false。
     /// </summary>
-    public static bool ExitWritesIccFor(string fmt) => fmt is not ("avif" or "webm");
+    public static bool ExitWritesIccFor(string fmt) => fmt is not "webm";
+
+    /// <summary>
+    /// AVIF 的 ICC 写入通路是否可用（默认编码器或 libaom-av1 ⇒ avifenc 可执行）。
+    /// 显式硬件编码器不静默换成 avifenc：装配层把出口能力置 false，计划据此回退 CICP-only 或拒绝。
+    /// </summary>
+    public static bool AvifIccExitAvailable(string? encoder)
+        => string.IsNullOrWhiteSpace(encoder)
+           || encoder.StartsWith("libaom", StringComparison.OrdinalIgnoreCase);
     /// <summary>把选项装配为意图；不可装配时返回 null 并在 <paramref name="reason"/> 给出原因。</summary>
     public static ColorIntent? FromOptions(FfmpegOptions o, string inputPath, out string? reason)
     {
@@ -341,13 +348,13 @@ public static class ColorIntentFactory
             //     （唯一口径见 `RawColorPipeline` 的 JXR 出口文档）⇒ 不存在「普通编码出口」
             //     这条替代路径 ⇒ jxr **恒**走本出口（不必像 jxl 那样再判后端）。
             ExternalEncoderExit = (fmt == "jxl" && o.EncoderBackend == EncoderBackend.Cjxl) || fmt == "jxr",
-            // ── 出口能否真写 ICC（2026-10-26 实测缺陷后补）──────────────────────────────
-            // AVIF 的**静态**出口是 ffmpeg：muxer 不写 ICC、exiftool 后置报「0 image files updated」
-            // 但 rc=0 ⇒ 计划若照能力表（`CanCarryArbitraryIcc=true`，那是对 avifenc 成立）附 ICC，
-            // 产物实际**无任何色彩描述**（像素是 ProPhoto，nclx 却写 bt709）。
-            // jxl 不在此列：cjxl 后端由 `-x icc_pathname` 落盘，ffmpeg 出口由
-            // `RawColorPipeline.TransformFileAsync` 的 JXL 诚实门拒绝（既有）。
-            ExitWritesIcc = ExitWritesIccFor(fmt),
+            // ── 出口能否真写 ICC（2026-10-26 实测缺陷后补；2026-11-15 AVIF 接线更新）──
+            // AVIF 静态出口不再是 ffmpeg 单程：只要本次计划要附 ICC，执行层改由 avifenc
+            // 编码（`--icc` + `--cicp` 可共存），因此默认/libaom 编码器下 AVIF 可写 ICC。
+            // 显式硬件 AV1 编码器没有 ICC 写入通路 ⇒ 不静默换编码器，直接置 false，让计划
+            // 回退 CICP-only 或 Reject；WebM muxer 仍不写 ICC。
+            ExitWritesIcc = ExitWritesIccFor(fmt)
+                && (fmt != "avif" || AvifIccExitAvailable(o.Encoder)),
             // ── 显式输出矩阵模式（C-PLAN-EXT@1 装配链，color-matrix-options 计划）──────────
             // options.ColorOutMatrix 已在模型 setter 归一（bt601→smpte170m、auto/空白→null，
             // FfmpegOptions 的 ColorOutMatrix 属性）⇒ 此处直传归一后 token，不重复归一。

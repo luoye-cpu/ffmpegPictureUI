@@ -119,6 +119,14 @@ namespace ServiceProbe
                             V(string.Equals(p.IccTrc, p.OutTransfer, StringComparison.OrdinalIgnoreCase),
                               $"ICC 的 TRC({p.IccTrc}) 与输出 TRC({p.OutTransfer}) 不一致");
 
+                        // 2026-11-15：支持 CICP+ICC 的容器上，ICC 有可命名等价令牌时不得只交 ICC
+                        // —— 显式“ICC-only”也必须是 ICC+CICP 双写；ICC-only 只留给 CICP 无法表达。
+                        if (p.AttachIcc && p.IccPrimaries != null && p.IccTrc != null
+                            && caps.CanHaveBothIccAndCicp && caps.CanCicp
+                            && p.CicpUnavailable == FfmpegGui.Services.ColorMapping.CicpUnavailableReason.None)
+                            V(p.OutPrimaries != null,
+                              "双承载格式出现 ICC-only：ICC 有可命名令牌却未补写 CICP（应为 ICC+CICP 双写）");
+
                         // C1/C2：S2 允许两条新形态：
                         //   · 源 ICC 可被更宽标准空间完整覆盖 ⇒ Action=Map + 标准 ICC（像素/曲线会变）；
                         //   · CICP 可精确表达 ⇒ CICP-first（PNG/APNG 不附 ICC；sRGB 只写 CICP）。
@@ -407,18 +415,24 @@ namespace ServiceProbe
                     // 按产物是否真的附 ICC 计，不再只看 Action。
                     bool carries = p.AttachIcc && (p.IccPath != null || p.IccPrimaries != null);
                     // C5 旧读数的 `expect` 只看了 CanCarryArbitraryIcc；现在 PNG 还要看
-                    // 是否真的需要 ICC（CICP 不可表达才用 ICC）。TIFF/AVIF 仍按原能力轴。
+                    // 是否真的需要 ICC（自动推荐档 CICP 可精确表达才剥 ICC）。AVIF 2026-11-15
+                    // 已把静态 ICC 接到 avifenc（`--icc` + `--cicp`）⇒ 不再排除 AVIF。
                     bool pngIccFirst = string.Equals(fmt, "png", StringComparison.OrdinalIgnoreCase)
-                        && p.OutPrimaries != null;
+                        && p.OutPrimaries != null
+                        && p.DeclaredStrategy == ST.Recommended;
                     // scope=None/Unnameable 仍允许“无目标空间 ⇒ 原样保留源 ICC”的 fallback；
-                    // 这是安全兜底，不是把 Carry 开关重新打开。只有 PNG 已 CICP-first 时例外。
+                    // 这是安全兜底，不是把 Carry 开关重新打开。只有 PNG 自动档已 CICP-first 时例外。
                     bool scopeFallbackCarry = carries;
-                    bool expectWritesIcc = !string.Equals(fmt, "avif", StringComparison.OrdinalIgnoreCase)
-                        && !pngIccFirst;
+                    bool expectWritesIcc = !pngIccFirst;
                     bool expect = CE.CapsFor(fmt).CanCarryArbitraryIcc && expectWritesIcc
                                   && src.SourceIccPath != null
                                   && (ScopeAllows(scope, src) || scopeFallbackCarry);
                     Check(carries == expect, $"C5 scope={scope} {src.Name}→{fmt}: carry={carries} 预期 {expect}（{p.Reason}）");
+                    // AVIF 的 ICC 只能由 avifenc 的 --icc 写入；计划附了 ICC 却 AvifIccExit=false
+                    // 意味着产物仍走 ffmpeg/libaom，ICC 承诺会再次落空。两边必须等价。
+                    if (string.Equals(fmt, "avif", StringComparison.OrdinalIgnoreCase))
+                        Check(p.AvifIccExit == p.AttachIcc,
+                            $"C5 AVIF {src.Name}: AttachIcc={p.AttachIcc} 但 AvifIccExit={p.AvifIccExit}（ICC 出口未接线）");
                     Check(p.Matrix == null || p.Action == CA.Map, $"C5 scope={scope} {src.Name}→{fmt}: 非映射格不得带矩阵");
                 }
 

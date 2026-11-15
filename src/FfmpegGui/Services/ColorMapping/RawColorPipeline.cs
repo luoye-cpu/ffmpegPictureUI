@@ -240,11 +240,13 @@ public static class RawColorPipeline
             // ⚠ 出口分叉要**先分 jxr 再分 jxl**：两者都置 `ExternalEncoderExit`，但编码器完全不同
             //   （jxr 恒走 JxrEncApp；jxl 视后端而定）。按扩展名二次分叉，而不是给计划层新开一个位
             //   —— `ExternalEncoderExit` 的语义就是「编码由引擎内的外部编码器出口完成」，对两者都成立。
-            if (plan.AvifSampleTransform16)
+            if (plan.AvifSampleTransform16 || plan.AvifIccExit)
             {
-                // AVIF 16-bit：libaom/ffmpeg 单 item 会静默降 12-bit；必须先转 16-bit PNG
-                // 再喂 avifenc --depth 12,4（sato + dimg 双 item）。
-                ec = await EncodeAvif16ViaAvifencAsync(inputPath, tmpOut, outputPath, plan, options, w, h, log, ct)
+                // AVIF 特殊出口：
+                //  · 16-bit ⇒ avifenc --depth 12,4（sato + dimg 双 item）；
+                //  · 计划要求附 ICC ⇒ avifenc --icc（ffmpeg/libaom muxer 写不进 ICC）；
+                // 两者可同时为真 ⇒ 同一个 avifenc 进程 `--depth 12,4 --icc --cicp`。
+                ec = await EncodeAvifViaAvifencAsync(inputPath, tmpOut, outputPath, plan, options, w, h, log, ct)
                         .ConfigureAwait(false);
             }
             else if (plan.ExternalEncoderExit && outExt == "jxr")
@@ -266,9 +268,11 @@ public static class RawColorPipeline
             if (ec != 0 || !File.Exists(outputPath) || new FileInfo(outputPath).Length == 0)
                 throw new InvalidOperationException(plan.AvifSampleTransform16
                     ? $"avifenc 16-bit encode failed (exit {ec})"
-                    : plan.ExternalEncoderExit
-                        ? $"{(outExt == "jxr" ? "JxrEncApp" : "cjxl")} 编码失败 (exit {ec})"
-                        : $"编码失败 (exit {ec})");
+                    : plan.AvifIccExit
+                        ? $"avifenc ICC encode failed (exit {ec})"
+                        : plan.ExternalEncoderExit
+                            ? $"{(outExt == "jxr" ? "JxrEncApp" : "cjxl")} 编码失败 (exit {ec})"
+                            : $"编码失败 (exit {ec})");
             st.ElapsedMs = sw.ElapsedMilliseconds;
             return st;
         }
@@ -435,77 +439,178 @@ public static class RawColorPipeline
     }
 
     /// <summary>
-    /// **AVIF 16-bit 出口**（2026-11-13）：把引擎已变换的 raw 先落成 16-bit PNG，
-    /// 再喂 <c>avifenc --depth 12,4</c>。
+    /// **AVIF 特殊出口**（2026-11-13 16-bit；2026-11-15 ICC 接线）：把引擎已变换的 raw 先落成
+    /// PNG，再喂 <c>avifenc</c>。
     /// <para>
-    /// 为什么不能交给 ffmpeg/libaom：单个 AV1 item 的 BitDepth 只有 8/10/12；ffmpeg 对
-    /// <c>gbrp16le</c> 会自动改选 <c>gbrp12le</c>（实测），产物**静默丢 4 LSB**。16-bit
-    /// 必须由 AVIF Sample Transform（<c>sato</c> + 两条 <c>av01</c>）承载，当前唯一可用
-    /// 编码器是随包 <c>avifenc 1.4.2</c>（libaom 3.15.0），实测 <c>--depth 12,4 --lossless</c>
-    /// 可产出 <c>av01×2 + dimg + sato</c>，且 <c>pixi</c> 为 12/16/8。
+    /// 两个触发条件（可同时成立）：
+    /// ① <see cref="ColorTransformPlan.AvifSampleTransform16"/>：单个 AV1 item 的 BitDepth 只有
+    ///    8/10/12，ffmpeg 对 <c>gbrp16le</c> 会自动改选 <c>gbrp12le</c>（实测）⇒ 16-bit 必须由
+    ///    AVIF Sample Transform（<c>sato</c> + 两条 <c>av01</c>）承载，用
+    ///    <c>--depth 12,4 --lossless</c>；
+    /// ② <see cref="ColorTransformPlan.AvifIccExit"/>：ffmpeg 的 AVIF muxer 不写 ICC、exiftool
+    ///    后置也写不进 ISO-BMFF ⇒ 必须由 <c>avifenc --icc</c> 编码。<c>--icc</c> 与
+    ///    <c>--cicp</c> 可在同一文件共存（E1 实测）。
     /// </para>
     /// <para>
     /// 色彩参数：RGB 源 + <c>-y 444</c> ⇒ avifenc 产出 <c>gbrp</c> 基图，CICP 矩阵写 0
-    /// （identity）；非 RGB 源保留计划矩阵码。CICP 无法命名时**不猜**，交给 avifenc 默认
-    /// 并在日志点名。
+    /// （identity）；非 RGB 源保留计划矩阵码。CICP 无法命名时写 <c>2/2/0</c>
+    /// （primaries/transfer unspecified、matrix identity），ICC 为唯一描述，不伪造 BT.709/BT.601。
+    /// ICC 由计划给出：源 ICC 走 v4.4 规范化；标准空间令牌走标准 ICC 生成。
     /// </para>
-    /// 失败语义：任何一环失败都抛异常（调用方映射为任务失败），绝不回退 ffmpeg 12-bit。
+    /// 失败语义：任何一环失败都抛异常（调用方映射为任务失败），绝不回退 ffmpeg 丢 ICC/降 12-bit。
     /// </summary>
-    private static async Task<int> EncodeAvif16ViaAvifencAsync(string inputPath, string rawPath, string outputPath,
+    private static async Task<int> EncodeAvifViaAvifencAsync(string inputPath, string rawPath, string outputPath,
         ColorTransformPlan plan, Models.FfmpegOptions? options, int w, int h, Action<string>? log, CancellationToken ct)
     {
         if (options == null)
-            throw new InvalidOperationException("[avif16] AVIF 16-bit 出口需要 FfmpegOptions（质量/无损/线程）");
+            throw new InvalidOperationException("[avif] AVIF 特殊出口需要 FfmpegOptions（质量/无损/线程）");
 
         var avifenc = PlatformServices.ResolveAvifencPath();
         if (string.IsNullOrWhiteSpace(avifenc) || !File.Exists(avifenc))
             throw new InvalidOperationException(
-                "[avif16] 未找到 avifenc.exe；16-bit AVIF 必须由 avifenc --depth 12,4 完成（不静默回退 ffmpeg 12-bit）");
+                plan.AvifIccExit
+                    ? "[avif] 未找到 avifenc.exe；计划要求附 ICC，但 ffmpeg/libaom 的 AVIF muxer 写不进 ICC"
+                      + "（不静默产出无 ICC 的 AVIF）"
+                    : "[avif16] 未找到 avifenc.exe；16-bit AVIF 必须由 avifenc --depth 12,4 完成"
+                      + "（不静默回退 ffmpeg 12-bit）");
 
-        var png = Path.Combine(PlatformServices.GetTempDir(), $"avif16_{Guid.NewGuid():N}.png");
+        // 交付位深：与 ffmpeg 单程的 AvifEffectiveBitDepth 同口径（源位深驱动，显式 --bit-depth 优先），
+        // 16-bit Sample Transform 例外（双 item 12+4，PNG 保持 16-bit 输入）。
+        var srcBd = FfmpegCommandBuilder.ProbeInputBitDepthForEngine(inputPath);
+        int outBd = plan.AvifSampleTransform16 ? 16
+            : options.BitDepth.HasValue
+                ? Math.Min(options.BitDepth.Value, ImageEncoderArgs.AvifMaxBitDepth(options))
+                : (srcBd > 8 ? Math.Min(srcBd, ImageEncoderArgs.AvifMaxBitDepth(options)) : 8);
+
+        var png = Path.Combine(PlatformServices.GetTempDir(), $"avif_{Guid.NewGuid():N}.png");
+        string? reextractedIcc = null;
+        string? localIcc = null;
         try
         {
-            // 引擎 raw = 变换后的最终像素；16-bit 计划 ⇒ rgb48le，8-bit 计划 ⇒ rgb24（PNG 再扩到 rgb48be）。
-            var pixIn = plan.OutBitDepth == 8 ? "rgb24" : "rgb48le";
+            // 引擎 raw = 变换后的最终像素；8-bit 交付走 rgb24，其余走 rgb48le 并落 16-bit PNG。
+            bool png16 = plan.AvifSampleTransform16 || outBd > 8;
+            var pixIn = plan.OutBitDepth == 8 && outBd <= 8 ? "rgb24" : "rgb48le";
+            var pngPix = png16 ? "rgb48be" : "rgb24";
             var pngArgs = $"-y -hide_banner -loglevel error -f rawvideo -pix_fmt {pixIn} "
-                        + $"-video_size {w}x{h} -i \"{rawPath}\" -pix_fmt rgb48be -compression_level 0 \"{png}\"";
+                        + $"-video_size {w}x{h} -i \"{rawPath}\" -pix_fmt {pngPix} -compression_level 0 \"{png}\"";
             int pngExit = await RunToEndAsync(
                 AppSettingsService.Current.FfmpegPath, pngArgs, log, ct).ConfigureAwait(false);
             if (pngExit != 0 || !File.Exists(png) || new FileInfo(png).Length == 0)
-                throw new InvalidOperationException($"[avif16] 16-bit PNG 中转失败 (ffmpeg exit {pngExit})");
+                throw new InvalidOperationException($"[avif] PNG 中转失败 (ffmpeg exit {pngExit})");
 
             bool srcRgb = ImageEncoderArgs.IsRgbFamilyPixFmt(
                 FfmpegCommandBuilder.ProbeInputPixFmtForEngine(inputPath));
-            var cicp = AvifCicp.FromPlan(plan, srcRgb);
+            // ⚠ ICC-only（ProPhoto/未知自定义 profile）时 CICP 无法表达该空间 ⇒ **不能补写
+            //   avifenc 的默认 nclx**（默认矩阵 2 会把 ICC 描述旁挂成 BT.601，正是用户禁止的
+            //   “ICC 说 A、CICP 说 B”）。写 nclx 的 2/2/0（primaries/transfer unspecified，
+            //   matrix identity）：既不伪造可命名空间，又避免默认 matrix=2。
+            bool cicpUnavailable = plan.AttachIcc && string.IsNullOrWhiteSpace(plan.OutPrimaries);
+            var cicp = cicpUnavailable
+                ? ((byte P, byte T, byte M)?)null
+                : AvifCicp.FromPlan(plan, srcRgb);
+
+            // ── ICC：计划给出的 ICC 文件 / 标准空间令牌 ──
+            // 与 cjxl 出口同一套诚实门：拿不到就失败，绝不产出“看起来写了标注、实际没有描述”的文件。
+            string? iccFile = null;
+            string? iccArg = null;
+            if (plan.AttachIcc)
+            {
+                iccFile = plan.IccPath;
+                if ((string.IsNullOrWhiteSpace(iccFile) || !File.Exists(iccFile))
+                    && !string.IsNullOrWhiteSpace(plan.IccPrimaries))
+                    iccFile = IccProfileService.GetOrGenerateStandardIcc(
+                        inputPath, plan.IccPrimaries, plan.IccTrc, plan.IccMatrix, log, ct);
+                // 标准 ICC 临时文件写入被 ACL/Defender 拒绝时（本机实测 %TEMP% 会报
+                // UnauthorizedAccess_IODenied_Path），改用**输出目录旁**的唯一临时件：
+                // 输出目录必然可写（否则编码本身也不可能落盘），且 avifenc 只要求一个路径。
+                if ((string.IsNullOrWhiteSpace(iccFile) || !File.Exists(iccFile))
+                    && !string.IsNullOrWhiteSpace(plan.IccPrimaries) && !string.IsNullOrWhiteSpace(plan.IccTrc))
+                {
+                    var bytes = IccProfileService.BuildStandardIccBytesFromCicp(
+                        plan.IccPrimaries!, plan.IccTrc!);
+                    if (bytes is { Length: >= 132 })
+                    {
+                        var dir = Path.GetDirectoryName(outputPath) ?? PlatformServices.GetTempDir();
+                        var local = Path.Combine(dir, $".avif_stdicc_{Guid.NewGuid():N}.icc");
+                        try
+                        {
+                            File.WriteAllBytes(local, bytes);
+                            if (File.Exists(local) && new FileInfo(local).Length >= 132)
+                            {
+                                localIcc = local;
+                                iccFile = local;
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            log?.Invoke($"[avif] ⚠ 输出目录旁标准 ICC 写入失败：{ex.Message}\n");
+                        }
+                    }
+                }
+                if ((string.IsNullOrWhiteSpace(iccFile) || !File.Exists(iccFile))
+                    && plan.Action == ColorAction.CarryIcc)
+                {
+                    var (re, _) = IccProfileService.ExtractIccToTempFile(inputPath);
+                    if (!string.IsNullOrWhiteSpace(re) && File.Exists(re))
+                    {
+                        reextractedIcc = re;
+                        iccFile = re;
+                    }
+                }
+                if (string.IsNullOrWhiteSpace(iccFile) || !File.Exists(iccFile))
+                    throw new InvalidOperationException(
+                        "[avif] 计划要求附 ICC（"
+                        + (plan.Action == ColorAction.CarryIcc ? "源 ICC" : "目标 ICC")
+                        + "），但无法定位/生成 ⇒ 拒绝产出无色彩描述的 AVIF");
+                // 用户口径：源 ICC 也一律重写 v4.4。NormalizeSourceIccToV44 对已合规的 ICC
+                // 原样返回；需要重写时返回缓存临时件，失败返回 null ⇒ 不携带旧版 profile。
+                iccArg = IccProfileService.NormalizeSourceIccToV44(iccFile, log);
+                if (string.IsNullOrWhiteSpace(iccArg) || !File.Exists(iccArg))
+                    throw new InvalidOperationException(
+                        $"[avif] 计划要求附 ICC，但 {Path.GetFileName(iccFile)} 无法无损重写为 v4.4"
+                        + " ⇒ 拒绝携带旧版/非法 profile");
+            }
 
             var sb = new StringBuilder();
-            sb.Append("--depth 12,4 ");
+            if (plan.AvifSampleTransform16) sb.Append("--depth 12,4 ");
+            else sb.Append("--depth ").Append(outBd).Append(' ');
             if (options.Lossless) sb.Append("--lossless ");
             else sb.Append("-q ").Append(Math.Clamp(options.Quality, 0, 100)).Append(' ');
             if (cicp != null)
             {
+                // avifenc 在 --lossless 下强制 matrix=identity(0)：传 6/9 会报
+                // “Matrix coefficients have to be identity…”。RGB 源本来就会落 0；非 RGB
+                // 源这里也压成 0，并保持 -y 444 无子采样，避免与无损约束冲突。
+                var c = options.Lossless ? (cicp.Value.P, cicp.Value.T, (byte)0) : cicp.Value;
                 sb.Append("--cicp ")
-                  .Append(cicp.Value.P).Append('/')
-                  .Append(cicp.Value.T).Append('/')
-                  .Append(cicp.Value.M).Append(' ');
+                  .Append(c.Item1).Append('/')
+                  .Append(c.Item2).Append('/')
+                  .Append(c.Item3).Append(' ');
             }
             else
             {
-                log?.Invoke("[avif16] ⚠ CICP token 未识别；avifenc 将使用默认色彩描述（不猜码）\n");
+                // CICP 无法命名 ⇒ ICC 是唯一色彩描述。只写 unspecified/identity 的 nclx，
+                // 不把 ProPhoto 说成 BT.709/BT.601；avifenc 的默认 matrix=2 也必须显式压回 0。
+                sb.Append("--cicp 2/2/0 ");
+                log?.Invoke("[avif] ICC-only（CICP 无法命名源空间）⇒ nclx=2/2/0（unspecified/unspecified/identity），ICC 为唯一描述\n");
             }
+            if (!string.IsNullOrWhiteSpace(iccArg))
+                sb.Append("--icc \"").Append(iccArg).Append("\" ");
             sb.Append("-y 444 ");
             sb.Append("-s ").Append(Math.Clamp(options.AvifCpuUsed ?? 6, 0, 10)).Append(' ');
             if (options.Threads > 1) sb.Append("-j ").Append(options.Threads).Append(' ');
             sb.Append('"').Append(png).Append("\" -o \"").Append(outputPath).Append('"');
 
-            log?.Invoke($"[avif16] avifenc {sb}\n");
+            log?.Invoke($"[avif] avifenc {sb}\n");
             int ec = await RunProcessToEndAsync(avifenc, sb.ToString(), log, ct, "avifenc").ConfigureAwait(false);
-            if (ec != 0) log?.Invoke($"[avif16] ❌ avifenc exit {ec}\n");
+            if (ec != 0) log?.Invoke($"[avif] ❌ avifenc exit {ec}\n");
             return ec;
         }
         finally
         {
             TryDelete(png);
+            if (reextractedIcc != null) IccProfileService.TryDeleteIcc(reextractedIcc);
+            if (localIcc != null) TryDelete(localIcc);
         }
     }
 

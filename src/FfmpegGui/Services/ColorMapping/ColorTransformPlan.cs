@@ -204,10 +204,10 @@ public sealed class PlanPolicy
     /// <summary>
     /// 本**出口**是否真能把 ICC 写进产物（按执行体判，不是按格式能力表）。
     /// <para>
-    /// AVIF 静态出口是 ffmpeg：实测 muxer **不写** ICC，exiftool 后置也报
-    /// 「0 image files updated」而退出码仍是 0（2026-10-26 实测 672 B ProPhoto ICC：
-    /// 产物 `<c>avifdec --info</c>` 报 `ICC Profile: Absent`，同时日志打「ICC Profile 已恢复」）。
-    /// `avifenc --icc` 确实能写，但本产品的 avifenc 只用于 GIF→AVIF 动画两步法。
+    /// AVIF 静态出口已接线到 <c>avifenc --icc</c>（2026-11-15）：默认/libaom 编码器可由
+    /// avifenc 进程写出 ICC，且 <c>--icc</c> 与 <c>--cicp</c> 可共存。硬件 AV1 编码器
+    /// （svt/nvenc/qsv/amf）没有 ICC 写入通路，装配层会把本位置 false ⇒ 计划回退 CICP-only
+    /// 或明确拒绝，绝不承诺一张写不进描述的文件。WebM muxer 仍然不写 ICC ⇒ false。
     /// </para>
     /// <para>
     /// 为 false 时的后果（刻意如此）：像素零改动的「携带」只在源空间可 CICP 命名时成立
@@ -376,6 +376,21 @@ public sealed class ColorTransformPlan
     /// </para>
     /// </summary>
     public bool AvifSampleTransform16;
+
+    /// <summary>
+    /// AVIF 静态出口用 <c>avifenc --icc</c> 写入 ICC（2026-11-15 接线）。
+    /// <para>
+    /// 与 <see cref="AvifSampleTransform16"/> 分开：后者解决 **16-bit 位深**，本字段解决
+    /// **ICC 描述**。两者可同时为真（16-bit AVIF 若计划要求 ICC，会由同一 avifenc 进程
+    /// 以 <c>--depth 12,4 --icc</c> 兑现）。
+    /// </para>
+    /// <para>
+    /// ffmpeg 的 AVIF muxer 不写 ICC，exiftool 后置也写不进 ISO-BMFF ⇒ 必须由 avifenc 编码。
+    /// 计划层只在 <see cref="PlanPolicy.ExitWritesIcc"/> 为真且本次确实要附 ICC 时置位；
+    /// 执行层见到本标志就**不得**再走 ffmpeg/libaom 编码（否则 ICC 会静默丢失）。
+    /// </para>
+    /// </summary>
+    public bool AvifIccExit;
 
     // ── 策略与损失归类（规划 §2/§3；contract 自检的断言对象）──
     /// <summary>用户声明的策略。</summary>
@@ -612,10 +627,10 @@ public static partial class ColorMappingEngine
         //（实测 recommended-hdr-png：引擎 53926B/ICC=True vs legacy 43821B/ICC=False）。
         ["png"]   = new() { Format = "png",   CanCarryArbitraryIcc = true,  CanGenerateIccFromCicp = true,  CanCicp = true, CanHdr = true, MaxBitDepth = 16, RgbNative = true,
                             HdrRequiresHighBitDepth = true,
-                            UnlabeledMeansSrgb = true, CanHaveBothIccAndCicp = true, CicpFirstWhenBoth = true, VerifiedBy = "exiftool iCCP + PngCicpService 实测 cICP（两 chunk 可共存、HDR 经 cICP 承载；2026-11-15 起 CICP 优先，ICC 仅不可表达兜底）" },
+                            UnlabeledMeansSrgb = true, CanHaveBothIccAndCicp = true, CicpFirstWhenBoth = true, VerifiedBy = "exiftool iCCP + PngCicpService 实测 cICP（两 chunk 可共存、HDR 经 cICP 承载；2026-11-15：自动推荐档 CICP 优先，显式携带/手动档 ICC+CICP 双写）" },
         ["apng"]  = new() { Format = "apng",  CanCarryArbitraryIcc = true,  CanGenerateIccFromCicp = true,  CanCicp = true, CanHdr = true, MaxBitDepth = 16, RgbNative = true,
                             HdrRequiresHighBitDepth = true,
-                            UnlabeledMeansSrgb = true, CanHaveBothIccAndCicp = true, CicpFirstWhenBoth = true, VerifiedBy = "exiftool iCCP + PngCicpService 实测 cICP（两 chunk 可共存、HDR 经 cICP 承载；2026-11-15 起 CICP 优先，ICC 仅不可表达兜底）" },
+                            UnlabeledMeansSrgb = true, CanHaveBothIccAndCicp = true, CicpFirstWhenBoth = true, VerifiedBy = "exiftool iCCP + PngCicpService 实测 cICP（两 chunk 可共存、HDR 经 cICP 承载；2026-11-15：自动推荐档 CICP 优先，显式携带/手动档 ICC+CICP 双写）" },
         ["jpg"]   = new() { Format = "jpg",   CanCarryArbitraryIcc = true,  CanGenerateIccFromCicp = true,  MaxBitDepth = 8,
                             UnlabeledMeansSrgb = true, CanHaveBothIccAndCicp = false, SupportsGainMap = true, VerifiedBy = "exiftool APP2" },
         ["jpeg"]  = new() { Format = "jpeg",  CanCarryArbitraryIcc = true,  CanGenerateIccFromCicp = true,  MaxBitDepth = 8,
@@ -677,7 +692,7 @@ public static partial class ColorMappingEngine
                             //   三路独立验证：自家探测器 11/0 · libavif `Gain map: …` ·
                             //   Google libultrahdr v2.0.2 `Ultra HDR Image: Yes`。
                             SupportsGainMap = true,
-                            VerifiedBy = "E1 实测：avifenc --icc ✅ / --icc+--nclx 共存 ✅；exiftool 不能后置写；GainMap = tmap 派生项（三路验证 2026-10-02）" },
+                            VerifiedBy = "E1 实测：avifenc --icc ✅ / --icc+--nclx 共存 ✅；2026-11-15 已接线静态出口（计划 AvifIccExit ⇒ avifenc --icc --cicp）；exiftool 不能后置写；GainMap = tmap 派生项（三路验证 2026-10-02）" },
         // ❗ heic/heif：**实测本工具链完全无法写入**（ffmpeg: Unknown format 'heif'，无 heif muxer；无 heifenc/libheif）
         // → 能力必须按“不可表达”给（全部保守），否则引擎会为 HEIF 产出“看似可行”的计划。
         ["heic"]  = new() { Format = "heic",  CanCarryArbitraryIcc = false, CanCicp = false, CanGenerateIccFromCicp = false, MaxBitDepth = 8,

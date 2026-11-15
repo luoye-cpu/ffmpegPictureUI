@@ -569,7 +569,7 @@ namespace FfmpegGui.Services
         // 纯托管生成器可产出与源描述符同色度的**标准** matrix/TRC ICC；它比
         // ffmpeg iccgen 的产物更能被 exiftool/lcms 接受，且不依赖外部进程。
         // sRGB / Rec.709 / Display P3 / Rec.2020 SDR 都走这一支。
-        var builtProfile = BuildStandardIccFromCicp(carrier, primaries, trc ?? "");
+        var builtProfile = BuildStandardIccFromCicp(carrier, primaries, trc ?? "", log);
         if (!string.IsNullOrWhiteSpace(builtProfile)) return builtProfile;
 
         // BuildStandardIccFromCicp 的缓存写失败（句柄/杀软瞬时占用）会让整条链误以为
@@ -675,7 +675,7 @@ namespace FfmpegGui.Services
     /// 产物是可被 exiftool/lcms 接受的标准 matrix/TRC profile。
     /// 失败返回 null，调用方回退既有 iccgen 生成。
     /// </summary>
-    public static string? BuildStandardIccFromCicp(string? carrier, string primaries, string trc)
+    public static string? BuildStandardIccFromCicp(string? carrier, string primaries, string trc, Action<string>? log = null)
     {
         if (string.IsNullOrWhiteSpace(primaries) || string.IsNullOrWhiteSpace(trc)) return null;
         var space = IccProfileBuilder.SpaceFromCicp(primaries, trc);
@@ -693,21 +693,47 @@ namespace FfmpegGui.Services
         {
             var bytes = IccProfileBuilder.Build(space);
             if (bytes == null || bytes.Length < 132) return null;
-            var tmp = outIcc + $".{Guid.NewGuid():N}.tmp";
-            File.WriteAllBytes(tmp, bytes);
+            // 2026-11-15：先直接写标准缓存名。旧实现先写 `*.tmp` 再 Move，Windows 上
+            // Defender/索引器偶发持有临时件或目标件 ⇒ `UnauthorizedAccess_IODenied_Path`
+            // （实测本机 `%TEMP%\stdbuilt_*.tmp` 被拒，导致标准 ICC 静默退到 iccgen 再失败）。
+            // 直接落盘 + 有效校验；失败再用唯一文件名重试，绝不因一次 ACL 抖动放弃标准 ICC。
             try
             {
-                if (File.Exists(outIcc)) File.Delete(outIcc);
-                File.Move(tmp, outIcc);
+                File.WriteAllBytes(outIcc, bytes);
+                if (IsValidIccProfile(outIcc) && HasIccTag(outIcc, "cicp")) return outIcc;
             }
-            catch
+            catch { }
+            var alt = outIcc + $".{Guid.NewGuid():N}.icc";
+            try
             {
-                TryDelete(tmp);
-                return File.Exists(outIcc) && IsValidIccProfile(outIcc) ? outIcc : null;
+                File.WriteAllBytes(alt, bytes);
+                if (IsValidIccProfile(alt) && HasIccTag(alt, "cicp")) return alt;
             }
-            return IsValidIccProfile(outIcc) ? outIcc : null;
+            catch (Exception ex)
+            {
+                if (log != null) log($"[icc] 标准 ICC 写入失败：{ex.Message}\n");
+                else System.Diagnostics.Trace.WriteLine($"[icc] 标准 ICC 写入失败：{ex.Message}");
+            }
+            try { if (File.Exists(alt)) File.Delete(alt); } catch { }
+            return File.Exists(outIcc) && IsValidIccProfile(outIcc) ? outIcc : null;
         }
-        catch { return null; }
+        catch (Exception ex)
+        {
+            if (log != null) log($"[icc] 标准 ICC 生成异常：{ex.Message}\n");
+            else System.Diagnostics.Trace.WriteLine($"[icc] 标准 ICC 生成异常：{ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// 纯托管生成标准 ICC 的**字节**（不落盘）。用于 PNG iCCP 直写等无需临时文件的出口；
+    /// 与 <see cref="BuildStandardIccFromCicp"/> 同一空间解析/构建器，失败返回 null。
+    /// </summary>
+    public static byte[]? BuildStandardIccBytesFromCicp(string primaries, string trc)
+    {
+        if (string.IsNullOrWhiteSpace(primaries) || string.IsNullOrWhiteSpace(trc)) return null;
+        var space = IccProfileBuilder.SpaceFromCicp(primaries, trc);
+        return space == null ? null : IccProfileBuilder.Build(space);
     }
 
     /// <summary>

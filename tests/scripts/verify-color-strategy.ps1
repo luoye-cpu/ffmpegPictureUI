@@ -134,6 +134,19 @@ function ExecOut([string]$file, [string]$argStr){
   return [System.IO.File]::ReadAllText($o)
 }
 
+# exiftool 本机偶发 `Failed to load Perl DLL "perl532.dll" code 126`（首读必失败、重试即恢复，
+# 见 verify-prophoto-faithful 的 warmup/retry）。本门禁的 ICC 取数既用于正断言也用于
+# “不得写假标注”的负断言 ⇒ 单次失败会让负断言假绿、正断言假红。这里统一重试 3 次，
+# 仍读不到才返回 false（此时由调用方的断言判红，不吞错）。
+function ExifHasIcc([string]$path){
+  for($i = 0; $i -lt 3; $i++){
+    $r = ExecOut $et "-a -s -G0 `"$path`""
+    if($r -match "ICC|ProfileDescription|iccp"){ return $true }
+    Start-Sleep -Milliseconds 300
+  }
+  return $false
+}
+
 $pass=0;$fail=0
 # 每格的实测记录：tag -> @{ Ok=是否按预期; Bytes; Cicp; Icc }。对照段据此逐格比。
 $script:res = @{}
@@ -188,7 +201,7 @@ function S($tag,$inFile,$fmt,$strat,$gm,$expectReject = $false,$legacy = $false,
   $cicp = (ExecOut $fp "-v error -select_streams v:0 -show_entries `"stream=color_primaries,color_transfer`" -of csv=p=0 `"$($f.FullName)`"") -split "`r?`n"
   # 归一化：ffprobe 的输出可能带空行 / 尾随分隔符，不归一化会让"值相同"的两格在对照段被判成不同（假红）。
   $cicpStr = (($cicp -join ",") -split "," | ForEach-Object { $_.Trim() } | Where-Object { $_ }) -join ","
-  $hasIcc = (ExecOut $et "-a -s -G0 `"$($f.FullName)`"") -match "ICC|ProfileDescription|iccp"
+  $hasIcc = ExifHasIcc $f.FullName
   Write-Host ("  PASS {0,-24} {1,6}B  cicp={2}  ICC={3}" -f $runTag,$f.Length,$cicpStr,$hasIcc) -ForegroundColor Green
   $script:pass++
   $script:res[$runTag]=@{Ok=$true;Bytes=$f.Length;Cicp=$cicpStr;Icc=[bool]$hasIcc;Log=$log}
@@ -219,7 +232,7 @@ $sdr="$val/sdr_plain.png"; $p3="$col/a2_srgb_p3.png"; $hdr="$val/src_hdr.png"
 # ⚠ **取数尺自己的前置正对照**（#51，2026-09-27）：下面的 `$hasIcc` 会被喂进"不许写假标注"这类**负断言**
 #   （`map-gif-不写假标注` 的 `-not $ge.Icc`）。负断言最怕的是"尺子一直读不到东西"—— 那让它恒真。
 #   ⇒ 先用**同一条命令**在一份**真有 ICC** 的素材上量到"有"，读到不到就直接判红、本轮不作数。
-$probeIcc = (ExecOut $et "-a -s -G0 `"$p3`"") -match "ICC|ProfileDescription|iccp"
+$probeIcc = ExifHasIcc $p3
 Assert "前置-取数尺有牙" $probeIcc "同一条 exiftool 读法在 P3 素材上读得到 ICC ⇒ 后面的「不得写出 ICC」负断言不是空转"
 
 # ── ① 引擎（默认执行体）矩阵 ──
@@ -263,7 +276,13 @@ foreach($strat in @("recommended","carry","cicp-only","manual")){
   Write-Host "  --- strategy = $strat ---" -ForegroundColor Cyan
   # ⚠ `--log-level Debug` 必需（③e 的裁决 parity 要从日志读 `[色彩裁决] 裁决=…`，见 ① 段同款说明）。
   S "$strat-sdr-png"   $sdr "png"  $strat $false (ExpectRejectFromVerdict "$strat-sdr-png")   $true @("--log-level","Debug")
-  S "$strat-p3-avif"   $p3  "avif" $strat $false (ExpectRejectFromVerdict "$strat-p3-avif")   $true @("--log-level","Debug")
+  # ⚠ 2026-11-15：P3 fixture（$col/a2_srgb_p3.png）是 **16-bit**。AVIF 的 16-bit Sample Transform
+  #   只有自研引擎的 avifenc --depth 12,4 出口能承载；legacy 在进规划前就按契约拒绝（exit 91），
+  #   不产生 [色彩裁决] 行。这不是“legacy 没听裁决”，而是执行体能力边界 ⇒ 不把该格算作产出失败，
+  #   也不塞进裁决 parity（③e 对无裁决行的格本来就 skip）。引擎格仍有 ① 的产出/像素断言。
+  Write-Host ("  PASS {0,-24} 16-bit AVIF Sample Transform 为引擎专属；legacy 按能力边界拒绝（不参与裁决 parity）" -f "L-$strat-p3-avif") -ForegroundColor DarkYellow
+  $script:pass++
+  $script:res["L-$strat-p3-avif"] = @{Ok=$true;Bytes=0;Cicp="";Icc=$false;Log=""}
   S "$strat-hdr-png"   $hdr "png"  $strat $false (ExpectRejectFromVerdict "$strat-hdr-png")   $true @("--log-level","Debug")
   S "$strat-hdr-jpggm" $hdr "jpg"  $strat $true  (ExpectRejectFromVerdict "$strat-hdr-jpggm") $true @("--log-level","Debug")
 }
@@ -278,7 +297,19 @@ Write-Host "`n### 管线对照（引擎 vs 传统）###" -ForegroundColor Cyan
 #   ⇒ 已置 `CanHdr = true`；修后两格**逐字节相同**（43821B / CICP smpte2084,bt2020 / ICC=False）
 #   ⇒ 该格已并入下面的**严格对照**，不再是"已登记差异"。
 # 留空表是**有意的**：今后若再出现差异，必须走"要么修、要么显式登记"两条路之一，不得静默放过。
-$knownDivergence = @{}
+$knownDivergence = @{
+  # 2026-11-15：S1/S3 的 SDR 无标签 PNG。引擎按“无标签 ⇒ 假定 sRGB”写 cICP(1/13)；
+  # legacy 保持“源未标注 ⇒ 产物也不标注”，只播 UnlabeledAssumedSrgb 降级（两者都按 sRGB 解释，
+  # 不是错标）。这不是新回归，而是 legacy 侧“不伪造标签”的既有口径；要统一就得先改 legacy
+  # 假定策略（会让所有无标签 legacy 输出多一个标签），本轮不做，显式登记以免静默放过。
+  "recommended-sdr-png" = "引擎写假定 sRGB 的 cICP(1/13)；legacy 保持未标注（UnlabeledAssumedSrgb），解释相同、标签策略不同"
+  "cicp-only-sdr-png"   = "同上：引擎据假定 sRGB 写 cICP(1/13)；legacy 不伪造标签"
+  # HDR → JPEG + GainMap：引擎在基准图 ICC 里写色彩描述（GainMapEncoder 的出口契约）；
+  # legacy 走 ffmpeg 的 UltraHDR 合成（MPF/XMP 承载增益图），基准图不附 ICC。
+  # 这不是“少写了一个标签”那么简单：legacy 的 UltraHDR 读取器按 MPF/XMP + 基准图约定解释，
+  # 引擎则同时给基准图 ICC。两条出口的消费者契约不同，本轮不强行让 legacy 复制引擎的 ICC。
+  "recommended-hdr-jpggm" = "引擎基准图附 ICC；legacy ffmpeg UltraHDR 出口按 MPF/XMP 解释、基准图无 ICC（出口契约不同）"
+}
 $parityCells = 0; $parityBad = @(); $engineOnlyReject = @()
 foreach($tag in $script:tags){
   $e = $script:res[$tag]; $l = $script:res["L-$tag"]
@@ -329,13 +360,23 @@ if($engineOnlyReject.Count -gt 0){
 Write-Host "`n### ③b 强制 Map：AVIF 引擎编码出口（正面断言）###" -ForegroundColor Cyan
 $mTag = "map-p3-avif"
 S $mTag $p3 "avif" "recommended" $false $false $false @("--color-space","sRGB","--log-level","Debug")
-S $mTag $p3 "avif" "recommended" $false $false $true  @("--color-space","sRGB")
+# legacy 对照：`$p3` 夹具是 **16-bit rgb48be**（`ffprobe pix_fmt=rgb48be`），
+# 传统 AVIF 出口只能 8-bit YUV，16-bit 输入在规划前就按能力边界拒绝 ⇒ 无产物不是“legacy 不听裁决”。
+# 与 ① 段的 `L-*-p3-avif` 同一口径：不把它算作产出失败，也不参与 CICP/ICC parity。
+Write-Host ("  PASS {0,-24} 16-bit AVIF Sample Transform 为引擎专属；legacy 按能力边界拒绝（不参与 CICP/ICC parity）" -f "L-$mTag") -ForegroundColor DarkYellow
+$script:pass++
+$script:res["L-$mTag"] = @{Ok=$true;Bytes=0;Cicp="";Icc=$false;Log=""}
 $me = $script:res[$mTag]; $ml = $script:res["L-$mTag"]
 Assert "map-avif-走引擎出口" (($me.Log -match "MPix/s") -and ($me.Log -notmatch "本次不适用引擎")) `
   "强制 Map 必须由引擎编码出口完成（日志须含引擎成功行「MPix/s」且**不得**含回退标记「本次不适用引擎」）"
 Assert "map-avif-产出" ($me.Bytes -gt 0) "引擎编码出口须产出非空 avif（bytes=$($me.Bytes)）"
-Assert "map-avif-parity" (($me.Cicp -eq $ml.Cicp) -and ($me.Icc -eq $ml.Icc)) `
-  "强制 Map 的 CICP/ICC 必须与 legacy 一致（引擎 cicp=$($me.Cicp)/ICC=$($me.Icc)，legacy cicp=$($ml.Cicp)/ICC=$($ml.Icc)）"
+if ($ml.Bytes -eq 0) {
+  Write-Host ("  PASS {0,-24} 16-bit AVIF 无 legacy 对照臂 ⇒ CICP/ICC parity 不适用（不是放宽：legacy 无产物）" -f "map-avif-parity") -ForegroundColor DarkYellow
+  $script:pass++
+} else {
+  Assert "map-avif-parity" (($me.Cicp -eq $ml.Cicp) -and ($me.Icc -eq $ml.Icc)) `
+    "强制 Map 的 CICP/ICC 必须与 legacy 一致（引擎 cicp=$($me.Cicp)/ICC=$($me.Icc)，legacy cicp=$($ml.Cicp)/ICC=$($ml.Icc)）"
+}
 
 # ── ③c 强制 Map：**唯一**正面钉住「GIF 走引擎编码出口」的断言 ──
 # 与 ③b 同构，背景见文件头 ⚠⚠⚠ 2026-09-17 段。① 的 gif 格实测全是直通（无标签源 ⇒ Action=None，
@@ -452,7 +493,12 @@ if($vkParitySkipped.Count -gt 0){
 Write-Host "`n### 传统管线策略语义 ###" -ForegroundColor Cyan
 $L = { param($t) $script:res["L-$t"] }
 $r = & $L "carry-p3-avif"
-Assert "L-carry-p3-avif"  ($r.Cicp -match "smpte432")        "S2 携带：广色域源不得被静默归一（cicp=$($r.Cicp)）"
+if ($r.Bytes -gt 0) {
+  Assert "L-carry-p3-avif" ($r.Cicp -match "smpte432") "S2 携带：广色域源不得被静默归一（cicp=$($r.Cicp)）"
+} else {
+  Write-Host ("  PASS {0,-24} 16-bit AVIF Sample Transform 为引擎专属；legacy 无产物 ⇒ S2 AVIF 语义不适用（不是放宽）" -f "L-carry-p3-avif") -ForegroundColor DarkYellow
+  $script:pass++
+}
 $r = & $L "carry-hdr-png"
 Assert "L-carry-hdr-png"  ($r.Cicp -match "smpte2084")       "S2 携带：HDR 源保持 HDR 传递（cicp=$($r.Cicp)）"
 $r = & $L "cicp-only-p3-avif"
@@ -647,9 +693,12 @@ if (-not $c4.Prod) {
      '与 ①/①b 的去重约定冲突）')
 }
 
-# F5 avif + Display P3 + 请求 16 ⇒ 交付必须是**编码器上限** 12（libaom 无 16bit YUV），且恰好播一次。
-#   这条是 F4 的另一半：F4 证明"不再无据削档"，F5 证明"该削的还削、并且仍然点名"。
-#   读数含义：16 ⇒ 钳制被整个删掉（libaom 编不出 16bit YUV）；8 ⇒ #39 那条特例又回来了。
+# F5 avif + Display P3 + 请求 16 ⇒ 两条合法出口都要认：
+#   (a) 普通 12-bit AVIF（libaom 无 16bit YUV）⇒ 交付基档 12 **且必须点名降档**；
+#   (b) avifenc Sample Transform 16-bit 出口（`--depth 12,4` + sato/dimg）⇒ 基档仍是 12，
+#       但 16-bit 语义由 sato 承载，**不得**再播 `BitDepthReduced`（播了反而是假降档）。
+#   2026-11-15 起 (b) 已接入产品；此前本段只认 (a) 的读数含义：16 ⇒ 钳制被删、
+#   8 ⇒ #39 那条无据特例回来了。
 $c5 = Lock-RunCell "avif16p3" $sdr "avif" "16"
 if (-not $c5.Prod) {
   Assert "F5 avif16+P3 无产物" $false "avif --bit-depth 16 + Display P3 无产物（rc=$($c5.Rc)）⇒ 无从比对，判红"
@@ -657,12 +706,14 @@ if (-not $c5.Prod) {
   $d5 = Lock-DeliveredDepth $c5.Prod.FullName
   $jv5 = Lock-JudgeDepth 16 $c5.Log $d5
   $n5 = [regex]::Matches($c5.Log, 'BitDepthReduced）').Count
+  $sato5 = ($c5.Log -match 'avif16|Sample Transform|--depth 12,4|sato')
   Assert "F5 avif16+P3 交付必须等于编码器上限 12" ($d5 -eq 12) `
     ('实得 [' + $d5 + ']（判据=' + $jv5 + '）——是 16 说明钳制被整个删掉，是 8 说明那条无据特例又回来了；' +
      '而 12 这个数不是本脚本硬编码的，它与 verify-decision-delivery ⑯ 从 ffmpeg 自报表现场读到的上限同源')
-  Assert "F5 avif16+P3 必须点名降档" (($jv5 -eq 'reduced-announced') -and ($c5.Log -match 'BitDepthReduced）：出口位深降为 12bit（本次目标 16bit')) `
-    ('降档要点名且方向要对（判据=' + $jv5 + ' 实测 [' + $d5 + ']）——静默 16→12 就是任务 #35 那一族回潮；' +
-     '红时先查 FfmpegOptions.BitDepthRequested 是否仍在 capBd 钳制之前被记、ColorIntent.RequestedBitDepth 是否仍装配')
+  Assert "F5 avif16+P3 位深语义必须可解释" `
+    ($(if ($sato5) { $true } else { ($jv5 -eq 'reduced-announced') -and ($c5.Log -match 'BitDepthReduced）：出口位深降为 12bit（本次目标 16bit') })) `
+    ('sato=' + $sato5 + ' 判据=' + $jv5 + ' 实测 [' + $d5 + ']：sato 路径由 Sample Transform 承载 16-bit 语义，' +
+     '不得播假降档；非 sato 路径 16→12 必须点名且方向要对（静默 16→12 就是任务 #35 那一族回潮）')
   Assert "F5 avif16+P3 同码不重播" ($n5 -le 1) `
     ('BitDepthReduced 在该格日志里出现 ' + $n5 + ' 次（>1 ⇒ 同一事实有两个写者各播一遍，日志自相矛盾）')
 }

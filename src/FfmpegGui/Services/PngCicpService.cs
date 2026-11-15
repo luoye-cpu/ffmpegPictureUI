@@ -131,12 +131,26 @@ namespace FfmpegGui.Services
         /// </summary>
         public static bool TryWriteIccp(string pngPath, string iccProfilePath, string profileName = "icc")
         {
+            try
+            {
+                var icc = File.ReadAllBytes(iccProfilePath);
+                if (icc.Length < 132) return false;
+                return TryWriteIccpBytes(pngPath, icc, profileName);
+            }
+            catch { return false; }
+        }
+
+        /// <summary>
+        /// 直接从 ICC 字节写 iCCP（2026-11-15）。用于标准 ICC 已在内存中生成、但落临时文件
+        /// 被 Windows ACL/Defender 拒绝的场景：不落盘 ICC，直接把字节压进 PNG。
+        /// </summary>
+        public static bool TryWriteIccpBytes(string pngPath, byte[] icc, string profileName = "icc")
+        {
+            if (icc.Length < 132) return false;
             for (int attempt = 0; ; attempt++)
             {
                 try
                 {
-                    var icc = File.ReadAllBytes(iccProfilePath);
-                    if (icc.Length < 132) return false;
                     var name = string.IsNullOrWhiteSpace(profileName) ? "icc" : profileName;
                     if (name.Length > 79) name = name[..79];
                     using var compressed = new MemoryStream();

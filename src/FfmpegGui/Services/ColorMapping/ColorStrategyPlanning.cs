@@ -474,6 +474,9 @@ public static partial class ColorMappingEngine
         // 交付档要能被下游出口读到（此前 `ColorTransformPlan.TargetBitDepth` 声明了却无人赋值，
         // 于是「出口该出几 bit」只能被各出口重新推导一遍 —— cjxl 出口就是这么推错成中间件档的）。
         p.TargetBitDepth = pol.TargetBitDepth;
+        // AVIF 的 ICC 出口位置：计划确实要附 ICC，且装配层确认本出口写得进去
+        // （默认/libaom 由 avifenc 兑现；硬件 AV1 编码器在 ColorIntentFactory 被置 false）。
+        p.AvifIccExit = pol.Format.Format == "avif" && pol.ExitWritesIcc && p.AttachIcc;
         EnsureAnnotationNotSilentlyMissing(p, pol, it);
         return p;
     }
@@ -608,9 +611,9 @@ public static partial class ColorMappingEngine
                 && TryStandardIccTokens(src, out stdP, out stdT, out stdM))
                 standardTokens = true;
 
-            // 本出口写不进 ICC（当前只有静态 AVIF 的 ffmpeg 出口）：ICC 不是可兑现的描述。
-            // 新口径不再把可 CICP 命名的源一刀切拒绝：CICP 能表达时以 CICP-only 交付，
-            // 标签与源 ICC 描述同一空间；CICP 也表达不了才拒绝。
+            // 本出口写不进 ICC（当前只剩 WebM 的 ffmpeg/matroska muxer 与显式硬件 AV1 编码器）：
+            // ICC 不是可兑现的描述。新口径不再把可 CICP 命名的源一刀切拒绝：CICP 能表达时以
+            // CICP-only 交付，标签与源 ICC 描述同一空间；CICP 也表达不了才拒绝。
             if (!pol.ExitWritesIcc)
             {
                 if (standardApplied || standardTokens)
@@ -1666,11 +1669,15 @@ public static partial class ColorMappingEngine
             }
         }
 
-        // ★ PNG/APNG 新口径（用户 2026-11-15）：即使容器物理上能同时写 iCCP + cICP，
-        //   也只在 CICP **无法精确表达**时才使用 ICC；CICP 可表达时只交付 cICP。
-        //   与下面“互斥容器择一”分开：这里不是容器不能共存，而是策略要求 CICP-only。
+        // ★ PNG/APNG 的 CICP 优先**只作用于自动推荐档**（用户 2026-11-15 定稿，2026-11-15 二次收口）：
+        //   Recommended 自动决策时，CICP 能精确表达就只交付 cICP，ICC 仅作不可表达时的兜底；
+        //   但用户**显式选择**「携带 ICC / ICC-only / 手动」时，双承载格式必须交付 **ICC + CICP 双写**
+        //   ——显式选择的语义不能被 Recommended 的自动规则悄悄改写。
+        //   ⚠ 这正是 2026-11-15 上午那版无条件 StripIcc 的缺陷：显式 CarryIcc 在 PNG/APNG 上
+        //     被剥成 CICP-only，与「携带 ICC 必须真正携带 ICC」的总口径冲突。
         //   只有能精确落到本出口的 CICP 才允许剥 ICC；否则保留 ICC、抑制 CICP。
-        if (icc && cicp && caps.CicpFirstWhenBoth)
+        if (icc && cicp && caps.CicpFirstWhenBoth
+            && p.DeclaredStrategy == ColorStrategy.Recommended)
         {
             var prefProbe = ColorSpaceDescriptor.FromCicp(p.OutPrimaries!, p.OutTransfer!, "CICP 优先判定");
             if (CapsAcceptsCicp(caps, prefProbe, externalEncoderExit))
@@ -1682,7 +1689,27 @@ public static partial class ColorMappingEngine
                 // 有真实像素映射的 Map 保持不动。
                 if (p.Action == ColorAction.CarryIcc && !p.NeedsCurveChange && p.Matrix == null)
                     p.Action = ColorAction.None;
-                p.Reason += "；源 ICC 未携带——CICP 已精确表达同一空间（PNG/APNG 遵循 CICP 优先，ICC 仅作不可表达时兜底）";
+                p.Reason += "；源 ICC 未携带——CICP 已精确表达同一空间"
+                         + "（自动推荐档遵循 CICP 优先，ICC 仅作不可表达时兜底）";
+            }
+        }
+
+        // ★ 双承载格式的 ICC-only 收口（用户 2026-11-15）：容器同时支持 CICP + ICC 时，
+        //   只要 ICC 本身带有可命名的等价令牌，就不允许只交付 ICC —— 必须补写同一空间的 CICP，
+        //   形成 ICC + CICP 双写。ICC-only 只保留给「CICP 确实无法表达」的源 profile
+        //   （原始源 ICC 无 H.273 令牌），以及在当前出口写不进该 CICP 的情形。
+        //   ⚠ 放在 PNG CICP-first 之后：Recommended 已按 CICP 优先剥离的格不会进入本段（icc=false）。
+        if (caps.CanHaveBothIccAndCicp && p.AttachIcc && p.OutPrimaries == null
+            && p.IccPrimaries != null && p.IccTrc != null)
+        {
+            var iccProbe = ColorSpaceDescriptor.FromCicp(p.IccPrimaries, p.IccTrc, "ICC-only 双写判定");
+            if (caps.CanCicp && CapsAcceptsCicp(caps, iccProbe, externalEncoderExit))
+            {
+                p.OutPrimaries = p.IccPrimaries;
+                p.OutTransfer = p.IccTrc;
+                p.OutMatrix = p.IccMatrix ?? MatrixTokenFor(p.IccPrimaries);
+                p.CicpUnavailable = CicpUnavailableReason.None;
+                p.Reason += "；ICC-only 收口为 ICC + CICP 双写（容器支持两者且 ICC 有可命名等价令牌）";
             }
         }
 
