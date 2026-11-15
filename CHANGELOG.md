@@ -12,6 +12,15 @@
 
 ## 📝 更新日志
 
+### v1.6.0-beta15 (2026-11-15) — ICC-only 双写 + AVIF 静态出口真正携带 ICC
+
+- **双承载格式的 ICC-only 收口**：容器同时支持 CICP + ICC 时，显式选择「携带 ICC / ICC-only」不再被 PNG/APNG 的自动 CICP-first 剥掉；只要 ICC 有可命名的等价 H.273 令牌，就补写同源 CICP，交付 **ICC + CICP 双写**。CICP 确实无法表达（如 ProPhoto/ROMM）时才保留 ICC-only。
+- **AVIF 静态出口接入 `avifenc --icc`**：此前 ffmpeg/libaom 的 AVIF muxer 写不进 ICC，exiftool 后置也报 `0 image files updated`，导致 ProPhoto→AVIF 被误删。现在计划附 ICC 时改由 avifenc 编码，同一进程写 `--icc` 与 `--cicp`；硬件 AV1 编码器不静默换 avifenc。
+- **AVIF ICC-only 的 nclx**：CICP 无法命名源空间时写 `2/2/0`（primaries/transfer unspecified、matrix identity），ICC 为唯一描述，不伪造 BT.709/BT.601；后置 exiftool 不再重复嵌入/误删 avifenc 已写好的 ICC。
+- **标准 ICC 不落临时文件（PNG/APNG）**：标准 ICC 直接在内存生成并写 `iCCP`，绕开产品进程写系统 `%TEMP%` 时的 `UnauthorizedAccess_IODenied_Path`；ICC 仍为 v4.4.0 并带 `cicp` 标注。
+- **修复 PNG cICP 取错源**：显式携带时 cICP 以计划目标空间为准，不再拿 `ffmpeg iccgen` 刚落的默认 ICC 反推成 BT.709；P3 源现在稳定交付 `iCCP(smpte432/sRGB, 4.4.0) + cICP(12/13/0)`。
+- **契约探针**：新增「双承载格式不得 ICC-only」与「AVIF 计划附 ICC ⇒ `AvifIccExit` 必须为真」断言；`contract` 164/0。
+
 ### v1.6.0-beta14 (2026-11-14) — AOT 切换到 AVX2 基线 + .NET 11 GA 口径收口
 
 - **AOT 目标 ISA**：NativeAOT 从 .NET 11 默认的 `x86-64-v2` 改为 `x86-64-v3`（AVX/AVX2/BMI1/BMI2/FMA 等）；`FfmpegGui.csproj` 与 `pack.ps1` 同步设置。AOT 进程自身现在能报告并使用 AVX2；旧 beta13 包仍是 v2 构建。

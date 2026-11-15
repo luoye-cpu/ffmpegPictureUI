@@ -13,6 +13,15 @@ All notable changes to this project are documented in this file.
 
 ## 📝 Changelog
 
+### v1.6.0-beta15 (2026-11-15) — ICC-only dual write + static AVIF export actually carries ICC
+
+- **ICC-only closure on dual-carrier formats**: when a container supports both CICP and ICC, an explicit "carry ICC / ICC-only" choice is no longer stripped by PNG/APNG's automatic CICP-first rule. If the ICC has a nameable equivalent H.273 token, the same-space CICP is written too, delivering **ICC + CICP dual write**. ICC-only remains only when CICP truly cannot express the space (e.g. ProPhoto/ROMM).
+- **Static AVIF export wired to `avifenc --icc`**: the ffmpeg/libaom AVIF muxer cannot write ICC and post-hoc exiftool reported `0 image files updated`, which previously caused ProPhoto→AVIF to be deleted as a failed color description. Plans that attach ICC now encode through avifenc, writing `--icc` and `--cicp` in one process; hardware AV1 encoders are not silently switched to avifenc.
+- **AVIF ICC-only nclx**: when CICP cannot name the source space, `2/2/0` is written (primaries/transfer unspecified, matrix identity); ICC is the sole description, and BT.709/BT.601 is not fabricated. Post-hoc exiftool no longer re-embeds or deletes the ICC written by avifenc.
+- **Standard ICC without temp files (PNG/APNG)**: standard ICC is generated in memory and written directly into `iCCP`, bypassing `UnauthorizedAccess_IODenied_Path` when the product process writes to the system `%TEMP%`. The profile is still v4.4.0 with the `cicp` tag.
+- **Fix PNG cICP source**: for explicit carry, cICP now follows the planned target space instead of being reverse-inferred from the default ICC just written by `ffmpeg iccgen` (which produced a wrong BT.709 tag). A P3 source now consistently delivers `iCCP(smpte432/sRGB, 4.4.0) + cICP(12/13/0)`.
+- **Contract probe**: added "dual-carrier formats must not be ICC-only" and "AVIF plan with ICC ⇒ `AvifIccExit` must be true" assertions; `contract` is 164/0.
+
 ### v1.6.0-beta14 (2026-11-14) — AOT moved to the AVX2 baseline + .NET 11 GA status cleanup
 
 - **AOT target ISA**: NativeAOT moved from the .NET 11 default `x86-64-v2` to `x86-64-v3` (AVX/AVX2/BMI1/BMI2/FMA and more); `FfmpegGui.csproj` and `pack.ps1` updated together. The AOT process can now report and use AVX2; the previous beta13 package was still built for v2.
