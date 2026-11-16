@@ -761,6 +761,58 @@ foreach($eng in @(@{n='eng';a='--color-engine engine'}, @{n='leg';a='--color-eng
   }
 }
 
+# ── ③h ICC/CICP 数值对撞（COLOR-06，2026-11-16）─────────────────────────────────────────
+# 背景：双写 iCCP+cICP 之后，两条标注各说各话是最隐蔽的偏色根因——cICP 说 P3(12)，
+#   iCCP 里却挂着 BT.709(1) 的原色 ⇒ 按 cICP 解码的查看器与按 ICC 解码的给出不同像素。
+#   旧格只断言"两块都在"（③g 的 iCCP 字节数 + cICP 存在），不对**数值**。本段把两条标注
+#   各自解出来的**原色**做对撞：cICP primaries 码 ↔ iCCP 红原色色度，必须描述同一空间。
+# 判据（拿 ③g 的 engine 产物：cICP=12/13、iCCP 红=0.67999 P3）：
+#   · cICP primaries=12（Display P3）⇒ iCCP 红 x 必须落在 P3 红区间 [0.66,0.70]；
+#   · cICP primaries=1（bt709/sRGB）⇒ iCCP 红 x 必须落在 bt709 红区间 [0.63,0.65]；
+#   · 两标注说的不是同一空间 ⇒ FAIL。
+# 负控：把产物 cICP 用 ServiceProbe png3 改写成 1/1（bt709）而 iCCP 仍是 P3 红 0.68 ⇒ 对撞必红
+#   （cICP=1 期待 ~0.64，实得 0.68）——不失配则本断言恒真。
+Write-Host "`n### ③h iCCP 内部原色 vs 容器 cICP 数值对撞（COLOR-06）###" -ForegroundColor Cyan
+function CicpPrimariesCode([string]$f){
+  $info = PngChunksG $f
+  $m = [regex]::Match($info, 'primaries=(\d+)')
+  if($m.Success){ return [int]$m.Groups[1].Value }
+  return $null
+}
+function CollidesIccCicp([string]$f){
+  # 返回 $true=一致；$false=失配；$null=读不到
+  $code = CicpPrimariesCode $f
+  $chr = IccRedG $f
+  if($null -eq $code -or -not $chr){ return $null }
+  $rx = $chr[0]
+  if($code -eq 12){ return ($rx -ge 0.66 -and $rx -le 0.70) }   # P3 红 ≈0.68
+  if($code -eq 1 ){ return ($rx -ge 0.63 -and $rx -le 0.65) }  # bt709 红 ≈0.64
+  return $false  # 未登记的 primaries 码与 ICC 对撞关系 ⇒ 不算一致
+}
+$fEng = Get-ChildItem -Recurse "$out/p3pngcarry-eng" -Include *.png -EA SilentlyContinue | Select-Object -First 1
+if(-not $fEng){
+  Assert "③h-对撞" $false "找不到 ③g engine 产物做对撞（p3pngcarry-eng）"
+} else {
+  $ok = CollidesIccCicp $fEng.FullName
+  $code = CicpPrimariesCode $fEng.FullName
+  $chr = IccRedG $fEng.FullName
+  Assert "③h-对撞" ($ok -eq $true) `
+    "iCCP 红原色与 cICP primaries 必须描述同一空间（cICP primaries=$code 期待区间 vs iCCP 红=$($chr -join ',')；一致=$ok）"
+  # 负控：改写 cICP 为 1/1（bt709），iCCP 仍 P3 红 0.68 ⇒ 对撞必须失配
+  $prExe = "$root/tests/projects/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.exe"
+  if(-not (Test-Path $prExe)){ $prExe = "$root/tests/projects/ServiceProbe/bin/Debug/net11.0/win-x64/ServiceProbe.exe" }
+  if(Test-Path $prExe){
+    $neg = "$out/_colortest_neg.png"
+    Copy-Item -LiteralPath $fEng.FullName -Destination $neg -Force
+    Start-Process -FilePath $prExe -ArgumentList "png3 `"$neg`" 0 1 1" -NoNewWindow -Wait | Out-Null
+    $negOk = CollidesIccCicp $neg
+    Assert "③h-负控" ($negOk -eq $false) `
+      "负控：把 cICP 改写成 bt709(1) 而 iCCP 仍 P3 红 0.68 ⇒ 对撞必须失配（实得一致=$negOk；不失配则本断言恒真）"
+  } else {
+    Assert "③h-负控" $false "缺 ServiceProbe（$prExe）⇒ 负控未跑，不是通过"
+  }
+}
+
 Write-Host "`n===== PASS=$pass FAIL=$fail =====" -ForegroundColor $(if($fail -eq 0){"Green"}else{"Red"})
 Write-Host "关注: cicp-only 的 avif/png 应 ICC=False; carry/hdr-png 应保 HDR(cicp smpte2084); jpeg+gm 应产出可用 UltraHDR" -ForegroundColor Yellow
 

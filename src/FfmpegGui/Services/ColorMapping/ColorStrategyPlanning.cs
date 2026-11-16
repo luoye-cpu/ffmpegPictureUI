@@ -1568,10 +1568,10 @@ public static partial class ColorMappingEngine
     /// <list type="number">
     ///   <item><see cref="ColorAction.None"/> —— 明确"引擎本次不做像素变换"（<c>QueueProcessor</c>
     ///         据此交回传统管线重编码）；</item>
-    ///   <item>声明**出口语义**（bt709/bt709），使其与交付**一致**。该语义来自容器的 SDR 标定：
+    ///   <item>声明**出口语义**（bt709/iec61966-2-1），使其与交付**一致**。该语义来自容器的 SDR 标定：
     ///         PNG/APNG 无 SDR 钳制（<c>GetFormatColorCapabilities</c> 的 capTrc=null），
-    ///         传统 tonemap 链的末级即 <c>zscale=p=bt709:t=bt709</c>，编码器据此写 cICP；
-    ///         <c>verify-decision-delivery</c> :126-128 正是按 bt709/bt709 锁定的。</item>
+    ///         传统 tonemap 链的末级即 <c>zscale=p=bt709:t=iec61966-2-1</c>（sRGB 分段），编码器据此写 cICP；
+    ///         <c>verify-decision-delivery</c> ⑮ 正是按"链末曲线 == 标签 transfer"锁定。</item>
     /// </list>
     /// </para>
     /// <para>
@@ -1591,13 +1591,18 @@ public static partial class ColorMappingEngine
         p.EffectiveStrategy = declared;
         if (ov != OverrideReason.None) p.Override = ov;
         p.OutPrimaries = "bt709";
-        p.OutTransfer = "bt709";
+        // COLOR-08（2026-11-16）：OutTransfer 必须**兑现链末实际曲线**。传统 tonemap 链末级是
+        //   zscale t=iec61966-2-1（sRGB 分段，见 FfmpegCommandBuilder.Decision.cs 的 tmDstT 定样），
+        //   此前这里写死 "bt709"（cICP transfer=1）⇒ 标签声称 BT.709 定义式曲线，像素走的却是
+        //   sRGB 分段 ⇒ verify-decision-delivery ⑮ 量到「链末 iec61966-2-1 vs 标签 bt709」失配。
+        //   原色保持 bt709（sRGB 与 BT.709 原色相同，=1）；矩阵不变；只把传递对齐到链末。
+        p.OutTransfer = "iec61966-2-1";
         p.OutMatrix = "bt709";
         p.AttachIcc = false;
         p.Reason = $"HDR 源（{it.Source!.Curve.Name}）+ auto 目标：{caps.Format} 的 HDR 承载能力要求位深 >8"
                  + $"（能力表 HdrRequiresHighBitDepth），而本次目标位深 {pol.TargetBitDepth} 装不下"
                  + " ⇒ 引擎不做像素变换；tonemap 与标注由传统管线裁决并执行，"
-                 + "出口语义 = 该容器的 SDR 标定 bt709/bt709（本计划**不**宣称保持源 HDR 标签）";
+                 + "出口语义 = bt709/iec61966-2-1（sRGB 分段；本计划**不**宣称保持源 HDR 标签）";
         p.Advice = "如需由引擎执行 HDR→SDR：显式指定 SDR 目标（--color-space sRGB），或把输出位深提到 >8";
         p.Verdict = new ColorVerdict
         {
@@ -1605,8 +1610,7 @@ public static partial class ColorMappingEngine
             {
                 new ColorAlternative(AlternativeKind.Strategy, "legacy",
                     $"位深 ≤8 的 {caps.Format} 装不下 HDR ⇒ 本出口的 tonemap 归传统管线"
-                    + "（引擎的 SDR 标定为 bt709/iec61966-2-1，与 PNG 的 SDR 出口语义 bt709/bt709 不同，"
-                    + "接管会改变交付）"),
+                    + "（引擎与传统管线的 SDR 标定均为 bt709/iec61966-2-1）"),
             },
         };
         return p;
