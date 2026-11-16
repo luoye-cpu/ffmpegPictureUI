@@ -59,9 +59,9 @@ UI 线程上已移除两条硬阻塞，并把日志/队列的 UI 回调从“逐
 ## 4. beta16 包
 
 - 版本位：`src/FfmpegGui/FfmpegGui.csproj` = `1.6.0-beta16`；中英 CHANGELOG 已补 beta16 条目。
-- 单文件包：`publish/FFmpegPictureUI-v1.6.0-beta16-x64.7z`，11,642,959 B，SHA256 前 16 `6590BFA27A2C2A69`。
-- 完整包：`publish/FFmpegPictureUI-v1.6.0-beta16-x64-full.7z`，56,381,544 B，SHA256 前 16 `B61F3860D926B45E`。
-- 包内 exe：app 24,681,984 B / SHA16 `131ED411B20C57C0`；full 24,681,984 B / SHA16 `7D1A8040A4BD8262`；均为 `ProductVersion=1.6.0-beta16+a4227a1ec2c593d458a56ff941b639e874c34068`。
+- 单文件包：`publish/FFmpegPictureUI-v1.6.0-beta16-x64.7z`，11,638,456 B，SHA256 前 16 `0D1549FD6D7540CE`。
+- 完整包：`publish/FFmpegPictureUI-v1.6.0-beta16-x64-full.7z`，56,372,635 B，SHA256 前 16 `86624E349017B36B`。
+- 包内 exe：app 24,681,984 B / SHA16 `E94DE7D4C279886B`；full 24,681,984 B / SHA16 `2ADFAB56F185A77D`；均为 `ProductVersion=1.6.0-beta16+1ad449c690c09116bb1df7042262a8083e24e9d7`（release commit `1ad449c`）。
 - `verify-package-gui-starts.ps1`（`PKG_VER=1.6.0-beta16`，full 包）：**PASS=6 FAIL=0 SKIP=1**，exit=0。SKIP 是提权会话下托盘 `Shell_NotifyIcon err=5` 的既定口径，不代表产品失败；普通权限会话需复验。
 - full 包 `--headless` 用**绝对路径**输入 `tests/output/sources/src_8bit.png` → PNG 成功，exit=0；相对路径输入会触发既有 exiftool 工作目录口径失败（exit 90），该问题不在本轮 UI 修复范围。
 - beta15 旧包与对应 `publish/build/FFmpegPictureUI-v1.6.0-beta15-x64*` 解包目录已删除；删除前已扫描 reparse point，beta15 两个目录 reparse_hits=0。
