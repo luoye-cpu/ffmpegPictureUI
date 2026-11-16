@@ -1443,6 +1443,10 @@ namespace FfmpegGui.Services
                                             captured.Log += s;
                                             _onItemUpdated?.Invoke(captured);
                                         }, AppSettingsService.Current.FfmpegPath, ct);
+                                        // 用户停止时 ffmpeg 可能以 -1 退出而不再抛 OperationCanceledException；
+                                        // 不能把这条取消路径写成「失败 (退出码 -1)」——统一交给外层取消分支标「已停止」。
+                                        if (ct.IsCancellationRequested)
+                                            throw new OperationCanceledException(ct);
                                         // ── 2026-11-03 Telegram 贴纸(webm): 256KB 体积闭环(超预算升 CRF 重编码)──
                                         // 调度点必须在 colorPostStepsDone 窗口内(verify-decision-delivery ⑧ 传递闭包);
                                         // 重编码走 FfmpegRunner(verify-ffmpeg-heartbeat 盯长站点)。
