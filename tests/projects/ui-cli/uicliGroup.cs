@@ -30,6 +30,8 @@ namespace Tests.UiCli
         //   而某个工程可能一个反射都不用它 ⇒ `static readonly` 会触发 CS0414
         //   （"字段已赋值但从未使用"）。const 不占字段、不产生该警告，
         //   语义也更强（编译期内联，不存在"两个实现漂移"的余地）。
+        private const BindingFlags BF = UiHost.BF;
+        private static FfmpegGui.MainWindow W { get => UiHost.W; set => UiHost.W = value; }
         private static string SrcDir => UiHost.SrcDir;
         private static string TempDir => UiHost.TempDir;
 
@@ -397,6 +399,34 @@ namespace Tests.UiCli
                   "FindControl<TextBox>(\"LogText\") == null ⇒ 面板根本没构造起来");
             if (box == null) return;
 
+            // GATE-01（2026-11-16）：日志已迁移到 UiLogService 唯一入口 ⇒ 落地进 ListBox 的
+            //   _uiLogLines 集合，LogText.Text 不再接收 [detect] 行。本组读数改读集合本身；
+            //   且 UiLogService 给每行加了 "[时间戳] [级别] " 前缀 ⇒ 剥掉还原旧 TextBox 的裸消息
+            //   形状（ClassifyDetectLines 按 "[detect] " 前缀分类，带前缀的行永不命中）。
+            string CaptureLog()
+            {
+                try
+                {
+                    var f = W.GetType().GetField("_uiLogLines", BF);
+                    var col = f?.GetValue(W) as System.Collections.ObjectModel.ObservableCollection<string>;
+                    if (col == null) return "";
+                    var sb = new System.Text.StringBuilder();
+                    foreach (var l in col)
+                    {
+                        var s = l;
+                        var e1 = s.IndexOf("] ", 1);
+                        if (e1 > 0)
+                        {
+                            var e2 = s.IndexOf("] ", e1 + 2);
+                            if (e2 > 0) s = s.Substring(e2 + 2);
+                        }
+                        sb.AppendLine(s);
+                    }
+                    return sb.ToString();
+                }
+                catch { return ""; }
+            }
+
             var names = new[] { "cjxl", "cjpegli", "djxl", "exiftool", "JxrEncApp", "avifenc", "dngtool" };
             // 轮询上限 45 s：本机预热实测 1~2 s，但「PLAN 整棵缺失 ⇒ 走扩展搜索预算」的最坏路径要几十秒。
             // ⚠ 超时**不能判红**，要单列「测量失败」⇒ 否则"这台机器装了什么应用"会决定断言颜色（§6 口径）。
@@ -407,7 +437,11 @@ namespace Tests.UiCli
             while (sw.Elapsed.TotalSeconds < 45.0)
             {
                 Pump(6);
-                ClassifyDetectLines(box.Text, names, verdicts, others, unknowns);
+                // GATE-01：日志落地在 DispatcherPriority.Background 的 FlushUiLog，
+                //   而 RunJobs() 默认只抽到 Normal 及以上 ⇒ 后台日志行永远进不了集合。
+                //   本组轮询必须把 Background 级也抽干，否则 P1 恒 0 条。
+                Dispatcher.UIThread.RunJobs(DispatcherPriority.Background);
+                ClassifyDetectLines(CaptureLog(), names, verdicts, others, unknowns);
                 if (verdicts.Count >= names.Length) break;
             }
 
