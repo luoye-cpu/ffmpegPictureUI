@@ -1,7 +1,7 @@
 # 48h 修复结果（`a9e2830..708d8d0`）· 统一交付
 
 **审查基线**：`a9e2830..957cfa8`（18 提交 / 75 文件 / +8777 −1095），裁决见 `CHANGES_48H_REVIEW_RESULT_2026-11-16.md`（P0=0 / P1=3 / MEDIUM=12 / LOW=18 / INFO=1，共 34 条）。
-**修复落点**：`main` 上一串未 push 的提交，HEAD 最终为 `708d8d0`（代码）+ 文档批。逐条闭环见 `FINDING_CLOSURE_2026-11-16.md`。
+**修复落点**：`main` 上一串未 push 的提交，当前 HEAD = `93c3a30`（代码 + 文档全在主干，未 push）。逐条闭环见 `FINDING_CLOSURE_2026-11-16.md`。
 
 ---
 
@@ -13,7 +13,7 @@
 | MEDIUM | **12 / 12 逐条关闭**（含 2 条文档侧、1 条测试侧） |
 | LOW | 18 条逐条处置：**修复 12 / 接受 3 / 不改+待办 3** |
 | INFO | 1 条不动作（正控通过，CRITICAL 候选不成立） |
-| 代码提交 | 11 条（`7695161`…`708d8d0`，另 2 条纯文档） |
+| 提交 | 自 `957cfa8` 起共 **18** 条：本批 **14** 条（修复 10 + 文档 4）+ 并行线 **3** 条 + 切片同步 **1** 条（`93c3a30`） |
 | 变更链路门禁 | 全部 **rc=0**，读数绑定 `FfmpegGui.dll` / `ServiceProbe.dll` 指纹 |
 | 版本位 | **未动**，仍 `<Version>1.6.0-beta17</Version>` |
 | tag | **未动**，`1.6.0BETA17` 仍指 `957cfa8` |
@@ -27,7 +27,8 @@
 
 - 第一次指令要求"修完升 `1.6.0-beta18`、打 tag、出包"；第二次**整体覆盖**为"不升版本位、不打新 tag、不出包，固定 `1.6.0-beta17`，修完停在可重出状态，等明确指令才 `pack.ps1`"。**按第二次执行**。
 - `FfmpegGui.csproj` 的 `<Version>` 全程未改；`git tag` 未执行；`CHANGELOG*` 未改（GATE-04 因此推迟）。
-- **事实**：两个 beta17 包（app 11.6 MB / full 56.4 MB）产出在 `957cfa8`（旧），而修复链现在在 `957cfa8` 之后 11 个提交。⇒ **包与 tag 指向同一个旧提交，但与当前 `main` 代码不一致**。处置建议见 §7.1。
+- **tag 未被移动（已复核）**：`git rev-parse 1.6.0BETA17` 返回 `f56db09…` 是 **annotated tag 对象的 SHA**，不是提交；`git rev-parse "1.6.0BETA17^{commit}"` = **`957cfa8`**，与授权冻结值一致。裸用 `rev-parse` 会把 tag 对象误读成"tag 被重指"，本轮验证过程中出现过这一次误读，已在此更正。
+- **事实**：两个 beta17 包（app 11.6 MB / full 56.4 MB）产出在 `957cfa8`，而修复链在该提交之后 **18 个提交**。⇒ **包与 tag 指向同一个旧提交，但与当前 `main` 代码不一致**。处置建议见 §7.1。
 
 ---
 
@@ -49,6 +50,18 @@
 | 12 | `0be4c4c` | fix(queue)：停止状态单一真值 + 优雅停止/探测取消 | UI-01 / UI-02 / UI-03 / UI-05 / UI-06 |
 | 13 | `0d281d9` | test(ui)：oxipng 面板显隐与默认 max 断言 + 五臂计数 487→497 | UI-04 |
 | 14 | `708d8d0` | test(ui)：GATE-01 根因修复（旧宿主 GroupP 适配 `UiLogService` 迁移） | GATE-01 |
+
+**并行工作线提交（非本批，同仓同主干，仅登记不认领）**：
+
+| # | 哈希 | 主题 |
+|---|---|---|
+| 15 | `f0fcb17` | fix(gainmap)：AVIF SDR CICP 与 GainMap UI 单一真值（14 文件 +644/−49，含两份 `GAINMAP_UI_*` 分析/计划文档） |
+| 16 | `b0bf678` | docs(review)：收口 48h 修复结果与审查证据（328 行改动，把裁决报告、五份子报告、evidence CSV 入库） |
+| 17 | `b6e1e34` | docs(review)：补 `verify-color-wiring` 完整体检证据 |
+
+| # | 哈希 | 主题 |
+|---|---|---|
+| 18 | `93c3a30` | test(ui)：重切切片并同批对齐五臂计数（本批 `708d8d0` 改 `GroupP` 后漏跑生成器的收口，1 文件 +35/−1） |
 
 ---
 
@@ -75,7 +88,34 @@
 
 ## 4. 最终门禁读数
 
-<!-- FINAL_READINGS -->
+**指纹绑定**（读数合法性的前提，宣布"全绿"必须与这两块哈希同段）：
+- `src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.dll` → `sha256[:16]` = **`76703DCCD71DDEB6`**
+- `tests/projects/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.dll` → `sha256[:16]` = **`13907D58EE2097DF`**
+- 构建：`dotnet build ffmpegPictureUI.sln -c Release -m:1` → **0 errors / 5 存量警告**
+- 树：HEAD `93c3a30`，`src/`、`tests/` 无未提交改动（`git status` 只剩 `review-evidence/logs/final/` 下的读数文件）
+- exiftool code 126 计数：**全部闸 0**（PATH 前置了 `exiftool_files`）
+
+| 闸 | rc | PASS / FAIL / SKIP | 耗时 | 日志（`review-evidence/logs/final/`） |
+|---|---|---|---|---|
+| verify-decision-delivery | 0 | 84 / 0 / 6 | 193 s | `verify-decision-delivery.out.txt` |
+| verify-probe-mirror-parity | 0 | 91 / 0 / – | 8 s | `verify-probe-mirror-parity.out.txt` |
+| verify-color-strategy | 0 | 86 / 0 / – | 291 s | `verify-color-strategy.out.txt` |
+| verify-color-wiring ① | 0 | 162 / 0 / – | 205 s | `verify-color-wiring-1.out.txt` |
+| verify-color-wiring ② | 0 | 162 / 0 / – | 213 s | `verify-color-wiring-2.out.txt` |
+| verify-prophoto-faithful | 0 | 42 / 0 / – | 78 s | `verify-prophoto-faithful.out.txt` |
+| verify-gainmap-isobmff ① | 0 | 174 / 0 / 9 | 252 s | `verify-gainmap-isobmff-1.out.txt` |
+| verify-gainmap-isobmff ② | 0 | 174 / 0 / 9 | 251 s | `verify-gainmap-isobmff-2.out.txt` |
+| verify-ui-host（五臂） | 0 | 497 / 0 / – | 261 s | `verify-ui-host.out.txt` |
+| verify-ui-split-reproducible | 0 | 19 / 0 / – | 4 s | `verify-ui-split-reproducible.out.txt`（红态留证 `…-RED-before-93c3a30.out.txt`，18/1） |
+| verify-ui-split-union | 0 | 11 / 0 / – | 301 s | `verify-ui-split-union.out.txt`（new=497 old=497） |
+| verify-module-registry | 0 | 11 / 0 / – | 1 s | `verify-module-registry.out.txt`（entries=67 / scriptList=104） |
+| verify-package-gui-starts | 0 | 6 / 0 / 1 | 31 s | `verify-package-gui-starts.out.txt`（⑥ 提权托盘 SKIP，已知口径） |
+
+五臂分解：`ui-core 87` / `ui-mode 66` / `ui-color 103` / `ui-sweep 169` / `ui-cli 72` = **497**。
+
+**出包放行闸**：`_release-gate-check.ps1` 实跑 **exit 0**，逐条打印 `GREEN … dll=76703dccd71ddeb6`，结论"全绿（11 条），允许出包"。负控（把 module-registry 改成 `rc=1` 的副本）→ **exit 1** 并点名该条。
+
+**一条红的过程记录（诚实留痕）**：首轮统一验证时 `verify-ui-split-reproducible` 是 **18/1 rc=1**——`FAIL R-1 ui-cli 逐字节全等（gen 518 行 / live 484 行）`。根因是本批 `708d8d0` 改单体 `GroupP` 后**漏跑 `_gen-ui-split.ps1`**（GroupP 切片落在 ui-cli 臂），不是并行线、也不是口径漂移。`93c3a30` 重切后 **19/0**；`FfmpegGui.dll` 指纹未变（只动测试源码），故其余 12 条读数仍绑定同一份产物。
 
 ---
 
@@ -106,7 +146,8 @@
 7. **beta16 五项微基准 / beta17 全量构建 5 warnings / beta15 contract 164 对账**：读数在别的批次，本轮未重跑（GATE-04 推迟）。
 8. **ProPhoto 非 D65 源 AVIF 兜底分支**、**HDR 源 AVIF 双写 ICC/CICP 一致性**（本轮只测 SDR P3）、**exiftool 重写 `iCCP` 后 cICP 逐块保留**、**APNG 帧保持**、**runner 式 rc（单跑 vs 运行器差异）**：均在审查报告 §8 挂账，本轮未收。
 9. **AVIF/JXL 未标注 SDR 的口径**：本批只收窄到 `UnlabeledMeansSrgb=true` 的 PNG/APNG；"未标注不必然是 sRGB"决定了 AVIF/JXL 仍各按各的，**口径待产品单独拍板**。
-10. **工作树内的并行未提交改动**（见 §7.4）：最终读数打在混合树上。
+10. **并行线的 `f0fcb17`**（AVIF SDR CICP / GainMap UI 单一真值）：被本批 13 条门禁间接覆盖，但其自身的逐值断言与全格式显隐矩阵**未在本批落断言**；本批不出具"已验证"。详见 §7.4。
+11. **`verify-ui-split-reproducible` 的一次红→绿**：红是"生成物与单体失同步"（`708d8d0` 漏跑生成器），留证 `…-RED-before-93c3a30.out.txt`（18/1）与修后日志（19/0）；两者都在册，未删红态证据。
 
 ---
 
@@ -130,10 +171,11 @@
 - **GATE-04**（CHANGELOG trace）：推迟，**一旦重出 beta17 必须补**。
 - **BUILD-08**：AOT CPU/GPU 检测不失真（否定结论成立），建议补 headless `--diagnose` 便于门禁锁定，本轮不动作。
 
-### 7.4 工作树里有另一条并行工作线的未提交改动（**不是本批、未被我提交**）
-20:33–20:40 前后写入、之后静默的 11–12 个文件：`MainWindow.xaml(.cs)`、`FfmpegOptions.cs`、`ColorIntent(.Factory).cs`、`ColorStrategyPlanning.cs`、`ColorTransformPlan.cs`、`FormatCapabilitiesService.cs`、`GainMapEncoder.cs`、`IsoBmffGainMapWriter.cs`、`QueueProcessor.cs`、`verify-color-matrix-full.ps1`，外加两份未跟踪文档 `GAINMAP_UI_AND_BASE_GAMUT_ANALYSIS_2026-11-16.md`、`GAINMAP_UI_FIX_PLAN_2026-11-16.md`。内容是把 GainMap 面板显隐统一到 `GainMapEncoder.FormatCarriesGainMap`、AVIF 底图 `colr` 重写等。
-- 本批**未改、未 add、未 revert** 它们（改动权不在本批）。
-- 影响：§4 的最终读数是"提交链 + 这批外部改动"的**混合树**读数；**重出 beta17 前必须先处置它们**（提交并各自跑闸，或退回），否则包内容会带上未验代码。
+### 7.4 并行工作线的提交：`f0fcb17`（本批未认领，但已被本批门禁覆盖）
+- 修批进行途中，工作树里出现 12 个未提交文件（`MainWindow.xaml(.cs)`、`FfmpegOptions.cs`、`ColorIntent(.Factory).cs`、`ColorStrategyPlanning.cs`、`ColorTransformPlan.cs`、`FormatCapabilitiesService.cs`、`GainMapEncoder.cs`、`IsoBmffGainMapWriter.cs`、`QueueProcessor.cs`、`verify-color-matrix-full.ps1`）+ 两份 `GAINMAP_UI_*` 文档；**19:53 由并行线提交为 `f0fcb17`**（14 文件 +644/−49）。本批全程未改、未 add、未 revert 它们。
+- 此后 `src/`、`tests/` 已无未提交改动，§4 的 13 条读数打在 `b6e1e34`（+`93c3a30`）树上 ⇒ **读数天然包含了 `f0fcb17` 的产品改动**：`verify-color-wiring` 162/0、`verify-gainmap-isobmff` 174/0、`verify-color-strategy` 86/0、`verify-decision-delivery` 84/0 都覆盖到它改过的色彩/增益图出口。
+- **但**它自己的针对性主张（AVIF SDR 底图 `colr` 重写后的 CICP 逐值、GainMap 面板在 `jpg/jpeg/jpegli/avif/jxl` 全格式下的显隐矩阵）**没有在本批门禁里逐条落断言**，只有间接覆盖 ⇒ 该批归属方应补自己的断言与读数；本批不对它出具"已验证"。
+- **重出 beta17 前**：包内容会包含 `f0fcb17`。若它尚未自证，出包说明里不得把它算作已验证修复。
 
 ---
 

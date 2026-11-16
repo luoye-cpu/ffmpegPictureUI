@@ -116,7 +116,7 @@
 ### ③h iCCP 内部原色 vs 容器 cICP 数值对撞（COLOR-06）###
   PASS ③h-对撞                    iCCP 红原色与 cICP primaries 必须描述同一空间（cICP primaries=12 期待区间 vs iCCP 红=0.67999,0.32001；一致=True）
 tools-root=C:\PLAN\ffmpegPictureUI
-png3: C:\PLAN\ffmpegPictureUI/tests/output/validate/strat_9b90f800/_colortest_neg.png sBIT=跳过 cICP=True 大小=36540
+png3: C:\PLAN\ffmpegPictureUI/tests/output/validate/strat_f9277cbf/_colortest_neg.png sBIT=跳过 cICP=True 大小=36540
 PASS png3 chunk 写入成功
 PROBE RESULT: pass=1 fail=0
   PASS ③h-负控                    负控：把 cICP 改写成 bt709(1) 而 iCCP 仍 P3 红 0.68 ⇒ 对撞必须失配（实得一致=False；不失配则本断言恒真）

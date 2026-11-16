@@ -38,10 +38,10 @@ Output #0, image2, to 'C:\PLAN\ffmpegPictureUI/tests/output/validate/decision-de
   Stream #0:0: Video: png, rgb24(pc, gbr/unknown/unknown, progressive), 320x240 [SAR 1:1 DAR 4:3], q=2-31, 200 kb/s, 10 fps, 10 tbn
     Metadata:
       encoder         : Lavc63.19.101 png
-[image2 @ 00000249ffb5d240] The specified filename 'C:\PLAN\ffmpegPictureUI/tests/output/validate/decision-delivery/srgb_src.png' does not contain an image sequence pattern or a pattern is invalid.
-[image2 @ 00000249ffb5d240] Use a pattern such as %03d for an image sequence or use the -update option (with -frames:v 1 if needed) to write a single image.
-[out#0/image2 @ 00000249fe922700] video:66KiB audio:0KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: unknown
-frame=    1 fps=0.0 q=-0.0 Lsize=N/A time=00:00:00.10 bitrate=N/A speed=4.17x elapsed=0:00:00.02    
+[image2 @ 0000018ae7f2a580] The specified filename 'C:\PLAN\ffmpegPictureUI/tests/output/validate/decision-delivery/srgb_src.png' does not contain an image sequence pattern or a pattern is invalid.
+[image2 @ 0000018ae7f2a580] Use a pattern such as %03d for an image sequence or use the -update option (with -frames:v 1 if needed) to write a single image.
+[out#0/image2 @ 0000018ae7f296c0] video:66KiB audio:0KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: unknown
+frame=    1 fps=0.0 q=-0.0 Lsize=N/A time=00:00:00.10 bitrate=N/A speed=4.72x elapsed=0:00:00.02    
   PASS ⑫ 对照组：源 .jxl 自身没有 ICC ⇒ 产物 ICC 不可能来自
   PASS ⑫ 走的确实是**已登记**通路（否则链尾不该做任何色彩后置）
   PASS ⑫ 链尾交付了 TIFF 目标 ICC 这一步（抽公共入口前它只在主分支跑 ⇒ 判据两份）

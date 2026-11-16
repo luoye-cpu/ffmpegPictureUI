@@ -93,11 +93,11 @@
   PASS (10) 负控：没有谎报 ICC 已写入（JXL 互斥路径只写 CICP）
   PASS (10) 携带的源 ICC 语义真的进了产物（jxlinfo 读回 P3：Color space: RGB, D65, P3 primaries, sRGB transfer function）
   PASS (10) 显式 sRGB 目标产出非空文件（11113B）
-  PASS (10) 目标语义由计划翻译成 cjxl 的 color_space（[色彩] cjxl 命令行: "C:\PLAN\ffmpegPictureUI\tests\output\_tmp\final-verify\tmp\jxl_meta_e6c1db45250445b4965d663af9680ce9.png" "C:\PLAN\ffmpegPictureUI\tests\output\validate\wire_6d867c0a\eng_cjxl_srgb\a2_srgb_p3.jxl" -e 7 -d 2.4 -x color_space=sRGB
+  PASS (10) 目标语义由计划翻译成 cjxl 的 color_space（[色彩] cjxl 命令行: "C:\PLAN\ffmpegPictureUI\tests\output\_tmp\final-verify\tmp\jxl_meta_70ee10b69cda4c5190a4a44dc35d42e4.png" "C:\PLAN\ffmpegPictureUI\tests\output\validate\wire_fe09d600\eng_cjxl_srgb\a2_srgb_p3.jxl" -e 7 -d 2.4 -x color_space=sRGB
 ）
   PASS (10) jxlinfo 读回 sRGB（Color space: RGB, D65, sRGB primaries, sRGB transfer function）
   PASS (10) BT.2020 PQ 目标产出非空文件（10812B）
-  PASS (10) HDR 目标落到 Rec2100PQ 枚举（[色彩] cjxl 命令行: "-" "C:\PLAN\ffmpegPictureUI\tests\output\validate\wire_6d867c0a\eng_cjxl_pq\a2_srgb_p3.jxl" -e 7 -d 2.4 -x color_space=Rec2100PQ --intensity_target=1000
+  PASS (10) HDR 目标落到 Rec2100PQ 枚举（[色彩] cjxl 命令行: "-" "C:\PLAN\ffmpegPictureUI\tests\output\validate\wire_fe09d600\eng_cjxl_pq\a2_srgb_p3.jxl" -e 7 -d 2.4 -x color_space=Rec2100PQ --intensity_target=1000
 ）
   PASS (10) **HDR 目标必须声明 --intensity_target**（缺了 libjxl 回落默认峰值 ⇒ 亮度语义错）
   PASS (10) **HDR 目标仍走 PPM 管道**（PNG 中转只给 SDR：PNG 表达不了 PQ/HLG 语义，历史坑 JXL_ISSUES_HANDOVER P0-2）
@@ -118,10 +118,10 @@
   PASS (10) PAM 用例产物**仍含 alpha**（未因换 PAM 目标语义而丢通道）：JPEG XL image, 32x32, lossy, 8-bit RGB+Alpha
   PASS (10) PAM 用例透明**未被拍平**（源 alpha YMIN=128，产物 YMIN=128）
   PASS (10) auto 光子噪声 + 引擎 cjxl 出口产出非空 jxl（exit=0，11004B）
-  PASS (10) 未解析的占位串**没有**被发给编码器（命令行：[色彩] cjxl 命令行: "C:\PLAN\ffmpegPictureUI\tests\output\_tmp\final-verify\tmp\jxl_meta_ada12d5fecd246d690da1984e6144521.png" "C:\PLAN\ffmpegPictureUI\tests\output\validate\wire_6d867c0a\eng_cjxl_photon_auto\a2_srgb_p3.jxl" -e 7 -d 2.4 -x color_space=DisplayP3
+  PASS (10) 未解析的占位串**没有**被发给编码器（命令行：[色彩] cjxl 命令行: "C:\PLAN\ffmpegPictureUI\tests\output\_tmp\final-verify\tmp\jxl_meta_927ed83f7e3546bcacf88bcfb07967d5.png" "C:\PLAN\ffmpegPictureUI\tests\output\validate\wire_fe09d600\eng_cjxl_photon_auto\a2_srgb_p3.jxl" -e 7 -d 2.4 -x color_space=DisplayP3
 ）
   PASS (10) ISO 解析确实跑在**引擎路线**上（该行由分叉前的共用步骤打出，不再内联在 ProcessCjxlAsync）
-  PASS (10) **正控**：有损 + 数值 ISO ⇒ flag 照发且产物非空（命令行：[色彩] cjxl 命令行: "C:\PLAN\ffmpegPictureUI\tests\output\_tmp\final-verify\tmp\jxl_meta_c20483112ba842c48553bf635a647c33.png" "C:\PLAN\ffmpegPictureUI\tests\output\validate\wire_6d867c0a\eng_cjxl_photon_iso\a2_srgb_p3.jxl" -e 7 -d 2.4 --photon_noise_iso=400 -x color_space=DisplayP3
+  PASS (10) **正控**：有损 + 数值 ISO ⇒ flag 照发且产物非空（命令行：[色彩] cjxl 命令行: "C:\PLAN\ffmpegPictureUI\tests\output\_tmp\final-verify\tmp\jxl_meta_ab7992c214e8434381b250c054e5ec12.png" "C:\PLAN\ffmpegPictureUI\tests\output\validate\wire_fe09d600\eng_cjxl_photon_iso\a2_srgb_p3.jxl" -e 7 -d 2.4 --photon_noise_iso=400 -x color_space=DisplayP3
 ）
   PASS (10) 无损 ⇒ 命令行只有 -d 0、**不带** --photon_noise_iso（叠加会静默破坏逐比特无损）
   PASS (10) 被丢弃的用户参数**点名**（不静默吞设置）
