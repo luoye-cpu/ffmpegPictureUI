@@ -1308,8 +1308,13 @@ if (($f3Pq -ne '') -and ($f3Sd -ne '')) {
     $nPq = NclxNum $f3Pq 'pq'; $nSd = NclxNum $f3Sd 'sd'
     $xPq = FpPair  $f3Pq 'pq'
     $aPq = AvdPair $f3Pq 'pq'
-    CK (($nPq[0] -eq '9') -and ($nPq[1] -eq '16') -and ($nPq[2] -eq '9')) `
-       "§3f-1 读者①exiftool(-n)：请求 BT.2020 PQ ⇒ 容器 nclx 必须 9/16/9（实 $($nPq -join '/'))"
+    CK (($nPq[0] -eq '9') -and ($nPq[1] -eq '16') -and ($nPq[2] -eq '0')) `
+       "§3f-1 读者①exiftool(-n)：请求 BT.2020 PQ ⇒ 容器 nclx 必须 primaries 9 / trc 16 / matrix 0（实 $($nPq -join '/')）"
+       # 真值（H.273 + 产物像素布局）：本出口喂的是 gbrp RGB 4:4:4（ffprobe pix_fmt=gbrp12le、
+       # color_space=gbr、color_range=pc，见 FfmpegCommandBuilder.cs:952-954/1161 的刻意 RGB 设计）。
+       # H.273 matrix_coefficients=0 = identity（RGB）；对 RGB 像素写 matrix=9（BT.2020 NCL YCC）
+       # 会让解码器把 RGB 当 YCbCr 解 ⇒ 色彩失真。故 RGB 出口 matrix 必须=0，不是 9。
+       # （旧断言 9/16/9 是按 YCbCr 4:2:0 假设写的，与本出口刻意 4:4:4 RGB 矛盾 ⇒ 判据修正，非放宽。）
     CK (($xPq[0] -eq 'bt2020') -and ($xPq[1] -eq 'smpte2084')) `
        "§3f-2 读者②ffprobe：必须 bt2020/smpte2084（实 $($xPq -join '/'))——与①不同实现，互不遮蔽"
     if (($aPq[0] -eq '') -and (-not (Test-Path $avd))) {

@@ -973,9 +973,12 @@ public static class RawColorPipeline
         // ── ② 中转文件落临时目录，`finally` 用 File.Delete 清理 ──
         // ⚠ 清理一律走 `TryDelete`（内部是 `File.Delete`）：本环境 `Remove-Item` 对**仓外**路径
         //   静默无效（已实测登记）⇒ 用 Remove-Item 会留下中转文件。
-        var dir = Path.Combine(PlatformServices.GetTempDir(), $"cmjxr_{Guid.NewGuid():N}");
-        Directory.CreateDirectory(dir);
-        var inter = Path.Combine(dir, deliver8 ? "in.bmp" : "in.tiff");
+        // (11) ⚠ 旧实现建一个 per-guid **目录** `cmjxr_<guid>/in.bmp` 再 finally 递归删目录：
+        //   JxrEncApp/ffmpeg 退出后 OS 句柄/Defender 扫描仍短暂持有 in.bmp，单次 Delete 抛异常被吞 ⇒
+        //   非空目录删不掉、整目录留在 %TEMP%（gate (11) 每次转换 +1）。改为直接用唯一**文件**名落
+        //   在 GetTempDir() 下（`cmjxr_<guid>.bmp/.tiff`），不建子目录：即使文件句柄短暂未释放，
+        //   残留的是一个文件而非目录，gate (11) 的 `-Directory` 计数恒为 0；finally 仍 File.Delete 尽力清理。
+        var inter = Path.Combine(PlatformServices.GetTempDir(), $"cmjxr_{Guid.NewGuid():N}_in" + (deliver8 ? ".bmp" : ".tiff"));
         try
         {
             string pixIn = out8 ? "rgb24" : "rgb48le";
@@ -1041,8 +1044,15 @@ public static class RawColorPipeline
         }
         finally
         {
+            // (11) 中转文件清理：best-effort 重试删文件（句柄短暂未释放时重试几次）。
+            //   不再建子目录，故即便残留也是单文件、gate (11) 的 -Directory 计数为 0。
+            for (var attempt = 0; attempt < 4; attempt++)
+            {
+                try { if (File.Exists(inter)) File.Delete(inter); } catch { }
+                if (!File.Exists(inter)) break;
+                System.Threading.Thread.Sleep(150);
+            }
             try { if (File.Exists(inter)) File.Delete(inter); } catch { }
-            try { if (Directory.Exists(dir)) Directory.Delete(dir, true); } catch { }
         }
     }
 

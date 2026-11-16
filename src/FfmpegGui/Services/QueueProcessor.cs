@@ -1839,7 +1839,12 @@ namespace FfmpegGui.Services
             //   触发条件（任一）：显式 --bit-depth 16 / 源位深 >12（16-bit AVIF 输入重建后是 16-bit PNG）。
             //   ⚠ 必须在下方 S7 降级播报**之前**置位并修正裁决：规划层只知道"AVIF 单 item 上限 12"，
             //     会给一条 BitDepthReduced(16→12)；本出口用 sato 兑现 16 后，那条降级不会发生。
-            if (IsAvif16Requested(item.Options, inputPath))
+            //   (5b) ⚠ 用户显式要 JPEG 增益图（tmap）时**不得**走 sato 双 item：tmap（ISO 21496-1）与
+            //     Sample Transform（sato two-item）在同一 AVIF 里互斥。HEIC/HDR 增益图源解码成线性 >12-bit
+            //     会误触发本块，旧逻辑在 Avif16Eligibility 里 return 拒绝串 ⇒ exit 91 零产物（§3f-8/§3g-2
+            //     假红根因）。正确行为是**跳过 sato 升级**、按普通 10-bit tmap AVIF 出口走（GainMapEncoder
+            //     组 tmap 容器并打 alpha 拍平点名日志），而不是把一个用户没要的 16-bit 路径强加进来再拒绝。
+            if (IsAvif16Requested(item.Options, inputPath) && !item.Options.JpegGainMap)
             {
                 var reject = Avif16Eligibility(item.Options);
                 if (reject != null)
