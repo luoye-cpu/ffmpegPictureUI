@@ -53,6 +53,7 @@
 第五份 `HANDOVER-2026-10-31.md`（beta10 独立性审查的**交接文档** v1.0：S1–S10 结论速览、被测件绑定 `f89b247b60dcf1ef`、9 批次产出索引。原放仓库根，2026-11-02 按 §1 目录契约（根目录只放法律/说明/规范白名单）移入本目录，内容未改）
 `review-2026-11-13`（2，2026-11-13 工作区审计：`WORKSPACE_AUDIT_2026-11-13.md` 构成/测试归置/AGENTS 精简/Git tag 核对与提交笔数分析；`AGENTS_HISTORY_2026-11-13.md` 旧 `AGENTS.md §7` 的逐字快照，只作参考、不是当前口径）
 `review-2026-11-14`（6，2026-11-14 色彩标注口径批：`COLOR_ANNOTATION_PRIORITY.md` 默认推荐改为「CICP 优先 / CICP 不可达才 ICC 兜底」的优先级阶梯、四条回退触发与播报落点、显式策略零漂移论证、旧默认→新默认的不兼容面、改锁与新增负控清单、§9 四模式对照表、§9a 自生成 ICC 版本策略（v4.4 默认 / JPEG 可选 v2.0 / 源 ICC 永不重写）、§10 策略单选不再自动联动（含断言↔表格对号）；`COLOR_UI_LINKAGE_AUDIT.md` 色彩面板状态机逐控制项审计（控制项 × 当前状态 × 锁定原因 × 真实实现依据 × 判定 × 回归）、真实冲突 vs 纯策略副作用分类、`isBaking` 混用拆除与 I11/I12 断言归属；`ICC_SPEC_VERSIONS_AND_LICENSING.md` ICC 版本沿革（v2 / 4.3 / 4.4 / iccMAX）与工具链/容器支持度矩阵、规范文本版权·profile 许可·商标·专利分层核查（含 color.org 一手原文与只读实测）；`ICC_VERSION_COMPARISON.md` v2/v4.0/v4.3/v4.4/ICC.2 的八维能力对比（矩阵·TRC / LUT / MPE / HDR / 宽色域 / 容器与查看器 / 实测体积 / 选型）与场景选型结论表，§6 已裁决「全量 v4.4」（含原「不建议一刀切」证据保留、落地实测代价 544 B / 432 B 与 JPEG 默认版本争议记录；独立复核 `COLOR_MATRIX_IO_ANALYSIS_2026-11-14.md`（矩阵与输入/输出组合，含 `COLOR_MATRIX_9X9_2026-11-14.csv`，不基于上述四文），修复实现账本 `COLOR_MATRIX_IO_FIX_PLAN_2026-11-14.md`）
+`review-2026-11-16`（2，2026-11-16 UI 卡死修复批：`UI_FREEZE_DIAGNOSIS_2026-11-16.md` 运行时定位报告（主日志 TextBox 布局风暴、`ProbeCurrentSourceBitDepth` UI 线程 ffprobe、队列逐行 Post 三层放大器与读数）；`UI_FREEZE_FIX_2026-11-16.md` 完整修复记录（日志有界队列 + 虚拟化列表、位深缓存/后台探测、格式代与 popup 收口、选项事件抑制、队列合并刷新；修复后读数、beta16 包哈希与验证口径））
 
 ## 3. 归档（`archive/`，28 份 + `_gapscout_raw/`）
 
