@@ -352,10 +352,14 @@ def main():
     n3 = build_aux_grid(p3, gray_hvcc, gray_item, xmp)
     print(f"✓ {p3}  {n3} B（同结构，灰瓦片 0x80 ⇒ p0.5=128 走 B 口径）")
 
-    # 无 XMP 变体：同结构但 idat 里没有 XMP ⇒ 未登记 URN 必须仍判「无增益图」（候选的语义门有牙）。
+    # 无 XMP 变体：同结构（auxC 仍是**已登记**的 Apple URN）但 idat 里没有 XMP、也没有 Exif。
+    # 探针据此结构仍判 hasGainMap=True（form=aux-apple-hdrgainmap），只是元数据缺失；
+    # 解码端因此走「诚实降级」：rc=3、产物为基础 SDR 图（不静默当无损增益图）。
+    # 「未登记 URN ⇒ 判无增益图」这一条负控由 verify-gainmap-isobmff 在**本件副本**上现场改写
+    # URN 字节得到，不是本随件本身。
     p4 = os.path.join(a.outdir, 'synth_heic_grid_aux_noxmp.heic')
     n4 = build_aux_grid(p4, hvcc, item, b'')
-    print(f"✓ {p4}  {n4} B（无 XMP：未登记 URN 的负控载体）")
+    print(f"✓ {p4}  {n4} B（无 XMP/无 Exif：Apple aux 结构命中但元数据缺失 ⇒ rc=3 诚实降级为基础 SDR 图）")
     return 0
 
 

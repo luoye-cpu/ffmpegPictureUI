@@ -357,6 +357,8 @@ namespace FfmpegGui.Services
             if (string.IsNullOrWhiteSpace(candidatePath) || !File.Exists(candidatePath))
                 return null;
 
+            EnsureExifToolDllDirOnPath(candidatePath);
+
             var fileName = Path.GetFileName(candidatePath);
             // 标准版直接使用
             if (!fileName.Contains("(-k)"))
@@ -381,6 +383,31 @@ namespace FfmpegGui.Services
                 // 复制失败则回退到 (-k) 版本（可能会挂起，但至少尝试了）
                 return candidatePath;
             }
+        }
+
+        /// <summary>
+        /// 2026-11-16 根因修复（偶发 "Failed to load Perl DLL perl532.dll code 126"）：
+        /// exiftool 13.61 的 Windows 启动器**不是**从自身所在目录加载 perl532.dll，而是按
+        /// Windows DLL 搜索顺序在 PATH 里搜；perl532.dll 实际位于
+        /// &lt;exiftool目录&gt;\exiftool_files\。实测：仅把 WorkingDirectory 固定到工具目录仍
+        /// 4/15 次失败；把 exiftool_files 加进子进程 PATH 后 0/15 次失败。
+        /// 故一旦解析到 exiftool.exe，就把 exiftool_files（及工具目录）前置进**本进程** PATH，
+        /// 此后所有 exiftool 子进程（Detection / GetTag / Copy / Embed / batch 全部启动点）自动继承。
+        /// </summary>
+        private static void EnsureExifToolDllDirOnPath(string exePath)
+        {
+            try
+            {
+                var dir = Path.GetDirectoryName(exePath);
+                if (string.IsNullOrEmpty(dir)) return;
+                var filesDir = Path.Combine(dir, "exiftool_files");
+                if (!Directory.Exists(filesDir)) return;   // 非便携布局（系统装的 exiftool），不动
+                var head = filesDir + ";" + dir;
+                var cur = Environment.GetEnvironmentVariable("PATH") ?? "";
+                if (cur.StartsWith(head, StringComparison.OrdinalIgnoreCase)) return; // 已加过
+                Environment.SetEnvironmentVariable("PATH", head + ";" + cur);
+            }
+            catch { /* PATH 注入失败不阻断 exiftool 本身 */ }
         }
 
         /// <summary>在系统 PATH 中查找可执行文件（通过 -ver 验证可用性）</summary>
@@ -721,9 +748,45 @@ namespace FfmpegGui.Services
             try
             {
                 var tmp = targetPath + "_exiftool_tmp";
-                if (File.Exists(tmp)) File.Delete(tmp);
+                // FMT-01：exiftool 13.61 随包 Perl 的启动器退出后，perl 运行时可能再花几百毫秒
+                // 才把暂存件落盘；且「无改动」(1 image files unchanged) 时它不自删。
+                // 这里不是"删一次"，而是在 ~0.5s 窗口内反复等待 tmp 出现并删掉，
+                // 覆盖"启动器已退出、finally 先跑、perl 后写 tmp"的竞态。
+                for (var attempt = 0; attempt < 6; attempt++)
+                {
+                    try
+                    {
+                        if (File.Exists(tmp)) { File.Delete(tmp); return; }
+                    }
+                    catch { /* 句柄/杀软占用：下一轮再试 */ }
+                    Thread.Sleep(80);
+                }
             }
             catch { /* 清理失败不阻断：让 exiftool 自己报错更可诊断 */ }
+        }
+
+        /// <summary>
+        /// FMT-01：从 exiftool 命令行参数里取出目标文件路径并清其 `_exiftool_tmp`。
+        /// 只在含 `-overwrite_original`（即真会写盘）时介入；取最后一个 `"..."` 引号段当目标
+        /// （exiftool 写命令的形状恒为 `… 选项… "目标"`）。读调用无 overwrite、不会产 tmp。
+        /// </summary>
+        private static void CleanExiftoolTempFromArgs(string args)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(args)) return;
+                if (args.IndexOf("-overwrite_original", StringComparison.OrdinalIgnoreCase) < 0) return;
+                var matches = System.Text.RegularExpressions.Regex.Matches(args, "\"([^\"]+)\"");
+                if (matches.Count == 0) return;
+                // 目标在命令行里的位置不固定（`… "target" -TAG=` 或 `-TAG=… "target"` 都有），
+                // 故对**每个**引号段都清一次其 `_exiftool_tmp`：源文件不会被写、清它是无害空操作。
+                foreach (System.Text.RegularExpressions.Match m in matches)
+                {
+                    var p = m.Groups[1].Value;
+                    if (!string.IsNullOrWhiteSpace(p)) CleanStaleExifToolTemp(p);
+                }
+            }
+            catch { /* 解析目标失败不阻断：单点 finally 已尽力 */ }
         }
 
         private static void TryDelete(string path)
@@ -749,11 +812,21 @@ namespace FfmpegGui.Services
         /// **写**元数据的统一出口：先清掉残留的 `_exiftool_tmp`，再按目标文件大小放宽超时。
         /// 所有会改动目标文件的 exiftool 调用都应走这里（`CopyMetadata*` / `CopyIccProfile*` / `RunAsync`）。
         /// </summary>
-        private static Task<int> RunWriteAsync(string targetPath, string args, Action<string>? logCallback = null,
+        private static async Task<int> RunWriteAsync(string targetPath, string args, Action<string>? logCallback = null,
             CancellationToken ct = default)
         {
             CleanStaleExifToolTemp(targetPath);
-            return RunRawAsync(args, logCallback, ct, WriteTimeoutSecondsFor(targetPath));
+            try
+            {
+                return await RunRawAsync(args, logCallback, ct, WriteTimeoutSecondsFor(targetPath)).ConfigureAwait(false);
+            }
+            finally
+            {
+                // FMT-01：写过程被超时杀 / exiftool 中途失败（如 perl DLL 加载失败）会留下
+                // <target>_exiftool_tmp；前置清理只清"上一次"的，这里无论成败都再清一次，
+                // 保证产物目录不残留"第二份产物"（不落到 %TEMP%，沿用宿主已钉的 scratch 根）。
+                CleanStaleExifToolTemp(targetPath);
+            }
         }
 
         /// <summary>
@@ -761,11 +834,18 @@ namespace FfmpegGui.Services
         /// （容器不收该标签时退出码照样 0，只打「0 image files updated / 1 image files unchanged」）。
         /// 两个复制变体要用它才能把"到底落地没有"说出口（2026-10-29 B5）。
         /// </summary>
-        private static Task<(int Rc, string Stdout)> RunWriteCaptureAsync(string targetPath, string args,
+        private static async Task<(int Rc, string Stdout)> RunWriteCaptureAsync(string targetPath, string args,
             Action<string>? logCallback = null, CancellationToken ct = default)
         {
             CleanStaleExifToolTemp(targetPath);
-            return RunCaptureAsync(args, logCallback, ct, WriteTimeoutSecondsFor(targetPath));
+            try
+            {
+                return await RunCaptureAsync(args, logCallback, ct, WriteTimeoutSecondsFor(targetPath)).ConfigureAwait(false);
+            }
+            finally
+            {
+                CleanStaleExifToolTemp(targetPath);   // FMT-01：与 RunWriteAsync 同款收尾清理
+            }
         }
 
         /// <summary>落地 0 件时的点名行（宣称"复制元数据"而产物没带上，是本仓反复出现的 F-13 同族形状）。
@@ -1029,15 +1109,24 @@ namespace FfmpegGui.Services
             Action<string>? logCallback, CancellationToken ct = default)
         {
             CleanStaleExifToolTemp(targetPath);
-            var (rc, stdout) = await RunCaptureAsync(args, logCallback, ct, WriteTimeoutSecondsFor(targetPath))
-                .ConfigureAwait(false);
-            if (rc != 0) return rc;
-            // 读不到总结行（-w 未输出等）⇒ 按成功处理：此时没有证据说它没写，不能凭猜测判失败。
-            if (ParseUpdatedCount(stdout) != 0) return 0;
-            logCallback?.Invoke($"[exiftool] ⚠️ 未写入：exiftool 报「0 image files updated」⇒ 标签没有落到 "
-                + $"{Path.GetExtension(targetPath).TrimStart('.')} 产物里（该容器不接受后置 ICC，或内容本就相同；"
-                + "退出码仍是 0，不能当成功）\n");
-            return NoWriteApplied;
+            try
+            {
+                var (rc, stdout) = await RunCaptureAsync(args, logCallback, ct, WriteTimeoutSecondsFor(targetPath))
+                    .ConfigureAwait(false);
+                if (rc != 0) return rc;
+                // 读不到总结行（-w 未输出等）⇒ 按成功处理：此时没有证据说它没写，不能凭猜测判失败。
+                if (ParseUpdatedCount(stdout) != 0) return 0;
+                logCallback?.Invoke($"[exiftool] ⚠️ 未写入：exiftool 报「0 image files updated」⇒ 标签没有落到 "
+                    + $"{Path.GetExtension(targetPath).TrimStart('.')} 产物里（该容器不接受后置 ICC，或内容本就相同；"
+                    + "退出码仍是 0，不能当成功）\n");
+                return NoWriteApplied;
+            }
+            finally
+            {
+                // FMT-01：本条写路径直写 targetPath（不走 RunWrite* 包装），无论成败都清一次
+                // <target>_exiftool_tmp（exiftool 重命名被句柄/杀软拖住时会残留成"第二份产物"）。
+                CleanStaleExifToolTemp(targetPath);
+            }
         }
 
         /// <summary>将外部 ICC 文件嵌入到输出图片中（用户指定的 ICC 配置文件）</summary>
@@ -1420,6 +1509,14 @@ namespace FfmpegGui.Services
                 try { if (!p.HasExited) p.Kill(entireProcessTree: true); } catch { }
                 logCallback?.Invoke($"[exiftool] ⚠️ 超时({timeoutSeconds}s)或被取消，已终止 exiftool 进程\n");
                 return (-2, stdout.ToString());
+            }
+            finally
+            {
+                // FMT-01：本进程体是所有 exiftool 调用的唯一收口（含 QueueProcessor 直接走
+                // RunRawAsync 的旁路）。exiftool 13.61 随包 Perl 在「无改动」(1 image files
+                // unchanged) 或重命名被句柄/杀软拖住时会留下 <target>_exiftool_tmp 而不自删。
+                // 无论成败都按 args 尾段目标路径清一次，避免产物目录残留"第二份产物"。
+                CleanExiftoolTempFromArgs(args);
             }
 
             var stdoutStr = stdout.ToString().Trim();
