@@ -1,6 +1,6 @@
 # FFmpegPictureUI 打包脚本 — 2 版本发布（全部 NativeAOT 编译，目标 x86-64-v3 / AVX2）
 # 用法:
-#   单文件版 (不含 PLAN):      .\pack.ps1 -Mode app
+#   单文件版 (仅随附 oxipng):  .\pack.ps1 -Mode app
 #   完整版 (含 PLAN 组件包):   .\pack.ps1 -Mode full
 #   一键全部 2 个版本:         .\pack.ps1 -Mode all (默认)
 #
@@ -176,7 +176,13 @@ if ($mode -eq "full") {
         # 使用 robocopy 避免 PowerShell Copy-Item 的容器/叶节点冲突
         # /XF 排除 .lib(静态导入库) / .pc(pkg-config) / .cmake(CMake 包配置) —— 均为编译期元数据，运行时无用
         # /XD 排除 pkgconfig 与 cmake 目录
-        robocopy $PlanSource $PlanDest /E /XF *.lib *.pc *.cmake /XD pkgconfig cmake /NFL /NDL /NJH /NJS /NC /NS
+        # ⚠ BUILD-01：robocopy 必须用全路径。PATH 不含 System32 的会话（受限容器/精简环境）裸调会
+        #   "术语 'robocopy' 不会被识别"并直接中止（ErrorActionPreference=Stop）。
+        $robocopy = Join-Path $env:SystemRoot 'System32\robocopy.exe'
+        if (-not (Test-Path -LiteralPath $robocopy)) {
+            throw "[$mode] 找不到 robocopy: $robocopy —— 请确认 Windows 安装完整，或手工把 PLAN 复制到 $PlanDest"
+        }
+        & $robocopy $PlanSource $PlanDest /E /XF *.lib *.pc *.cmake /XD pkgconfig cmake /NFL /NDL /NJH /NJS /NC /NS
         if ($LASTEXITCODE -ge 8) { throw "复制 PLAN 失败 (robocopy exit code: $LASTEXITCODE)" }
         Write-Host "   ✅ PLAN 组件已复制" -ForegroundColor Green
     } else {
@@ -197,8 +203,24 @@ if ($mode -eq "full") {
         throw "缺少使用说明模板: $ReadmeTemplate"
     }
 } else {
-    Write-Host "`n[2/4] 跳过 (单文件版不含 PLAN)" -ForegroundColor Yellow
-    Write-Host "`n[3/4] 跳过 (单文件版不生成使用说明)" -ForegroundColor Yellow
+    Write-Host "`n[2/4] app 档随附 oxipng.exe (PNG 默认优化器)..." -ForegroundColor Yellow
+    # BUILD-04 / MA-03：app 包默认 pngopt=max，但过去不随附 oxipng.exe ⇒
+    #   PngOptimizerService 运行时打一行"未检测到 oxipng，已跳过优化"就静默降级。
+    #   现在把单文件 oxipng.exe（~1MB，MIT，THIRD-PARTY-NOTICES.md 已登记）放到
+    #   <包>/PLAN/artifacts/oxipng.exe —— PlatformServices.LooksLikePlan 认 artifacts/ 子目录
+    #   ⇒ PlanFolderPath 锁定本地这个最小 PLAN；其他工具（ffmpeg/cjxl/exiftool/avifenc/dngtool）
+    #   在该最小 PLAN 里找不到，自然回落到外部 PATH / 用户设置，不影响既有检测顺序。
+    $appPlanDir = "$OutputDir\PLAN\artifacts"
+    $appOxipng = Join-Path $appPlanDir 'oxipng.exe'
+    $srcOxipng = Join-Path $PlanSource 'artifacts\oxipng.exe'
+    if (-not (Test-Path -LiteralPath $srcOxipng)) {
+        throw "[$mode] 缺少 oxipng 源文件: $srcOxipng —— app 档必须随附 oxipng（默认 pngopt=max）。请先准备 PLAN 组件包。"
+    }
+    New-Item -ItemType Directory -Force -Path $appPlanDir | Out-Null
+    Copy-Item -LiteralPath $srcOxipng -Destination $appOxipng -Force
+    Write-Host "   ✅ 已随附 oxipng.exe ($([math]::Round((Get-Item $appOxipng).Length/1KB,0)) KB) → PLAN\artifacts\" -ForegroundColor Green
+
+    Write-Host "`n[3/4] 跳过 (app 档不生成使用说明，见 PACKAGING_SPEC.md)" -ForegroundColor Yellow
 }
 
     # Step 3.5: 随附法律文件（GPL-3.0 §4/§5/§6 要求随二进制分发，缺失即失败）
@@ -241,13 +263,18 @@ if ($mode -eq "full") {
                    "PLAN\artifacts\avifenc.exe", "PLAN\artifacts\dngtool.exe",
                    "PLAN\artifacts\oxipng.exe")
         $needDirs += @("PLAN\exiftool", "PLAN\artifacts", "PLAN\ffmpeg-full", "PLAN\jxl")
+    } else {
+        # app 档：仅随附 oxipng（BUILD-04）；其余外部工具走 PATH / 用户设置，不在包内。
+        $need += @("PLAN\artifacts\oxipng.exe")
+        $needDirs += @("PLAN\artifacts")
     }
     $miss = @()
     foreach ($n in $need)      { if (-not (Test-Path (Join-Path $OutputDir $n))) { $miss += $n } }
     foreach ($d in $needDirs)  { if (-not (Test-Path (Join-Path $OutputDir $d))) { $miss += "$d\" } }
     $gotFiles = @(Get-ChildItem $OutputDir -Recurse -File -EA SilentlyContinue).Count
     # PLAN 组件包共 ~568 个文件；含 PLAN 的完整包总文件数应 ≥ 560（robocopy 排除了 .lib/.pc/.cmake）
-    $minFiles = $(if ($mode -eq "full") { 560 } else { 8 })
+    # app 档：exe + 原生库 + licenses + Resources + oxipng ≈ 30+ 文件；下限取 20 留余量。
+    $minFiles = $(if ($mode -eq "full") { 560 } else { 20 })
     if ($miss.Count -gt 0 -or $gotFiles -lt $minFiles) {
         throw "[$mode] 完整性闸未过：缺 $(if ($miss.Count) { ($miss -join ', ') } else { '(无缺项)' })；文件数 $gotFiles（要求 ≥ $minFiles）⇒ 拒绝压缩出包"
     }
@@ -305,6 +332,25 @@ if ($mode -eq "full") {
 Write-Host "`n═══════════════════════════════════════════" -ForegroundColor Cyan
 Write-Host "  FFmpegPictureUI 打包工具 (2 版本发布)" -ForegroundColor Cyan
 Write-Host "═══════════════════════════════════════════" -ForegroundColor Cyan
+
+# ── 出包前红态闸（MA-01/GATE-02）：任何复制/压缩动作之前 fail-closed ──
+# 调 tests/scripts/_release-gate-check.ps1 读 tests/output/release-gates.json；
+# 清单缺失 / 任一 rc!=0 ⇒ exit 1，不产包。helper 自身已做 fail-closed（缺字段/类型错按红）。
+# 本脚本只负责"调到它"并把它的退出码翻译成可操作提示。
+$gateScript = "$ScriptDir\tests\scripts\_release-gate-check.ps1"
+if (-not (Test-Path -LiteralPath $gateScript)) {
+    throw "缺少出包红态闸脚本: $gateScript —— 拒绝出包。请确认仓库完整。"
+}
+Write-Host "`n[gate] 出包前红态闸校验..." -ForegroundColor Yellow
+& powershell -NoProfile -ExecutionPolicy Bypass -File $gateScript
+$gateRc = $LASTEXITCODE
+if ($gateRc -ne 0) {
+    Write-Host "[gate] 红态闸未过 (rc=$gateRc) —— 拒绝出包。" -ForegroundColor Red
+    Write-Host "       下一步：按 docs/RELEASE_GATES.md 跑本批变更链路的门禁，" -ForegroundColor Yellow
+    Write-Host "       把 (gate 名, rc, 日志路径, 产物 sha256[:16]) 写进 tests/output/release-gates.json，再重跑 pack.ps1。" -ForegroundColor Yellow
+    exit $gateRc
+}
+Write-Host "[gate] 红态闸通过，继续打包。" -ForegroundColor Green
 
 if ($Mode -eq "all") {
     foreach ($m in @("app", "full")) {

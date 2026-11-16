@@ -290,10 +290,50 @@ Invoke-7zMax 'a -t7z -mx9 -md=3840m -mfb=273 -ms=on -mmt=1 "out.7z" *'
 | 特性 | 精简包 (`-x64.7z`) | 完整包 (`-x64-full.7z`) |
 |------|:--:|:--:|
 | 主程序 | ✅ | ✅ |
-| PLAN 文件夹 | ❌ | ✅ |
-| ffmpeg/cjxl/exiftool | ❌（需用户自行安装） | ✅（开箱即用） |
-| 压缩后体积 | ~11.4 MB（beta10 实测 11,430,807 B） | ~55.9 MB（beta10 实测 55,853,619 B） |
+| `PLAN/artifacts/oxipng.exe`（PNG 默认优化器） | ✅（单文件 ~1 MB，MIT） | ✅ |
+| `PLAN/ffmpeg-full/`（ffmpeg 引擎） | ❌（需外部探测/PATH/用户设置） | ✅ |
+| `PLAN/jxl/bin/`（cjxl/djxl/cjpegli） | ❌（需外部探测/PATH/用户设置） | ✅ |
+| `PLAN/exiftool/` | ❌（需外部探测/PATH/用户设置） | ✅ |
+| `PLAN/artifacts/`（avifenc/dngtool/JxrEncApp） | ❌（仅含 oxipng.exe） | ✅ |
+| `PLAN/使用说明.txt` | ❌ | ✅ |
+| 压缩后体积 | ~11.6 MB（beta17 实测，含 oxipng 后略增） | ~56.4 MB（beta17 实测） |
 | 适用场景 | 已有 ffmpeg 环境的用户 | 新用户 / 便携使用 |
+
+### 6.1 精简包（app 档）依赖清单与降级行为（BUILD-04 / MA-03）
+
+精简包**不是零外部依赖**：它随附一个最小 `PLAN/artifacts/oxipng.exe`（PNG 默认 `pngopt=max` 的优化器，~1 MB，MIT，`THIRD-PARTY-NOTICES.md` 已登记）。
+之所以走 `PLAN/artifacts/` 子目录而非散落在包根，是因为 `PlatformServices.LooksLikePlan` 认 `artifacts/` 子目录即视为合法 PLAN ⇒
+`PlanFolderPath` 锁定本地这个最小 PLAN，`TryFindInPlanFolder("oxipng.exe")` 直接命中，**零代码改动**。
+
+其他工具（ffmpeg/cjxl/djxl/cjpegli/exiftool/JxrEncApp/avifenc/dngtool）**不随精简包分发**，运行时按既有顺序探测：
+用户显式设置 → 环境变量 → 本地 PLAN（只有 oxipng）→ ffmpeg 同目录 → PATH → 扩展搜索。
+
+| 缺失工具 | 对应用户行为 | 降级路径（不报错、不判任务失败） |
+|---|---|---|
+| ffmpeg | 任何转换都做不了 | 启动横幅 `ffmpeg: ❌`；headless 拒绝接单（rc≠0）。**唯一硬依赖**。 |
+| cjxl/djxl/cjpegli | JPEG XL 编/解码 | GUI 下拉不列外部 JPEG XL 档；ffmpeg 内置编码器兜底（质量/速度略逊）。启动横幅逐行点名 ✅/❌。 |
+| exiftool | 元数据复制/隐私清理 | 任务日志打 `[exiftool] 不可用，跳过元数据复制`；产物不携源 EXIF/XMP。不影响像素。 |
+| avifenc | AVIF 外部高画质档 | `EncoderDetectionService.InferDefaultBackend` 回退 ffmpeg 内置 libaom/libsvtav1；GUI 下拉不列 avifenc 档。 |
+| dngtool | DNG 走 Adobe DNG SDK Opcode 路线 | 回退 LibRaw 臂（恒等 gamm，真线性 16-bit）；增强图 IFD 的 DNG 仍拒绝。 |
+| oxipng | PNG `pngopt=max` 优化 | **本档已随附**；若用户删了它，`PngOptimizerService` 打 `[pngopt] 未检测到 oxipng，已跳过优化`，产物=ffmpeg 原生 PNG（IDAT 未重压），任务仍 rc=0。 |
+
+> SKU 口径裁决（2026-11-16）：app 档随附 oxipng **不**破坏"自带工具链"边界——它只带一个用户最常用的、默认档（`pngopt=max`）就会触发的小工具；
+> ffmpeg 这个 476 KB 的主引擎仍要求外部提供（否则 app 包与 full 包的体积差就失去意义）。
+> 若未来要把更多工具塞进 app 档，应在本表逐行评估"默认档是否会触发"再决定。
+
+### 6.2 AOT 包哈希对账口径（BUILD-02）
+
+NativeAOT 单文件发布**不产出 `FfmpegGui.dll`**（IL 已编译进 exe），AGENTS.md §4 的"用 `FfmpegGui.dll` 对账"对 AOT 包**不适用**。
+
+实测 beta17（`1.6.0-beta17+957cfa8`）：
+- app 包 exe `sha256[:16] = 40266D90D4BF6DEB`
+- full 包 exe `sha256[:16] = 3AB17BF2E7FBCEC`
+- 两包 exe 同尺寸（24,681,984 B），逐字节 diff 仅 3 区间共 **6 字节**（偏移 264 / 20,298,596 / 20,298,624，各 2 B）——NativeAOT single-file bundle header 的构建时间戳/nonce，**非代码差异**。
+
+因此：
+1. **同源同版的 app/full 两包 exe 哈希不相等是预期**（bundle header nonce），不要写门禁要求它们相等。
+2. 登记哈希时必须同时记 **包名 + 源提交（ProductVersion 里的 `+<commit>`）+ 出包时间**，否则事后无法归因"打在哪个包上"。
+3. 对账用 `FfmpegGui.exe` 自身的 `sha256[:16]` + `ProductVersion`（含 `+<commit>`），不要找 dll。
 
 ---
 
