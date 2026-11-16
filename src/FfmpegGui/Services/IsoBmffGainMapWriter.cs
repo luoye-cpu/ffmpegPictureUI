@@ -431,6 +431,7 @@ internal static class IsoBmffGainMapWriter
     /// <summary>从一张单图 AVIF 里取出主 item 的码流字节与其属性盒（原样保留）。</summary>
     private sealed class SingleImage
     {
+        public byte[] Ftyp = Array.Empty<byte>();
         public byte[] ItemData = Array.Empty<byte>();
         public List<byte[]> Props = new();
         public int Width;
@@ -447,9 +448,16 @@ internal static class IsoBmffGainMapWriter
             return false;
         }
 
-        BoxInfo? meta = null;
-        foreach (var b in Boxes(d, 0, d.Length)) if (b.Type == "meta") { meta = b; break; }
+        BoxInfo? ftyp = null, meta = null;
+        foreach (var b in Boxes(d, 0, d.Length))
+        {
+            if (b.Type == "ftyp" && ftyp == null) ftyp = b;
+            else if (b.Type == "meta") { meta = b; break; }
+        }
+        if (ftyp == null) { err = $"[GainMap-Avif] {what} 缺 ftyp 盒"; return false; }
         if (meta == null) { err = $"[GainMap-Avif] {what} 缺 meta 盒"; return false; }
+        img.Ftyp = new byte[ftyp.Value.Size];
+        Array.Copy(d, ftyp.Value.Offset, img.Ftyp, 0, ftyp.Value.Size);
 
         int bodyStart = meta.Value.ContentOffset + 4;        // meta 是 FullBox
         int bodyEnd = meta.Value.Offset + meta.Value.Size;
@@ -498,6 +506,62 @@ internal static class IsoBmffGainMapWriter
         img.Width = w;
         img.Height = h;
         return true;
+    }
+
+    /// <summary>
+    /// 单图 AVIF 的 `colr` 重写：SDR 底图路径不写 tmap 时，仍必须让底图带正确的 CICP
+    /// （ffmpeg 的 AVIF muxer 不采纳 `-color_primaries/-color_trc`）。保留原 `ftyp`，
+    /// 用既有 `PatchColr` 改/补 nclx，再重建 `ftyp + meta + mdat`。
+    /// </summary>
+    public static (bool Ok, byte[]? Data, string Error) RewriteSingleColr(
+        byte[] avif, int primaries, int transfer, int matrix, bool fullRangeFallback = false)
+    {
+        if (!TryExtractSingle(avif, "base", out var img, out var err))
+            return (false, null, err);
+        PatchColr(img.Props, primaries, transfer, matrix, fullRangeFallback);
+        // iloc 的 extent offset 是**文件起点**的绝对偏移（construction_method=0）。
+        // 先按占位 offset 组一次 meta 得到其长度，再算 mdat 载荷起点；两次 meta 长度相同（offset 定长 4 字节）。
+        var metaDummy = BuildSingleMeta(img.Props, img.ItemData.Length, 0);
+        int mdatPayload = img.Ftyp.Length + metaDummy.Length + 8; // mdat box header
+        var meta = BuildSingleMeta(img.Props, img.ItemData.Length, (uint)mdatPayload);
+        var mdat = Box("mdat", img.ItemData);
+        return (true, Concat(img.Ftyp, meta, mdat), "");
+    }
+
+    private static byte[] BuildSingleMeta(List<byte[]> props, int itemLen, uint itemOffset)
+    {
+        var hdlr = FullBox("hdlr", 0, 0, Concat(U32(0), Ascii("pict"), new byte[12], new byte[] { 0 }));
+        var pitm = FullBox("pitm", 0, 0, U16(ItemBase));
+        var iinf = FullBox("iinf", 0, 0, Concat(U16(1), BuildInfe(ItemBase, "av01")));
+        var ipco = Box("ipco", Concat(props.ToArray()));
+        var ipma = BuildIpmaSingle(props.Count);
+        var iprp = Box("iprp", Concat(ipco, ipma));
+        var iloc = BuildIlocSingle(itemLen, itemOffset);
+        return FullBox("meta", 0, 0, Concat(hdlr, pitm, iinf, iprp, iloc));
+    }
+
+    private static byte[] BuildIpmaSingle(int propCount)
+    {
+        var ms = new MemoryStream();
+        var w = new BinaryWriter(ms);
+        WriteBe32(w, 1);                                    // entry_count
+        var assoc = new List<int>(propCount);
+        for (int i = 1; i <= propCount; i++) assoc.Add(i);
+        WriteIpmaEntry(w, ItemBase, assoc);
+        w.Flush();
+        return FullBox("ipma", 0, 0, ms.ToArray());
+    }
+
+    private static byte[] BuildIlocSingle(int itemLen, uint itemOffset)
+    {
+        var ms = new MemoryStream();
+        var w = new BinaryWriter(ms);
+        w.Write((byte)0x44);
+        w.Write((byte)0x00);
+        WriteBe16(w, 1);                                    // item_count
+        WriteIlocEntry(w, ItemBase, itemOffset, itemLen);
+        w.Flush();
+        return FullBox("iloc", 0, 0, ms.ToArray());
     }
 
     private static void ParseIinfTypes(byte[] d, BoxInfo iinf, Dictionary<int, string> items)

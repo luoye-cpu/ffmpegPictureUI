@@ -185,6 +185,8 @@ public sealed class ColorIntent
     public bool AllowGamutCompression;
     /// <summary>本次任务要生成 GainMap（UltraHDR JPEG）⇒ 触发 §2 策略覆盖。</summary>
     public bool GainMapRequested;
+    /// <summary>GainMap 底图色域（"srgb" / "bt2020"）；仅结果结构与告警口径使用，不参与像素计划。</summary>
+    public string? GainMapBaseGamut;
     /// <summary>
     /// 本次**编码**由引擎内的**外部编码器出口**完成（当前唯一实现：cjxl / JXL）。
     /// 由 `ColorIntentFactory` 按 `o.EncoderBackend` 置位 —— 判据是
@@ -269,6 +271,7 @@ public sealed class ColorIntent
         CarryScope = CarryScope,
         AllowUnlabeled = AllowUnlabeled,
         GainMapRequested = GainMapRequested,
+        GainMapBaseGamut = GainMapBaseGamut,
         ToneMapRequested = ToneMapRequested,
         FaithfulIccPath = FaithfulIccPath,
         Transfer709 = Transfer709,

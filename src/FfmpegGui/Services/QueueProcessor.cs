@@ -1366,9 +1366,9 @@ namespace FfmpegGui.Services
                                            captured.Options, finalOutputPath, inputMayHaveMultipleFrames);
                                 if (gainMapOnUnsupportedTarget)
                                 {
-                                    captured.Log += $"[色彩裁决] ❌ 契约拒绝（不出产物）：增益图（GainMap）不适用于 {captured.Options.Format}：它依赖 JPEG 的 APP2/XMP+MPF 结构\n";
+                                    captured.Log += $"[色彩裁决] ❌ 契约拒绝（不出产物）：增益图（GainMap）不适用于 {captured.Options.Format}：它依赖 JPEG 的 APP2/XMP+MPF、AVIF 的 tmap 或 JXL 的 jhgm 结构\n";
                                     captured.Log += "[色彩裁决]    建议：要保留 HDR：输出改用 AVIF/JXL（原生存 PQ/HLG）；或把目标改为 JPEG 并开启增益图\n";
-                                    captured.Log += "[色彩裁决]    可替代方案：jpg（JPEG 族是唯一能承载 GainMap 的容器）· avif · jxl（原生存 PQ/HLG）\n";
+                                    captured.Log += "[色彩裁决]    可替代方案：jpg · avif（ISO-BMFF tmap） · jxl（jhgm）\n";
                                     _onItemUpdated?.Invoke(captured);
                                     exitCode = 91;
                                 }

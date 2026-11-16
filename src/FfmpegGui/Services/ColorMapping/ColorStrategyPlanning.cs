@@ -30,8 +30,9 @@ public static partial class ColorMappingEngine
         // PlanCicpOnly / PlanManual / PlanRecommended，且各自还能 Reject 提前返回）——
         // 漏掉任何一支都会让「用户要了 GainMap、执行层却不知道」再次变成静默降级。
         // 计划层只负责**传递**这个位；「本次能否产出 GainMap」由 PlanWithPolicy 开头按
-        // FormatColorCaps.SupportsGainMap 判定（非 JPEG 族直接 Reject）。
+        // FormatColorCaps.SupportsGainMap 判定（非承载格式直接 Reject）。
         p.GainMap = pol.GainMapRequested;
+        p.GainMapBaseGamut = pol.GainMapBaseGamut;
         // ── 外部编码器出口位（cjxl）：**唯一装配点**（2026-09-17 接入）──
         // 与 GainMap 同款理由：本方法返回分支很多，漏掉任何一支都会让「计划说走 cjxl、
         // 执行层却不知道」再次变成**静默换编码器**（产物由 ffmpeg-libjxl 出，用户选的 cjxl 参数全丢）。
@@ -234,7 +235,18 @@ public static partial class ColorMappingEngine
         //    「已发生损失」，必须分开登记：
         //    · 映射生效时再报 GamutClipped（"被裁切"）与"已压缩"自相矛盾 —— 裁切根本没发生；
         //    · 两者都不登记则更糟：一次真实的去饱和会被裁决报成 Proceed（无任何损失）。
-        if (p.GamutOutsideDestination)
+        //
+        // ⚠ GainMap 特例：计划层的 `Target` 往往是 SDR bt709，而 GainMap 出口的**实际底图**
+        //   由 `GainMapEncoder` 独立决定（`JpegGainMapBaseGamut=bt2020` ⇒ Rec.2020 SDR 底）。
+        //   bt709/P3/bt2020 的标准 CICP 源在 Rec.2020 底图内时，`GamutOutsideDestination` 是
+        //   按 bt709 目标算出来的假越界；不抑制就会在 stdout 打出与实际像素不符的裁切告警。
+        //   ICC 派生源（ProPhoto 等）不做抑制：它们的实际色度可能仍超出宽底，保留真实告警。
+        bool gainMapWideBase = p.GainMap
+            && string.Equals(p.GainMapBaseGamut, "bt2020", StringComparison.OrdinalIgnoreCase);
+        bool gainMapBaseCoversSource = gainMapWideBase
+            && it.Source != null && !it.Source.IsIccDerived
+            && it.Source.PrimariesToken is "bt709" or "smpte432" or "bt2020";
+        if (p.GamutOutsideDestination && !gainMapBaseCoversSource)
         {
             // ⚠ 2026-11-10（R4 占位双写修复）：手动目标描述符的 Name 是 ColorIntentFactory 的
             //   DstLabel 占位「目标」（ColorIntentFactory.cs:211 `FromCicp(tp, tt, DstLabel)`），
@@ -242,7 +254,7 @@ public static partial class ColorMappingEngine
             //   对照 D13/E15 的自动推导目标带实名（"SDR(bt709/iec61966-2-1)"）。同模板两种填充
             //   状态就是占位泄漏。修复：占位/空名回退 CICP token 对（如 "bt2020/smpte2084"），
             //   连 token 都没有时**降级为不带名**（单次出现），绝不再输出占位字面量或 "-"。
-            var dstLabel = DstGamutLabelOf(p);
+            var dstLabel = gainMapWideBase ? "SDR(bt2020 base)" : DstGamutLabelOf(p);
             var dstSeg = string.IsNullOrEmpty(dstLabel) ? "" : $" {dstLabel}";
             degs.Add(p.GamutMap
                 ? new ColorDegradation(DegradationCodes.GamutCompressed,

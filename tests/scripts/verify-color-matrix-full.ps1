@@ -672,7 +672,7 @@ $synRejectCases = @(
   @{ N='F2 正控（引擎消费点）'; Rc=91; Want=$true; Form='F2-引擎侧契约拒绝'
      L='[色彩引擎] ❌ 契约拒绝（不出产物）' },
   @{ N='F3 正控（传统/分派级，无 裁决= 行）'; Rc=91; Want=$true; Form='F3-传统侧契约拒绝'
-     L='[色彩裁决] ❌ 契约拒绝（不出产物）：增益图（GainMap）不适用于 png：它依赖 JPEG 的 APP2/XMP+MPF 结构' },
+     L='[色彩裁决] ❌ 契约拒绝（不出产物）：增益图（GainMap）不适用于 png：它依赖 JPEG 的 APP2/XMP+MPF、AVIF 的 tmap 或 JXL 的 jhgm 结构' },
   @{ N='F4 正控（jxl 直编旁路的唯一读数）'; Rc=91; Want=$true; Form='F4-cjxl-legacy旁路拒绝'
      L='[色彩裁决] 通路=cjxl-legacy 出口=bt2020/bt709 链数=0 reject=Reject' },
   @{ N='F5 正控（显式引擎路被路由拦截，exit 90）'; Rc=90; Want=$true; Form='F5-显式引擎路由拦截'

@@ -638,7 +638,7 @@
                 </StackPanel>
 
                 <!-- HDR 实现模式（用户-facing 二选一）：GainMap（SDR 底图 + 增益图）| 传统（原生 PQ/HLG）。
-                     ⚠ 可见性由 `UpdateOptionAvailability` 按**容器能力**给（JPEG 族与 AVIF），XAML 只给初始隐藏；
+                     ⚠ 可见性由 `UpdateOptionAvailability` 按**容器能力**给（JPEG 族 / AVIF / JXL），XAML 只给初始隐藏；
                        ItemsSource 由 `FillComboByLoc` 在代码侧按本地化键填充。 -->
                 <ComboBox x:Name="HdrModeCombo" IsVisible="False" Margin="0,6,0,0" FontSize="11"
                           ToolTip.Tip="{ext:Loc tip.gainmap.enable}"
@@ -804,9 +804,8 @@
               <TextBlock Text="{ext:Loc jxl.lossless.jpeg.hint}" FontSize="10" TextWrapping="Wrap"
                          Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
             </StackPanel>
-            <!-- Gain Map (Ultra HDR) 选项 — 任意 JPEG 编码器 (mjpeg/cjpegli) 公共选项 -->
-            <!-- ⚠️ 必须位于 JpegCodecPanel / JpegliCodecPanel 之外: cjpegli 后端显示
-                 JpegliCodecPanel, 若嵌套在 JpegCodecPanel 内会被父容器隐藏导致不可见 -->
+            <!-- Gain Map (Ultra HDR) 选项 — JPEG 族 / AVIF(tmap) / JXL(jhgm) 公共选项 -->
+            <!-- ⚠️ 必须位于 JpegCodecPanel / JpegliCodecPanel / JxlCodecPanel 之外（各格式各自的子面板会隐藏它） -->
             <Border x:Name="JpegGainMapPanel" CornerRadius="4" Padding="8,6" Margin="0,0,0,4"
                     Background="{DynamicResource SystemControlBackgroundChromeMediumBrush}">
               <StackPanel x:Name="JpegGainMapOptions" Spacing="6">
@@ -818,9 +817,9 @@
                 <TextBlock Text="{ext:Loc gainmap.type}" FontSize="11" Margin="0,2,0,0"/>
                 <ComboBox x:Name="JpegGainMapTypeCombo" SelectedIndex="0" FontSize="11"/>
                 <!-- 元数据标记方式：ISO(默认) / XMP / 两者 —— 只有 JPEG 出口有意义，AVIF 的 tmap 就是 ISO -->
-                <TextBlock Text="{ext:Loc gainmap.metadata}" FontSize="11" Margin="0,2,0,0"/>
+                <TextBlock x:Name="JpegGainMapMetadataLabel" Text="{ext:Loc gainmap.metadata}" FontSize="11" Margin="0,2,0,0"/>
                 <ComboBox x:Name="JpegGainMapMetadataCombo" SelectedIndex="0" FontSize="11"/>
-                <TextBlock Text="{ext:Loc gainmap.metadata.note}" FontSize="9"
+                <TextBlock x:Name="JpegGainMapMetadataNote" Text="{ext:Loc gainmap.metadata.note}" FontSize="9"
                            Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" TextWrapping="Wrap"/>
                 <!-- 底图色域：sRGB SDR 底（默认）/ Rec.2020 SDR 底（广色域）-->
                 <TextBlock Text="{ext:Loc gainmap.base.gamut}" FontSize="11" Margin="0,2,0,0"/>

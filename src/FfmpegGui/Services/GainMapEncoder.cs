@@ -1089,9 +1089,11 @@ public static class GainMapEncoder
         int gainCrfN = gainMapCrf >= 0 ? Math.Clamp(gainMapCrf, 0, 63) : 18;
 
         // 底图色域与 JPEG 出口同口径（wideBase ⇒ Rec.2020 SDR，否则 sRGB）；
-        // AVIF 有 CICP 机制（`colr` 盒），由 ffmpeg 按下列参数写入，不需要 ICC 兜底。
+        // AVIF 有 CICP 机制（`colr` 盒），由本写出器统一重写，不依赖 ffmpeg muxer 的 color 标志。
+        // ⚠ 底图字节由 `BuildBaseBgra8` 用 sRGB gamma 落 8-bit ⇒ 无论宽底还是 sRGB 底，
+        //   传输函数都必须是 13（iec61966-2-1），不能写成 1（bt709，BT.1886 曲线）。
         string primaries = wideBase ? "bt2020" : "bt709";
-        string trc = wideBase ? "bt709" : "iec61966-2-1";
+        string trc = "iec61966-2-1";
         string matrix = wideBase ? "bt2020nc" : "bt709";
 
         if (!await EncodeAvifFileAsync(basePng, baseAvif, ffmpeg, "yuv420p", primaries, trc, matrix, log, ct, avifEncoder, baseCrfN))
@@ -1143,14 +1145,29 @@ public static class GainMapEncoder
             return false;
         }
 
+        // 底图 CICP：ffmpeg 不采纳 -color_primaries（实测写出 unspecified）⇒ 由写出器重写 colr。
+        // sRGB 底 = (1 bt709, 13 sRGB, 1 bt709)；Rec.2020 SDR 底 = (9 bt2020, 13 sRGB, 9 bt2020nc)。
+        // 宽底的 transfer 仍是 sRGB：底图字节由 BuildBaseBgra8 的 sRGB gamma 产生，标签必须与字节一致。
+        int cPrim = wideBase ? 9 : 1;
+        int cTrc = 13;
+        int cMtx = wideBase ? 9 : 1;
+
         // ⚠ SDR 输入（增益区间宽度为 0）⇒ 与 JPEG 出口同口径：**不写增益图**，直接以底图 AVIF 作产物并点名。
         //   绝不产出「自称带增益图、实际零增益」的假 HDR 容器（本仓最忌讳的「宣称 ≠ 交付」）。
         //   判据用**宽度**：自造底图时下沿恒 0 ⇒ 与改动前 `maxLog2Gain <= 0` 逐字等价；
         //   底图=源时「只下压」也是一张真增益图，不许被当成零增益丢掉。
         if (maxLog2Gain - minLog2Gain <= 0f)
         {
-            await File.WriteAllBytesAsync(outputPath, baseBytes, ct);
-            log?.Invoke("[GainMap] ⚠️ 输入为 SDR（headroom ≤ 1，增益区间为 0）⇒ 已按普通 AVIF 输出（未写入 tmap 增益图）。需要 HDR 请改用 HDR 输入。\n");
+            // SDR 短路也必须补 CICP：ffmpeg 的 AVIF muxer 实测不写 primaries/trc，直接写 baseBytes
+            // 会留下 unknown 底图。单图重写只改 colr，不引入第二套 tmap 打包。
+            var single = IsoBmffGainMapWriter.RewriteSingleColr(baseBytes, cPrim, cTrc, cMtx, false);
+            if (!single.Ok)
+            {
+                log?.Invoke($"[GainMap] ❌ SDR AVIF 底图 CICP 重写失败：{single.Error}\n");
+                return false;
+            }
+            await File.WriteAllBytesAsync(outputPath, single.Data!, ct);
+            log?.Invoke("[GainMap] ⚠️ 输入为 SDR（headroom ≤ 1，增益区间为 0）⇒ 已按普通 AVIF 输出（未写入 tmap 增益图；已补底图 CICP）。需要 HDR 请改用 HDR 输入。\n");
             return true;
         }
 
@@ -1160,11 +1177,7 @@ public static class GainMapEncoder
         //   —— 否则又会写出「声明与交付脱节」（F-4）。写出器还会拿 pixi 平面数复核一次。
         var tmapPayload = IsoBmffGainMapWriter.BuildTmapPayload(
             BuildIso21496Metadata(declaredChannels, maxLog2Gain, minLog2Gain, hdrCapacityLog2));
-        // 底图 CICP：ffmpeg 不采纳 -color_primaries（实测写出 unspecified）⇒ 由写出器重写 colr。
-        // sRGB 底 = (1 bt709, 13 iec61966-2-1, 1 bt709)；Rec.2020 SDR 底 = (9, 1 bt709, 9 bt2020nc)。
-        int cPrim = wideBase ? 9 : 1;
-        int cTrc = wideBase ? 1 : 13;
-        int cMtx = wideBase ? 9 : 1;
+        // 底图 CICP 与 SDR 短路共用同一份值（见上面 cPrim/cTrc/cMtx）。
         var built = IsoBmffGainMapWriter.Build(baseBytes, gmBytes, tmapPayload, cPrim, cTrc, cMtx);
         if (!built.Ok)
         {

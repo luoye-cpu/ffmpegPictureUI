@@ -192,6 +192,8 @@ public sealed class PlanPolicy
     public bool AllowUnlabeled;
     /// <summary>本次任务要生成 GainMap ⇒ 触发 §2 策略覆盖。</summary>
     public bool GainMapRequested;
+    /// <summary>GainMap 底图色域（"srgb" / "bt2020"），仅结果结构与告警口径使用。</summary>
+    public string? GainMapBaseGamut;
     /// <summary>用户显式请求 HDR→SDR 色调映射。</summary>
     public bool ToneMapRequested;
     /// <summary>BT.709 编码口径（Std=标准定义式且对 bt709 目标禁 H2；Zimg=对齐历史产物）。</summary>
@@ -340,6 +342,9 @@ public sealed class ColorTransformPlan
     /// </para>
     /// </summary>
     public bool GainMap;
+
+    /// <summary>与 <see cref="PlanPolicy.GainMapBaseGamut"/> 同步的底图色域；用于告警标签与宽底判定。</summary>
+    public string? GainMapBaseGamut;
 
     /// <summary>
     /// 本次产物的**编码**由引擎内的**外部编码器出口**完成（当前唯一实现：cjxl / JXL）。

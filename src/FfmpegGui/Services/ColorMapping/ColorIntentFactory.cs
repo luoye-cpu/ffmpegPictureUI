@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using FfmpegGui.Models;
 
 namespace FfmpegGui.Services.ColorMapping;
@@ -37,6 +38,10 @@ public static class ColorIntentFactory
     {
         reason = null;
         if (o == null) { reason = "options 为空"; return null; }
+        // exiftool 抽取 ICC 时以独立进程执行；相对路径会相对进程工作目录解析，调用方 cwd 不一定是仓库根
+        // （实测 ProPhoto ICC-only 相对路径 ⇒ exiftool File not found、整条计划 exit 90）。入口统一绝对化。
+        try { inputPath = Path.GetFullPath(inputPath); }
+        catch (Exception ex) { reason = $"输入路径无法解析：{ex.Message}"; return null; }
 
         var fmt = (o.Format ?? "").Trim().ToLowerInvariant();
         var caps = ColorMappingEngine.CapsFor(fmt);
@@ -330,6 +335,7 @@ public static class ColorIntentFactory
             AllowGamutCompression = ColorEngineRouter.GamutMapRequested(o),
             TargetLossless = o.Lossless,
             GainMapRequested = o.JpegGainMap,      // 见上：补上后 S2 覆盖①（GainMap）不再死代码
+            GainMapBaseGamut = o.JpegGainMapBaseGamut,
             ToneMapRequested = false,
             ToneMap = ToneMapMode.None,
             // ── 外部编码器出口位（2026-09-17 接入 cjxl 出口）───────────────────────────

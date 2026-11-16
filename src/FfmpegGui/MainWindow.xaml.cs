@@ -315,6 +315,8 @@ namespace FfmpegGui
         private ComboBox? JpegGainMapTypeCombo;
         private ComboBox? JpegGainMapBaseCombo;
         private ComboBox? JpegGainMapMetadataCombo;
+        private TextBlock? JpegGainMapMetadataLabel;
+        private TextBlock? JpegGainMapMetadataNote;
         private CheckBox? JpegGainMapMultiChannelCheck;  // 兼容旧代码引用
         private ComboBox? TiffCompressionCombo;
         private NumericUpDown? TiffDpiBox;
@@ -589,6 +591,8 @@ namespace FfmpegGui
             JpegGainMapTypeCombo = this.FindControl<ComboBox>("JpegGainMapTypeCombo");
             JpegGainMapBaseCombo = this.FindControl<ComboBox>("JpegGainMapBaseCombo");
             JpegGainMapMetadataCombo = this.FindControl<ComboBox>("JpegGainMapMetadataCombo");
+            JpegGainMapMetadataLabel = this.FindControl<TextBlock>("JpegGainMapMetadataLabel");
+            JpegGainMapMetadataNote = this.FindControl<TextBlock>("JpegGainMapMetadataNote");
             JpegGainMapMultiChannelCheck = this.FindControl<CheckBox>("JpegGainMapMultiChannelCheck");  // XAML 已改 ComboBox，此引用为 null 兼容
             // ── 色域映射（GMO）开关 ──
             ColorGamutMapCheck = this.FindControl<CheckBox>("ColorGamutMapCheck");
@@ -2594,7 +2598,8 @@ namespace FfmpegGui
                         // JPEG 特例：HDR 无法由 JPEG 自身标定，但**开启 GainMap (Ultra HDR) 后可以**
                         // （SDR 底 + 增益图，在支持的设备上显示 HDR）⇒ HDR 目标项随开关出现/消失，
                         // 而不是让用户选了再被降级。
-                        bool gainMapOn = (FormatCombo?.SelectedItem as string)?.ToLowerInvariant() is "jpg" or "jpeg"
+                        bool gainMapOn = GainMapEncoder.FormatCarriesGainMap(
+                                             NormalizeFormat(FormatCombo?.SelectedItem as string))
                                          && HdrModeCombo?.SelectedIndex == 1;
                         if (gainMapOn) hasHdr = true;
                         if (hasHdr)
@@ -2787,7 +2792,8 @@ namespace FfmpegGui
             if (JpegCodecPanel != null) JpegCodecPanel.IsVisible = false;
             if (JpegliCodecPanel != null) JpegliCodecPanel.IsVisible = false;
             if (JpegGainMapPanel != null) JpegGainMapPanel.IsVisible = false;
-            if (HdrModeCombo != null) HdrModeCombo.IsVisible = fmt is "jpg" or "jpeg" or "avif";
+            if (HdrModeCombo != null)
+                HdrModeCombo.IsVisible = GainMapEncoder.FormatCarriesGainMap(fmt);
             if (TiffCodecPanel != null) TiffCodecPanel.IsVisible = false;
             if (JxrCodecPanel != null) JxrCodecPanel.IsVisible = false;
             if (ThumbnailPanel != null) ThumbnailPanel.IsVisible = false;
@@ -2883,12 +2889,6 @@ namespace FfmpegGui
                     // JxlLosslessJpegPanel），所以不存在两份真值；它实际生效的条件仍是
                     // 「目标格式 jxl + 输入是 JPEG」（采集式里的 fmt/IsJpegInput 两道）。
                     if (JxlLosslessJpegPanel != null) JxlLosslessJpegPanel.IsVisible = true;
-                    // Gain Map (纯 C# GainMapEncoder) 是任意 JPEG 编码器的附加选项:
-                    // 选择 BT.2020 HDR 色彩空间 (PQ/HLG) 时显示, 与编码器后端无关
-                    // SDR 内容 (sRGB/BT.709) headroom=1 无增益意义, 不显示
-                    if (JpegGainMapPanel != null)
-                        JpegGainMapPanel.IsVisible = HdrModeCombo?.SelectedIndex == 1
-                                            && (FormatCombo?.SelectedItem as string)?.ToLowerInvariant() is "jpg" or "jpeg";
                     break;
                 case "tiff": if (TiffCodecPanel != null) TiffCodecPanel.IsVisible = true; break;
                 case "jxr": if (JxrCodecPanel != null) JxrCodecPanel.IsVisible = true; break;
@@ -2912,6 +2912,9 @@ namespace FfmpegGui
             // 面板显隐刚定稿，此时才刷 JPEG LI 那条冲突提示（判据里带 JpegliCodecPanel.IsVisible，
             // 放在上面那批 IsVisible 赋值之前会读到上一轮的旧值）。
             UpdateJpegliProgressiveConflictHint();
+            // GainMap 面板与 HdrMode 同属“格式承载能力”派生状态：上面所有子面板显隐定稿后再统一刷，
+            // 避免本函数内的多个 case 各写一份 jpg/jpeg 列表（第二份真值）。
+            UpdateGainMapPanelVisibility();
 
         }
 
@@ -3385,7 +3388,8 @@ namespace FfmpegGui
                 JpegHuffman = useAdvCodec ? (JpegHuffmanCombo?.SelectedItem as string) : "optimal",
                 JpegDct = useAdvCodec ? (JpegDctCombo?.SelectedItem as string is "auto" ? null : JpegDctCombo?.SelectedItem as string) : null,
                 JpegProgressiveId = useAdvCodec ? ParseJpegProgressiveId() : 0,
-                JpegGainMap = HdrModeCombo?.SelectedIndex == 1,
+                JpegGainMap = HdrModeCombo?.SelectedIndex == 1
+                    && GainMapEncoder.FormatCarriesGainMap(fmt),
                 JpegGainMapQuality = ParseGainMapQuality(),
                 JpegGainMapTargetNits = ParseGainMapNits(),
                 // (libultrahdr hdr-cf 字段已移除)
@@ -4412,14 +4416,42 @@ namespace FfmpegGui
             RegenerateCommand();
         }
 
-        /// <summary>根据「JPEG + HDR 色彩 (BT.2020 PQ/HLG)」刷新 Gain Map 面板可见性（任意 JPEG 编码器）</summary>
+        /// <summary>
+        /// 根据「格式承载能力 + HDR 色彩 (PQ/HLG)」刷新 Gain Map 面板。
+        /// 唯一真值是 <see cref="GainMapEncoder.FormatCarriesGainMap"/>（jpg/jpeg/jpegli/avif/jxl），
+        /// 本函数不再手写格式列表；AVIF/JXL 的 metadata 只留 ISO（XMP/both 后端本就拒绝），
+        /// JXL v1 的 jhgm 只支持 sRGB 底图 ⇒ 底图下拉禁用并归零。
+        /// </summary>
         private void UpdateGainMapPanelVisibility()
         {
             var fmt = NormalizeFormat(FormatCombo?.SelectedItem as string);
-            if (fmt is not ("jpg" or "jpeg")) return;
+            var carries = GainMapEncoder.FormatCarriesGainMap(fmt);
+            var hdrOn = HdrModeCombo?.SelectedIndex == 1;
+
             if (JpegGainMapPanel != null)
-                JpegGainMapPanel.IsVisible = HdrModeCombo?.SelectedIndex == 1
-                                    && (FormatCombo?.SelectedItem as string)?.ToLowerInvariant() is "jpg" or "jpeg";
+                JpegGainMapPanel.IsVisible = carries && hdrOn;
+            if (!carries) return;
+
+            var jpegLike = fmt is "jpg" or "jpeg" or "jpegli";
+            var jxl = fmt == "jxl";
+
+            if (JpegGainMapMetadataLabel != null) JpegGainMapMetadataLabel.IsVisible = jpegLike;
+            if (JpegGainMapMetadataNote != null) JpegGainMapMetadataNote.IsVisible = jpegLike;
+            if (JpegGainMapMetadataCombo != null)
+            {
+                JpegGainMapMetadataCombo.IsVisible = jpegLike;
+                // 隐藏控件不得带着 xmp/both 继续参与命令行：归一到 ISO 默认档。
+                if (!jpegLike && JpegGainMapMetadataCombo.SelectedIndex != 0)
+                    JpegGainMapMetadataCombo.SelectedIndex = 0;
+            }
+
+            if (JpegGainMapBaseCombo != null)
+            {
+                // JXL v1 只有 sRGB 底图；AVIF/JPEG 仍可自由选 Rec.2020 SDR 底。
+                JpegGainMapBaseCombo.IsEnabled = !jxl;
+                if (jxl && JpegGainMapBaseCombo.SelectedIndex != 0)
+                    JpegGainMapBaseCombo.SelectedIndex = 0;
+            }
         }
 
         private void UseAdvancedCodec_IsCheckedChanged(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
@@ -4594,9 +4626,9 @@ namespace FfmpegGui
                     && (_currentCapabilities is null || _currentCapabilities.SupportedColorSpaces.Count > 0);
             }
 
-            // 仅CICP（策略3）：格式不支持 CICP 时禁用该单选；JPEG 且 GainMap 开启时例外可用。
+            // 仅CICP（策略3）：格式不支持 CICP 时禁用该单选；任意 GainMap 承载格式开启时例外可用。
             bool gainMapOn = HdrModeCombo?.SelectedIndex == 1
-                && (FormatCombo?.SelectedItem as string)?.ToLowerInvariant() is "jpg" or "jpeg";
+                && GainMapEncoder.FormatCarriesGainMap(NormalizeFormat(FormatCombo?.SelectedItem as string));
             if (IccModeBake != null)
                 IccModeBake.IsEnabled = (_currentCapabilities?.SupportsCicp ?? true) || gainMapOn;
 
@@ -6435,10 +6467,7 @@ namespace FfmpegGui
         /// <summary>GainMap 独立开关变化：切换子选项面板可见性 + 刷新色彩面板（仅CICP 例外）与命令。</summary>
         private void HdrMode_Changed(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
         {
-            var on = HdrModeCombo?.SelectedIndex == 1;
-            if (JpegGainMapPanel != null)
-                JpegGainMapPanel.IsVisible = on
-                    && (FormatCombo?.SelectedItem as string)?.ToLowerInvariant() is "jpg" or "jpeg";
+            UpdateGainMapPanelVisibility();
             UpdateIccPanelVisibility();
             // ── D-1（2026-09-20）+ 2026-10-12 扩展：所有**没换格式**的刷新都走同一个保护方法 ──────
             //   勾/取消「GainMap (Ultra HDR)」会改变 JPEG 的 HDR 能力 ⇒ 目标色域列表需重新过滤，
@@ -6477,14 +6506,24 @@ namespace FfmpegGui
             return JpegGainMapMultiChannelCheck?.IsChecked ?? false;
         }
 
-        /// <summary>解析底图色域：0=sRGB SDR 底（默认）, 1=Rec.2020 SDR 底（广色域）；HDR 始终由增益图承载。</summary>
+        /// <summary>解析底图色域：0=sRGB SDR 底（默认）, 1=Rec.2020 SDR 底（广色域）；HDR 始终由增益图承载。
+        /// JXL v1 的 jhgm 只支持 sRGB 底图 ⇒ 即使旧预设/隐藏控件残留 bt2020，也在这里归零。</summary>
         private string ParseGainMapBaseGamut()
-            => JpegGainMapBaseCombo?.SelectedIndex == 1 ? "bt2020" : "srgb";
+        {
+            var fmt = NormalizeFormat(FormatCombo?.SelectedItem as string);
+            if (fmt == "jxl") return "srgb";
+            return JpegGainMapBaseCombo?.SelectedIndex == 1 ? "bt2020" : "srgb";
+        }
 
         /// <summary>解析元数据方式。取值域只有一处定义 = <see cref="GainMapEncoder.GainMapMetadataModes"/>
-        /// （下拉项顺序与它一致），越界一律回落默认档，不在 UI 里另抄一份字符串表。</summary>
+        /// （下拉项顺序与它一致），越界一律回落默认档，不在 UI 里另抄一份字符串表。
+        /// AVIF 的 tmap 只有 ISO 形式、JXL 的 jhgm 也只有 ISO 形式 ⇒ 即使旧预设/隐藏控件残留
+        /// xmp/both，也在这里按出口格式归一，避免后端收到必然被拒的组合。</summary>
         private string ParseGainMapMetadata()
         {
+            var fmt = NormalizeFormat(FormatCombo?.SelectedItem as string);
+            if (GainMapEncoder.FormatCarriesGainMap(fmt) && fmt != "jpg" && fmt != "jpeg" && fmt != "jpegli")
+                return GainMapEncoder.GainMapMetadataDefault;
             var modes = GainMapEncoder.GainMapMetadataModes;
             int idx = JpegGainMapMetadataCombo?.SelectedIndex ?? -1;
             if (idx < 0 || idx >= modes.Length) return GainMapEncoder.GainMapMetadataDefault;
@@ -6629,7 +6668,8 @@ namespace FfmpegGui
                 // ── 编码器后端 ──
                 EncoderBackend = GetCurrentEncoderBackend().ToString(),
                 // ── Gain Map ──
-                JpegGainMap = HdrModeCombo?.SelectedIndex == 1,
+                JpegGainMap = HdrModeCombo?.SelectedIndex == 1
+                    && GainMapEncoder.FormatCarriesGainMap(NormalizeFormat(FormatCombo?.SelectedItem as string)),
                 JpegGainMapQuality = ParseGainMapQuality(),
                 JpegGainMapTargetNits = ParseGainMapNits(),
                 JpegGainMapMultiChannel = ParseGainMapMultiChannel(),

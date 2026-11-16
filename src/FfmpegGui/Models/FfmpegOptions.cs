@@ -425,7 +425,7 @@ namespace FfmpegGui.Models
         /// <summary>JPEG 渐进模式: -1=自动, 0=基线, 1=渐进 (Gain Map / mjpeg 路径)</summary>
         public int JpegProgressiveId { get; set; } = 0;  // 0=Baseline (Gain Map 推荐基线)
         // ── Gain Map (Ultra HDR) JPEG 选项 ──
-        /// <summary>是否启用 Gain Map（仅 JPEG 输出；纯 C# GainMapEncoder + 所选 JPEG 编码器(cjpegli/mjpeg)实现，无 libultrahdr 依赖）</summary>
+        /// <summary>是否启用 Gain Map（JPEG/AVIF/JXL 输出；纯 C# GainMapEncoder + 各容器结构实现，无 libultrahdr 依赖）</summary>
         public bool JpegGainMap { get; set; } = false;
         /// <summary>Gain Map 压缩质量 (0-100)，-1 表示使用主 Quality 值</summary>
         public int JpegGainMapQuality { get; set; } = -1;

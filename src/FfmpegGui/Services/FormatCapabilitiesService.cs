@@ -122,7 +122,7 @@ namespace FfmpegGui.Services
                 SupportedColorSpaces = new List<string> { "BT.709" }
             };
 
-            // AVIF: libaom-av1 支持 8/10/12-bit YUV+RGB，原生 CICP
+            // AVIF: libaom-av1 支持 8/10/12-bit YUV+RGB，原生 CICP；GainMap 走 ISO-BMFF tmap
             _cache["avif"] = new FormatCapabilities
             {
                 Format = "avif",
@@ -131,9 +131,10 @@ namespace FfmpegGui.Services
                 SupportsBitDepth = true,
                 SupportsMetadata = true,
                 SupportsLossless = true,
+                SupportsGainMap = true,
                 SupportsCicp = true,
                 SupportsColorRange = true, // AVIF CICP full_range_flag 原生支持 tv/pc
-                CicpNote = "AVIF 原生支持 CICP (H.273)，8/10/12-bit",
+                CicpNote = "AVIF 原生支持 CICP (H.273)，8/10/12-bit；GainMap 走 ISO-BMFF tmap",
                 SupportedBitDepths = new List<int> { 8, 10, 12 },
                 SupportedColorSpaces = new List<string> { "BT.709", "BT.2020" }
             };
