@@ -74,7 +74,7 @@ $genScript = 'tests/scripts/_gen-mode-split.ps1'    # 把「一组一文件」�
 #   也钉住 ⇒ 取样器若整体失配（方法体取不到、塌 0 变多），当场红而不是静默放行。
 $counts = [ordered]@{
     'avifgm' = 14; 'bench' = 9; 'bitdepth' = 7; 'bt2446' = 18; 'color' = 0
-    'colormath' = 12; 'contract' = 101; 'curve' = 14; 'decision' = 5; 'dng-xmp-args' = 2
+    'colormath' = 12; 'contract' = 102; 'curve' = 14; 'decision' = 5; 'dng-xmp-args' = 2
     'encoding' = 6
     # 2026-10-27 与 origin/main 合流：`ProbeGainMapIsoBmff` 的源文本调用位 12 → **21**（+9），
     #   来历 = origin/main 那批读侧新增的 Apple aux 识别与 tmap `pixi` 关联断言（P0-1/P1-4），
@@ -200,6 +200,10 @@ $counts = [ordered]@{
 #   `auxvendorgrid` 10 条；后者锁「未登记厂商 URN + XMP HDRGainMapHeadroom ⇒ aux-vendor-gainmap」）
 #   ⇒ 总量 **1005**（= ③-e 实取总量；两条新分支的来历见 ServiceProbe Parts/09 与
 #   verify-gainmap-isobmff §1l）。
+# 2026-11-16（双载体 ICC+CICP，928ec89）：`contract` 101→**102**（+1）。来历 = `928ec89`
+#   「fix(color): dual-write ICC+CICP」给 `ProbeContract`（tests/projects/ServiceProbe/Parts/17_ProbeContract.cs）
+#   新增的那条 Check（双载体格式同时承载 iCCP 与 cICP 的能力/语义对账），未同批抬表 ⇒ ③-e 实取红出。
+#   ⇒ 总量 1005 → **1006**（= ③-e 实取总量；本格 102 = 17_ProbeContract.cs 源文本 `Check(` 计数）。
 
 #   来历 = 底图尺寸对账裁决（`GainMapDecoder.ReconcileBaseSize`）此前**零判据臂**，而该状态造不出
 #   文件样本（ispe 变异不影响 ffprobe 报的 HEVC 流尺寸；删 clap 则两侧同时退回 64x64）⇒ 只能直接钉

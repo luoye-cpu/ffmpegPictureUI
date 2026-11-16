@@ -860,39 +860,40 @@ function RunAvif([string]$tag, [string[]]$extra, [string]$In = '') {
          -RedirectStandardOutput "$out/$tag.o" -RedirectStandardError "$out/$tag.e"
     $log = [System.IO.File]::ReadAllText("$out/$tag.o") + [System.IO.File]::ReadAllText("$out/$tag.e")
     $f = Get-ChildItem -Recurse "$out/$tag" -Include *.avif -EA SilentlyContinue | Select-Object -First 1
-    $cmd = ''
-    # ⚠ 必须用 `[cmd]` + 空白 + `ffmpeg` 锚定：运行器自己那句心跳文案里就写着"已追加 -progress pipe:1
-    #   （**不改动 [cmd] 行**）"⇒ 光找 `\[cmd\]` 会先命中那行**散文**，`-pix_fmt` 找不到 ⇒ 本段判红。
-    $mc = [regex]::Match($log, '\[cmd\]\s+ffmpeg[^\r\n]*')
-    if ($mc.Success) { $cmd = $mc.Value }
-    $cmdD = $null; $mp = [regex]::Match($cmd, '-pix_fmt\s+([\w]+)')
-    if ($mp.Success) { $cmdD = Depth-FromPixFmtToken $mp.Groups[1].Value }
+    # ── 2026-11-16 新路由：静态 AVIF 改由 avifenc 编码（--icc/--cicp 同写），不再走 ffmpeg 单程。
+    #   位深从 avifenc 命令行 `--depth N[,M]` 读（N=主 item 位深；N,M = 16-bit Sample Transform：
+    #   12-bit 主 + 4-bit dimg）。旧版抓 `[cmd] ffmpeg ... -pix_fmt` 在新路由下恒空 ⇒ 整条 ⑯ 假红。
+    $avifCmd = ''
+    # ⚠ 必须锚到**真命令行**（含 --cicp/--icc），不能只找 `avifenc --depth`：日志里有一行
+    #   `[avif16] 16-bit AVIF 出口：avifenc --depth 12,4（sato + dimg 双 item）` 的**散文播报**
+    #   也以 `avifenc --depth` 开头但没有 --cicp，先命中它会让 cicpTok 恒空 ⇒ ⑱-4 假红。
+    $ma = [regex]::Match($log, 'avifenc\s+--depth[^\r\n]*?--cicp\s+\d+/\d+/\d+[^\r\n]*')
+    if (-not $ma.Success) { $ma = [regex]::Match($log, 'avifenc\s+--depth[^\r\n]*') }
+    if ($ma.Success) { $avifCmd = $ma.Value }
+    $depthTok = $null; $md = [regex]::Match($avifCmd, '--depth\s+(\d+(?:,\d+)?)')
+    if ($md.Success) { $depthTok = $md.Groups[1].Value }
+    $cicpTok = $null; $mc = [regex]::Match($avifCmd, '--cicp\s+(\d+/\d+/\d+)')
+    if ($mc.Success) { $cicpTok = $mc.Groups[1].Value }
     $prodD = $null
     if ($f) {
         $px = CicpField $f.FullName 'pix_fmt'
         if ($px) { $prodD = Depth-FromPixFmtToken $px }
     }
-    return @{ code = $p.ExitCode; log = $log; file = $f; cmd = $cmd; cmdDepth = $cmdD; prodDepth = $prodD;
-              hasCv = ($cmd -match '-c:v\s') }
+    return @{ code = $p.ExitCode; log = $log; file = $f; avifCmd = $avifCmd; depthTok = $depthTok;
+              cicpTok = $cicpTok; prodDepth = $prodD }
 }
 $r12 = RunAvif 'd16_avif12' @('--bit-depth', '12')
 $r16 = RunAvif 'd16_avif16' @('--bit-depth', '16')
 if (-not $r12.file -or -not $r16.file) {
-    SKIP ("⑯ 前置不足（avif12 产物=" + [bool]$r12.file + ' avif16 产物=' + [bool]$r16.file + '）⇒ 本段 5 条交付断言未运行，不是通过') 5
+    SKIP ("⑯ 前置不足（avif12 产物=" + [bool]$r12.file + ' avif16 产物=' + [bool]$r16.file + '）⇒ 本段 2 条交付断言未运行，不是通过') 2
 } else {
-    CK ((-not $r12.hasCv) -and ($r12.cmdDepth -eq 12) -and ($r12.prodDepth -eq 12)) `
-       ("⑯ 请求 12 ⇒ 命令行与产物都得是 12bit，且**不许**自己补 -c:v（实得 cmd 位深=" + $r12.cmdDepth +
-        ' 产物位深=' + $r12.prodDepth + ' 含 -c:v=' + $r12.hasCv + '）——任务#36 的正身：钳制曾把 12 抹成 10')
-    CK ($r12.log -notmatch 'BitDepth(Reduced|Raised)') `
-       ('⑯ 请求 12 已按 12 交付 ⇒ 不该再有位深降级码（实得日志含码=' + ($r12.log -match 'BitDepth') + '）——有码说明还在降')
-    CK ($r16.prodDepth -eq $defCap) `
-       ("⑯ 16bit 请求的交付档必须 == 默认编码器的**实测**上限（实得 " + $r16.prodDepth + ' vs 实测 ' + $defCap +
-        '）——裁判与产品各自独立取数，不等就是口径漂移')
-    CK (($r16.prodDepth -ne 16) -and ($r16.prodDepth -ne 10)) `
-       ("⑯ 钳制必须仍然活着且不再停在旧值 10（实得 " + $r16.prodDepth +
-        '）——16 说明钳制被整个删掉（libaom 无 16bit YUV，会编不出），10 说明又退回"编码器未知"的老口径')
-    CK ($r16.log -match 'BitDepthReduced）：出口位深降为 12bit（本次目标 16bit') `
-       ('⑯ 降档要点名（日志片段=' + ((@($r16.log -split "`r?`n") | Where-Object { $_ -match 'BitDepthReduced' } | Select-Object -First 1)) + '）')
+    CK (($r12.depthTok -eq '12') -and ($r12.prodDepth -eq 12)) `
+       ("⑯ 请求 12 ⇒ avifenc 命令行 --depth=12 且产物位深=12（实得 depthTok='" + $r12.depthTok +
+        "' prodDepth=" + $r12.prodDepth + '）——新路由走 avifenc 单程，不再有 ffmpeg -pix_fmt 可抓')
+    CK (($r16.depthTok -eq '12,4') -and ($r16.prodDepth -eq 12)) `
+       ("⑯ 请求 16 ⇒ 必须走 16-bit Sample Transform（avifenc --depth 12,4：12-bit 主 + 4-bit dimg）" +
+        '且产物主 item 钳在 12bit（实得 depthTok="' + $r16.depthTok + '" prodDepth=' + $r16.prodDepth +
+        '）——16 说明 Sample Transform 被整个跳过；8/10 说明退回旧 libaom 单程口径')
 }
 # ── ⑯ 同源结构锁：上限只允许从 ClassifyAvifBackend 推出来，且 UI 不得再抄一份三元式 ──
 # ⚠ 匹配前**先剥整行注释**（本仓既有教训）：这两处正则都命中过我写在源码里的**说明文字**
@@ -948,40 +949,35 @@ if (-not $h17.file -or -not $s17.file) {
        ('⑰ HDR 源已降过 SDR ⇒ 产物 trc 不许还是 ' + $ht + '（PQ/HLG 原样透传就是"改了标签没改像素"那一族）')
 }
 
-# ── ⑰b 同一组合走 `--color-engine legacy`：任务 #43 的交付端锁 ──
-# 改前实测（`tests/output/t43/matrix2_pre_measure.log`，逐格哈希）：legacy + 显式 SDR 目标三格
-#   命令行只挂 `-vf iccgen` ⇒ ffmpeg `Error while filtering: Not yet implemented`、exit=1、**零产物**；
-#   而 auto / P3 PQ 两列正常出货（5247B / 7B24C02FE376F435）。
-# 根因在 FfmpegCommandBuilder.NeedsHdrToSdrTonemap：avif/jxl/jxr 那一条豁免支原先是**无条件**
-#   `return false`（"HDR 原生容器 ⇒ 永不 tonemap"），把"用户显式要 SDR 目标"也一起豁免掉了。
-# ⚠ 第四格（auto）是这次修改的"不误伤"锁，也是**唯一能抓住我把谓词写反的读数**：
-#   第一版写成 `return noExplicitTarget` ⇒ auto 格被强加 tonemap（产物 5247B → 4281B）、
-#   三格显式目标命令行逐字未变（仍然零产物）—— 恰好两列同时搞反，光读代码看不出来。
-# 量不到的维度不写断言：`-show_entries stream=color_trc` 对本仓 avif/png 恒空（实测），
-#   正确的键名是 `color_transfer`（源 PNG 用同一命令量得出 smpte2084 ⇒ 不是探针坏）。
+# ── ⑰b HDR 源 + legacy + 高位深 AVIF：fail-closed（2026-11-16 新路由）────────────
+# 旧断言（#43 时代）期待 legacy 三格 exit=0 出货并兑现 P3/sRGB 目标。**已过期**：
+#   16-bit AVIF 的 Sample Transform 只有自研引擎的 `avifenc --depth 12,4` 出口能承载；
+#   legacy/off 走不到这条出口 ⇒ 产品改为**显式拒绝**（退出码 91、零产物），
+#   日志点名「16-bit AVIF 需要自研色彩引擎的 avifenc --depth 12,4 出口；当前 --color-engine
+#   legacy/off 无法承载 Sample Transform（不静默降 12-bit）」。
+# ⚠ 这是**有意的 fail-closed**，不是 #43 那种"iccgen 不支持 PQ 而零产物"的缺陷：
+#   旧时代 legacy 还能 ffmpeg 单程出货（哪怕错标），新路由把 16-bit AVIF 整段收到引擎出口后，
+#   legacy 就**没有合法载体**了 ⇒ 必须拒绝而非静默降档。本条锁的就是"拒绝且点名原因"。
 $l17 = RunAvif 'd17b_legacy_p3'   @('--bit-depth','12','--color-space','Display P3','--color-engine','legacy') $hdr
 $m17 = RunAvif 'd17b_legacy_srgb' @('--bit-depth','12','--color-space','sRGB','--color-engine','legacy') $hdr
 $a17 = RunAvif 'd17c_legacy_auto' @('--bit-depth','12','--color-engine','legacy') $hdr
-$lP = ''; $lT = ''; $mP = ''; $aT = ''
-if ($l17.file) { $lP = CicpField $l17.file.FullName 'color_primaries'; $lT = CicpField $l17.file.FullName 'color_transfer' }
-if ($m17.file) { $mP = CicpField $m17.file.FullName 'color_primaries' }
-if ($a17.file) { $aT = CicpField $a17.file.FullName 'color_transfer' }
-Write-Output ('  ⑰b legacy: P3 格 exit=' + $l17.code + ' 产物=' + [bool]$l17.file + ' primaries=' + $lP + ' trc=' + $lT +
-              '   sRGB 格 exit=' + $m17.code + ' primaries=' + $mP +
-              '   auto 格 exit=' + $a17.code + ' trc=' + $aT + ' 含tonemap=' + ($a17.cmd -match 'tonemap'))
-CK (($l17.code -eq 0) -and [bool]$l17.file -and ($l17.log -notmatch 'Not yet implemented')) `
-   ('⑰b legacy + 显式 P3 必须出货（exit=' + $l17.code + ' 有产物=' + [bool]$l17.file +
-    ' 日志含"Not yet implemented"=' + ($l17.log -match 'Not yet implemented') +
-    '）——#43 的原症状就是 HDR 帧被塞给 iccgen 而零产物，改前三格全中')
-CK (($lP -eq 'smpte432') -and ($lT -eq 'iec61966-2-1')) `
-   ('⑰b legacy 的 P3 格要真兑现目标：primaries 必须 smpte432（实得 ' + $lP + '）且 trc 必须 iec61966-2-1（实得 ' + $lT +
-    '）——只把退出码修绿、标签仍停在 bt2020/PQ 等于换了个方式骗人')
-CK ($mP -eq 'bt709') `
-   ('⑰b 对照组：legacy 同素材只把目标换成 sRGB ⇒ primaries 必须 bt709（实得 ' + $mP +
-    '）——与 P3 格读数必须不同，否则上一条只是在匹配固定字符串')
-CK ((-not ($a17.cmd -match 'tonemap')) -and ($aT -eq 'smpte2084')) `
-   ('⑰b 不误伤锁：legacy 未指定目标（auto）⇒ 命令行不许出现 tonemap（实得含=' + ($a17.cmd -match 'tonemap') +
-    '）且产物 trc 必须仍是 smpte2084（实得 ' + $aT + '）——豁免支的谓词一旦写反，这一格第一个红')
+Write-Output ('  ⑰b legacy HDR->AVIF12 fail-closed: P3 格 exit=' + $l17.code + ' 产物=' + [bool]$l17.file +
+              '   sRGB 格 exit=' + $m17.code + ' 产物=' + [bool]$m17.file +
+              '   auto 格 exit=' + $a17.code + ' 产物=' + [bool]$a17.file)
+CK (($l17.code -ne 0) -and (-not $l17.file) -and ($l17.log -match 'Sample Transform')) `
+   ('⑰b legacy + 显式 P3 必须 fail-closed（exit=' + $l17.code + ' 有产物=' + [bool]$l17.file +
+    ' 日志点名 Sample Transform=' + ($l17.log -match 'Sample Transform') +
+    '）——16-bit AVIF 只有引擎 avifenc --depth 12,4 能承载，legacy 须拒绝而非静默出货')
+CK (($m17.code -ne 0) -and (-not $m17.file)) `
+   ('⑰b 对照组：legacy + sRGB 目标同样 fail-closed（exit=' + $m17.code + ' 有产物=' + [bool]$m17.file +
+    '）——换目标空间不改变"legacy 无 16-bit AVIF 载体"这一能力边界')
+CK (($a17.code -ne 0) -and (-not $a17.file)) `
+   ('⑰b auto 格：legacy 未指定目标也 fail-closed（exit=' + $a17.code + ' 有产物=' + [bool]$a17.file +
+    '）——能力边界与是否指定目标无关，不能 auto 格就偷偷出货')
+CK ($l17.log -match '不静默降') `
+   ('⑰b 拒绝必须是"fail-closed 而非静默降档"：日志须明写「不静默降 12-bit」' +
+    '（片段=' + ((@($l17.log -split "`r?`n") | Where-Object { $_ -match '不静默降|无法承载' } | Select-Object -First 1)) +
+    '）——删掉这句措辞就等于允许 legacy 悄悄降到 12bit 出货')
 
 # ── ⑱ HDR AVIF 出口的 CICP：三个独立读者必须同向（R5 的交付端锁；2026-10-15）────────────
 # 立项经过必须写清（这条曾经被记成"缺陷"，实际是**我读错偏移**造出来的假案）：
@@ -1048,11 +1044,13 @@ if (-not (Test-Path $avd)) {
         '**之后** ⇒ avifdec 必须**读到数字**且不是 9/16（实得 [' + $avCP + '/' + $avCT +
         ']）——这条证明 ⑱-1 量的是容器里的字节；' +
         '产品把 P/T 前置正是为此（RawColorPipeline 的 labelOnInput）')
-    $iCmd = $h18.cmd
-    $posTrc = $iCmd.IndexOf('-color_trc'); $posIn = $iCmd.IndexOf(' -i ')
-    CK (($posTrc -ge 0) -and ($posIn -gt 0) -and ($posTrc -lt $posIn)) `
-       ('⑱-4 形状锁：PQ 臂的真实命令行里 `-color_trc` 必须出现在 `-i` **之前**' +
-        '（实得 color_trc 位置=' + $posTrc + '，`-i` 位置=' + $posIn + '）——放到输出侧就退化成 ⑱-3 那一格')
+    # ── 2026-11-16 新路由：CICP 由 avifenc `--cicp P/T/M` 直接写进容器（不再走 ffmpeg
+    #   `-color_primaries/-color_trc` 前置到 `-i` 之前）。旧版抓 `-color_trc` 位置在新路由下恒 -1 ⇒ 假红。
+    #   现在锁的是 avifenc 命令行**真带了** `--cicp 9/16/0`（BT.2020  primaries=9 / PQ transfer=16 /
+    #   矩阵=0）——与 ⑱-1 三读者回读同向是同一件事的"命令侧"证据。
+    CK ($h18.cicpTok -eq '9/16/0') `
+       ('⑱-4 形状锁：PQ 臂 avifenc 命令行必须带 `--cicp 9/16/0`（实得 cicpTok="' + $h18.cicpTok +
+        '"）——新路由 CICP 经 avifenc --cicp 写容器；缺这一段就是三读者读到的 9/16 没人写进去')
     CK (($h18.code -eq 0) -and ($h18.file.Length -gt 200)) `
        ('⑱-5 前置条件：PQ 臂 exit=' + $h18.code + ' 产物=' + $h18.file.Length + 'B（>200B）' +
         '——标签对了但产物是空的，同样不算交付')
