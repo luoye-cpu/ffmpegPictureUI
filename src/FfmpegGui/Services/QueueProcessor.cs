@@ -3154,7 +3154,7 @@ namespace FfmpegGui.Services
                     }
                     else if (protectColorMetadata)
                     {
-                        item.Log += $"[exiftool] 元数据恢复警告: 退出码 {copyExit}，已跳过 ffmpeg 回退（色彩保护模式）\n";
+                        item.Log += $"[warn] [exiftool] 元数据恢复警告: 退出码 {copyExit}，已跳过 ffmpeg 回退（色彩保护模式）\n";
                         // ⚠ 常规复制失败**不等于**拍摄字段也补不回：补漏是**独立的一次调用**且只写白名单
                         //   ⇒ 仍然尝试（部分元数据胜过全丢）。实测 PNG 目标曾因 ffmpeg 写坏的 `eXIf`
                         //   块让常规复制恒失败，若在此直接 return，补漏就永远不生效。
@@ -3163,22 +3163,22 @@ namespace FfmpegGui.Services
                     }
                     else
                     {
-                        item.Log += $"[exiftool] 元数据恢复警告: 退出码 {copyExit}，尝试 ffmpeg 回退...\n";
+                        item.Log += $"[warn] [exiftool] 元数据恢复警告: 退出码 {copyExit}，尝试 ffmpeg 回退...\n";
                     }
                 }
                 catch (Exception ex)
                 {
                     if (protectColorMetadata)
                     {
-                        item.Log += $"[exiftool] 元数据恢复异常: {ex.Message}，已跳过 ffmpeg 回退（色彩保护模式）\n";
+                        item.Log += $"[warn] [exiftool] 元数据恢复异常: {ex.Message}，已跳过 ffmpeg 回退（色彩保护模式）\n";
                         return;
                     }
-                    item.Log += $"[exiftool] 元数据恢复异常: {ex.Message}，尝试 ffmpeg 回退...\n";
+                    item.Log += $"[warn] [exiftool] 元数据恢复异常: {ex.Message}，尝试 ffmpeg 回退...\n";
                 }
             }
             else
             {
-                item.Log += "[metadata] exiftool 未检测到，使用 ffmpeg 回退方案恢复元数据\n";
+                item.Log += "[warn] [metadata] exiftool 未检测到，使用 ffmpeg 回退方案恢复元数据\n";
             }
 
             // ── 回退：ffmpeg 重新封装 ──
