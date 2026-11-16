@@ -87,3 +87,14 @@ pwsh -NoProfile -File tests/scripts/_release-gate-check.ps1
 **直接冲突**。处置：**本轮暂不修改 AGENTS §8**，把该冲突挂起，待用户明确拍板是否给"固定 beta17 重出"开豁免；
 在豁免落地前，重出一律按本节开头的"显式标注"要求标注，作为最低可追溯兜底。
 
+## 7. 运行器环境摩擦（GATE-05，2026-11-16）
+
+`_run-step3-gates.ps1` 两处环境摩擦已修（**只改提示与死锁回收，未放宽任何闸判据**）：
+
+- **死锁自动回收**：拿锁前先 `Get-Process -Id <锁内pid>`；进程已退出 ⇒ 打印"回收死锁 pid=X"并追加一行到
+  `tests/output/_gate_runner.txt` 后自动删锁重试；进程仍在 ⇒ 照旧 `exit 9` 拒跑（绝不强删活锁）；锁里取不到 pid ⇒
+  退化"拒跑 + 给人工删除命令"，不静默继续。
+- **STALE 提示可操作**：报 STALE 时附带 `git status --porcelain -- src/FfmpegGui/FfmpegGui.csproj`；为空则提示
+  "内容未变、疑似并行构建/工具触碰 mtime，建议重建"。**mtime 比较与 exit 2 判据本身未动**。
+
+

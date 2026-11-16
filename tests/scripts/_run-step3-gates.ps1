@@ -787,34 +787,54 @@ foreach ($fp in $fixtureProducers) {
 #     （每个都成了「可能被别人并发改」的文件）⇒ 反而**制造**成因 6。
 # 行为（三条都是**刻意**的取舍）：
 #   · **被占用 ⇒ 明确报错 + exit 9**（不静默跳过、不等待、不超时后继续）；9 与现有 0/1 及探针 90/91/92 都不撞。
-#   · **stale 锁不自动删**：读锁里的 pid，Get-Process 失败也只把措辞改成「疑似残留锁」并提示**手工**删。
-#     理由：自动删会引入「我删了别人的锁」的**新竞态** ⇒ 让**人**决定比「自动做对」更安全。
+#   · **死锁自动回收（GATE-05，2026-11-16）**：读锁里的 pid，Get-Process 查无此进程 ⇒ 视为死锁
+#     （上轮进程已退出），打印"回收死锁 pid=X"、追加一行到 tests/output/_gate_runner.txt 后自动删锁并重试拿锁；
+#     Get-Process 仍查到活进程 ⇒ 照旧 exit 9 拒跑（绝不强删活锁——那是并发保护）；锁里取不到 pid（或非
+#     Windows 取不到进程）⇒ 退化为"拒跑 + 给人工删除命令"，绝不静默继续。
+#     安全方向：pid 被新进程复用时 Get-Process 查得到 ⇒ 按活锁拒跑，不会误删活锁。
 #   · 释放走 Exit-WithSummary（所有退出路径都经过它）⇒ 正常结束删锁；**异常中断则残留**（符合上一条）。
 # ⚠ 实现要点：**写入后立即 Dispose 句柄** —— 锁的**存在性**由 CreateNew 语义保证（文件已存在 ⇒ 抛异常），
 #   而**不**靠长期持有独占句柄；否则别的实例**读不到锁内容** ⇒ stale 检测（读 pid）**结构性失效**。
 $script:gatesLockPath = "$root/tests/output/.gates.lock"
-try {
-  $script:gatesLockStream = [System.IO.File]::Open($script:gatesLockPath, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
-} catch {
-  $holder = "(锁内容读不到)"
-  try { $holder = [System.IO.File]::ReadAllText($script:gatesLockPath) } catch { }
-  $stale = $false
-  if ($holder -match '"pid"\s*:\s*(\d+)') {
-    $hpid = [int]$Matches[1]
+$gatesAcquired = $false
+for ($gatesAttempt = 0; $gatesAttempt -lt 4 -and -not $gatesAcquired; $gatesAttempt++) {
+  try {
+    $script:gatesLockStream = [System.IO.File]::Open($script:gatesLockPath, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+    $gatesAcquired = $true
+  } catch {
+    $holder = "(锁内容读不到)"
+    try { $holder = [System.IO.File]::ReadAllText($script:gatesLockPath) } catch { }
+    $hpid = $null
+    if ($holder -match '"pid"\s*:\s*(\d+)') { $hpid = [int]$Matches[1] }
     $hproc = $null
-    try { $hproc = Get-Process -Id $hpid -ErrorAction SilentlyContinue } catch { $hproc = $null }
-    if (-not $hproc) { $stale = $true }
+    if ($null -ne $hpid) {
+      try { $hproc = Get-Process -Id $hpid -ErrorAction SilentlyContinue } catch { $hproc = $null }
+    }
+    if ($null -ne $hpid -and -not $hproc) {
+      # 死锁：持有者进程已退出 ⇒ 回收并继续重试拿锁
+      $reclaimMsg = ("[{0}] 回收死锁 pid={1}（进程已退出）{2}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $hpid, $script:gatesLockPath)
+      Write-Output ("  " + $reclaimMsg)
+      try { Add-Content -Path "$root/tests/output/_gate_runner.txt" -Value $reclaimMsg -Encoding utf8 } catch { }
+      try { [System.IO.File]::Delete($script:gatesLockPath) } catch { }
+      continue
+    }
+    Write-Output ""
+    Write-Output "===== 运行器拒绝启动：仓库级锁被占用（#147 C）====="
+    Write-Output "  锁文件：$script:gatesLockPath"
+    Write-Output "  持有者：$holder"
+    if ($null -ne $hpid -and $hproc) {
+      Write-Output "  ⚠ 另一个门禁运行器正在跑（pid=$hpid）⇒ 本轮**不启动**（并发会互删共享 fixture ⇒ 读数不可信）。请等待其结束，或确认它是孤儿后手工删锁。"
+    } else {
+      Write-Output "  ⚠ 锁里取不到 pid（或非 Windows 取不到进程）⇒ 为安全起见**不自动回收**。请人工确认后删除该文件再重试："
+      Write-Output "      Remove-Item -LiteralPath '$script:gatesLockPath'"
+    }
+    Write-Output "  ⚠ 本锁**不**覆盖：构建（dotnet/MSBuild）、直接跑单个 verify-*.ps1、进程外手段。"
+    exit 9
   }
-  Write-Output ""
-  Write-Output "===== 运行器拒绝启动：仓库级锁被占用（#147 C）====="
-  Write-Output "  锁文件：$script:gatesLockPath"
-  Write-Output "  持有者：$holder"
-  if ($stale) {
-    Write-Output "  ⚠ 持有者进程已不存在 ⇒ **疑似残留锁**。请**手工**确认后删除该文件再重试（本脚本不会自动删）。"
-  } else {
-    Write-Output "  ⚠ 另一个门禁运行器正在跑 ⇒ 本轮**不启动**（并发会互删共享 fixture ⇒ 读数不可信）。"
-  }
-  Write-Output "  ⚠ 本锁**不**覆盖：构建（dotnet/MSBuild）、直接跑单个 verify-*.ps1、进程外手段。"
+}
+if (-not $gatesAcquired) {
+  Write-Output "===== 运行器拒绝启动：连续回收死锁后仍拿不到锁（$script:gatesLockPath）====="
+  Write-Output "  请人工检查该锁文件：Remove-Item -LiteralPath '$script:gatesLockPath'"
   exit 9
 }
 # ⚠ cmdline 必须**截断**（2026-09-19 实施期发现）：`[Environment]::CommandLine` 在**宿主注入环境**下
@@ -1024,6 +1044,22 @@ if ($stale.Count -gt 0) {
   Write-Output  "        ⚠ tests/projects/GainMapTestHost 自 2026-09-30 起**已进闸**（清单第 60 条 `verify-gainmap-host.ps1` + 上面第 ⑤ 对）"
   Write-Output  "        ⚠ 三段拆分件（Tests.GainMap{Encode,Decode,Struct}.exe）自 2026-10-16 起进闸（第 ⑥⑦⑧ 对；§4b 执行它们）"
   Write-Output  "        ⚠ 五个 UI 拆分件（Tests.Ui{Core,Mode,Color,Sweep,Cli}.exe）自 2026-10-31 起进闸（第 ⑨–⑬ 对；5 条 UI 门禁执行它们）"
+  # GATE-05（2026-11-16）：给 STALE 报错补可操作提示——闸本身（mtime 比较、exit 2）**不改**。
+  #   csproj 在 git 里内容未变（status --porcelain 为空）⇒ 多半是并行构建/工具触碰 mtime，而非真改了源码；
+  #   有未提交改动 ⇒ 这次 STALE 可能是真改动，先重建。只加提示，不放宽拦截。
+  try {
+    $gitExe = (Get-Command git.exe -ErrorAction SilentlyContinue).Source
+    if (-not $gitExe -and (Test-Path 'C:\Program Files\Git\bin\git.exe')) { $gitExe = 'C:\Program Files\Git\bin\git.exe' }
+    if ($gitExe) {
+      $porcelain = & $gitExe -C $root status --porcelain -- 'src/FfmpegGui/FfmpegGui.csproj' 2>$null
+      if (-not $porcelain) {
+        Write-Output  "        提示：git status --porcelain -- src/FfmpegGui/FfmpegGui.csproj 为空 ⇒ csproj 内容未变，疑似并行构建/工具触碰 mtime。"
+        Write-Output  "        建议：dotnet build 重建（让产物 mtime 追上源码）；闸本身不变，仍须产物新于源码才放行。"
+      } else {
+        Write-Output  "        提示：src/FfmpegGui/FfmpegGui.csproj 在 git 中有未提交改动（$($porcelain -join '; ')）⇒ 这次 STALE 可能是真改了源码，先重建再跑。"
+      }
+    }
+  } catch { }
   # ⚠ 2026-09-19 修（实施 #147 C 锁时漏掉的退出点）：此处**必须**先释放仓库级锁 ——
   #   否则「正常拒绝」也会留下残留锁（实测：STALE 拒跑后 `跑后锁残留=True`，下次运行会被
   #   自己的锁挡住并报「疑似残留锁」）。`Release-GatesLock` 只删**自己写的**锁（pid 校验）。
