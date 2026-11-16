@@ -37,6 +37,7 @@
 | `HANDOVER-2026-11-02.md` | 0 | 单会话时间点交接快照：全仓审查/MD 校订批次（`2a7d354`/`bbfde16` 已推送）、HEIC grid 增益图修复批次（`41375a2`，含 §1d 判据与变异 I 登记）、§3.10 **批次 D 六项收口**（含第三方 GainMap 语料与取向探针取数口径）；累积账本仍看 `HANDOVER.md`。⚠ **语料路径已迁**：原文记的仓外 `C:\PLAN\gainmap-corpora\` 目录已删（2026-11-03 工作区边界立规，见 §3.10 与仓内 `AGENTS.md §1`），现落 `tests/output/corpus/gainmap-iso21496/`（3 件，整树 gitignore，永不随仓分发） |
 | `HANDOVER-NET11-GA-PACKAGING-2026-11-11.md` | 0（新，2026-11-12 登记） | .NET 11 GA 升级收尾 + 出包任务的交接快照（前会话 11-11 23:2x 停止点）：GA SDK 状态、AOT 步骤与五项验收清单、风险与坑；接手批进展见该文 §8（AOT 已验收、代表门禁 GA 下全绿、版本裁定 1.6.0-rc.1、出包顺延至测试模块化批后）。位置可动，暂不进归档 |
 | `HANDOVER-TEST-MODULE-BATCH5-2026-11-12.md` | 0（新，2026-11-12） | 测试模块化批 5·死支处置 + 覆盖探针 fullrun 证据链的交接/收口快照：死支三删一留、⑥-d 回归根因（union 表键经 varMap 注入）与实参元素修法、40/0 战况；后续批（索引生成 / C4 超时表）指针在 §4。位置可动，暂不进归档 |
+| `RELEASE_GATES.md` | 2（新，2026-11-16 登记） | **出包前红态闸**：红态禁止发布、按链路选必跑门禁、机读清单 `tests/output/release-gates.json` 格式、`_release-gate-check.ps1` fail-closed 对账、§6 版本与 tag 纪律（同版本重出须显式标注"重出/源提交/与 tag 1.6.0BETA17 内容不同"；§8.1 冲突待用户拍板豁免）。被 `tests/scripts/_release-gate-check.ps1:32,76` 按路径指它 ⇒ **承重，位置固定** |
 
 ## 2. 分批审查（`review-YYYY-MM-DD/`，被门禁按名点名，位置固定）
 
