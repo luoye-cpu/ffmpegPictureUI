@@ -175,6 +175,32 @@ UI 三把尺：`verify-ui-host` 五件 **84+59+89+169+72 = 473**；`verify-ui-pa
 - `verify-color-engine-xcheck` 的库侧 `ColorGainKit` 已修（grid 候选/载荷 + 21 字段对撞 + 3 条正控）；
   跨仓改动仍须在 `C:\PLAN\ColorGainKit` 维护。
 
+**更正条目（2026-11-16，48h 变更审查 `a9e2830..957cfa8` 收口；旧读数不回改，以本节为准）**
+
+1. **AVIF 静态出口现在写 ICC（自 `928ec89`/beta15 起）**：`ColorIntentFactory.ExitWritesIccFor(fmt)` 现值
+   `=> fmt is not "webm"`（旧值是 `fmt is not ("avif" or "webm")`）。AVIF 静态出口在默认/libaom 通路下**经 avifenc
+   同写 `--icc` 与 `--cicp`**（ICC+CICP 双写）；`ExitWritesIcc = ExitWritesIccFor(fmt) && (fmt != "avif" || AvifIccExitAvailable(编码器))`，
+   即**显式选择硬件 AV1 编码器（SVT/NVENC/QSV/AMF）时仍不写 ICC**（装配层置 false，不静默换编码器）。
+   ⇒ 旧口径「AVIF 静态出口写不进 ICC / 可 CICP 命名即零改动携带 / 不可命名即 exit 91 零产物」**现仅适用于 webm**。
+   实测锚：`tests/output/_tmp/review-2026-11-16/color/out/avif-rec/a2_srgb_p3.avif` 中 nclx（SMPTE EG432-1/sRGB/Identity/Full）
+   与 v4.4 ICC（P3/sRGB）**并存且逐值一致**，avifenc 命令行含 `--cicp 12/13/0 --icc …stdbuilt_smpte432_iec61966-2-1.v44cicp.icc`。
+   仍写旧口径的带日期账本（**不回改，此条为准**）：`docs/review-2026-11-14/COLOR_ANNOTATION_PRIORITY.md`、
+   `…/COLOR_MATRIX_IO_ANALYSIS_2026-11-14.md`、`…/COLOR_MATRIX_IO_FIX_PLAN_2026-11-14.md`、
+   `…/COLOR_UI_LINKAGE_AUDIT.md`、`…/ICC_VERSION_COMPARISON.md`、
+   `docs/review-2026-11-15/COLOR_MATRIX_IO_ANALYSIS_2026-11-15.md`（§37-38 自相矛盾）、
+   `…/ICC_STANDARD_AUDIT_2026-11-15.md`。
+
+2. **UI 三把尺现值 = 487（不是 473）**：`verify-ui-host` 五件臂 **84+59+103+169+72 = 487**，
+   `verify-ui-split-union` 的 `$expectedOldCount` 与 `_module-registry.json` locks（`ui-host-arms=487`{84,59,103,169,72}、
+   `ui-split-union=487`、`param-matrix-j=126`）同批一致。本节上文旧文「84+59+89+169+72=473 / split-union 473」是
+   **2026-11-13 快照**（I11/I12 批把 ui-color 89→103、合计 473→487，2026-11-14 抬表）。另：`verify-ui-split-union`
+   当前 7P/4F 的定性是**旧参照宿主 GroupP 测量失效**（裸开窗未预置工具路径稳态 ⇒ P1 拿 0 条 `[detect]` 行、早返回吞 P2-P5），
+   非口径漂移、非产品回归（详见 `docs/review-2026-11-16/review-evidence/05-gates-docs-report.md` §1）。
+
+3. **`FFMPEGGUI_FFMPEG_DIR` / `FFMPEGGUI_PLAN_DIR` 的正斜杠归一化已在基线代码里做了**（`AppSettingsService.Norm()`
+   = `Path.GetFullPath(v)`，对 `FFMPEG_DIR` 等环境变量逐项调用；`PlatformServices` 的 PLAN_DIR 同款）。
+   ⇒ 本节上文 line「产品侧归一化仍是未了结 / 正斜杠产品侧归一化未做」**已核实、可从待办划掉**（runner 侧 Join-Path 之外，产品侧本身已归一）。
+
 ## 8. Git 历史纪律（2026-11-02 立规）
 
 **历史本体不回写**：共享史已推送，且全仓账本/日志按提交哈希绑定读数——改写历史 = 在册读数全部变悬空指针。以下规矩只管未来：
