@@ -1,0 +1,166 @@
+PLAN dir = C:\PLAN\ffmpegPictureUI\publish\PLAN
+tools-root=C:\PLAN\ffmpegPictureUI
+[dngtool] unknown option: --version
+[dngtool] unknown option: --version
+[dngtool] unknown option: --version
+Usage: C:\PLAN\ffmpegPictureUI\publish\PLAN\jxl\bin\cjpegli.exe INPUT OUTPUT [OPTIONS...]
+ INPUT
+    the input can be PPM, PNM, PFM, PAM, PGX, PNG, APNG
+ OUTPUT
+    the compressed JPEG output file
+ -d maxError, --distance=maxError
+    Max. butteraugli distance, lower = higher quality.
+    1.0 = visually lossless (default).
+    Recommended range: 0.5 .. 3.0. Allowed range: 0.0 ... 25.0.
+    Mutually exclusive with --quality and --target_size.
+ -q QUALITY, --quality=QUALITY
+    Quality setting (is remapped to --distance).    Default is quality 90.
+    Quality values roughly match libjpeg quality.
+    Recommended range: 68 .. 96. Allowed range: 1 .. 100.
+    Mutually exclusive with --distance and --target_size.
+ --chroma_subsampling=444|440|422|420
+    Chroma subsampling setting.
+ -p N, --progressive_level=N
+    Progressive level setting. Range: 0 .. 2.
+    Default: 2. Higher number is more scans, 0 means sequential.
+ -v, --verbose
+    Verbose output; can be repeated, also applies to help (!).
+
+ -h, --help
+    Prints this help message. Add -v (up to a total of 2 times) to see more options.
+
+########## E组: 简洁模式 ##########
+[PASS] E1 简洁面板可见
+[PASS] E1b 完整面板隐藏
+[PASS] E2 预设下拉存在
+[PASS] E2b 自动编码开关存在
+[PASS] E3 完整面板恢复
+[PASS] E3b 简洁面板隐藏
+[PASS] E4a 预设表含 GIF 与 PNG 条目
+⚠ [jpeg] --lossless true ignored: the mjpeg encoder is lossy, so the output is lossy. The only lossless JPEG path here is DNG container compression (--format dng --dng-compression 0).
+⚠ [jpeg] --lossless true ignored: the mjpeg encoder is lossy, so the output is lossy. The only lossless JPEG path here is DNG container compression (--format dng --dng-compression 0).
+⚠ [jpeg] --lossless true ignored: the mjpeg encoder is lossy, so the output is lossy. The only lossless JPEG path here is DNG container compression (--format dng --dng-compression 0).
+⚠ [jpeg] --lossless true ignored: the mjpeg encoder is lossy, so the output is lossy. The only lossless JPEG path here is DNG container compression (--format dng --dng-compression 0).
+⚠ [jpeg] --lossless true ignored: the mjpeg encoder is lossy, so the output is lossy. The only lossless JPEG path here is DNG container compression (--format dng --dng-compression 0).
+⚠ [jpeg] --lossless true ignored: the mjpeg encoder is lossy, so the output is lossy. The only lossless JPEG path here is DNG container compression (--format dng --dng-compression 0).
+⚠ [jpeg] --lossless true ignored: the mjpeg encoder is lossy, so the output is lossy. The only lossless JPEG path here is DNG container compression (--format dng --dng-compression 0).
+⚠ [jpeg] --lossless true ignored: the mjpeg encoder is lossy, so the output is lossy. The only lossless JPEG path here is DNG container compression (--format dng --dng-compression 0).
+⚠ [jpeg] --lossless true ignored: the mjpeg encoder is lossy, so the output is lossy. The only lossless JPEG path here is DNG container compression (--format dng --dng-compression 0).
+[PASS] E4b GIF 预设把模式推到动图
+[PASS] E4c GIF 预设确实选中 GIF 格式
+[PASS] E4d PNG 预设把模式拉回静态
+[PASS] E4e 快照还原后模式与格式回到应用前
+[PASS] E5a 第二套预设→选项映射已移除
+[PASS] E5b 控件→FfmpegOptions 采集点唯一
+[PASS] E5c 采集点被入队与两条预览共用
+[PASS] E5d 文件选择入队走 AddSingleToQueue
+[PASS] E5e 拖放入队走 AddSingleToQueue
+[PASS] E6a 旧预设的 AnimationLoop 解析为空
+[PASS] E6b 旧预设不得把循环框写成 -1
+[PASS] E6c 旧预设不得把 fps 框写成数值
+[PASS] E7a 两个列表绑的是同一个集合实例（无第二份内容源）
+[PASS] E7b 第二份已选集合已从产品码移除
+[PASS] E7c 返回完整模式不再做「合并/去重添加」（无 _mediaFiles.Add）
+[PASS] E7d 覆盖层计数标签反映共享集合
+[PASS] E7e 覆盖层的清空动的是同一份集合
+[PASS] E8a 回显含当前格式的显示串
+[PASS] E8b 回显含当前转换模式的显示串
+[PASS] E8c 回显以本地化标题开头（不是硬编码中文）
+[PASS] E8d 没应用过预设时不喊不一致（防假警报）
+[PASS] E8e 刚应用完预设 ⇒ 与预设一致，不喊不一致
+[PASS] E8f 改掉质量后回显点名不一致
+
+########## F组: 后台/隐藏可见性 ##########
+[PASS] F1 隐藏后不可见
+[PASS] F1b 恢复显示
+
+########## G组: GUI驱动端到端真实转换 ##########
+[PASS] G1 PNG端到端产物
+ffmpeg version git-2026-10-11-edadf711a9 Copyright (c) 2000-2026 the FFmpeg developers
+  built with clang version 23.1.3 (https://github.com/llvm/llvm-project.git 0d261d1ca552c95a8f007e061c787ac7132fbcbc)
+  configuration: --prefix=/home/dominic/ffmpeg/bin --bindir=/home/dominic/ffmpeg/bin/bin --arch=x86_64 --target-os=mingw32 --cross-prefix=x86_64-w64-mingw32- --enable-cross-compile --cc=/usr/local/llvm-mingw/bin/x86_64-w64-mingw32-clang --cxx=/usr/local/llvm-mingw/bin/x86_64-w64-mingw32-clang++ --ld=/home/dominic/ffmpeg/bin/bin/atw_ldwrapper --ar=/usr/local/llvm-mingw/bin/llvm-ar --ranlib=/usr/local/llvm-mingw/bin/llvm-ranlib --pkg-config=/usr/bin/pkg-config --pkg-config-flags=--static --optflags='-O3 -pipe -DNDEBUG -funwind-tables -fexceptions -finline-functions -march=x86-64-v3 -mtune=generic -ffunction-sections -fdata-sections -mguard=cf' --extra-cflags='-I/home/dominic/ffmpeg/bin/include -DLIBTWOLAME_STATIC -I/usr/local/cuda/include -I/usr/local/cuda/targets/x86_64-linux/include' --extra-cxxflags='-O3 -pipe -DNDEBUG -funwind-tables -fexceptions -finline-functions -march=x86-64-v3 -mtune=generic -ffunction-sections -fdata-sections -mguard=cf' --extra-ldflags='-L/home/dominic/ffmpeg/bin/lib -Wl,--gc-sections -Wl,/guard:cf -fuse-ld=lld' --extra-libs=' -lvulkan-1 -lpthread' --disable-autodetect --enable-gpl --enable-nonfree --enable-version3 --enable-w32threads --disable-pthreads --disable-static --enable-shared --disable-debug --disable-doc --enable-ffplay --enable-sdl2 --enable-ffprobe --enable-ffmpeg --enable-ffnvcodec --disable-cuvid --disable-decoder=libdavs2 --disable-decoder=libuavs3d --disable-encoder=libxavs --disable-encoder=libxavs2 --enable-nvenc --enable-nvdec --enable-libopus --enable-libass --enable-libfreetype --enable-libharfbuzz --enable-libfontconfig --enable-libfribidi --enable-libzimg --enable-libwebp --enable-libjxl --enable-libjxr --enable-libdav1d --enable-libsvtav1 --enable-libvpl --enable-libx264 --enable-libx265 --enable-libvmaf --enable-libvvenc --enable-schannel --enable-d3d11va --enable-d3d12va --enable-mediafoundation --enable-amf --enable-avisynth --enable-dxva2 --enable-vulkan --enable-vulkan-static --glslc=/home/dominic/ffmpeg/build-20261012-full/host-tools/bin/glslc --enable-opencl --enable-opengl --enable-libplacebo --enable-zlib --enable-bzlib --enable-lzma --enable-libxml2 --enable-libmp3lame --enable-libvorbis --enable-libsoxr --enable-libfdk-aac --enable-libaom --enable-libvpx --enable-libopenjpeg --enable-libsrt --enable-librist --enable-libbluray --enable-libaribcaption --enable-lcms2 --enable-librubberband --enable-libvidstab --enable-libssh --enable-libsnappy --enable-libtheora --enable-libspeex --enable-libtwolame --enable-libmysofa --enable-libopenmpt --enable-libdvdread --enable-libdvdnav --enable-chromaprint --enable-libzmq --enable-libzvbi --enable-libgsm --enable-libopencore-amrnb --enable-libopencore-amrwb --enable-libvo-amrwbenc --enable-iconv --enable-audiotoolbox --enable-cuda-nvcc --enable-cuda --disable-cuda-llvm --nvcc=/usr/local/cuda/bin/nvcc --nvccflags='-O3 --extra-device-vectorization --threads=1 -Xptxas=-O3 --use_fast_math -gencode arch=compute_75,code=compute_75' --enable-vapoursynth --enable-encoder=wrapped_avframe --enable-encoder=h264_nvenc --enable-encoder=hevc_nvenc --enable-encoder=av1_nvenc --enable-encoder=hevc_qsv --enable-encoder=av1_qsv --enable-encoder=h264_qsv --enable-encoder=libx264 --enable-encoder=libx265 --enable-encoder=libvvenc --enable-encoder=libmp3lame --enable-encoder=libvorbis --enable-encoder=libfdk_aac --enable-encoder=libvpx_vp8 --enable-encoder=libvpx_vp9 --enable-encoder=aac --enable-encoder=aac_at
+  libavutil      61. 14.100 / 61. 14.100
+  libavcodec     63. 19.101 / 63. 19.101
+  libavformat    63.  8.100 / 63.  8.100
+  libavdevice    63.  2.100 / 63.  2.100
+  libavfilter    12.  5.100 / 12.  5.100
+  libswscale     10.  2.100 / 10.  2.100
+  libswresample   7.  3.101 /  7.  3.101
+Input #0, lavfi, from 'testsrc2=size=6000x4000:rate=1':
+  Duration: N/A, start: 0.000000, bitrate: N/A
+  Stream #0:0: Video: wrapped_avframe, yuv420p, 6000x4000 [SAR 1:1 DAR 3:2], 1 fps, 1 tbr, 1 tbn
+Stream mapping:
+  Stream #0:0 -> #0:0 (wrapped_avframe (native) -> png (native))
+Press [q] to stop, [?] for help
+Output #0, image2, to 'C:\PLAN\ffmpegPictureUI\tests\output\_tmp\uitesthost_39fba1ec25194a9994641d92312cb729\g2_in.png':
+  Metadata:
+    encoder         : Lavf63.8.100
+  Stream #0:0: Video: png, rgb24(pc, gbr/unknown/unknown, progressive), 6000x4000 [SAR 1:1 DAR 3:2], q=2-31, 200 kb/s, 1 fps, 1 tbn
+    Metadata:
+      encoder         : Lavc63.19.101 png
+[image2 @ 0000026254622b00] The specified filename 'C:\PLAN\ffmpegPictureUI\tests\output\_tmp\uitesthost_39fba1ec25194a9994641d92312cb729\g2_in.png' does not contain an image sequence pattern or a pattern is invalid.
+[image2 @ 0000026254622b00] Use a pattern such as %03d for an image sequence or use the -update option (with -frames:v 1 if needed) to write a single image.
+[out#0/image2 @ 000002625461ce40] video:2175KiB audio:0KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: unknown
+frame=    1 fps=0.0 q=-0.0 Lsize=N/A time=00:00:01.00 bitrate=N/A speed=2.04x elapsed=0:00:00.49    
+[PASS] G2 前置 24MP 输入
+[PASS] G2 停止前工作子进程在跑
+[PASS] G2 停止后状态=已停止
+[PASS] G2 ffmpeg/oxipng 子进程已死
+[PASS] G2 无半截产物
+[PASS] G2 队列无已完成项
+ffmpeg version git-2026-10-11-edadf711a9 Copyright (c) 2000-2026 the FFmpeg developers
+  built with clang version 23.1.3 (https://github.com/llvm/llvm-project.git 0d261d1ca552c95a8f007e061c787ac7132fbcbc)
+  configuration: --prefix=/home/dominic/ffmpeg/bin --bindir=/home/dominic/ffmpeg/bin/bin --arch=x86_64 --target-os=mingw32 --cross-prefix=x86_64-w64-mingw32- --enable-cross-compile --cc=/usr/local/llvm-mingw/bin/x86_64-w64-mingw32-clang --cxx=/usr/local/llvm-mingw/bin/x86_64-w64-mingw32-clang++ --ld=/home/dominic/ffmpeg/bin/bin/atw_ldwrapper --ar=/usr/local/llvm-mingw/bin/llvm-ar --ranlib=/usr/local/llvm-mingw/bin/llvm-ranlib --pkg-config=/usr/bin/pkg-config --pkg-config-flags=--static --optflags='-O3 -pipe -DNDEBUG -funwind-tables -fexceptions -finline-functions -march=x86-64-v3 -mtune=generic -ffunction-sections -fdata-sections -mguard=cf' --extra-cflags='-I/home/dominic/ffmpeg/bin/include -DLIBTWOLAME_STATIC -I/usr/local/cuda/include -I/usr/local/cuda/targets/x86_64-linux/include' --extra-cxxflags='-O3 -pipe -DNDEBUG -funwind-tables -fexceptions -finline-functions -march=x86-64-v3 -mtune=generic -ffunction-sections -fdata-sections -mguard=cf' --extra-ldflags='-L/home/dominic/ffmpeg/bin/lib -Wl,--gc-sections -Wl,/guard:cf -fuse-ld=lld' --extra-libs=' -lvulkan-1 -lpthread' --disable-autodetect --enable-gpl --enable-nonfree --enable-version3 --enable-w32threads --disable-pthreads --disable-static --enable-shared --disable-debug --disable-doc --enable-ffplay --enable-sdl2 --enable-ffprobe --enable-ffmpeg --enable-ffnvcodec --disable-cuvid --disable-decoder=libdavs2 --disable-decoder=libuavs3d --disable-encoder=libxavs --disable-encoder=libxavs2 --enable-nvenc --enable-nvdec --enable-libopus --enable-libass --enable-libfreetype --enable-libharfbuzz --enable-libfontconfig --enable-libfribidi --enable-libzimg --enable-libwebp --enable-libjxl --enable-libjxr --enable-libdav1d --enable-libsvtav1 --enable-libvpl --enable-libx264 --enable-libx265 --enable-libvmaf --enable-libvvenc --enable-schannel --enable-d3d11va --enable-d3d12va --enable-mediafoundation --enable-amf --enable-avisynth --enable-dxva2 --enable-vulkan --enable-vulkan-static --glslc=/home/dominic/ffmpeg/build-20261012-full/host-tools/bin/glslc --enable-opencl --enable-opengl --enable-libplacebo --enable-zlib --enable-bzlib --enable-lzma --enable-libxml2 --enable-libmp3lame --enable-libvorbis --enable-libsoxr --enable-libfdk-aac --enable-libaom --enable-libvpx --enable-libopenjpeg --enable-libsrt --enable-librist --enable-libbluray --enable-libaribcaption --enable-lcms2 --enable-librubberband --enable-libvidstab --enable-libssh --enable-libsnappy --enable-libtheora --enable-libspeex --enable-libtwolame --enable-libmysofa --enable-libopenmpt --enable-libdvdread --enable-libdvdnav --enable-chromaprint --enable-libzmq --enable-libzvbi --enable-libgsm --enable-libopencore-amrnb --enable-libopencore-amrwb --enable-libvo-amrwbenc --enable-iconv --enable-audiotoolbox --enable-cuda-nvcc --enable-cuda --disable-cuda-llvm --nvcc=/usr/local/cuda/bin/nvcc --nvccflags='-O3 --extra-device-vectorization --threads=1 -Xptxas=-O3 --use_fast_math -gencode arch=compute_75,code=compute_75' --enable-vapoursynth --enable-encoder=wrapped_avframe --enable-encoder=h264_nvenc --enable-encoder=hevc_nvenc --enable-encoder=av1_nvenc --enable-encoder=hevc_qsv --enable-encoder=av1_qsv --enable-encoder=h264_qsv --enable-encoder=libx264 --enable-encoder=libx265 --enable-encoder=libvvenc --enable-encoder=libmp3lame --enable-encoder=libvorbis --enable-encoder=libfdk_aac --enable-encoder=libvpx_vp8 --enable-encoder=libvpx_vp9 --enable-encoder=aac --enable-encoder=aac_at
+  libavutil      61. 14.100 / 61. 14.100
+  libavcodec     63. 19.101 / 63. 19.101
+  libavformat    63.  8.100 / 63.  8.100
+  libavdevice    63.  2.100 / 63.  2.100
+  libavfilter    12.  5.100 / 12.  5.100
+  libswscale     10.  2.100 / 10.  2.100
+  libswresample   7.  3.101 /  7.  3.101
+Input #0, lavfi, from 'testsrc2=size=6000x4000:rate=1':
+  Duration: N/A, start: 0.000000, bitrate: N/A
+  Stream #0:0: Video: wrapped_avframe, yuv420p, 6000x4000 [SAR 1:1 DAR 3:2], 1 fps, 1 tbr, 1 tbn
+Stream mapping:
+  Stream #0:0 -> #0:0 (wrapped_avframe (native) -> bmp (native))
+Press [q] to stop, [?] for help
+Output #0, image2, to 'C:\PLAN\ffmpegPictureUI\tests\output\_tmp\uitesthost_39fba1ec25194a9994641d92312cb729\g2b_in.bmp':
+  Metadata:
+    encoder         : Lavf63.8.100
+  Stream #0:0: Video: bmp, bgr24(pc, gbr/unknown/unknown, progressive), 6000x4000 [SAR 1:1 DAR 3:2], q=2-31, 200 kb/s, 1 fps, 1 tbn
+    Metadata:
+      encoder         : Lavc63.19.101 bmp
+[image2 @ 0000028150167a40] The specified filename 'C:\PLAN\ffmpegPictureUI\tests\output\_tmp\uitesthost_39fba1ec25194a9994641d92312cb729\g2b_in.bmp' does not contain an image sequence pattern or a pattern is invalid.
+[image2 @ 0000028150167a40] Use a pattern such as %03d for an image sequence or use the -update option (with -frames:v 1 if needed) to write a single image.
+[out#0/image2 @ 00000281501665c0] video:70313KiB audio:0KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: unknown
+frame=    1 fps=0.0 q=-0.0 Lsize=N/A time=00:00:01.00 bitrate=N/A speed=7.42x elapsed=0:00:00.13    
+[PASS] G2b 前置 24MP BMP 输入
+[PASS] G2b 选中 cjpegli 编码器
+[PASS] G2b 管道工作子进程在跑
+[PASS] G2b 管道停止后状态=已停止(IsStopped 真)
+[PASS] G2c 前置小输入存在
+[PASS] G2c 找到「完成当前队列后停止」复选框
+[PASS] G2c 队列跑完后 IsRunning=false
+[PASS] O1 待测值与默认值不同（反控：否则 O2/O3 恒真）
+[PASS] O2a 开 GainMap 后目标色域保持
+[PASS] O2b 开 GainMap 后位深保持
+[PASS] O2c 开 GainMap 后质量保持
+[PASS] O3a 关 GainMap 后目标色域保持
+[PASS] O3b 关 GainMap 后位深保持
+[PASS] O3c 关 GainMap 后质量保持
+[PASS] O4 前置：三项已置成与默认不同的待测值（反控，否则本组恒真）
+[PASS] O4a 晚到刷新后目标色域保持
+[PASS] O4b 晚到刷新后位深保持
+[PASS] O4c 晚到刷新后质量保持
+[PASS] O5a 晚到的编码器列表刷新后所选后端保持
+[PASS] O5b 命令里的 -c:v 仍是所选后端
+[PASS] O6a 下拉恰好三档
+[PASS] O6b 默认档 = iso（索引 0）
+[PASS] O6c iso 档下 RGB 可选且已选中（反控）
+[PASS] O6d xmp 档不锁增益图类型（RGB 仍可选）
+[PASS] O6e 采集：xmp 与 RGB 同时落进预设快照
+[PASS] O6f both 档 RGB 可选
+[PASS] O6g both 档下 RGB 与 both 一起采集到
+
+===== UI 测试汇总: 66 PASS / 0 FAIL =====
+PROBE RESULT: pass=66 fail=0

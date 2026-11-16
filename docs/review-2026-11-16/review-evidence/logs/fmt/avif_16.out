@@ -1,0 +1,68 @@
+正在检测外部工具...
+  ffmpeg: ✅ [app-adjacent]
+  cjxl: ✅ [manual]
+  djxl: ✅ [manual]
+  cjpegli: ✅ [manual]
+  exiftool: ✅ [manual]
+  JxrEncApp: ✅ [manual]
+  avifenc: ✅ [manual]
+  dngtool: ✅ [PLAN]
+正在准备任务队列...
+找到 1 个输入文件，开始处理...
+[1/1] src16.png → 待处理
+[1/1] src16.png → 处理中
+[1/1] src16.png → 处理中
+[色彩引擎] 决策：None 色彩损失=None｜源描述置信度低（CodecDefault，按惯例假定）→ 不改像素；仅保证标注不缺位；该容器不接受未标注按 sRGB 解读 ⇒ 生成标准 sRGB ICC（avif，ICC-only）
+[1/1] src16.png → 处理中
+[avif16] 已由 sato 兑现 16-bit；移除规划层“出口降为 12bit”的降级播报
+[1/1] src16.png → 处理中
+[avif16] 16-bit AVIF 出口：avifenc --depth 12,4（sato + dimg 双 item）
+[1/1] src16.png → 处理中
+[avif] 计划要求附 ICC：静态 AVIF 改由 avifenc 编码（--icc 与 --cicp 同写，ffmpeg/libaom 单程写不进 ICC）
+[1/1] src16.png → 处理中
+[色彩裁决] 裁决=Proceed
+[1/1] src16.png → 处理中
+[色彩] ffmpeg -y -hide_banner -loglevel error -i "C:\PLAN\ffmpegPictureUI\tests\output\_tmp\review-2026-11-16\fmt\src16.png" -frames:v 1 -vf "format=rgb48le" -f rawvideo "C:\PLAN\ffmpegPictureUI\tests\output\_tmp\review-2026-11-16\fmt\tmp\cms_85ae0265bddb4cdfb1a00319a8525c2a.rgb48"
+[1/1] src16.png → 处理中
+[色彩] 源=?（-） 目标=auto（看齐源）
+[色彩] 源描述置信度低（CodecDefault，按惯例假定）→ 不改像素；仅保证标注不缺位；该容器不接受未标注按 sRGB 解读 ⇒ 生成标准 sRGB ICC（avif，ICC-only）
+[色彩] tier=S dop=1 tileRows=整帧 stream=off frame=0MB 变换耗时 2ms 吞吐 3.1 MPix/s
+[1/1] src16.png → 处理中
+[色彩] ffmpeg -y -hide_banner -loglevel error -f rawvideo -pix_fmt rgb48le -video_size 96x64 -i "C:\PLAN\ffmpegPictureUI\tests\output\_tmp\review-2026-11-16\fmt\tmp\cms_85ae0265bddb4cdfb1a00319a8525c2a.rgb48.out" -pix_fmt rgb48be -compression_level 0 "C:\PLAN\ffmpegPictureUI\tests\output\_tmp\review-2026-11-16\fmt\tmp\avif_d2a69afd62364e448457acc760363e63.png"
+[1/1] src16.png → 处理中
+[avif] avifenc --depth 12,4 -q 75 --cicp 1/13/0 --icc "C:\PLAN\ffmpegPictureUI\tests\output\_tmp\review-2026-11-16\fmt\tmp\stdbuilt_bt709_iec61966-2-1.v44cicp.icc" -y 444 -s 6 "C:\PLAN\ffmpegPictureUI\tests\output\_tmp\review-2026-11-16\fmt\tmp\avif_d2a69afd62364e448457acc760363e63.png" -o "C:\PLAN\ffmpegPictureUI\tests\output\_tmp\review-2026-11-16\fmt\avif_16\src16.avif"
+[1/1] src16.png → 处理中
+[色彩] avifenc --depth 12,4 -q 75 --cicp 1/13/0 --icc "C:\PLAN\ffmpegPictureUI\tests\output\_tmp\review-2026-11-16\fmt\tmp\stdbuilt_bt709_iec61966-2-1.v44cicp.icc" -y 444 -s 6 "C:\PLAN\ffmpegPictureUI\tests\output\_tmp\review-2026-11-16\fmt\tmp\avif_d2a69afd62364e448457acc760363e63.png" -o "C:\PLAN\ffmpegPictureUI\tests\output\_tmp\review-2026-11-16\fmt\avif_16\src16.avif"
+[1/1] src16.png → 处理中
+[色彩引擎] ✅ 96x64 变换 2ms（解码 61ms／编码 128ms，0.0 MPix/s）
+[1/1] src16.png → 已完成
+[exiftool] 从源文件恢复元数据（安全模式：编码器保护，不覆盖色彩标签）...
+[1/1] src16.png → 已完成
+[2/1] src16.png → 已完成
+[exiftool] 安全复制元数据（已排除色彩标签，保护编码器输出）: src16.png → src16.avif
+[2/1] src16.png → 已完成
+0 image files updated
+    1 image files unchanged
+[2/1] src16.png → 已完成
+Warning: No writable tags set from C:\PLAN\ffmpegPictureUI\tests\output\_tmp\review-2026-11-16\fmt\src16.png
+[2/1] src16.png → 已完成
+[exiftool] ⚠️ 本次复制 **0 项落地**（exiftool 报「0 image files updated」而退出码 0） ⇒ 产物 src16.avif 未携带源元数据（不是「复制成功」）
+[2/1] src16.png → 已完成
+[exiftool] 元数据恢复完成
+[exiftool] 嵌入 ICC Profile: stdbuilt_bt709_iec61966-2-1.v44cicp.icc → src16.avif
+[2/1] src16.png → 已完成
+Failed to load Perl DLL "perl532.dll" code 126
+[2/1] src16.png → 已完成
+[exiftool] ICC 嵌入第 1 次 rc=1，重试（区分 Perl 运行时抖动与容器拒绝）
+[2/1] src16.png → 已完成
+Failed to load Perl DLL "perl532.dll" code 126
+[2/1] src16.png → 已完成
+[exiftool] ICC 嵌入第 2 次 rc=1，重试（区分 Perl 运行时抖动与容器拒绝）
+[2/1] src16.png → 已完成
+1 image files updated
+[2/1] src16.png → 已完成
+[色彩引擎] 已嵌入目标 ICC（bt709/iec61966-2-1），与引擎转换后的像素一致
+[2/1] src16.png → 已完成
+[色彩] AVIF ICC 已随 avifenc 编码写入 ⇒ 跳过 exiftool 后置 ICC
+[2/1] src16.png → 已完成
+═══ 队列处理完毕 — 完成 1 项, 失败 0 项

@@ -1,0 +1,13 @@
+gates-lock=C:\PLAN\ffmpegPictureUI/tests/output/.gates.lock (pid=12420)
+env-cleaned=LC_ALL,LANG,LC_CTYPE (exiftool 的 perl locale warning 源头掐掉；本轮起有效)
+env-temp-before=C:\PLAN\ffmpegPictureUI\tests\output\_tmp\review-2026-11-16\gate\tmp | C:\PLAN\ffmpegPictureUI\tests\output\_tmp\review-2026-11-16\gate\tmp
+env-temp-pinned=C:\PLAN\ffmpegPictureUI/tests/output/_tmp/round-tmp (TMP/TEMP/TMPDIR；子进程继承 ⇒ 不再写系统临时目录)
+env-temp-writable=OK
+[gate] exe=C:\PLAN\ffmpegPictureUI/tests/projects/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.exe (Release)
+probe-host=C:\PLAN\ffmpegPictureUI/tests/projects/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.exe
+[STALE] 被执行的产物缺失或比它的源码旧，拒绝跑（否则结论不可信）
+        FfmpegGui.dll 2026/11/16 13:33:36 < src 2026/11/16 13:49:13（FfmpegGui.csproj）
+        重建（同批、各自 -c Release）：src/FfmpegGui | tests/projects/ServiceProbe | tests/projects/UiTestHost | tests/projects/GainMapTestHost | tests/gainmap-{encode,decode,struct} | tests/projects/ui-{core,mode,color,sweep,cli}
+        ⚠ tests/projects/GainMapTestHost 自 2026-09-30 起**已进闸**（清单第 60 条 erify-gainmap-host.ps1 + 上面第 ⑤ 对）
+        ⚠ 三段拆分件（Tests.GainMap{Encode,Decode,Struct}.exe）自 2026-10-16 起进闸（第 ⑥⑦⑧ 对；§4b 执行它们）
+        ⚠ 五个 UI 拆分件（Tests.Ui{Core,Mode,Color,Sweep,Cli}.exe）自 2026-10-31 起进闸（第 ⑨–⑬ 对；5 条 UI 门禁执行它们）

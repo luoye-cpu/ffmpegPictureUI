@@ -1,0 +1,139 @@
+正在检测外部工具...
+  ffmpeg: ✅ [app-adjacent]
+  cjxl: ✅ [manual]
+  djxl: ✅ [manual]
+  cjpegli: ✅ [manual]
+  exiftool: ✅ [manual]
+  JxrEncApp: ✅ [manual]
+  avifenc: ✅ [manual]
+  dngtool: ✅ [PLAN]
+正在准备任务队列...
+找到 1 个输入文件，开始处理...
+[1/1] synth_heic_grid_aux_noxmp.heic → 待处理
+[1/1] synth_heic_grid_aux_noxmp.heic → 处理中
+[1/1] synth_heic_grid_aux_noxmp.heic → 处理中
+[GainMap解码] 检测到 Apple aux 增益图（form=aux-apple-hdrgainmap，grid 2x2（4 瓦片，整幅 128x96）），方向为「SDR 底图 → HDR」（Apple/厂商公式族）
+[UltraHDR] 检测到 AVIF/HEIC 增益图（ISO-BMFF tmap 项），GainMapDecoder 应用增益图恢复 HDR...
+[1/1] synth_heic_grid_aux_noxmp.heic → 处理中
+[GainMap解码] AppleMakerNote tag 读数：HDRHeadroom(33)=缺失 HDRGain(48)=缺失
+[1/1] synth_heic_grid_aux_noxmp.heic → 处理中
+[GainMap解码] AppleMakerNote 无有效余量（tag33/48 缺失或为 0）⇒ 尝试 Apple HDRGainMap XMP
+[1/1] synth_heic_grid_aux_noxmp.heic → 处理中
+❌ [GainMap解码] ❌ 无法读取增益图元数据 (无 ISO 21496-1, 且 exiftool/hdrgm XMP 不可用)
+[1/1] synth_heic_grid_aux_noxmp.heic → 处理中
+[UltraHDR] ⚠️ 增益图应用失败，按 SDR 基础图处理
+[1/1] synth_heic_grid_aux_noxmp.heic → 处理中
+[色彩引擎] 决策：None 色彩损失=None｜源描述置信度低（CodecDefault，按惯例假定）→ 不改像素；仅保证标注不缺位
+[1/1] synth_heic_grid_aux_noxmp.heic → 处理中
+[色彩裁决] 裁决=ProceedWithDegradation
+[1/1] synth_heic_grid_aux_noxmp.heic → 处理中
+[色彩引擎] ⚠️ 降级（UnlabeledAssumedSrgb）：产物无色彩标注，像素按隐含 sRGB 处理（依赖容器/查看器惯例，非显式描述）
+[1/1] synth_heic_grid_aux_noxmp.heic → 处理中
+[色彩引擎] 计划为直通（不改像素）⇒ 本次由 ffmpeg 完成重编码
+[1/1] synth_heic_grid_aux_noxmp.heic → 处理中
+[cmd] ffmpeg -y -color_range tv -i "C:\PLAN\ffmpegPictureUI\tests\data\synth_heic_grid_aux_noxmp.heic" -threads 0 -compression_level 2 -pix_fmt rgb48le -map_metadata 0 -map_metadata:s:v -1 -map_chapters -1 -frames:v 1 "C:\PLAN\ffmpegPictureUI\tests\output\_tmp\review-2026-11-16\fmt\e2e_f3noxmp\synth_heic_grid_aux_noxmp.png"
+[1/1] synth_heic_grid_aux_noxmp.heic → 处理中
+[心跳] 已追加 `-progress pipe:1`（**不改动 [cmd] 行**）；连续 120 秒无进度块 ⇒ 判为挂死
+[1/1] synth_heic_grid_aux_noxmp.heic → 处理中
+ffmpeg version git-2026-10-11-edadf711a9 Copyright (c) 2000-2026 the FFmpeg developers
+[1/1] synth_heic_grid_aux_noxmp.heic → 处理中
+  built with clang version 23.1.3 (https://github.com/llvm/llvm-project.git 0d261d1ca552c95a8f007e061c787ac7132fbcbc)
+[1/1] synth_heic_grid_aux_noxmp.heic → 处理中
+  configuration: --prefix=/home/dominic/ffmpeg/bin --bindir=/home/dominic/ffmpeg/bin/bin --arch=x86_64 --target-os=mingw32 --cross-prefix=x86_64-w64-mingw32- --enable-cross-compile --cc=/usr/local/llvm-mingw/bin/x86_64-w64-mingw32-clang --cxx=/usr/local/llvm-mingw/bin/x86_64-w64-mingw32-clang++ --ld=/home/dominic/ffmpeg/bin/bin/atw_ldwrapper --ar=/usr/local/llvm-mingw/bin/llvm-ar --ranlib=/usr/local/llvm-mingw/bin/llvm-ranlib --pkg-config=/usr/bin/pkg-config --pkg-config-flags=--static --optflags='-O3 -pipe -DNDEBUG -funwind-tables -fexceptions -finline-functions -march=x86-64-v3 -mtune=generic -ffunction-sections -fdata-sections -mguard=cf' --extra-cflags='-I/home/dominic/ffmpeg/bin/include -DLIBTWOLAME_STATIC -I/usr/local/cuda/include -I/usr/local/cuda/targets/x86_64-linux/include' --extra-cxxflags='-O3 -pipe -DNDEBUG -funwind-tables -fexceptions -finline-functions -march=x86-64-v3 -mtune=generic -ffunction-sections -fdata-sections -mguard=cf' --extra-ldflags='-L/home/dominic/ffmpeg/bin/lib -Wl,--gc-sections -Wl,/guard:cf -fuse-ld=lld' --extra-libs=' -lvulkan-1 -lpthread' --disable-autodetect --enable-gpl --enable-nonfree --enable-version3 --enable-w32threads --disable-pthreads --disable-static --enable-shared --disable-debug --disable-doc --enable-ffplay --enable-sdl2 --enable-ffprobe --enable-ffmpeg --enable-ffnvcodec --disable-cuvid --disable-decoder=libdavs2 --disable-decoder=libuavs3d --disable-encoder=libxavs --disable-encoder=libxavs2 --enable-nvenc --enable-nvdec --enable-libopus --enable-libass --enable-libfreetype --enable-libharfbuzz --enable-libfontconfig --enable-libfribidi --enable-libzimg --enable-libwebp --enable-libjxl --enable-libjxr --enable-libdav1d --enable-libsvtav1 --enable-libvpl --enable-libx264 --enable-libx265 --enable-libvmaf --enable-libvvenc --enable-schannel --enable-d3d11va --enable-d3d12va --enable-mediafoundation --enable-amf --enable-avisynth --enable-dxva2 --enable-vulkan --enable-vulkan-static --glslc=/home/dominic/ffmpeg/build-20261012-full/host-tools/bin/glslc --enable-opencl --enable-opengl --enable-libplacebo --enable-zlib --enable-bzlib --enable-lzma --enable-libxml2 --enable-libmp3lame --enable-libvorbis --enable-libsoxr --enable-libfdk-aac --enable-libaom --enable-libvpx --enable-libopenjpeg --enable-libsrt --enable-librist --enable-libbluray --enable-libaribcaption --enable-lcms2 --enable-librubberband --enable-libvidstab --enable-libssh --enable-libsnappy --enable-libtheora --enable-libspeex --enable-libtwolame --enable-libmysofa --enable-libopenmpt --enable-libdvdread --enable-libdvdnav --enable-chromaprint --enable-libzmq --enable-libzvbi --enable-libgsm --enable-libopencore-amrnb --enable-libopencore-amrwb --enable-libvo-amrwbenc --enable-iconv --enable-audiotoolbox --enable-cuda-nvcc --enable-cuda --disable-cuda-llvm --nvcc=/usr/local/cuda/bin/nvcc --nvccflags='-O3 --extra-device-vectorization --threads=1 -Xptxas=-O3 --use_fast_math -gencode arch=compute_75,code=compute_75' --enable-vapoursynth --enable-encoder=wrapped_avframe --enable-encoder=h264_nvenc --enable-encoder=hevc_nvenc --enable-encoder=av1_nvenc --enable-encoder=hevc_qsv --enable-encoder=av1_qsv --enable-encoder=h264_qsv --enable-encoder=libx264 --enable-encoder=libx265 --enable-encoder=libvvenc --enable-encoder=libmp3lame --enable-encoder=libvorbis --enable-encoder=libfdk_aac --enable-encoder=libvpx_vp8 --enable-encoder=libvpx_vp9 --enable-encoder=aac --enable-encoder=aac_at
+[1/1] synth_heic_grid_aux_noxmp.heic → 处理中
+  libavutil      61. 14.100 / 61. 14.100
+[1/1] synth_heic_grid_aux_noxmp.heic → 处理中
+  libavcodec     63. 19.101 / 63. 19.101
+[1/1] synth_heic_grid_aux_noxmp.heic → 处理中
+  libavformat    63.  8.100 / 63.  8.100
+[1/1] synth_heic_grid_aux_noxmp.heic → 处理中
+  libavdevice    63.  2.100 / 63.  2.100
+[1/1] synth_heic_grid_aux_noxmp.heic → 处理中
+  libavfilter    12.  5.100 / 12.  5.100
+[1/1] synth_heic_grid_aux_noxmp.heic → 处理中
+  libswscale     10.  2.100 / 10.  2.100
+[1/1] synth_heic_grid_aux_noxmp.heic → 处理中
+  libswresample   7.  3.101 /  7.  3.101
+[1/1] synth_heic_grid_aux_noxmp.heic → 处理中
+Input #0, mov,mp4,m4a,3gp,3g2,mj2, from 'C:\PLAN\ffmpegPictureUI\tests\data\synth_heic_grid_aux_noxmp.heic':
+[1/1] synth_heic_grid_aux_noxmp.heic → 处理中
+  Metadata:
+[1/1] synth_heic_grid_aux_noxmp.heic → 处理中
+    major_brand     : heic
+[1/1] synth_heic_grid_aux_noxmp.heic → 处理中
+    minor_version   : 0
+[1/1] synth_heic_grid_aux_noxmp.heic → 处理中
+    compatible_brands: mif1heic
+[1/1] synth_heic_grid_aux_noxmp.heic → 处理中
+  Duration: N/A, start: 0.000000, bitrate: N/A
+[1/1] synth_heic_grid_aux_noxmp.heic → 处理中
+  Stream group #0:0[0x3]: Tile Grid: hevc (Main) (hvc1 / 0x31637668), yuv420p(tv), 128x96 [SAR 1:1 DAR 4:3]
+[1/1] synth_heic_grid_aux_noxmp.heic → 处理中
+  Stream #0:0[0x1]: Video: hevc (Main) (hvc1 / 0x31637668), yuv420p(tv), 64x48 [SAR 1:1 DAR 4:3], 1 fps, 1 tbr, 1 tbn (default)
+[1/1] synth_heic_grid_aux_noxmp.heic → 处理中
+Incompatible pixel format 'rgb48le' for codec 'png', auto-selecting format 'rgb48be'
+[1/1] synth_heic_grid_aux_noxmp.heic → 处理中
+Stream mapping:
+[1/1] synth_heic_grid_aux_noxmp.heic → 处理中
+  Stream #0:0 -> #0:0 (hevc (native) -> png (native))
+[1/1] synth_heic_grid_aux_noxmp.heic → 处理中
+Press [q] to stop, [?] for help
+[1/1] synth_heic_grid_aux_noxmp.heic → 处理中
+[swscaler @ 00000121ce009e40] No accelerated colorspace conversion found from yuv420p to rgb48be.
+[1/1] synth_heic_grid_aux_noxmp.heic → 处理中
+[swscaler @ 00000121ce009e40] [swscaler @ 00000121ce016f00] No accelerated colorspace conversion found from yuv420p to rgb48be.
+[1/1] synth_heic_grid_aux_noxmp.heic → 处理中
+[swscaler @ 00000121ce009e40] [swscaler @ 00000121cdf18f80] No accelerated colorspace conversion found from yuv420p to rgb48be.
+[1/1] synth_heic_grid_aux_noxmp.heic → 处理中
+[swscaler @ 00000121ce009e40] [swscaler @ 00000121cdf26000] No accelerated colorspace conversion found from yuv420p to rgb48be.
+[1/1] synth_heic_grid_aux_noxmp.heic → 处理中
+[swscaler @ 00000121ce009e40] [swscaler @ 00000121cdfb00c0] No accelerated colorspace conversion found from yuv420p to rgb48be.
+[1/1] synth_heic_grid_aux_noxmp.heic → 处理中
+[swscaler @ 00000121ce009e40] [swscaler @ 00000121cdfbd140] No accelerated colorspace conversion found from yuv420p to rgb48be.
+[1/1] synth_heic_grid_aux_noxmp.heic → 处理中
+[swscaler @ 00000121ce009e40] [swscaler @ 00000121cdfca200] No accelerated colorspace conversion found from yuv420p to rgb48be.
+[1/1] synth_heic_grid_aux_noxmp.heic → 处理中
+[swscaler @ 00000121ce009e40] [swscaler @ 00000121cdf3f480] No accelerated colorspace conversion found from yuv420p to rgb48be.
+[1/1] synth_heic_grid_aux_noxmp.heic → 处理中
+[swscaler @ 00000121ce009e40] [swscaler @ 00000121cdf4c500] No accelerated colorspace conversion found from yuv420p to rgb48be.
+[1/1] synth_heic_grid_aux_noxmp.heic → 处理中
+[swscaler @ 00000121ce009e40] [swscaler @ 00000121cdf595c0] No accelerated colorspace conversion found from yuv420p to rgb48be.
+[1/1] synth_heic_grid_aux_noxmp.heic → 处理中
+[swscaler @ 00000121ce009e40] [swscaler @ 00000121cdf66640] No accelerated colorspace conversion found from yuv420p to rgb48be.
+[1/1] synth_heic_grid_aux_noxmp.heic → 处理中
+[swscaler @ 00000121ce009e40] [swscaler @ 00000121ce060f00] No accelerated colorspace conversion found from yuv420p to rgb48be.
+[1/1] synth_heic_grid_aux_noxmp.heic → 处理中
+[swscaler @ 00000121ce009e40] [swscaler @ 00000121ce06dfc0] No accelerated colorspace conversion found from yuv420p to rgb48be.
+[1/1] synth_heic_grid_aux_noxmp.heic → 处理中
+[1/1] synth_heic_grid_aux_noxmp.heic → 处理中
+Output #0, image2, to 'C:\PLAN\ffmpegPictureUI\tests\output\_tmp\review-2026-11-16\fmt\e2e_f3noxmp\synth_heic_grid_aux_noxmp.png':
+[心跳] ffmpeg 进度收尾（progress=end）
+[1/1] synth_heic_grid_aux_noxmp.heic → 处理中
+  Metadata:
+[1/1] synth_heic_grid_aux_noxmp.heic → 处理中
+    encoder         : Lavf63.8.100
+[1/1] synth_heic_grid_aux_noxmp.heic → 处理中
+  Stream #0:0: Video: png, rgb48be(pc, gbr/unknown/unknown, progressive), 64x48 [SAR 1:1 DAR 4:3], q=2-31, 200 kb/s, 1 fps, 1 tbn (default)
+[1/1] synth_heic_grid_aux_noxmp.heic → 处理中
+    Metadata:
+[1/1] synth_heic_grid_aux_noxmp.heic → 处理中
+      encoder         : Lavc63.19.101 png
+[1/1] synth_heic_grid_aux_noxmp.heic → 处理中
+[image2 @ 00000121cdf18100] The specified filename 'C:\PLAN\ffmpegPictureUI\tests\output\_tmp\review-2026-11-16\fmt\e2e_f3noxmp\synth_heic_grid_aux_noxmp.png' does not contain an image sequence pattern or a pattern is invalid.
+[1/1] synth_heic_grid_aux_noxmp.heic → 处理中
+[image2 @ 00000121cdf18100] Use a pattern such as %03d for an image sequence or use the -update option (with -frames:v 1 if needed) to write a single image.
+[1/1] synth_heic_grid_aux_noxmp.heic → 处理中
+[out#0/image2 @ 00000121cbddf380] video:6KiB audio:0KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: unknown
+[1/1] synth_heic_grid_aux_noxmp.heic → 处理中
+frame=    1 fps=0.0 q=-0.0 Lsize=N/A time=00:00:01.00 bitrate=N/A speed= 108x elapsed=0:00:00.00    
+[1/1] synth_heic_grid_aux_noxmp.heic → 已完成 (降级：增益图应用失败（HDR 层未施加，产物为基础图）)
+[降级] 增益图应用失败（HDR 层未施加，产物为基础图）（ExitCode=3，产物仅为基础图）
+[exiftool] 从源文件恢复元数据（安全模式：编码器保护，不覆盖色彩标签）...
+[1/1] synth_heic_grid_aux_noxmp.heic → 已完成 (降级：增益图应用失败（HDR 层未施加，产物为基础图）)
+[2/1] synth_heic_grid_aux_noxmp.heic → 已完成 (降级：增益图应用失败（HDR 层未施加，产物为基础图）)
+[exiftool] 安全复制元数据（已排除色彩标签，保护编码器输出）: synth_heic_grid_aux_noxmp.heic → synth_heic_grid_aux_noxmp.png
+[2/1] synth_heic_grid_aux_noxmp.heic → 已完成 (降级：增益图应用失败（HDR 层未施加，产物为基础图）)
+Failed to load Perl DLL "perl532.dll" code 126
+[2/1] synth_heic_grid_aux_noxmp.heic → 已完成 (降级：增益图应用失败（HDR 层未施加，产物为基础图）)
+[exiftool] 元数据恢复警告: 退出码 1，已跳过 ffmpeg 回退（色彩保护模式）
+═══ 队列处理完毕 — 完成 1 项, 失败 0 项, 降级 1 项（降级按 D6/D7 契约计入进程退出码非 0）

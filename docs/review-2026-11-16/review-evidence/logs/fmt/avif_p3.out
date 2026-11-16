@@ -1,0 +1,52 @@
+正在检测外部工具...
+  ffmpeg: ✅ [app-adjacent]
+  cjxl: ✅ [manual]
+  djxl: ✅ [manual]
+  cjpegli: ✅ [manual]
+  exiftool: ✅ [manual]
+  JxrEncApp: ✅ [manual]
+  avifenc: ✅ [manual]
+  dngtool: ✅ [PLAN]
+正在准备任务队列...
+找到 1 个输入文件，开始处理...
+[1/1] oxsrc.png → 待处理
+[1/1] oxsrc.png → 处理中
+[1/1] oxsrc.png → 处理中
+[色彩引擎] 决策：CarryIcc 色彩损失=None｜L1/标准空间：源 ICC 改写为覆盖源色域的最窄标准空间（smpte432/iec61966-2-1）；CICP 与 ICC 同源；标准空间重写：源 ICC Display P3 (ICC 识别, sRGB（ICC 参数吻合）, err=2.0E-004) 已等价于标准空间 CICP:smpte432/iec61966-2-1，像素零改动；
+[1/1] oxsrc.png → 处理中
+[avif] 计划要求附 ICC：静态 AVIF 改由 avifenc 编码（--icc 与 --cicp 同写，ffmpeg/libaom 单程写不进 ICC）
+[1/1] oxsrc.png → 处理中
+[色彩裁决] 裁决=Proceed
+[1/1] oxsrc.png → 处理中
+[色彩] ffmpeg -y -hide_banner -loglevel error -i "C:\PLAN\ffmpegPictureUI\tests\output\_tmp\review-2026-11-16\fmt\oxsrc.png" -frames:v 1 -vf "format=rgb48le" -f rawvideo "C:\PLAN\ffmpegPictureUI\tests\output\_tmp\review-2026-11-16\fmt\tmp\cms_e93dfbd7cd804fc4be867c649a2f7616.rgb48"
+[1/1] oxsrc.png → 处理中
+[色彩] 源=Display P3 (ICC 识别, sRGB（ICC 参数吻合）, err=2.0E-004)（IccMetric） 目标=CICP:smpte432/iec61966-2-1
+[色彩] L1/标准空间：源 ICC 改写为覆盖源色域的最窄标准空间（smpte432/iec61966-2-1）；CICP 与 ICC 同源；标准空间重写：源 ICC Display P3 (ICC 识别, sRGB（ICC 参数吻合）, err=2.0E-004) 已等价于标准空间 CICP:smpte432/iec61966-2-1，像素零改动；
+[色彩] tier=S dop=1 tileRows=整帧 stream=off frame=0MB 变换耗时 2ms 吞吐 3.1 MPix/s
+[1/1] oxsrc.png → 处理中
+[色彩] ffmpeg -y -hide_banner -loglevel error -f rawvideo -pix_fmt rgb48le -video_size 96x64 -i "C:\PLAN\ffmpegPictureUI\tests\output\_tmp\review-2026-11-16\fmt\tmp\cms_e93dfbd7cd804fc4be867c649a2f7616.rgb48.out" -pix_fmt rgb24 -compression_level 0 "C:\PLAN\ffmpegPictureUI\tests\output\_tmp\review-2026-11-16\fmt\tmp\avif_ecf5b5bc8d7f4323ab2aa25bf6954f2f.png"
+[1/1] oxsrc.png → 处理中
+[avif] avifenc --depth 8 -q 75 --cicp 12/13/0 --icc "C:\PLAN\ffmpegPictureUI\tests\output\_tmp\review-2026-11-16\fmt\tmp\stdbuilt_smpte432_iec61966-2-1.v44cicp.icc" -y 444 -s 6 "C:\PLAN\ffmpegPictureUI\tests\output\_tmp\review-2026-11-16\fmt\tmp\avif_ecf5b5bc8d7f4323ab2aa25bf6954f2f.png" -o "C:\PLAN\ffmpegPictureUI\tests\output\_tmp\review-2026-11-16\fmt\avif_p3\oxsrc.avif"
+[1/1] oxsrc.png → 处理中
+[色彩] avifenc --depth 8 -q 75 --cicp 12/13/0 --icc "C:\PLAN\ffmpegPictureUI\tests\output\_tmp\review-2026-11-16\fmt\tmp\stdbuilt_smpte432_iec61966-2-1.v44cicp.icc" -y 444 -s 6 "C:\PLAN\ffmpegPictureUI\tests\output\_tmp\review-2026-11-16\fmt\tmp\avif_ecf5b5bc8d7f4323ab2aa25bf6954f2f.png" -o "C:\PLAN\ffmpegPictureUI\tests\output\_tmp\review-2026-11-16\fmt\avif_p3\oxsrc.avif"
+[1/1] oxsrc.png → 处理中
+[色彩引擎] ✅ 96x64 变换 2ms（解码 62ms／编码 105ms，0.0 MPix/s）
+[1/1] oxsrc.png → 已完成
+[exiftool] 从源文件恢复元数据（安全模式：编码器保护，不覆盖色彩标签）...
+[1/1] oxsrc.png → 已完成
+[2/1] oxsrc.png → 已完成
+[exiftool] 安全复制元数据（已排除色彩标签，保护编码器输出）: oxsrc.png → oxsrc.avif
+[2/1] oxsrc.png → 已完成
+0 image files updated
+    1 image files unchanged
+[2/1] oxsrc.png → 已完成
+Warning: No writable tags set from C:\PLAN\ffmpegPictureUI\tests\output\_tmp\review-2026-11-16\fmt\oxsrc.png
+[2/1] oxsrc.png → 已完成
+[exiftool] ⚠️ 本次复制 **0 项落地**（exiftool 报「0 image files updated」而退出码 0） ⇒ 产物 oxsrc.avif 未携带源元数据（不是「复制成功」）
+[2/1] oxsrc.png → 已完成
+[exiftool] 计划承诺生成标准 ICC（源 ICC 已重写或源仅 CICP）⇒ 跳过源 ICC 回带，交由后置步骤落地
+[2/1] oxsrc.png → 已完成
+[exiftool] 元数据恢复完成
+[色彩] AVIF ICC 已随 avifenc 编码写入 ⇒ 跳过 exiftool 后置 ICC
+[2/1] oxsrc.png → 已完成
+═══ 队列处理完毕 — 完成 1 项, 失败 0 项

@@ -21,20 +21,20 @@
 | COLOR-03 | MEDIUM | 修复（文档侧） | 7 份带日期账本写"AVIF 不写 ICC"旧口径；按 §6 不回改，由 AGENTS §7 更正条目兜底 | 提交 `7695161`（AGENTS §7 更正 1） |
 | COLOR-06 | MEDIUM | 修复 | 门禁用 exiftool 判 ICC、ffprobe 判 CICP，从不数值对撞"ICC 内部原色==容器 CICP" | 提交 `55369ff`（ICC/CICP 数值对撞门禁） |
 | COLOR-08 | MEDIUM | 接受/待批 | 存量（a9e2830 前已存在）链末 t=iec61966-2-1 与标签 transfer=bt709 不一致，本批未触及 | 提交 `55369ff`（HDR→SDR 链末 sRGB 对齐） |
-| UI-01 | MEDIUM | 修复 | 管道分支（cjxl/cjpegli/djxl）取消返回"已停止/超时"，与 `IsStopped` 精确匹配不一致 ⇒ 漏重排、错收进"仅显示报错" | 待重出 beta17 的 src 批（UI 路进行中） |
-| UI-02 | MEDIUM | 修复 | 优雅停止（StopAfterCurrentQueue）走 break 不 Cancel ⇒ `IsRunning` 恒真，简洁模式误拒启动 | 待重出 beta17 的 src 批（UI 路进行中） |
-| UI-04 | MEDIUM | 修复 | `c5f18e7` oxipng 面板迁到顶层+"PNG 显示/APNG 隐藏"判定，全 tests 树零 UI 断言 | 待重出 beta17 的 tests 批（UI 路进行中） |
+| UI-01 | MEDIUM | 修复 | 管道分支（cjxl/cjpegli/djxl）取消返回"已停止/超时"，与 `IsStopped` 精确匹配不一致 ⇒ 漏重排、错收进"仅显示报错" | 提交 `0be4c4c`（`QueueProcessor.cs:4863` 收为"已停止"，超时语义留在同行日志） |
+| UI-02 | MEDIUM | 修复 | 优雅停止（StopAfterCurrentQueue）走 break 不 Cancel ⇒ `IsRunning` 恒真，简洁模式误拒启动 | 提交 `0be4c4c`（`IsRunning` 改判 runner 完成/CTS 取消；7 个读者逐一核过，无依赖旧语义者） |
+| UI-04 | MEDIUM | 修复 | `c5f18e7` oxipng 面板迁到顶层+"PNG 显示/APNG 隐藏"判定，全 tests 树零 UI 断言 | 提交 `0d281d9`（ui-panel-visibility 组 C22a/b/c 三条；五臂 487→497） |
 | BUILD-04 | MEDIUM | 修复 | app 包无 oxipng.exe 而默认 pngopt=max，启动横幅 8 工具不点名 oxipng、首启无预警 | 提交 `17e4c7d`（app 档随附 oxipng；⚠ appstage 两态归因未验证，见 LOW/INFO 节） |
-| GATE-01 | MEDIUM | 修复 | `verify-ui-split-union`7P/4F 根因＝旧参照宿主裸开窗未预置工具路径稳态，P1 拿 0 条 `[detect]` 行、早返回吞 P2-P5（非口径漂移/非产品回归） | 待重出 beta17 的 tests 批（UI 路进行中） |
+| GATE-01 | MEDIUM | 修复 | `verify-ui-split-union`7P/4F 根因＝旧参照宿主测量失效；修复期坐实为**三层叠加**：`UiLogService` 迁移后行带 `[时间戳] [级别]` 前缀致按 `[detect] ` 分类恒 0 命中、flush 停在 `DispatcherPriority.Background` 而 `RunJobs()` 只抽 Normal、开窗前缺 `ApplyToolPaths` 稳态 | 提交 `708d8d0`（旧宿主 497/0，union 11P/0F new=497 old=497） |
 | GATE-02 | MEDIUM | 修复 | contract 源码调用位实取 102 vs 登记表锁 101（总量 1006 vs 1005），`928ec89` 加断言未同批抬表 | 提交 `a15efcd`（调用位抬表） |
 | MA-02 | MEDIUM | 修复（文档侧） | "AVIF 写不进 ICC"口径反向且已误导本批任务书前提；AGENTS §7 现行口径须更正 | 提交 `7695161`（AGENTS §7 更正 1） |
 | MA-03 | MEDIUM | 修复 | 默认 max 的能力侧（app 缺 exe）/提示侧（横幅不点名）/验证侧（面板零断言）三方口径未对齐（=BUILD-04+UI-04+采集侧） | 提交 `17e4c7d`（三方口径对齐） |
 | COLOR-05 | LOW | 不改 | 兼容性正控通过：坏版本被拒 rc=2、未知参数告警后忽略、WebP 恒 tv/JPEG auto 压回 pc 未漂移 | —（正控通过） |
 | FMT-01 | LOW | 接受 | `CopyMetadataAsync`（`-overwrite_original` 直写产物路径）中途失败残留 `*_exiftool_tmp`，未像 ICC 嵌入路径那样 finally 清理 | 提交 `6593af8`（perl532.dll PATH 根因 + 临时件清理；tmp 残留**接受为已知**，见 LOW/INFO 节） |
 | FMT-02 | LOW | 修复 | `synth_heic_grid_aux_noxmp.heic` 生成器注释称"未登记 URN 负控"，随件实为已登记 Apple URN（负控身份来自门禁现场改写字节） | 提交 `6593af8`（生成器注释/夹具修正） |
-| UI-03 | LOW | 修复 | `Start()` 重启旧 CTS 只 Cancel 不 Dispose（`RebuildSemaphore` 有 Dispose，此处无） | 待重出 beta17 的 src 批（UI 路进行中） |
-| UI-05 | LOW | 修复 | 用户点停止后日志连出"队列已停止"与"队列已完成"两行矛盾文案（无原因区分位） | 待重出 beta17 的 src 批（UI 路进行中） |
-| UI-06 | LOW | 修复 | 旧代位深探测只丢结果不取消在跑的 ffprobe；回灌 Post 无 try/catch | 待重出 beta17 的 src 批（UI 路进行中） |
+| UI-03 | LOW | 修复 | `Start()` 重启旧 CTS 只 Cancel 不 Dispose（`RebuildSemaphore` 有 Dispose，此处无） | 提交 `0be4c4c`（`oldCts?.Dispose()` 与 RebuildSemaphore 同形） |
+| UI-05 | LOW | 修复 | 用户点停止后日志连出"队列已停止"与"队列已完成"两行矛盾文案（无原因区分位） | 提交 `0be4c4c`（`OnQueueStopped(bool)` 仅自然跑完才写"已完成"） |
+| UI-06 | LOW | 修复 | 旧代位深探测只丢结果不取消在跑的 ffprobe；回灌 Post 无 try/catch | 提交 `0be4c4c`（`_probeCts` 代际 Cancel+Dispose + `CancelAfter(3s)` + Post 包 try/catch） |
 | BUILD-01 | LOW | 修复 | `pack.ps1` 全档模式裸调 `robocopy`（无全路径），PATH 不含 System32 的会话在 Step 2 中止 | 提交 `17e4c7d`（robocopy 全路径） |
 | BUILD-02 | LOW | 修复（文档侧） | app/full 两包 exe sha256 仅 6B 差（bundle header nonce），AGENTS §4"用 dll 对账"对 AOT 单包不适用，须写清口径 | 提交 `17e4c7d`（AOT 哈希口径写入） |
 | BUILD-03 | LOW | 接受 | 5 条构建警告（CS8604/CS8602×2/CA1416/IL3002）全存量，本批重写零新增、无 IL2026/IL2075 | 后续单独清理（接受） |
@@ -63,9 +63,11 @@
 | `991f496` | chore(gate-runner) 死锁自动回收 + STALE 可操作提示 | GATE-05 |
 | `e5ec98e` | fix(gainmap/deadcode) nclx 矩阵断言 + HEIC 增益图 sato + alpha 拍平日志 + JXR 中转目录 | GATE-03 / GATE-06 及 4 条存量红 |
 | `49dbd3a` | fix(color) legacy SDR 直通对齐写 `cICP=1/13` | COLOR-02 |
+| `0be4c4c` | fix(queue) 停止状态单一真值 + 优雅停止/探测取消 | UI-01 / UI-02 / UI-03 / UI-05 / UI-06 |
+| `0d281d9` | test(ui) oxipng 面板显隐与默认 max 断言 + 五臂 487→497 | UI-04 |
+| `708d8d0` | test(ui) GATE-01 根因修复（旧宿主 GroupP 适配 `UiLogService` 迁移） | GATE-01 |
 
-> **仍开放（等最终表）**：UI 路 `UI-01/02/03/04/05/06`、`GATE-01`（旧参照宿主 bootstrap 对齐）；
-> 接受/不改项 `BUILD-03/05/06/08`、`COLOR-04/05`、`GATE-04`（推迟到重出）。这些行暂留待最终表收口，不猜落点。
+> **全部 34 行已落点或已定性**：其余 14 行为接受/不改/推迟（`BUILD-03`/`BUILD-05`/`BUILD-06`/`BUILD-08`/`COLOR-04`/`COLOR-05`/`GATE-04` + 已定性项），不再有"待批次"字样。最终读数见 `CHANGES_48H_FIX_RESULT_2026-11-16.md §4`。
 
 ## LOW / INFO 逐条处置（2026-11-16）
 

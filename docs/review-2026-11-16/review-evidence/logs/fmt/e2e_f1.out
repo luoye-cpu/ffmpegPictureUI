@@ -1,0 +1,651 @@
+正在检测外部工具...
+  ffmpeg: ✅ [app-adjacent]
+  cjxl: ✅ [manual]
+  djxl: ✅ [manual]
+  cjpegli: ✅ [manual]
+  exiftool: ✅ [manual]
+  JxrEncApp: ✅ [manual]
+  avifenc: ✅ [manual]
+  dngtool: ✅ [PLAN]
+正在准备任务队列...
+找到 1 个输入文件，开始处理...
+[1/1] synth_heic_grid_aux_gainmap.heic → 待处理
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[GainMap解码] 检测到 Apple aux 增益图（form=aux-apple-hdrgainmap，grid 2x2（4 瓦片，整幅 128x96）），方向为「SDR 底图 → HDR」（Apple/厂商公式族）
+[UltraHDR] 检测到 AVIF/HEIC 增益图（ISO-BMFF tmap 项），GainMapDecoder 应用增益图恢复 HDR...
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[GainMap解码] AppleMakerNote tag 读数：HDRHeadroom(33)=缺失 HDRGain(48)=缺失
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[GainMap解码] AppleMakerNote 无有效余量（tag33/48 缺失或为 0）⇒ 尝试 Apple HDRGainMap XMP
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[GainMap解码] Apple HDRGainMap: headroom=2.000000 (log2)
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[GainMap解码] 元数据来源: Apple HDRGainMap XMP (纯托管)
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[GainMap解码] 元数据: min=0.000 max=2.000 gamma=1.00 offsetSDR=0.0000 offsetHDR=0.0000 Channels=1 hdrBase=False
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[GainMap解码] 增益图来源: ISO-BMFF grid（2x2 瓦片 × 64x48，hvc1，形式 aux-apple-hdrgainmap，整幅宽高取自 grid 载荷尾部 2×u16）
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+ffmpeg version git-2026-10-11-edadf711a9 Copyright (c) 2000-2026 the FFmpeg developers
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  built with clang version 23.1.3 (https://github.com/llvm/llvm-project.git 0d261d1ca552c95a8f007e061c787ac7132fbcbc)
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  configuration: --prefix=/home/dominic/ffmpeg/bin --bindir=/home/dominic/ffmpeg/bin/bin --arch=x86_64 --target-os=mingw32 --cross-prefix=x86_64-w64-mingw32- --enable-cross-compile --cc=/usr/local/llvm-mingw/bin/x86_64-w64-mingw32-clang --cxx=/usr/local/llvm-mingw/bin/x86_64-w64-mingw32-clang++ --ld=/home/dominic/ffmpeg/bin/bin/atw_ldwrapper --ar=/usr/local/llvm-mingw/bin/llvm-ar --ranlib=/usr/local/llvm-mingw/bin/llvm-ranlib --pkg-config=/usr/bin/pkg-config --pkg-config-flags=--static --optflags='-O3 -pipe -DNDEBUG -funwind-tables -fexceptions -finline-functions -march=x86-64-v3 -mtune=generic -ffunction-sections -fdata-sections -mguard=cf' --extra-cflags='-I/home/dominic/ffmpeg/bin/include -DLIBTWOLAME_STATIC -I/usr/local/cuda/include -I/usr/local/cuda/targets/x86_64-linux/include' --extra-cxxflags='-O3 -pipe -DNDEBUG -funwind-tables -fexceptions -finline-functions -march=x86-64-v3 -mtune=generic -ffunction-sections -fdata-sections -mguard=cf' --extra-ldflags='-L/home/dominic/ffmpeg/bin/lib -Wl,--gc-sections -Wl,/guard:cf -fuse-ld=lld' --extra-libs=' -lvulkan-1 -lpthread' --disable-autodetect --enable-gpl --enable-nonfree --enable-version3 --enable-w32threads --disable-pthreads --disable-static --enable-shared --disable-debug --disable-doc --enable-ffplay --enable-sdl2 --enable-ffprobe --enable-ffmpeg --enable-ffnvcodec --disable-cuvid --disable-decoder=libdavs2 --disable-decoder=libuavs3d --disable-encoder=libxavs --disable-encoder=libxavs2 --enable-nvenc --enable-nvdec --enable-libopus --enable-libass --enable-libfreetype --enable-libharfbuzz --enable-libfontconfig --enable-libfribidi --enable-libzimg --enable-libwebp --enable-libjxl --enable-libjxr --enable-libdav1d --enable-libsvtav1 --enable-libvpl --enable-libx264 --enable-libx265 --enable-libvmaf --enable-libvvenc --enable-schannel --enable-d3d11va --enable-d3d12va --enable-mediafoundation --enable-amf --enable-avisynth --enable-dxva2 --enable-vulkan --enable-vulkan-static --glslc=/home/dominic/ffmpeg/build-20261012-full/host-tools/bin/glslc --enable-opencl --enable-opengl --enable-libplacebo --enable-zlib --enable-bzlib --enable-lzma --enable-libxml2 --enable-libmp3lame --enable-libvorbis --enable-libsoxr --enable-libfdk-aac --enable-libaom --enable-libvpx --enable-libopenjpeg --enable-libsrt --enable-librist --enable-libbluray --enable-libaribcaption --enable-lcms2 --enable-librubberband --enable-libvidstab --enable-libssh --enable-libsnappy --enable-libtheora --enable-libspeex --enable-libtwolame --enable-libmysofa --enable-libopenmpt --enable-libdvdread --enable-libdvdnav --enable-chromaprint --enable-libzmq --enable-libzvbi --enable-libgsm --enable-libopencore-amrnb --enable-libopencore-amrwb --enable-libvo-amrwbenc --enable-iconv --enable-audiotoolbox --enable-cuda-nvcc --enable-cuda --disable-cuda-llvm --nvcc=/usr/local/cuda/bin/nvcc --nvccflags='-O3 --extra-device-vectorization --threads=1 -Xptxas=-O3 --use_fast_math -gencode arch=compute_75,code=compute_75' --enable-vapoursynth --enable-encoder=wrapped_avframe --enable-encoder=h264_nvenc --enable-encoder=hevc_nvenc --enable-encoder=av1_nvenc --enable-encoder=hevc_qsv --enable-encoder=av1_qsv --enable-encoder=h264_qsv --enable-encoder=libx264 --enable-encoder=libx265 --enable-encoder=libvvenc --enable-encoder=libmp3lame --enable-encoder=libvorbis --enable-encoder=libfdk_aac --enable-encoder=libvpx_vp8 --enable-encoder=libvpx_vp9 --enable-encoder=aac --enable-encoder=aac_at
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  libavutil      61. 14.100 / 61. 14.100
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  libavcodec     63. 19.101 / 63. 19.101
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  libavformat    63.  8.100 / 63.  8.100
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  libavdevice    63.  2.100 / 63.  2.100
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  libavfilter    12.  5.100 / 12.  5.100
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  libswscale     10.  2.100 / 10.  2.100
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  libswresample   7.  3.101 /  7.  3.101
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+Input #0, mov,mp4,m4a,3gp,3g2,mj2, from 'C:\PLAN\ffmpegPictureUI\tests\data\synth_heic_grid_aux_gainmap.heic':
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  Metadata:
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+    major_brand     : heic
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+    minor_version   : 0
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+    compatible_brands: mif1heic
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  Duration: N/A, start: 0.000000, bitrate: N/A
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  Stream group #0:0[0x3]: Tile Grid: hevc (Main) (hvc1 / 0x31637668), yuv420p(tv), 128x96 [SAR 1:1 DAR 4:3]
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  Stream #0:0[0x1]: Video: hevc (Main) (hvc1 / 0x31637668), yuv420p(tv), 64x48 [SAR 1:1 DAR 4:3], 1 fps, 1 tbr, 1 tbn (default)
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+Stream mapping:
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  Stream #0:0 -> #0:0 (hevc (native) -> rawvideo (native))
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+Press [q] to stop, [?] for help
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 0000028ebeaf7c80] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 0000028ebeaf7c80] [swscaler @ 0000028ebeae00c0] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 0000028ebeaf7c80] [swscaler @ 0000028ebeb38f40] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 0000028ebeaf7c80] [swscaler @ 0000028ebcb9ff80] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 0000028ebeaf7c80] [swscaler @ 0000028ebebe00c0] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 0000028ebeaf7c80] [swscaler @ 0000028ebeb14ac0] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 0000028ebeaf7c80] [swscaler @ 0000028ebeb21b40] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 0000028ebeaf7c80] [swscaler @ 0000028ebeb82ac0] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 0000028ebeaf7c80] [swscaler @ 0000028ebeb97b80] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 0000028ebeaf7c80] [swscaler @ 0000028ebeb4eb00] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 0000028ebeaf7c80] [swscaler @ 0000028ebeb63bc0] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 0000028ebeaf7c80] [swscaler @ 0000028ebecdee00] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 0000028ebeaf7c80] [swscaler @ 0000028ebecebec0] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+Output #0, rawvideo, to 'C:\PLAN\ffmpegPictureUI\tests\output\_tmp\review-2026-11-16\fmt\tmp\gmdecode_5cf0d63ef6554218b591db0b4a0ace1b\base_probe.rgba':
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  Metadata:
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+    encoder         : Lavf63.8.100
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  Stream #0:0: Video: rawvideo (G3[0][33] / 0x21003347), gbrpf32le(gbr/unknown/unknown, progressive), 64x48 [SAR 1:1 DAR 4:3], q=2-31, 294 kb/s, 1 fps, 1 tbn (default)
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+    Metadata:
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+      encoder         : Lavc63.19.101 rawvideo
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[out#0/rawvideo @ 0000028ebcb71f00] video:36KiB audio:0KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: 0.000000%
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+frame=    1 fps=0.0 q=-0.0 Lsize=      36KiB time=00:00:01.00 bitrate= 294.9kbits/s speed=94.5x elapsed=0:00:00.01    
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[GainMap解码] 底图按单 item 解码（-map 0:0 流真值 3072 px），与容器声明 128x96（12288 px）不符 ⇒ 以流真值修正尺寸
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+ffmpeg version git-2026-10-11-edadf711a9 Copyright (c) 2000-2026 the FFmpeg developers
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  built with clang version 23.1.3 (https://github.com/llvm/llvm-project.git 0d261d1ca552c95a8f007e061c787ac7132fbcbc)
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  configuration: --prefix=/home/dominic/ffmpeg/bin --bindir=/home/dominic/ffmpeg/bin/bin --arch=x86_64 --target-os=mingw32 --cross-prefix=x86_64-w64-mingw32- --enable-cross-compile --cc=/usr/local/llvm-mingw/bin/x86_64-w64-mingw32-clang --cxx=/usr/local/llvm-mingw/bin/x86_64-w64-mingw32-clang++ --ld=/home/dominic/ffmpeg/bin/bin/atw_ldwrapper --ar=/usr/local/llvm-mingw/bin/llvm-ar --ranlib=/usr/local/llvm-mingw/bin/llvm-ranlib --pkg-config=/usr/bin/pkg-config --pkg-config-flags=--static --optflags='-O3 -pipe -DNDEBUG -funwind-tables -fexceptions -finline-functions -march=x86-64-v3 -mtune=generic -ffunction-sections -fdata-sections -mguard=cf' --extra-cflags='-I/home/dominic/ffmpeg/bin/include -DLIBTWOLAME_STATIC -I/usr/local/cuda/include -I/usr/local/cuda/targets/x86_64-linux/include' --extra-cxxflags='-O3 -pipe -DNDEBUG -funwind-tables -fexceptions -finline-functions -march=x86-64-v3 -mtune=generic -ffunction-sections -fdata-sections -mguard=cf' --extra-ldflags='-L/home/dominic/ffmpeg/bin/lib -Wl,--gc-sections -Wl,/guard:cf -fuse-ld=lld' --extra-libs=' -lvulkan-1 -lpthread' --disable-autodetect --enable-gpl --enable-nonfree --enable-version3 --enable-w32threads --disable-pthreads --disable-static --enable-shared --disable-debug --disable-doc --enable-ffplay --enable-sdl2 --enable-ffprobe --enable-ffmpeg --enable-ffnvcodec --disable-cuvid --disable-decoder=libdavs2 --disable-decoder=libuavs3d --disable-encoder=libxavs --disable-encoder=libxavs2 --enable-nvenc --enable-nvdec --enable-libopus --enable-libass --enable-libfreetype --enable-libharfbuzz --enable-libfontconfig --enable-libfribidi --enable-libzimg --enable-libwebp --enable-libjxl --enable-libjxr --enable-libdav1d --enable-libsvtav1 --enable-libvpl --enable-libx264 --enable-libx265 --enable-libvmaf --enable-libvvenc --enable-schannel --enable-d3d11va --enable-d3d12va --enable-mediafoundation --enable-amf --enable-avisynth --enable-dxva2 --enable-vulkan --enable-vulkan-static --glslc=/home/dominic/ffmpeg/build-20261012-full/host-tools/bin/glslc --enable-opencl --enable-opengl --enable-libplacebo --enable-zlib --enable-bzlib --enable-lzma --enable-libxml2 --enable-libmp3lame --enable-libvorbis --enable-libsoxr --enable-libfdk-aac --enable-libaom --enable-libvpx --enable-libopenjpeg --enable-libsrt --enable-librist --enable-libbluray --enable-libaribcaption --enable-lcms2 --enable-librubberband --enable-libvidstab --enable-libssh --enable-libsnappy --enable-libtheora --enable-libspeex --enable-libtwolame --enable-libmysofa --enable-libopenmpt --enable-libdvdread --enable-libdvdnav --enable-chromaprint --enable-libzmq --enable-libzvbi --enable-libgsm --enable-libopencore-amrnb --enable-libopencore-amrwb --enable-libvo-amrwbenc --enable-iconv --enable-audiotoolbox --enable-cuda-nvcc --enable-cuda --disable-cuda-llvm --nvcc=/usr/local/cuda/bin/nvcc --nvccflags='-O3 --extra-device-vectorization --threads=1 -Xptxas=-O3 --use_fast_math -gencode arch=compute_75,code=compute_75' --enable-vapoursynth --enable-encoder=wrapped_avframe --enable-encoder=h264_nvenc --enable-encoder=hevc_nvenc --enable-encoder=av1_nvenc --enable-encoder=hevc_qsv --enable-encoder=av1_qsv --enable-encoder=h264_qsv --enable-encoder=libx264 --enable-encoder=libx265 --enable-encoder=libvvenc --enable-encoder=libmp3lame --enable-encoder=libvorbis --enable-encoder=libfdk_aac --enable-encoder=libvpx_vp8 --enable-encoder=libvpx_vp9 --enable-encoder=aac --enable-encoder=aac_at
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  libavutil      61. 14.100 / 61. 14.100
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  libavcodec     63. 19.101 / 63. 19.101
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  libavformat    63.  8.100 / 63.  8.100
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  libavdevice    63.  2.100 / 63.  2.100
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  libavfilter    12.  5.100 / 12.  5.100
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  libswscale     10.  2.100 / 10.  2.100
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  libswresample   7.  3.101 /  7.  3.101
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+Input #0, mov,mp4,m4a,3gp,3g2,mj2, from 'C:\PLAN\ffmpegPictureUI\tests\data\synth_heic_grid_aux_gainmap.heic':
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  Metadata:
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+    major_brand     : heic
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+    minor_version   : 0
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+    compatible_brands: mif1heic
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  Duration: N/A, start: 0.000000, bitrate: N/A
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  Stream group #0:0[0x3]: Tile Grid: hevc (Main) (hvc1 / 0x31637668), yuv420p(tv), 128x96 [SAR 1:1 DAR 4:3]
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  Stream #0:0[0x1]: Video: hevc (Main) (hvc1 / 0x31637668), yuv420p(tv), 64x48 [SAR 1:1 DAR 4:3], 1 fps, 1 tbr, 1 tbn (default)
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+Stream mapping:
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  Stream #0:0 -> #0:0 (hevc (native) -> rawvideo (native))
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+Press [q] to stop, [?] for help
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000001681ac3c3c0] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000001681ac3c3c0] [swscaler @ 000001681ac52f40] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000001681ac3c3c0] [swscaler @ 000001681ad1bd40] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000001681ac3c3c0] [swscaler @ 0000016818c56e80] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000001681ac3c3c0] [swscaler @ 0000016818c3be80] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000001681ac3c3c0] [swscaler @ 000001681acee140] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000001681ac3c3c0] [swscaler @ 000001681acfb1c0] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000001681ac3c3c0] [swscaler @ 000001681accccc0] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000001681ac3c3c0] [swscaler @ 000001681acd9d80] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000001681ac3c3c0] [swscaler @ 000001681ae25fc0] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000001681ac3c3c0] [swscaler @ 000001681ae33080] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000001681ac3c3c0] [swscaler @ 000001681ae48100] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000001681ac3c3c0] [swscaler @ 000001681ae551c0] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+Output #0, rawvideo, to 'C:\PLAN\ffmpegPictureUI\tests\output\_tmp\review-2026-11-16\fmt\tmp\gmdecode_5cf0d63ef6554218b591db0b4a0ace1b\base.rgba':
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  Metadata:
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+    encoder         : Lavf63.8.100
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  Stream #0:0: Video: rawvideo (G3[0][33] / 0x21003347), gbrpf32le(gbr/unknown/unknown, progressive), 64x48 [SAR 1:1 DAR 4:3], q=2-31, 294 kb/s, 1 fps, 1 tbn (default)
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+    Metadata:
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+      encoder         : Lavc63.19.101 rawvideo
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[out#0/rawvideo @ 0000016818c2ac00] video:36KiB audio:0KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: 0.000000%
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+frame=    1 fps=0.0 q=-0.0 Lsize=      36KiB time=00:00:01.00 bitrate= 294.9kbits/s speed= 137x elapsed=0:00:00.00    
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+ffmpeg version git-2026-10-11-edadf711a9 Copyright (c) 2000-2026 the FFmpeg developers
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  built with clang version 23.1.3 (https://github.com/llvm/llvm-project.git 0d261d1ca552c95a8f007e061c787ac7132fbcbc)
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  configuration: --prefix=/home/dominic/ffmpeg/bin --bindir=/home/dominic/ffmpeg/bin/bin --arch=x86_64 --target-os=mingw32 --cross-prefix=x86_64-w64-mingw32- --enable-cross-compile --cc=/usr/local/llvm-mingw/bin/x86_64-w64-mingw32-clang --cxx=/usr/local/llvm-mingw/bin/x86_64-w64-mingw32-clang++ --ld=/home/dominic/ffmpeg/bin/bin/atw_ldwrapper --ar=/usr/local/llvm-mingw/bin/llvm-ar --ranlib=/usr/local/llvm-mingw/bin/llvm-ranlib --pkg-config=/usr/bin/pkg-config --pkg-config-flags=--static --optflags='-O3 -pipe -DNDEBUG -funwind-tables -fexceptions -finline-functions -march=x86-64-v3 -mtune=generic -ffunction-sections -fdata-sections -mguard=cf' --extra-cflags='-I/home/dominic/ffmpeg/bin/include -DLIBTWOLAME_STATIC -I/usr/local/cuda/include -I/usr/local/cuda/targets/x86_64-linux/include' --extra-cxxflags='-O3 -pipe -DNDEBUG -funwind-tables -fexceptions -finline-functions -march=x86-64-v3 -mtune=generic -ffunction-sections -fdata-sections -mguard=cf' --extra-ldflags='-L/home/dominic/ffmpeg/bin/lib -Wl,--gc-sections -Wl,/guard:cf -fuse-ld=lld' --extra-libs=' -lvulkan-1 -lpthread' --disable-autodetect --enable-gpl --enable-nonfree --enable-version3 --enable-w32threads --disable-pthreads --disable-static --enable-shared --disable-debug --disable-doc --enable-ffplay --enable-sdl2 --enable-ffprobe --enable-ffmpeg --enable-ffnvcodec --disable-cuvid --disable-decoder=libdavs2 --disable-decoder=libuavs3d --disable-encoder=libxavs --disable-encoder=libxavs2 --enable-nvenc --enable-nvdec --enable-libopus --enable-libass --enable-libfreetype --enable-libharfbuzz --enable-libfontconfig --enable-libfribidi --enable-libzimg --enable-libwebp --enable-libjxl --enable-libjxr --enable-libdav1d --enable-libsvtav1 --enable-libvpl --enable-libx264 --enable-libx265 --enable-libvmaf --enable-libvvenc --enable-schannel --enable-d3d11va --enable-d3d12va --enable-mediafoundation --enable-amf --enable-avisynth --enable-dxva2 --enable-vulkan --enable-vulkan-static --glslc=/home/dominic/ffmpeg/build-20261012-full/host-tools/bin/glslc --enable-opencl --enable-opengl --enable-libplacebo --enable-zlib --enable-bzlib --enable-lzma --enable-libxml2 --enable-libmp3lame --enable-libvorbis --enable-libsoxr --enable-libfdk-aac --enable-libaom --enable-libvpx --enable-libopenjpeg --enable-libsrt --enable-librist --enable-libbluray --enable-libaribcaption --enable-lcms2 --enable-librubberband --enable-libvidstab --enable-libssh --enable-libsnappy --enable-libtheora --enable-libspeex --enable-libtwolame --enable-libmysofa --enable-libopenmpt --enable-libdvdread --enable-libdvdnav --enable-chromaprint --enable-libzmq --enable-libzvbi --enable-libgsm --enable-libopencore-amrnb --enable-libopencore-amrwb --enable-libvo-amrwbenc --enable-iconv --enable-audiotoolbox --enable-cuda-nvcc --enable-cuda --disable-cuda-llvm --nvcc=/usr/local/cuda/bin/nvcc --nvccflags='-O3 --extra-device-vectorization --threads=1 -Xptxas=-O3 --use_fast_math -gencode arch=compute_75,code=compute_75' --enable-vapoursynth --enable-encoder=wrapped_avframe --enable-encoder=h264_nvenc --enable-encoder=hevc_nvenc --enable-encoder=av1_nvenc --enable-encoder=hevc_qsv --enable-encoder=av1_qsv --enable-encoder=h264_qsv --enable-encoder=libx264 --enable-encoder=libx265 --enable-encoder=libvvenc --enable-encoder=libmp3lame --enable-encoder=libvorbis --enable-encoder=libfdk_aac --enable-encoder=libvpx_vp8 --enable-encoder=libvpx_vp9 --enable-encoder=aac --enable-encoder=aac_at
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  libavutil      61. 14.100 / 61. 14.100
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  libavcodec     63. 19.101 / 63. 19.101
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  libavformat    63.  8.100 / 63.  8.100
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  libavdevice    63.  2.100 / 63.  2.100
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  libavfilter    12.  5.100 / 12.  5.100
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  libswscale     10.  2.100 / 10.  2.100
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  libswresample   7.  3.101 /  7.  3.101
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+Input #0, hevc, from 'C:\PLAN\ffmpegPictureUI\tests\output\_tmp\review-2026-11-16\fmt\tmp\gmdecode_5cf0d63ef6554218b591db0b4a0ace1b\gm_tile_0.hevc':
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  Duration: N/A, bitrate: N/A
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  Stream #0:0: Video: hevc (Main), yuv420p(tv), 64x48 [SAR 1:1 DAR 4:3], 25 fps, 25 tbr, 1200k tbn
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+Stream mapping:
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  Stream #0:0 -> #0:0 (hevc (native) -> rawvideo (native))
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+Press [q] to stop, [?] for help
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000001729b6cec00] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000001729b6cec00] [swscaler @ 000001729b772740] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000001729b6cec00] [swscaler @ 000001729b66cb00] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000001729b6cec00] [swscaler @ 000001729b7400c0] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000001729b6cec00] [swscaler @ 000001729b6f4980] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000001729b6cec00] [swscaler @ 000001729b701a00] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000001729b6cec00] [swscaler @ 0000017299515e40] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000001729b6cec00] [swscaler @ 0000017299522ec0] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000001729b6cec00] [swscaler @ 000001729b69a2c0] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000001729b6cec00] [swscaler @ 000001729b6a7380] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000001729b6cec00] [swscaler @ 000001729b6400c0] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000001729b6cec00] [swscaler @ 000001729b655140] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000001729b6cec00] [swscaler @ 000001729b827fc0] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+Output #0, rawvideo, to 'C:\PLAN\ffmpegPictureUI\tests\output\_tmp\review-2026-11-16\fmt\tmp\gmdecode_5cf0d63ef6554218b591db0b4a0ace1b\gm_tile_0.rgba':
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  Metadata:
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+    encoder         : Lavf63.8.100
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  Stream #0:0: Video: rawvideo (G3[0][33] / 0x21003347), gbrpf32le(gbr/unknown/unknown, progressive), 64x48 [SAR 1:1 DAR 4:3], q=2-31, 7372 kb/s, 25 fps, 25 tbn
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+    Metadata:
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+      encoder         : Lavc63.19.101 rawvideo
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[out#0/rawvideo @ 0000017299515900] video:36KiB audio:0KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: 0.000000%
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+frame=    1 fps=0.0 q=-0.0 Lsize=      36KiB time=00:00:00.04 bitrate=7372.8kbits/s speed=4.79x elapsed=0:00:00.00    
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+ffmpeg version git-2026-10-11-edadf711a9 Copyright (c) 2000-2026 the FFmpeg developers
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  built with clang version 23.1.3 (https://github.com/llvm/llvm-project.git 0d261d1ca552c95a8f007e061c787ac7132fbcbc)
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  configuration: --prefix=/home/dominic/ffmpeg/bin --bindir=/home/dominic/ffmpeg/bin/bin --arch=x86_64 --target-os=mingw32 --cross-prefix=x86_64-w64-mingw32- --enable-cross-compile --cc=/usr/local/llvm-mingw/bin/x86_64-w64-mingw32-clang --cxx=/usr/local/llvm-mingw/bin/x86_64-w64-mingw32-clang++ --ld=/home/dominic/ffmpeg/bin/bin/atw_ldwrapper --ar=/usr/local/llvm-mingw/bin/llvm-ar --ranlib=/usr/local/llvm-mingw/bin/llvm-ranlib --pkg-config=/usr/bin/pkg-config --pkg-config-flags=--static --optflags='-O3 -pipe -DNDEBUG -funwind-tables -fexceptions -finline-functions -march=x86-64-v3 -mtune=generic -ffunction-sections -fdata-sections -mguard=cf' --extra-cflags='-I/home/dominic/ffmpeg/bin/include -DLIBTWOLAME_STATIC -I/usr/local/cuda/include -I/usr/local/cuda/targets/x86_64-linux/include' --extra-cxxflags='-O3 -pipe -DNDEBUG -funwind-tables -fexceptions -finline-functions -march=x86-64-v3 -mtune=generic -ffunction-sections -fdata-sections -mguard=cf' --extra-ldflags='-L/home/dominic/ffmpeg/bin/lib -Wl,--gc-sections -Wl,/guard:cf -fuse-ld=lld' --extra-libs=' -lvulkan-1 -lpthread' --disable-autodetect --enable-gpl --enable-nonfree --enable-version3 --enable-w32threads --disable-pthreads --disable-static --enable-shared --disable-debug --disable-doc --enable-ffplay --enable-sdl2 --enable-ffprobe --enable-ffmpeg --enable-ffnvcodec --disable-cuvid --disable-decoder=libdavs2 --disable-decoder=libuavs3d --disable-encoder=libxavs --disable-encoder=libxavs2 --enable-nvenc --enable-nvdec --enable-libopus --enable-libass --enable-libfreetype --enable-libharfbuzz --enable-libfontconfig --enable-libfribidi --enable-libzimg --enable-libwebp --enable-libjxl --enable-libjxr --enable-libdav1d --enable-libsvtav1 --enable-libvpl --enable-libx264 --enable-libx265 --enable-libvmaf --enable-libvvenc --enable-schannel --enable-d3d11va --enable-d3d12va --enable-mediafoundation --enable-amf --enable-avisynth --enable-dxva2 --enable-vulkan --enable-vulkan-static --glslc=/home/dominic/ffmpeg/build-20261012-full/host-tools/bin/glslc --enable-opencl --enable-opengl --enable-libplacebo --enable-zlib --enable-bzlib --enable-lzma --enable-libxml2 --enable-libmp3lame --enable-libvorbis --enable-libsoxr --enable-libfdk-aac --enable-libaom --enable-libvpx --enable-libopenjpeg --enable-libsrt --enable-librist --enable-libbluray --enable-libaribcaption --enable-lcms2 --enable-librubberband --enable-libvidstab --enable-libssh --enable-libsnappy --enable-libtheora --enable-libspeex --enable-libtwolame --enable-libmysofa --enable-libopenmpt --enable-libdvdread --enable-libdvdnav --enable-chromaprint --enable-libzmq --enable-libzvbi --enable-libgsm --enable-libopencore-amrnb --enable-libopencore-amrwb --enable-libvo-amrwbenc --enable-iconv --enable-audiotoolbox --enable-cuda-nvcc --enable-cuda --disable-cuda-llvm --nvcc=/usr/local/cuda/bin/nvcc --nvccflags='-O3 --extra-device-vectorization --threads=1 -Xptxas=-O3 --use_fast_math -gencode arch=compute_75,code=compute_75' --enable-vapoursynth --enable-encoder=wrapped_avframe --enable-encoder=h264_nvenc --enable-encoder=hevc_nvenc --enable-encoder=av1_nvenc --enable-encoder=hevc_qsv --enable-encoder=av1_qsv --enable-encoder=h264_qsv --enable-encoder=libx264 --enable-encoder=libx265 --enable-encoder=libvvenc --enable-encoder=libmp3lame --enable-encoder=libvorbis --enable-encoder=libfdk_aac --enable-encoder=libvpx_vp8 --enable-encoder=libvpx_vp9 --enable-encoder=aac --enable-encoder=aac_at
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  libavutil      61. 14.100 / 61. 14.100
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  libavcodec     63. 19.101 / 63. 19.101
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  libavformat    63.  8.100 / 63.  8.100
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  libavdevice    63.  2.100 / 63.  2.100
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  libavfilter    12.  5.100 / 12.  5.100
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  libswscale     10.  2.100 / 10.  2.100
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  libswresample   7.  3.101 /  7.  3.101
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+Input #0, hevc, from 'C:\PLAN\ffmpegPictureUI\tests\output\_tmp\review-2026-11-16\fmt\tmp\gmdecode_5cf0d63ef6554218b591db0b4a0ace1b\gm_tile_1.hevc':
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  Duration: N/A, bitrate: N/A
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  Stream #0:0: Video: hevc (Main), yuv420p(tv), 64x48 [SAR 1:1 DAR 4:3], 25 fps, 25 tbr, 1200k tbn
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+Stream mapping:
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  Stream #0:0 -> #0:0 (hevc (native) -> rawvideo (native))
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+Press [q] to stop, [?] for help
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000001646623cc40] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000001646623cc40] [swscaler @ 000001646603a100] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000001646623cc40] [swscaler @ 00000164660471c0] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000001646623cc40] [swscaler @ 00000164660f0740] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000001646623cc40] [swscaler @ 00000164660fd7c0] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000001646623cc40] [swscaler @ 0000016466084f80] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000001646623cc40] [swscaler @ 0000016466092000] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000001646623cc40] [swscaler @ 00000164660b2640] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000001646623cc40] [swscaler @ 00000164660bf700] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000001646623cc40] [swscaler @ 000001646605f380] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000001646623cc40] [swscaler @ 000001646606c440] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000001646623cc40] [swscaler @ 000001646630bfc0] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000001646623cc40] [swscaler @ 0000016466319080] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+Output #0, rawvideo, to 'C:\PLAN\ffmpegPictureUI\tests\output\_tmp\review-2026-11-16\fmt\tmp\gmdecode_5cf0d63ef6554218b591db0b4a0ace1b\gm_tile_1.rgba':
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  Metadata:
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+    encoder         : Lavf63.8.100
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  Stream #0:0: Video: rawvideo (G3[0][33] / 0x21003347), gbrpf32le(gbr/unknown/unknown, progressive), 64x48 [SAR 1:1 DAR 4:3], q=2-31, 7372 kb/s, 25 fps, 25 tbn
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+    Metadata:
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+      encoder         : Lavc63.19.101 rawvideo
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[out#0/rawvideo @ 000001646404bf00] video:36KiB audio:0KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: 0.000000%
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+frame=    1 fps=0.0 q=-0.0 Lsize=      36KiB time=00:00:00.04 bitrate=7372.8kbits/s speed=4.64x elapsed=0:00:00.00    
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+ffmpeg version git-2026-10-11-edadf711a9 Copyright (c) 2000-2026 the FFmpeg developers
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  built with clang version 23.1.3 (https://github.com/llvm/llvm-project.git 0d261d1ca552c95a8f007e061c787ac7132fbcbc)
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  configuration: --prefix=/home/dominic/ffmpeg/bin --bindir=/home/dominic/ffmpeg/bin/bin --arch=x86_64 --target-os=mingw32 --cross-prefix=x86_64-w64-mingw32- --enable-cross-compile --cc=/usr/local/llvm-mingw/bin/x86_64-w64-mingw32-clang --cxx=/usr/local/llvm-mingw/bin/x86_64-w64-mingw32-clang++ --ld=/home/dominic/ffmpeg/bin/bin/atw_ldwrapper --ar=/usr/local/llvm-mingw/bin/llvm-ar --ranlib=/usr/local/llvm-mingw/bin/llvm-ranlib --pkg-config=/usr/bin/pkg-config --pkg-config-flags=--static --optflags='-O3 -pipe -DNDEBUG -funwind-tables -fexceptions -finline-functions -march=x86-64-v3 -mtune=generic -ffunction-sections -fdata-sections -mguard=cf' --extra-cflags='-I/home/dominic/ffmpeg/bin/include -DLIBTWOLAME_STATIC -I/usr/local/cuda/include -I/usr/local/cuda/targets/x86_64-linux/include' --extra-cxxflags='-O3 -pipe -DNDEBUG -funwind-tables -fexceptions -finline-functions -march=x86-64-v3 -mtune=generic -ffunction-sections -fdata-sections -mguard=cf' --extra-ldflags='-L/home/dominic/ffmpeg/bin/lib -Wl,--gc-sections -Wl,/guard:cf -fuse-ld=lld' --extra-libs=' -lvulkan-1 -lpthread' --disable-autodetect --enable-gpl --enable-nonfree --enable-version3 --enable-w32threads --disable-pthreads --disable-static --enable-shared --disable-debug --disable-doc --enable-ffplay --enable-sdl2 --enable-ffprobe --enable-ffmpeg --enable-ffnvcodec --disable-cuvid --disable-decoder=libdavs2 --disable-decoder=libuavs3d --disable-encoder=libxavs --disable-encoder=libxavs2 --enable-nvenc --enable-nvdec --enable-libopus --enable-libass --enable-libfreetype --enable-libharfbuzz --enable-libfontconfig --enable-libfribidi --enable-libzimg --enable-libwebp --enable-libjxl --enable-libjxr --enable-libdav1d --enable-libsvtav1 --enable-libvpl --enable-libx264 --enable-libx265 --enable-libvmaf --enable-libvvenc --enable-schannel --enable-d3d11va --enable-d3d12va --enable-mediafoundation --enable-amf --enable-avisynth --enable-dxva2 --enable-vulkan --enable-vulkan-static --glslc=/home/dominic/ffmpeg/build-20261012-full/host-tools/bin/glslc --enable-opencl --enable-opengl --enable-libplacebo --enable-zlib --enable-bzlib --enable-lzma --enable-libxml2 --enable-libmp3lame --enable-libvorbis --enable-libsoxr --enable-libfdk-aac --enable-libaom --enable-libvpx --enable-libopenjpeg --enable-libsrt --enable-librist --enable-libbluray --enable-libaribcaption --enable-lcms2 --enable-librubberband --enable-libvidstab --enable-libssh --enable-libsnappy --enable-libtheora --enable-libspeex --enable-libtwolame --enable-libmysofa --enable-libopenmpt --enable-libdvdread --enable-libdvdnav --enable-chromaprint --enable-libzmq --enable-libzvbi --enable-libgsm --enable-libopencore-amrnb --enable-libopencore-amrwb --enable-libvo-amrwbenc --enable-iconv --enable-audiotoolbox --enable-cuda-nvcc --enable-cuda --disable-cuda-llvm --nvcc=/usr/local/cuda/bin/nvcc --nvccflags='-O3 --extra-device-vectorization --threads=1 -Xptxas=-O3 --use_fast_math -gencode arch=compute_75,code=compute_75' --enable-vapoursynth --enable-encoder=wrapped_avframe --enable-encoder=h264_nvenc --enable-encoder=hevc_nvenc --enable-encoder=av1_nvenc --enable-encoder=hevc_qsv --enable-encoder=av1_qsv --enable-encoder=h264_qsv --enable-encoder=libx264 --enable-encoder=libx265 --enable-encoder=libvvenc --enable-encoder=libmp3lame --enable-encoder=libvorbis --enable-encoder=libfdk_aac --enable-encoder=libvpx_vp8 --enable-encoder=libvpx_vp9 --enable-encoder=aac --enable-encoder=aac_at
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  libavutil      61. 14.100 / 61. 14.100
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  libavcodec     63. 19.101 / 63. 19.101
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  libavformat    63.  8.100 / 63.  8.100
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  libavdevice    63.  2.100 / 63.  2.100
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  libavfilter    12.  5.100 / 12.  5.100
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  libswscale     10.  2.100 / 10.  2.100
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  libswresample   7.  3.101 /  7.  3.101
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+Input #0, hevc, from 'C:\PLAN\ffmpegPictureUI\tests\output\_tmp\review-2026-11-16\fmt\tmp\gmdecode_5cf0d63ef6554218b591db0b4a0ace1b\gm_tile_2.hevc':
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  Duration: N/A, bitrate: N/A
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  Stream #0:0: Video: hevc (Main), yuv420p(tv), 64x48 [SAR 1:1 DAR 4:3], 25 fps, 25 tbr, 1200k tbn
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+Stream mapping:
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  Stream #0:0 -> #0:0 (hevc (native) -> rawvideo (native))
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+Press [q] to stop, [?] for help
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000002bf5b03a680] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000002bf5b03a680] [swscaler @ 000002bf5b0634c0] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000002bf5b03a680] [swscaler @ 000002bf5b070580] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000002bf5b03a680] [swscaler @ 000002bf5b091b40] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000002bf5b03a680] [swscaler @ 000002bf5b09ebc0] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000002bf5b03a680] [swscaler @ 000002bf5afc00c0] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000002bf5b03a680] [swscaler @ 000002bf5afcd140] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000002bf5b03a680] [swscaler @ 000002bf5aff8a00] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000002bf5b03a680] [swscaler @ 000002bf5b005a80] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000002bf5b03a680] [swscaler @ 000002bf5b012b40] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000002bf5b03a680] [swscaler @ 000002bf5b1aaf40] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000002bf5b03a680] [swscaler @ 000002bf5b1b7fc0] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000002bf5b03a680] [swscaler @ 000002bf5b1c5080] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+Output #0, rawvideo, to 'C:\PLAN\ffmpegPictureUI\tests\output\_tmp\review-2026-11-16\fmt\tmp\gmdecode_5cf0d63ef6554218b591db0b4a0ace1b\gm_tile_2.rgba':
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  Metadata:
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+    encoder         : Lavf63.8.100
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  Stream #0:0: Video: rawvideo (G3[0][33] / 0x21003347), gbrpf32le(gbr/unknown/unknown, progressive), 64x48 [SAR 1:1 DAR 4:3], q=2-31, 7372 kb/s, 25 fps, 25 tbn
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+    Metadata:
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+      encoder         : Lavc63.19.101 rawvideo
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[out#0/rawvideo @ 000002bf58fdeb40] video:36KiB audio:0KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: 0.000000%
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+frame=    1 fps=0.0 q=-0.0 Lsize=      36KiB time=00:00:00.04 bitrate=7372.8kbits/s speed=5.06x elapsed=0:00:00.00    
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+ffmpeg version git-2026-10-11-edadf711a9 Copyright (c) 2000-2026 the FFmpeg developers
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  built with clang version 23.1.3 (https://github.com/llvm/llvm-project.git 0d261d1ca552c95a8f007e061c787ac7132fbcbc)
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  configuration: --prefix=/home/dominic/ffmpeg/bin --bindir=/home/dominic/ffmpeg/bin/bin --arch=x86_64 --target-os=mingw32 --cross-prefix=x86_64-w64-mingw32- --enable-cross-compile --cc=/usr/local/llvm-mingw/bin/x86_64-w64-mingw32-clang --cxx=/usr/local/llvm-mingw/bin/x86_64-w64-mingw32-clang++ --ld=/home/dominic/ffmpeg/bin/bin/atw_ldwrapper --ar=/usr/local/llvm-mingw/bin/llvm-ar --ranlib=/usr/local/llvm-mingw/bin/llvm-ranlib --pkg-config=/usr/bin/pkg-config --pkg-config-flags=--static --optflags='-O3 -pipe -DNDEBUG -funwind-tables -fexceptions -finline-functions -march=x86-64-v3 -mtune=generic -ffunction-sections -fdata-sections -mguard=cf' --extra-cflags='-I/home/dominic/ffmpeg/bin/include -DLIBTWOLAME_STATIC -I/usr/local/cuda/include -I/usr/local/cuda/targets/x86_64-linux/include' --extra-cxxflags='-O3 -pipe -DNDEBUG -funwind-tables -fexceptions -finline-functions -march=x86-64-v3 -mtune=generic -ffunction-sections -fdata-sections -mguard=cf' --extra-ldflags='-L/home/dominic/ffmpeg/bin/lib -Wl,--gc-sections -Wl,/guard:cf -fuse-ld=lld' --extra-libs=' -lvulkan-1 -lpthread' --disable-autodetect --enable-gpl --enable-nonfree --enable-version3 --enable-w32threads --disable-pthreads --disable-static --enable-shared --disable-debug --disable-doc --enable-ffplay --enable-sdl2 --enable-ffprobe --enable-ffmpeg --enable-ffnvcodec --disable-cuvid --disable-decoder=libdavs2 --disable-decoder=libuavs3d --disable-encoder=libxavs --disable-encoder=libxavs2 --enable-nvenc --enable-nvdec --enable-libopus --enable-libass --enable-libfreetype --enable-libharfbuzz --enable-libfontconfig --enable-libfribidi --enable-libzimg --enable-libwebp --enable-libjxl --enable-libjxr --enable-libdav1d --enable-libsvtav1 --enable-libvpl --enable-libx264 --enable-libx265 --enable-libvmaf --enable-libvvenc --enable-schannel --enable-d3d11va --enable-d3d12va --enable-mediafoundation --enable-amf --enable-avisynth --enable-dxva2 --enable-vulkan --enable-vulkan-static --glslc=/home/dominic/ffmpeg/build-20261012-full/host-tools/bin/glslc --enable-opencl --enable-opengl --enable-libplacebo --enable-zlib --enable-bzlib --enable-lzma --enable-libxml2 --enable-libmp3lame --enable-libvorbis --enable-libsoxr --enable-libfdk-aac --enable-libaom --enable-libvpx --enable-libopenjpeg --enable-libsrt --enable-librist --enable-libbluray --enable-libaribcaption --enable-lcms2 --enable-librubberband --enable-libvidstab --enable-libssh --enable-libsnappy --enable-libtheora --enable-libspeex --enable-libtwolame --enable-libmysofa --enable-libopenmpt --enable-libdvdread --enable-libdvdnav --enable-chromaprint --enable-libzmq --enable-libzvbi --enable-libgsm --enable-libopencore-amrnb --enable-libopencore-amrwb --enable-libvo-amrwbenc --enable-iconv --enable-audiotoolbox --enable-cuda-nvcc --enable-cuda --disable-cuda-llvm --nvcc=/usr/local/cuda/bin/nvcc --nvccflags='-O3 --extra-device-vectorization --threads=1 -Xptxas=-O3 --use_fast_math -gencode arch=compute_75,code=compute_75' --enable-vapoursynth --enable-encoder=wrapped_avframe --enable-encoder=h264_nvenc --enable-encoder=hevc_nvenc --enable-encoder=av1_nvenc --enable-encoder=hevc_qsv --enable-encoder=av1_qsv --enable-encoder=h264_qsv --enable-encoder=libx264 --enable-encoder=libx265 --enable-encoder=libvvenc --enable-encoder=libmp3lame --enable-encoder=libvorbis --enable-encoder=libfdk_aac --enable-encoder=libvpx_vp8 --enable-encoder=libvpx_vp9 --enable-encoder=aac --enable-encoder=aac_at
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  libavutil      61. 14.100 / 61. 14.100
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  libavcodec     63. 19.101 / 63. 19.101
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  libavformat    63.  8.100 / 63.  8.100
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  libavdevice    63.  2.100 / 63.  2.100
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  libavfilter    12.  5.100 / 12.  5.100
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  libswscale     10.  2.100 / 10.  2.100
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  libswresample   7.  3.101 /  7.  3.101
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+Input #0, hevc, from 'C:\PLAN\ffmpegPictureUI\tests\output\_tmp\review-2026-11-16\fmt\tmp\gmdecode_5cf0d63ef6554218b591db0b4a0ace1b\gm_tile_3.hevc':
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  Duration: N/A, bitrate: N/A
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  Stream #0:0: Video: hevc (Main), yuv420p(tv), 64x48 [SAR 1:1 DAR 4:3], 25 fps, 25 tbr, 1200k tbn
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+Stream mapping:
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  Stream #0:0 -> #0:0 (hevc (native) -> rawvideo (native))
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+Press [q] to stop, [?] for help
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000001f93da43080] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000001f93da43080] [swscaler @ 000001f93da06340] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000001f93da43080] [swscaler @ 000001f93d9d00c0] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000001f93da43080] [swscaler @ 000001f93d9dd140] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000001f93da43080] [swscaler @ 000001f93daa27c0] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000001f93da43080] [swscaler @ 000001f93daaf840] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000001f93da43080] [swscaler @ 000001f93dabc900] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000001f93da43080] [swscaler @ 000001f93da5f1c0] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000001f93da43080] [swscaler @ 000001f93da6c280] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000001f93da43080] [swscaler @ 000001f93da79300] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000001f93da43080] [swscaler @ 000001f93da863c0] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000001f93da43080] [swscaler @ 000001f93dbbae00] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[swscaler @ 000001f93da43080] [swscaler @ 000001f93dbc7e80] No accelerated colorspace conversion found from yuv420p to gbrpf32le.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+Output #0, rawvideo, to 'C:\PLAN\ffmpegPictureUI\tests\output\_tmp\review-2026-11-16\fmt\tmp\gmdecode_5cf0d63ef6554218b591db0b4a0ace1b\gm_tile_3.rgba':
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  Metadata:
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+    encoder         : Lavf63.8.100
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  Stream #0:0: Video: rawvideo (G3[0][33] / 0x21003347), gbrpf32le(gbr/unknown/unknown, progressive), 64x48 [SAR 1:1 DAR 4:3], q=2-31, 7372 kb/s, 25 fps, 25 tbn
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+    Metadata:
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+      encoder         : Lavc63.19.101 rawvideo
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[out#0/rawvideo @ 000001f93b93d580] video:36KiB audio:0KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: 0.000000%
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+frame=    1 fps=0.0 q=-0.0 Lsize=      36KiB time=00:00:00.04 bitrate=7372.8kbits/s speed=5.14x elapsed=0:00:00.00    
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[GainMap解码] 分块增益图拼接完成：2x2 瓦片 × 64x48 ⇒ 128x96
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[GainMap解码] 恢复: Apple 公式 hdr = sdr_linear × (1 + (headroom−1) × Rec709Inv(gainmap))（非 ISO 2^logBoost；口径 A，p0.5=5）
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[GainMap解码] ✅ HDR 线性像素: 64x48 (1.0=SDR白点, 峰值 812nits, 底图原色=bt709, RGB_D65_SRG_Rel_Lin)
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[cmd] ffmpeg -y -f rawvideo -pix_fmt gbrpf32le -s 64x48 -i "C:\PLAN\ffmpegPictureUI\tests\output\_tmp\review-2026-11-16\fmt\tmp\uhdr_linear_9f587b51e1494f048778630b3839692a\hdr.rgba" -pix_fmt gbrpf32le "C:\PLAN\ffmpegPictureUI\tests\output\_tmp\review-2026-11-16\fmt\tmp\uhdr_linear_9f587b51e1494f048778630b3839692a\hdr.pfm"
+[心跳] 已追加 `-progress pipe:1`（**不改动 [cmd] 行**）；连续 120 秒无进度块 ⇒ 判为挂死
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+ffmpeg version git-2026-10-11-edadf711a9 Copyright (c) 2000-2026 the FFmpeg developers
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  built with clang version 23.1.3 (https://github.com/llvm/llvm-project.git 0d261d1ca552c95a8f007e061c787ac7132fbcbc)
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  configuration: --prefix=/home/dominic/ffmpeg/bin --bindir=/home/dominic/ffmpeg/bin/bin --arch=x86_64 --target-os=mingw32 --cross-prefix=x86_64-w64-mingw32- --enable-cross-compile --cc=/usr/local/llvm-mingw/bin/x86_64-w64-mingw32-clang --cxx=/usr/local/llvm-mingw/bin/x86_64-w64-mingw32-clang++ --ld=/home/dominic/ffmpeg/bin/bin/atw_ldwrapper --ar=/usr/local/llvm-mingw/bin/llvm-ar --ranlib=/usr/local/llvm-mingw/bin/llvm-ranlib --pkg-config=/usr/bin/pkg-config --pkg-config-flags=--static --optflags='-O3 -pipe -DNDEBUG -funwind-tables -fexceptions -finline-functions -march=x86-64-v3 -mtune=generic -ffunction-sections -fdata-sections -mguard=cf' --extra-cflags='-I/home/dominic/ffmpeg/bin/include -DLIBTWOLAME_STATIC -I/usr/local/cuda/include -I/usr/local/cuda/targets/x86_64-linux/include' --extra-cxxflags='-O3 -pipe -DNDEBUG -funwind-tables -fexceptions -finline-functions -march=x86-64-v3 -mtune=generic -ffunction-sections -fdata-sections -mguard=cf' --extra-ldflags='-L/home/dominic/ffmpeg/bin/lib -Wl,--gc-sections -Wl,/guard:cf -fuse-ld=lld' --extra-libs=' -lvulkan-1 -lpthread' --disable-autodetect --enable-gpl --enable-nonfree --enable-version3 --enable-w32threads --disable-pthreads --disable-static --enable-shared --disable-debug --disable-doc --enable-ffplay --enable-sdl2 --enable-ffprobe --enable-ffmpeg --enable-ffnvcodec --disable-cuvid --disable-decoder=libdavs2 --disable-decoder=libuavs3d --disable-encoder=libxavs --disable-encoder=libxavs2 --enable-nvenc --enable-nvdec --enable-libopus --enable-libass --enable-libfreetype --enable-libharfbuzz --enable-libfontconfig --enable-libfribidi --enable-libzimg --enable-libwebp --enable-libjxl --enable-libjxr --enable-libdav1d --enable-libsvtav1 --enable-libvpl --enable-libx264 --enable-libx265 --enable-libvmaf --enable-libvvenc --enable-schannel --enable-d3d11va --enable-d3d12va --enable-mediafoundation --enable-amf --enable-avisynth --enable-dxva2 --enable-vulkan --enable-vulkan-static --glslc=/home/dominic/ffmpeg/build-20261012-full/host-tools/bin/glslc --enable-opencl --enable-opengl --enable-libplacebo --enable-zlib --enable-bzlib --enable-lzma --enable-libxml2 --enable-libmp3lame --enable-libvorbis --enable-libsoxr --enable-libfdk-aac --enable-libaom --enable-libvpx --enable-libopenjpeg --enable-libsrt --enable-librist --enable-libbluray --enable-libaribcaption --enable-lcms2 --enable-librubberband --enable-libvidstab --enable-libssh --enable-libsnappy --enable-libtheora --enable-libspeex --enable-libtwolame --enable-libmysofa --enable-libopenmpt --enable-libdvdread --enable-libdvdnav --enable-chromaprint --enable-libzmq --enable-libzvbi --enable-libgsm --enable-libopencore-amrnb --enable-libopencore-amrwb --enable-libvo-amrwbenc --enable-iconv --enable-audiotoolbox --enable-cuda-nvcc --enable-cuda --disable-cuda-llvm --nvcc=/usr/local/cuda/bin/nvcc --nvccflags='-O3 --extra-device-vectorization --threads=1 -Xptxas=-O3 --use_fast_math -gencode arch=compute_75,code=compute_75' --enable-vapoursynth --enable-encoder=wrapped_avframe --enable-encoder=h264_nvenc --enable-encoder=hevc_nvenc --enable-encoder=av1_nvenc --enable-encoder=hevc_qsv --enable-encoder=av1_qsv --enable-encoder=h264_qsv --enable-encoder=libx264 --enable-encoder=libx265 --enable-encoder=libvvenc --enable-encoder=libmp3lame --enable-encoder=libvorbis --enable-encoder=libfdk_aac --enable-encoder=libvpx_vp8 --enable-encoder=libvpx_vp9 --enable-encoder=aac --enable-encoder=aac_at
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  libavutil      61. 14.100 / 61. 14.100
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  libavcodec     63. 19.101 / 63. 19.101
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  libavformat    63.  8.100 / 63.  8.100
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  libavdevice    63.  2.100 / 63.  2.100
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  libavfilter    12.  5.100 / 12.  5.100
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  libswscale     10.  2.100 / 10.  2.100
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  libswresample   7.  3.101 /  7.  3.101
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[in#0/rawvideo @ 0000021ba9236000] Estimating duration from bitrate, this may be inaccurate
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+Input #0, rawvideo, from 'C:\PLAN\ffmpegPictureUI\tests\output\_tmp\review-2026-11-16\fmt\tmp\uhdr_linear_9f587b51e1494f048778630b3839692a\hdr.rgba':
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  Duration: 00:00:00.04, start: 0.000000, bitrate: 7372 kb/s
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  Stream #0:0: Video: rawvideo (G3[0][33] / 0x21003347), gbrpf32le, 64x48, 7372 kb/s, 25 tbr, 25 tbn
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+Stream mapping:
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  Stream #0:0 -> #0:0 (rawvideo (native) -> pfm (native))
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+Press [q] to stop, [?] for help
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+Output #0, image2, to 'C:\PLAN\ffmpegPictureUI\tests\output\_tmp\review-2026-11-16\fmt\tmp\uhdr_linear_9f587b51e1494f048778630b3839692a\hdr.pfm':
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  Metadata:
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[心跳] ffmpeg 进度收尾（progress=end）
+    encoder         : Lavf63.8.100
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  Stream #0:0: Video: pfm, gbrpf32le(gbr/unknown/unknown, progressive), 64x48, q=2-31, 200 kb/s, 25 fps, 25 tbn
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+    Metadata:
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+      encoder         : Lavc63.19.101 pfm
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[image2 @ 0000021ba92496c0] The specified filename 'C:\PLAN\ffmpegPictureUI\tests\output\_tmp\review-2026-11-16\fmt\tmp\uhdr_linear_9f587b51e1494f048778630b3839692a\hdr.pfm' does not contain an image sequence pattern or a pattern is invalid.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[image2 @ 0000021ba92496c0] Use a pattern such as %03d for an image sequence or use the -update option (with -frames:v 1 if needed) to write a single image.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[out#0/image2 @ 0000021ba924b340] video:36KiB audio:0KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: unknown
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+frame=    1 fps=0.0 q=-0.0 Lsize=N/A time=00:00:00.04 bitrate=N/A speed=4.59x elapsed=0:00:00.00    
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[UltraHDR] ✅ 已解码为线性 HDR PFM（峰值 812 nits），继续编码
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[色彩引擎] 决策：None 色彩损失=None｜线性 HDR 直通携带（容器可承载 HDR 且位深足够 ⇒ 色彩语义不变：标注=源 linear 语义、不做 SDR 化。像素按出口编码交付：RGB 容器=linear 原值；YUV 容器（如 AVIF）经矩阵转换与色度下采样（默认 4:2:0，见 --chroma），不是逐值原样）：无目标色彩空间 → 不改像素，沿用源描述 CICP 优先（容器可承载 + 空间可精确命名）⇒ 只写 CICP，不附自生成 ICC
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[色彩裁决] 裁决=Proceed
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[色彩引擎] 计划为直通（不改像素）⇒ 本次由 ffmpeg 完成重编码
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[cmd] ffmpeg -y -color_primaries bt709 -color_trc linear -colorspace bt709 -color_range pc -i "C:\PLAN\ffmpegPictureUI\tests\output\_tmp\review-2026-11-16\fmt\tmp\uhdr_linear_9f587b51e1494f048778630b3839692a\hdr.pfm" -threads 0 -compression_level 2 -pix_fmt rgb48le -map_metadata 0 -map_metadata:s:v -1 -map_chapters -1 -frames:v 1 "C:\PLAN\ffmpegPictureUI\tests\output\_tmp\review-2026-11-16\fmt\e2e_f1\synth_heic_grid_aux_gainmap.png"
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[心跳] 已追加 `-progress pipe:1`（**不改动 [cmd] 行**）；连续 120 秒无进度块 ⇒ 判为挂死
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+ffmpeg version git-2026-10-11-edadf711a9 Copyright (c) 2000-2026 the FFmpeg developers
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  built with clang version 23.1.3 (https://github.com/llvm/llvm-project.git 0d261d1ca552c95a8f007e061c787ac7132fbcbc)
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  configuration: --prefix=/home/dominic/ffmpeg/bin --bindir=/home/dominic/ffmpeg/bin/bin --arch=x86_64 --target-os=mingw32 --cross-prefix=x86_64-w64-mingw32- --enable-cross-compile --cc=/usr/local/llvm-mingw/bin/x86_64-w64-mingw32-clang --cxx=/usr/local/llvm-mingw/bin/x86_64-w64-mingw32-clang++ --ld=/home/dominic/ffmpeg/bin/bin/atw_ldwrapper --ar=/usr/local/llvm-mingw/bin/llvm-ar --ranlib=/usr/local/llvm-mingw/bin/llvm-ranlib --pkg-config=/usr/bin/pkg-config --pkg-config-flags=--static --optflags='-O3 -pipe -DNDEBUG -funwind-tables -fexceptions -finline-functions -march=x86-64-v3 -mtune=generic -ffunction-sections -fdata-sections -mguard=cf' --extra-cflags='-I/home/dominic/ffmpeg/bin/include -DLIBTWOLAME_STATIC -I/usr/local/cuda/include -I/usr/local/cuda/targets/x86_64-linux/include' --extra-cxxflags='-O3 -pipe -DNDEBUG -funwind-tables -fexceptions -finline-functions -march=x86-64-v3 -mtune=generic -ffunction-sections -fdata-sections -mguard=cf' --extra-ldflags='-L/home/dominic/ffmpeg/bin/lib -Wl,--gc-sections -Wl,/guard:cf -fuse-ld=lld' --extra-libs=' -lvulkan-1 -lpthread' --disable-autodetect --enable-gpl --enable-nonfree --enable-version3 --enable-w32threads --disable-pthreads --disable-static --enable-shared --disable-debug --disable-doc --enable-ffplay --enable-sdl2 --enable-ffprobe --enable-ffmpeg --enable-ffnvcodec --disable-cuvid --disable-decoder=libdavs2 --disable-decoder=libuavs3d --disable-encoder=libxavs --disable-encoder=libxavs2 --enable-nvenc --enable-nvdec --enable-libopus --enable-libass --enable-libfreetype --enable-libharfbuzz --enable-libfontconfig --enable-libfribidi --enable-libzimg --enable-libwebp --enable-libjxl --enable-libjxr --enable-libdav1d --enable-libsvtav1 --enable-libvpl --enable-libx264 --enable-libx265 --enable-libvmaf --enable-libvvenc --enable-schannel --enable-d3d11va --enable-d3d12va --enable-mediafoundation --enable-amf --enable-avisynth --enable-dxva2 --enable-vulkan --enable-vulkan-static --glslc=/home/dominic/ffmpeg/build-20261012-full/host-tools/bin/glslc --enable-opencl --enable-opengl --enable-libplacebo --enable-zlib --enable-bzlib --enable-lzma --enable-libxml2 --enable-libmp3lame --enable-libvorbis --enable-libsoxr --enable-libfdk-aac --enable-libaom --enable-libvpx --enable-libopenjpeg --enable-libsrt --enable-librist --enable-libbluray --enable-libaribcaption --enable-lcms2 --enable-librubberband --enable-libvidstab --enable-libssh --enable-libsnappy --enable-libtheora --enable-libspeex --enable-libtwolame --enable-libmysofa --enable-libopenmpt --enable-libdvdread --enable-libdvdnav --enable-chromaprint --enable-libzmq --enable-libzvbi --enable-libgsm --enable-libopencore-amrnb --enable-libopencore-amrwb --enable-libvo-amrwbenc --enable-iconv --enable-audiotoolbox --enable-cuda-nvcc --enable-cuda --disable-cuda-llvm --nvcc=/usr/local/cuda/bin/nvcc --nvccflags='-O3 --extra-device-vectorization --threads=1 -Xptxas=-O3 --use_fast_math -gencode arch=compute_75,code=compute_75' --enable-vapoursynth --enable-encoder=wrapped_avframe --enable-encoder=h264_nvenc --enable-encoder=hevc_nvenc --enable-encoder=av1_nvenc --enable-encoder=hevc_qsv --enable-encoder=av1_qsv --enable-encoder=h264_qsv --enable-encoder=libx264 --enable-encoder=libx265 --enable-encoder=libvvenc --enable-encoder=libmp3lame --enable-encoder=libvorbis --enable-encoder=libfdk_aac --enable-encoder=libvpx_vp8 --enable-encoder=libvpx_vp9 --enable-encoder=aac --enable-encoder=aac_at
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  libavutil      61. 14.100 / 61. 14.100
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  libavcodec     63. 19.101 / 63. 19.101
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  libavformat    63.  8.100 / 63.  8.100
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  libavdevice    63.  2.100 / 63.  2.100
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  libavfilter    12.  5.100 / 12.  5.100
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  libswscale     10.  2.100 / 10.  2.100
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  libswresample   7.  3.101 /  7.  3.101
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+Input #0, pfm_pipe, from 'C:\PLAN\ffmpegPictureUI\tests\output\_tmp\review-2026-11-16\fmt\tmp\uhdr_linear_9f587b51e1494f048778630b3839692a\hdr.pfm':
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  Duration: N/A, bitrate: N/A
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  Stream #0:0: Video: pfm, gbrpf32le(pc, bt709/bt709/linear), 64x48, 25 fps, 25 tbr, 25 tbn
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+Incompatible pixel format 'rgb48le' for codec 'png', auto-selecting format 'rgb48be'
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+Stream mapping:
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  Stream #0:0 -> #0:0 (pfm (native) -> png (native))
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+Press [q] to stop, [?] for help
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+Output #0, image2, to 'C:\PLAN\ffmpegPictureUI\tests\output\_tmp\review-2026-11-16\fmt\e2e_f1\synth_heic_grid_aux_gainmap.png':
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  Metadata:
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+    encoder         : Lavf63.8.100
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+  Stream #0:0: Video: png, rgb48be(pc, gbr/bt709/linear, progressive), 64x48, q=2-31, 200 kb/s, 25 fps, 25 tbn
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+    Metadata:
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+      encoder         : Lavc63.19.101 png
+[心跳] ffmpeg 进度收尾（progress=end）
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[image2 @ 0000024ac3a8b240] The specified filename 'C:\PLAN\ffmpegPictureUI\tests\output\_tmp\review-2026-11-16\fmt\e2e_f1\synth_heic_grid_aux_gainmap.png' does not contain an image sequence pattern or a pattern is invalid.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[image2 @ 0000024ac3a8b240] Use a pattern such as %03d for an image sequence or use the -update option (with -frames:v 1 if needed) to write a single image.
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+[out#0/image2 @ 0000024ac3a8ca80] video:13KiB audio:0KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: unknown
+[1/1] synth_heic_grid_aux_gainmap.heic → 处理中
+frame=    1 fps=0.0 q=-0.0 Lsize=N/A time=00:00:00.04 bitrate=N/A speed=3.52x elapsed=0:00:00.01    
+[1/1] synth_heic_grid_aux_gainmap.heic → 已完成
+[exiftool] 从源文件恢复元数据（安全模式：编码器保护，不覆盖色彩标签）...
+[1/1] synth_heic_grid_aux_gainmap.heic → 已完成
+[2/1] synth_heic_grid_aux_gainmap.heic → 已完成
+[exiftool] 安全复制元数据（已排除色彩标签，保护编码器输出）: hdr.pfm → synth_heic_grid_aux_gainmap.png
+[2/1] synth_heic_grid_aux_gainmap.heic → 已完成
+0 image files updated
+    1 image files unchanged
+[2/1] synth_heic_grid_aux_gainmap.heic → 已完成
+Warning: No writable tags set from C:\PLAN\ffmpegPictureUI\tests\output\_tmp\review-2026-11-16\fmt\tmp\uhdr_linear_9f587b51e1494f048778630b3839692a\hdr.pfm
+[2/1] synth_heic_grid_aux_gainmap.heic → 已完成
+[exiftool] ⚠️ 本次复制 **0 项落地**（exiftool 报「0 image files updated」而退出码 0） ⇒ 产物 synth_heic_grid_aux_gainmap.png 未携带源元数据（不是「复制成功」）
+[2/1] synth_heic_grid_aux_gainmap.heic → 已完成
+[exiftool] 元数据恢复完成
+[pngopt] 已压缩（档位 max）：13167 → 11675 字节（-11.3%，耗时 0.0s）
+[2/1] synth_heic_grid_aux_gainmap.heic → 已完成
+[png3] 已剥离与 cICP 并存、且被其取代的 2 个色彩块（gAMA/cHRM/sRGB）（规范优先级 cICP>iCCP>sRGB>cHRM/gAMA）
+[exiftool] 嵌入 ICC Profile: stdbuilt_bt709_linear.v44cicp.icc → synth_heic_grid_aux_gainmap.png
+[2/1] synth_heic_grid_aux_gainmap.heic → 已完成
+1 image files updated
+[2/1] synth_heic_grid_aux_gainmap.heic → 已完成
+[色彩] 直通携带已并写出口语义 ICC（stdicc bt709/linear）与 cICP——双描述一致，兼容只认 iCCP 的读图器
+[2/1] synth_heic_grid_aux_gainmap.heic → 已完成
+═══ 队列处理完毕 — 完成 1 项, 失败 0 项

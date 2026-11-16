@@ -1,0 +1,175 @@
+diff --git a/src/FfmpegGui/Services/PngCicpService.cs b/src/FfmpegGui/Services/PngCicpService.cs
+index 06cf9ef..8eba9ab 100644
+--- a/src/FfmpegGui/Services/PngCicpService.cs
++++ b/src/FfmpegGui/Services/PngCicpService.cs
+@@ -1,5 +1,7 @@
+ using System.Buffers.Binary;
++using System.IO.Compression;
+ using System.Text;
++using System.Threading;
+ 
+ namespace FfmpegGui.Services
+ {
+@@ -122,6 +124,162 @@ namespace FfmpegGui.Services
+             }
+         }
+ 
++        /// <summary>
++        /// 纯托管写入/替换 PNG 的 <c>iCCP</c>（ICC profile）：profile name + NUL + 压缩方法 0 +
++        /// zlib 压缩的 ICC 字节。用于标准 ICC 后置落盘，绕过 exiftool 的 Perl 运行时依赖；
++        /// PNG/APNG 均适用。失败不修改文件。
++        /// </summary>
++        public static bool TryWriteIccp(string pngPath, string iccProfilePath, string profileName = "icc")
++        {
++            try
++            {
++                var icc = File.ReadAllBytes(iccProfilePath);
++                if (icc.Length < 132) return false;
++                return TryWriteIccpBytes(pngPath, icc, profileName);
++            }
++            catch { return false; }
++        }
++
++        /// <summary>
++        /// 直接从 ICC 字节写 iCCP（2026-11-15）。用于标准 ICC 已在内存中生成、但落临时文件
++        /// 被 Windows ACL/Defender 拒绝的场景：不落盘 ICC，直接把字节压进 PNG。
++        /// </summary>
++        public static bool TryWriteIccpBytes(string pngPath, byte[] icc, string profileName = "icc")
++        {
++            if (icc.Length < 132) return false;
++            for (int attempt = 0; ; attempt++)
++            {
++                try
++                {
++                    var name = string.IsNullOrWhiteSpace(profileName) ? "icc" : profileName;
++                    if (name.Length > 79) name = name[..79];
++                    using var compressed = new MemoryStream();
++                    using (var z = new ZLibStream(compressed, CompressionLevel.Optimal, leaveOpen: true))
++                        z.Write(icc, 0, icc.Length);
++                    var payload = new MemoryStream();
++                    payload.Write(Encoding.ASCII.GetBytes(name));
++                    payload.WriteByte(0);
++                    payload.WriteByte(0); // compression method: zlib
++                    compressed.Position = 0;
++                    compressed.CopyTo(payload);
++                    var chunk = BuildChunk("iCCP", payload.ToArray());
++
++                    var data = File.ReadAllBytes(pngPath);
++                    if (!TryParseHeader(data, out _, out _, out var ihdrEnd)) return false;
++
++                    // 移除旧 iCCP，再在 IHDR 后插入（必须在 IDAT 前）。
++                    using var ms = new MemoryStream(data.Length + chunk.Length + 16);
++                    ms.Write(data, 0, ihdrEnd);
++                    int pos = ihdrEnd;
++                    while (pos + 12 <= data.Length)
++                    {
++                        int len = BinaryPrimitives.ReadInt32BigEndian(data.AsSpan(pos));
++                        var type = Encoding.ASCII.GetString(data, pos + 4, 4);
++                        if (type == "iCCP") { pos += 12 + len; continue; }
++                        ms.Write(data, pos, 12 + len);
++                        pos += 12 + len;
++                    }
++                    var buf = ms.ToArray();
++                    using var outMs = new MemoryStream(buf.Length + chunk.Length);
++                    outMs.Write(buf, 0, ihdrEnd);
++                    outMs.Write(chunk);
++                    outMs.Write(buf, ihdrEnd, buf.Length - ihdrEnd);
++                    File.WriteAllBytes(pngPath, outMs.ToArray());
++                    return true;
++                }
++                catch (IOException) when (attempt < 2)
++                {
++                    // exiftool/pngopt 退出瞬间可能仍持有输出句柄；共享冲突是暂时的，退避后重试。
++                    Thread.Sleep(100 * (attempt + 1));
++                }
++                catch
++                {
++                    return false;
++                }
++            }
++        }
++
++        /// <summary>
++        /// 移除 PNG/APNG 中的 <c>iCCP</c>，仅保留 <c>cICP</c>。
++        /// 用于 2026-11-15 的「PNG/APNG 只在 CICP 无法表示时使用 ICC」：CICP 已精确表达时，
++        /// ffmpeg 仍可能沿 `-map_metadata:s:v` 把源 iCCP 带进产物，必须在编码后剥掉。
++        /// 仅当文件已有 cICP 时才允许移除（否则会留下零色彩描述）；无 iCCP 时不动文件。
++        /// </summary>
++        public static bool TryRemoveIccp(string pngPath, out int removed)
++        {
++            removed = 0;
++            try
++            {
++                var data = File.ReadAllBytes(pngPath);
++                if (!TryParseHeader(data, out _, out _, out var ihdrEnd)) return false;
++
++                bool hasCicp = false;
++                for (int pos = ihdrEnd; pos + 12 <= data.Length;)
++                {
++                    int len = BinaryPrimitives.ReadInt32BigEndian(data.AsSpan(pos));
++                    var type = Encoding.ASCII.GetString(data, pos + 4, 4);
++                    if (type == "cICP") { hasCicp = true; break; }
++                    if (type == "IDAT" || type == "IEND") break;
++                    pos += 12 + len;
++                }
++                if (!hasCicp) return true;
++
++                using var ms = new MemoryStream(data.Length);
++                ms.Write(data, 0, ihdrEnd);
++                for (int pos = ihdrEnd; pos + 12 <= data.Length;)
++                {
++                    int len = BinaryPrimitives.ReadInt32BigEndian(data.AsSpan(pos));
++                    if (pos + 12 + len > data.Length) return false;
++                    var type = Encoding.ASCII.GetString(data, pos + 4, 4);
++                    if (type == "iCCP") { removed++; pos += 12 + len; continue; }
++                    ms.Write(data, pos, 12 + len);
++                    pos += 12 + len;
++                }
++                if (removed == 0) return true;
++                File.WriteAllBytes(pngPath, ms.ToArray());
++                return true;
++            }
++            catch { return false; }
++        }
++
++        /// <summary>
++        /// 读回 PNG/APNG 的 <c>iCCP</c> 并解压出原始 ICC 字节。用于源 ICC 的纯托管提取，
++        /// 避免 exiftool 在目标文件上留下 `_exiftool_tmp` 后反而读不到自己刚写出的 profile。
++        /// 无 iCCP、压缩方法非 0、zlib 解压失败或损坏 → null（不猜）。
++        /// </summary>
++        public static byte[]? TryReadIccp(string pngPath)
++        {
++            try
++            {
++                var data = File.ReadAllBytes(pngPath);
++                if (!TryParseHeader(data, out _, out _, out var ihdrEnd)) return null;
++                int pos = ihdrEnd;
++                while (pos + 12 <= data.Length)
++                {
++                    int len = BinaryPrimitives.ReadInt32BigEndian(data.AsSpan(pos));
++                    if (len < 0 || pos + 12 + len > data.Length) return null;
++                    var type = Encoding.ASCII.GetString(data, pos + 4, 4);
++                    if (type == "iCCP")
++                    {
++                        var payload = data.AsSpan(pos + 8, len);
++                        int nul = payload.IndexOf((byte)0);
++                        if (nul < 0 || nul + 2 > payload.Length) return null;
++                        if (payload[nul + 1] != 0) return null;      // compression method must be 0
++                        var compressed = payload[(nul + 2)..].ToArray();
++                        using var input = new MemoryStream(compressed);
++                        using var z = new ZLibStream(input, CompressionMode.Decompress);
++                        using var output = new MemoryStream();
++                        z.CopyTo(output);
++                        return output.ToArray();
++                    }
++                    pos += 12 + len;
++                    if (type == "IEND") break;
++                }
++                return null;
++            }
++            catch { return null; }
++        }
++
+         /// <summary>
+         /// 读回 PNG 已带 <c>cICP</c> chunk 的 (primaries, transfer) 载荷值（matrix/full-range 不参与判定）。
+         /// <para>

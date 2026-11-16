@@ -1,0 +1,5 @@
+[dngtool] unknown option: --version
+[dngtool] unknown option: --version
+[dngtool] unknown option: --version
+[dngtool] unknown option: --version
+[dngtool] unknown option: --version

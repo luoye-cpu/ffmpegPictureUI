@@ -1,0 +1,20 @@
+tools-root=C:\PLAN\ffmpegPictureUI
+file=C:\PLAN\ffmpegPictureUI\tests\data\synth_heic_grid_aux_noxmp.heic size=15469 expect=auxapplegrid
+isobmff=True brands=heic,mif1,heic
+determinate=True failReason=-
+hasGainMap=True form=aux-apple-hdrgainmap primary=1 tmap=-1 gainmapItem=3
+codec=hvc1 ffmpegFmt=hevc tmapPayload=-1 gmData=-1
+grid=True rows=2 cols=2 gridW=128 gridH=96 tileW=64 tileH=48 tiles=4 gridSizeFromTail=True auxBase=1
+primaryType=hvc1 primaryIsGrid=False irot=-1 imir=-1 auxAlpha=False truncated=False
+PASS 识别为 ISO-BMFF（ftyp 存在）
+PASS aux+grid 完整提取 ⇒ determinate=true（failReason=-）
+PASS 检测到增益图
+PASS 承载形式为 aux-apple-hdrgainmap（实 aux-apple-hdrgainmap）
+PASS 增益图承载为 grid（实 True）
+PASS aux/grid item 已定位且为同一项（aux=3 grid=3）
+PASS auxl 指向主图（auxBase=1 primary=1）
+PASS grid 走瓦片而不是单 item 裸流（tiles=4 gmData=-1）
+PASS grid 几何 = 2x2 × 64x48 ⇒ 128x96 / 4 瓦片（实 2x2 × 64x48 ⇒ 128x96 / 4）
+PASS flags=0 尾宽高已读（gridSizeFromTail=True）
+PASS 无 Exif 件仍可解（ExifItemId=-1）
+PROBE RESULT: pass=11 fail=0

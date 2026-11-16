@@ -1,0 +1,2 @@
+[gate] exe=C:\PLAN\ffmpegPictureUI/src/FfmpegGui/bin/Debug/net11.0/win-x64/FfmpegGui.exe (Debug fallback)
+FAIL 缺被测 exe（不静默给绿）

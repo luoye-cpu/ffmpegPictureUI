@@ -1,0 +1,24 @@
+正在检测外部工具...
+  ffmpeg: ✅ [app-adjacent]
+  cjxl: ✅ [manual]
+  djxl: ✅ [manual]
+  cjpegli: ✅ [manual]
+  exiftool: ✅ [manual]
+  JxrEncApp: ✅ [manual]
+  avifenc: ✅ [manual]
+  dngtool: ✅ [PLAN]
+正在准备任务队列...
+找到 1 个输入文件，开始处理...
+[1/1] ppsrc.png → 待处理
+[1/1] ppsrc.png → 处理中
+[1/1] ppsrc.png → 处理中
+[色彩引擎] 决策：Reject 色彩损失=None｜S2 携带：源无 ICC 可携带，且不满足"隐含 sRGB + 容器未标注语义明确"（avif 的未标注语义不统一）
+[1/1] ppsrc.png → 处理中
+[色彩裁决] 裁决=Reject
+[1/1] ppsrc.png → 处理中
+❌ [色彩引擎] ❌ 契约拒绝（不出产物）
+[1/1] ppsrc.png → 处理中
+[色彩引擎]    建议：为源补 ICC；或改 S1（可命名空间用标准 ICC 描述）；S2 不生成 ICC、不改像素
+[1/1] ppsrc.png → 失败 (退出码 91)
+❌ [1/1] ppsrc.png 失败 (退出码 91) (<1s)
+═══ 队列处理完毕 — 完成 1 项, 失败 1 项

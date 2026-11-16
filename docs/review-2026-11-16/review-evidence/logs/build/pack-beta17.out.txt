@@ -1,0 +1,135 @@
+   i 未指定 -Version，已从 csproj 读取: 1.6.0-beta17
+
+═══════════════════════════════════════════
+  FFmpegPictureUI 打包工具 (2 版本发布)
+═══════════════════════════════════════════
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  单文件版 (NativeAOT, 不含 PLAN)
+  v1.6.0-beta17 | x64 | FFmpegPictureUI-v1.6.0-beta17-x64
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[1/4] dotnet publish (NativeAOT)...
+  正在确定要还原的项目…
+  已还原 C:\PLAN\ffmpegPictureUI\src\FfmpegGui\FfmpegGui.csproj (用时 3.51 秒)。
+C:\PLAN\ffmpegPictureUI\src\FfmpegGui\Services\ColorMapping\RawColorPipeline.cs(830,83): warning CS8604: “string CjxlService.BuildCjxlArguments(string input, string output, FfmpegOptions opts, ColorMetadata hdrMeta = default(ColorMetadata), string? iccPath = null, string? colorSpaceOverride = null, int intensityTargetOverride = 0, bool forPreview = false, Action<string>? log = null)”中的形参“opts”可能传入 null 引用实参。 [C:\PLAN\ffmpegPictureUI\src\FfmpegGui\FfmpegGui.csproj]
+C:\PLAN\ffmpegPictureUI\src\FfmpegGui\Services\QueueProcessor.cs(1580,43): warning CS8602: 解引用可能出现空引用。 [C:\PLAN\ffmpegPictureUI\src\FfmpegGui\FfmpegGui.csproj]
+C:\PLAN\ffmpegPictureUI\src\FfmpegGui\Services\QueueProcessor.cs(2680,87): warning CS8602: 解引用可能出现空引用。 [C:\PLAN\ffmpegPictureUI\src\FfmpegGui\FfmpegGui.csproj]
+C:\PLAN\ffmpegPictureUI\src\FfmpegGui\Win32TrayIcon.cs(78,13): warning CA1416: 可在所有平台上访问此调用站点。"Thread.SetApartmentState(ApartmentState)" 仅在 'windows' 上受支持。 (https://learn.microsoft.com/dotnet/fundamentals/code-analysis/quality-rules/ca1416) [C:\PLAN\ffmpegPictureUI\src\FfmpegGui\FfmpegGui.csproj]
+C:\PLAN\ffmpegPictureUI\src\FfmpegGui\Win32TrayIcon.cs(150,29): warning IL3002: Using member 'System.Runtime.InteropServices.Marshal.GetHINSTANCE(Module)' which has 'RequiresAssemblyFilesAttribute' can break functionality when embedded in a single-file app. Windows only assigns HINSTANCE to assemblies loaded from disk. This API will return -1 for modules without a file on disk. [C:\PLAN\ffmpegPictureUI\src\FfmpegGui\FfmpegGui.csproj]
+  FfmpegGui -> C:\PLAN\ffmpegPictureUI\src\FfmpegGui\bin\Release\net11.0\win-x64\FfmpegGui.dll
+
+已成功生成。
+
+C:\PLAN\ffmpegPictureUI\src\FfmpegGui\Services\ColorMapping\RawColorPipeline.cs(830,83): warning CS8604: “string CjxlService.BuildCjxlArguments(string input, string output, FfmpegOptions opts, ColorMetadata hdrMeta = default(ColorMetadata), string? iccPath = null, string? colorSpaceOverride = null, int intensityTargetOverride = 0, bool forPreview = false, Action<string>? log = null)”中的形参“opts”可能传入 null 引用实参。 [C:\PLAN\ffmpegPictureUI\src\FfmpegGui\FfmpegGui.csproj]
+C:\PLAN\ffmpegPictureUI\src\FfmpegGui\Services\QueueProcessor.cs(1580,43): warning CS8602: 解引用可能出现空引用。 [C:\PLAN\ffmpegPictureUI\src\FfmpegGui\FfmpegGui.csproj]
+C:\PLAN\ffmpegPictureUI\src\FfmpegGui\Services\QueueProcessor.cs(2680,87): warning CS8602: 解引用可能出现空引用。 [C:\PLAN\ffmpegPictureUI\src\FfmpegGui\FfmpegGui.csproj]
+C:\PLAN\ffmpegPictureUI\src\FfmpegGui\Win32TrayIcon.cs(78,13): warning CA1416: 可在所有平台上访问此调用站点。"Thread.SetApartmentState(ApartmentState)" 仅在 'windows' 上受支持。 (https://learn.microsoft.com/dotnet/fundamentals/code-analysis/quality-rules/ca1416) [C:\PLAN\ffmpegPictureUI\src\FfmpegGui\FfmpegGui.csproj]
+C:\PLAN\ffmpegPictureUI\src\FfmpegGui\Win32TrayIcon.cs(150,29): warning IL3002: Using member 'System.Runtime.InteropServices.Marshal.GetHINSTANCE(Module)' which has 'RequiresAssemblyFilesAttribute' can break functionality when embedded in a single-file app. Windows only assigns HINSTANCE to assemblies loaded from disk. This API will return -1 for modules without a file on disk. [C:\PLAN\ffmpegPictureUI\src\FfmpegGui\FfmpegGui.csproj]
+    5 个警告
+    0 个错误
+
+已用时间 00:01:20.13
+  正在确定要还原的项目…
+  已还原 C:\PLAN\ffmpegPictureUI\src\FfmpegGui\FfmpegGui.csproj (用时 613 毫秒)。
+C:\PLAN\ffmpegPictureUI\src\FfmpegGui\Services\ColorMapping\RawColorPipeline.cs(830,83): warning CS8604: “string CjxlService.BuildCjxlArguments(string input, string output, FfmpegOptions opts, ColorMetadata hdrMeta = default(ColorMetadata), string? iccPath = null, string? colorSpaceOverride = null, int intensityTargetOverride = 0, bool forPreview = false, Action<string>? log = null)”中的形参“opts”可能传入 null 引用实参。 [C:\PLAN\ffmpegPictureUI\src\FfmpegGui\FfmpegGui.csproj]
+C:\PLAN\ffmpegPictureUI\src\FfmpegGui\Services\QueueProcessor.cs(1580,43): warning CS8602: 解引用可能出现空引用。 [C:\PLAN\ffmpegPictureUI\src\FfmpegGui\FfmpegGui.csproj]
+C:\PLAN\ffmpegPictureUI\src\FfmpegGui\Services\QueueProcessor.cs(2680,87): warning CS8602: 解引用可能出现空引用。 [C:\PLAN\ffmpegPictureUI\src\FfmpegGui\FfmpegGui.csproj]
+C:\PLAN\ffmpegPictureUI\src\FfmpegGui\Win32TrayIcon.cs(78,13): warning CA1416: 可在所有平台上访问此调用站点。"Thread.SetApartmentState(ApartmentState)" 仅在 'windows' 上受支持。 (https://learn.microsoft.com/dotnet/fundamentals/code-analysis/quality-rules/ca1416) [C:\PLAN\ffmpegPictureUI\src\FfmpegGui\FfmpegGui.csproj]
+C:\PLAN\ffmpegPictureUI\src\FfmpegGui\Win32TrayIcon.cs(150,29): warning IL3002: Using member 'System.Runtime.InteropServices.Marshal.GetHINSTANCE(Module)' which has 'RequiresAssemblyFilesAttribute' can break functionality when embedded in a single-file app. Windows only assigns HINSTANCE to assemblies loaded from disk. This API will return -1 for modules without a file on disk. [C:\PLAN\ffmpegPictureUI\src\FfmpegGui\FfmpegGui.csproj]
+  Generating native code
+ILC : warning IL3002: FfmpegGui.Win32TrayIcon.PumpLoopCore(Object): Using member 'System.Runtime.InteropServices.Marshal.GetHINSTANCE(Module)' which has 'RequiresAssemblyFilesAttribute' can break functionality when embedded in a single-file app. Windows only assigns HINSTANCE to assemblies loaded from disk. This API will return -1 for modules without a file on disk. [C:\PLAN\ffmpegPictureUI\src\FfmpegGui\FfmpegGui.csproj]
+  ILC: Method '[Avalonia.Win32]Avalonia.Win32.DComposition.Impl.__MicroComIDCompositionDesktopDeviceVTable.CreateTargetForHwnd(void*,native int,bool,void**)' will always throw because: UnmanagedCallersOnly attribute specified on method with non-blittable parameters 'Int32 Avalonia.Win32.DComposition.Impl.__MicroComIDCompositionDesktopDeviceVTable.CreateTargetForHwnd(Void*, IntPtr, Boolean, Void**)'
+  ILC: Method '[Avalonia.Win32]Avalonia.Win32.DComposition.Impl.__MicroComIDCompositionDeviceVTable.CreateTargetForHwnd(void*,native int,bool,void**)' will always throw because: UnmanagedCallersOnly attribute specified on method with non-blittable parameters 'Int32 Avalonia.Win32.DComposition.Impl.__MicroComIDCompositionDeviceVTable.CreateTargetForHwnd(Void*, IntPtr, Boolean, Void**)'
+  FfmpegGui -> C:\PLAN\ffmpegPictureUI\publish\build\FFmpegPictureUI-v1.6.0-beta17-x64\
+   ✅ 发布完成 → C:\PLAN\ffmpegPictureUI\publish\build\FFmpegPictureUI-v1.6.0-beta17-x64
+   ✅ 已删除调试符号，节省 100.1MB
+
+[2/4] 跳过 (单文件版不含 PLAN)
+
+[3/4] 跳过 (单文件版不生成使用说明)
+
+[3.5/4] 随附法律文件...
+   ✅ LICENSE
+   ✅ NOTICE
+   ✅ THIRD-PARTY-NOTICES.md
+   ✅ licenses/ (9 个许可原文)
+
+[4/4] 压缩打包...
+   ✅ 完整性闸通过：18 个文件，必需项齐备
+
+7-Zip 26.05 (x64) : Copyright (c) 1999-2026 Igor Pavlov : 2026-10-21
+
+Scanning the drive:
+3 folders, 18 files, 43723298 bytes (42 MiB)
+
+Creating archive: C:\PLAN\ffmpegPictureUI\publish\FFmpegPictureUI-v1.6.0-beta17-x64.7z
+
+Add new data to archive: 3 folders, 18 files, 43723298 bytes (42 MiB)
+
+
+Files read from disk: 18
+Archive size: 11640616 bytes (12 MiB)
+Everything is Ok
+   ✅ 压缩完成 → C:\PLAN\ffmpegPictureUI\publish\FFmpegPictureUI-v1.6.0-beta17-x64.7z
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  [app] 打包完成!
+  产物: C:\PLAN\ffmpegPictureUI\publish\build\FFmpegPictureUI-v1.6.0-beta17-x64
+  压缩包: C:\PLAN\ffmpegPictureUI\publish\FFmpegPictureUI-v1.6.0-beta17-x64.7z (11.1 MB)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  完整版 (NativeAOT + PLAN 组件包)
+  v1.6.0-beta17 | x64 | FFmpegPictureUI-v1.6.0-beta17-x64-full
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[1/4] dotnet publish (NativeAOT)...
+  正在确定要还原的项目…
+  已还原 C:\PLAN\ffmpegPictureUI\src\FfmpegGui\FfmpegGui.csproj (用时 161 毫秒)。
+C:\PLAN\ffmpegPictureUI\src\FfmpegGui\Services\ColorMapping\RawColorPipeline.cs(830,83): warning CS8604: “string CjxlService.BuildCjxlArguments(string input, string output, FfmpegOptions opts, ColorMetadata hdrMeta = default(ColorMetadata), string? iccPath = null, string? colorSpaceOverride = null, int intensityTargetOverride = 0, bool forPreview = false, Action<string>? log = null)”中的形参“opts”可能传入 null 引用实参。 [C:\PLAN\ffmpegPictureUI\src\FfmpegGui\FfmpegGui.csproj]
+C:\PLAN\ffmpegPictureUI\src\FfmpegGui\Services\QueueProcessor.cs(1580,43): warning CS8602: 解引用可能出现空引用。 [C:\PLAN\ffmpegPictureUI\src\FfmpegGui\FfmpegGui.csproj]
+C:\PLAN\ffmpegPictureUI\src\FfmpegGui\Services\QueueProcessor.cs(2680,87): warning CS8602: 解引用可能出现空引用。 [C:\PLAN\ffmpegPictureUI\src\FfmpegGui\FfmpegGui.csproj]
+C:\PLAN\ffmpegPictureUI\src\FfmpegGui\Win32TrayIcon.cs(78,13): warning CA1416: 可在所有平台上访问此调用站点。"Thread.SetApartmentState(ApartmentState)" 仅在 'windows' 上受支持。 (https://learn.microsoft.com/dotnet/fundamentals/code-analysis/quality-rules/ca1416) [C:\PLAN\ffmpegPictureUI\src\FfmpegGui\FfmpegGui.csproj]
+C:\PLAN\ffmpegPictureUI\src\FfmpegGui\Win32TrayIcon.cs(150,29): warning IL3002: Using member 'System.Runtime.InteropServices.Marshal.GetHINSTANCE(Module)' which has 'RequiresAssemblyFilesAttribute' can break functionality when embedded in a single-file app. Windows only assigns HINSTANCE to assemblies loaded from disk. This API will return -1 for modules without a file on disk. [C:\PLAN\ffmpegPictureUI\src\FfmpegGui\FfmpegGui.csproj]
+  FfmpegGui -> C:\PLAN\ffmpegPictureUI\src\FfmpegGui\bin\Release\net11.0\win-x64\FfmpegGui.dll
+
+已成功生成。
+
+C:\PLAN\ffmpegPictureUI\src\FfmpegGui\Services\ColorMapping\RawColorPipeline.cs(830,83): warning CS8604: “string CjxlService.BuildCjxlArguments(string input, string output, FfmpegOptions opts, ColorMetadata hdrMeta = default(ColorMetadata), string? iccPath = null, string? colorSpaceOverride = null, int intensityTargetOverride = 0, bool forPreview = false, Action<string>? log = null)”中的形参“opts”可能传入 null 引用实参。 [C:\PLAN\ffmpegPictureUI\src\FfmpegGui\FfmpegGui.csproj]
+C:\PLAN\ffmpegPictureUI\src\FfmpegGui\Services\QueueProcessor.cs(1580,43): warning CS8602: 解引用可能出现空引用。 [C:\PLAN\ffmpegPictureUI\src\FfmpegGui\FfmpegGui.csproj]
+C:\PLAN\ffmpegPictureUI\src\FfmpegGui\Services\QueueProcessor.cs(2680,87): warning CS8602: 解引用可能出现空引用。 [C:\PLAN\ffmpegPictureUI\src\FfmpegGui\FfmpegGui.csproj]
+C:\PLAN\ffmpegPictureUI\src\FfmpegGui\Win32TrayIcon.cs(78,13): warning CA1416: 可在所有平台上访问此调用站点。"Thread.SetApartmentState(ApartmentState)" 仅在 'windows' 上受支持。 (https://learn.microsoft.com/dotnet/fundamentals/code-analysis/quality-rules/ca1416) [C:\PLAN\ffmpegPictureUI\src\FfmpegGui\FfmpegGui.csproj]
+C:\PLAN\ffmpegPictureUI\src\FfmpegGui\Win32TrayIcon.cs(150,29): warning IL3002: Using member 'System.Runtime.InteropServices.Marshal.GetHINSTANCE(Module)' which has 'RequiresAssemblyFilesAttribute' can break functionality when embedded in a single-file app. Windows only assigns HINSTANCE to assemblies loaded from disk. This API will return -1 for modules without a file on disk. [C:\PLAN\ffmpegPictureUI\src\FfmpegGui\FfmpegGui.csproj]
+    5 个警告
+    0 个错误
+
+已用时间 00:00:30.59
+  正在确定要还原的项目…
+  已还原 C:\PLAN\ffmpegPictureUI\src\FfmpegGui\FfmpegGui.csproj (用时 285 毫秒)。
+C:\PLAN\ffmpegPictureUI\src\FfmpegGui\Services\ColorMapping\RawColorPipeline.cs(830,83): warning CS8604: “string CjxlService.BuildCjxlArguments(string input, string output, FfmpegOptions opts, ColorMetadata hdrMeta = default(ColorMetadata), string? iccPath = null, string? colorSpaceOverride = null, int intensityTargetOverride = 0, bool forPreview = false, Action<string>? log = null)”中的形参“opts”可能传入 null 引用实参。 [C:\PLAN\ffmpegPictureUI\src\FfmpegGui\FfmpegGui.csproj]
+C:\PLAN\ffmpegPictureUI\src\FfmpegGui\Services\QueueProcessor.cs(1580,43): warning CS8602: 解引用可能出现空引用。 [C:\PLAN\ffmpegPictureUI\src\FfmpegGui\FfmpegGui.csproj]
+C:\PLAN\ffmpegPictureUI\src\FfmpegGui\Services\QueueProcessor.cs(2680,87): warning CS8602: 解引用可能出现空引用。 [C:\PLAN\ffmpegPictureUI\src\FfmpegGui\FfmpegGui.csproj]
+C:\PLAN\ffmpegPictureUI\src\FfmpegGui\Win32TrayIcon.cs(78,13): warning CA1416: 可在所有平台上访问此调用站点。"Thread.SetApartmentState(ApartmentState)" 仅在 'windows' 上受支持。 (https://learn.microsoft.com/dotnet/fundamentals/code-analysis/quality-rules/ca1416) [C:\PLAN\ffmpegPictureUI\src\FfmpegGui\FfmpegGui.csproj]
+C:\PLAN\ffmpegPictureUI\src\FfmpegGui\Win32TrayIcon.cs(150,29): warning IL3002: Using member 'System.Runtime.InteropServices.Marshal.GetHINSTANCE(Module)' which has 'RequiresAssemblyFilesAttribute' can break functionality when embedded in a single-file app. Windows only assigns HINSTANCE to assemblies loaded from disk. This API will return -1 for modules without a file on disk. [C:\PLAN\ffmpegPictureUI\src\FfmpegGui\FfmpegGui.csproj]
+  Generating native code
+ILC : warning IL3002: FfmpegGui.Win32TrayIcon.PumpLoopCore(Object): Using member 'System.Runtime.InteropServices.Marshal.GetHINSTANCE(Module)' which has 'RequiresAssemblyFilesAttribute' can break functionality when embedded in a single-file app. Windows only assigns HINSTANCE to assemblies loaded from disk. This API will return -1 for modules without a file on disk. [C:\PLAN\ffmpegPictureUI\src\FfmpegGui\FfmpegGui.csproj]
+  ILC: Method '[Avalonia.Win32]Avalonia.Win32.DComposition.Impl.__MicroComIDCompositionDesktopDeviceVTable.CreateTargetForHwnd(void*,native int,bool,void**)' will always throw because: UnmanagedCallersOnly attribute specified on method with non-blittable parameters 'Int32 Avalonia.Win32.DComposition.Impl.__MicroComIDCompositionDesktopDeviceVTable.CreateTargetForHwnd(Void*, IntPtr, Boolean, Void**)'
+  ILC: Method '[Avalonia.Win32]Avalonia.Win32.DComposition.Impl.__MicroComIDCompositionDeviceVTable.CreateTargetForHwnd(void*,native int,bool,void**)' will always throw because: UnmanagedCallersOnly attribute specified on method with non-blittable parameters 'Int32 Avalonia.Win32.DComposition.Impl.__MicroComIDCompositionDeviceVTable.CreateTargetForHwnd(Void*, IntPtr, Boolean, Void**)'
+  FfmpegGui -> C:\PLAN\ffmpegPictureUI\publish\build\FFmpegPictureUI-v1.6.0-beta17-x64-full\
+   ✅ 发布完成 → C:\PLAN\ffmpegPictureUI\publish\build\FFmpegPictureUI-v1.6.0-beta17-x64-full
+   ✅ 已删除调试符号，节省 100.1MB
+
+[1.7] PLAN 工具链版本清单...
+   ✅ dngtool.exe: 2026-11-09 03:56 (8069 KB)
+   ✅ oxipng.exe: 2026-09-02 19:54 (968 KB)
+   ✅ ffmpeg.exe: 2026-10-12 02:09 (476 KB)
+   ✅ cjxl.exe: 2026-10-29 21:29 (5128 KB)
+   ✅ exiftool.exe: 2026-11-05 09:54 (57 KB)
+
+[2/4] 复制 PLAN 组件包...
+robocopy: C:\PLAN\ffmpegPictureUI\pack.ps1:179
+Line |
+ 179 |          robocopy $PlanSource $PlanDest /E /XF *.lib *.pc *.cmake /XD  …
+     |          ~~~~~~~~
+     | 术语 'robocopy' 不会被识别为 cmdlet、函数、脚本文件或可执行程序的名称。 请检查名称的拼写或验证路径是否正确(如果包含路径)，然后重试。

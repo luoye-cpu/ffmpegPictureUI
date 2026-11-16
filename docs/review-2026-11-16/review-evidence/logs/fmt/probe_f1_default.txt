@@ -1,0 +1,16 @@
+tools-root=C:\PLAN\ffmpegPictureUI
+file=C:\PLAN\ffmpegPictureUI\tests\data\synth_heic_grid_aux_gainmap.heic size=15874 expect=gainmap
+isobmff=True brands=heic,mif1,heic
+determinate=True failReason=-
+hasGainMap=True form=aux-apple-hdrgainmap primary=1 tmap=-1 gainmapItem=3
+codec=hvc1 ffmpegFmt=hevc tmapPayload=-1 gmData=-1
+grid=True rows=2 cols=2 gridW=128 gridH=96 tileW=64 tileH=48 tiles=4 gridSizeFromTail=True auxBase=1
+primaryType=hvc1 primaryIsGrid=False irot=-1 imir=-1 auxAlpha=False truncated=False
+PASS 识别为 ISO-BMFF（ftyp 存在）
+PASS 解析确定（failReason=-）
+PASS 检测到增益图
+FAIL 承载形式为 tmap（实 aux-apple-hdrgainmap）
+PASS 增益图 item 已定位（实 3）
+PASS 增益图有已知裸流解复用器（实 hevc）
+FAIL tmap 载荷已切出
+PROBE RESULT: pass=5 fail=2

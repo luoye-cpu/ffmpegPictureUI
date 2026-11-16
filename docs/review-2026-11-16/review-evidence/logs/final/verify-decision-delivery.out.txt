@@ -1,0 +1,124 @@
+[gate] exe=C:\PLAN\ffmpegPictureUI/src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.exe (Release)
+  PASS p3/webp 产物真的带 ICC（libwebp 会丢弃 iccgen 的 ICC ⇒ 必须由裁决点触发后置嵌入）
+  PASS p3/webp 的 ICC 量出来就是 Display P3（红 x=0.67999，非 sRGB 0.640/非 2020 0.708）
+  PASS p3/webp 日志写明后置嵌入这一步真的发生了
+  PASS sdr/webp 产物**不**带 ICC（未标注即 sRGB，嵌了是无用的重复描述）
+  PASS sdr/webp 日志里没有后置嵌入（判据是出口语义而非
+  PASS hdr/png8 命令行确实跑了 tonemap（末端像素已是 SDR）
+  PASS hdr/png8 产物未宣称 PQ（实=iec61966-2-1,bt709）——像素已 tonemap 成 SDR，宣称 HDR 就是标签与像素相反
+  PASS hdr/png8 产物未宣称 BT.2020 原色（实=iec61966-2-1,bt709）
+  PASS hdr/png8 产物 cICP = bt709/bt709，与末级 zscale 一致（实=iec61966-2-1,bt709）
+  PASS hdr/png8 无 cICP 写入失败/降级告警（已有标签时兜底不重写）
+  PASS hdr/jpg8 附的 ICC 是 sRGB（红 x=0.64），与 tonemap 后的像素一致
+  PASS P3目标/webp 的**像素**真的落在 Display P3 域（按 P3 解 = 38.646568 dB；按 sRGB 解 = 14.123261 dB；差 24.523307 dB ≥ 15）
+  PASS P3目标/webp 附的 ICC 量出来是 Display P3（红 x=0.67999）
+  PASS hdr/webp 跑了 tonemap（WebP 无 HDR 标定通路）
+  PASS hdr/webp 不带 ICC（出口已是 sRGB，嵌 ICC 属无用重复）
+  PASS P3 JXL→webp 产物带 Display P3 ICC（红 x=0.67999）
+  PASS P3 JXL→webp 日志要么真补了 ICC、要么显式告警（不静默）
+ffmpeg version git-2026-10-11-edadf711a9 Copyright (c) 2000-2026 the FFmpeg developers
+  built with clang version 23.1.3 (https://github.com/llvm/llvm-project.git 0d261d1ca552c95a8f007e061c787ac7132fbcbc)
+  configuration: --prefix=/home/dominic/ffmpeg/bin --bindir=/home/dominic/ffmpeg/bin/bin --arch=x86_64 --target-os=mingw32 --cross-prefix=x86_64-w64-mingw32- --enable-cross-compile --cc=/usr/local/llvm-mingw/bin/x86_64-w64-mingw32-clang --cxx=/usr/local/llvm-mingw/bin/x86_64-w64-mingw32-clang++ --ld=/home/dominic/ffmpeg/bin/bin/atw_ldwrapper --ar=/usr/local/llvm-mingw/bin/llvm-ar --ranlib=/usr/local/llvm-mingw/bin/llvm-ranlib --pkg-config=/usr/bin/pkg-config --pkg-config-flags=--static --optflags='-O3 -pipe -DNDEBUG -funwind-tables -fexceptions -finline-functions -march=x86-64-v3 -mtune=generic -ffunction-sections -fdata-sections -mguard=cf' --extra-cflags='-I/home/dominic/ffmpeg/bin/include -DLIBTWOLAME_STATIC -I/usr/local/cuda/include -I/usr/local/cuda/targets/x86_64-linux/include' --extra-cxxflags='-O3 -pipe -DNDEBUG -funwind-tables -fexceptions -finline-functions -march=x86-64-v3 -mtune=generic -ffunction-sections -fdata-sections -mguard=cf' --extra-ldflags='-L/home/dominic/ffmpeg/bin/lib -Wl,--gc-sections -Wl,/guard:cf -fuse-ld=lld' --extra-libs=' -lvulkan-1 -lpthread' --disable-autodetect --enable-gpl --enable-nonfree --enable-version3 --enable-w32threads --disable-pthreads --disable-static --enable-shared --disable-debug --disable-doc --enable-ffplay --enable-sdl2 --enable-ffprobe --enable-ffmpeg --enable-ffnvcodec --disable-cuvid --disable-decoder=libdavs2 --disable-decoder=libuavs3d --disable-encoder=libxavs --disable-encoder=libxavs2 --enable-nvenc --enable-nvdec --enable-libopus --enable-libass --enable-libfreetype --enable-libharfbuzz --enable-libfontconfig --enable-libfribidi --enable-libzimg --enable-libwebp --enable-libjxl --enable-libjxr --enable-libdav1d --enable-libsvtav1 --enable-libvpl --enable-libx264 --enable-libx265 --enable-libvmaf --enable-libvvenc --enable-schannel --enable-d3d11va --enable-d3d12va --enable-mediafoundation --enable-amf --enable-avisynth --enable-dxva2 --enable-vulkan --enable-vulkan-static --glslc=/home/dominic/ffmpeg/build-20261012-full/host-tools/bin/glslc --enable-opencl --enable-opengl --enable-libplacebo --enable-zlib --enable-bzlib --enable-lzma --enable-libxml2 --enable-libmp3lame --enable-libvorbis --enable-libsoxr --enable-libfdk-aac --enable-libaom --enable-libvpx --enable-libopenjpeg --enable-libsrt --enable-librist --enable-libbluray --enable-libaribcaption --enable-lcms2 --enable-librubberband --enable-libvidstab --enable-libssh --enable-libsnappy --enable-libtheora --enable-libspeex --enable-libtwolame --enable-libmysofa --enable-libopenmpt --enable-libdvdread --enable-libdvdnav --enable-chromaprint --enable-libzmq --enable-libzvbi --enable-libgsm --enable-libopencore-amrnb --enable-libopencore-amrwb --enable-libvo-amrwbenc --enable-iconv --enable-audiotoolbox --enable-cuda-nvcc --enable-cuda --disable-cuda-llvm --nvcc=/usr/local/cuda/bin/nvcc --nvccflags='-O3 --extra-device-vectorization --threads=1 -Xptxas=-O3 --use_fast_math -gencode arch=compute_75,code=compute_75' --enable-vapoursynth --enable-encoder=wrapped_avframe --enable-encoder=h264_nvenc --enable-encoder=hevc_nvenc --enable-encoder=av1_nvenc --enable-encoder=hevc_qsv --enable-encoder=av1_qsv --enable-encoder=h264_qsv --enable-encoder=libx264 --enable-encoder=libx265 --enable-encoder=libvvenc --enable-encoder=libmp3lame --enable-encoder=libvorbis --enable-encoder=libfdk_aac --enable-encoder=libvpx_vp8 --enable-encoder=libvpx_vp9 --enable-encoder=aac --enable-encoder=aac_at
+  libavutil      61. 14.100 / 61. 14.100
+  libavcodec     63. 19.101 / 63. 19.101
+  libavformat    63.  8.100 / 63.  8.100
+  libavdevice    63.  2.100 / 63.  2.100
+  libavfilter    12.  5.100 / 12.  5.100
+  libswscale     10.  2.100 / 10.  2.100
+  libswresample   7.  3.101 /  7.  3.101
+Input #0, lavfi, from 'mandelbrot=size=320x240:rate=10':
+  Duration: N/A, start: 0.000000, bitrate: N/A
+  Stream #0:0: Video: wrapped_avframe, rgb0, 320x240 [SAR 1:1 DAR 4:3], 10 fps, 10 tbr, 10 tbn
+Stream mapping:
+  Stream #0:0 -> #0:0 (wrapped_avframe (native) -> png (native))
+Press [q] to stop, [?] for help
+Output #0, image2, to 'C:\PLAN\ffmpegPictureUI/tests/output/validate/decision-delivery/srgb_src.png':
+  Metadata:
+    encoder         : Lavf63.8.100
+  Stream #0:0: Video: png, rgb24(pc, gbr/unknown/unknown, progressive), 320x240 [SAR 1:1 DAR 4:3], q=2-31, 200 kb/s, 10 fps, 10 tbn
+    Metadata:
+      encoder         : Lavc63.19.101 png
+[image2 @ 00000249ffb5d240] The specified filename 'C:\PLAN\ffmpegPictureUI/tests/output/validate/decision-delivery/srgb_src.png' does not contain an image sequence pattern or a pattern is invalid.
+[image2 @ 00000249ffb5d240] Use a pattern such as %03d for an image sequence or use the -update option (with -frames:v 1 if needed) to write a single image.
+[out#0/image2 @ 00000249fe922700] video:66KiB audio:0KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: unknown
+frame=    1 fps=0.0 q=-0.0 Lsize=N/A time=00:00:00.10 bitrate=N/A speed=4.17x elapsed=0:00:00.02    
+  PASS ⑫ 对照组：源 .jxl 自身没有 ICC ⇒ 产物 ICC 不可能来自
+  PASS ⑫ 走的确实是**已登记**通路（否则链尾不该做任何色彩后置）
+  PASS ⑫ 链尾交付了 TIFF 目标 ICC 这一步（抽公共入口前它只在主分支跑 ⇒ 判据两份）
+  PASS ⑫ 按度量复核：TIFF 内 ICC 确实是 Display P3（红 x=0.67999）
+  PASS 同一内容的 webp：两条路径像素一致（主分支=116,16,237 ｜ JXL管道=116,16,237）——P7d 回归锁
+  PASS ⑨-b 整图兜底：两条路径 webp 互比 PSNR ≥ 40 dB（实 99）——防「只左上 1px 相同、其余区域偏」
+  ⑨-c 读数：主分支对源 31.877517 dB ｜ JXL管道对源 31.877517 dB
+  PASS ⑨-c 两臂对源同构且不失真（差 0 dB ≤ 1，较大者 31.877517 ≥ 25 dB）
+  SKIP (6 条) ⑩：0 个候选 AVIF 里没有一个 ≥2 帧动画 ⇒ 素材不可得，未评估（不拿静帧冒充动画素材）
+  PASS 对照组：透明 GIF 素材自身 alpha YMIN=0（须为 0，否则本组断言无意义）
+  PASS 读数器：源逐流表 4 行行合法（被拒 0 行：无）
+  PASS 素材：GIF→AVIF 产物有 10 帧颜色流（≥4，能触发 avifenc 的 -j 1 崩溃区）
+  PASS 素材：AVIF 带同帧数的 gray alpha 平面 ⇒ 走 hasAlpha 分支
+  PASS 对照组：GIF→AVIF 后 alpha 流仍有透明值（YMIN=0）⇒ 后面的 webp 断言不是替上游背锅
+  PASS hasAlpha 分支：日志显示真选中了 alpha 流（不是走了无 alpha 的 else）
+  PASS P7g：AVIF→webp 产物 10 帧 == 源颜色流 10 帧（序号空洞会静默截断，退出码仍是 0 ⇒ 只能按帧数判）
+  PASS P7g：产物 1 条视频流的像素格式（argb）全含 alpha 平面（旧缺陷是 yuv420p=把透明丢了）
+  PASS P7g：产物真的有透明像素（alpha YMIN=0；全 255 = 透明通道被静默丢弃，-1 = 读不出）
+  PASS P7h 锁：不再出现 Math.Max(1, item.Options.Threads)（它恒等于 1 ⇒ avifenc ≥4 帧段错误）
+  PASS P7g 锁：两步法不再用 -frame_pts 编号（站点：）
+  PASS 19 处专用通路调用均经色彩后置（窗口 L1192…L1526；覆盖方法 39 个；绕开的：；零调用方的死代码：）
+  PASS 色彩后置的唯一入口在主分支、链尾与定义处都出现（P7a-3 第三轮；防被
+  PASS ICC 后置子步在共享入口内与定义处都还在（判据没被拆成第二份）
+  PASS QueueProcessor 里只有 3 处直接调 BuildArguments（主分支/helper/管道克隆）；未登记的新站点：
+  PASS 专用通路已批量改走登记入口（调用处 11 个）
+  PASS P7f：avifenc 探测同源（PLAN 查找式 1 处、ResolveAvifencPath 定义 1 处，均应为 1）；站点：PlatformServices.cs:L529
+  PASS P7f 形态：定义在 PlatformServices.cs=1（应 1）、无第二口径形状 HasAvifencAvailable=0、无经通用函数探 avifenc=0（均应为 0）
+  PASS ⑬ auto 目标：引擎 cjxl 出口与直连 cjxl 都产出非空 jxl（11004B / 11004B）
+  PASS ⑬ auto 目标（CarryIcc，像素零改动）：两路产物**逐像素完全相同**（psnr=99；曾因 ToSpec 猜测式默认得 15.08dB）
+  PASS ⑬ auto 目标：两路标注一致（引擎「Color space: RGB | Primaries: P3  ⇒ P3 primaries」/ 直连「Color space: RGB | Primaries: P3  ⇒ P3 primaries」）
+  PASS ⑬ 显式 sRGB 目标：两路都产出非空 jxl（11113B / 11048B）
+  PASS ⑬ 引擎出口**真的映射到目标**：产物读回 sRGB（Color space: RGB | Primaries: sRGB  ⇒ sRGB primaries）
+  PASS ⑬ 直连 cjxl 路线现在也必须兑现目标：产物应读回 sRGB primaries（实得 Color space: RGB | Primaries: sRGB  ⇒ sRGB primaries）—— 旧版在这里钉的是'仍是源语义 P3、两路有意不同'，那属 #44 缺陷，已按实测翻转
+  PASS ⑬ 两路像素**趋同**（同源同目标 ⇒ 有损档 psnr 必须 ≥ 25 dB，实得 36.556508）：明显低于此值才说明'只有一路真转了像素'那一族复发；本档不测亚 LSB 级一致性（那是 ⑬c 的活）
+  PASS ⑬c 无损臂：两路都产出非空 jxl（40791B / 35620B）
+  PASS ⑬c 无损档两路像素趋同（同源同目标 ⇒ ≥ 40 dB，实得 79.473149）——这条才是'谁没转像素'的硬尺；有损档受 4:2:0/熵编码放大，测不了亚 LSB 级一致性
+  PASS ⑬c 无损档两路标注一致且都兑现目标（引擎「Color space: RGB | Primaries: sRGB  ⇒ sRGB primaries」/ 直连「Color space: RGB | Primaries: sRGB  ⇒ sRGB primaries」）
+  PASS ⑭ 前置：夹具 C:\PLAN\ffmpegPictureUI/tests/output/validate/../results/color/a2_srgb_p3.png 自身读得到 ICC 红原色（实得 0.67999,0.32001）⇒ helper 这条路是通的，负断言才有意义
+  PASS ⑭ 前置：夹具是**非 sRGB** 广色域源（红原色 0.67999,0.32001，须明显偏离 bt709 的 0.640）⇒ 否则本格退化成合法的不标注
+  PASS ⑭ 引擎 通路：carry + 指定目标空间仍产出非空 webp（7008B）
+  PASS ⑭ 引擎 通路：内嵌的就是**源** ICC（红原色 产物 0.67999,0.32001 vs 源 0.67999,0.32001）
+  PASS ⑭ 引擎 通路：不得再写「跳过源 ICC 恢复」这种与产物状态矛盾的话
+  PASS ⑭ 直连 通路：carry + 指定目标空间仍产出非空 webp（7008B）
+  PASS ⑭ 直连 通路：内嵌的就是**源** ICC（红原色 产物 0.67999,0.32001 vs 源 0.67999,0.32001）
+  PASS ⑭ 直连 通路：不得再写「跳过源 ICC 恢复」这种与产物状态矛盾的话
+  ⑮ 链末曲线=iec61966-2-1  产物标签 transfer=iec61966-2-1 primaries=bt709  exit=0
+  PASS ⑮ 一致性：链末用的曲线（iec61966-2-1）必须 == 产物标签兑现的曲线（iec61966-2-1）——不一致就是'标签声称了没实现的曲线'
+  PASS ⑮ 定样：图像容器 SDR 出口 = sRGB（维护者 2026-09-26 口径）⇒ 链末必须是 iec61966-2-1，实得 iec61966-2-1（两边都停在 bt709 也是错，故单列一条）
+tools-root=C:\PLAN\ffmpegPictureUI
+png3: C:\PLAN\ffmpegPictureUI/tests/output/validate/decision-delivery/d15_neg_cicp1.png sBIT=跳过 cICP=True 大小=24343
+PASS png3 chunk 写入成功
+PROBE RESULT: pass=1 fail=0
+  PASS ⑮ 负控：把标签改成 cICP=1 后判据必须失配（链末 iec61966-2-1 vs 标签 bt709）——不失配则 ① 只是在找字
+  PASS ⑮ 负控夹具自证：改写后标签确实读回 bt709（实得 bt709）⇒ 失配不是'读不到'造的
+  ⑯ 实测：.avif 默认编码器=libaom-av1 其自报上限=12  libsvtav1 自报上限=10
+  PASS ⑯ 前提（外部权威）：不写 -c:v 时 ffmpeg 为 .avif 选的编码器（实得 libaom-av1，上限 12）必须自己就能到 12bit —— 产品若按别的编码器定上限，本段结论作废，先看这条为什么红
+  PASS ⑯ 尺子自证：解析器必须能把 libsvtav1(实得 10) 与默认编码器(12)区分开——两边数一样，下面那条'交付==实测上限'就是恒等式，没有牙
+  PASS ⑯ 请求 12 ⇒ avifenc 命令行 --depth=12 且产物位深=12（实得 depthTok='12' prodDepth=12）——新路由走 avifenc 单程，不再有 ffmpeg -pix_fmt 可抓
+  PASS ⑯ 请求 16 ⇒ 必须走 16-bit Sample Transform（avifenc --depth 12,4：12-bit 主 + 4-bit dimg）且产物主 item 钳在 12bit（实得 depthTok="12,4" prodDepth=12）——16 说明 Sample Transform 被整个跳过；8/10 说明退回旧 libaom 单程口径
+  PASS ⑯ 结构锁：AvifMaxBitDepthForEncoder 必须由 ClassifyAvifBackend 推导（空编码器名⇒Libaom 这条口径全仓只有一份）
+  PASS ⑯ 结构锁：MainWindow 不得再自带 "? 12 : 10" 的位深上限副本（实得命中 0 处）——它漏掉"编码器留空"这一支，正是下拉不给 12 的那半边
+  PASS ⑯ 结构锁参考读数：ImageEncoderArgs 里按 libaom/av1_nvenc 前缀分类的位置 = 2 处（应为 ClassifyAvifBackend 内部那两处；本条只登记规模，超了说明有人又抄了一份前缀表）
+  ⑰ P3 格 primaries=smpte432 trc=iec61966-2-1 位深=12   sRGB 对照 primaries=bt709 位深=12
+  PASS ⑰ 请求 12 就必须交付 12（实得位深=12 含位深码=False）——被撤的那条特例正是把它折成 8bit，本条盯它别回来
+  PASS ⑰ 用户显式要 Display P3 ⇒ 产物 primaries 必须是 smpte432（实得 smpte432）。旧特例在这条 tonemap 链上以 `tmDstP = capP ?? target.primaries` 把目标改成过 bt709
+  PASS ⑰ 对照组：同素材同位深只把目标换成 sRGB ⇒ primaries 必须是 bt709（实得 bt709）——两格读数必须不同，否则上一条只是在找一个固定字符串
+  PASS ⑰ HDR 源已降过 SDR ⇒ 产物 trc 不许还是 iec61966-2-1（PQ/HLG 原样透传就是"改了标签没改像素"那一族）
+  ⑰b legacy HDR->AVIF12 fail-closed: P3 格 exit=1 产物=False   sRGB 格 exit=1 产物=False   auto 格 exit=1 产物=False
+  PASS ⑰b legacy + 显式 P3 必须 fail-closed（exit=1 有产物=False 日志点名 Sample Transform=True）——16-bit AVIF 只有引擎 avifenc --depth 12,4 能承载，legacy 须拒绝而非静默出货
+  PASS ⑰b 对照组：legacy + sRGB 目标同样 fail-closed（exit=1 有产物=False）——换目标空间不改变"legacy 无 16-bit AVIF 载体"这一能力边界
+  PASS ⑰b auto 格：legacy 未指定目标也 fail-closed（exit=1 有产物=False）——能力边界与是否指定目标无关，不能 auto 格就偷偷出货
+  PASS ⑰b 拒绝必须是"fail-closed 而非静默降档"：日志须明写「不静默降 12-bit」（片段=❌ [avif16] ❌ 16-bit AVIF 需要自研色彩引擎的 avifenc --depth 12,4 出口；当前 --color-engine legacy/off 无法承载 Sample Transform（不静默降 12-bit））——删掉这句措辞就等于允许 legacy 悄悄降到 12bit 出货
+  ⑱ PQ 臂: ffprobe[bt2020/smpte2084] exiftool[9/16] avifdec[9/16]
+  ⑱ 对照臂 SDR: avifdec[1/13]   控制臂(标签放输出侧): avifdec[2/2]
+  PASS ⑱-1 请求 BT.2020 PQ ⇒ 三个独立读者同向：ffprobe=bt2020/smpte2084、exiftool(-n)=9/16、avifdec=9/16（实得 ffprobe[bt2020/smpte2084] exiftool[9/16] avifdec[9/16]）
+  PASS ⑱-2 反真空（SDR 对照臂必须不同向）：同一素材只把目标换成 sRGB ⇒ avifdec 必须**读到数字**且primaries 不是 9、transfer 不是 16（实得 [1/13]，PQ 臂 [9/16]）——两臂读数相同或读不出，都说明 ⑱-1 只是在匹配套话
+  PASS ⑱-3 反真空（输出侧标签不算）：手工把同一对 `-color_primaries bt2020 -color_trc smpte2084` 放到 `-i` **之后** ⇒ avifdec 必须**读到数字**且不是 9/16（实得 [2/2]）——这条证明 ⑱-1 量的是容器里的字节；产品把 P/T 前置正是为此（RawColorPipeline 的 labelOnInput）
+  PASS ⑱-4 形状锁：PQ 臂 avifenc 命令行必须带 `--cicp 9/16/0`（实得 cicpTok="9/16/0"）——新路由 CICP 经 avifenc --cicp 写容器；缺这一段就是三读者读到的 9/16 没人写进去
+  PASS ⑱-5 前置条件：PQ 臂 exit=0 产物=54841B（>200B）——标签对了但产物是空的，同样不算交付
+  ── decision-delivery: pass=84 fail=0 skip=6
