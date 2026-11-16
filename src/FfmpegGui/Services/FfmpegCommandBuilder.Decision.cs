@@ -630,10 +630,37 @@ namespace FfmpegGui.Services
                     d.IccgenNeedsRgb = true;
                 }
             }
+            // ── legacy SDR 直通补齐 cICP=1/13（与引擎逐字节对齐；COLOR-02 前置遗留，2026-11-16）──
+            // 背景：无标签 SDR 源（如 sdr_plain.png，无 ICC/无 cICP）走 legacy auto 直通时，
+            //   上方 else 分支把 outP/outT 留成 null ⇒ ffmpeg 命令行不带 -color_primaries/-color_trc、
+            //   QueueProcessor 的 png3 后置也因 OutPrimaries/OutTrc 为 null 而不写 cICP ⇒ 产物零标注。
+            //   而**引擎**侧对同一输入却写 cICP=1/13（bt709/iec61966-2-1，sRGB）⇒ verify-color-wiring
+            //   (1) 量到 legacy 比 engine 少一个 cICP 块（+16B），IDAT 完全一致。
+            // 修法：仅在"什么都没决定"（outP/outT 双双 null）+ 容器真能写 CICP + **容器本身就把
+            //   未标注当 sRGB（UnlabeledMeansSrgb=true，即 PNG/APNG）** + 非 HDR + 非 faithful
+            //   + 非 carry/bake + 基线可命名时，把出口默认钉成 sRGB（bt709/iec61966-2-1）。这样
+            //   QueueProcessor 现有 png3 段（读 d.OutPrimaries/d.OutTrc → TryInsertCicp）自然写出
+            //   cICP=1/13，插入位置 IHDR 之后，与引擎块序一致。**不碰 QueueProcessor.cs。**
+            // ⚠ 收窄到 UnlabeledMeansSrgb=true（2026-11-16 裁决）：AVIF/JXL 的 UnlabeledMeansSrgb=false
+            //   代表"未标注不必然是 sRGB"，给这类源强写 cICP=1/13 是越权推断；宁可两臂在 AVIF/JXL
+            //   上各按各的，也不伪造标签。
+            // ⚠ 不附 ICC：sourceTagged=false ⇒ d.AttachIcc 仍为 false；下面 unlabeledIsFine 在
+            //   outP=bt709/outT=iec61966-2-1 下仍为真 ⇒ NeedsPostEmbedIcc=false，不触发 iccgen 后置。
+            bool fmtUnlabeledIsSrgb = FfmpegGui.Services.ColorMapping.ColorMappingEngine.CapsFor(fmt).UnlabeledMeansSrgb;
+            if (outP == null && outT == null
+                && d.CanWriteContainerCicp && fmtUnlabeledIsSrgb
+                && !d.Faithful
+                && !frameIsHdr && !preserveSource && !stripIcc
+                && baselineNameable)
+            {
+                outP = "bt709";
+                outT = "iec61966-2-1";
+            }
+
             // 编码器把 iccgen 的 ICC 丢掉（实测唯一已知的容器是 WebP）⇒ 队列必须后置嵌入同一张 ICC。
             // 例外：出口语义本就是 sRGB、而该容器“未标注即按 sRGB 解读”⇒ 不嵌也是对的，
             //   嵌了只会给每张图多添几十~几百字节的无用 ICC（并把“无标注直通”这一契约结局弄成双轨）。
-            bool unlabeledIsFine = FfmpegGui.Services.ColorMapping.ColorMappingEngine.CapsFor(fmt).UnlabeledMeansSrgb
+            bool unlabeledIsFine = fmtUnlabeledIsSrgb
                 && (outP == null || outP == "bt709") && (outT == null || outT == "iec61966-2-1");
             // 不可命名时生成不了标准 ICC（GetOrGenerateStandardIcc 要的是成对令牌），后置无意义。
             d.NeedsPostEmbedIcc = d.RunIccgen && d.EncoderWritesFilterIcc == false && !preserveSource

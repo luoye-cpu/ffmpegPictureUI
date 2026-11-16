@@ -298,15 +298,15 @@ Write-Host "`n### 管线对照（引擎 vs 传统）###" -ForegroundColor Cyan
 #   ⇒ 该格已并入下面的**严格对照**，不再是"已登记差异"。
 # 留空表是**有意的**：今后若再出现差异，必须走"要么修、要么显式登记"两条路之一，不得静默放过。
 $knownDivergence = @{
-  # 2026-11-15：S1/S3 的 SDR 无标签 PNG。引擎按“无标签 ⇒ 假定 sRGB”写 cICP(1/13)；
-  # legacy 保持“源未标注 ⇒ 产物也不标注”，只播 UnlabeledAssumedSrgb 降级（两者都按 sRGB 解释，
-  # 不是错标）。这不是新回归，而是 legacy 侧“不伪造标签”的既有口径；要统一就得先改 legacy
-  # 假定策略（会让所有无标签 legacy 输出多一个标签），本轮不做，显式登记以免静默放过。
-  "recommended-sdr-png" = "引擎写假定 sRGB 的 cICP(1/13)；legacy 保持未标注（UnlabeledAssumedSrgb），解释相同、标签策略不同"
-  "cicp-only-sdr-png"   = "同上：引擎据假定 sRGB 写 cICP(1/13)；legacy 不伪造标签"
+  # 2026-11-15：BakeCicpOnly（--color-strategy cicp-only）的 SDR 无标签 PNG。
+  #   引擎按”无标签 ⇒ 假定 sRGB”写 cICP(1/13)；legacy 在 BakeCicpOnly 下**不伪造标签**
+  #   （stripIcc=true 被 DecideOutputColor 的未标注 sRGB 默认显式排除）——这是设计，不是漏写。
+  #   Recommended（默认）路径的同名分歧已于 2026-11-16 修掉（legacy 也写 cICP=1/13），
+  #   故 recommended-sdr-png 条目删除、回严格 parity；只留这条 cicp-only 的有意分歧。
+  "cicp-only-sdr-png"   = "BakeCicpOnly 下 legacy 不伪造未标注 sRGB 标签（设计）；引擎按假定 sRGB 写 cICP(1/13)"
   # HDR → JPEG + GainMap：引擎在基准图 ICC 里写色彩描述（GainMapEncoder 的出口契约）；
   # legacy 走 ffmpeg 的 UltraHDR 合成（MPF/XMP 承载增益图），基准图不附 ICC。
-  # 这不是“少写了一个标签”那么简单：legacy 的 UltraHDR 读取器按 MPF/XMP + 基准图约定解释，
+  # 这不是”少写了一个标签”那么简单：legacy 的 UltraHDR 读取器按 MPF/XMP + 基准图约定解释，
   # 引擎则同时给基准图 ICC。两条出口的消费者契约不同，本轮不强行让 legacy 复制引擎的 ICC。
   "recommended-hdr-jpggm" = "引擎基准图附 ICC；legacy ffmpeg UltraHDR 出口按 MPF/XMP 解释、基准图无 ICC（出口契约不同）"
 }
