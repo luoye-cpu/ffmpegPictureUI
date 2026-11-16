@@ -116,6 +116,32 @@ namespace UiTestHost
                     .UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = true })
                     .SetupWithoutStarting();
 
+                // ══════ GATE-01（2026-11-16）：开窗前镜像 UiHostShared.ApplyToolPaths() ══════
+                // 旧宿主此前裸开窗：MainWindow 的 FullDetectionAsync 里 ExternalToolsDetector 七槽
+                //   结论行拿不到稳态路径 ⇒ GroupP 的 P1 在 45s 内等不齐 7 条 [detect] 结论行 ⇒
+                //   P1 早返回吞掉 P2+P3×7+P4+P5 共 10 个断言名，verify-ui-split-union 双向差集
+                //   对不上（7P/4F）。与 UiHost.cs ApplyToolPaths() 同形：预置 FfmpegDirectory /
+                //   OutputDirectory / JxlLibDir（存在才写）/ WindowsArtifactsDir（存在才写）+
+                //   EnsureAllDetected()。注释明写：放 BootWindow 之后则编码器列表永不加载。
+                try
+                {
+                    var st = FfmpegGui.Services.AppSettingsService.Current;
+                    st.FfmpegDirectory = System.IO.Path.Combine(planDir, "ffmpeg-full");
+                    st.OutputDirectory = TempDir;
+                    var jxlBin = System.IO.Path.Combine(planDir, "jxl", "bin");
+                    if (System.IO.File.Exists(System.IO.Path.Combine(jxlBin, "cjpegli.exe"))
+                        || System.IO.File.Exists(System.IO.Path.Combine(jxlBin, "cjxl.exe")))
+                    {
+                        if (string.IsNullOrWhiteSpace(st.JxlLibDir) || !System.IO.Directory.Exists(st.JxlLibDir))
+                            st.JxlLibDir = jxlBin;
+                    }
+                    var artifacts = System.IO.Path.Combine(planDir, "artifacts");
+                    if (System.IO.Directory.Exists(artifacts) && string.IsNullOrWhiteSpace(st.WindowsArtifactsDir))
+                        st.WindowsArtifactsDir = artifacts;
+                    FfmpegGui.Services.ExternalToolsDetector.EnsureAllDetected();
+                }
+                catch { }
+
                 W = new FfmpegGui.MainWindow();
                 W.Show();
                 Pump(10); // Opened -> InitControls
@@ -2276,6 +2302,34 @@ namespace UiTestHost
                   "FindControl<TextBox>(\"LogText\") == null ⇒ 面板根本没构造起来");
             if (box == null) return;
 
+            // GATE-01（2026-11-16）：日志已迁移到 UiLogService 唯一入口 ⇒ 落地进 ListBox 的
+            //   _uiLogLines 集合，LogText.Text 不再接收 [detect] 行。本组读数改读集合本身；
+            //   且 UiLogService 给每行加了 "[时间戳] [级别] " 前缀 ⇒ 剥掉还原旧 TextBox 的裸消息
+            //   形状（ClassifyDetectLines 按 "[detect] " 前缀分类，带前缀的行永不命中）。
+            string CaptureLog()
+            {
+                try
+                {
+                    var f = W.GetType().GetField("_uiLogLines", BF);
+                    var col = f?.GetValue(W) as System.Collections.ObjectModel.ObservableCollection<string>;
+                    if (col == null) return "";
+                    var sb = new System.Text.StringBuilder();
+                    foreach (var l in col)
+                    {
+                        var s = l;
+                        var e1 = s.IndexOf("] ", 1);
+                        if (e1 > 0)
+                        {
+                            var e2 = s.IndexOf("] ", e1 + 2);
+                            if (e2 > 0) s = s.Substring(e2 + 2);
+                        }
+                        sb.AppendLine(s);
+                    }
+                    return sb.ToString();
+                }
+                catch { return ""; }
+            }
+
             var names = new[] { "cjxl", "cjpegli", "djxl", "exiftool", "JxrEncApp", "avifenc", "dngtool" };
             // 轮询上限 45 s：本机预热实测 1~2 s，但「PLAN 整棵缺失 ⇒ 走扩展搜索预算」的最坏路径要几十秒。
             // ⚠ 超时**不能判红**，要单列「测量失败」⇒ 否则"这台机器装了什么应用"会决定断言颜色（§6 口径）。
@@ -2286,7 +2340,11 @@ namespace UiTestHost
             while (sw.Elapsed.TotalSeconds < 45.0)
             {
                 Pump(6);
-                ClassifyDetectLines(box.Text, names, verdicts, others, unknowns);
+                // GATE-01：日志落地在 DispatcherPriority.Background 的 FlushUiLog，
+                //   而 RunJobs() 默认只抽到 Normal 及以上 ⇒ 后台日志行永远进不了集合。
+                //   本组轮询必须把 Background 级也抽干，否则 P1 恒 0 条。
+                Dispatcher.UIThread.RunJobs(DispatcherPriority.Background);
+                ClassifyDetectLines(CaptureLog(), names, verdicts, others, unknowns);
                 if (verdicts.Count >= names.Length) break;
             }
 
