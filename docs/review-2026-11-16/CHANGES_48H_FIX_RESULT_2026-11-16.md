@@ -1,7 +1,7 @@
 # 48h 修复结果（`a9e2830..708d8d0`）· 统一交付
 
 **审查基线**：`a9e2830..957cfa8`（18 提交 / 75 文件 / +8777 −1095），裁决见 `CHANGES_48H_REVIEW_RESULT_2026-11-16.md`（P0=0 / P1=3 / MEDIUM=12 / LOW=18 / INFO=1，共 34 条）。
-**修复落点**：`main` 上一串未 push 的提交，当前 HEAD = `93c3a30`（代码 + 文档全在主干，未 push）。逐条闭环见 `FINDING_CLOSURE_2026-11-16.md`。
+**修复落点**：`main` 上一串未 push 的提交，HEAD = `0fb45dc`（18 条代码/文档提交 + 本报告入库，全部在主干、未 push；tag 与版本位未动）。逐条闭环见 `FINDING_CLOSURE_2026-11-16.md`。
 
 ---
 
@@ -92,7 +92,7 @@
 - `src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.dll` → `sha256[:16]` = **`76703DCCD71DDEB6`**
 - `tests/projects/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.dll` → `sha256[:16]` = **`13907D58EE2097DF`**
 - 构建：`dotnet build ffmpegPictureUI.sln -c Release -m:1` → **0 errors / 5 存量警告**
-- 树：HEAD `93c3a30`，`src/`、`tests/` 无未提交改动（`git status` 只剩 `review-evidence/logs/final/` 下的读数文件）
+- 树：读数时的 HEAD = `93c3a30`（其后仅 `0fb45dc` 这一条文档提交，不含代码改动）；`src/`、`tests/` 无未提交改动（`git status` 干净）
 - exiftool code 126 计数：**全部闸 0**（PATH 前置了 `exiftool_files`）
 
 | 闸 | rc | PASS / FAIL / SKIP | 耗时 | 日志（`review-evidence/logs/final/`） |
