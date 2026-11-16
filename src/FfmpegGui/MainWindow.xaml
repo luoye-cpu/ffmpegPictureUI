@@ -452,6 +452,14 @@
                      VerticalAlignment="Center"/>
           </Grid>
           <TextBlock x:Name="QualityValue" Text="质量: 75" FontSize="11" FontWeight="SemiBold"/>
+          <!-- PNG 出口优化器：独立于编码器与“高级编码”开关的后处理选项。
+               仅静态 PNG 显示；APNG 出口由服务端 acTL 检测后跳过，不在此处提供误导性档位。
+               Items 由 FillComboByLoc 按 png.optimizer.* 键填充；顺序与
+               MainWindow._pngOptimizerValues 逐位对应（off|default|max|zopfli15|zopfli30，默认 max）。 -->
+          <StackPanel x:Name="PngOptimizerPanel" IsVisible="False" Margin="0,8,0,0" Spacing="4">
+            <TextBlock Text="{ext:Loc png.optimizer}" FontSize="11"/>
+            <ComboBox x:Name="PngOptimizerCombo" SelectedIndex="2"/>
+          </StackPanel>
           <!-- 基本色彩参数：色度采样 / 位深（色彩空间已移至高级面板） -->
           <Border CornerRadius="4" Padding="8,6" Margin="0,4,0,0"
                   Background="{DynamicResource SystemControlBackgroundChromeMediumBrush}">
@@ -653,14 +661,6 @@
             <StackPanel x:Name="PngCodecPanel" IsVisible="False" Spacing="4">
               <TextBlock Text="{ext:Loc prediction.mode}" FontSize="11"/>
               <ComboBox x:Name="PngPredCombo" SelectedIndex="4"/>
-              <!-- PNG 出口优化器档位（png-optimizer-integration C-GUI@1）：Items 由 FillComboByLoc
-                   按 png.optimizer.* 键填充；顺序与 MainWindow._pngOptimizerValues 逐位对应
-                   （off|default|max|zopfli15|zopfli30，默认选中 max = 索引 2）。
-                   常显（png-default-oxipng C-DEFOPT@1：oxipng 升默认编码器，撤销与高级编码开关的显隐联动）。 -->
-              <StackPanel x:Name="PngOptimizerPanel" Spacing="4">
-                <TextBlock Text="{ext:Loc png.optimizer}" FontSize="11"/>
-                <ComboBox x:Name="PngOptimizerCombo" SelectedIndex="2"/>
-              </StackPanel>
               <TextBlock Text="{ext:Loc png.dpi}" Margin="0,6,0,0" FontSize="11"/>
               <!-- ⚠ 同 496 行：72px 数值框 + 约 200px 提示文本 ≈ 276px > 面板可用 236px，
                    横向 StackPanel 不换行也不滚动 ⇒ 提示被裁。拆成「数值框 + 独立提示行」。 -->

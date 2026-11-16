@@ -2773,6 +2773,8 @@ namespace FfmpegGui
         {
             // 全部隐藏
             if (PngCodecPanel != null) PngCodecPanel.IsVisible = false;
+            // PNG 出口优化器是独立后处理选项：显隐只看出口格式，不由 AdvancedCodecPanel 代管。
+            if (PngOptimizerPanel != null) PngOptimizerPanel.IsVisible = false;
             if (GifCodecPanel != null) GifCodecPanel.IsVisible = false;
             if (ApngCodecPanel != null) ApngCodecPanel.IsVisible = false;
             if (WebpCodecPanel != null) WebpCodecPanel.IsVisible = false;
@@ -2797,7 +2799,12 @@ namespace FfmpegGui
             // 按格式+编码器后端+动图模式显示对应面板
             switch (fmt)
             {
-                case "png": if (PngCodecPanel != null) PngCodecPanel.IsVisible = true; break;
+                case "png":
+                    if (PngCodecPanel != null) PngCodecPanel.IsVisible = true;
+                    // 独立后处理档位：静态 PNG 出口才显示；APNG 由 PngOptimizerService 的服务端
+                    // acTL 检测明确跳过，故不在此处展示，避免用户误以为 APNG 会被优化。
+                    if (PngOptimizerPanel != null) PngOptimizerPanel.IsVisible = true;
+                    break;
 
                 case "apng":
                     if (ApngCodecPanel != null) ApngCodecPanel.IsVisible = true;
