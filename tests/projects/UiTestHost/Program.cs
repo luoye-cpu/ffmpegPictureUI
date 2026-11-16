@@ -921,6 +921,12 @@ namespace UiTestHost
             Safe("G2 慢任务停止(点停止→已停止+子进程死+无半截产物)", () =>
             {
                 var plan = System.IO.Path.Combine(RepoRoot, "publish", "PLAN");
+                // G1 的队列循环在队列空时不会自行退出；G2 若直接并入队，旧循环会先取走本项，
+                // 随后的 StartQueue 再取消它 ⇒ 本组会读到“失败/退出码 -1”而不是“已停止”。
+                // ⇒ 先显式停掉上一组留下的消费循环，保证 G2 从干净队列启动。
+                typeof(FfmpegGui.MainWindow).GetMethod("StopQueue_Click", BF)?.Invoke(W, new object?[] { null, null });
+                Pump(10);
+                System.Threading.Thread.Sleep(150);
                 var st = FfmpegGui.Services.AppSettingsService.Current;
                 st.FfmpegDirectory = System.IO.Path.Combine(plan, "ffmpeg-full");
                 st.OutputDirectory = TempDir;
@@ -949,7 +955,13 @@ namespace UiTestHost
                 if (mf != null && !mf.Contains(bigIn)) mf.Add(bigIn);
                 typeof(FfmpegGui.MainWindow).GetMethod("AddToQueue_Click", BF)?.Invoke(W, new object?[] { null, null });
                 Pump(30);
-                typeof(FfmpegGui.MainWindow).GetMethod("StartQueue_Click", BF)?.Invoke(W, new object?[] { null, null });
+                // 前置的 G1 队列循环可能仍在运行：它会在本项入队后立刻自动取走并开始处理。
+                // 若此时再调 StartQueue_Click，QueueProcessor.Start 会取消旧 CTS ⇒ 正在处理的
+                // 本项被标成“已停止”且不会被重新消费，G2 的慢任务窗口当场消失。
+                // ⇒ 只有本项尚未被旧循环取走时才显式启动队列；已处理中则让它继续跑。
+                var alreadyProcessing = (Items() ?? new()).Any(i => i.InputPath == bigIn && i.IsProcessing);
+                if (!alreadyProcessing)
+                    typeof(FfmpegGui.MainWindow).GetMethod("StartQueue_Click", BF)?.Invoke(W, new object?[] { null, null });
 
                 System.Collections.Generic.List<FfmpegGui.Models.QueueItem>? Items() =>
                     typeof(FfmpegGui.MainWindow).GetField("_queueItems", BF)?.GetValue(W) as System.Collections.Generic.List<FfmpegGui.Models.QueueItem>;
