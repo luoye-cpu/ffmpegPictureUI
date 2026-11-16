@@ -345,6 +345,8 @@ namespace FfmpegGui
         private int _formatRefreshGen;
         private bool _suppressOptionEvents;
         private int _probeGeneration;
+        // UI-06：在途位深探测的取消句柄 —— 代际变化 / 窗口关闭时连带终止 ffprobe，不再只丢结果。
+        private System.Threading.CancellationTokenSource? _probeCts;
         private string? _probeCachePath;
         private long _probeCacheLength;
         private DateTime _probeCacheWriteUtc;
@@ -3637,12 +3639,15 @@ namespace FfmpegGui
             }
         }
 
-        private void OnQueueStopped()
+        private void OnQueueStopped(bool completedNaturally)
         {
             Dispatcher.UIThread.Post(() =>
             {
                 _isQueueRunning = false;
-                UiLogService.Info("队列已完成\n");
+                // UI-05：仅自然跑完才写「队列已完成」；用户点停止已在 StopQueue_Click 写「队列已停止」，
+                //   不再紧跟着补一句矛盾文案。
+                if (completedNaturally)
+                    UiLogService.Info("队列已完成\n");
                 if (ClearQueueButton != null) ClearQueueButton.IsEnabled = true;
                 if (_gainMapModeActive) RefreshGainMapProgressIfActive();
             });
@@ -4312,36 +4317,50 @@ namespace FfmpegGui
                 "ffprobe.exe");
             if (!File.Exists(ffprobe)) return;
 
+            // UI-06：新一轮探测开始前先取消在途探测（旧代 ffprobe 连带终止，不再只丢结果）；
+            //   旧句柄 Dispose。超时仍由本次 CTS 的 CancelAfter(3s) 兜住。
+            try { _probeCts?.Cancel(); } catch { }
+            try { _probeCts?.Dispose(); } catch { }
+            var myProbeCts = new System.Threading.CancellationTokenSource();
+            myProbeCts.CancelAfter(System.TimeSpan.FromSeconds(3));
+            _probeCts = myProbeCts;
+
             var generation = ++_probeGeneration;
-            var bitDepth = await Task.Run(() => ProbeSourceBitDepthBlocking(input, ffprobe));
+            var localCt = myProbeCts.Token;
+            var bitDepth = await Task.Run(() => ProbeSourceBitDepthBlocking(input, ffprobe, localCt));
 
             // 不假设 await 一定回到 UI 线程；统一 Post 回 UI 再碰控件。
             Dispatcher.UIThread.Post(() =>
             {
-                // 旧代探测不覆盖新选择；输入也必须在 await 期间没换。
-                if (generation != _probeGeneration) return;
-                if (!string.Equals(_inputPath, input, StringComparison.OrdinalIgnoreCase)) return;
-                if (!string.Equals(ColorSpaceCombo?.SelectedItem as string, colorSpace, StringComparison.Ordinal)) return;
-
-                if (bitDepth > 0)
+                // 回灌整体包 try/catch（UI-06）：窗口关闭后碰已释放控件不得抛未捕获异常。
+                try
                 {
-                    try
+                    // 旧代探测不覆盖新选择；输入也必须在 await 期间没换。
+                    if (generation != _probeGeneration) return;
+                    if (!string.Equals(_inputPath, input, StringComparison.OrdinalIgnoreCase)) return;
+                    if (!string.Equals(ColorSpaceCombo?.SelectedItem as string, colorSpace, StringComparison.Ordinal)) return;
+
+                    if (bitDepth > 0)
                     {
-                        var fi = new FileInfo(input);
-                        _probeCachePath = input;
-                        _probeCacheLength = fi.Length;
-                        _probeCacheWriteUtc = fi.LastWriteTimeUtc;
-                        _probeCacheBitDepth = bitDepth;
+                        try
+                        {
+                            var fi = new FileInfo(input);
+                            _probeCachePath = input;
+                            _probeCacheLength = fi.Length;
+                            _probeCacheWriteUtc = fi.LastWriteTimeUtc;
+                            _probeCacheBitDepth = bitDepth;
+                        }
+                        catch { }
+                        ApplyHdrBitDepth(bitDepth);
+                        DetectColorConflicts();
                     }
-                    catch { }
-                    ApplyHdrBitDepth(bitDepth);
-                    DetectColorConflicts();
                 }
+                catch { }
             });
         }
 
-        /// <summary>线程池上的同步 ffprobe：UI 线程永远不等待它。</summary>
-        private static int ProbeSourceBitDepthBlocking(string input, string ffprobe)
+        /// <summary>线程池上的同步 ffprobe：UI 线程永远不等待它。ct 同时承担 3s 超时与代际/窗口关闭取消。</summary>
+        private static int ProbeSourceBitDepthBlocking(string input, string ffprobe, System.Threading.CancellationToken ct)
         {
             try
             {
@@ -4358,20 +4377,26 @@ namespace FfmpegGui
                 });
                 if (p == null) return 8;
 
-                // 先挂读取任务、再等退出；超时后 kill 并直接放弃排空，避免线程池被畸形文件拖住。
+                // 先挂读取任务、再等退出；ct（3s 超时或代际/窗口关闭取消）触发即 kill，避免线程池被畸形文件拖住。
                 var outTask = p.StandardOutput.ReadToEndAsync();
                 var errTask = p.StandardError.ReadToEndAsync();
-                if (!p.WaitForExit(3000))
+                try
+                {
+                    p.WaitForExitAsync(ct).GetAwaiter().GetResult();
+                }
+                catch (System.OperationCanceledException)
                 {
                     try { p.Kill(entireProcessTree: true); } catch { }
-                    var bdMsg = $"[bitdepth] ffprobe 位深探测超时（3s）⇒ 已终止：{System.IO.Path.GetFileName(input)}（按 8bit 处理）";
+                    var why = ct.IsCancellationRequested ? "被取消" : "超时（3s）";
+                    var bdMsg = $"[bitdepth] ffprobe 位深探测{why} ⇒ 已终止：{System.IO.Path.GetFileName(input)}（按 8bit 处理）";
                     System.Diagnostics.Trace.WriteLine(bdMsg);
                     UiLogService.Warn(bdMsg);
                     return 8;
                 }
 
-                var output = outTask.GetAwaiter().GetResult().Trim();
-                errTask.GetAwaiter().GetResult();
+                string output;
+                try { output = outTask.GetAwaiter().GetResult().Trim(); } catch { output = ""; }
+                try { errTask.GetAwaiter().GetResult(); } catch { }
                 if (int.TryParse(output, out var bd) && bd > 0) return bd;
                 return 8;
             }
@@ -5062,6 +5087,8 @@ namespace FfmpegGui
                 }
             }
             catch { }
+            // UI-06：窗口关闭连带终止在途位深探测 ffprobe。
+            try { _probeCts?.Cancel(); } catch { }
             base.OnClosed(e);
         }
 

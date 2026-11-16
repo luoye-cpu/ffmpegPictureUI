@@ -31,10 +31,15 @@ namespace FfmpegGui.Services
         // ⚠ 2026-09-21 加固 2/3：后台循环句柄 —— Start() 先等旧循环退出，再启动新循环。
         private Task? _runner;
 
-        /// <summary>调度器是否正在运行（有活跃的 CTS 且未被取消）</summary>
-        public bool IsRunning => _cts != null && !_cts.IsCancellationRequested;
+        /// <summary>
+        /// 调度器是否正在运行（runner 句柄未完成且 CTS 未被取消）。
+        /// ⚠ UI-02：优雅停止（StopAfterCurrentQueue）走 break 退出循环时 CTS 从未 Cancel，
+        /// 旧公式只看 _cts ⇒ 跑完后 IsRunning 恒真，简洁模式误拒启动。加入 _runner.IsCompleted
+        /// 后：runner 退出（无论取消还是优雅 break）即转 false。
+        /// </summary>
+        public bool IsRunning => _runner != null && !_runner.IsCompleted && _cts != null && !_cts.IsCancellationRequested;
         private readonly Action<QueueItem> _onItemUpdated;
-        private readonly Action? _onQueueStopped;
+        private readonly Action<bool>? _onQueueStopped;
 
         /// <summary>非 RAW 输入请求 DNG 出口时的统一拒绝文案（预检与 ProcessDngAsync 共用，防两处漂移）。</summary>
         private const string DngNonRawMessage =
@@ -42,7 +47,7 @@ namespace FfmpegGui.Services
         private const string DngNonRawStatus = "失败 (非 RAW 输入)";
         private const string AvifencTwoStepStatus = "已完成 (avifenc 两步法)";
 
-        public QueueProcessor(Action<QueueItem> onItemUpdated, Action? onStopped = null)
+        public QueueProcessor(Action<QueueItem> onItemUpdated, Action<bool>? onStopped = null)
         {
             _onItemUpdated = onItemUpdated;
             _onQueueStopped = onStopped;
@@ -63,10 +68,12 @@ namespace FfmpegGui.Services
                 _concurrency = Math.Max(1, concurrency.Value);
             // 动态限制：根据可用内存与**队列内容**调整最大并发数（每任务预留见 EstimatePerTaskMemoryMB）
             _concurrency = ClampConcurrencyByMemory(_concurrency, EstimatePerTaskMemoryMB());
+            CancellationTokenSource? oldCts = null;
             if (_cts != null)
             {
-                _cts.Cancel();
+                oldCts = _cts;
                 _cts = null;
+                oldCts.Cancel();
             }
 
             // ⚠ 2026-09-21 加固 2/3：**先等旧循环真正退出**再启动新循环。
@@ -80,6 +87,9 @@ namespace FfmpegGui.Services
                 catch { /* 旧循环的异常不应阻断重启 */ }
             }
             _runner = null;
+            // UI-03：旧 CTS 必须 Dispose（与 RebuildSemaphore 同形），只 Cancel 会逐次泄漏。
+            //   放在 prev.Wait 之后：等旧循环收尾完毕再释放其注册回调，避免 CancelledToken 赛跑。
+            try { oldCts?.Dispose(); } catch { }
 
             RebuildSemaphore();
 
@@ -1671,7 +1681,9 @@ namespace FfmpegGui.Services
             }
             finally
             {
-                try { _onQueueStopped?.Invoke(); } catch { }
+                // UI-05：带上「是否自然跑完」原因 —— 用户主动停止（ct 被 Cancel）时不写「队列已完成」。
+                var completedNaturally = !ct.IsCancellationRequested;
+                try { _onQueueStopped?.Invoke(completedNaturally); } catch { }
             }
         }
 
@@ -4853,7 +4865,10 @@ namespace FfmpegGui.Services
                 if (linkedToken.IsCancellationRequested)
                 {
                     item.Log += $"[{encoderTag}-pipe] 超时或取消\n";
-                    return (-1, "已停止/超时");
+                    // UI-01：状态唯一真值 = "已停止"（与主分支 catch OCE、QueueItem.IsStopped 精确匹配同源）。
+                    //   超时语义已在上一行日志保留；旧串 "已停止/超时" 不匹配 IsStopped ⇒ 停止的管道项
+                    //   不被 RequeueStoppedAndFailed 重排、反被 ApplyErrorOnlyFilter 收进「仅显示报错」。
+                    return (-1, "已停止");
                 }
 
                 var encExitCode = procEnc.HasExited ? procEnc.ExitCode : -1;

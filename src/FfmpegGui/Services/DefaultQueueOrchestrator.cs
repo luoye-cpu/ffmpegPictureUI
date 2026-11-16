@@ -36,8 +36,10 @@ namespace FfmpegGui.Services
                             ItemCompleted?.Invoke(item);
                     }
                 },
-                onStopped: () =>
+                onStopped: _ =>
                 {
+                    // bool = 是否自然跑完（true=队列跑完；false=外部取消）。headless 两种情形都收尾，
+                    //   不区分原因（队列完成事件与 TCS 落成都照发）。
                     QueueCompleted?.Invoke();
                     lock (_tcsLock)
                     {

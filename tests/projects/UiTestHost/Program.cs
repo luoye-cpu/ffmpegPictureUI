@@ -599,6 +599,29 @@ namespace UiTestHost
                     panelOn && boxOn && !panelOff && reset,
                     $"avif(visible={panelOn},enabled={boxOn}) tiff(visible={panelOff},复位={reset})");
             });
+
+            // C22（2026-11-16，UI-04 锁）：oxipng（PNG 优化器）面板显隐 + 默认档回归锁。
+            //   c5f18e7 把面板从 PngCodecPanel 移到 StillOptionsPanel 顶层，判定 = 静态 PNG 才显示；
+            //   此前该迁移零 UI 断言（Grep tests/projects 无一处引用 PngOptimizer）。
+            //   面板被误挂回动图出口 / 默认档被改回 off ⇒ 本三条当场红。
+            Safe("C22 oxipng面板显隐+默认max", () =>
+            {
+                // 先确保静态模式（C5 可能把模式停在 RAW）
+                var m = Find<ComboBox>("ConversionModeCombo");
+                if (m != null) m.SelectedIndex = 0; Pump(8);
+                var panel = Find<StackPanel>("PngOptimizerPanel");
+                var combo = Find<ComboBox>("PngOptimizerCombo");
+
+                SetFormat("PNG"); Pump(8);
+                Check("C22a 静态 PNG → oxipng 面板显示", panel?.IsVisible == true,
+                      $"visible={panel?.IsVisible}");
+                Check("C22b 默认档 SelectedIndex=2 (max)", combo?.SelectedIndex == 2,
+                      $"idx={combo?.SelectedIndex}");
+
+                SetFormat("JPEG"); Pump(8);
+                Check("C22c 非 PNG(JPEG) → oxipng 面板隐藏", panel?.IsVisible == false,
+                      $"visible={panel?.IsVisible}");
+            });
         }
 
         // ══════════════ D组: 编码器下拉随格式联动 ══════════════
@@ -1026,6 +1049,146 @@ namespace UiTestHost
                 //   G1 遗留的已完成项与本断言无关）
                 Check("G2 队列无已完成项", (Items() ?? new()).Where(i => i.InputPath == bigIn).All(i => !i.IsSuccessStatus),
                       $"statuses={string.Join("|", (Items() ?? new()).Where(i => i.InputPath == bigIn).Select(i => i.Status))}");
+            });
+
+            // G2b（2026-11-16，UI-01 锁）：管道分支被用户停止的状态真值。
+            //   BMP 输入 + cjpegli 编码器 ⇒ 直接编码不支持 BMP ⇒ 必走 PipeFfmpegToExternalEncoderAsync。
+            //   旧行为：管道取消写 "已停止/超时"，而 QueueItem.IsStopped 是 Status=="已停止" 精确匹配
+            //   ⇒ IsStopped=false（本断言必红）；新行为统一写 "已停止"（超时语义留在日志行）。
+            Safe("G2b 管道分支停止(cjpegli管道→IsStopped 真)", () =>
+            {
+                var plan = System.IO.Path.Combine(RepoRoot, "publish", "PLAN");
+                typeof(FfmpegGui.MainWindow).GetMethod("StopQueue_Click", BF)?.Invoke(W, new object?[] { null, null });
+                Pump(10);
+                System.Threading.Thread.Sleep(150);
+                var st = FfmpegGui.Services.AppSettingsService.Current;
+                st.FfmpegDirectory = System.IO.Path.Combine(plan, "ffmpeg-full");
+                st.OutputDirectory = TempDir;
+                FfmpegGui.Services.ExternalToolsDetector.EnsureAllDetected();
+
+                var pipeIn = System.IO.Path.Combine(TempDir, "g2b_in.bmp");
+                var pipeOut = System.IO.Path.Combine(TempDir, "g2b_out.jpg");
+                try { if (System.IO.File.Exists(pipeOut)) System.IO.File.Delete(pipeOut); } catch { }
+                var ff = System.IO.Path.Combine(plan, "ffmpeg-full", "ffmpeg.exe");
+                var psi = new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = ff,
+                    Arguments = "-y -f lavfi -i testsrc2=size=6000x4000:rate=1 -frames:v 1 \"" + pipeIn + "\"",
+                    UseShellExecute = false, CreateNoWindow = true
+                };
+                var pGen = System.Diagnostics.Process.Start(psi);
+                pGen?.WaitForExit();
+                Check("G2b 前置 24MP BMP 输入", (pGen?.ExitCode ?? -1) == 0 && System.IO.File.Exists(pipeIn),
+                      $"exit={pGen?.ExitCode} exists={System.IO.File.Exists(pipeIn)}");
+
+                SetInput(pipeIn);
+                SetFormat("JPEG");
+                Pump(10);
+                var picked = PickEncoder(s => s.Contains("cjpegli", StringComparison.OrdinalIgnoreCase));
+                Check("G2b 选中 cjpegli 编码器", picked != null, $"picked={picked ?? "<none>"}");
+
+                var mf = typeof(FfmpegGui.MainWindow).GetField("_mediaFiles", BF)?.GetValue(W) as System.Collections.IList;
+                if (mf != null && !mf.Contains(pipeIn)) mf.Add(pipeIn);
+                typeof(FfmpegGui.MainWindow).GetMethod("AddToQueue_Click", BF)?.Invoke(W, new object?[] { null, null });
+                Pump(30);
+                var alreadyProcessing = (Items() ?? new()).Any(i => i.InputPath == pipeIn && i.IsProcessing);
+                if (!alreadyProcessing)
+                    typeof(FfmpegGui.MainWindow).GetMethod("StartQueue_Click", BF)?.Invoke(W, new object?[] { null, null });
+
+                System.Collections.Generic.List<FfmpegGui.Models.QueueItem>? Items() =>
+                    typeof(FfmpegGui.MainWindow).GetField("_queueItems", BF)?.GetValue(W) as System.Collections.Generic.List<FfmpegGui.Models.QueueItem>;
+
+                // 等到本项真的在处理（≤30s），再等到 ffmpeg/cjpegli 子进程出现（≤15s 宽限）。
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                while (sw.ElapsedMilliseconds < 30000)
+                {
+                    Pump(4);
+                    var its = Items();
+                    if (its != null && its.Any(i => i.InputPath == pipeIn && i.IsProcessing)) break;
+                    System.Threading.Thread.Sleep(120);
+                }
+                var childIds = new System.Collections.Generic.HashSet<int>();
+                while (sw.ElapsedMilliseconds < 45000)
+                {
+                    foreach (var nm in new[] { "ffmpeg", "cjpegli" })
+                        foreach (var pp in System.Diagnostics.Process.GetProcessesByName(nm))
+                            childIds.Add(pp.Id);
+                    if (childIds.Count > 0) break;
+                    Pump(4);
+                    System.Threading.Thread.Sleep(150);
+                }
+                Check("G2b 管道工作子进程在跑", childIds.Count > 0,
+                      $"workers=[{string.Join(",", childIds)}] elapsed={sw.ElapsedMilliseconds}ms");
+
+                typeof(FfmpegGui.MainWindow).GetMethod("StopQueue_Click", BF)?.Invoke(W, new object?[] { null, null });
+
+                // 旧行为（UI-01）：Status="已停止/超时" ⇒ IsStopped 精确匹配 false ⇒ 本等待必超时红。
+                var stopped = false;
+                while (sw.ElapsedMilliseconds < 70000)
+                {
+                    Pump(4);
+                    var its = Items();
+                    if (its != null && its.Any(i => i.InputPath == pipeIn && i.IsStopped)) { stopped = true; break; }
+                    System.Threading.Thread.Sleep(120);
+                }
+                Check("G2b 管道停止后状态=已停止(IsStopped 真)", stopped,
+                      $"status={string.Join("|", (Items() ?? new()).Where(i => i.InputPath == pipeIn).Select(i => i.Status))}");
+            });
+
+            // G2c（2026-11-16，UI-02 锁）：优雅停止（完成当前队列后停止）跑完后 IsRunning 必须转 false。
+            //   旧行为：优雅 break 从不 Cancel CTS ⇒ IsRunning 恒真 ⇒ 本等待必超时红。
+            //   判据经反射读 QueueProcessor.IsRunning（公开属性），与简洁模式 SimpleStartQueue_Click
+            //   的误拒判据是同一条真值。
+            Safe("G2c 优雅停止后 IsRunning=false", () =>
+            {
+                var plan = System.IO.Path.Combine(RepoRoot, "publish", "PLAN");
+                typeof(FfmpegGui.MainWindow).GetMethod("StopQueue_Click", BF)?.Invoke(W, new object?[] { null, null });
+                Pump(10);
+                System.Threading.Thread.Sleep(150);
+                var st = FfmpegGui.Services.AppSettingsService.Current;
+                st.FfmpegDirectory = System.IO.Path.Combine(plan, "ffmpeg-full");
+                st.OutputDirectory = TempDir;
+                FfmpegGui.Services.ExternalToolsDetector.EnsureAllDetected();
+
+                var smallIn = System.IO.Path.Combine(SrcDir, "src_8bit.png");
+                Check("G2c 前置小输入存在", System.IO.File.Exists(smallIn), $"path={smallIn}");
+                SetInput(smallIn);
+                SetFormat("PNG");
+                Pump(10);
+                var afterCheck = Find<CheckBox>("StopAfterCurrentCheck");
+                Check("G2c 找到「完成当前队列后停止」复选框", afterCheck != null, "");
+                if (afterCheck != null) afterCheck.IsChecked = true;
+                Pump(6);
+
+                var mf = typeof(FfmpegGui.MainWindow).GetField("_mediaFiles", BF)?.GetValue(W) as System.Collections.IList;
+                if (mf != null && !mf.Contains(smallIn)) mf.Add(smallIn);
+                typeof(FfmpegGui.MainWindow).GetMethod("AddToQueue_Click", BF)?.Invoke(W, new object?[] { null, null });
+                Pump(30);
+                typeof(FfmpegGui.MainWindow).GetMethod("StartQueue_Click", BF)?.Invoke(W, new object?[] { null, null });
+
+                bool runningAfterDrain;
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                while (sw.ElapsedMilliseconds < 60000)
+                {
+                    Pump(4);
+                    var proc = typeof(FfmpegGui.MainWindow).GetField("_queueProcessor", BF)?.GetValue(W);
+                    var prop = proc?.GetType().GetProperty("IsRunning");
+                    var running = prop != null && (bool)(prop.GetValue(proc) ?? false);
+                    if (!running) break;
+                    System.Threading.Thread.Sleep(200);
+                }
+                {
+                    var proc = typeof(FfmpegGui.MainWindow).GetField("_queueProcessor", BF)?.GetValue(W);
+                    var prop = proc?.GetType().GetProperty("IsRunning");
+                    runningAfterDrain = prop != null && (bool)(prop.GetValue(proc) ?? false);
+                }
+                Check("G2c 队列跑完后 IsRunning=false", !runningAfterDrain,
+                      $"IsRunning={runningAfterDrain} elapsed={sw.ElapsedMilliseconds}ms");
+
+                // 复位：别把「完成当前队列后停止」留给后续组（G1 注释：空队列循环不会自行退出）
+                if (afterCheck != null) afterCheck.IsChecked = false;
+                typeof(FfmpegGui.MainWindow).GetMethod("StopQueue_Click", BF)?.Invoke(W, new object?[] { null, null });
+                Pump(10);
             });
         }
 
