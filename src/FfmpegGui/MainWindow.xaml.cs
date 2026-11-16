@@ -125,6 +125,7 @@ namespace FfmpegGui
         private CheckBox? PreserveInputStructure;
         private CheckBox? StopAfterCurrentCheck;
         private CheckBox? ShowErrorsOnlyCheck;
+        private CheckBox? ShowWarningsOnlyCheck;
         private TextBlock? QueueProgressLabel;
         private TextBlock? QueueEtaLabel;
         private TextBlock? ElapsedLabel;
@@ -145,6 +146,7 @@ namespace FfmpegGui
         private Button? SimpleModeEntryBtn;
         // 简洁模式控件
         private CheckBox? SimpleErrorsOnlyCheck;
+        private CheckBox? SimpleWarningsOnlyCheck;
         private DockPanel? FullModePanel;
         private Grid? FullMainContent;
         private Grid? SimpleModePanel;
@@ -985,6 +987,7 @@ namespace FfmpegGui
             // 停止设置复选框（放在队列按钮旁）
             StopAfterCurrentCheck = this.FindControl<CheckBox>("StopAfterCurrentCheck");
             ShowErrorsOnlyCheck = this.FindControl<CheckBox>("ShowErrorsOnlyCheck");
+            ShowWarningsOnlyCheck = this.FindControl<CheckBox>("ShowWarningsOnlyCheck");
             QueueProgressLabel = this.FindControl<TextBlock>("QueueProgressLabel");
             QueueEtaLabel = this.FindControl<TextBlock>("QueueEtaLabel");
             ElapsedLabel = this.FindControl<TextBlock>("ElapsedLabel");
@@ -1130,6 +1133,7 @@ namespace FfmpegGui
             // ── 简洁模式控件 ──
             SimpleModeEntryBtn = this.FindControl<Button>("SimpleModeEntryBtn");
             SimpleErrorsOnlyCheck = this.FindControl<CheckBox>("SimpleErrorsOnlyCheck");
+            SimpleWarningsOnlyCheck = this.FindControl<CheckBox>("SimpleWarningsOnlyCheck");
             FullModePanel = this.FindControl<DockPanel>("FullModePanel");
             FullMainContent = this.FindControl<Grid>("FullMainContent");
             SimpleModePanel = this.FindControl<Grid>("SimpleModePanel");
@@ -3602,8 +3606,12 @@ namespace FfmpegGui
             // 过滤/进度只在整批处理完后刷新一次，避免逐行重建集合。
             if (ShowErrorsOnlyCheck?.IsChecked == true)
                 ApplyErrorOnlyFilter();
+            if (ShowWarningsOnlyCheck?.IsChecked == true)
+                ApplyWarningOnlyFilter();
             if (SimpleErrorsOnlyCheck?.IsChecked == true)
                 RefreshSimpleErrorFilter();
+            if (SimpleWarningsOnlyCheck?.IsChecked == true)
+                RefreshSimpleWarningFilter();
             if (_gainMapModeActive) RefreshGainMapProgressIfActive();
 
             if (!_pendingQueueUiUpdates.IsEmpty
@@ -3732,27 +3740,49 @@ namespace FfmpegGui
 
         private void DeleteSelected_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
         {
-            if (QueueList?.SelectedIndex is int idx and >= 0 && idx < _queueItems.Count)
+            if (QueueList?.SelectedItem is not Models.QueueItem item)
+                return;
+            if (item.IsProcessing)
             {
-                var item = _queueItems[idx];
-                if (item.IsProcessing)
-                {
-                    UiLogService.Info("无法删除正在处理的任务\n");
-                    return;
-                }
-                item.IsCancelled = true;
-                _queueView.RemoveAt(idx);
-                _queueItems.RemoveAt(idx);
-                UiLogService.Info($"已删除: {item.DisplayName}\n");
-                UpdateQueueCountLabel();
+                UiLogService.Info("无法删除正在处理的任务\n");
+                return;
             }
+
+            item.IsCancelled = true;
+            int idx = _queueItems.IndexOf(item);
+            if (idx >= 0)
+            {
+                _queueItems.RemoveAt(idx);
+                _queueView.Remove(item);
+            }
+            UiLogService.Info($"已删除: {item.DisplayName}\n");
+            UpdateQueueCountLabel();
+            // 筛选视图是快照集合，删除后必须按当前筛选条件重建，否则可见列表与 _queueView 脱节。
+            RefreshActiveQueueFilters();
         }
 
         private void ShowErrorsOnly_IsCheckedChanged(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
         {
             if (QueueList == null) return;
             if (ShowErrorsOnlyCheck?.IsChecked == true)
+            {
+                if (ShowWarningsOnlyCheck?.IsChecked == true)
+                    ShowWarningsOnlyCheck.IsChecked = false;
                 ApplyErrorOnlyFilter();
+            }
+            else
+                QueueList.ItemsSource = _queueView;
+        }
+
+        private void ShowWarningsOnly_IsCheckedChanged(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        {
+            if (QueueList == null) return;
+            if (ShowWarningsOnlyCheck?.IsChecked == true)
+            {
+                if (ShowErrorsOnlyCheck?.IsChecked == true)
+                    ShowErrorsOnlyCheck.IsChecked = false;
+                ApplyWarningOnlyFilter();
+            }
             else
                 QueueList.ItemsSource = _queueView;
         }
@@ -3763,6 +3793,28 @@ namespace FfmpegGui
             var filtered = new ObservableCollection<Models.QueueItem>(
                 _queueView.Where(item => item.HasError || !item.IsCompleted));
             QueueList.ItemsSource = filtered;
+        }
+
+        private void ApplyWarningOnlyFilter()
+        {
+            if (QueueList == null) return;
+            var filtered = new ObservableCollection<Models.QueueItem>(
+                _queueView.Where(item => item.IsWarning));
+            QueueList.ItemsSource = filtered;
+        }
+
+        /// <summary>按当前勾选状态重建两套队列视图（删除/清空/添加后调用）。</summary>
+        private void RefreshActiveQueueFilters()
+        {
+            if (ShowWarningsOnlyCheck?.IsChecked == true)
+                ApplyWarningOnlyFilter();
+            else if (ShowErrorsOnlyCheck?.IsChecked == true)
+                ApplyErrorOnlyFilter();
+
+            if (SimpleWarningsOnlyCheck?.IsChecked == true)
+                RefreshSimpleWarningFilter();
+            else if (SimpleErrorsOnlyCheck?.IsChecked == true)
+                RefreshSimpleErrorFilter();
         }
 
         private void ClearQueue_Click(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
@@ -3791,6 +3843,7 @@ namespace FfmpegGui
                 }
 
                 UpdateQueueCountLabel();
+                RefreshActiveQueueFilters();
                 UiLogService.Info(removedCount > 0
                     ? $"已清空队列中 {removedCount} 个任务"
                     : "队列中没有可清空的任务。");
@@ -4075,9 +4128,8 @@ namespace FfmpegGui
 
         private void QueueList_DoubleTapped(object? sender, Avalonia.Input.TappedEventArgs e)
         {
-            if (QueueList?.SelectedIndex is int idx and >= 0 && idx < _queueItems.Count)
+            if (QueueList?.SelectedItem is Models.QueueItem item)
             {
-                var item = _queueItems[idx];
                 var command = string.IsNullOrEmpty(item.Command)
                     ? BuildQueueItemCommand(item)
                     : item.Command;
@@ -5079,7 +5131,13 @@ namespace FfmpegGui
 
             // 绑定共享队列数据
             if (SimpleQueueList != null)
+            {
                 SimpleQueueList.ItemsSource = _queueView;
+                if (SimpleWarningsOnlyCheck?.IsChecked == true)
+                    RefreshSimpleWarningFilter();
+                else if (SimpleErrorsOnlyCheck?.IsChecked == true)
+                    RefreshSimpleErrorFilter();
+            }
 
             // 同步自动编码开关状态
             if (AutoEncodeToggle != null)
@@ -5318,6 +5376,7 @@ namespace FfmpegGui
             ClearSelectedMediaLists();
 
             UpdateSimpleCounts();
+            RefreshActiveQueueFilters();
 
             if (LogText != null && removed > 0)
                 UiLogService.Info($"[简洁模式] 已清空 {removed} 个队列项 + 已选文件列表\n");
@@ -5360,7 +5419,27 @@ namespace FfmpegGui
             bool showErrorsOnly = (sender as CheckBox)?.IsChecked == true;
 
             if (showErrorsOnly)
+            {
+                if (SimpleWarningsOnlyCheck?.IsChecked == true)
+                    SimpleWarningsOnlyCheck.IsChecked = false;
                 RefreshSimpleErrorFilter();
+            }
+            else
+                SimpleQueueList.ItemsSource = _queueView;
+        }
+
+        private void SimpleWarningsOnly_Changed(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        {
+            if (SimpleQueueList == null) return;
+
+            bool showWarningsOnly = (sender as CheckBox)?.IsChecked == true;
+
+            if (showWarningsOnly)
+            {
+                if (SimpleErrorsOnlyCheck?.IsChecked == true)
+                    SimpleErrorsOnlyCheck.IsChecked = false;
+                RefreshSimpleWarningFilter();
+            }
             else
                 SimpleQueueList.ItemsSource = _queueView;
         }
@@ -5371,6 +5450,15 @@ namespace FfmpegGui
             if (SimpleQueueList == null) return;
             var filtered = new ObservableCollection<Models.QueueItem>(
                 _queueView.Where(i => i.HasError || !i.IsCompleted));
+            SimpleQueueList.ItemsSource = filtered;
+        }
+
+        /// <summary>重建简洁模式"仅显示警告条目"过滤集合（队列状态变化时由 OnQueueItemUpdated 调用）</summary>
+        private void RefreshSimpleWarningFilter()
+        {
+            if (SimpleQueueList == null) return;
+            var filtered = new ObservableCollection<Models.QueueItem>(
+                _queueView.Where(i => i.IsWarning));
             SimpleQueueList.ItemsSource = filtered;
         }
 

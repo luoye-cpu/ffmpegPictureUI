@@ -1025,7 +1025,8 @@
                   <DataTemplate x:DataType="local:QueueItem">
                     <Grid ColumnDefinitions="*,Auto">
                       <TextBlock Text="{Binding DisplayText}"
-                                 Foreground="{Binding HasError, Converter={x:Static local:ErrorToColorConverter.Instance}}"
+                                 Foreground="{Binding Converter={x:Static local:ErrorToColorConverter.Instance}}"
+                                 ToolTip.Tip="{Binding WarningText}"
                                  TextTrimming="CharacterEllipsis"/>
                       <TextBlock Grid.Column="1" Text="{Binding DurationText}" FontSize="10" Margin="8,0,0,0"
                                  VerticalAlignment="Center"
@@ -1053,6 +1054,10 @@
                         VerticalAlignment="Center" Margin="8,0,0,3"
                         ToolTip.Tip="{ext:Loc tip.queue.errors.only}"
                         IsCheckedChanged="ShowErrorsOnly_IsCheckedChanged"/>
+              <CheckBox x:Name="ShowWarningsOnlyCheck" Content="{ext:Loc show.warnings.only}"
+                        VerticalAlignment="Center" Margin="8,0,0,3"
+                        ToolTip.Tip="{ext:Loc tip.queue.warnings.only}"
+                        IsCheckedChanged="ShowWarningsOnly_IsCheckedChanged"/>
               <Separator Width="12" Background="Transparent"/>
               <TextBlock x:Name="QueueProgressLabel" Text="队列: 0 / 0" VerticalAlignment="Center"
                          Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}" FontSize="11" Margin="4,0,0,3"/>
@@ -1397,14 +1402,18 @@
                     <DataTemplate x:DataType="local:QueueItem">
                       <Grid ColumnDefinitions="*,*,Auto" ColumnSpacing="10">
                         <TextBlock Grid.Column="0" Text="{Binding GainMapSdrName}" FontSize="12"
-                                   TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+                                   TextTrimming="CharacterEllipsis" VerticalAlignment="Center"
+                                   ToolTip.Tip="{Binding WarningText}"
+                                   Foreground="{Binding Converter={x:Static local:ErrorToColorConverter.Instance}}"/>
                         <TextBlock Grid.Column="1" Text="{Binding GainMapHdrName}" FontSize="12"
-                                   TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+                                   TextTrimming="CharacterEllipsis" VerticalAlignment="Center"
+                                   ToolTip.Tip="{Binding WarningText}"
+                                   Foreground="{Binding Converter={x:Static local:ErrorToColorConverter.Instance}}"/>
                         <TextBlock Grid.Column="2" Text="{Binding Status}" FontSize="11"
                                    MaxWidth="150" TextTrimming="CharacterEllipsis"
                                    ToolTip.Tip="{Binding Status}"
                                    VerticalAlignment="Center"
-                                   Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+                                   Foreground="{Binding Converter={x:Static local:ErrorToColorConverter.Instance}}"/>
                       </Grid>
                     </DataTemplate>
                   </ListBox.ItemTemplate>
@@ -1506,6 +1515,10 @@
             <CheckBox x:Name="SimpleErrorsOnlyCheck" Content="{ext:Loc show.errors.only}" FontSize="12" VerticalAlignment="Center"
                       Margin="16,0,0,0"
                       IsCheckedChanged="SimpleErrorsOnly_Changed"/>
+            <CheckBox x:Name="SimpleWarningsOnlyCheck" Content="{ext:Loc show.warnings.only}" FontSize="12" VerticalAlignment="Center"
+                      Margin="8,0,0,0"
+                      ToolTip.Tip="{ext:Loc tip.queue.warnings.only}"
+                      IsCheckedChanged="SimpleWarningsOnly_Changed"/>
           </StackPanel>
           <StackPanel Orientation="Horizontal" Spacing="20">
             <TextBlock x:Name="SimpleStatusLabel" FontSize="12" Text="{ext:Loc ready}"
@@ -1535,11 +1548,14 @@
                         Background="{DynamicResource SystemControlBackgroundChromeMediumBrush}">
                   <Grid ColumnDefinitions="*,Auto,Auto" RowDefinitions="Auto,Auto">
                     <TextBlock Grid.Row="0" Grid.Column="0" FontSize="12" FontWeight="Medium"
-                               Text="{Binding DisplayText}" TextTrimming="CharacterEllipsis"/>
+                               Text="{Binding DisplayText}" TextTrimming="CharacterEllipsis"
+                               ToolTip.Tip="{Binding WarningText}"
+                               Foreground="{Binding Converter={x:Static local:ErrorToColorConverter.Instance}}"/>
                     <TextBlock Grid.Row="0" Grid.Column="1" FontSize="10"
                                VerticalAlignment="Center" Margin="6,0,0,0"
                                Text="{Binding Status}"
-                               Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+                               ToolTip.Tip="{Binding WarningText}"
+                               Foreground="{Binding Converter={x:Static local:ErrorToColorConverter.Instance}}"/>
                     <TextBlock Grid.Row="0" Grid.Column="2" Grid.RowSpan="2" FontSize="10"
                                VerticalAlignment="Center" Margin="8,0,0,0"
                                Text="{Binding DurationText}"

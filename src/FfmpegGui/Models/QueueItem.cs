@@ -47,6 +47,89 @@ namespace FfmpegGui.Models
             }
         }
 
+        // ── 警告条目（组件缺失、色彩语义按惯例推定等）──────────────────────────
+        // 警告不是失败：任务继续执行，队列条目以黄色显示，并可被「仅显示警告条目」筛出。
+        private volatile bool _isWarning;
+        private readonly List<string> _warningReasons = new();
+        private readonly object _warningGate = new();
+
+        /// <summary>条目是否带警告（任务仍可继续/已产出）。</summary>
+        public bool IsWarning => _isWarning;
+
+        /// <summary>与 <see cref="IsWarning"/> 同义，留给绑定/筛选的语义命名。</summary>
+        public bool HasWarning => _isWarning;
+
+        /// <summary>警告原因（多条以分号拼接；仅用于提示，不参与状态判定）。</summary>
+        public string WarningText
+        {
+            get
+            {
+                lock (_warningGate)
+                {
+                    return _warningReasons.Count == 0 ? string.Empty : string.Join("; ", _warningReasons);
+                }
+            }
+        }
+
+        /// <summary>
+        /// 标记条目警告。重复原因会去重，便于日志/UI 多次刷新时不膨胀。
+        /// 警告不改变 <see cref="Status"/>，因此失败红显优先、警告黄显次之。
+        /// </summary>
+        public void MarkWarning(string? reason)
+        {
+            var text = (reason ?? string.Empty).Trim();
+            if (text.Length == 0) text = "warning";
+            if (text.Length > 240) text = text.Substring(0, 240) + "...";
+
+            bool changed = false;
+            lock (_warningGate)
+            {
+                if (!_warningReasons.Contains(text))
+                {
+                    // 只保留最近 8 条，避免异常路径不断追加导致 UI tooltip 过长。
+                    if (_warningReasons.Count >= 8) _warningReasons.RemoveAt(0);
+                    _warningReasons.Add(text);
+                }
+                if (!_isWarning)
+                {
+                    _isWarning = true;
+                    changed = true;
+                }
+            }
+
+            if (changed)
+            {
+                OnPropertyChanged(nameof(IsWarning));
+                OnPropertyChanged(nameof(HasWarning));
+                OnPropertyChanged(nameof(WarningText));
+                OnPropertyChanged(nameof(DisplayText));
+            }
+            else
+            {
+                // 原因有新增时 WarningText 仍需刷新；这里只在确有新增时通知。
+                OnPropertyChanged(nameof(WarningText));
+            }
+        }
+
+        /// <summary>清除警告（重新排队/重新执行时使用）。</summary>
+        public void ClearWarnings()
+        {
+            bool hadWarning;
+            lock (_warningGate)
+            {
+                hadWarning = _isWarning || _warningReasons.Count > 0;
+                _warningReasons.Clear();
+                _isWarning = false;
+            }
+            if (hadWarning)
+            {
+                OnPropertyChanged(nameof(IsWarning));
+                OnPropertyChanged(nameof(HasWarning));
+                OnPropertyChanged(nameof(WarningText));
+                OnPropertyChanged(nameof(DisplayText));
+            }
+        }
+
         public int? ExitCode { get; set; }
         private string _log = string.Empty;
         private readonly object _logGate = new();
@@ -77,21 +160,49 @@ namespace FfmpegGui.Models
 
         private void CommitLog(string value)
         {
+            string? warningLine = null;
             lock (_logGate)
             {
                 int baseLen = _logSnapshotLen;
                 bool snapshotUsable = baseLen >= 0 && baseLen <= value.Length && baseLen <= _log.Length
                     && string.CompareOrdinal(value, 0, _log, 0, baseLen) == 0;
+                string delta;
                 if (snapshotUsable)
                 {
-                    if (value.Length > baseLen) _log += value.Substring(baseLen);   // 只接上本次追加的部分
+                    delta = value.Length > baseLen ? value.Substring(baseLen) : string.Empty;
+                    if (delta.Length > 0) _log += delta;   // 只接上本次追加的部分
                 }
                 else
                 {
-                    _log = value;                                                    // 通道对不上 ⇒ 退回旧语义（不猜、不缝）
+                    delta = value;                         // 通道对不上 ⇒ 退回旧语义（不猜、不缝）
+                    _log = value;
                 }
+                warningLine = ExtractWarningLine(delta);
                 TruncateLocked();
             }
+            if (warningLine != null) MarkWarning(warningLine);
+        }
+
+        /// <summary>
+        /// 从本次追加的日志片段里提取一条可读的警告原因。
+        /// 只认显式警告标记（⚠ / [warn] / WARN / NOT FOUND），避免把普通信息日志误判成警告。
+        /// </summary>
+        private static string? ExtractWarningLine(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return null;
+            foreach (var raw in text.Split('\n'))
+            {
+                var line = raw.Trim().TrimEnd('\r');
+                if (line.Length == 0) continue;
+                if (line.Contains('⚠')
+                    || line.Contains("[warn]", StringComparison.OrdinalIgnoreCase)
+                    || line.Contains("WARN", StringComparison.OrdinalIgnoreCase)
+                    || line.Contains("NOT FOUND", StringComparison.OrdinalIgnoreCase))
+                {
+                    return line.Length <= 180 ? line : line.Substring(0, 180) + "...";
+                }
+            }
+            return null;
         }
 
         private void TruncateLocked()
@@ -112,6 +223,8 @@ namespace FfmpegGui.Models
                 _log += text;
                 TruncateLocked();
             }
+            var warningLine = ExtractWarningLine(text);
+            if (warningLine != null) MarkWarning(warningLine);
         }
         public DateTimeOffset AddedAt { get; set; } = DateTimeOffset.UtcNow;
 
@@ -202,7 +315,9 @@ namespace FfmpegGui.Models
             string.IsNullOrWhiteSpace(GainMapReferencePath) ? "—" : Path.GetFileName(GainMapReferencePath);
 
         /// <summary>队列列表显示文本</summary>
-        public string DisplayText => $"{DisplayName} — {Status}";
+        public string DisplayText => IsWarning
+            ? $"{DisplayName} — {Status} [warning]"
+            : $"{DisplayName} — {Status}";
 
         /// <summary>是否为报错条目（状态以"失败"开头）</summary>
         public bool HasError => !string.IsNullOrEmpty(Status) && Status.StartsWith("失败");

@@ -82,7 +82,7 @@ namespace FfmpegGui.Services
             if (oxipng == null)
             {
                 // R5.5：工具缺失不判任务失败，但跳过 ≠ 成功——必须出声（照 AGENTS §7 exiftool 同族纪律）。
-                log("[pngopt] 未检测到 oxipng，已跳过优化（期望位置 PLAN/artifacts/oxipng.exe，或在设置中指定路径）");
+                log("[warn] [pngopt] 未检测到 oxipng，已跳过优化（期望位置 PLAN/artifacts/oxipng.exe，或在设置中指定路径）");
                 return;
             }
 

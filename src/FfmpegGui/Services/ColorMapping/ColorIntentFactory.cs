@@ -70,6 +70,7 @@ public static class ColorIntentFactory
         // 容器探测只做一次（FfmpegCommandBuilder 内部有 10s 缓存），既供标签也供 HDR 峰值。
         var meta = FfmpegCommandBuilder.ProbeInputColorMetadata(inputPath);
         ColorSpaceDescriptor? src = null;
+        var intentWarnings = new List<string>();
         // ── 外部 ICC（`--icc-file`）：语义 = **用户显式指定源色彩空间**，优先级最高（2026-09-16 接入引擎）──
         // 依据：① 该选项的 help 与 legacy 口径都写明「用外部 ICC 文件判定**源**色彩空间」；
         //       ② 无 ICC / 无标签的源在引擎里只能落到「惯例假定 sRGB」（置信度 CodecDefault），
@@ -156,16 +157,23 @@ public static class ColorIntentFactory
         }
         if (src == null)
         {
-            // C-07（2026-11-14 独立复核）：exiftool 读取失败时，“没有 ICC”不是可信结论。
-            // 旧路径会落到 AssumeByConvention(sRGB) ⇒ 源=目标直通 ⇒ 把未知/广色域源错标成 sRGB。
-            // fail-closed：没有外部 --icc-file、没有自产中间件声明、也没有可用 CICP 时，不猜 sRGB。
+            // 2026-11-17（警告条目机制）：exiftool 读取失败不再 fail-closed。
+            // 用户要求允许按容器/格式惯例继续，但必须在运行中提示“可能是猜的”。
+            bool sourceIsRaw = RawService.IsRawFile(inputPath);
+            string conventionName = sourceIsRaw ? "BT.2020" : "sRGB";
             if (meta.exifReadFailed)
             {
-                reason = $"源色彩语义读取失败（exiftool: {meta.exifReadFailure ?? "unknown"}）"
-                       + "；已拒绝按惯例假定 sRGB（请重试、显式指定 --icc-file 或提供带 CICP/ICC 的源）";
-                return null;
+                intentWarnings.Add(
+                    $"exiftool color metadata read failed ({meta.exifReadFailure ?? "unknown"}); "
+                    + $"assuming {conventionName} by convention (possible misidentification)");
             }
-            src = ColorSpaceIdentify.AssumeByConvention(RawService.IsRawFile(inputPath));
+            else
+            {
+                intentWarnings.Add(
+                    "source has no ICC/CICP color description; "
+                    + $"assuming {conventionName} by convention (possible misidentification)");
+            }
+            src = ColorSpaceIdentify.AssumeByConvention(sourceIsRaw);
             if (src == null) { reason = "源色彩语义无法确定（无 ICC、无标签、惯例假定失败）"; return null; }
         }
         // ⚠ 可空流分析收口（2026-10-07，为恢复「0 警告」构建）：上面三条路径走完后
@@ -176,6 +184,12 @@ public static class ColorIntentFactory
         //     既有中文文案，而 `_probe-cjk-hardcode-scan.ps1` 的「C# UI 面」桶**按行计数、
         //     余量为 0** ⇒ 会当场顶成 834 > 833（本轮实测踩过，故记在此防重犯）。
         var srcNn = src!;
+        if (meta.primariesApproximated)
+        {
+            intentWarnings.Add(
+                $"source gamut '{meta.sourceGamutName ?? "unknown"}' has no exact CICP primaries; "
+                + "using a named-space approximation (possible slight color shift)");
+        }
         // HDR 曲线必须明确“1.0 = 多少 nits”：FromCicp 默认按 SDR 参考白（203），会让
         // PQ/HLG 源的 headroom 算成 1 ⇒ 色调映射被判定“未激活”（实测：wire 断言曾因此从
         // 另一条分支蹭到通过）。这里按曲线修正，不依赖调用方记得传参。
@@ -369,6 +383,7 @@ public static class ColorIntentFactory
             // null = auto ⇒ 规划层 ApplyExplicitOutMatrix 早退、全链路零行为变化（CM-REQ-08）。
             OutMatrixMode = o.ColorOutMatrix,
         };
+        it.Warnings.AddRange(intentWarnings);
         // ── 超广色域保真（2026-09-16 接入引擎）──────────────────────────────────────
         // 语义 = **像素零改动 + 仅靠 ICC 描述**（ProPhoto/ROMM 等超出 BT.2020 的色域：
         // 归一必削色，且 zscale 无法命名其 primaries 与 1.8 传递）。

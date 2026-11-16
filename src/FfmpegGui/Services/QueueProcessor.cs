@@ -55,6 +55,7 @@ namespace FfmpegGui.Services
 
         public void Add(QueueItem item)
         {
+            item.ClearWarnings();
             item.Status = "待处理";
             _queue.Enqueue(item);
             _onItemUpdated?.Invoke(item);
@@ -195,6 +196,7 @@ namespace FfmpegGui.Services
             {
                 if (item.IsStopped || (item.IsFailure && item.ExitCode != 0))
                 {
+                    item.ClearWarnings();
                     item.Status = "待处理";
                     item.IsCancelled = false;
                     item.ExitCode = null;
@@ -347,6 +349,7 @@ namespace FfmpegGui.Services
                                 return;
                             }
                             captured.Log += "[meta]   -> continuing WITHOUT the requested strip (named above)\n";
+                            captured.MarkWarning("exiftool not found; requested metadata strip was skipped");
                             _onItemUpdated?.Invoke(captured);
                         }
 
@@ -1581,6 +1584,7 @@ namespace FfmpegGui.Services
                                 else
                                 {
                                     captured.Log += "[exiftool] 未检测到 exiftool，已跳过元数据隐私清理。请安装 exiftool 并在设置中配置路径以启用该功能。\n";
+                                    captured.MarkWarning("exiftool not found; metadata privacy cleanup was skipped");
                                     _onItemUpdated?.Invoke(captured);
                                 }
                             }
@@ -1834,6 +1838,11 @@ namespace FfmpegGui.Services
             {
                 Log($"[色彩引擎] ❌ 选项→色彩意图装配失败：{why}\n");
                 return (true, 90, null);
+            }
+            foreach (var warning in intent.Warnings)
+            {
+                item.MarkWarning(warning);
+                Log($"[warn] {warning}\n");
             }
             var plan = ColorMapping.ColorMappingEngine.Plan(intent);
             item.Command = $"[色彩引擎] {plan.Action} 后端={plan.Backend} 源={plan.Src?.Name ?? "?"} 目标={plan.Dst?.Name ?? item.Options.ColorSpace ?? "auto"} 裁决={plan.Verdict?.Kind}";
@@ -3223,6 +3232,7 @@ namespace FfmpegGui.Services
             if (!ExifToolService.IsAvailable)
             {
                 item.Log += "[exiftool] ⚠️ 未检测到 exiftool ⇒ 无法从源 RAW 补回拍摄字段（拍摄时间 DateTimeOriginal/CreateDate、镜头型号等仍会缺失）\n";
+                item.MarkWarning("exiftool not found; RAW capture fields were not restored");
                 return;
             }
 
@@ -5602,6 +5612,7 @@ namespace FfmpegGui.Services
                 else
                 {
                     item.Log += "[djxl] 未检测到 djxl，回退到 ffmpeg\n";
+                    item.MarkWarning("djxl not found; ffmpeg fallback used for JXL decode");
                     // #151（2026-09-19）：djxl 缺失时「你显式指定的编码器后端被忽略」必须**点名**，
                     //   否则用户会以为 --encoder 生效了。裁定：**响亮 + 点名，不是硬失败**
                     //   （产物是对的 ⇒ ProceedWithDegradation）。

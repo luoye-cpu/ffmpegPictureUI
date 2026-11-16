@@ -254,6 +254,13 @@ public sealed class ColorIntent
     /// <summary>日志前缀（文件名等），便于并行队列里对应回任务。</summary>
     public string LogTag = "";
 
+    /// <summary>
+    /// 装配阶段产生的非致命警告（如 exiftool 读取失败后按惯例假定 sRGB、
+    /// 源色域无精确 CICP 命名而按具名空间近似）。QueueProcessor 负责把这些警告
+    /// 落到 <c>QueueItem</c>，任务本身继续执行。
+    /// </summary>
+    public List<string> Warnings { get; } = new();
+
     /// <summary>转换为规划层策略对象（保持与既有 <see cref="PlanPolicy"/> 兼容）。</summary>
     public PlanPolicy ToPolicy() => new()
     {
