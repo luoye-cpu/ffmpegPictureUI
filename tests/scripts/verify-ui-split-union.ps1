@@ -95,7 +95,11 @@ $srcDir = Join-Path $root 'tests/output/sources'
 #   I11 策略面板锁定审计 8 条 + I12 JPEG ICC 版本下拉 4 条；拆除 DetectColorConflicts 的
 #   isBaking 三元组灰化纯副作用锁。改断言改单体、_gen-ui-split.ps1 重切片；
 #   与 verify-ui-host.ps1 ui-color=103/合计=487、_module-registry.json locks 同批抬表。）
-$expectedOldCount = 487
+#   2026-11-16（队列停止语义修复批 UI-01/02/03/05/06 + oxipng 面板锁 UI-04）= **497**
+#   （+10：ui-mode G 组增 G2b 管道停止 4 条 + G2c 优雅停止 IsRunning=false 3 条 ⇒ ui-mode 59→66；
+#   ui-core C 组增 C22 oxipng 面板显隐+默认 max 3 条 ⇒ ui-core 84→87；
+#   改断言改单体、_gen-ui-split.ps1 重切片；与 _module-registry.json locks 同批抬表——三把尺同一来历。）
+$expectedOldCount = 497
 # 一对一改名 ⇒ 新旧总数相同（不是 408/412）
 $expectedNewCount = $expectedOldCount
 

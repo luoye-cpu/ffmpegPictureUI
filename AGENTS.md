@@ -190,10 +190,12 @@ UI 三把尺：`verify-ui-host` 五件 **84+59+89+169+72 = 473**；`verify-ui-pa
    `docs/review-2026-11-15/COLOR_MATRIX_IO_ANALYSIS_2026-11-15.md`（§37-38 自相矛盾）、
    `…/ICC_STANDARD_AUDIT_2026-11-15.md`。
 
-2. **UI 三把尺现值 = 487（不是 473）**：`verify-ui-host` 五件臂 **84+59+103+169+72 = 487**，
-   `verify-ui-split-union` 的 `$expectedOldCount` 与 `_module-registry.json` locks（`ui-host-arms=487`{84,59,103,169,72}、
-   `ui-split-union=487`、`param-matrix-j=126`）同批一致。本节上文旧文「84+59+89+169+72=473 / split-union 473」是
-   **2026-11-13 快照**（I11/I12 批把 ui-color 89→103、合计 473→487，2026-11-14 抬表）。另：`verify-ui-split-union`
+2. **UI 三把尺现值 = 497 = 87+66+103+169+72（2026-11-16 修复批后；真值以 `tests/scripts/_module-registry.json`
+   的 locks 为准，本处数字只是指针）**：`verify-ui-host` 五件臂 ui-core 87 / ui-mode 66 / ui-color 103 /
+   ui-sweep 169 / ui-cli 72，`verify-ui-split-union` 的 `$expectedOldCount` 与 locks（`ui-host-arms=497`{87,66,103,169,72}、
+   `ui-split-union=497`、`param-matrix-j=126`）同批一致。本节上文旧文「84+59+89+169+72=473 / split-union 473」是
+   **2026-11-13 快照**（I11/I12 批 2026-11-14 抬到 487；2026-11-16 队列停止语义修复批 G2b/G2c + oxipng 面板 C22
+   再抬 10 条 ⇒ ui-mode 59→66、ui-core 84→87）。另：`verify-ui-split-union`
    当前 7P/4F 的定性是**旧参照宿主 GroupP 测量失效**（裸开窗未预置工具路径稳态 ⇒ P1 拿 0 条 `[detect]` 行、早返回吞 P2-P5），
    非口径漂移、非产品回归（详见 `docs/review-2026-11-16/review-evidence/05-gates-docs-report.md` §1）。
 

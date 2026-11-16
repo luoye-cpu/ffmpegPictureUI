@@ -409,6 +409,29 @@ namespace Tests.UiCore
                     panelOn && boxOn && !panelOff && reset,
                     $"avif(visible={panelOn},enabled={boxOn}) tiff(visible={panelOff},复位={reset})");
             });
+
+            // C22（2026-11-16，UI-04 锁）：oxipng（PNG 优化器）面板显隐 + 默认档回归锁。
+            //   c5f18e7 把面板从 PngCodecPanel 移到 StillOptionsPanel 顶层，判定 = 静态 PNG 才显示；
+            //   此前该迁移零 UI 断言（Grep tests/projects 无一处引用 PngOptimizer）。
+            //   面板被误挂回动图出口 / 默认档被改回 off ⇒ 本三条当场红。
+            Safe("C22 oxipng面板显隐+默认max", () =>
+            {
+                // 先确保静态模式（C5 可能把模式停在 RAW）
+                var m = Find<ComboBox>("ConversionModeCombo");
+                if (m != null) m.SelectedIndex = 0; Pump(8);
+                var panel = Find<StackPanel>("PngOptimizerPanel");
+                var combo = Find<ComboBox>("PngOptimizerCombo");
+
+                SetFormat("PNG"); Pump(8);
+                Check("C22a 静态 PNG → oxipng 面板显示", panel?.IsVisible == true,
+                      $"visible={panel?.IsVisible}");
+                Check("C22b 默认档 SelectedIndex=2 (max)", combo?.SelectedIndex == 2,
+                      $"idx={combo?.SelectedIndex}");
+
+                SetFormat("JPEG"); Pump(8);
+                Check("C22c 非 PNG(JPEG) → oxipng 面板隐藏", panel?.IsVisible == false,
+                      $"visible={panel?.IsVisible}");
+            });
         }
 
         // ══════════════════════════ 组 D ══════════════════════════

@@ -28,11 +28,11 @@
   "locks": {
     "ui-host-arms": {
       "file": "tests/scripts/verify-ui-host.ps1",
-      "desc": "verify-ui-host 五件逐件 Expected + $aggExpected 合计锁（2026-11-14 色彩 UI 联动审计+JPEG ICC 版本下拉批：ui-color I 组新增 I11 锁定审计 8 条 + I12 版本下拉 4 条 ⇒ 91→103 / 475→487）",
-      "value": 487,
+      "desc": "verify-ui-host 五件逐件 Expected + $aggExpected 合计锁（2026-11-16 队列停止语义修复批+oxipng 面板锁：ui-mode G 组增 G2b 管道停止 4 条+G2c 优雅停止 IsRunning=false 3 条 ⇒ 59→66；ui-core C 组增 C22 oxipng 面板显隐+默认 max 3 条 ⇒ 84→87；合计 487→497）",
+      "value": 497,
       "members": {
-        "ui-core": 84,
-        "ui-mode": 59,
+        "ui-core": 87,
+        "ui-mode": 66,
         "ui-color": 103,
         "ui-sweep": 169,
         "ui-cli": 72
@@ -45,8 +45,8 @@
     },
     "ui-split-union": {
       "file": "tests/scripts/verify-ui-split-union.ps1",
-      "desc": "单体全量断言名并集锁（$expectedOldCount；2026-11-14 色彩 UI 联动审计+JPEG ICC 版本下拉批 +12 ⇒ 487）",
-      "value": 487
+      "desc": "单体全量断言名并集锁（$expectedOldCount；2026-11-16 队列停止语义修复批+oxipng 面板锁 +10 ⇒ 497）",
+      "value": 497
     },
     "script-timeouts": {
       "file": "tests/scripts/_run-step3-gates.ps1",

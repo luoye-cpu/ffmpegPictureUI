@@ -100,14 +100,18 @@ CK $true "PLAN dir exists"
 #   JPEG可见/PNG隐藏，旧代码无此控件必红] ⇒ ui-color 91 → **103**、合计 475 → **487**
 #   （=84+59+103+169+72）。拆除 DetectColorConflicts 里 isBaking 把仅CICP/手动三元组一起灰化的
 #   纯副作用锁；与 union $expectedOldCount=487、_module-registry.json locks 同批抬表。）
+#   2026-11-16（队列停止语义修复批 + oxipng 面板锁）= **497**（+10：ui-mode G 组增 G2b 管道停止
+#   4 条 + G2c 优雅停止 IsRunning=false 3 条 ⇒ 59→**66**；ui-core C 组增 C22 oxipng 面板显隐+默认 max
+#   3 条 ⇒ 84→**87**；合计 = **87+66+103+169+72**。改断言改单体、_gen-ui-split.ps1 重切片；
+#   与 union $expectedOldCount=497、_module-registry.json locks 同批抬表——三把尺同一来历。）
 $arms = @(
-    @{ Name = 'ui-core';  Exe = Join-Path $repoRoot 'tests/projects/ui-core/bin/Release/net11.0/win-x64/Tests.UiCore.exe';  Expected = 84  },
-    @{ Name = 'ui-mode';  Exe = Join-Path $repoRoot 'tests/projects/ui-mode/bin/Release/net11.0/win-x64/Tests.UiMode.exe';  Expected = 59  },
+    @{ Name = 'ui-core';  Exe = Join-Path $repoRoot 'tests/projects/ui-core/bin/Release/net11.0/win-x64/Tests.UiCore.exe';  Expected = 87  },
+    @{ Name = 'ui-mode';  Exe = Join-Path $repoRoot 'tests/projects/ui-mode/bin/Release/net11.0/win-x64/Tests.UiMode.exe';  Expected = 66  },
     @{ Name = 'ui-color'; Exe = Join-Path $repoRoot 'tests/projects/ui-color/bin/Release/net11.0/win-x64/Tests.UiColor.exe'; Expected = 103 },
     @{ Name = 'ui-sweep'; Exe = Join-Path $repoRoot 'tests/projects/ui-sweep/bin/Release/net11.0/win-x64/Tests.UiSweep.exe'; Expected = 169 },
     @{ Name = 'ui-cli';   Exe = Join-Path $repoRoot 'tests/projects/ui-cli/bin/Release/net11.0/win-x64/Tests.UiCli.exe';     Expected = 72  }
 )
-$aggExpected = 487
+$aggExpected = 497
 foreach ($arm in $arms) {
     if (-not (Test-Path $arm.Exe)) {
         Write-Output "  FAIL host exe exists ($($arm.Name)): $($arm.Exe)"
