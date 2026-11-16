@@ -12,6 +12,15 @@
 
 ## 📝 更新日志
 
+### v1.6.0-beta17 (2026-11-16) — PNG oxipng 独立为后处理档位
+
+- **UI 独立化**：`PngOptimizerPanel` 从 `PngCodecPanel` / `AdvancedCodecPanel` 移出，放到 `StillOptionsPanel` 顶层、质量行之后。oxipng 是 PNG 后处理优化器而非编码器，因此不再受“高级编码”开关折叠。
+- **显隐跟随出口格式**：仅静态 PNG 显示；APNG 隐藏（服务端检测到 `acTL` 后本就会跳过优化）。档位顺序 `off|default|max|zopfli15|zopfli30` 与默认 `max` 均不变。
+- **不改编码语义**：CLI 值域、`PngOptimizerService`、ffmpeg 编码器选择与命令行参数均未改动；`off/null/空串` 仍是零播报零触碰。
+- **停止状态诚实化**：用户在 ffmpeg 取消返回码阶段点击停止时，任务改报 **已停止**，不再写成 **失败 (退出码 -1)**；状态由外层取消分支统一收口。
+- **测试稳定性**：`ui-mode` G2 在入队 24MP 慢任务前先停掉上一组消费循环，并仅在本项尚未被旧循环取走时显式 Start；拆分测试已用 `_gen-ui-split.ps1` 重建。
+- **运行时读数**：`dotnet build ffmpegPictureUI.sln -c Release -m:1` 0 errors / 5 warnings；`verify-ui-host.ps1` **487 PASS / 0 FAIL**；`ui-startup-detect` 12/0；`ui-cli-strict` 60/0；`verify-ui-split-reproducible` 19/0。
+
 ### v1.6.0-beta16 (2026-11-16) — UI 格式切换卡死修复
 
 - **执行日志改为虚拟化列表**：可见日志从单个大 TextBox 换成最多 5,000 行的虚拟化 `ListBox`；隐藏的 `LogText` 只保留最近 4k 字符，继续满足既有 UI 测例的 `Find<TextBox>("LogText")` / 读取 / 清空契约。2.4k 字符级每行 53 ms、10k 级每行 0.2 s、50k 级秒级、2M 级分钟级的全量文本重排路径被移除。

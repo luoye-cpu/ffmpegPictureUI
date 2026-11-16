@@ -13,6 +13,15 @@ All notable changes to this project are documented in this file.
 
 ## 📝 Changelog
 
+### v1.6.0-beta17 (2026-11-16) — PNG oxipng as an independent post-process option
+
+- **Independent UI placement**: `PngOptimizerPanel` moved out of `PngCodecPanel` / `AdvancedCodecPanel` to the top level of `StillOptionsPanel`, immediately after the quality row. oxipng is a PNG post-processor, not an encoder; this exposes it independently of the advanced-codec switch.
+- **Visibility follows the export format**: the panel is shown only for static PNG and hidden for APNG (the service itself skips APNG after detecting `acTL`). The existing `off|default|max|zopfli15|zopfli30` order and default `max` are unchanged.
+- **No encoding semantics change**: CLI value domain, `PngOptimizerService`, ffmpeg encoder selection and argument construction are untouched. `off/null/empty` still means zero announcement and zero touch.
+- **Honest stop status**: when a user stops the queue while ffmpeg is returning a cancellation exit code, the item is now reported as **已停止** instead of **失败 (退出码 -1)**; the outer cancellation path owns the status.
+- **Test stability**: `ui-mode` G2 now stops the previous queue loop before enqueueing its 24 MP task and only calls Start when the item has not already been consumed; the generated split tests were rebuilt with `_gen-ui-split.ps1`.
+- **Runtime readings**: `dotnet build ffmpegPictureUI.sln -c Release -m:1` 0 errors / 5 warnings; `verify-ui-host.ps1` **487 PASS / 0 FAIL**; `ui-startup-detect` 12/0; `ui-cli-strict` 60/0; `verify-ui-split-reproducible` 19/0.
+
 ### v1.6.0-beta16 (2026-11-16) — UI format-switch freeze fix
 
 - **Execution log switched to a virtualized list**: the visible log is now a `ListBox` capped at 5,000 rows; the hidden `LogText` keeps only the latest 4k characters, preserving the existing UI test contract (`Find<TextBox>("LogText")`, read/clear `.Text`). The old full-text re-layout path (about 53 ms/line at 2.4k chars, 0.2 s/line at 10k, seconds at 50k, minutes at 2M) is gone.
