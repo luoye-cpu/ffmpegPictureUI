@@ -262,7 +262,7 @@ namespace FfmpegGui.Services
                     StandardOutputEncoding = Encoding.UTF8
                 };
 
-                using var p = Process.Start(psi);
+                using var p = await Task.Run(() => Process.Start(psi));
                 if (p == null) return list;
                     p.BeginErrorReadLine();   // P2-3：stderr 不排空会在管道缓冲(~4KB)写满时把子进程堵死，我们等 stdout/WaitForExit 就永等（实测可复现）
                 var output = await p.StandardOutput.ReadToEndAsync();

@@ -4,10 +4,13 @@ using Avalonia.Markup.Xaml;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Linq;
+using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using FfmpegGui.Models;
 using FfmpegGui.Services;
@@ -22,8 +25,14 @@ namespace FfmpegGui
         private readonly ObservableCollection<Models.QueueItem> _queueView = new();
         private readonly QueueProcessor _queueProcessor;
         private bool _initialized;
-        // 主执行日志只保留最近 2M 字符；超长队列/长时间运行不能把 TextBox 撑到卡死。
-        private const int UiLogTextMaxChars = 2_000_000;
+        // 主执行日志：可见面是虚拟化 ListBox，最多保留 5,000 行；
+        // 隐藏的 LogText 只保留最近一小段文本，供既有 UI 测例读取/清空，同时不再触发大文本布局。
+        private const int UiLogTextMaxChars = 4_000;
+        private const int UiLogMaxLines = 5_000;
+        private const int UiLogFlushBatch = 250;
+        private readonly ObservableCollection<string> _uiLogLines = new();
+        private readonly ConcurrentQueue<string> _uiLogPending = new();
+        private int _uiLogFlushQueued;
 
         private ComboBox? FormatCombo;
         private ComboBox? ConversionModeCombo;
@@ -95,6 +104,7 @@ namespace FfmpegGui
         private TextBox? CommandText;
         private TextBox? MediaInfoText;
         private TextBox? LogText;
+        private ListBox? LogList;
         private TextBox? FfmpegPathBox;
         private TextBox? OutputDirBox;
         private TextBox? JxlLibDirBox;
@@ -332,6 +342,15 @@ namespace FfmpegGui
         private Border? IccCompatPanel, IccPreviewPanel;
         private string? _iccFilePath;
         private int _lastProbedSourceBitDepth; // 上次探测的源位深，供冲突检测使用
+        private int _formatRefreshGen;
+        private bool _suppressOptionEvents;
+        private int _probeGeneration;
+        private string? _probeCachePath;
+        private long _probeCacheLength;
+        private DateTime _probeCacheWriteUtc;
+        private int _probeCacheBitDepth;
+        private readonly ConcurrentQueue<Models.QueueItem> _pendingQueueUiUpdates = new();
+        private int _queueUiUpdatePostQueued;
         // ── 拖放区域 ──
         private Border? DropZone;
         private TextBlock? DropHint;
@@ -432,14 +451,12 @@ namespace FfmpegGui
             CommandText = this.FindControl<TextBox>("CommandText");
             MediaInfoText = this.FindControl<TextBox>("MediaInfoText");
             LogText = this.FindControl<TextBox>("LogText");
+            LogList = this.FindControl<ListBox>("LogList");
+            if (LogList != null) LogList.ItemsSource = _uiLogLines;
 
-            // 唯一的 UI 日志入口：后台/服务层都可以写；UI 线程上直接落地，后台线程切回 UI，
-            // 这样 UI 启动期和单元测试读到的日志不会因为一次 Post 延迟而滞后。
-            UiLogService.Attach(line =>
-            {
-                if (Dispatcher.UIThread.CheckAccess()) AppendUiLogLine(line);
-                else Dispatcher.UIThread.Post(() => AppendUiLogLine(line));
-            });
+            // 唯一的 UI 日志入口：后台/服务层都可以写；真正的 UI 落地由 AppendUiLogLine
+            // 合并到后台优先级批次里执行，避免每行同步重排 TextBox / 阻塞 Dispatcher。
+            UiLogService.Attach(line => AppendUiLogLine(line));
             try
             {
                 var logDir = Path.Combine(
@@ -1355,26 +1372,64 @@ namespace FfmpegGui
         }
 
         /// <summary>
-        /// UI 日志唯一落点。调用方已由 UiLogService 切回 UI 线程；这里只负责容量、滚动和重绘。
-        /// 不直接接受后台回调，避免旧写法 `LogText.Text +=` 的跨线程竞争。
+        /// UI 日志唯一落点。所有线程都可调用，但只做入队和一次合并调度；
+        /// 真正的 TextBox/ListBox 更新在 UI 线程的 FlushUiLog 中批量完成。
+        /// 这样每行不再触发 `LogText.Text = 全量文本` 的布局风暴。
         /// </summary>
         private void AppendUiLogLine(string line)
         {
-            if (LogText == null) return;
+            if (string.IsNullOrEmpty(line)) return;
+            _uiLogPending.Enqueue(line);
+            ScheduleUiLogFlush();
+        }
 
-            var next = LogText.Text ?? "";
-            next += line + Environment.NewLine;
-            if (next.Length > UiLogTextMaxChars)
+        private void ScheduleUiLogFlush()
+        {
+            if (Interlocked.Exchange(ref _uiLogFlushQueued, 1) != 0) return;
+            Dispatcher.UIThread.Post(FlushUiLog, DispatcherPriority.Background);
+        }
+
+        private void FlushUiLog()
+        {
+            try
             {
-                // 从最近 2M 字符开始；保留尾部，保证最新错误仍然可见。
-                var cut = next.Length - UiLogTextMaxChars;
-                next = next[cut..];
-                var nl = next.IndexOf('\n');
-                if (nl >= 0 && nl < 200) next = next[(nl + 1)..];
-            }
+                if (_uiLogPending.IsEmpty) return;
 
-            LogText.Text = next;
-            LogText.CaretIndex = next.Length;
+                var batch = new StringBuilder();
+                int drained = 0;
+                while (drained < UiLogFlushBatch && _uiLogPending.TryDequeue(out var line))
+                {
+                    batch.AppendLine(line);
+                    _uiLogLines.Add(line);
+                    drained++;
+                }
+                if (drained == 0) return;
+
+                while (_uiLogLines.Count > UiLogMaxLines)
+                    _uiLogLines.RemoveAt(0);
+
+                // 隐藏 TextBox 仅保留最近 4k 字符，供既有 UI 测例断言/清空；
+                // 它 IsVisible=False，不参与可见布局，因此这里的赋值是常数级成本。
+                if (LogText != null)
+                {
+                    var next = (LogText.Text ?? "") + batch;
+                    if (next.Length > UiLogTextMaxChars)
+                    {
+                        next = next[^UiLogTextMaxChars..];
+                        var nl = next.IndexOf('\n');
+                        if (nl >= 0 && nl < 200) next = next[(nl + 1)..];
+                    }
+                    LogText.Text = next;
+                }
+
+                if (LogList != null && _uiLogLines.Count > 0)
+                    LogList.ScrollIntoView(_uiLogLines[^1]);
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _uiLogFlushQueued, 0);
+                if (!_uiLogPending.IsEmpty) ScheduleUiLogFlush();
+            }
         }
 
         private void LoadSettings()
@@ -2159,6 +2214,12 @@ namespace FfmpegGui
 
         private void FormatCombo_SelectionChanged(object? sender, SelectionChangedEventArgs e)
         {
+            // 先收 popup：选择事件可能排在重建选项/日志刷新之后，显式关闭能保证
+            // “鼠标按下选完”立刻收起，不再依赖后续 Dispatcher 批次。
+            if (FormatCombo != null && FormatCombo.IsDropDownOpen)
+                FormatCombo.IsDropDownOpen = false;
+
+            _formatRefreshGen++;
             UpdateOptionAvailability();
             // B1（CMX-2）：矩阵条目按新格式过滤（与 UpdateOptionAvailability 同理，格式变了
             // 都要按新格式重算；编码器列表的异步刷新收尾会再校准一次，见 Refill 方法注释）。
@@ -2326,10 +2387,16 @@ namespace FfmpegGui
         {
             if (EncoderCombo == null || FormatCombo == null) return;
 
+            // 捕获进入时的格式代；await 期间用户又切格式 ⇒ 旧代结果作废。
+            var generation = _formatRefreshGen;
             var fmt1 = NormalizeFormat(FormatCombo.SelectedItem as string);
             var isAnimMode = ConversionModeCombo?.SelectedIndex == 1;
 
             var encoders = await EncoderDetectionService.GetEncodersForFormatAsync(fmt1);
+
+            // 旧代刷新可能在 await 期间被用户的新格式选择超过；不要再把旧格式的
+            // 编码器列表写回当前控件（也就不会出现“刚切完又被上一代改回去”）。
+            if (generation != _formatRefreshGen) return;
 
             // 可用性诚实原则：只向用户提供「当前环境真能兑现」的编码器，过滤掉不可用项
             // （如无对应 GPU 硬件的 nvenc/qsv、未检测到的外部工具），避免用户选中后运行时才失败
@@ -2508,27 +2575,39 @@ namespace FfmpegGui
 
                 if (ColorSpaceCombo != null)
                 {
-                    ColorSpaceCombo.Items!.Clear();
-                    ColorSpaceCombo.Items.Add("auto");
-                    ColorSpaceCombo.Items.Add("sRGB");
-                    ColorSpaceCombo.Items.Add("BT.709");
-                    // Display P3: 广色域 SDR (Apple 生态标准), 所有格式均支持 (ICC/CICP)
-                    ColorSpaceCombo.Items.Add("Display P3");
-                    var hasHdr = _currentCapabilities.SupportedColorSpaces.Contains("BT.2020");
-                    // JPEG 特例：HDR 无法由 JPEG 自身标定，但**开启 GainMap (Ultra HDR) 后可以**
-                    // （SDR 底 + 增益图，在支持的设备上显示 HDR）⇒ HDR 目标项随开关出现/消失，
-                    // 而不是让用户选了再被降级。
-                    bool gainMapOn = (FormatCombo?.SelectedItem as string)?.ToLowerInvariant() is "jpg" or "jpeg"
-                                     && HdrModeCombo?.SelectedIndex == 1;
-                    if (gainMapOn) hasHdr = true;
-                    if (hasHdr)
+                    // Clear/Add 会逐项触发 SelectionChanged；若旧选择是 HDR，会在这里
+                    // 嵌套发起同步 ffprobe。重建期间抑制事件，重建完成后再显式选 auto，
+                    // 让 handler 只跑一次（auto 分支不做探测）。
+                    var prevSuppress = _suppressOptionEvents;
+                    _suppressOptionEvents = true;
+                    try
                     {
-                        // P3 PQ: P3 色域 + PQ 曲线 (HDR 场景)
-                        ColorSpaceCombo.Items.Add("P3 PQ");
-                        ColorSpaceCombo.Items.Add("BT.2020 PQ");
-                        ColorSpaceCombo.Items.Add("BT.2020 HLG");
+                        ColorSpaceCombo.Items!.Clear();
+                        ColorSpaceCombo.Items.Add("auto");
+                        ColorSpaceCombo.Items.Add("sRGB");
+                        ColorSpaceCombo.Items.Add("BT.709");
+                        // Display P3: 广色域 SDR (Apple 生态标准), 所有格式均支持 (ICC/CICP)
+                        ColorSpaceCombo.Items.Add("Display P3");
+                        var hasHdr = _currentCapabilities.SupportedColorSpaces.Contains("BT.2020");
+                        // JPEG 特例：HDR 无法由 JPEG 自身标定，但**开启 GainMap (Ultra HDR) 后可以**
+                        // （SDR 底 + 增益图，在支持的设备上显示 HDR）⇒ HDR 目标项随开关出现/消失，
+                        // 而不是让用户选了再被降级。
+                        bool gainMapOn = (FormatCombo?.SelectedItem as string)?.ToLowerInvariant() is "jpg" or "jpeg"
+                                         && HdrModeCombo?.SelectedIndex == 1;
+                        if (gainMapOn) hasHdr = true;
+                        if (hasHdr)
+                        {
+                            // P3 PQ: P3 色域 + PQ 曲线 (HDR 场景)
+                            ColorSpaceCombo.Items.Add("P3 PQ");
+                            ColorSpaceCombo.Items.Add("BT.2020 PQ");
+                            ColorSpaceCombo.Items.Add("BT.2020 HLG");
+                        }
+                        ColorSpaceCombo.IsEnabled = _currentCapabilities.SupportedColorSpaces.Count > 0;
                     }
-                    ColorSpaceCombo.IsEnabled = _currentCapabilities.SupportedColorSpaces.Count > 0;
+                    finally
+                    {
+                        _suppressOptionEvents = prevSuppress;
+                    }
                     if (ColorSpaceCombo.Items.Count > 0) ColorSpaceCombo.SelectedIndex = 0;
 
                     // 更新 CICP 格式兼容性提示
@@ -3489,47 +3568,66 @@ namespace FfmpegGui
 
         private void OnQueueItemUpdated(Models.QueueItem item)
         {
-            Dispatcher.UIThread.Post(() =>
-            {
-                // 若该项已被标记为删除，从 UI 中移除
-                if (item.IsDeleted)
-                {
-                    var idx = _queueItems.FindIndex(x => ReferenceEquals(x, item));
-                    if (idx >= 0 && idx < _queueView.Count)
-                    {
-                        _queueView.RemoveAt(idx);
-                        _queueItems.RemoveAt(idx);
-                        return;
-                    }
+            _pendingQueueUiUpdates.Enqueue(item);
+            if (Interlocked.Exchange(ref _queueUiUpdatePostQueued, 1) == 0)
+                Dispatcher.UIThread.Post(FlushQueueUiUpdates);
+        }
 
-                    // 回退：通过**显示名**匹配清理残留项（同时清理 _queueItems 和 _queueView）
-                    // ⚠ 2026-09-21：原先取 `Path.GetFileName(InputPath)`。RAW 预处理会把 `InputPath` 改写成
-                    //   内部临时 TIFF ⇒ 「改写前加入的重复条目」(`a.CR2`) 与「改写后的本项」(`a_raw.tiff`)
-                    //   会得到**两个不同名字** ⇒ 残留项**清不掉**。改用 `DisplayName`（源路径优先）后两侧一致。
-                    var fname = item.DisplayName;
-                    for (int j = _queueView.Count - 1; j >= 0; j--)
-                    {
-                        if (string.Equals(_queueView[j].DisplayName, fname, StringComparison.OrdinalIgnoreCase))
-                        {
-                            _queueView.RemoveAt(j);
-                        }
-                    }
-                    for (int j = _queueItems.Count - 1; j >= 0; j--)
-                    {
-                        if (string.Equals(_queueItems[j].DisplayName, fname, StringComparison.OrdinalIgnoreCase))
-                        {
-                            _queueItems.RemoveAt(j);
-                        }
-                    }
+        private void FlushQueueUiUpdates()
+        {
+            Interlocked.Exchange(ref _queueUiUpdatePostQueued, 0);
+
+            bool changed = false;
+            while (_pendingQueueUiUpdates.TryDequeue(out var item))
+            {
+                changed = true;
+                if (item.IsDeleted) RemoveQueueItemFromUi(item);
+            }
+            if (!changed) return;
+
+            // Status 变更由 INotifyPropertyChanged + DataTemplate 绑定自动反映到 UI；
+            // 过滤/进度只在整批处理完后刷新一次，避免逐行重建集合。
+            if (ShowErrorsOnlyCheck?.IsChecked == true)
+                ApplyErrorOnlyFilter();
+            if (SimpleErrorsOnlyCheck?.IsChecked == true)
+                RefreshSimpleErrorFilter();
+            if (_gainMapModeActive) RefreshGainMapProgressIfActive();
+
+            if (!_pendingQueueUiUpdates.IsEmpty
+                && Interlocked.Exchange(ref _queueUiUpdatePostQueued, 1) == 0)
+                Dispatcher.UIThread.Post(FlushQueueUiUpdates);
+        }
+
+        private void RemoveQueueItemFromUi(Models.QueueItem item)
+        {
+            // 若该项已被标记为删除，从 UI 中移除
+            var idx = _queueItems.FindIndex(x => ReferenceEquals(x, item));
+            if (idx >= 0 && idx < _queueView.Count)
+            {
+                _queueView.RemoveAt(idx);
+                _queueItems.RemoveAt(idx);
+                return;
+            }
+
+            // 回退：通过**显示名**匹配清理残留项（同时清理 _queueItems 和 _queueView）
+            // ⚠ 2026-09-21：原先取 `Path.GetFileName(InputPath)`。RAW 预处理会把 `InputPath` 改写成
+            //   内部临时 TIFF ⇒ 「改写前加入的重复条目」(`a.CR2`) 与「改写后的本项」(`a_raw.tiff`)
+            //   会得到**两个不同名字** ⇒ 残留项**清不掉**。改用 `DisplayName`（源路径优先）后两侧一致。
+            var fname = item.DisplayName;
+            for (int j = _queueView.Count - 1; j >= 0; j--)
+            {
+                if (string.Equals(_queueView[j].DisplayName, fname, StringComparison.OrdinalIgnoreCase))
+                {
+                    _queueView.RemoveAt(j);
                 }
-                // Status 变更由 INotifyPropertyChanged + DataTemplate 绑定自动反映到 UI
-                // 若"仅显示报错"模式开启，刷新过滤（完整模式 + 简洁模式）
-                if (ShowErrorsOnlyCheck?.IsChecked == true)
-                    ApplyErrorOnlyFilter();
-                if (SimpleErrorsOnlyCheck?.IsChecked == true)
-                    RefreshSimpleErrorFilter();
-                if (_gainMapModeActive) RefreshGainMapProgressIfActive();
-            });
+            }
+            for (int j = _queueItems.Count - 1; j >= 0; j--)
+            {
+                if (string.Equals(_queueItems[j].DisplayName, fname, StringComparison.OrdinalIgnoreCase))
+                {
+                    _queueItems.RemoveAt(j);
+                }
+            }
         }
 
         private void OnQueueStopped()
@@ -4034,6 +4132,8 @@ namespace FfmpegGui
 
         private void ColorSpaceCombo_SelectionChanged(object? sender, SelectionChangedEventArgs e)
         {
+            if (_suppressOptionEvents) return;
+
             var cs = ColorSpaceCombo?.SelectedItem as string;
             if (string.IsNullOrWhiteSpace(cs) || cs == "auto")
             {
@@ -4052,31 +4152,13 @@ namespace FfmpegGui
             if (matrix != null && ColorMatrixCombo != null)
                 SelectComboItem(ColorMatrixCombo, matrix);
 
-            // HDR (BT.2020 PQ/HLG / P3 PQ) → 自动位深联动: 探测源位深，匹配最优色深
+            // HDR (BT.2020 PQ/HLG / P3 PQ) → 自动位深联动。先用缓存/保守值立即落一次，
+            // 真正的 ffprobe 放到线程池；结果回来再校正，不在 UI 线程 WaitForExit。
             var isHdrCs = cs is "BT.2020 PQ" or "BT.2020 HLG" or "P3 PQ";
             if (isHdrCs && BitDepthCombo != null)
             {
-                var currentBd = BitDepthCombo.SelectedItem as string;
-                var sourceBd = ProbeCurrentSourceBitDepth();
-
-                // 确定目标位深: 不低于10bit, 匹配源位深, 不超格式上限
-                int targetBd = sourceBd switch
-                {
-                    <=8 => 10,              // 源≤8bit → 至少升到10bit
-                    10 => 10,               // 源10bit → 保持10bit
-                    12 => 12,               // 源12bit → 保持12bit
-                    _ => 16                 // 源16bit+ → 保持16bit
-                };
-                int maxBd = _currentCapabilities?.SupportedBitDepths?.DefaultIfEmpty(8).Max() ?? 8;
-                int effectiveBd = Math.Min(targetBd, maxBd);
-
-                // 映射到选项
-                var bdStr = effectiveBd switch { <=8 => "8", 10 => "10", 12 => "12", _ => "16" };
-                if (currentBd == "auto" || currentBd == "8" || effectiveBd > (int.TryParse(currentBd, out var cb) ? cb : 8))
-                    SelectComboItem(BitDepthCombo, bdStr);
-
-                // 记录源位深用于冲突检测
-                _lastProbedSourceBitDepth = sourceBd;
+                ApplyHdrBitDepth(ProbeCurrentSourceBitDepth());
+                _ = RefreshSourceBitDepthAsync(cs);
             }
 
             // ── Gain Map 联动: HDR+JPEG → 建议 RGB 增益图 ──
@@ -4143,44 +4225,144 @@ namespace FfmpegGui
             }
         }
 
-        /// <summary>探测当前源文件位深（调用 ffprobe）</summary>
+        /// <summary>读取已缓存的源位深；未命中返回 8，绝不在 UI 线程启动 ffprobe。</summary>
         private int ProbeCurrentSourceBitDepth()
         {
-            if (string.IsNullOrWhiteSpace(_inputPath) || !File.Exists(_inputPath))
-                return 8;
+            if (TryGetCachedSourceBitDepth(out var bd))
+            {
+                _lastProbedSourceBitDepth = bd;
+                return bd;
+            }
+            return 8;
+        }
+
+        private bool TryGetCachedSourceBitDepth(out int bitDepth)
+        {
+            bitDepth = 0;
+            var input = _inputPath;
+            if (string.IsNullOrWhiteSpace(input) || !File.Exists(input)) return false;
             try
             {
-                var ffprobe = System.IO.Path.Combine(
-                    System.IO.Path.GetDirectoryName(AppSettingsService.Current.FfmpegPath) ?? "",
-                    "ffprobe.exe");
-                if (!File.Exists(ffprobe)) return 8;
+                var fi = new FileInfo(input);
+                if (_probeCacheBitDepth > 0
+                    && string.Equals(_probeCachePath, input, StringComparison.OrdinalIgnoreCase)
+                    && _probeCacheLength == fi.Length
+                    && _probeCacheWriteUtc == fi.LastWriteTimeUtc)
+                {
+                    bitDepth = _probeCacheBitDepth;
+                    return true;
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        private void ApplyHdrBitDepth(int sourceBd)
+        {
+            if (BitDepthCombo == null) return;
+
+            var currentBd = BitDepthCombo.SelectedItem as string;
+            // 确定目标位深: 不低于10bit, 匹配源位深, 不超格式上限
+            int targetBd = sourceBd switch
+            {
+                <= 8 => 10,             // 源≤8bit → 至少升到10bit
+                10 => 10,               // 源10bit → 保持10bit
+                12 => 12,               // 源12bit → 保持12bit
+                _ => 16                 // 源16bit+ → 保持16bit
+            };
+            int maxBd = _currentCapabilities?.SupportedBitDepths?.DefaultIfEmpty(8).Max() ?? 8;
+            int effectiveBd = Math.Min(targetBd, maxBd);
+
+            var bdStr = effectiveBd switch { <= 8 => "8", 10 => "10", 12 => "12", _ => "16" };
+            if (currentBd == "auto" || currentBd == "8" || effectiveBd > (int.TryParse(currentBd, out var cb) ? cb : 8))
+                SelectComboItem(BitDepthCombo, bdStr);
+
+            // 记录源位深用于冲突检测
+            _lastProbedSourceBitDepth = sourceBd;
+        }
+
+        /// <summary>
+        /// 后台探测源位深并回填 HDR 位深联动。探测按“路径 + 长度 + mtime”缓存，
+        /// 同一文件重复切格式/色域不会反复起 ffprobe。
+        /// </summary>
+        private async Task RefreshSourceBitDepthAsync(string colorSpace)
+        {
+            var input = _inputPath;
+            if (string.IsNullOrWhiteSpace(input) || !File.Exists(input)) return;
+
+            if (TryGetCachedSourceBitDepth(out var cached))
+            {
+                if (string.Equals(ColorSpaceCombo?.SelectedItem as string, colorSpace, StringComparison.Ordinal))
+                {
+                    ApplyHdrBitDepth(cached);
+                    DetectColorConflicts();
+                }
+                return;
+            }
+
+            var ffprobe = System.IO.Path.Combine(
+                System.IO.Path.GetDirectoryName(AppSettingsService.Current.FfmpegPath) ?? "",
+                "ffprobe.exe");
+            if (!File.Exists(ffprobe)) return;
+
+            var generation = ++_probeGeneration;
+            var bitDepth = await Task.Run(() => ProbeSourceBitDepthBlocking(input, ffprobe));
+
+            // 不假设 await 一定回到 UI 线程；统一 Post 回 UI 再碰控件。
+            Dispatcher.UIThread.Post(() =>
+            {
+                // 旧代探测不覆盖新选择；输入也必须在 await 期间没换。
+                if (generation != _probeGeneration) return;
+                if (!string.Equals(_inputPath, input, StringComparison.OrdinalIgnoreCase)) return;
+                if (!string.Equals(ColorSpaceCombo?.SelectedItem as string, colorSpace, StringComparison.Ordinal)) return;
+
+                if (bitDepth > 0)
+                {
+                    try
+                    {
+                        var fi = new FileInfo(input);
+                        _probeCachePath = input;
+                        _probeCacheLength = fi.Length;
+                        _probeCacheWriteUtc = fi.LastWriteTimeUtc;
+                        _probeCacheBitDepth = bitDepth;
+                    }
+                    catch { }
+                    ApplyHdrBitDepth(bitDepth);
+                    DetectColorConflicts();
+                }
+            });
+        }
+
+        /// <summary>线程池上的同步 ffprobe：UI 线程永远不等待它。</summary>
+        private static int ProbeSourceBitDepthBlocking(string input, string ffprobe)
+        {
+            try
+            {
                 using var p = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
                 {
                     FileName = ffprobe,
-                    Arguments = $"-v error -select_streams v:0 -show_entries stream=bits_per_raw_sample -of csv=p=0 \"{_inputPath}\"",
+                    Arguments = $"-v error -select_streams v:0 -show_entries stream=bits_per_raw_sample -of csv=p=0 \"{input}\"",
                     RedirectStandardOutput = true,
                     StandardOutputEncoding = System.Text.Encoding.UTF8,
-                    RedirectStandardError = true,   // P2-3：stderr 必须排空（下方挂 errTask 异步读完）
+                    RedirectStandardError = true,
                     StandardErrorEncoding = System.Text.Encoding.UTF8,
                     UseShellExecute = false,
                     CreateNoWindow = true
                 });
                 if (p == null) return 8;
-                // ⚠ 先挂读取任务、再等退出（本仓范式，见 `FfmpegCommandBuilder.ProbeWithFfprobe`）：
-                //   旧写法把同步读写在 `WaitForExit(3000)` **之前** ⇒ 子进程不关管道就永不返回，
-                //   **超时（与超时后的 Kill）是死代码**。实测：畸形 `.jxl` 让 ffprobe 永不退出。
+
+                // 先挂读取任务、再等退出；超时后 kill 并直接放弃排空，避免线程池被畸形文件拖住。
                 var outTask = p.StandardOutput.ReadToEndAsync();
                 var errTask = p.StandardError.ReadToEndAsync();
                 if (!p.WaitForExit(3000))
                 {
                     try { p.Kill(entireProcessTree: true); } catch { }
-                    // `#26`：关闭 `#24` 留下的「Trace 可见性债」——本方法是 MainWindow 实例方法，
-                    // 直接走 UI 的日志通道（`LogText`），`Trace` 保留作兜底（非 UI 线程时仍可抓到）。
-                    var bdMsg = $"[bitdepth] ffprobe 位深探测超时（3s）⇒ 已终止：{System.IO.Path.GetFileName(_inputPath)}（按 8bit 处理）";
+                    var bdMsg = $"[bitdepth] ffprobe 位深探测超时（3s）⇒ 已终止：{System.IO.Path.GetFileName(input)}（按 8bit 处理）";
                     System.Diagnostics.Trace.WriteLine(bdMsg);
-                    Dispatcher.UIThread.Post(() => UiLogService.Warn(bdMsg));
+                    UiLogService.Warn(bdMsg);
                     return 8;
                 }
+
                 var output = outTask.GetAwaiter().GetResult().Trim();
                 errTask.GetAwaiter().GetResult();
                 if (int.TryParse(output, out var bd) && bd > 0) return bd;

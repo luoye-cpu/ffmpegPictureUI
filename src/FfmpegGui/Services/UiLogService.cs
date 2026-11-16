@@ -80,14 +80,24 @@ namespace FfmpegGui.Services
                 _ => "INFO"
             };
 
+            var lines = new System.Collections.Generic.List<string>();
+            foreach (var raw in body.Split('\n'))
+                lines.Add($"[{stamp}] [{levelTag}] {raw}");
+
+            Action<string>? sink;
             lock (Gate)
             {
-                foreach (var raw in body.Split('\n'))
-                {
-                    var line = $"[{stamp}] [{levelTag}] {raw}";
+                foreach (var line in lines)
                     try { _writer?.WriteLine(line); } catch { /* 落盘失败不影响 UI */ }
-                    try { _sink?.Invoke(line); } catch { /* UI sink 不应反向破坏日志写 */ }
-                }
+                sink = _sink;
+            }
+
+            // 锁外调用 sink：UI sink 现在是入队（可能很快），但也不能把文件锁
+            // 和 UI 调度串在一起，避免后台日志写互相等待。
+            if (sink != null)
+            {
+                foreach (var line in lines)
+                    try { sink(line); } catch { /* UI sink 不应反向破坏日志写 */ }
             }
         }
 

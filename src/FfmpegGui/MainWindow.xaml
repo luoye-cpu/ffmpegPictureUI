@@ -1125,10 +1125,20 @@
               <Border Classes="sectionbar"/>
               <TextBlock Text="{ext:Loc execution.log}" FontSize="13" FontWeight="Bold"/>
             </StackPanel>
-            <TextBox Grid.Row="3" x:Name="LogText" IsReadOnly="True" Margin="0,2,0,0"
-                     MinHeight="120" FontSize="11" Padding="8,4"
-                     FontFamily="Cascadia Mono,Consolas,Microsoft YaHei UI"
-                     ScrollViewer.HorizontalScrollBarVisibility="Auto"/>
+            <Grid Grid.Row="3" MinHeight="120">
+              <!-- 可见日志是虚拟化列表：只渲染视口内的行，追加日志不再触发全量 TextBox 布局。 -->
+              <ListBox x:Name="LogList" Margin="0,2,0,0" FontSize="11" Padding="4,2"
+                       FontFamily="Cascadia Mono,Consolas,Microsoft YaHei UI"
+                       Background="Transparent" BorderThickness="0"
+                       ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                       ScrollViewer.VerticalScrollBarVisibility="Auto"/>
+              <!-- 测试契约 + 最近文本镜像：多个 UI 测例 Find<TextBox>("LogText") 并读取/清空 .Text。
+                   保持不可见，避免再把 4k 文本镜像的布局成本带回可见面板。 -->
+              <TextBox x:Name="LogText" IsVisible="False" IsReadOnly="True" Margin="0,2,0,0"
+                       MinHeight="120" FontSize="11" Padding="8,4"
+                       FontFamily="Cascadia Mono,Consolas,Microsoft YaHei UI"
+                       ScrollViewer.HorizontalScrollBarVisibility="Auto"/>
+            </Grid>
           </Grid>
         </Border>
 
