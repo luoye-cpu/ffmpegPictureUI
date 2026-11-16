@@ -13,6 +13,16 @@ All notable changes to this project are documented in this file.
 
 ## 📝 Changelog
 
+### v1.6.0-beta16 (2026-11-16) — UI format-switch freeze fix
+
+- **Execution log switched to a virtualized list**: the visible log is now a `ListBox` capped at 5,000 rows; the hidden `LogText` keeps only the latest 4k characters, preserving the existing UI test contract (`Find<TextBox>("LogText")`, read/clear `.Text`). The old full-text re-layout path (about 53 ms/line at 2.4k chars, 0.2 s/line at 10k, seconds at 50k, minutes at 2M) is gone.
+- **Batched log writes**: `UiLogService` now calls the sink outside the file lock; UI log lines go through a bounded queue and a 250-line merged flush instead of per-line control re-layout.
+- **Source bit-depth probe moved off the UI thread**: `ProbeCurrentSourceBitDepth` is cached by `(path, length, mtime)`; on miss it runs ffprobe in `Task.Run` and posts the result back to the UI. Selecting HDR `BT.2020 PQ` no longer blocks on `WaitForExit(3000)`.
+- **Close the popup first**: `FormatCombo_SelectionChanged` explicitly sets `IsDropDownOpen=false`; the encoder-list refresh carries a format generation so stale results cannot overwrite a newer selection.
+- **Suppress nested option events**: `UpdateOptionAvailability` suppresses `ColorSpaceCombo` selection events during Clear/Add, avoiding a nested HDR probe from a transient selection.
+- **Coalesced queue notifications**: `OnQueueItemUpdated` posts once and flushes a batch; the "errors only" filters rebuild the collection once per batch instead of per line.
+- **Runtime readings**: 2k-line batch flush 424 ms; 10k incremental 871 ms; 50k incremental 2,740 ms; hidden mirror 3,996 chars; cached bit-depth probe 1.09 ms. `verify-ui-host.ps1` **487 PASS / 0 FAIL**, `ui-startup-detect` 12/0, `ui-cli-strict` 60/0.
+
 ### v1.6.0-beta15 (2026-11-15) — ICC-only dual write + static AVIF export actually carries ICC
 
 - **ICC-only closure on dual-carrier formats**: when a container supports both CICP and ICC, an explicit "carry ICC / ICC-only" choice is no longer stripped by PNG/APNG's automatic CICP-first rule. If the ICC has a nameable equivalent H.273 token, the same-space CICP is written too, delivering **ICC + CICP dual write**. ICC-only remains only when CICP truly cannot express the space (e.g. ProPhoto/ROMM).

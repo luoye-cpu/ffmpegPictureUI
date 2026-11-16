@@ -12,6 +12,16 @@
 
 ## 📝 更新日志
 
+### v1.6.0-beta16 (2026-11-16) — UI 格式切换卡死修复
+
+- **执行日志改为虚拟化列表**：可见日志从单个大 TextBox 换成最多 5,000 行的虚拟化 `ListBox`；隐藏的 `LogText` 只保留最近 4k 字符，继续满足既有 UI 测例的 `Find<TextBox>("LogText")` / 读取 / 清空契约。2.4k 字符级每行 53 ms、10k 级每行 0.2 s、50k 级秒级、2M 级分钟级的全量文本重排路径被移除。
+- **日志写入批处理**：`UiLogService` 的 sink 调用移到文件锁外；UI 日志改为有界队列 + 每批 250 行合并刷新，不再逐行重排控件。
+- **源位深探测移出 UI 线程**：`ProbeCurrentSourceBitDepth` 改为按“路径 + 长度 + mtime”缓存，未命中时 `Task.Run` 跑 ffprobe，结果 Post 回 UI；HDR 选 `BT.2020 PQ` 不再同步 `WaitForExit(3000)`。
+- **格式切换先收 popup**：`FormatCombo_SelectionChanged` 入口显式 `IsDropDownOpen=false`；编码器列表刷新加格式代，旧代结果不覆盖新选择。
+- **选项重建抑制嵌套事件**：`UpdateOptionAvailability` 重建 `ColorSpaceCombo` 时抑制 Clear/Add 触发的 SelectionChanged，避免嵌套 HDR 分支探测。
+- **队列通知合并**：`OnQueueItemUpdated` 从逐行 `Dispatcher.Post` 改为单次调度 + 整批刷新；“仅显示报错”过滤不再逐条重建集合。
+- **运行时读数**：2k 行日志批量 flush 424 ms；10k 增量 871 ms；50k 增量 2,740 ms；隐藏镜像 3,996 字符；缓存命中的位深探测 1.09 ms。`verify-ui-host.ps1` **487 PASS / 0 FAIL**，`ui-startup-detect` 12/0，`ui-cli-strict` 60/0。
+
 ### v1.6.0-beta15 (2026-11-15) — ICC-only 双写 + AVIF 静态出口真正携带 ICC
 
 - **双承载格式的 ICC-only 收口**：容器同时支持 CICP + ICC 时，显式选择「携带 ICC / ICC-only」不再被 PNG/APNG 的自动 CICP-first 剥掉；只要 ICC 有可命名的等价 H.273 令牌，就补写同源 CICP，交付 **ICC + CICP 双写**。CICP 确实无法表达（如 ProPhoto/ROMM）时才保留 ICC-only。
