@@ -718,6 +718,49 @@ if (-not $c5.Prod) {
     ('BitDepthReduced 在该格日志里出现 ' + $n5 + ' 次（>1 ⇒ 同一事实有两个写者各播一遍，日志自相矛盾）')
 }
 
+# ── ③g P3→PNG carry：必须**双写** iCCP+cICP（COLOR-01 回归锁，2026-11-16）─────────────────
+# 背景：legacy 通路的 pngCicpFirst（FfmpegCommandBuilder.Decision）曾无条件 d.AttachIcc=false
+#   剥掉 iCCP，只留 cICP；engine/auto 通路却双写。同一份 P3 源、同一条 carry 策略，两条管线
+#   产物标注形状不同 ⇒ 查看器对同一输入给出不同解释。修法（MA-04）：把"是否回带源 ICC"收敛到
+#   IccCarryPolicy.Decide 单一真值——显式 CarryIcc + 源真有 ICC + PNG 双载体 ⇒ 不剥 iCCP。
+#   ⚠ 本脚本 ① 段只测了 p3→**avif**，从无 p3→**png** 的 carry 格 ⇒ 这条洞 COLOR-01 一直溜过去。
+#   判据三条（两条管线都要）：(a) 非空 PNG；(b) pngcicp 同时报 iCCP 块与 cICP 块（双写）；
+#   (c) iCCP 红原色 == 源 P3（0.67999,0.32001）——不读"有/无 ICC"，读色度，否则"挂一张 BT.709
+#   标准 ICC 凑数"也会假绿。
+Write-Host "`n### ③g P3→PNG carry 双写 iCCP+cICP（COLOR-01）###" -ForegroundColor Cyan
+$script:pcg = "$root/tools/src/pngcicp/bin/Release/net11.0/pngcicp.exe"
+function PngChunksG([string]$f){
+  if(-not (Test-Path $script:pcg)){ return '(pngcicp 缺失)' }
+  $o = "$out/_pcg.txt"
+  Start-Process -FilePath $script:pcg -ArgumentList @('info',$f) -NoNewWindow -Wait -RedirectStandardOutput $o | Out-Null
+  return ([System.IO.File]::ReadAllText($o))
+}
+function IccRedG([string]$f){
+  for($i=0;$i -lt 5;$i++){
+    $r = ExecOut $et "-a -s -ICC_Profile:ChromaticityChannel1 `"$f`""
+    if($r -match '([0-9.]+)\s+([0-9.]+)'){ return @([double]$Matches[1],[double]$Matches[2]) }
+    Start-Sleep -Milliseconds 300
+  }
+  return $null
+}
+$srcChrG = IccRedG $p3
+foreach($eng in @(@{n='eng';a='--color-engine engine'}, @{n='leg';a='--color-engine legacy'})){
+  $tag = "p3pngcarry-$($eng.n)"
+  $a = "--headless -i `"$p3`" --format png --output `"$out/$tag`" --color-strategy carry --log-level Debug $($eng.a)"
+  Start-Process -FilePath $exe -ArgumentList $a -Wait -NoNewWindow -PassThru `
+    -RedirectStandardOutput "$out/$tag.o" -RedirectStandardError "$out/$tag.e" | Out-Null
+  $f = Get-ChildItem -Recurse "$out/$tag" -Include *.png -EA SilentlyContinue | Select-Object -First 1
+  Assert "③g-$($eng.n)-产出" ($f -and $f.Length -gt 0) "P3→PNG carry($($eng.n)) 须产出非空 PNG"
+  if($f){
+    $info = PngChunksG $f.FullName
+    Assert "③g-$($eng.n)-双写iCCP+cICP" (($info -match 'iCCP:\s*\d+\s*bytes') -and ($info -match 'cICP:')) `
+      "PNG 必须同时含 iCCP 块与 cICP 块（双写；pngcicp: $((($info -split "`r?`n") | Where-Object {$_ -match 'iCCP|cICP'}) -join ' / ')）"
+    $chr = IccRedG $f.FullName
+    Assert "③g-$($eng.n)-iCCP源色度" ($chr -and $srcChrG -and [Math]::Abs($chr[0]-$srcChrG[0]) -le 1e-4 -and [Math]::Abs($chr[1]-$srcChrG[1]) -le 1e-4) `
+      "iCCP 红原色须==源 P3（产物 $($chr -join ',') vs 源 $($srcChrG -join ',')；挂别的标准 ICC 也算红）"
+  }
+}
+
 Write-Host "`n===== PASS=$pass FAIL=$fail =====" -ForegroundColor $(if($fail -eq 0){"Green"}else{"Red"})
 Write-Host "关注: cicp-only 的 avif/png 应 ICC=False; carry/hdr-png 应保 HDR(cicp smpte2084); jpeg+gm 应产出可用 UltraHDR" -ForegroundColor Yellow
 

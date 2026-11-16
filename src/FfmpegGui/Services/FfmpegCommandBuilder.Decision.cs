@@ -567,9 +567,19 @@ namespace FfmpegGui.Services
             //   这里按**出口令牌对**复核精确性（不是只看有没有 token），不可精确命名
             //   （ProPhoto/Adobe 等）时保持 ICC 兜底。
             bool pngCicpFirst = fmt is "png" or "apng";
+            // ★ MA-04（COLOR-01）：显式携带(CarryIcc)且源真有 ICC 时，PNG/APNG 双载体**双写**
+            //   （iCCP 保留源 ICC + cICP 作附加标签），不允许无条件 AttachIcc=false 剥掉 iCCP。
+            //   是否回带源 ICC 的真值统一走 IccCarryPolicy（与 QueueProcessor exiftool 后置、
+            //   引擎 PNG 后置三处同口径），不在本处再写一份等价 if。
+            bool carrySourceIccHere = ColorMapping.IccCarryPolicy.ShouldCarrySourceIcc(
+                strategy,
+                ProbeInputIccDescriptor(inputPath) != null,
+                ColorMapping.ColorMappingEngine.CapsFor(fmt).CanCarryArbitraryIcc,
+                ColorMapping.ColorMappingEngine.CapsFor(fmt).CanHaveBothIccAndCicp);
             if (pngCicpFirst && d.CanWriteContainerCicp
                 && !string.IsNullOrEmpty(outP) && !string.IsNullOrEmpty(outT)
                 && !frameIsHdr
+                && !carrySourceIccHere
                 && !string.Equals(effDstTrc, "linear", StringComparison.OrdinalIgnoreCase))
             {
                 var pngCicpProbe = ColorMapping.ColorSpaceDescriptor.FromCicp(outP, outT, "PNG/APNG CICP 优先");

@@ -3013,11 +3013,25 @@ namespace FfmpegGui.Services
                             //   等于让**另一条通路**的乐观意见决定本通路的生死（本函数 2026-10-26 ⑬ 曾因此误删 jxl）。
                             var carryPlan = engPlan
                                 ?? FfmpegCommandBuilder.ResolveLegacyVerdictPlan(item.Options, item.InputPath);
+                            // ★ MA-04 单一真值：本块已在 effCarry（生效策略=CarryIcc）守卫内。
+                            //   是否回带**源** ICC 只认三件事（源是否真有 ICC、出口写不写得了 ICC、
+                            //   容器能否双写），统一走 IccCarryPolicy.Decide——**不再**靠
+                            //   AttachIcc/IccPrimaries/IccPath 的字段形状推断"计划自生成 ICC"。
+                            //   旧形状判断把 legacy 直连 webp carry（用户要带源 P3 ICC，legacy 裁决却
+                            //   选了"生成 BT.2020 ICC"且后置只在 engine 路径跑）误判成"自生成"⇒
+                            //   既不回带源 ICC、也无后置落地 ⇒ 静默零标注（COLOR-07，广色域被按 sRGB 洗白）。
+                            bool sourceHasIcc = FfmpegCommandBuilder.ProbeInputIccDescriptor(item.InputPath) != null;
+                            var outCaps = FfmpegGui.Services.ColorMapping.ColorMappingEngine.CapsFor(item.Options.Format);
+                            bool wantSourceIcc = FfmpegGui.Services.ColorMapping.IccCarryPolicy.ShouldCarrySourceIcc(
+                                Models.ColorStrategy.CarryIcc, sourceHasIcc,
+                                outCaps.CanCarryArbitraryIcc, outCaps.CanHaveBothIccAndCicp);
                             // 源没有 ICC、只有 CICP 时，CarryIcc 计划会按源 CICP 生成标准 ICC
                             // （AttachIcc=true、IccPrimaries 非空、IccPath 为空）。这一格不能走
                             // “从源文件回带 ICC”的旧路径：源本来就没有 ICC，回带必然 NoWriteApplied，
                             // 而旧兜底会把整项判死。交给后面的标准 ICC 后置步骤落地。
-                            bool planPromisesGeneratedIcc = carryPlan is
+                            // ⚠ wantSourceIcc（显式携带 + 源真有 ICC）时本判断一律不成立：回带源 ICC 才是
+                            //   用户承诺的语义，不许被 legacy 裁决的"生成标准 ICC"形状顶替。
+                            bool planPromisesGeneratedIcc = !wantSourceIcc && carryPlan is
                             {
                                 AttachIcc: true,
                                 IccPrimaries: { Length: > 0 },
@@ -3026,7 +3040,9 @@ namespace FfmpegGui.Services
                             // ★ 2026-11-15 PNG/APNG 口径：计划已裁成 CICP-only（CICP 能精确表达）
                             //   ⇒ 绝不能再把**源 ICC** 回带，否则 iCCP 会重新出现，违反“ICC 仅
                             //   在 CICP 无法表示时使用”。这一格不能落进下面的 else（回带源 ICC）。
-                            bool planCicpOnly = carryPlan is
+                            //   ⚠ 例外：显式携带 + 源真有 ICC（wantSourceIcc）⇒ 双写 iCCP+cICP 是用户要的，
+                            //     不剥（COLOR-01）。
+                            bool planCicpOnly = !wantSourceIcc && carryPlan is
                             {
                                 AttachIcc: false,
                                 OutPrimaries: not null,
