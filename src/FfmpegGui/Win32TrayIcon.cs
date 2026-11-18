@@ -1,5 +1,7 @@
 using System;
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.InteropServices;
+using System.Runtime.Versioning;
 using System.Text;
 using System.Threading;
 
@@ -21,6 +23,12 @@ namespace FfmpegGui
     /// （事件在托盘线程触发，调用方自行 marshal 回 UI 线程）。本类不引用 Avalonia。
     /// Explorer 重启（TaskbarCreated 广播）后自动重挂图标。
     /// </summary>
+    [UnconditionalSuppressMessage("Platform", "CA1416",
+        Justification = "本类只被 Windows 桌面程序引用（目标 win-x64）；显式标注 SupportedOSPlatform 会让 App 侧"
+                      + "产生一串仅因平台标注而来的 CA1416，故在唯一的平台实现类上统一豁免。")]
+    [UnconditionalSuppressMessage("SingleFile", "IL3002",
+        Justification = "本仓发布为 win-x64 多文件包（非 single-file）；托盘窗口句柄只需进程内 HINSTANCE，"
+                      + "AOT 单文件下该 API 的 -1 语义不会走到本实现。")]
     internal sealed class Win32TrayIcon : IDisposable
     {
         // ── 事件（在托盘线程触发）──

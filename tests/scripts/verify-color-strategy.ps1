@@ -290,7 +290,7 @@ foreach($strat in @("recommended","carry","cicp-only","manual")){
 # ── ③ 两条管线的逐格对照（共同产出格必须 CICP 与 ICC 一致）──
 Write-Host "`n### 管线对照（引擎 vs 传统）###" -ForegroundColor Cyan
 # ⚠ **2026-09-16 更新：原先登记的唯一差异 `recommended-hdr-png` 已修复，故本表已清空。**
-#   原差异：引擎 S1 对「HDR 源 → png」自动 hable 色调映射并附 ICC（53926B/ICC=True），
+#   原差异：引擎 S1 对「HDR 源 → png」自动色调映射（2026-11-18 起默认 Mobius）并附 ICC（53926B/ICC=True），
 #   而传统管线保 HDR 不附 ICC（43821B/ICC=False）。根因**不在 S1 的策略**，而在能力表：
 #   `png.CanHdr` 未设（false）⇒ `ColorIntentFactory` 的「HDR 源 + 容器不支持 HDR ⇒ 自动 tonemap」
 #   被误触发。PNG 经 **cICP** 就能承载 PQ/HLG（两条管线的产物实测都写着 `smpte2084,bt2020`）

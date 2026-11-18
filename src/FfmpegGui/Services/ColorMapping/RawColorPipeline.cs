@@ -330,7 +330,7 @@ public static class RawColorPipeline
         var ep = GainMapJpegCodec.ResolveEncodeParams(options, inputPath);
         log?.Invoke($"[GainMap]   源峰值 {ep.PeakNits:F0} nits（来源：{ep.PeakSourceText}）\n");
         log?.Invoke($"[GainMap]   源原色: {ep.SrcPrim}（底图将由此映射到目标底图色域）\n");
-        // 决策日志里那条 tonemap（Hable/峰值）是**计划层为普通出口**算的，本出口不使用：
+        // 决策日志里那条 tonemap（普通出口默认 Mobius/峰值）是**计划层为普通出口**算的，本出口不使用：
         // 底图压暗由 GainMapEncoder 的分段 Reinhard 按上面这个峰值完成。不写这句，日志会看起来
         // 像"Hable@峰值 应用了"，而实际生效的是 Reinhard@峰值 —— 属于"决策与执行不一致"的假象。
         log?.Invoke("[GainMap] 色调映射由本出口自持（分段 Reinhard，峰值即上行），"
@@ -413,6 +413,12 @@ public static class RawColorPipeline
             log?.Invoke(gmProgLv >= 0
                 ? $"[GainMap] JPEG progressive level -p {gmProgLv} (--jpeg-progressive={options.JpegProgressiveId})\n"
                 : "[GainMap] JPEG progressive level: unspecified (cjpegli default)\n");
+            var gmContainer = GainMapEncoder.ContainerOf(outputPath);
+            var gmMetadata = GainMapEncoder.ResolveMetadataForHdr(
+                options.JpegGainMapMetadata, gmContainer, ep.IsHdrInput);
+            if (!string.Equals(gmMetadata, options.JpegGainMapMetadata, StringComparison.Ordinal))
+                log?.Invoke($"[GainMap] HDR source -> metadata carrier '{gmMetadata}'"
+                          + " (XMP hdrgm + ISO 21496-1; Ultra HDR viewer path)\n");
             bool ok = await GainMapEncoder.EncodeAsync(
                 pixels, w, h, outputPath,
                 hdrPeakNits: ep.PeakNits, sdrWhiteNits: GainMapEncoder.KSdrWhiteNits,
@@ -420,11 +426,11 @@ public static class RawColorPipeline
                 baseQuality: baseDist, gainMapQuality: gmDist,
                 downsample: Math.Max(options.JpegGainMapDownsample, 1),
                 baseGamut: options.JpegGainMapBaseGamut,
-                gainMapMetadata: options.JpegGainMapMetadata,
+                gainMapMetadata: gmMetadata,
                 sourcePrimaries: ep.SrcPrim,
                 log: log, ct: ct,
                 jpegProgressiveLevel: gmProgLv,
-                container: GainMapEncoder.ContainerOf(outputPath),
+                container: gmContainer,
                 sourceBaseRaw: options.GainMapSourceBaseRawForEncode,
                 inputIsSdrWhiteUnit: options.GainMapInputIsSdrWhiteUnit,
                 sourceSpaceName: ep.SourceSpaceName,
@@ -827,11 +833,11 @@ public static class RawColorPipeline
                     throw new InvalidOperationException(
                         $"cjxl 出口：PNG 中转落盘失败（ffmpeg 退出码 {ffExit}）"
                         + " ⇒ 不回退 PPM 管道（回退 = 静默丢掉用户元数据，正是本修复要消掉的形状）");
-                var cjxlArgs = CjxlService.BuildCjxlArguments(pngTmp, outputPath, options, hdrMeta, iccFile,
+                var cjxlArgs = CjxlService.BuildCjxlArguments(pngTmp, outputPath, options!, hdrMeta, iccFile,
                     cjxlSpace, itNits, log: log);
                 // ⚠ `cjxl 命令行:` 显式标签不能省（门禁按它取命令行，见下方管道路径的同名注释）。
                 log?.Invoke($"[色彩] cjxl 命令行: {cjxlArgs}\n");
-                exitCode = await CjxlService.RunWithOptionsAsync(pngTmp, outputPath, options, log, iccFile, ct,
+                exitCode = await CjxlService.RunWithOptionsAsync(pngTmp, outputPath, options!, log, iccFile, ct,
                     cjxlSpace, itNits, hdrMeta).ConfigureAwait(false);
             }
             else

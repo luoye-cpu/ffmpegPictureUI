@@ -293,10 +293,10 @@ public static partial class ColorMappingEngine
         // ⑥ GainMap 出口**不消费**计划层的 tonemap ⇒ 用户显式请求的曲线未生效（2026-09-18）。
         // 判据：计划确为 GainMap 出口（`p.GainMap`）+ 用户**显式**请求了曲线（`ToneMapRequested`）
         //   且**不是**系统自动兜底（`!ToneMapAuto`）。
-        // ⚠ 为什么排除 `ToneMapAuto`：自动兜底（HDR 源 + 容器不支持 HDR ⇒ 内部默认 hable）的**目的**
+        // ⚠ 为什么排除 `ToneMapAuto`：自动兜底（HDR 源 + 容器不支持 HDR ⇒ 内部默认 mobius）的**目的**
         //   是"把 HDR 压成可看的 SDR 底图"，而 GainMap 出口的分段 Reinhard 正是干这件事
         //   ⇒ 目的已达成，不构成损失（否则每一次 HDR→JPEG GainMap 都会被误报成降级）。
-        // ⚠ 为什么必须登记（而不是像 legacy 那样静默忽略）：用户点了 hable，实际生效的是编码器内部的
+        // ⚠ 为什么必须登记（而不是像 legacy 那样静默忽略）：用户显式选了某条曲线，实际生效的是编码器内部的
         //   分段 Reinhard —— 曲线不同、压暗不同。不登记就是"看起来配置过"，正是本项目最忌讳的。
         //   ⚠ 登记它**不改变**产出与否（`CollectDegradations` 只在已产出的格上跑，见 `ProjectVerdict`），
         //   只把 `Kind` 从 `Proceed` 翻成 `ProceedWithDegradation`。
@@ -372,7 +372,7 @@ public static partial class ColorMappingEngine
         // 峰值优先级：用户给定 / 容器静态元数据（装配点已读，见 ColorIntentFactory）> 源曲线峰值（PQ=10000/HLG=1000）；
         // 绝不默认 1000nits。
         // ⚠ 2026-11-09（D4 配套第四处）：线性 HDR 也是 HDR 传递 —— 判据不认 linear 会让装配层
-        //   已经接受的 ToneMapRequested（自动 hable 兜底 / 显式 --color-tone-map）**静默无效**：
+        //   已经接受的 ToneMapRequested（自动 Mobius 兜底 / 显式 --color-tone-map）**静默无效**：
         //   exit 90 消了、Map 照跑，但内核收不到 ToneMapParams ⇒ 交付=纯 OETF 编码，日志无任何
         //   "[tonemap" 行。2026-11-09 实测（OnePlus 样本）：修复前 jpg 三臂（默认/强制 sRGB/显式
         //   hable）读数逐值一致 + 全程 0 条 tonemap 行 = 挂载点拦截的指纹；放行后三臂仍同值
@@ -402,7 +402,7 @@ public static partial class ColorMappingEngine
                                                  : $"待整帧实测（暂按源曲线名义峰值 {peak:F0}nit 兜底）";
             p.Reason += $" [tonemap: {p.Tone} 峰值来源={peakFrom}"
                       + (it.ToneMapAuto
-                            ? "｜算子=自动（容器不支持 HDR ⇒ 内部默认曲线；用 --color-tone-map 可指定）"
+                            ? "｜算子=自动（容器不支持 HDR ⇒ 内部默认曲线 Mobius；用 --color-tone-map 可指定）"
                             : "")
                       + "]";
             // HLG 是 scene-referred：编码值→显示亮度需经 BT.2100-2 Table 5 的 OOTF（已按建议书原文实现，
@@ -595,6 +595,42 @@ public static partial class ColorMappingEngine
         }
 
         // 结局 1：源有 ICC 且容器可携带 ⇒ 像素零改动 + 附着/改写 ICC
+        // ⚠ 2026-11-18（ICC fail-closed 已撤销）：CarryIcc 遇到 Unreadable 时**只警告、不拒绝**。
+        //   exiftool 不可用 / 读取失败时，源描述符可能只是按惯例假定的 sRGB；继续走下面
+        //   “源无 ICC”分支会生成一张标准 sRGB ICC，等于把“没读到”伪装成“源就是 sRGB”。
+        //   维护者定案（2026-11-18）：宁可产出**无标注**结果并条目标黄，也不让坏 profile
+        //   把整条任务打停。⇒ 本分支直接返回 None、不附 ICC、不写 CICP，警告由 Verdict 携带。
+        if (it.SourceIccStatus == SourceIccStatus.Unreadable)
+        {
+            p.Action = ColorAction.None;
+            p.Backend = ColorBackend.None;
+            p.ColorLoss = ColorLoss.None;
+            p.AttachIcc = false;
+            p.IccPath = p.IccPrimaries = p.IccTrc = p.IccMatrix = null;
+            p.OutPrimaries = p.OutTransfer = p.OutMatrix = null;
+            p.CicpUnavailable = caps.NoCicpReason;
+            p.UnlabeledAssumedSrgb = caps.UnlabeledMeansSrgb;
+            p.Annot = caps.UnlabeledMeansSrgb
+                ? AnnotChoice.UnlabeledAssumedSrgb
+                : AnnotChoice.None;
+            p.Reason = "S2 carry: source ICC presence is unreadable; continuing without an ICC claim "
+                     + "(warning only, no rejection)";
+            p.Advice = "为源补 ICC / 安装 exiftool 可获得精确描述；本次产物可能无色彩标注。";
+            p.Verdict = new ColorVerdict
+            {
+                Kind = VerdictKind.ProceedWithDegradation,
+                Action = p.Action,
+                Reason = p.Reason,
+                Advice = p.Advice,
+                Degradations = new[]
+                {
+                    new ColorDegradation(DegradationCodes.SourceIccUnverified,
+                        "源 ICC 存在性/内容不可读（exiftool 缺失或读取失败）⇒ 按惯例继续，未携带源 ICC"),
+                },
+            };
+            return p;
+        }
+
         if (src.SourceIccPath != null)
         {
             if (!caps.CanCarryArbitraryIcc)
@@ -1293,7 +1329,7 @@ public static partial class ColorMappingEngine
             && !pol.HdrOutput
             && it.Target?.Curve.Kind is not (TransferCurve.CurveKind.Pq or TransferCurve.CurveKind.Hlg);
         if (sdrExitForLinear && sdrHeadroom >= 2.0)
-            core.Reason += $"｜HDR headroom {sdrHeadroom:F2}×，纯线性编码将裁剪高光，建议 --color-tone-map hable";
+            core.Reason += $"｜HDR headroom {sdrHeadroom:F2}×，纯线性编码将裁剪高光，建议 --color-tone-map mobius";
 
         if (pol.Strategy == ColorStrategy.BakeCicpOnly && !it.GainMapRequested) StripIcc(core);
         return core;

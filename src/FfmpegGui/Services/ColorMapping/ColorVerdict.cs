@@ -114,4 +114,10 @@ public static class DegradationCodes
     public const string EncoderUnsupportedSetting = "EncoderUnsupportedSetting";
     /// <summary>请求的 tonemap 在 GainMap 出口不被消费（压暗由编码器内部分段 Reinhard 自持）⇒ 已产出，但该选项未生效。</summary>
     public const string ToneMapNotAppliedToGainMap = "ToneMapNotAppliedToGainMap";
+    /// <summary>源 ICC 字段存在但读不出/解析不了 ⇒ 本次按惯例继续，产物不声称携带该 ICC。</summary>
+    public const string SourceIccUnverified = "SourceIccUnverified";
+    /// <summary>CICP / 容器标签读不出、非法或互相冲突 ⇒ 按惯例/可用值继续，颜色可能是猜的。</summary>
+    public const string SourceCicpUnverified = "SourceCicpUnverified";
+    /// <summary>源 ICC 存在但无法求出到目标空间的矩阵 ⇒ 不改像素、不写误导标签，保留源描述（若可携带）。</summary>
+    public const string SourceColorUnmappable = "SourceColorUnmappable";
 }

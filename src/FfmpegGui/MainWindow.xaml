@@ -580,7 +580,7 @@
               <sys:String>legacy</sys:String>
             </ComboBox>
 
-            <!-- tonemap 曲线不再暴露给用户：内部固定 hable（HDR→SDR） -->
+            <!-- tonemap 曲线不再单独暴露给用户：auto 内部默认 mobius（HDR→SDR） -->
             
             <!-- 色彩范围（TV/PC）: 仅 YUV 输出格式支持（AVIF），不支持的格式整组隐藏（2026-08-16）
                  auto=跟随输入范围（RGB/yuvj→pc，yuv limited→tv） -->
@@ -637,12 +637,13 @@
                                IsCheckedChanged="IccMode_Changed"/>
                 </StackPanel>
 
-                <!-- HDR 实现模式（用户-facing 二选一）：GainMap（SDR 底图 + 增益图）| 传统（原生 PQ/HLG）。
-                     ⚠ 可见性由 `UpdateOptionAvailability` 按**容器能力**给（JPEG 族 / AVIF / JXL），XAML 只给初始隐藏；
-                       ItemsSource 由 `FillComboByLoc` 在代码侧按本地化键填充。 -->
-                <ComboBox x:Name="HdrModeCombo" IsVisible="False" Margin="0,6,0,0" FontSize="11"
-                          ToolTip.Tip="{ext:Loc tip.gainmap.enable}"
-                          SelectionChanged="HdrMode_Changed"/>
+                <!-- GainMap 唯一用户开关：JPEG 不提供“传统 HDR”（JPEG 本身承载不了 PQ/HLG）；
+                     AVIF/JXL 的原生 HDR 由目标色彩空间 + 容器能力自动决定，不在这里再拆一个二选一。
+                     ⚠ 可见性由 `UpdateOptionAvailability` 按容器能力给，XAML 只给初始隐藏。 -->
+                <CheckBox x:Name="JpegGainMapCheck" IsVisible="False" Margin="0,6,0,0" FontSize="11"
+                          Content="{ext:Loc gainmap.enable}"
+                          ToolTip.Tip="{ext:Loc gainmap.note}"
+                          IsCheckedChanged="JpegGainMap_Changed"/>
                 
                 <!-- 源色彩空间不再由用户手动指定：软件自动根据 CICP+ICC 探测判断（阶段3.6）。烘焙目标子面板已废弃移除。 -->
                 

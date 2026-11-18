@@ -273,8 +273,10 @@ if ($mode -eq "full") {
     foreach ($d in $needDirs)  { if (-not (Test-Path (Join-Path $OutputDir $d))) { $miss += "$d\" } }
     $gotFiles = @(Get-ChildItem $OutputDir -Recurse -File -EA SilentlyContinue).Count
     # PLAN 组件包共 ~568 个文件；含 PLAN 的完整包总文件数应 ≥ 560（robocopy 排除了 .lib/.pc/.cmake）
-    # app 档：exe + 原生库 + licenses + Resources + oxipng ≈ 30+ 文件；下限取 20 留余量。
-    $minFiles = $(if ($mode -eq "full") { 560 } else { 20 })
+    # 2026-11-17 实测：app 档合法载荷就是 19 个文件
+    #   （FfmpegGui.exe + 3 个 native dll + 3 份法律文件 + 9 份 licenses + oxipng + 2 份 locale）。
+    #   原阈值 20 会把合法包误判为红；下限改为 19，少任一项仍会掉到 18 并被拦下。
+    $minFiles = $(if ($mode -eq "full") { 560 } else { 19 })
     if ($miss.Count -gt 0 -or $gotFiles -lt $minFiles) {
         throw "[$mode] 完整性闸未过：缺 $(if ($miss.Count) { ($miss -join ', ') } else { '(无缺项)' })；文件数 $gotFiles（要求 ≥ $minFiles）⇒ 拒绝压缩出包"
     }

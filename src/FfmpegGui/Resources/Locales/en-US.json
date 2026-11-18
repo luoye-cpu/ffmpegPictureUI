@@ -388,7 +388,7 @@
   "gainmap.metadata.iso": "ISO 21496-1 (default)",
   "gainmap.metadata.xmp": "XMP (hdrgm)",
   "gainmap.metadata.both": "Both",
-  "gainmap.metadata.note": "JPEG output only. With ISO only, software that reads hdrgm XMP will not see the HDR; choose Both for those. AVIF (tmap) / JXL (jhgm) carry ISO 21496-1 in the container and ignore this setting.",
+  "gainmap.metadata.note": "JPEG output only. For an HDR source the default ISO carrier is automatically upgraded to Both (ISO + XMP hdrgm) so Ultra HDR viewers that only read XMP can see the HDR; explicit XMP/Both selections are honored. AVIF (tmap) / JXL (jhgm) carry ISO 21496-1 in the container and ignore this setting.",
   "gainmap.type": "Gain Map Type",
   "gainmap.type.gray": "Grayscale (smaller)",
   "gainmap.type.rgb": "RGB multi-channel (more accurate color)",

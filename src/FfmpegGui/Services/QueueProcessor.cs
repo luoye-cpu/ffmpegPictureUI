@@ -1,4 +1,5 @@
 using FfmpegGui.Models;
+using FfmpegGui.Services.ColorMapping;
 using System;
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
@@ -356,6 +357,11 @@ namespace FfmpegGui.Services
                         captured.Status = "处理中";
                         captured.StartedAt = DateTimeOffset.UtcNow;
                         _onItemUpdated?.Invoke(captured);
+
+                        // ── ICC 不可读：只警告，不阻断（2026-11-18 维护者定案）────────────
+                        // 旧行为在编码前 fail-closed、exit 90、零产物；维护者要求 ICC/CICP
+                        // 不准确只做警告，避免坏 profile 造成额外失败。这里只把条目打黄并继续。
+                        WarnCarryIccUnreadable(captured);
 
                         // ── DNG 出口前置校验（2026-10-25）──────────────────────────────────────
                         // DNG 需要传感器 RAW 数据；JXR/PNG 等已解码载体结构上无法反推 CFA。
@@ -1591,7 +1597,7 @@ namespace FfmpegGui.Services
                             // ── 追加 .png 后缀（JXL/AVIF 兼容性）──
                             if (captured.ExitCode == 0 && captured.Options.AppendPngExtension)
                             {
-                                var fmt = captured.Options.Format.ToLower();
+                                var fmt = (captured.Options!.Format ?? "").ToLower();
                                 if (fmt is "avif" or "jxl")
                                 {
                                     try
@@ -1821,8 +1827,9 @@ namespace FfmpegGui.Services
                 }
                 Log($"[色彩引擎] 本次不适用引擎（{block.Code}：{block.Text}）⇒ 由传统管线处理（非引擎编码出口的格式属正常归属）\n");
                 // ⚠ 2026-09-27 维护者定案：**HDR→SDR 的色调映射契约以自研管线（引擎）为准**
-                //   （引擎口径：Hable + `white=203nit`，且仅在出口语义本身是 HDR 时发 `intensity_target`）。
-                //   回落到传统管线后用的是 ffmpeg `tonemap=hable` 收满量程、SDR 出口不发 intensity_target
+                //   （引擎默认 Mobius + `white=203nit`，且仅在出口语义本身是 HDR 时发 `intensity_target`）；
+                //   2026-11-18 默认曲线由 Hable 切换为 Mobius。
+                //   回落到传统管线后用的是 ffmpeg `tonemap=mobius`、SDR 出口不发 intensity_target
                 //   ⇒ 同一份 HDR 源两条路**码值域稳定差 ~10 dB**（同路跨目标只差 ~30 dB，故这是契约不是色彩错误；
                 //   实测与推理见 `docs/COLOR_MATRIX_FIX_PLAN_2026-09-24.md` 的 #44 收口段末表格，任务 #55）。
                 //   既然定案"以自研为准"，这条差异就**不能静默发生** ⇒ 每次回退都点名。
@@ -1836,8 +1843,12 @@ namespace FfmpegGui.Services
             var intent = ColorMapping.ColorIntentFactory.FromOptions(item.Options, inputPath, out var why);
             if (intent == null)
             {
-                Log($"[色彩引擎] ❌ 选项→色彩意图装配失败：{why}\n");
-                return (true, 90, null);
+                // 2026-11-18：色彩意图装配失败（源 ICC/CICP 读不出、目标不可命名等）不再 exit 90。
+                // 维护者定案：这类色彩描述问题只警告，交给传统管线继续出图。
+                var warn = $"color intent assembly failed: {why}; falling back to the legacy chain (warning only)";
+                Log($"[色彩引擎] ⚠️ {warn}\n");
+                item.MarkWarning(warn);
+                return (false, 0, null);
             }
             foreach (var warning in intent.Warnings)
             {
@@ -1910,16 +1921,31 @@ namespace FfmpegGui.Services
             //   （"引擎产出正确但有损"对用户完全不可见）。格式与门禁断言逐字对齐，勿改前缀。
             if (plan.Verdict != null && plan.Verdict.Degradations.Count > 0)
                 foreach (var d in plan.Verdict.Degradations)
+                {
                     Log($"[色彩引擎] ⚠️ 降级（{d.Code}）：{d.Text}\n");
+                    // 2026-11-18：降级/不确定项同时把条目标黄（GUI 的“仅显示警告”勾选据此筛选）。
+                    item.MarkWarning($"{d.Code}: {d.Text}");
+                }
             if (!plan.IsOk)
             {
-                Log("[色彩引擎] ❌ 契约拒绝（不出产物）\n");
+                // 显式输出矩阵冲突是**用户显式选择的结构性不可能**，保留既有 fail-closed 契约
+                //（verify-color-out-matrix 的 C/D 组逐字锁）。其余色彩计划拒绝（源 ICC/CICP
+                // 读不出、不可矩阵化、容器无法标注等）按 2026-11-18 维护者定案降级为警告，
+                // 交回传统管线继续出图，不再 exit 91 / 零产物。
+                if (plan.OutMatrixVerdict == ColorMapping.OutMatrixCapability.Rejected)
+                {
+                    Log("[色彩引擎] ❌ 显式输出矩阵契约拒绝（不出产物）\n");
+                    if (!string.IsNullOrWhiteSpace(plan.Advice)) Log($"[色彩引擎]    建议：{plan.Advice}\n");
+                    LogAlternatives(Log, plan.Verdict?.Alternatives);
+                    return (true, 91, null);
+                }
+                var warn = $"color plan rejected ({plan.Reason}); falling back to the legacy chain "
+                         + "(warning only, no product blocked)";
+                Log($"[色彩引擎] ⚠️ {warn}\n");
                 if (!string.IsNullOrWhiteSpace(plan.Advice)) Log($"[色彩引擎]    建议：{plan.Advice}\n");
-                // ⚠ Reject 的 `Advice` 是**自由文本**（保留兼容既有日志/门禁），
-                //   `Verdict.Alternatives` 才是**结构化**替代路径（稳定 `AlternativeKind`）。
-                //   两者都打：前者给人读，后者供门禁/GUI 判定（规划 §6.4「不用自由文本当判据」）。
                 LogAlternatives(Log, plan.Verdict?.Alternatives);
-                return (true, 91, null);
+                item.MarkWarning(warn);
+                return (false, 0, null);
             }
 
             if (!plan.GainMap
@@ -2047,6 +2073,34 @@ namespace FfmpegGui.Services
             var args = FfmpegCommandBuilder.BuildArguments(opts, input, output);
             LogInjectedScale(item, args);      // 扩展 ③：缩了要让用户看得见
             return args;
+        }
+
+        /// <summary>
+        /// ICC 不可读**警告**（2026-11-18 起不再拒绝）：显式 CarryIcc 且源 ICC 存在性不可判定时，
+        /// 不把“读不出”当成“源没有 ICC”，也不阻断产出；只在条目上标黄并在日志点名。
+        /// <para>只对“容器本来能携带 ICC”的出口提示；GainMap / RAW / 非 CarryIcc 由其既有路径处理。</para>
+        /// </summary>
+        private static void WarnCarryIccUnreadable(QueueItem item)
+        {
+            if (item.Options.ColorStrategy != ColorStrategy.CarryIcc) return;
+            if (item.Options.JpegGainMap) return;
+            if (RawService.IsRawFile(item.InputPath)) return;
+
+            var caps = ColorMapping.ColorMappingEngine.CapsFor(item.Options.Format);
+            if (!caps.CanCarryArbitraryIcc) return;
+
+            // 生效策略才是真值（GainMap / HDR / 容器覆盖可能把 CarryIcc 改成别的策略）。
+            var effective = FfmpegCommandBuilder.EffectiveColorStrategy(item.Options, item.InputPath);
+            if (effective != ColorStrategy.CarryIcc) return;
+
+            var status = FfmpegCommandBuilder.ProbeInputIccStatus(item.InputPath);
+            if (status != ColorMapping.SourceIccStatus.Unreadable) return;
+
+            item.Log += "[color] WARN: source ICC presence is unreadable"
+                     + " (exiftool missing or read failed); continuing without an ICC claim\n";
+            item.Log += "[color] 警告：源 ICC 存在性不可判定（缺少 exiftool 或读取失败）"
+                     + "；按惯例继续，不携带源 ICC，任务不中断\n";
+            item.MarkWarning("source ICC unreadable; continuing with convention-based best effort");
         }
 
         /// <summary>
@@ -2703,7 +2757,7 @@ namespace FfmpegGui.Services
                     // PNG/APNG 走纯托管 iCCP 写入：不依赖 exiftool 的 Perl 运行时，
                     // 也避免同一目标上“恢复源 ICC / 嵌入标准 ICC”两个 exiftool 临时件互踩。
                     wExit = 0;
-                    item.Log += $"[色彩] 已由 PNG iCCP 写入标准 ICC（{(wantsGeneratedPlanIcc ? plan.IccPrimaries + "/" + plan.IccTrc : dec.OutPrimaries + "/" + dec.OutTrc)}），CICP 保留\n";
+                    item.Log += $"[色彩] 已由 PNG iCCP 写入标准 ICC（{(wantsGeneratedPlanIcc ? plan!.IccPrimaries + "/" + plan.IccTrc : dec!.OutPrimaries + "/" + dec.OutTrc)}），CICP 保留\n";
                 }
                 else
                 {
@@ -2960,8 +3014,9 @@ namespace FfmpegGui.Services
                 protectColorMetadata = false; // 允许完整元数据复制（含 ICC Profile）
             }
 
-            // ── 优先：exiftool ──
-            if (ExifToolService.IsAvailable)
+            // ── 优先：exiftool；缺失时按用户口径改用 ffmpeg（只提示缺工具，不标黄） ──
+            bool exifAvailable = ExifToolService.IsAvailable;
+            if (exifAvailable)
             {
                 try
                 {
@@ -3046,11 +3101,22 @@ namespace FfmpegGui.Services
                             //   旧形状判断把 legacy 直连 webp carry（用户要带源 P3 ICC，legacy 裁决却
                             //   选了"生成 BT.2020 ICC"且后置只在 engine 路径跑）误判成"自生成"⇒
                             //   既不回带源 ICC、也无后置落地 ⇒ 静默零标注（COLOR-07，广色域被按 sRGB 洗白）。
-                            bool sourceHasIcc = FfmpegCommandBuilder.ProbeInputIccDescriptor(item.InputPath) != null;
+                            var sourceIccStatus = FfmpegCommandBuilder.ProbeInputIccStatus(item.InputPath);
                             var outCaps = FfmpegGui.Services.ColorMapping.ColorMappingEngine.CapsFor(item.Options.Format);
-                            bool wantSourceIcc = FfmpegGui.Services.ColorMapping.IccCarryPolicy.ShouldCarrySourceIcc(
-                                Models.ColorStrategy.CarryIcc, sourceHasIcc,
+                            var carryOutcome = FfmpegGui.Services.ColorMapping.IccCarryPolicy.Decide(
+                                Models.ColorStrategy.CarryIcc, sourceIccStatus,
                                 outCaps.CanCarryArbitraryIcc, outCaps.CanHaveBothIccAndCicp);
+                            if (carryOutcome == FfmpegGui.Services.ColorMapping.IccCarryPolicy.CarryIccOutcome.FailClosed)
+                            {
+                                // 兼容旧枚举：Decide 已不再返回 FailClosed。万一未来回退，
+                                // 也只警告，不把任务打停。
+                                item.Log += "[metadata] 源 ICC 不可判定（exiftool 不可用或读取失败）⇒ 仅警告，继续\n";
+                                item.MarkWarning("source ICC unreadable; metadata restore continued");
+                                _onItemUpdated?.Invoke(item);
+                            }
+                            bool wantSourceIcc = carryOutcome
+                                is FfmpegGui.Services.ColorMapping.IccCarryPolicy.CarryIccOutcome.CarryIccOnly
+                                or FfmpegGui.Services.ColorMapping.IccCarryPolicy.CarryIccOutcome.CarryWithCicp;
                             // 源没有 ICC、只有 CICP 时，CarryIcc 计划会按源 CICP 生成标准 ICC
                             // （AttachIcc=true、IccPrimaries 非空、IccPath 为空）。这一格不能走
                             // “从源文件回带 ICC”的旧路径：源本来就没有 ICC，回带必然 NoWriteApplied，
@@ -3147,7 +3213,7 @@ namespace FfmpegGui.Services
                             var jfifRc = await ExifToolService.EnsureJfifHeaderAsync(
                                 outputPath, m => item.Log += m + "\n");
                             if (jfifRc == FfmpegGui.Services.ExifToolService.SkippedNoExiftool)
-                                item.Log += "[warn] JFIF 头这一步被跳过（exiftool 不可用）\n";
+                                item.Log += "[metadata] 未检测到 exiftool，JFIF 头这一步跳过\n";
                         }
                         item.Log += "[exiftool] 元数据恢复完成\n";
                         return;
@@ -3178,19 +3244,19 @@ namespace FfmpegGui.Services
             }
             else
             {
-                item.Log += "[warn] [metadata] exiftool 未检测到，使用 ffmpeg 回退方案恢复元数据\n";
+                item.Log += "[metadata] 未检测到 exiftool，改用 ffmpeg 恢复元数据\n";
             }
 
             // ── 回退：ffmpeg 重新封装 ──
-            // 仅在色彩不需要保护时才执行 ffmpeg 回退。
-            // ffmpeg -map_metadata 1 会从源文件映射全局元数据（可能含 ICC/色彩标签），
-            // 与用户手动指定的色彩参数或编码器嵌入的色彩信息可能冲突。
-            if (protectColorMetadata)
+            // exiftool 缺失时按用户口径必须走这条；色彩保护模式下只映射全局元数据，
+            // 不映射视频流色彩标签，避免把源 ICC/primaries 盖回已映射的像素。
+            // exiftool 可用但常规复制失败/异常时仍保持原来的“不静默改色彩”边界（上面已 return）。
+            if (protectColorMetadata && exifAvailable)
             {
-                item.Log += "[ffmpeg-meta] 已跳过回退（色彩保护模式）\n";
+                item.Log += "[ffmpeg-meta] 已跳过回退（exiftool 可用但色彩保护模式复制失败；不静默覆盖色彩）\n";
                 return;
             }
-            await RestoreMetadataViaFfmpegAsync(item, outputPath);
+            await RestoreMetadataViaFfmpegAsync(item, outputPath, protectColorMetadata);
         }
 
         /// <summary>
@@ -3231,8 +3297,7 @@ namespace FfmpegGui.Services
             if (!File.Exists(src)) return;
             if (!ExifToolService.IsAvailable)
             {
-                item.Log += "[exiftool] ⚠️ 未检测到 exiftool ⇒ 无法从源 RAW 补回拍摄字段（拍摄时间 DateTimeOriginal/CreateDate、镜头型号等仍会缺失）\n";
-                item.MarkWarning("exiftool not found; RAW capture fields were not restored");
+                item.Log += "[metadata] 未检测到 exiftool；RAW 拍摄字段（DateTimeOriginal/CreateDate、镜头型号等）没有替代恢复通路\n";
                 return;
             }
 
@@ -3259,7 +3324,8 @@ namespace FfmpegGui.Services
         /// 使用 ffmpeg 重新封装来恢复元数据：以目标文件的像素流为基础，
         /// 从源文件映射元数据，输出到临时文件后原子替换。
         /// </summary>
-        private async Task RestoreMetadataViaFfmpegAsync(QueueItem item, string outputPath)
+        private async Task RestoreMetadataViaFfmpegAsync(QueueItem item, string outputPath,
+            bool protectColorMetadata)
         {
             // 使用带正确扩展名的临时文件路径，确保 ffmpeg 可以自动识别输出格式
             var tempPath = Path.Combine(PlatformServices.GetTempDir(),
@@ -3274,9 +3340,10 @@ namespace FfmpegGui.Services
                 //   -i inputPath   (map_metadata 1 = 源文件的元数据)
                 //   -c copy        (不解码，直接复制码流)
                 //   -map_metadata 1 (从第二个输入映射全局元数据)
-                //   -map_metadata:s:v 1:s:v (从第二个输入映射视频流元数据)
+                //   色彩保护模式下**不**映射 `-map_metadata:s:v 1:s:v`（避免把源 ICC/primaries 盖回已映射的像素）
                 var ffArgs = $"-y -i \"{outputPath}\" -i \"{item.InputPath}\" " +
-                             $"-map 0 -map_metadata 1 -map_metadata:s:v 1:s:v " +
+                             $"-map 0 -map_metadata 1 " +
+                             (protectColorMetadata ? "" : "-map_metadata:s:v 1:s:v ") +
                              $"-c copy \"{tempPath}\"";
 
                 item.Log += $"[ffmpeg-meta] ffmpeg {ffArgs}\n";
@@ -3292,6 +3359,20 @@ namespace FfmpegGui.Services
 
                 if (exitCode == 0 && File.Exists(tempPath))
                 {
+                    // P0：ffmpeg 双输入对 JPEG 的 EXIF/GPS/XMP（APP1/APP13）并不可靠——实测
+                    // `-map_metadata 1` / `-map_metadata:s:v 1:s:v` 都可能 exit 0 但产物仍无 EXIF。
+                    // 先做一次“源有描述性元数据、临时产物没有”的回读；不成立就不替换，
+                    // 避免把“exit 0”写成“元数据已恢复”的假完成。
+                    bool sourceHadDescriptive = HasDescriptiveMetadata(item.InputPath);
+                    bool tempHasDescriptive = HasDescriptiveMetadata(tempPath);
+                    if (sourceHadDescriptive && !tempHasDescriptive)
+                    {
+                        item.Log += "[ffmpeg-meta] ffmpeg 回退未恢复描述性元数据（JPEG 的 EXIF/GPS/XMP 不能由第二输入可靠复制）；保持编码产物原样，不替换\n";
+                        TryCleanupTemp(tempPath);
+                        _onItemUpdated?.Invoke(item);
+                        return;
+                    }
+
                     // 单步替换（旧写法 File.Delete + File.Move 并不“原子”：Delete 之后 Move 失败 = 产物整个丢了）
                     try
                     {
@@ -3300,13 +3381,13 @@ namespace FfmpegGui.Services
                     }
                     catch (Exception ex)
                     {
-                        item.Log += $"[ffmpeg-meta] ⚠️ 文件替换失败（原产物保持原样，未被删除）: {ex.Message}\n";
+                        item.Log += $"[ffmpeg-meta] 文件替换失败（原产物保持原样，未被删除）: {ex.Message}\n";
                         TryCleanupTemp(tempPath);
                     }
                 }
                 else
                 {
-                    item.Log += $"[ffmpeg-meta] ffmpeg 重新封装失败 (退出码 {exitCode})，元数据可能丢失\n";
+                    item.Log += $"[ffmpeg-meta] ffmpeg 重新封装失败 (退出码 {exitCode})，元数据可能不完整\n";
                     TryCleanupTemp(tempPath);
                 }
             }
@@ -3320,6 +3401,32 @@ namespace FfmpegGui.Services
         private static void TryCleanupTemp(string path)
         {
             try { if (File.Exists(path)) File.Delete(path); } catch { }
+        }
+
+        /// <summary>
+        /// 轻量描述性元数据探针：只读文件头 2 MiB，识别 JPEG APP1 Exif/XMP/APP13、PNG tEXt/iTXt。
+        /// 这不是“完整解析”，只用于判断 ffmpeg 回退是否真的带回了可识别标签；不替代 exiftool 逐值回读。
+        /// </summary>
+        private static bool HasDescriptiveMetadata(string path)
+        {
+            try
+            {
+                if (!File.Exists(path)) return false;
+                using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+                var len = (int)Math.Min(fs.Length, 2 * 1024 * 1024);
+                var buf = new byte[len];
+                fs.ReadExactly(buf, 0, len);
+                var text = System.Text.Encoding.Latin1.GetString(buf);
+                return text.Contains("Exif\0\0", StringComparison.Ordinal)
+                    || text.Contains("http://ns.adobe.com/xap/1.0/", StringComparison.Ordinal)
+                    || text.Contains("Photoshop 3.0", StringComparison.Ordinal)
+                    || text.Contains("tEXt", StringComparison.Ordinal)
+                    || text.Contains("iTXt", StringComparison.Ordinal);
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         /// <summary>
@@ -3891,6 +3998,11 @@ namespace FfmpegGui.Services
                 item.Log += gmProgLv >= 0
                     ? $"[GainMap] JPEG progressive level -p {gmProgLv} (--jpeg-progressive={item.Options.JpegProgressiveId})\n"
                     : "[GainMap] JPEG progressive level: unspecified (cjpegli default)\n";
+                var gmMetadata = GainMapEncoder.ResolveMetadataForHdr(
+                    item.Options.JpegGainMapMetadata, GainMapEncoder.ContainerOf(outputPath), isHdrInput);
+                if (!string.Equals(gmMetadata, item.Options.JpegGainMapMetadata, StringComparison.Ordinal))
+                    item.Log += $"[GainMap] HDR source -> metadata carrier '{gmMetadata}'"
+                             + " (XMP hdrgm + ISO 21496-1; Ultra HDR viewer path)\n";
                 var ok = await GainMapEncoder.EncodeAsync(
                     pixels, width, height, outputPath,
                     hdrPeakNits: peakNits, sdrWhiteNits: GainMapEncoder.KSdrWhiteNits,
@@ -3904,7 +4016,7 @@ namespace FfmpegGui.Services
                     container: GainMapEncoder.ContainerOf(outputPath),
                     sourceBaseRaw: item.Options.GainMapSourceBaseRawForEncode,
                     inputIsSdrWhiteUnit: item.Options.GainMapInputIsSdrWhiteUnit,
-                    gainMapMetadata: item.Options.JpegGainMapMetadata,
+                    gainMapMetadata: gmMetadata,
                     sourceSpaceName: gp.SourceSpaceName,
                     primariesApproximated: gp.PrimariesApproximated);
 
@@ -4159,6 +4271,39 @@ namespace FfmpegGui.Services
                 var meta = FfmpegCommandBuilder.ProbeInputColorMetadata(item.InputPath,
                     s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ct);
                 var trc = (meta.colorTrc ?? "").Trim().ToLowerInvariant();
+
+                // T.832 的真实色彩标签先写：JxrEncApp 本身不写 ICC/PTM/COLOR_SPACE。
+                // 这一步与下面的 EXIF 描述是两套东西——EXIF 给普通读图器，PTM/ICC 给 JXR 解码器。
+                var jxrOut = new JxrMetadataWriter.OutputMetadata();
+                bool jxrHdr = trc is "smpte2084" or "pq" or "arib-std-b67" or "hlg";
+                if (jxrHdr)
+                {
+                    jxrOut.Primaries = MapJxrPrimaries(meta.colorPrimaries);
+                    jxrOut.Transfer = MapJxrTransfer(trc);
+                    jxrOut.Matrix = 0;
+                    jxrOut.FullRange = true;
+                }
+                else if ((meta.colorPrimaries is null or "" or "bt709")
+                         && (trc is "" or "iec61966-2-1" or "srgb"))
+                {
+                    jxrOut.ColorSpace = 1;
+                }
+                else
+                {
+                    jxrOut.Primaries = MapJxrPrimaries(meta.colorPrimaries);
+                    jxrOut.Transfer = MapJxrTransfer(trc);
+                    jxrOut.Matrix = 0;
+                    jxrOut.FullRange = true;
+                }
+                if (meta.iccDescriptor?.SourceIccPath is { Length: > 0 } iccPath && File.Exists(iccPath))
+                {
+                    try { jxrOut.IccBytes = File.ReadAllBytes(iccPath); } catch { }
+                }
+                if (JxrMetadataWriter.TryInject(outputPath, jxrOut, out var jxrErr))
+                    item.Log += "[jxr] T.832 色彩标签已写入（ICC/PTM/COLOR_SPACE）\n";
+                else
+                    item.MarkWarning($"JXR 出口色彩标签写入失败: {jxrErr}");
+
                 string desc = trc switch
                 {
                     "smpte2084" or "pq" => "HDR Rec.2100 PQ",
@@ -4578,7 +4723,8 @@ namespace FfmpegGui.Services
         /// </param>
         private async Task<(int exitCode, string status)> PipeFfmpegToCjxlAsync(QueueItem item, string outputPath,
             CancellationToken ct, FfmpegCommandBuilder.OutputColorDecision? pixelDecision = null,
-            string? pixelIccPath = null)
+            string? pixelIccPath = null, FfmpegCommandBuilder.ColorMetadata? sourceMeta = null,
+            bool pixelsAlreadyTarget = false)
         {
             var cjxlPath = CjxlService.DetectedPath;
             if (string.IsNullOrEmpty(cjxlPath))
@@ -4595,14 +4741,23 @@ namespace FfmpegGui.Services
             //  ② ppm/pam 的选择要看 alpha，而**改动前真正执行的那份 argv**（`PipeFfmpegToExternalEncoderAsync`
             //     内部自己拼的）恒按探测值选，展示用的那一份却用 hdrMeta（显式目标下恒 default=false ⇒ 只能显示
             //     ppm）⇒ 两处各拼一遍、显示与执行可以不一致。本次收敛成一次拼装（见下方 ffArgs）。
-            var inMeta = FfmpegCommandBuilder.ProbeInputColorMetadata(item.InputPath, PipeLog, ct);
+            var inMeta = sourceMeta ?? FfmpegCommandBuilder.ProbeInputColorMetadata(item.InputPath, PipeLog, ct);
             var autoColorSpace = string.IsNullOrWhiteSpace(item.Options.ColorSpace)
                 || item.Options.ColorSpace.Equals("auto", StringComparison.OrdinalIgnoreCase);
             var hdrMeta = autoColorSpace ? inMeta : default(FfmpegCommandBuilder.ColorMetadata);
 
             var dec = pixelDecision ?? FfmpegCommandBuilder.DecideOutputColor(item.Options, item.InputPath);
+            if (pixelsAlreadyTarget)
+            {
+                // JXR 旁路的 PAM 已经是**目标编码**（tone map / OETF 已做完）⇒ 管道里不能再按源链
+                // 转第二遍；只保留出口语义给 cjxl 打标，输入声明改成 PAM 的真实编码（目标）。
+                dec.PixelChains.Clear();
+                dec.DeclPrimaries = dec.OutPrimaries;
+                dec.DeclTrc = dec.OutTrc;
+                dec.DeclMatrix = "gbr";
+            }
             // 改道判据与插点 B 同一条：链非空（要转像素）且出口语义落得进 cjxl 的 color_space 枚举。
-            var cjxlSpace = dec.PixelChains.Count > 0
+            var cjxlSpace = (dec.PixelChains.Count > 0 || pixelsAlreadyTarget)
                 ? ColorEncodingHelper.MapPrimariesTransfer(dec.OutPrimaries, dec.OutTrc)
                 : null;
 
@@ -4633,9 +4788,17 @@ namespace FfmpegGui.Services
                 var chain = $"\"{string.Join(",", dec.PixelChains)}\"";
                 // 最长边限制插在**链首色彩变换之前**（R1 顺序判据与 `BuildPipeColorArgs` 共用同一份实现）
                 var scaleFilter = FfmpegCommandBuilder.BuildMaxDimensionScaleFilter(item.Options, item.InputPath);
-                if (!string.IsNullOrEmpty(scaleFilter))
-                    chain = FfmpegCommandBuilder.InsertScaleFilterAtChainHead(chain, scaleFilter);
-                outArgs += FfmpegCommandBuilder.ChainArgsFromDecision(item.InputPath, dec, chain) + " ";
+                if (dec.PixelChains.Count > 0)
+                {
+                    if (!string.IsNullOrEmpty(scaleFilter))
+                        chain = FfmpegCommandBuilder.InsertScaleFilterAtChainHead(chain, scaleFilter);
+                    outArgs += FfmpegCommandBuilder.ChainArgsFromDecision(item.InputPath, dec, chain) + " ";
+                }
+                else if (!string.IsNullOrEmpty(scaleFilter))
+                {
+                    // 像素已是目标编码（JXR 直通 PAM）：没有色彩链，但缩放仍要生效；空 `-vf ""` 会让 ffmpeg 直接退出。
+                    outArgs += $"-vf \"{scaleFilter}\" ";
+                }
 
                 var pipeVcodec = inMeta.hasAlpha ? "pam" : "ppm";
                 ffArgs = $"-y {inArgs}-i \"{item.InputPath}\" {outArgs}-compression_level 0 "
@@ -5831,7 +5994,50 @@ namespace FfmpegGui.Services
                 //   `JXRTestBmp.c` 的 WriteBMPHeader 尾支、`-c 0` 臂撞 `JXRGluePFC.c:2291`，**两臂同报
                 //   WMP_errUnsupportedFormat(-106)**；旧日志那句「scRGB→sRGB 转换完成」在该通路上
                 //   压根没调转换函数（属误导，本批一并撤）。⇒ 先走高位深直通臂，失败才回旧两臂。
-                var (highPrecisionPath, hpChannels, tryBlindArms) = await TryJxrHighPrecisionAsync(item, jxrDecPath, tempDir, ct);
+                var jxrContent = JxrContentProbe.IsJxrPath(item.InputPath)
+                    ? JxrContentProbe.Probe(item.InputPath)
+                    : null;
+                if (jxrContent != null)
+                {
+                    item.Log += "[jxr-content] " + jxrContent.ToJson() + "\n";
+                    if (jxrContent.Warnings.Count > 0)
+                    {
+                        var warn = "JXR: " + string.Join(",", jxrContent.Warnings);
+                        item.Log += "[jxr-content] 警告: " + warn + "\n";
+                        item.MarkWarning(warn);
+                    }
+                    if (!jxrContent.Ok)
+                        item.MarkWarning("JXR 容器识别失败，已回退 exiftool/ffprobe");
+                    else if (jxrContent.IccStatus == ColorMapping.SourceIccStatus.Unreadable)
+                        item.MarkWarning("JXR ICC 存在但不可解析，按裸 PTM/默认语义继续");
+                    else if (jxrContent.PixelFormat.Family is not "RGB")
+                        item.MarkWarning($"JXR 内容为 {jxrContent.PixelFormat.Family}，RGB 色彩引擎未覆盖");
+                }
+                var jxrMeta = jxrContent is { Ok: true }
+                    ? FfmpegCommandBuilder.BuildJxrColorMetadata(jxrContent)
+                    : (FfmpegCommandBuilder.ColorMetadata?)null;
+                var jxrDecision = jxrContent is { Ok: true }
+                    ? FfmpegCommandBuilder.DecideOutputColor(item.Options, item.InputPath)
+                    : (FfmpegCommandBuilder.OutputColorDecision?)null;
+                string? jxrIccPath = null;
+                if (jxrDecision?.AttachIcc == true && jxrContent?.IccBytes is { Length: > 0 })
+                {
+                    jxrIccPath = Path.Combine(tempDir, "source.jxr.icc");
+                    File.WriteAllBytes(jxrIccPath, jxrContent.IccBytes);
+                }
+                var hpOutcome = await TryJxrHighPrecisionAsync(item, jxrDecPath, tempDir, jxrContent, ct);
+                if (jxrDecision is { } jd && hpOutcome.Plan is { } jp)
+                {
+                    // 直通臂已把像素编成目标曲线（PQ/HLG 或 sRGB）⇒ cjxl 的出口标注必须取同一份计划，
+                    // 不能再让 PAM 上的旧决定把 PQ 产物标成 sRGB（否则播放器按 SDR 解读 = 过曝）。
+                    jd.OutPrimaries = jp.TargetPrimariesToken;
+                    jd.OutTrc = jp.TargetTrcToken;
+                    jd.TonemappedToSdr = !jp.TargetIsHdr;
+                    jd.PixelsUnchanged = false;
+                }
+                var highPrecisionPath = hpOutcome.PamPath;
+                var hpChannels = hpOutcome.Channels;
+                var tryBlindArms = hpOutcome.TryBlindArms;
                 string intermediatePath;
 
                 if (highPrecisionPath != null)
@@ -5877,12 +6083,12 @@ namespace FfmpegGui.Services
                         {
                             item.Log += $"[jxr]   既有两臂均失败（退出码 {decExit}）⇒ 选臂提示缺席，逐档盲试直通臂\n";
                             _onItemUpdated?.Invoke(item);
-                            var (blindPam, blindCh) = await TryJxrBlindPassthroughAsync(item, jxrDecPath, tempDir, ct);
-                            if (blindPam != null)
+                            var blind = await TryJxrBlindPassthroughAsync(item, jxrDecPath, tempDir, ct);
+                            if (blind.PamPath != null)
                             {
-                                highPrecisionPath = blindPam;
-                                hpChannels = blindCh;
-                                intermediatePath = blindPam;
+                                highPrecisionPath = blind.PamPath;
+                                hpChannels = blind.Channels;
+                                intermediatePath = blind.PamPath;
                             }
                         }
                         if (highPrecisionPath == null)
@@ -5945,7 +6151,8 @@ namespace FfmpegGui.Services
                         (int exitCode, string status) pipeResult;
                         if (useCjxl)
                         {
-                            pipeResult = await PipeFfmpegToCjxlAsync(item, outputPath, ct);
+                            pipeResult = await PipeFfmpegToCjxlAsync(item, outputPath, ct, jxrDecision, jxrIccPath, jxrMeta,
+                                pixelsAlreadyTarget: true);
                             // item.Command 已由 PipeFfmpegToCjxlAsync 设置为实际命令（PPM/PAM 管道）
                         }
                         else
@@ -6004,7 +6211,7 @@ namespace FfmpegGui.Services
                 else if (targetFmt == "avif" && intermediateHasAlpha)
                 {
                     await ProcessJxrToAvifWithAlphaAsync(item, intermediatePath,
-                        highPrecisionPath != null, outputPath, ct);
+                        highPrecisionPath != null, outputPath, ct, jxrDecision, jxrIccPath, hpOutcome.Plan);
                 }
                 else if (useJxrEnc)
                 {
@@ -6047,6 +6254,8 @@ namespace FfmpegGui.Services
                         s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ct);
                     item.ExitCode = encExit;
                     item.Status = encExit == 0 ? "已完成 (JXR→重新编码→JXR)" : $"失败 (JxrEncApp 退出码 {encExit})";
+                    if (encExit == 0)
+                        WriteJxrOutputColorTags(item, outputPath, jxrDecision, jxrContent);
                 }
                 else
                 {
@@ -6057,6 +6266,13 @@ namespace FfmpegGui.Services
                     var ffmpegOpts = CloneOptionsForFfmpeg(item.Options);
                     // 确保 FFmpeg 使用正确的编码器
                     ffmpegOpts.EncoderBackend = EncoderBackend.Ffmpeg;
+                    if (hpOutcome.Plan is { TargetIsHdr: true } hdrPlan)
+                    {
+                        // PAM 已是目标曲线（PQ/HLG）⇒ 不告诉 ffmpeg 真源，它会把 PQ 码值当 sRGB 再转一遍。
+                        // 显式把输入/输出都钉成同一目标 token（BuildArguments 的输入声明走这一对字段）。
+                        ffmpegOpts.ColorPrimaries = hdrPlan.TargetPrimariesToken;
+                        ffmpegOpts.ColorTrc = hdrPlan.TargetTrcToken;
+                    }
                     var args = BuildArgsAndNote(item, ffmpegOpts, intermediatePath, outputPath);
                     item.Command = "ffmpeg " + args; item.Log += $"[cmd] ffmpeg {args}\n";
                     var ffExit = await FfmpegRunner.RunAsync(args,
@@ -6064,6 +6280,17 @@ namespace FfmpegGui.Services
                         AppSettingsService.Current.FfmpegPath, ct);
                     item.ExitCode = ffExit;
                     item.Status = ffExit == 0 ? $"已完成 (JXR→{Path.GetExtension(intermediatePath).TrimStart('.').ToUpperInvariant()}→ffmpeg {targetFmt})" : $"失败 (ffmpeg 退出码 {ffExit})";
+                    if (ffExit == 0 && targetFmt == "png" && hpOutcome.Plan is { TargetIsHdr: true } pngPlan
+                        && FfmpegCommandBuilder.TryGetCicpNumbers(pngPlan.TargetPrimariesToken, pngPlan.TargetTrcToken,
+                            out byte cp, out byte ctNum))
+                    {
+                        // ffmpeg 对已编码的 PAM 只能按帧标签猜；HDR 的 primaries 会掉回 bt709。
+                        // 像素已是目标曲线 ⇒ 用纯托管 cICP 后置把两个数钉成计划值（替换旧 cICP，不追加）。
+                        if (PngCicpService.TryInsertCicp(outputPath, cp, ctNum))
+                            item.Log += $"[jxr] PNG cICP 已按计划重写: primaries={cp}, transfer={ctNum}\n";
+                        else
+                            item.MarkWarning("JXR→PNG: cICP 后置写入失败");
+                    }
                 }
 
                 // ── 元数据恢复 ──
@@ -6093,7 +6320,8 @@ namespace FfmpegGui.Services
         /// 只有 JXR 旁路调用：这条路本来就不经色彩引擎，不存在绕过引擎的额外语义损失。
         /// </summary>
         private async Task ProcessJxrToAvifWithAlphaAsync(
-            QueueItem item, string intermediatePath, bool sixteenBit, string outputPath, CancellationToken ct)
+            QueueItem item, string intermediatePath, bool sixteenBit, string outputPath, CancellationToken ct,
+            FfmpegCommandBuilder.OutputColorDecision? decision, string? iccPath, JxrColorPlan? plan)
         {
             var avifencPath = PlatformServices.ResolveAvifencPath();
             if (avifencPath == null)
@@ -6132,6 +6360,14 @@ namespace FfmpegGui.Services
                 var threads = item.Options.Threads;
                 var avifArgs = $"-q {quality} -s {speed} -d {depth} -y 420";
                 if (threads >= 2) avifArgs += $" -j {threads}";
+                // PAM 已经把像素编成目标曲线；avifenc 不会从 PAM 收到 nclx/ICC ⇒ 显式写 CICP，
+                // 否则 HDR 产物会被默认标成 sRGB（用户看到的“过曝光 SDR”同源问题）。
+                var prim = plan?.TargetPrimariesToken ?? decision?.OutPrimaries;
+                var trc = plan?.TargetTrcToken ?? decision?.OutTrc;
+                if (FfmpegCommandBuilder.TryGetCicpNumbers(prim, trc, out byte cp, out byte ctNum))
+                    avifArgs += $" --cicp {cp}/{ctNum}/0";
+                if (iccPath != null && File.Exists(iccPath))
+                    avifArgs += $" --icc \"{iccPath}\"";
                 avifArgs += $" \"{pngPath}\" -o \"{Path.GetFullPath(outputPath)}\"";
                 item.Command = "avifenc " + avifArgs;
                 item.Log += $"[jxr→avif] Step 2: avifenc 编码（q={quality}, depth={depth}, 4:2:0 + alpha 辅助流）\n";
@@ -6188,9 +6424,10 @@ namespace FfmpegGui.Services
         /// （为什么必须有这一档，见 <see cref="JxrHighPrecisionDecode.BlindArmOrder"/> 的实测账）。
         /// 为什么必须有直通臂、以及各前提的实测依据，见 <see cref="JxrHighPrecisionDecode"/>。
         /// </summary>
-        private async Task<(string? pamPath, int channels, bool tryBlindArms)> TryJxrHighPrecisionAsync(
-            QueueItem item, string jxrDecPath, string tempDir, CancellationToken ct)
+        private async Task<JxrHighPrecisionOutcome> TryJxrHighPrecisionAsync(
+            QueueItem item, string jxrDecPath, string tempDir, JxrContentInfo? jxrContent, CancellationToken ct)
         {
+            var outcome = new JxrHighPrecisionOutcome();
             // ① 选臂**提示** = ffmpeg/libjxr 报出的 pix_fmt（实测三档互不相同：bgr24 / rgba64le / rgbaf16le）。
             // ⚠ 2026-10-29 实机改判：提示**缺席**不等于"源不是高位深"。这条通路的解码腿是 JxrDecApp（jxrlib），
             //   与 ffmpeg 有无 libjxr 无关；旧写法把一次仪器失败折算成一条内容结论（"不是高位深直通档"），
@@ -6228,18 +6465,32 @@ namespace FfmpegGui.Services
                           + "⇒ 不把『不知道』当成『不是高位深』\n";
             }
 
-            var arm = JxrHighPrecisionDecode.ChoosePassthroughArm(pixFmt);
+            var arm = jxrContent != null
+                ? JxrHighPrecisionDecode.ChoosePassthroughArm(jxrContent.PixelFormat)
+                : null;
+            if (arm != null)
+                item.Log += $"[jxr]   容器选臂: PIXEL_FORMAT={jxrContent!.PixelFormat.Mnemonic} ⇒ JxrDecApp -c {arm.Value}（不靠 ffprobe 猜）\n";
+            arm ??= JxrHighPrecisionDecode.ChoosePassthroughArm(pixFmt);
             if (arm == null)
             {
-                if (answered)
+                if (jxrContent != null)
+                    item.Log += $"[jxr]   容器 PIXEL_FORMAT={jxrContent.PixelFormat.Mnemonic} 不是可直通的高位 RGB 档 ⇒ 走既有 BMP/-c 0 通路\n";
+                else if (answered)
                     item.Log += $"[jxr]   源 pix_fmt={pixFmt} 不是高位深直通档 ⇒ 走既有 BMP/-c 0 通路\n";
                 else
                     item.Log += "[jxr]   选臂提示缺席 ⇒ 先走既有 BMP/-c 0 通路，其失败后逐档盲试直通臂\n";
-                return (null, 0, tryBlindArms: !answered);
+                outcome.TryBlindArms = jxrContent == null && !answered;
+                return outcome;
             }
 
-            var (hpPam, hpCh) = await TryJxrPassthroughArmAsync(item, jxrDecPath, tempDir, arm.Value, pixFmt, ct);
-            return (hpPam, hpCh, tryBlindArms: false);
+            var armResult = await TryJxrPassthroughArmAsync(
+                item, jxrDecPath, tempDir, arm.Value, pixFmt, jxrContent, ct);
+            outcome.PamPath = armResult.PamPath;
+            outcome.Channels = armResult.Channels;
+            outcome.PeakNits = armResult.PeakNits;
+            outcome.ToneMapped = armResult.ToneMapped;
+            outcome.Plan = armResult.Plan;
+            return outcome;
         }
 
         /// <summary>
@@ -6292,22 +6543,23 @@ namespace FfmpegGui.Services
             catch { return false; }
         }
 
-        private async Task<(string? pamPath, int channels)> TryJxrBlindPassthroughAsync(
+        private async Task<JxrHighPrecisionOutcome> TryJxrBlindPassthroughAsync(
             QueueItem item, string jxrDecPath, string tempDir, CancellationToken ct)
         {
             foreach (var arm in JxrHighPrecisionDecode.BlindArmOrder())
             {
                 if (ct.IsCancellationRequested) break;
-                var (pam, ch) = await TryJxrPassthroughArmAsync(item, jxrDecPath, tempDir, arm, null, ct,
+                var r = await TryJxrPassthroughArmAsync(item, jxrDecPath, tempDir, arm, null, null, ct,
                     rejectSuffix: "试下一档");
-                if (pam != null)
+                if (r.PamPath != null)
                 {
                     item.Log += $"[jxr]   盲试直通臂 -c {arm} 成立 ⇒ 高位深通路接管（探针未判定未被折算成『不是高位深』）\n";
-                    return (pam, ch);
+                    r.TryBlindArms = false;
+                    return r;
                 }
             }
-            item.Log += "[jxr]   ❌ 四档直通臂（-c 25/28/23/10）逐档都不成立 ⇒ 本件确实取不出高位帧（与『探针未判定』一并记为失败）\n";
-            return (null, 0);
+            item.Log += "[jxr]   ❌ 高位直通臂（-c 25/28/23/10/12/11/14/24/27）逐档都不成立 ⇒ 本件确实取不出高位帧（与『探针未判定』一并记为失败）\n";
+            return new JxrHighPrecisionOutcome { TryBlindArms = false };
         }
 
         /// <summary>探测 stderr 收成一行并限长，供任务日志引用原文（多行会把日志的按行判据搅乱）。</summary>
@@ -6322,8 +6574,9 @@ namespace FfmpegGui.Services
         /// 单个直通档的全流程：JxrDecApp 取帧 → 托管读高位 TIFF → 映射 → 16-bit PAM。
         /// 任何一环不成立都点名并返回 null（调用方据此换档或回旧臂）。
         /// </summary>
-        private async Task<(string? pamPath, int channels)> TryJxrPassthroughArmAsync(
-            QueueItem item, string jxrDecPath, string tempDir, int arm, string? pixFmtForLog, CancellationToken ct,
+        private async Task<JxrHighPrecisionOutcome> TryJxrPassthroughArmAsync(
+            QueueItem item, string jxrDecPath, string tempDir, int arm, string? pixFmtForLog,
+            JxrContentInfo? content, CancellationToken ct,
             string rejectSuffix = "回既有 BMP/-c 0 通路")
         {
             // ② 直通取帧：from==to ⇒ 不查 jxrlib 转换表 ⇒ 不会撞 -106，也不会在 jxrlib 里偷偷钳位。
@@ -6337,71 +6590,256 @@ namespace FfmpegGui.Services
             if (hpExit != 0 || !File.Exists(tifPath))
             {
                 item.Log += $"[jxr]   直通臂退出码 {hpExit} ⇒ {rejectSuffix}\n";
-                return (null, 0);
+                return new JxrHighPrecisionOutcome();
             }
 
             if (!JxrHighPrecisionDecode.TryReadTiff(tifPath, out var frame, out var readErr) || frame == null)
             {
                 item.Log += $"[jxr]   ❌ 高位 TIFF 拒读：{readErr} ⇒ {rejectSuffix}\n";
-                return (null, 0);
+                return new JxrHighPrecisionOutcome();
             }
 
-            // ③ tone-map 选择：本通路只认既有的 `reinhard`（它按线性 RGBA 交错实现）。
-            //    其余算子的语义是 PQ/HLG，吃线性 scRGB 是错的 ⇒ 按「选项未生效必须点名」的规矩播报。
-            var tm = (item.Options.ColorToneMap ?? "none").Trim().ToLowerInvariant();
-            bool useReinhard = tm == "reinhard";
-            if (!useReinhard && tm.Length > 0 && tm != "none")
-                item.Log += $"[jxr] ⚠ 源是线性 scRGB 浮点，`--color-tone-map {tm}` 是 PQ/HLG 域算子 ⇒ 本通路**不消费**该选项（未生效）\n";
-            if (useReinhard && !JxrHighPrecisionDecode.CanToneMap(frame))
-            {
-                item.Log += "[jxr] ⚠ 3 通道浮点帧不满足 Reinhard 算子的 RGBA 交错前提 ⇒ 本帧改走钳位出口\n";
-                useReinhard = false;
-            }
-            // 整数档（-c 23/10）的样本是**已编码值**，Reinhard 的线性域前提不成立 ⇒ 不允许在
-            // `map=` 读数里冒充"映射过"（否则门禁与用户看到的都是假话）。
-            if (useReinhard && frame.Kind == JxrSampleKind.UInt16)
-            {
-                item.Log += "[jxr] ⚠ 源是 16-bit **整数**档（已是编码值）⇒ Reinhard 的线性域前提不成立，本帧按原值搬运（选项未生效）\n";
-                useReinhard = false;
-            }
-
+            var plan = BuildJxrColorPlan(content, frame, item.Options, s => { item.Log += s; _onItemUpdated?.Invoke(item); });
             var pamPath = Path.Combine(tempDir, "decoded.pam");
             JxrFrameStats st;
             try
             {
-                st = JxrHighPrecisionDecode.EncodeToPam16(frame, pamPath, useReinhard);
+                st = JxrHighPrecisionDecode.EncodeToPam16(frame, pamPath, plan);
             }
             catch (Exception ex)
             {
                 item.Log += $"[jxr]   ❌ 高位帧映射异常（{ex.GetType().Name}: {ex.Message}）⇒ {rejectSuffix}\n";
-                return (null, 0);
+                return new JxrHighPrecisionOutcome();
             }
             if (!File.Exists(pamPath) || new FileInfo(pamPath).Length == 0)
             {
                 item.Log += $"[jxr]   ❌ 16-bit PAM 未产出 ⇒ {rejectSuffix}\n";
-                return (null, 0);
+                return new JxrHighPrecisionOutcome();
             }
             PlatformServices.MarkAsTemporaryFile(pamPath);
 
+            bool toneMapped = plan.Tone.Active && st.LinearPeak > 1.0001;
             // ④ 读数播报。`HP-METRICS` 那一行是**给门禁吃的 ASCII 键值缝**（判据不靠中文散文匹配），
             //    数字与中文行同源同一次计算 ⇒ 门禁验的就是用户看到的那份数。
             item.Log += $"[jxr]   高位帧 {frame.Width}x{frame.Height}/{frame.Channels}ch 类型={frame.Kind} " +
                         $"→ 16-bit PAM（{new FileInfo(pamPath).Length / 1024}KB）\n";
+            item.Log += "[jxr]   色彩计划: " + plan.Summary + "\n";
             item.Log += "[jxr]   HP-METRICS"
                       + $" size={frame.Width}x{frame.Height}"
                       + $" channels={frame.Channels}"
                       + $" kind={frame.Kind}"
                       + $" arm={arm}"
                       + $" peak={st.Peak.ToString("F4", System.Globalization.CultureInfo.InvariantCulture)}"
+                      + $" linear_peak={st.LinearPeak.ToString("F4", System.Globalization.CultureInfo.InvariantCulture)}"
+                      + $" peak_nits={st.PeakNits.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)}"
                       + $" overWhite={st.OverWhite}/{st.RgbSampleCount}"
                       + $" alphaMin={st.AlphaMin.ToString("F3", System.Globalization.CultureInfo.InvariantCulture)}"
                       + $" alphaMax={st.AlphaMax.ToString("F3", System.Globalization.CultureInfo.InvariantCulture)}"
-                      + $" map={(frame.Kind == JxrSampleKind.UInt16 ? "int-copy" : (useReinhard ? "reinhard" : "srgb-clamp"))}\n";
-            if (st.OverWhite > 0 && !useReinhard)
-                item.Log += "[jxr] ⚠ 未请求色调映射 ⇒ 高光在 1.0 处钳位（与 Windows 显示同口径）；要保高光请 `--color-tone-map reinhard`\n";
+                      + $" src={plan.SourceCurve.Name}"
+                      + $" dst={plan.TargetCurve.Name}"
+                      + $" tonemap={(plan.Tone.Active ? plan.Tone.Mode.ToString() : "none")}"
+                      + $" premul={(plan.SourcePremultiplied ? 1 : 0)}"
+                      + $" full={(plan.SourceFullRange ? 1 : 0)}"
+                      + $" map={(plan.IntCopy ? "int-copy" : plan.Tone.Mode switch { ToneMapMode.None => "encode", ToneMapMode.ReinhardSegmented => "reinhard", ToneMapMode.Hable => "hable", ToneMapMode.Mobius => "mobius", ToneMapMode.Bt2446A => "bt2446a", _ => plan.Tone.Mode.ToString() })}\n";
+            if (st.OverWhite > 0 && !toneMapped)
+                item.Log += "[jxr] ⚠ 高光 >1.0 且本次未执行 tone map（显式 none 或目标峰值不足）⇒ 高光在 1.0 处钳位；"
+                          + "要保高光请 `--color-tone-map mobius`（或让目标为 HDR 容器）\n";
             if (frame.Channels == 4 && st.AlphaMin < 0.999f)
                 item.Log += "[jxr] 注: 源 alpha 非恒定 ⇒ 已由 PAM 的 RGB_ALPHA 载体带到出口（出口容器能不能装 alpha 由既有能力层判）\n";
-            return (pamPath, frame.Channels);
+            if (content?.SpatialXformPrimary is > 0)
+                item.Log += $"[jxr] ⚠ SPATIAL_XFRM_PRIMARY={content.SpatialXformPrimary}（方向变换）本批未施加；以解码 TIFF 实际宽高为准\n";
+
+            return new JxrHighPrecisionOutcome
+            {
+                PamPath = pamPath, Channels = frame.Channels, PeakNits = st.PeakNits,
+                ToneMapped = toneMapped, Plan = plan,
+            };
+        }
+
+        /// <summary>
+        /// 用容器识别结果 + 用户目标构造 JXR 出口计划。JXR 的源曲线/源 nits 来自 PIXEL_FORMAT/ICC/PTM，
+        /// 目标曲线来自用户显式目标或容器能力；auto 只在这里做一次，不留给下游再猜。
+        /// </summary>
+        private static void WriteJxrOutputColorTags(QueueItem item, string path,
+            FfmpegCommandBuilder.OutputColorDecision? dec, JxrContentInfo? src)
+        {
+            string? prim = dec?.OutPrimaries;
+            string? trc = dec?.OutTrc;
+            if (string.IsNullOrWhiteSpace(prim)) prim = "bt709";
+            if (string.IsNullOrWhiteSpace(trc)) trc = "iec61966-2-1";
+
+            var meta = new JxrMetadataWriter.OutputMetadata();
+            bool hdr = trc is "smpte2084" or "arib-std-b67";
+            if (hdr)
+            {
+                meta.Primaries = MapJxrPrimaries(prim);
+                meta.Transfer = MapJxrTransfer(trc);
+                meta.Matrix = 0;                 // RGB 通道恒等
+                meta.FullRange = true;
+            }
+            else if (trc == "iec61966-2-1" && prim == "bt709")
+            {
+                meta.ColorSpace = 1;             // T.832 A.7.17：无 ICC 且整数 sRGB 的唯一正确声明
+            }
+            else
+            {
+                // 非 sRGB 的 SDR / 线性目标：PTM 至少不让读取端把 2020/P3 当 sRGB。
+                meta.Primaries = MapJxrPrimaries(prim);
+                meta.Transfer = MapJxrTransfer(trc);
+                meta.Matrix = 0;
+                meta.FullRange = true;
+            }
+            if (dec?.AttachIcc == true && src?.IccBytes is { Length: > 0 })
+                meta.IccBytes = src.IccBytes;
+
+            if (JxrMetadataWriter.TryInject(path, meta, out var err))
+                item.Log += $"[jxr-out] 色彩标签已写入（{(meta.IccBytes != null ? $"ICC {meta.IccBytes.Length}B " : "")}"
+                          + $"{(meta.ColorSpace.HasValue ? "COLOR_SPACE=1" : $"PTM {meta.Primaries}/{meta.Transfer}/{meta.Matrix}")}）\n";
+            else
+                item.Log += $"[jxr-out] ⚠ 色彩标签写入失败（{err}）⇒ 产物保持 JxrEncApp 的裸标签\n";
+        }
+
+        private static byte MapJxrPrimaries(string? p) => p switch
+        {
+            "bt709" => 1,
+            "bt470bg" => 5,
+            "smpte170m" => 6,
+            "bt2020" => 9,
+            "smpte432" => 12,
+            _ => 2,
+        };
+
+        private static byte MapJxrTransfer(string? t) => t switch
+        {
+            "bt709" => 1,
+            "linear" => 8,
+            "iec61966-2-1" => 13,
+            "smpte2084" => 16,
+            "arib-std-b67" => 18,
+            _ => 2,
+        };
+
+        private static JxrColorPlan BuildJxrColorPlan(
+            JxrContentInfo? content, JxrHighBitFrame frame, FfmpegOptions opts, Action<string> log)
+        {
+            bool knownContent = content is { Ok: true };
+            var srcCurve = knownContent && content!.Descriptor != null
+                ? content.Descriptor.Curve
+                : (frame.Kind == JxrSampleKind.UInt16 ? TransferCurve.Srgb : TransferCurve.Linear);
+            double srcNits = knownContent && content!.Descriptor != null
+                ? content.Descriptor.NitsOfLinearOne
+                : (srcCurve.Kind == TransferCurve.CurveKind.Pq ? 10000
+                    : srcCurve.Kind == TransferCurve.CurveKind.Hlg ? 1000 : 203);
+            bool srcHdr = srcCurve.Kind is TransferCurve.CurveKind.Pq or TransferCurve.CurveKind.Hlg
+                          || (knownContent && (content!.IsHdrNominal
+                                               || content.Descriptor?.Curve.Kind == TransferCurve.CurveKind.Linear))
+                          || (!knownContent && frame.Kind != JxrSampleKind.UInt16);
+
+            string fmt = (opts.Format ?? "").Trim().ToLowerInvariant();
+            string? trc = NormalizeAuto(opts.ColorTrc);
+            string? space = NormalizeAuto(opts.ColorSpace);
+            string tmRaw = (opts.ColorToneMap ?? "").Trim().ToLowerInvariant();
+            // 显式选曲线（reinhard/hable/mobius/bt2446a）就是“我要 SDR 映射”的用户意图；
+            // 只有显式 none 才是“保持 HDR、按 1.0 钳位”。auto 仍让 HDR 格式走 HDR 出口。
+            bool forceSdrByToneMap = opts.ColorToneMapExplicit && tmRaw.Length > 0 && tmRaw != "none" && tmRaw != "auto"
+                                     && trc == null && string.IsNullOrWhiteSpace(space);
+            string targetTrc;
+            if (trc != null)
+                targetTrc = trc;
+            else if (!string.IsNullOrWhiteSpace(space) && space.Contains("PQ", StringComparison.OrdinalIgnoreCase))
+                targetTrc = "smpte2084";
+            else if (!string.IsNullOrWhiteSpace(space) && space.Contains("HLG", StringComparison.OrdinalIgnoreCase))
+                targetTrc = "arib-std-b67";
+            else if (!string.IsNullOrWhiteSpace(space) && space.Contains("sRGB", StringComparison.OrdinalIgnoreCase))
+                targetTrc = "iec61966-2-1";
+            else if (!string.IsNullOrWhiteSpace(space) && space.Contains("P3", StringComparison.OrdinalIgnoreCase))
+                targetTrc = "iec61966-2-1";   // Display P3 是 SDR 具名空间；HDR P3 不在本产品下拉里
+            else if (forceSdrByToneMap)
+                targetTrc = "iec61966-2-1";
+            else if (srcHdr && fmt is "jxl" or "avif" or "png" or "apng" or "tiff" or "jxr")
+                targetTrc = srcCurve.Kind == TransferCurve.CurveKind.Hlg ? "arib-std-b67" : "smpte2084";
+            else
+                targetTrc = "iec61966-2-1";
+
+            var targetCurve = TransferCurve.ForCicpTransfer(targetTrc) ?? TransferCurve.Srgb;
+            double targetNits = targetCurve.Kind switch
+            {
+                TransferCurve.CurveKind.Pq => 10000,
+                TransferCurve.CurveKind.Hlg => 1000,
+                _ => 203,
+            };
+            bool targetSdr = targetCurve.Kind is not (TransferCurve.CurveKind.Pq or TransferCurve.CurveKind.Hlg);
+            string? targetPrim = NormalizeAuto(opts.ColorPrimaries);
+            if (string.IsNullOrWhiteSpace(targetPrim))
+            {
+                if (!string.IsNullOrWhiteSpace(space) && space.Contains("P3", StringComparison.OrdinalIgnoreCase))
+                    targetPrim = "smpte432";
+                else if (!string.IsNullOrWhiteSpace(space) && space.Contains("2020", StringComparison.OrdinalIgnoreCase))
+                    targetPrim = "bt2020";
+                else if (knownContent && content!.Descriptor?.PrimariesToken is { Length: > 0 } srcPrim)
+                    targetPrim = srcPrim;       // auto 的推荐策略是“带源色域”，不是无条件压回 bt709
+                else
+                    targetPrim = targetSdr ? "bt709" : "bt2020";
+            }
+            string targetTrcToken = targetCurve.Kind switch
+            {
+                TransferCurve.CurveKind.Pq => "smpte2084",
+                TransferCurve.CurveKind.Hlg => "arib-std-b67",
+                _ => targetTrc == "iec61966-2-1" ? "iec61966-2-1" : targetTrc,
+            };
+            if (!targetSdr) targetPrim = "bt2020";   // HDR 出口统一 BT.2020（P3/PQ 也归一到 2020）
+
+            var plan = new JxrColorPlan
+            {
+                SourceCurve = srcCurve,
+                SourceNitsOfLinearOne = srcNits,
+                SourceFullRange = content?.Ptm?.FullRange ?? true,
+                SourcePremultiplied = content?.PixelFormat.Premultiplied ?? false,
+                TargetCurve = targetCurve,
+                TargetNitsOfLinearOne = targetNits,
+                TargetIsHdr = !targetSdr,
+                TargetPrimariesToken = targetPrim,
+                TargetTrcToken = targetTrcToken,
+            };
+            plan.IntCopy = frame.Kind == JxrSampleKind.UInt16
+                           && srcCurve.Kind == TransferCurve.CurveKind.Parametric
+                           && targetCurve.Kind == TransferCurve.CurveKind.Parametric
+                           && targetTrc == "iec61966-2-1"
+                           && plan.SourceFullRange;
+
+            if (targetSdr && srcHdr)
+            {
+                var tm = (opts.ColorToneMap ?? "").Trim().ToLowerInvariant();
+                if (opts.ColorToneMapExplicit && tm == "none")
+                {
+                    plan.Tone.Mode = ToneMapMode.None;
+                    log("[jxr] ⚠ 显式 --color-tone-map none：HDR→SDR 不压高光，按 1.0 钳位（用户显式意图）\n");
+                }
+                else
+                {
+                    plan.Tone.Mode = tm switch
+                    {
+                        "reinhard" => ToneMapMode.ReinhardSegmented,
+                        "hable" => ToneMapMode.Hable,
+                        "mobius" or "" or "auto" => ToneMapMode.Mobius,
+                        "bt2446a" => ToneMapMode.Bt2446A,
+                        _ => ToneMapMode.Mobius,
+                    };
+                    if (tm is "bt2446a")
+                        log("[jxr] 注: BT.2446A 在引擎线性域执行，目标曲线只用于反推编码；与 ffmpeg 码域实现不逐位相同\n");
+                }
+            }
+            plan.Tone.SdrWhiteNits = 203;
+            plan.Tone.PeakNits = 203;
+            plan.Tone.MeasurePeak = true;
+            return plan;
+        }
+
+        private static string? NormalizeAuto(string? v)
+        {
+            if (string.IsNullOrWhiteSpace(v)) return null;
+            var t = v.Trim();
+            return t.Equals("auto", StringComparison.OrdinalIgnoreCase) ? null : t;
         }
 
         /// <summary>

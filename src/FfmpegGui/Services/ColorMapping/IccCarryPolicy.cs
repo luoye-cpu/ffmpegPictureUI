@@ -32,27 +32,47 @@ public static class IccCarryPolicy
         CarryIccOnly,
         /// <summary>回带源 ICC；容器允许 ICC+CICP 共存（png/avif）⇒ 双写（cICP 由各自后置步骤补）。</summary>
         CarryWithCicp,
+        /// <summary>
+        /// 历史 fail-closed 保留位，**不再由 Decide 返回**。2026-11-18 维护者定案：
+        /// 源 ICC 存在性不可判定只做警告，不阻断产出（避免坏 profile 把整条任务打停）。
+        /// </summary>
+        FailClosed,
     }
 
     /// <summary>
-    /// 本次出口是否应当回带/保留源 ICC。
+    /// 本次出口是否应当回带/保留源 ICC（三态版本；生产路径应优先使用它）。
+    /// <para>Unreadable 只回 <see cref="CarryIccOutcome.Skip"/>：不拿未读出的 ICC 冒充源描述，
+    /// 也不拒绝产出；警告由调用方按「源 ICC 未验证」登记。</para>
     /// </summary>
-    /// <param name="declared">用户声明的策略（只对显式 <see cref="ColorStrategy.CarryIcc"/> 成立）。</param>
-    /// <param name="sourceHasIcc">源文件是否真有内嵌 ICC（false ⇒ 无可携带，由 iccgen/命名生成）。</param>
-    /// <param name="containerCanCarryIcc">容器+本出口执行体能否写入 ICC。</param>
-    /// <param name="containerCanBothIccAndCicp">容器能否同时写 ICC 与 CICP（png/avif=true；webp/jpg/jxl=false）。</param>
     public static CarryIccOutcome Decide(
-        ColorStrategy declared, bool sourceHasIcc,
+        ColorStrategy declared, SourceIccStatus sourceIccStatus,
         bool containerCanCarryIcc, bool containerCanBothIccAndCicp)
     {
-        if (declared != ColorStrategy.CarryIcc || !sourceHasIcc || !containerCanCarryIcc)
+        if (declared != ColorStrategy.CarryIcc) return CarryIccOutcome.Skip;
+        if (sourceIccStatus == SourceIccStatus.Unreadable) return CarryIccOutcome.Skip;
+        if (sourceIccStatus != SourceIccStatus.Present || !containerCanCarryIcc)
             return CarryIccOutcome.Skip;
         return containerCanBothIccAndCicp ? CarryIccOutcome.CarryWithCicp : CarryIccOutcome.CarryIccOnly;
     }
 
+    /// <summary>兼容旧调用：bool 只能表达“有/无”，无法表达 Unreadable；新代码改用三态重载。</summary>
+    public static CarryIccOutcome Decide(
+        ColorStrategy declared, bool sourceHasIcc,
+        bool containerCanCarryIcc, bool containerCanBothIccAndCicp)
+        => Decide(declared,
+            sourceHasIcc ? SourceIccStatus.Present : SourceIccStatus.Absent,
+            containerCanCarryIcc, containerCanBothIccAndCicp);
+
     /// <summary>是否回带源 ICC（<see cref="CarryIccOutcome.Skip"/> 以外的任一枚举）。</summary>
+    public static bool ShouldCarrySourceIcc(
+        ColorStrategy declared, SourceIccStatus sourceIccStatus,
+        bool containerCanCarryIcc, bool containerCanBothIccAndCicp)
+        => Decide(declared, sourceIccStatus, containerCanCarryIcc, containerCanBothIccAndCicp)
+            is CarryIccOutcome.CarryIccOnly or CarryIccOutcome.CarryWithCicp;
+
     public static bool ShouldCarrySourceIcc(
         ColorStrategy declared, bool sourceHasIcc,
         bool containerCanCarryIcc, bool containerCanBothIccAndCicp)
-        => Decide(declared, sourceHasIcc, containerCanCarryIcc, containerCanBothIccAndCicp) != CarryIccOutcome.Skip;
+        => Decide(declared, sourceHasIcc, containerCanCarryIcc, containerCanBothIccAndCicp)
+            is CarryIccOutcome.CarryIccOnly or CarryIccOutcome.CarryWithCicp;
 }

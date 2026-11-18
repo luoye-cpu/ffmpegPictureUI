@@ -56,7 +56,7 @@ public sealed class FormatColorCaps
     /// <para>
     /// ⚠ JPEG 族本身是 8-bit SDR 容器（<see cref="CanHdr"/> 未设 ⇒ false），但**开启 GainMap 后**
     /// 产物是 **Ultra HDR**（SDR 底片 + 增益层，ISO 21496-1 / XMP+MPF）⇒ **能表达 HDR**。
-    /// 不翻真会让 <c>ColorIntentFactory</c> 对 HDR 源走「容器装不下 ⇒ 自动 hable tonemap 降 SDR」
+    /// 不翻真会让 <c>ColorIntentFactory</c> 对 HDR 源走「容器装不下 ⇒ 自动 mobius tonemap 降 SDR」
     /// ⇒ **GainMap 出口白开**：用户开了增益图，却拿到一张纯 SDR（且没有任何点名）。
     /// </para>
     /// <para>
@@ -627,7 +627,7 @@ public static partial class ColorMappingEngine
         // 观感上等于降级（老查看器只认 ICC）—— 实测 verify-color-wiring 的 (2)(6) 两格因此转红。
         // ⚠ `CanHdr = true`（同日第三处修正）：PNG 经 **cICP** 就能承载 PQ/HLG（两条管线的
         // HDR→PNG 产物实测都写着 `smpte2084,bt2020`）。若误设 false，会连带触发
-        // `ColorIntentFactory` 的"HDR 源 + 容器不支持 HDR ⇒ 自动 hable tonemap" ⇒ 引擎把
+        // `ColorIntentFactory` 的"HDR 源 + 容器不支持 HDR ⇒ 自动 mobius tonemap" ⇒ 引擎把
         // HDR **降成 SDR**，而传统管线**保 HDR** ⇒ 两条管线对同一输入给出不同产物
         //（实测 recommended-hdr-png：引擎 53926B/ICC=True vs legacy 43821B/ICC=False）。
         ["png"]   = new() { Format = "png",   CanCarryArbitraryIcc = true,  CanGenerateIccFromCicp = true,  CanCicp = true, CanHdr = true, MaxBitDepth = 16, RgbNative = true,
@@ -809,13 +809,33 @@ public static partial class ColorMappingEngine
         p.DstCurve = dst.Curve;
         p.SrcCurve = src?.Curve;
 
-        // ── 源不可识别：绝不允许"猜一个色域写标签" ──
+        // ── 源不可识别 / ICC 存在但不可矩阵化：不拒绝，降级为“保留源 ICC 或原样输出 + 警告” ──
+        // 维护者定案（2026-11-18）：ICC 存在但求不出矩阵不是“任务不可做”，只说明本引擎做不了
+        // 这次映射。继续产出（能携带源 ICC 就携带，不能就无标注直通），并把原因条目标黄。
         if (src == null || !src.IsMappable)
         {
-            p.Action = ColorAction.Reject;
-            p.Reason = "源色彩无法确定（缺 ICC 且无 CICP 标签）→ 不映射、不写误导标签";
-            p.Advice = "为源文件指定色彩空间，或先由源携带 ICC";
-            p.Reason += Transfer709Note(policy, dst.TransferToken, p.Action, false);
+            p.Action = policy.Format.CanCarryArbitraryIcc && policy.ExitWritesIcc && src?.SourceIccPath != null
+                ? ColorAction.CarryIcc : ColorAction.None;
+            p.AttachIcc = p.Action == ColorAction.CarryIcc;
+            p.IccPath = p.AttachIcc ? src!.SourceIccPath : null;
+            p.OutPrimaries = p.OutTransfer = p.OutMatrix = null;
+            p.CicpUnavailable = CicpUnavailableReason.SpaceNotNameable;
+            p.Annot = p.AttachIcc ? AnnotChoice.IccOnly : AnnotChoice.None;
+            p.Reason = "源色彩无法确定或 ICC 存在但不可矩阵化 → 不改像素、不写误导标签；"
+                     + (p.AttachIcc ? "保留源 ICC" : "本次产物可能无色彩标注")
+                     + "（仅警告，不拒绝）";
+            p.Advice = "为源文件指定可矩阵化的色彩空间，或改用 PNG/TIFF/WebP/JXL 携带源 ICC";
+            p.Verdict = new ColorVerdict
+            {
+                Kind = VerdictKind.ProceedWithDegradation,
+                Action = p.Action,
+                Reason = p.Reason,
+                Advice = p.Advice,
+                Degradations = new[]
+                {
+                    new ColorDegradation(DegradationCodes.SourceColorUnmappable, p.Reason),
+                },
+            };
             return p;
         }
 
@@ -835,10 +855,31 @@ public static partial class ColorMappingEngine
         var m = src.MatrixTo(dst);
         if (m == null)
         {
-            p.Action = ColorAction.Reject;
-            p.Reason = $"无法求出 src→dst 矩阵（色度未知、矩阵奇异或白点不守恒 dev={src.LastRowSumDeviation:E1}）";
+            // 不拒绝：矩阵求不出（色度未知/奇异/白点不守恒）时保留源像素，
+            // 能携带源 ICC 就携带，不能就无标注直通；条目标黄说明目标未兑现。
+            p.Action = policy.Format.CanCarryArbitraryIcc && policy.ExitWritesIcc && src.SourceIccPath != null
+                ? ColorAction.CarryIcc : ColorAction.None;
+            p.AttachIcc = p.Action == ColorAction.CarryIcc;
+            p.IccPath = p.AttachIcc ? src.SourceIccPath : null;
+            p.OutPrimaries = p.OutTransfer = p.OutMatrix = null;
+            p.CicpUnavailable = CicpUnavailableReason.SpaceNotNameable;
+            p.Annot = p.AttachIcc ? AnnotChoice.IccOnly : AnnotChoice.None;
+            p.Reason = $"无法求出 src→dst 矩阵（色度未知、矩阵奇异或白点不守恒 dev={src.LastRowSumDeviation:E1}）"
+                     + " ⇒ 不改像素、不写误导标签；"
+                     + (p.AttachIcc ? "保留源 ICC" : "本次产物可能无色彩标注")
+                     + "（仅警告，不拒绝）";
             p.Advice = "改用可携带 ICC 的格式（PNG/TIFF/WebP/JXL），或补全色彩描述";
-            p.Reason += Transfer709Note(policy, dst.TransferToken, p.Action, false);
+            p.Verdict = new ColorVerdict
+            {
+                Kind = VerdictKind.ProceedWithDegradation,
+                Action = p.Action,
+                Reason = p.Reason,
+                Advice = p.Advice,
+                Degradations = new[]
+                {
+                    new ColorDegradation(DegradationCodes.SourceColorUnmappable, p.Reason),
+                },
+            };
             return p;
         }
         p.Matrix = MatrixIsIdentity(m) ? null : m;
@@ -873,15 +914,33 @@ public static partial class ColorMappingEngine
         {
             if (!policy.AllowApproximateCurve)
             {
-                // ⚠ 携带也要求**出口能写 ICC**：容器能带而本出口写不了（AVIF/ffmpeg）时，
-                //   "携带"只剩一句日志，产物照样没有色彩描述 ⇒ 只能拒绝。
-                p.Action = policy.Format.CanCarryArbitraryIcc && policy.ExitWritesIcc && src.SourceIccPath != null
-                    ? ColorAction.CarryIcc : ColorAction.Reject;
-                p.IccPath = p.Action == ColorAction.CarryIcc ? src.SourceIccPath : null;
-                p.Reason = "存在引擎无法精确表达的曲线（如 A2B/非中性 profile）→ " +
-                           (p.Action == ColorAction.CarryIcc ? "携带源 ICC，不动像素" : "拒绝（格式也不能带 ICC）");
-                p.Advice = p.Action == ColorAction.CarryIcc ? "" : "改用 PNG/TIFF/WebP/JXL 目标以携带 ICC";
-                p.Reason += Transfer709Note(policy, dst.TransferToken, p.Action, zimgExitApplied);
+                // ⚠ 不拒绝：曲线不可精确表达时保留源像素（能带源 ICC 就带），
+                // 条目标黄说明目标曲线未兑现。2026-11-18 维护者定案：ICC/CICP 问题只警告。
+                bool canCarry = policy.Format.CanCarryArbitraryIcc && policy.ExitWritesIcc
+                                && src.SourceIccPath != null;
+                p.Action = canCarry ? ColorAction.CarryIcc : ColorAction.None;
+                p.IccPath = canCarry ? src.SourceIccPath : null;
+                p.AttachIcc = canCarry;
+                p.Matrix = null;
+                p.NeedsCurveChange = false;
+                p.OutPrimaries = p.OutTransfer = p.OutMatrix = null;
+                p.CicpUnavailable = CicpUnavailableReason.SpaceNotNameable;
+                p.Annot = canCarry ? AnnotChoice.IccOnly : AnnotChoice.None;
+                p.Reason = "存在引擎无法精确表达的曲线（如 A2B/非中性 profile）→ "
+                         + (canCarry ? "携带源 ICC，不改像素" : "不改像素、不写误导标签")
+                         + "（仅警告，不拒绝）";
+                p.Advice = canCarry ? "" : "改用 PNG/TIFF/WebP/JXL 目标以携带 ICC";
+                p.Verdict = new ColorVerdict
+                {
+                    Kind = VerdictKind.ProceedWithDegradation,
+                    Action = p.Action,
+                    Reason = p.Reason,
+                    Advice = p.Advice,
+                    Degradations = new[]
+                    {
+                        new ColorDegradation(DegradationCodes.SourceColorUnmappable, p.Reason),
+                    },
+                };
                 return p;
             }
             p.Reason = "曲线不精确但策略允许近似（legacy 兼容路径）";

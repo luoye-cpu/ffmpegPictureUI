@@ -132,6 +132,25 @@ public static class GainMapEncoder
     public static bool MetadataWritesXmp(string? mode)
         => !string.Equals((mode ?? "").Trim().ToLowerInvariant(), "iso", StringComparison.Ordinal);
 
+    /// <summary>
+    /// HDR 源的 JPEG GainMap **自动承载**：请求为默认 `iso` 时升级为 `both`。
+    /// <para>
+    /// 只写 ISO 21496-1 的 JPEG 仍能被本程序自己的解码器读出，但不少 Ultra HDR 查看器只认
+    /// XMP `hdrgm` 承载（ISO-only 会表现成“有增益图但不显示 HDR”）。HDR 源开启 GainMap 是
+    /// “要看到 HDR”的明确意图 ⇒ 默认补上 XMP，同时保留 ISO，不改变显式选择 `xmp` 的行为。
+    /// </para>
+    /// <para>仅 JPEG 出口有效；AVIF/JXL 只有 ISO 承载，`both` 会在编码器入口按既有规则降级/拒绝。</para>
+    /// </summary>
+    public static string ResolveMetadataForHdr(string? requested, string container, bool isHdrInput)
+    {
+        var mode = string.IsNullOrWhiteSpace(requested) ? GainMapMetadataDefault : requested.Trim().ToLowerInvariant();
+        if (isHdrInput
+            && string.Equals(container, "jpeg", StringComparison.OrdinalIgnoreCase)
+            && string.Equals(mode, "iso", StringComparison.Ordinal))
+            return "both";
+        return mode;
+    }
+
     /// <summary>取值域单点裁决：合法返回 null，非法返回点名原因（CLI 与 UI 都问这里，不各自写 switch 表）。
     /// 注意这里**不判**组合合法性：`xmp` 与三通道不互斥——Ultra HDR v1.1 的 hdrgm 表没有通道数字段，
     /// 但逐通道参数恒相等时单值即适用全部通道（参考实现只拒"各通道参数不同"的 XMP 编码，

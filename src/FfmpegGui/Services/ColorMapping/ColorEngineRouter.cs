@@ -110,10 +110,11 @@ public static class ColorEngineRouter
     ///    传统管线是它的正常归属 ⇒ 记一条说明后继续走。
     ///    ⚠ 2026-09-17（cjxl 出口轮）更正：此处曾把「JXL 的 **Cjxl 后端子情形**」也列为不可走，
     ///      现已接入 ⇒ 不再是本条的举例（JXR/DNG/动画仍是）。
-    /// ⚠ **2026-09-27 维护者定案（任务 #55）**：HDR→SDR 的**色调映射契约以本引擎为准** —— 引擎走
-    ///    `Hable + white=203nit`，且只在出口语义本身是 HDR(PQ/HLG) 时发 `--intensity_target`；
-    ///    传统管线走 ffmpeg `tonemap=hable` 收满量程、SDR 出口不发 ⇒ 两路码值域稳定差 ~10 dB
-    ///    （取证 `tests/output/t44/`，登记在 `docs/COLOR_MATRIX_FIX_PLAN_2026-09-24.md` 的 #44 收口段末）。
+    /// ⚠ **2026-09-27 维护者定案（任务 #55）；2026-11-18 默认曲线改为 Mobius**：HDR→SDR 的
+    ///    **色调映射契约以本引擎为准** —— 引擎默认走 `Mobius + white=203nit`，且只在出口语义本身是
+    ///    HDR(PQ/HLG) 时发 `--intensity_target`；传统管线默认走 ffmpeg `tonemap=mobius`，SDR 出口不发
+    ///    ⇒ 两路码值域稳定差 ~10 dB（取证 `tests/output/t44/`，登记在 `docs/COLOR_MATRIX_FIX_PLAN_2026-09-24.md`
+    ///    的 #44 收口段末）。显式 `--color-tone-map hable` 仍按两路各自的 Hable 实现执行。
     ///    ⇒ 上面那条「默认 auto 时继续走传统管线」是**唯一允许的偏离口子**（只剩 DNG / 动画两种结构性
     ///    不在引擎出口的形态），且 `QueueProcessor` 现在必须**点名**这次偏离，不许静默。
     ///    ⚠ 不要拿"两路逐像素相同"当验收判据：HDR 源上它本就不成立（这是契约，不是回归）；

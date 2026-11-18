@@ -228,9 +228,23 @@ if ($null -ne $pTm) {
   if (Test-Path $rawT) {
     $b = [System.IO.File]::ReadAllBytes($rawT); $n = $b.Length / 8; $satT = 0
     for ($i = 0; $i -lt $n; $i++) { if ([System.BitConverter]::ToUInt16($b, $i * 8) -ge 65500) { $satT++ } }
-    Write-Host ("    [钉死白点的 R 像素] 默认档=$defaultSat  Reinhard档=$satT")
-    CK (($defaultSat -eq $expectOver) -and ($satT -le [int]($defaultSat / 4))) `
-       "② 对照臂有牙：钳位档 $defaultSat 个 R 钉死白点（==夹具奇数列 $($expectOver)），Reinhard 档只剩 $satT（≤ 1/4）⇒ 两档走的是不同分支"
+    # 显式 none 的 SDR 钳位对照：现在 auto→PNG 是 HDR(PQ) 出口，不能再拿它当“钳位档”。
+    $dirClamp = "$work/run_clamp"; New-Item -ItemType Directory -Force -Path $dirClamp | Out-Null
+    $rClamp = Exec $exe ('--headless -i "' + "$work/hp_f16.jxr" + '" -o "' + $dirClamp + '" --format png --color-space sRGB --color-tone-map none') "run_clamp"
+    $pClamp = Product $dirClamp @(".png")
+    $clampSat = -1
+    if ($null -ne $pClamp) {
+      $rawC = "$work/png_rgba_clamp.raw"
+      Exec $ff ('-y -hide_banner -loglevel error -i "' + $pClamp.FullName + '" -f rawvideo -pix_fmt rgba64le "' + $rawC + '"') "clampraw" | Out-Null
+      if (Test-Path $rawC) {
+        $bc = [System.IO.File]::ReadAllBytes($rawC); $satC = 0
+        for ($i = 0; $i -lt $bc.Length / 8; $i++) { if ([System.BitConverter]::ToUInt16($bc, $i * 8) -ge 65500) { $satC++ } }
+        $clampSat = $satC
+      }
+    }
+    Write-Host ("    [钉死白点的 R 像素] 显式none=$clampSat  Reinhard档=$satT")
+    CK (($clampSat -eq $expectOver) -and ($satT -le [int]($expectOver / 4))) `
+       "② 对照臂有牙：显式 none 钳位 $clampSat 个 R 钉死白点（==夹具奇数列 $($expectOver)），Reinhard 档只剩 $satT（≤ 1/4）⇒ 两档走的是不同分支"
   } else { CK $false "② Reinhard 档产物解不出裸流 ⇒ 对照无法判定" }
 } else { CK $false "② Reinhard 档无产物 ⇒ 对照无法判定" }
 
@@ -486,13 +500,11 @@ Write-Host ("  [⑨a] 提示在位: exit=" + $r7Hint.code + " " + $(if ($p7Hint)
 CK (($r7Hint.code -eq 0) -and ($null -ne $p7Hint)) "⑨a 对照臂成立：探针有答案时 half 档出件（这一条红了说明环境变了，不是本档要测的东西）"
 CK (($r7Blind.code -eq 0) -and ($null -ne $p7Blind)) `
    "⑨a **本档主判据**：探针不答时 half 档仍然出件（旧写法这里 exit=1、零产物）"
-CK ($r7Blind.text -match '源格式探测未判定') "⑨a 日志把失败记成「未判定」，不再记成「不适用」"
+CK ($r7Blind.text -match '\[jxr-content\]') "⑨a 容器探针不依赖 ffprobe：JXR 头里的 PIXEL_FORMAT 直接给出答案"
 CK ($r7Blind.text -notmatch '高位深直通臂不适用') "⑨a 旧措辞『⇒ 高位深直通臂不适用』0 命中（把仪器失败折算成内容结论的那句话已撤）"
-CK (($r7Blind.text -match 'ffprobe=') -and ($r7Blind.text -match 'Unrecognized option|Invalid data|Permission denied|No such file')) `
-   "⑨a 日志带出**哪份 ffprobe** 与它的 **stderr 原文**（过去读完即弃 ⇒ 三种病因无法分辨）"
-CK (($r7Blind.text -match 'Step 1\(高位深直通\)') -eq $false) "⑨a 探针不答时**不许**假装走了提示臂"
-CK (($r7Blind.text -match '盲试直通臂 -c 25 成立') -and ($r7Blind.text -match 'HP-METRICS')) `
-   "⑨a 盲试按顺序命中 -c 25 并接回高位深通路（指标行在场）"
+CK (($r7Blind.text -match 'Step 1\(高位深直通\)') -or ($r7Blind.text -match '容器选臂')) "⑨a 日志点名走的是容器选臂，不是假装 ffprobe 提示"
+CK ($r7Blind.text -match 'HP-METRICS') `
+   "⑨a 容器探针给出 PIXEL_FORMAT 后接回高位深通路（指标行在场）"
 $m7 = HpMetrics $r7Blind.text
 CK (($null -ne $m7) -and ($m7['arm'] -eq '25') -and ($m7['kind'] -eq 'HalfFloat16')) `
    "⑨a 指标行读数正确 arm=$($m7['arm']) kind=$($m7['kind'])"
@@ -518,7 +530,8 @@ $env:FFMPEGGUI_FFMPEG_DIR = $stubDir
 CK (($r7z.code -ne 0) -and ($null -eq (Product $dir7z @(".png")))) "⑨c 0 字节的件仍判失败且零产物（不许把坏件洗成绿）"
 CK (($r7z.text -match '源格式探测未判定') -and ($r7z.text -match 'Invalid data')) `
    "⑨c 失败原因写的是『未判定 + ffprobe 原文 Invalid data』，不是一句裸 exit"
-CK ($r7z.text -match '四档直通臂') "⑨c 四档盲试逐档试过并且承认全部不成立（而不是压根没试）"
+CK ($r7z.text -match '\[jxr-content\]') "⑨c 容器识别先答（0 字节/坏头会被点名），盲试只在容器不可读时接手"
+CK ($r7z.text -notmatch '四档直通臂') "⑨c 容器已判坏 ⇒ 不再用四档盲试假装还能救"
 CK ($r7z.text -notmatch '源载体是 0-bit') `
    "⑨c 不再把『探针没给位深』伪造成『源载体是 0-bit』这条内容属性"
 # ⚠ 还原探测环境：本节把 FFMPEGGUI_FFMPEG_DIR 指过桩件目录，不还原就会让后面的 ⑤/⑥/⑧

@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Text;
 using FfmpegGui.Services;
 using TC = FfmpegGui.Services.ColorMapping.TransferCurve;   // 色彩映射引擎的曲线表（P1）
@@ -59,6 +60,8 @@ namespace ServiceProbe
                 nitsOfLinearOne: FfmpegGui.Services.ColorMapping.TransferCurve.PqPeakNits);
             var prophoto = FfmpegGui.Services.ColorMapping.ColorSpaceDescriptor.FromNamedSpace("ProPhoto RGB");
             var adobe = FfmpegGui.Services.ColorMapping.ColorSpaceDescriptor.FromNamedSpace("Adobe RGB");
+            // 模拟“ICC 存在但只有 LUT/A2B，没有可逆 RGB→XYZ 矩阵”的描述符。
+            var lutOnly = new CS { Name = "LUT-only ICC", Curve = TC.Srgb };
 
             Check(srgb != null && p3 != null && rec2020 != null && pq2020 != null && prophoto != null && adobe != null,
                 "全部测试描述符可构造");
@@ -77,7 +80,20 @@ namespace ServiceProbe
                 FfmpegGui.Services.ColorMapping.ColorBackend.InProcess, true, prophoto, srgb);
             Case("Adobe(γ2.2)→BT.2020 不可命名→H1", FfmpegGui.Services.ColorMapping.ColorAction.Map,
                 FfmpegGui.Services.ColorMapping.ColorBackend.InProcess, true, adobe, rec2020);
-            Case("源不可识别→拒绝", FfmpegGui.Services.ColorMapping.ColorAction.Reject, null, false, null, srgb);
+            // 2026-11-18 维护者定案：源不可识别 / ICC 存在但不可矩阵化 ⇒ 只警告，不再 Reject。
+            // 计划降级为 None（不改像素、不写误导标签），撤销 2026-11-18 之前的 fail-closed 断言。
+            Case("源不可识别→降级不映射（警告）", FfmpegGui.Services.ColorMapping.ColorAction.None, null, false, null, srgb);
+            var pUnk = FfmpegGui.Services.ColorMapping.ColorMappingEngine.Plan(null, srgb, pol);
+            Check(pUnk.Verdict?.Kind == VK.ProceedWithDegradation
+                  && pUnk.Verdict.Degradations.Any(d => d.Code == DG.SourceColorUnmappable),
+                $"源不可识别应登记 SourceColorUnmappable 警告（实为 {pUnk.Verdict?.Kind}/{pUnk.Verdict?.Degradations.Count} 条）");
+
+            // ICC 存在但不可矩阵化：同样只警告、不拒绝（保留源像素；无可携带 ICC 时无标注直通）。
+            Case("ICC不可矩阵化→降级不映射（警告）", FfmpegGui.Services.ColorMapping.ColorAction.None, null, false, lutOnly, srgb);
+            var pLut = FfmpegGui.Services.ColorMapping.ColorMappingEngine.Plan(lutOnly, srgb, pol);
+            Check(pLut.Verdict?.Kind == VK.ProceedWithDegradation
+                  && pLut.Verdict.Degradations.Any(d => d.Code == DG.SourceColorUnmappable),
+                $"LUT-only ICC 应登记 SourceColorUnmappable 警告（实为 {pLut.Verdict?.Kind}/{pLut.Verdict?.Degradations.Count} 条）");
 
             // 无目标：不改像素，沿用源描述
             var pAuto = FfmpegGui.Services.ColorMapping.ColorMappingEngine.Plan(srgb, null, pol);

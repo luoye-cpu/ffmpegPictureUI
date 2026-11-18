@@ -698,7 +698,7 @@ CK ($synRejectBad.Count -eq 0) ("拒绝判据自测：$($synRejectCases.Count) �
 #   补的首先是**通路**覆盖（两条执行路必须被同一把尺子量），格式轴只是给那把尺子多两处能落地的地方：
 #   容器面已由 {jxl,jxr}=24 格扩到 {jxl,jxr,png,tiff}=48 格（任务 #50 缺口②，扩的理由见下面 6c 中段）。
 # ⚠ 像素判据**只用 SDR 源**、HDR 源不跨路比像素：HDR→SDR 两路的**色调映射契约本就不同**
-#   （legacy=ffmpeg `tonemap=hable` 收在满量程、不发 intensity_target；engine=进程内内核按 203nit 白
+#   （legacy=ffmpeg `tonemap=mobius`、不发 intensity_target；engine=进程内内核按 203nit 白
 #    + `--intensity_target=1000`）⇒ 同目标稳定差 ~10 dB，而**同路跨目标只差 ~30 dB**
 #   （实测与推理过程见 `docs/COLOR_MATRIX_FIX_PLAN_2026-09-24.md` 的 #44 段末）。拿跨路 PSNR 判 HDR 格
 #   等于把"两路算子分歧"当色彩缺陷钉 —— 那是另一条待决的账（任务 #55：tone-map 白点/峰值契约），不是这里的。

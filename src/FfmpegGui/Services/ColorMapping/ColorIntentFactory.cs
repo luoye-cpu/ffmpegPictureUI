@@ -76,10 +76,9 @@ public static class ColorIntentFactory
         //       ② 无 ICC / 无标签的源在引擎里只能落到「惯例假定 sRGB」（置信度 CodecDefault），
         //          而 CodecDefault 被规划层的置信度闸门挡住不许改像素 ⇒ 用户即便知道源是 P3 也无从表达。
         //          外部 ICC 的置信度是 IccMetric（最高）⇒ 映射被放行。
-        // ⚠ **不把外部 ICC 当作 SourceIccPath 往下传**：SourceIccPath 会触发「携带源 ICC」类计划
-        //   （CarryIcc / SetLabelsFrom 的 preferCarry），而队列侧目前只对**源文件内嵌**的 ICC 做附着，
-        //   外部 ICC 文件不会被嵌入 ⇒ 会留下「计划说携带了 ICC、产物里其实没有」的静默失配。
-        //   因此这里只取其**度量结果**（色度矩阵 + 曲线 + 命名空间）作为源描述符，ICC 的落盘归属另说。
+        // ⚠ 外部 ICC 的 SourceIccPath 归属：显式 `--icc-file` 是用户提供的稳定文件路径，
+        //   会作为 CarryIcc 的携带源；这里不再把它排除在 SourceIccPath 之外（旧注释已过期）。
+        //   ICC 落盘失败/格式不可携带时，规划层按 SourceColorUnmappable 降级为“只警告、不拒绝”。
         if (!string.IsNullOrWhiteSpace(o.IccFilePath))
         {
             try
@@ -93,15 +92,33 @@ public static class ColorIntentFactory
                         // 2026-11-15 收口：外部 ICC 不再只用于“判定源空间”。用户显式给出
                         // `--icc-file` 时把它作为可携带的源 ICC，让 CarryIcc/标准空间改写
                         // 与内嵌源 ICC 走同一条路径；文件是用户提供的稳定路径，不按临时件回收。
-                        // 同时先做 v4.4 + ProfileID 归一；未知/不可重建时保留原文件，交给规划层
-                        // 按其既有 fail-closed 口径处理，不把一个坏 profile 变成默认 sRGB。
+                        // 同时先做 v4.4 + ProfileID 归一；未知/不可重建时保留原文件，
+                        // 2026-11-18 起只警告、不拒绝（规划层按 SourceColorUnmappable 降级）。
                         var portable = IccProfileService.NormalizeSourceIccToV44(o.IccFilePath);
                         src.SourceIccPath = portable ?? o.IccFilePath;
                         src.Name = $"{src.Name} [--icc-file]";
                     }
+                    else
+                    {
+                        intentWarnings.Add(
+                            "external ICC file is valid but has no matrix/curve descriptor; "
+                            + "ignoring it and continuing with source/convention (possible misidentification)");
+                    }
+                }
+                else
+                {
+                    intentWarnings.Add(
+                        "external ICC file is not a valid ICC profile; ignoring it and continuing "
+                        + "with source/convention (possible misidentification)");
                 }
             }
-            catch { /* 外部 ICC 不可读/不可解析：退回源内嵌 ICC 与标签路径（不静默改用近似空间） */ }
+            catch (Exception ex)
+            {
+                // 外部 ICC 不可读/不可解析：只警告，不拒绝；退回源内嵌 ICC 与标签路径。
+                intentWarnings.Add(
+                    $"external ICC file could not be read ({ex.Message}); ignoring it and continuing "
+                    + "with source/convention (possible misidentification)");
+            }
         }
         // ── RAW 中间件：**本程序自己产出的文件，色彩语义是已知的**（2026-10-03 新增）──────────
         // 位置在 `--icc-file`（用户显式指定）之后、探测文件之前：用户意图优先，其次才是"我们知道自己写了什么"。
@@ -184,6 +201,15 @@ public static class ColorIntentFactory
         //     既有中文文案，而 `_probe-cjk-hardcode-scan.ps1` 的「C# UI 面」桶**按行计数、
         //     余量为 0** ⇒ 会当场顶成 834 > 833（本轮实测踩过，故记在此防重犯）。
         var srcNn = src!;
+        // 2026-11-18：源 ICC 字段存在但读不出/解析不了 ⇒ 只警告，不拒绝。
+        // 即使 CICP/惯例已给出一个可用描述符，“源里还有一份没读出来的 ICC”仍是
+        // 用户必须知道的不确定性；条目标黄，产物照常。
+        if (meta.iccStatus == SourceIccStatus.Unreadable && !meta.exifReadFailed)
+        {
+            intentWarnings.Add(
+                "source ICC exists but is unreadable; using CICP/convention as best effort "
+                + "(color may be misidentified)");
+        }
         if (meta.primariesApproximated)
         {
             intentWarnings.Add(
@@ -293,10 +319,15 @@ public static class ColorIntentFactory
             FixHdrNits(dst);
         }
 
+        var sourceIccStatus = srcNn.SourceIccPath is { Length: > 0 }
+            ? SourceIccStatus.Present
+            : meta.iccStatus;
+
         var it = new ColorIntent
         {
             Strategy = o.ColorStrategy,
             Source = src,
+            SourceIccStatus = sourceIccStatus,
             Target = dst,
             TargetExplicit = targetExplicit,
             Format = caps,
@@ -412,7 +443,7 @@ public static class ColorIntentFactory
         //   NitsOfLinearOne 对 linear 恒为 SDR 白点（PFM 契约 1.0=203），不能用它判 HDR。
         //   ⚠ 对 :369-419 守卫族的影响仅两处、都有实测背书：① :384 的拒绝门随 srcHdr 放行
         //     （= D4 本体：显式 tone-map 在线性 HDR 上不再 exit 90）；② :402 自动兜底**排除**
-        //     linear（见该处注释：纯 OETF 就是正确编码，自动挂 hable 会改显式 SDR 臂的既有
+        //     linear（见该处注释：纯 OETF 就是正确编码，自动挂 mobius 会改显式 SDR 臂的既有
         //     交付形态，§3f-5 码域分叉判据实测当场转红）。其余结论（GainMap 跳过门 /
         //     显式 none 不被兜底覆盖 / 兜底判据仍用 caps.CanHdr）逐字未动。
         bool srcLinearHdr = src.Curve.Kind is TransferCurve.CurveKind.Linear
@@ -475,19 +506,22 @@ public static class ColorIntentFactory
                  // ⚠ 2026-11-09（D3 修正）：线性 HDR **不进**这条自动兜底 —— linear 已在线性域，
                  //   「linear→SDR 出口」的正确编码就是**纯 OETF 曲线映射**（>1.0 段按容器钳制），
                  //   与 PQ/HLG「必须先 EOTF 线性化、不做 tonemap 就是高光裁剪灾难」的情况不同；
-                 //   自动挂 hable 会改变「显式 SDR 目标」臂的既有交付形态
+                 //   自动挂 mobius 会改变「显式 SDR 目标」臂的既有交付形态
                  //   （2026-11-09 实测：verify-gainmap-isobmff §3f-5 码域分叉判据当场转红，
                  //   SDR 臂 Ymax 被压 ⇒ 与 PQ 臂的差跌出阈值）。linear HDR 的默认档分流在
                  //   规划层 `PlanRecommended` 的 linearHdrCarried/SDR-twin 两支（纯 OETF，无 tonemap）。
                  && !o.ColorToneMapExplicit
                  && !srcLinearHdr)
         {
-            // ── HDR 源 + SDR 结局 ⇒ 自动使用内部默认曲线 hable（2026-09-16）──
-            // 为什么必须自动：GUI 已按设计**不再暴露** tonemap 曲线（"内部固定 hable"，见 MainWindow 各处的
+            // ── HDR 源 + SDR 结局 ⇒ 自动使用内部默认曲线 mobius（2026-09-16；2026-11-18 由 hable 切换）──
+            // 为什么必须自动：GUI 已按设计**不再暴露** tonemap 曲线（"内部固定 mobius"，见 MainWindow 各处的
             // `TonemapCurve = null` 注释），既有行为由传统链的内部默认承担。默认切引擎后若仍按规划层
             // "需显式请求"拒绝，**GUI 用户转 HDR→JPEG 将无路可走**（实测 verify-format-regression 16 项全红）。
             // 这不是"静默降级"：日志会写明是**自动**采用的曲线与来源（ToneMapAuto ⇒ 决策 Reason 里标注），
             // 用户显式给 --color-tone-map 时仍以其为准。
+            // 为什么从 hable 换到 mobius：hable 按整帧峰值归一化，headroom≈49 时把 203nit SDR 白点压到
+            // 线性≈0.252（sRGB 码值≈136/255），SDR 白点塌成中灰；mobius 低端 1:1、只压高光，
+            // 实测同源 YAVG/SATAVG 更接近 GainMap 底图，且仍保留 Hable 作为显式风格选项。
             // ⚠ 触发条件必须**两支**（2026-09-16 第二次修正）：
             //   ① `targetExplicit`：用户**显式**指定了 SDR 目标 ⇒ 他要的就是 SDR，必须映射；
             //   ② `!caps.CanHdr`：目标是 auto 但容器**承载不了** HDR（如 JPEG）⇒ 只能降 SDR。
@@ -505,7 +539,7 @@ public static class ColorIntentFactory
             //     `ToneMapNotAppliedToGainMap` 这条降级，不改变产出）。
             //   ⇒ **保持 `caps.CanHdr` 不变**。「JPEG+GainMap 算能表达 HDR」只在
             //     **RAW 源色域默认值**那个场景使用（`CanHdrWith`，见 `QueueProcessor` 的 RAW 预处理）。
-            it.ToneMap = ToneMapMode.Hable;
+            it.ToneMap = ToneMapMode.Mobius;
             it.ToneMapRequested = true;
             it.ToneMapAuto = true;
         }

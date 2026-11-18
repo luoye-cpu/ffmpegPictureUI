@@ -216,7 +216,7 @@ namespace FfmpegGui.Models
         // ── R3（2026-11-09）：CLI 8 个色彩开关的 GUI 承接（tone-map / engine 两轴优先）──
         /// <summary>
         /// HDR→SDR 色调映射算子：null（旧预设，= auto）/ "auto"（不指定，引擎按 HDR→SDR
-        /// 契约自动采用 Hable）/ "none"（显式不映射）/ "reinhard" / "hable" / "mobius" /
+        /// 契约自动采用 Mobius）/ "none"（显式不映射）/ "reinhard" / "hable" / "mobius" /
         /// "bt2446a"。取值域与 CLI <c>--color-tone-map</c> 一致；语义见
         /// <see cref="FfmpegOptions.ColorToneMap"/> 与 <see cref="FfmpegOptions.ColorToneMapExplicit"/>。
         /// </summary>

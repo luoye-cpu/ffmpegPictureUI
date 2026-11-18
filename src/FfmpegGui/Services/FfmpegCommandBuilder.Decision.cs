@@ -94,6 +94,8 @@ namespace FfmpegGui.Services
             public bool EncoderWritesFilterIcc;
             /// <summary>需要 ICC 而编码器会把它丢掉 ⇒ 队列必须用 exiftool 后置嵌入（否则输出零标注而像素是广色域）。</summary>
             public bool NeedsPostEmbedIcc;
+            /// <summary>声明了 CarryIcc，但源 ICC 存在性不可判定（exiftool 缺失/读失败）；不得把空当“无”。</summary>
+            public bool IccCarryFailClosed;
             /// <summary>容器有 CICP 通路（PNG cICP / AVIF nclx / JXL 枚举）⇒ 可写 CICP。</summary>
             public bool CanWriteContainerCicp;
             /// <summary>无 ICC、无 CICP，但按容器惯例可安全地按隐含 sRGB 解读。</summary>
@@ -356,8 +358,8 @@ namespace FfmpegGui.Services
                     var tmDstM = capM ?? "bt709";
                     // 注：目标能力不满足时由 **UI 选项过滤 + 契约层 Reject** 处理，不在此静默改写后记日志
                     // （“降级告警”会把未实现伪装成能力限制，也会掩盖真正该拒绝的组合）。
-                    // P4: tonemap 曲线可选（hable 默认保留 param=0.5 观感；mobius/reinhard 用算法默认）。
-                    var tmCurve = string.IsNullOrWhiteSpace(options.TonemapCurve) ? "hable" : options.TonemapCurve!.Trim().ToLowerInvariant();
+                    // P4: tonemap 曲线可选（mobius 默认：低端 1:1、只压高光；hable 显式保留 param=0.5 观感）。
+                    var tmCurve = string.IsNullOrWhiteSpace(options.TonemapCurve) ? "mobius" : options.TonemapCurve!.Trim().ToLowerInvariant();
                     var tmTone = tmCurve == "hable" ? "hable:param=0.5" : tmCurve;
                     // ── F-9（2026-10-11）：出口 trc=bt709 ⇒ 链末**不许**再交裸 `t=bt709` ──
                     // zimg 把 `t=bt709` 实现成纯 γ(1/2.4)，而下面 :332 把同一个 token 交出去当宣称值
@@ -571,11 +573,20 @@ namespace FfmpegGui.Services
             //   （iCCP 保留源 ICC + cICP 作附加标签），不允许无条件 AttachIcc=false 剥掉 iCCP。
             //   是否回带源 ICC 的真值统一走 IccCarryPolicy（与 QueueProcessor exiftool 后置、
             //   引擎 PNG 后置三处同口径），不在本处再写一份等价 if。
-            bool carrySourceIccHere = ColorMapping.IccCarryPolicy.ShouldCarrySourceIcc(
+            var sourceIccStatus = ProbeInputIccStatus(inputPath);
+            var carryIccOutcome = ColorMapping.IccCarryPolicy.Decide(
                 strategy,
-                ProbeInputIccDescriptor(inputPath) != null,
+                sourceIccStatus,
                 ColorMapping.ColorMappingEngine.CapsFor(fmt).CanCarryArbitraryIcc,
                 ColorMapping.ColorMappingEngine.CapsFor(fmt).CanHaveBothIccAndCicp);
+            bool carrySourceIccHere = carryIccOutcome
+                is ColorMapping.IccCarryPolicy.CarryIccOutcome.CarryIccOnly
+                or ColorMapping.IccCarryPolicy.CarryIccOutcome.CarryWithCicp;
+            if (carryIccOutcome == ColorMapping.IccCarryPolicy.CarryIccOutcome.FailClosed)
+            {
+                // 保留分支只为兼容旧枚举值；Decide 自 2026-11-18 起对 Unreadable 已返回 Skip。
+                // 不再置 IccCarryFailClosed，也不再由本字段触发任何拒绝。
+            }
             if (pngCicpFirst && d.CanWriteContainerCicp
                 && !string.IsNullOrEmpty(outP) && !string.IsNullOrEmpty(outT)
                 && !frameIsHdr

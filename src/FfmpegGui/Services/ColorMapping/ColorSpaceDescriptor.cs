@@ -3,6 +3,17 @@ using System.Globalization;
 
 namespace FfmpegGui.Services.ColorMapping;
 
+/// <summary>源 ICC 的三态：存在 / 不存在 / 无法判定（exiftool 不可用或读取失败）。</summary>
+public enum SourceIccStatus
+{
+    /// <summary>源没有 ICC；可以按无 ICC 路径继续。</summary>
+    Absent,
+    /// <summary>源有 ICC，且已成功读出。</summary>
+    Present,
+    /// <summary>无法判断源是否有 ICC；CarryIcc 不得把“读不出”当成“没有”。</summary>
+    Unreadable,
+}
+
 /// <summary>
 /// 统一的色彩空间描述符（色彩映射引擎的中间表示）。
 ///
@@ -62,6 +73,12 @@ public sealed class ColorSpaceDescriptor
 
     /// <summary>来源 ICC 文件路径（阶梯②"携带而不映射"时使用；引擎不负责删除）。</summary>
     public string? SourceIccPath;
+
+    /// <summary>
+    /// 源 ICC 的**存在性**（不是“解析成功”）：Absent / Present / Unreadable。
+    /// CarryIcc 出口必须区分后两者，否则“exiftool 读不出”会被静默当成“源没有 ICC”。
+    /// </summary>
+    public SourceIccStatus SourceIccStatus = SourceIccStatus.Absent;
 
     // ═══════════════════════════════════════════════════════════════════
     //  构造：三种来源
@@ -186,6 +203,7 @@ public sealed class ColorSpaceDescriptor
         Confidence = Confidence,
         NitsOfLinearOne = NitsOfLinearOne,
         SourceIccPath = SourceIccPath,
+        SourceIccStatus = SourceIccStatus,
     };
 
     /// <summary>能否参与映射：必须持有完整的 RGB→XYZ(D50) 矩阵（曲线为表型时仍可映射，精度由表保证）。</summary>

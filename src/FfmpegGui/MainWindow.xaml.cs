@@ -303,7 +303,7 @@ namespace FfmpegGui
         private Border? JpegGainMapPanel;
         private StackPanel? JpegGainMapOptions;
         private CheckBox? JpegGainMapFollowMainCheck;
-        private ComboBox? HdrModeCombo;   // HDR 实现模式（GainMap | 传统）；可见性按容器能力
+        private CheckBox? JpegGainMapCheck;   // GainMap 唯一用户开关
         private CheckBox? ColorGamutMapCheck;       // 色域映射（GMO）开关（高级色彩面板，默认关）
         private ComboBox? RawColorTargetCombo;      // RAW 输出色域模式（rec2020 | auto | rec709）
         private StackPanel? JpegGainMapQualityPanel;
@@ -347,6 +347,10 @@ namespace FfmpegGui
         private string? _iccFilePath;
         private int _lastProbedSourceBitDepth; // 上次探测的源位深，供冲突检测使用
         private int _formatRefreshGen;
+        // 格式切换事件重入守卫：UpdateOptionAvailability / RefillOutMatrixComboForFormat 内部可能
+        // 反向设置 FormatCombo.SelectedIndex（例如恢复可保留的目标项），从而在同一个 UI 批次里
+        // 再次触发 SelectionChanged。两层同步重建叠加是“切完一次后界面不刷新/像卡死”的可达形态。
+        private bool _formatComboHandlerActive;
         private bool _suppressOptionEvents;
         private int _probeGeneration;
         // UI-06：在途位深探测的取消句柄 —— 代际变化 / 窗口关闭时连带终止 ffprobe，不再只丢结果。
@@ -580,7 +584,7 @@ namespace FfmpegGui
             // ── Gain Map (Ultra HDR) JPEG 控件 ──
             JpegGainMapPanel = this.FindControl<Border>("JpegGainMapPanel");
             JpegGainMapOptions = this.FindControl<StackPanel>("JpegGainMapOptions");
-            HdrModeCombo = this.FindControl<ComboBox>("HdrModeCombo");
+            JpegGainMapCheck = this.FindControl<CheckBox>("JpegGainMapCheck");
             JpegGainMapFollowMainCheck = this.FindControl<CheckBox>("JpegGainMapFollowMainCheck");
             JpegGainMapQualityPanel = this.FindControl<StackPanel>("JpegGainMapQualityPanel");
             JpegGainMapQualityBox = this.FindControl<TextBox>("JpegGainMapQualityBox");
@@ -1112,9 +1116,7 @@ namespace FfmpegGui
                 "gainmap.base.srgb", "gainmap.base.rec2020");
             FillComboByLoc(this.FindControl<ComboBox>("JpegGainMapMetadataCombo"), 0,
                 "gainmap.metadata.iso", "gainmap.metadata.xmp", "gainmap.metadata.both");
-            // HDR 实现模式（用户-facing 单真值 = `FfmpegOptions.HdrMode`，它是 `JpegGainMap` 的强类型视图）
-            FillComboByLoc(this.FindControl<ComboBox>("HdrModeCombo"), 0,
-                "hdr.mode.traditional", "hdr.mode.gainmap");
+            // HDR 实现不再是二选一：JPEG 只有 GainMap 开关；原生 HDR 由目标色彩空间决定。
             FillComboByLoc(this.FindControl<ComboBox>("JpegGainMapDownsampleCombo"), 1,
                 "gainmap.ds.full", "gainmap.ds.half", "gainmap.ds.quarter",
                 "gainmap.ds.eighth", "gainmap.ds.sixteenth");
@@ -2229,18 +2231,26 @@ namespace FfmpegGui
             if (FormatCombo != null && FormatCombo.IsDropDownOpen)
                 FormatCombo.IsDropDownOpen = false;
 
-            _formatRefreshGen++;
-            UpdateOptionAvailability();
-            // B1（CMX-2）：矩阵条目按新格式过滤（与 UpdateOptionAvailability 同理，格式变了
-            // 都要按新格式重算；编码器列表的异步刷新收尾会再校准一次，见 Refill 方法注释）。
-            RefillOutMatrixComboForFormat();
-            // ⚠ 2026-09-20：**格式变化也要刷新「DNG 专属选项」的可见性** ——
-            //   该面板要求「RAW 模式 **且** 输出格式 = dng」；模式没变但格式变了同样要重算
-            //   （本 handler 原先只调 UpdateOptionAvailability()，**不**触发 UpdatePanels ⇒ 会漏刷）。
-            if (DngOptionsPanel != null && ConversionModeCombo != null)
-                DngOptionsPanel.IsVisible = ConversionModeCombo.SelectedIndex == 2
-                    && NormalizeFormat(FormatCombo?.SelectedItem as string) == "dng";
-            _ = RefreshEncoderListAsync();
+            // 同步重建段自带可重入触发点（见 _formatComboHandlerActive 注释）：嵌套那一次
+            // 只负责把值落下，不再叠第二套“重建选项 + 异步刷新”。
+            if (_formatComboHandlerActive) return;
+            _formatComboHandlerActive = true;
+            try
+            {
+                _formatRefreshGen++;
+                UpdateOptionAvailability();
+                // B1（CMX-2）：矩阵条目按新格式过滤（与 UpdateOptionAvailability 同理，格式变了
+                // 都要按新格式重算；编码器列表的异步刷新收尾会再校准一次，见 Refill 方法注释）。
+                RefillOutMatrixComboForFormat();
+                // ⚠ 2026-09-20：**格式变化也要刷新「DNG 专属选项」的可见性** ——
+                //   该面板要求「RAW 模式 **且** 输出格式 = dng」；模式没变但格式变了同样要重算
+                //   （本 handler 原先只调 UpdateOptionAvailability()，**不**触发 UpdatePanels ⇒ 会漏刷）。
+                if (DngOptionsPanel != null && ConversionModeCombo != null)
+                    DngOptionsPanel.IsVisible = ConversionModeCombo.SelectedIndex == 2
+                        && NormalizeFormat(FormatCombo?.SelectedItem as string) == "dng";
+                _ = RefreshEncoderListAsync();
+            }
+            finally { _formatComboHandlerActive = false; }
         }
 
         // 静态图片模式格式列表
@@ -2599,13 +2609,8 @@ namespace FfmpegGui
                         // Display P3: 广色域 SDR (Apple 生态标准), 所有格式均支持 (ICC/CICP)
                         ColorSpaceCombo.Items.Add("Display P3");
                         var hasHdr = _currentCapabilities.SupportedColorSpaces.Contains("BT.2020");
-                        // JPEG 特例：HDR 无法由 JPEG 自身标定，但**开启 GainMap (Ultra HDR) 后可以**
-                        // （SDR 底 + 增益图，在支持的设备上显示 HDR）⇒ HDR 目标项随开关出现/消失，
-                        // 而不是让用户选了再被降级。
-                        bool gainMapOn = GainMapEncoder.FormatCarriesGainMap(
-                                             NormalizeFormat(FormatCombo?.SelectedItem as string))
-                                         && HdrModeCombo?.SelectedIndex == 1;
-                        if (gainMapOn) hasHdr = true;
+                        // JPEG 的 HDR 由 GainMap 承载，不是原生 PQ/HLG 目标；不再因为勾选 GainMap
+                        // 就向 JPEG 注入 BT.2020 PQ/HLG 目标项（AVIF/JXL 的原生 HDR 由能力表决定）。
                         if (hasHdr)
                         {
                             // P3 PQ: P3 色域 + PQ 曲线 (HDR 场景)
@@ -2796,8 +2801,8 @@ namespace FfmpegGui
             if (JpegCodecPanel != null) JpegCodecPanel.IsVisible = false;
             if (JpegliCodecPanel != null) JpegliCodecPanel.IsVisible = false;
             if (JpegGainMapPanel != null) JpegGainMapPanel.IsVisible = false;
-            if (HdrModeCombo != null)
-                HdrModeCombo.IsVisible = GainMapEncoder.FormatCarriesGainMap(fmt);
+            if (JpegGainMapCheck != null)
+                JpegGainMapCheck.IsVisible = GainMapEncoder.FormatCarriesGainMap(fmt);
             if (TiffCodecPanel != null) TiffCodecPanel.IsVisible = false;
             if (JxrCodecPanel != null) JxrCodecPanel.IsVisible = false;
             if (ThumbnailPanel != null) ThumbnailPanel.IsVisible = false;
@@ -3314,11 +3319,11 @@ namespace FfmpegGui
                 // ── C-GUI@1：输出矩阵模式（基本区控件，不受 useAdv 门控——与 Chroma 同采集模式）──
                 // auto/未知 ⇒ null（默认零行为变化，CM-REQ-08）；bt601 别名归一 smpte170m（C-TOKEN@1）。
                 ColorOutMatrix = MapOutMatrixValue(OutputMatrixCombo?.SelectedItem as string),
-                TonemapCurve = null, // tonemap 曲线内部固定 hable
+                TonemapCurve = null, // tonemap 曲线内部默认 mobius
                 // ── R3（2026-11-09）：tone-map / engine 两轴的采集（与 ColorTrc 等同挂 useAdv）──
                 // tone-map：首项 "auto" = 不指定 ⇒ 提交 "none" 且 **不**置 Explicit（引擎按 HDR→SDR
-                //   契约自动采用 Hable，ToneMapAuto）；"none" = **显式**不映射 ⇒ 置 ColorToneMapExplicit
-                //   （缺了它，「显式 none」会被 ColorIntentFactory 的兜底静默升级成 Hable——该字段存在的
+                //   契约自动采用 Mobius，ToneMapAuto）；"none" = **显式**不映射 ⇒ 置 ColorToneMapExplicit
+                //   （缺了它，「显式 none」会被 ColorIntentFactory 的兜底静默升级成 Mobius——该字段存在的
                 //   唯一理由，见 FfmpegOptions.ColorToneMapExplicit 的注释）；其余算子直填。
                 // engine：首项 "auto" ⇒ 提交模型默认 "auto"（默认路由，与不勾时逐字节相同）；
                 //   "engine"/"legacy" 直填（路由语义由 ColorEngineRouter.Requested/ExplicitlyRequested 消费）。
@@ -3392,7 +3397,7 @@ namespace FfmpegGui
                 JpegHuffman = useAdvCodec ? (JpegHuffmanCombo?.SelectedItem as string) : "optimal",
                 JpegDct = useAdvCodec ? (JpegDctCombo?.SelectedItem as string is "auto" ? null : JpegDctCombo?.SelectedItem as string) : null,
                 JpegProgressiveId = useAdvCodec ? ParseJpegProgressiveId() : 0,
-                JpegGainMap = HdrModeCombo?.SelectedIndex == 1
+                JpegGainMap = JpegGainMapCheck?.IsChecked == true
                     && GainMapEncoder.FormatCarriesGainMap(fmt),
                 JpegGainMapQuality = ParseGainMapQuality(),
                 JpegGainMapTargetNits = ParseGainMapNits(),
@@ -4478,7 +4483,7 @@ namespace FfmpegGui
         {
             var fmt = NormalizeFormat(FormatCombo?.SelectedItem as string);
             var carries = GainMapEncoder.FormatCarriesGainMap(fmt);
-            var hdrOn = HdrModeCombo?.SelectedIndex == 1;
+            var hdrOn = JpegGainMapCheck?.IsChecked == true;
 
             if (JpegGainMapPanel != null)
                 JpegGainMapPanel.IsVisible = carries && hdrOn;
@@ -4679,7 +4684,7 @@ namespace FfmpegGui
             }
 
             // 仅CICP（策略3）：格式不支持 CICP 时禁用该单选；任意 GainMap 承载格式开启时例外可用。
-            bool gainMapOn = HdrModeCombo?.SelectedIndex == 1
+            bool gainMapOn = JpegGainMapCheck?.IsChecked == true
                 && GainMapEncoder.FormatCarriesGainMap(NormalizeFormat(FormatCombo?.SelectedItem as string));
             if (IccModeBake != null)
                 IccModeBake.IsEnabled = (_currentCapabilities?.SupportsCicp ?? true) || gainMapOn;
@@ -4822,12 +4827,24 @@ namespace FfmpegGui
 
         private void UpdateAdvancedColorControls()
         {
-            // 委托 ColorSpaceRegistry 单一来源（修正旧硬编码对 BT.2020 HLG 误填 smpte2084 的 bug）。
+            // 顶部“色彩空间”= auto 时，下面的原色/传递函数/矩阵必须同步回到 auto；
+            // 旧实现把 null 映射成 bt709/iec61966-2-1/bt709，导致 UI 显示 auto、实际却是显式 SDR 目标
+            // （HDR 源因此被当成“用户已指定 SDR”而丢失自动 HDR 路径）。
             var cs = ColorSpaceCombo?.SelectedItem as string;
-            var (p, t, m) = ColorSpaceRegistry.FfmpegTokens(cs);   // auto/未知 → null → 下方默认 sRGB
-            SetComboSelection(ColorPrimariesCombo, p ?? "bt709");
-            SetComboSelection(ColorTrcCombo, t ?? "iec61966-2-1");
-            SetComboSelection(ColorMatrixCombo, m ?? "bt709");
+            if (string.IsNullOrWhiteSpace(cs) || cs.Equals("auto", StringComparison.OrdinalIgnoreCase))
+            {
+                SetComboSelection(ColorPrimariesCombo, "auto");
+                SetComboSelection(ColorTrcCombo, "auto");
+                SetComboSelection(ColorMatrixCombo, "auto");
+            }
+            else
+            {
+                // 委托 ColorSpaceRegistry 单一来源（修正旧硬编码对 BT.2020 HLG 误填 smpte2084 的 bug）。
+                var (p, t, m) = ColorSpaceRegistry.FfmpegTokens(cs);
+                SetComboSelection(ColorPrimariesCombo, p ?? "auto");
+                SetComboSelection(ColorTrcCombo, t ?? "auto");
+                SetComboSelection(ColorMatrixCombo, m ?? "auto");
+            }
             RegenerateCommand();
         }
 
@@ -6553,7 +6570,7 @@ namespace FfmpegGui
         }
 
         /// <summary>GainMap 独立开关变化：切换子选项面板可见性 + 刷新色彩面板（仅CICP 例外）与命令。</summary>
-        private void HdrMode_Changed(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        private void JpegGainMap_Changed(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
         {
             UpdateGainMapPanelVisibility();
             UpdateIccPanelVisibility();
@@ -6721,7 +6738,7 @@ namespace FfmpegGui
                 // C-GUI@1：输出矩阵模式进 preset（MapOutMatrixValue 归一为 token；auto ⇒ null ⇒
                 // 旧预设 JSON 无此键时 SetOutMatrixCombo 早退，控件保持现状）。
                 ColorOutMatrix = MapOutMatrixValue(OutputMatrixCombo?.SelectedItem as string),
-                TonemapCurve = null, // tonemap 曲线内部固定 hable
+                TonemapCurve = null, // tonemap 曲线内部默认 mobius
                 // R3（2026-11-09）：tone-map / engine 进 preset（旧预设 JSON 无这两个键 ⇒ null ⇒
                 // ApplyPresetData 的 SetComboByValue 对 null 直接 return，控件保持现状）。
                 ColorToneMap = ColorToneMapCombo?.SelectedItem as string,
@@ -6756,7 +6773,7 @@ namespace FfmpegGui
                 // ── 编码器后端 ──
                 EncoderBackend = GetCurrentEncoderBackend().ToString(),
                 // ── Gain Map ──
-                JpegGainMap = HdrModeCombo?.SelectedIndex == 1
+                JpegGainMap = JpegGainMapCheck?.IsChecked == true
                     && GainMapEncoder.FormatCarriesGainMap(NormalizeFormat(FormatCombo?.SelectedItem as string)),
                 JpegGainMapQuality = ParseGainMapQuality(),
                 JpegGainMapTargetNits = ParseGainMapNits(),
@@ -7086,7 +7103,7 @@ namespace FfmpegGui
             if (EnableMaxDimensionCheck != null) EnableMaxDimensionCheck.IsChecked = p.EnableMaxDimension;
             if (MaxDimensionBox != null && p.MaxDimension > 0) MaxDimensionBox.Value = p.MaxDimension;
             if (AppendPngExtCheck != null) AppendPngExtCheck.IsChecked = p.AppendPngExtension;
-            if (HdrModeCombo != null) HdrModeCombo.SelectedIndex = p.JpegGainMap ? 1 : 0;
+            if (JpegGainMapCheck != null) JpegGainMapCheck.IsChecked = p.JpegGainMap;
             SetComboByValue(JpegDctCombo, p.JpegDct);
             // ── 色彩策略单选恢复（2026-09-19 修复）──────────────────────────────────
             // 缺陷：保存侧已写规范串 ColorStrategy（BuildPresetData 内），但本方法此前**整块缺失**

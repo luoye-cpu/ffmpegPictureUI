@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Text;
+using FfmpegGui.Services.ColorMapping;
 
 namespace FfmpegGui.Services
 {
@@ -15,6 +16,10 @@ namespace FfmpegGui.Services
     {
         /// <summary>SampleFormat=1 ⇒ 样本已是**编码值**：只搬深度，不加传递函数。</summary>
         UInt16,
+        /// <summary>SampleFormat=2 且 16bit ⇒ signed fixed point，T.832 BD16S = s2.13。</summary>
+        Fixed16,
+        /// <summary>SampleFormat=2 且 32bit ⇒ signed fixed point，T.832 BD32S = s7.24。</summary>
+        Fixed32,
         /// <summary>SampleFormat=3 且 16bit ⇒ IEEE 半浮点，语义 = **线性 scRGB**（1.0 = SDR 白）。</summary>
         HalfFloat16,
         /// <summary>SampleFormat=3 且 32bit ⇒ IEEE 单精度，语义 = **线性 scRGB**。</summary>
@@ -29,7 +34,46 @@ namespace FfmpegGui.Services
         public int Channels;
         public JxrSampleKind Kind;
         public byte[] Samples = Array.Empty<byte>();
-        public int BytesPerSample => Kind == JxrSampleKind.Float32 ? 4 : 2;
+        public bool Premultiplied;
+        public int SourceBitsPerSample;
+        public int BytesPerSample => Kind is JxrSampleKind.Float32 or JxrSampleKind.Fixed32 ? 4 : 2;
+    }
+
+    /// <summary>
+    /// 一次 JXR 高位帧的出口映射计划。所有“1.0 等于多少 nits”的换算只在这里发生：
+    /// <see cref="ToneMapParams"/> 的线性域约定恒为 1.0 = 203 nits。
+    /// </summary>
+    internal sealed class JxrColorPlan
+    {
+        public TransferCurve SourceCurve = TransferCurve.Srgb;
+        public double SourceNitsOfLinearOne = TransferCurve.SdrWhiteNits;
+        public bool SourceFullRange = true;
+        public bool SourcePremultiplied;
+        /// <summary>整数 sRGB 直通：样本已是 sRGB 码值时只搬深度，避免二次 OETF。</summary>
+        public bool IntCopy;
+        public ToneMapParams Tone = new();
+        public TransferCurve TargetCurve = TransferCurve.Srgb;
+        public double TargetNitsOfLinearOne = TransferCurve.SdrWhiteNits;
+        public bool TargetIsHdr;
+        public string TargetPrimariesToken = "bt709";
+        public string TargetTrcToken = "iec61966-2-1";
+
+        public string Summary =>
+            $"src={SourceCurve.Name} srcNits={SourceNitsOfLinearOne:F0} "
+            + $"dst={TargetCurve.Name} dstNits={TargetNitsOfLinearOne:F0} "
+            + $"map={(IntCopy ? "int-copy" : Tone.Mode switch { ToneMapMode.None => "encode", ToneMapMode.ReinhardSegmented => "reinhard", ToneMapMode.Hable => "hable", ToneMapMode.Mobius => "mobius", ToneMapMode.Bt2446A => "bt2446a", _ => Tone.Mode.ToString() })} "
+            + $"premul={SourcePremultiplied} full={SourceFullRange}";
+    }
+
+    /// <summary>一次 JXR 高位直通臂的结果：路径/通道/实测峰值/是否真的做了 tone map。</summary>
+    internal sealed class JxrHighPrecisionOutcome
+    {
+        public string? PamPath;
+        public int Channels;
+        public bool TryBlindArms;
+        public double PeakNits;
+        public bool ToneMapped;
+        public JxrColorPlan? Plan;
     }
 
     /// <summary>映射前的实测统计 —— 钳位与峰值必须由这里回传，日志才有牙。</summary>
@@ -38,7 +82,9 @@ namespace FfmpegGui.Services
         long OverWhite,          // >1.0 的 RGB 样本个数
         long RgbSampleCount,
         float AlphaMin,
-        float AlphaMax);
+        float AlphaMax,
+        double LinearPeak = 0,   // 统一到 1.0=203nit 的线性峰值
+        double PeakNits = 0);    // LinearPeak × 203
 
     /// <summary>
     /// JXR 高位深输入的取帧 → 映射 → 中间件写出（2026-10-21，修 <c>-106 Unsupported format</c>）。
@@ -67,6 +113,11 @@ namespace FfmpegGui.Services
         public const int Arm128RgbaFloat = 28;  // 128bppRGBAFloat 直通（单精度源）
         public const int Arm64RgbaInt = 23;     // 64bppRGBA 直通（16-bit 整数 RGBA 源）
         public const int Arm48RgbInt = 10;      // 48bppRGB 直通（16-bit 整数 3 通道源）
+        public const int Arm48RgbHalf = 12;     // 48bppRGBHalf 直通（3 通道半浮点源）
+        public const int Arm48RgbFixed = 11;    // 48bppRGBFixedPoint
+        public const int Arm96RgbFixed = 14;    // 96bppRGBFixedPoint
+        public const int Arm64RgbaFixed = 24;   // 64bppRGBAFixedPoint
+        public const int Arm128RgbaFixed = 27;  // 128bppRGBAFixedPoint
 
         /// <summary>
         /// 按 ffmpeg/libjxr 报出的 pix_fmt 选直通臂；报不出、或不是高位档 ⇒ null（调用方保持既有行为）。
@@ -84,20 +135,44 @@ namespace FfmpegGui.Services
         }
 
         /// <summary>
+        /// 用 JXR 容器里的 PIXEL_FORMAT 选直通臂（T.832 Table A.6 → JxrDecApp -c）。
+        /// 只有“同格式直通”才不会撞 jxrlib 的缺失转换表；颜色/曲线由托管路径处理。
+        /// </summary>
+        public static int? ChoosePassthroughArm(JxrPixelFormatInfo pf)
+        {
+            if (!pf.IsRgbLike) return null;
+            return pf.Mnemonic switch
+            {
+                "64bppRGBAHalf" => Arm64RgbAHalf,
+                "128bppRGBAFloat" => Arm128RgbaFloat,
+                "64bppPRGBA" => Arm64RgbaInt,
+                "64bppRGBA" => Arm64RgbaInt,
+                "48bppRGB" => Arm48RgbInt,
+                "48bppRGBHalf" => Arm48RgbHalf,
+                "48bppRGBFixedPoint" => Arm48RgbFixed,
+                "96bppRGBFixedPoint" => Arm96RgbFixed,
+                "64bppRGBAFixedPoint" => Arm64RgbaFixed,
+                "128bppRGBAFixedPoint" => Arm128RgbaFixed,
+                _ => null,
+            };
+        }
+
+        /// <summary>
         /// 探针**未给出可用答案**时的盲试顺序（2026-10-29 实机改判的核心）。
         /// <para>为什么需要它：这条通路真正解码用的是 JxrDecApp（jxrlib），跟 ffmpeg 能不能解 JXR 无关；
         /// 而历史上"探针 exit=1 ⇒ 当场判'不是高位深直通档'"会把一次**仪器失败**折算成一条**内容结论**，
         /// 落进对 64bppRGBAHalf 结构上必死的 BMP / <c>-c 0</c> 旧路。本机实测有三种完全不同的病因都能打出
         /// 同一句 <c>exit=1</c>：0 字节的件（<c>Invalid data found</c>）、头 1KB 被别的进程握着的件
         /// （<c>Permission denied</c>）、以及任何不带 libjxr 的 ffprobe 构建。</para>
-        /// <para>顺序 = Game DVR / HDR 抓件的实际常见度（半浮点 RGBA → 单精度 RGBA → 16-bit RGBA → 16-bit RGB）。
-        /// 每档都由调用方逐档自校验（JxrDecApp 退出码 + TIFF 产出 + <see cref="TryReadTiff"/> 的 fail-closed
-        /// 拒读），所以"试错"不会产出坏件；且**只在旧两臂已经失败之后**才启用 ⇒ 8-bit 源（旧臂能成）行为不变，
-        /// 也不会被无谓地升采样成浮点。</para>
+        /// <para>顺序 = Game DVR / HDR 抓件的实际常见度（半浮点 RGBA → 单精度 RGBA → 16-bit RGBA → 16-bit RGB
+        /// → 3 通道半浮点 / fixed point）。每档都由调用方逐档自校验（JxrDecApp 退出码 + TIFF 产出 +
+        /// <see cref="TryReadTiff"/> 的 fail-closed 拒读），所以"试错"不会产出坏件；且**只在旧两臂已经失败之后**
+        /// 才启用 ⇒ 8-bit 源（旧臂能成）行为不变。</para>
         /// </summary>
         public static IReadOnlyList<int> BlindArmOrder() => new[]
         {
-            Arm64RgbAHalf, Arm128RgbaFloat, Arm64RgbaInt, Arm48RgbInt
+            Arm64RgbAHalf, Arm128RgbaFloat, Arm64RgbaInt, Arm48RgbInt,
+            Arm48RgbHalf, Arm48RgbFixed, Arm96RgbFixed, Arm64RgbaFixed, Arm128RgbaFixed,
         };
 
         /// <summary>
@@ -199,6 +274,8 @@ namespace FfmpegGui.Services
 
                 JxrSampleKind kind;
                 if (fmt == 1 && bps[0] == 16) kind = JxrSampleKind.UInt16;
+                else if (fmt == 2 && bps[0] == 16) kind = JxrSampleKind.Fixed16;
+                else if (fmt == 2 && bps[0] == 32) kind = JxrSampleKind.Fixed32;
                 else if (fmt == 3 && bps[0] == 16) kind = JxrSampleKind.HalfFloat16;
                 else if (fmt == 3 && bps[0] == 32) kind = JxrSampleKind.Float32;
                 else { error = $"BitsPerSample={bps[0]} + SampleFormat={fmt} 不在通路内"; return false; }
@@ -216,7 +293,7 @@ namespace FfmpegGui.Services
                     offsets.Length != byteCounts.Length || offsets.Length == 0)
                 { error = "StripOffsets/StripByteCounts 缺失或条数不等"; return false; }
 
-                int bpsBytes = kind == JxrSampleKind.Float32 ? 4 : 2;
+                int bpsBytes = kind is JxrSampleKind.Float32 or JxrSampleKind.Fixed32 ? 4 : 2;
                 long need = (long)w * h * channels * bpsBytes;
                 long have = 0;
                 for (int i = 0; i < byteCounts.Length; i++) have += byteCounts[i];
@@ -235,6 +312,7 @@ namespace FfmpegGui.Services
                 frame = new JxrHighBitFrame
                 {
                     Width = w, Height = h, Channels = channels, Kind = kind, Samples = samples,
+                    SourceBitsPerSample = (int)bps[0],
                 };
                 return true;
             }
@@ -252,25 +330,21 @@ namespace FfmpegGui.Services
         /// <summary>
         /// 高位帧 → 16-bit PAM（<c>P7 … MAXVAL 65535</c>，大端样本；ffmpeg 原生读回
         /// <c>rgb48le</c>/<c>rgba64le</c>，实测）。
-        /// <para>浮点档语义 = 线性 scRGB ⇒ 过一次 sRGB 编码（与 jxrlib/WIC 的 8-bit 出口同一条曲线，
-        /// 常数唯一来源 <see cref="SimdPixelOps"/>）；整数档语义 = 编码值 ⇒ 只搬深度。</para>
-        /// <para><paramref name="useReinhard"/> 且实测峰值 &gt;1.0 时先过
-        /// <see cref="SimdPixelOps.ReinhardToSdr"/>（headroom = **整帧**峰值）⇒ 高光被压缩而不是被钳死。
-        /// 峰值是**第一遍全帧扫描**得到的，绝不用"到目前为止的峰值"，否则逐行带映射不一致。
-        /// 该算子按 RGBA 交错 4 步长实现，故 3 通道浮点档不走它（调用方据 <see cref="CanToneMap"/> 决定并播报）。</para>
+        /// <para>本方法只负责“把源像素搬到目标编码”，不做第二次决策：源曲线、源 nits、目标曲线、
+        /// 目标 nits、预乘与色调映射全部由 <see cref="JxrColorPlan"/> 带入。默认目标 = sRGB，
+        /// 与旧行为等价；JXR 识别出的 PQ/HLG/scRGB 则按真实曲线先 EOTF 再 OETF。</para>
         /// </summary>
-        public static JxrFrameStats EncodeToPam16(JxrHighBitFrame f, string pamPath, bool useReinhard)
+        public static JxrFrameStats EncodeToPam16(JxrHighBitFrame f, string pamPath, JxrColorPlan plan)
         {
-            var scan = Scan(f);
-            // ⚠ 整数档是**已编码值**（`-c 23/10` 出来的就是显示参考样本），只搬深度、**不再过 sRGB 曲线**。
-            //   2026-10-21 复核抓到：旧写法对所有档一视同仁地调 FloatToSrgb16Scalar ⇒ UInt16 臂被二次编码
-            //   （实测 0.5007 → 0.7359，maxdiff 18817）。浮点档才是线性的，才需要编码。
-            bool encodedInt = f.Kind == JxrSampleKind.UInt16;
-            bool toneMap = !encodedInt && useReinhard && CanToneMap(f) && scan.Peak > 1.0001f;
+            if (plan.SourcePremultiplied) f.Premultiplied = true;
+            var scan = Scan(f, plan);
+            // 峰值只增不减：用户显式给的峰值可能小于实测；内容峰值必须覆盖最亮样本，否则高光仍会被钳。
+            if (scan.PeakNits > plan.Tone.PeakNits)
+                plan.Tone.PeakNits = scan.PeakNits;
+            bool toneMap = plan.Tone.Active && scan.LinearPeak > 1.0001;
 
             int bandRows = Math.Max(1, Math.Min(f.Height, 1_000_000 / Math.Max(1, f.Width * f.Channels)));
             var floats = new float[bandRows * f.Width * f.Channels];
-            var sdr = toneMap ? new float[floats.Length] : null;
             var bytes = new byte[floats.Length * 2];
 
             using var ms = new FileStream(pamPath, FileMode.Create, FileAccess.Write);
@@ -282,86 +356,162 @@ namespace FfmpegGui.Services
                 int n = rows * f.Width * f.Channels;
                 LoadBand(f, y0, n, floats);
 
-                ReadOnlySpan<float> src = floats;
-                if (toneMap)
+                for (int i = 0; i < n; i += f.Channels)
                 {
-                    SimdPixelOps.ReinhardToSdr(floats.AsSpan(0, n), sdr!.AsSpan(0, n), scan.Peak);
-                    src = sdr.AsSpan(0, n);
-                }
+                    float a = f.Channels == 4 ? floats[i + 3] : 1f;
+                    if (plan.IntCopy)
+                    {
+                        // 整数 sRGB 直通：源码值已经是出口码值，只搬深度（旧 0.5007→0.7359 二次 OETF 的教训）。
+                        for (int c = 0; c < Math.Min(3, f.Channels); c++)
+                            WriteU16(bytes, i + c, floats[i + c]);
+                        if (f.Channels == 4) WriteU16(bytes, i + 3, a);
+                        continue;
+                    }
 
-                for (int i = 0; i < n; i++)
-                {
-                    int c = i % f.Channels;
-                    ushort v = (c < 3 && !encodedInt)
-                        ? SimdPixelOps.FloatToSrgb16Scalar(src[i])
-                        : (ushort)Math.Clamp((long)MathF.Round(Math.Clamp(src[i], 0f, 1f) * 65535f), 0L, 65535L);
-                    BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(i * 2), v);
+                    // 预乘 alpha：先还原成直通 RGB，映射完仍输出直通 alpha（cjxl/cjpegli 的 PAM 输入按直通解释）。
+                    float r = floats[i], g = f.Channels >= 2 ? floats[i + 1] : r, b = f.Channels >= 3 ? floats[i + 2] : r;
+                    if (plan.SourcePremultiplied && f.Channels == 4)
+                    {
+                        if (a > 1e-6f) { r /= a; g /= a; b /= a; }
+                        else { r = g = b = 0f; }
+                    }
+
+                    double lr = DecodeSampleToLinear(r, plan);
+                    double lg = DecodeSampleToLinear(g, plan);
+                    double lb = DecodeSampleToLinear(b, plan);
+                    if (toneMap)
+                    {
+                        float fr = (float)lr, fg = (float)lg, fb = (float)lb;
+                        ToneMap.ApplyRgb(ref fr, ref fg, ref fb, plan.Tone, plan.TargetCurve);
+                        lr = fr; lg = fg; lb = fb;
+                    }
+
+                    WriteU16(bytes, i, (float)EncodeLinearToTarget(lr, plan));
+                    if (f.Channels >= 2) WriteU16(bytes, i + 1, (float)EncodeLinearToTarget(lg, plan));
+                    if (f.Channels >= 3) WriteU16(bytes, i + 2, (float)EncodeLinearToTarget(lb, plan));
+                    if (f.Channels == 4) WriteU16(bytes, i + 3, a);
                 }
                 ms.Write(bytes, 0, n * 2);
             }
             return scan;
         }
 
-        /// <summary>Reinhard 算子只吃 RGBA 交错 4 步长；3 通道浮点档不具备条件（调用方须播报）。</summary>
-        public static bool CanToneMap(JxrHighBitFrame f) => f.Channels == 4;
+        /// <summary>旧签名（只用于历史调用/探针）：整数 sRGB 直通、浮点线性→sRGB、可选 4 通道 Reinhard。</summary>
+        public static JxrFrameStats EncodeToPam16(JxrHighBitFrame f, string pamPath, bool useReinhard)
+        {
+            var plan = new JxrColorPlan
+            {
+                SourceCurve = f.Kind == JxrSampleKind.UInt16 ? TransferCurve.Srgb : TransferCurve.Linear,
+                SourceNitsOfLinearOne = TransferCurve.SdrWhiteNits,
+                IntCopy = f.Kind == JxrSampleKind.UInt16,
+                SourceFullRange = true,
+                TargetCurve = TransferCurve.Srgb,
+                TargetNitsOfLinearOne = TransferCurve.SdrWhiteNits,
+            };
+            if (useReinhard && f.Channels == 4) plan.Tone.Mode = ToneMapMode.ReinhardSegmented;
+            return EncodeToPam16(f, pamPath, plan);
+        }
 
-        /// <summary>整帧扫描：峰值 / 越白样本数 / alpha 区间。整数档的 Peak 是编码值/65535、OverWhite 恒 0。</summary>
-        public static JxrFrameStats Scan(JxrHighBitFrame f)
+        /// <summary>3 通道与 4 通道都可做统一线性域 tone map（旧实现只允许 RGBA 是历史限制）。</summary>
+        public static bool CanToneMap(JxrHighBitFrame f) => f.Channels is 3 or 4;
+
+        /// <summary>整帧扫描：原始峰值 / 线性峰值 / 越白样本数 / alpha 区间。峰值源只来自像素。</summary>
+        public static JxrFrameStats Scan(JxrHighBitFrame f) => Scan(f, new JxrColorPlan
+        {
+            SourceCurve = f.Kind == JxrSampleKind.UInt16 ? TransferCurve.Srgb : TransferCurve.Linear,
+            IntCopy = f.Kind == JxrSampleKind.UInt16,
+        });
+
+        public static JxrFrameStats Scan(JxrHighBitFrame f, JxrColorPlan plan)
         {
             int n = f.Width * f.Height * f.Channels;
             float peak = 0f, aMin = float.MaxValue, aMax = float.MinValue;
+            double linearPeak = 0;
             long overWhite = 0, rgbCount = 0;
 
-            if (f.Kind == JxrSampleKind.UInt16)
+            for (int i = 0; i < n; i++)
             {
-                for (int i = 0; i < n; i++)
+                float v = ReadSampleFloat(f, i);
+                if (i % f.Channels < 3)
                 {
-                    float v = BinaryPrimitives.ReadUInt16LittleEndian(f.Samples.AsSpan(i * 2)) / 65535f;
-                    if (i % f.Channels < 3) { rgbCount++; if (v > peak) peak = v; }
-                    else { if (v < aMin) aMin = v; if (v > aMax) aMax = v; }
+                    rgbCount++;
+                    if (v > peak) peak = v;
+                    double lin = DecodeSampleToLinear(v, plan);
+                    if (lin > linearPeak) linearPeak = lin;
+                    if (lin > 1.0001) overWhite++;
                 }
-            }
-            else
-            {
-                for (int i = 0; i < n; i++)
+                else
                 {
-                    float v = ReadSampleFloat(f, i);
-                    if (i % f.Channels < 3)
-                    {
-                        rgbCount++;
-                        if (v > peak) peak = v;
-                        if (v > 1.0001f) overWhite++;
-                    }
-                    else { if (v < aMin) aMin = v; if (v > aMax) aMax = v; }
+                    if (v < aMin) aMin = v;
+                    if (v > aMax) aMax = v;
                 }
             }
             if (f.Channels == 3) { aMin = 1f; aMax = 1f; }
             return new JxrFrameStats(peak, overWhite, rgbCount,
-                aMin == float.MaxValue ? 1f : aMin, aMax == float.MinValue ? 1f : aMax);
+                aMin == float.MaxValue ? 1f : aMin, aMax == float.MinValue ? 1f : aMax,
+                linearPeak, linearPeak * TransferCurve.SdrWhiteNits);
+        }
+
+        /// <summary>源样本 → 引擎线性域（1.0 = SDR 白 203nit）。有限范围在这里展开，曲线在这里取反。</summary>
+        private static double DecodeSampleToLinear(float encoded, JxrColorPlan plan)
+        {
+            double e = encoded;
+            if (!plan.SourceFullRange)
+                e = (e - 16.0 / 256.0) / (219.0 / 256.0);
+            double lin = plan.SourceCurve.ToLinear(e);
+            return lin * plan.SourceNitsOfLinearOne / TransferCurve.SdrWhiteNits;
+        }
+
+        /// <summary>引擎线性域 → 目标编码。目标曲线与目标 nits 都由计划给定。</summary>
+        private static double EncodeLinearToTarget(double linear, JxrColorPlan plan)
+        {
+            double rel = linear * TransferCurve.SdrWhiteNits / plan.TargetNitsOfLinearOne;
+            // sRGB 目标复用唯一一份 16-bit 编码核（gate ⑤ 的存在锁）；其它曲线走 TransferCurve。
+            if (plan.TargetCurve.Kind == TransferCurve.CurveKind.Parametric
+                && Math.Abs(plan.TargetNitsOfLinearOne - TransferCurve.SdrWhiteNits) < 1e-6)
+                return SimdPixelOps.FloatToSrgb16Scalar((float)Math.Clamp(rel, 0.0, 1.0)) / 65535.0;
+            return plan.TargetCurve.FromLinear(Math.Clamp(rel, 0.0, 1.0));
+        }
+
+        private static void WriteU16(byte[] bytes, int index, float v)
+        {
+            ushort u = (ushort)Math.Clamp((long)MathF.Round(Math.Clamp(v, 0f, 1f) * 65535f), 0L, 65535L);
+            BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(index * 2), u);
         }
 
         private static void LoadBand(JxrHighBitFrame f, int y0, int n, float[] into)
         {
-            // Samples 本身就是 byte[] ⇒ 其长度与任何带内偏移必然落在 int 范围，这里不做 long 往返。
             int off = y0 * f.Width * f.Channels * f.BytesPerSample;
             var src = f.Samples.AsSpan(off);
-            // ⚠ 三档**必须三分支**（2026-10-21 复核抓到的真缺陷）：旧写法 `if (Float32) … else 当半浮点`
-            //   把 **UInt16 臂（`-c 23`/`-c 10` 出的 64bpp/48bpp 整数 TIFF）也按 IEEE 半浮点解码** ⇒
-            //   32816/55/65315 变成 0/3/0（实测 maxdiff=65535）。`Scan`/`ReadSampleFloat` 本来就是三档，
-            //   只有这里漏了 ⇒ 读数行（kind=UInt16、peak 正确）反而会掩盖像素是坏的。
-            if (f.Kind == JxrSampleKind.Float32)
-                for (int i = 0; i < n; i++) into[i] = BinaryPrimitives.ReadSingleLittleEndian(src[(i * 4)..]);
-            else if (f.Kind == JxrSampleKind.HalfFloat16)
-                for (int i = 0; i < n; i++)
-                    into[i] = (float)BitConverter.UInt16BitsToHalf(BinaryPrimitives.ReadUInt16LittleEndian(src[(i * 2)..]));
-            else
-                for (int i = 0; i < n; i++)
-                    into[i] = BinaryPrimitives.ReadUInt16LittleEndian(src[(i * 2)..]) / 65535f;
+            switch (f.Kind)
+            {
+                case JxrSampleKind.Float32:
+                    for (int i = 0; i < n; i++) into[i] = BinaryPrimitives.ReadSingleLittleEndian(src[(i * 4)..]);
+                    break;
+                case JxrSampleKind.Fixed32:
+                    for (int i = 0; i < n; i++)
+                        into[i] = BinaryPrimitives.ReadInt32LittleEndian(src[(i * 4)..]) / 16777216f; // s7.24
+                    break;
+                case JxrSampleKind.Fixed16:
+                    for (int i = 0; i < n; i++)
+                        into[i] = BinaryPrimitives.ReadInt16LittleEndian(src[(i * 2)..]) / 8192f; // s2.13
+                    break;
+                case JxrSampleKind.HalfFloat16:
+                    for (int i = 0; i < n; i++)
+                        into[i] = (float)BitConverter.UInt16BitsToHalf(BinaryPrimitives.ReadUInt16LittleEndian(src[(i * 2)..]));
+                    break;
+                default:
+                    for (int i = 0; i < n; i++)
+                        into[i] = BinaryPrimitives.ReadUInt16LittleEndian(src[(i * 2)..]) / 65535f;
+                    break;
+            }
         }
 
         private static float ReadSampleFloat(JxrHighBitFrame f, int i) => f.Kind switch
         {
             JxrSampleKind.Float32 => BinaryPrimitives.ReadSingleLittleEndian(f.Samples.AsSpan(i * 4)),
+            JxrSampleKind.Fixed32 => BinaryPrimitives.ReadInt32LittleEndian(f.Samples.AsSpan(i * 4)) / 16777216f,
+            JxrSampleKind.Fixed16 => BinaryPrimitives.ReadInt16LittleEndian(f.Samples.AsSpan(i * 2)) / 8192f,
             JxrSampleKind.HalfFloat16 => (float)BitConverter.UInt16BitsToHalf(
                 BinaryPrimitives.ReadUInt16LittleEndian(f.Samples.AsSpan(i * 2))),
             _ => BinaryPrimitives.ReadUInt16LittleEndian(f.Samples.AsSpan(i * 2)) / 65535f,

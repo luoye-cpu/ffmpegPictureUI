@@ -1003,8 +1003,8 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
                             "", "none", "reinhard", "hable", "mobius", "bt2446a", "bt2390");
                         // ⚠⚠ 2026-10-05：标记"用户**显式**写了本参数"。
                         //   动机：`ColorToneMap` 的默认值就是 `"none"` ⇒「显式要 none」与"没提"同形，
-                        //   而 `ColorIntentFactory` 的自动兜底（HDR→SDR ⇒ 自动 Hable）写在 `else` 分支里
-                        //   ⇒ **显式 `--color-tone-map none` 会被静默升级成 Hable**（实测：与 hable 产物逐字节相同）。
+                        //   而 `ColorIntentFactory` 的自动兜底（HDR→SDR ⇒ 自动 Mobius）写在 `else` 分支里
+                        //   ⇒ **显式 `--color-tone-map none` 会被静默升级成 Mobius**（2026-11-18 默认切换前实测：与 hable 产物逐字节相同）。
                         //   ⇒ 用本标志让"显式 none"可识别，显式选择**优先于**自动兜底。
                         options.ColorToneMapExplicit = true;
                         break;

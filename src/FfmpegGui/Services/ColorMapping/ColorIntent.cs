@@ -163,6 +163,8 @@ public sealed class ColorIntent
     public ManualIntent? Manual;
 
     public ColorSpaceDescriptor? Source;
+    /// <summary>源 ICC 三态（Present/Absent/Unreadable）；由意图装配从探测缓存带入。</summary>
+    public SourceIccStatus SourceIccStatus = SourceIccStatus.Absent;
     /// <summary>用户/策略指定的目标空间；null = auto（看齐源）。</summary>
     public ColorSpaceDescriptor? Target;
     /// <summary>目标是否由用户显式指定（S4 或"选了目标色域下拉"）。</summary>
@@ -209,9 +211,8 @@ public sealed class ColorIntent
     public string? FaithfulIccPath;
     /// <summary>
     /// 色调映射算子是**自动**采用的（非用户显式指定）。当前唯一来源：HDR 源 + 容器不支持 HDR
-    /// ⇒ 自动用内部默认曲线 `hable`（对齐传统链的既有行为，见 `ColorIntentFactory`）。
-    /// 用途：让决策日志能区分"用户要的"与"系统兜的"，避免看起来像静默降级。
-    /// </summary>
+    /// ⇒ 自动用内部默认曲线 `mobius`（对齐传统链的既有行为，见 `ColorIntentFactory`）。
+    /// 用途：让决策日志能区分"用户要的"与"系统兜的"，避免看起来像静默降级。</summary>
     public bool ToneMapAuto;
     /// <summary>请求的色调映射算子（None = 不映射；与 ToneMapRequested 同时成立才生效）。</summary>
     public ToneMapMode ToneMap = ToneMapMode.None;

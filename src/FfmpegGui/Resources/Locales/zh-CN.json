@@ -388,7 +388,7 @@
   "gainmap.metadata.iso": "ISO 21496-1（默认）",
   "gainmap.metadata.xmp": "XMP（hdrgm）",
   "gainmap.metadata.both": "两者都写",
-  "gainmap.metadata.note": "只影响 JPEG。选「ISO」时只按 XMP 读的老软件会看不到 HDR；需要它们请选「两者都写」。AVIF（tmap）/JXL（jhgm）由容器承载 ISO 21496-1，与此设置无关。",
+  "gainmap.metadata.note": "只影响 JPEG。HDR 源保持默认「ISO」时会自动补写 XMP hdrgm（实际落成两者都写），让只认 XMP 的 Ultra HDR 查看器也能看到 HDR；显式选「XMP」或「两者都写」按你的选择。AVIF（tmap）/JXL（jhgm）由容器承载 ISO 21496-1，与此设置无关。",
   "gainmap.type": "增益图类型",
   "gainmap.type.gray": "灰度（体积小）",
   "gainmap.type.rgb": "RGB 多通道（色彩更准）",

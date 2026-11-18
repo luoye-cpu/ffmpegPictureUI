@@ -28,6 +28,8 @@ namespace FfmpegGui.Services
         private static bool _attempted;
         /// <summary>把"清缓存 → 5 级扫描 → 发布结果"整体串行化。</summary>
         private static readonly object _gate = new();
+        /// <summary>候选 exiftool 的实际可运行性（path → 是否通过 -json 自读）；同一进程只验证一次。</summary>
+        private static readonly Dictionary<string, bool> _runnable = new(StringComparer.OrdinalIgnoreCase);
 
         /// <summary>
         /// 复位缓存 ⇒ 允许重新探测。**必须在**"用户改了 exiftool 路径 / 点重新检测 / 换了工具目录"
@@ -35,7 +37,7 @@ namespace FfmpegGui.Services
         /// </summary>
         public static void ClearCache()
         {
-            lock (_gate) { _detected = false; _attempted = false; _detectedPath = null; }
+            lock (_gate) { _detected = false; _attempted = false; _detectedPath = null; _runnable.Clear(); }
         }
 
         /// <summary>
@@ -216,7 +218,11 @@ namespace FfmpegGui.Services
                     //   以 `base64:` 前缀放进同一条 JSON（实测键 `ICC_Profile:ICC_Profile`，
                     //   且不带 `-a` 也能取到 `ICC_Profile:ProfileDescription`），故一次调用即可两样都拿到。
                     //   消费者只有 `FfmpegCommandBuilder.ProbeInputColorMetadataCore`（全仓唯一调用点）。
-                    Arguments = $"-json -G -ColorSpace -BitsPerSample -ColorType -SRGBRendering -PhotometricInterpretation -ProfileDescription -b -icc_profile \"{imagePath}\"",
+                    // ⚠ 2026-11-18：`-ProfileDescription` 已移除。对 JPEG 等没有该 tag 的容器，
+                    //   exiftool 返回 exit 1（实测 `src_photo.jpg`），导致整条合并探测被判失败 ⇒
+                    //   F-12 的 ICC 描述符恒为 null、CarryIcc 被误判成“读不到”。ICC 描述由
+                    //   `IccProfileService.ExtractIccFromBase64` 从 ICC 头里解析，不依赖这个 tag。
+                    Arguments = $"-json -G -ColorSpace -BitsPerSample -ColorType -SRGBRendering -PhotometricInterpretation -b -icc_profile \"{imagePath}\"",
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,
                     UseShellExecute = false,
@@ -293,8 +299,7 @@ namespace FfmpegGui.Services
             var manual = AppSettingsService.Current.ExifToolPath;
             if (!string.IsNullOrWhiteSpace(manual) && File.Exists(manual))
             {
-                _detectedPath = ResolveSafeExifToolPath(manual);
-                if (_detectedPath != null) return;
+                if (TryUseCandidate(manual, log)) return;
             }
 
             // ── ② PLAN 便携包自动检测 ──
@@ -304,7 +309,7 @@ namespace FfmpegGui.Services
                 var planFound = PlatformServices.TryFindInPlanFolder(PlatformServices.Exiftool);
                 if (planFound == null)
                     planFound = PlatformServices.TryFindInPlanFolder("exiftool(-k).exe");
-                if (planFound != null) { _detectedPath = ResolveSafeExifToolPath(planFound); if (_detectedPath != null) return; }
+                if (planFound != null && TryUseCandidate(planFound, log)) return;
             }
             catch { }
 
@@ -321,11 +326,7 @@ namespace FfmpegGui.Services
                 foreach (var name in names)
                 {
                     var candidate = Path.Combine(dir, name);
-                    if (File.Exists(candidate))
-                    {
-                        _detectedPath = ResolveSafeExifToolPath(candidate);
-                        if (_detectedPath != null) return;
-                    }
+                    if (File.Exists(candidate) && TryUseCandidate(candidate, log)) return;
                 }
             }
 
@@ -334,18 +335,98 @@ namespace FfmpegGui.Services
             {
                 var extended = ExternalToolsDetector.FindToolInExtendedPaths(
                     PlatformServices.Exiftool, $"*{PlatformServices.Exiftool}*", log);
-                if (extended != null) { _detectedPath = ResolveSafeExifToolPath(extended); if (_detectedPath != null) return; }
+                if (extended != null && TryUseCandidate(extended, log)) return;
             }
             catch { }
 
             // ── ⑤ 系统 PATH ──
             foreach (var name in names)
             {
-                if (TryFindInPath(name, out var pathFound, log) && pathFound != null)
+                if (TryFindInPath(name, out var pathFound, log) && pathFound != null
+                    && TryUseCandidate(pathFound, log)) return;
+            }
+        }
+
+        /// <summary>
+        /// 候选路径必须**先能跑起来**才算“可用”。只看文件存在会把 exiftool 启动器
+        /// （缺 perl532.dll 时 exit 126）判成可用 ⇒ 上层按“exiftool 已就绪”走真实调用，
+        /// 每条元数据都失败并拖到超时；同时 UI 绿色 ✅ 与事实相反。
+        /// <para>用 `-ver` 做一次最小启动验证；失败按“没有这玩意”处理，让 ffprobe/容器探针回退。</para>
+        /// </summary>
+        private static bool TryUseCandidate(string candidatePath, Action<string>? log)
+        {
+            var resolved = ResolveSafeExifToolPath(candidatePath);
+            if (resolved == null) return false;
+            bool runnable;
+            lock (_gate)
+            {
+                if (_runnable.TryGetValue(resolved, out var cached)) runnable = cached;
+                else runnable = IsExifToolRunnable(resolved, out string? _);
+            }
+            string? failure = null;
+            if (!runnable)
+                failure = "自读验证未通过";
+            else
+            {
+                lock (_gate) { _runnable[resolved] = true; }
+                _detectedPath = resolved;
+                return true;
+            }
+            // 缓存失败也记住，避免每次 Detect(force) 都重启一条 exiftool 启动器。
+            lock (_gate) { _runnable[resolved] = false; }
+            var msg = $"[exiftool] 不可用（{failure}）⇒ 本次按未安装处理：{Path.GetFileName(resolved)}";
+            if (log != null) log(msg + "\n"); else System.Diagnostics.Trace.WriteLine(msg);
+            return false;
+        }
+
+        private static bool IsExifToolRunnable(string exe, out string? failure)
+        {
+            failure = null;
+            try
+            {
+                using var p = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
                 {
-                    _detectedPath = ResolveSafeExifToolPath(pathFound);
-                    if (_detectedPath != null) return;
+                    FileName = exe,
+                    // `-ver` 由启动器直接打印，**不加载 Perl**（缺 perl532.dll 时仍能返回 13.61）。
+                    // 这里让 exiftool 读它自己的文件：走完整的 Perl 初始化 + JSON 输出路径，
+                    // 能抓住“启动器在、运行库缺”的典型假阳性。
+                    Arguments = $"-json -G -ColorSpace \"{exe}\"",
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    StandardOutputEncoding = Encoding.UTF8,
+                    StandardErrorEncoding = Encoding.UTF8,
+                    WorkingDirectory = Path.GetDirectoryName(exe) ?? Environment.CurrentDirectory,
+                });
+                if (p == null) { failure = "进程启动失败"; return false; }
+                // 先挂读取再等退出：exiftool 的 JSON 自读输出可能超过 stdout 管道缓冲，
+                // `WaitForExit` 先跑会与子进程互相等（表现为超时/误判，UI 频发 Detect 时能拖到分钟级）。
+                var stdoutTask = p.StandardOutput.ReadToEndAsync();
+                p.BeginErrorReadLine();
+                if (!p.WaitForExit(5000))
+                {
+                    try { p.Kill(entireProcessTree: true); } catch { }
+                    failure = "启动超时 5s";
+                    return false;
                 }
+                var stdout = stdoutTask.GetAwaiter().GetResult().Trim();
+                if (p.ExitCode != 0)
+                {
+                    failure = $"exit {p.ExitCode}";
+                    return false;
+                }
+                if (string.IsNullOrWhiteSpace(stdout) || !stdout.Contains("\"SourceFile\"", StringComparison.Ordinal))
+                {
+                    failure = "无可解析的 JSON 输出";
+                    return false;
+                }
+                return true;
+            }
+            catch (Exception ex)
+            {
+                failure = ex.Message;
+                return false;
             }
         }
 

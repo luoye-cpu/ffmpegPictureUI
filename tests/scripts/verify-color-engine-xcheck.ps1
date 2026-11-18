@@ -102,8 +102,8 @@ foreach ($img in @("bars16.png","t2.png")) {
   }
 }
 # ── 2026-09-27 新增：**HDR→SDR 契约以自研管线为准**（维护者定案，任务 #55）⇒ 偏离必须点名 ──────────
-#   定案内容：引擎口径 = `Hable + white=203nit`，且仅出口语义本身是 HDR 时才发 `intensity_target`；
-#   传统管线 = ffmpeg `tonemap=hable` 收满量程、SDR 出口不发 ⇒ 同一份 HDR 源两路码值域稳定差 ~10 dB
+#   定案内容：引擎默认口径 = `Mobius + white=203nit`，且仅出口语义本身是 HDR 时才发 `intensity_target`；
+#   传统管线默认 = ffmpeg `tonemap=mobius`、SDR 出口不发 ⇒ 同一份 HDR 源两路码值域稳定差 ~10 dB
 #   （实测取证 `tests/output/t44/`、登记在 FIX_PLAN 的 #44 收口段末）。
 #   ⇒ 既然"以自研为准"，`--color-engine auto` 因结构原因（DNG / 动画）回落到传统管线时**不许静默**：
 #     必须同时出现「本次不适用引擎」与「tone-map contract differs … in-house engine … is the standard」两行。

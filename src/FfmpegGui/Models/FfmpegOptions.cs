@@ -313,7 +313,7 @@ namespace FfmpegGui.Models
             get => _colorOutMatrix;
             set => _colorOutMatrix = Services.ColorSpaceRegistry.NormalizeOutMatrixToken(value);
         }
-        /// <summary>HDR→SDR tonemap 曲线: null/"hable"(默认)/"mobius"/"reinhard"。仅对 HDR 降级生效。</summary>
+        /// <summary>HDR→SDR tonemap 曲线: null/"mobius"(默认)/"hable"/"reinhard"。仅对 HDR 降级生效。</summary>
         public string? TonemapCurve { get; set; }
         public int Threads { get; set; } = ComputeAutoThreads();
         /// <summary>
@@ -707,13 +707,13 @@ namespace FfmpegGui.Models
         /// 用户是否**显式**写了 `--color-tone-map`（2026-10-05 新增）。
         /// <para><b>为什么必须与 <see cref="ColorToneMap"/> 的值分开</b>：该属性的默认值就是 `"none"`，
         /// 于是「用户明确要 <b>不映射</b>」与「用户没提这件事」在值上**完全同形**。
-        /// 而 `ColorIntentFactory` 有一条**自动兜底**：HDR 源 + SDR 结局 ⇒ 自动采用 Hable
-        /// （`ColorIntentFactory.cs:287-315`，动机是"GUI 不暴露曲线，否则 HDR→JPEG 无路可走"）。
-        /// 该兜底写在 `else` 分支里 ⇒ **显式 `--color-tone-map none` 会被它静默升级成 Hable**
+        /// 而 `ColorIntentFactory` 有一条**自动兜底**：HDR 源 + SDR 结局 ⇒ 自动采用 Mobius
+        /// （`ColorIntentFactory.cs` 的 HDR→SDR 自动分支，动机是"GUI 不暴露曲线，否则 HDR→JPEG 无路可走"）。
+        /// 该兜底写在 `else` 分支里 ⇒ **显式 `--color-tone-map none` 会被它静默升级成 Mobius**
         /// —— 用户的明确选择被覆盖，且日志只说"自动采用"。</para>
-        /// <para>实测（2026-10-05）：`--color-tone-map none` 与 `--color-tone-map hable`
+        /// <para>实测（2026-10-05，当时默认仍为 Hable）：`--color-tone-map none` 与 `--color-tone-map hable`
         /// 的产物**逐字节相同**（两者实际都在跑 Hable）；内核运行时探针亦显示
-        /// `mode=Hable` 而传入的是 `none`。</para>
+        /// `mode=Hable` 而传入的是 `none`。2026-11-18 默认已切换为 Mobius，本标志的语义不变。</para>
         /// <para>⇒ 本标志让"显式 none"可被识别，从而**不被自动兜底覆盖**（显式选择优先）。</para>
         /// </summary>
         public bool ColorToneMapExplicit { get; set; } = false;

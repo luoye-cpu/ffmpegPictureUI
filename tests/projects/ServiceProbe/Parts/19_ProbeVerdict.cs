@@ -180,8 +180,14 @@ namespace ServiceProbe
             {
                 var pos = CE.Plan(CarryJpg(srgbTag, "jpg"));
                 Note(pos);
-                Check(pos.Action == CA.None && pos.UnlabeledAssumedSrgb && Has(pos, DG.UnlabeledAssumedSrgb),
-                    $"UnlabeledAssumedSrgb 正向：S2 × sRGB标签源 × jpg 必须登记该 Code（实为 {Show(pos)}）");
+                // 2026-11-18：显式 CarryIcc + 源仅 CICP + 容器无 CICP 通路（JPEG）的现行口径是
+                // **生成等价标准 ICC（ICC-only）**，不是“无标注直通”。旧断言按 2b 写，已过期；
+                // UnlabeledAssumedSrgb 的正向覆盖仍由下面 ContainerCannotCarryIcc 格承担。
+                Check(pos.Action == CA.None && pos.AttachIcc
+                      && pos.IccPrimaries == "bt709" && pos.IccTrc == "iec61966-2-1"
+                      && !Has(pos, DG.UnlabeledAssumedSrgb),
+                      $"CarryIcc×CICP-only×jpg 必须生成 sRGB ICC-only，不得冒充 Unlabeled（实为 {Show(pos)}"
+                    + $" attachIcc={pos.AttachIcc} icc={pos.IccPrimaries}/{pos.IccTrc}）");
 
                 // 负控：只把**容器 jpg → png**（可写 CICP）⇒ 走"继承 CICP 标签"形态，该 Code 必须消失。
                 var neg = CE.Plan(CarryJpg(srgbTag, "png"));

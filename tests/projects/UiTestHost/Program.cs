@@ -2013,11 +2013,11 @@ namespace UiTestHost
         {
             Safe("O1/O2/O3 GainMap 开关保持目标三项", () =>
             {
-                var gm = Find<ComboBox>("HdrModeCombo");
-                if (gm == null) { Check("O1 HdrModeCombo 存在", false, "null"); return; }
+                var gm = Find<CheckBox>("JpegGainMapCheck");
+                if (gm == null) { Check("O1 JpegGainMapCheck 存在", false, "null"); return; }
 
                 SweepReset();
-                gm.SelectedIndex = 0; Pump(8);      // ⚠ SweepReset 不含本开关 ⇒ 本组自己归零，避免跨组串状态
+                gm.IsChecked = false; Pump(8);      // ⚠ SweepReset 不含本开关 ⇒ 本组自己归零，避免跨组串状态
                 SetFormat("JPEG"); Pump(10);
 
                 var csCombo = Find<ComboBox>("ColorSpaceCombo");
@@ -2046,7 +2046,7 @@ namespace UiTestHost
                 Pump(10);
 
                 // ③ 真实 UI 路径：勾上 GainMap（XAML `IsCheckedChanged` ⇒ 处理器）
-                gm.SelectedIndex = 1; Pump(14);
+                gm.IsChecked = true; Pump(14);
                 var onCs = csCombo?.SelectedItem as string;
                 var onBd = bdCombo?.SelectedItem as string;
                 var onQ = qSlider?.Value ?? double.NaN;
@@ -2055,7 +2055,7 @@ namespace UiTestHost
                 Check("O2c 开 GainMap 后质量保持", Math.Abs(onQ - pickQ) < 0.5, $"期望={pickQ} 实={onQ}（默认={defQ}）");
 
                 // ④ 再取消 —— 双向都必须保持
-                gm.SelectedIndex = 0; Pump(14);
+                gm.IsChecked = false; Pump(14);
                 var offCs = csCombo?.SelectedItem as string;
                 var offBd = bdCombo?.SelectedItem as string;
                 var offQ = qSlider?.Value ?? double.NaN;
@@ -2179,9 +2179,9 @@ namespace UiTestHost
                 if (meta == null || type == null)
                 { Check("O6 两个下拉存在（前提）", false, $"meta={meta != null} type={type != null}"); return; }
 
-                var gm = Find<ComboBox>("HdrModeCombo");
+                var gm = Find<CheckBox>("JpegGainMapCheck");
                 SetFormat("JPEG"); Pump(10);
-                if (gm != null) { gm.SelectedIndex = 1; Pump(12); }   // 开 GainMap ⇒ 面板进入真实出货构型
+                if (gm != null) { gm.IsChecked = true; Pump(12); }   // 开 GainMap ⇒ 面板进入真实出货构型
 
                 Check("O6a 下拉恰好三档", meta.ItemCount == 3, $"items={meta.ItemCount}");
                 Check("O6b 默认档 = iso（索引 0）", meta.SelectedIndex == 0, $"idx={meta.SelectedIndex}");

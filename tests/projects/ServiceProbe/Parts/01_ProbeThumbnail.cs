@@ -40,7 +40,9 @@ namespace ServiceProbe
         /// </summary>
         private static System.Threading.Tasks.Task ProbeThumbnail(string[] args)
         {
-            const string dir = "tests/output/validate";
+            // 绝对路径：下面是真跑 exiftool/ffmpeg 的行为断言，子进程 WorkingDirectory 在工具目录，
+            // 传相对路径会让“文件存在”与 exiftool 看到的路径分叉（T11 会全红成 declared=0/extracted=0）。
+            var dir = System.IO.Path.GetFullPath("tests/output/validate");
             var st = FfmpegGui.Services.AppSettingsService.Current;
             var ff = st.FfmpegPath;
             var et = st.ExifToolPath;

@@ -172,7 +172,7 @@ namespace FfmpegGui.Services
             // ═══════════════════════════════════════════════════
             // ── 色彩策略（取代 IccMode）：控制「是否转换 + 如何标定(ICC/CICP)」；
             //    具体取舍（preserveSource/stripIcc/iccgen/链）已在裁决点完成，此处只剩日志与元数据映射需要它。
-            var strategy = options.ColorStrategy;
+            var strategy = EffectiveColorStrategy(options, inputPath);
 
             // ── 按决定写色彩链（唯一的“决定→命令行”换算点；换算规则见 DecideOutputColor）──
             foreach (var chain in dec.PixelChains) AppendVideoFilter(args, chain, EnsureGroupForm(), groupLabelReset);
@@ -1819,6 +1819,8 @@ namespace FfmpegGui.Services
             /// null = 无 ICC / ICC 读不出度量（调用方按 CICP 标签路径继续）。
             /// </summary>
             public ColorMapping.ColorSpaceDescriptor? iccDescriptor;
+            /// <summary>源 ICC 三态；exiftool 不可用/读取失败时不得把空标签当成“源无 ICC”。</summary>
+            public ColorMapping.SourceIccStatus iccStatus;
             /// <summary>源峰值亮度 (nits)，来自 HDR 静态元数据；0=未读到（调用方必须回退到源曲线名义峰值并写明来源）。</summary>
             public double peakNits;
             /// <summary>peakNits 的来源（"MaxCLL" / "BS.2086 mastering"，null=未读到）——日志须能自证峰值不是猜的。</summary>
@@ -1827,6 +1829,14 @@ namespace FfmpegGui.Services
             public int width;
             /// <summary>图像高度（像素），0 表示未成功探测</summary>
             public int height;
+            /// <summary>JXR 容器识别是否参与（true ⇒ 下列 jxr* 字段有效，探测不再依赖 exiftool）。</summary>
+            public bool sourceIsJxr;
+            public string? jxrPixelFormat;
+            public int jxrChannels;
+            public bool jxrPremultiplied;
+            public bool jxrFloatOrFixed;
+            public bool jxrPtmPresent;
+            public int? jxrColorSpaceTag;
         }
 
         // ── ffprobe 探测缓存：同一输入文件在短时间内只探测一次 ──
@@ -1844,6 +1854,11 @@ namespace FfmpegGui.Services
             Action<string>? log = null, CancellationToken ct = default)
         {
             if (inputPath == "-") return default;
+            // exiftool 进程的 WorkingDirectory 固定在工具目录（见 ExifToolService），
+            // 相对输入路径会被它按工具目录解析而不是调用方 cwd ⇒ 相对路径一律先锚定到调用方 cwd。
+            // 生产 CLI 多传绝对路径，但 ServiceProbe / 测试宿主会传仓库相对路径；不归一化会把
+            // “文件存在”探成 exiftool exit 1，最终把 ICC 描述符误判成 null。
+            try { inputPath = Path.GetFullPath(inputPath); } catch { }
             lock (ProbeCacheLock)
             {
                 if (ProbeCache.TryGetValue(inputPath, out var entry)
@@ -1896,6 +1911,43 @@ namespace FfmpegGui.Services
         public static ColorMapping.ColorSpaceDescriptor? ProbeInputIccDescriptor(string inputPath,
             Action<string>? log = null, CancellationToken ct = default)
             => GetCachedProbe(inputPath, log, ct).iccDescriptor?.Clone();
+
+        /// <summary>源 ICC 的存在性三态（探测缓存同源；不得用 Descriptor==null 代替）。</summary>
+        public static ColorMapping.SourceIccStatus ProbeInputIccStatus(string inputPath,
+            Action<string>? log = null, CancellationToken ct = default)
+            => GetCachedProbe(inputPath, log, ct).iccStatus;
+
+        /// <summary>
+        /// exiftool 不可用时的 ICC **存在性**容器探针（不解析 ICC，只回答“有没有”）。
+        /// <para>
+        /// 这是无 exiftool 机器的安全回退：能眼看见容器里带 ICC ⇒ 返回 true（调用方按
+        /// Unreadable 处理，拒绝用 sRGB 冒充）；能确认没有 ⇒ false（源无 ICC）；
+        /// 容器形态不认识 / 太大 / 读取失败 ⇒ null（调用方按 Unreadable 处理）。绝不返回
+        /// “有但不解析”的中间态给执行侧：那会退化成静默生成标准 sRGB。
+        /// </para>
+        /// </summary>
+        private static bool? ProbeContainerIccPresence(string inputPath)
+        {
+            try
+            {
+                var fi = new System.IO.FileInfo(inputPath);
+                if (!fi.Exists || fi.Length <= 0 || fi.Length > 64L * 1024 * 1024) return null;
+                string ext = System.IO.Path.GetExtension(inputPath).ToLowerInvariant();
+                // 只扫容器头/元数据常见区域；读全文件保证 PNG iCCP 在 IDAT 后也命中。
+                var ascii = System.Text.Encoding.ASCII.GetString(System.IO.File.ReadAllBytes(inputPath));
+                return ext switch
+                {
+                    ".jpg" or ".jpeg" or ".jpegli" => ascii.Contains("ICC_PROFILE", StringComparison.Ordinal),
+                    ".png" => ascii.Contains("iCCP", StringComparison.Ordinal),
+                    ".webp" => ascii.Contains("ICCP", StringComparison.Ordinal),
+                    ".avif" or ".heic" or ".heif" or ".hif" =>
+                        ascii.Contains("prof", StringComparison.Ordinal)
+                        || ascii.Contains("rICC", StringComparison.Ordinal),
+                    _ => null,
+                };
+            }
+            catch { return null; }
+        }
 
         /// <summary>
         /// 点三：判定并解析超广色域「像素原样 + 仅靠 ICC 描述」的保真 ICC。全部条件满足才生效：
@@ -1957,12 +2009,59 @@ namespace FfmpegGui.Services
         /// </summary>
         /// <param name="log">日志回调（取消/超时分支点名用；null ⇒ 退回 Trace.WriteLine）</param>
         /// <param name="ct">取消令牌（`#26`：上游 15 个调用点全部持有 `ct`，此前四级全断）</param>
+        internal static ColorMetadata BuildJxrColorMetadata(JxrContentInfo jxr)
+        {
+            var meta = new ColorMetadata
+            {
+                sourceIsJxr = true,
+                bitDepth = jxr.PixelFormat.BitsPerSample,
+                colorPrimaries = jxr.Descriptor?.PrimariesToken,
+                colorTrc = jxr.Descriptor?.TransferToken,
+                colorSpace = null,          // JXR 是 RGB；矩阵只对 YUV 有意义，别写假标签
+                colorRange = jxr.Ptm is { FullRange: false } ? "tv" : "pc",
+                hasAlpha = jxr.HasAlpha,
+                isRgb = jxr.PixelFormat.Family == "RGB",
+                pixFmt = null,
+                hasIccSemantics = jxr.IccBytes is { Length: > 0 },
+                iccDescriptor = jxr.Descriptor,
+                iccStatus = jxr.IccStatus,
+                sourceGamutName = jxr.Descriptor?.KnownSpaceName,
+                primariesApproximated = jxr.Descriptor is { Confidence: ColorMapping.DescriptorConfidence.CodecDefault },
+                peakNits = 0,
+                peakSource = "JXR 容器（峰值待解码实测）",
+                width = jxr.Width,
+                height = jxr.Height,
+                jxrPixelFormat = jxr.PixelFormat.Mnemonic,
+                jxrChannels = jxr.PixelFormat.Channels,
+                jxrPremultiplied = jxr.PixelFormat.Premultiplied,
+                jxrFloatOrFixed = jxr.FloatOrFixed,
+                jxrPtmPresent = jxr.Ptm != null,
+                jxrColorSpaceTag = jxr.ColorSpaceTag,
+            };
+            // ICC 存在但不可解析：保留 hasIccSemantics / iccStatus=Unreadable，不把空当成无。
+            return meta;
+        }
+
         private static ColorMetadata ProbeInputColorMetadataCore(string inputPath,
             Action<string>? log = null, CancellationToken ct = default)
         {
             var meta = new ColorMetadata();
             // 管道输入（stdin）无法探测，直接返回空结构
             if (inputPath == "-") return meta;
+
+            // ── JXR/WDP：先读容器（PIXEL_FORMAT / COLOR_SPACE / PTM / ICC），不依赖 exiftool ──
+            // T.832 的这四个标签才是 JXR 的真实语义；exiftool 对 .jxr 的 EXIF:ColorSpace 不可靠，
+            // 而 ffprobe 只能给 pix_fmt，给不出 scRGB/线性/预乘。识别失败才落回既有探测链。
+            if (JxrContentProbe.IsJxrPath(inputPath))
+            {
+                var jxr = JxrContentProbe.Probe(inputPath);
+                if (jxr.Ok)
+                {
+                    log?.Invoke("[jxr-content] " + jxr.ToJson() + "\n");
+                    return BuildJxrColorMetadata(jxr);
+                }
+                log?.Invoke($"[jxr-content] 识别失败（{jxr.Error}）⇒ 回退既有 exiftool/ffprobe 探测\n");
+            }
 
             // ── 1) exiftool 优先：EXIF ColorSpace + ICC 描述（色彩语义真相来源）──
             // 相机 JPEG 常在 EXIF 写 ColorSpace（1=sRGB, 2=Adobe RGB），ffprobe 读不到；
@@ -2011,6 +2110,7 @@ namespace FfmpegGui.Services
             //   因为"要不要试"这个判断在合并后不存在——标签与 ICC 本来就来自同一条结果。
             string? iccGuessed = null;
             ColorMapping.ColorSpaceDescriptor? iccDescriptor = null;
+            bool iccRawPresent = false;
             {
                 try
                 {
@@ -2024,6 +2124,8 @@ namespace FfmpegGui.Services
                             break;
                         }
                     }
+                    // exiftool 给了 ICC 字段但字节为空/过短/解析失败时，不能当成“源没有 ICC”。
+                    iccRawPresent = !string.IsNullOrEmpty(iccB64);
                     var (iccPath, iccDesc) = IccProfileService.ExtractIccFromBase64(iccB64, log);
                     if (iccPath != null)
                     {
@@ -2043,6 +2145,27 @@ namespace FfmpegGui.Services
             // 随探测结果一起带回：下面 `meta = ApplyIccSemantics(meta, …)` 是按值改后**接回**，
             // 不会抹掉本行（本仓踩过"按值传参丢弃修改"的同族缺陷，见下方 ⚠️ 注释）。
             meta.iccDescriptor = iccDescriptor;
+            // 三态（2026-11-18）：exiftool 不可用时不再一刀切 Unreadable —— 那会把“源本来没 ICC”
+            // 也判成“读不到”，CarryIcc 全被 exit 90 拒绝（无 exiftool 的机器上等于产品不可用）。
+            // 改用容器级存在性探针：能确认存在但解析不了 ⇒ Unreadable（fail-closed，不能拿 sRGB 冒充）；
+            // 能确认不存在 ⇒ Absent（源无 ICC，按承诺策略继续）；探针本身不确定 ⇒ Unreadable。
+            if (meta.exifReadFailed)
+                meta.iccStatus = ColorMapping.SourceIccStatus.Unreadable;
+            else if (ExifToolService.IsAvailable)
+                meta.iccStatus = iccDescriptor != null
+                    ? ColorMapping.SourceIccStatus.Present
+                    : iccRawPresent
+                        ? ColorMapping.SourceIccStatus.Unreadable
+                        : ColorMapping.SourceIccStatus.Absent;
+            else
+            {
+                var iccPresence = ProbeContainerIccPresence(inputPath);
+                meta.iccStatus = iccPresence switch
+                {
+                    false => ColorMapping.SourceIccStatus.Absent,
+                    _ => ColorMapping.SourceIccStatus.Unreadable,
+                };
+            }
 
             // ── 色彩语义决策：ICC > EXIF ColorSpace ──
             // ⚠ EXIF 的 `ColorSpace` 这里只先记成**候选**（`exifPrim`/`exifTrc`），是否采用要等 ffprobe 的
