@@ -12,6 +12,13 @@
 
 ## 📝 更新日志
 
+### v1.6.0-rc1 (2026-11-18) — JXR 真实内容识别与 HDR 出口修正
+
+- **容器识别**：按 ITU-T T.832 读取 `PIXEL_FORMAT` / `COLOR_SPACE` / `PTM_COLOR_INFO` / ICC，`JXR` 不再靠 ffprobe 猜位深与曲线；容器不可读才回退探测。
+- **HDR 出口**：`auto` 下 HDR 输入输出真实 HDR（JXL `Rec.2100/PQ`、PNG `BT.2020/PQ cICP`、AVIF `bt2020/smpte2084`）；显式 sRGB 走线性域 Mobius，显式 `none` 才按 1.0 钳位。
+- **JXR 出口元数据**：SDR 写 `COLOR_SPACE=1`，HDR 写 `PTM`；ICC 原样携带；坏 ICC 只警告不拒绝。
+- **验证**：`verify-jxr-highbitdepth` 118 PASS / 0 FAIL / 1 SKIP，`verify-jxr-backend-choice` 15 PASS / 0 FAIL。
+
 ### v1.6.0-beta17 (2026-11-16) — PNG oxipng 独立为后处理档位
 
 - **UI 独立化**：`PngOptimizerPanel` 从 `PngCodecPanel` / `AdvancedCodecPanel` 移出，放到 `StillOptionsPanel` 顶层、质量行之后。oxipng 是 PNG 后处理优化器而非编码器，因此不再受“高级编码”开关折叠。

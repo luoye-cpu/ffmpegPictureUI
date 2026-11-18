@@ -13,6 +13,13 @@ All notable changes to this project are documented in this file.
 
 ## 📝 Changelog
 
+### v1.6.0-rc1 (2026-11-18) — Real JXR content identification and HDR output fixes
+
+- **Container probe**: read `PIXEL_FORMAT` / `COLOR_SPACE` / `PTM_COLOR_INFO` / ICC per ITU-T T.832; JXR no longer guesses bit depth and transfer from ffprobe. Probing is a fallback only when the container is unreadable.
+- **HDR output**: with `auto`, HDR input now stays HDR (JXL `Rec.2100/PQ`, PNG `BT.2020/PQ cICP`, AVIF `bt2020/smpte2084`); explicit sRGB uses linear-domain Mobius, and only explicit `none` clamps at 1.0.
+- **JXR output metadata**: SDR writes `COLOR_SPACE=1`, HDR writes `PTM`; ICC is carried as-is; unreadable ICC warns but does not reject.
+- **Verification**: `verify-jxr-highbitdepth` 118 PASS / 0 FAIL / 1 SKIP; `verify-jxr-backend-choice` 15 PASS / 0 FAIL.
+
 ### v1.6.0-beta17 (2026-11-16) — PNG oxipng as an independent post-process option
 
 - **Independent UI placement**: `PngOptimizerPanel` moved out of `PngCodecPanel` / `AdvancedCodecPanel` to the top level of `StillOptionsPanel`, immediately after the quality row. oxipng is a PNG post-processor, not an encoder; this exposes it independently of the advanced-codec switch.
