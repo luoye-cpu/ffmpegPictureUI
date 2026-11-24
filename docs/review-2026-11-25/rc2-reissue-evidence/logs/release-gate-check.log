@@ -1,0 +1,14 @@
+[release-gate] GREEN verify-color-wiring              rc=0  dll=2bc80d80748c6968  log=docs/review-2026-11-25/rc2-reissue-evidence/logs/verify-color-wiring.out.txt
+[release-gate] GREEN verify-color-strategy            rc=0  dll=2bc80d80748c6968  log=docs/review-2026-11-25/rc2-reissue-evidence/logs/verify-color-strategy.out.txt
+[release-gate] GREEN verify-decision-delivery         rc=0  dll=2bc80d80748c6968  log=docs/review-2026-11-25/rc2-reissue-evidence/logs/verify-decision-delivery.out.txt
+[release-gate] GREEN verify-prophoto-faithful         rc=0  dll=2bc80d80748c6968  log=docs/review-2026-11-25/rc2-reissue-evidence/logs/verify-prophoto-faithful.out.txt
+[release-gate] GREEN verify-gainmap-isobmff           rc=0  dll=2bc80d80748c6968  log=docs/review-2026-11-25/rc2-reissue-evidence/logs/verify-gainmap-isobmff.out.txt
+[release-gate] GREEN verify-ui-host                   rc=0  dll=2bc80d80748c6968  log=docs/review-2026-11-25/rc2-reissue-evidence/logs/verify-ui-host.out.txt
+[release-gate] GREEN verify-ui-split-union            rc=0  dll=2bc80d80748c6968  log=docs/review-2026-11-25/rc2-reissue-evidence/logs/verify-ui-split-union.out.txt
+[release-gate] GREEN verify-ui-split-reproducible     rc=0  dll=2bc80d80748c6968  log=docs/review-2026-11-25/rc2-reissue-evidence/logs/verify-ui-split-reproducible.out.txt
+[release-gate] GREEN verify-probe-mirror-parity       rc=0  dll=2bc80d80748c6968  log=docs/review-2026-11-25/rc2-reissue-evidence/logs/verify-probe-mirror-parity.out.txt
+[release-gate] GREEN verify-color-out-matrix          rc=0  dll=2bc80d80748c6968  log=docs/review-2026-11-25/rc2-reissue-evidence/logs/verify-color-out-matrix.out.txt
+[release-gate] GREEN verify-module-registry           rc=0  dll=2bc80d80748c6968  log=docs/review-2026-11-25/rc2-reissue-evidence/logs/verify-module-registry.out.txt
+[release-gate] GREEN verify-release-package           rc=0  dll=068a1d8ac10f2af1  log=docs/review-2026-11-25/rc2-reissue-evidence/logs/verify-release-package.out.txt
+[release-gate] GREEN verify-package-gui-starts        rc=0  dll=f42733913c8b80cb  log=docs/review-2026-11-25/rc2-reissue-evidence/logs/verify-package-gui-starts.out.txt
+[release-gate] 全绿（13 条），允许出包。

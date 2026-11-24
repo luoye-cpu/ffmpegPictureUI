@@ -1,6 +1,6 @@
 # RELEASE_GATES — 出包前红态闸（MA-01 / GATE-02）
 
-> 状态：**机制就位，pack.ps1 尚未接线**。由后续打包批次（批次4）在 `pack.ps1` 出包前调用本闸。
+> 状态：**机制就位，pack.ps1 已接线**。`pack.ps1` 在任何复制/压缩前调用本闸（2026-11-25 复核）。
 > 本文件只定义"出包前必须跑哪些门禁、红了会怎样、清单长什么样"。
 
 ## 1. 规则（一句话）
@@ -19,6 +19,7 @@
 | 改了什么 | 出包前必跑（选你这条，不是全跑） |
 |---|---|
 | 色彩语义 / CICP / ICC / carry / 命令行决策 | `verify-color-strategy.ps1`、`verify-decision-delivery.ps1` |
+| 色彩矩阵 / 输出矩阵 / AVIF legacy M | `verify-color-out-matrix.ps1` |
 | ServiceProbe 派发包 / Check 条数 | `verify-probe-mirror-parity.ps1` |
 | PNG 出口 / pngopt / 双写 iCCP+cICP | `verify-png-optimizer.ps1`、`verify-color-wiring.ps1` |
 | UI 执行面 / 拆分件 | `verify-ui-host.ps1`、`verify-ui-split-union.ps1`、`verify-package-gui-starts.ps1` |

@@ -1,0 +1,22 @@
+  FfmpegGui -> C:\PLAN\ffmpegPictureUI\src\FfmpegGui\bin\Release\net11.0\win-x64\FfmpegGui.dll
+  GainMapTestHost -> C:\PLAN\ffmpegPictureUI\tests\projects\GainMapTestHost\bin\Release\net11.0\win-x64\GainMapTestHost.dll
+  PngCicp -> C:\PLAN\ffmpegPictureUI\tools\src\pngcicp\bin\Release\net11.0\pngcicp.dll
+  DngJxlProbe -> C:\PLAN\ffmpegPictureUI\tools\src\dngjxlprobe\bin\Release\net11.0\dngjxlprobe.dll
+  ServiceProbe -> C:\PLAN\ffmpegPictureUI\tests\projects\ServiceProbe\bin\Release\net11.0\win-x64\ServiceProbe.dll
+  Tests.Shared -> C:\PLAN\ffmpegPictureUI\tests\projects\Tests.Shared\bin\Release\net11.0\win-x64\Tests.Shared.dll
+  UiHostShared -> C:\PLAN\ffmpegPictureUI\tests\projects\UiHostShared\bin\Release\net11.0\win-x64\UiHostShared.dll
+  UiTestHost -> C:\PLAN\ffmpegPictureUI\tests\projects\UiTestHost\bin\Release\net11.0\win-x64\UiTestHost.dll
+  Tests.UiCli -> C:\PLAN\ffmpegPictureUI\tests\projects\ui-cli\bin\Release\net11.0\win-x64\Tests.UiCli.dll
+  Tests.UiColor -> C:\PLAN\ffmpegPictureUI\tests\projects\ui-color\bin\Release\net11.0\win-x64\Tests.UiColor.dll
+  Tests.UiCore -> C:\PLAN\ffmpegPictureUI\tests\projects\ui-core\bin\Release\net11.0\win-x64\Tests.UiCore.dll
+  Tests.UiMode -> C:\PLAN\ffmpegPictureUI\tests\projects\ui-mode\bin\Release\net11.0\win-x64\Tests.UiMode.dll
+  Tests.UiSweep -> C:\PLAN\ffmpegPictureUI\tests\projects\ui-sweep\bin\Release\net11.0\win-x64\Tests.UiSweep.dll
+  Tests.GainMapDecode -> C:\PLAN\ffmpegPictureUI\tests\projects\gainmap-decode\bin\Release\net11.0\win-x64\Tests.GainMapDecode.dll
+  Tests.GainMapEncode -> C:\PLAN\ffmpegPictureUI\tests\projects\gainmap-encode\bin\Release\net11.0\win-x64\Tests.GainMapEncode.dll
+  Tests.GainMapStruct -> C:\PLAN\ffmpegPictureUI\tests\projects\gainmap-struct\bin\Release\net11.0\win-x64\Tests.GainMapStruct.dll
+
+已成功生成。
+    0 个警告
+    0 个错误
+
+已用时间 00:01:16.31

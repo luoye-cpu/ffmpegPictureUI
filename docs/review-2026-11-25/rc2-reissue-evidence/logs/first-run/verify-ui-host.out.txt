@@ -1,0 +1,1784 @@
+repo root          = C:\PLAN\ffmpegPictureUI
+FFMPEGGUI_PLAN_DIR = C:\PLAN\ffmpegPictureUI\publish\PLAN
+  PASS PLAN dir exists
+  PASS host exe exists (5 拆分件: ui-core / ui-mode / ui-color / ui-sweep / ui-cli)
+  PASS source dir exists (C:\PLAN\ffmpegPictureUI\tests\output\sources)
+
+===== run: ui-core 全组 mode (timeout=120s) =====
+  PASS ui-core no timeout (elapsed 17s, limit 120s)
+----- ui-core stdout -----
+PLAN dir = C:\PLAN\ffmpegPictureUI\publish\PLAN
+tools-root=C:\PLAN\ffmpegPictureUI
+Usage: C:\PLAN\ffmpegPictureUI\publish\PLAN\jxl\bin\cjpegli.exe INPUT OUTPUT [OPTIONS...]
+ INPUT
+    the input can be PPM, PNM, PFM, PAM, PGX, PNG, APNG
+ OUTPUT
+    the compressed JPEG output file
+ -d maxError, --distance=maxError
+    Max. butteraugli distance, lower = higher quality.
+    1.0 = visually lossless (default).
+    Recommended range: 0.5 .. 3.0. Allowed range: 0.0 ... 25.0.
+    Mutually exclusive with --quality and --target_size.
+ -q QUALITY, --quality=QUALITY
+    Quality setting (is remapped to --distance).    Default is quality 90.
+    Quality values roughly match libjpeg quality.
+    Recommended range: 68 .. 96. Allowed range: 1 .. 100.
+    Mutually exclusive with --distance and --target_size.
+ --chroma_subsampling=444|440|422|420
+    Chroma subsampling setting.
+ -p N, --progressive_level=N
+    Progressive level setting. Range: 0 .. 2.
+    Default: 2. Higher number is more scans, 0 means sequential.
+ -v, --verbose
+    Verbose output; can be repeated, also applies to help (!).
+
+ -h, --help
+    Prints this help message. Add -v (up to a total of 2 times) to see more options.
+
+########## A组: 输出格式→生成命令 (UI选项生效) ##########
+[PASS] A1 JPEG
+[PASS] A2 PNG
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+[PASS] A3 WebP
+[avif] tune=vmaf is not expressible on encoder 'libwebp': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'libwebp' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif] tune=vmaf is not expressible on encoder 'libwebp': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'libwebp' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif] tune=vmaf is not expressible on encoder 'libwebp': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'libwebp' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif] tune=vmaf is not expressible on encoder 'libwebp': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'libwebp' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif] tune=vmaf is not expressible on encoder 'libwebp': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'libwebp' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif] tune=vmaf is not expressible on encoder 'libwebp': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'libwebp' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif] tune=vmaf is not expressible on encoder 'libwebp': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'libwebp' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[PASS] A4 AVIF路由(ffmpeg+.avif+crf/av1)
+[PASS] A4b AVIF非cjxl(缺陷1核心)
+      info: 编码器名已检测
+[PASS] A5 JXL
+[PASS] A6 TIFF
+
+########## B组: 参数传递 (质量/位深/色度) ##########
+[PASS] B1 质量传递
+[PASS] B2a cjpegli路由成立(前置)
+[PASS] B2b 专用色度控件值进命令
+[PASS] B2c 通用色度控件值不进命令(负控)
+[PASS] B3 位深传递
+
+########## C组: 面板显隐联动 (UI交互) ##########
+[PASS] C1 高级色彩面板
+[PASS] C1b 取消→隐藏
+[PASS] C2 高级编码面板
+[PASS] C3 exiftool可用→面板显示
+[PASS] C3b 删除模式→strip复选框禁用
+[PASS] C3c 保留模式→strip复选框启用
+[PASS] C3d exiftool不可用→面板仍可见（否则用户得不到任何解释）
+[PASS] C3d exiftool不可用→模式下拉禁用（不得再选「删除全部」）
+[PASS] C3d exiftool不可用→模式强制回「保留」
+[PASS] C3d exiftool不可用→strip复选框禁用
+[PASS] C3d exiftool不可用→提示明确说明不可用（点名 exiftool）
+[PASS] C3d 还原后 strip复选框重新启用
+⚠ [jpeg] --cjpegli-progressive ignored: this task is encoded by ffmpeg's mjpeg (the backend is not JPEG LI), which has no progressive support, so the output is baseline. Pass -e Cjpegli to encode with JPEG LI and keep progressive output.
+⚠ [jpeg] --lossless true ignored: the mjpeg encoder is lossy, so the output is lossy. The only lossless JPEG path here is DNG container compression (--format dng --dng-compression 0).
+⚠ [jpeg] --cjpegli-progressive ignored: this task is encoded by ffmpeg's mjpeg (the backend is not JPEG LI), which has no progressive support, so the output is baseline. Pass -e Cjpegli to encode with JPEG LI and keep progressive output.
+⚠ [jpeg] --lossless true ignored: the mjpeg encoder is lossy, so the output is lossy. The only lossless JPEG path here is DNG container compression (--format dng --dng-compression 0).
+⚠ [jpeg] --cjpegli-progressive ignored: this task is encoded by ffmpeg's mjpeg (the backend is not JPEG LI), which has no progressive support, so the output is baseline. Pass -e Cjpegli to encode with JPEG LI and keep progressive output.
+⚠ [jpeg] --lossless true ignored: the mjpeg encoder is lossy, so the output is lossy. The only lossless JPEG path here is DNG container compression (--format dng --dng-compression 0).
+⚠ [jpeg] --cjpegli-progressive ignored: this task is encoded by ffmpeg's mjpeg (the backend is not JPEG LI), which has no progressive support, so the output is baseline. Pass -e Cjpegli to encode with JPEG LI and keep progressive output.
+⚠ [jpeg] --lossless true ignored: the mjpeg encoder is lossy, so the output is lossy. The only lossless JPEG path here is DNG container compression (--format dng --dng-compression 0).
+⚠ [jpeg] --cjpegli-progressive ignored: this task is encoded by ffmpeg's mjpeg (the backend is not JPEG LI), which has no progressive support, so the output is baseline. Pass -e Cjpegli to encode with JPEG LI and keep progressive output.
+⚠ [jpeg] --lossless true ignored: the mjpeg encoder is lossy, so the output is lossy. The only lossless JPEG path here is DNG container compression (--format dng --dng-compression 0).
+[PASS] C4 动图面板
+[PASS] C5 RAW面板显示
+[PASS] C5b RAW时静态选项隐藏
+⚠ [jpeg] --cjpegli-progressive ignored: this task is encoded by ffmpeg's mjpeg (the backend is not JPEG LI), which has no progressive support, so the output is baseline. Pass -e Cjpegli to encode with JPEG LI and keep progressive output.
+⚠ [jpeg] --cjpegli-progressive ignored: this task is encoded by ffmpeg's mjpeg (the backend is not JPEG LI), which has no progressive support, so the output is baseline. Pass -e Cjpegli to encode with JPEG LI and keep progressive output.
+⚠ [jpeg] --cjpegli-progressive ignored: this task is encoded by ffmpeg's mjpeg (the backend is not JPEG LI), which has no progressive support, so the output is baseline. Pass -e Cjpegli to encode with JPEG LI and keep progressive output.
+⚠ [jpeg] --cjpegli-progressive ignored: this task is encoded by ffmpeg's mjpeg (the backend is not JPEG LI), which has no progressive support, so the output is baseline. Pass -e Cjpegli to encode with JPEG LI and keep progressive output.
+⚠ [jpeg] --cjpegli-progressive ignored: this task is encoded by ffmpeg's mjpeg (the backend is not JPEG LI), which has no progressive support, so the output is baseline. Pass -e Cjpegli to encode with JPEG LI and keep progressive output.
+[PASS] C6 冲突成立→渐进选项下方提示可见
+[PASS] C6b 选基线（无降级）→提示隐藏
+[PASS] C6c 优化开着（无冲突）→提示隐藏
+[PASS] C6d 收起高级编码面板→提示隐藏
+[PASS] C20a 窗口 Icon 已由 XAML 解析
+[PASS] C20b AssetLoader 认得托盘用的那条 avares URI
+[PASS] C20d avares 吐出的就是那份 PNG
+  [N/A] C20c 位图解码尺寸：headless 宿主不解码（对照件 src_8bit.png 也解成 1x1），图标字节已由 C20d 验过
+[PASS] C21 能力 true(AVIF) 显示且可编辑 / 能力 false(TIFF) 隐藏并复位勾选
+[PASS] C22a 静态 PNG → oxipng 面板显示
+[PASS] C22b 默认档 SelectedIndex=2 (max)
+⚠ [jpeg] --cjpegli-progressive ignored: this task is encoded by ffmpeg's mjpeg (the backend is not JPEG LI), which has no progressive support, so the output is baseline. Pass -e Cjpegli to encode with JPEG LI and keep progressive output.
+⚠ [jpeg] --cjpegli-progressive ignored: this task is encoded by ffmpeg's mjpeg (the backend is not JPEG LI), which has no progressive support, so the output is baseline. Pass -e Cjpegli to encode with JPEG LI and keep progressive output.
+⚠ [jpeg] --cjpegli-progressive ignored: this task is encoded by ffmpeg's mjpeg (the backend is not JPEG LI), which has no progressive support, so the output is baseline. Pass -e Cjpegli to encode with JPEG LI and keep progressive output.
+⚠ [jpeg] --cjpegli-progressive ignored: this task is encoded by ffmpeg's mjpeg (the backend is not JPEG LI), which has no progressive support, so the output is baseline. Pass -e Cjpegli to encode with JPEG LI and keep progressive output.
+⚠ [jpeg] --cjpegli-progressive ignored: this task is encoded by ffmpeg's mjpeg (the backend is not JPEG LI), which has no progressive support, so the output is baseline. Pass -e Cjpegli to encode with JPEG LI and keep progressive output.
+[PASS] C22c 非 PNG(JPEG) → oxipng 面板隐藏
+
+########## D组: 编码器下拉联动 ##########
+[avif] tune=vmaf is not expressible on encoder 'png': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'png' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif] tune=vmaf is not expressible on encoder 'png': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'png' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif] tune=vmaf is not expressible on encoder 'png': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'png' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif] tune=vmaf is not expressible on encoder 'png': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'png' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif] tune=vmaf is not expressible on encoder 'png': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'png' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif] tune=vmaf is not expressible on encoder 'png': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'png' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif] tune=vmaf is not expressible on encoder 'png': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'png' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[PASS] D1 EncoderCombo有项
+
+########## N组: 预设保存→载入往返 ColorStrategy ##########
+[PASS] N1a IccModeNone 实时=Recommended ⇒ 载入A 不变
+[PASS] N1b IccModeNone 实时=Recommended ⇒ 载入B(预设→控件→采集) 不变
+[PASS] N1a IccModeCarry 实时=CarryIcc ⇒ 载入A 不变
+[PASS] N1b IccModeCarry 实时=CarryIcc ⇒ 载入B(预设→控件→采集) 不变
+[PASS] N1a IccModeBake 实时=BakeCicpOnly ⇒ 载入A 不变
+[PASS] N1b IccModeBake 实时=BakeCicpOnly ⇒ 载入B(预设→控件→采集) 不变
+[PASS] N1a IccModeBakeOnly 实时=Manual ⇒ 载入A 不变
+[PASS] N1b IccModeBakeOnly 实时=Manual ⇒ 载入B(预设→控件→采集) 不变
+[PASS] N2a 载入A 往返后 4 值互不相同
+[PASS] N2b 载入B 往返后 4 值互不相同
+[PASS] N2c 保存侧 IccMode 4 值互不相同
+[PASS] N3 旧预设 IccMode=CarryIcc⇒CarryIcc
+[PASS] N3 旧预设 IccMode=BakeOnly⇒BakeCicpOnly
+[PASS] N3 旧预设 IccMode=BakeToStandard⇒Recommended
+[PASS] N3 旧预设 IccMode=None⇒Recommended
+[PASS] N4 IccModeNone 存盘串可还原为 Recommended
+[PASS] N4 IccModeCarry 存盘串可还原为 CarryIcc
+[PASS] N4 IccModeBake 存盘串可还原为 BakeCicpOnly
+[PASS] N4 IccModeBakeOnly 存盘串可还原为 Manual
+      [dump] N5 基线 IccModeNone(Recommended) :: 21 tokens
+        ffmpeg | -y | -color_range | pc | -i | "C:\PLAN\ffmpegPictureUI\tests\output\sources\src_8bit.png" | -c:v | png | -threads | 16 | -compression_level | 0 | -map_metadata | 0 | -map_metadata:s:v | -1 | -map_chapters | -1 | -frames:v | 1 | "C:\PLAN\ffmpegPictureUI\tests\output\_tmp\uitesthost_33e9262a4ebc4a71adb65bffd3b1cc19\src_8bit.png"
+      [dump] N5 基线 IccModeCarry(CarryIcc) :: 23 tokens
+        ffmpeg | -y | -color_range | pc | -i | "C:\PLAN\ffmpegPictureUI\tests\output\sources\src_8bit.png" | -c:v | png | -threads | 16 | -compression_level | 0 | -map_metadata | 0 | -map_metadata:s:v | 0:s:v | -map_chapters | 0 | -vf | iccgen | -frames:v | 1 | "C:\PLAN\ffmpegPictureUI\tests\output\_tmp\uitesthost_33e9262a4ebc4a71adb65bffd3b1cc19\src_8bit.png"
+      [dump] N5 基线 IccModeBake(BakeCicpOnly) :: 21 tokens
+        ffmpeg | -y | -color_range | pc | -i | "C:\PLAN\ffmpegPictureUI\tests\output\sources\src_8bit.png" | -c:v | png | -threads | 16 | -compression_level | 0 | -map_metadata | 0 | -map_metadata:s:v | -1 | -map_chapters | -1 | -frames:v | 1 | "C:\PLAN\ffmpegPictureUI\tests\output\_tmp\uitesthost_33e9262a4ebc4a71adb65bffd3b1cc19\src_8bit.png"
+      [dump] N5 基线 IccModeBakeOnly(Manual) :: 21 tokens
+        ffmpeg | -y | -color_range | pc | -i | "C:\PLAN\ffmpegPictureUI\tests\output\sources\src_8bit.png" | -c:v | png | -threads | 16 | -compression_level | 0 | -map_metadata | 0 | -map_metadata:s:v | -1 | -map_chapters | -1 | -frames:v | 1 | "C:\PLAN\ffmpegPictureUI\tests\output\_tmp\uitesthost_33e9262a4ebc4a71adb65bffd3b1cc19\src_8bit.png"
+[PASS] N5a IccModeNone 应用预设后单选恢复
+[PASS] N5b IccModeNone 恢复后命令 == 同场景直接选中基线
+[PASS] N5c IccModeNone 命令 token 与策略一致
+[PASS] N5d IccModeNone 负控 换策略⇒命令必变
+[PASS] N5a IccModeCarry 应用预设后单选恢复
+[PASS] N5b IccModeCarry 恢复后命令 == 同场景直接选中基线
+[PASS] N5c IccModeCarry 命令 token 与策略一致
+[PASS] N5d IccModeCarry 负控 换策略⇒命令必变
+[PASS] N5a IccModeBake 应用预设后单选恢复
+[PASS] N5b IccModeBake 恢复后命令 == 同场景直接选中基线
+[PASS] N5c IccModeBake 命令 token 与策略一致
+      [info] N5d IccModeBake: BakeCicpOnly 与 Manual 在本场景命令同形（登记，不判红）
+[PASS] N5a IccModeBakeOnly 应用预设后单选恢复
+[PASS] N5b IccModeBakeOnly 恢复后命令 == 同场景直接选中基线
+[PASS] N5c IccModeBakeOnly 命令 token 与策略一致
+      [info] N5d IccModeBakeOnly: Manual 与 Recommended 在本场景命令同形（登记，不判红）
+[PASS] N6a 负控 双垃圾串⇒保持现状(CarryIcc)
+[PASS] N6b 负控 日志点名两个字段(响亮且点名)
+[PASS] N7 旧预设(UI路径) IccMode=CarryIcc⇒CarryIcc
+[PASS] N7 旧预设(UI路径) IccMode=BakeOnly⇒BakeCicpOnly
+[PASS] N7 旧预设(UI路径) IccMode=BakeToStandard⇒Recommended
+[PASS] N7 旧预设(UI路径) IccMode=None⇒Recommended
+[PASS] N8a Save() 落盘成功
+[PASS] N8b 重读(bool) 翻转在
+[PASS] N8c 重读(int) =37
+[PASS] N8d 控件(并发)=37
+[PASS] N8e 控件(bool) 翻转在
+[PASS] N9a 打开+格式复选框建出
+Usage: C:\PLAN\ffmpegPictureUI\publish\PLAN\jxl\bin\cjpegli.exe INPUT OUTPUT [OPTIONS...]
+ INPUT
+    the input can be PPM, PNM, PFM, PAM, PGX, PNG, APNG
+ OUTPUT
+    the compressed JPEG output file
+ -d maxError, --distance=maxError
+    Max. butteraugli distance, lower = higher quality.
+    1.0 = visually lossless (default).
+    Recommended range: 0.5 .. 3.0. Allowed range: 0.0 ... 25.0.
+    Mutually exclusive with --quality and --target_size.
+ -q QUALITY, --quality=QUALITY
+    Quality setting (is remapped to --distance).    Default is quality 90.
+    Quality values roughly match libjpeg quality.
+    Recommended range: 68 .. 96. Allowed range: 1 .. 100.
+    Mutually exclusive with --distance and --target_size.
+ --chroma_subsampling=444|440|422|420
+    Chroma subsampling setting.
+ -p N, --progressive_level=N
+    Progressive level setting. Range: 0 .. 2.
+    Default: 2. Higher number is more scans, 0 means sequential.
+ -v, --verbose
+    Verbose output; can be repeated, also applies to help (!).
+
+ -h, --help
+    Prints this help message. Add -v (up to a total of 2 times) to see more options.
+Usage: C:\PLAN\ffmpegPictureUI\publish\PLAN\jxl\bin\cjpegli.exe INPUT OUTPUT [OPTIONS...]
+ INPUT
+    the input can be PPM, PNM, PFM, PAM, PGX, PNG, APNG
+ OUTPUT
+    the compressed JPEG output file
+ -d maxError, --distance=maxError
+    Max. butteraugli distance, lower = higher quality.
+    1.0 = visually lossless (default).
+    Recommended range: 0.5 .. 3.0. Allowed range: 0.0 ... 25.0.
+    Mutually exclusive with --quality and --target_size.
+ -q QUALITY, --quality=QUALITY
+    Quality setting (is remapped to --distance).    Default is quality 90.
+    Quality values roughly match libjpeg quality.
+    Recommended range: 68 .. 96. Allowed range: 1 .. 100.
+    Mutually exclusive with --distance and --target_size.
+ --chroma_subsampling=444|440|422|420
+    Chroma subsampling setting.
+ -p N, --progressive_level=N
+    Progressive level setting. Range: 0 .. 2.
+    Default: 2. Higher number is more scans, 0 means sequential.
+ -v, --verbose
+    Verbose output; can be repeated, also applies to help (!).
+
+ -h, --help
+    Prints this help message. Add -v (up to a total of 2 times) to see more options.
+[PASS] N9b 打开+PresetListBox 在
+[PASS] N9c 打开+标题带文件名
+[PASS] N9d 打开+MetadataEditorCtrl 在
+[color-out-matrix] rgb on png: container is already RGB; recorded, no pixel effect
+[PASS] N10a 真实保存→JSON→重读：明确 auto 与 rgb 仍是两个值
+[color-out-matrix] rgb on png: container is already RGB; recorded, no pixel effect
+[color-out-matrix] rgb on png: container is already RGB; recorded, no pixel effect
+[color-out-matrix] rgb on png: container is already RGB; recorded, no pixel effect
+[color-out-matrix] rgb on png: container is already RGB; recorded, no pixel effect
+[color-out-matrix] rgb on png: container is already RGB; recorded, no pixel effect
+[color-out-matrix] rgb on png: container is already RGB; recorded, no pixel effect
+[color-out-matrix] rgb on png: container is already RGB; recorded, no pixel effect
+[color-out-matrix] rgb on png: container is already RGB; recorded, no pixel effect
+[color-out-matrix] rgb on png: container is already RGB; recorded, no pixel effect
+[color-out-matrix] rgb on png: container is already RGB; recorded, no pixel effect
+[color-out-matrix] rgb on png: container is already RGB; recorded, no pixel effect
+[color-out-matrix] rgb on png: container is already RGB; recorded, no pixel effect
+[color-out-matrix] rgb on png: container is already RGB; recorded, no pixel effect
+[color-out-matrix] rgb on png: container is already RGB; recorded, no pixel effect
+[color-out-matrix] rgb on png: container is already RGB; recorded, no pixel effect
+[color-out-matrix] rgb on png: container is already RGB; recorded, no pixel effect
+[color-out-matrix] rgb on png: container is already RGB; recorded, no pixel effect
+[color-out-matrix] rgb on png: container is already RGB; recorded, no pixel effect
+[PASS] N10b 应用明确 auto 覆盖已选 rgb
+[color-out-matrix] rgb on png: container is already RGB; recorded, no pixel effect
+[color-out-matrix] rgb on png: container is already RGB; recorded, no pixel effect
+[PASS] N10c 应用保存的 rgb 恢复已切为 auto 的控件
+[color-out-matrix] rgb on png: container is already RGB; recorded, no pixel effect
+[color-out-matrix] rgb on png: container is already RGB; recorded, no pixel effect
+[color-out-matrix] rgb on png: container is already RGB; recorded, no pixel effect
+[color-out-matrix] rgb on png: container is already RGB; recorded, no pixel effect
+[color-out-matrix] rgb on png: container is already RGB; recorded, no pixel effect
+[color-out-matrix] rgb on png: container is already RGB; recorded, no pixel effect
+[color-out-matrix] rgb on png: container is already RGB; recorded, no pixel effect
+[color-out-matrix] rgb on png: container is already RGB; recorded, no pixel effect
+[color-out-matrix] rgb on png: container is already RGB; recorded, no pixel effect
+[color-out-matrix] rgb on png: container is already RGB; recorded, no pixel effect
+[color-out-matrix] rgb on png: container is already RGB; recorded, no pixel effect
+[color-out-matrix] rgb on png: container is already RGB; recorded, no pixel effect
+[color-out-matrix] rgb on png: container is already RGB; recorded, no pixel effect
+[color-out-matrix] rgb on png: container is already RGB; recorded, no pixel effect
+[color-out-matrix] rgb on png: container is already RGB; recorded, no pixel effect
+[color-out-matrix] rgb on png: container is already RGB; recorded, no pixel effect
+[color-out-matrix] rgb on png: container is already RGB; recorded, no pixel effect
+[color-out-matrix] rgb on png: container is already RGB; recorded, no pixel effect
+[color-out-matrix] rgb on png: container is already RGB; recorded, no pixel effect
+[color-out-matrix] rgb on png: container is already RGB; recorded, no pixel effect
+[color-out-matrix] rgb on png: container is already RGB; recorded, no pixel effect
+[PASS] N10d 旧 JSON 缺少矩阵字段不覆盖已选 rgb
+[color-out-matrix] smpte170m on jpg: container is already bt470bg; recorded, no pixel effect
+[color-out-matrix] smpte170m on jpg: container is already bt470bg; recorded, no pixel effect
+[color-out-matrix] smpte170m on jpg: container is already bt470bg; recorded, no pixel effect
+[color-out-matrix] smpte170m on jpg: container is already bt470bg; recorded, no pixel effect
+[PASS] N10e 简洁预设 handler 跨 PNG→JPEG 回放 encoder/质量/色域/位深/矩阵；切格式取消 pending
+[avif] tune=vmaf is not expressible on encoder 'png': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+[avif] tune=vmaf is not expressible on encoder 'png': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+[avif] tune=vmaf is not expressible on encoder 'png': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+[avif] tune=vmaf is not expressible on encoder 'png': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+[avif] tune=vmaf is not expressible on encoder 'png': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+[avif] tune=vmaf is not expressible on encoder 'png': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+[avif] tune=vmaf is not expressible on encoder 'png': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+[PASS] N11a AOM 提供 rgb 输出矩阵
+⚠ [rgb] avif: explicit rgb matrix -> gbrp12le (AV1 identity), YUV chroma/bit-depth rewrite skipped
+[color-out-matrix] avif: rgb -> nclx matrix_coefficients=0 (identity, enforced via setparams=gbr + RGB 4:4:4 feed)
+⚠ [rgb] avif: explicit rgb matrix -> gbrp12le (AV1 identity), YUV chroma/bit-depth rewrite skipped
+[color-out-matrix] avif: rgb -> nclx matrix_coefficients=0 (identity, enforced via setparams=gbr + RGB 4:4:4 feed)
+⚠ [rgb] avif: explicit rgb matrix -> gbrp12le (AV1 identity), YUV chroma/bit-depth rewrite skipped
+[color-out-matrix] avif: rgb -> nclx matrix_coefficients=0 (identity, enforced via setparams=gbr + RGB 4:4:4 feed)
+[PASS] N11b rgb锁色度为auto且置灰并说明原因
+[PASS] N11c rgb不锁位深且命令兑现gbrp12le
+[PASS] N11d 离开rgb后色度恢复可选且不误改其他选择
+⚠ [rgb] avif: explicit rgb matrix -> gbrp12le (AV1 identity), YUV chroma/bit-depth rewrite skipped
+[color-out-matrix] avif: rgb -> nclx matrix_coefficients=0 (identity, enforced via setparams=gbr + RGB 4:4:4 feed)
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[color-out-matrix] avif: rgb -> unlandable on libsvtav1 (no gbrp support; identity+4:2:0 is rejected by the encoder)
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[color-out-matrix] avif: rgb -> unlandable on libsvtav1 (no gbrp support; identity+4:2:0 is rejected by the encoder)
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[color-out-matrix] avif: rgb -> unlandable on libsvtav1 (no gbrp support; identity+4:2:0 is rejected by the encoder)
+[color-out-matrix] avif: rgb -> unlandable on libsvtav1 (no gbrp support; identity+4:2:0 is rejected by the encoder)
+[color-out-matrix] avif: rgb -> unlandable on libsvtav1 (no gbrp support; identity+4:2:0 is rejected by the encoder)
+[PASS] N11e SVT收窄矩阵候选并回auto，rgb不再可选
+[avif] tune=vmaf is not expressible on encoder 'av1_nvenc': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+[avif] tune=vmaf is not expressible on encoder 'av1_nvenc': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+[avif] tune=vmaf is not expressible on encoder 'av1_nvenc': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+[avif] tune=vmaf is not expressible on encoder 'av1_nvenc': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+[avif] tune=vmaf is not expressible on encoder 'av1_nvenc': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+[avif] tune=vmaf is not expressible on encoder 'av1_nvenc': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+[avif] tune=vmaf is not expressible on encoder 'av1_nvenc': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+[avif] tune=vmaf is not expressible on encoder 'av1_nvenc': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+[PASS] N11f NVENC候选与后端一致：rgb/444/422可用且12-bit不露出
+[avif] tune=vmaf is not expressible on encoder 'av1_qsv': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+[avif] tune=vmaf is not expressible on encoder 'av1_qsv': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+[avif] tune=vmaf is not expressible on encoder 'av1_qsv': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+[avif] tune=vmaf is not expressible on encoder 'av1_qsv': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+[avif] tune=vmaf is not expressible on encoder 'av1_qsv': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+[avif] tune=vmaf is not expressible on encoder 'av1_qsv': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+[PASS] N11g QSV矩阵候选逐格等同同源函数，色度/位深收窄（未做实机编码宣称）
+[avif] tune=vmaf is not expressible on encoder 'av1_amf': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+[avif] tune=vmaf is not expressible on encoder 'av1_amf': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+[avif] tune=vmaf is not expressible on encoder 'av1_amf': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+[avif] tune=vmaf is not expressible on encoder 'av1_amf': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+[avif] tune=vmaf is not expressible on encoder 'av1_amf': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+[avif] tune=vmaf is not expressible on encoder 'av1_amf': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+[PASS] N11h AMF矩阵候选逐格等同同源函数，色度/位深收窄（未做实机编码宣称）
+[avif] tune=vmaf is not expressible on encoder 'png': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+[avif] tune=vmaf is not expressible on encoder 'png': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+[avif] tune=vmaf is not expressible on encoder 'png': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+[avif] tune=vmaf is not expressible on encoder 'png': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+[avif] tune=vmaf is not expressible on encoder 'png': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+[avif] tune=vmaf is not expressible on encoder 'png': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+[avif] tune=vmaf is not expressible on encoder 'png': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: explicit rgb matrix -> gbrp12le (AV1 identity), YUV chroma/bit-depth rewrite skipped
+[color-out-matrix] avif: rgb -> nclx matrix_coefficients=0 (identity, enforced via setparams=gbr + RGB 4:4:4 feed)
+⚠ [rgb] avif: explicit rgb matrix -> gbrp12le (AV1 identity), YUV chroma/bit-depth rewrite skipped
+[color-out-matrix] avif: rgb -> nclx matrix_coefficients=0 (identity, enforced via setparams=gbr + RGB 4:4:4 feed)
+⚠ [rgb] avif: explicit rgb matrix -> gbrp12le (AV1 identity), YUV chroma/bit-depth rewrite skipped
+[color-out-matrix] avif: rgb -> nclx matrix_coefficients=0 (identity, enforced via setparams=gbr + RGB 4:4:4 feed)
+⚠ [rgb] avif: explicit rgb matrix -> gbrp12le (AV1 identity), YUV chroma/bit-depth rewrite skipped
+[color-out-matrix] avif: rgb -> nclx matrix_coefficients=0 (identity, enforced via setparams=gbr + RGB 4:4:4 feed)
+[PASS] N12a rgb预设最终色度auto置灰、位深12、命令gbrp12le
+⚠ [rgb] avif: explicit rgb matrix -> gbrp12le (AV1 identity), YUV chroma/bit-depth rewrite skipped
+[color-out-matrix] avif: rgb -> nclx matrix_coefficients=0 (identity, enforced via setparams=gbr + RGB 4:4:4 feed)
+⚠ [rgb] avif: explicit rgb matrix -> gbrp12le (AV1 identity), YUV chroma/bit-depth rewrite skipped
+[color-out-matrix] avif: rgb -> nclx matrix_coefficients=0 (identity, enforced via setparams=gbr + RGB 4:4:4 feed)
+⚠ [rgb] avif: explicit rgb matrix -> gbrp12le (AV1 identity), YUV chroma/bit-depth rewrite skipped
+[color-out-matrix] avif: rgb -> nclx matrix_coefficients=0 (identity, enforced via setparams=gbr + RGB 4:4:4 feed)
+⚠ [rgb] avif: explicit rgb matrix -> gbrp12le (AV1 identity), YUV chroma/bit-depth rewrite skipped
+[color-out-matrix] avif: rgb -> nclx matrix_coefficients=0 (identity, enforced via setparams=gbr + RGB 4:4:4 feed)
+⚠ [rgb] avif: explicit rgb matrix -> gbrp12le (AV1 identity), YUV chroma/bit-depth rewrite skipped
+[color-out-matrix] avif: rgb -> nclx matrix_coefficients=0 (identity, enforced via setparams=gbr + RGB 4:4:4 feed)
+⚠ [rgb] avif: explicit rgb matrix -> gbrp12le (AV1 identity), YUV chroma/bit-depth rewrite skipped
+[color-out-matrix] avif: rgb -> nclx matrix_coefficients=0 (identity, enforced via setparams=gbr + RGB 4:4:4 feed)
+⚠ [rgb] avif: explicit rgb matrix -> gbrp (AV1 identity), YUV chroma/bit-depth rewrite skipped
+[color-out-matrix] avif: rgb -> nclx matrix_coefficients=0 (identity, enforced via setparams=gbr + RGB 4:4:4 feed)
+⚠ [rgb] avif: explicit rgb matrix -> gbrp12le (AV1 identity), YUV chroma/bit-depth rewrite skipped
+[color-out-matrix] avif: rgb -> nclx matrix_coefficients=0 (identity, enforced via setparams=gbr + RGB 4:4:4 feed)
+⚠ [rgb] avif: explicit rgb matrix -> gbrp12le (AV1 identity), YUV chroma/bit-depth rewrite skipped
+[color-out-matrix] avif: rgb -> nclx matrix_coefficients=0 (identity, enforced via setparams=gbr + RGB 4:4:4 feed)
+⚠ [rgb] avif: explicit rgb matrix -> gbrp12le (AV1 identity), YUV chroma/bit-depth rewrite skipped
+[color-out-matrix] avif: rgb -> nclx matrix_coefficients=0 (identity, enforced via setparams=gbr + RGB 4:4:4 feed)
+⚠ [rgb] avif: explicit rgb matrix -> gbrp12le (AV1 identity), YUV chroma/bit-depth rewrite skipped
+[color-out-matrix] avif: rgb -> nclx matrix_coefficients=0 (identity, enforced via setparams=gbr + RGB 4:4:4 feed)
+⚠ [rgb] avif: explicit rgb matrix -> gbrp12le (AV1 identity), YUV chroma/bit-depth rewrite skipped
+[color-out-matrix] avif: rgb -> nclx matrix_coefficients=0 (identity, enforced via setparams=gbr + RGB 4:4:4 feed)
+⚠ [rgb] avif: explicit rgb matrix -> gbrp12le (AV1 identity), YUV chroma/bit-depth rewrite skipped
+[color-out-matrix] avif: rgb -> nclx matrix_coefficients=0 (identity, enforced via setparams=gbr + RGB 4:4:4 feed)
+⚠ [rgb] avif: explicit rgb matrix -> gbrp12le (AV1 identity), YUV chroma/bit-depth rewrite skipped
+[color-out-matrix] avif: rgb -> nclx matrix_coefficients=0 (identity, enforced via setparams=gbr + RGB 4:4:4 feed)
+[color-out-matrix] avif: rgb -> nclx matrix_coefficients=0 (identity, enforced via setparams=gbr + RGB 4:4:4 feed)
+⚠ [rgb] avif: explicit rgb matrix -> gbrp12le (AV1 identity), YUV chroma/bit-depth rewrite skipped
+[color-out-matrix] avif: rgb -> nclx matrix_coefficients=0 (identity, enforced via setparams=gbr + RGB 4:4:4 feed)
+⚠ [rgb] avif: explicit rgb matrix -> gbrp12le (AV1 identity), YUV chroma/bit-depth rewrite skipped
+[color-out-matrix] avif: rgb -> nclx matrix_coefficients=0 (identity, enforced via setparams=gbr + RGB 4:4:4 feed)
+⚠ [rgb] avif: explicit rgb matrix -> gbrp12le (AV1 identity), YUV chroma/bit-depth rewrite skipped
+[color-out-matrix] avif: rgb -> nclx matrix_coefficients=0 (identity, enforced via setparams=gbr + RGB 4:4:4 feed)
+⚠ [rgb] avif: explicit rgb matrix -> gbrp12le (AV1 identity), YUV chroma/bit-depth rewrite skipped
+[color-out-matrix] avif: rgb -> nclx matrix_coefficients=0 (identity, enforced via setparams=gbr + RGB 4:4:4 feed)
+[color-out-matrix] avif: rgb -> nclx matrix_coefficients=0 (identity, enforced via setparams=gbr + RGB 4:4:4 feed)
+⚠ [rgb] avif: explicit rgb matrix -> gbrp12le (AV1 identity), YUV chroma/bit-depth rewrite skipped
+[color-out-matrix] avif: rgb -> nclx matrix_coefficients=0 (identity, enforced via setparams=gbr + RGB 4:4:4 feed)
+⚠ [rgb] avif: explicit rgb matrix -> gbrp12le (AV1 identity), YUV chroma/bit-depth rewrite skipped
+[color-out-matrix] avif: rgb -> nclx matrix_coefficients=0 (identity, enforced via setparams=gbr + RGB 4:4:4 feed)
+⚠ [rgb] avif: explicit rgb matrix -> gbrp12le (AV1 identity), YUV chroma/bit-depth rewrite skipped
+[color-out-matrix] avif: rgb -> nclx matrix_coefficients=0 (identity, enforced via setparams=gbr + RGB 4:4:4 feed)
+⚠ [rgb] avif: explicit rgb matrix -> gbrp12le (AV1 identity), YUV chroma/bit-depth rewrite skipped
+[color-out-matrix] avif: rgb -> nclx matrix_coefficients=0 (identity, enforced via setparams=gbr + RGB 4:4:4 feed)
+⚠ [rgb] avif: explicit rgb matrix -> gbrp12le (AV1 identity), YUV chroma/bit-depth rewrite skipped
+[color-out-matrix] avif: rgb -> nclx matrix_coefficients=0 (identity, enforced via setparams=gbr + RGB 4:4:4 feed)
+[PASS] N12b 同矩阵索引二次应用仍重新套锁
+[PASS] N12c GUI采集与预设/CLI同源：encoder/rgb/auto/12完全一致
+[avif] tune=vmaf is not expressible on encoder 'av1_nvenc': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'av1_nvenc' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[color-out-matrix] avif: rgb -> nclx matrix_coefficients=0 (identity, enforced via setparams=gbr + RGB 4:4:4 feed)
+[avif] tune=vmaf is not expressible on encoder 'av1_nvenc': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'av1_nvenc' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[color-out-matrix] avif: rgb -> nclx matrix_coefficients=0 (identity, enforced via setparams=gbr + RGB 4:4:4 feed)
+[avif] tune=vmaf is not expressible on encoder 'av1_nvenc': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'av1_nvenc' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[color-out-matrix] avif: rgb -> nclx matrix_coefficients=0 (identity, enforced via setparams=gbr + RGB 4:4:4 feed)
+[avif] tune=vmaf is not expressible on encoder 'av1_nvenc': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+[color-out-matrix] avif: rgb -> nclx matrix_coefficients=0 (identity, enforced via setparams=gbr + RGB 4:4:4 feed)
+[avif] tune=vmaf is not expressible on encoder 'av1_nvenc': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+[color-out-matrix] avif: rgb -> nclx matrix_coefficients=0 (identity, enforced via setparams=gbr + RGB 4:4:4 feed)
+[avif] tune=vmaf is not expressible on encoder 'av1_nvenc': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+[color-out-matrix] avif: rgb -> nclx matrix_coefficients=0 (identity, enforced via setparams=gbr + RGB 4:4:4 feed)
+[avif] tune=vmaf is not expressible on encoder 'av1_nvenc': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+[color-out-matrix] avif: rgb -> nclx matrix_coefficients=0 (identity, enforced via setparams=gbr + RGB 4:4:4 feed)
+[avif] tune=vmaf is not expressible on encoder 'av1_nvenc': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+[color-out-matrix] avif: rgb -> nclx matrix_coefficients=0 (identity, enforced via setparams=gbr + RGB 4:4:4 feed)
+[avif] tune=vmaf is not expressible on encoder 'av1_nvenc': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+[color-out-matrix] avif: rgb -> nclx matrix_coefficients=0 (identity, enforced via setparams=gbr + RGB 4:4:4 feed)
+[avif] tune=vmaf is not expressible on encoder 'av1_nvenc': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+[color-out-matrix] avif: rgb -> nclx matrix_coefficients=0 (identity, enforced via setparams=gbr + RGB 4:4:4 feed)
+[avif] tune=vmaf is not expressible on encoder 'av1_nvenc': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'av1_nvenc' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[color-out-matrix] avif: rgb -> nclx matrix_coefficients=0 (identity, enforced via setparams=gbr + RGB 4:4:4 feed)
+[avif] tune=vmaf is not expressible on encoder 'av1_nvenc': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+[color-out-matrix] avif: bt709 -> -colorspace bt709
+[avif] tune=vmaf is not expressible on encoder 'av1_nvenc': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+[color-out-matrix] avif: bt709 -> -colorspace bt709
+[PASS] N12d NVENC 12-bit预设最终回auto并点名位深，GUI不把无效预设留到队列才失败
+[avif] tune=vmaf is not expressible on encoder 'av1_nvenc': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [avif] explicit --color-out-matrix=bt709 requested without --chroma/--bit-depth; pinned YUV 4:2:0 so the matrix can actually land in nclx (RGB/gbrp identity would silently ignore it).
+[color-out-matrix] avif: bt709 -> -colorspace bt709
+[avif] tune=vmaf is not expressible on encoder 'av1_nvenc': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [avif] explicit --color-out-matrix=bt709 requested without --chroma/--bit-depth; pinned YUV 4:2:0 so the matrix can actually land in nclx (RGB/gbrp identity would silently ignore it).
+[color-out-matrix] avif: bt709 -> -colorspace bt709
+[avif] tune=vmaf is not expressible on encoder 'png': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+[avif] tune=vmaf is not expressible on encoder 'png': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+[avif] tune=vmaf is not expressible on encoder 'png': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+[avif] tune=vmaf is not expressible on encoder 'png': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+[avif] tune=vmaf is not expressible on encoder 'png': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+[avif] tune=vmaf is not expressible on encoder 'png': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+[avif] tune=vmaf is not expressible on encoder 'png': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+[PASS] N13a 编码器收窄后重置色度/位深并同时点名
+[PASS] N13b 合法选择保留时提示消失
+[PASS] N13c 格式收窄HDR色彩空间后回auto并点名
+      [table] 按钮 | 实时策略 | 存盘IccMode | 存盘ColorStrategy | 载入A(FfmpegOptions) | 载入B(简洁模式)
+      [table] IccModeNone | Recommended | None | recommended | Recommended | Recommended
+      [table] IccModeCarry | CarryIcc | CarryIcc | carry-icc | CarryIcc | CarryIcc
+      [table] IccModeBake | BakeCicpOnly | BakeToStandard | cicp-only | BakeCicpOnly | BakeCicpOnly
+      [table] IccModeBakeOnly | Manual | BakeOnly | manual | Manual | Manual
+
+===== UI 测试汇总: 107 PASS / 0 FAIL =====
+PROBE RESULT: pass=107 fail=0
+
+----- stderr -----
+[dngtool] unknown option: --version
+[dngtool] unknown option: --version
+[dngtool] unknown option: --version
+[dngtool] unknown option: --version
+[dngtool] unknown option: --version
+
+----- end ui-core -----
+  PASS ui-core summary line present (exit 0 alone is not enough)
+  PASS ui-core summary FAIL=0
+  PASS ui-core exit code == 0 (actual 0)
+  PASS ui-core assertion count == 107 (actual 107)
+
+===== run: ui-mode 全组 mode (timeout=120s) =====
+  PASS ui-mode no timeout (elapsed 51s, limit 120s)
+----- ui-mode stdout -----
+PLAN dir = C:\PLAN\ffmpegPictureUI\publish\PLAN
+tools-root=C:\PLAN\ffmpegPictureUI
+Usage: C:\PLAN\ffmpegPictureUI\publish\PLAN\jxl\bin\cjpegli.exe INPUT OUTPUT [OPTIONS...]
+ INPUT
+    the input can be PPM, PNM, PFM, PAM, PGX, PNG, APNG
+ OUTPUT
+    the compressed JPEG output file
+ -d maxError, --distance=maxError
+    Max. butteraugli distance, lower = higher quality.
+    1.0 = visually lossless (default).
+    Recommended range: 0.5 .. 3.0. Allowed range: 0.0 ... 25.0.
+    Mutually exclusive with --quality and --target_size.
+ -q QUALITY, --quality=QUALITY
+    Quality setting (is remapped to --distance).    Default is quality 90.
+    Quality values roughly match libjpeg quality.
+    Recommended range: 68 .. 96. Allowed range: 1 .. 100.
+    Mutually exclusive with --distance and --target_size.
+ --chroma_subsampling=444|440|422|420
+    Chroma subsampling setting.
+ -p N, --progressive_level=N
+    Progressive level setting. Range: 0 .. 2.
+    Default: 2. Higher number is more scans, 0 means sequential.
+ -v, --verbose
+    Verbose output; can be repeated, also applies to help (!).
+
+ -h, --help
+    Prints this help message. Add -v (up to a total of 2 times) to see more options.
+
+########## E组: 简洁模式 ##########
+[PASS] E1 简洁面板可见
+[PASS] E1b 完整面板隐藏
+[PASS] E2 预设下拉存在
+[PASS] E2b 自动编码开关存在
+[PASS] E3 完整面板恢复
+[PASS] E3b 简洁面板隐藏
+[PASS] E4a 预设表含 GIF 与 PNG 条目
+⚠ [jpeg] --lossless true ignored: the mjpeg encoder is lossy, so the output is lossy. The only lossless JPEG path here is DNG container compression (--format dng --dng-compression 0).
+⚠ [jpeg] --lossless true ignored: the mjpeg encoder is lossy, so the output is lossy. The only lossless JPEG path here is DNG container compression (--format dng --dng-compression 0).
+⚠ [jpeg] --lossless true ignored: the mjpeg encoder is lossy, so the output is lossy. The only lossless JPEG path here is DNG container compression (--format dng --dng-compression 0).
+⚠ [jpeg] --lossless true ignored: the mjpeg encoder is lossy, so the output is lossy. The only lossless JPEG path here is DNG container compression (--format dng --dng-compression 0).
+⚠ [jpeg] --lossless true ignored: the mjpeg encoder is lossy, so the output is lossy. The only lossless JPEG path here is DNG container compression (--format dng --dng-compression 0).
+[PASS] E4b GIF 预设把模式推到动图
+[PASS] E4c GIF 预设确实选中 GIF 格式
+[PASS] E4d PNG 预设把模式拉回静态
+[PASS] E4e 快照还原后模式与格式回到应用前
+[PASS] E5a 第二套预设→选项映射已移除
+[PASS] E5b 控件→FfmpegOptions 采集点唯一
+[PASS] E5c 采集点被入队与两条预览共用
+[PASS] E5d 文件选择入队走 AddSingleToQueue
+[PASS] E5e 拖放入队走 AddSingleToQueue
+[PASS] E6a 旧预设的 AnimationLoop 解析为空
+[PASS] E6b 旧预设不得把循环框写成 -1
+[PASS] E6c 旧预设不得把 fps 框写成数值
+[PASS] E7a 两个列表绑的是同一个集合实例（无第二份内容源）
+[PASS] E7b 第二份已选集合已从产品码移除
+[PASS] E7c 返回完整模式不再做「合并/去重添加」（无 _mediaFiles.Add）
+[PASS] E7d 覆盖层计数标签反映共享集合
+[PASS] E7e 覆盖层的清空动的是同一份集合
+[PASS] E8a 回显含当前格式的显示串
+[PASS] E8b 回显含当前转换模式的显示串
+[PASS] E8c 回显以本地化标题开头（不是硬编码中文）
+[PASS] E8d 没应用过预设时不喊不一致（防假警报）
+[PASS] E8e 刚应用完预设 ⇒ 与预设一致，不喊不一致
+[PASS] E8f 改掉质量后回显点名不一致
+
+########## F组: 后台/隐藏可见性 ##########
+[PASS] F1 隐藏后不可见
+[PASS] F1b 恢复显示
+
+########## G组: GUI驱动端到端真实转换 ##########
+[PASS] G1 PNG端到端产物
+[PASS] G2 前置 24MP 输入
+[PASS] G2 停止前工作子进程在跑
+[PASS] G2 停止后状态=已停止
+[PASS] G2 ffmpeg/oxipng 子进程已死
+[PASS] G2 无半截产物
+[PASS] G2 队列无已完成项
+[PASS] G2b 前置 24MP BMP 输入
+[PASS] G2b 选中 cjpegli 编码器
+[PASS] G2b 管道工作子进程在跑
+[PASS] G2b 管道停止后状态=已停止(IsStopped 真)
+[PASS] G2c 前置小输入存在
+[PASS] G2c 找到「完成当前队列后停止」复选框
+[PASS] G2c 队列跑完后 IsRunning=false
+[PASS] O1 待测值与默认值不同（反控：否则 O2/O3 恒真）
+[PASS] O2a 开 GainMap 后目标色域保持
+[PASS] O2b 开 GainMap 后位深保持
+[PASS] O2c 开 GainMap 后质量保持
+[PASS] O3a 关 GainMap 后目标色域保持
+[PASS] O3b 关 GainMap 后位深保持
+[PASS] O3c 关 GainMap 后质量保持
+[PASS] O4 前置：三项已置成与默认不同的待测值（反控，否则本组恒真）
+[PASS] O4a 晚到刷新后目标色域保持
+[PASS] O4b 晚到刷新后位深保持
+[PASS] O4c 晚到刷新后质量保持
+[PASS] O5a 晚到的编码器列表刷新后所选后端保持
+[PASS] O5b 命令里的 -c:v 仍是所选后端
+[PASS] O6a 下拉恰好三档
+[PASS] O6b 默认档 = iso（索引 0）
+[PASS] O6c iso 档下 RGB 可选且已选中（反控）
+[PASS] O6d xmp 档不锁增益图类型（RGB 仍可选）
+[PASS] O6e 采集：xmp 与 RGB 同时落进预设快照
+[PASS] O6f both 档 RGB 可选
+[PASS] O6g both 档下 RGB 与 both 一起采集到
+
+===== UI 测试汇总: 66 PASS / 0 FAIL =====
+PROBE RESULT: pass=66 fail=0
+
+----- stderr -----
+[dngtool] unknown option: --version
+[dngtool] unknown option: --version
+[dngtool] unknown option: --version
+ffmpeg version git-2026-10-11-edadf711a9 Copyright (c) 2000-2026 the FFmpeg developers
+  built with clang version 23.1.3 (https://github.com/llvm/llvm-project.git 0d261d1ca552c95a8f007e061c787ac7132fbcbc)
+  configuration: --prefix=/home/dominic/ffmpeg/bin --bindir=/home/dominic/ffmpeg/bin/bin --arch=x86_64 --target-os=mingw32 --cross-prefix=x86_64-w64-mingw32- --enable-cross-compile --cc=/usr/local/llvm-mingw/bin/x86_64-w64-mingw32-clang --cxx=/usr/local/llvm-mingw/bin/x86_64-w64-mingw32-clang++ --ld=/home/dominic/ffmpeg/bin/bin/atw_ldwrapper --ar=/usr/local/llvm-mingw/bin/llvm-ar --ranlib=/usr/local/llvm-mingw/bin/llvm-ranlib --pkg-config=/usr/bin/pkg-config --pkg-config-flags=--static --optflags='-O3 -pipe -DNDEBUG -funwind-tables -fexceptions -finline-functions -march=x86-64-v3 -mtune=generic -ffunction-sections -fdata-sections -mguard=cf' --extra-cflags='-I/home/dominic/ffmpeg/bin/include -DLIBTWOLAME_STATIC -I/usr/local/cuda/include -I/usr/local/cuda/targets/x86_64-linux/include' --extra-cxxflags='-O3 -pipe -DNDEBUG -funwind-tables -fexceptions -finline-functions -march=x86-64-v3 -mtune=generic -ffunction-sections -fdata-sections -mguard=cf' --extra-ldflags='-L/home/dominic/ffmpeg/bin/lib -Wl,--gc-sections -Wl,/guard:cf -fuse-ld=lld' --extra-libs=' -lvulkan-1 -lpthread' --disable-autodetect --enable-gpl --enable-nonfree --enable-version3 --enable-w32threads --disable-pthreads --disable-static --enable-shared --disable-debug --disable-doc --enable-ffplay --enable-sdl2 --enable-ffprobe --enable-ffmpeg --enable-ffnvcodec --disable-cuvid --disable-decoder=libdavs2 --disable-decoder=libuavs3d --disable-encoder=libxavs --disable-encoder=libxavs2 --enable-nvenc --enable-nvdec --enable-libopus --enable-libass --enable-libfreetype --enable-libharfbuzz --enable-libfontconfig --enable-libfribidi --enable-libzimg --enable-libwebp --enable-libjxl --enable-libjxr --enable-libdav1d --enable-libsvtav1 --enable-libvpl --enable-libx264 --enable-libx265 --enable-libvmaf --enable-libvvenc --enable-schannel --enable-d3d11va --enable-d3d12va --enable-mediafoundation --enable-amf --enable-avisynth --enable-dxva2 --enable-vulkan --enable-vulkan-static --glslc=/home/dominic/ffmpeg/build-20261012-full/host-tools/bin/glslc --enable-opencl --enable-opengl --enable-libplacebo --enable-zlib --enable-bzlib --enable-lzma --enable-libxml2 --enable-libmp3lame --enable-libvorbis --enable-libsoxr --enable-libfdk-aac --enable-libaom --enable-libvpx --enable-libopenjpeg --enable-libsrt --enable-librist --enable-libbluray --enable-libaribcaption --enable-lcms2 --enable-librubberband --enable-libvidstab --enable-libssh --enable-libsnappy --enable-libtheora --enable-libspeex --enable-libtwolame --enable-libmysofa --enable-libopenmpt --enable-libdvdread --enable-libdvdnav --enable-chromaprint --enable-libzmq --enable-libzvbi --enable-libgsm --enable-libopencore-amrnb --enable-libopencore-amrwb --enable-libvo-amrwbenc --enable-iconv --enable-audiotoolbox --enable-cuda-nvcc --enable-cuda --disable-cuda-llvm --nvcc=/usr/local/cuda/bin/nvcc --nvccflags='-O3 --extra-device-vectorization --threads=1 -Xptxas=-O3 --use_fast_math -gencode arch=compute_75,code=compute_75' --enable-vapoursynth --enable-encoder=wrapped_avframe --enable-encoder=h264_nvenc --enable-encoder=hevc_nvenc --enable-encoder=av1_nvenc --enable-encoder=hevc_qsv --enable-encoder=av1_qsv --enable-encoder=h264_qsv --enable-encoder=libx264 --enable-encoder=libx265 --enable-encoder=libvvenc --enable-encoder=libmp3lame --enable-encoder=libvorbis --enable-encoder=libfdk_aac --enable-encoder=libvpx_vp8 --enable-encoder=libvpx_vp9 --enable-encoder=aac --enable-encoder=aac_at
+  libavutil      61. 14.100 / 61. 14.100
+  libavcodec     63. 19.101 / 63. 19.101
+  libavformat    63.  8.100 / 63.  8.100
+  libavdevice    63.  2.100 / 63.  2.100
+  libavfilter    12.  5.100 / 12.  5.100
+  libswscale     10.  2.100 / 10.  2.100
+  libswresample   7.  3.101 /  7.  3.101
+Input #0, lavfi, from 'testsrc2=size=6000x4000:rate=1':
+  Duration: N/A, start: 0.000000, bitrate: N/A
+  Stream #0:0: Video: wrapped_avframe, yuv420p, 6000x4000 [SAR 1:1 DAR 3:2], 1 fps, 1 tbr, 1 tbn
+Stream mapping:
+  Stream #0:0 -> #0:0 (wrapped_avframe (native) -> png (native))
+Press [q] to stop, [?] for help
+Output #0, image2, to 'C:\PLAN\ffmpegPictureUI\tests\output\_tmp\uitesthost_6c1d69ba47ae4bce9f00860d7e3ddd30\g2_in.png':
+  Metadata:
+    encoder         : Lavf63.8.100
+  Stream #0:0: Video: png, rgb24(pc, gbr/unknown/unknown, progressive), 6000x4000 [SAR 1:1 DAR 3:2], q=2-31, 200 kb/s, 1 fps, 1 tbn
+    Metadata:
+      encoder         : Lavc63.19.101 png
+[image2 @ 0000021dc1c2a940] The specified filename 'C:\PLAN\ffmpegPictureUI\tests\output\_tmp\uitesthost_6c1d69ba47ae4bce9f00860d7e3ddd30\g2_in.png' does not contain an image sequence pattern or a pattern is invalid.
+[image2 @ 0000021dc1c2a940] Use a pattern such as %03d for an image sequence or use the -update option (with -frames:v 1 if needed) to write a single image.
+[out#0/image2 @ 0000021dc1c29840] video:2175KiB audio:0KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: unknown
+frame=    1 fps=0.0 q=-0.0 Lsize=N/A time=00:00:01.00 bitrate=N/A speed=2.66x elapsed=0:00:00.37    
+ffmpeg version git-2026-10-11-edadf711a9 Copyright (c) 2000-2026 the FFmpeg developers
+  built with clang version 23.1.3 (https://github.com/llvm/llvm-project.git 0d261d1ca552c95a8f007e061c787ac7132fbcbc)
+  configuration: --prefix=/home/dominic/ffmpeg/bin --bindir=/home/dominic/ffmpeg/bin/bin --arch=x86_64 --target-os=mingw32 --cross-prefix=x86_64-w64-mingw32- --enable-cross-compile --cc=/usr/local/llvm-mingw/bin/x86_64-w64-mingw32-clang --cxx=/usr/local/llvm-mingw/bin/x86_64-w64-mingw32-clang++ --ld=/home/dominic/ffmpeg/bin/bin/atw_ldwrapper --ar=/usr/local/llvm-mingw/bin/llvm-ar --ranlib=/usr/local/llvm-mingw/bin/llvm-ranlib --pkg-config=/usr/bin/pkg-config --pkg-config-flags=--static --optflags='-O3 -pipe -DNDEBUG -funwind-tables -fexceptions -finline-functions -march=x86-64-v3 -mtune=generic -ffunction-sections -fdata-sections -mguard=cf' --extra-cflags='-I/home/dominic/ffmpeg/bin/include -DLIBTWOLAME_STATIC -I/usr/local/cuda/include -I/usr/local/cuda/targets/x86_64-linux/include' --extra-cxxflags='-O3 -pipe -DNDEBUG -funwind-tables -fexceptions -finline-functions -march=x86-64-v3 -mtune=generic -ffunction-sections -fdata-sections -mguard=cf' --extra-ldflags='-L/home/dominic/ffmpeg/bin/lib -Wl,--gc-sections -Wl,/guard:cf -fuse-ld=lld' --extra-libs=' -lvulkan-1 -lpthread' --disable-autodetect --enable-gpl --enable-nonfree --enable-version3 --enable-w32threads --disable-pthreads --disable-static --enable-shared --disable-debug --disable-doc --enable-ffplay --enable-sdl2 --enable-ffprobe --enable-ffmpeg --enable-ffnvcodec --disable-cuvid --disable-decoder=libdavs2 --disable-decoder=libuavs3d --disable-encoder=libxavs --disable-encoder=libxavs2 --enable-nvenc --enable-nvdec --enable-libopus --enable-libass --enable-libfreetype --enable-libharfbuzz --enable-libfontconfig --enable-libfribidi --enable-libzimg --enable-libwebp --enable-libjxl --enable-libjxr --enable-libdav1d --enable-libsvtav1 --enable-libvpl --enable-libx264 --enable-libx265 --enable-libvmaf --enable-libvvenc --enable-schannel --enable-d3d11va --enable-d3d12va --enable-mediafoundation --enable-amf --enable-avisynth --enable-dxva2 --enable-vulkan --enable-vulkan-static --glslc=/home/dominic/ffmpeg/build-20261012-full/host-tools/bin/glslc --enable-opencl --enable-opengl --enable-libplacebo --enable-zlib --enable-bzlib --enable-lzma --enable-libxml2 --enable-libmp3lame --enable-libvorbis --enable-libsoxr --enable-libfdk-aac --enable-libaom --enable-libvpx --enable-libopenjpeg --enable-libsrt --enable-librist --enable-libbluray --enable-libaribcaption --enable-lcms2 --enable-librubberband --enable-libvidstab --enable-libssh --enable-libsnappy --enable-libtheora --enable-libspeex --enable-libtwolame --enable-libmysofa --enable-libopenmpt --enable-libdvdread --enable-libdvdnav --enable-chromaprint --enable-libzmq --enable-libzvbi --enable-libgsm --enable-libopencore-amrnb --enable-libopencore-amrwb --enable-libvo-amrwbenc --enable-iconv --enable-audiotoolbox --enable-cuda-nvcc --enable-cuda --disable-cuda-llvm --nvcc=/usr/local/cuda/bin/nvcc --nvccflags='-O3 --extra-device-vectorization --threads=1 -Xptxas=-O3 --use_fast_math -gencode arch=compute_75,code=compute_75' --enable-vapoursynth --enable-encoder=wrapped_avframe --enable-encoder=h264_nvenc --enable-encoder=hevc_nvenc --enable-encoder=av1_nvenc --enable-encoder=hevc_qsv --enable-encoder=av1_qsv --enable-encoder=h264_qsv --enable-encoder=libx264 --enable-encoder=libx265 --enable-encoder=libvvenc --enable-encoder=libmp3lame --enable-encoder=libvorbis --enable-encoder=libfdk_aac --enable-encoder=libvpx_vp8 --enable-encoder=libvpx_vp9 --enable-encoder=aac --enable-encoder=aac_at
+  libavutil      61. 14.100 / 61. 14.100
+  libavcodec     63. 19.101 / 63. 19.101
+  libavformat    63.  8.100 / 63.  8.100
+  libavdevice    63.  2.100 / 63.  2.100
+  libavfilter    12.  5.100 / 12.  5.100
+  libswscale     10.  2.100 / 10.  2.100
+  libswresample   7.  3.101 /  7.  3.101
+Input #0, lavfi, from 'testsrc2=size=6000x4000:rate=1':
+  Duration: N/A, start: 0.000000, bitrate: N/A
+  Stream #0:0: Video: wrapped_avframe, yuv420p, 6000x4000 [SAR 1:1 DAR 3:2], 1 fps, 1 tbr, 1 tbn
+Stream mapping:
+  Stream #0:0 -> #0:0 (wrapped_avframe (native) -> bmp (native))
+Press [q] to stop, [?] for help
+Output #0, image2, to 'C:\PLAN\ffmpegPictureUI\tests\output\_tmp\uitesthost_6c1d69ba47ae4bce9f00860d7e3ddd30\g2b_in.bmp':
+  Metadata:
+    encoder         : Lavf63.8.100
+  Stream #0:0: Video: bmp, bgr24(pc, gbr/unknown/unknown, progressive), 6000x4000 [SAR 1:1 DAR 3:2], q=2-31, 200 kb/s, 1 fps, 1 tbn
+    Metadata:
+      encoder         : Lavc63.19.101 bmp
+[image2 @ 000001ec3c189c00] The specified filename 'C:\PLAN\ffmpegPictureUI\tests\output\_tmp\uitesthost_6c1d69ba47ae4bce9f00860d7e3ddd30\g2b_in.bmp' does not contain an image sequence pattern or a pattern is invalid.
+[image2 @ 000001ec3c189c00] Use a pattern such as %03d for an image sequence or use the -update option (with -frames:v 1 if needed) to write a single image.
+[out#0/image2 @ 000001ec3a1ba000] video:70313KiB audio:0KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: unknown
+frame=    1 fps=0.0 q=-0.0 Lsize=N/A time=00:00:01.00 bitrate=N/A speed=8.88x elapsed=0:00:00.11    
+
+----- end ui-mode -----
+  PASS ui-mode summary line present (exit 0 alone is not enough)
+  PASS ui-mode summary FAIL=0
+  PASS ui-mode exit code == 0 (actual 0)
+  PASS ui-mode assertion count == 66 (actual 66)
+
+===== run: ui-color 全组 mode (timeout=120s) =====
+  PASS ui-color no timeout (elapsed 16s, limit 120s)
+----- ui-color stdout -----
+PLAN dir = C:\PLAN\ffmpegPictureUI\publish\PLAN
+tools-root=C:\PLAN\ffmpegPictureUI
+Usage: C:\PLAN\ffmpegPictureUI\publish\PLAN\jxl\bin\cjpegli.exe INPUT OUTPUT [OPTIONS...]
+ INPUT
+    the input can be PPM, PNM, PFM, PAM, PGX, PNG, APNG
+ OUTPUT
+    the compressed JPEG output file
+ -d maxError, --distance=maxError
+    Max. butteraugli distance, lower = higher quality.
+    1.0 = visually lossless (default).
+    Recommended range: 0.5 .. 3.0. Allowed range: 0.0 ... 25.0.
+    Mutually exclusive with --quality and --target_size.
+ -q QUALITY, --quality=QUALITY
+    Quality setting (is remapped to --distance).    Default is quality 90.
+    Quality values roughly match libjpeg quality.
+    Recommended range: 68 .. 96. Allowed range: 1 .. 100.
+    Mutually exclusive with --distance and --target_size.
+ --chroma_subsampling=444|440|422|420
+    Chroma subsampling setting.
+ -p N, --progressive_level=N
+    Progressive level setting. Range: 0 .. 2.
+    Default: 2. Higher number is more scans, 0 means sequential.
+ -v, --verbose
+    Verbose output; can be repeated, also applies to help (!).
+
+ -h, --help
+    Prints this help message. Add -v (up to a total of 2 times) to see more options.
+
+########## H组: 色彩管线 (Registry/超广色域/CICP) ##########
+[PASS] H1 P3 tagging
+[PASS] H2 P3PQ CICP
+[PASS] H3 Adobe归一BT2020
+[PASS] H4 矩阵数值
+[PASS] H5 IsUltraWide
+[PASS] H6 滤镜链
+[PASS] H7 cjxl P3
+[PASS] H8 BT.601已移除
+[PASS] H9 bt2020PQ→cjxl
+[PASS] H12 SDR2020→null
+[PASS] H13 HDR目标CICP
+[PASS] H14 HDR-aware
+      [H10dbg] comboNow=Display P3 idx=3
+[PASS] H10 命令含smpte432且非bt2020
+[PASS] H11 Adobe→BT.2020 实转
+[PASS] B1 H11 中间产物落在 TempDir 而非 SrcDir
+
+########## I组: GUI ICC 选项→命令生效 ##########
+[PASS] I1 None无iccgen
+[PASS] I2 Bake P3
+[PASS] I3 ProPhoto保真
+[PASS] B2 I3 中间产物落在 TempDir 而非 SrcDir
+[PASS] I4 Carry含iccgen
+[PASS] I5 P3 不自动切 Bake
+[PASS] I5b P3PQ 不自动切 Bake
+[PASS] I6 sRGB 仍推荐
+[PASS] I7 手动不被联动覆盖
+⚠ [jpeg] --lossless true ignored: the mjpeg encoder is lossy, so the output is lossy. The only lossless JPEG path here is DNG container compression (--format dng --dng-compression 0).
+⚠ [jpeg] --lossless true ignored: the mjpeg encoder is lossy, so the output is lossy. The only lossless JPEG path here is DNG container compression (--format dng --dng-compression 0).
+⚠ [jpeg] --lossless true ignored: the mjpeg encoder is lossy, so the output is lossy. The only lossless JPEG path here is DNG container compression (--format dng --dng-compression 0).
+⚠ [jpeg] --lossless true ignored: the mjpeg encoder is lossy, so the output is lossy. The only lossless JPEG path here is DNG container compression (--format dng --dng-compression 0).
+⚠ [jpeg] --lossless true ignored: the mjpeg encoder is lossy, so the output is lossy. The only lossless JPEG path here is DNG container compression (--format dng --dng-compression 0).
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[PASS] I9 切格式不自动切策略
+[PASS] I8 P3PQ不降级
+[PASS] B3 I9 中间产物落在 TempDir 而非 SrcDir
+[PASS] I9 8bitP3→smpte432
+[PASS] I10 Bake源来自探测pin=smpte432
+[PASS] I11-a 三元组/色域控件齐备
+[matrix] --color-matrix=bt709 ignored for pixel conversion: decoded layout rgb24 is not YUV
+[matrix] --color-matrix=bt709 ignored for pixel conversion: decoded layout rgb24 is not YUV
+[matrix] --color-matrix=bt709 ignored for pixel conversion: decoded layout rgb24 is not YUV
+[PASS] I11-b Manual→primaries 可编辑
+[PASS] I11-c Manual→trc 可编辑
+[PASS] I11-d Manual→matrix 可编辑
+[PASS] I11-e Manual→无'已锁定'文案
+[matrix] --color-matrix=bt709 ignored for pixel conversion: decoded layout rgb24 is not YUV
+[matrix] --color-matrix=bt709 ignored for pixel conversion: decoded layout rgb24 is not YUV
+[PASS] I11-f 仅CICP→快速色彩空间可改
+[matrix] --color-matrix=bt709 ignored for pixel conversion: decoded layout rgb24 is not YUV
+[matrix] --color-matrix=bt709 ignored for pixel conversion: decoded layout rgb24 is not YUV
+[PASS] I11-g CarryIcc→快速色彩空间锁定(真实冲突)
+[matrix] --color-matrix=bt709 ignored for pixel conversion: decoded layout rgb24 is not YUV
+[matrix] --color-matrix=bt709 ignored for pixel conversion: decoded layout rgb24 is not YUV
+[PASS] I11-h Recommended→三元组可用
+[PASS] I12-a IccVersionCombo 存在
+[PASS] I12-b 下拉默认 v4.4(index 0)
+[PASS] I12-c 输出=JPEG ⇒ 版本下拉可见
+[PASS] I12-d 输出=PNG ⇒ 版本下拉隐藏
+
+########## K组: 四大模式 UI 映射 + 4→3 折叠 (P1-D) ##########
+[PASS] K1 IccModeNone→Recommended (目标=Display P3)
+      [dump] K1 IccModeNone(Recommended) target=P3 :: 29 tokens
+        ffmpeg | -y | -color_primaries | bt709 | -color_trc | iec61966-2-1 | -colorspace | bt709 | -color_range | pc | -i | "C:\PLAN\ffmpegPictureUI\tests\output\sources\src_8bit.png" | -c:v | png | -threads | 1 | -vf | format=rgb48le,zscale=pin=bt709:tin=iec61966-2-1:min=gbr:p=smpte432:t=iec61966-2-1:m=gbr | -compression_level | 1 | -map_metadata | 0 | -map_metadata:s:v | -1 | -map_chapters | -1 | -frames:v | 1 | "C:\PLAN\ffmpegPictureUI\tests\output\_tmp\uitesthost_d948750b5c744c79b7f57dd4149e6d97\src_8bit.png"
+[PASS] K1 IccModeCarry→CarryIcc (目标=Display P3)
+      [dump] K1 IccModeCarry(CarryIcc) target=P3 :: 27 tokens
+        ffmpeg | -y | -color_primaries | bt709 | -color_trc | iec61966-2-1 | -colorspace | bt709 | -color_range | pc | -i | "C:\PLAN\ffmpegPictureUI\tests\output\sources\src_8bit.png" | -c:v | png | -threads | 1 | -compression_level | 1 | -map_metadata | 0 | -map_metadata:s:v | 0:s:v | -map_chapters | 0 | -frames:v | 1 | "C:\PLAN\ffmpegPictureUI\tests\output\_tmp\uitesthost_d948750b5c744c79b7f57dd4149e6d97\src_8bit.png"
+[PASS] K1 IccModeBake→BakeCicpOnly (目标=Display P3)
+      [dump] K1 IccModeBake(BakeCicpOnly) target=P3 :: 29 tokens
+        ffmpeg | -y | -color_primaries | bt709 | -color_trc | iec61966-2-1 | -colorspace | bt709 | -color_range | pc | -i | "C:\PLAN\ffmpegPictureUI\tests\output\sources\src_8bit.png" | -c:v | png | -threads | 1 | -vf | format=rgb48le,zscale=pin=bt709:tin=iec61966-2-1:min=gbr:p=smpte432:t=iec61966-2-1:m=gbr | -compression_level | 1 | -map_metadata | 0 | -map_metadata:s:v | -1 | -map_chapters | -1 | -frames:v | 1 | "C:\PLAN\ffmpegPictureUI\tests\output\_tmp\uitesthost_d948750b5c744c79b7f57dd4149e6d97\src_8bit.png"
+[PASS] K1 IccModeBakeOnly→Manual (目标=Display P3)
+      [dump] K1 IccModeBakeOnly(Manual) target=P3 :: 29 tokens
+        ffmpeg | -y | -color_primaries | bt709 | -color_trc | iec61966-2-1 | -colorspace | bt709 | -color_range | pc | -i | "C:\PLAN\ffmpegPictureUI\tests\output\sources\src_8bit.png" | -c:v | png | -threads | 1 | -vf | format=rgb48le,zscale=pin=bt709:tin=iec61966-2-1:min=gbr:p=smpte432:t=iec61966-2-1:m=gbr | -compression_level | 1 | -map_metadata | 0 | -map_metadata:s:v | -1 | -map_chapters | -1 | -frames:v | 1 | "C:\PLAN\ffmpegPictureUI\tests\output\_tmp\uitesthost_d948750b5c744c79b7f57dd4149e6d97\src_8bit.png"
+[PASS] K2a CarryIcc 与其余三者都不同
+[PASS] K2b P3上 Recommended≡BakeCicpOnly（都CICP-only无ICC）
+      [info] Manual 与 Recommended 在本场景逐字节相同（登记：两者语义不同但预览命令同形）
+[PASS] K3a Recommended P3默认⇒zscale p=smpte432 且【不】触发iccgen
+[PASS] K3b CarryIcc⇒无 zscale + -map_metadata:s:v=0:s:v
+[PASS] K3c BakeCicpOnly⇒zscale p=smpte432 且无 iccgen
+[PASS] K3d 非 CarryIcc 剥离(-map_metadata:s:v=-1)
+[PASS] K4 recommended→Recommended
+[PASS] K4 carry-icc→CarryIcc
+[PASS] K4 cicp-only→BakeCicpOnly
+[PASS] K4 manual→Manual
+[PASS] K5a None ≡ BakeToStandard (逐 token)
+[PASS] K5b 折叠后与 CarryIcc 不同
+[PASS] K5c 归一化空间上 Recommended≡BakeCicpOnly（都CICP-only无ICC）
+[PASS] K5d 折叠语义 = Recommended
+      [dump] K5 None :: 26 tokens
+        -y | -color_primaries | bt709 | -color_trc | iec61966-2-1 | -colorspace | bt709 | -color_range | pc | -i | "C:\PLAN\ffmpegPictureUI\tests\output\sources\src_8bit.png" | -threads | 16 | -vf | format=rgb48le,zscale=pin=bt709:tin=iec61966-2-1:min=gbr:p=bt2020:t=linear:m=gbr,format=rgb48le,lutrgb=r='floor(if(lt(val/maxval\,0.0180555555555556)\,4.5*val\,maxval*(1.099*pow(val/maxval\,0.45)-0.099))+0.5)':g='floor(if(lt(val/maxval\,0.0180555555555556)\,4.5*val\,maxval*(1.099*pow(val/maxval\,0.45)-0.099))+0.5)':b='floor(if(lt(val/maxval\,0.0180555555555556)\,4.5*val\,maxval*(1.099*pow(val/maxval\,0.45)-0.099))+0.5)',setparams=color_primaries=bt2020:color_trc=bt709:colorspace=gbr | -compression_level | 2 | -map_metadata | 0 | -map_metadata:s:v | -1 | -map_chapters | -1 | -frames:v | 1 | "C:\PLAN\ffmpegPictureUI\tests\output\_tmp\uitesthost_d948750b5c744c79b7f57dd4149e6d97\_k5_same_out.png"
+      [dump] K5 CarryIcc :: 24 tokens
+        -y | -color_primaries | bt709 | -color_trc | iec61966-2-1 | -colorspace | bt709 | -color_range | pc | -i | "C:\PLAN\ffmpegPictureUI\tests\output\sources\src_8bit.png" | -threads | 16 | -compression_level | 2 | -map_metadata | 0 | -map_metadata:s:v | 0:s:v | -map_chapters | 0 | -frames:v | 1 | "C:\PLAN\ffmpegPictureUI\tests\output\_tmp\uitesthost_d948750b5c744c79b7f57dd4149e6d97\_k5_same_out.png"
+      [dump] K5 BakeOnly :: 26 tokens
+        -y | -color_primaries | bt709 | -color_trc | iec61966-2-1 | -colorspace | bt709 | -color_range | pc | -i | "C:\PLAN\ffmpegPictureUI\tests\output\sources\src_8bit.png" | -threads | 16 | -vf | format=rgb48le,zscale=pin=bt709:tin=iec61966-2-1:min=gbr:p=bt2020:t=linear:m=gbr,format=rgb48le,lutrgb=r='floor(if(lt(val/maxval\,0.0180555555555556)\,4.5*val\,maxval*(1.099*pow(val/maxval\,0.45)-0.099))+0.5)':g='floor(if(lt(val/maxval\,0.0180555555555556)\,4.5*val\,maxval*(1.099*pow(val/maxval\,0.45)-0.099))+0.5)':b='floor(if(lt(val/maxval\,0.0180555555555556)\,4.5*val\,maxval*(1.099*pow(val/maxval\,0.45)-0.099))+0.5)',setparams=color_primaries=bt2020:color_trc=bt709:colorspace=gbr | -compression_level | 2 | -map_metadata | 0 | -map_metadata:s:v | -1 | -map_chapters | -1 | -frames:v | 1 | "C:\PLAN\ffmpegPictureUI\tests\output\_tmp\uitesthost_d948750b5c744c79b7f57dd4149e6d97\_k5_same_out.png"
+[PASS] K6 None→Recommended
+[PASS] K6 BakeToStandard→Recommended
+[PASS] K6 CarryIcc→CarryIcc
+[PASS] K6 BakeOnly→BakeCicpOnly
+[PASS] K7 recommended→Recommended
+[PASS] K7 carry-icc→CarryIcc
+[PASS] K7 cicp-only→BakeCicpOnly
+[PASS] K7 manual→Manual
+[PASS] K7 负控 非法取值⇒false
+
+########## R组: 编码参数分域与取值域 ##########
+[PASS] R1a nvenc 有真实质量轴 -cq
+[PASS] R1b nvenc 不再吃 -crf（实测 10 与 60 同哈希）
+[PASS] R1c nvenc 不吃 libaom 私有项
+[PASS] R1d qsv 不吃 -crf
+[PASS] R1e amf 不发 -usage allintra
+[PASS] R1f amf 不发 -aom-params
+[PASS] R1g libaom 仍走 -crf（未被误伤）
+[PASS] R1h libaom 不吃 -cq
+[PASS] R2a PSNR⇒tune=1
+[PASS] R2b SSIM⇒tune=2
+[PASS] R2c VMAF⇒tune=5
+[PASS] R2d 默认档不发 tune
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+[PASS] R2e -svtav1-params 只出现一次（实测重复出现是整体替换）
+[PASS] R2f SVT 无损走 lossless=1（旧 crf0 实测 45.89dB 是假的）
+[PASS] R3a zh 与 en 的 IQ 产出同一条参数
+[PASS] R3b IQ 确实 tune=iq
+[PASS] R3c 默认档两种语言都不发 tune
+[PASS] R3d SVT 认得带尾巴的显示串（前缀折叠⇒tune=5）
+[avif/libaom-av1] tune=vmaf is not available in this libaom build (-tune accepts only psnr | ssim, and -aom-params tune=vmaf fails with CONFIG_TUNE_VMAF), so no tuning flag is emitted. Switch encoder to libsvtav1 for a VMAF-tuned encode.
+[avif/libaom-av1] tune=vmaf is not available in this libaom build (-tune accepts only psnr | ssim, and -aom-params tune=vmaf fails with CONFIG_TUNE_VMAF), so no tuning flag is emitted. Switch encoder to libsvtav1 for a VMAF-tuned encode.
+[PASS] R3e libaom 不再发不存在的 vmaf_without_preprocessing
+[PASS] R4a 勾选必须显式发 -spatial-aq 1（省略==0 是惰性的）
+[avif/av1_nvenc] -aq-strength dropped because spatial AQ is off: NVENC only uses this field when -spatial-aq is 1 (verified: with spatial AQ off, strength 5 / strength 8 / omitting it all yield the identical file). Enable Spatial AQ to apply it. The value 0 means do not emit this option at all, because the encoder range starts at 1.
+[PASS] R4b 取消勾选发 0
+[PASS] R4c 未开空间 AQ 时不发 aq-strength（实测三态同哈希）
+[PASS] R4d aq-strength=0 不发（0 越界 rc=127，语义应是「不设」）
+[PASS] R4e 越上界被钳到 15
+[PASS] R5 静帧发 -still-picture 1
+[PASS] R6a 关抖动⇒paletteuse=dither=none（省略==sierra2_4a 不是关）
+[PASS] R6b 开抖动仍是 bayer
+[PASS] R7a 无损 + 质量 50 ⇒ 级别不是被钉死的 0（旧写法 11.3× 体积）
+[PASS] R7b 放行的 PNG 级别守在本软件的 0..9 域内（ffmpeg 声明无界，界由我们守）
+[PASS] R7c PNG 命令行里不出现有损质量旗标
+[PASS] R8a 有损 WebP 也发 -compression_level（旧注释判成无损专有）
+[PASS] R8b APNG 补发 -pred（实测每帧生效）
+[PASS] R8c APNG 补发 -dpi
+[PASS] R9a nvenc 分支确实被排除了这 5 项
+[PASS] R9b 同一套输入在 libaom 分支上会出现其中至少 3 项（证明排除是**按后端**的）
+
+===== UI 测试汇总: 103 PASS / 0 FAIL =====
+PROBE RESULT: pass=103 fail=0
+
+----- stderr -----
+[dngtool] unknown option: --version
+[dngtool] unknown option: --version
+[dngtool] unknown option: --version
+
+----- end ui-color -----
+  PASS ui-color summary line present (exit 0 alone is not enough)
+  PASS ui-color summary FAIL=0
+  PASS ui-color exit code == 0 (actual 0)
+  PASS ui-color assertion count == 103 (actual 103)
+
+===== run: ui-sweep 全组 mode (timeout=120s) =====
+  PASS ui-sweep no timeout (elapsed 36s, limit 120s)
+----- ui-sweep stdout -----
+PLAN dir = C:\PLAN\ffmpegPictureUI\publish\PLAN
+tools-root=C:\PLAN\ffmpegPictureUI
+Usage: C:\PLAN\ffmpegPictureUI\publish\PLAN\jxl\bin\cjpegli.exe INPUT OUTPUT [OPTIONS...]
+ INPUT
+    the input can be PPM, PNM, PFM, PAM, PGX, PNG, APNG
+ OUTPUT
+    the compressed JPEG output file
+ -d maxError, --distance=maxError
+    Max. butteraugli distance, lower = higher quality.
+    1.0 = visually lossless (default).
+    Recommended range: 0.5 .. 3.0. Allowed range: 0.0 ... 25.0.
+    Mutually exclusive with --quality and --target_size.
+ -q QUALITY, --quality=QUALITY
+    Quality setting (is remapped to --distance).    Default is quality 90.
+    Quality values roughly match libjpeg quality.
+    Recommended range: 68 .. 96. Allowed range: 1 .. 100.
+    Mutually exclusive with --distance and --target_size.
+ --chroma_subsampling=444|440|422|420
+    Chroma subsampling setting.
+ -p N, --progressive_level=N
+    Progressive level setting. Range: 0 .. 2.
+    Default: 2. Higher number is more scans, 0 means sequential.
+ -v, --verbose
+    Verbose output; can be repeated, also applies to help (!).
+
+ -h, --help
+    Prints this help message. Add -v (up to a total of 2 times) to see more options.
+
+########## J组: UI 控件穷举 → 命令串 token 级断言 (P1-B) ##########
+  断言口径: 按 token 下标关系定位(-key 的下一个 token 精确相等), 不用整串 Contains
+  [state] advColor=False advCodec=False lossless=False enc=png — PNG (Portable Network Graphics) image
+[PASS] J1 JPEG -c:v+扩展名+编码key
+[PASS] J1 PNG -c:v+扩展名+编码key
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+[PASS] J1 WebP -c:v+扩展名+编码key
+[avif] tune=vmaf is not expressible on encoder 'libwebp': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+[avif] tune=vmaf is not expressible on encoder 'libwebp': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+[avif] tune=vmaf is not expressible on encoder 'libwebp': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+[avif] tune=vmaf is not expressible on encoder 'libwebp': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+[avif] tune=vmaf is not expressible on encoder 'libwebp': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+[avif] tune=vmaf is not expressible on encoder 'libwebp': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+[avif] tune=vmaf is not expressible on encoder 'libwebp': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+[PASS] J1 AVIF -c:v+扩展名+编码key
+[PASS] J1 JPEG XL -c:v+扩展名+编码key
+[PASS] J1 TIFF -c:v+扩展名+编码key
+[avif] tune=vmaf is not expressible on encoder 'tiff': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'tiff' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif] tune=vmaf is not expressible on encoder 'tiff': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'tiff' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif] tune=vmaf is not expressible on encoder 'tiff': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'tiff' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif] tune=vmaf is not expressible on encoder 'tiff': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'tiff' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif] tune=vmaf is not expressible on encoder 'tiff': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'tiff' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif] tune=vmaf is not expressible on encoder 'tiff': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'tiff' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif] tune=vmaf is not expressible on encoder 'tiff': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'tiff' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+      [info] J1z hw picked="<none>" -c:v token="libsvtav1" (期望是单个 token "av1_nvenc"；非单 token ⇒ ParseEncoderName 未剥离图标前缀)
+[SKIP] J1z 硬件编码器名解析：本机 GUI 未提供硬件编码器项（无 GPU 检测落地）⇒ 本条未验证，不计入通过
+[PASS] J1z 硬件编码器名解析（`-c:v` 为单个 token、不含图标/空格）
+⚠ [rgb-lossless] avif: RGB source + lossless -> gbrp (AV1 identity), YUV chroma subsampling skipped
+⚠ [rgb-lossless] avif: RGB source + lossless -> gbrp (AV1 identity), YUV chroma subsampling skipped
+⚠ [rgb-lossless] avif: RGB source + lossless -> gbrp (AV1 identity), YUV chroma subsampling skipped
+⚠ [rgb-lossless] avif: RGB source + lossless -> gbrp (AV1 identity), YUV chroma subsampling skipped
+⚠ [rgb-lossless] avif: RGB source + lossless -> gbrp (AV1 identity), YUV chroma subsampling skipped
+⚠ [rgb-lossless] avif: RGB source + lossless -> gbrp (AV1 identity), YUV chroma subsampling skipped
+⚠ [rgb-lossless] avif: RGB source + lossless -> gbrp (AV1 identity), YUV chroma subsampling skipped
+⚠ [rgb-lossless] avif: RGB source + lossless -> gbrp (AV1 identity), YUV chroma subsampling skipped
+⚠ [rgb-lossless] avif: RGB source + lossless -> gbrp (AV1 identity), YUV chroma subsampling skipped
+[PASS] J2a auto⇒无-pix_fmt
+[PASS] J2 4:4:4
+[PASS] J2 4:2:2
+[PASS] J2 4:2:0
+[PASS] J2d 回auto⇒-pix_fmt消失
+      [J3] PNG BitDepthCombo items=[auto, 8, 16]
+[PASS] J3 语料自检 items≥3
+[PASS] J3 PNG bd=auto
+[PASS] J3 PNG bd=8
+[PASS] J3 PNG bd=16
+[PASS] J4 质量→-q:v值随动
+[PASS] J5 bt709
+[PASS] J5 bt2020
+[PASS] J5 smpte432
+[PASS] J6 iec61966-2-1
+[PASS] J6 bt709
+[PASS] J6 smpte2084
+[PASS] J6 arib-std-b67
+[PASS] J6 linear
+[matrix] --color-matrix=bt709 ignored for pixel conversion: decoded layout rgb24 is not YUV
+[matrix] --color-matrix=bt709 ignored for pixel conversion: decoded layout rgb24 is not YUV
+[PASS] J7 bt709→bt709
+[matrix] --color-matrix=bt2020nc ignored for pixel conversion: decoded layout rgb24 is not YUV
+[matrix] --color-matrix=bt2020nc ignored for pixel conversion: decoded layout rgb24 is not YUV
+[PASS] J7 bt2020nc→bt2020nc
+[matrix] --color-matrix=bt470bg ignored for pixel conversion: decoded layout rgb24 is not YUV
+[matrix] --color-matrix=bt470bg ignored for pixel conversion: decoded layout rgb24 is not YUV
+[PASS] J7 bt470bg→bt470bg
+[matrix] --color-matrix=smpte170m ignored for pixel conversion: decoded layout rgb24 is not YUV
+[matrix] --color-matrix=smpte170m ignored for pixel conversion: decoded layout rgb24 is not YUV
+[PASS] J7 smpte170m→smpte170m
+[matrix] --color-matrix=gbr ignored for pixel conversion: decoded layout rgb24 is not YUV
+[matrix] --color-matrix=gbr ignored for pixel conversion: decoded layout rgb24 is not YUV
+[PASS] J7 gbr→rgb
+      [J8] ColorSpaceCombo items=[auto, sRGB, BT.709, Display P3, P3 PQ, BT.2020 PQ, BT.2020 HLG]
+[PASS] J8 语料自检 7 取值齐备
+[PASS] J8 auto⇒无zscale目标/无iccgen
+      [J8dbg] want=sRGB comboNow=sRGB advColor=False gp=<none> gt=<none>
+[PASS] J8 sRGB⇒无zscale+CICP=bt709/sRGB
+      [J8dbg] want=BT.709 comboNow=BT.709 advColor=False gp=bt709 gt=linear
+[PASS] J8 BT.709⇒p=bt709:t=bt709
+      [J8dbg] want=Display P3 comboNow=Display P3 advColor=False gp=smpte432 gt=iec61966-2-1
+[PASS] J8 Display P3⇒p=smpte432:t=iec61966-2-1+!iccgen
+      [J8dbg] want=P3 PQ comboNow=P3 PQ advColor=False gp=bt2020 gt=smpte2084
+[PASS] J8 P3 PQ⇒p=bt2020:t=smpte2084
+      [J8dbg] want=BT.2020 PQ comboNow=BT.2020 PQ advColor=False gp=bt2020 gt=smpte2084
+[PASS] J8 BT.2020 PQ⇒p=bt2020:t=smpte2084
+      [J8dbg] want=BT.2020 HLG comboNow=BT.2020 HLG advColor=False gp=bt2020 gt=arib-std-b67
+[PASS] J8 BT.2020 HLG⇒p=bt2020:t=arib-std-b67
+[PASS] J8 auto回归⇒smpte432/iccgen 消失
+[PASS] J8d 前置：高级 trc 已设为非 auto（实 iec61966-2-1）
+[PASS] J8d 选 ColorSpaceCombo=auto ⇒ 高级 trc **保持原值**（这就是复位必须显式做的原因）
+[PASS] J9a PNG⇒无损被强制勾选+compression_level=0
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+[PASS] J9b WebP 关⇒无-lossless
+[PASS] J9c WebP 开⇒-lossless=1
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [jpeg] --cjpegli-progressive ignored: this task is encoded by ffmpeg's mjpeg (the backend is not JPEG LI), which has no progressive support, so the output is baseline. Pass -e Cjpegli to encode with JPEG LI and keep progressive output.
+⚠ [jpeg] --lossless true ignored: the mjpeg encoder is lossy, so the output is lossy. The only lossless JPEG path here is DNG container compression (--format dng --dng-compression 0).
+⚠ [jpeg] --cjpegli-progressive ignored: this task is encoded by ffmpeg's mjpeg (the backend is not JPEG LI), which has no progressive support, so the output is baseline. Pass -e Cjpegli to encode with JPEG LI and keep progressive output.
+⚠ [jpeg] --lossless true ignored: the mjpeg encoder is lossy, so the output is lossy. The only lossless JPEG path here is DNG container compression (--format dng --dng-compression 0).
+⚠ [jpeg] --cjpegli-progressive ignored: this task is encoded by ffmpeg's mjpeg (the backend is not JPEG LI), which has no progressive support, so the output is baseline. Pass -e Cjpegli to encode with JPEG LI and keep progressive output.
+⚠ [jpeg] --lossless true ignored: the mjpeg encoder is lossy, so the output is lossy. The only lossless JPEG path here is DNG container compression (--format dng --dng-compression 0).
+⚠ [jpeg] --cjpegli-progressive ignored: this task is encoded by ffmpeg's mjpeg (the backend is not JPEG LI), which has no progressive support, so the output is baseline. Pass -e Cjpegli to encode with JPEG LI and keep progressive output.
+⚠ [jpeg] --lossless true ignored: the mjpeg encoder is lossy, so the output is lossy. The only lossless JPEG path here is DNG container compression (--format dng --dng-compression 0).
+⚠ [jpeg] --cjpegli-progressive ignored: this task is encoded by ffmpeg's mjpeg (the backend is not JPEG LI), which has no progressive support, so the output is baseline. Pass -e Cjpegli to encode with JPEG LI and keep progressive output.
+⚠ [jpeg] --lossless true ignored: the mjpeg encoder is lossy, so the output is lossy. The only lossless JPEG path here is DNG container compression (--format dng --dng-compression 0).
+[PASS] J9d-a 非无损+自动模式 ⇒ 复选框可选、手动 ISO 置灰
+[PASS] J9d-b 非无损+手动 ISO ⇒ 两只都可选（正控：证明 a 的置灰不是恒假）
+[PASS] J9d-c 无损 ⇒ 两只都置灰（叠加会静默破坏逐比特无损）
+[PASS] J9d-d 撤掉无损 ⇒ 可选性回来且勾选状态未被吞
+[PASS] J10 勾选前后 token 完全相同
+[PASS] J11a 未启用⇒无scale滤镜
+[PASS] J11b 启用+256(<源最长边512)⇒scale=256:
+[PASS] J11c 改 192⇒scale=192: 且 256 消失
+[PASS] J11d 上限>源最长边⇒无scale(有意跳过)
+[PASS] J11e 关闭⇒scale 消失
+[PASS] J12a 单线程⇒-threads=1
+[PASS] J12b 手动 3⇒-threads=3
+[PASS] J12c 自动⇒-threads 为数值且≠手动值
+⚠ [jpeg] --cjpegli-progressive ignored: this task is encoded by ffmpeg's mjpeg (the backend is not JPEG LI), which has no progressive support, so the output is baseline. Pass -e Cjpegli to encode with JPEG LI and keep progressive output.
+⚠ [jpeg] --cjpegli-progressive ignored: this task is encoded by ffmpeg's mjpeg (the backend is not JPEG LI), which has no progressive support, so the output is baseline. Pass -e Cjpegli to encode with JPEG LI and keep progressive output.
+⚠ [jpeg] --cjpegli-progressive ignored: this task is encoded by ffmpeg's mjpeg (the backend is not JPEG LI), which has no progressive support, so the output is baseline. Pass -e Cjpegli to encode with JPEG LI and keep progressive output.
+⚠ [jpeg] --cjpegli-progressive ignored: this task is encoded by ffmpeg's mjpeg (the backend is not JPEG LI), which has no progressive support, so the output is baseline. Pass -e Cjpegli to encode with JPEG LI and keep progressive output.
+⚠ [jpeg] --cjpegli-progressive ignored: this task is encoded by ffmpeg's mjpeg (the backend is not JPEG LI), which has no progressive support, so the output is baseline. Pass -e Cjpegli to encode with JPEG LI and keep progressive output.
+⚠ [jpeg] --cjpegli-progressive ignored: this task is encoded by ffmpeg's mjpeg (the backend is not JPEG LI), which has no progressive support, so the output is baseline. Pass -e Cjpegli to encode with JPEG LI and keep progressive output.
+⚠ [jpeg] --cjpegli-progressive ignored: this task is encoded by ffmpeg's mjpeg (the backend is not JPEG LI), which has no progressive support, so the output is baseline. Pass -e Cjpegli to encode with JPEG LI and keep progressive output.
+⚠ [jpeg] --cjpegli-progressive ignored: this task is encoded by ffmpeg's mjpeg (the backend is not JPEG LI), which has no progressive support, so the output is baseline. Pass -e Cjpegli to encode with JPEG LI and keep progressive output.
+⚠ [jpeg] --cjpegli-progressive ignored: this task is encoded by ffmpeg's mjpeg (the backend is not JPEG LI), which has no progressive support, so the output is baseline. Pass -e Cjpegli to encode with JPEG LI and keep progressive output.
+⚠ [jpeg] --cjpegli-progressive ignored: this task is encoded by ffmpeg's mjpeg (the backend is not JPEG LI), which has no progressive support, so the output is baseline. Pass -e Cjpegli to encode with JPEG LI and keep progressive output.
+⚠ [jpeg] --cjpegli-progressive ignored: this task is encoded by ffmpeg's mjpeg (the backend is not JPEG LI), which has no progressive support, so the output is baseline. Pass -e Cjpegli to encode with JPEG LI and keep progressive output.
+⚠ [jpeg] --cjpegli-progressive ignored: this task is encoded by ffmpeg's mjpeg (the backend is not JPEG LI), which has no progressive support, so the output is baseline. Pass -e Cjpegli to encode with JPEG LI and keep progressive output.
+[PASS] J13a JPEG+推荐⇒-map_metadata=-1 且 -map_chapters=-1
+[PASS] J13b PNG+推荐⇒-map_metadata=0 且 -map_metadata:s:v=-1
+[PASS] J13c MetadataModeCombo 不改预览 token（现状锁）
+      [J14a] PngPredCombo items=[none, sub, up, avg, paeth, mixed]
+[PASS] J14a-1 pred 默认值进命令
+[PASS] J14a-2 pred=none⇒-pred=none
+[PASS] J14a-3 pred=mixed⇒-pred=mixed
+[PASS] J14a-4 DPI=300⇒-dpi=300
+[PASS] J14a-5 DPI=0⇒-dpi 消失
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] -compression_level is pinned by -preset photo (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] -compression_level is pinned by -preset photo (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+[PASS] J14b photo
+⚠ [webp] -compression_level is pinned by -preset drawing (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] -compression_level is pinned by -preset drawing (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+[PASS] J14b drawing
+⚠ [webp] -compression_level is pinned by -preset icon (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] -compression_level is pinned by -preset icon (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+[PASS] J14b icon
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [jpeg] --cjpegli-progressive ignored: this task is encoded by ffmpeg's mjpeg (the backend is not JPEG LI), which has no progressive support, so the output is baseline. Pass -e Cjpegli to encode with JPEG LI and keep progressive output.
+⚠ [jpeg] --cjpegli-progressive ignored: this task is encoded by ffmpeg's mjpeg (the backend is not JPEG LI), which has no progressive support, so the output is baseline. Pass -e Cjpegli to encode with JPEG LI and keep progressive output.
+⚠ [jpeg] --cjpegli-progressive ignored: this task is encoded by ffmpeg's mjpeg (the backend is not JPEG LI), which has no progressive support, so the output is baseline. Pass -e Cjpegli to encode with JPEG LI and keep progressive output.
+⚠ [jpeg] --cjpegli-progressive ignored: this task is encoded by ffmpeg's mjpeg (the backend is not JPEG LI), which has no progressive support, so the output is baseline. Pass -e Cjpegli to encode with JPEG LI and keep progressive output.
+⚠ [jpeg] --cjpegli-progressive ignored: this task is encoded by ffmpeg's mjpeg (the backend is not JPEG LI), which has no progressive support, so the output is baseline. Pass -e Cjpegli to encode with JPEG LI and keep progressive output.
+⚠ [jpeg] --cjpegli-progressive ignored: this task is encoded by ffmpeg's mjpeg (the backend is not JPEG LI), which has no progressive support, so the output is baseline. Pass -e Cjpegli to encode with JPEG LI and keep progressive output.
+⚠ [jpeg] --cjpegli-progressive ignored: this task is encoded by ffmpeg's mjpeg (the backend is not JPEG LI), which has no progressive support, so the output is baseline. Pass -e Cjpegli to encode with JPEG LI and keep progressive output.
+⚠ [jpeg] --cjpegli-progressive ignored: this task is encoded by ffmpeg's mjpeg (the backend is not JPEG LI), which has no progressive support, so the output is baseline. Pass -e Cjpegli to encode with JPEG LI and keep progressive output.
+⚠ [jpeg] --cjpegli-progressive ignored: this task is encoded by ffmpeg's mjpeg (the backend is not JPEG LI), which has no progressive support, so the output is baseline. Pass -e Cjpegli to encode with JPEG LI and keep progressive output.
+⚠ [jpeg] --cjpegli-progressive ignored: this task is encoded by ffmpeg's mjpeg (the backend is not JPEG LI), which has no progressive support, so the output is baseline. Pass -e Cjpegli to encode with JPEG LI and keep progressive output.
+⚠ [jpeg] --cjpegli-progressive ignored: this task is encoded by ffmpeg's mjpeg (the backend is not JPEG LI), which has no progressive support, so the output is baseline. Pass -e Cjpegli to encode with JPEG LI and keep progressive output.
+[PASS] J14c-1 optimal⇒-huffman=1
+[PASS] J14c-2 dct=int⇒-dct=int
+⚠ [jpeg] --cjpegli-progressive ignored: this task is encoded by ffmpeg's mjpeg (the backend is not JPEG LI), which has no progressive support, so the output is baseline. Pass -e Cjpegli to encode with JPEG LI and keep progressive output.
+⚠ [jpeg] --cjpegli-progressive ignored: this task is encoded by ffmpeg's mjpeg (the backend is not JPEG LI), which has no progressive support, so the output is baseline. Pass -e Cjpegli to encode with JPEG LI and keep progressive output.
+⚠ [jpeg] --cjpegli-progressive ignored: this task is encoded by ffmpeg's mjpeg (the backend is not JPEG LI), which has no progressive support, so the output is baseline. Pass -e Cjpegli to encode with JPEG LI and keep progressive output.
+[PASS] J14c-3 default⇒-huffman=0
+[PASS] J14c-4 dct=auto⇒-dct 消失
+⚠ [jpeg] --cjpegli-progressive ignored: this task is encoded by ffmpeg's mjpeg (the backend is not JPEG LI), which has no progressive support, so the output is baseline. Pass -e Cjpegli to encode with JPEG LI and keep progressive output.
+⚠ [jpeg] --cjpegli-progressive ignored: this task is encoded by ffmpeg's mjpeg (the backend is not JPEG LI), which has no progressive support, so the output is baseline. Pass -e Cjpegli to encode with JPEG LI and keep progressive output.
+⚠ [jpeg] --cjpegli-progressive ignored: this task is encoded by ffmpeg's mjpeg (the backend is not JPEG LI), which has no progressive support, so the output is baseline. Pass -e Cjpegli to encode with JPEG LI and keep progressive output.
+      [J14d] TiffCompressionCombo items=[raw, lzw, deflate, packbits]
+[PASS] J14d-1 TIFF 无损被强制勾选
+[PASS] J14d-2 lzw 生效(P1-F 缺陷3 已修)
+[PASS] J14d-2 deflate 生效(P1-F 缺陷3 已修)
+[PASS] J14d-2 packbits 生效(P1-F 缺陷3 已修)
+[PASS] J14d-4 负控 三取值命令串互异
+[PASS] J14d-3 TiffCompressionAlgo=deflate&Lossless=false⇒-compression_algo=deflate
+[PASS] J14d-5 无损且未指定算法⇒raw(默认保留)
+[PASS] J14d2-1 DPI=144⇒-dpi=144
+[PASS] J14d2-2 DPI=0⇒-dpi 消失
+[PASS] J14e-1 effort=3⇒-effort=3
+[PASS] J14e-2 modular 关⇒无 -modular
+[PASS] J14e-3 modular 开⇒-modular=1
+[avif] tune=vmaf is not expressible on encoder 'libjxl': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'libjxl' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif] tune=vmaf is not expressible on encoder 'libjxl': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'libjxl' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif] tune=vmaf is not expressible on encoder 'libjxl': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'libjxl' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif] tune=vmaf is not expressible on encoder 'libjxl': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'libjxl' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif] tune=vmaf is not expressible on encoder 'libjxl': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'libjxl' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif] tune=vmaf is not expressible on encoder 'libjxl': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'libjxl' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif] tune=vmaf is not expressible on encoder 'libjxl': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'libjxl' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+⚠ [rgb-lossless] avif: RGB source + lossless -> gbrp (AV1 identity), YUV chroma subsampling skipped
+⚠ [rgb-lossless] avif: RGB source + lossless -> gbrp (AV1 identity), YUV chroma subsampling skipped
+⚠ [rgb-lossless] avif: RGB source + lossless -> gbrp (AV1 identity), YUV chroma subsampling skipped
+⚠ [rgb-lossless] avif: RGB source + lossless -> gbrp (AV1 identity), YUV chroma subsampling skipped
+⚠ [rgb-lossless] avif: RGB source + lossless -> gbrp (AV1 identity), YUV chroma subsampling skipped
+⚠ [rgb-lossless] avif: RGB source + lossless -> gbrp (AV1 identity), YUV chroma subsampling skipped
+⚠ [rgb-lossless] avif: RGB source + lossless -> gbrp (AV1 identity), YUV chroma subsampling skipped
+⚠ [rgb-lossless] avif: RGB source + lossless -> gbrp (AV1 identity), YUV chroma subsampling skipped
+⚠ [rgb-lossless] avif: RGB source + lossless -> gbrp (AV1 identity), YUV chroma subsampling skipped
+⚠ [rgb-lossless] avif: RGB source + lossless -> gbrp (AV1 identity), YUV chroma subsampling skipped
+[PASS] J14f-1 cpu-used=2
+⚠ [rgb-lossless] avif: RGB source + lossless -> gbrp (AV1 identity), YUV chroma subsampling skipped
+⚠ [rgb-lossless] avif: RGB source + lossless -> gbrp (AV1 identity), YUV chroma subsampling skipped
+[PASS] J14f-2 cdef 关⇒-enable-cdef=0
+⚠ [rgb-lossless] avif: RGB source + lossless -> gbrp (AV1 identity), YUV chroma subsampling skipped
+⚠ [rgb-lossless] avif: RGB source + lossless -> gbrp (AV1 identity), YUV chroma subsampling skipped
+[PASS] J14f-3 cdef 开⇒-enable-cdef=1
+⚠ [rgb-lossless] avif: RGB source + lossless -> gbrp (AV1 identity), YUV chroma subsampling skipped
+⚠ [rgb-lossless] avif: RGB source + lossless -> gbrp (AV1 identity), YUV chroma subsampling skipped
+[PASS] J14f-4 row-mt 关⇒无 -row-mt
+⚠ [rgb-lossless] avif: RGB source + lossless -> gbrp (AV1 identity), YUV chroma subsampling skipped
+⚠ [rgb-lossless] avif: RGB source + lossless -> gbrp (AV1 identity), YUV chroma subsampling skipped
+⚠ [rgb-lossless] avif: RGB source + lossless -> gbrp (AV1 identity), YUV chroma subsampling skipped
+⚠ [rgb-lossless] avif: RGB source + lossless -> gbrp (AV1 identity), YUV chroma subsampling skipped
+⚠ [rgb-lossless] avif: RGB source + lossless -> gbrp (AV1 identity), YUV chroma subsampling skipped
+⚠ [rgb-lossless] avif: RGB source + lossless -> gbrp (AV1 identity), YUV chroma subsampling skipped
+⚠ [rgb-lossless] avif: RGB source + lossless -> gbrp (AV1 identity), YUV chroma subsampling skipped
+⚠ [rgb-lossless] avif: RGB source + lossless -> gbrp (AV1 identity), YUV chroma subsampling skipped
+⚠ [rgb-lossless] avif: RGB source + lossless -> gbrp (AV1 identity), YUV chroma subsampling skipped
+⚠ [rgb-lossless] avif: RGB source + lossless -> gbrp (AV1 identity), YUV chroma subsampling skipped
+⚠ [rgb-lossless] avif: RGB source + lossless -> gbrp (AV1 identity), YUV chroma subsampling skipped
+⚠ [jpeg] --lossless true ignored: the mjpeg encoder is lossy, so the output is lossy. The only lossless JPEG path here is DNG container compression (--format dng --dng-compression 0).
+⚠ [jpeg] --lossless true ignored: the mjpeg encoder is lossy, so the output is lossy. The only lossless JPEG path here is DNG container compression (--format dng --dng-compression 0).
+⚠ [jpeg] --lossless true ignored: the mjpeg encoder is lossy, so the output is lossy. The only lossless JPEG path here is DNG container compression (--format dng --dng-compression 0).
+⚠ [jpeg] --lossless true ignored: the mjpeg encoder is lossy, so the output is lossy. The only lossless JPEG path here is DNG container compression (--format dng --dng-compression 0).
+⚠ [jpeg] --lossless true ignored: the mjpeg encoder is lossy, so the output is lossy. The only lossless JPEG path here is DNG container compression (--format dng --dng-compression 0).
+[PASS] J15a 帧率空⇒无fps滤镜 且 -c:v 非 libjxl_anim
+[PASS] J15b fps=12⇒-c:v=libjxl_anim
+[PASS] J15c fps=12⇒滤镜段 fps=12
+[PASS] J15d scaleW=320⇒滤镜段 scale=320:-1:flags=lanczos
+[PASS] J15e duration=5⇒-t=5
+[PASS] J15f 清空帧率⇒fps/scale 消失 且 -c:v 回 libjxl
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+[PASS] J15g WebP loop=3⇒-loop=3
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+[PASS] J15h WebP loop=0⇒-loop=0
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+      [info] J15 WebP 分支已断言 -loop；fps/scaleW 的断言见 GroupL/L4（P1-F 缺陷 4 已修）
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [jpeg] --cjpegli-progressive ignored: this task is encoded by ffmpeg's mjpeg (the backend is not JPEG LI), which has no progressive support, so the output is baseline. Pass -e Cjpegli to encode with JPEG LI and keep progressive output.
+⚠ [jpeg] --cjpegli-progressive ignored: this task is encoded by ffmpeg's mjpeg (the backend is not JPEG LI), which has no progressive support, so the output is baseline. Pass -e Cjpegli to encode with JPEG LI and keep progressive output.
+⚠ [jpeg] --cjpegli-progressive ignored: this task is encoded by ffmpeg's mjpeg (the backend is not JPEG LI), which has no progressive support, so the output is baseline. Pass -e Cjpegli to encode with JPEG LI and keep progressive output.
+[PASS] J16a JPEG 格 ⇒ 共用面板可见、默认勾选
+[PASS] J16b 负控：PNG 格 ⇒ 面板隐藏（不是一只恒可见的装饰）
+[PASS] J17a ColorConflictLabel 控件存在
+[PASS] J17b 初始态不可见（Text 空且 IsVisible=false）
+[PASS] J17c HDR(BT.2020 PQ)→JPEG ⇒ 标签可见
+[PASS] J17d 提示文案点名 HDR→SDR 降级
+[PASS] J17e 空间回 auto ⇒ 标签复位不可见
+[PASS] J17f 模式2+三元组auto ⇒ 标签可见且点名缺参
+[PASS] J17g 模式4+合法三元组 ⇒ 标签复位不可见
+[PASS] J17h 环境复位后标签保持不可见（负控收尾）
+[PASS] J18a 两控件存在且语料齐备
+[PASS] J18b 默认(auto) ⇒ none/不显式/engine=auto
+[PASS] J18c hable ⇒ tm=hable 且不显式
+[PASS] J18d 显式 none ⇒ tm=none 且 Explicit=true（防静默升级 Hable）
+[PASS] J18e engine ⇒ eng=engine（显式走引擎）
+[PASS] J18f legacy ⇒ eng=legacy（传统管线）
+[PASS] J18g 选择 tone-map/engine ⇒ 预览命令串逐字不变（无 token 污染）
+[PASS] J18h 不勾高级色彩 ⇒ 采集恒默认（useAdv 闸）
+[PASS] J19a 控件存在且 png 过滤集恰 2 档（CMX-2 能力过滤 auto+rgb）
+[PASS] J19b 默认 auto（index 0）⇒ ColorOutMatrix == null（CM-REQ-08 零行为）
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+[color-out-matrix] smpte170m on webp: container is already bt470bg; recorded, no pixel effect
+[PASS] J19c 选中 bt601 档 ⇒ 采集 smpte170m（别名归一，C-TOKEN@1；webp 过滤集内）
+⚠ [jpeg] --lossless true ignored: the mjpeg encoder is lossy, so the output is lossy. The only lossless JPEG path here is DNG container compression (--format dng --dng-compression 0).
+[color-out-matrix] smpte170m on jpeg: container is already bt470bg; recorded, no pixel effect
+⚠ [jpeg] --lossless true ignored: the mjpeg encoder is lossy, so the output is lossy. The only lossless JPEG path here is DNG container compression (--format dng --dng-compression 0).
+[color-out-matrix] smpte170m on jpeg: container is already bt470bg; recorded, no pixel effect
+⚠ [jpeg] --lossless true ignored: the mjpeg encoder is lossy, so the output is lossy. The only lossless JPEG path here is DNG container compression (--format dng --dng-compression 0).
+[color-out-matrix] smpte170m on jpeg: container is already bt470bg; recorded, no pixel effect
+[PASS] J19d 选中 xyb 档 ⇒ 采集 xyb（特殊成员直通；jxl 过滤集内）
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+⚠ [rgb-lossless] avif: RGB source + lossless -> gbrp (AV1 identity), YUV chroma subsampling skipped
+⚠ [rgb-lossless] avif: RGB source + lossless -> gbrp (AV1 identity), YUV chroma subsampling skipped
+⚠ [rgb-lossless] avif: RGB source + lossless -> gbrp (AV1 identity), YUV chroma subsampling skipped
+⚠ [rgb-lossless] avif: RGB source + lossless -> gbrp (AV1 identity), YUV chroma subsampling skipped
+⚠ [rgb-lossless] avif: RGB source + lossless -> gbrp (AV1 identity), YUV chroma subsampling skipped
+⚠ [rgb-lossless] avif: RGB source + lossless -> gbrp (AV1 identity), YUV chroma subsampling skipped
+⚠ [rgb-lossless] avif: RGB source + lossless -> gbrp (AV1 identity), YUV chroma subsampling skipped
+⚠ [rgb-lossless] avif: RGB source + lossless -> gbrp (AV1 identity), YUV chroma subsampling skipped
+[color-out-matrix] avif: bt2020nc -> -colorspace bt2020nc
+[PASS] J19e 选中 bt2020nc 档 ⇒ 采集 bt2020nc（H.273 族直通；avif 过滤集内）
+[PASS] J19f 不勾高级色彩 ⇒ 采集仍 = bt2020nc（不受 useAdv 门控，C-GUI@1 基本区语义）
+[PASS] J19i avif+AOM 过滤集恰 8 档且 bt2020nc/smpte240m 在集（CMX-2 唯一真值）
+[PASS] J19j avif 下 ycgco/fcc/xyb 均被过滤（C4/C5 校准 Rejected 档不进下拉）
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+[color-out-matrix] smpte170m on webp: container is already bt470bg; recorded, no pixel effect
+[PASS] J19g 预设回放：bt601 ⇒ 归位 bt601 档（webp 集内 index 1）；null ⇒ 早退不动控件
+[avif] tune=vmaf is not expressible on encoder 'libwebp': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+[color-out-matrix] avif: smpte170m -> -colorspace smpte170m
+[avif] tune=vmaf is not expressible on encoder 'libwebp': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+[color-out-matrix] avif: smpte170m -> -colorspace smpte170m
+[avif] tune=vmaf is not expressible on encoder 'libwebp': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [avif] explicit --color-out-matrix=smpte170m requested without --chroma/--bit-depth; pinned YUV 4:2:0 so the matrix can actually land in nclx (RGB/gbrp identity would silently ignore it).
+[color-out-matrix] avif: smpte170m -> -colorspace smpte170m
+[avif] tune=vmaf is not expressible on encoder 'libwebp': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+[color-out-matrix] avif: smpte170m -> -colorspace smpte170m
+[avif] tune=vmaf is not expressible on encoder 'libwebp': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+[color-out-matrix] avif: smpte170m -> -colorspace smpte170m
+[avif] tune=vmaf is not expressible on encoder 'libwebp': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'libwebp' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif] tune=vmaf is not expressible on encoder 'libwebp': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'libwebp' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif] tune=vmaf is not expressible on encoder 'libwebp': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+[color-out-matrix] avif: smpte170m -> -colorspace smpte170m
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+[color-out-matrix] avif: smpte170m -> -colorspace smpte170m
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+[color-out-matrix] avif: smpte170m -> -colorspace smpte170m
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+[color-out-matrix] avif: smpte170m -> -colorspace smpte170m
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [avif] explicit --color-out-matrix=smpte170m requested without --chroma/--bit-depth; pinned YUV 4:2:0 so the matrix can actually land in nclx (RGB/gbrp identity would silently ignore it).
+[color-out-matrix] avif: smpte170m -> -colorspace smpte170m
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+[color-out-matrix] avif: smpte170m -> -colorspace smpte170m
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+[color-out-matrix] avif: smpte170m -> -colorspace smpte170m
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+[color-out-matrix] avif: smpte170m -> -colorspace smpte170m
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[PASS] J19l 切格式后选中失效 ⇒ 重置 auto（CMX-2 失效回放 newIdx=0；采集 null）
+[PASS] J19k jpg(cjpegli) 过滤集 3 档且 xyb 在集、bt709 不在（backend 感知过滤，C9）
+[PASS] J19h 复位 auto ⇒ 采集恒 null（回归红线收尾）
+[avif] tune=vmaf is not expressible on encoder 'png': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'png' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif] tune=vmaf is not expressible on encoder 'png': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'png' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif] tune=vmaf is not expressible on encoder 'png': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'png' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif] tune=vmaf is not expressible on encoder 'png': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'png' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif] tune=vmaf is not expressible on encoder 'png': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'png' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif] tune=vmaf is not expressible on encoder 'png': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'png' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif] tune=vmaf is not expressible on encoder 'png': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'png' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+
+########## L组: P1-F UI→命令 参数传递缺陷 4 项 ##########
+  [state] advColor=False advCodec=False lossless=True enc=png — PNG (Portable Network Graphics) image
+[PASS] L1a av1_nvenc 解析精确
+[PASS] L1b av1_nvenc 无空格/无图标
+[PASS] L1a av1_amf 解析精确
+[PASS] L1b av1_amf 无空格/无图标
+[PASS] L1a mjpeg_nvenc 解析精确
+[PASS] L1b mjpeg_nvenc 无空格/无图标
+[PASS] L1a mjpeg 解析精确
+[PASS] L1b mjpeg 无空格/无图标
+[PASS] L1a libaom-av1 解析精确
+[PASS] L1b libaom-av1 无空格/无图标
+[PASS] L1c 负控 空串⇒空
+[PASS] L1d 负控 纯图标⇒空(不残留图标)
+[avif] tune=vmaf is not expressible on encoder 'png': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'png' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif] tune=vmaf is not expressible on encoder 'png': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'png' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif] tune=vmaf is not expressible on encoder 'png': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'png' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif] tune=vmaf is not expressible on encoder 'png': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'png' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif] tune=vmaf is not expressible on encoder 'png': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'png' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif] tune=vmaf is not expressible on encoder 'png': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'png' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif] tune=vmaf is not expressible on encoder 'png': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'png' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/av1_nvenc] --lossless true is not honoured: the NVENC AV1 encoder has no lossless mode (ffmpeg -tune lossless / -rc constqp both fail with not supported). Falling back to the best constant-quality setting (-cq 1), which is still lossy. Use libaom-av1 or libsvtav1 for a truly lossless AVIF.
+[avif] tune=vmaf is not expressible on encoder 'av1_nvenc': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'av1_nvenc' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/av1_nvenc] --lossless true is not honoured: the NVENC AV1 encoder has no lossless mode (ffmpeg -tune lossless / -rc constqp both fail with not supported). Falling back to the best constant-quality setting (-cq 1), which is still lossy. Use libaom-av1 or libsvtav1 for a truly lossless AVIF.
+[avif] tune=vmaf is not expressible on encoder 'av1_nvenc': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'av1_nvenc' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/av1_nvenc] --lossless true is not honoured: the NVENC AV1 encoder has no lossless mode (ffmpeg -tune lossless / -rc constqp both fail with not supported). Falling back to the best constant-quality setting (-cq 1), which is still lossy. Use libaom-av1 or libsvtav1 for a truly lossless AVIF.
+[avif] tune=vmaf is not expressible on encoder 'av1_nvenc': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'av1_nvenc' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/av1_nvenc] --lossless true is not honoured: the NVENC AV1 encoder has no lossless mode (ffmpeg -tune lossless / -rc constqp both fail with not supported). Falling back to the best constant-quality setting (-cq 1), which is still lossy. Use libaom-av1 or libsvtav1 for a truly lossless AVIF.
+[avif] tune=vmaf is not expressible on encoder 'av1_nvenc': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'av1_nvenc' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/av1_nvenc] --lossless true is not honoured: the NVENC AV1 encoder has no lossless mode (ffmpeg -tune lossless / -rc constqp both fail with not supported). Falling back to the best constant-quality setting (-cq 1), which is still lossy. Use libaom-av1 or libsvtav1 for a truly lossless AVIF.
+[avif] tune=vmaf is not expressible on encoder 'av1_nvenc': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'av1_nvenc' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/av1_nvenc] --lossless true is not honoured: the NVENC AV1 encoder has no lossless mode (ffmpeg -tune lossless / -rc constqp both fail with not supported). Falling back to the best constant-quality setting (-cq 1), which is still lossy. Use libaom-av1 or libsvtav1 for a truly lossless AVIF.
+[avif] tune=vmaf is not expressible on encoder 'av1_nvenc': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'av1_nvenc' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/av1_nvenc] --lossless true is not honoured: the NVENC AV1 encoder has no lossless mode (ffmpeg -tune lossless / -rc constqp both fail with not supported). Falling back to the best constant-quality setting (-cq 1), which is still lossy. Use libaom-av1 or libsvtav1 for a truly lossless AVIF.
+[avif] tune=vmaf is not expressible on encoder 'av1_nvenc': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'av1_nvenc' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/av1_nvenc] --lossless true is not honoured: the NVENC AV1 encoder has no lossless mode (ffmpeg -tune lossless / -rc constqp both fail with not supported). Falling back to the best constant-quality setting (-cq 1), which is still lossy. Use libaom-av1 or libsvtav1 for a truly lossless AVIF.
+[avif] tune=vmaf is not expressible on encoder 'av1_nvenc': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'av1_nvenc' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[PASS] L1e-0 本环境存在硬件编码器项
+[avif/av1_nvenc] --lossless true is not honoured: the NVENC AV1 encoder has no lossless mode (ffmpeg -tune lossless / -rc constqp both fail with not supported). Falling back to the best constant-quality setting (-cq 1), which is still lossy. Use libaom-av1 or libsvtav1 for a truly lossless AVIF.
+[avif] tune=vmaf is not expressible on encoder 'av1_nvenc': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'av1_nvenc' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+      [dump] L1e hw="⚡ av1_nvenc — NVIDIA NVENC av1 encoder (codec av1)" :: 27 tokens
+        ffmpeg | -y | -color_range | pc | -i | "C:\PLAN\ffmpegPictureUI\tests\output\sources\src_8bit.png" | -c:v | av1_nvenc | -threads | 16 | -cq | 1 | -preset | p7 | -spatial-aq | 1 | -aq-strength | 8 | -color_range | pc | -map_metadata | 0 | -map_metadata:s:v | -1 | -map_chapters | -1 | "C:\PLAN\ffmpegPictureUI\tests\output\_tmp\uitesthost_602febe140e24c7381b07e33bb5584af\src_8bit.avif"
+[PASS] L1f UI 侧 -c:v == ParseEncoderName(显示名)
+[PASS] L1g UI 侧 -c:v 单 token(无空格/无图标)
+[PASS] L1h UI 侧 -c:v 的下一 token 不是图标
+[PASS] L1i 负控 断言有牙(enc 不得等于图标)
+[avif/av1_nvenc] --lossless true is not honoured: the NVENC AV1 encoder has no lossless mode (ffmpeg -tune lossless / -rc constqp both fail with not supported). Falling back to the best constant-quality setting (-cq 1), which is still lossy. Use libaom-av1 or libsvtav1 for a truly lossless AVIF.
+[avif] tune=vmaf is not expressible on encoder 'av1_nvenc': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'av1_nvenc' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/av1_nvenc] --lossless true is not honoured: the NVENC AV1 encoder has no lossless mode (ffmpeg -tune lossless / -rc constqp both fail with not supported). Falling back to the best constant-quality setting (-cq 1), which is still lossy. Use libaom-av1 or libsvtav1 for a truly lossless AVIF.
+[avif] tune=vmaf is not expressible on encoder 'av1_nvenc': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'av1_nvenc' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/av1_nvenc] --lossless true is not honoured: the NVENC AV1 encoder has no lossless mode (ffmpeg -tune lossless / -rc constqp both fail with not supported). Falling back to the best constant-quality setting (-cq 1), which is still lossy. Use libaom-av1 or libsvtav1 for a truly lossless AVIF.
+[avif] tune=vmaf is not expressible on encoder 'av1_nvenc': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'av1_nvenc' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/av1_nvenc] --lossless true is not honoured: the NVENC AV1 encoder has no lossless mode (ffmpeg -tune lossless / -rc constqp both fail with not supported). Falling back to the best constant-quality setting (-cq 1), which is still lossy. Use libaom-av1 or libsvtav1 for a truly lossless AVIF.
+[avif] tune=vmaf is not expressible on encoder 'av1_nvenc': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'av1_nvenc' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[PASS] L1j 硬件预设级别走 nvenc 支(idx3⇒p4)
+[avif/av1_nvenc] --lossless true is not honoured: the NVENC AV1 encoder has no lossless mode (ffmpeg -tune lossless / -rc constqp both fail with not supported). Falling back to the best constant-quality setting (-cq 1), which is still lossy. Use libaom-av1 or libsvtav1 for a truly lossless AVIF.
+[avif] tune=vmaf is not expressible on encoder 'av1_nvenc': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'av1_nvenc' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/av1_nvenc] --lossless true is not honoured: the NVENC AV1 encoder has no lossless mode (ffmpeg -tune lossless / -rc constqp both fail with not supported). Falling back to the best constant-quality setting (-cq 1), which is still lossy. Use libaom-av1 or libsvtav1 for a truly lossless AVIF.
+[avif] tune=vmaf is not expressible on encoder 'av1_nvenc': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'av1_nvenc' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[PASS] L1k 负控 预设随下拉变化(idx5⇒p6)
+[avif/av1_nvenc] --lossless true is not honoured: the NVENC AV1 encoder has no lossless mode (ffmpeg -tune lossless / -rc constqp both fail with not supported). Falling back to the best constant-quality setting (-cq 1), which is still lossy. Use libaom-av1 or libsvtav1 for a truly lossless AVIF.
+[avif] tune=vmaf is not expressible on encoder 'av1_nvenc': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'av1_nvenc' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/av1_nvenc] --lossless true is not honoured: the NVENC AV1 encoder has no lossless mode (ffmpeg -tune lossless / -rc constqp both fail with not supported). Falling back to the best constant-quality setting (-cq 1), which is still lossy. Use libaom-av1 or libsvtav1 for a truly lossless AVIF.
+[avif] tune=vmaf is not expressible on encoder 'av1_nvenc': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'av1_nvenc' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/av1_nvenc] --lossless true is not honoured: the NVENC AV1 encoder has no lossless mode (ffmpeg -tune lossless / -rc constqp both fail with not supported). Falling back to the best constant-quality setting (-cq 1), which is still lossy. Use libaom-av1 or libsvtav1 for a truly lossless AVIF.
+[avif] tune=vmaf is not expressible on encoder 'av1_nvenc': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'av1_nvenc' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[PASS] L2a PNG 无损=勾选且禁用
+[PASS] L2b PNG 质量滑块禁用
+[PASS] L2c PNG 质量输入框禁用
+[PASS] L2d PNG 重生成两次后仍禁用(缺陷2核心)
+[PASS] L2e LockLosslessForJxl 生效
+[PASS] L2f PNG 下 JXL 锁撤销后格式锁仍在
+[PASS] L2g TIFF 无损=勾选且禁用
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+⚠ [webp] --webp-preset ignored in lossless mode: presets configure lossy quantization and can silently degrade -lossless 1 to lossy.
+[PASS] L2h WebP 无损可用
+[PASS] L2i WebP 质量滑块可用
+[avif] tune=vmaf is not expressible on encoder 'libwebp': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'libwebp' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif] tune=vmaf is not expressible on encoder 'libwebp': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'libwebp' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif] tune=vmaf is not expressible on encoder 'libwebp': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'libwebp' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif] tune=vmaf is not expressible on encoder 'libwebp': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'libwebp' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif] tune=vmaf is not expressible on encoder 'libwebp': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'libwebp' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif] tune=vmaf is not expressible on encoder 'libwebp': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'libwebp' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif] tune=vmaf is not expressible on encoder 'libwebp': this build implements a -tune path only on libaom-av1 and libsvtav1 => no tuning flag is emitted.
+⚠ [rgb] avif: RGB output requested, but encoder 'libwebp' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[avif/libsvtav1] tune=5 dropped because lossless is on: with lossless=1 this tune silently voids losslessness (measured PSNR 53.14dB for tune=5 and 32.16dB for tune=4, versus inf for tune=0/1/2). The lossless promise wins here; turn lossless off to keep the tuning metric.
+⚠ [rgb] avif: RGB output requested, but encoder 'libsvtav1' has no gbrp support -> output falls back to YUV (chose libaom-av1 to keep RGB)
+[PASS] L2j AVIF 无损可用
+[PASS] L2k 回到 PNG 再次禁用(幂等)
+      [L3] TiffCompressionCombo items=[raw, lzw, deflate, packbits]
+[PASS] L3a 四个算法在册
+[PASS] L3b raw ⇒ -compression_algo=raw
+[PASS] L3b lzw ⇒ -compression_algo=lzw
+[PASS] L3b deflate ⇒ -compression_algo=deflate
+[PASS] L3b packbits ⇒ -compression_algo=packbits
+[PASS] L3c 四个取值命令串互异(区分力负控)
+[PASS] L3d 高级关⇒-compression_algo=lzw(现状锁)
+⚠ [jpeg] --lossless true ignored: the mjpeg encoder is lossy, so the output is lossy. The only lossless JPEG path here is DNG container compression (--format dng --dng-compression 0).
+⚠ [jpeg] --lossless true ignored: the mjpeg encoder is lossy, so the output is lossy. The only lossless JPEG path here is DNG container compression (--format dng --dng-compression 0).
+⚠ [jpeg] --lossless true ignored: the mjpeg encoder is lossy, so the output is lossy. The only lossless JPEG path here is DNG container compression (--format dng --dng-compression 0).
+⚠ [jpeg] --lossless true ignored: the mjpeg encoder is lossy, so the output is lossy. The only lossless JPEG path here is DNG container compression (--format dng --dng-compression 0).
+⚠ [jpeg] --lossless true ignored: the mjpeg encoder is lossy, so the output is lossy. The only lossless JPEG path here is DNG container compression (--format dng --dng-compression 0).
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+[PASS] L4a 空⇒无 fps/scale 滤镜
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+      [dump] L4 webp anim fps=12 scaleW=320 :: 29 tokens
+        ffmpeg | -y | -color_range | pc | -i | "C:\PLAN\ffmpegPictureUI\tests\output\sources\src_8bit.png" | -c:v | libwebp | -threads | 1 | -q:v | 95 | -preset | picture | -compression_level | 4 | -loop | 3 | -vf | fps=12,scale=320:-1:flags=lanczos | -color_range | tv | -map_metadata | -1 | -map_chapters | -1 | -colorspace | bt470bg | "C:\PLAN\ffmpegPictureUI\tests\output\_tmp\uitesthost_602febe140e24c7381b07e33bb5584af\src_8bit.webp"
+[PASS] L4b fps=12⇒滤镜段 fps=12
+[PASS] L4c scaleW=320⇒滤镜段 scale=320:-1:flags=lanczos
+[PASS] L4d -loop=3 仍在(不回归)
+[PASS] L4e -vf 唯一(不得产生第二条)
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+[PASS] L4f 负控 清空⇒fps/scale 消失
+
+===== UI 测试汇总: 169 PASS / 0 FAIL =====
+PROBE RESULT: pass=169 fail=0 skip=1
+
+----- stderr -----
+[dngtool] unknown option: --version
+[dngtool] unknown option: --version
+[dngtool] unknown option: --version
+
+----- end ui-sweep -----
+  PASS ui-sweep summary line present (exit 0 alone is not enough)
+  PASS ui-sweep summary FAIL=0
+  PASS ui-sweep exit code == 0 (actual 0)
+  PASS ui-sweep assertion count == 169 (actual 169)
+
+===== run: ui-cli 全组 mode (timeout=120s) =====
+  PASS ui-cli no timeout (elapsed 6s, limit 120s)
+----- ui-cli stdout -----
+PLAN dir = C:\PLAN\ffmpegPictureUI\publish\PLAN
+tools-root=C:\PLAN\ffmpegPictureUI
+[PASS] P0 面板控件 LogText 可见且为可选只读多行文本（本组前提）
+[PASS] P1 七个槽位都打出了结论行（槽位数 = 日志行数）
+[PASS] P2 每条结论行都以 OK/未找到 收尾（无'检测了但不说结果'形态）
+[PASS] P3 [cjxl] 恰有一条结论行
+[PASS] P3 [cjpegli] 恰有一条结论行
+[PASS] P3 [djxl] 恰有一条结论行
+[PASS] P3 [exiftool] 恰有一条结论行
+[PASS] P3 [JxrEncApp] 恰有一条结论行
+[PASS] P3 [avifenc] 恰有一条结论行
+[PASS] P3 [dngtool] 恰有一条结论行
+[PASS] P4 不存在'未知名字却带结论'的行（空槽位/漏改名的直接形态）
+[PASS] P5 对照组：P3 逐名累加必须恰好吃掉全部 7 条结论行（防本组被判据漏行恒绿）
+
+########## M组: P1-E CLI 取值口径(D4/D5/D6) + 任务B/C 回归锁 ##########
+  [state] advColor=False advCodec=False lossless=False enc=png — PNG (Portable Network Graphics) image
+[PASS] M0 ApplyExtraOption/BuildBaseOptions 可反射
+[PASS] M0a CLI preset retains JPEG format and cjpegli backend when no axes are explicit
+[PASS] M0b explicit -f overrides preset container and selects a compatible inferred backend
+[PASS] M0c preset concrete EncoderName is normalized into the CLI model
+[PASS] M1a --animation-loop -1 取值被消费(不是 true)
+[PASS] M1b --threads -1 ⇒ options.Threads == -1（修复前恒 0）
+[PASS] M1c 空格形式 ≡ 内联形式（修复前只有内联可用）
+[PASS] M1d 负控 后随 --选项 不被当取值
+[PASS] M1e 负控 -x 仍当选项（键置 true）
+[PASS] M2a color-strategy 非法值 ⇒ ArgumentException
+[PASS] M2b color-strategy 异常消息点名该 key
+[PASS] M2a icc-mode 非法值 ⇒ ArgumentException
+[PASS] M2b icc-mode 异常消息点名该 key
+[PASS] M2a color-engine 非法值 ⇒ ArgumentException
+[PASS] M2b color-engine 异常消息点名该 key
+[PASS] M2a color-gamut-map 非法值 ⇒ ArgumentException
+[PASS] M2b color-gamut-map 异常消息点名该 key
+[PASS] M2a jpeg-gain-map-base-gamut 非法值 ⇒ ArgumentException
+[PASS] M2b jpeg-gain-map-base-gamut 异常消息点名该 key
+[PASS] M2a jpeg-gain-map-metadata 非法值 ⇒ ArgumentException
+[PASS] M2b jpeg-gain-map-metadata 异常消息点名该 key
+[PASS] M2a bit-depth 非法值 ⇒ ArgumentException
+[PASS] M2b bit-depth 异常消息点名该 key
+[PASS] M2a threads 非法值 ⇒ ArgumentException
+[PASS] M2b threads 异常消息点名该 key
+[PASS] M2a lossless 非法值 ⇒ ArgumentException
+[PASS] M2b lossless 异常消息点名该 key
+[PASS] M2a color-hdr-peak 非法值 ⇒ ArgumentException
+[PASS] M2b color-hdr-peak 异常消息点名该 key
+[PASS] M2a chroma 非法值 ⇒ ArgumentException
+[PASS] M2b chroma 异常消息点名该 key
+[PASS] M2a color-range 非法值 ⇒ ArgumentException
+[PASS] M2b color-range 异常消息点名该 key
+[PASS] M2a color-709-curve 非法值 ⇒ ArgumentException
+[PASS] M2b color-709-curve 异常消息点名该 key
+[PASS] M2a color-carry-scope 非法值 ⇒ ArgumentException
+[PASS] M2b color-carry-scope 异常消息点名该 key
+[PASS] M2a color-tone-map 非法值 ⇒ ArgumentException
+[PASS] M2b color-tone-map 异常消息点名该 key
+[PASS] M2a jpeg-huffman 非法值 ⇒ ArgumentException
+[PASS] M2b jpeg-huffman 异常消息点名该 key
+[PASS] M2c 合法取值全部仍被接受（正控）
+[PASS] M2d 端到端 Parse→BuildBaseOptions 对非法策略报错
+[PASS] M2e 端到端 合法策略 carry ⇒ CarryIcc
+[PASS] M2f 分层语义 能识别但不支持的 token 被 CLI 放行
+[PASS] M3a --bit-depth auto 被显式接受（不抛异常）
+[PASS] M3b auto ⇒ BitDepth=null（与模型语义一致）
+[PASS] M3c 正控 8/16 逐值生效
+[PASS] M3d banana ⇒ ArgumentException 点名 bit-depth（修复前静默=与 auto 同结果）
+[PASS] M3e --bit-depth 0 被拒（范围校验；哨兵是 auto/null 而非 0）
+[PASS] M3f auto ≡ 未设置（有意，锁住）
+[PASS] M4a 运行级 TempDir 已建立且不在 SrcDir 下
+[PASS] M4b 共享语料目录内无 _*.png 残留
+[PASS] M4c _h11_bt2020.png 不在 SrcDir
+[PASS] M4c _prophoto_src.png 不在 SrcDir
+[PASS] M4c _p3_8bit.png 不在 SrcDir
+[PASS] M4c _k5_same_out.png 不在 SrcDir
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+[PASS] M5a 动图模式 fps=12 进命令（正控）
+[PASS] M5b 动图模式 scale=320 进命令（正控）
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+      [dump] M5 静态WebP(动图模式残留fps=12) :: 25 tokens
+        ffmpeg | -y | -color_range | pc | -i | "C:\PLAN\ffmpegPictureUI\tests\output\sources\src_8bit.png" | -c:v | libwebp | -threads | 1 | -q:v | 95 | -preset | picture | -compression_level | 4 | -color_range | tv | -map_metadata | -1 | -map_chapters | -1 | -colorspace | bt470bg | "C:\PLAN\ffmpegPictureUI\tests\output\_tmp\uitesthost_3bbf8464bcc4434f990ac4c572165eef\src_8bit.webp"
+[PASS] M5c 静态 WebP 无 fps=/scale= 滤镜（修复前有）
+      [dump] M5 静态JXL(动图模式残留fps=12) :: 23 tokens
+        ffmpeg | -y | -color_range | pc | -i | "C:\PLAN\ffmpegPictureUI\tests\output\sources\src_8bit.png" | -c:v | libjxl | -threads | 1 | -distance | 1.0 | -effort | 7 | -map_metadata | 0 | -map_metadata:s:v | -1 | -map_chapters | -1 | -frames:v | 1 | "C:\PLAN\ffmpegPictureUI\tests\output\_tmp\uitesthost_3bbf8464bcc4434f990ac4c572165eef\src_8bit.jxl"
+[PASS] M5d 静态 JXL 不得被换成 libjxl_anim（修复前会）
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+⚠ [webp] -compression_level is pinned by -preset picture (measured byte-identical output for level 0/4/6); use --webp-preset none to let -compression_level apply.
+[PASS] M5e 切回动图模式 输入仍在(fps=12)
+[PASS] M5f 负控 文本框内容确实未被清空
+
+===== UI 测试汇总: 75 PASS / 0 FAIL =====
+PROBE RESULT: pass=75 fail=0
+
+----- stderr -----
+[dngtool] unknown option: --version
+[dngtool] unknown option: --version
+[dngtool] unknown option: --version
+
+----- end ui-cli -----
+  PASS ui-cli summary line present (exit 0 alone is not enough)
+  PASS ui-cli summary FAIL=0
+  PASS ui-cli exit code == 0 (actual 0)
+  PASS ui-cli assertion count == 75 (actual 75)
+
+  [info] aggregate: 520 PASS / 0 FAIL (expected 520 PASS)
+  PASS aggregate assertion count == 520 (actual 520)
+
+===== selfcheck: UIHOST_NEGCTL=1 must turn RED =====
+  [selfcheck] ui-core: exit=1 timedOut=False summary=True pass=108 fail=1 elapsed=17s
+  PASS negative-control switch on 'ui-core' => summary shows FAIL and exit code != 0
+  [selfcheck] ui-mode: exit=-1 timedOut=True summary=False pass=-1 fail=-1 elapsed=121s
+  FAIL negative-control switch on 'ui-mode' => summary shows FAIL and exit code != 0
+  [selfcheck] ui-color: exit=1 timedOut=False summary=True pass=104 fail=1 elapsed=13s
+  PASS negative-control switch on 'ui-color' => summary shows FAIL and exit code != 0
+  [selfcheck] ui-sweep: exit=1 timedOut=False summary=True pass=169 fail=2 elapsed=37s
+  PASS negative-control switch on 'ui-sweep' => summary shows FAIL and exit code != 0
+  [selfcheck] ui-cli: exit=1 timedOut=False summary=True pass=76 fail=1 elapsed=5s
+  PASS negative-control switch on 'ui-cli' => summary shows FAIL and exit code != 0
+
+  [info] arms=5 allClean=True aggregate=520/520 elapsed=126s
+UIHOST FAIL: selfcheck negative control did not turn red
+UIHOST RESULT: pass=520 fail=0

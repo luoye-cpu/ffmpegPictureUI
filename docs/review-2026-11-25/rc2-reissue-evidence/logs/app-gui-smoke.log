@@ -1,0 +1,6 @@
+app GUI smoke (2026-11-25)
+exe=publish/build/FFmpegPictureUI-v1.6.0-rc2-x64/FfmpegGui.exe
+alive_after_12s=True
+main_window_handle=0x13E176A (20846442)
+close_main_window_exit=True
+exit_code=0

@@ -1,0 +1,149 @@
+   i 未指定 -Version，已从 csproj 读取: 1.6.0-rc2
+
+═══════════════════════════════════════════
+  FFmpegPictureUI 打包工具 (2 版本发布)
+═══════════════════════════════════════════
+
+[gate] 出包前红态闸校验...
+[release-gate] GREEN verify-color-wiring              rc=0  dll=2bc80d80748c6968  log=docs/review-2026-11-25/rc2-reissue-evidence/logs/verify-color-wiring.out.txt
+[release-gate] GREEN verify-color-strategy            rc=0  dll=2bc80d80748c6968  log=docs/review-2026-11-25/rc2-reissue-evidence/logs/verify-color-strategy.out.txt
+[release-gate] GREEN verify-decision-delivery         rc=0  dll=2bc80d80748c6968  log=docs/review-2026-11-25/rc2-reissue-evidence/logs/verify-decision-delivery.out.txt
+[release-gate] GREEN verify-prophoto-faithful         rc=0  dll=2bc80d80748c6968  log=docs/review-2026-11-25/rc2-reissue-evidence/logs/verify-prophoto-faithful.out.txt
+[release-gate] GREEN verify-gainmap-isobmff           rc=0  dll=2bc80d80748c6968  log=docs/review-2026-11-25/rc2-reissue-evidence/logs/verify-gainmap-isobmff.out.txt
+[release-gate] GREEN verify-ui-host                   rc=0  dll=2bc80d80748c6968  log=docs/review-2026-11-25/rc2-reissue-evidence/logs/verify-ui-host.out.txt
+[release-gate] GREEN verify-ui-split-union            rc=0  dll=2bc80d80748c6968  log=docs/review-2026-11-25/rc2-reissue-evidence/logs/verify-ui-split-union.out.txt
+[release-gate] GREEN verify-ui-split-reproducible     rc=0  dll=2bc80d80748c6968  log=docs/review-2026-11-25/rc2-reissue-evidence/logs/verify-ui-split-reproducible.out.txt
+[release-gate] GREEN verify-probe-mirror-parity       rc=0  dll=2bc80d80748c6968  log=docs/review-2026-11-25/rc2-reissue-evidence/logs/verify-probe-mirror-parity.out.txt
+[release-gate] GREEN verify-color-out-matrix          rc=0  dll=2bc80d80748c6968  log=docs/review-2026-11-25/rc2-reissue-evidence/logs/verify-color-out-matrix.out.txt
+[release-gate] GREEN verify-module-registry           rc=0  dll=2bc80d80748c6968  log=docs/review-2026-11-25/rc2-reissue-evidence/logs/verify-module-registry.out.txt
+[release-gate] 全绿（11 条），允许出包。
+[gate] 红态闸通过，继续打包。
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  单文件版 (NativeAOT, 不含 PLAN)
+  v1.6.0-rc2 | x64 | FFmpegPictureUI-v1.6.0-rc2-x64
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[1/4] dotnet publish (NativeAOT)...
+  正在确定要还原的项目…
+  所有项目均是最新的，无法还原。
+  FfmpegGui -> C:\PLAN\ffmpegPictureUI\src\FfmpegGui\bin\Release\net11.0\win-x64\FfmpegGui.dll
+
+已成功生成。
+    0 个警告
+    0 个错误
+
+已用时间 00:00:10.70
+  正在确定要还原的项目…
+  已还原 C:\PLAN\ffmpegPictureUI\src\FfmpegGui\FfmpegGui.csproj (用时 2.2 秒)。
+  Generating native code
+  ILC: Method '[Avalonia.Win32]Avalonia.Win32.DComposition.Impl.__MicroComIDCompositionDesktopDeviceVTable.CreateTargetForHwnd(void*,native int,bool,void**)' will always throw because: UnmanagedCallersOnly attribute specified on method with non-blittable parameters 'Int32 Avalonia.Win32.DComposition.Impl.__MicroComIDCompositionDesktopDeviceVTable.CreateTargetForHwnd(Void*, IntPtr, Boolean, Void**)'
+  ILC: Method '[Avalonia.Win32]Avalonia.Win32.DComposition.Impl.__MicroComIDCompositionDeviceVTable.CreateTargetForHwnd(void*,native int,bool,void**)' will always throw because: UnmanagedCallersOnly attribute specified on method with non-blittable parameters 'Int32 Avalonia.Win32.DComposition.Impl.__MicroComIDCompositionDeviceVTable.CreateTargetForHwnd(Void*, IntPtr, Boolean, Void**)'
+  FfmpegGui -> C:\PLAN\ffmpegPictureUI\publish\build\FFmpegPictureUI-v1.6.0-rc2-x64\
+   ✅ 发布完成 → C:\PLAN\ffmpegPictureUI\publish\build\FFmpegPictureUI-v1.6.0-rc2-x64
+   ✅ 已删除调试符号，节省 100.1MB
+
+[2/4] app 档随附 oxipng.exe (PNG 默认优化器)...
+   ✅ 已随附 oxipng.exe (968 KB) → PLAN\artifacts\
+
+[3/4] 跳过 (app 档不生成使用说明，见 PACKAGING_SPEC.md)
+
+[3.5/4] 随附法律文件...
+   ✅ LICENSE
+   ✅ NOTICE
+   ✅ THIRD-PARTY-NOTICES.md
+   ✅ licenses/ (9 个许可原文)
+
+[4/4] 压缩打包...
+   ✅ 完整性闸通过：19 个文件，必需项齐备
+
+7-Zip 26.05 (x64) : Copyright (c) 1999-2026 Igor Pavlov : 2026-10-21
+
+Scanning the drive:
+5 folders, 19 files, 45132411 bytes (44 MiB)
+
+Creating archive: C:\PLAN\ffmpegPictureUI\publish\FFmpegPictureUI-v1.6.0-rc2-x64.7z
+
+Add new data to archive: 5 folders, 19 files, 45132411 bytes (44 MiB)
+
+
+Files read from disk: 19
+Archive size: 12117401 bytes (12 MiB)
+Everything is Ok
+   ✅ 压缩完成 → C:\PLAN\ffmpegPictureUI\publish\FFmpegPictureUI-v1.6.0-rc2-x64.7z
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  [app] 打包完成!
+  产物: C:\PLAN\ffmpegPictureUI\publish\build\FFmpegPictureUI-v1.6.0-rc2-x64
+  压缩包: C:\PLAN\ffmpegPictureUI\publish\FFmpegPictureUI-v1.6.0-rc2-x64.7z (11.6 MB)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  完整版 (NativeAOT + PLAN 组件包)
+  v1.6.0-rc2 | x64 | FFmpegPictureUI-v1.6.0-rc2-x64-full
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[1/4] dotnet publish (NativeAOT)...
+  正在确定要还原的项目…
+  已还原 C:\PLAN\ffmpegPictureUI\src\FfmpegGui\FfmpegGui.csproj (用时 95 毫秒)。
+  FfmpegGui -> C:\PLAN\ffmpegPictureUI\src\FfmpegGui\bin\Release\net11.0\win-x64\FfmpegGui.dll
+
+已成功生成。
+    0 个警告
+    0 个错误
+
+已用时间 00:00:20.51
+  正在确定要还原的项目…
+  已还原 C:\PLAN\ffmpegPictureUI\src\FfmpegGui\FfmpegGui.csproj (用时 103 毫秒)。
+  Generating native code
+  ILC: Method '[Avalonia.Win32]Avalonia.Win32.DComposition.Impl.__MicroComIDCompositionDesktopDeviceVTable.CreateTargetForHwnd(void*,native int,bool,void**)' will always throw because: UnmanagedCallersOnly attribute specified on method with non-blittable parameters 'Int32 Avalonia.Win32.DComposition.Impl.__MicroComIDCompositionDesktopDeviceVTable.CreateTargetForHwnd(Void*, IntPtr, Boolean, Void**)'
+  ILC: Method '[Avalonia.Win32]Avalonia.Win32.DComposition.Impl.__MicroComIDCompositionDeviceVTable.CreateTargetForHwnd(void*,native int,bool,void**)' will always throw because: UnmanagedCallersOnly attribute specified on method with non-blittable parameters 'Int32 Avalonia.Win32.DComposition.Impl.__MicroComIDCompositionDeviceVTable.CreateTargetForHwnd(Void*, IntPtr, Boolean, Void**)'
+  FfmpegGui -> C:\PLAN\ffmpegPictureUI\publish\build\FFmpegPictureUI-v1.6.0-rc2-x64-full\
+   ✅ 发布完成 → C:\PLAN\ffmpegPictureUI\publish\build\FFmpegPictureUI-v1.6.0-rc2-x64-full
+   ✅ 已删除调试符号，节省 100.1MB
+
+[1.7] PLAN 工具链版本清单...
+   ✅ dngtool.exe: 2026-11-09 03:56 (8069 KB)
+   ✅ oxipng.exe: 2026-09-02 19:54 (968 KB)
+   ✅ ffmpeg.exe: 2026-10-12 02:09 (476 KB)
+   ✅ cjxl.exe: 2026-10-29 21:29 (5128 KB)
+   ✅ exiftool.exe: 2026-11-05 09:54 (57 KB)
+
+[2/4] 复制 PLAN 组件包...
+
+   ✅ PLAN 组件已复制
+
+[3/4] 生成使用说明...
+   ✅ 使用说明已生成 → C:\PLAN\ffmpegPictureUI\publish\build\FFmpegPictureUI-v1.6.0-rc2-x64-full\PLAN\使用说明.txt
+
+[3.5/4] 随附法律文件...
+   ✅ LICENSE
+   ✅ NOTICE
+   ✅ THIRD-PARTY-NOTICES.md
+   ✅ licenses/ (9 个许可原文)
+
+[4/4] 压缩打包...
+   ✅ 完整性闸通过：584 个文件，必需项齐备
+
+7-Zip 26.05 (x64) : Copyright (c) 1999-2026 Igor Pavlov : 2026-10-21
+
+Scanning the drive:
+128 folders, 584 files, 314161209 bytes (300 MiB)
+
+Creating archive: C:\PLAN\ffmpegPictureUI\publish\FFmpegPictureUI-v1.6.0-rc2-x64-full.7z
+
+Add new data to archive: 128 folders, 584 files, 314161209 bytes (300 MiB)
+
+
+Files read from disk: 584
+Archive size: 56518339 bytes (54 MiB)
+Everything is Ok
+   ✅ 压缩完成 → C:\PLAN\ffmpegPictureUI\publish\FFmpegPictureUI-v1.6.0-rc2-x64-full.7z
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  [full] 打包完成!
+  产物: C:\PLAN\ffmpegPictureUI\publish\build\FFmpegPictureUI-v1.6.0-rc2-x64-full
+  压缩包: C:\PLAN\ffmpegPictureUI\publish\FFmpegPictureUI-v1.6.0-rc2-x64-full.7z (53.9 MB)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🎉 全部 2 个版本打包完成!

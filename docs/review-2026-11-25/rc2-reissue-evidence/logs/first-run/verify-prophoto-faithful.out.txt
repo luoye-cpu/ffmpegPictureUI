@@ -1,0 +1,67 @@
+[gate] exe=C:\PLAN\ffmpegPictureUI/src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.exe (Release)
+[gate] exe=C:\PLAN\ffmpegPictureUI/tests/projects/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.exe (Release)
+[warmup] exiftool burn-in (5x) ...
+[warmup] exiftool 13.61 burn 1/5 OK
+[warmup] exiftool 13.61 burn 2/5 OK
+[warmup] exiftool 13.61 burn 3/5 OK
+[warmup] exiftool 13.61 burn 4/5 OK
+[warmup] exiftool 13.61 burn 5/5 OK
+
+### 1) 造 ProPhoto 源 ###
+  PASS §icc mode 在 ProPhoto 上 7/0（ICC **结构**单元：解析/魔数/desc/wtpt 四项 + v4.4 版本位/cprt 类型/chad 三项；**确定性不在这一格** —— 重复生成同字节由上面的 aithful 臂量）
+  PASS §icc mode v2 臂在 ProPhoto 上 10/0（4 项基础 + 6 项真 v2 类型锁：header/desc/cprt/rTRC=curv+count 形态/chad 缺席）
+  PASS §ICC cicp tag：Display P3 标准 ICC 为 4.4.0，内嵌 CICP=12/13/0/1
+  PASS 保真 ICC: prophoto_v44.icc (544 B)
+  [retry] 源 ICC 嵌入第 1 次未读出 ProPhoto desc（got=''），exiftool burn-in 后重试
+  PASS 源已附着 ProPhoto ICC ([ICC_Profile]   ProfileDescription              : ProPhoto RGB)
+  FAIL 正向锁失效：截短的 ICC 没被读出问题 ⇒ 下面的‘无损解析’是恒真断言（实得 [ExifTool]      ExifToolVersion                 : 13.61）
+  PASS exiftool 可无损解析生成的 mluc desc
+  PASS 源像素哈希 93486E1FF6ED4EA8D67067D79AF727553A97A52E764781EC9D628E8C656B313B
+
+### 2) 服务级 ICC 自检 (确定性 + 结构 + 色度) ###
+  PASS ServiceProbe faithful 全通过 (19 项)
+  PASS rXYZ 与公开 ProPhoto D50 矩阵一致
+  PASS gXYZ 一致
+  PASS bXYZ 一致
+
+### 3) PNG → PNG (推荐策略, 应逐位保真) ###
+  PASS RGB 样本逐位一致（像素未转换）
+  PASS 输出带 ProPhoto ICC
+  PASS 输出 ICC 可被 exiftool 无损解析
+  PASS 日志走了保真路径
+  PASS 未写误导性 CICP（unknown,unknown）
+
+### 4) PNG → JPG / TIFF / WebP ###
+  PASS jpg 走保真路径
+  PASS jpg 输出带 ProPhoto ICC
+  PASS tiff 走保真路径
+  PASS tiff 输出带 ProPhoto ICC
+  PASS tiff 像素逐位一致
+  PASS webp 走保真路径
+  PASS webp 输出带 ProPhoto ICC
+
+### 5) 显式目标 = ProPhoto (手动策略) 仍保真 ###
+  PASS 手动 ProPhoto 目标走保真
+  PASS 手动 ProPhoto 像素逐位一致
+
+### 6) ProPhoto → AVIF (avifenc --icc；不可命名 ⇒ ICC-only + nclx 2/2/0) ###
+  PASS 推荐→AVIF 成功（avifenc 已接入静态 ICC 出口）
+  PASS 推荐→AVIF 有产物（11964 B）
+  PASS 推荐→AVIF 携带 ProPhoto ICC（v4.4.0）
+  PASS 推荐→AVIF CICP 不可命名 ⇒ nclx=unspecified/identity（不伪造 BT.709/BT.601）
+  PASS 推荐→AVIF 明示 ICC 描述色彩，nclx P/T 未指定
+  PASS 推荐路径未谎报 ICC 已恢复/已嵌入
+  PASS carry→AVIF 成功（avifenc --icc 兑现 ICC 承诺）
+  PASS carry→AVIF 有产物（1 个）
+  PASS carry→AVIF 携带 ProPhoto ICC（v4.4.0）
+  PASS carry→AVIF nclx=unspecified/identity（ICC-only 不伪造 CICP）
+  PASS carry→AVIF 命令行含 avifenc --icc
+  PASS carry 路径未把后置 exiftool 当 ICC 唯一通路
+  PASS 反真空：carry→PNG 有产物（21062 B，try=1）
+  PASS 反真空：carry→PNG 的 ICC 与源逐字节相同（DDC125934F005B26…）
+
+### 7) 非超广色域不受影响 (sRGB→png 不应打保真日志) ###
+  PASS sRGB 源不走保真路径
+  PASS sRGB→PNG 像素未改动
+
+===== PASS=41 FAIL=1 =====
