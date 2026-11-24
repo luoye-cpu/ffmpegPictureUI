@@ -36,6 +36,7 @@ namespace FfmpegGui.Services
             /// <see cref="MatrixForOutput"/> = 产物应当标注什么（受容器能力 <see cref="CapMatrix"/> 约束）。
             /// </summary>
             public string? DeclMatrix;
+            internal bool SuppressUnverifiedLabels;
 
             // ── 容器能力（唯一来源 GetFormatColorCapabilities，null=不约束）──
             public string? CapPrimaries;
@@ -50,6 +51,7 @@ namespace FfmpegGui.Services
             public string? MatrixForOutput;
             /// <summary>iccgen 是否要写进命令行（需附 ICC 且目标非 HDR）。</summary>
             public bool RunIccgen;
+            internal bool GenerateJpegIccAfterEncode;
             /// <summary>iccgen 前是否要先 `format=rgb48le`（高位深 YUV 输入：iccgen 仅在 RGB 域工作）。</summary>
             public bool IccgenNeedsRgb;
             /// <summary>
@@ -131,16 +133,46 @@ namespace FfmpegGui.Services
 
             // ── 输入声明（简化模式=如实描述实际输入；高级模式=用户声明）──
             var (inputPrimaries, inputTrc, inputMatrix) = BuildColorArgsSplit(options, inputPath);
+            var meta = ProbeInputColorMetadata(inputPath);
+            // Resolve the same source priority as the planner: an explicit ICC can replace
+            // an embedded LUT. Keep this in Decision, never in Probe (the resolver probes).
+            var sourceIcc = ColorMapping.ColorIntentFactory.EffectiveIccIdentity(options, inputPath);
+            bool externalIccOverride = sourceIcc.Kind == ColorMapping.IccProfileKind.MatrixTrc
+                && sourceIcc.ExternalPath != null;
+            if (externalIccOverride && sourceIcc.CreateMatrixTrcDescriptor() is { } sourceDescriptor)
+            {
+                meta.iccIdentity = sourceIcc;
+                meta.iccDescriptor = sourceDescriptor;
+                meta.hasIccSemantics = true;
+                meta.sourceGamutName = sourceDescriptor.KnownSpaceName;
+                meta.colorPrimaries = inputPrimaries = sourceDescriptor.PrimariesToken;
+                meta.colorTrc = inputTrc = sourceDescriptor.TransferToken;
+            }
+            bool noRequestedColorMap = !options.HasExplicitColorTarget && !options.JpegGainMap
+                && (string.IsNullOrWhiteSpace(options.ColorSpace) || options.ColorSpace.Equals("auto", StringComparison.OrdinalIgnoreCase));
+            bool disputedWithoutTrustedPt = (meta.VideoColorConflict != null || meta.InvalidPngCicp)
+                && (!Tagged(meta.colorPrimaries) || !Tagged(meta.colorTrc));
+            if (sourceIcc.Kind == ColorMapping.IccProfileKind.LutOrUnsupported
+                || (disputedWithoutTrustedPt && noRequestedColorMap))
+            {
+                // Only an ICC-aware route can interpret these RGB values. The FFmpeg
+                // fallback may transcode them, but cannot convert or assert raw CICP P/T.
+                d.SuppressUnverifiedLabels = true;
+                d.DeclMatrix = inputMatrix;
+                d.CapMatrix = GetFormatColorCapabilities(fmt, options).matrix;
+                d.MatrixForOutput = d.CapMatrix ?? (IsYcbcrPixelFormat(meta.pixFmt) ? meta.colorSpace : null);
+                d.EffectiveStrategy = options.ColorStrategy;
+                return d;
+            }
 
             // ── 点三：超广色域「像素原样 + 仅靠 ICC 描述」保真路径（必须在写 CICP 标签/任何像素转换前判定）──
             // ProPhoto/ROMM 色域超出 BT.2020：归一会削色；zscale 又无法命名其 primaries 与 1.8 传递
             // （旧行为按 sRGB 曲线线性化 + 矩阵转 BT.2020 → 像素与标签双错）。存在命名 ICC 时，
             // 业界正确做法是像素一帧不动 + 附着该 ICC（Photoshop/darktable/ICC 惯例）。
-            d.FaithfulIccPath = options.FaithfulIccPath;
+            d.FaithfulIccPath = options.HasExplicitColorTarget ? null : options.FaithfulIccPath;
             if (string.IsNullOrWhiteSpace(d.FaithfulIccPath))
             {
-                var fpm = ProbeInputColorMetadata(inputPath);
-                d.FaithfulIccPath = ResolveFaithfulUltraWideIcc(options, fpm.sourceGamutName, fpm.colorTrc, fmt);
+                d.FaithfulIccPath = ResolveFaithfulUltraWideIcc(options, meta.sourceGamutName, meta.colorTrc, fmt);
                 if (assignFaithfulPath) options.FaithfulIccPath = d.FaithfulIccPath;
             }
             d.Faithful = !string.IsNullOrWhiteSpace(d.FaithfulIccPath);
@@ -154,7 +186,8 @@ namespace FfmpegGui.Services
             d.DeclTrc = inputTrc;
             d.DeclMatrix = inputMatrix;      // 输入矩阵声明（`-i` 前）；与下面的输出标签职责分离
             // 输出 YUV 矩阵：链会改写它（与旧 BuildArguments 里的 outputColorSpace 局部变量同义）
-            var outMatrix = inputMatrix;
+            var outMatrix = string.IsNullOrWhiteSpace(options.ColorMatrix) ? inputMatrix
+                : ProbeInputColorMetadata(inputPath).colorSpace;
 
             // ── 容器能力（含位深硬约束：与 BuildArguments 同一处施加，避免两侧口径不同）──
             var (capP, capT, capM, capBd, capIcc) = GetFormatColorCapabilities(fmt, options);
@@ -171,8 +204,6 @@ namespace FfmpegGui.Services
                 options.BitDepth = capBd;
             }
 
-            var meta = string.IsNullOrEmpty(inputPath) || inputPath == "-"
-                ? new ColorMetadata() : ProbeInputColorMetadata(inputPath);
             // ── `--color-709-curve` 的口径（F-9：传统链的出口兑现方式由它决定，判据复用计划层那份名单）──
             // std（默认）⇒ trc=bt709 的出口必须兑现成 ITU-R BT.709-6 定义式（拆式，见 ColorSpaceRegistry）；
             // zimg ⇒ 命令行逐字保持历史形态 `t=bt709`（=纯 γ2.4），并在 Short() 点名这是刻意的历史对齐。
@@ -265,7 +296,7 @@ namespace FfmpegGui.Services
             }
             else
             {
-                fromSource = Tagged(meta.colorPrimaries) && Tagged(meta.colorTrc);
+                fromSource = !externalIccOverride && Tagged(meta.colorPrimaries) && Tagged(meta.colorTrc);
                 if (!baselineNameable) { outP = null; outT = null; }
                 // ⚠ 2026-11-09（R1 P1-c 同批）：末级同样补源描述（ColorSourceDecl*）——
                 //   无标签中间件（PFM/RAW 线性 TIFF）+ auto 直通时，出口语义此前恒 null，
@@ -405,7 +436,10 @@ namespace FfmpegGui.Services
                     // 实际输入色彩（来自 BuildColorArgsSplit 的 -i 前声明）
                     var srcP = inputPrimaries ?? "bt709";
                     var srcT = inputTrc ?? "iec61966-2-1";
-                    var srcM = outMatrix ?? "bt709";
+                    // This chain starts in RGB. An input YUV selection belongs to the decoder,
+                    // not to zscale's interpretation of the RGB samples or the output dimensions.
+                    var srcM = "gbr";
+                    if (isRgbNativeFmt) dstM = "gbr";
 
                     // 判断源是否为 HDR（PQ/HLG）→ 若目标是 SDR，交给 tonemap 处理
                     var srcIsHdr = srcT.Equals("smpte2084", StringComparison.OrdinalIgnoreCase)
@@ -429,16 +463,16 @@ namespace FfmpegGui.Services
                         // ⚠ 2026-10-25：jpg/webp 的 capM 改为 bt470bg（匹配解码器假设的 BT.601）后，
                         //   这里必须把 BT.601 矩阵也算作「YUV 出口」——否则偶数化守卫对这两个容器静默失效
                         //   （libzimg 的 yuv420 尺寸整除要求仍成立）。
-                        var needsEven = outMatrix == "bt709" || outMatrix == "bt470bg" || outMatrix == "smpte170m"
-                                        || outMatrix?.StartsWith("bt2020") == true;
+                        var needsEven = !isRgbNativeFmt && dstM != "gbr";
                         var preScale = needsEven ? "scale=ceil(iw/2)*2:ceil(ih/2)*2:flags=lanczos," : "";
-                        // ── F-9（2026-10-11）：同一把锁的第二个 emit 点（SDR 源 + 显式 trc=bt709 目标）──
-                        // 裸 `t=bt709` = zimg 纯 γ(1/2.4)，而 :383 把同一个 token 交出去当宣称值 ⇒ 拆式；
-                        // std 口径下出口改 `t=linear` + lutrgb(定义式) + setparams(找回标签)，标签一字不动。
-                        // ⚠ **解码端**（`tin={srcT}`，srcT 可能是 bt709 标签）仍是 zimg γ2.4 EOTF ⇒ 同族失配，
-                        //   本批未拆（ integer 域 EOTF 拆法的量化地板未实测 ⇒ 登记"未判定"，见交付账）。
+                        // ── F-9（2026-10-11）+ 2026-11-24 入口续修：两端都不能把 zimg 的 bt709 当定义式 ──
+                        // 出口：std 口径改 `t=linear` + lutrgb(OETF) + setparams(找回标签)。
+                        // 入口：srcT=bt709 时先在 RGB48 编码域按同一 BT.709-6 锚反解，再以 tin=linear 做矩阵。
+                        // `--color-709-curve zimg` 下两个 helper 都返回旧形态，历史兼容档不变。
+                        bool srcSplitInput = ColorSpaceRegistry.NeedsDefinitionInput(srcT, zimgCurveCaliber);
                         bool dstSplitExit = ColorSpaceRegistry.NeedsDefinitionExit(dstT, zimgCurveCaliber);
-                        d.PixelChains.Add($"format=rgb48le,{preScale}zscale=pin={srcP}:tin={srcT}:min={srcM}"
+                        d.PixelChains.Add($"format=rgb48le,{preScale}{ColorSpaceRegistry.BuildDefinitionInputLut(srcT, zimgCurveCaliber)}"
+                            + $"zscale=pin={srcP}:tin={(srcSplitInput ? "linear" : srcT)}:min={srcM}"
                             + $":p={dstP}:t={(dstSplitExit ? "linear" : dstT)}:m={dstM}"
                             + ColorSpaceRegistry.BuildDefinitionExitTail(dstP, dstT, dstM, zimgCurveCaliber));
                         d.ExitCurveNote = ColorSpaceRegistry.DefinitionExitNote(dstT, zimgCurveCaliber);
@@ -677,6 +711,15 @@ namespace FfmpegGui.Services
             d.NeedsPostEmbedIcc = d.RunIccgen && d.EncoderWritesFilterIcc == false && !preserveSource
                 && !unlabeledIsFine && outP != null && outT != null;
 
+            d.GenerateJpegIccAfterEncode = d.RunIccgen && !preserveSource && !d.Faithful
+                && (fmt is "jpg" or "jpeg") && options.EncoderBackend == EncoderBackend.Ffmpeg
+                && outP != null && outT != null && (outT != "bt709" || !zimgCurveCaliber)
+                && IccProfileBuilder.SpaceFromCicp(outP, outT) != null;
+            if (d.GenerateJpegIccAfterEncode)
+            {
+                d.RunIccgen = false;
+                d.NeedsPostEmbedIcc = true;
+            }
             d.OutPrimaries = outP; d.OutTrc = outT;
             d.MatrixForOutput = outMatrix;
             d.EffectiveStrategy = strategy;

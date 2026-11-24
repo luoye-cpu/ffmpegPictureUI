@@ -484,6 +484,9 @@
                 <sys:String>12</sys:String>
                 <sys:String>16</sys:String>
               </ComboBox>
+              <!-- G8：能力收窄导致选择被重置时，明确列出受影响项；无重置时整行隐藏。 -->
+              <TextBlock x:Name="ColorOptionResetHint" Text="" FontSize="10" TextWrapping="Wrap"
+                         IsVisible="False" Foreground="Orange" Margin="0,2,0,0"/>
             </StackPanel>
           </Border>
           <CheckBox x:Name="UseAdvancedColor" Content="{ext:Loc advanced.color}" IsCheckedChanged="UseAdvancedColor_IsCheckedChanged"/>
@@ -587,14 +590,11 @@
             <TextBlock x:Name="ColorRangeLabel" Text="{ext:Loc color.range}" ToolTip.Tip="{ext:Loc tip.color.range}"/>
             <ComboBox x:Name="ColorRangeCombo"/>
 
-            <!-- JPEG 专用：自生成 ICC 版本（v4.4 推荐 / v2.0 最大兼容）。仅 JPEG 出口可见
-                 （UpdateOptionAvailability 按 NormalizeFormat=="jpg" 闸）。显示串经
-                 MapIccVersionToken 归一为后端 token v4/v2，不裸比显示串。 -->
+            <!-- JPEG：显示自产 ICC 写入版本。有效第三方 ICC 的原样携带不受此限制。 -->
             <TextBlock x:Name="IccVersionLabel" Text="{ext:Loc icc.version}"
                        ToolTip.Tip="{ext:Loc tip.icc.version}" IsVisible="False"/>
             <ComboBox x:Name="IccVersionCombo" FontSize="11" IsVisible="False" SelectedIndex="0">
               <sys:String>v4.4</sys:String>
-              <sys:String>v2.0</sys:String>
             </ComboBox>
             
             <!-- CICP 标记（始终启用以保证准确色彩） -->
@@ -1131,18 +1131,14 @@
               <TextBlock Text="{ext:Loc execution.log}" FontSize="13" FontWeight="Bold"/>
             </StackPanel>
             <Grid Grid.Row="3" MinHeight="120">
-              <!-- 可见日志是虚拟化列表：只渲染视口内的行，追加日志不再触发全量 TextBox 布局。 -->
-              <ListBox x:Name="LogList" Margin="0,2,0,0" FontSize="11" Padding="4,2"
+              <!-- 执行日志保持为可见的只读多行 TextBox：可直接 Ctrl+A 全选、Ctrl+C 复制，
+                   并与既有 UI 测例的 Find<TextBox>("LogText")/.Text 契约同体。
+                   刷新仍走 FlushUiLog 的批次合并，不为每行重排大文本。 -->
+              <TextBox x:Name="LogText" IsReadOnly="True" AcceptsReturn="True" TextWrapping="NoWrap"
+                       Margin="0,2,0,0" MinHeight="120" FontSize="11" Padding="8,4"
                        FontFamily="Cascadia Mono,Consolas,Microsoft YaHei UI"
-                       Background="Transparent" BorderThickness="0"
                        ScrollViewer.HorizontalScrollBarVisibility="Auto"
                        ScrollViewer.VerticalScrollBarVisibility="Auto"/>
-              <!-- 测试契约 + 最近文本镜像：多个 UI 测例 Find<TextBox>("LogText") 并读取/清空 .Text。
-                   保持不可见，避免再把 4k 文本镜像的布局成本带回可见面板。 -->
-              <TextBox x:Name="LogText" IsVisible="False" IsReadOnly="True" Margin="0,2,0,0"
-                       MinHeight="120" FontSize="11" Padding="8,4"
-                       FontFamily="Cascadia Mono,Consolas,Microsoft YaHei UI"
-                       ScrollViewer.HorizontalScrollBarVisibility="Auto"/>
             </Grid>
           </Grid>
         </Border>

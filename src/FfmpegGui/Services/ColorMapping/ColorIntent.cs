@@ -165,6 +165,13 @@ public sealed class ColorIntent
     public ColorSpaceDescriptor? Source;
     /// <summary>源 ICC 三态（Present/Absent/Unreadable）；由意图装配从探测缓存带入。</summary>
     public SourceIccStatus SourceIccStatus = SourceIccStatus.Absent;
+    /// <summary>Original profile identity, before any matrix rewrite or CICP inference.</summary>
+    public IccProfileIdentity SourceIccIdentity = IccProfileIdentity.Absent;
+    public bool SourceIccIsExplicit;
+    /// <summary>Reserved for a target-profile input; the existing --icc-file specifies the source only.</summary>
+    public IccProfileIdentity TargetIccIdentity = IccProfileIdentity.Absent;
+    /// <summary>True only if this execution route can write and verify the exact opaque ICC with no competing color labels.</summary>
+    public bool CanCarryOpaqueSourceIcc;
     /// <summary>用户/策略指定的目标空间；null = auto（看齐源）。</summary>
     public ColorSpaceDescriptor? Target;
     /// <summary>目标是否由用户显式指定（S4 或"选了目标色域下拉"）。</summary>
@@ -232,6 +239,7 @@ public sealed class ColorIntent
     public bool AllowUnlabeled;
     /// <summary>S1 携带范围（默认 All = 无损优先）。</summary>
     public CarryScope CarryScope = CarryScope.All;
+    internal bool DisputedColorWithoutReliableDescription;
     /// <summary>是否允许"用近似曲线凑数"（legacy=true；引擎=false）。</summary>
     public bool AllowApproximateCurve;
     /// <summary>目标是否请求无损编码（影响 <see cref="CodecLoss"/> 归类）。</summary>

@@ -235,9 +235,25 @@ function ExecOut([string]$file, [string]$argStr, [string]$tag) {
   $o = "$work/$tag.out"; $e = "$work/$tag.err"
   $p = Start-Process -FilePath $file -ArgumentList $argStr -Wait -NoNewWindow -PassThru `
        -RedirectStandardOutput $o -RedirectStandardError $e
-  if (-not (Test-Path $o)) { return @{ code = $p.ExitCode; text = "" } }
-  $t = [System.IO.File]::ReadAllText($o)
-  return @{ code = $p.ExitCode; text = $t }
+  $t = ""; if (Test-Path $o) { $t = [System.IO.File]::ReadAllText($o) }
+  $t2 = ""; if (Test-Path $e) { $t2 = [System.IO.File]::ReadAllText($e) }
+  return @{ code = $p.ExitCode; text = $t; errt = $t2 }
+}
+
+# 13.61 的 Windows 启动器在并发/杀软扫描下会偶发加载 perl532.dll 失败（code 126），实测本机
+# 60 次串行调用命中 1 次；产品侧 ReadColorTagsResultAsync 已有同因有界重试。测试取数同样只对
+# 这个明确的启动器故障重试，且最终读值断言不变：若三次都拿不到值，§3f-1 仍红。
+function ExecExifRetry([string]$argStr, [string]$tag, [int]$maxAttempts = 3) {
+  $last = $null
+  for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+    $last = ExecOut $et $argStr ("exif_" + $tag + "_a" + $attempt)
+    if ($last.code -eq 0) { return $last }
+    if ($last.errt -notmatch 'code 126|Failed to load Perl DLL') { return $last }
+    if ($attempt -lt $maxAttempts) {
+      Write-Host ("WARN exiftool 启动器偶发 code 126（第 {0} 次）⇒ 仅对启动失败重试，终值判据不变" -f $attempt) -ForegroundColor Yellow
+    }
+  }
+  return $last
 }
 
 # ⚠ 共享读：重定向目标在子进程存活期间被独占 ⇒ 直接 ReadAllText 会抛「being used by another process」。
@@ -524,7 +540,7 @@ if (Test-Path $auxGen) {
     if ((Test-Path $auxA) -and (Test-Path $auxB) -and (Test-Path $auxC)) {
       # exiftool 身份双验证（随包 perl 版 exiftool：取值一律走 ExecOut 只读 stdout —— 见 ExecOut 注释）
       $et = "$root/publish/PLAN/exiftool/exiftool.exe"
-      $etA = ExecOut $et "-j -a -G1 -MakerNotes:all `"$auxA`"" "aux_et"
+      $etA = ExecExifRetry "-j -a -G1 -MakerNotes:all `"$auxA`"" "aux_et"
       CK ($etA.text -match '"Apple:HDRHeadroom":\s*1\.5') `
          "§1h exiftool 读出 Apple:HDRHeadroom=1.5（tag 33=3/2；exiftool 可读 = 合成件身份成立）"
       CK ($etA.text -match '"Apple:HDRGain":\s*0\.5') `
@@ -1010,7 +1026,7 @@ $et = "$root/publish/PLAN/exiftool/exiftool.exe"
 $negPng = "$work/neg_src.png"; $negJpg = "$work/neg_exif_srgb.jpg"
 $r = Exec $ff "-y -v error -f lavfi -i `"testsrc2=s=64x48`" -frames:v 1 `"$negPng`"" "gen_negpng"
 $r = Exec $ff "-y -v error -i `"$negPng`" -frames:v 1 `"$negJpg`"" "gen_negjpg"
-if ((Test-Path $et) -and (Test-Path $negJpg)) { $r = Exec $et "-overwrite_original -EXIF:ColorSpace=sRGB `"$negJpg`"" "tag_negjpg" }  # 合并取数已论证：这是**写标签**的动作（打标夹具），返回值只赋给 $r 且从不消费 ⇒ 不喂任何断言
+if ((Test-Path $et) -and (Test-Path $negJpg)) { $r = ExecExifRetry "-overwrite_original -EXIF:ColorSpace=sRGB `"$negJpg`"" "tag_negjpg" }  # 写标签；返回值不喂断言
 # 负控素材形态自检（**没有它，下面那条负控可能真空绿**）：CICP 必须真是 unknown，且 EXIF 标签必须真写进去了。
 # ⚠ 两条都读**工具写在 stdout 的值** ⇒ `ExecOut`。实测（laneB equiv-laneB3/4）：
 #   · `$nchk` 用 `-v error` 的 ffprobe ⇒ stderr 0 字节、`unknown` 在 stdout ⇒ 与合并版同值，换尺不由绿转红；
@@ -1019,7 +1035,7 @@ if ((Test-Path $et) -and (Test-Path $negJpg)) { $r = Exec $et "-overwrite_origin
 #     真有什么标签"。⚠ 反向也实测过：文件缺失时 exiftool 的 Error 行只在 **stderr**、stdout 为空 ⇒
 #     只读 stdout 会让这条自检**转红**，而"标签没写进去"本来就该红（收紧，不是放宽）。
 $nchk = ExecOut $fp "-v error -select_streams v:0 -show_entries stream=color_transfer -of csv=p=0 `"$negJpg`"" "chk_neg_cicp"
-$echk = ExecOut $et "-G -s -ColorSpace `"$negJpg`"" "chk_neg_et"
+$echk = ExecExifRetry "-G -s -ColorSpace `"$negJpg`"" "chk_neg_et"
 CK (($nchk.text -match 'unknown') -and ($echk.text -match 'ColorSpace')) `
    "§3b 负控素材形态：JPEG 的 CICP 真是 unknown 且 EXIF ColorSpace 标签真写进去了（否则下面那条负控真空绿）"
 $pPos = Exec $sp "color `"$gmHdr`"" "p_cicp_pos"
@@ -1125,7 +1141,7 @@ if (-not (Test-Path $vHeic)) {
     $vMaskM = [regex]::Match($vWline, 'mask=(\d+)x(\d+)x(\d+)')
     $vMw = 0; $vMh = 0
     if ($vMaskM.Success) { $vMw = [int]$vMaskM.Groups[1].Value; $vMh = [int]$vMaskM.Groups[2].Value }
-    $vIS = (ExecOut $et "-s -ImageWidth -ImageHeight `"$vHeic`"" "v_base_wh").text
+    $vIS = (ExecExifRetry "-s -ImageWidth -ImageHeight `"$vHeic`"" "v_base_wh").text
     $vBw = 0; $vBh = 0
     $vBwM = [regex]::Match($vIS, 'ImageWidth\s*:\s*(\d+)')
     if ($vBwM.Success) { $vBw = [int]$vBwM.Groups[1].Value }
@@ -1234,7 +1250,7 @@ CK (($via -eq 2) -and ($bare -eq 0)) `
 $avd = "$root/tools/src/libavif/build/Release/avifdec.exe"
 
 function NclxNum([string]$path, [string]$tag) {
-    $t = (ExecOut $et "-n -s -ColorPrimaries -TransferCharacteristics -MatrixCoefficients `"$path`"" "nx_$tag").text
+    $t = (ExecExifRetry "-n -s -ColorPrimaries -TransferCharacteristics -MatrixCoefficients `"$path`"" "nx_$tag").text
     $p = ''; $q = ''; $m = ''
     if ($t -match 'ColorPrimaries\s*:\s*(\d+)')         { $p = $Matches[1] }
     if ($t -match 'TransferCharacteristics\s*:\s*(\d+)') { $q = $Matches[1] }

@@ -671,7 +671,8 @@ function Get-SemanticMatrices {
                 # ⚠ pin 演进（2026-11-13，批 5 余波·全量轮抓到）：**再 +26**（852 → **878**）。成因 = 0f6c11a
                 #   「输出矩阵模式」在 `ImageEncoderArgs.cs` 上方插入 39 行（`git log --numstat` 实读 39 增 0 删）；
                 #   `git log -S` 实测该字面量自 2026-09-28 起未变 ⇒ **纯行漂移**，唯一命中已 `grep -n` 复核。
-                'src/FfmpegGui/Services/ColorMapping/ImageEncoderArgs.cs:878|if (fmt is "png" or "tiff" or "apng" or "jxl")'
+                # 2026-11-22 NVENC 深度修复：按当前源码唯一命中重钉；原锚字面量不变。
+                'src/FfmpegGui/Services/ColorMapping/ImageEncoderArgs.cs:1014|if (fmt is "png" or "tiff" or "apng" or "jxl")'
             )
         },
         @{
@@ -764,14 +765,15 @@ function Get-SemanticMatrices {
         @{
             Name = 'bitdepth-container'
             Axes = @('format', 'color-space', 'bit-depth')
-            Rationale = 'Bit depth is clamped by the outlet: AVIF takes its ceiling from the encoder that actually runs (libaom/av1_nvenc 12, others 10; an empty encoder name means no -c:v, i.e. ffmpeg default = libaom-av1), WebP/JPEG are capped at 8 by the container, and RGB-native outlets only ship 8/16 - so the three axes are coupled. (2026-09-26: the former "AVIF + Display P3 + high bit depth collapses to sRGB 8-bit" clause was measured and removed; see task 39 and tests/output/t36/probe_39b.ps1.)'
+            Rationale = 'Bit depth is clamped by the outlet: AVIF takes its ceiling from the encoder that actually runs (libaom 12, NVENC and others 10; an empty encoder name means no -c:v, i.e. ffmpeg default = libaom-av1; explicit NVENC 12 is rejected before encoding because p012le input does not prove 12-bit AV1 output), WebP/JPEG are capped at 8 by the container, and RGB-native outlets only ship 8/16 - so the three axes are coupled. (2026-09-26: the former "AVIF + Display P3 + high bit depth collapses to sRGB 8-bit" clause was measured and removed; see task 39 and tests/output/t36/probe_39b.ps1.)'
             Evidence = @(
                 # ⚠ pin 演进：715 → **748**（+33），与上面 encoder-core 是同三段 U4b 编辑造成的同向漂移
                 #   （2026-10-01 第一半补 libaom tune `default:` 播报、2026-10-02 第二半改
                 #   `NormalizeTuneToken` 的两义性、第三半加"这条后端没有 tune 通路"的中心播报）；
                 #   唯一性同样已 `grep -n` 核过。
                 # ⚠ pin 演进（2026-11-13）：**再 +26**（804 → **830**），与 encoder-core 同因（0f6c11a 的 39 行插入）。
-                'src/FfmpegGui/Services/ColorMapping/ImageEncoderArgs.cs:830|AvifMaxBitDepthForEncoder(string? encoder)',
+                # 2026-11-22：NVENC 实物只交付10；能力声明由原分类函数统一收口，唯一命中重钉。
+                'src/FfmpegGui/Services/ColorMapping/ImageEncoderArgs.cs:899|AvifMaxBitDepthForEncoder(string? encoder)',
                 # ⚠ pin 演进（2026-10-25）：1057 → **1065**（+8），同 metadata-core 的成因；字面量未动。
                 # ⚠ pin 演进（2026-11-03，webp 出口范围口径批）：1065 → **1072**（+7）。成因 = 本轮在
                 #   `FfmpegCommandBuilder.cs` 的输出 `-color_range` 段（`:577-621`，含后加的 jpeg limited 放行段）重写注释并删掉反向回退

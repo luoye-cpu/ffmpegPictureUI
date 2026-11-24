@@ -31,23 +31,18 @@ public static class ColorSpaceIdentify
     /// <summary>色度矩阵匹配容差（ICC 为 16.16 定点，各家实现取整差异 &lt;1e-3）。</summary>
     private const double KnownSpaceTol = 2e-3;
 
-    /// <summary>
-    /// 由 ICC 文件构造描述符。取不到色度矩阵或曲线不可解析（含非中性 TRC）→ 返回 null，
-    /// 上层必须走"携带 ICC"或告警，不得改用近似曲线映射。
-    /// </summary>
-    public static ColorSpaceDescriptor? FromIccFile(string? iccPath, string? descriptionHint = null)
-    {
-        if (string.IsNullOrWhiteSpace(iccPath)) return null;
-        var m = IccProfileService.ReadIccColorants(iccPath);
-        var curve = IccProfileService.ReadIccCurve(iccPath);
-        if (m == null || curve == null) return null;
+    /// <summary>Read the original profile before any v4.4 normalization or label inference.</summary>
+    public static IccProfileIdentity IdentifyIccProfile(string? iccPath) => IccProfileAnalyzer.FromFile(iccPath);
 
-        var d = ColorSpaceDescriptor.FromIcc(m, curve.Value,
-            $"ICC:{(string.IsNullOrWhiteSpace(descriptionHint) ? "profile" : descriptionHint)}", iccPath);
-        RefineKnownSpace(d, curve.Value);
-        d.Confidence = DescriptorConfidence.IccMetric;      // 即使归入已知空间，仍保持最高置信度
-        return d;
-    }
+    /// <summary>Read the original ICC field from the shared probe; null alone means absent.</summary>
+    public static IccProfileIdentity IdentifyIccBase64(string? iccBase64) => IccProfileAnalyzer.FromBase64(iccBase64);
+
+    /// <summary>Read raw ICC bytes (e.g. PNG iCCP) without creating a temporary file.</summary>
+    public static IccProfileIdentity IdentifyIccBytes(ReadOnlySpan<byte> iccBytes) => IccProfileAnalyzer.FromBytes(iccBytes);
+
+    /// <summary>Compatibility accessor for consumers of the matrix/TRC model only.</summary>
+    public static ColorSpaceDescriptor? FromIccFile(string? iccPath, string? descriptionHint = null)
+        => IdentifyIccProfile(iccPath).CreateMatrixTrcDescriptor(descriptionHint);
 
     /// <summary>
     /// 把 ICC 得到的矩阵与已知空间理论值比对；命中则补 PrimariesToken / 色度坐标 / 更友好的名字，
@@ -145,9 +140,9 @@ public static class ColorSpaceIdentify
         string? iccPath, string? descriptionHint = null)
     {
         var d = FromIccFile(iccPath, descriptionHint);
-        if (!string.IsNullOrWhiteSpace(d?.KnownSpaceName)) return (d, d!.KnownSpaceName);
-        // 度量认不出时才拿描述当线索：描述符照旧返回（任意 ICC 仍可映射），名字可能为 null。
-        return (d, IccProfileService.GuessColorSpace(descriptionHint));
+        // A recorded profile name is not proof that opaque/malformed ICC pixels are sRGB (or any named space).
+        if (d == null) return (null, null);
+        return (d, d.KnownSpaceName ?? IccProfileService.GuessColorSpace(descriptionHint));
     }
 
     /// <summary>

@@ -34,8 +34,12 @@
 # 用法：pwsh -NoProfile -File tests/scripts/verify-color-token-normalize.ps1
 $ErrorActionPreference = 'Continue'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path; Set-Location $root
+$roundTmp = Join-Path $root 'tests/output/_tmp/round-tmp'
+New-Item -ItemType Directory -Force -Path $roundTmp | Out-Null
+$env:TMP = $roundTmp; $env:TEMP = $roundTmp; $env:TMPDIR = $roundTmp
 $env:FFMPEGGUI_FFMPEG_DIR = "$root/publish/PLAN/ffmpeg-full"
 $ff  = "$root/publish/PLAN/ffmpeg-full/ffmpeg.exe"
+$ffprobe = "$root/publish/PLAN/ffmpeg-full/ffprobe.exe"
 $exe = "$root/src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.exe"
 if (-not (Test-Path $exe)) { $exe = "$root/src/FfmpegGui/bin/Debug/net11.0/win-x64/FfmpegGui.exe" }
 # ⚠ 2026-09-21（TESTING.md 第 84 条处置建议 ①）：**回退是静默的** —— 门禁可能测的
@@ -56,9 +60,11 @@ function CK($ok, $msg) { if ($ok) { $script:pass++; Say "  PASS $msg" } else { $
 #   返回值带 [[GATE-TIMEOUT]] 前缀（下游断言即便被空输出骗绿，末尾那条也会红并点名完整命令）。
 $runTimeoutSec = 180
 $runTimeouts = New-Object System.Collections.ArrayList
-function Run-Exe([string]$file, [string]$argStr) {
+function Run-Exe([string]$file, [string]$argStr, [ref]$exitCode) {
+    if ($null -ne $exitCode) { $exitCode.Value = $null }
     $p = Start-Process -FilePath $file -ArgumentList $argStr -NoNewWindow -PassThru `
         -RedirectStandardOutput "$val/_exec.out" -RedirectStandardError "$val/_exec.err"
+    if ($null -eq $p) { return "[[GATE-START-FAILED]] $file $argStr" }
     if (-not $p.WaitForExit($runTimeoutSec * 1000)) {
         # 先杀整棵树（ffmpeg 常是 FfmpegGui.exe 的子进程），再兜一层对象 Kill。
         try { & "$env:SystemRoot\System32\taskkill.exe" /PID $p.Id /T /F 2>&1 | Out-Null } catch { }
@@ -66,11 +72,13 @@ function Run-Exe([string]$file, [string]$argStr) {
         [void]$runTimeouts.Add(("{0} {1}" -f (Split-Path -Leaf $file), $argStr))
         return ("[[GATE-TIMEOUT]] {0} 超过 {1}s 未退出（已击杀进程树）：{2}" -f (Split-Path -Leaf $file), $runTimeoutSec, $argStr)
     }
+    if ($null -ne $exitCode) { $exitCode.Value = $p.ExitCode }
     return ([System.IO.File]::ReadAllText("$val/_exec.out") + "`n" + [System.IO.File]::ReadAllText("$val/_exec.err"))
 }
 
 if (-not (Test-Path $exe)) { Say "SKIP FfmpegGui.exe 未构建（先 dotnet build -c Release --no-restore）"; exit 0 }
 if (-not (Test-Path $ff))  { Say "SKIP 缺 ffmpeg（publish/PLAN/ffmpeg-full）"; exit 0 }
+if (-not (Test-Path $ffprobe))  { Say "SKIP 缺 ffprobe（publish/PLAN/ffmpeg-full）"; exit 0 }
 New-Item -ItemType Directory -Path $val -Force | Out-Null
 
 # ── 素材：一张无标签的 RGB PNG（只用它跑 dry-run 与取值探测）──
@@ -236,12 +244,40 @@ foreach ($m in @('bt709', 'bt2020nc', 'bt470bg', 'smpte170m')) {
     CK ($tail -match '-colorspace bt470bg') "E2 输出转换矩阵服从 capM=bt470bg（用户选 $m，jpg 实际用 bt470bg）"
 }
 
-# E3：不可用矩阵 —— 必须**出声**且**不得失败**（此前是静默忽略或 -40 零产物）
+# Read the task sink independently of stdout/stderr: a file alone cannot prove task success.
+function Read-ProductTaskState([string]$path) {
+    $events = @(); $jsonOk = $false
+    if (Test-Path -LiteralPath $path -PathType Leaf) {
+        try {
+            $lines = @([IO.File]::ReadAllLines($path) | Where-Object { $_.Trim() })
+            $jsonOk = $lines.Count -gt 0
+            foreach ($line in $lines) {
+                $event = ConvertFrom-Json -InputObject $line -ErrorAction Stop
+                if ($null -eq $event -or -not ($event.c -is [string]) -or -not ($event.m -is [string])) { $jsonOk = $false }
+                $events += $event
+            }
+        } catch { $jsonOk = $false }
+    }
+    return @{ JsonOk = $jsonOk; Done = @($events | Where-Object { $_.c -ceq 'item_completed' }); Messages = (($events | ForEach-Object { $_.m }) -join "`n") }
+}
+function Test-ProductTaskOutcome($result, [int]$processCode, [int]$itemCode, [string]$level) {
+    $done = @($result.Task.Done)
+    return ($result.Code -eq $processCode -and $result.Task.JsonOk -and $done.Count -eq 1 -and
+        ($done[0].code -is [int] -or $done[0].code -is [long]) -and $done[0].code -eq $itemCode -and
+        $done[0].l -ceq $level -and $done[0].p -eq 1 -and $done[0].tot -eq 1)
+}
+
+# E3：不可用矩阵 —— 每个 token 独立产物，进程与单项任务都必须成功。
 foreach ($bad in @('ycgco', 'bt2020c')) {
-    New-Item -ItemType Directory -Path "$val/out" -Force | Out-Null
-    $o = Run-Exe $exe "--headless -i `"$src`" -o `"$val/out`" -f jpg -q 95 --color-primaries bt709 --color-trc iec61966-2-1 --color-matrix $bad"
-    CK (Test-Path "$val/out/src.jpg") "E3 不可用矩阵 $bad 不再导致零产物"
-    CK ($o -match '本管线不支持') "E3 不可用矩阵 $bad 有明确告知（可用性诚实，不静默忽略）"
+    $dir = Join-Path $val ('e3_' + $bad + '_' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $dir | Out-Null
+    $log = "$dir.jsonl"; $rc = $null
+    $o = Run-Exe $exe "--headless -i `"$src`" -o `"$dir`" -f jpg -q 95 --color-primaries bt709 --color-trc iec61966-2-1 --color-matrix $bad --log-format JsonLines --log-file `"$log`"" ([ref]$rc)
+    $task = Read-ProductTaskState $log
+    $result = @{ Code = $rc; Task = $task }
+    $product = Get-Item -LiteralPath (Join-Path $dir 'src.jpg') -ErrorAction SilentlyContinue
+    CK ((Test-ProductTaskOutcome $result 0 0 'info') -and $product -and -not $product.PSIsContainer -and $product.Length -gt 0) "E3 不可用矩阵 $bad 本轮正常产出（进程=$rc，任务=$($task.Done.code)）"
+    CK (($o + "`n" + $task.Messages) -match '本管线不支持') "E3 不可用矩阵 $bad 有明确告知（可用性诚实，不静默忽略）"
 }
 
 # E4：GUI 词表里每个选项都必须真的能当**输入声明**用（否则就是"提供了但不可用"）
@@ -259,6 +295,409 @@ $unusable = @($items | Where-Object {
 })
 CK ($unusable.Count -eq 0) "词表每个选项都在输入矩阵白名单内（不在的：$($unusable -join ', ')）"
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# E5–E12. Batch A：真实输入解码合同（2026-11-19）
+# 这些格不再只看 -i 前的 -colorspace 文本：回读 RGB24 framemd5，证明矩阵和范围
+# 真的在第一次 YUV→RGB 处生效。gbr 在 YUV 上是负控；RGB/gray/pal8 必须 no-op。
+Say "[E5–E12] Batch A 真实输入矩阵/范围/像素合同"
+$yuvPc = "$val/yuv_pc.avif"; $yuvTv = "$val/yuv_tv.avif"
+foreach ($range in @('pc','tv')) {
+    $dst = if ($range -eq 'pc') { $yuvPc } else { $yuvTv }
+    Run-Exe $ff "-y -v error -f lavfi -i `"testsrc2=s=64x48`" -vf `"format=yuv444p,setparams=range=${range}:color_primaries=bt709:color_trc=iec61966-2-1:colorspace=bt709`" -frames:v 1 -c:v libaom-av1 -still-picture 1 -cpu-used 8 -crf 0 -color_range $range -colorspace bt709 `"$dst`"" | Out-Null
+}
+function ProbeStream([string]$path, [string]$field) {
+    $t = Run-Exe $ffprobe "-v error -select_streams v:0 -show_entries stream=$field -of default=nw=1:nk=1 `"$path`""
+    return ([string]($t -split "`r?`n" | Where-Object { $_.Trim() -ne '' } | Select-Object -First 1)).Trim()
+}
+function ProductConvert([string]$inputPath, [string]$tag, [string]$extra, [string]$engine = 'legacy', [string]$fmt = 'png') {
+    $dir = Join-Path $val ("batcha_" + $tag)
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    $log = Join-Path $dir 'product.log'
+    $encoderArgs = if ($fmt -eq 'png') { '--png-optimizer off' } else { '--lossless true' }
+    $rc = $null
+    $txt = Run-Exe $exe "--headless -i `"$inputPath`" -o `"$dir`" -f $fmt -q 100 $encoderArgs --color-engine $engine --log-level Debug --log-format JsonLines --log-file `"$log`" $extra" ([ref]$rc)
+    $f = Get-ChildItem -LiteralPath $dir -Recurse -File -Filter "*.$fmt" -ErrorAction SilentlyContinue | Select-Object -First 1
+    $task = Read-ProductTaskState $log
+    return [pscustomobject]@{ Text = ($txt + "`n" + $task.Messages); Dir = $dir; File = $f; Code = $rc; Task = $task }
+}
+function ProductPng([string]$inputPath, [string]$tag, [string]$extra) {
+    return (ProductConvert $inputPath $tag $extra)
+}
+function RgbMd5([string]$path, [string]$filter = '', [string]$pixFmt = 'rgb24') {
+    if (-not $path) { return '' }
+    $vf = if ($filter) { "-vf `"$filter`"" } else { '' }
+    $rc = $null
+    $t = Run-Exe $ff "-v error -i `"$path`" -frames:v 1 $vf -pix_fmt $pixFmt -f md5 -" ([ref]$rc)
+    if ($rc -ne 0) { return '' }
+    $m = [regex]::Match($t, 'MD5=([0-9a-fA-F]{32})')
+    if ($m.Success) { return $m.Groups[1].Value.ToLowerInvariant() }
+    return ''
+}
+$pcRange = ProbeStream $yuvPc 'color_range'; $tvRange = ProbeStream $yuvTv 'color_range'
+CK ((Test-Path $yuvPc) -and (Test-Path $yuvTv)) "E5 YUV full/limited 夹具生成（pc=$pcRange, tv=$tvRange）"
+CK ($pcRange -eq 'pc') "E5a ffprobe 真实读回 full-range pc（不是按 yuv* 猜测）"
+CK ($tvRange -eq 'tv') "E5b ffprobe 真实读回 limited-range tv"
+$pc709 = ProductPng $yuvPc 'pc_709' '--color-matrix bt709'
+$pc601 = ProductPng $yuvPc 'pc_601' '--color-matrix bt470bg'
+$tv709 = ProductPng $yuvTv 'tv_709' '--color-matrix bt709'
+$tv601 = ProductPng $yuvTv 'tv_601' '--color-matrix bt470bg'
+$pc709Md5 = RgbMd5 $pc709.File.FullName; $pc601Md5 = RgbMd5 $pc601.File.FullName
+$tv709Md5 = RgbMd5 $tv709.File.FullName; $tv601Md5 = RgbMd5 $tv601.File.FullName
+foreach ($arm in @($pc709, $pc601, $tv709, $tv601)) {
+    CK ((Test-ProductTaskOutcome $arm 0 0 'info') -and $arm.File.Length -gt 0) "E6 $(Split-Path -Leaf $arm.Dir)：进程及单项任务成功、PNG 非空（进程=$($arm.Code)，任务=$($arm.Task.Done.code)）"
+}
+CK ($pc709Md5 -and $pc601Md5 -and $pc709Md5 -ne $pc601Md5) "E6 full-range：bt709 与 601 输入矩阵实际改变 RGB 像素（$pc709Md5 vs $pc601Md5）"
+CK ($tv709Md5 -and $tv601Md5 -and $tv709Md5 -ne $tv601Md5) "E7 limited-range：bt709 与 601 输入矩阵实际改变 RGB 像素（$tv709Md5 vs $tv601Md5）"
+CK ($pc709Md5 -ne $tv709Md5) "E8 range 负控：相同 bt709 矩阵下 full/limited 输入解码结果不同（$pc709Md5 vs $tv709Md5）"
+CK ($pc709Md5 -and $pc709Md5 -ceq (RgbMd5 $yuvPc 'scale=in_color_matrix=bt709:in_range=pc,format=rgb24')) 'E8a PC RGB matches reference decoded directly from the original YUV'
+CK ($tv601Md5 -and $tv601Md5 -ceq (RgbMd5 $yuvTv 'scale=in_color_matrix=bt470bg:in_range=tv,format=rgb24')) 'E8b TV RGB matches reference decoded directly from the original YUV'
+# gbr 是 RGB/identity 语义，不能转成 scale=in_color_matrix=rgb；Batch A 契约选择：
+# YUV 输入上的显式 gbr 必须在产品层明确拒绝、任务零产物；不能把底层 FFmpeg -22 当用户契约。
+$gbr = ProductPng $yuvTv 'yuv_gbr_reject' '--color-matrix gbr'
+$gbrText = $gbr.Text
+$gbrProducts = @(Get-ChildItem -LiteralPath $gbr.Dir -Recurse -Force -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.FullName -ne (Join-Path $gbr.Dir 'product.log') })
+CK ((Test-ProductTaskOutcome $gbr 1 91 'error') -and $gbrProducts.Count -eq 0 -and
+    ($gbrText -match 'COLOR_INPUT_MATRIX_IDENTITY_ON_YUV')) "E9 YUV + gbr：进程 1、单项任务 91/error、零产物（进程=$($gbr.Code)，任务=$($gbr.Task.Done.code)，产物=$($gbrProducts.Count)）"
+CK ($gbrText -notmatch '(?i)Unable to parse.*in_color_matrix|option value ["'']rgb["'']') "E9b gbr：拒绝不泄漏 scale 的 rgb 解析错误"
+$gray = "$val/gray.png"; $pal = "$val/pal8.png"
+Run-Exe $ff "-y -v error -f lavfi -i `"testsrc2=s=64x48,format=gray`" -frames:v 1 `"$gray`"" | Out-Null
+Run-Exe $ff "-y -v error -f lavfi -i `"testsrc2=s=64x48,format=rgb24`" -pix_fmt pal8 -frames:v 1 `"$pal`"" | Out-Null
+foreach ($pair in @(@('rgb',$src),@('gray',$gray),@('pal8',$pal))) {
+    $kind = $pair[0]; $in = $pair[1]
+    $base = ProductPng $in ("${kind}_auto") ''
+    $explicit = ProductPng $in ("${kind}_matrix") '--color-matrix bt709'
+    $bmd5 = RgbMd5 $base.File.FullName; $emd5 = RgbMd5 $explicit.File.FullName
+    $ignored = $explicit.Text -match '(?i)ignored|source is RGB|不改变像素|不生效|no-op'
+    CK ((Test-ProductTaskOutcome $base 0 0 'info') -and (Test-ProductTaskOutcome $explicit 0 0 'info') -and
+        $base.File.Length -gt 0 -and $explicit.File.Length -gt 0) "E10 $kind：auto/显式矩阵进程与单项任务均成功、PNG 非空（进程=$($base.Code)/$($explicit.Code)，任务=$($base.Task.Done.code)/$($explicit.Task.Done.code)）"
+    CK ($bmd5 -and $bmd5 -eq $emd5) "E11 $kind no-op：显式 bt709 不改变 RGB 像素（$bmd5）"
+    CK $ignored "E12 $kind no-op：日志明确说明矩阵未用于像素转换"
+}
+
+# E13–E15. 同一 limited YUV 夹具贯穿 H1 Map、传统最长边预缩放、传统 JXR 编码入口。
+# 正控从原始 YUV 计算；交叉矩阵/错误处理顺序必须能与正控区分，不能只靠日志或文件哈希判色。
+Say '[E13–E15] H1 Map / 最长边 / JXR 输入矩阵像素对拍'
+function RgbPsnr([string]$path, [string]$reference, [string]$pixFmt = 'gbrp') {
+    if (-not $path -or -not $reference) { return -1 }
+    $rc = $null
+    $txt = Run-Exe $ff "-hide_banner -i `"$path`" -i `"$reference`" -lavfi `"[0:v]format=${pixFmt}[a];[1:v]format=${pixFmt}[b];[a][b]psnr`" -frames:v 1 -f null -" ([ref]$rc)
+    if ($rc -ne 0) { return -1 }
+    $m = [regex]::Match($txt, 'average:\s*(inf|[0-9.]+)')
+    if (-not $m.Success) { return -1 }
+    if ($m.Groups[1].Value -eq 'inf') { return [double]::PositiveInfinity }
+    return [double]::Parse($m.Groups[1].Value, [System.Globalization.CultureInfo]::InvariantCulture)
+}
+
+# H1 必须是真正的 sRGB → Display P3 Map，而不是同色域 PNG/None 直通。
+# 以独立 zimg 做同一 P/T 变换；核内归一/舍入不同，不能拿两套实现的 RGB 码值强求逐位相等。
+$h1Refs = @{}; $h1Products = @{}; $geom = @{}; $jxr = @{}
+$jxrDec = Join-Path $root 'publish/PLAN/artifacts/JxrDecApp.exe'
+foreach ($matrix in @('bt709', 'bt470bg')) {
+    $decode = "scale=in_color_matrix=${matrix}:in_range=tv"
+    $ref = Join-Path $val "p3_ref_$matrix.png"
+    $refRc = $null
+    Run-Exe $ff "-y -v error -i `"$yuvTv`" -vf `"$decode,format=rgb48le,zscale=pin=bt709:tin=iec61966-2-1:min=gbr:rin=full:p=smpte432:t=iec61966-2-1:m=gbr:r=full`" -frames:v 1 -pix_fmt rgb48be `"$ref`"" ([ref]$refRc) | Out-Null
+    if ($refRc -eq 0 -and (Test-Path -LiteralPath $ref -PathType Leaf)) { $h1Refs[$matrix] = $ref }
+    $h1Products[$matrix] = ProductConvert $yuvTv "h1_$matrix" "--color-space `"Display P3`" --color-matrix $matrix --bit-depth 16" 'engine'
+
+    $scaled = ProductPng $yuvTv "scale_$matrix" "--color-matrix $matrix --max-dimension-enabled true --max-dimension 32"
+    $shape = if ($scaled.File) { (ProbeStream $scaled.File.FullName 'width') + 'x' + (ProbeStream $scaled.File.FullName 'height') } else { '' }
+    # 保留 PNG16 参照精度；若直接要求 RGB8，末端 scale 会协商成缩放兼降位，不等价于先产出 PNG16。
+    $geom[$matrix] = [pscustomobject]@{
+        Code = $scaled.Code; Shape = $shape; Actual = (RgbMd5 $scaled.File.FullName '' 'rgb48be')
+        Direct = (RgbMd5 $yuvTv "$decode,format=rgb48le,scale=32:-2:flags=lanczos" 'rgb48be')
+        WrongOrder = (RgbMd5 $yuvTv "scale=32:-2:flags=lanczos,$decode,format=rgb48le" 'rgb48be')
+    }
+
+    $encoded = ProductConvert $yuvTv "jxr_$matrix" "--color-matrix $matrix --bit-depth 8" 'legacy' 'jxr'
+    $bmp = Join-Path $val "jxr_back_$matrix.bmp"
+    $decRc = $null
+    if ($encoded.File -and (Test-Path -LiteralPath $jxrDec -PathType Leaf)) {
+        Run-Exe $jxrDec "-i `"$($encoded.File.FullName)`" -o `"$bmp`" -c 0" ([ref]$decRc) | Out-Null
+    }
+    $jxr[$matrix] = [pscustomobject]@{
+        Code = $encoded.Code; DecodeCode = $decRc
+        Actual = $(if ($decRc -eq 0 -and (Test-Path -LiteralPath $bmp -PathType Leaf)) { RgbMd5 $bmp })
+        Direct = (RgbMd5 $yuvTv "$decode,format=bgr24")
+    }
+}
+foreach ($matrix in @('bt709', 'bt470bg')) {
+    $other = if ($matrix -eq 'bt709') { 'bt470bg' } else { 'bt709' }
+    $h1 = $h1Products[$matrix]
+    $same = RgbPsnr $h1.File.FullName $h1Refs[$matrix]
+    $cross = RgbPsnr $h1.File.FullName $h1Refs[$other]
+    $h1Md5 = RgbMd5 $h1.File.FullName
+    $ingressMd5 = if ($matrix -eq 'bt709') { $tv709Md5 } else { $tv601Md5 }
+    CK ($h1.Code -eq 0 -and $h1Md5 -and $ingressMd5 -and $h1Md5 -ne $ingressMd5 -and $same -ge 40 -and $cross -ge 0 -and $same -ge ($cross + 3)) "E13 H1 Map/$matrix：真改像素并匹配对应 P3 独立参考（同=$same dB，交叉=$cross dB）"
+
+    $s = $geom[$matrix]
+    CK ($s.Code -eq 0 -and $s.Shape -eq '32x24' -and $s.Direct -and $s.Actual -eq $s.Direct) "E14 最长边/$matrix：64x48→$($s.Shape)，RGB 先解再缩与独立参考一致（$($s.Actual) vs $($s.Direct)）"
+    CK ($s.Direct -and $s.WrongOrder -and $geom[$other].Direct -and $s.Direct -ne $s.WrongOrder -and $s.Direct -ne $geom[$other].Direct) "E14 负控/$matrix：先缩 YUV 或换另一矩阵均不可冒充本格像素"
+
+    $x = $jxr[$matrix]
+    CK ($x.Code -eq 0 -and $x.DecodeCode -eq 0 -and $x.Direct -and $x.Actual -eq $x.Direct) "E15 JXR/$matrix：JxrDecApp 独立解码与原始 YUV 参考逐像素一致（$($x.Actual) vs $($x.Direct)）"
+    CK ($x.Actual -and $jxr[$other].Direct -and $x.Actual -ne $jxr[$other].Direct) "E15 负控/$matrix：另一输入矩阵的参考不能冒充本格 JXR 像素"
+}
+
+# E16: Encode H.264 once with explicit SDR VUI, then clone it for four independent conflicts.
+# Patch exactly one P/T/M/range nclx field per clone; SPS and every encoded sample stay identical.
+# Both coherent and conflicting products must match an explicit correct matrix/range source decode:
+# comparing products only to each other would let a shared wrong decode pass.
+Say '[E16] Single-field MP4 colr conflicts: warn, convert, match correct source RGB'
+$agreeVideo = Join-Path $val 'agree.mp4'; $agreeRc = $null
+$e16Cases = @(
+    @{ Axis = 'P'; Offset = 0; Bytes = [byte[]](0,9); Stream = 'bt2020/iec61966-2-1/bt709/tv' },
+    @{ Axis = 'T'; Offset = 2; Bytes = [byte[]](0,16); Stream = 'bt709/smpte2084/bt709/tv' },
+    @{ Axis = 'M'; Offset = 4; Bytes = [byte[]](0,9); Stream = 'bt709/iec61966-2-1/bt2020nc/tv' },
+    @{ Axis = 'range'; Offset = 6; Bytes = [byte[]](128); Stream = 'bt709/iec61966-2-1/bt709/pc' }
+)
+Run-Exe $ff "-y -v error -f lavfi -i `"testsrc2=s=64x48:r=2:d=1`" -vf `"setparams=range=tv:color_primaries=bt709:color_trc=iec61966-2-1:colorspace=bt709`" -c:v libx264 -pix_fmt yuv420p -movflags +write_colr `"$agreeVideo`"" ([ref]$agreeRc) | Out-Null
+foreach ($case in $e16Cases) {
+    $case.Path = Join-Path $val ("conflict_" + $case.Axis + '.mp4')
+    $case.PatchOk = $false
+    if ($agreeRc -ne 0 -or -not (Test-Path -LiteralPath $agreeVideo -PathType Leaf)) { continue }
+    $mp4 = [IO.File]::ReadAllBytes($agreeVideo)
+    $scan = [Text.Encoding]::ASCII.GetString($mp4)
+    $at = $scan.IndexOf('colrnclx', [StringComparison]::Ordinal)
+    # Require exactly one sized colr/nclx atom and check all original values before patching.
+    if ($at -ge 4 -and $at + 15 -le $mp4.Length -and $at -eq $scan.LastIndexOf('colrnclx', [StringComparison]::Ordinal) -and
+        [BitConverter]::ToString($mp4, $at - 4, 19) -ceq '00-00-00-13-63-6F-6C-72-6E-63-6C-78-00-01-00-0D-00-01-00') {
+        [Array]::Copy($case.Bytes, 0, $mp4, $at + 8 + $case.Offset, $case.Bytes.Length)
+        [IO.File]::WriteAllBytes($case.Path, $mp4)
+        # Read back the actual fixture and prove no bytes outside this one field were changed.
+        $original = [IO.File]::ReadAllBytes($agreeVideo); $patched = [IO.File]::ReadAllBytes($case.Path)
+        $changed = @(); $outside = @()
+        if ($original.Length -eq $patched.Length) {
+            for ($i = 0; $i -lt $original.Length; $i++) {
+                if ($original[$i] -ne $patched[$i]) {
+                    $changed += $i
+                    if ($i -lt $at + 8 + $case.Offset -or $i -ge $at + 8 + $case.Offset + $case.Bytes.Length) { $outside += $i }
+                }
+            }
+        }
+        $case.PatchOk = $changed.Count -gt 0 -and $outside.Count -eq 0
+    }
+}
+function ProbeE16Video([string]$path) {
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return }
+    $fields = 'color_primaries,color_transfer,color_space,color_range'
+    $rc = $null
+    $t = Run-Exe $ffprobe "-v error -select_streams v:0 -show_entries stream=${fields}:frame=$fields -of json `"$path`"" ([ref]$rc)
+    if ($rc -ne 0) { return }
+    try { $facts = ConvertFrom-Json $t -ErrorAction Stop } catch { return }
+    $streams = @($facts.streams | Where-Object { $_ })
+    if ($streams.Count -ne 1) { return }
+    $tags = { param($x) '{0}/{1}/{2}/{3}' -f $x.color_primaries, $x.color_transfer, $x.color_space, $x.color_range }
+    return @{ Stream = (& $tags $streams[0]); Frames = @($facts.frames | Where-Object { $_ } | ForEach-Object { & $tags $_ }) }
+}
+function ReadE16PngCicp([string]$path) {
+    if (-not $path) { return '' }
+    $b = [IO.File]::ReadAllBytes($path)
+    if ($b.Length -lt 8 -or [BitConverter]::ToString($b, 0, 8) -cne '89-50-4E-47-0D-0A-1A-0A') { return '' }
+    $seenData = $false; $cicp = ''
+    for ($at = 8; $at + 12 -le $b.Length; $at += 12 + [int]$size) {
+        $size = ([long]$b[$at] -shl 24) + ([long]$b[$at + 1] -shl 16) + ([long]$b[$at + 2] -shl 8) + $b[$at + 3]
+        if ($size -gt $b.Length - $at - 12) { return '' }
+        $type = [Text.Encoding]::ASCII.GetString($b, $at + 4, 4)
+        if ($type -ceq 'IDAT') { $seenData = $true }
+        if ($type -ceq 'IEND' -and $size -eq 0 -and $seenData) { return $cicp }
+        if ($type -ceq 'cICP') {
+            if ($seenData -or $cicp -or $size -ne 4) { return '' }
+            $cicp = $b[($at + 8)..($at + 11)] -join '/'
+        }
+    }
+    return ''
+}
+$sourceSdr = 'bt709/iec61966-2-1/bt709/tv'
+$aFacts = ProbeE16Video $agreeVideo
+CK ($agreeRc -eq 0 -and $aFacts.Stream -ceq $sourceSdr -and $aFacts.Frames.Count -eq 2 -and
+    @($aFacts.Frames | Where-Object { $_ -cne $sourceSdr }).Count -eq 0) `
+    "E16 coherent source oracle: stream and both decoded frames are $sourceSdr"
+foreach ($case in $e16Cases) {
+    $facts = ProbeE16Video $case.Path
+    CK ($case.PatchOk -and $facts.Stream -ceq $case.Stream -and $facts.Frames.Count -eq 2 -and
+        @($facts.Frames | Where-Object { $_ -cne $sourceSdr }).Count -eq 0) `
+        "E16 $($case.Axis) source oracle: only one nclx field changes (stream=$($facts.Stream)); both decoded frames remain $sourceSdr"
+}
+# Fix both decode axes explicitly; neither defaults nor the conflicting container tags are an oracle.
+$correctDecode = RgbMd5 $agreeVideo 'scale=in_color_matrix=bt709:in_range=tv,format=rgb48be' 'rgb48be'
+$wrongMatrix = RgbMd5 $agreeVideo 'scale=in_color_matrix=bt2020:in_range=tv,format=rgb48be' 'rgb48be'
+$wrongRange = RgbMd5 $agreeVideo 'scale=in_color_matrix=bt709:in_range=pc,format=rgb48be' 'rgb48be'
+CK ($correctDecode -and $wrongMatrix -and $correctDecode -cne $wrongMatrix) `
+    "E16 M-only decode negative control: wrong matrix with correct tv range changes RGB ($correctDecode vs $wrongMatrix)"
+CK ($correctDecode -and $wrongRange -and $correctDecode -cne $wrongRange) `
+    "E16 range-only decode negative control: wrong range with correct bt709 matrix changes RGB ($correctDecode vs $wrongRange)"
+$e16Arms = @(@{ Axis = 'coherent'; Path = $agreeVideo; Conflict = $false }) + @($e16Cases | ForEach-Object {
+    @{ Axis = $_.Axis; Path = $_.Path; Conflict = $true }
+})
+foreach ($case in $e16Arms) {
+    $arm = ProductPng $case.Path ("e16_" + $case.Axis) '--bit-depth 16'
+    $log = Join-Path $arm.Dir 'product.log'
+    $events = @()
+    if ($arm.Task.JsonOk) {
+        try {
+            $events = @(Get-Content -LiteralPath $log | Where-Object { $_.Trim() } | ForEach-Object { ConvertFrom-Json $_ -ErrorAction Stop })
+        } catch { }
+    }
+    $notices = @($events | Where-Object { $_.m -cmatch '\bCOLOR_STREAM_FRAME_CONFLICT\b' })
+    $tag = $case.Axis
+    $products = @(Get-ChildItem -LiteralPath $arm.Dir -Recurse -File -Filter '*.png' -ErrorAction SilentlyContinue)
+    CK ((Test-ProductTaskOutcome $arm 0 0 'info') -and $products.Count -eq 1 -and $arm.File.Length -gt 0) `
+        "E16 ${tag}: process and one task succeed with exactly one non-empty PNG (process=$($arm.Code); task=$($arm.Task.Done.code))"
+    $warned = if ($case.Conflict) { $notices.Count -gt 0 -and @($notices | Where-Object l -cne 'warn').Count -eq 0 }
+              else { $notices.Count -eq 0 }
+    CK $warned "E16 ${tag}: COLOR_STREAM_FRAME_CONFLICT is warn on each single-field conflict only (levels=$($notices.l -join ','))"
+    $actual = RgbMd5 $arm.File.FullName '' 'rgb48be'
+    $reference = RgbMd5 $case.Path 'scale=in_color_matrix=bt709:in_range=tv,format=rgb48be' 'rgb48be'
+    CK ($correctDecode -and $reference -and $actual -and $reference -ceq $correctDecode -and $actual -ceq $reference) `
+        "E16 ${tag}: product RGB48 matches same-source explicit bt709/tv reference ($actual vs $reference; coherent=$correctDecode)"
+    CK ($actual -and $wrongMatrix -and $wrongRange -and $actual -cne $wrongMatrix -and $actual -cne $wrongRange) `
+        "E16 ${tag}: product RGB48 rejects independently wrong matrix and wrong range references"
+    $cicp = ReadE16PngCicp $arm.File.FullName
+    CK ($cicp -ceq '1/13/0/1') "E16 ${tag}: PNG cICP is decoded-frame BT.709/sRGB/identity/full (actual=$cicp)"
+}
+
+# E17: native 10-bit 4:2:0, independent input matrix/range references.
+# Samples are written as planar 10-bit codes, including nonzero low bits; no RGB->YUV generator is the oracle.
+Say '[E17] Native 10-bit YUV420 PC/TV x BT.709/BT.2020NC input decode'
+$native10 = Join-Path $val 'native10.yuv'
+$nativeCodes = New-Object 'System.UInt16[]' (64 * 48 * 3 / 2)
+$ys = @(101,401,733,901); $us = @(233,513,697,389); $vs = @(733,511,307,649)
+for ($y = 0; $y -lt 48; $y++) {
+    for ($x = 0; $x -lt 64; $x++) { $nativeCodes[$y*64+$x] = $ys[[int][Math]::Floor($x/16)] }
+}
+for ($y = 0; $y -lt 24; $y++) {
+    for ($x = 0; $x -lt 32; $x++) {
+        $block = [int][Math]::Floor($x/8)
+        $nativeCodes[64*48+$y*32+$x] = $us[$block]
+        $nativeCodes[64*48+32*24+$y*32+$x] = $vs[$block]
+    }
+}
+$nativeBytes = New-Object byte[] ($nativeCodes.Length*2)
+for ($i=0; $i -lt $nativeCodes.Length; $i++) { $nativeBytes[2*$i] = $nativeCodes[$i] -band 255; $nativeBytes[2*$i+1] = $nativeCodes[$i] -shr 8 }
+[IO.File]::WriteAllBytes($native10,$nativeBytes)
+# ITU-R BT.709 inverse OETF differs from this bundled zimg's pure gamma 2.4.
+# H1 uses the standard piecewise source curve; E18 separately locks legacy zscale behavior.
+function NewE17H1Reference([string]$inputPath, [string]$key, [string]$decode, [string]$outputPath) {
+    $decodedPath = Join-Path $val "h1_source_$key.rgb48"
+    $mappedPath = Join-Path $val "h1_reference_$key.rgb48"
+    $decodeRc = $null
+    Run-Exe $ff "-y -v error -i `"$inputPath`" -vf `"$decode`" -frames:v 1 -pix_fmt rgb48le -f rawvideo `"$decodedPath`"" ([ref]$decodeRc) | Out-Null
+    if ($decodeRc -ne 0 -or -not (Test-Path -LiteralPath $decodedPath)) { return $false }
+    $decoded = [IO.File]::ReadAllBytes($decodedPath)
+    if ($decoded.Length -ne 64 * 48 * 6) { return $false }
+    $mapped = New-Object byte[] $decoded.Length
+    # D65 BT.709 -> D65 Display P3, derived from IEC sRGB / EG432 xy primaries.
+    $rows = @(@(.8224619687143624,.1775380312856376,0.0),@(.0331941988509615,.9668058011490385,0.0),@(.0170826307211200,.0723974406639630,.9105199286149170))
+    for ($at = 0; $at -lt $decoded.Length; $at += 6) {
+        $linear = @()
+        for ($channel = 0; $channel -lt 3; $channel++) {
+            $index = $at + 2 * $channel
+            $e = ([int]$decoded[$index] + 256 * [int]$decoded[$index + 1]) / 65535.0
+            $linear += $(if ($e -lt .081) { $e / 4.5 } else { [Math]::Pow(($e + .099) / 1.099, 1.0 / .45) })
+        }
+        for ($channel = 0; $channel -lt 3; $channel++) {
+            $row = $rows[$channel]
+            $l = [Math]::Max(0.0, [Math]::Min(1.0, ($row[0]*$linear[0] + $row[1]*$linear[1] + $row[2]*$linear[2])))
+            $e = if ($l -le .0031308) { 12.92 * $l } else { 1.055 * [Math]::Pow($l, 1.0/2.4) - .055 }
+            $code = [int][Math]::Round($e * 65535.0)
+            $index = $at + 2 * $channel
+            $mapped[$index] = $code -band 255; $mapped[$index + 1] = $code -shr 8
+        }
+    }
+    [IO.File]::WriteAllBytes($mappedPath, $mapped)
+    $encodeRc = $null
+    Run-Exe $ff "-y -v error -f rawvideo -pixel_format rgb48le -video_size 64x48 -i `"$mappedPath`" -frames:v 1 -pix_fmt rgb48be `"$outputPath`"" ([ref]$encodeRc) | Out-Null
+    return ($encodeRc -eq 0 -and (Test-Path -LiteralPath $outputPath))
+}
+$nativeSources = @{}; $nativeRefs = @{}; $nativeProducts = @{}
+foreach ($range in @('pc','tv')) {
+    $input10 = Join-Path $val "native10_$range.avif"; $rc10 = $null
+    # Declare raw input range and frame P/T/M before encoding; output flags alone can trigger an implicit conversion.
+    Run-Exe $ff "-y -v error -f rawvideo -pixel_format yuv420p10le -video_size 64x48 -color_range $range -i `"$native10`" -vf `"setparams=range=${range}:color_primaries=bt709:color_trc=bt709:colorspace=bt709`" -frames:v 1 -c:v libaom-av1 -still-picture 1 -cpu-used 8 -crf 0 -b:v 0 -aom-params lossless=1 -pix_fmt yuv420p10le -color_primaries bt709 -color_trc bt709 -colorspace bt709 -color_range $range `"$input10`"" ([ref]$rc10) | Out-Null
+    $nativeSources[$range] = $input10
+    $rawBack = Join-Path $val "native10_${range}_readback.yuv"; $backRc = $null
+    Run-Exe $ff "-y -v error -i `"$input10`" -frames:v 1 -pix_fmt yuv420p10le -f rawvideo `"$rawBack`"" ([ref]$backRc) | Out-Null
+    $nativeFacts10 = ProbeE16Video $input10
+    $expectedTags10 = "bt709/bt709/bt709/$range"
+    CK ($rc10 -eq 0 -and $backRc -eq 0 -and (ProbeStream $input10 'pix_fmt') -ceq 'yuv420p10le' -and
+        $nativeFacts10.Stream -ceq $expectedTags10 -and $nativeFacts10.Frames.Count -eq 1 -and
+        $nativeFacts10.Frames[0] -ceq $expectedTags10 -and (Test-Path -LiteralPath $rawBack) -and
+        (Get-Item -LiteralPath $rawBack).Length -eq $nativeBytes.Length -and
+        (Get-FileHash -LiteralPath $rawBack).Hash -ceq (Get-FileHash -LiteralPath $native10).Hash) `
+        "E17 fixture/${range}: native 10-bit 420 codes survive AV1 bit-exact; stream and decoded frame P/T/M/range=$expectedTags10"
+    foreach ($matrix in @('bt709','bt2020nc')) {
+        $scaleMatrix = if ($matrix -eq 'bt2020nc') { 'bt2020' } else { $matrix }
+        $key = "${range}_$matrix"; $decode10 = "scale=in_color_matrix=${scaleMatrix}:in_range=$range,format=rgb48le"
+        $ref10 = Join-Path $val "native10_p3_$key.png"
+        if (NewE17H1Reference $input10 $key $decode10 $ref10) { $nativeRefs[$key] = $ref10 }
+        $direct10 = ProductConvert $input10 "native10_direct_$key" "--color-matrix $matrix --bit-depth 16" 'legacy'
+        $directHash = RgbMd5 $direct10.File.FullName '' 'rgb48be'
+        $rightHash = RgbMd5 $input10 $decode10 'rgb48be'
+        $wrongRange10 = if ($range -eq 'pc') { 'tv' } else { 'pc' }
+        $wrongHash = RgbMd5 $input10 "scale=in_color_matrix=${scaleMatrix}:in_range=$wrongRange10,format=rgb48le" 'rgb48be'
+        CK ((Test-ProductTaskOutcome $direct10 0 0 'info') -and $direct10.File.Length -gt 0 -and $directHash -and
+            $rightHash -ceq $directHash -and $wrongHash -and $wrongHash -cne $rightHash) `
+            "E17 legacy/${key}: task success; RGB48 equals original-source explicit matrix/range reference; wrong range differs"
+        $nativeProducts[$key] = ProductConvert $input10 "native10_h1_$key" "--color-space `"Display P3`" --color-matrix $matrix --bit-depth 16" 'engine'
+    }
+}
+foreach ($range in @('pc','tv')) {
+    foreach ($matrix in @('bt709','bt2020nc')) {
+        $key = "${range}_$matrix"; $other = if ($matrix -eq 'bt709') { 'bt2020nc' } else { 'bt709' }
+        $p10 = $nativeProducts[$key]; $same10 = RgbPsnr $p10.File.FullName $nativeRefs[$key] 'gbrp16le'
+        $cross10 = RgbPsnr $p10.File.FullName $nativeRefs["${range}_$other"] 'gbrp16le'
+        $decodeCommands10 = @($p10.Task.Messages -split "`r?`n" | Where-Object { $_ -match '^\[色彩\] ffmpeg .* -frames:v 1 -vf "[^"]+" -f rawvideo ' })
+        $filter10 = if ($decodeCommands10.Count -eq 1 -and $decodeCommands10[0] -match '-vf "([^"]+)"') { $Matches[1] } else { '' }
+        $decodeAt10 = $filter10.IndexOf("scale=in_color_matrix=${matrix}:in_range=$range", [StringComparison]::Ordinal)
+        CK ($p10.Text -match '后端=H1' -and $decodeCommands10.Count -eq 1 -and
+            [regex]::Matches($filter10, 'scale=in_color_matrix=').Count -eq 1 -and $decodeAt10 -ge 0 -and
+            $filter10.IndexOf('format=rgb48le', [StringComparison]::Ordinal) -gt $decodeAt10) `
+            "E17 H1/${key}: actual H1 decode consumes input matrix/range exactly once before first RGB sink"
+        CK ((ReadE16PngCicp $p10.File.FullName) -ceq '12/13/0/1') "E17 H1/${key}: PNG cICP names Display P3/sRGB/identity/full"
+        CK ((Test-ProductTaskOutcome $p10 0 0 'info') -and $p10.File.Length -gt 0 -and $same10 -ge 40 -and
+            $cross10 -ge 0 -and $same10 -ge ($cross10+3)) `
+            "E17 H1/${key}: real P3 mapping matches correct source reference and rejects other matrix (same=$same10 cross=$cross10 dB)"
+    }
+}
+
+# E18: CM-12 dedicated cjxl remap pipe. The oracle starts from the original YUV, never another product arm.
+Say '[E18] Cjxl pipe consumes input matrix once before first RGB sink'
+$cm12Refs = @{}; $cm12Arms = @{}
+foreach ($range in @('pc','tv')) {
+    foreach ($matrix in @('bt709','bt470bg')) {
+        $key = "${range}_$matrix"; $input12 = $nativeSources[$range]
+        $ref12 = Join-Path $val "cjxl_reference_$key.png"; $ref12Rc = $null
+        Run-Exe $ff "-y -v error -i `"$input12`" -vf `"scale=in_color_matrix=${matrix}:in_range=$range,format=rgb48le,zscale=pin=bt709:tin=bt709:min=gbr:rin=full:p=smpte432:t=iec61966-2-1:m=gbr:r=full`" -frames:v 1 -pix_fmt rgb48be `"$ref12`"" ([ref]$ref12Rc) | Out-Null
+        $cm12Refs[$key] = RgbMd5 $ref12 '' 'rgb48be'
+        $arm12 = ProductConvert $input12 "cjxl_remap_$key" "--encoder Cjxl --color-space `"Display P3`" --color-matrix $matrix --bit-depth 16" 'legacy' 'jxl'
+        $cm12Arms[$key] = $arm12
+        $cmd12 = @($arm12.Task.Messages -split "`r?`n" | Where-Object { $_ -match '^\[cmd\] ffmpeg .*\|.*cjxl' })
+        $filter12 = if ($cmd12.Count -eq 1 -and $cmd12[0] -match '-vf "([^"]+)"') { $Matches[1] } else { '' }
+        $firstRgb12 = $filter12.IndexOf('format=rgb48le',[StringComparison]::Ordinal)
+        $consume12 = [regex]::Matches($filter12,'scale=in_color_matrix=')
+        $decodeAt12 = $filter12.IndexOf("scale=in_color_matrix=${matrix}:in_range=$range",[StringComparison]::Ordinal)
+        CK ((Test-ProductTaskOutcome $arm12 0 0 'info') -and $arm12.File.Length -gt 0 -and
+            $arm12.Text -match '\[cjxl-pipe\]' -and $cmd12.Count -eq 1) "E18 Cjxl/${key}: actual pipe route, one successful JSONL terminal, new nonempty JXL"
+        CK ($filter12 -and $consume12.Count -eq 1 -and $decodeAt12 -ge 0 -and $firstRgb12 -gt $decodeAt12) `
+            "E18 Cjxl/${key}: explicit input matrix/range appears exactly once before first RGB sink (vf=$filter12)"
+        $actual12 = RgbMd5 $arm12.File.FullName '' 'rgb48be'
+        CK ($ref12Rc -eq 0 -and $actual12 -and $cm12Refs[$key] -and $actual12 -ceq $cm12Refs[$key]) `
+            "E18 Cjxl/${key}: decoded RGB48 equals independent source-to-P3 reference ($actual12)"
+    }
+}
+foreach ($range in @('pc','tv')) {
+    CK ($cm12Refs["${range}_bt709"] -and $cm12Refs["${range}_bt470bg"] -and
+        $cm12Refs["${range}_bt709"] -cne $cm12Refs["${range}_bt470bg"]) "E18 negative control/${range}: correct 709 and 601 references are distinguishable"
+}
+# The no-target AVIF input is unsupported by direct cjxl and exercises the secondary pipe fallback.
+$cm12Fallback = ProductConvert $nativeSources.tv 'cjxl_fallback_601' '--encoder Cjxl --color-matrix bt470bg --bit-depth 16' 'legacy' 'jxl'
+$cm12FallbackHash = RgbMd5 $cm12Fallback.File.FullName '' 'rgb48be'
+$cm12FallbackRef = RgbMd5 $nativeSources.tv 'scale=in_color_matrix=bt470bg:in_range=tv,format=rgb48le' 'rgb48be'
+CK ((Test-ProductTaskOutcome $cm12Fallback 0 0 'info') -and $cm12Fallback.Text -match '直接编码失败' -and
+    $cm12FallbackHash -and $cm12FallbackHash -ceq $cm12FallbackRef) 'E18 fallback: failed direct cjxl cannot bypass explicit input matrix in the secondary pipe'
+
 # ══════════════ F. 输入色彩范围回拷（2026-11-02 第二批：t2）══════════════
 # 缺陷：`ProbeWithFfprobeOnce` 把 `colorRange` 只写进**局部** `meta`，回拷段（`FfmpegCommandBuilder.cs`
 # 的 `meta.pixFmt = ffMeta.pixFmt;` 一带）**漏拷** ⇒ `ProbeInputColorRange`（:1354）恒得 null ⇒ 三处
@@ -271,7 +710,11 @@ Say "[F] 输入色彩范围回拷（dry-run 的 -color_range 三个角色）"
 $pc16 = "$val/pc16.tif"
 $limMp4 = "$val/lim.mp4"
 Run-Exe $ff "-y -v error -f lavfi -i `"testsrc2=s=64x48,format=rgb48le`" -frames:v 1 `"$pc16`"" | Out-Null
-Run-Exe $ff "-y -v error -f lavfi -i `"testsrc2=s=64x48`" -pix_fmt yuv420p -frames:v 30 `"$limMp4`"" | Out-Null
+# 仅 -color_range tv 时，x264/MP4 可省略默认值，ffprobe 仍报 unknown；强制写 nclx。
+$limRc = $null
+Run-Exe $ff "-y -v error -f lavfi -i `"testsrc2=s=64x48`" -pix_fmt yuv420p -color_range tv -movflags +write_colr -frames:v 30 `"$limMp4`"" ([ref]$limRc) | Out-Null
+$limRange = ProbeStream $limMp4 'color_range'
+CK ($limRc -eq 0 -and $limRange -eq 'tv') "R3/R10a 夹具：MP4 编码成功且 ffprobe 实际读回 color_range=tv（exit=$limRc, range=$limRange）"
 # ── 工具：取 dry-run 命令行里 `-color_range` 的值，按 ` -i ` 切成前后两段（输入声明 / 输出声明）──
 function DryRunRange([string]$src, [string]$fmt, [string]$extra) {
     $line = DryRunCmdFor $src $fmt $extra

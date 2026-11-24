@@ -19,12 +19,60 @@ public static partial class ColorMappingEngine
     private static readonly ColorSpaceDescriptor? SrgbRef =
         ColorSpaceDescriptor.FromCicp("bt709", "iec61966-2-1", "sRGB");
 
+    internal static bool IsIccSafetyRejection(ColorTransformPlan plan)
+        => plan.Action == ColorAction.Reject && plan.IccSafetyCode != null;
+
+    private static ColorTransformPlan? PlanIccSafety(ColorIntent it)
+    {
+        if (it.SourceIccIdentity is not { } profile) return null;
+        if (it.SourceIccIsExplicit && !profile.IsValid)
+            return new ColorTransformPlan { Action = ColorAction.Reject, IccSafetyCode = "ICC_EXPLICIT_INVALID", Reason = profile.Detail ?? "explicit ICC cannot be read or parsed" };
+        if (profile.Kind != IccProfileKind.LutOrUnsupported) return null;
+        bool safeRoute = profile.CanDescribeRgbSource && it.CanCarryOpaqueSourceIcc
+            && !it.GainMapRequested && !it.ToneMapRequested && !it.AllowGamutCompression && it.OutMatrixMode == null;
+        if (safeRoute && it.TargetExplicit && it.TargetIccIdentity.IsValid && it.Target != null
+            && it.Strategy is ColorStrategy.Recommended or ColorStrategy.Manual)
+            return new ColorTransformPlan { Action = ColorAction.Map, IccCmsTransform = (profile, it.TargetIccIdentity),
+                Dst = it.Target, OutBitDepth = it.TargetBitDepth, Reason = "Windows CMS: source ICC to explicit SDR target, relative colorimetric" };
+        if (safeRoute && !it.TargetExplicit && it.Manual?.HasAny != true
+            && (it.Strategy == ColorStrategy.CarryIcc || (it.Strategy == ColorStrategy.Recommended && it.CarryScope != CarryScope.None)))
+            return new ColorTransformPlan { Action = ColorAction.CarryIcc, RawSourceIcc = profile,
+                OutBitDepth = it.TargetBitDepth, Reason = "preserve the original ICC without converting samples" };
+        if (!it.SourceIccIsExplicit && !it.TargetExplicit && it.Manual?.HasAny != true
+            && !it.GainMapRequested && !it.ToneMapRequested && !it.AllowGamutCompression
+            && (it.Strategy is ColorStrategy.Recommended or ColorStrategy.BakeCicpOnly))
+        {
+            const string warning = "embedded ICC requires an unavailable color route; continuing without a color-space claim";
+            return new ColorTransformPlan
+            {
+                Action = ColorAction.None, IccSafetyCode = "ICC_SOURCE_UNDESCRIBED", Reason = warning,
+                Verdict = new ColorVerdict
+                {
+                    Kind = VerdictKind.ProceedWithDegradation, Action = ColorAction.None, Reason = warning,
+                    Degradations = new[] { new ColorDegradation(DegradationCodes.SourceIccUnverified, warning) }
+                }
+            };
+        }
+        return new ColorTransformPlan { Action = ColorAction.Reject, IccSafetyCode = "ICC_CMS_REQUIRED",
+            Reason = "the requested color conversion or ICC carry requires a route that can execute this profile; no matrix approximation was used" };
+    }
+
     /// <summary>按策略产出计划（管线唯一入口）。</summary>
     public static ColorTransformPlan Plan(ColorIntent it)
     {
         if (it == null) throw new ArgumentNullException(nameof(it));
         var pol = it.ToPolicy();
-        var p = PlanWithPolicy(it, pol);
+        bool keepUndescribedSource = it.DisputedColorWithoutReliableDescription && !it.TargetExplicit
+            && !it.GainMapRequested && !it.ToneMapRequested && it.OutMatrixMode == null;
+        ColorTransformPlan p;
+        if (keepUndescribedSource)
+        {
+            const string reason = "source color declaration is unreliable; keeping decoded samples without asserting a color space";
+            p = new ColorTransformPlan { Action = ColorAction.None, Reason = reason, DeclaredStrategy = it.Strategy,
+                EffectiveStrategy = it.Strategy, Verdict = new ColorVerdict { Kind = VerdictKind.ProceedWithDegradation,
+                    Action = ColorAction.None, Reason = reason, Degradations = new[] { new ColorDegradation(DegradationCodes.SourceIccUnverified, reason) } } };
+        }
+        else p = PlanIccSafety(it) ?? PlanWithPolicy(it, pol);
         // ── GainMap 请求位：**唯一装配点** ──
         // 放在这里而不是各个 PlanXxx 里，是因为本方法的返回分支很多（PlanFaithful / PlanCarry /
         // PlanCicpOnly / PlanManual / PlanRecommended，且各自还能 Reject 提前返回）——
@@ -39,6 +87,26 @@ public static partial class ColorMappingEngine
         // 计划层只负责**传递**这个位；「本次能否走 cjxl 出口」由路由层（`ColorEngineRouter.BlockReason`）
         // 与执行层（`RawColorPipeline` 的出口）各自显式判定，任一不满足都**显式失败**，不静默回退。
         p.ExternalEncoderExit = pol.ExternalEncoderExit;
+        p.TargetBitDepth = pol.TargetBitDepth;
+        if (keepUndescribedSource || p.IccSafetyCode != null || p.RawSourceIcc != null || p.IccCmsTransform != null)
+        {
+            // Safety plans omit unverified color labels, not the selected encoder or
+            // delivery precision. They must pass the same exit assembly as normal plans.
+            p.DeclaredStrategy = p.EffectiveStrategy = it.Strategy;
+            p.CodecLoss = it.InferCodecLoss();
+            // Source uncertainty does not waive an explicit output-matrix contract.
+            // Keep auto's staged safety verdict; explicit modes need the final action/reason.
+            bool alreadyRejected = p.Action == ColorAction.Reject;
+            ApplyExplicitOutMatrix(p, it, pol);
+            // A newly rejected matrix contract must use the matrix-specific queue terminal path.
+            if (!alreadyRejected && p.Action == ColorAction.Reject && p.OutMatrixVerdict == OutMatrixCapability.Rejected)
+                p.IccSafetyCode = null;
+            if (!string.IsNullOrWhiteSpace(it.OutMatrixMode))
+                p.Verdict = ProjectVerdict(p, pol, it);
+            else
+                p.Verdict ??= ProjectVerdict(p, pol, it);
+            return p;
+        }
         // ── 显式输出矩阵模式（C-PLAN-EXT@1 / C-CAPS@1 / C-REPORT@1，color-matrix-options 计划）：
         //    **唯一判定与覆盖点**。auto（null）直接早退 ⇒ 全链路与改造前逐字节同路径（CM-REQ-08）；
         //    显式值在 MatrixTokenFor 三处推导（ColorTransformPlan 的 SetLabelsFrom / 本文件的
@@ -90,9 +158,9 @@ public static partial class ColorMappingEngine
     {
         var staged = p.Verdict;
         var degs = CollectDegradations(p, pol, it);
-        if (staged?.Degradations is { Count: > 0 })
+        if (p.Action != ColorAction.Reject && staged?.Degradations is { Count: > 0 })
         {
-            // 调用点（Reject 助手）确实登记了损失时**搬运**；当前恒空，保留以免将来被静默丢弃。
+            // Only completed degradations survive projection; a later contract rejection delivered nothing.
             for (int i = 0; i < staged.Degradations.Count; i++) degs.Add(staged.Degradations[i]);
         }
         return new ColorVerdict
@@ -438,23 +506,8 @@ public static partial class ColorMappingEngine
                       + "该开关仅在与 --color-tone-map 同用时被消费）";
         }
 
-        // ── 2026-11-10（R4）：用户显式 --color-matrix 的「无承载」点名 ──
-        // matrix 的文档语义是**输入矩阵声明**（FfmpegOptions.cs:204，help 原话「YUV→RGB 解读」用）。
-        // 引擎路径的输入恒为**已解码 RGB 像素**（Ultra HDR/RAW 中间件的 gbrpf32le PFM、或容器解码的
-        // rgb48）——整个链路无 YUV 中转 ⇒ 矩阵声明没有任何作用对象；输出侧矩阵（OutMatrix）由
-        // 目标 primaries 推导（MatrixTokenFor），从不读用户值。Ultra HDR 中间件路径的输入声明还在
-        // FfmpegCommandBuilder.cs:1017 写死 bt709，用户值被整体绕过。
-        // 24 格 D 组实测（D12/D13/D14，2026-11-09）：`--color-matrix bt2020nc/bt709` 在引擎格零消费、
-        // 决策文案零提及（D12 产物逐字节 = avif-def）——静默无效正是本仓反复禁止的「看起来配置过」。
-        // 判据通道：用户值经 it.Manual.Matrix（ManualIntent.Create 的 enabled=UseAdvancedColorParameters）
-        // 进入规划层。引擎路径上 matrix 恒无承载（含 Map 格——输出矩阵同样由 primaries 推导），
-        // 故只要值在位即点名，句式对齐上方 hdr-peak 点名。
-        // ⚠ 已知缺口：CLI 裸 `--color-matrix`（未开高级色彩 ⇒ UseAdvancedColorParameters=false ⇒
-        //   Manual=null）拿不到该值，本处点不到名——根因在装配层防呆契约与 CLI 无高级开关，
-        //   ColorIntentFactory/CliParser 均不在 R4 授权面，如实上报不改。
-        if (it.Manual?.FieldsFromUi == true && !string.IsNullOrWhiteSpace(it.Manual.Matrix))
-            p.Reason += $"｜用户 --color-matrix={it.Manual.Matrix} 在本次交付中无承载"
-                      + "（引擎路径输入为已解码 RGB 像素，无 YUV 矩阵语义；输出矩阵由目标 primaries 推导）";
+        // The decoder resolves --color-matrix against its actual input layout.
+        // An RGB handoff to the color engine does not imply that decode ignored the request.
 
         p.CodecLoss = CodecLossOf(pol.Format.Format, it.TargetLossless);
         EnforceContainerAnnotationRules(p, pol.Format, pol.ExternalEncoderExit);
@@ -599,8 +652,10 @@ public static partial class ColorMappingEngine
         //   exiftool 不可用 / 读取失败时，源描述符可能只是按惯例假定的 sRGB；继续走下面
         //   “源无 ICC”分支会生成一张标准 sRGB ICC，等于把“没读到”伪装成“源就是 sRGB”。
         //   维护者定案（2026-11-18）：宁可产出**无标注**结果并条目标黄，也不让坏 profile
-        //   把整条任务打停。⇒ 本分支直接返回 None、不附 ICC、不写 CICP，警告由 Verdict 携带。
-        if (it.SourceIccStatus == SourceIccStatus.Unreadable)
+        //   把整条任务打停。没有可信替代时保留无标注输出；若有可验证的源 CICP，
+        //   继续走下方的 CICP/等价 ICC 描述，但不承诺携带读不出的原 ICC。
+        if (it.SourceIccStatus == SourceIccStatus.Unreadable
+            && (src.Confidence < EquivalenceTolerances.MinConfidenceForMapping || !src.IsCicpNameable))
         {
             p.Action = ColorAction.None;
             p.Backend = ColorBackend.None;
@@ -1929,11 +1984,12 @@ public static partial class ColorMappingEngine
     ///       判定格为死格、编码只为表完整性；jxr 经引擎 JxrEncApp 出口可达；</item>
     /// </list>
     /// <para>
-    /// 已知边界（三参签名的维度上限）：avif × rgb 按 <b>libaom-av1</b>（默认编码器）口径判
-    /// Carried（nclx matrix=0 + gbrp 直喂语义自洽，T1 §4 表「可写」）；用户显式选 libsvtav1 时
-    /// 它无 gbrp 支持位（T1 §1 表：rgb 拒绝）——该收窄需要编码器名维度（backend 枚举装不下），
-    /// 由出口层既有像素格式边界族（ImageEncoderArgs.cs:1019 libsvtav1 边界）与 T6 落地点承接；
-    /// 本函数不做二次判定（单一真值）。同理，Requires-PixFmt-Switch 的「引擎通路 vs legacy 通路」
+    /// 已知边界（编码器名维度）：avif × rgb 在 encoder=null / libaom-av1 时按 <b>libaom-av1</b>（默认编码器）口径判
+    /// Carried（nclx matrix=0 + gbrp 直喂语义自洽，T1 §4 表「可写」）。2026-11-23（G1）起本函数带可选第四参
+    /// <c>encoder</c>：编码器名含 "libsvt"（libsvtav1 无 gbrp 支持位，T1 §1 表：rgb 拒绝）⇒ Rejected，供 GUI 下拉
+    /// 按编码器过滤；口径与出口层 ImageEncoderArgs 的 libsvtav1×rgb block 一致，出口层 block 仍保留为防线
+    /// （预设/命令行回放不经 GUI）。encoder=null 保持旧行为（旧三参调用与既有判定表不变）。nvenc/qsv/amf 无实机证据，
+    /// 本函数不对其下结论。同理，Requires-PixFmt-Switch 的「引擎通路 vs legacy 通路」
     /// 区分（legacy 的 MapPixFmt 恒显式 YUV pix_fmt、无孤立标签问题）也由 T6 落地点按出口维度处理。
     /// </para>
     /// <para>
@@ -1946,7 +2002,7 @@ public static partial class ColorMappingEngine
     /// <param name="fmt">目标格式（如 "jpg" / "webp" / "avif" / "jxl"；大小写不敏感）。</param>
     /// <param name="token">输出矩阵 token（C-TOKEN@1 域的**归一后**成员；null/空白 = auto）。</param>
     /// <param name="backend">编码后端（决定 jpg 的 mjpeg/cjpegli 与 avif 的 ffmpeg 编码器口径）。</param>
-    public static OutMatrixCapability ResolveOutMatrixCapability(string fmt, string? token, EncoderBackend backend)
+    public static OutMatrixCapability ResolveOutMatrixCapability(string fmt, string? token, EncoderBackend backend, string? encoder = null)
     {
         if (string.IsNullOrWhiteSpace(token)) return OutMatrixCapability.NotApplicable;   // auto：无判定意义
         var t = token.Trim();
@@ -1996,7 +2052,7 @@ public static partial class ColorMappingEngine
                 //（AV1/AVIF 无 XYB 概念）；bt709/bt470bg/smpte170m/smpte240m/bt2020nc = Carried
                 //（C7：nclx 枚举 1/5/6/7/9 可写 + 输出侧 -colorspace 驱动转换；
                 // Requires-PixFmt-Switch 由 T6 出口并入落地）。
-                if (t == "rgb") return OutMatrixCapability.Carried;
+                if (t == "rgb") return (encoder ?? "").Contains("libsvt", StringComparison.OrdinalIgnoreCase) ? OutMatrixCapability.Rejected : OutMatrixCapability.Carried;   // 2026-11-23 G1：libsvtav1 无 gbrp（出口层 ImageEncoderArgs 已 block），GUI 同口径不再提供 rgb 档；encoder=null 保持旧行为
                 if (t is "ycgco" or "fcc" or "xyb") return OutMatrixCapability.Rejected;
                 return OutMatrixCapability.Carried;        // 601/709 族
             case "jxl":

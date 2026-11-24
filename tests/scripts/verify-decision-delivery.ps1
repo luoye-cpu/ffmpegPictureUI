@@ -33,6 +33,11 @@ $out = "$val/decision-delivery"
 #   见 `docs/HANDOVER.md` 的宿主限制一节）⇒ 不加这句会让门禁**跑到一半崩掉**、报不出 PASS/FAIL 汇总。
 if (Test-Path $out) { Remove-Item -LiteralPath $out -Recurse -Force -ErrorAction SilentlyContinue }
 New-Item -ItemType Directory -Force -Path $out | Out-Null
+# 单条裸跑也不能落到系统 TEMP：产品 GIF→AVIF 两步法与全部子进程共用本轮工作区 scratch。
+$scratch = "$out/_scratch"
+New-Item -ItemType Directory -Force -Path $scratch | Out-Null
+$env:TMP = $scratch; $env:TEMP = $scratch; $env:TMPDIR = $scratch
+$env:FFMPEGGUI_RAMDISK = $scratch
 
 # 取子进程 stdout 一律走 Start-Process（`& exe` 在部分宿主静默失败：输出为空 ⇒ 假红/空值）
 function Exec([string]$file, [string]$argStr){
@@ -142,6 +147,31 @@ function HasIcc([string]$path) {
     $t = ExifTool $path @('-s', '-ICC_Profile:ProfileClass')
     return ($t -match 'Display Device Profile')
 }
+$generatedIccEvent = '[icc] Generated ICC v4.4 delivered; output profile bytes independently verified.'
+$originalIccEvent = '[icc] Original source ICC preserved byte-exact; output profile bytes independently verified.'
+$skipSourceIccEvent = '[exiftool] 用户已指定色彩空间，跳过源文件 ICC Profile 恢复（避免覆盖用户选择）'
+$tiffVerifyIccEvent = '[tiff] 校验目标 ICC（Display P3），以产物 profile 字节为交付依据'
+function Test-IccDeliveryLog([string]$log, [string]$delivery, [string]$preceding = '', [string]$forbidden = '') {
+    $lines = $log -split '\r?\n'
+    $hits = @($lines | Where-Object { $_ -ceq $delivery })
+    if ($hits.Count -ne 1 -or ($forbidden -and $lines -ccontains $forbidden)) { return $false }
+    if (-not $preceding) { return $true }
+    $before = @($lines | Where-Object { $_ -ceq $preceding })
+    return ($before.Count -eq 1 -and [array]::IndexOf($lines, $preceding) -lt [array]::IndexOf($lines, $delivery))
+}
+function Read-IccSha256([string]$path, [string]$tag) {
+    $rawIcc = "$out/$tag.icc"
+    $readError = "$out/$tag.icc.err"
+    foreach ($delay in @(250, 500, 800, 1000, 1200, 1500)) {
+        $extract = Start-Process -FilePath $ex -ArgumentList @('-b', '-icc_profile', "`"$path`"") -NoNewWindow -Wait -PassThru `
+            -RedirectStandardOutput $rawIcc -RedirectStandardError $readError
+        if ($extract.ExitCode -eq 0 -and (Test-Path -LiteralPath $rawIcc) -and (Get-Item -LiteralPath $rawIcc).Length -ge 132) {
+            return (Get-FileHash -LiteralPath $rawIcc -Algorithm SHA256).Hash
+        }
+        Start-Sleep -Milliseconds $delay
+    }
+    return $null
+}
 function IccRedChroma([string]$path) {
     $t = ExifTool $path @('-a', '-s', '-ICC_Profile:ChromaticityChannel1')
     if ($t -match '([0-9.]+)\s+([0-9.]+)') { return @([double]$matches[1], [double]$matches[2]) }
@@ -192,13 +222,8 @@ else {
         # Display P3 红原色 x=0.680；sRGB=0.640；BT.2020=0.708 —— 三者必须能区分开
         CK ([math]::Abs($c[0] - 0.680) -lt 0.005) "p3/webp 的 ICC 量出来就是 Display P3（红 x=$($c[0])，非 sRGB 0.640/非 2020 0.708）"
     } else { CK $false "p3/webp 的 ICC 色度读不出（后置嵌入的 ICC 无效？）" }
-    # 出口语义必须是 P3：无标注的 webp 会被按 sRGB 解读 ⇒ 上面两条就是全部证据
-    # ⚠ 2026-10-14 重定（不是放宽）：携带格写入 ICC 的**机制**变了 —— 源 ICC 由元数据恢复回带，
-    #   生成 ICC 那步被"先读回产物"的守卫挡下（见 QueueProcessor.EmbedDroppedFilterIccAsync），
-    #   故日志改打 `[color] artifact already carries the source ICC …`。本条只证明"非静默"，
-    #   **真正判交付对错的是上面 :168 的 P3 色度断言**（字节级，与哪一步写入无关）；
-    #   回带失败时仍会落回"已嵌入出口语义 ICC"那条路径 ⇒ 三个合法出口都要认，缺一即判红。
-    CK ($r.log -match '已嵌入出口语义 ICC|已嵌入目标 ICC|already carries the source ICC') "p3/webp 日志写明后置嵌入这一步真的发生了"
+    CK ($r.code -eq 0 -and (Test-IccDeliveryLog $r.log $generatedIccEvent)) `
+       'p3/webp 成功且唯一记录生成 ICC v4.4 交付与回读校验'
 }
 
 # ── ② sRGB 源 → WebP：出口语义 = sRGB ⇒ 未标注即正确，不该多嵌一张无用 ICC ──
@@ -281,7 +306,8 @@ else {
         $c7 = IccRedChroma $r7.file.FullName
         # 交付端事实：专用通路也必须把 ICC 补上（或至少显式报告它没补）——绝不能静默交个无标注的 P3 webp
         CK ($c7 -and [math]::Abs($c7[0] - 0.680) -lt 0.005) "P3 JXL→webp 产物带 Display P3 ICC（红 x=$($c7[0])）"
-        CK ($r7.log -match '已嵌入出口语义 ICC|\[色彩后置\] ⚠') "P3 JXL→webp 日志要么真补了 ICC、要么显式告警（不静默）"
+        CK ($r7.code -eq 0 -and (Test-IccDeliveryLog $r7.log $generatedIccEvent)) `
+           'P3 JXL→webp 成功且唯一记录生成 ICC v4.4 交付与回读校验'
     }
 }
 
@@ -306,7 +332,8 @@ else {
             SKIP "⑫ 内层：JXL→TIFF 未产出（$($(($r12.log -split "`n") | Select-Object -Last 2) -join ' | ')）⇒ 未评估（以下 3 条断言未运行）" 3
         } else {
             CK ($r12.log -notmatch '裁决点未参与') "⑫ 走的确实是**已登记**通路（否则链尾不该做任何色彩后置）"
-            CK ($r12.log -match '\[tiff\] 已嵌入目标色彩空间 ICC') "⑫ 链尾交付了 TIFF 目标 ICC 这一步（抽公共入口前它只在主分支跑 ⇒ 判据两份）"
+            CK ($r12.code -eq 0 -and (Test-IccDeliveryLog $r12.log $generatedIccEvent $tiffVerifyIccEvent)) `
+               '⑫ TIFF 链尾验证 Display P3 后成功交付生成 ICC v4.4'
             $c12 = IccRedChroma $r12.file.FullName
             CK ($c12 -and [math]::Abs($c12[0] - 0.680) -lt 0.005) "⑫ 按度量复核：TIFF 内 ICC 确实是 Display P3（红 x=$($c12[0])）"
         }
@@ -357,22 +384,37 @@ if ($r.file -and $r7.file) {
 # 动画 AVIF → WebP 走 ProcessAvifToGifWebpAsync 两步法：它的命令行是自建 filter_complex，
 # 不是裁决点产的 ⇒ 拿“按源文件推断的出口语义”去给它嵌 ICC 就是在赌（P7d 证明赌不赢）。
 # 允许的唯一行为：显式记录“未参与”；偷偷嵌了或静默都不行。
-# ⚠ 素材必须是**真 ≥2 帧动画**（2026-09-27 实测教训）：本段断言的是"选流没退化成单帧副本"，
-#   而 `results/` 是**共享产物目录** —— 色彩矩阵跑完会往里放**静帧** `color/d2_p3.avif`(>3 KB)，
-#   旧写法"枚举到的第一个算谁是谁"于是随别的门禁跑没跑而翻转 ⇒ 本段 4 条红全与产品无关（假红，
-#   且 `裁决点未参与`/`没嵌 ICC` 两条负断言也会被静帧的不同分支翻转）。
-#   ⇒ 逐候选量帧数、只接受 ≥2 帧者，并把选中的素材打进日志（读数可追溯）。
-$avifCands = @(Get-ChildItem "$root/tests/output/results" -Recurse -Include *.avif -EA SilentlyContinue |
-               Where-Object { $_.Length -gt 3000 })
-$avif = $null; $avifFrames = -1
-foreach ($c in $avifCands) {
-    $cn = ProbeInts (ExecOut $fp "-v error -select_streams v -count_frames -show_entries stream=nb_read_frames -of csv=p=0 `"$($c.FullName)`"")
-    $cm = if ($null -eq $cn) { -1 } else { (@($cn) | Measure-Object -Maximum).Maximum }
-    if ($cm -ge 2) { $avif = $c; $avifFrames = $cm; break }
+# 2026-11-24：不再扫描共享 results/ 里碰巧存在的 AVIF。通用 avifenc 序列虽能被 avifdec 识别，
+# 本仓 ffprobe 却只看到 1 帧，不能覆盖产品选流。这里用有限 GIF → 产品自己的 GIF→AVIF 通路
+# 现场造兼容素材；颜色与 alpha 都应有 1 帧预览 + 4 帧动画。缺素材是门禁失败，不再记 SKIP。
+$animFix = "$out/avifanim_fixture"
+$animGifDir = "$animFix/gif"; $animAvifDir = "$animFix/avif"; $animTmp = "$animFix/tmp"
+New-Item -ItemType Directory -Force -Path $animGifDir,$animAvifDir,$animTmp | Out-Null
+$env:TMP = $animTmp; $env:TEMP = $animTmp; $env:TMPDIR = $animTmp; $env:FFMPEGGUI_RAMDISK = $animTmp
+$animGraph = 'split[a][b];[a]palettegen=stats_mode=full[p];[b][p]paletteuse'
+$mkAnim = Start-Process -FilePath $ff -ArgumentList @('-y','-hide_banner','-loglevel','error',
+    '-f','lavfi','-i','testsrc2=s=64x64:r=2:duration=2','-filter_complex',$animGraph,
+    '-frames:v','4','-loop','0',"$animGifDir/source.gif") -NoNewWindow -Wait -PassThru `
+    -RedirectStandardOutput "$animFix/make-gif.out" -RedirectStandardError "$animFix/make-gif.err"
+$madeAnim = $null
+if ($mkAnim.ExitCode -eq 0 -and (Test-Path "$animGifDir/source.gif")) {
+    $mkAvif = Start-Process -FilePath $exe -ArgumentList @('--headless','-i',"$animGifDir/source.gif",
+        '--format','avif','--output',$animAvifDir,'--log-level','Debug') -NoNewWindow -Wait -PassThru `
+        -RedirectStandardOutput "$animFix/make-avif.out" -RedirectStandardError "$animFix/make-avif.err"
+    $madeAnim = Get-ChildItem $animAvifDir -Filter *.avif -EA SilentlyContinue | Select-Object -First 1
 }
-if (-not $avif) { SKIP "⑩：$($avifCands.Count) 个候选 AVIF 里没有一个 ≥2 帧动画 ⇒ 素材不可得，未评估（不拿静帧冒充动画素材）" 6 }
+$avif = $null; $avifFrames = -1
+if ($madeAnim) {
+    $cn = ProbeInts (ExecOut $fp "-v error -select_streams v -count_frames -show_entries stream=nb_read_frames -of csv=p=0 `"$($madeAnim.FullName)`"")
+    $cm = if ($null -eq $cn) { -1 } else { (@($cn) | Measure-Object -Maximum).Maximum }
+    if ($cm -ge 2) { $avif = $madeAnim; $avifFrames = $cm }
+}
+if (-not $avif) {
+    CK $false "⑩：自备动画 AVIF 失败（GIF exit=$($mkAnim.ExitCode)，产品产物=$([bool]$madeAnim)，最大帧数=$avifFrames）；不再用共享目录静帧冒充动画"
+    SKIP '⑩：自备素材不可用，后续 5 条选流/像素断言未执行' 5
+}
 else {
-    Write-Output "  （⑩ 素材：$($avif.Name)，源最大流 $avifFrames 帧，候选 $($avifCands.Count) 个）"
+    Write-Output "  （⑩ 自备素材：$($avif.FullName)，源最大流 $avifFrames 帧）"
     $r10 = RunCli 'avif_webp' $avif.FullName 'webp' @()
     if (-not $r10.file) {
         # 路径本身失败 ⇒ 本断言**无法评估**。绝不能因为“日志里没有嵌 ICC”就给绿灯——
@@ -425,7 +467,7 @@ else {
     }
 }
 
-# ── ⑪ 动画 + 真透明的两步法（P7g/P7h 回归锁；⑩ 的素材只有 2 流无 alpha，覆盖不到 hasAlpha 分支）──
+# ── ⑪ 动画 + 真透明的两步法（P7g/P7h 回归锁；⑩ 是不透明图案，本条锁真透明像素）──
 # 素材由**产品自己**生成：透明 GIF → GIF→AVIF(avifenc)。这一步同时是 P7h 的门：
 # avifenc 1.4.2 实测 `-j 1` 且 ≥4 帧 ⇒ 段错误(-1073741819)，而旧代码 Math.Max(1,Threads=0) 恒传 -j 1。
 $aa = "$out/animalpha"
@@ -725,7 +767,8 @@ if (-not (Test-Path $jxlinfo)) {
     }
 }
 
-# ── ⑭ 携带策略 + 用户指定目标空间 + **编码器丢弃 ICC 的容器** ⇒ 必须回带源 ICC ──
+# ── ⑭ 携带策略 + 显式目标 + 编码器丢弃 ICC：保留源色彩语义 ──
+#   引擎交付与源等价的标准 Display P3 ICC，直连通路逐字节保留原始 ICC。
 #   2026-09-26 实测缺陷的回归锁。修复前的形态：源挂 Display P3 ICC，跑
 #   `--color-strategy carry --color-space BT.2020` 出 webp ⇒ 产物 **96 B、抽不到任何 ICC（0 B）**，
 #   日志却写「用户已指定色彩空间，跳过源文件 ICC Profile 恢复」、裁决仍是 `Proceed`
@@ -749,9 +792,24 @@ foreach ($eng in @(@{ n = '引擎'; a = @('--color-engine', 'engine') }, @{ n = 
     $chr = if ($rc.file) { IccRedChroma $rc.file.FullName } else { $null }
     $cs = if ($chr) { "$($chr[0]),$($chr[1])" } else { '(读不到 ICC)' }
     CK ($chr -and $chrSrc -and [Math]::Abs($chr[0] - $chrSrc[0]) -le 1e-4 -and [Math]::Abs($chr[1] - $chrSrc[1]) -le 1e-4) `
-        ("⑭ " + $eng.n + " 通路：内嵌的就是**源** ICC（红原色 产物 $cs vs 源 $ss）")
-    CK ($rc.log -notmatch '跳过源文件 ICC Profile 恢复') `
-        ("⑭ " + $eng.n + " 通路：不得再写「跳过源 ICC 恢复」这种与产物状态矛盾的话")
+        ("⑭ " + $eng.n + " 通路：产物保留源红原色色度（产物 $cs vs 源 $ss）")
+    if ($eng.n -eq '引擎') {
+        $plan = @($rc.log -split '\r?\n' | Where-Object {
+            $_ -match '^\[色彩引擎\] 决策：CarryIcc .*源 ICC Display P3 .*已等价于标准空间 CICP:smpte432/iec61966-2-1，像素零改动；'
+        })
+        CK ($rc.code -eq 0 -and $plan.Count -eq 1 -and (Test-IccDeliveryLog $rc.log $generatedIccEvent $skipSourceIccEvent)) `
+            '⑭ 引擎通路：等价 Display P3 携带计划保留像素，源恢复略过后完成标准 ICC 回读校验'
+        $omitted = ($rc.log -split '\r?\n' | Where-Object { $_ -cne $generatedIccEvent }) -join "`n"
+        CK (-not (Test-IccDeliveryLog $omitted $generatedIccEvent $skipSourceIccEvent) -and
+            -not (Test-IccDeliveryLog $skipSourceIccEvent $generatedIccEvent $skipSourceIccEvent)) `
+            '⑭ 日志负控：删去交付事件或只有源恢复略过必须失败'
+    } else {
+        $srcHash = Read-IccSha256 $p3 'carry-source-readback'
+        $dstHash = if ($rc.file) { Read-IccSha256 $rc.file.FullName 'carry-legacy-readback' } else { $null }
+        CK ($rc.code -eq 0 -and $srcHash -and $srcHash -ceq $dstHash -and
+            (Test-IccDeliveryLog $rc.log $originalIccEvent '' $skipSourceIccEvent)) `
+            "⑭ 直连通路：唯一记录源 ICC 保留，独立二进制读取 SHA256 源=$srcHash 产物=$dstHash"
+    }
 }
 
 # ── ⑮ tonemap 链的 SDR 出口：链末**实际用的曲线**必须等于**产物标签兑现的曲线**（任务 #26②）──
@@ -805,8 +863,8 @@ if (-not $hdr15.file -or -not $chainT) {
 
 # ── ⑯ AVIF 出口位深 == **实际会跑的那个编码器**的能力（任务 #36）────────────────────────
 # 修复前实测（取证脚本 tests/output/t36/run_cells.ps1，本机 Release exe）：
-#   · CLI 的 --encoder 映射到 **EncoderBackend 枚举**（Ffmpeg/Cjpegli/Cjxl/...），
-#     全仓**没有任何入口**能把 ffmpeg 编码器名写进 options.Encoder ⇒ 命令行路径上它恒为 null；
+#   · 当时 CLI 的 --encoder 只映射到 **EncoderBackend 枚举**（Ffmpeg/Cjpegli/Cjxl/...），
+#     未选具体预设的路径 options.Encoder 为 null；现在 --preset 可选择具体编码器。
 #   · 旧的 AvifMaxBitDepth 用 `options.Encoder ?? ""` 做前缀匹配 ⇒ 空串落到 else 支 ⇒ 上限**恒 10**
 #     ⇒ `--bit-depth 12` 在裁决点被就地钳成 10（产物 pix_fmt=yuv420p10le），并播报
 #       「本工具对该容器实测可交付的上限 = 10bit」；
@@ -819,7 +877,8 @@ if (-not $hdr15.file -or -not $chainT) {
 #     ② 产品的真实交付（[cmd] 的 -pix_fmt + ffprobe 回读产物）；
 #     ③ 钳制**仍然活着**（16 ⇒ 必须落在实测上限并播报）——否则"把钳制整个删掉"也能骗过 ②。
 # ⚠ 本段刻意**不**用 ServiceProbe 读那个函数的返回值：那只能证明"代码里写了 12"，
-#   证明不了"产物是 12"。表①用的是 ffmpeg 自报表（外部权威），与产品实现无关。
+#   证明不了"产物是 12"。自报表只证明输入存储格式；下面 libaom 的实际产物才证明 12-bit 交付。
+#   NVENC 自报 p012le 却实物只交付 10-bit 的回归由 ⑯b 锁住，不把自报表当硬件交付上限。
 function Depth-FromPixFmtToken([string]$name) {
     # yuv420p12le / gbrp12le / p012le / yuv444p12msble ⇒ 12；p010le ⇒ 10；yuv420p / nv12 ⇒ 8
     $m = [regex]::Match($name, 'p(\d{2,3})[a-z]*$')
@@ -914,6 +973,70 @@ CK ($uiTernary.Count -eq 0) `
 CK ($ownTable.Count -le 2) `
    ('⑯ 结构锁参考读数：ImageEncoderArgs 里按 libaom/av1_nvenc 前缀分类的位置 = ' + $ownTable.Count +
     ' 处（应为 ClassifyAvifBackend 内部那两处；本条只登记规模，超了说明有人又抄了一份前缀表）')
+
+# ── ⑯b NVENC 显式 12-bit：无 GPU 也必须由产品预检诚实拒绝，不能编码后静默成功 ──
+# p012le 是编码器可接受的输入存储格式；2026-11-21 RTX4060 实物却只交付 10-bit AV1。
+# 三条产品路径必须命中同一位深合同，不接受 GPU 不可用/编码失败冒充正确预检。
+$maxBody = [regex]::Match($ieaSrc, 'public static int AvifMaxBitDepthForEncoder\(string\? encoder\)\s*=>\s*ClassifyAvifBackend\(encoder\)\s*switch\s*\{(?<body>[^}]+)\}').Groups['body'].Value
+CK ($maxBody -match 'AvifBackend\.Libaom\s*=>\s*12' -and $maxBody -match '_\s*=>\s*10' -and $maxBody -notmatch 'Nvenc') `
+   '⑯b 单一位深上限保留 libaom/default 12，NVENC 随其余编码器保守取 10；不按输入格式名承诺 AV1 位深'
+$nvencSettings = "$out/d16b-nvenc-settings.json"
+[IO.File]::WriteAllText($nvencSettings, '{}')
+foreach ($mode in @('engine','legacy','auto')) {
+    $tag = "d16b_nvenc12_$mode"
+    $eventsPath = "$out/$tag.jsonl"
+    $nv = RunAvif $tag @('--preset','🚀 AVIF NVENC — 平衡 (p4, AQ=8, 4:2:0 10-bit)',
+        '--settings',$nvencSettings,'--bit-depth','12','--chroma','4:2:0','--color-engine',$mode,
+        '--color-range','auto','--color-out-matrix','auto','--log-format','JsonLines','--log-file',$eventsPath)
+    $events = @(); $eventsRead = $false
+    try {
+        $events = @(Get-Content -LiteralPath $eventsPath -ErrorAction Stop | Where-Object { $_.Trim() } |
+            ForEach-Object { $_ | ConvertFrom-Json -ErrorAction Stop })
+        $eventsRead = $true
+    } catch { Write-Output "  NVENC $mode JSONL unreadable: $_" }
+    $completed = @($events | Where-Object { $_.c -eq 'item_completed' })
+    $reason = @($events | Where-Object { $_.c -eq 'item_log' -and $_.m -match '^\[color-contract\] COLOR_BIT_DEPTH_REJECTED:' })
+    $products = @(Get-ChildItem -LiteralPath "$out/$tag" -File -Recurse -ErrorAction SilentlyContinue)
+    CK ($eventsRead -and $nv.code -eq 1 -and $completed.Count -eq 1 -and $completed[0].code -eq 91) `
+       "⑯b NVENC12/$mode：进程1、恰一任务91，GPU 可用性不影响位深预检"
+    CK ($reason.Count -eq 1 -and $reason[0].m -match 'requested 12-bit' -and $reason[0].m -match 'maximum is 10-bit') `
+       "⑯b NVENC12/$mode：唯一稳定 COLOR_BIT_DEPTH_REJECTED 说明请求12/上限10"
+    CK (-not $nv.file -and $products.Count -eq 0) "⑯b NVENC12/$mode：零输出产物，不接受静默10-bit成功"
+    $encodingStart = '(?im)\[cmd\]\s+ffmpeg\b|\bffmpeg\b[^\r\n]*-c:v\s+av1_nvenc\b|\bavifenc\s+--depth\b|\bStream mapping:|\bOutput #\d+,\s*avif\b'
+    $encoderEvents = @($events | Where-Object {
+        ($_.c -eq 'item_log' -and $_.m -match $encodingStart) -or $_.c -eq 'item_progress'
+    })
+    CK ($eventsRead -and $encoderEvents.Count -eq 0 -and $nv.log -notmatch $encodingStart) `
+       "⑯b NVENC12/$mode：预检拒绝前后均无启动编码的命令、流或进度事件"
+}
+
+# ── ⑯c libsvtav1 显式 12-bit：软件编码器在场，能直接区分「预检拒绝」与「旧 Math.Min 静默交付 10-bit」──
+# 纯函数 avifcaps 只证明拒绝函数本身；本条走真实 engine CLI、预设和队列，锁 ValidateAvifRequestedBitDepth 的接线。
+# 去掉队列预检的变异对照应改为进程成功并产出 10-bit，而不是用“方法不存在”冒充旧行为红。
+$svtTag = 'd16c_svt12_engine'; $svtEventsPath = "$out/$svtTag.jsonl"
+$svt = RunAvif $svtTag @('--preset','🚀 AVIF SVT — 平衡 (preset 7, CRF 32, 4:2:0 10-bit)',
+    '--settings',$nvencSettings,'--bit-depth','12','--chroma','4:2:0','--color-engine','engine',
+    '--color-range','auto','--color-out-matrix','auto','--log-format','JsonLines','--log-file',$svtEventsPath)
+$svtEvents = @(); $svtEventsRead = $false
+try {
+    $svtEvents = @(Get-Content -LiteralPath $svtEventsPath -ErrorAction Stop | Where-Object { $_.Trim() } |
+        ForEach-Object { $_ | ConvertFrom-Json -ErrorAction Stop })
+    $svtEventsRead = $true
+} catch { Write-Output "  SVT engine JSONL unreadable: $_" }
+$svtCompleted = @($svtEvents | Where-Object { $_.c -eq 'item_completed' })
+$svtReason = @($svtEvents | Where-Object { $_.c -eq 'item_log' -and $_.m -match '^\[color-contract\] COLOR_BIT_DEPTH_REJECTED:' })
+$svtProducts = @(Get-ChildItem -LiteralPath "$out/$svtTag" -File -Recurse -ErrorAction SilentlyContinue)
+CK ($svtEventsRead -and $svt.code -eq 1 -and $svtCompleted.Count -eq 1 -and $svtCompleted[0].code -eq 91) `
+   '⑯c SVT12/engine：真实 CLI 进程1、恰一任务91；不是纯函数孤证'
+CK ($svtReason.Count -eq 1 -and $svtReason[0].m -match 'requested 12-bit' -and $svtReason[0].m -match 'maximum is 10-bit') `
+   '⑯c SVT12/engine：唯一稳定拒绝原因点名请求12/上限10'
+CK (-not $svt.file -and $svtProducts.Count -eq 0) '⑯c SVT12/engine：零输出产物，不接受软件编码器静默降到10-bit成功'
+$svtEncodingStart = '(?im)\[cmd\]\s+ffmpeg\b|\bffmpeg\b[^\r\n]*-c:v\s+libsvtav1\b|\bavifenc\s+--depth\b|\bStream mapping:|\bOutput #\d+,\s*avif\b'
+$svtEncoderEvents = @($svtEvents | Where-Object {
+    ($_.c -eq 'item_log' -and $_.m -match $svtEncodingStart) -or $_.c -eq 'item_progress'
+})
+CK ($svtEventsRead -and $svtEncoderEvents.Count -eq 0 -and $svt.log -notmatch $svtEncodingStart) `
+   '⑯c SVT12/engine：拒绝发生在任何编码命令、流或进度事件之前'
 
 # ── ⑰ HDR 源 → AVIF + 显式广色域目标：#39 撤掉"avif+P3+高位深 ⇒ 8bit"特例之后的交付端锁 ──
 # 为什么单列一段（⑯ 覆盖不到）：⑯ 用的是 SDR 源，走的是"目标色域转换"链；而 HDR 源在

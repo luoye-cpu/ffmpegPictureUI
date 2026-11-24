@@ -27,6 +27,12 @@ $ff = "$root/publish/PLAN/ffmpeg-full/ffmpeg.exe"   # MeanY 要跑 signalstats�
 # (8) 段自备 P3 ICC 素材要用 exiftool（提取 ICC）；生成逻辑与 caps 共用 `_lib-color-assets.ps1`。
 # ⚠ 不把它塞进下面的 `$need` 硬检查：缺它只该让 (8) 段转红，不该让整个脚本 exit 1（那会掩盖其余段的结论）。
 $et = "$root/publish/PLAN/exiftool/exiftool.exe"
+if (Test-Path -LiteralPath $et) {
+  # 独立读回与产品同口径：Windows 便携 ExifTool 的 Perl DLL 在 exiftool_files，
+  # 只设 WorkingDirectory 不足以让子进程装载 perl532.dll；缺失会把 PixelFormat/Orientation 折叠成空串假红。
+  $etDir = Split-Path -Parent $et
+  $env:PATH = (Join-Path $etDir 'exiftool_files') + ";$etDir;$env:PATH"
+}
 . "$root/tests/scripts/_lib-color-assets.ps1"
 $pr = "$root/tests/projects/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.exe"
 if (-not (Test-Path $pr)) { $pr = "$root/tests/projects/ServiceProbe/bin/Debug/net11.0/win-x64/ServiceProbe.exe" }
@@ -277,7 +283,7 @@ Write-Host "`n=== (8) 外部 ICC（--icc-file）：判定源色彩空间并真�
 # 本段的判据全是**可观测差异**，不靠"代码里写了"自证：
 #   ① 源无 ICC 无标签（sdr_plain.png）⇒ 引擎按惯例假定 sRGB ⇒ 与 sRGB 目标等价 ⇒ 直通（不改像素）；
 #   ② 同一输入 + `--icc-file p3.icc` ⇒ 源被改判为 Display P3（IccMetric）⇒ P3 ⊃ sRGB 越界 ⇒ Map（真转像素）；
-#   ③ 无效/不存在的 ICC ⇒ 不得被采信（回落惯例假定），也不得报"用了外部 ICC"。
+#   ③ 明示的外置 ICC 不存在 ⇒ 请求无法履行；与自动发现坏内嵌标签不同。
 # ⚠ 素材**自备**（2026-09-17 修「门禁依赖另一门禁的遗留产物」）：此前这里直接读 `verify-color-caps.ps1`
 #   的输出目录 ⇒ 干净 `tests/output` 上本段**必红**，而"单跑绿、全量红"极易被误判成**产品回归**
 #   （本轮实测踩到 73/1 的假红）。现在缺素材（或素材退化成 ≤200B）就**按同一机制自己生成**——
@@ -294,15 +300,16 @@ if ($p3len -le 200 -and (Test-Path $et)) {
 if ($p3len -gt 200) {
     $i0 = RunCli 'icc_off' $sdr 'png' ($Q100 + @('--color-space', 'sRGB') + $ENG)
     $i1 = RunCli 'icc_on'  $sdr 'png' ($Q100 + @('--color-space', 'sRGB', '--icc-file', $p3icc) + $ENG)
-    $i2 = RunCli 'icc_bad' $sdr 'png' ($Q100 + @('--color-space', 'sRGB', '--icc-file', "$out/_not_an_icc.icc") + $ENG)
-    CK ($i0.file -and $i1.file -and $i2.file) "(8) 三路都有产物（无 ICC / 有效 ICC / 无效 ICC）"
+    $i2 = RunCli 'icc_bad' $sdr 'png' ($Q100 + @('--color-space', 'sRGB', '--icc-file', "$out/_not_an_icc.icc", '--log-format', 'JsonLines') + $ENG)
+    CK ($i0.code -eq 0 -and $i1.code -eq 0 -and $i0.file -and $i1.file) "(8) 无外置 ICC 与有效外置 ICC 均正常产出"
     CK ($i0.log -match '源=目标（矩阵与曲线等价）') "(8) 无 --icc-file：源按惯例假定 sRGB ⇒ 与 sRGB 目标等价 ⇒ 直通"
     CK ($i1.log -match '决策：Map') "(8) --icc-file=p3.icc ⇒ 源改判为 P3 ⇒ 走 Map（像素真被转换）"
     CK ($i1.log -match '源色域超出目标') "(8) 决策理由含「源色域超出目标」（P3 ⊃ sRGB）—— 外部 ICC 被真正消费"
     CK ($i1.log -match '源=.*\[--icc-file\]') `
        "(8) 引擎日志写明源描述符来自外部 ICC（$([regex]::Match($i1.log, '源=[^\r\n]*').Value)）"
-    CK ($i2.log -match '源=目标（矩阵与曲线等价）' -and $i2.log -notmatch '\[--icc-file\]') `
-       "(8) 无效/不存在的 ICC 不被采信（回落惯例假定，且不冒认用了外部 ICC）"
+    $terminal = @($i2.log -split '\r?\n' | Where-Object { $_ -match '^\{' } | ForEach-Object { ConvertFrom-Json $_ } | Where-Object c -eq 'item_completed')
+    CK ($i2.code -eq 1 -and $terminal.Count -eq 1 -and $terminal[0].code -eq 91 -and !$i2.file -and $i2.log -match 'ICC_EXPLICIT_INVALID') `
+       "(8) 明示的外置 ICC 不存在：报告请求无法履行，不伪报已按该 ICC 转换"
     if ($i0.file -and $i1.file) {
         $ps = PixelPsnr $i0.file.FullName $i1.file.FullName '55'
         $m = [regex]::Match($ps, 'psnr=([0-9.]+)dB')

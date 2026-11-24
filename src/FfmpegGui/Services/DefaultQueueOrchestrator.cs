@@ -25,7 +25,7 @@ namespace FfmpegGui.Services
                     ItemProgress?.Invoke(item);
 
                     // 当项达到终态时触发 ItemCompleted（去重，避免同一项重复回调）
-                    if (item.IsCompletedOrTerminal())
+                    if (item.TerminalReady && item.IsCompletedOrTerminal())
                     {
                         bool newlyCompleted;
                         lock (_completedItems)

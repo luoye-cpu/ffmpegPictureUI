@@ -1,5 +1,7 @@
 using System;
 using System.Buffers;
+using System.Buffers.Binary;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Text;
@@ -97,7 +99,16 @@ public static class RawColorPipeline
         var scaleFilter = options != null
             ? FfmpegCommandBuilder.BuildMaxDimensionScaleFilter(options, inputPath) : null;
         bool scaled = !string.IsNullOrEmpty(scaleFilter);
-        string vf = scaled ? $"format=rgb48le,{scaleFilter}" : "format=rgb48le";
+
+        var inputMatrix = FfmpegCommandBuilder.ResolveInputMatrix(options, inputPath);
+        if (inputMatrix.Use == FfmpegCommandBuilder.InputMatrixUse.Reject)
+            throw new FfmpegCommandBuilder.InputMatrixContractException(inputMatrix.Diagnostic!);
+        if (inputMatrix.Diagnostic != null) log?.Invoke(inputMatrix.Diagnostic + "\n");
+        string vf = inputMatrix.BuildFilter("rgb48le") ?? "format=rgb48le";
+        if (FfmpegCommandBuilder.PngNarrowRangeFilter(inputPath) is { } expandPng)
+            vf = expandPng + "," + vf;
+        if (scaled) vf += "," + scaleFilter;
+
         // 缩放后尺寸：**锁定的那条边恒 = MaxDimension**（同一滤镜语义，legacy 注释已实测“不漂移”），
         // 另一条只能由**解码产物长度**反推 —— `-2` 那条边由 ffmpeg 定偶数（实测 512x384 限 32 时
         // 纵向 `scale=-2:32` 得 42x32，按 512*32/384=42.67 自己算会取到 43/44），自己算必与它漂开。
@@ -187,7 +198,9 @@ public static class RawColorPipeline
                 ApplyMeasuredPeak(spec, st,
                     await MeasureContentPeakNitsAsync(tmp, w * h, spec, stSrc, ct).ConfigureAwait(false), log);
             bool out8 = plan.OutBitDepth == 8;          // 出口位深由 Plan 真驱动（解码固定 rgb48le，降位只发生在变换那一次遍历）
-            if (sched.Streaming)
+            if (plan.IccCmsTransform is { } cms)
+                await TransformIccAsync(tmp, tmpOut, w, h, out8, cms.Source, cms.Target, ct).ConfigureAwait(false);
+            else if (sched.Streaming)
                 await TransformStreamedAsync(tmp, tmpOut, spec, w, h, sched, ct, stSrc, stDst, out8).ConfigureAwait(false);
             else
                 await TransformWholeFrameAsync(tmp, tmpOut, spec, w, h, sched, ct, stSrc, stDst, out8).ConfigureAwait(false);
@@ -233,7 +246,8 @@ public static class RawColorPipeline
                 }
             }
 
-            // ── 编码：把变换后的 rgb48le 喂回去，色彩标注来自 Plan ──
+            // ── 编码：把变换后的 RGB 喂回去，色彩标注来自 Plan ──
+            ValidateEncodingContract(inputPath, outputPath, plan, options);
             // ⚠ **出口分叉点**（2026-09-17）：cjxl 出口只换这一段，解码段/变换段完全共用。
             var sw3 = Stopwatch.StartNew();
             int ec;
@@ -273,6 +287,9 @@ public static class RawColorPipeline
                         : plan.ExternalEncoderExit
                             ? $"{(outExt == "jxr" ? "JxrEncApp" : "cjxl")} 编码失败 (exit {ec})"
                             : $"编码失败 (exit {ec})");
+            if (!plan.ExternalEncoderExit)
+                EmitOutMatrixReport(outExt, plan, avifenc: plan.AvifSampleTransform16 || plan.AvifIccExit);
+            plan.MatrixDeliveryReported = plan.OutMatrixVerdict is OutMatrixCapability.Carried or OutMatrixCapability.Redundant;
             st.ElapsedMs = sw.ElapsedMilliseconds;
             return st;
         }
@@ -444,6 +461,92 @@ public static class RawColorPipeline
         finally { TryDelete(tmp); }
     }
 
+    /// <summary>Validate the effective H1 AVIF representation before decoding or creating output files.</summary>
+    internal static void ValidateEncodingContract(string inputPath, string outputPath, ColorTransformPlan plan,
+        Models.FfmpegOptions? options)
+    {
+        if (options == null || plan.GainMap || !string.Equals(Path.GetExtension(outputPath), ".avif", StringComparison.OrdinalIgnoreCase))
+            return;
+        if (plan.AvifSampleTransform16 || plan.AvifIccExit)
+            _ = ResolveAvifencColor(inputPath, plan, options);
+        else
+            ValidateFfmpegAvifColor(plan, options);
+    }
+
+    private readonly record struct AvifencColor(byte P, byte T, byte M, string Chroma, string Range);
+
+    private static AvifencColor ResolveAvifencColor(string inputPath, ColorTransformPlan plan, Models.FfmpegOptions o)
+    {
+        var range = ImageEncoderArgs.ExplicitRange(o);
+        var chroma = ImageEncoderArgs.ExplicitChroma(o);
+        var (p, t) = AvifCicp.FromOutputTokens(plan.OutPrimaries, plan.OutTransfer);
+        bool explicitMatrix = plan.OutMatrixVerdict == OutMatrixCapability.Carried && plan.OutMatrixMode != null;
+        var matrix = AvifCicp.MatrixCode(plan.OutMatrix);
+        if (explicitMatrix && matrix == null)
+            throw new ColorOutputContractException("COLOR_MATRIX_REJECTED", $"avifenc cannot encode matrix '{plan.OutMatrixMode}'.");
+
+        ValidateAvifRgbConstraints(plan, o, explicitMatrix && matrix != 0, explicitMatrix && matrix == 0);
+
+        byte m;
+        if (explicitMatrix)
+            m = matrix!.Value;
+        else if (o.Lossless)
+            m = 0; // preserve the historical lossless representation when no matrix was requested
+        else if (range == "tv" || chroma is "420" or "422")
+            // 2 is unspecified; libavif uses BT.601 coefficients for it. Do not use identity with subsampling.
+            m = matrix is > 0 ? matrix.Value : (byte)2;
+        else
+        {
+            // Preserve the automatic default (RGB sources use identity; otherwise use the plan's matrix).
+            bool srcRgb = ImageEncoderArgs.IsRgbFamilyPixFmt(FfmpegCommandBuilder.ProbeInputPixFmtForEngine(inputPath));
+            m = srcRgb ? (byte)0 : matrix ?? 0;
+        }
+
+        // libavif's PNG RGB -> YUV reformat rejects these values; a numeric H.273 code isn't proof of support.
+        if (m is 3 or 10 or 11 or 13 or 14 || (m == 8 && range == "tv") || (m == 12 && p == 2))
+            throw new ColorOutputContractException("COLOR_MATRIX_REJECTED",
+                $"avifenc cannot convert RGB to matrix code {m} with the selected range and primaries.");
+        return new AvifencColor(p, t, m, chroma ?? "444", range == "tv" ? "limited" : "full");
+    }
+
+    private static void ValidateAvifRgbConstraints(ColorTransformPlan plan, Models.FfmpegOptions o,
+        bool explicitYuv, bool explicitRgb)
+    {
+        bool requiresRgb = o.Lossless || plan.AvifSampleTransform16;
+        var representation = plan.AvifSampleTransform16 ? "16-bit Sample Transform" : o.Lossless ? "lossless RGB" : "RGB identity";
+        if (requiresRgb && explicitYuv)
+            throw new ColorOutputContractException("COLOR_MATRIX_REJECTED",
+                $"H1 AVIF {representation} cannot preserve RGB samples with matrix '{plan.OutMatrixMode}'; select rgb/auto or use lossy AVIF.");
+        if (!requiresRgb && !explicitRgb) return;
+        if (ImageEncoderArgs.ExplicitRange(o) == "tv")
+            throw new ColorOutputContractException("COLOR_RANGE_REJECTED",
+                $"H1 AVIF {representation} requires full (pc) range; limited (tv) would not preserve the RGB representation.");
+        if (ImageEncoderArgs.ExplicitChroma(o) is "420" or "422")
+            throw new ColorOutputContractException("COLOR_CHROMA_REJECTED",
+                $"H1 AVIF {representation} requires 4:4:4; cannot honor '{o.Chroma}'.");
+    }
+
+    internal static void ValidateLegacyAvifMatrix(Models.FfmpegOptions o)
+    {
+        if (!o.Format.Equals("avif", StringComparison.OrdinalIgnoreCase) || o.ColorOutMatrix == null) return;
+        var cap = ColorMappingEngine.ResolveOutMatrixCapability("avif", o.ColorOutMatrix, EncoderBackend.Ffmpeg);
+        if (cap != OutMatrixCapability.Carried) return; // Planner owns format-level rejection diagnostics.
+        ValidateFfmpegAvifColor(new ColorTransformPlan { OutMatrixMode = o.ColorOutMatrix, OutMatrixVerdict = cap }, o);
+    }
+
+    private static void ValidateFfmpegAvifColor(ColorTransformPlan plan, Models.FfmpegOptions o)
+    {
+        bool explicitRgb = plan.OutMatrixVerdict == OutMatrixCapability.Carried && plan.OutMatrixMode == "rgb";
+        bool explicitYuv = plan.OutMatrixVerdict == OutMatrixCapability.Carried && plan.OutMatrixMode is not (null or "rgb" or "xyb");
+        ValidateAvifRgbConstraints(plan, o, explicitYuv, explicitRgb);
+        if (explicitRgb && !ImageEncoderArgs.CanUseAvif16(o.Encoder))
+            throw new ColorOutputContractException("COLOR_MATRIX_REJECTED",
+                $"The selected AVIF encoder '{o.Encoder}' cannot carry H1 RGB identity; select libaom-av1.");
+        if (ImageEncoderArgs.ExplicitRange(o) != null && !ImageEncoderArgs.CanUseAvif16(o.Encoder))
+            throw new ColorOutputContractException("COLOR_RANGE_REJECTED",
+                $"Explicit H1 AVIF range has no verified carrier on '{o.Encoder}'; use libaom-av1 or auto range.");
+    }
+
     /// <summary>
     /// **AVIF 特殊出口**（2026-11-13 16-bit；2026-11-15 ICC 接线）：把引擎已变换的 raw 先落成
     /// PNG，再喂 <c>avifenc</c>。
@@ -458,10 +561,9 @@ public static class RawColorPipeline
     ///    <c>--cicp</c> 可在同一文件共存（E1 实测）。
     /// </para>
     /// <para>
-    /// 色彩参数：RGB 源 + <c>-y 444</c> ⇒ avifenc 产出 <c>gbrp</c> 基图，CICP 矩阵写 0
-    /// （identity）；非 RGB 源保留计划矩阵码。CICP 无法命名时写 <c>2/2/0</c>
-    /// （primaries/transfer unspecified、matrix identity），ICC 为唯一描述，不伪造 BT.709/BT.601。
-    /// ICC 由计划给出：源 ICC 走 v4.4 规范化；标准空间令牌走标准 ICC 生成。
+    /// avifenc 从 RGB PNG 直接按 <c>--cicp</c> 的矩阵和 <c>--range</c> 计算实际样本；
+    /// <c>-y</c> 决定采样格。矩阵 0 只与实际 RGB identity 4:4:4 表示搭配。
+    /// P/T 来自计划，不能命名时用 unspecified（2）；ICC 仍由计划给出。
     /// </para>
     /// 失败语义：任何一环失败都抛异常（调用方映射为任务失败），绝不回退 ffmpeg 丢 ICC/降 12-bit。
     /// </summary>
@@ -471,6 +573,7 @@ public static class RawColorPipeline
         if (options == null)
             throw new InvalidOperationException("[avif] AVIF 特殊出口需要 FfmpegOptions（质量/无损/线程）");
 
+        var color = ResolveAvifencColor(inputPath, plan, options);
         var avifenc = PlatformServices.ResolveAvifencPath();
         if (string.IsNullOrWhiteSpace(avifenc) || !File.Exists(avifenc))
             throw new InvalidOperationException(
@@ -495,7 +598,7 @@ public static class RawColorPipeline
         {
             // 引擎 raw = 变换后的最终像素；8-bit 交付走 rgb24，其余走 rgb48le 并落 16-bit PNG。
             bool png16 = plan.AvifSampleTransform16 || outBd > 8;
-            var pixIn = plan.OutBitDepth == 8 && outBd <= 8 ? "rgb24" : "rgb48le";
+            var pixIn = plan.OutBitDepth == 8 ? "rgb24" : "rgb48le";
             var pngPix = png16 ? "rgb48be" : "rgb24";
             var pngArgs = $"-y -hide_banner -loglevel error -f rawvideo -pix_fmt {pixIn} "
                         + $"-video_size {w}x{h} -i \"{rawPath}\" -pix_fmt {pngPix} -compression_level 0 \"{png}\"";
@@ -503,17 +606,6 @@ public static class RawColorPipeline
                 AppSettingsService.Current.FfmpegPath, pngArgs, log, ct).ConfigureAwait(false);
             if (pngExit != 0 || !File.Exists(png) || new FileInfo(png).Length == 0)
                 throw new InvalidOperationException($"[avif] PNG 中转失败 (ffmpeg exit {pngExit})");
-
-            bool srcRgb = ImageEncoderArgs.IsRgbFamilyPixFmt(
-                FfmpegCommandBuilder.ProbeInputPixFmtForEngine(inputPath));
-            // ⚠ ICC-only（ProPhoto/未知自定义 profile）时 CICP 无法表达该空间 ⇒ **不能补写
-            //   avifenc 的默认 nclx**（默认矩阵 2 会把 ICC 描述旁挂成 BT.601，正是用户禁止的
-            //   “ICC 说 A、CICP 说 B”）。写 nclx 的 2/2/0（primaries/transfer unspecified，
-            //   matrix identity）：既不伪造可命名空间，又避免默认 matrix=2。
-            bool cicpUnavailable = plan.AttachIcc && string.IsNullOrWhiteSpace(plan.OutPrimaries);
-            var cicp = cicpUnavailable
-                ? ((byte P, byte T, byte M)?)null
-                : AvifCicp.FromPlan(plan, srcRgb);
 
             // ── ICC：计划给出的 ICC 文件 / 标准空间令牌 ──
             // 与 cjxl 出口同一套诚实门：拿不到就失败，绝不产出“看起来写了标注、实际没有描述”的文件。
@@ -556,7 +648,7 @@ public static class RawColorPipeline
                 if ((string.IsNullOrWhiteSpace(iccFile) || !File.Exists(iccFile))
                     && plan.Action == ColorAction.CarryIcc)
                 {
-                    var (re, _) = IccProfileService.ExtractIccToTempFile(inputPath);
+                    var (re, _) = IccProfileService.ExtractIccToTempFile(inputPath, ct: ct, preserveSourceBytes: true);
                     if (!string.IsNullOrWhiteSpace(re) && File.Exists(re))
                     {
                         reextractedIcc = re;
@@ -568,13 +660,8 @@ public static class RawColorPipeline
                         "[avif] 计划要求附 ICC（"
                         + (plan.Action == ColorAction.CarryIcc ? "源 ICC" : "目标 ICC")
                         + "），但无法定位/生成 ⇒ 拒绝产出无色彩描述的 AVIF");
-                // 用户口径：源 ICC 也一律重写 v4.4。NormalizeSourceIccToV44 对已合规的 ICC
-                // 原样返回；需要重写时返回缓存临时件，失败返回 null ⇒ 不携带旧版 profile。
-                iccArg = IccProfileService.NormalizeSourceIccToV44(iccFile, log);
-                if (string.IsNullOrWhiteSpace(iccArg) || !File.Exists(iccArg))
-                    throw new InvalidOperationException(
-                        $"[avif] 计划要求附 ICC，但 {Path.GetFileName(iccFile)} 无法无损重写为 v4.4"
-                        + " ⇒ 拒绝携带旧版/非法 profile");
+                // A byte-for-byte carry is not a profile produced by our writer.
+                iccArg = iccFile;
             }
 
             var sb = new StringBuilder();
@@ -582,27 +669,14 @@ public static class RawColorPipeline
             else sb.Append("--depth ").Append(outBd).Append(' ');
             if (options.Lossless) sb.Append("--lossless ");
             else sb.Append("-q ").Append(Math.Clamp(options.Quality, 0, 100)).Append(' ');
-            if (cicp != null)
-            {
-                // avifenc 在 --lossless 下强制 matrix=identity(0)：传 6/9 会报
-                // “Matrix coefficients have to be identity…”。RGB 源本来就会落 0；非 RGB
-                // 源这里也压成 0，并保持 -y 444 无子采样，避免与无损约束冲突。
-                var c = options.Lossless ? (cicp.Value.P, cicp.Value.T, (byte)0) : cicp.Value;
-                sb.Append("--cicp ")
-                  .Append(c.Item1).Append('/')
-                  .Append(c.Item2).Append('/')
-                  .Append(c.Item3).Append(' ');
-            }
-            else
-            {
-                // CICP 无法命名 ⇒ ICC 是唯一色彩描述。只写 unspecified/identity 的 nclx，
-                // 不把 ProPhoto 说成 BT.709/BT.601；avifenc 的默认 matrix=2 也必须显式压回 0。
-                sb.Append("--cicp 2/2/0 ");
-                log?.Invoke("[avif] ICC-only（CICP 无法命名源空间）⇒ nclx=2/2/0（unspecified/unspecified/identity），ICC 为唯一描述\n");
-            }
+            sb.Append("--cicp ").Append(color.P).Append('/').Append(color.T).Append('/').Append(color.M).Append(' ');
             if (!string.IsNullOrWhiteSpace(iccArg))
                 sb.Append("--icc \"").Append(iccArg).Append("\" ");
-            sb.Append("-y 444 ");
+            sb.Append("-y ").Append(color.Chroma).Append(' ');
+            if (ImageEncoderArgs.ExplicitRange(options) != null)
+                sb.Append("--range ").Append(color.Range).Append(' '); // no explicit range: keep avifenc's full default
+            if (plan.AttachIcc && color.P == 2 && color.T == 2)
+                log?.Invoke($"[avif] ICC describes the color space; nclx P/T are unspecified (2/2/{color.M}).\n");
             sb.Append("-s ").Append(Math.Clamp(options.AvifCpuUsed ?? 6, 0, 10)).Append(' ');
             if (options.Threads > 1) sb.Append("-j ").Append(options.Threads).Append(' ');
             sb.Append('"').Append(png).Append("\" -o \"").Append(outputPath).Append('"');
@@ -684,7 +758,7 @@ public static class RawColorPipeline
             if ((string.IsNullOrWhiteSpace(iccFile) || !File.Exists(iccFile))
                 && plan.Action == ColorAction.CarryIcc)
             {
-                var (reextracted, _) = IccProfileService.ExtractIccToTempFile(inputPath);
+                var (reextracted, _) = IccProfileService.ExtractIccToTempFile(inputPath, ct: ct, preserveSourceBytes: true);
                 if (!string.IsNullOrWhiteSpace(reextracted) && File.Exists(reextracted)) iccFile = reextracted;
             }
             if (string.IsNullOrWhiteSpace(iccFile) || !File.Exists(iccFile))
@@ -890,17 +964,14 @@ public static class RawColorPipeline
         if (exitCode == 0 && (!File.Exists(outputPath) || new FileInfo(outputPath).Length == 0))
             throw new InvalidOperationException("cjxl 出口：cjxl 退出码为 0 但未产出非空文件");
 
-        // ── ⑥ 兑现声明：ICC 已由 cjxl 自己写进产物 ⇒ 必须把 AttachIcc 清掉 ──
-        // 否则调用方的**后置步骤**（`ApplyColorPostStepsAsync` 的「引擎 ICC」段）会再用 exiftool 嵌一次：
-        // 对 JXL 那是**必然失败**（实测退出码 1、"Will wrap JXL codestream in ISO BMFF container"、
-        // "0 image files updated"）⇒ 用户会看到一条"ICC 嵌入失败，输出可能缺少色彩描述"的**假告警**，
-        // 而产物其实已经有 ICC 了。这与 GainMap 出口"清空标注字段 = 执行体声明自己实际写了什么"同款处理。
+        // Preserve the ICC delivery obligation. The queue reads JXL through djxl and never
+        // attempts an ExifTool rewrite; an equivalent structured encoding is checked separately.
         if (exitCode == 0 && iccFile != null)
         {
-            plan.AttachIcc = false;
-            log?.Invoke($"[色彩] cjxl 出口：{(plan.Action == ColorAction.CarryIcc ? "源" : "目标")} ICC "
-                      + "已由 cjxl 写入产物 ⇒ 跳过 exiftool 后置"
-                      + "（exiftool 写 JXL 的 ICC 会失败，实测退出码 1）\n");
+            // The encoder may replace a standard ICC with an equivalent structured color
+            // encoding. Supplying --icc is not a read-back proof; keep the delivery obligation
+            // for the queue's native djxl verification and equivalent-CICP fallback.
+            log?.Invoke("[icc] ICC supplied to cjxl; final profile or equivalent color encoding will be verified after metadata processing.\n");
         }
         return exitCode;
     }
@@ -1231,7 +1302,8 @@ public static class RawColorPipeline
                          && !string.IsNullOrWhiteSpace(plan.OutMatrix)
             ? plan.OutMatrix
             : (ColorSpaceRegistry.ContainerYuvMatrix(ext) ?? plan.OutMatrix);
-        if (!string.IsNullOrWhiteSpace(convMatrix)) matrixLabels += $" -colorspace {convMatrix}";
+        var matrixLabel = ColorSpaceRegistry.ToFfmpegColorSpaceName(convMatrix);
+        if (matrixLabel != null) matrixLabels += $" -colorspace {matrixLabel}";
         string pixIn = plan.OutBitDepth == 8 ? "rgb24" : "rgb48le";
         // ── AVIF / JXL：P/T 标签必须写在 `-i` **之前**（两者分别于 2026-09-17 实测驱动）──
         // AVIF 的 nclx `colr` 盒由**编码器读输入帧的色彩属性**写入，输出侧
@@ -1251,7 +1323,7 @@ public static class RawColorPipeline
         string inLabels = labelOnInput ? labels : "";
         string outLabels = labelOnInput ? matrixLabels : labels + matrixLabels;
         string inArgs = $"{inLabels} -f rawvideo -pix_fmt {pixIn} -video_size {w}x{h} -i \"{rawPath}\"";
-        string opts, pixFmt, codec = "";
+        string opts, pixFmt, codec = "", rangeOptions = "", encodeScale = "";
         if (o != null)
         {
             opts = ImageEncoderArgs.BuildEncoderOptions(ext, o);
@@ -1299,16 +1371,13 @@ public static class RawColorPipeline
                 // ⚠ AVIF 静态出口写不进 ICC ⇒ RGB 身份只能由 nclx matrix=0 表达（gbrp 直喂自动落）。
                 bool srcRgb = ImageEncoderArgs.IsRgbFamilyPixFmt(
                     FfmpegCommandBuilder.ProbeInputPixFmtForEngine(inputPath));
-                bool rgbCapableEncoder = string.IsNullOrWhiteSpace(o.Encoder)
-                    || o.Encoder.StartsWith("libaom", StringComparison.OrdinalIgnoreCase);
+                bool rgbCapableEncoder = ImageEncoderArgs.CanUseAvif16(o.Encoder);
+                var requestedRange = ImageEncoderArgs.ExplicitRange(o);
                 bool rgbLossless = o.Lossless && srcRgb && rgbCapableEncoder
                     && !outMatrixRgbCarried && !outMatrixYuvCarried;
-                // 显式 rgb 矩阵 + 显式色度/位深：同一条钉法。否则下面的通用分支会写
-                // yuv444p / yuv420p10le，再被 `setparams=colorspace=gbr` 标成 identity ——
-                // 实测 4:4:4 档不报错但颜色错乱（PSNR 11.96 dB），4:2:0 档直接硬失败。
-                bool rgbExplicitPin = outMatrixRgbCarried && rgbCapableEncoder
-                    && (chromaSet || o.BitDepth.HasValue);
-                if (rgbLossless || rgbExplicitPin)
+                // Identity must be fed actual GBR planes even without a chroma/depth option;
+                // yuv444p plus an RGB label would be a relabel, not a conversion.
+                if (rgbLossless || outMatrixRgbCarried)
                 {
                     var bd = ImageEncoderArgs.AvifEffectiveBitDepth(o, srcBd);
                     var rgbPix = ImageEncoderArgs.MapAvifRgbPixFmt(bd);
@@ -1332,13 +1401,27 @@ public static class RawColorPipeline
                             "⚠ [rgb-lossless] avif: RGB source + lossless, but encoder "
                             + $"'{o.Encoder}' has no gbrp support -> output falls back to YUV "
                             + "(chose libaom-av1 to keep RGB)");
-                    if ((chromaSet || o.BitDepth.HasValue || srcBd > 8 || outMatrixYuvCarried)
-                        && !outMatrixRgbCarried)
+                    if (chromaSet || o.BitDepth.HasValue || srcBd > 8 || outMatrixYuvCarried || requestedRange != null)
                     {
                         var bd = ImageEncoderArgs.AvifEffectiveBitDepth(o, srcBd);
-                        pixFmt = " -pix_fmt " + ImageEncoderArgs.MapPixFmt("avif", o.Chroma, bd, false, o.ColorRange);
+                        var avifPix = ImageEncoderArgs.MapPixFmt("avif", o.Chroma, bd, false, o.ColorRange);
+                        pixFmt = " -pix_fmt " + avifPix;
+                        if (requestedRange != null)
+                        {
+                            encodeScale = ImageEncoderArgs.EngineRangeScale(requestedRange, convMatrix, avifPix);
+                            if (matrixLabel == "rgb") outLabels = ""; // a forced YUV representation cannot be labeled identity
+                        }
                     }
                 }
+                rangeOptions = ImageEncoderArgs.EngineRangeOptions(ext, o, rgbLossless || outMatrixRgbCarried);
+            }
+            else if (ext is "jpg" or "jpeg" or "webp")
+            {
+                rangeOptions = ImageEncoderArgs.EngineRangeOptions(ext, o, avifRgb: false);
+                var jpegRange = ImageEncoderArgs.ExplicitRange(o);
+                if ((ext is "jpg" or "jpeg") && jpegRange != null)
+                    encodeScale = ImageEncoderArgs.EngineRangeScale(jpegRange, convMatrix,
+                        ImageEncoderArgs.MapPixFmt(ext, o.Chroma, 8, false, jpegRange));
             }
             // ── GIF（2026-09-17 接入）──
             // 编码器显式化策略与 AVIF 同（传统管线 `if (!string.IsNullOrWhiteSpace(options.Encoder))`
@@ -1419,9 +1502,7 @@ public static class RawColorPipeline
             var alphaPix = ImageEncoderArgs.MapPixFmt(ext, o.Chroma, plan.OutBitDepth, true, o.ColorRange);
             if (!string.IsNullOrWhiteSpace(alphaPix)) pixFmt = $" -pix_fmt {alphaPix}";
         }
-        // ── 显式输出矩阵模式的出口侧播报（C-REPORT@1 模板 1 落地 / 模板 2 冗余；全 ASCII）──
-        EmitOutMatrixReport(ext, plan);
-        return $"-y -hide_banner -loglevel error {inArgs}{gifExtraIn}{gifFilter}{outLabels}{codec}{pixFmt}{opts} \"{outputPath}\"";
+        return $"-y -hide_banner -loglevel error {inArgs}{gifExtraIn}{gifFilter}{encodeScale}{outLabels}{codec}{pixFmt}{rangeOptions}{opts} \"{outputPath}\"";
     }
 
     /// <summary>
@@ -1429,7 +1510,7 @@ public static class RawColorPipeline
     /// 对 EmitWarn 文案的硬约束）。模板 3（拒绝）由规划层直接发（Rejected 决议 ⇒ 出口不被调用，
     /// 本方法收不到该档）。
     /// <para>
-    /// 播报唯一性（计划 §2.3 第 5 条）：本方法在 BuildEncodeArgs 内每任务恰好调用一次；
+    /// 播报唯一性：在编码成功且产物存在后调用一次；
     /// xyb 档的开关播报归 cjxl（EncodeJxlViaCjxlAsync 的 log 通道，经
     /// <see cref="CjxlService.BuildCjxlArguments"/>）与 libjxl（<see cref="ImageEncoderArgs.BuildJxlOptions"/>
     /// 的 EmitWarn 通道）出口，此处不发。
@@ -1442,7 +1523,7 @@ public static class RawColorPipeline
     /// <see cref="ColorSpaceRegistry.ContainerYuvMatrix"/>）；RGB 原生/调色板容器给 <c>RGB</c>。
     /// </para>
     /// </summary>
-    private static void EmitOutMatrixReport(string ext, ColorTransformPlan plan)
+    private static void EmitOutMatrixReport(string ext, ColorTransformPlan plan, bool avifenc)
     {
         var token = plan.OutMatrixMode;
         if (string.IsNullOrWhiteSpace(token)) return;   // auto（null）：零播报（CM-REQ-08）
@@ -1452,7 +1533,7 @@ public static class RawColorPipeline
                 if (token == "xyb") return;   // 开关播报归 cjxl / libjxl 出口（见方法注释）
                 var landing = ext == "avif" && token == "rgb"
                     ? "nclx matrix_coefficients=0 (identity, RGB 4:4:4 gbrp feed)"
-                    : $"-colorspace {token}";
+                    : avifenc ? $"avifenc --cicp (matrix_coefficients={AvifCicp.MatrixCode(token)})" : $"-colorspace {token}";
                 ImageEncoderArgs.EmitWarn(string.Format(
                     ColorMappingEngine.OutMatrixReportLanded, ext, token, landing));
                 break;
@@ -1487,6 +1568,43 @@ public static class RawColorPipeline
     /// <para>⚠ 10/12-bit 源经 rgb48le 的扩位顶码**未实测** ⇒ 一律按 65535（已知敞口，见 HANDOVER）；
     /// yuv420p（受限范围）/ pal8 等其余 8-bit 载体同样未实测 ⇒ 不外推，维持 RGB 族尺。</para>
     /// </summary>
+    private static async Task TransformIccAsync(string input, string output, int width, int height, bool out8,
+        IccProfileIdentity source, IccProfileIdentity target, CancellationToken ct)
+    {
+        // Row bands bound managed memory and keep cancellation responsive.
+        int stride = checked(width * 6);
+        int lines = Math.Min(height, Math.Max(1, (2 * 1024 * 1024) / stride));
+        var src = new byte[checked(lines * stride)];
+        var dst = new byte[src.Length];
+        var quantized = out8 ? new byte[src.Length / 2] : null;
+        await using var read = File.OpenRead(input);
+        await using var write = File.Create(output);
+        for (int y = 0; y < height; y += lines)
+        {
+            ct.ThrowIfCancellationRequested();
+            int band = Math.Min(lines, height - y);
+            int n = band * stride;
+            await read.ReadExactlyAsync(src.AsMemory(0, n), ct).ConfigureAwait(false);
+            // swscale's RGB24 -> RGB48 expands 255 to 65283; CMS expects 65535.
+            if (out8)
+                for (int i = 0; i < n; i += 2)
+                {
+                    int x = BinaryPrimitives.ReadUInt16LittleEndian(src.AsSpan(i, 2));
+                    BinaryPrimitives.WriteUInt16LittleEndian(src.AsSpan(i, 2), (ushort)Math.Min(65535, (x * 65535L + 32641) / 65283));
+                }
+            try { WindowsIccTransform.ConvertRgb48(src.AsSpan(0, n), dst.AsSpan(0, n), width, band, source, target); }
+            catch (Exception ex) when (ex is Win32Exception or NotSupportedException or ArgumentException)
+            { throw new ColorOutputContractException("ICC_CMS_FAILED", ex.Message); }
+            if (quantized == null) await write.WriteAsync(dst.AsMemory(0, n), ct).ConfigureAwait(false);
+            else
+            {
+                for (int i = 0; i < n / 2; ++i)
+                    quantized[i] = (byte)((BinaryPrimitives.ReadUInt16LittleEndian(dst.AsSpan(i * 2, 2)) + 128) / 257);
+                await write.WriteAsync(quantized.AsMemory(0, n / 2), ct).ConfigureAwait(false);
+            }
+        }
+    }
+
     private static double ResolveSrcCodeMax(string inputPath)
     {
         int bd;

@@ -57,6 +57,7 @@ namespace FfmpegGui.Services
         public void Add(QueueItem item)
         {
             item.ClearWarnings();
+            item.TerminalReady = false;
             item.Status = "待处理";
             _queue.Enqueue(item);
             _onItemUpdated?.Invoke(item);
@@ -198,6 +199,7 @@ namespace FfmpegGui.Services
                 if (item.IsStopped || (item.IsFailure && item.ExitCode != 0))
                 {
                     item.ClearWarnings();
+                    item.TerminalReady = false;
                     item.Status = "待处理";
                     item.IsCancelled = false;
                     item.ExitCode = null;
@@ -313,6 +315,20 @@ namespace FfmpegGui.Services
                         // RAW→TIFF / MaxDimension 预缩放 PNG），而临时目录在项结束时删除。
                         // 不还原的话，「重新排队」拿着已消失的临时路径重跑必然失败（且错误信息还指向不存在的文件）。
                         var originalInputPath = captured.InputPath;
+                        var requestedInputMatrix = captured.Options.ColorMatrix;
+                        var requestedSourcePrimaries = captured.Options.ColorSourceDeclPrimaries;
+                        var requestedSourceTrc = captured.Options.ColorSourceDeclTrc;
+                        captured.Options.ColorSourceProvenance = null;
+                        var previousWarnSink = ColorMapping.ImageEncoderArgs.WarnSink.Value;
+                        var previousRouting = ColorMapping.ImageEncoderArgs.RouteWarningsToItemOnly.Value;
+                        ColorMapping.ImageEncoderArgs.RouteWarningsToItemOnly.Value = true;
+                        var pendingMatrixReports = new List<string>();
+                        ColorMapping.ImageEncoderArgs.WarnSink.Value = message =>
+                        {
+                            if (message.StartsWith("[color-out-matrix]", StringComparison.Ordinal))
+                                pendingMatrixReports.Add(message);
+                            else captured.Log += message + "\n";
+                        };
                         // ⚠⚠ 2026-09-21：把「用户实际提供的源文件」钉死在**改写之前** —— 供两处使用：
                         //   ① **元数据恢复的取源**：RAW 的拍摄字段（`DateTimeOriginal` / `CreateDate` /
                         //      `LensModel` / `ExposureProgram` / `MeteringMode` / `Flash` 等）**只存在于原文件**；
@@ -358,10 +374,71 @@ namespace FfmpegGui.Services
                         captured.StartedAt = DateTimeOffset.UtcNow;
                         _onItemUpdated?.Invoke(captured);
 
+                        // Shared preflight runs before engine/legacy dispatch and any encoding.
+                        ColorMapping.ImageEncoderArgs.ValidateAvifRequestedBitDepth(captured.Options);
+
                         // ── ICC 不可读：只警告，不阻断（2026-11-18 维护者定案）────────────
                         // 旧行为在编码前 fail-closed、exit 90、零产物；维护者要求 ICC/CICP
                         // 不准确只做警告，避免坏 profile 造成额外失败。这里只把条目打黄并继续。
+                        if (IccProfileBuilder.ParseVersionToken(captured.Options.IccProfileVersion) == IccProfileBuilder.IccProfileVersion.V2)
+                            captured.Log += "[icc] ⚠ Legacy ICC v2 preference ignored: newly generated profiles use ICC v4.4.\n";
+                        if (ColorMapping.ColorIntentFactory.GetExplicitIccIssue(captured.Options) is { } iccIssue)
+                            throw new ColorMapping.ColorOutputContractException("ICC_EXPLICIT_INVALID", iccIssue);
+                        var sourceIcc = ColorMapping.ColorIntentFactory.EffectiveIccIdentity(captured.Options, originalInputPath);
+                        if (sourceIcc.Kind == ColorMapping.IccProfileKind.LutOrUnsupported)
+                        {
+                            var canCarry = CanCarryOpaquePng(captured.Options, originalInputPath);
+                            var iccIntent = ColorMapping.ColorIntentFactory.FromOptions(captured.Options, originalInputPath, out _, canCarry);
+                            var iccPlan = iccIntent == null ? null : ColorMapping.ColorMappingEngine.Plan(iccIntent);
+                            if (iccPlan == null || ColorMapping.ColorMappingEngine.IsIccSafetyRejection(iccPlan))
+                                throw new ColorMapping.ColorOutputContractException(iccPlan?.IccSafetyCode ?? "ICC_CMS_REQUIRED",
+                                    iccPlan?.Reason ?? "the requested ICC operation cannot be executed");
+                            if (iccPlan.IccSafetyCode == "ICC_SOURCE_UNDESCRIBED")
+                            {
+                                captured.Log += $"[icc] ⚠ {iccPlan.IccSafetyCode}: {iccPlan.Reason}\n";
+                                captured.MarkWarning(iccPlan.Reason!);
+                            }
+                        }
+                        // Legacy needs named source primaries; an unnameable RGB matrix needs H1.
+                        // Do not use strict ICC/CICP curve identity as an input admission gate:
+                        // standard BT.709/2020 profiles legitimately vary in coefficients/rounding.
+                        // Automatic transcodes and faithful pixel-preserving ICC carry remain allowed.
+                        if (!ColorMapping.ColorEngineRouter.Requested(captured.Options)
+                            && ColorMapping.ColorIntentFactory.HasUserColorTarget(captured.Options)
+                            && sourceIcc.CreateMatrixTrcDescriptor() is { } legacySource
+                            && string.IsNullOrWhiteSpace(legacySource.PrimariesToken)
+                            && FfmpegCommandBuilder.ResolveFaithfulUltraWideIcc(captured.Options,
+                                legacySource.KnownSpaceName, legacySource.TransferToken, captured.Options.Format) == null)
+                            throw new ColorMapping.ColorOutputContractException("ICC_CMS_REQUIRED",
+                                "The requested legacy conversion cannot name this source ICC's RGB primaries; use the color engine for its matrix conversion.");
                         WarnCarryIccUnreadable(captured);
+                        var sourceColor = FfmpegCommandBuilder.ProbeInputColorMetadata(originalInputPath, ct: ct);
+                        if (sourceColor.InvalidPngCicp)
+                        {
+                            captured.Log += "[color] ⚠ CICP_SOURCE_IGNORED: invalid PNG cICP; continuing with independently usable color descriptions.\n";
+                            captured.MarkWarning("invalid embedded PNG cICP");
+                        }
+                        if (sourceColor.DiscardSourceIcc)
+                        {
+                            captured.Log += "[icc] ⚠ ICC_SOURCE_IGNORED: embedded ICC is malformed or has no usable input transform; retaining independently usable color tags.\n";
+                            captured.MarkWarning("embedded ICC could not describe the decoded pixels");
+                        }
+                        if (sourceColor.VideoColorConflict is { } conflict)
+                        {
+                            captured.Log += $"[matrix] ⚠ COLOR_STREAM_FRAME_CONFLICT: {conflict}; decoded frame metadata takes precedence over the container, explicit input overrides still apply.\n";
+                            if (sourceColor.VideoColorVariesWithinSample)
+                                captured.Log += "[matrix] ⚠ Source color tags vary in the sampled frames; automatic still-image decisions use the first frame.\n";
+                            captured.MarkWarning("source container and decoded color metadata disagree");
+                            if ((sourceColor.colorPrimaries is null or "unknown" or "unspecified"
+                                 || sourceColor.colorTrc is null or "unknown" or "unspecified")
+                                && sourceIcc.Kind != ColorMapping.IccProfileKind.MatrixTrc
+                                && (ColorMapping.ColorIntentFactory.HasUserColorTarget(captured.Options) || captured.Options.JpegGainMap))
+                                throw new ColorMapping.ColorOutputContractException("COLOR_SOURCE_UNVERIFIED",
+                                    "The requested color conversion has no reliable source primaries/transfer; provide a source description.");
+                        }
+                        var originalInputMatrix = FfmpegCommandBuilder.ResolveInputMatrix(captured.Options, originalInputPath);
+                        if (originalInputMatrix.Use == FfmpegCommandBuilder.InputMatrixUse.Reject)
+                            throw new FfmpegCommandBuilder.InputMatrixContractException(originalInputMatrix.Diagnostic!);
 
                         // ── DNG 出口前置校验（2026-10-25）──────────────────────────────────────
                         // DNG 需要传感器 RAW 数据；JXR/PNG 等已解码载体结构上无法反推 CFA。
@@ -457,6 +534,22 @@ namespace FfmpegGui.Services
                                 captured.Status = composed ? "已完成 (GainMap 合成)" : "失败 (GainMap 合成)";
                                 _onItemUpdated?.Invoke(captured);
                                 return;
+                            }
+
+                            if (sourceColor.InvalidPngIccp)
+                            {
+                                // Some decoders treat a bad ancillary iCCP wrapper as a fatal
+                                // decode error. Give them the same PNG bytes minus only that chunk.
+                                var cleanDir = Path.Combine(PlatformServices.GetTempDir(), $"png_color_input_{Guid.NewGuid():N}");
+                                Directory.CreateDirectory(cleanDir);
+                                tempDirsToCleanup.Add(cleanDir);
+                                var clean = Path.Combine(cleanDir, Path.GetFileName(originalInputPath));
+                                if (PngCicpService.TryRemoveIccp(originalInputPath, clean, out int discarded, requireCicp: false)
+                                    && discarded > 0)
+                                {
+                                    captured.InputPath = clean;
+                                    captured.Log += "[icc] PNG decoder input sanitized: removed only the unusable ancillary iCCP.\n";
+                                }
                             }
 
                             // ── 根据编码器后端调度 ──
@@ -772,7 +865,15 @@ namespace FfmpegGui.Services
                                     var decoded = await DecodeUltraHdrToLinearAsync(captured, captured.InputPath, ct);
                                     if (decoded != null)
                                     {
-                                        captured.InputPath = decoded.Value.path;
+                                         captured.InputPath = decoded.Value.path;
+                                         captured.Options.ColorSourceProvenance = new Models.ColorSourceProvenance
+                                         {
+                                             Origin = Models.ColorSourceOrigin.UltraHdrDecoded,
+                                             OriginalInputPath = captured.SourceInputPath ?? originalInputPath,
+                                             IntermediatePath = decoded.Value.path,
+                                             DeclaredPrimaries = null,
+                                             DeclaredTrc = "linear"
+                                         };
                                         tempDirsToCleanup.Add(decoded.Value.tempDir);   // P1-6：随本项结束一起删
                                         // 线性相对亮度：cjxl 用 RGB_D65_SRG_Rel_Lin(SDR 基图/BT.709) 或
                                         // RGB_D65_202_Rel_Lin(HDR PQ 基图/BT.2020) + --intensity_target=峰值 精确表达线性 HDR
@@ -805,6 +906,8 @@ namespace FfmpegGui.Services
                                         };
                                         captured.Options.ColorSourceDeclPrimaries = declPrimaries;
                                         captured.Options.ColorSourceDeclTrc = "linear";
+                                         if (captured.Options.ColorSourceProvenance != null)
+                                             captured.Options.ColorSourceProvenance.DeclaredPrimaries = declPrimaries;
                                         captured.Log += $"[UltraHDR] ✅ 已解码为线性 HDR PFM（峰值 {decoded.Value.peakNits:F0} nits），继续编码\n";
                                     }
                                     else
@@ -921,7 +1024,15 @@ namespace FfmpegGui.Services
                                     //   而本行却报「色彩空间: BT.709 + 线性传输」——正是本仓最忌讳的「宣称≠交付」。
                                     //   ⇒ 本行只报「已完成预处理」，具体标记交给紧随其后的那条日志。
                                     captured.Log += "[RAW] ✅ 预处理完成，使用线性 TIFF 继续编码（色彩标记见下一条）。\n";
-                                    captured.InputPath = rawTiff;
+                                     captured.InputPath = rawTiff;
+                                     captured.Options.ColorSourceProvenance = new Models.ColorSourceProvenance
+                                     {
+                                         Origin = Models.ColorSourceOrigin.RawIntermediate,
+                                         OriginalInputPath = captured.SourceInputPath ?? originalInputPath,
+                                         IntermediatePath = rawTiff,
+                                         DeclaredPrimaries = rawSourcePrimaries,
+                                         DeclaredTrc = "linear"
+                                     };
                                     // ── 输入声明：**与用户是否选目标无关，必须总是写**（2026-10-04 修）──────────
                                     // 中间件是 dngtool 的**线性**输出。原色随路线而定（2026-10-24 ACR 路线）：
                                     //   · DNG 输入 ⇒ dng_render 已映射到标准原色 ⇒ 按**实际渲染空间**声明
@@ -1156,9 +1267,28 @@ namespace FfmpegGui.Services
                                     if (!string.IsNullOrEmpty(colorMeta.colorTrc))
                                         inputColorArgs += $"-color_trc {colorMeta.colorTrc} ";
 
+                                    var preScaleMatrix = FfmpegCommandBuilder.ResolveInputMatrix(captured.Options, captured.InputPath);
+                                    if (preScaleMatrix.Use == FfmpegCommandBuilder.InputMatrixUse.Reject)
+                                        throw new FfmpegCommandBuilder.InputMatrixContractException(preScaleMatrix.Diagnostic!);
+                                    var decodeMeta = colorMeta.hasAlpha ? "rgba64le" : "rgb48le";
+                                    var matrixFilter = preScaleMatrix.BuildFilter(decodeMeta);
+                                    // PNG 3 permits RGB cICP full-range flag=0. The normal decode path
+                                    // expands those encoded values before conversion; do the same before
+                                    // this pre-scale or the later pipeline will mistake unexpanded RGB
+                                    // for full-range and attach a full-range label to limited samples.
+                                    bool sourceNarrowPng = PngCicpService.ReadCicp(captured.InputPath,
+                                        out byte narrowP, out byte narrowT, out bool narrowPng)
+                                        == PngCicpService.PngColorTagState.Valid && narrowPng;
+                                    var rangeFilter = sourceNarrowPng
+                                        ? FfmpegCommandBuilder.PngNarrowRangeFilter(captured.InputPath) : null;
+                                    var geometryParts = new List<string>();
+                                    if (rangeFilter != null) geometryParts.Add(rangeFilter);
+                                    if (matrixFilter != null) geometryParts.Add(matrixFilter);
+                                    geometryParts.Add(maxFilter);
+                                    var geometryChain = string.Join(",", geometryParts);
                                     var scaleArgs = inputIsJxl
-                                        ? $"-y {inputColorArgs}-i \"{captured.InputPath}\" {FfmpegCommandBuilder.ChainArgs(captured.InputPath, maxFilter)} -distance 0 \"{scaledInput}\""
-                                        : $"-y {inputColorArgs}-i \"{captured.InputPath}\" {FfmpegCommandBuilder.ChainArgs(captured.InputPath, maxFilter)} -compression_level 0 \"{scaledInput}\"";
+                                        ? $"-y {inputColorArgs}-i \"{captured.InputPath}\" {FfmpegCommandBuilder.ChainArgs(captured.InputPath, geometryChain)} -distance 0 \"{scaledInput}\""
+                                        : $"-y {inputColorArgs}-i \"{captured.InputPath}\" {FfmpegCommandBuilder.ChainArgs(captured.InputPath, geometryChain)} -compression_level 0 \"{scaledInput}\"";
 
                                     // 实际执行
                                     captured.Log += $"[cmd] ffmpeg {scaleArgs}\n";
@@ -1174,7 +1304,7 @@ namespace FfmpegGui.Services
                                         captured.Log += "[MaxDimension] ⚠️ JXL 中转缩放失败，回退 PNG 中转（HDR 输入可能削顶）\n";
                                         _onItemUpdated?.Invoke(captured);
                                         scaledInput = Path.Combine(scaleDir, $"scaled_{Guid.NewGuid():N}.png");
-                                        var pngScaleArgs = $"-y {inputColorArgs}-i \"{captured.InputPath}\" {FfmpegCommandBuilder.ChainArgs(captured.InputPath, maxFilter)} -compression_level 0 \"{scaledInput}\"";
+                                        var pngScaleArgs = $"-y {inputColorArgs}-i \"{captured.InputPath}\" {FfmpegCommandBuilder.ChainArgs(captured.InputPath, geometryChain)} -compression_level 0 \"{scaledInput}\"";
                                         captured.Log += $"[cmd] ffmpeg {pngScaleArgs}\n";
                                         scaleExit = await FfmpegRunner.RunAsync(pngScaleArgs, s =>
                                         {
@@ -1185,6 +1315,18 @@ namespace FfmpegGui.Services
 
                                     if (scaleExit == 0 && File.Exists(scaledInput))
                                     {
+                                        if (rangeFilter != null
+                                            && !PngCicpService.TryInsertCicp(scaledInput, narrowP, narrowT))
+                                            throw new ColorMapping.ColorOutputContractException(
+                                                "PNG_RANGE_NORMALIZATION_FAILED",
+                                                "Narrow-range PNG pixels were expanded but the intermediate could not be marked full-range.");
+                                        if (captured.Options.ColorSourceProvenance is { } provenance)
+                                            provenance.IntermediatePath = scaledInput;
+                                        if (matrixFilter != null)
+                                        {
+                                            captured.Options.ColorMatrix = null;
+                                            captured.Log += $"[matrix] Applied {preScaleMatrix.Matrix} before resizing\n";
+                                        }
                                         captured.InputPath = scaledInput;
                                         captured.Log += $"[MaxDimension] ✅ 预缩放完成，新输入: {Path.GetFileName(scaledInput)}\n";
                                     }
@@ -1384,6 +1526,7 @@ namespace FfmpegGui.Services
                                 else if (engUsed)
                                 {
                                     exitCode = engExit;
+                                    outMatrixConsumed = exitCode == 0 && engPlan is { MatrixDeliveryReported: true };
                                 }
                                 else
                                 {
@@ -1413,7 +1556,7 @@ namespace FfmpegGui.Services
                                     // A1（2026-11-11 修复批）：本分支只要拿到了**计划**（engPlan 或 legacyPlan），
                                     // 规划层就已经跑过 `ApplyExplicitOutMatrix`（auto/null 时它早退、零播报，
                                     // 但「已处理」为真）⇒ 记消费位，收尾不再兜底点名。
-                                    if (engUsed || engPlan != null || legacyPlan != null) outMatrixConsumed = true;
+                                    // A plan does not prove that an encoder ran or wrote a matrix.
                                     var legacyVerdict = legacyPlan?.Verdict;
                                     bool legacyReject = legacyVerdict?.Kind == ColorMapping.VerdictKind.Reject;
                                     // ⚠ **只在"裁决由本消费点算出来"时打印**（`engPlan == null`）。
@@ -1449,6 +1592,7 @@ namespace FfmpegGui.Services
                                     {
                                         // A1：BuildArguments 内会为 Carried/Redundant 发模板 1/2（Rejected 不发）
                                         // ⇒ 记一笔，收尾兜底点名据此去重（bmp/ppm 的 YUV 族 = Rejected，仍需点名）。
+                                        ColorMapping.RawColorPipeline.ValidateLegacyAvifMatrix(captured.Options);
                                         legacyExitMatrixReportRan = true;
                                         var args = FfmpegCommandBuilder.BuildArguments(captured.Options, captured.InputPath, finalOutputPath);
                                         LogInjectedScale(captured, args);      // 扩展 ③：缩了要让用户看得见
@@ -1504,7 +1648,7 @@ namespace FfmpegGui.Services
                                 // 其他格式（TIFF/PNG/WebP/JXL）也存在不同程度的丢失。
                                 if (exitCode == 0)
                                 {
-                                    await RestoreMetadataAsync(captured, finalOutputPath, engPlan);
+                                    await RestoreMetadataAsync(captured, finalOutputPath, engPlan, ct);
                                     // 元数据阶段也可能判失败（ICC 是唯一描述却写不进产物 ⇒ 产物已删）
                                     if (captured.ExitCode is int metaExit && metaExit != 0) exitCode = metaExit;
 
@@ -1521,9 +1665,24 @@ namespace FfmpegGui.Services
 
                                 // ── 色彩后置全套（sBIT / cICP / 引擎 ICC / 裁决点 ICC / TIFF ICC / 保真 ICC）──
                                 // 与链尾已登记的专用通路**共用同一入口** ⇒ 判据不再有两份（P7a-3 第三轮）。
-                                await ApplyColorPostStepsAsync(captured, finalOutputPath, captured.Options,
-                                    captured.InputPath, exitCode,
-                                    engineUsed: engUsed, mainBranch: true, engPlan: engPlan, ct: ct);
+                                if ((engPlan?.RawSourceIcc ?? engPlan?.IccCmsTransform?.Target) is { } opaqueIcc)
+                                {
+                                    if (exitCode == 0)
+                                    {
+                                        var bytes = opaqueIcc.CopyProfileBytes();
+                                        if (!PngCicpService.TryWriteIccOnly(finalOutputPath, bytes)
+                                            || PngCicpService.TryReadIccp(finalOutputPath) is not { } readBack
+                                            || !bytes.AsSpan().SequenceEqual(readBack))
+                                            throw new ColorMapping.ColorOutputContractException("ICC_CARRY_WRITE_FAILED", "PNG could not preserve the original ICC bytes");
+                                        captured.Log += $"[icc] {(engPlan?.IccCmsTransform != null ? "CMS target profile written" : "original profile preserved")} (SHA-256 {opaqueIcc.Sha256})\n";
+                                    }
+                                }
+                                else
+                                {
+                                    await ApplyColorPostStepsAsync(captured, finalOutputPath, captured.Options,
+                                        captured.InputPath, exitCode,
+                                        engineUsed: engUsed, mainBranch: true, engPlan: engPlan, ct: ct);
+                                }
                             colorPostStepsDone = true;   // 本分支已跑完全套色彩后置（元数据恢复/sBIT/cICP/ICC/保真）
                             }
 
@@ -1594,6 +1753,33 @@ namespace FfmpegGui.Services
                                     _onItemUpdated?.Invoke(captured);
                                 }
                             }
+                            if (captured.ExitCode == 0 && sourceColor.DiscardSourceIcc
+                                && captured.Options.Format is "png" or "apng")
+                            {
+                                var iccpState = PngCicpService.ReadIccp(finalOutputPath, out var finalIcc);
+                                if ((iccpState == PngCicpService.PngColorTagState.Invalid
+                                     || (finalIcc != null && (sourceColor.iccIdentity?.ProfileBytes.SequenceEqual(finalIcc) == true
+                                         || !ColorMapping.ColorSpaceIdentify.IdentifyIccBytes(finalIcc).IsValid)))
+                                    && !PngCicpService.TryRemoveIccp(finalOutputPath, out _, requireCicp: false))
+                                    throw new ColorMapping.ColorOutputContractException("ICC_INVALID_OUTPUT", "Unable to remove an unusable ICC from the PNG artifact");
+                            }
+
+                            if (captured.ExitCode == 0 && captured.Options is { Format: var deliveredFormat } deliveredOptions
+                                && string.Equals(deliveredFormat, "avif", StringComparison.OrdinalIgnoreCase)
+                                && ColorMapping.AvifCicp.MatrixCode(deliveredOptions.ColorOutMatrix) is byte expectedMatrix
+                                && (outMatrixConsumed || pendingMatrixReports.Any(s => !s.Contains("contract rejection", StringComparison.Ordinal))))
+                            {
+                                var delivered = FfmpegCommandBuilder.ProbeDeliveredVideoColor(finalOutputPath, s => captured.Log += s, ct);
+                                ct.ThrowIfCancellationRequested();
+                                var actual = ColorMapping.AvifCicp.MatrixCode(delivered.colorSpace);
+                                if (actual != expectedMatrix || string.IsNullOrWhiteSpace(delivered.pixFmt))
+                                {
+                                    var detail = $"AVIF readback expected matrix {expectedMatrix}; got {delivered.colorSpace ?? "unknown"} ({delivered.pixFmt ?? "unknown"})";
+                                    pendingMatrixReports.Add($"[color-out-matrix] {detail} => contract rejection, exit 91, no output");
+                                    throw new ColorMapping.ColorOutputContractException("COLOR_MATRIX_NOT_DELIVERED", detail);
+                                }
+                            }
+
                             // ── 追加 .png 后缀（JXL/AVIF 兼容性）──
                             if (captured.ExitCode == 0 && captured.Options.AppendPngExtension)
                             {
@@ -1626,13 +1812,22 @@ namespace FfmpegGui.Services
                             // 播报唯一性（计划 §2.3 第 5 条）：出口层已为 Carried/Redundant 发过模板 1/2 的格子不再重复
                             //   （legacy BuildArguments 或 cjxl/cjpegli 服务）；Rejected 格出口层从不发 ⇒ 一律由本处点名。
                             var outMatrixTok = captured.Options.ColorOutMatrix;
-                            if ((captured.ExitCode ?? 0) == 0
-                                && !outMatrixConsumed
-                                && !string.IsNullOrWhiteSpace(outMatrixTok))
+                            bool matrixArtifactExists = captured.ExitCode == 0 && captured.IsSuccessStatus
+                                && File.Exists(finalOutputPath) && new FileInfo(finalOutputPath).Length > 0;
+                            if (matrixArtifactExists && pendingMatrixReports.Count > 0)
+                            {
+                                var report = pendingMatrixReports.LastOrDefault(s => !s.Contains("contract rejection", StringComparison.Ordinal));
+                                if (report != null)
+                                {
+                                    captured.Log += report + "\n";
+                                    outMatrixConsumed = true;
+                                }
+                            }
+                            if (matrixArtifactExists && !outMatrixConsumed && !string.IsNullOrWhiteSpace(outMatrixTok))
                             {
                                 var omFmt = (captured.Options.Format ?? "").Trim().TrimStart('.').ToLowerInvariant();
                                 var omCap = ColorMapping.ColorMappingEngine.ResolveOutMatrixCapability(
-                                    omFmt, outMatrixTok, EncoderBackend.Ffmpeg);
+                                    omFmt, outMatrixTok, backend);
                                 bool exitLayerSpoke = dedicatedEncoderMatrixReportRan
                                     || (legacyExitMatrixReportRan && omCap != ColorMapping.OutMatrixCapability.Rejected);
                                 if (!exitLayerSpoke)
@@ -1648,6 +1843,20 @@ namespace FfmpegGui.Services
                             captured.Status = "已停止";
                             captured.CompletedAt = DateTimeOffset.UtcNow;
                         }
+                        catch (ColorMapping.ColorOutputContractException ex)
+                        {
+                            captured.Log += $"[color-contract] {ex.ReasonCode}: {ex.Message}\n";
+                            captured.ExitCode = 91;
+                            captured.Status = "失败 (退出码 91)";
+                            captured.CompletedAt = DateTimeOffset.UtcNow;
+                        }
+                        catch (FfmpegCommandBuilder.InputMatrixContractException ex)
+                        {
+                            captured.Log += ex.Message + "\n";
+                            captured.ExitCode = 91;
+                            captured.Status = "失败 (退出码 91)";
+                            captured.CompletedAt = DateTimeOffset.UtcNow;
+                        }
                         catch (Exception ex)
                         {
                             captured.Status = "失败: " + ex.Message;
@@ -1655,6 +1864,12 @@ namespace FfmpegGui.Services
                         }
                         finally
                         {
+                            if (captured.ExitCode == 91
+                                && !captured.Log.Contains("[color-out-matrix] ", StringComparison.Ordinal)
+                                && pendingMatrixReports.LastOrDefault(s => s.Contains("contract rejection", StringComparison.Ordinal)) is { } rejected)
+                                captured.Log += rejected + "\n";
+                            ColorMapping.ImageEncoderArgs.WarnSink.Value = previousWarnSink;
+                            ColorMapping.ImageEncoderArgs.RouteWarningsToItemOnly.Value = previousRouting;
                             // P1-4：未成功的任务不留“看着像成功”的半成品（各专用通路都是直写最终路径 + 无条件 -y）
                             // 判据用**确证失败**而不是“不算成功”：状态/退出码有任一没落到位时宁可留下文件，也不误删有效产物。
                             // D6/D7（2026-11-09）：**降级出图 ≠ 失败**——产物是完整的 SDR 基础图，只是 HDR 层
@@ -1672,6 +1887,12 @@ namespace FfmpegGui.Services
                                 try { if (Directory.Exists(dir)) Directory.Delete(dir, true); } catch { }
                             }
                             captured.InputPath = originalInputPath;   // P1-5：临时件已删，路径必须回到真实源文件
+                            captured.Options.ColorMatrix = requestedInputMatrix;
+                            captured.Options.ColorSourceDeclPrimaries = requestedSourcePrimaries;
+                            captured.Options.ColorSourceDeclTrc = requestedSourceTrc;
+                            captured.Options.ColorSourceProvenance = null;
+                            captured.CompletedAt ??= DateTimeOffset.UtcNow;
+                            captured.TerminalReady = true;
                             _onItemUpdated?.Invoke(captured);
                             sem.Release();
                         }
@@ -1762,6 +1983,21 @@ namespace FfmpegGui.Services
         /// 专用分派、本方法三处**必须**用同一份结果 —— 各自求值就会出现「路由说能走、分派说不能走」两套口径。
         /// </para>
         /// </summary>
+        private static bool CanCarryOpaquePng(FfmpegOptions options, string inputPath)
+        {
+            if (!options.Format.Equals("png", StringComparison.OrdinalIgnoreCase)
+                || !Path.GetExtension(inputPath).Equals(".png", StringComparison.OrdinalIgnoreCase)
+                || options.EncoderBackend != EncoderBackend.Ffmpeg
+                || !ColorMapping.ColorEngineRouter.Requested(options)
+                || options.EnableMaxDimension || !string.IsNullOrWhiteSpace(options.ColorMatrix)
+                || options.MetadataMode == Models.MetadataMode.StripAll
+                || !ColorMapping.ColorEngineRouter.ShouldRoute(options, "out.png", false)) return false;
+            var source = FfmpegCommandBuilder.ProbeInputColorMetadata(inputPath);
+            var requestedDepth = options.BitDepthRequested ?? options.BitDepth;
+            return !source.NarrowRangePng && (source.pixFmt is "rgb24" or "rgba" or "rgb48be" or "rgba64be")
+                && (requestedDepth == null || requestedDepth == (source.pixFmt is "rgb24" or "rgba" ? 8 : 16));
+        }
+
         private async Task<(bool used, int exitCode, ColorMapping.ColorTransformPlan? plan)> TryRunColorEngineAsync(
             QueueItem item, string inputPath, string outputPath, bool inputMayHaveMultipleFrames, CancellationToken ct)
         {
@@ -1840,7 +2076,8 @@ namespace FfmpegGui.Services
                 return (false, 0, null);
             }
 
-            var intent = ColorMapping.ColorIntentFactory.FromOptions(item.Options, inputPath, out var why);
+            var intent = ColorMapping.ColorIntentFactory.FromOptions(item.Options, inputPath, out var why,
+                CanCarryOpaquePng(item.Options, inputPath) && !inputMayHaveMultipleFrames);
             if (intent == null)
             {
                 // 2026-11-18：色彩意图装配失败（源 ICC/CICP 读不出、目标不可命名等）不再 exit 90。
@@ -1901,8 +2138,7 @@ namespace FfmpegGui.Services
                         Log("[avif16] 已由 sato 兑现 16-bit；移除规划层“出口降为 12bit”的降级播报\n");
                     }
                 }
-                if (item.Options.Chroma is not ("auto" or "4:4:4"))
-                    Log($"[avif16] ⚠ 16-bit AVIF 固定 4:4:4（avifenc -y 444）；已忽略色度子采样 {item.Options.Chroma}\n");
+                ColorMapping.RawColorPipeline.ValidateEncodingContract(inputPath, outputPath, plan, item.Options);
                 Log("[avif16] 16-bit AVIF 出口：avifenc --depth 12,4（sato + dimg 双 item）\n");
             }
 
@@ -1913,6 +2149,8 @@ namespace FfmpegGui.Services
                 Log("[avif] 计划要求附 ICC：静态 AVIF 改由 avifenc 编码（--icc 与 --cicp 同写，"
                     + "ffmpeg/libaom 单程写不进 ICC）\n");
 
+            if (plan.IsOk)
+                ColorMapping.RawColorPipeline.ValidateEncodingContract(inputPath, outputPath, plan, item.Options);
             Log($"[色彩裁决] 裁决={plan.Verdict?.Kind}\n");
 
             // ── S7：把「引擎产出正确但有可量化损失」**逐条**告诉用户 ──
@@ -1926,6 +2164,8 @@ namespace FfmpegGui.Services
                     // 2026-11-18：降级/不确定项同时把条目标黄（GUI 的“仅显示警告”勾选据此筛选）。
                     item.MarkWarning($"{d.Code}: {d.Text}");
                 }
+            if (ColorMapping.ColorMappingEngine.IsIccSafetyRejection(plan))
+                throw new ColorMapping.ColorOutputContractException(plan.IccSafetyCode!, plan.Reason ?? "ICC safety rejection");
             if (!plan.IsOk)
             {
                 // 显式输出矩阵冲突是**用户显式选择的结构性不可能**，保留既有 fail-closed 契约
@@ -1968,6 +2208,7 @@ namespace FfmpegGui.Services
                 //   并不等于"可以交给 ffmpeg 编码"。少了这一条，直通的 jxl+Cjxl 任务会掉进下面的
                 //   ffmpeg 分支 ⇒ 产物由 **ffmpeg 的 libjxl** 出（用户选的 cjxl 及其 `-e/--progressive/
                 //   --photon_noise_iso` 全丢），即**静默换编码器**。实测变异证据见本轮报告。
+                if (plan.RawSourceIcc != null) return (false, 0, plan);
                 if (plan.Action == ColorMapping.ColorAction.CarryIcc)
                     // ⚠ 计划里没有 IccPath ⇒ 这次携带**不靠 ICC**（出口写不进去，如 WebM/ffmpeg），
                     //   描述由可命名的 CICP 标签承担。AVIF 2026-11-15 起已由 avifenc 写 ICC，
@@ -2007,6 +2248,8 @@ namespace FfmpegGui.Services
                 return (true, 0, plan);
             }
             catch (OperationCanceledException) { throw; }
+            catch (ColorMapping.ColorOutputContractException) { throw; }
+            catch (FfmpegCommandBuilder.InputMatrixContractException) { throw; }
             catch (Exception ex)
             {
                 Log($"[色彩引擎] ❌ 执行失败：{ex.GetType().Name}: {ex.Message}\n");
@@ -2378,21 +2621,9 @@ namespace FfmpegGui.Services
                                     out byte cpPlan, out byte trPlan)
                                 && cpNow == cpPlan && trNow == trPlan)
                             {
-                                var stdIcc = IccProfileService.GetOrGenerateStandardIcc(probeInput,
-                                    engPlan.OutPrimaries, engPlan.OutTransfer, engPlan.OutMatrix,
-                                    s => { captured.Log += s; _onItemUpdated?.Invoke(captured); }, ct);
-                                if (!string.IsNullOrWhiteSpace(stdIcc) && File.Exists(stdIcc))
-                                {
-                                    var iccExit = await ExifToolService.EmbedIccProfileFromFileAsync(stdIcc, finalOutputPath,
-                                        s => { captured.Log += s; _onItemUpdated?.Invoke(captured); });
-                                    captured.Log += iccExit == 0
-                                        ? $"[色彩] 直通携带已并写出口语义 ICC（stdicc {engPlan.OutPrimaries}/linear）与 cICP——双描述一致，兼容只认 iCCP 的读图器\n"
-                                        : iccExit == ExifToolService.NoWriteApplied
-                                            ? "[色彩] ⚠️ 直通携带的出口语义 ICC 未写入：exiftool 报未应用（产物保留，cICP 仍在，语义不缺位）\n"
-                                            : $"[色彩] ⚠️ 直通携带的出口语义 ICC 嵌入失败（退出码 {iccExit}）；产物保留，cICP 仍在，语义不缺位\n";
-                                }
-                                else
-                                    captured.Log += "[色彩] ⚠️ 直通携带并写 ICC：标准 ICC 生成失败（产物保留，cICP 仍在，语义不缺位）\n";
+                                await DeliverIccAsync(captured, finalOutputPath, probeInput, opts, engPlan,
+                                    profilePath: null, engPlan.OutPrimaries, engPlan.OutTransfer, engPlan.OutMatrix,
+                                    generated: true, carrySource: false, ct: ct);
                             }
                             else
                                 captured.Log += "[png3] 直通携带未并写 ICC：已写 cICP 与计划语义不一致（宁缺勿错，不并写与标签失配的 ICC）\n";
@@ -2401,38 +2632,8 @@ namespace FfmpegGui.Services
                     _onItemUpdated?.Invoke(captured);
                 }
 
-                // ── 引擎路径的 ICC 后置（P7a）──
-                // legacy 由 iccgen **在编码时**嵌入目标 ICC；引擎不跑 iccgen（像素在本进程转换），
-                // 因此计划要求附 ICC 时必须在此补齐，否则输出只有标签，甚至被元数据恢复带回
-                // **源 ICC** 而与转换后像素失配。TIFF 由下面那段（同源逻辑）负责，此处排除。
-                if (exitCode == 0 && engineUsed && engPlan is { AttachIcc: true }
-                    && engPlan.Action != ColorMapping.ColorAction.CarryIcc
-                    && string.IsNullOrWhiteSpace(opts.FaithfulIccPath)
-                    && !opts.Format.Equals("tiff", StringComparison.OrdinalIgnoreCase)
-                    && !opts.Format.Equals("tif", StringComparison.OrdinalIgnoreCase))
-                {
-                    string? iccFile = engPlan.IccPath;
-                    if (string.IsNullOrWhiteSpace(iccFile) && !string.IsNullOrWhiteSpace(engPlan.IccPrimaries))
-                        iccFile = IccProfileService.GetOrGenerateStandardIcc(probeInput,
-                            engPlan.IccPrimaries, engPlan.IccTrc, engPlan.IccMatrix,
-                            s => { captured.Log += s; _onItemUpdated?.Invoke(captured); }, ct);
-                    if (!string.IsNullOrWhiteSpace(iccFile) && File.Exists(iccFile))
-                    {
-                        var iccExit = await ExifToolService.EmbedIccProfileFromFileAsync(iccFile, finalOutputPath,
-                            s => { captured.Log += s; _onItemUpdated?.Invoke(captured); });
-                        captured.Log += iccExit == 0
-                            ? $"[色彩引擎] 已嵌入目标 ICC（{engPlan.IccPrimaries}/{engPlan.IccTrc}），与引擎转换后的像素一致\n"
-                            : iccExit == ExifToolService.NoWriteApplied
-                                ? "[色彩引擎] ⚠️ 目标 ICC 未写入：该容器不接受后置 ICC（像素已由 nclx 标签描述）\n"
-                                : $"[色彩引擎] ⚠️ ICC 嵌入失败（退出码 {iccExit}）；输出可能缺少色彩描述\n";
-                    }
-                    else
-                        captured.Log += "[色彩引擎] ⚠️ 计划要求附 ICC，但无法定位/生成目标 ICC ⇒ 输出缺少色彩描述（显式记录，不静默）\n";
-                    _onItemUpdated?.Invoke(captured);
-                }
-
-                // ── legacy 路径的 ICC 后置（步骤 3：单一裁决点判“要附而编码器不落盘”）──
-                // 非主分支的专用通路走同一个入口（见链尾的同名调用），避免“同一缺陷只有一条路径被修”。
+                // ── ICC 统一交付：源字节 / 生成目标 / 命名保真；不再另设 P7a Map 写入段 ──
+                // 已由编码器落盘的 ICC 只读回；所有“已交付”日志均以预期 profile 字节为证。
                 await EmbedDroppedFilterIccAsync(captured, finalOutputPath, probeInput,
                     engineUsed: engineUsed, mainBranch: mainBranch, exitCode: exitCode, decisionOptions: opts,
                     plan: engPlan, ct: ct);
@@ -2506,7 +2707,9 @@ namespace FfmpegGui.Services
                               + (string.IsNullOrWhiteSpace(engPlan.IccTrc) ? "" : "/" + engPlan.IccTrc);
                 }
 
-                if (exitCode == 0
+                if (exitCode == 0 && engPlan?.GainMap != true && !opts.JpegGainMap
+                    && engPlan?.Action != ColorMapping.ColorAction.CarryIcc
+                    && string.IsNullOrWhiteSpace(engPlan?.IccPath)
                     && FfmpegCommandBuilder.EffectiveColorStrategy(opts, probeInput)
                        is Models.ColorStrategy.Recommended or Models.ColorStrategy.Manual
                     && string.IsNullOrWhiteSpace(opts.FaithfulIccPath)   // 保真路径：像素未转→目标标准 ICC 会失配
@@ -2517,264 +2720,413 @@ namespace FfmpegGui.Services
                     // TIFF 格式能力恒将 trc 钳为 iec61966-2-1（见 GetFormatColorCapabilities），
                     // 像素 zscale 的 dstT=capTrc 亦然；故目标 ICC 的 trc 必须恒用 iec61966-2-1，
                     // 与像素编码精确一致（避免 Adobe RGB/BT.2020 的 spec.OutTrc=bt709 与像素 sRGB trc 失配）。
-                    var tiffTrc = "iec61966-2-1";
-                    var tiffIcc = IccProfileService.GetOrGenerateStandardIcc(
-                        probeInput, tiffPrimaries, tiffTrc, tiffMatrix,
-                        s => { captured.Log += s; _onItemUpdated?.Invoke(captured); }, ct);
-                    if (!string.IsNullOrWhiteSpace(tiffIcc))
+                    var tiffTrc = engPlan?.IccTrc ?? "iec61966-2-1";
+                    if (engPlan?.IccPrimaries is { Length: > 0 })
                     {
-                        var tiffIccExit = await ExifToolService.EmbedIccProfileFromFileAsync(
-                            tiffIcc, finalOutputPath,
-                            s => { captured.Log += s; _onItemUpdated?.Invoke(captured); });
-                        if (tiffIccExit == 0)
-                        {
-                            // C-13（2026-11-14 独立复核）：写入命令返回 0 不等于产物真的有 ICC。
-                            // 首跑“无法生成”那次用户看到的也是 exit 0 + 无 ICC；这里读回一次，至少让
-                            // “已嵌入”这句话有产物证据，读不到就点名失败，不再只报成功。
-                            var proof = await ExifToolService.ReadColorTagsResultAsync(
-                                finalOutputPath,
-                                s => { captured.Log += s; _onItemUpdated?.Invoke(captured); }, ct);
-                            bool hasProfile = !proof.Failed
-                                && proof.Tags.Keys.Any(k => k.EndsWith(":ICC_Profile", StringComparison.OrdinalIgnoreCase)
-                                                         || k.Equals("ICC_Profile", StringComparison.OrdinalIgnoreCase));
-                            captured.Log += hasProfile
-                                ? $"[tiff] 已嵌入目标色彩空间 ICC（{tiffLabel}），并读回确认（遵循 JPEG XL ICC 策略）\n"
-                                : $"[tiff] ⚠️ ICC 读回失败（{tiffLabel}）：写入命令 exit 0，但产物未检出 ICC"
-                                  + (proof.Failure != null ? $"（{proof.Failure}）" : "") + "\n";
-                        }
-                        else
-                        {
-                            captured.Log += $"[tiff] ⚠️ 目标 ICC 嵌入失败（退出码 {tiffIccExit}）\n";
-                        }
+                        tiffPrimaries = engPlan.IccPrimaries;
+                        tiffMatrix = engPlan.IccMatrix;
                     }
-                    else
-                    {
-                        captured.Log += $"[tiff] ⚠️ 无法生成目标 ICC（{tiffLabel}），TIFF 可能缺少色彩描述\n";
-                    }
+                    captured.Log += $"[tiff] 校验目标 ICC（{tiffLabel}），以产物 profile 字节为交付依据\n";
+                    await DeliverIccAsync(captured, finalOutputPath, probeInput, opts, engPlan,
+                        profilePath: null, tiffPrimaries, tiffTrc, tiffMatrix,
+                        generated: true, carrySource: false, ct: ct);
                     _onItemUpdated?.Invoke(captured);
                 }
 
-            // ── 超广色域保真 ICC 附着（点三）──
-            // FfmpegCommandBuilder 已判定并置位 FaithfulIccPath：像素完全未转换，
-            // 也未跑 iccgen（iccgen 无法命名 ProPhoto），故必须在此把命名 ICC 贴到输出容器。
-            // 必须在元数据恢复之后：exiftool 安全复制会排除源 ICC，本步为权威覆盖。
-            if (exitCode == 0
-                && !string.IsNullOrWhiteSpace(opts.FaithfulIccPath)
-                && File.Exists(opts.FaithfulIccPath))
+        }
+
+        // AVIF ICC belongs to the primary item's colr property. Read the bounded container directly:
+        // an unavailable ExifTool is not evidence that avifenc failed to write its --icc argument.
+        private static (bool Readable, byte[]? Icc, (ushort P, ushort T, ushort M, bool Full)? Cicp)
+            ReadAvifColorProperties(string path, CancellationToken ct)
+        {
+            try
             {
-                var fIcc = opts.FaithfulIccPath!;
-                var fExit = await ExifToolService.EmbedIccProfileFromFileAsync(fIcc, finalOutputPath,
-                    s => { captured.Log += s; _onItemUpdated?.Invoke(captured); });
-                captured.Log += fExit == 0
-                    ? $"[保真] 已附着超广色域命名 ICC（{Path.GetFileName(fIcc)}），像素未转换\n"
-                    : $"[保真] ⚠️ 命名 ICC 附着失败（退出码 {fExit}）；输出可能缺少色彩描述\n";
-                _onItemUpdated?.Invoke(captured);
+                ct.ThrowIfCancellationRequested();
+                using var stream = File.OpenRead(path);
+                if (stream.Length > IsoBmffGainMapProbe.MaxManagedParseBytes || stream.Length < 8)
+                    return (false, null, null);
+                var data = new byte[(int)stream.Length];
+                stream.ReadExactly(data);
+                IEnumerable<(string Type, int Start, int End)> Boxes(int start, int end)
+                {
+                    int count = 0;
+                    while (start < end)
+                    {
+                        if (++count > 65536 || end - start < 8) throw new InvalidDataException("Invalid AVIF box chain");
+                        ulong size = BinaryPrimitives.ReadUInt32BigEndian(data.AsSpan(start, 4));
+                        string type = Encoding.ASCII.GetString(data, start + 4, 4);
+                        int header = 8;
+                        if (size == 1)
+                        {
+                            if (end - start < 16) throw new InvalidDataException("Truncated AVIF box");
+                            size = BinaryPrimitives.ReadUInt64BigEndian(data.AsSpan(start + 8, 8));
+                            header = 16;
+                        }
+                        if (size == 0) size = (ulong)(end - start);
+                        if (size < (ulong)header || size > (ulong)(end - start)) throw new InvalidDataException("Invalid AVIF box length");
+                        int next = start + (int)size;
+                        yield return (type, start + header, next);
+                        start = next;
+                    }
+                }
+                var meta = Boxes(0, data.Length).Single(x => x.Type == "meta");
+                var children = Boxes(meta.Start + 4, meta.End).ToList();
+                var pitm = children.Single(x => x.Type == "pitm");
+                uint primary = data[pitm.Start] switch
+                {
+                    0 when pitm.End - pitm.Start == 6 => BinaryPrimitives.ReadUInt16BigEndian(data.AsSpan(pitm.Start + 4, 2)),
+                    1 when pitm.End - pitm.Start == 8 => BinaryPrimitives.ReadUInt32BigEndian(data.AsSpan(pitm.Start + 4, 4)),
+                    _ => throw new InvalidDataException("Invalid AVIF primary item")
+                };
+                var iprp = children.Single(x => x.Type == "iprp");
+                var propertyBoxes = Boxes(iprp.Start, iprp.End).ToList();
+                var ipco = propertyBoxes.Single(x => x.Type == "ipco");
+                var properties = Boxes(ipco.Start, ipco.End).ToList();
+                var associated = new List<int>();
+                bool foundPrimary = false;
+                foreach (var ipma in propertyBoxes.Where(x => x.Type == "ipma"))
+                {
+                    int q = ipma.Start;
+                    if (ipma.End - q < 8 || data[q] > 1) throw new InvalidDataException("Invalid AVIF associations");
+                    bool wideId = data[q] == 1;
+                    bool wideIndex = (data[q + 3] & 1) != 0;
+                    uint entries = BinaryPrimitives.ReadUInt32BigEndian(data.AsSpan(q + 4, 4)); q += 8;
+                    if (entries > (ipma.End - q) / 3) throw new InvalidDataException("Invalid AVIF association count");
+                    for (uint e = 0; e < entries; e++)
+                    {
+                        int idSize = wideId ? 4 : 2;
+                        if (ipma.End - q < idSize + 1) throw new InvalidDataException("Truncated AVIF association");
+                        uint id = wideId ? BinaryPrimitives.ReadUInt32BigEndian(data.AsSpan(q, 4))
+                            : BinaryPrimitives.ReadUInt16BigEndian(data.AsSpan(q, 2));
+                        q += idSize;
+                        int count = data[q++];
+                        if (ipma.End - q < count * (wideIndex ? 2 : 1)) throw new InvalidDataException("Truncated AVIF properties");
+                        if (id == primary)
+                        {
+                            if (foundPrimary) throw new InvalidDataException("Duplicate AVIF primary associations");
+                            foundPrimary = true;
+                        }
+                        for (int i = 0; i < count; i++)
+                        {
+                            int index = wideIndex ? BinaryPrimitives.ReadUInt16BigEndian(data.AsSpan(q, 2)) & 0x7fff : data[q] & 0x7f;
+                            q += wideIndex ? 2 : 1;
+                            if (id == primary && index != 0) associated.Add(index);
+                        }
+                    }
+                    if (q != ipma.End) throw new InvalidDataException("Invalid AVIF association extent");
+                }
+                if (!foundPrimary) return (false, null, null);
+                byte[]? icc = null;
+                (ushort P, ushort T, ushort M, bool Full)? cicp = null;
+                foreach (int index in associated)
+                {
+                    if (index > properties.Count) throw new InvalidDataException("Invalid AVIF property index");
+                    var prop = properties[index - 1];
+                    if (prop.Type != "colr") continue;
+                    if (prop.End - prop.Start < 4) throw new InvalidDataException("Truncated AVIF colr");
+                    string type = Encoding.ASCII.GetString(data, prop.Start, 4);
+                    if (type is "prof" or "rICC")
+                    {
+                        if (icc != null) throw new InvalidDataException("Duplicate AVIF ICC");
+                        icc = data.AsSpan(prop.Start + 4, prop.End - prop.Start - 4).ToArray();
+                    }
+                    else if (type == "nclx")
+                    {
+                        if (cicp != null || prop.End - prop.Start != 11 || (data[prop.Start + 10] & 0x7f) != 0)
+                            throw new InvalidDataException("Invalid AVIF nclx");
+                        cicp = (BinaryPrimitives.ReadUInt16BigEndian(data.AsSpan(prop.Start + 4, 2)),
+                            BinaryPrimitives.ReadUInt16BigEndian(data.AsSpan(prop.Start + 6, 2)),
+                            BinaryPrimitives.ReadUInt16BigEndian(data.AsSpan(prop.Start + 8, 2)), (data[prop.Start + 10] & 0x80) != 0);
+                    }
+                }
+                ct.ThrowIfCancellationRequested();
+                return (true, icc, cicp);
+            }
+            catch (OperationCanceledException) { throw; }
+            catch { return (false, null, null); }
+        }
+
+        private static async Task<byte[]?> ReadJxlIccBytesAsync(string path, CancellationToken ct)
+        {
+            var djxl = DjxlService.DetectedPath;
+            if (string.IsNullOrWhiteSpace(djxl) || !File.Exists(djxl)) return null;
+            var stem = Path.Combine(PlatformServices.GetTempDir(), $"jxl_icc_readback_{Guid.NewGuid():N}");
+            var imagePath = stem + ".png";
+            var iccPath = stem + ".icc";
+            var originalIccPath = stem + ".orig.icc";
+            Process? process = null;
+            try
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = djxl, UseShellExecute = false, CreateNoWindow = true,
+                    RedirectStandardOutput = true, RedirectStandardError = true,
+                    StandardOutputEncoding = Encoding.UTF8, StandardErrorEncoding = Encoding.UTF8
+                };
+                psi.ArgumentList.Add(path);
+                psi.ArgumentList.Add(imagePath);
+                psi.ArgumentList.Add($"--icc_out={iccPath}");
+                psi.ArgumentList.Add($"--orig_icc_out={originalIccPath}");
+                psi.ArgumentList.Add("--quiet");
+                process = Process.Start(psi);
+                if (process == null) return null;
+                var stdoutTask = process.StandardOutput.ReadToEndAsync();
+                var stderrTask = process.StandardError.ReadToEndAsync();
+                using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+                using var linked = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token, ct);
+                try { await process.WaitForExitAsync(linked.Token).ConfigureAwait(false); }
+                catch (OperationCanceledException)
+                {
+                    try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { }
+                    if (ct.IsCancellationRequested) throw;
+                    return null;
+                }
+                await Task.WhenAll(stdoutTask, stderrTask).ConfigureAwait(false);
+                if (process.ExitCode != 0) return null;
+                var selected = File.Exists(originalIccPath) ? originalIccPath : iccPath;
+                if (!File.Exists(selected)) return null;
+                var bytes = await File.ReadAllBytesAsync(selected, ct).ConfigureAwait(false);
+                return bytes.Length >= 128 ? bytes : null;
+            }
+            catch (OperationCanceledException) { throw; }
+            catch { return null; }
+            finally
+            {
+                if (process != null)
+                {
+                    try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { }
+                    process.Dispose();
+                }
+                foreach (var temp in new[] { imagePath, iccPath, originalIccPath })
+                    try { if (File.Exists(temp)) File.Delete(temp); } catch { }
             }
         }
-        /// <summary>
-        /// 裁决点判「本应附 ICC，但该容器的编码器会把 <c>iccgen</c> 的 ICC 丢弃」时的后置补齐（步骤 3）。
-        /// 实测：png(iCCP)/jpg(APP2)/tiff 能落盘，**webp 不能**（libwebp 不写 ICCP 块），exiftool 后置嵌入可正常读回。
-        /// 主分支与已登记的专用通路**共用本入口**（P7a-3），避免“同一个缺陷只有一条路径被修”；
-        /// 未登记的通路（命令行非裁决点产出）不得调用本方法，只能显式记录“裁决点未参与”。
-        /// </summary>
-        /// <param name="decisionOptions">命令行实际用的 options（与 <c>actualInput</c> 成对）；主分支传 null 即用 item.Options。</param>
-        /// <param name="ct">取消令牌（`#26`：唯一调用方 `ApplyColorPostStepsAsync` 持有它，本跳之前是断点）</param>
+
+        private static async Task<bool> ArtifactHasIccAsync(string path, string format, byte[] expected, CancellationToken ct)
+        {
+            if (format is "png" or "apng")
+                return PngCicpService.TryReadIccp(path) is { } bytes && expected.AsSpan().SequenceEqual(bytes);
+            if (format == "avif")
+                return ReadAvifColorProperties(path, ct) is { Readable: true, Icc: { } icc } && expected.AsSpan().SequenceEqual(icc);
+            if (format == "jxl")
+            {
+                var native = await ReadJxlIccBytesAsync(path, ct).ConfigureAwait(false);
+                return native != null && expected.AsSpan().SequenceEqual(native);
+            }
+            if (IccContainerReader.TryRead(path, out var containerIcc))
+                return containerIcc != null && expected.AsSpan().SequenceEqual(containerIcc);
+            var (actual, _) = IccProfileService.ExtractIccToTempFile(path, ct: ct, preserveSourceBytes: true);
+            try { return actual != null && expected.AsSpan().SequenceEqual(File.ReadAllBytes(actual)); }
+            finally { IccProfileService.TryDeleteIcc(actual); }
+        }
+
+        private static string? ExtractSourceIccForCarry(string path, Action<string>? log, CancellationToken ct)
+            => IccProfileService.ExtractIccToTempFile(path, log, ct, preserveSourceBytes: true).path;
+
+        private static async Task<bool> ArtifactCarriesInputIccAsync(string inputPath, string outputPath, string format,
+            CancellationToken ct)
+        {
+            byte[]? expected = null;
+            string? extracted = null;
+            try
+            {
+                if (Path.GetExtension(inputPath).Equals(".jxl", StringComparison.OrdinalIgnoreCase))
+                    expected = await ReadJxlIccBytesAsync(inputPath, ct).ConfigureAwait(false);
+                else if (IccContainerReader.TryRead(inputPath, out var containerIcc))
+                    expected = containerIcc;
+                else
+                {
+                    (extracted, _) = IccProfileService.ExtractIccToTempFile(inputPath, ct: ct, preserveSourceBytes: true);
+                    if (extracted != null) expected = await File.ReadAllBytesAsync(extracted, ct).ConfigureAwait(false);
+                }
+                return expected != null && await ArtifactHasIccAsync(outputPath, format, expected, ct).ConfigureAwait(false);
+            }
+            finally { IccProfileService.TryDeleteIcc(extracted); }
+        }
+
+        // Only independently read, matching output annotations may substitute for a missing generated ICC.
+        // Reuse the existing bounded probes; never start an unbounded synchronous metadata process here.
+        private async Task<string?> ReadIccFallbackAsync(string path, FfmpegOptions opts,
+            ColorMapping.ColorTransformPlan? plan, string? primaries, string? transfer, string? matrix, CancellationToken ct)
+        {
+            var fmt = (opts.Format ?? "").Trim().TrimStart('.').ToLowerInvariant();
+            var caps = ColorMapping.ColorMappingEngine.CapsFor(fmt);
+            if (!File.Exists(path) || !FfmpegCommandBuilder.TryGetCicpNumbers(primaries, transfer, out byte p, out byte t)) return null;
+            bool srgb = p == 1 && t == 13;
+            if (fmt == "avif")
+            {
+                var actual = ReadAvifColorProperties(path, ct);
+                if (!caps.CanCicp || !actual.Readable || actual.Icc != null || actual.Cicp is not { } c) return null;
+                var expectedMatrix = ColorMapping.AvifCicp.MatrixCode(plan?.OutMatrix ?? matrix);
+                bool matrixMatches = c.M == expectedMatrix
+                    || (c.M == 0 && plan?.OutMatrixVerdict != ColorMapping.OutMatrixCapability.Carried);
+                return c.P == p && c.T == t && matrixMatches && c.Full == (ColorMapping.ImageEncoderArgs.ExplicitRange(opts) != "tv")
+                    ? $"independently read AVIF nclx {c.P}/{c.T}/{c.M}/{(c.Full ? "full" : "limited")}" : null;
+            }
+            if (fmt is "png" or "apng")
+            {
+                if (PngCicpService.ReadIccp(path, out _) != PngCicpService.PngColorTagState.Absent) return null;
+                var state = PngCicpService.ReadCicp(path, out byte cp, out byte tr, out bool narrow);
+                if (state != PngCicpService.PngColorTagState.Absent)
+                    return caps.CanCicp && state == PngCicpService.PngColorTagState.Valid && cp == p && tr == t && !narrow
+                        ? $"independently read PNG cICP {cp}/{tr}/0/full" : null;
+            }
+            else
+            {
+                bool nativeRead = IccContainerReader.TryRead(path, out var storedProfile);
+                if (nativeRead && storedProfile != null) return null;
+                if (!ExifToolService.IsAvailable)
+                {
+                    // A missing optional writer is not evidence of a missing/incorrect color
+                    // description. For supported containers the native reader can prove ICC
+                    // absence; the bounded frame probe below must also confirm sRGB semantics.
+                    if (!nativeRead || !caps.UnlabeledMeansSrgb || !srgb) return null;
+                }
+                else
+                {
+                    var proof = await ExifToolService.ReadColorTagsResultAsync(path, ct: ct);
+                    if (proof.Failed || proof.Tags.Keys.Any(k => k.EndsWith(":ICC_Profile", StringComparison.OrdinalIgnoreCase)
+                        || k.Equals("ICC_Profile", StringComparison.OrdinalIgnoreCase))) return null;
+                    if (proof.Tags.Any(kv => kv.Key.EndsWith(":ColorSpace", StringComparison.OrdinalIgnoreCase)
+                        && kv.Value is not ("sRGB" or "Uncalibrated" or "1" or "65535"))) return null;
+                }
+            }
+            if (!caps.CanCicp && !(caps.UnlabeledMeansSrgb && srgb)) return null;
+            var delivered = FfmpegCommandBuilder.ProbeDeliveredVideoColor(path, null, ct);
+            ct.ThrowIfCancellationRequested();
+            if (string.IsNullOrWhiteSpace(delivered.pixFmt)) return null; // failed probe is not an unlabeled artifact
+            if (caps.CanCicp && FfmpegCommandBuilder.TryGetCicpNumbers(delivered.colorPrimaries, delivered.colorTrc, out byte dp, out byte dt)
+                && dp == p && dt == t)
+            {
+                var expectedMatrix = ColorMapping.AvifCicp.MatrixCode(plan?.OutMatrix ?? matrix);
+                var actualMatrix = ColorMapping.AvifCicp.MatrixCode(delivered.colorSpace);
+                bool matrixMatches = expectedMatrix != null && actualMatrix == expectedMatrix
+                    || (caps.RgbNative && actualMatrix == 0);
+                if (matrixMatches && (!caps.RgbNative || delivered.colorRange == "pc"))
+                    return $"independently read CICP {dp}/{dt}/{actualMatrix}/{delivered.colorRange}";
+            }
+            static bool Unspecified(string? token) => string.IsNullOrWhiteSpace(token) || token is "unknown" or "unspecified" or "reserved";
+            if (caps.UnlabeledMeansSrgb && srgb
+                && (Unspecified(delivered.colorPrimaries) || delivered.colorPrimaries == "bt709")
+                && (Unspecified(delivered.colorTrc) || delivered.colorTrc == "iec61966-2-1"))
+                return "independently read untagged/standard sRGB artifact; container implicit sRGB";
+            return null;
+        }
+
+        private async Task DeliverIccAsync(QueueItem item, string outputPath, string actualInput,
+            FfmpegOptions opts, ColorMapping.ColorTransformPlan? plan, string? profilePath,
+            string? primaries, string? transfer, string? matrix, bool generated, bool carrySource, CancellationToken ct)
+        {
+            var fmt = (opts.Format ?? "").Trim().TrimStart('.').ToLowerInvariant();
+            string failure = "the planned ICC could not be read/generated";
+            try
+            {
+                if (generated && (string.IsNullOrWhiteSpace(profilePath) || !File.Exists(profilePath)) && primaries != null)
+                    profilePath = IccProfileService.GetOrGenerateStandardIcc(actualInput, primaries, transfer, matrix,
+                        s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ct);
+                byte[]? expected = profilePath != null && File.Exists(profilePath) ? File.ReadAllBytes(profilePath) : null;
+                if (expected == null && generated && primaries != null && transfer != null)
+                    expected = IccProfileService.BuildStandardIccBytesFromCicp(primaries, transfer);
+                if (expected is { Length: >= 132 } && (!generated || IccProfileService.IsGeneratedV44(expected)))
+                {
+                    bool delivered = await ArtifactHasIccAsync(outputPath, fmt, expected, ct).ConfigureAwait(false);
+                    if (!delivered && fmt is not ("avif" or "jxl")) // AVIF/JXL ICC is encoder-owned; never blind-reembed after read-back failure
+                    {
+                        if (fmt is "png" or "apng")
+                        {
+                            bool wrote = generated ? PngCicpService.TryWriteIccpBytes(outputPath, expected, $"{primaries}/{transfer}")
+                                : PngCicpService.TryWriteIccOnly(outputPath, expected);
+                            failure = wrote ? "ICC bytes did not survive output read-back" : "PNG iCCP write failed";
+                        }
+                        else if (profilePath != null && File.Exists(profilePath))
+                        {
+                            int result = await ExifToolService.EmbedIccProfileFromFileAsync(profilePath, outputPath,
+                                s => { item.Log += s; _onItemUpdated?.Invoke(item); });
+                            failure = $"ICC embedding returned {result}; expected bytes were not read back";
+                        }
+                        delivered = await ArtifactHasIccAsync(outputPath, fmt, expected, ct).ConfigureAwait(false);
+                    }
+                    if (delivered)
+                    {
+                        item.Log += $"[icc] {(carrySource ? "Original source ICC preserved byte-exact" : generated ? "Generated ICC v4.4 delivered" : "Faithful named ICC delivered")}; output profile bytes independently verified"
+                            + (fmt == "avif" ? " (avifenc; no ExifTool rewrite)" : "") + ".\n";
+                        _onItemUpdated?.Invoke(item);
+                        return;
+                    }
+                    if (fmt == "avif") failure = "avifenc output ICC did not match the planned profile (or container read-back was unavailable)";
+                }
+                else if (expected != null) failure = generated ? "generated profile failed IsGeneratedV44 validation" : "planned profile bytes were unreadable";
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) { failure = ex.Message; }
+            ct.ThrowIfCancellationRequested();
+            if (!carrySource && await ReadIccFallbackAsync(outputPath, opts, plan, primaries, transfer, matrix, ct) is { } fallback)
+            {
+                item.Log += $"[icc] ⚠ WARN: ICC_NOT_DELIVERED: {failure}; ICC was NOT delivered/embedded; retaining artifact with {fallback}.\n";
+                item.MarkWarning("ICC was not delivered; independently verified color fallback retained");
+                _onItemUpdated?.Invoke(item);
+                return;
+            }
+            throw new ColorMapping.ColorOutputContractException(carrySource ? "ICC_CARRY_WRITE_FAILED" : "ICC_TARGET_NOT_DELIVERED",
+                failure + "; no independently verified color fallback matches the output plan");
+        }
+
+        // One owner for source-byte carry, generated target ICC and faithful named profiles.
         private async Task EmbedDroppedFilterIccAsync(QueueItem item, string outputPath, string actualInput,
             bool engineUsed, bool mainBranch, int exitCode = 0, FfmpegOptions? decisionOptions = null,
             ColorMapping.ColorTransformPlan? plan = null, CancellationToken ct = default)
         {
-            // 引擎路径不跑 iccgen（像素在本进程转换），它的目标 ICC 由 P7a 那段后置逻辑负责。
-            // 例外：计划要求生成标准 ICC（CarryIcc 的零像素重写，或 CICP-only 的“按源 CICP 生成”）
-            // 必须在引擎路径也执行；判据看 AttachIcc+IccPrimaries，而不是只看 Action=CarryIcc
-            // （后者在 CICP-only 分支被置为 None，但仍承诺附 ICC）。
-
             var copts = decisionOptions ?? item.Options;
-            bool wantsGeneratedPlanIcc = plan is { AttachIcc: true, IccPrimaries: { Length: > 0 } }
-                && string.IsNullOrWhiteSpace(plan.IccPath)
-                && plan.Action is ColorMapping.ColorAction.CarryIcc
-                    or ColorMapping.ColorAction.None
-                    or ColorMapping.ColorAction.Map;
-            bool planPromisesSourceIcc = plan is { Action: ColorMapping.ColorAction.CarryIcc, AttachIcc: true };
-            // TIFF 的计划生成 ICC 由下方专用段负责（同一目标空间、含回读确认）；这里再做一次
-            // 只会多写一遍并留下 .icc-embed 临时件。源 ICC 回带（CarryIcc）仍走下面的规范化分支。
-            var fmtEarly = (item.Options.Format ?? "").ToLowerInvariant();
-            if (fmtEarly is "tiff" or "tif" && wantsGeneratedPlanIcc
-                && FfmpegCommandBuilder.EffectiveColorStrategy(copts, actualInput)
-                    is Models.ColorStrategy.Recommended or Models.ColorStrategy.Manual) return;
-            if (exitCode != 0) return;
-            // 引擎路径也要执行两类后置：①计划承诺生成标准 ICC（CarryIcc/CICP-only）；
-            // ②出口语义要求后置 ICC（如 webp 丢弃 iccgen 的 ICC），或计划承诺回带源 ICC。
-            // 不先算 dec 就只看 Action，会把 Map 出口的 webp/JXL 产物漏成零标注。
-            var dec = FfmpegCommandBuilder.DecideOutputColor(copts, actualInput);
-            if (engineUsed && !wantsGeneratedPlanIcc && !dec.NeedsPostEmbedIcc && !planPromisesSourceIcc) return;
-            var fmtL = (item.Options.Format ?? "").ToLowerInvariant();
-            // 2026-11-15：AVIF 的 ICC 由 avifenc --icc 在编码时写入；exiftool 不支持 AVIF
-            // ICC 后置（实测 0 files updated），再嵌一次只会覆盖/失败。直接跳过，保留 avifenc 产物。
-            if (engineUsed && plan is { AvifIccExit: true })
+            if (exitCode != 0 || plan?.GainMap == true || copts.JpegGainMap) return;
+            var fmt = (copts.Format ?? "").Trim().TrimStart('.').ToLowerInvariant();
+            if (!string.IsNullOrWhiteSpace(copts.FaithfulIccPath))
             {
-                item.Log += "[色彩] AVIF ICC 已随 avifenc 编码写入 ⇒ 跳过 exiftool 后置 ICC\n";
-                _onItemUpdated?.Invoke(item);
+                await DeliverIccAsync(item, outputPath, actualInput, copts, plan, copts.FaithfulIccPath,
+                    null, null, null, generated: false, carrySource: false, ct: ct);
                 return;
             }
-            if (!mainBranch)
+            var dec = FfmpegCommandBuilder.DecideOutputColor(copts, actualInput);
+            bool sourceCarry = plan is { Action: ColorMapping.ColorAction.CarryIcc, AttachIcc: true, IccPath: not null };
+            // A legacy dedicated route may not have an engine plan. Preserve only a known valid source;
+            // malformed/unreadable source ICC keeps the existing warn-and-continue policy.
+            if (plan == null && dec.EffectiveStrategy == Models.ColorStrategy.CarryIcc
+                && ColorMapping.ColorMappingEngine.CapsFor(fmt).CanCarryArbitraryIcc)
             {
-                // 只在“这个组合确实会丢东西”时告警，不给所有专用通路制造噪音。
-                bool warned = false;
-                if (!string.IsNullOrWhiteSpace(copts.FaithfulIccPath)
-                    && fmtL is "png" or "apng" or "jpg" or "jpeg" or "tiff" or "tif" or "webp")
-                {
-                    item.Log += $"[色彩后置] ⚠️ 本通路不经过主分支的保真 ICC 附着（{Path.GetFileName(copts.FaithfulIccPath)} 未嵌入）⇒ 输出缺少色彩描述\n";
-                    warned = true;
-                }
-                else if (fmtL is "png" or "apng" && copts.BitDepth is 10 or 12)
-                {
-                    item.Log += "[色彩后置] ⚠️ 本通路不经过主分支的 PNG sBIT 补写 ⇒ 10/12-bit 有效位标记缺失\n";
-                    warned = true;
-                }
-                if (warned) _onItemUpdated?.Invoke(item);
+                var source = FfmpegCommandBuilder.ProbeInputColorMetadata(actualInput, ct: ct);
+                sourceCarry = !source.DiscardSourceIcc && source.iccIdentity?.IsValid == true;
             }
-            // 保真路径：像素未转，附自生成标准 ICC 会失配 ⇒ 只依赖命名 ICC 那一步（主分支已做）。
-            if (!string.IsNullOrWhiteSpace(copts.FaithfulIccPath)) return;
-            if (!dec.NeedsPostEmbedIcc && !wantsGeneratedPlanIcc && !planPromisesSourceIcc) return;
-            // 计划承诺携带时**先读回产物**再决定叠不叠生成 ICC。本仓顺序是"元数据恢复在前、色彩后置在后"，
-            // 不读回就会用生成 ICC 覆盖刚落位的源字节——而携带的承诺恰恰是"像素未动 ⇒ 源描述才真"。
-            // 读不到 ICC（回带失败 / 容器不收）⇒ 照常嵌入并点名，绝不留静默空档。
-            // 文案 ASCII：`_probe-cjk-hardcode-scan` 把 item.Log 的中文行算进 UI 面棘轮。
-            if (plan is { Action: ColorMapping.ColorAction.CarryIcc, GainMap: false }
-                && !wantsGeneratedPlanIcc)
+            if (sourceCarry)
             {
-                var originalIccBytes = fmtL is "png" or "apng"
-                    ? PngCicpService.TryReadIccp(outputPath) : null;
-                var originalIccVersion = originalIccBytes is { Length: >= 132 } b
-                    ? $"{b[8]}.{b[9] >> 4}.{b[9] & 0xF}" : (string?)null;
-                bool originalHasCicp = originalIccBytes is { Length: >= 132 } ob
-                    && IccProfileService.FindIccTag(ob, "cicp").size > 0;
-                bool originalHasProfileId = originalIccBytes is { Length: >= 100 } oid
-                    && oid.Skip(84).Take(16).Any(v => v != 0);
-                // 计划的目标空间可被 H.273 命名时，ICC 内部也必须带 cicp tag；
-                // 版本已是 4.4 不等于满足这条额外语义（iccgen 产物就是 4.4 但无 cicp）。
-                bool expectCicp = plan.IccPrimaries is { Length: > 0 } ip
-                    && plan.IccTrc is { Length: > 0 } it
-                    && FfmpegGui.Services.ColorMapping.AvifCicp.FromSourceTokens(ip, it) != null;
-                var (carriedIcc, carriedDesc) = IccProfileService.ExtractIccToTempFile(outputPath, s2 => { item.Log += s2; _onItemUpdated?.Invoke(item); }, ct);
-                bool generatedReplacement = false;
-                if (!string.IsNullOrWhiteSpace(carriedIcc) && expectCicp && !originalHasCicp)
+                string? sourcePath = plan?.IccPath;
+                string? extracted = null;
+                try
                 {
-                    // 产物带的是 iccgen 生成的标准 profile（4.4 但无 cicp）；换成纯托管标准 ICC，
-                    // 同色度/同版本，同时写 ICC.1:2022 cicp tag。不能只跳过“版本已 4.4”。
-                    var standard = IccProfileService.GetOrGenerateStandardIcc(actualInput,
-                        plan.IccPrimaries!, plan.IccTrc, plan.IccMatrix ?? "bt709",
-                        s2 => { item.Log += s2; _onItemUpdated?.Invoke(item); }, ct);
-                    if (!string.IsNullOrWhiteSpace(standard))
+                    if (sourcePath == null || !File.Exists(sourcePath))
                     {
-                        carriedIcc = standard;
-                        carriedDesc = "standard ICC with cicp";
-                        generatedReplacement = true;
+                        (extracted, _) = IccProfileService.ExtractIccToTempFile(actualInput, ct: ct, preserveSourceBytes: true);
+                        sourcePath = extracted;
                     }
+                    await DeliverIccAsync(item, outputPath, actualInput, copts, plan, sourcePath,
+                        null, null, null, generated: false, carrySource: true, ct: ct);
                 }
-                if (!string.IsNullOrWhiteSpace(carriedIcc))
-                {
-                    if (originalIccVersion == "4.4.0" && (!expectCicp || originalHasCicp) && originalHasProfileId)
-                    {
-                        item.Log += $"[color] artifact already carries a v4.4 source ICC (desc={carriedDesc ?? "n/a"}) => no rewrite needed (pixels were never converted, plan Action=CarryIcc)\n";
-                        IccProfileService.TryDeleteIcc(carriedIcc);
-                        _onItemUpdated?.Invoke(item);
-                        return;
-                    }
-                    // ffmpeg 会把源 ICC 作为 stream side-data 原样复制到产物（即使我们后置附着失败）；
-                    // ExtractIccToTempFile 已把旧版源 profile 重写成 v4.4，这里必须**回写**，
-                    // 否则“读回已有 ICC 就跳过”会让 v2 源 profile 直接漏到产物。
-                    bool rewritten = false;
-                    if (fmtL is "png" or "apng")
-                    {
-                        rewritten = PngCicpService.TryWriteIccp(outputPath, carriedIcc, "ICC");
-                    }
-                    else
-                    {
-                        var rewriteExit = await ExifToolService.EmbedIccProfileFromFileAsync(carriedIcc, outputPath,
-                            s => { item.Log += s; _onItemUpdated?.Invoke(item); });
-                        rewritten = rewriteExit == 0;
-                    }
-                    if (rewritten)
-                    {
-                        item.Log += generatedReplacement
-                            ? "[color] standard ICC with cicp tag written (replaced iccgen profile lacking cicp)\n"
-                            : $"[color] source ICC rewritten to v4.4.0 (was {originalIccVersion ?? "unknown"}, desc={carriedDesc ?? "n/a"}) => artifact now carries the normalized profile\n";
-                        if (!generatedReplacement) IccProfileService.TryDeleteIcc(carriedIcc);
-                        _onItemUpdated?.Invoke(item);
-                        return;
-                    }
-                    item.Log += "[color] WARN: source profile already present but v4.4 rewrite could not be written => falling back to the generated exit-semantics profile below\n";
-                    if (!generatedReplacement) IccProfileService.TryDeleteIcc(carriedIcc);
-                }
-                else
-                {
-                    item.Log += "[color] WARN: plan promised CarryIcc but the artifact carries no ICC => falling back to the generated exit-semantics profile below (source re-copy failed or the container rejected it)\n";
-                }
-                _onItemUpdated?.Invoke(item);
+                finally { IccProfileService.TryDeleteIcc(extracted); }
+                return;
             }
-            string? wIcc = IccProfileService.GetOrGenerateStandardIcc(actualInput,
-                wantsGeneratedPlanIcc ? plan!.IccPrimaries! : dec.OutPrimaries!,
-                wantsGeneratedPlanIcc ? plan!.IccTrc : dec.OutTrc!,
-                wantsGeneratedPlanIcc ? plan!.IccMatrix ?? "bt709" : dec.MatrixForOutput ?? "bt709",
-                s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ct);
-            // 2026-11-15：PNG/APNG 的标准 ICC 不落临时文件，直接从内存字节写 iCCP。
-            // 本机实测产品进程写 %TEMP%\stdbuilt_*.icc 会被 ACL/Defender 拒绝
-            // （UnauthorizedAccess_IODenied_Path），而输出目录可写 ⇒ 不再让临时 ICC 成为双写的前置条件。
-            if (string.IsNullOrWhiteSpace(wIcc) && wantsGeneratedPlanIcc
-                && fmtL is "png" or "apng")
-            {
-                var direct = IccProfileService.BuildStandardIccBytesFromCicp(
-                    plan!.IccPrimaries!, plan.IccTrc!);
-                if (direct is { Length: >= 132 }
-                    && PngCicpService.TryWriteIccpBytes(outputPath, direct,
-                        $"{plan.IccPrimaries}/{plan.IccTrc}"))
-                {
-                    item.Log += $"[色彩] 已由 PNG iCCP 直写标准 ICC（{plan.IccPrimaries}/{plan.IccTrc}，内存字节，无临时文件），CICP 保留\n";
-                    _onItemUpdated?.Invoke(item);
-                    return;
-                }
-            }
-            if (string.IsNullOrWhiteSpace(wIcc) && wantsGeneratedPlanIcc)
-            {
-                // 标准 ICC 生成失败时，宁可回退源 ICC，也不能让产物缺少描述（并显式播报）。
-                var (sourceIcc, sourceDesc) = IccProfileService.ExtractIccToTempFile(actualInput,
-                    s2 => { item.Log += s2; _onItemUpdated?.Invoke(item); }, ct);
-                if (!string.IsNullOrWhiteSpace(sourceIcc))
-                {
-                    wIcc = sourceIcc;
-                    item.Log += $"[color] WARN: standard ICC generation failed => fallback to source ICC (desc={sourceDesc ?? "n/a"}), pixels unchanged\n";
-                    _onItemUpdated?.Invoke(item);
-                }
-            }
-            if (!string.IsNullOrWhiteSpace(wIcc) && File.Exists(wIcc))
-            {
-                int wExit;
-                if (fmtL is "png" or "apng"
-                    && PngCicpService.TryWriteIccp(outputPath, wIcc,
-                        wantsGeneratedPlanIcc ? $"{plan!.IccPrimaries}/{plan.IccTrc}" : "ICC"))
-                {
-                    // PNG/APNG 走纯托管 iCCP 写入：不依赖 exiftool 的 Perl 运行时，
-                    // 也避免同一目标上“恢复源 ICC / 嵌入标准 ICC”两个 exiftool 临时件互踩。
-                    wExit = 0;
-                    item.Log += $"[色彩] 已由 PNG iCCP 写入标准 ICC（{(wantsGeneratedPlanIcc ? plan!.IccPrimaries + "/" + plan.IccTrc : dec!.OutPrimaries + "/" + dec.OutTrc)}），CICP 保留\n";
-                }
-                else
-                {
-                    wExit = await ExifToolService.EmbedIccProfileFromFileAsync(wIcc, outputPath,
-                        s => { item.Log += s; _onItemUpdated?.Invoke(item); });
-                }
-                item.Log += wExit == 0
-                    ? (fmtL is "png" or "apng"
-                        ? ""
-                        : $"[色彩] 已嵌入出口语义 ICC（{dec.OutPrimaries}/{dec.OutTrc}）——该容器编码器会丢弃 iccgen 的 ICC，故后置补齐\n")
-                    : wExit == ExifToolService.NoWriteApplied
-                        ? "[色彩] ⚠️ 出口语义 ICC 未写入：该容器不接受后置 ICC（像素若已由 nclx/NCLX 标签描述则无损）\n"
-                        : $"[色彩] ⚠️ ICC 嵌入失败（退出码 {wExit}）；输出色彩描述缺失，广色域像素将被按 sRGB 误读\n";
-            }
-            else
-                item.Log += $"[色彩] ⚠️ 无法生成出口语义 ICC（{dec.OutPrimaries}/{dec.OutTrc}）⇒ 输出缺少色彩描述（显式记录，不静默）\n";
-            _onItemUpdated?.Invoke(item);
+            if (plan == null && dec.EffectiveStrategy == Models.ColorStrategy.CarryIcc)
+                plan = FfmpegCommandBuilder.ResolveLegacyVerdictPlan(copts, actualInput);
+            bool wantsGenerated = plan?.AttachIcc ?? (dec.AttachIcc && dec.EffectiveStrategy != Models.ColorStrategy.CarryIcc);
+            if (!wantsGenerated) return;
+            // TIFF's explicit-target/SDR clamp remains below; it calls the same delivery contract.
+            if (fmt is "tiff" or "tif" && string.IsNullOrWhiteSpace(plan?.IccPath)
+                && dec.EffectiveStrategy is Models.ColorStrategy.Recommended or Models.ColorStrategy.Manual)
+                return;
+            await DeliverIccAsync(item, outputPath, actualInput, copts, plan, plan?.IccPath,
+                plan != null ? plan.IccPrimaries : dec.OutPrimaries,
+                plan != null ? plan.IccTrc : dec.OutTrc,
+                plan != null ? plan.IccMatrix ?? plan.OutMatrix : dec.MatrixForOutput,
+                generated: plan == null || plan.IccFromGenerator || string.IsNullOrWhiteSpace(plan.IccPath),
+                carrySource: false, ct: ct);
         }
 
         // ── 编码器后端专用处理方法 ──
@@ -2905,9 +3257,9 @@ namespace FfmpegGui.Services
         /// <para>收口在本方法而不是 19 个调用点：那些点是各通路的早退分支，逐点接线必然漏。</para>
         /// </summary>
         private async Task RestoreMetadataAsync(QueueItem item, string outputPath,
-            ColorMapping.ColorTransformPlan? engPlan = null)
+            ColorMapping.ColorTransformPlan? engPlan = null, CancellationToken ct = default)
         {
-            await RestoreMetadataCoreAsync(item, outputPath, engPlan);
+            await RestoreMetadataCoreAsync(item, outputPath, engPlan, ct);
 
             if (!item.Options.EnableThumbnail) return;
             await ThumbnailService.ApplyAsync(outputPath, item.Options,
@@ -2916,7 +3268,7 @@ namespace FfmpegGui.Services
 
         /// <summary>外部工具编码后恢复元数据（优先 exiftool，不可用时回退 ffmpeg）</summary>
         private async Task RestoreMetadataCoreAsync(QueueItem item, string outputPath,
-            ColorMapping.ColorTransformPlan? engPlan = null)
+            ColorMapping.ColorTransformPlan? engPlan = null, CancellationToken ct = default)
         {
             if (item.Options.MetadataMode != Models.MetadataMode.PreserveAll)
             {
@@ -2993,14 +3345,24 @@ namespace FfmpegGui.Services
             //   实测（HDR 源 + 源附 P3 ICC + `--format jpg --jpeg-gain-map true`）：
             //     · 默认（引擎/Ffmpeg 后端）：底图 ICC = `75FF19E1…` —— **自己的色域**，正确；
             //     · `--encoder cjpegli`：底图 ICC = `D6881218…` —— 与**源 P3 ICC 逐字节相同** ⇒ 错标。
+            // XYB JPEG has an encoder-owned LUT ICC; copying source RGB ICC would misdescribe it.
             var encoderProtectsColor =
-                backend == EncoderBackend.Cjxl ||
-                backend == EncoderBackend.Jxr ||
-                backend == EncoderBackend.Ffmpeg ||
-                (backend == EncoderBackend.Cjpegli && item.Options.JpegGainMap);
+                backend is EncoderBackend.Cjxl or EncoderBackend.Jxr or EncoderBackend.Ffmpeg
+                || (backend == EncoderBackend.Cjpegli && item.Options.JpegGainMap)
+                || (backend == EncoderBackend.Cjpegli && item.Options.ColorOutMatrix == "xyb");
+
+            if (backend == EncoderBackend.Cjpegli && item.Options.ColorOutMatrix == "xyb"
+                && item.Options.ColorStrategy == Models.ColorStrategy.CarryIcc)
+            {
+                const string warning = "XYB requires the encoder-owned ICC; the original RGB ICC cannot also describe the encoded samples and is not copied back.";
+                item.Log += "[icc] ⚠ WARN: " + warning + "\n";
+                item.MarkWarning(warning);
+            }
 
             // 综合判断：用户指定 或 编码器保护 → 安全模式
-            var protectColorMetadata = userSpecifiedColor || encoderProtectsColor;
+            var probedSource = FfmpegCommandBuilder.ProbeInputColorMetadata(item.InputPath);
+            var protectColorMetadata = userSpecifiedColor || encoderProtectsColor || probedSource.DiscardSourceIcc
+                || probedSource.iccIdentity?.Kind == ColorMapping.IccProfileKind.LutOrUnsupported;
 
             // TIFF 特殊处理：TIFF 使用 ICC Profile 色彩管理，不支持视频风格 color_primaries。
             // 元数据复制因此走“不覆盖色彩标签”的路径；最终出口 ICC 由色彩后置步骤决定
@@ -3010,8 +3372,8 @@ namespace FfmpegGui.Services
             if (isTiff && userSpecifiedColor)
             {
                 item.Log += "[tiff] TIFF 以 ICC Profile 承载色彩（无 color_primaries 模式）：元数据复制不覆盖色彩标签，"
-                    + "出口 ICC 由色彩后置步骤嵌入并覆盖随元数据带回的源 ICC\n";
-                protectColorMetadata = false; // 允许完整元数据复制（含 ICC Profile）
+                    + "出口 ICC 由色彩后置步骤交付并校验，不回带源色彩描述\n";
+                protectColorMetadata = true; // TIFF 也不能由源 ICC/EXIF ColorSpace 覆盖本次输出计划
             }
 
             // ── 优先：exiftool；缺失时按用户口径改用 ffmpeg（只提示缺工具，不标黄） ──
@@ -3034,7 +3396,22 @@ namespace FfmpegGui.Services
                     //   判据取 `CjxlService.UsesLosslessJpegRewrap`（与 cjxl 命令行里 `--lossless_jpeg=1`
                     //   的判据**同一份实现**，不另写一遍）。
                     bool keepOrientationTag = CjxlService.UsesLosslessJpegRewrap(item.InputPath, item.Options);
-                    var copyExit = protectColorMetadata
+                    bool stripRequested = item.Options.StripExifGps || item.Options.StripXmp
+                        || item.Options.StripExifTime || item.Options.StripExifCamera || item.Options.StripExifAll;
+                    // 只有文件头可判定的 PNG/JPEG 且确知没有描述性标签时才跳过这次 0 项写入；
+                    // 其他格式、读取失败、隐私清理请求都保守继续。copyExit=0 仍进入下面的
+                    // Carry/ICC/JFIF 后置，绝不能把“无 EXIF”误当成“无 ICC”。
+                    bool skipEmptyDescriptiveCopy = !stripRequested && !HasDescriptiveMetadata(item.InputPath);
+                    int copyExit;
+                    if (skipEmptyDescriptiveCopy)
+                    {
+                        item.Log += "[exiftool] 源文件无可识别的描述性元数据，跳过 0 项复制；ICC/色彩后置仍继续\n";
+                        _onItemUpdated?.Invoke(item);
+                        copyExit = 0;
+                    }
+                    else
+                    {
+                        copyExit = protectColorMetadata
                         ? await ExifToolService.CopyMetadataSafeAsync(
                             item.InputPath, outputPath,
                             s => { item.Log += s; _onItemUpdated?.Invoke(item); },
@@ -3049,6 +3426,7 @@ namespace FfmpegGui.Services
                             dropOrientation: !keepOrientationTag,
                             excludeGainMapXmp: item.Options.JpegGainMap
                                 && GainMapEncoder.FormatCarriesGainMap(item.Options.Format));
+                    }
 
                     if (copyExit == 0)
                     {
@@ -3084,7 +3462,11 @@ namespace FfmpegGui.Services
                         //   给没动过的像素挂一张目标空间的 ICC 才是假标签，所以这里补带源 ICC 并点名空间选择为何没落到标签上。
                         bool containerDropsIcc = !FfmpegGui.Services.ColorMapping.ColorMappingEngine
                             .CapsFor(item.Options.Format).EncoderWritesGeneratedIcc;
-                        if (protectColorMetadata && effCarry && (!userSpecifiedColor || containerDropsIcc))
+                        if (protectColorMetadata && effCarry && !probedSource.DiscardSourceIcc
+                            && !(backend == EncoderBackend.Cjpegli && item.Options.ColorOutMatrix == "xyb")
+                            && engPlan?.Action != ColorMapping.ColorAction.Map
+                            && engPlan?.AttachIcc != true
+                            && (!userSpecifiedColor || containerDropsIcc))
                         {
                             // 计划是否把 ICC 当成**唯一**色彩描述（没有可命名的 nclx 兜底）。
                             // 是 ⇒ 这一格写不进去就没有任何诚实描述，必须失败而不是"照常报成功"。
@@ -3163,37 +3545,43 @@ namespace FfmpegGui.Services
                             }
                             else
                             {
-                                var iccExit = await ExifToolService.CopyIccProfileAsync(
-                                    item.InputPath, outputPath,
-                                    s => { item.Log += s; _onItemUpdated?.Invoke(item); });
-                                if (iccExit == ExifToolService.NoWriteApplied && iccIsOnlyDescription)
+                                string carryFormat = item.Options.Format.TrimStart('.').ToLowerInvariant();
+                                bool sourceIccAlreadyDelivered = await ArtifactCarriesInputIccAsync(item.InputPath, outputPath,
+                                    carryFormat, ct).ConfigureAwait(false);
+                                int iccExit = ExifToolService.NoWriteApplied;
+                                // JXL 的 ICC 只能编码时交付；先由 djxl 原生读回确认，绝不尝试 ExifTool 后置重嵌。
+                                if (!sourceIccAlreadyDelivered && carryFormat != "jxl")
+                                    iccExit = await ExifToolService.CopyIccProfileAsync(
+                                        item.InputPath, outputPath,
+                                        s => { item.Log += s; _onItemUpdated?.Invoke(item); });
+                                bool sourceIccReadBack = sourceIccAlreadyDelivered
+                                    || (carryFormat != "jxl" && await ArtifactCarriesInputIccAsync(item.InputPath, outputPath,
+                                        carryFormat, ct).ConfigureAwait(false));
+                                if (sourceIccReadBack)
+                                    item.Log += "[icc] source profile read back byte-exact; carry already delivered\n";
+                                if (iccIsOnlyDescription && !sourceIccReadBack)
                                 {
-                                    // 交付的是「像素 A、标签 B」⇒ 不出货（fail-closed，退出码 90；引擎侧契约拒绝是 91，两型不合并）。
-                                    // 正常路径下规划层已挡住（见 PlanPolicy.ExitWritesIcc），此处是兜底。
-                                    item.Log += $"[exiftool] ❌ ICC 是本次唯一的色彩描述，但 {item.Options.Format} 容器不接受后置 ICC "
-                                              + $"⇒ 不产出色域描述错误的文件（已删除产物）\n"
-                                              + "[exiftool]    建议：改用 PNG/TIFF/WebP/JXL 出口，或显式指定可命名的目标空间\n";
+                                    item.Log += $"[exiftool] ❌ ICC 是本次唯一的色彩描述，但 {item.Options.Format} 产物未读回匹配的源 ICC "
+                                              + "⇒ 不产出色域描述错误的文件（已删除产物）\n"
+                                              + "[exiftool]    建议：改用可交付 ICC 的出口，或显式指定可命名的目标空间\n";
                                     try { if (File.Exists(outputPath)) File.Delete(outputPath); } catch { }
                                     item.ExitCode = 90;
                                     item.Status = "失败 (出口无法携带 ICC)";
                                     _onItemUpdated?.Invoke(item);
                                     return;
                                 }
-                                if (iccExit != 0 && iccExit != ExifToolService.NoWriteApplied)
+                                if (!sourceIccReadBack && iccExit != 0 && iccExit != ExifToolService.NoWriteApplied)
                                 {
-                                    item.Log += $"[exiftool] ⚠️ ICC Profile 恢复失败（退出码 {iccExit}），目标格式可能不支持 exiftool ICC 写入（如 JXL）。\n" +
-                                        $"[exiftool] 建议：勾选「保留 Ultra HDR 增益图」或使用外部 cjxl 编码，以正确保留色彩配置。\n";
+                                    item.Log += $"[exiftool] ⚠️ ICC Profile 恢复失败（退出码 {iccExit}），目标格式可能不支持 ICC 写入。\n" +
+                                        "[exiftool] 建议：使用具备 ICC 写入能力的出口，以正确保留色彩配置。\n";
                                 }
-                                else if (iccExit == ExifToolService.NoWriteApplied)
+                                else if (!sourceIccReadBack)
                                 {
-                                    // 不是"恢复"：容器收不了。nclx 已能描述（否则上面已经失败）⇒ 只降为一句警告。
-                                    item.Log += "[exiftool] ⚠️ 源 ICC 未写入：该容器不接受后置 ICC；本次以可命名的 CICP 标签描述像素\n";
+                                    item.Log += "[icc] source profile did not read back byte-exact; no-write/exit counts are not delivery proof, retaining any independently nameable color description\n";
                                 }
-                                // ⚠ 每条诊断都要落在**带 `item.Log +=` 的那一行**上：cjk 棘轮（②-c）是**词法**判据，
-                                //   折行会让消息掉进「UI 面」桶（本仓已把它登记为三类误计之一，范式见 HANDOVER §5 第 5 行）。
                                 else if (userSpecifiedColor)
                                     item.Log += "[exiftool] ICC Profile 已恢复（本容器编码器丢弃 ICC ⇒ 携带策略下标签只能取源 ICC；指定的目标空间未落到标签）\n";
-                                else
+                                else if (!sourceIccReadBack)
                                     item.Log += "[exiftool] ICC Profile 已恢复\n";
                             }
                         }
@@ -3237,6 +3625,7 @@ namespace FfmpegGui.Services
                     if (protectColorMetadata)
                     {
                         item.Log += $"[warn] [exiftool] 元数据恢复异常: {ex.Message}，已跳过 ffmpeg 回退（色彩保护模式）\n";
+                        await RestoreRawCaptureFieldsAsync(item, outputPath);
                         return;
                     }
                     item.Log += $"[warn] [exiftool] 元数据恢复异常: {ex.Message}，尝试 ffmpeg 回退...\n";
@@ -3327,6 +3716,16 @@ namespace FfmpegGui.Services
         private async Task RestoreMetadataViaFfmpegAsync(QueueItem item, string outputPath,
             bool protectColorMetadata)
         {
+            // Stream-copy equivalence is insufficient for AVIF: mov remuxing can drop
+            // the ICC property while keeping nclx, or discard auxiliary/derived items.
+            if (Path.GetExtension(outputPath).Equals(".avif", StringComparison.OrdinalIgnoreCase))
+            {
+                const string warning = "AVIF metadata fallback skipped: FFmpeg remux cannot guarantee ICC and item preservation";
+                item.Log += "[ffmpeg-meta] " + warning + "\n";
+                item.MarkWarning(warning);
+                _onItemUpdated?.Invoke(item);
+                return;
+            }
             // 使用带正确扩展名的临时文件路径，确保 ffmpeg 可以自动识别输出格式
             var tempPath = Path.Combine(PlatformServices.GetTempDir(),
                 $"meta_{Guid.NewGuid():N}_{Path.GetFileName(outputPath)}");
@@ -3404,14 +3803,17 @@ namespace FfmpegGui.Services
         }
 
         /// <summary>
-        /// 轻量描述性元数据探针：只读文件头 2 MiB，识别 JPEG APP1 Exif/XMP/APP13、PNG tEXt/iTXt。
-        /// 这不是“完整解析”，只用于判断 ffmpeg 回退是否真的带回了可识别标签；不替代 exiftool 逐值回读。
+        /// 轻量描述性元数据探针：只读文件头 2 MiB，识别 JPEG APP1 Exif/XMP/APP13、PNG tEXt/iTXt/zTXt/eXIf。
+        /// 这不是“完整解析”。只有 PNG/JPEG 可用它证明“没有”；其他格式与读取失败一律返回 true，
+        /// 让元数据恢复保守继续，绝不因容器未覆盖而跳过真实 EXIF。
         /// </summary>
         private static bool HasDescriptiveMetadata(string path)
         {
             try
             {
                 if (!File.Exists(path)) return false;
+                var ext = Path.GetExtension(path).ToLowerInvariant();
+                if (ext is not (".png" or ".apng" or ".jpg" or ".jpeg")) return true;
                 using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
                 var len = (int)Math.Min(fs.Length, 2 * 1024 * 1024);
                 var buf = new byte[len];
@@ -3421,11 +3823,13 @@ namespace FfmpegGui.Services
                     || text.Contains("http://ns.adobe.com/xap/1.0/", StringComparison.Ordinal)
                     || text.Contains("Photoshop 3.0", StringComparison.Ordinal)
                     || text.Contains("tEXt", StringComparison.Ordinal)
-                    || text.Contains("iTXt", StringComparison.Ordinal);
+                    || text.Contains("iTXt", StringComparison.Ordinal)
+                    || text.Contains("zTXt", StringComparison.Ordinal)
+                    || text.Contains("eXIf", StringComparison.Ordinal);
             }
             catch
             {
-                return false;
+                return true;
             }
         }
 
@@ -3553,7 +3957,7 @@ namespace FfmpegGui.Services
                 && item.Options.MetadataMode == Models.MetadataMode.PreserveAll
                 && string.IsNullOrWhiteSpace(item.Options.DecodedUltraHdrColorSpace))
             {
-                var (icc, _) = IccProfileService.ExtractIccToTempFile(item.InputPath);
+                var (icc, _) = IccProfileService.ExtractIccToTempFile(item.InputPath, ct: ct, preserveSourceBytes: true);
                 if (icc != null)
                 {
                     var inputExt = Path.GetExtension(item.InputPath).ToLowerInvariant();
@@ -3661,6 +4065,9 @@ namespace FfmpegGui.Services
                 // 既不能命名、又生成不出 ICC ⇒ 宁可维持现状并在此**点名**（本仓价值序：静默 < 响亮但看不懂
                 //   < 响亮且点名），也绝不"改道后只改标签"（§#44「半个修法比现状更坏」）。
                 // 文案 ASCII：`_probe-cjk-hardcode-scan` 的 UI 面余量只有 10。
+                if (ColorMapping.ColorIntentFactory.HasUserColorTarget(item.Options))
+                    throw new ColorMapping.ColorOutputContractException("ICC_TARGET_NOT_DELIVERED",
+                        $"cjxl cannot fulfill the requested target {jxlDecision.OutPrimaries ?? "unknown"}/{jxlDecision.OutTrc ?? "unknown"}: no cjxl color_space enum or generated ICC is available");
                 item.Log += $"[cjxl] WARNING: target {jxlDecision.OutPrimaries ?? "unknown"}/{jxlDecision.OutTrc ?? "unknown"}"
                           + $" has no cjxl color_space enum and this route cannot carry an ICC"
                           + $" => direct encode kept, pixels stay {jxlDecision.DeclPrimaries ?? "unknown"}/{jxlDecision.DeclTrc ?? "unknown"}"
@@ -3679,12 +4086,12 @@ namespace FfmpegGui.Services
                 item.ExitCode = pixelPipe.exitCode;
                 item.Status = pixelPipe.status;
                 if (pixelPipe.exitCode == 0)
-                    await RestoreMetadataAsync(item, outputPath);
+                    await RestoreMetadataAsync(item, outputPath, ct: ct);
                 return;   // finally 照旧执行（清理提取的临时 ICC 与 ICC 输入副本）
             }
 
             // 第一步：直接尝试 cjxl
-            item.Command = "cjxl " + CjxlService.BuildCjxlArguments(item.InputPath, outputPath, item.Options, default, srcIccPath);
+            item.Command = "cjxl " + CjxlService.BuildCjxlArguments(item.InputPath, outputPath, item.Options, default, srcIccPath, forPreview: true);
             var inputExtForCjxl = Path.GetExtension(item.InputPath).ToLowerInvariant();
             // effort 的缺省值与 CjxlService.BuildCjxlArguments 同一口径（未设置时 cjxl 默认 7）：
             // 旧写法此处写 5，而它上一行生成的 item.Command 已经是 7 ⇒ 日志与命令两个数不一致。
@@ -3766,7 +4173,7 @@ namespace FfmpegGui.Services
                     }
                     return;
                 }
-                await RestoreMetadataAsync(item, outputPath);
+                await RestoreMetadataAsync(item, outputPath, ct: ct);
                 return;
             }
 
@@ -3798,7 +4205,7 @@ namespace FfmpegGui.Services
             item.ExitCode = pipeResult.exitCode;
             item.Status = pipeResult.status;
             if (pipeResult.exitCode == 0)
-                await RestoreMetadataAsync(item, outputPath);
+                await RestoreMetadataAsync(item, outputPath, ct: ct);
             }
             finally
             {
@@ -3826,7 +4233,7 @@ namespace FfmpegGui.Services
             {
                 item.ExitCode = 0;
                 item.Status = "已完成 (cjpegli)";
-                await RestoreMetadataAsync(item, outputPath);
+                await RestoreMetadataAsync(item, outputPath, ct: ct);
                 return;
             }
 
@@ -3858,7 +4265,7 @@ namespace FfmpegGui.Services
             item.ExitCode = pipeResult.exitCode;
             item.Status = pipeResult.status;
             if (pipeResult.exitCode == 0)
-                await RestoreMetadataAsync(item, outputPath);
+                await RestoreMetadataAsync(item, outputPath, ct: ct);
         }
 
         /// <summary>
@@ -4023,7 +4430,7 @@ namespace FfmpegGui.Services
                 item.ExitCode = ok ? 0 : -1;
                 item.Status = ok ? "已完成 (Gain Map 纯托管编码)" : "失败 (GainMapEncoder 编码失败)";
                 if (ok)
-                    await RestoreMetadataAsync(item, outputPath);
+                    await RestoreMetadataAsync(item, outputPath, ct: ct);
             }
             catch (OperationCanceledException)
             {
@@ -4071,6 +4478,9 @@ namespace FfmpegGui.Services
                 // JXR 出口注释）；否则得到「像素已是目标域、文件没有任何色彩描述」的半件修法，比不转更坏。
                 bool jxrPixelsRemapped = false;
                 string? jxrTargetIcc = null;
+                string? jxrTargetPrimaries = null;
+                string? jxrTargetTransfer = null;
+                string? jxrTargetMatrix = null;
                 string jxrTargetIccLabel = "";
 
                 // ── 常规输入：ffmpeg 解码 → BMP/TIFF ──
@@ -4134,15 +4544,24 @@ namespace FfmpegGui.Services
                     // 已在 2026-09-18 被实测证伪为不可达（RAW 在上游被 dngtool 预解码成 `*_raw.tiff` 并注入
                     // bt709/linear 声明），那段自证恒为 null 的死守卫随本次同源改造一并删除 —— 判据回到唯一
                     // 一份：改不改像素只由裁决点的 `PixelChains` 说，本处不再留第二套方向。
+                    var inputMatrix = FfmpegCommandBuilder.ResolveInputMatrix(item.Options, item.InputPath);
+                    if (inputMatrix.Use == FfmpegCommandBuilder.InputMatrixUse.Reject)
+                        throw new FfmpegCommandBuilder.InputMatrixContractException(inputMatrix.Diagnostic!);
+                    if (inputMatrix.Diagnostic != null) item.Log += inputMatrix.Diagnostic + "\n";
+                    jxrPixelsRemapped = jxrDecision.PixelChains.Count > 0;
+                    var firstMatrixFilter = inputMatrix.BuildFilter(jxrPixelsRemapped
+                        ? (srcHasAlpha ? "rgba64le" : "rgb48le") : pixFmt);
+                    var rangeFilter = FfmpegCommandBuilder.PngNarrowRangeFilter(item.InputPath);
                     var filterArg = "";
-                    if (jxrDecision.PixelChains.Count > 0)
+                    if (firstMatrixFilter != null || jxrPixelsRemapped || rangeFilter != null)
                     {
-                        // 逗号串照主构建器的 `-vf` 形态；链尾再收一口 `format={pixFmt}`（与被删除的旧守卫同形），
-                        // 保证中转 BMP/TIFF 拿到的正是本分支要写的像素格式。
-                        filterArg = FfmpegCommandBuilder.ChainArgsFromDecision(
-                                        item.InputPath, jxrDecision,
-                                        $"\"{string.Join(",", jxrDecision.PixelChains)},format={pixFmt}\"") + " ";
-                        jxrPixelsRemapped = true;
+                        var chain = "";
+                        if (rangeFilter != null) chain = rangeFilter;
+                        if (firstMatrixFilter != null) chain += (chain.Length == 0 ? "" : ",") + firstMatrixFilter;
+                        if (jxrPixelsRemapped)
+                            chain += (chain.Length == 0 ? "" : ",")
+                                + $"{string.Join(",", jxrDecision.PixelChains)},format={pixFmt}";
+                        filterArg = FfmpegCommandBuilder.ChainArgsFromDecision(item.InputPath, jxrDecision, $"\"{chain}\"") + " ";
                     }
                     // ⚠ ICC 的生成**不能**挂在"像素转了没有"这个条件里（2026-09-27 由 #49 的 LEGACY 层实测抓出）：
                     //   请求目标 == 源色域时 `PixelChains` 恒为 0（不转是合法的），旧写法于是既不生成也不嵌入任何
@@ -4153,10 +4572,12 @@ namespace FfmpegGui.Services
                     if (!string.IsNullOrWhiteSpace(jxrDecision.OutPrimaries)
                         && !string.IsNullOrWhiteSpace(jxrDecision.OutTrc))
                     {
-                        jxrTargetIccLabel = $"{jxrDecision.OutPrimaries}/{jxrDecision.OutTrc}";
+                        jxrTargetPrimaries = jxrDecision.OutPrimaries;
+                        jxrTargetTransfer = jxrDecision.OutTrc;
+                        jxrTargetMatrix = jxrDecision.MatrixForOutput ?? "bt709";
+                        jxrTargetIccLabel = $"{jxrTargetPrimaries}/{jxrTargetTransfer}";
                         jxrTargetIcc = IccProfileService.GetOrGenerateStandardIcc(item.InputPath,
-                            jxrDecision.OutPrimaries!, jxrDecision.OutTrc!,
-                            jxrDecision.MatrixForOutput ?? "bt709",
+                            jxrTargetPrimaries, jxrTargetTransfer, jxrTargetMatrix,
                             s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ct);
                     }
                     else if (jxrPixelsRemapped)
@@ -4216,27 +4637,19 @@ namespace FfmpegGui.Services
                     {
                         await WriteJxrHdrMetadataAsync(item, outputPath, ct);
                     }
-                    await RestoreMetadataAsync(item, outputPath);
+                    await RestoreMetadataAsync(item, outputPath, ct: ct);
                     // ── #44-① 插点 C 的后半：有色彩描述要落地就得落地（**不再只看"转没转像素"**，同上注）──
                     // 必须在元数据恢复**之后**（否则回带的源 ICC 会与转换后的像素失配，与主分支后置同序）。
                     // 文案 ASCII：`_probe-cjk-hardcode-scan` 的 UI 面余量只有 10。
-                    if (jxrPixelsRemapped || !string.IsNullOrWhiteSpace(jxrTargetIcc))
+                    if (jxrPixelsRemapped || jxrTargetPrimaries != null || jxrTargetTransfer != null)
                     {
-                        if (!string.IsNullOrWhiteSpace(jxrTargetIcc) && File.Exists(jxrTargetIcc))
-                        {
-                            var embExit = await ExifToolService.EmbedIccProfileFromFileAsync(
-                                jxrTargetIcc, outputPath,
-                                s => { item.Log += s; _onItemUpdated?.Invoke(item); });
-                            item.Log += embExit == 0
-                                ? $"[jxr] target ICC embedded via exiftool ({jxrTargetIccLabel})"
-                                  + " - JxrEncApp itself cannot write ICC\n"
-                                : $"[jxr] WARNING: target ICC embed failed (exit {embExit})"
-                                  + $" ({jxrTargetIccLabel}) - the file has no color description\n";
-                        }
-                        else
-                            item.Log += $"[jxr] WARNING: target {jxrTargetIccLabel} has no standard ICC"
-                                      + " - output carries no color description (explicit, not silent)\n";
-                        _onItemUpdated?.Invoke(item);
+                        if (string.IsNullOrWhiteSpace(jxrTargetPrimaries) || string.IsNullOrWhiteSpace(jxrTargetTransfer))
+                            throw new ColorMapping.ColorOutputContractException("ICC_TARGET_NOT_DELIVERED",
+                                "JXR pixels were remapped but the target color space has no complete ICC description");
+                        await DeliverIccAsync(item, outputPath, item.InputPath, item.Options, plan: null,
+                            profilePath: jxrTargetIcc, primaries: jxrTargetPrimaries,
+                            transfer: jxrTargetTransfer, matrix: jxrTargetMatrix,
+                            generated: true, carrySource: false, ct: ct);
                     }
                 }
             }
@@ -4244,6 +4657,7 @@ namespace FfmpegGui.Services
             {
                 item.Status = "已停止";
             }
+            catch (ColorMapping.ColorOutputContractException) { throw; }
             catch (Exception ex)
             {
                 item.Log += $"[jxr] 异常: {ex.Message}\n";
@@ -4501,7 +4915,7 @@ namespace FfmpegGui.Services
                 : "失败 (dngtool 编码失败)";
 
             if (success)
-                await RestoreMetadataAsync(item, outputPath);
+                await RestoreMetadataAsync(item, outputPath, ct: ct);
 
             // SDK 的 WriteDNG 没有发射路径的 10 个标准位 ⇒ 由 exiftool 从源件抄进产物。
             // 只在搬运档做（整组剥除 = 用户明确不要描述性元数据）。排在 XMP 步之前，
@@ -4760,6 +5174,9 @@ namespace FfmpegGui.Services
             var cjxlSpace = (dec.PixelChains.Count > 0 || pixelsAlreadyTarget)
                 ? ColorEncodingHelper.MapPrimariesTransfer(dec.OutPrimaries, dec.OutTrc)
                 : null;
+            if (pixelsAlreadyTarget && cjxlSpace == null && string.IsNullOrWhiteSpace(pixelIccPath))
+                throw new ColorMapping.ColorOutputContractException("ICC_TARGET_NOT_DELIVERED",
+                    "cjxl cannot describe the already transformed RGB intermediate; refusing to run the original source conversion again");
 
             string ffArgs;
             string cjxlArgs;
@@ -4785,20 +5202,27 @@ namespace FfmpegGui.Services
                 var outArgs = inMeta.bitDepth > 8
                     ? $"-pix_fmt {(inMeta.hasAlpha ? "rgba64le" : "rgb48le")} "
                     : "";
+                // The JXR PAM branch already contains target RGB samples. Its source metadata
+                // describes the original JXR, so it must not drive a second YUV decode here.
+                var inputMatrix = pixelsAlreadyTarget ? default
+                    : FfmpegCommandBuilder.ResolveInputMatrix(item.Options, item.InputPath, inMeta);
+                if (inputMatrix.Use == FfmpegCommandBuilder.InputMatrixUse.Reject)
+                    throw new FfmpegCommandBuilder.InputMatrixContractException(inputMatrix.Diagnostic!);
+                if (inputMatrix.Diagnostic != null) PipeLog(inputMatrix.Diagnostic + "\n");
+                bool wideDecode = inMeta.bitDepth > 8 || dec.PixelChains.Count > 0 || item.Options.BitDepth > 8;
+                var decodeFormat = inMeta.hasAlpha ? (wideDecode ? "rgba64le" : "rgba") : (wideDecode ? "rgb48le" : "rgb24");
+                var firstMatrixFilter = inputMatrix.BuildFilter(decodeFormat);
+                var narrowRangeFilter = pixelsAlreadyTarget ? null : FfmpegCommandBuilder.PngNarrowRangeFilter(item.InputPath);
                 var chain = $"\"{string.Join(",", dec.PixelChains)}\"";
-                // 最长边限制插在**链首色彩变换之前**（R1 顺序判据与 `BuildPipeColorArgs` 共用同一份实现）
                 var scaleFilter = FfmpegCommandBuilder.BuildMaxDimensionScaleFilter(item.Options, item.InputPath);
-                if (dec.PixelChains.Count > 0)
-                {
-                    if (!string.IsNullOrEmpty(scaleFilter))
-                        chain = FfmpegCommandBuilder.InsertScaleFilterAtChainHead(chain, scaleFilter);
+                if (!string.IsNullOrEmpty(scaleFilter))
+                    chain = dec.PixelChains.Count == 0 ? $"\"{scaleFilter}\""
+                        : FfmpegCommandBuilder.InsertScaleFilterAtChainHead(chain, scaleFilter);
+                var decodePrefix = string.Join(",", new[] { narrowRangeFilter, firstMatrixFilter }.Where(f => f != null));
+                if (decodePrefix.Length > 0)
+                    chain = chain.Length > 2 ? "\"" + decodePrefix + "," + chain[1..] : $"\"{decodePrefix}\"";
+                if (chain.Length > 2)
                     outArgs += FfmpegCommandBuilder.ChainArgsFromDecision(item.InputPath, dec, chain) + " ";
-                }
-                else if (!string.IsNullOrEmpty(scaleFilter))
-                {
-                    // 像素已是目标编码（JXR 直通 PAM）：没有色彩链，但缩放仍要生效；空 `-vf ""` 会让 ffmpeg 直接退出。
-                    outArgs += $"-vf \"{scaleFilter}\" ";
-                }
 
                 var pipeVcodec = inMeta.hasAlpha ? "pam" : "ppm";
                 ffArgs = $"-y {inArgs}-i \"{item.InputPath}\" {outArgs}-compression_level 0 "
@@ -4831,7 +5255,8 @@ namespace FfmpegGui.Services
             else
             {
                 (var pipeInputColor, var pipeOutputColor, pipeIccPath) =
-                    BuildPipeColorArgs(item.Options, item.InputPath, PipeLog, ct);
+                    BuildPipeColorArgs(item.Options, item.InputPath, PipeLog, ct, inMeta,
+                        inputAlreadyDecoded: pixelsAlreadyTarget);
                 var pipeVcodec = inMeta.hasAlpha ? "pam" : "ppm";
                 ffArgs = $"-y {pipeInputColor}-i \"{item.InputPath}\" {pipeOutputColor}-compression_level 0 "
                        + $"-f image2pipe -c:v {pipeVcodec} -";
@@ -4863,32 +5288,38 @@ namespace FfmpegGui.Services
 
             var ffmpegPath = AppSettingsService.Current.FfmpegPath;
 
-            // auto 模式：探测输入 HDR 属性
-            var hdrMeta = default(FfmpegCommandBuilder.ColorMetadata);
-            if (string.IsNullOrWhiteSpace(item.Options.ColorSpace)
-                || item.Options.ColorSpace.Equals("auto", StringComparison.OrdinalIgnoreCase))
-            {
-                hdrMeta = FfmpegCommandBuilder.ProbeInputColorMetadata(item.InputPath,
-                    s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ct);
-            }
-
-            var (pipeInputColor2, pipeOutputColor2, pipeIccPath2) = BuildPipeColorArgs(item.Options, item.InputPath,
+            var sourceMeta = FfmpegCommandBuilder.ProbeInputColorMetadata(item.InputPath,
                 s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ct);
-            // log 传下去：管道路也要把「选项被降级」（如固定码表逼出的 -p 0）说进 item.Log，
-            // 否则用户只看得到命令行里那个 -p 0，看不到它为什么被降。
-            var cjpegliArgs = CjpegliService.BuildCjpegliArguments("-", outputPath, item.Options, hdrMeta, pipeIccPath2,
-                log: s => { item.Log += s; _onItemUpdated?.Invoke(item); });
-            var pipeVcodec2 = hdrMeta.hasAlpha ? "pam" : "ppm";
+            // auto 模式需要源 HDR 描述；alpha 则一律取独立的源探测，不能用显式目标下的 default 值。
+            var hdrMeta = string.IsNullOrWhiteSpace(item.Options.ColorSpace)
+                || item.Options.ColorSpace.Equals("auto", StringComparison.OrdinalIgnoreCase)
+                ? sourceMeta : default(FfmpegCommandBuilder.ColorMetadata);
 
-            item.Command = $"ffmpeg -y {pipeInputColor2}-i \"{item.InputPath}\" {pipeOutputColor2}-compression_level 0 -f image2pipe -c:v {pipeVcodec2} - | cjpegli {cjpegliArgs}";
-            item.Log += $"[cmd] {item.Command}\n";
-            item.Log += $"[cjpegli-pipe] ffmpeg 管道 → cjpegli（无中间文件）\n";
-            _onItemUpdated?.Invoke(item);
+            string? pipeIccPath2 = null;
+            try
+            {
+                var (pipeInputColor2, pipeOutputColor2, builtIccPath) = BuildPipeColorArgs(item.Options, item.InputPath,
+                    s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ct, sourceMeta);
+                pipeIccPath2 = builtIccPath;
+                var pipeVcodec2 = sourceMeta.hasAlpha ? "pam" : "ppm";
+                var ffmpegArgs2 = $"-y {pipeInputColor2}-i \"{item.InputPath}\" {pipeOutputColor2}-compression_level 0 -f image2pipe -c:v {pipeVcodec2} -";
+                // argv 与 ICC 只构造一次：界面展示、FFmpeg 执行和 cjpegli 输入共用同一决策结果。
+                // log 传下去：管道路也要把「选项被降级」（如固定码表逼出的 -p 0）说进 item.Log。
+                var cjpegliArgs = CjpegliService.BuildCjpegliArguments("-", outputPath, item.Options, hdrMeta, pipeIccPath2,
+                    log: s => { item.Log += s; _onItemUpdated?.Invoke(item); });
 
-            var pipeResult2 = await PipeFfmpegToExternalEncoderAsync(
-                item, ffmpegPath, cjpegliPath, cjpegliArgs, outputPath, "cjpegli", ct);
-            TryDeleteIcc(pipeIccPath2);  // 清理临时 ICC 文件
-            return pipeResult2;
+                item.Command = $"ffmpeg {ffmpegArgs2} | cjpegli {cjpegliArgs}";
+                item.Log += $"[cmd] {item.Command}\n";
+                item.Log += $"[cjpegli-pipe] ffmpeg 管道 → cjpegli（无中间文件）\n";
+                _onItemUpdated?.Invoke(item);
+
+                return await PipeFfmpegToExternalEncoderAsync(
+                    item, ffmpegPath, cjpegliPath, cjpegliArgs, outputPath, "cjpegli", ct, ffmpegArgs2);
+            }
+            finally
+            {
+                TryDeleteIcc(pipeIccPath2);
+            }
         }
 
         /// <summary>
@@ -5129,7 +5560,21 @@ namespace FfmpegGui.Services
                 // ⚠ 序号必须**连续**：这里曾写 `-frame_pts 1`，让 image2 用 PTS 当文件序号。一旦某条流的
                 //   PTS 间隔 >1，写出的就是带空洞的序号，而 Step2 按 `%04d` 顺序读会在第一个空洞处**静默截断**
                 //   （退出码仍为 0、状态"已完成"）⇒ 帧数丢失无人知晓。现在按帧序连续编号，读取侧同一基号。
-                var colorArgs = $"-y -i \"{item.InputPath}\" -map 0:{colorIdx} -fps_mode passthrough -start_number 0 \"{tempDir}\\c_%04d.png\"";
+                var selectedFilter = "";
+                if (item.Options.ColorMatrix != null)
+                {
+                    var track = FfmpegCommandBuilder.ProbeDeliveredVideoColor(item.InputPath, s => item.Log += s, ct, colorIdx);
+                    ct.ThrowIfCancellationRequested();
+                    var decode = FfmpegCommandBuilder.ResolveInputMatrix(item.Options, item.InputPath, track);
+                    if (string.IsNullOrEmpty(track.pixFmt))
+                        throw new FfmpegCommandBuilder.InputMatrixContractException("[matrix] COLOR_INPUT_MATRIX_STREAM_UNKNOWN: unable to establish animated AVIF color track");
+                    if (decode.Use == FfmpegCommandBuilder.InputMatrixUse.Reject)
+                        throw new FfmpegCommandBuilder.InputMatrixContractException(decode.Diagnostic!);
+                    if (decode.BuildFilter(track.bitDepth > 8 ? "rgb48be" : "rgb24") is { } filter)
+                        selectedFilter = $" -vf \"{filter}\"";
+                    else if (decode.Diagnostic is { } diagnostic) item.Log += diagnostic + "\n";
+                }
+                var colorArgs = $"-y -i \"{item.InputPath}\" -map 0:{colorIdx}{selectedFilter} -fps_mode passthrough -start_number 0 \"{tempDir}\\c_%04d.png\"";
                 var alphaArgs = alphaIdx is int ai2
                     ? $"-y -i \"{item.InputPath}\" -map 0:{ai2} -fps_mode passthrough -start_number 0 \"{tempDir}\\a_%04d.png\""
                     : null;
@@ -5213,7 +5658,7 @@ namespace FfmpegGui.Services
                 item.Status = encodeExit == 0 ? $"已完成 (avif→{fmt})" : $"失败 (退出码 {encodeExit})";
 
                 if (encodeExit == 0)
-                    await RestoreMetadataAsync(item, outputPath);
+                    await RestoreMetadataAsync(item, outputPath, ct: ct);
             }
             finally
             {
@@ -5243,81 +5688,65 @@ namespace FfmpegGui.Services
             {
                 probe = await IsoBmffGainMapProbe.ProbeFileAsync(inputPath, ct);
             }
+            catch (OperationCanceledException) { throw; }
             catch (Exception ex)
             {
-                log($"[avif16] ⚠ 容器探测失败（按普通 AVIF 继续）：{ex.Message}\n");
-                return null;
+                throw new ColorMapping.ColorOutputContractException("AVIF_SAMPLE_TRANSFORM_INPUT_UNVERIFIED",
+                    $"AVIF item structure could not be inspected safely: {ex.Message}");
             }
 
             if (probe == null || !probe.HasSampleTransform) return null;
             if (!probe.Determinate)
-                throw new InvalidOperationException($"[avif16] ❌ {probe.FailReason ?? "sato 结构不确定；拒绝退回 12-bit 基图"}");
+                throw new ColorMapping.ColorOutputContractException("AVIF_SAMPLE_TRANSFORM_INPUT_UNVERIFIED",
+                    probe.FailReason ?? "Sample Transform structure cannot be verified; refusing to fall back to the base image");
             if (probe.SampleTransformPayload == null)
-                throw new InvalidOperationException("[avif16] ❌ sato 载荷缺失；拒绝退回 12-bit 基图");
+                throw new ColorMapping.ColorOutputContractException("AVIF_SAMPLE_TRANSFORM_INPUT_UNVERIFIED",
+                    "Sample Transform payload is missing; refusing to fall back to the base image");
 
             var transform = ColorMapping.AvifSampleTransform.Parse(probe.SampleTransformPayload, out var parseError);
             if (transform == null)
-                throw new InvalidOperationException($"[avif16] ❌ sato 表达式解析失败：{parseError}");
+                throw new ColorMapping.ColorOutputContractException("AVIF_SAMPLE_TRANSFORM_EXPRESSION_UNSUPPORTED",
+                    $"Sample Transform expression cannot be executed: {parseError}");
 
-            log($"[avif16] 检测到 AVIF Sample Transform 派生项：sato item {probe.SampleTransformItemId}，"
-                + $"inputs [{string.Join(",", probe.SampleTransformInputItemIds)}]，"
-                + $"声明输入位深 {probe.SampleTransformInputBitDepth}；表达式 {transform.Expression}\n");
-
-            // ── 读两条视频流的实况（ffprobe；与 MediaInfoService 同源）──
-            var json = await MediaInfoService.GetMediaInfoAsync(inputPath, ffprobePath: null, ffmpegPath: null);
-            if (string.IsNullOrWhiteSpace(json))
-                throw new InvalidOperationException("[avif16] ❌ ffprobe 未返回 AVIF 流信息");
-
-            var vids = new List<(int Index, string PixFmt, int Width, int Height, int? NbFrames,
-                string? Primaries, string? Trc, string? Matrix)>();
-            using (var doc = JsonDocument.Parse(json))
-            {
-                if (doc.RootElement.TryGetProperty("streams", out var streams)
-                    && streams.ValueKind == JsonValueKind.Array)
-                {
-                    foreach (var s in streams.EnumerateArray())
-                    {
-                        if (!s.TryGetProperty("codec_type", out var ctj) || ctj.GetString() != "video")
-                            continue;
-
-                        var pix = JsonStr(s, "pix_fmt") ?? "";
-                        var w = JsonInt(s, "width") ?? 0;
-                        var h = JsonInt(s, "height") ?? 0;
-                        var nb = JsonInt(s, "nb_frames");
-                        vids.Add((vids.Count, pix, w, h, nb,
-                            JsonStr(s, "color_primaries"), JsonStr(s, "color_transfer"), JsonStr(s, "color_space")));
-                    }
-                }
-            }
-
-            if (vids.Count != 2)
-                throw new InvalidOperationException(
-                    $"[avif16] ❌ sato 输入应有 2 条视频流，ffprobe 读到 {vids.Count} 条（布局不支持）");
-            if (vids[0].Width <= 0 || vids[0].Height <= 0
-                || vids[0].Width != vids[1].Width || vids[0].Height != vids[1].Height)
-                throw new InvalidOperationException(
-                    $"[avif16] ❌ 两条流尺寸不一致：{vids[0].Width}x{vids[0].Height} vs {vids[1].Width}x{vids[1].Height}");
-            if ((vids[0].NbFrames ?? 1) > 1 || (vids[1].NbFrames ?? 1) > 1)
-                throw new InvalidOperationException(
-                    $"[avif16] ❌ 动图/多帧 AVIF 的 Sample Transform 暂不支持（帧数 {vids[0].NbFrames}/{vids[1].NbFrames}）");
-
-            // primary item = base；ffprobe 的流顺序通常与 item 顺序一致，但若 primary 明确是第二条则交换。
-            bool swap = probe.PrimaryItemId >= 0
-                        && probe.SampleTransformInputItemIds.Length == 2
-                        && probe.PrimaryItemId == probe.SampleTransformInputItemIds[1];
-            var baseV = swap ? vids[1] : vids[0];
-            var extV = swap ? vids[0] : vids[1];
-
-            if (!IsSupportedAvif16BasePixFmt(baseV.PixFmt))
-                throw new InvalidOperationException(
-                    $"[avif16] ❌ base 流 pix_fmt='{baseV.PixFmt}' 不支持（只支持 gbrp/yuv444p 的 8/10/12/16-bit）");
-            if (!IsSupportedAvif16ExtPixFmt(extV.PixFmt))
-                throw new InvalidOperationException(
-                    $"[avif16] ❌ extension 流 pix_fmt='{extV.PixFmt}' 不支持（只支持 gbrp/yuv444p 的 8/10/12/16-bit）");
+            if (probe.SampleTransformArithmeticBitDepth != transform.ArithmeticBitDepth
+                || probe.SampleTransformOutputBitDepth != 16
+                || probe.SampleTransformInputItemIds.Length != 2
+                || probe.SampleTransformInputBitDepths.Length != 2
+                || probe.SampleTransformInputWidths.Length != 2 || probe.SampleTransformInputHeights.Length != 2
+                || probe.SampleTransformInputItemData.Length != 2
+                || probe.SampleTransformInputItemData.Any(data => data == null || data.Length == 0))
+                throw new ColorMapping.ColorOutputContractException("AVIF_SAMPLE_TRANSFORM_INPUT_UNVERIFIED",
+                    "Sample Transform item references, arithmetic precision, dimensions or independently decodable AV1 payloads are not verified; refusing to guess the input order");
+            log($"[avif16] Sample Transform item {probe.SampleTransformItemId}: dimg inputs [{string.Join(",", probe.SampleTransformInputItemIds)}], "
+                + $"AV1 depths [{string.Join(",", probe.SampleTransformInputBitDepths)}], arithmetic {transform.ArithmeticBitDepth}-bit; expression {transform.Expression}\n");
 
             var tempDir = Path.Combine(PlatformServices.GetTempDir(), $"avif16_{Guid.NewGuid():N}");
             Directory.CreateDirectory(tempDir);
             tempDirsToCleanup.Add(tempDir);
+            var baseObu = Path.Combine(tempDir, "input1.obu");
+            var extObu = Path.Combine(tempDir, "input2.obu");
+            // dimg reference order defines sample1/sample2. Decode the referenced items
+            // themselves, never the demuxer's stream order, primary-item position or ids.
+            await File.WriteAllBytesAsync(baseObu, probe.SampleTransformInputItemData[0], ct);
+            await File.WriteAllBytesAsync(extObu, probe.SampleTransformInputItemData[1], ct);
+            var baseV = await ProbeAvifSampleTransformItemAsync(baseObu, ct);
+            var extV = await ProbeAvifSampleTransformItemAsync(extObu, ct);
+            var inputs = new[] { baseV, extV };
+            for (int i = 0; i < inputs.Length; i++)
+            {
+                var actual = inputs[i];
+                if (actual.Width != probe.SampleTransformInputWidths[i] || actual.Height != probe.SampleTransformInputHeights[i]
+                    || actual.Width <= 0 || actual.Height <= 0)
+                    throw new ColorMapping.ColorOutputContractException("AVIF_SAMPLE_TRANSFORM_INPUT_SIZE_MISMATCH",
+                        $"item {probe.SampleTransformInputItemIds[i]} decoded {actual.Width}x{actual.Height}, but its ispe declares {probe.SampleTransformInputWidths[i]}x{probe.SampleTransformInputHeights[i]}");
+                if (AvifSampleTransformNativeBitDepth(actual.PixFmt) is not { } depth
+                    || depth != probe.SampleTransformInputBitDepths[i])
+                    throw new ColorMapping.ColorOutputContractException("AVIF_SAMPLE_TRANSFORM_INPUT_DEPTH_MISMATCH",
+                        $"item {probe.SampleTransformInputItemIds[i]} decoded pix_fmt={actual.PixFmt}, but its av1C declares {probe.SampleTransformInputBitDepths[i]}-bit; no input conversion was applied");
+            }
+            if (baseV.Width != extV.Width || baseV.Height != extV.Height)
+                throw new ColorMapping.ColorOutputContractException("AVIF_SAMPLE_TRANSFORM_INPUT_SIZE_MISMATCH",
+                    $"Sample Transform inputs have different decoded dimensions: {baseV.Width}x{baseV.Height} versus {extV.Width}x{extV.Height}");
 
             var baseRaw = Path.Combine(tempDir, "base.raw");
             var extRaw = Path.Combine(tempDir, "ext.raw");
@@ -5325,10 +5754,10 @@ namespace FfmpegGui.Services
             var reconPng = Path.Combine(tempDir, "recon16.png");
 
             int baseExit = await FfmpegRunner.RunAsync(
-                $"-v error -y -i \"{inputPath}\" -map 0:v:{(swap ? 1 : 0)} -pix_fmt {baseV.PixFmt} -frames:v 1 -f rawvideo \"{baseRaw}\"",
+                $"-v error -y -f obu -i \"{baseObu}\" -map 0:v:0 -pix_fmt {baseV.PixFmt} -frames:v 1 -f rawvideo \"{baseRaw}\"",
                 log, AppSettingsService.Current.FfmpegPath, ct);
             int extExit = await FfmpegRunner.RunAsync(
-                $"-v error -y -i \"{inputPath}\" -map 0:v:{(swap ? 0 : 1)} -pix_fmt {extV.PixFmt} -frames:v 1 -f rawvideo \"{extRaw}\"",
+                $"-v error -y -f obu -i \"{extObu}\" -map 0:v:0 -pix_fmt {extV.PixFmt} -frames:v 1 -f rawvideo \"{extRaw}\"",
                 log, AppSettingsService.Current.FfmpegPath, ct);
             if (baseExit != 0 || extExit != 0)
                 throw new InvalidOperationException(
@@ -5338,7 +5767,7 @@ namespace FfmpegGui.Services
 
             int rw = baseV.Width;
             int rh = baseV.Height;
-            int planeSize = rw * rh;
+            int planeSize = checked(rw * rh);
             int baseBps = BytesPerSample(baseV.PixFmt);
             int extBps = BytesPerSample(extV.PixFmt);
             long expectedPlaneBytes = (long)planeSize * 3 * baseBps;
@@ -5349,6 +5778,38 @@ namespace FfmpegGui.Services
                     $"[avif16] ❌ raw 尺寸不符：base={new FileInfo(baseRaw).Length}/{expectedPlaneBytes}，"
                     + $"ext={new FileInfo(extRaw).Length}/{expectedExtBytes}（{rw}x{rh}）");
 
+            var sourcePrimaries = probe.SampleTransformColorPrimaries.HasValue
+                ? ColorMapping.AvifCicp.PrimariesToken(probe.SampleTransformColorPrimaries) : baseV.Primaries;
+            var sourceTrc = probe.SampleTransformColorTransfer.HasValue
+                ? ColorMapping.AvifCicp.TransferToken(probe.SampleTransformColorTransfer) : baseV.Trc;
+            var sourceMatrix = probe.SampleTransformColorMatrix.HasValue
+                ? ColorMapping.AvifCicp.MatrixToken(probe.SampleTransformColorMatrix) : baseV.Matrix;
+            var sourceRange = probe.SampleTransformFullRange is { } full ? (full ? "pc" : "tv") : baseV.Range;
+            // A bare AV1 stream with an unspecified sequence-header matrix is exposed
+            // as YUV even when its item-associated nclx declares Identity. Both formats
+            // contain the same three codec planes; select their output interpretation
+            // from the associated color information, without converting either input.
+            bool sourceRgb = sourceMatrix is "gbr" or "rgb";
+            if (sourceRange is not ("pc" or "tv") || (sourceMatrix is null
+                && baseV.PixFmt.StartsWith("gbr", StringComparison.OrdinalIgnoreCase)))
+                throw new ColorMapping.ColorOutputContractException("AVIF_SAMPLE_TRANSFORM_COLOR_UNVERIFIED",
+                    "Sample Transform output matrix/range cannot be established from its associated color information or AV1 sequence header");
+            static bool Known(string? token) => token is not (null or "" or "unknown" or "unspecified");
+            for (int i = 0; i < inputs.Length; i++)
+            {
+                var actual = inputs[i];
+                bool matrixConflict = Known(actual.Matrix) && Known(sourceMatrix)
+                    && ColorSpaceRegistry.NormalizeMatrixToken(actual.Matrix) != ColorSpaceRegistry.NormalizeMatrixToken(sourceMatrix);
+                bool primariesConflict = Known(actual.Primaries) && Known(sourcePrimaries)
+                    && ColorSpaceRegistry.NormalizePrimariesToken(actual.Primaries) != ColorSpaceRegistry.NormalizePrimariesToken(sourcePrimaries);
+                bool trcConflict = Known(actual.Trc) && Known(sourceTrc)
+                    && ColorSpaceRegistry.NormalizeTrcToken(actual.Trc) != ColorSpaceRegistry.NormalizeTrcToken(sourceTrc);
+                if (matrixConflict || primariesConflict || trcConflict
+                    || (Known(actual.Range) && actual.Range != sourceRange)
+                    || (!sourceRgb && actual.PixFmt.StartsWith("gbr", StringComparison.OrdinalIgnoreCase)))
+                    throw new ColorMapping.ColorOutputContractException("AVIF_SAMPLE_TRANSFORM_COLOR_UNVERIFIED",
+                        $"item {probe.SampleTransformInputItemIds[i]} AV1 sequence-header color conflicts with the Sample Transform output; no input color conversion was applied");
+            }
             var baseBuf = File.ReadAllBytes(baseRaw);
             var extBuf = File.ReadAllBytes(extRaw);
             int outLen = checked(planeSize * 3 * 2);
@@ -5362,22 +5823,34 @@ namespace FfmpegGui.Services
                     long s1 = ReadRawSample(baseBuf, idx, baseBps);
                     long s2 = ReadRawSample(extBuf, idx, extBps);
                     long v = transform.Evaluate(s1, s2);
+                    // AVIF sample-transform output samples are clamped to the declared
+                    // full/limited code range after evaluating the signed expression.
+                    if (sourceRange == "tv") v = Math.Clamp(v, 16L << 8, (sourceRgb || plane == 0 ? 235L : 240L) << 8);
                     BinaryPrimitives.WriteUInt16LittleEndian(
                         outBuf.AsSpan(idx * 2, 2), ColorMapping.AvifSampleTransform.ClampTo16(v));
                 }
             }
             File.WriteAllBytes(reconRaw, outBuf);
 
-            string outPix = baseV.PixFmt.StartsWith("gbr", StringComparison.OrdinalIgnoreCase)
-                ? "gbrp16le"
-                : "yuv444p16le";
+            string outPix = sourceRgb ? "gbrp16le" : "yuv444p16le";
             string vf = "";
-            if (outPix.StartsWith("yuv", StringComparison.OrdinalIgnoreCase))
+            if (sourceRgb && sourceRange == "tv")
             {
-                // avifenc 的 RGB 入口（-y 444）产出 gbrp 基图；这里保留 yuv 分支给非 RGB 源。
-                // 矩阵只用于 YUV→RGB 转换，取流自报 matrix；缺失时按 BT.709 安全默认。
-                var m = NormalizeDecoderMatrix(baseV.Matrix);
-                vf = $" -vf \"scale=in_color_matrix={m}:in_range=full:out_color_matrix=bt709:out_range=full,format=rgb48be\"";
+                const string expand = "clip(floor((val-4096)*65535/56064+0.5),0,65535)";
+                vf = $" -vf \"lutrgb=r='{expand}':g='{expand}':b='{expand}',setparams=range=pc,format=rgb48be\"";
+            }
+            else if (!sourceRgb)
+            {
+                var reconstructed = new FfmpegCommandBuilder.ColorMetadata { pixFmt = outPix, colorRange = sourceRange };
+                var decode = FfmpegCommandBuilder.ResolveInputMatrix(item.Options, baseObu, reconstructed);
+                if (decode.Use == FfmpegCommandBuilder.InputMatrixUse.Reject)
+                    throw new FfmpegCommandBuilder.InputMatrixContractException(decode.Diagnostic!);
+                var matrix = decode.Matrix ?? ColorSpaceRegistry.ToFfmpegInputMatrixName(sourceMatrix);
+                if (matrix is null or "rgb" || sourceRange is not ("pc" or "tv"))
+                    throw new ColorMapping.ColorOutputContractException("AVIF_SAMPLE_TRANSFORM_COLOR_UNVERIFIED",
+                        "Sample Transform YUV matrix/range cannot be established from its associated color information or AV1 sequence header");
+                vf = $" -vf \"scale=in_color_matrix={matrix}:in_range={sourceRange},format=rgb48be\"";
+                if (decode.Use == FfmpegCommandBuilder.InputMatrixUse.Convert) item.Options.ColorMatrix = null;
             }
 
             int pngExit = await FfmpegRunner.RunAsync(
@@ -5386,17 +5859,77 @@ namespace FfmpegGui.Services
             if (pngExit != 0 || !File.Exists(reconPng))
                 throw new InvalidOperationException($"[avif16] ❌ 16-bit PNG 落盘失败（ffmpeg exit={pngExit}）");
 
-            // 把源 CICP 带进 PNG（cICP chunk），并显式声明输入色彩描述，避免后续引擎把
-            // BT.2020/PQ 误当 sRGB。未知 token 不猜，留给原有探测。
-            var cicp = ColorMapping.AvifCicp.FromSourceTokens(baseV.Primaries, baseV.Trc);
-            if (cicp != null) PngCicpService.TryInsertCicp(reconPng, cicp.Value.P, cicp.Value.T);
-            if (!string.IsNullOrWhiteSpace(baseV.Primaries)) item.Options.ColorSourceDeclPrimaries = baseV.Primaries;
-            if (!string.IsNullOrWhiteSpace(baseV.Trc)) item.Options.ColorSourceDeclTrc = baseV.Trc;
+            // Preserve ICC priority on the RGB intermediate. Nominal nclx P/T must not
+            // replace an associated opaque/custom profile, and source option overrides
+            // belong to the user. Invalid/unusable ICC follows the existing input policy.
+            var cicp = ColorMapping.AvifCicp.FromSourceTokens(sourcePrimaries, sourceTrc);
+            var associatedIcc = probe.SampleTransformIcc is { } sourceIcc
+                ? ColorMapping.ColorSpaceIdentify.IdentifyIccBytes(sourceIcc) : ColorMapping.IccProfileIdentity.Absent;
+            bool preserveIcc = associatedIcc.IsValid && associatedIcc.CanDescribeRgbSource;
+            if (preserveIcc && !PngCicpService.TryWriteIccOnly(reconPng, probe.SampleTransformIcc!))
+                throw new ColorMapping.ColorOutputContractException("AVIF_SAMPLE_TRANSFORM_COLOR_UNVERIFIED",
+                    "Sample Transform associated ICC could not be preserved on its reconstructed PNG");
+            if (!preserveIcc && probe.SampleTransformIcc != null)
+            {
+                log("[avif16] ICC_SOURCE_IGNORED: associated ICC cannot describe RGB source pixels; retaining independently usable CICP.\n");
+                item.MarkWarning("Sample Transform associated ICC could not describe the decoded pixels");
+            }
+            if (!preserveIcc && cicp != null && !PngCicpService.TryInsertCicp(reconPng, cicp.Value.P, cicp.Value.T))
+                throw new ColorMapping.ColorOutputContractException("AVIF_SAMPLE_TRANSFORM_COLOR_UNVERIFIED",
+                    "Sample Transform associated CICP could not be preserved on its reconstructed PNG");
 
             log($"[avif16] ✅ 16-bit AVIF 已重建：base {baseV.PixFmt} + ext {extV.PixFmt} → {outPix} "
                 + $"({rw}x{rh})，PNG {Path.GetFileName(reconPng)}"
-                + (cicp != null ? $"，CICP {cicp.Value.P}/{cicp.Value.T}" : "，CICP 未识别") + "\n");
+                + (preserveIcc ? ", associated ICC preserved" : cicp != null ? $"，CICP {cicp.Value.P}/{cicp.Value.T}" : "，CICP 未识别") + "\n");
             return reconPng;
+        }
+
+        private readonly record struct AvifSampleTransformItemInfo(string PixFmt, int Width, int Height,
+            string? Primaries, string? Trc, string? Matrix, string? Range);
+
+        private static async Task<AvifSampleTransformItemInfo> ProbeAvifSampleTransformItemAsync(string obuPath, CancellationToken ct)
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeout.CancelAfter(TimeSpan.FromSeconds(15));
+            var info = new ProcessStartInfo(AppSettingsService.Current.FfprobePath)
+            {
+                UseShellExecute = false, CreateNoWindow = true,
+                RedirectStandardOutput = true, RedirectStandardError = true,
+            };
+            foreach (var arg in new[] { "-v", "error", "-f", "obu", "-count_frames", "-show_entries",
+                "stream=codec_type,codec_name,pix_fmt,width,height,nb_read_frames,color_primaries,color_transfer,color_space,color_range",
+                "-of", "json", "-i", obuPath }) info.ArgumentList.Add(arg);
+            try
+            {
+                using var process = Process.Start(info);
+                if (process == null) throw new InvalidOperationException("ffprobe did not start");
+                using var kill = timeout.Token.Register(() => { try { process.Kill(entireProcessTree: true); } catch { } });
+                var output = process.StandardOutput.ReadToEndAsync(timeout.Token);
+                var error = process.StandardError.ReadToEndAsync(timeout.Token);
+                await Task.WhenAll(output, error, process.WaitForExitAsync(timeout.Token)).ConfigureAwait(false);
+                if (process.ExitCode != 0) throw new InvalidOperationException($"ffprobe exit={process.ExitCode}: {await error.ConfigureAwait(false)}");
+                using var doc = JsonDocument.Parse(await output.ConfigureAwait(false));
+                if (!doc.RootElement.TryGetProperty("streams", out var streams) || streams.ValueKind != JsonValueKind.Array
+                    || streams.GetArrayLength() != 1)
+                    throw new InvalidOperationException("a referenced AV1 item must decode to one video stream");
+                var stream = streams[0];
+                if (JsonStr(stream, "codec_type") != "video" || JsonStr(stream, "codec_name") != "av1"
+                    || JsonInt(stream, "nb_read_frames") != 1)
+                    throw new InvalidOperationException("a referenced AV1 item must contain exactly one decoded AV1 frame");
+                return new(JsonStr(stream, "pix_fmt") ?? "", JsonInt(stream, "width") ?? 0, JsonInt(stream, "height") ?? 0,
+                    JsonStr(stream, "color_primaries"), JsonStr(stream, "color_transfer"), JsonStr(stream, "color_space"), JsonStr(stream, "color_range"));
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                throw new ColorMapping.ColorOutputContractException("AVIF_SAMPLE_TRANSFORM_INPUT_UNVERIFIED",
+                    "Timed out probing a referenced Sample Transform AV1 item; no stream order was guessed");
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                throw new ColorMapping.ColorOutputContractException("AVIF_SAMPLE_TRANSFORM_INPUT_UNVERIFIED",
+                    $"Cannot independently decode referenced Sample Transform item {Path.GetFileName(obuPath)}: {ex.Message}");
+            }
         }
 
         private static string? JsonStr(JsonElement obj, string name)
@@ -5415,13 +5948,13 @@ namespace FfmpegGui.Services
             return null;
         }
 
-        private static bool IsSupportedAvif16BasePixFmt(string pix)
-            => pix is "gbrp" or "gbrp10le" or "gbrp12le" or "gbrp16le"
-                or "yuv444p" or "yuv444p10le" or "yuv444p12le" or "yuv444p16le";
-
-        private static bool IsSupportedAvif16ExtPixFmt(string pix)
-            => pix is "gbrp" or "gbrp10le" or "gbrp12le" or "gbrp16le"
-                or "yuv444p" or "yuv444p10le" or "yuv444p12le" or "yuv444p16le";
+        private static int? AvifSampleTransformNativeBitDepth(string pix) => pix switch
+        {
+            "gbrp" or "yuv444p" => 8,
+            "gbrp10le" or "yuv444p10le" => 10,
+            "gbrp12le" or "yuv444p12le" => 12,
+            _ => null,
+        };
 
         private static int BytesPerSample(string pix)
             => pix.Contains("16", StringComparison.Ordinal)
@@ -5432,14 +5965,6 @@ namespace FfmpegGui.Services
             => bytesPerSample == 2
                 ? BinaryPrimitives.ReadUInt16LittleEndian(buf.AsSpan(sampleIndex * 2, 2))
                 : buf[sampleIndex];
-
-        private static string NormalizeDecoderMatrix(string? matrix)
-        {
-            var m = ColorSpaceRegistry.NormalizeMatrixToken(matrix);
-            return m is "bt709" or "bt2020nc" or "bt2020c" or "smpte170m" or "bt470bg" or "smpte240m"
-                ? m
-                : "bt709";
-        }
 
 
         /// <summary>GIF → AVIF 两步法：先提取带透明通道的 PNG 帧，再用 avifenc 编码</summary>
@@ -5515,45 +6040,32 @@ namespace FfmpegGui.Services
                     threads = 2;
                 }
 
-                // ── 显式输出矩阵（2026-11-11 修复批 A1）：两步法只能用 avifenc 的 nclx `--cicp P/T/M` 表达 ──
-                // 缺陷形状（审查 P1-1）：本分支先于引擎插入点 ⇒ 规划层根本不跑 ⇒ 显式 `--color-out-matrix`
-                // 被静默丢弃（exit 0 + 产物 + 零播报）。维护者裁决：能安全携带的才带，不能的显式播报。
-                // 实测取证（`tests/output/_tmp/beta12-fix-color/avifenc-cicp/`，裸跑探针，非整轮验收）：
-                //  · avifenc 对未标注 PNG 帧的默认 nclx = 1/13/6（bt709 原色 / sRGB 传递 / smpte170m 矩阵）；
-                //  · M=6（smpte170m）与默认**逐像素 PSNR=inf**（字节只差 nclx 标签）⇒ 显式同值 = 无副作用携带；
-                //  · M=5（bt470bg）与默认**逐像素 PSNR=inf**（H.273 601 族系数相同 Kr=.299/Kb=.114）⇒ 只换标签、安全；
-                //  · M=0（rgb/identity）配 `-y 444` ⇒ 产物 gbrp（identity 直存，无 YUV 反变换），
-                //    帧 PSNR 38.60 → 43.48 dB（反而更保真）⇒ 真兑现；
-                //  · 其它 M（bt709=1 / smpte240m=7 / bt2020nc=9 …）：avifenc 的 RGB→YUV 恒 libyuv **BT.601**
-                //    系数，声明别的矩阵 = 解码端按错系数反变换（实测 bt709：43.76→42.26 dB；bt2020nc：
-                //    38.60→38.45 dB）⇒ 属「乱标」，**不携带**，只显式播报未生效（exit 0、产物照出）。
-                var omTok = item.Options.ColorOutMatrix;   // 已在 FfmpegOptions setter 归一（bt601→smpte170m；auto→null）
-                string cicp = "";
-                if (!string.IsNullOrWhiteSpace(omTok))
+                // avifenc converts these RGB PNG frames with the requested coefficients.
+                // Bundled 1.4.2 produces different native YUV samples for BT.709 and 601.
+                var matrix = item.Options.ColorOutMatrix;
+                var code = ColorMapping.AvifCicp.MatrixCode(matrix);
+                var range = ColorMapping.ImageEncoderArgs.ExplicitRange(item.Options);
+                var chroma = ColorMapping.ImageEncoderArgs.ExplicitChroma(item.Options);
+                if (matrix != null && code is not (0 or 1 or 4 or 5 or 6 or 7 or 9))
+                    throw new ColorMapping.ColorOutputContractException("COLOR_MATRIX_REJECTED", $"GIF to AVIF has no verified carrier for {matrix}");
+                if (item.Options.Lossless && code is > 0)
+                    throw new ColorMapping.ColorOutputContractException("COLOR_MATRIX_REJECTED", "Lossless GIF to AVIF requires RGB identity");
+                if (item.Options.Lossless || code == 0)
                 {
-                    switch (omTok)
-                    {
-                        case "smpte170m":
-                            cicp = "--cicp 1/13/6";
-                            break;
-                        case "bt470bg":
-                            cicp = "--cicp 1/13/5";
-                            break;
-                        case "rgb":
-                            cicp = "--cicp 1/13/0 -y 444";
-                            break;
-                    }
-                    // 播报（[color-out-matrix] 前缀 = 契约播报面，门禁按此前缀做负控）。
-                    if (cicp.Length > 0)
-                        item.Log += $"[color-out-matrix] avif(two-step): {omTok} -> avifenc {cicp} (nclx carrier; the encoder's RGB->YUV coefficients match the declared matrix)\n";
-                    else
-                        item.Log += $"[color-out-matrix] ⚠ 该出口无矩阵承载（avif two-step / avifenc）：显式值 {omTok} 未生效——avifenc 的 RGB→YUV 转换系数固定为 BT.601，声明其它矩阵会让解码端按错系数反变换（实测像素偏移）；exit 0，产物照常输出\n";
-                    _onItemUpdated?.Invoke(item);
+                    if (range == "tv") throw new ColorMapping.ColorOutputContractException("COLOR_RANGE_REJECTED", "RGB identity requires full range");
+                    if (chroma is "420" or "422") throw new ColorMapping.ColorOutputContractException("COLOR_CHROMA_REJECTED", "RGB identity requires 4:4:4");
+                    code = 0;
+                    chroma = "444";
+                    range = "pc";
                 }
-
+                var cicp = code == null ? "" : $"--cicp 1/13/{code}";
                 var avifencArgs = new StringBuilder();
-                var headArgs = $"-q {quality} -s {speed}" + (threads >= 2 ? $" -j {threads}" : "")   // Threads<=0 ⇒ 不传 -j，由 avifenc 自适应
-                             + (cicp.Length > 0 ? " " + cicp : "");
+                var headArgs = $"-q {(item.Options.Lossless ? 100 : quality)} -s {speed}"
+                    + (threads >= 2 ? $" -j {threads}" : "")
+                    + (cicp.Length > 0 ? " " + cicp : "")
+                    + (chroma == null ? "" : $" -y {chroma}")
+                    + (range == null ? "" : $" --range {(range == "pc" ? "full" : "limited")}")
+                    + (item.Options.Lossless ? " --lossless" : "");
                 avifencArgs.Append(headArgs).Append(' ');
                 // ⚠ P2-4（实测）：帧文件**只能传相对文件名**，配合下面的 WorkingDirectory。
                 //   绝对路径每帧 ~98 字符 ⇒ 约 330 帧就撞满 CreateProcess 的 32767 上限
@@ -5625,8 +6137,17 @@ namespace FfmpegGui.Services
                 //   进程退出码读它）——英文 "failed: ..." 会让条目失败但 exit=0，CI 无法机读察觉。
                 item.Status = process.ExitCode == 0 ? AvifencTwoStepStatus : $"失败 (avifenc 两步法 exit {process.ExitCode})";
 
-                if (process.ExitCode == 0)
-                    await RestoreMetadataAsync(item, outputPath);
+                if (process.ExitCode == 0 && File.Exists(outputPath) && new FileInfo(outputPath).Length > 0)
+                {
+                    await RestoreMetadataAsync(item, outputPath, ct: ct);
+                    if (item.ExitCode == 0 && matrix != null)
+                        ColorMapping.ImageEncoderArgs.EmitWarn($"[color-out-matrix] avif(two-step): {matrix} -> avifenc {cicp}");
+                }
+                else if (process.ExitCode == 0)
+                {
+                    item.ExitCode = 92;
+                    item.Status = "失败 (avifenc did not write an artifact)";
+                }
             }
             finally
             {
@@ -5752,7 +6273,7 @@ namespace FfmpegGui.Services
                     else if (djxlDegradedToPixels)
                     {
                         // ⚠ 降级后产物是**重新编码**的普通 JPEG，不再是"原始码流" ⇒ 走正常元数据阶段。
-                        await RestoreMetadataAsync(item, outputPath);
+                        await RestoreMetadataAsync(item, outputPath, ct: ct);
                     }
                     else
                     {
@@ -5852,7 +6373,7 @@ namespace FfmpegGui.Services
                             {
                                 item.ExitCode = 0;
                                 item.Status = pipeResult.status;
-                                await RestoreMetadataAsync(item, outputPath);
+                                await RestoreMetadataAsync(item, outputPath, ct: ct);
                                 return;
                             }
                             item.Log += "[pipeline] djxl→cjxl 管道失败，回退到 PNG 中转\n";
@@ -5869,7 +6390,7 @@ namespace FfmpegGui.Services
                             {
                                 item.ExitCode = 0;
                                 item.Status = "已完成 (cjpegli 管道)";
-                                await RestoreMetadataAsync(item, outputPath);
+                                await RestoreMetadataAsync(item, outputPath, ct: ct);
                                 return;
                             }
                             else
@@ -6295,12 +6816,13 @@ namespace FfmpegGui.Services
 
                 // ── 元数据恢复 ──
                 if (item.ExitCode == 0)
-                    await RestoreMetadataAsync(item, outputPath);
+                    await RestoreMetadataAsync(item, outputPath, ct: ct);
             }
             catch (OperationCanceledException)
             {
                 item.Status = "已停止";
             }
+            catch (ColorMapping.ColorOutputContractException) { throw; }
             catch (Exception ex)
             {
                 item.Log += $"[jxr] 异常: {ex.Message}\n";
@@ -6987,7 +7509,7 @@ namespace FfmpegGui.Services
                 if (pipeIccPath == null
                     && item.Options.MetadataMode == Models.MetadataMode.PreserveAll)
                 {
-                    var (iccPipe, _) = IccProfileService.ExtractIccToTempFile(item.InputPath);
+                    var (iccPipe, _) = IccProfileService.ExtractIccToTempFile(item.InputPath, ct: ct, preserveSourceBytes: true);
                     pipeIccPath = iccPipe;
                     if (pipeIccPath != null)
                         item.Log += "[djxl→cjxl] 已提取源 ICC，将嵌入输出 JXL\n";
@@ -7141,7 +7663,7 @@ namespace FfmpegGui.Services
                         s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ct: ct);
                     item.ExitCode = cjxlExit;
                     item.Status = cjxlExit == 0 ? "已完成 (cjxl, PNG 中转)" : $"失败 (cjxl 退出码 {cjxlExit})";
-                    if (cjxlExit == 0) await RestoreMetadataAsync(item, outputPath);
+                    if (cjxlExit == 0) await RestoreMetadataAsync(item, outputPath, ct: ct);
                     return true;
                 }
                 else if ((targetFmt == "jpg" || targetFmt == "jpeg" || targetFmt == "jpegli")
@@ -7152,7 +7674,7 @@ namespace FfmpegGui.Services
                         s => { item.Log += s; _onItemUpdated?.Invoke(item); }, ct);
                     item.ExitCode = cjexit;
                     item.Status = cjexit == 0 ? "已完成 (cjpegli 编码)" : $"失败 (cjpegli 退出码 {cjexit})";
-                    if (cjexit == 0) await RestoreMetadataAsync(item, outputPath);
+                    if (cjexit == 0) await RestoreMetadataAsync(item, outputPath, ct: ct);
                     return true;
                 }
                 else
@@ -7167,7 +7689,7 @@ namespace FfmpegGui.Services
                     item.Status = exit2 == 0 ? "已完成 (ffmpeg)" : $"失败 (ffmpeg 退出码 {exit2})";
                     // ffmpeg with -map_metadata 0 preserves metadata from the input file,
                     // but here the input is tmp PNG which has no metadata, so we still need restore.
-                    if (exit2 == 0) await RestoreMetadataAsync(item, outputPath);
+                    if (exit2 == 0) await RestoreMetadataAsync(item, outputPath, ct: ct);
                     return true;
                 }
             }
@@ -7213,7 +7735,7 @@ namespace FfmpegGui.Services
                 item.Status = exitDirect == 0
                     ? "已完成 (ffmpeg 直读 JXL)"
                     : $"失败 (djxl PNM exit {exit} 且 ffmpeg 直读 exit {exitDirect})";
-                if (exitDirect == 0) await RestoreMetadataAsync(item, outputPath);
+                if (exitDirect == 0) await RestoreMetadataAsync(item, outputPath, ct: ct);
                 return exitDirect == 0;
             }
         }
@@ -7274,7 +7796,7 @@ namespace FfmpegGui.Services
                     //   产物 CICP 仍是 `bt709`（P3 被吞）；对照普通 png 源同参数 ⇒ `smpte432` ✓。
                     item.Options.ColorSourceDeclPrimaries = jxlMeta.colorPrimaries;
                     item.Options.ColorSourceDeclTrc = jxlMeta.colorTrc;
-                    item.Options.ColorMatrix = jxlMeta.colorSpace ?? "bt709";   // 输入矩阵声明（`-i` 前 -colorspace）
+                    // djxl emits RGB here; a probed container tag is not a user matrix request.
                     item.Log += $"[pipe] 注入 JXL 真实色彩: p={jxlMeta.colorPrimaries} t={jxlMeta.colorTrc} m={jxlMeta.colorSpace}\n";
                 }
             }
@@ -7425,7 +7947,7 @@ namespace FfmpegGui.Services
                 var pipeOk = (ffExitCode == 0 && transferError == null && djxlExit == 0);
                 item.ExitCode = djxlExit != 0 ? djxlExit : ffExitCode;
                 item.Status = pipeOk ? "已完成 (djxl→ffmpeg 管道)" : $"失败 (ffmpeg 退出码 {ffExitCode})";
-                if (pipeOk) await RestoreMetadataAsync(item, outputPath);
+                if (pipeOk) await RestoreMetadataAsync(item, outputPath, ct: ct);
             }
             catch (OperationCanceledException)
             {
@@ -7466,19 +7988,50 @@ namespace FfmpegGui.Services
         /// <param name="ct">取消令牌（`#26`：3 个调用方各自持有 `ct`/`linkedToken`，本方法此前 static 无形参）</param>
         private static (string inputArgs, string outputArgs, string? iccPath) BuildPipeColorArgs(
             Models.FfmpegOptions options, string? inputPath = null,
-            Action<string>? log = null, CancellationToken ct = default)
+            Action<string>? log = null, CancellationToken ct = default,
+            FfmpegCommandBuilder.ColorMetadata? sourceMeta = null, bool inputAlreadyDecoded = false)
         {
             string inputArgs = "", outputArgs = "";
             string? iccPath = null;
+            var narrowRangeFilter = inputAlreadyDecoded || string.IsNullOrEmpty(inputPath)
+                ? null : FfmpegCommandBuilder.PngNarrowRangeFilter(inputPath);
 
             // ── 位深保留：16-bit+ 输入显式指定 PNG 输出位深（防御性，确保不被降级）──
             // 实测 ffmpeg PNG 编码器对 16-bit 输入默认输出 rgb48be（自动保留），
             // 此处显式指定消除不确定性；8-bit 输入不指定（保持默认 rgb24）。
-            var depthMeta = default(FfmpegCommandBuilder.ColorMetadata);
-            if (!string.IsNullOrEmpty(inputPath))
+            var depthMeta = sourceMeta ?? default(FfmpegCommandBuilder.ColorMetadata);
+            if (sourceMeta == null && !string.IsNullOrEmpty(inputPath))
                 depthMeta = FfmpegCommandBuilder.ProbeInputColorMetadata(inputPath, log, ct);
             if (depthMeta.bitDepth > 8)
                 outputArgs += $"-pix_fmt {(depthMeta.hasAlpha ? "rgba64le" : "rgb48le")} ";
+
+            var inputMatrix = inputAlreadyDecoded || string.IsNullOrEmpty(inputPath) ? default
+                : FfmpegCommandBuilder.ResolveInputMatrix(options, inputPath, depthMeta);
+            if (inputMatrix.Use == FfmpegCommandBuilder.InputMatrixUse.Reject)
+                throw new FfmpegCommandBuilder.InputMatrixContractException(inputMatrix.Diagnostic!);
+            if (inputMatrix.Diagnostic != null) log?.Invoke(inputMatrix.Diagnostic + "\n");
+            (string inputArgs, string outputArgs, string? iccPath) Finish(string incoming, string outgoing, string? profile)
+            {
+                // Every exit, including faithful ICC and the direct-encode fallback, must
+                // interpret YUV samples before the first RGB sink, geometry or color map.
+                bool wideDecode = depthMeta.bitDepth > 8 || options.BitDepth > 8
+                    || outgoing.Contains("rgb48", StringComparison.Ordinal) || outgoing.Contains("rgba64", StringComparison.Ordinal);
+                var rgb = depthMeta.hasAlpha ? (wideDecode ? "rgba64le" : "rgba") : (wideDecode ? "rgb48le" : "rgb24");
+                var firstDecode = inputMatrix.BuildFilter(rgb);
+                if (firstDecode == null) return (incoming, outgoing, profile);
+                int vfIndex = outgoing.IndexOf("-vf ", StringComparison.Ordinal);
+                if (vfIndex < 0) vfIndex = outgoing.IndexOf("-filter_complex ", StringComparison.Ordinal);
+                if (vfIndex >= 0)
+                {
+                    int quoteStart = outgoing.IndexOf('"', vfIndex);
+                    int quoteEnd = quoteStart >= 0 ? outgoing.IndexOf('"', quoteStart + 1) : -1;
+                    if (quoteEnd <= quoteStart)
+                        throw new InvalidOperationException("COLOR_INPUT_MATRIX_PIPE_FILTER_INVALID: cannot locate the pipe's first filter chain");
+                    outgoing = outgoing[..(quoteStart + 1)] + firstDecode + "," + outgoing[(quoteStart + 1)..];
+                }
+                else outgoing += $"-vf \"{firstDecode}\" ";
+                return (incoming, outgoing, profile);
+            }
 
             // ── 点三：超广色域「像素原样 + 仅靠 ICC」保真（管道 ffmpeg → cjpegli/cjxl）──
             // 管道输入无容器元数据可搭，ICC 只能由编码器 -x icc_pathname 嵌入；
@@ -7487,7 +8040,7 @@ namespace FfmpegGui.Services
                 options.FaithfulIccPath = FfmpegCommandBuilder.ResolveFaithfulUltraWideIcc(
                     options, depthMeta.sourceGamutName, depthMeta.colorTrc, options.Format);
             if (!string.IsNullOrWhiteSpace(options.FaithfulIccPath))
-                return ("", outputArgs.Trim(), options.FaithfulIccPath);
+                return Finish("", outputArgs, options.FaithfulIccPath);
 
             // ⚠ 2026-10-04：`HasExplicitColorParams` 本身 = CP/CT/Matrix 任一非空 ⇒ 原先的合取是冗余的；
             //   同时不再读 UI 布尔（勾选/不勾选不得有策略差别，见 `FfmpegOptions.HasExplicitColorParams`）。
@@ -7497,8 +8050,9 @@ namespace FfmpegGui.Services
                     inputArgs += $"-color_primaries {options.ColorPrimaries} ";
                 if (!string.IsNullOrWhiteSpace(options.ColorTrc))
                     inputArgs += $"-color_trc {options.ColorTrc} ";
-                if (!string.IsNullOrWhiteSpace(options.ColorMatrix))
-                    outputArgs += ColorSpaceRegistry.FfmpegColorSpaceArg(options.ColorMatrix);
+                var declaredInputMatrix = ColorSpaceRegistry.ToFfmpegInputMatrixName(options.ColorMatrix);
+                if (declaredInputMatrix != null)
+                    inputArgs += $"-colorspace {declaredInputMatrix} ";
             }
             else if (!string.IsNullOrWhiteSpace(options.ColorSpace)
                      && !options.ColorSpace.Equals("auto", StringComparison.OrdinalIgnoreCase))
@@ -7577,14 +8131,17 @@ namespace FfmpegGui.Services
                         allowApproximateCurve: true, zimgCurveCaliber: ColorSpaceRegistry.IsZimgCurveCaliber(options));
                     if (stdIcc != null && xform != null)
                     {
-                        outputArgs += FfmpegCommandBuilder.ChainArgs(inputPath, xform, withLabelReset: true) + " ";
-                        return (inputArgs, outputArgs, stdIcc);
+                        var fullRangeXform = narrowRangeFilter == null ? xform : narrowRangeFilter + "," + xform;
+                        outputArgs += FfmpegCommandBuilder.ChainArgs(inputPath, fullRangeXform, withLabelReset: true) + " ";
+                        return Finish(inputArgs, outputArgs, stdIcc);
                     }
                     // 回退: 生成失败则携带源 ICC(色彩正确, 避免误标 sRGB)。
-                    var (uwIcc, _) = IccProfileService.ExtractIccToTempFile(inputPath, log, ct);
+                    var (uwIcc, _) = IccProfileService.ExtractIccToTempFile(inputPath, log, ct, preserveSourceBytes: true);
                     if (uwIcc != null)
                     {
-                        return (inputArgs, outputArgs, uwIcc);
+                        if (narrowRangeFilter != null)
+                            outputArgs += FfmpegCommandBuilder.ChainArgs(inputPath, narrowRangeFilter) + " ";
+                        return Finish(inputArgs, outputArgs, uwIcc);
                     }
                 }
                 // 广色域源但 cjxl 无 color_space 枚举（DCI-P3/SDR-BT.2020）→ 携带源 ICC 完整描述，
@@ -7593,10 +8150,12 @@ namespace FfmpegGui.Services
                 else if (ColorSpaceRegistry.MapPrimariesTransferToCjxl(hdrMeta.colorPrimaries, hdrMeta.colorTrc) == null
                          && hdrMeta.colorPrimaries is "smpte431" or "bt2020")
                 {
-                    var (wIcc, _) = IccProfileService.ExtractIccToTempFile(inputPath, log, ct);
+                    var (wIcc, _) = IccProfileService.ExtractIccToTempFile(inputPath, log, ct, preserveSourceBytes: true);
                     if (wIcc != null)
                     {
-                        return (inputArgs, outputArgs, wIcc);
+                        if (narrowRangeFilter != null)
+                            outputArgs += FfmpegCommandBuilder.ChainArgs(inputPath, narrowRangeFilter) + " ";
+                        return Finish(inputArgs, outputArgs, wIcc);
                     }
                 }
                 if (hdrMeta.bitDepth > 8)
@@ -7619,9 +8178,9 @@ namespace FfmpegGui.Services
                             var (primariesIn, transferIn) = MapIccToZscale(guessed);
                             if (primariesIn == "bt709" && transferIn == "bt709")
                             {
-                                // sRGB ICC → 无需转换（修正旧逻辑误判 sRGB 内容为 Rec.2020 的问题）
-                                // 像素保持原样，ICC 由编码器携带（iccx_pathname）
-                                iccPath = extractedIcc;
+                                // sRGB ICC → 无需转换；只在最终决定原样携带时重新提取原始字节。
+                                iccPath = ExtractSourceIccForCarry(inputPath, log, ct);
+                                TryDeleteIcc(extractedIcc);
                                 outputArgs += "-colorspace bt709 ";
                             }
                             else if (primariesIn != null)
@@ -7632,9 +8191,9 @@ namespace FfmpegGui.Services
                             }
                             else
                             {
-                                // 不可映射的 ICC（Adobe RGB / ProPhoto 等）→ 像素原样 + 携带 ICC，
-                                // 由 cjxl 嵌入输出，查看器按 ICC 正确解释
-                                iccPath = extractedIcc;
+                                // 不可映射的 ICC（Adobe RGB / ProPhoto 等）→ 像素原样 + 携带原始 ICC 字节。
+                                iccPath = ExtractSourceIccForCarry(inputPath, log, ct);
+                                TryDeleteIcc(extractedIcc);
                             }
                         }
                         else
@@ -7707,7 +8266,26 @@ namespace FfmpegGui.Services
                 }
             }
 
-            return (inputArgs, outputArgs, iccPath);
+            // Narrow-range RGB PNG samples are expanded exactly once before any geometric or color transform.
+            // The filter also resets the frame range tag to full, matching the expanded pixel values.
+            if (narrowRangeFilter != null)
+            {
+                int vfIndex = outputArgs.IndexOf("-vf ", StringComparison.Ordinal);
+                if (vfIndex >= 0)
+                {
+                    int quoteStart = outputArgs.IndexOf('"', vfIndex);
+                    int quoteEnd = quoteStart >= 0 ? outputArgs.IndexOf('"', quoteStart + 1) : -1;
+                    if (quoteEnd > quoteStart)
+                        outputArgs = outputArgs[..(quoteStart + 1)] + narrowRangeFilter + ","
+                            + outputArgs[(quoteStart + 1)..quoteEnd] + outputArgs[quoteEnd..];
+                    else
+                        outputArgs += FfmpegCommandBuilder.ChainArgs(inputPath, narrowRangeFilter) + " ";
+                }
+                else
+                    outputArgs += FfmpegCommandBuilder.ChainArgs(inputPath, narrowRangeFilter) + " ";
+            }
+
+            return Finish(inputArgs, outputArgs, iccPath);
         }
 
         /// <summary>将 ICC 推断的色彩空间名映射为 zscale 的 primariesin/transferin 参数。返回 (null,null) 表示无法映射</summary>
@@ -7955,6 +8533,8 @@ namespace FfmpegGui.Services
                 ColorPrimaries = original.ColorPrimaries,
                 ColorTrc = original.ColorTrc,
                 ColorMatrix = original.ColorMatrix,
+                ColorOutMatrix = original.ColorOutMatrix,
+                ColorSourceProvenance = original.ColorSourceProvenance?.DeepClone(),
                 ColorRange = original.ColorRange,
                 Threads = original.Threads,
                 MetadataMode = original.MetadataMode,

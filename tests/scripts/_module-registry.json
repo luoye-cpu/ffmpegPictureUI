@@ -28,14 +28,14 @@
   "locks": {
     "ui-host-arms": {
       "file": "tests/scripts/verify-ui-host.ps1",
-      "desc": "verify-ui-host 五件逐件 Expected + $aggExpected 合计锁（2026-11-16 队列停止语义修复批+oxipng 面板锁：ui-mode G 组增 G2b 管道停止 4 条+G2c 优雅停止 IsRunning=false 3 条 ⇒ 59→66；ui-core C 组增 C22 oxipng 面板显隐+默认 max 3 条 ⇒ 84→87；合计 487→497）",
-      "value": 497,
+      "desc": "verify-ui-host 五件逐件 Expected + $aggExpected 合计锁；2026-11-24 N11/N12/N13 色彩矩阵 GUI 收口 +11、R5/R6 +4，ui-core 92→107，合计 505→520。历史抬表原因见 verify-ui-host 文件头。",
+      "value": 520,
       "members": {
-        "ui-core": 87,
+        "ui-core": 107,
         "ui-mode": 66,
         "ui-color": 103,
         "ui-sweep": 169,
-        "ui-cli": 72
+        "ui-cli": 75
       }
     },
     "param-matrix-j": {
@@ -45,8 +45,8 @@
     },
     "ui-split-union": {
       "file": "tests/scripts/verify-ui-split-union.ps1",
-      "desc": "单体全量断言名并集锁（$expectedOldCount；2026-11-16 队列停止语义修复批+oxipng 面板锁 +10 ⇒ 497）",
-      "value": 497
+      "desc": "单体断言名并集锁（$expectedOldCount；2026-11-24 N11/N12/N13 色彩矩阵 GUI 收口 +11、R5/R6 +4 ⇒ 520）",
+      "value": 520
     },
     "script-timeouts": {
       "file": "tests/scripts/_run-step3-gates.ps1",
@@ -1311,7 +1311,7 @@
       "evidence": [
         "tests/scripts/verify-ui-host.ps1:4"
       ],
-      "desc": "UI 拆分件五件 458 断言（控件穷举/策略映射/参数缺陷/CLI 严格）"
+      "desc": "UI 拆分件五件 505 断言（控件穷举/策略映射/参数缺陷/CLI 严格/预设回放）"
     },
     {
       "id": "cap.jpeg-family",

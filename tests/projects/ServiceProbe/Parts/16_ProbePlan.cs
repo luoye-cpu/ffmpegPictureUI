@@ -175,6 +175,95 @@ namespace ServiceProbe
                 }
             }
             else Console.WriteLine("  SKIP iccgen 互测（未找到 ffmpeg）");
+
+            // Exercise the actual post-encode ICC contract with independent artifact chunks.
+            // A bad generated profile is an output failure, not a bad-input rejection; a verified
+            // equivalent cICP can keep an artifact, while Carry cannot substitute that for bytes.
+            var deliver = typeof(QueueProcessor).GetMethod("DeliverIccAsync",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            var dir = Path.Combine(PlatformServices.GetTempDir(), "icc_delivery_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(dir);
+            try
+            {
+                var png = Path.Combine(dir, "artifact.png");
+                var profile = Path.Combine(dir, "generated.icc");
+                var valid = IccProfileService.BuildStandardIccBytesFromCicp("smpte432", "iec61966-2-1");
+                var pixelBytes = Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAACXBIWXMAAAABAAAAAQBPJcTWAAAADElEQVR4nGNsaGgAAAMIAYKGLCvCAAAAAElFTkSuQmCC");
+                string InvokeDelivery(FfmpegGui.Models.QueueItem item, bool generated, bool carry, string p, string? source)
+                {
+                    try
+                    {
+                        var queue = new QueueProcessor(_ => { });
+                        var options = new FfmpegGui.Models.FfmpegOptions { Format = "png" };
+                        var task = (System.Threading.Tasks.Task)deliver!.Invoke(queue, new object?[]
+                        { item, png, png, options, null, source, p, "iec61966-2-1", "rgb", generated, carry, System.Threading.CancellationToken.None })!;
+                        task.GetAwaiter().GetResult();
+                        return "ok";
+                    }
+                    catch (Exception ex)
+                    {
+                        var cause = ex is System.Reflection.TargetInvocationException tie ? tie.InnerException ?? tie : ex;
+                        return cause.GetType().GetProperty("ReasonCode", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)?.GetValue(cause) as string
+                            ?? cause.GetType().Name + ": " + cause.Message;
+                    }
+                }
+                Check(deliver != null && valid is { Length: >= 132 }, "ICC delivery contract and generated P3 profile are available");
+                if (deliver != null && valid is { Length: >= 132 })
+                {
+                    File.WriteAllBytes(png, pixelBytes);
+                    Check(PngCicpService.TryInsertCicp(png, 12, 13), "ICC delivery fixture independently carries P3/sRGB/full cICP");
+                    var bad = (byte[])valid.Clone(); bad[84] ^= 1; // valid model, invalid output Profile ID
+                    File.WriteAllBytes(profile, bad);
+                    var optional = new FfmpegGui.Models.QueueItem();
+                    var kept = InvokeDelivery(optional, true, false, "smpte432", profile);
+                    Check(kept == "ok" && optional.IsWarning && optional.Log.Contains("ICC_NOT_DELIVERED"),
+                        $"ICC not delivered is a warning only when independent cICP matches (result={kept}, warning={optional.IsWarning})");
+                    var wrong = InvokeDelivery(new FfmpegGui.Models.QueueItem(), true, false, "bt2020", profile);
+                    Check(wrong == "ICC_TARGET_NOT_DELIVERED", $"wrong cICP cannot substitute for failed target ICC (result={wrong})");
+                    var carry = InvokeDelivery(new FfmpegGui.Models.QueueItem(), false, true, "smpte432", Path.Combine(dir, "missing.icc"));
+                    Check(carry == "ICC_CARRY_WRITE_FAILED", $"Carry requires original bytes even when matching cICP exists (result={carry})");
+                    File.WriteAllBytes(profile, valid);
+                    var item = new FfmpegGui.Models.QueueItem();
+                    var written = InvokeDelivery(item, true, false, "smpte432", profile);
+                    var embedded = PngCicpService.TryReadIccp(png);
+                    Check(written == "ok" && !item.IsWarning && embedded != null && valid.AsSpan().SequenceEqual(embedded),
+                        $"generated target ICC is verified from artifact bytes (result={written})");
+
+                    // Carry writes the source ICC after the color stage wrote cICP. Exercise the
+                    // internal writer directly: matching dual tags survive; a mismatched cICP does not.
+                    var writeSourceOnly = typeof(PngCicpService).GetMethod("TryWriteIccOnly",
+                        System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
+                    bool WriteSourceOnly() => writeSourceOnly != null
+                        && (bool)(writeSourceOnly.Invoke(null, new object?[] { png, valid }) ?? false);
+                    var matchWritten = WriteSourceOnly();
+                    var matchCicp = PngCicpService.TryReadCicp(png, out var matchP, out var matchT);
+                    var matchIcc = PngCicpService.TryReadIccp(png);
+                    Check(matchWritten && matchCicp && matchP == 12 && matchT == 13
+                        && matchIcc != null && valid.AsSpan().SequenceEqual(matchIcc),
+                        $"source ICC carry preserves matching P3/sRGB cICP and exact ICC bytes (cicp={matchP}/{matchT})");
+                    File.WriteAllBytes(png, pixelBytes);
+                    var mismatchFixture = PngCicpService.TryInsertCicp(png, 9, 16);
+                    var mismatchWritten = WriteSourceOnly();
+                    var mismatchCicp = PngCicpService.TryReadCicp(png, out _, out _);
+                    var mismatchIcc = PngCicpService.TryReadIccp(png);
+                    Check(mismatchFixture && mismatchWritten && !mismatchCicp
+                        && mismatchIcc != null && valid.AsSpan().SequenceEqual(mismatchIcc),
+                        "source ICC carry strips mismatched cICP while retaining exact source ICC bytes");
+                    var oldIccDirectory = AppSettingsService.Current.IccDirectory;
+                    try
+                    {
+                        AppSettingsService.Current.IccDirectory = dir;
+                        File.WriteAllBytes(Path.Combine(dir, "prophoto-rgb.icc"), valid); // P3 bytes deliberately misnamed ProPhoto
+                        var faithful = IccProfileService.GetFaithfulIcc("ProPhoto RGB");
+                        var actualNamed = FfmpegGui.Services.ColorMapping.ColorSpaceIdentify.FromIccFile(faithful);
+                        Check(actualNamed?.KnownSpaceName == "ProPhoto RGB"
+                            && actualNamed.Curve.Equivalent(TC.ProPhoto),
+                            "a mislabeled user named ICC is ignored in favor of measured ProPhoto colorimetry");
+                    }
+                    finally { AppSettingsService.Current.IccDirectory = oldIccDirectory; }
+                }
+            }
+            finally { try { Directory.Delete(dir, recursive: true); } catch { } }
         }
 
         // ───────────────────── P3：内核自洽 / 性能 / 与外部参照互测 ─────────────────

@@ -1,5 +1,6 @@
 # 4 色彩策略 × {SDR/广色域/HDR 源} × {png/avif/jpg/jpg+gainmap} 矩阵实测
-# 断言: 输出非0字节; 记录 CICP(ffprobe) + ICC(exiftool) 以验证策略差异
+# 断言: 联合真实进程码、JSONL 唯一任务码与产物；另读 CICP(ffprobe) + ICC(exiftool)。
+# 2026-11-21：旧注释中按引擎裁决推导 legacy 预期已作废；以明确合同分别验收，再比 parity。
 # ⚠ **2026-09-16 契约更新（默认切引擎）**：4 策略的 Reject 契约现在**默认生效**（此前由传统管线的
 #   两个布尔近似吞掉）。三格按契约**必须拒绝**，已改为 `$expectReject` 断言（若产出文件则判红）：
 #     · carry-sdr-png    —— 源**完全无标签**（无 ICC 无 CICP）⇒ S2「携带」没有可携带的东西
@@ -111,6 +112,10 @@ if (-not (Test-Path $exe)) { $exe = "$root/src/FfmpegGui/bin/Debug/net11.0/win-x
 #   不是你以为的那个二进制。⇒ 一律**打印被测 exe 与构建类型**，让读数可追溯。
 Write-Output ("[gate] exe=" + $exe + $(if ($exe -like '*[/\]Debug[/\]*') { " (Debug fallback)" } else { " (Release)" }))
 $et = "$root/publish/PLAN/exiftool/exiftool.exe"
+# 与产品 ExifToolService 同口径：随包启动器按 PATH 加载 perl532.dll。
+# 只改本门禁进程及其子进程环境，避免独立读回把 code 126 误记为“无 ICC”。
+$etDir = Split-Path -Parent $et
+$env:PATH = (Join-Path $etDir 'exiftool_files') + ";$etDir;$env:PATH"
 $fp = "$root/publish/PLAN/ffmpeg-full/ffprobe.exe"
 $val = "$root/tests/output/validate"; $col = "$val/../results/color"
 # ⚠ 运行级隔离（GUID）：固定 `$out` + 开头整目录删，会被**并发的同名实例**互删 ⇒ 假红（§6 第 66 条）。
@@ -134,77 +139,123 @@ function ExecOut([string]$file, [string]$argStr){
   return [System.IO.File]::ReadAllText($o)
 }
 
-# exiftool 本机偶发 `Failed to load Perl DLL "perl532.dll" code 126`（首读必失败、重试即恢复，
-# 见 verify-prophoto-faithful 的 warmup/retry）。本门禁的 ICC 取数既用于正断言也用于
-# “不得写假标注”的负断言 ⇒ 单次失败会让负断言假绿、正断言假红。这里统一重试 3 次，
-# 仍读不到才返回 false（此时由调用方的断言判红，不吞错）。
+# exiftool 的 ICC 取数既用于正断言也用于“不得写假标注”的负断言。
+# 只有拿到完整标签清单才允许返回 true/false；启动失败或空输出重试后必须显式转红，
+# 绝不能把“读失败”折叠成“没有 ICC”。
 function ExifHasIcc([string]$path){
-  for($i = 0; $i -lt 3; $i++){
-    $r = ExecOut $et "-a -s -G0 `"$path`""
-    if($r -match "ICC|ProfileDescription|iccp"){ return $true }
+  $last = ''
+  for($i = 0; $i -lt 5; $i++){
+    $r = Exec $et "-a -s -G0 `"$path`""
+    $last = $r
+    if($r -match 'Failed to load Perl DLL|code 126'){ Start-Sleep -Milliseconds 300; continue }
+    if($r -match '\[ExifTool\]\s+ExifToolVersion' -and $r -match '\[File\]\s+FileType'){
+      return [bool]($r -match "ICC|ProfileDescription|iccp")
+    }
     Start-Sleep -Milliseconds 300
   }
-  return $false
+  throw "ExifTool ICC 读取连续失败，不能把读失败当作无 ICC：$(($last -replace '\r?\n',' ').Trim())"
 }
 
-$pass=0;$fail=0
+$pass=0;$fail=0;$script:skip=0
 # 每格的实测记录：tag -> @{ Ok=是否按预期; Bytes; Cicp; Icc }。对照段据此逐格比。
 $script:res = @{}
 $script:tags = @()
 
-function S($tag,$inFile,$fmt,$strat,$gm,$expectReject = $false,$legacy = $false,$extra = @()){
-  $runTag = if($legacy){"L-$tag"}else{$tag}
-  $a = "--headless -i `"$inFile`" --format $fmt --output `"$out/$runTag`""
-  if($strat){$a+=" --color-strategy `"$strat`""}
-  if($gm){$a+=" --jpeg-gain-map true"}
-  # 附加参数（逐项加引号）：供「强制 Map」等需要额外开关的格使用（见 ③b 段）
-  foreach($x in $extra){$a+=" `"$x`""}
-  if($legacy){$a+=" --color-engine legacy"}
+# JSONL 在产物目录外；每个产品臂必须联合验证真实进程码、唯一任务终态及产物。
+# 解码 item_log 文本供既有策略 parity 使用，不能拿 Verdict 文本代替真实任务结果。
+function Invoke-StrategyProduct([string]$Tag, [string]$InFile, [string]$Fmt, [string]$Arguments) {
+  $dir = Join-Path $out $Tag; $json = Join-Path $out "$Tag.jsonl"
+  $stdout = Join-Path $out "$Tag.o"; $stderr = Join-Path $out "$Tag.e"
+  $levelArgs = if($Arguments -match '--log-level'){ '' } else { '--log-level Debug' }
+  $a = "--headless $levelArgs --log-format JsonLines --log-file `"$json`" -i `"$InFile`" --format $Fmt --output `"$dir`" $Arguments"
+  $rc = $null; $launchError = ''
+  try {
+    $process = Start-Process -FilePath $exe -ArgumentList $a -Wait -NoNewWindow -PassThru `
+      -RedirectStandardOutput $stdout -RedirectStandardError $stderr -ErrorAction Stop
+    $rc = $process.ExitCode
+  } catch { $launchError = $_.Exception.Message }
+  $events = @(); $jsonOk = $false; $jsonIssue = ''
+  try {
+    if(-not (Test-Path -LiteralPath $json -PathType Leaf)){ throw 'JSONL log file missing' }
+    $lines = @([IO.File]::ReadAllLines($json) | Where-Object { $_.Trim() })
+    if($lines.Count -eq 0){ throw 'JSONL log file empty' }
+    $events = @($lines | ForEach-Object { ConvertFrom-Json -InputObject $_ -ErrorAction Stop })
+    $jsonOk = $true
+  } catch { $jsonIssue = $_.Exception.Message }
+  $done = @($events | Where-Object { $_.c -ceq 'item_completed' })
+  $queues = @($events | Where-Object { $_.c -ceq 'queue_completed' })
+  $hasCode = $done.Count -eq 1 -and ($done[0].PSObject.Properties.Name -ccontains 'code')
+  $taskCode = if($hasCode){ $done[0].code } else { $null }
+  # JSON 数字必须仍是整数类型；"0"、null、0.0 不得靠 PowerShell 隐式转换冒充成功 code。
+  $codeIsInteger = $taskCode -is [int] -or $taskCode -is [long]
+  $doneLevel = if($done.Count -eq 1){ $done[0].l } else { $null }
+  $doneP = if($done.Count -eq 1){ $done[0].p } else { $null }
+  $doneTotal = if($done.Count -eq 1){ $done[0].tot } else { $null }
+  $positionIsInteger = ($doneP -is [int] -or $doneP -is [long]) -and ($doneTotal -is [int] -or $doneTotal -is [long])
+  $files = @(Get-ChildItem -LiteralPath $dir -Recurse -File -ErrorAction SilentlyContinue)
+  $extensions = if($Fmt -in @('jpg','jpeg','jpegli')){ @('.jpg','.jpeg') } else { @(".$Fmt") }
+  $products = @($files | Where-Object { $_.Extension.ToLowerInvariant() -in $extensions })
+  $primary = if($products.Count -eq 1){ $products[0] } else { $null }
+  $log = (@($events | ForEach-Object { if($_.m){ [string]$_.m } }) -join "`n")
+  if(Test-Path -LiteralPath $stderr -PathType Leaf){ $log += "`n" + [IO.File]::ReadAllText($stderr) }
+  if(-not $jsonOk -and (Test-Path -LiteralPath $stdout -PathType Leaf)){ $log += "`n" + [IO.File]::ReadAllText($stdout) }
+  return @{ Rc=$rc; Log=$log; Events=$events; JsonOk=$jsonOk; DoneCount=$done.Count; QueueCount=$queues.Count;
+    HasCode=$hasCode; CodeIsInteger=$codeIsInteger; TaskCode=$taskCode; DoneLevel=$doneLevel;
+    DoneP=$doneP; DoneTotal=$doneTotal; PositionIsInteger=$positionIsInteger;
+    Files=$files; Products=$products; Prod=$primary; Json=$json;
+    Issue=(@($launchError,$jsonIssue) | Where-Object { $_ }) -join '; ' }
+}
+function Test-StrategyOutcome($Cell, [bool]$Reject) {
+  $issues = @()
+  if(-not $Cell.JsonOk -or $Cell.DoneCount -ne 1 -or $Cell.QueueCount -ne 1 -or -not $Cell.HasCode -or -not $Cell.CodeIsInteger){
+    $issues += "JSONL parse=$($Cell.JsonOk) item_completed=$($Cell.DoneCount) queue_completed=$($Cell.QueueCount) code-present=$($Cell.HasCode) integer-code=$($Cell.CodeIsInteger)"
+  }
+  if(-not $Cell.PositionIsInteger -or $Cell.DoneP -cne 1 -or $Cell.DoneTotal -cne 1){
+    $issues += "单项终态必须整数 p/tot=1/1（p=$($Cell.DoneP), tot=$($Cell.DoneTotal), integer=$($Cell.PositionIsInteger)）"
+  }
+  $expectedLevel = if($Reject){ 'error' } else { 'info' }
+  if($Cell.DoneLevel -cne $expectedLevel){ $issues += "终态 level 必须 $expectedLevel（实际 $($Cell.DoneLevel)）" }
+  if($Reject){
+    if($Cell.Rc -cne 1 -or $Cell.TaskCode -cne 91){ $issues += "拒绝必须 process=1/item=91（process=$($Cell.Rc), item=$($Cell.TaskCode)）" }
+    if($Cell.Files.Count -ne 0){ $issues += "拒绝必须零文件（实际 $($Cell.Files.Count)）" }
+  } else {
+    if($Cell.Rc -cne 0 -or $Cell.TaskCode -cne 0){ $issues += "成功必须 process=0/item=0（process=$($Cell.Rc), item=$($Cell.TaskCode)）" }
+    if($Cell.Products.Count -ne 1 -or -not $Cell.Prod -or $Cell.Prod.Length -le 0){ $issues += "成功必须恰有一份非空目标产物（实际 $($Cell.Products.Count)）" }
+  }
+  if($Cell.Issue){ $issues += $Cell.Issue }
+  return @{ Ok=($issues.Count -eq 0); Detail=($issues -join '; ') }
+}
+
+function S($tag,$inFile,$fmt,$strat,$gm,$expectReject = $false,$legacy = $false,$extra = @(),[string]$rejectPattern = ''){
+  $runTag = if($legacy){"L-$tag"}else{$tag}; $cellArgs = ''
+  if($strat){$cellArgs+=" --color-strategy `"$strat`""}
+  if($gm){$cellArgs+=' --jpeg-gain-map true'}
+  foreach($x in $extra){$cellArgs+=" `"$x`""}
+  if($legacy){$cellArgs+=' --color-engine legacy'}
   Start-Sleep -Seconds 2
-  Start-Process -FilePath $exe -ArgumentList $a -Wait -NoNewWindow -PassThru `
-    -RedirectStandardOutput "$out/$runTag.o" -RedirectStandardError "$out/$runTag.e" | Out-Null
-  # 日志一律读出来并存进结果：③b 段要按日志判「是否真的走了引擎编码出口」。
-  # （成功项的 item.Log 默认不回显 ⇒ ③b 的调用额外传了 --log-level Debug。）
-  $log = [System.IO.File]::ReadAllText("$out/$runTag.o") + [System.IO.File]::ReadAllText("$out/$runTag.e")
-  $f = Get-ChildItem -Recurse "$out/$runTag" -Include *.$fmt,*.jpg,*.jpeg -EA SilentlyContinue | Select-Object -First 1
+  $cell = Invoke-StrategyProduct $runTag $inFile $fmt $cellArgs
+  $log = $cell.Log; $f = $cell.Prod; $outcome = Test-StrategyOutcome $cell ([bool]$expectReject)
+  # 普通策略拒绝查 Reject；前置能力拒绝另查稳定标签，二者都必须真实 item=91/零文件。
+  $reasonOk = -not $expectReject -or $(if($rejectPattern){ $log -match $rejectPattern }else{ (GetVerdictKind $log) -eq 'Reject' })
+  $record = @{ Ok=($outcome.Ok -and $reasonOk); Bytes=$(if($f){$f.Length}else{0}); Cicp=''; Icc=$false; Log=$log;
+    ProcessCode=$cell.Rc; TaskCode=$cell.TaskCode; Rejected=[bool]$expectReject; Json=$cell.Json; ProductCount=$cell.Products.Count; Path=$f.FullName }
+  $script:res[$runTag] = $record
+  if(-not $record.Ok){
+    $detail = $outcome.Detail
+    if(-not $reasonOk){ $detail += '; 缺少预期拒绝原因（Reject 裁决或指定能力拒绝标签）' }
+    Write-Host ("  FAIL {0,-24} {1}; json={2}" -f $runTag,$detail,$cell.Json) -ForegroundColor Red
+    $script:fail++; return
+  }
   if($expectReject){
-    # 契约拒绝：**不得**产出文件，且必须给出明确的拒绝原因（否则就是"静默失败"）
-    # ⚠ 2026-09-17（S6）：判据由「能匹配到引擎那种 `Reject…｜…` 决策行」换成
-    #   「日志里出现**裁决行** `[色彩裁决] 裁决=Reject`」。理由：现在**两条管线**消费同一份裁决，
-    #   传统管线打的是 `[色彩裁决] ❌ 契约拒绝（不出产物）：…`（没有引擎那种 `Reject…｜…` 形状）。
-    #   这**不是放宽**：仍然要求「零产物 + 明确拒绝理由」，只是把判据从**自由文本**换成**稳定枚举**
-    #   （规划 §6.4：禁止用自由文本当判据）。理由串只用于人读的 PASS 行。
-    if($f -and $f.Length -gt 0){
-      Write-Host ("  FAIL {0,-24} 期望契约拒绝，却产出了 {1}B 的文件" -f $runTag,$f.Length) -ForegroundColor Red
-      $script:fail++; $script:res[$runTag]=@{Ok=$false;Bytes=$f.Length;Cicp="";Icc=$false;Log=$log}; return
-    }
-    if((GetVerdictKind $log) -eq "Reject"){
-      $why = [regex]::Match($log, '契约拒绝（不出产物）：([^\r\n]{0,80})').Groups[1].Value.Trim()
-      if(-not $why){ $why = [regex]::Match($log, 'Reject[^\r\n｜]*｜([^\r\n]{0,80})').Groups[1].Value.Trim() }
-      Write-Host ("  PASS {0,-24} 契约拒绝：{1}" -f $runTag,$why) -ForegroundColor Green; $script:pass++
-      $script:res[$runTag]=@{Ok=$true;Bytes=0;Cicp="";Icc=$false;Log=$log}
-    } else {
-      Write-Host ("  FAIL {0,-24} 无输出但**没有**裁决行 `[色彩裁决] 裁决=Reject`（静默失败）" -f $runTag) -ForegroundColor Red
-      $script:fail++; $script:res[$runTag]=@{Ok=$false;Bytes=0;Cicp="";Icc=$false;Log=$log}
-    }
-    return
+    Write-Host ("  PASS {0,-24} 真实契约拒绝 process={1}/item={2}，唯一终态、零文件" -f $runTag,$cell.Rc,$cell.TaskCode) -ForegroundColor Green
+    $script:pass++; return
   }
-  if(-not $f -or $f.Length -eq 0){
-    Write-Host ("  FAIL {0,-24} (无输出)" -f $runTag) -ForegroundColor Red; $script:fail++
-    $script:res[$runTag]=@{Ok=$false;Bytes=0;Cicp="";Icc=$false;Log=$log}; return
-  }
-  # ⚠ 两处取数都改 **ExecOut（只读 stdout）**：`Exec` 把 stderr 并进返回值，而随包 exiftool 是 perl 打的，
-  #   环境带本机 perl 不认的 `LC_ALL/LANG` 时每次调用都先喷 locale warning ⇒
-  #   ① `$hasIcc` 被喂进 `-not $ge.Icc` 这类**负断言**（gif 不许写假标注），污染会让它偏成假绿/假红两边都可能，
-  #   ② `$cicpStr` 里会混进 warning 文本，两格对照（`:289`/`:319`/`:346`）就变成"两条 warning 互比"。
-  #   前置的"取数尺有牙"正对照见 `:213`（同一把尺必须先在**真有 ICC** 的素材上读到东西）。
   $cicp = (ExecOut $fp "-v error -select_streams v:0 -show_entries `"stream=color_primaries,color_transfer`" -of csv=p=0 `"$($f.FullName)`"") -split "`r?`n"
-  # 归一化：ffprobe 的输出可能带空行 / 尾随分隔符，不归一化会让"值相同"的两格在对照段被判成不同（假红）。
-  $cicpStr = (($cicp -join ",") -split "," | ForEach-Object { $_.Trim() } | Where-Object { $_ }) -join ","
+  $cicpStr = (($cicp -join ',') -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }) -join ','
   $hasIcc = ExifHasIcc $f.FullName
-  Write-Host ("  PASS {0,-24} {1,6}B  cicp={2}  ICC={3}" -f $runTag,$f.Length,$cicpStr,$hasIcc) -ForegroundColor Green
+  $record.Cicp = $cicpStr; $record.Icc = [bool]$hasIcc
+  Write-Host ("  PASS {0,-24} {1,6}B process=0/item=0 cicp={2} ICC={3}" -f $runTag,$f.Length,$cicpStr,$hasIcc) -ForegroundColor Green
   $script:pass++
-  $script:res[$runTag]=@{Ok=$true;Bytes=$f.Length;Cicp=$cicpStr;Icc=[bool]$hasIcc;Log=$log}
 }
 
 # 从日志里读**裁决类别**（稳定枚举，规划 §6.4：不用自由文本当判据）。
@@ -255,36 +306,22 @@ foreach($strat in @("recommended","carry","cicp-only","manual")){
   $script:tags += @("$strat-sdr-png","$strat-p3-avif","$strat-hdr-png","$strat-hdr-jpggm")
 }
 
-# 规划 §3 P4.1：legacy 的 `expectReject` **由读裁决决定**，不再硬编码。
-# 读的是**同格引擎运行**（① 段刚跑过、日志已记）的 `[色彩裁决] 裁决=…`：同一输入在两条管线上
-# 裁决必须相同 ⇒ 引擎说 Reject，传统管线也必须不产出。
-# ⚠ 读不到裁决（引擎格未跑 / 无裁决行）⇒ 返回 $false（保持"产出"预期）；该情形会被 ③e 的
-#   **覆盖格数**断言抓出来，不会静默退化成"传统管线永远不拒绝"。
-function ExpectRejectFromVerdict([string]$tag){
-  $r = $script:res[$tag]
-  if(-not $r){ return $false }
-  return ((GetVerdictKind $r.Log) -eq "Reject")
-}
-
+# 预期由本门禁列明的策略/能力合同决定，不拿引擎本轮结果作为 legacy 的 oracle。
+# 实际 Verdict 和产物仍在 ③/③e 独立比较；parity 关系不能替代各臂的预期。
 # ── ② 传统管线（--color-engine legacy）对照矩阵 ──
 # ⚠ 2026-09-17（S6）：本段此前写着「传统管线不做契约拒绝 ⇒ expectReject 一律 $false」——**已作废**。
 #   维护者裁定「拒绝，用自研管线完成色彩映射」⇒ legacy 消费与引擎**同一份**裁决：
 #   Reject 格 legacy **也不产出**（非零退出码 + Reason/Advice/Alternatives）。
-#   故此处 expectReject 改为**读裁决**（`ExpectRejectFromVerdict`），与 §3 P4.1 一致。
+#   当前各臂按显式策略/能力合同验收，③e 再检验双方实际裁决关系，避免共同错误成为 oracle。
 Write-Host "`n### 传统管线对照（--color-engine legacy）###" -ForegroundColor Cyan
 foreach($strat in @("recommended","carry","cicp-only","manual")){
   Write-Host "  --- strategy = $strat ---" -ForegroundColor Cyan
   # ⚠ `--log-level Debug` 必需（③e 的裁决 parity 要从日志读 `[色彩裁决] 裁决=…`，见 ① 段同款说明）。
-  S "$strat-sdr-png"   $sdr "png"  $strat $false (ExpectRejectFromVerdict "$strat-sdr-png")   $true @("--log-level","Debug")
-  # ⚠ 2026-11-15：P3 fixture（$col/a2_srgb_p3.png）是 **16-bit**。AVIF 的 16-bit Sample Transform
-  #   只有自研引擎的 avifenc --depth 12,4 出口能承载；legacy 在进规划前就按契约拒绝（exit 91），
-  #   不产生 [色彩裁决] 行。这不是“legacy 没听裁决”，而是执行体能力边界 ⇒ 不把该格算作产出失败，
-  #   也不塞进裁决 parity（③e 对无裁决行的格本来就 skip）。引擎格仍有 ① 的产出/像素断言。
-  Write-Host ("  PASS {0,-24} 16-bit AVIF Sample Transform 为引擎专属；legacy 按能力边界拒绝（不参与裁决 parity）" -f "L-$strat-p3-avif") -ForegroundColor DarkYellow
-  $script:pass++
-  $script:res["L-$strat-p3-avif"] = @{Ok=$true;Bytes=0;Cicp="";Icc=$false;Log=""}
-  S "$strat-hdr-png"   $hdr "png"  $strat $false (ExpectRejectFromVerdict "$strat-hdr-png")   $true @("--log-level","Debug")
-  S "$strat-hdr-jpggm" $hdr "jpg"  $strat $true  (ExpectRejectFromVerdict "$strat-hdr-jpggm") $true @("--log-level","Debug")
+  S "$strat-sdr-png"   $sdr "png"  $strat $false ($strat -in @("carry","manual")) $true @("--log-level","Debug")
+  # 16-bit AVIF 的 legacy/off 是前置能力拒绝，不参与普通 Verdict parity；真实运行核 91/零文件。
+  S "$strat-p3-avif" $p3 "avif" $strat $false $true $true @("--bit-depth","16","--log-level","Debug") '\[avif16\]'
+  S "$strat-hdr-png"   $hdr "png"  $strat $false ($strat -eq "manual") $true @("--log-level","Debug")
+  S "$strat-hdr-jpggm" $hdr "jpg"  $strat $true  $false $true @("--log-level","Debug")
 }
 
 # ── ③ 两条管线的逐格对照（共同产出格必须 CICP 与 ICC 一致）──
@@ -360,22 +397,128 @@ if($engineOnlyReject.Count -gt 0){
 Write-Host "`n### ③b 强制 Map：AVIF 引擎编码出口（正面断言）###" -ForegroundColor Cyan
 $mTag = "map-p3-avif"
 S $mTag $p3 "avif" "recommended" $false $false $false @("--color-space","sRGB","--log-level","Debug")
-# legacy 对照：`$p3` 夹具是 **16-bit rgb48be**（`ffprobe pix_fmt=rgb48be`），
-# 传统 AVIF 出口只能 8-bit YUV，16-bit 输入在规划前就按能力边界拒绝 ⇒ 无产物不是“legacy 不听裁决”。
-# 与 ① 段的 `L-*-p3-avif` 同一口径：不把它算作产出失败，也不参与 CICP/ICC parity。
-Write-Host ("  PASS {0,-24} 16-bit AVIF Sample Transform 为引擎专属；legacy 按能力边界拒绝（不参与 CICP/ICC parity）" -f "L-$mTag") -ForegroundColor DarkYellow
-$script:pass++
-$script:res["L-$mTag"] = @{Ok=$true;Bytes=0;Cicp="";Icc=$false;Log=""}
+# 显式 16-bit 的 legacy 能力边界也是真运行；拒绝不能靠写一条 PASS 代替。
+S $mTag $p3 "avif" "recommended" $false $true $true @("--bit-depth","16","--color-space","sRGB","--log-level","Debug") '\[avif16\]'
 $me = $script:res[$mTag]; $ml = $script:res["L-$mTag"]
 Assert "map-avif-走引擎出口" (($me.Log -match "MPix/s") -and ($me.Log -notmatch "本次不适用引擎")) `
   "强制 Map 必须由引擎编码出口完成（日志须含引擎成功行「MPix/s」且**不得**含回退标记「本次不适用引擎」）"
 Assert "map-avif-产出" ($me.Bytes -gt 0) "引擎编码出口须产出非空 avif（bytes=$($me.Bytes)）"
-if ($ml.Bytes -eq 0) {
-  Write-Host ("  PASS {0,-24} 16-bit AVIF 无 legacy 对照臂 ⇒ CICP/ICC parity 不适用（不是放宽：legacy 无产物）" -f "map-avif-parity") -ForegroundColor DarkYellow
-  $script:pass++
+if($ml.Ok -and $ml.Rejected){
+  $script:skip++; Write-Host '  SKIP map-avif-parity：已实跑并验证 legacy 16-bit 能力拒绝，无共同产物可比较（不计 PASS）' -ForegroundColor DarkYellow
 } else {
-  Assert "map-avif-parity" (($me.Cicp -eq $ml.Cicp) -and ($me.Icc -eq $ml.Icc)) `
-    "强制 Map 的 CICP/ICC 必须与 legacy 一致（引擎 cicp=$($me.Cicp)/ICC=$($me.Icc)，legacy cicp=$($ml.Cicp)/ICC=$($ml.Icc)）"
+  Assert "map-avif-parity" ($me.Ok -and $ml.Ok -and $me.Bytes -gt 0 -and $ml.Bytes -gt 0 -and ($me.Cicp -eq $ml.Cicp) -and ($me.Icc -eq $ml.Icc)) `
+    "强制 Map 仅在两臂真实成功且有产物时比较 CICP/ICC；legacy 拒绝臂失约不得计绿"
+}
+
+# ③c 的 ExifTool JSON 同时读文件类型、尺寸、ICC 及其三条曲线。无 ICC 的判定也要求成功读回。
+function Read-GifParityMetadata([string]$Path, [string]$Key) {
+  $stdout = Join-Path $out "gif-$Key.meta.json"
+  $metadataArgs = '-j -b -G1 -FileType -ImageWidth -ImageHeight -Validate -Error -Warning -ICC_Profile -ColorSpaceData -ProfileConnectionSpace -MediaWhitePoint -RedMatrixColumn -GreenMatrixColumn -BlueMatrixColumn -RedTRC -GreenTRC -BlueTRC'
+  for ($attempt = 0; $attempt -lt 3; $attempt++) {
+    $p = Start-Process -FilePath $et -ArgumentList "$metadataArgs `"$Path`"" -Wait -NoNewWindow -PassThru -ErrorAction Stop `
+      -RedirectStandardOutput $stdout -RedirectStandardError "$stdout.err"
+    if ($p.ExitCode -eq 0) {
+      $meta = @(ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($stdout)) -ErrorAction Stop)
+      if ($meta.Count -eq 1 -and $meta[0].'File:FileType' -and $meta[0].'ExifTool:Validate' -ceq 'OK' -and
+          -not @($meta[0].PSObject.Properties.Name -match ':(?:Error|Warning)$').Count) { return $meta[0] }
+    }
+    Start-Sleep -Milliseconds 300
+  }
+  throw "ExifTool 未成功读取 $Key（exit=$($p.ExitCode)，见 $stdout）"
+}
+
+function Test-GifParityIcc($Meta, [bool]$P3) {
+  if ($Meta.'ICC_Profile:ICC_Profile' -notmatch '^base64:' -or
+      $Meta.'ICC-header:ColorSpaceData' -cne 'RGB ' -or $Meta.'ICC-header:ProfileConnectionSpace' -cne 'XYZ ') { return $false }
+  # ICC PCS D50 的 RGB→XYZ 列和白点。以标准色度经 Bradford 适配后的值为参照。
+  $white = @(0.9642, 1.0, 0.8249)
+  $columns = if ($P3) {
+    @(0.51512,0.24120,-0.00105), @(0.29198,0.69225,0.04189), @(0.15710,0.06657,0.78407), $white
+  } else {
+    @(0.43604,0.22249,0.01392), @(0.38512,0.71690,0.09706), @(0.14305,0.06061,0.71391), $white
+  }
+  $tags = @('RedMatrixColumn','GreenMatrixColumn','BlueMatrixColumn','MediaWhitePoint')
+  for ($i = 0; $i -lt $tags.Count; $i++) {
+    $values = [string]$Meta.PSObject.Properties["ICC_Profile:$($tags[$i])"].Value -split '\s+'
+    if ($values.Count -ne 3) { return $false }
+    for ($j = 0; $j -lt 3; $j++) {
+      $actual = 0.0
+      if (-not [double]::TryParse($values[$j], [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$actual) -or
+          -not ([Math]::Abs($actual - $columns[$i][$j]) -le 0.00025)) { return $false }
+    }
+  }
+  # IEC 61966-2-1 EOTF：ICC para 类型 3/4 的 g,a,b,c,d；类型 4 的 e,f 应为零。
+  $curve = 2.4, (1/1.055), (.055/1.055), (1/12.92), .04045, 0.0, 0.0
+  foreach ($channel in @('Red','Green','Blue')) {
+    $value = [string]$Meta.PSObject.Properties["ICC_Profile:${channel}TRC"].Value
+    if ($value -notmatch '^base64:') { return $false }
+    $buffer = [Convert]::FromBase64String($value.Substring(7))
+    if ($buffer.Length -notin @(32,40) -or [Text.Encoding]::ASCII.GetString($buffer,0,4) -cne 'para' -or
+        $buffer[8] -ne 0 -or $buffer[9] -ne $(if ($buffer.Length -eq 32) { 3 } else { 4 })) { return $false }
+    for ($k = 12; $k -lt $buffer.Length; $k += 4) {
+      $fixed = $buffer[$k]*16777216L + $buffer[$k+1]*65536 + $buffer[$k+2]*256 + $buffer[$k+3]
+      if ([Math]::Abs($fixed - 65536*$curve[($k-12)/4]) -gt 1.0) { return $false }
+    }
+  }
+  return $true
+}
+
+function Read-GifParityRgb([string]$Path, [string]$Key, [int]$Size, [string]$Filter = '') {
+  $ff = Join-Path $root 'publish/PLAN/ffmpeg-full/ffmpeg.exe'
+  $raw = Join-Path $out "gif-$Key.rgb"
+  $p = Start-Process -FilePath $ff -ArgumentList "-nostdin -v error -y -i `"$Path`" $Filter -frames:v 1 -threads 1 -c:v rawvideo -pix_fmt rgb24 -f rawvideo `"$raw`"" `
+    -Wait -NoNewWindow -PassThru -ErrorAction Stop -RedirectStandardError "$raw.err"
+  if ($p.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $raw -PathType Leaf)) { throw "GIF RGB decode $Key exit=$($p.ExitCode)" }
+  $bytes = [IO.File]::ReadAllBytes($raw)
+  if ($bytes.Length -ne $Size) { throw "GIF RGB decode $Key：样本数 $($bytes.Length) != $Size" }
+  return ,$bytes
+}
+
+function Measure-GifParityRgb([byte[]]$A, [byte[]]$B) {
+  if ($A.Length -eq 0 -or $A.Length -ne $B.Length) { throw 'GIF RGB 比较：样本数不齐' }
+  $sum = 0.0; $outliers = 0
+  for ($i = 0; $i -lt $A.Length; $i++) {
+    $err = [Math]::Abs([int]$A[$i] - [int]$B[$i])
+    $sum += $err * $err
+    if ($err -gt 20) { $outliers++ }
+  }
+  $rms = [Math]::Sqrt($sum / $A.Length); $tail = $outliers / $A.Length
+  # B 轮对拍 RMS 1.72–2.11 LSB，超过 20 LSB 的通道样本占比 0.10–0.14%。
+  # 调色板边缘可有局部峰值，同时约束全图 RMS 和大误差尾部。
+  return @{ Ok = ($rms -le 3.0 -and $tail -le 0.0025); Detail = ('RMS={0:F3}/3 LSB, >20 LSB={1:P3}/0.25%' -f $rms,$tail) }
+}
+
+function Test-GifParity($Engine, $Legacy, [string]$Source) {
+  if (-not ($Engine.Ok -and $Legacy.Ok -and $Engine.Bytes -gt 0 -and $Legacy.Bytes -gt 0)) {
+    throw '两臂必须真实成功（process=0/item=0、唯一终态及非空 GIF）'
+  }
+  $src = Read-GifParityMetadata $Source 'source'
+  if ($src.'File:FileType' -cne 'PNG' -or -not (Test-GifParityIcc $src $true)) { throw '源夹具必须是带真实 Display P3 ICC 的 PNG' }
+  $width = [int]$src.'PNG:ImageWidth'; $height = [int]$src.'PNG:ImageHeight'
+  $encoding = @{}
+  foreach ($key in @('engine','legacy')) {
+    $record = if ($key -eq 'engine') { $Engine } else { $Legacy }
+    $meta = Read-GifParityMetadata $record.Path $key
+    if ($meta.'File:FileType' -cne 'GIF' -or $meta.'GIF:ImageWidth' -ne $width -or $meta.'GIF:ImageHeight' -ne $height -or
+        $width -le 0 -or $height -le 0 -or $record.Cicp -notmatch '^unknown(,unknown)?$') { throw "$key 的 GIF 类型、尺寸或标注异常" }
+    # ExifTool 已解析文件并通过 Validate；用实际 ICC 数据与原有的元数据探针交叉检查。
+    $hasIcc = [bool]$meta.'ICC_Profile:ICC_Profile'
+    if ($hasIcc -ne $record.Icc) { throw "$key 的 GIF ICC 两次读回不一致" }
+    if ($hasIcc -and -not (Test-GifParityIcc $meta $false)) { throw "$key 的显式 ICC 不符合 sRGB 的 D50 矩阵、白点或三通道 TRC" }
+    $encoding[$key] = if ($hasIcc) { 'explicit sRGB ICC' } else { 'implicit sRGB' }
+  }
+  $n = $width * $height * 3
+  $a = Read-GifParityRgb $Engine.Path 'engine' $n; $b = Read-GifParityRgb $Legacy.Path 'legacy' $n
+  # 独立 libzimg：明确指定源 P3/sRGB 和目标 BT.709/sRGB，不使用两臂的 ICC 或编码命令构造参考。
+  $filter = '-vf "format=gbrp16le,zscale=primariesin=smpte432:transferin=iec61966-2-1:matrixin=gbr:rangein=full:primaries=bt709:transfer=iec61966-2-1:matrix=gbr:range=full,format=gbrp16le"'
+  $reference = Read-GifParityRgb $Source 'srgb-reference' $n $filter
+  $bypass = Read-GifParityRgb $Source 'p3-bypass' $n
+  $pair = Measure-GifParityRgb $a $b
+  $engineRef = Measure-GifParityRgb $a $reference
+  $legacyRef = Measure-GifParityRgb $b $reference
+  $wrong = Measure-GifParityRgb $bypass $reference
+  return @{ Ok=($pair.Ok -and $engineRef.Ok -and $legacyRef.Ok -and -not $wrong.Ok);
+    Detail="engine=$($encoding.engine), legacy=$($encoding.legacy), ${width}x${height}; pair $($pair.Detail); engine/reference $($engineRef.Detail); legacy/reference $($legacyRef.Detail); P3 bypass rejected=$(-not $wrong.Ok) ($($wrong.Detail))" }
 }
 
 # ── ③c 强制 Map：**唯一**正面钉住「GIF 走引擎编码出口」的断言 ──
@@ -398,12 +541,13 @@ $ge = $script:res[$gTag]; $gl = $script:res["L-$gTag"]
 Assert "map-gif-走引擎出口" (($ge.Log -match "MPix/s") -and ($ge.Log -notmatch "本次不适用引擎")) `
   "强制 Map 必须由引擎编码出口完成（日志须含引擎成功行「MPix/s」且**不得**含回退标记「本次不适用引擎」）"
 Assert "map-gif-产出" ($ge.Bytes -gt 0) "引擎编码出口须产出非空 gif（bytes=$($ge.Bytes)）"
-# gif 既无 ICC 通路也无 CICP 通路 ⇒ 产物**必须**零标注。这条钉的是"不得写假标注"（历史偏色根因）。
+# 引擎当前 GIF 出口使用隐含 sRGB，legacy 可以附带显式 sRGB ICC。
 # ⚠ ffprobe 对"无 CICP"的渲染是 `unknown,unknown`（**不是**空串，实测踩到过）⇒ 按渲染判。
 Assert "map-gif-不写假标注" ((-not $ge.Icc) -and ($ge.Cicp -match '^unknown(,unknown)?$')) `
-  "gif 无任何色彩标注通路 ⇒ 引擎不得写出 ICC/CICP（ICC=$($ge.Icc) cicp=$($ge.Cicp)，期望 ICC=False / cicp=unknown）"
-Assert "map-gif-parity" (($ge.Cicp -eq $gl.Cicp) -and ($ge.Icc -eq $gl.Icc)) `
-  "强制 Map 的 CICP/ICC 必须与 legacy 一致（引擎 cicp=$($ge.Cicp)/ICC=$($ge.Icc)，legacy cicp=$($gl.Cicp)/ICC=$($gl.Icc)）"
+  "引擎 GIF 出口应使用隐含 sRGB（ICC=$($ge.Icc) cicp=$($ge.Cicp)，期望 ICC=False / cicp=unknown）"
+try { $gifParity = Test-GifParity $ge $gl $p3 }
+catch { $gifParity = @{ Ok=$false; Detail=$_.Exception.Message } }
+Assert 'map-gif-parity' $gifParity.Ok $gifParity.Detail
 # ── 引擎 gif 出口的**命令行形态**（② 端到端硬断言）──
 # 取引擎日志里**编码步**那一行：`[色彩] ffmpeg … -filter_complex …`（解码步只有 `-vf`，不含它）。
 # 不用"最后一行"这种脆弱取法，按 `-filter_complex` 选；链一旦丢失 ⇒ 选不到行 ⇒ 断言转红（这是想要的）。
@@ -466,6 +610,12 @@ Assert "裁决-legacy替代方案-jpg" ($script:res["L-$jTag"].Log -match '可�
 $vkParityN = 0; $vkParityBad = @(); $vkParitySkipped = @()
 foreach($tag in $script:tags){
   $eRec = $script:res[$tag]; $lRec = $script:res["L-$tag"]
+  if(-not $eRec -or -not $lRec -or -not $eRec.Ok -or -not $lRec.Ok){
+    $vkParityBad += "${tag}: 单臂真实进程/任务/产物合同失败，不能以日志相同计作 parity"
+    continue
+  }
+  # 16-bit AVIF 的 legacy 前置能力拒绝不属于共同能力面；即便将来打印 Verdict 也不能误算策略差异。
+  if($tag -like '*-p3-avif'){ $vkParitySkipped += $tag; continue }
   $ev = ""
   if($eRec){ $ev = GetVerdictKind $eRec.Log }
   $lv = ""
@@ -493,16 +643,19 @@ if($vkParitySkipped.Count -gt 0){
 Write-Host "`n### 传统管线策略语义 ###" -ForegroundColor Cyan
 $L = { param($t) $script:res["L-$t"] }
 $r = & $L "carry-p3-avif"
-if ($r.Bytes -gt 0) {
-  Assert "L-carry-p3-avif" ($r.Cicp -match "smpte432") "S2 携带：广色域源不得被静默归一（cicp=$($r.Cicp)）"
+if($r.Ok -and $r.Rejected -and $r.TaskCode -eq 91){
+  $script:skip++; Write-Host '  SKIP L-carry-p3-avif 色彩语义：已实跑验证 legacy 16-bit 拒绝，无产物可比（不计 PASS）' -ForegroundColor DarkYellow
 } else {
-  Write-Host ("  PASS {0,-24} 16-bit AVIF Sample Transform 为引擎专属；legacy 无产物 ⇒ S2 AVIF 语义不适用（不是放宽）" -f "L-carry-p3-avif") -ForegroundColor DarkYellow
-  $script:pass++
+  Assert "L-carry-p3-avif" ($r.Ok -and $r.Bytes -gt 0 -and $r.Cicp -match "smpte432") "S2 携带：只在真实成功产物上验证源 P3（cicp=$($r.Cicp)）；拒绝臂失约不得因零文件计绿"
 }
 $r = & $L "carry-hdr-png"
 Assert "L-carry-hdr-png"  ($r.Cicp -match "smpte2084")       "S2 携带：HDR 源保持 HDR 传递（cicp=$($r.Cicp)）"
 $r = & $L "cicp-only-p3-avif"
-Assert "L-cicp-only-p3-avif" (-not $r.Icc)                   "S3 仅CICP：不得残留 ICC（ICC=$($r.Icc)）"
+if($r.Ok -and $r.Rejected -and $r.TaskCode -eq 91){
+  $script:skip++; Write-Host '  SKIP L-cicp-only-p3-avif ICC 语义：已实跑验证 legacy 16-bit 拒绝，无产物可读（不计 PASS）' -ForegroundColor DarkYellow
+} else {
+  Assert "L-cicp-only-p3-avif" ($r.Ok -and $r.Bytes -gt 0 -and -not $r.Icc) "S3 仅CICP：真实成功产物不得残留 ICC（ICC=$($r.Icc)）"
+}
 $r = & $L "cicp-only-hdr-png"
 Assert "L-cicp-only-hdr-png" (-not $r.Icc)                   "S3 仅CICP：不得残留 ICC（ICC=$($r.Icc)）"
 $r = & $L "recommended-sdr-png"
@@ -599,13 +752,10 @@ Assert "F0e 判据自测·一致即绿" ((Lock-JudgeDepth 10 $synRaised 16) -eq 
 # —— 跑一格真实任务，返回 日志 / 产物 / rc（与 S() 同一套 Start-Process 取法，不走 `& exe`）——
 function Lock-RunCell([string]$Tag, [string]$InFile, [string]$Fmt, [string]$Bd) {
   Start-Sleep -Seconds 2
-  $a = "--headless --log-level Debug -i `"$InFile`" --format $Fmt --bit-depth $Bd --color-space `"Display P3`" --output `"$out/F-$Tag`""
-  $p = Start-Process -FilePath $exe -ArgumentList $a -Wait -NoNewWindow -PassThru `
-        -RedirectStandardOutput "$out/F-$Tag.o" -RedirectStandardError "$out/F-$Tag.e"
-  $log = [System.IO.File]::ReadAllText("$out/F-$Tag.o") + [System.IO.File]::ReadAllText("$out/F-$Tag.e")
-  $f = Get-ChildItem -Recurse "$out/F-$Tag" -File -EA SilentlyContinue |
-       Where-Object { $_.Extension -eq ".$Fmt" } | Sort-Object Length -Descending | Select-Object -First 1
-  return @{ Rc = $p.ExitCode; Log = $log; Prod = $f }
+  $cell = Invoke-StrategyProduct "F-$Tag" $InFile $Fmt "--bit-depth $Bd --color-space `"Display P3`""
+  $outcome = Test-StrategyOutcome $cell $false
+  Assert "F-$Tag-进程终态产物" $outcome.Ok "process=$($cell.Rc) item=$($cell.TaskCode)；$($outcome.Detail)；json=$($cell.Json)"
+  return @{ Rc=$cell.Rc; Log=$cell.Log; Prod=$(if($outcome.Ok){$cell.Prod}else{$null}); TaskOk=$outcome.Ok }
 }
 
 # F1 jxl 10 ⇒ 播升位，且 **jxlinfo 读回的码流位深**必须就是播报里那个数
@@ -746,12 +896,12 @@ function IccRedG([string]$f){
 $srcChrG = IccRedG $p3
 foreach($eng in @(@{n='eng';a='--color-engine engine'}, @{n='leg';a='--color-engine legacy'})){
   $tag = "p3pngcarry-$($eng.n)"
-  $a = "--headless -i `"$p3`" --format png --output `"$out/$tag`" --color-strategy carry --log-level Debug $($eng.a)"
-  Start-Process -FilePath $exe -ArgumentList $a -Wait -NoNewWindow -PassThru `
-    -RedirectStandardOutput "$out/$tag.o" -RedirectStandardError "$out/$tag.e" | Out-Null
-  $f = Get-ChildItem -Recurse "$out/$tag" -Include *.png -EA SilentlyContinue | Select-Object -First 1
-  Assert "③g-$($eng.n)-产出" ($f -and $f.Length -gt 0) "P3→PNG carry($($eng.n)) 须产出非空 PNG"
-  if($f){
+  $cell = Invoke-StrategyProduct $tag $p3 'png' "--color-strategy carry $($eng.a)"
+  $outcome = Test-StrategyOutcome $cell $false
+  if($eng.n -eq 'eng'){ $script:carryEngOutcomeOk = $outcome.Ok }
+  $f = $cell.Prod
+  Assert "③g-$($eng.n)-产出" $outcome.Ok "P3→PNG carry($($eng.n)) 须 process=0/item=0、唯一终态且恰有一份非空 PNG；$($outcome.Detail)；json=$($cell.Json)"
+  if($outcome.Ok){
     $info = PngChunksG $f.FullName
     Assert "③g-$($eng.n)-双写iCCP+cICP" (($info -match 'iCCP:\s*\d+\s*bytes') -and ($info -match 'cICP:')) `
       "PNG 必须同时含 iCCP 块与 cICP 块（双写；pngcicp: $((($info -split "`r?`n") | Where-Object {$_ -match 'iCCP|cICP'}) -join ' / ')）"
@@ -789,7 +939,7 @@ function CollidesIccCicp([string]$f){
   if($code -eq 1 ){ return ($rx -ge 0.63 -and $rx -le 0.65) }  # bt709 红 ≈0.64
   return $false  # 未登记的 primaries 码与 ICC 对撞关系 ⇒ 不算一致
 }
-$fEng = Get-ChildItem -Recurse "$out/p3pngcarry-eng" -Include *.png -EA SilentlyContinue | Select-Object -First 1
+$fEng = if($script:carryEngOutcomeOk){ Get-ChildItem -Recurse "$out/p3pngcarry-eng" -File -Filter '*.png' -EA SilentlyContinue | Select-Object -First 1 }else{ $null }
 if(-not $fEng){
   Assert "③h-对撞" $false "找不到 ③g engine 产物做对撞（p3pngcarry-eng）"
 } else {
@@ -813,7 +963,7 @@ if(-not $fEng){
   }
 }
 
-Write-Host "`n===== PASS=$pass FAIL=$fail =====" -ForegroundColor $(if($fail -eq 0){"Green"}else{"Red"})
+Write-Host "`n===== PASS=$pass FAIL=$fail SKIP=$script:skip =====" -ForegroundColor $(if($fail -eq 0){"Green"}else{"Red"})
 Write-Host "关注: cicp-only 的 avif/png 应 ICC=False; carry/hdr-png 应保 HDR(cicp smpte2084); jpeg+gm 应产出可用 UltraHDR" -ForegroundColor Yellow
 
 # ⚠ 2026-09-17：此前本脚本**有 FAIL 但退出码恒为 0**（与 verify-color-engine-xcheck 同类的

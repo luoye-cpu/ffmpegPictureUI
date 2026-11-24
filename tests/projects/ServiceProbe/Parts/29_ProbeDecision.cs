@@ -45,9 +45,13 @@ namespace ServiceProbe
             };
             string[] targets = { "auto", "sRGB", "Display P3", "BT.2020", "BT.2020 PQ" };
             int compared = 0, mismatch = 0, iccOnly = 0, implicitCount = 0, hdrClaim = 0, embedMismatch = 0;
+            int finalIccMissing = 0, postRouteMismatch = 0, jpegEncoderWritablePostCases = 0, encoderBoolShapeFailures = 0;
             foreach (var (sn, sp) in srcs)
             {
                 if (!File.Exists(sp)) { Console.WriteLine($"  SKIP 源缺失 {sp}"); continue; }
+                var observedSource = FfmpegCommandBuilder.ProbeInputColorMetadata(sp);
+                static bool KnownTag(string? token) => !string.IsNullOrWhiteSpace(token) && token is not ("unknown" or "unspecified" or "reserved");
+                bool sourceTagged = observedSource.hasIccSemantics || KnownTag(observedSource.colorPrimaries) || KnownTag(observedSource.colorTrc);
                 foreach (var fmt in new[] { "png", "jpg", "webp", "tiff" })
                     foreach (var tg in targets)
                     {
@@ -142,28 +146,65 @@ namespace ServiceProbe
                             hdrClaim++;
                             Console.WriteLine($"  ≠ HDR已映射 {sn}/{fmt}/{tg}：命令行跑了 tonemap，宣称却仍是 {(claimP ?? "—")}/{(claimT ?? "—")}");
                         }
-                        // ── 第三项对账：iccgen 的 ICC 能不能真的落盘（探针自带实测表，不读生产代码的表）──
-                        // 实测（ffmpeg-full 2026.9.2 + exiftool 13.59）：同一 P3 源同一 iccgen 链，
-                        //   png/jpg/tiff 产物内都能读到 P3 ICC；**webp 产物 RIFF 内根本没有 ICCP 块**。
-                        // ⇒ 出口语义不是 sRGB 而编码器又会丢 ICC 时，dec 必须说出“要后置嵌入”；其余容器不得多嵌。
-                        bool probeSaysEncoderDropsIcc = fmt == "webp";
+                        // ── 第三项对账：最终 ICC 交付义务与实际后置路线（不从 NeedsPostEmbedIcc 自证）──
+                        // 实测表：WebP 会丢 iccgen ICC，必须由队列补写；FFmpeg JPEG 则有意用编码后生成/嵌入
+                        // ICC 取代 iccgen。故 JPEG 虽能写 filter ICC（EncoderWritesFilterIcc=true），仍有后置义务。
                         bool outIsNotSrgb = (claimP != null && claimP != "bt709") || (claimT != null && claimT != "iec61966-2-1");
-                        bool wantEmbed = probeSaysEncoderDropsIcc && outIsNotSrgb;
+                        bool finalIccCanDescribeOutput = !string.IsNullOrWhiteSpace(claimP)
+                            && !string.IsNullOrWhiteSpace(claimT)
+                            && claimT != "smpte2084" && claimT != "arib-std-b67" && claimT != "linear"
+                            && FfmpegGui.Services.IccProfileBuilder.SpaceFromCicp(claimP, claimT) != null;
+                        // JPEG/WebP 无 CICP 输出通路；非 sRGB 的可命名 SDR 交付必须有最终 ICC。
+                        bool outputNeedsFinalIcc = (fmt is "jpg" or "jpeg" or "webp")
+                            && outIsNotSrgb && finalIccCanDescribeOutput;
+                        if (outputNeedsFinalIcc && !dec.AttachIcc) finalIccMissing++;
+                        bool webpPostRouteExpected = outputNeedsFinalIcc && fmt == "webp";
+                        // JPEG also selects a generated compatibility ICC for a tagged source
+                        // converted to sRGB. Its semantic fallback may be implicit sRGB, but that
+                        // does not remove the chosen post-encode route. WebP's implicit-sRGB
+                        // exception remains a separate route, not a wide-only JPEG rule.
+                        bool jpegIccSelected = finalIccCanDescribeOutput && (outIsNotSrgb || sourceTagged);
+                        bool jpegGeneratedPostRouteExpected = jpegIccSelected
+                            && (fmt is "jpg" or "jpeg")
+                            && o.EncoderBackend == FfmpegGui.Services.EncoderBackend.Ffmpeg
+                            && dec.EffectiveStrategy != ST.CarryIcc
+                            && !dec.Faithful
+                            && (claimT != "bt709" || !FfmpegGui.Services.ColorSpaceRegistry.IsZimgCurveCaliber(o));
+                        bool wantEmbed = webpPostRouteExpected || jpegGeneratedPostRouteExpected;
+                        bool commandRouteMismatch = (webpPostRouteExpected && !outSide.Contains("iccgen"))
+                            || (jpegGeneratedPostRouteExpected && outSide.Contains("iccgen"));
+                        if (commandRouteMismatch) postRouteMismatch++;
+                        // 形态负控：FFmpeg JPEG 编码器可落 filter ICC，但 JPEG 的生成后置路线仍必须交付 ICC；
+                        // 若错误地只按 EncoderWritesFilterIcc 推断，以下反向条件会漏掉这个必需的后置写入。
+                        if (jpegGeneratedPostRouteExpected && dec.EncoderWritesFilterIcc)
+                        {
+                            jpegEncoderWritablePostCases++;
+                            if (!dec.NeedsPostEmbedIcc) encoderBoolShapeFailures++;
+                        }
                         if (dec.NeedsPostEmbedIcc != wantEmbed)
                         {
                             embedMismatch++;
                             Console.WriteLine($"  ≠ ICC后置 {sn}/{fmt}/{tg}：出口语义 {(claimP ?? "—")}/{(claimT ?? "—")} "
-                                + $"编码器落盘={!probeSaysEncoderDropsIcc} ⇒ 应后置嵌入={wantEmbed}，裁决点给 {dec.NeedsPostEmbedIcc}｜{dec.Short()}");
+                                + $"最终ICC需求={outputNeedsFinalIcc} 决策Attach={dec.AttachIcc} 后置路线={wantEmbed}，"
+                                + $"裁决点给 {dec.NeedsPostEmbedIcc}｜{dec.Short()}");
                         }
+                        if (commandRouteMismatch)
+                            Console.WriteLine($"  ≠ ICC路线 {sn}/{fmt}/{tg}：应有后置路线={wantEmbed}，输出侧 iccgen={outSide.Contains("iccgen")}｜{dec.Short()}");
                         if (!outSide.Contains("iccgen")) iccOnly++;
                     }
             }
             Console.WriteLine($"  合计对比 {compared} 格：宣称未落实 {mismatch} 格；跑了 tonemap 仍宣称 HDR {hdrClaim} 格；"
-                + $"ICC 后置判据不符 {embedMismatch} 格；命令行未跑 iccgen {iccOnly} 格；按隐含 sRGB 合法放过 {implicitCount} 格");
+                + $"ICC 后置判据不符 {embedMismatch} 格；最终ICC缺失 {finalIccMissing} 格；后置路线形态不符 {postRouteMismatch} 格；"
+                + $"JPEG 可写过滤器ICC但仍需后置 {jpegEncoderWritablePostCases} 格（encoder-bool反向失效 {encoderBoolShapeFailures}）；"
+                + $"命令行未跑 iccgen {iccOnly} 格；按隐含 sRGB 合法放过 {implicitCount} 格");
             Check(compared >= 40, $"网格覆盖足够（{compared} 格）");
             Check(mismatch == 0, $"同源宣称值全部在命令行得到落实（未落实 {mismatch}）");
             Check(hdrClaim == 0, $"像素已被 tonemap 成 SDR 时，宣称不得再是 HDR 语义（违反 {hdrClaim}）");
-            Check(embedMismatch == 0, $"ICC 落盘能力与“要不要后置嵌入”一致（违反 {embedMismatch}）");
+            Check(finalIccMissing == 0, $"要求最终 ICC 的非 CICP 输出均设置交付义务（缺失 {finalIccMissing}）");
+            Check(postRouteMismatch == 0, $"WebP 与 FFmpeg JPEG 的 ICC 后置路线形态正确（违反 {postRouteMismatch}）");
+            Check(jpegEncoderWritablePostCases > 0 && encoderBoolShapeFailures == 0,
+                $"反向负控：FFmpeg JPEG 即使 EncoderWritesFilterIcc=true，生成后置 ICC 仍必须交付（覆盖 {jpegEncoderWritablePostCases} 格，失效 {encoderBoolShapeFailures}）");
+            Check(embedMismatch == 0, $"最终 ICC 义务与执行/后置路线一致（违反 {embedMismatch}）");
         }
 
     }

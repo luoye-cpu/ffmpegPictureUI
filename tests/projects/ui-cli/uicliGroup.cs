@@ -76,6 +76,27 @@ namespace Tests.UiCli
                   $"apply={(apply != null)} buildBase={(buildBase != null)}");
             if (apply == null || buildBase == null) return;
 
+            // A GUI preset is a full snapshot: CLI defaults must not overwrite its container/backend.
+            const string jpegPresetName = "📸 JPEG LI — 高质量 (d=2.0, 4:4:4)";
+            var presetCli = new FfmpegGui.CliParser.Result { PresetName = jpegPresetName };
+            var presetCliOptions = (FfmpegGui.Models.FfmpegOptions)buildBase.Invoke(null, new object?[] { presetCli })!;
+            Check("M0a CLI preset retains JPEG format and cjpegli backend when no axes are explicit",
+                presetCliOptions.Format == "jpg" && presetCliOptions.EncoderBackend == FfmpegGui.Services.EncoderBackend.Cjpegli,
+                $"format={presetCliOptions.Format} backend={presetCliOptions.EncoderBackend}");
+            var explicitFormatCli = new FfmpegGui.CliParser.Result
+            {
+                PresetName = jpegPresetName, Format = "webp", FormatExplicit = true
+            };
+            var explicitFormatOptions = (FfmpegGui.Models.FfmpegOptions)buildBase.Invoke(null, new object?[] { explicitFormatCli })!;
+            Check("M0b explicit -f overrides preset container and selects a compatible inferred backend",
+                explicitFormatOptions.Format == "webp" && explicitFormatOptions.EncoderBackend == FfmpegGui.Services.EncoderBackend.Ffmpeg,
+                $"format={explicitFormatOptions.Format} backend={explicitFormatOptions.EncoderBackend}");
+            var encoderNameOptions = new FfmpegGui.Models.FfmpegOptions();
+            encoderNameOptions.ApplyPresetData(new FfmpegGui.Models.PresetData
+            { EncoderBackend = "Ffmpeg", EncoderName = "mjpeg — baseline JPEG" });
+            Check("M0c preset concrete EncoderName is normalized into the CLI model",
+                encoderNameOptions.Encoder == "mjpeg", $"encoder={encoderNameOptions.Encoder ?? "<null>"}");
+
             // 「一条 key/value 经 ApplyExtraOption」的结局压成一个字符串：
             // 正常 ⇒ "ok"；异常 ⇒ "<异常类型名>: <消息>"。这样断言既能判类型、也能判消息是否点名 key。
             Func<string, string, string> applyOutcome = (k, v) =>
@@ -395,14 +416,17 @@ namespace Tests.UiCli
         static void GroupP_StartupDetectLog()
         {
             var box = Find<TextBox>("LogText");
-            Check("P0 面板控件 LogText 在位（本组前提）", box != null,
-                  "FindControl<TextBox>(\"LogText\") == null ⇒ 面板根本没构造起来");
+            Check("P0 面板控件 LogText 可见且为可选只读多行文本（本组前提）",
+                  box != null && box.IsVisible && box.IsReadOnly && box.AcceptsReturn,
+                  box == null
+                      ? "FindControl<TextBox>(\"LogText\") == null ⇒ 面板根本没构造起来"
+                      : $"visible={box.IsVisible} readonly={box.IsReadOnly} acceptsReturn={box.AcceptsReturn} ⇒ 执行日志不可全选复制");
             if (box == null) return;
 
-            // GATE-01（2026-11-16）：日志已迁移到 UiLogService 唯一入口 ⇒ 落地进 ListBox 的
-            //   _uiLogLines 集合，LogText.Text 不再接收 [detect] 行。本组读数改读集合本身；
-            //   且 UiLogService 给每行加了 "[时间戳] [级别] " 前缀 ⇒ 剥掉还原旧 TextBox 的裸消息
-            //   形状（ClassifyDetectLines 按 "[detect] " 前缀分类，带前缀的行永不命中）。
+            // GATE-01（2026-11-16；2026-11-24 回退日志面后仍成立）：UiLogService 是唯一入口，
+            //   行同时落到可见的 LogText 与 _uiLogLines 集合。本组读数用集合以避免时间戳前缀干扰；
+            //   UiLogService 给每行加了 "[时间戳] [级别] " 前缀 ⇒ 剥掉还原裸消息形状
+            //   （ClassifyDetectLines 按 "[detect] " 前缀分类，带前缀的行永不命中）。
             string CaptureLog()
             {
                 try

@@ -456,7 +456,7 @@ namespace UiTestHost
                     Check("C3d exiftool不可用→strip复选框禁用",
                           gps?.IsEnabled == false, $"enabled={gps?.IsEnabled}");
                     Check("C3d exiftool不可用→提示明确说明不可用（点名 exiftool）",
-                          hint?.Text != null && hint.Text.Contains("exiftool", StringComparison.OrdinalIgnoreCase),
+                          hint?.Text != null && (hint?.Text ?? "").Contains("exiftool", StringComparison.OrdinalIgnoreCase),
                           $"hint=\"{hint?.Text}\"");
                 }
                 finally
@@ -2298,14 +2298,17 @@ namespace UiTestHost
         static void GroupP_StartupDetectLog()
         {
             var box = Find<TextBox>("LogText");
-            Check("P0 面板控件 LogText 在位（本组前提）", box != null,
-                  "FindControl<TextBox>(\"LogText\") == null ⇒ 面板根本没构造起来");
+            Check("P0 面板控件 LogText 可见且为可选只读多行文本（本组前提）",
+                  box != null && box.IsVisible && box.IsReadOnly && box.AcceptsReturn,
+                  box == null
+                      ? "FindControl<TextBox>(\"LogText\") == null ⇒ 面板根本没构造起来"
+                      : $"visible={box.IsVisible} readonly={box.IsReadOnly} acceptsReturn={box.AcceptsReturn} ⇒ 执行日志不可全选复制");
             if (box == null) return;
 
-            // GATE-01（2026-11-16）：日志已迁移到 UiLogService 唯一入口 ⇒ 落地进 ListBox 的
-            //   _uiLogLines 集合，LogText.Text 不再接收 [detect] 行。本组读数改读集合本身；
-            //   且 UiLogService 给每行加了 "[时间戳] [级别] " 前缀 ⇒ 剥掉还原旧 TextBox 的裸消息
-            //   形状（ClassifyDetectLines 按 "[detect] " 前缀分类，带前缀的行永不命中）。
+            // GATE-01（2026-11-16；2026-11-24 回退日志面后仍成立）：UiLogService 是唯一入口，
+            //   行同时落到可见的 LogText 与 _uiLogLines 集合。本组读数用集合以避免时间戳前缀干扰；
+            //   UiLogService 给每行加了 "[时间戳] [级别] " 前缀 ⇒ 剥掉还原裸消息形状
+            //   （ClassifyDetectLines 按 "[detect] " 前缀分类，带前缀的行永不命中）。
             string CaptureLog()
             {
                 try
@@ -3291,14 +3294,11 @@ namespace UiTestHost
                 if (cm17 != null) cm17.SelectedItem = "auto";
                 Pump(8);
 
-                // 冲突1：HDR 快速空间 + SDR 目标格式 ⇒ 必须出降级提示。
-                // ⚠ 顺序订正（实测 2026-11-09）：`SetFormat` 触发 `UpdateOptionAvailability` 会
-                //   **重建 ColorSpaceCombo.Items 并复位 SelectedIndex=0（auto）**（:2389-2410）⇒
-                //   「先选空间再换格式」必被清成 auto（首轮实测 J17c/J17d 由此假红）。
-                //   正确顺序 = 先落格式、再选空间。JPEG 的 `SupportedColorSpaces` 含 "BT.2020"
-                //   （FormatCapabilitiesService._cache["jpg"]）⇒ hasHdr=true ⇒ HDR 三项在 items 里，
-                //   「HDR 空间 → SDR 目标」是**真实用户可达**的组合（冲突1 的 fmt 列表里 JPEG 命中）。
+                // 冲突1：直接测冲突检测器对陈旧 HDR 状态的处理。普通 JPEG 候选集自 N13c 起
+                // 不再提供原生 PQ/HLG（HDR 由 GainMap 通路承担），因此这里显式注入一个
+                // 来自旧预设/旧界面的 BT.2020 PQ 项；这不宣称该组合仍可由正常下拉产生。
                 SetFormat("JPEG"); Pump(10);
+                cs17.Items.Add("BT.2020 PQ");
                 cs17.SelectedItem = "BT.2020 PQ"; Pump(8);
                 typeof(FfmpegGui.MainWindow).GetMethod("DetectColorConflicts", BF)!.Invoke(W, null);
                 Pump(4);
@@ -3526,8 +3526,10 @@ namespace UiTestHost
                 Check("J19d 选中 xyb 档 ⇒ 采集 xyb（特殊成员直通；jxl 过滤集内）",
                       d19 == "xyb", $"val={d19 ?? "<null>"}");
 
-                SetFormat("AVIF"); Pump(10);   // avif 过滤集 8 档
-                om19.SelectedIndex = 7; Pump(8);   // bt2020nc 档（集内末位）
+                SetFormat("AVIF"); Pump(10);
+                // 固定 AOM 后再锁 8 档；SVT/NVENC 等后端会按同源能力函数合法收窄 rgb。
+                PickEncoder(s => FfmpegGui.Services.EncoderInfo.ParseEncoderName(s) == "libaom-av1"); Pump(8);
+                om19.SelectedIndex = 7; Pump(8);   // bt2020nc 档（AOM 集内末位）
                 var e19 = Collect19();
                 Check("J19e 选中 bt2020nc 档 ⇒ 采集 bt2020nc（H.273 族直通；avif 过滤集内）",
                       e19 == "bt2020nc", $"val={e19 ?? "<null>"}");
@@ -3544,7 +3546,7 @@ namespace UiTestHost
                 //   在集判定（J19i）与被过滤判定（J19j）分开：一块一个测试，红的时候能直接点名是
                 //   「条数漂了」还是「该被过滤的档漏进了下拉」。
                 var set19 = Set19();
-                Check("J19i avif 过滤集恰 8 档且 bt2020nc/smpte240m 在集（CMX-2 唯一真值）",
+                Check("J19i avif+AOM 过滤集恰 8 档且 bt2020nc/smpte240m 在集（CMX-2 唯一真值）",
                       om19.ItemCount == 8 && set19.Contains("bt2020nc") && set19.Contains("smpte240m"),
                       $"count={om19.ItemCount} set=[{string.Join(",", set19)}]");
                 Check("J19j avif 下 ycgco/fcc/xyb 均被过滤（C4/C5 校准 Rejected 档不进下拉）",
@@ -4100,6 +4102,27 @@ namespace UiTestHost
             Check("M0 ApplyExtraOption/BuildBaseOptions 可反射", apply != null && buildBase != null,
                   $"apply={(apply != null)} buildBase={(buildBase != null)}");
             if (apply == null || buildBase == null) return;
+
+            // A GUI preset is a full snapshot: CLI defaults must not overwrite its container/backend.
+            const string jpegPresetName = "📸 JPEG LI — 高质量 (d=2.0, 4:4:4)";
+            var presetCli = new FfmpegGui.CliParser.Result { PresetName = jpegPresetName };
+            var presetCliOptions = (FfmpegGui.Models.FfmpegOptions)buildBase.Invoke(null, new object?[] { presetCli })!;
+            Check("M0a CLI preset retains JPEG format and cjpegli backend when no axes are explicit",
+                presetCliOptions.Format == "jpg" && presetCliOptions.EncoderBackend == FfmpegGui.Services.EncoderBackend.Cjpegli,
+                $"format={presetCliOptions.Format} backend={presetCliOptions.EncoderBackend}");
+            var explicitFormatCli = new FfmpegGui.CliParser.Result
+            {
+                PresetName = jpegPresetName, Format = "webp", FormatExplicit = true
+            };
+            var explicitFormatOptions = (FfmpegGui.Models.FfmpegOptions)buildBase.Invoke(null, new object?[] { explicitFormatCli })!;
+            Check("M0b explicit -f overrides preset container and selects a compatible inferred backend",
+                explicitFormatOptions.Format == "webp" && explicitFormatOptions.EncoderBackend == FfmpegGui.Services.EncoderBackend.Ffmpeg,
+                $"format={explicitFormatOptions.Format} backend={explicitFormatOptions.EncoderBackend}");
+            var encoderNameOptions = new FfmpegGui.Models.FfmpegOptions();
+            encoderNameOptions.ApplyPresetData(new FfmpegGui.Models.PresetData
+            { EncoderBackend = "Ffmpeg", EncoderName = "mjpeg — baseline JPEG" });
+            Check("M0c preset concrete EncoderName is normalized into the CLI model",
+                encoderNameOptions.Encoder == "mjpeg", $"encoder={encoderNameOptions.Encoder ?? "<null>"}");
 
             // 「一条 key/value 经 ApplyExtraOption」的结局压成一个字符串：
             // 正常 ⇒ "ok"；异常 ⇒ "<异常类型名>: <消息>"。这样断言既能判类型、也能判消息是否点名 key。
@@ -4856,6 +4879,479 @@ namespace UiTestHost
                           $"visible={w.IsVisible} metaEditor={(me != null ? "ok" : "missing")}");
                 }
                 finally { w.Close(); try { System.IO.File.Delete(img); } catch { } }
+            });
+
+            // ── N10 Batch D：矩阵预设的三态往返，以及依赖后端的候选回放 ──
+            Safe("N10 输出矩阵预设三态与后端联动", () =>
+            {
+                var matrix = Find<ComboBox>("OutputMatrixCombo")!;
+                var encoder = Find<ComboBox>("EncoderCombo")!;
+                var mapMatrix = mwType.GetMethod("MapOutMatrixValue", BFS)!;
+                var refreshEncoders = mwType.GetMethod("RefreshEncoderListAsync", BF)!;
+                var genField = mwType.GetField("_formatRefreshGen", BF)!;
+                var pendingField = mwType.GetField("_pendingEncoderPreset", BF)!;
+                System.Threading.Tasks.Task RefreshEncoders() => (System.Threading.Tasks.Task)refreshEncoders.Invoke(W, null)!;
+                bool FinishRefreshes(params System.Threading.Tasks.Task[] tasks)
+                {
+                    for (int spin = 0; spin < 300 && tasks.Any(t => !t.IsCompleted); spin++) Pump(1);
+                    return tasks.All(t => t.IsCompletedSuccessfully);
+                }
+                string? MatrixToken(object? item) => mapMatrix.Invoke(null, new object?[] { item as string }) as string;
+                string? SelectedMatrix() => MatrixToken(matrix.SelectedItem);
+                int MatrixIndex(string token)
+                {
+                    for (int i = 0; i < matrix.ItemCount; i++)
+                        if (MatrixToken(matrix.Items[i]) == token) return i;
+                    return -1;
+                }
+                FfmpegGui.Models.PresetData SaveMatrixPreset() => FfmpegGui.Models.PresetData.FromJson(
+                    ((FfmpegGui.Models.PresetData)build.Invoke(W, null)!).ToJson());
+                void ApplyMatrixPreset(FfmpegGui.Models.PresetData preset)
+                {
+                    applyUi!.Invoke(W, new object?[] { preset });
+                    Pump(12);
+                }
+
+                try
+                {
+                    SweepReset();
+                    // PNG 下 rgb 与 auto 都可选，固定格式隔离出「明确清空」与「旧字段缺失」的差别。
+                    matrix.SelectedIndex = 0; Pump(8);
+                    var auto = SaveMatrixPreset();
+                    matrix.SelectedIndex = MatrixIndex("rgb"); Pump(8);
+                    var rgb = SaveMatrixPreset();
+                    Check("N10a 真实保存→JSON→重读：明确 auto 与 rgb 仍是两个值",
+                          auto.ColorOutMatrix == "auto" && rgb.ColorOutMatrix == "rgb",
+                          $"auto={auto.ColorOutMatrix ?? "<null>"} rgb={rgb.ColorOutMatrix ?? "<null>"}");
+
+                    var beforeAuto = SelectedMatrix();
+                    ApplyMatrixPreset(auto);
+                    Check("N10b 应用明确 auto 覆盖已选 rgb",
+                          beforeAuto == "rgb" && matrix.SelectedIndex == 0,
+                          $"before={beforeAuto} index={matrix.SelectedIndex} after={SelectedMatrix() ?? "<null>"}");
+
+                    var beforeRgbIndex = matrix.SelectedIndex;
+                    ApplyMatrixPreset(rgb);
+                    Check("N10c 应用保存的 rgb 恢复已切为 auto 的控件",
+                          beforeRgbIndex == 0 && SelectedMatrix() == "rgb",
+                          $"beforeIndex={beforeRgbIndex} after={SelectedMatrix() ?? "<null>"}");
+
+                    var legacy = FfmpegGui.Models.PresetData.FromJson("{\"format\":\"PNG\",\"quality\":85}");
+                    matrix.SelectedIndex = MatrixIndex("rgb"); Pump(8);
+                    var beforeLegacy = SelectedMatrix();
+                    ApplyMatrixPreset(legacy);
+                    Check("N10d 旧 JSON 缺少矩阵字段不覆盖已选 rgb",
+                          legacy.ColorOutMatrix == null && beforeLegacy == "rgb" && SelectedMatrix() == "rgb",
+                          $"legacy={legacy.ColorOutMatrix ?? "<null>"} before={beforeLegacy} after={SelectedMatrix() ?? "<null>"}");
+
+                    // 同为 JPEG：xyb 只在 cjpegli 候选中。先用真实 GUI 保存 cjpegli+xyb，切到
+                    // mjpeg 确认候选消失，再应用预设；若在恢复 backend 之前选矩阵，xyb 无从复原。
+                    SetFormat("JPEG"); Pump(10);
+                    var cjpegli = PickEncoder(s => s.Contains("cjpegli", StringComparison.OrdinalIgnoreCase));
+                    var xybIndex = MatrixIndex("xyb");
+                    matrix.SelectedIndex = xybIndex; Pump(8);
+                    var xyb = SaveMatrixPreset();
+                    var mjpeg = PickEncoder(s => s.StartsWith("mjpeg —", StringComparison.Ordinal));
+                    bool onMjpegWithoutXyb = mjpeg != null && Equals(encoder.SelectedItem, mjpeg)
+                        && MatrixIndex("xyb") < 0;
+                    ApplyMatrixPreset(xyb);
+                    bool restoredInOrder = cjpegli != null && Equals(encoder.SelectedItem, cjpegli) && SelectedMatrix() == "xyb";
+                    var temporarilyIncompatible = FfmpegGui.Models.PresetData.FromJson(xyb.ToJson());
+                    temporarilyIncompatible.EncoderName = "mjpeg";
+                    temporarilyIncompatible.EncoderBackend = "Ffmpeg";
+                    ApplyMatrixPreset(temporarilyIncompatible);
+                    bool deferred = Equals(encoder.SelectedItem, mjpeg) && MatrixIndex("xyb") < 0 && SelectedMatrix() == null;
+                    PickEncoder(s => s.Contains("cjpegli", StringComparison.OrdinalIgnoreCase)); Pump(8);
+                    bool xybRestoredAfterBackendChange = cjpegli != null && Equals(encoder.SelectedItem, cjpegli)
+                        && SelectedMatrix() == "xyb";
+
+                    // 同代连发两次真实 encoder 刷新，最终后端与 xyb 均须保留；不是只测一次幂等 refill。
+                    int sameGeneration = (int)genField.GetValue(W)!;
+                    var refreshA = RefreshEncoders();
+                    var refreshB = RefreshEncoders();
+                    bool sameGenerationXybKept = FinishRefreshes(refreshA, refreshB)
+                        && (int)genField.GetValue(W)! == sameGeneration
+                        && Equals(encoder.SelectedItem, cjpegli) && SelectedMatrix() == "xyb";
+
+                    // 待回放的旧预设不能覆盖用户随后改选的编码器；同代刷新仍须保留这次选择。
+                    pendingField.SetValue(W, (sameGeneration, xyb));
+                    PickEncoder(s => s.StartsWith("mjpeg —", StringComparison.Ordinal));
+                    bool userEncoderCancelledPending = pendingField.GetValue(W) == null;
+                    bool userEncoderKept = FinishRefreshes(RefreshEncoders()) && userEncoderCancelledPending
+                        && Equals(encoder.SelectedItem, mjpeg) && SelectedMatrix() == null;
+
+                    // 从真实不兼容预设产生 pending xyb。用户改选 601 后再切 cjpegli，不能复活旧 xyb。
+                    ApplyMatrixPreset(temporarilyIncompatible);
+                    matrix.SelectedIndex = MatrixIndex("smpte170m"); Pump(8);
+                    bool userMatrixSelected = SelectedMatrix() == "smpte170m";
+                    PickEncoder(s => s.Contains("cjpegli", StringComparison.OrdinalIgnoreCase)); Pump(8);
+                    bool userMatrixKept = FinishRefreshes(RefreshEncoders()) && userMatrixSelected
+                        && Equals(encoder.SelectedItem, cjpegli) && SelectedMatrix() == null;
+
+                    // AVIF 同格式也必须先确定具体 encoder，再恢复它支持的色度和位深。
+                    // 从真实 AOM 4:4:4/12-bit 快照切到仅 4:2:0/10-bit 的 SVT，防旧候选吞掉预设值。
+                    SetFormat("AVIF"); Pump(10);
+                    var aom = PickEncoder(s => FfmpegGui.Services.EncoderInfo.ParseEncoderName(s) == "libaom-av1");
+                    var avifChroma = Find<ComboBox>("ChromaCombo")!;
+                    var avifDepth = Find<ComboBox>("BitDepthCombo")!;
+                    avifChroma.SelectedItem = "4:4:4";
+                    avifDepth.SelectedItem = "12"; Pump(8);
+                    var aomPreset = SaveMatrixPreset();
+                    var svt = PickEncoder(s => FfmpegGui.Services.EncoderInfo.ParseEncoderName(s) == "libsvtav1");
+                    bool svtCandidatesRestricted = svt != null
+                        && !avifChroma.Items.Contains("4:4:4") && !avifDepth.Items.Contains("12");
+                    ApplyMatrixPreset(aomPreset);
+                    bool avifAxesRestored = aom != null && svtCandidatesRestricted
+                        && aomPreset.Chroma == "4:4:4" && aomPreset.BitDepth == "12"
+                        && Equals(encoder.SelectedItem, aom)
+                        && Equals(avifChroma.SelectedItem, "4:4:4") && Equals(avifDepth.SelectedItem, "12");
+
+                    // 旧预设只指定 Ffmpeg 后端时，不得把当前同后端的 SVT 强换成列表首项 AOM。
+                    PickEncoder(s => FfmpegGui.Services.EncoderInfo.ParseEncoderName(s) == "libsvtav1");
+                    var backendOnlyPreset = FfmpegGui.Models.PresetData.FromJson(aomPreset.ToJson());
+                    backendOnlyPreset.EncoderName = null;
+                    backendOnlyPreset.Chroma = "4:2:0";
+                    backendOnlyPreset.BitDepth = "10";
+                    ApplyMatrixPreset(backendOnlyPreset);
+                    bool legacyBackendKept = svt != null && Equals(encoder.SelectedItem, svt);
+
+                    // 内置带名 SVT 档必须明确指向 SVT；不能依赖当前选择碰巧就是 SVT。
+                    PickEncoder(s => FfmpegGui.Services.EncoderInfo.ParseEncoderName(s) == "libaom-av1");
+                    var builtinSvt = FfmpegGui.Services.PresetManagerService.GetPresetByName(
+                        "🚀 AVIF SVT — 极致质量 (preset 2, CRF 18, 4:2:0 10-bit)");
+                    if (builtinSvt != null) ApplyMatrixPreset(builtinSvt.Data);
+                    bool builtinSvtSelected = builtinSvt != null
+                        && FfmpegGui.Services.EncoderInfo.ParseEncoderName(builtinSvt.Data.EncoderName) == "libsvtav1"
+                        && svt != null && Equals(encoder.SelectedItem, svt);
+
+                    // 真正通过 SimplePresetCombo.SelectionChanged 走简洁预设入口：PNG 当前编码器
+                    // → JPEG 预设指定 mjpeg，且质量/色域/位深/矩阵值都应在异步回放后仍成立。
+                    var simpleCombo = Find<ComboBox>("SimplePresetCombo");
+                    var simpleActiveField = mwType.GetField("_simpleActivePreset", BF)!;
+                    var simpleSigField = mwType.GetField("_simpleAppliedSig", BF)!;
+                    var simpleModeField = mwType.GetField("_simpleModeActive", BF)!;
+                    var priorActivePreset = simpleActiveField.GetValue(W);
+                    var priorSimpleSig = simpleSigField.GetValue(W);
+                    bool priorSimpleMode = (bool)simpleModeField.GetValue(W)!;
+                    int priorSimpleIndex = simpleCombo?.SelectedIndex ?? -1;
+                    int priorSimpleItemCount = simpleCombo?.Items?.Count ?? 0;
+                    bool simpleHandlerApplied = false;
+                    bool qualityTextInputApplied = false;
+                    bool formatChangeCancelledPending = false;
+                    string simpleDebug = "not applied";
+                    try
+                    {
+                        if (simpleCombo?.Items != null)
+                        {
+                            if (!priorSimpleMode) Click("SimpleModeEntryBtn");
+                            SetFormat("PNG");
+                            PickEncoder(s => FfmpegGui.Services.EncoderInfo.ParseEncoderName(s) == "png");
+                            var simplePresetData = new FfmpegGui.Models.PresetData
+                            {
+                                ConversionMode = 0, Format = "JPEG", EncoderBackend = "Ffmpeg", EncoderName = "mjpeg",
+                                Quality = 77, ColorSpace = "Display P3", BitDepth = "8", ColorOutMatrix = "smpte170m"
+                            };
+                            var simplePresetEntry = new FfmpegGui.Models.PresetEntry
+                            { Name = "__ui_preset_refresh_probe__", Data = simplePresetData };
+                            simpleCombo.Items.Add(simplePresetEntry);
+                            simpleCombo.SelectedIndex = priorSimpleItemCount;
+                            for (int spin = 0; spin < 300; spin++)
+                            {
+                                Pump(1);
+                                if (ReferenceEquals(simpleActiveField.GetValue(W), simplePresetEntry)
+                                    && string.Equals(Find<ComboBox>("FormatCombo")?.SelectedItem as string, "JPEG", StringComparison.OrdinalIgnoreCase)
+                                    && FfmpegGui.Services.EncoderInfo.ParseEncoderName(encoder.SelectedItem as string) == "mjpeg"
+                                    && pendingField.GetValue(W) == null) break;
+                            }
+                            var simpleFormatNow = Find<ComboBox>("FormatCombo")?.SelectedItem as string;
+                            var simpleEncoderNow = FfmpegGui.Services.EncoderInfo.ParseEncoderName(encoder.SelectedItem as string);
+                            var simpleQualityNow = Find<Slider>("QualitySlider")?.Value ?? -1;
+                            var simpleSpaceNow = Find<ComboBox>("ColorSpaceCombo")?.SelectedItem as string;
+                            var simpleDepthNow = Find<ComboBox>("BitDepthCombo")?.SelectedItem as string;
+                            var simpleMatrixNow = SelectedMatrix();
+                            simpleHandlerApplied = ReferenceEquals(simpleActiveField.GetValue(W), simplePresetEntry)
+                                && string.Equals(simpleFormatNow, "JPEG", StringComparison.OrdinalIgnoreCase)
+                                && simpleEncoderNow == "mjpeg"
+                                && Math.Abs(simpleQualityNow - simplePresetData.Quality) < 0.5
+                                && Equals(simpleSpaceNow, simplePresetData.ColorSpace)
+                                && Equals(simpleDepthNow, simplePresetData.BitDepth)
+                                && simpleMatrixNow == simplePresetData.ColorOutMatrix;
+                            simpleDebug = $"simpleFormat={simpleFormatNow} encoder={simpleEncoderNow} quality={simpleQualityNow} space={simpleSpaceNow} depth={simpleDepthNow} matrix={simpleMatrixNow}";
+                            // 显示刷新必须保留 77；用户主动输入 JPEG q:v=2 仍须更新为质量 100。
+                            if (Find<TextBox>("QualityBox") is { } qualityInput)
+                            {
+                                qualityInput.Text = "2"; Pump(8);
+                                qualityTextInputApplied = Find<Slider>("QualitySlider")?.Value == 100;
+                            }
+
+                            // 安排一条仍处于当前代的 pending preset，再真实切回 PNG；格式 handler 必须
+                            // 递增 generation 并丢弃它，不允许晚到的 JPEG 预设回放污染新格式。
+                            int oldGeneration = (int)genField.GetValue(W)!;
+                            var interrupted = new FfmpegGui.Models.PresetData { Format = "JPEG", EncoderBackend = "Ffmpeg", EncoderName = "mjpeg" };
+                            pendingField.SetValue(W, (oldGeneration, interrupted));
+                            SetFormat("PNG");
+                            formatChangeCancelledPending = pendingField.GetValue(W) == null
+                                && (int)genField.GetValue(W)! > oldGeneration;
+                        }
+                    }
+                    finally
+                    {
+                        if (!priorSimpleMode && (bool)simpleModeField.GetValue(W)!) Click("SimpleReturnBtn");
+                        if (simpleCombo?.Items != null)
+                            while (simpleCombo.Items.Count > priorSimpleItemCount)
+                                simpleCombo.Items.RemoveAt(simpleCombo.Items.Count - 1);
+                        if (simpleCombo?.Items != null && priorSimpleIndex >= 0 && priorSimpleIndex < simpleCombo.Items.Count)
+                            simpleCombo.SelectedIndex = priorSimpleIndex;
+                        simpleActiveField.SetValue(W, priorActivePreset);
+                        simpleSigField.SetValue(W, priorSimpleSig);
+                    }
+
+                    Check("N10e 简洁预设 handler 跨 PNG→JPEG 回放 encoder/质量/色域/位深/矩阵；切格式取消 pending",
+                          xyb.ColorOutMatrix == "xyb" && onMjpegWithoutXyb && restoredInOrder && deferred
+                          && xybRestoredAfterBackendChange && sameGenerationXybKept && userEncoderKept && userMatrixKept
+                          && avifAxesRestored && legacyBackendKept && builtinSvtSelected
+                          && simpleHandlerApplied && qualityTextInputApplied && formatChangeCancelledPending,
+                          $"saved={xyb.ColorOutMatrix ?? "<null>"} cjpegli={cjpegli} mjpeg={mjpeg} "
+                          + $"onMjpegWithoutXyb={onMjpegWithoutXyb} restoredInOrder={restoredInOrder} deferred={deferred} "
+                          + $"sameGenerationXybKept={sameGenerationXybKept} userEncoderKept={userEncoderKept} userMatrixKept={userMatrixKept} qualityTextInput={qualityTextInputApplied} "
+                          + $"avifAxesRestored={avifAxesRestored} legacyBackendKept={legacyBackendKept} builtinSvtSelected={builtinSvtSelected} "
+                          + $"liveEncoder={encoder.SelectedItem} liveMatrix={SelectedMatrix() ?? "<null>"} "
+                          + $"simpleApplied={simpleHandlerApplied} formatCancelledPending={formatChangeCancelledPending} "
+                          + $"quality={Find<Slider>("QualitySlider")?.Value} space={Find<ComboBox>("ColorSpaceCombo")?.SelectedItem} "
+                          + $"depth={Find<ComboBox>("BitDepthCombo")?.SelectedItem} matrixBeforeCancel={SelectedMatrix() ?? "<null>"} {simpleDebug}");
+                }
+                finally { SweepReset(); }
+            });
+
+            // 硬件矩阵/预设组必须等待一次**自己发起且可追踪**的真实刷新完成。
+            // 旧实现只 Pump(12)，可能读到上一格式的残留编码器列表；随后迟到的刷新会把注入项替换，
+            // 让 QSV/提示断言变成随机红。直接等待现有 Task，不新增产品侧测试钩子或断言。
+            void SettleEncoderRefresh()
+            {
+                var refresh = mwType.GetMethod("RefreshEncoderListAsync", BF)!;
+                var task = (System.Threading.Tasks.Task)refresh.Invoke(W, null)!;
+                for (int spin = 0; spin < 5000 && !task.IsCompleted; spin++)
+                {
+                    Pump(1);
+                    System.Threading.Thread.Sleep(1);
+                }
+                if (!task.IsCompleted) throw new TimeoutException("RefreshEncoderListAsync did not settle within 5s");
+                task.GetAwaiter().GetResult();
+                Pump(12);
+            }
+
+            // ── N11/N12/N13：色彩矩阵 GUI 收口（G1/G2/G5/G8 + GUI→CLI 采集一致性）──
+            Safe("N11 AVIF rgb矩阵与编码器/色度/位深联动", () =>
+            {
+                try
+                {
+                    SweepReset(); SetFormat("AVIF"); Pump(12); SettleEncoderRefresh();
+                    var matrix = Find<ComboBox>("OutputMatrixCombo")!;
+                    var chroma = Find<ComboBox>("ChromaCombo")!;
+                    var depth = Find<ComboBox>("BitDepthCombo")!;
+                    var mapMatrix = mwType.GetMethod("MapOutMatrixValue", BFS)!;
+                    string? MatrixToken(object? item) => mapMatrix.Invoke(null, new object?[] { item as string }) as string;
+                    string? SelectedMatrix() => MatrixToken(matrix.SelectedItem);
+                    int MatrixIndex(string token)
+                    {
+                        for (int i = 0; i < matrix.ItemCount; i++)
+                            if (MatrixToken(matrix.Items[i]) == token) return i;
+                        return -1;
+                    }
+                    var aom = PickEncoder(s => FfmpegGui.Services.EncoderInfo.ParseEncoderName(s) == "libaom-av1");
+                    int rgbIndex = MatrixIndex("rgb");
+                    Check("N11a AOM 提供 rgb 输出矩阵", aom != null && rgbIndex >= 0,
+                          $"aom={aom ?? "<none>"} rgbIndex={rgbIndex}");
+
+                    depth.SelectedItem = "12";
+                    chroma.SelectedItem = "4:4:4";
+                    matrix.SelectedIndex = rgbIndex; Pump(8); Regen();
+                    var rgbCommand = Cmd();
+                    Check("N11b rgb锁色度为auto且置灰并说明原因",
+                          SelectedMatrix() == "rgb" && Equals(chroma.SelectedItem, "auto") && !chroma.IsEnabled
+                          && !string.IsNullOrWhiteSpace(Avalonia.Controls.ToolTip.GetTip(chroma) as string),
+                          $"matrix={SelectedMatrix() ?? "<null>"} chroma={chroma.SelectedItem} enabled={chroma.IsEnabled} tip={Avalonia.Controls.ToolTip.GetTip(chroma)}");
+                    Check("N11c rgb不锁位深且命令兑现gbrp12le",
+                          depth.IsEnabled && Equals(depth.SelectedItem, "12") && rgbCommand.Contains("-pix_fmt gbrp12le")
+                          && !rgbCommand.Contains("yuv420p12le"), Snip(rgbCommand));
+
+                    matrix.SelectedIndex = 0; Pump(8); Regen();
+                    Check("N11d 离开rgb后色度恢复可选且不误改其他选择",
+                          chroma.IsEnabled && Equals(chroma.SelectedItem, "auto") && Equals(depth.SelectedItem, "12"),
+                          $"chromaEnabled={chroma.IsEnabled} chroma={chroma.SelectedItem} depth={depth.SelectedItem}");
+
+                    matrix.SelectedIndex = MatrixIndex("rgb"); Pump(6);
+                    var svt = PickEncoder(s => FfmpegGui.Services.EncoderInfo.ParseEncoderName(s) == "libsvtav1");
+                    Pump(8);
+                    Check("N11e SVT收窄矩阵候选并回auto，rgb不再可选",
+                          svt != null && MatrixIndex("rgb") < 0 && matrix.SelectedIndex == 0,
+                          $"svt={svt ?? "<none>"} rgbIndex={MatrixIndex("rgb")} selected={matrix.SelectedIndex}");
+
+                    // R6：GUI 候选集必须与 ImageEncoderArgs 同源。硬件未检测到时就注入一个显示项，
+                    // 只测真实控件的过滤行为，绝不把这一项写成“硬件编码已验证”。
+                    var encoderCombo = Find<ComboBox>("EncoderCombo")!;
+                    var injected = new List<string>();
+                    void SelectEncoderEvenIfUnverified(string name)
+                    {
+                        var found = PickEncoder(s => FfmpegGui.Services.EncoderInfo.ParseEncoderName(s) == name);
+                        if (found == null)
+                        {
+                            encoderCombo.Items.Add(name); injected.Add(name);
+                            // SelectionChanged 及其候选重建都是同步链路；不要额外 Pump 让迟到的真实列表
+                            // 刷新先删除这个“未验证注入项”，否则测到的是刷新后的默认编码器而非 name。
+                            encoderCombo.SelectedItem = name;
+                        }
+                    }
+                    bool HasValue(ComboBox combo, string value) => combo.Items.Cast<object?>().Any(x => Equals(x as string, value));
+                    bool RgbMatchesSingleTruth(string encoder)
+                    {
+                        var expected = FfmpegGui.Services.ColorMapping.ColorMappingEngine.ResolveOutMatrixCapability(
+                            "avif", "rgb", FfmpegGui.Services.EncoderBackend.Ffmpeg, encoder)
+                            != FfmpegGui.Services.ColorMapping.OutMatrixCapability.Rejected;
+                        return (MatrixIndex("rgb") >= 0) == expected;
+                    }
+
+                    SelectEncoderEvenIfUnverified("av1_nvenc");
+                    Check("N11f NVENC候选与后端一致：rgb/444/422可用且12-bit不露出",
+                          RgbMatchesSingleTruth("av1_nvenc") && HasValue(chroma, "4:4:4") && HasValue(chroma, "4:2:2")
+                          && HasValue(depth, "10") && !HasValue(depth, "12"),
+                          $"rgb={MatrixIndex("rgb")} chroma={string.Join(',', chroma.Items.Cast<object?>())} depth={string.Join(',', depth.Items.Cast<object?>())}");
+                    SelectEncoderEvenIfUnverified("av1_qsv");
+                    var qsvRgbAllowed = FfmpegGui.Services.ColorMapping.ColorMappingEngine.ResolveOutMatrixCapability(
+                        "avif", "rgb", FfmpegGui.Services.EncoderBackend.Ffmpeg, "av1_qsv")
+                        != FfmpegGui.Services.ColorMapping.OutMatrixCapability.Rejected;
+                    Check("N11g QSV矩阵候选逐格等同同源函数，色度/位深收窄（未做实机编码宣称）",
+                          RgbMatchesSingleTruth("av1_qsv") && !HasValue(chroma, "4:4:4") && HasValue(chroma, "4:2:0")
+                          && HasValue(depth, "10") && !HasValue(depth, "12"),
+                          $"encoder={FfmpegGui.Services.EncoderInfo.ParseEncoderName(encoderCombo.SelectedItem as string ?? "")} rgb={MatrixIndex("rgb")} expectedRgb={qsvRgbAllowed} chroma={string.Join(',', chroma.Items.Cast<object?>())} depth={string.Join(',', depth.Items.Cast<object?>())}");
+                    SelectEncoderEvenIfUnverified("av1_amf");
+                    Check("N11h AMF矩阵候选逐格等同同源函数，色度/位深收窄（未做实机编码宣称）",
+                          RgbMatchesSingleTruth("av1_amf") && !HasValue(chroma, "4:4:4") && HasValue(chroma, "4:2:0")
+                          && HasValue(depth, "10") && !HasValue(depth, "12"),
+                          $"encoder={FfmpegGui.Services.EncoderInfo.ParseEncoderName(encoderCombo.SelectedItem as string ?? "")} rgb={MatrixIndex("rgb")} chroma={string.Join(',', chroma.Items.Cast<object?>())} depth={string.Join(',', depth.Items.Cast<object?>())}");
+                    foreach (var item in injected) encoderCombo.Items.Remove(item);
+                }
+                finally { SweepReset(); }
+            });
+
+            Safe("N12 rgb预设二次回放与GUI到CLI采集一致", () =>
+            {
+                try
+                {
+                    SweepReset(); SetFormat("AVIF"); Pump(12); SettleEncoderRefresh();
+                    var aom = PickEncoder(s => FfmpegGui.Services.EncoderInfo.ParseEncoderName(s) == "libaom-av1");
+                    var matrix = Find<ComboBox>("OutputMatrixCombo")!;
+                    var chroma = Find<ComboBox>("ChromaCombo")!;
+                    var depth = Find<ComboBox>("BitDepthCombo")!;
+                    var pendingField = mwType.GetField("_pendingEncoderPreset", BF)!;
+                    var preset = FfmpegGui.Models.PresetData.FromJson(
+                        ((FfmpegGui.Models.PresetData)build.Invoke(W, null)!).ToJson());
+                    preset.Format = "AVIF";
+                    preset.EncoderBackend = "Ffmpeg";
+                    preset.EncoderName = "libaom-av1";
+                    preset.ColorOutMatrix = "rgb";
+                    preset.Chroma = "4:2:0";
+                    preset.BitDepth = "12";
+                    void ApplyRgbPreset()
+                    {
+                        applyUi!.Invoke(W, new object?[] { preset });
+                        for (int spin = 0; spin < 300 && pendingField.GetValue(W) != null; spin++) Pump(1);
+                        Pump(8); Regen();
+                    }
+
+                    matrix.SelectedIndex = 0;
+                    ApplyRgbPreset();
+                    Check("N12a rgb预设最终色度auto置灰、位深12、命令gbrp12le",
+                          aom != null && Equals(chroma.SelectedItem, "auto") && !chroma.IsEnabled
+                          && Equals(depth.SelectedItem, "12") && Cmd().Contains("-pix_fmt gbrp12le"),
+                          $"aom={aom ?? "<none>"} chroma={chroma.SelectedItem} enabled={chroma.IsEnabled} depth={depth.SelectedItem} cmd={Snip(Cmd())}");
+
+                    // 模拟旧回放留下的置灰但非 auto 状态；矩阵索引保持 rgb，第二次应用不能依赖 SelectionChanged。
+                    chroma.SelectedItem = "4:2:0";
+                    ApplyRgbPreset();
+                    Check("N12b 同矩阵索引二次应用仍重新套锁",
+                          Equals(chroma.SelectedItem, "auto") && !chroma.IsEnabled && Cmd().Contains("-pix_fmt gbrp12le"),
+                          $"chroma={chroma.SelectedItem} enabled={chroma.IsEnabled} cmd={Snip(Cmd())}");
+
+                    var collect = mwType.GetMethod("CollectOptionsFromUiAsync", BF)!;
+                    var collectTask = (System.Threading.Tasks.Task<FfmpegGui.Models.FfmpegOptions>)collect
+                        .Invoke(W, new object?[] { System.IO.Path.Combine(SrcDir, "src_8bit.png"), false })!;
+                    for (int spin = 0; spin < 300 && !collectTask.IsCompleted; spin++) Pump(1);
+                    FfmpegGui.Models.FfmpegOptions? collected = collectTask.IsCompletedSuccessfully ? collectTask.Result : null;
+                    Check("N12c GUI采集与预设/CLI同源：encoder/rgb/auto/12完全一致",
+                          collected != null && collected.Encoder == "libaom-av1" && collected.ColorOutMatrix == "rgb"
+                          && collected.Chroma == "auto" && collected.BitDepth == 12,
+                          $"completed={collectTask.Status} encoder={collected?.Encoder ?? "<null>"} matrix={collected?.ColorOutMatrix ?? "<null>"} chroma={collected?.Chroma ?? "<null>"} depth={collected?.BitDepth.ToString() ?? "<null>"}");
+
+                    // R5：预设携带 NVENC 不支持的 12-bit 时，最终 GUI 必须停 auto 并点名位深；
+                    // 不能只靠队列在入队后拒绝，也不能静默把 12 留在下拉/命令里。
+                    // N12a-c 已走完整异步预设回放；这里直接调用同一终端回放方法并注入未验证 NVENC 项，
+                    // 避免“本轮是否检测到硬件”改变被测路径。该项只作控件测试，不是硬件编码证据。
+                    preset.EncoderName = "av1_nvenc";
+                    preset.ColorOutMatrix = "bt709";
+                    preset.Chroma = "4:2:0";
+                    preset.BitDepth = "12";
+                    var encoderCombo = Find<ComboBox>("EncoderCombo")!;
+                    bool injectedNvenc = !encoderCombo.Items.OfType<string>().Any(s =>
+                        FfmpegGui.Services.EncoderInfo.ParseEncoderName(s) == "av1_nvenc");
+                    if (injectedNvenc) encoderCombo.Items.Add("av1_nvenc");
+                    mwType.GetMethod("ApplyPresetEncoderMatrix", BF)!.Invoke(W, new object?[] { preset });
+                    Regen();
+                    var resetHint = Find<TextBlock>("ColorOptionResetHint");
+                    string depthLabel = FfmpegGui.Services.LocalizationService.Instance["bit.depth"];
+                    Check("N12d NVENC 12-bit预设最终回auto并点名位深，GUI不把无效预设留到队列才失败",
+                          Equals(FfmpegGui.Services.EncoderInfo.ParseEncoderName(Find<ComboBox>("EncoderCombo")?.SelectedItem as string ?? ""), "av1_nvenc")
+                          && Equals(depth.SelectedItem, "auto") && resetHint != null && resetHint.IsVisible
+                          && (resetHint.Text ?? "").Contains(depthLabel) && !Cmd().Contains("yuv420p12le") && !Cmd().Contains("gbrp12le"),
+                          $"encoder={Find<ComboBox>("EncoderCombo")?.SelectedItem} depth={depth.SelectedItem} depthItems={string.Join(',', depth.Items.Cast<object?>())} pendingBitDepth={mwType.GetField("_bitDepthResetPending", BF)?.GetValue(W)} pendingPreset={pendingField.GetValue(W) != null} visible={resetHint?.IsVisible} text={resetHint?.Text ?? "<null>"} cmd={Snip(Cmd())}");
+                    if (injectedNvenc) encoderCombo.Items.Remove("av1_nvenc");
+                }
+                finally { SweepReset(); }
+            });
+
+            Safe("N13 能力重置提示点名且合法保留时隐藏", () =>
+            {
+                try
+                {
+                    SweepReset(); SetFormat("AVIF"); Pump(12); SettleEncoderRefresh();
+                    var chroma = Find<ComboBox>("ChromaCombo")!;
+                    var depth = Find<ComboBox>("BitDepthCombo")!;
+                    var colorSpace = Find<ComboBox>("ColorSpaceCombo")!;
+                    var hint = Find<TextBlock>("ColorOptionResetHint");
+                    var aom = PickEncoder(s => FfmpegGui.Services.EncoderInfo.ParseEncoderName(s) == "libaom-av1");
+                    chroma.SelectedItem = "4:4:4"; depth.SelectedItem = "12";
+                    var updateChroma = mwType.GetMethod("UpdateChromaBitDepthOptions", BF)!;
+                    var updateArgs = updateChroma.GetParameters().Length == 0 ? Array.Empty<object?>() : new object?[] { false };
+                    updateChroma.Invoke(W, updateArgs);
+                    bool baselineHidden = hint != null && !hint.IsVisible;
+                    var svt = PickEncoder(s => FfmpegGui.Services.EncoderInfo.ParseEncoderName(s) == "libsvtav1");
+                    Pump(8);
+                    string chromaLabel = FfmpegGui.Services.LocalizationService.Instance["chroma.subsampling"];
+                    string depthLabel = FfmpegGui.Services.LocalizationService.Instance["bit.depth"];
+                    Check("N13a 编码器收窄后重置色度/位深并同时点名",
+                          aom != null && svt != null && baselineHidden
+                          && Equals(chroma.SelectedItem, "auto") && Equals(depth.SelectedItem, "auto")
+                          && hint != null && hint.IsVisible && (hint?.Text ?? "").Contains(chromaLabel) && (hint?.Text ?? "").Contains(depthLabel),
+                          $"encoder={FfmpegGui.Services.EncoderInfo.ParseEncoderName(Find<ComboBox>("EncoderCombo")?.SelectedItem as string ?? "")} baselineHidden={baselineHidden} chroma={chroma.SelectedItem} depth={depth.SelectedItem} pendingChroma={mwType.GetField("_chromaResetPending", BF)?.GetValue(W)} pendingBitDepth={mwType.GetField("_bitDepthResetPending", BF)?.GetValue(W)} visible={hint?.IsVisible} text={hint?.Text ?? "<null>"}");
+
+                    chroma.SelectedItem = "4:2:0"; depth.SelectedItem = "10";
+                    PickEncoder(s => FfmpegGui.Services.EncoderInfo.ParseEncoderName(s) == "libaom-av1");
+                    Pump(8);
+                    Check("N13b 合法选择保留时提示消失",
+                          Equals(chroma.SelectedItem, "4:2:0") && Equals(depth.SelectedItem, "10")
+                          && hint != null && !hint.IsVisible,
+                          $"chroma={chroma.SelectedItem} depth={depth.SelectedItem} visible={hint?.IsVisible} text={hint?.Text ?? "<null>"}");
+
+                    SetFormat("AVIF"); Pump(10);
+                    colorSpace.SelectedItem = "BT.2020 PQ"; Pump(6);
+                    SetFormat("JPEG"); Pump(10);
+                    string colorLabel = FfmpegGui.Services.LocalizationService.Instance["color.space.quick"];
+                    Check("N13c 格式收窄HDR色彩空间后回auto并点名",
+                          Equals(colorSpace.SelectedItem, "auto") && hint != null && hint.IsVisible
+                          && (hint?.Text ?? "").Contains(colorLabel),
+                          $"colorSpace={colorSpace.SelectedItem} visible={hint?.IsVisible} text={hint?.Text ?? "<null>"}");
+                }
+                finally { SweepReset(); }
             });
 
             // 诊断表（非断言）：把「期望 vs 实际」打出来供人工核对

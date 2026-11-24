@@ -73,8 +73,10 @@ $genScript = 'tests/scripts/_gen-mode-split.ps1'    # 把「一组一文件」�
 #   要么是跨进程往返的驻留端（`ipc-server`/`piperaw-server`）。下面 ③-d 把"哪些 mode 该是 0"
 #   也钉住 ⇒ 取样器若整体失配（方法体取不到、塌 0 变多），当场红而不是静默放行。
 $counts = [ordered]@{
-    'avifgm' = 14; 'bench' = 9; 'bitdepth' = 7; 'bt2446' = 18; 'color' = 0
-    'colormath' = 12; 'contract' = 102; 'curve' = 14; 'decision' = 5; 'dng-xmp-args' = 2
+    # 2026-11-24 新增 AVIF 编码器能力探针：avifcaps 11 个源文本 Check 调用位。
+    'avifcaps' = 11; 'avifgm' = 14; 'bench' = 9; 'bitdepth' = 7; 'bt2446' = 18; 'color' = 0
+    # 2026-11-20 decision delivery assertions: +3 for actual post-encode obligations and JPEG counterexample.
+    'colormath' = 12; 'contract' = 102; 'curve' = 14; 'decision' = 8; 'dng-xmp-args' = 2
     'encoding' = 6
     # 2026-10-27 与 origin/main 合流：`ProbeGainMapIsoBmff` 的源文本调用位 12 → **21**（+9），
     #   来历 = origin/main 那批读侧新增的 Apple aux 识别与 tmap `pixi` 关联断言（P0-1/P1-4），
@@ -124,7 +126,13 @@ $counts = [ordered]@{
     #   批① +8（v44 臂 3：版本字节/cprt=mluc/chad 在场；v2 臂 5：header 02 00 / desc='desc' /
     #   cprt='text' / rTRC='curv' / chad 缺席）；批② +1（v2 curv 形态锁 count=1|256——单值幂 gamma
     #   与 256 点采样表二选一，不许把两种形态写死成一种）。
-    'icc' = 14; 'icc-dump' = 0; 'iccname' = 9; 'ipc' = 13; 'ipc-client' = 2
+    # 2026-11-20 source ICC priority and disputed external-route regression: 9 -> 18 Check sites (+12 runtime cases).
+    # Final source-priority review adds reverse faithful overrides and explicit-target axes: +3 sites, Census=21.
+    # 2026-11-21 色彩矩阵修复：iccname 21→38（+17 源调用位：sato 算术/语法 +3，ICC 结构/TIFF IFD0 +8，
+    #   ICC 安全计划与显式输出矩阵交叉 +6）。向量循环增加的执行次数不并入源码条数锁。
+    # 2026-11-22 TIFF IFD0 authority: iccname 38->45 (+7 public source/extraction Check sites; existing malformed-page loop retained).
+    # 2026-11-22 optional preview/gamut compatibility: iccname 45->50 (+5 sites, 15 runtime cases; original controls retained).
+    'icc' = 14; 'icc-dump' = 0; 'iccname' = 50; 'ipc' = 13; 'ipc-client' = 2
     'ipc-raw-client' = 4; 'ipc-server' = 0; 'ipc-submit' = 3; 'matrix' = 13; 'memadmit' = 7; 'framelen' = 5
     # 2026-10-22 P3 跨仓对撞（宿主 vs ColorGainKit，同进程反射）。口径同样是**源文本调用位**：
     #   运行时会跑 10 条（`Log2Gain` 那一格在 foreach 里、两个 floorAtOne 各跑一次），但**条数锁量的是形状**，
@@ -147,7 +155,12 @@ $counts = [ordered]@{
     #   （coded 64x32 而产品解析器给可见区 32x64、裁切 0x0 ⇒ 既证明解析链通、又证明没凭空扣像素）。
     #   来历 = `-Census` 实测 got=21（源文本调用位，不是运行读数；运行 17 —— 差额来自循环内调用位）。
     'metaraw' = 20; 'oog' = 7; 'ootf' = 11; 'orientmeta' = 11; 'orientation' = 21
-    'peak' = 8; 'peakmeasure' = 14; 'piperaw-client' = 5; 'piperaw-server' = 0; 'plan' = 18
+    # 2026-11-24 新增编码器感知输出矩阵探针：outmatrixenc 8 个源文本 Check 调用位。
+    'outmatrixenc' = 8
+    # 2026-11-20 Census=27: prior source/LUT warning regressions added two previously unregistered sites;
+    # six delivery sites plus one mislabeled named-profile negative verify semantic output delivery (18+2+6+1).
+    # 2026-11-24 ICC carry 双写修复：plan 27->29（匹配 cICP 保留 + 失配 cICP 剥除两条源文本调用位）。
+    'peak' = 8; 'peakmeasure' = 14; 'piperaw-client' = 5; 'piperaw-server' = 0; 'plan' = 29
     'png3' = 1;
     # 2026-11-10 新增派发 mode `pngopt`（PNG 出口优化器判据宿主，png-optimizer-integration T6，
     #   契约 C-PROBE@1 六 case：pixel/ihdr/chunk/argv/off/timeout，全部内联在 ProbePngOpt 单方法体）。
@@ -173,7 +186,8 @@ $counts = [ordered]@{
     #   负控④c P3源带ICC+png+auto 不携源ICC + 反负控④d ProPhoto 仍携ICC 兜底，计 +2；
     #   加上一轮 CICP 优先批未同批登记的 ④a/②/③/③b 五条计 +5，合计 +7）。
     #   faithful=12 / icc=14 已由 ICC 线自行登记（v4.4 迁移批；本批未动那两个 mode，不重复计入 wire）。
-    'verdict' = 36; 'wire' = 106
+    # 2026-11-20 provenance binding regression: one negative Check site rejects a different IntermediatePath (Census=107).
+    'verdict' = 36; 'wire' = 107
     'xcheck' = 6
 }
 # 登记表各值之和 = 2026-10-14 实测 813；2026-10-15 加 `vendor-hdr` ⇒ 829，同日审查再加 V16/V17/V18 ⇒ 832，

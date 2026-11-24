@@ -153,7 +153,7 @@ namespace FfmpegGui.Services
                 {
                     Format = "AVIF", Quality = 92, Chroma = "4:4:4",
                     BitDepth = "10", ColorSpace = "auto",
-                    EncoderBackend = "Ffmpeg",
+                    EncoderBackend = "Ffmpeg", EncoderName = "libaom-av1",
                     AvifCpuUsed = 2, AvifStillPicture = true, AvifRowMt = true,
                     AvifTune = "IQ (图像优化)",
                     AvifAqMode = "variance",
@@ -170,7 +170,7 @@ namespace FfmpegGui.Services
                 {
                     Format = "AVIF", Quality = 88, Chroma = "4:4:4",
                     BitDepth = "10", ColorSpace = "auto",
-                    EncoderBackend = "Ffmpeg",
+                    EncoderBackend = "Ffmpeg", EncoderName = "libaom-av1",
                     AvifCpuUsed = 4, AvifStillPicture = true, AvifRowMt = true,
                     AvifTune = "IQ (图像优化)",
                     AvifAqMode = "variance",
@@ -187,7 +187,7 @@ namespace FfmpegGui.Services
                 {
                     Format = "AVIF", Quality = 80, Chroma = "4:2:0",
                     BitDepth = "10", ColorSpace = "auto",
-                    EncoderBackend = "Ffmpeg",
+                    EncoderBackend = "Ffmpeg", EncoderName = "libaom-av1",
                     AvifCpuUsed = 5, AvifStillPicture = true, AvifRowMt = true,
                     AvifAqMode = "variance",
                     AvifEnableCdef = true, AvifEnableIntrabc = true,
@@ -204,7 +204,7 @@ namespace FfmpegGui.Services
                     Format = "AVIF", Quality = 100, Chroma = "4:4:4",
                     BitDepth = "auto", ColorSpace = "auto",
                     Lossless = true,
-                    EncoderBackend = "Ffmpeg",
+                    EncoderBackend = "Ffmpeg", EncoderName = "libaom-av1",
                     AvifCpuUsed = 1, AvifStillPicture = true, AvifRowMt = false,
                     MetadataMode = "PreserveAll", AutoThreads = true,
                     Concurrency = 1, MaxQueueSize = 4
@@ -223,7 +223,7 @@ namespace FfmpegGui.Services
                 {
                     Format = "AVIF", Quality = 92, Chroma = "4:2:0", // libsvtav1 仅支持 4:2:0（2026-08-16 实测）
                     BitDepth = "10", ColorSpace = "auto",
-                    EncoderBackend = "Ffmpeg",
+                    EncoderBackend = "Ffmpeg", EncoderName = "libsvtav1",
                     AvifSvtPreset = 2, AvifSvtTune = "VMAF (主观)",
                     AvifStillPicture = true, AvifRowMt = true,
                     MetadataMode = "PreserveAll", AutoThreads = true,
@@ -238,7 +238,7 @@ namespace FfmpegGui.Services
                 {
                     Format = "AVIF", Quality = 88, Chroma = "4:2:0", // libsvtav1 仅支持 4:2:0
                     BitDepth = "10", ColorSpace = "auto",
-                    EncoderBackend = "Ffmpeg",
+                    EncoderBackend = "Ffmpeg", EncoderName = "libsvtav1",
                     AvifSvtPreset = 4, AvifSvtTune = "VMAF (主观)",
                     AvifStillPicture = true, AvifRowMt = true,
                     MetadataMode = "PreserveAll", AutoThreads = true,
@@ -253,7 +253,7 @@ namespace FfmpegGui.Services
                 {
                     Format = "AVIF", Quality = 80, Chroma = "4:2:0",
                     BitDepth = "10", ColorSpace = "auto",
-                    EncoderBackend = "Ffmpeg",
+                    EncoderBackend = "Ffmpeg", EncoderName = "libsvtav1",
                     AvifSvtPreset = 7, AvifSvtTune = "VMAF (主观)",
                     AvifStillPicture = true, AvifRowMt = true,
                     MetadataMode = "PreserveAll", AutoThreads = true,
@@ -268,7 +268,7 @@ namespace FfmpegGui.Services
                 {
                     Format = "AVIF", Quality = 73, Chroma = "4:2:0",
                     BitDepth = "10", ColorSpace = "auto",
-                    EncoderBackend = "Ffmpeg",
+                    EncoderBackend = "Ffmpeg", EncoderName = "libsvtav1",
                     AvifSvtPreset = 10, AvifSvtTune = "VMAF (主观)",
                     AvifStillPicture = true, AvifRowMt = true,
                     MetadataMode = "StripAll", AutoThreads = true,
@@ -290,6 +290,7 @@ namespace FfmpegGui.Services
                     BitDepth = "10", ColorSpace = "auto",
                     EncoderBackend = "Ffmpeg",
                     AvifHwPresetLevel = 7,
+                    EncoderName = "av1_nvenc",
                     AvifNvencAqStrength = 8, AvifNvencSpatialAq = true,
                     AvifStillPicture = true,
                     MetadataMode = "PreserveAll", AutoThreads = true,
@@ -306,6 +307,7 @@ namespace FfmpegGui.Services
                     BitDepth = "10", ColorSpace = "auto",
                     EncoderBackend = "Ffmpeg",
                     AvifHwPresetLevel = 4,
+                    EncoderName = "av1_nvenc",
                     AvifNvencAqStrength = 8, AvifNvencSpatialAq = true,
                     AvifStillPicture = true,
                     MetadataMode = "PreserveAll", AutoThreads = true,
@@ -322,6 +324,7 @@ namespace FfmpegGui.Services
                     BitDepth = "10", ColorSpace = "auto",
                     EncoderBackend = "Ffmpeg",
                     AvifHwPresetLevel = 1,
+                    EncoderName = "av1_nvenc",
                     AvifNvencAqStrength = 4, AvifNvencSpatialAq = true,
                     AvifStillPicture = true,
                     MetadataMode = "StripAll", AutoThreads = true,
@@ -343,6 +346,7 @@ namespace FfmpegGui.Services
                     BitDepth = "10", ColorSpace = "auto",
                     EncoderBackend = "Ffmpeg",
                     AvifHwPresetLevel = 5, // slow
+                    EncoderName = "av1_qsv",
                     AvifLowPower = false,
                     AvifStillPicture = true,
                     MetadataMode = "PreserveAll", AutoThreads = true,
@@ -359,6 +363,7 @@ namespace FfmpegGui.Services
                     BitDepth = "10", ColorSpace = "auto",
                     EncoderBackend = "Ffmpeg",
                     AvifHwPresetLevel = 4, // medium
+                    EncoderName = "av1_qsv",
                     AvifLowPower = false,
                     AvifStillPicture = true,
                     MetadataMode = "PreserveAll", AutoThreads = true,
@@ -375,6 +380,7 @@ namespace FfmpegGui.Services
                     BitDepth = "10", ColorSpace = "auto",
                     EncoderBackend = "Ffmpeg",
                     AvifHwPresetLevel = 1, // veryfast
+                    EncoderName = "av1_qsv",
                     AvifLowPower = false,
                     AvifStillPicture = true,
                     MetadataMode = "StripAll", AutoThreads = true,

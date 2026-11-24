@@ -1,4 +1,4 @@
-﻿# ═══════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════
 # _probe-color-matrix-scan.ps1 — 全格式矩阵承载扫描（第 98 条，2026-11-10 接线，T1）
 #
 # 判什么：color-matrix-options 计划 C-SCAN@1 契约的交付物生成器——对全部输出格式
@@ -136,9 +136,9 @@ $Anchors = [ordered]@{
     # ── ColorTransformPlan.cs ──
     plan_outmatrix_assign  = @{ file='src/FfmpegGui/Services/ColorMapping/ColorTransformPlan.cs'; pattern='p\.OutMatrix = MatrixTokenFor\(dst\.PrimariesToken\)'; desc='plan.OutMatrix 由目标 primaries 推导（从不读用户值）' }
     matrix_token_for_def   = @{ file='src/FfmpegGui/Services/ColorMapping/ColorTransformPlan.cs'; pattern='private static string\? MatrixTokenFor'; desc='MatrixTokenFor 推导表（bt2020→bt2020nc；bt709/smpte432/smpte431→bt709；470bg/170m/470m/p22→smpte170m）' }
-    # ── ColorStrategyPlanning.cs ──
-    r4_noop_note           = @{ file='src/FfmpegGui/Services/ColorMapping/ColorStrategyPlanning.cs'; pattern='--color-matrix=\{it\.Manual\.Matrix\} 在本次交付中无承载'; desc='R4：用户显式 --color-matrix（输入声明）在引擎路径无承载的点名' }
-    r4_engine_rgb_note     = @{ file='src/FfmpegGui/Services/ColorMapping/ColorStrategyPlanning.cs'; pattern='整个链路无 YUV 中转'; desc='引擎路径输入恒为已解码 RGB 像素（矩阵声明没有作用对象）' }
+    # ── 输入解码与布局裁决 ──
+    input_matrix_layout    = @{ file='src/FfmpegGui/Services/FfmpegCommandBuilder.InputMatrix.cs'; pattern='InputMatrixUse\.NotApplicable, null, null,.*ignored for pixel conversion'; desc='按实际输入布局报告输入矩阵不适用' }
+    engine_input_matrix    = @{ file='src/FfmpegGui/Services/ColorMapping/RawColorPipeline.cs'; pattern='inputMatrix\.BuildFilter\("rgb48le"\)'; desc='H1 在首次 RGB 解码前使用输入矩阵和源范围合同' }
     # ── 外部编码器服务 ──
     cjpegli_build_args     = @{ file='src/FfmpegGui/Services/CjpegliService.cs'; pattern='public static string BuildCjpegliArguments'; desc='cjpegli 参数拼装（含显式输出矩阵分支，见 cjpegli_xyb_append）' }
     # 2026-11-13 重校准：T6（0f6c11a，2026-11-11「输出矩阵模式 + 一致性校验」）已在 cjpegli 出口接线 --xyb，
@@ -565,8 +565,8 @@ $($tblRows -join "`n")
 | 6.2 | ``ImageEncoderArgs.MapEnginePixFmt``（引擎位） | **只覆盖 jpg/jpeg**（恒显式 yuvj*/yuv*）⇒ jpg 引擎出口显式矩阵**真转 YUV 生效**；其余格式返回 null ⇒ 像素留 rgb24/rgb48le 直喂 | $(L 'mapenginepixfmt_def')；$(L 'engine_jpg_only_note') |
 | 6.3 | ``RawColorPipeline.BuildEncodeArgs`` convMatrix | ``ContainerYuvMatrix(ext) ?? plan.OutMatrix``——显式矩阵落地 = 覆写该取值点；png 出口 plan.OutMatrix 推导值非空（bt709）但 RGB 容器零效果 | $(L 'convmatrix_engine')；$(L 'primaries_bt709')；$(L 'plan_outmatrix_assign') |
 | 6.4 | ``FfmpegCommandBuilder`` 输出侧 | ``dec.CapMatrix ?? outputColorSpace``——legacy 唯一输出矩阵取值点；RGB 原生（png/tiff/apng/jxl）由 isRgbNativeFmt 跳过 | $(L 'capm_output')；$(L 'isrgb_native') |
-| 6.5 | **引擎 raw 通路恒 rgb24/rgb48le 时显式 bt709 会发生什么** | 分出口三种结局：①jpg（MapEnginePixFmt 已 YUV）⇒ swscale 真按 bt709 转 YUV = 像素真变；②avif（pix_fmt 判据未命中时 gbrp 直喂）⇒ 矩阵标签孤立（nclx 写上但像素是 RGB = 语义错位）⇒ **Requires-PixFmt-Switch**；③png/jxl/tiff ⇒ RGB 容器零转换零标注 = no-op 形式声明 | $(L 'pixin_rgb')；$(L 'avif_pixfmt_gate')；$(L 'r4_engine_rgb_note') |
-| 6.6 | 输入声明侧（对照，本特性不动） | ``--color-matrix`` 文档语义 = 输入矩阵声明（-i 前）；引擎路径输入恒已解码 RGB ⇒ 用户值无承载（R4 已点名） | $(L 'input_decl')；$(L 'options_matrix_doc')；$(L 'r4_noop_note') |
+| 6.5 | **引擎 raw 通路恒 rgb24/rgb48le 时显式输出 bt709 会发生什么** | RGB 中间件交给编码器。输出矩阵只有经出口能力裁决并落在 YUV 编码时才控制像素系数；RGB 原生出口按能力裁决。 | $(L 'pixin_rgb')；$(L 'avif_pixfmt_gate')；$(L 'convmatrix_engine') |
+| 6.6 | 输入声明侧 | ``--color-matrix`` 控制首次 YUV→RGB 解码。H1 依实际输入布局应用矩阵与源范围，未建立 YUV 布局则报告不适用。 | $(L 'options_matrix_doc')；$(L 'input_decl')；$(L 'input_matrix_layout')；$(L 'engine_input_matrix') |
 
 ## 7. C-CAPS@1 初版判定表校准清单（T5 据此修订）
 

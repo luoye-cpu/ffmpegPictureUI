@@ -58,8 +58,15 @@ namespace FfmpegGui.Services.ColorMapping
         private readonly List<Op> _ops;
         private readonly int _firstTokenCount;
 
-        /// <summary>载荷声明的**输入 item** 位深（8/10/12/16）。</summary>
-        public int InputBitDepth { get; }
+        /// <summary>sato 声明的有符号常量、栈及中间运算位深；不是输入 AV1 item 位深。</summary>
+        public int ArithmeticBitDepth { get; }
+
+        /// <summary>兼容旧调用名；该值实际为算术位深，不得用于判断输入采样位深。</summary>
+        [Obsolete("Use ArithmeticBitDepth; sato bit_depth does not declare input image depth.")]
+        public int InputBitDepth => ArithmeticBitDepth;
+
+        /// <summary>表达式引用的最大输入序号（本解码器支持最多两项）。</summary>
+        public int RequiredInputCount { get; }
 
         /// <summary>token 数（载荷第 2 字节）。</summary>
         public int TokenCount => _firstTokenCount;
@@ -67,11 +74,12 @@ namespace FfmpegGui.Services.ColorMapping
         /// <summary>人读表达式，用于播报/诊断。</summary>
         public string Expression { get; }
 
-        private AvifSampleTransform(List<Op> ops, int tokenCount, int inputBitDepth, string expression)
+        private AvifSampleTransform(List<Op> ops, int tokenCount, int arithmeticBitDepth, int requiredInputCount, string expression)
         {
             _ops = ops;
             _firstTokenCount = tokenCount;
-            InputBitDepth = inputBitDepth;
+            ArithmeticBitDepth = arithmeticBitDepth;
+            RequiredInputCount = requiredInputCount;
             Expression = expression;
         }
 
@@ -95,18 +103,14 @@ namespace FfmpegGui.Services.ColorMapping
                 return null;
             }
 
+            // AVIF §4.2.3.3: bit_depth is signed arithmetic width (8 << code), not
+            // input image depth. libavif writes code=2 even for the 12-bit + 8-bit recipe.
+            // Match the supported upstream implementation in tools/src/libavif/src/sampletransform.c.
             int bitDepthCode = payload[0] & 0x03;
-            int inputBitDepth = bitDepthCode switch
+            int arithmeticBitDepth = 8 << bitDepthCode;
+            if (arithmeticBitDepth != 32)
             {
-                0 => 8,
-                1 => 10,
-                2 => 12,
-                3 => 16,
-                _ => 0,
-            };
-            if (inputBitDepth == 0)
-            {
-                error = $"sato input bit-depth code={bitDepthCode} invalid";
+                error = $"sato arithmetic bit-depth={arithmeticBitDepth} unsupported (only signed 32-bit supported)";
                 return null;
             }
 
@@ -170,35 +174,55 @@ namespace FfmpegGui.Services.ColorMapping
                 }
             }
 
-            // 允许尾部零填充（规范未要求 exact-length，但非零尾字节必须点名）。
-            for (int i = pos; i < payload.Length; i++)
+            // token_count describes the complete payload, not a prefix. Match libavif's
+            // avifParseSampleTransformTokens: even zero trailing bytes are not tokens/padding.
+            if (pos != payload.Length)
             {
-                if (payload[i] != 0)
-                {
-                    error = $"sato payload has non-zero trailing byte (offset={i}, value=0x{payload[i]:X2})";
-                    return null;
-                }
-            }
-
-            if (sb.Length > 2) sb.Length -= 2;
-            var expression = sb.ToString();
-
-            // 结构自检：用 1/1 试算，栈必须恰好剩 1 个值。
-            var probe = new AvifSampleTransform(ops, tokenCount, inputBitDepth, expression);
-            if (!probe.TryEvaluateStack(1, 1, long.MinValue, out _, out var evalError))
-            {
-                error = evalError;
+                error = $"sato payload has {payload.Length - pos} trailing bytes";
                 return null;
             }
 
-            return probe;
+            int stackSize = 0, requiredInputCount = 0;
+            foreach (var op in ops)
+            {
+                if (op.Kind == OpKind.Sample)
+                {
+                    if (op.Value > 2)
+                    {
+                        error = $"sato sample{op.Value}: only 2 input items are supported";
+                        return null;
+                    }
+                    requiredInputCount = Math.Max(requiredInputCount, (int)op.Value);
+                }
+                if (op.Kind is OpKind.Constant or OpKind.Sample) stackSize++;
+                else if (op.Kind is OpKind.Negation or OpKind.Abs or OpKind.Not or OpKind.Bsr)
+                {
+                    if (stackSize < 1) { error = $"sato {op.Kind} stack underflow"; return null; }
+                }
+                else
+                {
+                    if (stackSize < 2) { error = $"sato {op.Kind} stack underflow"; return null; }
+                    stackSize--;
+                }
+            }
+            if (stackSize != 1)
+            {
+                error = $"sato expression left {stackSize} values (expected 1)";
+                return null;
+            }
+
+            if (sb.Length > 2) sb.Length -= 2;
+            return new AvifSampleTransform(ops, tokenCount, arithmeticBitDepth, requiredInputCount, sb.ToString());
         }
 
-        /// <summary>逐样本求值（通用后缀栈，返回未钳位的 long）。</summary>
+        /// <summary>逐样本求值；每步钳到声明的有符号 32 位域，最终输出位深的钳位由调用方执行。</summary>
         public long Evaluate(long sample1, long sample2)
         {
+            if ((ulong)sample1 > ushort.MaxValue || (ulong)sample2 > ushort.MaxValue)
+                throw new ArgumentOutOfRangeException(nameof(sample1), "sato input samples must be unsigned 8/10/12/16-bit values");
             if (TryFast(sample1, sample2, out var v)) return v;
-            TryEvaluateStack(sample1, sample2, 0, out v, out _);
+            if (!TryEvaluateStack(sample1, sample2, out v, out var error))
+                throw new InvalidOperationException(error ?? "sato expression could not be evaluated");
             return v;
         }
 
@@ -223,8 +247,8 @@ namespace FfmpegGui.Services.ColorMapping
             {
                 long c1 = _ops[0].Value;
                 long c2 = _ops[4].Value;
-                long q = c2 == 0 ? 0 : s2 / c2;
-                value = c1 * s1 + q;
+                long q = c2 == 0 ? s2 : Clamp32(s2 / c2);
+                value = Clamp32(Clamp32(c1 * s1) + q);
                 return true;
             }
 
@@ -235,19 +259,20 @@ namespace FfmpegGui.Services.ColorMapping
                 && _ops[3].Kind == OpKind.Sample && _ops[3].Value == 2
                 && _ops[4].Kind == OpKind.Sum)
             {
-                value = _ops[0].Value * s1 + s2;
+                value = Clamp32(Clamp32(_ops[0].Value * s1) + s2);
                 return true;
             }
 
             return false;
         }
 
-        private bool TryEvaluateStack(long s1, long s2, long unused, out long result, out string? error)
+        private bool TryEvaluateStack(long s1, long s2, out long result, out string? error)
         {
             error = null;
             result = 0;
             int sp = 0;
-            long[] stack = new long[_ops.Count + 4];
+            // token_count is one byte, so this is bounded even for untrusted expressions.
+            Span<long> stack = stackalloc long[_ops.Count];
 
             for (int i = 0; i < _ops.Count; i++)
             {
@@ -269,35 +294,50 @@ namespace FfmpegGui.Services.ColorMapping
                     case OpKind.Negation:
                     case OpKind.Abs:
                     case OpKind.Not:
+                    case OpKind.Bsr:
                         if (sp < 1) { error = $"sato {op.Kind} stack underflow"; return false; }
                         stack[sp - 1] = op.Kind switch
                         {
-                            OpKind.Negation => -stack[sp - 1],
-                            OpKind.Abs => Math.Abs(stack[sp - 1]),
-                            _ => ~stack[sp - 1],
+                            OpKind.Negation => Clamp32(-stack[sp - 1]),
+                            OpKind.Abs => Clamp32(Math.Abs(stack[sp - 1])),
+                            OpKind.Not => ~(int)stack[sp - 1],
+                            OpKind.Bsr => BitScanReverse(stack[sp - 1]),
+                            _ => throw new InvalidOperationException("unsupported sato unary operator"),
                         };
                         break;
-                    default:
+                    case OpKind.Sum:
+                    case OpKind.Difference:
+                    case OpKind.Product:
+                    case OpKind.Quotient:
+                    case OpKind.And:
+                    case OpKind.Or:
+                    case OpKind.Xor:
+                    case OpKind.Pow:
+                    case OpKind.Min:
+                    case OpKind.Max:
                         if (sp < 2) { error = $"sato {op.Kind} stack underflow"; return false; }
                         {
                             long b = stack[--sp];
                             long a = stack[sp - 1];
                             stack[sp - 1] = op.Kind switch
                             {
-                                OpKind.Sum => a + b,
-                                OpKind.Difference => a - b,
-                                OpKind.Product => a * b,
-                                OpKind.Quotient => b == 0 ? 0 : a / b,
-                                OpKind.And => a & b,
-                                OpKind.Or => a | b,
-                                OpKind.Xor => a ^ b,
+                                OpKind.Sum => Clamp32(a + b),
+                                OpKind.Difference => Clamp32(a - b),
+                                OpKind.Product => Clamp32(a * b),
+                                OpKind.Quotient => b == 0 ? a : Clamp32(a / b),
+                                OpKind.And => (int)a & (int)b,
+                                OpKind.Or => (int)a | (int)b,
+                                OpKind.Xor => (int)a ^ (int)b,
                                 OpKind.Pow => Pow(a, b),
                                 OpKind.Min => Math.Min(a, b),
                                 OpKind.Max => Math.Max(a, b),
-                                _ => 0,
+                                _ => throw new InvalidOperationException("unsupported sato binary operator"),
                             };
                         }
                         break;
+                    default:
+                        error = $"sato operator {op.Kind} is not implemented";
+                        return false;
                 }
             }
 
@@ -311,17 +351,34 @@ namespace FfmpegGui.Services.ColorMapping
             return true;
         }
 
+        private static long Clamp32(long value)
+            => Math.Clamp(value, (long)int.MinValue, int.MaxValue);
+
+        private static long BitScanReverse(long value)
+        {
+            if (value <= 0) return 0;
+            int highest = 0;
+            while ((value >>= 1) != 0) highest++;
+            return highest;
+        }
+
+        // AVIF Appendix A / vendored libavif sampletransform.c:243-267. After each
+        // operation the signed arithmetic domain saturates; overflow must never wrap.
         private static long Pow(long a, long b)
         {
-            if (b < 0 || b > 63) return 0;
-            long r = 1;
-            for (int i = 0; i < b; i++)
+            if (a is 0 or 1) return a;
+            if (a == -1) return (b & 1) == 0 ? 1 : -1;
+            if (b == 0) return 1;
+            if (b == 1) return a;
+            if (b < 0) return 0;
+            long result = a;
+            for (long i = 1; i < b; i++)
             {
-                if (a == 0) return 0;
-                r *= a;
-                if (r > long.MaxValue / 2) return long.MaxValue;
+                result *= a; // two int32-domain operands fit safely in signed int64
+                if (result < int.MinValue || result > int.MaxValue)
+                    return a > 0 || (b & 1) == 0 ? int.MaxValue : int.MinValue;
             }
-            return r;
+            return result;
         }
 
         /// <summary>钳到 16-bit 无符号（sato 的目标位深为 16）。</summary>
@@ -330,28 +387,13 @@ namespace FfmpegGui.Services.ColorMapping
     }
 
     /// <summary>
-    /// CICP token → H.273 数字码。只用于 avifenc <c>--cicp P/T/M</c>；
-    /// 未知 token 返回 null（调用方播报并改用安全默认，不猜一个无关的码）。
+    /// CICP token → H.273 数字码。编码侧的 P/T 标注和实际采样矩阵独立决议；解码侧只转已知 P/T。
     /// </summary>
     public static class AvifCicp
     {
-        /// <summary>由计划的目标描述符生成 avifenc <c>--cicp</c> 三元组。</summary>
-        public static (byte P, byte T, byte M)? FromPlan(ColorTransformPlan plan, bool rgbSource)
-        {
-            if (plan == null) return null;
-            byte? p = PrimariesCode(plan.OutPrimaries);
-            byte? t = TransferCode(plan.OutTransfer);
-            // RGB 源 + identity：即使计划层没给出可命名 token，也可以用 sRGB 的 H.273 默认
-            //（1/13）承载；省略 --cicp 会让 avifenc 落默认矩阵 6（YUV），与 gbrp 基图自相矛盾。
-            if (rgbSource)
-            {
-                p ??= 1;
-                t ??= 13;
-            }
-            byte? m = rgbSource ? (byte)0 : MatrixCode(plan.OutMatrix);
-            if (p == null || t == null || m == null) return null;
-            return (p.Value, t.Value, m.Value);
-        }
+        /// <summary>编码 P/T 只来自计划；每个不可命名的分量独立写 2（unspecified）。</summary>
+        internal static (byte P, byte T) FromOutputTokens(string? primaries, string? transfer)
+            => (PrimariesCode(primaries) ?? 2, TransferCode(transfer) ?? 2);
 
         /// <summary>由已探测的源 CICP token 生成 <c>--cicp</c>（解码侧写 PNG cICP 用）。</summary>
         public static (byte P, byte T)? FromSourceTokens(string? primaries, string? transfer)
@@ -361,6 +403,27 @@ namespace FfmpegGui.Services.ColorMapping
             if (p == null || t == null) return null;
             return (p.Value, t.Value);
         }
+
+        internal static string? PrimariesToken(int? code) => code switch
+        {
+            1 => "bt709", 4 => "bt470m", 5 => "bt470bg", 6 => "smpte170m", 7 => "smpte240m",
+            8 => "film", 9 => "bt2020", 10 => "smpte428", 11 => "smpte431", 12 => "smpte432", 22 => "ebu3213", _ => null,
+        };
+
+        internal static string? TransferToken(int? code) => code switch
+        {
+            1 => "bt709", 4 => "bt470m", 5 => "bt470bg", 6 => "smpte170m", 7 => "smpte240m",
+            8 => "linear", 9 => "log100", 10 => "log316", 11 => "iec61966-2-4", 12 => "bt1361",
+            13 => "iec61966-2-1", 14 => "bt2020-10", 15 => "bt2020-12", 16 => "smpte2084",
+            17 => "smpte428", 18 => "arib-std-b67", _ => null,
+        };
+
+        internal static string? MatrixToken(int? code) => code switch
+        {
+            0 => "rgb", 1 => "bt709", 4 => "fcc", 5 => "bt470bg", 6 => "smpte170m", 7 => "smpte240m",
+            8 => "ycgco", 9 => "bt2020nc", 10 => "bt2020c", 11 => "smpte2085",
+            12 => "chroma-derived-nc", 13 => "chroma-derived-c", 14 => "ictcp", _ => null,
+        };
 
         private static byte? PrimariesCode(string? token)
         {
@@ -409,7 +472,7 @@ namespace FfmpegGui.Services.ColorMapping
             };
         }
 
-        private static byte? MatrixCode(string? token)
+        internal static byte? MatrixCode(string? token)
         {
             if (string.IsNullOrWhiteSpace(token)) return null;
             var t = Services.ColorSpaceRegistry.NormalizeMatrixToken(token) ?? token.Trim().ToLowerInvariant();

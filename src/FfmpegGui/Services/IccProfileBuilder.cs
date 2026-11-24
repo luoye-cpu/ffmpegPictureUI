@@ -37,9 +37,9 @@ namespace FfmpegGui.Services
         /// 保证旧格式产物不会被当作新结果复用）。v2 = 'mluc' 改为 recordSize 头 + 无 BOM、NUL 结尾文本。
         /// v3 = 自生成 ICC 全量升 v4.4（cprt 由 v2 textType 改 v4 mluc，与版本位原子同批落地，
         /// 杜绝"4.4 头 + textType cprt"的混合非法 profile）；另增 BuildV2（真 v2.0：desc=descriptionType、
-        /// TRC=curv 采样）。
+        /// TRC=curv 采样）。v4 = 按 ICC.1 计算 v4.4 Profile ID，v2.0 的保留字节维持零。
         /// </summary>
-        public const int WriterVersion = 3;
+        public const int WriterVersion = 4;
 
         /// <summary>
         /// 自生成 ICC 的规范版本位。<c>V44</c> = 全量默认（v4.4.0，头版本字节 04 40 00 00）；
@@ -333,7 +333,7 @@ namespace FfmpegGui.Services
 
                 var ms = new MemoryStream(pos);
                 var w = new BinaryWriter(ms);
-                WriteHeader(w, pos, s, version);
+                WriteHeader(w, pos, version);
                 // tag 目录
                 WriteU32(w, (uint)tags.Count);
                 for (int i = 0; i < tags.Count; i++)
@@ -352,27 +352,36 @@ namespace FfmpegGui.Services
                     for (int k = 0; k < pad; k++) w.Write((byte)0);
                 }
                 w.Flush();
-                return StampProfileId(ms.ToArray());
+                var profile = ms.ToArray();
+                return v2 ? profile : StampProfileId(profile);
             }
             catch { return null; }
         }
 
-        /// <summary>
-        /// ICC.1 Profile ID：对“Profile ID 字段（offset 84..99）清零后的整份 profile”做 MD5，
-        /// 把 16 字节摘要写回同一位置。只影响 header 的 ID，不改变 tag 数据、体积或对齐；
-        /// ProfileID 在 ICC 里是可选项，但补算后第三方校验器不会再把它当“未填”。
-        /// </summary>
-        private static byte[] StampProfileId(byte[] profile)
+        /// <summary>给新生成的 ICC v4 写入 Profile ID；除了 ID 字段外不改动其他字节。</summary>
+        internal static byte[] StampProfileId(byte[] profile)
         {
-            if (profile.Length < 128) return profile;
-            var copy = (byte[])profile.Clone();
-            Array.Clear(copy, 84, 16);
-            var id = MD5.HashData(copy);
-            Buffer.BlockCopy(id, 0, profile, 84, 16);
+            if (ComputeProfileId(profile) is { } id) id.AsSpan().CopyTo(profile.AsSpan(84, 16));
             return profile;
         }
 
-        private static void WriteHeader(BinaryWriter w, int size, RgbSpace s, IccProfileVersion version)
+        internal static bool HasValidProfileId(byte[] profile)
+            => ComputeProfileId(profile) is { } id && profile.AsSpan(84, 16).SequenceEqual(id);
+
+        private static byte[]? ComputeProfileId(byte[] profile)
+        {
+            if (profile.Length < 128 || profile[8] != 4) return null;
+            uint size = System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(profile);
+            if (size < 128 || size > profile.Length) return null;
+            // ICC.1:2022 §7.2.18：在 profile size 所覆盖的副本中临时清零 flags、intent、ID。
+            var copy = profile.AsSpan(0, (int)size).ToArray();
+            copy.AsSpan(44, 4).Clear();
+            copy.AsSpan(64, 4).Clear();
+            copy.AsSpan(84, 16).Clear();
+            return MD5.HashData(copy);
+        }
+
+        private static void WriteHeader(BinaryWriter w, int size, IccProfileVersion version)
         {
             WriteU32(w, (uint)size);              // 0   profile size
             WriteU32(w, 0);                       // 4   preferred CMM
@@ -388,8 +397,8 @@ namespace FfmpegGui.Services
             w.Write(Be16(2026)); w.Write(Be16(1)); w.Write(Be16(1));
             w.Write(Be16(0)); w.Write(Be16(0)); w.Write(Be16(0));
             w.Write(Ascii4("acsp"));              // 36  magic
-            WriteU32(w, 0);                       // 40  profile file flags
-            WriteU32(w, 0);                       // 44  embedded profile signature
+            WriteU32(w, 0);                       // 40  primary platform
+            WriteU32(w, 0);                       // 44  profile flags
             w.Write(Ascii4("FFGU"));              // 48  device manufacturer
             WriteU32(w, 0);                       // 52  device model
             WriteU32(w, 0); WriteU32(w, 0);       // 56  device attributes (u64)
@@ -397,7 +406,7 @@ namespace FfmpegGui.Services
             // 68  PCS 固有白点 (XYZ × s15Fixed16) = D50
             foreach (var v in D50Xyz) WriteS15(w, v);
             w.Write(Ascii4("FFGU"));              // 80  profile creator
-            w.Write(new byte[16]);                // 84  profile ID（未计算 → 置零；校验器仅告警）
+            w.Write(new byte[16]);                // 84  v4 Profile ID 占位 / v2 保留字段
             w.Write(new byte[28]);                // 100 reserved
         }
 

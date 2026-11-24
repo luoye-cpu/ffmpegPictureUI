@@ -14,7 +14,7 @@
 #           一并算成违规 ⇒ full 层 360 格里 144 条假红。改成读该格日志定性，但**不放宽**：
 #           判据的牙由 §2a 的合成行自测锁住（无码必红 / 有码必绿 / 播报与实测矛盾必红）。
 #   [LBL] 产物**实际携带**的标注必须等于承诺（`Get-ColorMetadata` / `Get-StreamInfo` 位深）⇒ 专治「只改标签」。
-#   [NUM] 与**纯 zimg 参照链**同变换对拍（`Invoke-Psnr`，≥60 dB 才绿）⇒ 独立实现背书。
+#   [NUM] 与 ITU/IEC 标准色度与分段 OETF 的独立 RGB 参照逐码对拍；按源/目标位深分账，不准有损冒充无损。
 #   [RT ] A→B→A 往返漂移 ⇒ 不需要外部参照，专治转置/复合顺序错（自洽骗不过往返）。
 #   [NC1/NC1b/NC2/NC3] 四条负控 —— 不同目标空间的产物互比、篡改一字节、非法位深必须被拒、
 #         抹掉 ICC 后标签尺子必须判"缺"。**没有负控的裁判等于没有裁判。**
@@ -36,13 +36,15 @@ Set-Location $root
 # ── 接线前奏（2026-11-01，第 88 条批）：TMP 钉扎 ────────────────────────────
 # 引擎臂的解码中间件按 Path.GetTempPath() 落点；本机沙箱拦真 %TEMP% 写 ⇒ 引擎臂批量
 # rc=1 无产物（2026-11-01 实测：LEGACY 48 格里 44 违规全是这个根因）。AGENTS §4 标准处置。
-$scratch = Join-Path $root 'tests/output/_tmp/scratchroot'
+# 统一使用仓库规定的共享临时根；本轮仍以每轮 $d 作为实际产物/证据目录。
+$scratch = Join-Path $root 'tests/output/_tmp/round-tmp'
 New-Item -ItemType Directory -Force -Path $scratch | Out-Null
 $env:TMP = $scratch; $env:TEMP = $scratch; $env:TMPDIR = $scratch
 Set-OracleConfig -RepoRoot $root -TimeoutSec 180 | Out-Null
 
 $avail = Test-OracleAvailable
-$need = @('ffmpeg', 'ffprobe', 'exiftool')
+# 主网格锁定软件 cjxl；这不是硬件编码器覆盖或自动选择能力测试。
+$need = @('ffmpeg', 'ffprobe', 'exiftool', 'cjxl', 'djxl', 'jxlinfo')
 $missing = @($need | Where-Object { $avail.Available -notcontains $_ })
 function Say($t) { Write-Output $t }
 $script:pass = 0; $script:fail = 0
@@ -50,6 +52,11 @@ function CK($ok, $msg) { if ($ok) { $script:pass++; Say "  PASS $msg" } else { $
 
 $ff = Get-ToolPath 'ffmpeg'
 $ex = Get-ToolPath 'exiftool'
+if ($ex) {
+  # 与产品相同：独立 oracle 的 exiftool 子进程也必须找得到随包 Perl DLL。
+  $exDir = Split-Path -Parent $ex
+  $env:PATH = (Join-Path $exDir 'exiftool_files') + ";$exDir;$env:PATH"
+}
 $exe = Join-Path $root 'src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.exe'
 CK ($missing.Count -eq 0) "前置：oracle 工具齐备（缺 = $(if ($missing) { $missing -join ',' } else { '无' })）"
 CK (Test-Path $exe) "前置：被测产品 exe 在位 $exe"
@@ -71,10 +78,56 @@ function ExecCli([string]$file, [string]$argStr, [string]$Tee = '') {
 function Resolve-Prod([string]$p) {
   if (Test-Path -LiteralPath $p -PathType Leaf) { return $p }
   if (Test-Path -LiteralPath $p -PathType Container) {
-    $f = Get-ChildItem -LiteralPath $p -File -EA SilentlyContinue | Sort-Object Length -Descending | Select-Object -First 1
+    # exiftool 的暂存件不是交付产物；即使产品清理回归，也绝不能让裁判改读第二份文件。
+    $f = Get-ChildItem -LiteralPath $p -File -EA SilentlyContinue |
+      Where-Object { $_.Name -notlike '*_exiftool_tmp' } |
+      Sort-Object Length -Descending | Select-Object -First 1
     if ($f) { return $f.FullName }
   }
   return $null
+}
+
+# 主格的进程、JSONL 唯一终态和产物分别核对；一条成功日志不能替代其它两列。
+function Read-GridTask([string]$Log, [int]$Rc, [bool]$Made) {
+  $done = @(); $messages = @(); $parseOk = $true
+  foreach ($line in ($Log -split '\r?\n')) {
+    if ($line -cmatch '^\s*\{') {
+      try { $evt = ConvertFrom-Json -InputObject $line -ErrorAction Stop } catch { $parseOk = $false; continue }
+      if ($evt.c -ceq 'item_completed') { $done += $evt }
+      if ($evt.c -ceq 'item_log' -and $evt.m -is [string]) { $messages += $evt.m }
+    }
+  }
+  $isCode = $done.Count -eq 1 -and ($done[0].code -is [int] -or $done[0].code -is [long])
+  $hasShape = $done.Count -eq 1 -and $done[0].p -eq 1 -and $done[0].tot -eq 1
+  $success = $parseOk -and $Rc -eq 0 -and $Made -and $done.Count -eq 1 -and $isCode -and $hasShape -and
+    $done[0].code -eq 0 -and $done[0].l -ceq 'info'
+  return @{ Ok = [bool]$success; Parsed = $parseOk; Count = $done.Count; Code = $(if ($done.Count -eq 1) { $done[0].code } else { $null });
+    Messages = ($messages -join "`n"); Detail = "process=$Rc made=$Made parsed=$parseOk completed=$($done.Count) code=$($done.code -join ',')" }
+}
+
+# 本脚本的 SDR 无 alpha 格使用引擎 raw → PNG → cjxl 通路。只认进程启动记录；
+# `[色彩] cjxl 命令行:` 是计划。核对实际参数及 PNG 交接路径，排除 legacy cjxl 直编。
+function Test-GridCjxlExecution([string]$Log, [string]$Source, [string]$Product, [string]$Target, [int]$Depth) {
+  $lines = $Log -split '\r?\n'
+  $commands = @($lines | Where-Object { $_ -match '^\[cjxl\]\s+cjxl\.exe(?:\s|$)' })
+  if ($commands.Count -ne 1) { return @{ Ok = $false; Detail = "cjxl launches=$($commands.Count)" } }
+  $cmd = [regex]::Match($commands[0], '(?i)^\[cjxl\]\s+cjxl\.exe\s+"(?<input>[^"\r\n]+\.png)"\s+"(?<output>[^"\r\n]+\.jxl)"\s+-e\s+7\s+-d\s+0\s+-x\s+(?<hint>.+)$')
+  if (-not $cmd.Success -or $cmd.Groups['output'].Value -ine $Product) {
+    return @{ Ok = $false; Detail = 'actual cjxl must target this artifact with -e 7 -d 0 -x' }
+  }
+  $hint = $cmd.Groups['hint'].Value
+  $hintOk = switch ($Target) {
+    'sRGB'       { $hint -ceq 'color_space=sRGB' }
+    'Display P3' { $hint -ceq 'color_space=DisplayP3' }
+    'BT.2020'    { $hint -match '^"icc_pathname=[^"\r\n]+\.icc"$' }
+    default      { $false }
+  }
+  $pix = switch ($Depth) { 8 { 'rgb24' } 16 { 'rgb48le' } default { '' } }
+  $pngArg = [regex]::Escape('"' + $cmd.Groups['input'].Value + '"')
+  $sourceArg = [regex]::Escape('"' + $Source + '"')
+  $route = @($lines | Where-Object { $_ -match ('^\[色彩\] ffmpeg .* -f rawvideo .* -i ' + $sourceArg + ' -map 0:v -map_metadata 1 -vf "format=' + $pix + '" -f image2 ' + $pngArg + '$') })
+  $routeOk = $pix -ne '' -and $route.Count -eq 1 -and [array]::IndexOf($lines, $route[0]) -lt [array]::IndexOf($lines, $commands[0])
+  return @{ Ok = ($hintOk -and $routeOk); Detail = "actual cjxl -e 7 -d 0 hint=$hint hintOk=$hintOk enginePngHandoff=$routeOk format=$pix" }
 }
 
 # ── CAP 判据：请求位深 ≠ 容器能力档时，该格有三种结局 ────────────────────────────────
@@ -109,6 +162,40 @@ function Get-DeliveredDepth([string]$Pix) {
   $k = $Pix.ToLowerInvariant()
   if ($pixDepth.ContainsKey($k)) { return $pixDepth[$k] }
   return $null
+}
+function Test-AvifSampleTransform([string]$Path) {
+  try {
+    $b = [IO.File]::ReadAllBytes($Path); if ($b.Length -lt 16) { return $false }
+    function Local-Boxes([byte[]]$x,[int]$s,[int]$e) { $r=@(); for($p=$s;$p -lt $e;) { if($e-$p -lt 8){return}; $n=0; for($j=0;$j -lt 4;$j++){$n=($n*256)+$x[$p+$j]}; if($n -lt 8 -or $n -gt ($e-$p)){return}; $r+=,@{type=[Text.Encoding]::ASCII.GetString($x,$p+4,4);start=$p+8;end=$p+$n};$p+=$n }; return $r }
+    function Local-One([byte[]]$x,[int]$s,[int]$e,[string]$t) { @((Local-Boxes $x $s $e)|Where-Object type -ceq $t)|Select-Object -First 1 }
+    $meta=Local-One $b 0 $b.Length 'meta'; if(-not $meta){return $false}
+    $iinf=Local-One $b ($meta.start+4) $meta.end 'iinf';$iref=Local-One $b ($meta.start+4) $meta.end 'iref';
+    $iprp=Local-One $b ($meta.start+4) $meta.end 'iprp'; if(-not $iinf -or -not $iref -or -not $iprp){return $false}
+    $ipco=Local-One $b ($iprp.start+4) $iprp.end 'ipco';$ipma=Local-One $b ($iprp.start+4) $iprp.end 'ipma';if(-not $ipco -or -not $ipma){return $false}
+    $sato=@();$av01=@()
+    foreach($e in @(Local-Boxes $b ($iinf.start+6) $iinf.end|Where-Object type -ceq 'infe')) { if($e.end-$e.start -lt 12 -or $b[$e.start] -ne 2){continue};$id=($b[$e.start+4]*256)+$b[$e.start+5];$kind=[Text.Encoding]::ASCII.GetString($b,$e.start+8,4);if($kind -ceq 'sato'){$sato+=$id};if($kind -ceq 'av01'){$av01+=$id} }
+    if($sato.Count -ne 1 -or $av01.Count -ne 2 -or $av01[0] -eq $av01[1]){return $false}
+    $ref=Local-One $b ($iref.start+4) $iref.end 'dimg';if(-not $ref -or $ref.end-$ref.start -ne 8){return $false}
+    $from=($b[$ref.start+4]*256)+$b[$ref.start+5];$to=($b[$ref.start+6]*256)+$b[$ref.start+7]
+    $dimgOk=(($b[$ref.start]*256)+$b[$ref.start+1] -eq $sato[0] -and $from -ne $to -and $from -in $av01 -and $to -in $av01);if(-not $dimgOk){return $false}
+    # pixi is associated with the sato item through ipma; require 3 channels at 16 bits.
+    $version=$b[$ipma.start];$flags=0;for($j=0;$j -lt 3;$j++){$flags=($flags*256)+$b[$ipma.start+1+$j]};if($version -gt 1 -or $flags -gt 1){return $false}
+    $idWidth=2+2*$version;$assocWidth=1+$flags;$mask=(1 -shl (8*$assocWidth-1))-1;$entries=0;for($j=0;$j -lt 4;$j++){$entries=($entries*256)+$b[$ipma.start+4+$j]};$q=$ipma.start+8;$pixi16=$false
+    $props=@(Local-Boxes $b ($ipco.start+4) $ipco.end)
+    for($i=0;$i -lt $entries;$i++) {
+      if($ipma.end-$q -lt $idWidth+1){return $false};$id=0;for($j=0;$j -lt $idWidth;$j++){$id=($id*256)+$b[$q+$j]};$q+=$idWidth;$n=$b[$q];$q++
+      if($ipma.end-$q -lt $n*$assocWidth){return $false}
+      if($id -eq $sato[0]) { for($j=0;$j -lt $n;$j++) { $index=0;for($k=0;$k -lt $assocWidth;$k++){$index=($index*256)+$b[$q+$j*$assocWidth+$k]};$index=$index -band $mask;if($index -lt 1 -or $index -gt $props.Count){return $false};$prop=$props[$index-1];if($prop.type -ceq 'pixi' -and $prop.end-$prop.start -ge 8){$channels=$b[$prop.start+4];if($channels -eq 3 -and $prop.end-$prop.start -ge 5+$channels){# libavif's pixi writer/read path stores bits_per_channel as the actual depth; 16-bit is exactly 16.
+$pixi16=($b[$prop.start+5] -eq 16 -and $b[$prop.start+6] -eq 16 -and $b[$prop.start+7] -eq 16)}}} }
+      $q+=$n*$assocWidth
+    }
+    return $pixi16
+  } catch { return $false }
+}
+function Get-GridDeliveredDepth([string]$Path, [string]$Pix) {
+  $d = Get-DeliveredDepth $Pix
+  if ([IO.Path]::GetExtension($Path) -ieq '.avif' -and (Test-AvifSampleTransform $Path)) { return 16 }
+  return $d
 }
 function Get-BitDepthOutcome {
   param(
@@ -159,15 +246,30 @@ foreach ($pair in @(@('p3', 'smpte432', 'iec61966-2-1'), @('bt2020', 'bt2020', '
     ${outPix} = 'rgb24'; if ($bpp -eq 16) { ${outPix} = 'rgb48le' }
     # iccgen **没有 iccfile 选项**（本机 ffmpeg 实测：只有 color_primaries/color_trc 等）⇒ 它把 profile 附在帧上，
     #   写 PNG 时自动进 iCCP。写成 `iccgen=iccfile=...` 会让整条命令失败 ⇒ 上一轮夹具四格全空。
-    $fr = ExecCli $ff ("-hide_banner -loglevel error -y -i `"$in`" -vf `"format=rgb48le,zscale=pin=bt709:tin=iec61966-2-1:min=gbr:p=${pp}:t=${tt}:m=gbr,iccgen,format=${outPix}`" -frames:v 1 `"$o`"")
-    if (Test-Path -LiteralPath $o -PathType Leaf) { $srcs["${tag}$bpp"] = $o }
+    $convert = "format=gbrp16le,zscale=pin=bt709:tin=iec61966-2-1:min=gbr:rin=full:p=${pp}:t=${tt}:m=gbr:r=full,format=gbrp16le"
+    if ($tag -eq 'bt2020') {
+      # zimg 的 bt709 变换实际是纯 gamma 2.4，但 iccgen 的 bt709 写的是分段曲线。
+      # 先做线性矩阵，再显式应用 BT.709-6 分段 OETF，最后按同一曲线生成 ICC。
+      $convert = $convert.Replace(':t=bt709:', ':t=linear:')
+      # lutrgb 的 maxval 可能按下游格式协商成 65280；这里在定死的 gbrp16le 上必须除以 65535。
+      $oetf = 'floor(65535*if(lt(val/65535\,0.0180539685108078)\,4.5*val/65535\,1.0992968268094429*pow(val/65535\,0.45)-0.0992968268094429)+0.5)'
+      $convert += ",lutrgb=r='$oetf':g='$oetf':b='$oetf'"
+    }
+    $convert += ",iccgen=color_primaries=${pp}:color_trc=${tt}:force=1,setparams=color_trc=${tt},format=${outPix}"
+    $fr = ExecCli $ff ("-hide_banner -loglevel error -y -i `"$in`" -vf `"$convert`" -frames:v 1 `"$o`"")
+    if ($fr.Rc -eq 0 -and (Test-Path -LiteralPath $o -PathType Leaf)) { $srcs["${tag}$bpp"] = $o }
     else { Say ("  夹具失败 {0}/{1} rc={2} ⇒ {3}" -f $tag, $bpp, $fr.Rc, (($fr.Out -replace "`r?`n", ' | ').Substring(0, [Math]::Min(300, $fr.Out.Length)))) }
   }
 }
-CK ($srcs.Count -ge 4) "夹具计数 = $($srcs.Count)（$($srcs.Keys -join ' ')）"
-$adobeIcc = @(Get-ChildItem "$env:SystemRoot\System32\spool\drivers\color" -Recurse -Include '*.icc', '*.icm' -EA SilentlyContinue | Where-Object { $_.Name -match 'Adobe' }) | Select-Object -First 1
-if ($adobeIcc) { $srcs['adobe8'] = $base8; Say "  Adobe RGB 轴用权威 ICC：$($adobeIcc.FullName)（源=base8 + --icc-file ⇒ 同数值重解释，非真 Adobe 照片）" }
-else { Say '  本机无 Adobe ICC ⇒ Adobe 轴记 SKIP' }
+CK ($srcs.Count -eq 6) "命名夹具计数 = $($srcs.Count)/6（$($srcs.Keys -join ' ')）"
+$adobeIcc = @(
+  'tools/src/libjxl/third_party/skcms/profiles/misc/AdobeRGB.icc',
+  'tools/src/jpegli/third_party/skcms/profiles/misc/AdobeRGB.icc'
+) | ForEach-Object { Join-Path $root $_ } | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+  Select-Object -First 1 | ForEach-Object { Get-Item -LiteralPath $_ }
+CK ($null -ne $adobeIcc) '仓库内 vendored Adobe RGB ICC 就位（缺失是夹具错误，不再记 SKIP）'
+if ($adobeIcc) { $srcs['adobe8'] = $base8; Say "  Adobe RGB 轴用仓库内权威 ICC：$($adobeIcc.FullName)（源=base8 + --icc-file ⇒ 同数值重解释，非真 Adobe 照片）" }
+else { Say '  vendored Adobe ICC 缺失 ⇒ Adobe 轴无法执行，本门禁按红处理' }
 
 # ── 2) 网格与容器能力表 ─────────────────────────────────────────────────────────────
 # 值 = 该容器**能**承载的出口位深；不在表内 ⇒ 产品必须显式拒绝（CAP 尺子）
@@ -204,7 +306,7 @@ else { Say '  本机无 Adobe ICC ⇒ Adobe 轴记 SKIP' }
 #     的 `jxl.SupportedBitDepths = {8,10,12,16,32}` 与 UI 位深下拉同样**过宽**（引擎出口只出 8/16）
 #     ⇒ 用户能在下拉里选到 10/12。那是"下拉给了选不出来的档位"，属能力表侧的口径修复，
 #     归属另一个 lane（本脚本改不到它，也不该由网格替它背书）。
-#   ✅ `avif = @(8, 10, 12)`（**2026-09-26 第二笔：任务 #36 修好后重新放开 12**）：
+#   ✅ AVIF `@(8,10,12,16)`：12-bit libaom 与 16-bit sato/dimg 均必须由实际产物回读证明；
 #     本表曾收窄到 @(8,10)，理由写在下面这条历史里 —— 因为产品当时**确实**把 12 钳成 10。
 #     那个钳制的依据是 `AvifMaxBitDepth` 按 `options.Encoder` 前缀判档，而**空编码器名**（CLI/headless
 #     唯一可能的形态：`--encoder` 映射到 EncoderBackend 枚举，写不到编码器名）被算成"上限 10"。
@@ -218,7 +320,8 @@ else { Say '  本机无 Adobe ICC ⇒ Adobe 轴记 SKIP' }
 #     `ImageEncoderArgs.AvifMaxBitDepth` 给 —— 未显式选编码器时恒 **10**（保守取候选编码器的交集：
 #     libsvtav1 只到 10），实测（`tests/output/t35/grid-t35fix.csv`，full 层 12 格 avif12）交付
 #     `-pix_fmt yuv420p10le` 并播报"降为 10bit（本次目标 12bit）"⇒ 当时产品兑现了自己的声明、没有静默。
-$capDepths = @{ png = @(8, 16); webp = @(8); tiff = @(8, 16); jxl = @(8, 16); avif = @(8, 10, 12) }
+# AVIF 16-bit is delivered as a verified sato/dimg sample-transform pair, not by base pix_fmt alone.
+$capDepths = @{ png = @(8, 16); webp = @(8); tiff = @(8, 16); jxl = @(8, 16); avif = @(8, 10, 12, 16) }
 $targets = @{ 'sRGB' = 'bt709'; 'Display P3' = 'smpte432'; 'BT.2020' = 'bt2020' }
 # 目标空间 → **裁判工具实际输出的词形**（同一张表现在由 §3 LBL 与 §6c 的 png/tiff 标签判据共用，
 # 不再各写一份：判据词形表一分家就各自漂移，而"缺一个词形"的代价是把**正确的标注判成缺失**）。
@@ -237,6 +340,107 @@ function Get-TargetTransferRx([string]$Tgt) {
   if ($Tgt -eq 'Display P3') { return '(?i)iec61966-2-1|sRGB' }
   if ($Tgt -eq 'BT.2020')    { return '(?i)bt709|709' }
   return ''
+}
+# 独立 ICC 度量尺：读实际嵌入字节，不读取描述字符串、产品解析器或产品矩阵常量。
+# 标准 xy/D65 → Bradford D50；三原色、白点与三通道 TRC 均须匹配目标。
+if (-not ('MatrixGridIcc' -as [type])) {
+  Add-Type -ErrorAction Stop -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Text;
+public static class MatrixGridIcc {
+    static int U16(byte[] b,int o) => (b[o]<<8)|b[o+1];
+    static int U32(byte[] b,int o) { long n=((long)b[o]<<24)|((long)b[o+1]<<16)|((long)b[o+2]<<8)|b[o+3]; if(n>int.MaxValue) throw new ArgumentException("ICC integer"); return (int)n; }
+    static double Fixed(byte[] b,int o) => unchecked((int)(((uint)b[o]<<24)|((uint)b[o+1]<<16)|((uint)b[o+2]<<8)|b[o+3]))/65536.0;
+    static string Sig(byte[] b,int o) => Encoding.ASCII.GetString(b,o,4);
+    static double[,] Inv(double[,] m) {
+        var a=new double[3,6]; for(int i=0;i<3;i++) for(int j=0;j<3;j++){a[i,j]=m[i,j];a[i,j+3]=i==j?1:0;}
+        for(int k=0;k<3;k++){ int p=k;for(int i=k+1;i<3;i++)if(Math.Abs(a[i,k])>Math.Abs(a[p,k]))p=i;
+            for(int j=0;j<6;j++){double v=a[p,j];a[p,j]=a[k,j];a[k,j]=v;} double d=a[k,k];if(Math.Abs(d)<1e-12)throw new ArgumentException("singular");
+            for(int j=0;j<6;j++)a[k,j]/=d;for(int i=0;i<3;i++)if(i!=k){double s=a[i,k];for(int j=0;j<6;j++)a[i,j]-=s*a[k,j];}}
+        var r=new double[3,3];for(int i=0;i<3;i++)for(int j=0;j<3;j++)r[i,j]=a[i,j+3];return r;
+    }
+    static double[] Mul(double[,] m,double[] v){var r=new double[3];for(int i=0;i<3;i++)for(int j=0;j<3;j++)r[i]+=m[i,j]*v[j];return r;}
+    static double[,] Colorants(string target) {
+        double[] xy=target=="sRGB"?new[]{.64,.33,.30,.60,.15,.06}:target=="Display P3"?new[]{.68,.32,.265,.69,.15,.06}:target=="BT.2020"?new[]{.708,.292,.170,.797,.131,.046}:throw new ArgumentException("target");
+        var w=new[]{.3127/.329,1.0,(1-.3127-.329)/.329};var d50=new[]{.9642,1.0,.8249};var m=new double[3,3];
+        for(int c=0;c<3;c++){m[0,c]=xy[2*c]/xy[2*c+1];m[1,c]=1;m[2,c]=(1-xy[2*c]-xy[2*c+1])/xy[2*c+1];}
+        var s=Mul(Inv(m),w);for(int c=0;c<3;c++)for(int r=0;r<3;r++)m[r,c]*=s[c];
+        var br=new double[,]{{.8951,.2664,-.1614},{-.7502,1.7135,.0367},{.0389,-.0685,1.0296}};var bi=Inv(br);var sw=Mul(br,w);var dw=Mul(br,d50);
+        for(int c=0;c<3;c++){var v=Mul(br,new[]{m[0,c],m[1,c],m[2,c]});for(int r=0;r<3;r++)v[r]*=dw[r]/sw[r];v=Mul(bi,v);for(int r=0;r<3;r++)m[r,c]=v[r];}return m;
+    }
+    static double Curve(byte[] b,int o,int size,double x){
+        string type=Sig(b,o); if(size<12)throw new ArgumentException("TRC size");
+        if(type=="curv"){int n=U32(b,o+8);if(n>(size-12)/2)throw new ArgumentException("TRC bounds");if(n==0)return x;if(n==1)return Math.Pow(x,U16(b,o+12)/256.0);
+            double p=x*(n-1);int lo=(int)Math.Floor(p),hi=Math.Min(lo+1,n-1);return (U16(b,o+12+2*lo)*(hi-p)+U16(b,o+12+2*hi)*(p-lo))/65535.0+(lo==hi?U16(b,o+12+2*lo)/65535.0:0);}
+        if(type!="para")throw new ArgumentException("TRC type");int f=U16(b,o+8);int[] need={16,24,28,32,40};if(f>4||size<need[f])throw new ArgumentException("TRC function");
+        double g=Fixed(b,o+12);if(f==0)return Math.Pow(x,g);double a=Fixed(b,o+16),bb=Fixed(b,o+20);if(a==0)throw new ArgumentException("TRC a");
+        if(f==1)return x< -bb/a?0:Math.Pow(a*x+bb,g);double c0=Fixed(b,o+24);if(f==2)return x< -bb/a?c0:Math.Pow(a*x+bb,g)+c0;
+        double d=Fixed(b,o+28);if(f==3)return x<d?c0*x:Math.Pow(a*x+bb,g);return x<d?c0*x+Fixed(b,o+36):Math.Pow(a*x+bb,g)+Fixed(b,o+32);
+    }
+    public static bool MutationControls(byte[] profile,string target) {
+        if(Check(profile,target)!="")return false;
+        var matrix=(byte[])profile.Clone();var curve=(byte[])profile.Clone();bool sawMatrix=false,sawCurve=false;
+        for(int i=0;i<U32(profile,128);i++) {
+            int p=132+12*i,o=U32(profile,p+4);string name=Sig(profile,p);
+            if(name=="rXYZ"){matrix[o+8]^=0x10;sawMatrix=true;}
+            if(name=="rTRC") {
+                if(Sig(profile,o)=="para"){curve[o+12]^=0x20;sawCurve=true;}
+                else if(Sig(profile,o)=="curv") {int n=U32(profile,o+8);if(n>0){curve[o+12+2*(n/2)]^=128;sawCurve=true;}}
+            }
+        }
+        return sawMatrix&&sawCurve&&Check(matrix,target)!=""&&Check(curve,target)!="";
+    }
+    public static string Check(byte[] b,string target){
+        try{
+            if(b==null||b.Length<132||b.Length>33554432||U32(b,0)!=b.Length||Sig(b,36)!="acsp"||Sig(b,16)!="RGB "||Sig(b,20)!="XYZ ")return "ICC header";
+            int n=U32(b,128);if(n<1||n>(b.Length-132)/12)return "ICC tag count";int end=132+12*n;var tags=new Dictionary<string,int[]>();
+            for(int i=0;i<n;i++){int p=132+12*i;string name=Sig(b,p);int off=U32(b,p+4),len=U32(b,p+8);if(tags.ContainsKey(name)||off<end||len<8||off>b.Length-len)return "ICC tag bounds";tags[name]=new[]{off,len};}
+            var m=Colorants(target);string[] names={"rXYZ","gXYZ","bXYZ","wtpt"};
+            for(int c=0;c<4;c++){if(!tags.ContainsKey(names[c]))return "missing "+names[c];var t=tags[names[c]];if(t[1]<20||Sig(b,t[0])!="XYZ ")return "XYZ type";
+                for(int r=0;r<3;r++){double actual=Fixed(b,t[0]+8+4*r),want=c==3?new[]{.9642,1.0,.8249}[r]:m[r,c];if(Math.Abs(actual-want)>.003)return names[c]+" mismatch";}}
+            foreach(string name in new[]{"rTRC","gTRC","bTRC"}){if(!tags.ContainsKey(name))return "missing "+name;var t=tags[name];
+                for(int i=0;i<=64;i++){double x=i/64.0;double want=target=="BT.2020"?(x<4.5*.0180539685108078?x/4.5:Math.Pow((x+.0992968268094429)/1.0992968268094429,1/.45)):(x<=.04045?x/12.92:Math.Pow((x+.055)/1.055,2.4));
+                    double actual=Curve(b,t[0],t[1],x);if(double.IsNaN(actual)||double.IsInfinity(actual)||Math.Abs(actual-want)>.001)return name+" mismatch";}}
+            return "";
+        }catch(Exception e){return "ICC parse: "+e.GetType().Name;}
+    }
+}
+'@
+}
+function Test-GridIcc([string]$Path, [string]$Target, [string]$Key) {
+  $profile = Join-Path $d ("label_" + $Key + '.icc'); $stderr = "$profile.err"
+  if ([IO.Path]::GetExtension($Path) -ieq '.jxl') {
+    $dj = Get-ToolPath 'djxl'; if (-not $dj) { return @{ Ok = $false; Detail = 'djxl missing' } }
+    $decoded = Join-Path $d ("label_" + $Key + '.png')
+    $r = ExecCli $dj "`"$Path`" `"$decoded`" --orig_icc_out=`"$profile`" --quiet"
+    if ($r.Rc -ne 0) { return @{ Ok = $false; Detail = 'JXL ICC extraction failed' } }
+  } else {
+    $p = Start-Process -FilePath $ex -ArgumentList "-b -ICC_Profile `"$Path`"" -Wait -NoNewWindow -PassThru -RedirectStandardOutput $profile -RedirectStandardError $stderr
+    if ($p.ExitCode -ne 0) { return @{ Ok = $false; Detail = "ICC extraction exit=$($p.ExitCode)" } }
+  }
+  if (-not (Test-Path -LiteralPath $profile -PathType Leaf)) { return @{ Ok = $false; Detail = 'ICC extraction absent' } }
+  $bytes = [IO.File]::ReadAllBytes($profile)
+  $issue = [MatrixGridIcc]::Check($bytes, $Target)
+  $mutations = if ($issue -ceq '') { [MatrixGridIcc]::MutationControls($bytes, $Target) } else { $false }
+  $detail = if ($issue -ne '') { $issue } elseif (-not $mutations) { 'ICC mutation negative controls did not reject changed matrix/TRC' } else { '' }
+  return @{ Ok = ($detail -ceq ''); Detail = $detail; Bytes = $bytes.Length; ProfilePath = $profile }
+}
+function Test-GridLabel($Cell) {
+  $rp = Get-TargetPrimariesRx $Cell.tgt; $rt = Get-TargetTransferRx $Cell.tgt
+  $tagged = $rp -and $rt -and $Cell.prim -match $rp -and $Cell.trc -match $rt
+  if ($Cell.hasIcc) {
+    $icc = Test-GridIcc $Cell.out $Cell.tgt ([IO.Path]::GetFileNameWithoutExtension($Cell.cellLog))
+    # ICC+CICP 同时存在时两者都不能反向声明；缺省 CICP 可由已核实 ICC 单独描述。
+    $contradiction = ($Cell.prim -and $Cell.prim -notmatch '^(?i:unknown|unspecified)$' -and $Cell.prim -notmatch $rp) -or
+      ($Cell.trc -and $Cell.trc -notmatch '^(?i:unknown|unspecified)$' -and $Cell.trc -notmatch $rt)
+    return @{ Ok = ($icc.Ok -and -not $contradiction); Detail = "ICC=$($icc.Detail) conflictingTags=$contradiction" }
+  }
+  if ($tagged) { return @{ Ok = $true; Detail = 'target P/T read back' } }
+  # 仅 WebP/sRGB 的确定无 ICC + 隐含 sRGB 可作无标注例外；泛「降级」绝不放行广色域。
+  $implicit = $Cell.fmt -eq 'webp' -and $Cell.tgt -eq 'sRGB' -and $Cell.metadataOk -and
+    $Cell.messages -match '\bUnlabeledAssumedSrgb\b' -and $Cell.taskOk
+  return @{ Ok = [bool]$implicit; Detail = "target P/T missing or wrong (P=$($Cell.prim) T=$($Cell.trc)); implicitSrgb=$implicit" }
 }
 $fmts = if ($Layer -eq 'quick') { @('png', 'jxl') } else { @('png', 'webp', 'tiff', 'jxl', 'avif') }
 $depths = if ($Layer -eq 'quick') { @(8, 16) } else { @(8, 10, 12, 16) }
@@ -279,13 +483,18 @@ foreach ($sk in $srcs.Keys) {
         #   "目录里最大的文件"那套语义（Resolve-Prod）⇒ 把裁判要读的证据放进产物目录，等于自己喂自己。
         $cellLog = "$outDir.log"
         # --log-level Debug：LBL 的"缺标注必须有名字"要看的是降级播报，而它**不在 Info 级别**（Lane E 是在 Debug 下看到的）
-        $r = ExecCli $exe "--headless --log-level Debug -i `"$srcP`" -o `"$outDir`" -f $f --bit-depth $bd --color-space `"$tn`" --color-engine engine $extra" -Tee $cellLog
+        # 这张网格要分辨矩阵偏差，不把默认 -d 2.4 的 JXL 压缩噪声预算混进 NUM。
+        $codecArgs = if ($f -eq 'jxl') { '--encoder Cjxl --jxl-effort 7 --lossless true' } else { '' }
+        $r = ExecCli $exe "--headless --log-level Debug --log-format JsonLines -i `"$srcP`" -o `"$outDir`" -f $f --bit-depth $bd --color-space `"$tn`" --color-strategy recommended --color-gamut-map off --color-engine engine $codecArgs $extra" -Tee $cellLog
         # 取产物只有一条路：Resolve-Prod（Leaf 原样 / Container 取最大文件 / 没有 ⇒ $null）
         $prod = Resolve-Prod $outDir
+        $tempArtifacts = @(Get-ChildItem -LiteralPath $outDir -File -Filter '*_exiftool_tmp' -EA SilentlyContinue).Count
         $made = ($null -ne $prod)
         $st = if ($made) { Get-StreamInfo $prod } else { $null }
         $cm = if ($made) { Get-ColorMetadata $prod } else { $null }
-        $delivered = if ($st -and $st.Ok) { Get-DeliveredDepth ([string]$st.PixFmt) } else { $null }
+        $jxi = if ($made -and $f -eq 'jxl') { Get-JxlInfo $prod } else { $null }
+        $delivered = if ($jxi -and $jxi.Ok) { $jxi.BitDepth }
+                     elseif ($f -ne 'jxl' -and $st -and $st.Ok) { Get-GridDeliveredDepth $prod ([string]$st.PixFmt) } else { $null }
         $capOk = ($capDepths[$f] -contains $bd)
         # ⚠⚠ 这段"合法拒绝"前提**已作废并删除**（2026-09-26 任务 #37 实测）：
         #   旧事实（2026-09-25 取证，审计 §6-C）：cjxl 的 `color_space` 枚举只有 sRGB / Display P3 /
@@ -299,21 +508,40 @@ foreach ($sk in $srcs.Keys) {
         #   ⇒ 这些格现在按**普通格**判（LBL 查标注是否真落地、NUM 与 zimg 参照对拍像素），
         #     不再享受"必须响亮拒绝"的特殊待遇；若某环境 cjxl 缺失而 rc≠0 零产物，仍会被
         #     `Get-BitDepthOutcome` 判成 `refused`（干净拒绝）而不是放过。
-        $capNote = ''
-        $verdict = if ($capOk) { if ($made -and $r.Rc -eq 0) { 'ok' } else { 'CAP-FAIL' } }
-                   # 能力表说不支持的档位：读该格日志判三种结局（见 §2a 的自测）。
-                   else { $o = Get-BitDepthOutcome -Requested $bd -Made $made -Rc $r.Rc -Log $r.Out -Delivered $delivered
-                          $capNote = $o.Evidence; $o.Verdict }
+        $task = Read-GridTask $r.Out $r.Rc $made
+        $capNote = $task.Detail
+        $encoderLanded = $f -ne 'jxl'
+        if ($f -eq 'jxl' -and $made) {
+          $expectedJxlDepth = if ($bd -eq 8) { 8 } else { 16 } # 10/12 requests are promoted to RGB16.
+          $exec = Test-GridCjxlExecution $task.Messages $srcP $prod $tn $expectedJxlDepth
+          $encoderLanded = $exec.Ok -and $delivered -eq $expectedJxlDepth
+          $capNote += '; ' + $exec.Detail
+        }
+        # 支持档必须实际交付同档；缺读数或未播报的折档也不能算 ok。
+        $verdict = if ($capOk) {
+          if ($task.Ok -and $null -ne $delivered -and [int]$delivered -eq $bd -and $encoderLanded) { 'ok' } else { 'CAP-FAIL' }
+        } else {
+          $o = Get-BitDepthOutcome -Requested $bd -Made $made -Rc $r.Rc -Log $task.Messages -Delivered $delivered
+          $capNote += '; ' + $o.Evidence
+          if ($made -and (-not $task.Ok -or -not $encoderLanded -or $null -eq $delivered)) { 'CAP-FAIL' } else { $o.Verdict }
+        }
+        $capNote += "; requested=$bd delivered=$delivered selectedEncoder=$(if ($f -eq 'jxl') { 'cjxl' } else { 'format-default' }) encoderLanded=$encoderLanded"
         $rows.Add([pscustomobject]@{
             src = $sk; tgt = $tn; fmt = $f; bd = $bd; rc = $r.Rc; made = $made; verdict = $verdict
-            announced = ($r.Out -match 'BitDepthRaised|BitDepthReduced')
-            out = $prod; pixfmt = $(if ($st) { [string]$st.PixFmt } else { '' }); prim = $(if ($cm) { $cm.Primaries } else { '' })
-            trc = $(if ($cm) { $cm.Transfer } else { '' })
+            announced = ($task.Messages -match 'BitDepthRaised|BitDepthReduced')
+            out = $prod; tempArtifacts = $tempArtifacts; pixfmt = $(if ($st) { [string]$st.PixFmt } else { '' })
+            prim = $(if ($cm -and $cm.Primaries) { $cm.Primaries } elseif ($st -and $st.Ok) { $st.ColorPrimaries } else { '' })
+            width = $st.Width; height = $st.Height
+            trc = $(if ($cm -and $cm.Transfer) { $cm.Transfer } elseif ($st -and $st.Ok) { $st.ColorTransfer } else { '' })
             delivered = $delivered; capNote = $capNote; cellLog = $cellLog
+            metadataOk = ($cm -and $cm.Ok); taskOk = $task.Ok; taskCode = $task.Code; terminalCount = $task.Count
+            messages = $task.Messages; encoder = $(if ($f -eq 'jxl') { 'cjxl' } else { 'format-default' }); encoderLanded = $encoderLanded
+            # jxlinfo 的 “(possibly) lossless” 只说明采用可能无损的编码工具；逐样本再对独立参照。
+            jxlLosslessMode = $(if ($jxi -and $jxi.Ok) { $jxi.Raw -match '(?im)^JPEG XL image, .*?, (?:\(possibly\) )?lossless,' } else { $false })
             # ⚠ 字段名必须照 `Get-ColorMetadata` 的真实形状取：它给的是 `HasIcc` / `IccProfileName` /
             #   `IccProfileDescription`，**没有** `.IccDescription`（我上一版读错 ⇒ 恒空 ⇒ 把带 ICC 的 TIFF
             #   判成"无标注"，62 格里的一半就是这么来的）。
-            hasIcc = $(if ($cm) { [bool]$cm.HasIcc } else { $false })
+            hasIcc = ($cm.HasIcc -or ($jxi -and $jxi.Ok -and $jxi.Raw -match '(?im)^\d+-byte ICC profile,.*Color space:'))
             # 日志里有没有"我选择无标注"的点名（降级码）⇒ LBL 只打**静默**无标注，见 §3 的判据
             loud = ($r.Out -match 'UnlabeledAssumedSrgb|降级')
             icc = $(if ($cm) { "$($cm.IccProfileName)|$($cm.IccProfileDescription)" } else { '' })
@@ -360,10 +588,12 @@ CK ($bad.Count -eq 0) $capLine
 #     就是这么播报的，拿"日志里有码"当判据会把它们误计成红）。
 #   这里不改 verdict（那些格仍归 LBL/NUM 判；改判会把它们送出对拍范围 ⇒ coverage 反而掉），
 #   单独判红是为了"承诺≠交付"不许静默：要么改表，要么产品补上 10/12 出口档。
-$promOk = @($rows | Where-Object { $_.verdict -eq 'ok' })
-$promBad = @($promOk | Where-Object { $_.announced -and ($null -ne $_.delivered) -and ([int]$_.delivered -ne [int]$_.bd) })
-foreach ($b in ($promBad | Select-Object -First 6)) { Say ("  CAP承诺? {0,-9} →{1,-11} {2}{3} 能力表说支持、产品却交付了 {4}bit" -f $b.src, $b.tgt, $b.fmt, $b.bd, $b.delivered) }
-CK ($promBad.Count -eq 0) "CAP 承诺账：判 ok 的 $($promOk.Count) 格里『播报了升降档且实测交付 ≠ 请求』的 = $($promBad.Count)（>0 ⇒ 能力表与产品口径不一致：改表或改产品，不许静默）"
+$promOk = @($rows | Where-Object { $capDepths[$_.fmt] -contains $_.bd })
+$promBad = @($promOk | Where-Object { -not $_.taskOk -or $null -eq $_.delivered -or [int]$_.delivered -ne [int]$_.bd -or -not $_.encoderLanded })
+foreach ($b in ($promBad | Select-Object -First 6)) { Say ("  CAP承诺? {0,-9} →{1,-11} {2}{3} requested={3} delivered={4} task={5}；{6}" -f $b.src, $b.tgt, $b.fmt, $b.bd, $b.delivered, $b.taskCode, $b.capNote) }
+CK ($promBad.Count -eq 0) "CAP 承诺账：$($promOk.Count) 个支持格逐格要求进程/唯一成功终态/产物/实际同位深/选定编码器，违规=$($promBad.Count)；与升降档日志无关"
+$tempTotal = [int](($rows | Measure-Object -Property tempArtifacts -Sum).Sum)
+CK ($tempTotal -eq 0) "交付目录不得残留 ExifTool 暂存件（*_exiftool_tmp），实得=$tempTotal；裁判只读精确最终产物"
 
 # ── 3) LBL 标签账 ───────────────────────────────────────────────────────────────────
 Say '== 3) LBL 标签回读 =='
@@ -371,76 +601,320 @@ $lblBad = New-Object System.Collections.Generic.List[string]
 $lblN = 0
 foreach ($g in ($rows | Where-Object { $_.verdict -eq 'ok' })) {
   $lblN++
-  $wantTok = $targets[$g.tgt]
-  # ⚠ 判据必须按**裁判工具实际输出的形状**匹配：exiftool/jxlinfo 给人话名（'SMPTE EG 432-1'/'P3 primaries'/
-  #   'BT.2020, BT.2100'/'sRGB primaries'），ffprobe 给 CICP token ⇒ 只比 token 会把**正确的标注判成缺失**
-  #   （本轮第一次跑就是这么假红了 20 格）。
-  # ⚠ 2026-09-26 同一族的**第二个**词形：jxlinfo 报 BT.2020 原色时写的是 **`Rec.2100 primaries`**
-  #   （Rec.2100 用的就是 BT.2020 原色集），旧式 `BT\.?2100` 咬不住 ⇒ 任务 #37 交付成功的
-  #   4 格 `jxl × BT.2020 × 16bit` 被本尺子判成"静默无标注"（实测 4 条 LBL? 行，prim 字段就是
-  #   'Rec.2100 primaries'）。⇒ 加 `Rec\.?\s?2100`，**只扩词形、不扩语义**：这条 regex 仍然只认
-  #   "原色是 2020 家族"，不会因此放过别的原色。
-  # ⚠ 词形表已上移成 `Get-TargetPrimariesRx`（§6c 的 png/tiff 标签判据共用同一张表 ⇒ 只有一份尺子）。
-  $rx = Get-TargetPrimariesRx $g.tgt
-  $tokHit = ($g.prim -match $rx)
-  # 判"有没有带标注"用 `HasIcc` 这个布尔；**不要**拿 ICC 描述文字当色域证据
-  # （本仓既有结论：iccgen 生成的 ICC 描述恒为 "RGB built-in"，识别色域必须按色度+曲线量）。
-  $iccHit = [bool]$g.hasIcc
-  # 「无标注」只有在**静默**时才算缺陷：webp 的 sRGB 目标本来就无 CICP 通路、也不嵌 ICC，
-  #   但产品会打 `降级（UnlabeledAssumedSrgb）` 且 `裁决=ProceedWithDegradation`（Lane E 实测到的声明处）。
-  #   ⇒ 判据写成"缺标注 ⇒ 必须有名字"，这样既不放走静默无标注，也不把合法出口判成红。
-  if (-not ($tokHit -or $iccHit) -and -not $g.loud) { $lblBad.Add("$($g.src)→$($g.tgt) $($g.fmt)$($g.bd) [prim='$($g.prim)' 静默无标注]") }
+  $label = Test-GridLabel $g
+  if (-not $label.Ok) { $lblBad.Add("$($g.src)→$($g.tgt) $($g.fmt)$($g.bd) $($label.Detail)") }
 }
 foreach ($x in ($lblBad | Select-Object -First 10)) { Say "  LBL? $x" }
-CK ($lblBad.Count -eq 0) "LBL 标签账：$lblN 个成功格里，既无 CICP 命中又无 ICC 的 = $($lblBad.Count)"
+CK ($lblBad.Count -eq 0) "LBL 标签账：$lblN 个成功格逐一核对目标 P/T 或实际 ICC 矩阵/白点/三通道曲线，违规=$($lblBad.Count)；任意 ICC/泛降级词不作正证"
 
-# ── 4) NUM 与 zimg 参照对拍（只判无损容器，lossy 的 PSNR 归 oracle-matrix 管）──────────
-Say '== 4) NUM 与 zimg 参照链对拍 =='
+# ── 4) NUM：只从源像素和标准构造参照，不读产品目标标签/日志决定数值或放行 ──────────
+Say '== 4) NUM 独立 SDR 矩阵 / TRC / 原生 RGB 码值对拍 =='
+# IEC 61966-2-1 / SMPTE EG 432-1 / ITU-R BT.2020 色度 + D65；ITU-R BT.709-6 分段 OETF。
+# RGB → XYZ 的列由 xy 换算并使 RGB 白点等于 D65；目标矩阵求逆。GMO=off 明确约定在线性目标域裁切。
+# FFmpeg 只解码 RGB，不进 PSNR 自动格式协商（旧 16bit 对拍可悄悄退到 yuv/RGB8）。
+if (-not ('MatrixGridNum' -as [type])) {
+  Add-Type -ErrorAction Stop -TypeDefinition @'
+using System;
+public static class MatrixGridNum {
+    // Derive a 3x3 inverse with partial pivoting; no engine constants, ICC reader or transform code.
+    static double[,] Inverse(double[,] m) {
+        var t = new double[3,6];
+        for (int y=0;y<3;y++) for (int x=0;x<3;x++) { t[y,x]=m[y,x]; t[y,x+3]=y==x?1:0; }
+        for (int i=0;i<3;i++) {
+            int p=i;
+            for (int y=i+1;y<3;y++) if (Math.Abs(t[y,i])>Math.Abs(t[p,i])) p=y;
+            for (int x=0;x<6;x++) { double a=t[i,x]; t[i,x]=t[p,x]; t[p,x]=a; }
+            double d=t[i,i];
+            for (int x=0;x<6;x++) t[i,x]/=d;
+            for (int y=0;y<3;y++) if (y!=i) {
+                double k=t[y,i];
+                for (int x=0;x<6;x++) t[y,x]-=k*t[i,x];
+            }
+        }
+        for (int y=0;y<3;y++) for (int x=0;x<3;x++) m[y,x]=t[y,x+3];
+        return m;
+    }
+    static double[,] Xyz(string name) {
+        double[] xy;
+        switch (name) {
+        case "sRGB": xy=new[]{.64,.33,.30,.60,.15,.06}; break;
+        case "Display P3": xy=new[]{.68,.32,.265,.69,.15,.06}; break;
+        case "BT.2020": xy=new[]{.708,.292,.170,.797,.131,.046}; break;
+        default: throw new ArgumentException(name);
+        }
+        var white=new[]{.3127/.329, 1.0, (1-.3127-.329)/.329};
+        var m=new double[3,3];
+        for (int i=0;i<3;i++) { m[0,i]=xy[2*i]/xy[2*i+1]; m[1,i]=1; m[2,i]=(1-xy[2*i]-xy[2*i+1])/xy[2*i+1]; }
+        var inv=Inverse((double[,])m.Clone());
+        for (int x=0;x<3;x++) {
+            double scale=0;
+            for (int k=0;k<3;k++) scale+=inv[x,k]*white[k];
+            for (int y=0;y<3;y++) m[y,x]*=scale;
+        }
+        return m;
+    }
+    const double A=1.0992968268094429, B=.0180539685108078;
+    static double Decode(double e, bool rec709) => rec709
+        ? (e < 4.5*B ? e/4.5 : Math.Pow((e+(A-1))/A, 1/.45))
+        : (e <= .04045 ? e/12.92 : Math.Pow((e+.055)/1.055, 2.4));
+    static double Encode(double l, bool rec709) {
+        l=Math.Max(0,Math.Min(1,l));
+        return rec709 ? (l < B ? 4.5*l : A*Math.Pow(l,.45)-(A-1))
+                      : (l <= .0031308 ? 12.92*l : 1.055*Math.Pow(l,1/2.4)-.055);
+    }
+    static int Code(byte[] data,int i,int bits) => bits==8 ? data[i] : data[2*i]+256*data[2*i+1];
+    public static double[] Reference(byte[] src,int bits,string input,string target) {
+        int n=src.Length/(bits/8), peak=(1<<bits)-1;
+        var toXyz=Xyz(input); var fromXyz=Inverse(Xyz(target));
+        var matrix=new double[3,3];
+        for (int y=0;y<3;y++) for (int x=0;x<3;x++) for (int k=0;k<3;k++) matrix[y,x]+=fromXyz[y,k]*toXyz[k,x];
+        var table=new double[peak+1];
+        for (int i=0;i<=peak;i++) table[i]=Decode((double)i/peak,input=="BT.2020");
+        var result=new double[n];
+        for (int i=0;i<n;i+=3) {
+            if (input==target) { for (int c=0;c<3;c++) result[i+c]=(double)Code(src,i+c,bits)/peak; continue; }
+            double r=table[Code(src,i,bits)], g=table[Code(src,i+1,bits)], b=table[Code(src,i+2,bits)];
+            for (int c=0;c<3;c++) result[i+c]=Encode(matrix[c,0]*r+matrix[c,1]*g+matrix[c,2]*b,target=="BT.2020");
+        }
+        return result;
+    }
+    // 原生 16-bit 阶梯：每行连续 1 LSB，各通道跨不同码段；没有 8-bit 前身。
+    public static byte[] NativeSteps() {
+        var data=new byte[256*192*6];
+        for(int p=0;p<256*192;p++) for(int c=0;c<3;c++) {
+            int code=((p/256)*769+(p%256)+11731*c+1)&65535, at=6*p+2*c;
+            data[at]=(byte)code;data[at+1]=(byte)(code>>8);
+        }
+        return data;
+    }
+    public static byte[] CollapseTo8(byte[] data) {
+        var collapsed=new byte[data.Length];for(int i=0;i<data.Length/2;i++) {
+            int code=(int)Math.Round(Code(data,i,16)/257.0)*257;collapsed[2*i]=(byte)code;collapsed[2*i+1]=(byte)(code>>8);
+        }return collapsed;
+    }
+    public static int LowDetailSamples(byte[] data) {
+        int n=0;for(int i=0;i<data.Length/2;i++)if(Code(data,i,16)%257!=0)n++;return n;
+    }
+    public static double[] Error(double[] reference,byte[] actual,int bits) {
+        if (reference.Length*(bits/8)!=actual.Length) throw new ArgumentException("RGB sample counts differ");
+        double peak=(1<<bits)-1, sum=0, max=0;
+        for (int i=0;i<reference.Length;i++) {
+            double d=Math.Abs(reference[i]*peak-Code(actual,i,bits));
+            sum+=d*d; max=Math.Max(max,d);
+        }
+        return new[]{Math.Sqrt(sum/reference.Length),max};
+    }
+}
+'@
+}
+function Read-NumRgb([string]$Path, [int]$Bits, [string]$Key) {
+  $px = if ($Bits -eq 8) { 'rgb24' } elseif ($Bits -eq 16) { 'rgb48le' } else { throw "未知 RGB 位深 $Bits" }
+  $raw = Join-Path $d "num_${Key}.rgb"
+  $dec = ExecCli $ff "-nostdin -hide_banner -loglevel error -y -i `"$Path`" -frames:v 1 -threads 1 -c:v rawvideo -pix_fmt $px -f rawvideo `"$raw`""
+  if ($dec.Rc -ne 0 -or -not (Test-Path -LiteralPath $raw -PathType Leaf)) { throw "RGB 解码 rc=$($dec.Rc)：$($dec.Out)" }
+  $buf = [IO.File]::ReadAllBytes($raw)
+  if ($buf.Length -ne (256 * 192 * 3 * ($Bits / 8))) { throw "RGB 样本数不符（$($buf.Length) 字节）" }
+  return ,$buf
+}
+function Test-NumFixtureCurve([string]$Path, [string]$Space, [string]$Key) {
+  # ICC.1 parametricCurveType 3: g,a,b,c,d in s15Fixed16; y=(ax+b)^g if x>=d, else cx.
+  # 这里只核生成夹具 ICC（而非产品输出或描述字符串），三通道参数均要等于独立定义。
+  $out = Join-Path $d "num_${Key}.trc"
+  $err = "$out.err"
+  $p = $null
+  for ($attempt = 0; $attempt -lt 3; $attempt++) {
+    $p = Start-Process -FilePath $ex -ArgumentList "-b -RedTRC -GreenTRC -BlueTRC `"$Path`"" `
+      -NoNewWindow -Wait -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
+    if ($p.ExitCode -eq 0) { break }
+    Start-Sleep -Milliseconds 250
+  }
+  if ($p.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $out -PathType Leaf)) { return $false }
+  $bytes = [IO.File]::ReadAllBytes($out)
+  if ($bytes.Length -ne 3*32) { return $false }
+  $a = 1.0992968268094429
+  $want = if ($Space -eq 'BT.2020') { (1/.45),(1/$a),(($a-1)/$a),(1/4.5),(4.5*.0180539685108078) }
+          else { 2.4,(1/1.055),(.055/1.055),(1/12.92),.04045 }
+  for ($at=0; $at -lt $bytes.Length; $at+=32) {
+    if ([Text.Encoding]::ASCII.GetString($bytes,$at,4) -ne 'para' -or $bytes[$at+8] -ne 0 -or $bytes[$at+9] -ne 3) { return $false }
+    for ($i=0; $i -lt 5; $i++) {
+      $k = $at+12+4*$i
+      $fixed = $bytes[$k]*16777216 + $bytes[$k+1]*65536 + $bytes[$k+2]*256 + $bytes[$k+3]
+      if ([Math]::Abs($fixed - 65536*$want[$i]) -gt 1.0) { return $false }
+    }
+  }
+  return $true
+}
+function Get-NumBudget([int]$SourceBits, [int]$DestBits, [bool]$Identity, [bool]$Narrowing = $false) {
+  # 同档 sRGB/P3 直通必须逐码相同；8bit 变换保留 0.5 LSB 舍入 + 0.47 LSB Bayer 及小量 RGB 重采样。
+  # 8→16 的 swscale RGB 展码并不等于 n×257（且窄色域近黑的 OETF 可放大这点），预算仍以 8bit LSB 计。
+  # 真正的 16→16 不借 8bit 预算；最多 32 码（<0.05% 满量程），给 ICC 固定点和曲线插值留余量。
+  if ($Identity -and $SourceBits -eq $DestBits) { return 0.0, 0.0 }
+  # 原生 8 位源展到 RGB48 时的 ≤1 输入码偏差，在窄向矩阵的近黑抵消处可放大；
+  # 例如 BT.2020 [144,243,69]→sRGB，理想 R=6.407，8→16 展码 + 裁切/抖动后实测 R=3。
+  # 只给这种方向增加局部峰值预算；全图 RMS 仍 ≤0.8 个 8 位码，同源真 16 位毫无此项豁免。
+  $peak8 = if ($SourceBits -eq 8 -and $Narrowing) { 4.0 } else { 2.0 }
+  if ($DestBits -eq 8) { return 0.8, $peak8 }
+  if ($SourceBits -eq 8) { return (0.8 * 257), ($peak8 * 257) }
+  return 10.0, 32.0
+}
+$numSourceSpace = [ordered]@{ srgb8='sRGB'; srgb16='sRGB'; p38='Display P3'; p316='Display P3'; bt20208='BT.2020'; bt202016='BT.2020' }
+$numSrc = @{}; $numRef = @{}; $numDepth = @{}
+$numGamutRank = @{ 'sRGB'=0; 'Display P3'=1; 'BT.2020'=2 }
 $numBad = New-Object System.Collections.Generic.List[string]
 $numN = 0; $numErr = 0
-foreach ($g in ($rows | Where-Object { $_.verdict -eq 'ok' -and $_.fmt -in @('png', 'tiff', 'jxl') })) {
-  $srcTok = switch -Regex ($g.src) { '^srgb' { 'bt709' } '^p3' { 'smpte432' } '^bt2020' { 'bt2020' } default { 'bt709' } }
-  $srcTrc = switch -Regex ($g.src) { '^bt2020' { 'bt709' } default { 'iec61966-2-1' } }
-  $dtTrc = if ($g.tgt -eq 'BT.2020') { 'bt709' } else { 'iec61966-2-1' }
-  $ref = Join-Path $d ('ref_' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.png')
-  # 参照链：把产物按「它自己声明的源」再转到目标空间；两侧同输入 ⇒ 差异只可能来自矩阵/曲线/量化
-  ExecCli $ff "-hide_banner -loglevel error -y -i `"$($g.out)`" -vf `"zscale=pin=$($targets[$g.tgt]):tin=${dtTrc}:min=gbr:p=$($targets[$g.tgt]):t=${dtTrc}:m=gbr,format=rgb48le`" -frames:v 1 `"$ref`"" | Out-Null
-  if (-not (Test-Path $ref)) { $numErr++; continue }
-  $r = Invoke-Psnr -Ref $ref -Dist $g.out
-  if (-not $r.Ok) { $numErr++; Say "  NUM 取数失败 $($g.src)→$($g.tgt) $($g.fmt)$($g.bd) : $($r.Error)"; continue }
-  $numN++
-  if ([double]$r.Psnr -lt 60) { $numBad.Add("$($g.src)→$($g.tgt) $($g.fmt)$($g.bd) PSNR=$([math]::Round($r.Psnr,2))") }
+foreach ($sk in $numSourceSpace.Keys) {
+  $numDepth[$sk] = if ($sk.EndsWith('16')) { 16 } else { 8 }
+  try {
+    if ($numSourceSpace[$sk] -ne 'sRGB') {
+      if (-not (Test-NumFixtureCurve $srcs[$sk] $numSourceSpace[$sk] $sk)) { throw '宽色域夹具 ICC 的三通道曲线缺失或不符' }
+    }
+    $numSrc[$sk] = Read-NumRgb $srcs[$sk] $numDepth[$sk] "source_$sk"
+    foreach ($target in $targets.Keys) {
+      $numRef["$sk/$target"] = [MatrixGridNum]::Reference($numSrc[$sk], $numDepth[$sk], $numSourceSpace[$sk], $target)
+    }
+  } catch { $numErr++; Say "  NUM 夹具取数失败 ${sk}：$($_.Exception.Message)" }
 }
-foreach ($x in ($numBad | Select-Object -First 12)) { Say "  NUM? $x" }
-CK (($numN -gt 0) -and ($numBad.Count -eq 0)) "NUM 对拍：$numN 格比过，红 $($numBad.Count)，参照取数失败 $numErr"
+# 独立校验夹具确实按声称的色域/TRC 编码；错误 gamma 即使和 ICC 口径相反也不能靠产品自洽通过。
+foreach ($sk in @('p38','p316','bt20208','bt202016')) {
+  $bits = $numDepth[$sk]; $srcKey = "srgb$bits/$($numSourceSpace[$sk])"
+  if (-not ($numSrc.ContainsKey($sk) -and $numRef.ContainsKey($srcKey))) { continue }
+  $metric = [MatrixGridNum]::Error($numRef[$srcKey], $numSrc[$sk], $bits)
+  $budget = if ($bits -eq 8) { 0.65, 1.1 } else { 12.0, 48.0 } # 夹具 zimg 先量化线性 16 位，再编码目标 TRC
+  if ($metric[0] -gt $budget[0] -or $metric[1] -gt $budget[1]) {
+    $numBad.Add(('夹具 {0} × {1}-bit 色度/TRC 不自洽：RMS={2:F3}/{3} max={4:F3}/{5} LSB' -f $sk,$bits,$metric[0],$budget[0],$metric[1],$budget[1]))
+  }
+}
+# 不用产品当负控：把源的原始 sRGB 码值假装是 P3，必须在独立数值预算外；正确同空间则逐码相同。
+if ($numSrc.ContainsKey('srgb16') -and $numRef.ContainsKey('srgb16/Display P3')) {
+  $wrong = [MatrixGridNum]::Error($numRef['srgb16/Display P3'], $numSrc['srgb16'], 16)
+  $right = [MatrixGridNum]::Error($numRef['srgb16/sRGB'], $numSrc['srgb16'], 16)
+  $strict = Get-NumBudget 16 16 $false
+  CK ($wrong[0] -gt $strict[0] -and $wrong[1] -gt $strict[1] -and $right[1] -eq 0) 'NUM 自测：sRGB 原码冒充 P3 必须被拒，真直通逐码相同'
+} else { CK $false 'NUM 自测缺少独立样本' }
+$numCells = @($rows | Where-Object { $_.verdict -eq 'ok' -and $_.fmt -in @('png', 'tiff', 'jxl') -and $_.src -notlike 'adobe*' })
+if ($srcs.Contains('adobe8')) { Say '  NUM Adobe：外部 ICC 没有命名数学参照，仅进 CAP/LBL，不拿 sRGB 冒充' }
+foreach ($g in $numCells) {
+  $name = "$($g.src)→$($g.tgt) $($g.fmt)$($g.bd)"
+  $refKey = "$($g.src)/$($g.tgt)"
+  if (-not $numRef.ContainsKey($refKey)) { $numErr++; Say "  NUM 取数失败 ${name}：无源参照"; continue }
+  if ($g.delivered -ne $g.bd -or $g.width -ne 256 -or $g.height -ne 192 -or ($g.fmt -eq 'jxl' -and -not $g.jxlLosslessMode)) {
+    $numBad.Add("${name}：交付位深=$($g.delivered) 尺寸=$($g.width)x$($g.height) JXL无损模式=$($g.jxlLosslessMode)")
+    continue
+  }
+  try { $actual = Read-NumRgb $g.out $g.bd ((Split-Path -Leaf (Split-Path -Parent $g.out))) }
+  catch { $numErr++; Say "  NUM 取数失败 ${name}：$($_.Exception.Message)"; continue }
+  $metric = [MatrixGridNum]::Error($numRef[$refKey], $actual, $g.bd)
+  $ident = ($numSourceSpace[$g.src] -eq $g.tgt -and $g.tgt -ne 'BT.2020')
+  $narrowing = ($numGamutRank[$numSourceSpace[$g.src]] -gt $numGamutRank[$g.tgt])
+  $budget = Get-NumBudget $numDepth[$g.src] $g.bd $ident $narrowing
+  $numN++
+  if ($metric[0] -gt $budget[0] -or $metric[1] -gt $budget[1]) {
+    $numBad.Add(('{0} RMS={1:F3}/{2} max={3:F3}/{4} LSB' -f $name,$metric[0],$budget[0],$metric[1],$budget[1]))
+  }
+}
+foreach ($x in $numBad) { Say "  NUM? $x" }
+$numExpected = $numSourceSpace.Count * $targets.Count * @($fmts | Where-Object { $_ -in @('png','tiff','jxl') }).Count * 2
+CK (($numN -eq $numExpected) -and ($numBad.Count -eq 0) -and ($numErr -eq 0)) "NUM 对拍：$numN/$numExpected 格比过（候选 $($numCells.Count)），红 $($numBad.Count)，参照/解码取数失败 $numErr"
+
+# ── 4b) 原生 16-bit 低位阶梯（与 8-bit 展码网格分账）──────────────────────────
+Say '== 4b) 原生 16-bit：1 LSB 阶梯恒等与独立变换 =='
+$nativeRows = New-Object System.Collections.Generic.List[object]
+$nativeBad = New-Object System.Collections.Generic.List[string]
+$nativeBytes = [MatrixGridNum]::NativeSteps()
+$nativeRaw = Join-Path $d 'native16.rgb48le'; $nativePng = Join-Path $d 'native16.png'
+[IO.File]::WriteAllBytes($nativeRaw, $nativeBytes)
+$nativeMake = ExecCli $ff "-nostdin -hide_banner -loglevel error -y -f rawvideo -pixel_format rgb48le -video_size 256x192 -i `"$nativeRaw`" -vf iccgen=color_primaries=bt709:color_trc=iec61966-2-1:force=1 -frames:v 1 -pix_fmt rgb48be `"$nativePng`""
+$nativeReady = $false
+try {
+  if ($nativeMake.Rc -ne 0 -or -not (Test-Path -LiteralPath $nativePng -PathType Leaf)) { throw "native fixture encoder exit=$($nativeMake.Rc)" }
+  $nativeRead = Read-NumRgb $nativePng 16 'native_source'
+  $nativeIdentity = [MatrixGridNum]::Reference($nativeBytes, 16, 'sRGB', 'sRGB')
+  $fixtureError = [MatrixGridNum]::Error($nativeIdentity, $nativeRead, 16)
+  $low = [MatrixGridNum]::LowDetailSamples($nativeRead)
+  if ($fixtureError[1] -ne 0 -or $low -lt 100000) { throw "fixture not exact native RGB16 (max=$($fixtureError[1]) lowDetail=$low)" }
+  # 坍缩到 RGB8 再展码必须被原生恒等和变换两把尺子判负。
+  $collapsed = [MatrixGridNum]::CollapseTo8($nativeRead)
+  $collapseError = [MatrixGridNum]::Error($nativeIdentity, $collapsed, 16)
+  $p3Reference = [MatrixGridNum]::Reference($nativeRead, 16, 'sRGB', 'Display P3')
+  $p3Collapsed = [MatrixGridNum]::Reference($collapsed, 16, 'sRGB', 'Display P3')
+  $collapsedP3Bytes = New-Object byte[] $nativeRead.Length
+  for ($i=0; $i -lt $p3Collapsed.Length; $i++) {
+    $v = [int][Math]::Round($p3Collapsed[$i]*65535); $collapsedP3Bytes[2*$i] = [byte]($v -band 255); $collapsedP3Bytes[2*$i+1] = [byte]($v -shr 8)
+  }
+  $transformCollapseError = [MatrixGridNum]::Error($p3Reference, $collapsedP3Bytes, 16)
+  if ($collapseError[1] -eq 0 -or $transformCollapseError[0] -le 10 -or $transformCollapseError[1] -le 32) { throw 'native precision negative control cannot distinguish an RGB8 collapse' }
+  $nativeReady = $true
+  CK $true "N16 夹具：原始 RGB16 写入/读回逐码相同，非8bit展码样本=$low；8bit坍缩负控恒等max=$($collapseError[1])、P3 RMS/max=$($transformCollapseError -join '/')"
+} catch { CK $false "N16 夹具/负控失败：$($_.Exception.Message)" }
+foreach ($case in @(@{ Fmt='png'; Target='sRGB'; Identity=$true }, @{ Fmt='jxl'; Target='sRGB'; Identity=$true }, @{ Fmt='png'; Target='Display P3'; Identity=$false })) {
+  $key = 'native_' + $case.Fmt + '_' + ($case.Target -replace '[^A-Za-z0-9]', '')
+  $dir = Join-Path $d $key
+  $row = [pscustomobject]@{ fmt=$case.Fmt; target=$case.Target; process=$null; taskCode=$null; terminalCount=0; made=$false; depth=$null; encoder=''; encoderEvidence=''; rms=$null; max=$null; measured=$false; error='' }
+  $nativeRows.Add($row)
+  try {
+    if (-not $nativeReady) { throw 'native fixture/oracle precheck failed' }
+    $codec = if ($case.Fmt -eq 'jxl') { '--encoder Cjxl --jxl-effort 7 --lossless true' } else { '--png-optimizer off' }
+    $run = ExecCli $exe "--headless --log-level Debug --log-format JsonLines -i `"$nativePng`" -o `"$dir`" -f $($case.Fmt) --bit-depth 16 --color-space `"$($case.Target)`" --color-strategy recommended --color-gamut-map off --color-engine engine $codec" -Tee "$dir.log"
+    $prod = Resolve-Prod $dir; $task = Read-GridTask $run.Out $run.Rc ([bool]$prod)
+    $row.process=$run.Rc; $row.taskCode=$task.Code; $row.terminalCount=$task.Count; $row.made=[bool]$prod
+    if (-not $task.Ok) { throw $task.Detail }
+    if ($case.Fmt -eq 'jxl') {
+      $j = Get-JxlInfo $prod; $row.depth=$j.BitDepth; $row.encoder='cjxl'
+      $exec = Test-GridCjxlExecution $task.Messages $nativePng $prod $case.Target 16
+      $row.encoderEvidence = $exec.Detail
+      if (-not $exec.Ok -or -not $j.Ok -or $j.BitDepth -ne 16 -or $j.Raw -notmatch '(?im)^JPEG XL image, .*?, (?:\(possibly\) )?lossless,') {
+        throw "JXL must read back 16-bit lossless and actual engine cjxl execution (depth=$($j.BitDepth); $($exec.Detail))"
+      }
+    } else {
+      $st = Get-StreamInfo $prod; $row.depth=Get-DeliveredDepth $st.PixFmt; $row.encoder='ffmpeg/png'
+      if (-not $st.Ok -or $row.depth -ne 16) { throw 'PNG native 16-bit delivery missing' }
+    }
+    $actual = Read-NumRgb $prod 16 $key
+    $reference = [MatrixGridNum]::Reference($nativeRead,16,'sRGB',$case.Target)
+    $metric = [MatrixGridNum]::Error($reference,$actual,16); $row.rms=$metric[0]; $row.max=$metric[1]; $row.measured=$true
+    $budget = Get-NumBudget 16 16 $case.Identity
+    if ($metric[0] -gt $budget[0] -or $metric[1] -gt $budget[1]) { throw "native RMS/max=$($metric -join '/') > $($budget -join '/') LSB" }
+  } catch { $row.error=$_.Exception.Message; $nativeBad.Add("$key：$($row.error)") }
+}
+$nativeRows | Export-Csv -NoTypeInformation -LiteralPath (Join-Path $d 'native16-outcomes.csv')
+foreach ($x in $nativeBad) { Say "  N16? $x" }
+CK ($nativeRows.Count -eq 3 -and @($nativeRows | Where-Object measured).Count -eq 3 -and $nativeBad.Count -eq 0) "N16：3/3 原生16bit格须完整到场，PNG/JXL恒等逐码相同、PNG→P3沿用10/32码预算（红=$($nativeBad.Count)）"
 
 # ── 5) RT 往返自洽（转置/顺序错的探测器）────────────────────────────────────────────
 Say '== 5) RT 往返漂移 =='
 $rtBad = New-Object System.Collections.Generic.List[string]
-$rtN = 0
+$rtRows = New-Object System.Collections.Generic.List[object]
+$rtN = 0; $rtExpected = 9
 foreach ($sk in @('srgb8', 'p38', 'bt20208')) {
-  if (-not $srcs[$sk]) { continue }
   foreach ($tn in @('Display P3', 'BT.2020', 'sRGB')) {
     $mid = Join-Path $d "rt1_${sk}_$($tn -replace '[^A-Za-z0-9]', '').png"
     $back = Join-Path $d "rt2_${sk}_$($tn -replace '[^A-Za-z0-9]', '').png"
-    $tgt2 = if ($tn -eq 'Display P3') { 'sRGB' } elseif ($tn -eq 'BT.2020') { 'sRGB' } else { 'Display P3' }
-    # 往返必须**回到源自己的空间**（源空间由夹具的 ICC 声明），否则"A→B→C"根本不闭合
-    $srcName = switch -Regex ($sk) { '^srgb' { 'sRGB' } '^p3' { 'Display P3' } '^bt2020' { 'BT.2020' } default { 'sRGB' } }
-    $a = ExecCli $exe "--headless -i `"$($srcs[$sk])`" -o `"$mid`" -f png --bit-depth 16 --color-space `"$tn`" --color-engine engine"
-    $midProd = Resolve-Prod $mid
-    if (-not $midProd) { continue }
-    $b = ExecCli $exe "--headless -i `"$midProd`" -o `"$back`" -f png --bit-depth 16 --color-space `"$srcName`" --color-engine engine"
-    $backProd = Resolve-Prod $back
-    if (-not $backProd) { continue }
-    # 与源比：源是 8-bit、往返产物按 16-bit 承载 ⇒ 允许的差异上限取"8-bit 量化 + 两次矩阵"的量级（45 dB）
-    $r = Invoke-Psnr -Ref $srcs[$sk] -Dist $backProd
-    if (-not $r.Ok) { continue }
-    $rtN++
-    if ([double]$r.Psnr -lt 45) { $rtBad.Add("$sk →$tn →$srcName 往返 PSNR=$([math]::Round($r.Psnr,2))（<45 ⇒ 矩阵或顺序有问题，不是量化）") }
+    $srcName = switch -Regex ($sk) { '^srgb' { 'sRGB' } '^p3' { 'Display P3' } '^bt2020' { 'BT.2020' } }
+    $row = [pscustomobject]@{ src = $sk; via = $tn; firstProcess = $null; firstCode = $null; firstMade = $false; secondProcess = $null; secondCode = $null; secondMade = $false; measured = $false; psnr = $null; error = '' }
+    $rtRows.Add($row)
+    try {
+      if (-not $srcs[$sk]) { throw 'source fixture absent' }
+      $a = ExecCli $exe "--headless --log-level Debug --log-format JsonLines -i `"$($srcs[$sk])`" -o `"$mid`" -f png --bit-depth 16 --color-space `"$tn`" --color-engine engine" -Tee "$mid.log"
+      $midProd = Resolve-Prod $mid; $at = Read-GridTask $a.Out $a.Rc ([bool]$midProd)
+      $row.firstProcess = $a.Rc; $row.firstCode = $at.Code; $row.firstMade = [bool]$midProd
+      if (-not $at.Ok) { throw "first leg: $($at.Detail)" }
+      $b = ExecCli $exe "--headless --log-level Debug --log-format JsonLines -i `"$midProd`" -o `"$back`" -f png --bit-depth 16 --color-space `"$srcName`" --color-engine engine" -Tee "$back.log"
+      $backProd = Resolve-Prod $back; $bt = Read-GridTask $b.Out $b.Rc ([bool]$backProd)
+      $row.secondProcess = $b.Rc; $row.secondCode = $bt.Code; $row.secondMade = [bool]$backProd
+      if (-not $bt.Ok) { throw "second leg: $($bt.Detail)" }
+      $r = Invoke-Psnr -Ref $srcs[$sk] -Dist $backProd
+      if (-not $r.Ok) { throw "PSNR read failed: $($r.Error)" }
+      $row.measured = $true; $row.psnr = $r.Psnr; $rtN++
+      if ([double]$r.Psnr -lt 45) { throw "PSNR=$($r.Psnr) < 45 dB" }
+    } catch {
+      $row.error = $_.Exception.Message
+      $rtBad.Add("$sk →$tn →$srcName：$($row.error)")
+    }
   }
 }
+$rtRows | Export-Csv -NoTypeInformation -LiteralPath (Join-Path $d 'rt-outcomes.csv')
 foreach ($x in $rtBad) { Say "  RT? $x" }
-CK (($rtN -gt 0) -and ($rtBad.Count -eq 0)) "RT 往返：$rtN 组，红 $($rtBad.Count)（往返不需要外部参照 ⇒ 转置/复合顺序错只能由它抓）"
+CK (($rtRows.Count -eq $rtExpected) -and ($rtN -eq $rtExpected) -and ($rtBad.Count -eq 0)) "RT 往返：预期=$rtExpected 到场=$($rtRows.Count) 完整测量=$rtN 红=$($rtBad.Count)；任一路进程/终态/产物/取数失败均计红"
 
 # ── 6) NC 负控 ──────────────────────────────────────────────────────────────────────
 Say '== 6) NC 负控 =='
@@ -486,34 +960,30 @@ RunGate 'NC1b' {
     CK $st2 "NC1b 篡改一个字节后裁判不得判「相同」（Ok=$($r2.Ok) PSNR=$($r2.Psnr) err=$($r2.Error)）"
   } else { CK $false 'NC1b 没有可比对的无损产物 ⇒ 上面 NUM 那一账不算可信' }
 }
-# NC3 = **LBL 这把尺子自己的牙**：LBL 是负断言（"不许缺标注"），此前没有任何负控能证明它会判出"缺"。
-#   做法：拿一个带 ICC 的产物，复制一份用 exiftool 抹掉 ICC ⇒ 判据必须"原件=有 / 抹掉后=缺"。
-#   两端都要成立：只"抹掉后判缺"可能只是取数一直失败；只"原件判有"则没有牙。
-#   ⚠ 取样不能限死容器：quick 层不跑 tiff，上一版把前置写死成 tiff ⇒ 对照永远取不到，把**我自己的**
-#     范围错报成一条红。现在退到"任意带 ICC 的产物"，优先 tiff/png（ICC 通路最稳）。
-#   ⚠ 排序键只能有一份：这里要的是"tiff(0) → png(1) → 其他(2)"**升序**取第一个当对照，
-#     写成 `@{E={…}; E='Descending'}` 既是重复键（ParserError：哈希文本中不允许重复的键"E"，
-#     实测整驱动在解析期就死 ⇒ full 层此前从未真的跑起来），也会被误当成降序而取到"其他"。
+# NC3 只测 LBL 的 ICC 分支，不要求产品网格选 ICC：有 CICP 的正常交付本来就可以不写 ICC。
+#   本轮独立生成仅有 ICC 标注的 sRGB PNG；同一份像素只剥 ICC 后，§3 所用的回读必须由有变无。
 RunGate 'NC3' {
-  # `verdict=ok 且 hasIcc` 逻辑上就蕴含 `out` 非空；这里仍显式要 `out`，是因为 ① 的根因就出在
-  #   "拿着 null 路径去喂 Mandatory 参数"。同时数一下**被排除的矛盾行**，有就说出来，不静默放行。
-  $ghost = @($rows | Where-Object { $_.verdict -eq 'ok' -and $_.hasIcc -and -not $_.out })
-  if ($ghost.Count -gt 0) { Say "  NC3 注意：$($ghost.Count) 格登记了 ok+带 ICC 却没有产物路径 ⇒ 逐格账自相矛盾，见 CSV" }
-  $tif = @($rows | Where-Object { $_.verdict -eq 'ok' -and $_.hasIcc -and $_.out } | Sort-Object @{E = { if ($_.fmt -eq 'tiff') { 0 } elseif ($_.fmt -eq 'png') { 1 } else { 2 } } }) | Select-Object -First 1
-  if ($tif) {
-    $strip = Join-Path $d ('nc3_stripped.' + $tif.fmt); Copy-Item -LiteralPath $tif.out -Destination $strip -Force
-    & (Get-ToolPath 'exiftool') -overwrite_original -ICC_Profile= $strip | Out-Null
-    $cmKeep = Get-ColorMetadata $tif.out
-    $cmStrip = Get-ColorMetadata $strip
-    # 取数失败（Ok=false）不能算"没有 ICC"⇒ 两端都必须 Ok 才谈得上"有牙"，否则这条就是假绿。
-    $st3 = $cmKeep.Ok -and $cmStrip.Ok -and ([bool]$cmKeep.HasIcc) -and (-not [bool]$cmStrip.HasIcc)
-    CK $st3 "NC3 标签尺子有牙（样本 $($tif.fmt)）：原件 HasIcc=$([bool]$cmKeep.HasIcc)/读=$($cmKeep.Ok) 抹掉后 HasIcc=$([bool]$cmStrip.HasIcc)/读=$($cmStrip.Ok)，要 真/假"
-  } else {
-    # 取不到对照样本**不能只是打一行 SKIP 就算过关**：那等于"这条负控这轮不存在"却仍是绿的。
-    #   取样已经不限容器（png 带 ICC 就够，quick 层也有）⇒ 走到这里说明整张网格没有一个带 ICC 的产物，
-    #   LBL 的牙无从证明 ⇒ 判红。
-    CK $false 'NC3 没有任何带 ICC 的产物可当对照 ⇒ LBL 的负控这轮未做成（不许当"跑过了"）'
+  $keep = Join-Path $d 'nc3_icc.png'; $strip = Join-Path $d 'nc3_stripped.png'
+  $mk = ExecCli $ff ('-hide_banner -loglevel error -y -f lavfi -i testsrc=s=64x48:r=1 ' +
+    '-vf "format=rgb24,iccgen=color_primaries=bt709:color_trc=iec61966-2-1:force=1,setparams=color_primaries=unknown:color_trc=unknown:colorspace=unknown" ' +
+    '-frames:v 1 "' + $keep + '"')
+  if ($mk.Rc -ne 0 -or -not (Test-Path -LiteralPath $keep -PathType Leaf)) {
+    CK $false "NC3 带 ICC 的独立正控生成失败（rc=$($mk.Rc)）：$($mk.Out)"
+    return
   }
+  Copy-Item -LiteralPath $keep -Destination $strip -ErrorAction Stop
+  $rm = ExecCli $ex ('-overwrite_original -ICC_Profile= "' + $strip + '"')
+  if ($rm.Rc -ne 0) {
+    CK $false "NC3 ICC 剥除失败（rc=$($rm.Rc)）：$($rm.Out)"
+    return
+  }
+  $cmKeep = Get-ColorMetadata $keep
+  $cmStrip = Get-ColorMetadata $strip
+  $px = Invoke-Psnr -Ref $keep -Dist $strip
+  # 取数失败不能充当「无标注」，另有 CICP 时也不能用这对文件证明 LBL 会判缺。
+  $st3 = $cmKeep.Ok -and $cmStrip.Ok -and -not $cmKeep.Primaries -and -not $cmStrip.Primaries -and
+    $cmKeep.HasIcc -and -not $cmStrip.HasIcc -and $px.Ok -and $px.IsIdentical
+  CK $st3 "NC3 标签尺子有牙：原件 HasIcc=$($cmKeep.HasIcc)/读=$($cmKeep.Ok)/CICP='$($cmKeep.Primaries)'；剥除后 HasIcc=$($cmStrip.HasIcc)/读=$($cmStrip.Ok)/CICP='$($cmStrip.Primaries)'；像素相同=$($px.IsIdentical)/读=$($px.Ok)（$($cmKeep.Error) $($cmStrip.Error) $($px.Error)）"
 }
 RunGate 'NC2' {
   $f = ExecCli $exe "--headless -i `"$base8`" -o `"$(Join-Path $d 'nc_bad.png')`" -f png --bit-depth 47 --color-space sRGB"
@@ -528,27 +998,12 @@ Say ''
 # ── 6b) 「干净拒绝」的稳定码表 + 它自己的牙（合成行，零转换成本）───────────────────
 # 为什么这一段必须存在：§6c 的 (A) 负路径原先写成「无产物 ⇒ rc≠0 **或** 日志含 Reject/拒绝」，
 #   而**任何崩溃都 rc≠0** ⇒ 「按契约拒绝」与「产品炸了」在这一族格里根本分不开（任务 #50 缺口①）。
-#   现在只认**产品源码里逐字存在的稳定载体**，并且每条都做一次「载体还在不在源码里」的核对
-#   —— 按符号/日志文案常量核对，不引用会漂移的行号；凭猜测硬编码的字符串一律不收。
-# 五种合法形态（⚠ 每条都锚在源码的**符号名**或**日志文案常量**上）：
-#   F1 = 枚举成员名 VerdictKind.Reject（定义在 ColorVerdict.cs 的「public enum VerdictKind」），
-#        投影成日志行「[色彩裁决] 裁决=<Kind>」：引擎侧与传统管线消费点**逐字同格式**
-#        （QueueProcessor 里那条 S6 注释就写着"两条管线的裁决因此可以按同一口径直接对拍"）。
-#        ⚠ 这一条里的 "Reject" 是**从源码 enum 成员名解析出来**的、不是我抄的字符串：解析不到
-#          ⇒ F1/F4 整条停用并由下面的载体账判红（判据自身失效时**不许**退化成"什么都算拒绝"）。
-#   F2 = 引擎消费点「plan.IsOk=false」⇒「[色彩引擎] ❌ 契约拒绝（不出产物）」，项级 exit 91。
-#   F3 = 传统管线消费点「legacyVerdict.Kind=Reject」⇒「[色彩裁决] ❌ 契约拒绝（不出产物）：{Reason}」，
-#        同为 exit 91；分派级那条「非 JPEG 目标 + GainMap」的拒绝打的也是这一行、且**没有** 裁决= 行
-#        ⇒ 只靠 F1 会把它漏成"静默失败"。
-#   F4 = jxl 直编旁路的观测行「[色彩裁决] 通路=cjxl-legacy … reject=<Kind>」：该路线**到不了**主消费点
-#        （源码注释点名"本旁路原先零读数"），裁决只能从这一行读。⚠「reject=null」= 算不出裁决，
-#        **不是**拒绝（自测里专门有一条盯这个形状）。
-#   F5 = 显式「--color-engine」时 EngineBlockCodes.* 的路由拦截行（exit 90）。
-#        ⚠ 语义是"本执行体不接 ⇒ 换执行体"，与 Reject「任务做不了」**不同型**（EngineBlock.cs 的 ⚠），
-#          所以单列一条、读数里分开统计，不让"回退"被算进"契约拒绝"。
-# ⚠ **不在表里的一律不算干净拒绝**：「[色彩引擎] ❌ 未产出文件」与「❌ 执行失败：…」（= exit 92 的两条形状）、
-#   「❌ 选项→色彩意图装配失败」（内部失败）、任何异常栈、rc=0 的静默 ⇒ 全部判红。
-#   并且保留 fail-closed：**日志为空/取数失败**也不判绿（headless 只有 --log-level Debug 才回显项级日志）。
+# 先读 JsonLines 的 item_completed.code，再核对 item_log 中的拒绝形态（优先稳定字段）。
+# headless 进程只返回聚合 rc=1；项级 91 是契约拒绝，90 是显式路由拦截，92 是执行失败。
+# F1/F4 使用 VerdictKind.Reject；F2 使用 Engine 显式输出矩阵拒绝的 [color-out-matrix] 模板 3/4；
+# F3 是尚无独立拒绝码的传统/分派级固定前缀，不认其人读原因；F5 使用 EngineBlockCodes 的实际词表。
+# 引擎现在可能先打裁决=Reject、再警告并回传统链路。规划行不是终态，只有项级 code 与形态吻合才算拒绝。
+# 缺终态、错码、空日志、异常/崩溃均不判绿；源码载体失效也一律按红处理。
 Say '== 6b) 拒绝判据的稳定码表 + 自测（合成行，不产生任何真实转换）=='
 function Read-RepoText([string]$Rel) {
   if ([string]::IsNullOrEmpty($Rel)) { return @{ Ok = $false; Text = ''; Error = '载体核对未给源码路径（判据自身缺参数）' } }
@@ -560,10 +1015,12 @@ function Read-RepoText([string]$Rel) {
 $srcVerdictKind = 'src/FfmpegGui/Services/ColorMapping/ColorVerdict.cs'
 $srcVerdictLog  = 'src/FfmpegGui/Services/QueueProcessor.cs'
 $srcBlockCodes  = 'src/FfmpegGui/Services/ColorMapping/EngineBlock.cs'
+$srcMatrixPlan  = 'src/FfmpegGui/Services/ColorMapping/ColorStrategyPlanning.cs'
+$srcQueueLog    = 'src/FfmpegGui/Services/ConsoleQueueObserver.cs'
 $txByFile = @{}
-$txByFile[$srcVerdictKind] = Read-RepoText $srcVerdictKind
-$txByFile[$srcVerdictLog]  = Read-RepoText $srcVerdictLog
-$txByFile[$srcBlockCodes]  = Read-RepoText $srcBlockCodes
+foreach ($src in @($srcVerdictKind, $srcVerdictLog, $srcBlockCodes, $srcMatrixPlan, $srcQueueLog)) {
+  $txByFile[$src] = Read-RepoText $src
+}
 # 从源码解析 VerdictKind 的**成员名**（判据的词表来自符号，不来自记忆）
 $kindMembers = @()
 $kindParseErr = ''
@@ -580,117 +1037,120 @@ else {
   }
 }
 $rxKindReject = ''
-if ($kindMembers -contains 'Reject') { $rxKindReject = 'Reject' }
+if ($kindMembers -ccontains 'Reject') { $rxKindReject = [regex]::Escape([string]($kindMembers -ceq 'Reject' | Select-Object -First 1)) }
+$blockValues = @([regex]::Matches($txByFile[$srcBlockCodes].Text, '(?m)^\s*public const string \w+ = "([A-Za-z][A-Za-z0-9_]*)";') |
+  ForEach-Object { [regex]::Escape($_.Groups[1].Value) })
+# 直接编译发布给调用者的模板而非抄一份正则；只接受源码中确认为 exit 91、零交付的模板。
+$matrixTemplateRx = @(foreach ($symbol in @('OutMatrixReportRejected', 'OutMatrixReportConflict')) {
+  $m = [regex]::Match($txByFile[$srcMatrixPlan].Text, ('public const string ' + $symbol + ' = "(\[color-out-matrix\] [^"\r\n]+ => contract rejection, exit 91, no output)";'))
+  if ($m.Success) { '^' + ([regex]::Escape($m.Groups[1].Value) -replace '\\\{[0-9]+\\?\}', '[^\r\n]+?') + '$' }
+})
 $script:RejectForms = @(
-  [pscustomobject]@{ Id = 'F1-裁决=Reject'; Enabled = ($rxKindReject -ne '')
-    Rx = $(if ($rxKindReject -ne '') { '\[色彩裁决\]\s*裁决=' + $rxKindReject + '\b' } else { '' })
-    Sym = 'VerdictKind.Reject（ColorVerdict.cs 的 enum 成员名）经两条管线的「[色彩裁决] 裁决=<Kind>」行投影'
-    Audits = @(@{ File = $srcVerdictKind; Lit = 'public enum VerdictKind' }, @{ File = $srcVerdictLog; Lit = '[色彩裁决] 裁决=' }) },
-  [pscustomobject]@{ Id = 'F2-引擎侧契约拒绝'; Enabled = $true
-    Rx = '\[色彩引擎\][^\r\n]*契约拒绝（不出产物）'
-    Sym = 'QueueProcessor 引擎消费点 plan.IsOk=false ⇒ exit 91'
-    Audits = @(@{ File = $srcVerdictLog; Lit = '[色彩引擎] ❌ 契约拒绝（不出产物）' }) },
-  [pscustomobject]@{ Id = 'F3-传统侧契约拒绝'; Enabled = $true
-    Rx = '\[色彩裁决\][^\r\n]*契约拒绝（不出产物）'
-    Sym = 'QueueProcessor 传统管线消费点 legacyVerdict.Kind=VerdictKind.Reject ⇒ exit 91（含分派级的非 JPEG GainMap 拒绝，同文案）'
-    Audits = @(@{ File = $srcVerdictLog; Lit = '契约拒绝（不出产物）：' }) },
-  [pscustomobject]@{ Id = 'F4-cjxl-legacy旁路拒绝'; Enabled = ($rxKindReject -ne '')
-    Rx = '\[色彩裁决\]\s*通路=cjxl-legacy[^\r\n]*reject=' + $rxKindReject + '\b'
-    Sym = 'QueueProcessor 的 jxl 直编旁路观测行（ResolveLegacyVerdictPlan(...) 的 Verdict.Kind ⇒ 该路线唯一读得到裁决的地方）'
-    Audits = @(@{ File = $srcVerdictLog; Lit = '通路=cjxl-legacy' }, @{ File = $srcVerdictLog; Lit = ' reject=' }) },
-  [pscustomobject]@{ Id = 'F5-显式引擎路由拦截'; Enabled = $true
-    Rx = '\[色彩引擎\][^\r\n]*按要求应走引擎，但本次不可走（[A-Za-z]+）'
-    Sym = 'EngineBlock.Code（EngineBlockCodes.* 词表）⇒ exit 90；语义是「换执行体」，与 Reject 不同型，单列不并入'
-    Audits = @(@{ File = $srcVerdictLog; Lit = '按要求应走引擎，但本次不可走（' }, @{ File = $srcBlockCodes; Lit = 'public static class EngineBlockCodes' }) }
+  [pscustomobject]@{ Id = 'F1-裁决=Reject'; Code = 91; Enabled = ($rxKindReject -ne '')
+    Rx = '^\[色彩裁决\] 裁决=' + $rxKindReject + '$'
+    Audits = @(@{ File = $srcVerdictKind; Lit = 'public enum VerdictKind' }, @{ File = $srcVerdictLog; Lit = '[色彩裁决] 裁决={plan.Verdict?.Kind}' }, @{ File = $srcVerdictLog; Lit = '[色彩裁决] 裁决={legacyVerdict.Kind}' }) },
+  [pscustomobject]@{ Id = 'F2-显式输出矩阵拒绝'; Code = 91; Enabled = ($matrixTemplateRx.Count -eq 2)
+    Rx = $matrixTemplateRx -join '|'
+    Audits = @(@{ File = $srcVerdictLog; Lit = 'OutMatrixCapability.Rejected)' }) },
+  [pscustomobject]@{ Id = 'F3-传统侧契约拒绝'; Code = 91; Enabled = $true
+    Rx = '^\[色彩裁决\] ❌ 契约拒绝（不出产物）：[^\r\n]+$'
+    Audits = @(@{ File = $srcVerdictLog; Lit = '[色彩裁决] ❌ 契约拒绝（不出产物）：' }) },
+  [pscustomobject]@{ Id = 'F4-cjxl-legacy旁路拒绝'; Code = 91; Enabled = ($rxKindReject -ne '')
+    Rx = '^\[色彩裁决\] 通路=cjxl-legacy [^\r\n]+ reject=' + $rxKindReject + '$'
+    Audits = @(@{ File = $srcVerdictLog; Lit = '通路=cjxl-legacy {jxlDecision.Short()}' }, @{ File = $srcVerdictLog; Lit = ' reject={(jxlObsVerdict' }) },
+  [pscustomobject]@{ Id = 'F5-显式引擎路由拦截'; Code = 90; Enabled = ($blockValues.Count -gt 0)
+    Rx = '^\[色彩引擎\] ❌ 按要求应走引擎，但本次不可走（(?:' + ($blockValues -join '|') + ')）：[^\r\n]+$'
+    Audits = @(@{ File = $srcVerdictLog; Lit = '按要求应走引擎，但本次不可走（{block.Code}）' }, @{ File = $srcBlockCodes; Lit = 'public static class EngineBlockCodes' }) }
 )
-# 载体账：每条形态的**日志文案**都回源码逐字核对。文案在产品侧被改掉 ⇒ 本表的 regex 就永远咬不到 ⇒
-#   负路径会静默退化成"全部判红"或（更糟）"从没被执行过"。这一条把那种漂移当场钉成红。
+# 核对输出载体；源码漂移不可被「刚好没有无产物格」掩盖。
 $carrierBad = @()
 if ($kindParseErr -ne '') { $carrierBad += ('VerdictKind 解析：' + $kindParseErr) }
-foreach ($f in @($script:RejectForms)) {
-  if (-not $f.Enabled) { $carrierBad += ($f.Id + '：源码 enum VerdictKind 的成员里解析不到 Reject ⇒ 该形态整条停用') }
+$queueAudits = @('"item_completed"', '"item_log"', 'JsonPropertyName("c")', 'JsonPropertyName("m")', 'JsonPropertyName("code")', 'exitCode: item.ExitCode') |
+  ForEach-Object { @{ File = $srcQueueLog; Lit = $_ } }
+foreach ($f in @($script:RejectForms) + @(@{ Id = 'JsonLines 终态'; Enabled = $true; Audits = $queueAudits })) {
+  if (-not $f.Enabled) { $carrierBad += ($f.Id + '：未能从产品源码解析稳定符号或模板 ⇒ 该形态停用') }
   foreach ($a in $f.Audits) {
-    $tx = $null
-    if ($txByFile.ContainsKey($a.File)) { $tx = $txByFile[$a.File] }
-    if ($null -eq $tx) { $carrierBad += ($f.Id + '：核对未预载源码 ' + $a.File) ; continue }
+    $tx = $txByFile[$a.File]
     if (-not $tx.Ok) { $carrierBad += ($f.Id + '：' + $tx.Error) }
     elseif ($tx.Text.IndexOf($a.Lit, [System.StringComparison]::Ordinal) -lt 0) {
-      $carrierBad += ($f.Id + '：源码里找不到文案『' + $a.Lit + '』（载体漂移 ⇒ 这一行再也不会出现在日志里）')
+      $carrierBad += ($f.Id + '：产品源码缺载体『' + $a.Lit + '』')
     }
   }
 }
 foreach ($x in ($carrierBad | Select-Object -First 8)) { Say "  载体? $x" }
 $script:rejectTrusted = ($carrierBad.Count -eq 0)
-CK ($script:rejectTrusted) ("拒绝判据载体账：F1..F5 的文案在**产品源码**里逐字在位（漂移/读不到 = $($carrierBad.Count)；" +
-  '判据自身失效时不许把它掩盖成"没有无产物格"，也不许放过任何一次崩溃')
+CK ($script:rejectTrusted) "拒绝判据载体账：F1..F5 与 JsonLines 终态字段（漂移/读不到 = $($carrierBad.Count)；缺载体不判绿）"
 
 function Get-StableRejection {
   param([string]$Log, [int]$Rc)
-  # 「无产物」要算**干净拒绝**，两条同时成立缺一不可（比旧判据「rc≠0 或 日志含 Reject/拒绝」严格更紧）：
-  #   ① 日志里读到 F1..F5 之一（稳定载体）；② rc≠0（产品侧契约拒绝 = 91、显式引擎路拦截 = 90；
-  #      rc=0 却零产物按 §2a 的 REFUSE-UNCLEAN 同口径判违规）。
-  # 返回 @{ Ok; Form; Detail }；**取数失败（日志空）一律 Ok=false**，不猜。
   if (-not $script:rejectTrusted) {
     return @{ Ok = $false; Form = ''; Detail = '拒绝判据的载体核对未过（见 6b 载体账）⇒ 本条负路径不作数，按红处理' }
   }
-  if ([string]::IsNullOrWhiteSpace($Log)) {
-    return @{ Ok = $false; Form = ''; Detail = '日志为空/未回显 ⇒ 无从证实拒绝（取数失败不判绿；headless 需 --log-level Debug 才回显项级日志）' }
+  if ($Rc -ne 1 -or [string]::IsNullOrWhiteSpace($Log)) {
+    return @{ Ok = $false; Form = ''; Detail = "缺聚合失败 rc=1 或项级日志（实得 rc=$Rc）" }
   }
-  $hit = ''
-  foreach ($f in @($script:RejectForms)) {
-    if (-not $f.Enabled) { continue }
-    if ($f.Rx -eq '') { continue }
-    if ($Log -match $f.Rx) { $hit = $f.Id; break }
+  $messages = @(); $completed = @()
+  foreach ($line in ($Log -split '\r?\n')) {
+    # CLI 启动/外部工具可能输出非 JSON，但不能提供项级证据；若 JSON 事件解析失败则不能放行。
+    if ($line -cmatch '^\s*\{') {
+      try { $evt = ConvertFrom-Json -InputObject $line -ErrorAction Stop }
+      catch { return @{ Ok = $false; Form = ''; Detail = 'JsonLines 事件无法解析' } }
+      if ($evt.c -ceq 'item_completed') { $completed += $evt }
+      elseif ($evt.c -ceq 'item_log' -and $evt.m -is [string]) { $messages += $evt.m }
+    }
+    elseif ($line -cmatch '^\s*(?:Unhandled exception\b|错误:)') {
+      return @{ Ok = $false; Form = ''; Detail = 'CLI 报出未处理异常或顶层执行错误，不能算拒绝' }
+    }
   }
-  if ($hit -eq '') {
-    return @{ Ok = $false; Form = ''; Detail = ("rc=$Rc 且日志里没有任何稳定拒绝载体 ⇒ 崩溃/内部失败不得算干净拒绝") }
+  if ($completed.Count -ne 1 -or $completed[0].code -cnotin @(90, 91) -or $completed[0].code -is [string]) {
+    return @{ Ok = $false; Form = ''; Detail = "需要唯一 item_completed 且 code 为 90/91（读取 $($completed.Count) 项；code=$($completed.code -join ',')）" }
   }
-  if ($Rc -eq 0) {
-    return @{ Ok = $false; Form = $hit; Detail = "读到 $hit 却 rc=0 ⇒ 既不交付也不报错（REFUSE-UNCLEAN 同口径）" }
+  $code = $completed[0].code
+  foreach ($f in $script:RejectForms) {
+    if ($f.Enabled -and $f.Code -eq $code -and ($messages -cmatch $f.Rx)) {
+      return @{ Ok = $true; Form = $f.Id; Detail = "干净拒绝：$($f.Id)（rc=$Rc，项级 code=$code）" }
+    }
   }
-  return @{ Ok = $true; Form = $hit; Detail = ("干净拒绝：$hit（rc=$Rc）") }
+  return @{ Ok = $false; Form = ''; Detail = "项级 code=$code 无对应稳定拒绝载体 ⇒ 不能算干净拒绝" }
 }
-# 自测（§2a 的同款做法）：不打产品、不建图，喂的就是判据要读的那些行本身 ⇒ 跑一次几毫秒。
-# 前 7 条是**牙**（必须红），后 5 条是**反真空正控**（每条形态单独成立 ⇒ 证明判据不是一条巨型 regex）。
+# 不启动产品：合成事件必须过和实际格同一套 JsonLines 解码、终态与形态匹配。
 $synRejectCases = @(
-  @{ N='牙1 崩溃：rc=1 + 异常栈、零稳定码'; Rc=1; Want=$false; Form=''
-     L='Unhandled exception. System.NullReferenceException: Object reference not set to an instance of an object.' },
-  @{ N='牙2 引擎侧「未产出文件」（exit 92 的形状：有 ❌ 但不是拒绝）'; Rc=92; Want=$false; Form=''
-     L='[色彩引擎] ❌ 未产出文件' },
-  @{ N='牙3 只说人话的「被拒绝了」（旧判据 Reject|拒绝|不出产物 会被这条骗成干净拒绝）'; Rc=1; Want=$false; Form=''
-     L='[信息] 这个目标在当前容器上被拒绝了，因此没有产出文件' },
-  @{ N='牙4 裁决=ProceedWithDegradation 却没有产物（本该交付 ⇒ 不是拒绝）'; Rc=91; Want=$false; Form=''
-     L='[色彩裁决] 裁决=ProceedWithDegradation' },
-  @{ N='牙5 有 F1 拒绝行却 rc=0（既不交付也不报错）'; Rc=0; Want=$false; Form='F1-裁决=Reject'
-     L='[色彩裁决] 裁决=Reject' },
-  @{ N='牙6 日志空白（取数失败 ⇒ 不许当过）'; Rc=1; Want=$false; Form=''
-     L='' },
-  @{ N='牙7 jxl 旁路 reject=null（算不出裁决 ≠ 拒绝）'; Rc=1; Want=$false; Form=''
-     L='[色彩裁决] 通路=cjxl-legacy 出口=bt2020/bt709 链数=0 reject=null' },
-  @{ N='F1 正控（两条管线同一行格式）'; Rc=91; Want=$true; Form='F1-裁决=Reject'
-     L='[色彩裁决] 裁决=Reject' },
-  @{ N='F2 正控（引擎消费点）'; Rc=91; Want=$true; Form='F2-引擎侧契约拒绝'
-     L='[色彩引擎] ❌ 契约拒绝（不出产物）' },
-  @{ N='F3 正控（传统/分派级，无 裁决= 行）'; Rc=91; Want=$true; Form='F3-传统侧契约拒绝'
-     L='[色彩裁决] ❌ 契约拒绝（不出产物）：增益图（GainMap）不适用于 png：它依赖 JPEG 的 APP2/XMP+MPF、AVIF 的 tmap 或 JXL 的 jhgm 结构' },
-  @{ N='F4 正控（jxl 直编旁路的唯一读数）'; Rc=91; Want=$true; Form='F4-cjxl-legacy旁路拒绝'
-     L='[色彩裁决] 通路=cjxl-legacy 出口=bt2020/bt709 链数=0 reject=Reject' },
-  @{ N='F5 正控（显式引擎路被路由拦截，exit 90）'; Rc=90; Want=$true; Form='F5-显式引擎路由拦截'
-     L='[色彩引擎] ❌ 按要求应走引擎，但本次不可走（FormatNotSupported）：出口容器不在引擎编码白名单内' }
+  @{ N='崩溃'; Rc=1; Raw='Unhandled exception. System.NullReferenceException'; Want=$false },
+  @{ N='规划拒绝后执行失败'; Code=92; L='[色彩裁决] 裁决=Reject'; Want=$false },
+  @{ N='只有人话的拒绝'; Code=91; L='这个目标被拒绝了'; Want=$false },
+  @{ N='找不到拒绝裁决'; Code=91; L='[色彩裁决] 裁决=ProceedWithDegradation'; Want=$false },
+  @{ N='有拒绝日志但聚合 rc=0'; Rc=0; Code=91; L='[色彩裁决] 裁决=Reject'; Want=$false },
+  @{ N='空日志'; Want=$false },
+  @{ N='cjxl 旁路 reject=null'; Code=91; L='[色彩裁决] 通路=cjxl-legacy 出口=bt2020/bt709 链数=0 reject=null'; Want=$false },
+  @{ N='有拒绝日志但没有终态'; L='[色彩裁决] 裁决=Reject'; Want=$false },
+  @{ N='有拒绝日志但崩溃'; Code=91; L='[色彩裁决] 裁决=Reject'; Raw='Unhandled exception. System.NullReferenceException'; Want=$false },
+  @{ N='未知路由码'; Code=90; L='[色彩引擎] ❌ 按要求应走引擎，但本次不可走（UnknownCode）：原因'; Want=$false },
+  @{ N='路由码与项级契约拒绝码冲突'; Code=91; L='[色彩引擎] ❌ 按要求应走引擎，但本次不可走（FormatNotSupported）：原因'; Want=$false },
+  @{ N='F1 两路共有机读裁决'; Code=91; L='[色彩裁决] 裁决=Reject'; Want=$true; Form='F1-裁决=Reject' },
+  @{ N='F2 输出矩阵拒绝模板 3'; Code=91; L='[color-out-matrix] bt709 is not carried by png (RGB-native/palette container has no YUV matrix concept) => contract rejection, exit 91, no output'; Want=$true; Form='F2-显式输出矩阵拒绝' },
+  @{ N='F2 输出矩阵拒绝模板 4'; Code=91; L='[color-out-matrix] bt709 conflicts with derived matrix bt2020nc for avif output => contract rejection, exit 91, no output'; Want=$true; Form='F2-显式输出矩阵拒绝' },
+  @{ N='F3 传统/分派级拒绝（无裁决行）'; Code=91; L='[色彩裁决] ❌ 契约拒绝（不出产物）：增益图（GainMap）不适用于 png'; Want=$true; Form='F3-传统侧契约拒绝' },
+  @{ N='F4 cjxl 直编旁路'; Code=91; L='[色彩裁决] 通路=cjxl-legacy 出口=bt2020/bt709 链数=0 reject=Reject'; Want=$true; Form='F4-cjxl-legacy旁路拒绝' },
+  @{ N='F5 显式引擎路由拦截'; Code=90; L='[色彩引擎] ❌ 按要求应走引擎，但本次不可走（FormatNotSupported）：出口容器不在引擎编码白名单内'; Want=$true; Form='F5-显式引擎路由拦截' }
 )
 $synRejectBad = @()
 foreach ($c in $synRejectCases) {
-  $r = Get-StableRejection -Log $c.L -Rc $c.Rc
+  $log = @(
+    if ($c.L) { @{ c = 'item_log'; m = $c.L } | ConvertTo-Json -Compress }
+    if ($c.ContainsKey('Code')) { @{ c = 'item_completed'; code = $c.Code } | ConvertTo-Json -Compress }
+    if ($c.Raw) { $c.Raw }
+  ) -join "`n"
+  $rc = if ($c.ContainsKey('Rc')) { $c.Rc } else { 1 }
+  $r = Get-StableRejection -Log $log -Rc $rc
   $shapeOk = ($r.Ok -eq $c.Want)
-  if ($shapeOk -and ($c.Form -ne '')) { $shapeOk = ($r.Form -eq $c.Form) }
+  if ($shapeOk -and $c.Form) { $shapeOk = ($r.Form -ceq $c.Form) }
   if (-not $shapeOk) {
     $synRejectBad += ('{0} ⇒ 判据实得 Ok={1}/Form={2}，期望 Ok={3}/Form={4}（依据：{5}）' -f $c.N, $r.Ok,
       $(if ($r.Form) { $r.Form } else { '—' }), $c.Want, $(if ($c.Form) { $c.Form } else { '—' }), $r.Detail)
   }
 }
 foreach ($x in $synRejectBad) { Say "  拒绝自测? $x" }
-CK ($synRejectBad.Count -eq 0) ("拒绝判据自测：$($synRejectCases.Count) 条合成行（7 条必须红 = 崩溃 / exit92 未产出 / 只说人话的拒绝 / " +
-  "非 Reject 裁决 / rc=0 / 空日志 / reject=null，5 条必须绿 = F1..F5 逐条）形态分判全对 = $($synRejectCases.Count - $synRejectBad.Count)")
+CK ($synRejectBad.Count -eq 0) "拒绝判据自测：$($synRejectCases.Count) 组 JsonLines（含 F1..F5 正控与缺终态、错码、崩溃负控）分判对 $($synRejectCases.Count - $synRejectBad.Count) 组"
 
 # ── 6c) LEGACY 通路层（任务 #49，2026-09-27）───────────────────────────────────────
 # 为什么必须补这一段：§2 那 360 格**每格都写死 `--color-engine engine`**，而 `$fmts` 里连 jxr 都没有
@@ -780,7 +1240,7 @@ RunGate 'LEGACY' {
         $made = @{}   # eng -> @{Prod;Rc;Log}
         foreach ($eng in @('legacy', 'engine')) {
           $co = Join-Path $d ("lgcell_{0}_{1}_{2}_{3}" -f $sk, ($tn -replace '[^A-Za-z0-9]', ''), $f, $eng)
-          $r = ExecCli $exe ("--headless --log-level Debug -i `"$($srcs[$sk])`" -o `"$co`" -f $f --bit-depth 8 --color-space `"$tn`" --color-engine $eng") -Tee "$co.log"
+          $r = ExecCli $exe ("--headless --log-level Debug --log-format JsonLines -i `"$($srcs[$sk])`" -o `"$co`" -f $f --bit-depth 8 --color-space `"$tn`" --color-engine $eng") -Tee "$co.log"
           $made[$eng] = @{ Prod = (Resolve-Prod $co); Rc = $r.Rc; Log = $r.Out }
           $script:lgCells++
           $script:lgCellsFmt[$f] = 1 + [int]$script:lgCellsFmt[$f]
@@ -791,11 +1251,8 @@ RunGate 'LEGACY' {
         foreach ($eng in @('legacy', 'engine')) {
           $m = $made[$eng]; $tag = "${sk}_${f}_${tn}_$eng"
           if (-not $m.Prod) {
-            # ── (A) 负路径（任务 #50 缺口①）：无产物**必须**在日志里读到 §6b 的稳定拒绝形态之一 ──
-            #   旧写法「rc≠0 或 日志含 Reject/拒绝」没有牙：任何崩溃都 rc≠0，于是"炸了"也能交差。
-            #   新判据 = **稳定拒绝码 ∧ rc≠0**（两条缺一不可 ⇒ 相对旧写法严格更紧，不是放宽）：
-            #     · 崩溃/异常栈/exit 92 的「未产出文件」/「装配失败」/只说人话的"被拒绝" ⇒ 红；
-            #     · 日志空白（取数失败）⇒ 红；有拒绝码却 rc=0 ⇒ 红（§2a 的 REFUSE-UNCLEAN 同口径）。
+            # ── (A) 负路径：无产物须同时满足 §6b 的项级终态、对应拒绝载体与进程失败 ──
+            #   例如 JXR 的 engine 规划可先给 Reject 再回传统链路；只有最后的项级 91 才确认未交付是契约拒绝。
             $script:lgNoProd++
             $rj = Get-StableRejection -Log $m.Log -Rc $m.Rc
             if ($rj.Ok) {
@@ -880,31 +1337,26 @@ RunGate 'LEGACY' {
         $dtTrc  = if ($tn -eq 'BT.2020') { 'bt709' } else { 'iec61966-2-1' }
         $refT = Join-Path $d ("lgref_{0}_{1}.png" -f $sk, ($tn -replace '[^A-Za-z0-9]', ''))
         if (-not (Test-Path -LiteralPath $refT -PathType Leaf)) {
-          # 2026-11-01：目标 TRC=bt709 的参照**不得**用 zimg 的 `t=bt709`——那是纯 γ(1/2.4)，而产品
-          #   （legacy 链路）按 BT.709-6 分段定义式编码（:874-880 的口径黑名单同族）。实测对撞
-          #   （colormx_d536047e，p38→BT.2020 png legacy 产物）：vs t=bt709 参照 23.36 dB（<26 ⇒ 假红），
-          #   vs t=linear+定义式 OETF 参照 **50.92 dB**（完美吻合）⇒ bt709 档换定义式尺，其余档不动。
-          #   常数逐字取自 _lib-oracle.ps1 ProbeXcheck 的 DefOetf（F-9 后续的那份）。
-          if ($dtTrc -eq 'bt709') {
-            $defOetf = "floor(maxval*if(lt(val/maxval\,0.0180539685108078)\,4.5*val/maxval\,1.0992968268094429*pow(val/maxval\,0.45)-0.0992968268094429)+0.5)"
-            ExecCli $ff ("-hide_banner -loglevel error -y -i `"$($srcs[$sk])`" -vf `"zscale=pin=${srcTok}:tin=${srcTrc}:min=gbr:p=$($targets[$tn]):t=linear:m=gbr,format=rgb48le,lutrgb=r='$defOetf':g='$defOetf':b='$defOetf'`" -frames:v 1 `"$refT`"") | Out-Null
-          } else {
-            ExecCli $ff ("-hide_banner -loglevel error -y -i `"$($srcs[$sk])`" -vf `"zscale=pin=${srcTok}:tin=${srcTrc}:min=gbr:p=$($targets[$tn]):t=${dtTrc}:m=gbr,format=rgb48le`" -frames:v 1 `"$refT`"") | Out-Null
-          }
+          # 两端都绕开 zimg 的 bt709 纯 γ2.4：入口先用 DNG 常数反解到线性，出口再用定义式 OETF。
+          # 旧参照只拆出口、入口仍 tin=bt709，会与 legacy 产品同错互证，并把已按 ICC 定义式转换的 engine 误判为红。
+          # 常数与 ServiceProbe/54_ProbeXcheck.cs 的独立参照一致，不读产品侧曲线代码。
+          $defOetf = "floor(maxval*if(lt(val/maxval\,0.0180539685108078)\,4.5*val/maxval\,1.0992968268094429*pow(val/maxval\,0.45)-0.0992968268094429)+0.5)"
+          $defInv = "maxval*if(lt(val/maxval\,0.0812428582986351)\,(val/maxval)/4.5\,pow(((val/maxval)+0.0992968268094429)/1.0992968268094429\,1/0.45))"
+          $srcNeedsDef = $srcTrc -eq 'bt709'
+          $dstNeedsDef = $dtTrc -eq 'bt709'
+          $refPre = if ($srcNeedsDef) { "format=rgb48le,lutrgb=r='$defInv':g='$defInv':b='$defInv',format=gbrpf32le," } else { '' }
+          $refTin = if ($srcNeedsDef) { 'linear' } else { $srcTrc }
+          $refTout = if ($dstNeedsDef) { 'linear' } else { $dtTrc }
+          $refTail = ',format=rgb48le' + $(if ($dstNeedsDef) { ",lutrgb=r='$defOetf':g='$defOetf':b='$defOetf'" } else { '' })
+          ExecCli $ff ("-hide_banner -loglevel error -y -i `"$($srcs[$sk])`" -vf `"${refPre}zscale=pin=${srcTok}:tin=${refTin}:min=gbr:p=$($targets[$tn]):t=${refTout}:m=gbr${refTail}`" -frames:v 1 `"$refT`"") | Out-Null
         }
-        # ⚠ 这条参照**只在"两侧曲线都不是 bt709"时对两路同时适用**：`zscale t=bt709` 实为纯 γ(1/2.4)，
-        #   而引擎按 BT.709-6 定义式（分段、α=1.099/β=0.055）编码 —— 这是本仓自己的**口径黑名单**
-        #   （`verify-color-caps.ps1` (f) 段实测：两者 8-bit 最大差 27.2 LSB ⇒ 相对量 ~19.5 dB，与位深无关）。
-        #   实测签名（bt20208 → sRGB jxl，18:45 那轮）：engine 离本参照 14.68 dB / 离源原样 18.72 dB，
-        #   而 legacy（走的正是 zimg 那条链）离本参照 28.32 dB / 离源原样 11.69 dB
-        #   ⇒ 判 engine "没转到目标"是**拿错的尺子量对的像素**。所以：曲线含 bt709 时本段只判 legacy，
-        #   engine 那一侧仍由 (A) 标签 + (C) 与 auto 不同字节 两把尺子看住（不是放宽，是换用不适用的尺子=不用）。
-        $curveBlocked = ($srcTrc -eq 'bt709') -or ($dtTrc -eq 'bt709')
+        # ⚠ 2026-11-24：目标/源 TRC 为 bt709 时，上方参照已改用 t=linear + BT.709-6 定义式 OETF；
+        #   因而 legacy 与 engine 都必须接受同一把方向性像素尺，不再让 engine 走 lgCurveSkip。
+        #   这不是抬阈值：仍要求离目标参照至少比离源原样远 4 dB，目标侧绝对下限仍为 26 dB。
         $sameGamut = ($sk -eq 'p38' -and $tn -eq 'Display P3') -or ($sk -eq 'bt20208' -and $tn -eq 'BT.2020')
         foreach ($eng in @('legacy', 'engine')) {
           $m = $made[$eng]
           if (-not $m.Prod) { continue }
-          if ($curveBlocked -and $eng -eq 'engine') { $script:lgCurveSkip++; continue }
           $dp = LgProdPng $m.Prod ("{0}_{1}_{2}_{3}" -f $sk, $f, ($tn -replace '[^A-Za-z0-9]', ''), $eng)
           if (-not $dp) { $lgBad.Add("$($sk)_$($tn)_$f（$eng）：产物解码件取不到 ⇒ 像素账未跑（不许当过）"); continue }
           if ($sameGamut) {

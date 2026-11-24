@@ -103,8 +103,24 @@ public static class IsoBmffGainMapProbe
         public int[] SampleTransformInputItemIds = Array.Empty<int>();
         /// <summary>`sato` item 的原始载荷（供 <see cref="ColorMapping.AvifSampleTransform"/> 解析）。</summary>
         public byte[]? SampleTransformPayload;
-        /// <summary>`sato` 载荷声明的输入 item 位深（8/10/12/16）。</summary>
+        /// <summary>`sato` 常量/栈/中间运算的有符号位深（8/16/32/64），不是输入 item 位深。</summary>
+        public int SampleTransformArithmeticBitDepth;
+        /// <summary>兼容旧字段名；其值实际是算术位深，不用于源采样深度判断。</summary>
         public int SampleTransformInputBitDepth;
+        /// <summary>按 dimg 顺序关联的 av1C 原生输入位深；与 OBU 解码格式逐项核对。</summary>
+        public int[] SampleTransformInputBitDepths = Array.Empty<int>();
+        public int[] SampleTransformInputWidths = Array.Empty<int>();
+        public int[] SampleTransformInputHeights = Array.Empty<int>();
+        /// <summary>按 dimg 顺序提取的自包含 AV1 OBU；不依赖解复用器的流排列或流 id。</summary>
+        public byte[][] SampleTransformInputItemData = Array.Empty<byte[]>();
+        /// <summary>sato 的 pixi 属性声明的交付采样位深；当前重建路径支持 16-bit。</summary>
+        public int SampleTransformOutputBitDepth;
+        /// <summary>sato 关联的颜色；旧版 libavif 兼容布局可从明确关联的替代主图继承。</summary>
+        public byte[]? SampleTransformIcc;
+        public int? SampleTransformColorPrimaries;
+        public int? SampleTransformColorTransfer;
+        public int? SampleTransformColorMatrix;
+        public bool? SampleTransformFullRange;
 
         /// <summary>`tmap` item 的载荷（含首个 version 字节）；供 ISO 21496-1 解析。</summary>
         public byte[]? TmapPayload;
@@ -322,6 +338,8 @@ public static class IsoBmffGainMapProbe
 
             // ── 顶层 box：找 ftyp（品牌）与 meta ──
             int metaOff = -1, metaSize = 0;
+            int groupsStart = -1, groupsEnd = -1;
+            bool duplicateGroups = false;
             // meta 内 `idat` 载荷区间（construction_method=1 的 item 数据住这里；2026-11-02 新增）。
             // ⚠ `idat` 是**纯 box**（非 FullBox）：载荷起点即 item 数据起点，extent 偏移相对它。
             int idatStart = -1, idatEnd = -1;
@@ -379,6 +397,11 @@ public static class IsoBmffGainMapProbe
                     case "iprp":
                         ParseIprp(d, cstart, cend, ipcoProps, ipmaMap, auxCProps,
                             ref sawAux21496, ref sawAuxApple, ref sawAuxAlpha, ref sawAuxVendor);
+                        break;
+                    case "grpl":
+                        duplicateGroups |= groupsStart >= 0;
+                        groupsStart = cstart;
+                        groupsEnd = cend;
                         break;
                     case "idat":
                         // 2026-11-02：真实 iPhone HDR HEIC 把 tmap / grid 载荷放在 meta/idat
@@ -573,49 +596,157 @@ public static class IsoBmffGainMapProbe
             //   依据 AVIF §4.2.3.3 / Appendix A：单条 AV1 item 的 BitDepth 只有 8/10/12，
             //   16-bit 必须 `sato` + 两条 `av01`（base + extension）。这里只做**容器级提取**：
             //   item id、dimg 输入、载荷；表达式解析/缩放合成在 AvifSampleTransform + QueueProcessor。
-            int satoId = -1;
-            foreach (var kv in items) if (kv.Value == "sato") { satoId = kv.Key; break; }
+            int satoId = -1, satoCount = 0;
+            foreach (var kv in items)
+                if (kv.Value == "sato") { satoId = kv.Key; satoCount++; }
             if (satoId >= 0)
             {
                 r.HasSampleTransform = true;
                 r.SampleTransformItemId = satoId;
+                if (sawAuxAlpha)
+                {
+                    r.Determinate = false;
+                    r.FailReason = "[IsoBmff] AVIF_SAMPLE_TRANSFORM_LAYOUT_UNSUPPORTED: auxiliary alpha reconstruction is not supported";
+                    return r;
+                }
+                if (satoCount != 1)
+                {
+                    r.Determinate = false;
+                    r.FailReason = "[IsoBmff] AVIF_SAMPLE_TRANSFORM_LAYOUT_UNSUPPORTED: multiple sato items";
+                    return r;
+                }
 
+                // dimg order defines sample1/sample2. Never deduplicate or reorder by pitm:
+                // a duplicate input is ambiguous for this two-coded-item reconstruction path.
                 var satoInputs = new List<int>();
+                int dimgCount = 0;
                 foreach (var rf in refs)
                 {
                     if (rf.Type != "dimg" || rf.From != satoId) continue;
-                    foreach (var to in rf.To)
-                        if (!satoInputs.Contains(to)) satoInputs.Add(to);
+                    dimgCount++;
+                    satoInputs.AddRange(rf.To);
                 }
                 r.SampleTransformInputItemIds = satoInputs.ToArray();
+                var checkedItems = new List<int>(satoInputs) { satoId };
+                foreach (int itemId in checkedItems)
+                {
+                    if (!ipmaMap.TryGetValue(itemId, out var propertyIndices)) continue;
+                    foreach (int ix in propertyIndices)
+                    {
+                        if (ix >= 1 && ix <= ipcoProps.Count
+                            && ipcoProps[ix - 1].Type is "clap" or "irot" or "imir" or "lsel" or "a1op" or "a1lx")
+                        {
+                            r.Determinate = false;
+                            r.FailReason = $"[IsoBmff] AVIF_SAMPLE_TRANSFORM_LAYOUT_UNSUPPORTED: item {itemId} has an unsupported transform/layer selector";
+                            return r;
+                        }
+                    }
+                }
+                if (dimgCount != 1 || satoInputs.Count != 2 || satoInputs[0] == satoInputs[1])
+                {
+                    r.Determinate = false;
+                    r.FailReason = "[IsoBmff] AVIF_SAMPLE_TRANSFORM_INPUTS_INVALID: expected one ordered dimg with two distinct inputs";
+                    return r;
+                }
 
                 var satoPayload = SliceItem(d, locs, satoId, idatStart, idatEnd, ref r, "sample transform");
-                if (satoPayload == null) return r;   // SliceItem 已置 Determinate=false + FailReason
+                if (satoPayload == null) return r;
                 r.SampleTransformPayload = satoPayload;
-
-                if (satoPayload.Length < 2 || (satoPayload[0] >> 6) != 0)
+                var expression = ColorMapping.AvifSampleTransform.Parse(satoPayload, out var expressionError);
+                if (expression == null)
                 {
                     r.Determinate = false;
-                    r.FailReason = "[IsoBmff] sato 载荷版本/长度非法";
+                    r.FailReason = $"[IsoBmff] AVIF_SAMPLE_TRANSFORM_EXPRESSION_INVALID: {expressionError}";
                     return r;
                 }
-
-                int bdCode = satoPayload[0] & 0x03;
-                r.SampleTransformInputBitDepth = bdCode switch
-                {
-                    0 => 8,
-                    1 => 10,
-                    2 => 12,
-                    3 => 16,
-                    _ => 0,
-                };
-
-                if (satoInputs.Count != 2)
+                r.SampleTransformArithmeticBitDepth = expression.ArithmeticBitDepth;
+                r.SampleTransformInputBitDepth = expression.ArithmeticBitDepth;
+                if (!TryFindSampleTransformDepth(d, ipcoProps, ipmaMap, satoId, out var outputDepth)
+                    || outputDepth != 16)
                 {
                     r.Determinate = false;
-                    r.FailReason = $"[IsoBmff] sato 的 dimg 输入数={satoInputs.Count}（应为 2：base + extension）";
+                    r.FailReason = "[IsoBmff] AVIF_SAMPLE_TRANSFORM_OUTPUT_DEPTH_UNSUPPORTED: expected uniform 16-bit pixi";
                     return r;
                 }
+                r.SampleTransformOutputBitDepth = outputDepth;
+                if (!TryReadSampleTransformColor(d, ipcoProps, ipmaMap, satoId, out var outputColor))
+                {
+                    r.Determinate = false;
+                    r.FailReason = "[IsoBmff] AVIF_SAMPLE_TRANSFORM_COLOR_UNVERIFIED: output colr invalid or ambiguous";
+                    return r;
+                }
+                if (!TryFindIspe(d, ipcoProps, ipmaMap, satoId, out int outputWidth, out int outputHeight))
+                {
+                    r.Determinate = false;
+                    r.FailReason = "[IsoBmff] AVIF_SAMPLE_TRANSFORM_INPUT_INVALID: output ispe missing or invalid";
+                    return r;
+                }
+                var inputDepths = new int[2];
+                var inputWidths = new int[2];
+                var inputHeights = new int[2];
+                var inputData = new byte[2][];
+                var inputColors = new SampleTransformColor[2];
+                for (int inputIndex = 0; inputIndex < 2; inputIndex++)
+                {
+                    int inputId = satoInputs[inputIndex];
+                    if (!items.TryGetValue(inputId, out var inputType) || inputType != "av01")
+                    {
+                        r.Determinate = false;
+                        r.FailReason = $"[IsoBmff] AVIF_SAMPLE_TRANSFORM_LAYOUT_UNSUPPORTED: input item {inputId} is not av01";
+                        return r;
+                    }
+                    if (!TryFindIspe(d, ipcoProps, ipmaMap, inputId, out inputWidths[inputIndex], out inputHeights[inputIndex])
+                        || inputWidths[inputIndex] != outputWidth || inputHeights[inputIndex] != outputHeight)
+                    {
+                        r.Determinate = false;
+                        r.FailReason = $"[IsoBmff] AVIF_SAMPLE_TRANSFORM_INPUT_INVALID: item {inputId} ispe does not match output";
+                        return r;
+                    }
+                    if (!TryReadSampleTransformColor(d, ipcoProps, ipmaMap, inputId, out inputColors[inputIndex]))
+                    {
+                        r.Determinate = false;
+                        r.FailReason = $"[IsoBmff] AVIF_SAMPLE_TRANSFORM_COLOR_UNVERIFIED: item {inputId} colr invalid or ambiguous";
+                        return r;
+                    }
+                    var raw = SliceItem(d, locs, inputId, idatStart, idatEnd, ref r, $"sato input {inputId}");
+                    if (raw == null) return r;
+                    if (!TryPrepareSampleTransformObu(d, ipcoProps, ipmaMap, inputId, raw,
+                        out inputDepths[inputIndex], out inputData[inputIndex], out var inputError))
+                    {
+                        r.Determinate = false;
+                        r.FailReason = $"[IsoBmff] AVIF_SAMPLE_TRANSFORM_INPUT_INVALID: item {inputId}: {inputError}";
+                        return r;
+                    }
+                }
+                // AVIF §4.2.3.1 requires the same color information on every item.
+                // Older libavif writes it only on its displayable base in the exact
+                // altr=[sato, base] layout. Allow that omission with a declared nclx;
+                // never merge differing declarations or infer an association from pitm alone.
+                if (!SampleTransformColorsEqual(outputColor, inputColors[0])
+                    || !SampleTransformColorsEqual(outputColor, inputColors[1]))
+                {
+                    if (!outputColor.IsEmpty || !inputColors[1].IsEmpty || !inputColors[0].Nclx.HasValue
+                        || primary != satoInputs[0] || duplicateGroups
+                        || !HasSampleTransformAlternative(d, groupsStart, groupsEnd, satoId, primary))
+                    {
+                        r.Determinate = false;
+                        r.FailReason = "[IsoBmff] AVIF_SAMPLE_TRANSFORM_COLOR_UNVERIFIED: conflicting or unassociated item colr";
+                        return r;
+                    }
+                    outputColor = inputColors[0];
+                }
+                if (outputColor.Nclx is { } nclx)
+                {
+                    r.SampleTransformColorPrimaries = nclx.P;
+                    r.SampleTransformColorTransfer = nclx.T;
+                    r.SampleTransformColorMatrix = nclx.M;
+                    r.SampleTransformFullRange = nclx.Full;
+                }
+                r.SampleTransformIcc = outputColor.Icc;
+                r.SampleTransformInputBitDepths = inputDepths;
+                r.SampleTransformInputWidths = inputWidths;
+                r.SampleTransformInputHeights = inputHeights;
+                r.SampleTransformInputItemData = inputData;
             }
 
             // ── 判定 2（次级）：辅助图形式（auxC 的 URN 带 21496）—— AU2-X1（2026-11-10）**结构尝试**。
@@ -857,6 +988,167 @@ public static class IsoBmffGainMapProbe
         if (u.Contains("depth") || u.Contains("disparity") || u.Contains("mask")
             || u.Contains("segment") || u.Contains("matte") || u.Contains("thumbnail")) return 0;
         return 4;
+    }
+
+    private readonly record struct SampleTransformColor((int P, int T, int M, bool Full)? Nclx, byte[]? Icc)
+    {
+        public bool IsEmpty => !Nclx.HasValue && Icc == null;
+    }
+
+    private static bool TryReadSampleTransformColor(byte[] d, List<(string Type, int Off, int Size)> props,
+        Dictionary<int, List<int>> ipma, int itemId, out SampleTransformColor color)
+    {
+        color = default;
+        (int P, int T, int M, bool Full)? nclx = null;
+        byte[]? icc = null;
+        if (!ipma.TryGetValue(itemId, out var indices)) return false;
+        foreach (int ix in indices)
+        {
+            if (ix < 1 || ix > props.Count) return false;
+            if (props[ix - 1].Type != "colr") continue;
+            var (_, off, size) = props[ix - 1];
+            if (off < 0 || size < 4 || (long)off + size > d.Length) return false;
+            string type = Encoding.ASCII.GetString(d, off, 4);
+            if (type == "nclx")
+            {
+                if (nclx.HasValue || size != 11) return false;
+                nclx = (Be16(d, off + 4), Be16(d, off + 6), Be16(d, off + 8), (d[off + 10] & 0x80) != 0);
+            }
+            else if (type is "prof" or "rICC")
+            {
+                if (icc != null) return false;
+                icc = d.AsSpan(off + 4, size - 4).ToArray();
+            }
+            else return false;
+        }
+        color = new(nclx, icc);
+        return true;
+    }
+
+    private static bool SampleTransformColorsEqual(SampleTransformColor first, SampleTransformColor second)
+        => first.Nclx == second.Nclx && (first.Icc == null
+            ? second.Icc == null
+            : second.Icc != null && first.Icc.AsSpan().SequenceEqual(second.Icc));
+
+    private static bool HasSampleTransformAlternative(byte[] d, int start, int end, int sato, int primary)
+    {
+        bool found = false;
+        for (int p = start; p >= 0 && p < end;)
+        {
+            if (!ReadBox(d, p, end, out var type, out var size, out var header)) return false;
+            int off = p + header;
+            p += size;
+            if (type != "altr") continue;
+            // EntityToGroupBox: FullBox header, group_id, num_entities_in_group, entity IDs.
+            if (p - off < 12 || Be32(d, off) != 0) return false;
+            uint count = Be32(d, off + 8);
+            if (12L + 4L * count != p - off) return false;
+            bool relevant = false;
+            for (int entity = off + 12; entity < p; entity += 4)
+            {
+                uint id = Be32(d, entity);
+                relevant |= id == (uint)sato || id == (uint)primary;
+            }
+            if (!relevant) continue;
+            if (found || count != 2 || Be32(d, off + 12) != (uint)sato
+                || Be32(d, off + 16) != (uint)primary) return false;
+            found = true;
+        }
+        return found;
+    }
+
+    // Read item-associated properties only; their order in ipco is not an item identity.
+    private static bool TryFindSampleTransformDepth(byte[] d, List<(string Type, int Off, int Size)> props,
+        Dictionary<int, List<int>> ipma, int itemId, out int depth)
+    {
+        depth = 0;
+        if (!ipma.TryGetValue(itemId, out var indices)) return false;
+        bool found = false;
+        foreach (int ix in indices)
+        {
+            if (ix < 1 || ix > props.Count || props[ix - 1].Type != "pixi") continue;
+            var (_, off, size) = props[ix - 1];
+            // This reconstruction supports three equal-depth color planes, no extended pixi.
+            if (found || off < 0 || size != 8 || (long)off + size > d.Length
+                || Be32(d, off) != 0 || d[off + 4] != 3
+                || d[off + 5] != d[off + 6] || d[off + 5] != d[off + 7]) return false;
+            depth = d[off + 5];
+            found = true;
+        }
+        return found && depth > 0;
+    }
+
+    private static bool TryPrepareSampleTransformObu(byte[] d, List<(string Type, int Off, int Size)> props,
+        Dictionary<int, List<int>> ipma, int itemId, byte[] raw, out int depth, out byte[] obu, out string error)
+    {
+        depth = 0; obu = Array.Empty<byte>(); error = "missing or invalid av1C";
+        if (!ipma.TryGetValue(itemId, out var indices)) return false;
+        int configOff = -1, configSize = 0;
+        foreach (int ix in indices)
+        {
+            if (ix < 1 || ix > props.Count || props[ix - 1].Type != "av1C") continue;
+            if (configOff >= 0) { error = "multiple av1C properties"; return false; }
+            var (_, off, size) = props[ix - 1];
+            if (off < 0 || size < 4 || (long)off + size > d.Length || d[off] != 0x81) return false;
+            configOff = off; configSize = size;
+        }
+        if (configOff < 0) return false;
+        bool highBitDepth = (d[configOff + 2] & 0x40) != 0;
+        bool twelveBit = (d[configOff + 2] & 0x20) != 0;
+        if (twelveBit && !highBitDepth) { error = "av1C twelve_bit without high_bitdepth"; return false; }
+        depth = !highBitDepth ? 8 : twelveBit ? 12 : 10;
+        if ((d[configOff + 2] & 0x1c) != 0)
+        { error = "only three-plane 4:4:4 sample transform inputs are supported"; return false; }
+        if (!TryFindSampleTransformDepth(d, props, ipma, itemId, out var pixiDepth) || pixiDepth != depth)
+        { error = "input pixi/av1C depth mismatch or unsupported pixi"; return false; }
+        if (!TryInspectObuSequence(raw, out bool hasSequenceHeader))
+        { error = "item is not a complete low-overhead OBU sequence"; return false; }
+        // AV1-ISOBMFF §2.3.3: output configOBUs first, followed by item OBUs. Two
+        // identical consecutive sequence headers are explicitly valid; skipping configOBUs
+        // when an item has a sequence header would also discard configuration metadata.
+        var configObus = d.AsSpan(configOff + 4, configSize - 4).ToArray();
+        bool configHasSequenceHeader = false;
+        if (configObus.Length > 0 && !TryInspectObuSequence(configObus, out configHasSequenceHeader))
+        { error = "invalid av1C configOBUs framing"; return false; }
+        if (!hasSequenceHeader && !configHasSequenceHeader)
+        { error = "no sequence header in item or av1C configOBUs"; return false; }
+        if (configObus.Length == 0) { obu = raw; return true; }
+        obu = new byte[checked(configObus.Length + raw.Length)];
+        configObus.CopyTo(obu, 0);
+        raw.CopyTo(obu, configObus.Length);
+        return true;
+    }
+
+    private static bool TryInspectObuSequence(byte[] data, out bool hasSequenceHeader)
+    {
+        hasSequenceHeader = false;
+        if (data.Length == 0) return false;
+        int offset = 0;
+        while (offset < data.Length)
+        {
+            byte header = data[offset++];
+            // AV1 low-overhead framing: forbidden/reserved bits zero, explicit obu_size.
+            if ((header & 0x81) != 0 || (header & 0x02) == 0) return false;
+            int type = (header >> 3) & 15;
+            if (type == 0 || (type >= 9 && type <= 14)) return false;
+            if ((header & 0x04) != 0)
+            {
+                if (offset >= data.Length || (data[offset++] & 0x07) != 0) return false;
+            }
+            ulong length = 0;
+            bool terminated = false;
+            for (int i = 0; i < 8; i++)
+            {
+                if (offset >= data.Length) return false;
+                byte next = data[offset++];
+                length |= (ulong)(next & 0x7f) << (7 * i);
+                if ((next & 0x80) == 0) { terminated = true; break; }
+            }
+            if (!terminated || length > (ulong)(data.Length - offset)) return false;
+            if (type == 1) hasSequenceHeader = true;
+            offset += (int)length;
+        }
+        return offset == data.Length;
     }
 
     /// <summary>

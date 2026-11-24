@@ -2,7 +2,8 @@
 # 为什么必须对拍：常数/归一化若凭记忆写，验证会变成"自己的公式等于自己"（本项目吃过多次）。
 # ffmpeg 是**独立参照**：同一批线性输入 → 两路输出比 PSNR / 最大偏差。
 # 覆盖：Hable、Mobius（两者公式均取自 ffmpeg vf_tonemap.c 源码）。
-#   BT.2390 未实现（标准公式原文未取到）→ 本脚本显式 SKIP，而不是给个绿灯。
+#   BT.2390：仓库已收 BT.2390-12 正文；全文没有可直接实现的 EETF 定义（Hermite 描述并非本报告条款）。
+#   产品因此明确不支持并响亮拒绝，本脚本仍显式 SKIP，绝不拿第三方同名曲线冒充标准实现。
 $ErrorActionPreference = "Continue"
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path; Set-Location $root
 $ff  = "$root/publish/PLAN/ffmpeg-full/ffmpeg.exe"
@@ -81,9 +82,9 @@ function CheckMode([string]$name, [string]$filter) {
 CheckMode "Hable"  "tonemap=hable:peak=$hr"
 CheckMode "Mobius" "tonemap=mobius:param=0.3:peak=$hr"
 
-Write-Host "`n=== SKIP（未实现，不给绿灯）===" -ForegroundColor Yellow
-Write-Output "  SKIP BT.2390：ITU-R Report BT.2390 公式原文尚未取得（只查到描述：带线性段的 Hermite 样条滚降、拐点偏移规范值 0.5）。"
-Write-Output "       引擎里 Bt2390 枚举存在但 Apply() 会原样返回并被策略层当作'未就绪'，绝不静默降级成别的曲线。"
+Write-Host "`n=== SKIP（标准未定义可实现的 EETF，产品有意拒绝；不计 PASS）===" -ForegroundColor Yellow
+Write-Output "  SKIP BT.2390：tools/std/bt2390-12.txt 已核对，正文不含 EETF/Hermite 曲线定义；第三方同名算法不得冒充 ITU 标准。"
+Write-Output "       产品对 bt2390 走显式拒绝，不静默换成 Hable/Mobius/BT.2446A；标准曲线请用 bt2446a。"
 
 Write-Host "`n### 7) pq mode 必须被执行面调用（#69 在册零调用点之一，2026-10-15 补）###" -ForegroundColor Cyan
 #   `ServiceProbe pq` 钉的是 ST 2084 的公开锚点（0.5→92.7nits、0.5799→203、0.7516→1000、1.0→10000）。

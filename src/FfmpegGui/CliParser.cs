@@ -28,6 +28,8 @@ namespace FfmpegGui
 
             // 编码参数
             public string Format { get; set; } = "jxl";
+            /// <summary>Only an explicit -f/--format overrides the format stored in a preset.</summary>
+            public bool FormatExplicit { get; set; } = false;
             public EncoderBackend EncoderBackend { get; set; } = EncoderBackend.Ffmpeg;
             /// <summary>用户是否通过 -e/--encoder 显式指定了后端。未指定时按目标格式推断，避免默认 Cjxl 导致非 JXL 格式被错编成 JXL。</summary>
             public bool EncoderBackendExplicit { get; set; } = false;
@@ -215,6 +217,7 @@ namespace FfmpegGui
                             //   docs/JPEGLI_GAINMAP_PANEL_PLAN_2026-10-09.md §1c。
                             if (fmt == "jpegli") fmt = "jpg";
                             result.Format = fmt;
+                            result.FormatExplicit = true;
                         }
                         break;
                     }
@@ -510,10 +513,8 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
   --icc-file <path>       用外部 ICC 文件判定**源**色彩空间；CarryIcc 时作为可携带源 ICC
   --icc-mode <mode>       旧参数，映射为 --color-strategy（兼容用）
   --icc-profile-version <v4|v2>
-                          自生成 ICC 的版本档（默认 v4 = v4.4.0）；v2 = v2.0.0 兼容档
-                          （真 v2：desc=descriptionType、TRC=curv 采样）。仅作用于自生成
-                          命名 ICC（ProPhoto/PQ 保真路径）；源图自带 ICC 永远原样携带。
-                          v2 仅 JPEG 出口有意义，非 JPEG 出口自动归一回 v4。
+                          自生成 ICC 固定 v4.4.0。兼容旧 v2 参数，执行时会提示并使用 v4.4；
+                          输入与原样携带的 ICC 不受这一写入规则限制。
 
 元数据处理:
   --strip-gps             删除 GPS 信息 (默认: **关闭**，2026-10-20 四处默认统一为「不勾选就全保留」)
@@ -575,6 +576,11 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
                 throw new InvalidOperationException("未找到匹配的输入文件。请使用 -i/--input 指定。");
             }
 
+            var baseOptions = BuildBaseOptions(opts);
+            var effectiveFormat = baseOptions.Format;
+            if (AppSettings.IsDecodeOnlyFormat(effectiveFormat))
+                throw new InvalidOperationException($"Unsupported output format '{effectiveFormat}': HEIC/HEIF are decode-only.");
+
             // ── 两图 GainMap 合成：结构错误在**建队时**就拒绝（不等到逐项失败）──
             bool compose = opts.ComposeGainMap;
             if (!compose && opts.ComposeEncoder != null)
@@ -588,13 +594,13 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
                 if (inputFiles.Count % 2 != 0)
                     throw new InvalidOperationException(
                         $"--compose-gainmap 要求输入数量为偶数（按顺序两两配对：先 SDR 底图、后 HDR 参考），当前 {inputFiles.Count} 个。");
-                string cfmt = opts.Format.ToLowerInvariant();
+                string cfmt = effectiveFormat.ToLowerInvariant();
                 // 2026-11-11 修复批 A2（维护者裁决「接线放开 jxl」）：jxl 的增益图承载是容器的 **jhgm box**
                 // （ISO 21496-1；libjxl 0.11+ / 随包 cjxl·jxlinfo 0.12.0），服务层 GainMapComposeService 与
                 // GUI 早已支持 ⇒ 建队守卫此前只收 jpg/jpeg/avif 属**与自身能力矛盾**的接线缺口。
                 if (cfmt is not ("jpg" or "jpeg" or "avif" or "jxl"))
                     throw new InvalidOperationException(
-                        $"GainMap 合成只支持 -f jpg / jpeg / avif / jxl（当前 {opts.Format}）；其它容器没有标准的增益图承载。");
+                        $"GainMap 合成只支持 -f jpg / jpeg / avif / jxl（当前 {effectiveFormat}）；其它容器没有标准的增益图承载。");
                 // 编码器与容器强绑定：跨族取值（如 JPEG + libaom-av1）必须建队时就拒绝，
                 // 不能等到逐项在引擎里失败；显式 cjpegli 不可用同样当场点名。
                 if (!string.IsNullOrWhiteSpace(opts.ComposeEncoder))
@@ -608,7 +614,7 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
                         : cfmt == "avif" && (opts.ComposeEncoder is "libaom-av1" or "libsvtav1");
                     if (!pairOk)
                         throw new InvalidOperationException(
-                            $"--gainmap-encoder {opts.ComposeEncoder} 与 -f {opts.Format} 不匹配（JPEG ⇒ cjpegli | mjpeg；AVIF ⇒ libaom-av1 | libsvtav1；JXL ⇒ 子图恒由 cjxl 编码、没有编码器选择面）。");
+                            $"--gainmap-encoder {opts.ComposeEncoder} 与 -f {effectiveFormat} 不匹配（JPEG ⇒ cjpegli | mjpeg；AVIF ⇒ libaom-av1 | libsvtav1；JXL ⇒ 子图恒由 cjxl 编码、没有编码器选择面）。");
                     if (jpegFmt && opts.ComposeEncoder == "cjpegli" && !CjpegliService.IsAvailable)
                         throw new InvalidOperationException(
                             "--gainmap-encoder cjpegli 不可用：未检测到 cjpegli。"
@@ -626,9 +632,7 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
 
             // 可用性诚实原则：目标格式依赖的外部编码器缺失时直接报错，
             // 不静默用 ffmpeg 兜底（ffmpeg 无 JXR 编码器、无法编码 DNG）。
-            ValidateFormatToolAvailability(opts.Format);
-
-            var baseOptions = BuildBaseOptions(opts);
+            ValidateFormatToolAvailability(effectiveFormat);
 
             // ⚠ 同批输出冲突防护：目录树递归枚举 + 输出只取文件名 ⇒ 不同子目录的同名文件
             //   会写到**同一个**目标路径相互覆盖（实机测试 2026-09-28：6 进 3 出、rc=0 静默丢文件）。
@@ -644,7 +648,7 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
             foreach (var (file, gainMapRef) in jobs)
             {
                 baseDirs.TryGetValue(file, out var baseDir);
-                var outputPath = BuildOutputPath(file, opts, baseDir);
+                var outputPath = BuildOutputPath(file, opts, baseDir, effectiveFormat);
                 if (gainMapRef != null)
                 {
                     // 命名：<底图名>_gainmap.<ext> —— 一目录里成对文件不会互相覆盖
@@ -669,11 +673,6 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
                 }
 
                 var options = baseOptions.DeepClone();
-                options.Format = opts.Format;
-                // 未显式指定 -e 时按目标格式推断合理后端，避免默认后端与格式不符导致错标文件
-                options.EncoderBackend = opts.EncoderBackendExplicit
-                    ? opts.EncoderBackend
-                    : EncoderBackendCompat.InferDefaultBackend(opts.Format);
                 // ── JPEG→JXL 无损重封装：CLI 侧的「默认开」在这里落地（2026-09-30）──────────
                 // 有效值 = (用户显式指定 ?? 开关默认 true) **且** 输入真是 JPEG **且** 目标真是 JXL。
                 // 为什么必须与输入相与：<c>FfmpegOptions.JxlLosslessJpeg</c> 会被
@@ -813,8 +812,11 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
 
         private static FfmpegOptions BuildBaseOptions(Result opts)
         {
+            var requestedFormat = NormalizePresetFormat(opts.Format);
+            bool presetHasBackend = false;
             var options = new FfmpegOptions
             {
+                Format = requestedFormat,
                 Quality = opts.Quality,
                 Threads = 0, // 0=auto
                 AutoThreads = opts.AutoThreads,
@@ -845,12 +847,53 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
                 if (preset != null)
                 {
                     options.ApplyPresetData(preset.Data);
+                    presetHasBackend = !string.IsNullOrWhiteSpace(preset.Data.EncoderBackend)
+                        && Enum.TryParse<EncoderBackend>(preset.Data.EncoderBackend, true, out _);
+                    if (!presetHasBackend && !string.IsNullOrWhiteSpace(options.Encoder))
+                    {
+                        var backend = EncoderInfo.ParseBackend(options.Encoder);
+                        if (EncoderDetectionService.IsEncoderForFormat(options.Encoder, backend,
+                                NormalizePresetFormat(options.Format)))
+                        {
+                            options.EncoderBackend = backend;
+                            presetHasBackend = true;
+                        }
+                    }
                 }
                 else
                 {
                     Console.WriteLine($"⚠️ 未找到预设: {opts.PresetName}");
                 }
             }
+
+            options.Format = string.IsNullOrWhiteSpace(options.Format)
+                ? requestedFormat : NormalizePresetFormat(options.Format);
+            if (opts.FormatExplicit)
+            {
+                if (!SameFormatFamily(options.Format, requestedFormat))
+                {
+                    // A new container cannot inherit a concrete encoder from the old preset.
+                    options.Encoder = null;
+                    presetHasBackend = false;
+                }
+                options.Format = requestedFormat;
+            }
+            if (opts.EncoderBackendExplicit)
+            {
+                if (options.EncoderBackend != opts.EncoderBackend)
+                    options.Encoder = null;
+                options.EncoderBackend = opts.EncoderBackend;
+            }
+            else if (!presetHasBackend || !EncoderBackendCompat.IsCompatibleWith(options.EncoderBackend, options.Format))
+            {
+                var backend = EncoderBackendCompat.InferDefaultBackend(options.Format);
+                if (options.EncoderBackend != backend) options.Encoder = null;
+                options.EncoderBackend = backend;
+            }
+
+            if (!string.IsNullOrWhiteSpace(options.Encoder)
+                && !EncoderDetectionService.IsEncoderForFormat(options.Encoder, options.EncoderBackend, options.Format))
+                options.Encoder = null;
 
             // 应用扩展选项
             foreach (var kv in opts.ExtraOptions)
@@ -859,6 +902,28 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
             }
 
             return options;
+        }
+
+        private static bool SameFormatFamily(string left, string right)
+            => (left is "jpeg" or "jpg" ? "jpg" : left)
+                == (right is "jpeg" or "jpg" ? "jpg" : right);
+
+        // GUI presets store display labels; CLI requests already contain container tokens.
+        private static string NormalizePresetFormat(string format)
+        {
+            var token = format.Trim();
+            if (token.Equals("PNG (APNG)", StringComparison.OrdinalIgnoreCase)) return "apng";
+            int suffix = token.IndexOf('(');
+            if (suffix >= 0) token = token.Substring(0, suffix).TrimEnd();
+            if (token == "JPEG") return "jpg";
+            return token.ToLowerInvariant() switch
+            {
+                "jpegli" or "jpeg li" => "jpg",
+                "jpeg xl" => "jxl",
+                "jpeg xr" => "jxr",
+                "telegram sticker" => "webm",
+                _ => token.ToLowerInvariant(),
+            };
         }
 
         /// <summary>
@@ -1405,9 +1470,9 @@ FFmpegPictureUI - 批量图片/动图/视频转换工具
             return !(char.IsDigit(c) || c == '.');           // "-1"/"-.5" ⇒ 取值；"-abc" ⇒ 选项
         }
 
-        private static string BuildOutputPath(string inputFile, Result opts, string? baseDir)
+        private static string BuildOutputPath(string inputFile, Result opts, string? baseDir, string format)
         {
-            var ext = "." + opts.Format.ToLowerInvariant();
+            var ext = "." + format.ToLowerInvariant();
             var fileName = Path.GetFileNameWithoutExtension(inputFile) + ext;
 
             if (string.IsNullOrWhiteSpace(opts.OutputDirectory))

@@ -143,7 +143,11 @@ $ppIcc = $null
 if (Test-Path $probe) {
   $fo = Exec $probe "faithful `"ProPhoto RGB`" yes"
   $mm = [regex]::Match($fo, "icc=(\S+?\.icc)")
-  if ($mm.Success) { $ppIcc = $mm.Groups[1].Value.Trim() }
+  if ($mm.Success -and (Test-Path -LiteralPath $mm.Groups[1].Value)) {
+    # Keep the file for the conversion arms independent of the separate v2 fixture probe's cache.
+    $ppIcc = Join-Path $out 'prophoto_v44.icc'
+    Copy-Item -LiteralPath $mm.Groups[1].Value -Destination $ppIcc
+  }
   # ── `icc` mode 必须被执行面调用（#69 的 ⑥-d：此前 `icc` 的**唯一**调用点在 `ensure-fixtures.ps1`，
   #    那份脚本不在受管清单里 ⇒ "有调用点"不等于"担保跑到"）。本格钉条数 4/0。
   $ic7 = Exec $probe "icc `"ProPhoto RGB`""
@@ -292,7 +296,7 @@ if($avMeta -match 'ProfileVersion\s*:\s*4\.4\.0' -and $avMeta -match 'ProfileDes
 if($avMeta -match '(?s)QuickTime.*ColorPrimaries.*Unspecified' -and $avMeta -match '(?s)QuickTime.*MatrixCoefficients.*Identity matrix'){
   Ok "推荐→AVIF CICP 不可命名 ⇒ nclx=unspecified/identity（不伪造 BT.709/BT.601）"
 } else { No "推荐→AVIF nclx 不是 unspecified/identity（meta=$avMeta）" }
-if($al -match 'ICC-only|nclx=2/2/0'){ Ok "推荐→AVIF 日志点名 ICC-only / nclx=2/2/0" } else { No "推荐→AVIF 日志未点名 ICC-only（日志=$al）" }
+if($al -match 'ICC describes the color space; nclx P/T are unspecified|ICC-only|nclx=2/2/0'){ Ok "推荐→AVIF 明示 ICC 描述色彩，nclx P/T 未指定" } else { No "推荐→AVIF 未说明 ICC 与 nclx 的职责（日志=$al）" }
 if($al -notmatch 'ICC Profile 已恢复|已嵌入目标 ICC'){ Ok "推荐路径未谎报 ICC 已恢复/已嵌入" } else { No "推荐路径仍宣称 ICC 已恢复/已嵌入" }
 
 # ── ⑥e S2 carry + AVIF + ProPhoto：ICC 是**唯一**色彩描述，但 avifenc --icc 已能写入 ⇒

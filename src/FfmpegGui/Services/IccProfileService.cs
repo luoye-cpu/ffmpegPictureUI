@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Security.Cryptography;
 using System.Threading;
+using FfmpegGui.Services.ColorMapping;
 
 namespace FfmpegGui.Services
 {
@@ -12,6 +13,8 @@ namespace FfmpegGui.Services
     /// </summary>
     public static class IccProfileService
     {
+        private const int MaxIccProfileBytes = 32 * 1024 * 1024;
+
         /// <summary>
     /// 用 exiftool 从图片提取内嵌 ICC 配置文件到临时文件。
     /// 返回 (临时文件路径, ICC 描述)；无 ICC / exiftool 不可用 / 失败时返回 (null, null)。
@@ -19,9 +22,10 @@ namespace FfmpegGui.Services
     /// 带 5 秒超时保护：exiftool 挂起时杀死进程，防止阻塞编码队列。
     /// </summary>
     /// <param name="log">日志回调（取消/超时分支点名用；null ⇒ 退回 Trace.WriteLine）</param>
-    /// <param name="ct">取消令牌（`#26`：上游 7 条路径**全部**持有 `ct` 却一条都没传下来，本次接通）</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <param name="preserveSourceBytes">用于识别或原样携带；保留合格的 ICC 原始字节，不做版本归一。</param>
     public static (string? path, string? description) ExtractIccToTempFile(string imagePath,
-        Action<string>? log = null, CancellationToken ct = default)
+        Action<string>? log = null, CancellationToken ct = default, bool preserveSourceBytes = false)
     {
         try
         {
@@ -33,9 +37,21 @@ namespace FfmpegGui.Services
             // 于是“产物已有 ICC”反而读不出来。先走这里；无 iCCP 再回退 exiftool。
             if (IsPngLike(imagePath))
             {
-                var pngIcc = PngCicpService.TryReadIccp(imagePath);
-                if (pngIcc != null)
-                    return ExtractIccBytesToTemp(pngIcc, log);
+                var pngState = PngCicpService.ReadIccp(imagePath, out var pngIcc);
+                if (pngState == PngCicpService.PngColorTagState.Valid && pngIcc != null)
+                    return ExtractIccBytesToTemp(pngIcc, log, preserveSourceBytes);
+                if (pngState == PngCicpService.PngColorTagState.Invalid) return (null, null);
+            }
+
+            // Reading an already-delivered profile must not depend on the optional writer.
+            // These bounded native readers preserve the stored bytes, including valid legacy ICC.
+            if (IccContainerReader.TryRead(imagePath, out var storedIcc))
+                return storedIcc != null ? ExtractIccBytesToTemp(storedIcc, log, preserveSourceBytes) : (null, null);
+            // An unreadable TIFF IFD0 is not permission to extract an unqualified later-page ICC.
+            if (Path.GetExtension(imagePath).ToLowerInvariant() is ".tif" or ".tiff")
+            {
+                log?.Invoke("[icc] TIFF IFD0 ICC read failed; document-wide ICC fallback disabled\n");
+                return (null, null);
             }
 
             if (!ExifToolService.IsAvailable)
@@ -92,7 +108,7 @@ namespace FfmpegGui.Services
                 return (null, null);
             }
             if (ms.Length < 128) { TryDelete(tmp); return (null, null); }
-            return ExtractIccBytesToTemp(ms.ToArray(), log);
+            return ExtractIccBytesToTemp(ms.ToArray(), log, preserveSourceBytes);
         }
         catch { return (null, null); }
     }
@@ -101,16 +117,24 @@ namespace FfmpegGui.Services
     private static bool IsPngLike(string path)
         => Path.GetExtension(path).ToLowerInvariant() is ".png" or ".apng";
 
-    /// <summary>把一份 ICC 原始字节落成临时文件，并强制走 v4.4.0 重写/校验。</summary>
-    private static (string? path, string? description) ExtractIccBytesToTemp(byte[] bytes, Action<string>? log)
+    /// <summary>校验并落盘 ICC；仅默认的出站契约要求 v4.4 归一。</summary>
+    private static (string? path, string? description) ExtractIccBytesToTemp(byte[] bytes,
+        Action<string>? log, bool preserveSourceBytes)
     {
         var tmp = Path.Combine(PlatformServices.GetTempDir(), $"icc_extract_{Guid.NewGuid():N}.icc");
         try
         {
-            if (bytes.Length < 128) { TryDelete(tmp); return (null, null); }
+            if (bytes.Length < 128) return (null, null);
+            if (bytes.Length > MaxIccProfileBytes)
+            {
+                const string message = "[icc] ICC size exceeds 32 MiB; profile ignored\n";
+                if (log != null) log(message); else System.Diagnostics.Trace.WriteLine(message);
+                return (null, null);
+            }
             File.WriteAllBytes(tmp, bytes);
             if (!IsValidIccProfile(tmp, log)) { TryDelete(tmp); return (null, null); }
             var info = ParseInfo(tmp);
+            if (preserveSourceBytes) return (tmp, info?.Description);
             var normalized = NormalizeSourceIccToV44(tmp, log);
             if (normalized == null)
             {
@@ -142,7 +166,8 @@ namespace FfmpegGui.Services
     /// 合并路径不许悄悄放宽。
     /// </para>
     /// </summary>
-    public static (string? path, string? description) ExtractIccFromBase64(string? base64Value, Action<string>? log = null)
+    public static (string? path, string? description) ExtractIccFromBase64(string? base64Value,
+        Action<string>? log = null, bool preserveSourceBytes = false)
     {
         try
         {
@@ -152,21 +177,7 @@ namespace FfmpegGui.Services
                 : base64Value;
             // exiftool 的 base64 可能带换行/空白 ⇒ 先剥掉，别让解析器直接抛
             payload = payload.Replace("\r", "").Replace("\n", "").Replace(" ", "").Replace("\t", "");
-            var bytes = Convert.FromBase64String(payload);
-            if (bytes.Length < 128) return (null, null);
-            var tmp = Path.Combine(PlatformServices.GetTempDir(), $"icc_extract_{Guid.NewGuid():N}.icc");
-            File.WriteAllBytes(tmp, bytes);
-            if (!IsValidIccProfile(tmp, log)) { TryDelete(tmp); return (null, null); }
-            var info = ParseInfo(tmp);
-            var normalized = NormalizeSourceIccToV44(tmp, log);
-            if (normalized == null)
-            {
-                TryDelete(tmp);
-                return (null, info?.Description);
-            }
-            if (!string.Equals(Path.GetFullPath(normalized), Path.GetFullPath(tmp), StringComparison.OrdinalIgnoreCase))
-                TryDelete(tmp);
-            return (normalized, info?.Description);
+            return ExtractIccBytesToTemp(Convert.FromBase64String(payload), log, preserveSourceBytes);
         }
         catch { return (null, null); }
     }
@@ -202,17 +213,10 @@ namespace FfmpegGui.Services
     {
         try
         {
-            if (string.IsNullOrWhiteSpace(iccPath) || !File.Exists(iccPath)) return null;
-            var icc = File.ReadAllBytes(iccPath);
-            if (icc.Length < 132) return null;
-            var got = new double[9];
-            for (int c = 0; c < 3; c++)
-            {
-                string sig = c == 0 ? "rXYZ" : c == 1 ? "gXYZ" : "bXYZ";
-                var (off, size) = FindIccTag(icc, sig);
-                if (size < 20 || (long)off + 20 > icc.Length) return null;
-                for (int k = 0; k < 3; k++) got[c * 3 + k] = ReadS15Fixed16(icc, (int)off + 8 + k * 4);
-            }
+            // Use the same typed XYZ reader as the matrix path. Arbitrary tag bytes
+            // at the right offsets must not be mistaken for source RGB colorants.
+            var got = ReadIccColorants(iccPath);
+            if (got == null) return null;
             string? best = null;
             double bestErr = double.MaxValue;
             foreach (var tok in IccGamutCandidates)
@@ -220,9 +224,8 @@ namespace FfmpegGui.Services
                 var m = ColorSpaceRegistry.ColorantsD50(tok);
                 if (m == null) continue;
                 double err = 0;
-                for (int c = 0; c < 3; c++)
-                    for (int k = 0; k < 3; k++)
-                        err = Math.Max(err, Math.Abs(got[c * 3 + k] - m[k * 3 + c]));   // got[通道][XYZ] vs m[XYZ][通道]
+                for (int k = 0; k < 9; k++)
+                    err = Math.Max(err, Math.Abs(got[k] - m[k]));   // both are row-major RGB→XYZ(D50)
                 if (err < bestErr) { bestErr = err; best = tok; }
             }
             return bestErr <= 2e-3 ? best : null;
@@ -246,7 +249,8 @@ namespace FfmpegGui.Services
         {
             if (string.IsNullOrWhiteSpace(iccPath) || !File.Exists(iccPath)) return null;
             var icc = File.ReadAllBytes(iccPath);
-            if (icc.Length < 132) return null;
+            if (!IccProfileAnalyzer.ValidateStructure(icc, out _)
+                || ReadTagType(icc, 16) != "RGB " || ReadTagType(icc, 20) != "XYZ ") return null;
             var m = new double[9];
             for (int c = 0; c < 3; c++)
             {
@@ -383,13 +387,15 @@ namespace FfmpegGui.Services
             // 已经是目标版本且 tag 结构干净 ⇒ 原样返回；重写只为消除 v2/v4.3 或“4.4 头 + v2 tag”。
             // 但已知空间若缺 ICC.1:2022 的 `cicp` 标注，仍要重建一次：用户要求 ICC 内也标注 CICP，
             // 不能因为“版本已经是 4.4”就跳过这项额外语义。
-            if (bytes[8] == 4 && bytes[9] == 0x40 && bytes[10] == 0 && bytes[11] == 0
-                && IsCleanV44Tags(bytes) && !SourceIccNeedsCicpTag(iccPath)
-                && HasProfileId(bytes))
+            var identity = ColorSpaceIdentify.IdentifyIccBytes(bytes);
+            if (!identity.IsValid) return null;
+            if (IsGeneratedV44(bytes) && IsCleanV44Tags(bytes) && !SourceIccNeedsCicpTag(iccPath))
                 return iccPath;
+            // Rebuilding from incidental matrix tags must never erase a LUT/MPE transform.
+            if (identity.Kind != IccProfileKind.MatrixTrc) return null;
 
             var desc = ParseInfo(iccPath)?.Description;
-            var descriptor = FfmpegGui.Services.ColorMapping.ColorSpaceIdentify.FromIccFile(iccPath, desc);
+            var descriptor = identity.CreateMatrixTrcDescriptor(desc);
             var matrix = ReadIccColorants(iccPath);
             var curve = ReadIccCurve(iccPath);
             var wtpt = ReadIccWhitePoint(iccPath);
@@ -465,6 +471,17 @@ namespace FfmpegGui.Services
     /// v4.4 的 tag 结构检查：`desc`/`cprt` 必须是 v4 的 mluc；`chad` 必须存在。
     /// 只检查版本头会把“4.4 头 + v2 descriptionType/textType”的混合 profile 当合法，故一并检查。
     /// </summary>
+    internal static bool IsGeneratedV44(byte[] icc)
+        => icc.Length >= 132 && icc[8] == 4 && icc[9] == 0x40 && icc[10] == 0 && icc[11] == 0
+            && IccProfileBuilder.HasValidProfileId(icc);
+
+    private static bool IsGeneratedV44File(string? path)
+    {
+        try { return path != null && File.Exists(path) && IsGeneratedV44(File.ReadAllBytes(path)); }
+        catch (IOException) { return false; }
+        catch (UnauthorizedAccessException) { return false; }
+    }
+
     private static bool IsCleanV44Tags(byte[] icc)
     {
         return IsTagType(icc, "desc", "mluc")
@@ -575,17 +592,14 @@ namespace FfmpegGui.Services
         // BuildStandardIccFromCicp 的缓存写失败（句柄/杀软瞬时占用）会让整条链误以为
         // “标准 ICC 不可生成”。缓存本身仍是有效 v4.4 产物时直接复用，避免退到
         // ffmpeg iccgen（它还会再失败一次，TIFF 最终无标注）。
-        var standardSlug = $"{primaries}_{trc ?? ""}".Replace('/', '_').Replace(':', '_');
-        var standardCache = Path.Combine(PlatformServices.GetTempDir(),
-            $"stdbuilt_{standardSlug}.v44cicp.icc");
-        if (File.Exists(standardCache) && IsValidIccProfile(standardCache))
-            return standardCache;
+        // Never fall back to an older writer's cache: header version alone does not
+        // validate the tag payload or the Profile ID.
         // trc/matrix 缺失时无法构造 zscale 滤镜（引擎计划可能不要求 ICC），回退调用方分支。
         if (string.IsNullOrEmpty(trc) || string.IsNullOrEmpty(matrix))
             return null;
         var tmpDir = PlatformServices.GetTempDir();
-        var outIcc = Path.Combine(tmpDir, $"stdicc_{primaries}_{trc}_{matrix}.icc");
-        if (File.Exists(outIcc) && IsValidIccProfile(outIcc)) return outIcc;
+        var outIcc = Path.Combine(tmpDir, $"stdicc_v{IccProfileBuilder.WriterVersion}_{primaries}_{trc}_{matrix}.icc");
+        if (IsGeneratedV44File(outIcc)) return outIcc;
         try
         {
             var ffmpegDir = Path.GetDirectoryName(AppSettingsService.Current.FfmpegPath) ?? "";
@@ -662,8 +676,8 @@ namespace FfmpegGui.Services
             catch { TryDelete(icc); return null; }
             // 最后一道收口：ffmpeg iccgen 产出的 profile 仍可能是 ProfileID=0 或缺少 ICC 内
             // cicp 标注；统一过一遍 v4.4 重建器（不能重建时保留原 profile，不伪造标签）。
-            var finalized = NormalizeSourceIccToV44(outIcc, log) ?? outIcc;
-            return IsValidIccProfile(finalized) ? finalized : null;
+            var finalized = NormalizeSourceIccToV44(outIcc, log);
+            return IsGeneratedV44File(finalized) ? finalized : null;
         }
         catch { return null; }
     }
@@ -684,11 +698,8 @@ namespace FfmpegGui.Services
         var slug = $"{primaries}_{trc}".Replace('/', '_').Replace(':', '_');
         // 缓存名带 revision：加入 cicp tag 后旧 592B 缓存（无 cicp）必须视为不同产物；
         // 只靠删除旧文件会受 Windows 句柄/杀软瞬时占用影响，失败后又会回退到旧缓存。
-        var outIcc = System.IO.Path.Combine(tmpDir, $"stdbuilt_{slug}.v44cicp.icc");
-        // 旧缓存（本批改造前由 iccgen 生成）没有 chrm 色度标签；不能只看“文件存在”就复用，
-        // 否则标准 ICC 的色度仍读不出。缺 chrm 或 cicp 就重生成，已有合规缓存直接复用。
-        if (File.Exists(outIcc) && IsValidIccProfile(outIcc)
-            && HasIccTag(outIcc, "chrm") && HasIccTag(outIcc, "cicp")) return outIcc;
+        var outIcc = System.IO.Path.Combine(tmpDir, $"stdbuilt_v{IccProfileBuilder.WriterVersion}_{slug}.v44cicp.icc");
+        if (IsGeneratedV44File(outIcc)) return outIcc;
         try
         {
             var bytes = IccProfileBuilder.Build(space);
@@ -700,14 +711,14 @@ namespace FfmpegGui.Services
             try
             {
                 File.WriteAllBytes(outIcc, bytes);
-                if (IsValidIccProfile(outIcc) && HasIccTag(outIcc, "cicp")) return outIcc;
+                if (IsGeneratedV44File(outIcc)) return outIcc;
             }
             catch { }
             var alt = outIcc + $".{Guid.NewGuid():N}.icc";
             try
             {
                 File.WriteAllBytes(alt, bytes);
-                if (IsValidIccProfile(alt) && HasIccTag(alt, "cicp")) return alt;
+                if (IsGeneratedV44File(alt)) return alt;
             }
             catch (Exception ex)
             {
@@ -715,7 +726,7 @@ namespace FfmpegGui.Services
                 else System.Diagnostics.Trace.WriteLine($"[icc] 标准 ICC 写入失败：{ex.Message}");
             }
             try { if (File.Exists(alt)) File.Delete(alt); } catch { }
-            return File.Exists(outIcc) && IsValidIccProfile(outIcc) ? outIcc : null;
+            return IsGeneratedV44File(outIcc) ? outIcc : null;
         }
         catch (Exception ex)
         {
@@ -749,7 +760,7 @@ namespace FfmpegGui.Services
         var slug = NamedIccSlug(specKey);
         if (slug != null)
         {
-            var user = FindUserNamedIcc(slug);
+            var user = FindUserNamedIcc(slug, specKey);
             if (user != null) return user;
             var built = BuildNamedIcc(slug, specKey, version);
             if (built != null) return built;
@@ -771,11 +782,11 @@ namespace FfmpegGui.Services
         if (!IccProfileBuilder.IsFaithfulOnly(specKey)) return null;
         var slug = NamedIccSlug(specKey);
         if (slug == null) return null;
-        return FindUserNamedIcc(slug) ?? BuildNamedIcc(slug, specKey, version);
+        return FindUserNamedIcc(slug, specKey) ?? BuildNamedIcc(slug, specKey, version);
     }
 
-    /// <summary>用户提供的标准 ICC（PLAN/iccs/<slug>.icc）：魔数 + tag 表 desc 校验；无效返回 null。</summary>
-    private static string? FindUserNamedIcc(string slug)
+    /// <summary>Named output profiles must match the requested colorants and transfer, not just a filename.</summary>
+    private static string? FindUserNamedIcc(string slug, string? specKey)
     {
         var dir = AppSettingsService.Current.IccDirectory;
         if (string.IsNullOrWhiteSpace(dir)) return null;
@@ -783,10 +794,32 @@ namespace FfmpegGui.Services
         if (!File.Exists(cand)) return null;
         try
         {
-            var bytes = File.ReadAllBytes(cand);
-            return IsValidIccProfile(cand) && FindIccTag(bytes, "desc").size > 0 ? cand : null;
+            if (MatchesNamedColorimetry(cand, specKey)) return cand;
+            System.Diagnostics.Trace.TraceWarning($"[icc] Ignoring named ICC '{cand}': its measured colorants/transfer do not match {specKey}.");
+            return null;
         }
         catch { return null; }
+    }
+
+    private static bool MatchesNamedColorimetry(string path, string? specKey)
+    {
+        try
+        {
+            var expected = ColorSpaceDescriptor.FromNamedSpace(specKey);
+            var measured = ColorSpaceIdentify.FromIccFile(path);
+            if (expected?.RgbToXyzD50 is not { Length: 9 } reference
+                || measured?.RgbToXyzD50 is not { Length: 9 } matrix) return false;
+            for (int i = 0; i < 9; i++)
+                if (Math.Abs(matrix[i] - reference[i]) > 0.002) return false;
+            for (int i = 0; i <= 256; i++)
+            {
+                double x = i / 256.0;
+                double a = measured.Curve.ToLinear(x), b = expected.Curve.ToLinear(x);
+                if (!double.IsFinite(a) || !double.IsFinite(b) || Math.Abs(a - b) > 0.001) return false;
+            }
+            return true;
+        }
+        catch { return false; }
     }
 
     /// <summary>
@@ -800,7 +833,19 @@ namespace FfmpegGui.Services
         var tmpDir = PlatformServices.GetTempDir();
         var family = version == IccProfileBuilder.IccProfileVersion.V2 ? "v2" : "v44";
         var outIcc = System.IO.Path.Combine(tmpDir, $"named_{slug}.v{IccProfileBuilder.WriterVersion}.{family}.icc");
-        if (File.Exists(outIcc) && IsValidIccProfile(outIcc)) return outIcc;
+        bool ValidCache()
+        {
+            try
+            {
+                return File.Exists(outIcc) && MatchesNamedColorimetry(outIcc, specKey)
+                    && (version == IccProfileBuilder.IccProfileVersion.V2
+                        ? IsValidIccProfile(outIcc) && File.ReadAllBytes(outIcc)[8] == 2
+                        : IsGeneratedV44File(outIcc));
+            }
+            catch (IOException) { return false; }
+            catch (UnauthorizedAccessException) { return false; }
+        }
+        if (ValidCache()) return outIcc;
         try
         {
             var space = IccProfileBuilder.SpaceFor(specKey);
@@ -820,10 +865,10 @@ namespace FfmpegGui.Services
             catch
             {
                 TryDelete(tmp);
-                return File.Exists(outIcc) && IsValidIccProfile(outIcc) ? outIcc : null;
+                return ValidCache() ? outIcc : null;
             }
             CleanupOldNamedIccCaches(tmpDir, slug, outIcc);
-            return IsValidIccProfile(outIcc) ? outIcc : null;
+            return ValidCache() ? outIcc : null;
         }
         catch { return null; }
     }
@@ -924,12 +969,14 @@ namespace FfmpegGui.Services
             try
             {
                 if (!File.Exists(filePath)) { reason = "文件不存在"; return false; }
+                if (new FileInfo(filePath).Length > MaxIccProfileBytes)
+                { reason = "ICC size 超过 32 MiB 读取上限"; return false; }
                 var bytes = File.ReadAllBytes(filePath);
-                if (bytes.Length < 128) { reason = $"短于 128B 头（实 {bytes.Length}）"; return false; }
+                if (bytes.Length < 132) { reason = $"ICC size 短于头与 tag 计数（实 {bytes.Length}，须 ≥132B）"; return false; }
 
                 long declared = ((long)bytes[0] << 24) | ((long)bytes[1] << 16) | ((long)bytes[2] << 8) | bytes[3];
-                if (declared < 128 || declared > bytes.Length)
-                { reason = $"头 size={declared} 不自洽（须 128 ≤ size ≤ 文件长 {bytes.Length}）"; return false; }
+                if (declared < 132 || declared > bytes.Length)
+                { reason = $"头 size={declared} 不自洽（须 132 ≤ size ≤ 文件长 {bytes.Length}）"; return false; }
 
                 if (System.Text.Encoding.ASCII.GetString(bytes, 36, 4) != "acsp")
                 { reason = "36-39 魔数不是 'acsp'"; return false; }
@@ -945,31 +992,19 @@ namespace FfmpegGui.Services
                 }
 
                 string cls = Fourcc(12), cs = Fourcc(16), pcs = Fourcc(20);
-                var classes = new[] { "scnr", "mntr", "prtr", "spac", "link", "named", "msng" };
+                var classes = new[] { "scnr", "mntr", "prtr", "spac", "link", "abst", "nmcl", "named", "msng" };
                 if (!IsFourccCode(cls) || Array.IndexOf(classes, cls) < 0)
                 { reason = $"设备类别 12-15 非法（实 '{cls}'）"; return false; }
                 if (!IsFourccCode(cs))
                 { reason = $"色彩空间 16-19 不是四字符码（实 '{cs}'）"; return false; }
-                if (pcs != "XYZ " && pcs != "Lab ")
-                { reason = $"PCS 20-23 不是 'XYZ '/'Lab '（实 '{pcs}'）"; return false; }
+                // DeviceLink's PCS field names its output device space, not XYZ/Lab.
+                if (cls == "link" ? !IsFourccCode(pcs) : pcs != "XYZ " && pcs != "Lab ")
+                { reason = $"PCS 20-23 非法（实 '{pcs}'）"; return false; }
 
-                long tagCount = ((long)bytes[128] << 24) | ((long)bytes[129] << 16) | ((long)bytes[130] << 8) | bytes[131];
-                if (tagCount <= 0 || 132 + tagCount * 12 > bytes.Length)
-                { reason = $"tag 目录越界（计数={tagCount}，需 {132 + tagCount * 12}B / 文件 {bytes.Length}B）"; return false; }
-
-                for (int i = 0; i < tagCount; i++)
-                {
-                    int e = 132 + i * 12;
-                    uint sig = ((uint)bytes[e] << 24) | ((uint)bytes[e + 1] << 16) | ((uint)bytes[e + 2] << 8) | bytes[e + 3];
-                    long off = ((long)bytes[e + 4] << 24) | ((long)bytes[e + 5] << 16) | ((long)bytes[e + 6] << 8) | bytes[e + 7];
-                    long len = ((long)bytes[e + 8] << 24) | ((long)bytes[e + 9] << 16) | ((long)bytes[e + 10] << 8) | bytes[e + 11];
-                    if (sig == 0 || len <= 0 || off < 128 || off + len > bytes.Length)
-                    { reason = $"第 {i} 个 tag 越界/空（sig={sig:x8} off={off} len={len}）"; return false; }
-                    // ⚠ 曾在此拒"目录非升序"，实测被 lcms 自己的 10 件里的 7 件否证
-                    //   （desc 排在 A2B0/cprt 之前是真常见写法）⇒ 那是**过度收紧**，会把真 ICC 判成无 ICC。
-                    //   读者侧本来就有线性扫描兜底（见 FindIccTag 的注释），故本判据零收益、已撤。
-                }
-                return true;
+                // Share the bounded directory/payload checks with identity analysis, without
+                // requiring matrix-engine support or rewriting a legacy source profile.
+                // Unsorted directories, complete shared payloads and file-end padding remain legal.
+                return IccProfileAnalyzer.ValidateStructure(bytes, out reason);
             }
             catch (Exception ex) { reason = $"读取异常 {ex.GetType().Name}"; return false; }
         }

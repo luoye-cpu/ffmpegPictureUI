@@ -15,8 +15,8 @@ namespace FfmpegGui.Models
         /// <summary>输出色彩范围: auto/tv/pc</summary>
         public string? ColorRange { get; set; }
         /// <summary>
-        /// 输出矩阵模式（C-TOKEN@1，color-matrix-options 计划）：null = auto（不指定，
-        /// 旧预设回放不动）。取值域与 <see cref="FfmpegOptions.ColorOutMatrix"/> 一致
+        /// 输出矩阵模式：null = 旧预设未指定，保留当前值；"auto" = 显式恢复自动。
+        /// 其它值与 <see cref="FfmpegOptions.ColorOutMatrix"/> 一致
         /// （auto/rgb/bt709/bt601/bt470bg/smpte170m/smpte240m/fcc/bt2020nc/ycgco/xyb）；
         /// bt601 别名与大小写由落模型时的 setter 归一兜底折为规范 token。
         /// </summary>

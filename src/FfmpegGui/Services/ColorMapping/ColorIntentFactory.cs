@@ -34,10 +34,57 @@ public static class ColorIntentFactory
         => string.IsNullOrWhiteSpace(encoder)
            || encoder.StartsWith("libaom", StringComparison.OrdinalIgnoreCase);
     /// <summary>把选项装配为意图；不可装配时返回 null 并在 <paramref name="reason"/> 给出原因。</summary>
+    private static IccProfileIdentity ReadExplicitIcc(FfmpegOptions o)
+        => ColorSpaceIdentify.IdentifyIccProfile(o.IccFilePath);
+
+    private static string? ExplicitIccIssue(IccProfileIdentity identity)
+        => identity.Kind == IccProfileKind.MalformedOrUnreadable
+            ? $"ICC_EXPLICIT_INVALID: {identity.Detail ?? identity.IssueCode}" : null;
+
+    internal static string? GetExplicitIccIssue(FfmpegOptions o) => ExplicitIccIssue(ReadExplicitIcc(o));
+
+    private static ColorSourceProvenance? BoundProvenance(FfmpegOptions o, string inputPath)
+    {
+        if (o.ColorSourceProvenance is not { IntermediatePath.Length: > 0 } provenance) return null;
+        try
+        {
+            return string.Equals(Path.GetFullPath(provenance.IntermediatePath), Path.GetFullPath(inputPath),
+                OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal) ? provenance : null;
+        }
+        catch (ArgumentException) { return null; }
+        catch (NotSupportedException) { return null; }
+    }
+
+    internal static bool HasUserColorTarget(FfmpegOptions o) => o.HasExplicitColorTarget
+        || (!string.IsNullOrWhiteSpace(o.ColorSpace) && !o.ColorSpace.Equals("auto", StringComparison.OrdinalIgnoreCase));
+
+    private static IccProfileIdentity ResolveSourceIcc(IccProfileIdentity explicitIcc,
+        ColorSourceProvenance? provenance, FfmpegCommandBuilder.ColorMetadata meta)
+        => explicitIcc.Kind != IccProfileKind.Absent ? explicitIcc
+            : provenance != null || meta.IccNotUsableForRgb ? IccProfileIdentity.Absent
+                : meta.iccIdentity ?? IccProfileIdentity.Absent;
+
+    internal static IccProfileIdentity EffectiveIccIdentity(FfmpegOptions o, string path)
+        => ResolveSourceIcc(ReadExplicitIcc(o), BoundProvenance(o, path), FfmpegCommandBuilder.ProbeInputColorMetadata(path));
+
     public static ColorIntent? FromOptions(FfmpegOptions o, string inputPath, out string? reason)
+        => FromOptions(o, inputPath, out reason, canCarryOpaqueSourceIcc: false);
+
+    /// <summary>The execution route must explicitly vouch for byte-exact opaque ICC carry.</summary>
+    public static ColorIntent? FromOptions(FfmpegOptions o, string inputPath, out string? reason,
+        bool canCarryOpaqueSourceIcc)
     {
         reason = null;
         if (o == null) { reason = "options 为空"; return null; }
+        var explicitIcc = ReadExplicitIcc(o);
+        var explicitIssue = ExplicitIccIssue(explicitIcc);
+        if (explicitIssue != null)
+        {
+            // Return a rejected intent, not null: null is the legacy fallback signal.
+            reason = explicitIssue;
+            return new ColorIntent { Strategy = o.ColorStrategy, SourceIccIdentity = explicitIcc,
+                SourceIccStatus = SourceIccStatus.Unreadable, SourceIccIsExplicit = true };
+        }
         // exiftool 抽取 ICC 时以独立进程执行；相对路径会相对进程工作目录解析，调用方 cwd 不一定是仓库根
         // （实测 ProPhoto ICC-only 相对路径 ⇒ exiftool File not found、整条计划 exit 90）。入口统一绝对化。
         try { inputPath = Path.GetFullPath(inputPath); }
@@ -45,6 +92,55 @@ public static class ColorIntentFactory
 
         var fmt = (o.Format ?? "").Trim().ToLowerInvariant();
         var caps = ColorMappingEngine.CapsFor(fmt);
+        var provenance = BoundProvenance(o, inputPath);
+        bool isRawProvenance = provenance?.Origin == ColorSourceOrigin.RawIntermediate;
+        bool isUltraHdrProvenance = provenance?.Origin == ColorSourceOrigin.UltraHdrDecoded;
+        bool sourceIsRaw = isRawProvenance || RawService.IsRawFile(provenance?.OriginalInputPath ?? inputPath);
+        bool userTargetExplicit = HasUserColorTarget(o);
+        bool targetExplicit = o.ColorFromRawDefault ? caps.HasColorPath : userTargetExplicit;
+        var meta = FfmpegCommandBuilder.ProbeInputColorMetadata(inputPath);
+        var sourceIdentity = ResolveSourceIcc(explicitIcc, provenance, meta);
+        if (sourceIdentity.Kind == IccProfileKind.LutOrUnsupported)
+        {
+            // There is no safe nominal matrix, curve, or CICP fallback for opaque ICC.
+            var opaque = new ColorIntent
+            {
+                Strategy = o.ColorStrategy, Manual = BuildManualIntent(o), Format = caps,
+                SourceIccIdentity = sourceIdentity, SourceIccStatus = SourceIccStatus.Present,
+                SourceIccIsExplicit = explicitIcc.IsValid, SourceIsRaw = sourceIsRaw,
+                TargetExplicit = targetExplicit,
+                TargetBitDepth = Math.Min(o.BitDepth ?? (meta.bitDepth > 8 ? meta.bitDepth : 8), caps.MaxBitDepth),
+                TargetLossless = o.Lossless,
+                ExternalEncoderExit = (fmt == "jxl" && o.EncoderBackend == EncoderBackend.Cjxl) || fmt == "jxr",
+                ExitWritesIcc = ExitWritesIccFor(fmt) && (fmt != "avif" || AvifIccExitAvailable(o.Encoder)),
+                CanCarryOpaqueSourceIcc = canCarryOpaqueSourceIcc,
+                GainMapRequested = o.JpegGainMap, GainMapBaseGamut = o.JpegGainMapBaseGamut,
+                ToneMapRequested = !string.IsNullOrWhiteSpace(o.ColorToneMap)
+                    && !o.ColorToneMap.Trim().Equals("none", StringComparison.OrdinalIgnoreCase),
+                AllowGamutCompression = ColorEngineRouter.GamutMapRequested(o),
+                OutMatrixMode = o.ColorOutMatrix,
+            };
+            if (canCarryOpaqueSourceIcc && targetExplicit && WindowsIccTransform.IsAvailable)
+            {
+                var named = ColorSpaceRegistry.Resolve(o.ColorSpace);
+                var p = o.HasExplicitColorTarget ? ColorSpaceRegistry.NormalizePrimariesToken(o.ColorPrimaries) : named?.OutPrimaries;
+                var t = o.HasExplicitColorTarget ? ColorSpaceRegistry.NormalizeTrcToken(o.ColorTrc) : named?.OutTrc;
+                // A missing target axis cannot be inferred from an opaque input. Keep
+                // HDR, unnamed/wide spaces, and requests for zimg's curve off this route.
+                if (p is "bt709" or "smpte432" or "bt2020" && t is "iec61966-2-1" or "bt709"
+                    && (o.HasExplicitColorTarget || named?.IccgenPrimaries == p)
+                    && !ColorSpaceRegistry.IsZimgCurveCaliber(o)
+                    && IccProfileService.BuildStandardIccBytesFromCicp(p, t) is { } bytes)
+                {
+                    opaque.TargetIccIdentity = ColorSpaceIdentify.IdentifyIccBytes(bytes);
+                    opaque.Target = ColorSpaceDescriptor.FromCicp(p, t, "CMS output");
+                }
+            }
+            if (Enum.TryParse<CarryScope>(o.ColorCarryScope, true, out var scope)) opaque.CarryScope = scope;
+            if (!string.IsNullOrWhiteSpace(meta.colorPrimaries) || !string.IsNullOrWhiteSpace(meta.colorTrc))
+                opaque.Warnings.Add("source ICC is not representable by the matrix/TRC engine; competing container CICP is not used");
+            return opaque;
+        }
         // ── 无色彩通路容器（`HasColorPath=false`）的放行范围（2026-09-17 更新）──────────────
         // `HasColorPath = CanCicp || CanCarryArbitraryIcc || CanGenerateIccFromCicp`。为 false 意味着
         // **产物里放不下任何色彩声明**（GIF 是调色板、PPM/BMP 是裸像素…）。此前一律 return null ⇒
@@ -66,58 +162,16 @@ public static class ColorIntentFactory
         if (!caps.HasColorPath && fmt != "gif" && fmt != "jxr")
         { reason = $"{fmt} 无色彩通路（既不能写 CICP 也不能带 ICC）"; return null; }
 
-        // ── 源描述符：外部 ICC（用户显式指定源）→ 源内嵌 ICC（度量识别）→ 容器 CICP 标签 → 业界惯例假定 ──
-        // 容器探测只做一次（FfmpegCommandBuilder 内部有 10s 缓存），既供标签也供 HDR 峰值。
-        var meta = FfmpegCommandBuilder.ProbeInputColorMetadata(inputPath);
+        // External ICC wins over a proven intermediate, then embedded ICC, CICP and convention.
         ColorSpaceDescriptor? src = null;
         var intentWarnings = new List<string>();
-        // ── 外部 ICC（`--icc-file`）：语义 = **用户显式指定源色彩空间**，优先级最高（2026-09-16 接入引擎）──
-        // 依据：① 该选项的 help 与 legacy 口径都写明「用外部 ICC 文件判定**源**色彩空间」；
-        //       ② 无 ICC / 无标签的源在引擎里只能落到「惯例假定 sRGB」（置信度 CodecDefault），
-        //          而 CodecDefault 被规划层的置信度闸门挡住不许改像素 ⇒ 用户即便知道源是 P3 也无从表达。
-        //          外部 ICC 的置信度是 IccMetric（最高）⇒ 映射被放行。
-        // ⚠ 外部 ICC 的 SourceIccPath 归属：显式 `--icc-file` 是用户提供的稳定文件路径，
-        //   会作为 CarryIcc 的携带源；这里不再把它排除在 SourceIccPath 之外（旧注释已过期）。
-        //   ICC 落盘失败/格式不可携带时，规划层按 SourceColorUnmappable 降级为“只警告、不拒绝”。
-        if (!string.IsNullOrWhiteSpace(o.IccFilePath))
+        if (explicitIcc.Kind == IccProfileKind.MatrixTrc && explicitIcc.ExternalPath is { } externalPath)
         {
-            try
+            src = explicitIcc.CreateMatrixTrcDescriptor(IccProfileService.ParseInfo(externalPath)?.Description);
+            if (src != null)
             {
-                if (IccProfileService.IsValidIccProfile(o.IccFilePath))
-                {
-                    src = ColorSpaceIdentify.FromIccFile(o.IccFilePath,
-                        IccProfileService.ParseInfo(o.IccFilePath)?.Description);
-                    if (src != null)
-                    {
-                        // 2026-11-15 收口：外部 ICC 不再只用于“判定源空间”。用户显式给出
-                        // `--icc-file` 时把它作为可携带的源 ICC，让 CarryIcc/标准空间改写
-                        // 与内嵌源 ICC 走同一条路径；文件是用户提供的稳定路径，不按临时件回收。
-                        // 同时先做 v4.4 + ProfileID 归一；未知/不可重建时保留原文件，
-                        // 2026-11-18 起只警告、不拒绝（规划层按 SourceColorUnmappable 降级）。
-                        var portable = IccProfileService.NormalizeSourceIccToV44(o.IccFilePath);
-                        src.SourceIccPath = portable ?? o.IccFilePath;
-                        src.Name = $"{src.Name} [--icc-file]";
-                    }
-                    else
-                    {
-                        intentWarnings.Add(
-                            "external ICC file is valid but has no matrix/curve descriptor; "
-                            + "ignoring it and continuing with source/convention (possible misidentification)");
-                    }
-                }
-                else
-                {
-                    intentWarnings.Add(
-                        "external ICC file is not a valid ICC profile; ignoring it and continuing "
-                        + "with source/convention (possible misidentification)");
-                }
-            }
-            catch (Exception ex)
-            {
-                // 外部 ICC 不可读/不可解析：只警告，不拒绝；退回源内嵌 ICC 与标签路径。
-                intentWarnings.Add(
-                    $"external ICC file could not be read ({ex.Message}); ignoring it and continuing "
-                    + "with source/convention (possible misidentification)");
+                src.SourceIccPath = externalPath;
+                src.Name = $"{src.Name} [--icc-file]";
             }
         }
         // ── RAW 中间件：**本程序自己产出的文件，色彩语义是已知的**（2026-10-03 新增）──────────
@@ -131,12 +185,11 @@ public static class ColorIntentFactory
         //   `RawService.IsRawFile(inputPath)`（RAW 预处理）或 `DecodedUltraHdrColorSpace` 非空
         //   （Ultra HDR 解码）。否则**命令行/其它路径**设的 `ColorSourceDecl*`（如 SDR JXL 的
         //   输入声明）会在这里被当成"已知源"、拿到 `NamedIcc` 置信度，**跳过真正的标签/ICC 探测**。
-        bool isSelfMadeIntermediate = RawService.IsRawFile(inputPath)
-            || !string.IsNullOrWhiteSpace(o.DecodedUltraHdrColorSpace);
-        if (src == null && isSelfMadeIntermediate && !string.IsNullOrWhiteSpace(o.ColorSourceDeclTrc))
+        if (src == null && (isRawProvenance || isUltraHdrProvenance))
         {
-            src = ColorSpaceDescriptor.FromCicp(o.ColorSourceDeclPrimaries, o.ColorSourceDeclTrc,
-                RawService.IsRawFile(inputPath)
+            src = ColorSpaceDescriptor.FromCicp(provenance?.DeclaredPrimaries ?? o.ColorSourceDeclPrimaries,
+                provenance?.DeclaredTrc ?? o.ColorSourceDeclTrc,
+                isRawProvenance
                     ? "RAW 中间件（dngtool 去马赛克线性输出）"
                     : "Ultra HDR 解码中间件（线性 sRGB PFM）");
             if (src != null)
@@ -176,7 +229,6 @@ public static class ColorIntentFactory
         {
             // 2026-11-17（警告条目机制）：exiftool 读取失败不再 fail-closed。
             // 用户要求允许按容器/格式惯例继续，但必须在运行中提示“可能是猜的”。
-            bool sourceIsRaw = RawService.IsRawFile(inputPath);
             string conventionName = sourceIsRaw ? "BT.2020" : "sRGB";
             if (meta.exifReadFailed)
             {
@@ -204,7 +256,9 @@ public static class ColorIntentFactory
         // 2026-11-18：源 ICC 字段存在但读不出/解析不了 ⇒ 只警告，不拒绝。
         // 即使 CICP/惯例已给出一个可用描述符，“源里还有一份没读出来的 ICC”仍是
         // 用户必须知道的不确定性；条目标黄，产物照常。
-        if (meta.iccStatus == SourceIccStatus.Unreadable && !meta.exifReadFailed)
+        if (!explicitIcc.IsValid && provenance == null
+            && (sourceIdentity.Kind == IccProfileKind.MalformedOrUnreadable || meta.iccStatus == SourceIccStatus.Unreadable)
+            && !meta.exifReadFailed)
         {
             intentWarnings.Add(
                 "source ICC exists but is unreadable; using CICP/convention as best effort "
@@ -261,13 +315,6 @@ public static class ColorIntentFactory
         //     的定义本身就把二者并列，见 `FfmpegOptions.cs:213`）；两者都缺时才回退 `ColorSpace`。
         //   ⚠ 仍然**不含 Matrix** —— 那是**输入声明**，含它会让 `--color-matrix X --color-space Y`
         //     丢掉 `ColorSpace` 目标（2026-10-04 实机确证，勿回退）。
-        bool userTargetExplicit = o.HasExplicitColorTarget
-            ? (!string.IsNullOrWhiteSpace(o.ColorPrimaries) || !string.IsNullOrWhiteSpace(o.ColorTrc))
-            : !string.IsNullOrWhiteSpace(o.ColorSpace)
-              && !o.ColorSpace.Equals("auto", StringComparison.OrdinalIgnoreCase);
-        bool targetExplicit = o.ColorFromRawDefault
-            ? caps.HasColorPath
-            : userTargetExplicit;
         ColorSpaceDescriptor? dst = null;
         if (targetExplicit)
         {
@@ -319,15 +366,18 @@ public static class ColorIntentFactory
             FixHdrNits(dst);
         }
 
-        var sourceIccStatus = srcNn.SourceIccPath is { Length: > 0 }
+        var sourceIccStatus = sourceIdentity.IsValid || srcNn.SourceIccPath is { Length: > 0 }
             ? SourceIccStatus.Present
-            : meta.iccStatus;
+            : sourceIdentity.Kind == IccProfileKind.MalformedOrUnreadable ? SourceIccStatus.Unreadable
+                : provenance != null ? SourceIccStatus.Absent : meta.iccStatus;
 
         var it = new ColorIntent
         {
             Strategy = o.ColorStrategy,
             Source = src,
             SourceIccStatus = sourceIccStatus,
+            DisputedColorWithoutReliableDescription = (meta.InvalidPngCicp || meta.VideoColorConflict != null)
+                && srcNn.Confidence < EquivalenceTolerances.MinConfidenceForMapping,
             Target = dst,
             TargetExplicit = targetExplicit,
             Format = caps,
@@ -344,16 +394,8 @@ public static class ColorIntentFactory
             //   杜绝"取消勾选高级色彩后残留值仍流入管道"的历史缺陷）。
             //   ⚠ 与上面 `userTargetExplicit` 的**值派生**口径**不冲突**：那个判"是否已有目标"（只看值），
             //     这个判"三元组是否可信"（看 UI 启用位）；两者回答的是不同问题，**不要合并**。
-            // ── matrix CLI 缺口补位（2026-11-10，AU-W2 附带；R4 登记遗留②）──────────────────
-            //   `ManualIntent.Create(enabled=false)` 把**全部**字段强制 null ⇒ CLI 裸 `--color-matrix`
-            //   （未开高级色彩）的值到不了规划层 ⇒ `ColorStrategyPlanning` 的 no-op 点名
-            //   （`it.Manual?.FieldsFromUi == true && Manual.Matrix 非空`，R4 批次定稿）永远不可达。
-            //   补位 = **值派生**：未开高级色彩但用户**显式**给了 matrix（非 auto）时，构造一个
-            //   **只带 Matrix** 的 ManualIntent——Space/Primaries/Transfer 保持 null ⇒
-            //   `ManualIntent.HasAny`（只看那三个字段）恒 false ⇒ `PlanManual` 的手动通路
-            //   **不会**被误触发，像素行为零变化；唯一效果 = matrix 的 no-op 点名可达。
-            //   ⚠ 不动 `ManualIntent.Create` 本身（防呆契约「FieldsFromUi=false 时全字段强制 null」
-            //     是 UI 残留值防线，语义不动）；也不动 :369-419 守卫族（R1 既有约束）。
+            // Preserve the explicit input matrix in the intent. Its execution and diagnostics
+            // follow the actual decoder input layout and do not select a manual target space.
             Manual = BuildManualIntent(o),
             // ── 位深（2026-09-16 与 legacy 口径对齐）──
             // 用户显式指定优先；**未指定时跟随源位深**（>8 才提升，否则按 8），再按容器上限钳制。
@@ -367,7 +409,7 @@ public static class ColorIntentFactory
             //   `?? o.BitDepth` 兜的是"意图装配早于钳制"那条顺序 —— 那时 o.BitDepth 本身就还是请求档。
             //   null（用户未指定 ⇒ 跟随源位深）**刻意不当请求档**：那不是"请求 ≠ 交付"。
             RequestedBitDepth = o.BitDepthRequested ?? o.BitDepth,
-            SourceIsRaw = RawService.IsRawFile(inputPath),
+            SourceIsRaw = sourceIsRaw,
             AllowUnlabeled = o.ColorAllowUnlabeled,
             // ── 色域压缩（GMO）开关（2026-09-17 接入引擎）────────────────────────────────
             // ⚠ 此前 `AllowGamutCompression` **从未被装配**（全仓只有字段声明 + ToPolicy 透传）
@@ -421,8 +463,10 @@ public static class ColorIntentFactory
         // 判定复用**传统管线的同一个函数** `ResolveFaithfulUltraWideIcc` ⇒ 两条管线口径一致、可 A/B 对拍。
         // ⚠ 此前规划层没有这个概念 ⇒ 引擎会把 ProPhoto 当普通任务**归一化**：
         //   实测像素被改、源 ICC 丢失、还写上误导性 CICP `bt709,bt709`（prophoto-faithful 26/0 → 13/13）。
-        it.FaithfulIccPath = FfmpegCommandBuilder.ResolveFaithfulUltraWideIcc(
-            o.ColorStrategy, o.ColorSpace, meta.sourceGamutName, meta.colorTrc, fmt,
+        // Use the resolved source, including an explicit ICC override. Explicit target axes
+        // request a conversion and cannot be replaced by the source's faithful carry shortcut.
+        it.FaithfulIccPath = o.HasExplicitColorTarget ? null : FfmpegCommandBuilder.ResolveFaithfulUltraWideIcc(
+            o.ColorStrategy, o.ColorSpace, srcNn.KnownSpaceName, srcNn.TransferToken, fmt,
             // v2 版本档必须穿进引擎管线（此前走默认 V44 ⇒ CLI --icc-profile-version v2 在 JPEG 出口静默失效）；
             // JPEG 门外加闸（非 JPEG 归 v4.4）由 ResolveIccVersion 单点负责，与传统管线同口径。
             FfmpegCommandBuilder.ResolveIccVersion(o.IccProfileVersion, fmt));
@@ -586,9 +630,8 @@ public static class ColorIntentFactory
     ///   防呆契约「未启用时全字段强制 null」不变）；</item>
     /// <item>补位：**未**启用高级色彩但用户**显式**给了 <c>ColorMatrix</c>（非 auto、非空白）⇒
     ///   构造**只带 Matrix** 的 ManualIntent（FieldsFromUi=true）——Space/Primaries/Transfer 恒 null
-    ///   ⇒ <see cref="ManualIntent.HasAny"/> 恒 false ⇒ 手动规划通路不被触发，像素零变化；
-    ///   唯一效果 = 规划层「--color-matrix 在本次交付中无承载」的 no-op 点名可达
-    ///   （值在位即点名，与 <see cref="FfmpegOptions.HasExplicitColorParams"/> 的值派生口径一致）。</item>
+    ///   ⇒ <see cref="ManualIntent.HasAny"/> 恒 false ⇒ 不触发手动目标规划。
+    ///   解码器根据实际输入布局消费矩阵并报告拒绝或不适用。</item>
     /// </list>
     /// </summary>
     private static ManualIntent BuildManualIntent(FfmpegOptions o)

@@ -63,6 +63,8 @@
 #      ⚠ 未削弱既有五格 fail-closed 判据（C1 png / D5 webp / E3 jpg / A8 avif-ycgco / B4 jxl 逐字保留）。
 #   K. AVIF 16-bit Sample Transform（2026-11-13）: K0 真 16-bit 源；K1 avifenc --depth 12,4
 #      双 item（gbrp12le + yuv444p）；K2 产品回读 PNG 像素 md5 bit-exact（编码 + 识别/解码双向）。
+#   L. AVIF ICC：容器 nclx 描述编码采样，ICC v4.4 的 cicp 描述 RGB；各臂独立校验结构、Profile ID 和四轴。
+#      原位变异分别证明 tag 表、checksum、ICC cicp 及 nclx 的判据可独立咬住错误。
 #   -SelfCheck: 负控臂（反向判读，预期红）——证明判读链有牙（对齐 verify-ui-param-matrix 的
 #     -SelfCheck 契约：负控转红是预期，正向臂照常全绿、整体 exit 0）。CMX 批加第二臂：
 #     跨族拒绝（BT.2020 源 + avif + bt709）反向判读「exit==0 且有产物」期望被真实行为推翻。
@@ -135,30 +137,76 @@ function Read-TextShared([string]$path) {
     }
     return ''
 }
+
+# ── 2026-11-24 定向纯函数预检：P1/G1 的产品契约必须与真实出口同口径 ──
+# 运行时条数分别锁 33/15，防探针整段未执行却被 fail=0 的假绿吞掉。
+$prFocused = "$repoRoot/tests/projects/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.exe"
+if (-not (Test-Path $prFocused)) { $prFocused = "$repoRoot/tests/projects/ServiceProbe/bin/Debug/net11.0/win-x64/ServiceProbe.exe" }
+CK (Test-Path $prFocused) "focused ServiceProbe host present"
+if (Test-Path $prFocused) {
+    $pAvifCaps = Start-Process -FilePath $prFocused -ArgumentList 'avifcaps' -Wait -NoNewWindow -PassThru `
+        -RedirectStandardOutput "$work/probe-avifcaps.out" -RedirectStandardError "$work/probe-avifcaps.err"
+    $avifCapsText = Read-TextShared "$work/probe-avifcaps.out"
+    CK ($pAvifCaps.ExitCode -eq 0 -and $avifCapsText -match 'PROBE RESULT: pass=33 fail=0') "ServiceProbe avifcaps = 33/0"
+
+    $pOutMatrixEnc = Start-Process -FilePath $prFocused -ArgumentList 'outmatrixenc' -Wait -NoNewWindow -PassThru `
+        -RedirectStandardOutput "$work/probe-outmatrixenc.out" -RedirectStandardError "$work/probe-outmatrixenc.err"
+    $outMatrixEncText = Read-TextShared "$work/probe-outmatrixenc.out"
+    CK ($pOutMatrixEnc.ExitCode -eq 0 -and $outMatrixEncText -match 'PROBE RESULT: pass=15 fail=0') "ServiceProbe outmatrixenc = 15/0"
+}
+
 # Find-Prod: 产物查找（-Include 与无通配路径的组合在部分宿主下不命中 ⇒ 用 Extension 过滤，
 #   探测轮实测：probe3 probe4 两次 -Include 假阴性、本形态命中）。
 function Find-Prod([string]$dir) {
     $f = Get-ChildItem -Recurse -LiteralPath $dir -File -ErrorAction SilentlyContinue |
-         Where-Object { $_.Extension -match '^\.(avif|png|webp|jpg|jpeg|jxl|bmp|ppm)$' } | Select-Object -First 1
+         Where-Object { $_.Extension -match '^\.(avif|png|webp|jpg|jpeg|jxl|bmp|ppm|gif)$' } | Select-Object -First 1
     if ($f) { $f.FullName } else { $null }
 }
 # Run: headless 一臂。⚠ FfmpegGui.exe 是 GUI 子系统（WinExe）⇒ pwsh `&` 调用不等待且
 #   $LASTEXITCODE 不设置（探测轮实测 rc 文件空、[int]'' 假读 0）⇒ 用 Start-Process -Wait -PassThru
 #   （verify-decision-delivery RunCli 在册形态），退出码从进程对象读（-Wait 在位 ⇒ 双宿主均有值）。
 #   ArgumentList 手动给含空格元素加内嵌引号（decision-delivery 同款，探测轮已验证）。
-function Run([string]$tag, [string]$fmt, [string[]]$extra, [string]$srcFile = '') {
+function Run([string]$tag, [string]$fmt, [string[]]$extra, [string]$srcFile = '', [switch]$JsonLines) {
     $o = Join-Path $work $tag
     if (Test-Path $o) { Remove-Item -Recurse -Force $o -ErrorAction SilentlyContinue }
     # CMX 批：I 组多源臂（avifenc --cicp 构造的 CICP 标注源）⇒ 可选源覆盖（默认夹具 src_8bit.png）。
     $useSrc = $src
     if ($srcFile -ne '') { $useSrc = $srcFile }
-    $a = @('--headless', '-i', "`"$useSrc`"", '--format', $fmt, '--output', "`"$o`"", '--log-level', 'Debug') + $extra
+    $a = @('--headless', '-i', $useSrc, '--format', $fmt, '--output', $o, '--log-level', 'Debug') + $extra
+    $jsonFile = Join-Path $work "$tag.jsonl"
+    # Every arm has an independent machine-readable task sink; stdout is not a terminal oracle.
+    $JsonLines = $true
+    $a += @('--log-format', 'JsonLines', '--log-file', $jsonFile)
     $aQ = @(); foreach ($x in $a) { if ($x -match '\s') { $aQ += ('"' + $x + '"') } else { $aQ += $x } }
     $child = Start-Process -FilePath $exe -ArgumentList $aQ -Wait -NoNewWindow -PassThru `
              -RedirectStandardOutput (Join-Path $work "$tag.o") -RedirectStandardError (Join-Path $work "$tag.e")
-    $log = (Read-TextShared (Join-Path $work "$tag.o")) + (Read-TextShared (Join-Path $work "$tag.e"))
+    $log = (Read-TextShared (Join-Path $work "$tag.o")) + "`n" + (Read-TextShared (Join-Path $work "$tag.e"))
+    $events = @(); $jsonOk = $false
+    if ($JsonLines) {
+        # 只读 JSONL sink：启动/探测诊断可独立写 stdout/stderr，不把它们误当观察者事件。
+        $lines = @((Read-TextShared $jsonFile) -split "`r?`n" | Where-Object { $_.Trim() })
+        $jsonOk = $lines.Count -gt 0
+        foreach ($line in $lines) {
+            try {
+                $event = ConvertFrom-Json -InputObject $line -ErrorAction Stop
+                if ($null -eq $event -or -not ($event.c -is [string]) -or -not ($event.m -is [string])) { $jsonOk = $false }
+                $events += $event
+            } catch { $jsonOk = $false }
+        }
+        $log = ($events | ForEach-Object { $_.m }) -join "`n"
+    }
     $prod = Find-Prod $o
-    return @{ code = $child.ExitCode; log = $log; file = $prod; dir = $o }
+    $terminal = @($events | Where-Object { $_.c -ceq 'item_completed' })
+    $images = @(Get-ChildItem -LiteralPath $o -Recurse -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Extension -match '^\.(avif|png|webp|jpg|jpeg|jxl|bmp|ppm|gif)$' })
+    $oneTerminal = $jsonOk -and $terminal.Count -eq 1 -and
+        ($terminal[0].code -is [int] -or $terminal[0].code -is [long]) -and $terminal[0].p -eq 1 -and $terminal[0].tot -eq 1
+    $consistent = ($child.ExitCode -eq 0 -and $oneTerminal -and $terminal[0].code -eq 0 -and
+        $terminal[0].l -ceq 'info' -and $images.Count -eq 1 -and $images[0].Length -gt 0) -or
+        ($child.ExitCode -ne 0 -and $oneTerminal -and $terminal[0].code -ne 0 -and
+        $terminal[0].l -ceq 'error' -and $images.Count -eq 0)
+    CK $consistent "$tag process/task terminal/new-artifact contract (process=$($child.ExitCode); item=$($terminal.code); terminals=$($terminal.Count); images=$($images.Count))"
+    return @{ code = $child.ExitCode; log = $log; file = $prod; dir = $o; events = $events; jsonOk = $jsonOk }
 }
 # ffprobe 读回 color_space/color_range/pix_fmt（decision-delivery Cicp 同款，只读 stdout）。
 function ProbeCs([string]$f) {
@@ -179,10 +227,12 @@ function ProbeVStreams([string]$f) {
 # 16-bit 像素 md5（统一 rgb48le）；K 组解码回读的 bit-exact 判据。
 function Md5Rgb48([string]$f) {
     $o = Join-Path $work '_md5.txt'
-    Start-Process -FilePath $ff -ArgumentList @('-hide_banner','-loglevel','error','-i',"`"$f`"",
-        '-pix_fmt','rgb48le','-f','md5','-') -Wait -NoNewWindow -PassThru `
-        -RedirectStandardOutput $o | Out-Null
-    return ((Read-TextShared $o).Trim())
+    $p = Start-Process -FilePath $ff -ArgumentList @('-hide_banner','-loglevel','error','-i',"`"$f`"",
+        '-map','0:v:0','-frames:v','1','-pix_fmt','rgb48le','-f','md5','-') -Wait -NoNewWindow -PassThru `
+        -RedirectStandardOutput $o
+    $hash = (Read-TextShared $o).Trim()
+    if ($p.ExitCode -eq 0 -and $hash -match '^MD5=[0-9a-f]{32}$') { return $hash }
+    return ''
 }
 # 全帧 PSNR（decision-delivery PsnrTwo 同款；inf ⇒ 99）。
 function PsnrTwo([string]$prod, [string]$ref) {
@@ -207,6 +257,329 @@ function CmdLineOf([string]$log) {
 function LogHit([string]$log, [string]$pat, [int]$n = 2) {
     return @(($log -split "`r?`n") | Select-String $pat | Select-Object -First $n | ForEach-Object { $_.Line.Trim() })
 }
+function OneMatrixResult([string]$log, [string]$expected) {
+    $lines = @($log -split "`r?`n" | Where-Object { $_ -match '\[color-out-matrix\] ' })
+    return ($lines.Count -eq 1 -and $lines[0].Trim() -match $expected)
+}
+function Rejected91($r) {
+    $done = @($r.events | Where-Object { $_.c -ceq 'item_completed' })
+    $files = @(Get-ChildItem -LiteralPath $r.dir -Recurse -File -ErrorAction SilentlyContinue)
+    return ($r.jsonOk -and $r.code -eq 1 -and $done.Count -eq 1 -and
+        ($done[0].code -is [int] -or $done[0].code -is [long]) -and $done[0].code -eq 91 -and
+        $done[0].l -ceq 'error' -and $done[0].p -eq 1 -and $done[0].tot -eq 1 -and $files.Count -eq 0)
+}
+
+# 独立 ISO-BMFF 容器读回：只遍历 avifenc 的 meta 子树，不在 mdat/编码位流里搜索 ASCII。
+function Be([byte[]]$b, [int]$offset, [int]$width) {
+    [long]$value = 0
+    for ($j = 0; $j -lt $width; $j++) { $value = ($value * 256) + $b[$offset + $j] }
+    return $value
+}
+function Boxes([byte[]]$b, [int]$start, [int]$end) {
+    $items = @()
+    for ($at = $start; $at -lt $end; $at += [int]$size) {
+        if ($end - $at -lt 8) { return }
+        $size = Be $b $at 4
+        if ($size -lt 8 -or $size -gt ($end - $at)) { return }
+        $items += @{ type = [Text.Encoding]::ASCII.GetString($b, $at + 4, 4); start = ($at + 8); end = ($at + [int]$size) }
+    }
+    return $items
+}
+function BoxOf([byte[]]$b, [int]$start, [int]$end, [string]$type) {
+    $found = @(Boxes $b $start $end | Where-Object { $_.type -ceq $type })
+    if ($found.Count -eq 1) { return $found[0] }
+}
+# ICC.1 Profile ID: hash the entire declared profile with flags, rendering intent and ID zeroed.
+function IccIdDigest([byte[]]$profile) {
+    $digestInput = [byte[]]$profile.Clone()
+    [Array]::Clear($digestInput, 44, 4)
+    [Array]::Clear($digestInput, 64, 4)
+    [Array]::Clear($digestInput, 84, 16)
+    $md5 = [Security.Cryptography.MD5]::Create()
+    try { return ,($md5.ComputeHash($digestInput)) } finally { $md5.Dispose() }
+}
+function IccS15([byte[]]$b, [int]$offset) {
+    $u = [long](Be $b $offset 4)
+    if ($u -ge 2147483648L) { $u -= 4294967296L }
+    return ($u / 65536.0)
+}
+function IccCurveAt([byte[]]$b, $tag, [double]$x) {
+    if ($tag.Type -ceq 'curv') {
+        $count = Be $b ($tag.Off + 8) 4
+        if ($count -eq 0) { return $x }
+        if ($count -eq 1) { return [Math]::Pow($x, (Be $b ($tag.Off + 12) 2) / 256.0) }
+        $position = $x * ($count - 1); $lo = [int][Math]::Floor($position)
+        $hi = [Math]::Min($lo + 1, $count - 1); $fraction = $position - $lo
+        $y0 = (Be $b ($tag.Off + 12 + 2 * $lo) 2) / 65535.0
+        $y1 = (Be $b ($tag.Off + 12 + 2 * $hi) 2) / 65535.0
+        return $y0 * (1 - $fraction) + $y1 * $fraction
+    }
+    $kind = Be $b ($tag.Off + 8) 2
+    $g = IccS15 $b ($tag.Off + 12)
+    if ($kind -eq 0) { return [Math]::Pow($x, $g) }
+    $a = IccS15 $b ($tag.Off + 16); $bb = IccS15 $b ($tag.Off + 20)
+    if ($kind -eq 1) {
+        $cut = -$bb / $a
+        if ($x -lt $cut) { return 0.0 }
+        return [Math]::Pow($a * $x + $bb, $g)
+    }
+    $c = IccS15 $b ($tag.Off + 24)
+    if ($kind -eq 2) {
+        $cut = -$bb / $a
+        if ($x -lt $cut) { return $c }
+        return [Math]::Pow($a * $x + $bb, $g) + $c
+    }
+    $cut = IccS15 $b ($tag.Off + 28)
+    if ($kind -eq 3) {
+        if ($x -lt $cut) { return $c * $x }
+        return [Math]::Pow($a * $x + $bb, $g)
+    }
+    $e = IccS15 $b ($tag.Off + 32); $f = IccS15 $b ($tag.Off + 36)
+    if ($x -lt $cut) { return $c * $x + $f }
+    return [Math]::Pow($a * $x + $bb, $g) + $e
+}
+function WriteIccS15([byte[]]$b, [int]$offset, [double]$value) {
+    $raw = [long][Math]::Round($value * 65536.0, [MidpointRounding]::AwayFromZero)
+    if ($raw -lt 0) { $raw += 4294967296L }
+    for ($i = 3; $i -ge 0; $i--) {
+        $b[$offset + $i] = [byte]($raw -band 255)
+        $raw = [long][Math]::Floor($raw / 256.0)
+    }
+}
+function WriteIccU16([byte[]]$b, [int]$offset, [int]$value) {
+    $b[$offset] = [byte](($value -shr 8) -band 255)
+    $b[$offset + 1] = [byte]($value -band 255)
+}
+function MutateIccCurve([byte[]]$b, $tag) {
+    if ($tag.Type -ceq 'curv') {
+        $count = Be $b ($tag.Off + 8) 4
+        if ($count -eq 0) { return $false }
+        if ($count -eq 1) {
+            $offset = $tag.Off + 12; $old = Be $b $offset 2
+            $new = if ($old -le 65407) { $old + 128 } else { $old - 128 }
+            WriteIccU16 $b $offset $new
+            return $true
+        }
+        $index = [int][Math]::Round(($count - 1) / 2.0)
+        $offset = $tag.Off + 12 + 2 * $index; $old = Be $b $offset 2
+        $new = if ($old -le 45535) { $old + 20000 } else { $old - 20000 }
+        WriteIccU16 $b $offset $new
+        return $true
+    }
+    if ($tag.Type -ceq 'para') {
+        $gamma = IccS15 $b ($tag.Off + 12)
+        WriteIccS15 $b ($tag.Off + 12) ($gamma + 0.5)
+        return $true
+    }
+    return $false
+}
+function ProfileMatchesP3Target($profile) {
+    if ($null -eq $profile -or -not $profile.idOk -or $profile.cicp -cne '12/13/0/1') { return $false }
+    $expected = @{
+        wtpt = @(0.9642,1.0,0.8249)
+        rXYZ = @(0.51512,0.24120,-0.00105)
+        gXYZ = @(0.29198,0.69225,0.04189)
+        bXYZ = @(0.15710,0.06657,0.78407)
+    }
+    foreach ($name in $expected.Keys) {
+        for ($i = 0; $i -lt 3; $i++) {
+            $actual = [double]$profile.xyz[$name][$i]
+            if ([double]::IsNaN($actual) -or [double]::IsInfinity($actual) -or
+                [Math]::Abs($actual - $expected[$name][$i]) -gt 0.003) { return $false }
+        }
+    }
+    foreach ($name in @('rTRC','gTRC','bTRC')) {
+        for ($i = 0; $i -lt $profile.curveSamples.Count; $i++) {
+            $actual = [double]$profile.trc[$name][$i]
+            if ([double]::IsNaN($actual) -or [double]::IsInfinity($actual) -or
+                [Math]::Abs($actual - $profile.curveExpected[$i]) -gt 0.001) { return $false }
+        }
+    }
+    return $true
+}
+function ReadRgbIcc44([byte[]]$b) {
+    $size = $b.Length
+    $ascii = [Text.Encoding]::ASCII
+    if ($size -lt 132 -or $size % 4 -ne 0 -or (Be $b 0 4) -ne $size -or (Be $b 8 4) -ne 0x04400000 -or
+        $ascii.GetString($b, 36, 4) -cne 'acsp' -or $ascii.GetString($b, 12, 12) -cne 'mntrRGB XYZ ' -or
+        (Be $b 64 4) -gt 3 -or @($b[100..127] | Where-Object { $_ -ne 0 }).Count -ne 0) { return }
+    $count = Be $b 128 4; $tableEnd = 132 + 12 * $count
+    if ($count -lt 1 -or $tableEnd -gt $size) { return }
+    $tags = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::Ordinal)
+    for ($entry = 132; $entry -lt $tableEnd; $entry += 12) {
+        $sig = $ascii.GetString($b, $entry, 4)
+        $off = Be $b ($entry + 4) 4; $len = Be $b ($entry + 8) 4
+        if ($tags.ContainsKey($sig) -or $off -lt $tableEnd -or $off % 4 -ne 0 -or $len -lt 8 -or
+            $off + $len -gt $size -or (Be $b ($off + 4) 4) -ne 0) { return }
+        $tags.Add($sig, [pscustomobject]@{ Off = $off; Len = $len; Entry = $entry; Type = $ascii.GetString($b, $off, 4) })
+    }
+    # Shared tag data is allowed (e.g. the three TRCs), but partially overlapping intervals are not.
+    $last = $null
+    foreach ($tag in @($tags.Values | Sort-Object Off, Len)) {
+        if ($last -and $tag.Off -lt $last.Off + $last.Len -and
+            ($tag.Off -ne $last.Off -or $tag.Len -ne $last.Len)) { return }
+        $last = $tag
+    }
+    foreach ($name in @('wtpt','rXYZ','gXYZ','bXYZ')) {
+        if (-not $tags.ContainsKey($name) -or $tags[$name].Type -cne 'XYZ ' -or $tags[$name].Len -ne 20) { return }
+    }
+    foreach ($name in @('rTRC','gTRC','bTRC')) {
+        if (-not $tags.ContainsKey($name)) { return }
+        $tag = $tags[$name]
+        if ($tag.Len -lt 12) { return }
+        if ($tag.Type -ceq 'curv') { $need = 12 + 2 * (Be $b ($tag.Off + 8) 4) }
+        elseif ($tag.Type -ceq 'para') {
+            $curve = Be $b ($tag.Off + 8) 2
+            if ($curve -gt 4 -or (Be $b ($tag.Off + 10) 2) -ne 0) { return }
+            $need = @(16,24,28,32,40)[$curve]
+        } else { return }
+        if ($tag.Len -ne $need) { return }
+    }
+    foreach ($name in @('desc','cprt')) {
+        if (-not $tags.ContainsKey($name)) { return }
+        $tag = $tags[$name]
+        if ($tag.Type -cne 'mluc' -or $tag.Len -lt 28 -or (Be $b ($tag.Off + 12) 4) -ne 12) { return }
+        $records = Be $b ($tag.Off + 8) 4; $dataStart = 16 + 12 * $records
+        if ($records -lt 1 -or $dataStart -gt $tag.Len) { return }
+        for ($i = 16; $i -lt $dataStart; $i += 12) {
+            $strLen = Be $b ($tag.Off + $i + 4) 4; $strOff = Be $b ($tag.Off + $i + 8) 4
+            if ($strLen % 2 -ne 0 -or $strOff -lt $dataStart -or $strOff + $strLen -gt $tag.Len) { return }
+        }
+    }
+    $cicp = ''
+    if ($tags.ContainsKey('cicp')) {
+        $tag = $tags['cicp']
+        if ($tag.Type -cne 'cicp' -or $tag.Len -ne 12) { return }
+        $cicp = $b[($tag.Off + 8)..($tag.Off + 11)] -join '/'
+    }
+    $xyz = @{}
+    foreach ($name in @('wtpt','rXYZ','gXYZ','bXYZ')) {
+        $off = $tags[$name].Off + 8
+        $xyz[$name] = @((IccS15 $b $off), (IccS15 $b ($off + 4)), (IccS15 $b ($off + 8)))
+    }
+    $curveSamples = @(0.012,0.035,0.07,0.18,0.35,0.5,0.75,0.95)
+    $curveExpected = @()
+    foreach ($x in $curveSamples) {
+        $curveExpected += $(if ($x -le 0.04045) { $x / 12.92 } else { [Math]::Pow(($x + 0.055) / 1.055, 2.4) })
+    }
+    $trc = @{}
+    foreach ($name in @('rTRC','gTRC','bTRC')) {
+        $values = @()
+        foreach ($x in $curveSamples) { $values += (IccCurveAt $b $tags[$name] $x) }
+        $trc[$name] = $values
+    }
+    $id = [BitConverter]::ToString($b, 84, 16)
+    return @{ id = $id; idOk = ($id -cne ('00-' * 15 + '00') -and $id -ceq [BitConverter]::ToString((IccIdDigest $b)))
+        cicp = $cicp; cicpTag = $tags['cicp']; xyz = $xyz; trc = $trc
+        curveSamples = $curveSamples; curveExpected = $curveExpected; tags = $tags }
+}
+function ReadJpegIcc([string]$path) {
+    $b = [IO.File]::ReadAllBytes($path)
+    if ($b.Length -lt 4 -or (Be $b 0 2) -ne 0xffd8) { return }
+    $chunks = @{}; $total = 0
+    for ($i = 2; $i + 4 -le $b.Length;) {
+        if ($b[$i++] -ne 255) { return }
+        while ($i -lt $b.Length -and $b[$i] -eq 255) { $i++ }
+        if ($i + 2 -ge $b.Length) { return }
+        $marker = $b[$i++]; if ($marker -in 0xda,0xd9) { break }
+        $n = Be $b $i 2
+        if ($n -lt 2 -or $i + $n -gt $b.Length) { return }
+        if ($marker -eq 0xe2 -and $n -gt 16 -and [Text.Encoding]::ASCII.GetString($b,$i+2,12) -ceq "ICC_PROFILE`0") {
+            $part = $b[$i+14]; $count = $b[$i+15]
+            if ($part -lt 1 -or $part -gt $count -or ($total -ne 0 -and $total -ne $count) -or $chunks.ContainsKey($part)) { return }
+            $total = $count; $chunks[$part] = [byte[]]$b[($i+16)..($i+$n-1)]
+        }
+        $i += $n
+    }
+    if ($total -le 0 -or $chunks.Count -ne $total) { return }
+    $m = [IO.MemoryStream]::new()
+    try {
+        for ($j=1; $j -le $total; $j++) { $part=$chunks[[byte]$j]; $m.Write($part,0,$part.Length) }
+        return ,($m.ToArray())
+    } finally { $m.Dispose() }
+}
+
+function PrimaryAvifProperties([byte[]]$b, [long]$itemId = -1) {
+    $meta = BoxOf $b 0 $b.Length 'meta'
+    if (-not $meta -or $meta.end - $meta.start -lt 4) { return }
+    $pitm = BoxOf $b ($meta.start + 4) $meta.end 'pitm'
+    $iprp = BoxOf $b ($meta.start + 4) $meta.end 'iprp'
+    if (-not $pitm -or -not $iprp -or $pitm.end - $pitm.start -lt 6) { return }
+    $pv = $b[$pitm.start]
+    $idWidth = 2 + 2 * $pv
+    if ($pv -gt 1 -or $pitm.end - $pitm.start -ne 4 + $idWidth) { return }
+    $primary = Be $b ($pitm.start + 4) $idWidth
+    if ($itemId -ge 0) { $primary = $itemId }
+    $ipco = BoxOf $b $iprp.start $iprp.end 'ipco'
+    $ipma = BoxOf $b $iprp.start $iprp.end 'ipma'
+    if (-not $ipco -or -not $ipma -or $ipma.end - $ipma.start -lt 8) { return }
+    $props = @(Boxes $b $ipco.start $ipco.end)
+    $version = $b[$ipma.start]; $flags = Be $b ($ipma.start + 1) 3
+    if ($version -gt 1 -or $flags -gt 1) { return }
+    $idWidth = 2 + 2 * $version; $assocWidth = 1 + $flags; $indexMask = (1 -shl (8 * $assocWidth - 1)) - 1
+    $entries = Be $b ($ipma.start + 4) 4; $q = $ipma.start + 8
+    $found = $false; $selected = @()
+    for ($i = 0; $i -lt $entries; $i++) {
+        if ($ipma.end - $q -lt $idWidth + 1) { return }
+        $id = Be $b $q $idWidth; $q += $idWidth
+        $n = $b[$q]; $q++
+        if ($ipma.end - $q -lt $n * $assocWidth) { return }
+        if ($id -eq $primary) {
+            if ($found) { return }
+            $found = $true
+            for ($j = 0; $j -lt $n; $j++) {
+                $index = (Be $b ($q + $j * $assocWidth) $assocWidth) -band $indexMask
+                if ($index -gt $props.Count) { return }
+                if ($index -gt 0) { $selected += $props[$index - 1] }
+            }
+        }
+        $q += $n * $assocWidth
+    }
+    if ($found -and $q -eq $ipma.end) { return $selected }
+}
+function ReadAvifColor([byte[]]$b) {
+    $nclx = @(); $icc = @()
+    foreach ($box in @(PrimaryAvifProperties $b | Where-Object { $_.type -ceq 'colr' })) {
+        $p = $box.start
+        if ($box.end - $p -lt 4) { continue }
+        $kind = [Text.Encoding]::ASCII.GetString($b, $p, 4)
+        if ($kind -ceq 'nclx') {
+            $value = if ($box.end - $p -eq 11 -and ($b[$p + 10] -band 127) -eq 0) {
+                '{0}/{1}/{2}/{3}' -f (Be $b ($p + 4) 2), (Be $b ($p + 6) 2), (Be $b ($p + 8) 2), ($b[$p + 10] -shr 7)
+            } else { '' }
+            $nclx += @{ value = $value; sampleOffset = $p + 8 }
+        } elseif ($kind -cin @('prof','rICC')) {
+            $bytes = [byte[]]::new($box.end - $p - 4)
+            [Array]::Copy($b, $p + 4, $bytes, 0, $bytes.Length)
+            $icc += @{ bytes = $bytes; profile = (ReadRgbIcc44 $bytes) }
+        }
+    }
+    return @{ nclx = $nclx; icc = $icc }
+}
+function HasSampleTransform([string]$path) {
+    $b = [IO.File]::ReadAllBytes($path)
+    $meta = BoxOf $b 0 $b.Length 'meta'
+    if (-not $meta -or $meta.end - $meta.start -lt 4) { return $false }
+    $iinf = BoxOf $b ($meta.start + 4) $meta.end 'iinf'
+    $iref = BoxOf $b ($meta.start + 4) $meta.end 'iref'
+    # avifenc 小图固定使用 16-bit item ID（iinf v0 / infe v2 / iref v0）。
+    if (-not $iinf -or -not $iref -or $iinf.end - $iinf.start -lt 6 -or $iref.end - $iref.start -lt 4 -or
+        $b[$iinf.start] -ne 0 -or $b[$iref.start] -ne 0) { return $false }
+    $sato = @(); $av01 = @()
+    foreach ($entry in @(Boxes $b ($iinf.start + 6) $iinf.end | Where-Object { $_.type -ceq 'infe' })) {
+        if ($entry.end - $entry.start -lt 12 -or $b[$entry.start] -ne 2) { continue }
+        $id = Be $b ($entry.start + 4) 2
+        $type = [Text.Encoding]::ASCII.GetString($b, $entry.start + 8, 4)
+        if ($type -ceq 'sato') { $sato += $id }
+        if ($type -ceq 'av01') { $av01 += $id }
+    }
+    if ($sato.Count -ne 1 -or $av01.Count -ne 2 -or $av01[0] -eq $av01[1]) { return $false }
+    $ref = BoxOf $b ($iref.start + 4) $iref.end 'dimg'
+    if (-not $ref -or $ref.end - $ref.start -ne 8) { return $false }
+    $a = Be $b ($ref.start + 4) 2; $z = Be $b ($ref.start + 6) 2
+    return ((Be $b $ref.start 2) -eq $sato[0] -and (Be $b ($ref.start + 2) 2) -eq 2 -and
+        $a -ne $z -and $a -in $av01 -and $z -in $av01)
+}
 
 # C-REPORT@1 三常量（G 组结构锁源）：ColorStrategyPlanning.cs（ColorMappingEngine 类）。
 $planningCs = "$repoRoot/src/FfmpegGui/Services/ColorMapping/ColorStrategyPlanning.cs"
@@ -229,7 +602,7 @@ CK ($cs1 -match 'yuv') "A1 pix_fmt really switched to YUV (pixfmt-switch landed;
 
 # A2: 模板 1 落地播报逐字（引擎 EmitOutMatrixReport：-colorspace <token>；CMX 同值 bt709 锚）
 $hit = LogHit $r.log '\[color-out-matrix\] avif: bt709 -> -colorspace bt709' 1
-CK ($hit.Count -ge 1) "A2 template-1 landed verbatim: '[color-out-matrix] avif: bt709 -> -colorspace bt709'"
+CK ($hit.Count -ge 1 -and (OneMatrixResult $r.log '\[color-out-matrix\] avif: bt709 -> -colorspace bt709$')) "A2 exactly one template-1 result: '[color-out-matrix] avif: bt709 -> -colorspace bt709'"
 # A2b: 规划层 Reason 载体（C-REPORT@1 通道既有约定：Reason 进任务详情/日志）
 $hit2 = LogHit $r.log '用户 --color-out-matrix=bt709 已由 avif 出口承载' 1
 CK ($hit2.Count -ge 1) "A2b planning-layer Reason verbatim (ColorTransformPlan.Reason channel)"
@@ -254,11 +627,12 @@ CK ($hit.Count -ge 1) "A5 template-1 landed verbatim (rgb => nclx matrix_coeffic
 $rLls = Run 'a9_avif_lossless_rgb' 'avif' @('--lossless','true')
 $csLls = if ($rLls.file) { ProbeCs $rLls.file } else { '' }
 CK ($rLls.code -eq 0 -and ($null -ne $rLls.file)) "A9 avif RGB source + lossless: exit=$($rLls.code), produced=$($null -ne $rLls.file)"
-CK ($csLls -match 'gbr') "A9 readback = gbr (gbrp feed => AV1 identity; full='$csLls')"
+CK ($csLls -eq 'gbrp,pc,gbr') "A9 readback = 8-bit planar RGB, full range and AV1 identity (full='$csLls')"
 $ps9 = if ($rLls.file) { PsnrTwo $rLls.file $src } else { -1 }
 CK ($ps9 -ge 99) "A9 RGB lossless is bit-exact vs source (PSNR=$ps9; inf folds to 99)"
-$hit = LogHit $rLls.log '\[rgb-lossless\] avif: RGB source \+ lossless -> gbrp' 1
-CK ($hit.Count -ge 1) "A9 [rgb-lossless] advisory landed verbatim"
+$md59src = Md5Rgb48 $src
+$md59out = if ($rLls.file) { Md5Rgb48 $rLls.file } else { '' }
+CK ($md59src -ne '' -and $md59src -ceq $md59out) "A9 independent decoded full-frame RGB hash matches (source=$md59src; AVIF=$md59out)"
 
 # A10: 显式 rgb + 4:4:4 + 无损 ⇒ 也不得写 yuv444p（legacy 直通同样钉 gbrp；负控 11.96 dB）
 $r444 = Run 'a10_avif_rgb444' 'avif' @('--color-engine','legacy','--color-out-matrix','rgb','--chroma','4:4:4','--lossless','true')
@@ -290,16 +664,12 @@ CK ((CmdLineOf $r12.log) -notmatch ' -colorspace ') "A12 legacy auto gbrp arm ha
 # A6: auto 档零播报（C-REPORT@1「auto 不播报」+ CM-REQ-08 零噪声）
 CK ($rAuto.log -notmatch '\[color-out-matrix\] ') "A6 auto arm has ZERO [color-out-matrix] lines (silence contract)"
 
-# A7: legacy 直通孤立点名（T6 移交注意事项 3：判据未命中 ⇒ -colorspace 被忽略，仍写 flag + 点名）。
-#   ⚠ CMX 批改锚：显式值 bt2020nc → **bt709**（同值）。原 bt2020nc 在 CMX-1 闸下与 src_8bit.png
-#   （无标注 ⇒ NormalizePrimaries 归一 sRGB ⇒ 推导 bt709）构成跨族 ⇒ 规划层直接拒绝、到不了
-#   出口（基线轮实测 A7 群 2 红）⇒ 「legacy 直通孤立点名」的验证语义改由同值 bt709 承载——
-#   Carried 过闸、flag 写入、直通不改像素 ⇒ 孤立点名逐字保留。
+# A7: legacy 直通也必须实际落地同族 bt709；没有显式 chroma/位深，不能只写孤立的 -colorspace。
 $rL = Run 'a7_legacy' 'avif' @('--color-engine','legacy','--color-out-matrix','bt709')
 $csL = if ($rL.file) { ProbeCs $rL.file } else { '' }
-$hit = LogHit $rL.log 'no YUV -pix_fmt was forced by the chroma/bit-depth criteria' 1
-CK ($hit.Count -ge 1) "A7 legacy direct-pass orphan-tag advisory emitted verbatim (T6 known-boundary note 2; CMX same-value bt709)"
-CK ($rL.code -eq 0 -and ($null -ne $rL.file)) "A7 legacy arm still produced output (flag written, auto-same shape; exit=$($rL.code); prod=$($null -ne $rL.file))"
+CK ($rL.code -eq 0 -and ($null -ne $rL.file)) "A7 legacy arm produced output (exit=$($rL.code); prod=$($null -ne $rL.file))"
+CK ($csL -match '^yuv[^,]*,(?:pc|tv),bt709$') "A7 legacy AVIF readback is YUV with BT.709, not a bare matrix flag (full='$csL')"
+CK (OneMatrixResult $rL.log '\[color-out-matrix\] avif: bt709 -> -colorspace bt709$') "A7 legacy has exactly one truthful BT.709 result"
 
 # A8: avif x ycgco ⇒ Rejected（T1 C4 校准）+ 模板 3 逐字（规划层发）
 $rY = Run 'a8_ycgco' 'avif' @('--color-out-matrix','ycgco')
@@ -312,9 +682,8 @@ Write-Output "===== B jxl XYB ====="
 
 # B1: 显式 xyb（默认 backend=Cjxl）⇒ 确认播报逐字（C8：cjxl v0.12.0 无显式开关）
 $rJ = Run 'b1_xyb' 'jxl' @('--color-out-matrix','xyb')
-$hit = LogHit $rJ.log "\[cjxl\] \[color-out-matrix\] xyb confirmed: cjxl's VarDCT mode carries XYB" 1
 CK ($rJ.code -eq 0 -and ($null -ne $rJ.file)) "B1 jxl x xyb (cjxl backend): exit=$($rJ.code), produced=$($null -ne $rJ.file)"
-CK ($hit.Count -ge 1) "B1 cjxl xyb-confirmed advisory verbatim (C8: implicit VarDCT carrier, no flag exists)"
+CK (OneMatrixResult $rJ.log "\[color-out-matrix\] xyb confirmed: cjxl's VarDCT mode carries XYB") 'B1 exactly one cjxl xyb-confirmed result (implicit VarDCT carrier)'
 $hit = LogHit $rJ.log '用户 --color-out-matrix=xyb 已由 jxl 出口承载' 1
 CK ($hit.Count -ge 1) "B1b planning-layer Reason verbatim (jxl xyb Carried)"
 
@@ -332,16 +701,21 @@ $rJA = Run 'b3_auto' 'jxl' @()
 CK ($rJA.log -notmatch '\[color-out-matrix\] ') "B3 jxl auto has ZERO [color-out-matrix] lines (auto silence)"
 
 # B4: jxl x bt709 ⇒ Rejected（RgbNative）+ 模板 3 逐字
-$rJB = Run 'b4_bt709' 'jxl' @('--color-out-matrix','bt709')
+$rJB = Run 'b4_bt709' 'jxl' @('--color-out-matrix','bt709') -JsonLines
 $hit = LogHit $rJB.log 'bt709 is not carried by jxl \(JXL is an RGB-native container \(RgbNative\); no YUV carrier\) => contract rejection, exit 91, no output' 1
 CK ($hit.Count -ge 1) "B4 jxl x bt709 template-3 verbatim (RgbNative rejection)"
-CK ($rJB.code -ne 0 -and ($null -eq $rJB.file)) "B4 jxl x bt709: exit=$($rJB.code) != 0, no output"
+CK (Rejected91 $rJB) 'B4 engine JXL JSONL: one failed task code 91; process 1; no output'
+$rJLegacy = Run 'b4_legacy_cjxl_bt709' 'jxl' @('-e','cjxl','--color-engine','legacy','--color-out-matrix','bt709') -JsonLines
+CK (Rejected91 $rJLegacy) 'B4 direct cjxl JSONL: one failed task code 91; process 1; no output'
+CK (OneMatrixResult $rJLegacy.log '\[color-out-matrix\] bt709 is not carried by jxl \(cjxl backend is RGB-native; no YUV carrier\) => contract rejection, exit 91, no output$') 'B4 direct cjxl: exactly one backend-specific rejection result'
 
 Write-Output ""
 Write-Output "===== C png fail-closed (plan-level Rejected => exit 91) ====="
 
 # C1: 显式 bt709 ⇒ 任务级退出码 91 + 模板 3 逐字 + 零产物
-$rP = Run 'c1_png_bt709' 'png' @('--color-out-matrix','bt709')
+$rP = Run 'c1_png_bt709' 'png' @('--color-out-matrix','bt709') -JsonLines
+CK (Rejected91 $rP) 'C1 JSONL: exactly one item_completed with numeric code 91; process 1 and zero output files'
+CK (OneMatrixResult $rP.log '\[color-out-matrix\] bt709 is not carried by png .*=> contract rejection, exit 91, no output$') 'C1 exactly one rejection result; no false success'
 $hit = LogHit $rP.log '失败 \(退出码 91\)' 1
 CK ($hit.Count -ge 1) "C1 png x bt709: task-level exit code 91 verbatim in log ('失败 (退出码 91)')"
 $hit = LogHit $rP.log 'bt709 is not carried by png \(RGB-native/palette container has no YUV matrix concept\) => contract rejection, exit 91, no output' 1
@@ -370,7 +744,7 @@ $rWB = Run 'd2_webp_bt470bg' 'webp' @('--color-out-matrix','bt470bg')
 $shaB = if ($rWB.file) { (Get-FileHash $rWB.file -Algorithm SHA256).Hash } else { '' }
 $hit = LogHit $rWB.log '\[color-out-matrix\] bt470bg on webp: container is already bt470bg; recorded, no pixel effect' 1
 CK ($rWB.code -eq 0 -and ($null -ne $rWB.file)) "D2 webp x bt470bg (Redundant): exit=$($rWB.code), produced=$($null -ne $rWB.file)"
-CK ($hit.Count -ge 1) "D2 template-2 verbatim ({2}=bt470bg per T6 handover note 1)"
+CK ($hit.Count -ge 1 -and (OneMatrixResult $rWB.log '\[color-out-matrix\] bt470bg on webp: container is already bt470bg; recorded, no pixel effect$')) "D2 exactly one template-2 result ({2}=bt470bg)"
 CK ($shaAuto -ne '' -and $shaAuto -eq $shaB) "D2 webp bt470bg hash == auto hash (byte-identical: sha16 $(if($shaAuto){$shaAuto.Substring(0,16)}else{'-'}))"
 
 # D3: 显式 smpte170m（601 族）⇒ 同哈希（C3 校准：601 族 Redundant）
@@ -402,11 +776,13 @@ CK ($rJA2.code -eq 0 -and ($null -ne $rJA2.file)) "E1 jpg auto: exit=$($rJA2.cod
 CK ($rJB2.code -eq 0 -and ($null -ne $rJB2.file)) "E1 jpg x bt470bg: exit=$($rJB2.code), produced=$($null -ne $rJB2.file)"
 CK ($cmdA -ne '' -and $cmdA -eq $cmdB) "E1 ffmpeg cmdline (path-stripped) identical between auto and bt470bg (Redundant = same-value landing)"
 $hit = LogHit $rJB2.log '\[color-out-matrix\] bt470bg on jpg: container is already bt470bg; recorded, no pixel effect' 1
-CK ($hit.Count -ge 1) "E1b template-2 verbatim on jpg ({2}=bt470bg)"
+CK ($hit.Count -ge 1 -and (OneMatrixResult $rJB2.log '\[color-out-matrix\] bt470bg on jpg: container is already bt470bg; recorded, no pixel effect$')) "E1b exactly one template-2 result on jpg ({2}=bt470bg)"
 # E2: 像素级一致（全帧 PSNR=inf 级）——同命令行同源 ⇒ 逐像素相同
 if ($rJA2.file -and $rJB2.file) {
     $psnr = PsnrTwo $rJB2.file $rJA2.file
-    CK ($psnr -ge 50.0) "E2 jpg bt470bg vs auto pixel parity: PSNR=$psnr dB >= 50 (99 = inf, byte-equal pixels)"
+    $md5AutoJpg = Md5Rgb48 $rJA2.file
+    $md5ExplicitJpg = Md5Rgb48 $rJB2.file
+    CK ($psnr -ge 50.0 -and $md5AutoJpg -ne '' -and $md5AutoJpg -ceq $md5ExplicitJpg) "E2 jpg bt470bg vs auto is bit-exact after RGB decode (PSNR=$psnr; $md5AutoJpg vs $md5ExplicitJpg)"
 } else { CK $false "E2 pixel parity skipped (missing product)" }
 
 # E3: jpg x bt709 ⇒ Rejected + 模板 3 逐字 + 零产物
@@ -432,12 +808,10 @@ $cmdCA = CmdLineOf $rCA.log
 CK ($cmdCA -ne '' -and $cmdCA -notmatch '--xyb') "F2 cjpegli auto command line has NO --xyb"
 CK ($rCA.log -notmatch '\[color-out-matrix\] ') "F2 cjpegli auto has ZERO [color-out-matrix] lines"
 
-# F3: 显式 bt709 ⇒ Rejected 经异常路径（T6 移交注意事项 2：进程码非 91 是已知边界，不是契约失败）
-#   判据 = exit != 0 + 零产物 + 出口点名逐字（文本含模板常量的 "exit 91" 契约措辞）。
-$rCB = Run 'f3_cjpegli_bt709' 'jpg' @('-e','cjpegli','--color-out-matrix','bt709')
-$hit = LogHit $rCB.log 'bt709 is not carried by jpg \(cjpegli encodes from RGB directly; no YUV conversion point\) => contract rejection, exit 91, no output' 1
-CK ($hit.Count -ge 1) "F3 cjpegli x bt709 exit-layer advisory verbatim (cjpegli Rejected; text carries contract wording)"
-CK ($rCB.code -ne 0 -and ($null -eq $rCB.file)) "F3 cjpegli x bt709: exit=$($rCB.code) != 0, ZERO output (exception-path termination; process code is NOT 91 by design - T6 boundary note 2)"
+# F3: 直接 cjpegli 的异常路径也必须兑现 JSONL 任务码 91，不可只在文案里提到 91。
+$rCB = Run 'f3_cjpegli_bt709' 'jpg' @('-e','cjpegli','--color-engine','legacy','--color-out-matrix','bt709') -JsonLines
+CK (OneMatrixResult $rCB.log '\[color-out-matrix\] bt709 is not carried by jpg \(cjpegli encodes from RGB directly; no YUV conversion point\) => contract rejection, exit 91, no output$') 'F3 direct cjpegli: exactly one backend-specific rejection result'
+CK (Rejected91 $rCB) 'F3 cjpegli JSONL: one failed task code 91; process 1; no output'
 
 Write-Output ""
 Write-Output "===== G template constants structural lock (C-REPORT@1) ====="
@@ -474,7 +848,7 @@ Write-Output "===== I CMX cross-family consistency (A1 strict gate; CMX-1/CMX-2 
 # （nclx colr box 原生可写；H.273：primaries 9=bt2020 / 1=bt709 / 6=smpte170m / 5=bt470bg）。
 # 像素体用夹具 src_8bit.png（avifenc 吃 png 输入）。先 ffprobe 读回 primaries 逐一断言。
 $avifenc = "$repoRoot/publish/PLAN/artifacts/avifenc.exe"
-if (-not (Test-Path $avifenc)) { Write-Output "  FAIL tool missing: $avifenc"; Write-Output "OUTMATRIX RESULT: pass=$pass fail=$($fail+1)"; if (-not $KeepWork) { Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue }; exit 1 }
+if (-not (Test-Path $avifenc)) { Write-Output "  FAIL tool missing: $avifenc"; Write-Output "OUTMATRIX RESULT: pass=$pass fail=$($fail+1)"; Write-Output "[keepwork] failed product area kept: $work"; exit 1 }
 CK $true "I0 tool present (avifenc, PLAN artifacts)"
 $isrc = Join-Path $work 'sources'
 New-Item -ItemType Directory -Force -Path $isrc | Out-Null
@@ -588,13 +962,60 @@ $csJ3 = if ($rJ3.file) { ProbeCs $rJ3.file } else { '' }
 CK ($rJ3.code -eq 0 -and ($null -ne $rJ3.file)) "J3 GIF->AVIF two-step x rgb: exit=$($rJ3.code), produced=$($null -ne $rJ3.file)"
 CK ($csJ3 -match 'gbr') "J3 identity matrix landed as gbrp (nclx matrix_coefficients=0; full='$csJ3')"
 
-# J4: bt709（不能安全携带）⇒ exit 0 + 产物 + 显式播报「无矩阵承载/未生效」；产物标注**不变**（不乱标）
+# J4: bundled avifenc uses the chosen matrix for native YUV, not just the nclx label.
 $rJ4 = Run 'j4_gif2avif_bt709' 'avif' @('--color-out-matrix','bt709') $gifSrc
 $csJ4 = if ($rJ4.file) { ProbeCs $rJ4.file } else { '' }
-CK ($rJ4.code -eq 0 -and ($null -ne $rJ4.file)) "J4 GIF->AVIF two-step x bt709: exit=$($rJ4.code) (NOT fail-closed), produced=$($null -ne $rJ4.file)"
-$hit = LogHit $rJ4.log '该出口无矩阵承载（avif two-step / avifenc）：显式值 bt709 未生效' 1
-CK ($hit.Count -ge 1) "J4 no-carrier broadcast verbatim (explicit value not applied; no mislabeling)"
-CK ($csJ4 -notmatch 'bt709') "J4 product nclx NOT mislabeled bt709 (kept encoder's real BT.601 label; full='$csJ4')"
+CK ($rJ4.code -eq 0 -and ($null -ne $rJ4.file)) "J4 GIF->AVIF two-step x bt709: exit=$($rJ4.code), produced=$($null -ne $rJ4.file)"
+CK (OneMatrixResult $rJ4.log '\[color-out-matrix\] avif\(two-step\): bt709 -> avifenc --cicp 1/13/1$') 'J4 exactly one BT.709 result'
+CK ($csJ4 -match '^yuv[^,]*,[^,]*,bt709$') "J4 YUV, nclx BT.709 (full='$csJ4')"
+function NativeFrameHash([string]$file) {
+    if (-not $file) { return '' }
+    $o = & $ff -hide_banner -v error -i $file -map 0:v:0 -frames:v 1 -f md5 -
+    if ($LASTEXITCODE -eq 0 -and $o -match '^MD5=[0-9a-f]{32}$') { return [string]$o }
+    return ''
+}
+$j601 = NativeFrameHash $rJ1.file; $j709 = NativeFrameHash $rJ4.file
+CK ($j601 -and $j709 -and $j601 -cne $j709) 'J4 primary native YUV codes differ from the BT.601 control (not a tag-only change)'
+# v:0 sees only the primary image. Inspect the timed colour track with all video streams visible.
+function Read-SequenceYuv([string]$f, [string]$matrix) {
+    if (-not $f) { return $null }
+    $o = Join-Path $work '_sequence.json'
+    $probe = Start-Process -FilePath $fp -ArgumentList @('-v','error','-select_streams','v','-show_entries',
+        'stream=index,pix_fmt,color_space,nb_frames','-of','json',"`"$f`"") -Wait -PassThru -NoNewWindow -RedirectStandardOutput $o
+    if ($probe.ExitCode -ne 0) { return $null }
+    $stream = @(((Read-TextShared $o) | ConvertFrom-Json).streams | Where-Object {
+        [int]$_.nb_frames -gt 1 -and $_.pix_fmt -like 'yuv*'
+    })
+    if ($stream.Count -ne 1 -or $stream[0].color_space -cne $matrix) { return $null }
+    $hashFile = Join-Path $work '_sequence.md5'
+    $decode = Start-Process -FilePath $ff -ArgumentList @('-v','error','-i',"`"$f`"",'-map',"0:$($stream[0].index)",
+        '-pix_fmt',$stream[0].pix_fmt,'-f','framemd5','-') -Wait -PassThru -NoNewWindow -RedirectStandardOutput $hashFile
+    $rows = @((Read-TextShared $hashFile) -split "`r?`n" | Where-Object { $_ -match '^\s*\d+,.+,[\s]*[0-9a-f]{32}\s*$' })
+    if ($decode.ExitCode -ne 0 -or $rows.Count -ne [int]$stream[0].nb_frames) { return $null }
+    @{ Frames=$rows.Count; Hashes=@($rows | ForEach-Object { ($_ -split ',')[-1].Trim() }) }
+}
+$seq601 = Read-SequenceYuv $rJ1.file 'smpte170m'; $seq709 = Read-SequenceYuv $rJ4.file 'bt709'
+CK ($seq601 -and $seq709 -and $seq601.Frames -eq $seq709.Frames -and
+    (($seq601.Hashes -join ':') -cne ($seq709.Hashes -join ':'))) 'J4 timed colour track: matrix readback and native sample A/B across all decoded frames'
+if ($rJ4.file) {
+    $back601 = Run 'j4_back_601' 'gif' @('--color-matrix','bt470bg') $rJ4.file
+    $back709 = Run 'j4_back_709' 'gif' @('--color-matrix','bt709') $rJ4.file
+    function DecodedGifHash([string]$path) {
+        if (-not $path) { return $null }
+        $o = Join-Path $work '_gifback.md5'
+        $p = Start-Process -FilePath $ff -ArgumentList @('-v','error','-i',"`"$path`"",'-pix_fmt','rgb24','-f','framemd5','-') `
+            -Wait -PassThru -NoNewWindow -RedirectStandardOutput $o
+        if ($p.ExitCode -ne 0) { return $null }
+        return @((Read-TextShared $o) -split "`r?`n" | Where-Object { $_ -match '^\s*\d+,.+,[\s]*[0-9a-f]{32}\s*$' } |
+            ForEach-Object { ($_ -split ',')[-1].Trim() })
+    }
+    $gif601 = @(DecodedGifHash $back601.file); $gif709 = @(DecodedGifHash $back709.file)
+    CK ($back601.code -eq 0 -and $back709.code -eq 0 -and $seq709 -and
+        $gif601.Count -eq $seq709.Frames -and $gif709.Count -eq $seq709.Frames -and
+        ($gif601 -join ':') -cne ($gif709 -join ':') -and
+        $back601.log -match '-map 0:\d+ -vf "scale=in_color_matrix=bt470bg:' -and
+        $back709.log -match '-map 0:\d+ -vf "scale=in_color_matrix=bt709:') 'J4 reverse animation: input matrix reaches the mapped colour track and changes decoded GIF pixels'
+} else { CK $false 'J4 reverse animation has no AVIF input' }
 
 # J5: auto 负控——不传显式矩阵 ⇒ 两步法零 `[color-out-matrix] ` 播报（CM-REQ-08 零噪声）
 $rJ5 = Run 'j5_gif2avif_auto' 'avif' @() $gifSrc
@@ -642,10 +1063,10 @@ $rK1 = Run 'k1_avif16_lossless' 'avif' @('--lossless','true','--bit-depth','16',
 $vsK1 = if ($rK1.file) { ProbeVStreams $rK1.file } else { @() }
 CK ($rK1.code -eq 0 -and ($null -ne $rK1.file)) "K1 avif 16-bit lossless: exit=$($rK1.code), produced=$($null -ne $rK1.file)"
 CK ($vsK1.Count -eq 2) "K1 container has exactly 2 video streams (base + extension); got $($vsK1.Count): $($vsK1 -join ' | ')"
-CK ($vsK1 -match 'gbrp12le') "K1 base pix_fmt = gbrp12le (12-bit RGB base; full='$($vsK1 -join ' | ')'"
-CK ($vsK1 -match 'yuv444p') "K1 extension pix_fmt = yuv444p (4-bit extension item; full='$($vsK1 -join ' | ')'"
-$hitK1 = LogHit $rK1.log '\[avif16\] avifenc --depth 12,4' 1
-CK ($hitK1.Count -ge 1) "K1 avifenc --depth 12,4 path landed (not ffmpeg/libaom 12-bit single item)"
+CK ($vsK1.Count -eq 2 -and $vsK1[0] -match '^\d+,gbrp12le$') "K1 base pix_fmt = gbrp12le (12-bit RGB base; full='$($vsK1 -join ' | ')')"
+CK ($vsK1.Count -eq 2 -and $vsK1[1] -match '^\d+,yuv444p$') "K1 extension pix_fmt = yuv444p (extension item; full='$($vsK1 -join ' | ')')"
+# K1 直接校验 sato 派生项对两个 av01 item 的引用；K2 再证明不是只读 12-bit base。
+CK ($rK1.file -and (HasSampleTransform $rK1.file)) "K1 ISO-BMFF sato item references both distinct av01 items through dimg"
 CK ($rK1.log -notmatch '出口位深降为 12bit（本次目标 16bit）') "K1 no false 16->12 degradation broadcast (sato fulfills 16-bit)"
 
 $rK2 = @{ code = -1; log = ''; file = $null }
@@ -656,12 +1077,312 @@ CK ($rK2.code -eq 0 -and ($null -ne $rK2.file)) "K2 16-bit AVIF decoded by produ
 if ($rK2.file) {
     $md5K0 = Md5Rgb48 $src16
     $md5K2 = Md5Rgb48 $rK2.file
-    CK ($md5K0 -eq $md5K2) "K2 pixel md5 bit-exact after AVIF roundtrip (src=$md5K0, dec=$md5K2)"
+    CK ($md5K0 -ne '' -and $md5K0 -ceq $md5K2) "K2 pixel md5 bit-exact after AVIF roundtrip (src=$md5K0, dec=$md5K2)"
 } else {
     CK $false "K2 pixel md5 bit-exact after AVIF roundtrip (no decoded product)"
 }
 $hitK2 = LogHit $rK2.log '\[avif16\].*(Sample Transform|sato|重建)' 1
 CK ($hitK2.Count -ge 1) "K2 sample-transform recognition landed (sato + dimg, not 12-bit base only)"
+
+Write-Output ""
+# K3: reject ambiguous dimg, advertised precision, and unrelated altr color inheritance before guessing.
+if ($rK1.file -and (HasSampleTransform $rK1.file)) {
+    $originalK = [IO.File]::ReadAllBytes($rK1.file)
+    $metaK = BoxOf $originalK 0 $originalK.Length 'meta'
+    $irefK = if ($metaK) { BoxOf $originalK ($metaK.start+4) $metaK.end 'iref' } else { $null }
+    $iinfK = if ($metaK) { BoxOf $originalK ($metaK.start+4) $metaK.end 'iinf' } else { $null }
+    $pitmK = if ($metaK) { BoxOf $originalK ($metaK.start+4) $metaK.end 'pitm' } else { $null }
+    $grplK = if ($metaK) { BoxOf $originalK ($metaK.start+4) $metaK.end 'grpl' } else { $null }
+    $dimgK = if ($irefK) { BoxOf $originalK ($irefK.start+4) $irefK.end 'dimg' } else { $null }
+    $altrK = if ($grplK) { BoxOf $originalK $grplK.start $grplK.end 'altr' } else { $null }
+    $infeK = if ($iinfK -and $iinfK.end - $iinfK.start -ge 6) { @(Boxes $originalK ($iinfK.start+6) $iinfK.end | Where-Object { $_.type -ceq 'infe' }) } else { @() }
+    $satoIdsK = @(); $av01IdsK = @()
+    foreach ($entryK in $infeK) {
+        if ($entryK.end - $entryK.start -lt 12 -or $originalK[$entryK.start] -ne 2) { continue }
+        $idK = Be $originalK ($entryK.start+4) 2
+        $typeK = [Text.Encoding]::ASCII.GetString($originalK,$entryK.start+8,4)
+        if ($typeK -ceq 'sato') { $satoIdsK += $idK }
+        if ($typeK -ceq 'av01') { $av01IdsK += $idK }
+    }
+    $pitmIdK = if ($pitmK -and $pitmK.end - $pitmK.start -eq 6 -and $originalK[$pitmK.start] -eq 0) { Be $originalK ($pitmK.start+4) 2 } else { -1 }
+    $dimgFromK = if ($dimgK -and $dimgK.end - $dimgK.start -eq 8) { Be $originalK $dimgK.start 2 } else { -1 }
+    $dimgCountK = if ($dimgK -and $dimgK.end - $dimgK.start -eq 8) { Be $originalK ($dimgK.start+2) 2 } else { -1 }
+    $baseItemK = if ($dimgCountK -eq 2) { Be $originalK ($dimgK.start+4) 2 } else { -1 }
+    $extensionItemK = if ($dimgCountK -eq 2) { Be $originalK ($dimgK.start+6) 2 } else { -1 }
+    $basePropsK = if ($baseItemK -ge 0) { @(PrimaryAvifProperties $originalK $baseItemK) } else { @() }
+    $satoPropsK = if ($satoIdsK.Count -eq 1) { @(PrimaryAvifProperties $originalK $satoIdsK[0]) } else { @() }
+    $extensionPropsK = if ($extensionItemK -ge 0) { @(PrimaryAvifProperties $originalK $extensionItemK) } else { @() }
+    $baseColrK = @($basePropsK | Where-Object { $_.type -ceq 'colr' })
+    $satoColrK = @($satoPropsK | Where-Object { $_.type -ceq 'colr' })
+    $extensionColrK = @($extensionPropsK | Where-Object { $_.type -ceq 'colr' })
+    $codecK = @($basePropsK | Where-Object { $_.type -ceq 'av1C' })
+    $inputPixiK = @($basePropsK | Where-Object { $_.type -ceq 'pixi' })
+    # Sample-transform output precision belongs to the sato item, not the pitm base image.
+    $outputPixiK = @($satoPropsK | Where-Object { $_.type -ceq 'pixi' })
+    $altrFixtureValid = $false
+    if ($altrK -and $dimgK -and $satoIdsK.Count -eq 1 -and $pitmIdK -ge 0 -and
+        $altrK.end - $altrK.start -eq 20 -and $dimgCountK -eq 2) {
+        $altrFlagsK = Be $originalK $altrK.start 4
+        $altrGroupK = Be $originalK ($altrK.start+4) 4
+        $altrEntitiesK = Be $originalK ($altrK.start+8) 4
+        $altrFirstK = Be $originalK ($altrK.start+12) 4
+        $altrSecondK = Be $originalK ($altrK.start+16) 4
+        $altrFixtureValid = ($altrFlagsK -eq 0 -and $altrGroupK -eq 4 -and $altrEntitiesK -eq 2 -and
+            $altrFirstK -eq $satoIdsK[0] -and $altrSecondK -eq $pitmIdK -and
+            $dimgFromK -eq $satoIdsK[0] -and $baseItemK -eq $pitmIdK -and
+            $av01IdsK.Count -eq 2 -and $baseItemK -in $av01IdsK -and $extensionItemK -in $av01IdsK -and
+            $baseItemK -ne $extensionItemK -and $baseColrK.Count -gt 0 -and
+            $satoColrK.Count -eq 0 -and $extensionColrK.Count -eq 0)
+    }
+    if ($altrFixtureValid) {
+        CK $true 'K3 unrelated_altr fixture shape: legacy base-only colr, altr v0/group 4/count 2 = [sato, primary], dimg = [sato, primary, extension]'
+    } else {
+        Write-Output '  SKIP K3 unrelated_altr: K1 is not the legacy base-only-colr altr layout; strict-color K1 does not require altr'
+    }
+    $k3Kinds = @('duplicate_dimg','output_precision','input_depth_mismatch')
+    if ($altrFixtureValid) { $k3Kinds += 'unrelated_altr' }
+    foreach ($kind in $k3Kinds) {
+        $mutant = [byte[]]$originalK.Clone(); $patchOk=$false
+        if($kind -eq 'duplicate_dimg' -and $dimgCountK -eq 2){
+            [Array]::Copy($mutant,$dimgK.start+4,$mutant,$dimgK.start+6,2); $patchOk=$true
+        } elseif($kind -eq 'output_precision' -and $outputPixiK.Count -eq 1){
+            $pix=$outputPixiK[0]; $channels=$mutant[$pix.start+4]
+            if($channels -eq 3 -and $pix.end-$pix.start -eq 8 -and $mutant[$pix.start+5] -eq 16 -and
+                $mutant[$pix.start+6] -eq 16 -and $mutant[$pix.start+7] -eq 16){
+                for($i=0;$i -lt 3;$i++){$mutant[$pix.start+5+$i]=12};$patchOk=$true
+            }
+        } elseif($kind -eq 'input_depth_mismatch' -and $codecK.Count -eq 1 -and $inputPixiK.Count -eq 1){
+            $codec=$codecK[0];$pix=$inputPixiK[0]
+            if($codec.end-$codec.start -ge 4 -and ($mutant[$codec.start+2] -band 96) -eq 96 -and
+                $mutant[$pix.start+4] -eq 3 -and $pix.end-$pix.start -eq 8 -and $mutant[$pix.start+5] -eq 12){
+                $mutant[$codec.start+2]=$mutant[$codec.start+2] -band 223
+                for($i=0;$i -lt 3;$i++){$mutant[$pix.start+5+$i]=10};$patchOk=$true
+            }
+        } elseif($kind -eq 'unrelated_altr' -and $altrFixtureValid -and $extensionItemK -le 255){
+            $newId=[long]$extensionItemK
+            for($i=3;$i -ge 0;$i--){$mutant[$altrK.start+16+$i]=[byte]($newId -band 255);$newId=[long][Math]::Floor($newId/256.0)}
+            $changed=@();for($i=0;$i -lt $originalK.Length;$i++){if($mutant[$i] -ne $originalK[$i]){$changed+= $i}}
+            $patchOk=($mutant.Length -eq $originalK.Length -and $changed.Count -eq 1 -and
+                $changed[0] -eq $altrK.start+19 -and $mutant[$altrK.start+19] -eq $extensionItemK)
+        }
+        CK $patchOk "K3 $kind fixture: bounded metadata-only patch, encoded AV1 items remain unchanged"
+        if($patchOk){
+            $path=Join-Path $work ("k3_$kind.avif");[IO.File]::WriteAllBytes($path,$mutant)
+            $rejected=Run ("k3_$kind") 'png' @('--bit-depth','16','--color-engine','engine') $path
+            CK (Rejected91 $rejected) "K3 ${kind}: one task 91, process 1, zero guessed output"
+            $reason = switch($kind){
+                'duplicate_dimg' {'AVIF_SAMPLE_TRANSFORM_INPUTS_INVALID'}
+                'output_precision' {'AVIF_SAMPLE_TRANSFORM_OUTPUT_DEPTH_UNSUPPORTED'}
+                'input_depth_mismatch' {'AVIF_SAMPLE_TRANSFORM_INPUT_DEPTH_MISMATCH'}
+                'unrelated_altr' {'AVIF_SAMPLE_TRANSFORM_COLOR_UNVERIFIED'}
+            }
+            CK ($rejected.log -match ('\b'+$reason+'\b')) "K3 $kind rejection has the stable sample-transform contract reason $reason"
+            if($kind -eq 'unrelated_altr'){
+                CK ($rejected.log -match '\bAVIF_SAMPLE_TRANSFORM_INPUT_UNVERIFIED\b' -and
+                    $rejected.log -match '\bAVIF_SAMPLE_TRANSFORM_COLOR_UNVERIFIED\b') `
+                    'K3 unrelated_altr has the expected outer INPUT_UNVERIFIED and inner COLOR_UNVERIFIED reason chain'
+            }
+        }else{CK $false "K3 $kind cannot run without its independently checked fixture structure"}
+    }
+} else { CK $false 'K3 requires the valid K1 sample-transform artifact' }
+
+Write-Output "===== L AVIF ICC exit (matrix, native samples, range/chroma and terminal reject) ====="
+# 置黑/红/白三个 32px 色块；444/RGB 臂提供变换后原生 RGB 取数，601 公式作为错误矩阵负控。
+$srcIcc = Join-Path $work 'icc_swatches.png'
+$genIcc = @('-y','-v','error','-f','lavfi','-i','color=black:s=32x32:r=1,format=rgb24',
+    '-f','lavfi','-i','color=red:s=32x32:r=1,format=rgb24','-f','lavfi','-i','color=white:s=32x32:r=1,format=rgb24',
+    '-filter_complex','[0][1][2]hstack=3','-frames:v','1',"`"$srcIcc`"")
+$mkIcc = Start-Process -FilePath $ff -ArgumentList $genIcc -Wait -NoNewWindow -PassThru `
+    -RedirectStandardOutput (Join-Path $work 'l0_gen.o') -RedirectStandardError (Join-Path $work 'l0_gen.e')
+CK ($mkIcc.ExitCode -eq 0 -and (Test-Path -LiteralPath $srcIcc)) 'L0 RGB black/red/white swatches generated'
+$iccArgs = @('--color-engine','engine','--color-strategy','manual','--color-space','Display P3','--quality','100')
+$lYuv = Run 'l1_icc_709' 'avif' ($iccArgs + @('--color-out-matrix','bt709','--color-range','tv','--chroma','4:2:0')) $srcIcc
+$lRgb = Run 'l2_icc_rgb' 'avif' ($iccArgs + @('--color-out-matrix','rgb','--color-range','pc','--chroma','4:4:4','--lossless','true')) $srcIcc
+$csYuv = if ($lYuv.file) { ProbeCs $lYuv.file } else { '' }
+$csIccRgb = if ($lRgb.file) { ProbeCs $lRgb.file } else { '' }
+CK ($lYuv.code -eq 0 -and $csYuv -ceq 'yuv420p,tv,bt709') "L1 decoded representation YUV 4:2:0 limited BT.709 (rc=$($lYuv.code); '$csYuv')"
+CK ($lRgb.code -eq 0 -and $csIccRgb -ceq 'gbrp,pc,gbr') "L2 decoded representation RGB 4:4:4 full identity (rc=$($lRgb.code); '$csIccRgb')"
+# Both profiles describe Display P3/sRGB as full-range RGB; only the pixel storage nclx differs.
+# Check each profile against that contract, not against the byte serialization of the other arm.
+$yuvAvifBytes = if ($lYuv.file) { ,([IO.File]::ReadAllBytes($lYuv.file)) } else { $null }
+$rgbAvifBytes = if ($lRgb.file) { ,([IO.File]::ReadAllBytes($lRgb.file)) } else { $null }
+$mYuv = if ($yuvAvifBytes) { ReadAvifColor $yuvAvifBytes } else { $null }
+$mRgb = if ($rgbAvifBytes) { ReadAvifColor $rgbAvifBytes } else { $null }
+$rgbCicp = '12/13/0/1'; $yuvNclx = '12/13/1/0'
+foreach ($arm in @(@{ name = 'L1'; color = $mYuv; nclx = $yuvNclx }, @{ name = 'L2'; color = $mRgb; nclx = $rgbCicp })) {
+    $c = $arm.color; $name = $arm.name; $expected = $arm.nclx
+    CK ($c.nclx.Count -eq 1 -and $c.nclx[0].value -ceq $expected) `
+        "$name primary item nclx P/T/M/full = $expected (got $($c.nclx.value -join ','))"
+    $profile = if ($c.icc.Count -eq 1) { $c.icc[0].profile } else { $null }
+    CK ($null -ne $profile) "$name primary item carries one structurally valid ICC v4.4 RGB matrix/TRC profile"
+    CK ($profile.idOk) "$name ICC Profile ID is nonzero and equals the ICC.1 MD5 checksum (stored $($profile.id))"
+    CK ($profile.cicp -ceq $rgbCicp) "$name ICC cicp = $rgbCicp (got $($profile.cicp)); describes full-range RGB independently of nclx"
+    CK (ProfileMatchesP3Target $profile) `
+        "$name ICC numerical target: D50 whitepoint + Display P3 XYZ matrix + sRGB TRC samples (cICP alone is insufficient)"
+}
+
+# In-memory mutants isolate each detector, keep the AVIF media samples unchanged, and add no encoder runs.
+$embedded = if ($mYuv.icc.Count -eq 1) { $mYuv.icc[0] } else { $null }
+if ($embedded.profile.idOk -and $embedded.profile.cicp -ceq $rgbCicp -and $mYuv.nclx.Count -eq 1 -and $mYuv.nclx[0].value -ceq $yuvNclx) {
+    # Flipping legitimate flags and changing the rendering intent must not change a valid ID.
+    $headerVariant = [byte[]]$embedded.bytes.Clone()
+    $headerVariant[47] = $headerVariant[47] -bxor 1
+    $headerVariant[67] = ($headerVariant[67] + 1) % 4
+    $variant = ReadRgbIcc44 $headerVariant
+    CK ($variant.idOk -and $variant.id -ceq $embedded.profile.id -and $variant.cicp -ceq $rgbCicp) `
+        'L Profile ID normalization: changing only flags and rendering intent does not invalidate the same checksum'
+
+    $idMutant = [byte[]]$embedded.bytes.Clone()
+    $idMutant[84] = $idMutant[84] -bxor 1
+    $badId = ReadRgbIcc44 $idMutant
+    [Array]::Clear($idMutant, 84, 16)
+    $zeroId = ReadRgbIcc44 $idMutant
+    CK ($badId.cicp -ceq $rgbCicp -and -not $badId.idOk -and $zeroId.cicp -ceq $rgbCicp -and -not $zeroId.idOk) `
+        'L negative control: both wrong nonzero and zero Profile IDs fail despite valid structure and cicp'
+
+    $cicpOffset = $embedded.profile.cicpTag.Off
+    $wrongIcc = [byte[]]$embedded.bytes.Clone()
+    $wrongIcc[$cicpOffset + 10] = 1; $wrongIcc[$cicpOffset + 11] = 0
+    [Array]::Copy((IccIdDigest $wrongIcc), 0, $wrongIcc, 84, 16)
+    $badIcc = ReadRgbIcc44 $wrongIcc
+    CK ($badIcc.idOk -and $badIcc.cicp -ceq $yuvNclx -and $badIcc.cicp -cne $rgbCicp) `
+        'L negative control: copying storage nclx into ICC cicp violates RGB semantics even with a valid Profile ID'
+
+    # A correct checksum cannot make a tag table entry which points into the header valid.
+    [Array]::Clear($wrongIcc, $embedded.profile.cicpTag.Entry + 4, 4)
+    [Array]::Copy((IccIdDigest $wrongIcc), 0, $wrongIcc, 84, 16)
+    CK ($null -eq (ReadRgbIcc44 $wrongIcc)) 'L negative control: rejects a cicp tag pointing into the ICC header'
+
+    $wrongAvif = [byte[]]$yuvAvifBytes.Clone(); $p = $mYuv.nclx[0].sampleOffset
+    $wrongAvif[$p + 1] = 0; $wrongAvif[$p + 2] = 128
+    $badAvif = ReadAvifColor $wrongAvif
+    CK ($badAvif.nclx.Count -eq 1 -and $badAvif.nclx[0].value -ceq $rgbCicp -and $badAvif.nclx[0].value -cne $yuvNclx -and
+        $badAvif.icc.Count -eq 1 -and $badAvif.icc[0].profile.idOk -and $badAvif.icc[0].profile.cicp -ceq $rgbCicp) `
+        'L negative control: copying ICC cicp into YUV storage nclx violates sample semantics while ICC remains valid'
+
+    # Valid Profile IDs and unchanged RGB cicp must not hide a wrong matrix or wrong TRC.
+    $wrongMatrix = [byte[]]$embedded.bytes.Clone()
+    $redX = $embedded.profile.tags['rXYZ'].Off + 8
+    WriteIccS15 $wrongMatrix $redX ((IccS15 $wrongMatrix $redX) + 0.05)
+    [Array]::Copy((IccIdDigest $wrongMatrix), 0, $wrongMatrix, 84, 16)
+    $badMatrixProfile = ReadRgbIcc44 $wrongMatrix
+    CK ($badMatrixProfile.idOk -and $badMatrixProfile.cicp -ceq $rgbCicp -and
+        -not (ProfileMatchesP3Target $badMatrixProfile)) `
+        'L negative control: altered rXYZ with recomputed valid Profile ID and unchanged cicp fails the numerical target'
+
+    $wrongTrc = [byte[]]$embedded.bytes.Clone()
+    $trcMutated = MutateIccCurve $wrongTrc $embedded.profile.tags['rTRC']
+    [Array]::Copy((IccIdDigest $wrongTrc), 0, $wrongTrc, 84, 16)
+    $badTrcProfile = ReadRgbIcc44 $wrongTrc
+    CK ($trcMutated -and $badTrcProfile.idOk -and $badTrcProfile.cicp -ceq $rgbCicp -and
+        -not (ProfileMatchesP3Target $badTrcProfile)) `
+        'L negative control: altered rTRC with recomputed valid Profile ID and unchanged cicp fails the sampled curve target'
+} else { CK $false 'L negative controls require the valid L1 ICC and YUV nclx positive control' }
+CK (OneMatrixResult $lYuv.log '\[color-out-matrix\] avif: bt709 -> .*') 'L1 exactly one landed BT.709 result'
+CK (OneMatrixResult $lRgb.log '\[color-out-matrix\] avif: rgb -> .*') 'L2 exactly one landed identity result'
+
+function ReadRawFrame([string]$path, [string]$tag, [string[]]$videoArgs, [int]$length) {
+    $raw = Join-Path $work "$tag.raw"
+    $argsRaw = @('-y','-v','error','-i',"`"$path`"",'-map','0:v:0','-frames:v','1') + $videoArgs + @('-f','rawvideo',"`"$raw`"")
+    $proc = Start-Process -FilePath $ff -ArgumentList $argsRaw -Wait -NoNewWindow -PassThru `
+        -RedirectStandardOutput (Join-Path $work "$tag.o") -RedirectStandardError (Join-Path $work "$tag.e")
+    if ($proc.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $raw)) { return }
+    $b = [IO.File]::ReadAllBytes($raw)
+    if ($b.Length -eq $length) { return ,$b }
+}
+$yL = if ($lYuv.file) { ReadRawFrame $lYuv.file 'l_y' @('-vf','extractplanes=y','-pix_fmt','gray') (96 * 32) } else { $null }
+$rgbL = if ($lRgb.file) { ReadRawFrame $lRgb.file 'l_rgb' @('-pix_fmt','rgb24') (96 * 32 * 3) } else { $null }
+if ($null -ne $yL -and $null -ne $rgbL) {
+    $black = 16 * 96 + 16; $red = 16 * 96 + 48; $white = 16 * 96 + 80
+    $rr = [int]$rgbL[3 * $red]; $gg = [int]$rgbL[3 * $red + 1]; $bb = [int]$rgbL[3 * $red + 2]
+    $y709 = 16 + 219 * (0.2126 * $rr + 0.7152 * $gg + 0.0722 * $bb) / 255
+    $y601 = 16 + 219 * (0.299 * $rr + 0.587 * $gg + 0.114 * $bb) / 255
+    CK ([Math]::Abs($yL[$black] - 16) -le 3 -and [Math]::Abs($yL[$white] - 235) -le 3) `
+        "L1 native Y black/white are limited-range (got $($yL[$black])/$($yL[$white]))"
+    CK ([Math]::Abs($y709 - $y601) -ge 8 -and [Math]::Abs($yL[$red] - $y709) -le 3 -and [Math]::Abs($yL[$red] - $y601) -gt 3) `
+        "L1 red swatch native Y=$($yL[$red]); matches BT.709=$y709 and rejects BT.601=$y601 (RGB=$rr/$gg/$bb)"
+} else { CK $false 'L1/L2 native sample oracle could not decode both arms' }
+
+# L5: same source/target/chroma/depth/quality; only output range and actual encoder route vary.
+# Native Y/Cb/Cr are compared to a source-derived RGB->P3->BT.709 formula, never the L2 product.
+$sourceRgbL = ReadRawFrame $srcIcc 'l5_original_rgb' @('-pix_fmt','rgb24') (96 * 32 * 3)
+function SourceRgbToP3([int]$r,[int]$g,[int]$b) {
+    $lin = @()
+    foreach ($v in @($r,$g,$b)) { $e=$v/255.0; $lin += $(if($e -le .04045){$e/12.92}else{[Math]::Pow(($e+.055)/1.055,2.4)}) }
+    # From IEC sRGB / EG432 P3 xy primaries and D65, independently of product registry/ICC bytes.
+    $rows = @(@(.8224619687143624,.1775380312856376,0.0),@(.0331941988509615,.9668058011490385,0.0),@(.0170826307211200,.0723974406639630,.9105199286149170))
+    $encoded = @()
+    foreach($row in $rows) {
+        $l = [Math]::Max(0.0,[Math]::Min(1.0,($row[0]*$lin[0]+$row[1]*$lin[1]+$row[2]*$lin[2])))
+        $encoded += $(if($l -le .0031308){12.92*$l}else{1.055*[Math]::Pow($l,1.0/2.4)-.055})
+    }
+    return ,$encoded
+}
+$nativeYuvRefs = @{}
+foreach ($range in @('pc','tv')) {
+    $samples = @()
+    foreach ($sampleX in @(16,48,80)) {
+        $at = (16*96+$sampleX)*3
+        $rgb = if ($sourceRgbL) { SourceRgbToP3 $sourceRgbL[$at] $sourceRgbL[$at+1] $sourceRgbL[$at+2] } else { @() }
+        if ($rgb.Count -ne 3) { continue }
+        $yy=.2126*$rgb[0]+.7152*$rgb[1]+.0722*$rgb[2]
+        $yScale=255.0; $yOffset=0.0; $cScale=255.0
+        if($range -eq 'tv'){$yScale=219.0;$yOffset=16.0;$cScale=224.0}
+        $samples += ,@(($yOffset+$yScale*$yy),(128+$cScale*($rgb[2]-$yy)/(2*(1-.0722))),(128+$cScale*($rgb[0]-$yy)/(2*(1-.2126))))
+    }
+    $nativeYuvRefs[$range] = $samples
+}
+$rangeNative = @{}
+# Use the existing AVIF AOM lossless preset to select its concrete EncoderName=libaom-av1;
+# override lossless and the preset's 4:4:4/auto-depth axes for this 8-bit 4:2:0 route probe.
+$aomPreset = [string]::Concat([char]::ConvertFromUtf32(0x1F680), ' AVIF AOM ', [char]0x2014, ' ', [char]0x65E0, [char]0x635F, ' (CRF 0, 4:4:4, cpu=1)')
+foreach ($route in @('icc-avifenc','cicp-ffmpeg')) {
+    foreach ($range in @('pc','tv')) {
+        $tag = "l5_${route}_$range"
+        $strategy = if ($route -eq 'icc-avifenc') { 'manual' } else { 'cicp-only' }
+        $cell = Run $tag 'avif' @('--preset',$aomPreset,'--encoder','Ffmpeg','--color-engine','engine','--color-strategy',$strategy,
+            '--color-space','Display P3','--color-out-matrix','bt709','--color-range',$range,'--chroma','4:2:0','--bit-depth','8','--quality','100','--lossless','false') $srcIcc
+        $color = if($cell.file){ReadAvifColor ([IO.File]::ReadAllBytes($cell.file))}else{$null}
+        $fullBit = if($range -eq 'pc'){'1'}else{'0'}
+        $nclx = "12/13/1/$fullBit"
+        CK ($cell.code -eq 0 -and $color.nclx.Count -eq 1 -and $color.nclx[0].value -ceq $nclx -and
+            (ProbeCs $cell.file) -ceq "yuv420p,$range,bt709") "L5 $tag actual primary nclx/storage matches fixed BT.709/420/8 and selected range"
+        $routeOk = if($route -eq 'icc-avifenc'){
+            $cell.log -match '\[avif\] avifenc .*--cicp 12/13/1' -and $cell.log -match '--icc ' -and $color.icc.Count -eq 1
+        }else{
+            $cell.log -match 'ffmpeg .* -c:v libaom-av1' -and $cell.log -notmatch '\[avif\] avifenc' -and $color.icc.Count -eq 0
+        }
+        CK $routeOk "L5 $tag real encoder command and ICC/CICP route are verified, no silent route substitution"
+        $yuv = if($cell.file){ReadRawFrame $cell.file $tag @('-pix_fmt','yuv420p') (96*32*3/2)}else{$null}
+        $maxError=1000000.0; $gotSamples=@()
+        if($yuv -and $nativeYuvRefs[$range].Count -eq 3){
+            $maxError=0.0; $sampleIndex=0
+            foreach($sampleX in @(16,48,80)){
+                $yAt=16*96+$sampleX; $cAt=8*48+[int]($sampleX/2)
+                $got=@([int]$yuv[$yAt],[int]$yuv[96*32+$cAt],[int]$yuv[96*32+48*16+$cAt]); $gotSamples += ,$got
+                for($channel=0;$channel -lt 3;$channel++){$maxError=[Math]::Max($maxError,[Math]::Abs($got[$channel]-$nativeYuvRefs[$range][$sampleIndex][$channel]))}
+                $sampleIndex++
+            }
+        }
+        CK ($sourceRgbL -and $maxError -le 3.0) "L5 $tag source-independent native Y/Cb/Cr samples agree with P3/BT.709 formula (max=$maxError codes <=3)"
+        $rangeNative[$tag]=$gotSamples
+    }
+    $pc=$rangeNative["l5_${route}_pc"]; $tv=$rangeNative["l5_${route}_tv"]
+    CK ($pc.Count -eq 3 -and $tv.Count -eq 3 -and [Math]::Abs($pc[0][0]-$tv[0][0]) -ge 12 -and
+        [Math]::Abs($pc[2][0]-$tv[2][0]) -ge 15) "L5 $route range negative control: paired full/limited black and white samples are distinguishable"
+}
+
+$jpegIccRun = Run 'l4_legacy_jpeg_icc' 'jpg' @('--color-engine','legacy','--color-space','Display P3','--icc-profile-version','v2','--quality','100') $srcIcc
+$jpegIccBytes = if ($jpegIccRun.file) { ReadJpegIcc $jpegIccRun.file } else { $null }
+$jpegIcc = if ($jpegIccBytes) { ReadRgbIcc44 $jpegIccBytes } else { $null }
+CK ($jpegIccRun.code -eq 0 -and $jpegIcc.idOk -and $jpegIcc.cicp -ceq '12/13/0/1' -and
+    (ProfileMatchesP3Target $jpegIcc) -and $jpegIccRun.log -match 'Legacy ICC v2 preference ignored') `
+    'L4 JPEG APP2: old version preference is accepted; generated ICC v4.4 has valid ID, RGB cicp and measured P3/sRGB colorants/TRC'
+
+$lReject = Run 'l3_icc_lossless_709' 'avif' ($iccArgs + @('--color-out-matrix','bt709','--lossless','true')) $srcIcc -JsonLines
+CK (Rejected91 $lReject) 'L3 ICC/lossless BT.709 conflict: JSONL task 91, process 1, zero output'
+CK ($lReject.log -match '\bCOLOR_MATRIX_REJECTED\b' -and $lReject.log -notmatch '\[color-out-matrix\] avif: bt709 ->') `
+    'L3 stable matrix rejection reason, never a false landed result'
 
 Write-Output ""
 Write-Output "===== -SelfCheck negative-control arm (must turn RED) ====="
@@ -693,7 +1414,7 @@ if ($SelfCheck) {
 }
 
 # ── 清理 + 汇总（house 契约：末行 PASS=n FAIL=m + fail => exit 1） ─────────────────
-if (-not $KeepWork) { Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue }
+if (-not $KeepWork -and $fail -eq 0 -and $ncOk) { Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue }
 else { Write-Output "[keepwork] product area kept: $work" }
 
 Write-Output ""

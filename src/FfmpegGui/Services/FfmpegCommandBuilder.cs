@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Text.Json;
 using FfmpegGui.Models;
 
 namespace FfmpegGui.Services
@@ -61,8 +62,10 @@ namespace FfmpegGui.Services
             //   返回 null 时**跳过**（绝不原样拼）。
             // ⚠ 安全性：对 RGB 原生输出不会污染其 CICP —— 实测 `-colorspace bt2020nc -i … out.png`
             //   的 PNG 仍报 `color_space=gbr`，且应用侧 PngCicpService 对 PNG 恒写 matrix=0。
+            var inputMatrix = ResolveInputMatrix(options, inputPath);
+            // Queue preflight rejects this before execution. Command preview must stay renderable.
             var declMatrix = ColorSpaceRegistry.ToFfmpegInputMatrixName(dec.DeclMatrix);
-            if (declMatrix != null)
+            if (declMatrix != null && inputMatrix.Use != InputMatrixUse.Reject)
             {
                 args.Add("-colorspace"); args.Add(declMatrix);
             }
@@ -98,41 +101,24 @@ namespace FfmpegGui.Services
             args.Add("-i");
             args.Add($"\"{inputPath}\"");
 
-            // ── C-02（2026-11-14 独立复核）：`-colorspace` 放在 `-i` 前只是**声明/元数据**，
-            // 实测 JPEG/AVIF 的 bt601 vs bt709 产物 PSNR=inf；真正改变 YUV→RGB 解码矩阵的是
-            // scale 的 `in_color_matrix=`。这里只在**用户显式给了 --color-matrix** 且输入是
-            // 非 RGB、非分块流组时追加该滤镜；RGB 输入没有可应用的 YUV 矩阵，另行点名。
-            // 注意：不能把派生矩阵也塞进来——那会改变既有 auto 路径的像素，违反 C-02 的边界。
-            // ⚠ 必须在 `-i` 之后：input option 不能出现在输入 URL 后面（实测 `vf ... cannot be applied to input url`）。
-            if (!string.IsNullOrWhiteSpace(options.ColorMatrix) && declMatrix != null)
+            if (PngNarrowRangeFilter(inputPath) is { } expandPng)
+                AppendVideoFilter(args, expandPng, EnsureGroupForm(), groupLabelReset);
+            if (GetCachedProbe(inputPath).DiscardSourceIcc || dec.SuppressUnverifiedLabels || dec.GenerateJpegIccAfterEncode)
+                AppendVideoFilter(args, "sidedata=mode=delete:type=ICC_PROFILE", EnsureGroupForm(), groupLabelReset);
+            if (dec.SuppressUnverifiedLabels)
+                AppendVideoFilter(args, "setparams=color_primaries=unknown:color_trc=unknown", EnsureGroupForm(), groupLabelReset);
+
+            // A declaration alone does not force swscale to use that matrix. Pin an RGB
+            // sink at the first YUV→RGB boundary, even when the final encoder uses YUV.
+            if (inputMatrix.Use == InputMatrixUse.Convert)
             {
-                bool inputIsRgb = GetCachedProbe(probeInput).isRgb;
-                bool grouped = EnsureGroupForm();
-                if (inputIsRgb)
-                {
-                    ColorMapping.ImageEncoderArgs.EmitWarn(
-                        $"⚠ [matrix] --color-matrix={options.ColorMatrix} ignored for pixel conversion: "
-                        + "source is RGB; the matrix only remains a container declaration where the format has one.");
-                }
-                else if (grouped)
-                {
-                    ColorMapping.ImageEncoderArgs.EmitWarn(
-                        $"⚠ [matrix] --color-matrix={options.ColorMatrix} not applied to a grouped/tiled input: "
-                        + "the scale in_color_matrix stage is only wired for a single video stream.");
-                }
-                else
-                {
-                    var rangePart = string.IsNullOrWhiteSpace(inputColorRange)
-                        ? ""
-                        : $":in_range={inputColorRange}:out_range={inputColorRange}";
-                    AppendVideoFilter(args,
-                        $"scale=in_color_matrix={declMatrix}{rangePart}",
-                        false, null);
-                    ColorMapping.ImageEncoderArgs.EmitWarn(
-                        $"⚠ [matrix] --color-matrix={options.ColorMatrix} now drives pixel conversion "
-                        + $"via scale=in_color_matrix={declMatrix} (not just a pre-input metadata declaration).");
-                }
+                var decodeMeta = GetCachedProbe(inputPath);
+                bool wideDecode = decodeMeta.bitDepth > 8 || dec.PixelChains.Count > 0 || options.BitDepth > 8;
+                var decodeFmt = decodeMeta.hasAlpha ? (wideDecode ? "rgba64le" : "rgba") : (wideDecode ? "rgb48le" : "rgb24");
+                AppendVideoFilter(args, inputMatrix.BuildFilter(decodeFmt)!, false, null);
             }
+            else if (inputMatrix.Diagnostic != null)
+                ColorMapping.ImageEncoderArgs.EmitWarn(inputMatrix.Diagnostic);
 
 
             // GIF → AVIF：swscale 精确标志（输出选项，FFmpeg 8.x 不接受 -i 前 -pix_fmt）
@@ -717,7 +703,9 @@ namespace FfmpegGui.Services
             // 旧路径不发 `-pix_fmt` ⇒ libaom 对 RGB 源自选 gbrp，后续 `-colorspace` 被忽略，
             // 计划写 `Carried` 但产物 nclx 仍是 identity。显式矩阵请求必须自己钉住 YUV 像素面；
             // 位深跟随 EffectiveBitDepth（仍受 AVIF 编码器上限钳制），色度按 auto=4:2:0。
-            else if (!skipGenericPixFmt && explicitYuvOutMatrix
+            else if (fmt == "avif" && explicitYuvOutMatrix
+                && ColorMapping.ColorMappingEngine.ResolveOutMatrixCapability(fmt, outMatrixTok, EncoderBackend.Ffmpeg)
+                    == ColorMapping.OutMatrixCapability.Carried
                 && !chromaExplicit && !options.BitDepth.HasValue)
             {
                 args.Add("-pix_fmt");
@@ -1310,9 +1298,10 @@ namespace FfmpegGui.Services
                      || !string.IsNullOrWhiteSpace(options.ColorTrc)
                      || !string.IsNullOrWhiteSpace(options.ColorMatrix)))
             {
-                primaries = options.ColorPrimaries;
-                trc = options.ColorTrc;
-                colorspace = options.ColorMatrix;
+                var source = ProbeInputColorMetadata(inputPath);
+                primaries = options.ColorPrimaries ?? source.colorPrimaries;
+                trc = options.ColorTrc ?? source.colorTrc;
+                colorspace = options.ColorMatrix ?? source.colorSpace;
             }
             else if ((!options.HasExplicitColorParams
                  && !string.IsNullOrWhiteSpace(options.ColorPrimaries)
@@ -1838,6 +1827,14 @@ namespace FfmpegGui.Services
             /// null = 无 ICC / ICC 读不出度量（调用方按 CICP 标签路径继续）。
             /// </summary>
             public ColorMapping.ColorSpaceDescriptor? iccDescriptor;
+            public ColorMapping.IccProfileIdentity? iccIdentity;
+            internal bool InvalidPngCicp;
+            internal bool NarrowRangePng;
+            internal bool IccNotUsableForRgb;
+            internal bool InvalidPngIccp;
+            internal bool DiscardSourceIcc => InvalidPngIccp || iccIdentity?.Kind == ColorMapping.IccProfileKind.MalformedOrUnreadable || IccNotUsableForRgb;
+            internal string? VideoColorConflict;
+            internal bool VideoColorVariesWithinSample;
             /// <summary>源 ICC 三态；exiftool 不可用/读取失败时不得把空标签当成“源无 ICC”。</summary>
             public ColorMapping.SourceIccStatus iccStatus;
             /// <summary>源峰值亮度 (nits)，来自 HDR 静态元数据；0=未读到（调用方必须回退到源曲线名义峰值并写明来源）。</summary>
@@ -1979,19 +1976,13 @@ namespace FfmpegGui.Services
         /// </summary>
         public static string? ResolveFaithfulUltraWideIcc(Models.FfmpegOptions options,
             string? srcGamutName, string? srcTrc, string? format)
-            => ResolveFaithfulUltraWideIcc(options.ColorStrategy, options.ColorSpace, srcGamutName, srcTrc, format,
-                ResolveIccVersion(options.IccProfileVersion, format));
+            => options.HasExplicitColorTarget ? null
+                : ResolveFaithfulUltraWideIcc(options.ColorStrategy, options.ColorSpace, srcGamutName, srcTrc, format,
+                    ResolveIccVersion(options.IccProfileVersion, format));
 
-        /// <summary>把用户的 ICC 版本 token 解析为 writer 档位；非 JPEG 出口归一回 v4.4
-        ///（v2 只对老 JPEG 消费端有意义）。options 重载与引擎装配层（ColorIntentFactory）共用本判定。</summary>
+        /// <summary>Product writer version. Legacy preference tokens remain loadable; imported profiles are separate.</summary>
         public static IccProfileBuilder.IccProfileVersion ResolveIccVersion(string? versionToken, string? format)
-            => IsJpegLikeFormat(format)
-                ? IccProfileBuilder.ParseVersionToken(versionToken)
-                : IccProfileBuilder.IccProfileVersion.V44;
-
-        /// <summary>输出是否 JPEG 族（jpg/jpeg/jpegli 后端）。与 UI 侧"ICC 版本下拉可见性"同一口径。</summary>
-        private static bool IsJpegLikeFormat(string? format)
-            => (format ?? "").ToLowerInvariant() is "jpg" or "jpeg" or "jpegli";
+            => IccProfileBuilder.IccProfileVersion.V44;
 
         /// <summary>
         /// 同上，但**不依赖 <see cref="Models.FfmpegOptions"/>** —— 供色彩引擎的意图装配层
@@ -2043,6 +2034,7 @@ namespace FfmpegGui.Services
                 pixFmt = null,
                 hasIccSemantics = jxr.IccBytes is { Length: > 0 },
                 iccDescriptor = jxr.Descriptor,
+                iccIdentity = ColorMapping.ColorSpaceIdentify.IdentifyIccBytes(jxr.IccBytes ?? []),
                 iccStatus = jxr.IccStatus,
                 sourceGamutName = jxr.Descriptor?.KnownSpaceName,
                 primariesApproximated = jxr.Descriptor is { Confidence: ColorMapping.DescriptorConfidence.CodecDefault },
@@ -2130,6 +2122,10 @@ namespace FfmpegGui.Services
             string? iccGuessed = null;
             ColorMapping.ColorSpaceDescriptor? iccDescriptor = null;
             bool iccRawPresent = false;
+            bool? tiffIccReadable = Path.GetExtension(inputPath).ToLowerInvariant() is ".tif" or ".tiff" ? false : null;
+            if (tiffIccReadable.HasValue)
+                meta.iccIdentity = new ColorMapping.IccProfileIdentity(ColorMapping.IccProfileKind.MalformedOrUnreadable,
+                    "IccProfileUnreadable", "cannot establish TIFF IFD0 ICC");
             {
                 try
                 {
@@ -2144,19 +2140,48 @@ namespace FfmpegGui.Services
                         }
                     }
                     // exiftool 给了 ICC 字段但字节为空/过短/解析失败时，不能当成“源没有 ICC”。
-                    iccRawPresent = !string.IsNullOrEmpty(iccB64);
-                    var (iccPath, iccDesc) = IccProfileService.ExtractIccFromBase64(iccB64, log);
-                    if (iccPath != null)
+                    iccRawPresent = !tiffIccReadable.HasValue && iccB64 != null;
+                    if (!tiffIccReadable.HasValue)
+                        meta.iccIdentity = ColorMapping.ColorSpaceIdentify.IdentifyIccBase64(iccB64);
+                    var ext = Path.GetExtension(inputPath).ToLowerInvariant();
+                    if (ext is ".png" or ".apng")
                     {
-                        // 先按**度量**（色度矩阵+曲线）定空间，描述文字只作兜底：
-                        // 本仓库生成的标准 ICC 描述就是“RGB built-in”，只按描述猜会让广色域判断静默失效。
-                        // ⚠ `IdentifyIcc` 一次给出**名字与描述符两样**（F-12）：描述符此前在这里被丢掉，
-                        //   而意图装配（`ColorIntentFactory`）为了拿它又起一次 exiftool 把同一张图重抽一遍
-                        //   ⇒ 每图白付一趟进程。认空间仍只有这一份实现。
-                        var idf = ColorMapping.ColorSpaceIdentify.IdentifyIcc(iccPath, iccDesc);
-                        iccDescriptor = idf.descriptor;
-                        iccGuessed = idf.name;
-                        IccProfileService.TryDeleteIcc(iccPath);
+                        var state = PngCicpService.ReadIccp(inputPath, out var embedded);
+                        if (state == PngCicpService.PngColorTagState.Valid && embedded != null)
+                        {
+                            iccRawPresent = true;
+                            meta.iccIdentity = ColorMapping.ColorSpaceIdentify.IdentifyIccBytes(embedded);
+                        }
+                        else if (state == PngCicpService.PngColorTagState.Invalid)
+                        {
+                            iccRawPresent = true;
+                            meta.InvalidPngIccp = true;
+                            meta.iccIdentity = ColorMapping.IccProfileIdentity.Absent;
+                        }
+                    }
+                    else if (ext is ".tif" or ".tiff")
+                    {
+                        // Unqualified ExifTool ICC can belong to IFD1. Only the decoded default page (IFD0)
+                        // may identify these pixels; a failed native read cannot authorize borrowing a page.
+                        tiffIccReadable = IccContainerReader.TryRead(inputPath, out var tiffIcc);
+                        iccRawPresent = tiffIccReadable == true && tiffIcc != null;
+                        if (tiffIccReadable == true)
+                            meta.iccIdentity = tiffIcc == null ? ColorMapping.IccProfileIdentity.Absent
+                                : ColorMapping.ColorSpaceIdentify.IdentifyIccBytes(tiffIcc);
+                    }
+                    // Identify pixels from the original transform, never from a rewritten profile.
+                    if (meta.iccIdentity is { Kind: ColorMapping.IccProfileKind.LutOrUnsupported, CanDescribeRgbSource: false })
+                    {
+                        meta.IccNotUsableForRgb = true;
+                    }
+                    var desc = !tiffIccReadable.HasValue
+                        && exifColorTags.TryGetValue("ICC_Profile:ProfileDescription", out var iccDesc) ? iccDesc : null;
+                    iccDescriptor = meta.iccIdentity?.CreateMatrixTrcDescriptor(desc);
+                    iccGuessed = iccDescriptor?.KnownSpaceName;
+                    if (iccDescriptor != null)
+                    {
+                        // Carry plans use a non-null locator and re-extract embedded bytes at delivery.
+                        iccDescriptor.SourceIccPath = "embedded.icc";
                     }
                 }
                 catch { }
@@ -2168,14 +2193,17 @@ namespace FfmpegGui.Services
             // 也判成“读不到”，CarryIcc 全被 exit 90 拒绝（无 exiftool 的机器上等于产品不可用）。
             // 改用容器级存在性探针：能确认存在但解析不了 ⇒ Unreadable（fail-closed，不能拿 sRGB 冒充）；
             // 能确认不存在 ⇒ Absent（源无 ICC，按承诺策略继续）；探针本身不确定 ⇒ Unreadable。
-            if (meta.exifReadFailed)
+            if (tiffIccReadable == false)
+                meta.iccStatus = ColorMapping.SourceIccStatus.Unreadable;
+            else if (iccRawPresent)
+                meta.iccStatus = meta.iccIdentity?.IsValid == true && !meta.IccNotUsableForRgb
+                    ? ColorMapping.SourceIccStatus.Present : ColorMapping.SourceIccStatus.Unreadable;
+            else if (tiffIccReadable == true)
+                meta.iccStatus = ColorMapping.SourceIccStatus.Absent;
+            else if (meta.exifReadFailed)
                 meta.iccStatus = ColorMapping.SourceIccStatus.Unreadable;
             else if (ExifToolService.IsAvailable)
-                meta.iccStatus = iccDescriptor != null
-                    ? ColorMapping.SourceIccStatus.Present
-                    : iccRawPresent
-                        ? ColorMapping.SourceIccStatus.Unreadable
-                        : ColorMapping.SourceIccStatus.Absent;
+                meta.iccStatus = ColorMapping.SourceIccStatus.Absent;
             else
             {
                 var iccPresence = ProbeContainerIccPresence(inputPath);
@@ -2218,6 +2246,22 @@ namespace FfmpegGui.Services
 
             // ── 2) ffprobe 补充：pix_fmt → 位深/alpha/isRgb（始终执行，exiftool 无此能力）──
             var ffMeta = ProbeWithFfprobe(inputPath, log, ct);
+            var pngTag = PngCicpService.ReadCicp(inputPath, out _, out _, out bool narrowPng);
+            meta.InvalidPngCicp = pngTag == PngCicpService.PngColorTagState.Invalid;
+            meta.NarrowRangePng = pngTag == PngCicpService.PngColorTagState.Valid && narrowPng;
+            if (meta.InvalidPngCicp)
+            {
+                ffMeta.colorPrimaries = ffMeta.colorTrc = null;
+                ffMeta.colorRange = "pc"; // actual PNG sample layout, not the invalid declaration
+                ffMeta.colorSpace = ffMeta.isRgb ? "gbr" : null;
+            }
+            var decoded = ReadVideoColorEvidenceAsync(inputPath, ct).GetAwaiter().GetResult();
+            meta.VideoColorConflict = decoded.Conflict;
+            meta.VideoColorVariesWithinSample = decoded.VariesWithinSample;
+            ffMeta.colorPrimaries = decoded.Primaries ?? ffMeta.colorPrimaries;
+            ffMeta.colorTrc = decoded.Transfer ?? ffMeta.colorTrc;
+            ffMeta.colorSpace = decoded.Matrix ?? ffMeta.colorSpace;
+            ffMeta.colorRange = decoded.Range ?? ffMeta.colorRange;
             // ⚠⚠ **CICP 优先（2026-09-20 修，缺陷 C）**：能写 CICP 的容器（AVIF/HEIC/JXL/MP4…）里，
             //   **容器的 CICP 才是权威色彩描述**；EXIF/XMP 的 `ColorSpace` 往往只是**源照片的残留标签**。
             //   实测 `seine_hdr_gainmap_srgb.avif`：CICP 说 `smpte2084`(PQ)，而 `XMP-exif:ColorSpace` 说 `sRGB`
@@ -2329,23 +2373,28 @@ namespace FfmpegGui.Services
             return meta;
         }
 
+        // Inspect codec/container delivery, not the ICC-influenced source interpretation or its cache.
+        internal static ColorMetadata ProbeDeliveredVideoColor(string path, Action<string>? log, CancellationToken ct, int? absoluteStreamIndex = null)
+            => ProbeWithFfprobe(path, log, ct, readGeometry: false, absoluteStreamIndex);
+
         /// <summary>纯 ffprobe 探测（pix_fmt/色彩标签/宽高），供回退与补充使用</summary>
         /// <param name="log">日志回调（取消/超时分支点名用；null ⇒ 退回 Trace.WriteLine）</param>
         /// <param name="ct">取消令牌（`#26`：本方法此前四级全无 `ct`，用户取消按不动）</param>
         private static ColorMetadata ProbeWithFfprobe(string inputPath,
-            Action<string>? log = null, CancellationToken ct = default)
+            Action<string>? log = null, CancellationToken ct = default, bool readGeometry = true, int? absoluteStreamIndex = null)
         {
-            var m = ProbeWithFfprobeOnce(inputPath, out bool timedOut, log, ct, 5000);
+            var selector = absoluteStreamIndex?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "v:0";
+            var m = ProbeWithFfprobeOnce(inputPath, out bool timedOut, log, ct, 5000, readGeometry, selector);
             if (!timedOut || ct.IsCancellationRequested) return m;
             // ⚠ 2026-10-26：5 s 在负载下会抽风，而超时=「按未探测处理」⇒ 有标签的源被当未标注
             //   （sRGB 惯例）⇒ 源=目标直通、产出错标。与 `ExifToolService.ReadColorTagsAsync`
             //   同一口径：快路径 5 s ⇒ 重试 20 s；两趟都超时才算真的读不到。
             log?.Invoke($"[probe] ffprobe 色彩探测超时（5s）⇒ 重试一次（20s）：{Path.GetFileName(inputPath)}\n");
-            return ProbeWithFfprobeOnce(inputPath, out _, log, ct, 20000);
+            return ProbeWithFfprobeOnce(inputPath, out _, log, ct, 20000, readGeometry, selector);
         }
 
         private static ColorMetadata ProbeWithFfprobeOnce(string inputPath, out bool timedOut,
-            Action<string>? log, CancellationToken ct, int timeoutMs)
+            Action<string>? log, CancellationToken ct, int timeoutMs, bool readGeometry, string selector)
         {
             timedOut = false;
             var meta = new ColorMetadata();
@@ -2357,7 +2406,7 @@ namespace FfmpegGui.Services
                 using var p = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
                 {
                     FileName = ffprobe,
-                    Arguments = $"-v error -select_streams v:0 -show_entries stream=width,height,bits_per_raw_sample,pix_fmt,color_primaries,color_transfer,color_space -of csv=p=0 \"{inputPath}\"",
+                    Arguments = $"-v error -select_streams {selector} -show_entries stream=width,height,bits_per_raw_sample,pix_fmt,color_range,color_primaries,color_transfer,color_space -of json \"{inputPath}\"",
                     RedirectStandardOutput = true,
                     StandardOutputEncoding = System.Text.Encoding.UTF8,
                     RedirectStandardError = true,   // P2-3：排空见下方 BeginErrorReadLine
@@ -2391,14 +2440,23 @@ namespace FfmpegGui.Services
                 }
                 var output = outTask.GetAwaiter().GetResult().Trim();
                 errTask.GetAwaiter().GetResult();
-                var parts = output.Split(',');
-                // ⚠️ 关键：ffprobe 的 -show_entries stream=A,B,C 输出顺序为流内部固定顺序
-                // （与参数书写顺序无关）。实测（ffmpeg 22.x / ffprobe 8.x）为：
-                //   width, height, pix_fmt, color_space, color_transfer, color_primaries, bits_per_raw_sample
-                // （注意：color_transfer 在 color_primaries 之前！2026-08-14 实测修正）
-                // 实际输出示例: 512,384,yuvj420p,bt470bg,unknown,unknown,8
-                // parts[0]=width, parts[1]=height, parts[2]=pix_fmt, parts[3]=color_space,
-                // parts[4]=color_transfer, parts[5]=color_primaries, parts[6]=bits_per_raw_sample
+                using var probeDoc = JsonDocument.Parse(output);
+                var streams = probeDoc.RootElement.TryGetProperty("streams", out var streamArray)
+                    ? streamArray : default;
+                var stream = streams.ValueKind == JsonValueKind.Array && streams.GetArrayLength() > 0
+                    ? streams[0] : default;
+                string Field(string name)
+                    => stream.ValueKind == JsonValueKind.Object
+                        && stream.TryGetProperty(name, out var value)
+                        && value.ValueKind != JsonValueKind.Null
+                        ? value.ToString() : "";
+                // 统一成旧内部槽位，但每一项先按 JSON 字段名读取；不要依赖 ffprobe CSV 排序。
+                var parts = new[]
+                {
+                    Field("width"), Field("height"), Field("pix_fmt"),
+                    Field("color_space"), Field("color_transfer"), Field("color_primaries"),
+                    Field("bits_per_raw_sample"), Field("color_range")
+                };
                 if (parts.Length >= 3 && !string.IsNullOrEmpty(parts[2]))
                 {
                     var pixFmt = parts[2];
@@ -2437,19 +2495,16 @@ namespace FfmpegGui.Services
                               || pixFmt.StartsWith("rgba", StringComparison.OrdinalIgnoreCase)
                               || pixFmt.StartsWith("bgra", StringComparison.OrdinalIgnoreCase)
                               || pixFmt.StartsWith("argb", StringComparison.OrdinalIgnoreCase);
-                    // ── 色彩范围推断（2026-08-15 扩展）──
-                    // 之前只识别 RGB → pc；现在 TV/PC 自动选项需要完整判断：
-                    //   yuvj/grayj 系列 = full range YUV（如 JPEG 解码输出）→ pc
-                    //   yuv 系列 = limited YUV（视频帧/HEIC/AVIF 等）→ tv
-                    //   RGB 系列 = 恒全范围 → pc
-                    //   gray/pal8/其他 = 不判断（避免误标）→ null
-                    if (meta.isRgb)
+                    // 容器/码流声明的范围优先；未知时才按像素格式做保守推断。
+                    var probedRange = parts.Length >= 8 ? parts[7] : "";
+                    if (probedRange is "pc" or "tv")
+                        meta.colorRange = probedRange;
+                    else if (meta.isRgb)
                         meta.colorRange = "pc";
                     else if (pixFmt.StartsWith("yuvj", StringComparison.OrdinalIgnoreCase)
                           || pixFmt.StartsWith("grayj", StringComparison.OrdinalIgnoreCase))
                         meta.colorRange = "pc";
-                    else if (pixFmt.StartsWith("yuv", StringComparison.OrdinalIgnoreCase))
-                        meta.colorRange = "tv";
+                    // Untagged ordinary YUV has no proven range. Leave negotiation to the decoder.
                 }
                 // parts[0] = width
                 if (parts.Length >= 1 && !string.IsNullOrEmpty(parts[0]) && int.TryParse(parts[0], out var w))
@@ -2464,7 +2519,7 @@ namespace FfmpegGui.Services
                 // 「锁哪条边」判据 ⇒ 留 coded 会锁错边（实测 6000×4000 限 2000 → 产物 2000×3000，
                 // 最长边**突破**用户上限），且与引擎侧按显示尺寸声明的 `w` 互相对不上。
                 // 探测本身收在 `ImageGeometry`（仓内宽高探测的唯一实现）。
-                if (meta.width > 0 && meta.height > 0)
+                if (readGeometry && meta.width > 0 && meta.height > 0)
                 {
                     var (dw, dh) = ImageGeometry.DisplaySizeAsync(inputPath, ffprobe, log, ct)
                         .GetAwaiter().GetResult();

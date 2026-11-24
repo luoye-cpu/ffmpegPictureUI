@@ -466,17 +466,34 @@ public static class GainMapEncoder
                 {
                     var baseIcc = IccProfileService.GetOrGenerateStandardIcc(basePath,
                         wideBase ? "bt2020" : "bt709", "iec61966-2-1", wideBase ? "bt2020nc" : "bt709", log, ct);
-                    if (baseIcc != null)
+                    byte[]? expectedBaseIcc = baseIcc != null && File.Exists(baseIcc)
+                        ? await File.ReadAllBytesAsync(baseIcc, ct).ConfigureAwait(false) : null;
+                    bool validProfile = expectedBaseIcc is { Length: >= 132 }
+                        && IccProfileService.IsGeneratedV44(expectedBaseIcc);
+                    bool delivered = validProfile
+                        && IccContainerReader.TryRead(basePath, out var initialIcc)
+                        && initialIcc != null && expectedBaseIcc.AsSpan().SequenceEqual(initialIcc);
+                    int embedExit = 0;
+                    if (!delivered && validProfile && baseIcc != null && File.Exists(baseIcc))
                     {
-                        var iccExit = await ExifToolService.EmbedIccProfileFromFileAsync(baseIcc, basePath, log ?? (_ => { }));
-                        log?.Invoke(iccExit == 0
-                            ? $"[GainMap] 底图已附 {(wideBase ? "Rec.2020 SDR" : "sRGB")} ICC（{Path.GetFileName(baseIcc)}）\n"
-                            : $"[GainMap] ⚠️ 底图 ICC 嵌入失败（退出码 {iccExit}），查看器可能按错误色域解读底图\n");
+                        embedExit = await ExifToolService.EmbedIccProfileFromFileAsync(baseIcc, basePath, log ?? (_ => { }));
+                        delivered = expectedBaseIcc is { Length: >= 128 }
+                            && IccContainerReader.TryRead(basePath, out var embeddedIcc)
+                            && embeddedIcc != null && expectedBaseIcc.AsSpan().SequenceEqual(embeddedIcc);
                     }
+                    // An implicit sRGB fallback exists only when the base really has no ICC.
+                    // A conflicting or unreadable profile must not be waved through as "untagged".
+                    bool implicitSrgb = !wideBase && IccContainerReader.TryRead(basePath, out var fallbackIcc)
+                        && fallbackIcc == null;
+                    if (!delivered && !implicitSrgb)
+                        throw new ColorMapping.ColorOutputContractException("ICC_TARGET_NOT_DELIVERED",
+                            $"GainMap base ICC was not delivered byte-exactly and has no verified implicit-sRGB fallback (generation/embed exit {embedExit})");
+                    if (delivered)
+                        log?.Invoke($"[GainMap] 底图已附并读回核验 {(wideBase ? "Rec.2020 SDR" : "sRGB")} ICC（{Path.GetFileName(baseIcc)}）\n");
                     else
-                    {
-                        log?.Invoke("[GainMap] ⚠️ 无法生成底图 ICC（需 ffmpeg/iccgen）；底图色域仅由惯例推断\n");
-                    }
+                        log?.Invoke(baseIcc == null
+                            ? "[GainMap] ⚠️ 无法生成 sRGB 底图 ICC；底图无标记时按惯例解释为 sRGB\n"
+                            : $"[GainMap] ⚠️ sRGB 底图 ICC 未读回匹配（嵌入退出码 {embedExit}）；无标记时仍按惯例解释为 sRGB\n");
                 }
 
                 // F-4（2026-10-11）：增益图 JPEG 的色度采样必须与**声明的通道数成套**。
@@ -539,6 +556,7 @@ public static class GainMapEncoder
             }
         }
         catch (OperationCanceledException) { throw; }
+        catch (ColorMapping.ColorOutputContractException) { throw; }
         catch (Exception ex)
         {
             log?.Invoke($"[GainMap] 异常: {ex.Message}\n");

@@ -482,24 +482,23 @@ namespace FfmpegGui.Services
                 switch (capJxl)
                 {
                     case ColorMapping.OutMatrixCapability.Carried:
-                        if (outMatrixTok == "xyb")
+                        if (outMatrixTok == "xyb" && log != null)
                         {
-                            if (opts.JxlModular == true && !UsesLosslessJpegRewrap(input, opts))
-                                log?.Invoke("[cjxl] [color-out-matrix] xyb conflicts with --jxl-modular: modular mode"
-                                          + " does not carry XYB (XYB is a VarDCT feature), so modular wins and the xyb"
-                                          + " request is dropped for this run (cjxl v0.12.0 has no explicit xyb flag)\n");
-                            else
-                                log?.Invoke("[cjxl] [color-out-matrix] xyb confirmed: cjxl's VarDCT mode carries XYB"
-                                          + " implicitly (v0.12.0 has no explicit xyb flag), so no flag is emitted and"
-                                          + " the output equals the auto path\n");
+                            const string prefix = "[color-out-matrix] ";
+                            var result = opts.JxlModular == true && !UsesLosslessJpegRewrap(input, opts)
+                                ? prefix + "xyb conflicts with --jxl-modular: modular mode does not carry XYB (XYB is a VarDCT feature), so modular wins and the xyb request is dropped for this run (cjxl v0.12.0 has no explicit xyb flag)"
+                                : UsesLosslessJpegRewrap(input, opts) || opts.Lossless
+                                    ? prefix + "xyb not delivered: cjxl lossless or JPEG reconstruction does not enable XYB"
+                                    : prefix + "xyb confirmed: cjxl's VarDCT mode carries XYB implicitly (v0.12.0 has no explicit xyb flag), so no flag is emitted and the output equals the auto path";
+                            ColorMapping.ImageEncoderArgs.ReportMatrixResult(log, result);
                         }
                         break;
                     case ColorMapping.OutMatrixCapability.Redundant:
                         // 模板 2 精确形态（string.Format；{2}=RGB）——T7 播报锁按模板锚定，
                         // 出口说明以**尾部追加**携带（不混入 {2} 占位值）。
-                        log?.Invoke(string.Format(ColorMapping.ColorMappingEngine.OutMatrixReportRedundant,
-                                                  outMatrixTok, "jxl", "RGB")
-                                  + " (cjxl RgbNative)\n");
+                        if (log != null)
+                            ColorMapping.ImageEncoderArgs.ReportMatrixResult(log, string.Format(
+                                ColorMapping.ColorMappingEngine.OutMatrixReportRedundant, outMatrixTok, "jxl", "RGB") + " (cjxl RgbNative)");
                         break;
                     case ColorMapping.OutMatrixCapability.Rejected:
                         var rejWhy = "[color-out-matrix] " + outMatrixTok
@@ -519,7 +518,7 @@ namespace FfmpegGui.Services
                             log?.Invoke("[cjxl] 用户 --color-out-matrix=" + outMatrixTok
                                       + " 不被 jxl 出口承载（cjxl 后端为 RGB 原生，无 YUV 承载位）"
                                       + "⇒ 契约拒绝，不产出\n");
-                            throw new InvalidOperationException(
+                            throw new ColorMapping.ColorOutputContractException("COLOR_MATRIX_REJECTED",
                                 "cjxl exit: --color-out-matrix " + outMatrixTok
                                 + " is not carried by jxl (cjxl backend is RGB-native; no YUV carrier)"
                                 + " => contract rejection, no output");

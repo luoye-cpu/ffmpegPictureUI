@@ -1,5 +1,6 @@
 using System;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace FfmpegGui.Models
 {
@@ -27,13 +28,57 @@ namespace FfmpegGui.Models
         BakeOnly = 3
     }
 
+    /// <summary>
+    /// 运行时色彩来源。仅用于标记本程序生成的中间件，不能由普通输入声明冒充。
+    /// </summary>
+    public enum ColorSourceOrigin
+    {
+        None = 0,
+        RawIntermediate = 1,
+        UltraHdrDecoded = 2,
+        ContainerDeclared = 3
+    }
+
+    /// <summary>
+    /// 本次任务实际编码输入的色彩来源事实。
+    /// <para>
+    /// 这是运行时 provenance，不是用户预设字段：它必须随任务克隆传递，
+    /// 但不能进入 settings.json、PresetData 或 CLI 预设序列化。
+    /// </para>
+    /// </summary>
+    public sealed class ColorSourceProvenance
+    {
+        public ColorSourceOrigin Origin { get; set; } = ColorSourceOrigin.None;
+        public string? OriginalInputPath { get; set; }
+        public string? IntermediatePath { get; set; }
+        public string? DeclaredPrimaries { get; set; }
+        public string? DeclaredTrc { get; set; }
+
+        public ColorSourceProvenance DeepClone() => new()
+        {
+            Origin = Origin,
+            OriginalInputPath = OriginalInputPath,
+            IntermediatePath = IntermediatePath,
+            DeclaredPrimaries = DeclaredPrimaries,
+            DeclaredTrc = DeclaredTrc
+        };
+    }
+
     public class FfmpegOptions
     {
-        /// <summary>深度克隆（通过 JSON 序列化保证所有字段拷贝）</summary>
+        /// <summary>
+        /// 运行时来源事实；不进入 settings/preset JSON。队列克隆时由 <see cref="DeepClone"/> 显式复制。
+        /// </summary>
+        [JsonIgnore]
+        public ColorSourceProvenance? ColorSourceProvenance { get; set; }
+
+        /// <summary>深度克隆（通过 JSON 序列化保证所有字段拷贝；运行时 provenance 显式深拷贝）</summary>
         public FfmpegOptions DeepClone()
         {
             var json = JsonSerializer.Serialize(this, AppJsonContext.Default.FfmpegOptions);
-            return JsonSerializer.Deserialize(json, AppJsonContext.Default.FfmpegOptions)!;
+            var clone = JsonSerializer.Deserialize(json, AppJsonContext.Default.FfmpegOptions)!;
+            clone.ColorSourceProvenance = ColorSourceProvenance?.DeepClone();
+            return clone;
         }
 
         /// <summary>从 PresetData 应用预设到当前 FfmpegOptions 实例</summary>
@@ -142,6 +187,8 @@ namespace FfmpegGui.Models
 
             if (!string.IsNullOrWhiteSpace(p.EncoderBackend) && Enum.TryParse<Services.EncoderBackend>(p.EncoderBackend, true, out var eb))
                 EncoderBackend = eb;
+            if (!string.IsNullOrWhiteSpace(p.EncoderName))
+                Encoder = Services.EncoderInfo.ParseEncoderName(p.EncoderName);
 
             // 图片最长边限制
             EnableMaxDimension = p.EnableMaxDimension;

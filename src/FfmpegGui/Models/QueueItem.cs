@@ -131,6 +131,8 @@ namespace FfmpegGui.Models
         }
 
         public int? ExitCode { get; set; }
+        // A codec can set its status before metadata, color tags, and publication are settled.
+        internal bool TerminalReady { get; set; }
         private string _log = string.Empty;
         private readonly object _logGate = new();
 

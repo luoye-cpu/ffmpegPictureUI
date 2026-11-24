@@ -145,6 +145,12 @@ namespace FfmpegGui.Services
         /// 被 Windows ACL/Defender 拒绝的场景：不落盘 ICC，直接把字节压进 PNG。
         /// </summary>
         public static bool TryWriteIccpBytes(string pngPath, byte[] icc, string profileName = "icc")
+            => WriteIccpBytes(pngPath, icc, profileName, iccOnly: false);
+
+        internal static bool TryWriteIccOnly(string pngPath, byte[] icc)
+            => WriteIccpBytes(pngPath, icc, "Source ICC", iccOnly: true);
+
+        private static bool WriteIccpBytes(string pngPath, byte[] icc, string profileName, bool iccOnly)
         {
             if (icc.Length < 132) return false;
             for (int attempt = 0; ; attempt++)
@@ -167,6 +173,19 @@ namespace FfmpegGui.Services
                     var data = File.ReadAllBytes(pngPath);
                     if (!TryParseHeader(data, out _, out _, out var ihdrEnd)) return false;
 
+                    // Carry 后写源 ICC 时，前一步可能已经写入同语义 cICP；不能再把它当冲突块删掉。
+                    // 只有 ICC 的实际矩阵/TRC 可命名且与现有 cICP 逐项一致才保留；失配、窄范围、
+                    // 重复/非法块和不可命名 ICC 仍走原来的剥除路径。
+                    var sourceSpace = iccOnly
+                        ? ColorMapping.ColorSpaceIdentify.IdentifyIccBytes(icc).CreateMatrixTrcDescriptor()
+                        : null;
+                    bool preserveCicp = sourceSpace != null
+                        && ReadCicp(data, out byte existingP, out byte existingT, out bool narrowRange) == PngColorTagState.Valid
+                        && !narrowRange
+                        && FfmpegCommandBuilder.TryGetCicpNumbers(sourceSpace.PrimariesToken, sourceSpace.TransferToken,
+                            out byte sourceP, out byte sourceT)
+                        && existingP == sourceP && existingT == sourceT;
+
                     // 移除旧 iCCP，再在 IHDR 后插入（必须在 IDAT 前）。
                     using var ms = new MemoryStream(data.Length + chunk.Length + 16);
                     ms.Write(data, 0, ihdrEnd);
@@ -174,8 +193,13 @@ namespace FfmpegGui.Services
                     while (pos + 12 <= data.Length)
                     {
                         int len = BinaryPrimitives.ReadInt32BigEndian(data.AsSpan(pos));
+                        if (len < 0 || len > data.Length - pos - 12) return false;
                         var type = Encoding.ASCII.GetString(data, pos + 4, 4);
-                        if (type == "iCCP") { pos += 12 + len; continue; }
+                        bool dropColorChunk = type == "iCCP"
+                            || (iccOnly && type is "sRGB" or "cHRM" or "gAMA")
+                            || (iccOnly && type == "cICP" && !preserveCicp);
+                        if (dropColorChunk)
+                        { pos += 12 + len; continue; }
                         ms.Write(data, pos, 12 + len);
                         pos += 12 + len;
                     }
@@ -203,9 +227,12 @@ namespace FfmpegGui.Services
         /// 移除 PNG/APNG 中的 <c>iCCP</c>，仅保留 <c>cICP</c>。
         /// 用于 2026-11-15 的「PNG/APNG 只在 CICP 无法表示时使用 ICC」：CICP 已精确表达时，
         /// ffmpeg 仍可能沿 `-map_metadata:s:v` 把源 iCCP 带进产物，必须在编码后剥掉。
-        /// 仅当文件已有 cICP 时才允许移除（否则会留下零色彩描述）；无 iCCP 时不动文件。
+        /// 默认要求已有 cICP；若 iCCP 本身不可用，调用方可显式允许无标注结果。
         /// </summary>
-        public static bool TryRemoveIccp(string pngPath, out int removed)
+        public static bool TryRemoveIccp(string pngPath, out int removed, bool requireCicp = true)
+            => TryRemoveIccp(pngPath, pngPath, out removed, requireCicp);
+
+        internal static bool TryRemoveIccp(string pngPath, string destination, out int removed, bool requireCicp)
         {
             removed = 0;
             try
@@ -222,21 +249,21 @@ namespace FfmpegGui.Services
                     if (type == "IDAT" || type == "IEND") break;
                     pos += 12 + len;
                 }
-                if (!hasCicp) return true;
+                if (requireCicp && !hasCicp) return true;
 
                 using var ms = new MemoryStream(data.Length);
                 ms.Write(data, 0, ihdrEnd);
                 for (int pos = ihdrEnd; pos + 12 <= data.Length;)
                 {
                     int len = BinaryPrimitives.ReadInt32BigEndian(data.AsSpan(pos));
-                    if (pos + 12 + len > data.Length) return false;
+                    if (len < 0 || len > data.Length - pos - 12) return false;
                     var type = Encoding.ASCII.GetString(data, pos + 4, 4);
                     if (type == "iCCP") { removed++; pos += 12 + len; continue; }
                     ms.Write(data, pos, 12 + len);
                     pos += 12 + len;
                 }
                 if (removed == 0) return true;
-                File.WriteAllBytes(pngPath, ms.ToArray());
+                File.WriteAllBytes(destination, ms.ToArray());
                 return true;
             }
             catch { return false; }
@@ -248,36 +275,52 @@ namespace FfmpegGui.Services
         /// 无 iCCP、压缩方法非 0、zlib 解压失败或损坏 → null（不猜）。
         /// </summary>
         public static byte[]? TryReadIccp(string pngPath)
+            => ReadIccp(pngPath, out var bytes) == PngColorTagState.Valid ? bytes : null;
+
+        internal static PngColorTagState ReadIccp(string pngPath, out byte[]? bytes)
         {
+            bytes = null;
+            bool found = false;
             try
             {
                 var data = File.ReadAllBytes(pngPath);
-                if (!TryParseHeader(data, out _, out _, out var ihdrEnd)) return null;
-                int pos = ihdrEnd;
-                while (pos + 12 <= data.Length)
+                if (!TryParseHeader(data, out _, out _, out int pos)) return PngColorTagState.Absent;
+                bool afterPaletteOrData = false;
+                while (pos <= data.Length - 12)
                 {
                     int len = BinaryPrimitives.ReadInt32BigEndian(data.AsSpan(pos));
-                    if (len < 0 || pos + 12 + len > data.Length) return null;
                     var type = Encoding.ASCII.GetString(data, pos + 4, 4);
+                    if (len < 0 || len > data.Length - pos - 12)
+                        return type == "iCCP" ? PngColorTagState.Invalid : PngColorTagState.Absent;
                     if (type == "iCCP")
                     {
+                        if (found || afterPaletteOrData) return PngColorTagState.Invalid;
+                        found = true;
+                        if (Crc32(data.AsSpan(pos + 4, len + 4)) != BinaryPrimitives.ReadUInt32BigEndian(data.AsSpan(pos + 8 + len)))
+                            return PngColorTagState.Invalid;
                         var payload = data.AsSpan(pos + 8, len);
                         int nul = payload.IndexOf((byte)0);
-                        if (nul < 0 || nul + 2 > payload.Length) return null;
-                        if (payload[nul + 1] != 0) return null;      // compression method must be 0
-                        var compressed = payload[(nul + 2)..].ToArray();
-                        using var input = new MemoryStream(compressed);
+                        if (nul < 1 || nul > 79 || nul + 2 >= payload.Length || payload[nul + 1] != 0)
+                            return PngColorTagState.Invalid;
+                        using var input = new MemoryStream(data, pos + 8 + nul + 2, len - nul - 2);
                         using var z = new ZLibStream(input, CompressionMode.Decompress);
                         using var output = new MemoryStream();
-                        z.CopyTo(output);
-                        return output.ToArray();
+                        var buffer = new byte[16 * 1024];
+                        for (int n; (n = z.Read(buffer)) != 0;)
+                        {
+                            if (output.Length + n > 32 * 1024 * 1024) return PngColorTagState.Invalid;
+                            output.Write(buffer, 0, n);
+                        }
+                        if (output.Length < 132) return PngColorTagState.Invalid;
+                        bytes = output.ToArray();
                     }
                     pos += 12 + len;
                     if (type == "IEND") break;
+                    afterPaletteOrData |= type is "PLTE" or "IDAT";
                 }
-                return null;
+                return found ? PngColorTagState.Valid : PngColorTagState.Absent;
             }
-            catch { return null; }
+            catch { return found ? PngColorTagState.Invalid : PngColorTagState.Absent; }
         }
 
         /// <summary>
@@ -290,30 +333,49 @@ namespace FfmpegGui.Services
         /// </para>
         /// </summary>
         public static bool TryReadCicp(string pngPath, out byte primaries, out byte transfer)
+            => ReadCicp(pngPath, out primaries, out transfer) == PngColorTagState.Valid;
+
+        internal enum PngColorTagState { Absent, Valid, Invalid }
+
+        internal static PngColorTagState ReadCicp(string pngPath, out byte primaries, out byte transfer)
+            => ReadCicp(pngPath, out primaries, out transfer, out _);
+
+        internal static PngColorTagState ReadCicp(string pngPath, out byte primaries, out byte transfer, out bool narrowRange)
         {
-            primaries = 0; transfer = 0;
-            try
+            primaries = 0; transfer = 0; narrowRange = false;
+            if (Path.GetExtension(pngPath).ToLowerInvariant() is not (".png" or ".apng")) return PngColorTagState.Absent;
+            try { return ReadCicp(File.ReadAllBytes(pngPath), out primaries, out transfer, out narrowRange); }
+            catch { return PngColorTagState.Absent; }
+        }
+
+        private static PngColorTagState ReadCicp(byte[] data, out byte primaries, out byte transfer, out bool narrowRange)
+        {
+            primaries = 0; transfer = 0; narrowRange = false;
+            if (!TryParseHeader(data, out _, out _, out var pos)) return PngColorTagState.Absent;
+            bool hasCicp = false, hasImageData = false, hasPalette = false;
+            while (pos <= data.Length - 12)
             {
-                var data = File.ReadAllBytes(pngPath);
-                if (!TryParseHeader(data, out _, out _, out var pos)) return false;
-                while (pos + 12 <= data.Length)
+                int len = BinaryPrimitives.ReadInt32BigEndian(data.AsSpan(pos));
+                var type = Encoding.ASCII.GetString(data, pos + 4, 4);
+                if (len < 0 || len > data.Length - pos - 12)
+                    return type == "cICP" ? PngColorTagState.Invalid : PngColorTagState.Absent;
+                if (type == "cICP")
                 {
-                    int len = BinaryPrimitives.ReadInt32BigEndian(data.AsSpan(pos));
-                    if (len < 0 || pos + 12 + len > data.Length) break;
-                    var type = Encoding.ASCII.GetString(data, pos + 4, 4);
-                    if (type == "cICP")
-                    {
-                        if (len < 4) return false;
-                        primaries = data[pos + 8];
-                        transfer = data[pos + 9];
-                        return true;
-                    }
-                    if (type == "IDAT" || type == "IEND") break;   // cICP 必在 IDAT 之前，后面的不用再看
-                    pos += 12 + len;
+                    if (len != 4 || hasCicp || hasImageData || hasPalette
+                        || data[pos + 10] != 0 || data[pos + 11] > 1
+                        || Crc32(data.AsSpan(pos + 4, 8)) != BinaryPrimitives.ReadUInt32BigEndian(data.AsSpan(pos + 12)))
+                        return PngColorTagState.Invalid;
+                    primaries = data[pos + 8];
+                    transfer = data[pos + 9];
+                    narrowRange = data[pos + 11] == 0;
+                    hasCicp = true;
                 }
-                return false;
+                if (type == "IEND") break;
+                hasImageData |= type == "IDAT";
+                hasPalette |= type == "PLTE";
+                pos += 12 + len;
             }
-            catch { return false; }
+            return hasCicp ? PngColorTagState.Valid : PngColorTagState.Absent;
         }
 
         /// <summary>
@@ -485,7 +547,7 @@ namespace FfmpegGui.Services
             return chunk;
         }
 
-        private static uint Crc32(byte[] data)
+        private static uint Crc32(ReadOnlySpan<byte> data)
         {
             // 反射 CRC-32 (IEEE 802.3), 多项式 0xEDB88320
             Span<uint> table = stackalloc uint[256];

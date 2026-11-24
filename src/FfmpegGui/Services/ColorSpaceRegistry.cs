@@ -295,7 +295,13 @@ namespace FfmpegGui.Services
             // 拆式生效时这一级只做 primaries/矩阵（t=linear ⇒ 像素留在线性域），编码由尾巴的 lutrgb 施加，
             // 帧标签由尾巴的 setparams 找回 ⇒ 出口宣称（outT=bt709）一字未动，只是**像素补上了定义式**。
             var exitTrc = NeedsDefinitionExit(outT, zimgCurveCaliber) ? "linear" : outT;
-            return $"format=gbrpf32le,zscale=tin={encIn}:t=linear,{mix}," +
+            // 入口同形：zimg 的 tin=bt709 也是纯 γ2.4 解码。std 档先在 RGB48 编码域按
+            // BT.709-6 定义式反解，再让 zscale 以 tin=linear 只做色度/矩阵；zimg 档保持旧命令。
+            var splitInput = NeedsDefinitionInput(encIn, zimgCurveCaliber);
+            var linearize = splitInput
+                ? $"format=rgb48le,{BuildDefinitionInputLut(encIn, zimgCurveCaliber)}format=gbrpf32le,zscale=tin=linear:t=linear"
+                : $"format=gbrpf32le,zscale=tin={encIn}:t=linear";
+            return linearize + $",{mix}," +
                    $"zscale=pin={outP}:tin=linear:p={outP}:t={exitTrc}:m={outM}" +
                    BuildDefinitionExitTail(outP, outT, outM, zimgCurveCaliber);
         }
@@ -362,6 +368,24 @@ namespace FfmpegGui.Services
             => !zimgCurveCaliber
                && ColorMapping.ColorMappingEngine.ZimgDivergentTransfer(outTrc)
                && string.Equals(outTrc, "bt709", StringComparison.OrdinalIgnoreCase);
+
+        /// <summary>BT.709-6 定义式 EOTF（编码域 → 线性），与进程内引擎的 Bt709 锚同式。</summary>
+        private const string Bt709EotfExpr =
+            "floor(maxval*if(lt(val/maxval\\,0.08125)\\,(val/maxval)/4.5\\,pow(((val/maxval)+0.099)/1.099\\,1/0.45))+0.5)";
+
+        /// <summary>入口是否必须绕开 zimg 的纯 γ2.4 bt709 解码；与出口共用同一名单和兼容开关。</summary>
+        public static bool NeedsDefinitionInput(string? srcTrc, bool zimgCurveCaliber)
+            => NeedsDefinitionExit(srcTrc, zimgCurveCaliber);
+
+        /// <summary>
+        /// 返回带尾逗号的 RGB48 BT.709-6 定义式反解段；调用方负责前置 format=rgb48le，
+        /// 后续 zscale 必须使用 tin=linear。非 std/bt709 入口返回空串，旧命令逐字不变。
+        /// </summary>
+        public static string BuildDefinitionInputLut(string? srcTrc, bool zimgCurveCaliber)
+        {
+            if (!NeedsDefinitionInput(srcTrc, zimgCurveCaliber)) return "";
+            return "lutrgb=r='" + Bt709EotfExpr + "':g='" + Bt709EotfExpr + "':b='" + Bt709EotfExpr + "',";
+        }
 
         /// <summary>
         /// 拆式生效时追加在链末的尾巴（含前导逗号）：`format=rgb48le` 钉住 lutrgb 的取值域 →

@@ -104,14 +104,17 @@ CK $true "PLAN dir exists"
 #   4 条 + G2c 优雅停止 IsRunning=false 3 条 ⇒ 59→**66**；ui-core C 组增 C22 oxipng 面板显隐+默认 max
 #   3 条 ⇒ 84→**87**；合计 = **87+66+103+169+72**。改断言改单体、_gen-ui-split.ps1 重切片；
 #   与 union $expectedOldCount=497、_module-registry.json locks 同批抬表——三把尺同一来历。）
+#   2026-11-24（色彩矩阵 GUI 收口）= **520**（首轮 +11：N11 rgb联动5 + N12预设/GUI→CLI3 + N13重置提示3；
+#   R5/R6 复核再 +4：N11f/g/h NVENC/QSV/AMF候选3 + N12d NVENC 12-bit预设1；ui-core 92→**107**；
+#   改单体后重跑 _gen-ui-split.ps1，union/locks 同批抬表。）
 $arms = @(
-    @{ Name = 'ui-core';  Exe = Join-Path $repoRoot 'tests/projects/ui-core/bin/Release/net11.0/win-x64/Tests.UiCore.exe';  Expected = 87  },
+    @{ Name = 'ui-core';  Exe = Join-Path $repoRoot 'tests/projects/ui-core/bin/Release/net11.0/win-x64/Tests.UiCore.exe';  Expected = 107  },
     @{ Name = 'ui-mode';  Exe = Join-Path $repoRoot 'tests/projects/ui-mode/bin/Release/net11.0/win-x64/Tests.UiMode.exe';  Expected = 66  },
     @{ Name = 'ui-color'; Exe = Join-Path $repoRoot 'tests/projects/ui-color/bin/Release/net11.0/win-x64/Tests.UiColor.exe'; Expected = 103 },
     @{ Name = 'ui-sweep'; Exe = Join-Path $repoRoot 'tests/projects/ui-sweep/bin/Release/net11.0/win-x64/Tests.UiSweep.exe'; Expected = 169 },
-    @{ Name = 'ui-cli';   Exe = Join-Path $repoRoot 'tests/projects/ui-cli/bin/Release/net11.0/win-x64/Tests.UiCli.exe';     Expected = 72  }
+    @{ Name = 'ui-cli';   Exe = Join-Path $repoRoot 'tests/projects/ui-cli/bin/Release/net11.0/win-x64/Tests.UiCli.exe';     Expected = 75  }
 )
-$aggExpected = 497
+$aggExpected = 520
 foreach ($arm in $arms) {
     if (-not (Test-Path $arm.Exe)) {
         Write-Output "  FAIL host exe exists ($($arm.Name)): $($arm.Exe)"

@@ -666,7 +666,7 @@ namespace ServiceProbe
             // 病因：RAW 源描述符的置信度曾**恰好等于**闸门阈值（`CicpTag == MinConfidenceForMapping`），
             // 靠 `>=` 才放行 ⇒ 只要有人往枚举里插一个成员、或把闸门抬到 `NamedIcc`，这条刚修好的
             // RAW 路径就**零告警地退回「直通」**（像素一个都不动，却仍标目标域）。
-            // 现修法：RAW 分支**显式**把置信度抬到 `NamedIcc`（见 `ColorIntentFactory` 的 `ColorSourceDecl*` 分支）。
+            // 现修法：只有绑定到当前输入的自产中间件 provenance 才会将源描述符置信度显式抬到 `NamedIcc`。
             // 下面三条把「枚举序不可随意插成员」钉死，并锁住「显式抬高」这件事本身（不再依赖枚举巧合）。
             var minConf = FfmpegGui.Services.ColorMapping.EquivalenceTolerances.MinConfidenceForMapping;
             Check(minConf == FfmpegGui.Services.ColorMapping.DescriptorConfidence.CicpTag,
@@ -677,19 +677,35 @@ namespace ServiceProbe
                 + $"{(int)FfmpegGui.Services.ColorMapping.DescriptorConfidence.CicpTag}) < NamedIcc("
                 + $"{(int)FfmpegGui.Services.ColorMapping.DescriptorConfidence.NamedIcc})");
             var rawDeclO = O("tiff");
+            const string rawDeclOriginalPath = "tests/output/raw_samples/Sony_ILCE7S.ARW";
+            const string rawDeclIntermediatePath = "tests/output/sources/src_8bit.tiff";
             rawDeclO.ColorSourceDeclPrimaries = "bt2020";
             rawDeclO.ColorSourceDeclTrc = "linear";
-            // ⚠⚠ 输入路径必须是 **RAW**（用真素材，避免探测抛错）：`ColorIntentFactory` 的「自产中间件」
-            //   分支自 2026-10-04 审查起**只认 RAW 与 Ultra HDR 解码**两条路 —— 用 png 路径会让该分支
-            //   不触发 ⇒ 下面这条 P1-3 锁**假红**（实测：收紧后 `probe:wire` exit=1）。
-            //   ⇒ 这里改用 `tests/output/raw_samples/` 下的真 ARW（`RawService.IsRawFile` 是扩展名判据）。
-            const string rawDeclPath = "tests/output/raw_samples/Sony_ILCE7S.ARW";
-            var iRawDecl = FfmpegGui.Services.ColorMapping.ColorIntentFactory.FromOptions(rawDeclO, rawDeclPath, out var rRawDecl);
+            // 与 QueueProcessor 的生产赋值同形：原始 RAW 路径 + 实际编码输入的中间件路径 + 声明值。
+            // IntermediatePath 必须绑定当前 inputPath（BoundProvenance 按规范化路径核验），不能再靠把
+            // 原始 .ARW 传给 FromOptions 来模拟自产中间件；RAW 解码后真正交给色彩管线的是 TIFF。
+            rawDeclO.ColorSourceProvenance = new FfmpegGui.Models.ColorSourceProvenance
+            {
+                Origin = FfmpegGui.Models.ColorSourceOrigin.RawIntermediate,
+                OriginalInputPath = rawDeclOriginalPath,
+                IntermediatePath = Path.GetFullPath(rawDeclIntermediatePath),
+                DeclaredPrimaries = "bt2020",
+                DeclaredTrc = "linear"
+            };
+            var iRawDecl = FfmpegGui.Services.ColorMapping.ColorIntentFactory.FromOptions(
+                rawDeclO, rawDeclIntermediatePath, out var rRawDecl);
             Check(iRawDecl?.Source != null
                   && iRawDecl.Source!.Confidence == FfmpegGui.Services.ColorMapping.DescriptorConfidence.NamedIcc
                   && iRawDecl.Source.Confidence >= minConf,
-                $"P1-3 RAW 源描述符置信度**显式** NamedIcc（实 {iRawDecl?.Source?.Confidence}，闸门 {minConf}）"
+                $"P1-3 绑定的 RawIntermediate/TIFF 源描述符置信度**显式** NamedIcc（实 {iRawDecl?.Source?.Confidence}，闸门 {minConf}）"
                 + $"⇒ 不依赖「恰好等于」（reason={rRawDecl ?? "无"}）");
+            var unboundRawDeclO = rawDeclO.DeepClone();
+            unboundRawDeclO.ColorSourceProvenance!.IntermediatePath = rawDeclOriginalPath;
+            var iUnboundRawDecl = FfmpegGui.Services.ColorMapping.ColorIntentFactory.FromOptions(
+                unboundRawDeclO, rawDeclIntermediatePath, out var rUnboundRawDecl);
+            Check(iUnboundRawDecl?.Source?.Confidence != FfmpegGui.Services.ColorMapping.DescriptorConfidence.NamedIcc,
+                $"P1-3 负控：RawIntermediate provenance 的 IntermediatePath 不匹配当前 TIFF 输入时，声明不得冒充自产源"
+                + $"（实={iUnboundRawDecl?.Source?.Confidence} reason={rUnboundRawDecl ?? "无"}）");
 
             // 8) **回归锁（2026-10-04）**：`ColorMatrix` 是**输入声明**、不是目标轴 ——
             //    设了它**不得**吃掉 `ColorSpace` 目标。

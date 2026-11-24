@@ -99,7 +99,10 @@ $srcDir = Join-Path $root 'tests/output/sources'
 #   （+10：ui-mode G 组增 G2b 管道停止 4 条 + G2c 优雅停止 IsRunning=false 3 条 ⇒ ui-mode 59→66；
 #   ui-core C 组增 C22 oxipng 面板显隐+默认 max 3 条 ⇒ ui-core 84→87；
 #   改断言改单体、_gen-ui-split.ps1 重切片；与 _module-registry.json locks 同批抬表——三把尺同一来历。）
-$expectedOldCount = 497
+#   2026-11-24（色彩矩阵 GUI 收口）= **520**：首轮 N11/N12/N13 共 11 条，覆盖 rgb 锁、预设二次回放、
+#   GUI→CLI 采集一致性与 G8 重置提示；R5/R6 复核再增 4 条（NVENC/QSV/AMF 候选集 + NVENC 12-bit 回放）。
+#   单体与拆分件由生成器同步，锁表同批抬。
+$expectedOldCount = 520
 # 一对一改名 ⇒ 新旧总数相同（不是 408/412）
 $expectedNewCount = $expectedOldCount
 

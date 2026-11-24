@@ -211,6 +211,18 @@ namespace FfmpegGui.Services
             ["webm"] = new[] { "libvpx-vp9" }
         };
 
+        /// <summary>Validate a preset's concrete encoder without probing tools or hardware.</summary>
+        internal static bool IsEncoderForFormat(string encoder, EncoderBackend backend, string format)
+        {
+            var name = EncoderInfo.ParseEncoderName(encoder);
+            if (string.IsNullOrWhiteSpace(name) || EncoderInfo.ParseBackend(name) != backend)
+                return false;
+            if (backend != EncoderBackend.Ffmpeg)
+                return EncoderBackendCompat.IsCompatibleWith(backend, format);
+            return FormatEncoderMap.TryGetValue(format, out var names)
+                && names.Contains(name, StringComparer.OrdinalIgnoreCase);
+        }
+
         // 格式 → 必需的 muxer 名称列表（任一存在即可；ffmpeg 各版本 muxer 名不同）
         // ⚠️ ffmpeg 22 实测：无 jpegxl muxer，JXL 静态图用 image2 muxer + libjxl 编码器输出
         private static readonly Dictionary<string, string[]> FormatMuxerMap = new(StringComparer.OrdinalIgnoreCase)

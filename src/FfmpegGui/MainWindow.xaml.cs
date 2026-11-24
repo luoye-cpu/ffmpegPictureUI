@@ -25,9 +25,9 @@ namespace FfmpegGui
         private readonly ObservableCollection<Models.QueueItem> _queueView = new();
         private readonly QueueProcessor _queueProcessor;
         private bool _initialized;
-        // 主执行日志：可见面是虚拟化 ListBox，最多保留 5,000 行；
-        // 隐藏的 LogText 只保留最近一小段文本，供既有 UI 测例读取/清空，同时不再触发大文本布局。
-        private const int UiLogTextMaxChars = 4_000;
+        // 主执行日志：可见的只读多行 TextBox（Ctrl+A/Ctrl+C 可直接全选复制），最多保留 2,000,000 字符；
+        // _uiLogLines 保留最近 5,000 行结构化副本，供既有 UI 测例（GroupP 反射读取）使用。
+        private const int UiLogTextMaxChars = 2_000_000;
         private const int UiLogMaxLines = 5_000;
         private const int UiLogFlushBatch = 250;
         private readonly ObservableCollection<string> _uiLogLines = new();
@@ -67,6 +67,12 @@ namespace FfmpegGui
         private TextBox? QualityBox;
         private TextBlock? QualityValue;
         private ComboBox? ChromaCombo;
+        private TextBlock? ColorOptionResetHint;
+        private bool _chromaResetPending;
+        private bool _bitDepthResetPending;
+        private bool _colorSpaceResetPending;
+        // 能力重建 Items.Clear/回填与“用户手动改选”都会发 SelectionChanged；重建期间不得清掉重置提示。
+        private bool _rebuildingChromaBitDepthOptions;
         private ComboBox? OutputMatrixCombo;   // C-GUI@1（2026-11-10）：--color-out-matrix 的 GUI 承接（基本区，不受 useAdv 门控）
         private ComboBox? ColorSpaceCombo;
         private ComboBox? ColorToneMapCombo;   // R3（2026-11-09）：--color-tone-map 的 GUI 承接
@@ -104,7 +110,6 @@ namespace FfmpegGui
         private TextBox? CommandText;
         private TextBox? MediaInfoText;
         private TextBox? LogText;
-        private ListBox? LogList;
         private TextBox? FfmpegPathBox;
         private TextBox? OutputDirBox;
         private TextBox? JxlLibDirBox;
@@ -347,6 +352,9 @@ namespace FfmpegGui
         private string? _iccFilePath;
         private int _lastProbedSourceBitDepth; // 上次探测的源位深，供冲突检测使用
         private int _formatRefreshGen;
+        private long _encoderRefreshRequest;
+        private bool _applyingPresetFormat;
+        private bool _refreshingEncoderList;
         // 格式切换事件重入守卫：UpdateOptionAvailability / RefillOutMatrixComboForFormat 内部可能
         // 反向设置 FormatCombo.SelectedIndex（例如恢复可保留的目标项），从而在同一个 UI 批次里
         // 再次触发 SelectionChanged。两层同步重建叠加是“切完一次后界面不刷新/像卡死”的可达形态。
@@ -438,6 +446,7 @@ namespace FfmpegGui
             UseAdvancedColor = this.FindControl<CheckBox>("UseAdvancedColor");
             AdvancedColorPanel = this.FindControl<StackPanel>("AdvancedColorPanel");
             BitDepthCombo = this.FindControl<ComboBox>("BitDepthCombo");
+            ColorOptionResetHint = this.FindControl<TextBlock>("ColorOptionResetHint");
             ThreadsBox = this.FindControl<NumericUpDown>("ThreadsBox");
             MetadataModeCombo = this.FindControl<ComboBox>("MetadataModeCombo");
             ExifToolPanel = this.FindControl<Border>("ExifToolPanel");
@@ -461,8 +470,6 @@ namespace FfmpegGui
             CommandText = this.FindControl<TextBox>("CommandText");
             MediaInfoText = this.FindControl<TextBox>("MediaInfoText");
             LogText = this.FindControl<TextBox>("LogText");
-            LogList = this.FindControl<ListBox>("LogList");
-            if (LogList != null) LogList.ItemsSource = _uiLogLines;
 
             // 唯一的 UI 日志入口：后台/服务层都可以写；真正的 UI 落地由 AppendUiLogLine
             // 合并到后台优先级批次里执行，避免每行同步重排 TextBox / 阻塞 Dispatcher。
@@ -679,22 +686,37 @@ namespace FfmpegGui
             // 注册事件
             if (ColorSpaceCombo != null) ColorSpaceCombo.SelectionChanged += ColorSpaceCombo_SelectionChanged;
             // 其他参数变更时刷新命令预览
-            if (ChromaCombo != null) ChromaCombo.SelectionChanged += (_, _) => RegenerateCommand();
-            // C-GUI@1：基本区控件，事件形态跟随 ChromaCombo/BitDepthCombo（不带 UpdateAdvancedColorValidation，
-            // 不随高级面板锁定联动；ICC 烘焙锁定分支不受影响）。
-            if (OutputMatrixCombo != null) OutputMatrixCombo.SelectionChanged += (_, _) => RegenerateCommand();
-            if (BitDepthCombo != null) BitDepthCombo.SelectionChanged += (_, _) => RegenerateCommand();
-            if (EncoderCombo != null) EncoderCombo.SelectionChanged += (_, _) =>
+            if (ChromaCombo != null) ChromaCombo.SelectionChanged += (_, _) =>
             {
-                UpdateThreadAvailabilityForFormat(NormalizeFormat(FormatCombo?.SelectedItem as string));
-                UpdateCodecPanelVisibility(NormalizeFormat(FormatCombo?.SelectedItem as string));
-                UpdateAvifEncoderPanel();
-                UpdateChromaBitDepthOptions();
-                UpdateGpuEncoderWarning();
-                // B1（CMX-2）：后端可能换出口（mjpeg↔cjpegli / libjxl↔cjxl）⇒ 重过滤矩阵条目。
-                RefillOutMatrixComboForFormat();
+                if (!_suppressOptionEvents && !_rebuildingChromaBitDepthOptions)
+                {
+                    _chromaResetPending = false;
+                    UpdateColorOptionResetHint(null, null, null);
+                }
                 RegenerateCommand();
             };
+            // C-GUI@1：基本区控件，事件形态跟随 ChromaCombo/BitDepthCombo（不带 UpdateAdvancedColorValidation，
+            // 不随高级面板锁定联动；ICC 烘焙锁定分支不受影响）。
+            if (OutputMatrixCombo != null) OutputMatrixCombo.SelectionChanged += (_, _) =>
+            {
+                if (!_refillingOutputMatrix)
+                {
+                    _pendingPresetMatrix = null;
+                    if (!_applyingPresetFormat) _pendingEncoderPreset = null;
+                }
+                ApplyRgbMatrixChromaLock();
+                RegenerateCommand();
+            };
+            if (BitDepthCombo != null) BitDepthCombo.SelectionChanged += (_, _) =>
+            {
+                if (!_suppressOptionEvents && !_rebuildingChromaBitDepthOptions)
+                {
+                    _bitDepthResetPending = false;
+                    UpdateColorOptionResetHint(null, null, null);
+                }
+                RegenerateCommand();
+            };
+            if (EncoderCombo != null) EncoderCombo.SelectionChanged += (_, _) => EncoderSelectionChanged();
             if (ThreadsBox != null) ThreadsBox.ValueChanged += (_, _) => RegenerateCommand();
             // 动图参数
             if (AnimationFpsBox != null) AnimationFpsBox.TextChanged += (_, _) => RegenerateCommand();
@@ -1269,9 +1291,11 @@ namespace FfmpegGui
                 };
             if (QualityBox != null)
             {
-                QualityBox.TextChanged += (_, _) =>
+                // TextChanged is queued: its callback can outlive _updatingQuality and round-trip
+                // a rounded display parameter back into the exact slider value. Observe Text inline.
+                QualityBox.PropertyChanged += (_, e) =>
                 {
-                    if (_updatingQuality) return;
+                    if (e.Property.Name != nameof(TextBox.Text) || _updatingQuality) return;
                     var fmt = NormalizeFormat(FormatCombo?.SelectedItem as string);
                     if (double.TryParse(QualityBox.Text, System.Globalization.NumberStyles.Float,
                             System.Globalization.CultureInfo.InvariantCulture, out var parsed))
@@ -1289,7 +1313,9 @@ namespace FfmpegGui
                     if (QualitySlider != null)
                     {
                         var fmt = NormalizeFormat(FormatCombo?.SelectedItem as string);
-                        QualityBox.Text = Models.FfmpegOptions.FormatQualityForDisplay(fmt, (int)QualitySlider.Value, GetCurrentEncoderBackend());
+                        _updatingQuality = true;
+                        try { QualityBox.Text = Models.FfmpegOptions.FormatQualityForDisplay(fmt, (int)QualitySlider.Value, GetCurrentEncoderBackend()); }
+                        finally { _updatingQuality = false; }
                     }
                 };
             }
@@ -1385,7 +1411,7 @@ namespace FfmpegGui
 
         /// <summary>
         /// UI 日志唯一落点。所有线程都可调用，但只做入队和一次合并调度；
-        /// 真正的 TextBox/ListBox 更新在 UI 线程的 FlushUiLog 中批量完成。
+        /// 真正的 TextBox 更新在 UI 线程的 FlushUiLog 中按批完成。
         /// 这样每行不再触发 `LogText.Text = 全量文本` 的布局风暴。
         /// </summary>
         private void AppendUiLogLine(string line)
@@ -1420,22 +1446,38 @@ namespace FfmpegGui
                 while (_uiLogLines.Count > UiLogMaxLines)
                     _uiLogLines.RemoveAt(0);
 
-                // 隐藏 TextBox 仅保留最近 4k 字符，供既有 UI 测例断言/清空；
-                // 它 IsVisible=False，不参与可见布局，因此这里的赋值是常数级成本。
+                // 可见 TextBox 是执行日志的唯一展示面：保留 2,000,000 字符，使长任务也能整体
+                // Ctrl+A/Ctrl+C。覆盖 .Text 会重置选区 ⇒ 先记下选区，写回后恢复，避免后台日志
+                // 把用户正在复制的选择冲掉。
                 if (LogText != null)
                 {
-                    var next = (LogText.Text ?? "") + batch;
-                    if (next.Length > UiLogTextMaxChars)
-                    {
-                        next = next[^UiLogTextMaxChars..];
-                        var nl = next.IndexOf('\n');
-                        if (nl >= 0 && nl < 200) next = next[(nl + 1)..];
-                    }
-                    LogText.Text = next;
-                }
+                    var oldText = LogText.Text ?? "";
+                    var selStart = LogText.SelectionStart;
+                    var selEnd = LogText.SelectionEnd;
+                    var hadSelection = selEnd > selStart;
 
-                if (LogList != null && _uiLogLines.Count > 0)
-                    LogList.ScrollIntoView(_uiLogLines[^1]);
+                    var combined = oldText + batch;
+                    var next = combined;
+                    var cut = 0;
+                    if (combined.Length > UiLogTextMaxChars)
+                    {
+                        cut = combined.Length - UiLogTextMaxChars;
+                        var nl = combined.IndexOf('\n', cut);
+                        if (nl >= 0 && nl < cut + 200) cut = nl + 1;
+                        next = combined[cut..];
+                    }
+
+                    LogText.Text = next;
+                    if (hadSelection)
+                    {
+                        LogText.SelectionStart = Math.Clamp(selStart - cut, 0, next.Length);
+                        LogText.SelectionEnd = Math.Clamp(selEnd - cut, 0, next.Length);
+                    }
+                    else
+                    {
+                        LogText.CaretIndex = next.Length;
+                    }
+                }
             }
             finally
             {
@@ -2231,6 +2273,13 @@ namespace FfmpegGui
             if (FormatCombo != null && FormatCombo.IsDropDownOpen)
                 FormatCombo.IsDropDownOpen = false;
 
+            // 普通格式切换中止尚未完成的预设编码器回放；预设自身改格式时由其末尾唯一刷新接管。
+            if (!_applyingPresetFormat)
+            {
+                _pendingEncoderPreset = null;
+                _pendingPresetMatrix = null;
+            }
+
             // 同步重建段自带可重入触发点（见 _formatComboHandlerActive 注释）：嵌套那一次
             // 只负责把值落下，不再叠第二套“重建选项 + 异步刷新”。
             if (_formatComboHandlerActive) return;
@@ -2248,7 +2297,7 @@ namespace FfmpegGui
                 if (DngOptionsPanel != null && ConversionModeCombo != null)
                     DngOptionsPanel.IsVisible = ConversionModeCombo.SelectedIndex == 2
                         && NormalizeFormat(FormatCombo?.SelectedItem as string) == "dng";
-                _ = RefreshEncoderListAsync();
+                if (!_applyingPresetFormat) _ = RefreshEncoderListAsync();
             }
             finally { _formatComboHandlerActive = false; }
         }
@@ -2370,7 +2419,7 @@ namespace FfmpegGui
                     FormatCombo.SelectedIndex = 0;
                     // 需要手动触发 SelectionChanged（列表重建后 SelectedIndex=0 可能不会自动触发）
                     UpdateOptionAvailability();
-                    _ = RefreshEncoderListAsync();
+                    if (!_applyingPresetFormat) _ = RefreshEncoderListAsync();
                 }
             }
 
@@ -2403,20 +2452,47 @@ namespace FfmpegGui
             RegenerateCommand();
         }
 
+        private (int Generation, Models.PresetData Preset)? _pendingEncoderPreset;
+        private (int Generation, string Format, string Token)? _pendingPresetMatrix;
+        private bool _refillingOutputMatrix;
+
+        private void EncoderSelectionChanged()
+        {
+            if (_refreshingEncoderList) return;
+            // A user choice made while a preset encoder lookup is pending wins over that stale replay.
+            if (!_applyingPresetFormat) _pendingEncoderPreset = null;
+            RefreshEncoderDependentOptions();
+        }
+
+        private void RefreshEncoderDependentOptions()
+        {
+            var format = NormalizeFormat(FormatCombo?.SelectedItem as string);
+            UpdateThreadAvailabilityForFormat(format);
+            UpdateCodecPanelVisibility(format);
+            UpdateAvifEncoderPanel();
+            UpdateChromaBitDepthOptions();
+            UpdateGpuEncoderWarning();
+            // B1（CMX-2）：后端可能换出口（mjpeg↔cjpegli / libjxl↔cjxl）⇒ 重过滤矩阵条目。
+            RefillOutMatrixComboForFormat();
+            RegenerateCommand();
+        }
+
         private async Task RefreshEncoderListAsync()
         {
             if (EncoderCombo == null || FormatCombo == null) return;
 
-            // 捕获进入时的格式代；await 期间用户又切格式 ⇒ 旧代结果作废。
+            // 同代也只提交最后发起的一轮：后台检测收尾可能与格式/预设刷新重叠。
+            // 格式代保护跨格式结果，请求序号保护同代晚到结果。
             var generation = _formatRefreshGen;
+            var request = ++_encoderRefreshRequest;
             var fmt1 = NormalizeFormat(FormatCombo.SelectedItem as string);
             var isAnimMode = ConversionModeCombo?.SelectedIndex == 1;
 
             var encoders = await EncoderDetectionService.GetEncodersForFormatAsync(fmt1);
 
-            // 旧代刷新可能在 await 期间被用户的新格式选择超过；不要再把旧格式的
-            // 编码器列表写回当前控件（也就不会出现“刚切完又被上一代改回去”）。
-            if (generation != _formatRefreshGen) return;
+            // 旧代刷新可能在 await 期间被用户的新格式选择超过；同代中较旧请求也会被后发请求淘汰。
+            // 不把过期结果写回控件，避免旧 keepEncoder / 后端联动覆盖新预设状态。
+            if (generation != _formatRefreshGen || request != _encoderRefreshRequest) return;
 
             // 可用性诚实原则：只向用户提供「当前环境真能兑现」的编码器，过滤掉不可用项
             // （如无对应 GPU 硬件的 nvenc/qsv、未检测到的外部工具），避免用户选中后运行时才失败
@@ -2429,36 +2505,99 @@ namespace FfmpegGui
 
             // 用户当前所选（必须在 Clear 之前取，Clear 之后 SelectedItem 就没了）
             var keepEncoder = EncoderCombo.SelectedItem as string;
-            EncoderCombo.Items!.Clear();
-            if (encoders.Count > 0)
+            _refreshingEncoderList = true;
+            try
             {
-                foreach (var enc in encoders)
+                EncoderCombo.Items!.Clear();
+                if (encoders.Count > 0)
                 {
-                    EncoderCombo.Items.Add(enc.ToString());
-                }
+                    foreach (var enc in encoders)
+                    {
+                        EncoderCombo.Items.Add(enc.ToString());
+                    }
 
-                // 尝试选中默认编码器（P2：消费刚枚举的列表，avif 的 svt/aom 判断不再依赖全局缓存时序）
-                var defaultEnc = EncoderDetectionService.GetDefaultEncoder(fmt1, encoders);
-                var idx = encoders.FindIndex(e => e.Name.Equals(defaultEnc, StringComparison.OrdinalIgnoreCase));
-                // ── D-1 同族第三处（2026-10-12）：**新列表里还有用户当前所选项就保留它**，没有才回落默认 ──
-                //   原先这里**无条件**选默认编码器，而本方法跨一个 `await GetEncodersForFormatAsync(...)`：
-                //   ⇒ 任何一次列表刷新（切格式的异步收尾、启动探测收尾那拍）都会把用户刚选好的后端
-                //   悄悄换掉，与本方法上方那段「可用性诚实 … 避免造成「实际编码器 ≠ 用户所选」」
-                //   立的规矩**正好相反**。实测签名：UI 组 J1 的 `-c:v=<none>`（picked=mjpeg 却生成不出
-                //   -c:v），且把空转泵从 8 加到 60 仍 2/20 红 ⇒ 不是"读得太早"，是产品换了选择。
-                //   判据：GroupO 的 O5a/O5b（反射直接跑完这一次刷新 ⇒ 确定性，不靠时机）。
-                //   回落分支保持原语义：格式变了 ⇒ 旧后端不在新列表 ⇒ 仍按默认选（不写进非法值）。
-                var keepEnc = keepEncoder;
-                int keepIdx = keepEnc == null ? -1 : encoders.FindIndex(e => e.ToString() == keepEnc);
-                EncoderCombo.SelectedIndex = keepIdx >= 0 ? keepIdx : (idx >= 0 ? idx : 0);
-                EncoderCombo.IsEnabled = true;
+                    // 尝试选中默认编码器（P2：消费刚枚举的列表，avif 的 svt/aom 判断不再依赖全局缓存时序）
+                    var defaultEnc = EncoderDetectionService.GetDefaultEncoder(fmt1, encoders);
+                    var idx = encoders.FindIndex(e => e.Name.Equals(defaultEnc, StringComparison.OrdinalIgnoreCase));
+                    // 格式没变时保留有效的用户选择；不在新列表中的项回落为该格式默认编码器。
+                    int keepIdx = keepEncoder == null ? -1 : encoders.FindIndex(e => e.ToString() == keepEncoder);
+                    EncoderCombo.SelectedIndex = keepIdx >= 0 ? keepIdx : (idx >= 0 ? idx : 0);
+                    EncoderCombo.IsEnabled = true;
+                }
+                else
+                {
+                    EncoderCombo.Items.Add("(未检测到可用编码器)");
+                    EncoderCombo.SelectedIndex = 0;
+                    EncoderCombo.IsEnabled = false;
+                }
             }
-            else
+            finally { _refreshingEncoderList = false; }
+
+            // Items.Clear / selection during refill can transiently look like a backend switch.
+            // Re-run the dependent UI update once, after the final encoder selection, preserving
+            // a still-compatible output-matrix selection rather than resetting it mid-refill.
+            RefreshEncoderDependentOptions();
+            if (_pendingEncoderPreset is { } pending && pending.Generation == generation)
             {
-                EncoderCombo.Items.Add("(未检测到可用编码器)");
-                EncoderCombo.SelectedIndex = 0;
-                EncoderCombo.IsEnabled = false;
+                _pendingEncoderPreset = null;
+                ApplyPresetEncoderMatrix(pending.Preset);
+                RegenerateCommand();
+                if (_simpleModeActive && ReferenceEquals(_simpleActivePreset?.Data, pending.Preset))
+                {
+                    _simpleAppliedSig = SimpleCoreSignature();
+                    UpdateSimpleCurrentStateLabel();
+                }
             }
+        }
+
+        private void ApplyPresetEncoderMatrix(Models.PresetData preset)
+        {
+            // 新一次用户回放只报告本次回放；旧的未确认提示不穿越到另一份预设。
+            _chromaResetPending = false;
+            _bitDepthResetPending = false;
+            _colorSpaceResetPending = false;
+            if (EncoderCombo?.Items is { } items)
+            {
+                int exact = -1, fallback = -1;
+                for (int i = 0; i < items.Count; i++)
+                {
+                    if (items[i] is not string label) continue;
+                    if (!string.IsNullOrWhiteSpace(preset.EncoderName)
+                        && (string.Equals(label, preset.EncoderName, StringComparison.OrdinalIgnoreCase)
+                            || string.Equals(EncoderInfo.ParseEncoderName(label), preset.EncoderName, StringComparison.OrdinalIgnoreCase)))
+                    { exact = i; break; }
+                    if (fallback < 0 && string.Equals(EncoderInfo.ParseBackend(label).ToString(), preset.EncoderBackend,
+                            StringComparison.OrdinalIgnoreCase)) fallback = i;
+                }
+                bool keepBackendSelection = string.IsNullOrWhiteSpace(preset.EncoderName)
+                    && EncoderCombo.SelectedItem is string selected
+                    && string.Equals(EncoderInfo.ParseBackend(selected).ToString(), preset.EncoderBackend,
+                        StringComparison.OrdinalIgnoreCase);
+                if (exact >= 0) EncoderCombo.SelectedIndex = exact;
+                else if (fallback >= 0 && !keepBackendSelection) EncoderCombo.SelectedIndex = fallback;
+            }
+            // Chroma and AVIF bit depth depend on the final concrete encoder. The earlier
+            // preset writes may have missed values filtered out by the previous encoder.
+            UpdateChromaBitDepthOptions();
+            SetComboByValue(ChromaCombo, preset.Chroma);
+            SetComboByValue(BitDepthCombo, preset.BitDepth);
+            // R5：显式位深若不在最终编码器候选集中，SetComboByValue 只会找不到项而停在 auto。
+            // 这是能力重置，必须像格式切换一样点名；不能让“值没写进去”变成无提示的静默降级。
+            if (BitDepthCombo != null && !string.IsNullOrWhiteSpace(preset.BitDepth)
+                && !preset.BitDepth.Equals("auto", StringComparison.OrdinalIgnoreCase)
+                && !BitDepthCombo.Items.OfType<string>().Contains(preset.BitDepth, StringComparer.OrdinalIgnoreCase))
+            {
+                BitDepthCombo.SelectedIndex = 0;
+                _bitDepthResetPending = true;
+                UiLogService.Info("[preset] bit depth '" + preset.BitDepth + "' is unavailable on encoder '"
+                    + GetCurrentEncoderName() + "'; reset to auto");
+            }
+            RefillOutMatrixComboForFormat();
+            SetOutMatrixCombo(preset.ColorOutMatrix);
+            // G5（2026-11-24）：色度先于输出矩阵回放；矩阵索引不变（如 rgb→rgb）时 SelectionChanged 不触发，
+            // 色度会以预设值留在置灰下拉里 ⇒ 回放收尾显式再套用一次 rgb 锁（幂等）。
+            ApplyRgbMatrixChromaLock();
+            UpdateColorOptionResetHint(null, null, null);
         }
 
         /// <summary>
@@ -2526,6 +2665,10 @@ namespace FfmpegGui
         private void UpdateOptionAvailability()
         {
             if (FormatCombo == null) return;
+            // G8：在能力表重建控件前拍下旧选择；只有「非 auto → auto」才属于需要点名的能力重置。
+            var previousChroma = ChromaCombo?.SelectedItem as string;
+            var previousBitDepth = BitDepthCombo?.SelectedItem as string;
+            var previousColorSpace = ColorSpaceCombo?.SelectedItem as string;
             var fmt3 = NormalizeFormat(FormatCombo.SelectedItem as string);
             _currentCapabilities = FormatCapabilitiesService.GetCapabilities(fmt3);
 
@@ -2552,7 +2695,7 @@ namespace FfmpegGui
                     // 所有格式均可选 auto，因此始终启用
                     BitDepthCombo.IsEnabled = true;
                     // 动态更新位深选项：始终首位为 auto
-                    BitDepthCombo.Items!.Clear();
+                    var prevBitDepth = BitDepthCombo.SelectedItem as string; BitDepthCombo.Items!.Clear();   // 2026-11-23 G8：先记住旧选择，重建后仅在新格式仍允许时保留
                     BitDepthCombo.Items.Add("auto");
                     foreach (var bd in _currentCapabilities.SupportedBitDepths)
                     {
@@ -2560,7 +2703,7 @@ namespace FfmpegGui
                         if (!BitDepthCombo.Items.Contains(s))
                             BitDepthCombo.Items.Add(s);
                     }
-                    if (BitDepthCombo.Items.Count > 0) BitDepthCombo.SelectedIndex = 0;
+                    if (BitDepthCombo.Items.Count > 0) { var keepBd = prevBitDepth != null ? BitDepthCombo.Items.IndexOf(prevBitDepth) : -1; BitDepthCombo.SelectedIndex = keepBd > 0 ? keepBd : 0; }   // G8：旧值在新格式列表内才保留，否则回 auto
                 }
                 // ⚠ 2026-09-22：**必须与 `UpdateExifToolPanelState()` 同一表达式**（`&& ExifToolService.IsAvailable`）——
                 //   否则本处会把那边的 exiftool 条件**覆盖**掉，导致「缺 exiftool 仍可选『删除全部』」的旧缺陷复活。
@@ -2599,6 +2742,7 @@ namespace FfmpegGui
                     // 嵌套发起同步 ffprobe。重建期间抑制事件，重建完成后再显式选 auto，
                     // 让 handler 只跑一次（auto 分支不做探测）。
                     var prevSuppress = _suppressOptionEvents;
+                    var prevColorSpace = ColorSpaceCombo.SelectedItem as string;   // 2026-11-23 G8: remember, keep only if the new format still offers it
                     _suppressOptionEvents = true;
                     try
                     {
@@ -2608,7 +2752,9 @@ namespace FfmpegGui
                         ColorSpaceCombo.Items.Add("BT.709");
                         // Display P3: 广色域 SDR (Apple 生态标准), 所有格式均支持 (ICC/CICP)
                         ColorSpaceCombo.Items.Add("Display P3");
-                        var hasHdr = _currentCapabilities.SupportedColorSpaces.Contains("BT.2020");
+                        // SupportedColorSpaces 的 BT.2020 只证明能交付 BT.2020 色域，不等于能写原生 PQ/HLG。
+                        // JPEG 的 HDR 只能由 GainMap 承载；mjpeg 普通出口不得继承 AVIF 的原生 HDR 目标。
+                        var hasHdr = fmt3 != "jpg" && _currentCapabilities.SupportedColorSpaces.Contains("BT.2020");
                         // JPEG 的 HDR 由 GainMap 承载，不是原生 PQ/HLG 目标；不再因为勾选 GainMap
                         // 就向 JPEG 注入 BT.2020 PQ/HLG 目标项（AVIF/JXL 的原生 HDR 由能力表决定）。
                         if (hasHdr)
@@ -2624,7 +2770,12 @@ namespace FfmpegGui
                     {
                         _suppressOptionEvents = prevSuppress;
                     }
-                    if (ColorSpaceCombo.Items.Count > 0) ColorSpaceCombo.SelectedIndex = 0;
+                    if (ColorSpaceCombo.Items.Count > 0)
+                    {
+                        // G8: keep a previous choice the new format still allows (index>0 = not auto); otherwise reset to auto.
+                        var keepCs = prevColorSpace != null ? ColorSpaceCombo.Items.IndexOf(prevColorSpace) : -1;
+                        ColorSpaceCombo.SelectedIndex = keepCs > 0 ? keepCs : 0;
+                    }
 
                     // 更新 CICP 格式兼容性提示
                     UpdateCicpHint();
@@ -2669,7 +2820,8 @@ namespace FfmpegGui
             {
                 _suppressCommandRegen = false;
             }
-            UpdateChromaBitDepthOptions();
+            UpdateChromaBitDepthOptions(deferResetHint: true);
+            UpdateColorOptionResetHint(previousChroma, previousBitDepth, previousColorSpace);
             RegenerateCommand();
         }
 
@@ -2680,8 +2832,13 @@ namespace FfmpegGui
         /// - libaom-av1 / av1_nvenc 支持 4:4:4/4:2:2/4:2:0、8/10/12-bit
         /// 保留用户当前选择；不可用的选择自动回退 auto。
         /// </summary>
-        private void UpdateChromaBitDepthOptions()
+        private void UpdateChromaBitDepthOptions(bool deferResetHint = false)
         {
+            _rebuildingChromaBitDepthOptions = true;
+            try
+            {
+            var previousChroma = ChromaCombo?.SelectedItem as string;
+            var previousBitDepth = BitDepthCombo?.SelectedItem as string;
             var fmt = NormalizeFormat(FormatCombo?.SelectedItem as string);
             // ⚠ P1-F 缺陷 1（显示侧）：这里原先读 **EncoderCombo 的显示串**（含硬件编码器的图标前缀
             //   "⚡ "）⇒ `StartsWith("av1_nvenc")` 对 "⚡ av1_nvenc — …" 恒假 ⇒ 按编码器过滤
@@ -2720,7 +2877,7 @@ namespace FfmpegGui
                 // 留空时下拉只给到 10，而命令里不写 -c:v ⇒ 实跑 libaom-av1、能出 12bit。
                 var maxBd = Services.ColorMapping.ImageEncoderArgs.AvifMaxBitDepthForEncoder(enc);
                 // 16-bit AVIF：avifenc --depth 12,4 是唯一出口（avifenc 可用且编码器为默认/libaom）。
-                // 其余编码器（libsvt/nvenc/qsv/amf）没有 Sample Transform 出口 ⇒ 仍只到 12。
+                // 其余编码器（libsvt/nvenc/qsv/amf/vaapi）没有 Sample Transform 出口，且上限表为 10（libaom 为 12）⇒ 只到 10。
                 if (Services.ColorMapping.ImageEncoderArgs.CanUseAvif16(enc)
                     && !string.IsNullOrWhiteSpace(Services.PlatformServices.ResolveAvifencPath()))
                     maxBd = 16;
@@ -2735,6 +2892,87 @@ namespace FfmpegGui
                     BitDepthCombo.SelectedIndex = BitDepthCombo.Items.IndexOf(cur);
                 else
                     BitDepthCombo.SelectedIndex = 0; // auto
+            }
+
+            ApplyRgbMatrixChromaLock();
+            if (!deferResetHint)
+                UpdateColorOptionResetHint(previousChroma, previousBitDepth, previousColorSpace: null);
+            }
+            finally
+            {
+                _rebuildingChromaBitDepthOptions = false;
+            }
+        }
+
+        // G8（2026-11-24）：能力收窄造成重置时必须点名，不允许只把下拉悄悄拨回 auto。
+        private static bool ResetToAuto(string? previous, string? current) =>
+            !string.IsNullOrWhiteSpace(previous)
+            && !string.Equals(previous, "auto", StringComparison.OrdinalIgnoreCase)
+            && string.Equals(current, "auto", StringComparison.OrdinalIgnoreCase);
+
+        private static bool IsExplicitOption(string? value) =>
+            !string.IsNullOrWhiteSpace(value) && !string.Equals(value, "auto", StringComparison.OrdinalIgnoreCase);
+
+        private void UpdateColorOptionResetHint(string? previousChroma, string? previousBitDepth, string? previousColorSpace)
+        {
+            if (ColorOptionResetHint == null) return;
+            // auto→auto 常见于异步编码器刷新，不代表用户确认了之前的重置；不得借此擦掉已有提示。
+            // 非 auto→非 auto 才是“合法显式值被保留”，此时清除对应提示。
+            if (IsExplicitOption(previousChroma))
+                _chromaResetPending = ResetToAuto(previousChroma, ChromaCombo?.SelectedItem as string);
+            if (IsExplicitOption(previousBitDepth))
+                _bitDepthResetPending = ResetToAuto(previousBitDepth, BitDepthCombo?.SelectedItem as string);
+            if (IsExplicitOption(previousColorSpace))
+                _colorSpaceResetPending = ResetToAuto(previousColorSpace, ColorSpaceCombo?.SelectedItem as string);
+
+            var resetLabels = new List<string>(3);
+            if (_chromaResetPending)
+                resetLabels.Add(Services.LocalizationService.Instance["chroma.subsampling"]);
+            if (_bitDepthResetPending)
+                resetLabels.Add(Services.LocalizationService.Instance["bit.depth"]);
+            if (_colorSpaceResetPending)
+                resetLabels.Add(Services.LocalizationService.Instance["color.space.quick"]);
+
+            if (resetLabels.Count == 0)
+            {
+                ColorOptionResetHint.Text = "";
+                ColorOptionResetHint.IsVisible = false;
+                ToolTip.SetTip(ColorOptionResetHint, null);
+                return;
+            }
+            var hint = string.Format(Services.LocalizationService.Instance["color.option.reset"],
+                string.Join(", ", resetLabels.Distinct()));
+            ColorOptionResetHint.Text = hint;
+            ColorOptionResetHint.IsVisible = true;
+            ToolTip.SetTip(ColorOptionResetHint, hint);
+        }
+
+        // G2（2026-11-24）：AVIF + 输出矩阵 rgb（AV1 identity）只能由 gbrp 承载，命令构建层会钉 gbrp 并
+        // 跳过 YUV 色度重写（FfmpegCommandBuilder rgbPinWanted 分支）⇒ 此时色度下拉不起作用，
+        // 放任可选会出现「选了 4:2:0 却被静默忽略」。这里置灰并回 auto；离开 rgb 时只解除自己加的锁
+        // （避免覆盖 UpdateOptionAvailability 按格式能力设定的 IsEnabled）。位深在 rgb 下仍生效
+        // （gbrp / gbrp10le / gbrp12le），故不锁。提示文案用英文，避免 CsUi 中文字面量基线。
+        private bool _chromaLockedByRgbMatrix;
+
+        private void ApplyRgbMatrixChromaLock()
+        {
+            if (ChromaCombo == null) return;
+            var fmt = NormalizeFormat(FormatCombo?.SelectedItem as string);
+            var tok = MapOutMatrixValue(OutputMatrixCombo?.SelectedItem as string);
+            bool rgbLock = fmt == "avif" && tok == "rgb";
+            if (rgbLock)
+            {
+                if (ChromaCombo.SelectedIndex != 0) ChromaCombo.SelectedIndex = 0; // auto
+                ChromaCombo.IsEnabled = false;
+                _chromaLockedByRgbMatrix = true;
+                ToolTip.SetTip(ChromaCombo,
+                    "Locked: output matrix rgb (AV1 identity) is carried as gbrp 4:4:4; chroma subsampling does not apply.");
+            }
+            else if (_chromaLockedByRgbMatrix)
+            {
+                ChromaCombo.IsEnabled = _currentCapabilities?.SupportsChroma ?? true;
+                _chromaLockedByRgbMatrix = false;
+                ToolTip.SetTip(ChromaCombo, null);
             }
         }
 
@@ -4207,6 +4445,8 @@ namespace FfmpegGui
         {
             if (_suppressOptionEvents) return;
 
+            _colorSpaceResetPending = false;
+            UpdateColorOptionResetHint(null, null, null);
             var cs = ColorSpaceCombo?.SelectedItem as string;
             if (string.IsNullOrWhiteSpace(cs) || cs == "auto")
             {
@@ -5528,9 +5768,8 @@ namespace FfmpegGui
             {
                 _simpleActivePreset = preset;
                 ApplyPresetData(preset.Data);
-                _ = RefreshEncoderListAsync();
-                UpdateOptionAvailability();
-                // 指纹要在全部刷新之后抓：回显比对的是"用户实际看到的那份状态"
+                // ApplyPresetData owns the option rebuild and its single encoder refresh.
+                // Its async completion refreshes this fingerprint after restoring the requested encoder.
                 _simpleAppliedSig = SimpleCoreSignature();
                 UpdateSimpleCurrentStateLabel();
             }
@@ -6735,9 +6974,8 @@ namespace FfmpegGui
                 ColorTrc = ColorTrcCombo?.SelectedItem as string,
                 ColorMatrix = ColorMatrixCombo?.SelectedItem as string,
                 ColorRange = MapColorRangeValue(ColorRangeCombo?.SelectedItem as string),
-                // C-GUI@1：输出矩阵模式进 preset（MapOutMatrixValue 归一为 token；auto ⇒ null ⇒
-                // 旧预设 JSON 无此键时 SetOutMatrixCombo 早退，控件保持现状）。
-                ColorOutMatrix = MapOutMatrixValue(OutputMatrixCombo?.SelectedItem as string),
+                // Missing is a historical preset; auto is an explicit reset.
+                ColorOutMatrix = MapOutMatrixValue(OutputMatrixCombo?.SelectedItem as string) ?? "auto",
                 TonemapCurve = null, // tonemap 曲线内部默认 mobius
                 // R3（2026-11-09）：tone-map / engine 进 preset（旧预设 JSON 无这两个键 ⇒ null ⇒
                 // ApplyPresetData 的 SetComboByValue 对 null 直接 return，控件保持现状）。
@@ -6877,6 +7115,18 @@ namespace FfmpegGui
 
         private void ApplyPresetData(Models.PresetData p)
         {
+            _pendingEncoderPreset = null;
+            _pendingPresetMatrix = null;
+            // Format / mode handlers still advance the generation and rebuild their normal options,
+            // but their intermediate refreshes are coalesced into this preset's final refresh.
+            bool wasApplyingPresetFormat = _applyingPresetFormat;
+            _applyingPresetFormat = true;
+            try { ApplyPresetDataCore(p); }
+            finally { _applyingPresetFormat = wasApplyingPresetFormat; }
+        }
+
+        private void ApplyPresetDataCore(Models.PresetData p)
+        {
             // Mode first: ConversionMode_SelectionChanged rebuilds FormatCombo's item list
             // (still / animated / RAW carry disjoint format sets), so a format written before the
             // mode would be dropped when that rebuild runs. null = preset predates the axis.
@@ -6896,10 +7146,7 @@ namespace FfmpegGui
             SetComboByValue(ColorPrimariesCombo, p.ColorPrimaries);
             SetComboByValue(ColorTrcCombo, p.ColorTrc);
             SetComboByValue(ColorMatrixCombo, p.ColorMatrix);
-            // C-GUI@1：输出矩阵模式回放（token → 索引；SetOutMatrixCombo 对 null 早退 ⇒ 旧预设不动控件）。
-            // ⚠ 不用 SetComboByValue：条目经 FillComboByLoc 本地化填充（zh「SMPTE 170M」…），
-            //   规范 token 按 Items 字符串相等比对匹配不到——同 ColorRangeCombo 的 SetColorRangeCombo 解法。
-            SetOutMatrixCombo(p.ColorOutMatrix);
+            // Output matrix is restored after the encoder's capability set is known.
             // R3（2026-11-09）：tone-map / engine 恢复（SetComboByValue 对 null 早退 ⇒ 旧预设不动控件）
             SetComboByValue(ColorToneMapCombo, p.ColorToneMap);
             SetComboByValue(ColorEngineCombo, p.ColorEngine);
@@ -6990,35 +7237,7 @@ namespace FfmpegGui
                 DngLensCheck.IsChecked = p.DngLensCorrection;
             if (DngBitDepthCombo != null)
                 DngBitDepthCombo.SelectedIndex = p.DngBitDepth <= 8 ? 0 : 1;
-            // ── 编码器后端 ──
-            // Exact preset selection first: one backend can expose several encoders, and the
-            // backend-name substring match below cannot tell them apart.
-            if (!string.IsNullOrWhiteSpace(p.EncoderName) && EncoderCombo?.Items != null)
-            {
-                for (int i = 0; i < EncoderCombo.Items.Count; i++)
-                {
-                    if (string.Equals(EncoderCombo.Items[i] as string, p.EncoderName,
-                            StringComparison.OrdinalIgnoreCase))
-                    {
-                        EncoderCombo.SelectedIndex = i;
-                        break;
-                    }
-                }
-            }
-            if (!string.IsNullOrWhiteSpace(p.EncoderBackend) && EncoderCombo != null)
-            {
-                // 在 EncoderCombo 中查找包含后端名称的项
-                for (int i = 0; i < EncoderCombo.Items!.Count; i++)
-                {
-                    var item = EncoderCombo.Items[i] as string ?? "";
-                    if (item.Contains(p.EncoderBackend, StringComparison.OrdinalIgnoreCase)
-                        || (p.EncoderBackend == "Ffmpeg" && item.Contains("FFmpeg")))
-                    {
-                        EncoderCombo.SelectedIndex = i;
-                        break;
-                    }
-                }
-            }
+            // Encoder and capability-dependent matrix are restored after the final refresh below.
             // ── WebP 无损压缩级别 ──
             if (WebpCompressionBox != null && p.WebpCompressionLevel.HasValue)
                 WebpCompressionBox.Value = p.WebpCompressionLevel.Value;
@@ -7165,6 +7384,9 @@ namespace FfmpegGui
 
             UpdateExifToolPanelState();
             UpdateQualityLabel();
+
+            _pendingEncoderPreset = (_formatRefreshGen, p);
+            _ = RefreshEncoderListAsync();
         }
 
         /// <summary>
@@ -7286,18 +7508,25 @@ namespace FfmpegGui
 
         private void SetOutMatrixCombo(string? value)
         {
-            if (OutputMatrixCombo == null) return;
+            if (OutputMatrixCombo == null || value == null) return;
             var v = MapOutMatrixValue(value);
-            if (v == null) return;   // null（auto/旧预设无此键）⇒ 早退不动控件（= SetComboByValue 的 null 语义）
+            if (v == null)
+            {
+                _pendingPresetMatrix = null;
+                if (OutputMatrixCombo.Items.Count > 0) OutputMatrixCombo.SelectedIndex = 0;
+                return;
+            }
             for (int i = 0; i < OutputMatrixCombo.Items!.Count; i++)
             {
                 if (MapOutMatrixValue(OutputMatrixCombo.Items[i] as string) == v)
                 {
                     OutputMatrixCombo.SelectedIndex = i;
+                    _pendingPresetMatrix = null;
                     return;
                 }
             }
-            if (OutputMatrixCombo.Items.Count > 0) OutputMatrixCombo.SelectedIndex = 0;  // 未知 token ⇒ 归位 auto
+            if (OutputMatrixCombo.Items.Count > 0) OutputMatrixCombo.SelectedIndex = 0;
+            _pendingPresetMatrix = (_formatRefreshGen, NormalizeFormat(FormatCombo?.SelectedItem as string), v);
         }
 
         // ── B1（CMX-2，color-matrix-options 计划）：GUI 条目按输出格式 + 编码器后端能力过滤 ──
@@ -7363,7 +7592,7 @@ namespace FfmpegGui
             foreach (var (key, tok) in _outMatrixGuiTokens)
             {
                 if (Services.ColorMapping.ColorMappingEngine.ResolveOutMatrixCapability(
-                        fmt, tok, backend) != Services.ColorMapping.OutMatrixCapability.Rejected)
+                        fmt, tok, backend, GetCurrentEncoderName()) != Services.ColorMapping.OutMatrixCapability.Rejected)
                 {
                     kept.Add(key);
                     keptToks.Add(tok);
@@ -7374,9 +7603,19 @@ namespace FfmpegGui
 
             // 幂等：同格式 + 同后端的重复触发（格式切换先跑一次、编码器刷新收尾再跑一次、
             // 或编码器在两个非外部后端间切换）不重建，避免 ItemsSource 抖动与冗余事件链。
+            var pendingIndex = _pendingPresetMatrix is { } pending
+                && pending.Generation == _formatRefreshGen && pending.Format == fmt
+                ? keptToks.IndexOf(pending.Token) : -1;
             if (_locCombos.TryGetValue(OutputMatrixCombo, out var curKeys)
                 && curKeys.SequenceEqual(kept))
+            {
+                if (pendingIndex > 0)
+                {
+                    _pendingPresetMatrix = null;
+                    OutputMatrixCombo.SelectedIndex = pendingIndex;
+                }
                 return;
+            }
 
             // 选中值失效重置：重建后当前 token 不在过滤后集合 ⇒ 归 0（auto）；在 ⇒ 保持。
             // 回放优先按显示名精确匹配（保留用户可见档），失败再按归一 token 匹配
@@ -7399,9 +7638,19 @@ namespace FfmpegGui
 
             // FillComboByLoc 的 SelectedIndex 保留逻辑面向「等长同序」集合；过滤后集合收缩 ⇒
             // 先归 -1（让它走 defaultIndex=0），再按新索引回放，避免旧索引越界或错位。
-            OutputMatrixCombo.SelectedIndex = -1;
-            FillComboByLoc(OutputMatrixCombo, 0, kept.ToArray());
-            if (newIdx != 0) OutputMatrixCombo.SelectedIndex = newIdx;
+            _refillingOutputMatrix = true;
+            try
+            {
+                OutputMatrixCombo.SelectedIndex = -1;
+                FillComboByLoc(OutputMatrixCombo, 0, kept.ToArray());
+                if (pendingIndex > 0)
+                {
+                    _pendingPresetMatrix = null;
+                    newIdx = pendingIndex;
+                }
+                if (newIdx != 0) OutputMatrixCombo.SelectedIndex = newIdx;
+            }
+            finally { _refillingOutputMatrix = false; }
         }
 
         /// <summary>通过值数组匹配设置 ComboBox 索引（用于显示文本≠原始值的情况，如 PNG 预测模式）</summary>

@@ -109,6 +109,9 @@ namespace Tests.Shared
                 // ⚠ T6→T7 接线之间的窗口期该 mode 尚无调用点，组表覆盖探针的 ⑥-c 会逐名点名
                 //   ——接线后即绿（与计划 C-PROBE@1→C-GATE@1 的串行时序一致）。
                 "pngopt",
+                // 2026-11-24 色彩矩阵修复：AVIF 编码器位深上限与编码器感知输出矩阵能力。
+                // 调用者 = 在册门禁 verify-color-out-matrix 的定向 ServiceProbe 预检段。
+                "avifcaps", "outmatrixenc",
             },
 
             // ── 编码参数与产物 / 元数据与 ICC / 增益图与 Ultra HDR / 进程与 IPC ──

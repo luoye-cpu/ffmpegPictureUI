@@ -263,6 +263,12 @@ public sealed class ColorTransformPlan
     public bool AttachIcc;
     public string? IccPath;
     public string? IccPrimaries, IccTrc, IccMatrix;
+    /// <summary>Exact source bytes promised by the opaque ICC carry route. Never pass this through ICC normalization.</summary>
+    public IccProfileIdentity? RawSourceIcc;
+    internal (IccProfileIdentity Source, IccProfileIdentity Target)? IccCmsTransform;
+    internal bool MatrixDeliveryReported;
+    /// <summary>Stable ICC safety rejection code; such plans must not fall back to legacy.</summary>
+    public string? IccSafetyCode;
 
     // ── 精度闸门 ──
     public bool NeedsDither;

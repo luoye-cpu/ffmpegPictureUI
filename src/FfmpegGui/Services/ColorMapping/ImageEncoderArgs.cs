@@ -5,6 +5,15 @@ using FfmpegGui.Models;
 
 namespace FfmpegGui.Services.ColorMapping;
 
+/// <summary>A selected output representation cannot be delivered by this encoder route.</summary>
+internal sealed class ColorOutputContractException : InvalidOperationException
+{
+    internal string ReasonCode { get; }
+
+    internal ColorOutputContractException(string reasonCode, string message) : base(message)
+        => ReasonCode = reasonCode;
+}
+
 /// <summary>
 /// 图像编码器参数构造（**单一真值**）：把 <see cref="FfmpegOptions"/> 的质量 / 无损 / 结构参数
 /// 映射成 ffmpeg 编码器选项。
@@ -53,6 +62,7 @@ public static class ImageEncoderArgs
     /// </para>
     /// </summary>
     public static readonly AsyncLocal<Action<string>?> WarnSink = new();
+    internal static readonly AsyncLocal<bool> RouteWarningsToItemOnly = new();
 
     /// <summary>
     /// Emits one "advanced option ignored" notice on both channels: Console (unchanged, headless +
@@ -60,9 +70,69 @@ public static class ImageEncoderArgs
     /// </summary>
     internal static void EmitWarn(string message)
     {
-        Console.WriteLine(message);
+        if (!RouteWarningsToItemOnly.Value) Console.WriteLine(message);
         WarnSink.Value?.Invoke(message);
     }
+
+    internal static void ReportMatrixResult(Action<string> log, string message)
+    {
+        if (RouteWarningsToItemOnly.Value && WarnSink.Value is { } defer) defer(message);
+        else log(message + "\n");
+    }
+
+    /// <summary>Only PC/TV are explicit range requests; auto leaves the codec's defaults intact.</summary>
+    internal static string? ExplicitRange(FfmpegOptions? o) => o?.ColorRange?.Trim().ToLowerInvariant() switch
+    {
+        "pc" => "pc",
+        "tv" => "tv",
+        _ => null,
+    };
+
+    /// <summary>H1 range arguments; WebP VP8 is always limited, while VP8L is RGB.</summary>
+    internal static string EngineRangeOptions(string format, FfmpegOptions o, bool avifRgb)
+    {
+        var requested = ExplicitRange(o);
+        if (format == "webp")
+        {
+            if (o.Lossless)
+            {
+                if (requested != null)
+                    EmitWarn($"[webp] --color-range {requested} has no YUV effect on lossless VP8L (RGB samples).");
+                return "";
+            }
+            if (requested == "pc")
+                EmitWarn("[webp] --color-range pc ignored: lossy WebP (VP8) is limited-range only; using tv.");
+            return " -color_range tv";
+        }
+        if (format is "jpg" or "jpeg")
+        {
+            if (requested == "tv")
+            {
+                EmitWarn("[jpeg] --color-range tv honored via -strict unofficial: JPEG/JFIF carries no range "
+                    + "marker; libjpeg/WIC/browsers interpret its limited samples as full range and may show washed-out colors.");
+                return " -color_range tv -strict unofficial";
+            }
+            // The auto path's yuvj format already supplies the standard full-range JPEG contract.
+            return requested == "pc" ? " -color_range pc" : "";
+        }
+        return format == "avif" && requested != null && !avifRgb ? $" -color_range {requested}" : "";
+    }
+
+    // Set range on the actual RGB -> YUV operation, not only on the output AVCodecContext.
+    internal static string EngineRangeScale(string range, string? matrix, string pixelFormat)
+    {
+        var matrixArg = matrix is "bt709" or "bt470bg" or "smpte170m" or "smpte240m" or "fcc" or "bt2020nc"
+            ? $":out_color_matrix={matrix}" : "";
+        return $" -vf \"scale=in_range=pc:out_range={range}{matrixArg},format={pixelFormat}\"";
+    }
+
+    internal static string? ExplicitChroma(FfmpegOptions? o) => o?.Chroma?.Trim().ToLowerInvariant() switch
+    {
+        "4:2:0" => "420",
+        "4:2:2" => "422",
+        "4:4:4" => "444",
+        _ => null,
+    };
 
     /// <summary>0-100 质量 → mjpeg 的 qscale（2-31，越小越好）。</summary>
     public static int MapJpegQuality(int quality) => (int)Math.Round(2 + (100 - quality) * 29.0 / 100.0);
@@ -797,7 +867,7 @@ public static class ImageEncoderArgs
 
     /// <summary>
     /// AVIF 的**编码器特定位深上限**（单一真值），按 <see cref="ClassifyAvifBackend"/> 的同一套分类给：
-    /// <c>libaom-av1</c> / <c>av1_nvenc</c> ⇒ 12；<c>libsvtav1</c> / <c>av1_qsv</c> / <c>av1_amf</c> /
+    /// <c>libaom-av1</c> ⇒ 12；<c>av1_nvenc</c> / <c>libsvtav1</c> / <c>av1_qsv</c> / <c>av1_amf</c> /
     /// <c>av1_vaapi</c> / 未识别名 ⇒ 10。
     /// <para>
     /// ★ **空编码器名 ⇒ 12，不是 10**（任务 #36，2026-09-26 收口）。空名意味着命令里**不写** <c>-c:v</c>
@@ -820,19 +890,30 @@ public static class ImageEncoderArgs
     /// ⇒ <c>tests/scripts/verify-decision-delivery.ps1</c> ⑯ 现场解析这张表，但它只对**两行**下判断：
     ///   「不写 -c:v 时 ffmpeg 实际选的默认编码器」与 <c>libsvtav1</c>（后者用来证明解析器能区分不同
     ///   编码器，否则"交付 == 实测上限"就是恒等式）⇒ 随包 ffmpeg 换了默认编码器会红在前提那条。
-    /// ⚠ <c>av1_nvenc ⇒ 12</c> 这一行**本轮没有被端到端验过**，且已知可疑：本表只决定"允许到哪档"，
-    ///   真正的像素格式名由 <see cref="MapPixFmt"/> 给（12bit ⇒ <c>yuv420p12le</c>），而 nvenc 的自报表里
-    ///   **没有** <c>yuv420p12le</c>（只有 <c>p012le / p212le / yuv444p12msble</c>）⇒ 12bit + nvenc 大概率
-    ///   会被编码器拒收。本机无 NVIDIA GPU（见本文件 <c>AvifBackend</c> 注："本机无法实测任何一条"）
-    ///   ⇒ 登记为待办，不在本轮改（改它需要能起 nvenc 的机器）。libaom 一行是实测过的（⑯ 的前提条）。
+    /// NVENC 自报的 p012le 是可接受的输入存储格式，不证明 12-bit AV1 交付：2026-11-21 随包
+    /// ffmpeg + RTX4060 Laptop 实测显式 12bit 进程/任务均成功，但独立解码只有 10bit。
+    /// 因此随包 NVENC 通路保守上限为 10；显式 12bit 由队列统一预检拒绝，避免静默降位。
+    /// libaom 的 12bit 保持不变；其它设备/驱动的能力不由本表推断。
     /// </para>
     /// </summary>
     public static int AvifMaxBitDepthForEncoder(string? encoder)
         => ClassifyAvifBackend(encoder) switch
         {
-            AvifBackend.Libaom or AvifBackend.Nvenc => 12,
+            AvifBackend.Libaom => 12,
             _ => 10,
         };
+
+    /// <summary>Reject explicit AVIF precision above the selected encoder's table maximum (<see cref="AvifMaxBitDepthForEncoder"/>) for every backend, not only NVENC (2026-11-23 P1: no silent Math.Min clamp). QSV/AMF/VAAPI limits are declared capability only, not hardware-verified.</summary>
+    internal static void ValidateAvifRequestedBitDepth(FfmpegOptions o)
+    {
+        // Preserve the separate 16-bit Sample Transform eligibility contract.
+        var requested = o.BitDepthRequested ?? o.BitDepth;
+        if (string.Equals(o.Format, "avif", StringComparison.OrdinalIgnoreCase)
+            && requested is > 8 and < 16 && requested > AvifMaxBitDepth(o))
+            throw new ColorOutputContractException("COLOR_BIT_DEPTH_REJECTED",
+                $"AVIF encoder '{o.Encoder}' cannot deliver the explicitly requested {requested}-bit AV1 output on the shipped route; "
+                + $"its conservative maximum is {AvifMaxBitDepth(o)}-bit. Select 8/10-bit or libaom-av1; no output was encoded.");
+    }
 
     /// <summary>见 <see cref="AvifMaxBitDepthForEncoder"/>（按 <c>options.Encoder</c> 取档）。</summary>
     public static int AvifMaxBitDepth(FfmpegOptions o) => AvifMaxBitDepthForEncoder(o.Encoder);
@@ -1105,7 +1186,7 @@ public static class ImageEncoderArgs
         //（matrix_coefficients=0）结构上无法承载：identity 仅 4:4:4 无子采样有效，实测
         //（tests/output/_tmp/color-matrix-t6-probe/ A7，2026-11-10）libsvtav1 对 identity+4:2:0
         // 硬失败 "Identity matrix (matrix_coefficient = 0) may be used only with 4:4:4 color
-        // format"。判 libaom 口径 Carried 的规划层拿不到编码器名维度（三参签名上限）⇒ 收窄在本
+        // format"。规划层原先拿不到编码器名维度（三参签名上限；2026-11-23 起 GUI 经可选第四参过滤，本条保留为出口防线）⇒ 收窄在本
         // 边界族执行：引擎路由 block 点名（显式 engine ⇒ 硬失败 90 / auto ⇒ 回退 legacy 并写明理由），
         // 与上方 4:4:4 静默降级条同一机制，不构成第二份判定表。
         if (fmt == "avif" && o.ColorOutMatrix == "rgb"

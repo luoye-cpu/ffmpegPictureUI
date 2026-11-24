@@ -123,6 +123,8 @@ namespace ServiceProbe
                     // verdict —— S5′：纯函数级裁决断言（每个 Degradation.Code 一条正向 + 一条负控）
                     case "verdict": ProbeVerdict(); break;
                     case "bitdepth": ProbeBitDepth(args).GetAwaiter().GetResult(); break;
+                    case "avifcaps": ProbeAvifEncoderCaps(args).GetAwaiter().GetResult(); break;
+                    case "outmatrixenc": ProbeOutMatrixEncoder(args).GetAwaiter().GetResult(); break;
                     case "tonemap": ProbeToneMap(args).GetAwaiter().GetResult(); break;
                     case "tonemapcurve": DumpToneMapCurve(args); break;
                     case "ootf": ProbeOotf(); break;

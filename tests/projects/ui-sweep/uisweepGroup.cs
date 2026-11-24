@@ -938,14 +938,11 @@ namespace Tests.UiSweep
                 if (cm17 != null) cm17.SelectedItem = "auto";
                 Pump(8);
 
-                // 冲突1：HDR 快速空间 + SDR 目标格式 ⇒ 必须出降级提示。
-                // ⚠ 顺序订正（实测 2026-11-09）：`SetFormat` 触发 `UpdateOptionAvailability` 会
-                //   **重建 ColorSpaceCombo.Items 并复位 SelectedIndex=0（auto）**（:2389-2410）⇒
-                //   「先选空间再换格式」必被清成 auto（首轮实测 J17c/J17d 由此假红）。
-                //   正确顺序 = 先落格式、再选空间。JPEG 的 `SupportedColorSpaces` 含 "BT.2020"
-                //   （FormatCapabilitiesService._cache["jpg"]）⇒ hasHdr=true ⇒ HDR 三项在 items 里，
-                //   「HDR 空间 → SDR 目标」是**真实用户可达**的组合（冲突1 的 fmt 列表里 JPEG 命中）。
+                // 冲突1：直接测冲突检测器对陈旧 HDR 状态的处理。普通 JPEG 候选集自 N13c 起
+                // 不再提供原生 PQ/HLG（HDR 由 GainMap 通路承担），因此这里显式注入一个
+                // 来自旧预设/旧界面的 BT.2020 PQ 项；这不宣称该组合仍可由正常下拉产生。
                 SetFormat("JPEG"); Pump(10);
+                cs17.Items.Add("BT.2020 PQ");
                 cs17.SelectedItem = "BT.2020 PQ"; Pump(8);
                 typeof(FfmpegGui.MainWindow).GetMethod("DetectColorConflicts", BF)!.Invoke(W, null);
                 Pump(4);
@@ -1173,8 +1170,10 @@ namespace Tests.UiSweep
                 Check("J19d 选中 xyb 档 ⇒ 采集 xyb（特殊成员直通；jxl 过滤集内）",
                       d19 == "xyb", $"val={d19 ?? "<null>"}");
 
-                SetFormat("AVIF"); Pump(10);   // avif 过滤集 8 档
-                om19.SelectedIndex = 7; Pump(8);   // bt2020nc 档（集内末位）
+                SetFormat("AVIF"); Pump(10);
+                // 固定 AOM 后再锁 8 档；SVT/NVENC 等后端会按同源能力函数合法收窄 rgb。
+                PickEncoder(s => FfmpegGui.Services.EncoderInfo.ParseEncoderName(s) == "libaom-av1"); Pump(8);
+                om19.SelectedIndex = 7; Pump(8);   // bt2020nc 档（AOM 集内末位）
                 var e19 = Collect19();
                 Check("J19e 选中 bt2020nc 档 ⇒ 采集 bt2020nc（H.273 族直通；avif 过滤集内）",
                       e19 == "bt2020nc", $"val={e19 ?? "<null>"}");
@@ -1191,7 +1190,7 @@ namespace Tests.UiSweep
                 //   在集判定（J19i）与被过滤判定（J19j）分开：一块一个测试，红的时候能直接点名是
                 //   「条数漂了」还是「该被过滤的档漏进了下拉」。
                 var set19 = Set19();
-                Check("J19i avif 过滤集恰 8 档且 bt2020nc/smpte240m 在集（CMX-2 唯一真值）",
+                Check("J19i avif+AOM 过滤集恰 8 档且 bt2020nc/smpte240m 在集（CMX-2 唯一真值）",
                       om19.ItemCount == 8 && set19.Contains("bt2020nc") && set19.Contains("smpte240m"),
                       $"count={om19.ItemCount} set=[{string.Join(",", set19)}]");
                 Check("J19j avif 下 ycgco/fcc/xyb 均被过滤（C4/C5 校准 Rejected 档不进下拉）",

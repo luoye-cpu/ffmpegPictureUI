@@ -328,7 +328,7 @@ if ($e1.file) {
     Write-Output '  KNOWN ①b 未采 origin/main 的『底图必须带版本裸桩（规范列为 Required）』：该主张出自 2026-10-20 批次（docs/FIX_PLAN_2026-10-14.md:1119-1145），其"维护者裁决"归因已于 2026-10-27 由维护者本人否认 ⇒ 容器形状属未决项，不是本树契约（IMPLEMENT_PLAN §54.1/§55）'
 } else { CK $false "①b 无产物，底图裸桩形状断言无法进行" }
 
-# ── 1c) 元数据方式三档必须**真的分叉**（iso / xmp / both）───────────────────────
+# ── 1c) HDR 输入下验证每档实际承载：iso 按兼容策略升级到 both ──
 #   为什么不能只测"读得回"：三档都读得回时，"开关没生效"与"生效了"在探针输出上同形。
 #   ⇒ 打字节指纹：两种命名空间各自落在底图还是次图，外加次图自声明长度的账是否闭合。
 Write-Host "`n### 1c) 元数据方式三档的容器指纹 ###" -ForegroundColor Cyan
@@ -355,17 +355,12 @@ if ($armIso.file -and $armXmp.file -and $armBoth.file -and $armXmpRgb.file) {
     # 2026-10-27 方案一改写出器后的**新形状**（账本 §56）：数值同时写在底图（元素形式，自家读手与
     # exiftool 走这条）与次图（属性形式，libultrahdr 唯一入口，jpegr.cpp:1495-1500 + jpegrutils.cpp:770-800）。
     # 改这条之前，`xmp`/`both` 档对参考读手是「received no valid buffer to parse gainmap metadata」（D5e 实测）。
-    CK ($fIso.IsoBase -eq 0 -and $fIso.IsoSec -eq 1 -and $fIso.XmpBase -eq 0 -and $fIso.XmpSec -eq 0) ("①c iso 档＝只次图 1 份 ISO 全量、两处 XMP 都不写（实 底ISO=" + $fIso.IsoBase + ' 次ISO=' + $fIso.IsoSec + ' 底XMP=' + $fIso.XmpBase + ' 次XMP=' + $fIso.XmpSec + '）')
+    CK ($fIso.IsoBase -eq 0 -and $fIso.IsoSec -eq 1 -and $fIso.XmpBase -eq 1 -and $fIso.XmpSec -eq 1) '①c HDR JPEG 的 iso 选项按兼容策略实写 ISO + XMP'
     CK ($fXmp.IsoBase -eq 0 -and $fXmp.IsoSec -eq 0 -and $fXmp.XmpBase -eq 1 -and $fXmp.XmpSec -eq 1) ("①c xmp 档＝底图与次图各 1 份 XMP、不写 ISO（实 底ISO=" + $fXmp.IsoBase + ' 次ISO=' + $fXmp.IsoSec + ' 底XMP=' + $fXmp.XmpBase + ' 次XMP=' + $fXmp.XmpSec + '）')
     CK ($fBoth.IsoBase -eq 0 -and $fBoth.IsoSec -eq 1 -and $fBoth.XmpBase -eq 1 -and $fBoth.XmpSec -eq 1) ("①c both 档＝底图 XMP + 次图 XMP + 次图 ISO 全量（实 底ISO=" + $fBoth.IsoBase + ' 次ISO=' + $fBoth.IsoSec + ' 底XMP=' + $fBoth.XmpBase + ' 次XMP=' + $fBoth.XmpSec + '）')
-    # 三档互不相同 = 开关确实改变产物（若某一档空转，这三条里必有一条相等而判红）
-    CK (($fIso.XmpBase + $fXmp.XmpBase) -eq 1) ("①c 反控：iso 与 xmp 两档的**底图 XMP**必须一有一无（实 iso底XMP=" + $fIso.XmpBase + ' xmp底XMP=' + $fXmp.XmpBase + '）')
+    CK ($fIso.XmpBase -eq 1 -and $fXmp.XmpBase -eq 1) '①c HDR 的 iso 升级后与 xmp 都有底图 XMP，次图 ISO 仍用于区分'
     CK (($fIso.IsoSec + $fXmp.IsoSec) -eq 1) ("①c 反控：iso 与 xmp 两档的**次图 ISO**必须一有一无（实 iso次ISO=" + $fIso.IsoSec + ' xmp次ISO=' + $fXmp.IsoSec + '）')
-    # 与容器形状无关的硬判据：三档产物两两不同字节（某档空转 ⇒ 必有一条相等 ⇒ 红）
-    $hIso = (Get-FileHash -Algorithm SHA256 $armIso.file.FullName).Hash
-    $hXmp = (Get-FileHash -Algorithm SHA256 $armXmp.file.FullName).Hash
-    $hBoth = (Get-FileHash -Algorithm SHA256 $armBoth.file.FullName).Hash
-    CK ($hIso -ne $hXmp -and $hIso -ne $hBoth -and $hXmp -ne $hBoth) ("①c 三档产物两两不同（SHA256 前 16：iso=" + $hIso.Substring(0,16) + ' xmp=' + $hXmp.Substring(0,16) + ' both=' + $hBoth.Substring(0,16) + '）')
+    CK ($fIso.DeclaredLen -eq [string]$fIso.ActualLen) '①c HDR 的 iso 升级后，XMP 中声明的次图长度与实际一致'
     Write-Output "  KNOWN ①c 『次图也必须带一份 XMP』这一条**已随方案一落地**（2026-10-27，理由不是形状偏好而是实测：libultrahdr 只从次图取元数据）；仍未采的是同批的『底图 ISO 版本裸桩』与『XMP 只许九项』（P0-3/P0-5，未获授权且与 #80 互斥 ⇒ 待裁决，§54.1/§55/§56）"
     # 次图自声明长度 == 实测次图长度（P0-4 之后次图自己多带一段 XMP，这笔账最容易漏）
     CK ($fBoth.DeclaredLen -eq [string]$fBoth.ActualLen) ("①c both 档：底图 XMP 声明的 Item:Length=" + $fBoth.DeclaredLen + ' 必须等于实测次图 ' + $fBoth.ActualLen + ' 字节')
@@ -659,10 +654,12 @@ if ($m1.file) {
     CK ($pm -match 'images=1') "⑦ 产物是**普通 JPEG**（顶层 1 幅图；SDR 源不再产零增益的假 Ultra HDR）"
     CK ($m1.log -match '输入为 SDR') "⑦ 诚实告知：日志点名「输入为 SDR…已按普通 JPEG 输出」（非静默降级）"
 } else { CK $false "⑦ 无产物，容器断言无法进行" }
-# 负控：**非** GainMap 格**不得**放宽这道门（否则「HDR 才需要 tonemap」的检查失效 ⇒ 真正的静默压暗会溜过去）。
+# Tone mapping is inapplicable to this SDR source: allow the ordinary PNG but do not darken pixels.
 $m0 = RunCli 'sdrtm_png' $sdr 'png' @('--color-tone-map', 'hable')
-CK ($m0.code -ne 0) "⑦ 负控：非 GainMap + SDR 源 + tonemap ⇒ 仍须拒绝（实得 $($m0.code)）"
-CK ($m0.log -match '需要 HDR 源') "⑦ 负控：拒绝理由仍是「tone-map 需要 HDR 源」（这道门一个字没放宽）"
+$mRef = RunCli 'sdrtm_ref' $sdr 'png' @()
+CK ($m0.code -eq 0 -and $mRef.code -eq 0 -and $m0.file -and $mRef.file -and
+    (Get-FileHash $m0.file.FullName).Hash -eq (Get-FileHash $mRef.file.FullName).Hash) '⑦ SDR 非增益图仍出相同 PNG，不执行不适用的 tone-map'
+CK ($m0.log -match '需要 HDR 源') '⑦ 说明该 tone-map 未执行，需要 HDR 源'
 
 Write-Host "`n### 8) GainMap + 最长边缩放 ⇒ 走引擎（Part C 删掉死拦截后的新契约）###" -ForegroundColor Cyan
 # 背景：原先 `ColorEngineRouter` 对「GainMap + 最长边缩放」显式拦（Code=`GeometryWithGainMap`）。
@@ -892,9 +889,11 @@ Write-Host "`n### 11) §38 GainMap + cjpegli：底图 ICC 必须与引擎一致�
 #   （对齐 libultrahdr：底图是什么色域就附什么 ICC）⇒ 复制回来的源 ICC 是**错标**。
 # 判据（以**引擎路径为参照**，因为 §38.4 实测二者修复后一致；三条互相制衡，任何一条空跑都会被另两条抓住）：
 #   a) 引擎底图 ICC ≠ 源 ICC       —— 反空跑对照（a 不成立则 b/c 恒真 = 真空绿）
-#   b) cjpegli 底图 ICC == 引擎底图 ICC —— 换后端**不得**换色彩宣称
+#   b) 两个底图的 ICC 都必须是结构有效、Profile ID 校验正确的 v4.4 RGB matrix/TRC profile；
+#      数值独立核 D50 白点/三原色 XYZ 与 xy、三条 TRC 对 sRGB 分段曲线的误差，不以 cicp 自述代替测量。
 #   c) cjpegli 底图 ICC ≠ 源 ICC       —— 正是修复前逐字节相同的那一条
-#   d) 第三方色度读数交叉核对（exiftool 读红原色），不依赖任何自研解析器
+#   d) 负控修改 cicp 自述或 rXYZ 关键 tag、重算 Profile ID 后，仍必须被对应语义判据拒绝；
+#      保留 exiftool 红原色读数作为第三方交叉核对，不比较不同后端的 ICC bytes。
 # 素材**自备**：P3 ICC 由 ffmpeg `iccgen` 现造（口径同 `_probe-jpg-p3-icc.ps1` 的 zscale 链），
 #   再内嵌进本门禁已有的 `$hdr`（PQ/bt2020、**本无 ICC**）⇒ 与引擎臂的唯一变量就是"源带 P3 ICC"。
 #   ⚠ 三个 ICC 一律**从文件里抽出来再比**（PNG 的 iCCP / JPEG 的 APP2 存储形态不同），
@@ -951,16 +950,244 @@ if ($c38.file) { $cRed = ExifTag $c38.file.FullName 'ICC_Profile:ChromaticityCha
 #   ⚠ **源 ICC 的哈希每轮都会变**：实测同一滤镜链两次生成的 P3 ICC **长度相同(584B)、只有第 35 字节不同**
 #     ⇒ 那是 ICC 头 date/time 字段里的秒 ⇒ ffmpeg `iccgen` 把生成时刻写进了配置文件头。
 #     所以源 ICC 只能当**不等式判据的一侧**，**不许**被当成可 pin 的指纹。
-#     引擎/cjpegli 两个**底图** ICC 实测跨轮稳定（`75FF19E1029473FE`，与 `docs/HANDOVER.md §38.1` 逐字同值）
-#     ⇒ ⑪b 的等号判据成立（两条臂在同一轮内比较）。
+#     底图 ICC 的序列化并非跨后端契约；下面逐份按结构/ID/数值验证，不要求引擎与 cjpegli 的 ICC bytes 或哈希相等。
 Write-Host ("  [§38 读数] 源 ICC=" + $srcIcc.Substring(0, [Math]::Min(16, $srcIcc.Length)) +
             "  引擎底图=" + $eIcc.Substring(0, [Math]::Min(16, $eIcc.Length)) +
             "  cjpegli 底图=" + $cIcc.Substring(0, [Math]::Min(16, $cIcc.Length)))
 CK (($eIcc -ne "") -and ($cIcc -ne "")) "⑪ 两条臂的底图 ICC 都抽到了（非空，否则等号是真空成立）"
 CK ($eIcc -ne $srcIcc) "⑪a 对照：引擎底图 ICC ≠ 源 ICC（实得引擎 $eIcc / 源 $srcIcc）⇒ 下面两条有判别力"
-CK (($cIcc -ne "") -and ($cIcc -eq $eIcc)) "⑪b 锁：cjpegli 底图 ICC == 引擎底图 ICC ⇒ 换后端不得换色彩宣称"
+# ICC.1 parser and numeric validator, defined at script scope so the ⑪ checks and in-memory
+# negative controls use the same reader (no module/script-scope variable lookup dependency).
+function IccBe([byte[]]$b, [int]$offset, [int]$width) {
+    [long]$value = 0
+    for ($j = 0; $j -lt $width; $j++) { $value = ($value * 256) + $b[$offset + $j] }
+    return $value
+}
+function IccS15([byte[]]$b, [int]$offset) {
+    $u = IccBe $b $offset 4
+    if ($u -ge 2147483648L) { $u -= 4294967296L }
+    return $u / 65536.0
+}
+function IccIdDigest([byte[]]$profile) {
+    $digestInput = [byte[]]$profile.Clone()
+    [Array]::Clear($digestInput, 44, 4)
+    [Array]::Clear($digestInput, 64, 4)
+    [Array]::Clear($digestInput, 84, 16)
+    $md5 = [Security.Cryptography.MD5]::Create()
+    try { return ,($md5.ComputeHash($digestInput)) } finally { $md5.Dispose() }
+}
+function Set-IccProfileId([byte[]]$profile) {
+    $digest = IccIdDigest $profile
+    [Array]::Copy($digest, 0, $profile, 84, 16)
+}
+function Set-IccBe32([byte[]]$b, [int]$offset, [long]$value) {
+    $b[$offset] = [byte](($value -shr 24) -band 255)
+    $b[$offset + 1] = [byte](($value -shr 16) -band 255)
+    $b[$offset + 2] = [byte](($value -shr 8) -band 255)
+    $b[$offset + 3] = [byte]($value -band 255)
+}
+function Read-Icc44Structure([byte[]]$b) {
+    $size = $b.Length; $ascii = [Text.Encoding]::ASCII
+    if ($size -lt 132 -or $size % 4 -ne 0 -or (IccBe $b 0 4) -ne $size -or
+        $b[8] -ne 4 -or $b[9] -ne 0x40 -or $b[10] -ne 0 -or $b[11] -ne 0 -or
+        $ascii.GetString($b, 36, 4) -cne 'acsp' -or $ascii.GetString($b, 12, 12) -cne 'mntrRGB XYZ ' -or
+        (IccBe $b 64 4) -gt 3 -or @($b[100..127] | Where-Object { $_ -ne 0 }).Count -ne 0) { return }
+    $count = IccBe $b 128 4; $tableEnd = 132 + 12 * $count
+    if ($count -lt 1 -or $tableEnd -gt $size) { return }
+    $tags = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::Ordinal)
+    for ($entry = 132; $entry -lt $tableEnd; $entry += 12) {
+        $sig = $ascii.GetString($b, $entry, 4)
+        $off = IccBe $b ($entry + 4) 4; $len = IccBe $b ($entry + 8) 4
+        if ($tags.ContainsKey($sig) -or $off -lt $tableEnd -or $off % 4 -ne 0 -or $len -lt 8 -or
+            $off + $len -gt $size -or (IccBe $b ($off + 4) 4) -ne 0) { return }
+        $tags.Add($sig, [pscustomobject]@{ Off = [int]$off; Len = [int]$len; Entry = $entry; Type = $ascii.GetString($b, $off, 4) })
+    }
+    # Shared tag data (e.g. identical TRCs) is valid; partial overlap is not.
+    $last = $null
+    foreach ($tag in @($tags.Values | Sort-Object Off, Len)) {
+        if ($last -and $tag.Off -lt ($last.Off + $last.Len) -and
+            ($tag.Off -ne $last.Off -or $tag.Len -ne $last.Len)) { return }
+        $last = $tag
+    }
+    foreach ($name in @('wtpt','rXYZ','gXYZ','bXYZ')) {
+        if (-not $tags.ContainsKey($name) -or $tags[$name].Type -cne 'XYZ ' -or $tags[$name].Len -ne 20) { return }
+    }
+    foreach ($name in @('rTRC','gTRC','bTRC')) {
+        if (-not $tags.ContainsKey($name)) { return }
+        $tag = $tags[$name]
+        if ($tag.Type -ceq 'curv') {
+            $need = 12 + 2 * (IccBe $b ($tag.Off + 8) 4)
+        } elseif ($tag.Type -ceq 'para') {
+            $curve = IccBe $b ($tag.Off + 8) 2
+            if ($curve -gt 4 -or (IccBe $b ($tag.Off + 10) 2) -ne 0) { return }
+            $need = @(16,24,28,32,40)[$curve]
+        } else { return }
+        if ($tag.Len -ne $need) { return }
+    }
+    foreach ($name in @('desc','cprt')) {
+        if (-not $tags.ContainsKey($name)) { return }
+        $tag = $tags[$name]
+        if ($tag.Type -cne 'mluc' -or $tag.Len -lt 28 -or (IccBe $b ($tag.Off + 12) 4) -ne 12) { return }
+        $records = IccBe $b ($tag.Off + 8) 4; $dataStart = 16 + 12 * $records
+        if ($records -lt 1 -or $dataStart -gt $tag.Len) { return }
+        for ($i = 16; $i -lt $dataStart; $i += 12) {
+            $strLen = IccBe $b ($tag.Off + $i + 4) 4; $strOff = IccBe $b ($tag.Off + $i + 8) 4
+            if ($strLen % 2 -ne 0 -or $strOff -lt $dataStart -or $strOff + $strLen -gt $tag.Len) { return }
+        }
+    }
+    $cicp = ''; $cicpTag = $null
+    if ($tags.ContainsKey('cicp')) {
+        $cicpTag = $tags['cicp']
+        if ($cicpTag.Type -cne 'cicp' -or $cicpTag.Len -ne 12) { return }
+        $cicp = $b[($cicpTag.Off + 8)..($cicpTag.Off + 11)] -join '/'
+    }
+    $id = [BitConverter]::ToString($b, 84, 16)
+    return @{ Version = '4.4'; Id = $id
+        IdOk = ($id -cne ('00-' * 15 + '00') -and $id -ceq [BitConverter]::ToString((IccIdDigest $b)))
+        Cicp = $cicp; CicpTag = $cicpTag; Tags = $tags }
+}
+function IccCurveAt([byte[]]$b, [object]$tag, [double]$x) {
+    $o = $tag.Off; $n = $tag.Len
+    if ($tag.Type -ceq 'curv') {
+        $samples = IccBe $b ($o + 8) 4
+        if ($samples -eq 0) { return $x }
+        if ($samples -eq 1) { return [Math]::Pow($x, (($b[$o + 12] * 256) + $b[$o + 13]) / 256.0) }
+        if ($samples -lt 2 -or 12 + 2 * $samples -ne $n) { return [double]::NaN }
+        $t = $x * ($samples - 1); $j = [int][Math]::Floor($t); $k = [Math]::Min($j + 1, $samples - 1)
+        $a = $o + 12 + 2 * $j; $z = $o + 12 + 2 * $k; $f = $t - $j
+        return ((($b[$a] * 256 + $b[$a + 1]) * (1 - $f)) + (($b[$z] * 256 + $b[$z + 1]) * $f)) / 65535.0
+    }
+    if ($tag.Type -cne 'para') { return [double]::NaN }
+    $kind = IccBe $b ($o + 8) 2
+    $params = @(); $paramCount = @(1,3,4,5,7)[$kind]
+    for ($i = 0; $i -lt $paramCount; $i++) { $params += (IccS15 $b ($o + 12 + 4 * $i)) }
+    switch ($kind) {
+        0 { return [Math]::Pow($x, $params[0]) }
+        1 {
+            if ($params[1] -eq 0) { return [double]::NaN }
+            if ($x -ge (-$params[2] / $params[1])) { return [Math]::Pow(($params[1] * $x + $params[2]), $params[0]) }
+            return 0.0
+        }
+        2 {
+            if ($params[1] -eq 0) { return [double]::NaN }
+            if ($x -ge (-$params[2] / $params[1])) { return ([Math]::Pow(($params[1] * $x + $params[2]), $params[0]) + $params[3]) }
+            return $params[3]
+        }
+        3 {
+            if ($x -ge $params[4]) { return [Math]::Pow(($params[1] * $x + $params[2]), $params[0]) }
+            return ($params[3] * $x)
+        }
+        4 {
+            if ($x -ge $params[4]) { return ([Math]::Pow(($params[1] * $x + $params[2]), $params[0]) + $params[5]) }
+            return ($params[3] * $x + $params[6])
+        }
+    }
+    return [double]::NaN
+}
+function Get-SrgbIcc44Evidence([byte[]]$b) {
+    try {
+        $p = Read-Icc44Structure $b
+        if ($null -eq $p) { return }
+        $targetXyz = @{ wtpt=@(.9642,1.0000,.8249); rXYZ=@(.43607,.22249,.01392)
+                        gXYZ=@(.38515,.71687,.09708); bXYZ=@(.14307,.06061,.71410) }
+        # D50-adapted xy obtained from the ICC sRGB D50 XYZ columns (not the unadapted D65 primaries).
+        $targetXy = @{ rXYZ=@(.64844,.33087); gXYZ=@(.32118,.59788); bXYZ=@(.15590,.06605); wtpt=@(.34567,.35850) }
+        $xyz = @{}; $xy = @{}; $matrixOk = $true
+        foreach ($name in @('wtpt','rXYZ','gXYZ','bXYZ')) {
+            $tag = $p.Tags[$name]; $o = $tag.Off
+            $v = @((IccS15 $b ($o + 8)), (IccS15 $b ($o + 12)), (IccS15 $b ($o + 16)))
+            $xyz[$name] = $v
+            for ($i = 0; $i -lt 3; $i++) { if ([Math]::Abs($v[$i] - $targetXyz[$name][$i]) -gt .003) { $matrixOk = $false } }
+            $sum = $v[0] + $v[1] + $v[2]
+            if ($sum -le 0) { $xy[$name] = @([double]::NaN,[double]::NaN); $matrixOk = $false }
+            else {
+                $xy[$name] = @(($v[0] / $sum), ($v[1] / $sum))
+                $xyTol = .002; if ($name -eq 'wtpt') { $xyTol = .001 }
+                for ($i = 0; $i -lt 2; $i++) { if ([Math]::Abs($xy[$name][$i] - $targetXy[$name][$i]) -gt $xyTol) { $matrixOk = $false } }
+            }
+        }
+        $trcMaxError = 0.0; $trcOk = $true
+        $sampleX = @(0.0, .001, .005, .012, .02, .035, .04045, .0406, .07, .18, .35, .5, .75, .95, 1.0)
+        for ($i = 0; $i -le 256; $i++) { $sampleX += ($i / 256.0) }
+        foreach ($name in @('rTRC','gTRC','bTRC')) {
+            $tag = $p.Tags[$name]
+            foreach ($x in $sampleX) {
+                $y = IccCurveAt $b $tag $x
+                if ([double]::IsNaN($y)) { $trcOk = $false; $trcMaxError = [double]::PositiveInfinity; break }
+                if ($x -le .04045) { $ref = $x / 12.92 } else { $ref = [Math]::Pow(($x + .055) / 1.055, 2.4) }
+                $err = [Math]::Abs($y - $ref)
+                if ($err -gt $trcMaxError) { $trcMaxError = $err }
+                if ($err -gt .001) { $trcOk = $false }
+            }
+        }
+        $cicpOk = $p.Cicp -ceq '1/13/0/1'
+        return @{ Profile=$p; Version=$p.Version; Id=$p.Id; IdOk=$p.IdOk; Cicp=$p.Cicp; CicpOk=$cicpOk
+                  Xyz=$xyz; Xy=$xy; MatrixOk=$matrixOk; TrcMaxError=$trcMaxError; TrcOk=$trcOk
+                  Ok=($p.IdOk -and $cicpOk -and $matrixOk -and $trcOk) }
+    } catch { return }
+}
+function Format-IccEvidence($e) {
+    if ($null -eq $e) { return 'ICC structure invalid/unreadable' }
+    return ('v{0} id={1} idOk={2} cicp={3} wtptXYZ={4} rXYZ={5}/rXY={6} gXYZ={7}/gXY={8} bXYZ={9}/bXY={10} TRCmaxAbsErr={11}' -f
+        $e.Version, $e.Id, $e.IdOk, $e.Cicp, ($e.Xyz.wtpt -join '/'), ($e.Xyz.rXYZ -join '/'), ($e.Xy.rXYZ -join '/'),
+        ($e.Xyz.gXYZ -join '/'), ($e.Xy.gXYZ -join '/'), ($e.Xyz.bXYZ -join '/'), ($e.Xy.bXYZ -join '/'), $e.TrcMaxError)
+}
+$eIccPath = ''; $cIccPath = ''; $eIccEvidence = $null; $cIccEvidence = $null
+if ($e38.file) { $eIccPath = ExtractIcc $e38.file.FullName 'engine_read' }
+if ($c38.file) { $cIccPath = ExtractIcc $c38.file.FullName 'cjli_read' }
+if ($eIccPath -ne '') { $eIccEvidence = Get-SrgbIcc44Evidence ([System.IO.File]::ReadAllBytes($eIccPath)) }
+if ($cIccPath -ne '') { $cIccEvidence = Get-SrgbIcc44Evidence ([System.IO.File]::ReadAllBytes($cIccPath)) }
+Write-Output ("  [⑪ ICC 数值读数] engine: " + (Format-IccEvidence $eIccEvidence))
+Write-Output ("  [⑪ ICC 数值读数] cjpegli: " + (Format-IccEvidence $cIccEvidence))
+CK ($eIccEvidence -and $cIccEvidence -and $eIccEvidence.IdOk -and $cIccEvidence.IdOk -and
+    $eIccEvidence.Version -ceq '4.4' -and $cIccEvidence.Version -ceq '4.4' -and
+    $eIccEvidence.CicpOk -and $cIccEvidence.CicpOk) `
+    '⑪b 引擎与 cjpegli 底图均为结构有效的 ICC v4.4 RGB profile，Profile ID/MD5 有效且 cicp=sRGB/RGB/full（独立数值见⑪d）'
+CK ($eIccEvidence -and $cIccEvidence -and $eIccEvidence.MatrixOk -and $cIccEvidence.MatrixOk -and
+    $eIccEvidence.TrcOk -and $cIccEvidence.TrcOk) `
+    '⑪d 两臂的真实矩阵均为 sRGB D50（wtpt XYZ/xy 与 RGB 三原色 XYZ/xy）且 r/g/b TRC 在稠密采样上符合分段 sRGB（误差≤0.001）'
 CK (($cIcc -ne "") -and ($cIcc -ne $srcIcc)) "⑪c 锁：cjpegli 底图 ICC ≠ 源 ICC（修复前正是逐字节等于源 ICC = 错标）"
-CK (($cRed -ne "") -and ($srcRed -ne "") -and ($cRed -ne $srcRed)) "⑪d 第三方色度交叉核对：cjpegli 底图红原色（$cRed）≠ 源（$srcRed）"
+# Negative controls keep a valid recomputed Profile ID so rejection proves the CICP/matrix semantics are checked.
+$badCicpRejected = $false
+if ($eIccEvidence -and $eIccEvidence.Profile.CicpTag) {
+    $badCicpBytes = [System.IO.File]::ReadAllBytes($eIccPath)
+    $badCicpBytes[$eIccEvidence.Profile.CicpTag.Off + 8] = 9
+    Set-IccProfileId $badCicpBytes
+    $badCicp = Get-SrgbIcc44Evidence $badCicpBytes
+    $badCicpRejected = ($badCicp -and $badCicp.IdOk -and -not $badCicp.CicpOk -and
+        $badCicp.MatrixOk -and $badCicp.TrcOk -and -not $badCicp.Ok)
+}
+CK $badCicpRejected '⑪d 负控：篡改 ICC cicp 声称并重算有效 Profile ID 后仍被拒（D50 矩阵/TRC 不受影响）'
+$badMatrixRejected = $false
+if ($eIccEvidence) {
+    $badMatrixBytes = [System.IO.File]::ReadAllBytes($eIccPath)
+    $redY = IccBe $badMatrixBytes ($eIccEvidence.Profile.Tags['rXYZ'].Off + 12) 4
+    Set-IccBe32 $badMatrixBytes ($eIccEvidence.Profile.Tags['rXYZ'].Off + 12) ($redY + 3277)
+    Set-IccProfileId $badMatrixBytes
+    $badMatrix = Get-SrgbIcc44Evidence $badMatrixBytes
+    $badMatrixRejected = ($badMatrix -and $badMatrix.IdOk -and $badMatrix.CicpOk -and
+        -not $badMatrix.MatrixOk -and $badMatrix.TrcOk -and -not $badMatrix.Ok)
+}
+CK $badMatrixRejected '⑪d 负控：篡改 rXYZ 红原色关键 tag 并重算有效 Profile ID 后被数值矩阵判据拒绝'
+$badTrcRejected = $false
+if ($eIccEvidence) {
+    $badTrcBytes = [IO.File]::ReadAllBytes($eIccPath)
+    $curveTag = $eIccEvidence.Profile.Tags['rTRC']
+    if ($curveTag.Type -ceq 'para') {
+        Set-IccBe32 $badTrcBytes ($curveTag.Off + 12) 65536 # gamma 1.0; same structure and declared CICP
+    } elseif ($curveTag.Type -ceq 'curv') {
+        $samples = IccBe $badTrcBytes ($curveTag.Off + 8) 4
+        if ($samples -gt 1) {
+            $at = $curveTag.Off + 12 + 2 * [int][Math]::Floor($samples / 2)
+            $badTrcBytes[$at] = 255; $badTrcBytes[$at+1] = 255
+        }
+    }
+    Set-IccProfileId $badTrcBytes
+    $badTrc = Get-SrgbIcc44Evidence $badTrcBytes
+    $badTrcRejected = $badTrc -and $badTrc.IdOk -and $badTrc.CicpOk -and $badTrc.MatrixOk -and -not $badTrc.TrcOk -and -not $badTrc.Ok
+}
+CK $badTrcRejected '⑪d 负控：篡改真实 TRC 并重算有效 ID，保留正确 CICP/矩阵仍被曲线判据拒绝'
+CK (($cRed -ne "") -and ($srcRed -ne "") -and ($cRed -ne $srcRed)) "⑪e 第三方色度交叉核对：cjpegli 底图红原色（$cRed）≠ 源（$srcRed）"
 $qpcText = [System.IO.File]::ReadAllText("$root/src/FfmpegGui/Services/QueueProcessor.cs")
 # ⚠⚠ 源码锁必须**锚定到初始化式内部**：全文无锚的 `–match` 只要那串出现在**任何**位置就绿 ⇒
 #   ①整行注释掉仍绿（注释里也含该串）②挪进死变量/别的分支也绿。⇒ 三条分开咬。
@@ -1243,11 +1470,12 @@ $rPol = RunCli 'eg_poll' $hdrXmp 'jpg' @('--jpeg-gain-map', 'true')
 CK ($rPol.code -eq 0 -and $rPol.file) "14e 污染源 + gainmap：正常产出（实得 code=$($rPol.code)）"
 if ($rPol.file) {
     $prodTxt = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($rPol.file.FullName))
-    CK (-not $prodTxt.Contains('hdrgm')) "14e 产物**字节级无** hdrgm XMP（源的旧增益量程没被搬进来；污染回归时此条当场红）"
-    # ⚠ 不 assert 产品日志的「元数据来源」行：它只在**解码增益图源**时出现，本臂源是 PQ PNG（无源增益图可解）。
-    #   「源旧量程不得被采用」已由上面字节级断言 + 下面 ISO max 值级断言共同钉住（无 XMP 载体 ⇒ ISO 必胜）。
+    $fingerprint = Get-GmMetaFingerprint $rPol.file.FullName
+    $pollutedRange = 'hdrgm:(?:GainMapMax|HDRCapacityMax)(?:=[''"]9\.90*[''"]|>9\.90*<)'
+    CK ($fingerprint.XmpBase -eq 1 -and $fingerprint.XmpSec -eq 1 -and $prodTxt -notmatch $pollutedRange) `
+        '14e 新生成的 XMP 留在 HDR JPEG；输入注入的 9.9 量程未被复制'
     $pmPol = ProbeOut 'gainmap' $rPol.file.FullName "$out/sec14e.jpg"
-    CK ((IsoMax $pmPol) -ne "" -and ([double](IsoMax $pmPol) -gt 0)) "14e ISO max 在场且非零（实得 $(IsoMax $pmPol)）"
+    CK ((IsoMax $pmPol) -ne "" -and ([double](IsoMax $pmPol) -gt 0) -and [Math]::Abs([double](IsoMax $pmPol) - 9.9) -gt .02) "14e ISO max 在场，且未使用输入污染值（实得 $(IsoMax $pmPol)）"
 }
 
 
