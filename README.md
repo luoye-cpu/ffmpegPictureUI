@@ -4,7 +4,7 @@
 
 **v1.6.0** — 2026-09-28 发布 · 基于 Avalonia UI 的跨平台批量图片 / 动图 / 视频转换工具，封装 `ffmpeg` / `ffprobe` + 外部编码器（`cjxl` / `djxl` / `cjpegli` / `JxrEncApp` / `JxrDecApp`）。
 
-> ℹ️ 本 README 记述的是**已发布的稳定版 v1.6.0**；**本工作区当前为 `v1.6.0-beta10` 开发线**（最新条目见 [CHANGELOG.md](CHANGELOG.md)）。
+> ℹ️ 本 README 记述的是**已发布的稳定版 v1.6.0**；**本工作区当前为 `v1.6.0-rc2` 发布候选线**（最新条目见 [CHANGELOG.md](CHANGELOG.md)）。
 
 QQ 交流群：754439779 | [点击加群](https://qm.qq.com/q/M2181PvCkW)
 

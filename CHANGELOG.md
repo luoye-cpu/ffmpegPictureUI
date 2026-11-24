@@ -12,6 +12,20 @@
 
 ## 📝 更新日志
 
+### v1.6.0-rc2 (2026-11-24，重出) — 色彩矩阵合同、ICC/CICP、GUI 联动与执行日志可复制性收口
+
+> RC2 承接 RC1 之后的未入包修复批（2026-11-19 → 11-24）。同日重出一次：纳入“执行日志恢复为可全选复制”的 GUI 修复，并整体替换此前 RC2 两档包；本条目包哈希以重出包为准。未实测硬件、明确 SKIP 与保守拒绝不等同于“全部组合支持”。
+
+- **色彩矩阵输入合同**：普通显式目标、H1 与 Cjxl 专用通路复用实际解码位深、矩阵、范围和消费状态；仅在真实 Y′CbCr 输入进入首个 RGB 阶段前应用一次，已转目标像素的路径不重复应用。默认 `std` 档先按 BT.709-6 定义式反解到线性，再做色度/矩阵；`--color-709-curve zimg` 保持旧兼容行为。
+- **出口能力与位深单一真值**：AVIF 输出矩阵与 `ResolveOutMatrixCapability` 同源；`rgb` 在编码器不支持 `gbrp` 时不再列出。libaom/NVENC/SVT/QSV/AMF 等 12-bit 请求在进入编码前按统一能力表拒绝，保留 16-bit Sample Transform 独立判定；NVENC 显式 12-bit 实测为零产物拒绝。
+- **ICC/CICP**：新增 JPEG APP2、WebP ICCP、经典 TIFF/BigTIFF 与 AVIF 主项关联 `colr` 的独立读取；PNG 仅在 ICC 与 cICP 数值一致时双写，失配剥除且源 ICC 字节不变。TIFF 默认首页 ICC 与后续 IFD 严格区分，JXR 按 T.832 读取真实内容；静态 RGB PNG→PNG 的 Windows CMS/LUT 路径只开放已验证范围，其余组合显式拒绝。
+- **GUI 可用性**：格式、编码器、色度、位深、输出矩阵与 ICC 模式联动重新校验；只重置新格式确实不允许的项，并提示被重置字段。能力表重建与用户手动改选分离，异步刷新不覆盖更新一代的选择；预设回放与 CLI/队列使用同一能力口径。
+- **执行日志可复制性（同日重出补入）**：执行日志从虚拟化 `ListBox` 恢复为可见只读多行 `TextBox`，`Ctrl+A` / `Ctrl+C` 可直接全选复制；上限恢复 2,000,000 字符。保留 `UiLogService` 单点入队与 250 行/批刷新；写回 `Text` 时保存/恢复选区，后台刷新不会冲掉正在复制的选择。P0 回归判据要求 `LogText` 同时可见、只读、支持多行显示。
+- **动画与元数据**：动画 AVIF 走真多帧 GIF 通路并核对选中彩色轨道的布局/范围；空描述性复制跳过无意义 ExifTool 写入，ICC carry、RAW 字段与隐私清理仍执行，单张 PNG 转换不再残留 `_exiftool_tmp`。
+- **定向验证（重出候选 `2B90DE92DA2F937B`）**：`verify-ui-host` **520/0**、`verify-ui-split-union` **11/0**（并集 520=520）、`verify-ui-split-reproducible` **19/0**、`verify-color-wiring` **162/0**、`verify-color-strategy` **87/0/SKIP 3**、`verify-decision-delivery` **109/0/0**、`verify-prophoto-faithful` **42/0**、`verify-gainmap-isobmff` **174/0/SKIP 9**、`verify-probe-mirror-parity` **93/0**、`verify-module-registry` **12/0**；release-gate 清单 11 条全绿。3 个 strategy SKIP 是 legacy 16-bit 合理拒绝后的不可比较项，不计 PASS。首轮另外跑过的 `verify-ui-param-matrix` 126/0、`verify-color-matrix-full` 29/0、`verify-color-out-matrix` 241/0 记录在首轮报告，未在本次重出候选上重跑。
+- **RC2 出货包（同日重出）**：单文件版 `FFmpegPictureUI-v1.6.0-rc2-x64.7z` 12,113,010 B / SHA-256 `0C81AD770BE5FD46618CB4F04BC8774967EBCC30EF58ABD36D7228124F64A615`；完整版 `FFmpegPictureUI-v1.6.0-rc2-x64-full.7z` 56,504,303 B / SHA-256 `1292DCB41FE571B846EFDE0685CAAA9DD0E9C25C0A050647B4339C41DF846216`。两档 `7z t` 均通过（app 19 文件 / full 584 文件），独立验包 **16/0**；包内 GUI **6 PASS / 0 FAIL / 1 SKIP**，SKIP 是提权会话无法点亮托盘，不计绿；app 包 GUI 存活 12 s、句柄 `0x237158E`、关窗退出 `0x0`。
+- **边界**：未运行 104 条全量基线；QSV/AMF/VAAPI 无实机编码证据；少数 engine JXR 跨色域组合与 BT.2390 仍为显式拒绝。性能预检存在负载敏感波动，不能宣称绝对稳定。
+
 ### v1.6.0-rc1 (2026-11-18) — JXR 真实内容识别与 HDR 出口修正
 
 - **容器识别**：按 ITU-T T.832 读取 `PIXEL_FORMAT` / `COLOR_SPACE` / `PTM_COLOR_INFO` / ICC，`JXR` 不再靠 ffprobe 猜位深与曲线；容器不可读才回退探测。
