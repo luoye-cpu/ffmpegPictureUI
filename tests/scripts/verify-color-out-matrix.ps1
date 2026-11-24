@@ -270,6 +270,23 @@ CK ($ps10 -ge 99) "A10 explicit rgb + 4:4:4 is bit-exact vs source (PSNR=$ps10; 
 $hit = LogHit $r444.log '\[rgb\] avif: explicit rgb matrix -> gbrp' 1
 CK ($hit.Count -ge 1) "A10 [rgb] advisory landed verbatim"
 
+# A11: legacy 静态 AVIF + 显式 YUV 像素面（420/10bit）+ 无 --color-out-matrix。
+#   旧路径默认用 swscale/libaom 的 BT.601 系数转换，但不写 -colorspace ⇒ nclx matrix 落
+#   unspecified(2)；补 smpte170m 后必须读回显式 BT.601，且命令行真的带矩阵旗标（非事后改标签）。
+$r11 = Run 'a11_avif_legacy_yuv601' 'avif' @('--color-engine','legacy','--bit-depth','10','--chroma','4:2:0','--color-range','pc')
+$cs11 = if ($r11.file) { ProbeCs $r11.file } else { '' }
+CK ($r11.code -eq 0 -and ($null -ne $r11.file)) "A11 legacy AVIF YUV420/10 auto produced (exit=$($r11.code))"
+CK ($cs11 -ceq 'yuv420p10le,pc,smpte170m') "A11 legacy AVIF nclx matrix is explicit BT.601/SMPTE170M (full='$cs11')"
+CK ((CmdLineOf $r11.log) -match ' -colorspace smpte170m ') "A11 legacy command carries -colorspace smpte170m (not a tag-only patch)"
+
+# A12: 同一 legacy 路径的 auto 对照仍是 gbrp identity ⇒ 补矩阵只准落在真实 YUV 像素面，
+#   不许把 RGB/gbrp 误标成 BT.601（A11 的负控）。
+$r12 = Run 'a12_avif_legacy_auto_gbr' 'avif' @('--color-engine','legacy')
+$cs12 = if ($r12.file) { ProbeCs $r12.file } else { '' }
+CK ($r12.code -eq 0 -and ($null -ne $r12.file)) "A12 legacy AVIF auto produced (exit=$($r12.code))"
+CK ($cs12 -ceq 'gbrp,pc,gbr') "A12 legacy AVIF auto stays gbrp identity (full='$cs12')"
+CK ((CmdLineOf $r12.log) -notmatch ' -colorspace ') "A12 legacy auto gbrp arm has NO -colorspace flag"
+
 # A6: auto 档零播报（C-REPORT@1「auto 不播报」+ CM-REQ-08 零噪声）
 CK ($rAuto.log -notmatch '\[color-out-matrix\] ') "A6 auto arm has ZERO [color-out-matrix] lines (silence contract)"
 

@@ -928,6 +928,25 @@ namespace FfmpegGui.Services
             //   QueueProcessor 传统管线消费点），此处只服务预览等旁路调用的安全回退（既有取值）；
             //   xyb 档 Carried 但不进本段（那是编码器开关域，由 BuildJxlOptions 发 `-xyb 1`）。
             var outMatrixToken = dec.CapMatrix ?? outputColorSpace;
+            // AVIF 静态有损出口：RGB 源 + 无显式矩阵，但通用块已钉出 YUV 像素格式。
+            // swscale/libaom 的默认 RGB→YUV 系数是 BT.601；旧路径不写 -colorspace ⇒ nclx
+            // matrix 落 unspecified(2)，查看器只能猜矩阵。只给真实 YUV 像素面补
+            // smpte170m；gbrp identity 必须保持无矩阵（否则会把 RGB 误标成 YUV）。
+            bool avifYuvOutput = false;
+            if (fmt0 == "avif" && srcIsRgb)
+            {
+                for (int i = 0; i + 1 < args.Count; i++)
+                {
+                    if (args[i] == "-pix_fmt"
+                        && args[i + 1].StartsWith("yuv", StringComparison.OrdinalIgnoreCase))
+                    {
+                        avifYuvOutput = true;
+                        break;
+                    }
+                }
+            }
+            if (avifYuvOutput && string.IsNullOrWhiteSpace(outMatrixToken))
+                outMatrixToken = "smpte170m";
             var explicitOutMatrix = options.ColorOutMatrix;
             var outMatrixCap = ColorMapping.ColorMappingEngine.ResolveOutMatrixCapability(
                 fmt0, explicitOutMatrix, EncoderBackend.Ffmpeg);
