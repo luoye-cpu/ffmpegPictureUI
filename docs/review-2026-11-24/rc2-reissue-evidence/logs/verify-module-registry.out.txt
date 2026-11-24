@@ -1,0 +1,15 @@
+  PASS  registry loaded (version=1, entries=67)
+  PASS  CliParser parse-switch window located (5731..19993)
+  PASS  case literals extracted: 43（首版实测 43 = 33 具名选项 + 别名去重；泛型 case var 不在此列；若此数变 ⇒ CliParser 选项面变了，账本同批更新）
+  PASS  scriptList literals extracted from runner: 104
+  PASS  verify-ui-host arms parsed: ui-core=107, ui-mode=66, ui-color=103, ui-sweep=169, ui-cli=75
+  PASS  ① 覆盖锁双向差集为空（CLI 具名选项全覆盖，无幽灵名）
+  PASS  ② 档位不撒谎（E2E/E2E-UI/static/blind 全部如实）
+  PASS  ③ carrier 全部在册（无幽灵门禁）
+  PASS  ④ 结构锁（schema/src 见证/locks 对账；全部一致）
+  PASS  ⑤ C4 超时表锁（键在册/只许抬/装载+查表点在位；2 条：verify-color-strategy.ps1=1200, verify-png-optimizer.ps1=1200）
+  PASS  ⑥ TESTING.md 索引段与账本一致（段 8777 B；101 行；67 条）
+  [selfcheck] five in-memory mutations must each be caught
+  PASS  selfcheck: 5/5 mutations caught (5) — 判据有牙
+
+===== module-registry: PASS=12 FAIL=0 =====

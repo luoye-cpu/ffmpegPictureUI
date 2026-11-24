@@ -1,0 +1,12 @@
+[release-gate] GREEN verify-decision-delivery         rc=0  dll=2b90de92da2f937b  log=docs/review-2026-11-24/rc2-reissue-evidence/logs/verify-decision-delivery.out.txt
+[release-gate] GREEN verify-probe-mirror-parity       rc=0  dll=2b90de92da2f937b  log=docs/review-2026-11-24/rc2-reissue-evidence/logs/verify-probe-mirror-parity.out.txt
+[release-gate] GREEN verify-color-strategy            rc=0  dll=2b90de92da2f937b  log=docs/review-2026-11-24/rc2-reissue-evidence/logs/verify-color-strategy.out.txt
+[release-gate] GREEN verify-color-wiring              rc=0  dll=2b90de92da2f937b  log=docs/review-2026-11-24/rc2-reissue-evidence/logs/verify-color-wiring.out.txt
+[release-gate] GREEN verify-prophoto-faithful         rc=0  dll=2b90de92da2f937b  log=docs/review-2026-11-24/rc2-reissue-evidence/logs/verify-prophoto-faithful.out.txt
+[release-gate] GREEN verify-gainmap-isobmff           rc=0  dll=2b90de92da2f937b  log=docs/review-2026-11-24/rc2-reissue-evidence/logs/verify-gainmap-isobmff.out.txt
+[release-gate] GREEN verify-ui-host                   rc=0  dll=2b90de92da2f937b  log=docs/review-2026-11-24/rc2-reissue-evidence/logs/verify-ui-host.out.txt
+[release-gate] GREEN verify-ui-split-reproducible     rc=0  dll=2b90de92da2f937b  log=docs/review-2026-11-24/rc2-reissue-evidence/logs/verify-ui-split-reproducible.out.txt
+[release-gate] GREEN verify-ui-split-union            rc=0  dll=2b90de92da2f937b  log=docs/review-2026-11-24/rc2-reissue-evidence/logs/verify-ui-split-union.out.txt
+[release-gate] GREEN verify-module-registry           rc=0  dll=2b90de92da2f937b  log=docs/review-2026-11-24/rc2-reissue-evidence/logs/verify-module-registry.out.txt
+[release-gate] GREEN verify-package-gui-starts        rc=0  dll=fce289566f6a3f79  log=docs/review-2026-11-24/rc2-reissue-evidence/logs/verify-package-gui-starts.out.txt
+[release-gate] 全绿（11 条），允许出包。

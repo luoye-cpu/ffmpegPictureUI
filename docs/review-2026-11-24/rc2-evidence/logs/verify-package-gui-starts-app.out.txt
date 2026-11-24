@@ -1,0 +1,3 @@
+SUBJ=C:\PLAN\ffmpegPictureUI\publish\build\FFmpegPictureUI-v1.6.0-rc2-x64\FfmpegGui.exe SHA16=704D1B39445B8558 PV=1.6.0-rc2+b085facabeb4ceece785dc39d49447e2d6ba57a1
+PASS app GUI 存活=12s MainWindowHandle=0xC41782
+PASS app 关窗后已退出 exit=0x00000000

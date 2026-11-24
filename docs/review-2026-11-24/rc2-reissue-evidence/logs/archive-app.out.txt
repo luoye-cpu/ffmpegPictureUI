@@ -1,0 +1,22 @@
+
+7-Zip 26.05 (x64) : Copyright (c) 1999-2026 Igor Pavlov : 2026-10-21
+
+Scanning the drive for archives:
+1 file, 12113010 bytes (12 MiB)
+
+Testing archive: publish\FFmpegPictureUI-v1.6.0-rc2-x64.7z
+--
+Path = publish\FFmpegPictureUI-v1.6.0-rc2-x64.7z
+Type = 7z
+Physical Size = 12113010
+Headers Size = 748
+Method = LZMA2:48m LZMA:20 BCJ2
+Solid = +
+Blocks = 2
+
+Everything is Ok
+
+Folders: 5
+Files: 19
+Size:       45132411
+Compressed: 12113010

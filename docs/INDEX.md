@@ -59,6 +59,12 @@
 `review-2026-11-17`（6，2026-11-17 色彩管线独立审查批：`COLOR_PIPELINE_INDEPENDENT_AUDIT_2026-11-17.md` 五 HIGH+一 MEDIUM 的审查主报告；`COLOR_PIPELINE_FIX_PLAN_2026-11-17.md` 旧修复方案（引擎外挂独立 CMS 架构已被用户否决，保留为历史记录，不作为现行方案）；`COLOR_PIPELINE_LUT_ICC_IMPLEMENTATION_PLAN_2026-11-17.md` 完整修复方案（LUT ICC 扩展 + §15 前序未完成项收口 V-01～V-12；D1 GUI 双写已拍板；V-09 三条规范事实已按 ICC.1:2022 原文复核并落附录 F；规划稿未落地，未改产品源码）；`METADATA_LOSS_FIX_PLAN_2026-11-17.md` 元数据丢失完整修复方案（EXIF/GPS/XMP 与 ICC/色彩描述两条链路、P0 止血 + P1 ICC 三态/T5 + P2 安全回退、pack 清单闸与 beta17 重出口径；规划稿未落地，未改产品源码）；`FIX_RESULT_2-5_2026-11-18.md` 2–5 项修复落地结果（ICC fail-closed 实测、HDR JPEG GainMap 双承载、格式切换重入守卫、五个 UI 拆分件 497/0、exiftool 可运行性与 `-ProfileDescription` 修复；明确列出仍未绿的 color-wiring/ServiceProbe 与未验证的 BUILD-04/08）；`ICC_CICP_WARN_ONLY_2026-11-18.md` 源侧 ICC/CICP 问题改为“只警告、不拒绝”的落地记录（手动坏 ICC/LUT/P3 实测、降级 Code、`MarkWarning` 落点、显式输出矩阵拒绝保留的边界与门禁受本机资源污染说明））
 `review-2026-11-18`（1，2026-11-18 JXR 真实内容识别修复规划：`JXR_CONTENT_IDENTIFICATION_FIX_PLAN_2026-11-18.md` 按 T.832 Annex A/C 定义 `PIXEL_FORMAT` / `COLOR_SPACE` / `PTM_COLOR_INFO` / `0x8773 ICC` 的识别优先级与回退、`JxrSourceContext` 贯穿选臂/裁决/色调映射/出口元数据、3 通道与整数非 sRGB 的修正、JXR 输出 ICC/PTM 写入、GUI 条目标黄与门禁/负控；规划稿，未改产品源码）
 
+[review-2026-11-19](review-2026-11-19/COLOR_MATRIX_PIPELINE_AUDIT.md)（5 份：矩阵初审、完整计划、实施验证、输入元数据兼容更正、[色彩管线复审收口](review-2026-11-19/COLOR_PIPELINE_REVIEW_CLOSURE_2026-11-20.md)；后者区分输入容错与自产 ICC/CICP 的输出义务，按 DLL 指纹登记定向验证与未覆盖范围，不代表 104 条全量基线）
+
+[review-2026-11-21](review-2026-11-21/COLOR_MATRIX_PIPELINE_REVIEW_2026-11-21.md)（当前工作区 Release 新增两条矩阵缺陷定向复现：opaque ICC 降级绕过显式输出矩阵拒绝、Cjxl pipe 漏消费 YUV 输入矩阵；同时更正 E16 与 matrix-full NUM 的旧覆盖描述，列明组合覆盖边界和分批修复验收计划）
+
+同批后续：[色彩矩阵修复计划](review-2026-11-21/COLOR_MATRIX_REPAIR_PLAN_2026-11-21.md)与[修复结果](review-2026-11-21/COLOR_MATRIX_REPAIR_RESULT_2026-11-21.md)。结果绑定最终 DLL，记录 CM‑11/12、sato、ICC/TIFF 和 NVENC 的定向验收、软件及硬件复测、跳过和未覆盖范围。
+
 ## 3. 归档（`archive/`，28 份 + `_gapscout_raw/`）
 
 一次性审计报告与已执行计划，2026-10-22 从顶层移入。**判据 = 按前缀名（去掉尾部日期）在 `docs/` 外数命中，

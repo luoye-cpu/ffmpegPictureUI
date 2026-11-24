@@ -1,0 +1,68 @@
+gates-lock=C:\PLAN\ffmpegPictureUI/tests/output/.gates.lock (pid=58356)
+env-cleaned=LC_ALL,LANG,LC_CTYPE (exiftool 的 perl locale warning 源头掐掉；本轮起有效)
+env-temp-before=C:\Users\20210\AppData\Local\Temp | C:\Users\20210\AppData\Local\Temp
+env-temp-pinned=C:\PLAN\ffmpegPictureUI/tests/output/_tmp/round-tmp (TMP/TEMP/TMPDIR；子进程继承 ⇒ 不再写系统临时目录)
+env-temp-writable=OK
+[gate] exe=C:\PLAN\ffmpegPictureUI/tests/projects/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.exe (Release)
+probe-host=C:\PLAN\ffmpegPictureUI/tests/projects/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.exe
+shape-selfcheck=OK（20 针：定义点 / 调用点 / 带超时调用点 / 裸取 A / 裸取 B / 进程对象取码 / 写 rc 点 / 读 rc 点 / 杀树 token / 抑制点 / 探针超时默认值 / 脚本超时默认值 / tableOnly 条数 / noSelfSummary 条数 / 读失败不沿用 / 自身指纹 / 散文条数 / 受管参数表 / C4 超时表 / 全量拒跑闸）
+runner-self-sha256=A9B8742A8CE7A1E8 lines=2214 bytes=226394  (启动时记录；有意打印)
+artifact-sha16: FfmpegGui.dll=2B90DE92DA2F937B  FfmpegGui.exe=0937D8E940096A4B  ServiceProbe.exe=64793E92B76FA0B3  UiTestHost.exe=D35849812BCBFC49  GainMapTestHost.exe=DEDD5B2882E548DF  Tests.UiCore.exe=3592BEC31DBBE1A7  Tests.UiMode.exe=250ACA2D1B07B4D3  Tests.UiColor.exe=CB479FBA3E9690F9  Tests.UiSweep.exe=B2E612C954E2AEB4  Tests.UiCli.exe=03CA5DF3491CA4C8  (被测产物；跑后不改则可事后追溯到这一份)
+[contract  ] exit=0  PROBE RESULT: pass=164 fail=0  2.5s
+      PASS C20 EncodeScale≠1（SDR→PQ 目标）：快路径开关须与声明一致（期望 关表，实 False）
+      PASS C20 EncodeScale≠1（SDR→PQ 目标）：算子要求关表 ⇒ 两支都解析式，须逐字节相同（实 首个不同码位=无 最大差=0 容差=0）
+      PASS C20 LinearScale≠1（PQ→sRGB 源，快路径已启用）：快路径开关须与声明一致（期望 走表，实 True）
+      PASS C20 LinearScale≠1（PQ→sRGB 源，快路径已启用）：快路径启用 ⇒ 表与解析式差须在容差内（实 首个不同码位=99 最大差=1 容差=1）
+      PASS C20 LinearScale≠1 + 矩阵（PQ→Display P3）：快路径开关须与声明一致（期望 走表，实 True）
+      PASS C20 LinearScale≠1 + 矩阵（PQ→Display P3）：快路径启用 ⇒ 表与解析式差须在容差内（实 首个不同码位=99 最大差=1 容差=1）
+[wire      ] exit=0  PASS ③ 无损丢弃时点名：[[cjxl] photon noise skipped: distance=0.0 is mathematically lossless, and adding synthesized noise would break bit-exactness while jxlinfo still reports 'lossless'] ; PROBE RESULT: pass=106 fail=0  9.6s
+[verdict   ] exit=0  PROBE RESULT: pass=42 fail=0  1.7s
+[selftest  ] exit=0  SKIP ② AssetLoader 解码路径在本宿主判不了：InvalidOperationException: Unable to locate 'Avalonia.Platform.IAssetLoader'. ; PROBE RESULT: pass=40 fail=0 skip=1  1.7s
+[iccname   ] exit=0  PASS L-3 合法件必须**逐件**收下（清单 10、在位 10、收下 10）⇒ 收紧校验不许把真 ICC 判成无 ICC，也不许用『缺素材』把分母缩小 ; PROBE RESULT: pass=120 fail=0  13.4s
+[plan      ] exit=0  PROBE RESULT: pass=52 fail=0  1.2s
+[curve     ] exit=0  PROBE RESULT: pass=44 fail=0  1.0s
+[matrix    ] exit=0  PROBE RESULT: pass=15 fail=0  1.5s
+[colormath ] exit=0  PROBE RESULT: pass=19 fail=0  1.0s
+[ootf      ] exit=0  PROBE RESULT: pass=11 fail=0  0.9s
+[hlgwire   ] exit=0  PROBE RESULT: pass=3 fail=0  0.9s
+[bt2446    ] exit=0  PROBE RESULT: pass=18 fail=0  1.3s
+[decision  ] exit=0  合计对比 60 格：宣称未落实 0 格；跑了 tonemap 仍宣称 HDR 0 格；ICC 后置判据不符 0 格；最终ICC缺失 0 格；后置路线形态不符 0 格；JPEG 可写过滤器ICC但仍需后置 13 格（encoder-bool反向失效 0）；命令行未跑 iccgen 34 格；按隐含 sRGB 合法放过 8 格 ; PROBE RESULT: pass=7 fail=0  6.7s
+[engine    ] exit=0  PROBE RESULT: pass=35 fail=0  39.7s
+[runner    ] exit=0  PROBE RESULT: pass=8 fail=0  15.0s
+[settings  ] exit=0  PROBE RESULT: pass=11 fail=0  1.8s
+[procstreams] exit=0  PROBE RESULT: pass=3 fail=0  12.6s
+[encoding  ] exit=0  PROBE RESULT: pass=6 fail=0  3.3s
+[ipc       ] exit=0  PROBE RESULT: pass=10 fail=0  8.6s
+[i18n      ] exit=0  PROBE RESULT: pass=7 fail=0  1.4s
+[geometry  ] exit=0  r1-s2-shape SKIP：S2（tonemap）形态不可达（lavfi→PNG 不带 CICP）⇒ M-h 无落点，按「与 M-g 同断言、缺双变换形态」登记（SKIP=1） ; PROBE RESULT: pass=52 fail=0  25.8s
+[metaraw   ] exit=0  PROBE RESULT: pass=20 fail=0  5.3s
+[thumbnail ] exit=0  PROBE RESULT: pass=40 fail=0  66.2s
+[oog       ] exit=0  PROBE RESULT: pass=6 fail=0  4.6s
+[avifgm    ] exit=0  PROBE RESULT: pass=14 fail=0  2.8s
+[gamutfit  ] exit=0  PROBE RESULT: pass=19 fail=0  1.1s
+[bench     ] exit=1  PROBE RESULT: pass=33 fail=4  126.7s
+      FAIL sRGB→P3(矩阵同曲线) 单核 ≥40MPix/s（快路径适用，实 37.3）
+      FAIL sRGB→PQ(目标域换算 ⇒ 关表) 单核 ≥3MPix/s（快路径被合法关闭(解析式)，实 3.0）
+      FAIL 8b sRGB→P3（纯 SDR 快路径） 单核 ≥25MPix/s（实 22.2；修前实测 16.4~22.7，白算的 FromLinear 一回来就红）
+      FAIL 端到端 H1 ≤ H2×2.0（实 3.72×；超出则调代价模型）
+script-host=C:\Users\20210\AppData\Local\Doubao\User Data\sandbox_runtime\bases\fa694f517e5995233c80a9a8db5212c2\pwsh\pwsh.exe
+script-list=104 条（受管基线 104）
+[SUBSET] -Scripts ⇒ 只跑 10 条：verify-color-wiring.ps1, verify-color-strategy.ps1, verify-decision-delivery.ps1, verify-prophoto-faithful.ps1, verify-gainmap-isobmff.ps1, verify-ui-host.ps1, verify-ui-split-union.ps1, verify-ui-split-reproducible.ps1, verify-probe-mirror-parity.ps1, verify-module-registry.ps1
+[SUBSET] 仓库锁 / 单步超时 / STALE / 双漂移 / 逐条留痕 **仍然全部生效**。
+[SUBSET] 本仓硬规矩⑥：**不许跑全量**；要跑必须 -FullBaseline 且用户明确要求（AGENTS.md §3）。
+registry-timeouts=OK（2 条：verify-color-strategy.ps1=1200, verify-png-optimizer.ps1=1200）
+[verify-color-wiring.ps1         ] exit=0  ===== 接线路径: PASS=162 FAIL=0 =====  349.6s to=900s
+[verify-color-strategy.ps1       ] exit=0  SKIP L-cicp-only-p3-avif ICC 语义：已实跑验证 legacy 16-bit 拒绝，无产物可读（不计 PASS） ; PASS png3 chunk 写入成功 ; PROBE RESULT: pass=1 fail=0 ; ===== PASS=87 FAIL=0 SKIP=3 =====  398.1s to=1200s
+[verify-decision-delivery.ps1    ] exit=0  PASS ⑭ 前置：夹具 C:\PLAN\ffmpegPictureUI/tests/output/validate/../results/color/a2_srgb_p3.png 自身读得到 ICC 红原色（实得 0.67999,0.32001）⇒ helper 这条路是通的，负断言才有意义 ; PASS png3 chunk 写入成功 ; PROBE RESULT: pass=1 fail=0 ; ── decision-delivery: pass=109 fail=0 skip=0  647.6s to=900s
+[verify-prophoto-faithful.ps1    ] exit=0  ===== PASS=42 FAIL=0 =====  70.8s to=900s
+[verify-gainmap-isobmff.ps1      ] exit=0  PASS §3h 对照：容器识别不受手术影响（路径照常走通） ; PASS §3h **负控**：原件（bit2=0）不出现点名行 => 该行只对真冲突打印，不是常驻日志 ; PASS §4 被测 exe 未被中途重建（C:\PLAN\ffmpegPictureUI/src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.exe） ; ===== gainmap-isobmff: PASS=174 FAIL=0 SKIP=9 =====  406.8s to=900s
+[verify-ui-host.ps1              ] exit=0  [selfcheck] ui-color: exit=1 timedOut=False summary=True pass=104 fail=1 elapsed=14s ; [selfcheck] ui-sweep: exit=1 timedOut=False summary=True pass=170 fail=1 elapsed=31s ; [selfcheck] ui-cli: exit=1 timedOut=False summary=True pass=76 fail=1 elapsed=6s ; UIHOST RESULT: pass=520 fail=0  217.4s to=900s
+[verify-ui-split-union.ps1       ] exit=0  PASS 3c 并集计数 == 旧宿主计数（一对一改名 ⇒ 总数守恒）（new=520 old=520） ; PASS 3d 并集计数 == 520（实 520） ; PASS 4  反控：两侧集合都非空（防路径错导致空比全绿） ; ===== ui-split-union: PASS=11 FAIL=0 =====  166.9s to=900s
+[verify-ui-split-reproducible.ps1] exit=0  PASS R-10 前置：两份 SelectColorSpaceSettled 都解析到方法体（旧宿主 26 行 / UiHost 26 行） ; PASS R-10 牙齿：双拷贝逐行相等（26 行，差异 0 行） ; PASS R-11 牙齿：旧宿主 Skip 打 [SKIP] + 计 _skip + **不动** _pass/_fail（打印=True 计数=True 误动=False） ; ===== ui-split-reproducible: PASS=19 FAIL=0 =====  6.2s to=900s
+[verify-probe-mirror-parity.ps1  ] exit=0  PASS ⑤ 前置：ServiceProbe 自己定义的 Probe* 方法 = 67 个（须 ≥30 ⇒ 取样域没被清空才有资格谈只此一份） ; PASS ⑤ 执行面 67 个 Probe* 方法里，长出第二份定义的 = 0 条（须 0；实 无）⇒ 又有人把断言抄进无人执行的拷贝，这里当场红 ; PASS ⑤-z 除登记的 1 名同名 helper 外，没有别的 Probe* 长出第二份定义（实 0：无） ; ===== probe-mirror-parity: PASS=93 FAIL=0 =====  25.3s to=900s
+[verify-module-registry.ps1      ] exit=0  ===== module-registry: PASS=12 FAIL=0 =====  3.7s to=900s
+runner-self-sha256=A9B8742A8CE7A1E8 lines=2214 bytes=226394  (收尾时重测；有意打印)
+
+===== 运行器汇总（-Scripts 子集 10/104 条 ⇒ **不构成基线**）：失败 1 项 =====
+    probe:bench (exit=1)
+⇒ 退出码 1（2026-09-18 之前本脚本尾部无 exit ⇒ 失败会被吞掉）

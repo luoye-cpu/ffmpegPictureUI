@@ -1,0 +1,25 @@
+VER(被验包) = 1.6.0-rc2   7z = C:\Program Files\7-Zip\7z.exe
+
+===== app：FFmpegPictureUI-v1.6.0-rc2-x64 =====
+PASS  app 归档在位   C:\PLAN\ffmpegPictureUI\publish\FFmpegPictureUI-v1.6.0-rc2-x64.7z
+PASS  app 归档条目数合理   归档内 19 个文件（要求 ≥ 8）
+PASS  app 归档必需成员齐备   5 项全在
+PASS  app 磁盘目录与归档同数   目录 19 vs 归档 19
+PASS  app 包内 exe 版本串   1.6.0-rc2+b085facabeb4ceece785dc39d49447e2d6ba57a1
+  包内 exe sha=704D1B39445B8558  25100800 B
+
+===== full：FFmpegPictureUI-v1.6.0-rc2-x64-full =====
+PASS  full 归档在位   C:\PLAN\ffmpegPictureUI\publish\FFmpegPictureUI-v1.6.0-rc2-x64-full.7z
+PASS  full 归档条目数合理   归档内 584 个文件（要求 ≥ 560）
+PASS  full 归档必需成员齐备   14 项全在
+PASS  full 磁盘目录与归档同数   目录 584 vs 归档 584
+PASS  full 工具同指纹 ffmpeg.exe   C:\PLAN\ffmpegPictureUI\publish\build\FFmpegPictureUI-v1.6.0-rc2-x64-full\PLAN\ffmpeg-full\ffmpeg.exe=7E1448924D27A63A  publish\PLAN\ffmpeg-full\ffmpeg.exe=7E1448924D27A63A
+PASS  full 工具同指纹 cjxl.exe   C:\PLAN\ffmpegPictureUI\publish\build\FFmpegPictureUI-v1.6.0-rc2-x64-full\PLAN\jxl\bin\cjxl.exe=E2262D72F4C1028F  publish\PLAN\jxl\bin\cjxl.exe=E2262D72F4C1028F
+PASS  full 工具同指纹 exiftool.exe   C:\PLAN\ffmpegPictureUI\publish\build\FFmpegPictureUI-v1.6.0-rc2-x64-full\PLAN\exiftool\exiftool.exe=29121F6ECDEBDB91  publish\PLAN\exiftool\exiftool.exe=29121F6ECDEBDB91
+PASS  full 工具同指纹 JxrEncApp.exe   C:\PLAN\ffmpegPictureUI\publish\build\FFmpegPictureUI-v1.6.0-rc2-x64-full\PLAN\artifacts\JxrEncApp.exe=B2656F78C31764E4  publish\PLAN\artifacts\JxrEncApp.exe=B2656F78C31764E4
+PASS  full 工具同指纹 avifenc.exe   C:\PLAN\ffmpegPictureUI\publish\build\FFmpegPictureUI-v1.6.0-rc2-x64-full\PLAN\artifacts\avifenc.exe=625B8FCEB4726C05  publish\PLAN\artifacts\avifenc.exe=625B8FCEB4726C05
+PASS  full 工具同指纹 dngtool.exe   C:\PLAN\ffmpegPictureUI\publish\build\FFmpegPictureUI-v1.6.0-rc2-x64-full\PLAN\artifacts\dngtool.exe=B3399C1B28C2B2DF  publish\PLAN\artifacts\dngtool.exe=B3399C1B28C2B2DF
+PASS  full 包内 exe 版本串   1.6.0-rc2+b085facabeb4ceece785dc39d49447e2d6ba57a1
+  包内 exe sha=4FAB428D7C977BEB  25100800 B
+
+---- 出包独立验收 (v1.6.0-rc2): PASS=16 FAIL=0 ----
