@@ -27,6 +27,8 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- 单体宿主不引用 UiHostShared（避免第二套 UI helper 命名冲突）；组合探针只编译同一源文件。 -->
+    <Compile Include="..\UiHostShared\GuiCombinationCoverage.cs" Link="GuiCombinationCoverage.cs" />
     <!-- 引用主项目以复用真实 App / MainWindow / 服务 -->
     <ProjectReference Include="..\..\..\src\FfmpegGui\FfmpegGui.csproj" />
   </ItemGroup>

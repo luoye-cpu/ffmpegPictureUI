@@ -54,9 +54,11 @@ public static partial class FfmpegCommandBuilder
         if (matrix == "rgb")
             return new(InputMatrixUse.Reject, null, null,
                 "[matrix] COLOR_INPUT_MATRIX_IDENTITY_ON_YUV: RGB/GBR identity cannot interpret ordinary YUV planes");
-        if (InputIsGroupDerived(inputPath))
-            return new(InputMatrixUse.Reject, null, null,
-                "[matrix] COLOR_INPUT_MATRIX_GROUP_UNSUPPORTED: explicit input matrix is not supported for a derived stream group");
+        // A derived Tile Grid stream still carries ordinary YUV planes after ffmpeg's
+        // automatic xstack. It needs the same coefficient conversion as any other YUV
+        // input; only the filter transport differs (-filter_complex, handled by
+        // CreateVideoChain/ChainArgs). Rejecting here used to make a GUI-reachable
+        // combination fail before either the legacy or engine pipeline could run.
         return new(InputMatrixUse.Convert, matrix, meta.colorRange, null);
     }
 

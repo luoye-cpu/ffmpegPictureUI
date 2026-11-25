@@ -209,6 +209,54 @@ def build(out_path, hvcc, tile_item, payload):
     return len(blob)
 
 
+def build_plain_grid(out_path, hvcc, tile_item):
+    """Primary image = 2x2 grid; no gain-map item or auxiliary metadata.
+
+    Items: 1=grid (primary), 2..5=hvc1 tiles. This isolates Tile Grid filter
+    transport from the independent gain-map decode route.
+    """
+    def infe(iid, itype):
+        return full_box('infe', struct.pack('>HH', iid, 0) + itype.encode() + b'\x00', ver=2)
+
+    iinf = full_box('iinf', struct.pack('>H', 5) + infe(1, 'grid')
+                    + infe(2, 'hvc1') + infe(3, 'hvc1') + infe(4, 'hvc1') + infe(5, 'hvc1'))
+    pitm = full_box('pitm', struct.pack('>H', 1))
+    hdlr = full_box('hdlr', struct.pack('>I', 0) + b'pict' + b'\x00' * 12 + b'\x00')
+    dimg_grid = plain_box('dimg', struct.pack('>HH', 1, 4) + struct.pack('>HHHH', 2, 3, 4, 5))
+    iref = full_box('iref', dimg_grid)
+    ispe_tile = full_box('ispe', struct.pack('>II', 64, 48))
+    ispe_grid = full_box('ispe', struct.pack('>II', 128, 96))
+    ipco = plain_box('ipco', hvcc + ispe_tile + ispe_grid)
+    entries = [struct.pack('>HB', 1, 1) + bytes([0x83])]
+    for iid in (2, 3, 4, 5):
+        entries.append(struct.pack('>HB', iid, 2) + bytes([0x81, 0x82]))
+    ipma = full_box('ipma', struct.pack('>I', 5) + b''.join(entries))
+    iprp = plain_box('iprp', ipco + ipma)
+    grid_payload = struct.pack('>BB', 0, 1) + struct.pack('>BB', 1, 1) + struct.pack('>II', 128, 96)
+
+    def iloc_bytes(offsets):
+        body = struct.pack('>H', 5)
+        body += struct.pack('>HHH', 1, 1, 0) + struct.pack('>I', 0)
+        body += struct.pack('>H', 1) + struct.pack('>II', 0, len(grid_payload))
+        for iid in (2, 3, 4, 5):
+            body += struct.pack('>HHH', iid, 0, 0) + struct.pack('>I', 0)
+            body += struct.pack('>H', 1) + struct.pack('>II', offsets[iid], len(tile_item))
+        return full_box('iloc', struct.pack('>BB', 0x44, 0x40) + body, ver=1)
+
+    idat = plain_box('idat', grid_payload)
+    ftyp = plain_box('ftyp', b'heic' + struct.pack('>I', 0) + b'mif1' + b'heic')
+    zeros = {k: 0 for k in (2, 3, 4, 5)}
+    meta_probe = full_box('meta', hdlr + pitm + iinf + iref + iprp + iloc_bytes(zeros) + idat)
+    first = len(ftyp) + len(meta_probe) + 8
+    offsets = {iid: first + (iid - 2) * len(tile_item) for iid in (2, 3, 4, 5)}
+    meta = full_box('meta', hdlr + pitm + iinf + iref + iprp + iloc_bytes(offsets) + idat)
+    if len(meta) != len(meta_probe):
+        raise SystemExit('plain grid meta length changed after offset fixup')
+    blob = ftyp + meta + plain_box('mdat', tile_item * 4)
+    open(out_path, 'wb').write(blob)
+    return len(blob)
+
+
 def build_aux_grid(out_path, hvcc, tile_item, xmp):
     """组装 **auxC(hdrgainmap) + grid** 变体（手机私有件形态）。
 
@@ -296,6 +344,10 @@ def main():
 
     hvcc = build_hvcc(paramsets)
     item = to_length_prefixed(annexb)
+
+    p0 = os.path.join(a.outdir, 'synth_heic_tilegrid_plain.heic')
+    n0 = build_plain_grid(p0, hvcc, item)
+    print(f"✓ {p0}  {n0} B（primary grid 2x2 / no gain map）")
 
     # tmap 载荷（从库内真实 AVIF 样本取）
     seine = open(a.seine, 'rb').read()

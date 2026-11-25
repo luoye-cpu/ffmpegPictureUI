@@ -115,7 +115,10 @@ namespace FfmpegGui.Services
                 var decodeMeta = GetCachedProbe(inputPath);
                 bool wideDecode = decodeMeta.bitDepth > 8 || dec.PixelChains.Count > 0 || options.BitDepth > 8;
                 var decodeFmt = decodeMeta.hasAlpha ? (wideDecode ? "rgba64le" : "rgba") : (wideDecode ? "rgb48le" : "rgb24");
-                AppendVideoFilter(args, inputMatrix.BuildFilter(decodeFmt)!, false, null);
+                // Tile Grid inputs are already joined into one YUV frame by ffmpeg.
+                // Apply the same RGB sink through the group-aware complex-chain sink;
+                // forcing a separate -vf here makes ffmpeg reject the derived stream.
+                AppendVideoFilter(args, inputMatrix.BuildFilter(decodeFmt)!, EnsureGroupForm(), groupLabelReset);
             }
             else if (inputMatrix.Diagnostic != null)
                 ColorMapping.ImageEncoderArgs.EmitWarn(inputMatrix.Diagnostic);

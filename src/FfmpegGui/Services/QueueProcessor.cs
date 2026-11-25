@@ -8029,7 +8029,7 @@ namespace FfmpegGui.Services
                         throw new InvalidOperationException("COLOR_INPUT_MATRIX_PIPE_FILTER_INVALID: cannot locate the pipe's first filter chain");
                     outgoing = outgoing[..(quoteStart + 1)] + firstDecode + "," + outgoing[(quoteStart + 1)..];
                 }
-                else outgoing += $"-vf \"{firstDecode}\" ";
+                else outgoing += FfmpegCommandBuilder.ChainArgs(inputPath, firstDecode) + " ";
                 return (incoming, outgoing, profile);
             }
 
