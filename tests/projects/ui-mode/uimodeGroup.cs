@@ -352,8 +352,9 @@ namespace Tests.UiMode
             // G2（2026-11-12，测试模块化批 2 模块 2）：用户取消/停止路径的端到端判据。
             //   调研盲区#2：此前仅 _probe-cancel-propagation-scan(#14) 静态锁「每个 RunAsync 传 ct」，
             //   「点停止 → 子进程真死 → 无半截产物 → 状态=已停止」整段无运行时判据。
-            //   慢任务配方：24MP（6000×4000）PNG→PNG，pngopt 默认 max（pngopt-def-t4 实测 24MP max≈41.8s）
-            //   —— 停止窗钉在 ffmpeg 编码相位（24MP PNG 编码本身即秒级-十秒级），裕量数百倍。
+            //   慢任务配方：48MP（8000×6000）PNG→PNG，pngopt 默认 max（24MP max 本机≈11s，受管运行器
+            //   负载下 Stop 会撞在完成边界 ⇒ 改用 48MP 把 oxipng 相位再拉长一档；停止仍只验状态与进程）。
+            //   —— 停止窗钉在 ffmpeg 编码/优化相位（48MP PNG 编码本身即十秒级），裕量足够。
             //   子进程死活用「先记 id、后验全灭」判定：并发轮里其他 ffmpeg/oxipng 不受影响（只查自己的 id）。
             Safe("G2 慢任务停止(点停止→已停止+子进程死+无半截产物)", () =>
             {
@@ -364,25 +365,30 @@ namespace Tests.UiMode
                 typeof(FfmpegGui.MainWindow).GetMethod("StopQueue_Click", BF)?.Invoke(W, new object?[] { null, null });
                 Pump(10);
                 System.Threading.Thread.Sleep(150);
+                // 输出目录必须与输入目录**分开**：产物名恒为「输入基名 + 目标扩展名」，
+                // 若输出目录就是 TempDir（输入 g2_in.png 所在处），6000×4000 的 PNG→PNG 会写回输入本身
+                // ⇒ ffmpeg 报 `Output ... same as Input #0 - exiting` / exit -22，G2 在起跑前就失败。
+                var outDir = System.IO.Path.Combine(TempDir, "g2_out");
+                if (!System.IO.Directory.Exists(outDir)) System.IO.Directory.CreateDirectory(outDir);
                 var st = FfmpegGui.Services.AppSettingsService.Current;
                 st.FfmpegDirectory = System.IO.Path.Combine(plan, "ffmpeg-full");
-                st.OutputDirectory = TempDir;
+                st.OutputDirectory = outDir;
                 FfmpegGui.Services.ExternalToolsDetector.EnsureAllDetected();
 
-                // 前置输入：lavfi 现造 24MP（TempDir 内，退出自清；与输出异名防同名覆盖）
+                // 前置输入：lavfi 现造 24MP（TempDir 根，退出自清）；产物落在 outDir/g2_in.png
                 var bigIn = System.IO.Path.Combine(TempDir, "g2_in.png");
-                var outFile = System.IO.Path.Combine(TempDir, "g2_out.png");
+                var outFile = System.IO.Path.Combine(outDir, "g2_in.png");
                 try { if (System.IO.File.Exists(outFile)) System.IO.File.Delete(outFile); } catch { }
                 var ff = System.IO.Path.Combine(plan, "ffmpeg-full", "ffmpeg.exe");
                 var psi = new System.Diagnostics.ProcessStartInfo
                 {
                     FileName = ff,
-                    Arguments = "-y -f lavfi -i testsrc2=size=6000x4000:rate=1 -frames:v 1 \"" + bigIn + "\"",
+                    Arguments = "-y -f lavfi -i testsrc2=size=8000x6000:rate=1 -frames:v 1 \"" + bigIn + "\"",
                     UseShellExecute = false, CreateNoWindow = true
                 };
                 var pGen = System.Diagnostics.Process.Start(psi);
                 pGen?.WaitForExit();
-                Check("G2 前置 24MP 输入", (pGen?.ExitCode ?? -1) == 0 && System.IO.File.Exists(bigIn)
+                Check("G2 前置 48MP 输入", (pGen?.ExitCode ?? -1) == 0 && System.IO.File.Exists(bigIn)
                                            && new System.IO.FileInfo(bigIn).Length > 1_000_000,
                       $"exit={pGen?.ExitCode} size={(System.IO.File.Exists(bigIn) ? new System.IO.FileInfo(bigIn).Length : 0)}B");
 
@@ -403,30 +409,31 @@ namespace Tests.UiMode
                 System.Collections.Generic.List<FfmpegGui.Models.QueueItem>? Items() =>
                     typeof(FfmpegGui.MainWindow).GetField("_queueItems", BF)?.GetValue(W) as System.Collections.Generic.List<FfmpegGui.Models.QueueItem>;
 
-                // 前置：等到 **G2 自己的条目**（按 InputPath 锁定，≤30s）真的在处理，再等到工作子进程出现（≤10s）。
+                // 前置：等到 **G2 自己的条目**真的在处理，并同步收工作子进程（同一条轮询窗口，≤40s）。
+                //   ⚠ 不能先单独等 IsProcessing 再另开 10s 子进程窗：48MP PNG→PNG 的 ffmpeg 相位只有
+                //   数百毫秒，等完状态再扫进程会整段错过 ⇒ 判据假红（实测 workers=[] / status=已完成）。
                 //   ⚠ 不能用全队列 Any(IsProcessing)：AddToQueue_Click 在 _mediaFiles 非空时批量添加
                 //   （MainWindow.xaml.cs:3013-3022）⇒ G1 的 src_8bit 会在 G2 再入队并瞬间完成——
                 //   全队列断言会被这个无关项打假红；子进程快照也可能捕到它的 ffmpeg（同被本次 Stop 取消，无害）。
                 var swG2 = System.Diagnostics.Stopwatch.StartNew();
-                while (swG2.ElapsedMilliseconds < 30000)
+                System.Collections.Generic.HashSet<int> childIds = new();
+                bool sawProcessing = false;
+                string lastStatus = "";
+                while (swG2.ElapsedMilliseconds < 40000)
                 {
                     Pump(4);
                     var its = Items();
-                    if (its != null && its.Any(i => i.InputPath == bigIn && i.IsProcessing)) break;
-                    System.Threading.Thread.Sleep(120);
-                }
-                System.Collections.Generic.HashSet<int> childIds = new();
-                while (swG2.ElapsedMilliseconds < 40000)
-                {
+                    var g2Item = its?.FirstOrDefault(i => i.InputPath == bigIn);
+                    if (g2Item != null) lastStatus = g2Item.Status;
+                    if (g2Item?.IsProcessing == true) sawProcessing = true;
                     foreach (var nm in new[] { "ffmpeg", "oxipng" })
                         foreach (var pp in System.Diagnostics.Process.GetProcessesByName(nm))
                             childIds.Add(pp.Id);
-                    if (childIds.Count > 0) break;
-                    Pump(4);
+                    if (sawProcessing && childIds.Count > 0) break;
                     System.Threading.Thread.Sleep(150);
                 }
                 Check("G2 停止前工作子进程在跑", childIds.Count > 0,
-                      $"workers=[{string.Join(",", childIds)}] elapsed={swG2.ElapsedMilliseconds}ms");
+                      $"workers=[{string.Join(",", childIds)}] elapsed={swG2.ElapsedMilliseconds}ms sawProcessing={sawProcessing} lastStatus={lastStatus}");
 
                 // 点停止（StopQueue_Click 无 x:Name ⇒ 反射，同 G1 范式；Stop()= _cts.Cancel()）
                 typeof(FfmpegGui.MainWindow).GetMethod("StopQueue_Click", BF)?.Invoke(W, new object?[] { null, null });
