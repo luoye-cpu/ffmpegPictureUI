@@ -12,6 +12,16 @@
 
 ## 📝 更新日志
 
+### v1.6.0-rc3 (2026-11-25) — 全部具名色彩空间输出类型收口（AVIF/P3/sRGB/HDR）
+
+- **完整色彩类型审查**：12 个具名目标空间逐一跑 engine / legacy / manual；输出矩阵统一由目标原色派生，不再允许输入侧的 `gbr`/`rgb` 或编码器默认 601 留到 YUV 出口。sRGB、BT.709、Display P3 → `bt709`；DCI-P3、P3 PQ、P3 HLG、BT.2020、BT.2020 PQ、BT.2020 HLG、Adobe RGB、ProPhoto RGB、ColorMatch RGB → `bt2020nc`；仅 601 族使用 `smpte170m`。
+- **高级 CP/CT 出口**：legacy 路径不再把 PNG 源的 `gbr` 输入矩阵当成输出矩阵；AVIF 真实 YUV 面按目标原色派生矩阵，`gbrp` identity 出口仍不写 YUV 矩阵。
+- **输入矩阵声明与直通**：`--color-matrix` 只声明输入矩阵，不再吞掉 `--color-space` 目标；无标签源 + 显式目标 + 直通时用 `setparams` 把已裁决的 P/T/M 落到帧标签，像素不变。
+- **门禁（候选 `FfmpegGui.dll` `4023A589109AA2DC`）**：`verify-color-out-matrix` **327/0**（A16 高级 CP/CT engine/legacy 的 M+P/T、A17 输入矩阵声明 + 目标 sRGB 完整三元组）；`verify-color-strategy` **87/0/SKIP 3**；`verify-decision-delivery` **109/0**；`verify-color-wiring` **162/0**；`verify-prophoto-faithful` **42/0**；`verify-gainmap-isobmff` **174/0/SKIP 9**；`verify-ui-host` **520/0**；`verify-ui-split-union` **11/0**（并集 520=520）；`verify-ui-split-reproducible` **19/0**；`verify-probe-mirror-parity` **93/0**；`verify-module-registry` **12/0**。包级 `verify-release-package` **16/0**、`verify-package-gui-starts` **6/0/1**（⑥ 提权会话托盘 `err=5` 按既定口径 SKIP，不计绿）。
+- **G2 测试夹具校正（产品未改）**：G2 原先输入/输出同在 TempDir，产物名恒取输入基名 ⇒ PNG→PNG 写回输入、ffmpeg 报 `same as Input`/exit -22；改为独立 `g2_out/` 子目录，并按实际产物名断言。慢任务从 24MP 提到 48MP，`IsProcessing` 等待与 worker 扫描合到同一窗口，消除运行器负载下 Stop 撞完成边界。裸跑 ui-mode **66/0**。
+- **RC3 出货包**：单文件版 `FFmpegPictureUI-v1.6.0-rc3-x64.7z` 12,117,553 B / SHA-256 `CF8733E817E3CE25C1D8551684B9DC1222F650DA672FE9FD65E09A96B3F5F32B`；完整版 `FFmpegPictureUI-v1.6.0-rc3-x64-full.7z` 56,508,167 B / SHA-256 `62ED2D81D9B3D39F7CD6B3C0E7D1CC505D2E52A8EF3AE182DB204E32A9D543D1`。两档 `7z t` 通过（app 19 文件 / full 584 文件）；包内 exe sha16 依次为 `B696B25101BF8A01` / `4FC60ADF01F824E8`，`ProductVersion=1.6.0-rc3+5b92323…`。
+- **边界**：`auto`/无显式目标的 AVIF YUV 仍保留 `smpte170m` 兜底（A11 锁定）；不把“空目标策略边界”混同为显式空间修复，也不宣称未实测组合支持。本轮未运行 104 条全量基线；`probe:bench` 未纳入发布清单，一次默认探针轮中 H1 端到端比 `2.01×` 略超 `2.0` 阈值（已知负载敏感、无成对采样保护），不据此声明性能稳定。
+
 ### v1.6.0-rc2 (2026-11-24，重出) — 色彩矩阵合同、ICC/CICP、GUI 联动与执行日志可复制性收口
 
 > RC2 承接 RC1 之后的未入包修复批（2026-11-19 → 11-24）。同日重出一次：纳入“执行日志恢复为可全选复制”的 GUI 修复，并整体替换此前 RC2 两档包；本条目包哈希以重出包为准。未实测硬件、明确 SKIP 与保守拒绝不等同于“全部组合支持”。
