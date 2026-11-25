@@ -1,0 +1,129 @@
+[gate] exe=C:\PLAN\ffmpegPictureUI/src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.exe (Release)
+  PASS 前置-取数尺有牙                 同一条 exiftool 读法在 P3 素材上读得到 ICC ⇒ 后面的「不得写出 ICC」负断言不是空转
+
+### strategy = recommended ###
+  PASS recommended-sdr-png       20745B process=0/item=0 cicp=iec61966-2-1,bt709 ICC=False
+  PASS recommended-p3-avif       56330B process=0/item=0 cicp=iec61966-2-1,smpte432 ICC=True
+  PASS recommended-hdr-png       30844B process=0/item=0 cicp=smpte2084,bt2020 ICC=False
+  PASS recommended-hdr-jpggm     13598B process=0/item=0 cicp=unknown,unknown ICC=True
+
+### strategy = carry ###
+  PASS carry-sdr-png            真实契约拒绝 process=1/item=91，唯一终态、零文件
+  PASS carry-p3-avif             56330B process=0/item=0 cicp=iec61966-2-1,smpte432 ICC=True
+  PASS carry-hdr-png             30844B process=0/item=0 cicp=smpte2084,bt2020 ICC=False
+  PASS carry-hdr-jpggm           13598B process=0/item=0 cicp=unknown,unknown ICC=True
+
+### strategy = cicp-only ###
+  PASS cicp-only-sdr-png         20745B process=0/item=0 cicp=iec61966-2-1,bt709 ICC=False
+  PASS cicp-only-p3-avif         55701B process=0/item=0 cicp=iec61966-2-1,smpte432 ICC=False
+  PASS cicp-only-hdr-png         30844B process=0/item=0 cicp=smpte2084,bt2020 ICC=False
+  PASS cicp-only-hdr-jpggm       13598B process=0/item=0 cicp=unknown,unknown ICC=True
+
+### strategy = manual ###
+  PASS manual-sdr-png           真实契约拒绝 process=1/item=91，唯一终态、零文件
+  PASS manual-p3-avif           真实契约拒绝 process=1/item=91，唯一终态、零文件
+  PASS manual-hdr-png           真实契约拒绝 process=1/item=91，唯一终态、零文件
+  PASS manual-hdr-jpggm          13598B process=0/item=0 cicp=unknown,unknown ICC=True
+
+### 传统管线对照（--color-engine legacy）###
+  --- strategy = recommended ---
+  PASS L-recommended-sdr-png     20745B process=0/item=0 cicp=iec61966-2-1,bt709 ICC=False
+  PASS L-recommended-p3-avif    真实契约拒绝 process=1/item=91，唯一终态、零文件
+  PASS L-recommended-hdr-png     30844B process=0/item=0 cicp=smpte2084,bt2020 ICC=False
+  PASS L-recommended-hdr-jpggm   13598B process=0/item=0 cicp=unknown,unknown ICC=True
+  --- strategy = carry ---
+  PASS L-carry-sdr-png          真实契约拒绝 process=1/item=91，唯一终态、零文件
+  PASS L-carry-p3-avif          真实契约拒绝 process=1/item=91，唯一终态、零文件
+  PASS L-carry-hdr-png           30844B process=0/item=0 cicp=smpte2084,bt2020 ICC=False
+  PASS L-carry-hdr-jpggm         13598B process=0/item=0 cicp=unknown,unknown ICC=True
+  --- strategy = cicp-only ---
+  PASS L-cicp-only-sdr-png       20729B process=0/item=0 cicp=unknown,unknown ICC=False
+  PASS L-cicp-only-p3-avif      真实契约拒绝 process=1/item=91，唯一终态、零文件
+  PASS L-cicp-only-hdr-png       30844B process=0/item=0 cicp=smpte2084,bt2020 ICC=False
+  PASS L-cicp-only-hdr-jpggm     13598B process=0/item=0 cicp=unknown,unknown ICC=True
+  --- strategy = manual ---
+  PASS L-manual-sdr-png         真实契约拒绝 process=1/item=91，唯一终态、零文件
+  PASS L-manual-p3-avif         真实契约拒绝 process=1/item=91，唯一终态、零文件
+  PASS L-manual-hdr-png         真实契约拒绝 process=1/item=91，唯一终态、零文件
+  PASS L-manual-hdr-jpggm        13598B process=0/item=0 cicp=unknown,unknown ICC=True
+
+### 管线对照（引擎 vs 传统）###
+  INFO recommended-hdr-jpggm    已登记差异（不判红）：引擎基准图附 ICC；legacy ffmpeg UltraHDR 出口按 MPF/XMP 解释、基准图无 ICC（出口契约不同）
+  INFO cicp-only-sdr-png        已登记差异（不判红）：BakeCicpOnly 下 legacy 不伪造未标注 sRGB 标签（设计）；引擎按假定 sRGB 写 cICP(1/13)
+  PASS parity(7 格)              共同产出格 CICP/ICC 全部一致
+
+### ③b 强制 Map：AVIF 引擎编码出口（正面断言）###
+  PASS map-p3-avif               56425B process=0/item=0 cicp=iec61966-2-1,bt709 ICC=False
+  PASS L-map-p3-avif            真实契约拒绝 process=1/item=91，唯一终态、零文件
+  PASS map-avif-走引擎出口           强制 Map 必须由引擎编码出口完成（日志须含引擎成功行「MPix/s」且**不得**含回退标记「本次不适用引擎」）
+  PASS map-avif-产出              引擎编码出口须产出非空 avif（bytes=56425）
+  SKIP map-avif-parity：已实跑并验证 legacy 16-bit 能力拒绝，无共同产物可比较（不计 PASS）
+
+### ③c 强制 Map：GIF 引擎编码出口（正面断言）###
+  PASS map-p3-gif                22327B process=0/item=0 cicp=unknown,unknown ICC=False
+  PASS L-map-p3-gif              17616B process=0/item=0 cicp=unknown,unknown ICC=True
+  PASS map-gif-走引擎出口            强制 Map 必须由引擎编码出口完成（日志须含引擎成功行「MPix/s」且**不得**含回退标记「本次不适用引擎」）
+  PASS map-gif-产出               引擎编码出口须产出非空 gif（bytes=22327）
+  PASS map-gif-不写假标注            引擎 GIF 出口应使用隐含 sRGB（ICC=False cicp=unknown,unknown，期望 ICC=False / cicp=unknown）
+  PASS map-gif-parity           engine=implicit sRGB, legacy=explicit sRGB ICC, 512x384; pair RMS=1.871/3 LSB, >20 LSB=0.095%/0.25%; engine/reference RMS=2.104/3 LSB, >20 LSB=0.139%/0.25%; legacy/reference RMS=1.716/3 LSB, >20 LSB=0.127%/0.25%; P3 bypass rejected=True (RMS=49.461/3 LSB, >20 LSB=47.384%/0.25%)
+  PASS map-gif-引擎命令行含调色板链       引擎 gif 出口必须写调色板链（palettegen=reserve_transparent=1 + paletteuse），否则是静默降质（32.33 vs 44.33 dB）
+  PASS map-gif-引擎命令行含 alpha 合成  引擎 raw 通路无 alpha ⇒ 必须把原文件作第二输入（[1:v]）取 alpha 再 alphamerge，否则透明被静默拍平
+  PASS verdict-降级码-gif          「引擎产出正确但有损」必须对用户可见：gif 无色彩通路 ⇒ 须打出稳定降级码 UnlabeledAssumedSrgb
+  PASS map-p3-png-negctl         42765B process=0/item=0 cicp=iec61966-2-1,bt709 ICC=False
+  PASS verdict-降级码负控-png        负控：PNG 有 cICP/ICC 通路 ⇒ 不得登记 UnlabeledAssumedSrgb（否则正断言无判别力）
+  PASS cicp-only-p3-jpg         真实契约拒绝 process=1/item=91，唯一终态、零文件
+  PASS verdict-替代方案-jpg         Reject 必须给出结构化替代路径（AlternativeKind.Format + Value=avif，§5-A），而不是只给自由文本建议
+  PASS L-cicp-only-p3-jpg       真实契约拒绝 process=1/item=91，唯一终态、零文件
+  PASS 裁决-legacy拒绝-jpg          legacy 必须消费同一份裁决 ⇒ 同格同样 Reject（实测裁决=Reject）
+  PASS 裁决-legacy替代方案-jpg        legacy 拒绝时同样要打出结构化替代路径（与引擎侧同格式，只换日志标签）
+  PASS 裁决parity(12 格)           两条管线的 Verdict.Kind 逐格相同，且 legacy 的产出/不产出与裁决一致
+  PASS 裁决parity-覆盖格数            两条管线都给出裁决的格数不得少于 12（否则本断言退化成空断言；实测 12）
+  INFO 覆盖边界                     无 legacy 侧裁决行（未纳入 parity，见 ③e 注释）：recommended-p3-avif、carry-p3-avif、cicp-only-p3-avif、manual-p3-avif
+
+### 传统管线策略语义 ###
+  SKIP L-carry-p3-avif 色彩语义：已实跑验证 legacy 16-bit 拒绝，无产物可比（不计 PASS）
+  PASS L-carry-hdr-png          S2 携带：HDR 源保持 HDR 传递（cicp=smpte2084,bt2020）
+  SKIP L-cicp-only-p3-avif ICC 语义：已实跑验证 legacy 16-bit 拒绝，无产物可读（不计 PASS）
+  PASS L-cicp-only-hdr-png      S3 仅CICP：不得残留 ICC（ICC=False）
+  PASS L-recommended-sdr-png    S1 推荐：SDR 无标签源仍须产出（bytes=20745）
+  PASS L-manual-hdr-jpggm       S4 手动 + GainMap：须产出可用 UltraHDR（bytes=13598）
+  PASS L-S2≠S1(策略生效)            传统管线上 S2(携带) 与 S1(推荐) 必须走出不同结局（carry=0B/ICC=False，recommended=20745B/ICC=False）
+
+### ③f 位深播报锁（出口档 ≠ 请求档 ⇒ 必须点名 + 播报须与实测一致）###
+  PASS F0a 判据自测·无人话外的码          无稳定码（只有中文描述）的日志必须仍判 SILENT ⇒ 本锁不是在找字（实得 SILENT）
+  PASS F0b 判据自测·播升给浅            播升位而实测 8 < 请求 10 ⇒ 必须 MISANNOUNCED（实得 MISANNOUNCED-shallower）
+  PASS F0c 判据自测·播降给深            播降位而实测 16 > 请求 12 ⇒ 必须 MISANNOUNCED（方向播反就是假播报）
+  PASS F0d 判据自测·升降同播            同一格同时播升位与降位 ⇒ 必须 MISANNOUNCED-both（自相矛盾不许互相抵消成绿）
+  PASS F0e 判据自测·一致即绿            播升位且实测交付 16 ⇒ 判合规（否则 F1 的绿没有基准）
+  PASS F-jxl10-进程终态产物           process=0 item=0；；json=C:\PLAN\ffmpegPictureUI\tests\output\validate\strat_30ec1650\F-jxl10.jsonl
+  PASS F1 jxl10 播报=实测           jxl --bit-depth 10 ⇒ 需 BitDepthRaised 且播报的出口档 == jxlinfo 读回的码流位深（判据=raised-announced 播报 10→16 jxlinfo=16；ffprobe 的 pix_fmt 只作对照、不当位深真值）
+  PASS F2 负控·真日志配错实测            F1 的真实日志配上实测 8 ⇒ 必须 MISANNOUNCED（实得 MISANNOUNCED-shallower）—— 否则 F1 只是在找字
+  PASS F-webp10-进程终态产物          process=0 item=0；；json=C:\PLAN\ffmpegPictureUI\tests\output\validate\strat_30ec1650\F-webp10.jsonl
+  PASS F3 webp10 播报=实测          [任务#35 回潮] webp --bit-depth 10 ⇒ 需播 BitDepthReduced(10→8) 且实测交付 8（判据=reduced-announced 实测交付 8）。红只有两种成因：① 请求档又被钳制吃掉（查 FfmpegOptions.BitDepthRequested 是否仍在 capBd 钳制之前被记、ColorIntent.RequestedBitDepth 是否仍装配）；② CollectDegradations ①b 的非 RgbNative 分支被改掉。两者都不许用放宽判据解决。
+  PASS F-avif12p3-进程终态产物        process=0 item=0；；json=C:\PLAN\ffmpegPictureUI\tests\output\validate\strat_30ec1650\F-avif12p3.jsonl
+  PASS F4 avif12+P3 交付位深测得出     交付位深必须当场测得出来（实得 [12]，产物 pix_fmt 见该格日志）——测不出来时 #41 这类静默削档就会和"只看播报"的判据叠成 ok；红先看 Lock-DeliveredDepth 的 pixDepthForLock 是否缺词形
+  PASS F4 avif12+P3 必须真交付 12bit 请求 12 就必须真给到 12：实测交付 [12] 命令行 pix_fmt=yuv420p12le 判据=SILENT 日志含位深码=False。产品里"avif + Display P3 + 高位深 ⇒ 8bit"那条特例已被实测否证并删除（同一命令行只换 -pix_fmt，8/10/12 三档 rc=0、nclx 标签一致、10/12 对 8 的 PSNR=51.45/50.99 dB，取证 tests/output/t36/probe_39b.ps1）⇒ 本条红 = 有人把那条特例加回来，或在别处另立了一条无据的削档（不许用放宽判据解决）
+  PASS F4 avif12+P3 同码不重播       BitDepthReduced 在该格日志里出现 0 次（>1 ⇒ 同一事实有两个写者各播一遍，日志自相矛盾；与 ①/①b 的去重约定冲突）
+  PASS F-avif16p3-进程终态产物        process=0 item=0；；json=C:\PLAN\ffmpegPictureUI\tests\output\validate\strat_30ec1650\F-avif16p3.jsonl
+  PASS F5 avif16+P3 交付必须等于编码器上限 12 实得 [12]（判据=SILENT）——是 16 说明钳制被整个删掉，是 8 说明那条无据特例又回来了；而 12 这个数不是本脚本硬编码的，它与 verify-decision-delivery ⑯ 从 ffmpeg 自报表现场读到的上限同源
+  PASS F5 avif16+P3 位深语义必须可解释   sato=True 判据=SILENT 实测 [12]：sato 路径由 Sample Transform 承载 16-bit 语义，不得播假降档；非 sato 路径 16→12 必须点名且方向要对（静默 16→12 就是任务 #35 那一族回潮）
+  PASS F5 avif16+P3 同码不重播       BitDepthReduced 在该格日志里出现 0 次（>1 ⇒ 同一事实有两个写者各播一遍，日志自相矛盾）
+
+### ③g P3→PNG carry 双写 iCCP+cICP（COLOR-01）###
+  PASS ③g-eng-产出                P3→PNG carry(eng) 须 process=0/item=0、唯一终态且恰有一份非空 PNG；；json=C:\PLAN\ffmpegPictureUI\tests\output\validate\strat_30ec1650\p3pngcarry-eng.jsonl
+  PASS ③g-eng-双写iCCP+cICP       PNG 必须同时含 iCCP 块与 cICP 块（双写；pngcicp:   iCCP: 407 bytes /   cICP: primaries=12 transfer=13 matrix=0 full=1）
+  PASS ③g-eng-iCCP源色度           iCCP 红原色须==源 P3（产物 0.67999,0.32001 vs 源 0.67999,0.32001；挂别的标准 ICC 也算红）
+  PASS ③g-leg-产出                P3→PNG carry(leg) 须 process=0/item=0、唯一终态且恰有一份非空 PNG；；json=C:\PLAN\ffmpegPictureUI\tests\output\validate\strat_30ec1650\p3pngcarry-leg.jsonl
+  PASS ③g-leg-双写iCCP+cICP       PNG 必须同时含 iCCP 块与 cICP 块（双写；pngcicp:   cICP: primaries=12 transfer=13 matrix=0 full=1 /   iCCP: 397 bytes）
+  PASS ③g-leg-iCCP源色度           iCCP 红原色须==源 P3（产物 0.67999,0.32001 vs 源 0.67999,0.32001；挂别的标准 ICC 也算红）
+
+### ③h iCCP 内部原色 vs 容器 cICP 数值对撞（COLOR-06）###
+  PASS ③h-对撞                    iCCP 红原色与 cICP primaries 必须描述同一空间（cICP primaries=12 期待区间 vs iCCP 红=0.67999,0.32001；一致=True）
+tools-root=C:\PLAN\ffmpegPictureUI
+png3: C:\PLAN\ffmpegPictureUI/tests/output/validate/strat_30ec1650/_colortest_neg.png sBIT=跳过 cICP=True 大小=36542
+PASS png3 chunk 写入成功
+PROBE RESULT: pass=1 fail=0
+  PASS ③h-负控                    负控：把 cICP 改写成 bt709(1) 而 iCCP 仍 P3 红 0.68 ⇒ 对撞必须失配（实得一致=False；不失配则本断言恒真）
+
+===== PASS=87 FAIL=0 SKIP=3 =====
+关注: cicp-only 的 avif/png 应 ICC=False; carry/hdr-png 应保 HDR(cicp smpte2084); jpeg+gm 应产出可用 UltraHDR

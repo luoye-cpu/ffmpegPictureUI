@@ -1,0 +1,275 @@
+[gate] exe=C:\PLAN\ffmpegPictureUI/src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.exe (Release)
+  PASS tools present (exe/ffmpeg/ffprobe/jxlinfo)
+  PASS source present (C:\PLAN\ffmpegPictureUI/tests/output/sources/src_8bit.png)
+  PASS focused ServiceProbe host present
+  PASS ServiceProbe avifcaps = 33/0
+  PASS ServiceProbe outmatrixenc = 15/0
+
+===== A avif nclx (engine path, pixfmt-switch) =====
+  PASS A1 avif x bt709 (engine, Display P3 target): exit=0, produced=True
+  PASS A1 nclx readback color_space=bt709 (H.273 enum 1; CMX same-value Carried; full='yuv420p,tv,bt709')
+  PASS A1 pix_fmt really switched to YUV (pixfmt-switch landed; full='yuv420p,tv,bt709')
+  PASS A2 exactly one template-1 result: '[color-out-matrix] avif: bt709 -> -colorspace bt709'
+  PASS A2b planning-layer Reason verbatim (ColorTransformPlan.Reason channel)
+  PASS A3 avif auto (engine): exit=0, produced=True
+  PASS A3 auto baseline readback = gbr (gbrp feed => nclx matrix=0; full='gbrp12le,pc,gbr')
+  PASS A4 avif x rgb (engine): exit=0, produced=True
+  PASS A4 rgb readback = gbr (nclx matrix_coefficients=0 via gbrp feed; full='gbrp,pc,gbr')
+  PASS A5 template-1 landed verbatim (rgb => nclx matrix_coefficients=0 description)
+  PASS A9 avif RGB source + lossless: exit=0, produced=True
+  PASS A9 readback = 8-bit planar RGB, full range and AV1 identity (full='gbrp,pc,gbr')
+  PASS A9 RGB lossless is bit-exact vs source (PSNR=99; inf folds to 99)
+  PASS A9 independent decoded full-frame RGB hash matches (source=MD5=aefe30a9eb8fffc9283054c039856675; AVIF=MD5=aefe30a9eb8fffc9283054c039856675)
+  PASS A10 avif explicit rgb + 4:4:4: exit=0, produced=True
+  PASS A10 readback = gbr (identity carried by gbrp, not yuv444p; full='gbrp,pc,gbr')
+  PASS A10 explicit rgb + 4:4:4 is bit-exact vs source (PSNR=99; inf folds to 99)
+  PASS A10 [rgb] advisory landed verbatim
+  PASS A11 legacy AVIF YUV420/10 auto produced (exit=0)
+  PASS A11 legacy AVIF nclx matrix is explicit BT.601/SMPTE170M (full='yuv420p10le,pc,smpte170m')
+  PASS A11 legacy command carries -colorspace smpte170m (not a tag-only patch)
+  PASS A12 legacy AVIF auto produced (exit=0)
+  PASS A12 legacy AVIF auto stays gbrp identity (full='gbrp,pc,gbr')
+  PASS A12 legacy auto gbrp arm has NO -colorspace flag
+  PASS A13 engine target 'sRGB' without --color-out-matrix produced (exit=0)
+  PASS A13 engine target 'sRGB' => matrix=bt709 (full='yuv420p10le,pc,bt709')
+  PASS A14 legacy target 'sRGB' without --color-out-matrix produced (exit=0)
+  PASS A14 legacy target 'sRGB' => matrix=bt709 (full='yuv420p10le,pc,bt709')
+  PASS A13 engine target 'Display P3' without --color-out-matrix produced (exit=0)
+  PASS A13 engine target 'Display P3' => matrix=bt709 (full='yuv420p10le,pc,bt709')
+  PASS A14 legacy target 'Display P3' without --color-out-matrix produced (exit=0)
+  PASS A14 legacy target 'Display P3' => matrix=bt709 (full='yuv420p10le,pc,bt709')
+  PASS A13 engine target 'BT.2020' without --color-out-matrix produced (exit=0)
+  PASS A13 engine target 'BT.2020' => matrix=bt2020nc (full='yuv420p10le,pc,bt2020nc')
+  PASS A14 legacy target 'BT.2020' without --color-out-matrix produced (exit=0)
+  PASS A14 legacy target 'BT.2020' => matrix=bt2020nc (full='yuv420p10le,pc,bt2020nc')
+  PASS A15 legacy normalized target 'DCI-P3' produced (exit=0)
+  PASS A15 legacy normalized target 'DCI-P3' => matrix=bt2020nc (full='yuv420p10le,pc,bt2020nc')
+  PASS A15 legacy normalized target 'Adobe RGB' produced (exit=0)
+  PASS A15 legacy normalized target 'Adobe RGB' => matrix=bt2020nc (full='yuv420p10le,pc,bt2020nc')
+  PASS A15 legacy normalized target 'ProPhoto RGB' produced (exit=0)
+  PASS A15 legacy normalized target 'ProPhoto RGB' => matrix=bt2020nc (full='yuv420p10le,pc,bt2020nc')
+  PASS A15 legacy normalized target 'ColorMatch RGB' produced (exit=0)
+  PASS A15 legacy normalized target 'ColorMatch RGB' => matrix=bt2020nc (full='yuv420p10le,pc,bt2020nc')
+  PASS A16 engine advanced 'sRGB' produced (exit=0)
+  PASS A16 engine advanced 'sRGB' => matrix=bt709 (full='yuv420p10le,pc,bt709')
+  PASS A16 engine advanced 'sRGB' => primaries/transfer=bt709/iec61966-2-1 (full='bt709,iec61966-2-1')
+  PASS A16 legacy advanced 'sRGB' produced (exit=0)
+  PASS A16 legacy advanced 'sRGB' => matrix=bt709 (full='yuv420p10le,pc,bt709')
+  PASS A16 legacy advanced 'sRGB' => primaries/transfer=bt709/iec61966-2-1 (full='bt709,iec61966-2-1')
+  PASS A16 engine advanced 'Display P3' produced (exit=0)
+  PASS A16 engine advanced 'Display P3' => matrix=bt709 (full='yuv420p10le,pc,bt709')
+  PASS A16 engine advanced 'Display P3' => primaries/transfer=smpte432/iec61966-2-1 (full='smpte432,iec61966-2-1')
+  PASS A16 legacy advanced 'Display P3' produced (exit=0)
+  PASS A16 legacy advanced 'Display P3' => matrix=bt709 (full='yuv420p10le,pc,bt709')
+  PASS A16 legacy advanced 'Display P3' => primaries/transfer=smpte432/iec61966-2-1 (full='smpte432,iec61966-2-1')
+  PASS A16 engine advanced 'BT.2020' produced (exit=0)
+  PASS A16 engine advanced 'BT.2020' => matrix=bt2020nc (full='yuv420p10le,pc,bt2020nc')
+  PASS A16 engine advanced 'BT.2020' => primaries/transfer=bt2020/bt709 (full='bt2020,bt709')
+  PASS A16 legacy advanced 'BT.2020' produced (exit=0)
+  PASS A16 legacy advanced 'BT.2020' => matrix=bt2020nc (full='yuv420p10le,pc,bt2020nc')
+  PASS A16 legacy advanced 'BT.2020' => primaries/transfer=bt2020/bt709 (full='bt2020,bt709')
+  PASS A16 engine advanced 'BT.2020 PQ' produced (exit=0)
+  PASS A16 engine advanced 'BT.2020 PQ' => matrix=bt2020nc (full='yuv420p10le,pc,bt2020nc')
+  PASS A16 engine advanced 'BT.2020 PQ' => primaries/transfer=bt2020/smpte2084 (full='bt2020,smpte2084')
+  PASS A16 legacy advanced 'BT.2020 PQ' produced (exit=0)
+  PASS A16 legacy advanced 'BT.2020 PQ' => matrix=bt2020nc (full='yuv420p10le,pc,bt2020nc')
+  PASS A16 legacy advanced 'BT.2020 PQ' => primaries/transfer=bt2020/smpte2084 (full='bt2020,smpte2084')
+  PASS A16 engine advanced 'BT.601' produced (exit=0)
+  PASS A16 engine advanced 'BT.601' => matrix=smpte170m (full='yuv420p10le,pc,smpte170m')
+  PASS A16 engine advanced 'BT.601' => primaries/transfer=smpte170m/bt709 (full='smpte170m,bt709')
+  PASS A16 legacy advanced 'BT.601' produced (exit=0)
+  PASS A16 legacy advanced 'BT.601' => matrix=smpte170m (full='yuv420p10le,pc,smpte170m')
+  PASS A16 legacy advanced 'BT.601' => primaries/transfer=smpte170m/bt709 (full='smpte170m,bt709')
+  PASS A17 engine input-matrix declaration + target sRGB produced (exit=0)
+  PASS A17 engine input-matrix declaration + target sRGB => matrix=bt709 (full='yuv420p10le,pc,bt709')
+  PASS A17 engine input-matrix declaration + target sRGB => primaries/transfer=bt709/iec61966-2-1 (full='bt709,iec61966-2-1')
+  PASS A17 legacy input-matrix declaration + target sRGB produced (exit=0)
+  PASS A17 legacy input-matrix declaration + target sRGB => matrix=bt709 (full='yuv420p10le,pc,bt709')
+  PASS A17 legacy input-matrix declaration + target sRGB => primaries/transfer=bt709/iec61966-2-1 (full='bt709,iec61966-2-1')
+  PASS A6 auto arm has ZERO [color-out-matrix] lines (silence contract)
+  PASS A7 legacy arm produced output (exit=0; prod=True)
+  PASS A7 legacy AVIF readback is YUV with BT.709, not a bare matrix flag (full='yuv420p,pc,bt709')
+  PASS A7 legacy has exactly one truthful BT.709 result
+  PASS A8 avif x ycgco template-3 verbatim (C4: rejected conservatively)
+  PASS A8 avif x ycgco: exit=1 != 0, no output (plan-level Reject)
+
+===== B jxl XYB =====
+  PASS B1 jxl x xyb (cjxl backend): exit=0, produced=True
+  PASS B1 exactly one cjxl xyb-confirmed result (implicit VarDCT carrier)
+  PASS B1b planning-layer Reason verbatim (jxl xyb Carried)
+  PASS B2 jxlinfo parses xyb product as valid JXL (container-level read; XYB not visible at container layer per T1 section-2)
+  PASS B3 jxl auto has ZERO [color-out-matrix] lines (auto silence)
+  PASS B4 jxl x bt709 template-3 verbatim (RgbNative rejection)
+  PASS B4 engine JXL JSONL: one failed task code 91; process 1; no output
+  PASS B4 direct cjxl JSONL: one failed task code 91; process 1; no output
+  PASS B4 direct cjxl: exactly one backend-specific rejection result
+
+===== C png fail-closed (plan-level Rejected => exit 91) =====
+  PASS C1 JSONL: exactly one item_completed with numeric code 91; process 1 and zero output files
+  PASS C1 exactly one rejection result; no false success
+  PASS C1 png x bt709: task-level exit code 91 verbatim in log ('失败 (退出码 91)')
+  PASS C1 template-3 verbatim (png Rejected by planning layer)
+  PASS C1 png x bt709: process exit=1 != 0, ZERO output (CM-REQ-05 fail-closed)
+  PASS C1 decision verdict = Reject (queue-level contract path)
+  PASS C2 png x rgb (Redundant): exit=0, produced=True
+  PASS C2 template-2 verbatim ({2}=RGB; recorded, no pixel effect)
+
+===== D webp fail-closed + redundant hash-parity (CM-REQ-08) =====
+  PASS D1 webp auto baseline: exit=0, produced=True
+  PASS D1b webp auto has ZERO [color-out-matrix] lines
+  PASS D2 webp x bt470bg (Redundant): exit=0, produced=True
+  PASS D2 exactly one template-2 result ({2}=bt470bg)
+  PASS D2 webp bt470bg hash == auto hash (byte-identical: sha16 9B6B2B1587840E05)
+  PASS D3 webp smpte170m hash == auto hash (601-family redundant; sha16 9B6B2B1587840E05)
+  PASS D4 webp bt601 hash == auto hash (bt601 normalized to smpte170m; sha16 9B6B2B1587840E05)
+  PASS D5 webp x bt709 template-3 verbatim (2026-11-03 colorRange policy anchor)
+  PASS D5 webp x bt709: exit=1 != 0, ZERO output
+
+===== E jpg redundant (cmdline-parity + pixel parity) =====
+  PASS E1 jpg auto: exit=0, produced=True
+  PASS E1 jpg x bt470bg: exit=0, produced=True
+  PASS E1 ffmpeg cmdline (path-stripped) identical between auto and bt470bg (Redundant = same-value landing)
+  PASS E1b exactly one template-2 result on jpg ({2}=bt470bg)
+  PASS E2 jpg bt470bg vs auto is bit-exact after RGB decode (PSNR=99; MD5=406ad886317735809bb0624db8f52beb vs MD5=406ad886317735809bb0624db8f52beb)
+  PASS E3 jpg x bt709 template-3 verbatim (BT.601 decoder-assumption anchor)
+  PASS E3 jpg x bt709: exit=1 != 0, ZERO output
+
+===== F cjpegli --xyb (C9 wiring) + Rejected-by-exception boundary =====
+  PASS F1 jpg(cjpegli) x xyb: exit=0, produced=True
+  PASS F1 cjpegli command line contains --xyb (C9 wiring evidence)
+  PASS F1 template-1 landed verbatim (cjpegli --xyb description)
+  PASS F2 cjpegli auto command line has NO --xyb
+  PASS F2 cjpegli auto has ZERO [color-out-matrix] lines
+  PASS F3 direct cjpegli: exactly one backend-specific rejection result
+  PASS F3 cjpegli JSONL: one failed task code 91; process 1; no output
+
+===== G template constants structural lock (C-REPORT@1) =====
+  PASS G1 OutMatrixReportLanded constant verbatim in ColorStrategyPlanning.cs (exactly 1)
+  PASS G2 OutMatrixReportRedundant constant verbatim (exactly 1)
+  PASS G3 OutMatrixReportRejected constant verbatim (exactly 1)
+  PASS G4 all three template constants are pure ASCII (EmitWarn hard constraint)
+  PASS G5 OutMatrixReportConflict constant verbatim (CMX-1 template-4; exactly 1)
+  PASS G6 template-4 constant is pure ASCII (EmitWarn hard constraint; CMX-1)
+
+===== I CMX cross-family consistency (A1 strict gate; CMX-1/CMX-2 batch) =====
+  PASS I0 tool present (avifenc, PLAN artifacts)
+  PASS I0 source bt2020 primaries readback == bt2020 (avifenc --cicp nclx; full='bt2020')
+  PASS I0 source bt709 primaries readback == bt709 (avifenc --cicp nclx; full='bt709')
+  PASS I0 source smpte170m primaries readback == smpte170m (avifenc --cicp nclx; full='smpte170m')
+  PASS I0 source bt470bg primaries readback == bt470bg (avifenc --cicp nclx; full='bt470bg')
+  PASS I1 template-4 verbatim (bt709 vs derived bt2020nc; cross-family down)
+  PASS I1 Reason zh-synonym verbatim (CMX-1 cmxZh channel)
+  PASS I1 cross-family: exit=1 != 0, ZERO output (task-level exit 91 contract)
+  PASS I1 task-level exit code 91 verbatim in log
+  PASS I2 template-4 verbatim (bt2020nc vs derived bt709; cross-family up)
+  PASS I2 cross-family: exit=1 != 0, ZERO output
+  PASS I3 601 same-family fwd (smpte170m src + bt470bg): exit=0, produced=True
+  PASS I3 Reason Carried verbatim (601 interop fwd)
+  PASS I4 601 same-family rev (bt470bg src => derived smpte170m + smpte170m): exit=0, produced=True
+  PASS I4 Reason Carried verbatim (601 interop rev)
+  PASS I5 601 family pixel parity (bt470bg vs smpte170m arm): PSNR=99 dB >= 50 (99 = inf, byte-equal pixels)
+  PASS I6 unlabeled-source same-value: exit=0, produced=True
+  PASS I6 Reason Carried verbatim (gate passes same-value; no false rejection)
+  PASS I7 webp auto sha16 == 9B6B2B1587840E05 (absolute baseline; CMX gate zero-impact on auto; sha16 9B6B2B1587840E05)
+  PASS I7 bt2020-src auto: exit=0, produced=True, ZERO [color-out-matrix] lines (early-return precedes the gate)
+
+===== J explicit matrix on non-carrier exits (2026-11-11 fix batch A1) =====
+  PASS J0 GIF fixture present (C:\PLAN\ffmpegPictureUI/tests/output/sources/anim_gif.gif)
+  PASS J1 GIF->AVIF two-step x smpte170m: exit=0, produced non-empty
+  PASS J1 carrier landing line verbatim (avifenc --cicp 1/13/6; 601 family = encoder's own BT.601 coefficients)
+  PASS J1 nclx readback color_space=smpte170m (explicit value really landed; full='yuv444p,pc,smpte170m')
+  PASS J2 GIF->AVIF two-step x bt470bg: exit=0, produced=True
+  PASS J2 nclx readback color_space=bt470bg (601 family label landed; full='yuv444p,pc,bt470bg')
+  PASS J3 GIF->AVIF two-step x rgb: exit=0, produced=True
+  PASS J3 identity matrix landed as gbrp (nclx matrix_coefficients=0; full='gbrp,pc,gbr')
+  PASS J4 GIF->AVIF two-step x bt709: exit=0, produced=True
+  PASS J4 exactly one BT.709 result
+  PASS J4 YUV, nclx BT.709 (full='yuv444p,pc,bt709')
+  PASS J4 primary native YUV codes differ from the BT.601 control (not a tag-only change)
+  PASS J4 timed colour track: matrix readback and native sample A/B across all decoded frames
+  PASS J4 reverse animation: input matrix reaches the mapped colour track and changes decoded GIF pixels
+  PASS J5 GIF->AVIF auto: exit=0, ZERO [color-out-matrix] lines (negative control)
+  PASS J6 bmp x bt709: exit=0, produced non-empty (runs normally, NOT fail-closed)
+  PASS J6 bmp no-carrier broadcast verbatim
+  PASS J7 ppm x bt709: exit=0, produced=True
+  PASS J7 ppm no-carrier broadcast verbatim
+  PASS J8 bmp auto: exit=0, ZERO [color-out-matrix] lines (negative control)
+  PASS J9 ppm x rgb (Redundant): exit=0, exactly ONE [color-out-matrix] line (got 1)
+  PASS J9 template-2 verbatim on the non-planning bmp/ppm family
+
+===== K avif 16-bit sample transform (encode + decode, 2026-11-13) =====
+  PASS K0 true 16-bit source generated (ffmpeg geq; low bits nonzero)
+  PASS K1 avif 16-bit lossless: exit=0, produced=True
+  PASS K1 container has exactly 2 video streams (base + extension); got 2: 0,gbrp12le | 1,yuv444p
+  PASS K1 base pix_fmt = gbrp12le (12-bit RGB base; full='0,gbrp12le | 1,yuv444p')
+  PASS K1 extension pix_fmt = yuv444p (extension item; full='0,gbrp12le | 1,yuv444p')
+  PASS K1 ISO-BMFF sato item references both distinct av01 items through dimg
+  PASS K1 no false 16->12 degradation broadcast (sato fulfills 16-bit)
+  PASS K2 16-bit AVIF decoded by product: exit=0, produced=True
+  PASS K2 pixel md5 bit-exact after AVIF roundtrip (src=MD5=549da4e5bcf221f844f2c3e6af6ba284, dec=MD5=549da4e5bcf221f844f2c3e6af6ba284)
+  PASS K2 sample-transform recognition landed (sato + dimg, not 12-bit base only)
+
+  PASS K3 unrelated_altr fixture shape: legacy base-only colr, altr v0/group 4/count 2 = [sato, primary], dimg = [sato, primary, extension]
+  PASS K3 duplicate_dimg fixture: bounded metadata-only patch, encoded AV1 items remain unchanged
+  PASS K3 duplicate_dimg: one task 91, process 1, zero guessed output
+  PASS K3 duplicate_dimg rejection has the stable sample-transform contract reason AVIF_SAMPLE_TRANSFORM_INPUTS_INVALID
+  PASS K3 output_precision fixture: bounded metadata-only patch, encoded AV1 items remain unchanged
+  PASS K3 output_precision: one task 91, process 1, zero guessed output
+  PASS K3 output_precision rejection has the stable sample-transform contract reason AVIF_SAMPLE_TRANSFORM_OUTPUT_DEPTH_UNSUPPORTED
+  PASS K3 input_depth_mismatch fixture: bounded metadata-only patch, encoded AV1 items remain unchanged
+  PASS K3 input_depth_mismatch: one task 91, process 1, zero guessed output
+  PASS K3 input_depth_mismatch rejection has the stable sample-transform contract reason AVIF_SAMPLE_TRANSFORM_INPUT_DEPTH_MISMATCH
+  PASS K3 unrelated_altr fixture: bounded metadata-only patch, encoded AV1 items remain unchanged
+  PASS K3 unrelated_altr: one task 91, process 1, zero guessed output
+  PASS K3 unrelated_altr rejection has the stable sample-transform contract reason AVIF_SAMPLE_TRANSFORM_COLOR_UNVERIFIED
+  PASS K3 unrelated_altr has the expected outer INPUT_UNVERIFIED and inner COLOR_UNVERIFIED reason chain
+===== L AVIF ICC exit (matrix, native samples, range/chroma and terminal reject) =====
+  PASS L0 RGB black/red/white swatches generated
+  PASS L1 decoded representation YUV 4:2:0 limited BT.709 (rc=0; 'yuv420p,tv,bt709')
+  PASS L2 decoded representation RGB 4:4:4 full identity (rc=0; 'gbrp,pc,gbr')
+  PASS L1 primary item nclx P/T/M/full = 12/13/1/0 (got 12/13/1/0)
+  PASS L1 primary item carries one structurally valid ICC v4.4 RGB matrix/TRC profile
+  PASS L1 ICC Profile ID is nonzero and equals the ICC.1 MD5 checksum (stored 8E-14-70-CC-DD-CF-38-D6-2D-BD-7F-DA-C6-0D-23-35)
+  PASS L1 ICC cicp = 12/13/0/1 (got 12/13/0/1); describes full-range RGB independently of nclx
+  PASS L1 ICC numerical target: D50 whitepoint + Display P3 XYZ matrix + sRGB TRC samples (cICP alone is insufficient)
+  PASS L2 primary item nclx P/T/M/full = 12/13/0/1 (got 12/13/0/1)
+  PASS L2 primary item carries one structurally valid ICC v4.4 RGB matrix/TRC profile
+  PASS L2 ICC Profile ID is nonzero and equals the ICC.1 MD5 checksum (stored 8E-14-70-CC-DD-CF-38-D6-2D-BD-7F-DA-C6-0D-23-35)
+  PASS L2 ICC cicp = 12/13/0/1 (got 12/13/0/1); describes full-range RGB independently of nclx
+  PASS L2 ICC numerical target: D50 whitepoint + Display P3 XYZ matrix + sRGB TRC samples (cICP alone is insufficient)
+  PASS L Profile ID normalization: changing only flags and rendering intent does not invalidate the same checksum
+  PASS L negative control: both wrong nonzero and zero Profile IDs fail despite valid structure and cicp
+  PASS L negative control: copying storage nclx into ICC cicp violates RGB semantics even with a valid Profile ID
+  PASS L negative control: rejects a cicp tag pointing into the ICC header
+  PASS L negative control: copying ICC cicp into YUV storage nclx violates sample semantics while ICC remains valid
+  PASS L negative control: altered rXYZ with recomputed valid Profile ID and unchanged cicp fails the numerical target
+  PASS L negative control: altered rTRC with recomputed valid Profile ID and unchanged cicp fails the sampled curve target
+  PASS L1 exactly one landed BT.709 result
+  PASS L2 exactly one landed identity result
+  PASS L1 native Y black/white are limited-range (got 16/235)
+  PASS L1 red swatch native Y=92; matches BT.709=92.4036894117647 and rejects BT.601=105.482541176471 (RGB=235/51/35)
+  PASS L5 l5_icc-avifenc_pc actual primary nclx/storage matches fixed BT.709/420/8 and selected range
+  PASS L5 l5_icc-avifenc_pc real encoder command and ICC/CICP route are verified, no silent route substitution
+  PASS L5 l5_icc-avifenc_pc source-independent native Y/Cb/Cr samples agree with P3/BT.709 formula (max=0.835262713160034 codes <=3)
+  PASS L5 l5_icc-avifenc_tv actual primary nclx/storage matches fixed BT.709/420/8 and selected range
+  PASS L5 l5_icc-avifenc_tv real encoder command and ICC/CICP route are verified, no silent route substitution
+  PASS L5 l5_icc-avifenc_tv source-independent native Y/Cb/Cr samples agree with P3/BT.709 formula (max=0.680314871215586 codes <=3)
+  PASS L5 icc-avifenc range negative control: paired full/limited black and white samples are distinguishable
+  PASS L5 l5_cicp-ffmpeg_pc actual primary nclx/storage matches fixed BT.709/420/8 and selected range
+  PASS L5 l5_cicp-ffmpeg_pc real encoder command and ICC/CICP route are verified, no silent route substitution
+  PASS L5 l5_cicp-ffmpeg_pc source-independent native Y/Cb/Cr samples agree with P3/BT.709 formula (max=1.1762513042856 codes <=3)
+  PASS L5 l5_cicp-ffmpeg_tv actual primary nclx/storage matches fixed BT.709/420/8 and selected range
+  PASS L5 l5_cicp-ffmpeg_tv real encoder command and ICC/CICP route are verified, no silent route substitution
+  PASS L5 l5_cicp-ffmpeg_tv source-independent native Y/Cb/Cr samples agree with P3/BT.709 formula (max=1.03960332450134 codes <=3)
+  PASS L5 cicp-ffmpeg range negative control: paired full/limited black and white samples are distinguishable
+  PASS L4 JPEG APP2: old version preference is accepted; generated ICC v4.4 has valid ID, RGB cicp and measured P3/sRGB colorants/TRC
+  PASS L3 ICC/lossless BT.709 conflict: JSONL task 91, process 1, zero output
+  PASS L3 stable matrix rejection reason, never a false landed result
+
+===== -SelfCheck negative-control arm (must turn RED) =====
+===== selfcheck: reversed judgement on png x bt709 must turn RED =====
+  PASS selfcheck negative-control turned RED as expected (2 reversed judgement(s) failed)
+===== selfcheck: cross-family reversed judgement (BT.2020 src x bt709) must turn RED =====
+  PASS selfcheck cross-family negative-control turned RED as expected (2 reversed judgement(s) failed)
+
+OUTMATRIX RESULT: pass=327 fail=0

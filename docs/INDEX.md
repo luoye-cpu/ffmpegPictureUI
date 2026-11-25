@@ -65,6 +65,8 @@
 
 同批后续：[色彩矩阵修复计划](review-2026-11-21/COLOR_MATRIX_REPAIR_PLAN_2026-11-21.md)与[修复结果](review-2026-11-21/COLOR_MATRIX_REPAIR_RESULT_2026-11-21.md)。结果绑定最终 DLL，记录 CM‑11/12、sato、ICC/TIFF 和 NVENC 的定向验收、软件及硬件复测、跳过和未覆盖范围。
 
+[review-2026-11-25](review-2026-11-25/RC3_PACKAGE_REPORT_2026-11-25.md)（RC3 出货报告：12 个具名色彩空间的矩阵/P-T 全景审查结论、高级 CP/CT 与 `--color-matrix` 两处 AVIF 出口残留的修复、G2 测试夹具校正、13 条发布门禁读数与 RC3 两档包指纹；旧 RC2 报告保留为时间点记录）
+
 ## 3. 归档（`archive/`，28 份 + `_gapscout_raw/`）
 
 一次性审计报告与已执行计划，2026-10-22 从顶层移入。**判据 = 按前缀名（去掉尾部日期）在 `docs/` 外数命中，

@@ -1,0 +1,12 @@
+SUBJ(被测) = v1.6.0-rc3 (L3 出货包)  ProductVersion=1.6.0-rc3+5b92323d01f9efa7d120ef75c30663474e7c61e2
+exe=C:\PLAN\ffmpegPictureUI\publish\build\FFmpegPictureUI-v1.6.0-rc3-x64-full\FfmpegGui.exe  sha16=4FC60ADF01F824E8  存活观察=12s  句柄轮询=12s
+PASS  gui 存活：包内/开发件 exe 不带 --headless 必须活过观察窗   存活 12s（NativeAOT 的编译 XAML 载荷在位）
+PASS  gui 主窗口句柄非 0   MainWindowHandle=0x2B0AEC
+SKIP  ⑥ 启动即常驻：托盘图标被点亮（tray.log create=ok + IsVisible=True）   **提权（高完整性）会话测不了**：Shell_NotifyIcon err=5 —— Windows 不允许高完整性进程往交互桌面托盘加图标。本条**不计绿**；同一份产物在**普通权限**会话下必须 PASS。 tray.log=[2026-11-25 17:41:37.042] [tray] create=failed IsVisible=False reason=Shell_NotifyIcon(NIM_ADD) denied (err=5) — elevated or restricted process context? tray unavailable => real exit
+PASS  ④ 默认档关窗：托盘不可用 ⇒ 真退出（契约第三态）   exit=0x00000000 + tray.log create=failed ⇒ 退出合法
+PASS  ⑦ 托盘设关：启动时图标不点亮（IsVisible=False）   [2026-11-25 17:41:53.072] [tray] create=failed IsVisible=False reason=Shell_NotifyIcon(NIM_ADD) denied (err=5) — elevated or restricted process context? tray unavailable => real exit
+PASS  ⑦ 托盘设关：关窗后 6s 内必须退出（不许藏进不可见进程）   已退出 exit=0x00000000
+PASS  负控：headless + 不存在的输入必须很快退出（否则②的存活尺是死的）   已退出 exit=0x00000002
+===== gui-starts: PASS=6 FAIL=0 SKIP=1 =====
+⚠ 本轮有 1 条**未判定**（SKIP，非绿）：⑥ 启动即常驻：托盘图标被点亮（tray.log create=ok + IsVisible=True）
+   处置 = 换**普通权限**会话重跑本门禁；在该上下文下 SKIP 必须变成 PASS。
