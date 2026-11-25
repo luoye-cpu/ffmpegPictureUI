@@ -916,12 +916,12 @@ namespace FfmpegGui.Services
             //   QueueProcessor 传统管线消费点），此处只服务预览等旁路调用的安全回退（既有取值）；
             //   xyb 档 Carried 但不进本段（那是编码器开关域，由 BuildJxlOptions 发 `-xyb 1`）。
             var outMatrixToken = dec.CapMatrix ?? outputColorSpace;
-            // AVIF 静态有损出口：RGB 源 + 无显式矩阵，但通用块已钉出 YUV 像素格式。
+            // AVIF 静态有损出口：真实 YUV 像素面（与源是否 RGB 无关；gbrp 直通面不在此列）。
             // swscale/libaom 的默认 RGB→YUV 系数是 BT.601；旧路径不写 -colorspace ⇒ nclx
             // matrix 落 unspecified(2)，查看器只能猜矩阵。只给真实 YUV 像素面补
             // smpte170m；gbrp identity 必须保持无矩阵（否则会把 RGB 误标成 YUV）。
             bool avifYuvOutput = false;
-            if (fmt0 == "avif" && srcIsRgb)
+            if (fmt0 == "avif")
             {
                 for (int i = 0; i + 1 < args.Count; i++)
                 {
@@ -932,6 +932,19 @@ namespace FfmpegGui.Services
                         break;
                     }
                 }
+            }
+            // 高级 CP/CT 的 legacy 路径不经过目标 zscale：`outMatrix` 可能是输入声明
+            // （PNG 源探测为 "gbr"）而不是输出矩阵。AVIF 真实 YUV 面必须按目标原色派生，
+            // 否则会再次落 nclx M=2（libavif 按 BT.601 解释）。只处理 YUV 面；gbrp 保持 identity。
+            if (avifYuvOutput
+                && (string.IsNullOrWhiteSpace(outMatrixToken)
+                    || string.Equals(outMatrixToken, "rgb", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(outMatrixToken, "gbr", StringComparison.OrdinalIgnoreCase))
+                && !string.IsNullOrWhiteSpace(dec.OutPrimaries))
+            {
+                var targetMatrix = ColorSpaceRegistry.OutputMatrixTokenForPrimaries(dec.OutPrimaries);
+                if (!string.IsNullOrWhiteSpace(targetMatrix))
+                    outMatrixToken = targetMatrix;
             }
             if (avifYuvOutput && string.IsNullOrWhiteSpace(outMatrixToken))
                 outMatrixToken = "smpte170m";
@@ -953,6 +966,25 @@ namespace FfmpegGui.Services
                 && !ffmpegColorSpace.Equals("rgb", StringComparison.OrdinalIgnoreCase))
             {
                 args.Add("-colorspace"); args.Add(ffmpegColorSpace);
+            }
+
+            // 无标签源 + 显式目标 + 直通：`-i` 前没有可被 ffmpeg 继承的 CP/CT，
+            // 只写输出 `-colorspace` 会得到 M 正确但 P/T=unknown 的产物（`--color-matrix` 只声明输入矩阵时
+            // 尤其明显）。给帧补一次 setparams，像素不动、只把已裁决的出口语义落到编码器可见的帧标签。
+            if (avifYuvOutput
+                && dec.PixelsUnchanged
+                && string.IsNullOrWhiteSpace(dec.DeclPrimaries)
+                && string.IsNullOrWhiteSpace(dec.DeclTrc)
+                && !string.IsNullOrWhiteSpace(dec.OutPrimaries)
+                && !string.IsNullOrWhiteSpace(dec.OutTrc)
+                && !string.IsNullOrWhiteSpace(outMatrixToken)
+                && !string.Equals(outMatrixToken, "rgb", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(outMatrixToken, "gbr", StringComparison.OrdinalIgnoreCase))
+            {
+                AppendVideoFilter(
+                    args,
+                    $"setparams=color_primaries={dec.OutPrimaries}:color_trc={dec.OutTrc}:colorspace={outMatrixToken}",
+                    EnsureGroupForm(), groupLabelReset);
             }
 
             // ── 显式 rgb（AV1 identity）的像素面兑现（T6 出口落地）：setparams=colorspace=gbr ──

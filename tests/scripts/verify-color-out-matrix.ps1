@@ -216,6 +216,16 @@ function ProbeCs([string]$f) {
         -RedirectStandardOutput $o | Out-Null
     return ((Read-TextShared $o).Trim())
 }
+# ffprobe 读回 primaries/transfer（完整色彩类型：A16/A17 不能只验矩阵）。
+function ProbePt([string]$f) {
+    $o = Join-Path $work '_pt.txt'
+    Start-Process -FilePath $fp -ArgumentList @('-v','error','-select_streams','v:0','-show_entries',
+        'stream=color_primaries,color_transfer','-of','json', $f) -Wait -NoNewWindow -PassThru `
+        -RedirectStandardOutput $o | Out-Null
+    $j = Get-Content -LiteralPath $o -Raw -Encoding utf8 | ConvertFrom-Json
+    $s = @($j.streams)[0]
+    return "$($s.color_primaries),$($s.color_transfer)"
+}
 # K 组（AVIF 16-bit Sample Transform）：两条视频流的 pix_fmt 清单（base / extension 各一行）。
 function ProbeVStreams([string]$f) {
     $o = Join-Path $work '_vstreams.txt'
@@ -694,7 +704,49 @@ foreach ($space in @('DCI-P3', 'Adobe RGB', 'ProPhoto RGB', 'ColorMatch RGB')) {
     CK ($cs15 -ceq 'yuv420p10le,pc,bt2020nc') "A15 legacy normalized target '$space' => matrix=bt2020nc (full='$cs15')"
 }
 
-# A6: auto 档零播报（C-REPORT@1「auto 不播报」+ CM-REQ-08 零噪声）
+# A16: 高级 CP/CT 目标（`--color-primaries/--color-trc`，不指定 --color-out-matrix）——
+#   legacy 路径不经过目标 zscale，`outMatrix` 初值继承 PNG 源的 gbr；若只在空值时派生，
+#   非空 gbr 会被保留 ⇒ 输出 nclx M=2（libavif 按 601 解释），而 P/T 仍写目标。
+#   engine 的 sRGB 高级目标走“直通重编码”同一条 ffmpeg 命令，必须一并锁住。
+$advancedCases = @(
+    @('sRGB', 'bt709', 'iec61966-2-1', 'bt709'),
+    @('Display P3', 'smpte432', 'iec61966-2-1', 'bt709'),
+    @('BT.2020', 'bt2020', 'bt709', 'bt2020nc'),
+    @('BT.2020 PQ', 'bt2020', 'smpte2084', 'bt2020nc'),
+    @('BT.601', 'smpte170m', 'bt709', 'smpte170m')
+)
+foreach ($ac in $advancedCases) {
+    $label = $ac[0]; $cp = $ac[1]; $ct = $ac[2]; $wantM = $ac[3]
+    $tag = 'a16_engine_' + ($label -replace '[^A-Za-z0-9]', '').ToLowerInvariant()
+    $r16e = Run $tag 'avif' @('--color-engine','engine','--color-primaries',$cp,'--color-trc',$ct,'--bit-depth','10','--chroma','4:2:0','--color-range','pc')
+    $cs16e = if ($r16e.file) { ProbeCs $r16e.file } else { '' }
+    $pt16e = if ($r16e.file) { ProbePt $r16e.file } else { '' }
+    CK ($r16e.code -eq 0 -and ($null -ne $r16e.file)) "A16 engine advanced '$label' produced (exit=$($r16e.code))"
+    CK ($cs16e -ceq "yuv420p10le,pc,$wantM") "A16 engine advanced '$label' => matrix=$wantM (full='$cs16e')"
+    CK ($pt16e -ceq "$cp,$ct") "A16 engine advanced '$label' => primaries/transfer=$cp/$ct (full='$pt16e')"
+
+    $tag = 'a16_legacy_' + ($label -replace '[^A-Za-z0-9]', '').ToLowerInvariant()
+    $r16 = Run $tag 'avif' @('--color-engine','legacy','--color-primaries',$cp,'--color-trc',$ct,'--bit-depth','10','--chroma','4:2:0','--color-range','pc')
+    $cs16 = if ($r16.file) { ProbeCs $r16.file } else { '' }
+    $pt16 = if ($r16.file) { ProbePt $r16.file } else { '' }
+    CK ($r16.code -eq 0 -and ($null -ne $r16.file)) "A16 legacy advanced '$label' produced (exit=$($r16.code))"
+    CK ($cs16 -ceq "yuv420p10le,pc,$wantM") "A16 legacy advanced '$label' => matrix=$wantM (full='$cs16')"
+    CK ($pt16 -ceq "$cp,$ct") "A16 legacy advanced '$label' => primaries/transfer=$cp/$ct (full='$pt16')"
+}
+
+
+# A17: `--color-matrix` 只是输入声明；不得让它把显式目标 sRGB 的 P/T/M 全部吞掉。
+#   无标签 RGB 源 + 直通 + 显式目标：目标相同的 sRGB 也必须落成 M1/P1/T13，而不是 unknown 三元组。
+foreach ($eng in @('engine', 'legacy')) {
+    $tag = 'a17_matrix_decl_' + $eng
+    $r17 = Run $tag 'avif' @('--color-engine',$eng,'--color-matrix','bt2020nc','--color-space','sRGB','--bit-depth','10','--chroma','4:2:0','--color-range','pc')
+    $cs17 = if ($r17.file) { ProbeCs $r17.file } else { '' }
+    $pt17 = if ($r17.file) { ProbePt $r17.file } else { '' }
+    CK ($r17.code -eq 0 -and ($null -ne $r17.file)) "A17 $eng input-matrix declaration + target sRGB produced (exit=$($r17.code))"
+    CK ($cs17 -ceq 'yuv420p10le,pc,bt709') "A17 $eng input-matrix declaration + target sRGB => matrix=bt709 (full='$cs17')"
+    CK ($pt17 -ceq 'bt709,iec61966-2-1') "A17 $eng input-matrix declaration + target sRGB => primaries/transfer=bt709/iec61966-2-1 (full='$pt17')"
+}
+
 CK ($rAuto.log -notmatch '\[color-out-matrix\] ') "A6 auto arm has ZERO [color-out-matrix] lines (silence contract)"
 
 # A7: legacy 直通也必须实际落地同族 bt709；没有显式 chroma/位深，不能只写孤立的 -colorspace。
