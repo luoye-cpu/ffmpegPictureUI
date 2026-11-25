@@ -30,6 +30,12 @@ namespace FfmpegGui.Services
             public string OutPrimaries = "bt709";
             public string OutTrc = "iec61966-2-1";
             public string OutMatrix = "bt709";
+            /// <summary>
+            /// 该具名空间是否可由 CICP 三元组**精确**命名（P/T/M 描述的就是空间本身）。
+            /// 仅标准/广色域且未走“归一化到 BT.2020”的条目为 true；DCI-P3/Adobe/ProPhoto 等
+            /// 的 Out* 是归一化目标，不是其自身色彩语义，禁止据此给具名空间回填 PrimariesToken。
+            /// </summary>
+            public bool ExactCicp;
             // ── iccgen 参数（CICP 枚举名；生成标准 ICC）──
             public string? IccgenPrimaries;
             public string? IccgenTrc;
@@ -58,18 +64,18 @@ namespace FfmpegGui.Services
             void Add(Spec s) => d[s.Key] = s;
 
             // ── 标准 ──
-            Add(new Spec { Key = "sRGB", Kind = GamutKind.Standard,
+            Add(new Spec { Key = "sRGB", Kind = GamutKind.Standard, ExactCicp = true,
                 OutPrimaries = "bt709", OutTrc = "iec61966-2-1", OutMatrix = "bt709",
                 IccgenPrimaries = "bt709", IccgenTrc = "iec61966-2-1", CjxlColorSpace = "sRGB",
                 Rp = new[]{0.640,0.330}, Gp = new[]{0.300,0.600}, Bp = new[]{0.150,0.060}, Wp = D65 });
-            Add(new Spec { Key = "BT.709", Kind = GamutKind.Standard,
+            Add(new Spec { Key = "BT.709", Kind = GamutKind.Standard, ExactCicp = true,
                 OutPrimaries = "bt709", OutTrc = "bt709", OutMatrix = "bt709",
                 IccgenPrimaries = "bt709", IccgenTrc = "bt709", CjxlColorSpace = "sRGB",
                 Rp = new[]{0.640,0.330}, Gp = new[]{0.300,0.600}, Bp = new[]{0.150,0.060}, Wp = D65 });
 
             // ── 广色域（CICP 精确可表达）──
             // Display P3：primaries=smpte432，trc=sRGB(iec61966-2-1)（P5 统一），matrix=bt709
-            Add(new Spec { Key = "Display P3", Kind = GamutKind.Wide,
+            Add(new Spec { Key = "Display P3", Kind = GamutKind.Wide, ExactCicp = true,
                 OutPrimaries = "smpte432", OutTrc = "iec61966-2-1", OutMatrix = "bt709",
                 IccgenPrimaries = "smpte432", IccgenTrc = "iec61966-2-1", CjxlColorSpace = "DisplayP3",
                 Rp = new[]{0.680,0.320}, Gp = new[]{0.265,0.690}, Bp = new[]{0.150,0.060}, Wp = D65 });
@@ -108,11 +114,11 @@ namespace FfmpegGui.Services
                 IccgenPrimaries = "bt2020", IccgenTrc = "arib-std-b67", CjxlColorSpace = "Rec2100HLG",
                 Rp = new[]{0.680,0.320}, Gp = new[]{0.265,0.690}, Bp = new[]{0.150,0.060}, Wp = D65,
                 SourceTransfer = "arib-std-b67" });
-            Add(new Spec { Key = "BT.2020 PQ", Kind = GamutKind.Wide,
+            Add(new Spec { Key = "BT.2020 PQ", Kind = GamutKind.Wide, ExactCicp = true,
                 OutPrimaries = "bt2020", OutTrc = "smpte2084", OutMatrix = "bt2020nc",
                 IccgenPrimaries = "bt2020", IccgenTrc = "smpte2084", CjxlColorSpace = "Rec2100PQ",
                 Rp = new[]{0.708,0.292}, Gp = new[]{0.170,0.797}, Bp = new[]{0.131,0.046}, Wp = D65 });
-            Add(new Spec { Key = "BT.2020 HLG", Kind = GamutKind.Wide,
+            Add(new Spec { Key = "BT.2020 HLG", Kind = GamutKind.Wide, ExactCicp = true,
                 OutPrimaries = "bt2020", OutTrc = "arib-std-b67", OutMatrix = "bt2020nc",
                 IccgenPrimaries = "bt2020", IccgenTrc = "arib-std-b67", CjxlColorSpace = "Rec2100HLG",
                 Rp = new[]{0.708,0.292}, Gp = new[]{0.170,0.797}, Bp = new[]{0.131,0.046}, Wp = D65 });
@@ -120,7 +126,7 @@ namespace FfmpegGui.Services
             // MapIccToZscale/ApplyIccSemantics 的 "Rec.2020"→(bt2020,bt709) 一致（修复 D-2：旧值 smpte2084 令 SDR
             // BT.2020 源被当 PQ 解码→变暗，三处矛盾）。HDR 用明确的 "BT.2020 PQ"/"BT.2020 HLG"。
             // SDR BT.2020 在 cjxl 无枚举 → Kind=UltraWide 走归一化分支携带标准 BT.2020 SDR ICC（与 DCI-P3/Adobe RGB 一致）。
-            Add(new Spec { Key = "BT.2020", Kind = GamutKind.UltraWide,
+            Add(new Spec { Key = "BT.2020", Kind = GamutKind.UltraWide, ExactCicp = true,
                 OutPrimaries = "bt2020", OutTrc = "bt709", OutMatrix = "bt2020nc",
                 IccgenPrimaries = "bt2020", IccgenTrc = "bt709", CjxlColorSpace = null,
                 Rp = new[]{0.708,0.292}, Gp = new[]{0.170,0.797}, Bp = new[]{0.131,0.046}, Wp = D65 });
@@ -184,7 +190,46 @@ namespace FfmpegGui.Services
             return null;
         }
 
+        /// <summary>
+        /// CICP (primaries, transfer) → **精确**具名空间（仅 <see cref="Spec.ExactCicp"/> 条目）。
+        /// 用于保留完整空间身份；矩阵轴仍由 <see cref="OutputMatrixTokenForPrimaries"/> 派生。
+        /// </summary>
+        public static Spec? ResolveExactCicp(string? primariesToken, string? transferToken)
+        {
+            var p = NormalizePrimariesToken(primariesToken);
+            var t = NormalizeTrcToken(transferToken);
+            if (p == null || t == null) return null;
+            foreach (var s in ByKey.Values)
+            {
+                if (!s.ExactCicp) continue;
+                if (string.Equals(s.OutPrimaries, p, StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(s.OutTrc, t, StringComparison.OrdinalIgnoreCase))
+                    return s;
+            }
+            return null;
+        }
+
         // ══════════════ 适配器（供现有调用点机械迁移）══════════════
+
+        /// <summary>
+        /// 输出 YUV 矩阵由**目标 RGB 空间的原色**派生（单一真值）。
+        /// <para>
+        /// H.273 的 matrix 是 RGB→Y′CbCr 编码轴，不是 RGB 空间本体；但它必须与目标原色一致：
+        /// BT.709/sRGB/Display P3 用 BT.709 系数，BT.2020 用非恒定亮度 BT.2020 系数，
+        /// 601 族用 SMPTE 170M。**不得**从输入矩阵或编码器默认值反推。
+        /// </para>
+        /// </summary>
+        public static string? OutputMatrixTokenForPrimaries(string? primariesToken)
+        {
+            var p = NormalizePrimariesToken(primariesToken);
+            return p switch
+            {
+                "bt2020" => "bt2020nc",
+                "bt709" or "smpte432" or "smpte431" => "bt709",
+                "bt470bg" or "smpte170m" or "bt470m" or "jedec-p22" => "smpte170m",
+                _ => null,
+            };
+        }
 
         /// <summary>显示名 → ffmpeg (primaries, trc, matrix)。未知 → (null,null,null)。</summary>
         public static (string? primaries, string? trc, string? matrix) FfmpegTokens(string? displayName)

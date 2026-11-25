@@ -661,6 +661,39 @@ CK ($r12.code -eq 0 -and ($null -ne $r12.file)) "A12 legacy AVIF auto produced (
 CK ($cs12 -ceq 'gbrp,pc,gbr') "A12 legacy AVIF auto stays gbrp identity (full='$cs12')"
 CK ((CmdLineOf $r12.log) -notmatch ' -colorspace ') "A12 legacy auto gbrp arm has NO -colorspace flag"
 
+# A13/A14: 显式目标色彩空间但**不显式指定矩阵** ⇒ 矩阵必须从目标原色派生，不得落编码器默认 601。
+# 这是 2026-11-25 用户复现的“sRGB/P3 实际是 601”回归面：只把 601 写成 6 不算修复，
+# 真正要证明的是 sRGB→M1、Display P3→M1、BT.2020→M9（Y′CbCr 轴与目标 RGB 空间一致）。
+$targetMatrixCases = @(
+    @('sRGB', 'bt709'),
+    @('Display P3', 'bt709'),
+    @('BT.2020', 'bt2020nc')
+)
+foreach ($tm in $targetMatrixCases) {
+    $space = $tm[0]; $wantM = $tm[1]
+    $tag = 'a13_engine_' + ($space -replace '[^A-Za-z0-9]', '').ToLowerInvariant()
+    $r13 = Run $tag 'avif' @('--color-engine','engine','--color-space',$space,'--bit-depth','10','--chroma','4:2:0','--color-range','pc')
+    $cs13 = if ($r13.file) { ProbeCs $r13.file } else { '' }
+    CK ($r13.code -eq 0 -and ($null -ne $r13.file)) "A13 engine target '$space' without --color-out-matrix produced (exit=$($r13.code))"
+    CK ($cs13 -ceq "yuv420p10le,pc,$wantM") "A13 engine target '$space' => matrix=$wantM (full='$cs13')"
+
+    $tag = 'a14_legacy_' + ($space -replace '[^A-Za-z0-9]', '').ToLowerInvariant()
+    $r14 = Run $tag 'avif' @('--color-engine','legacy','--color-space',$space,'--bit-depth','10','--chroma','4:2:0','--color-range','pc')
+    $cs14 = if ($r14.file) { ProbeCs $r14.file } else { '' }
+    CK ($r14.code -eq 0 -and ($null -ne $r14.file)) "A14 legacy target '$space' without --color-out-matrix produced (exit=$($r14.code))"
+    CK ($cs14 -ceq "yuv420p10le,pc,$wantM") "A14 legacy target '$space' => matrix=$wantM (full='$cs14')"
+}
+
+# A15: 不可精确 CICP 命名的具名空间按产品策略归一化到 BT.2020 SDR；矩阵仍必须随归一化目标走 bt2020nc。
+# 这些空间不是“没矩阵”，而是“矩阵来自归一化目标”——旧代码从输入矩阵/编码器默认值取值时同样会落 601。
+foreach ($space in @('DCI-P3', 'Adobe RGB', 'ProPhoto RGB', 'ColorMatch RGB')) {
+    $tag = 'a15_legacy_' + ($space -replace '[^A-Za-z0-9]', '').ToLowerInvariant()
+    $r15 = Run $tag 'avif' @('--color-engine','legacy','--color-space',$space,'--bit-depth','10','--chroma','4:2:0','--color-range','pc')
+    $cs15 = if ($r15.file) { ProbeCs $r15.file } else { '' }
+    CK ($r15.code -eq 0 -and ($null -ne $r15.file)) "A15 legacy normalized target '$space' produced (exit=$($r15.code))"
+    CK ($cs15 -ceq 'yuv420p10le,pc,bt2020nc') "A15 legacy normalized target '$space' => matrix=bt2020nc (full='$cs15')"
+}
+
 # A6: auto 档零播报（C-REPORT@1「auto 不播报」+ CM-REQ-08 零噪声）
 CK ($rAuto.log -notmatch '\[color-out-matrix\] ') "A6 auto arm has ZERO [color-out-matrix] lines (silence contract)"
 

@@ -103,6 +103,7 @@ public sealed class ColorSpaceDescriptor
             Rp = def.R, Gp = def.G, Bp = def.B, Wp = def.W,
             Curve = curve.Value,
             PrimariesToken = def.Token,
+            KnownSpaceName = ColorSpaceRegistry.ResolveExactCicp(def.Token, curve.Value.CicpToken)?.Key,
             NitsOfLinearOne = nitsOfLinearOne,
             Confidence = DescriptorConfidence.CicpTag,
         };
@@ -115,6 +116,7 @@ public sealed class ColorSpaceDescriptor
     /// </summary>
     public static ColorSpaceDescriptor? FromNamedSpace(string? displayName)
     {
+        var spec = ColorSpaceRegistry.Resolve(displayName);
         var chr = ColorSpaceRegistry.NamedSpaceChromaticities(displayName);
         if (chr == null) return null;
         var m = ColorSpaceRegistry.NamedSpaceColorantsD50(displayName);
@@ -125,6 +127,10 @@ public sealed class ColorSpaceDescriptor
         // 但 ProPhoto 实际是 1.8 + 线性趾（16·L），不能当成纯幂 1.8。
         var curve = KeyCurveFor(displayName) ?? TransferCurve.ForSourceTransfer(trc) ?? TransferCurve.ForCicpTransfer(trc);
         curve ??= TransferCurve.ForCicpTransfer(ColorSpaceRegistry.Resolve(displayName)?.OutTrc);
+        // 精确可 CICP 命名的具名空间（sRGB/BT.709/Display P3/BT.2020…）以 Spec 的
+        // 传递函数为准；否则 ICC 探测名可能与 CICP token 差一个曲线口径。
+        if (spec is { ExactCicp: true })
+            curve = TransferCurve.ForCicpTransfer(spec.OutTrc) ?? curve;
         if (curve == null) return null;
 
         bool hdr = curve.Value.Kind is TransferCurve.CurveKind.Pq or TransferCurve.CurveKind.Hlg;
@@ -134,7 +140,10 @@ public sealed class ColorSpaceDescriptor
             RgbToXyzD50 = m,
             Rp = chr.Value.R, Gp = chr.Value.G, Bp = chr.Value.B, Wp = chr.Value.W,
             Curve = curve.Value,
-            PrimariesToken = null,                      // 具名空间不等于任何 CICP token（不可用于 H2）
+            // 只有 Spec 明确“其 Out* 就是空间本身”时才回填 CICP token；
+            // DCI-P3/Adobe/ProPhoto 的 Out* 是归一化目标，不能拿来命名其物理空间。
+            PrimariesToken = spec is { ExactCicp: true } ? spec.OutPrimaries : null,
+            KnownSpaceName = spec?.Key,
             Confidence = DescriptorConfidence.NamedIcc,
             NitsOfLinearOne = hdr ? (curve.Value.Kind == TransferCurve.CurveKind.Pq
                                         ? TransferCurve.PqPeakNits : 1000.0)

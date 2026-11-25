@@ -1320,13 +1320,8 @@ public static partial class ColorMappingEngine
         return canonical != null && d.Equivalent(canonical);
     }
 
-    private static string? MatrixTokenFor(string? primariesToken) => primariesToken switch
-    {
-        "bt2020" => "bt2020nc",
-        "bt709" or "smpte432" or "smpte431" => "bt709",
-        "bt470bg" or "smpte170m" or "bt470m" or "jedec-p22" => "smpte170m",
-        _ => null,
-    };
+    private static string? MatrixTokenFor(string? primariesToken)
+        => Services.ColorSpaceRegistry.OutputMatrixTokenForPrimaries(primariesToken);
 
     /// <summary>带缓存的矩阵求解（供 H1 内核反复取用同一对）。</summary>
     public static double[]? CachedMatrix(ColorSpaceDescriptor? src, ColorSpaceDescriptor? dst)

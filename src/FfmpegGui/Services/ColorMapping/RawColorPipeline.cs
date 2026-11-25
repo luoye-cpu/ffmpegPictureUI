@@ -481,7 +481,12 @@ public static class RawColorPipeline
         var chroma = ImageEncoderArgs.ExplicitChroma(o);
         var (p, t) = AvifCicp.FromOutputTokens(plan.OutPrimaries, plan.OutTransfer);
         bool explicitMatrix = plan.OutMatrixVerdict == OutMatrixCapability.Carried && plan.OutMatrixMode != null;
-        var matrix = AvifCicp.MatrixCode(plan.OutMatrix);
+        // 计划没有携带矩阵但已有输出原色时，矩阵轴仍应从目标 RGB 空间的 primaries 派生。
+        // 旧行为直接落到 avifenc 的 m=2（unspecified），libavif 按 BT.601 解释 ⇒ sRGB/P3/BT.2020 全被降成 601。
+        var matrixToken = plan.OutMatrix;
+        if (string.IsNullOrWhiteSpace(matrixToken))
+            matrixToken = Services.ColorSpaceRegistry.OutputMatrixTokenForPrimaries(plan.OutPrimaries);
+        var matrix = AvifCicp.MatrixCode(matrixToken);
         if (explicitMatrix && matrix == null)
             throw new ColorOutputContractException("COLOR_MATRIX_REJECTED", $"avifenc cannot encode matrix '{plan.OutMatrixMode}'.");
 

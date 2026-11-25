@@ -1502,6 +1502,20 @@ public static partial class ColorMappingEngine
             var d = ColorSpaceDescriptor.FromCicp(m.Primaries ?? "bt709", m.Transfer ?? "iec61966-2-1", m.Space);
             if (d != null) { d.Confidence = DescriptorConfidence.NamedIcc; return d; }
         }
+        // 具名 sRGB/BT.709/Display P3/BT.2020 等本身就能被 CICP 精确命名：
+        // 必须走 Spec 的 P/T，不能走 FromNamedSpace（后者刻意不把具名空间当作 CICP token，
+        // 会把完整空间的矩阵轴丢掉，最终由编码器默认成 601）。
+        var spec = ColorSpaceRegistry.Resolve(m.Space);
+        if (spec is { ExactCicp: true })
+        {
+            var d = ColorSpaceDescriptor.FromCicp(spec.OutPrimaries, spec.OutTrc, spec.Key);
+            if (d != null)
+            {
+                d.Confidence = DescriptorConfidence.NamedIcc;
+                d.KnownSpaceName = spec.Key;
+                return d;
+            }
+        }
         return ColorSpaceDescriptor.FromNamedSpace(m.Space);
     }
 

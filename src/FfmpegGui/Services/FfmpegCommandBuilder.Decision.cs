@@ -721,6 +721,12 @@ namespace FfmpegGui.Services
                 d.NeedsPostEmbedIcc = true;
             }
             d.OutPrimaries = outP; d.OutTrc = outT;
+            // 输出矩阵必须有唯一来源：用户显式覆盖 / 已判定的变换结果 > 输出原色派生。
+            // 旧行为 `outMatrix = inputMatrix` 把**输入解读矩阵**当输出标签，且 CP/CT/简单 ColorSpace
+            // 分支只设 outP/outT 不设 outMatrix ⇒ AVIF 等 YUV 出口落到编码器默认 601。
+            // 这里在最终裁决点补一次派生，链路其余地方不再各算一套。
+            if (string.IsNullOrWhiteSpace(outMatrix) && !string.IsNullOrWhiteSpace(outP))
+                outMatrix = ColorSpaceRegistry.OutputMatrixTokenForPrimaries(outP);
             d.MatrixForOutput = outMatrix;
             d.EffectiveStrategy = strategy;
             d.ImplicitSrgb = !d.AttachIcc && !d.CanWriteContainerCicp && !d.Faithful
