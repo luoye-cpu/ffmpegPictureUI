@@ -1,0 +1,24 @@
+
+Result                  : PASS
+FormatEncoderStates     : 15
+TargetTemplates         : 417
+Core                    : 85968
+Policy                  : 23832
+Geometry                : 6576
+Universal               : 101965824
+UniversalPlanned        : 78642432
+UniversalUiWarnings     : 30233088
+UniversalUiLocked       : 16174080
+UniversalInputRejected  : 7149312
+UniversalOutputRejected : 0
+CommandsBuilt           : 107278
+PipeCommandsBuilt       : 256
+ExpectedRejects         : 7586
+UiWarningStates         : 7992
+UiLockedStates          : 1512
+RealConversions         : 36
+PixelOracleComparisons  : 18
+
+
+PASS=54 (36 real conversions + 18 independent pixel-oracle comparisons; combination assertions separately closed)
+PASS: GUI colour combination coverage + pixel routes; evidence=C:\PLAN\ffmpegPictureUI\tests\output\_tmp\gui-color-combinations\5c94442d145b4ae592717457fc74644f

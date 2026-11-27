@@ -1,0 +1,266 @@
+[gate] exe=C:\PLAN\ffmpegPictureUI/src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.exe (Release)
+
+### §0 前置自检（缺任一 ⇒ 后续断言无凭据，一律 fail-closed）###
+被测 exe: C:\PLAN\ffmpegPictureUI/src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.exe
+exe mtime(UTC) = 11/26/2026 19:31:19
+运行级目录: C:\PLAN\ffmpegPictureUI/tests/output/validate/gmisobmff_08812925
+PASS §0 库内增益图样本齐备（seine_sdr_gainmap_srgb.avif / seine_hdr_gainmap_srgb.avif）—— 缺则本门禁整段无凭据
+PASS §0 avifenc 可用（C:\PLAN\ffmpegPictureUI/tools/src/libavif/build/Release/avifenc.exe）—— 用来造「静态 AVIF+alpha」负控；缺它则「没误伤 alpha」这句话无凭据（fail-closed，不静默跳过）
+  [形态] plain: 0,video,1
+  [形态] anim : 0,video,1
+1,video,8
+  [形态] gmSdr: 0,video,1
+1,video,1
+  [形态] alpha: 0,video,1
+1,video,1
+PASS §0 静态 AVIF 恰好 1 条视频流（判据载体：单流 ⇒ 必然判静态）
+PASS §0 动画 AVIF 的流 1 有 8 帧（判据载体：存在 nb_frames>1 的流 ⇒ 必然判动画）
+PASS §0 增益图 AVIF 是「2 条流且都 1 帧」——**与下面 alpha 负控形状完全相同**（这正是旧判据失效的根因）
+PASS §0 静态 AVIF+alpha 也是「2 条流且都 1 帧」⇒ 单靠 nb_frames **无法**区分增益图与 alpha（必须看容器 tmap）
+
+### §1 容器层：ISO-BMFF 增益图探测（tmap 项 + 载荷闭合 + 方向）###
+PASS §1 SDR 增益图 AVIF：识别为 tmap 形式（pass=11 fail=0）
+PASS §1 SDR：item 定位正确（底图=1 / tmap=2 / 增益图=3，av01→-f obu，tmap 载荷 142 B）
+PASS §1 SDR：方向判为 forward（底图 SDR ⇒ 增益给 HDR）
+PASS §1 HDR 增益图 AVIF：识别 + 方向判为 backward（底图已是 HDR）—— 方向由 headroom 比较推出
+PASS §1 负控：普通静态 AVIF ⇒ 无增益图
+PASS §1 负控：动画 AVIF ⇒ 无增益图（不把动画轨误当增益图）
+PASS §1 负控：静态 AVIF+alpha（**与增益图形状相同**）⇒ 仍判「无增益图」（判据看的是容器 tmap，不是流数）
+PASS §1 **反控（断言有牙）**：把普通 AVIF 按「期望有增益图」跑 ⇒ 必须判红（实 pass=2 fail=5
+
+）—— 证明上面 3 条负控不是恒真
+PASS §1b 前置：HEIC 合成件齐备（synth_heic_gainmap.heic / synth_heic_gainmap_fakehevc.heic）—— 缺则本段整段无凭据（fail-closed，不静默跳过）
+  [形态] heicPos: 0,hevc,64,48
+1,hevc,64,48
+PASS §1b 素材形态：合成 HEIC 含 2 条 hevc 流（判据载体：增益图 item 确是真实 HEVC 码流，不是改标签的空壳）
+PASS §1b 正向：合成 HEIC 识别为 tmap 增益图（识别只看 item 关系，与编解码类型无关）
+PASS §1b 正向：hvc1 增益图 item **转换成功** ⇒ 给出 -f hevc 且切出字节（实 codec=hvc1 ffmpegFmt=hevc tmapPayload=142 gmData=2981)
+PASS §1b 正向：产物是 **Annex-B**（首 4 字节 = 00 00 00 01，实 2981 B）
+PASS §1b 正向 **端到端**：探针产出的字节被 ffprobe 解为 hevc 64x48（实 hevc,64,48）—— 参数集前置与逐 NAL 转换都对
+PASS §1b **反控（断言有牙）**：产物按 -f obu（AV1）解**解不出 64x48**（实 av1,0,0）—— 否则说明产物其实是 AV1 字节，上面两条正向断言就是假绿
+  负控①（改标签无 hvcC）: determinate=False failReason=[IsoBmff] 增益图 item 类型 'hvc1' 需要 hvcC：ipma does not associate any hvcC with this item
+PASS §1b 负控①：类型改 hvc1 后仍**识别**为 tmap 增益图（识别只看 item 关系）
+PASS §1b 负控①：无 hvcC ⇒ **fail-closed + 点名**（不得给出 -f hevc 这个错命令，也不切字节）
+PASS §1b 负控②：hvcC 存在但 item 是 AV1 字节 ⇒ **仍** fail-closed（不切字节、不给解复用器）
+PASS §1b 负控②：失败原因精确到「长度前缀断链」（实 determinate=False failReason=[IsoBmff] 增益图 item 'hvc1' 长度前缀转换失败：length-prefix chain broken at offset 0 (len=301992457, remain=31073)）—— **证明转换不是无脑照搬**
+PASS §1c Apple auxC：认出并点名（hasGainMap=True / form=aux-apple-hdrgainmap / determinate=False）—— 旧的「只搜 21496」判据会把它报成无增益图
+PASS §1c Apple auxC：失败原因点名 hdrgainmap、容器确实被解析（primary=1）、且**不伪造可解字节**（tmap=-1 / gmData=-1）
+PASS §1c **反控（断言有牙）**：同结构、URN 仅换成 urn:com:example:other ⇒ 仍判无增益图（证明判据是 URN 语义，不是「有 auxC 就算」）
+PASS §1c 回归：URN 含 21496 仍走原有 aux-21496 分支（新增的 apple 分支不得吞掉它）
+
+### §1h Apple aux 完整解码形态（合成 + 探针 + exiftool 身份 + 端到端像素分叉）###
+PASS §1h 前置：合成器脚本在位（tests/scripts/_make-synth-aux-gainmap.py）—— 缺则本段整段无凭据（fail-closed）
+PASS §1h 前置：python 可用（合成器执行体）
+PASS §1h 合成器执行成功（exit=0；stderr 摘要见 aux_gen.err）
+PASS §1h 三件语料在位（A 正控 / B 纯 SDR 负控 / C URN 语义反控）
+PASS §1h exiftool 读出 Apple:HDRHeadroom=1.5（tag 33=3/2；exiftool 可读 = 合成件身份成立）
+PASS §1h exiftool 读出 Apple:HDRGain=0.5（tag 48=1/2 ⇒ stops=-0.303×0.5+2.303=2.1515 ⇒ headroom≈4.4536×）
+  [auxdec] determinate=True failReason=- | hasGainMap=True form=aux-apple-hdrgainmap primary=1 tmap=-1 gainmapItem=2 | codec=hvc1 ffmpegFmt=hevc tmapPayload=-1 gmData=2519
+PASS §1h 探针 8 条全绿 + aux 裸流已落盘（determinate=True / form=aux-apple-hdrgainmap / Exif item 已切出）
+PASS §1h 提取链读数：aux item=2（hvc1）⇒ Annex-B（ffmpegFmt=hevc）—— 与 tmap 形态同一套 hvcC→Annex-B 转换器
+PASS §1h 裸流端到端：探针切出的字节被 ffprobe 按 hevc 解出 32x24（= aux 灰度图 1/4 尺寸；实 hevc,32,24）
+PASS §1h 负控 B：同 A 去掉 aux/Exif ⇒ 判无增益图（不凭空造增益）
+PASS §1h 反控 C：**完整结构** + URN 换 urn:com:example:other ⇒ 仍判无增益图（判据是 URN 语义，不是「有 aux item 就算」；与 §1c 极简件反控互补）
+PASS §1h 前置：A-zero（MN 0/0 + XMP）合成件在位
+PASS §1h A-zero 探针 8 条全绿（0/0 MakerNote 不破坏容器提取）
+PASS §1h A-zero 端到端：0/0 被拒（不按 3.48× 兜底）⇒ 回退 XMP 线性 headroom=2.0 ⇒ log2 max=1.000 并产出（2 个）
+PASS §1h **负控（断言有牙）**：Exif item 类型被破坏 ⇒ fail-closed 且点名 Exif（实 determinate=False failReason=[IsoBmff] Apple 辅助图（auxC URN 含 hdrgainmap） 不可解：item 3 类型 'xxxx' 经 cdsc 指向主图但不是 'Exif'（Exif item 类型被破坏））
+PASS §1h 端到端 A：png 产物在位（2 个）且日志含 AppleMakerNote 元数据行 + Apple 公式恢复行
+PASS §1h 端到端 B：png 产物在位且日志**无** AppleMakerNote 行（纯 SDR 件不进增益图路径）
+PASS §1h 像素分叉（断言有牙）：A（增益已应用）vs B（纯 SDR）产物 PSNR=22.049758 dB（&lt;60 ⇒ 两者真实不同 ⇒ 增益真被施加；相同则说明恢复链没跑）
+
+### §1i aux-21496 防御性解码（D 件结构尝试 + version 负控 + MN 对拍 + 端到端）###
+PASS §1i 前置：合成器产出 D 件（aux-21496 正控）与 D-bad（version 破坏负控）—— 缺则本段整段无凭据（fail-closed）
+  [corpus] aux_iso21496.heic sha256[:16]=89689d7e298dc3a1（首冻结登记 ef7d4fcabb19825f @ 2026-11-10 gen1；两者可不同——x265 非确定，登记为身份记录非断言）
+PASS §1i corpus 语料在位（tests/output/corpus/aux-gainmap-heic/aux_iso21496.heic，缺失由本轮 D 件自动补齐）
+PASS §1i 探针 8 条全绿：结构尝试成立（determinate=True / form=aux-21496 / gainmapItem=2）
+PASS §1i 提取链读数：前置 version+元数据段 62 B（与 tmap 载荷同构，ParseIso21496 out consumed 切出）+ 编码流已转 Annex-B（实 codec=hvc1 ffmpegFmt=hevc tmapPayload=62 gmData=2519）
+PASS §1i **负控（断言有牙）**：version 段破坏（0→1）⇒ fail-closed 且点名「aux-21496 元数据结构未证实：前置 version 字节 = 1」（实 determinate=False failReason=[IsoBmff] aux-21496 元数据结构未证实：前置 version 字节 = 1（要求 0）——该形态当前无已知写入器（libheif#1121 / libultrahdr / libavif 三生态均走 tmap），字节层证据不足 ⇒ fail-closed）
+PASS §1i MN 对拍 8 条全绿：AppleMakerNote 纯托管解析 == exiftool（parity=ok；新 mode 由 TestGroups 组表 + mirror-parity 同批登记）
+PASS §1i MN 对拍身份值：managed33=1.5 / managed48=0.5 / exif33=1.5 / exif48=0.5（⇒ headroom≈4.4429×，纯托管接管后读数无漂移）
+PASS §1i 端到端 D：png 产物在位（2 个）且日志点名「URN 21496 数据前置元数据」+「恢复: ISO 21496 公式族」且**无** Apple 公式行（形态点名，与 tmap 同汇合点）
+PASS §1i 端到端 D：增益图真被解码并应用（「已解码为线性 HDR PFM」= 元数据 + HEVC item 解码 + 增益公式全链走通）
+PASS §1i A 件回归：exiftool→纯托管切换后**无降级行**（AppleMakerNoteParser 一次解成；读数一致性由 MN 对拍臂逐值锁住）
+
+### §1d grid 分块 + idat 承载（含 version 负控与端到端拼接）###
+PASS §1d 前置：grid 合成件在位（tests/data/synth_heic_grid_gainmap.heic，生成器 tests/scripts/_make-synth-heic-gridgainmap.py）—— 缺则本段整段无凭据（fail-closed）
+  [grid] determinate=True failReason=- | grid=True rows=2 cols=2 gridW=128 gridH=96 tileW=64 tileH=48 tiles=4 gridSizeFromTail=False auxBase=-1
+PASS §1d grid 承载：解析**确定**（construction_method=1 的 tmap 载荷已从 idat 切出；实 determinate=True failReason=-）
+PASS §1d grid 承载：识别为 grid 分块（grid=True）
+PASS §1d grid 承载：网格 2x2 / 整幅 128x96 / 瓦片 64x48 / 4 块（数值见上一行 [grid] 读数）
+PASS §1d grid 承载：仍是 tmap 形态（Form=tmap，grid 只是增益图 item 的承载方式）
+PASS §1d 探针 9 条全绿（实 PROBE RESULT: pass=9 fail=0）
+PASS §1d 负控素材：idat 里的 grid 载荷可定位（否则下面的负控是真空）
+PASS §1d **负控（断言有牙）**：grid 载荷 version 改 1 ⇒ fail-closed 且点名 grid 版本（实 determinate=False failReason=[IsoBmff] grid 载荷解析失败：grid version=1（仅 v0 定义））
+PASS §1d 行为：grid 增益图 HEIC → jpg 产出 ≥1（实 1）
+PASS §1d 行为：解码端按 grid 路径取增益图（日志点名 ISO-BMFF grid（2x2 瓦片 × 64x48）
+PASS §1d 行为：**逐瓦片解码 + 拼接**真发生（日志「分块增益图拼接完成：2x2 瓦片 × 64x48 ⇒ 128x96」）
+PASS §1d 行为：增益图**真被应用**（日志「已解码为线性 HDR PFM」—— 与 §3c 同口径）
+
+### §1e clean aperture（clap）裁切：几何口径回归 ###
+PASS §1e 前置：clap 夹具在位（tests/data/gainmap_hevc_16x16.heic，出处 Google libultrahdr 合成件、Apache-2.0 OR MIT）—— 缺则本段整段无凭据（fail-closed）
+PASS §1e 前置：夹具逐字节钉死（SHA-256 实 6DD810EE6D118D3CE876936D9B265338B94D44CDE187BCE2BA384CE93EDB1B8E）—— 换件必须同批改期望值，否则本段读数失去意义
+  [clap] stats w=16 h=16 peakNits=1000 capLinear=4.9261 maxLinear=0.2470 meanLinear=0.2470 over1=0 total=768 | PROBE RESULT: pass=2 fail=2
+PASS §1e 几何口径：解码器按 **16x16** 记账（不是容器的 64x64）—— 实 stats w=16 h=16 peakNits=1000 capLinear=4.9261 maxLinear=0.2470 meanLinear=0.2470 over1=0 total=768
+PASS §1e 几何口径：像素总数 = 16x16x3 = 768（clap 裁切后，正是裸流 3072 B / 12）
+PASS §1e 行为：**解码不再 fail-closed**（旧行为是「像素数据不完整」⇒ 返回 null ⇒ 静默退回 SDR）
+PASS §1e 定性：本件是**均匀 HLG + 增益图恒零** ⇒ 两条「必须高于 SDR 白点」的断言必然 FAIL（pass=2 fail=2）⇒ 它是 clap 几何回归件，**不是** HDR 正控，别把它的红当回归
+PASS §1e 端到端：clap 裁切件 → jpg 产出 ≥1（实 1）
+PASS §1e 端到端：产品侧同样按 16x16 记账（日志「HDR 线性像素: 16x16」—— 旧行为此处是 64x64 且随后静默退回 SDR）
+PASS §1e 端到端：增益图**真被应用**（日志「已解码为线性 HDR PFM」，与 §1d/§3c 同口径）
+PASS §1e 端到端：**对账兜底未被触发**（日志不出「底图尺寸按实际像素校正」）⇒ 16x16 来自 clap 解析，而不是靠字节数反推出来的
+PASS §1e 负控素材：clap 盒类型可定位（实 offset=1035，否则下面两条负控是真空）
+PASS §1e 负控 A（断言有牙）：clap widthN 16→8 ⇒ 记账变 **8x16**（实 stats w=8 h=16 peakNits=1000 capLinear=4.9261 maxLinear=0.2470 meanLinear=0.2470 over1=0 total=384）
+PASS §1e 负控 A：像素总数随之 8x16x3 = 384 ⇒ 尺寸不是常量
+PASS §1e 负控 B（断言有牙）：删掉 clap 后记账回到容器的 **64x64**（实 stats w=64 h=64 peakNits=1000 capLinear=4.9261 maxLinear=0.2470 meanLinear=0.2470 over1=0 total=12288）⇒ 16x16 由容器声明驱动
+PASS §1e 负控 B：像素总数回到 64x64x3 = 12288 ⇒ 与正控的 768 成 16 倍，两臂可区分
+
+### §1f 底图尺寸对账：纯函数臂（fail-closed 的牙 / 等比校正 / 放大臂边界）###
+  [size-recon] A1 verdict=Match out=64x64（探测 64x64 / 实测 4096 = 一致） | A2 verdict=RejectUndeclared（探测 64x64 / 实测 256 / 未声明裁切） | A3 verdict=Scaled out=16x16（探测 64x64 / 实测 256 / 已声明裁切） | A4 verdict=Scaled out=16x16（探测 8x8 / 实测 256 / 已声明裁切） | A5 verdict=Scaled out=4x4（探测 64x64 / 实测 16 / k=16 缩小端） | A6 verdict=Scaled out=64x64（探测 4x4 / 实测 4096 / k=16 放大端） | A7 verdict=RejectNonUniform（探测 64x64 / 实测 1000 / 已声明裁切 / 非等比） | A8 verdict=Match/Match out=0x0（退化输入：0 宽 / 0 像素） | PROBE RESULT: pass=10 fail=0
+PASS §1f 执行面：10 条断言全绿（A0 反射自检 + A1/A2/A2b/A3–A8；这批此前无处可判 —— 该状态造不出文件样本）
+PASS §1f fail-closed 有牙：**未声明 clap 时即便恰为 1/4 等比（64x64 探测 / 256 实测）也拒绝**（否则静默出半幅 HDR）
+PASS §1f 等比校正双向：放大臂 k=2（8x8 探测 / 256 实测 ⇒ 16x16）与 k=16（4x4 ⇒ 64x64）**都被接受**，缩小臂见 A3/A5
+PASS §1f fail-closed 的**另一个方向**：未声明 clap 的放大**型**错配（4x4 探测 / 256 实测 = k=4，缩小臂永不成立）同样拒绝 ⇒ 闸在两条臂之前
+PASS §1f 非等比拒绝：声明 clap 但 4096 → 1000 像素 ⇒ **不猜**（RejectNonUniform，不退回 Scaled）
+PASS §1f-b 取到 GainMapDecoder.cs 源码（否则下面两条形态断言真空绿）
+PASS §1f-b 调用点接线：cropDeclared 由裁切量算出并**真**作为 ReconcileBaseSize 的第 4 实参（NC4 变异正是抹掉这一句）
+PASS §1f-b 三类裁决在**使用态**各有出口（RejectUndeclared / Scaled / RejectNonUniform 都在去注释源码里出现）
+
+### §1l 私有件 auxC(hdrgainmap)+grid（flags=0 尾宽高 / 无 Exif / 产品端到端）###
+PASS §1l 前置：aux+grid 合成件在位（tests/data/synth_heic_grid_aux_gainmap.heic）—— 缺则本段无凭据（fail-closed）
+  [auxapplegrid] determinate=True failReason=- grid=True rows=2 cols=2 gridW=128 gridH=96 tileW=64 tileH=48 tiles=4 gridSizeFromTail=True auxBase=1
+PASS §1l 探针 11 条全绿：auxC(hdrgainmap) 挂 grid 也能完整提取（不再要求单 item / Exif）
+PASS §1l 读数：2x2 × 64x48 ⇒ 128x96 / 4 瓦片，flags=0 尾宽高已读，auxl 指回主图（实 grid=True rows=2 cols=2 gridW=128 gridH=96 tileW=64 tileH=48 tiles=4 gridSizeFromTail=True auxBase=1 )
+PASS §1l **负控（断言有牙）**：flags=0 尾宽高 0/0 ⇒ 退回全铺 128x96 且 gridSizeFromTail=False（不拿 0 当裁切）
+PASS §1l URN 替换串等长（否则 Replace-Bytes 会改坏盒子长度）
+PASS §1l 负控前置：无 XMP 载体在位（tests/data/synth_heic_grid_aux_noxmp.heic）
+PASS §1l 负控：未登记 URN 且**无 XMP** ⇒ 不被静默当增益图（hasGainMap=False，不误报 apple/vendor）
+PASS §1l 厂商候选映射：未登记 URN + XMP 头room ⇒ form=aux-vendor-gainmap，探针 11 条全绿
+PASS §1l 厂商候选端到端：产出自 2 个，日志点名「厂商私有 aux」+ grid 来源（不降级）
+PASS §1l 产品端到端：aux+grid 件产出在位（2 个）且日志点名 grid 来源 + 增益施加（无 Exif 靠 XMP，不降级不可解）
+PASS §1l-B 前置：128 灰瓦片合成件在位（tests/data/synth_heic_grid_aux_gainmap_b.heic）
+PASS §1l-B 探针 11 条全绿：灰瓦片同结构仍完整提取（结构与像素值解耦）
+PASS §1l-B Apple 数值锚：XMP 线性 2× ⇒ cap=2.0；128 灰瓦片 max=0.2701（独立期望 0.270713931387854，±0.012），不得按旧对称分支保持 0.2146
+
+### §2 源码形态：动画判据（多帧 + tmap 两级）###
+PASS §2 取到 IsAnimatedAvifAsync 方法体（否则后续源码形态断言真空绿）
+PASS §2 探测命令带 
+b_frames（判据已从「数流条数」改为「是否真有流带多帧」的前提）
+PASS §2 判据含「多帧」支（maxFrames > 1 / framesKnown）
+PASS §2 判据含「增益图容器」支（HasTmapItemFast）—— 用来把「静态 AVIF+alpha」与「静态增益图 AVIF」分开
+PASS §2 旧判据「videoCount >= 2」已移除（它把「输入有第二条流」误当「输入多帧」）
+PASS §2 **反控（断言有牙）**：把 HasTmapItemFast( 变异掉 ⇒ 上面的锚点断言会判红 —— 证明该锁不是恒真
+PASS §2b 源码形态：色彩探测里有「CICP 可用」判据（ffCicpUsable）
+PASS §2b 源码形态：EXIF 的采用与否受 CICP 可用性门控（EXIF **只在 CICP 不可用时**才生效）
+PASS §2b **反控（断言有牙）**：把 ffCicpUsable 变异掉 ⇒ 上面的锚点断言会判红 —— 证明该锁不是恒真
+
+### §3 行为：增益图 AVIF 走增益图路径；动画/alpha 不被误伤 ###
+  [gm_sdr] 结束=True 耗时=3.7s 产物=1
+  [gm_hdr] 结束=True 耗时=5.9s 产物=1
+  [anim] 结束=True 耗时=5.3s 产物=1
+  [alpha] 结束=True 耗时=5.0s 产物=1
+  [plain] 结束=True 耗时=2.5s 产物=1
+PASS §3 SDR 增益图 AVIF → webp：识别并产出（实 产物=1）
+PASS §3 SDR：增益图**真被应用**（日志出现「已解码为线性 HDR PFM」= 走完元数据+增益图 item 解码）
+PASS §3 SDR：**不得**再走两步法（实 0 条 [avif→xxx] Step1:）—— 旧判据下它被判动画，这里正是缺陷②的回归钉。⚠ 该判据载体的**活性**由下面 anim/alpha 两条 -ge 1 证明（否则 -eq 0 可能是真空绿）
+PASS §3 HDR 增益图 AVIF：方向**点名**（backward）⇒ 按普通 HDR 处理，不静默套用增益
+PASS §3 HDR：**不得**再走两步法（实 0 条）
+PASS §3 **不误伤**：真动画 AVIF → gif 仍走两步法（实 1 条）—— 新判据不得把真动画判成静态
+PASS §3 **不误伤**：静态 AVIF+alpha → webp 仍走两步法（实 1 条）—— 改判静态会丢 alpha
+PASS §3 **不误伤**：普通静态 AVIF → webp 仍走单命令（日志「输入为静态 AVIF」）
+
+### §3b 缺陷 C：容器 CICP 优先于 EXIF ColorSpace（含负控）###
+WARN exiftool 启动器偶发 code 126（第 1 次）⇒ 仅对启动失败重试，终值判据不变
+PASS §3b 负控素材形态：JPEG 的 CICP 真是 unknown 且 EXIF ColorSpace 标签真写进去了（否则下面那条负控真空绿）
+  正向(HDR AVIF)  : gamut=(null) primaries=bt709 trc=smpte2084 matrix=smpte170m hasIccSemantics=False isRgb=False bitDepth=10 peakNits=0 400x300
+  负控(JPEG+EXIF) : gamut=(null) primaries=bt709 trc=iec61966-2-1 matrix=bt470bg hasIccSemantics=True isRgb=False bitDepth=8 peakNits=0 64x48
+PASS §3b 正向：容器 CICP（trc=smpte2084 / PQ）**胜过** EXIF 的 sRGB 残留（hasIccSemantics=False）
+PASS §3b **负控**：JPEG 无 CICP（ffprobe 恒 unknown）时 EXIF ColorSpace **仍生效**（trc=iec61966-2-1）—— 不得一刀切删掉该分支
+PASS §3b 行为：HDR 底增益图 AVIF → jpg **产出 ≥1**（实 1）—— 修复前是**零产物** + Not yet implemented
+
+### §3d 厂商 HDR 尾注（ServiceProbe vendor-hdr，V1–V23）###
+PASS §3d vendor-hdr 23 条全绿（实 PROBE RESULT: pass=23 fail=0）
+PASS §3d 逐条点名：以 PASS V 开头的行 = 23（实 23）⇒ 汇总数不是靠早退蒙对
+PASS §3d 拒因点名：V6 声明长度不符 / V7 参数块非 144（两条各死于自己那条判据，不是顺带没认出）
+PASS §3d 与标准承载互斥：真 tmap 件厂商支不认、ISO 支仍认（同一行读数钉住两侧）
+
+### §3v 厂商尾注真机件（OnePlus 15T：1/2 比例 / max=50/256 / 头部比率不参与判定）###
+PASS §3v-0 前提：真机语料在位且 sha256[:16]=33e2a27a1ed72b89（实 33e2a27a1ed72b89，2,837,433 B）—— 同名不同字节 ⇒ 下面读数全部失效
+  [W] W Found=True Det=True reason=- dev='OnePlus 15T' mask=1536x2048x8 ratio=1.2 slack=209 jpegLen=820165
+  [W-meta] W-meta min=0 max=2.00806427 g=1 ch=1
+PASS §3v-1 臂① 真文件识别：V 组条数锁 pass=23 不变 + W 组 real=9 fail=0 + Found/Det=True（实 PROBE RESULT: pass=23 fail=0）
+PASS §3v-2 臂① 设备与几何：dev='OnePlus 15T' 且 mask=1536x2048x8（识别日志 device=OnePlus 15T, mask 1536x2048x8）
+PASS §3v-3 LHDR 独立语义锚：min=0 / max=log2(f33=4.0224218)=2.0080644 / gamma=1；直接掩膜路径真实像素 cap=4.0224 max=3.6585 mean=0.4539 over1=3904179（独立 Python 复算参考 4.0224/3.6585/0.4539/3904179，容差按 1.2e-6 对撞留量）
+PASS §3v-4 臂① 载荷对账：mask JPEG 820165 B（manifest 声明 820181，差 16≤64）+ 声明自洽 slack=209
+PASS §3v-5 臂② 1/2 比例锁：主图 3072x4096（exiftool IFD0）= mask 1536x2048（探针 W 行）× 2 —— 两个独立读者对撞；ffprobe 对本件只报 48 条 512x512 分块 tile（6x8），主图尺寸只能走 IFD0 层读者
+PASS §3v-6 臂③a 记录头比率读数：DeclaredRatio=1.2（f32 @ SOI 前 80B、紧贴设备名）且 Found/Det=True —— 真机件比率字段在场
+PASS §3v-7 臂③b 负控素材：1.2f + 00 + OnePlus 15T 模式在语料中恰命中 1 处（实 1 处）—— 否则字节手术打错位置，负控无效
+PASS §3v-7 臂③b **负控**：抹掉记录头比率（1.2f→0）后 DeclaredRatio=0 而 Found/Det **仍** True（实 W Found=True Det=True reason=- dev='OnePlus 15T' mask=1536x2048x8 ratio=0 slack=209 jpegLen=820165）—— 头部比率只是记录、从不参与判定；「比率必读」硬判据引入者在这里红
+  [align] id=0.8863 其余最大=0.1553 最强=id
+PASS §3v-8 空间对齐：底图亮度 vs mask 原朝向相关系数 0.8863 是 8 向最强且 ≥0.70（外部独立复算 +0.837；若 mask 被旋转/镜像错位，最强向会变成 r90/r180/… 而本行红）
+PASS §3v-9 对齐负控：七种旋转/镜像的最高相关系数 0.1553 ≤0.30（防「退化掩膜八向都高」把 §3v-8 撑成恒真）
+
+### §3e 底图取法 A/B（两臂点名 + 相对忠实度 + 单一真值）###
+  [ab] 源底图均值=65.180 A臂=67.193 B臂=68.293  |dA|=2.012 |dB|=3.113
+PASS §3e-1 两臂都真产出增益图，且各自点名（A=底图=源 / B=自造 Reinhard，互不出现对方点名）
+PASS §3e-2 对照臂真的分叉：两臂产物 sha256 不同（实 92967BD4B4DC… vs 4BFA4FD7F44C…）⇒ 不是死旋钮
+PASS §3e-3 A 更接近源底图：|dA| < |dB|（读数见上一行）⇒ 「底图=源」是更忠实的一档
+PASS §3e-4 两个出口都只读唯一取底图入口（ForEncode 命中 2 须 2、裸读 GainMapSourceBaseRaw 命中 0 须 0）
+
+### §3f HEIC → BT.2020/PQ 出口（三读者 + 码域分叉）###
+PASS §3f-0 前置：两臂都必须产出 AVIF（PQ 臂=True 对照臂=True）—— 缺件则下面全部无凭据
+PASS §3f-1 读者①exiftool(-n)：请求 BT.2020 PQ ⇒ 容器 nclx 必须 primaries 9 / trc 16 / matrix 0（实 9/16/0）
+PASS §3f-2 读者②ffprobe：必须 bt2020/smpte2084（实 bt2020/smpte2084)——与①不同实现，互不遮蔽
+PASS §3f-3 读者③avifdec --info：必须 9/16（实 9/16）
+PASS §3f-4 反真空：PQ 臂日志必须点名「增益图来源: ISO-BMFF item…」⇒ 这条真走了 HEIC 增益图解码，不是普通转码
+PASS §3f-5 标签↔像素一致（码域分叉）：同素材同尺寸，PQ 臂 Ymax 必须显著低于 sRGB 臂，换的才只是矩阵不会造成这个量级（实 PQ=575 / SDR=943；判据 差≥200 且 PQ<0.8×SDR）
+PASS §3f-6 对照臂不得同向：sRGB 臂必须**不是** 9/16（实 1/13/0)——否则 §3f-1 只是在匹配恒真
+PASS §3f-7 PNG 出口：本门禁自己解析 cICP 块必须 = primaries 9 / trc 16 / fullrange 1（实 9/16/0/1)——不借任何产品侧读者
+PASS §3f-8 增益图出口：容器里必须同时有 tmap 与 dimg（实 tmap=True dimg=True）
+PASS §3f-9 第三方读者解析成功：avifdec 读出 Alternate Headroom=1.30，且文件里存在 trc=16 的 HDR 表示（读者报出的 Transfer Char 序列=13/16）⇒ 这份增益图能被 libavif 理解；读不出就是写错了
+PASS §3f-11 tmap 带 pixi：avifdec 的「Alternate image」必须报 Bit Depth=8 / Planes=3（实 8/3）—— 缺 pixi 时这两行整段不出现
+
+### §3g AVIF 增益图 + alpha：透明被拍平必须点名 ###
+PASS §3g-0 前提：HDR 夹具在位（C:\PLAN\ffmpegPictureUI/tests/output/validate/src_hdr.png）—— 缺则本段无凭据（fail-closed，不静默跳过）
+PASS §3g-1 前提：夹具是 PQ 且 alpha 非平凡（trc=smpte2084，alpha YMIN=4096 YMAX=60157）
+PASS §3g-2 源带 alpha ⇒ 走完增益图路径（tmap）且日志**点名**透明会被拍平（实 产物=True 点名=True）
+PASS §3g-3 点名必须与交付一致：产物 avifdec 报 Alpha: Absent（实 Absent）
+PASS §3g-4 对照：同一源走普通 PNG 出口**保留** alpha（pix_fmt=rgba64be）⇒ 上面不是源本身没 alpha
+
+### §1j ISOBMFF alpha：AVIF ALPHA0 URN / HEIC auxid:1 识别 + 透明端到端 ###
+PASS §1j-0 前提：HEIC alpha 夹具在位且 sha256[:16]=3873a32390124eb0（实 3873a32390124eb0）
+PASS §1j-1 前提：AVIF+alpha 素材由 avifenc 现造成功（C:\PLAN\ffmpegPictureUI/tests/output/validate/gmisobmff_08812925/alpha.avif）
+PASS §1j-2 AVIF alpha 识别：libavif 的 ALPHA0 URN（auxiliary:alpha）⇒ auxAlpha=True（只认 auxid:1 的旧实现判 False）
+PASS §1j-3 无 aux 负控：普通静态 AVIF ⇒ auxAlpha=False（不是「见到第二条视频流就算 alpha」——DJI 灰增益图反例）
+PASS §1j-4 HEIC 正控：auxid:1 URN ⇒ auxAlpha=True（HEVC 腿保持兼容，不被 AVIF 改动吞掉）
+PASS §1j-5 AVIF alpha → PNG：产物 pix_fmt=rgba（必须带 alpha 通道；修前 rgb24）
+PASS §1j-6 AVIF alpha 透明区保留：产物 alphaextract YMIN=0 YMAX=255（源 0..255；只补 pix_fmt 不 merge 的半成品是全 255）
+PASS §1j-7 无 aux 负控 → PNG：pix_fmt=rgb24（不得被补出 alpha 通道；否则「保留透明」会变成给所有输入加 alpha）
+PASS §1j-8 HEIC alpha → PNG：pix_fmt=rgba（HEIC 正控仍 rgba）
+PASS §1j-9 HEIC alpha 透明区保留：产物 alphaextract YMIN=0 YMAX=255（auxid:1 腿同样要真合并，不只改 pix_fmt）
+
+### §1k D5 截断预检 fail-closed（meta 缺失 / 链断 / extent 截断都必须拦）###
+PASS §1k-1 meta 缺失 + 顶层 box 链中断 ⇒ 拦截且点名「meta 未定位」（实 产物=0；旧实现返回未截断 ⇒ 会送进 ffmpeg）
+PASS §1k-2 meta 子 box 链中断 ⇒ 拦截且点名「box 链解析中断」（实 产物=0；旧实现通过 meta 已定位 + IsTruncated=false 放行）
+PASS §1k-3 iloc extent 越过 EOF 的截断件 ⇒ 拦截且点名「越过数据区终点」（实 产物=0；回归锁）
+PASS §1k-4 正控：完好件不被新 fail-closed 误拦（实 产物=1）
+WARN §3f-10 已知缺陷仍在：拼错的 BT.2020 PPP 与合法的 BT.2020 产物逐字节相同（sha12=6B6CDB40FF89）且 exit=0 ⇒ 外部不可区分。处方 = --color-space 走 ParseTokenStrict/BadValue（同文件 :772/:924 的先例）+ 一条「拼错词必须与合法近邻字节不同」的判据
+
+### §3c 行为：HEIC 合成件走完增益图路径（含负控）###
+PASS §3c 负控素材存在（libheif 的 example.heic = 普通 HEIC，无 tmap）
+PASS §3c 合成 HEIC → jpg：识别并产出（实 产物=1）
+PASS §3c HEIC：增益图**真被解码并应用**（日志出现「已解码为线性 HDR PFM」= 走完元数据 + HEVC item 解码 + 增益公式）
+PASS §3c HEIC：增益图来源点名到 hvc1 item 且字节数为转换后的 Annex-B（实 [GainMap解码] 增益图来源: ISO-BMFF item 3（hvc1，2981 B，形式 tmap））
+PASS §3c **负控**：普通 HEIC → jpg 产出正常且**不出现**增益图路径（实 产物=1）
+
+### §3h 方向位冲突：flags bit2 置位时以标志为准（批次 E，审阅面 1）###
+PASS §3g 前置：tmap 载荷定位并翻 bit2 成功（tmap off=3333 len=142 flags=0xc0 -> 0xc4）
+PASS §3h 冲突裁决：bit2=1 与 headroom 读数相反时，点名行在案且方向以标志为准
+PASS §3h 对照：容器识别不受手术影响（路径照常走通）
+PASS §3h **负控**：原件（bit2=0）不出现点名行 => 该行只对真冲突打印，不是常驻日志
+
+### §4 收尾 ###
+PASS §4 被测 exe 未被中途重建（C:\PLAN\ffmpegPictureUI/src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.exe）
+  本门禁共起过 36 个应用进程
+
+===== gainmap-isobmff: PASS=185 FAIL=0 SKIP=0 =====

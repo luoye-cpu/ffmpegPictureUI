@@ -1,0 +1,27 @@
+===== accept-ui-split-union =====
+PASS 0 前置：仓库安静（无其它 UI 宿主在跑）
+run: UiTestHost (reference implementation) ...
+  old host: ===== UI 测试汇总: 520 PASS / 0 FAIL ===== ; names=520 ; exit=0
+PASS 1a 旧宿主断言名数 == 520（实 520）
+PASS 1b 旧宿主 FAIL == 0（实 0）
+
+project                    run       PASS      FAIL
+-------------------------- --------- --------- ----
+ui-core                    (full)    107       0
+ui-mode                    (full)    66        0
+ui-color                   (full)    103       0
+ui-sweep                   (full)    169       0
+ui-cli                     (full)    75        0
+
+union of new projects = 520 names
+sum of per-project PASS lines = 520 (⚠ 会 > 并集：个别断言行跨工程重复出现)
+PASS 2a 5 个工程全组无 FAIL（实 0）
+PASS 3a missing（旧有新无、且**不在**已登记改名白名单内）== 0（实 0）
+PASS 3b extra（新有旧无、且**不在**已登记改名白名单内）== 0（实 0）
+PASS 3a2 白名单的**旧名**恰好命中 0 条（实 0）—— 防白名单过期后变成"什么都放过"
+PASS 3b2 白名单的**新名**恰好命中 0 条（实 0）—— 防"只删不加"的静默丢断言
+PASS 3c 并集计数 == 旧宿主计数（一对一改名 ⇒ 总数守恒）（new=520 old=520）
+PASS 3d 并集计数 == 520（实 520）
+PASS 4  反控：两侧集合都非空（防路径错导致空比全绿）
+
+===== ui-split-union: PASS=11 FAIL=0 =====

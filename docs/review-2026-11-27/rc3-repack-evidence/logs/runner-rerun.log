@@ -1,0 +1,36 @@
+gates-lock=C:\PLAN\ffmpegPictureUI/tests/output/.gates.lock (pid=4136)
+env-cleaned=LC_ALL,LANG,LC_CTYPE (exiftool 的 perl locale warning 源头掐掉；本轮起有效)
+env-temp-before=C:\Users\20210\AppData\Local\Temp | C:\Users\20210\AppData\Local\Temp
+env-temp-pinned=C:\PLAN\ffmpegPictureUI/tests/output/_tmp/round-tmp (TMP/TEMP/TMPDIR；子进程继承 ⇒ 不再写系统临时目录)
+env-temp-writable=OK
+[gate] exe=C:\PLAN\ffmpegPictureUI/tests/projects/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.exe (Release)
+probe-host=C:\PLAN\ffmpegPictureUI/tests/projects/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.exe
+shape-selfcheck=OK（20 针：定义点 / 调用点 / 带超时调用点 / 裸取 A / 裸取 B / 进程对象取码 / 写 rc 点 / 读 rc 点 / 杀树 token / 抑制点 / 探针超时默认值 / 脚本超时默认值 / tableOnly 条数 / noSelfSummary 条数 / 读失败不沿用 / 自身指纹 / 散文条数 / 受管参数表 / C4 超时表 / 全量拒跑闸）
+runner-self-sha256=BE6974ADF50BA1A4 lines=2223 bytes=227724  (启动时记录；有意打印)
+artifact-sha16: FfmpegGui.dll=5650FF1173F30085  FfmpegGui.exe=A05CB92DDF17E665  ServiceProbe.exe=17731D770F2D79C4  UiTestHost.exe=7A230C2894E975D5  GainMapTestHost.exe=E58F5B74C027947E  Tests.UiCore.exe=CD768EA3AB0178D2  Tests.UiMode.exe=B418F3B1A2B22190  Tests.UiColor.exe=C591DF3DB18E42AC  Tests.UiSweep.exe=8230508756889CBF  Tests.UiCli.exe=F16F39682E04047F  (被测产物；跑后不改则可事后追溯到这一份)
+[contract  ] exit=0  PROBE RESULT: pass=164 fail=0  0.7s
+      PASS C20 EncodeScale≠1（SDR→PQ 目标）：快路径开关须与声明一致（期望 关表，实 False）
+      PASS C20 EncodeScale≠1（SDR→PQ 目标）：算子要求关表 ⇒ 两支都解析式，须逐字节相同（实 首个不同码位=无 最大差=0 容差=0）
+      PASS C20 LinearScale≠1（PQ→sRGB 源，快路径已启用）：快路径开关须与声明一致（期望 走表，实 True）
+      PASS C20 LinearScale≠1（PQ→sRGB 源，快路径已启用）：快路径启用 ⇒ 表与解析式差须在容差内（实 首个不同码位=99 最大差=1 容差=1）
+      PASS C20 LinearScale≠1 + 矩阵（PQ→Display P3）：快路径开关须与声明一致（期望 走表，实 True）
+      PASS C20 LinearScale≠1 + 矩阵（PQ→Display P3）：快路径启用 ⇒ 表与解析式差须在容差内（实 首个不同码位=99 最大差=1 容差=1）
+script-host=C:\Users\20210\AppData\Local\Doubao\User Data\sandbox_runtime\bases\fa694f517e5995233c80a9a8db5212c2\pwsh\pwsh.exe
+script-list=106 条（受管基线 106）
+[SUBSET] -Scripts ⇒ 只跑 3 条：verify-gainmap-engine.ps1, verify-gainmap-isobmff.ps1, verify-ui-host.ps1
+[SUBSET] 仓库锁 / 单步超时 / STALE / 双漂移 / 逐条留痕 **仍然全部生效**。
+[SUBSET] 本仓硬规矩⑥：**不许跑全量**；要跑必须 -FullBaseline 且用户明确要求（AGENTS.md §3）。
+registry-timeouts=OK（4 条：verify-color-strategy.ps1=1200, verify-cross-format-matrix.ps1=1200, verify-gui-color-combinations.ps1=1200, verify-png-optimizer.ps1=1200）
+[verify-gainmap-engine.ps1       ] exit=1  PASS ⑬ 前提：三件第三方语料在位（fail-closed，不许静默 SKIP；缺=） ; PASS ⑬b DSC00037 容器结构（探针直读字节）：2 幅图 + ISO 增益区间 0..4.1402 + 副图 1368x912（= 底图 1/2）+ 副图定位命中 SOI；pass=6 fail=0 ⇐ 实得 [PROBE RESULT: pass=6 fail=0] ; PASS ⑬e DSC01058 容器结构：探针读到负 min=-0.0049（**首次**在第三方真件上覆盖负 min）+ 副图 1500x1000；pass=6 fail=0 ⇐ 实得 [PROBE RESULT: pass=6 fail=0] ; ===== gainmap-engine: PASS=220 FAIL=5 =====  392.4s to=1200s
+      FAIL ⑨ 前提：混合件确有内嵌 ICC（exiftool 读到描述）
+      FAIL ⑨ 实测：混合件走 **SDR** 路 ⇒ 产物里没有 ISO 增益区间（实得「0 max=2.3 gamma=1 offsetSDR=0.0156 offsetHDR=0.0156 channels=1 hdrBase=False capMin=0 capMax=2.3」）⇒ ICC 判据压过 cICP/ffprobe
+      FAIL ⑨ 实测：日志**点名**「输入为 SDR…已按普通 JPEG 输出」（可用性诚实，非静默降级）
+      FAIL ⑨ 混合件是**普通 JPEG**（顶层 1 幅图；SDR 路不写增益图 ⇒ 无 ISO 增益区间）
+      FAIL ⑨ 诚实告知：日志点名「输入为 SDR…」（非静默降级）
+[verify-gainmap-isobmff.ps1      ] exit=0  PASS §3h 对照：容器识别不受手术影响（路径照常走通） ; PASS §3h **负控**：原件（bit2=0）不出现点名行 => 该行只对真冲突打印，不是常驻日志 ; PASS §4 被测 exe 未被中途重建（C:\PLAN\ffmpegPictureUI/src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.exe） ; ===== gainmap-isobmff: PASS=185 FAIL=0 SKIP=0 =====  278.8s to=1200s
+[verify-ui-host.ps1              ] exit=0  [selfcheck] ui-color: exit=1 timedOut=False summary=True pass=104 fail=1 elapsed=11s ; [selfcheck] ui-sweep: exit=1 timedOut=False summary=True pass=170 fail=1 elapsed=32s ; [selfcheck] ui-cli: exit=1 timedOut=False summary=True pass=76 fail=1 elapsed=4s ; UIHOST RESULT: pass=520 fail=0  213.8s to=1200s
+runner-self-sha256=BE6974ADF50BA1A4 lines=2223 bytes=227724  (收尾时重测；有意打印)
+
+===== 运行器汇总（-Scripts 子集 3/106 条 ⇒ **不构成基线**）：失败 1 项 =====
+    script:verify-gainmap-engine.ps1 (exit=1)
+⇒ 退出码 1（2026-09-18 之前本脚本尾部无 exit ⇒ 失败会被吞掉）

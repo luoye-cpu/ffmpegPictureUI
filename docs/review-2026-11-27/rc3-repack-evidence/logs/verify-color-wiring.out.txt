@@ -1,0 +1,192 @@
+[gate] exe=C:\PLAN\ffmpegPictureUI/src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.exe (Release)
+[gate] exe=C:\PLAN\ffmpegPictureUI/tests/projects/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.exe (Release)
+
+=== (1) 默认走引擎；legacy 是显式逃生门（2026-09-16 契约更新）===
+  PASS (1) 三路都有产物（显式 legacy / 显式 engine / 默认）
+  PASS (1) SDR 源 + auto 目标：引擎判直通 ⇒ 与显式 legacy **逐字节相同**（27D8B40E97C5…）
+  PASS (1) 日志写明「计划为直通 ⇒ 由 ffmpeg 重编码」（不是偷偷不走）
+  PASS (1) **默认（不传 --color-engine）⇒ 走引擎**：与显式 engine 逐字节相同
+  PASS (1) 默认路径出现引擎日志 ⇒ 默认值确实是 engine（默认值即契约）
+  PASS (1) 显式 legacy 时一行引擎日志都不该出现（逃生门零污染）
+
+=== (2) 选了引擎 ⇒ 真的走引擎 ===
+  PASS (2) 引擎产出文件 42765B
+  PASS (2) 日志有引擎决策行（Map）
+  PASS (2) 日志有引擎执行耗时行（证明像素真由本进程变换）
+  PASS (2) 本次**没有**再跑 legacy 的 ffmpeg 色彩命令
+  PASS (2) 引擎 vs legacy 像素同域（psnr=83.62dB maxDiff=19/65535 尺寸=512x384）
+  PASS (2) 引擎产物 CICP 标签为 sRGB 目标（iec61966-2-1,bt709）
+  PASS (2) 引擎 P3→sRGB png 走 CICP 优先硬路径（日志含'CICP 优先'且无'已嵌入目标 ICC'；旧双描述在此必红）
+
+=== (3) HDR→SDR：引擎 tonemap + 峰值来源可见 ===
+  PASS (3) 引擎 tonemap 产出文件
+  PASS (3) 引擎决策含 tonemap 挂载
+  PASS (3) 日志写明峰值来源（用户/元数据/整帧实测/名义兜底）
+  PASS (3) 输出不得仍挂 PQ 标签（iec61966-2-1,bt709）
+
+=== (4) 不能走 ⇒ 显式失败并点名（绝不静默回退） ===
+  PASS (4) 质量参数已承接 ⇒ 不再拒绝（24321B）
+  PASS (4) 质量**确实生效**（q60 24321B ≠ q100 592126B，PNG 压缩级别随之变化）
+  PASS (4) 旧 --tonemap-curve 未接入 ⇒ 拒绝并提示改用 --color-tone-map
+
+=== (7) 最长边几何缩放：不再拒绝，且真的缩到限值 ===
+  PASS (7) 需要几何缩放 ⇒ 不再拒绝（显式 engine 也出产物）
+  PASS (7) 几何缩放**实测宽高** = 32,24（源 512x384，最长边锁 32；ffprobe 读回 32,24）
+  PASS (7) 日志可追溯缩放发生在哪一层（实命中层: prescale；⚠ 今天默认路径应为 prescale，删预缩放后应变为 engine）
+  PASS (7) 未启用限值 ⇒ 尺寸不变（512,384；ffprobe 读回 512,384）
+  PASS (7) 限值 4096 > 最长边 ⇒ 不缩放（512,384；ffprobe 读回 512,384）
+
+=== (6) 超广目标：声明域必须等于像素实际所处的域 ===
+  PASS (6) 超广目标确实走了引擎（Map）
+  PASS (6) 产物 cICP 声明归一后的 BT.2020 原色（实得 bt709,bt2020）
+  PASS (6) 日志给出 cICP tokens（CICP 优先正控）
+  PASS (6) cICP 声明 = 归一后的 bt2020/bt709（实 'bt2020/bt709'）
+  PASS (6) cICP transfer 编号=1（bt709 ⇔ 1）
+  PASS (6) 负控：CICP 优先产物不含 iCCP chunk（实 hasIccp=False）
+  PASS (6) 负控：日志不再出现'已嵌入目标 ICC'（旧双描述已退役）
+  PASS (6) 引擎与 legacy 亮度同量级（YAVG 144.92 vs 144.915，相对差 0%＜10%）
+
+=== (13) L1 收紧：源带 ICC 但空间可精确 CICP 命名 ⇒ 默认不携源 ICC（2026-11-14）===
+  PASS (13) P3源(带ICC)→png 默认产出 36123B
+  PASS (13) 产物字节级不含 iCCP chunk（实 hasIccp=False；旧 L1 会带回源 718B ICC ⇒ 必红）
+  PASS (13) 日志显式解释'源 ICC 未携带'（不许静默丢源 ICC）
+  PASS (13) 不得再宣称'后置嵌入源 ICC'（新口径下不嵌入）
+  PASS (13) 产物仍写 cICP=P3 原色（iec61966-2-1,smpte432）——CICP 已正确承载同一空间
+
+=== (8) 外部 ICC（--icc-file）：判定源色彩空间并真驱动映射 ===
+  PASS (8) 无外置 ICC 与有效外置 ICC 均正常产出
+  PASS (8) 无 --icc-file：源按惯例假定 sRGB ⇒ 与 sRGB 目标等价 ⇒ 直通
+  PASS (8) --icc-file=p3.icc ⇒ 源改判为 P3 ⇒ 走 Map（像素真被转换）
+  PASS (8) 决策理由含「源色域超出目标」（P3 ⊃ sRGB）—— 外部 ICC 被真正消费
+  PASS (8) 引擎日志写明源描述符来自外部 ICC（源=Display P3 (ICC 识别, sRGB（ICC 参数吻合）, err=2.0E-004) [--icc-file]（IccMetric） 目标=目标）
+  PASS (8) 明示的外置 ICC 不存在：报告请求无法履行，不伪报已按该 ICC 转换
+  PASS (8) 像素**确实变了**（P3→sRGB 实测 PSNR 35.36 dB ＜ 50dB ⇒ 不是「只改了标签」）
+
+=== (5) GainMap：由色彩引擎决策并执行（2026-09-16 契约更新）===
+  PASS (5) GainMap + 显式引擎 ⇒ 产出非空文件（13598B）
+  PASS (5) 日志不得再声明「GainMap 路径尚未接入引擎」（已接入）
+  PASS (5) 出现引擎色彩决策行（决策由引擎做，而非被路由拦下）
+  PASS (5) 产物是 Ultra HDR 容器（顶层 2 幅图：底图 + 增益图）
+  PASS (5) ISO 21496-1 增益元数据存在（不是一张普通 JPEG 改名）
+  PASS (5) MPF 副图偏移命中 SOI（增益图真实可定位）
+
+=== (9) JXL：ffmpeg-libjxl 子情形接入引擎（Cjxl 子情形见 (10) 段）===
+  PASS (9) jxl(backend=Ffmpeg) 引擎出口产出非空文件（11113B）
+  PASS (9) 确实由引擎出口完成（日志有「MPix/s」且无「本次不适用引擎」）
+  PASS (9) 引擎 jxl 出口命令行含 CICP 标签
+  PASS (9) 标签写在 -i 之前（-color_primaries@45 < -f rawvideo@92；写输出侧会被静默忽略）
+  PASS (9) jxlinfo 读回 sRGB（Color space: RGB, D65, sRGB primaries, sRGB transfer function）
+  PASS (9) 目标 Display P3 的引擎出口产出非空文件（11662B）
+  PASS (9) 目标 Display P3 ⇒ jxlinfo 读回 P3（Color space: RGB, D65, P3 primaries, sRGB transfer function）
+  PASS (9) 默认后端（Cjxl）产出非空 jxl（11004B）
+  PASS (9) 默认后端**不再**被报「引擎尚未接入该路径」（契约变更）
+  PASS (9) 默认后端确实由引擎的 **cjxl 出口**执行（日志有 cjxl 命令行）
+
+=== (10) JXL 的 Cjxl 后端：引擎 cjxl 执行出口（2026-09-17 第二轮接入；2026-10-02 SDR 改走 PNG 中转）===
+  PASS (10) cjxl 出口产出非空文件（11004B）
+  PASS (10) 源 ICC 可精确 CICP 命名 ⇒ cjxl 走 -x color_space=DisplayP3（ICC 与 CICP 互斥时 CICP 优先）
+  PASS (10) 负控：此时**不**再塞 -x icc_pathname=（互斥容器不双写；ICC 不是被静默吞掉）
+  PASS (10) SDR 场景 ffmpeg 侧走 **PNG 落盘中转**（-map_metadata 1 保住源 EXIF/XMP；图像体积与 PPM 一致，2026-10-02 实测）
+  PASS (10) 负控：PNG 中转未失败（失败会点名且显式不产出，不回退 PPM 以免静默丢元数据）
+  PASS (10) 计划显式说明：源 ICC 由等价 CICP 承载（不是偷偷丢掉；降级已登记）
+  PASS (10) 负控：没有谎报 ICC 已写入（JXL 互斥路径只写 CICP）
+  PASS (10) 携带的源 ICC 语义真的进了产物（jxlinfo 读回 P3：Color space: RGB, D65, P3 primaries, sRGB transfer function）
+  PASS (10) 显式 sRGB 目标产出非空文件（11113B）
+  PASS (10) 目标语义由计划翻译成 cjxl 的 color_space（[色彩] cjxl 命令行: "C:\PLAN\ffmpegPictureUI\tests\output\_tmp\round-tmp\jxl_meta_01e2dd7b967746958e74c57abf293e56.png" "C:\PLAN\ffmpegPictureUI\tests\output\validate\wire_05bcf8fc\eng_cjxl_srgb\a2_srgb_p3.jxl" -e 7 -d 2.4 -x color_space=sRGB）
+  PASS (10) jxlinfo 读回 sRGB（Color space: RGB, D65, sRGB primaries, sRGB transfer function）
+  PASS (10) BT.2020 PQ 目标产出非空文件（10812B）
+  PASS (10) HDR 目标落到 Rec2100PQ 枚举（[色彩] cjxl 命令行: "-" "C:\PLAN\ffmpegPictureUI\tests\output\validate\wire_05bcf8fc\eng_cjxl_pq\a2_srgb_p3.jxl" -e 7 -d 2.4 -x color_space=Rec2100PQ --intensity_target=1000）
+  PASS (10) **HDR 目标必须声明 --intensity_target**（缺了 libjxl 回落默认峰值 ⇒ 亮度语义错）
+  PASS (10) **HDR 目标仍走 PPM 管道**（PNG 中转只给 SDR：PNG 表达不了 PQ/HLG 语义，历史坑 JXL_ISSUES_HANDOVER P0-2）
+  PASS (10) jxlinfo 读回 PQ 传递函数（Color space: RGB, D65, Rec.2100 primaries, PQ transfer function）
+  PASS (10) 带 alpha 源产出非空文件（82B）
+  PASS (10) 透明源补了 alpha 平面（PAM + 第二输入 alphaextract/alphamerge）
+  PASS (10) 透明**未被静默拍平**（源 alpha YMIN=128，产物 YMIN=128；拍平会得 255）
+  PASS (10) 目标落不进 cjxl 枚举（DCI-P3 ⇒ bt2020/bt709）⇒ **现在必须交付**（exit=0，产物=True）—— 契约见本段头注
+  PASS (10) 且 cjxl 侧真的交付了该语义（jxlinfo 读回「Color space: RGB, D65, Rec.2100 primaries, 709 transfer function」）⇒ 不是'出了个文件但标注丢了'
+  PASS (10) 机制点名：cjxl 命令行带 -x icc_pathname=（生成目标 ICC 落盘）—— 否则这条交付无从复现
+  PASS (10) 旧的显式拒绝**不得复现**（日志里再出现「落不进 cjxl 的 color_space 枚举」= 择一被改回原样）
+  PASS (10) 交叉证明：**同一目标**走 ffmpeg-libjxl 后端也产出非空 jxl（10994B）⇒ 两条后端现在都走得通
+  PASS (10) 且 ffmpeg 侧真的交付了该语义（jxlinfo 读回「Color space: RGB, D65, Rec.2100 primaries, 709 transfer function」）—— 证明目标本身可交付
+  PASS (10) PAM 用例产出非空 jxl（85B）
+  PASS (10) PAM 用例的命令行确实带了「-x color_space=DisplayP3」
+  PASS (10) PAM 用例 ffmpeg 侧用的是「-c:v pam」（**不是** ppm）
+  PASS (10) **PAM 下「-x color_space=」确实生效**（第三方工具 jxlinfo 读回 P3，而非只看命令行）：Color space: RGB, D65, P3 primaries, sRGB transfer function
+  PASS (10) PAM 用例产物**仍含 alpha**（未因换 PAM 目标语义而丢通道）：JPEG XL image, 32x32, lossy, 8-bit RGB+Alpha
+  PASS (10) PAM 用例透明**未被拍平**（源 alpha YMIN=128，产物 YMIN=128）
+  PASS (10) auto 光子噪声 + 引擎 cjxl 出口产出非空 jxl（exit=0，11004B）
+  PASS (10) 未解析的占位串**没有**被发给编码器（命令行：[色彩] cjxl 命令行: "C:\PLAN\ffmpegPictureUI\tests\output\_tmp\round-tmp\jxl_meta_cbab6a93ef97420a8723f076db7053bf.png" "C:\PLAN\ffmpegPictureUI\tests\output\validate\wire_05bcf8fc\eng_cjxl_photon_auto\a2_srgb_p3.jxl" -e 7 -d 2.4 -x color_space=DisplayP3）
+  PASS (10) ISO 解析确实跑在**引擎路线**上（该行由分叉前的共用步骤打出，不再内联在 ProcessCjxlAsync）
+  PASS (10) **正控**：有损 + 数值 ISO ⇒ flag 照发且产物非空（命令行：[色彩] cjxl 命令行: "C:\PLAN\ffmpegPictureUI\tests\output\_tmp\round-tmp\jxl_meta_4d90249bfa5a4ece95b7fcb121d18484.png" "C:\PLAN\ffmpegPictureUI\tests\output\validate\wire_05bcf8fc\eng_cjxl_photon_iso\a2_srgb_p3.jxl" -e 7 -d 2.4 --photon_noise_iso=400 -x color_space=DisplayP3）
+  PASS (10) 无损 ⇒ 命令行只有 -d 0、**不带** --photon_noise_iso（叠加会静默破坏逐比特无损）
+  PASS (10) 被丢弃的用户参数**点名**（不静默吞设置）
+  PASS (10) 进程→进程管道条数 == 结构锁表长（实得 5，表 5）⇒ 新增管道必须先入表并带齐三件
+  PASS (10h) PipeToEncoderAsync：捕获=True 杀写侧(pa)=True 成功判据含传输失败=True 附加=True
+  PASS (10h) TryPipeDjxlToCjpegliAsync：捕获=True 杀写侧(procDj)=True 成功判据含传输失败=True 附加=True
+  PASS (10h) PipeFfmpegToExternalEncoderAsync：捕获=True 杀写侧(procFf)=True 成功判据含传输失败=True 附加=True
+  PASS (10h) PipeDjxlToCjxlAsync：捕获=True 杀写侧(procDj)=True 成功判据含传输失败=True 附加=True
+  PASS (10h) PipeDjxlToFfmpegAsync：捕获=True 杀写侧(procDj)=True 成功判据含传输失败=True 附加=True
+  PASS (10j) 8-bit 源 → JXL 无损交付 rgb24（不是 rgb48le 载体）：rgb24
+  PASS (10j) 8-bit 源 → JXR 交付 8-bit（曾为 rgb48le / +369%）：bgr24
+  PASS (10j) **正控**：16-bit 源仍按 16-bit 交付（证明上两条不是恒 8-bit）：rgb48le
+
+=== (11) JXR 执行出口：BMP/TIFF 中转 + JxrEncApp ===
+  PASS (11) JXR 出口产出非空 .jxr（30925B）
+  PASS (11) 8-bit 直通源 ⇒ **BMP** 中转 + 交付 -pix_fmt rgb24（交付档取自计划的目标位深，不再取自中间件档）
+  PASS (11) 同一行的**中间件**仍是 rgb48le ⇒ 『直通绝不降位』没有被削弱，改的只是出口交付档
+  PASS (11) 该用例**不是** TIFF（TIFF 只属于 ≥8bpc 交付；两档同时出现=交付档被两处独立推导）
+  PASS (11) 播报的中转容器与命令行一致（实得「JXR 出口：变换后的 raw → BMP（无 alpha）→ JxrEncApp（中转文件已清理）」；旧文案在此处写 TIFF）
+  PASS (11) 出口的 ffmpeg 命令行**不含 zscale** ⇒ 色彩不再由硬编码滤镜决定（原 ProcessJxrAsync 的 :1783 那条）
+  PASS (11) 命令行有可追溯的「JxrEncApp 命令行:」标签（A/B 对拍用）
+  PASS (11) --bit-depth 16 ⇒ **TIFF** 中转（JxrEncApp 自述 bmp: <=8bpc ⇒ 48-bit 中转只能走 TIFF）
+  PASS (11) 同一素材：8-bit 交付 30925 B < 16-bit 交付 151899 B ⇒ 载体档位不再白涨（旧行为下两格同为 16-bit，本条会红）
+  PASS (11) **独立解码器 JxrDecApp 能解出 8-bit 产物**（-c 0 = 24bppBGR，码表取自工具自己的 usage）
+  PASS (11) 8-bit 交付的容器像素格式回读为 24-bit BGR（实得「[IFD0]          PixelFormat                     : 24-bit BGR」）
+  PASS (11) 16-bit 交付产物可被 JxrDecApp -c 10（48bppRGB）独立解出
+  PASS (11) 负控：48-bit 产物**不得**被 -c 22（32bppBGRA）解出 ⇒ 上一条的成功有判别力
+  PASS (11) 16-bit 交付的容器像素格式回读为 48-bit RGB（实得「[IFD0]          PixelFormat                     : 48-bit RGB」）
+  PASS (11) 用 --bit-depth=8 ⇒ 计划出口位深 8 ⇒ **BMP** 中转（BMP 分支确实可达，不是死代码）
+  PASS (11) 8-bit 产物可被 JxrDecApp -c 0 独立解出
+  PASS (11) 8-bit 产物容器像素格式回读为 24-bit BGR（实得「[IFD0]          PixelFormat                     : 24-bit BGR」）
+  PASS (11) P3 源 + jxr：决策由**计划**给出（Map → sRGB），而不是硬编码把像素当 Rec.2020
+  PASS (11) 对照：legacy 同一请求仍走**专用 JXR 管线**（有「[jxr] Step 1」、无引擎出口标签）
+  PASS (11) 对照：引擎用例**没有** legacy 的「[jxr] Step 1」⇒ 两条路确实不同、本段的断言不是空转
+  PASS (11) legacy 不再硬编码改标（源 smpte432 ⇒ 中转 TIFF **保持** smpte432，不再被改标 bt709）
+  PASS (11) legacy 的 ffmpeg 命令行**不再**含 zscale=primariesin=bt2020（实测 0 条；2026-09-18 之前为 ≥1）
+  PASS (11) alpha 源：中转用第二输入补 alpha 平面（alphaextract/alphamerge），不是直接喂 rgb
+  PASS (11) **产物容器真的含 alpha**（exiftool 回读 PixelFormat=「[IFD0]          PixelFormat                     : 32-bit BGRA」）—— 不是只看命令行
+  PASS (11) 透明**未被拍平**（同一 16-bit 口径下源 alpha YMIN=32238，产物=32238；解码码 22 由 [IFD0]          PixelFormat                     : 32-bit BGRA 选出）
+  PASS (11) --bit-depth 16 的 alpha 交付回读为 64-bit RGBA（实得「[IFD0]          PixelFormat                     : 64-bit RGBA」）⇒ 升档臂不是死分支
+  PASS (11) 同一 alpha 素材：8-bit 交付 349 B < 16-bit 交付 609 B（体积差由交付档解释，不是编码器换档）
+  PASS (11) 64bppRGBA 产物可被 -c 23 独立解出
+  PASS (11e) 前提自检：素材确实**无色彩标签**（ffprobe primaries/transfer = 「unknown,unknown」）
+  PASS (11e) 该用例**确实**走 legacy 专用 JXR 解码段（有「[jxr] Step 1」）
+  PASS (11e) 无标签 16-bit → legacy JXR：ffmpeg 命令行**不得**含 zscale=primariesin=bt2020（实测 0 条）
+  PASS (11e) 中转 TIFF 保持**无标签**（不被改标 bt709；原实现会标 bt709）
+  PASS (11e) 仍须产出非空 .jxr（不转换 ≠ 不产出；实测 152166B）
+  PASS (11) 中转目录已清理（跑前 0 个 / 跑后 0 个；用 File.Delete，Remove-Item 对仓外路径静默无效）
+
+=== (12) 取向标签 × 免解码重封装：产物自洽性 ===
+  PASS (12) 夹具自检：源 coded=640x480 且 Orientation=8（不成立则本段无从判定）：实得 coded=640,480 tag=8
+  PASS (12) jpg：像素已被旋正（coded 应成 480x640，实得 480,640）
+  PASS (12) jpg：旋正后不得仍带源 Orientation（否则二次旋转），实得 <无>
+  PASS (12) png：像素已被旋正（coded 应成 480x640，实得 480,640）
+  PASS (12) png：旋正后不得仍带源 Orientation（否则二次旋转），实得 <无>
+  PASS (12) webp：像素已被旋正（coded 应成 480x640，实得 480,640）
+  PASS (12) webp：旋正后不得仍带源 Orientation（否则二次旋转），实得 <无>
+  PASS (12) jxl(jbrd)：像素应当没动（jxlinfo coded 仍是 640x480，实得 640,480）
+  PASS (12) jxl(jbrd)：取向随产物带走（EXIF 读回 8，期望 8）
+  PASS (12) 反真空：jxl 关掉 jbrd ⇒ 像素被旋正，标签必须丢（实得 <无>，coded 480,640）
+  PASS (13) 意图装配不再自己起 exiftool 抽 ICC（ColorIntentFactory 命中 0 次）
+  PASS (13) 正向对照：同一正则在 QueueProcessor 命中 10 次 ⇒ 上一条的 0 是「真没有」而不是正则失效
+  PASS (13) 装配侧只有**一个** ICC 描述符入口（ProbeInputIccDescriptor 命中 1，期望 1）
+  PASS (13) 缓存描述符对外只经 Clone 出口（.iccDescriptor?.Clone() 命中 1 次）⇒ 摘掉它就是把缓存里的对象交给单个任务改
+  PASS (13) 探测核把描述符**接回** struct（meta.iccDescriptor 赋值命中 1 次）⇒ ColorMetadata 是 struct，漏接回就是『按值传参丢弃修改』同族缺陷
+  PASS (13) 正向对照：合并探测的 argv 确实带着 ICC（-b -icc_profile 命中 1 次）⇒ 下面的点名不是空对空
+  PASS (13) 合并探测的取消/超时点名恰一条且说出 ICC 一起失去（1/1）
+  PASS (13) ICC→空间名的兜底口径只有一份（ColorSpaceIdentify 内 GuessColorSpace 命中 1，期望 1）
+  PASS (13) 8-bit 快路径判据具名且同源：TableFastPathOperatorsAllowRgb8 命中 2（须 2 = 定义 + 内核唯一调用点）⇒ 谁把条件再裸写回 if 里，这一条掉到 1 就红
+  PASS (13) 正向对照：16-bit 侧同名族判据 TableFastPathOperatorsAllow( 命中 2（须 2）⇒ 上一条的计数不是正则空转
+  PASS (13) 8-bit 出口不得再留裸写的算子条件（旧形式命中 0，须 0）
+
+===== 接线路径: PASS=162 FAIL=0 =====

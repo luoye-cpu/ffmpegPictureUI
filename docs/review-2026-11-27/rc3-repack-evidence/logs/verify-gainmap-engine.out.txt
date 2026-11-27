@@ -1,0 +1,277 @@
+[gate] exe=C:\PLAN\ffmpegPictureUI/src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.exe (Release)
+[gate] exe=C:\PLAN\ffmpegPictureUI/tests/projects/ServiceProbe/bin/Release/net11.0/win-x64/ServiceProbe.exe (Release)
+
+### 1) 默认引擎：HDR 源 + jpg + --jpeg-gain-map ⇒ 真 Ultra HDR ###
+  PASS 退出码 0（实得 0）
+  PASS 产出非空文件（13598 B）
+  PASS 日志不再声明「GainMap 路径尚未接入引擎」（旧契约已失效）
+  PASS 出现引擎**决策行** ⇒ 色彩决策确实由引擎做（不是被路由拦下后由旧管线自决）
+  PASS ① 被识别为 Ultra HDR 容器（顶层 2 幅图：底图 + 增益图）
+  PASS ① ISO 21496-1 增益元数据存在
+  PASS ① MPF 副图偏移命中 SOI（增益图可定位）
+  PASS ① 探针容器结构断言全通过（含「ISO 增益区间非零」）
+
+### 1b) 底图 ISO 21496-1 裸桩：本树形状 = **不带**（形状主张的处置见账本 §54.1/§55）###
+  PASS ①b 默认档(=iso)：底图**不得**出现 APP2 ISO 裸桩（beta9 出货形状 = ISO 只插次图；实 Found=False off=-1）
+  PASS ①b 反控（读尺活性）：往底图合成一根合规裸桩后，同一把尺必须判有（实 Found=True 段长=34 版本尾=00010000）
+  PASS ①b ISO 命名空间恰好 1 处（只次图全量），实 1 —— 多了说明底图被插桩/重复插入，少了说明次图丢了 ISO
+  KNOWN ①b 未采 origin/main 的『底图必须带版本裸桩（规范列为 Required）』：该主张出自 2026-10-20 批次（docs/FIX_PLAN_2026-10-14.md:1119-1145），其"维护者裁决"归因已于 2026-10-27 由维护者本人否认 ⇒ 容器形状属未决项，不是本树契约（IMPLEMENT_PLAN §54.1/§55）
+
+### 1c) 元数据方式三档的容器指纹 ###
+  PASS ①c iso 档正常产出（实得 code=0）
+  PASS ①c xmp 档正常产出（实得 code=0）
+  PASS ①c both 档正常产出（实得 code=0）
+  PASS ①c xmp + RGB 三通道可产出（实得 code=0）
+  PASS ①c HDR JPEG 的 iso 选项按兼容策略实写 ISO + XMP
+  PASS ①c xmp 档＝底图与次图各 1 份 XMP、不写 ISO（实 底ISO=0 次ISO=0 底XMP=1 次XMP=1）
+  PASS ①c both 档＝底图 XMP + 次图 XMP + 次图 ISO 全量（实 底ISO=0 次ISO=1 底XMP=1 次XMP=1）
+  PASS ①c HDR 的 iso 升级后与 xmp 都有底图 XMP，次图 ISO 仍用于区分
+  PASS ①c 反控：iso 与 xmp 两档的**次图 ISO**必须一有一无（实 iso次ISO=1 xmp次ISO=0）
+  PASS ①c HDR 的 iso 升级后，XMP 中声明的次图长度与实际一致
+  KNOWN ①c 『次图也必须带一份 XMP』这一条**已随方案一落地**（2026-10-27，理由不是形状偏好而是实测：libultrahdr 只从次图取元数据）；仍未采的是同批的『底图 ISO 版本裸桩』与『XMP 只许九项』（P0-3/P0-5，未获授权且与 #80 互斥 ⇒ 待裁决，§54.1/§55/§56）
+  PASS ①c both 档：底图 XMP 声明的 Item:Length=2060 必须等于实测次图 2060 字节
+  PASS ①c xmp 档：同一笔账闭合（声明 1967 vs 实测 1967）
+  PASS ①c xmp+RGB 档＝底图与次图各 1 份 XMP、不写 ISO（实 底ISO=0 次ISO=0 底XMP=1 次XMP=1）
+  PASS ①c xmp+RGB 档：Item:Length 账闭合（声明 5906 vs 实测 5906）
+  PASS ①c xmp+RGB 档仍是两幅图（实 2）
+  PASS ①c 增益图 JPEG 恒为 3 分量（实 3/3）—— SOF 不区分灰/彩，通道语义在数据里
+  PASS ①c xmp 单通道臂：增益图逐像素三通道相等（有差像素=0/49152）
+  PASS ①c xmp+RGB 臂：增益图逐通道数据真的不同（有差像素=48896/49152）⇒ 上一条有判别力
+  PASS ①c 三档都是两幅图（实 2/2/2）—— 拒绝对外不是"普通 JPEG 改名"
+
+### 1d) 读侧：三档产物都能被自家解码器识别 ###
+  PASS ①d iso 档可回解并产出 png（code=0）
+  PASS ①d iso 档被识别为 ISO 21496-1 APP2
+  PASS ①d iso 档确实按增益图恢复 HDR（不是只解底图）
+  PASS ①d xmp 档可回解并产出 png（code=0）
+  PASS ①d xmp 档被识别为 hdrgm XMP
+  PASS ①d xmp 档确实按增益图恢复 HDR（不是只解底图）
+  PASS ①d both 档可回解并产出 png（code=0）
+  PASS ①d both 档被识别为 ISO 21496-1 APP2
+  PASS ①d both 档确实按增益图恢复 HDR（不是只解底图）
+  PASS ①d 反控：普通 JPEG（无增益图）不得出现元数据来源行
+
+### 2) 底图与增益图都真实存在（不是「普通 JPEG 改名」）###
+  PASS ② 增益图被纯托管切割出来且非空（2060 B）
+  PASS ② 增益图只是容器的一部分，不是整个文件（2060 < 13598）
+  PASS ② 增益图本身是可解码的 JPEG（ffprobe 读回 256,192）
+  PASS ② 底图尺寸 == 源尺寸（源 512x384，ffprobe 读回 512,384）
+
+### 3) 负控：非 JPEG + GainMap ⇒ 明确拒绝 + 建议，且不得产出「看着像成功」的文件 ###
+  PASS 退出码非 0（实得 1）—— 拒绝必须是响亮的
+  PASS 未产出 .png（不得产出「看着像成功」的文件）
+  PASS 日志点名 GainMap（不是含糊失败）
+  PASS 明确拒绝时给出建议（日志含「建议：」）
+  PASS 建议内容点名改 AVIF/JXL（日志含 AVIF）
+  PASS 对照：同输入不开 GainMap ⇒ 正常产出 png（实得 code=0）
+  PASS ⑨b 引擎不可走的非 JPEG（bmp）+ GainMap ⇒ 退出码非 0（实得 1）—— 不得静默忽略
+  PASS ⑨b 未产出 .bmp（不得产出「看着像成功」的文件）
+  PASS ⑨b 日志**点名契约拒绝**（不是静默忽略）
+  PASS ⑨b 点名 GainMap（不是含糊失败）
+  PASS ⑨b 对照：同 bmp 不开 GainMap ⇒ 正常产出（实得 code=0）
+
+### 4) 显式 legacy + GainMap ⇒ **按设计仍走引擎**（GainMap 是引擎自有能力）###
+  PASS 退出码 0（实得 0）
+  PASS 产出非空（13598 B）
+  PASS 显式 legacy + GainMap ⇒ 出现引擎**决策行**（GainMap 恒走引擎，legacy 开关踢不走它）
+  PASS 显式 legacy + GainMap ⇒ 走的是**引擎的** GainMap 出口（引擎出口专属日志行）
+  PASS 对照：显式 legacy + 非 GainMap ⇒ 正常产出（实得 code=0）
+  PASS 对照：显式 legacy + 非 GainMap ⇒ 仍不得出现任何引擎日志（逃生门零污染未被放宽）
+  PASS ④ 显式 legacy + GainMap 产物同样是 Ultra HDR 容器（顶层 2 幅图）
+  PASS ④ 该产物 ISO 21496-1 元数据存在
+  PASS ④ 该产物副图可定位
+  PASS ④ 该产物容器断言全通过
+
+### 5) 引擎出口的底图色域与增益图通道数（接入前零覆盖）###
+  PASS ⑤ bt2020 底：退出码 0（实得 0）
+  PASS ⑤ bt2020 底：产出非空（13608 B）
+  PASS ⑤ bt2020 底：日志确认底图色域为 Rec.2020(SDR)（参数真透传）
+  PASS ⑤ bt2020 底：仍是 Ultra HDR 容器（顶层 2 幅图）
+  PASS ⑤ bt2020 底：ISO 21496-1 元数据存在
+  PASS ⑤ bt2020 底：增益图为灰度（ISO channels=1）
+  PASS ⑤ multi-channel：退出码 0（实得 0）
+  PASS ⑤ multi-channel：产出非空（17617 B）
+  PASS ⑤ multi-channel：仍是 Ultra HDR 容器（顶层 2 幅图）
+  PASS ⑤ multi-channel：增益图为 RGB（ISO channels=3）
+  PASS ⑤ 负控：bt2020 底 与 multi-channel 产物**不同**（13608B vs 17617B）⇒ 两个选项都真生效
+
+### 5b) 第三方判据：exiftool 直读产物（C⑥ 补，原 ⑤ 只有产品日志散文）###
+  PASS ⑤b bt2020 底：exiftool 读底图 ICC 红原色 ≈ BT.2020（实得「0.70799 0.29201」）
+  PASS ⑤b 默认底：exiftool 读底图 ICC 红原色 == sRGB 0.64（实得「0.64 0.33」）⇒ 上一条有判别力
+  PASS ⑤b bt2020 与默认的底图 ICC 色度**不同**（0.70799 0.29201 vs 0.64 0.33）⇒ bt2020 真改了底图色域
+  PASS ⑤b both 档（单通道）正常产出（实得 code=0）
+  PASS ⑤b both 档（三通道）正常产出（实得 code=0）
+  PASS ⑤b 规范九项在底图 XMP 内逐项可读（缺失 0 项）
+  PASS ⑤b MapPrimary=「512x384」必须等于 ffprobe 实测底图 「512x384」
+  PASS ⑤b MapSecondary=「256x192」必须等于实测次图 「256x192」
+  PASS ⑤b Channels 标签随实际通道成套（灰度臂实得「1」期望 1；三通道臂实得「3」期望 3）
+  KNOWN ⑤b 未采 origin/main 的『XMP 只许规范九项 / 底图只留 Version / 数值写次图』（docs/GAINMAP_ROUTES_AND_PATCH_PLAN.md P0-5）：其依据 libultrahdr jpegrutils.cpp:915-940 是真读数，但那是参考实现的形状，五个扩展字段是否被真实读者拒绝本机无读者可证 ⇒ 属未决主张，非本树契约（§54.1/§55）
+  PASS ⑤b' SDR 源 + srgb 底正常产出（实得 code=0）
+  PASS ⑤b' SDR 源 + bt2020 底正常产出（实得 code=0）
+  PASS ⑤b' 两路底图均解出等长 raw（589824 vs 589824 B）
+  PASS ⑤b' 底图像素**真的不同**（raw MD5 A3AE5B29 vs E05FF27E）⇒ bt2020 底是真转换，不是只改标签
+  PASS ⑤c 非法 base-gamut：退出码非 0（实得 2）
+  PASS ⑤c 非法 base-gamut：不产出任何文件（不得静默按 srgb 跑）
+  PASS ⑤c 非法 base-gamut：日志点名「取值无效」（不是静默忽略）
+
+### 6) 预缩放中转不得静默退化为 SDR（ISO max 锁）###
+  PASS ⑥ 预缩放中转件已生成（-vf scale=128:-2，未指定 pix_fmt / 未重打 cICP）
+  PASS ⑥ 预缩放中转件跑 GainMap 正常产出（实得 code=0）
+  PASS ⑥ 直跑基准的 ISO max 可读（实得 「2.3」）
+  PASS ⑥ 预缩放中转的 ISO max 可读（实得 「2.3」）
+  PASS ⑥ 预缩放中转后 ISO max **不变且非零**（2.3 == 2.3，>0；静默退化成 SDR 时 headroom=1 ⇒ max=0）
+
+### 7) tonemap 误伤修复：SDR 源 + 显式 tonemap + GainMap ⇒ 产出 + 诚实降级 ###
+  PASS ⑦ SDR 源 + tonemap + GainMap：退出码 0（实得 0；改动前为 ≠0 且零产出）
+  PASS ⑦ 产出非空（9439 B）
+  PASS ⑦ 诚实告知：日志打出稳定降级码 ToneMapNotAppliedToGainMap（用户要求的曲线确实没生效）
+  PASS ⑦ 产物是**普通 JPEG**（顶层 1 幅图；SDR 源不再产零增益的假 Ultra HDR）
+  PASS ⑦ 诚实告知：日志点名「输入为 SDR…已按普通 JPEG 输出」（非静默降级）
+  PASS ⑦ SDR 非增益图仍出相同 PNG，不执行不适用的 tone-map
+  PASS ⑦ 说明该 tone-map 未执行，需要 HDR 源
+
+### 8) GainMap + 最长边缩放 ⇒ 走引擎（Part C 删掉死拦截后的新契约）###
+  PASS ⑧ GainMap + 最长边缩放(128)：退出码 0（实得 0）
+  PASS ⑧ 产出非空（4780 B）
+  PASS ⑧ 出现引擎**决策行** ⇒ 色彩决策确实由引擎做（不是被路由拦下后由旧管线自决）
+  PASS ⑧ 走的是**引擎的** GainMap 出口（该行全仓唯一出处 = RawColorPipeline.TransformGainMapAsync）
+  PASS ⑧ 负控：不得出现「GainMap 专用管线」提示（该组合已由引擎接管）
+  PASS ⑧ 负控：不得出现专用管线专属的「[GainMap] Step 1」
+  PASS ⑧ 几何确实生效：底图 == 128x96（源 512x384 限最长边 128，ffprobe 读回 128,96）
+  PASS ⑧ 产物仍是真 Ultra HDR 容器（顶层 2 幅图：底图 + 增益图）
+  PASS ⑧ ISO 21496-1 增益元数据存在
+  PASS ⑧ MPF 副图偏移命中 SOI（增益图可定位）
+  PASS ⑧ 探针容器结构断言全通过（含「ISO 增益区间非零」）
+
+### 9) isHdrInput 判据换源：ICC 感知 vs 裸 ffprobe（C⑦，2026-09-19 补）###
+  PASS ⑨ 找到 sRGB ICC 源（C:\PLAN\ffmpegPictureUI/tests/output/sources/srgb.icc）
+  PASS ⑨ 前提：混合件 ffprobe 仍报 color_transfer=smpte2084（cICP 未被删，实得「smpte2084」）
+  PASS ⑨ 前提：混合件确有内嵌 ICC（exiftool 读到描述）
+  PASS ⑨ 前提：源 src_hdr.png 本无 ICC（判别式：只差 ICC 一项）
+  PASS ⑨ 前提：去 ICC 对照件确无 ICC
+  PASS ⑨ 混合件（cICP=PQ + ICC=sRGB）正常产出（实得 code=0）
+  PASS ⑨ 去 ICC 对照件正常产出（实得 code=0）
+  PASS ⑨ 实测：混合件走 **SDR** 路 ⇒ 产物里没有 ISO 增益区间（实得「」）⇒ ICC 判据压过 cICP/ffprobe
+  PASS ⑨ 实测：日志**点名**「输入为 SDR…已按普通 JPEG 输出」（可用性诚实，非静默降级）
+  PASS ⑨ 对照：去 ICC 后走 **HDR** 路（ISO 声明 max=2.3，上一条因此不是恒真）⇒ 唯一变量 ICC 决定了分类
+  PASS ⑨ 混合件是**普通 JPEG**（顶层 1 幅图；SDR 路不写增益图 ⇒ 无 ISO 增益区间）
+  PASS ⑨ 诚实告知：日志点名「输入为 SDR…」（非静默降级）
+
+### 10) --jpeg-progressive 三态 × GainMap 双路径（2026-09-19 补，R3/R7 结构锁） ###
+  PASS ⑩ 前提：ffmpeg 可用（用于现场自造动画素材）
+  PASS ⑩ 前提：现场自造 3 帧动画 GIF 成功（缺它本段会退化成只覆盖一条管线）
+  PASS ⑩A 前提：本格确实由**引擎出口**完成（有决策行；不是回退专用管线）
+  PASS ⑩A --jpeg-progressive 0 ⇒ 退出码 0 + 产物（实得 code=0）
+  PASS ⑩A --jpeg-progressive 1 ⇒ 退出码 0 + 产物（放行：GainMap 走 cjpegli，支持渐进；实得 code=0）
+  PASS ⑩A 1 时**不再**被 ProgressiveJpeg 拦截（放行生效）
+  PASS ⑩A 1 仍由**引擎出口**完成（防：1 悄悄回退专用管线后本段靠兜底蒙混）
+  PASS ⑩A 1 **不得**回退到专用管线（放行必须落在引擎侧，不是靠专用管线兜底）
+  PASS ⑩A 0 的日志点名 -p 0（单一真值被消费，不是静默丢弃）
+  PASS ⑩A 1 的日志点名 -p 2（1 => 2 映射生效）
+  PASS ⑩A 1 的产物**确实是渐进**（SOF 标记 SOF2，实得 SOF2）—— 第三方判据
+  PASS ⑩A 0 的产物**不是渐进**（实得 SOF0；顺序 = SOF0/SOF1）
+  PASS ⑩A 0 与 1 的产物**字节不同**（接线生效；相同 ⇒ 该选项被静默忽略）
+  PASS ⑩A 三态第三态：**不传 ≡ 0**（默认 0=基线，MD5 相同）
+  PASS ⑩B 前提：动画输入确实走 **GainMap 专用管线**（静态 png 打不到这条）
+  PASS ⑩B 0 ⇒ 退出码 0 + 产物（实得 code=0）
+  PASS ⑩B 1 ⇒ 退出码 0 + 产物（实得 code=0）
+  PASS ⑩B 0 的日志点名 -p 0（专用管线调用点已接上单一真值）
+  PASS ⑩B 1 的日志点名 -p 2（专用管线把 1 映射成 2）
+  PASS ⑩B 1 的产物确实是渐进（实得 SOF2）—— 第三方判据
+  PASS ⑩B 0 的产物不是渐进（实得 SOF0）
+  PASS ⑩B 0 与 1 的产物字节不同 ⇒ **专用管线也接了线**（此前它吃默认值、恒渐进）
+  PASS ⑩ 负控：非 GainMap + 1 + 显式 engine ⇒ **仍硬失败**（实得 code=1）
+  PASS ⑩ 负控：非 GainMap + 1 ⇒ **零产物**（放行只对 GainMap 生效）
+  PASS ⑩ 负控：失败原因点名 ProgressiveJpeg（ffmpeg mjpeg 确实无渐进能力）
+  PASS ⑩ 负控的负控：同输入**不传**该选项 ⇒ 正常产出（排除「输入坏了」造成的假红）
+  PASS ⑩ 源码锁：GainMap 白名单定义在（JpegGainMap + fmt 只认 jpg/jpeg）
+  PASS ⑩ 源码锁：拦截判据含 !gainMapJpeg（防被改回对 GainMap 恒拦）
+  PASS ⑩ 源码锁：**不得**存在不带 !gainMapJpeg 的裸判据（改回旧形态即红）
+  PASS ⑩ 源码锁：ProgressiveLevelOf 仍是唯一映射 1=>2 / 0=>0 / 其它=>-1
+  PASS ⑩ 源码锁：log/ct 仍紧跟 sourcePrimaries 之后（位置实参不错绑的前提；在其后追加 container 是合法的）
+  PASS ⑩ 源码锁：专用管线调用点复用单一真值（不另写映射）
+  PASS ⑩ 源码锁：主路调用点具名传入 progressive 档（防接线被删）
+  PASS ⑩ 源码锁：主路容器由单一真值决定（不许就地写死 \
+  PASS ⑩ 源码锁：引擎路调用点同样具名传入 progressive 档
+
+### 11) §38 GainMap + cjpegli：底图 ICC 必须与引擎一致、且不得等于源 ICC ###
+  PASS ⑪ 素材：ffmpeg iccgen 造出带 ICC 的 P3 载体（exit=0）
+  PASS ⑪ 素材：P3 ICC 已从 iccgen 载体里抽出（C:\PLAN\ffmpegPictureUI\tests\output\validate\gmeng_b2ee3dee\s38icc_emb_s38_p3src.icc）
+  PASS ⑪ 前提：源已带 **P3** ICC（exiftool 红原色 x∈[0.67,0.69)，实得「0.67999 0.32001」）
+  PASS ⑪ 前提：源 ICC 可被抽出（防空对照：抽不到则下面三条全无意义）
+  PASS ⑪ 引擎臂产出底图（exit=0）
+  PASS ⑪ cjpegli 臂产出底图（exit=0）
+  [§38 读数] 源 ICC=3D8AD349E38D7193  引擎底图=6ADB81860620D270  cjpegli 底图=6ADB81860620D270
+  PASS ⑪ 两条臂的底图 ICC 都抽到了（非空，否则等号是真空成立）
+  PASS ⑪a 对照：引擎底图 ICC ≠ 源 ICC（实得引擎 6ADB81860620D2702514E6C5CE3266F0F80DE7D28D723861EEBBBAC8E3A0AF4A / 源 3D8AD349E38D7193030F8D5D55D2D0856F06C81D415CA92E0FB3EA40D041DC30）⇒ 下面两条有判别力
+  [⑪ ICC 数值读数] engine: v4.4 id=48-23-F1-75-75-03-61-B2-EC-F5-D7-22-47-46-3B-C9 idOk=True cicp=1/13/0/1 wtptXYZ=0.964202880859375/1/0.824905395507812 rXYZ=0.43603515625/0.222488403320312/0.013916015625/rXY=0.648437677278813/0.330867503233566 gXYZ=0.385116577148438/0.716903686523438/0.0970611572265625/gXY=0.32117633584872/0.597877403509665 bXYZ=0.143051147460938/0.06060791015625/0.713912963867188/bXY=0.155901819270296/0.0660524827884392 TRCmaxAbsErr=4.175163271613602E-06
+  [⑪ ICC 数值读数] cjpegli: v4.4 id=48-23-F1-75-75-03-61-B2-EC-F5-D7-22-47-46-3B-C9 idOk=True cicp=1/13/0/1 wtptXYZ=0.964202880859375/1/0.824905395507812 rXYZ=0.43603515625/0.222488403320312/0.013916015625/rXY=0.648437677278813/0.330867503233566 gXYZ=0.385116577148438/0.716903686523438/0.0970611572265625/gXY=0.32117633584872/0.597877403509665 bXYZ=0.143051147460938/0.06060791015625/0.713912963867188/bXY=0.155901819270296/0.0660524827884392 TRCmaxAbsErr=4.175163271613602E-06
+  PASS ⑪b 引擎与 cjpegli 底图均为结构有效的 ICC v4.4 RGB profile，Profile ID/MD5 有效且 cicp=sRGB/RGB/full（独立数值见⑪d）
+  PASS ⑪d 两臂的真实矩阵均为 sRGB D50（wtpt XYZ/xy 与 RGB 三原色 XYZ/xy）且 r/g/b TRC 在稠密采样上符合分段 sRGB（误差≤0.001）
+  PASS ⑪c 锁：cjpegli 底图 ICC ≠ 源 ICC（修复前正是逐字节等于源 ICC = 错标）
+  PASS ⑪d 负控：篡改 ICC cicp 声称并重算有效 Profile ID 后仍被拒（D50 矩阵/TRC 不受影响）
+  PASS ⑪d 负控：篡改 rXYZ 红原色关键 tag 并重算有效 Profile ID 后被数值矩阵判据拒绝
+  PASS ⑪d 负控：篡改真实 TRC 并重算有效 ID，保留正确 CICP/矩阵仍被曲线判据拒绝
+  PASS ⑪e 第三方色度交叉核对：cjpegli 底图红原色（0.64 0.33）≠ 源（0.67999 0.32001）
+  PASS ⑪ 源码锁A：encoderProtectsColor 的初始化式仍在本文件（形态大变 ⇒ 先红再核，不静默）
+  PASS ⑪ 源码锁B：GainMap 变体例外确实在 encoderProtectsColor 初始化式「内」（挪到别处/删掉即红）
+  PASS ⑪ 源码锁C：该例外不得以整行注释形态存在（注释掉即红，实得 0 行）
+
+### 12) 输入侧：Apple 两代 Ultra HDR JPEG（第三方样本；像素级施加证据）###
+  PASS ⑫ 前提：Apple 两代样本在位（libultrahdr tests/data）—— 缺则本段无凭据（fail-closed，不静默跳过）
+  PASS ⑫ new：识别 + 线性 headroom/log2 + 920nits 逐字命中；PatHit 不存在标记负控=False  逐条命中: 出件=True 负控=False 检测=True XMP源=True headroom=True log2=True PFM=True
+  PASS ⑫ old：v1.0 无 headroom 字段 ⇒ 按隐式 8× 处理，仍走完解码并产出  逐条命中: 出件=True 检测=True XMP源=True 隐式8x=True PFM=True
+stats w=384 h=512 peakNits=920 capLinear=4.5328 maxLinear=2.8438 meanLinear=0.2315 over1=40022 total=589824
+stats w=384 h=512 peakNits=1624 capLinear=8.0000 maxLinear=4.2149 meanLinear=0.2603 over1=50031 total=589824
+  PASS ⑫ new 像素级：maxLinear=2.8438 > 1.0（SDR 白点）且确有像素越白点 ⇒ 增益真被施加（不是只读了元数据）
+  PASS ⑫ old 像素级：maxLinear=4.2149 > 1.0 ⇒ 隐式 8× 参数真的进了公式
+  PASS ⑫ 独立剂量锚：new cap=4.5328/max=2.8438（期望 2.8438±0.02），old cap=8/max=4.2149（期望 4.2149±0.02）；v2 线性 4.532783× 不得再误读成 log2
+  PASS ⑫ **负控**：同一底图剥掉全部元数据（exiftool -all=）⇒ 产品不走增益图路径，但产物照出（证明正控的日志来自增益层）
+  PASS ⑫ **负控**：剥元数据后的 new 底图 ⇒ 解码器返回 null（pass=1 fail=0）
+  PASS ⑫ **负控**：剥元数据后的 old 底图 ⇒ 解码器返回 null（pass=1 fail=0）
+
+### 13) 输入侧：第三方 ISO 21496-1 APP2 JPEG（第三方产量实件；纯托管解析 + 像素级施加 + 负 min + 负控）###
+  语料根=C:\PLAN\ffmpegPictureUI/tests/output/corpus/gainmap-iso21496
+  sha16 对账=DSC00037.jpg=34504aa6d6db6e6f/OK  DSC01058.jpg=95419a66144f1a65/OK  seine_sdr_gainmap_srgb.jpg=1aaf0a1afa91a485/OK
+  PASS ⑬ 前提：三件第三方语料在位（fail-closed，不许静默 SKIP；缺=）
+  PASS ⑬ 前提：在位件字节与登记一致（同名不同字节 ⇒ 下面所有读数失效；不符=）
+  PASS ⑬a DSC00037：识别为 Ultra HDR + 走纯托管 ISO APP2 通路 + 元数据/切割字节/峰值/P3 底图逐项命中  逐条命中: 出件=True 检测=True ISO源=True min=True ch=True 切割=True 峰值=True 底图=True
+  PASS ⑬b DSC00037 容器结构（探针直读字节）：2 幅图 + ISO 增益区间 0..4.1402 + 副图 1368x912（= 底图 1/2）+ 副图定位命中 SOI；pass=6 fail=0 ⇐ 实得 [PROBE RESULT: pass=6 fail=0]
+  PASS ⑬c DSC00037 像素级：maxLinear=4.1263 > 1.0（SDR 白点）且确有像素越白点 ⇒ 增益真被施加（不是只读了元数据）
+  PASS ⑬c' DSC00037 自洽：像素峰 4.1263 不得超过元数据上限 4.3362（越上限 = 公式或通道乘法错）
+  PASS ⑬c'' DSC00037 交叉：像素统计的 peakNits=880 与产品日志「峰值 880nits」同源
+  PASS ⑬d DSC01058：min 为负（-0.005）的件仍走通 ISO APP2 通路并产出  逐条命中: 出件=True 检测=True ISO源=True 负min=True 切割=True 峰值=True 底图=True
+  PASS ⑬e DSC01058 容器结构：探针读到负 min=-0.0049（**首次**在第三方真件上覆盖负 min）+ 副图 1500x1000；pass=6 fail=0 ⇐ 实得 [PROBE RESULT: pass=6 fail=0]
+  PASS ⑬f DSC01058 像素级：maxLinear=10.1899 > 1.0 且 ≤ capLinear=10.2829 ⇒ 负 min 未把增益打折成 0
+  PASS ⑬g 剂量分叉：58 的 headroom 明显大于 37（maxLinear 10.1899 vs 4.1263；capLinear 10.2829 vs 4.3362）⇒ 两件的参数各自进了公式
+stats w=2736 h=1824 peakNits=880 capLinear=4.3362 maxLinear=4.1263 meanLinear=0.5015 over1=2129962 total=14971392
+stats w=3000 h=2000 peakNits=2087 capLinear=10.2829 maxLinear=10.1899 meanLinear=0.7537 over1=5168753 total=18000000
+  PASS ⑬h **负控**：xmp-only 样本走 hdrgm XMP 分支，产品**不**声称 元数据来源: ISO 21496-1 APP2 ⇒ ⑬a/⑬d 的来源行非恒真
+  PASS ⑬i **负控**：探针判它不是 ISO 容器（iso=null + 3 条 FAIL）⇐ 实得 [
+  PASS ⑬j **负控像素**：maxLinear 恰为 1.0000 且 over1=0（解码没坏、只是没有增益可施加）—— 与 ⑬c/⑬f 的大数 over1 形成对照
+
+### 14) 出口诚实性（批次 E 2026-11-03：审阅面 2/面 4 的四条必修/应修）###
+  PASS 14a avif+gainmap dry-run：点名纯托管 tmap 管线（实得含 tmap 文案）
+  PASS 14a avif+gainmap dry-run：**不再**打印普通 avif ffmpeg 命令（旧失真形态绝迹）
+  PASS 14a' jpg+gainmap dry-run 仍是纯托管文案（回归对照）
+  PASS 14b routable + -e Cjpegli + gainmap：正常产出（实得 code=0）
+  PASS 14b 产物是真增益图容器（images=2；被静默截成普通 JPEG 时为 images=1）
+  PASS 14b ISO max 在场且非零（实得 2.3）
+  PASS 14c 动画输入已生成（4 帧 gif）
+  PASS 14c 动画 + -e Cjpegli + gainmap：专用管线照常产出（实得 code=0）
+  PASS 14c 真牙：日志点名专用管线（[GainMap] Step 在场；被 Cjpegli 分派截走时无此标记）
+  PASS 14c 动画 testsrc2 是 SDR 源 => 按 2026-09-20 裁定产普通 JPEG（images=1），不是零增益假 Ultra HDR
+  PASS 14c 诚实降级：日志点名「输入为 SDR…已按普通 JPEG 输出」
+  PASS 14d 前置：DSC00037 内找到 ISO URN（偏移 310）
+  PASS 14d 前置：翻转了 2 处 min_version（真 APP2 必在其中）
+  PASS 14d 前置：min_version=1 变异件按降级出图（实得 code=1；D6/D7 契约：降级 ⇒ 进程码非 0）
+  PASS 14d 前置：降级仍产出 SDR 交付件（不是零产物）
+  PASS 14d 点名在案：min_version=1 超出支持被日志点名（不再静默）
+  PASS 14d 降级语义诚实：日志写明按无增益图处理（SDR 交付）
+  PASS 14d 该 APP2 确实被忽略（不再解析出 ISO 元数据）
+  PASS 14e 前置：XMP iTXt 注入成功（injected 433）
+  PASS 14e 污染源 + gainmap：正常产出（实得 code=0）
+  PASS 14e 新生成的 XMP 留在 HDR JPEG；输入注入的 9.9 量程未被复制
+  PASS 14e ISO max 在场，且未使用输入污染值（实得 2.3）
+
+===== gainmap-engine: PASS=225 FAIL=0 =====

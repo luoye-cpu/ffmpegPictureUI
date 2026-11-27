@@ -67,6 +67,8 @@
 
 [review-2026-11-25](review-2026-11-25/RC3_PACKAGE_REPORT_2026-11-25.md)（RC3 出货报告：12 个具名色彩空间的矩阵/P-T 全景审查结论、高级 CP/CT 与 `--color-matrix` 两处 AVIF 出口残留的修复、G2 测试夹具校正、13 条发布门禁读数与 RC3 两档包指纹；旧 RC2 报告保留为时间点记录）
 
+[review-2026-11-27](review-2026-11-27/RC3_REPACK_REPORT_2026-11-27.md)（RC3 重出报告：`9cc5a83` 上的 Apple/私有 HEIC GainMap、队列红/黄着色、跨格式矩阵覆盖三项补入；11 条源码门禁 + 2 条包级门禁读数、app/full 新包哈希与 exe 指纹、源码门禁 pack 前 DLL 与 AOT 重写后的指纹口径说明）
+
 ## 3. 归档（`archive/`，28 份 + `_gapscout_raw/`）
 
 一次性审计报告与已执行计划，2026-10-22 从顶层移入。**判据 = 按前缀名（去掉尾部日期）在 `docs/` 外数命中，

@@ -1,0 +1,82 @@
+{
+  "gates": [
+    {
+      "name": "verify-gainmap-engine",
+      "rc": 0,
+      "log": "docs/review-2026-11-27/rc3-repack-evidence/logs/verify-gainmap-engine.out.txt",
+      "artifact": "src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.dll"
+    },
+    {
+      "name": "verify-gainmap-isobmff",
+      "rc": 0,
+      "log": "docs/review-2026-11-27/rc3-repack-evidence/logs/verify-gainmap-isobmff.out.txt",
+      "artifact": "src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.dll"
+    },
+    {
+      "name": "verify-ui-host",
+      "rc": 0,
+      "log": "docs/review-2026-11-27/rc3-repack-evidence/logs/verify-ui-host.out.txt",
+      "artifact": "src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.dll"
+    },
+    {
+      "name": "verify-ui-split-union",
+      "rc": 0,
+      "log": "docs/review-2026-11-27/rc3-repack-evidence/logs/verify-ui-split-union.out.txt",
+      "artifact": "src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.dll"
+    },
+    {
+      "name": "verify-ui-split-reproducible",
+      "rc": 0,
+      "log": "docs/review-2026-11-27/rc3-repack-evidence/logs/verify-ui-split-reproducible.out.txt",
+      "artifact": "src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.dll"
+    },
+    {
+      "name": "verify-probe-mirror-parity",
+      "rc": 0,
+      "log": "docs/review-2026-11-27/rc3-repack-evidence/logs/verify-probe-mirror-parity.out.txt",
+      "artifact": "src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.dll"
+    },
+    {
+      "name": "verify-module-registry",
+      "rc": 0,
+      "log": "docs/review-2026-11-27/rc3-repack-evidence/logs/verify-module-registry.out.txt",
+      "artifact": "src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.dll"
+    },
+    {
+      "name": "verify-gui-color-combinations",
+      "rc": 0,
+      "log": "docs/review-2026-11-27/rc3-repack-evidence/logs/verify-gui-color-combinations.out.txt",
+      "artifact": "src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.dll"
+    },
+    {
+      "name": "verify-cross-format-matrix",
+      "rc": 0,
+      "log": "docs/review-2026-11-27/rc3-repack-evidence/logs/verify-cross-format-matrix.out.txt",
+      "artifact": "src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.dll"
+    },
+    {
+      "name": "verify-color-wiring",
+      "rc": 0,
+      "log": "docs/review-2026-11-27/rc3-repack-evidence/logs/verify-color-wiring.out.txt",
+      "artifact": "src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.dll"
+    },
+    {
+      "name": "verify-decision-delivery",
+      "rc": 0,
+      "log": "docs/review-2026-11-27/rc3-repack-evidence/logs/verify-decision-delivery.out.txt",
+      "artifact": "src/FfmpegGui/bin/Release/net11.0/win-x64/FfmpegGui.dll"
+    },
+    {
+      "name": "verify-release-package",
+      "rc": 0,
+      "log": "docs/review-2026-11-27/rc3-repack-evidence/logs/verify-release-package.out.txt",
+      "artifact": "publish/FFmpegPictureUI-v1.6.0-rc3-x64-full.7z"
+    },
+    {
+      "name": "verify-package-gui-starts",
+      "rc": 0,
+      "log": "docs/review-2026-11-27/rc3-repack-evidence/logs/verify-package-gui-starts.out.txt",
+      "artifact": "publish/build/FFmpegPictureUI-v1.6.0-rc3-x64-full/FfmpegGui.exe"
+    }
+  ]
+}

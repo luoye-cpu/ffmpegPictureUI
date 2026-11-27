@@ -1,0 +1,21 @@
+
+Result                  : PASS
+FormatEncoderStates     : 15
+Routes                  : 135
+ExecutedRoutes          : 135
+ConversionFailures      : 0
+HarnessFailures         : 0
+PixelReadFailures       : 0
+WrongBestMatrix         : 0
+NonDistinctMatrixGroups : 0
+LosslessMismatches      : 0
+EncoderRoutingFailures  : 0
+EncoderRoutingErrors    : {}
+PixelOracleComparisons  : 135
+CrossOracleEvaluations  : 405
+MinCorrectPsnr          : 23.137904
+HostExit                : 0
+
+
+PASS=270 (135 real conversions + 135 independent best-matrix verdicts)
+PASS: all live GUI format/encoder states apply the selected matrix; evidence=C:\PLAN\ffmpegPictureUI\tests\output\_tmp\cross-format-matrix-gate\30ef40999bad4f2d9e5b44488a871ae6
