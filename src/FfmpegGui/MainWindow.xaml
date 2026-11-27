@@ -1026,7 +1026,7 @@
                   <DataTemplate x:DataType="local:QueueItem">
                     <Grid ColumnDefinitions="*,Auto">
                       <TextBlock Text="{Binding DisplayText}"
-                                 Foreground="{Binding Converter={x:Static local:ErrorToColorConverter.Instance}}"
+                                 Foreground="{Binding StatusColorKey, Converter={x:Static local:ErrorToColorConverter.Instance}}"
                                  ToolTip.Tip="{Binding WarningText}"
                                  TextTrimming="CharacterEllipsis"/>
                       <TextBlock Grid.Column="1" Text="{Binding DurationText}" FontSize="10" Margin="8,0,0,0"
@@ -1401,16 +1401,16 @@
                         <TextBlock Grid.Column="0" Text="{Binding GainMapSdrName}" FontSize="12"
                                    TextTrimming="CharacterEllipsis" VerticalAlignment="Center"
                                    ToolTip.Tip="{Binding WarningText}"
-                                   Foreground="{Binding Converter={x:Static local:ErrorToColorConverter.Instance}}"/>
+                                   Foreground="{Binding StatusColorKey, Converter={x:Static local:ErrorToColorConverter.Instance}}"/>
                         <TextBlock Grid.Column="1" Text="{Binding GainMapHdrName}" FontSize="12"
                                    TextTrimming="CharacterEllipsis" VerticalAlignment="Center"
                                    ToolTip.Tip="{Binding WarningText}"
-                                   Foreground="{Binding Converter={x:Static local:ErrorToColorConverter.Instance}}"/>
+                                   Foreground="{Binding StatusColorKey, Converter={x:Static local:ErrorToColorConverter.Instance}}"/>
                         <TextBlock Grid.Column="2" Text="{Binding Status}" FontSize="11"
                                    MaxWidth="150" TextTrimming="CharacterEllipsis"
                                    ToolTip.Tip="{Binding Status}"
                                    VerticalAlignment="Center"
-                                   Foreground="{Binding Converter={x:Static local:ErrorToColorConverter.Instance}}"/>
+                                   Foreground="{Binding StatusColorKey, Converter={x:Static local:ErrorToColorConverter.Instance}}"/>
                       </Grid>
                     </DataTemplate>
                   </ListBox.ItemTemplate>
@@ -1547,12 +1547,12 @@
                     <TextBlock Grid.Row="0" Grid.Column="0" FontSize="12" FontWeight="Medium"
                                Text="{Binding DisplayText}" TextTrimming="CharacterEllipsis"
                                ToolTip.Tip="{Binding WarningText}"
-                               Foreground="{Binding Converter={x:Static local:ErrorToColorConverter.Instance}}"/>
+                               Foreground="{Binding StatusColorKey, Converter={x:Static local:ErrorToColorConverter.Instance}}"/>
                     <TextBlock Grid.Row="0" Grid.Column="1" FontSize="10"
                                VerticalAlignment="Center" Margin="6,0,0,0"
                                Text="{Binding Status}"
                                ToolTip.Tip="{Binding WarningText}"
-                               Foreground="{Binding Converter={x:Static local:ErrorToColorConverter.Instance}}"/>
+                               Foreground="{Binding StatusColorKey, Converter={x:Static local:ErrorToColorConverter.Instance}}"/>
                     <TextBlock Grid.Row="0" Grid.Column="2" Grid.RowSpan="2" FontSize="10"
                                VerticalAlignment="Center" Margin="8,0,0,0"
                                Text="{Binding DurationText}"

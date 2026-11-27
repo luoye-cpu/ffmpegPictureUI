@@ -10,7 +10,9 @@ namespace FfmpegGui.Models
 {
     /// <summary>
     /// 将 QueueItem 的状态转换为前景色：失败红、警告黄，其余返回当前主题文字色。
-    /// 也兼容旧的 bool 绑定（true = HasError）。
+    /// 入参可以是 <see cref="QueueItem"/>（兼容旧的无路径绑定）、
+    /// <see cref="QueueItem.StatusColorKey"/> 的字符串键（error/warning/normal，会随状态变化发通知），
+    /// 或旧的 bool 绑定（true = HasError）。
     /// </summary>
     public class ErrorToColorConverter : IValueConverter
     {
@@ -29,6 +31,12 @@ namespace FfmpegGui.Models
             else if (value is true)
             {
                 return Brushes.Red;
+            }
+            else if (value is string key)
+            {
+                // StatusColorKey：走这条路径才有 INotifyPropertyChanged 驱动的重算。
+                if (key == "error") return Brushes.Red;
+                if (key == "warning") return WarningBrush;
             }
 
             // 返回当前主题对应的系统文字画刷（深色→白，浅色→深灰）

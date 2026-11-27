@@ -43,6 +43,7 @@ namespace FfmpegGui.Models
                     OnPropertyChanged(nameof(Status));
                     OnPropertyChanged(nameof(DisplayText));
                     OnPropertyChanged(nameof(HasError));
+                    OnPropertyChanged(nameof(StatusColorKey));
                 }
             }
         }
@@ -55,6 +56,17 @@ namespace FfmpegGui.Models
 
         /// <summary>条目是否带警告（任务仍可继续/已产出）。</summary>
         public bool IsWarning => _isWarning;
+
+        /// <summary>
+        /// 队列条目的着色键：<c>error</c> / <c>warning</c> / <c>normal</c>。
+        /// <para>
+        /// ⚠ 2026-11-27：颜色**不能**靠 `Foreground="{Binding Converter=…}"` 直接绑 DataContext ——
+        /// 无路径绑定只在 DataContext 换对象时求值，条目状态从「待处理」变成「失败」时不会重算
+        /// ⇒ 红/黄着色在生成后永远不出现（42a0880 引入的写法，2026-11-27 实机复现）。
+        /// 这里给一个**会被通知**的标量属性，Status/警告变化时显式 raise。
+        /// </para>
+        /// </summary>
+        public string StatusColorKey => HasError ? "error" : IsWarning ? "warning" : "normal";
 
         /// <summary>与 <see cref="IsWarning"/> 同义，留给绑定/筛选的语义命名。</summary>
         public bool HasWarning => _isWarning;
@@ -103,6 +115,7 @@ namespace FfmpegGui.Models
                 OnPropertyChanged(nameof(HasWarning));
                 OnPropertyChanged(nameof(WarningText));
                 OnPropertyChanged(nameof(DisplayText));
+                OnPropertyChanged(nameof(StatusColorKey));
             }
             else
             {
@@ -127,6 +140,7 @@ namespace FfmpegGui.Models
                 OnPropertyChanged(nameof(HasWarning));
                 OnPropertyChanged(nameof(WarningText));
                 OnPropertyChanged(nameof(DisplayText));
+                OnPropertyChanged(nameof(StatusColorKey));
             }
         }
 
