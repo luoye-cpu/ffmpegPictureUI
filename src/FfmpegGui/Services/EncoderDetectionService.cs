@@ -140,6 +140,8 @@ namespace FfmpegGui.Services
             if (string.IsNullOrWhiteSpace(displayName)) return EncoderBackend.Ffmpeg;
             if (displayName.Contains("cjpegli")) return EncoderBackend.Cjpegli;
             if (displayName.Contains("cjxl")) return EncoderBackend.Cjxl;
+            // `libjxr — …` 也包含小写 jxr；先识别 FFmpeg 真名，不能掉进外部 JxrEncApp 分支。
+            if (displayName.Contains("libjxr")) return EncoderBackend.Ffmpeg;
             if (displayName.Contains("jxr") || displayName.Contains("JxrEnc")) return EncoderBackend.Jxr;
             if (displayName.Contains("dngtool")) return EncoderBackend.Dng;
             return EncoderBackend.Ffmpeg;
@@ -160,6 +162,7 @@ namespace FfmpegGui.Services
             if (string.IsNullOrWhiteSpace(displayName)) return "";
             if (displayName.Contains("cjpegli")) return "cjpegli";
             if (displayName.Contains("cjxl")) return "cjxl";
+            if (displayName.Contains("libjxr")) return "libjxr";
             if (displayName.Contains("jxr") || displayName.Contains("JxrEnc")) return "jxr";
             // FFmpeg 编码器: "mjpeg — MJPEG..." → "mjpeg"；"⚡ av1_nvenc — …" → "av1_nvenc"
             var head = displayName;

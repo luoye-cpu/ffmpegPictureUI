@@ -54,7 +54,8 @@
       "table": {
         "verify-color-strategy.ps1": 1200,
         "verify-png-optimizer.ps1": 1200,
-        "verify-gui-color-combinations.ps1": 1200
+        "verify-gui-color-combinations.ps1": 1200,
+        "verify-cross-format-matrix.ps1": 1200
       }
     }
   },
@@ -1301,6 +1302,10 @@
           "kind": "ui"
         },
         {
+          "gate": "verify-cross-format-matrix.ps1",
+          "kind": "ui"
+        },
+        {
           "gate": "verify-ui-strategy-map.ps1",
           "kind": "ui"
         },
@@ -1316,7 +1321,7 @@
       "evidence": [
         "tests/scripts/verify-ui-host.ps1:4"
       ],
-      "desc": "UI 拆分件五件 520 断言 + 126 个参数值映射 + GUI 静态色彩离散全集裁决、三族命令闭包与真实像素读回"
+      "desc": "UI 拆分件五件 520 断言 + 126 个参数值映射 + GUI 静态色彩离散全集裁决、三族命令闭包、全格式/编码器真实矩阵转换与独立像素读回"
     },
     {
       "id": "cap.jpeg-family",

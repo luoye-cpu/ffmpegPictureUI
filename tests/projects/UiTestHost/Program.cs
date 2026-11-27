@@ -155,6 +155,15 @@ namespace UiTestHost
                     return UiHostShared.GuiCombinationCoverage.Run(W, SrcDir, TempDir, reportPath);
                 }
 
+                if (args.Contains("--gui-real-formats"))
+                {
+                    int reportIndex = Array.IndexOf(args, "--report");
+                    string reportPath = reportIndex >= 0 && reportIndex + 1 < args.Length
+                        ? args[reportIndex + 1]
+                        : System.IO.Path.Combine(TempDir, "gui-real-formats.json");
+                    return UiHostShared.GuiCombinationCoverage.RunRealFormats(W, SrcDir, TempDir, reportPath);
+                }
+
                 // ⚠ GroupP 必须**紧跟启动**跑，不能排到最后：中间有别的组会把面板清空
                 //   （实测 `GroupN` 的 N6 负控就写 `logBox.Text = ""` 只留本次产生的日志）⇒
                 //   放末尾时那 7 行 `[detect]` 早被抹掉，本组会一路轮询到超时（实测把宿主从 6 s 拖到 79 s）。

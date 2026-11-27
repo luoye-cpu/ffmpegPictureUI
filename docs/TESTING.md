@@ -6463,7 +6463,7 @@ bench 两条经**同一份 `ServiceProbe.dll`（`3C36FDFCE451CF8A`，mtime `01:0
 - `blindspot.gui-i18n-render` — blindspot · blind · 承载 — · 理由：真实 GUI 下 i18n 文本渲染/切换仅服务层探针+两条静态扫描
 - `cap.gui-subwindows` — capability · E2E-UI · 承载 `verify-ui-host.ps1`（ui） · 说明：四子窗口 headless 打开/关闭冒烟
 - `cap.settings-gui-restart` — capability · E2E-UI · 承载 `verify-ui-host.ps1`（ui） · 说明：设置改→重启→GUI 生效
-- `cap.ui-suite` — capability · E2E-UI · 承载 `verify-cli-strict.ps1`（ui） / `verify-gui-color-combinations.ps1`（ui） / `verify-ui-host.ps1`（ui） / `verify-ui-param-defects.ps1`（ui） / `verify-ui-param-matrix.ps1`（ui） / `verify-ui-strategy-map.ps1`（ui） · 说明：UI 拆分件五件 520 断言 + 126 个参数值映射 + GUI 静态色彩离散全集裁决、三族命令闭包与真实像素读回
+- `cap.ui-suite` — capability · E2E-UI · 承载 `verify-cli-strict.ps1`（ui） / `verify-cross-format-matrix.ps1`（ui） / `verify-gui-color-combinations.ps1`（ui） / `verify-ui-host.ps1`（ui） / `verify-ui-param-defects.ps1`（ui） / `verify-ui-param-matrix.ps1`（ui） / `verify-ui-strategy-map.ps1`（ui） · 说明：UI 拆分件五件 520 断言 + 126 个参数值映射 + GUI 静态色彩离散全集裁决、三族命令闭包、全格式/编码器…
 - `cli.gui` — option · blind · 承载 — · 名 `--gui`
 
 <!-- module-index:end -->

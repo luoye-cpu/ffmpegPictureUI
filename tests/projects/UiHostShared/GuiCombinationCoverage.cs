@@ -206,6 +206,124 @@ public static class GuiCombinationCoverage
         return report.FailureCount == 0 ? 0 : 1;
     }
 
+    /// <summary>真实跨格式执行面：从活 GUI 采集全部终态，再经 QueueProcessor 跑矩阵/引擎闭包。</summary>
+    public static int RunRealFormats(MainWindow window, string srcDir, string workDir, string reportPath)
+    {
+        var report = new RealFormatReport();
+        try
+        {
+            W = window;
+            SrcDir = srcDir;
+            WorkDir = Path.GetDirectoryName(Path.GetFullPath(reportPath))!;
+            string realDir = Path.Combine(WorkDir, "real-format-routes");
+            Directory.CreateDirectory(realDir);
+            string heic = Path.Combine(RepoRoot, "tests", "data", "synth_heic_tilegrid_plain_256.heic");
+            if (!File.Exists(heic)) throw new FileNotFoundException("256×256 普通 Tile Grid 夹具缺失", heic);
+
+            typeof(MainWindow).GetField("_inputPath", BF)!.SetValue(W, heic);
+            Find<CheckBox>("UseAdvancedCodec").IsChecked = false;
+            Find<CheckBox>("LosslessCheck").IsChecked = false;
+            Find<RadioButton>("IccModeNone").IsChecked = true;
+            Find<CheckBox>("ColorGamutMapCheck").IsChecked = false;
+            Pump(6);
+            WaitOnUi(GpuCapabilityService.DetectAsync(), "GPU capability detection");
+            WaitOnUi(GpuCapabilityService.ValidateEncodersAsync(), "GPU encoder runtime validation");
+            SettleEncoderRefresh(window);
+            var states = CollectStates(window, heic);
+            report.FormatEncoderStates = states.Count;
+            report.ExpectedRoutes = states.Count * 9;
+
+            foreach (var state in states)
+            {
+                int stateIndex = states.IndexOf(state);
+                var template = state.Templates.SingleOrDefault(t => t.Name == "advanced:auto");
+                if (template == null)
+                {
+                    report.Failures.Add(state.EncoderLabel + ": advanced:auto template missing");
+                    continue;
+                }
+                foreach (string engine in new[] { "auto", "engine", "legacy" })
+                foreach (string matrix in new[] { "bt709", "bt2020nc", "smpte170m" })
+                {
+                    string key = $"{state.Format}-{stateIndex:D2}-{engine}-{matrix}";
+                    string routeDir = Path.Combine(realDir, key);
+                    Directory.CreateDirectory(routeDir);
+                    var route = new RealFormatRoute
+                    {
+                        StateIndex = stateIndex,
+                        Format = state.Format,
+                        EncoderLabel = state.EncoderLabel,
+                        Encoder = state.Encoder,
+                        Backend = state.Backend,
+                        Engine = engine,
+                        Matrix = matrix,
+                        Directory = routeDir,
+                        Artifact = Path.Combine(routeDir, "output." + Extension(state.Format))
+                    };
+                    report.Routes.Add(route);
+                    QueueProcessor? queue = null;
+                    try
+                    {
+                        var options = template.Options.DeepClone();
+                        options.Format = state.Format;
+                        options.Encoder = state.Encoder;
+                        options.EncoderBackend = state.Backend;
+                        options.ColorEngine = engine;
+                        options.ColorMatrix = matrix;
+                        options.ColorRange = null;
+                        options.Lossless = false;
+                        var item = new QueueItem
+                        {
+                            InputPath = heic,
+                            OutputPath = route.Artifact,
+                            Options = options
+                        };
+                        var done = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                        queue = new QueueProcessor(_ => { }, _ => done.TrySetResult(true));
+                        queue.Add(item);
+                        queue.Start(1);
+                        queue.StopAfterCurrentQueue();
+                        for (int spin = 0; spin < 24000 && !done.Task.IsCompleted; spin++)
+                        {
+                            Pump(1);
+                            Thread.Sleep(5);
+                        }
+                        if (!done.Task.IsCompleted)
+                        {
+                            queue.Stop();
+                            throw new TimeoutException("真实队列路由 120 秒未结束");
+                        }
+                        route.ExitCode = item.ExitCode;
+                        route.Status = item.Status;
+                        route.Command = item.Command;
+                        route.Bytes = File.Exists(route.Artifact) ? new FileInfo(route.Artifact).Length : 0;
+                        File.WriteAllText(Path.Combine(routeDir, "item.log"), item.Log ?? "");
+                        File.WriteAllText(Path.Combine(routeDir, "command.txt"), item.Command ?? "");
+                        if (item.ExitCode != 0 || item.HasError || route.Bytes <= 0)
+                            report.Failures.Add($"{key}: exit={item.ExitCode?.ToString() ?? "null"} error={item.HasError} bytes={route.Bytes} status={item.Status}");
+                    }
+                    catch (Exception ex)
+                    {
+                        route.Error = ex.ToString();
+                        report.Failures.Add(key + ": " + ex.Message);
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            report.Failures.Add("real-format harness: " + ex.ToString());
+        }
+
+        Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);
+        File.WriteAllText(reportPath, JsonSerializer.Serialize(report, new JsonSerializerOptions { WriteIndented = true }));
+        Console.WriteLine($"GUI-REAL-FORMATS states={report.FormatEncoderStates} routes={report.Routes.Count} "
+            + $"executed={report.Routes.Count(r => r.ExitCode.HasValue)} fail={report.Failures.Count}");
+        Console.WriteLine("GUI-REAL-FORMATS-REPORT=" + reportPath);
+        foreach (string failure in report.Failures.Take(20)) Console.WriteLine("[FAIL] " + failure);
+        return report.Failures.Count == 0 ? 0 : 1;
+    }
+
     private static (string Use, string? Diagnostic, string? ScaleFilter) InputMatrix(
         FfmpegOptions options, string inputPath, FfmpegCommandBuilder.ColorMetadata meta)
     {
@@ -363,7 +481,7 @@ public static class GuiCombinationCoverage
             throw new InvalidOperationException("universal discrete Cartesian coverage is empty");
     }
 
-    private static List<EncoderState> CollectStates(MainWindow window)
+    private static List<EncoderState> CollectStates(MainWindow window, string? collectionInput = null)
     {
         var result = new List<EncoderState>();
         var format = Find<ComboBox>("FormatCombo")!;
@@ -413,7 +531,7 @@ public static class GuiCombinationCoverage
                     {
                         Find<ComboBox>("ColorSpaceCombo")!.SelectedItem = space;
                         Pump(8);
-                        var collected = Collect(window, Path.Combine(SrcDir, "src_8bit.png"));
+                        var collected = Collect(window, collectionInput ?? Path.Combine(SrcDir, "src_8bit.png"));
                         state.Templates.Add(new TargetTemplate((advanced ? "advanced:" : "basic:") + space, collected));
                     }
                 }
@@ -556,6 +674,34 @@ public static class GuiCombinationCoverage
             "JPEG" => "jpg", "PNG" => "png", "WebP" => "webp", "AVIF" => "avif",
             "JPEG XL" => "jxl", "TIFF" => "tif", "JPEG XR" => "jxr", _ => value.ToLowerInvariant()
         };
+    }
+
+    public sealed class RealFormatRoute
+    {
+        public int StateIndex { get; set; }
+        public string Format { get; set; } = "";
+        public string EncoderLabel { get; set; } = "";
+        public string Encoder { get; set; } = "";
+        public EncoderBackend Backend { get; set; }
+        public string Engine { get; set; } = "";
+        public string Matrix { get; set; } = "";
+        public string Directory { get; set; } = "";
+        public string Artifact { get; set; } = "";
+        public int? ExitCode { get; set; }
+        public string? Status { get; set; }
+        public string? Command { get; set; }
+        public long Bytes { get; set; }
+        public string? Error { get; set; }
+    }
+
+    public sealed class RealFormatReport
+    {
+        public int Schema { get; set; } = 1;
+        public string Scope { get; set; } = "live-GUI static format/encoder states × auto/engine/legacy × bt709/bt2020nc/smpte170m; real QueueProcessor routes; independent pixel oracle is PowerShell-side";
+        public int FormatEncoderStates { get; set; }
+        public int ExpectedRoutes { get; set; }
+        public List<RealFormatRoute> Routes { get; set; } = new();
+        public List<string> Failures { get; set; } = new();
     }
 
     public sealed class StateReport
