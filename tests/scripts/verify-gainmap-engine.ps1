@@ -95,12 +95,14 @@ function ProbeOut([string]$mode, [string]$arg, [string]$arg2) {
 # 逐条算 + 逐条报（2026-10-28 账本 §57）：旧写法把四项模式 AND 成一条判据 ⇒ 红了说不出死在哪项
 #   （那一轮就是靠手工翻 `apple_new.o` 才定位到「PFM 那行压根没打」）。这里只改**可诊断性**，
 #   通过条件一项没减也没加：同样的「出件 ∧ 四项模式全命中」。
-#   入参形如 @('检测=检测到 Ultra HDR JPEG', 'headroom=headroom=4\.532783')（名称 | 正则）。
+#   入参形如 @('检测=检测到 Ultra HDR JPEG', 'headroom=headroom=4\.532783')（名称=正则；只切第一个等号）。
+#   2026-11-26 更正：旧实现误按 `|` 分割，而全部调用都传 `=` ⇒ $kv[1]=null、`-match $null` 恒真，
+#   连「产品实写 920 nits / 判据要求 4699 nits」也会假绿。⑫ 附带不存在标记的负控，防再次退化成恒真。
 function PatHit([string[]]$named, [string]$log) {
     $parts = @(); $all = $true
     foreach ($it in $named) {
-        $kv = $it -split '\|', 2
-        $hit = ($log -match $kv[1])
+        $kv = $it -split '=', 2
+        $hit = ($kv.Count -eq 2) -and ($log -match $kv[1])
         if (-not $hit) { $all = $false }
         $parts += ($kv[0] + '=' + $hit)
     }
@@ -143,12 +145,37 @@ function ExifTag([string]$path, [string]$tag, [switch]$EE) {
     $al = @('-s', '-s')
     if ($EE) { $al += '-ee' }
     $al += "-$tag"; $al += $path
-    Start-Process -FilePath $et -ArgumentList $al `
-        -NoNewWindow -Wait -RedirectStandardOutput $o -RedirectStandardError $e | Out-Null
+    $p = Start-Process -FilePath $et -ArgumentList $al `
+        -NoNewWindow -Wait -PassThru -RedirectStandardOutput $o -RedirectStandardError $e
+    # ⚠ 2026-11-27 实测：exiftool 的 Perl 启动器偶发 `Failed to load Perl DLL "perl532.dll" code 126`
+    #   （同一文件连续调用两次即可复现，第三次自动恢复）⇒ 只对这条启动器错误重试，不掩盖真实读不到。
+    for ($try = 0; $try -lt 3 -and $p.ExitCode -ne 0; $try++) {
+        $errText = ''
+        if (Test-Path $e) { $errText = [System.IO.File]::ReadAllText($e) }
+        if ($errText -notmatch 'Failed to load Perl DLL|code 126') { break }
+        Start-Sleep -Milliseconds 250
+        $p = Start-Process -FilePath $et -ArgumentList $al `
+            -NoNewWindow -Wait -PassThru -RedirectStandardOutput $o -RedirectStandardError $e
+    }
     $t = ([System.IO.File]::ReadAllText($o)).Trim()
     $i = $t.IndexOf(': ')
     if ($i -ge 0) { return $t.Substring($i + 2).Trim() }
     return ""
+}
+
+# 写侧同样只重试 Perl 启动器 126：⑨ 的 sRGB ICC 嵌入、⑪ 的 P3 ICC 嵌入都依赖它。
+function Invoke-ExifWrite([string[]]$al, [string]$o, [string]$e) {
+    $p = Start-Process -FilePath $et -ArgumentList $al `
+        -NoNewWindow -Wait -PassThru -RedirectStandardOutput $o -RedirectStandardError $e
+    for ($try = 0; $try -lt 3 -and $p.ExitCode -ne 0; $try++) {
+        $errText = ''
+        if (Test-Path $e) { $errText = [System.IO.File]::ReadAllText($e) }
+        if ($errText -notmatch 'Failed to load Perl DLL|code 126') { break }
+        Start-Sleep -Milliseconds 250
+        $p = Start-Process -FilePath $et -ArgumentList $al `
+            -NoNewWindow -Wait -PassThru -RedirectStandardOutput $o -RedirectStandardError $e
+    }
+    return $p
 }
 
 Write-Host "`n### 1) 默认引擎：HDR 源 + jpg + --jpeg-gain-map ⇒ 真 Ultra HDR ###" -ForegroundColor Cyan
@@ -707,11 +734,9 @@ if (-not (Test-Path $iccSrc)) { $iccSrc = "C:/Windows/System32/spool/drivers/col
 CK (Test-Path $iccSrc) "⑨ 找到 sRGB ICC 源（$iccSrc）"
 $mixed = "$out/icc_srgb_pq.png"; $noicc = "$out/noicc_pq.png"
 Copy-Item $hdr $mixed -Force
-Start-Process -FilePath $et -ArgumentList @('-overwrite_original', "-icc_profile<=$iccSrc", $mixed) `
-    -NoNewWindow -Wait -RedirectStandardOutput "$out/_etm.out" -RedirectStandardError "$out/_etm.err" | Out-Null
+Invoke-ExifWrite -al @('-overwrite_original', "-icc_profile<=$iccSrc", $mixed) -o "$out/_etm.out" -e "$out/_etm.err" | Out-Null
 Copy-Item $mixed $noicc -Force
-Start-Process -FilePath $et -ArgumentList @('-overwrite_original', '-icc_profile=', $noicc) `
-    -NoNewWindow -Wait -RedirectStandardOutput "$out/_etn.out" -RedirectStandardError "$out/_etn.err" | Out-Null
+Invoke-ExifWrite -al @('-overwrite_original', '-icc_profile=', $noicc) -o "$out/_etn.out" -e "$out/_etn.err" | Out-Null
 # 前提断言（第三方）：混合件必须"cICP 仍 PQ + ICC 仍在"；两个对照必须"cICP 仍 PQ + 无 ICC"
 $mTrc = FfprobeTrc $mixed
 CK ($mTrc -eq 'smpte2084') "⑨ 前提：混合件 ffprobe 仍报 color_transfer=smpte2084（cICP 未被删，实得「$mTrc」）"
@@ -903,12 +928,19 @@ $ffG = "$root/publish/PLAN/ffmpeg-full/ffmpeg.exe"
 #   （如 `$out/x.icc`）时 exiftool **不落盘**、也不报错 ⇒ 静默抽不到 ICC。
 function ExtractIcc([string]$src, [string]$tag) {
     Get-ChildItem "$out/s38icc_${tag}_*.icc" -EA SilentlyContinue | Remove-Item -Force -EA SilentlyContinue
-    Start-Process -FilePath $et -ArgumentList @('-b', '-ICC_Profile', '-w', "$out/s38icc_${tag}_%f.icc", "`"$src`"") `
-        -NoNewWindow -Wait -RedirectStandardOutput "$out/_iccd.out" -RedirectStandardError "$out/_iccd.err" | Out-Null
-    $f = Get-ChildItem "$out/s38icc_${tag}_*.icc" -EA SilentlyContinue | Select-Object -First 1
-    # ⚠ 必须**非空文件**：`Get-FileHash` 对 0 字节文件也返回一个固定哈希 ⇒ "抽到了"与"抽到空壳"
-    #   在哈希层面无法区分 ⇒ ⑪b 的 `==` 会被两个空壳撑成恒等（假绿）。
-    if ($null -ne $f -and $f.Length -gt 0) { return $f.FullName }
+    for ($try = 0; $try -lt 3; $try++) {
+        Start-Process -FilePath $et -ArgumentList @('-b', '-ICC_Profile', '-w', "$out/s38icc_${tag}_%f.icc", "`"$src`"") `
+            -NoNewWindow -Wait -RedirectStandardOutput "$out/_iccd.out" -RedirectStandardError "$out/_iccd.err" | Out-Null
+        $f = Get-ChildItem "$out/s38icc_${tag}_*.icc" -EA SilentlyContinue | Select-Object -First 1
+        # ⚠ 必须**非空文件**：`Get-FileHash` 对 0 字节文件也返回一个固定哈希 ⇒ "抽到了"与"抽到空壳"
+        #   在哈希层面无法区分 ⇒ ⑪b 的 `==` 会被两个空壳撑成恒等（假绿）。
+        if ($null -ne $f -and $f.Length -gt 0) { return $f.FullName }
+        # 同 ExifTag：只对 Perl 启动器 126 重试；真抽不到 ICC 时不再空转。
+        $errText = ''
+        if (Test-Path "$out/_iccd.err") { $errText = [System.IO.File]::ReadAllText("$out/_iccd.err") }
+        if ($errText -notmatch 'Failed to load Perl DLL|code 126') { break }
+        Start-Sleep -Milliseconds 250
+    }
     return ""
 }
 function IccDump([string]$src, [string]$tag) {
@@ -928,8 +960,7 @@ $p3IccFile = ExtractIcc $p3Jpg 'emb'
 CK ($p3IccFile -ne "") "⑪ 素材：P3 ICC 已从 iccgen 载体里抽出（$p3IccFile）"
 $srcP3 = "$out/s38_src_p3.png"
 Copy-Item $hdr $srcP3 -Force
-Start-Process -FilePath $et -ArgumentList @('-overwrite_original', "-icc_profile<=$p3IccFile", "`"$srcP3`"") `
-    -NoNewWindow -Wait -RedirectStandardOutput "$out/_icce.out" -RedirectStandardError "$out/_icce.err" | Out-Null
+Invoke-ExifWrite -al @('-overwrite_original', "-icc_profile<=$p3IccFile", "`"$srcP3`"") -o "$out/_icce.out" -e "$out/_icce.err" | Out-Null
 $srcRed = ExifTag $srcP3 'ICC_Profile:ChromaticityChannel1'
 # ⚠ 判据取 `^0\.6[78]` 而非 `^0\.68`：iccgen 写出的 P3 红原色实测是 **0.67999**（规范值 0.680 的
 #   定点舍入），而 sRGB=0.64、BT.2020=0.708 都落在该区间外 ⇒ 既有牙又不会被舍入翻红。
@@ -1204,8 +1235,10 @@ Write-Host "`n### 12) 输入侧：Apple 两代 Ultra HDR JPEG（第三方样本�
 #     `TryReadAppleXmpMetadata` 是唯一读通路；若它坏了，样本会被静默当 SDR。
 #   · 产品日志里的「峰值 N nits」是 `203 × 2^HDRCapacityMax`，由**元数据**算出，不是像素读数。
 #     §3c/本段的「施加后峰值 > 底图峰值」必须由**像素**证明 ⇒ `gainmap-stats` 读回解码器写出的线性像素。
-#   · 两代样本的 headroom 来源不同（new：XMP 显式 4.532783；old：v1.0 无字段 ⇒ 隐式 8×）
-#     ⇒ 两臂的最大线性值必须分叉；两臂同值就说明参数根本没进增益公式。
+#   · 两代样本的 headroom 来源不同（new：XMP 显式线性 4.532783×；old：v1.0 无字段 ⇒ 隐式 8×）
+#     ⇒ 必须各自命中独立像素锚，不能再用「new 必须比 old 亮」这种把旧单位错误固化为期望的方向断言。
+#     libavif 对同一 v2 件的公开锚为 alternateHdrHeadroom=log2(4.532783)=2.1804；
+#     本树独立像素读数锚：new cap=4.5328/max=2.8438，old cap=8/max=4.2149。
 #   · 负控用 `exiftool -all=` 剥掉**全部**元数据（实测 `-MPF:all= -XMP:all=` 只去掉一根 APP2，
 #     Apple 的 XMP 仍在 ⇒ 负控会假绿，2026-10-20 实测）。
 $appleNew = "$root/tools/src/libultrahdr/tests/data/apple_gainmap_new.jpg"
@@ -1216,9 +1249,10 @@ $newRun = RunCli "apple_new" $appleNew "png" @()
 $oldRun = RunCli "apple_old" $appleOld "png" @()
 $newOut = (($null -ne $newRun.file) -and (Test-Path $newRun.file))
 $newHit = PatHit @('检测=检测到 Ultra HDR JPEG', 'XMP源=元数据来源: Apple HDRGainMap XMP',
-                   'headroom=headroom=4\.532783', 'PFM=已解码为线性 HDR PFM（峰值 4699 nits）') $newRun.log
-CK ($newOut -and $newHit.ok) ("⑫ new：识别 + 元数据非空（显式 headroom=4.532783）+ 走完解码并产出" +
-      "  逐条命中: 出件=" + $newOut + ' ' + $newHit.detail)
+                   'headroom=headroom=4\.532783', 'log2=log2=2\.180397', 'PFM=已解码为线性 HDR PFM（峰值 920 nits）') $newRun.log
+$newPatNegative = (PatHit @('不存在标记=GAINMAP_PATH_HIT_MUST_NOT_MATCH_7F3A9C') $newRun.log).ok
+CK ($newOut -and $newHit.ok -and (-not $newPatNegative)) ("⑫ new：识别 + 线性 headroom/log2 + 920nits 逐字命中；PatHit 不存在标记负控=False" +
+      "  逐条命中: 出件=" + $newOut + ' 负控=' + $newPatNegative + ' ' + $newHit.detail)
 $oldOut = (($null -ne $oldRun.file) -and (Test-Path $oldRun.file))
 $oldHit = PatHit @('检测=检测到 Ultra HDR JPEG', 'XMP源=元数据来源: Apple HDRGainMap XMP',
                    '隐式8x=隐式 8× 上限', 'PFM=已解码为线性 HDR PFM（峰值 1624 nits）') $oldRun.log
@@ -1237,8 +1271,9 @@ CK (($stNew -match 'PROBE RESULT: pass=4 fail=0') -and ($mxn -gt 1.0) -and ($stN
    "⑫ new 像素级：maxLinear=$mxn > 1.0（SDR 白点）且确有像素越白点 ⇒ 增益真被施加（不是只读了元数据）"
 CK (($stOld -match 'PROBE RESULT: pass=4 fail=0') -and ($mxo -gt 1.0) -and ($stOld -match 'over1=[1-9][0-9]*')) `
    "⑫ old 像素级：maxLinear=$mxo > 1.0 ⇒ 隐式 8× 参数真的进了公式"
-CK (($mxn -gt 0.0) -and ($mxo -gt 0.0) -and ($mxn -gt ($mxo * 1.5))) `
-   "⑫ 剂量分叉：new（显式 headroom，实测 $mxn）必须明显亮于 old（隐式 8×，实测 $mxo）—— 两臂同值说明参数被忽略"
+CK (($stNew -match 'capLinear=4\.5328') -and ($stOld -match 'capLinear=8\.0000') -and
+    ([Math]::Abs($mxn - 2.8438) -le 0.02) -and ([Math]::Abs($mxo - 4.2149) -le 0.02) -and ($mxn -lt $mxo)) `
+   "⑫ 独立剂量锚：new cap=4.5328/max=$mxn（期望 2.8438±0.02），old cap=8/max=$mxo（期望 4.2149±0.02）；v2 线性 4.532783× 不得再误读成 log2"
 # 负控：剥掉全部元数据（含 Apple XMP 与 MPF）⇒ 同一底图不得再走增益图路径。
 # ⚠ `-all=` 会连 ICC 一起剥掉；本段只判「不走增益图路径」，不做色彩断言。
 $strippedNew = "$out/apple_new_stripped.jpg"

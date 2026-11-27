@@ -290,29 +290,19 @@ public static class GainMapDecoder
                 // ── 厂商私有 HDR 层（OnePlus/OPPO 的 `local.hdr.linear.mask` 尾注）───────────
                 //   这类文件既没有 ISO 21496-1 载荷、也没有 XMP/MPF ⇒ 上面三条路必然全落空；
                 //   不接这一支，手机相册里的「GainMap」在转换后就静默消失了（2026-10-14 用户报障）。
-                if (meta == null && vendor is { Found: true })
+                // 只有**没有标准承载**时才允许拿厂商尾注参数当元数据；否则会出现
+                // 「标准承载的增益图 + 厂商曲线的元数据」这种跨来源拼接（两者坐标系不同）。
+                if (meta == null && vendor is { Found: true } && bmff?.HasGainMap != true)
                 {
                     meta = VendorHdrTrailer.BuildMetadata(vendor, options, log);
                     if (meta != null)
                         log?.Invoke("[vendor-hdr] metadata source: vendor trailer (device=" + vendor.Device
                             + $", mask {vendor.MaskWidth}x{vendor.MaskHeight}x{vendor.MaskDepth}"
-                            + $", header ratio {vendor.DeclaredRatio:0.####}, manifest slack {vendor.DeclaredSlack} B). "
-                            + "WARN: the 144-byte vendor param block has no public spec; min/max are read as log2*256 "
-                            + "and cross-checked against the header float, gamma is read as-is; unused fields are dumped verbatim.\n"
-                            + (meta.HdrCapacityMin < 0f
-                                ? (options == null || options.GainMapBaseFromSource
-                                    // 审查（2026-10-15）改文案：A 路默认生效后，"下沿一定会被归一化掉"这句**已经不成立**
-                                    //   （第三方读回实测：合成件 A 臂 minContentBoost=0.817902、B 臂=1）。
-                                    //   ⇒ 文案改成说真话：下沿**由实测 1% 分位决定**，取不到就是 1.0（本件就取不到）。
-                                    ? "[vendor-hdr] NOTE: source declares a headroom floor below 1.0x (shadows are pulled DOWN). "
-                                      + "The gain-map exit keeps the SOURCE base (A path), so the declared floor is re-measured "
-                                      + "from the delivered pixels and written as gainMapMin only if the content actually reaches it "
-                                      + "(if it never does, minContentBoost legitimately comes back as 1.0). "
-                                      + "Disable with --gain-map-base-from-source false to reproduce the old behaviour.\n"
-                                    : "[vendor-hdr] NOTE: source declares a headroom floor below 1.0x (shadows are pulled DOWN), "
-                                      + "but the exit is re-deriving its own Reinhard base (--gain-map-base-from-source false) "
-                                      + "=> that band is normalized away downstream (minContentBoost will come back as 1.0).\n")
-                                : "")
+                            + $", header ratio {vendor.DeclaredRatio:0.####}, manifest slack {vendor.DeclaredSlack} B).\n"
+                            + "[vendor-hdr] " + VendorHdrLhdrCurve.Describe(vendor) + "\n"
+                            + "[vendor-hdr] XDRemux-compatible LHDR semantics: private JPEG mask is first reconstructed "
+                            + "into a 0-based gamma=1 ISO gain map; byte 32/36/44 are NOT read as min/gamma/max. "
+                            + "This is an independently cross-checked empirical model, not a public vendor specification.\n"
                             + "[vendor-hdr] raw144=" + VendorHdrTrailer.DumpBlock(vendor) + "\n");
                     else
                         log?.Invoke("[vendor-hdr] WARN: vendor HDR trailer found but its parameters are unusable "
@@ -350,6 +340,10 @@ public static class GainMapDecoder
                 string gmFmtArgs = "";
                 bool gmOk;
                 bool gmGrid = false;      // 2026-11-02：增益图以 `grid` 分块承载 ⇒ 逐瓦片解码后拼接
+                // 2026-11-27：**增益图来源**必须与公式选择同源，不能拿 `vendor.Found` 当判据 ——
+                //   一个文件可以同时有标准承载（tmap/aux）与厂商尾注；此时 Step 2 会先取标准承载，
+                //   若仍按 vendor.Found 重建，就会把标准增益图套上厂商 LUT（或反之按 bmff.Form 选 Apple 公式）。
+                bool gmFromVendorMask = false;
                 // AU2-X1（2026-11-10）：aux-21496 防御性形态的单 item 提取与本支同构（探针保证它
                 // 恒非 grid：结构尝试只做单 item；元数据前置在 item 数据里、流部分已转 Annex-B）。
                 if (bmff?.HasGainMap == true
@@ -418,6 +412,7 @@ public static class GainMapDecoder
                     // 半尺寸/单通道由施加端负责（ApplyGainMap 的双线性上采样 + BilinearGray 已是这条路）。
                     await File.WriteAllBytesAsync(gmPath, vendor.MaskJpeg, ct);
                     gmOk = true;
+                    gmFromVendorMask = true;
                     log?.Invoke($"[vendor-hdr] gain map source: vendor trailer mask ({vendor.MaskJpeg.Length} B gray JPEG, "
                         + $"{vendor.MaskWidth}x{vendor.MaskHeight})\n");
                 }
@@ -731,37 +726,48 @@ public static class GainMapDecoder
                 // sRGB → 线性（底图无论 sRGB 还是 Rec.2020 均用 sRGB 传递编码，见 GainMapEncoder）
                 SimdPixelOps.SrgbToLinearRgba(baseRgb);
                 var gmRgb = PlanarToInterleaved(gmBytes, (int)gmPixels);
-                // 应用增益 (双线性插值增益图 → 基础图分辨率)
-                // ⚠ Apple aux 形态有两种真实口径（2026-11-14 实拍件定案）：
-                //   A「0 基」= Apple 自家 iPhone（0=1.0×，Rec709 编码）⇒ 官方公式；
-                //   B「对称/128 基」= 手机厂私有件（128=1.0×，线性 mask）⇒ ISO 2^logBoost 负下沿。
-                //   p0.5（0..255 刻度）是两者的判别量：<=8 ⇒ A；>=16 ⇒ B；中间 A+WARN。
-                bool appleAux = bmff is { HasGainMap: true, Form: "aux-apple-hdrgainmap" or "aux-vendor-gainmap" };
+
+                // OnePlus/OPPO LHDR：JPEG 内的 gray mask 不是可直接施加的 ISO 增益图。
+                // 先按 XDRemux 的 LUT 链重建标准 0 基 / gamma=1 增益图，再走下方通用 ApplyGainMap。
+                // 只改厂商尾注支；Apple aux、ISO tmap、JPEG Ultra HDR 的 gmRgb 均保持原样。
+                if (gmFromVendorMask && vendor != null)
+                {
+                    int maskPixels = (int)gmPixels;
+                    var mask = new byte[maskPixels];
+                    for (int i = 0; i < maskPixels; i++)
+                        mask[i] = (byte)Math.Clamp((int)MathF.Round(gmRgb[i * 4] * 255f), 0, 255);
+                    var reconstructed = VendorHdrTrailer.ReconstructGainMap8(vendor, mask);
+                    if (reconstructed == null || reconstructed.Length != maskPixels)
+                    {
+                        log?.Invoke("[vendor-hdr] ❌ LHDR mask 重建失败（EDR scale/knee 不可用）⇒ 拒绝制造伪 HDR，保留 SDR 降级\n");
+                        return null;
+                    }
+                    for (int i = 0; i < maskPixels; i++)
+                    {
+                        float g = reconstructed[i] / 255f;
+                        int o = i * 4;
+                        gmRgb[o] = g; gmRgb[o + 1] = g; gmRgb[o + 2] = g;
+                    }
+                    log?.Invoke($"[vendor-hdr] LHDR mask → ISO gain map 重建完成（{maskPixels} px，"
+                        + $"max={meta.GainMapMax:F6} log2 / {MathF.Pow(2f, meta.GainMapMax):F6}×，gamma={meta.Gamma:F2}）\n");
+                }
+
+                // 应用增益 (双线性插值增益图 → 基础图分辨率)。
+                // Apple/厂商 aux 与 XMP 使用同一套 0 基 Rec.709 语义：前向写入器把
+                // (HDR/SDR - 1)/(headroom - 1) 经 Rec.709 OETF 编码，故这里必须严格逆变换。
+                // 不再按增益图 p0.5 分位猜「128 中性」：该启发式没有容器/规范依据，且会把
+                // 仅含中高增益的真实 Apple 图误判成对称 ISO 曲线（2026-11-26 真机/上游源码复核）。
+                // 公式只跟着**实际取到的增益图来源**走：厂商 mask 重建后必然是 0 基/gamma=1 的 ISO 图，
+                // 即使同一文件里另有 Apple 形态的 bmff 记录也不得套 Apple 公式。
+                bool appleAux = !gmFromVendorMask
+                    && bmff is { HasGainMap: true, Form: "aux-apple-hdrgainmap" or "aux-vendor-gainmap" };
                 bool auxIso21496 = bmff is { HasGainMap: true, Form: "aux-21496" };
                 if (appleAux)
                 {
-                    float p05 = GainMapPercentile05(gmRgb, (int)gmPixels);
-                    bool symmetric = p05 * 255f >= 16f;
-                    if (symmetric)
-                    {
-                        float h = meta.GainMapMax;              // log2 头room（XMP 3.482202 ⇒ 11.17×）
-                        meta.GainMapMin = -h;                  // 三通道一起写（setter 语义）
-                        meta.Gamma = 1f;
-                        if (HasDistinctChannels(gmRgb, (int)gmPixels)) meta.Channels = 3;
-                        hdrRgb = ApplyGainMap(baseRgb, gmRgb, baseW, baseH, gmW, gmH, meta);
-                        log?.Invoke($"[GainMap解码] Apple 增益口径: 对称/128 基（p0.5={p05 * 255f:F0}）"
-                            + $"⇒ min={-h:F3}/max=+{h:F3}（线性 gain，ISO 2^logBoost 族）\n");
-                    }
-                    else
-                    {
-                        if (p05 * 255f > 8f)
-                            log?.Invoke($"[GainMap解码] ⚠️ Apple 增益口径不确定（p0.5={p05 * 255f:F0}，"
-                                + "既非 0 基也非 128 基的典型域）⇒ 按 0 基处理\n");
-                        hdrRgb = ApplyGainMapApple(baseRgb, gmRgb, baseW, baseH, gmW, gmH,
-                            MathF.Pow(2f, meta.GainMapMax));
-                        log?.Invoke($"[GainMap解码] 恢复: Apple 公式 hdr = sdr_linear × (1 + (headroom−1) × Rec709Inv(gainmap))"
-                            + $"（非 ISO 2^logBoost；口径 A，p0.5={p05 * 255f:F0}）\n");
-                    }
+                    float headroomLinear = MathF.Pow(2f, meta.GainMapMax);
+                    hdrRgb = ApplyGainMapApple(baseRgb, gmRgb, baseW, baseH, gmW, gmH, headroomLinear);
+                    log?.Invoke($"[GainMap解码] 恢复: Apple 公式 hdr = sdr_linear × (1 + (headroom−1) × Rec709Inv(gainmap))"
+                        + $"（非 ISO 2^logBoost；headroom={headroomLinear:F6}×，0 基 Rec.709）\n");
                 }
                 else
                 {
@@ -1061,7 +1067,7 @@ public static class GainMapDecoder
                     ? $"grid {bmff.GridRows}x{bmff.GridCols}（{bmff.GainMapTiles.Count} 瓦片，整幅 {bmff.GridWidth}x{bmff.GridHeight}）"
                     : $"item {bmff.GainMapItemId} {bmff.GainMapItemData!.Length} B";
                 log?.Invoke($"[GainMap解码] 检测到 {(bmff.Form == "aux-vendor-gainmap" ? "厂商私有 aux" : "Apple aux")} 增益图"
-                    + $"（form={bmff.Form}，{carrier}），方向为「SDR 底图 → HDR」（Apple/厂商公式族）\n");
+                    + $"（form={bmff.Form}，{carrier}），方向为「SDR 底图 → HDR」（Apple 0 基 Rec.709 公式）\n");
                 return (true, null);
             }
             // AU2-X1（2026-11-10）：aux-21496 防御性形态（合成件 D 同构）—— 探针结构尝试成立
@@ -1556,15 +1562,16 @@ public static class GainMapDecoder
     /// <see cref="ReadMetadataAsync"/> 拿不到 Apple 的字段。
     /// </para>
     /// <para>
-    /// Apple 只给两个字段，且语义与 ISO/Adobe 的字段**不同**，须推导：
+    /// Apple v2 给出版本与**线性** headroom；进入 ISO 风格元数据前必须转成 log2：
     /// <code>
     /// &lt;HDRGainMap:HDRGainMapVersion&gt;131072&lt;/HDRGainMap:HDRGainMapVersion&gt;    (0x20000 = v2.0)
-    /// &lt;HDRGainMap:HDRGainMapHeadroom&gt;4.532783&lt;/HDRGainMap:HDRGainMapHeadroom&gt;   (log2)
+    /// &lt;HDRGainMap:HDRGainMapHeadroom&gt;4.532783&lt;/HDRGainMap:HDRGainMapHeadroom&gt;   (线性 4.532783×)
     /// </code>
-    /// `4.532783` 是 **log2**：`2^4.532783 = 23.1475` —— 与 Google libultrahdr 对同一样本报的
-    /// `maxContentBoost 23.1475` **精确一致**（可作回归锚）。
+    /// 对照 libavif `avifjpeg.c::appleXMPToGainMap`：`hdrHeadroomLinear` 读同名字段，
+    /// `alternateHdrHeadroom = log2(hdrHeadroomLinear)`；其公开 v2 夹具断言 2.1804。
+    /// 旧实现把 4.532783 当 log2，错误放大为 23.1475×（2026-11-26 更正）。
     /// 映射（SDR 底图 + 单色增益图的通例）：
-    /// `GainMapMin=0`、`GainMapMax=HdrCapacityMax=Headroom`、`Gamma=1`、`Offset*=0`、`Channels=1`。
+    /// `GainMapMin=0`、`GainMapMax=HdrCapacityMax=log2(HeadroomLinear)`、`Gamma=1`、`Offset*=0`、`Channels=1`。
     /// </para>
     /// </summary>
     private static GainMapMetadata? TryReadAppleXmpMetadata(string path, Action<string>? log)
@@ -1592,8 +1599,10 @@ public static class GainMapDecoder
             if (mh.Success)
             {
                 if (!float.TryParse(mh.Groups[1].Value, System.Globalization.NumberStyles.Float,
-                        System.Globalization.CultureInfo.InvariantCulture, out headroomLog2)) return null;
-                log?.Invoke($"[GainMap解码] Apple HDRGainMap: headroom={headroomLog2:F6} (log2)\n");
+                        System.Globalization.CultureInfo.InvariantCulture, out float headroomLinear)) return null;
+                if (headroomLinear <= 1f) return null;  // 无正 HDR 余量，不得套 log2 后硬造增益
+                headroomLog2 = MathF.Log2(headroomLinear);
+                log?.Invoke($"[GainMap解码] Apple HDRGainMap: headroom={headroomLinear:F6}×（线性；log2={headroomLog2:F6}）\n");
             }
             else
             {
@@ -1945,52 +1954,6 @@ public static class GainMapDecoder
     }
 
     /// <summary>
-    /// 增益图 **0.5% 分位**（0..1 刻度；用 256 桶直方图 + 至多 ~1M 采样，O(N) 不排序）。
-    /// 判据：<c>p0.5×255 &lt;= 8</c> ⇒ 0 基（Apple 自家）；<c>&gt;= 16</c> ⇒ 128 基（手机私有）。
-    /// 取 BT.709 亮度与 <see cref="BilinearGray"/> 同口径；单通道件三通道相等 ⇒ 值不变。
-    /// </summary>
-    private static float GainMapPercentile05(float[] rgba, int pixelCount)
-    {
-        if (pixelCount <= 0) return 0f;
-        int stride = Math.Max(1, pixelCount / 1_000_000);
-        var hist = new int[256];
-        long n = 0;
-        for (int i = 0; i < pixelCount; i += stride)
-        {
-            int o = i * 4;
-            float l = 0.2126f * rgba[o] + 0.7152f * rgba[o + 1] + 0.0722f * rgba[o + 2];
-            int b = (int)MathF.Round(Math.Clamp(l, 0f, 1f) * 255f);
-            b = Math.Min(255, Math.Max(0, b));
-            hist[b]++; n++;
-        }
-        long target = Math.Max(1, (long)Math.Ceiling(n * 0.005));
-        long acc = 0;
-        for (int b = 0; b < 256; b++)
-        {
-            acc += hist[b];
-            if (acc >= target) return b / 255f;
-        }
-        return 1f;
-    }
-
-    /// <summary>
-    /// 增益图是否真有 **3 个不同通道**（单通道 HEVC 解成 gbrpf32le 时三通道逐值相等）。
-    /// 用于把 <see cref="GainMapMetadata.Channels"/> 从「元数据说 1」纠正为真实 3，
-    /// 否则 3 通道私有件会被 <see cref="BilinearGray"/> 压成亮度、逐通道增益丢失。
-    /// </summary>
-    private static bool HasDistinctChannels(float[] rgba, int pixelCount)
-    {
-        int stride = Math.Max(1, pixelCount / 200_000);
-        for (int i = 0; i < pixelCount; i += stride)
-        {
-            int o = i * 4;
-            if (MathF.Abs(rgba[o] - rgba[o + 1]) > 1e-4f
-                || MathF.Abs(rgba[o + 1] - rgba[o + 2]) > 1e-4f) return true;
-        }
-        return false;
-    }
-
-    /// <summary>
     /// **Apple aux 形态**的增益施加（A 口径，AU-W2，2026-11-10）——与 <see cref="ApplyGainMap"/>（ISO 语义）
     /// 是两条公式，**不共用**：Apple 官方（SPEC E5；johncf lib.py apply_hdrgainmap 同形）：
     /// <code>
@@ -2000,9 +1963,10 @@ public static class GainMapDecoder
     /// </code>
     /// <para>
     /// ⚠ 与 ISO 链路的另一点不同：ISO 的增益图值是**线性权重**（直接进 logBoost 插值），
-    /// Apple 的增益图字节是 **Rec.709 OETF 编码** ⇒ 先逆线性化再用。⚠ 实现分歧登记（SPEC §4）：
-    /// johncf 一手实现用 sRGB EOTF 线性化（两条曲线中间调差异 ≪8-bit 量化），本实现按
-    /// Apple 官方文档口径取 Rec.709 逆（任务书定稿），真机件到手前不再改。
+    /// Apple 的增益图字节是 **Rec.709 OETF 编码** ⇒ 先逆线性化再用。该互逆关系同时由
+    /// Apple 公开公式与 `chemharuka/toGainMapHDR` 的 `GainMapKernel.ci.metal` 前向写入器证实：
+    /// 后者先算 `(HDR/SDR - 1)/(headroom - 1)`，再做 `1.099*r^0.45-0.099`（低段 `4.5*r`）。
+    /// 因此不能按图像分位猜另一种「128 中性」曲线（2026-11-26 更正）。
     /// </para>
     /// <para>结构对齐 <see cref="ApplyGainMap"/>：双线性上采样（复用 <see cref="BilinearGray"/>）+
     /// 坐标按逻辑尺寸归一 + 真实缓冲尺寸钳位（越界防线同源）。Channels 恒 1（单通道亮度图）。</para>
@@ -2208,8 +2172,9 @@ public static class GainMapDecoder
         Action<string>? log, string source)
     {
         // 2026-11-14：手机私有件（DJI/MiHE 等）常写 tag33=0/tag48=0。旧公式把它算成
-        // stops=1.8 ⇒ headroom=3.48×，并因「非 null」抢先覆盖 XMP 的 11.17×（错读）。
-        // 0/0 = 写入器没有给出 HDR 余量 ⇒ 视为无有效 MakerNote 元数据，交回 XMP 判定。
+        // stops=1.8 ⇒ headroom=3.48×，并因「非 null」抢先覆盖 XMP 的显式余量。
+        // 0/0 = 写入器没有给出 HDR 余量 ⇒ 视为无有效 MakerNote 元数据，交回 XMP 判定；
+        // XMP 的 HDRGainMapHeadroom 是线性倍率，在 TryReadAppleXmpMetadata 内统一转 log2。
         if (m33 <= 0f && m48 <= 0f)
         {
             log?.Invoke($"[GainMap解码] AppleMakerNote tag33/48=0（来源 {source}）⇒ 无 HDR 余量语义，不按 3.48× 兜底\n");

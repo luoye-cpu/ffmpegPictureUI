@@ -209,7 +209,7 @@ public static class AppleMakerNoteParser
 
     /// <summary>
     /// 读 MakerNote IFD 里的一个 float tag（0x0021 / 0x0030）。
-    /// **双编码容忍**：type 5（RATIONAL64，num/den）与 type 11（FLOAT32 IEEE754）都解析。
+    /// **多编码容忍**：type 5（RATIONAL）、type 10（SRATIONAL）与 type 11（FLOAT32 IEEE754）都解析。
     /// 值区基准：<paramref name="mnBase"/>（= MakerNote 绝对起点）+ entry 的 offset 字段。
     /// </summary>
     private static bool ReadTagFloat(byte[] d, int mnIfd, int mnBase, int tag, bool be,
@@ -227,16 +227,18 @@ public static class AppleMakerNoteParser
             int cnt = U32(d, p + 4, be);
             if (cnt < 1) { err = $"tag 0x{tag:X4} count={cnt}"; return false; }
 
-            if (type == 5)
+            if (type == 5 || type == 10)
             {
-                // RATIONAL64：8 B（u32 num + u32 den）。count=1 ⇒ 8 B > 4 B value 字段 ⇒ 值区在 offset 处；
-                // count>1 只取第一组（本仓消费语义 = 单值）。
+                // RATIONAL / SRATIONAL：8 B（num + den）。count=1 时仍在 offset 值区；
+                // count>1 只取第一组（本仓消费语义 = 单值）。DJI 实拍件使用 SRATIONAL(10)。
                 int off = U32(d, p + 8, be);
                 int v = mnBase + off;
                 if (v < 0 || v + 8 > d.Length) { err = $"tag 0x{tag:X4} 值区越界（MN+{off}）"; return false; }
-                int num = U32(d, v, be), den = U32(d, v + 4, be);
+                int rawNum = U32(d, v, be), rawDen = U32(d, v + 4, be);
+                double num = type == 10 ? (double)rawNum : (double)unchecked((uint)rawNum);
+                double den = type == 10 ? (double)rawDen : (double)unchecked((uint)rawDen);
                 if (den == 0) { err = $"tag 0x{tag:X4} RATIONAL 分母为 0"; return false; }
-                value = (float)((double)num / den);
+                value = (float)(num / den);
                 return true;
             }
             if (type == 11)
@@ -258,7 +260,7 @@ public static class AppleMakerNoteParser
                 value = fv;
                 return true;
             }
-            err = $"tag 0x{tag:X4} 编码 type={type}（容忍 RATIONAL(5)/FLOAT(11)，实 {type}）";
+            err = $"tag 0x{tag:X4} 编码 type={type}（容忍 RATIONAL(5)/SRATIONAL(10)/FLOAT(11)，实 {type}）";
             return false;
         }
         err = $"MakerNote IFD 共 {count} entry 无 tag 0x{tag:X4}";

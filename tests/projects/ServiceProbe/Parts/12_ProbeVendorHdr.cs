@@ -77,9 +77,14 @@ namespace ServiceProbe
                 BitConverter.GetBytes(10f).CopyTo(meta, 72);
                 BitConverter.GetBytes(6f).CopyTo(meta, 76);
                 BitConverter.GetBytes(144f).CopyTo(meta, 8);     // 块自带长度 = 定位锚
-                BitConverter.GetBytes(-42f).CopyTo(meta, 32);    // min = -42/256 log2
-                BitConverter.GetBytes(2.45991f).CopyTo(meta, 36);
-                BitConverter.GetBytes(73f).CopyTo(meta, 44);     // max = 73/256 log2
+                // XDRemux 同构 LHDR：version + raw gain + precomputed EDR scale。
+                BitConverter.GetBytes(5.0686f).CopyTo(meta, 0);
+                BitConverter.GetBytes(10.5180845f).CopyTo(meta, 128);  // f32[32]
+                BitConverter.GetBytes(4.0224218f).CopyTo(meta, 132);   // f32[33] ⇒ 4.0224218×
+                // 旧实现的三个误读字段保留为诱饵：新实现若仍读它们，V2 会当场红。
+                BitConverter.GetBytes(-42f).CopyTo(meta, 32);    // 旧误读 min = -42/256
+                BitConverter.GetBytes(2.45991f).CopyTo(meta, 36); // 旧误读 gamma
+                BitConverter.GetBytes(73f).CopyTo(meta, 44);     // 旧误读 max = 73/256
                 BitConverter.GetBytes(64).CopyTo(meta, 80);
                 BitConverter.GetBytes(48).CopyTo(meta, 84);
                 BitConverter.GetBytes(8).CopyTo(meta, 88);
@@ -97,12 +102,14 @@ namespace ServiceProbe
             Check(ok.Found && ok.Determinate, "V1 合成尾注必须被认出（含声明长度自洽）");
 
             var mm = VendorHdrTrailer.BuildMetadata(ok);
+            var curve = VendorHdrTrailer.ReconstructGainMap8(ok, new byte[] { 0, 32, 64, 128, 192, 255 });
+            bool curveOk = curve != null && curve.AsSpan().SequenceEqual(new byte[] { 0, 20, 49, 118, 188, 255 });
             Console.WriteLine($"V2 min={mm?.GainMapMin.ToString("F7")} max={mm?.GainMapMax.ToString("F7")} " +
-                $"γ={mm?.Gamma.ToString("F5")} ch={mm?.Channels}");
-            Check(mm != null && Math.Abs(mm.GainMapMin - (-42f / 256f)) < 1e-6f
-                  && Math.Abs(mm.GainMapMax - (73f / 256f)) < 1e-6f
-                  && Math.Abs(mm.Gamma - 2.45991f) < 1e-4f && mm.Channels == 1,
-                  "V2 参数按 ISO 单位读出（/256 log2 + 单通道）");
+                $"γ={mm?.Gamma.ToString("F5")} ch={mm?.Channels} curve=[{string.Join(",", curve ?? Array.Empty<byte>())}]");
+            Check(mm != null && Math.Abs(mm.GainMapMin) < 1e-6f
+                  && Math.Abs(mm.GainMapMax - 2.0080644f) < 1e-4f
+                  && Math.Abs(mm.Gamma - 1f) < 1e-6f && mm.Channels == 1 && curveOk,
+                  "V2 LHDR：min=0 / max=log2(4.0224218) / γ=1；XDRemux 六点 LUT 金样=[0,20,49,118,188,255]；旧 /256 诱饵不得生效");
             Check(ok.MaskWidth == 64 && ok.MaskHeight == 48 && ok.MaskDepth == 8,
                   "V3 mask 几何取自参数块而非 JPEG 头（夹具的假 JPEG 没有 SOF）");
             Check(Math.Abs(ok.DeclaredRatio - 1.25f) < 1e-6f, "V4 记录头比率读回");
@@ -152,7 +159,7 @@ namespace ServiceProbe
             var lg = new List<string>();
             var mo = VendorHdrTrailer.BuildMetadata(ok, lo, s => lg.Add(s));
             Console.WriteLine($"V11 γ 覆盖=-1 => γ={(mo?.Gamma.ToString("F5"))} logs={lg.Count} [{string.Join(" | ", lg)}]");
-            Check(mo != null && Math.Abs(mo.Gamma - 2.45991f) < 1e-4f && lg.Count == 1
+            Check(mo != null && Math.Abs(mo.Gamma - 1f) < 1e-6f && lg.Count == 1
                   && lg[0].Contains("vendor-gm-gamma") && lg[0].Contains("ignored"),
                   "V11 非法 γ 覆盖 ⇒ 警告 + 沿用实测值（不停整条转换）");
 
@@ -160,7 +167,7 @@ namespace ServiceProbe
             var lh = new List<string>();
             var mh = VendorHdrTrailer.BuildMetadata(ok, hi, s => lh.Add(s));
             Console.WriteLine($"V12 max 覆盖=40 => max={(mh?.GainMapMax.ToString("F5"))} logs={lh.Count}");
-            Check(mh != null && Math.Abs(mh.GainMapMax - (73f / 256f)) < 1e-6f && lh.Count == 1,
+            Check(mh != null && Math.Abs(mh.GainMapMax - 2.0080644f) < 1e-4f && lh.Count == 1,
                   "V12 越界（|log2|>10）max 覆盖 ⇒ 警告 + 沿用实测值");
 
             var hv = new FfmpegGui.Models.FfmpegOptions { VendorGmMin = -0.5f, VendorGmMax = 0.5f, VendorGmGamma = 2.2f };
@@ -189,9 +196,9 @@ namespace ServiceProbe
                 var l16 = new List<string>();
                 var m16 = VendorHdrTrailer.BuildMetadata(ok, o16, s => l16.Add(s));
                 bool kept = m16 != null
-                    && Math.Abs(m16.GainMapMin - (-42f / 256f)) < 1e-6f
-                    && Math.Abs(m16.GainMapMax - (73f / 256f)) < 1e-6f
-                    && Math.Abs(m16.Gamma - 2.45991f) < 1e-4f;
+                    && Math.Abs(m16.GainMapMin) < 1e-6f
+                    && Math.Abs(m16.GainMapMax - 2.0080644f) < 1e-4f
+                    && Math.Abs(m16.Gamma - 1f) < 1e-6f;
                 Console.WriteLine($"{vName} => min={(m16?.GainMapMin.ToString("F5"))} max={(m16?.GainMapMax.ToString("F5"))} " +
                     $"γ={(m16?.Gamma.ToString("F5"))} 警告 {l16.Count} 条");
                 Check(kept && l16.Count == 3,
@@ -231,6 +238,52 @@ namespace ServiceProbe
                     "V19 参数块布局指纹被改 ⇒ 拒认 + Determinate=false + 点名 offset（2026-11-09 双真机样本互证的布局校验有牙）");
             }
 
+            // ── V20–V23：EDR 曲线分支覆盖（2026-11-27）──────────────────────────────
+            //   真机只走 version≥3 + f32[33]≥1 的直达路径；EarlyScale / sigmoid / main 三支
+            //   此前零覆盖。合成 144 B 块直接喂 BuildMetadata/ReconstructGainMap8，
+            //   期望值来自 XDRemux 上游 edr.py / gainmap.py 的逐值复算（独立实现，不是本实现自证）。
+            byte[] Block(params (int Index, float V)[] kv)
+            {
+                var meta = new byte[VendorHdrTrailer.ParamBlockBytes];
+                foreach (var (idx, v) in kv) BitConverter.GetBytes(v).CopyTo(meta, idx * 4);
+                return meta;
+            }
+            VendorHdrTrailerResult Synthetic(byte[] block) => new()
+            {
+                Found = true, ParamBlock = block, MaskWidth = 1, MaskHeight = 1, MaskDepth = 8, Device = "SYNTH",
+            };
+            // 基线：f0=5（version）/ f23=1.5 / f24=0 / f29=300 / f32=10 / f33=0.5 / f34=0
+
+            var v20 = Synthetic(Block((0, 5f), (23, 1.5f), (29, 300f), (32, 10f), (33, 0.5f)));
+            var mm20 = VendorHdrTrailer.BuildMetadata(v20);
+            Console.WriteLine($"V20 main path max={(mm20?.GainMapMax.ToString("G9"))} (期望 log2(2.0751001)=1.0531809)");
+            Check(mm20 != null && Math.Abs(mm20.GainMapMax - 1.0531809f) <= 0.0001f,
+                  "V20 MAIN 分支（f23>0.99 且 version>=3）：EDR scale=2.0751001 ⇒ max=1.0531809（XDRemux 复算值）");
+
+            var v21 = Synthetic(Block((0, 5f), (23, 0.5f), (29, 300f), (32, 10f), (33, 0.5f)));
+            var mm21 = VendorHdrTrailer.BuildMetadata(v21);
+            Console.WriteLine($"V21 sigmoid path max={(mm21?.GainMapMax.ToString("G9"))} (期望 log2(3.1522202)=1.6563683)");
+            Check(mm21 != null && Math.Abs(mm21.GainMapMax - 1.6563683f) <= 0.0001f,
+                  "V21 SIGMOID 分支（f23<=0.99）：EDR scale=3.1522202 ⇒ max=1.6563683（XDRemux 复算值）");
+
+            var v22log = new List<string>();
+            var v22 = Synthetic(Block((0, 2.5f), (23, 1.5f), (29, 300f), (32, 10f), (33, 0.5f)));
+            var mm22 = VendorHdrTrailer.BuildMetadata(v22, null, s => v22log.Add(s));
+            var rec22 = VendorHdrTrailer.ReconstructGainMap8(v22, new byte[] { 0, 32, 64, 128, 192, 255 });
+            bool rec22Ok = rec22 != null && rec22.AsSpan().SequenceEqual(new byte[] { 0, 0, 3, 59, 153, 255 });
+            Console.WriteLine($"V22 early path max={(mm22?.GainMapMax.ToString("G9"))} rec=[{(rec22 == null ? "null" : string.Join(",", rec22))}] " +
+                $"note={(v22log.Any(s => s.Contains("NOTE: LHDR version<3")))}");
+            Check(mm22 != null && Math.Abs(mm22.GainMapMax - 1.6563759f) <= 0.0001f && rec22Ok
+                  && v22log.Any(s => s.Contains("NOTE: LHDR version<3")),
+                  "V22 EarlyScale（version<3）+ KneePoint：max=1.6563759、六点重建=[0,0,3,59,153,255]（与直达路径 [0,20,49,118,188,255] 不同），且点名「该分支无真机证据」");
+
+            var v23log = new List<string>();
+            var v23 = Synthetic(Block((0, 5f), (23, 1.5f), (29, 300f), (32, 0f), (33, 0.2f)));
+            var mm23 = VendorHdrTrailer.BuildMetadata(v23, null, s => v23log.Add(s));
+            Console.WriteLine($"V23 raw gain=0 => meta={(mm23 == null ? "null" : "non-null")} note={v23log.Any(s => s.Contains("NOTE"))}");
+            Check(mm23 == null && v23log.Any(s => s.Contains("NOTE")),
+                  "V23 raw gain=0 ⇒ EDR scale=1 ⇒ min==max（无增益区间 ⇒ null），并点名未验证分支（不许静默造 0 区间 HDR）");
+
             // ── W 组：真机件臂（可选位置参数 `vendor-hdr <path>`；2026-11-09 接入）──
             //   语料 = tests/output/corpus/gainmap-vendor-heic/IMG20261101124423.heic
             //   （OnePlus 15T 直出 HEIC，含 GPS 隐私 ⇒ 不入仓，门禁侧 verify-gainmap-isobmff §3v
@@ -267,6 +320,9 @@ namespace ServiceProbe
             {
                 var realBytes = File.ReadAllBytes(realPath);
                 var wp = VendorHdrTrailer.Probe(realBytes);
+                // 可选第 3 参：把切出的 mask JPEG 落盘（供门禁做空间对齐的独立取证；默认不写）。
+                if (args.Length >= 3 && !string.IsNullOrWhiteSpace(args[2]) && wp.MaskJpeg != null)
+                    File.WriteAllBytes(args[2], wp.MaskJpeg);
                 Console.WriteLine($"W Found={wp.Found} Det={wp.Determinate} reason={wp.FailReason ?? "-"} " +
                     $"dev='{wp.Device}' mask={wp.MaskWidth}x{wp.MaskHeight}x{wp.MaskDepth} " +
                     $"ratio={wp.DeclaredRatio} slack={wp.DeclaredSlack} jpegLen={(wp.MaskJpeg?.Length ?? -1)}");
@@ -279,12 +335,12 @@ namespace ServiceProbe
                 Console.WriteLine(wm != null
                     ? $"W-meta min={wm.GainMapMin.ToString("G9")} max={wm.GainMapMax.ToString("G9")} g={wm.Gamma.ToString("G9")} ch={wm.Channels}"
                     : "W-meta null");
-                WCk(wm != null && Math.Abs(wm.GainMapMin - (-0.1067f)) <= 0.001f,
-                    $"W4 min log2 = -27.3185/256 ≈ -0.1067±0.001（实 {wm?.GainMapMin.ToString("G9")}）");
-                WCk(wm != null && Math.Abs(wm.GainMapMax - 0.1953f) <= 0.001f,
-                    $"W5 max log2 = 50/256 ≈ 0.1953±0.001（实 {wm?.GainMapMax.ToString("G9")}）");
-                WCk(wm != null && Math.Abs(wm.Gamma - 2.9126f) <= 0.01f,
-                    $"W6 gamma ≈ 2.9126±0.01（实 {wm?.Gamma.ToString("G9")}）");
+                WCk(wm != null && Math.Abs(wm.GainMapMin) <= 0.000001f,
+                    $"W4 LHDR 标准下沿 min=0（实 {wm?.GainMapMin.ToString("G9")}；旧 -27.3185/256 语义已否定）");
+                WCk(wm != null && Math.Abs(wm.GainMapMax - 2.0080644f) <= 0.0001f,
+                    $"W5 max=log2(f33=4.0224218)=2.0080644±0.0001（实 {wm?.GainMapMax.ToString("G9")}；旧 50/256 语义已否定）");
+                WCk(wm != null && Math.Abs(wm.Gamma - 1f) <= 0.000001f,
+                    $"W6 重建后标准 ISO gamma=1（实 {wm?.Gamma.ToString("G9")}；私有 2.9126 字段不再误当 gamma）");
                 WCk((wp.MaskJpeg?.Length ?? -1) == 820165,
                     $"W7 mask JPEG 长度 820165（manifest 声明 820181，差 16 ≤ 64 容差｜实 {(wp.MaskJpeg?.Length ?? -1)}）");
                 WCk(Math.Abs(wp.DeclaredRatio - 1.2f) <= 0.001f,

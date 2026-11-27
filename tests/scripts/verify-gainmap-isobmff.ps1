@@ -116,7 +116,7 @@
 #                   §3b 缺陷 C 行为 4（含负控与素材形态自检）· **§3c HEIC 端到端行为 5（含负控）** ·
 #                   **§3d 厂商尾注执行面 4（含拒因与互斥点名）** · **§3e 底图取法 A/B 4（含对照臂分叉）** · **§3f HEIC→BT.2020/PQ 出口 11（三读者 + 码域分叉 + 2 条对照 + tmap pixi）** ·
 #                   **§3g AVIF 增益图 + alpha 5（含 PNG 对照；点名"透明被拍平"）** · §4 收尾 1 ·
-#                   **§3v 厂商尾注真机件 9（2026-11-09 新增：前提 sha 锁 1 + 臂①识别/几何/headroom/载荷 4 + 臂② 1/2 比例 1 + 臂③a 比率读数 1 + 臂③b 字节变异负控 2；语料缺失时整段 SKIP，收尾行 SKIP=9 活体可见，不假绿不误红）** ·
+#                   **§3v 厂商尾注真机件 11（2026-11-09 新增：前提 sha 锁 1 + 臂①识别/几何/headroom/载荷 4 + 臂② 1/2 比例 1 + 臂③a 比率读数 1 + 臂③b 字节变异负控 2 + 2026-11-27 空间对齐 2；语料缺失时整段 SKIP，收尾行 SKIP=11 活体可见，不假绿不误红）** ·
 #                   **§1j ISOBMFF alpha 识别 + 透明端到端 10（2026-11-11 修复批 B：AVIF 的 libavif
 #                   AVIF_URN_ALPHA0 = `urn:mpeg:mpegB:cicp:systems:auxiliary:alpha` 与 HEIC 的
 #                   `auxid:1` 两条 URN 都认；AVIF alpha → PNG rgba 且 alphaextract 有非平凡值 +
@@ -574,9 +574,9 @@ if (Test-Path $auxGen) {
            "§1h A-zero 探针 8 条全绿（0/0 MakerNote 不破坏容器提取）"
         $eZero = RunApp $auxZero "png" "aux_e2e_zero" @("--bit-depth", "16")
         CK (($eZero.prods -gt 0) -and ($eZero.text -match '不按 3\.48× 兜底') `
-            -and ($eZero.text -match 'Apple HDRGainMap XMP') -and ($eZero.text -match 'max=2\.000') `
+            -and ($eZero.text -match 'Apple HDRGainMap XMP') -and ($eZero.text -match 'max=1\.000') `
             -and ($eZero.text -notmatch '元数据来源: AppleMakerNote')) `
-           "§1h A-zero 端到端：0/0 被拒（不按 3.48× 兜底）⇒ 回退 XMP headroom=2.0 并产出（$($eZero.prods) 个）"
+           "§1h A-zero 端到端：0/0 被拒（不按 3.48× 兜底）⇒ 回退 XMP 线性 headroom=2.0 ⇒ log2 max=1.000 并产出（$($eZero.prods) 个）"
       }
       # 变异负控（断言有牙）：infe 的 item 类型 "Exif" 改成 "xxxx" ⇒ Exif item 定位失败 ⇒ fail-closed 点名
       #   （证明探针**真的消费** Exif item 的存在性，而不是看到 auxC 就放行）
@@ -908,21 +908,33 @@ if (Test-Path $heicGridAux) {
   # 产品端到端：无 Exif ⇒ MakerNote 通道必然空，必须靠 XMP headroom 继续走完 grid 解码 + 增益施加。
   $eGrid = RunApp $heicGridAux "png" "aux_grid_e2e" @("--bit-depth", "16")
   CK (($eGrid.prods -gt 0) -and ($eGrid.text -match '增益图来源: ISO-BMFF grid') `
-      -and ($eGrid.text -match 'Apple 增益口径|Apple 公式') -and ($eGrid.text -notmatch '不可解')) `
+      -and ($eGrid.text -match '恢复: Apple 公式') -and ($eGrid.text -notmatch '不可解')) `
      "§1l 产品端到端：aux+grid 件产出在位（$($eGrid.prods) 个）且日志点名 grid 来源 + 增益施加（无 Exif 靠 XMP，不降级不可解）"
 
-  # 灰瓦片变体：p0.5=128 ⇒ 必须走「对称/128 基」B 口径（不是 Apple A 的 Rec709Inv）。
+  # 灰瓦片变体：128 是 Apple Rec.709 编码值，不是「1.0× 中性点」声明。
+  # 独立数值锚：底图最大线性值实测 0.2146，XMP 线性 headroom=2.0 ⇒
+  # max = 0.2146 × (1 + ((128/255 + 0.099)/1.099)^(1/0.45)) ≈ 0.270714。
   $heicGridAuxB = "$root/tests/data/synth_heic_grid_aux_gainmap_b.heic"
   CK (Test-Path $heicGridAuxB) `
-     "§1l-B 前置：B 口径灰瓦片合成件在位（tests/data/synth_heic_grid_aux_gainmap_b.heic）"
+     "§1l-B 前置：128 灰瓦片合成件在位（tests/data/synth_heic_grid_aux_gainmap_b.heic）"
   if (Test-Path $heicGridAuxB) {
     $cAuxGridB = Exec $sp "gainmap-isobmff `"$heicGridAuxB`" auxapplegrid" "p_auxapplegrid_b"
     CK ($cAuxGridB.text -match 'PROBE RESULT: pass=11 fail=0') `
        "§1l-B 探针 11 条全绿：灰瓦片同结构仍完整提取（结构与像素值解耦）"
     $eGridB = RunApp $heicGridAuxB "png" "aux_grid_e2e_B" @("--bit-depth", "16")
-    CK (($eGridB.prods -gt 0) -and ($eGridB.text -match 'Apple 增益口径: 对称/128 基（p0.5=128）') `
-        -and ($eGridB.text -match 'min=-2.000/max=\+2.000')) `
-       "§1l-B 产品端到端：p0.5=128 ⇒ 走 B 口径 min=-2/max=+2（不会被 A 的 3.48× 抢占）"
+    $bStats = Exec $sp "gainmap-stats `"$heicGridAuxB`"" "p_auxgrid_b_stats"
+    $bMaxMatch = [regex]::Match($bStats.text, 'maxLinear=([0-9.]+)')
+    $bCapMatch = [regex]::Match($bStats.text, 'capLinear=([0-9.]+)')
+    $bMax = -1.0
+    $bCap = -1.0
+    if ($bMaxMatch.Success) { $bMax = [double]::Parse($bMaxMatch.Groups[1].Value, [Globalization.CultureInfo]::InvariantCulture) }
+    if ($bCapMatch.Success) { $bCap = [double]::Parse($bCapMatch.Groups[1].Value, [Globalization.CultureInfo]::InvariantCulture) }
+    $bExpected = 0.2146 * (1.0 + [math]::Pow(((128.0 / 255.0) + 0.099) / 1.099, 1.0 / 0.45))
+    $bStatsOk = ($bStats.text -match 'stats w=64 h=48') `
+      -and ([math]::Abs($bCap - 2.0) -lt 0.0002) -and ([math]::Abs($bMax - $bExpected) -lt 0.012)
+    CK (($eGridB.prods -gt 0) -and ($eGridB.text -match '恢复: Apple 公式') `
+        -and ($eGridB.text -notmatch '对称/128') -and $bStatsOk) `
+       "§1l-B Apple 数值锚：XMP 线性 2× ⇒ cap=2.0；128 灰瓦片 max=$bMax（独立期望 $bExpected，±0.012），不得按旧对称分支保持 0.2146"
   }
 }
 
@@ -1056,22 +1068,22 @@ CK (($bHdrJpg.terminated) -and ($bHdrJpg.prods -ge 1)) `
 #   ⚠ 这不是语法错误（解析器不报错）⇒ `verify-ps-compat` 与 `Parser.ParseFile` **都抓不到**。
 #   ⇒ **纪律**：双引号串里不要用反引号包裹代码片段（改裸写或用「」）；尤其**尾反引号不得紧贴引号**。
 
-# ── §3d 厂商 HDR 尾注：V1–V19 必须在**执行面**跑，且条数钉死 ──────────────────────────
+# ── §3d 厂商 HDR 尾注：V1–V23 必须在**执行面**跑，且条数钉死 ──────────────────────────
 #   为什么落 ServiceProbe 而不是 tests/gainmap：那四份镜像工程（tests/{encode,io,metadata,gainmap}）的 exe
 #     从来不被任何门禁执行，只是源文本拷贝 ⇒ 断言写在那里＝「只在死代码里有的断言」。
 #     2026-10-15 先把 V1–V18 那段从镜像删掉；2026-10-16 价值普查 A-1 把四份镜像工程整体删除
 #     （`docs/review-2026-10-16/test-value-audit.md`），#76 的 ⑤-c 同批改成「只此一份锁」⑤。
-#     为什么钉 pass=19 而不只钉 fail=0：本段的牙是**条数** —— 早退/改名会让断言整段不跑而 fail 照旧 0。
+#     为什么钉 pass=23 而不只钉 fail=0：本段的牙是**条数** —— 早退/改名会让断言整段不跑而 fail 照旧 0。
 #     （2026-11-09 批次 C：V19 布局指纹负控上线，探针内 V 组 18→19；门禁 CK 条数不变，字面量同批。）
 #     #76 ③ 量的是源文本里的调用位，这里量实际执行并通过的数 ⇒ 两把尺互补，不重复。
 #   两臂天然分叉（不是自身对照）：识别若退化成「见到字段名就放行」⇒ V6/V7/V8 红；
 #     识别若整体失效 ⇒ V1/V2/V3 红 ⇒ 任一侧坏都有活格子。
-Write-Host "`n### §3d 厂商 HDR 尾注（ServiceProbe vendor-hdr，V1–V19）###" -ForegroundColor Cyan
+Write-Host "`n### §3d 厂商 HDR 尾注（ServiceProbe vendor-hdr，V1–V23）###" -ForegroundColor Cyan
 $vh = ExecOut $sp "vendor-hdr" "vendor_hdr"
 $vhSum = ($vh.text -split "\r?\n" | Where-Object { $_ -match "PROBE RESULT" } | Select-Object -First 1)
-CK ($vh.text -match "PROBE RESULT: pass=19 fail=0") "§3d vendor-hdr 19 条全绿（实 $vhSum）"
+CK ($vh.text -match "PROBE RESULT: pass=23 fail=0") "§3d vendor-hdr 23 条全绿（实 $vhSum）"
 $vPass = @([regex]::Matches($vh.text, "(?m)^PASS V")).Count
-CK ($vPass -eq 19) "§3d 逐条点名：以 PASS V 开头的行 = 19（实 $vPass）⇒ 汇总数不是靠早退蒙对"
+CK ($vPass -eq 23) "§3d 逐条点名：以 PASS V 开头的行 = 23（实 $vPass）⇒ 汇总数不是靠早退蒙对"
 #   两条「必须拒」的臂只钉 Found=False 是不够的（任何解析失步都会 False）⇒ 必须钉**拒因**。
 CK (($vh.text -match "no JPEG matches the declared mask length") -and ($vh.text -match "expected 144")) `
    "§3d 拒因点名：V6 声明长度不符 / V7 参数块非 144（两条各死于自己那条判据，不是顺带没认出）"
@@ -1079,7 +1091,7 @@ CK ($vh.text -match "V8/V9 vendorFound=False isoHasGainMap=True isoForm=tmap") `
    "§3d 与标准承载互斥：真 tmap 件厂商支不认、ISO 支仍认（同一行读数钉住两侧）"
 
 # ── §3v 厂商尾注**真机件**形态锁（2026-11-09，OnePlus 15T 直出 HEIC 进语料）────────────────
-#   背景：V1–V19（§3d）是结构层合成件自测；本节钉**首个真机形态**（tests/output/corpus/
+#   背景：V1–V23（§3d）是结构层合成件自测；本节钉**首个真机形态**（tests/output/corpus/
 #   gainmap-vendor-heic/IMG20261101124423.heic，含 GPS 隐私 ⇒ 不入仓，sha256[:16] 锁定字节）。
 #   三处形态差异是合成件造不出的：
 #     ① mask 恰为主图 1/2 分辨率（1536x2048 vs 3072x4096）；
@@ -1097,40 +1109,51 @@ CK ($vh.text -match "V8/V9 vendorFound=False isoHasGainMap=True isoForm=tmap") `
 #   活体可见）：既不假绿（跳过计数可见）也不误红（没样本的机器不该红）；**在位但 sha 不符
 #   ⇒ fail-closed 判红**（同名不同字节 = 读数漂移，比缺件更危险；口径同 verify-gainmap-engine ⑬）。
 #   探针侧：ServiceProbe `vendor-hdr <path>` 有参时追加 W 组真文件臂（9 条断言，独立计数
-#   `real=9 fail=0`，不并入 V 组的 pass=19 条数锁）；无参调用 = 纯合成臂（§3d 形状逐字不变）。
+#   `real=9 fail=0`，不并入 V 组的 pass=23 条数锁）；无参调用 = 纯合成臂（§3d 形状逐字不变）。
 Write-Host "`n### §3v 厂商尾注真机件（OnePlus 15T：1/2 比例 / max=50/256 / 头部比率不参与判定）###" -ForegroundColor Cyan
 $vCorpus = "$root/tests/output/corpus/gainmap-vendor-heic"
 if ($env:VENDOR_HEIC_CORPUS_DIR) { $vCorpus = $env:VENDOR_HEIC_CORPUS_DIR }
 $vHeic = "$vCorpus/IMG20261101124423.heic"
 $vSkip = 0
 if (-not (Test-Path $vHeic)) {
-    $vSkip = 9
-    Write-Host "SKIP §3v 真机语料不在位（$vHeic）⇒ 9 条形态臂整段跳过（收尾行 SKIP=9 可见）。取法：需人工从用户本机复制 D:\TEST\IMG20261101124423\IMG20261101124423.heic 到该目录（OnePlus 私有尾注 + 含 GPS，无公开渠道、不入仓；sha256[:16]=33e2a27a1ed72b89）" -ForegroundColor Yellow
+    $vSkip = 11
+    Write-Host "SKIP §3v 真机语料不在位（$vHeic）⇒ 11 条形态/对齐臂整段跳过（收尾行 SKIP=11 可见）。取法：需人工从用户本机复制 D:\TEST\IMG20261101124423\IMG20261101124423.heic 到该目录（OnePlus 私有尾注 + 含 GPS，无公开渠道、不入仓；sha256[:16]=33e2a27a1ed72b89）" -ForegroundColor Yellow
 } else {
     $vSha = (Get-FileHash -Algorithm SHA256 -Path $vHeic).Hash.ToLower()
     CK ($vSha.Substring(0, 16) -eq '33e2a27a1ed72b89') `
        "§3v-0 前提：真机语料在位且 sha256[:16]=33e2a27a1ed72b89（实 $($vSha.Substring(0, 16))，2,837,433 B）—— 同名不同字节 ⇒ 下面读数全部失效"
-    $vh2 = ExecOut $sp "vendor-hdr `"$vHeic`"" "vendor_hdr_real"
+    $vh2 = ExecOut $sp "vendor-hdr `"$vHeic`" `"$work/oneplus_mask.jpg`"" "vendor_hdr_real"
     $vh2Sum = ($vh2.text -split "\r?\n" | Where-Object { $_ -match "PROBE RESULT" } | Select-Object -First 1)
     Write-Host "  [W] $(($vh2.text -split "`r?`n" | Where-Object { $_ -match '^W ' }) -join ' | ')"
     Write-Host "  [W-meta] $(($vh2.text -split "`r?`n" | Where-Object { $_ -match '^W-meta' }) -join ' | ')"
     # 臂①：真文件识别（ServiceProbe vendor-hdr <path>：V 组 18 条照跑 + W 组 9 条真文件断言）
-    CK (($vh2.text -match 'PROBE RESULT: pass=19 fail=0') -and ($vh2.text -match '(?m)^real=9 fail=0') `
+    CK (($vh2.text -match 'PROBE RESULT: pass=23 fail=0') -and ($vh2.text -match '(?m)^real=9 fail=0') `
         -and ($vh2.text -match 'W Found=True Det=True')) `
-       "§3v-1 臂① 真文件识别：V 组条数锁 pass=19 不变 + W 组 real=9 fail=0 + Found/Det=True（实 $vh2Sum）"
+       "§3v-1 臂① 真文件识别：V 组条数锁 pass=23 不变 + W 组 real=9 fail=0 + Found/Det=True（实 $vh2Sum）"
     CK (($vh2.text -match "dev='OnePlus 15T'") -and ($vh2.text -match 'mask=1536x2048x8')) `
        "§3v-2 臂① 设备与几何：dev='OnePlus 15T' 且 mask=1536x2048x8（识别日志 device=OnePlus 15T, mask 1536x2048x8）"
-    # headroom 三值从 W-meta 行提取后按 ±容差判（比子串匹配精确；容差与探针 W4–W6 同源）
-    $vMeta = ($vh2.text -split "`r?`n" | Where-Object { $_ -match '^W-meta' } | Select-Object -First 1)
+    # 元数据 + 真实像素必须同时命中**原掩膜直读**的独立参考。
+    #   ⚠ 2026-11-27 更正来路：旧段落写的 3.6599/0.4534/3,888,841 是「XDRemux 先把私有件转成标准 ISO
+    #   HEIC、再由本仓 gainmap-stats 回读」的那条**转存流水线**读数（中间件经一次 HEVC 有损往返），
+    #   不是本仓直接解私有件的值。直接解的值由外部独立 Python 复算与本产品 HDR 输出缓冲逐值对撞
+    #   （最大绝对差 1.2e-6、超白像素归属零翻转）：cap=4.0224 / max=3.6585 / mean=0.4539 / over1=3,904,179。
+    #   ⇒ 本节只对**直接路径**取数；转存件那组数字保留为跨实现旁证，不进断言。
+    $vWmeta = ($vh2.text -split "`r?`n" | Where-Object { $_ -match '^W-meta' } | Select-Object -First 1)
     $vMin = 0.0; $vMax = 0.0; $vGam = 0.0
-    $vm1 = [regex]::Match($vMeta, 'min=(-?[\d.Ee+-]+)')
-    if ($vm1.Success) { $vMin = [double]$vm1.Groups[1].Value }
-    $vm2 = [regex]::Match($vMeta, 'max=(-?[\d.Ee+-]+)')
-    if ($vm2.Success) { $vMax = [double]$vm2.Groups[1].Value }
-    $vm3 = [regex]::Match($vMeta, 'g=([\d.Ee+-]+)')
-    if ($vm3.Success) { $vGam = [double]$vm3.Groups[1].Value }
-    CK (([Math]::Abs($vMin - (-0.1067)) -le 0.001) -and ([Math]::Abs($vMax - 0.1953) -le 0.001) -and ([Math]::Abs($vGam - 2.9126) -le 0.01)) `
-       "§3v-3 臂① headroom 三值：min≈-0.1067±0.001 / max≈0.1953±0.001 / gamma≈2.9126±0.01（实 min=$vMin max=$vMax g=$vGam）＝ 27.3185..50 / 256 log2"
+    if ($vWmeta -match 'min=([\-0-9.eE+]+)') { $vMin = [double]$Matches[1] }
+    if ($vWmeta -match 'max=([\-0-9.eE+]+)') { $vMax = [double]$Matches[1] }
+    if ($vWmeta -match '\bg=([\-0-9.eE+]+)') { $vGam = [double]$Matches[1] }
+    $vStats = ExecOut $sp "gainmap-stats `"$vHeic`"" "vendor_hdr_real_stats"
+    $vCap = 0.0; $vPeak = 0.0; $vMean = 0.0; $vOver = 0
+    $vs1 = [regex]::Match($vStats.text, 'capLinear=([0-9.]+)'); if ($vs1.Success) { $vCap = [double]$vs1.Groups[1].Value }
+    $vs2 = [regex]::Match($vStats.text, 'maxLinear=([0-9.]+)'); if ($vs2.Success) { $vPeak = [double]$vs2.Groups[1].Value }
+    $vs3 = [regex]::Match($vStats.text, 'meanLinear=([0-9.]+)'); if ($vs3.Success) { $vMean = [double]$vs3.Groups[1].Value }
+    $vs4 = [regex]::Match($vStats.text, 'over1=(\d+)'); if ($vs4.Success) { $vOver = [int]$vs4.Groups[1].Value }
+    CK (($vWmeta -ne $null) -and ([Math]::Abs($vMin) -le 0.000001) -and ([Math]::Abs($vMax - 2.0080644) -le 0.0001) -and ([Math]::Abs($vGam - 1.0) -le 0.000001) `
+        -and ($vStats.text -match 'PROBE RESULT: pass=4 fail=0') -and ([Math]::Abs($vCap - 4.0224) -le 0.0002) `
+        -and ([Math]::Abs($vPeak - 3.6585) -le 0.002) -and ([Math]::Abs($vMean - 0.4539) -le 0.002) `
+        -and ([Math]::Abs($vOver - 3904179) -le 3000)) `
+       "§3v-3 LHDR 独立语义锚：min=0 / max=log2(f33=4.0224218)=2.0080644 / gamma=1；直接掩膜路径真实像素 cap=$vCap max=$vPeak mean=$vMean over1=$vOver（独立 Python 复算参考 4.0224/3.6585/0.4539/3904179，容差按 1.2e-6 对撞留量）"
     CK (($vh2.text -match 'jpegLen=820165') -and ($vh2.text -match 'slack=209')) `
        "§3v-4 臂① 载荷对账：mask JPEG 820165 B（manifest 声明 820181，差 16≤64）+ 声明自洽 slack=209"
     # 臂②：mask / 主图恰 1/2 比例。⚠ 取证（2026-11-09 当轮）：ffprobe 对本件报 **48 条 hevc 512x512 流**
@@ -1179,6 +1202,65 @@ if (-not (Test-Path $vHeic)) {
         CK (($vMut2.text -match 'W Found=True Det=True') -and ($vMut2.text -match 'ratio=0 ') -and ($vMut2.text -match "dev='OnePlus 15T'")) `
            "§3v-7 臂③b **负控**：抹掉记录头比率（1.2f→0）后 DeclaredRatio=0 而 Found/Det **仍** True（实 $(($vMut2.text -split "`r?`n" | Where-Object { $_ -match '^W ' } | Select-Object -First 1))）—— 头部比率只是记录、从不参与判定；「比率必读」硬判据引入者在这里红"
     }
+    # ── §3v-8/9 空间对齐（2026-11-27）────────────────────────────────────────────
+    #   外部审查实测：底图亮度与原朝向 mask 的相关系数 +0.837，七种旋转/镜像 ≤0.14；
+    #   但仓内此前**没有任何判据**守「mask 坐标必须与底图同向」。这里用两个独立下游
+    #   （ffmpeg 解底图 + ffmpeg 解 mask，64x64 网格）在 8 种取向下各算一次 Pearson：
+    #   原朝向必须最强且 ≥0.70，其余七种必须 ≤0.30（后者防「退化掩膜八向都高」的假绿）。
+    #   ⚠ 底图**不能**用 `-map 0:0` 取：本件是 6x8 分块 Tile Grid，`-map 0:0` 只给一块 512x512
+    #   （2026-11-27 实测：块级读数 id=0.14，整图读数 id=0.88）。整图必须先解全尺寸 raw 再缩放。
+    $vMaskJpg = "$work/oneplus_mask.jpg"
+    $vBaseRaw = "$work/oneplus_base.gray"; $vBase64 = "$work/oneplus_base64.raw"; $vMask64 = "$work/oneplus_mask64.raw"
+    $null = Exec $ff "-y -v error -i `"$vHeic`" -pix_fmt gray -frames:v 1 -f rawvideo `"$vBaseRaw`"" "v_align_base"
+    $null = Exec $ff "-y -v error -f rawvideo -s ${vBw}x${vBh} -pix_fmt gray -i `"$vBaseRaw`" -vf scale=64:64 -frames:v 1 -f rawvideo `"$vBase64`"" "v_align_base64"
+    $null = Exec $ff "-y -v error -i `"$vMaskJpg`" -vf scale=64:64,format=gray -frames:v 1 -f rawvideo `"$vMask64`"" "v_align_mask64"
+    function Corr64($a, $c) {
+        $n = 4096; $sa = 0.0; $sc = 0.0
+        for ($i = 0; $i -lt $n; $i++) { $sa += $a[$i]; $sc += $c[$i] }
+        $ma = $sa / $n; $mc = $sc / $n; $num = 0.0; $da = 0.0; $dc = 0.0
+        for ($i = 0; $i -lt $n; $i++) { $x = $a[$i] - $ma; $y = $c[$i] - $mc; $num += $x * $y; $da += $x * $x; $dc += $y * $y }
+        if ($da -le 0 -or $dc -le 0) { return 0.0 }
+        return $num / [Math]::Sqrt($da * $dc)
+    }
+    function Oriented64([byte[]]$src, [string]$mode) {
+        $o = New-Object 'double[]' 4096
+        for ($y = 0; $y -lt 64; $y++) {
+            for ($x = 0; $x -lt 64; $x++) {
+                $sx = $x; $sy = $y
+                switch ($mode) {
+                    'r90'   { $sx = $y;       $sy = 63 - $x }
+                    'r180'  { $sx = 63 - $x;  $sy = 63 - $y }
+                    'r270'  { $sx = 63 - $y;  $sy = $x }
+                    'flipx' { $sx = 63 - $x }
+                    'flipy' { $sy = 63 - $y }
+                    'trans' { $sx = $y;       $sy = $x }
+                    'anti'  { $sx = 63 - $y;  $sy = 63 - $x }
+                }
+                $o[$y * 64 + $x] = [double]$src[$sy * 64 + $sx]
+            }
+        }
+        return ,$o
+    }
+    $vAlignOk = (Test-Path $vBase64) -and (Test-Path $vMask64) `
+        -and ((Get-Item $vBase64).Length -eq 4096) -and ((Get-Item $vMask64).Length -eq 4096)
+    $vCorrId = 0.0; $vCorrOthersMax = 0.0; $vBestName = ''
+    if ($vAlignOk) {
+        $b64 = [System.IO.File]::ReadAllBytes($vBase64)
+        $m64 = [System.IO.File]::ReadAllBytes($vMask64)
+        $names = 'id','r90','r180','r270','flipx','flipy','trans','anti'
+        $best = -9.0
+        foreach ($nm in $names) {
+            $mm = if ($nm -eq 'id') { $m64 } else { Oriented64 $m64 $nm }
+            $c = Corr64 $b64 $mm
+            if ($nm -eq 'id') { $vCorrId = $c } elseif ($c -gt $vCorrOthersMax) { $vCorrOthersMax = $c }
+            if ($c -gt $best) { $best = $c; $vBestName = $nm }
+        }
+    }
+    Write-Output ("  [align] id={0:F4} 其余最大={1:F4} 最强={2}" -f $vCorrId, $vCorrOthersMax, $vBestName)
+    CK ($vAlignOk -and ($vBestName -eq 'id') -and ($vCorrId -ge 0.70)) `
+       "§3v-8 空间对齐：底图亮度 vs mask 原朝向相关系数 $([Math]::Round($vCorrId,4)) 是 8 向最强且 ≥0.70（外部独立复算 +0.837；若 mask 被旋转/镜像错位，最强向会变成 r90/r180/… 而本行红）"
+    CK ($vAlignOk -and ($vCorrOthersMax -le 0.30)) `
+       "§3v-9 对齐负控：七种旋转/镜像的最高相关系数 $([Math]::Round($vCorrOthersMax,4)) ≤0.30（防「退化掩膜八向都高」把 §3v-8 撑成恒真）"
 }
 
 # ── §3e 底图取法 A/B（--gain-map-base-from-source）：开关必须**可测**，A 必须**更忠实** ────────

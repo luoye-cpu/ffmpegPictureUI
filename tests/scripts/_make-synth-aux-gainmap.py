@@ -115,7 +115,7 @@ def to_length_prefixed(annexb, length_size=4):
 # ───────────────────────── Exif / AppleMakerNote 合成 ─────────────────────────
 
 def build_apple_exif(hr_num=MAKER33_NUM, hr_den=MAKER33_DEN,
-                     gain_num=MAKER48_NUM, gain_den=MAKER48_DEN):
+                     gain_num=MAKER48_NUM, gain_den=MAKER48_DEN, value_type=5):
     """构造 Exif item 载荷：4B tiff_header_offset + TIFF(IFD0 → ExifIFD → MakerNote)。
 
     MakerNote 形态按随包 exiftool 13.61 的 MakerNotes.pm 判定：
@@ -123,8 +123,12 @@ def build_apple_exif(hr_num=MAKER33_NUM, hr_den=MAKER33_DEN,
       · IFD 内 offset **相对 MakerNote 起点**（exiftool `Base => $start - 14`——实测校准，见本函数
         尾注：若该基准读不出 tag，依次试「相对 TIFF 头」「相对 IFD」两种变体并以 exiftool 读数定案）。
     tag 0x0021 = HDRHeadroom（默认 rational64s 3/2 = 1.5）；0x0030 = HDRGain（默认 1/2 = 0.5）。
+    value_type=5 写 RATIONAL；value_type=10 写 SRATIONAL（DJI 实拍形态，数值域带符号）。
     0/0 变体：传 `hr_num=0, hr_den=1, gain_num=0, gain_den=1` —— 产品必须拒绝按 3.48× 兜底并回退 XMP。
     """
+    if value_type not in (5, 10):
+        raise ValueError(f"unsupported MakerNote value_type={value_type}")
+    value_fmt = '>ii' if value_type == 10 else '>II'
     # ── MakerNote（自成一体，先算好再嵌进 Exif IFD）──
     # header 14B + count 2B + 3×entry 36B + next 4B = 56B 处放值区
     mn = bytearray()
@@ -136,14 +140,13 @@ def build_apple_exif(hr_num=MAKER33_NUM, hr_den=MAKER33_DEN,
     mn += struct.pack('>H', 3)
     # 0x0001 MakerNoteVersion，LONG(4) count=1，值 inline = 1
     mn += struct.pack('>HHI', 0x0001, 4, 1) + struct.pack('>I', 1)
-    # 0x0021 HDRHeadroom，RATIONAL(5) count=1，offset（相对 MakerNote 起点）
-    mn += struct.pack('>HHI', 0x0021, 5, 1) + struct.pack('>I', off_v33)
-    # 0x0030 HDRGain，RATIONAL(5) count=1，offset
-    mn += struct.pack('>HHI', 0x0030, 5, 1) + struct.pack('>I', off_v48)
+    # 0x0021 HDRHeadroom / 0x0030 HDRGain：A 件用 SRATIONAL(10)，D/0/0 件保留 RATIONAL(5)。
+    mn += struct.pack('>HHI', 0x0021, value_type, 1) + struct.pack('>I', off_v33)
+    mn += struct.pack('>HHI', 0x0030, value_type, 1) + struct.pack('>I', off_v48)
     mn += struct.pack('>I', 0)                 # next IFD = 0
     assert len(mn) == off_v33, f"MakerNote 布局失配：{len(mn)} != {off_v33}"
-    mn += struct.pack('>II', hr_num, hr_den)
-    mn += struct.pack('>II', gain_num, gain_den)
+    mn += struct.pack(value_fmt, hr_num, hr_den)
+    mn += struct.pack(value_fmt, gain_num, gain_den)
 
     # ── Exif IFD：0x9000 ExifVersion（inline 4B）+ 0x927C MakerNote（offset）──
     # 布局：count 2B + 2×entry 24B + next 4B = 30B；MakerNote 值紧跟其后。
@@ -362,7 +365,7 @@ def main():
     #   Apple 真机主图形态（SPEC §5：P3 nclx 或 P3 ICC）；aux 无 colr（untagged linear，官方口径）。
     colr_p = plain_box('colr', b'nclx' + struct.pack('>HHHB', 12, 13, 6, 1))
 
-    exif = build_apple_exif()
+    exif = build_apple_exif(value_type=10)  # A 件复现 DJI 的 SRATIONAL(10)，原 parity=8 臂直接覆盖纯托管解析。
     print(f"Exif item {len(exif)} B（AppleMakerNote 33=3/2 48=1/2 ⇒ headroom≈4.4536）")
 
     n1 = build_heic(primary, hvcc_p, (64, 48), aux_item, hvcc_a, (32, 24),

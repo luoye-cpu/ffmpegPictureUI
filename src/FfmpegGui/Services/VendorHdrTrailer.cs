@@ -39,12 +39,13 @@ public sealed class VendorHdrTrailerResult
 /// </para>
 ///
 /// <para>
-/// ⚠ **参数语义是推断的**：厂商未公开 144 B 块的字段定义。本文件只按「两条独立读数互证」
-/// 采用其中三个字段（见 <see cref="BuildMetadata"/>），其余字段**原样进日志、不参与计算**；
-/// 其中双真机样本逐字节一致的位置另作**布局指纹校验**（<see cref="LayoutStable"/>，2026-11-09 批次 C）——
-/// 校验的是「与已见形态不符 ⇒ 拒认」，不是「这些值有某含义」，语义依旧一个都不发明。
-/// 字节偏移由门禁 <c>verify-gainmap-isobmff.ps1</c> 的 §3d（跑 <c>ServiceProbe vendor-hdr</c>，
-/// V2 逐字段钉死、V19 钉布局负控）锁定，改动必须同步该闸。
+/// ⚠ **参数语义来自独立实现对拍，不是厂商公开规范**：旧版把 byte 32/36/44 当作
+/// min/gamma/max（/256），2026-11-26 经 XDRemux 同文件转换证明该口径会严重少恢复 HDR。
+/// 现由 <see cref="VendorHdrLhdrCurve"/> 使用 float[0]/[32]/[33] 计算 EDR scale，并把私有
+/// JPEG mask 重建成标准 ISO 增益图；其余字段仍只进日志、不参与计算。
+/// 双真机样本逐字节一致的位置另作**布局指纹校验**（<see cref="LayoutStable"/>）——
+/// 校验的是「与已见形态不符 ⇒ 拒认」，不是给每个字节发明含义。
+/// 门禁 <c>verify-gainmap-isobmff.ps1</c> §3d/§3v 同批锁定新语义与真实像素读数。
 /// </para>
 ///
 /// <para>
@@ -64,11 +65,9 @@ public static class VendorHdrTrailer
     const string MaskName = "local.hdr.linear.mask";
     const string MetaName = "local.hdr.meta.data";
 
-    // 144 B 参数块内的字节偏移（**推断**；语义无公开规范，改动须同步门禁）
+    // 144 B 参数块内的字节偏移。byte 32/36/44 不再是增益参数；它们留给布局对拍，
+    // 真正的 LHDR 语义由 VendorHdrLhdrCurve 的 float[0]/[32]/[33] 单点负责。
     const int P_SELF_SIZE = 8;    // f32 == 144.0 ⇒ 块自带长度，兼作定位锚
-    const int P_MIN_X256  = 32;   // f32 == -42.0  ⇒ log2(最小提升) = 值/256
-    const int P_GAMMA     = 36;   // f32 == 2.45991
-    const int P_MAX_X256  = 44;   // f32 == 73.0   ⇒ log2(最大提升) = 值/256
     const int P_W         = 80;   // i32 == 2944（实测等于 mask 宽）
     const int P_H         = 84;   // i32 == 2208
     const int P_DEPTH     = 88;   // i32 == 8
@@ -79,8 +78,9 @@ public static class VendorHdrTrailer
     // ⇒ 才允许进校验。其余位置两件读数不一致 ⇒ **不许校验**（0: 5.0674 vs 5.0686，疑似随曝光变；
     //   16: 1.0 vs 4.1322；52/56/60/64: 小 float 各异；68: 1e7 vs 2178533，疑似随像素数/文件变；
     //   116/120/124/128/132: 各异）——校验的是「形态一致」，不是「字段语义」，语义一个都没有（见类注释）。
-    // 已锁字段（8/32/36/44/80/84/88）不入表：8 是定位锚，32/36/44 参与计算且随样本变，
-    // 80/84/88 有独立的 plausibility 检查。第三件样本若在下列任一位置漂移 ⇒ 本表必须复议。
+    // 已锁字段（8/32/36/44/80/84/88）不入表：8 是定位锚，32/36/44 是随样本变化的诱饵字段
+    // （旧版曾误当增益参数，现由 V2 断言其不参与），80/84/88 有独立的 plausibility 检查。
+    // 第三件样本若在下列任一位置漂移 ⇒ 本表必须复议。
     static readonly (int Off, float Expect)[] LayoutStable =
     {
         (4, 0f), (12, 0f), (24, 0f), (40, 0f),              // 零位（字节全 00）
@@ -351,25 +351,24 @@ public static class VendorHdrTrailer
     }
 
     /// <summary>
-    /// 144 B 块 → ISO 21496-1 语义的 <see cref="GainMapDecoder.GainMapMetadata"/>。
-    ///
-    /// <para>采用的三个字段与其依据（**互证**，其余字段不参与计算）：</para>
-    /// <list type="bullet">
-    /// <item>max = f32[44]/256 = 73/256 = 0.28516 log2 ⇒ 线性 1.2166；
-    /// 尾注头部独立声明的 f32 = 1.2 ⇒ 两条读数差 1.4%，故最大提升 ≈1.2× 可信。</item>
-    /// <item>min = f32[32]/256 = −42/256 = −0.16406 log2 ⇒ 0.891×（暗部下压，与「恢复对比」一致）。</item>
-    /// <item>gamma = f32[36] = 2.45991（施加为 g^(1/γ)，见 ApplyGainChannel）。</item>
-    /// </list>
-    /// <para>offsetSdr/offsetHdr 取 0：块内没有可信的对应字段，猜一个非零值只会把误差藏进乘式。</para>
+    /// 144 B LHDR 块 → 标准 ISO 21496 元数据。曲线与字段解释集中在
+    /// <see cref="VendorHdrLhdrCurve"/>：私有 mask 先重建为 0 基、gamma=1 的灰度增益图，
+    /// 最大线性提升为 EDR scale；这里只保留人工覆盖与既有方向/尺寸契约。
     /// </summary>
     public static GainMapDecoder.GainMapMetadata? BuildMetadata(VendorHdrTrailerResult r,
         FfmpegGui.Models.FfmpegOptions? o = null, Action<string>? log = null)
     {
         if (!r.Found || r.ParamBlock == null) return null;
-        float minLog2 = F32(r.ParamBlock, P_MIN_X256) / 256f;
-        float maxLog2 = F32(r.ParamBlock, P_MAX_X256) / 256f;
-        float gamma = F32(r.ParamBlock, P_GAMMA);
-        if (gamma <= 0f) gamma = 1f;
+        // 诚实性：其余三支只有上游公式对拍，没有真机像素证据 ⇒ 必须在日志里点名，
+        // 让用户知道这台设备的 HDR 恢复强度未经实测（与“已验过”的直达路径区分开）。
+        if (log != null && VendorHdrLhdrCurve.IsEmpiricallyUnverified(r))
+            log("[vendor-hdr] NOTE: LHDR version<3 或 f32[33]<1 ⇒ 走 EarlyScale/sigmoid/main 经验分支；"
+                + "该分支目前只有上游实现公式对拍、无真机像素证据（仅 version>=3 且 f32[33]>=1 的直达路径有 OnePlus 15T 原片实测）\n");
+        var standard = VendorHdrLhdrCurve.CreateMetadata(r);
+        if (standard == null) return null;
+        float minLog2 = standard.GainMapMin;
+        float maxLog2 = standard.GainMapMax;
+        float gamma = standard.Gamma;
 
         // 覆盖位（`--vendor-gm-*`）：非法 ⇒ 警告 + 沿用实测值，绝不停整条转换。
         // ⚠ 审查（2026-10-15）：合法性判据必须显式挡 NaN/Infinity —— `Math.Abs(NaN)>10` 与 `NaN<=0`
@@ -425,6 +424,10 @@ public static class VendorHdrTrailer
         m.FillRemainingChannelsFromZero();
         return m;
     }
+
+    /// <summary>把私有 JPEG 灰度 mask 重建成 XDRemux 同构的 ISO 灰度增益图。</summary>
+    public static byte[]? ReconstructGainMap8(VendorHdrTrailerResult r, byte[] mask)
+        => VendorHdrLhdrCurve.ReconstructGainMap8(r, mask);
 
     /// <summary>把 144 B 块原样打成 ASCII 串（供日志对拍；不进任何计算）。</summary>
     public static string DumpBlock(VendorHdrTrailerResult r)

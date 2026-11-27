@@ -180,7 +180,10 @@ $counts = [ordered]@{
     #   登记 = **源文本调用位 17**（media 6 + plan 7 + ps 4；条件不变式形态——运行时通过数
     #   按机器形态收敛 8~10，两把尺互补不许对齐）。
     'mediasvc' = 17
-    'tonemapcurve' = 0; 'tooldetect' = 27; 'ultrahdr' = 4; 'vendor-hdr' = 20
+    'tonemapcurve' = 0; 'tooldetect' = 27; 'ultrahdr' = 4; 'vendor-hdr' = 24
+    # 2026-11-27 私有 LHDR 完整覆盖批：`vendor-hdr` 20→**24**（+4 = V20–V23：main / sigmoid /
+    #   EarlyScale+KneePoint / rawGain=0 四条曲线分支数值锚，期望值由 XDRemux edr.py/gainmap.py 复算）。
+    #   运行时 V 组通过数 19→**23**（同批门禁 verify-gainmap-isobmff §3d 字面量 pass=23）。
     # 2026-11-14（L1 收紧批）：verdict 35→36（+1，= 19_ProbeVerdict gif→png 负控改判新增的
     #   「CICP 已精确承载 ⇒ NoIccCarrier 记信息项」断言）；wire 99→106（+7 = 本批 24_ProbeWire
     #   负控④c P3源带ICC+png+auto 不携源ICC + 反负控④d ProPhoto 仍携ICC 兜底，计 +2；

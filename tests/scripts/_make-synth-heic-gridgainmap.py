@@ -209,7 +209,7 @@ def build(out_path, hvcc, tile_item, payload):
     return len(blob)
 
 
-def build_plain_grid(out_path, hvcc, tile_item):
+def build_plain_grid(out_path, hvcc, tile_item, tile_width=64, tile_height=48):
     """Primary image = 2x2 grid; no gain-map item or auxiliary metadata.
 
     Items: 1=grid (primary), 2..5=hvc1 tiles. This isolates Tile Grid filter
@@ -224,15 +224,16 @@ def build_plain_grid(out_path, hvcc, tile_item):
     hdlr = full_box('hdlr', struct.pack('>I', 0) + b'pict' + b'\x00' * 12 + b'\x00')
     dimg_grid = plain_box('dimg', struct.pack('>HH', 1, 4) + struct.pack('>HHHH', 2, 3, 4, 5))
     iref = full_box('iref', dimg_grid)
-    ispe_tile = full_box('ispe', struct.pack('>II', 64, 48))
-    ispe_grid = full_box('ispe', struct.pack('>II', 128, 96))
+    ispe_tile = full_box('ispe', struct.pack('>II', tile_width, tile_height))
+    ispe_grid = full_box('ispe', struct.pack('>II', tile_width * 2, tile_height * 2))
     ipco = plain_box('ipco', hvcc + ispe_tile + ispe_grid)
     entries = [struct.pack('>HB', 1, 1) + bytes([0x83])]
     for iid in (2, 3, 4, 5):
         entries.append(struct.pack('>HB', iid, 2) + bytes([0x81, 0x82]))
     ipma = full_box('ipma', struct.pack('>I', 5) + b''.join(entries))
     iprp = plain_box('iprp', ipco + ipma)
-    grid_payload = struct.pack('>BB', 0, 1) + struct.pack('>BB', 1, 1) + struct.pack('>II', 128, 96)
+    grid_payload = (struct.pack('>BB', 0, 1) + struct.pack('>BB', 1, 1)
+                    + struct.pack('>II', tile_width * 2, tile_height * 2))
 
     def iloc_bytes(offsets):
         body = struct.pack('>H', 5)
@@ -349,6 +350,24 @@ def main():
     n0 = build_plain_grid(p0, hvcc, item)
     print(f"✓ {p0}  {n0} B（primary grid 2x2 / no gain map）")
 
+    # 2026-11-25：跨格式硬件编码器需要 ≥128×128；用 128×128 瓦片组成 256×256 主图。
+    # 与原 128×96 夹具并存，避免改变旧 Tile Grid / 增益图门禁的输入与像素基准。
+    tmp_large = os.path.join(a.outdir, '_hevc_grid_src_128.h265')
+    rl = subprocess.run([a.ffmpeg, '-y', '-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=s=128x128',
+                         '-frames:v', '1', '-c:v', 'libx265', '-f', 'hevc', tmp_large], capture_output=True)
+    if rl.returncode != 0:
+        print(f"✗ ffmpeg 生成 128×128 HEVC 失败: {rl.stderr.decode('utf-8', 'replace')[:300]}")
+        return 1
+    large_annexb = open(tmp_large, 'rb').read()
+    os.remove(tmp_large)
+    large_nals = split_annexb(large_annexb)
+    large_paramsets = [(t, p) for t, p in large_nals if t in (32, 33, 34)]
+    large_hvcc = build_hvcc(large_paramsets)
+    large_item = to_length_prefixed(large_annexb)
+    p_large = os.path.join(a.outdir, 'synth_heic_tilegrid_plain_256.heic')
+    n_large = build_plain_grid(p_large, large_hvcc, large_item, 128, 128)
+    print(f"✓ {p_large}  {n_large} B（primary grid 2x2 / 256x256 / no gain map）")
+
     # tmap 载荷（从库内真实 AVIF 样本取）
     seine = open(a.seine, 'rb').read()
     sm = box(seine, ['meta'], 0, len(seine))
@@ -387,7 +406,8 @@ def main():
     n2 = build_aux_grid(p2, hvcc, item, xmp)
     print(f"✓ {p2}  {n2} B（auxC hdrgainmap + grid 2x2 + flags=0 尾宽高 128x96 + XMP headroom=2.0）")
 
-    # 2026-11-15：灰瓦片变体 —— 增益中位 = 128 ⇒ 锁「对称/128 基」B 口径（testsrc2 件 p0.5≈5 只走 A）。
+    # 灰瓦片变体：恒定 128 仍属于 Apple Rec.709 编码域，不是「128 中性」声明。
+    # 门禁以独立逆公式给出 maxLinear≈0.2707 的数值锚，防止按分位猜曲线的旧缺陷回归。
     tmp_gray = os.path.join(a.outdir, '_hevc_grid_gray.h265')
     rg = subprocess.run([a.ffmpeg, '-y', '-v', 'error', '-f', 'lavfi', '-i', 'color=c=0x808080:s=64x48',
                          '-frames:v', '1', '-c:v', 'libx265', '-f', 'hevc', tmp_gray], capture_output=True)
@@ -402,7 +422,7 @@ def main():
     gray_item = to_length_prefixed(gray_annexb)
     p3 = os.path.join(a.outdir, 'synth_heic_grid_aux_gainmap_b.heic')
     n3 = build_aux_grid(p3, gray_hvcc, gray_item, xmp)
-    print(f"✓ {p3}  {n3} B（同结构，灰瓦片 0x80 ⇒ p0.5=128 走 B 口径）")
+    print(f"✓ {p3}  {n3} B（同结构，灰瓦片 0x80 ⇒ Apple Rec.709 逆公式独立数值锚）")
 
     # 无 XMP 变体：同结构（auxC 仍是**已登记**的 Apple URN）但 idat 里没有 XMP、也没有 Exif。
     # 探针据此结构仍判 hasGainMap=True（form=aux-apple-hdrgainmap），只是元数据缺失；
